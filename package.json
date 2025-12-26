@@ -1,0 +1,31 @@
+{
+  "name": "pjsr-parser-server",
+  "version": "1.0.0",
+  "description": "Language parser server for PixInsight JavaScript Runtime (PJSR) - helps Claude Code write better PixInsight scripts",
+  "main": "src/server.js",
+  "type": "module",
+  "bin": {
+    "pjsr-server": "./src/server.js"
+  },
+  "scripts": {
+    "start": "node src/server.js",
+    "mcp": "node src/mcp-server.js",
+    "test": "node --test src/test.js"
+  },
+  "keywords": [
+    "pixinsight",
+    "pjsr",
+    "astrophotography",
+    "scripting",
+    "language-server",
+    "mcp"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.27.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
