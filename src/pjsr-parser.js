@@ -9,14 +9,43 @@ import { dirname, join } from 'path';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
-// Load the PJSR schema
-const schemaPath = join(__dirname, '..', 'schemas', 'pjsr-core.json');
-let pjsrSchema;
+// Load the PJSR schemas
+const coreSchemaPath = join(__dirname, '..', 'schemas', 'pjsr-core.json');
+const extendedSchemaPath = join(__dirname, '..', 'schemas', 'pjsr-extended.json');
+
+let pjsrSchema = {};
+let pjsrExtended = {};
+
 try {
-  pjsrSchema = JSON.parse(readFileSync(schemaPath, 'utf8'));
+  pjsrSchema = JSON.parse(readFileSync(coreSchemaPath, 'utf8'));
 } catch (e) {
-  console.error('Failed to load PJSR schema:', e.message);
-  pjsrSchema = {};
+  console.error('Failed to load PJSR core schema:', e.message);
+}
+
+try {
+  pjsrExtended = JSON.parse(readFileSync(extendedSchemaPath, 'utf8'));
+  // Merge extended constants into core schema
+  if (pjsrExtended.extendedConstants) {
+    pjsrSchema.constants = { ...pjsrSchema.constants, ...pjsrExtended.extendedConstants };
+  }
+  // Add astrometry classes
+  if (pjsrExtended.astrometryClasses) {
+    pjsrSchema.astrometryClasses = pjsrExtended.astrometryClasses;
+  }
+  // Add catalog classes
+  if (pjsrExtended.catalogClasses) {
+    pjsrSchema.catalogClasses = pjsrExtended.catalogClasses;
+  }
+  // Add include file documentation
+  if (pjsrExtended.includeFiles) {
+    pjsrSchema.includeFiles = pjsrExtended.includeFiles;
+  }
+  // Add extended ImageWindow methods
+  if (pjsrExtended.extendedImageWindowMethods) {
+    pjsrSchema.extendedImageWindowMethods = pjsrExtended.extendedImageWindowMethods;
+  }
+} catch (e) {
+  console.error('Failed to load PJSR extended schema:', e.message);
 }
 
 /**
