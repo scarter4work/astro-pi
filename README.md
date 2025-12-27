@@ -2,6 +2,48 @@
 
 A language parser server for **PixInsight JavaScript Runtime (PJSR)** that helps Claude Code (and other AI assistants) write better code for PixInsight astrophotography software.
 
+## Claude Code Plugin Installation
+
+The easiest way to use this with Claude Code is to install it as a plugin:
+
+```bash
+claude plugin install scarter4work/pjsr-parser-server
+```
+
+This gives you:
+- **PJSR Skill** - Claude automatically knows PJSR APIs and best practices
+- **MCP Tools** - Code analysis, validation, completions, and documentation lookup
+- **Slash Commands** - Quick access to common operations
+
+### Slash Commands
+
+After installation, these commands are available:
+
+| Command | Description |
+|---------|-------------|
+| `/pjsr-analyze` | Analyze PJSR code for issues and best practices |
+| `/pjsr-template` | Generate code templates (script, dialog, batch, etc.) |
+| `/pjsr-class` | Look up detailed class documentation |
+| `/pjsr-help` | Get best practices and coding guidelines |
+
+### MCP Tools
+
+The plugin provides these tools that Claude can use automatically:
+
+| Tool | Description |
+|------|-------------|
+| `pjsr_analyze` | Analyze PJSR code structure |
+| `pjsr_completions` | Get code completions at position |
+| `pjsr_hover` | Get symbol documentation |
+| `pjsr_validate` | Validate code and get diagnostics |
+| `pjsr_template` | Get code templates |
+| `pjsr_class_info` | Get detailed class documentation |
+| `pjsr_constants` | Get constants by category |
+| `pjsr_list_classes` | List all available classes |
+| `pjsr_best_practices` | Get best practices guide |
+
+---
+
 ## Overview
 
 PixInsight is an advanced image processing platform primarily used in astrophotography. PJSR (PixInsight JavaScript Runtime) is its embedded scripting environment based on SpiderMonkey 24 (ECMA 262-5 compliant).
@@ -12,7 +54,7 @@ This project provides:
 - **Code Parser & Analyzer** - Lexer and analyzer for PJSR code
 - **HTTP Server** - RESTful API for code analysis
 - **MCP Server** - Model Context Protocol server for AI assistant integration
-- **Claude Code Skill** - Ready-to-use skill file for Claude Code
+- **Claude Code Plugin** - Ready-to-install plugin with skills and commands
 
 ## Features
 
@@ -23,16 +65,15 @@ This project provides:
 - Code templates for common patterns
 - Full API reference for 50+ PJSR classes
 
-## Quick Start
+## Standalone Usage
+
+If you want to run the servers directly instead of using the plugin:
 
 ### Installation
 
 ```bash
-# Clone the repository
-git clone https://github.com/YOUR_USERNAME/pjsr-parser-server.git
+git clone https://github.com/scarter4work/pjsr-parser-server.git
 cd pjsr-parser-server
-
-# Install dependencies
 npm install
 ```
 
@@ -49,7 +90,7 @@ npm start
 npm run mcp
 ```
 
-## API Endpoints
+## HTTP API Endpoints
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
@@ -88,11 +129,13 @@ curl http://localhost:3847/classes/ImageWindow
 curl http://localhost:3847/templates/dialogTemplate
 ```
 
-## Claude Code Integration
+## Manual Claude Code Integration
+
+If you prefer manual setup instead of the plugin:
 
 ### As an MCP Server
 
-Add to your Claude Code MCP configuration:
+Add to your Claude Code MCP configuration (`~/.claude.json` or project `.mcp.json`):
 
 ```json
 {
@@ -107,23 +150,7 @@ Add to your Claude Code MCP configuration:
 
 ### As a Skill
 
-Copy `skills/pjsr.md` to your Claude Code skills directory.
-
-## MCP Tools
-
-The MCP server provides these tools:
-
-| Tool | Description |
-|------|-------------|
-| `pjsr_analyze` | Analyze PJSR code structure |
-| `pjsr_completions` | Get code completions at position |
-| `pjsr_hover` | Get symbol documentation |
-| `pjsr_validate` | Validate code and get diagnostics |
-| `pjsr_template` | Get code templates |
-| `pjsr_class_info` | Get detailed class documentation |
-| `pjsr_constants` | Get constants by category |
-| `pjsr_list_classes` | List all available classes |
-| `pjsr_best_practices` | Get best practices guide |
+Copy `skills/pjsr/SKILL.md` to your Claude Code skills directory.
 
 ## PJSR Schema
 
@@ -181,6 +208,10 @@ Available templates:
 ## License
 
 MIT License
+
+## Author
+
+Brian Scott Carter (scarter4work@yahoo.com)
 
 ## Acknowledgments
 
