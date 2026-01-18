@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<xri version="1.0" xmlns="http://www.pixinsight.com/xri" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://www.pixinsight.com/xri http://pixinsight.com/xri/xri-1.0.xsd">
+   <package fileName="NukeX-1.0.0-linux-x64.zip" sha1="c62fd3d09e2ce1a1eda74fb3bcc583a38a4add1b" type="module" releaseDate="20260118" title="NukeX 1.0.0 - Intelligent Astrophotography Processing" platform="linux" architecture="x64">
+      <description>
+         <p>
+            <b>NukeX - Intelligent Region-Aware Processing for PixInsight</b>
+         </p>
+         <p>
+            NukeX provides two powerful processes for astrophotography:
+         </p>
+         <ul>
+            <li>
+               <b>NukeX</b> - Region-aware image stretching using AI segmentation. Applies optimal stretch algorithms to different image regions (stars, nebulae, background) independently.
+            </li>
+            <li>
+               <b>NukeXStack</b> - Intelligent pixel selection for subframe integration. Uses statistical distribution fitting and ML-guided selection to choose the optimal pixel value from a stack of prestretched subframes.
+            </li>
+         </ul>
+         <p>
+            Features:
+         </p>
+         <ul>
+            <li>21-class ML segmentation (stars, nebulae, galaxies, dust, artifacts)</li>
+            <li>Per-pixel distribution fitting (Gaussian, Lognormal, Skewed, Bimodal)</li>
+            <li>Class-aware outlier rejection</li>
+            <li>FITS header context awareness (knows M42 = emission nebula)</li>
+            <li>Transition smoothing to prevent artifacts</li>
+         </ul>
+         <p>
+            ________________________________________________________________
+         </p>
+         <p>
+            Copyright (c) 2026 Scott Carter. All Rights Reserved.
+         </p>
+      </description>
+   </package>
+</xri>
+<Signature developerId="scarter4work" timestamp="2026-01-18T23:59:26.726Z" encoding="Base64">ASE8iXkkQWW8t2jN2y5YE51vL2BxdW2kx9zZzj+FtwoQ6ne8Md0YqYDn6W7E9EMgEXA6rd5K7SfEX9Rjie2JAQ==</Signature>
