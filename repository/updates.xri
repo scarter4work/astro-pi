@@ -9,7 +9,7 @@
       </p>
    </description>
    <platform os="linux" arch="x64" version="1.8.0:1.9.9">
-      <package fileName="20260118-linux-x64-NukeX.tar.gz" sha1="54aa8ae9a01d68c8e37d755092e7d378337e1fc4" type="module" releaseDate="20260118">
+      <package fileName="20260118-linux-x64-NukeX.tar.gz" sha1="c749b8ae476ee68dbb4b4906344ff0b05f02b411" type="module" releaseDate="20260118">
          <title>NukeX 1.0.0 - Intelligent Astrophotography Processing</title>
          <description>
             <p>
@@ -33,4 +33,4 @@
       </package>
    </platform>
 </xri>
-<Signature developerId="scarter4work" timestamp="2026-01-19T03:29:59.741Z" encoding="Base64">Xf1kquSYwozztUQXNF9IvvBaeaY0U1Jns/ar/LxlyYdy3s19OwnvAGJc5ebdbBjV7SWl7FIxlNpJnY7TA3KHAQ==</Signature>
+<Signature developerId="scarter4work" timestamp="2026-01-19T04:14:39.723Z" encoding="Base64">HQ4742hiJrZSko+c20Rp978olpzk+eD2wkitSt9IVyygGMImyFlNEkiVGR5To2brEQZiaPMpvcd/iQaX6UTNAw==</Signature>

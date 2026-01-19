@@ -11,6 +11,7 @@ MODULE_VERSION := $(shell cat VERSION 2>/dev/null || echo "1.0.0")
 # PixInsight paths
 PCLDIR := /opt/PixInsight
 PCLINCDIR := $(PCLDIR)/include
+PCLSRCDIR := $(PCLDIR)/src/pcl
 PCLLIBDIR := $(PCLDIR)/bin
 
 # ONNX Runtime (optional - set to 0 to disable)
@@ -76,9 +77,19 @@ ALGO_SOURCES := \
 	src/engine/algorithms/StatisticalAutoStretch.cpp \
 	src/engine/algorithms/VeraluxStretch.cpp
 
+# PCL library sources (compiled into module)
+PCL_SOURCES := $(wildcard $(PCLSRCDIR)/*.cpp)
+
 SOURCES := $(MAIN_SOURCES) $(ENGINE_SOURCES) $(ALGO_SOURCES)
+ALL_SOURCES := $(SOURCES) $(PCL_SOURCES)
+
+# Object files - PCL objects go in build/pcl/
 OBJECTS := $(SOURCES:.cpp=.o)
+PCL_OBJECTS := $(patsubst $(PCLSRCDIR)/%.cpp,build/pcl/%.o,$(PCL_SOURCES))
+ALL_OBJECTS := $(OBJECTS) $(PCL_OBJECTS)
+
 DEPS := $(SOURCES:.cpp=.d)
+PCL_DEPS := $(PCL_OBJECTS:.o=.d)
 
 # Output
 TARGET := $(MODULE_NAME)-pxm.so
@@ -127,6 +138,7 @@ DEFINES := \
 # Include paths
 INCLUDES := \
 	-I$(PCLINCDIR) \
+	-I$(PCLDIR)/src/3rdparty \
 	-Isrc \
 	-Isrc/engine \
 	-Isrc/engine/algorithms
@@ -170,23 +182,34 @@ endif
 
 all: $(TARGET)
 
-$(TARGET): $(OBJECTS)
+$(TARGET): $(ALL_OBJECTS)
 	@echo "Linking $(TARGET)..."
-	$(CXX) $(LDFLAGS) -o $@ $(OBJECTS) $(LIBS)
+	$(CXX) $(LDFLAGS) -o $@ $(ALL_OBJECTS) $(LIBS)
 	@echo "Build complete: $(TARGET)"
 
-# Pattern rule for object files with dependency generation
+# Create build directory for PCL objects
+build/pcl:
+	@mkdir -p build/pcl
+
+# Pattern rule for module object files
 %.o: %.cpp
 	@echo "Compiling $<..."
 	$(CXX) $(CXXFLAGS) -MMD -MP -c $< -o $@
 
+# Pattern rule for PCL object files
+build/pcl/%.o: $(PCLSRCDIR)/%.cpp | build/pcl
+	@echo "Compiling PCL: $(notdir $<)..."
+	$(CXX) $(CXXFLAGS) -MMD -MP -c $< -o $@
+
 # Include dependency files
 -include $(DEPS)
+-include $(PCL_DEPS)
 
 # Clean build artifacts
 clean:
 	@echo "Cleaning..."
 	rm -f $(OBJECTS) $(DEPS) $(TARGET)
+	rm -rf build/pcl
 	rm -f *.xsgn
 	@echo "Clean complete."
 
@@ -201,7 +224,8 @@ info:
 	@echo "PCL Dir:     $(PCLDIR)"
 	@echo "ONNX:        $(USE_ONNX)"
 	@echo "Compiler:    $(CXX)"
-	@echo "Sources:     $(words $(SOURCES)) files"
+	@echo "Sources:     $(words $(SOURCES)) module files"
+	@echo "PCL Sources: $(words $(PCL_SOURCES)) files"
 
 # ============================================================================
 # Installation and Signing
