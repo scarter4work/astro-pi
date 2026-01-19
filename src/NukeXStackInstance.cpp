@@ -24,7 +24,8 @@
 #include "engine/PixelStackAnalyzer.h"
 #include "engine/TransitionChecker.h"
 #include "engine/Segmentation.h"
-#include "engine/Compositor.h"
+#include "engine/StretchLibrary.h"
+#include "engine/algorithms/StatisticalAutoStretch.h"
 
 #include <algorithm>
 
@@ -442,35 +443,19 @@ StackAnalysisConfig NukeXStackInstance::BuildStackConfig() const
 
 bool NukeXStackInstance::PreStretchFrame( Image& frame ) const
 {
-   // Build compositor config for pre-stretching
-   // Keep it simple - no segmentation needed for pre-stretch, just statistical stretch
-   CompositorConfig config;
+   // Use StatisticalAutoStretch directly - bypasses all Compositor complexity
+   // This is designed specifically for linear astronomical data
+   StatisticalAutoStretch stretch;
 
-   // Disable segmentation for pre-stretching - we just want a uniform stretch
-   config.useSegmentation = false;
-   config.useAutoSelection = true;  // Let compositor pick best stretch algorithm
-   config.useLRGBMode = false;      // We're processing individual frames
-   config.applyToneMapping = false; // Don't apply final tone mapping
+   // Configure stretch strength via target background
+   // Lower target = more aggressive stretch
+   // Map p_preStretchStrength (0-1) to target background (0.25 down to 0.05)
+   double targetBg = 0.25 - (p_preStretchStrength * 0.20);
+   stretch.SetTargetBackground( targetBg );
 
-   // Use the pre-stretch strength parameter
-   config.globalStrength = p_preStretchStrength;
-   config.globalContrast = 1.0f;
-   config.globalSaturation = 1.0f;
-
-   // Simple blending (not really used without segmentation)
-   config.blendConfig.featherRadius = 8.0f;
-   config.blendConfig.normalizeWeights = true;
-
-   // Create compositor and process
-   Compositor compositor( config );
-
-   CompositorResult result = compositor.Process( frame, nullptr );
-
-   if ( !result.isValid )
-      return false;
-
-   // Copy result back to frame
-   frame = result.outputImage;
+   // Apply stretch directly to the frame
+   // ApplyToImage auto-computes statistics and applies appropriate MTF stretch
+   stretch.ApplyToImage( frame );
 
    return true;
 }
