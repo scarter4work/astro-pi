@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <xri version="1.0" xmlns="http://www.pixinsight.com/xri" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://www.pixinsight.com/xri http://pixinsight.com/xri/xri-1.0.xsd">
-   <package fileName="NukeX-1.0.0-linux-x64.tar.gz" sha1="54aa8ae9a01d68c8e37d755092e7d378337e1fc4" type="module" repo="https://raw.githubusercontent.com/scarter4work/NukeX2/main/repository/" releaseDate="20260118" title="NukeX 1.0.0 - Intelligent Astrophotography Processing">
+   <package fileName="NukeX-1.0.0-linux-x64.tar.gz" sha1="54aa8ae9a01d68c8e37d755092e7d378337e1fc4" type="module" repo="https://github.com/scarter4work/NukeX2/releases/download/v1.0.0/" releaseDate="20260118" title="NukeX 1.0.0 - Intelligent Astrophotography Processing">
       <description>
          <p>
             <b>NukeX - Intelligent Region-Aware Processing for PixInsight</b>
@@ -22,4 +22,4 @@
       </description>
    </package>
 </xri>
-<Signature developerId="scarter4work" timestamp="2026-01-19T00:21:55.900Z" encoding="Base64">horIuIGZ+bEDO4PpqxLBNTD6KbDV2Zw66Aqv1Hl+SJI3Cp94EwtFl5D1Gw6c+Zz/j/WYbF3EtuX0cjmHGP7jCg==</Signature>
+<Signature developerId="scarter4work" timestamp="2026-01-19T00:23:34.549Z" encoding="Base64">DqS5Ko9obnYFLJtvozSmw5myCdalAuamGb8zW+BE6gpusM03N2/wIgfsb6WQK927jQYslCDtf5Ylf+DAdxbqCg==</Signature>
