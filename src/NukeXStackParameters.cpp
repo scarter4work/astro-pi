@@ -216,6 +216,26 @@ bool NXSGenerateMetadata::DefaultValue() const
 }
 
 // ----------------------------------------------------------------------------
+
+NXSPreStretchWithNukeX* TheNXSPreStretchWithNukeXParameter = nullptr;
+
+NXSPreStretchWithNukeX::NXSPreStretchWithNukeX( MetaProcess* P )
+   : MetaBoolean( P )
+{
+   TheNXSPreStretchWithNukeXParameter = this;
+}
+
+IsoString NXSPreStretchWithNukeX::Id() const
+{
+   return "preStretchWithNukeX";
+}
+
+bool NXSPreStretchWithNukeX::DefaultValue() const
+{
+   return true;  // Enable by default for linear input
+}
+
+// ----------------------------------------------------------------------------
 // Floating Point Parameters
 // ----------------------------------------------------------------------------
 
@@ -355,6 +375,41 @@ double NXSTransitionThreshold::MaximumValue() const
 double NXSTransitionThreshold::DefaultValue() const
 {
    return 0.05;
+}
+
+// ----------------------------------------------------------------------------
+
+NXSPreStretchStrength* TheNXSPreStretchStrengthParameter = nullptr;
+
+NXSPreStretchStrength::NXSPreStretchStrength( MetaProcess* P )
+   : MetaFloat( P )
+{
+   TheNXSPreStretchStrengthParameter = this;
+}
+
+IsoString NXSPreStretchStrength::Id() const
+{
+   return "preStretchStrength";
+}
+
+int NXSPreStretchStrength::Precision() const
+{
+   return 2;
+}
+
+double NXSPreStretchStrength::MinimumValue() const
+{
+   return 0.0;
+}
+
+double NXSPreStretchStrength::MaximumValue() const
+{
+   return 1.0;
+}
+
+double NXSPreStretchStrength::DefaultValue() const
+{
+   return 0.5;
 }
 
 // ----------------------------------------------------------------------------

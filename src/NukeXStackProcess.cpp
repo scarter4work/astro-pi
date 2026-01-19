@@ -39,12 +39,14 @@ NukeXStackProcess::NukeXStackProcess()
    new NXSUseSpatialContext( this );
    new NXSUseTargetContext( this );
    new NXSGenerateMetadata( this );
+   new NXSPreStretchWithNukeX( this );
 
    // Floating point parameters
    new NXSOutlierSigmaThreshold( this );
    new NXSMinClassConfidence( this );
    new NXSSmoothingStrength( this );
    new NXSTransitionThreshold( this );
+   new NXSPreStretchStrength( this );
 
    // Integer parameters
    new NXSTileSize( this );

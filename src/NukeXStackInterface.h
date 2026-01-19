@@ -110,6 +110,14 @@ private:
             Label             SmoothingRadius_Label;
             SpinBox           SmoothingRadius_SpinBox;
 
+      // Pre-Stretch Section
+      SectionBar        PreStretch_SectionBar;
+      Control           PreStretch_Control;
+      VerticalSizer     PreStretch_Sizer;
+         CheckBox          EnablePreStretch_CheckBox;
+         NumericControl    PreStretchStrength_NumericControl;
+         Label             PreStretch_Description_Label;
+
       // Outlier Rejection Section
       SectionBar        Outliers_SectionBar;
       Control           Outliers_Control;

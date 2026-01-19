@@ -24,6 +24,7 @@
 #include "engine/PixelStackAnalyzer.h"
 #include "engine/TransitionChecker.h"
 #include "engine/Segmentation.h"
+#include "engine/Compositor.h"
 
 #include <algorithm>
 
@@ -46,6 +47,8 @@ NukeXStackInstance::NukeXStackInstance( const MetaProcess* m )
    , p_transitionThreshold( static_cast<float>( TheNXSTransitionThresholdParameter->DefaultValue() ) )
    , p_tileSize( static_cast<int32>( TheNXSTileSizeParameter->DefaultValue() ) )
    , p_smoothingRadius( static_cast<int32>( TheNXSSmoothingRadiusParameter->DefaultValue() ) )
+   , p_preStretchWithNukeX( TheNXSPreStretchWithNukeXParameter->DefaultValue() )
+   , p_preStretchStrength( static_cast<float>( TheNXSPreStretchStrengthParameter->DefaultValue() ) )
 {
 }
 
@@ -77,6 +80,8 @@ void NukeXStackInstance::Assign( const ProcessImplementation& p )
       p_transitionThreshold     = x->p_transitionThreshold;
       p_tileSize                = x->p_tileSize;
       p_smoothingRadius         = x->p_smoothingRadius;
+      p_preStretchWithNukeX     = x->p_preStretchWithNukeX;
+      p_preStretchStrength      = x->p_preStretchStrength;
    }
 }
 
@@ -219,6 +224,27 @@ bool NukeXStackInstance::ExecuteGlobal()
    console.WriteLn( String().Format( "\r<clrbol>Loaded %d frames (%dx%dx%d)",
       frames.size(), width, height, channels ) );
 
+   // Pre-stretch frames if enabled
+   if ( p_preStretchWithNukeX )
+   {
+      console.WriteLn( String().Format( "<br>Pre-stretching frames with NukeX (strength=%.2f)...",
+         p_preStretchStrength ) );
+
+      for ( size_t i = 0; i < frames.size(); ++i )
+      {
+         console.Write( String().Format( "\rPre-stretching frame %d of %d...", i + 1, frames.size() ) );
+         console.Flush();
+
+         if ( !PreStretchFrame( frames[i] ) )
+         {
+            console.WarningLn( String().Format( "\r<clrbol>Warning: Pre-stretch failed for frame %d, using original",
+               i + 1 ) );
+         }
+      }
+
+      console.WriteLn( String().Format( "\r<clrbol>Pre-stretched %d frames", frames.size() ) );
+   }
+
    // Run integration
    Image output;
    IntegrationSummary summary;
@@ -296,6 +322,10 @@ void* NukeXStackInstance::LockParameter( const MetaParameter* p, size_type table
       return &p_tileSize;
    if ( p == TheNXSSmoothingRadiusParameter )
       return &p_smoothingRadius;
+   if ( p == TheNXSPreStretchWithNukeXParameter )
+      return &p_preStretchWithNukeX;
+   if ( p == TheNXSPreStretchStrengthParameter )
+      return &p_preStretchStrength;
 
    return nullptr;
 }
@@ -406,6 +436,53 @@ StackAnalysisConfig NukeXStackInstance::BuildStackConfig() const
    }
 
    return config;
+}
+
+// ----------------------------------------------------------------------------
+
+bool NukeXStackInstance::PreStretchFrame( Image& frame ) const
+{
+   // Build compositor config for pre-stretching
+   CompositorConfig config;
+
+   // Basic settings - use segmentation if ML is enabled, otherwise just use statistical stretch
+   config.useSegmentation = p_enableMLSegmentation;
+   config.useAutoSelection = true;  // Let compositor pick best stretch algorithm
+   config.useLRGBMode = false;      // We're processing individual frames
+   config.applyToneMapping = false; // Don't apply final tone mapping
+
+   // Use the pre-stretch strength parameter
+   config.globalStrength = p_preStretchStrength;
+   config.globalContrast = 1.0f;
+   config.globalSaturation = 1.0f;
+
+   // Simple blending
+   config.blendConfig.featherRadius = 8.0f;
+   config.blendConfig.normalizeWeights = true;
+
+   // Find available segmentation models
+   if ( config.useSegmentation )
+   {
+      auto availableModels = SegmentationEngine::FindAvailableModels();
+      if ( !availableModels.empty() )
+      {
+         config.segmentationConfig.modelConfig.modelPath = availableModels[0];
+      }
+      config.segmentationConfig.autoFallback = true;
+   }
+
+   // Create compositor and process
+   Compositor compositor( config );
+
+   CompositorResult result = compositor.Process( frame, nullptr );
+
+   if ( !result.isValid )
+      return false;
+
+   // Copy result back to frame
+   frame = result.outputImage;
+
+   return true;
 }
 
 // ----------------------------------------------------------------------------

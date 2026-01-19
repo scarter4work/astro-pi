@@ -101,10 +101,17 @@ private:
    int32    p_tileSize;
    int32    p_smoothingRadius;
 
+   // Pre-stretch parameters
+   pcl_bool p_preStretchWithNukeX;
+   float    p_preStretchStrength;
+
    // Helper methods
    PixelSelectorConfig BuildSelectorConfig() const;
    TransitionCheckerConfig BuildTransitionConfig() const;
    StackAnalysisConfig BuildStackConfig() const;
+
+   // Pre-stretch a frame using NukeX compositor
+   bool PreStretchFrame( Image& frame ) const;
 
    // Load a FITS file and return the image
    bool LoadFrame( const String& path, Image& image, FITSKeywordArray& keywords ) const;

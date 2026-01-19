@@ -169,6 +169,11 @@ void NukeXStackInterface::UpdateControls()
    GUI->TileSize_SpinBox.Enable( smoothEnabled );
    GUI->SmoothingRadius_SpinBox.Enable( smoothEnabled );
 
+   // Pre-stretch controls
+   GUI->EnablePreStretch_CheckBox.SetChecked( m_instance.p_preStretchWithNukeX );
+   GUI->PreStretchStrength_NumericControl.SetValue( m_instance.p_preStretchStrength );
+   GUI->PreStretchStrength_NumericControl.Enable( m_instance.p_preStretchWithNukeX );
+
    // Outlier controls
    GUI->OutlierSigma_NumericControl.SetValue( m_instance.p_outlierSigmaThreshold );
    GUI->GenerateMetadata_CheckBox.SetChecked( m_instance.p_generateMetadata );
@@ -444,6 +449,11 @@ void NukeXStackInterface::e_CheckBoxClick( Button& sender, bool checked )
    {
       m_instance.p_generateMetadata = checked;
    }
+   else if ( sender == GUI->EnablePreStretch_CheckBox )
+   {
+      m_instance.p_preStretchWithNukeX = checked;
+      GUI->PreStretchStrength_NumericControl.Enable( checked );
+   }
 }
 
 // ----------------------------------------------------------------------------
@@ -458,6 +468,8 @@ void NukeXStackInterface::e_NumericValueUpdated( NumericEdit& sender, double val
       m_instance.p_transitionThreshold = value;
    else if ( sender == GUI->OutlierSigma_NumericControl )
       m_instance.p_outlierSigmaThreshold = value;
+   else if ( sender == GUI->PreStretchStrength_NumericControl )
+      m_instance.p_preStretchStrength = value;
 }
 
 // ----------------------------------------------------------------------------
@@ -703,6 +715,42 @@ NukeXStackInterface::GUIData::GUIData( NukeXStackInterface& w )
    Smoothing_Control.SetSizer( Smoothing_Sizer );
 
    // =========================================================================
+   // Pre-Stretch Section
+   // =========================================================================
+
+   PreStretch_SectionBar.SetTitle( "Pre-Stretch with NukeX" );
+   PreStretch_SectionBar.SetSection( PreStretch_Control );
+
+   EnablePreStretch_CheckBox.SetText( "Pre-stretch subframes before integration" );
+   EnablePreStretch_CheckBox.SetToolTip( "<p>Apply NukeX statistical stretch to each subframe before stacking. "
+                                          "Enable this when your input frames are linear (not pre-stretched). "
+                                          "The stretch converts linear data to a form suitable for intelligent pixel selection.</p>" );
+   EnablePreStretch_CheckBox.OnClick( (Button::click_event_handler)&NukeXStackInterface::e_CheckBoxClick, w );
+
+   PreStretchStrength_NumericControl.label.SetText( "Stretch Strength:" );
+   PreStretchStrength_NumericControl.label.SetMinWidth( labelWidth1 );
+   PreStretchStrength_NumericControl.slider.SetRange( 0, 100 );
+   PreStretchStrength_NumericControl.SetReal();
+   PreStretchStrength_NumericControl.SetRange( TheNXSPreStretchStrengthParameter->MinimumValue(),
+                                                TheNXSPreStretchStrengthParameter->MaximumValue() );
+   PreStretchStrength_NumericControl.SetPrecision( TheNXSPreStretchStrengthParameter->Precision() );
+   PreStretchStrength_NumericControl.edit.SetMinWidth( editWidth1 );
+   PreStretchStrength_NumericControl.SetToolTip( "<p>Global strength of the pre-stretch applied to each frame. "
+                                                  "Higher values produce more aggressive stretching.</p>" );
+   PreStretchStrength_NumericControl.OnValueUpdated( (NumericEdit::value_event_handler)&NukeXStackInterface::e_NumericValueUpdated, w );
+
+   PreStretch_Description_Label.SetText( "Use this for linear input data (e.g., directly from calibration)." );
+   PreStretch_Description_Label.SetTextColor( 0xFF808080 );  // Gray
+   PreStretch_Description_Label.EnableWordWrapping();
+
+   PreStretch_Sizer.SetSpacing( 4 );
+   PreStretch_Sizer.Add( EnablePreStretch_CheckBox );
+   PreStretch_Sizer.Add( PreStretchStrength_NumericControl );
+   PreStretch_Sizer.Add( PreStretch_Description_Label );
+
+   PreStretch_Control.SetSizer( PreStretch_Sizer );
+
+   // =========================================================================
    // Outlier Rejection Section
    // =========================================================================
 
@@ -747,6 +795,8 @@ NukeXStackInterface::GUIData::GUIData( NukeXStackInterface& w )
    Global_Sizer.Add( MLSegmentation_Control );
    Global_Sizer.Add( Smoothing_SectionBar );
    Global_Sizer.Add( Smoothing_Control );
+   Global_Sizer.Add( PreStretch_SectionBar );
+   Global_Sizer.Add( PreStretch_Control );
    Global_Sizer.Add( Outliers_SectionBar );
    Global_Sizer.Add( Outliers_Control );
 

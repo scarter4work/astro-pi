@@ -131,6 +131,16 @@ public:
 
 extern NXSGenerateMetadata* TheNXSGenerateMetadataParameter;
 
+class NXSPreStretchWithNukeX : public MetaBoolean
+{
+public:
+   NXSPreStretchWithNukeX( MetaProcess* );
+   IsoString Id() const override;
+   bool DefaultValue() const override;
+};
+
+extern NXSPreStretchWithNukeX* TheNXSPreStretchWithNukeXParameter;
+
 // ----------------------------------------------------------------------------
 // Floating Point Parameters
 // ----------------------------------------------------------------------------
@@ -186,6 +196,19 @@ public:
 };
 
 extern NXSTransitionThreshold* TheNXSTransitionThresholdParameter;
+
+class NXSPreStretchStrength : public MetaFloat
+{
+public:
+   NXSPreStretchStrength( MetaProcess* );
+   IsoString Id() const override;
+   int Precision() const override;
+   double MinimumValue() const override;
+   double MaximumValue() const override;
+   double DefaultValue() const override;
+};
+
+extern NXSPreStretchStrength* TheNXSPreStretchStrengthParameter;
 
 // ----------------------------------------------------------------------------
 // Integer Parameters
