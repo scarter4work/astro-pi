@@ -61,18 +61,18 @@ echo "Signing module..."
 make sign
 
 echo "Creating package..."
-PACKAGE_NAME="NukeX-${NEW_VERSION}-linux-x64.tar.gz"
+RELEASE_DATE=$(date +%Y%m%d)
+PACKAGE_NAME="${RELEASE_DATE}-linux-x64-NukeX.tar.gz"
 tar -czvf "repository/$PACKAGE_NAME" NukeX-pxm.so NukeX-pxm.xsgn
 
 # Get SHA1
 PACKAGE_SHA1=$(sha1sum "repository/$PACKAGE_NAME" | cut -d' ' -f1)
-RELEASE_DATE=$(date +%Y%m%d)
 
 echo "Updating updates.xri..."
 cat > repository/updates.xri << EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <xri version="1.0" xmlns="http://www.pixinsight.com/xri" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://www.pixinsight.com/xri http://pixinsight.com/xri/xri-1.0.xsd">
-   <package fileName="$PACKAGE_NAME" sha1="$PACKAGE_SHA1" type="module" repo="https://github.com/scarter4work/NukeX2/releases/download/v${NEW_VERSION}/" releaseDate="$RELEASE_DATE" title="NukeX ${NEW_VERSION} - Intelligent Astrophotography Processing">
+   <package fileName="$PACKAGE_NAME" sha1="$PACKAGE_SHA1" type="module" platform="linux" repo="https://raw.githubusercontent.com/scarter4work/NukeX2/main/repository/" releaseDate="$RELEASE_DATE" title="NukeX ${NEW_VERSION} - Intelligent Astrophotography Processing">
       <description>
          <p>
             <b>NukeX - Intelligent Region-Aware Processing for PixInsight</b>
