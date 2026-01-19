@@ -47,11 +47,16 @@ bool Compositor::Initialize( const CompositorConfig& config )
    // Only initialize segmentation engine if segmentation is enabled
    if ( config.useSegmentation )
    {
+      Console().WriteLn( "Compositor: Initializing segmentation engine..." );
       m_segmentation = std::make_unique<SegmentationEngine>();
       if ( !m_segmentation->Initialize( config.segmentationConfig ) )
       {
          Console().WarningLn( "Segmentation initialization failed, using mock" );
       }
+   }
+   else
+   {
+      Console().WriteLn( "Compositor: Segmentation disabled, using simple background mask" );
    }
 
    // Initialize analyzer
@@ -167,6 +172,11 @@ CompositorResult Compositor::Process( const Image& input, CompositorProgressCall
          segResult.segmentation.masks[RegionClass::Background] =
             Image( input.Width(), input.Height(), pcl::ColorSpace::Gray );
          segResult.segmentation.masks[RegionClass::Background].White();
+
+         // Set all validity flags and metadata
+         segResult.segmentation.width = input.Width();
+         segResult.segmentation.height = input.Height();
+         segResult.segmentation.isValid = true;
          segResult.isValid = true;
       }
 

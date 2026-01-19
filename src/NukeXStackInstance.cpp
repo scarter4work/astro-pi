@@ -25,7 +25,7 @@
 #include "engine/TransitionChecker.h"
 #include "engine/Segmentation.h"
 #include "engine/StretchLibrary.h"
-#include "engine/algorithms/StatisticalAutoStretch.h"
+#include "engine/Compositor.h"
 
 #include <algorithm>
 
@@ -443,19 +443,50 @@ StackAnalysisConfig NukeXStackInstance::BuildStackConfig() const
 
 bool NukeXStackInstance::PreStretchFrame( Image& frame ) const
 {
-   // Use StatisticalAutoStretch directly - bypasses all Compositor complexity
-   // This is designed specifically for linear astronomical data
-   StatisticalAutoStretch stretch;
+   // Build compositor config for pre-stretching
+   // Keep it simple - no segmentation needed for pre-stretch, just statistical stretch
+   CompositorConfig config;
 
-   // Configure stretch strength via target background
-   // Lower target = more aggressive stretch
-   // Map p_preStretchStrength (0-1) to target background (0.25 down to 0.05)
-   double targetBg = 0.25 - (p_preStretchStrength * 0.20);
-   stretch.SetTargetBackground( targetBg );
+   // CRITICAL: Disable segmentation for pre-stretching
+   // This prevents any ONNX/segmentation model initialization
+   config.useSegmentation = false;
 
-   // Apply stretch directly to the frame
-   // ApplyToImage auto-computes statistics and applies appropriate MTF stretch
-   stretch.ApplyToImage( frame );
+   // Let compositor pick best stretch algorithm based on image statistics
+   config.useAutoSelection = true;
+
+   // We're processing individual frames, not LRGB combined
+   config.useLRGBMode = false;
+
+   // Don't apply final tone mapping - we just want the stretch
+   config.applyToneMapping = false;
+
+   // Use the pre-stretch strength parameter
+   config.globalStrength = p_preStretchStrength;
+
+   // Neutral contrast and saturation
+   config.globalContrast = 0.0;
+   config.globalSaturation = 0.0;
+
+   // Simple blending (not really used without segmentation, but set reasonable defaults)
+   config.blendConfig.featherRadius = 8.0f;
+   config.blendConfig.normalizeWeights = true;
+
+   // Use parallel processing for speed
+   config.useParallelBlend = true;
+
+   // Create compositor and process
+   Compositor compositor( config );
+
+   CompositorResult result = compositor.Process( frame, nullptr );
+
+   if ( !result.isValid )
+   {
+      Console().WarningLn( "PreStretch: Compositor failed - " + result.errorMessage );
+      return false;
+   }
+
+   // Copy result back to frame
+   frame = result.outputImage;
 
    return true;
 }

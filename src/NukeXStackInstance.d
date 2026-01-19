@@ -88,8 +88,10 @@ src/NukeXStackInstance.o: src/NukeXStackInstance.cpp \
  /opt/PixInsight/include/pcl/StandardStatus.h \
  src/engine/PixelStackAnalyzer.h src/engine/Segmentation.h \
  src/engine/StretchLibrary.h src/engine/IStretchAlgorithm.h \
- src/engine/algorithms/StatisticalAutoStretch.h \
- src/engine/algorithms/../IStretchAlgorithm.h
+ src/engine/Compositor.h src/engine/StretchSelector.h \
+ src/engine/SelectionRules.h src/engine/StretchLibrary.h \
+ src/engine/BlendEngine.h src/engine/ToneMapper.h \
+ src/engine/LRGBProcessor.h
 src/NukeXStackInstance.h:
 /opt/PixInsight/include/pcl/ProcessImplementation.h:
 /opt/PixInsight/include/pcl/Defs.h:
@@ -189,5 +191,10 @@ src/engine/PixelStackAnalyzer.h:
 src/engine/Segmentation.h:
 src/engine/StretchLibrary.h:
 src/engine/IStretchAlgorithm.h:
-src/engine/algorithms/StatisticalAutoStretch.h:
-src/engine/algorithms/../IStretchAlgorithm.h:
+src/engine/Compositor.h:
+src/engine/StretchSelector.h:
+src/engine/SelectionRules.h:
+src/engine/StretchLibrary.h:
+src/engine/BlendEngine.h:
+src/engine/ToneMapper.h:
+src/engine/LRGBProcessor.h:
