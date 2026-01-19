@@ -6,7 +6,7 @@
 # ============================================================================
 
 MODULE_NAME := NukeX
-MODULE_VERSION := 1.0.0
+MODULE_VERSION := $(shell cat VERSION 2>/dev/null || echo "1.0.0")
 
 # PixInsight paths
 PCLDIR := /opt/PixInsight
