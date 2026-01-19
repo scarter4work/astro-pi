@@ -72,27 +72,38 @@ echo "Updating updates.xri..."
 cat > repository/updates.xri << EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <xri version="1.0" xmlns="http://www.pixinsight.com/xri" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://www.pixinsight.com/xri http://pixinsight.com/xri/xri-1.0.xsd">
-   <package fileName="$PACKAGE_NAME" sha1="$PACKAGE_SHA1" type="module" platform="linux" repo="https://raw.githubusercontent.com/scarter4work/NukeX2/main/repository/" releaseDate="$RELEASE_DATE" title="NukeX ${NEW_VERSION} - Intelligent Astrophotography Processing">
-      <description>
-         <p>
-            <b>NukeX - Intelligent Region-Aware Processing for PixInsight</b>
-         </p>
-         <p>
-            NukeX provides two powerful processes for astrophotography:
-         </p>
-         <ul>
-            <li>
-               <b>NukeX</b> - Region-aware image stretching using AI segmentation.
-            </li>
-            <li>
-               <b>NukeXStack</b> - Intelligent pixel selection for subframe integration.
-            </li>
-         </ul>
-         <p>
-            Copyright (c) 2026 Scott Carter. All Rights Reserved.
-         </p>
-      </description>
-   </package>
+   <description>
+      <p>
+         <b>NukeX Update Repository</b>
+      </p>
+      <p>
+         Intelligent region-aware processing for PixInsight by Scott Carter.
+      </p>
+   </description>
+   <platform os="linux" arch="x64" version="1.8.0:1.9.9">
+      <package fileName="$PACKAGE_NAME" sha1="$PACKAGE_SHA1" type="module" releaseDate="$RELEASE_DATE">
+         <title>NukeX ${NEW_VERSION} - Intelligent Astrophotography Processing</title>
+         <description>
+            <p>
+               <b>NukeX - Intelligent Region-Aware Processing for PixInsight</b>
+            </p>
+            <p>
+               NukeX provides two powerful processes for astrophotography:
+            </p>
+            <ul>
+               <li>
+                  <b>NukeX</b> - Region-aware image stretching using AI segmentation.
+               </li>
+               <li>
+                  <b>NukeXStack</b> - Intelligent pixel selection for subframe integration.
+               </li>
+            </ul>
+            <p>
+               Copyright (c) 2026 Scott Carter. All Rights Reserved.
+            </p>
+         </description>
+      </package>
+   </platform>
 </xri>
 EOF
 
@@ -117,7 +128,7 @@ gh release create "v${NEW_VERSION}" \
   --notes "NukeX ${NEW_VERSION} release
 
 To install via PixInsight updater, add this repository URL:
-\`https://github.com/scarter4work/NukeX2/releases/download/v${NEW_VERSION}/updates.xri\`"
+\`https://raw.githubusercontent.com/scarter4work/NukeX2/main/repository/\`"
 
 echo ""
 echo "========================================="
@@ -125,4 +136,4 @@ echo "Release v${NEW_VERSION} complete!"
 echo "========================================="
 echo ""
 echo "Repository URL for PixInsight:"
-echo "https://github.com/scarter4work/NukeX2/releases/download/v${NEW_VERSION}/updates.xri"
+echo "https://raw.githubusercontent.com/scarter4work/NukeX2/main/repository/"
