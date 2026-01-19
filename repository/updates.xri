@@ -10,7 +10,7 @@
    </description>
    <platform os="linux" arch="x64" version="1.8.0:1.9.9">
       <package fileName="20260118-linux-x64-NukeX.tar.gz" sha1="3f0f4d38de22692eb470e276ba2b97db9288f582" type="module" releaseDate="20260118">
-         <title>NukeX 1.0.0 - Intelligent Astrophotography Processing</title>
+         <title>NukeX 1.1.0 - Intelligent Astrophotography Processing</title>
          <description>
             <p>
                <b>NukeX - Intelligent Region-Aware Processing for PixInsight</b>
@@ -23,9 +23,12 @@
                   <b>NukeX</b> - Region-aware image stretching using AI segmentation.
                </li>
                <li>
-                  <b>NukeXStack</b> - Intelligent pixel selection for subframe integration.
+                  <b>NukeXStack</b> - Intelligent pixel selection for subframe integration with automatic pre-stretching of linear data.
                </li>
             </ul>
+            <p>
+               <b>New in 1.1.0:</b> NukeXStack now supports pre-stretching linear subframes before integration.
+            </p>
             <p>
                Copyright (c) 2026 Scott Carter. All Rights Reserved.
             </p>
@@ -33,4 +36,4 @@
       </package>
    </platform>
 </xri>
-<Signature developerId="scarter4work" timestamp="2026-01-19T04:39:52.604Z" encoding="Base64">D86OJt/72aCOis+oZIhcd1MumruUIrRoyBLv5s8OAXoDPqfdYPSoacdDxhxfFK/WVHfHzQGjDCiBWouSXt+QAg==</Signature>
+<Signature developerId="scarter4work" timestamp="2026-01-19T04:43:14.273Z" encoding="Base64">xkHHPQ/Cm+ksWG4YEHTuuAX5mtClYo9D/5cpg/RbNIm8zKE+uVDgwwjzSRaSJ/ZB5ZImJRKhV0U4yh7u2zSDAg==</Signature>
