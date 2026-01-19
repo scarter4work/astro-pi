@@ -44,11 +44,14 @@ bool Compositor::Initialize( const CompositorConfig& config )
 {
    m_config = config;
 
-   // Initialize segmentation engine
-   m_segmentation = std::make_unique<SegmentationEngine>();
-   if ( !m_segmentation->Initialize( config.segmentationConfig ) )
+   // Only initialize segmentation engine if segmentation is enabled
+   if ( config.useSegmentation )
    {
-      Console().WarningLn( "Segmentation initialization failed, using mock" );
+      m_segmentation = std::make_unique<SegmentationEngine>();
+      if ( !m_segmentation->Initialize( config.segmentationConfig ) )
+      {
+         Console().WarningLn( "Segmentation initialization failed, using mock" );
+      }
    }
 
    // Initialize analyzer
