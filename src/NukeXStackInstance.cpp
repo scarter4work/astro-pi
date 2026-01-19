@@ -443,10 +443,11 @@ StackAnalysisConfig NukeXStackInstance::BuildStackConfig() const
 bool NukeXStackInstance::PreStretchFrame( Image& frame ) const
 {
    // Build compositor config for pre-stretching
+   // Keep it simple - no segmentation needed for pre-stretch, just statistical stretch
    CompositorConfig config;
 
-   // Basic settings - use segmentation if ML is enabled, otherwise just use statistical stretch
-   config.useSegmentation = p_enableMLSegmentation;
+   // Disable segmentation for pre-stretching - we just want a uniform stretch
+   config.useSegmentation = false;
    config.useAutoSelection = true;  // Let compositor pick best stretch algorithm
    config.useLRGBMode = false;      // We're processing individual frames
    config.applyToneMapping = false; // Don't apply final tone mapping
@@ -456,20 +457,9 @@ bool NukeXStackInstance::PreStretchFrame( Image& frame ) const
    config.globalContrast = 1.0f;
    config.globalSaturation = 1.0f;
 
-   // Simple blending
+   // Simple blending (not really used without segmentation)
    config.blendConfig.featherRadius = 8.0f;
    config.blendConfig.normalizeWeights = true;
-
-   // Find available segmentation models
-   if ( config.useSegmentation )
-   {
-      auto availableModels = SegmentationEngine::FindAvailableModels();
-      if ( !availableModels.empty() )
-      {
-         config.segmentationConfig.modelConfig.modelPath = availableModels[0];
-      }
-      config.segmentationConfig.autoFallback = true;
-   }
 
    // Create compositor and process
    Compositor compositor( config );
