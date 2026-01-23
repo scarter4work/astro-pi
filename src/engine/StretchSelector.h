@@ -39,7 +39,7 @@ struct SelectedStretch
 
    // Selection metadata
    double confidence = 1.0;
-   String rationale;  // Initialized by explicit default constructor below
+   IsoString rationale;  // IsoString for PCL ABI safety (matches AlgorithmRecommendation)
    bool isOverride = false;     // User overrode the automatic selection
 
    // Statistics used for selection
@@ -112,8 +112,8 @@ public:
    double GetGlobalStrength() const { return m_globalStrength; }
 
    // Get selection rationale for a region
-   String GetRationale( RegionClass region,
-                        const RegionStatistics& stats ) const;
+   IsoString GetRationale( RegionClass region,
+                           const RegionStatistics& stats ) const;
 
    // Get all recommendations (not just the top one)
    std::vector<AlgorithmRecommendation> GetAllRecommendations(

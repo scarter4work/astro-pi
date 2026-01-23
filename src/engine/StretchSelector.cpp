@@ -85,7 +85,7 @@ SelectedStretch StretchSelector::Select( RegionClass region,
       result.algorithm = override.algorithm;
       result.parameters = override.parameters;
       result.confidence = 1.0;
-      result.rationale = "User override";
+      result.rationale = IsoString( "User override" );
       result.isOverride = true;
    }
    else
@@ -184,12 +184,12 @@ void StretchSelector::SetGlobalStrength( double strength )
 
 // ----------------------------------------------------------------------------
 
-String StretchSelector::GetRationale( RegionClass region,
-                                       const RegionStatistics& stats ) const
+IsoString StretchSelector::GetRationale( RegionClass region,
+                                         const RegionStatistics& stats ) const
 {
    if ( HasOverride( region ) )
    {
-      return "User override applied";
+      return IsoString( "User override applied" );
    }
 
    AlgorithmRecommendation rec = m_rules.GetRecommendation( region, stats );
