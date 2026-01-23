@@ -21,8 +21,11 @@
 After building and signing the module, update the repository:
 
 ```bash
-# 1. Create package (use today's date YYYYMMDD)
-tar -czvf repository/YYYYMMDD-linux-x64-NukeX.tar.gz NukeX-pxm.so NukeX-pxm.xsgn
+# 1. Create package with bin/ prefix (CRITICAL: modules must install to bin/)
+mkdir -p bin
+cp NukeX-pxm.so NukeX-pxm.xsgn bin/
+tar -czvf repository/YYYYMMDD-linux-x64-NukeX.tar.gz bin/NukeX-pxm.so bin/NukeX-pxm.xsgn
+rm -rf bin
 
 # 2. Get SHA1 and update repository/updates.xri with new:
 #    - fileName, sha1, releaseDate, version info
