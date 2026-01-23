@@ -14,6 +14,8 @@
 
 **Current Version Format**: `MAJOR.MINOR.REVISION.BUILD` (e.g., 1.1.0.1)
 
+**ML Backup**: Full ML segmentation code is preserved in `/home/scarter4work/projects/NukeX2/` (local only, not on GitHub). Use this if re-adding ML features.
+
 ---
 
 ## Training Optimization
