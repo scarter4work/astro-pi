@@ -85,20 +85,17 @@ PCL_CXXFLAGS = -D__PCL_$(shell echo $(PLATFORM) | tr a-z A-Z) \
                -D__PCL_BUILDING_MODULE \
                -I$(PCL_INCDIR)
 
-# ONNX Runtime flags (if available)
-ifneq ($(ONNX_DIR),)
-    # Explicit ONNX_DIR specified
-    ONNX_CXXFLAGS = -I$(ONNX_DIR)/include -DNUKEX_USE_ONNX
-    ONNX_LDFLAGS = -L$(ONNX_DIR)/lib -lonnxruntime
-else ifeq ($(ONNX_USE_SYSTEM),1)
-    # System-installed ONNX Runtime detected
-    ONNX_CXXFLAGS = -I/usr/include/onnxruntime -DNUKEX_USE_ONNX
-    ONNX_LDFLAGS = -lonnxruntime
-else
-    # No ONNX Runtime available
-    ONNX_CXXFLAGS =
-    ONNX_LDFLAGS =
-endif
+# ONNX Runtime disabled (ML segmentation removed from build)
+# To re-enable, uncomment below and see NukeX2 backup for ML code
+ONNX_CXXFLAGS =
+ONNX_LDFLAGS =
+# ifneq ($(ONNX_DIR),)
+#     ONNX_CXXFLAGS = -I$(ONNX_DIR)/include -DNUKEX_USE_ONNX
+#     ONNX_LDFLAGS = -L$(ONNX_DIR)/lib -lonnxruntime
+# else ifeq ($(ONNX_USE_SYSTEM),1)
+#     ONNX_CXXFLAGS = -I/usr/include/onnxruntime -DNUKEX_USE_ONNX
+#     ONNX_LDFLAGS = -lonnxruntime
+# endif
 
 # Combined flags
 CXXFLAGS = $(CXXSTD) $(WARNINGS) $(OPT_FLAGS) $(PLATFORM_CXXFLAGS) \
