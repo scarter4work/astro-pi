@@ -27,6 +27,8 @@ SelectionRule::SelectionRule( const String& name,
    , m_targetRegion( targetRegion )
    , m_algorithm( algorithm )
    , m_priority( priority )
+   , m_confidence( 1.0 )
+   , m_rationale()
 {
 }
 
@@ -225,8 +227,15 @@ std::vector<AlgorithmRecommendation> SelectionRulesEngine::GetAllRecommendations
          if ( rule.Matches( stats ) )
          {
             AlgorithmRecommendation rec = rule.GetRecommendation( stats );
-            String fullRationale = rule.Name() + ": " + rec.rationale;
-            rec.SetRationale( fullRationale.ToUTF8().c_str() );
+            // Build rationale safely to avoid String ABI issues
+            String ruleName = rule.Name();
+            String rationale = rec.rationale;
+            String fullRationale;
+            fullRationale.Reserve( ruleName.Length() + rationale.Length() + 3 );
+            fullRationale = ruleName;
+            fullRationale += ": ";
+            fullRationale += rationale;
+            rec.rationale = fullRationale;
             result.push_back( rec );
          }
       }
