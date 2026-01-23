@@ -33,7 +33,7 @@ struct AlgorithmRecommendation
    AlgorithmType algorithm = AlgorithmType::MTF;
    std::map<IsoString, double> parameters;
    double confidence = 1.0;        // How confident we are in this choice (0-1)
-   String rationale = String();    // Human-readable explanation - MUST be initialized
+   IsoString rationale;            // Human-readable explanation (IsoString for ABI safety)
 
    // Default constructor - explicitly initialize all members
    AlgorithmRecommendation()
@@ -42,6 +42,28 @@ struct AlgorithmRecommendation
       , confidence( 1.0 )
       , rationale()
    {
+   }
+
+   // Copy constructor - explicit for ABI safety
+   AlgorithmRecommendation( const AlgorithmRecommendation& other )
+      : algorithm( other.algorithm )
+      , parameters( other.parameters )
+      , confidence( other.confidence )
+      , rationale( other.rationale )
+   {
+   }
+
+   // Copy assignment - explicit for ABI safety
+   AlgorithmRecommendation& operator=( const AlgorithmRecommendation& other )
+   {
+      if ( this != &other )
+      {
+         algorithm = other.algorithm;
+         parameters = other.parameters;
+         confidence = other.confidence;
+         rationale = other.rationale;
+      }
+      return *this;
    }
 
    // Simple constructor - takes algorithm type only
@@ -71,7 +93,7 @@ struct AlgorithmRecommendation
    // Helper to set rationale safely
    void SetRationale( const char* text )
    {
-      rationale = String( text );
+      rationale = IsoString( text );
    }
 };
 
@@ -96,7 +118,7 @@ public:
                   double priority = 1.0 );
 
    // Rule identification
-   String Name() const { return m_name; }
+   IsoString Name() const { return m_name; }
    RegionClass TargetRegion() const { return m_targetRegion; }
    double Priority() const { return m_priority; }
 
@@ -118,7 +140,7 @@ public:
 
    // Set confidence and rationale
    SelectionRule& WithConfidence( double conf );
-   SelectionRule& WithRationale( const String& reason );
+   SelectionRule& WithRationale( const IsoString& reason );
 
    // Evaluate rule against statistics
    bool Matches( const RegionStatistics& stats ) const;
@@ -126,14 +148,20 @@ public:
    // Get recommendation (assumes Matches returned true)
    AlgorithmRecommendation GetRecommendation( const RegionStatistics& stats ) const;
 
+   // Copy constructor - explicit for ABI safety
+   SelectionRule( const SelectionRule& other );
+
+   // Copy assignment - explicit for ABI safety
+   SelectionRule& operator=( const SelectionRule& other );
+
 private:
 
-   String m_name = String();  // Must be initialized for PCL ABI
+   IsoString m_name;  // IsoString for PCL ABI safety
    RegionClass m_targetRegion = RegionClass::Background;
    AlgorithmType m_algorithm = AlgorithmType::MTF;
    double m_priority = 1.0;
    double m_confidence = 1.0;
-   String m_rationale = String();  // Must be initialized for PCL ABI
+   IsoString m_rationale;  // IsoString for PCL ABI safety
 
    std::vector<ConditionFunc> m_conditions;
    std::map<IsoString, double> m_staticParams;

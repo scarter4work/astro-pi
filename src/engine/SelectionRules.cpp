@@ -23,13 +23,47 @@ SelectionRule::SelectionRule( const String& name,
                               RegionClass targetRegion,
                               AlgorithmType algorithm,
                               double priority )
-   : m_name( name )
+   : m_name( IsoString( name ) )
    , m_targetRegion( targetRegion )
    , m_algorithm( algorithm )
    , m_priority( priority )
    , m_confidence( 1.0 )
    , m_rationale()
 {
+}
+
+// ----------------------------------------------------------------------------
+
+SelectionRule::SelectionRule( const SelectionRule& other )
+   : m_name( other.m_name )
+   , m_targetRegion( other.m_targetRegion )
+   , m_algorithm( other.m_algorithm )
+   , m_priority( other.m_priority )
+   , m_confidence( other.m_confidence )
+   , m_rationale( other.m_rationale )
+   , m_conditions( other.m_conditions )
+   , m_staticParams( other.m_staticParams )
+   , m_dynamicParams( other.m_dynamicParams )
+{
+}
+
+// ----------------------------------------------------------------------------
+
+SelectionRule& SelectionRule::operator=( const SelectionRule& other )
+{
+   if ( this != &other )
+   {
+      m_name = other.m_name;
+      m_targetRegion = other.m_targetRegion;
+      m_algorithm = other.m_algorithm;
+      m_priority = other.m_priority;
+      m_confidence = other.m_confidence;
+      m_rationale = other.m_rationale;
+      m_conditions = other.m_conditions;
+      m_staticParams = other.m_staticParams;
+      m_dynamicParams = other.m_dynamicParams;
+   }
+   return *this;
 }
 
 // ----------------------------------------------------------------------------
@@ -128,7 +162,7 @@ SelectionRule& SelectionRule::WithConfidence( double conf )
 
 // ----------------------------------------------------------------------------
 
-SelectionRule& SelectionRule::WithRationale( const String& reason )
+SelectionRule& SelectionRule::WithRationale( const IsoString& reason )
 {
    m_rationale = reason;
    return *this;
@@ -217,43 +251,47 @@ std::vector<AlgorithmRecommendation> SelectionRulesEngine::GetAllRecommendations
 {
    std::vector<AlgorithmRecommendation> result;
 
-   // Find rules for this region
-   auto it = m_rules.find( region );
-   if ( it != m_rules.end() )
+   try
    {
-      // Evaluate each rule and collect matching recommendations
-      for ( const auto& rule : it->second )
+      // Find rules for this region
+      auto it = m_rules.find( region );
+      if ( it != m_rules.end() )
       {
-         if ( rule.Matches( stats ) )
+         // Evaluate each rule and collect matching recommendations
+         for ( const auto& rule : it->second )
          {
-            AlgorithmRecommendation rec = rule.GetRecommendation( stats );
-            // Build rationale safely to avoid String ABI issues
-            String ruleName = rule.Name();
-            String rationale = rec.rationale;
-            String fullRationale;
-            fullRationale.Reserve( ruleName.Length() + rationale.Length() + 3 );
-            fullRationale = ruleName;
-            fullRationale += ": ";
-            fullRationale += rationale;
-            rec.rationale = fullRationale;
-            result.push_back( rec );
+            if ( rule.Matches( stats ) )
+            {
+               AlgorithmRecommendation rec = rule.GetRecommendation( stats );
+               // Build rationale safely using IsoString (no ABI issues)
+               IsoString ruleName = rule.Name();
+               IsoString rationale = rec.rationale;
+               rec.rationale = ruleName + ": " + rationale;
+               result.push_back( rec );
+            }
          }
       }
-   }
 
-   // If no rules matched, return default
-   if ( result.empty() )
+      // If no rules matched, return default
+      if ( result.empty() )
+      {
+         result.push_back( GetDefaultRecommendation( region ) );
+         return result;
+      }
+
+      // Sort by priority (rules added first have implicit higher priority within same confidence)
+      // Higher confidence first
+      std::sort( result.begin(), result.end(),
+                 []( const AlgorithmRecommendation& a, const AlgorithmRecommendation& b ) {
+                    return a.confidence > b.confidence;
+                 } );
+   }
+   catch ( ... )
    {
+      // If anything goes wrong, return default recommendation
+      result.clear();
       result.push_back( GetDefaultRecommendation( region ) );
-      return result;
    }
-
-   // Sort by priority (rules added first have implicit higher priority within same confidence)
-   // Higher confidence first
-   std::sort( result.begin(), result.end(),
-              []( const AlgorithmRecommendation& a, const AlgorithmRecommendation& b ) {
-                 return a.confidence > b.confidence;
-              } );
 
    return result;
 }
@@ -416,7 +454,7 @@ AlgorithmRecommendation SelectionRulesEngine::GetDefaultRecommendation( RegionCl
 String SelectionRulesEngine::ToJSON() const
 {
    // Simplified serialization
-   String json = "{\n  \"rules\": [\n";
+   IsoString json = "{\n  \"rules\": [\n";
 
    bool first = true;
    for ( const auto& regionPair : m_rules )
@@ -426,7 +464,7 @@ String SelectionRulesEngine::ToJSON() const
          if ( !first ) json += ",\n";
          first = false;
 
-         json += String().Format(
+         json += IsoString().Format(
             "    {\"name\": \"%s\", \"region\": \"%s\", \"priority\": %.2f}",
             rule.Name().c_str(),
             RegionClassToString( rule.TargetRegion() ).c_str(),
@@ -435,7 +473,7 @@ String SelectionRulesEngine::ToJSON() const
    }
 
    json += "\n  ]\n}";
-   return json;
+   return String( json );
 }
 
 // ----------------------------------------------------------------------------
