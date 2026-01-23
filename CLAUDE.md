@@ -16,6 +16,29 @@
 
 **ML Backup**: Full ML segmentation code is preserved in `/home/scarter4work/projects/NukeX2/` (local only, not on GitHub). Use this if re-adding ML features.
 
+### PixInsight Repository Update (after each release)
+
+After building and signing the module, update the repository:
+
+```bash
+# 1. Create package (use today's date YYYYMMDD)
+tar -czvf repository/YYYYMMDD-linux-x64-NukeX.tar.gz NukeX-pxm.so NukeX-pxm.xsgn
+
+# 2. Get SHA1 and update repository/updates.xri with new:
+#    - fileName, sha1, releaseDate, version info
+sha1sum repository/YYYYMMDD-linux-x64-NukeX.tar.gz
+
+# 3. Sign the updates.xri
+/opt/PixInsight/bin/PixInsight.sh --sign-xml-file=repository/updates.xri \
+  --xssk-file=/home/scarter4work/projects/keys/scarter4work_keys.xssk \
+  --xssk-password="***REDACTED***"
+
+# 4. Commit and push
+git add repository/ && git commit -m "Update repository to vX.X.X" && git push
+```
+
+**Repository URL**: `https://raw.githubusercontent.com/scarter4work/NukeX/main/repository/`
+
 ---
 
 ## Training Optimization
