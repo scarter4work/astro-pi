@@ -109,7 +109,7 @@ struct CompositorProgress
    ProcessingStage stage = ProcessingStage::Idle;
    double progress = 0.0;       // 0-1 within current stage
    double overall = 0.0;        // 0-1 overall progress
-   String message = String();
+   IsoString message;           // Use IsoString for cross-module ABI compatibility
 };
 
 using CompositorProgressCallback = std::function<void( const CompositorProgress& )>;
@@ -169,7 +169,7 @@ private:
 
    // Progress reporting
    CompositorProgressCallback m_progressCallback;
-   void ReportProgress( ProcessingStage stage, double progress, const String& message );
+   void ReportProgress( ProcessingStage stage, double progress, const IsoString& message );
    double GetStageWeight( ProcessingStage stage ) const;
 
    // Processing stages

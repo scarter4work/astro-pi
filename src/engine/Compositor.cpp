@@ -79,7 +79,7 @@ void Compositor::SetConfig( const CompositorConfig& config )
 
 // ----------------------------------------------------------------------------
 
-void Compositor::ReportProgress( ProcessingStage stage, double progress, const String& message )
+void Compositor::ReportProgress( ProcessingStage stage, double progress, const IsoString& message )
 {
    if ( !m_progressCallback )
       return;

@@ -63,9 +63,22 @@ struct TensorShape
 
    int64_t NumElements() const
    {
+      if ( dims.empty() )
+         return 0;
+
       int64_t n = 1;
       for ( int64_t d : dims )
+      {
+         // Validate dimension is positive and reasonable
+         if ( d <= 0 || d > 1000000000 )
+            return 0;
+
+         // Check for overflow before multiplying
+         if ( n > std::numeric_limits<int64_t>::max() / d )
+            return 0;
+
          n *= d;
+      }
       return n;
    }
 
@@ -98,8 +111,24 @@ struct Tensor
    TensorShape shape;
 
    Tensor() = default;
-   Tensor( const TensorShape& s ) : shape( s ), data( s.NumElements() ) {}
-   Tensor( const TensorShape& s, const T& initVal ) : shape( s ), data( s.NumElements(), initVal ) {}
+   Tensor( const TensorShape& s ) : shape( s )
+   {
+      int64_t numElements = s.NumElements();
+      if ( numElements <= 0 )
+         throw std::runtime_error( "Invalid tensor shape: empty or invalid dimensions" );
+      if ( numElements > 500000000 )  // Max 500M elements (~2GB for float)
+         throw std::runtime_error( "Tensor too large: " + std::to_string( numElements ) + " elements" );
+      data.resize( static_cast<size_t>( numElements ) );
+   }
+   Tensor( const TensorShape& s, const T& initVal ) : shape( s )
+   {
+      int64_t numElements = s.NumElements();
+      if ( numElements <= 0 )
+         throw std::runtime_error( "Invalid tensor shape: empty or invalid dimensions" );
+      if ( numElements > 500000000 )
+         throw std::runtime_error( "Tensor too large: " + std::to_string( numElements ) + " elements" );
+      data.resize( static_cast<size_t>( numElements ), initVal );
+   }
 
    size_t Size() const { return data.size(); }
    T* Data() { return data.data(); }
