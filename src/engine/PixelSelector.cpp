@@ -13,6 +13,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <omp.h>
 
 namespace pcl
 {
@@ -125,6 +126,8 @@ void PixelSelector::SetSegmentation( const Image& segmentationImage )
    const Image::sample* confData = (segmentationImage.NumberOfChannels() >= 2)
                                    ? segmentationImage.PixelData( 1 ) : nullptr;
 
+   // OpenMP parallelization for segmentation map conversion
+   #pragma omp parallel for schedule(static)
    for ( int y = 0; y < height; ++y )
    {
       for ( int x = 0; x < width; ++x )
@@ -180,14 +183,17 @@ Image PixelSelector::ProcessStackWithMetadata(
    // Allocate metadata grid
    metadata.resize( height, std::vector<PixelSelectionResult>( width ) );
 
-   // Buffer for pixel values
-   std::vector<float> pixelValues( numFrames );
-
    // Process each pixel
    Image::sample* outData = result.PixelData( 0 );
 
+   // OpenMP parallelization - process rows in parallel
+   // Each thread gets its own pixelValues buffer (thread-local)
+   #pragma omp parallel for schedule(dynamic)
    for ( int y = 0; y < height; ++y )
    {
+      // Thread-local buffer for pixel values
+      std::vector<float> pixelValues( numFrames );
+
       for ( int x = 0; x < width; ++x )
       {
          // Collect values from all frames
@@ -201,7 +207,7 @@ Image PixelSelector::ProcessStackWithMetadata(
          // Select best pixel
          PixelSelectionResult result_pixel = SelectPixel( pixelValues, x, y );
 
-         // Store result
+         // Store result - no race condition since each thread works on different rows
          size_t outIdx = static_cast<size_t>( y ) * width + x;
          outData[outIdx] = result_pixel.value;
          metadata[y][x] = result_pixel;

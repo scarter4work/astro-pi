@@ -115,6 +115,15 @@ private:
                         Image& output,
                         IntegrationSummary& summary ) const;
 
+   // Create a median reference image from the stack for segmentation
+   Image CreateMedianReference( const std::vector<Image>& frames ) const;
+
+   // Run ML segmentation on the reference image and populate maps
+   bool RunSegmentation( const Image& referenceImage,
+                         std::vector<std::vector<int>>& classMap,
+                         std::vector<std::vector<float>>& confidenceMap,
+                         double& segmentationTimeMs ) const;
+
    friend class NukeXStackProcess;
    friend class NukeXStackInterface;
 };

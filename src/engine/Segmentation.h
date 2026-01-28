@@ -163,6 +163,9 @@ public:
    // Get available model paths (searches common locations)
    static std::vector<String> FindAvailableModels();
 
+   // Get default model path (checks env var, then searches)
+   static String GetDefaultModelPath();
+
 private:
 
    SegmentationEngineConfig m_config;

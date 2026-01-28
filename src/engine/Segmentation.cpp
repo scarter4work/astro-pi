@@ -8,6 +8,7 @@
 // Copyright (c) 2026 Scott Carter
 
 #include "Segmentation.h"
+#include "SegmentationPalette.h"
 
 #include <pcl/Console.h>
 #include <pcl/File.h>
@@ -558,15 +559,20 @@ std::vector<String> SegmentationEngine::FindAvailableModels()
       "../models",
       "~/.nukex/models",
       "/usr/share/nukex/models",
-      "/usr/local/share/nukex/models"
+      "/usr/local/share/nukex/models",
+      // PixInsight installation directories
+      "/opt/PixInsight/bin",
+      "/opt/PixInsight/library"
    };
 
 #ifdef __PI_MACOSX__
    searchPaths.push_back( "~/Library/Application Support/NukeX/models" );
+   searchPaths.push_back( "/Applications/PixInsight/PixInsight.app/Contents/MacOS" );
 #endif
 
 #ifdef __PI_WINDOWS__
    searchPaths.push_back( "%APPDATA%/NukeX/models" );
+   searchPaths.push_back( "C:/Program Files/PixInsight/bin" );
 #endif
 
    // Search for .onnx files
@@ -592,92 +598,41 @@ std::vector<String> SegmentationEngine::FindAvailableModels()
 }
 
 // ----------------------------------------------------------------------------
+
+String SegmentationEngine::GetDefaultModelPath()
+{
+   // First check environment variable
+   const char* envPath = std::getenv( "NUKEX_MODEL_PATH" );
+   if ( envPath != nullptr )
+   {
+      String path( envPath );
+      if ( File::Exists( path ) )
+         return path;
+   }
+
+   // Search common locations
+   auto models = FindAvailableModels();
+   if ( !models.empty() )
+      return models[0];
+
+   // Last resort: check alongside the module in PixInsight bin
+   String pixinsightPath = "/opt/PixInsight/bin/nukex_segmentation.onnx";
+   if ( File::Exists( pixinsightPath ) )
+      return pixinsightPath;
+
+   // Return empty string if not found
+   return String();
+}
+
+// ----------------------------------------------------------------------------
 // SegmentationVisualizer Implementation
 // ----------------------------------------------------------------------------
 
 void SegmentationVisualizer::GetRegionColor( RegionClass rc, double& r, double& g, double& b )
 {
-   // Distinct colors for each region class (21 classes)
-   switch ( rc )
-   {
-   case RegionClass::Background:
-      r = 0.1; g = 0.1; b = 0.2;
-      break;
-
-   // Star classes (1-4) - yellow/orange tones
-   case RegionClass::StarBright:
-      r = 1.0; g = 1.0; b = 0.0;
-      break;
-   case RegionClass::StarMedium:
-      r = 1.0; g = 0.8; b = 0.2;
-      break;
-   case RegionClass::StarFaint:
-      r = 0.9; g = 0.7; b = 0.4;
-      break;
-   case RegionClass::StarSaturated:
-      r = 1.0; g = 1.0; b = 1.0;
-      break;
-
-   // Nebula classes (5-8) - red/pink/purple tones
-   case RegionClass::NebulaEmission:
-      r = 1.0; g = 0.2; b = 0.4;
-      break;
-   case RegionClass::NebulaReflection:
-      r = 0.4; g = 0.6; b = 1.0;
-      break;
-   case RegionClass::NebulaDark:
-      r = 0.2; g = 0.1; b = 0.15;
-      break;
-   case RegionClass::NebulaPlanetary:
-      r = 0.0; g = 0.8; b = 0.8;
-      break;
-
-   // Galaxy classes (9-12) - purple/orange tones
-   case RegionClass::GalaxySpiral:
-      r = 0.2; g = 0.6; b = 1.0;
-      break;
-   case RegionClass::GalaxyElliptical:
-      r = 0.6; g = 0.4; b = 0.8;
-      break;
-   case RegionClass::GalaxyIrregular:
-      r = 0.5; g = 0.5; b = 0.9;
-      break;
-   case RegionClass::GalaxyCore:
-      r = 1.0; g = 0.6; b = 0.0;
-      break;
-
-   // Structural classes (13-15)
-   case RegionClass::DustLane:
-      r = 0.4; g = 0.2; b = 0.1;
-      break;
-   case RegionClass::StarClusterOpen:
-      r = 0.8; g = 0.9; b = 0.3;
-      break;
-   case RegionClass::StarClusterGlobular:
-      r = 0.9; g = 0.8; b = 0.2;
-      break;
-
-   // Artifact classes (16-20) - gray/muted tones
-   case RegionClass::ArtifactHotPixel:
-      r = 1.0; g = 0.0; b = 0.0;
-      break;
-   case RegionClass::ArtifactSatellite:
-      r = 0.0; g = 1.0; b = 0.0;
-      break;
-   case RegionClass::ArtifactDiffraction:
-      r = 0.8; g = 0.8; b = 0.0;
-      break;
-   case RegionClass::ArtifactGradient:
-      r = 0.5; g = 0.3; b = 0.3;
-      break;
-   case RegionClass::ArtifactNoise:
-      r = 0.4; g = 0.4; b = 0.4;
-      break;
-
-   default:
-      r = 0.5; g = 0.5; b = 0.5;
-      break;
-   }
+   // Use the unified segmentation palette for consistent colors
+   // between C++ and Python visualization code
+   SegmentationPalette::GetColorForRegion( rc, r, g, b );
 }
 
 // ----------------------------------------------------------------------------

@@ -167,17 +167,35 @@ PixelStackMetadata PixelStackAnalyzer::AnalyzePixelWithClass(
       switch ( regionClass )
       {
       case RegionClass::StarBright:
+      case RegionClass::StarMedium:
+      case RegionClass::StarFaint:
       case RegionClass::StarSaturated:
-      case RegionClass::NebulaEmission:
-         // Don't reject high values as outliers for bright features
+      case RegionClass::StarClusterOpen:
+      case RegionClass::StarClusterGlobular:
+      case RegionClass::ArtifactDiffraction:
+         // For stars: LOW values are outliers (tracking errors, clouds)
+         // HIGH values are the correct star signal - preserve them!
          if ( values[i] < meta.distribution.mu && z > adjustedConfig.outlierSigmaThreshold )
             isOutlier = true;
          break;
 
       case RegionClass::NebulaDark:
       case RegionClass::DustLane:
-         // Don't reject low values as outliers for dark features
+         // CRITICAL: For dark nebulae, LOW values are CORRECT, not outliers!
+         // Only reject HIGH values as outliers (contamination from gradients, light pollution)
          if ( values[i] > meta.distribution.mu && z > adjustedConfig.outlierSigmaThreshold )
+            isOutlier = true;
+         break;
+
+      case RegionClass::NebulaEmission:
+      case RegionClass::NebulaReflection:
+      case RegionClass::NebulaPlanetary:
+      case RegionClass::GalaxyCore:
+      case RegionClass::GalaxySpiral:
+      case RegionClass::GalaxyElliptical:
+      case RegionClass::GalaxyIrregular:
+         // For emission features: favor high signal, reject low outliers
+         if ( values[i] < meta.distribution.mu && z > adjustedConfig.outlierSigmaThreshold )
             isOutlier = true;
          break;
 
@@ -328,59 +346,210 @@ float PixelStackAnalyzer::SelectBestValue(
    // Get class-adjusted config
    StackAnalysisConfig config = GetClassAdjustedConfig( regionClass );
 
-   // Compute quality score for each frame's value
-   std::vector<float> scores( values.size() );
-   float maxScore = -std::numeric_limits<float>::max();
-   int bestFrame = 0;
+   // First, identify outliers based on class-specific logic
+   // Build a valid (non-outlier) value list with frame indices
+   std::vector<std::pair<float, int>> validValues;
+   float sigma = std::max( dist.sigma, 1e-10f );
 
    for ( size_t i = 0; i < values.size(); ++i )
    {
       float v = values[i];
-      float z = std::abs( v - dist.mu ) / std::max( dist.sigma, 1e-10f );
+      float z = std::abs( v - dist.mu ) / sigma;
 
-      // Base score: probability (Gaussian assumption for simplicity)
-      float prob = std::exp( -0.5f * z * z );
+      bool isOutlier = false;
 
-      // Apply class-specific adjustments
-      float adjustment = 1.0f;
+      // CLASS-SPECIFIC OUTLIER LOGIC:
+      // For DARK features (NebulaDark, DustLane): reject HIGH outliers, keep LOW values
+      // For BRIGHT features (Stars): reject LOW outliers, keep HIGH values
+      // For Background: reject HIGH outliers more aggressively (gradients, satellites)
 
-      if ( config.favorHighSignal && v > dist.mu )
+      switch ( regionClass )
       {
-         // Bonus for above-median values (nebula signal)
-         adjustment = 1.0f + 0.2f * (v - dist.mu) / std::max( dist.sigma, 1e-10f );
-      }
-      else if ( config.favorLowSignal && v < dist.mu )
-      {
-         // Bonus for below-median values (dark nebula)
-         adjustment = 1.0f + 0.2f * (dist.mu - v) / std::max( dist.sigma, 1e-10f );
+      case RegionClass::NebulaDark:
+      case RegionClass::DustLane:
+         // CRITICAL: For dark nebulae, LOW values are CORRECT, not outliers!
+         // Only reject HIGH values as outliers (contamination from gradients, light pollution)
+         if ( v > dist.mu && z > config.outlierSigmaThreshold )
+            isOutlier = true;
+         // LOW values are preserved - they represent the actual dark nebula
+         break;
+
+      case RegionClass::StarBright:
+      case RegionClass::StarMedium:
+      case RegionClass::StarFaint:
+      case RegionClass::StarSaturated:
+      case RegionClass::StarClusterOpen:
+      case RegionClass::StarClusterGlobular:
+      case RegionClass::ArtifactDiffraction:
+         // For stars: LOW values are outliers (tracking errors, clouds)
+         // HIGH values are the correct star signal - preserve them!
+         if ( v < dist.mu && z > config.outlierSigmaThreshold )
+            isOutlier = true;
+         // HIGH values are preserved - they represent the actual star signal
+         break;
+
+      case RegionClass::Background:
+      case RegionClass::ArtifactGradient:
+         // For background: reject HIGH outliers more aggressively (satellites, gradients)
+         if ( v > dist.mu && z > config.outlierSigmaThreshold * 0.7f )
+            isOutlier = true;
+         else if ( z > config.outlierSigmaThreshold )
+            isOutlier = true;
+         break;
+
+      default:
+         // Standard symmetric outlier rejection for other classes
+         if ( z > config.outlierSigmaThreshold )
+            isOutlier = true;
+         break;
       }
 
-      scores[i] = prob * adjustment;
+      if ( !isOutlier )
+         validValues.push_back( { v, static_cast<int>( i ) } );
+   }
 
-      if ( scores[i] > maxScore )
+   // If all values were rejected, fall back to using all values
+   if ( validValues.empty() )
+   {
+      for ( size_t i = 0; i < values.size(); ++i )
+         validValues.push_back( { values[i], static_cast<int>( i ) } );
+   }
+
+   // CLASS-SPECIFIC SELECTION STRATEGY:
+   // For dark features: select MINIMUM value (darkest = correct)
+   // For bright features: select value that preserves signal
+   // For background: select near median
+
+   int bestFrame = 0;
+   float bestValue = 0.0f;
+
+   switch ( regionClass )
+   {
+   case RegionClass::NebulaDark:
+   case RegionClass::DustLane:
       {
-         maxScore = scores[i];
-         bestFrame = static_cast<int>( i );
+         // SELECT MINIMUM: The darkest valid value is the correct dark nebula value
+         float minVal = std::numeric_limits<float>::max();
+         for ( const auto& vp : validValues )
+         {
+            if ( vp.first < minVal )
+            {
+               minVal = vp.first;
+               bestFrame = vp.second;
+            }
+         }
+         bestValue = minVal;
+         // High confidence because we're selecting the correct extreme
+         confidence = 0.9f;
       }
+      break;
+
+   case RegionClass::StarBright:
+   case RegionClass::StarSaturated:
+      {
+         // SELECT MAXIMUM: The brightest valid value preserves the star signal
+         float maxVal = -std::numeric_limits<float>::max();
+         for ( const auto& vp : validValues )
+         {
+            if ( vp.first > maxVal )
+            {
+               maxVal = vp.first;
+               bestFrame = vp.second;
+            }
+         }
+         bestValue = maxVal;
+         confidence = 0.9f;
+      }
+      break;
+
+   case RegionClass::StarMedium:
+   case RegionClass::StarFaint:
+   case RegionClass::StarClusterOpen:
+   case RegionClass::StarClusterGlobular:
+      {
+         // For medium/faint stars: favor higher values but use weighted selection
+         // to avoid picking noise spikes
+         float maxScore = -std::numeric_limits<float>::max();
+         for ( const auto& vp : validValues )
+         {
+            float v = vp.first;
+            float z = std::abs( v - dist.mu ) / sigma;
+            // Score favors values above mean, penalizes extreme outliers
+            float score = v;  // Base: prefer higher values
+            if ( v < dist.mu )
+               score -= z * sigma * 0.5f;  // Penalize below-mean values
+            if ( score > maxScore )
+            {
+               maxScore = score;
+               bestFrame = vp.second;
+               bestValue = v;
+            }
+         }
+         confidence = 0.85f;
+      }
+      break;
+
+   case RegionClass::NebulaEmission:
+   case RegionClass::NebulaReflection:
+   case RegionClass::NebulaPlanetary:
+   case RegionClass::GalaxyCore:
+   case RegionClass::GalaxySpiral:
+   case RegionClass::GalaxyElliptical:
+   case RegionClass::GalaxyIrregular:
+      {
+         // For emission nebula and galaxies: favor signal (higher values)
+         // but be more conservative than stars
+         float maxScore = -std::numeric_limits<float>::max();
+         for ( const auto& vp : validValues )
+         {
+            float v = vp.first;
+            float z = std::abs( v - dist.mu ) / sigma;
+            float prob = std::exp( -0.5f * z * z );
+            // Score: probability weighted toward higher signal
+            float score = prob * (1.0f + 0.3f * (v - dist.mu) / sigma);
+            if ( score > maxScore )
+            {
+               maxScore = score;
+               bestFrame = vp.second;
+               bestValue = v;
+            }
+         }
+         confidence = 0.8f;
+      }
+      break;
+
+   default:
+      {
+         // Default: select value closest to median (standard behavior)
+         std::vector<float> sortedValid;
+         for ( const auto& vp : validValues )
+            sortedValid.push_back( vp.first );
+         std::sort( sortedValid.begin(), sortedValid.end() );
+         float median = sortedValid[sortedValid.size() / 2];
+
+         float minDist = std::numeric_limits<float>::max();
+         for ( const auto& vp : validValues )
+         {
+            float d = std::abs( vp.first - median );
+            if ( d < minDist )
+            {
+               minDist = d;
+               bestFrame = vp.second;
+               bestValue = vp.first;
+            }
+         }
+         confidence = 0.7f;
+      }
+      break;
    }
 
    selectedFrame = bestFrame;
 
-   // Confidence based on how much better the best is vs second best
-   std::vector<float> sortedScores = scores;
-   std::sort( sortedScores.begin(), sortedScores.end(), std::greater<float>() );
+   // Adjust confidence based on how many values were valid
+   float validRatio = static_cast<float>( validValues.size() ) / static_cast<float>( values.size() );
+   confidence *= validRatio;
 
-   if ( sortedScores.size() >= 2 && sortedScores[1] > 0 )
-   {
-      float ratio = sortedScores[0] / sortedScores[1];
-      confidence = std::min( 1.0f, (ratio - 1.0f) * 2.0f );  // 1.5x better -> 100% confidence
-   }
-   else
-   {
-      confidence = (sortedScores[0] > 0.5f) ? 1.0f : sortedScores[0] * 2.0f;
-   }
-
-   return values[bestFrame];
+   return bestValue;
 }
 
 // ----------------------------------------------------------------------------

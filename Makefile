@@ -73,6 +73,9 @@ CXXSTD = -std=c++17
 # Warning flags
 WARNINGS = -Wall -Wextra -Wno-unused-parameter
 
+# OpenMP flags for parallel processing
+OPENMP_FLAGS = -fopenmp
+
 # Optimization flags
 ifeq ($(DEBUG), 1)
     OPT_FLAGS = -g -O0 -DDEBUG
@@ -85,21 +88,28 @@ PCL_CXXFLAGS = -D__PCL_$(shell echo $(PLATFORM) | tr a-z A-Z) \
                -D__PCL_BUILDING_MODULE \
                -I$(PCL_INCDIR)
 
-# ONNX Runtime disabled (ML segmentation removed from build)
-# To re-enable, uncomment below and see NukeX2 backup for ML code
-ONNX_CXXFLAGS =
-ONNX_LDFLAGS =
-# ifneq ($(ONNX_DIR),)
-#     ONNX_CXXFLAGS = -I$(ONNX_DIR)/include -DNUKEX_USE_ONNX
-#     ONNX_LDFLAGS = -L$(ONNX_DIR)/lib -lonnxruntime
-# else ifeq ($(ONNX_USE_SYSTEM),1)
-#     ONNX_CXXFLAGS = -I/usr/include/onnxruntime -DNUKEX_USE_ONNX
-#     ONNX_LDFLAGS = -lonnxruntime
-# endif
+# ONNX Runtime configuration for ML segmentation
+# Set ONNX_DIR to custom installation or use system onnxruntime
+ifneq ($(ONNX_DIR),)
+    ONNX_CXXFLAGS = -I$(ONNX_DIR)/include -DNUKEX_USE_ONNX
+    ONNX_LDFLAGS = -L$(ONNX_DIR)/lib -lonnxruntime
+else ifeq ($(ONNX_USE_SYSTEM),1)
+    ONNX_CXXFLAGS = -I/usr/include/onnxruntime -DNUKEX_USE_ONNX
+    ONNX_LDFLAGS = -lonnxruntime
+else
+    # Disabled by default - set ONNX_ENABLE=1 to force enable
+    ifeq ($(ONNX_ENABLE),1)
+        ONNX_CXXFLAGS = -I/usr/include/onnxruntime -DNUKEX_USE_ONNX
+        ONNX_LDFLAGS = -lonnxruntime
+    else
+        ONNX_CXXFLAGS =
+        ONNX_LDFLAGS =
+    endif
+endif
 
 # Combined flags
 CXXFLAGS = $(CXXSTD) $(WARNINGS) $(OPT_FLAGS) $(PLATFORM_CXXFLAGS) \
-           $(PCL_CXXFLAGS) $(ONNX_CXXFLAGS)
+           $(PCL_CXXFLAGS) $(ONNX_CXXFLAGS) $(OPENMP_FLAGS)
 
 # PCL libraries to link (static linking)
 PCL_LIBS = -lPCL-pxi -llz4-pxi -lzstd-pxi -lzlib-pxi -lRFC6234-pxi -llcms-pxi -lcminpack-pxi
@@ -108,6 +118,7 @@ LDFLAGS = $(SHARED_FLAGS) $(PLATFORM_LDFLAGS) \
           -L$(PCL_LIBDIR) \
           $(PCL_LIBS) \
           $(ONNX_LDFLAGS) \
+          $(OPENMP_FLAGS) \
           -lpthread
 
 # ============================================================================
@@ -130,10 +141,15 @@ CORE_SOURCES = \
     $(SRC_DIR)/NukeXStackInstance.cpp \
     $(SRC_DIR)/NukeXStackInterface.cpp
 
-# Engine source files (excluding ML segmentation for simplified version)
+# Engine source files
+# Include ONNX/ML files if ONNX is enabled
+ifneq ($(ONNX_CXXFLAGS),)
+ENGINE_SOURCES = $(wildcard $(ENGINE_DIR)/*.cpp)
+else
 ENGINE_SOURCES = \
     $(filter-out $(ENGINE_DIR)/ONNXInference.cpp $(ENGINE_DIR)/SegmentationModel.cpp $(ENGINE_DIR)/Segmentation.cpp, \
     $(wildcard $(ENGINE_DIR)/*.cpp))
+endif
 
 # Algorithm source files (add as they are implemented)
 ALGO_SOURCES = \
@@ -182,6 +198,10 @@ install: $(TARGET)
 	@echo "Installing $(TARGET) to $(OUTPUT_DIR)..."
 	@mkdir -p $(OUTPUT_DIR)
 	cp $(TARGET) $(OUTPUT_DIR)/
+ifneq ($(wildcard src/models/nukex_segmentation.onnx),)
+	@echo "Installing ONNX model to $(OUTPUT_DIR)..."
+	cp src/models/nukex_segmentation.onnx $(OUTPUT_DIR)/
+endif
 	@echo "Installation complete."
 	@echo "Restart PixInsight to load the module."
 

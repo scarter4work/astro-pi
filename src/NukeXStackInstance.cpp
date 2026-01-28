@@ -24,8 +24,10 @@
 #include "engine/PixelStackAnalyzer.h"
 #include "engine/TransitionChecker.h"
 #include "engine/RegionStatistics.h"
+#include "engine/Segmentation.h"
 
 #include <algorithm>
+#include <numeric>
 
 namespace pcl
 {
@@ -456,6 +458,215 @@ bool NukeXStackInstance::LoadFrame( const String& path, Image& image, FITSKeywor
 
 // ----------------------------------------------------------------------------
 
+// ----------------------------------------------------------------------------
+
+Image NukeXStackInstance::CreateMedianReference( const std::vector<Image>& frames ) const
+{
+   if ( frames.empty() )
+      return Image();
+
+   int width = frames[0].Width();
+   int height = frames[0].Height();
+   int channels = frames[0].NumberOfChannels();
+   size_t numFrames = frames.size();
+
+   Image reference;
+   reference.AllocateData( width, height, channels );
+
+   // For each pixel position, compute the median across all frames
+   std::vector<float> values( numFrames );
+
+   for ( int c = 0; c < channels; ++c )
+   {
+      for ( int y = 0; y < height; ++y )
+      {
+         for ( int x = 0; x < width; ++x )
+         {
+            // Gather values from all frames
+            for ( size_t f = 0; f < numFrames; ++f )
+               values[f] = frames[f].Pixel( x, y, c );
+
+            // Sort and take median
+            std::nth_element( values.begin(), values.begin() + numFrames / 2, values.end() );
+            float median = values[numFrames / 2];
+
+            // For even number of frames, average the two middle values
+            if ( numFrames % 2 == 0 && numFrames > 1 )
+            {
+               auto maxIt = std::max_element( values.begin(), values.begin() + numFrames / 2 );
+               median = ( *maxIt + median ) / 2.0f;
+            }
+
+            reference.Pixel( x, y, c ) = median;
+         }
+      }
+   }
+
+   return reference;
+}
+
+// ----------------------------------------------------------------------------
+
+bool NukeXStackInstance::RunSegmentation(
+   const Image& referenceImage,
+   std::vector<std::vector<int>>& classMap,
+   std::vector<std::vector<float>>& confidenceMap,
+   double& segmentationTimeMs ) const
+{
+   Console console;
+
+   // Get the model path - look in standard locations
+   String modelPath = SegmentationEngine::GetDefaultModelPath();
+
+   if ( modelPath.IsEmpty() )
+   {
+      // Try to find the model in the src/models directory relative to module
+      // This handles development builds
+      modelPath = "/home/scarter4work/projects/NukeX/src/models/nukex_segmentation.onnx";
+      if ( !File::Exists( modelPath ) )
+      {
+         // Also try installed location
+         modelPath = "/opt/PixInsight/bin/nukex_segmentation.onnx";
+      }
+   }
+
+   if ( !File::Exists( modelPath ) )
+   {
+      console.WarningLn( String().Format( "ONNX model not found at: %s", modelPath.c_str() ) );
+      console.WarningLn( "ML segmentation disabled - using statistical selection only." );
+      return false;
+   }
+
+   console.WriteLn( String().Format( "<br>Loading segmentation model: %s", modelPath.c_str() ) );
+
+   // Configure the segmentation engine
+   SegmentationEngineConfig engineConfig;
+   engineConfig.modelConfig.modelPath = modelPath;
+   engineConfig.modelConfig.inputWidth = 512;
+   engineConfig.modelConfig.inputHeight = 512;
+   engineConfig.modelConfig.useGPU = false;  // CPU for now
+   engineConfig.autoFallback = true;         // Fall back to mock if ONNX fails
+   engineConfig.cacheResults = false;        // No need for caching in stacker
+   engineConfig.runAnalysis = false;         // We don't need region analysis
+   engineConfig.downsampleLargeImages = true;
+   engineConfig.maxProcessingDimension = 1024;  // Reasonable for segmentation
+
+   // Create and initialize engine
+   SegmentationEngine engine;
+   if ( !engine.Initialize( engineConfig ) )
+   {
+      console.WarningLn( String().Format( "Failed to initialize segmentation engine: %s",
+         engine.GetLastError().c_str() ) );
+      return false;
+   }
+
+   if ( !engine.IsReady() )
+   {
+      console.WarningLn( "Segmentation engine not ready" );
+      return false;
+   }
+
+   console.WriteLn( String().Format( "Using model: %s", engine.GetModelName().c_str() ) );
+
+   // Run segmentation with progress reporting
+   auto progressCallback = []( SegmentationEventType event, double progress, const String& message )
+   {
+      Console console;
+      switch ( event )
+      {
+      case SegmentationEventType::Started:
+         console.WriteLn( "  Starting segmentation..." );
+         break;
+      case SegmentationEventType::Preprocessing:
+         console.WriteLn( "  Preprocessing image..." );
+         break;
+      case SegmentationEventType::ModelRunning:
+         console.WriteLn( "  Running neural network..." );
+         break;
+      case SegmentationEventType::Postprocessing:
+         console.WriteLn( "  Postprocessing masks..." );
+         break;
+      case SegmentationEventType::Completed:
+         console.WriteLn( String().Format( "  %s", message.c_str() ) );
+         break;
+      case SegmentationEventType::Failed:
+         console.WarningLn( String().Format( "  Segmentation failed: %s", message.c_str() ) );
+         break;
+      default:
+         break;
+      }
+   };
+
+   SegmentationEngineResult result = engine.Process( referenceImage, progressCallback );
+
+   if ( !result.isValid )
+   {
+      console.WarningLn( String().Format( "Segmentation failed: %s", result.errorMessage.c_str() ) );
+      return false;
+   }
+
+   segmentationTimeMs = result.totalTimeMs;
+
+   // Convert the class map image to the vector format expected by PixelSelector
+   int width = result.segmentation.width;
+   int height = result.segmentation.height;
+
+   classMap.resize( height );
+   confidenceMap.resize( height );
+
+   for ( int y = 0; y < height; ++y )
+   {
+      classMap[y].resize( width );
+      confidenceMap[y].resize( width );
+
+      for ( int x = 0; x < width; ++x )
+      {
+         // The class map stores classes normalized to [0,1]
+         // We need to convert back to integer class indices
+         float normalizedClass = result.segmentation.classMap.Pixel( x, y, 0 );
+         int numClasses = static_cast<int>( RegionClass::Count );
+         int classIdx = static_cast<int>( normalizedClass * ( numClasses - 1 ) + 0.5f );
+         classIdx = std::max( 0, std::min( numClasses - 1, classIdx ) );
+
+         classMap[y][x] = classIdx;
+
+         // Get confidence from the mask of the predicted class
+         RegionClass rc = static_cast<RegionClass>( classIdx );
+         const Image* mask = result.segmentation.GetMask( rc );
+         if ( mask && x < mask->Width() && y < mask->Height() )
+         {
+            confidenceMap[y][x] = mask->Pixel( x, y, 0 );
+         }
+         else
+         {
+            confidenceMap[y][x] = 0.5f;  // Default confidence
+         }
+      }
+   }
+
+   // Report class distribution
+   std::map<int, int> classCounts;
+   for ( int y = 0; y < height; ++y )
+      for ( int x = 0; x < width; ++x )
+         classCounts[classMap[y][x]]++;
+
+   console.WriteLn( "<br>Segmentation class distribution:" );
+   for ( const auto& pair : classCounts )
+   {
+      double percentage = 100.0 * pair.second / ( width * height );
+      if ( percentage > 0.5 )  // Only report classes with > 0.5% coverage
+      {
+         RegionClass rc = static_cast<RegionClass>( pair.first );
+         console.WriteLn( String().Format( "  %s: %.1f%%",
+            RegionClassDisplayName( rc ).c_str(), percentage ) );
+      }
+   }
+
+   return true;
+}
+
+// ----------------------------------------------------------------------------
+
 bool NukeXStackInstance::RunIntegration(
    std::vector<Image>& frames,
    const FITSKeywordArray& keywords,
@@ -488,13 +699,46 @@ bool NukeXStackInstance::RunIntegration(
       summary.targetObject = context.objectName;
    }
 
-   // ML segmentation disabled in simplified version
+   // ML segmentation setup
    std::vector<std::vector<int>> segmentationMap;
    std::vector<std::vector<float>> confidenceMap;
 
    if ( p_enableMLSegmentation )
    {
-      console.WriteLn( "<br>ML segmentation is disabled in this version." );
+      console.WriteLn( "<br>Creating median reference image for segmentation..." );
+
+      // Create a median reference image from the stack
+      Image referenceImage = CreateMedianReference( frames );
+
+      if ( referenceImage.Width() > 0 )
+      {
+         console.WriteLn( String().Format( "Reference image: %dx%d",
+            referenceImage.Width(), referenceImage.Height() ) );
+
+         // Run ML segmentation on the reference image
+         double segTime = 0.0;
+         if ( RunSegmentation( referenceImage, segmentationMap, confidenceMap, segTime ) )
+         {
+            summary.segmentationTimeMs = segTime;
+
+            // Pass segmentation to the pixel selector
+            selector.SetSegmentation( segmentationMap, confidenceMap );
+            console.WriteLn( String().Format( "<br>ML segmentation enabled (%.1f ms)", segTime ) );
+            console.WriteLn( "Pixel selection will use region-aware strategies." );
+         }
+         else
+         {
+            console.WarningLn( "<br>ML segmentation failed - using statistical selection only." );
+         }
+      }
+      else
+      {
+         console.WarningLn( "<br>Failed to create reference image for segmentation." );
+      }
+   }
+   else
+   {
+      console.WriteLn( "<br>ML segmentation disabled by user." );
       console.WriteLn( "Using statistical pixel selection without ML classification." );
    }
 

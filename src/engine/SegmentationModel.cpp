@@ -432,110 +432,122 @@ bool ONNXSegmentationModel::Initialize( const SegmentationConfig& config )
 
 FloatTensor ONNXSegmentationModel::PreprocessImage( const Image& image ) const
 {
-   // Create 11-channel multi-spectral tensor for the model
-   // Channels: R, G, B, L, Ha, OIII, SII, Continuum, Saturation, Hue, EmissionStrength
+   // Create 4-channel tensor matching PyTorch training preprocessing:
+   // Channels: R, G, B, ColorContrast (B - R, range -1 to 1)
+   //
+   // IMPORTANT: Input image is ALREADY pre-stretched (arcsinh applied during
+   // training data preparation). The model was trained on pre-stretched PNGs.
+   //
+   // Preprocessing pipeline (matching training):
+   // 1. Resample to model input size (bilinear interpolation)
+   // 2. Percentile normalization: (x - p1) / (p99 - p1) per channel
+   // 3. Create color contrast channel: B - R
+   //
+   // NOTE: Do NOT apply arcsinh stretch here - the input is already stretched!
+   // Training data was created with arcsinh(x/0.1)/arcsinh(10) in process_qnap_data.py
 
-   int srcWidth = image.Width();
-   int srcHeight = image.Height();
-   int outWidth = m_config.inputWidth;
-   int outHeight = m_config.inputHeight;
+   constexpr int NUM_CHANNELS = 4;
+   constexpr double PERCENTILE_LOW = 0.01;   // 1st percentile
+   constexpr double PERCENTILE_HIGH = 0.99;  // 99th percentile
 
-   constexpr int NUM_CHANNELS = 11;
-   TensorShape shape = { 1, NUM_CHANNELS, outHeight, outWidth };
-   FloatTensor tensor( shape );
+   const int srcWidth = image.Width();
+   const int srcHeight = image.Height();
+   const int outWidth = m_config.inputWidth;
+   const int outHeight = m_config.inputHeight;
+   const size_t numPixels = static_cast<size_t>( outWidth ) * outHeight;
 
    // Scale factors for resampling
-   double scaleX = static_cast<double>( srcWidth ) / outWidth;
-   double scaleY = static_cast<double>( srcHeight ) / outHeight;
+   const double scaleX = static_cast<double>( srcWidth ) / outWidth;
+   const double scaleY = static_cast<double>( srcHeight ) / outHeight;
 
+   // Temporary storage for resampled RGB channels
+   std::vector<float> channelR( numPixels );
+   std::vector<float> channelG( numPixels );
+   std::vector<float> channelB( numPixels );
+
+   // Step 1: Resample using bilinear interpolation (NO arcsinh - data is already stretched)
    for ( int y = 0; y < outHeight; ++y )
    {
       for ( int x = 0; x < outWidth; ++x )
       {
          // Bilinear sampling coordinates
-         double srcX = x * scaleX;
-         double srcY = y * scaleY;
+         const double srcX = x * scaleX;
+         const double srcY = y * scaleY;
 
-         int x0 = static_cast<int>( srcX );
-         int y0 = static_cast<int>( srcY );
-         int x1 = std::min( x0 + 1, srcWidth - 1 );
-         int y1 = std::min( y0 + 1, srcHeight - 1 );
+         const int x0 = static_cast<int>( srcX );
+         const int y0 = static_cast<int>( srcY );
+         const int x1 = std::min( x0 + 1, srcWidth - 1 );
+         const int y1 = std::min( y0 + 1, srcHeight - 1 );
 
-         double fx = srcX - x0;
-         double fy = srcY - y0;
+         const double fx = srcX - x0;
+         const double fy = srcY - y0;
 
-         // Bilinear interpolation for R, G, B
+         // Bilinear interpolation lambda
          auto bilinear = [&]( int c ) {
-            double v00 = image( x0, y0, c );
-            double v10 = image( x1, y0, c );
-            double v01 = image( x0, y1, c );
-            double v11 = image( x1, y1, c );
-            return (1 - fx) * (1 - fy) * v00 +
-                   fx * (1 - fy) * v10 +
-                   (1 - fx) * fy * v01 +
+            const double v00 = image( x0, y0, c );
+            const double v10 = image( x1, y0, c );
+            const double v01 = image( x0, y1, c );
+            const double v11 = image( x1, y1, c );
+            return (1.0 - fx) * (1.0 - fy) * v00 +
+                   fx * (1.0 - fy) * v10 +
+                   (1.0 - fx) * fy * v01 +
                    fx * fy * v11;
          };
 
-         // Get RGB values (already 0-1 in PixInsight)
-         double r = bilinear( 0 );
-         double g = bilinear( 1 );
-         double b = bilinear( 2 );
+         // Resample only - NO arcsinh stretch (input is already stretched)
+         const size_t idx = static_cast<size_t>( y ) * outWidth + x;
+         channelR[idx] = static_cast<float>( bilinear( 0 ) );
+         channelG[idx] = static_cast<float>( bilinear( 1 ) );
+         channelB[idx] = static_cast<float>( bilinear( 2 ) );
+      }
+   }
 
-         // Channel 0: R
-         tensor[(0 * outHeight + y) * outWidth + x] = static_cast<float>( r );
+   // Step 2: Compute percentiles for normalization
+   // Lambda to compute percentile from sorted data
+   auto computePercentile = []( std::vector<float>& data, double percentile ) {
+      std::vector<float> sorted = data;
+      std::sort( sorted.begin(), sorted.end() );
+      const size_t idx = static_cast<size_t>( percentile * (sorted.size() - 1) );
+      return sorted[idx];
+   };
 
-         // Channel 1: G
-         tensor[(1 * outHeight + y) * outWidth + x] = static_cast<float>( g );
+   // Compute percentiles for each RGB channel
+   const float r_p1 = computePercentile( channelR, PERCENTILE_LOW );
+   const float r_p99 = computePercentile( channelR, PERCENTILE_HIGH );
+   const float g_p1 = computePercentile( channelG, PERCENTILE_LOW );
+   const float g_p99 = computePercentile( channelG, PERCENTILE_HIGH );
+   const float b_p1 = computePercentile( channelB, PERCENTILE_LOW );
+   const float b_p99 = computePercentile( channelB, PERCENTILE_HIGH );
 
-         // Channel 2: B
-         tensor[(2 * outHeight + y) * outWidth + x] = static_cast<float>( b );
+   // Avoid division by zero
+   const float r_range = (r_p99 > r_p1) ? (r_p99 - r_p1) : 1.0f;
+   const float g_range = (g_p99 > g_p1) ? (g_p99 - g_p1) : 1.0f;
+   const float b_range = (b_p99 > b_p1) ? (b_p99 - b_p1) : 1.0f;
 
-         // Channel 3: Luminance (ITU-R BT.709)
-         double lum = 0.2126 * r + 0.7152 * g + 0.0722 * b;
-         tensor[(3 * outHeight + y) * outWidth + x] = static_cast<float>( lum );
+   // Create output tensor
+   TensorShape shape = { 1, NUM_CHANNELS, outHeight, outWidth };
+   FloatTensor tensor( shape );
 
-         // Channel 4: Ha proxy (r - 0.5*(g+b) + 0.5, clipped)
-         double ha = r - 0.5 * (g + b) + 0.5;
-         tensor[(4 * outHeight + y) * outWidth + x] = static_cast<float>( std::clamp( ha, 0.0, 1.0 ) );
+   // Step 3: Apply percentile normalization and create color contrast channel
+   for ( int y = 0; y < outHeight; ++y )
+   {
+      for ( int x = 0; x < outWidth; ++x )
+      {
+         const size_t srcIdx = static_cast<size_t>( y ) * outWidth + x;
 
-         // Channel 5: OIII proxy (0.5*(g+b) - 0.5*r + 0.5, clipped)
-         double oiii = 0.5 * (g + b) - 0.5 * r + 0.5;
-         tensor[(5 * outHeight + y) * outWidth + x] = static_cast<float>( std::clamp( oiii, 0.0, 1.0 ) );
+         // Normalize with percentiles and clamp to [0, 1]
+         const float r = std::clamp( (channelR[srcIdx] - r_p1) / r_range, 0.0f, 1.0f );
+         const float g = std::clamp( (channelG[srcIdx] - g_p1) / g_range, 0.0f, 1.0f );
+         const float b = std::clamp( (channelB[srcIdx] - b_p1) / b_range, 0.0f, 1.0f );
 
-         // Channel 6: SII proxy (r - 0.7*g - 0.3*b + 0.5, clipped)
-         double sii = r - 0.7 * g - 0.3 * b + 0.5;
-         tensor[(6 * outHeight + y) * outWidth + x] = static_cast<float>( std::clamp( sii, 0.0, 1.0 ) );
+         // Color contrast: B - R (range -1 to 1, no clamping needed for model)
+         const float colorContrast = b - r;
 
-         // Channel 7: Continuum (1 - color_variance * 10, clipped)
-         double mean = (r + g + b) / 3.0;
-         double variance = ((r - mean) * (r - mean) + (g - mean) * (g - mean) + (b - mean) * (b - mean)) / 3.0;
-         double continuum = 1.0 - std::min( variance * 10.0, 1.0 );
-         tensor[(7 * outHeight + y) * outWidth + x] = static_cast<float>( continuum );
-
-         // Channel 8: Saturation
-         double maxRGB = std::max( { r, g, b } );
-         double minRGB = std::min( { r, g, b } );
-         double saturation = (maxRGB > 0) ? (maxRGB - minRGB) / maxRGB : 0;
-         tensor[(8 * outHeight + y) * outWidth + x] = static_cast<float>( saturation );
-
-         // Channel 9: Hue (simplified HSV hue normalized to 0-1)
-         double hue = 0;
-         double delta = maxRGB - minRGB;
-         if ( delta > 0.001 )
-         {
-            if ( maxRGB == r )
-               hue = std::fmod( (g - b) / delta, 6.0 );
-            else if ( maxRGB == g )
-               hue = (b - r) / delta + 2.0;
-            else
-               hue = (r - g) / delta + 4.0;
-            hue /= 6.0;
-            if ( hue < 0 ) hue += 1.0;
-         }
-         tensor[(9 * outHeight + y) * outWidth + x] = static_cast<float>( hue );
-
-         // Channel 10: EmissionStrength (saturation * luminance)
-         tensor[(10 * outHeight + y) * outWidth + x] = static_cast<float>( saturation * lum );
+         // Store in tensor (NCHW format)
+         tensor[(0 * outHeight + y) * outWidth + x] = r;               // Channel 0: R
+         tensor[(1 * outHeight + y) * outWidth + x] = g;               // Channel 1: G
+         tensor[(2 * outHeight + y) * outWidth + x] = b;               // Channel 2: B
+         tensor[(3 * outHeight + y) * outWidth + x] = colorContrast;   // Channel 3: B - R
       }
    }
 

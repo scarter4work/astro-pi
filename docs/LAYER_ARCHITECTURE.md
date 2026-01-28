@@ -25,7 +25,7 @@ Layer 0 (back):   Background sky
 ### 1. Multi-Head Neural Network
 
 ```
-Input Image (H x W x 11 channels)
+Input Image (H x W x 4 channels: R, G, B, ColorContrast)
          │
          ▼
     ┌─────────────┐
