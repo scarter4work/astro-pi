@@ -379,16 +379,21 @@ bool NukeXInstance::ExecuteOn( View& view )
    console.WriteLn( "<br>Processing..." );
    console.Flush();
 
+   // Track last reported stage to avoid duplicate messages
+   ProcessingStage lastReportedStage = ProcessingStage::Idle;
+
    CompositorResult result = compositor.Process( floatImage,
-      [&console]( const CompositorProgress& progress ) {
-         // Use fixed-width format for cleaner progress display
-         console.Write( String().Format( "\r<clrbol>%-20s [%3.0f%%]",
-            progress.message.c_str(), progress.overall * 100 ) );
-         console.Flush();
+      [&console, &lastReportedStage]( const CompositorProgress& progress ) {
+         // Only report when we enter a new stage (avoids garbled rapid updates)
+         if ( progress.stage != lastReportedStage )
+         {
+            lastReportedStage = progress.stage;
+            console.WriteLn( String().Format( "  %-25s [%3.0f%%]",
+               progress.message.c_str(), progress.overall * 100 ) );
+            console.Flush();
+         }
       }
    );
-
-   console.WriteLn( "<br>" );
 
    if ( !result.isValid )
    {
@@ -406,17 +411,34 @@ bool NukeXInstance::ExecuteOn( View& view )
       console.WriteLn( String().Format( "  Tone mapping: %.1f ms", result.toneMappingTimeMs ) );
    console.WriteLn( String().Format( "  Total: %.1f ms", result.totalTimeMs ) );
 
-   // Report algorithm selections
+   // Report algorithm selections with detailed information
    console.WriteLn( "<br>Algorithm selections:" );
    for ( const auto& item : result.selectionSummary.entries )
    {
       // Compute names on-demand to avoid PCL String ABI issues
       String regionName = RegionClassDisplayName( item.region );
       String algorithmName = StretchLibrary::TypeToName( item.algorithm );
-      console.WriteLn( String().Format( "  %s: %s (%.0f%% confidence)",
+      IsoString algorithmId = StretchLibrary::TypeToId( item.algorithm );
+
+      // Format: Region: Algorithm Full Name (ID) - confidence%
+      console.WriteLn( String().Format( "  %s: %s (%s) - %.0f%% confidence",
          regionName.c_str(),
          algorithmName.c_str(),
+         algorithmId.c_str(),
          item.confidence * 100 ) );
+
+      // Show rationale if available
+      if ( !item.rationale.IsEmpty() )
+      {
+         console.WriteLn( String().Format( "    Reason: %s", item.rationale.c_str() ) );
+      }
+   }
+
+   // For RGB images, note that the same algorithm is applied to all channels
+   if ( image.NumberOfNominalChannels() >= 3 )
+   {
+      console.WriteLn( "<br>Note: For RGB images, the selected algorithm is applied uniformly to all channels." );
+      console.WriteLn( "LRGB mode can be enabled for luminance-only stretching with color preservation." );
    }
 
    // Copy result back to view

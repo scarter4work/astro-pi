@@ -154,8 +154,8 @@ struct SelectionSummary
       double confidence = 0.0;
       bool isOverride = false;
       double coverage = 0.0;
-      // NOTE: String members removed to avoid PCL ABI crashes
-      // Names are computed on-demand in ToString()
+      IsoString rationale;  // IsoString for PCL ABI safety
+      // NOTE: String display names are computed on-demand to avoid PCL ABI crashes
    };
 
    std::vector<RegionEntry> entries;

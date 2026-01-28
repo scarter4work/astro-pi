@@ -161,6 +161,7 @@ CompositorResult Compositor::Process( const Image& input, CompositorProgressCall
       entry.algorithm = selection.algorithm;
       entry.confidence = selection.confidence;
       entry.coverage = 1.0;
+      entry.rationale = selection.rationale;  // Capture selection rationale
       result.selectionSummary.entries.push_back( entry );
 
       ReportProgress( ProcessingStage::SelectingAlgorithms, 1.0, "Algorithm selected" );

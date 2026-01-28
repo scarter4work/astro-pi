@@ -277,8 +277,7 @@ SelectionSummary SelectionSummary::Create(
       entry.algorithm = pair.second.algorithm;
       entry.confidence = pair.second.confidence;
       entry.isOverride = pair.second.isOverride;
-      // NOTE: String members removed to avoid PCL ABI crashes
-      // Names are computed on-demand in ToString()
+      entry.rationale = pair.second.rationale;  // Capture rationale
 
       auto covIt = coverage.find( pair.first );
       entry.coverage = (covIt != coverage.end()) ? covIt->second : 0;
@@ -316,14 +315,20 @@ String SelectionSummary::ToString() const
       // Compute names on-demand to avoid storing PCL Strings
       String regionName = RegionClassDisplayName( entry.region );
       String algorithmName = StretchLibrary::TypeToName( entry.algorithm );
+      IsoString algorithmId = StretchLibrary::TypeToId( entry.algorithm );
 
-      result += String().Format( "%s (%.1f%%):\n",
+      result += String().Format( "%s (%.1f%% coverage):\n",
                                   regionName.c_str(),
                                   entry.coverage * 100 );
-      result += String().Format( "  Algorithm: %s%s\n",
+      result += String().Format( "  Algorithm: %s (%s)%s\n",
                                   algorithmName.c_str(),
+                                  algorithmId.c_str(),
                                   entry.isOverride ? " [Override]" : "" );
       result += String().Format( "  Confidence: %.0f%%\n", entry.confidence * 100 );
+      if ( !entry.rationale.IsEmpty() )
+      {
+         result += String().Format( "  Rationale: %s\n", entry.rationale.c_str() );
+      }
       result += "\n";
    }
 
