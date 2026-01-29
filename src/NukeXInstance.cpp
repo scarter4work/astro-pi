@@ -184,8 +184,8 @@ CompositorConfig NukeXInstance::BuildCompositorConfig() const
 {
    CompositorConfig config;
 
-   // Processing modes (segmentation disabled in simplified version)
-   config.useSegmentation = false;
+   // Processing modes - use user's segmentation setting
+   config.useSegmentation = p_autoSegment;
    config.useAutoSelection = p_autoSelect;
    config.useLRGBMode = p_enableLRGB;
    config.applyToneMapping = p_enableToneMapping;
@@ -416,8 +416,9 @@ bool NukeXInstance::ExecuteOn( View& view )
    for ( const auto& item : result.selectionSummary.entries )
    {
       // Compute names on-demand to avoid PCL String ABI issues
-      String regionName = RegionClassDisplayName( item.region );
-      String algorithmName = StretchLibrary::TypeToName( item.algorithm );
+      // Use IsoString (UTF-8) for console output - String (UTF-16) c_str() doesn't work with %s
+      IsoString regionName = IsoString( RegionClassDisplayName( item.region ) );
+      IsoString algorithmName = IsoString( StretchLibrary::TypeToName( item.algorithm ) );
       IsoString algorithmId = StretchLibrary::TypeToId( item.algorithm );
 
       // Format: Region: Algorithm Full Name (ID) - confidence%
@@ -455,6 +456,10 @@ Image NukeXInstance::GeneratePreview( const Image& input, int previewMode ) cons
 {
    CompositorConfig config = BuildCompositorConfig();
    config.useParallelBlend = true;
+
+   // Disable segmentation for real-time preview (too slow for interactive use)
+   // Full segmentation runs during final ExecuteOn()
+   config.useSegmentation = false;
 
    Compositor compositor( config );
 

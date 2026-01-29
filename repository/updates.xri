@@ -9,8 +9,8 @@
       </p>
    </description>
    <platform os="linux" arch="x64" version="1.8.0:1.9.9">
-      <package fileName="20260128-linux-x64-NukeX.tar.gz" sha1="8bb2afc38b294ae78196183b0bd77d670fb03dcc" type="module" releaseDate="20260128">
-         <title>NukeX 1.1.0.5 - Intelligent Astrophotography Processing</title>
+      <package fileName="20260128-linux-x64-NukeX.tar.gz" sha1="777096a8f51cf256a5f8c2e9ab1705226a394e98" type="module" releaseDate="20260128">
+         <title>NukeX 1.1.0.6 - Intelligent Astrophotography Processing</title>
          <description>
             <p>
                <b>NukeX - Intelligent Region-Aware Processing for PixInsight</b>
@@ -27,7 +27,7 @@
                </li>
             </ul>
             <p>
-               <b>Version 1.1.0.5:</b> Fixed LRGB mode crash (tensor validation). Fixed progress message truncation (String ABI). Includes ONNX segmentation model.
+               <b>Version 1.1.0.6:</b> Region-aware stretching! Different algorithms now applied per-region based on ML segmentation. Emission nebulae, stars, and background each get optimal treatment.
             </p>
             <p>
                Copyright (c) 2026 Scott Carter. All Rights Reserved.
@@ -36,4 +36,4 @@
       </package>
    </platform>
 </xri>
-<Signature developerId="scarter4work" timestamp="2026-01-28T21:37:12.603Z" encoding="Base64">Jh1+ZWZZSE+p79OGsdXvK0iYVwIcV9bRIaruVNAxxAorwLdoz0yWCykNiV6UG+lp4pPd+domCWsKpm0HihPrDw==</Signature>
+<Signature developerId="scarter4work" timestamp="2026-01-29T00:08:32.302Z" encoding="Base64">3jR/qCVWYgOYIJgIXq9ulq1HWh8IFEw777cwNcuv+b2DBBiQEKPWL6idxS23NueO6+mySqSo69Io2ubG8Q/XDw==</Signature>

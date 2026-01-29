@@ -17,6 +17,7 @@
 #include "BlendEngine.h"
 #include "ToneMapper.h"
 #include "LRGBProcessor.h"
+#include "Segmentation.h"
 
 #include <pcl/Image.h>
 #include <pcl/String.h>
@@ -61,6 +62,7 @@ struct CompositorConfig
 enum class ProcessingStage
 {
    Idle,
+   Segmenting,
    Analyzing,
    SelectingAlgorithms,
    Stretching,
@@ -167,15 +169,24 @@ private:
    std::unique_ptr<ToneMapper> m_toneMapper;
    std::unique_ptr<LRGBProcessor> m_lrgbProcessor;
 
+   // Segmentation (optional)
+   std::unique_ptr<SegmentationEngine> m_segmentation;
+   SegmentationEngineResult m_segmentationResult;
+
    // Progress reporting
    CompositorProgressCallback m_progressCallback;
    void ReportProgress( ProcessingStage stage, double progress, const IsoString& message );
    double GetStageWeight( ProcessingStage stage ) const;
 
    // Processing stages
+   bool RunSegmentation( const Image& input, double& segmentationTimeMs );
    RegionStatistics AnalyzeImage( const Image& input );
    SelectedStretch SelectAlgorithm( const RegionStatistics& stats );
    Image ApplyStretch( const Image& input, IStretchAlgorithm* algorithm );
+   Image ApplyRegionAwareStretch(
+      const Image& input,
+      const std::map<RegionClass, SelectedStretch>& regionAlgorithms,
+      const std::map<RegionClass, Image>& regionMasks );
    Image RunToneMapping( const Image& input );
    Image RunLRGBProcessing( const Image& original, const Image& stretched );
 };

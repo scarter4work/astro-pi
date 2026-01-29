@@ -657,8 +657,10 @@ bool NukeXStackInstance::RunSegmentation(
       if ( percentage > 0.5 )  // Only report classes with > 0.5% coverage
       {
          RegionClass rc = static_cast<RegionClass>( pair.first );
+         // Use IsoString for region name to ensure proper UTF-8 encoding with %s
+         IsoString regionName = IsoString( RegionClassDisplayName( rc ) );
          console.WriteLn( String().Format( "  %s: %.1f%%",
-            RegionClassDisplayName( rc ).c_str(), percentage ) );
+            regionName.c_str(), percentage ) );
       }
    }
 

@@ -22,6 +22,8 @@ namespace pcl
 String RegionAnalysisResult::ToString() const
 {
    String result;
+   // Use IsoString for region name to ensure proper UTF-8 encoding with %s
+   IsoString dominantRegionName = IsoString( RegionClassDisplayName( dominantRegion ) );
    result += String().Format(
       "Image Analysis Result\n"
       "=====================\n"
@@ -34,7 +36,7 @@ String RegionAnalysisResult::ToString() const
       "  Clipping: %.2f%%\n",
       imageWidth, imageHeight, totalPixels,
       numChannels, isColor ? "Color" : "Grayscale",
-      RegionClassDisplayName( dominantRegion ).c_str(),
+      dominantRegionName.c_str(),
       overallSNR,
       overallDynamicRange, overallDynamicRange * 20.0,
       overallClipping
@@ -45,8 +47,9 @@ String RegionAnalysisResult::ToString() const
    {
       if ( pair.second > 0.001 )  // Only show regions with >0.1% coverage
       {
+         IsoString regionName = IsoString( RegionClassDisplayName( pair.first ) );
          result += String().Format( "  %s: %.1f%%\n",
-                                     RegionClassDisplayName( pair.first ).c_str(),
+                                     regionName.c_str(),
                                      pair.second * 100.0 );
       }
    }
@@ -54,7 +57,8 @@ String RegionAnalysisResult::ToString() const
    result += "\nRegion Statistics:\n";
    for ( const auto& pair : regionStats )
    {
-      result += String().Format( "\n%s:\n", RegionClassDisplayName( pair.first ).c_str() );
+      IsoString regionName = IsoString( RegionClassDisplayName( pair.first ) );
+      result += String().Format( "\n%s:\n", regionName.c_str() );
       result += String().Format( "  Median: %.6f, Mean: %.6f\n",
                                   pair.second.median, pair.second.mean );
       result += String().Format( "  Range: [%.6f, %.6f]\n",

@@ -313,8 +313,9 @@ String SelectionSummary::ToString() const
    for ( const auto& entry : entries )
    {
       // Compute names on-demand to avoid storing PCL Strings
-      String regionName = RegionClassDisplayName( entry.region );
-      String algorithmName = StretchLibrary::TypeToName( entry.algorithm );
+      // Use IsoString (UTF-8) for Format %s - String (UTF-16) c_str() doesn't work with %s
+      IsoString regionName = IsoString( RegionClassDisplayName( entry.region ) );
+      IsoString algorithmName = IsoString( StretchLibrary::TypeToName( entry.algorithm ) );
       IsoString algorithmId = StretchLibrary::TypeToId( entry.algorithm );
 
       result += String().Format( "%s (%.1f%% coverage):\n",

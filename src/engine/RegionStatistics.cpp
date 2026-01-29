@@ -292,6 +292,8 @@ void NXHistogram::Normalize()
 
 String RegionStatistics::ToString() const
 {
+   // Use IsoString for region name to ensure proper UTF-8 encoding with %s
+   IsoString regionName = IsoString( RegionClassDisplayName( regionClass ) );
    return String().Format(
       "Region: %s\n"
       "  Pixels: %zu (%.2f%% coverage)\n"
@@ -300,7 +302,7 @@ String RegionStatistics::ToString() const
       "  MAD: %.6f, SNR: %.1f\n"
       "  Clipping: %.2f%% low, %.2f%% high\n"
       "  Percentiles: P05=%.4f, P25=%.4f, P75=%.4f, P95=%.4f",
-      RegionClassDisplayName( regionClass ).c_str(),
+      regionName.c_str(),
       pixelCount, maskCoverage * 100.0,
       min, max, dynamicRange,
       mean, median, stdDev,

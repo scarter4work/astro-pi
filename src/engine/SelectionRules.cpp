@@ -263,10 +263,7 @@ std::vector<AlgorithmRecommendation> SelectionRulesEngine::GetAllRecommendations
             if ( rule.Matches( stats ) )
             {
                AlgorithmRecommendation rec = rule.GetRecommendation( stats );
-               // Build rationale safely using IsoString (no ABI issues)
-               IsoString ruleName = rule.Name();
-               IsoString rationale = rec.rationale;
-               rec.rationale = ruleName + ": " + rationale;
+               // rationale is already set by the rule - keep it as-is
                result.push_back( rec );
             }
          }
