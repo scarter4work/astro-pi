@@ -163,10 +163,12 @@ public:
 
 private:
 
-   std::vector<double> m_histogram;
-   std::vector<double> m_cdf;
+   // IMPORTANT: m_numBins must be declared BEFORE vectors that use it in their
+   // constructors, because C++ initializes members in declaration order!
    int m_numBins = 65536;
    double m_totalCount = 0;
+   std::vector<double> m_histogram;
+   std::vector<double> m_cdf;
 };
 
 // ----------------------------------------------------------------------------
