@@ -328,7 +328,7 @@ String SelectionSummary::ToString() const
       result += String().Format( "  Confidence: %.0f%%\n", entry.confidence * 100 );
       if ( !entry.rationale.IsEmpty() )
       {
-         result += String().Format( "  Rationale: %s\n", entry.rationale.c_str() );
+         result += String().Format( "  Rationale: %s\n", IsoString( entry.rationale ).c_str() );
       }
       result += "\n";
    }

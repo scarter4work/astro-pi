@@ -526,12 +526,12 @@ bool Compositor::RunSegmentation( const Image& input, double& segmentationTimeMs
 
    if ( !File::Exists( modelPath ) )
    {
-      console.WarningLn( String().Format( "ONNX model not found at: %s", modelPath.c_str() ) );
+      console.WarningLn( String().Format( "ONNX model not found at: %s", IsoString( modelPath ).c_str() ) );
       console.WarningLn( "ML segmentation disabled - using statistical selection only." );
       return false;
    }
 
-   console.WriteLn( String().Format( "<br>Loading segmentation model: %s", modelPath.c_str() ) );
+   console.WriteLn( String().Format( "<br>Loading segmentation model: %s", IsoString( modelPath ).c_str() ) );
 
    // Configure the segmentation engine
    SegmentationEngineConfig engineConfig;
@@ -550,7 +550,7 @@ bool Compositor::RunSegmentation( const Image& input, double& segmentationTimeMs
    if ( !m_segmentation->Initialize( engineConfig ) )
    {
       console.WarningLn( String().Format( "Failed to initialize segmentation engine: %s",
-         m_segmentation->GetLastError().c_str() ) );
+         IsoString( m_segmentation->GetLastError() ).c_str() ) );
       m_segmentation.reset();
       return false;
    }
@@ -562,7 +562,7 @@ bool Compositor::RunSegmentation( const Image& input, double& segmentationTimeMs
       return false;
    }
 
-   console.WriteLn( String().Format( "Using model: %s", m_segmentation->GetModelName().c_str() ) );
+   console.WriteLn( String().Format( "Using model: %s", IsoString( m_segmentation->GetModelName() ).c_str() ) );
 
    // Run segmentation with progress reporting
    auto progressCallback = []( SegmentationEventType event, double progress, const String& message )
@@ -586,10 +586,10 @@ bool Compositor::RunSegmentation( const Image& input, double& segmentationTimeMs
          console.WriteLn( "  Analyzing regions..." );
          break;
       case SegmentationEventType::Completed:
-         console.WriteLn( String().Format( "  %s", message.c_str() ) );
+         console.WriteLn( String().Format( "  %s", IsoString( message ).c_str() ) );
          break;
       case SegmentationEventType::Failed:
-         console.WarningLn( String().Format( "  Segmentation failed: %s", message.c_str() ) );
+         console.WarningLn( String().Format( "  Segmentation failed: %s", IsoString( message ).c_str() ) );
          break;
       default:
          break;
@@ -600,7 +600,7 @@ bool Compositor::RunSegmentation( const Image& input, double& segmentationTimeMs
 
    if ( !m_segmentationResult.isValid )
    {
-      console.WarningLn( String().Format( "Segmentation failed: %s", m_segmentationResult.errorMessage.c_str() ) );
+      console.WarningLn( String().Format( "Segmentation failed: %s", IsoString( m_segmentationResult.errorMessage ).c_str() ) );
       return false;
    }
 

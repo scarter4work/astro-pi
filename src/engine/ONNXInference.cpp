@@ -122,7 +122,7 @@ bool ONNXSession::LoadModel( const String& modelPath, const ONNXConfig& config )
          return false;
       }
 
-      Console().WriteLn( String().Format( "ONNX: Loaded model '%s'", modelPath.c_str() ) );
+      Console().WriteLn( String().Format( "ONNX: Loaded model '%s'", IsoString( modelPath ).c_str() ) );
       Console().WriteLn( String().Format( "ONNX: %zu inputs, %zu outputs",
                                            m_inputs.size(), m_outputs.size() ) );
 

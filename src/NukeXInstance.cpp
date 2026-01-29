@@ -431,7 +431,7 @@ bool NukeXInstance::ExecuteOn( View& view )
       // Show rationale if available
       if ( !item.rationale.IsEmpty() )
       {
-         console.WriteLn( String().Format( "    Reason: %s", item.rationale.c_str() ) );
+         console.WriteLn( String().Format( "    Reason: %s", IsoString( item.rationale ).c_str() ) );
       }
    }
 

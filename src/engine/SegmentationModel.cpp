@@ -751,7 +751,7 @@ std::unique_ptr<ISegmentationModel> SegmentationModelFactory::CreateWithFallback
 {
    Console console;
    console.WriteLn( String().Format( "CreateWithFallback: modelPath='%s', IsONNXAvailable=%s",
-      config.modelPath.c_str(),
+      IsoString( config.modelPath ).c_str(),
       IsONNXAvailable() ? "true" : "false" ) );
 
    // Try ONNX first if model path is provided
@@ -764,13 +764,13 @@ std::unique_ptr<ISegmentationModel> SegmentationModelFactory::CreateWithFallback
          console.WriteLn( "Using ONNX segmentation model" );
          return model;
       }
-      console.WarningLn( String().Format( "ONNX model failed to load: %s", model->GetLastError().c_str() ) );
+      console.WarningLn( String().Format( "ONNX model failed to load: %s", IsoString( model->GetLastError() ).c_str() ) );
    }
 
    // Fall back to mock
    auto model = std::make_unique<MockSegmentationModel>();
    model->Initialize( config );
-   String pathInfo = config.modelPath.IsEmpty() ? String( "<empty>" ) : config.modelPath;
+   IsoString pathInfo = config.modelPath.IsEmpty() ? IsoString( "<empty>" ) : IsoString( config.modelPath );
    console.WriteLn( "*** ONNX DEBUG ***" );
    console.WriteLn( String().Format( "  Model path: %s", pathInfo.c_str() ) );
    console.WriteLn( String().Format( "  ONNX available: %s", IsONNXAvailable() ? "YES" : "NO" ) );

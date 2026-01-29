@@ -187,7 +187,7 @@ bool NukeXStackInstance::ExecuteGlobal()
    {
       const String& path = p_inputFrames[enabledIndices[i]].path;
       console.Write( String().Format( "\rLoading frame %d of %d: %s",
-         i + 1, enabledIndices.size(), File::ExtractName( path ).c_str() ) );
+         i + 1, enabledIndices.size(), IsoString( File::ExtractName( path ) ).c_str() ) );
       console.Flush();
 
       Image frame;
@@ -195,7 +195,7 @@ bool NukeXStackInstance::ExecuteGlobal()
 
       if ( !LoadFrame( path, frame, keywords ) )
       {
-         console.CriticalLn( String().Format( "\r<clrbol>Failed to load: %s", path.c_str() ) );
+         console.CriticalLn( String().Format( "\r<clrbol>Failed to load: %s", IsoString( path ).c_str() ) );
          return false;
       }
 
@@ -211,7 +211,7 @@ bool NukeXStackInstance::ExecuteGlobal()
       {
          console.CriticalLn( String().Format(
             "\r<clrbol>Frame dimension mismatch: %s (%dx%d) vs expected (%dx%d)",
-            path.c_str(), frame.Width(), frame.Height(), width, height ) );
+            IsoString( path ).c_str(), frame.Width(), frame.Height(), width, height ) );
          return false;
       }
 
@@ -251,7 +251,7 @@ bool NukeXStackInstance::ExecuteGlobal()
       console.WriteLn( String().Format( "  Transitions smoothed: %d", summary.smoothedTransitions ) );
 
    if ( !summary.targetObject.IsEmpty() )
-      console.WriteLn( String().Format( "  Target object: %s", summary.targetObject.c_str() ) );
+      console.WriteLn( String().Format( "  Target object: %s", IsoString( summary.targetObject ).c_str() ) );
 
    console.WriteLn( "<br>Timing:" );
    if ( p_enableMLSegmentation && summary.segmentationTimeMs > 0 )
@@ -532,12 +532,12 @@ bool NukeXStackInstance::RunSegmentation(
 
    if ( !File::Exists( modelPath ) )
    {
-      console.WarningLn( String().Format( "ONNX model not found at: %s", modelPath.c_str() ) );
+      console.WarningLn( String().Format( "ONNX model not found at: %s", IsoString( modelPath ).c_str() ) );
       console.WarningLn( "ML segmentation disabled - using statistical selection only." );
       return false;
    }
 
-   console.WriteLn( String().Format( "<br>Loading segmentation model: %s", modelPath.c_str() ) );
+   console.WriteLn( String().Format( "<br>Loading segmentation model: %s", IsoString( modelPath ).c_str() ) );
 
    // Configure the segmentation engine
    SegmentationEngineConfig engineConfig;
@@ -556,7 +556,7 @@ bool NukeXStackInstance::RunSegmentation(
    if ( !engine.Initialize( engineConfig ) )
    {
       console.WarningLn( String().Format( "Failed to initialize segmentation engine: %s",
-         engine.GetLastError().c_str() ) );
+         IsoString( engine.GetLastError() ).c_str() ) );
       return false;
    }
 
@@ -566,7 +566,7 @@ bool NukeXStackInstance::RunSegmentation(
       return false;
    }
 
-   console.WriteLn( String().Format( "Using model: %s", engine.GetModelName().c_str() ) );
+   console.WriteLn( String().Format( "Using model: %s", IsoString( engine.GetModelName() ).c_str() ) );
 
    // Run segmentation with progress reporting
    auto progressCallback = []( SegmentationEventType event, double progress, const String& message )
@@ -587,10 +587,10 @@ bool NukeXStackInstance::RunSegmentation(
          console.WriteLn( "  Postprocessing masks..." );
          break;
       case SegmentationEventType::Completed:
-         console.WriteLn( String().Format( "  %s", message.c_str() ) );
+         console.WriteLn( String().Format( "  %s", IsoString( message ).c_str() ) );
          break;
       case SegmentationEventType::Failed:
-         console.WarningLn( String().Format( "  Segmentation failed: %s", message.c_str() ) );
+         console.WarningLn( String().Format( "  Segmentation failed: %s", IsoString( message ).c_str() ) );
          break;
       default:
          break;
@@ -601,7 +601,7 @@ bool NukeXStackInstance::RunSegmentation(
 
    if ( !result.isValid )
    {
-      console.WarningLn( String().Format( "Segmentation failed: %s", result.errorMessage.c_str() ) );
+      console.WarningLn( String().Format( "Segmentation failed: %s", IsoString( result.errorMessage ).c_str() ) );
       return false;
    }
 
