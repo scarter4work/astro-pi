@@ -219,22 +219,81 @@ SegmentationResult MockSegmentationModel::Segment( const Image& image )
    int height = image.Height();
    int numChannels = image.NumberOfNominalChannels();
 
-   // Create luminance image
+   // Collect pixel values for percentile computation
+   std::vector<float> allValues;
+   allValues.reserve( static_cast<size_t>( width ) * height );
+
+   for ( int y = 0; y < height; ++y )
+   {
+      for ( int x = 0; x < width; ++x )
+      {
+         float lum;
+         if ( numChannels >= 3 )
+         {
+            lum = static_cast<float>( ComputeLuminance(
+               image( x, y, 0 ), image( x, y, 1 ), image( x, y, 2 ) ) );
+         }
+         else
+         {
+            lum = static_cast<float>( image( x, y, 0 ) );
+         }
+         allValues.push_back( lum );
+      }
+   }
+
+   // Compute percentiles for linear detection
+   std::vector<float> sorted = allValues;
+   std::sort( sorted.begin(), sorted.end() );
+   const float p1 = sorted[static_cast<size_t>( 0.01 * (sorted.size() - 1) )];
+   const float p99 = sorted[static_cast<size_t>( 0.99 * (sorted.size() - 1) )];
+   const float median = sorted[sorted.size() / 2];
+
+   // Detect if input is linear: median < 0.1 AND (p99/median) > 10
+   const bool isLinear = (median < 0.1f) && (median > 0.0f) && ((p99 / median) > 10.0f);
+
+   if ( isLinear )
+   {
+      Console().WriteLn( "MockSegmentation: Input appears to be linear data, applying arcsinh stretch" );
+   }
+   else
+   {
+      Console().WriteLn( "MockSegmentation: Input appears pre-stretched, using as-is" );
+   }
+
+   // Arcsinh stretch parameters (matching training)
+   constexpr double ARCSINH_SCALE = 0.1;
+   const double ARCSINH_NORM = std::asinh( 1.0 / ARCSINH_SCALE );  // asinh(10) ~ 2.998
+
+   const float range = (p99 > p1) ? (p99 - p1) : 1.0f;
+
+   // Create luminance image with proper preprocessing
    Image luminance( width, height, pcl::ColorSpace::Gray );
 
    for ( int y = 0; y < height; ++y )
    {
       for ( int x = 0; x < width; ++x )
       {
+         float lum;
          if ( numChannels >= 3 )
          {
-            luminance( x, y, 0 ) = ComputeLuminance(
-               image( x, y, 0 ), image( x, y, 1 ), image( x, y, 2 ) );
+            lum = static_cast<float>( ComputeLuminance(
+               image( x, y, 0 ), image( x, y, 1 ), image( x, y, 2 ) ) );
          }
          else
          {
-            luminance( x, y, 0 ) = image( x, y, 0 );
+            lum = static_cast<float>( image( x, y, 0 ) );
          }
+
+         // Percentile normalization
+         lum = std::clamp( (lum - p1) / range, 0.0f, 1.0f );
+
+         // Apply arcsinh stretch if linear input
+         if ( isLinear )
+         {
+            lum = static_cast<float>( std::clamp( std::asinh( lum / ARCSINH_SCALE ) / ARCSINH_NORM, 0.0, 1.0 ) );
+         }
+
+         luminance( x, y, 0 ) = lum;
       }
    }
 
@@ -452,16 +511,17 @@ FloatTensor ONNXSegmentationModel::PreprocessImage( const Image& image ) const
    // - 3 channels: R, G, B
    // - 4 channels: R, G, B, ColorContrast (B - R, range -1 to 1)
    //
-   // IMPORTANT: Input image is ALREADY pre-stretched (arcsinh applied during
-   // training data preparation). The model was trained on pre-stretched PNGs.
-   //
-   // Preprocessing pipeline (matching training):
+   // Preprocessing pipeline (matching training from process_qnap_data.py):
    // 1. Resample to model input size (bilinear interpolation)
-   // 2. Percentile normalization: (x - p1) / (p99 - p1) per channel
-   // 3. Create color contrast channel: B - R (only if 4 channels expected)
+   // 2. Detect if input is linear or pre-stretched
+   // 3. If linear: apply percentile normalization then arcsinh stretch
+   // 4. If pre-stretched: use as-is with percentile normalization
+   // 5. Create color contrast channel: B - R (only if 4 channels expected)
    //
-   // NOTE: Do NOT apply arcsinh stretch here - the input is already stretched!
-   // Training data was created with arcsinh(x/0.1)/arcsinh(10) in process_qnap_data.py
+   // Training data was created with:
+   //   p1, p99 = np.percentile(data, [1, 99])
+   //   normalized = (data - p1) / (p99 - p1)
+   //   stretched = arcsinh(normalized / 0.1) / arcsinh(10)
 
    const int numChannels = m_numInputChannels;  // Use detected value (3 or 4)
    constexpr double PERCENTILE_LOW = 0.01;   // 1st percentile
@@ -482,7 +542,7 @@ FloatTensor ONNXSegmentationModel::PreprocessImage( const Image& image ) const
    std::vector<float> channelG( numPixels );
    std::vector<float> channelB( numPixels );
 
-   // Step 1: Resample using bilinear interpolation (NO arcsinh - data is already stretched)
+   // Step 1: Resample using bilinear interpolation
    for ( int y = 0; y < outHeight; ++y )
    {
       for ( int x = 0; x < outWidth; ++x )
@@ -511,7 +571,7 @@ FloatTensor ONNXSegmentationModel::PreprocessImage( const Image& image ) const
                    fx * fy * v11;
          };
 
-         // Resample only - NO arcsinh stretch (input is already stretched)
+         // Resample
          const size_t idx = static_cast<size_t>( y ) * outWidth + x;
          channelR[idx] = static_cast<float>( bilinear( 0 ) );
          channelG[idx] = static_cast<float>( bilinear( 1 ) );
@@ -519,7 +579,7 @@ FloatTensor ONNXSegmentationModel::PreprocessImage( const Image& image ) const
       }
    }
 
-   // Step 2: Compute percentiles for normalization
+   // Step 2: Compute percentiles for normalization and linear detection
    // Lambda to compute percentile from sorted data
    auto computePercentile = []( std::vector<float>& data, double percentile ) {
       std::vector<float> sorted = data;
@@ -536,26 +596,55 @@ FloatTensor ONNXSegmentationModel::PreprocessImage( const Image& image ) const
    const float b_p1 = computePercentile( channelB, PERCENTILE_LOW );
    const float b_p99 = computePercentile( channelB, PERCENTILE_HIGH );
 
+   // Compute median for linear detection (use green channel as proxy for luminance)
+   const float g_median = computePercentile( channelG, 0.5 );
+
+   // Detect if input is linear or already stretched
+   // Linear data typically has: median < 0.1 AND (p99/median) > 10
+   // This indicates data is clustered near zero with high dynamic range
+   const bool isLinear = (g_median < 0.1f) && (g_median > 0.0f) && ((g_p99 / g_median) > 10.0f);
+
+   if ( isLinear )
+   {
+      Console().WriteLn( "Segmentation: Input appears to be linear data, applying arcsinh stretch" );
+   }
+   else
+   {
+      Console().WriteLn( "Segmentation: Input appears pre-stretched, using as-is" );
+   }
+
    // Avoid division by zero
    const float r_range = (r_p99 > r_p1) ? (r_p99 - r_p1) : 1.0f;
    const float g_range = (g_p99 > g_p1) ? (g_p99 - g_p1) : 1.0f;
    const float b_range = (b_p99 > b_p1) ? (b_p99 - b_p1) : 1.0f;
 
+   // Arcsinh stretch parameters (matching training)
+   constexpr double ARCSINH_SCALE = 0.1;
+   const double ARCSINH_NORM = std::asinh( 1.0 / ARCSINH_SCALE );  // asinh(10) ~ 2.998
+
    // Create output tensor
    TensorShape shape = { 1, numChannels, outHeight, outWidth };
    FloatTensor tensor( shape );
 
-   // Step 3: Apply percentile normalization and create color contrast channel (if needed)
+   // Step 3: Apply percentile normalization, arcsinh stretch (if linear), and create tensor
    for ( int y = 0; y < outHeight; ++y )
    {
       for ( int x = 0; x < outWidth; ++x )
       {
          const size_t srcIdx = static_cast<size_t>( y ) * outWidth + x;
 
-         // Normalize with percentiles and clamp to [0, 1]
-         const float r = std::clamp( (channelR[srcIdx] - r_p1) / r_range, 0.0f, 1.0f );
-         const float g = std::clamp( (channelG[srcIdx] - g_p1) / g_range, 0.0f, 1.0f );
-         const float b = std::clamp( (channelB[srcIdx] - b_p1) / b_range, 0.0f, 1.0f );
+         // First: percentile normalization to [0, 1]
+         float r = std::clamp( (channelR[srcIdx] - r_p1) / r_range, 0.0f, 1.0f );
+         float g = std::clamp( (channelG[srcIdx] - g_p1) / g_range, 0.0f, 1.0f );
+         float b = std::clamp( (channelB[srcIdx] - b_p1) / b_range, 0.0f, 1.0f );
+
+         // If linear input, apply arcsinh stretch (matching training)
+         if ( isLinear )
+         {
+            r = static_cast<float>( std::clamp( std::asinh( r / ARCSINH_SCALE ) / ARCSINH_NORM, 0.0, 1.0 ) );
+            g = static_cast<float>( std::clamp( std::asinh( g / ARCSINH_SCALE ) / ARCSINH_NORM, 0.0, 1.0 ) );
+            b = static_cast<float>( std::clamp( std::asinh( b / ARCSINH_SCALE ) / ARCSINH_NORM, 0.0, 1.0 ) );
+         }
 
          // Store in tensor (NCHW format)
          tensor[(0 * outHeight + y) * outWidth + x] = r;               // Channel 0: R

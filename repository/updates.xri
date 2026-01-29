@@ -9,8 +9,8 @@
       </p>
    </description>
    <platform os="linux" arch="x64" version="1.8.0:1.9.9">
-      <package fileName="20260128-linux-x64-NukeX.tar.gz" sha1="d2ca7763a38a465df617391acc3d0ee2baf7bf2f" type="module" releaseDate="20260128">
-         <title>NukeX 1.1.0.8 - Intelligent Astrophotography Processing</title>
+      <package fileName="20260128-linux-x64-NukeX.tar.gz" sha1="55868c2437bedd11c9e7b8a4645157b999f083bd" type="module" releaseDate="20260128">
+         <title>NukeX 1.1.0.9 - Intelligent Astrophotography Processing</title>
          <description>
             <p>
                <b>NukeX - Intelligent Region-Aware Processing for PixInsight</b>
@@ -27,7 +27,7 @@
                </li>
             </ul>
             <p>
-               <b>Version 1.1.0.8:</b> Fixed String/IsoString path corruption throughout codebase. Model paths now load correctly.
+               <b>Version 1.1.0.9:</b> Auto-detect linear data and apply arcsinh stretch for segmentation. Emission nebulae now properly detected in unstretched images.
             </p>
             <p>
                Copyright (c) 2026 Scott Carter. All Rights Reserved.
@@ -36,4 +36,4 @@
       </package>
    </platform>
 </xri>
-<Signature developerId="scarter4work" timestamp="2026-01-29T03:02:31.614Z" encoding="Base64">c7DLuqRqZEXvdrSBPl3gcw3g0KUShygbngZUkH9mXBAURUrf8HUNXlrkyGFmP++TN6bBlmob1sesUy8J0orYBg==</Signature>
+<Signature developerId="scarter4work" timestamp="2026-01-29T03:17:54.040Z" encoding="Base64">47lZ23hPq3FMnP4NDgul86t2dmn+ex1R2SfOJta+SrFNCOhueIhQt7w7VHnX6G2UVp+gRK13YPpIyv4Ml7nFDg==</Signature>
