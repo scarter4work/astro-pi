@@ -413,6 +413,22 @@ bool ONNXSegmentationModel::Initialize( const SegmentationConfig& config )
       return false;
    }
 
+   // Get input info to determine number of expected channels
+   auto inputs = m_session->GetInputInfo();
+   if ( !inputs.empty() && inputs[0].shape.Rank() >= 2 )
+   {
+      // Assuming NCHW format, dim[1] is the channel dimension
+      m_numInputChannels = static_cast<int>( inputs[0].shape[1] );
+      // Validate - should be 3 (RGB) or 4 (RGB + ColorContrast)
+      if ( m_numInputChannels != 3 && m_numInputChannels != 4 )
+      {
+         Console().WarningLn( String().Format(
+            "ONNXSegmentationModel: Unexpected input channels %d, defaulting to 3",
+            m_numInputChannels ) );
+         m_numInputChannels = 3;
+      }
+   }
+
    // Get output info to determine number of classes
    auto outputs = m_session->GetOutputInfo();
    if ( !outputs.empty() && outputs[0].shape.Rank() >= 2 )
@@ -422,8 +438,8 @@ bool ONNXSegmentationModel::Initialize( const SegmentationConfig& config )
    }
 
    m_isReady = true;
-   Console().WriteLn( String().Format( "ONNXSegmentationModel: Loaded with %d classes",
-                                        m_numClasses ) );
+   Console().WriteLn( String().Format( "ONNXSegmentationModel: Loaded with %d input channels, %d classes",
+                                        m_numInputChannels, m_numClasses ) );
 
    return true;
 }
@@ -432,8 +448,9 @@ bool ONNXSegmentationModel::Initialize( const SegmentationConfig& config )
 
 FloatTensor ONNXSegmentationModel::PreprocessImage( const Image& image ) const
 {
-   // Create 4-channel tensor matching PyTorch training preprocessing:
-   // Channels: R, G, B, ColorContrast (B - R, range -1 to 1)
+   // Create tensor matching the model's expected input channels:
+   // - 3 channels: R, G, B
+   // - 4 channels: R, G, B, ColorContrast (B - R, range -1 to 1)
    //
    // IMPORTANT: Input image is ALREADY pre-stretched (arcsinh applied during
    // training data preparation). The model was trained on pre-stretched PNGs.
@@ -441,12 +458,12 @@ FloatTensor ONNXSegmentationModel::PreprocessImage( const Image& image ) const
    // Preprocessing pipeline (matching training):
    // 1. Resample to model input size (bilinear interpolation)
    // 2. Percentile normalization: (x - p1) / (p99 - p1) per channel
-   // 3. Create color contrast channel: B - R
+   // 3. Create color contrast channel: B - R (only if 4 channels expected)
    //
    // NOTE: Do NOT apply arcsinh stretch here - the input is already stretched!
    // Training data was created with arcsinh(x/0.1)/arcsinh(10) in process_qnap_data.py
 
-   constexpr int NUM_CHANNELS = 4;
+   const int numChannels = m_numInputChannels;  // Use detected value (3 or 4)
    constexpr double PERCENTILE_LOW = 0.01;   // 1st percentile
    constexpr double PERCENTILE_HIGH = 0.99;  // 99th percentile
 
@@ -525,10 +542,10 @@ FloatTensor ONNXSegmentationModel::PreprocessImage( const Image& image ) const
    const float b_range = (b_p99 > b_p1) ? (b_p99 - b_p1) : 1.0f;
 
    // Create output tensor
-   TensorShape shape = { 1, NUM_CHANNELS, outHeight, outWidth };
+   TensorShape shape = { 1, numChannels, outHeight, outWidth };
    FloatTensor tensor( shape );
 
-   // Step 3: Apply percentile normalization and create color contrast channel
+   // Step 3: Apply percentile normalization and create color contrast channel (if needed)
    for ( int y = 0; y < outHeight; ++y )
    {
       for ( int x = 0; x < outWidth; ++x )
@@ -540,14 +557,18 @@ FloatTensor ONNXSegmentationModel::PreprocessImage( const Image& image ) const
          const float g = std::clamp( (channelG[srcIdx] - g_p1) / g_range, 0.0f, 1.0f );
          const float b = std::clamp( (channelB[srcIdx] - b_p1) / b_range, 0.0f, 1.0f );
 
-         // Color contrast: B - R (range -1 to 1, no clamping needed for model)
-         const float colorContrast = b - r;
-
          // Store in tensor (NCHW format)
          tensor[(0 * outHeight + y) * outWidth + x] = r;               // Channel 0: R
          tensor[(1 * outHeight + y) * outWidth + x] = g;               // Channel 1: G
          tensor[(2 * outHeight + y) * outWidth + x] = b;               // Channel 2: B
-         tensor[(3 * outHeight + y) * outWidth + x] = colorContrast;   // Channel 3: B - R
+
+         // Only add color contrast channel if model expects 4 channels
+         if ( numChannels == 4 )
+         {
+            // Color contrast: B - R (range -1 to 1, no clamping needed for model)
+            const float colorContrast = b - r;
+            tensor[(3 * outHeight + y) * outWidth + x] = colorContrast;   // Channel 3: B - R
+         }
       }
    }
 

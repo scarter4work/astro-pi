@@ -363,9 +363,17 @@ RegionStatistics HistogramEngine::ComputeStatistics( const Image& image, int cha
    int width = image.Width();
    int height = image.Height();
 
+   // Validate dimensions to catch corruption early
+   if ( width <= 0 || height <= 0 || width > 100000 || height > 100000 )
+      throw std::runtime_error( "Invalid image dimensions in ComputeStatistics" );
+
+   size_t numPixels = size_t( width ) * height;
+   if ( numPixels > 500000000 )  // 500M pixel limit
+      throw std::runtime_error( "Image too large for statistics computation" );
+
    // Collect all values
    std::vector<double> values;
-   values.reserve( size_t( width ) * height );
+   values.reserve( numPixels );
 
    double min = 1.0, max = 0.0;
    double sum = 0;
@@ -471,13 +479,18 @@ RegionStatistics HistogramEngine::ComputeStatistics( const Image& image, const I
    int width = image.Width();
    int height = image.Height();
 
+   // Validate dimensions to catch corruption early
+   if ( width <= 0 || height <= 0 || width > 100000 || height > 100000 )
+      throw std::runtime_error( "Invalid image dimensions in ComputeStatistics (masked)" );
+
    bool useMask = (mask.Width() == width && mask.Height() == height);
 
    // Collect values with weights
    std::vector<double> values;
    std::vector<double> weights;
-   values.reserve( size_t( width ) * height / 4 );  // Estimate
-   weights.reserve( size_t( width ) * height / 4 );
+   size_t estimatedSize = size_t( width ) * height / 4;
+   values.reserve( estimatedSize );
+   weights.reserve( estimatedSize );
 
    double min = 1.0, max = 0.0;
    double sumW = 0, sumVW = 0;

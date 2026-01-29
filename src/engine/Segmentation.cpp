@@ -540,13 +540,15 @@ std::vector<String> SegmentationEngine::FindAvailableModels()
    std::vector<String> models;
 
    // Get home directory for tilde expansion
-   String homeDir;
+   // Use IsoString (UTF-8) for environment variables and path operations
+   // String (UTF-16) c_str() doesn't work with %s format specifier
+   IsoString homeDir;
    const char* home = std::getenv( "HOME" );
    if ( home != nullptr )
-      homeDir = String( home );
+      homeDir = IsoString( home );
 
    // Helper lambda to expand tilde in paths
-   auto expandPath = [&homeDir]( const String& path ) -> String
+   auto expandPath = [&homeDir]( const IsoString& path ) -> IsoString
    {
       if ( path.StartsWith( "~/" ) && !homeDir.IsEmpty() )
          return homeDir + path.Substring( 1 );
@@ -554,7 +556,7 @@ std::vector<String> SegmentationEngine::FindAvailableModels()
    };
 
    // Common locations to search
-   std::vector<String> searchPaths = {
+   std::vector<IsoString> searchPaths = {
       "./models",
       "../models",
       "~/.nukex/models",
@@ -579,15 +581,15 @@ std::vector<String> SegmentationEngine::FindAvailableModels()
    Console console;
    console.WriteLn( String().Format( "Searching for ONNX models (HOME=%s)...", homeDir.c_str() ) );
 
-   for ( const String& basePath : searchPaths )
+   for ( const IsoString& basePath : searchPaths )
    {
-      String expandedPath = expandPath( basePath );
-      String modelPath = expandedPath + "/nukex_segmentation.onnx";
+      IsoString expandedPath = expandPath( basePath );
+      IsoString modelPath = expandedPath + "/nukex_segmentation.onnx";
       console.WriteLn( String().Format( "  Checking: %s", modelPath.c_str() ) );
-      if ( File::Exists( modelPath ) )
+      if ( File::Exists( String( modelPath ) ) )
       {
          console.WriteLn( String().Format( "  -> FOUND: %s", modelPath.c_str() ) );
-         models.push_back( modelPath );
+         models.push_back( String( modelPath ) );
       }
    }
 

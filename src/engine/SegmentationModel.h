@@ -243,6 +243,7 @@ private:
    String m_lastError;
    bool m_isReady = false;
    int m_numClasses = 9;
+   int m_numInputChannels = 4;  // Detected from model (3=RGB, 4=RGB+ColorContrast)
 
    std::unique_ptr<ONNXSession> m_session;
 
