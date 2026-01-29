@@ -249,19 +249,23 @@ SegmentationResult MockSegmentationModel::Segment( const Image& image )
    const float p99 = sorted[static_cast<size_t>( 0.99 * (sorted.size() - 1) )];
    const float median = sorted[sorted.size() / 2];
 
-   // Detect if input is linear: median < 0.1 AND (p99/median) > 10
+   // Detect if input is linear using improved heuristic:
+   // - Either: p99 < 0.15 AND median < 0.1 (very compressed data)
+   // - Or: median < 0.1 AND median > 0 AND (p99/median) > 5 (high dynamic range)
    const float ratio = (median > 0.0f) ? (p99 / median) : 0.0f;
-   const bool isLinear = (median < 0.1f) && (median > 0.0f) && (ratio > 10.0f);
+   const bool isLinear = (p99 < 0.15f && median < 0.1f) ||
+                         (median < 0.1f && median > 0.0f && ratio > 5.0f);
 
    // Debug logging to diagnose linear detection
    Console().WriteLn( String().Format(
       "MockSegmentation: Data stats - median=%.6f, p99=%.6f, ratio=%.2f, isLinear=%s",
       median, p99, ratio, isLinear ? "true" : "false" ) );
    Console().WriteLn( String().Format(
-      "MockSegmentation: Thresholds - median<0.1=%s, median>0=%s, ratio>10=%s",
+      "MockSegmentation: Thresholds - p99<0.15=%s, median<0.1=%s, median>0=%s, ratio>5=%s",
+      (p99 < 0.15f) ? "true" : "false",
       (median < 0.1f) ? "true" : "false",
       (median > 0.0f) ? "true" : "false",
-      (ratio > 10.0f) ? "true" : "false" ) );
+      (ratio > 5.0f) ? "true" : "false" ) );
 
    if ( isLinear )
    {
@@ -618,21 +622,23 @@ FloatTensor ONNXSegmentationModel::PreprocessImage( const Image& image ) const
    // Compute median for linear detection (use green channel as proxy for luminance)
    const float g_median = computePercentile( channelG, 0.5 );
 
-   // Detect if input is linear or already stretched
-   // Linear data typically has: median < 0.1 AND (p99/median) > 10
-   // This indicates data is clustered near zero with high dynamic range
+   // Detect if input is linear or already stretched using improved heuristic:
+   // - Either: p99 < 0.15 AND median < 0.1 (very compressed data)
+   // - Or: median < 0.1 AND median > 0 AND (p99/median) > 5 (high dynamic range)
    const float ratio = (g_median > 0.0f) ? (g_p99 / g_median) : 0.0f;
-   const bool isLinear = (g_median < 0.1f) && (g_median > 0.0f) && (ratio > 10.0f);
+   const bool isLinear = (g_p99 < 0.15f && g_median < 0.1f) ||
+                         (g_median < 0.1f && g_median > 0.0f && ratio > 5.0f);
 
    // Debug logging to diagnose linear detection
    Console().WriteLn( String().Format(
       "Segmentation: Data stats - median=%.6f, p99=%.6f, ratio=%.2f, isLinear=%s",
       g_median, g_p99, ratio, isLinear ? "true" : "false" ) );
    Console().WriteLn( String().Format(
-      "Segmentation: Thresholds - median<0.1=%s, median>0=%s, ratio>10=%s",
+      "Segmentation: Thresholds - p99<0.15=%s, median<0.1=%s, median>0=%s, ratio>5=%s",
+      (g_p99 < 0.15f) ? "true" : "false",
       (g_median < 0.1f) ? "true" : "false",
       (g_median > 0.0f) ? "true" : "false",
-      (ratio > 10.0f) ? "true" : "false" ) );
+      (ratio > 5.0f) ? "true" : "false" ) );
 
    if ( isLinear )
    {

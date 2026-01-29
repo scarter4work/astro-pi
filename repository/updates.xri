@@ -9,8 +9,8 @@
       </p>
    </description>
    <platform os="linux" arch="x64" version="1.8.0:1.9.9">
-      <package fileName="20260129-linux-x64-NukeX.tar.gz" sha1="bcb4a689a6d79f4a1fc61dd3f187c412208d31c5" type="module" releaseDate="20260129">
-         <title>NukeX 1.1.0.11 - Intelligent Astrophotography Processing</title>
+      <package fileName="20260129-2-linux-x64-NukeX.tar.gz" sha1="f8382ed4830c4d25ffabc10f7639d0e5f2c7f6a3" type="module" releaseDate="20260129">
+         <title>NukeX 1.1.0.12 - Intelligent Astrophotography Processing</title>
          <description>
             <p>
                <b>NukeX - Intelligent Region-Aware Processing for PixInsight</b>
@@ -27,7 +27,7 @@
                </li>
             </ul>
             <p>
-               <b>Version 1.1.0.11:</b> Fixed C++ member initialization order bug in HistogramMapper that caused vector allocation crash during tone mapping.
+               <b>Version 1.1.0.12:</b> Improved linear data detection heuristic for segmentation preprocessing. Now detects linear data more reliably using dual criteria: either very compressed data (p99 &lt; 0.15 and median &lt; 0.1) or high dynamic range data (median &lt; 0.1 and ratio &gt; 5).
             </p>
             <p>
                Copyright (c) 2026 Scott Carter. All Rights Reserved.
@@ -36,4 +36,4 @@
       </package>
    </platform>
 </xri>
-<Signature developerId="scarter4work" timestamp="2026-01-29T21:15:45.823Z" encoding="Base64">GXwZ9svhe7qurYg3FIzP443y32Ef+D+xpQ6/mGJAusZICFr5/55CP6GhOCgs0dbJQ6Iz6MKST5WIiRHmickyCg==</Signature>
+<Signature developerId="scarter4work" timestamp="2026-01-29T22:05:55.466Z" encoding="Base64">ohaCHxfI5VmoeNKDXWsiOJO/FO5UCMA4K3kdsYLtXV/xEU7k25QxuH4vhjmpJepAuJ5/OZFrJeBQBH5c8ACaBA==</Signature>
