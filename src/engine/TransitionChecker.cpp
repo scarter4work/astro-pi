@@ -13,6 +13,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <stdexcept>
 
 namespace pcl
 {
@@ -58,8 +59,20 @@ std::vector<std::vector<TransitionInfo>> TransitionChecker::AnalyzeTransitions(
    int height = image.Height();
    int tileSize = m_config.tileSize;
 
+   // Validate dimensions to prevent allocation crashes
+   if ( width <= 0 || height <= 0 || width > 100000 || height > 100000 )
+      throw std::runtime_error( "Invalid image dimensions for transition checking" );
+
+   if ( tileSize <= 0 || tileSize > 10000 )
+      throw std::runtime_error( "Invalid tile size for transition checking" );
+
    int tilesX = (width + tileSize - 1) / tileSize;
    int tilesY = (height + tileSize - 1) / tileSize;
+
+   // Validate tile grid size
+   size_t numTiles = static_cast<size_t>( tilesX ) * tilesY;
+   if ( numTiles > 10000000 )  // 10M tiles max
+      throw std::runtime_error( "Transition grid too large" );
 
    // First, compute tile statistics using DistributionFitter
    auto tileGrid = m_fitter.FitImage( image, channel );
@@ -390,6 +403,10 @@ void TransitionChecker::SmoothBoundary(
    int width = image.Width();
    int height = image.Height();
    int radius = m_config.smoothingRadius;
+
+   // Validate smoothing radius to prevent allocation crash
+   if ( radius <= 0 || radius > 1000 )
+      throw std::runtime_error( "Invalid smoothing radius: " + std::to_string( radius ) );
 
    Image::sample* data = image.PixelData( channel );
 

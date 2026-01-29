@@ -15,6 +15,7 @@
 #include <algorithm>
 #include <cmath>
 #include <numeric>
+#include <stdexcept>
 
 namespace pcl
 {
@@ -59,8 +60,17 @@ std::vector<std::vector<TileMetadata>> DistributionFitter::FitImage( const Image
    int width = image.Width();
    int height = image.Height();
 
+   // Validate dimensions to prevent allocation crashes
+   if ( width <= 0 || height <= 0 || width > 100000 || height > 100000 )
+      throw std::runtime_error( "Invalid image dimensions for distribution fitting" );
+
    int tilesX, tilesY;
    GetGridDimensions( width, height, tilesX, tilesY );
+
+   // Validate tile grid size
+   size_t numTiles = static_cast<size_t>( tilesX ) * tilesY;
+   if ( numTiles > 10000000 )  // 10M tiles max
+      throw std::runtime_error( "Distribution fitter tile grid too large" );
 
    std::vector<std::vector<TileMetadata>> grid( tilesY, std::vector<TileMetadata>( tilesX ) );
 
@@ -426,8 +436,20 @@ TileMetadataGrid::TileMetadataGrid( int imageWidth, int imageHeight, int tileSiz
    , m_imageHeight( imageHeight )
    , m_tileSize( tileSize )
 {
+   // Validate dimensions to prevent allocation crashes
+   if ( imageWidth <= 0 || imageHeight <= 0 || imageWidth > 100000 || imageHeight > 100000 )
+      throw std::runtime_error( "Invalid image dimensions for tile metadata grid" );
+
+   if ( tileSize <= 0 || tileSize > 10000 )
+      throw std::runtime_error( "Invalid tile size for tile metadata grid" );
+
    m_tilesX = (imageWidth + tileSize - 1) / tileSize;
    m_tilesY = (imageHeight + tileSize - 1) / tileSize;
+
+   // Validate tile grid size
+   size_t numTiles = static_cast<size_t>( m_tilesX ) * m_tilesY;
+   if ( numTiles > 10000000 )  // 10M tiles max
+      throw std::runtime_error( "Tile metadata grid too large" );
 
    m_grid.resize( m_tilesY, std::vector<TileMetadata>( m_tilesX ) );
 

@@ -12,6 +12,7 @@
 #include <algorithm>
 #include <cmath>
 #include <numeric>
+#include <stdexcept>
 
 namespace pcl
 {
@@ -122,6 +123,10 @@ void ToneMapper::AutoDetectPoints( const Image& image )
 
 void ToneMapper::BuildLUT( int lutSize )
 {
+   // Validate LUT size to prevent vector allocation crash
+   if ( lutSize <= 0 || lutSize > 16777216 )  // Max 16M entries (reasonable for 24-bit)
+      throw std::runtime_error( "Invalid LUT size for tone mapping: " + std::to_string( lutSize ) );
+
    m_lut.resize( lutSize );
 
    for ( int i = 0; i < lutSize; ++i )
@@ -296,6 +301,14 @@ void ToneMapper::ApplyLocalContrast( Image& image ) const
    int height = image.Height();
    int numChannels = image.NumberOfNominalChannels();
    int radius = m_config.localContrastRadius;
+
+   // Validate image dimensions to prevent allocation crashes
+   if ( width <= 0 || height <= 0 || width > 100000 || height > 100000 )
+      throw std::runtime_error( "Invalid image dimensions for local contrast" );
+
+   size_t numPixels = static_cast<size_t>( width ) * height;
+   if ( numPixels > 500000000 )  // 500M pixels max
+      throw std::runtime_error( "Image too large for local contrast processing" );
 
    double strength = m_config.localContrast;
 

@@ -14,6 +14,7 @@
 #include <algorithm>
 #include <cmath>
 #include <omp.h>
+#include <stdexcept>
 
 namespace pcl
 {
@@ -119,6 +120,14 @@ void PixelSelector::SetSegmentation( const Image& segmentationImage )
    int width = segmentationImage.Width();
    int height = segmentationImage.Height();
 
+   // Validate dimensions to prevent allocation crash
+   if ( width <= 0 || height <= 0 || width > 100000 || height > 100000 )
+      throw std::runtime_error( "Invalid segmentation image dimensions" );
+
+   size_t numPixels = static_cast<size_t>( width ) * height;
+   if ( numPixels > 500000000 )  // 500M pixels max
+      throw std::runtime_error( "Segmentation image too large" );
+
    m_segmentationMap.resize( height, std::vector<int>( width ) );
    m_confidenceMap.resize( height, std::vector<float>( width, 1.0f ) );
 
@@ -168,6 +177,18 @@ Image PixelSelector::ProcessStackWithMetadata(
    int width = frames[0]->Width();
    int height = frames[0]->Height();
    int numFrames = static_cast<int>( frames.size() );
+
+   // Validate dimensions to prevent allocation crashes
+   if ( width <= 0 || height <= 0 || width > 100000 || height > 100000 )
+      throw std::runtime_error( "Invalid image dimensions for pixel selection" );
+
+   size_t numPixels = static_cast<size_t>( width ) * height;
+   if ( numPixels > 500000000 )  // 500M pixels max
+      throw std::runtime_error( "Image too large for pixel selection" );
+
+   // Validate frame count
+   if ( numFrames <= 0 || numFrames > 10000 )
+      throw std::runtime_error( "Invalid number of frames: " + std::to_string( numFrames ) );
 
    // Validate dimensions
    for ( const Image* frame : frames )

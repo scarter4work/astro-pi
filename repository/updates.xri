@@ -9,8 +9,8 @@
       </p>
    </description>
    <platform os="linux" arch="x64" version="1.8.0:1.9.9">
-      <package fileName="20260128-linux-x64-NukeX.tar.gz" sha1="55868c2437bedd11c9e7b8a4645157b999f083bd" type="module" releaseDate="20260128">
-         <title>NukeX 1.1.0.9 - Intelligent Astrophotography Processing</title>
+      <package fileName="20260128-linux-x64-NukeX.tar.gz" sha1="e177b0f34c4fbef8a667b4b01ac779079c2217e3" type="module" releaseDate="20260128">
+         <title>NukeX 1.1.0.10 - Intelligent Astrophotography Processing</title>
          <description>
             <p>
                <b>NukeX - Intelligent Region-Aware Processing for PixInsight</b>
@@ -27,7 +27,7 @@
                </li>
             </ul>
             <p>
-               <b>Version 1.1.0.9:</b> Auto-detect linear data and apply arcsinh stretch for segmentation. Emission nebulae now properly detected in unstretched images.
+               <b>Version 1.1.0.10:</b> Added linear detection debug logging. Comprehensive vector allocation validation across all engine files.
             </p>
             <p>
                Copyright (c) 2026 Scott Carter. All Rights Reserved.
@@ -36,4 +36,4 @@
       </package>
    </platform>
 </xri>
-<Signature developerId="scarter4work" timestamp="2026-01-29T03:17:54.040Z" encoding="Base64">47lZ23hPq3FMnP4NDgul86t2dmn+ex1R2SfOJta+SrFNCOhueIhQt7w7VHnX6G2UVp+gRK13YPpIyv4Ml7nFDg==</Signature>
+<Signature developerId="scarter4work" timestamp="2026-01-29T03:33:06.811Z" encoding="Base64">WHo2a7z/XnuRpJboyYecHfbfHFPaKyEKVny1hlEnBjgj1VCgn6Evlvf8n8ExR2F3RKNWE4YD0jl4lPyEf76MDg==</Signature>

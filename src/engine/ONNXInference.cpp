@@ -14,6 +14,7 @@
 #include <algorithm>
 #include <cmath>
 #include <mutex>
+#include <stdexcept>
 
 // Conditionally include ONNX Runtime
 #ifdef NUKEX_USE_ONNX
@@ -327,6 +328,10 @@ bool ONNXSession::Run( const std::vector<FloatTensor>& inputs,
          // Get data
          const float* data = tensor.GetTensorData<float>();
          size_t numElements = typeInfo.GetElementCount();
+
+         // Validate output size to prevent allocation crashes
+         if ( numElements > 500000000 )  // 500M elements max (~2GB for float)
+            throw std::runtime_error( "ONNX output tensor too large: " + std::to_string( numElements ) + " elements" );
 
          outputs[i].data.resize( numElements );
          std::copy( data, data + numElements, outputs[i].data.begin() );
@@ -693,7 +698,17 @@ std::vector<int> ArgmaxChannels( const FloatTensor& tensor )
    int height = static_cast<int>( tensor.shape[2] );
    int width = static_cast<int>( tensor.shape[3] );
 
-   std::vector<int> result( batch * height * width );
+   // Validate dimensions to prevent allocation crash
+   if ( batch <= 0 || channels <= 0 || height <= 0 || width <= 0 )
+      throw std::runtime_error( "Invalid tensor dimensions for argmax" );
+   if ( batch > 100 || height > 100000 || width > 100000 )
+      throw std::runtime_error( "Tensor dimensions out of range for argmax" );
+
+   size_t resultSize = static_cast<size_t>( batch ) * height * width;
+   if ( resultSize > 500000000 )  // 500M elements max
+      throw std::runtime_error( "Argmax result too large: " + std::to_string( resultSize ) + " elements" );
+
+   std::vector<int> result( resultSize );
 
    for ( int n = 0; n < batch; ++n )
    {

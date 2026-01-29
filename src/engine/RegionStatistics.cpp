@@ -12,6 +12,7 @@
 #include <algorithm>
 #include <cmath>
 #include <numeric>
+#include <stdexcept>
 
 namespace pcl
 {
@@ -21,8 +22,13 @@ namespace pcl
 // ----------------------------------------------------------------------------
 
 NXHistogram::NXHistogram( int numBins )
-   : m_bins( numBins, 0.0 )
+   : m_bins()
 {
+   // Validate number of bins to prevent allocation crash
+   if ( numBins <= 0 || numBins > 16777216 )  // Max 16M bins
+      throw std::runtime_error( "Invalid histogram bin count: " + std::to_string( numBins ) );
+
+   m_bins.resize( numBins, 0.0 );
 }
 
 // ----------------------------------------------------------------------------

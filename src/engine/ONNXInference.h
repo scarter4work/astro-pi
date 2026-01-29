@@ -139,8 +139,14 @@ struct Tensor
 
    void Resize( const TensorShape& newShape )
    {
+      int64_t numElements = newShape.NumElements();
+      if ( numElements <= 0 )
+         throw std::runtime_error( "Invalid tensor shape for resize: empty or invalid dimensions" );
+      if ( numElements > 500000000 )  // Max 500M elements
+         throw std::runtime_error( "Tensor resize too large: " + std::to_string( numElements ) + " elements" );
+
       shape = newShape;
-      data.resize( shape.NumElements() );
+      data.resize( static_cast<size_t>( numElements ) );
    }
 
    void Fill( const T& value )

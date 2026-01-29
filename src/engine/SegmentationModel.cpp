@@ -14,6 +14,7 @@
 #include <algorithm>
 #include <cmath>
 #include <chrono>
+#include <stdexcept>
 
 namespace pcl
 {
@@ -249,7 +250,18 @@ SegmentationResult MockSegmentationModel::Segment( const Image& image )
    const float median = sorted[sorted.size() / 2];
 
    // Detect if input is linear: median < 0.1 AND (p99/median) > 10
-   const bool isLinear = (median < 0.1f) && (median > 0.0f) && ((p99 / median) > 10.0f);
+   const float ratio = (median > 0.0f) ? (p99 / median) : 0.0f;
+   const bool isLinear = (median < 0.1f) && (median > 0.0f) && (ratio > 10.0f);
+
+   // Debug logging to diagnose linear detection
+   Console().WriteLn( String().Format(
+      "MockSegmentation: Data stats - median=%.6f, p99=%.6f, ratio=%.2f, isLinear=%s",
+      median, p99, ratio, isLinear ? "true" : "false" ) );
+   Console().WriteLn( String().Format(
+      "MockSegmentation: Thresholds - median<0.1=%s, median>0=%s, ratio>10=%s",
+      (median < 0.1f) ? "true" : "false",
+      (median > 0.0f) ? "true" : "false",
+      (ratio > 10.0f) ? "true" : "false" ) );
 
    if ( isLinear )
    {
@@ -531,7 +543,14 @@ FloatTensor ONNXSegmentationModel::PreprocessImage( const Image& image ) const
    const int srcHeight = image.Height();
    const int outWidth = m_config.inputWidth;
    const int outHeight = m_config.inputHeight;
+
+   // Validate dimensions to prevent allocation crashes
+   if ( outWidth <= 0 || outHeight <= 0 || outWidth > 16384 || outHeight > 16384 )
+      throw std::runtime_error( "Invalid segmentation model input dimensions" );
+
    const size_t numPixels = static_cast<size_t>( outWidth ) * outHeight;
+   if ( numPixels > 268435456 )  // 256M pixels max for segmentation
+      throw std::runtime_error( "Segmentation input too large" );
 
    // Scale factors for resampling
    const double scaleX = static_cast<double>( srcWidth ) / outWidth;
@@ -602,7 +621,18 @@ FloatTensor ONNXSegmentationModel::PreprocessImage( const Image& image ) const
    // Detect if input is linear or already stretched
    // Linear data typically has: median < 0.1 AND (p99/median) > 10
    // This indicates data is clustered near zero with high dynamic range
-   const bool isLinear = (g_median < 0.1f) && (g_median > 0.0f) && ((g_p99 / g_median) > 10.0f);
+   const float ratio = (g_median > 0.0f) ? (g_p99 / g_median) : 0.0f;
+   const bool isLinear = (g_median < 0.1f) && (g_median > 0.0f) && (ratio > 10.0f);
+
+   // Debug logging to diagnose linear detection
+   Console().WriteLn( String().Format(
+      "Segmentation: Data stats - median=%.6f, p99=%.6f, ratio=%.2f, isLinear=%s",
+      g_median, g_p99, ratio, isLinear ? "true" : "false" ) );
+   Console().WriteLn( String().Format(
+      "Segmentation: Thresholds - median<0.1=%s, median>0=%s, ratio>10=%s",
+      (g_median < 0.1f) ? "true" : "false",
+      (g_median > 0.0f) ? "true" : "false",
+      (ratio > 10.0f) ? "true" : "false" ) );
 
    if ( isLinear )
    {

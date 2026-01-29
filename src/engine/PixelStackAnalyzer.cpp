@@ -15,6 +15,7 @@
 #include <cmath>
 #include <numeric>
 #include <limits>
+#include <stdexcept>
 
 namespace pcl
 {
@@ -53,6 +54,17 @@ std::vector<std::vector<PixelStackMetadata>> PixelStackAnalyzer::AnalyzeStack(
    int width = frames[0]->Width();
    int height = frames[0]->Height();
    int numFrames = static_cast<int>( frames.size() );
+
+   // Validate dimensions to prevent allocation crashes
+   if ( width <= 0 || height <= 0 || width > 100000 || height > 100000 )
+      throw std::runtime_error( "Invalid image dimensions for stack analysis" );
+
+   size_t numPixels = static_cast<size_t>( width ) * height;
+   if ( numPixels > 500000000 )  // 500M pixels max
+      throw std::runtime_error( "Image too large for stack analysis" );
+
+   if ( numFrames <= 0 || numFrames > 10000 )
+      throw std::runtime_error( "Invalid number of frames: " + std::to_string( numFrames ) );
 
    // Validate all frames have same dimensions
    for ( const Image* frame : frames )
