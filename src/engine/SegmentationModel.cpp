@@ -267,18 +267,36 @@ SegmentationResult MockSegmentationModel::Segment( const Image& image )
       (median > 0.0f) ? "true" : "false",
       (ratio > 5.0f) ? "true" : "false" ) );
 
-   if ( isLinear )
+   // Adaptive arcsinh stretch parameters based on data compression
+   double ARCSINH_SCALE = 0.1;  // default for normal data
+   if ( isLinear && ratio < 2.0 )
    {
-      Console().WriteLn( "MockSegmentation: Input appears to be linear data, applying arcsinh stretch" );
+      // Very compressed data needs stronger stretch
+      ARCSINH_SCALE = 0.02;  // 5x more aggressive
+      Console().WarningLn( String().Format(
+         "MockSegmentation: Extremely compressed linear data (ratio=%.2f), using aggressive stretch (scale=%.3f)",
+         ratio, ARCSINH_SCALE ) );
+   }
+   else if ( isLinear && ratio < 5.0 )
+   {
+      // Moderately compressed data
+      ARCSINH_SCALE = 0.05;  // 2x more aggressive
+      Console().WriteLn( String().Format(
+         "MockSegmentation: Moderately compressed linear data, applying arcsinh stretch (scale=%.3f)",
+         ARCSINH_SCALE ) );
+   }
+   else if ( isLinear )
+   {
+      Console().WriteLn( String().Format(
+         "MockSegmentation: Input appears to be linear data, applying arcsinh stretch (scale=%.3f)",
+         ARCSINH_SCALE ) );
    }
    else
    {
       Console().WriteLn( "MockSegmentation: Input appears pre-stretched, using as-is" );
    }
 
-   // Arcsinh stretch parameters (matching training)
-   constexpr double ARCSINH_SCALE = 0.1;
-   const double ARCSINH_NORM = std::asinh( 1.0 / ARCSINH_SCALE );  // asinh(10) ~ 2.998
+   const double ARCSINH_NORM = std::asinh( 1.0 / ARCSINH_SCALE );
 
    const float range = (p99 > p1) ? (p99 - p1) : 1.0f;
 
@@ -640,9 +658,29 @@ FloatTensor ONNXSegmentationModel::PreprocessImage( const Image& image ) const
       (g_median > 0.0f) ? "true" : "false",
       (ratio > 5.0f) ? "true" : "false" ) );
 
-   if ( isLinear )
+   // Adaptive arcsinh stretch parameters based on data compression
+   double ARCSINH_SCALE = 0.1;  // default for normal data
+   if ( isLinear && ratio < 2.0 )
    {
-      Console().WriteLn( "Segmentation: Input appears to be linear data, applying arcsinh stretch" );
+      // Very compressed data needs stronger stretch
+      ARCSINH_SCALE = 0.02;  // 5x more aggressive
+      Console().WarningLn( String().Format(
+         "Segmentation: Extremely compressed linear data (ratio=%.2f), using aggressive stretch (scale=%.3f)",
+         ratio, ARCSINH_SCALE ) );
+   }
+   else if ( isLinear && ratio < 5.0 )
+   {
+      // Moderately compressed data
+      ARCSINH_SCALE = 0.05;  // 2x more aggressive
+      Console().WriteLn( String().Format(
+         "Segmentation: Moderately compressed linear data, applying arcsinh stretch (scale=%.3f)",
+         ARCSINH_SCALE ) );
+   }
+   else if ( isLinear )
+   {
+      Console().WriteLn( String().Format(
+         "Segmentation: Input appears to be linear data, applying arcsinh stretch (scale=%.3f)",
+         ARCSINH_SCALE ) );
    }
    else
    {
@@ -654,9 +692,7 @@ FloatTensor ONNXSegmentationModel::PreprocessImage( const Image& image ) const
    const float g_range = (g_p99 > g_p1) ? (g_p99 - g_p1) : 1.0f;
    const float b_range = (b_p99 > b_p1) ? (b_p99 - b_p1) : 1.0f;
 
-   // Arcsinh stretch parameters (matching training)
-   constexpr double ARCSINH_SCALE = 0.1;
-   const double ARCSINH_NORM = std::asinh( 1.0 / ARCSINH_SCALE );  // asinh(10) ~ 2.998
+   const double ARCSINH_NORM = std::asinh( 1.0 / ARCSINH_SCALE );
 
    // Create output tensor
    TensorShape shape = { 1, numChannels, outHeight, outWidth };
