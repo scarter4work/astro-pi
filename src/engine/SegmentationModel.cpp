@@ -72,7 +72,7 @@ double MockSegmentationModel::ComputeLuminance( double r, double g, double b ) c
 
 // ----------------------------------------------------------------------------
 
-Image MockSegmentationModel::DetectStars( const Image& luminance ) const
+Image MockSegmentationModel::DetectStars( const Image& luminance, double starThreshold ) const
 {
    int width = luminance.Width();
    int height = luminance.Height();
@@ -90,7 +90,7 @@ Image MockSegmentationModel::DetectStars( const Image& luminance ) const
          double centerValue = luminance( x, y, 0 );
 
          // Skip if below star threshold
-         if ( centerValue < m_starThreshold )
+         if ( centerValue < starThreshold )
             continue;
 
          // Check if local maximum
@@ -298,6 +298,31 @@ SegmentationResult MockSegmentationModel::Segment( const Image& image )
 
    const double ARCSINH_NORM = std::asinh( 1.0 / ARCSINH_SCALE );
 
+   // Adjust thresholds for extremely compressed data
+   // After arcsinh preprocessing with scale=0.02, values cluster in 0.65-1.0 range
+   double backgroundThreshold = m_backgroundThreshold;
+   double faintNebulaThreshold = m_faintNebulaThreshold;
+   double brightNebulaThreshold = m_brightNebulaThreshold;
+   double starThreshold = m_starThreshold;
+
+   if ( isLinear && ratio < 2.0 )
+   {
+      // Extremely compressed data: stretched values cluster in 0.65-1.0 range
+      backgroundThreshold = 0.65;
+      faintNebulaThreshold = 0.75;
+      brightNebulaThreshold = 0.88;
+      starThreshold = 0.95;
+      Console().WriteLn( "MockSegmentation: Using adaptive thresholds for compressed data" );
+   }
+   else if ( isLinear && ratio < 5.0 )
+   {
+      // Moderately compressed data
+      backgroundThreshold = 0.40;
+      faintNebulaThreshold = 0.55;
+      brightNebulaThreshold = 0.70;
+      starThreshold = 0.85;
+   }
+
    const float range = (p99 > p1) ? (p99 - p1) : 1.0f;
 
    // Create luminance image with proper preprocessing
@@ -343,7 +368,7 @@ SegmentationResult MockSegmentationModel::Segment( const Image& image )
    result.classMap.AllocateData( width, height, 1, ColorSpace::Gray );
 
    // Detect stars
-   Image starMask = DetectStars( luminance );
+   Image starMask = DetectStars( luminance, starThreshold );
 
    // Create region masks based on luminance thresholds
    // Map to new 21-class structure for mock model
@@ -385,7 +410,7 @@ SegmentationResult MockSegmentationModel::Segment( const Image& image )
          // Non-star regions based on luminance
          double nonStarWeight = 1.0 - starWeight;
 
-         if ( lum < m_backgroundThreshold )
+         if ( lum < backgroundThreshold )
          {
             probBackground = nonStarWeight;
 
@@ -397,25 +422,25 @@ SegmentationResult MockSegmentationModel::Segment( const Image& image )
                probBackground = nonStarWeight * 0.7;
             }
          }
-         else if ( lum < m_faintNebulaThreshold )
+         else if ( lum < faintNebulaThreshold )
          {
             // Transition between background and dark nebula
-            double t = (lum - m_backgroundThreshold) /
-                       (m_faintNebulaThreshold - m_backgroundThreshold);
+            double t = (lum - backgroundThreshold) /
+                       (faintNebulaThreshold - backgroundThreshold);
             probNebulaDark = nonStarWeight * t;
             probBackground = nonStarWeight * (1.0 - t);
          }
-         else if ( lum < m_brightNebulaThreshold )
+         else if ( lum < brightNebulaThreshold )
          {
             // Dark nebula / faint emission region
             probNebulaDark = nonStarWeight * 0.6;
             probNebulaEmission = nonStarWeight * 0.4;
          }
-         else if ( lum < m_starThreshold )
+         else if ( lum < starThreshold )
          {
             // Transition to bright emission nebula
-            double t = (lum - m_brightNebulaThreshold) /
-                       (m_starThreshold - m_brightNebulaThreshold);
+            double t = (lum - brightNebulaThreshold) /
+                       (starThreshold - brightNebulaThreshold);
             probNebulaEmission = nonStarWeight * t;
             probNebulaDark = nonStarWeight * (1.0 - t) * 0.5;
          }

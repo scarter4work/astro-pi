@@ -200,7 +200,7 @@ private:
    double ComputeLuminance( double r, double g, double b ) const;
 
    // Detect local maxima (stars)
-   Image DetectStars( const Image& luminance ) const;
+   Image DetectStars( const Image& luminance, double starThreshold ) const;
 
    // Create smooth probability masks
    Image CreateGradientMask( const Image& binary, double featherRadius ) const;

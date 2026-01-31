@@ -9,8 +9,8 @@
       </p>
    </description>
    <platform os="linux" arch="x64" version="1.8.0:1.9.9">
-      <package fileName="20260130-linux-x64-NukeX.tar.gz" sha1="658410ad3d227b211cc9dcc6ff7cc41f526d2025" type="module" releaseDate="20260130">
-         <title>NukeX 1.1.0.13 - Intelligent Astrophotography Processing</title>
+      <package fileName="20260130-2-linux-x64-NukeX.tar.gz" sha1="c9550c7497be8d48461773dfa35f0f7545c80a81" type="module" releaseDate="20260130">
+         <title>NukeX 1.1.0.14 - Intelligent Astrophotography Processing</title>
          <description>
             <p>
                <b>NukeX - Intelligent Region-Aware Processing for PixInsight</b>
@@ -27,7 +27,7 @@
                </li>
             </ul>
             <p>
-               <b>Version 1.1.0.13:</b> Adaptive arcsinh preprocessing for compressed linear data. Segmentation now uses stronger stretch (scale=0.02) for very compressed data (p99/median ratio &lt; 2.0) to improve classification accuracy on faint starfields.
+               <b>Version 1.1.0.14:</b> Major segmentation and blending improvements: (1) Adaptive thresholds for compressed linear data to improve faint nebula detection, (2) Soft mask blending with feathering to eliminate blocky artifacts at region boundaries, (3) TransitionChecker post-processing to smooth any remaining hard transitions.
             </p>
             <p>
                Copyright (c) 2026 Scott Carter. All Rights Reserved.
@@ -36,4 +36,4 @@
       </package>
    </platform>
 </xri>
-<Signature developerId="scarter4work" timestamp="2026-01-30T23:32:22.013Z" encoding="Base64">qqDgRWA68de2it3sEOvUXDulIPlEtFXiZ+0fWKlVCdO03ZZH79WNhhGs8+bGG71h6nKtGICLFXKcbOHcY4TXDQ==</Signature>
+<Signature developerId="scarter4work" timestamp="2026-01-31T03:57:03.798Z" encoding="Base64">MxmOHWB+7yf8jpPSxDUDXcy0hRgzu7TpGWrQpAMZvZ+aKowi97pZYLMcxDmzteRUoubBUlTq9EII68drGDj5Aw==</Signature>

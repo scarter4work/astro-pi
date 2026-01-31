@@ -12,6 +12,7 @@
 #include "Compositor.h"
 #include "HistogramEngine.h"
 #include "StretchLibrary.h"
+#include "TransitionChecker.h"
 
 #include <pcl/Console.h>
 #include <pcl/File.h>
@@ -338,6 +339,37 @@ CompositorResult Compositor::Process( const Image& input, CompositorProgressCall
          stretchEnd - stretchStart ).count();
 
       ReportProgress( ProcessingStage::Stretching, 1.0, "Stretch complete" );
+
+      // Post-stretch transition smoothing
+      // Check for hard transitions at region boundaries and smooth if needed
+      {
+         TransitionChecker transitionChecker;
+         int totalSmoothed = 0;
+         int numChannels = stretched.NumberOfNominalChannels();
+
+         // Process each channel
+         for ( int c = 0; c < numChannels; ++c )
+         {
+            int numSmoothed;
+            if ( useRegionAware && !m_segmentationResult.segmentation.classMap.IsEmpty() )
+            {
+               // Use segmentation-aware smoothing to preserve real feature boundaries
+               numSmoothed = transitionChecker.CheckAndSmooth(
+                  stretched, m_segmentationResult.segmentation.classMap, c );
+            }
+            else
+            {
+               numSmoothed = transitionChecker.CheckAndSmooth( stretched, c );
+            }
+            totalSmoothed += numSmoothed;
+         }
+
+         if ( totalSmoothed > 0 )
+         {
+            Console().WriteLn( String().Format( "  Smoothed %d hard transitions across %d channel(s)",
+               totalSmoothed, numChannels ) );
+         }
+      }
 
       // Stage 4: Tone Mapping
       result.stage = ProcessingStage::ToneMapping;
@@ -801,82 +833,88 @@ Image Compositor::ApplyRegionAwareStretch(
    const std::map<RegionClass, Image>& regionMasks )
 {
    Console console;
-   console.WriteLn( "  Applying region-aware stretch blending..." );
+   console.WriteLn( "  Applying region-aware stretch with soft mask blending..." );
 
    int width = input.Width();
    int height = input.Height();
-   int numChannels = input.NumberOfNominalChannels();
 
    // Get dimensions from segmentation result for mask scaling
    int maskWidth = m_segmentationResult.segmentation.width;
    int maskHeight = m_segmentationResult.segmentation.height;
 
-   // Scale factors for mask to image coordinates
-   double scaleX = static_cast<double>( maskWidth ) / width;
-   double scaleY = static_cast<double>( maskHeight ) / height;
-
-   Image output( width, height, input.ColorSpace() );
-
-   // Build a map of raw pointers to algorithms for per-pixel access
+   // Build a map of raw pointers to algorithms for BlendEngine
    std::map<RegionClass, IStretchAlgorithm*> algoPointers;
    for ( const auto& pair : regionAlgorithms )
    {
       algoPointers[pair.first] = pair.second.algorithmInstance.get();
    }
 
-   // Get the class map data for per-pixel class lookup
-   const float* classMapData = m_segmentationResult.segmentation.classMap.PixelData( 0 );
-   int numClasses = static_cast<int>( RegionClass::Count );
+   // Check if masks need to be scaled to image resolution
+   std::map<RegionClass, Image> scaledMasks;
+   bool needsScaling = ( maskWidth != width || maskHeight != height );
 
-   // For each pixel, determine the region class and apply the appropriate stretch
-   for ( int c = 0; c < numChannels; ++c )
+   if ( needsScaling )
    {
-      for ( int y = 0; y < height; ++y )
+      console.WriteLn( String().Format( "  Scaling masks from %dx%d to %dx%d...",
+         maskWidth, maskHeight, width, height ) );
+
+      // Scale each mask to match input image dimensions using bilinear interpolation
+      for ( const auto& maskPair : regionMasks )
       {
-         for ( int x = 0; x < width; ++x )
+         const Image& srcMask = maskPair.second;
+         Image dstMask( width, height, ColorSpace::Gray );
+
+         double scaleX = static_cast<double>( srcMask.Width() ) / width;
+         double scaleY = static_cast<double>( srcMask.Height() ) / height;
+
+         for ( int y = 0; y < height; ++y )
          {
-            double inputValue = input( x, y, c );
-
-            // Map image coordinates to mask coordinates
-            int mx = static_cast<int>( x * scaleX );
-            int my = static_cast<int>( y * scaleY );
-            mx = std::min( mx, maskWidth - 1 );
-            my = std::min( my, maskHeight - 1 );
-
-            // Get the class index from the class map
-            size_t maskIdx = static_cast<size_t>( my ) * maskWidth + mx;
-            float classValue = classMapData[maskIdx];
-            int classIdx = static_cast<int>( classValue * ( numClasses - 1 ) + 0.5f );
-            classIdx = std::max( 0, std::min( numClasses - 1, classIdx ) );
-            RegionClass pixelClass = static_cast<RegionClass>( classIdx );
-
-            // Find the algorithm for this region
-            auto algoIt = algoPointers.find( pixelClass );
-            if ( algoIt == algoPointers.end() || algoIt->second == nullptr )
+            for ( int x = 0; x < width; ++x )
             {
-               // Fall back to Background algorithm
-               algoIt = algoPointers.find( RegionClass::Background );
-               if ( algoIt == algoPointers.end() || algoIt->second == nullptr )
-               {
-                  // No algorithm found, use first available
-                  algoIt = algoPointers.begin();
-               }
-            }
+               // Map to source coordinates
+               double sx = x * scaleX;
+               double sy = y * scaleY;
 
-            // Apply the stretch
-            double stretchedValue = inputValue;
-            if ( algoIt != algoPointers.end() && algoIt->second != nullptr )
-            {
-               stretchedValue = algoIt->second->Apply( inputValue );
-            }
+               // Bilinear interpolation
+               int x0 = static_cast<int>( sx );
+               int y0 = static_cast<int>( sy );
+               int x1 = std::min( x0 + 1, srcMask.Width() - 1 );
+               int y1 = std::min( y0 + 1, srcMask.Height() - 1 );
 
-            // Clamp to valid range
-            output( x, y, c ) = std::max( 0.0, std::min( 1.0, stretchedValue ) );
+               double fx = sx - x0;
+               double fy = sy - y0;
+
+               double v00 = srcMask( x0, y0, 0 );
+               double v10 = srcMask( x1, y0, 0 );
+               double v01 = srcMask( x0, y1, 0 );
+               double v11 = srcMask( x1, y1, 0 );
+
+               double value = v00 * (1.0 - fx) * (1.0 - fy) +
+                              v10 * fx * (1.0 - fy) +
+                              v01 * (1.0 - fx) * fy +
+                              v11 * fx * fy;
+
+               dstMask( x, y, 0 ) = value;
+            }
          }
+
+         scaledMasks[maskPair.first] = std::move( dstMask );
       }
    }
+   else
+   {
+      // Masks are already at the right resolution, just copy references
+      scaledMasks = regionMasks;
+   }
 
-   console.WriteLn( "  Region-aware stretch complete." );
+   // Use BlendEngine for soft mask blending with feathering
+   // This applies Gaussian feathering to mask edges and normalizes weights
+   console.WriteLn( String().Format( "  Blending %d regions with feathered masks (radius=%.1f)...",
+      static_cast<int>( scaledMasks.size() ), m_config.blendConfig.featherRadius ) );
+
+   Image output = m_blender->BlendWithAlgorithms( input, scaledMasks, algoPointers );
+
+   console.WriteLn( "  Region-aware stretch with soft blending complete." );
    return output;
 }
 
