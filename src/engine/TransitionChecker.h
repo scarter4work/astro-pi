@@ -62,8 +62,12 @@ struct TransitionCheckerConfig
    int tileSize = 16;                    // Tile size for analysis
 
    // Detection thresholds
-   float hardTransitionThreshold = 0.05f;  // Gradient threshold for hard transition
-   float softTransitionThreshold = 0.02f;  // Below this, no smoothing needed
+   float hardTransitionThreshold = 0.08f;  // Gradient threshold for hard transition (when adaptive disabled)
+   float softTransitionThreshold = 0.03f;  // Below this, no smoothing needed
+
+   // Adaptive threshold settings
+   bool useAdaptiveThreshold = true;        // Compute threshold from image statistics
+   float adaptiveThresholdMultiplier = 3.0f; // Threshold = multiplier * median gradient
 
    // Smoothing parameters
    float maxSmoothingStrength = 0.5f;    // Maximum blending weight

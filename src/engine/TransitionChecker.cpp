@@ -85,7 +85,9 @@ std::vector<std::vector<TransitionInfo>> TransitionChecker::AnalyzeTransitions(
                           segmentation.Width() == width &&
                           segmentation.Height() == height;
 
-   // Analyze each tile
+   // ========================================================================
+   // PASS 1: Compute all gradients for each tile
+   // ========================================================================
    for ( int ty = 0; ty < tilesY; ++ty )
    {
       for ( int tx = 0; tx < tilesX; ++tx )
@@ -135,9 +137,59 @@ std::vector<std::vector<TransitionInfo>> TransitionChecker::AnalyzeTransitions(
             info.gradientLeft,
             info.gradientRight
          } );
+      }
+   }
 
-         // Detect hard transition
-         info.hasHardTransition = (info.maxGradient > m_config.hardTransitionThreshold);
+   // ========================================================================
+   // Compute adaptive threshold if enabled
+   // ========================================================================
+   float effectiveHardThreshold = m_config.hardTransitionThreshold;
+   float effectiveSoftThreshold = m_config.softTransitionThreshold;
+
+   if ( m_config.useAdaptiveThreshold )
+   {
+      // Collect all non-zero gradients
+      std::vector<float> allGradients;
+      allGradients.reserve( tilesX * tilesY * 4 );
+
+      for ( int ty = 0; ty < tilesY; ++ty )
+      {
+         for ( int tx = 0; tx < tilesX; ++tx )
+         {
+            const TransitionInfo& info = transitions[ty][tx];
+            if ( info.gradientTop > 0 ) allGradients.push_back( info.gradientTop );
+            if ( info.gradientBottom > 0 ) allGradients.push_back( info.gradientBottom );
+            if ( info.gradientLeft > 0 ) allGradients.push_back( info.gradientLeft );
+            if ( info.gradientRight > 0 ) allGradients.push_back( info.gradientRight );
+         }
+      }
+
+      if ( !allGradients.empty() )
+      {
+         // Compute median gradient
+         std::sort( allGradients.begin(), allGradients.end() );
+         float medianGradient = allGradients[allGradients.size() / 2];
+
+         // Set adaptive thresholds
+         // Never go below configured minimum (hardTransitionThreshold)
+         effectiveHardThreshold = std::max(
+            m_config.hardTransitionThreshold,
+            medianGradient * m_config.adaptiveThresholdMultiplier );
+         effectiveSoftThreshold = effectiveHardThreshold * 0.4f;  // Soft = 40% of hard
+      }
+   }
+
+   // ========================================================================
+   // PASS 2: Detect transitions and determine smoothing using effective threshold
+   // ========================================================================
+   for ( int ty = 0; ty < tilesY; ++ty )
+   {
+      for ( int tx = 0; tx < tilesX; ++tx )
+      {
+         TransitionInfo& info = transitions[ty][tx];
+
+         // Detect hard transition using effective threshold
+         info.hasHardTransition = (info.maxGradient > effectiveHardThreshold);
 
          // Check feature alignment if requested
          if ( info.hasHardTransition && m_config.checkFeatureAlignment && hasSegmentation )
@@ -160,8 +212,8 @@ std::vector<std::vector<TransitionInfo>> TransitionChecker::AnalyzeTransitions(
          if ( info.needsSmoothing )
          {
             // Linear interpolation between soft and hard thresholds
-            float range = m_config.hardTransitionThreshold - m_config.softTransitionThreshold;
-            float normalized = (info.maxGradient - m_config.softTransitionThreshold) / range;
+            float range = effectiveHardThreshold - effectiveSoftThreshold;
+            float normalized = (info.maxGradient - effectiveSoftThreshold) / range;
             info.smoothingStrength = std::min( normalized, 1.0f ) * m_config.maxSmoothingStrength;
          }
       }
@@ -185,6 +237,9 @@ void TransitionChecker::ApplySmoothing(
    int tileSize = m_config.tileSize;
 
    // Apply smoothing at boundaries that need it
+   // Note: needsSmoothing and smoothingStrength are computed using adaptive thresholds
+   // in AnalyzeTransitions(), so we simply apply smoothing to boundaries that contribute
+   // to the maxGradient when smoothing is needed
    for ( int ty = 0; ty < tilesY; ++ty )
    {
       for ( int tx = 0; tx < tilesX; ++tx )
@@ -194,29 +249,32 @@ void TransitionChecker::ApplySmoothing(
          if ( !info.needsSmoothing )
             continue;
 
-         // Smooth at each boundary that exceeds threshold
-         if ( info.gradientTop > m_config.softTransitionThreshold && ty > 0 )
+         // Smooth boundaries that contribute significantly to the transition
+         // Use a proportional threshold based on maxGradient
+         float boundaryThreshold = info.maxGradient * 0.5f;
+
+         if ( info.gradientTop > boundaryThreshold && ty > 0 )
          {
             int boundaryY = ty * tileSize;
             int centerX = tx * tileSize + tileSize / 2;
             SmoothBoundary( image, channel, centerX, boundaryY, true, info.smoothingStrength );
          }
 
-         if ( info.gradientBottom > m_config.softTransitionThreshold && ty < tilesY - 1 )
+         if ( info.gradientBottom > boundaryThreshold && ty < tilesY - 1 )
          {
             int boundaryY = (ty + 1) * tileSize;
             int centerX = tx * tileSize + tileSize / 2;
             SmoothBoundary( image, channel, centerX, boundaryY, true, info.smoothingStrength );
          }
 
-         if ( info.gradientLeft > m_config.softTransitionThreshold && tx > 0 )
+         if ( info.gradientLeft > boundaryThreshold && tx > 0 )
          {
             int boundaryX = tx * tileSize;
             int centerY = ty * tileSize + tileSize / 2;
             SmoothBoundary( image, channel, boundaryX, centerY, false, info.smoothingStrength );
          }
 
-         if ( info.gradientRight > m_config.softTransitionThreshold && tx < tilesX - 1 )
+         if ( info.gradientRight > boundaryThreshold && tx < tilesX - 1 )
          {
             int boundaryX = (tx + 1) * tileSize;
             int centerY = ty * tileSize + tileSize / 2;
