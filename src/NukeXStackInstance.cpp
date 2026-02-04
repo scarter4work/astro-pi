@@ -156,6 +156,40 @@ bool NukeXStackInstance::CanExecuteGlobal( String& whyNot ) const
 
 // ----------------------------------------------------------------------------
 
+// Helper function to extract double value from FITS keywords
+static double GetKeywordDouble( const FITSKeywordArray& keywords, const char* name1, const char* name2 = nullptr, double defaultVal = 0.0 )
+{
+   for ( const FITSHeaderKeyword& kw : keywords )
+   {
+      IsoString n = kw.name.Uppercase();
+      if ( n == name1 || (name2 && n == name2) )
+         return kw.value.ToDouble();
+   }
+   return defaultVal;
+}
+
+// Helper function to extract string value from FITS keywords
+static IsoString GetKeywordString( const FITSKeywordArray& keywords, const char* name, const IsoString& defaultVal = IsoString() )
+{
+   for ( const FITSHeaderKeyword& kw : keywords )
+   {
+      IsoString n = kw.name.Uppercase();
+      if ( n == name )
+      {
+         // Remove quotes if present
+         IsoString val = kw.value;
+         val.Trim();
+         if ( val.StartsWith( '\'' ) && val.EndsWith( '\'' ) )
+            val = val.Substring( 1, val.Length() - 2 );
+         val.Trim();
+         return val;
+      }
+   }
+   return defaultVal;
+}
+
+// ----------------------------------------------------------------------------
+
 bool NukeXStackInstance::ExecuteGlobal()
 {
    Console console;
@@ -183,6 +217,12 @@ bool NukeXStackInstance::ExecuteGlobal()
    FITSKeywordArray referenceKeywords;
    int width = 0, height = 0, channels = 0;
 
+   // Reference values for consistency validation
+   double referenceExptime = 0.0;
+   double referenceGain = 0.0;
+   IsoString referenceFilter;
+   const double exptimeTolerance = 0.10;  // 10% tolerance for exposure time
+
    for ( size_t i = 0; i < enabledIndices.size(); ++i )
    {
       const String& path = p_inputFrames[enabledIndices[i]].path;
@@ -206,6 +246,11 @@ bool NukeXStackInstance::ExecuteGlobal()
          height = frame.Height();
          channels = frame.NumberOfChannels();
          referenceKeywords = keywords;
+
+         // Extract reference values for consistency validation
+         referenceExptime = GetKeywordDouble( keywords, "EXPTIME", "EXPOSURE", 0.0 );
+         referenceGain = GetKeywordDouble( keywords, "GAIN", nullptr, 0.0 );
+         referenceFilter = GetKeywordString( keywords, "FILTER", IsoString() );
       }
       else if ( frame.Width() != width || frame.Height() != height )
       {
@@ -213,6 +258,42 @@ bool NukeXStackInstance::ExecuteGlobal()
             "\r<clrbol>Frame dimension mismatch: %s (%dx%d) vs expected (%dx%d)",
             IsoString( path ).c_str(), frame.Width(), frame.Height(), width, height ) );
          return false;
+      }
+
+      // Validate exposure time, gain, and filter consistency (warnings only)
+      if ( i > 0 )
+      {
+         double currentExptime = GetKeywordDouble( keywords, "EXPTIME", "EXPOSURE", 0.0 );
+         double currentGain = GetKeywordDouble( keywords, "GAIN", nullptr, 0.0 );
+         IsoString currentFilter = GetKeywordString( keywords, "FILTER", IsoString() );
+
+         // Check exposure time (warn if difference > 10%)
+         if ( referenceExptime > 0.0 && currentExptime > 0.0 )
+         {
+            double exptimeDiff = Abs( currentExptime - referenceExptime ) / referenceExptime;
+            if ( exptimeDiff > exptimeTolerance )
+            {
+               console.WarningLn( String().Format(
+                  "\r<clrbol>Frame %d: EXPTIME mismatch (%.1fs vs reference %.1fs)",
+                  static_cast<int>( i + 1 ), currentExptime, referenceExptime ) );
+            }
+         }
+
+         // Check gain (warn if different)
+         if ( referenceGain > 0.0 && currentGain > 0.0 && currentGain != referenceGain )
+         {
+            console.WarningLn( String().Format(
+               "\r<clrbol>Frame %d: GAIN mismatch (%.1f vs reference %.1f)",
+               static_cast<int>( i + 1 ), currentGain, referenceGain ) );
+         }
+
+         // Check filter (warn if different)
+         if ( !referenceFilter.IsEmpty() && !currentFilter.IsEmpty() && currentFilter != referenceFilter )
+         {
+            console.WarningLn( String().Format(
+               "\r<clrbol>Frame %d: FILTER mismatch ('%s' vs reference '%s')",
+               static_cast<int>( i + 1 ), currentFilter.c_str(), referenceFilter.c_str() ) );
+         }
       }
 
       frames.push_back( std::move( frame ) );

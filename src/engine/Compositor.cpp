@@ -224,7 +224,7 @@ CompositorResult Compositor::Process( const Image& input, CompositorProgressCall
          regionMasks = ExtractRegionMasks( m_segmentationResult, regionCoverage );
 
          // For each significant region, compute statistics and select algorithm
-         RegionAnalyzer analyzer;
+         HistogramEngine histEngine;
          for ( const auto& coveragePair : regionCoverage )
          {
             RegionClass rc = coveragePair.first;
@@ -235,13 +235,73 @@ CompositorResult Compositor::Process( const Image& input, CompositorProgressCall
             if ( maskIt == regionMasks.end() )
                continue;
 
-            // Compute statistics for this region using the mask
-            // For now, use the global stats scaled by region characteristics
-            RegionStatistics regionStats = stats;
+            // Scale mask to match input image dimensions if necessary
+            const Image& segMask = maskIt->second;
+            int maskWidth = segMask.Width();
+            int maskHeight = segMask.Height();
+            int imgWidth = input.Width();
+            int imgHeight = input.Height();
+
+            // Compute LOCAL statistics for this region using the mask
+            // This is CRITICAL - we must use the actual pixel values within the masked region
+            RegionStatistics regionStats;
+
+            if ( maskWidth == imgWidth && maskHeight == imgHeight )
+            {
+               // Mask is already at image resolution - use directly
+               regionStats = histEngine.ComputeStatistics( input, segMask, 0, 0 );
+            }
+            else
+            {
+               // Scale mask to image resolution using bilinear interpolation
+               Image scaledMask( imgWidth, imgHeight, ColorSpace::Gray );
+               double scaleX = static_cast<double>( maskWidth ) / imgWidth;
+               double scaleY = static_cast<double>( maskHeight ) / imgHeight;
+
+               for ( int y = 0; y < imgHeight; ++y )
+               {
+                  for ( int x = 0; x < imgWidth; ++x )
+                  {
+                     double sx = x * scaleX;
+                     double sy = y * scaleY;
+                     int x0 = static_cast<int>( sx );
+                     int y0 = static_cast<int>( sy );
+                     int x1 = std::min( x0 + 1, maskWidth - 1 );
+                     int y1 = std::min( y0 + 1, maskHeight - 1 );
+                     double fx = sx - x0;
+                     double fy = sy - y0;
+
+                     double v00 = segMask( x0, y0, 0 );
+                     double v10 = segMask( x1, y0, 0 );
+                     double v01 = segMask( x0, y1, 0 );
+                     double v11 = segMask( x1, y1, 0 );
+
+                     double value = v00 * (1.0 - fx) * (1.0 - fy) +
+                                    v10 * fx * (1.0 - fy) +
+                                    v01 * (1.0 - fx) * fy +
+                                    v11 * fx * fy;
+
+                     // Apply threshold to exclude blended edge pixels from stats
+                     // Only use pixels where mask > 0.5 for cleaner region statistics
+                     scaledMask( x, y, 0 ) = (value > 0.5) ? value : 0.0;
+                  }
+               }
+
+               regionStats = histEngine.ComputeStatistics( input, scaledMask, 0, 0 );
+            }
+
+            // Set the region metadata
             regionStats.regionClass = rc;
             regionStats.maskCoverage = coverage;
 
-            // Select algorithm for this region
+            // Log the local statistics for debugging
+            console.WriteLn( String().Format( "  %s local stats: median=%.4f, stdDev=%.4f, SNR=%.1f",
+               IsoString( RegionClassDisplayName( rc ) ).c_str(),
+               regionStats.median,
+               regionStats.stdDev,
+               regionStats.snrEstimate ) );
+
+            // Select algorithm for this region based on LOCAL statistics
             SelectedStretch selection = m_selector->Select( rc, regionStats );
 
             // Log the selection
