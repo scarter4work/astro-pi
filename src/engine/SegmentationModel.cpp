@@ -298,31 +298,6 @@ SegmentationResult MockSegmentationModel::Segment( const Image& image )
 
    const double ARCSINH_NORM = std::asinh( 1.0 / ARCSINH_SCALE );
 
-   // Adjust thresholds for extremely compressed data
-   // After arcsinh preprocessing with scale=0.02, values cluster in 0.65-1.0 range
-   double backgroundThreshold = m_backgroundThreshold;
-   double faintNebulaThreshold = m_faintNebulaThreshold;
-   double brightNebulaThreshold = m_brightNebulaThreshold;
-   double starThreshold = m_starThreshold;
-
-   if ( isLinear && ratio < 2.0 )
-   {
-      // Extremely compressed data: stretched values cluster in 0.65-1.0 range
-      backgroundThreshold = 0.65;
-      faintNebulaThreshold = 0.75;
-      brightNebulaThreshold = 0.88;
-      starThreshold = 0.95;
-      Console().WriteLn( "MockSegmentation: Using adaptive thresholds for compressed data" );
-   }
-   else if ( isLinear && ratio < 5.0 )
-   {
-      // Moderately compressed data
-      backgroundThreshold = 0.40;
-      faintNebulaThreshold = 0.55;
-      brightNebulaThreshold = 0.70;
-      starThreshold = 0.85;
-   }
-
    const float range = (p99 > p1) ? (p99 - p1) : 1.0f;
 
    // Create luminance image with proper preprocessing
@@ -355,6 +330,35 @@ SegmentationResult MockSegmentationModel::Segment( const Image& image )
          luminance( x, y, 0 ) = lum;
       }
    }
+
+   // Collect stretched luminance values for percentile-based thresholds
+   std::vector<float> stretchedValues;
+   stretchedValues.reserve( static_cast<size_t>( width ) * height );
+   for ( int y = 0; y < height; ++y )
+      for ( int x = 0; x < width; ++x )
+         stretchedValues.push_back( static_cast<float>( luminance( x, y, 0 ) ) );
+
+   std::sort( stretchedValues.begin(), stretchedValues.end() );
+
+   // Compute percentile-based thresholds from actual stretched data
+   auto getPercentile = [&stretchedValues]( double p ) {
+      size_t idx = static_cast<size_t>( p * (stretchedValues.size() - 1) );
+      return static_cast<double>( stretchedValues[idx] );
+   };
+
+   // Adaptive thresholds based on actual data distribution
+   // Background: below 25th percentile
+   // Faint nebula: 25th to 50th percentile transition
+   // Bright nebula: 50th to 85th percentile
+   // Stars: above 85th percentile (plus local maximum test)
+   double backgroundThreshold = getPercentile( 0.25 );
+   double faintNebulaThreshold = getPercentile( 0.50 );
+   double brightNebulaThreshold = getPercentile( 0.75 );
+   double starThreshold = getPercentile( 0.90 );
+
+   Console().WriteLn( String().Format(
+      "MockSegmentation: Adaptive thresholds from stretched data - bg=%.3f, faint=%.3f, bright=%.3f, star=%.3f",
+      backgroundThreshold, faintNebulaThreshold, brightNebulaThreshold, starThreshold ) );
 
    // Initialize masks for all region classes
    for ( int i = 0; i < static_cast<int>( RegionClass::Count ); ++i )
