@@ -9,8 +9,8 @@
       </p>
    </description>
    <platform os="linux" arch="x64" version="1.8.0:1.9.9">
-      <package fileName="20260204-4-linux-x64-NukeX.tar.gz" sha1="8caf46c31900d0873a60daa9dcf8193adf366c6b" type="module" releaseDate="20260204">
-         <title>NukeX 1.1.0.18 - Intelligent Astrophotography Processing</title>
+      <package fileName="20260204-5-linux-x64-NukeX.tar.gz" sha1="a0dcfdf614ec35451cafa33f130547593f3d25ed" type="module" releaseDate="20260204">
+         <title>NukeX 1.1.0.19 - Intelligent Astrophotography Processing</title>
          <description>
             <p>
                <b>NukeX - Intelligent Region-Aware Processing for PixInsight</b>
@@ -27,7 +27,7 @@
                </li>
             </ul>
             <p>
-               <b>Version 1.1.0.18:</b> Adaptive transition detection threshold. Now computes threshold from actual image gradient statistics (3x median gradient) instead of fixed 5%. Prevents over-smoothing legitimate features like star halos and galaxy arms while still catching real artifacts.
+               <b>Version 1.1.0.19:</b> Region-specific feathering. Different astronomical features now get appropriate feather radii - stars get sharp boundaries (0.75px), nebulae get soft edges (5px), galaxies get medium feathering (2.5px). This prevents over-smoothing star edges while maintaining natural nebula transitions.
             </p>
             <p>
                Copyright (c) 2026 Scott Carter. All Rights Reserved.
@@ -36,4 +36,4 @@
       </package>
    </platform>
 </xri>
-<Signature developerId="scarter4work" timestamp="2026-02-04T21:32:19.698Z" encoding="Base64">l3Qq34rzfERFWQhWJnQ4rF+siJ6EJEDCAmAxir0D0SMkiKQYDOs5GvfrmnHnrQdczxfC3P7m42oNMABUrPy9Dw==</Signature>
+<Signature developerId="scarter4work" timestamp="2026-02-04T21:54:24.426Z" encoding="Base64">D3Ez9vPJ3sgoYuIMWswtetrYn5sM1PWZhpaNTrscKY49FK6osoiBpUfB/YOI6mgeTvW/0J1RY6DtAcMApebiCw==</Signature>

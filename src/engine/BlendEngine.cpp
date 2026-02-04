@@ -191,7 +191,9 @@ std::map<RegionClass, Image> BlendEngine::PrepareMasks(
 
    for ( const auto& pair : rawMasks )
    {
-      prepared[pair.first] = FeatherMask( pair.second );
+      // Use region-specific feathering instead of uniform feathering
+      // Stars get sharp edges, nebulae get soft edges, galaxies get medium
+      prepared[pair.first] = FeatherMaskForRegion( pair.second, pair.first );
    }
 
    // Normalize if configured
@@ -214,6 +216,29 @@ Image BlendEngine::FeatherMask( const Image& mask ) const
    Image feathered = MaskPrep::GaussianFeather( mask, m_config.featherRadius );
 
    // Apply falloff exponent
+   if ( std::abs( m_config.blendFalloff - 1.0 ) > 0.001 )
+   {
+      feathered = MaskPrep::PowerFalloff( feathered, m_config.blendFalloff );
+   }
+
+   return feathered;
+}
+
+// ----------------------------------------------------------------------------
+
+Image BlendEngine::FeatherMaskForRegion( const Image& mask, RegionClass region ) const
+{
+   // Get the region-specific feather radius
+   // Stars: sharp (0.5-1.0), Nebulae: soft (4-6), Galaxies: medium (2-3)
+   double regionRadius = m_config.GetFeatherRadiusForRegion( region );
+
+   if ( regionRadius <= 0 )
+      return mask;
+
+   // Apply Gaussian blur with region-specific radius
+   Image feathered = MaskPrep::GaussianFeather( mask, regionRadius );
+
+   // Apply falloff exponent (same for all regions - controls transition sharpness)
    if ( std::abs( m_config.blendFalloff - 1.0 ) > 0.001 )
    {
       feathered = MaskPrep::PowerFalloff( feathered, m_config.blendFalloff );

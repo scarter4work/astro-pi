@@ -31,7 +31,7 @@ namespace pcl
 
 struct BlendConfig
 {
-   double featherRadius = 3.0;         // Mask edge softening radius
+   double featherRadius = 3.0;         // Default mask edge softening radius
    double blendFalloff = 2.0;          // Falloff exponent for transitions
    bool normalizeWeights = true;       // Ensure weights sum to 1
    bool preserveBlackPoint = true;     // Don't stretch pure black
@@ -40,10 +40,84 @@ struct BlendConfig
    // Per-region strength multipliers
    std::map<RegionClass, double> regionStrength;
 
+   // Per-region feather radius (different astronomical features need different blending)
+   // Stars: sharp boundaries (0.5-1.0), Nebulae: soft (4-6), Galaxies: medium (2-3)
+   std::map<RegionClass, double> regionFeatherRadius;
+
    double GetRegionStrength( RegionClass rc ) const
    {
       auto it = regionStrength.find( rc );
       return (it != regionStrength.end()) ? it->second : 1.0;
+   }
+
+   // Get the feather radius for a specific region class
+   // Returns region-specific value if set, otherwise returns sensible defaults
+   // based on astronomical feature type
+   double GetFeatherRadiusForRegion( RegionClass rc ) const
+   {
+      // Check for explicit override first
+      auto it = regionFeatherRadius.find( rc );
+      if ( it != regionFeatherRadius.end() )
+         return it->second;
+
+      // Return defaults based on region type
+      switch ( rc )
+      {
+      // Stars: SHARP boundaries - minimal feathering (0.5-1.0)
+      case RegionClass::StarBright:
+      case RegionClass::StarMedium:
+      case RegionClass::StarFaint:
+      case RegionClass::StarSaturated:
+         return 0.75;
+
+      // Star clusters: slightly more feathering than individual stars
+      case RegionClass::StarClusterOpen:
+      case RegionClass::StarClusterGlobular:
+         return 1.5;
+
+      // Nebulae: SOFT boundaries - higher feathering (4-6)
+      case RegionClass::NebulaEmission:
+      case RegionClass::NebulaReflection:
+      case RegionClass::NebulaPlanetary:
+         return 5.0;
+
+      // Dark nebulae: soft but slightly less than emission
+      case RegionClass::NebulaDark:
+         return 4.5;
+
+      // Galaxies: MEDIUM feathering (2-3)
+      case RegionClass::GalaxySpiral:
+      case RegionClass::GalaxyElliptical:
+      case RegionClass::GalaxyIrregular:
+         return 2.5;
+
+      // Galaxy cores: slightly sharper than outer regions
+      case RegionClass::GalaxyCore:
+         return 2.0;
+
+      // Dust lanes: medium-soft (blend with galaxy/nebula context)
+      case RegionClass::DustLane:
+         return 3.0;
+
+      // Artifacts: sharp boundaries - we want to isolate them
+      case RegionClass::ArtifactHotPixel:
+      case RegionClass::ArtifactSatellite:
+      case RegionClass::ArtifactDiffraction:
+         return 0.5;
+
+      // Gradient artifacts: very soft blending
+      case RegionClass::ArtifactGradient:
+         return 6.0;
+
+      // Noise: medium-soft
+      case RegionClass::ArtifactNoise:
+         return 4.0;
+
+      // Background: use default
+      case RegionClass::Background:
+      default:
+         return featherRadius;  // Use global default (3.0)
+      }
    }
 };
 
@@ -89,8 +163,13 @@ public:
    std::map<RegionClass, Image> PrepareMasks(
       const std::map<RegionClass, Image>& rawMasks ) const;
 
-   // Apply feathering to a single mask
+   // Apply feathering to a single mask (uses default featherRadius)
    Image FeatherMask( const Image& mask ) const;
+
+   // Apply region-specific feathering to a mask
+   // Different astronomical features need different feathering:
+   // - Stars: sharp (0.5-1.0), Nebulae: soft (4-6), Galaxies: medium (2-3)
+   Image FeatherMaskForRegion( const Image& mask, RegionClass region ) const;
 
    // Compute weight map from masks
    Image ComputeWeightMap( const std::map<RegionClass, Image>& masks,
