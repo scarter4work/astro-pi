@@ -155,18 +155,47 @@ Image SegmentationEngine::PreprocessImage( const Image& image, double& scale ) c
       return image;
 
    int maxDim = std::max( image.Width(), image.Height() );
-   if ( maxDim <= m_config.maxProcessingDimension )
+
+   // Determine effective max dimension based on adaptive settings
+   int effectiveMaxDim = m_config.maxProcessingDimension;
+
+   if ( m_config.useAdaptiveResolution )
+   {
+      // Use full resolution up to adaptive threshold
+      if ( maxDim <= m_config.adaptiveThreshold )
+      {
+         Console().WriteLn( String().Format(
+            "Segmentation: Using full resolution %dx%d (below adaptive threshold %d)",
+            image.Width(), image.Height(), m_config.adaptiveThreshold ) );
+         return image;
+      }
+
+      // Above threshold: scale proportionally, but respect maxProcessingDimension
+      effectiveMaxDim = std::min( m_config.maxProcessingDimension,
+                                   m_config.adaptiveThreshold );
+      Console().WriteLn( String().Format(
+         "Segmentation: Adaptive scaling - image %dx%d exceeds threshold %d, scaling to max %d",
+         image.Width(), image.Height(), m_config.adaptiveThreshold, effectiveMaxDim ) );
+   }
+
+   if ( maxDim <= effectiveMaxDim )
       return image;
 
    // Calculate scale factor
-   scale = static_cast<double>( m_config.maxProcessingDimension ) / maxDim;
+   scale = static_cast<double>( effectiveMaxDim ) / maxDim;
    int newWidth = static_cast<int>( image.Width() * scale );
    int newHeight = static_cast<int>( image.Height() * scale );
 
-   // Create downsampled image
+   Console().WriteLn( String().Format(
+      "Segmentation: Downsampling from %dx%d to %dx%d (scale=%.3f)",
+      image.Width(), image.Height(), newWidth, newHeight, scale ) );
+
+   // Create downsampled image using area averaging for better quality
+   // (better than bilinear for downsampling - preserves small features)
    Image downsampled( newWidth, newHeight, image.ColorSpace() );
 
    double invScale = 1.0 / scale;
+   double sampleRadius = invScale / 2.0;  // Half the downscale factor
 
    for ( int c = 0; c < image.NumberOfNominalChannels(); ++c )
    {
@@ -174,24 +203,29 @@ Image SegmentationEngine::PreprocessImage( const Image& image, double& scale ) c
       {
          for ( int x = 0; x < newWidth; ++x )
          {
-            // Bilinear sampling
-            double srcX = x * invScale;
-            double srcY = y * invScale;
+            // Area averaging: sample multiple pixels and average
+            double srcCenterX = (x + 0.5) * invScale;
+            double srcCenterY = (y + 0.5) * invScale;
 
-            int x0 = static_cast<int>( srcX );
-            int y0 = static_cast<int>( srcY );
-            int x1 = std::min( x0 + 1, image.Width() - 1 );
-            int y1 = std::min( y0 + 1, image.Height() - 1 );
+            // Determine sampling area
+            int x0 = std::max( 0, static_cast<int>( srcCenterX - sampleRadius ) );
+            int x1 = std::min( image.Width() - 1, static_cast<int>( srcCenterX + sampleRadius ) );
+            int y0 = std::max( 0, static_cast<int>( srcCenterY - sampleRadius ) );
+            int y1 = std::min( image.Height() - 1, static_cast<int>( srcCenterY + sampleRadius ) );
 
-            double fx = srcX - x0;
-            double fy = srcY - y0;
+            // Average all pixels in the sample area
+            double sum = 0;
+            int count = 0;
+            for ( int sy = y0; sy <= y1; ++sy )
+            {
+               for ( int sx = x0; sx <= x1; ++sx )
+               {
+                  sum += image( sx, sy, c );
+                  ++count;
+               }
+            }
 
-            double value = (1 - fx) * (1 - fy) * image( x0, y0, c ) +
-                           fx * (1 - fy) * image( x1, y0, c ) +
-                           (1 - fx) * fy * image( x0, y1, c ) +
-                           fx * fy * image( x1, y1, c );
-
-            downsampled( x, y, c ) = value;
+            downsampled( x, y, c ) = (count > 0) ? (sum / count) : image( x0, y0, c );
          }
       }
    }
@@ -344,9 +378,38 @@ SegmentationEngineResult SegmentationEngine::Process( const Image& image,
       return result;
    }
 
+   // Check if we should use tiled segmentation for very large images
+   int maxDim = std::max( image.Width(), image.Height() );
+   if ( m_config.useTiledSegmentation && maxDim > m_config.tiledSegmentationThreshold )
+   {
+      Console().WriteLn( String().Format(
+         "Segmentation: Using tiled approach for large image %dx%d (threshold=%d)",
+         image.Width(), image.Height(), m_config.tiledSegmentationThreshold ) );
+
+      ReportProgress( SegmentationEventType::Preprocessing, 0.1, "Starting tiled segmentation" );
+
+      auto segStart = std::chrono::high_resolution_clock::now();
+      result.segmentation = ProcessTiled( image );
+      auto segEnd = std::chrono::high_resolution_clock::now();
+
+      result.segmentationTimeMs = std::chrono::duration<double, std::milli>(
+         segEnd - segStart ).count();
+      result.modelUsed = m_model->Name();
+
+      if ( !result.segmentation.isValid )
+      {
+         ReportProgress( SegmentationEventType::Failed, 0.0, result.segmentation.errorMessage );
+         return result;
+      }
+
+      // Skip the standard downsampling/upscaling path - tiled already produces full-res output
+      goto postprocess;
+   }
+
    // Preprocess (downsample if needed)
    ReportProgress( SegmentationEventType::Preprocessing, 0.1, "Preprocessing image" );
 
+   {
    double scale;
    Image processImage = PreprocessImage( image, scale );
 
@@ -392,41 +455,19 @@ SegmentationEngineResult SegmentationEngine::Process( const Image& image,
       int origWidth = image.Width();
       int origHeight = image.Height();
 
+      Console().WriteLn( String().Format(
+         "Segmentation: Upscaling masks from %dx%d to %dx%d",
+         result.segmentation.masks.begin()->second.Width(),
+         result.segmentation.masks.begin()->second.Height(),
+         origWidth, origHeight ) );
+
       for ( auto& pair : result.segmentation.masks )
       {
-         Image& mask = pair.second;
-         Image resized( origWidth, origHeight, pcl::ColorSpace::Gray );
-
-         double invScale = 1.0 / scale;
-
-         for ( int y = 0; y < origHeight; ++y )
-         {
-            for ( int x = 0; x < origWidth; ++x )
-            {
-               double srcX = x * scale;
-               double srcY = y * scale;
-
-               int x0 = static_cast<int>( srcX );
-               int y0 = static_cast<int>( srcY );
-               int x1 = std::min( x0 + 1, mask.Width() - 1 );
-               int y1 = std::min( y0 + 1, mask.Height() - 1 );
-
-               double fx = srcX - x0;
-               double fy = srcY - y0;
-
-               double value = (1 - fx) * (1 - fy) * mask( x0, y0, 0 ) +
-                              fx * (1 - fy) * mask( x1, y0, 0 ) +
-                              (1 - fx) * fy * mask( x0, y1, 0 ) +
-                              fx * fy * mask( x1, y1, 0 );
-
-               resized( x, y, 0 ) = value;
-            }
-         }
-
-         mask = std::move( resized );
+         // Use edge-aware upscaling for better boundary preservation
+         pair.second = UpscaleMaskEdgeAware( pair.second, origWidth, origHeight, scale );
       }
 
-      // Also resize class map
+      // Also resize class map using nearest-neighbor (preserve class labels)
       if ( result.segmentation.classMap.Width() > 0 )
       {
          Image& classMap = result.segmentation.classMap;
@@ -436,8 +477,9 @@ SegmentationEngineResult SegmentationEngine::Process( const Image& image,
          {
             for ( int x = 0; x < origWidth; ++x )
             {
-               int srcX = static_cast<int>( x * scale );
-               int srcY = static_cast<int>( y * scale );
+               // Nearest-neighbor for class map (preserves class labels)
+               int srcX = static_cast<int>( (x + 0.5) * scale );
+               int srcY = static_cast<int>( (y + 0.5) * scale );
                srcX = std::min( srcX, classMap.Width() - 1 );
                srcY = std::min( srcY, classMap.Height() - 1 );
 
@@ -452,6 +494,9 @@ SegmentationEngineResult SegmentationEngine::Process( const Image& image,
       result.segmentation.height = origHeight;
    }
 
+   } // End of standard (non-tiled) processing scope
+
+postprocess:
    // Apply mask postprocessing
    PostprocessMasks( result.segmentation );
 
@@ -828,6 +873,312 @@ Image SegmentationVisualizer::CreateLegend( int width, int height )
    }
 
    return legend;
+}
+
+// ----------------------------------------------------------------------------
+// Tiled Segmentation Implementation
+// ----------------------------------------------------------------------------
+
+SegmentationResult SegmentationEngine::ProcessTiled( const Image& image )
+{
+   SegmentationResult result;
+   result.width = image.Width();
+   result.height = image.Height();
+
+   int imageWidth = image.Width();
+   int imageHeight = image.Height();
+   int tileSize = m_config.tileSize;
+   int overlap = m_config.tileOverlap;
+
+   // Calculate number of tiles needed
+   int effectiveTileSize = tileSize - overlap;
+   int numTilesX = (imageWidth + effectiveTileSize - 1) / effectiveTileSize;
+   int numTilesY = (imageHeight + effectiveTileSize - 1) / effectiveTileSize;
+
+   Console().WriteLn( String().Format(
+      "Segmentation: Processing %dx%d tiles (size=%d, overlap=%d)",
+      numTilesX, numTilesY, tileSize, overlap ) );
+
+   // Initialize result masks
+   for ( int i = 0; i < static_cast<int>( RegionClass::Count ); ++i )
+   {
+      RegionClass rc = static_cast<RegionClass>( i );
+      result.masks[rc].AllocateData( imageWidth, imageHeight, 1, ColorSpace::Gray );
+      result.masks[rc].Zero();
+   }
+   result.classMap.AllocateData( imageWidth, imageHeight, 1, ColorSpace::Gray );
+   result.classMap.Zero();
+
+   // Weight map for blending (accumulates contribution counts)
+   Image weightMap( imageWidth, imageHeight, ColorSpace::Gray );
+   weightMap.Zero();
+
+   int totalTiles = numTilesX * numTilesY;
+   int processedTiles = 0;
+
+   // Process each tile
+   for ( int tileY = 0; tileY < numTilesY; ++tileY )
+   {
+      for ( int tileX = 0; tileX < numTilesX; ++tileX )
+      {
+         // Calculate tile boundaries with overlap
+         int x0 = tileX * effectiveTileSize;
+         int y0 = tileY * effectiveTileSize;
+         int x1 = std::min( x0 + tileSize, imageWidth );
+         int y1 = std::min( y0 + tileSize, imageHeight );
+         int tileWidth = x1 - x0;
+         int tileHeight = y1 - y0;
+
+         // Extract tile from image
+         Image tile( tileWidth, tileHeight, image.ColorSpace() );
+         for ( int c = 0; c < image.NumberOfNominalChannels(); ++c )
+         {
+            for ( int y = 0; y < tileHeight; ++y )
+            {
+               for ( int x = 0; x < tileWidth; ++x )
+               {
+                  tile( x, y, c ) = image( x0 + x, y0 + y, c );
+               }
+            }
+         }
+
+         // Progress report
+         processedTiles++;
+         double progress = 0.2 + 0.6 * processedTiles / totalTiles;
+         ReportProgress( SegmentationEventType::ModelRunning, progress,
+            String().Format( "Processing tile %d/%d", processedTiles, totalTiles ) );
+
+         // Run segmentation on tile
+         SegmentationResult tileResult = m_model->Segment( tile );
+
+         if ( !tileResult.isValid )
+         {
+            Console().WarningLn( String().Format(
+               "Segmentation: Tile %d,%d failed: %s",
+               tileX, tileY, IsoString( tileResult.errorMessage ).c_str() ) );
+            continue;
+         }
+
+         // Calculate overlap regions for blending
+         int overlapLeft = (tileX > 0) ? overlap / 2 : 0;
+         int overlapTop = (tileY > 0) ? overlap / 2 : 0;
+         int overlapRight = (tileX < numTilesX - 1) ? overlap / 2 : 0;
+         int overlapBottom = (tileY < numTilesY - 1) ? overlap / 2 : 0;
+
+         // Merge tile result into full result with blending
+         MergeTileResult( result, tileResult, x0, y0, tileWidth, tileHeight,
+                          overlapLeft, overlapTop, overlapRight, overlapBottom );
+
+         // Update weight map
+         for ( int y = 0; y < tileHeight; ++y )
+         {
+            for ( int x = 0; x < tileWidth; ++x )
+            {
+               // Calculate blend weight (ramp down at edges)
+               double wx = 1.0;
+               double wy = 1.0;
+
+               if ( overlapLeft > 0 && x < overlapLeft )
+                  wx = static_cast<double>( x ) / overlapLeft;
+               else if ( overlapRight > 0 && x >= tileWidth - overlapRight )
+                  wx = static_cast<double>( tileWidth - 1 - x ) / overlapRight;
+
+               if ( overlapTop > 0 && y < overlapTop )
+                  wy = static_cast<double>( y ) / overlapTop;
+               else if ( overlapBottom > 0 && y >= tileHeight - overlapBottom )
+                  wy = static_cast<double>( tileHeight - 1 - y ) / overlapBottom;
+
+               double weight = wx * wy;
+
+               int px = x0 + x;
+               int py = y0 + y;
+               if ( px < imageWidth && py < imageHeight )
+               {
+                  weightMap( px, py, 0 ) += weight;
+               }
+            }
+         }
+      }
+   }
+
+   // Normalize masks by weight map
+   for ( auto& pair : result.masks )
+   {
+      Image& mask = pair.second;
+      for ( int y = 0; y < imageHeight; ++y )
+      {
+         for ( int x = 0; x < imageWidth; ++x )
+         {
+            double w = weightMap( x, y, 0 );
+            if ( w > 0 )
+               mask( x, y, 0 ) /= w;
+         }
+      }
+   }
+
+   // Recompute class map from normalized masks
+   for ( int y = 0; y < imageHeight; ++y )
+   {
+      for ( int x = 0; x < imageWidth; ++x )
+      {
+         double maxProb = 0;
+         int maxClass = 0;
+
+         int classIdx = 0;
+         for ( const auto& pair : result.masks )
+         {
+            double prob = pair.second( x, y, 0 );
+            if ( prob > maxProb )
+            {
+               maxProb = prob;
+               maxClass = static_cast<int>( pair.first );
+            }
+            classIdx++;
+         }
+
+         result.classMap( x, y, 0 ) = static_cast<double>( maxClass ) / 20.0;
+      }
+   }
+
+   result.isValid = true;
+   Console().WriteLn( String().Format(
+      "Segmentation: Tiled processing complete, processed %d tiles", totalTiles ) );
+
+   return result;
+}
+
+// ----------------------------------------------------------------------------
+
+void SegmentationEngine::MergeTileResult( SegmentationResult& target,
+                                           const SegmentationResult& tile,
+                                           int tileX, int tileY,
+                                           int tileWidth, int tileHeight,
+                                           int overlapLeft, int overlapTop,
+                                           int overlapRight, int overlapBottom )
+{
+   // Merge each mask from tile into target with blending weights
+   for ( const auto& pair : tile.masks )
+   {
+      RegionClass rc = pair.first;
+      const Image& tileMask = pair.second;
+
+      auto it = target.masks.find( rc );
+      if ( it == target.masks.end() )
+         continue;
+
+      Image& targetMask = it->second;
+
+      for ( int y = 0; y < tileHeight && y < tileMask.Height(); ++y )
+      {
+         for ( int x = 0; x < tileWidth && x < tileMask.Width(); ++x )
+         {
+            int px = tileX + x;
+            int py = tileY + y;
+
+            if ( px >= target.width || py >= target.height )
+               continue;
+
+            // Calculate blend weight (linear ramp in overlap regions)
+            double wx = 1.0;
+            double wy = 1.0;
+
+            if ( overlapLeft > 0 && x < overlapLeft )
+               wx = static_cast<double>( x ) / overlapLeft;
+            else if ( overlapRight > 0 && x >= tileWidth - overlapRight )
+               wx = static_cast<double>( tileWidth - 1 - x ) / overlapRight;
+
+            if ( overlapTop > 0 && y < overlapTop )
+               wy = static_cast<double>( y ) / overlapTop;
+            else if ( overlapBottom > 0 && y >= tileHeight - overlapBottom )
+               wy = static_cast<double>( tileHeight - 1 - y ) / overlapBottom;
+
+            double weight = wx * wy;
+            double tileValue = tileMask( x, y, 0 );
+
+            // Accumulate weighted value
+            targetMask( px, py, 0 ) += tileValue * weight;
+         }
+      }
+   }
+}
+
+// ----------------------------------------------------------------------------
+
+Image SegmentationEngine::UpscaleMaskEdgeAware( const Image& mask,
+                                                  int targetWidth, int targetHeight,
+                                                  double scale ) const
+{
+   Image resized( targetWidth, targetHeight, pcl::ColorSpace::Gray );
+
+   // Edge-aware upscaling: use bilinear interpolation but preserve
+   // sharp transitions by detecting edges and using nearest-neighbor there
+
+   // First pass: compute gradient magnitude in source mask
+   Image gradient( mask.Width(), mask.Height(), pcl::ColorSpace::Gray );
+
+   for ( int y = 1; y < mask.Height() - 1; ++y )
+   {
+      for ( int x = 1; x < mask.Width() - 1; ++x )
+      {
+         // Sobel gradient
+         double gx = -mask( x - 1, y - 1, 0 ) - 2 * mask( x - 1, y, 0 ) - mask( x - 1, y + 1, 0 )
+                     +mask( x + 1, y - 1, 0 ) + 2 * mask( x + 1, y, 0 ) + mask( x + 1, y + 1, 0 );
+         double gy = -mask( x - 1, y - 1, 0 ) - 2 * mask( x, y - 1, 0 ) - mask( x + 1, y - 1, 0 )
+                     +mask( x - 1, y + 1, 0 ) + 2 * mask( x, y + 1, 0 ) + mask( x + 1, y + 1, 0 );
+         gradient( x, y, 0 ) = std::sqrt( gx * gx + gy * gy );
+      }
+   }
+
+   // Edge threshold (high gradient = edge)
+   const double edgeThreshold = 0.3;
+
+   // Second pass: upscale with edge-awareness
+   for ( int y = 0; y < targetHeight; ++y )
+   {
+      for ( int x = 0; x < targetWidth; ++x )
+      {
+         double srcX = x * scale;
+         double srcY = y * scale;
+
+         int x0 = static_cast<int>( srcX );
+         int y0 = static_cast<int>( srcY );
+         int x1 = std::min( x0 + 1, mask.Width() - 1 );
+         int y1 = std::min( y0 + 1, mask.Height() - 1 );
+
+         // Check if we're near an edge in the source
+         double gradVal = 0;
+         if ( x0 > 0 && y0 > 0 && x0 < mask.Width() - 1 && y0 < mask.Height() - 1 )
+         {
+            gradVal = gradient( x0, y0, 0 );
+         }
+
+         double value;
+         if ( gradVal > edgeThreshold )
+         {
+            // Near edge: use nearest-neighbor to preserve sharp boundaries
+            int nearX = static_cast<int>( srcX + 0.5 );
+            int nearY = static_cast<int>( srcY + 0.5 );
+            nearX = std::min( nearX, mask.Width() - 1 );
+            nearY = std::min( nearY, mask.Height() - 1 );
+            value = mask( nearX, nearY, 0 );
+         }
+         else
+         {
+            // Smooth region: use bilinear interpolation
+            double fx = srcX - x0;
+            double fy = srcY - y0;
+
+            value = (1 - fx) * (1 - fy) * mask( x0, y0, 0 ) +
+                    fx * (1 - fy) * mask( x1, y0, 0 ) +
+                    (1 - fx) * fy * mask( x0, y1, 0 ) +
+                    fx * fy * mask( x1, y1, 0 );
+         }
+
+         resized( x, y, 0 ) = value;
+      }
+   }
+
+   return resized;
 }
 
 // ----------------------------------------------------------------------------

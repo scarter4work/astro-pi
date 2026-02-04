@@ -46,9 +46,17 @@ struct SegmentationEngineConfig
    double maskErosionRadius = 0.0;     // Shrink mask boundaries
    double minMaskCoverage = 0.001;     // Minimum coverage to keep a mask (0.1%)
 
-   // Performance settings
+   // Resolution settings (improved from fixed 2048 limit)
    bool downsampleLargeImages = true;  // Downsample for faster processing
-   int maxProcessingDimension = 2048;  // Max dimension before downsampling
+   int maxProcessingDimension = 4096;  // Max dimension before downsampling (increased from 2048)
+   bool useAdaptiveResolution = true;  // Use full resolution up to adaptiveThreshold, then scale
+   int adaptiveThreshold = 4096;       // Use full resolution below this, proportional above
+
+   // Tiled segmentation for very large images (preserves small features)
+   bool useTiledSegmentation = true;   // Use overlapping tiles for large images
+   int tileSize = 2048;                // Size of each tile for tiled segmentation
+   int tileOverlap = 256;              // Overlap between tiles for smooth blending
+   int tiledSegmentationThreshold = 6144; // Use tiled approach above this dimension
 };
 
 // ----------------------------------------------------------------------------
@@ -196,6 +204,18 @@ private:
 
    // Compute simple hash of image for cache validation
    static uint64_t ComputeImageHash( const Image& image );
+
+   // Tiled segmentation for large images (preserves small features)
+   SegmentationResult ProcessTiled( const Image& image );
+
+   // Merge overlapping tile results with blending
+   void MergeTileResult( SegmentationResult& target, const SegmentationResult& tile,
+                         int tileX, int tileY, int tileWidth, int tileHeight,
+                         int overlapLeft, int overlapTop, int overlapRight, int overlapBottom );
+
+   // Upscale masks with edge-aware method (better for class boundaries)
+   Image UpscaleMaskEdgeAware( const Image& mask, int targetWidth, int targetHeight,
+                                double scale ) const;
 };
 
 // ----------------------------------------------------------------------------
