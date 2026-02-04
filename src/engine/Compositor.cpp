@@ -918,7 +918,7 @@ Image Compositor::ApplyRegionAwareStretch(
       console.WriteLn( String().Format( "  Scaling masks from %dx%d to %dx%d...",
          maskWidth, maskHeight, width, height ) );
 
-      // Scale each mask to match input image dimensions using bilinear interpolation
+      // Scale each mask to match input image dimensions using edge-preserving interpolation
       for ( const auto& maskPair : regionMasks )
       {
          const Image& srcMask = maskPair.second;
@@ -935,24 +935,48 @@ Image Compositor::ApplyRegionAwareStretch(
                double sx = x * scaleX;
                double sy = y * scaleY;
 
-               // Bilinear interpolation
+               // Edge-preserving interpolation for segmentation masks
+               // Use nearest-neighbor at edges (high gradient), bilinear in smooth regions
                int x0 = static_cast<int>( sx );
                int y0 = static_cast<int>( sy );
                int x1 = std::min( x0 + 1, srcMask.Width() - 1 );
                int y1 = std::min( y0 + 1, srcMask.Height() - 1 );
-
-               double fx = sx - x0;
-               double fy = sy - y0;
 
                double v00 = srcMask( x0, y0, 0 );
                double v10 = srcMask( x1, y0, 0 );
                double v01 = srcMask( x0, y1, 0 );
                double v11 = srcMask( x1, y1, 0 );
 
-               double value = v00 * (1.0 - fx) * (1.0 - fy) +
-                              v10 * fx * (1.0 - fy) +
-                              v01 * (1.0 - fx) * fy +
-                              v11 * fx * fy;
+               // Compute local gradient (edge detection)
+               double gradX = std::abs( v10 - v00 ) + std::abs( v11 - v01 );
+               double gradY = std::abs( v01 - v00 ) + std::abs( v11 - v10 );
+               double gradient = (gradX + gradY) * 0.25;  // Average gradient magnitude
+
+               // Edge threshold - if gradient is high, we're at a mask boundary
+               const double edgeThreshold = 0.3;  // Tunable: lower = more nearest-neighbor
+
+               double value;
+               if ( gradient > edgeThreshold )
+               {
+                  // At edge: use nearest-neighbor to preserve hard boundary
+                  // Pick the value closest to the sample point
+                  double fx = sx - x0;
+                  double fy = sy - y0;
+                  if ( fx < 0.5 )
+                     value = (fy < 0.5) ? v00 : v01;
+                  else
+                     value = (fy < 0.5) ? v10 : v11;
+               }
+               else
+               {
+                  // Smooth region: use bilinear for anti-aliasing
+                  double fx = sx - x0;
+                  double fy = sy - y0;
+                  value = v00 * (1.0 - fx) * (1.0 - fy) +
+                          v10 * fx * (1.0 - fy) +
+                          v01 * (1.0 - fx) * fy +
+                          v11 * fx * fy;
+               }
 
                dstMask( x, y, 0 ) = value;
             }
