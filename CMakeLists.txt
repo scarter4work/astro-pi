@@ -44,6 +44,9 @@ else()
     )
 endif()
 
+# OpenMP support for parallel processing
+find_package(OpenMP)
+
 # Source files
 set(NUKEX_SOURCES
     src/NukeXModule.cpp
@@ -55,16 +58,13 @@ set(NUKEX_SOURCES
     src/NukeXStackProcess.cpp
     src/NukeXStackInstance.cpp
     src/NukeXStackParameters.cpp
+    src/NukeXStackInterface.cpp
     # Engine core
     src/engine/IStretchAlgorithm.cpp
     src/engine/StretchLibrary.cpp
     src/engine/RegionStatistics.cpp
     src/engine/HistogramEngine.cpp
     src/engine/RegionAnalyzer.cpp
-    # ML Segmentation removed for simplified version
-    # src/engine/ONNXInference.cpp
-    # src/engine/SegmentationModel.cpp
-    # src/engine/Segmentation.cpp
     src/engine/SelectionRules.cpp
     src/engine/StretchSelector.cpp
     src/engine/BlendEngine.cpp
@@ -112,10 +112,6 @@ set(NUKEX_HEADERS
     src/engine/RegionStatistics.h
     src/engine/HistogramEngine.h
     src/engine/RegionAnalyzer.h
-    # ML Segmentation removed for simplified version
-    # src/engine/ONNXInference.h
-    # src/engine/SegmentationModel.h
-    # src/engine/Segmentation.h
     src/engine/SelectionRules.h
     src/engine/StretchSelector.h
     src/engine/BlendEngine.h
@@ -163,20 +159,31 @@ target_include_directories(NukeX PRIVATE
 target_link_directories(NukeX PRIVATE ${PCL_LIB_DIR})
 target_link_libraries(NukeX PRIVATE ${PCL_LIBRARIES} pthread)
 
-# ONNX Runtime support
+# OpenMP support
+if(OpenMP_CXX_FOUND)
+    target_compile_options(NukeX PRIVATE ${OpenMP_CXX_FLAGS})
+    target_link_libraries(NukeX PRIVATE OpenMP::OpenMP_CXX)
+endif()
+
+# ONNX Runtime support (ML segmentation)
 if(NUKEX_USE_ONNX)
-    if(NOT DEFINED ONNXRUNTIME_DIR)
-        message(FATAL_ERROR "ONNXRUNTIME_DIR not set. Please set -DONNXRUNTIME_DIR=...")
-    endif()
+    # Add ONNX/ML source files
+    target_sources(NukeX PRIVATE
+        src/engine/ONNXInference.cpp
+        src/engine/SegmentationModel.cpp
+        src/engine/Segmentation.cpp
+    )
 
-    target_compile_definitions(NukeX PRIVATE NUKEX_USE_ONNX)
-    target_include_directories(NukeX PRIVATE "${ONNXRUNTIME_DIR}/include")
-
-    if(WIN32)
-        target_link_libraries(NukeX PRIVATE "${ONNXRUNTIME_DIR}/lib/onnxruntime.lib")
+    # Find ONNX Runtime
+    find_package(onnxruntime QUIET)
+    if(onnxruntime_FOUND)
+        target_link_libraries(NukeX PRIVATE onnxruntime::onnxruntime)
     else()
-        target_link_libraries(NukeX PRIVATE "${ONNXRUNTIME_DIR}/lib/libonnxruntime.so")
+        # Try system paths
+        target_include_directories(NukeX PRIVATE /usr/include/onnxruntime)
+        target_link_libraries(NukeX PRIVATE onnxruntime)
     endif()
+    target_compile_definitions(NukeX PRIVATE NUKEX_USE_ONNX ONNX_AVAILABLE)
 endif()
 
 # Compiler flags (matching PCL build system)
@@ -187,7 +194,6 @@ else()
         -Wall -Wno-parentheses
         -O3 -fPIC
         -ffunction-sections -fdata-sections
-        -ffast-math
         -fvisibility=hidden -fvisibility-inlines-hidden
         -fnon-call-exceptions
     )

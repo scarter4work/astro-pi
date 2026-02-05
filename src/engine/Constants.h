@@ -144,6 +144,23 @@ namespace ColorSpaceConstants
 }
 
 // ----------------------------------------------------------------------------
+// Interpolation Utilities
+// ----------------------------------------------------------------------------
+
+namespace Interpolation
+{
+   // Bilinear interpolation of 4 corner values given fractional x,y position
+   inline double BilinearInterpolate( double v00, double v10, double v01, double v11,
+                                       double fx, double fy )
+   {
+      return v00 * (1.0 - fx) * (1.0 - fy) +
+             v10 * fx * (1.0 - fy) +
+             v01 * (1.0 - fx) * fy +
+             v11 * fx * fy;
+   }
+}
+
+// ----------------------------------------------------------------------------
 
 } // namespace pcl
 

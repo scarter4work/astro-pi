@@ -237,7 +237,7 @@ void TransitionChecker::ApplySmoothing(
    int tilesX = static_cast<int>( transitions[0].size() );
    int tileSize = m_config.tileSize;
 
-   // Apply smoothing at boundaries that need it
+   // Pass 1: Apply 1D smoothing at boundaries that need it
    // Note: needsSmoothing and smoothingStrength are computed using adaptive thresholds
    // in AnalyzeTransitions(), so we simply apply smoothing to boundaries that contribute
    // to the maxGradient when smoothing is needed
@@ -283,6 +283,10 @@ void TransitionChecker::ApplySmoothing(
          }
       }
    }
+
+   // Pass 2: Apply 2D Gaussian smoothing at tile corner intersections
+   // where horizontal and vertical boundaries meet
+   SmoothCornerIntersections( image, channel, transitions, m_config.maxSmoothingStrength );
 }
 
 // ----------------------------------------------------------------------------
@@ -533,6 +537,102 @@ void TransitionChecker::SmoothBoundary(
          {
             float original = static_cast<float>( data[y * width + x] );
             data[y * width + x] = static_cast<Image::sample>( original * (1.0f - strength) + smoothed * strength );
+         }
+      }
+   }
+}
+
+// ----------------------------------------------------------------------------
+
+void TransitionChecker::SmoothCornerIntersections(
+   Image& image,
+   int channel,
+   const std::vector<std::vector<TransitionInfo>>& transitions,
+   float strength ) const
+{
+   if ( transitions.empty() || transitions[0].empty() )
+      return;
+
+   int width = image.Width();
+   int height = image.Height();
+   int tilesY = static_cast<int>( transitions.size() );
+   int tilesX = static_cast<int>( transitions[0].size() );
+   int tileSize = m_config.tileSize;
+
+   Image::sample* data = image.PixelData( channel );
+
+   // Find corner intersection points where tiles that need smoothing meet
+   // A corner intersection occurs at position (tx * tileSize, ty * tileSize)
+   // when any of the 4 tiles sharing that corner need smoothing
+   for ( int ty = 1; ty < tilesY; ++ty )
+   {
+      for ( int tx = 1; tx < tilesX; ++tx )
+      {
+         // Check if any of the 4 tiles sharing this corner need smoothing
+         const TransitionInfo& topLeft = transitions[ty - 1][tx - 1];
+         const TransitionInfo& topRight = transitions[ty - 1][tx];
+         const TransitionInfo& bottomLeft = transitions[ty][tx - 1];
+         const TransitionInfo& bottomRight = transitions[ty][tx];
+
+         bool anyNeedsSmoothing = topLeft.needsSmoothing || topRight.needsSmoothing ||
+                                  bottomLeft.needsSmoothing || bottomRight.needsSmoothing;
+
+         if ( !anyNeedsSmoothing )
+            continue;
+
+         // Use the maximum smoothing strength from the 4 tiles
+         float cornerStrength = std::max( {
+            topLeft.needsSmoothing ? topLeft.smoothingStrength : 0.0f,
+            topRight.needsSmoothing ? topRight.smoothingStrength : 0.0f,
+            bottomLeft.needsSmoothing ? bottomLeft.smoothingStrength : 0.0f,
+            bottomRight.needsSmoothing ? bottomRight.smoothingStrength : 0.0f
+         } );
+
+         // Scale by the overall strength parameter
+         cornerStrength = std::min( cornerStrength, strength );
+
+         // Corner position in pixel coordinates
+         int cx = tx * tileSize;
+         int cy = ty * tileSize;
+
+         // Compute radius from strength (minimum 2 pixels)
+         int radius = std::max( 2, static_cast<int>( cornerStrength * 3.0f + 0.5f ) );
+         float sigma = std::max( 0.5f, cornerStrength );
+
+         // Apply 2D Gaussian blur centered on the corner intersection
+         for ( int dy = -radius; dy <= radius; ++dy )
+         {
+            for ( int dx = -radius; dx <= radius; ++dx )
+            {
+               int px = cx + dx;
+               int py = cy + dy;
+
+               // Skip pixels outside the image (with 1-pixel border for kernel)
+               if ( px < 1 || px >= width - 1 || py < 1 || py >= height - 1 )
+                  continue;
+
+               // Weight for blending original vs smoothed (stronger near center)
+               float blendWeight = std::exp( -(dx * dx + dy * dy) / (2.0f * sigma * sigma) );
+
+               // Compute weighted average with 3x3 neighbors
+               float sum = 0.0f;
+               float wsum = 0.0f;
+               for ( int ky = -1; ky <= 1; ++ky )
+               {
+                  for ( int kx = -1; kx <= 1; ++kx )
+                  {
+                     float kw = std::exp( -(kx * kx + ky * ky) / 2.0f );
+                     sum += static_cast<float>( data[(py + ky) * width + (px + kx)] ) * kw;
+                     wsum += kw;
+                  }
+               }
+               float smoothed = sum / wsum;
+
+               // Blend original with smoothed value
+               float original = static_cast<float>( data[py * width + px] );
+               data[py * width + px] = static_cast<Image::sample>(
+                  original * (1.0f - blendWeight) + smoothed * blendWeight );
+            }
          }
       }
    }

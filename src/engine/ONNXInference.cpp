@@ -8,12 +8,12 @@
 // Copyright (c) 2026 Scott Carter
 
 #include "ONNXInference.h"
+#include "Constants.h"
 
 #include <pcl/Image.h>
 
 #include <algorithm>
 #include <cmath>
-#include <mutex>
 #include <stdexcept>
 
 // Conditionally include ONNX Runtime
@@ -421,14 +421,9 @@ ONNXRuntime::ONNXRuntime()
 #if ONNX_AVAILABLE
    try
    {
-      static std::once_flag initFlag;
-      static Ort::Env* globalEnv = nullptr;
+      static Ort::Env globalEnv( ORT_LOGGING_LEVEL_WARNING, "NukeX" );
 
-      std::call_once( initFlag, []() {
-         globalEnv = new Ort::Env( ORT_LOGGING_LEVEL_WARNING, "NukeX" );
-      } );
-
-      m_env = globalEnv;
+      m_env = &globalEnv;
       m_isAvailable = true;
       m_version = String( ORT_API_VERSION );
 
@@ -509,10 +504,7 @@ FloatTensor ImageToTensor( const Image& image, int targetWidth, int targetHeight
             double v01 = image( x0, y1, c );
             double v11 = image( x1, y1, c );
 
-            double value = (1 - fx) * (1 - fy) * v00 +
-                           fx * (1 - fy) * v10 +
-                           (1 - fx) * fy * v01 +
-                           fx * fy * v11;
+            double value = Interpolation::BilinearInterpolate( v00, v10, v01, v11, fx, fy );
 
             // NCHW layout: index = ((n * C + c) * H + y) * W + x
             size_t idx = (c * outHeight + y) * outWidth + x;
@@ -596,10 +588,8 @@ FloatTensor ResizeTensor( const FloatTensor& input, int newWidth, int newHeight 
                size_t idx11 = ((n * channels + c) * oldHeight + y1) * oldWidth + x1;
 
                float value = static_cast<float>(
-                  (1 - fx) * (1 - fy) * input[idx00] +
-                  fx * (1 - fy) * input[idx10] +
-                  (1 - fx) * fy * input[idx01] +
-                  fx * fy * input[idx11] );
+                  Interpolation::BilinearInterpolate(
+                     input[idx00], input[idx10], input[idx01], input[idx11], fx, fy ) );
 
                size_t outIdx = ((n * channels + c) * newHeight + y) * newWidth + x;
                output[outIdx] = value;

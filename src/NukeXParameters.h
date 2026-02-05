@@ -21,6 +21,29 @@ namespace pcl
 {
 
 // ----------------------------------------------------------------------------
+// Processing Mode Enumeration
+// ----------------------------------------------------------------------------
+
+class NXProcessingMode : public MetaEnumeration
+{
+public:
+   enum { Manual,
+          FullyAutomatic,
+          NumberOfItems,
+          Default = FullyAutomatic };
+
+   NXProcessingMode( MetaProcess* );
+
+   IsoString Id() const override;
+   size_type NumberOfElements() const override;
+   IsoString ElementId( size_type ) const override;
+   int ElementValue( size_type ) const override;
+   size_type DefaultValueIndex() const override;
+};
+
+extern NXProcessingMode* TheNXProcessingModeParameter;
+
+// ----------------------------------------------------------------------------
 // Preview Mode Enumeration
 // ----------------------------------------------------------------------------
 

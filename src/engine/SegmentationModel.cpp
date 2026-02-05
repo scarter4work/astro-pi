@@ -8,6 +8,7 @@
 // Copyright (c) 2026 Scott Carter
 
 #include "SegmentationModel.h"
+#include "Constants.h"
 
 #include <pcl/Console.h>
 
@@ -474,7 +475,7 @@ SegmentationResult MockSegmentationModel::Segment( const Image& image )
          if ( probNebulaDark > maxProb ) { maxProb = probNebulaDark; maxClass = 7; }
          if ( probDustLane > maxProb ) { maxProb = probDustLane; maxClass = 13; }
 
-         result.classMap( x, y, 0 ) = static_cast<double>( maxClass ) / 20.0;  // 21 classes (0-20)
+         result.classMap( x, y, 0 ) = static_cast<double>( maxClass ) / static_cast<double>( static_cast<int>( RegionClass::Count ) - 1 );
       }
    }
 
@@ -635,10 +636,7 @@ FloatTensor ONNXSegmentationModel::PreprocessImage( const Image& image ) const
             const double v10 = image( x1, y0, c );
             const double v01 = image( x0, y1, c );
             const double v11 = image( x1, y1, c );
-            return (1.0 - fx) * (1.0 - fy) * v00 +
-                   fx * (1.0 - fy) * v10 +
-                   (1.0 - fx) * fy * v01 +
-                   fx * fy * v11;
+            return Interpolation::BilinearInterpolate( v00, v10, v01, v11, fx, fy );
          };
 
          // Resample
@@ -834,10 +832,9 @@ SegmentationResult ONNXSegmentationModel::PostprocessOutput( const FloatTensor& 
             size_t idx01 = (c * outHeight + y1) * outWidth + x0;
             size_t idx11 = (c * outHeight + y1) * outWidth + x1;
 
-            double prob = (1 - fx) * (1 - fy) * processed[idx00] +
-                          fx * (1 - fy) * processed[idx10] +
-                          (1 - fx) * fy * processed[idx01] +
-                          fx * fy * processed[idx11];
+            double prob = Interpolation::BilinearInterpolate(
+                             processed[idx00], processed[idx10],
+                             processed[idx01], processed[idx11], fx, fy );
 
             RegionClass rc = m_config.channelMapping[c];
 

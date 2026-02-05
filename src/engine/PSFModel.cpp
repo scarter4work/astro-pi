@@ -67,14 +67,34 @@ float PSFParameters::Evaluate( float r ) const
 
    case PSFProfile::Airy:
       {
-         // Simplified Airy pattern
-         float x = r * PCL_PI / fwhm;
+         float x = r * 3.14159265f / fwhm;
          if ( x < 0.001f )
             value = intensity;
          else
          {
-            float j1 = std::sin(x) / (x * x) - std::cos(x) / x;  // Approx J1
-            value = intensity * std::pow( 2.0f * j1 / x, 2 );
+            // J1 Bessel function approximation (polynomial fit)
+            float j1;
+            float ax = std::abs( x );
+            if ( ax < 3.0f )
+            {
+               // Small argument: series approximation
+               float t = x / 3.0f;
+               float t2 = t * t;
+               j1 = x * (0.5f + t2 * (-0.56249985f + t2 * (0.21093573f + t2 * (-0.03954289f + t2 * 0.00443319f))));
+            }
+            else
+            {
+               // Large argument: asymptotic approximation
+               float t = 3.0f / ax;
+               float t2 = t * t;
+               float p1 = 1.0f + t2 * (-0.00000156f + t2 * (0.00001659f + t2 * (-0.00017105f + t2 * 0.00249511f)));
+               float q1 = 0.04166397f + t2 * (-0.00003954f + t2 * (0.00262573f + t2 * (-0.00054125f + t2 * (-0.00029333f))));
+               float theta = ax - 2.356194491f; // ax - 3*pi/4
+               j1 = std::sqrt( 0.636619772f / ax ) * (p1 * std::cos( theta ) - t * q1 * std::sin( theta ));
+               if ( x < 0 ) j1 = -j1;
+            }
+            float airy = (std::abs( x ) > 0.001f) ? 2.0f * j1 / x : 1.0f;
+            value = intensity * airy * airy;
          }
       }
       break;

@@ -601,14 +601,8 @@ bool NukeXStackInstance::RunSegmentation(
 
    if ( modelPath.IsEmpty() )
    {
-      // Try to find the model in the src/models directory relative to module
-      // This handles development builds
-      modelPath = "/home/scarter4work/projects/NukeX/src/models/nukex_segmentation.onnx";
-      if ( !File::Exists( modelPath ) )
-      {
-         // Also try installed location
-         modelPath = "/opt/PixInsight/bin/nukex_segmentation.onnx";
-      }
+      // Try standard installed location
+      modelPath = "/opt/PixInsight/bin/nukex_segmentation.onnx";
    }
 
    if ( !File::Exists( modelPath ) )

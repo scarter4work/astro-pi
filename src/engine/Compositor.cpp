@@ -10,6 +10,7 @@
 // Compositor - Processing pipeline with optional ML segmentation
 
 #include "Compositor.h"
+#include "Constants.h"
 #include "HistogramEngine.h"
 #include "StretchLibrary.h"
 #include "TransitionChecker.h"
@@ -169,302 +170,30 @@ CompositorResult Compositor::Process( const Image& input, CompositorProgressCall
    try
    {
       // Stage 0: Segmentation (if enabled)
-      if ( m_config.useSegmentation )
-      {
-         result.stage = ProcessingStage::Segmenting;
-         ReportProgress( ProcessingStage::Segmenting, 0.0, "Running segmentation" );
-
-         double segTimeMs = 0;
-         bool segSuccess = RunSegmentation( input, segTimeMs );
-         result.segmentationTimeMs = segTimeMs;
-
-         if ( segSuccess )
-         {
-            ReportProgress( ProcessingStage::Segmenting, 1.0, "Segmentation complete" );
-         }
-         else
-         {
-            ReportProgress( ProcessingStage::Segmenting, 1.0, "Segmentation skipped" );
-         }
-      }
+      RunSegmentationStage( input, result );
 
       // Stage 1: Analysis
-      result.stage = ProcessingStage::Analyzing;
-      ReportProgress( ProcessingStage::Analyzing, 0.0, "Analyzing image" );
-
-      auto analysisStart = std::chrono::high_resolution_clock::now();
-      RegionStatistics stats = AnalyzeImage( input );
-      auto analysisEnd = std::chrono::high_resolution_clock::now();
-      result.analysisTimeMs = std::chrono::duration<double, std::milli>(
-         analysisEnd - analysisStart ).count();
-
-      ReportProgress( ProcessingStage::Analyzing, 1.0, "Analysis complete" );
+      RegionStatistics stats = RunAnalysisStage( input, result );
 
       // Stage 2: Algorithm Selection
-      result.stage = ProcessingStage::SelectingAlgorithms;
-      ReportProgress( ProcessingStage::SelectingAlgorithms, 0.0, "Selecting algorithm" );
-
-      // Check if we have valid segmentation results for region-aware processing
-      bool useRegionAware = m_config.useSegmentation && m_segmentationResult.isValid;
-
-      // Maps for region-aware processing
+      bool useRegionAware = false;
       std::map<RegionClass, SelectedStretch> regionAlgorithms;
       std::map<RegionClass, Image> regionMasks;
-      std::map<RegionClass, double> regionCoverage;
-
-      if ( useRegionAware )
-      {
-         Console console;
-         console.WriteLn( "<br>Region-aware algorithm selection:" );
-
-         // Get regions with significant coverage (>1%)
-         regionCoverage = ComputeRegionCoverage( m_segmentationResult, 0.01 );
-
-         // Extract masks for significant regions
-         regionMasks = ExtractRegionMasks( m_segmentationResult, regionCoverage );
-
-         // For each significant region, compute statistics and select algorithm
-         HistogramEngine histEngine;
-         for ( const auto& coveragePair : regionCoverage )
-         {
-            RegionClass rc = coveragePair.first;
-            double coverage = coveragePair.second;
-
-            // Get mask for this region
-            auto maskIt = regionMasks.find( rc );
-            if ( maskIt == regionMasks.end() )
-               continue;
-
-            // Scale mask to match input image dimensions if necessary
-            const Image& segMask = maskIt->second;
-            int maskWidth = segMask.Width();
-            int maskHeight = segMask.Height();
-            int imgWidth = input.Width();
-            int imgHeight = input.Height();
-
-            // Compute LOCAL statistics for this region using the mask
-            // This is CRITICAL - we must use the actual pixel values within the masked region
-            RegionStatistics regionStats;
-
-            if ( maskWidth == imgWidth && maskHeight == imgHeight )
-            {
-               // Mask is already at image resolution - use directly
-               regionStats = histEngine.ComputeStatistics( input, segMask, 0, 0 );
-            }
-            else
-            {
-               // Scale mask to image resolution using bilinear interpolation
-               Image scaledMask( imgWidth, imgHeight, ColorSpace::Gray );
-               double scaleX = static_cast<double>( maskWidth ) / imgWidth;
-               double scaleY = static_cast<double>( maskHeight ) / imgHeight;
-
-               for ( int y = 0; y < imgHeight; ++y )
-               {
-                  for ( int x = 0; x < imgWidth; ++x )
-                  {
-                     double sx = x * scaleX;
-                     double sy = y * scaleY;
-                     int x0 = static_cast<int>( sx );
-                     int y0 = static_cast<int>( sy );
-                     int x1 = std::min( x0 + 1, maskWidth - 1 );
-                     int y1 = std::min( y0 + 1, maskHeight - 1 );
-                     double fx = sx - x0;
-                     double fy = sy - y0;
-
-                     double v00 = segMask( x0, y0, 0 );
-                     double v10 = segMask( x1, y0, 0 );
-                     double v01 = segMask( x0, y1, 0 );
-                     double v11 = segMask( x1, y1, 0 );
-
-                     double value = v00 * (1.0 - fx) * (1.0 - fy) +
-                                    v10 * fx * (1.0 - fy) +
-                                    v01 * (1.0 - fx) * fy +
-                                    v11 * fx * fy;
-
-                     // Apply threshold to exclude blended edge pixels from stats
-                     // Only use pixels where mask > 0.5 for cleaner region statistics
-                     scaledMask( x, y, 0 ) = (value > 0.5) ? value : 0.0;
-                  }
-               }
-
-               regionStats = histEngine.ComputeStatistics( input, scaledMask, 0, 0 );
-            }
-
-            // Set the region metadata
-            regionStats.regionClass = rc;
-            regionStats.maskCoverage = coverage;
-
-            // Log the local statistics for debugging
-            console.WriteLn( String().Format( "  %s local stats: median=%.4f, stdDev=%.4f, SNR=%.1f",
-               IsoString( RegionClassDisplayName( rc ) ).c_str(),
-               regionStats.median,
-               regionStats.stdDev,
-               regionStats.snrEstimate ) );
-
-            // Select algorithm for this region based on LOCAL statistics
-            SelectedStretch selection = m_selector->Select( rc, regionStats );
-
-            // Log the selection
-            IsoString regionName = IsoString( RegionClassDisplayName( rc ) );
-            IsoString algoName = IsoString( StretchLibrary::TypeToName( selection.algorithm ) );
-            console.WriteLn( String().Format( "  %s (%.1f%%): %s (confidence: %.0f%%)",
-               regionName.c_str(),
-               coverage * 100.0,
-               algoName.c_str(),
-               selection.confidence * 100.0 ) );
-
-            // Add to selection summary
-            SelectionSummary::RegionEntry entry;
-            entry.region = rc;
-            entry.algorithm = selection.algorithm;
-            entry.confidence = selection.confidence;
-            entry.coverage = coverage;
-            entry.rationale = selection.rationale;
-            result.selectionSummary.entries.push_back( entry );
-
-            // Store the selection (need to move the unique_ptr)
-            regionAlgorithms.emplace( rc, std::move( selection ) );
-         }
-
-         console.WriteLn( String().Format( "<br>Selected algorithms for %d regions",
-            static_cast<int>( regionAlgorithms.size() ) ) );
-      }
-      else
-      {
-         // Fall back to single algorithm for entire image
-         SelectedStretch selection = SelectAlgorithm( stats );
-
-         // Create selection summary with single entry
-         SelectionSummary::RegionEntry entry;
-         entry.region = RegionClass::Background;
-         entry.algorithm = selection.algorithm;
-         entry.confidence = selection.confidence;
-         entry.coverage = 1.0;
-         entry.rationale = selection.rationale;
-         result.selectionSummary.entries.push_back( entry );
-
-         regionAlgorithms.emplace( RegionClass::Background, std::move( selection ) );
-      }
-
-      ReportProgress( ProcessingStage::SelectingAlgorithms, 1.0, "Algorithm selected" );
+      RunAlgorithmSelectionStage( input, stats, result,
+                                  useRegionAware, regionAlgorithms, regionMasks );
 
       // Stage 3: Stretching
-      result.stage = ProcessingStage::Stretching;
-      ReportProgress( ProcessingStage::Stretching, 0.0, "Applying stretch" );
-
-      auto stretchStart = std::chrono::high_resolution_clock::now();
-
-      Image stretched;
-      if ( m_config.useLRGBMode && input.NumberOfNominalChannels() >= 3 )
-      {
-         // Extract luminance
-         Image luminance = m_lrgbProcessor->ExtractLuminance( input );
-
-         // Apply region-aware or single stretch to luminance
-         Image stretchedL;
-         if ( useRegionAware && regionAlgorithms.size() > 1 )
-         {
-            stretchedL = ApplyRegionAwareStretch( luminance, regionAlgorithms, regionMasks );
-         }
-         else
-         {
-            // Use first (and only) algorithm
-            auto it = regionAlgorithms.begin();
-            stretchedL = ApplyStretch( luminance, it->second.algorithmInstance.get() );
-         }
-
-         // Recombine with color
-         stretched = m_lrgbProcessor->ApplyStretchedLuminance( input, stretchedL );
-
-         // Store for debugging
-         result.luminanceImage = std::make_unique<Image>( stretchedL );
-      }
-      else
-      {
-         // Apply region-aware or single stretch directly
-         if ( useRegionAware && regionAlgorithms.size() > 1 )
-         {
-            stretched = ApplyRegionAwareStretch( input, regionAlgorithms, regionMasks );
-         }
-         else
-         {
-            // Use first (and only) algorithm
-            auto it = regionAlgorithms.begin();
-            stretched = ApplyStretch( input, it->second.algorithmInstance.get() );
-         }
-      }
-
-      auto stretchEnd = std::chrono::high_resolution_clock::now();
-      result.stretchTimeMs = std::chrono::duration<double, std::milli>(
-         stretchEnd - stretchStart ).count();
-
-      ReportProgress( ProcessingStage::Stretching, 1.0, "Stretch complete" );
+      Image stretched = RunStretchStage( input, useRegionAware,
+                                          regionAlgorithms, regionMasks, result );
 
       // Post-stretch transition smoothing
-      // Check for hard transitions at region boundaries and smooth if needed
-      {
-         TransitionChecker transitionChecker;
-         int totalSmoothed = 0;
-         int numChannels = stretched.NumberOfNominalChannels();
-
-         // Process each channel
-         for ( int c = 0; c < numChannels; ++c )
-         {
-            int numSmoothed;
-            if ( useRegionAware && !m_segmentationResult.segmentation.classMap.IsEmpty() )
-            {
-               // Use segmentation-aware smoothing to preserve real feature boundaries
-               numSmoothed = transitionChecker.CheckAndSmooth(
-                  stretched, m_segmentationResult.segmentation.classMap, c );
-            }
-            else
-            {
-               numSmoothed = transitionChecker.CheckAndSmooth( stretched, c );
-            }
-            totalSmoothed += numSmoothed;
-         }
-
-         if ( totalSmoothed > 0 )
-         {
-            Console().WriteLn( String().Format( "  Smoothed %d hard transitions across %d channel(s)",
-               totalSmoothed, numChannels ) );
-         }
-      }
+      RunTransitionStage( stretched, useRegionAware );
 
       // Stage 4: Tone Mapping
-      result.stage = ProcessingStage::ToneMapping;
-      Image toned = stretched;
-
-      if ( m_config.applyToneMapping )
-      {
-         ReportProgress( ProcessingStage::ToneMapping, 0.0, "Applying tone mapping" );
-
-         auto toneStart = std::chrono::high_resolution_clock::now();
-         toned = RunToneMapping( stretched );
-         auto toneEnd = std::chrono::high_resolution_clock::now();
-         result.toneMappingTimeMs = std::chrono::duration<double, std::milli>(
-            toneEnd - toneStart ).count();
-
-         ReportProgress( ProcessingStage::ToneMapping, 1.0, "Tone mapping complete" );
-      }
+      Image toned = RunToneMappingStage( stretched, result );
 
       // Stage 5: Finalization
-      result.stage = ProcessingStage::Finalizing;
-      ReportProgress( ProcessingStage::Finalizing, 0.0, "Finalizing" );
-
-      // Apply global saturation adjustment
-      if ( m_config.useLRGBMode && std::abs( m_config.globalSaturation ) > 0.001 )
-      {
-         m_lrgbProcessor->ApplySaturationBoost( toned, m_config.globalSaturation );
-      }
-
-      result.outputImage = std::move( toned );
-
-      ReportProgress( ProcessingStage::Finalizing, 1.0, "Complete" );
-
-      // Done
-      result.stage = ProcessingStage::Complete;
-      result.isValid = true;
+      RunFinalizationStage( toned, result );
    }
    catch ( const std::exception& e )
    {
@@ -477,6 +206,343 @@ CompositorResult Compositor::Process( const Image& input, CompositorProgressCall
       totalEnd - totalStart ).count();
 
    return result;
+}
+
+// ----------------------------------------------------------------------------
+
+void Compositor::RunSegmentationStage( const Image& input, CompositorResult& result )
+{
+   if ( m_config.useSegmentation )
+   {
+      result.stage = ProcessingStage::Segmenting;
+      ReportProgress( ProcessingStage::Segmenting, 0.0, "Running segmentation" );
+
+      double segTimeMs = 0;
+      bool segSuccess = RunSegmentation( input, segTimeMs );
+      result.segmentationTimeMs = segTimeMs;
+
+      if ( segSuccess )
+      {
+         ReportProgress( ProcessingStage::Segmenting, 1.0, "Segmentation complete" );
+      }
+      else
+      {
+         ReportProgress( ProcessingStage::Segmenting, 1.0, "Segmentation skipped" );
+      }
+   }
+}
+
+// ----------------------------------------------------------------------------
+
+RegionStatistics Compositor::RunAnalysisStage( const Image& input, CompositorResult& result )
+{
+   result.stage = ProcessingStage::Analyzing;
+   ReportProgress( ProcessingStage::Analyzing, 0.0, "Analyzing image" );
+
+   auto analysisStart = std::chrono::high_resolution_clock::now();
+   RegionStatistics stats = AnalyzeImage( input );
+   auto analysisEnd = std::chrono::high_resolution_clock::now();
+   result.analysisTimeMs = std::chrono::duration<double, std::milli>(
+      analysisEnd - analysisStart ).count();
+
+   ReportProgress( ProcessingStage::Analyzing, 1.0, "Analysis complete" );
+
+   return stats;
+}
+
+// ----------------------------------------------------------------------------
+
+void Compositor::RunAlgorithmSelectionStage(
+   const Image& input,
+   const RegionStatistics& stats,
+   CompositorResult& result,
+   bool& useRegionAware,
+   std::map<RegionClass, SelectedStretch>& regionAlgorithms,
+   std::map<RegionClass, Image>& regionMasks )
+{
+   result.stage = ProcessingStage::SelectingAlgorithms;
+   ReportProgress( ProcessingStage::SelectingAlgorithms, 0.0, "Selecting algorithm" );
+
+   // Check if we have valid segmentation results for region-aware processing
+   useRegionAware = m_config.useSegmentation && m_segmentationResult.isValid;
+
+   // Maps for region-aware processing
+   std::map<RegionClass, double> regionCoverage;
+
+   if ( useRegionAware )
+   {
+      Console console;
+      console.WriteLn( "<br>Region-aware algorithm selection:" );
+
+      // Get regions with significant coverage (>1%)
+      regionCoverage = ComputeRegionCoverage( m_segmentationResult, 0.01 );
+
+      // Extract masks for significant regions
+      regionMasks = ExtractRegionMasks( m_segmentationResult, regionCoverage );
+
+      // For each significant region, compute statistics and select algorithm
+      HistogramEngine histEngine;
+      for ( const auto& coveragePair : regionCoverage )
+      {
+         RegionClass rc = coveragePair.first;
+         double coverage = coveragePair.second;
+
+         // Get mask for this region
+         auto maskIt = regionMasks.find( rc );
+         if ( maskIt == regionMasks.end() )
+            continue;
+
+         // Scale mask to match input image dimensions if necessary
+         const Image& segMask = maskIt->second;
+         int maskWidth = segMask.Width();
+         int maskHeight = segMask.Height();
+         int imgWidth = input.Width();
+         int imgHeight = input.Height();
+
+         // Compute LOCAL statistics for this region using the mask
+         // This is CRITICAL - we must use the actual pixel values within the masked region
+         RegionStatistics regionStats;
+
+         if ( maskWidth == imgWidth && maskHeight == imgHeight )
+         {
+            // Mask is already at image resolution - use directly
+            regionStats = histEngine.ComputeStatistics( input, segMask, 0, 0 );
+         }
+         else
+         {
+            // Scale mask to image resolution using bilinear interpolation
+            Image scaledMask( imgWidth, imgHeight, ColorSpace::Gray );
+            double scaleX = static_cast<double>( maskWidth ) / imgWidth;
+            double scaleY = static_cast<double>( maskHeight ) / imgHeight;
+
+            for ( int y = 0; y < imgHeight; ++y )
+            {
+               for ( int x = 0; x < imgWidth; ++x )
+               {
+                  double sx = x * scaleX;
+                  double sy = y * scaleY;
+                  int x0 = static_cast<int>( sx );
+                  int y0 = static_cast<int>( sy );
+                  int x1 = std::min( x0 + 1, maskWidth - 1 );
+                  int y1 = std::min( y0 + 1, maskHeight - 1 );
+                  double fx = sx - x0;
+                  double fy = sy - y0;
+
+                  double v00 = segMask( x0, y0, 0 );
+                  double v10 = segMask( x1, y0, 0 );
+                  double v01 = segMask( x0, y1, 0 );
+                  double v11 = segMask( x1, y1, 0 );
+
+                  double value = Interpolation::BilinearInterpolate( v00, v10, v01, v11, fx, fy );
+
+                  // Apply threshold to exclude blended edge pixels from stats
+                  // Only use pixels where mask > 0.5 for cleaner region statistics
+                  scaledMask( x, y, 0 ) = (value > 0.5) ? value : 0.0;
+               }
+            }
+
+            regionStats = histEngine.ComputeStatistics( input, scaledMask, 0, 0 );
+         }
+
+         // Set the region metadata
+         regionStats.regionClass = rc;
+         regionStats.maskCoverage = coverage;
+
+         // Log the local statistics for debugging
+         console.WriteLn( String().Format( "  %s local stats: median=%.4f, stdDev=%.4f, SNR=%.1f",
+            IsoString( RegionClassDisplayName( rc ) ).c_str(),
+            regionStats.median,
+            regionStats.stdDev,
+            regionStats.snrEstimate ) );
+
+         // Select algorithm for this region based on LOCAL statistics
+         SelectedStretch selection = m_selector->Select( rc, regionStats );
+
+         // Log the selection
+         IsoString regionName = IsoString( RegionClassDisplayName( rc ) );
+         IsoString algoName = IsoString( StretchLibrary::TypeToName( selection.algorithm ) );
+         console.WriteLn( String().Format( "  %s (%.1f%%): %s (confidence: %.0f%%)",
+            regionName.c_str(),
+            coverage * 100.0,
+            algoName.c_str(),
+            selection.confidence * 100.0 ) );
+
+         // Add to selection summary
+         SelectionSummary::RegionEntry entry;
+         entry.region = rc;
+         entry.algorithm = selection.algorithm;
+         entry.confidence = selection.confidence;
+         entry.coverage = coverage;
+         entry.rationale = selection.rationale;
+         result.selectionSummary.entries.push_back( entry );
+
+         // Store the selection (need to move the unique_ptr)
+         regionAlgorithms.emplace( rc, std::move( selection ) );
+      }
+
+      console.WriteLn( String().Format( "<br>Selected algorithms for %d regions",
+         static_cast<int>( regionAlgorithms.size() ) ) );
+   }
+   else
+   {
+      // Fall back to single algorithm for entire image
+      SelectedStretch selection = SelectAlgorithm( stats );
+
+      // Create selection summary with single entry
+      SelectionSummary::RegionEntry entry;
+      entry.region = RegionClass::Background;
+      entry.algorithm = selection.algorithm;
+      entry.confidence = selection.confidence;
+      entry.coverage = 1.0;
+      entry.rationale = selection.rationale;
+      result.selectionSummary.entries.push_back( entry );
+
+      regionAlgorithms.emplace( RegionClass::Background, std::move( selection ) );
+   }
+
+   ReportProgress( ProcessingStage::SelectingAlgorithms, 1.0, "Algorithm selected" );
+}
+
+// ----------------------------------------------------------------------------
+
+Image Compositor::RunStretchStage(
+   const Image& input,
+   bool useRegionAware,
+   std::map<RegionClass, SelectedStretch>& regionAlgorithms,
+   const std::map<RegionClass, Image>& regionMasks,
+   CompositorResult& result )
+{
+   result.stage = ProcessingStage::Stretching;
+   ReportProgress( ProcessingStage::Stretching, 0.0, "Applying stretch" );
+
+   auto stretchStart = std::chrono::high_resolution_clock::now();
+
+   Image stretched;
+   if ( m_config.useLRGBMode && input.NumberOfNominalChannels() >= 3 )
+   {
+      // Extract luminance
+      Image luminance = m_lrgbProcessor->ExtractLuminance( input );
+
+      // Apply region-aware or single stretch to luminance
+      Image stretchedL;
+      if ( useRegionAware && regionAlgorithms.size() > 1 )
+      {
+         stretchedL = ApplyRegionAwareStretch( luminance, regionAlgorithms, regionMasks );
+      }
+      else
+      {
+         // Use first (and only) algorithm
+         auto it = regionAlgorithms.begin();
+         stretchedL = ApplyStretch( luminance, it->second.algorithmInstance.get() );
+      }
+
+      // Recombine with color
+      stretched = m_lrgbProcessor->ApplyStretchedLuminance( input, stretchedL );
+
+      // Store for debugging
+      result.luminanceImage = std::make_unique<Image>( stretchedL );
+   }
+   else
+   {
+      // Apply region-aware or single stretch directly
+      if ( useRegionAware && regionAlgorithms.size() > 1 )
+      {
+         stretched = ApplyRegionAwareStretch( input, regionAlgorithms, regionMasks );
+      }
+      else
+      {
+         // Use first (and only) algorithm
+         auto it = regionAlgorithms.begin();
+         stretched = ApplyStretch( input, it->second.algorithmInstance.get() );
+      }
+   }
+
+   auto stretchEnd = std::chrono::high_resolution_clock::now();
+   result.stretchTimeMs = std::chrono::duration<double, std::milli>(
+      stretchEnd - stretchStart ).count();
+
+   ReportProgress( ProcessingStage::Stretching, 1.0, "Stretch complete" );
+
+   return stretched;
+}
+
+// ----------------------------------------------------------------------------
+
+void Compositor::RunTransitionStage( Image& stretched, bool useRegionAware )
+{
+   // Post-stretch transition smoothing
+   // Check for hard transitions at region boundaries and smooth if needed
+   TransitionChecker transitionChecker;
+   int totalSmoothed = 0;
+   int numChannels = stretched.NumberOfNominalChannels();
+
+   // Process each channel
+   for ( int c = 0; c < numChannels; ++c )
+   {
+      int numSmoothed;
+      if ( useRegionAware && !m_segmentationResult.segmentation.classMap.IsEmpty() )
+      {
+         // Use segmentation-aware smoothing to preserve real feature boundaries
+         numSmoothed = transitionChecker.CheckAndSmooth(
+            stretched, m_segmentationResult.segmentation.classMap, c );
+      }
+      else
+      {
+         numSmoothed = transitionChecker.CheckAndSmooth( stretched, c );
+      }
+      totalSmoothed += numSmoothed;
+   }
+
+   if ( totalSmoothed > 0 )
+   {
+      Console().WriteLn( String().Format( "  Smoothed %d hard transitions across %d channel(s)",
+         totalSmoothed, numChannels ) );
+   }
+}
+
+// ----------------------------------------------------------------------------
+
+Image Compositor::RunToneMappingStage( const Image& stretched, CompositorResult& result )
+{
+   result.stage = ProcessingStage::ToneMapping;
+   Image toned = stretched;
+
+   if ( m_config.applyToneMapping )
+   {
+      ReportProgress( ProcessingStage::ToneMapping, 0.0, "Applying tone mapping" );
+
+      auto toneStart = std::chrono::high_resolution_clock::now();
+      toned = RunToneMapping( stretched );
+      auto toneEnd = std::chrono::high_resolution_clock::now();
+      result.toneMappingTimeMs = std::chrono::duration<double, std::milli>(
+         toneEnd - toneStart ).count();
+
+      ReportProgress( ProcessingStage::ToneMapping, 1.0, "Tone mapping complete" );
+   }
+
+   return toned;
+}
+
+// ----------------------------------------------------------------------------
+
+void Compositor::RunFinalizationStage( Image& toned, CompositorResult& result )
+{
+   result.stage = ProcessingStage::Finalizing;
+   ReportProgress( ProcessingStage::Finalizing, 0.0, "Finalizing" );
+
+   // Apply global saturation adjustment
+   if ( m_config.useLRGBMode && std::abs( m_config.globalSaturation ) > 0.001 )
+   {
+      m_lrgbProcessor->ApplySaturationBoost( toned, m_config.globalSaturation );
+   }
+
+   result.outputImage = std::move( toned );
+
+   ReportProgress( ProcessingStage::Finalizing, 1.0, "Complete" );
+
+   // Done
+   result.stage = ProcessingStage::Complete;
+   result.isValid = true;
 }
 
 // ----------------------------------------------------------------------------
@@ -578,6 +644,13 @@ Image Compositor::ApplyStretch( const Image& input, IStretchAlgorithm* algorithm
    int height = input.Height();
    int numChannels = input.NumberOfNominalChannels();
 
+   // Build a lookup table for the transfer function
+   // 65536 entries gives <0.002% interpolation error
+   static constexpr int LUT_SIZE = 65536;
+   std::vector<float> lut( LUT_SIZE );
+   for ( int i = 0; i < LUT_SIZE; ++i )
+      lut[i] = algorithm->Apply( static_cast<float>( i ) / ( LUT_SIZE - 1 ) );
+
    Image output( width, height, input.ColorSpace() );
 
    for ( int c = 0; c < numChannels; ++c )
@@ -586,7 +659,14 @@ Image Compositor::ApplyStretch( const Image& input, IStretchAlgorithm* algorithm
       {
          for ( int x = 0; x < width; ++x )
          {
-            output( x, y, c ) = algorithm->Apply( input( x, y, c ) );
+            float v = input( x, y, c );
+            // Clamp and lookup with linear interpolation
+            v = std::max( 0.0f, std::min( 1.0f, v ) );
+            float fidx = v * ( LUT_SIZE - 1 );
+            int idx0 = static_cast<int>( fidx );
+            int idx1 = std::min( idx0 + 1, LUT_SIZE - 1 );
+            float frac = fidx - idx0;
+            output( x, y, c ) = lut[idx0] * ( 1.0f - frac ) + lut[idx1] * frac;
          }
       }
    }
@@ -606,14 +686,8 @@ bool Compositor::RunSegmentation( const Image& input, double& segmentationTimeMs
 
    if ( modelPath.IsEmpty() )
    {
-      // Try to find the model in the src/models directory relative to module
-      // This handles development builds
-      modelPath = "/home/scarter4work/projects/NukeX/src/models/nukex_segmentation.onnx";
-      if ( !File::Exists( modelPath ) )
-      {
-         // Also try installed location
-         modelPath = "/opt/PixInsight/bin/nukex_segmentation.onnx";
-      }
+      // Try standard installed location
+      modelPath = "/opt/PixInsight/bin/nukex_segmentation.onnx";
    }
 
    if ( !File::Exists( modelPath ) )
@@ -972,10 +1046,7 @@ Image Compositor::ApplyRegionAwareStretch(
                   // Smooth region: use bilinear for anti-aliasing
                   double fx = sx - x0;
                   double fy = sy - y0;
-                  value = v00 * (1.0 - fx) * (1.0 - fy) +
-                          v10 * fx * (1.0 - fy) +
-                          v01 * (1.0 - fx) * fy +
-                          v11 * fx * fy;
+                  value = Interpolation::BilinearInterpolate( v00, v10, v01, v11, fx, fy );
                }
 
                dstMask( x, y, 0 ) = value;

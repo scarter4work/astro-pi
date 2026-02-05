@@ -71,26 +71,26 @@ struct PixelStackMetadata
    float selectedValue = 0.0f;            // The chosen "best" value
    uint16_t sourceFrame = 0;              // Which frame contributed this pixel
    float confidence = 0.0f;               // Confidence in selection (0-1)
-   uint32_t outlierMask = 0;              // Bitmask of rejected frames (up to 32)
+   uint64_t outlierMask = 0;              // Bitmask of rejected frames (up to 64)
 
    // Check if a specific frame was marked as outlier
    bool IsOutlier( int frameIndex ) const
    {
-      return (frameIndex < 32) && ((outlierMask & (1u << frameIndex)) != 0);
+      return (frameIndex < 64) && ((outlierMask & (uint64_t( 1 ) << frameIndex)) != 0);
    }
 
    // Mark a frame as outlier
    void SetOutlier( int frameIndex )
    {
-      if ( frameIndex < 32 )
-         outlierMask |= (1u << frameIndex);
+      if ( frameIndex < 64 )
+         outlierMask |= (uint64_t( 1 ) << frameIndex);
    }
 
    // Count number of outlier frames
    int OutlierCount() const
    {
       int count = 0;
-      uint32_t mask = outlierMask;
+      uint64_t mask = outlierMask;
       while ( mask )
       {
          count += (mask & 1);
@@ -182,7 +182,7 @@ public:
    static float ComputeMean( const std::vector<float>& values );
    static float ComputeStdDev( const std::vector<float>& values, float mean );
    static float ComputeMedian( std::vector<float>& values );  // Modifies input!
-   static float ComputeMAD( std::vector<float>& values, float median );
+   static float ComputeMAD( std::vector<float> values, float median );
    static float ComputeSkewness( const std::vector<float>& values, float mean, float sigma );
    static float ComputeKurtosis( const std::vector<float>& values, float mean, float sigma );
    static float ComputeBimodalityCoefficient( const std::vector<float>& values, float mean, float sigma );
@@ -208,7 +208,7 @@ private:
    void IdentifyOutliers(
       const std::vector<float>& values,
       const StackDistributionParams& dist,
-      uint32_t& outlierMask ) const;
+      uint64_t& outlierMask ) const;
 };
 
 // ----------------------------------------------------------------------------

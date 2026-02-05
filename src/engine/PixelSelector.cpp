@@ -53,12 +53,48 @@ void TargetContext::ParseFromHeaders( const FITSKeywordArray& keywords )
 
 void TargetContext::InferExpectedFeatures()
 {
-   if ( objectName.IsEmpty() )
+   if ( objectName.IsEmpty() && filter.IsEmpty() )
       return;
 
-   KnownObjects::GetExpectedFeatures( objectName,
-      expectsEmissionNebula, expectsDarkNebula, expectsGalaxy,
-      expectsStarCluster, expectsPlanetaryNebula );
+   // Infer from object name first
+   if ( !objectName.IsEmpty() )
+   {
+      KnownObjects::GetExpectedFeatures( objectName,
+         expectsEmissionNebula, expectsDarkNebula, expectsGalaxy,
+         expectsStarCluster, expectsPlanetaryNebula );
+   }
+
+   // Apply filter-based adjustments
+   if ( !filter.IsEmpty() )
+   {
+      String upperFilter = filter.Uppercase();
+
+      // Detect narrowband filters
+      bool isNarrowband = upperFilter.Contains( "HA" ) ||
+                          upperFilter.Contains( "H-ALPHA" ) ||
+                          upperFilter.Contains( "HALPHA" ) ||
+                          upperFilter.Contains( "OIII" ) ||
+                          upperFilter.Contains( "O3" ) ||
+                          upperFilter.Contains( "SII" ) ||
+                          upperFilter.Contains( "S2" ) ||
+                          upperFilter.Contains( "NII" );
+
+      if ( isNarrowband )
+      {
+         // Narrowband: stronger signal preservation, flatter background expected
+         // Almost all narrowband signal IS emission nebulosity
+         expectsEmissionNebula = true;
+      }
+
+      // Detect luminance filter - broadband, all features equally likely
+      bool isLuminance = upperFilter.Contains( "LUM" ) ||
+                         upperFilter.Contains( "CLEAR" ) ||
+                         upperFilter == "L";
+
+      // Luminance data doesn't change expectations, but we note it
+      // for potential future use (e.g., luminance weighting)
+      (void)isLuminance;
+   }
 }
 
 // ----------------------------------------------------------------------------
@@ -466,6 +502,25 @@ float PixelSelector::ApplySpatialSmoothing(
 namespace KnownObjects
 {
 
+static bool MatchesDesignation( const String& name, const String& prefix, const String& number )
+{
+   String designator = prefix + number;
+   String upper = name.Uppercase();
+   String upperDes = designator.Uppercase();
+   int pos = upper.Find( upperDes );
+   while ( pos >= 0 )
+   {
+      int endPos = pos + int( upperDes.Length() );
+      if ( endPos >= int( upper.Length() ) )
+         return true;
+      char nextChar = upper[endPos];
+      if ( nextChar < '0' || nextChar > '9' )
+         return true;
+      pos = upper.Find( upperDes, endPos );
+   }
+   return false;
+}
+
 void GetExpectedFeatures( const String& objectName,
                           bool& emission, bool& dark, bool& galaxy,
                           bool& cluster, bool& planetary )
@@ -483,7 +538,7 @@ void GetExpectedFeatures( const String& objectName,
    {
       emission = true;
       // Many emission nebulae also have dark regions
-      if ( upper.Contains( "42" ) || upper.Contains( "ORION" ) ||
+      if ( MatchesDesignation( upper, "M", "42" ) || upper.Contains( "ORION" ) ||
            upper.Contains( "HORSEHEAD" ) || upper.Contains( "BARNARD" ) )
          dark = true;
    }
@@ -499,91 +554,92 @@ void GetExpectedFeatures( const String& objectName,
 
    // Check for star clusters
    if ( upper.Contains( "CLUSTER" ) ||
-        (upper.StartsWith( "M" ) && (upper.Contains( "45" ) || upper.Contains( "7" ) ||
-         upper.Contains( "35" ) || upper.Contains( "36" ) || upper.Contains( "37" ) ||
-         upper.Contains( "38" ) || upper.Contains( "44" ) || upper.Contains( "67" ))) )
+        MatchesDesignation( upper, "M", "45" ) || MatchesDesignation( upper, "M", "7" ) ||
+        MatchesDesignation( upper, "M", "35" ) || MatchesDesignation( upper, "M", "36" ) ||
+        MatchesDesignation( upper, "M", "37" ) || MatchesDesignation( upper, "M", "38" ) ||
+        MatchesDesignation( upper, "M", "44" ) || MatchesDesignation( upper, "M", "67" ) )
       cluster = true;
 }
 
 bool IsMessierEmissionNebula( const String& name )
 {
    // Common Messier emission nebulae
-   return name.Contains( "M1" ) ||   // Crab
-          name.Contains( "M8" ) ||   // Lagoon
-          name.Contains( "M16" ) ||  // Eagle
-          name.Contains( "M17" ) ||  // Omega/Swan
-          name.Contains( "M20" ) ||  // Trifid
-          name.Contains( "M42" ) ||  // Orion
-          name.Contains( "M43" ) ||  // De Mairan's
-          name.Contains( "M76" ) ||  // Little Dumbbell
-          name.Contains( "M78" );    // Reflection but often grouped
+   return MatchesDesignation( name, "M", "1" ) ||   // Crab
+          MatchesDesignation( name, "M", "8" ) ||   // Lagoon
+          MatchesDesignation( name, "M", "16" ) ||  // Eagle
+          MatchesDesignation( name, "M", "17" ) ||  // Omega/Swan
+          MatchesDesignation( name, "M", "20" ) ||  // Trifid
+          MatchesDesignation( name, "M", "42" ) ||  // Orion
+          MatchesDesignation( name, "M", "43" ) ||  // De Mairan's
+          MatchesDesignation( name, "M", "76" ) ||  // Little Dumbbell
+          MatchesDesignation( name, "M", "78" );    // Reflection but often grouped
 }
 
 bool IsMessierGalaxy( const String& name )
 {
    // Common Messier galaxies
-   return name.Contains( "M31" ) ||  // Andromeda
-          name.Contains( "M32" ) ||
-          name.Contains( "M33" ) ||  // Triangulum
-          name.Contains( "M51" ) ||  // Whirlpool
-          name.Contains( "M63" ) ||  // Sunflower
-          name.Contains( "M64" ) ||  // Black Eye
-          name.Contains( "M65" ) ||
-          name.Contains( "M66" ) ||
-          name.Contains( "M74" ) ||
-          name.Contains( "M77" ) ||
-          name.Contains( "M81" ) ||  // Bode's
-          name.Contains( "M82" ) ||  // Cigar
-          name.Contains( "M83" ) ||
-          name.Contains( "M101" ) || // Pinwheel
-          name.Contains( "M104" ) || // Sombrero
-          name.Contains( "M106" );
+   return MatchesDesignation( name, "M", "31" ) ||  // Andromeda
+          MatchesDesignation( name, "M", "32" ) ||
+          MatchesDesignation( name, "M", "33" ) ||  // Triangulum
+          MatchesDesignation( name, "M", "51" ) ||  // Whirlpool
+          MatchesDesignation( name, "M", "63" ) ||  // Sunflower
+          MatchesDesignation( name, "M", "64" ) ||  // Black Eye
+          MatchesDesignation( name, "M", "65" ) ||
+          MatchesDesignation( name, "M", "66" ) ||
+          MatchesDesignation( name, "M", "74" ) ||
+          MatchesDesignation( name, "M", "77" ) ||
+          MatchesDesignation( name, "M", "81" ) ||  // Bode's
+          MatchesDesignation( name, "M", "82" ) ||  // Cigar
+          MatchesDesignation( name, "M", "83" ) ||
+          MatchesDesignation( name, "M", "101" ) || // Pinwheel
+          MatchesDesignation( name, "M", "104" ) || // Sombrero
+          MatchesDesignation( name, "M", "106" );
 }
 
 bool IsNGCEmissionNebula( const String& name )
 {
-   return name.Contains( "NGC281" ) ||   // Pacman
-          name.Contains( "NGC1499" ) ||  // California
-          name.Contains( "NGC2024" ) ||  // Flame
-          name.Contains( "NGC2237" ) ||  // Rosette
-          name.Contains( "NGC2244" ) ||  // Rosette cluster
-          name.Contains( "NGC6888" ) ||  // Crescent
-          name.Contains( "NGC7000" ) ||  // North America
-          name.Contains( "NGC7635" ) ||  // Bubble
-          name.Contains( "IC1396" ) ||   // Elephant Trunk
-          name.Contains( "IC1805" ) ||   // Heart
-          name.Contains( "IC1848" ) ||   // Soul
-          name.Contains( "IC2177" ) ||   // Seagull
-          name.Contains( "IC5070" ) ||   // Pelican
-          name.Contains( "SH2-" );       // Sharpless catalog
+   return MatchesDesignation( name, "NGC", "281" ) ||   // Pacman
+          MatchesDesignation( name, "NGC", "1499" ) ||  // California
+          MatchesDesignation( name, "NGC", "2024" ) ||  // Flame
+          MatchesDesignation( name, "NGC", "2237" ) ||  // Rosette
+          MatchesDesignation( name, "NGC", "2244" ) ||  // Rosette cluster
+          MatchesDesignation( name, "NGC", "6888" ) ||  // Crescent
+          MatchesDesignation( name, "NGC", "7000" ) ||  // North America
+          MatchesDesignation( name, "NGC", "7635" ) ||  // Bubble
+          MatchesDesignation( name, "IC", "1396" ) ||   // Elephant Trunk
+          MatchesDesignation( name, "IC", "1805" ) ||   // Heart
+          MatchesDesignation( name, "IC", "1848" ) ||   // Soul
+          MatchesDesignation( name, "IC", "2177" ) ||   // Seagull
+          MatchesDesignation( name, "IC", "5070" ) ||   // Pelican
+          name.Contains( "SH2-" );                      // Sharpless catalog
 }
 
 bool IsNGCGalaxy( const String& name )
 {
-   return name.Contains( "NGC224" ) ||   // M31
-          name.Contains( "NGC598" ) ||   // M33
-          name.Contains( "NGC891" ) ||
-          name.Contains( "NGC1300" ) ||
-          name.Contains( "NGC2403" ) ||
-          name.Contains( "NGC4565" ) ||  // Needle
-          name.Contains( "NGC5128" ) ||  // Centaurus A
-          name.Contains( "NGC6744" ) ||
-          name.Contains( "NGC7331" );
+   return MatchesDesignation( name, "NGC", "224" ) ||   // M31
+          MatchesDesignation( name, "NGC", "598" ) ||   // M33
+          MatchesDesignation( name, "NGC", "891" ) ||
+          MatchesDesignation( name, "NGC", "1300" ) ||
+          MatchesDesignation( name, "NGC", "2403" ) ||
+          MatchesDesignation( name, "NGC", "4565" ) ||  // Needle
+          MatchesDesignation( name, "NGC", "5128" ) ||  // Centaurus A
+          MatchesDesignation( name, "NGC", "6744" ) ||
+          MatchesDesignation( name, "NGC", "7331" );
 }
 
 bool IsPlanetaryNebula( const String& name )
 {
-   return name.Contains( "M27" ) ||      // Dumbbell
-          name.Contains( "M57" ) ||      // Ring
-          name.Contains( "M97" ) ||      // Owl
-          name.Contains( "NGC6543" ) ||  // Cat's Eye
-          name.Contains( "NGC6720" ) ||  // Ring
-          name.Contains( "NGC6826" ) ||  // Blinking
-          name.Contains( "NGC7009" ) ||  // Saturn
-          name.Contains( "NGC7293" ) ||  // Helix
-          name.Contains( "NGC7662" ) ||  // Blue Snowball
-          name.Contains( "ABELL" ) ||    // Abell planetaries
-          name.Contains( "PN " ) ||      // Explicit PN designation
+   return MatchesDesignation( name, "M", "27" ) ||      // Dumbbell
+          MatchesDesignation( name, "M", "57" ) ||      // Ring
+          MatchesDesignation( name, "M", "97" ) ||      // Owl
+          MatchesDesignation( name, "NGC", "6543" ) ||  // Cat's Eye
+          MatchesDesignation( name, "NGC", "6720" ) ||  // Ring
+          MatchesDesignation( name, "NGC", "6826" ) ||  // Blinking
+          MatchesDesignation( name, "NGC", "7009" ) ||  // Saturn
+          MatchesDesignation( name, "NGC", "7293" ) ||  // Helix
+          MatchesDesignation( name, "NGC", "7662" ) ||  // Blue Snowball
+          name.Contains( "ABELL" ) ||                   // Abell planetaries
+          name.Contains( "PN " ) ||                     // Explicit PN designation
           name.Contains( "PLANETARY" );
 }
 

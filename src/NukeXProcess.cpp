@@ -26,6 +26,7 @@ NukeXProcess::NukeXProcess()
    TheNukeXProcess = this;
 
    // Instantiate all process parameters
+   new NXProcessingMode( this );
    new NXPreviewMode( this );
    new NXStretchAlgorithm( this );
    new NXAutoSegment( this );

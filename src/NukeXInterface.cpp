@@ -163,12 +163,17 @@ bool NukeXInterface::GenerateRealTimePreview( UInt16Image& image, const View& vi
    image.Apply( result );
 
    // Update info string
-   info = String().Format( "NukeX Preview | Strength: %.2f", m_instance.p_stretchStrength );
+   if ( m_instance.p_processingMode == NXProcessingMode::FullyAutomatic )
+      info = "NukeX Preview | FULLY AUTOMATIC";
+   else
+   {
+      info = String().Format( "NukeX Preview | Strength: %.2f", m_instance.p_stretchStrength );
 
-   if ( m_instance.p_autoSegment )
-      info += " | Segmentation: ON";
-   if ( m_instance.p_enableLRGB )
-      info += " | LRGB";
+      if ( m_instance.p_autoSegment )
+         info += " | Segmentation: ON";
+      if ( m_instance.p_enableLRGB )
+         info += " | LRGB";
+   }
 
    m_realTimePreviewUpdated = true;
    return true;
@@ -188,6 +193,16 @@ void NukeXInterface::UpdateControls()
 {
    if ( GUI == nullptr )
       return;
+
+   // Processing Mode
+   bool isFullyAuto = ( m_instance.p_processingMode == NXProcessingMode::FullyAutomatic );
+   GUI->Mode_ComboBox.SetCurrentItem( isFullyAuto ? 0 : 1 );
+
+   // Disable all parameter sections when in fully automatic mode
+   GUI->Algorithm_Control.Enable( !isFullyAuto );
+   GUI->Stretch_Control.Enable( !isFullyAuto );
+   GUI->ToneMapping_Control.Enable( !isFullyAuto );
+   GUI->Regions_Control.Enable( !isFullyAuto );
 
    GUI->Algorithm_ComboBox.SetCurrentItem( m_instance.p_stretchAlgorithm );
    GUI->AutoSegment_CheckBox.SetChecked( m_instance.p_autoSegment );
@@ -246,7 +261,14 @@ void NukeXInterface::UpdateRealTimePreview()
 
 void NukeXInterface::e_ComboBoxItemSelected( ComboBox& sender, int itemIndex )
 {
-   if ( sender == GUI->Algorithm_ComboBox )
+   if ( sender == GUI->Mode_ComboBox )
+   {
+      m_instance.p_processingMode = ( itemIndex == 0 ) ?
+         NXProcessingMode::FullyAutomatic : NXProcessingMode::Manual;
+      UpdateControls();
+      UpdateRealTimePreview();
+   }
+   else if ( sender == GUI->Algorithm_ComboBox )
    {
       m_instance.p_stretchAlgorithm = itemIndex;
 
@@ -351,6 +373,31 @@ NukeXInterface::GUIData::GUIData( NukeXInterface& w )
 {
    int labelWidth1 = w.Font().Width( String( "Stretch Strength:" ) + 'M' );
    int editWidth1 = w.Font().Width( String( '0', 10 ) );
+
+   // Processing Mode Section
+   Mode_SectionBar.SetTitle( "Processing Mode" );
+   Mode_SectionBar.SetSection( Mode_Control );
+
+   Mode_Label.SetText( "Mode:" );
+   Mode_Label.SetTextAlignment( TextAlign::Right | TextAlign::VertCenter );
+   Mode_Label.SetMinWidth( labelWidth1 );
+
+   Mode_ComboBox.AddItem( "Fully Automatic" );
+   Mode_ComboBox.AddItem( "Manual" );
+   Mode_ComboBox.SetToolTip( "<p><b>Fully Automatic</b>: NukeX analyzes your image and determines all "
+      "processing parameters automatically using ML segmentation and image statistics. "
+      "Just press the button and let NukeX do the rest.</p>"
+      "<p><b>Manual</b>: Full control over all processing parameters.</p>" );
+   Mode_ComboBox.OnItemSelected( (ComboBox::item_event_handler)&NukeXInterface::e_ComboBoxItemSelected, w );
+
+   Mode_HSizer.SetSpacing( 6 );
+   Mode_HSizer.Add( Mode_Label );
+   Mode_HSizer.Add( Mode_ComboBox, 100 );
+
+   Mode_Sizer.SetSpacing( 4 );
+   Mode_Sizer.Add( Mode_HSizer );
+
+   Mode_Control.SetSizer( Mode_Sizer );
 
    // Algorithm Section
    Algorithm_SectionBar.SetTitle( "Algorithm" );
@@ -612,6 +659,8 @@ NukeXInterface::GUIData::GUIData( NukeXInterface& w )
    // Global Layout
    Global_Sizer.SetMargin( 8 );
    Global_Sizer.SetSpacing( 6 );
+   Global_Sizer.Add( Mode_SectionBar );
+   Global_Sizer.Add( Mode_Control );
    Global_Sizer.Add( Algorithm_SectionBar );
    Global_Sizer.Add( Algorithm_Control );
    Global_Sizer.Add( Stretch_SectionBar );

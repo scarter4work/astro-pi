@@ -55,6 +55,7 @@ public:
 private:
 
    // Process parameters
+   pcl_enum p_processingMode;
    pcl_enum p_previewMode;
    pcl_enum p_stretchAlgorithm;
    pcl_bool p_autoSegment;

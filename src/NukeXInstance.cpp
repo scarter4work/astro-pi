@@ -12,6 +12,7 @@
 
 #include <pcl/AutoViewLock.h>
 #include <pcl/Console.h>
+#include <pcl/FITSHeaderKeyword.h>
 #include <pcl/StandardStatus.h>
 #include <pcl/View.h>
 
@@ -27,6 +28,7 @@ namespace pcl
 
 NukeXInstance::NukeXInstance( const MetaProcess* m )
    : ProcessImplementation( m )
+   , p_processingMode( NXProcessingMode::Default )
    , p_previewMode( NXPreviewMode::Default )
    , p_stretchAlgorithm( NXStretchAlgorithm::Default )
    , p_autoSegment( TheNXAutoSegmentParameter->DefaultValue() )
@@ -68,6 +70,7 @@ void NukeXInstance::Assign( const ProcessImplementation& p )
    const NukeXInstance* x = dynamic_cast<const NukeXInstance*>( &p );
    if ( x != nullptr )
    {
+      p_processingMode     = x->p_processingMode;
       p_previewMode        = x->p_previewMode;
       p_stretchAlgorithm   = x->p_stretchAlgorithm;
       p_autoSegment        = x->p_autoSegment;
@@ -183,6 +186,28 @@ bool NukeXInstance::IsRealTimePreviewEnabled( const View& ) const
 CompositorConfig NukeXInstance::BuildCompositorConfig() const
 {
    CompositorConfig config;
+
+   // FULLY AUTOMATIC MODE: everything computed from image stats
+   if ( p_processingMode == NXProcessingMode::FullyAutomatic )
+   {
+      config.useSegmentation = true;
+      config.useAutoSelection = true;
+      config.useLRGBMode = true;
+      config.applyToneMapping = true;
+      config.globalStrength = 1.0;    // Will be modulated by SNR in ExecuteOn()
+      config.globalContrast = 1.0;
+      config.globalSaturation = 1.0;
+      config.blendConfig.featherRadius = 5.0;
+      config.blendConfig.normalizeWeights = true;
+      config.toneConfig.autoBlackPoint = true;
+      config.toneConfig.autoWhitePoint = true;
+      config.toneConfig.gamma = 1.0;
+      config.useParallelBlend = true;
+      config.numThreads = 0;
+      return config;
+   }
+
+   // MANUAL MODE: existing code below unchanged...
 
    // Processing modes - use user's segmentation setting
    config.useSegmentation = p_autoSegment;
@@ -306,6 +331,66 @@ bool NukeXInstance::ExecuteOn( View& view )
 
    // Build configuration from parameters
    CompositorConfig config = BuildCompositorConfig();
+
+   // FULLY AUTOMATIC MODE: adapt parameters from image statistics and FITS metadata
+   if ( p_processingMode == NXProcessingMode::FullyAutomatic )
+   {
+      console.WriteLn( "<br>** Fully Automatic Mode **" );
+
+      // Compute SNR-adaptive stretch strength from image statistics
+      double median = image.Median();
+      double stdDev = image.StdDev();
+
+      double autoStrength;
+      if ( median < 0.01 )       autoStrength = 1.5;   // Very faint linear
+      else if ( median < 0.05 )  autoStrength = 1.2;   // Faint linear
+      else if ( median < 0.15 )  autoStrength = 1.0;   // Moderate
+      else if ( median < 0.35 )  autoStrength = 0.7;   // Partially stretched
+      else                        autoStrength = 0.4;   // Already stretched
+
+      // Modulate by noise level
+      double snr = ( stdDev > 0 ) ? median / stdDev : 10.0;
+      if ( snr < 5.0 )  autoStrength *= 0.8;
+      if ( snr > 30.0 ) autoStrength *= 1.1;
+
+      config.globalStrength = autoStrength;
+
+      // Adapt blend radius to image scale
+      int imageDim = Max( image.Width(), image.Height() );
+      config.blendConfig.featherRadius = Max( 3.0, static_cast<double>( imageDim ) / 500.0 );
+
+      // Read FITS keywords for context
+      FITSKeywordArray keywords;
+      view.Window().GetKeywords( keywords );
+
+      String objectName, filter;
+      for ( const FITSHeaderKeyword& kw : keywords )
+      {
+         if ( kw.name == "OBJECT" )
+            objectName = kw.value.Trimmed();
+         else if ( kw.name == "FILTER" )
+            filter = kw.value.Trimmed();
+      }
+
+      if ( !objectName.IsEmpty() )
+         console.WriteLn( "NukeX Auto: Target = " + objectName );
+      if ( !filter.IsEmpty() )
+         console.WriteLn( "NukeX Auto: Filter = " + filter );
+
+      // Narrowband filter detection
+      String upperFilter = filter.Uppercase();
+      if ( upperFilter.Contains( "HA" ) || upperFilter.Contains( "H-ALPHA" ) ||
+           upperFilter.Contains( "OIII" ) || upperFilter.Contains( "SII" ) )
+      {
+         console.WriteLn( "NukeX Auto: Narrowband detected - adjusting parameters" );
+         config.globalSaturation = 0.8;
+      }
+
+      console.WriteLn( String().Format( "NukeX Auto: median=%.4f, stdDev=%.4f, SNR=%.1f",
+         median, stdDev, snr ) );
+      console.WriteLn( String().Format( "NukeX Auto: strength=%.2f, blend=%.1f",
+         autoStrength, config.blendConfig.featherRadius ) );
+   }
 
    // If using manual algorithm selection (not Auto), configure overrides
    if ( p_stretchAlgorithm != NXStretchAlgorithm::Auto )
@@ -493,6 +578,8 @@ Image NukeXInstance::GeneratePreview( const Image& input, int previewMode ) cons
 
 void* NukeXInstance::LockParameter( const MetaParameter* p, size_type /*tableRow*/ )
 {
+   if ( p == TheNXProcessingModeParameter )
+      return &p_processingMode;
    if ( p == TheNXPreviewModeParameter )
       return &p_previewMode;
    if ( p == TheNXStretchAlgorithmParameter )

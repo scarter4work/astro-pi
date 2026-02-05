@@ -506,6 +506,15 @@ Image GaussianFeather( const Image& mask, double sigma )
    Image temp( width, height, pcl::ColorSpace::Gray );
    Image result( width, height, pcl::ColorSpace::Gray );
 
+   // Precompute Gaussian kernel weights
+   std::vector<double> kernel( 2 * radius + 1 );
+   double twoSigmaSq = 2.0 * sigma * sigma;
+   for ( int i = 0; i <= 2 * radius; ++i )
+   {
+      int d = i - radius;
+      kernel[i] = std::exp( -(d * d) / twoSigmaSq );
+   }
+
    // Horizontal pass
    for ( int y = 0; y < height; ++y )
    {
@@ -519,7 +528,7 @@ Image GaussianFeather( const Image& mask, double sigma )
             int sx = x + dx;
             if ( sx >= 0 && sx < width )
             {
-               double weight = std::exp( -(dx * dx) / (2 * sigma * sigma) );
+               double weight = kernel[dx + radius];
                sum += mask( sx, y, 0 ) * weight;
                weightSum += weight;
             }
@@ -542,7 +551,7 @@ Image GaussianFeather( const Image& mask, double sigma )
             int sy = y + dy;
             if ( sy >= 0 && sy < height )
             {
-               double weight = std::exp( -(dy * dy) / (2 * sigma * sigma) );
+               double weight = kernel[dy + radius];
                sum += temp( x, sy, 0 ) * weight;
                weightSum += weight;
             }

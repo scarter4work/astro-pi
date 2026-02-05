@@ -8,6 +8,7 @@
 // Copyright (c) 2026 Scott Carter
 
 #include "Segmentation.h"
+#include "Constants.h"
 #include "SegmentationPalette.h"
 
 #include <pcl/Console.h>
@@ -367,8 +368,9 @@ SegmentationEngineResult SegmentationEngine::Process( const Image& image,
          std::lock_guard<std::mutex> lock( m_cacheMutex );
          if ( hash == m_cachedImageHash && m_cachedResult.isValid )
          {
+            SegmentationEngineResult cachedCopy = m_cachedResult;
             ReportProgress( SegmentationEventType::Completed, 1.0, "Using cached result" );
-            return m_cachedResult;
+            return cachedCopy;
          }
          m_cachedImageHash = hash;
       }
@@ -408,7 +410,8 @@ SegmentationEngineResult SegmentationEngine::Process( const Image& image,
       }
 
       // Skip the standard downsampling/upscaling path - tiled already produces full-res output
-      goto postprocess;
+      RunPostprocessing( result, image, totalStart );
+      return result;
    }
 
    // Preprocess (downsample if needed)
@@ -501,7 +504,16 @@ SegmentationEngineResult SegmentationEngine::Process( const Image& image,
 
    } // End of standard (non-tiled) processing scope
 
-postprocess:
+   RunPostprocessing( result, image, totalStart );
+   return result;
+}
+
+// ----------------------------------------------------------------------------
+
+void SegmentationEngine::RunPostprocessing( SegmentationEngineResult& result,
+                                             const Image& image,
+                                             const std::chrono::high_resolution_clock::time_point& totalStart )
+{
    // Apply mask postprocessing
    PostprocessMasks( result.segmentation );
 
@@ -524,14 +536,16 @@ postprocess:
 
    ReportProgress( SegmentationEventType::Completed, 1.0,
       String().Format( "Completed in %.1f ms", result.totalTimeMs ) );
-
-   return result;
 }
 
 // ----------------------------------------------------------------------------
 
 const SegmentationEngineResult* SegmentationEngine::GetCachedResult() const
 {
+   // NOTE: This returns a pointer to m_cachedResult which is protected by m_cacheMutex.
+   // The caller must ensure no concurrent modifications occur while using the pointer.
+   // For thread-safe access, prefer using Process() which returns a copy, or
+   // use GetAllMasks() which returns a copy of the mask data.
    std::lock_guard<std::mutex> lock( m_cacheMutex );
    return m_cachedResult.isValid ? &m_cachedResult : nullptr;
 }
@@ -549,6 +563,9 @@ void SegmentationEngine::ClearCache()
 
 const Image* SegmentationEngine::GetMask( RegionClass rc ) const
 {
+   // NOTE: This returns a pointer to data protected by m_cacheMutex.
+   // The caller must ensure no concurrent modifications occur while using the pointer.
+   // For thread-safe access, prefer using GetAllMasks() which returns a copy.
    std::lock_guard<std::mutex> lock( m_cacheMutex );
    if ( !m_cachedResult.isValid )
       return nullptr;
@@ -1052,7 +1069,7 @@ SegmentationResult SegmentationEngine::ProcessTiled( const Image& image )
             classIdx++;
          }
 
-         result.classMap( x, y, 0 ) = static_cast<double>( maxClass ) / 20.0;
+         result.classMap( x, y, 0 ) = static_cast<double>( maxClass ) / static_cast<double>( static_cast<int>( RegionClass::Count ) - 1 );
       }
    }
 
@@ -1184,10 +1201,9 @@ Image SegmentationEngine::UpscaleMaskEdgeAware( const Image& mask,
             double fx = srcX - x0;
             double fy = srcY - y0;
 
-            value = (1 - fx) * (1 - fy) * mask( x0, y0, 0 ) +
-                    fx * (1 - fy) * mask( x1, y0, 0 ) +
-                    (1 - fx) * fy * mask( x0, y1, 0 ) +
-                    fx * fy * mask( x1, y1, 0 );
+            value = Interpolation::BilinearInterpolate(
+                       mask( x0, y0, 0 ), mask( x1, y0, 0 ),
+                       mask( x0, y1, 0 ), mask( x1, y1, 0 ), fx, fy );
          }
 
          resized( x, y, 0 ) = value;

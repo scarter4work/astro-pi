@@ -21,6 +21,7 @@
 #include <memory>
 #include <map>
 #include <functional>
+#include <chrono>
 #include <cstdint>
 #include <mutex>
 
@@ -218,6 +219,10 @@ private:
    // Upscale masks with edge-aware method (better for class boundaries)
    Image UpscaleMaskEdgeAware( const Image& mask, int targetWidth, int targetHeight,
                                 double scale ) const;
+
+   // Run postprocessing steps (mask cleanup, region analysis, caching, timing)
+   void RunPostprocessing( SegmentationEngineResult& result, const Image& image,
+                           const std::chrono::high_resolution_clock::time_point& totalStart );
 };
 
 // ----------------------------------------------------------------------------

@@ -13,6 +13,47 @@ namespace pcl
 {
 
 // ----------------------------------------------------------------------------
+// Processing Mode
+// ----------------------------------------------------------------------------
+
+NXProcessingMode* TheNXProcessingModeParameter = nullptr;
+
+NXProcessingMode::NXProcessingMode( MetaProcess* P ) : MetaEnumeration( P )
+{
+   TheNXProcessingModeParameter = this;
+}
+
+IsoString NXProcessingMode::Id() const
+{
+   return "processingMode";
+}
+
+size_type NXProcessingMode::NumberOfElements() const
+{
+   return NumberOfItems;
+}
+
+IsoString NXProcessingMode::ElementId( size_type i ) const
+{
+   switch ( i )
+   {
+   default:
+   case Manual:          return "ProcessingMode_Manual";
+   case FullyAutomatic:  return "ProcessingMode_FullyAutomatic";
+   }
+}
+
+int NXProcessingMode::ElementValue( size_type i ) const
+{
+   return int( i );
+}
+
+size_type NXProcessingMode::DefaultValueIndex() const
+{
+   return Default;
+}
+
+// ----------------------------------------------------------------------------
 // Preview Mode
 // ----------------------------------------------------------------------------
 

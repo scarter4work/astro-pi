@@ -178,7 +178,27 @@ private:
    void ReportProgress( ProcessingStage stage, double progress, const IsoString& message );
    double GetStageWeight( ProcessingStage stage ) const;
 
-   // Processing stages
+   // Processing stages (called by Process)
+   void RunSegmentationStage( const Image& input, CompositorResult& result );
+   RegionStatistics RunAnalysisStage( const Image& input, CompositorResult& result );
+   void RunAlgorithmSelectionStage(
+      const Image& input,
+      const RegionStatistics& stats,
+      CompositorResult& result,
+      bool& useRegionAware,
+      std::map<RegionClass, SelectedStretch>& regionAlgorithms,
+      std::map<RegionClass, Image>& regionMasks );
+   Image RunStretchStage(
+      const Image& input,
+      bool useRegionAware,
+      std::map<RegionClass, SelectedStretch>& regionAlgorithms,
+      const std::map<RegionClass, Image>& regionMasks,
+      CompositorResult& result );
+   void RunTransitionStage( Image& stretched, bool useRegionAware );
+   Image RunToneMappingStage( const Image& stretched, CompositorResult& result );
+   void RunFinalizationStage( Image& toned, CompositorResult& result );
+
+   // Internal helpers
    bool RunSegmentation( const Image& input, double& segmentationTimeMs );
    RegionStatistics AnalyzeImage( const Image& input );
    SelectedStretch SelectAlgorithm( const RegionStatistics& stats );

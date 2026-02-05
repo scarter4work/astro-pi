@@ -58,10 +58,6 @@ void StretchAlgorithmBase::ApplyToImage( Image& image, const Image* mask ) const
    int height = image.Height();
    int channels = image.NumberOfChannels();
 
-   // Optimized version with progress reporting
-   size_type totalPixels = size_type( width ) * height * channels;
-   size_type processedPixels = 0;
-
    for ( int c = 0; c < channels; ++c )
    {
       Image::sample_iterator i( image, c );

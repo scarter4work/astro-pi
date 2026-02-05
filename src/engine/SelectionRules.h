@@ -235,15 +235,29 @@ namespace DefaultRules
 
    // Nebula rules (by type)
    std::vector<SelectionRule> GetNebulaEmissionRules();
+   std::vector<SelectionRule> GetNebulaReflectionRules();
    std::vector<SelectionRule> GetNebulaDarkRules();
+   std::vector<SelectionRule> GetNebulaPlanetaryRules();
 
    // Galaxy rules
    std::vector<SelectionRule> GetGalaxyCoreRules();
    std::vector<SelectionRule> GetGalaxySpiralRules();
+   std::vector<SelectionRule> GetGalaxyEllipticalRules();
+   std::vector<SelectionRule> GetGalaxyIrregularRules();
+
+   // Star rules (additional)
+   std::vector<SelectionRule> GetStarSaturatedRules();
 
    // Structural rules
    std::vector<SelectionRule> GetDustLaneRules();
    std::vector<SelectionRule> GetStarClusterRules();
+
+   // Artifact rules
+   std::vector<SelectionRule> GetArtifactHotPixelRules();
+   std::vector<SelectionRule> GetArtifactSatelliteRules();
+   std::vector<SelectionRule> GetArtifactDiffractionRules();
+   std::vector<SelectionRule> GetArtifactGradientRules();
+   std::vector<SelectionRule> GetArtifactNoiseRules();
 }
 
 // ----------------------------------------------------------------------------

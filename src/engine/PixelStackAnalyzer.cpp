@@ -16,17 +16,10 @@
 #include <numeric>
 #include <limits>
 #include <stdexcept>
+#include <omp.h>
 
 namespace pcl
 {
-
-// ----------------------------------------------------------------------------
-// Constants
-// ----------------------------------------------------------------------------
-
-static const float PI = 3.14159265358979323846f;
-static const float SQRT_2PI = 2.50662827463100050242f;
-static const float SQRT_2 = 1.41421356237309504880f;
 
 // ----------------------------------------------------------------------------
 // PixelStackAnalyzer Implementation
@@ -77,24 +70,28 @@ std::vector<std::vector<PixelStackMetadata>> PixelStackAnalyzer::AnalyzeStack(
    std::vector<std::vector<PixelStackMetadata>> result(
       height, std::vector<PixelStackMetadata>( width ) );
 
-   // Buffer for pixel values across stack
-   std::vector<float> pixelValues( numFrames );
-
-   // Process each pixel position
-   for ( int y = 0; y < height; ++y )
+   // Process each pixel position with OpenMP parallelization
+   // pixelValues buffer is thread-local to avoid data races
+   #pragma omp parallel
    {
-      for ( int x = 0; x < width; ++x )
-      {
-         // Collect values from all frames at this position
-         for ( int f = 0; f < numFrames; ++f )
-         {
-            const Image::sample* data = frames[f]->PixelData( channel );
-            size_t idx = static_cast<size_t>( y ) * width + x;
-            pixelValues[f] = static_cast<float>( data[idx] );
-         }
+      std::vector<float> pixelValues( numFrames );
 
-         // Analyze this pixel stack
-         result[y][x] = AnalyzePixel( pixelValues );
+      #pragma omp for schedule( dynamic, 16 )
+      for ( int y = 0; y < height; ++y )
+      {
+         for ( int x = 0; x < width; ++x )
+         {
+            // Collect values from all frames at this position
+            for ( int f = 0; f < numFrames; ++f )
+            {
+               const Image::sample* data = frames[f]->PixelData( channel );
+               size_t idx = static_cast<size_t>( y ) * width + x;
+               pixelValues[f] = static_cast<float>( data[idx] );
+            }
+
+            // Analyze this pixel stack
+            result[y][x] = AnalyzePixel( pixelValues );
+         }
       }
    }
 
@@ -125,6 +122,48 @@ PixelStackMetadata PixelStackAnalyzer::AnalyzePixel( const std::vector<float>& v
 
    // Identify outliers
    IdentifyOutliers( values, meta.distribution, meta.outlierMask );
+
+   // Iterative sigma clipping - refine outlier detection
+   for ( int pass = 1; pass < 3; ++pass )
+   {
+      // Count current valid (non-outlier) frames
+      int validCount = 0;
+      for ( size_t i = 0; i < values.size() && i < 64; ++i )
+         if ( !meta.IsOutlier( static_cast<int>( i ) ) )
+            ++validCount;
+
+      if ( validCount < m_config.minFramesForStats )
+         break;  // Too few frames left, stop clipping
+
+      // Recompute statistics from valid frames only
+      std::vector<float> validValues;
+      validValues.reserve( validCount );
+      for ( size_t i = 0; i < values.size() && i < 64; ++i )
+         if ( !meta.IsOutlier( static_cast<int>( i ) ) )
+            validValues.push_back( values[i] );
+
+      float newMu = ComputeMedian( validValues );
+      float newSigma = ComputeMAD( validValues, newMu ) * 1.4826f;
+
+      if ( newSigma < 1e-10f )
+         break;
+
+      // Check for new outliers with refined statistics
+      uint64_t prevMask = meta.outlierMask;
+      meta.distribution.mu = newMu;
+      meta.distribution.sigma = newSigma;
+
+      for ( size_t i = 0; i < values.size() && i < 64; ++i )
+      {
+         float z = std::abs( values[i] - newMu ) / newSigma;
+         if ( z > m_config.outlierSigmaThreshold )
+            meta.SetOutlier( static_cast<int>( i ) );
+      }
+
+      // Converged if no new outliers found
+      if ( meta.outlierMask == prevMask )
+         break;
+   }
 
    // Select best value (no class hint, use background as default)
    int selectedFrame = 0;
@@ -169,7 +208,7 @@ PixelStackMetadata PixelStackAnalyzer::AnalyzePixelWithClass(
       sigma = 1e-10f;
 
    meta.outlierMask = 0;
-   for ( size_t i = 0; i < values.size() && i < 32; ++i )
+   for ( size_t i = 0; i < values.size() && i < 64; ++i )
    {
       float z = std::abs( values[i] - meta.distribution.mu ) / sigma;
 
@@ -229,6 +268,96 @@ PixelStackMetadata PixelStackAnalyzer::AnalyzePixelWithClass(
 
       if ( isOutlier )
          meta.SetOutlier( static_cast<int>( i ) );
+   }
+
+   // Iterative sigma clipping - refine outlier detection with class awareness
+   for ( int pass = 1; pass < 3; ++pass )
+   {
+      // Count current valid (non-outlier) frames
+      int validCount = 0;
+      for ( size_t i = 0; i < values.size() && i < 64; ++i )
+         if ( !meta.IsOutlier( static_cast<int>( i ) ) )
+            ++validCount;
+
+      if ( validCount < m_config.minFramesForStats )
+         break;  // Too few frames left, stop clipping
+
+      // Recompute statistics from valid frames only
+      std::vector<float> validValues;
+      validValues.reserve( validCount );
+      for ( size_t i = 0; i < values.size() && i < 64; ++i )
+         if ( !meta.IsOutlier( static_cast<int>( i ) ) )
+            validValues.push_back( values[i] );
+
+      float newMu = ComputeMedian( validValues );
+      float newSigma = ComputeMAD( validValues, newMu ) * 1.4826f;
+
+      if ( newSigma < 1e-10f )
+         break;
+
+      // Check for new outliers with refined statistics
+      uint64_t prevMask = meta.outlierMask;
+      meta.distribution.mu = newMu;
+      meta.distribution.sigma = newSigma;
+
+      for ( size_t i = 0; i < values.size() && i < 64; ++i )
+      {
+         float z = std::abs( values[i] - newMu ) / newSigma;
+
+         // Apply same class-specific outlier logic as initial pass
+         bool isNewOutlier = false;
+
+         switch ( regionClass )
+         {
+         case RegionClass::StarBright:
+         case RegionClass::StarMedium:
+         case RegionClass::StarFaint:
+         case RegionClass::StarSaturated:
+         case RegionClass::StarClusterOpen:
+         case RegionClass::StarClusterGlobular:
+         case RegionClass::ArtifactDiffraction:
+            if ( values[i] < newMu && z > adjustedConfig.outlierSigmaThreshold )
+               isNewOutlier = true;
+            break;
+
+         case RegionClass::NebulaDark:
+         case RegionClass::DustLane:
+            if ( values[i] > newMu && z > adjustedConfig.outlierSigmaThreshold )
+               isNewOutlier = true;
+            break;
+
+         case RegionClass::NebulaEmission:
+         case RegionClass::NebulaReflection:
+         case RegionClass::NebulaPlanetary:
+         case RegionClass::GalaxyCore:
+         case RegionClass::GalaxySpiral:
+         case RegionClass::GalaxyElliptical:
+         case RegionClass::GalaxyIrregular:
+            if ( values[i] < newMu && z > adjustedConfig.outlierSigmaThreshold )
+               isNewOutlier = true;
+            break;
+
+         case RegionClass::Background:
+         case RegionClass::ArtifactGradient:
+            if ( values[i] > newMu && z > adjustedConfig.outlierSigmaThreshold * 0.7f )
+               isNewOutlier = true;
+            else if ( z > adjustedConfig.outlierSigmaThreshold )
+               isNewOutlier = true;
+            break;
+
+         default:
+            if ( z > adjustedConfig.outlierSigmaThreshold )
+               isNewOutlier = true;
+            break;
+         }
+
+         if ( isNewOutlier )
+            meta.SetOutlier( static_cast<int>( i ) );
+      }
+
+      // Converged if no new outliers found
+      if ( meta.outlierMask == prevMask )
+         break;
    }
 
    // Select best value with class awareness
@@ -323,7 +452,7 @@ StackDistributionType PixelStackAnalyzer::DetermineDistributionType(
 void PixelStackAnalyzer::IdentifyOutliers(
    const std::vector<float>& values,
    const StackDistributionParams& dist,
-   uint32_t& outlierMask ) const
+   uint64_t& outlierMask ) const
 {
    outlierMask = 0;
 
@@ -331,11 +460,11 @@ void PixelStackAnalyzer::IdentifyOutliers(
    if ( sigma < 1e-10f )
       sigma = 1e-10f;
 
-   for ( size_t i = 0; i < values.size() && i < 32; ++i )
+   for ( size_t i = 0; i < values.size() && i < 64; ++i )
    {
       float z = std::abs( values[i] - dist.mu ) / sigma;
       if ( z > m_config.outlierSigmaThreshold )
-         outlierMask |= (1u << i);
+         outlierMask |= (uint64_t( 1 ) << i);
    }
 }
 
@@ -427,6 +556,24 @@ float PixelStackAnalyzer::SelectBestValue(
          validValues.push_back( { values[i], static_cast<int>( i ) } );
    }
 
+   // Compute data-dependent confidence from stack statistics
+   auto ComputeConfidence = [&]( float baseConfidence ) -> float
+   {
+      // Factor 1: What fraction of frames are valid (not outliers)?
+      float validRatio = static_cast<float>( validValues.size() ) / static_cast<float>( values.size() );
+
+      // Factor 2: How tight is the distribution? (lower CV = higher confidence)
+      float cv = ( dist.mu > 1e-6f ) ? ( dist.sigma / dist.mu ) : 1.0f;
+      float cvFactor = 1.0f / ( 1.0f + cv * 2.0f );
+
+      // Factor 3: Distribution fit quality
+      float qualityFactor = dist.quality;
+
+      // Combine: base * validity * cv * quality
+      float conf = baseConfidence * ( 0.4f + 0.3f * validRatio + 0.2f * cvFactor + 0.1f * qualityFactor );
+      return std::max( 0.3f, std::min( 0.98f, conf ) );
+   };
+
    // CLASS-SPECIFIC SELECTION STRATEGY:
    // For dark features: select MINIMUM value (darkest = correct)
    // For bright features: select value that preserves signal
@@ -452,7 +599,7 @@ float PixelStackAnalyzer::SelectBestValue(
          }
          bestValue = minVal;
          // High confidence because we're selecting the correct extreme
-         confidence = 0.9f;
+         confidence = ComputeConfidence( 0.9f );
       }
       break;
 
@@ -470,7 +617,7 @@ float PixelStackAnalyzer::SelectBestValue(
             }
          }
          bestValue = maxVal;
-         confidence = 0.9f;
+         confidence = ComputeConfidence( 0.9f );
       }
       break;
 
@@ -497,7 +644,7 @@ float PixelStackAnalyzer::SelectBestValue(
                bestValue = v;
             }
          }
-         confidence = 0.85f;
+         confidence = ComputeConfidence( 0.85f );
       }
       break;
 
@@ -526,7 +673,7 @@ float PixelStackAnalyzer::SelectBestValue(
                bestValue = v;
             }
          }
-         confidence = 0.8f;
+         confidence = ComputeConfidence( 0.8f );
       }
       break;
 
@@ -550,16 +697,12 @@ float PixelStackAnalyzer::SelectBestValue(
                bestValue = vp.first;
             }
          }
-         confidence = 0.7f;
+         confidence = ComputeConfidence( 0.7f );
       }
       break;
    }
 
    selectedFrame = bestFrame;
-
-   // Adjust confidence based on how many values were valid
-   float validRatio = static_cast<float>( validValues.size() ) / static_cast<float>( values.size() );
-   confidence *= validRatio;
 
    return bestValue;
 }
@@ -574,7 +717,9 @@ float PixelStackAnalyzer::ComputeProbability( float value, const StackDistributi
    float z = (value - dist.mu) / dist.sigma;
    float prob = std::exp( -0.5f * z * z );
 
-   // Normalize to 0-1
+   // Returns the Gaussian kernel value (0-1) as a relative probability measure.
+   // This is NOT a normalized probability density; it gives the likelihood
+   // relative to the distribution peak (value at mean returns 1.0).
    return prob;
 }
 
@@ -724,7 +869,7 @@ float PixelStackAnalyzer::ComputeMedian( std::vector<float>& values )
 
 // ----------------------------------------------------------------------------
 
-float PixelStackAnalyzer::ComputeMAD( std::vector<float>& values, float median )
+float PixelStackAnalyzer::ComputeMAD( std::vector<float> values, float median )
 {
    if ( values.empty() )
       return 0.0f;

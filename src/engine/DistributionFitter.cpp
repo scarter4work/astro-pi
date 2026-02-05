@@ -285,19 +285,21 @@ double DistributionFitter::GaussianPDF( double x, double mu, double sigma )
 
 double DistributionFitter::LognormalPDF( double x, double mu, double sigma )
 {
-   // For astronomical data, we shift to handle values near zero
-   // Lognormal is defined for x > 0
-
-   if ( sigma <= 0 || x <= 0 )
+   // Lognormal is defined for x > 0, and mu (sample-space mean) must be > 0
+   if ( sigma <= 0 || x <= 0 || mu <= 0 )
       return 0.0;
 
-   // Convert mu/sigma to lognormal parameters
-   // If Y = log(X) is normal with mean mu_y and std sigma_y,
-   // then X is lognormal
-   double logx = std::log( x );
-   double z = (logx - mu) / sigma;
+   // mu and sigma are in sample space. Convert to log-space parameters:
+   // sigma_log = sqrt(log(1 + (sigma/mu)^2))
+   // mu_log = log(mu) - 0.5 * sigma_log^2
+   double cv = sigma / mu;
+   double sigma_log = std::sqrt( std::log( 1.0 + cv * cv ) );
+   double mu_log = std::log( mu ) - 0.5 * sigma_log * sigma_log;
 
-   return std::exp( -0.5 * z * z ) / (x * sigma * SQRT_2PI);
+   double logx = std::log( x );
+   double z = (logx - mu_log) / sigma_log;
+
+   return std::exp( -0.5 * z * z ) / (x * sigma_log * SQRT_2PI);
 }
 
 // ----------------------------------------------------------------------------

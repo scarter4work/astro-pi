@@ -170,6 +170,14 @@ private:
       int boundaryX, int boundaryY,
       bool horizontal,
       float strength ) const;
+
+   // Apply 2D Gaussian smoothing at tile corner intersections
+   // where horizontal and vertical boundaries meet
+   void SmoothCornerIntersections(
+      Image& image,
+      int channel,
+      const std::vector<std::vector<TransitionInfo>>& transitions,
+      float strength ) const;
 };
 
 // ----------------------------------------------------------------------------

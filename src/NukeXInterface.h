@@ -72,6 +72,14 @@ private:
 
       VerticalSizer     Global_Sizer;
 
+      // Processing Mode Section
+      SectionBar        Mode_SectionBar;
+      Control           Mode_Control;
+      VerticalSizer     Mode_Sizer;
+         HorizontalSizer   Mode_HSizer;
+            Label             Mode_Label;
+            ComboBox          Mode_ComboBox;
+
       // Algorithm Section
       SectionBar        Algorithm_SectionBar;
       Control           Algorithm_Control;
