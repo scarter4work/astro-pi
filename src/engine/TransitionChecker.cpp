@@ -213,7 +213,8 @@ std::vector<std::vector<TransitionInfo>> TransitionChecker::AnalyzeTransitions(
          {
             // Linear interpolation between soft and hard thresholds
             float range = effectiveHardThreshold - effectiveSoftThreshold;
-            float normalized = (info.maxGradient - effectiveSoftThreshold) / range;
+            float normalized = (range > 1e-6f) ?
+                (info.maxGradient - effectiveSoftThreshold) / range : 1.0f;
             info.smoothingStrength = std::min( normalized, 1.0f ) * m_config.maxSmoothingStrength;
          }
       }

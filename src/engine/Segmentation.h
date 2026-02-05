@@ -22,6 +22,7 @@
 #include <map>
 #include <functional>
 #include <cstdint>
+#include <mutex>
 
 namespace pcl
 {
@@ -180,9 +181,10 @@ private:
    std::unique_ptr<ISegmentationModel> m_model;
    String m_lastError;
 
-   // Cached results
+   // Cached results (protected by mutex for thread safety)
    mutable SegmentationEngineResult m_cachedResult;
    mutable uint64_t m_cachedImageHash = 0;
+   mutable std::mutex m_cacheMutex;
 
    // Region analyzer for post-segmentation analysis
    std::unique_ptr<RegionAnalyzer> m_analyzer;

@@ -40,6 +40,10 @@ Image BlendEngine::Blend( const Image& original,
 
    Image output( width, height, original.ColorSpace() );
 
+   // Pre-allocate vector outside hot loop to avoid repeated allocations
+   std::vector<std::pair<double, double>> stretchedWeights;
+   stretchedWeights.reserve( stretchedRegions.size() );
+
    for ( int c = 0; c < numChannels; ++c )
    {
       for ( int y = 0; y < height; ++y )
@@ -49,7 +53,7 @@ Image BlendEngine::Blend( const Image& original,
             double origValue = original( x, y, c );
 
             // Collect stretched values and weights
-            std::vector<std::pair<double, double>> stretchedWeights;
+            stretchedWeights.clear();
 
             for ( const auto& region : stretchedRegions )
             {
@@ -382,6 +386,10 @@ Image ParallelBlendProcessor::Process(
          int startRow = t * rowsPerThread;
          int endRow = (t == numThreads - 1) ? height : (t + 1) * rowsPerThread;
 
+         // NOTE: Thread safety is ensured because IStretchAlgorithm::Apply() is const,
+         // meaning algorithms cannot modify internal state during parallel execution.
+         // If any algorithm implementation violates this contract (e.g., by using
+         // mutable members without synchronization), thread safety must be reconsidered.
          threads.emplace_back( [this, &original, &output, &preparedMasks, &algorithms,
                                  startRow, endRow, c]() {
             ProcessRows( original, output, preparedMasks, algorithms,

@@ -9,8 +9,8 @@
       </p>
    </description>
    <platform os="linux" arch="x64" version="1.8.0:1.9.9">
-      <package fileName="20260204-6-linux-x64-NukeX.tar.gz" sha1="61023e1dc7175a79d48646715720dc84391d7ccc" type="module" releaseDate="20260204">
-         <title>NukeX 1.1.0.20 - Intelligent Astrophotography Processing</title>
+      <package fileName="20260204-7-linux-x64-NukeX.tar.gz" sha1="d311261e720122de25a0e0997158786286efd8e9" type="module" releaseDate="20260204">
+         <title>NukeX 1.1.0.21 - Intelligent Astrophotography Processing</title>
          <description>
             <p>
                <b>NukeX - Intelligent Region-Aware Processing for PixInsight</b>
@@ -27,7 +27,7 @@
                </li>
             </ul>
             <p>
-               <b>Version 1.1.0.20:</b> Improved segmentation resolution. Images up to 4096px now processed at full resolution (doubled from 2048). Very large images (&gt;6144px) use tiled segmentation with overlapping tiles to preserve small features. Edge-aware upscaling preserves sharp boundaries while smoothing flat regions.
+               <b>Version 1.1.0.21:</b> Critical C++ fixes. Fixed strict aliasing violation in image hash computation. Added thread-safe cache access with mutex protection. Added division-by-zero guard in transition smoothing. Optimized memory allocation in blend loop. Added tile size validation.
             </p>
             <p>
                Copyright (c) 2026 Scott Carter. All Rights Reserved.
@@ -36,4 +36,4 @@
       </package>
    </platform>
 </xri>
-<Signature developerId="scarter4work" timestamp="2026-02-04T22:15:33.581Z" encoding="Base64">Mxuo43w+vfTKgFldlQhEUg76UlQRUw+e8OhFriXICvshvgxPPLCjYfrY245xiuYvEi17Zf4fWMyluUkPpknrCQ==</Signature>
+<Signature developerId="scarter4work" timestamp="2026-02-05T02:47:36.935Z" encoding="Base64">D+NclmCGCUCC/BZSEBIMwvr4qZVl9UepaZsHAqBaq3FkVqAeFdmFpSMTcScL9OL9E/jvFgdW5upR2AgeYs8bDg==</Signature>

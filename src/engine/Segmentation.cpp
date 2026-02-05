@@ -17,6 +17,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstdlib>
+#include <cstring>
 
 namespace pcl
 {
@@ -329,7 +330,8 @@ uint64_t SegmentationEngine::ComputeImageHash( const Image& image )
       for ( int x = 0; x < image.Width(); x += step )
       {
          double value = image( x, y, 0 );
-         uint64_t bits = *reinterpret_cast<uint64_t*>( &value );
+         uint64_t bits;
+         std::memcpy( &bits, &value, sizeof( bits ) );
          hash ^= bits + 0x9e3779b9 + (hash << 6) + (hash >> 2);
       }
    }
@@ -361,12 +363,15 @@ SegmentationEngineResult SegmentationEngine::Process( const Image& image,
    if ( m_config.cacheResults )
    {
       uint64_t hash = ComputeImageHash( image );
-      if ( hash == m_cachedImageHash && m_cachedResult.isValid )
       {
-         ReportProgress( SegmentationEventType::Completed, 1.0, "Using cached result" );
-         return m_cachedResult;
+         std::lock_guard<std::mutex> lock( m_cacheMutex );
+         if ( hash == m_cachedImageHash && m_cachedResult.isValid )
+         {
+            ReportProgress( SegmentationEventType::Completed, 1.0, "Using cached result" );
+            return m_cachedResult;
+         }
+         m_cachedImageHash = hash;
       }
-      m_cachedImageHash = hash;
    }
 
    ReportProgress( SegmentationEventType::Started, 0.0, "Starting segmentation" );
@@ -513,6 +518,7 @@ postprocess:
    // Cache result
    if ( m_config.cacheResults )
    {
+      std::lock_guard<std::mutex> lock( m_cacheMutex );
       m_cachedResult = result;
    }
 
@@ -526,6 +532,7 @@ postprocess:
 
 const SegmentationEngineResult* SegmentationEngine::GetCachedResult() const
 {
+   std::lock_guard<std::mutex> lock( m_cacheMutex );
    return m_cachedResult.isValid ? &m_cachedResult : nullptr;
 }
 
@@ -533,6 +540,7 @@ const SegmentationEngineResult* SegmentationEngine::GetCachedResult() const
 
 void SegmentationEngine::ClearCache()
 {
+   std::lock_guard<std::mutex> lock( m_cacheMutex );
    m_cachedResult = SegmentationEngineResult();
    m_cachedImageHash = 0;
 }
@@ -541,6 +549,7 @@ void SegmentationEngine::ClearCache()
 
 const Image* SegmentationEngine::GetMask( RegionClass rc ) const
 {
+   std::lock_guard<std::mutex> lock( m_cacheMutex );
    if ( !m_cachedResult.isValid )
       return nullptr;
 
@@ -551,6 +560,7 @@ const Image* SegmentationEngine::GetMask( RegionClass rc ) const
 
 std::map<RegionClass, Image> SegmentationEngine::GetAllMasks() const
 {
+   std::lock_guard<std::mutex> lock( m_cacheMutex );
    if ( !m_cachedResult.isValid )
       return {};
 
@@ -892,6 +902,12 @@ SegmentationResult SegmentationEngine::ProcessTiled( const Image& image )
 
    // Calculate number of tiles needed
    int effectiveTileSize = tileSize - overlap;
+   if ( effectiveTileSize <= 0 )
+   {
+      result.errorMessage = "Tile overlap must be less than tile size";
+      result.isValid = false;
+      return result;
+   }
    int numTilesX = (imageWidth + effectiveTileSize - 1) / effectiveTileSize;
    int numTilesY = (imageHeight + effectiveTileSize - 1) / effectiveTileSize;
 
