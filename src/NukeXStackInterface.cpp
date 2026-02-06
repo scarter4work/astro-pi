@@ -595,7 +595,7 @@ NukeXStackInterface::GUIData::GUIData( NukeXStackInterface& w )
    MLSegmentation_SectionBar.SetSection( MLSegmentation_Control );
 
    EnableMLSegmentation_CheckBox.SetText( "Enable ML Segmentation" );
-   EnableMLSegmentation_CheckBox.SetToolTip( "<p>Use 21-class ML semantic segmentation to identify pixel types "
+   EnableMLSegmentation_CheckBox.SetToolTip( "<p>Use 23-class ML semantic segmentation to identify pixel types "
                                               "(stars, nebula, background, etc.) and apply class-specific "
                                               "selection strategies.</p>" );
    EnableMLSegmentation_CheckBox.OnClick( (Button::click_event_handler)&NukeXStackInterface::e_CheckBoxClick, w );

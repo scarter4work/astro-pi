@@ -119,6 +119,10 @@ struct StackAnalysisConfig
    bool  favorHighSignal = false;         // For nebula: prefer brighter values
    bool  favorLowSignal = false;          // For dark nebula: prefer darker values
    bool  useMedianSelection = true;       // Default: select value closest to median
+
+   // Per-frame quality weights (from EXPTIME, FWHM, etc.)
+   // Normalized to [0,1]. Empty means equal weight for all frames.
+   std::vector<float> frameWeights;
 };
 
 // ----------------------------------------------------------------------------
@@ -142,8 +146,8 @@ public:
    /// Analyze a stack of frames and produce per-pixel metadata
    /// @param frames Vector of prestretched frames (all same dimensions)
    /// @param channel Which channel to analyze (0 for mono/red)
-   /// @return Grid of per-pixel metadata [height][width]
-   std::vector<std::vector<PixelStackMetadata>> AnalyzeStack(
+   /// @return Flat vector of per-pixel metadata, indexed as [y * width + x]
+   std::vector<PixelStackMetadata> AnalyzeStack(
       const std::vector<const Image*>& frames,
       int channel = 0 ) const;
 
@@ -203,7 +207,7 @@ private:
 
    // Internal helpers
    StackDistributionType DetermineDistributionType(
-      float skewness, float kurtosis, float bimodality ) const;
+      float skewness, float kurtosis, float bimodality, int sampleSize = 25 ) const;
 
    void IdentifyOutliers(
       const std::vector<float>& values,

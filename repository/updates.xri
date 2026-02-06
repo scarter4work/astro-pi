@@ -9,8 +9,8 @@
       </p>
    </description>
    <platform os="linux" arch="x64" version="1.8.0:1.9.9">
-      <package fileName="20260205-linux-x64-NukeX.tar.gz" sha1="234e245d2992dd0eb28fb604d68c445d4cb069d5" type="module" releaseDate="20260205">
-         <title>NukeX 1.1.0.22 - Fully Automatic Mode + Major Cleanup</title>
+      <package fileName="20260205-linux-x64-NukeX.tar.gz" sha1="1c07aeb9edc0941bebc92990c9c4749e405e660d" type="module" releaseDate="20260205">
+         <title>NukeX 1.1.0.23 - StarHalo/IFN Classes, Spatially-Varying PSF, Batched ONNX, Flat Vectors</title>
          <description>
             <p>
                <b>NukeX - Intelligent Region-Aware Processing for PixInsight</b>
@@ -27,7 +27,7 @@
                </li>
             </ul>
             <p>
-               <b>Version 1.1.0.22:</b> Major release. New Fully Automatic processing mode - point at an image and go, no sliders needed. SNR-adaptive stretch strength, FITS metadata-driven presets, narrowband filter detection. Fixed KnownObjects substring matching bug, lognormal parameter calculation, Airy PSF function, segmentation cache race condition. OpenMP parallelization of stack analysis. LUT-based stretch for 100x fewer virtual calls. Precomputed Gaussian kernels. 64-frame outlier mask (was 32). Iterative sigma clipping. Complete selection rules for all 21 classes. FILTER keyword integration. 2D boundary smoothing. Compositor refactored into stage methods. Bilinear interpolation utility extracted. Build system fixes for CMake.
+               <b>Version 1.1.0.23:</b> StarHalo (class 21) and GalacticCirrus (class 22) segmentation classes. Spatially-varying PSF model with grid-based bilinear interpolation. Batched ONNX inference (RunBatch) for tiled processing. Flat vector refactor (y*width+x) replacing nested vectors for cache performance. EXPTIME-based per-frame quality weighting. Adaptive skewness threshold for small sample sizes. Mask skip optimization (skip Apply when mask &lt; 0.001). LUT-based stretch with mask skip. Thread-safe algorithm cloning via Clone() virtual method. [[nodiscard]] on factory functions. Fixed const_cast UB in ONNX inference (copies to mutable buffers). Runtime model class count validation. 2D SetSegmentation backward compatibility.
             </p>
             <p>
                Copyright (c) 2026 Scott Carter. All Rights Reserved.
@@ -36,4 +36,4 @@
       </package>
    </platform>
 </xri>
-<Signature developerId="scarter4work" timestamp="2026-02-05T22:40:58.100Z" encoding="Base64">t7aYrei/x60CMTkTIA2CYZbFrlGX977j2HZsBD034Y9hVbmhrsHnpOkDU+vR1xYdjYgdnpi2f9xtIGHhmVXEBA==</Signature>
+<Signature developerId="scarter4work" timestamp="2026-02-06T00:04:21.089Z" encoding="Base64">Rba1DxSzlmYQe+CGdG65LMken7lt01de2zYomqH0HwXEj5cELYrlhc1uJ7K6aMMkCF1V5zA7tLTicf7Ar7kTAg==</Signature>

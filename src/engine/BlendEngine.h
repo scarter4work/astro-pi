@@ -113,6 +113,14 @@ struct BlendConfig
       case RegionClass::ArtifactNoise:
          return 4.0;
 
+      // Star halos: intermediate between stars and nebulae
+      case RegionClass::StarHalo:
+         return 3.0;
+
+      // Galactic cirrus / IFN: very soft, extremely diffuse features
+      case RegionClass::GalacticCirrus:
+         return 8.0;
+
       // Background: use default
       case RegionClass::Background:
       default:

@@ -459,6 +459,21 @@ AlgorithmRecommendation SelectionRulesEngine::GetDefaultRecommendation( RegionCl
       rec.SetRationale( "Noise region - conservative stretch" );
       break;
 
+   // Extended classes (21-22)
+   case RegionClass::StarHalo:
+      rec.algorithm = AlgorithmType::GHS;
+      rec.SetParameter( "stretchFactor", 0.6 );
+      rec.SetParameter( "highlightProtection", 0.75 );
+      rec.SetRationale( "Default star halo gradient-preserving stretch" );
+      break;
+
+   case RegionClass::GalacticCirrus:
+      rec.algorithm = AlgorithmType::GHS;
+      rec.SetParameter( "stretchFactor", 0.4 );
+      rec.SetParameter( "highlightProtection", 0.7 );
+      rec.SetRationale( "Default galactic cirrus / IFN gentle enhancement" );
+      break;
+
    default:
       rec.algorithm = AlgorithmType::MTF;
       rec.SetParameter( "midtones", 0.18 );  // Conservative
@@ -541,6 +556,8 @@ std::vector<SelectionRule> GetAllRules()
    add( GetArtifactDiffractionRules() );
    add( GetArtifactGradientRules() );
    add( GetArtifactNoiseRules() );
+   add( GetStarHaloRules() );
+   add( GetGalacticCirrusRules() );
 
    return rules;
 }
@@ -1275,6 +1292,85 @@ std::vector<SelectionRule> GetArtifactNoiseRules()
          .WithParameter( "midtones", 0.2 )
          .WithConfidence( 0.7 )
          .WithRationale( "Standard noise region - conservative stretch" )
+   );
+
+   return rules;
+}
+
+// ----------------------------------------------------------------------------
+
+std::vector<SelectionRule> GetStarHaloRules()
+{
+   std::vector<SelectionRule> rules;
+
+   // Bright star halo - moderate GHS to preserve radial gradient
+   rules.push_back(
+      SelectionRule( "StarHalo_Bright", RegionClass::StarHalo, AlgorithmType::GHS, 10.0 )
+         .WhenSNRAbove( 15.0 )
+         .WhenMedianAbove( 0.2 )
+         .WithParameter( "stretchFactor", 0.7 )
+         .WithParameter( "highlightProtection", 0.8 )
+         .WithConfidence( 0.9 )
+         .WithRationale( "Bright star halo - moderate stretch preserving radial gradient falloff" )
+   );
+
+   // Faint star halo - gentle treatment to avoid noise amplification
+   rules.push_back(
+      SelectionRule( "StarHalo_Faint", RegionClass::StarHalo, AlgorithmType::GHS, 9.0 )
+         .WhenSNRBelow( 8.0 )
+         .WhenMedianBelow( 0.1 )
+         .WithParameter( "stretchFactor", 0.5 )
+         .WithParameter( "highlightProtection", 0.7 )
+         .WithConfidence( 0.8 )
+         .WithRationale( "Faint star halo - gentle stretch to avoid amplifying noise in diffuse glow" )
+   );
+
+   // Default star halo
+   rules.push_back(
+      SelectionRule( "StarHalo_Default", RegionClass::StarHalo, AlgorithmType::GHS, 1.0 )
+         .WithParameter( "stretchFactor", 0.6 )
+         .WithParameter( "highlightProtection", 0.75 )
+         .WithConfidence( 0.75 )
+         .WithRationale( "Standard star halo gradient-preserving stretch" )
+   );
+
+   return rules;
+}
+
+// ----------------------------------------------------------------------------
+
+std::vector<SelectionRule> GetGalacticCirrusRules()
+{
+   std::vector<SelectionRule> rules;
+
+   // Rare high SNR galactic cirrus - can push a bit harder
+   rules.push_back(
+      SelectionRule( "GalacticCirrus_HighSNR", RegionClass::GalacticCirrus, AlgorithmType::GHS, 10.0 )
+         .WhenSNRAbove( 12.0 )
+         .WithParameter( "stretchFactor", 0.5 )
+         .WithParameter( "highlightProtection", 0.75 )
+         .WithConfidence( 0.85 )
+         .WithRationale( "High SNR galactic cirrus - slightly stronger stretch to reveal structure" )
+   );
+
+   // Very low SNR cirrus (typical) - SAS for noise awareness
+   rules.push_back(
+      SelectionRule( "GalacticCirrus_VeryFaint", RegionClass::GalacticCirrus, AlgorithmType::SAS, 9.0 )
+         .WhenSNRBelow( 5.0 )
+         .WithDynamicParameter( "iterations", []( const RegionStatistics& s, AlgorithmRecommendation& r ) {
+            r.parameters["iterations"] = ParameterTuning::ComputeSASIterations( s );
+         } )
+         .WithConfidence( 0.8 )
+         .WithRationale( "Very faint IFN at noise floor - statistical adaptive stretch to preserve signal" )
+   );
+
+   // Default galactic cirrus / IFN
+   rules.push_back(
+      SelectionRule( "GalacticCirrus_Default", RegionClass::GalacticCirrus, AlgorithmType::GHS, 1.0 )
+         .WithParameter( "stretchFactor", 0.4 )
+         .WithParameter( "highlightProtection", 0.7 )
+         .WithConfidence( 0.7 )
+         .WithRationale( "Standard galactic cirrus / IFN - very gentle to avoid noise amplification" )
    );
 
    return rules;

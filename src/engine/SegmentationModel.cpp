@@ -376,7 +376,7 @@ SegmentationResult MockSegmentationModel::Segment( const Image& image )
    Image starMask = DetectStars( luminance, starThreshold );
 
    // Create region masks based on luminance thresholds
-   // Map to new 21-class structure for mock model
+   // Map to new 23-class structure for mock model
    for ( int y = 0; y < height; ++y )
    {
       for ( int x = 0; x < width; ++x )
@@ -558,6 +558,22 @@ bool ONNXSegmentationModel::Initialize( const SegmentationConfig& config )
    {
       // Assuming NCHW format, channel dimension is the number of classes
       m_numClasses = static_cast<int>( outputs[0].shape[1] );
+   }
+
+   // Validate model class count matches channel mapping
+   if ( m_numClasses != static_cast<int>( m_config.channelMapping.size() ) )
+   {
+      Console().WarningLn( String().Format(
+         "** Warning: ONNX model has %d output classes but channel mapping has %d entries. "
+         "Results may be incorrect.", m_numClasses, static_cast<int>( m_config.channelMapping.size() ) ) );
+
+      // If model has fewer classes, truncate mapping
+      if ( m_numClasses < static_cast<int>( m_config.channelMapping.size() ) )
+      {
+         m_config.channelMapping.resize( m_numClasses );
+         Console().WarningLn( "   Channel mapping truncated to match model." );
+      }
+      // If model has more classes, the extra channels will be ignored
    }
 
    m_isReady = true;

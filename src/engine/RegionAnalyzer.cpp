@@ -514,7 +514,7 @@ void RegionAnalyzer::ComputeQualityMetrics( RegionAnalysisResult& result ) const
 RegionClass RegionAnalyzer::ChannelToRegionClass( int channel )
 {
    // Standard mapping from segmentation network output channels
-   // This should match the model's output format (21 classes)
+   // This should match the model's output format (23 classes)
    static const RegionClass channelMap[] = {
       RegionClass::Background,          // 0
       RegionClass::StarBright,          // 1
@@ -536,7 +536,9 @@ RegionClass RegionAnalyzer::ChannelToRegionClass( int channel )
       RegionClass::ArtifactSatellite,   // 17
       RegionClass::ArtifactDiffraction, // 18
       RegionClass::ArtifactGradient,    // 19
-      RegionClass::ArtifactNoise        // 20
+      RegionClass::ArtifactNoise,       // 20
+      RegionClass::StarHalo,            // 21
+      RegionClass::GalacticCirrus       // 22
    };
 
    if ( channel >= 0 && channel < static_cast<int>( sizeof( channelMap ) / sizeof( channelMap[0] ) ) )

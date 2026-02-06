@@ -211,6 +211,47 @@ float PSFParameters::GetEffectiveRadius( float threshold ) const
 }
 
 // ----------------------------------------------------------------------------
+// PSFGrid Implementation
+// ----------------------------------------------------------------------------
+
+PSFParameters PSFGrid::GetParametersAt( int x, int y ) const
+{
+   if ( gridParams.empty() || gridCols < 1 || gridRows < 1 )
+      return PSFParameters();
+
+   // Map image position to grid coordinates
+   float gx = static_cast<float>( x ) / imageWidth * ( gridCols - 1 );
+   float gy = static_cast<float>( y ) / imageHeight * ( gridRows - 1 );
+
+   // Bilinear interpolation between 4 nearest grid points
+   int gx0 = std::max( 0, std::min( gridCols - 2, static_cast<int>( gx ) ) );
+   int gy0 = std::max( 0, std::min( gridRows - 2, static_cast<int>( gy ) ) );
+   int gx1 = gx0 + 1;
+   int gy1 = gy0 + 1;
+   float fx = gx - gx0;
+   float fy = gy - gy0;
+
+   const PSFParameters& p00 = gridParams[gy0 * gridCols + gx0];
+   const PSFParameters& p10 = gridParams[gy0 * gridCols + gx1];
+   const PSFParameters& p01 = gridParams[gy1 * gridCols + gx0];
+   const PSFParameters& p11 = gridParams[gy1 * gridCols + gx1];
+
+   PSFParameters result;
+   result.fwhm = p00.fwhm * (1-fx)*(1-fy) + p10.fwhm * fx*(1-fy) +
+                  p01.fwhm * (1-fx)*fy + p11.fwhm * fx*fy;
+   result.beta = p00.beta * (1-fx)*(1-fy) + p10.beta * fx*(1-fy) +
+                  p01.beta * (1-fx)*fy + p11.beta * fx*fy;
+   result.ellipticity = p00.ellipticity * (1-fx)*(1-fy) + p10.ellipticity * fx*(1-fy) +
+                         p01.ellipticity * (1-fx)*fy + p11.ellipticity * fx*fy;
+   result.positionAngle = p00.positionAngle * (1-fx)*(1-fy) + p10.positionAngle * fx*(1-fy) +
+                           p01.positionAngle * (1-fx)*fy + p11.positionAngle * fx*fy;
+   // Copy profile type from nearest grid point
+   result.profile = (fx < 0.5f) ? ((fy < 0.5f) ? p00.profile : p01.profile)
+                                 : ((fy < 0.5f) ? p10.profile : p11.profile);
+   return result;
+}
+
+// ----------------------------------------------------------------------------
 // PSFModel Implementation
 // ----------------------------------------------------------------------------
 
@@ -803,6 +844,120 @@ std::vector<DPoint> DetectStars( const Image& image,
    }
 
    return stars;
+}
+
+// ----------------------------------------------------------------------------
+
+PSFGrid FitSpatiallyVaryingPSF( const Image& image,
+                                 const std::vector<DPoint>& stars,
+                                 int gridCols, int gridRows )
+{
+   PSFGrid grid;
+   grid.gridCols = gridCols;
+   grid.gridRows = gridRows;
+   grid.imageWidth = image.Width();
+   grid.imageHeight = image.Height();
+   grid.gridParams.resize( gridCols * gridRows );
+
+   // Collect stars per grid cell
+   std::vector<std::vector<int>> cellStars( gridCols * gridRows );
+
+   float cellW = static_cast<float>( image.Width() ) / gridCols;
+   float cellH = static_cast<float>( image.Height() ) / gridRows;
+
+   for ( int i = 0; i < static_cast<int>( stars.size() ); ++i )
+   {
+      int gc = std::min( gridCols - 1, static_cast<int>( stars[i].x / cellW ) );
+      int gr = std::min( gridRows - 1, static_cast<int>( stars[i].y / cellH ) );
+      gc = std::max( 0, gc );
+      gr = std::max( 0, gr );
+      cellStars[gr * gridCols + gc].push_back( i );
+   }
+
+   // Fit PSF parameters per cell
+   std::vector<bool> fitted( gridCols * gridRows, false );
+
+   for ( int r = 0; r < gridRows; ++r )
+   {
+      for ( int c = 0; c < gridCols; ++c )
+      {
+         int idx = r * gridCols + c;
+         const auto& indices = cellStars[idx];
+
+         if ( indices.empty() )
+            continue;
+
+         // Fit PSF to each star in the cell, then average parameters
+         float sumFwhm = 0, sumBeta = 0, sumEllip = 0, sumPA = 0;
+         int count = 0;
+
+         for ( int si : indices )
+         {
+            PSFParameters starPSF = PSFModel::FitToStar(
+               image, float(stars[si].x), float(stars[si].y) );
+
+            sumFwhm += starPSF.fwhm;
+            sumBeta += starPSF.beta;
+            sumEllip += starPSF.ellipticity;
+            sumPA += starPSF.positionAngle;
+            ++count;
+         }
+
+         if ( count > 0 )
+         {
+            grid.gridParams[idx].fwhm = sumFwhm / count;
+            grid.gridParams[idx].beta = sumBeta / count;
+            grid.gridParams[idx].ellipticity = sumEllip / count;
+            grid.gridParams[idx].positionAngle = sumPA / count;
+            fitted[idx] = true;
+         }
+      }
+   }
+
+   // Fill empty cells with interpolated values from fitted neighbors
+   for ( int r = 0; r < gridRows; ++r )
+   {
+      for ( int c = 0; c < gridCols; ++c )
+      {
+         int idx = r * gridCols + c;
+         if ( fitted[idx] )
+            continue;
+
+         // Find nearest fitted neighbors and average them
+         float sumFwhm = 0, sumBeta = 0, sumEllip = 0, sumPA = 0;
+         float weightSum = 0;
+
+         for ( int nr = 0; nr < gridRows; ++nr )
+         {
+            for ( int nc = 0; nc < gridCols; ++nc )
+            {
+               int nidx = nr * gridCols + nc;
+               if ( !fitted[nidx] )
+                  continue;
+
+               float dist = std::sqrt( float((nr - r) * (nr - r) + (nc - c) * (nc - c)) );
+               float w = 1.0f / std::max( 0.5f, dist );
+
+               sumFwhm += grid.gridParams[nidx].fwhm * w;
+               sumBeta += grid.gridParams[nidx].beta * w;
+               sumEllip += grid.gridParams[nidx].ellipticity * w;
+               sumPA += grid.gridParams[nidx].positionAngle * w;
+               weightSum += w;
+            }
+         }
+
+         if ( weightSum > 0 )
+         {
+            grid.gridParams[idx].fwhm = sumFwhm / weightSum;
+            grid.gridParams[idx].beta = sumBeta / weightSum;
+            grid.gridParams[idx].ellipticity = sumEllip / weightSum;
+            grid.gridParams[idx].positionAngle = sumPA / weightSum;
+         }
+         // else: leave defaults from PSFParameters constructor
+      }
+   }
+
+   return grid;
 }
 
 } // namespace PSFUtils

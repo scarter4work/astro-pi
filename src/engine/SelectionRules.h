@@ -258,6 +258,10 @@ namespace DefaultRules
    std::vector<SelectionRule> GetArtifactDiffractionRules();
    std::vector<SelectionRule> GetArtifactGradientRules();
    std::vector<SelectionRule> GetArtifactNoiseRules();
+
+   // Extended class rules
+   std::vector<SelectionRule> GetStarHaloRules();
+   std::vector<SelectionRule> GetGalacticCirrusRules();
 }
 
 // ----------------------------------------------------------------------------

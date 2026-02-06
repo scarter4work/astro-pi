@@ -949,6 +949,14 @@ SegmentationResult SegmentationEngine::ProcessTiled( const Image& image )
    int totalTiles = numTilesX * numTilesY;
    int processedTiles = 0;
 
+   // TODO: Batch tile inference optimization
+   // Currently each tile is processed individually via m_model->Segment().
+   // For ONNX models with dynamic batch support, collect tiles into batches
+   // of BATCH_SIZE (e.g., 4) and use ONNXSession::RunBatch() for significantly
+   // faster throughput. This requires splitting Segment() into separate
+   // preprocess/inference/postprocess steps so that only the inference step
+   // is batched. See ONNXSession::RunBatch() in ONNXInference.h.
+
    // Process each tile
    for ( int tileY = 0; tileY < numTilesY; ++tileY )
    {

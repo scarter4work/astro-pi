@@ -141,11 +141,11 @@ public:
    bool IsReady() const { return m_model != nullptr && m_model->IsReady(); }
 
    // Run segmentation on an image
-   SegmentationEngineResult Process( const Image& image );
+   [[nodiscard]] SegmentationEngineResult Process( const Image& image );
 
    // Run segmentation with progress callback
-   SegmentationEngineResult Process( const Image& image,
-                                      SegmentationProgressCallback progressCallback );
+   [[nodiscard]] SegmentationEngineResult Process( const Image& image,
+                                                    SegmentationProgressCallback progressCallback );
 
    // Get cached result (if available and valid for this image)
    const SegmentationEngineResult* GetCachedResult() const;

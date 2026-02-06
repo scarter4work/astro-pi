@@ -840,7 +840,7 @@ bool NukeXStackInstance::RunIntegration(
       // If generating metadata, use the detailed method
       if ( p_generateMetadata )
       {
-         std::vector<std::vector<PixelSelectionResult>> metadata;
+         std::vector<PixelSelectionResult> metadata;
          Image channelResult = selector.ProcessStackWithMetadata( framePtrs, c, metadata );
 
          // Copy to output
@@ -848,11 +848,10 @@ bool NukeXStackInstance::RunIntegration(
             for ( int x = 0; x < width; ++x )
                output.Pixel( x, y, c ) = channelResult.Pixel( x, y, 0 );
 
-         // Count outliers from metadata
-         for ( const auto& row : metadata )
-            for ( const auto& result : row )
-               if ( result.outlierMask != 0 )
-                  summary.outlierPixels++;
+         // Count outliers from flat metadata
+         for ( const auto& result : metadata )
+            if ( result.outlierMask != 0 )
+               summary.outlierPixels++;
       }
       else
       {

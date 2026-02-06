@@ -291,15 +291,21 @@ bool ONNXSession::Run( const std::vector<FloatTensor>& inputs,
       std::vector<Ort::Value> inputTensors;
       inputTensors.reserve( inputs.size() );
 
+      // Create mutable copies of input data for ONNX Runtime (avoids const_cast)
+      std::vector<std::vector<float>> inputDataCopies( inputs.size() );
+
       for ( size_t i = 0; i < inputs.size(); ++i )
       {
          const FloatTensor& input = inputs[i];
 
-         // Create tensor with input data
+         // Copy input data to a mutable buffer
+         inputDataCopies[i].assign( input.Data(), input.Data() + input.Size() );
+
+         // Create tensor with mutable data
          inputTensors.push_back( Ort::Value::CreateTensor<float>(
             *m_impl->memoryInfo,
-            const_cast<float*>( input.Data() ),
-            input.Size(),
+            inputDataCopies[i].data(),
+            inputDataCopies[i].size(),
             input.shape.dims.data(),
             input.shape.dims.size() ) );
       }
@@ -369,6 +375,159 @@ bool ONNXSession::Run( const FloatTensor& input, FloatTensor& output )
 
    output = std::move( outputs[0] );
    return true;
+}
+
+// ----------------------------------------------------------------------------
+
+bool ONNXSession::RunBatch( const std::vector<FloatTensor>& batchInputs,
+                             std::vector<FloatTensor>& batchOutputs,
+                             int batchSize )
+{
+#if ONNX_AVAILABLE
+   if ( !m_isLoaded || !m_impl->session )
+   {
+      m_lastError = "No model loaded";
+      return false;
+   }
+
+   if ( batchInputs.empty() )
+   {
+      m_lastError = "Empty batch input";
+      return false;
+   }
+
+   if ( batchSize <= 0 || batchSize > static_cast<int>( batchInputs.size() ) )
+      batchSize = static_cast<int>( batchInputs.size() );
+
+   // If batch size is 1, delegate to the standard Run() method
+   if ( batchSize == 1 )
+   {
+      std::vector<FloatTensor> singleInput = { batchInputs[0] };
+      std::vector<FloatTensor> singleOutput;
+      if ( !Run( singleInput, singleOutput ) )
+         return false;
+      batchOutputs = std::move( singleOutput );
+      return true;
+   }
+
+   try
+   {
+      // Validate all inputs have the same shape (except batch dim, which should be 1)
+      const TensorShape& refShape = batchInputs[0].shape;
+      if ( refShape.Rank() != 4 )
+      {
+         m_lastError = "RunBatch expects 4D tensors [N, C, H, W]";
+         return false;
+      }
+
+      int64_t channels = refShape[1];
+      int64_t height = refShape[2];
+      int64_t width = refShape[3];
+      int64_t elementsPerSample = channels * height * width;
+
+      for ( int i = 1; i < batchSize; ++i )
+      {
+         const TensorShape& s = batchInputs[i].shape;
+         if ( s.Rank() != 4 || s[1] != channels || s[2] != height || s[3] != width )
+         {
+            m_lastError = String().Format(
+               "RunBatch: Input %d shape %s does not match expected [*, %lld, %lld, %lld]",
+               i, IsoString( s.ToString() ).c_str(), channels, height, width );
+            return false;
+         }
+      }
+
+      // Concatenate individual inputs into a single batched tensor [N, C, H, W]
+      int64_t totalElements = static_cast<int64_t>( batchSize ) * elementsPerSample;
+      if ( totalElements > 500000000 )
+      {
+         m_lastError = String().Format( "RunBatch: Combined tensor too large (%lld elements)", totalElements );
+         return false;
+      }
+
+      std::vector<float> batchedData( static_cast<size_t>( totalElements ) );
+
+      for ( int i = 0; i < batchSize; ++i )
+      {
+         const float* src = batchInputs[i].Data();
+         float* dst = batchedData.data() + i * elementsPerSample;
+         std::copy( src, src + elementsPerSample, dst );
+      }
+
+      // Create batched tensor shape
+      std::vector<int64_t> batchedShape = { static_cast<int64_t>( batchSize ), channels, height, width };
+
+      // Create ONNX input tensor
+      std::vector<Ort::Value> inputTensors;
+      inputTensors.push_back( Ort::Value::CreateTensor<float>(
+         *m_impl->memoryInfo,
+         batchedData.data(),
+         batchedData.size(),
+         batchedShape.data(),
+         batchedShape.size() ) );
+
+      // Run inference
+      auto outputTensors = m_impl->session->Run(
+         Ort::RunOptions{ nullptr },
+         m_impl->inputNamePtrs.data(),
+         inputTensors.data(),
+         1,  // Single batched input
+         m_impl->outputNamePtrs.data(),
+         m_outputs.size() );
+
+      // Split batched output back into individual results
+      if ( outputTensors.empty() )
+      {
+         m_lastError = "RunBatch: No output tensors returned";
+         return false;
+      }
+
+      auto& outTensor = outputTensors[0];
+      auto typeInfo = outTensor.GetTensorTypeAndShapeInfo();
+      auto outShape = typeInfo.GetShape();
+
+      if ( outShape.size() != 4 || outShape[0] != batchSize )
+      {
+         m_lastError = String().Format(
+            "RunBatch: Unexpected output shape, expected batch=%d, got batch=%lld",
+            batchSize, outShape.empty() ? -1 : outShape[0] );
+         return false;
+      }
+
+      const float* outData = outTensor.GetTensorData<float>();
+      int64_t outChannels = outShape[1];
+      int64_t outHeight = outShape[2];
+      int64_t outWidth = outShape[3];
+      int64_t outElementsPerSample = outChannels * outHeight * outWidth;
+
+      batchOutputs.resize( batchSize );
+      for ( int i = 0; i < batchSize; ++i )
+      {
+         TensorShape singleOutShape = { 1, outChannels, outHeight, outWidth };
+         batchOutputs[i].Resize( singleOutShape );
+
+         const float* src = outData + i * outElementsPerSample;
+         std::copy( src, src + outElementsPerSample, batchOutputs[i].Data() );
+      }
+
+      return true;
+   }
+   catch ( const Ort::Exception& e )
+   {
+      m_lastError = String( "RunBatch inference failed: " ) + e.what();
+      Console().CriticalLn( m_lastError );
+      return false;
+   }
+   catch ( const std::exception& e )
+   {
+      m_lastError = String( "RunBatch exception: " ) + e.what();
+      Console().CriticalLn( m_lastError );
+      return false;
+   }
+#else
+   m_lastError = "ONNX Runtime not available";
+   return false;
+#endif
 }
 
 // ----------------------------------------------------------------------------

@@ -37,7 +37,7 @@ PixelStackAnalyzer::PixelStackAnalyzer( const StackAnalysisConfig& config )
 
 // ----------------------------------------------------------------------------
 
-std::vector<std::vector<PixelStackMetadata>> PixelStackAnalyzer::AnalyzeStack(
+std::vector<PixelStackMetadata> PixelStackAnalyzer::AnalyzeStack(
    const std::vector<const Image*>& frames,
    int channel ) const
 {
@@ -66,9 +66,8 @@ std::vector<std::vector<PixelStackMetadata>> PixelStackAnalyzer::AnalyzeStack(
          return {};  // Dimension mismatch
    }
 
-   // Allocate output grid
-   std::vector<std::vector<PixelStackMetadata>> result(
-      height, std::vector<PixelStackMetadata>( width ) );
+   // Allocate flat output vector indexed as [y * width + x]
+   std::vector<PixelStackMetadata> result( height * width );
 
    // Process each pixel position with OpenMP parallelization
    // pixelValues buffer is thread-local to avoid data races
@@ -90,7 +89,7 @@ std::vector<std::vector<PixelStackMetadata>> PixelStackAnalyzer::AnalyzeStack(
             }
 
             // Analyze this pixel stack
-            result[y][x] = AnalyzePixel( pixelValues );
+            result[y * width + x] = AnalyzePixel( pixelValues );
          }
       }
    }
@@ -224,7 +223,8 @@ PixelStackMetadata PixelStackAnalyzer::AnalyzePixelWithClass(
       case RegionClass::StarClusterOpen:
       case RegionClass::StarClusterGlobular:
       case RegionClass::ArtifactDiffraction:
-         // For stars: LOW values are outliers (tracking errors, clouds)
+      case RegionClass::StarHalo:
+         // For stars/halos: LOW values are outliers (tracking errors, clouds)
          // HIGH values are the correct star signal - preserve them!
          if ( values[i] < meta.distribution.mu && z > adjustedConfig.outlierSigmaThreshold )
             isOutlier = true;
@@ -245,7 +245,8 @@ PixelStackMetadata PixelStackAnalyzer::AnalyzePixelWithClass(
       case RegionClass::GalaxySpiral:
       case RegionClass::GalaxyElliptical:
       case RegionClass::GalaxyIrregular:
-         // For emission features: favor high signal, reject low outliers
+      case RegionClass::GalacticCirrus:
+         // For emission features and IFN: favor high signal, reject low outliers
          if ( values[i] < meta.distribution.mu && z > adjustedConfig.outlierSigmaThreshold )
             isOutlier = true;
          break;
@@ -316,6 +317,7 @@ PixelStackMetadata PixelStackAnalyzer::AnalyzePixelWithClass(
          case RegionClass::StarClusterOpen:
          case RegionClass::StarClusterGlobular:
          case RegionClass::ArtifactDiffraction:
+         case RegionClass::StarHalo:
             if ( values[i] < newMu && z > adjustedConfig.outlierSigmaThreshold )
                isNewOutlier = true;
             break;
@@ -333,6 +335,7 @@ PixelStackMetadata PixelStackAnalyzer::AnalyzePixelWithClass(
          case RegionClass::GalaxySpiral:
          case RegionClass::GalaxyElliptical:
          case RegionClass::GalaxyIrregular:
+         case RegionClass::GalacticCirrus:
             if ( values[i] < newMu && z > adjustedConfig.outlierSigmaThreshold )
                isNewOutlier = true;
             break;
@@ -400,13 +403,18 @@ StackDistributionParams PixelStackAnalyzer::FitDistribution( const std::vector<f
    if ( sigma < 1e-10f )
       sigma = 1e-10f;
 
-   // Compute higher moments
+   // Compute higher moments with sample-size awareness
+   int N = static_cast<int>( values.size() );
    float skewness = ComputeSkewness( values, mean, sigma );
-   float kurtosis = ComputeKurtosis( values, mean, sigma );
+
+   // Only use kurtosis for classification when N >= 15
+   // For small samples, kurtosis estimates are extremely unreliable
+   float kurtosis = ( N >= 15 ) ? ComputeKurtosis( values, mean, sigma ) : 0.0f;
+
    float bimodality = ComputeBimodalityCoefficient( values, mean, sigma );
 
-   // Determine distribution type
-   params.type = DetermineDistributionType( skewness, kurtosis, bimodality );
+   // Determine distribution type with sample-size-aware thresholds
+   params.type = DetermineDistributionType( skewness, kurtosis, bimodality, N );
    params.mu = mean;
    params.sigma = sigma;
    params.skewness = skewness;
@@ -422,23 +430,34 @@ StackDistributionParams PixelStackAnalyzer::FitDistribution( const std::vector<f
 // ----------------------------------------------------------------------------
 
 StackDistributionType PixelStackAnalyzer::DetermineDistributionType(
-   float skewness, float kurtosis, float bimodality ) const
+   float skewness, float kurtosis, float bimodality, int sampleSize ) const
 {
    // Check for bimodal first
    if ( bimodality > m_config.bimodalityThreshold )
       return StackDistributionType::Bimodal;
 
    // Check for high variance / uniform-like
-   // (This is tricky - maybe check if kurtosis is very negative?)
-   if ( kurtosis < -1.0f )
+   // Only use kurtosis classification for sufficiently large samples
+   if ( sampleSize >= 15 && kurtosis < -1.0f )
       return StackDistributionType::Uniform;
+
+   // Adaptive skewness threshold: increases for small samples
+   // Standard error of skewness ~ sqrt(6/N), so the 0.5 threshold
+   // is unreliable for N < ~25. Use at least 1.5x the standard error.
+   float skewnessThreshold = m_config.skewnessThreshold;
+   if ( sampleSize > 0 && sampleSize < 25 )
+   {
+      float se = std::sqrt( 6.0f / static_cast<float>( sampleSize ) );
+      skewnessThreshold = std::max( m_config.skewnessThreshold, 1.5f * se );
+   }
 
    float absSkew = std::abs( skewness );
 
-   if ( absSkew > m_config.skewnessThreshold )
+   if ( absSkew > skewnessThreshold )
    {
       // Positive skew with heavy tails suggests lognormal
-      if ( skewness > 0 && kurtosis > 1.0f )
+      // Only use kurtosis criterion for sufficiently large samples
+      if ( skewness > 0 && sampleSize >= 15 && kurtosis > 1.0f )
          return StackDistributionType::Lognormal;
 
       return StackDistributionType::Skewed;
@@ -522,7 +541,8 @@ float PixelStackAnalyzer::SelectBestValue(
       case RegionClass::StarClusterOpen:
       case RegionClass::StarClusterGlobular:
       case RegionClass::ArtifactDiffraction:
-         // For stars: LOW values are outliers (tracking errors, clouds)
+      case RegionClass::StarHalo:
+         // For stars/halos: LOW values are outliers (tracking errors, clouds)
          // HIGH values are the correct star signal - preserve them!
          if ( v < dist.mu && z > config.outlierSigmaThreshold )
             isOutlier = true;
@@ -582,22 +602,35 @@ float PixelStackAnalyzer::SelectBestValue(
    int bestFrame = 0;
    float bestValue = 0.0f;
 
+   // Helper lambda: get frame weight (1.0 if no weights configured)
+   auto GetFrameWeight = [this]( int frameIdx ) -> float
+   {
+      if ( !m_config.frameWeights.empty() &&
+           frameIdx >= 0 &&
+           static_cast<size_t>( frameIdx ) < m_config.frameWeights.size() )
+         return m_config.frameWeights[frameIdx];
+      return 1.0f;
+   };
+
    switch ( regionClass )
    {
    case RegionClass::NebulaDark:
    case RegionClass::DustLane:
       {
          // SELECT MINIMUM: The darkest valid value is the correct dark nebula value
-         float minVal = std::numeric_limits<float>::max();
+         // Frame weight acts as a tiebreaker - prefer darker values from better frames
+         float bestScore = std::numeric_limits<float>::max();
          for ( const auto& vp : validValues )
          {
-            if ( vp.first < minVal )
+            // Lower values are better; frame weight reduces the score (favors weighted frames)
+            float score = vp.first / GetFrameWeight( vp.second );
+            if ( score < bestScore )
             {
-               minVal = vp.first;
+               bestScore = score;
                bestFrame = vp.second;
+               bestValue = vp.first;
             }
          }
-         bestValue = minVal;
          // High confidence because we're selecting the correct extreme
          confidence = ComputeConfidence( 0.9f );
       }
@@ -607,16 +640,18 @@ float PixelStackAnalyzer::SelectBestValue(
    case RegionClass::StarSaturated:
       {
          // SELECT MAXIMUM: The brightest valid value preserves the star signal
-         float maxVal = -std::numeric_limits<float>::max();
+         // Frame weight boosts score - prefer brighter values from better frames
+         float maxScore = -std::numeric_limits<float>::max();
          for ( const auto& vp : validValues )
          {
-            if ( vp.first > maxVal )
+            float score = vp.first * GetFrameWeight( vp.second );
+            if ( score > maxScore )
             {
-               maxVal = vp.first;
+               maxScore = score;
                bestFrame = vp.second;
+               bestValue = vp.first;
             }
          }
-         bestValue = maxVal;
          confidence = ComputeConfidence( 0.9f );
       }
       break;
@@ -625,9 +660,11 @@ float PixelStackAnalyzer::SelectBestValue(
    case RegionClass::StarFaint:
    case RegionClass::StarClusterOpen:
    case RegionClass::StarClusterGlobular:
+   case RegionClass::StarHalo:
       {
-         // For medium/faint stars: favor higher values but use weighted selection
-         // to avoid picking noise spikes
+         // For medium/faint stars and halos: favor higher values but use weighted
+         // selection to avoid picking noise spikes. Star halos need spatial
+         // consistency emphasis - values slightly above median preserve halo signal.
          float maxScore = -std::numeric_limits<float>::max();
          for ( const auto& vp : validValues )
          {
@@ -637,6 +674,7 @@ float PixelStackAnalyzer::SelectBestValue(
             float score = v;  // Base: prefer higher values
             if ( v < dist.mu )
                score -= z * sigma * 0.5f;  // Penalize below-mean values
+            score *= GetFrameWeight( vp.second );
             if ( score > maxScore )
             {
                maxScore = score;
@@ -655,9 +693,12 @@ float PixelStackAnalyzer::SelectBestValue(
    case RegionClass::GalaxySpiral:
    case RegionClass::GalaxyElliptical:
    case RegionClass::GalaxyIrregular:
+   case RegionClass::GalacticCirrus:
       {
-         // For emission nebula and galaxies: favor signal (higher values)
-         // but be more conservative than stars
+         // For emission nebula, galaxies, and IFN: favor signal (higher values)
+         // but be more conservative than stars. GalacticCirrus is extremely faint -
+         // very careful signal preservation, DO NOT reject low values as they may
+         // represent real dark structure in the cirrus.
          float maxScore = -std::numeric_limits<float>::max();
          for ( const auto& vp : validValues )
          {
@@ -666,6 +707,7 @@ float PixelStackAnalyzer::SelectBestValue(
             float prob = std::exp( -0.5f * z * z );
             // Score: probability weighted toward higher signal
             float score = prob * (1.0f + 0.3f * (v - dist.mu) / sigma);
+            score *= GetFrameWeight( vp.second );
             if ( score > maxScore )
             {
                maxScore = score;
@@ -680,19 +722,22 @@ float PixelStackAnalyzer::SelectBestValue(
    default:
       {
          // Default: select value closest to median (standard behavior)
+         // Frame weight acts as a tiebreaker for similarly-close values
          std::vector<float> sortedValid;
          for ( const auto& vp : validValues )
             sortedValid.push_back( vp.first );
          std::sort( sortedValid.begin(), sortedValid.end() );
          float median = sortedValid[sortedValid.size() / 2];
 
-         float minDist = std::numeric_limits<float>::max();
+         float bestInvScore = std::numeric_limits<float>::max();
          for ( const auto& vp : validValues )
          {
             float d = std::abs( vp.first - median );
-            if ( d < minDist )
+            // Lower distance is better; divide by frame weight to favor weighted frames
+            float invScore = d / GetFrameWeight( vp.second );
+            if ( invScore < bestInvScore )
             {
-               minDist = d;
+               bestInvScore = invScore;
                bestFrame = vp.second;
                bestValue = vp.first;
             }
@@ -801,6 +846,20 @@ StackAnalysisConfig PixelStackAnalyzer::GetClassAdjustedConfig( RegionClass regi
    case RegionClass::GalaxyIrregular:
       config.outlierSigmaThreshold = 3.0f;
       config.favorHighSignal = true;
+      config.favorLowSignal = false;
+      break;
+
+   // Star halos - similar to medium stars but with more spatial consistency
+   case RegionClass::StarHalo:
+      config.outlierSigmaThreshold = 3.5f;  // Between stars (4.0) and nebulae (3.0)
+      config.favorHighSignal = true;         // Preserve halo signal
+      config.favorLowSignal = false;
+      break;
+
+   // Galactic cirrus / IFN - extremely faint, at noise floor
+   case RegionClass::GalacticCirrus:
+      config.outlierSigmaThreshold = 4.0f;  // Very permissive - don't reject faint features
+      config.favorHighSignal = true;         // Preserve faint signal
       config.favorLowSignal = false;
       break;
 

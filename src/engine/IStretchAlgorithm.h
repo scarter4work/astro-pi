@@ -127,7 +127,7 @@ public:
    // -------------------------------------------------------------------------
 
    /// Create a copy of this algorithm
-   virtual std::unique_ptr<IStretchAlgorithm> Clone() const = 0;
+   [[nodiscard]] virtual std::unique_ptr<IStretchAlgorithm> Clone() const = 0;
 
 protected:
 

@@ -386,13 +386,26 @@ Image ParallelBlendProcessor::Process(
          int startRow = t * rowsPerThread;
          int endRow = (t == numThreads - 1) ? height : (t + 1) * rowsPerThread;
 
-         // NOTE: Thread safety is ensured because IStretchAlgorithm::Apply() is const,
-         // meaning algorithms cannot modify internal state during parallel execution.
-         // If any algorithm implementation violates this contract (e.g., by using
-         // mutable members without synchronization), thread safety must be reconsidered.
-         threads.emplace_back( [this, &original, &output, &preparedMasks, &algorithms,
-                                 startRow, endRow, c]() {
-            ProcessRows( original, output, preparedMasks, algorithms,
+         // Clone algorithms for each thread to ensure thread safety.
+         // Some algorithm implementations use mutable cached state (e.g.,
+         // normalization factors), which is not safe to share across threads.
+         // Cloning gives each thread its own independent algorithm instances.
+         std::map<RegionClass, IStretchAlgorithm*> threadAlgos;
+         std::vector<std::unique_ptr<IStretchAlgorithm>> threadAlgoOwners;
+         for ( const auto& pair : algorithms )
+         {
+            if ( pair.second )
+            {
+               threadAlgoOwners.push_back( pair.second->Clone() );
+               threadAlgos[pair.first] = threadAlgoOwners.back().get();
+            }
+         }
+
+         threads.emplace_back( [this, &original, &output, &preparedMasks,
+                                 startRow, endRow, c,
+                                 algos = std::move( threadAlgos ),
+                                 owners = std::move( threadAlgoOwners )]() {
+            ProcessRows( original, output, preparedMasks, algos,
                          startRow, endRow, c );
          } );
       }

@@ -78,10 +78,10 @@ public:
    static StretchLibrary& Instance();
 
    /// Create an algorithm instance by type
-   std::unique_ptr<IStretchAlgorithm> Create( AlgorithmType type ) const;
+   [[nodiscard]] std::unique_ptr<IStretchAlgorithm> Create( AlgorithmType type ) const;
 
    /// Create an algorithm instance by ID string
-   std::unique_ptr<IStretchAlgorithm> Create( const IsoString& id ) const;
+   [[nodiscard]] std::unique_ptr<IStretchAlgorithm> Create( const IsoString& id ) const;
 
    /// Get information about an algorithm
    const AlgorithmInfo& GetInfo( AlgorithmType type ) const;
@@ -132,13 +132,13 @@ private:
 // ----------------------------------------------------------------------------
 
 /// Create a stretch algorithm by type
-inline std::unique_ptr<IStretchAlgorithm> CreateStretchAlgorithm( AlgorithmType type )
+[[nodiscard]] inline std::unique_ptr<IStretchAlgorithm> CreateStretchAlgorithm( AlgorithmType type )
 {
    return StretchLibrary::Instance().Create( type );
 }
 
 /// Create a stretch algorithm by ID
-inline std::unique_ptr<IStretchAlgorithm> CreateStretchAlgorithm( const IsoString& id )
+[[nodiscard]] inline std::unique_ptr<IStretchAlgorithm> CreateStretchAlgorithm( const IsoString& id )
 {
    return StretchLibrary::Instance().Create( id );
 }

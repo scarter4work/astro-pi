@@ -133,6 +133,9 @@ struct Tensor
    size_t Size() const { return data.size(); }
    T* Data() { return data.data(); }
    const T* Data() const { return data.data(); }
+   T* MutableData() { return data.data(); }
+
+   int64_t NumElements() const { return shape.NumElements(); }
 
    T& operator[]( size_t i ) { return data[i]; }
    const T& operator[]( size_t i ) const { return data[i]; }
@@ -203,6 +206,14 @@ public:
 
    // Single input/output convenience method
    bool Run( const FloatTensor& input, FloatTensor& output );
+
+   // Run inference on a batch of inputs
+   // Concatenates multiple [1,C,H,W] tensors into [N,C,H,W] and runs a single inference call.
+   // All inputs must have the same shape (except batch dimension).
+   // The model must support dynamic batch size.
+   bool RunBatch( const std::vector<FloatTensor>& batchInputs,
+                  std::vector<FloatTensor>& batchOutputs,
+                  int batchSize );
 
    // Get last error message
    String GetLastError() const { return m_lastError; }

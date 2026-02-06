@@ -9,7 +9,7 @@
 //
 // Unified Segmentation Palette
 //
-// This header provides a consistent color palette for the 21-class
+// This header provides a consistent color palette for the 23-class
 // segmentation model, matching the Python implementation in:
 // training_data/scripts/segmentation_palette.py
 //
@@ -30,10 +30,10 @@ namespace pcl
 // ----------------------------------------------------------------------------
 // Segmentation Palette
 //
-// Unified color palette for 21-class astronomical image segmentation.
+// Unified color palette for 23-class astronomical image segmentation.
 //
 // Design Rationale:
-// - Perceptually distinct: All 21 classes are visually separable
+// - Perceptually distinct: All 23 classes are visually separable
 // - Semantically meaningful: Colors match astronomical expectations
 //   (red for emission nebulae, blue for reflection, etc.)
 // - Colorblind-friendly: Major categories use different hues/luminances
@@ -46,13 +46,14 @@ namespace pcl
 // - DUST LANES (13): Dark brown
 // - STAR CLUSTERS (14-15): Distinct blue/peach tones
 // - ARTIFACTS (16-20): Warning colors
+// - EXTENDED (21-22): Star halo, Galactic cirrus/IFN
 // ----------------------------------------------------------------------------
 
 namespace SegmentationPalette
 {
 
 // Number of segmentation classes
-constexpr int NumClasses = 21;
+constexpr int NumClasses = 23;
 
 // RGB color structure (0-255 values)
 struct RGB8
@@ -102,6 +103,10 @@ constexpr std::array<RGB8, NumClasses> Colors = {{
    { 255, 51, 255 },     // 18: artifact_diffraction - magenta
    { 153, 153, 51 },     // 19: artifact_gradient - olive/khaki
    { 102, 102, 102 },    // 20: artifact_noise - medium gray
+
+   // Extended classes
+   { 200, 200, 100 },    // 21: star_halo - pale yellow/gold (star light, dimmer)
+   { 180, 200, 220 },    // 22: galactic_cirrus - very pale blue (faint reflection/dust)
 }};
 
 // Class names (indexed by class ID)
@@ -127,6 +132,8 @@ constexpr const char* ClassNames[NumClasses] = {
    "artifact_diffraction",
    "artifact_gradient",
    "artifact_noise",
+   "star_halo",
+   "galactic_cirrus",
 };
 
 // Human-readable display names
@@ -152,6 +159,8 @@ constexpr const char* ClassDisplayNames[NumClasses] = {
    "Diffraction Spike",
    "Gradient",
    "Noise",
+   "Star Halo",
+   "Galactic Cirrus / IFN",
 };
 
 // ----------------------------------------------------------------------------
@@ -161,7 +170,7 @@ constexpr const char* ClassDisplayNames[NumClasses] = {
 /**
  * Get the color for a class ID as normalized 0.0-1.0 RGB values.
  *
- * @param classId Integer class ID (0-20)
+ * @param classId Integer class ID (0-22)
  * @param r Output: Red component (0.0-1.0)
  * @param g Output: Green component (0.0-1.0)
  * @param b Output: Blue component (0.0-1.0)
@@ -187,7 +196,7 @@ inline void GetColor( int classId, double& r, double& g, double& b )
 /**
  * Get the color for a class ID as 0-255 RGB values.
  *
- * @param classId Integer class ID (0-20)
+ * @param classId Integer class ID (0-22)
  * @param r Output: Red component (0-255)
  * @param g Output: Green component (0-255)
  * @param b Output: Blue component (0-255)
@@ -226,7 +235,7 @@ inline void GetColorForRegion( RegionClass rc, double& r, double& g, double& b )
 /**
  * Get the class name for a class ID.
  *
- * @param classId Integer class ID (0-20)
+ * @param classId Integer class ID (0-22)
  * @return Class name string, or "unknown" for invalid IDs
  */
 inline const char* GetClassName( int classId )
@@ -239,7 +248,7 @@ inline const char* GetClassName( int classId )
 /**
  * Get the display name for a class ID.
  *
- * @param classId Integer class ID (0-20)
+ * @param classId Integer class ID (0-22)
  * @return Human-readable display name, or "Unknown" for invalid IDs
  */
 inline const char* GetClassDisplayName( int classId )
@@ -263,7 +272,7 @@ inline const char* GetRegionDisplayName( RegionClass rc )
 /**
  * Convert a class ID to a RegionClass enum value.
  *
- * @param classId Integer class ID (0-20)
+ * @param classId Integer class ID (0-22)
  * @return Corresponding RegionClass, or RegionClass::Background for invalid IDs
  */
 inline RegionClass ClassIdToRegionClass( int classId )
@@ -279,18 +288,20 @@ inline RegionClass ClassIdToRegionClass( int classId )
 
 /**
  * Check if a class belongs to the "stars" category.
+ * Includes StarHalo (21) as a star-related class.
  */
 inline bool IsStarClass( int classId )
 {
-   return classId >= 1 && classId <= 4;
+   return (classId >= 1 && classId <= 4) || classId == 21;
 }
 
 /**
  * Check if a class belongs to the "nebulae" category.
+ * Includes GalacticCirrus (22) as a nebula-related class.
  */
 inline bool IsNebulaClass( int classId )
 {
-   return classId >= 5 && classId <= 8;
+   return (classId >= 5 && classId <= 8) || classId == 22;
 }
 
 /**
@@ -323,6 +334,15 @@ inline bool IsArtifactClass( int classId )
 inline bool IsDustClass( int classId )
 {
    return classId == 7 || classId == 13;
+}
+
+/**
+ * Check if a class is an extended emission feature.
+ * Includes emission, reflection, planetary nebulae and galactic cirrus.
+ */
+inline bool IsExtendedEmissionClass( int classId )
+{
+   return (classId >= 5 && classId <= 8) || classId == 22;
 }
 
 } // namespace SegmentationPalette

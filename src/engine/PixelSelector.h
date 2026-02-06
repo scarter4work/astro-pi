@@ -134,9 +134,18 @@ public:
    void SetTargetContext( const TargetContext& context ) { m_targetContext = context; }
    void SetTargetContext( const FITSKeywordArray& keywords );
 
-   /// Set ML segmentation results
-   /// @param segmentationMap Per-pixel class labels [height][width]
-   /// @param confidenceMap Per-pixel confidence [height][width]
+   /// Set ML segmentation results (flat vectors, indexed as [y * width + x])
+   /// @param segmentationMap Per-pixel class labels, flat [height * width]
+   /// @param confidenceMap Per-pixel confidence, flat [height * width]
+   /// @param width Image width
+   /// @param height Image height
+   void SetSegmentation(
+      const std::vector<int>& segmentationMap,
+      const std::vector<float>& confidenceMap,
+      int width, int height );
+
+   /// Set ML segmentation results (2D vector overload for backward compatibility)
+   /// Internally flattens to 1D storage
    void SetSegmentation(
       const std::vector<std::vector<int>>& segmentationMap,
       const std::vector<std::vector<float>>& confidenceMap );
@@ -155,12 +164,12 @@ public:
    /// Process stack and return detailed metadata
    /// @param frames Input prestretched frames
    /// @param channel Channel to process
-   /// @param metadata Output per-pixel metadata
+   /// @param metadata Output per-pixel metadata (flat, indexed as [y * width + x])
    /// @return Integrated image
    Image ProcessStackWithMetadata(
       const std::vector<const Image*>& frames,
       int channel,
-      std::vector<std::vector<PixelSelectionResult>>& metadata ) const;
+      std::vector<PixelSelectionResult>& metadata ) const;
 
    /// Select pixel value at a specific position
    /// @param values Pixel values from all frames
@@ -173,6 +182,10 @@ public:
    /// Get spatial context for a pixel position
    SpatialContext GetSpatialContext( int x, int y ) const;
 
+   /// Set per-frame quality weights (e.g., from EXPTIME normalization)
+   /// Weights should be normalized to [0,1]. Empty means equal weight.
+   void SetFrameWeights( const std::vector<float>& weights );
+
    /// Access the internal analyzer
    const PixelStackAnalyzer& Analyzer() const { return m_analyzer; }
 
@@ -182,12 +195,15 @@ private:
    PixelStackAnalyzer m_analyzer;
    TargetContext m_targetContext;
 
-   // Segmentation data
-   std::vector<std::vector<int>> m_segmentationMap;
-   std::vector<std::vector<float>> m_confidenceMap;
+   // Segmentation data (flat vectors, indexed as [y * m_segWidth + x])
+   std::vector<int> m_segmentationMap;
+   std::vector<float> m_confidenceMap;
    int m_segWidth = 0;
    int m_segHeight = 0;
    bool m_hasSegmentation = false;
+
+   // Per-frame quality weights
+   std::vector<float> m_frameWeights;
 
    // Get ML class at position (with bounds checking)
    RegionClass GetRegionClass( int x, int y ) const;

@@ -122,25 +122,68 @@ void PixelSelector::SetTargetContext( const FITSKeywordArray& keywords )
 
 // ----------------------------------------------------------------------------
 
+void PixelSelector::SetFrameWeights( const std::vector<float>& weights )
+{
+   m_frameWeights = weights;
+
+   // Also pass through to the analyzer's config so SelectBestValue can use them
+   StackAnalysisConfig analyzerConfig = m_analyzer.Config();
+   analyzerConfig.frameWeights = weights;
+   m_analyzer.SetConfig( analyzerConfig );
+}
+
+// ----------------------------------------------------------------------------
+
+void PixelSelector::SetSegmentation(
+   const std::vector<int>& segmentationMap,
+   const std::vector<float>& confidenceMap,
+   int width, int height )
+{
+   m_segmentationMap = segmentationMap;
+   m_confidenceMap = confidenceMap;
+   m_segWidth = width;
+   m_segHeight = height;
+   m_hasSegmentation = ( width > 0 && height > 0 &&
+      !segmentationMap.empty() &&
+      segmentationMap.size() == static_cast<size_t>( width ) * height );
+}
+
 void PixelSelector::SetSegmentation(
    const std::vector<std::vector<int>>& segmentationMap,
    const std::vector<std::vector<float>>& confidenceMap )
 {
-   m_segmentationMap = segmentationMap;
-   m_confidenceMap = confidenceMap;
-
-   if ( !segmentationMap.empty() && !segmentationMap[0].empty() )
-   {
-      m_segHeight = static_cast<int>( segmentationMap.size() );
-      m_segWidth = static_cast<int>( segmentationMap[0].size() );
-      m_hasSegmentation = true;
-   }
-   else
+   if ( segmentationMap.empty() || segmentationMap[0].empty() )
    {
       m_segWidth = 0;
       m_segHeight = 0;
       m_hasSegmentation = false;
+      m_segmentationMap.clear();
+      m_confidenceMap.clear();
+      return;
    }
+
+   int height = static_cast<int>( segmentationMap.size() );
+   int width = static_cast<int>( segmentationMap[0].size() );
+
+   // Flatten 2D input to 1D storage
+   m_segmentationMap.resize( static_cast<size_t>( height ) * width );
+   m_confidenceMap.resize( static_cast<size_t>( height ) * width );
+
+   for ( int y = 0; y < height; ++y )
+   {
+      for ( int x = 0; x < width; ++x )
+      {
+         size_t idx = static_cast<size_t>( y ) * width + x;
+         m_segmentationMap[idx] = segmentationMap[y][x];
+         m_confidenceMap[idx] = ( y < static_cast<int>( confidenceMap.size() ) &&
+                                  x < static_cast<int>( confidenceMap[y].size() ) )
+                                ? confidenceMap[y][x] : 0.5f;
+      }
+   }
+
+   m_segWidth = width;
+   m_segHeight = height;
+   m_hasSegmentation = true;
 }
 
 // ----------------------------------------------------------------------------
@@ -164,8 +207,8 @@ void PixelSelector::SetSegmentation( const Image& segmentationImage )
    if ( numPixels > 500000000 )  // 500M pixels max
       throw std::runtime_error( "Segmentation image too large" );
 
-   m_segmentationMap.resize( height, std::vector<int>( width ) );
-   m_confidenceMap.resize( height, std::vector<float>( width, 1.0f ) );
+   m_segmentationMap.resize( numPixels );
+   m_confidenceMap.resize( numPixels, 1.0f );
 
    const Image::sample* classData = segmentationImage.PixelData( 0 );
    const Image::sample* confData = (segmentationImage.NumberOfChannels() >= 2)
@@ -179,9 +222,9 @@ void PixelSelector::SetSegmentation( const Image& segmentationImage )
       {
          size_t idx = static_cast<size_t>( y ) * width + x;
          // Class stored as normalized float, convert to int
-         m_segmentationMap[y][x] = static_cast<int>( classData[idx] * (static_cast<int>( RegionClass::Count ) - 1) + 0.5f );
+         m_segmentationMap[idx] = static_cast<int>( classData[idx] * (static_cast<int>( RegionClass::Count ) - 1) + 0.5f );
          if ( confData )
-            m_confidenceMap[y][x] = static_cast<float>( confData[idx] );
+            m_confidenceMap[idx] = static_cast<float>( confData[idx] );
       }
    }
 
@@ -196,7 +239,7 @@ Image PixelSelector::ProcessStack(
    const std::vector<const Image*>& frames,
    int channel ) const
 {
-   std::vector<std::vector<PixelSelectionResult>> metadata;
+   std::vector<PixelSelectionResult> metadata;
    return ProcessStackWithMetadata( frames, channel, metadata );
 }
 
@@ -205,7 +248,7 @@ Image PixelSelector::ProcessStack(
 Image PixelSelector::ProcessStackWithMetadata(
    const std::vector<const Image*>& frames,
    int channel,
-   std::vector<std::vector<PixelSelectionResult>>& metadata ) const
+   std::vector<PixelSelectionResult>& metadata ) const
 {
    if ( frames.empty() || frames[0] == nullptr )
       return Image();
@@ -237,8 +280,8 @@ Image PixelSelector::ProcessStackWithMetadata(
    Image result( width, height, ColorSpace::Gray );
    result.Zero();
 
-   // Allocate metadata grid
-   metadata.resize( height, std::vector<PixelSelectionResult>( width ) );
+   // Allocate flat metadata vector indexed as [y * width + x]
+   metadata.resize( numPixels );
 
    // Process each pixel
    Image::sample* outData = result.PixelData( 0 );
@@ -267,7 +310,7 @@ Image PixelSelector::ProcessStackWithMetadata(
          // Store result - no race condition since each thread works on different rows
          size_t outIdx = static_cast<size_t>( y ) * width + x;
          outData[outIdx] = result_pixel.value;
-         metadata[y][x] = result_pixel;
+         metadata[outIdx] = result_pixel;
       }
    }
 
@@ -399,7 +442,11 @@ RegionClass PixelSelector::GetRegionClass( int x, int y ) const
    if ( !m_hasSegmentation || x < 0 || x >= m_segWidth || y < 0 || y >= m_segHeight )
       return RegionClass::Background;
 
-   int classInt = m_segmentationMap[y][x];
+   size_t idx = static_cast<size_t>( y ) * m_segWidth + x;
+   if ( idx >= m_segmentationMap.size() )
+      return RegionClass::Background;
+
+   int classInt = m_segmentationMap[idx];
    if ( classInt < 0 || classInt >= static_cast<int>( RegionClass::Count ) )
       return RegionClass::Background;
 
@@ -413,7 +460,11 @@ float PixelSelector::GetClassConfidence( int x, int y ) const
    if ( !m_hasSegmentation || x < 0 || x >= m_segWidth || y < 0 || y >= m_segHeight )
       return 0.0f;
 
-   return m_confidenceMap[y][x];
+   size_t idx = static_cast<size_t>( y ) * m_segWidth + x;
+   if ( idx >= m_confidenceMap.size() )
+      return 0.0f;
+
+   return m_confidenceMap[idx];
 }
 
 // ----------------------------------------------------------------------------

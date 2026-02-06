@@ -30,18 +30,19 @@ void IStretchAlgorithm::ApplyToImage( Image& image, const Image* mask ) const
       {
          for ( int x = 0; x < width; ++x )
          {
-            double original = image( x, y, c );
-            double stretched = Apply( original );
-
             if ( mask != nullptr )
             {
                // Blend based on mask value
                double maskValue = (*mask)( x, y, 0 );
+               if ( maskValue < 0.001 )
+                  continue;  // Mask is zero - skip expensive Apply() call
+               double original = image( x, y, c );
+               double stretched = Apply( original );
                image( x, y, c ) = original * (1.0 - maskValue) + stretched * maskValue;
             }
             else
             {
-               image( x, y, c ) = stretched;
+               image( x, y, c ) = Apply( image( x, y, c ) );
             }
          }
       }
@@ -67,9 +68,11 @@ void StretchAlgorithmBase::ApplyToImage( Image& image, const Image* mask ) const
          Image::const_sample_iterator m( *mask, 0 );
          for ( ; i; ++i, ++m )
          {
+            double maskValue = *m;
+            if ( maskValue < 0.001 )
+               continue;  // Mask is zero - skip expensive Apply() call
             double original = *i;
             double stretched = Apply( original );
-            double maskValue = *m;
             *i = original * (1.0 - maskValue) + stretched * maskValue;
          }
       }

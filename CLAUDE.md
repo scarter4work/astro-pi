@@ -8,15 +8,17 @@
    - Increment `MODULE_VERSION_BUILD` (or MINOR/MAJOR for significant changes)
    - Update `MODULE_RELEASE_YEAR/MONTH/DAY` to today's date
 3. **Build**: `make clean && make`
-4. **Sign**: `/opt/PixInsight/bin/PixInsight.sh --sign-module-file=NukeX-pxm.so --xssk-file=/home/scarter4work/projects/keys/scarter4work_keys.xssk --xssk-password="***REDACTED***"`
-5. **Commit & Push to GitHub**: User downloads from https://github.com/scarter4work/NukeX
-6. **DO NOT run `make install`** - this causes version conflicts
+4. **Sign module**: `/opt/PixInsight/bin/PixInsight.sh --sign-module-file=NukeX-pxm.so --xssk-file=/home/scarter4work/projects/keys/scarter4work_keys.xssk --xssk-password="***REDACTED***"`
+5. **Commit source changes** to git
+6. **UPDATE THE PIXINSIGHT REPOSITORY** (see below) - THIS IS MANDATORY!
+7. **Push everything to GitHub**
+8. **DO NOT run `make install`** - this causes version conflicts
 
 **Current Version Format**: `MAJOR.MINOR.REVISION.BUILD` (e.g., 1.1.0.1)
 
 **ML Backup**: Full ML segmentation code is preserved in `/home/scarter4work/projects/NukeX2/` (local only, not on GitHub). Use this if re-adding ML features.
 
-### PixInsight Repository Update (after each release)
+### PixInsight Repository Update (MANDATORY - DO NOT SKIP!)
 
 After building and signing the module, update the repository:
 
@@ -258,3 +260,13 @@ Rejected: Frame 3 - 25σ outlier, cloud contamination
 **Without ML class**: Might incorrectly average or select median
 **With ML class**: Knows this is bright nebula, favors strong signal, rejects low outlier
 
+
+---
+
+## Workflow Style
+
+**IMPORTANT: Delegate all implementation work to subagents.** The main agent should:
+- Coordinate and delegate tasks to the subagent team
+- Review and present results from subagents
+- NOT directly edit code, run builds, or make commits
+- Use Task tool with appropriate subagent_type for all implementation work

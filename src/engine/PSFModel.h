@@ -86,6 +86,26 @@ struct PSFParameters
 };
 
 // ----------------------------------------------------------------------------
+// Spatially-Varying PSF Grid
+//
+// Divides the image into a grid of zones with independently fitted PSF
+// parameters, then interpolates between grid points to model field-varying
+// aberrations (coma, field curvature, tilt, etc.).
+// ----------------------------------------------------------------------------
+
+struct PSFGrid
+{
+   int gridCols = 3;  // Number of columns in the grid
+   int gridRows = 3;  // Number of rows in the grid
+   std::vector<PSFParameters> gridParams;  // gridCols * gridRows PSF fits
+   int imageWidth = 0;
+   int imageHeight = 0;
+
+   // Get interpolated PSF parameters at any image position
+   [[nodiscard]] PSFParameters GetParametersAt( int x, int y ) const;
+};
+
+// ----------------------------------------------------------------------------
 // PSF Model - Generate and manipulate PSF images
 // ----------------------------------------------------------------------------
 
@@ -111,18 +131,18 @@ public:
    void SubtractFromImage( Image& target, float x, float y, float scale = 1.0f ) const;
 
    // Fit PSF to star in image
-   static PSFParameters FitToStar( const Image& image,
-                                    float centerX, float centerY,
-                                    float searchRadius = 20.0f );
+   [[nodiscard]] static PSFParameters FitToStar( const Image& image,
+                                                   float centerX, float centerY,
+                                                   float searchRadius = 20.0f );
 
    // Fit PSF with known center (more accurate)
-   static PSFParameters FitToStarAtCenter( const Image& image,
-                                            float centerX, float centerY,
-                                            float maxRadius = 100.0f );
+   [[nodiscard]] static PSFParameters FitToStarAtCenter( const Image& image,
+                                                          float centerX, float centerY,
+                                                          float maxRadius = 100.0f );
 
    // Estimate PSF from multiple stars
-   static PSFParameters EstimateFromStars( const Image& image,
-                                            const std::vector<DPoint>& starPositions );
+   [[nodiscard]] static PSFParameters EstimateFromStars( const Image& image,
+                                                          const std::vector<DPoint>& starPositions );
 
 private:
 
@@ -226,6 +246,13 @@ DPoint FindCentroid( const Image& image, float x, float y, float radius );
 std::vector<DPoint> DetectStars( const Image& image,
                                   float threshold = 5.0f,  // sigma above background
                                   float minSeparation = 10.0f );
+
+// Fit a spatially-varying PSF grid from detected stars.
+// Assigns each star to its nearest grid cell, fits PSF parameters per cell,
+// and fills empty cells with interpolated values from neighbors.
+[[nodiscard]] PSFGrid FitSpatiallyVaryingPSF( const Image& image,
+                                               const std::vector<DPoint>& stars,
+                                               int gridCols = 3, int gridRows = 3 );
 
 } // namespace PSFUtils
 

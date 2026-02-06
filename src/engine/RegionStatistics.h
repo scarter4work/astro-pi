@@ -21,7 +21,7 @@ namespace pcl
 
 // ----------------------------------------------------------------------------
 // Region Class Enumeration
-// Matches model training classes (21 total)
+// 23 total classes (21 original + 2 extended: StarHalo, GalacticCirrus)
 // ----------------------------------------------------------------------------
 
 enum class RegionClass
@@ -59,7 +59,11 @@ enum class RegionClass
    ArtifactGradient,       // Background gradients/vignetting
    ArtifactNoise,          // Noise patterns
 
-   Count                   // Number of region classes (21)
+   // Extended classes (21-22) - added for star-nebula transitions and IFN
+   StarHalo,               // Star halos - diffuse glow around stars
+   GalacticCirrus,         // Integrated Flux Nebulae / Galactic cirrus
+
+   Count                   // Number of region classes (23)
 };
 
 // Convert region class to string (matches model training names)
@@ -88,6 +92,8 @@ inline IsoString RegionClassToString( RegionClass rc )
    case RegionClass::ArtifactDiffraction: return "artifact_diffraction";
    case RegionClass::ArtifactGradient:    return "artifact_gradient";
    case RegionClass::ArtifactNoise:       return "artifact_noise";
+   case RegionClass::StarHalo:            return "star_halo";
+   case RegionClass::GalacticCirrus:      return "galactic_cirrus";
    default:                               return "unknown";
    }
 }
@@ -118,8 +124,29 @@ inline String RegionClassDisplayName( RegionClass rc )
    case RegionClass::ArtifactDiffraction: return "Diffraction Spike";
    case RegionClass::ArtifactGradient:    return "Gradient";
    case RegionClass::ArtifactNoise:       return "Noise";
+   case RegionClass::StarHalo:            return "Star Halo";
+   case RegionClass::GalacticCirrus:      return "Galactic Cirrus / IFN";
    default:                               return "Unknown";
    }
+}
+
+// Classification helper: is this a star-related class?
+inline bool IsStarRelatedClass( RegionClass rc )
+{
+   return rc == RegionClass::StarBright ||
+          rc == RegionClass::StarMedium ||
+          rc == RegionClass::StarFaint ||
+          rc == RegionClass::StarSaturated ||
+          rc == RegionClass::StarHalo;
+}
+
+// Classification helper: is this an extended emission class?
+inline bool IsExtendedEmission( RegionClass rc )
+{
+   return rc == RegionClass::NebulaEmission ||
+          rc == RegionClass::NebulaReflection ||
+          rc == RegionClass::NebulaPlanetary ||
+          rc == RegionClass::GalacticCirrus;
 }
 
 // ----------------------------------------------------------------------------
