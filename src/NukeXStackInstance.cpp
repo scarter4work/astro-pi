@@ -858,7 +858,7 @@ bool NukeXStackInstance::RunIntegration(
 
          // Count outliers from flat metadata
          for ( const auto& result : metadata )
-            if ( result.outlierMask != 0 )
+            if ( result.outlierCount > 0 )
                summary.outlierPixels++;
       }
       else

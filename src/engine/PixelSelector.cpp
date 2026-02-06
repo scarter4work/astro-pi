@@ -356,6 +356,8 @@ PixelSelectionResult PixelSelector::SelectPixel(
    result.sourceFrame = stackMeta.sourceFrame;
    result.confidence = stackMeta.confidence;
    result.outlierMask = stackMeta.outlierMask;
+   result.outlierCount = stackMeta.outlierCount;
+   result.totalFrames = stackMeta.totalFrames;
    result.distMu = stackMeta.distribution.mu;
    result.distSigma = stackMeta.distribution.sigma;
 

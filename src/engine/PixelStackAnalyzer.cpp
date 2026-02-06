@@ -102,6 +102,7 @@ std::vector<PixelStackMetadata> PixelStackAnalyzer::AnalyzeStack(
 PixelStackMetadata PixelStackAnalyzer::AnalyzePixel( const std::vector<float>& values ) const
 {
    PixelStackMetadata meta;
+   meta.totalFrames = static_cast<uint16_t>( values.size() );
 
    if ( values.size() < static_cast<size_t>( m_config.minFramesForStats ) )
    {
@@ -119,16 +120,28 @@ PixelStackMetadata PixelStackAnalyzer::AnalyzePixel( const std::vector<float>& v
    // Fit distribution to values
    meta.distribution = FitDistribution( values );
 
-   // Identify outliers
-   IdentifyOutliers( values, meta.distribution, meta.outlierMask );
+   // Local rejected vector tracks ALL frames regardless of index (fixes >64 frame bug)
+   std::vector<bool> rejected( values.size(), false );
+
+   // Identify outliers (initial pass)
+   float sigma = meta.distribution.sigma;
+   if ( sigma < 1e-10f )
+      sigma = 1e-10f;
+
+   for ( size_t i = 0; i < values.size(); ++i )
+   {
+      float z = std::abs( values[i] - meta.distribution.mu ) / sigma;
+      if ( z > m_config.outlierSigmaThreshold )
+         rejected[i] = true;
+   }
 
    // Iterative sigma clipping - refine outlier detection
    for ( int pass = 1; pass < 3; ++pass )
    {
-      // Count current valid (non-outlier) frames
+      // Count current valid (non-rejected) frames
       int validCount = 0;
-      for ( size_t i = 0; i < values.size() && i < 64; ++i )
-         if ( !meta.IsOutlier( static_cast<int>( i ) ) )
+      for ( size_t i = 0; i < values.size(); ++i )
+         if ( !rejected[i] )
             ++validCount;
 
       if ( validCount < m_config.minFramesForStats )
@@ -137,8 +150,8 @@ PixelStackMetadata PixelStackAnalyzer::AnalyzePixel( const std::vector<float>& v
       // Recompute statistics from valid frames only
       std::vector<float> validValues;
       validValues.reserve( validCount );
-      for ( size_t i = 0; i < values.size() && i < 64; ++i )
-         if ( !meta.IsOutlier( static_cast<int>( i ) ) )
+      for ( size_t i = 0; i < values.size(); ++i )
+         if ( !rejected[i] )
             validValues.push_back( values[i] );
 
       float newMu = ComputeMedian( validValues );
@@ -148,20 +161,33 @@ PixelStackMetadata PixelStackAnalyzer::AnalyzePixel( const std::vector<float>& v
          break;
 
       // Check for new outliers with refined statistics
-      uint64_t prevMask = meta.outlierMask;
+      std::vector<bool> prevRejected = rejected;
       meta.distribution.mu = newMu;
       meta.distribution.sigma = newSigma;
 
-      for ( size_t i = 0; i < values.size() && i < 64; ++i )
+      for ( size_t i = 0; i < values.size(); ++i )
       {
          float z = std::abs( values[i] - newMu ) / newSigma;
          if ( z > m_config.outlierSigmaThreshold )
-            meta.SetOutlier( static_cast<int>( i ) );
+            rejected[i] = true;
       }
 
       // Converged if no new outliers found
-      if ( meta.outlierMask == prevMask )
+      if ( rejected == prevRejected )
          break;
+   }
+
+   // Aggregate rejected vector into metadata
+   meta.outlierMask = 0;
+   meta.outlierCount = 0;
+   for ( size_t i = 0; i < rejected.size(); ++i )
+   {
+      if ( rejected[i] )
+      {
+         if ( i < 64 )
+            meta.outlierMask |= (uint64_t( 1 ) << i);
+         meta.outlierCount++;
+      }
    }
 
    // Select best value (no class hint, use background as default)
@@ -182,6 +208,7 @@ PixelStackMetadata PixelStackAnalyzer::AnalyzePixelWithClass(
    float classConfidence ) const
 {
    PixelStackMetadata meta;
+   meta.totalFrames = static_cast<uint16_t>( values.size() );
 
    if ( values.size() < static_cast<size_t>( m_config.minFramesForStats ) )
    {
@@ -201,13 +228,15 @@ PixelStackMetadata PixelStackAnalyzer::AnalyzePixelWithClass(
    // Get class-adjusted config for outlier detection
    StackAnalysisConfig adjustedConfig = GetClassAdjustedConfig( regionClass );
 
+   // Local rejected vector tracks ALL frames regardless of index (fixes >64 frame bug)
+   std::vector<bool> rejected( values.size(), false );
+
    // Identify outliers with class-aware thresholds
    float sigma = meta.distribution.sigma;
    if ( sigma < 1e-10f )
       sigma = 1e-10f;
 
-   meta.outlierMask = 0;
-   for ( size_t i = 0; i < values.size() && i < 64; ++i )
+   for ( size_t i = 0; i < values.size(); ++i )
    {
       float z = std::abs( values[i] - meta.distribution.mu ) / sigma;
 
@@ -268,16 +297,16 @@ PixelStackMetadata PixelStackAnalyzer::AnalyzePixelWithClass(
       }
 
       if ( isOutlier )
-         meta.SetOutlier( static_cast<int>( i ) );
+         rejected[i] = true;
    }
 
    // Iterative sigma clipping - refine outlier detection with class awareness
    for ( int pass = 1; pass < 3; ++pass )
    {
-      // Count current valid (non-outlier) frames
+      // Count current valid (non-rejected) frames
       int validCount = 0;
-      for ( size_t i = 0; i < values.size() && i < 64; ++i )
-         if ( !meta.IsOutlier( static_cast<int>( i ) ) )
+      for ( size_t i = 0; i < values.size(); ++i )
+         if ( !rejected[i] )
             ++validCount;
 
       if ( validCount < m_config.minFramesForStats )
@@ -286,8 +315,8 @@ PixelStackMetadata PixelStackAnalyzer::AnalyzePixelWithClass(
       // Recompute statistics from valid frames only
       std::vector<float> validValues;
       validValues.reserve( validCount );
-      for ( size_t i = 0; i < values.size() && i < 64; ++i )
-         if ( !meta.IsOutlier( static_cast<int>( i ) ) )
+      for ( size_t i = 0; i < values.size(); ++i )
+         if ( !rejected[i] )
             validValues.push_back( values[i] );
 
       float newMu = ComputeMedian( validValues );
@@ -297,11 +326,11 @@ PixelStackMetadata PixelStackAnalyzer::AnalyzePixelWithClass(
          break;
 
       // Check for new outliers with refined statistics
-      uint64_t prevMask = meta.outlierMask;
+      std::vector<bool> prevRejected = rejected;
       meta.distribution.mu = newMu;
       meta.distribution.sigma = newSigma;
 
-      for ( size_t i = 0; i < values.size() && i < 64; ++i )
+      for ( size_t i = 0; i < values.size(); ++i )
       {
          float z = std::abs( values[i] - newMu ) / newSigma;
 
@@ -355,12 +384,25 @@ PixelStackMetadata PixelStackAnalyzer::AnalyzePixelWithClass(
          }
 
          if ( isNewOutlier )
-            meta.SetOutlier( static_cast<int>( i ) );
+            rejected[i] = true;
       }
 
       // Converged if no new outliers found
-      if ( meta.outlierMask == prevMask )
+      if ( rejected == prevRejected )
          break;
+   }
+
+   // Aggregate rejected vector into metadata
+   meta.outlierMask = 0;
+   meta.outlierCount = 0;
+   for ( size_t i = 0; i < rejected.size(); ++i )
+   {
+      if ( rejected[i] )
+      {
+         if ( i < 64 )
+            meta.outlierMask |= (uint64_t( 1 ) << i);
+         meta.outlierCount++;
+      }
    }
 
    // Select best value with class awareness
@@ -479,11 +521,14 @@ void PixelStackAnalyzer::IdentifyOutliers(
    if ( sigma < 1e-10f )
       sigma = 1e-10f;
 
-   for ( size_t i = 0; i < values.size() && i < 64; ++i )
+   for ( size_t i = 0; i < values.size(); ++i )
    {
       float z = std::abs( values[i] - dist.mu ) / sigma;
       if ( z > m_config.outlierSigmaThreshold )
-         outlierMask |= (uint64_t( 1 ) << i);
+      {
+         if ( i < 64 )
+            outlierMask |= (uint64_t( 1 ) << i);
+      }
    }
 }
 

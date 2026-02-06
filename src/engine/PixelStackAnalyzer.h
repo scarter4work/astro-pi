@@ -71,7 +71,9 @@ struct PixelStackMetadata
    float selectedValue = 0.0f;            // The chosen "best" value
    uint16_t sourceFrame = 0;              // Which frame contributed this pixel
    float confidence = 0.0f;               // Confidence in selection (0-1)
-   uint64_t outlierMask = 0;              // Bitmask of rejected frames (up to 64)
+   uint64_t outlierMask = 0;              // Per-frame detail for first 64 frames
+   uint16_t outlierCount = 0;             // Total outlier count (all frames)
+   uint16_t totalFrames = 0;             // How many frames were analyzed
 
    // Check if a specific frame was marked as outlier
    bool IsOutlier( int frameIndex ) const
@@ -84,20 +86,11 @@ struct PixelStackMetadata
    {
       if ( frameIndex < 64 )
          outlierMask |= (uint64_t( 1 ) << frameIndex);
+      outlierCount++;
    }
 
    // Count number of outlier frames
-   int OutlierCount() const
-   {
-      int count = 0;
-      uint64_t mask = outlierMask;
-      while ( mask )
-      {
-         count += (mask & 1);
-         mask >>= 1;
-      }
-      return count;
-   }
+   int OutlierCount() const { return outlierCount; }
 };
 
 // ----------------------------------------------------------------------------
