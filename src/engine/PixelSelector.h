@@ -38,7 +38,7 @@ struct PixelSelectionResult
    float confidence = 0.0f;                   // Confidence in selection (0-1)
    RegionClass regionClass = RegionClass::Background;  // ML segmentation class
    float classConfidence = 0.0f;              // Confidence in ML class
-   uint32_t outlierMask = 0;                  // Which frames were rejected
+   uint64_t outlierMask = 0;                  // Which frames were rejected (up to 64)
 
    // Distribution info (for debugging/analysis)
    float distMu = 0.0f;

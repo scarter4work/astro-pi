@@ -9,8 +9,8 @@
       </p>
    </description>
    <platform os="linux" arch="x64" version="1.8.0:1.9.9">
-      <package fileName="20260205-linux-x64-NukeX.tar.gz" sha1="1c07aeb9edc0941bebc92990c9c4749e405e660d" type="module" releaseDate="20260205">
-         <title>NukeX 1.1.0.23 - StarHalo/IFN Classes, Spatially-Varying PSF, Batched ONNX, Flat Vectors</title>
+      <package fileName="20260205-linux-x64-NukeX.tar.gz" sha1="e165c3c62005601aff3fa1537da7638254400ea9" type="module" releaseDate="20260205">
+         <title>NukeX 1.1.0.24 - Stacker crash fixes</title>
          <description>
             <p>
                <b>NukeX - Intelligent Region-Aware Processing for PixInsight</b>
@@ -27,7 +27,7 @@
                </li>
             </ul>
             <p>
-               <b>Version 1.1.0.23:</b> StarHalo (class 21) and GalacticCirrus (class 22) segmentation classes. Spatially-varying PSF model with grid-based bilinear interpolation. Batched ONNX inference (RunBatch) for tiled processing. Flat vector refactor (y*width+x) replacing nested vectors for cache performance. EXPTIME-based per-frame quality weighting. Adaptive skewness threshold for small sample sizes. Mask skip optimization (skip Apply when mask &lt; 0.001). LUT-based stretch with mask skip. Thread-safe algorithm cloning via Clone() virtual method. [[nodiscard]] on factory functions. Fixed const_cast UB in ONNX inference (copies to mutable buffers). Runtime model class count validation. 2D SetSegmentation backward compatibility.
+               <b>Version 1.1.0.24:</b> Fixed transition checker segfault from dimension mismatch when segmentation map is downsampled relative to the output image (nearest-neighbor upscaling). Fixed outlierMask uint32 truncation (uint32_t to uint64_t in PixelSelectionResult to match PixelStackMetadata, supporting 64-frame outlier tracking). Added frame channel count validation when loading subframes. Exception-safe FITS keyword numeric parsing (catches malformed values instead of crashing).
             </p>
             <p>
                Copyright (c) 2026 Scott Carter. All Rights Reserved.
@@ -36,4 +36,4 @@
       </package>
    </platform>
 </xri>
-<Signature developerId="scarter4work" timestamp="2026-02-06T00:04:21.089Z" encoding="Base64">Rba1DxSzlmYQe+CGdG65LMken7lt01de2zYomqH0HwXEj5cELYrlhc1uJ7K6aMMkCF1V5zA7tLTicf7Ar7kTAg==</Signature>
+<Signature developerId="scarter4work" timestamp="2026-02-06T03:14:10.737Z" encoding="Base64">bTLvu9nI//xRL2NqTe5eX4sns8MwxsT6iupBu80GEuKPL9ZXG+wM6acU+5ODDmN5Lvv/eBQO9d5zjM1hMxNHDg==</Signature>

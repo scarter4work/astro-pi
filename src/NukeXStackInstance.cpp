@@ -163,7 +163,8 @@ static double GetKeywordDouble( const FITSKeywordArray& keywords, const char* na
    {
       IsoString n = kw.name.Uppercase();
       if ( n == name1 || (name2 && n == name2) )
-         return kw.value.ToDouble();
+         try { return kw.value.ToDouble(); }
+         catch ( ... ) { return defaultVal; }
    }
    return defaultVal;
 }
@@ -257,6 +258,13 @@ bool NukeXStackInstance::ExecuteGlobal()
          console.CriticalLn( String().Format(
             "\r<clrbol>Frame dimension mismatch: %s (%dx%d) vs expected (%dx%d)",
             IsoString( path ).c_str(), frame.Width(), frame.Height(), width, height ) );
+         return false;
+      }
+      else if ( frame.NumberOfChannels() != channels )
+      {
+         console.CriticalLn( String().Format(
+            "\r<clrbol>Frame channel count mismatch: %s (%d channels) vs expected (%d channels)",
+            IsoString( path ).c_str(), frame.NumberOfChannels(), channels ) );
          return false;
       }
 
@@ -886,11 +894,26 @@ bool NukeXStackInstance::RunIntegration(
          Image segImage;
          if ( !segmentationMap.empty() )
          {
+            // Segmentation map may have different dimensions than the output image
+            // (due to downsampling in the segmentation engine)
+            int segHeight = static_cast<int>( segmentationMap.size() );
+            int segWidth = segHeight > 0 ? static_cast<int>( segmentationMap[0].size() ) : 0;
+
+            // Build segmentation image at output image dimensions with nearest-neighbor upscaling
             segImage.AllocateData( width, height, 1 );
+            float scaleX = ( segWidth > 1 ) ? static_cast<float>( segWidth - 1 ) / std::max( 1, width - 1 ) : 0.0f;
+            float scaleY = ( segHeight > 1 ) ? static_cast<float>( segHeight - 1 ) / std::max( 1, height - 1 ) : 0.0f;
+
             for ( int y = 0; y < height; ++y )
+            {
+               int sy = std::min( static_cast<int>( y * scaleY + 0.5f ), segHeight - 1 );
                for ( int x = 0; x < width; ++x )
-                  segImage.Pixel( x, y, 0 ) = static_cast<float>( segmentationMap[y][x] ) /
+               {
+                  int sx = std::min( static_cast<int>( x * scaleX + 0.5f ), segWidth - 1 );
+                  segImage.Pixel( x, y, 0 ) = static_cast<float>( segmentationMap[sy][sx] ) /
                      static_cast<float>( static_cast<int>( RegionClass::Count ) - 1 );
+               }
+            }
 
             summary.smoothedTransitions += checker.CheckAndSmooth( output, segImage, c );
          }
