@@ -9,8 +9,8 @@
       </p>
    </description>
    <platform os="linux" arch="x64" version="1.8.0:1.9.9">
-      <package fileName="20260206-v26-linux-x64-NukeX.tar.gz" sha1="cb62b71db50abdc263e75ab2831bfccc99ccf8ae" type="module" releaseDate="20260206">
-         <title>NukeX 1.1.0.26 - Streaming stacker for 300+ frames</title>
+      <package fileName="20260206-v27-linux-x64-NukeX.tar.gz" sha1="d3b361aaec101a45361da6cb4cd4ad080b9630c4" type="module" releaseDate="20260206">
+         <title>NukeX 1.1.0.27 - Streaming performance optimizations</title>
          <description>
             <p>
                <b>NukeX - Intelligent Region-Aware Processing for PixInsight</b>
@@ -27,7 +27,7 @@
                </li>
             </ul>
             <p>
-               <b>Version 1.1.0.26:</b> New FrameStreamer for row-based streaming I/O, enabling stacking of 300+ frames with ~224 MB peak memory instead of 13+ GB. Auto-selects streaming mode when total frame data exceeds 8 GB threshold; smaller stacks use the existing fast in-memory path. Streaming median reference and streaming pixel selection with OpenMP parallelism preserved. Also includes v25 unlimited outlier tracking (no more 64-frame cap).
+               <b>Version 1.1.0.27:</b> Double-buffered row prefetch in FrameStreamer overlaps disk I/O with pixel processing. Eliminated per-pixel vector allocations in streaming path (~50M allocs removed for 4K images). Dynamic OpenMP scheduling for better load balancing on mixed-feature images. Row-level progress reporting during streaming integration.
             </p>
             <p>
                Copyright (c) 2026 Scott Carter. All Rights Reserved.
@@ -36,4 +36,4 @@
       </package>
    </platform>
 </xri>
-<Signature developerId="scarter4work" timestamp="2026-02-06T17:39:40.936Z" encoding="Base64">s83wy2tkJf+KKSK2UbkvihL/bBgKj8XPDIZj7pzJXDzDQGXfjo0Edto5O5a8Rgcy4VWfbZ29OYLVn8wAteRkAQ==</Signature>
+<Signature developerId="scarter4work" timestamp="2026-02-06T22:21:11.543Z" encoding="Base64">TT60pkRohHBpRKbfHDFrMyDwUIHB0KYTljZFVZGKGhclgZQhRoTc3hqOmBdc7RFbju3bDCva1EpfcllA3i4hDA==</Signature>

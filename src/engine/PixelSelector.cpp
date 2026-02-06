@@ -11,6 +11,8 @@
 
 #include "PixelSelector.h"
 
+#include <pcl/Console.h>
+
 #include <algorithm>
 #include <cmath>
 #include <omp.h>
@@ -357,24 +359,40 @@ Image PixelSelector::ProcessStackWithMetadata(
       if ( !streamer.ReadRow( y, channel, rowData ) )
          throw std::runtime_error( "Failed to read row " + std::to_string( y ) );
 
-      // Parallel: process pixels within this row
-      #pragma omp parallel for schedule(static)
-      for ( int x = 0; x < width; ++x )
+      // Progress reporting
+      if ( y % 100 == 0 || y == height - 1 )
       {
-         // Collect values from the pre-read row data
+         Console().Write( String().Format( "\r  Row %d/%d (%.0f%%)",
+            y + 1, height, 100.0 * ( y + 1 ) / height ) );
+         Console().Flush();
+      }
+
+      // Parallel: process pixels within this row
+      // Each thread allocates pixelValues once and reuses across all pixels
+      #pragma omp parallel
+      {
          std::vector<float> pixelValues( numFrames );
-         for ( int f = 0; f < numFrames; ++f )
-            pixelValues[f] = rowData[f][x];
 
-         // Select best pixel
-         PixelSelectionResult result_pixel = SelectPixel( pixelValues, x, y );
+         #pragma omp for schedule(dynamic, 64)
+         for ( int x = 0; x < width; ++x )
+         {
+            // Collect values from the pre-read row data
+            for ( int f = 0; f < numFrames; ++f )
+               pixelValues[f] = rowData[f][x];
 
-         // Store result
-         size_t outIdx = static_cast<size_t>( y ) * width + x;
-         outData[outIdx] = result_pixel.value;
-         metadata[outIdx] = result_pixel;
+            // Select best pixel
+            PixelSelectionResult result_pixel = SelectPixel( pixelValues, x, y );
+
+            // Store result
+            size_t outIdx = static_cast<size_t>( y ) * width + x;
+            outData[outIdx] = result_pixel.value;
+            metadata[outIdx] = result_pixel;
+         }
       }
    }
+
+   // Final newline after progress reporting
+   Console().WriteLn( "" );
 
    return result;
 }
