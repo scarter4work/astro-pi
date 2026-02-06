@@ -19,6 +19,7 @@
 #include "NukeXStackParameters.h"
 #include "engine/PixelSelector.h"
 #include "engine/TransitionChecker.h"
+#include "engine/FrameStreamer.h"
 
 #include <vector>
 
@@ -117,6 +118,14 @@ private:
 
    // Create a median reference image from the stack for segmentation
    Image CreateMedianReference( const std::vector<Image>& frames ) const;
+
+   // Streaming variants for large stacks
+   Image CreateMedianReferenceStreaming( FrameStreamer& streamer ) const;
+
+   bool RunIntegrationStreaming( FrameStreamer& streamer,
+                                const FITSKeywordArray& keywords,
+                                Image& output,
+                                IntegrationSummary& summary ) const;
 
    // Run ML segmentation on the reference image and populate maps
    bool RunSegmentation( const Image& referenceImage,

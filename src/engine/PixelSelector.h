@@ -14,6 +14,7 @@
 #define __PixelSelector_h
 
 #include "PixelStackAnalyzer.h"
+#include "FrameStreamer.h"
 #include "RegionStatistics.h"
 
 #include <pcl/Image.h>
@@ -170,6 +171,25 @@ public:
    /// @return Integrated image
    Image ProcessStackWithMetadata(
       const std::vector<const Image*>& frames,
+      int channel,
+      std::vector<PixelSelectionResult>& metadata ) const;
+
+   /// Process stack using streaming I/O (for large frame counts)
+   /// Reads frames row-by-row via FrameStreamer to minimize memory usage.
+   /// @param streamer Initialized FrameStreamer with all frames open
+   /// @param channel Channel to process
+   /// @return Integrated image
+   Image ProcessStack(
+      FrameStreamer& streamer,
+      int channel = 0 ) const;
+
+   /// Process stack using streaming I/O and return detailed metadata
+   /// @param streamer Initialized FrameStreamer with all frames open
+   /// @param channel Channel to process
+   /// @param metadata Output per-pixel metadata (flat, indexed as [y * width + x])
+   /// @return Integrated image
+   Image ProcessStackWithMetadata(
+      FrameStreamer& streamer,
       int channel,
       std::vector<PixelSelectionResult>& metadata ) const;
 

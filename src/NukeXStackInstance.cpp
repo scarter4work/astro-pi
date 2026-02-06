@@ -25,6 +25,7 @@
 #include "engine/TransitionChecker.h"
 #include "engine/RegionStatistics.h"
 #include "engine/Segmentation.h"
+#include "engine/FrameStreamer.h"
 
 #include <algorithm>
 #include <numeric>
@@ -210,114 +211,88 @@ bool NukeXStackInstance::ExecuteGlobal()
    console.WriteLn( String().Format( "<br>Input frames: %d enabled of %d total",
       enabledIndices.size(), p_inputFrames.size() ) );
 
-   // Load all enabled frames
-   console.WriteLn( "<br>Loading frames..." );
-   std::vector<Image> frames;
-   frames.reserve( enabledIndices.size() );
-
-   FITSKeywordArray referenceKeywords;
-   int width = 0, height = 0, channels = 0;
-
-   // Reference values for consistency validation
-   double referenceExptime = 0.0;
-   double referenceGain = 0.0;
-   IsoString referenceFilter;
-   const double exptimeTolerance = 0.10;  // 10% tolerance for exposure time
-
+   // Collect enabled frame paths
+   std::vector<String> framePaths;
+   framePaths.reserve( enabledIndices.size() );
    for ( size_t i = 0; i < enabledIndices.size(); ++i )
+      framePaths.push_back( p_inputFrames[enabledIndices[i]].path );
+
+   // Initialize FrameStreamer to validate dimensions and extract keywords
+   FrameStreamer streamer;
+   if ( !streamer.Initialize( framePaths ) )
    {
-      const String& path = p_inputFrames[enabledIndices[i]].path;
-      console.Write( String().Format( "\rLoading frame %d of %d: %s",
-         i + 1, enabledIndices.size(), IsoString( File::ExtractName( path ) ).c_str() ) );
-      console.Flush();
-
-      Image frame;
-      FITSKeywordArray keywords;
-
-      if ( !LoadFrame( path, frame, keywords ) )
-      {
-         console.CriticalLn( String().Format( "\r<clrbol>Failed to load: %s", IsoString( path ).c_str() ) );
-         return false;
-      }
-
-      // Validate dimensions match
-      if ( i == 0 )
-      {
-         width = frame.Width();
-         height = frame.Height();
-         channels = frame.NumberOfChannels();
-         referenceKeywords = keywords;
-
-         // Extract reference values for consistency validation
-         referenceExptime = GetKeywordDouble( keywords, "EXPTIME", "EXPOSURE", 0.0 );
-         referenceGain = GetKeywordDouble( keywords, "GAIN", nullptr, 0.0 );
-         referenceFilter = GetKeywordString( keywords, "FILTER", IsoString() );
-      }
-      else if ( frame.Width() != width || frame.Height() != height )
-      {
-         console.CriticalLn( String().Format(
-            "\r<clrbol>Frame dimension mismatch: %s (%dx%d) vs expected (%dx%d)",
-            IsoString( path ).c_str(), frame.Width(), frame.Height(), width, height ) );
-         return false;
-      }
-      else if ( frame.NumberOfChannels() != channels )
-      {
-         console.CriticalLn( String().Format(
-            "\r<clrbol>Frame channel count mismatch: %s (%d channels) vs expected (%d channels)",
-            IsoString( path ).c_str(), frame.NumberOfChannels(), channels ) );
-         return false;
-      }
-
-      // Validate exposure time, gain, and filter consistency (warnings only)
-      if ( i > 0 )
-      {
-         double currentExptime = GetKeywordDouble( keywords, "EXPTIME", "EXPOSURE", 0.0 );
-         double currentGain = GetKeywordDouble( keywords, "GAIN", nullptr, 0.0 );
-         IsoString currentFilter = GetKeywordString( keywords, "FILTER", IsoString() );
-
-         // Check exposure time (warn if difference > 10%)
-         if ( referenceExptime > 0.0 && currentExptime > 0.0 )
-         {
-            double exptimeDiff = Abs( currentExptime - referenceExptime ) / referenceExptime;
-            if ( exptimeDiff > exptimeTolerance )
-            {
-               console.WarningLn( String().Format(
-                  "\r<clrbol>Frame %d: EXPTIME mismatch (%.1fs vs reference %.1fs)",
-                  static_cast<int>( i + 1 ), currentExptime, referenceExptime ) );
-            }
-         }
-
-         // Check gain (warn if different)
-         if ( referenceGain > 0.0 && currentGain > 0.0 && currentGain != referenceGain )
-         {
-            console.WarningLn( String().Format(
-               "\r<clrbol>Frame %d: GAIN mismatch (%.1f vs reference %.1f)",
-               static_cast<int>( i + 1 ), currentGain, referenceGain ) );
-         }
-
-         // Check filter (warn if different)
-         if ( !referenceFilter.IsEmpty() && !currentFilter.IsEmpty() && currentFilter != referenceFilter )
-         {
-            console.WarningLn( String().Format(
-               "\r<clrbol>Frame %d: FILTER mismatch ('%s' vs reference '%s')",
-               static_cast<int>( i + 1 ), currentFilter.c_str(), referenceFilter.c_str() ) );
-         }
-      }
-
-      frames.push_back( std::move( frame ) );
+      console.CriticalLn( "Failed to initialize frame streamer." );
+      return false;
    }
 
-   console.WriteLn( String().Format( "\r<clrbol>Loaded %d frames (%dx%dx%d)",
-      frames.size(), width, height, channels ) );
+   int width = streamer.Width();
+   int height = streamer.Height();
+   int channels = streamer.Channels();
+   FITSKeywordArray referenceKeywords = streamer.GetKeywords( 0 );
 
-   // Run integration
+   // Compute total frame data size to decide streaming vs in-memory
+   size_t totalFrameBytes = static_cast<size_t>( streamer.NumFrames() )
+      * width * height * channels * sizeof( float );
+   const size_t streamingThreshold = 8ULL * 1024 * 1024 * 1024;  // 8 GB
+
+   bool useStreaming = ( totalFrameBytes > streamingThreshold );
+
    Image output;
    IntegrationSummary summary;
 
-   if ( !RunIntegration( frames, referenceKeywords, output, summary ) )
+   if ( useStreaming )
    {
-      console.CriticalLn( "Integration failed." );
-      return false;
+      console.WriteLn( String().Format(
+         "<br>Streaming mode: %.1f GB frame data exceeds %.1f GB threshold",
+         totalFrameBytes / ( 1024.0 * 1024.0 * 1024.0 ),
+         streamingThreshold / ( 1024.0 * 1024.0 * 1024.0 ) ) );
+
+      if ( !RunIntegrationStreaming( streamer, referenceKeywords, output, summary ) )
+      {
+         console.CriticalLn( "Streaming integration failed." );
+         return false;
+      }
+   }
+   else
+   {
+      console.WriteLn( String().Format(
+         "<br>In-memory mode: %.1f GB frame data within %.1f GB threshold",
+         totalFrameBytes / ( 1024.0 * 1024.0 * 1024.0 ),
+         streamingThreshold / ( 1024.0 * 1024.0 * 1024.0 ) ) );
+
+      // Close streamer and load frames into memory
+      streamer.Close();
+
+      console.WriteLn( "<br>Loading frames..." );
+      std::vector<Image> frames;
+      frames.reserve( framePaths.size() );
+
+      for ( size_t i = 0; i < framePaths.size(); ++i )
+      {
+         console.Write( String().Format( "\rLoading frame %d of %d...",
+            static_cast<int>( i + 1 ), static_cast<int>( framePaths.size() ) ) );
+         console.Flush();
+
+         Image frame;
+         FITSKeywordArray keywords;
+         if ( !LoadFrame( framePaths[i], frame, keywords ) )
+         {
+            console.CriticalLn( String().Format( "\r<clrbol>Failed to load: %s",
+               IsoString( framePaths[i] ).c_str() ) );
+            return false;
+         }
+
+         frames.push_back( std::move( frame ) );
+      }
+
+      console.WriteLn( String().Format( "\r<clrbol>Loaded %d frames (%dx%dx%d)",
+         static_cast<int>( frames.size() ), width, height, channels ) );
+
+      if ( !RunIntegration( frames, referenceKeywords, output, summary ) )
+      {
+         console.CriticalLn( "Integration failed." );
+         return false;
+      }
    }
 
    auto endTime = std::chrono::high_resolution_clock::now();
@@ -580,6 +555,58 @@ Image NukeXStackInstance::CreateMedianReference( const std::vector<Image>& frame
             float median = values[numFrames / 2];
 
             // For even number of frames, average the two middle values
+            if ( numFrames % 2 == 0 && numFrames > 1 )
+            {
+               auto maxIt = std::max_element( values.begin(), values.begin() + numFrames / 2 );
+               median = ( *maxIt + median ) / 2.0f;
+            }
+
+            reference.Pixel( x, y, c ) = median;
+         }
+      }
+   }
+
+   return reference;
+}
+
+// ----------------------------------------------------------------------------
+
+Image NukeXStackInstance::CreateMedianReferenceStreaming( FrameStreamer& streamer ) const
+{
+   int width = streamer.Width();
+   int height = streamer.Height();
+   int channels = streamer.Channels();
+   int numFrames = streamer.NumFrames();
+
+   Image reference;
+   reference.AllocateData( width, height, channels );
+
+   std::vector<float> values( numFrames );
+
+   for ( int c = 0; c < channels; ++c )
+   {
+      for ( int y = 0; y < height; ++y )
+      {
+         // Read this row from all frames
+         std::vector<std::vector<float>> rowData;
+         if ( !streamer.ReadRow( y, c, rowData ) )
+         {
+            Console().CriticalLn( String().Format(
+               "Failed to read row %d for median reference", y ) );
+            return Image();
+         }
+
+         for ( int x = 0; x < width; ++x )
+         {
+            // Gather values from all frames for this pixel
+            for ( int f = 0; f < numFrames; ++f )
+               values[f] = rowData[f][x];
+
+            // Partial sort for median
+            std::nth_element( values.begin(), values.begin() + numFrames / 2, values.end() );
+            float median = values[numFrames / 2];
+
+            // Even frame count: average the two middle values
             if ( numFrames % 2 == 0 && numFrames > 1 )
             {
                auto maxIt = std::max_element( values.begin(), values.begin() + numFrames / 2 );
@@ -900,6 +927,169 @@ bool NukeXStackInstance::RunIntegration(
             int segWidth = segHeight > 0 ? static_cast<int>( segmentationMap[0].size() ) : 0;
 
             // Build segmentation image at output image dimensions with nearest-neighbor upscaling
+            segImage.AllocateData( width, height, 1 );
+            float scaleX = ( segWidth > 1 ) ? static_cast<float>( segWidth - 1 ) / std::max( 1, width - 1 ) : 0.0f;
+            float scaleY = ( segHeight > 1 ) ? static_cast<float>( segHeight - 1 ) / std::max( 1, height - 1 ) : 0.0f;
+
+            for ( int y = 0; y < height; ++y )
+            {
+               int sy = std::min( static_cast<int>( y * scaleY + 0.5f ), segHeight - 1 );
+               for ( int x = 0; x < width; ++x )
+               {
+                  int sx = std::min( static_cast<int>( x * scaleX + 0.5f ), segWidth - 1 );
+                  segImage.Pixel( x, y, 0 ) = static_cast<float>( segmentationMap[sy][sx] ) /
+                     static_cast<float>( static_cast<int>( RegionClass::Count ) - 1 );
+               }
+            }
+
+            summary.smoothedTransitions += checker.CheckAndSmooth( output, segImage, c );
+         }
+         else
+         {
+            summary.smoothedTransitions += checker.CheckAndSmooth( output, c );
+         }
+      }
+
+      auto smoothEnd = std::chrono::high_resolution_clock::now();
+      summary.smoothingTimeMs = std::chrono::duration<double, std::milli>(smoothEnd - smoothStart).count();
+      console.WriteLn( String().Format( "Smoothed %d transitions (%.1f ms)",
+         summary.smoothedTransitions, summary.smoothingTimeMs ) );
+   }
+
+   return true;
+}
+
+// ----------------------------------------------------------------------------
+
+bool NukeXStackInstance::RunIntegrationStreaming(
+   FrameStreamer& streamer,
+   const FITSKeywordArray& keywords,
+   Image& output,
+   IntegrationSummary& summary ) const
+{
+   Console console;
+
+   summary.totalFrames = static_cast<int>( p_inputFrames.size() );
+   summary.enabledFrames = streamer.NumFrames();
+
+   if ( streamer.NumFrames() == 0 )
+      return false;
+
+   int width = streamer.Width();
+   int height = streamer.Height();
+   int channels = streamer.Channels();
+
+   // Build pixel selector configuration
+   PixelSelectorConfig selectorConfig = BuildSelectorConfig();
+   PixelSelector selector( selectorConfig );
+
+   // Parse target context from FITS headers
+   if ( p_useTargetContext )
+   {
+      TargetContext context;
+      context.ParseFromHeaders( keywords );
+      context.InferExpectedFeatures();
+      selector.SetTargetContext( context );
+      summary.targetObject = context.objectName;
+   }
+
+   // ML segmentation setup
+   std::vector<std::vector<int>> segmentationMap;
+   std::vector<std::vector<float>> confidenceMap;
+
+   if ( p_enableMLSegmentation )
+   {
+      console.WriteLn( "<br>Creating streaming median reference for segmentation..." );
+
+      Image referenceImage = CreateMedianReferenceStreaming( streamer );
+
+      if ( referenceImage.Width() > 0 )
+      {
+         console.WriteLn( String().Format( "Reference image: %dx%d",
+            referenceImage.Width(), referenceImage.Height() ) );
+
+         double segTime = 0.0;
+         if ( RunSegmentation( referenceImage, segmentationMap, confidenceMap, segTime ) )
+         {
+            summary.segmentationTimeMs = segTime;
+            selector.SetSegmentation( segmentationMap, confidenceMap );
+            console.WriteLn( String().Format( "<br>ML segmentation enabled (%.1f ms)", segTime ) );
+            console.WriteLn( "Pixel selection will use region-aware strategies." );
+         }
+         else
+         {
+            console.WarningLn( "<br>ML segmentation failed - using statistical selection only." );
+         }
+      }
+      else
+      {
+         console.WarningLn( "<br>Failed to create reference image for segmentation." );
+      }
+   }
+   else
+   {
+      console.WriteLn( "<br>ML segmentation disabled by user." );
+      console.WriteLn( "Using statistical pixel selection without ML classification." );
+   }
+
+   // Allocate output image
+   output.AllocateData( width, height, channels );
+
+   // Process each channel using streaming
+   console.WriteLn( "<br>Selecting pixels (streaming)..." );
+   auto selectionStart = std::chrono::high_resolution_clock::now();
+
+   for ( int c = 0; c < channels; ++c )
+   {
+      console.Write( String().Format( "\rProcessing channel %d of %d...", c + 1, channels ) );
+      console.Flush();
+
+      if ( p_generateMetadata )
+      {
+         std::vector<PixelSelectionResult> metadata;
+         Image channelResult = selector.ProcessStackWithMetadata( streamer, c, metadata );
+
+         for ( int y = 0; y < height; ++y )
+            for ( int x = 0; x < width; ++x )
+               output.Pixel( x, y, c ) = channelResult.Pixel( x, y, 0 );
+
+         for ( const auto& result : metadata )
+            if ( result.outlierCount > 0 )
+               summary.outlierPixels++;
+      }
+      else
+      {
+         Image channelResult = selector.ProcessStack( streamer, c );
+
+         for ( int y = 0; y < height; ++y )
+            for ( int x = 0; x < width; ++x )
+               output.Pixel( x, y, c ) = channelResult.Pixel( x, y, 0 );
+      }
+   }
+
+   auto selectionEnd = std::chrono::high_resolution_clock::now();
+   summary.selectionTimeMs = std::chrono::duration<double, std::milli>(selectionEnd - selectionStart).count();
+   summary.processedPixels = width * height * channels;
+   console.WriteLn( String().Format( "\r<clrbol>Pixel selection complete (%.1f ms)",
+      summary.selectionTimeMs ) );
+
+   // Transition smoothing (identical to in-memory path - works on output image)
+   if ( p_enableTransitionSmoothing )
+   {
+      console.WriteLn( "<br>Checking for hard transitions..." );
+      auto smoothStart = std::chrono::high_resolution_clock::now();
+
+      TransitionCheckerConfig transConfig = BuildTransitionConfig();
+      TransitionChecker checker( transConfig );
+
+      for ( int c = 0; c < channels; ++c )
+      {
+         Image segImage;
+         if ( !segmentationMap.empty() )
+         {
+            int segHeight = static_cast<int>( segmentationMap.size() );
+            int segWidth = segHeight > 0 ? static_cast<int>( segmentationMap[0].size() ) : 0;
+
             segImage.AllocateData( width, height, 1 );
             float scaleX = ( segWidth > 1 ) ? static_cast<float>( segWidth - 1 ) / std::max( 1, width - 1 ) : 0.0f;
             float scaleY = ( segHeight > 1 ) ? static_cast<float>( segHeight - 1 ) / std::max( 1, height - 1 ) : 0.0f;

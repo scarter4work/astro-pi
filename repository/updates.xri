@@ -9,8 +9,8 @@
       </p>
    </description>
    <platform os="linux" arch="x64" version="1.8.0:1.9.9">
-      <package fileName="20260206-linux-x64-NukeX.tar.gz" sha1="6385adcd9a3d56ad5be017587cd72d1e83b7d2dc" type="module" releaseDate="20260206">
-         <title>NukeX 1.1.0.25 - Unlimited frame outlier tracking</title>
+      <package fileName="20260206-v26-linux-x64-NukeX.tar.gz" sha1="cb62b71db50abdc263e75ab2831bfccc99ccf8ae" type="module" releaseDate="20260206">
+         <title>NukeX 1.1.0.26 - Streaming stacker for 300+ frames</title>
          <description>
             <p>
                <b>NukeX - Intelligent Region-Aware Processing for PixInsight</b>
@@ -27,7 +27,7 @@
                </li>
             </ul>
             <p>
-               <b>Version 1.1.0.25:</b> Removed the 64-frame cap on outlier tracking in iterative sigma clipping. Stacks of any size now have correct outlier rejection for all frames. Added outlierCount and totalFrames fields to per-pixel metadata for accurate statistics regardless of stack depth. Iterative clipping uses local vector-based rejected tracking to prevent double-counting and ensure convergence correctness for large stacks.
+               <b>Version 1.1.0.26:</b> New FrameStreamer for row-based streaming I/O, enabling stacking of 300+ frames with ~224 MB peak memory instead of 13+ GB. Auto-selects streaming mode when total frame data exceeds 8 GB threshold; smaller stacks use the existing fast in-memory path. Streaming median reference and streaming pixel selection with OpenMP parallelism preserved. Also includes v25 unlimited outlier tracking (no more 64-frame cap).
             </p>
             <p>
                Copyright (c) 2026 Scott Carter. All Rights Reserved.
@@ -36,4 +36,4 @@
       </package>
    </platform>
 </xri>
-<Signature developerId="scarter4work" timestamp="2026-02-06T15:46:45.372Z" encoding="Base64">4pKGP2vDjs7qKOB4ZXQgdKRKBSwOKo21brwvvEIhIeXU2Xvjbdc1x6sDG6AG6NCuDD1oOju51OJ6lVHmImbIAg==</Signature>
+<Signature developerId="scarter4work" timestamp="2026-02-06T17:39:40.936Z" encoding="Base64">s83wy2tkJf+KKSK2UbkvihL/bBgKj8XPDIZj7pzJXDzDQGXfjo0Edto5O5a8Rgcy4VWfbZ29OYLVn8wAteRkAQ==</Signature>

@@ -319,6 +319,78 @@ Image PixelSelector::ProcessStackWithMetadata(
 
 // ----------------------------------------------------------------------------
 
+Image PixelSelector::ProcessStackWithMetadata(
+   FrameStreamer& streamer,
+   int channel,
+   std::vector<PixelSelectionResult>& metadata ) const
+{
+   int width = streamer.Width();
+   int height = streamer.Height();
+   int numFrames = streamer.NumFrames();
+
+   // Validate dimensions
+   if ( width <= 0 || height <= 0 || width > 100000 || height > 100000 )
+      throw std::runtime_error( "Invalid image dimensions for pixel selection" );
+
+   size_t numPixels = static_cast<size_t>( width ) * height;
+   if ( numPixels > 500000000 )
+      throw std::runtime_error( "Image too large for pixel selection" );
+
+   if ( numFrames <= 0 || numFrames > 10000 )
+      throw std::runtime_error( "Invalid number of frames: " + std::to_string( numFrames ) );
+
+   // Create output image (single channel)
+   Image result( width, height, ColorSpace::Gray );
+   result.Zero();
+
+   // Allocate flat metadata vector
+   metadata.resize( numPixels );
+
+   Image::sample* outData = result.PixelData( 0 );
+
+   // Streaming: process row-by-row (sequential I/O, parallel pixel processing)
+   std::vector<std::vector<float>> rowData;
+
+   for ( int y = 0; y < height; ++y )
+   {
+      // Sequential: read this row from all frames
+      if ( !streamer.ReadRow( y, channel, rowData ) )
+         throw std::runtime_error( "Failed to read row " + std::to_string( y ) );
+
+      // Parallel: process pixels within this row
+      #pragma omp parallel for schedule(static)
+      for ( int x = 0; x < width; ++x )
+      {
+         // Collect values from the pre-read row data
+         std::vector<float> pixelValues( numFrames );
+         for ( int f = 0; f < numFrames; ++f )
+            pixelValues[f] = rowData[f][x];
+
+         // Select best pixel
+         PixelSelectionResult result_pixel = SelectPixel( pixelValues, x, y );
+
+         // Store result
+         size_t outIdx = static_cast<size_t>( y ) * width + x;
+         outData[outIdx] = result_pixel.value;
+         metadata[outIdx] = result_pixel;
+      }
+   }
+
+   return result;
+}
+
+// ----------------------------------------------------------------------------
+
+Image PixelSelector::ProcessStack(
+   FrameStreamer& streamer,
+   int channel ) const
+{
+   std::vector<PixelSelectionResult> metadata;
+   return ProcessStackWithMetadata( streamer, channel, metadata );
+}
+
+// ----------------------------------------------------------------------------
+
 PixelSelectionResult PixelSelector::SelectPixel(
    const std::vector<float>& values,
    int x, int y ) const
