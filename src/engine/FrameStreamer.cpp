@@ -22,7 +22,6 @@ namespace pcl
 
 FrameStreamer::~FrameStreamer()
 {
-   StopPrefetchThread();
    Close();
 }
 
@@ -30,9 +29,6 @@ FrameStreamer::~FrameStreamer()
 
 void FrameStreamer::Close()
 {
-   // Stop any in-flight prefetch before closing file handles
-   StopPrefetchThread();
-
    for ( FrameInfo& frame : m_frames )
    {
       try
@@ -55,10 +51,6 @@ void FrameStreamer::Close()
    m_rowCache.clear();
    m_cachedRow = -1;
    m_cachedChannel = -1;
-   m_prefetchBuffer.clear();
-   m_prefetchRow = -1;
-   m_prefetchChannel = -1;
-   m_prefetchError = false;
    m_width = 0;
    m_height = 0;
    m_channels = 0;
@@ -128,6 +120,17 @@ bool FrameStreamer::Initialize( const std::vector<String>& paths )
          FITSKeywordArray keywords;
          if ( format->CanStoreKeywords() )
             file->ReadFITSKeywords( keywords );
+
+         // Verify incremental read support (required for row-based streaming)
+         if ( !file->CanReadIncrementally() )
+         {
+            console.CriticalLn( String().Format(
+               "FrameStreamer: File does not support incremental reads: %s",
+               IsoString( path ).c_str() ) );
+            file->Close();
+            Close();
+            return false;
+         }
 
          // First frame sets reference dimensions
          if ( i == 0 )
@@ -199,162 +202,77 @@ bool FrameStreamer::Initialize( const std::vector<String>& paths )
 
 // ----------------------------------------------------------------------------
 
-bool FrameStreamer::ReadRowInternal( int y, int channel,
-                                     std::vector<std::vector<float>>& buffer )
-{
-   int numFrames = static_cast<int>( m_frames.size() );
-
-   // Resize buffer to [numFrames][width]
-   buffer.resize( numFrames );
-   for ( int f = 0; f < numFrames; ++f )
-      buffer[f].resize( m_width );
-
-   // Read one row from each frame
-   for ( int f = 0; f < numFrames; ++f )
-   {
-      if ( !m_frames[f].isOpen )
-         if ( !OpenFrame( m_frames[f] ) )
-            return false;
-
-      FImage::sample* dest = buffer[f].data();
-      if ( !m_frames[f].file->ReadSamples( dest, y, 1, channel ) )
-         return false;
-   }
-
-   return true;
-}
-
-// ----------------------------------------------------------------------------
-
-void FrameStreamer::StartPrefetch( int nextRow, int channel )
-{
-   // Stop any in-flight prefetch first
-   StopPrefetchThread();
-
-   m_stopPrefetch.store( false );
-   m_prefetchReady.store( false );
-   m_prefetchRow = nextRow;
-   m_prefetchChannel = channel;
-   m_prefetchError = false;
-
-   m_prefetchThread = std::make_unique<std::thread>( [this, nextRow, channel]()
-   {
-      if ( m_stopPrefetch.load() )
-         return;
-
-      m_prefetchError = !ReadRowInternal( nextRow, channel, m_prefetchBuffer );
-      m_prefetchReady.store( true );
-   } );
-}
-
-// ----------------------------------------------------------------------------
-
-bool FrameStreamer::WaitForPrefetch()
-{
-   if ( m_prefetchThread && m_prefetchThread->joinable() )
-      m_prefetchThread->join();
-   m_prefetchThread.reset();
-   return !m_prefetchError;
-}
-
-// ----------------------------------------------------------------------------
-
-void FrameStreamer::StopPrefetchThread()
-{
-   m_stopPrefetch.store( true );
-   if ( m_prefetchThread && m_prefetchThread->joinable() )
-      m_prefetchThread->join();
-   m_prefetchThread.reset();
-   m_stopPrefetch.store( false );
-   m_prefetchReady.store( false );
-}
-
-// ----------------------------------------------------------------------------
-
 bool FrameStreamer::ReadRow( int y, int channel,
                              std::vector<std::vector<float>>& rowData )
 {
-   Console console;
+   // Bounds check
+   if ( y < 0 || y >= m_height || channel < 0 || channel >= m_channels )
+   {
+      Console().CriticalLn( String().Format(
+         "FrameStreamer: Row/channel out of bounds (row=%d/%d, channel=%d/%d)",
+         y, m_height, channel, m_channels ) );
+      return false;
+   }
+
+   // Check cache
+   if ( y == m_cachedRow && channel == m_cachedChannel && !m_rowCache.empty() )
+   {
+      rowData = m_rowCache;
+      return true;
+   }
 
    int numFrames = static_cast<int>( m_frames.size() );
 
-   if ( numFrames == 0 )
+   // Resize output
+   rowData.resize( numFrames );
+   for ( int f = 0; f < numFrames; ++f )
+      rowData[f].resize( m_width );
+
+   // Read from each frame
+   for ( int f = 0; f < numFrames; ++f )
    {
-      console.CriticalLn( "FrameStreamer::ReadRow: No frames initialized" );
-      return false;
-   }
-
-   if ( y < 0 || y >= m_height )
-   {
-      console.CriticalLn( String().Format(
-         "FrameStreamer::ReadRow: Row %d out of range [0, %d)", y, m_height ) );
-      return false;
-   }
-
-   if ( channel < 0 || channel >= m_channels )
-   {
-      console.CriticalLn( String().Format(
-         "FrameStreamer::ReadRow: Channel %d out of range [0, %d)", channel, m_channels ) );
-      return false;
-   }
-
-   // Check primary cache - return cached data if same row/channel
-   if ( y == m_cachedRow && channel == m_cachedChannel )
-   {
-      rowData = m_rowCache;
-
-      // Prefetch next row in background
-      if ( y + 1 < m_height )
-         StartPrefetch( y + 1, channel );
-
-      return true;
-   }
-
-   // Check if the prefetch buffer has the row we need
-   if ( m_prefetchReady.load() && y == m_prefetchRow && channel == m_prefetchChannel )
-   {
-      if ( !WaitForPrefetch() )
+      if ( !m_frames[f].isOpen )
       {
-         console.CriticalLn( String().Format(
-            "FrameStreamer::ReadRow: Prefetch failed for row %d, channel %d",
-            y, channel ) );
+         if ( !OpenFrame( m_frames[f] ) )
+         {
+            Console().CriticalLn( String().Format(
+               "FrameStreamer: Failed to reopen frame %d", f ) );
+            return false;
+         }
+      }
+
+      // Verify incremental read support
+      if ( !m_frames[f].file->CanReadIncrementally() )
+      {
+         Console().CriticalLn( String().Format(
+            "FrameStreamer: Frame %d does not support incremental reads", f ) );
          return false;
       }
 
-      // Move prefetch buffer into output
-      rowData = std::move( m_prefetchBuffer );
-
-      // Update primary cache
-      m_cachedRow = y;
-      m_cachedChannel = channel;
-      m_rowCache = rowData;  // copy for cache
-
-      // Start prefetching the next row
-      if ( y + 1 < m_height )
-         StartPrefetch( y + 1, channel );
-
-      return true;
+      FImage::sample* dest = rowData[f].data();
+      try
+      {
+         if ( !m_frames[f].file->ReadSamples( dest, y, 1, channel ) )
+         {
+            Console().CriticalLn( String().Format(
+               "FrameStreamer: ReadSamples failed for frame %d, row %d, channel %d",
+               f, y, channel ) );
+            return false;
+         }
+      }
+      catch ( ... )
+      {
+         Console().CriticalLn( String().Format(
+            "FrameStreamer: Exception reading frame %d, row %d, channel %d",
+            f, y, channel ) );
+         return false;
+      }
    }
 
-   // No cache hit - stop any in-flight prefetch, then read directly
-   StopPrefetchThread();
-
-   if ( !ReadRowInternal( y, channel, rowData ) )
-   {
-      console.CriticalLn( String().Format(
-         "FrameStreamer::ReadRow: ReadRowInternal failed for row %d, channel %d",
-         y, channel ) );
-      return false;
-   }
-
-   // Update primary cache
+   // Update cache
    m_cachedRow = y;
    m_cachedChannel = channel;
    m_rowCache = rowData;
-
-   // Start prefetching the next row
-   if ( y + 1 < m_height )
-      StartPrefetch( y + 1, channel );
 
    return true;
 }

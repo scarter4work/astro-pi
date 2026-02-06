@@ -9,8 +9,8 @@
       </p>
    </description>
    <platform os="linux" arch="x64" version="1.8.0:1.9.9">
-      <package fileName="20260206-v27-linux-x64-NukeX.tar.gz" sha1="d3b361aaec101a45361da6cb4cd4ad080b9630c4" type="module" releaseDate="20260206">
-         <title>NukeX 1.1.0.27 - Streaming performance optimizations</title>
+      <package fileName="20260206-v28-linux-x64-NukeX.tar.gz" sha1="099db05759df132798118bd30ba8dee186be1cab" type="module" releaseDate="20260206">
+         <title>NukeX 1.1.0.28 - Streaming stacker crash fix</title>
          <description>
             <p>
                <b>NukeX - Intelligent Region-Aware Processing for PixInsight</b>
@@ -27,7 +27,7 @@
                </li>
             </ul>
             <p>
-               <b>Version 1.1.0.27:</b> Double-buffered row prefetch in FrameStreamer overlaps disk I/O with pixel processing. Eliminated per-pixel vector allocations in streaming path (~50M allocs removed for 4K images). Dynamic OpenMP scheduling for better load balancing on mixed-feature images. Row-level progress reporting during streaming integration.
+               <b>Version 1.1.0.28:</b> Fixed crash in streaming stacker caused by background prefetch thread accessing non-thread-safe PCL file handles. Removed prefetch threading; FrameStreamer now uses safe single-threaded row reads with try-catch around ReadSamples. Added CanReadIncrementally() validation at initialization. Improved error diagnostics with per-frame/row/channel failure messages.
             </p>
             <p>
                Copyright (c) 2026 Scott Carter. All Rights Reserved.
@@ -36,4 +36,4 @@
       </package>
    </platform>
 </xri>
-<Signature developerId="scarter4work" timestamp="2026-02-06T22:21:11.543Z" encoding="Base64">TT60pkRohHBpRKbfHDFrMyDwUIHB0KYTljZFVZGKGhclgZQhRoTc3hqOmBdc7RFbju3bDCva1EpfcllA3i4hDA==</Signature>
+<Signature developerId="scarter4work" timestamp="2026-02-06T22:56:48.380Z" encoding="Base64">AhZjnDX2hJZQTdwQ/5+u1u2sAmEglevh2aciH1eKMS26OFoPYh5keeFUVq+JG7bpZrcFewU5rs2su3Es+Uu1AQ==</Signature>

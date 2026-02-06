@@ -22,10 +22,6 @@
 
 #include <vector>
 #include <memory>
-#include <thread>
-#include <mutex>
-#include <condition_variable>
-#include <atomic>
 
 namespace pcl
 {
@@ -66,7 +62,7 @@ public:
    FrameStreamer( const FrameStreamer& ) = delete;
    FrameStreamer& operator=( const FrameStreamer& ) = delete;
 
-   /// Non-moveable (contains mutex/atomic members)
+   /// Non-moveable
    FrameStreamer( FrameStreamer&& ) = delete;
    FrameStreamer& operator=( FrameStreamer&& ) = delete;
 
@@ -167,32 +163,6 @@ private:
    /// @param frame FrameInfo to populate with open file handle
    /// @return false on failure
    bool OpenFrame( FrameInfo& frame );
-
-   // -------------------------------------------------------------------------
-   // Double-buffering: prefetch next row in a background thread
-   // -------------------------------------------------------------------------
-
-   std::unique_ptr<std::thread> m_prefetchThread;
-   std::mutex                   m_prefetchMutex;
-   std::atomic<bool>            m_prefetchReady{ false };
-   std::atomic<bool>            m_stopPrefetch{ false };
-   int                          m_prefetchRow = -1;
-   int                          m_prefetchChannel = -1;
-   std::vector<std::vector<float>> m_prefetchBuffer;
-   bool                         m_prefetchError = false;
-
-   /// Read a row from all frames into the given buffer (no caching logic).
-   bool ReadRowInternal( int y, int channel, std::vector<std::vector<float>>& buffer );
-
-   /// Launch a background thread to prefetch the next row.
-   void StartPrefetch( int nextRow, int channel );
-
-   /// Wait for a running prefetch to complete.
-   /// @return false if the prefetch encountered an I/O error.
-   bool WaitForPrefetch();
-
-   /// Join and reset the prefetch thread, ensuring no background work is active.
-   void StopPrefetchThread();
 };
 
 // ----------------------------------------------------------------------------
