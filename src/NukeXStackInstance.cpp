@@ -26,6 +26,7 @@
 #include "engine/RegionStatistics.h"
 #include "engine/Segmentation.h"
 #include "engine/FrameStreamer.h"
+#include "engine/BayerDemosaic.h"
 
 #include <algorithm>
 #include <cstring>
@@ -239,30 +240,17 @@ bool NukeXStackInstance::ExecuteGlobal()
       else
          colorDesc = "mono";
 
-      // Check for CFA/Bayer pattern in reference keywords
-      bool isCFA = false;
-      String bayerPattern;
+      // Check for CFA/Bayer pattern in reference keywords (informational only -
+      // actual demosaicing happens in LoadFrame() or FrameStreamer)
       for ( const FITSHeaderKeyword& kw : referenceKeywords )
       {
          if ( kw.name.Uppercase().Trimmed() == "BAYERPAT" )
          {
-            isCFA = true;
-            bayerPattern = kw.value.Trimmed();
+            console.WriteLn( String().Format(
+               "<br>CFA/Bayer mosaic detected (pattern: %s) - auto-demosaicing to RGB",
+               IsoString( kw.value.Trimmed() ).c_str() ) );
             break;
          }
-      }
-
-      if ( isCFA )
-      {
-         console.WarningLn( String().Format(
-            "<br>** WARNING: CFA/Bayer mosaic data detected (pattern: %s)",
-            IsoString( bayerPattern ).c_str() ) );
-         console.WarningLn(
-            "** These frames contain raw Bayer data (1 channel per pixel)." );
-         console.WarningLn(
-            "** For RGB output, debayer frames first (e.g., PixInsight Debayer process)." );
-         console.WarningLn(
-            "** Proceeding with mono stacking of CFA data." );
       }
 
       console.WriteLn( String().Format(
@@ -627,6 +615,21 @@ bool NukeXStackInstance::LoadFrame( const String& path, Image& image, FITSKeywor
          }
       }
 
+      // Auto-demosaic CFA/Bayer data to RGB
+      if ( image.NumberOfChannels() == 1 )
+      {
+         for ( const FITSHeaderKeyword& kw : keywords )
+         {
+            if ( kw.name.Uppercase().Trimmed() == "BAYERPAT" )
+            {
+               BayerPattern bp = ParseBayerPattern( IsoString( kw.value.Trimmed() ) );
+               if ( bp != BayerPattern::Unknown )
+                  image = BayerDemosaic::Demosaic( image, bp );
+               break;
+            }
+         }
+      }
+
       file.Close();
       return true;
    }
@@ -944,19 +947,7 @@ bool NukeXStackInstance::RunIntegration(
    std::vector<std::vector<int>> segmentationMap;
    std::vector<std::vector<float>> confidenceMap;
 
-   // Check for CFA/Bayer data - skip ML segmentation if detected
-   // (Bayer mosaic pattern confuses the neural network)
-   bool isCFAData = false;
-   for ( const FITSHeaderKeyword& kw : keywords )
-   {
-      if ( kw.name.Uppercase().Trimmed() == "BAYERPAT" )
-      {
-         isCFAData = true;
-         break;
-      }
-   }
-
-   if ( p_enableMLSegmentation && !isCFAData )
+   if ( p_enableMLSegmentation )
    {
       console.WriteLn( "<br>Creating median reference image for segmentation..." );
 
@@ -988,12 +979,6 @@ bool NukeXStackInstance::RunIntegration(
       {
          console.WarningLn( "<br>Failed to create reference image for segmentation." );
       }
-   }
-   else if ( isCFAData )
-   {
-      console.WriteLn( "<br>ML segmentation bypassed for CFA/Bayer data." );
-      console.WriteLn( "Bayer mosaic patterns produce unreliable segmentation results." );
-      console.WriteLn( "Using statistical pixel selection only." );
    }
    else
    {
@@ -1145,18 +1130,7 @@ bool NukeXStackInstance::RunIntegrationStreaming(
    std::vector<std::vector<int>> segmentationMap;
    std::vector<std::vector<float>> confidenceMap;
 
-   // Check for CFA/Bayer data - skip ML segmentation if detected
-   bool isCFAData = false;
-   for ( const FITSHeaderKeyword& kw : keywords )
-   {
-      if ( kw.name.Uppercase().Trimmed() == "BAYERPAT" )
-      {
-         isCFAData = true;
-         break;
-      }
-   }
-
-   if ( p_enableMLSegmentation && !isCFAData )
+   if ( p_enableMLSegmentation )
    {
       console.WriteLn( "<br>Creating streaming median reference for segmentation..." );
 
@@ -1192,12 +1166,6 @@ bool NukeXStackInstance::RunIntegrationStreaming(
       {
          console.WarningLn( "<br>Failed to create reference image for segmentation." );
       }
-   }
-   else if ( isCFAData )
-   {
-      console.WriteLn( "<br>ML segmentation bypassed for CFA/Bayer data." );
-      console.WriteLn( "Bayer mosaic patterns produce unreliable segmentation results." );
-      console.WriteLn( "Using statistical pixel selection only." );
    }
    else
    {

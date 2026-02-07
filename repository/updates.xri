@@ -9,8 +9,8 @@
       </p>
    </description>
    <platform os="linux" arch="x64" version="1.8.0:1.9.9">
-      <package fileName="20260206-v32-linux-x64-NukeX.tar.gz" sha1="331f2ab3d53d4eb31462c41138912f57b0061edd" type="module" releaseDate="20260206">
-         <title>NukeX 1.1.0.32 - Fix pixel selection for CFA/Bayer data</title>
+      <package fileName="20260207-linux-x64-NukeX.tar.gz" sha1="a2560e415d6bfec2b6fd7bb1a48961b2fb0f3dce" type="module" releaseDate="20260207">
+         <title>NukeX 1.1.0.33</title>
          <description>
             <p>
                <b>NukeX - Intelligent Region-Aware Processing for PixInsight</b>
@@ -27,7 +27,7 @@
                </li>
             </ul>
             <p>
-               <b>Version 1.1.0.32:</b> Fixed pixel selection quality for CFA/Bayer data. StarFaint/StarMedium/StarHalo now use probability-weighted selection instead of maximum-value picking (eliminates dots/stipple artifacts). Made outlier rejection symmetric for faint stars and halos. Relaxed background outlier threshold. Added CFA detection gate to bypass ML segmentation on undebayered data. Added M95/M96/M105 to galaxy catalog. Extracted outlier logic to shared helper, added minimum valid frame guard, improved all-rejected fallback to median.
+               <b>Version 1.1.0.33</b>
             </p>
             <p>
                Copyright (c) 2026 Scott Carter. All Rights Reserved.
@@ -36,4 +36,4 @@
       </package>
    </platform>
 </xri>
-<Signature developerId="scarter4work" timestamp="2026-02-07T04:18:24.175Z" encoding="Base64">4J71drzBymjrZMxGQF4uOfhpy1J0pnSaheKbSxc2qNreweEwFONqNnxhk96pmmtlyRH5/WFWu31aCIh1F9tICw==</Signature>
+<Signature developerId="scarter4work" timestamp="2026-02-07T18:54:10.124Z" encoding="Base64">oJg94xlIFtxAY8ewDGkKj25d7xtllGfnCG/3sWw2qhS06OHOC5pEyhkz8nkg2XggG9sr9wnDABSoCCOP4+k9Aw==</Signature>

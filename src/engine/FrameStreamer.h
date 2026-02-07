@@ -23,6 +23,8 @@
 #include <vector>
 #include <memory>
 
+#include "BayerDemosaic.h"
+
 namespace pcl
 {
 
@@ -91,6 +93,9 @@ public:
 
    /// Number of channels (all frames match)
    int Channels() const { return m_channels; }
+
+   /// Returns true if the opened frames contain CFA/Bayer data that will be demosaiced
+   bool IsCFA() const { return m_isCFA; }
 
    // ----------------------------------------------------------------------------
    // Row-based streaming reads
@@ -173,10 +178,28 @@ private:
 
    bool m_isMultiExtension = false;  // True if files are multi-extension FITS (separate HDUs per channel)
 
+   bool m_isCFA = false;
+   BayerPattern m_bayerPattern = BayerPattern::Unknown;
+   int m_physicalChannels = 0;  // Actual channels in file (1 for CFA, expanded to 3 logically)
+
+   // Per-frame rolling raw row buffer (3 rows for bilinear demosaic)
+   struct CfaRawBuffer
+   {
+      std::vector<float> rows[3];  // [0]=prev, [1]=cur, [2]=next
+      int nextRawY = 0;            // Next raw row to read from file
+   };
+   std::vector<CfaRawBuffer> m_cfaBuffers;
+
    /// Open a single frame file for streaming reads
    /// @param frame FrameInfo to populate with open file handle
    /// @return false on failure
    bool OpenFrame( FrameInfo& frame );
+
+   /// Read a single row for CFA data, demosaicing on the fly
+   bool ReadRowCFA( int y, int channel, std::vector<std::vector<float>>& rowData );
+
+   /// Read the next sequential raw CFA row from a frame file
+   bool ReadRawCfaRow( int frameIndex, float* dest );
 };
 
 // ----------------------------------------------------------------------------

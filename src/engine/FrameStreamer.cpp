@@ -57,6 +57,10 @@ void FrameStreamer::Close()
    m_height = 0;
    m_channels = 0;
    m_isMultiExtension = false;
+   m_isCFA = false;
+   m_bayerPattern = BayerPattern::Unknown;
+   m_physicalChannels = 0;
+   m_cfaBuffers.clear();
 }
 
 // ----------------------------------------------------------------------------
@@ -103,6 +107,10 @@ bool FrameStreamer::ResetAllFiles()
    m_cachedChannel = -1;
    m_lastReadRow = -1;
    m_lastReadChannel = -1;
+
+   // Reset CFA buffer state
+   for ( auto& buf : m_cfaBuffers )
+      buf.nextRawY = 0;
 
    return true;
 }
@@ -259,11 +267,15 @@ bool FrameStreamer::Initialize( const std::vector<String>& paths )
             {
                if ( kw.name.Uppercase().Trimmed() == "BAYERPAT" )
                {
-                  console.WarningLn( String().Format(
-                     "  ** CFA/Bayer data detected (pattern: %s)",
-                     IsoString( kw.value.Trimmed() ).c_str() ) );
-                  console.WarningLn(
-                     "  ** Consider debayering frames before stacking for RGB output." );
+                  BayerPattern bp = ParseBayerPattern( IsoString( kw.value.Trimmed() ) );
+                  if ( bp != BayerPattern::Unknown )
+                  {
+                     m_isCFA = true;
+                     m_bayerPattern = bp;
+                     console.WriteLn( String().Format(
+                        "  CFA/Bayer data detected (pattern: %s) - will demosaic to RGB",
+                        IsoString( kw.value.Trimmed() ).c_str() ) );
+                  }
                   break;
                }
             }
@@ -285,16 +297,17 @@ bool FrameStreamer::Initialize( const std::vector<String>& paths )
          {
             m_width = w;
             m_height = h;
-            m_channels = c;
+            m_physicalChannels = c;
+            m_channels = m_isCFA ? 3 : c;  // CFA reports 3 logical channels
          }
          else
          {
-            // Subsequent frames must match
-            if ( w != m_width || h != m_height || c != m_channels )
+            // Subsequent frames must match physical dimensions
+            if ( w != m_width || h != m_height || c != m_physicalChannels )
             {
                console.CriticalLn( String().Format(
                   "FrameStreamer: Dimension mismatch in frame %d: %dx%dx%d vs %dx%dx%d",
-                  i, w, h, c, m_width, m_height, m_channels ) );
+                  i, w, h, c, m_width, m_height, m_physicalChannels ) );
                file->Close();
                Close();
                return false;
@@ -344,9 +357,23 @@ bool FrameStreamer::Initialize( const std::vector<String>& paths )
    m_lastReadRow = -1;
    m_lastReadChannel = -1;
 
+   // Allocate CFA demosaic buffers if needed
+   if ( m_isCFA )
+   {
+      m_cfaBuffers.resize( numFrames );
+      for ( auto& buf : m_cfaBuffers )
+      {
+         for ( int r = 0; r < 3; r++ )
+            buf.rows[r].resize( m_width );
+         buf.nextRawY = 0;
+      }
+   }
+
    // Log format summary
    String colorType;
-   if ( m_isMultiExtension )
+   if ( m_isCFA )
+      colorType = "CFA->RGB (demosaiced)";
+   else if ( m_isMultiExtension )
       colorType = String().Format( "%d-channel multi-extension", m_channels );
    else if ( m_channels >= 3 )
       colorType = "RGB";
@@ -374,6 +401,10 @@ bool FrameStreamer::ReadRow( int y, int channel,
          y, m_height, channel, m_channels ) );
       return false;
    }
+
+   // CFA data: use demosaic path
+   if ( m_isCFA )
+      return ReadRowCFA( y, channel, rowData );
 
    // Check cache
    if ( y == m_cachedRow && channel == m_cachedChannel && !m_rowCache.empty() )
@@ -527,6 +558,142 @@ std::vector<FITSKeywordArray> FrameStreamer::GetAllKeywords() const
    for ( const auto& frame : m_frames )
       result.push_back( frame.keywords );
    return result;
+}
+
+// ----------------------------------------------------------------------------
+
+bool FrameStreamer::ReadRawCfaRow( int frameIndex, float* dest )
+{
+   FrameInfo& frame = m_frames[frameIndex];
+   CfaRawBuffer& buf = m_cfaBuffers[frameIndex];
+
+   if ( buf.nextRawY >= m_height )
+      return false;
+
+   if ( !frame.isOpen )
+   {
+      if ( !OpenFrame( frame ) )
+         return false;
+   }
+
+   try
+   {
+      if ( !frame.file->ReadSamples( dest, buf.nextRawY, 1, 0 ) )
+      {
+         Console().CriticalLn( String().Format(
+            "FrameStreamer: ReadRawCfaRow failed for frame %d, row %d",
+            frameIndex, buf.nextRawY ) );
+         return false;
+      }
+   }
+   catch ( ... )
+   {
+      Console().CriticalLn( String().Format(
+         "FrameStreamer: Exception in ReadRawCfaRow for frame %d, row %d",
+         frameIndex, buf.nextRawY ) );
+      return false;
+   }
+
+   buf.nextRawY++;
+   return true;
+}
+
+// ----------------------------------------------------------------------------
+
+bool FrameStreamer::ReadRowCFA( int y, int channel,
+                                 std::vector<std::vector<float>>& rowData )
+{
+   // Check cache
+   if ( y == m_cachedRow && channel == m_cachedChannel && !m_rowCache.empty() )
+   {
+      rowData = m_rowCache;
+      return true;
+   }
+
+   int numFrames = static_cast<int>( m_frames.size() );
+
+   // Resize output
+   rowData.resize( numFrames );
+   for ( int f = 0; f < numFrames; ++f )
+      rowData[f].resize( m_width );
+
+   for ( int f = 0; f < numFrames; ++f )
+   {
+      CfaRawBuffer& buf = m_cfaBuffers[f];
+
+      // Advance the rolling buffer to cover rows y-1, y, y+1
+      // On first call (y=0), we need to read rows 0 and 1
+      if ( y == 0 )
+      {
+         // Need a file reset if we previously read past row 0
+         if ( buf.nextRawY > 0 )
+         {
+            // Reset this frame's file to start from row 0
+            if ( m_frames[f].isOpen && m_frames[f].file )
+            {
+               m_frames[f].file->Close();
+               m_frames[f].isOpen = false;
+            }
+            m_frames[f].file.reset();
+            if ( !OpenFrame( m_frames[f] ) )
+               return false;
+            buf.nextRawY = 0;
+         }
+
+         // Read row 0 into slot [1] (current)
+         if ( !ReadRawCfaRow( f, buf.rows[1].data() ) )
+            return false;
+
+         // Replicate for top edge: prev = current
+         std::copy( buf.rows[1].begin(), buf.rows[1].end(), buf.rows[0].begin() );
+
+         // Read row 1 into slot [2] (next) if height > 1
+         if ( m_height > 1 )
+         {
+            if ( !ReadRawCfaRow( f, buf.rows[2].data() ) )
+               return false;
+         }
+         else
+         {
+            // Single-row image: next = current
+            std::copy( buf.rows[1].begin(), buf.rows[1].end(), buf.rows[2].begin() );
+         }
+      }
+      else
+      {
+         // Rotate buffer: prev = old cur, cur = old next
+         std::swap( buf.rows[0], buf.rows[1] );
+         std::swap( buf.rows[1], buf.rows[2] );
+
+         // Read the new next row
+         if ( y + 1 < m_height )
+         {
+            if ( !ReadRawCfaRow( f, buf.rows[2].data() ) )
+               return false;
+         }
+         else
+         {
+            // Bottom edge: replicate current row
+            std::copy( buf.rows[1].begin(), buf.rows[1].end(), buf.rows[2].begin() );
+         }
+      }
+
+      // Demosaic this row for the requested channel
+      BayerDemosaic::DemosaicRow(
+         buf.rows[0].data(), buf.rows[1].data(), buf.rows[2].data(),
+         y, m_width, m_bayerPattern, channel, rowData[f].data() );
+   }
+
+   // Update cache
+   m_cachedRow = y;
+   m_cachedChannel = channel;
+   m_rowCache = rowData;
+
+   // Update tracking
+   m_lastReadRow = y;
+   m_lastReadChannel = channel;
+
+   return true;
 }
 
 // ----------------------------------------------------------------------------
