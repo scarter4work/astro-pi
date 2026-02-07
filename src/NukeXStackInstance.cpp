@@ -585,6 +585,17 @@ Image NukeXStackInstance::CreateMedianReferenceStreaming( FrameStreamer& streame
 
    for ( int c = 0; c < channels; ++c )
    {
+      // Reset file handles before each channel (except first)
+      // to ensure clean read state after sequential row reads
+      if ( c > 0 )
+      {
+         if ( !streamer.ResetAllFiles() )
+         {
+            Console().CriticalLn( "Failed to reset streamer for median reference channel change." );
+            return Image();
+         }
+      }
+
       for ( int y = 0; y < height; ++y )
       {
          // Read this row from all frames
@@ -1003,6 +1014,14 @@ bool NukeXStackInstance::RunIntegrationStreaming(
 
       Image referenceImage = CreateMedianReferenceStreaming( streamer );
 
+      // Reset file handles after median reference pass so pixel selection
+      // can read from the beginning of each file
+      if ( !streamer.ResetAllFiles() )
+      {
+         console.CriticalLn( "Failed to reset frame streamer after median reference." );
+         return false;
+      }
+
       if ( referenceImage.Width() > 0 )
       {
          console.WriteLn( String().Format( "Reference image: %dx%d",
@@ -1041,6 +1060,18 @@ bool NukeXStackInstance::RunIntegrationStreaming(
 
    for ( int c = 0; c < channels; ++c )
    {
+      // Reset file handles before each channel (except first)
+      // to ensure clean read state for sequential row reads
+      if ( c > 0 )
+      {
+         if ( !streamer.ResetAllFiles() )
+         {
+            console.CriticalLn( String().Format(
+               "Failed to reset frame streamer for channel %d.", c ) );
+            return false;
+         }
+      }
+
       console.Write( String().Format( "\rProcessing channel %d of %d...", c + 1, channels ) );
       console.Flush();
 

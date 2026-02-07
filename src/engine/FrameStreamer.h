@@ -136,6 +136,13 @@ public:
    /// Close all open file handles. Called automatically by destructor.
    void Close();
 
+   /// Close and reopen all frame files to reset their internal read state.
+   /// Needed between passes (e.g., median reference -> pixel selection)
+   /// and when the read position must seek backward or change channels.
+   /// Preserves all extracted FITS keywords (stored in FrameInfo, not file handles).
+   /// @return false if any frame fails to reopen
+   bool ResetAllFiles();
+
 private:
 
    // Per-frame tracking structure
@@ -158,6 +165,10 @@ private:
    int m_cachedRow     = -1;
    int m_cachedChannel = -1;
    std::vector<std::vector<float>> m_rowCache;
+
+   // Tracking for backward-seek and channel-change detection
+   int m_lastReadRow     = -1;
+   int m_lastReadChannel = -1;
 
    /// Open a single frame file for streaming reads
    /// @param frame FrameInfo to populate with open file handle

@@ -51,9 +51,59 @@ void FrameStreamer::Close()
    m_rowCache.clear();
    m_cachedRow = -1;
    m_cachedChannel = -1;
+   m_lastReadRow = -1;
+   m_lastReadChannel = -1;
    m_width = 0;
    m_height = 0;
    m_channels = 0;
+}
+
+// ----------------------------------------------------------------------------
+
+bool FrameStreamer::ResetAllFiles()
+{
+   Console console;
+
+   for ( int f = 0; f < static_cast<int>( m_frames.size() ); ++f )
+   {
+      try
+      {
+         if ( m_frames[f].isOpen && m_frames[f].file )
+         {
+            m_frames[f].file->Close();
+            m_frames[f].isOpen = false;
+         }
+         m_frames[f].file.reset();
+
+         // Reopen - keywords are preserved in FrameInfo, not the file handle
+         if ( !OpenFrame( m_frames[f] ) )
+         {
+            console.CriticalLn( String().Format(
+               "FrameStreamer::ResetAllFiles: Failed to reopen frame %d: %s",
+               f, IsoString( m_frames[f].path ).c_str() ) );
+            return false;
+         }
+      }
+      catch ( const Exception& e )
+      {
+         console.CriticalLn( "FrameStreamer::ResetAllFiles: PCL exception: " + e.Message() );
+         return false;
+      }
+      catch ( ... )
+      {
+         console.CriticalLn( String().Format(
+            "FrameStreamer::ResetAllFiles: Unknown exception for frame %d", f ) );
+         return false;
+      }
+   }
+
+   // Invalidate cache and tracking state
+   m_cachedRow = -1;
+   m_cachedChannel = -1;
+   m_lastReadRow = -1;
+   m_lastReadChannel = -1;
+
+   return true;
 }
 
 // ----------------------------------------------------------------------------
@@ -192,6 +242,8 @@ bool FrameStreamer::Initialize( const std::vector<String>& paths )
 
    m_cachedRow = -1;
    m_cachedChannel = -1;
+   m_lastReadRow = -1;
+   m_lastReadChannel = -1;
 
    console.WriteLn( String().Format(
       "FrameStreamer: Initialized %d frames (%dx%dx%d) for streaming",
@@ -219,6 +271,24 @@ bool FrameStreamer::ReadRow( int y, int channel,
    {
       rowData = m_rowCache;
       return true;
+   }
+
+   // Detect backward seek or channel change that requires file reset.
+   // PCL incremental reads may not support seeking backward, so we must
+   // close and reopen all files to reset their internal read position.
+   bool needReset = false;
+   if ( m_lastReadChannel >= 0 && channel != m_lastReadChannel )
+      needReset = true;  // Channel changed - must reset
+   else if ( m_lastReadRow >= 0 && y < m_lastReadRow )
+      needReset = true;  // Backward seek within same channel
+
+   if ( needReset )
+   {
+      if ( !ResetAllFiles() )
+      {
+         Console().CriticalLn( "FrameStreamer: Failed to reset files for seek/channel change" );
+         return false;
+      }
    }
 
    int numFrames = static_cast<int>( m_frames.size() );
@@ -273,6 +343,10 @@ bool FrameStreamer::ReadRow( int y, int channel,
    m_cachedRow = y;
    m_cachedChannel = channel;
    m_rowCache = rowData;
+
+   // Update tracking for backward-seek/channel-change detection
+   m_lastReadRow = y;
+   m_lastReadChannel = channel;
 
    return true;
 }
