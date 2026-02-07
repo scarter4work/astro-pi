@@ -736,7 +736,10 @@ bool IsMessierGalaxy( const String& name )
           MatchesDesignation( name, "M", "83" ) ||
           MatchesDesignation( name, "M", "101" ) || // Pinwheel
           MatchesDesignation( name, "M", "104" ) || // Sombrero
-          MatchesDesignation( name, "M", "106" );
+          MatchesDesignation( name, "M", "106" ) ||
+          MatchesDesignation( name, "M", "95" ) ||   // Leo Triplet region
+          MatchesDesignation( name, "M", "96" ) ||   // Leo Triplet region
+          MatchesDesignation( name, "M", "105" );    // Leo Triplet region
 }
 
 bool IsNGCEmissionNebula( const String& name )

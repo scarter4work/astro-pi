@@ -944,7 +944,19 @@ bool NukeXStackInstance::RunIntegration(
    std::vector<std::vector<int>> segmentationMap;
    std::vector<std::vector<float>> confidenceMap;
 
-   if ( p_enableMLSegmentation )
+   // Check for CFA/Bayer data - skip ML segmentation if detected
+   // (Bayer mosaic pattern confuses the neural network)
+   bool isCFAData = false;
+   for ( const FITSHeaderKeyword& kw : keywords )
+   {
+      if ( kw.name.Uppercase().Trimmed() == "BAYERPAT" )
+      {
+         isCFAData = true;
+         break;
+      }
+   }
+
+   if ( p_enableMLSegmentation && !isCFAData )
    {
       console.WriteLn( "<br>Creating median reference image for segmentation..." );
 
@@ -976,6 +988,12 @@ bool NukeXStackInstance::RunIntegration(
       {
          console.WarningLn( "<br>Failed to create reference image for segmentation." );
       }
+   }
+   else if ( isCFAData )
+   {
+      console.WriteLn( "<br>ML segmentation bypassed for CFA/Bayer data." );
+      console.WriteLn( "Bayer mosaic patterns produce unreliable segmentation results." );
+      console.WriteLn( "Using statistical pixel selection only." );
    }
    else
    {
@@ -1127,7 +1145,18 @@ bool NukeXStackInstance::RunIntegrationStreaming(
    std::vector<std::vector<int>> segmentationMap;
    std::vector<std::vector<float>> confidenceMap;
 
-   if ( p_enableMLSegmentation )
+   // Check for CFA/Bayer data - skip ML segmentation if detected
+   bool isCFAData = false;
+   for ( const FITSHeaderKeyword& kw : keywords )
+   {
+      if ( kw.name.Uppercase().Trimmed() == "BAYERPAT" )
+      {
+         isCFAData = true;
+         break;
+      }
+   }
+
+   if ( p_enableMLSegmentation && !isCFAData )
    {
       console.WriteLn( "<br>Creating streaming median reference for segmentation..." );
 
@@ -1163,6 +1192,12 @@ bool NukeXStackInstance::RunIntegrationStreaming(
       {
          console.WarningLn( "<br>Failed to create reference image for segmentation." );
       }
+   }
+   else if ( isCFAData )
+   {
+      console.WriteLn( "<br>ML segmentation bypassed for CFA/Bayer data." );
+      console.WriteLn( "Bayer mosaic patterns produce unreliable segmentation results." );
+      console.WriteLn( "Using statistical pixel selection only." );
    }
    else
    {
