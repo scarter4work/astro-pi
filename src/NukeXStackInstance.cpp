@@ -27,6 +27,8 @@
 #include "engine/Segmentation.h"
 #include "engine/FrameStreamer.h"
 #include "engine/BayerDemosaic.h"
+#include "engine/algorithms/ArcSinhStretch.h"
+#include "engine/IStretchAlgorithm.h"
 
 #include <algorithm>
 #include <cstring>
@@ -949,35 +951,161 @@ bool NukeXStackInstance::RunIntegration(
 
    if ( p_enableMLSegmentation )
    {
-      console.WriteLn( "<br>Creating median reference image for segmentation..." );
+      console.WriteLn( "<br>Running per-frame segmentation..." );
+      auto segStart = std::chrono::high_resolution_clock::now();
 
-      // Create a median reference image from the stack
-      Image referenceImage = CreateMedianReference( frames );
+      std::vector<PerFrameClassMap> perFrameMaps;
+      perFrameMaps.reserve( frames.size() );
 
-      if ( referenceImage.Width() > 0 )
+      int segSuccessCount = 0;
+
+      for ( size_t f = 0; f < frames.size(); ++f )
       {
-         console.WriteLn( String().Format( "Reference image: %dx%d",
-            referenceImage.Width(), referenceImage.Height() ) );
+         console.Write( String().Format( "\rSegmenting frame %d/%d...",
+            static_cast<int>( f + 1 ), static_cast<int>( frames.size() ) ) );
+         console.Flush();
 
-         // Run ML segmentation on the reference image
-         double segTime = 0.0;
-         if ( RunSegmentation( referenceImage, segmentationMap, confidenceMap, segTime ) )
+         // Create a temporary stretched copy for segmentation
+         Image stretchedCopy;
+         stretchedCopy.Assign( frames[f] );
+
+         // Compute statistics for auto-configuration
+         RegionStatistics stats;
          {
-            summary.segmentationTimeMs = segTime;
+            double median, mad;
+            median = stretchedCopy.Median();
 
-            // Pass segmentation to the pixel selector
-            selector.SetSegmentation( segmentationMap, confidenceMap );
-            console.WriteLn( String().Format( "<br>ML segmentation enabled (%.1f ms)", segTime ) );
-            console.WriteLn( "Pixel selection will use region-aware strategies." );
+            // Compute MAD manually: median of |pixel - median|
+            Image devImage;
+            devImage.Assign( stretchedCopy );
+            for ( int c = 0; c < devImage.NumberOfChannels(); ++c )
+            {
+               Image::sample* data = devImage.PixelData( c );
+               size_t numPx = static_cast<size_t>( devImage.Width() ) * devImage.Height();
+               for ( size_t p = 0; p < numPx; ++p )
+                  data[p] = std::abs( data[p] - static_cast<float>( median ) );
+            }
+            mad = devImage.Median();
+
+            stats.median = median;
+            stats.mad = mad;
+            stats.min = 0.0;
+            stats.max = 1.0;
+            stats.snrEstimate = ( mad > 1e-10 ) ? ( median / mad ) : 10.0;
+         }
+
+         // Auto-configure and apply arcsinh stretch
+         ArcSinhStretch stretcher;
+         stretcher.AutoConfigure( stats );
+         stretcher.ApplyToImage( stretchedCopy );
+
+         // Run segmentation on the stretched copy
+         std::vector<std::vector<int>> frameClassMap;
+         std::vector<std::vector<float>> frameConfMap;
+         double segTime = 0.0;
+
+         if ( RunSegmentation( stretchedCopy, frameClassMap, frameConfMap, segTime ) )
+         {
+            // Convert to compact PerFrameClassMap
+            PerFrameClassMap pfMap;
+            pfMap.segHeight = static_cast<int>( frameClassMap.size() );
+            pfMap.segWidth = pfMap.segHeight > 0
+               ? static_cast<int>( frameClassMap[0].size() ) : 0;
+
+            size_t mapSize = static_cast<size_t>( pfMap.segWidth ) * pfMap.segHeight;
+            pfMap.classLabels.resize( mapSize );
+            pfMap.confidences.resize( mapSize );
+
+            for ( int y = 0; y < pfMap.segHeight; ++y )
+            {
+               for ( int x = 0; x < pfMap.segWidth; ++x )
+               {
+                  size_t idx = static_cast<size_t>( y ) * pfMap.segWidth + x;
+                  pfMap.classLabels[idx] = static_cast<uint8_t>(
+                     std::max( 0, std::min( static_cast<int>( RegionClass::Count ) - 1,
+                        frameClassMap[y][x] ) ) );
+                  pfMap.confidences[idx] = static_cast<uint8_t>(
+                     std::max( 0.0f, std::min( 1.0f,
+                        ( y < static_cast<int>( frameConfMap.size() ) &&
+                          x < static_cast<int>( frameConfMap[y].size() ) )
+                        ? frameConfMap[y][x] : 0.5f ) ) * 255.0f );
+               }
+            }
+
+            perFrameMaps.push_back( std::move( pfMap ) );
+            segSuccessCount++;
          }
          else
          {
-            console.WarningLn( "<br>ML segmentation failed - using statistical selection only." );
+            // Segmentation failed for this frame - add empty map
+            perFrameMaps.push_back( PerFrameClassMap() );
          }
+      }
+
+      auto segEnd = std::chrono::high_resolution_clock::now();
+      summary.segmentationTimeMs = std::chrono::duration<double, std::milli>(
+         segEnd - segStart ).count();
+
+      if ( segSuccessCount > 0 )
+      {
+         // Pass per-frame segmentation to selector
+         selector.SetPerFrameSegmentation( perFrameMaps );
+         selector.SetImageDimensions( width, height );
+
+         // Also populate the single segmentation map from frame 0 for transition smoothing
+         if ( !perFrameMaps.empty() && perFrameMaps[0].segWidth > 0 )
+         {
+            const PerFrameClassMap& map0 = perFrameMaps[0];
+            segmentationMap.resize( map0.segHeight );
+            confidenceMap.resize( map0.segHeight );
+            for ( int y = 0; y < map0.segHeight; ++y )
+            {
+               segmentationMap[y].resize( map0.segWidth );
+               confidenceMap[y].resize( map0.segWidth );
+               for ( int x = 0; x < map0.segWidth; ++x )
+               {
+                  size_t idx = static_cast<size_t>( y ) * map0.segWidth + x;
+                  segmentationMap[y][x] = map0.classLabels[idx];
+                  confidenceMap[y][x] = map0.confidences[idx] / 255.0f;
+               }
+            }
+         }
+
+         console.WriteLn( String().Format(
+            "\r<clrbol>Per-frame segmentation complete: %d/%d frames (%.1f s)",
+            segSuccessCount, static_cast<int>( frames.size() ),
+            summary.segmentationTimeMs / 1000.0 ) );
+
+         // Report consensus class distribution from first frame as sample
+         if ( !perFrameMaps.empty() && perFrameMaps[0].segWidth > 0 )
+         {
+            std::map<int, int> classCounts;
+            const PerFrameClassMap& map0 = perFrameMaps[0];
+            for ( size_t i = 0; i < map0.classLabels.size(); ++i )
+               classCounts[map0.classLabels[i]]++;
+
+            int totalPx = map0.segWidth * map0.segHeight;
+            console.WriteLn( "<br>Frame 1 segmentation class distribution:" );
+            for ( const auto& pair : classCounts )
+            {
+               double pct = 100.0 * pair.second / totalPx;
+               if ( pct > 0.5 )
+               {
+                  RegionClass rc = static_cast<RegionClass>( pair.first );
+                  IsoString regionName = IsoString( RegionClassDisplayName( rc ) );
+                  console.WriteLn( String().Format( "  %s: %.1f%%",
+                     regionName.c_str(), pct ) );
+               }
+            }
+         }
+
+         console.WriteLn( "Pixel selection will use per-frame region-aware consensus strategies." );
       }
       else
       {
-         console.WarningLn( "<br>Failed to create reference image for segmentation." );
+         console.WarningLn(
+            "\r<clrbol>Per-frame segmentation failed for all frames - "
+            "using statistical selection only." );
       }
    }
    else

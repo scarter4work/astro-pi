@@ -158,6 +158,18 @@ public:
       RegionClass regionClass,
       float classConfidence = 1.0f ) const;
 
+   /// Analyze with ML segmentation class and per-frame anomaly flags
+   /// Frames flagged as anomalous get a more aggressive outlier threshold
+   /// @param values Pixel values from each frame
+   /// @param regionClass Consensus ML segmentation class
+   /// @param classConfidence Agreement score (0-1)
+   /// @param anomalyFlags Per-frame flags: true = class disagrees with consensus
+   PixelStackMetadata AnalyzePixelWithClassAndAnomalies(
+      const std::vector<float>& values,
+      RegionClass regionClass,
+      float classConfidence,
+      const std::vector<bool>& anomalyFlags ) const;
+
    /// Fit distribution to pixel values
    StackDistributionParams FitDistribution( const std::vector<float>& values ) const;
 

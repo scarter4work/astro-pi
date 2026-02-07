@@ -360,6 +360,122 @@ PixelStackMetadata PixelStackAnalyzer::AnalyzePixelWithClass(
 
 // ----------------------------------------------------------------------------
 
+PixelStackMetadata PixelStackAnalyzer::AnalyzePixelWithClassAndAnomalies(
+   const std::vector<float>& values,
+   RegionClass regionClass,
+   float classConfidence,
+   const std::vector<bool>& anomalyFlags ) const
+{
+   PixelStackMetadata meta;
+   meta.totalFrames = static_cast<uint16_t>( values.size() );
+
+   if ( values.size() < static_cast<size_t>( m_config.minFramesForStats ) )
+   {
+      if ( !values.empty() )
+      {
+         std::vector<float> sorted = values;
+         meta.selectedValue = ComputeMedian( sorted );
+         meta.sourceFrame = 0;
+         meta.confidence = 0.0f;
+      }
+      return meta;
+   }
+
+   // Fit distribution
+   meta.distribution = FitDistribution( values );
+
+   // Get class-adjusted config for outlier detection
+   StackAnalysisConfig adjustedConfig = GetClassAdjustedConfig( regionClass );
+
+   std::vector<bool> rejected( values.size(), false );
+
+   // Identify outliers with class-aware thresholds AND anomaly penalty
+   float sigma = meta.distribution.sigma;
+   if ( sigma < 1e-10f )
+      sigma = 1e-10f;
+
+   for ( size_t i = 0; i < values.size(); ++i )
+   {
+      // Anomalous frames (class disagrees with consensus) get a tighter threshold
+      float effectiveThreshold = adjustedConfig.outlierSigmaThreshold;
+      if ( i < anomalyFlags.size() && anomalyFlags[i] )
+         effectiveThreshold *= 0.7f;  // 30% more aggressive for anomalous frames
+
+      if ( IsClassSpecificOutlier( values[i], meta.distribution.mu, sigma,
+                                    effectiveThreshold, regionClass ) )
+         rejected[i] = true;
+   }
+
+   // Iterative sigma clipping (same as AnalyzePixelWithClass but with anomaly awareness)
+   for ( int pass = 1; pass < 3; ++pass )
+   {
+      int validCount = 0;
+      for ( size_t i = 0; i < values.size(); ++i )
+         if ( !rejected[i] )
+            ++validCount;
+
+      int minRequired = std::max( m_config.minFramesForStats,
+                                   static_cast<int>( values.size() ) / 2 );
+      if ( validCount < minRequired )
+         break;
+
+      std::vector<float> validValues;
+      validValues.reserve( validCount );
+      for ( size_t i = 0; i < values.size(); ++i )
+         if ( !rejected[i] )
+            validValues.push_back( values[i] );
+
+      float newMu = ComputeMedian( validValues );
+      float newSigma = ComputeMAD( validValues, newMu ) * 1.4826f;
+
+      if ( newSigma < 1e-10f )
+         break;
+
+      std::vector<bool> prevRejected = rejected;
+      meta.distribution.mu = newMu;
+      meta.distribution.sigma = newSigma;
+
+      for ( size_t i = 0; i < values.size(); ++i )
+      {
+         float effectiveThreshold = adjustedConfig.outlierSigmaThreshold;
+         if ( i < anomalyFlags.size() && anomalyFlags[i] )
+            effectiveThreshold *= 0.7f;
+
+         if ( IsClassSpecificOutlier( values[i], newMu, newSigma,
+                                       effectiveThreshold, regionClass ) )
+            rejected[i] = true;
+      }
+
+      if ( rejected == prevRejected )
+         break;
+   }
+
+   // Aggregate rejected vector into metadata
+   meta.outlierMask = 0;
+   meta.outlierCount = 0;
+   for ( size_t i = 0; i < rejected.size(); ++i )
+   {
+      if ( rejected[i] )
+      {
+         if ( i < 64 )
+            meta.outlierMask |= (uint64_t( 1 ) << i);
+         meta.outlierCount++;
+      }
+   }
+
+   // Select best value with class awareness
+   int selectedFrame = 0;
+   float confidence = 0.0f;
+   meta.selectedValue = SelectBestValue( values, meta.distribution, regionClass,
+                                          selectedFrame, confidence );
+   meta.sourceFrame = static_cast<uint16_t>( selectedFrame );
+   meta.confidence = confidence * classConfidence;
+
+   return meta;
+}
+
+// ----------------------------------------------------------------------------
+
 StackDistributionParams PixelStackAnalyzer::FitDistribution( const std::vector<float>& values ) const
 {
    StackDistributionParams params;

@@ -136,6 +136,14 @@ void PixelSelector::SetFrameWeights( const std::vector<float>& weights )
 
 // ----------------------------------------------------------------------------
 
+void PixelSelector::SetPerFrameSegmentation( const std::vector<PerFrameClassMap>& maps )
+{
+   m_perFrameClassMaps = maps;
+   m_hasPerFrameSegmentation = !maps.empty() && maps[0].segWidth > 0 && maps[0].segHeight > 0;
+}
+
+// ----------------------------------------------------------------------------
+
 void PixelSelector::SetSegmentation(
    const std::vector<int>& segmentationMap,
    const std::vector<float>& confidenceMap,
@@ -423,7 +431,11 @@ PixelSelectionResult PixelSelector::SelectPixel(
    float classConfidence = 0.0f;
    bool hasValidClass = false;
 
-   if ( m_hasSegmentation )
+   if ( m_hasPerFrameSegmentation )
+   {
+      // Per-frame segmentation handled below in stackMeta computation
+   }
+   else if ( m_hasSegmentation )
    {
       regionClass = GetRegionClass( x, y );
       classConfidence = GetClassConfidence( x, y );
@@ -432,15 +444,33 @@ PixelSelectionResult PixelSelector::SelectPixel(
       hasValidClass = (classConfidence >= m_config.minClassConfidence);
    }
 
-   result.regionClass = regionClass;
-   result.classConfidence = classConfidence;
-
    // Analyze pixel stack with or without class
    PixelStackMetadata stackMeta;
-   if ( hasValidClass )
+   if ( m_hasPerFrameSegmentation )
+   {
+      // Per-frame segmentation: compute consensus across all frames
+      ConsensusResult consensus = ComputeConsensus( x, y, static_cast<int>( values.size() ) );
+      regionClass = consensus.consensusClass;
+      classConfidence = consensus.agreementScore;
+      hasValidClass = ( classConfidence >= m_config.minClassConfidence );
+
+      if ( hasValidClass )
+         stackMeta = m_analyzer.AnalyzePixelWithClassAndAnomalies(
+            values, regionClass, classConfidence, consensus.anomalyFlags );
+      else
+         stackMeta = m_analyzer.AnalyzePixel( values );
+   }
+   else if ( hasValidClass )
+   {
       stackMeta = m_analyzer.AnalyzePixelWithClass( values, regionClass, classConfidence );
+   }
    else
+   {
       stackMeta = m_analyzer.AnalyzePixel( values );
+   }
+
+   result.regionClass = regionClass;
+   result.classConfidence = classConfidence;
 
    result.value = stackMeta.selectedValue;
    result.sourceFrame = stackMeta.sourceFrame;
@@ -557,6 +587,130 @@ float PixelSelector::GetClassConfidence( int x, int y ) const
       return 0.0f;
 
    return m_confidenceMap[idx];
+}
+
+// ----------------------------------------------------------------------------
+
+RegionClass PixelSelector::GetPerFrameClass( int mapIndex, int x, int y,
+                                               int imageWidth, int imageHeight ) const
+{
+   if ( mapIndex < 0 || mapIndex >= static_cast<int>( m_perFrameClassMaps.size() ) )
+      return RegionClass::Background;
+
+   const PerFrameClassMap& map = m_perFrameClassMaps[mapIndex];
+   if ( map.classLabels.empty() )
+      return RegionClass::Background;
+
+   // Scale image coordinates to segmentation map coordinates
+   int sx = ( map.segWidth > 1 && imageWidth > 1 )
+      ? static_cast<int>( static_cast<float>( x ) * ( map.segWidth - 1 ) / ( imageWidth - 1 ) + 0.5f )
+      : 0;
+   int sy = ( map.segHeight > 1 && imageHeight > 1 )
+      ? static_cast<int>( static_cast<float>( y ) * ( map.segHeight - 1 ) / ( imageHeight - 1 ) + 0.5f )
+      : 0;
+
+   sx = std::max( 0, std::min( sx, map.segWidth - 1 ) );
+   sy = std::max( 0, std::min( sy, map.segHeight - 1 ) );
+
+   size_t idx = static_cast<size_t>( sy ) * map.segWidth + sx;
+   if ( idx >= map.classLabels.size() )
+      return RegionClass::Background;
+
+   int classInt = map.classLabels[idx];
+   if ( classInt < 0 || classInt >= static_cast<int>( RegionClass::Count ) )
+      return RegionClass::Background;
+
+   return static_cast<RegionClass>( classInt );
+}
+
+// ----------------------------------------------------------------------------
+
+float PixelSelector::GetPerFrameConfidence( int mapIndex, int x, int y,
+                                              int imageWidth, int imageHeight ) const
+{
+   if ( mapIndex < 0 || mapIndex >= static_cast<int>( m_perFrameClassMaps.size() ) )
+      return 0.0f;
+
+   const PerFrameClassMap& map = m_perFrameClassMaps[mapIndex];
+   if ( map.confidences.empty() )
+      return 0.5f;
+
+   int sx = ( map.segWidth > 1 && imageWidth > 1 )
+      ? static_cast<int>( static_cast<float>( x ) * ( map.segWidth - 1 ) / ( imageWidth - 1 ) + 0.5f )
+      : 0;
+   int sy = ( map.segHeight > 1 && imageHeight > 1 )
+      ? static_cast<int>( static_cast<float>( y ) * ( map.segHeight - 1 ) / ( imageHeight - 1 ) + 0.5f )
+      : 0;
+
+   sx = std::max( 0, std::min( sx, map.segWidth - 1 ) );
+   sy = std::max( 0, std::min( sy, map.segHeight - 1 ) );
+
+   size_t idx = static_cast<size_t>( sy ) * map.segWidth + sx;
+   if ( idx >= map.confidences.size() )
+      return 0.5f;
+
+   return map.confidences[idx] / 255.0f;
+}
+
+// ----------------------------------------------------------------------------
+
+PixelSelector::ConsensusResult PixelSelector::ComputeConsensus(
+   int x, int y, int numFrames ) const
+{
+   ConsensusResult result;
+   result.anomalyFlags.resize( numFrames, false );
+
+   if ( !m_hasPerFrameSegmentation || m_perFrameClassMaps.empty() )
+      return result;
+
+   // Count votes per class, weighted by confidence
+   int numClasses = static_cast<int>( RegionClass::Count );
+   std::vector<float> classVotes( numClasses, 0.0f );
+   std::vector<RegionClass> perFrameClass( numFrames );
+
+   int mapsAvailable = static_cast<int>( m_perFrameClassMaps.size() );
+
+   for ( int f = 0; f < numFrames; ++f )
+   {
+      if ( f < mapsAvailable )
+      {
+         perFrameClass[f] = GetPerFrameClass( f, x, y, m_imageWidth, m_imageHeight );
+         float conf = GetPerFrameConfidence( f, x, y, m_imageWidth, m_imageHeight );
+         int ci = static_cast<int>( perFrameClass[f] );
+         if ( ci >= 0 && ci < numClasses )
+            classVotes[ci] += conf;
+      }
+      else
+      {
+         perFrameClass[f] = RegionClass::Background;
+      }
+   }
+
+   // Find consensus class (highest weighted vote)
+   float maxVotes = 0.0f;
+   int consensusIdx = 0;
+   for ( int c = 0; c < numClasses; ++c )
+   {
+      if ( classVotes[c] > maxVotes )
+      {
+         maxVotes = classVotes[c];
+         consensusIdx = c;
+      }
+   }
+   result.consensusClass = static_cast<RegionClass>( consensusIdx );
+
+   // Compute agreement score and flag anomalies
+   int agreeCount = 0;
+   for ( int f = 0; f < numFrames; ++f )
+   {
+      if ( perFrameClass[f] == result.consensusClass )
+         agreeCount++;
+      else
+         result.anomalyFlags[f] = true;
+   }
+   result.agreementScore = static_cast<float>( agreeCount ) / std::max( 1, numFrames );
+
+   return result;
 }
 
 // ----------------------------------------------------------------------------

@@ -94,6 +94,18 @@ struct SpatialContext
 };
 
 // ----------------------------------------------------------------------------
+// Per-frame class map for per-frame segmentation
+// ----------------------------------------------------------------------------
+
+struct PerFrameClassMap
+{
+   int segWidth = 0;
+   int segHeight = 0;
+   std::vector<uint8_t> classLabels;   // [y * segWidth + x], one byte per pixel
+   std::vector<uint8_t> confidences;   // [y * segWidth + x], quantized 0-255
+};
+
+// ----------------------------------------------------------------------------
 // PixelSelector Configuration
 // ----------------------------------------------------------------------------
 
@@ -208,6 +220,15 @@ public:
    /// Weights should be normalized to [0,1]. Empty means equal weight.
    void SetFrameWeights( const std::vector<float>& weights );
 
+   /// Set per-frame segmentation maps (one per frame)
+   void SetPerFrameSegmentation( const std::vector<PerFrameClassMap>& maps );
+
+   /// Check if per-frame segmentation is available
+   bool HasPerFrameSegmentation() const { return m_hasPerFrameSegmentation; }
+
+   /// Set image dimensions (needed for per-frame segmentation coordinate scaling)
+   void SetImageDimensions( int width, int height ) { m_imageWidth = width; m_imageHeight = height; }
+
    /// Access the internal analyzer
    const PixelStackAnalyzer& Analyzer() const { return m_analyzer; }
 
@@ -227,9 +248,31 @@ private:
    // Per-frame quality weights
    std::vector<float> m_frameWeights;
 
+   // Per-frame segmentation data
+   std::vector<PerFrameClassMap> m_perFrameClassMaps;
+   bool m_hasPerFrameSegmentation = false;
+
+   // Image dimensions (needed for per-frame segmentation coordinate scaling)
+   int m_imageWidth = 0;
+   int m_imageHeight = 0;
+
    // Get ML class at position (with bounds checking)
    RegionClass GetRegionClass( int x, int y ) const;
    float GetClassConfidence( int x, int y ) const;
+
+   // Per-frame consensus computation
+   struct ConsensusResult
+   {
+      RegionClass consensusClass = RegionClass::Background;
+      float agreementScore = 0.0f;       // 0-1, fraction of frames agreeing
+      std::vector<bool> anomalyFlags;    // true = frame disagrees with consensus
+   };
+
+   ConsensusResult ComputeConsensus( int x, int y, int numFrames ) const;
+
+   // Get class from a per-frame map at (x,y), with coordinate scaling
+   RegionClass GetPerFrameClass( int mapIndex, int x, int y, int imageWidth, int imageHeight ) const;
+   float GetPerFrameConfidence( int mapIndex, int x, int y, int imageWidth, int imageHeight ) const;
 
    // Apply target context adjustments to selection
    void ApplyTargetContextAdjustments(
