@@ -9,8 +9,8 @@
       </p>
    </description>
    <platform os="linux" arch="x64" version="1.8.0:1.9.9">
-      <package fileName="20260206-v30-linux-x64-NukeX.tar.gz" sha1="e9e3535b0b619f45c62307d261ee06905a89e97e" type="module" releaseDate="20260206">
-         <title>NukeX 1.1.0.30 - Fix segmentation crash on RGB images</title>
+      <package fileName="20260206-v31-linux-x64-NukeX.tar.gz" sha1="0a828548fe2399b1e60a3efe7e91b546f2f7fb22" type="module" releaseDate="20260206">
+         <title>NukeX 1.1.0.31 - RGB/multi-extension FITS support and improved logging</title>
          <description>
             <p>
                <b>NukeX - Intelligent Region-Aware Processing for PixInsight</b>
@@ -27,7 +27,7 @@
                </li>
             </ul>
             <p>
-               <b>Version 1.1.0.30:</b> Fixed crash in ONNX segmentation caused by incorrect ColorSpace on median reference and loaded frame images. Images were allocated with default Gray color space even for RGB data, causing the segmentation engine to produce 1-channel downsampled images. ONNXSegmentationModel::PreprocessImage then crashed accessing non-existent channels 1 and 2. Fixed by setting proper ColorSpace (RGB for 3+ channels) on all image allocations in CreateMedianReference, CreateMedianReferenceStreaming, and LoadFrame. Added defensive mono image handling in PreprocessImage. Also includes v29 fix: FrameStreamer file handle reset mechanism for multi-pass streaming.
+               <b>Version 1.1.0.31:</b> Added multi-extension FITS support for RGB data stored across separate HDUs. NukeXStack now detects valid image HDUs, uses PCL SelectImage() API for multi-extension files, and correctly reads each HDU as a separate channel. Added CFA/Bayer mosaic detection with clear warning to debayer before stacking. Improved console logging: format summary on load, consolidated progress reporting (no more per-frame keyword spam), memory usage display. Fixed missing ColorSpace on output image allocation in both in-memory and streaming integration paths.
             </p>
             <p>
                Copyright (c) 2026 Scott Carter. All Rights Reserved.
@@ -36,4 +36,4 @@
       </package>
    </platform>
 </xri>
-<Signature developerId="scarter4work" timestamp="2026-02-07T02:45:10.324Z" encoding="Base64">u9LmXLQrPJMTvAOLADjN4Ev8kG4wtOYWme0Qd+sGZE2ZPfWiJjT5tVUZPvXIVrfQJtHETDC2Hjw4Yl9yJ2cnAQ==</Signature>
+<Signature developerId="scarter4work" timestamp="2026-02-07T03:51:16.415Z" encoding="Base64">etKzZeLhm4MGfWo7bolbK1N3HERuFA6SZgXZMXIh22FOyaX27nm3p2iriBN1l80hP36meO7tpJy1b5hJOYv4Aw==</Signature>

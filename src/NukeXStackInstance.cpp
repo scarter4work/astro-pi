@@ -28,6 +28,7 @@
 #include "engine/FrameStreamer.h"
 
 #include <algorithm>
+#include <cstring>
 #include <numeric>
 
 namespace pcl
@@ -230,6 +231,45 @@ bool NukeXStackInstance::ExecuteGlobal()
    int channels = streamer.Channels();
    FITSKeywordArray referenceKeywords = streamer.GetKeywords( 0 );
 
+   // Detect and log frame format details
+   {
+      String colorDesc;
+      if ( channels >= 3 )
+         colorDesc = "RGB";
+      else
+         colorDesc = "mono";
+
+      // Check for CFA/Bayer pattern in reference keywords
+      bool isCFA = false;
+      String bayerPattern;
+      for ( const FITSHeaderKeyword& kw : referenceKeywords )
+      {
+         if ( kw.name.Uppercase().Trimmed() == "BAYERPAT" )
+         {
+            isCFA = true;
+            bayerPattern = kw.value.Trimmed();
+            break;
+         }
+      }
+
+      if ( isCFA )
+      {
+         console.WarningLn( String().Format(
+            "<br>** WARNING: CFA/Bayer mosaic data detected (pattern: %s)",
+            IsoString( bayerPattern ).c_str() ) );
+         console.WarningLn(
+            "** These frames contain raw Bayer data (1 channel per pixel)." );
+         console.WarningLn(
+            "** For RGB output, debayer frames first (e.g., PixInsight Debayer process)." );
+         console.WarningLn(
+            "** Proceeding with mono stacking of CFA data." );
+      }
+
+      console.WriteLn( String().Format(
+         "<br>Frame format: %dx%d, %d channel(s) (%s)",
+         width, height, channels, IsoString( colorDesc ).c_str() ) );
+   }
+
    // Compute total frame data size to decide streaming vs in-memory
    size_t totalFrameBytes = static_cast<size_t>( streamer.NumFrames() )
       * width * height * channels * sizeof( float );
@@ -267,26 +307,39 @@ bool NukeXStackInstance::ExecuteGlobal()
       std::vector<Image> frames;
       frames.reserve( framePaths.size() );
 
+      int totalFrames = static_cast<int>( framePaths.size() );
+      int lastPctReported = -1;
+
       for ( size_t i = 0; i < framePaths.size(); ++i )
       {
-         console.Write( String().Format( "\rLoading frame %d of %d...",
-            static_cast<int>( i + 1 ), static_cast<int>( framePaths.size() ) ) );
-         console.Flush();
+         // Progress reporting every 10% or on last frame
+         int pct = static_cast<int>( 100.0 * ( i + 1 ) / totalFrames );
+         int pctBucket = pct / 10;
+         if ( pctBucket > lastPctReported || static_cast<int>( i ) == totalFrames - 1 )
+         {
+            console.Write( String().Format( "\rLoading frames... %d/%d (%d%%)",
+               static_cast<int>( i + 1 ), totalFrames, pct ) );
+            console.Flush();
+            lastPctReported = pctBucket;
+         }
 
          Image frame;
          FITSKeywordArray keywords;
          if ( !LoadFrame( framePaths[i], frame, keywords ) )
          {
-            console.CriticalLn( String().Format( "\r<clrbol>Failed to load: %s",
-               IsoString( framePaths[i] ).c_str() ) );
+            console.CriticalLn( String().Format( "\r<clrbol>Failed to load frame %d: %s",
+               static_cast<int>( i + 1 ), IsoString( framePaths[i] ).c_str() ) );
             return false;
          }
 
          frames.push_back( std::move( frame ) );
       }
 
-      console.WriteLn( String().Format( "\r<clrbol>Loaded %d frames (%dx%dx%d)",
-         static_cast<int>( frames.size() ), width, height, channels ) );
+      // Final summary
+      size_t totalBytes = static_cast<size_t>( frames.size() ) * width * height * channels * sizeof( float );
+      console.WriteLn( String().Format( "\r<clrbol>Loaded %d frames (%dx%dx%d, %.1f GB in memory)",
+         static_cast<int>( frames.size() ), width, height, channels,
+         totalBytes / ( 1024.0 * 1024.0 * 1024.0 ) ) );
 
       if ( !RunIntegration( frames, referenceKeywords, output, summary ) )
       {
@@ -480,11 +533,8 @@ bool NukeXStackInstance::LoadFrame( const String& path, Image& image, FITSKeywor
 {
    try
    {
-      // Determine file format from extension
       String extension = File::ExtractExtension( path ).Lowercase();
-
       FileFormat format( extension, true, false );
-
       FileFormatInstance file( format );
       ImageDescriptionArray images;
 
@@ -501,15 +551,80 @@ bool NukeXStackInstance::LoadFrame( const String& path, Image& image, FITSKeywor
       if ( format.CanStoreKeywords() )
          file.ReadFITSKeywords( keywords );
 
-      // Read as 32-bit float
-      image.AllocateData( images[0].info.width, images[0].info.height,
-         images[0].info.numberOfChannels,
-         images[0].info.numberOfChannels >= 3 ? ColorSpace::RGB : ColorSpace::Gray );
+      // Find valid HDUs
+      std::vector<int> validHDUs;
+      for ( int d = 0; d < images.Length(); ++d )
+      {
+         if ( images[d].info.width > 0 && images[d].info.height > 0 &&
+              images[d].info.numberOfChannels >= 1 )
+            validHDUs.push_back( d );
+      }
 
-      if ( !file.ReadImage( image ) )
+      if ( validHDUs.empty() )
       {
          file.Close();
          return false;
+      }
+
+      // Check for multi-extension RGB
+      bool multiExtRGB = false;
+      if ( validHDUs.size() > 1 )
+      {
+         bool allSingleCh = true;
+         bool allSameDims = true;
+         int refW = images[validHDUs[0]].info.width;
+         int refH = images[validHDUs[0]].info.height;
+         for ( int vi : validHDUs )
+         {
+            if ( images[vi].info.numberOfChannels != 1 ) allSingleCh = false;
+            if ( images[vi].info.width != refW || images[vi].info.height != refH ) allSameDims = false;
+         }
+         multiExtRGB = ( allSingleCh && allSameDims );
+      }
+
+      if ( multiExtRGB )
+      {
+         // Multi-extension RGB: read each HDU as a channel
+         int w = images[validHDUs[0]].info.width;
+         int h = images[validHDUs[0]].info.height;
+         int totalChannels = static_cast<int>( validHDUs.size() );
+
+         image.AllocateData( w, h, totalChannels,
+            totalChannels >= 3 ? ColorSpace::RGB : ColorSpace::Gray );
+
+         for ( int ci = 0; ci < totalChannels; ++ci )
+         {
+            file.SelectImage( validHDUs[ci] );
+            Image temp;
+            temp.AllocateData( w, h, 1, ColorSpace::Gray );
+            if ( !file.ReadImage( temp ) )
+            {
+               file.Close();
+               return false;
+            }
+            // Copy temp channel 0 to output channel ci
+            const Image::sample* src = temp.PixelData( 0 );
+            Image::sample* dst = image.PixelData( ci );
+            size_t numPx = static_cast<size_t>( w ) * h;
+            std::memcpy( dst, src, numPx * sizeof( Image::sample ) );
+         }
+      }
+      else
+      {
+         // Single-extension or standard multi-channel: use first valid HDU
+         int vi = validHDUs[0];
+         if ( vi > 0 )
+            file.SelectImage( vi );
+
+         image.AllocateData( images[vi].info.width, images[vi].info.height,
+            images[vi].info.numberOfChannels,
+            images[vi].info.numberOfChannels >= 3 ? ColorSpace::RGB : ColorSpace::Gray );
+
+         if ( !file.ReadImage( image ) )
+         {
+            file.Close();
+            return false;
+         }
       }
 
       file.Close();
@@ -875,7 +990,8 @@ bool NukeXStackInstance::RunIntegration(
       framePtrs.push_back( &frame );
 
    // Allocate output image
-   output.AllocateData( width, height, channels );
+   output.AllocateData( width, height, channels,
+      channels >= 3 ? ColorSpace::RGB : ColorSpace::Gray );
 
    // Process each channel
    console.WriteLn( "<br>Selecting pixels..." );
@@ -1055,7 +1171,8 @@ bool NukeXStackInstance::RunIntegrationStreaming(
    }
 
    // Allocate output image
-   output.AllocateData( width, height, channels );
+   output.AllocateData( width, height, channels,
+      channels >= 3 ? ColorSpace::RGB : ColorSpace::Gray );
 
    // Process each channel using streaming
    console.WriteLn( "<br>Selecting pixels (streaming)..." );

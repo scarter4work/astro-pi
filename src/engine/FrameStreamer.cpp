@@ -56,6 +56,7 @@ void FrameStreamer::Close()
    m_width = 0;
    m_height = 0;
    m_channels = 0;
+   m_isMultiExtension = false;
 }
 
 // ----------------------------------------------------------------------------
@@ -154,9 +155,89 @@ bool FrameStreamer::Initialize( const std::vector<String>& paths )
             return false;
          }
 
-         int w = images[0].info.width;
-         int h = images[0].info.height;
-         int c = images[0].info.numberOfChannels;
+         // Detect multi-extension FITS and determine effective dimensions/channels
+         int w = 0, h = 0, c = 0;
+         int primaryHDU = 0;
+
+         if ( i == 0 )
+         {
+            console.WriteLn( String().Format( "  File has %d image description(s)", images.Length() ) );
+            for ( int d = 0; d < images.Length(); ++d )
+            {
+               console.WriteLn( String().Format( "    [%d] %dx%d, %d channel(s), %d bps",
+                  d, images[d].info.width, images[d].info.height,
+                  images[d].info.numberOfChannels, images[d].options.bitsPerSample ) );
+            }
+         }
+
+         // Count valid HDUs (non-empty image data)
+         std::vector<int> validHDUs;
+         for ( int d = 0; d < images.Length(); ++d )
+         {
+            if ( images[d].info.width > 0 && images[d].info.height > 0 &&
+                 images[d].info.numberOfChannels >= 1 )
+               validHDUs.push_back( d );
+         }
+
+         if ( validHDUs.empty() )
+         {
+            console.CriticalLn( "FrameStreamer: No valid image data in file: " + path );
+            file->Close();
+            Close();
+            return false;
+         }
+
+         // Check for multi-extension RGB: multiple valid single-channel HDUs with same dimensions
+         bool isMultiExt = false;
+         if ( validHDUs.size() > 1 )
+         {
+            bool allSingleChannel = true;
+            bool allSameDims = true;
+            int refW = images[validHDUs[0]].info.width;
+            int refH = images[validHDUs[0]].info.height;
+
+            for ( int vi : validHDUs )
+            {
+               if ( images[vi].info.numberOfChannels != 1 )
+                  allSingleChannel = false;
+               if ( images[vi].info.width != refW || images[vi].info.height != refH )
+                  allSameDims = false;
+            }
+
+            if ( allSingleChannel && allSameDims )
+            {
+               isMultiExt = true;
+               w = refW;
+               h = refH;
+               c = static_cast<int>( validHDUs.size() );
+               primaryHDU = validHDUs[0];
+
+               if ( i == 0 )
+                  console.WriteLn( String().Format(
+                     "  Multi-extension FITS: %d channels across %d HDUs", c, images.Length() ) );
+            }
+            else
+            {
+               // Multiple HDUs but not uniform - use first valid
+               int vi = validHDUs[0];
+               w = images[vi].info.width;
+               h = images[vi].info.height;
+               c = images[vi].info.numberOfChannels;
+               primaryHDU = vi;
+            }
+         }
+         else
+         {
+            // Single valid HDU
+            int vi = validHDUs[0];
+            w = images[vi].info.width;
+            h = images[vi].info.height;
+            c = images[vi].info.numberOfChannels;
+            primaryHDU = vi;
+         }
+
+         if ( i == 0 )
+            m_isMultiExtension = isMultiExt;
 
          if ( w <= 0 || h <= 0 || c <= 0 )
          {
@@ -170,6 +251,23 @@ bool FrameStreamer::Initialize( const std::vector<String>& paths )
          FITSKeywordArray keywords;
          if ( format->CanStoreKeywords() )
             file->ReadFITSKeywords( keywords );
+
+         // Check for CFA/Bayer pattern (first frame only)
+         if ( i == 0 )
+         {
+            for ( const FITSHeaderKeyword& kw : keywords )
+            {
+               if ( kw.name.Uppercase().Trimmed() == "BAYERPAT" )
+               {
+                  console.WarningLn( String().Format(
+                     "  ** CFA/Bayer data detected (pattern: %s)",
+                     IsoString( kw.value.Trimmed() ).c_str() ) );
+                  console.WarningLn(
+                     "  ** Consider debayering frames before stacking for RGB output." );
+                  break;
+               }
+            }
+         }
 
          // Verify incremental read support (required for row-based streaming)
          if ( !file->CanReadIncrementally() )
@@ -210,6 +308,7 @@ bool FrameStreamer::Initialize( const std::vector<String>& paths )
          info.format   = std::move( format );
          info.file     = std::move( file );
          info.isOpen   = true;
+         info.hduIndex = primaryHDU;
 
          m_frames.push_back( std::move( info ) );
       }
@@ -245,9 +344,19 @@ bool FrameStreamer::Initialize( const std::vector<String>& paths )
    m_lastReadRow = -1;
    m_lastReadChannel = -1;
 
+   // Log format summary
+   String colorType;
+   if ( m_isMultiExtension )
+      colorType = String().Format( "%d-channel multi-extension", m_channels );
+   else if ( m_channels >= 3 )
+      colorType = "RGB";
+   else
+      colorType = "mono";
+
    console.WriteLn( String().Format(
-      "FrameStreamer: Initialized %d frames (%dx%dx%d) for streaming",
-      numFrames, m_width, m_height, m_channels ) );
+      "FrameStreamer: Initialized %d frames (%dx%dx%d, %s) for streaming",
+      numFrames, m_width, m_height, m_channels,
+      IsoString( colorType ).c_str() ) );
 
    return true;
 }
@@ -319,10 +428,24 @@ bool FrameStreamer::ReadRow( int y, int channel,
          return false;
       }
 
+      // For multi-extension FITS, select the correct image/HDU for this channel
+      int readChannel = channel;
+      if ( m_isMultiExtension )
+      {
+         // Each channel is a separate HDU; select it, then read channel 0
+         if ( !m_frames[f].file->SelectImage( channel ) )
+         {
+            Console().CriticalLn( String().Format(
+               "FrameStreamer: SelectImage(%d) failed for frame %d", channel, f ) );
+            return false;
+         }
+         readChannel = 0;  // Within each HDU, data is channel 0
+      }
+
       FImage::sample* dest = rowData[f].data();
       try
       {
-         if ( !m_frames[f].file->ReadSamples( dest, y, 1, channel ) )
+         if ( !m_frames[f].file->ReadSamples( dest, y, 1, readChannel ) )
          {
             Console().CriticalLn( String().Format(
                "FrameStreamer: ReadSamples failed for frame %d, row %d, channel %d",
@@ -368,6 +491,16 @@ bool FrameStreamer::OpenFrame( FrameInfo& frame )
       {
          Console().CriticalLn( "FrameStreamer::OpenFrame: Failed to reopen: " + frame.path );
          return false;
+      }
+
+      // For multi-extension files, select the correct starting HDU
+      if ( m_isMultiExtension && frame.hduIndex > 0 )
+      {
+         if ( !frame.file->SelectImage( frame.hduIndex ) )
+         {
+            Console().CriticalLn( "FrameStreamer::OpenFrame: SelectImage failed for: " + frame.path );
+            return false;
+         }
       }
 
       frame.isOpen = true;

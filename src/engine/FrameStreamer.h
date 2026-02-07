@@ -153,6 +153,7 @@ private:
       std::unique_ptr<FileFormat>       format;
       std::unique_ptr<FileFormatInstance> file;
       bool                              isOpen = false;
+      int                               hduIndex = 0;          // Which HDU/image index to use in multi-extension files
    };
 
    std::vector<FrameInfo> m_frames;
@@ -169,6 +170,8 @@ private:
    // Tracking for backward-seek and channel-change detection
    int m_lastReadRow     = -1;
    int m_lastReadChannel = -1;
+
+   bool m_isMultiExtension = false;  // True if files are multi-extension FITS (separate HDUs per channel)
 
    /// Open a single frame file for streaming reads
    /// @param frame FrameInfo to populate with open file handle
