@@ -9,8 +9,8 @@
       </p>
    </description>
    <platform os="linux" arch="x64" version="1.8.0:1.9.9">
-      <package fileName="20260206-v29-linux-x64-NukeX.tar.gz" sha1="14348b335ccfe983fb5560729d2ad3fdf37dbb8b" type="module" releaseDate="20260206">
-         <title>NukeX 1.1.0.29 - Fix streaming stacker file handle state corruption</title>
+      <package fileName="20260206-v30-linux-x64-NukeX.tar.gz" sha1="e9e3535b0b619f45c62307d261ee06905a89e97e" type="module" releaseDate="20260206">
+         <title>NukeX 1.1.0.30 - Fix segmentation crash on RGB images</title>
          <description>
             <p>
                <b>NukeX - Intelligent Region-Aware Processing for PixInsight</b>
@@ -27,7 +27,7 @@
                </li>
             </ul>
             <p>
-               <b>Version 1.1.0.29:</b> Fixed crash in streaming stacker caused by PCL FileFormatInstance internal state corruption when re-reading files across multiple passes and channel switches. Added ResetAllFiles() to FrameStreamer that closes and reopens all frame file handles to reset internal read state. Explicit resets between median reference and pixel selection passes, and between channel iterations. Auto-detection of backward seeks and channel changes in ReadRow as safety net. Preserves FITS keywords across file resets.
+               <b>Version 1.1.0.30:</b> Fixed crash in ONNX segmentation caused by incorrect ColorSpace on median reference and loaded frame images. Images were allocated with default Gray color space even for RGB data, causing the segmentation engine to produce 1-channel downsampled images. ONNXSegmentationModel::PreprocessImage then crashed accessing non-existent channels 1 and 2. Fixed by setting proper ColorSpace (RGB for 3+ channels) on all image allocations in CreateMedianReference, CreateMedianReferenceStreaming, and LoadFrame. Added defensive mono image handling in PreprocessImage. Also includes v29 fix: FrameStreamer file handle reset mechanism for multi-pass streaming.
             </p>
             <p>
                Copyright (c) 2026 Scott Carter. All Rights Reserved.
@@ -36,4 +36,4 @@
       </package>
    </platform>
 </xri>
-<Signature developerId="scarter4work" timestamp="2026-02-07T02:15:28.464Z" encoding="Base64">Gp+R49U1PQEumwKREl5npVCR8fHDC24FcdeppX4P5b4HoLkZhACY6pFozFPegpOivwpmv1ERcTshpe26DoCKAA==</Signature>
+<Signature developerId="scarter4work" timestamp="2026-02-07T02:45:10.324Z" encoding="Base64">u9LmXLQrPJMTvAOLADjN4Ev8kG4wtOYWme0Qd+sGZE2ZPfWiJjT5tVUZPvXIVrfQJtHETDC2Hjw4Yl9yJ2cnAQ==</Signature>

@@ -609,6 +609,7 @@ FloatTensor ONNXSegmentationModel::PreprocessImage( const Image& image ) const
 
    const int srcWidth = image.Width();
    const int srcHeight = image.Height();
+   const int imageChannels = image.NumberOfChannels();
    const int outWidth = m_config.inputWidth;
    const int outHeight = m_config.inputHeight;
 
@@ -658,8 +659,8 @@ FloatTensor ONNXSegmentationModel::PreprocessImage( const Image& image ) const
          // Resample
          const size_t idx = static_cast<size_t>( y ) * outWidth + x;
          channelR[idx] = static_cast<float>( bilinear( 0 ) );
-         channelG[idx] = static_cast<float>( bilinear( 1 ) );
-         channelB[idx] = static_cast<float>( bilinear( 2 ) );
+         channelG[idx] = static_cast<float>( bilinear( imageChannels >= 3 ? 1 : 0 ) );
+         channelB[idx] = static_cast<float>( bilinear( imageChannels >= 3 ? 2 : 0 ) );
       }
    }
 

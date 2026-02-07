@@ -503,7 +503,8 @@ bool NukeXStackInstance::LoadFrame( const String& path, Image& image, FITSKeywor
 
       // Read as 32-bit float
       image.AllocateData( images[0].info.width, images[0].info.height,
-         images[0].info.numberOfChannels, ColorSpace::Gray );
+         images[0].info.numberOfChannels,
+         images[0].info.numberOfChannels >= 3 ? ColorSpace::RGB : ColorSpace::Gray );
 
       if ( !file.ReadImage( image ) )
       {
@@ -535,7 +536,8 @@ Image NukeXStackInstance::CreateMedianReference( const std::vector<Image>& frame
    size_t numFrames = frames.size();
 
    Image reference;
-   reference.AllocateData( width, height, channels );
+   reference.AllocateData( width, height, channels,
+      channels >= 3 ? ColorSpace::RGB : ColorSpace::Gray );
 
    // For each pixel position, compute the median across all frames
    std::vector<float> values( numFrames );
@@ -579,7 +581,8 @@ Image NukeXStackInstance::CreateMedianReferenceStreaming( FrameStreamer& streame
    int numFrames = streamer.NumFrames();
 
    Image reference;
-   reference.AllocateData( width, height, channels );
+   reference.AllocateData( width, height, channels,
+      channels >= 3 ? ColorSpace::RGB : ColorSpace::Gray );
 
    std::vector<float> values( numFrames );
 
