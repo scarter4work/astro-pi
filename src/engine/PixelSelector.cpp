@@ -429,22 +429,8 @@ PixelSelectionResult PixelSelector::SelectPixel(
    // Get ML class if available
    RegionClass regionClass = RegionClass::Background;
    float classConfidence = 0.0f;
-   bool hasValidClass = false;
 
-   if ( m_hasPerFrameSegmentation )
-   {
-      // Per-frame segmentation handled below in stackMeta computation
-   }
-   else if ( m_hasSegmentation )
-   {
-      regionClass = GetRegionClass( x, y );
-      classConfidence = GetClassConfidence( x, y );
-
-      // Check if confidence meets threshold
-      hasValidClass = (classConfidence >= m_config.minClassConfidence);
-   }
-
-   // Analyze pixel stack with or without class
+   // Analyze pixel stack - always use ML class when segmentation is available
    PixelStackMetadata stackMeta;
    if ( m_hasPerFrameSegmentation )
    {
@@ -452,20 +438,23 @@ PixelSelectionResult PixelSelector::SelectPixel(
       ConsensusResult consensus = ComputeConsensus( x, y, static_cast<int>( values.size() ) );
       regionClass = consensus.consensusClass;
       classConfidence = consensus.agreementScore;
-      hasValidClass = ( classConfidence >= m_config.minClassConfidence );
 
-      if ( hasValidClass )
-         stackMeta = m_analyzer.AnalyzePixelWithClassAndAnomalies(
-            values, regionClass, classConfidence, consensus.anomalyFlags );
-      else
-         stackMeta = m_analyzer.AnalyzePixel( values );
+      // Always use consensus class with anomaly-aware analysis
+      stackMeta = m_analyzer.AnalyzePixelWithClassAndAnomalies(
+         values, regionClass, classConfidence, consensus.anomalyFlags );
    }
-   else if ( hasValidClass )
+   else if ( m_hasSegmentation )
    {
+      regionClass = GetRegionClass( x, y );
+      classConfidence = GetClassConfidence( x, y );
+
+      // Always use ML class when segmentation is available
       stackMeta = m_analyzer.AnalyzePixelWithClass( values, regionClass, classConfidence );
    }
    else
    {
+      // No segmentation at all - use basic analysis (this is NOT a fallback,
+      // it's the non-segmentation code path)
       stackMeta = m_analyzer.AnalyzePixel( values );
    }
 

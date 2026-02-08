@@ -467,7 +467,7 @@ PixelSelectorConfig NukeXStackInstance::BuildSelectorConfig() const
 
    config.stackConfig = BuildStackConfig();
    config.useSpatialContext = p_useSpatialContext;
-   config.minClassConfidence = p_minClassConfidence;
+   // minClassConfidence removed: ML class is always used when segmentation is available
    config.useTargetContext = p_useTargetContext;
 
    return config;
@@ -789,7 +789,6 @@ bool NukeXStackInstance::RunSegmentation(
    engineConfig.modelConfig.inputWidth = 512;
    engineConfig.modelConfig.inputHeight = 512;
    engineConfig.modelConfig.useGPU = false;  // CPU for now
-   engineConfig.autoFallback = true;         // Fall back to mock if ONNX fails
    engineConfig.cacheResults = false;        // No need for caching in stacker
    engineConfig.runAnalysis = false;         // We don't need region analysis
    engineConfig.downsampleLargeImages = true;
@@ -981,7 +980,6 @@ bool NukeXStackInstance::RunIntegration(
          engineConfig.modelConfig.inputWidth = 512;
          engineConfig.modelConfig.inputHeight = 512;
          engineConfig.modelConfig.useGPU = false;
-         engineConfig.autoFallback = true;
          engineConfig.cacheResults = false;
          engineConfig.runAnalysis = false;
          engineConfig.downsampleLargeImages = true;

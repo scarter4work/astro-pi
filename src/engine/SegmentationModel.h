@@ -115,7 +115,6 @@ struct SegmentationConfig
 //
 // Abstract base class for all segmentation models.
 // Implementations include:
-// - MockSegmentationModel: Threshold-based for testing
 // - ONNXSegmentationModel: ONNX Runtime-based neural network
 // ----------------------------------------------------------------------------
 
@@ -147,63 +146,6 @@ public:
 
    // Get number of output classes
    virtual int GetNumClasses() const = 0;
-};
-
-// ----------------------------------------------------------------------------
-// Mock Segmentation Model
-//
-// Simple threshold-based segmentation for testing and fallback.
-// No external dependencies required.
-// ----------------------------------------------------------------------------
-
-class MockSegmentationModel : public ISegmentationModel
-{
-public:
-
-   MockSegmentationModel();
-
-   String Name() const override { return "MockSegmentation"; }
-   String Description() const override
-   {
-      return "Threshold-based segmentation for testing (no AI model)";
-   }
-
-   bool IsReady() const override { return true; }
-   bool Initialize( const SegmentationConfig& config ) override;
-
-   SegmentationResult Segment( const Image& image ) override;
-
-   String GetLastError() const override { return m_lastError; }
-
-   int GetInputWidth() const override { return m_config.inputWidth; }
-   int GetInputHeight() const override { return m_config.inputHeight; }
-   int GetNumClasses() const override { return static_cast<int>( RegionClass::Count ); }
-
-   // Threshold settings
-   void SetStarThreshold( double t ) { m_starThreshold = t; }
-   void SetBrightNebulaThreshold( double t ) { m_brightNebulaThreshold = t; }
-   void SetFaintNebulaThreshold( double t ) { m_faintNebulaThreshold = t; }
-   void SetBackgroundThreshold( double t ) { m_backgroundThreshold = t; }
-
-private:
-
-   SegmentationConfig m_config;
-   String m_lastError;
-
-   // Thresholds for simple classification
-   double m_starThreshold = 0.7;
-   double m_brightNebulaThreshold = 0.3;
-   double m_faintNebulaThreshold = 0.08;
-   double m_backgroundThreshold = 0.05;
-
-   // Compute luminance from RGB
-   double ComputeLuminance( double r, double g, double b ) const;
-
-   // Detect local maxima (stars)
-   Image DetectStars( const Image& luminance, double starThreshold ) const;
-
-   // Create smooth probability masks
-   Image CreateGradientMask( const Image& binary, double featherRadius ) const;
 };
 
 // ----------------------------------------------------------------------------
@@ -263,21 +205,10 @@ class SegmentationModelFactory
 {
 public:
 
-   enum class ModelType
-   {
-      Mock,     // Threshold-based (always available)
-      ONNX,     // ONNX Runtime model
-      Auto      // Try ONNX first, fall back to Mock
-   };
+   // Create an ONNX segmentation model
+   static std::unique_ptr<ISegmentationModel> Create();
 
-   // Create a segmentation model
-   static std::unique_ptr<ISegmentationModel> Create( ModelType type );
-
-   // Create with automatic fallback
-   static std::unique_ptr<ISegmentationModel> CreateWithFallback(
-      const SegmentationConfig& config );
-
-   // Check if ONNX models are available
+   // Check if ONNX runtime is available
    static bool IsONNXAvailable();
 };
 

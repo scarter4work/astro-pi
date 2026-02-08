@@ -151,7 +151,7 @@ void NukeXStackInterface::UpdateControls()
 
    // Enable/disable dependent controls
    bool mlEnabled = m_instance.p_enableMLSegmentation;
-   GUI->MinConfidence_NumericControl.Enable( mlEnabled );
+   GUI->MinConfidence_NumericControl.Enable( false );  // No longer used: ML class always applied
    GUI->UseSpatialContext_CheckBox.Enable( mlEnabled );
    GUI->UseTargetContext_CheckBox.Enable( mlEnabled );
 
@@ -420,7 +420,7 @@ void NukeXStackInterface::e_CheckBoxClick( Button& sender, bool checked )
    if ( sender == GUI->EnableMLSegmentation_CheckBox )
    {
       m_instance.p_enableMLSegmentation = checked;
-      GUI->MinConfidence_NumericControl.Enable( checked );
+      // MinConfidence no longer used: ML class always applied when segmentation available
       GUI->UseSpatialContext_CheckBox.Enable( checked );
       GUI->UseTargetContext_CheckBox.Enable( checked );
    }
@@ -608,8 +608,9 @@ NukeXStackInterface::GUIData::GUIData( NukeXStackInterface& w )
                                            TheNXSMinClassConfidenceParameter->MaximumValue() );
    MinConfidence_NumericControl.SetPrecision( TheNXSMinClassConfidenceParameter->Precision() );
    MinConfidence_NumericControl.edit.SetMinWidth( editWidth1 );
-   MinConfidence_NumericControl.SetToolTip( "<p>Minimum confidence threshold for using ML class information. "
-                                             "Below this threshold, fallback to median selection.</p>" );
+   MinConfidence_NumericControl.SetToolTip( "<p>(Deprecated) ML class information is now always used when "
+                                             "segmentation is available. This parameter has no effect.</p>" );
+   MinConfidence_NumericControl.Enable( false );
    MinConfidence_NumericControl.OnValueUpdated( (NumericEdit::value_event_handler)&NukeXStackInterface::e_NumericValueUpdated, w );
 
    UseSpatialContext_CheckBox.SetText( "Spatial Context" );

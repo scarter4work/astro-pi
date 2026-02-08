@@ -96,43 +96,25 @@ bool SegmentationEngine::Initialize( const SegmentationEngineConfig& config )
 {
    m_config = config;
 
-   // Create segmentation model
-   if ( config.autoFallback )
-   {
-      m_model = SegmentationModelFactory::CreateWithFallback( config.modelConfig );
-   }
-   else
-   {
-      // Try ONNX first if path is specified
-      if ( !config.modelConfig.modelPath.IsEmpty() )
-      {
-         m_model = SegmentationModelFactory::Create( SegmentationModelFactory::ModelType::ONNX );
-         if ( m_model && !m_model->Initialize( config.modelConfig ) )
-         {
-            m_lastError = m_model->GetLastError();
-            m_model.reset();
-            return false;
-         }
-      }
-      else
-      {
-         m_model = SegmentationModelFactory::Create( SegmentationModelFactory::ModelType::Mock );
-         m_model->Initialize( config.modelConfig );
-      }
-   }
-
+   // Create ONNX segmentation model (no fallback)
+   m_model = SegmentationModelFactory::Create();
    if ( !m_model )
    {
-      m_lastError = "Failed to create segmentation model";
+      m_lastError = "ONNX runtime not available";
+      return false;
+   }
+
+   if ( !m_model->Initialize( config.modelConfig ) )
+   {
+      m_lastError = m_model->GetLastError();
+      m_model.reset();
       return false;
    }
 
    // Create region analyzer
    RegionAnalyzerConfig analyzerConfig;
    m_analyzer = std::make_unique<RegionAnalyzer>( analyzerConfig );
-
    ClearCache();
-
    return true;
 }
 
@@ -435,24 +417,8 @@ SegmentationEngineResult SegmentationEngine::Process( const Image& image,
    if ( !result.segmentation.isValid )
    {
       result.errorMessage = "Segmentation failed: " + result.segmentation.errorMessage;
-      result.usedFallback = true;
-
-      // Try fallback if this was ONNX
-      if ( m_config.autoFallback && dynamic_cast<ONNXSegmentationModel*>( m_model.get() ) )
-      {
-         Console().WarningLn( "ONNX segmentation failed, trying mock fallback" );
-         auto mockModel = std::make_unique<MockSegmentationModel>();
-         mockModel->Initialize( m_config.modelConfig );
-
-         result.segmentation = mockModel->Segment( processImage );
-         result.modelUsed = mockModel->Name();
-      }
-
-      if ( !result.segmentation.isValid )
-      {
-         ReportProgress( SegmentationEventType::Failed, 0.0, result.errorMessage );
-         return result;
-      }
+      ReportProgress( SegmentationEventType::Failed, 0.0, result.errorMessage );
+      return result;
    }
 
    // Resize masks back to original size if we downsampled

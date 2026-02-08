@@ -38,7 +38,6 @@ struct SegmentationEngineConfig
    SegmentationConfig modelConfig;
 
    // Processing settings
-   bool autoFallback = true;           // Fall back to mock if ONNX fails
    bool cacheResults = true;           // Cache segmentation results
    bool runAnalysis = true;            // Run RegionAnalyzer after segmentation
 
@@ -99,7 +98,6 @@ struct SegmentationEngineResult
    double totalTimeMs = 0;
    double segmentationTimeMs = 0;
    double analysisTimeMs = 0;
-   bool usedFallback = false;
 
    // Status
    bool isValid = false;

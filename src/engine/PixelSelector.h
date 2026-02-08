@@ -118,10 +118,6 @@ struct PixelSelectorConfig
    bool useSpatialContext = true;        // Consider neighboring pixels
    float transitionSmoothingWeight = 0.3f;  // Blending weight in transition zones
 
-   // ML integration
-   float minClassConfidence = 0.5f;      // Min confidence to use ML class
-   bool fallbackToMedian = true;         // If ML fails, use median selection
-
    // Target context
    bool useTargetContext = true;         // Use FITS metadata hints
    float contextWeight = 0.2f;           // How much target hints affect selection

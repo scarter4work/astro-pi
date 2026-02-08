@@ -693,7 +693,7 @@ bool Compositor::RunSegmentation( const Image& input, double& segmentationTimeMs
    if ( !File::Exists( modelPath ) )
    {
       console.WarningLn( String().Format( "ONNX model not found at: %s", IsoString( modelPath ).c_str() ) );
-      console.WarningLn( "ML segmentation disabled - using statistical selection only." );
+      console.WarningLn( "Segmentation requires an ONNX model. Install nukex_segmentation.onnx to enable." );
       return false;
    }
 
@@ -705,7 +705,6 @@ bool Compositor::RunSegmentation( const Image& input, double& segmentationTimeMs
    engineConfig.modelConfig.inputWidth = 512;
    engineConfig.modelConfig.inputHeight = 512;
    engineConfig.modelConfig.useGPU = false;  // CPU for now
-   engineConfig.autoFallback = true;         // Fall back to mock if ONNX fails
    engineConfig.cacheResults = false;        // No caching needed
    engineConfig.runAnalysis = true;          // Run region analysis for statistics
    engineConfig.downsampleLargeImages = true;
