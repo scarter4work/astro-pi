@@ -178,6 +178,8 @@ PixelStackMetadata PixelStackAnalyzer::AnalyzePixel( const std::vector<float>& v
    if ( sigma < 1e-10f )
       sigma = 1e-10f;
 
+   float initialSigma = sigma;  // Save initial sigma as floor for iterative passes
+
    for ( size_t i = 0; i < values.size(); ++i )
    {
       float z = std::abs( values[i] - meta.distribution.mu ) / sigma;
@@ -186,6 +188,8 @@ PixelStackMetadata PixelStackAnalyzer::AnalyzePixel( const std::vector<float>& v
    }
 
    // Iterative sigma clipping - refine outlier detection
+   // Use initialSigma * 0.5 as floor to prevent death spiral where sigma
+   // shrinks each pass, causing cascading rejection of valid data
    for ( int pass = 1; pass < 3; ++pass )
    {
       // Count current valid (non-rejected) frames
@@ -210,6 +214,9 @@ PixelStackMetadata PixelStackAnalyzer::AnalyzePixel( const std::vector<float>& v
 
       if ( newSigma < 1e-10f )
          break;
+
+      // Floor sigma at 50% of initial estimate to prevent death spiral
+      newSigma = std::max( newSigma, initialSigma * 0.5f );
 
       // Check for new outliers with refined statistics
       std::vector<bool> prevRejected = rejected;
@@ -287,6 +294,8 @@ PixelStackMetadata PixelStackAnalyzer::AnalyzePixelWithClass(
    if ( sigma < 1e-10f )
       sigma = 1e-10f;
 
+   float initialSigma = sigma;  // Save initial sigma as floor for iterative passes
+
    for ( size_t i = 0; i < values.size(); ++i )
    {
       if ( IsClassSpecificOutlier( values[i], meta.distribution.mu, sigma, adjustedConfig.outlierSigmaThreshold, regionClass ) )
@@ -294,6 +303,7 @@ PixelStackMetadata PixelStackAnalyzer::AnalyzePixelWithClass(
    }
 
    // Iterative sigma clipping - refine outlier detection with class awareness
+   // Use initialSigma * 0.5 as floor to prevent death spiral
    for ( int pass = 1; pass < 3; ++pass )
    {
       // Count current valid (non-rejected) frames
@@ -318,6 +328,9 @@ PixelStackMetadata PixelStackAnalyzer::AnalyzePixelWithClass(
 
       if ( newSigma < 1e-10f )
          break;
+
+      // Floor sigma at 50% of initial estimate to prevent death spiral
+      newSigma = std::max( newSigma, initialSigma * 0.5f );
 
       // Check for new outliers with refined statistics
       std::vector<bool> prevRejected = rejected;
@@ -394,6 +407,8 @@ PixelStackMetadata PixelStackAnalyzer::AnalyzePixelWithClassAndAnomalies(
    if ( sigma < 1e-10f )
       sigma = 1e-10f;
 
+   float initialSigma = sigma;  // Save initial sigma as floor for iterative passes
+
    for ( size_t i = 0; i < values.size(); ++i )
    {
       // Anomalous frames (class disagrees with consensus) get a tighter threshold
@@ -407,6 +422,7 @@ PixelStackMetadata PixelStackAnalyzer::AnalyzePixelWithClassAndAnomalies(
    }
 
    // Iterative sigma clipping (same as AnalyzePixelWithClass but with anomaly awareness)
+   // Use initialSigma * 0.5 as floor to prevent death spiral
    for ( int pass = 1; pass < 3; ++pass )
    {
       int validCount = 0;
@@ -430,6 +446,9 @@ PixelStackMetadata PixelStackAnalyzer::AnalyzePixelWithClassAndAnomalies(
 
       if ( newSigma < 1e-10f )
          break;
+
+      // Floor sigma at 50% of initial estimate to prevent death spiral
+      newSigma = std::max( newSigma, initialSigma * 0.5f );
 
       std::vector<bool> prevRejected = rejected;
       meta.distribution.mu = newMu;
