@@ -116,6 +116,7 @@ private:
       VerticalSizer     Outliers_Sizer;
          NumericControl    OutlierSigma_NumericControl;
          CheckBox          GenerateMetadata_CheckBox;
+         CheckBox          EnableAutoStretch_CheckBox;
    };
 
    GUIData* GUI = nullptr;

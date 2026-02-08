@@ -9,9 +9,8 @@
 //
 // Unified Segmentation Palette
 //
-// This header provides a consistent color palette for the 23-class
-// segmentation model, matching the Python implementation in:
-// training_data/scripts/segmentation_palette.py
+// This header provides a consistent color palette for the 7-class
+// segmentation model (v2.0 taxonomy).
 //
 // IMPORTANT: Any changes to this palette must be synchronized with
 // the Python version to maintain visualization consistency.
@@ -30,30 +29,28 @@ namespace pcl
 // ----------------------------------------------------------------------------
 // Segmentation Palette
 //
-// Unified color palette for 23-class astronomical image segmentation.
+// Unified color palette for 7-class astronomical image segmentation.
 //
 // Design Rationale:
-// - Perceptually distinct: All 23 classes are visually separable
+// - Perceptually distinct: All 7 classes are visually separable
 // - Semantically meaningful: Colors match astronomical expectations
-//   (red for emission nebulae, blue for reflection, etc.)
 // - Colorblind-friendly: Major categories use different hues/luminances
 //
 // Color Categories:
 // - BACKGROUND (0): Dark blue-gray - neutral, non-intrusive
-// - STARS (1-4): Yellow to white spectrum - bright, attention-grabbing
-// - NEBULAE (5-8): Spectral colors matching real appearance
-// - GALAXIES (9-12): Warm orange/purple tones
-// - DUST LANES (13): Dark brown
-// - STAR CLUSTERS (14-15): Distinct blue/peach tones
-// - ARTIFACTS (16-20): Warning colors
-// - EXTENDED (21-22): Star halo, Galactic cirrus/IFN
+// - BRIGHT COMPACT (1): Yellow - bright stellar cores + diffraction
+// - FAINT COMPACT (2): Golden amber - faint stars + clusters
+// - BRIGHT EXTENDED (3): Red/magenta - nebulae, galaxies, cirrus
+// - DARK EXTENDED (4): Dark brown/maroon - dark nebulae, dust lanes
+// - ARTIFACT (5): Bright red - hot pixels, satellite trails
+// - STAR HALO (6): Pale yellow/gold - diffuse glow around stars
 // ----------------------------------------------------------------------------
 
 namespace SegmentationPalette
 {
 
 // Number of segmentation classes
-constexpr int NumClasses = 23;
+constexpr int NumClasses = 7;
 
 // RGB color structure (0-255 values)
 struct RGB8
@@ -69,98 +66,36 @@ struct RGB8
 };
 
 // The unified color palette (indexed by class ID)
-// These values MUST match the Python CLASS_COLORS_RGB array exactly
 constexpr std::array<RGB8, NumClasses> Colors = {{
-   // 0: background - dark blue-gray
-   { 26, 26, 51 },
-
-   // Stars - yellow/gold/white spectrum
-   { 255, 255, 0 },      // 1: star_bright - pure yellow
-   { 255, 204, 51 },     // 2: star_medium - golden amber
-   { 230, 191, 102 },    // 3: star_faint - pale gold
-   { 255, 255, 255 },    // 4: star_saturated - pure white
-
-   // Nebulae - spectral colors matching real appearance
-   { 255, 51, 102 },     // 5: nebula_emission - red/magenta (H-alpha)
-   { 102, 153, 255 },    // 6: nebula_reflection - blue
-   { 51, 26, 38 },       // 7: nebula_dark - dark brown/maroon
-   { 0, 204, 204 },      // 8: nebula_planetary - cyan/teal (OIII)
-
-   // Galaxies - orange/purple spectrum
-   { 255, 153, 51 },     // 9: galaxy_spiral - orange
-   { 230, 128, 128 },    // 10: galaxy_elliptical - salmon/coral
-   { 153, 102, 204 },    // 11: galaxy_irregular - violet
-   { 255, 204, 0 },      // 12: galaxy_core - bright amber/yellow
-
-   // Structural features
-   { 102, 51, 26 },      // 13: dust_lane - dark brown
-   { 153, 204, 255 },    // 14: star_cluster_open - light sky blue
-   { 255, 179, 128 },    // 15: star_cluster_globular - peach/apricot
-
-   // Artifacts - warning colors
-   { 255, 0, 51 },       // 16: artifact_hot_pixel - bright red
-   { 51, 255, 51 },      // 17: artifact_satellite - bright green
-   { 255, 51, 255 },     // 18: artifact_diffraction - magenta
-   { 153, 153, 51 },     // 19: artifact_gradient - olive/khaki
-   { 102, 102, 102 },    // 20: artifact_noise - medium gray
-
-   // Extended classes
-   { 200, 200, 100 },    // 21: star_halo - pale yellow/gold (star light, dimmer)
-   { 180, 200, 220 },    // 22: galactic_cirrus - very pale blue (faint reflection/dust)
+   { 26, 26, 51 },       // 0: Background - dark blue-gray
+   { 255, 255, 0 },      // 1: BrightCompact - pure yellow
+   { 255, 204, 51 },     // 2: FaintCompact - golden amber
+   { 255, 51, 102 },     // 3: BrightExtended - red/magenta
+   { 51, 26, 38 },       // 4: DarkExtended - dark brown/maroon
+   { 255, 0, 51 },       // 5: Artifact - bright red
+   { 200, 200, 100 },    // 6: StarHalo - pale yellow/gold
 }};
 
 // Class names (indexed by class ID)
 constexpr const char* ClassNames[NumClasses] = {
    "background",
-   "star_bright",
-   "star_medium",
-   "star_faint",
-   "star_saturated",
-   "nebula_emission",
-   "nebula_reflection",
-   "nebula_dark",
-   "nebula_planetary",
-   "galaxy_spiral",
-   "galaxy_elliptical",
-   "galaxy_irregular",
-   "galaxy_core",
-   "dust_lane",
-   "star_cluster_open",
-   "star_cluster_globular",
-   "artifact_hot_pixel",
-   "artifact_satellite",
-   "artifact_diffraction",
-   "artifact_gradient",
-   "artifact_noise",
+   "bright_compact",
+   "faint_compact",
+   "bright_extended",
+   "dark_extended",
+   "artifact",
    "star_halo",
-   "galactic_cirrus",
 };
 
 // Human-readable display names
 constexpr const char* ClassDisplayNames[NumClasses] = {
    "Background",
-   "Bright Star",
-   "Medium Star",
-   "Faint Star",
-   "Saturated Star",
-   "Emission Nebula",
-   "Reflection Nebula",
-   "Dark Nebula",
-   "Planetary Nebula",
-   "Spiral Galaxy",
-   "Elliptical Galaxy",
-   "Irregular Galaxy",
-   "Galaxy Core",
-   "Dust Lane",
-   "Open Cluster",
-   "Globular Cluster",
-   "Hot Pixel",
-   "Satellite Trail",
-   "Diffraction Spike",
-   "Gradient",
-   "Noise",
+   "Bright Compact",
+   "Faint Compact",
+   "Bright Extended",
+   "Dark Extended",
+   "Artifact",
    "Star Halo",
-   "Galactic Cirrus / IFN",
 };
 
 // ----------------------------------------------------------------------------
@@ -170,7 +105,7 @@ constexpr const char* ClassDisplayNames[NumClasses] = {
 /**
  * Get the color for a class ID as normalized 0.0-1.0 RGB values.
  *
- * @param classId Integer class ID (0-22)
+ * @param classId Integer class ID (0-6)
  * @param r Output: Red component (0.0-1.0)
  * @param g Output: Green component (0.0-1.0)
  * @param b Output: Blue component (0.0-1.0)
@@ -196,7 +131,7 @@ inline void GetColor( int classId, double& r, double& g, double& b )
 /**
  * Get the color for a class ID as 0-255 RGB values.
  *
- * @param classId Integer class ID (0-22)
+ * @param classId Integer class ID (0-6)
  * @param r Output: Red component (0-255)
  * @param g Output: Green component (0-255)
  * @param b Output: Blue component (0-255)
@@ -235,7 +170,7 @@ inline void GetColorForRegion( RegionClass rc, double& r, double& g, double& b )
 /**
  * Get the class name for a class ID.
  *
- * @param classId Integer class ID (0-22)
+ * @param classId Integer class ID (0-6)
  * @return Class name string, or "unknown" for invalid IDs
  */
 inline const char* GetClassName( int classId )
@@ -248,7 +183,7 @@ inline const char* GetClassName( int classId )
 /**
  * Get the display name for a class ID.
  *
- * @param classId Integer class ID (0-22)
+ * @param classId Integer class ID (0-6)
  * @return Human-readable display name, or "Unknown" for invalid IDs
  */
 inline const char* GetClassDisplayName( int classId )
@@ -272,7 +207,7 @@ inline const char* GetRegionDisplayName( RegionClass rc )
 /**
  * Convert a class ID to a RegionClass enum value.
  *
- * @param classId Integer class ID (0-22)
+ * @param classId Integer class ID (0-6)
  * @return Corresponding RegionClass, or RegionClass::Background for invalid IDs
  */
 inline RegionClass ClassIdToRegionClass( int classId )
@@ -288,36 +223,38 @@ inline RegionClass ClassIdToRegionClass( int classId )
 
 /**
  * Check if a class belongs to the "stars" category.
- * Includes StarHalo (21) as a star-related class.
+ * Includes BrightCompact (1), FaintCompact (2), and StarHalo (6).
  */
 inline bool IsStarClass( int classId )
 {
-   return (classId >= 1 && classId <= 4) || classId == 21;
+   return classId == 1 || classId == 2 || classId == 6;
 }
 
 /**
  * Check if a class belongs to the "nebulae" category.
- * Includes GalacticCirrus (22) as a nebula-related class.
+ * BrightExtended (3) covers all nebula types.
  */
 inline bool IsNebulaClass( int classId )
 {
-   return (classId >= 5 && classId <= 8) || classId == 22;
+   return classId == 3;
 }
 
 /**
  * Check if a class belongs to the "galaxies" category.
+ * BrightExtended (3) covers all galaxy types.
  */
 inline bool IsGalaxyClass( int classId )
 {
-   return classId >= 9 && classId <= 12;
+   return classId == 3;
 }
 
 /**
  * Check if a class belongs to the "clusters" category.
+ * FaintCompact (2) covers star clusters.
  */
 inline bool IsClusterClass( int classId )
 {
-   return classId == 14 || classId == 15;
+   return classId == 2;
 }
 
 /**
@@ -325,7 +262,7 @@ inline bool IsClusterClass( int classId )
  */
 inline bool IsArtifactClass( int classId )
 {
-   return classId >= 16 && classId <= 20;
+   return classId == 5;
 }
 
 /**
@@ -333,16 +270,16 @@ inline bool IsArtifactClass( int classId )
  */
 inline bool IsDustClass( int classId )
 {
-   return classId == 7 || classId == 13;
+   return classId == 4;
 }
 
 /**
  * Check if a class is an extended emission feature.
- * Includes emission, reflection, planetary nebulae and galactic cirrus.
+ * BrightExtended (3) covers all extended emission.
  */
 inline bool IsExtendedEmissionClass( int classId )
 {
-   return (classId >= 5 && classId <= 8) || classId == 22;
+   return classId == 3;
 }
 
 } // namespace SegmentationPalette

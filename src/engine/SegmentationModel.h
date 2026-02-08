@@ -78,6 +78,9 @@ struct SegmentationConfig
    int inputHeight = 512;               // Model input height
    bool useGPU = false;                 // Use GPU acceleration
 
+   // Determinism
+   bool deterministic = false;          // Force deterministic inference
+
    // Processing settings
    bool applySoftmax = true;            // Apply softmax to model output
    double probabilityThreshold = 0.1;   // Min probability to include in mask
@@ -86,27 +89,13 @@ struct SegmentationConfig
    // Region mapping
    // Maps model output channel index to region class (matches training)
    std::vector<RegionClass> channelMapping = {
-      RegionClass::Background,          // 0
-      RegionClass::StarBright,          // 1
-      RegionClass::StarMedium,          // 2
-      RegionClass::StarFaint,           // 3
-      RegionClass::StarSaturated,       // 4
-      RegionClass::NebulaEmission,      // 5
-      RegionClass::NebulaReflection,    // 6
-      RegionClass::NebulaDark,          // 7
-      RegionClass::NebulaPlanetary,     // 8
-      RegionClass::GalaxySpiral,        // 9
-      RegionClass::GalaxyElliptical,    // 10
-      RegionClass::GalaxyIrregular,     // 11
-      RegionClass::GalaxyCore,          // 12
-      RegionClass::DustLane,            // 13
-      RegionClass::StarClusterOpen,     // 14
-      RegionClass::StarClusterGlobular, // 15
-      RegionClass::ArtifactHotPixel,    // 16
-      RegionClass::ArtifactSatellite,   // 17
-      RegionClass::ArtifactDiffraction, // 18
-      RegionClass::ArtifactGradient,    // 19
-      RegionClass::ArtifactNoise        // 20
+      RegionClass::Background,      // 0
+      RegionClass::BrightCompact,   // 1
+      RegionClass::FaintCompact,    // 2
+      RegionClass::BrightExtended,  // 3
+      RegionClass::DarkExtended,    // 4
+      RegionClass::Artifact,        // 5
+      RegionClass::StarHalo         // 6
    };
 };
 
@@ -184,8 +173,8 @@ private:
    SegmentationConfig m_config;
    String m_lastError;
    bool m_isReady = false;
-   int m_numClasses = 9;
-   int m_numInputChannels = 4;  // Detected from model (3=RGB, 4=RGB+ColorContrast)
+   int m_numClasses = 7;
+   int m_numInputChannels = 3;  // Detected from model (3=RGB)
 
    std::unique_ptr<ONNXSession> m_session;
 

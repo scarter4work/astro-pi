@@ -31,20 +31,15 @@ Layer::Layer( RegionClass regionClass, float depth )
 
 bool Layer::IsStarLayer() const
 {
-   return m_regionClass == RegionClass::StarBright ||
-          m_regionClass == RegionClass::StarMedium ||
-          m_regionClass == RegionClass::StarFaint ||
-          m_regionClass == RegionClass::StarSaturated ||
-          m_regionClass == RegionClass::StarClusterOpen ||
-          m_regionClass == RegionClass::StarClusterGlobular;
+   return m_regionClass == RegionClass::BrightCompact ||
+          m_regionClass == RegionClass::FaintCompact ||
+          m_regionClass == RegionClass::StarHalo;
 }
 
 bool Layer::IsNebulaLayer() const
 {
-   return m_regionClass == RegionClass::NebulaEmission ||
-          m_regionClass == RegionClass::NebulaReflection ||
-          m_regionClass == RegionClass::NebulaDark ||
-          m_regionClass == RegionClass::NebulaPlanetary;
+   return m_regionClass == RegionClass::BrightExtended ||
+          m_regionClass == RegionClass::DarkExtended;
 }
 
 bool Layer::IsBackground() const
@@ -681,23 +676,14 @@ LayerStack LayerDecomposer::DecomposeFromSegmentation( const Image& inputImage,
       float depth = 0.5f;
       switch ( rc )
       {
-      case RegionClass::Background:           depth = 0.0f; break;
-      case RegionClass::NebulaDark:           depth = 0.15f; break;
-      case RegionClass::NebulaEmission:       depth = 0.25f; break;
-      case RegionClass::NebulaReflection:     depth = 0.25f; break;
-      case RegionClass::NebulaPlanetary:      depth = 0.3f; break;
-      case RegionClass::DustLane:             depth = 0.35f; break;
-      case RegionClass::GalaxyElliptical:     depth = 0.4f; break;
-      case RegionClass::GalaxyIrregular:      depth = 0.4f; break;
-      case RegionClass::GalaxySpiral:         depth = 0.5f; break;
-      case RegionClass::GalaxyCore:           depth = 0.6f; break;
-      case RegionClass::StarClusterOpen:      depth = 0.7f; break;
-      case RegionClass::StarClusterGlobular:  depth = 0.75f; break;
-      case RegionClass::StarFaint:            depth = 0.8f; break;
-      case RegionClass::StarMedium:           depth = 0.9f; break;
-      case RegionClass::StarBright:           depth = 0.95f; break;
-      case RegionClass::StarSaturated:        depth = 1.0f; break;
-      default:                                depth = 0.5f; break;
+      case RegionClass::Background:      depth = 0.0f; break;
+      case RegionClass::DarkExtended:    depth = 0.15f; break;
+      case RegionClass::BrightExtended:  depth = 0.4f; break;
+      case RegionClass::StarHalo:        depth = 0.7f; break;
+      case RegionClass::FaintCompact:    depth = 0.8f; break;
+      case RegionClass::BrightCompact:   depth = 0.95f; break;
+      case RegionClass::Artifact:        depth = 0.5f; break;
+      default:                           depth = 0.5f; break;
       }
       layer.SetDepth( depth );
 

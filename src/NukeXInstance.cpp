@@ -246,48 +246,23 @@ std::set<RegionClass> NukeXInstance::GetEnabledRegions() const
 
    if ( p_enableBackground )   enabled.insert( RegionClass::Background );
 
-   // Star classes (mapped from old StarCore/StarHalo settings)
+   // Star classes -> BrightCompact, FaintCompact, StarHalo
    if ( p_enableStarCores )
-   {
-      enabled.insert( RegionClass::StarBright );
-      enabled.insert( RegionClass::StarSaturated );
-   }
+      enabled.insert( RegionClass::BrightCompact );
    if ( p_enableStarHalos )
    {
-      enabled.insert( RegionClass::StarMedium );
-      enabled.insert( RegionClass::StarFaint );
+      enabled.insert( RegionClass::FaintCompact );
+      enabled.insert( RegionClass::StarHalo );
    }
 
-   // Nebula classes (mapped from old NebulaBright/NebulaFaint settings)
-   if ( p_enableNebulaBright )
-   {
-      enabled.insert( RegionClass::NebulaEmission );
-      enabled.insert( RegionClass::NebulaReflection );
-      enabled.insert( RegionClass::NebulaPlanetary );
-   }
-   if ( p_enableNebulaFaint )
-   {
-      enabled.insert( RegionClass::NebulaDark );
-   }
+   // Nebula/Galaxy classes -> BrightExtended, DarkExtended
+   if ( p_enableNebulaBright || p_enableGalaxyCore || p_enableGalaxyHalo || p_enableGalaxyArms )
+      enabled.insert( RegionClass::BrightExtended );
+   if ( p_enableNebulaFaint || p_enableDustLanes )
+      enabled.insert( RegionClass::DarkExtended );
 
-   // Structural classes
-   if ( p_enableDustLanes )    enabled.insert( RegionClass::DustLane );
-
-   // Galaxy classes (mapped from old GalaxyCore/GalaxyHalo/GalaxyArm settings)
-   if ( p_enableGalaxyCore )   enabled.insert( RegionClass::GalaxyCore );
-   if ( p_enableGalaxyHalo )
-   {
-      enabled.insert( RegionClass::GalaxyElliptical );
-      enabled.insert( RegionClass::GalaxyIrregular );
-   }
-   if ( p_enableGalaxyArms )   enabled.insert( RegionClass::GalaxySpiral );
-
-   // Star clusters (enable if any galaxy/star settings are enabled)
-   if ( p_enableStarCores || p_enableStarHalos )
-   {
-      enabled.insert( RegionClass::StarClusterOpen );
-      enabled.insert( RegionClass::StarClusterGlobular );
-   }
+   // Artifacts are always enabled (handled via Artifact class)
+   enabled.insert( RegionClass::Artifact );
 
    return enabled;
 }

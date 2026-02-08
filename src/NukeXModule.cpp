@@ -7,10 +7,10 @@
 // NukeX - Intelligent Region-Aware Stretch for PixInsight
 // Copyright (c) 2026 Scott Carter
 
-#define MODULE_VERSION_MAJOR     1
-#define MODULE_VERSION_MINOR     1
+#define MODULE_VERSION_MAJOR     2
+#define MODULE_VERSION_MINOR     0
 #define MODULE_VERSION_REVISION  0
-#define MODULE_VERSION_BUILD     37
+#define MODULE_VERSION_BUILD     38
 #define MODULE_VERSION_LANGUAGE  eng
 
 #define MODULE_RELEASE_YEAR      2026

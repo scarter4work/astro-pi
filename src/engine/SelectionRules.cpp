@@ -321,145 +321,43 @@ AlgorithmRecommendation SelectionRulesEngine::GetDefaultRecommendation( RegionCl
    {
    case RegionClass::Background:
       rec.algorithm = AlgorithmType::MTF;
-      rec.SetParameter( "midtones", 0.20 );  // Conservative
+      rec.SetParameter( "midtones", 0.20 );
       rec.SetRationale( "Default background stretch" );
       break;
 
-   // Star classes (1-4)
-   case RegionClass::StarBright:
-   case RegionClass::StarSaturated:
+   case RegionClass::BrightCompact:
       rec.algorithm = AlgorithmType::ArcSinh;
-      rec.SetParameter( "softness", 0.05 );  // Strong compression for bright stars
-      rec.SetRationale( "Default bright star protection" );
+      rec.SetParameter( "softness", 0.05 );
+      rec.SetRationale( "Default bright compact protection" );
       break;
 
-   case RegionClass::StarMedium:
-      rec.algorithm = AlgorithmType::GHS;
-      rec.SetParameter( "stretchFactor", 0.3 );  // Gentle
-      rec.SetParameter( "highlightProtection", 0.9 );
-      rec.SetRationale( "Default medium star stretch" );
-      break;
-
-   case RegionClass::StarFaint:
-      rec.algorithm = AlgorithmType::GHS;
-      rec.SetParameter( "stretchFactor", 0.6 );
-      rec.SetParameter( "highlightProtection", 0.7 );
-      rec.SetRationale( "Default faint star enhancement" );
-      break;
-
-   // Nebula classes (5-8)
-   case RegionClass::NebulaEmission:
-      rec.algorithm = AlgorithmType::GHS;
-      rec.SetParameter( "stretchFactor", 0.65 );
-      rec.SetParameter( "highlightProtection", 0.75 );
-      rec.SetRationale( "Emission nebula enhancement" );
-      break;
-
-   case RegionClass::NebulaReflection:
-      rec.algorithm = AlgorithmType::GHS;
-      rec.SetParameter( "stretchFactor", 0.6 );
-      rec.SetParameter( "highlightProtection", 0.75 );
-      rec.SetRationale( "Reflection nebula blue enhancement" );
-      break;
-
-   case RegionClass::NebulaDark:
-      rec.algorithm = AlgorithmType::MTF;
-      rec.SetParameter( "midtones", 0.15 );  // Very gentle to preserve darkness
-      rec.SetRationale( "Dark nebula preservation" );
-      break;
-
-   case RegionClass::NebulaPlanetary:
-      rec.algorithm = AlgorithmType::ArcSinh;
-      rec.SetParameter( "softness", 0.08 );  // Preserve shell structure
-      rec.SetRationale( "Planetary nebula shell enhancement" );
-      break;
-
-   // Galaxy classes (9-12)
-   case RegionClass::GalaxySpiral:
+   case RegionClass::FaintCompact:
       rec.algorithm = AlgorithmType::GHS;
       rec.SetParameter( "stretchFactor", 0.4 );
       rec.SetParameter( "highlightProtection", 0.85 );
-      rec.SetRationale( "Default spiral galaxy arm stretch" );
+      rec.SetRationale( "Default faint compact stretch" );
       break;
 
-   case RegionClass::GalaxyElliptical:
-      rec.algorithm = AlgorithmType::GHS;
-      rec.SetParameter( "stretchFactor", 0.5 );
-      rec.SetParameter( "highlightProtection", 0.8 );
-      rec.SetRationale( "Default elliptical galaxy stretch" );
-      break;
-
-   case RegionClass::GalaxyIrregular:
+   case RegionClass::BrightExtended:
       rec.algorithm = AlgorithmType::GHS;
       rec.SetParameter( "stretchFactor", 0.55 );
       rec.SetParameter( "highlightProtection", 0.75 );
-      rec.SetRationale( "Default irregular galaxy stretch" );
+      rec.SetRationale( "Default bright extended stretch" );
       break;
 
-   case RegionClass::GalaxyCore:
-      rec.algorithm = AlgorithmType::ArcSinh;
-      rec.SetParameter( "softness", 0.05 );  // Strong compression for cores
-      rec.SetRationale( "Default galaxy core protection" );
-      break;
-
-   // Structural classes (13-15)
-   case RegionClass::DustLane:
-      rec.algorithm = AlgorithmType::MTF;  // Simple stretch for dust
-      rec.SetParameter( "midtones", 0.15 );  // Very gentle
-      rec.SetRationale( "Default dust lane treatment" );
-      break;
-
-   case RegionClass::StarClusterOpen:
-      rec.algorithm = AlgorithmType::GHS;
-      rec.SetParameter( "stretchFactor", 0.35 );
-      rec.SetParameter( "highlightProtection", 0.85 );
-      rec.SetRationale( "Open cluster balanced stretch" );
-      break;
-
-   case RegionClass::StarClusterGlobular:
-      rec.algorithm = AlgorithmType::GHS;
-      rec.SetParameter( "stretchFactor", 0.3 );
-      rec.SetParameter( "highlightProtection", 0.9 );  // Protect dense cores
-      rec.SetRationale( "Globular cluster balanced stretch" );
-      break;
-
-   // Artifact classes (16-20)
-   case RegionClass::ArtifactHotPixel:
+   case RegionClass::DarkExtended:
       rec.algorithm = AlgorithmType::MTF;
-      rec.SetParameter( "midtones", 0.05 );  // Aggressive clipping
-      rec.confidence = 0.4;
-      rec.SetRationale( "Hot pixel suppression" );
+      rec.SetParameter( "midtones", 0.15 );
+      rec.SetRationale( "Default dark extended preservation" );
       break;
 
-   case RegionClass::ArtifactSatellite:
+   case RegionClass::Artifact:
       rec.algorithm = AlgorithmType::MTF;
-      rec.SetParameter( "midtones", 0.05 );  // Aggressive clipping
+      rec.SetParameter( "midtones", 0.05 );
       rec.confidence = 0.4;
-      rec.SetRationale( "Satellite trail suppression" );
+      rec.SetRationale( "Artifact suppression" );
       break;
 
-   case RegionClass::ArtifactDiffraction:
-      rec.algorithm = AlgorithmType::ArcSinh;
-      rec.SetParameter( "softness", 0.15 );  // Preserve as part of star PSF
-      rec.confidence = 0.4;
-      rec.SetRationale( "Diffraction spike preservation" );
-      break;
-
-   case RegionClass::ArtifactGradient:
-      rec.algorithm = AlgorithmType::MTF;
-      rec.SetParameter( "midtones", 0.5 );   // High midtones to flatten
-      rec.confidence = 0.4;
-      rec.SetRationale( "Background gradient flattening" );
-      break;
-
-   case RegionClass::ArtifactNoise:
-      rec.algorithm = AlgorithmType::MTF;
-      rec.SetParameter( "midtones", 0.2 );   // Conservative
-      rec.confidence = 0.3;
-      rec.SetRationale( "Noise region - conservative stretch" );
-      break;
-
-   // Extended classes (21-22)
    case RegionClass::StarHalo:
       rec.algorithm = AlgorithmType::GHS;
       rec.SetParameter( "stretchFactor", 0.6 );
@@ -467,16 +365,9 @@ AlgorithmRecommendation SelectionRulesEngine::GetDefaultRecommendation( RegionCl
       rec.SetRationale( "Default star halo gradient-preserving stretch" );
       break;
 
-   case RegionClass::GalacticCirrus:
-      rec.algorithm = AlgorithmType::GHS;
-      rec.SetParameter( "stretchFactor", 0.4 );
-      rec.SetParameter( "highlightProtection", 0.7 );
-      rec.SetRationale( "Default galactic cirrus / IFN gentle enhancement" );
-      break;
-
    default:
       rec.algorithm = AlgorithmType::MTF;
-      rec.SetParameter( "midtones", 0.18 );  // Conservative
+      rec.SetParameter( "midtones", 0.18 );
       rec.confidence = 0.3;
       rec.SetRationale( "Generic fallback" );
       break;
@@ -484,6 +375,7 @@ AlgorithmRecommendation SelectionRulesEngine::GetDefaultRecommendation( RegionCl
 
    return rec;
 }
+
 
 // ----------------------------------------------------------------------------
 
@@ -537,27 +429,12 @@ std::vector<SelectionRule> GetAllRules()
    };
 
    add( GetBackgroundRules() );
-   add( GetStarBrightRules() );
-   add( GetStarMediumRules() );
-   add( GetStarFaintRules() );
-   add( GetStarSaturatedRules() );
-   add( GetNebulaEmissionRules() );
-   add( GetNebulaReflectionRules() );
-   add( GetNebulaDarkRules() );
-   add( GetNebulaPlanetaryRules() );
-   add( GetGalaxyCoreRules() );
-   add( GetGalaxySpiralRules() );
-   add( GetGalaxyEllipticalRules() );
-   add( GetGalaxyIrregularRules() );
-   add( GetDustLaneRules() );
-   add( GetStarClusterRules() );
-   add( GetArtifactHotPixelRules() );
-   add( GetArtifactSatelliteRules() );
-   add( GetArtifactDiffractionRules() );
-   add( GetArtifactGradientRules() );
-   add( GetArtifactNoiseRules() );
+   add( GetBrightCompactRules() );
+   add( GetFaintCompactRules() );
+   add( GetBrightExtendedRules() );
+   add( GetDarkExtendedRules() );
+   add( GetArtifactRules() );
    add( GetStarHaloRules() );
-   add( GetGalacticCirrusRules() );
 
    return rules;
 }
@@ -605,22 +482,22 @@ std::vector<SelectionRule> GetBackgroundRules()
 
 // ----------------------------------------------------------------------------
 
-std::vector<SelectionRule> GetStarBrightRules()
+std::vector<SelectionRule> GetBrightCompactRules()
 {
    std::vector<SelectionRule> rules;
 
-   // Very bright stars - strong protection
+   // Very bright / saturated - strong ArcSinh protection
    rules.push_back(
-      SelectionRule( "StarBright_VeryBright", RegionClass::StarBright, AlgorithmType::ArcSinh, 10.0 )
+      SelectionRule( "BrightCompact_VeryBright", RegionClass::BrightCompact, AlgorithmType::ArcSinh, 10.0 )
          .WhenMedianAbove( 0.9 )
-         .WithParameter( "softness", 0.2 )
+         .WithParameter( "softness", 0.02 )
          .WithConfidence( 0.95 )
-         .WithRationale( "Very bright star cores need strong HDR protection" )
+         .WithRationale( "Very bright/saturated stars need maximum HDR compression" )
    );
 
-   // High dynamic range stars
+   // High dynamic range bright stars
    rules.push_back(
-      SelectionRule( "StarBright_HighDR", RegionClass::StarBright, AlgorithmType::ArcSinh, 9.0 )
+      SelectionRule( "BrightCompact_HighDR", RegionClass::BrightCompact, AlgorithmType::ArcSinh, 9.0 )
          .WhenDynamicRangeAbove( 3.0 )
          .WithDynamicParameter( "softness", []( const RegionStatistics& s, AlgorithmRecommendation& r ) {
             r.parameters["softness"] = ParameterTuning::ComputeArcSinhSoftness( s );
@@ -631,19 +508,19 @@ std::vector<SelectionRule> GetStarBrightRules()
 
    // Stars with clipping risk
    rules.push_back(
-      SelectionRule( "StarBright_ClipRisk", RegionClass::StarBright, AlgorithmType::ArcSinh, 8.0 )
+      SelectionRule( "BrightCompact_ClipRisk", RegionClass::BrightCompact, AlgorithmType::ArcSinh, 8.0 )
          .WhenClippingAbove( 1.0 )
          .WithParameter( "softness", 0.15 )
          .WithConfidence( 0.9 )
          .WithRationale( "Existing clipping requires conservative stretch" )
    );
 
-   // Default bright star
+   // Default bright compact
    rules.push_back(
-      SelectionRule( "StarBright_Default", RegionClass::StarBright, AlgorithmType::ArcSinh, 1.0 )
-         .WithParameter( "softness", 0.3 )
+      SelectionRule( "BrightCompact_Default", RegionClass::BrightCompact, AlgorithmType::ArcSinh, 1.0 )
+         .WithParameter( "softness", 0.1 )
          .WithConfidence( 0.8 )
-         .WithRationale( "Standard bright star protection" )
+         .WithRationale( "Standard bright compact protection" )
    );
 
    return rules;
@@ -651,60 +528,41 @@ std::vector<SelectionRule> GetStarBrightRules()
 
 // ----------------------------------------------------------------------------
 
-std::vector<SelectionRule> GetStarMediumRules()
+std::vector<SelectionRule> GetFaintCompactRules()
 {
    std::vector<SelectionRule> rules;
 
-   // Medium stars - controlled GHS
+   // Brighter faint compact objects
    rules.push_back(
-      SelectionRule( "StarMedium_Bright", RegionClass::StarMedium, AlgorithmType::GHS, 10.0 )
+      SelectionRule( "FaintCompact_Bright", RegionClass::FaintCompact, AlgorithmType::GHS, 10.0 )
          .WhenMedianAbove( 0.5 )
          .WithParameter( "stretchFactor", 0.3 )
          .WithParameter( "highlightProtection", 0.8 )
          .WithConfidence( 0.85 )
-         .WithRationale( "Medium stars need highlight protection" )
+         .WithRationale( "Brighter faint compact objects need highlight protection" )
    );
 
-   // Default medium star
+   // Good SNR faint compact
    rules.push_back(
-      SelectionRule( "StarMedium_Default", RegionClass::StarMedium, AlgorithmType::GHS, 1.0 )
+      SelectionRule( "FaintCompact_GoodSNR", RegionClass::FaintCompact, AlgorithmType::GHS, 9.0 )
+         .WhenSNRAbove( 8.0 )
+         .WithParameter( "stretchFactor", 0.5 )
+         .WithParameter( "highlightProtection", 0.75 )
+         .WithConfidence( 0.85 )
+         .WithRationale( "Good SNR faint compact can use moderate stretch" )
+   );
+
+   // Default faint compact
+   rules.push_back(
+      SelectionRule( "FaintCompact_Default", RegionClass::FaintCompact, AlgorithmType::GHS, 1.0 )
          .WithDynamicParameter( "stretchFactor", []( const RegionStatistics& s, AlgorithmRecommendation& r ) {
             r.parameters["stretchFactor"] = ParameterTuning::ComputeGHSStretchFactor( s );
          } )
          .WithDynamicParameter( "highlightProtection", []( const RegionStatistics& s, AlgorithmRecommendation& r ) {
             r.parameters["highlightProtection"] = ParameterTuning::ComputeGHSHighlightProtection( s );
          } )
-         .WithConfidence( 0.8 )
-         .WithRationale( "Balanced medium star stretch" )
-   );
-
-   return rules;
-}
-
-// ----------------------------------------------------------------------------
-
-std::vector<SelectionRule> GetStarFaintRules()
-{
-   std::vector<SelectionRule> rules;
-
-   // Faint stars with good SNR
-   rules.push_back(
-      SelectionRule( "StarFaint_GoodSNR", RegionClass::StarFaint, AlgorithmType::GHS, 10.0 )
-         .WhenSNRAbove( 8.0 )
-         .WithParameter( "stretchFactor", 0.6 )
-         .WithParameter( "highlightProtection", 0.7 )
-         .WithConfidence( 0.85 )
-         .WithRationale( "Faint stars with good SNR can use moderate stretch" )
-   );
-
-   // Default faint star
-   rules.push_back(
-      SelectionRule( "StarFaint_Default", RegionClass::StarFaint, AlgorithmType::GHS, 1.0 )
-         .WithDynamicParameter( "stretchFactor", []( const RegionStatistics& s, AlgorithmRecommendation& r ) {
-            r.parameters["stretchFactor"] = ParameterTuning::ComputeGHSStretchFactor( s );
-         } )
          .WithConfidence( 0.75 )
-         .WithRationale( "Standard faint star enhancement" )
+         .WithRationale( "Standard faint compact stretch" )
    );
 
    return rules;
@@ -712,22 +570,22 @@ std::vector<SelectionRule> GetStarFaintRules()
 
 // ----------------------------------------------------------------------------
 
-std::vector<SelectionRule> GetNebulaEmissionRules()
+std::vector<SelectionRule> GetBrightExtendedRules()
 {
    std::vector<SelectionRule> rules;
 
-   // High SNR emission nebula - RNC for color
+   // High SNR bright extended - RNC for color preservation
    rules.push_back(
-      SelectionRule( "NebulaEmission_HighSNR", RegionClass::NebulaEmission, AlgorithmType::RNC, 10.0 )
+      SelectionRule( "BrightExtended_HighSNR", RegionClass::BrightExtended, AlgorithmType::RNC, 10.0 )
          .WhenSNRAbove( 20.0 )
          .WhenMedianAbove( 0.3 )
          .WithConfidence( 0.9 )
-         .WithRationale( "High SNR emission nebula benefits from color-preserving stretch" )
+         .WithRationale( "High SNR bright extended benefits from color-preserving stretch" )
    );
 
-   // Wide dynamic range nebula - GHS
+   // Wide dynamic range - GHS
    rules.push_back(
-      SelectionRule( "NebulaEmission_WideDR", RegionClass::NebulaEmission, AlgorithmType::GHS, 9.0 )
+      SelectionRule( "BrightExtended_WideDR", RegionClass::BrightExtended, AlgorithmType::GHS, 9.0 )
          .WhenDynamicRangeAbove( 2.5 )
          .WithDynamicParameter( "stretchFactor", []( const RegionStatistics& s, AlgorithmRecommendation& r ) {
             r.parameters["stretchFactor"] = ParameterTuning::ComputeGHSStretchFactor( s );
@@ -736,12 +594,22 @@ std::vector<SelectionRule> GetNebulaEmissionRules()
          .WithRationale( "Wide dynamic range needs GHS flexibility" )
    );
 
-   // Default emission nebula
+   // Bright core (galaxy core / AGN) - ArcSinh for HDR
    rules.push_back(
-      SelectionRule( "NebulaEmission_Default", RegionClass::NebulaEmission, AlgorithmType::GHS, 1.0 )
-         .WithParameter( "stretchFactor", 1.0 )
+      SelectionRule( "BrightExtended_BrightCore", RegionClass::BrightExtended, AlgorithmType::ArcSinh, 8.0 )
+         .WhenMedianAbove( 0.8 )
+         .WithParameter( "softness", 0.2 )
+         .WithConfidence( 0.9 )
+         .WithRationale( "Very bright extended core needs HDR protection" )
+   );
+
+   // Default bright extended
+   rules.push_back(
+      SelectionRule( "BrightExtended_Default", RegionClass::BrightExtended, AlgorithmType::GHS, 1.0 )
+         .WithParameter( "stretchFactor", 0.65 )
+         .WithParameter( "highlightProtection", 0.75 )
          .WithConfidence( 0.75 )
-         .WithRationale( "Standard emission nebula stretch" )
+         .WithRationale( "Standard bright extended stretch" )
    );
 
    return rules;
@@ -749,36 +617,36 @@ std::vector<SelectionRule> GetNebulaEmissionRules()
 
 // ----------------------------------------------------------------------------
 
-std::vector<SelectionRule> GetNebulaDarkRules()
+std::vector<SelectionRule> GetDarkExtendedRules()
 {
    std::vector<SelectionRule> rules;
 
-   // Very dark nebula - preserve darkness
+   // Very dark - preserve darkness
    rules.push_back(
-      SelectionRule( "NebulaDark_VeryDark", RegionClass::NebulaDark, AlgorithmType::MTF, 10.0 )
+      SelectionRule( "DarkExtended_VeryDark", RegionClass::DarkExtended, AlgorithmType::MTF, 10.0 )
          .WhenMedianBelow( 0.03 )
          .WithParameter( "midtones", 0.15 )
          .WithConfidence( 0.85 )
-         .WithRationale( "Very dark nebula needs shadow preservation" )
+         .WithRationale( "Very dark extended needs shadow preservation" )
    );
 
-   // Dark nebula with some detail
+   // Dark with some detail
    rules.push_back(
-      SelectionRule( "NebulaDark_WithDetail", RegionClass::NebulaDark, AlgorithmType::GHS, 9.0 )
+      SelectionRule( "DarkExtended_WithDetail", RegionClass::DarkExtended, AlgorithmType::GHS, 9.0 )
          .WhenSNRAbove( 8.0 )
          .WhenMedianBelow( 0.1 )
          .WithParameter( "stretchFactor", 0.4 )
          .WithParameter( "highlightProtection", 0.8 )
          .WithConfidence( 0.8 )
-         .WithRationale( "Dark nebula with detail can use gentle stretch" )
+         .WithRationale( "Dark extended with detail can use gentle stretch" )
    );
 
-   // Default dark nebula
+   // Default dark extended
    rules.push_back(
-      SelectionRule( "NebulaDark_Default", RegionClass::NebulaDark, AlgorithmType::MTF, 1.0 )
+      SelectionRule( "DarkExtended_Default", RegionClass::DarkExtended, AlgorithmType::MTF, 1.0 )
          .WithParameter( "midtones", 0.2 )
          .WithConfidence( 0.7 )
-         .WithRationale( "Standard dark nebula preservation" )
+         .WithRationale( "Standard dark extended preservation" )
    );
 
    return rules;
@@ -786,512 +654,36 @@ std::vector<SelectionRule> GetNebulaDarkRules()
 
 // ----------------------------------------------------------------------------
 
-std::vector<SelectionRule> GetGalaxyCoreRules()
+std::vector<SelectionRule> GetArtifactRules()
 {
    std::vector<SelectionRule> rules;
 
-   // Very bright core - similar to star core
+   // Bright artifact - aggressive rejection
    rules.push_back(
-      SelectionRule( "GalaxyCore_VeryBright", RegionClass::GalaxyCore, AlgorithmType::ArcSinh, 10.0 )
-         .WhenMedianAbove( 0.8 )
-         .WithParameter( "softness", 0.2 )
-         .WithConfidence( 0.9 )
-         .WithRationale( "Very bright galaxy core needs HDR protection" )
-   );
-
-   // Default galaxy core
-   rules.push_back(
-      SelectionRule( "GalaxyCore_Default", RegionClass::GalaxyCore, AlgorithmType::ArcSinh, 1.0 )
-         .WithDynamicParameter( "softness", []( const RegionStatistics& s, AlgorithmRecommendation& r ) {
-            r.parameters["softness"] = ParameterTuning::ComputeArcSinhSoftness( s );
-         } )
-         .WithConfidence( 0.8 )
-         .WithRationale( "Standard galaxy core protection" )
-   );
-
-   return rules;
-}
-
-// ----------------------------------------------------------------------------
-
-std::vector<SelectionRule> GetGalaxySpiralRules()
-{
-   std::vector<SelectionRule> rules;
-
-   // Good SNR spiral - Lumpton
-   rules.push_back(
-      SelectionRule( "GalaxySpiral_GoodSNR", RegionClass::GalaxySpiral, AlgorithmType::Lumpton, 10.0 )
-         .WhenSNRAbove( 10.0 )
-         .WithDynamicParameter( "Q", []( const RegionStatistics& s, AlgorithmRecommendation& r ) {
-            r.parameters["Q"] = ParameterTuning::ComputeLumptonQ( s );
-         } )
-         .WithConfidence( 0.85 )
-         .WithRationale( "Good SNR spiral galaxy uses Lumpton stretch" )
-   );
-
-   // Well-defined arms - GHS
-   rules.push_back(
-      SelectionRule( "GalaxySpiral_WellDefined", RegionClass::GalaxySpiral, AlgorithmType::GHS, 9.0 )
-         .WhenSNRAbove( 12.0 )
-         .WithDynamicParameter( "stretchFactor", []( const RegionStatistics& s, AlgorithmRecommendation& r ) {
-            r.parameters["stretchFactor"] = ParameterTuning::ComputeGHSStretchFactor( s );
-         } )
-         .WithConfidence( 0.85 )
-         .WithRationale( "Well-defined spiral arms benefit from GHS" )
-   );
-
-   // Low SNR spiral - SAS
-   rules.push_back(
-      SelectionRule( "GalaxySpiral_LowSNR", RegionClass::GalaxySpiral, AlgorithmType::SAS, 8.0 )
-         .WhenSNRBelow( 6.0 )
-         .WithDynamicParameter( "iterations", []( const RegionStatistics& s, AlgorithmRecommendation& r ) {
-            r.parameters["iterations"] = ParameterTuning::ComputeSASIterations( s );
-         } )
-         .WithConfidence( 0.8 )
-         .WithRationale( "Low SNR spiral needs noise-aware stretch" )
-   );
-
-   // Default spiral galaxy
-   rules.push_back(
-      SelectionRule( "GalaxySpiral_Default", RegionClass::GalaxySpiral, AlgorithmType::GHS, 1.0 )
-         .WithParameter( "stretchFactor", 1.0 )
-         .WithConfidence( 0.75 )
-         .WithRationale( "Standard spiral galaxy stretch" )
-   );
-
-   return rules;
-}
-
-// ----------------------------------------------------------------------------
-
-std::vector<SelectionRule> GetStarClusterRules()
-{
-   std::vector<SelectionRule> rules;
-
-   // Open clusters - moderate stretch
-   rules.push_back(
-      SelectionRule( "StarCluster_Open", RegionClass::StarClusterOpen, AlgorithmType::GHS, 10.0 )
-         .WhenSNRAbove( 10.0 )
-         .WithParameter( "stretchFactor", 0.4 )
-         .WithParameter( "highlightProtection", 0.85 )
-         .WithConfidence( 0.85 )
-         .WithRationale( "Open clusters need balanced stretch with star protection" )
-   );
-
-   // Globular clusters - strong protection for dense cores
-   rules.push_back(
-      SelectionRule( "StarCluster_Globular", RegionClass::StarClusterGlobular, AlgorithmType::ArcSinh, 10.0 )
-         .WhenMedianAbove( 0.4 )
-         .WithParameter( "softness", 0.1 )
-         .WithConfidence( 0.9 )
-         .WithRationale( "Dense globular cores need HDR protection" )
-   );
-
-   // Default open cluster
-   rules.push_back(
-      SelectionRule( "StarClusterOpen_Default", RegionClass::StarClusterOpen, AlgorithmType::GHS, 1.0 )
-         .WithParameter( "stretchFactor", 0.5 )
-         .WithParameter( "highlightProtection", 0.8 )
-         .WithConfidence( 0.75 )
-         .WithRationale( "Standard open cluster stretch" )
-   );
-
-   // Default globular cluster
-   rules.push_back(
-      SelectionRule( "StarClusterGlobular_Default", RegionClass::StarClusterGlobular, AlgorithmType::GHS, 1.0 )
-         .WithParameter( "stretchFactor", 0.35 )
-         .WithParameter( "highlightProtection", 0.9 )
-         .WithConfidence( 0.75 )
-         .WithRationale( "Standard globular cluster stretch" )
-   );
-
-   return rules;
-}
-
-// ----------------------------------------------------------------------------
-
-std::vector<SelectionRule> GetDustLaneRules()
-{
-   std::vector<SelectionRule> rules;
-
-   // Very dark dust - preserve darkness
-   rules.push_back(
-      SelectionRule( "DustLane_VeryDark", RegionClass::DustLane, AlgorithmType::Histogram, 10.0 )
-         .WhenMedianBelow( 0.02 )
-         .WithParameter( "shadowsClipping", 0.0 )
-         .WithConfidence( 0.85 )
-         .WithRationale( "Very dark dust lanes need shadow preservation" )
-   );
-
-   // Default dust lane
-   rules.push_back(
-      SelectionRule( "DustLane_Default", RegionClass::DustLane, AlgorithmType::Histogram, 1.0 )
-         .WithParameter( "shadowsClipping", 0.0 )
-         .WithParameter( "midtones", 0.3 )
-         .WithConfidence( 0.75 )
-         .WithRationale( "Standard dust lane treatment" )
-   );
-
-   return rules;
-}
-
-// ----------------------------------------------------------------------------
-
-std::vector<SelectionRule> GetStarSaturatedRules()
-{
-   std::vector<SelectionRule> rules;
-
-   // Fully saturated cores - maximum blowout protection
-   rules.push_back(
-      SelectionRule( "StarSaturated_Blown", RegionClass::StarSaturated, AlgorithmType::ArcSinh, 10.0 )
-         .WhenMedianAbove( 0.95 )
-         .WithParameter( "softness", 0.01 )
-         .WithConfidence( 0.95 )
-         .WithRationale( "Fully saturated star cores need maximum HDR compression" )
-   );
-
-   // Near-saturated with clipping
-   rules.push_back(
-      SelectionRule( "StarSaturated_ClipRisk", RegionClass::StarSaturated, AlgorithmType::ArcSinh, 9.0 )
-         .WhenClippingAbove( 5.0 )
-         .WithParameter( "softness", 0.02 )
-         .WithConfidence( 0.9 )
-         .WithRationale( "Heavy clipping requires very aggressive compression" )
-   );
-
-   // Default saturated star
-   rules.push_back(
-      SelectionRule( "StarSaturated_Default", RegionClass::StarSaturated, AlgorithmType::ArcSinh, 1.0 )
-         .WithParameter( "softness", 0.02 )
-         .WithConfidence( 0.85 )
-         .WithRationale( "Standard saturated star clamping at peak" )
-   );
-
-   return rules;
-}
-
-// ----------------------------------------------------------------------------
-
-std::vector<SelectionRule> GetNebulaReflectionRules()
-{
-   std::vector<SelectionRule> rules;
-
-   // High SNR reflection nebula - preserve blue coloring
-   rules.push_back(
-      SelectionRule( "NebulaReflection_HighSNR", RegionClass::NebulaReflection, AlgorithmType::GHS, 10.0 )
-         .WhenSNRAbove( 15.0 )
-         .WithParameter( "stretchFactor", 0.5 )
-         .WithParameter( "highlightProtection", 0.8 )
-         .WithConfidence( 0.9 )
-         .WithRationale( "High SNR reflection nebula - gentle stretch to preserve blue hues" )
-   );
-
-   // Faint reflection nebula - moderate stretch
-   rules.push_back(
-      SelectionRule( "NebulaReflection_Faint", RegionClass::NebulaReflection, AlgorithmType::GHS, 9.0 )
-         .WhenSNRBelow( 8.0 )
-         .WhenMedianBelow( 0.1 )
-         .WithParameter( "stretchFactor", 0.7 )
-         .WithParameter( "highlightProtection", 0.75 )
-         .WithConfidence( 0.8 )
-         .WithRationale( "Faint reflection nebula needs moderate stretch without over-saturating color" )
-   );
-
-   // Default reflection nebula
-   rules.push_back(
-      SelectionRule( "NebulaReflection_Default", RegionClass::NebulaReflection, AlgorithmType::GHS, 1.0 )
-         .WithParameter( "stretchFactor", 0.6 )
-         .WithParameter( "highlightProtection", 0.75 )
-         .WithConfidence( 0.75 )
-         .WithRationale( "Standard reflection nebula blue preservation" )
-   );
-
-   return rules;
-}
-
-// ----------------------------------------------------------------------------
-
-std::vector<SelectionRule> GetNebulaPlanetaryRules()
-{
-   std::vector<SelectionRule> rules;
-
-   // Bright core - ArcSinh for HDR compression
-   rules.push_back(
-      SelectionRule( "NebulaPlanetary_BrightCore", RegionClass::NebulaPlanetary, AlgorithmType::ArcSinh, 10.0 )
-         .WhenMedianAbove( 0.4 )
-         .WhenDynamicRangeAbove( 2.5 )
-         .WithParameter( "softness", 0.08 )
-         .WithConfidence( 0.9 )
-         .WithRationale( "Bright planetary nebula core needs HDR protection for shell detail" )
-   );
-
-   // Faint outer shell - GHS for detail enhancement
-   rules.push_back(
-      SelectionRule( "NebulaPlanetary_FaintShell", RegionClass::NebulaPlanetary, AlgorithmType::GHS, 9.0 )
-         .WhenMedianBelow( 0.1 )
-         .WhenSNRAbove( 6.0 )
-         .WithParameter( "stretchFactor", 0.8 )
-         .WithParameter( "highlightProtection", 0.7 )
-         .WithConfidence( 0.85 )
-         .WithRationale( "Faint planetary nebula shell needs stronger stretch to reveal detail" )
-   );
-
-   // High dynamic range - ArcSinh to preserve both core and shell
-   rules.push_back(
-      SelectionRule( "NebulaPlanetary_HighDR", RegionClass::NebulaPlanetary, AlgorithmType::ArcSinh, 8.0 )
-         .WhenDynamicRangeAbove( 3.0 )
-         .WithDynamicParameter( "softness", []( const RegionStatistics& s, AlgorithmRecommendation& r ) {
-            r.parameters["softness"] = ParameterTuning::ComputeArcSinhSoftness( s );
-         } )
-         .WithConfidence( 0.85 )
-         .WithRationale( "High dynamic range planetary nebula benefits from adaptive ArcSinh" )
-   );
-
-   // Default planetary nebula
-   rules.push_back(
-      SelectionRule( "NebulaPlanetary_Default", RegionClass::NebulaPlanetary, AlgorithmType::ArcSinh, 1.0 )
-         .WithParameter( "softness", 0.08 )
-         .WithConfidence( 0.75 )
-         .WithRationale( "Standard planetary nebula shell enhancement" )
-   );
-
-   return rules;
-}
-
-// ----------------------------------------------------------------------------
-
-std::vector<SelectionRule> GetGalaxyEllipticalRules()
-{
-   std::vector<SelectionRule> rules;
-
-   // Bright elliptical - smooth profile preservation
-   rules.push_back(
-      SelectionRule( "GalaxyElliptical_Bright", RegionClass::GalaxyElliptical, AlgorithmType::GHS, 10.0 )
-         .WhenMedianAbove( 0.3 )
-         .WhenSNRAbove( 12.0 )
-         .WithParameter( "stretchFactor", 0.35 )
-         .WithParameter( "highlightProtection", 0.85 )
-         .WithConfidence( 0.85 )
-         .WithRationale( "Bright elliptical galaxy needs gentle stretch to preserve smooth gradient" )
-   );
-
-   // Faint elliptical - moderate stretch
-   rules.push_back(
-      SelectionRule( "GalaxyElliptical_Faint", RegionClass::GalaxyElliptical, AlgorithmType::GHS, 9.0 )
-         .WhenSNRBelow( 8.0 )
-         .WhenMedianBelow( 0.1 )
-         .WithDynamicParameter( "stretchFactor", []( const RegionStatistics& s, AlgorithmRecommendation& r ) {
-            r.parameters["stretchFactor"] = ParameterTuning::ComputeGHSStretchFactor( s );
-         } )
-         .WithDynamicParameter( "highlightProtection", []( const RegionStatistics& s, AlgorithmRecommendation& r ) {
-            r.parameters["highlightProtection"] = ParameterTuning::ComputeGHSHighlightProtection( s );
-         } )
-         .WithConfidence( 0.8 )
-         .WithRationale( "Faint elliptical galaxy uses adaptive stretch" )
-   );
-
-   // Default elliptical galaxy
-   rules.push_back(
-      SelectionRule( "GalaxyElliptical_Default", RegionClass::GalaxyElliptical, AlgorithmType::GHS, 1.0 )
-         .WithParameter( "stretchFactor", 0.5 )
-         .WithParameter( "highlightProtection", 0.8 )
-         .WithConfidence( 0.75 )
-         .WithRationale( "Standard elliptical galaxy smooth gradient stretch" )
-   );
-
-   return rules;
-}
-
-// ----------------------------------------------------------------------------
-
-std::vector<SelectionRule> GetGalaxyIrregularRules()
-{
-   std::vector<SelectionRule> rules;
-
-   // High SNR irregular - SAS for varied morphology
-   rules.push_back(
-      SelectionRule( "GalaxyIrregular_HighSNR", RegionClass::GalaxyIrregular, AlgorithmType::SAS, 10.0 )
-         .WhenSNRAbove( 12.0 )
-         .WithDynamicParameter( "iterations", []( const RegionStatistics& s, AlgorithmRecommendation& r ) {
-            r.parameters["iterations"] = ParameterTuning::ComputeSASIterations( s );
-         } )
-         .WithConfidence( 0.85 )
-         .WithRationale( "High SNR irregular galaxy benefits from statistical adaptive stretch" )
-   );
-
-   // Wide dynamic range irregular - GHS
-   rules.push_back(
-      SelectionRule( "GalaxyIrregular_WideDR", RegionClass::GalaxyIrregular, AlgorithmType::GHS, 9.0 )
-         .WhenDynamicRangeAbove( 2.0 )
-         .WithDynamicParameter( "stretchFactor", []( const RegionStatistics& s, AlgorithmRecommendation& r ) {
-            r.parameters["stretchFactor"] = ParameterTuning::ComputeGHSStretchFactor( s );
-         } )
-         .WithConfidence( 0.8 )
-         .WithRationale( "Wide dynamic range irregular galaxy needs GHS flexibility" )
-   );
-
-   // Default irregular galaxy
-   rules.push_back(
-      SelectionRule( "GalaxyIrregular_Default", RegionClass::GalaxyIrregular, AlgorithmType::GHS, 1.0 )
-         .WithParameter( "stretchFactor", 0.55 )
-         .WithParameter( "highlightProtection", 0.75 )
-         .WithConfidence( 0.75 )
-         .WithRationale( "Standard irregular galaxy stretch" )
-   );
-
-   return rules;
-}
-
-// ----------------------------------------------------------------------------
-
-std::vector<SelectionRule> GetArtifactHotPixelRules()
-{
-   std::vector<SelectionRule> rules;
-
-   // Hot pixel with high median (likely real hot pixel)
-   rules.push_back(
-      SelectionRule( "ArtifactHotPixel_Bright", RegionClass::ArtifactHotPixel, AlgorithmType::MTF, 10.0 )
-         .WhenMedianAbove( 0.5 )
-         .WithParameter( "midtones", 0.05 )
-         .WithConfidence( 0.9 )
-         .WithRationale( "Bright hot pixel - aggressive rejection via very low midtones" )
-   );
-
-   // Default hot pixel - minimize affected area
-   rules.push_back(
-      SelectionRule( "ArtifactHotPixel_Default", RegionClass::ArtifactHotPixel, AlgorithmType::MTF, 1.0 )
-         .WithParameter( "midtones", 0.05 )
-         .WithConfidence( 0.85 )
-         .WithRationale( "Hot pixel suppression with aggressive clipping" )
-   );
-
-   return rules;
-}
-
-// ----------------------------------------------------------------------------
-
-std::vector<SelectionRule> GetArtifactSatelliteRules()
-{
-   std::vector<SelectionRule> rules;
-
-   // Bright satellite trail
-   rules.push_back(
-      SelectionRule( "ArtifactSatellite_Bright", RegionClass::ArtifactSatellite, AlgorithmType::MTF, 10.0 )
+      SelectionRule( "Artifact_Bright", RegionClass::Artifact, AlgorithmType::MTF, 10.0 )
          .WhenMedianAbove( 0.3 )
          .WithParameter( "midtones", 0.05 )
          .WithConfidence( 0.9 )
-         .WithRationale( "Bright satellite trail - aggressive rejection" )
+         .WithRationale( "Bright artifact - aggressive rejection" )
    );
 
-   // Default satellite trail - minimize affected area
+   // Low SNR noise artifact - SAS for noise awareness
    rules.push_back(
-      SelectionRule( "ArtifactSatellite_Default", RegionClass::ArtifactSatellite, AlgorithmType::MTF, 1.0 )
-         .WithParameter( "midtones", 0.05 )
-         .WithConfidence( 0.85 )
-         .WithRationale( "Satellite trail suppression with aggressive clipping" )
-   );
-
-   return rules;
-}
-
-// ----------------------------------------------------------------------------
-
-std::vector<SelectionRule> GetArtifactDiffractionRules()
-{
-   std::vector<SelectionRule> rules;
-
-   // Bright diffraction spikes - treat like star halos
-   rules.push_back(
-      SelectionRule( "ArtifactDiffraction_Bright", RegionClass::ArtifactDiffraction, AlgorithmType::ArcSinh, 10.0 )
-         .WhenMedianAbove( 0.5 )
-         .WithParameter( "softness", 0.1 )
-         .WithConfidence( 0.85 )
-         .WithRationale( "Bright diffraction spikes are part of star PSF - preserve with ArcSinh" )
-   );
-
-   // Moderate diffraction spikes
-   rules.push_back(
-      SelectionRule( "ArtifactDiffraction_Moderate", RegionClass::ArtifactDiffraction, AlgorithmType::ArcSinh, 9.0 )
-         .WhenDynamicRangeAbove( 2.0 )
-         .WithDynamicParameter( "softness", []( const RegionStatistics& s, AlgorithmRecommendation& r ) {
-            r.parameters["softness"] = ParameterTuning::ComputeArcSinhSoftness( s );
-         } )
-         .WithConfidence( 0.8 )
-         .WithRationale( "Moderate diffraction spikes need adaptive compression" )
-   );
-
-   // Default diffraction spike - preserve as part of PSF
-   rules.push_back(
-      SelectionRule( "ArtifactDiffraction_Default", RegionClass::ArtifactDiffraction, AlgorithmType::ArcSinh, 1.0 )
-         .WithParameter( "softness", 0.15 )
-         .WithConfidence( 0.75 )
-         .WithRationale( "Standard diffraction spike preservation" )
-   );
-
-   return rules;
-}
-
-// ----------------------------------------------------------------------------
-
-std::vector<SelectionRule> GetArtifactGradientRules()
-{
-   std::vector<SelectionRule> rules;
-
-   // Strong gradient - flatten aggressively
-   rules.push_back(
-      SelectionRule( "ArtifactGradient_Strong", RegionClass::ArtifactGradient, AlgorithmType::MTF, 10.0 )
-         .WhenDynamicRangeAbove( 1.5 )
-         .WithParameter( "midtones", 0.5 )
-         .WithConfidence( 0.85 )
-         .WithRationale( "Strong background gradient - high midtones to flatten for subtraction" )
-   );
-
-   // Default gradient - gentle treatment to allow subtraction
-   rules.push_back(
-      SelectionRule( "ArtifactGradient_Default", RegionClass::ArtifactGradient, AlgorithmType::MTF, 1.0 )
-         .WithParameter( "midtones", 0.5 )
-         .WithConfidence( 0.8 )
-         .WithRationale( "Background gradient - very gentle treatment to allow removal" )
-   );
-
-   return rules;
-}
-
-// ----------------------------------------------------------------------------
-
-std::vector<SelectionRule> GetArtifactNoiseRules()
-{
-   std::vector<SelectionRule> rules;
-
-   // Low SNR noise region - gentle noise-aware stretch
-   rules.push_back(
-      SelectionRule( "ArtifactNoise_LowSNR", RegionClass::ArtifactNoise, AlgorithmType::SAS, 10.0 )
+      SelectionRule( "Artifact_LowSNR", RegionClass::Artifact, AlgorithmType::SAS, 9.0 )
          .WhenSNRBelow( 5.0 )
          .WithDynamicParameter( "iterations", []( const RegionStatistics& s, AlgorithmRecommendation& r ) {
             r.parameters["iterations"] = ParameterTuning::ComputeSASIterations( s );
          } )
          .WithConfidence( 0.85 )
-         .WithRationale( "Low SNR noise region benefits from statistical adaptive smoothing" )
+         .WithRationale( "Low SNR artifact region benefits from statistical adaptive smoothing" )
    );
 
-   // Moderate noise - MTF with noise-sensitive parameters
+   // Default artifact - aggressive suppression
    rules.push_back(
-      SelectionRule( "ArtifactNoise_Moderate", RegionClass::ArtifactNoise, AlgorithmType::MTF, 9.0 )
-         .WhenSNRBelow( 10.0 )
-         .WithDynamicParameter( "midtones", []( const RegionStatistics& s, AlgorithmRecommendation& r ) {
-            // Use gentler midtones for noise regions to avoid amplification
-            r.parameters["midtones"] = std::max( 0.15, ParameterTuning::ComputeMTFMidtones( s ) * 0.8 );
-         } )
-         .WithConfidence( 0.8 )
-         .WithRationale( "Moderate noise region needs gentle MTF to avoid amplifying noise" )
-   );
-
-   // Default noise region
-   rules.push_back(
-      SelectionRule( "ArtifactNoise_Default", RegionClass::ArtifactNoise, AlgorithmType::MTF, 1.0 )
-         .WithParameter( "midtones", 0.2 )
-         .WithConfidence( 0.7 )
-         .WithRationale( "Standard noise region - conservative stretch" )
+      SelectionRule( "Artifact_Default", RegionClass::Artifact, AlgorithmType::MTF, 1.0 )
+         .WithParameter( "midtones", 0.05 )
+         .WithConfidence( 0.85 )
+         .WithRationale( "Artifact suppression with aggressive clipping" )
    );
 
    return rules;
@@ -1332,45 +724,6 @@ std::vector<SelectionRule> GetStarHaloRules()
          .WithParameter( "highlightProtection", 0.75 )
          .WithConfidence( 0.75 )
          .WithRationale( "Standard star halo gradient-preserving stretch" )
-   );
-
-   return rules;
-}
-
-// ----------------------------------------------------------------------------
-
-std::vector<SelectionRule> GetGalacticCirrusRules()
-{
-   std::vector<SelectionRule> rules;
-
-   // Rare high SNR galactic cirrus - can push a bit harder
-   rules.push_back(
-      SelectionRule( "GalacticCirrus_HighSNR", RegionClass::GalacticCirrus, AlgorithmType::GHS, 10.0 )
-         .WhenSNRAbove( 12.0 )
-         .WithParameter( "stretchFactor", 0.5 )
-         .WithParameter( "highlightProtection", 0.75 )
-         .WithConfidence( 0.85 )
-         .WithRationale( "High SNR galactic cirrus - slightly stronger stretch to reveal structure" )
-   );
-
-   // Very low SNR cirrus (typical) - SAS for noise awareness
-   rules.push_back(
-      SelectionRule( "GalacticCirrus_VeryFaint", RegionClass::GalacticCirrus, AlgorithmType::SAS, 9.0 )
-         .WhenSNRBelow( 5.0 )
-         .WithDynamicParameter( "iterations", []( const RegionStatistics& s, AlgorithmRecommendation& r ) {
-            r.parameters["iterations"] = ParameterTuning::ComputeSASIterations( s );
-         } )
-         .WithConfidence( 0.8 )
-         .WithRationale( "Very faint IFN at noise floor - statistical adaptive stretch to preserve signal" )
-   );
-
-   // Default galactic cirrus / IFN
-   rules.push_back(
-      SelectionRule( "GalacticCirrus_Default", RegionClass::GalacticCirrus, AlgorithmType::GHS, 1.0 )
-         .WithParameter( "stretchFactor", 0.4 )
-         .WithParameter( "highlightProtection", 0.7 )
-         .WithConfidence( 0.7 )
-         .WithRationale( "Standard galactic cirrus / IFN - very gentle to avoid noise amplification" )
    );
 
    return rules;

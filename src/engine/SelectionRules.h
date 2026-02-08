@@ -222,46 +222,14 @@ private:
 
 namespace DefaultRules
 {
-   // Get all default rules
    std::vector<SelectionRule> GetAllRules();
-
-   // Background rules
    std::vector<SelectionRule> GetBackgroundRules();
-
-   // Star rules (by brightness)
-   std::vector<SelectionRule> GetStarBrightRules();
-   std::vector<SelectionRule> GetStarMediumRules();
-   std::vector<SelectionRule> GetStarFaintRules();
-
-   // Nebula rules (by type)
-   std::vector<SelectionRule> GetNebulaEmissionRules();
-   std::vector<SelectionRule> GetNebulaReflectionRules();
-   std::vector<SelectionRule> GetNebulaDarkRules();
-   std::vector<SelectionRule> GetNebulaPlanetaryRules();
-
-   // Galaxy rules
-   std::vector<SelectionRule> GetGalaxyCoreRules();
-   std::vector<SelectionRule> GetGalaxySpiralRules();
-   std::vector<SelectionRule> GetGalaxyEllipticalRules();
-   std::vector<SelectionRule> GetGalaxyIrregularRules();
-
-   // Star rules (additional)
-   std::vector<SelectionRule> GetStarSaturatedRules();
-
-   // Structural rules
-   std::vector<SelectionRule> GetDustLaneRules();
-   std::vector<SelectionRule> GetStarClusterRules();
-
-   // Artifact rules
-   std::vector<SelectionRule> GetArtifactHotPixelRules();
-   std::vector<SelectionRule> GetArtifactSatelliteRules();
-   std::vector<SelectionRule> GetArtifactDiffractionRules();
-   std::vector<SelectionRule> GetArtifactGradientRules();
-   std::vector<SelectionRule> GetArtifactNoiseRules();
-
-   // Extended class rules
+   std::vector<SelectionRule> GetBrightCompactRules();
+   std::vector<SelectionRule> GetFaintCompactRules();
+   std::vector<SelectionRule> GetBrightExtendedRules();
+   std::vector<SelectionRule> GetDarkExtendedRules();
+   std::vector<SelectionRule> GetArtifactRules();
    std::vector<SelectionRule> GetStarHaloRules();
-   std::vector<SelectionRule> GetGalacticCirrusRules();
 }
 
 // ----------------------------------------------------------------------------

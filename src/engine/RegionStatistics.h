@@ -21,49 +21,20 @@ namespace pcl
 
 // ----------------------------------------------------------------------------
 // Region Class Enumeration
-// 23 total classes (21 original + 2 extended: StarHalo, GalacticCirrus)
+// 7 total classes (v2.0 taxonomy)
 // ----------------------------------------------------------------------------
 
 enum class RegionClass
 {
-   // Background (0)
-   Background = 0,         // Sky background
+   Background = 0,      // Sky background, gradients, noise
+   BrightCompact,       // Bright/saturated stars, diffraction spikes
+   FaintCompact,        // Medium/faint stars, star clusters
+   BrightExtended,      // Emission/reflection/planetary nebulae, galaxies, cirrus
+   DarkExtended,        // Dark nebulae, dust lanes
+   Artifact,            // Hot pixels, satellite trails
+   StarHalo,            // Diffuse glow around stars
 
-   // Star classes (1-4)
-   StarBright,             // Bright stellar cores (top 10% intensity)
-   StarMedium,             // Medium brightness stars (10-50%)
-   StarFaint,              // Faint stars (bottom 50%)
-   StarSaturated,          // Saturated star cores (>0.95 intensity)
-
-   // Nebula classes (5-8)
-   NebulaEmission,         // Emission nebulae (H-alpha, OIII)
-   NebulaReflection,       // Blue reflection nebulae
-   NebulaDark,             // Dark nebulae, absorption
-   NebulaPlanetary,        // Planetary nebula shells
-
-   // Galaxy classes (9-12)
-   GalaxySpiral,           // Spiral galaxies
-   GalaxyElliptical,       // Elliptical galaxies
-   GalaxyIrregular,        // Irregular galaxies
-   GalaxyCore,             // Bright galactic nuclei/AGN
-
-   // Structural classes (13-15)
-   DustLane,               // Dark dust lanes
-   StarClusterOpen,        // Open star clusters
-   StarClusterGlobular,    // Globular clusters
-
-   // Artifact classes (16-20)
-   ArtifactHotPixel,       // Hot pixels, cosmic rays
-   ArtifactSatellite,      // Satellite/airplane trails
-   ArtifactDiffraction,    // Diffraction spikes
-   ArtifactGradient,       // Background gradients/vignetting
-   ArtifactNoise,          // Noise patterns
-
-   // Extended classes (21-22) - added for star-nebula transitions and IFN
-   StarHalo,               // Star halos - diffuse glow around stars
-   GalacticCirrus,         // Integrated Flux Nebulae / Galactic cirrus
-
-   Count                   // Number of region classes (23)
+   Count                // Number of region classes (7)
 };
 
 // Convert region class to string (matches model training names)
@@ -71,30 +42,14 @@ inline IsoString RegionClassToString( RegionClass rc )
 {
    switch ( rc )
    {
-   case RegionClass::Background:          return "background";
-   case RegionClass::StarBright:          return "star_bright";
-   case RegionClass::StarMedium:          return "star_medium";
-   case RegionClass::StarFaint:           return "star_faint";
-   case RegionClass::StarSaturated:       return "star_saturated";
-   case RegionClass::NebulaEmission:      return "nebula_emission";
-   case RegionClass::NebulaReflection:    return "nebula_reflection";
-   case RegionClass::NebulaDark:          return "nebula_dark";
-   case RegionClass::NebulaPlanetary:     return "nebula_planetary";
-   case RegionClass::GalaxySpiral:        return "galaxy_spiral";
-   case RegionClass::GalaxyElliptical:    return "galaxy_elliptical";
-   case RegionClass::GalaxyIrregular:     return "galaxy_irregular";
-   case RegionClass::GalaxyCore:          return "galaxy_core";
-   case RegionClass::DustLane:            return "dust_lane";
-   case RegionClass::StarClusterOpen:     return "star_cluster_open";
-   case RegionClass::StarClusterGlobular: return "star_cluster_globular";
-   case RegionClass::ArtifactHotPixel:    return "artifact_hot_pixel";
-   case RegionClass::ArtifactSatellite:   return "artifact_satellite";
-   case RegionClass::ArtifactDiffraction: return "artifact_diffraction";
-   case RegionClass::ArtifactGradient:    return "artifact_gradient";
-   case RegionClass::ArtifactNoise:       return "artifact_noise";
-   case RegionClass::StarHalo:            return "star_halo";
-   case RegionClass::GalacticCirrus:      return "galactic_cirrus";
-   default:                               return "unknown";
+   case RegionClass::Background:      return "background";
+   case RegionClass::BrightCompact:   return "bright_compact";
+   case RegionClass::FaintCompact:    return "faint_compact";
+   case RegionClass::BrightExtended:  return "bright_extended";
+   case RegionClass::DarkExtended:    return "dark_extended";
+   case RegionClass::Artifact:        return "artifact";
+   case RegionClass::StarHalo:        return "star_halo";
+   default:                           return "unknown";
    }
 }
 
@@ -103,50 +58,29 @@ inline String RegionClassDisplayName( RegionClass rc )
 {
    switch ( rc )
    {
-   case RegionClass::Background:          return "Background";
-   case RegionClass::StarBright:          return "Bright Stars";
-   case RegionClass::StarMedium:          return "Medium Stars";
-   case RegionClass::StarFaint:           return "Faint Stars";
-   case RegionClass::StarSaturated:       return "Saturated Stars";
-   case RegionClass::NebulaEmission:      return "Emission Nebula";
-   case RegionClass::NebulaReflection:    return "Reflection Nebula";
-   case RegionClass::NebulaDark:          return "Dark Nebula";
-   case RegionClass::NebulaPlanetary:     return "Planetary Nebula";
-   case RegionClass::GalaxySpiral:        return "Spiral Galaxy";
-   case RegionClass::GalaxyElliptical:    return "Elliptical Galaxy";
-   case RegionClass::GalaxyIrregular:     return "Irregular Galaxy";
-   case RegionClass::GalaxyCore:          return "Galaxy Core";
-   case RegionClass::DustLane:            return "Dust Lane";
-   case RegionClass::StarClusterOpen:     return "Open Cluster";
-   case RegionClass::StarClusterGlobular: return "Globular Cluster";
-   case RegionClass::ArtifactHotPixel:    return "Hot Pixel";
-   case RegionClass::ArtifactSatellite:   return "Satellite Trail";
-   case RegionClass::ArtifactDiffraction: return "Diffraction Spike";
-   case RegionClass::ArtifactGradient:    return "Gradient";
-   case RegionClass::ArtifactNoise:       return "Noise";
-   case RegionClass::StarHalo:            return "Star Halo";
-   case RegionClass::GalacticCirrus:      return "Galactic Cirrus / IFN";
-   default:                               return "Unknown";
+   case RegionClass::Background:      return "Background";
+   case RegionClass::BrightCompact:   return "Bright Compact";
+   case RegionClass::FaintCompact:    return "Faint Compact";
+   case RegionClass::BrightExtended:  return "Bright Extended";
+   case RegionClass::DarkExtended:    return "Dark Extended";
+   case RegionClass::Artifact:        return "Artifact";
+   case RegionClass::StarHalo:        return "Star Halo";
+   default:                           return "Unknown";
    }
 }
 
 // Classification helper: is this a star-related class?
 inline bool IsStarRelatedClass( RegionClass rc )
 {
-   return rc == RegionClass::StarBright ||
-          rc == RegionClass::StarMedium ||
-          rc == RegionClass::StarFaint ||
-          rc == RegionClass::StarSaturated ||
+   return rc == RegionClass::BrightCompact ||
+          rc == RegionClass::FaintCompact ||
           rc == RegionClass::StarHalo;
 }
 
 // Classification helper: is this an extended emission class?
 inline bool IsExtendedEmission( RegionClass rc )
 {
-   return rc == RegionClass::NebulaEmission ||
-          rc == RegionClass::NebulaReflection ||
-          rc == RegionClass::NebulaPlanetary ||
-          rc == RegionClass::GalacticCirrus;
+   return rc == RegionClass::BrightExtended;
 }
 
 // ----------------------------------------------------------------------------

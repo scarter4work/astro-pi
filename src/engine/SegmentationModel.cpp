@@ -80,6 +80,7 @@ bool ONNXSegmentationModel::Initialize( const SegmentationConfig& config )
    ONNXConfig onnxConfig;
    onnxConfig.useGPU = config.useGPU;
    onnxConfig.numThreads = 0;  // Auto
+   onnxConfig.deterministic = config.deterministic;
 
    if ( !m_session->LoadModel( config.modelPath, onnxConfig ) )
    {
@@ -138,23 +139,14 @@ bool ONNXSegmentationModel::Initialize( const SegmentationConfig& config )
 
 FloatTensor ONNXSegmentationModel::PreprocessImage( const Image& image ) const
 {
-   // Create tensor matching the model's expected input channels:
-   // - 3 channels: R, G, B
-   // - 4 channels: R, G, B, ColorContrast (B - R, range -1 to 1)
-   //
-   // Preprocessing pipeline (matching training from process_qnap_data.py):
+   // Preprocessing pipeline (v2.0):
    // 1. Resample to model input size (bilinear interpolation)
-   // 2. Detect if input is linear or pre-stretched
-   // 3. If linear: apply percentile normalization then arcsinh stretch
-   // 4. If pre-stretched: use as-is with percentile normalization
-   // 5. Create color contrast channel: B - R (only if 4 channels expected)
-   //
-   // Training data was created with:
-   //   p1, p99 = np.percentile(data, [1, 99])
-   //   normalized = (data - p1) / (p99 - p1)
-   //   stretched = arcsinh(normalized / 0.1) / arcsinh(10)
+   // 2. Polynomial background subtraction (removes vignetting/gradients)
+   // 3. Detect if input is linear or pre-stretched (quartile ratio method)
+   // 4. Percentile normalization to [0, 1]
+   // 5. If linear: apply arcsinh stretch
+   // 6. Store as [1, 3, H, W] tensor (RGB only, no color contrast channel)
 
-   const int numChannels = m_numInputChannels;  // Use detected value (3 or 4)
    constexpr double PERCENTILE_LOW = 0.01;   // 1st percentile
    constexpr double PERCENTILE_HIGH = 0.99;  // 99th percentile
 
@@ -215,8 +207,145 @@ FloatTensor ONNXSegmentationModel::PreprocessImage( const Image& image ) const
       }
    }
 
-   // Step 2: Compute percentiles for normalization and linear detection
-   // Lambda to compute percentile from sorted data
+   // Step 2: Polynomial background subtraction
+   // Fit 2nd-order polynomial surface to background pixels per channel
+   // and subtract to remove vignetting and light pollution gradients.
+   // Polynomial: f(x,y) = a + b*x + c*y + d*x*y + e*x^2 + f*y^2
+   // where x,y are normalized to [0,1].
+   {
+      // Lambda to fit and subtract polynomial background from one channel
+      auto subtractBackground = [&]( std::vector<float>& channel ) {
+         // Sample every 16th pixel to build the background model
+         constexpr int SAMPLE_STEP = 16;
+         std::vector<float> samples;
+         samples.reserve( (outHeight / SAMPLE_STEP + 1) * (outWidth / SAMPLE_STEP + 1) );
+
+         for ( int y = 0; y < outHeight; y += SAMPLE_STEP )
+            for ( int x = 0; x < outWidth; x += SAMPLE_STEP )
+               samples.push_back( channel[static_cast<size_t>( y ) * outWidth + x] );
+
+         if ( samples.size() < 6 )
+            return;  // Not enough samples for 6-parameter fit
+
+         // Find 30th percentile as background threshold
+         std::vector<float> sorted = samples;
+         std::sort( sorted.begin(), sorted.end() );
+         const float bgThreshold = sorted[static_cast<size_t>( 0.30 * (sorted.size() - 1) )];
+
+         // Collect background pixels (those <= threshold)
+         // Build normal equation system: A^T A x = A^T b  (6x6 system)
+         // Basis: [1, x, y, xy, x^2, y^2]
+         double ATA[6][6] = {};  // 6x6 normal matrix
+         double ATb[6] = {};     // 6x1 right-hand side
+         int bgCount = 0;
+
+         const double invW = 1.0 / std::max( outWidth - 1, 1 );
+         const double invH = 1.0 / std::max( outHeight - 1, 1 );
+
+         for ( int sy = 0; sy < outHeight; sy += SAMPLE_STEP )
+         {
+            for ( int sx = 0; sx < outWidth; sx += SAMPLE_STEP )
+            {
+               const float val = channel[static_cast<size_t>( sy ) * outWidth + sx];
+               if ( val > bgThreshold )
+                  continue;
+
+               const double nx = sx * invW;  // Normalized x in [0,1]
+               const double ny = sy * invH;  // Normalized y in [0,1]
+
+               const double basis[6] = { 1.0, nx, ny, nx * ny, nx * nx, ny * ny };
+
+               for ( int i = 0; i < 6; ++i )
+               {
+                  for ( int j = 0; j < 6; ++j )
+                     ATA[i][j] += basis[i] * basis[j];
+                  ATb[i] += basis[i] * static_cast<double>( val );
+               }
+               ++bgCount;
+            }
+         }
+
+         if ( bgCount < 6 )
+            return;  // Not enough background samples for least-squares
+
+         // Solve 6x6 system via Gaussian elimination with partial pivoting
+         double aug[6][7];
+         for ( int i = 0; i < 6; ++i )
+         {
+            for ( int j = 0; j < 6; ++j )
+               aug[i][j] = ATA[i][j];
+            aug[i][6] = ATb[i];
+         }
+
+         for ( int col = 0; col < 6; ++col )
+         {
+            // Partial pivoting
+            int maxRow = col;
+            double maxVal = std::abs( aug[col][col] );
+            for ( int row = col + 1; row < 6; ++row )
+            {
+               if ( std::abs( aug[row][col] ) > maxVal )
+               {
+                  maxVal = std::abs( aug[row][col] );
+                  maxRow = row;
+               }
+            }
+            if ( maxVal < 1e-15 )
+               return;  // Singular matrix, skip subtraction
+
+            if ( maxRow != col )
+               std::swap( aug[col], aug[maxRow] );
+
+            // Eliminate below
+            for ( int row = col + 1; row < 6; ++row )
+            {
+               const double factor = aug[row][col] / aug[col][col];
+               for ( int j = col; j < 7; ++j )
+                  aug[row][j] -= factor * aug[col][j];
+            }
+         }
+
+         // Back substitution
+         double coeffs[6];
+         for ( int i = 5; i >= 0; --i )
+         {
+            coeffs[i] = aug[i][6];
+            for ( int j = i + 1; j < 6; ++j )
+               coeffs[i] -= aug[i][j] * coeffs[j];
+            coeffs[i] /= aug[i][i];
+         }
+
+         // Subtract fitted surface and clamp to >= 0
+         float maxChannelVal = *std::max_element( channel.begin(), channel.end() );
+         for ( int y = 0; y < outHeight; ++y )
+         {
+            const double ny = y * invH;
+            for ( int x = 0; x < outWidth; ++x )
+            {
+               const double nx = x * invW;
+               const double bg = coeffs[0]
+                                + coeffs[1] * nx
+                                + coeffs[2] * ny
+                                + coeffs[3] * nx * ny
+                                + coeffs[4] * nx * nx
+                                + coeffs[5] * ny * ny;
+
+               const size_t idx = static_cast<size_t>( y ) * outWidth + x;
+               channel[idx] = std::clamp( channel[idx] - static_cast<float>( bg ),
+                                           0.0f, maxChannelVal );
+            }
+         }
+      };
+
+      subtractBackground( channelR );
+      subtractBackground( channelG );
+      subtractBackground( channelB );
+
+      Console().WriteLn( "Segmentation: Polynomial background subtraction applied" );
+   }
+
+   // Step 3: Compute percentiles for normalization and linear detection
+   // Lambda to compute percentile from data
    auto computePercentile = []( std::vector<float>& data, double percentile ) {
       std::vector<float> sorted = data;
       std::sort( sorted.begin(), sorted.end() );
@@ -232,38 +361,34 @@ FloatTensor ONNXSegmentationModel::PreprocessImage( const Image& image ) const
    const float b_p1 = computePercentile( channelB, PERCENTILE_LOW );
    const float b_p99 = computePercentile( channelB, PERCENTILE_HIGH );
 
-   // Compute median for linear detection (use green channel as proxy for luminance)
-   const float g_median = computePercentile( channelG, 0.5 );
+   // Compute quartiles for linear detection (use green channel as luminance proxy)
+   const float g_p50 = computePercentile( channelG, 0.50 );
+   const float g_p75 = computePercentile( channelG, 0.75 );
 
-   // Detect if input is linear or already stretched using improved heuristic:
-   // - Either: p99 < 0.15 AND median < 0.1 (very compressed data)
-   // - Or: median < 0.1 AND median > 0 AND (p99/median) > 5 (high dynamic range)
-   const float ratio = (g_median > 0.0f) ? (g_p99 / g_median) : 0.0f;
-   const bool isLinear = (g_p99 < 0.15f && g_median < 0.1f) ||
-                         (g_median < 0.1f && g_median > 0.0f && ratio > 5.0f);
+   // Detect if input is linear or already stretched using quartile ratio method.
+   // Linear data has extreme top-end concentration: ratio = (p99 - p75) / (p75 - p50).
+   // Stretched data has a more uniform spread, so the ratio is lower.
+   const double denom = static_cast<double>( g_p75 ) - g_p50;
+   const double numer = static_cast<double>( g_p99 ) - g_p75;
+   const double quartileRatio = (denom > 1e-10) ? (numer / denom) : 0.0;
+   const bool isLinear = (quartileRatio > 5.0);
 
    // Debug logging to diagnose linear detection
    Console().WriteLn( String().Format(
-      "Segmentation: Data stats - median=%.6f, p99=%.6f, ratio=%.2f, isLinear=%s",
-      g_median, g_p99, ratio, isLinear ? "true" : "false" ) );
-   Console().WriteLn( String().Format(
-      "Segmentation: Thresholds - p99<0.15=%s, median<0.1=%s, median>0=%s, ratio>5=%s",
-      (g_p99 < 0.15f) ? "true" : "false",
-      (g_median < 0.1f) ? "true" : "false",
-      (g_median > 0.0f) ? "true" : "false",
-      (ratio > 5.0f) ? "true" : "false" ) );
+      "Segmentation: Data stats - p50=%.6f, p75=%.6f, p99=%.6f, quartileRatio=%.2f, isLinear=%s",
+      g_p50, g_p75, g_p99, quartileRatio, isLinear ? "true" : "false" ) );
 
    // Adaptive arcsinh stretch parameters based on data compression
    double ARCSINH_SCALE = 0.1;  // default for normal data
-   if ( isLinear && ratio < 2.0 )
+   if ( isLinear && quartileRatio > 20.0 )
    {
       // Very compressed data needs stronger stretch
       ARCSINH_SCALE = 0.02;  // 5x more aggressive
       Console().WarningLn( String().Format(
-         "Segmentation: Extremely compressed linear data (ratio=%.2f), using aggressive stretch (scale=%.3f)",
-         ratio, ARCSINH_SCALE ) );
+         "Segmentation: Extremely compressed linear data (quartileRatio=%.2f), using aggressive stretch (scale=%.3f)",
+         quartileRatio, ARCSINH_SCALE ) );
    }
-   else if ( isLinear && ratio < 5.0 )
+   else if ( isLinear && quartileRatio > 10.0 )
    {
       // Moderately compressed data
       ARCSINH_SCALE = 0.05;  // 2x more aggressive
@@ -289,18 +414,19 @@ FloatTensor ONNXSegmentationModel::PreprocessImage( const Image& image ) const
 
    const double ARCSINH_NORM = std::asinh( 1.0 / ARCSINH_SCALE );
 
-   // Create output tensor
-   TensorShape shape = { 1, numChannels, outHeight, outWidth };
+   // Create output tensor: always [1, 3, H, W] (RGB only, no color contrast channel)
+   constexpr int NUM_OUTPUT_CHANNELS = 3;
+   TensorShape shape = { 1, NUM_OUTPUT_CHANNELS, outHeight, outWidth };
    FloatTensor tensor( shape );
 
-   // Step 3: Apply percentile normalization, arcsinh stretch (if linear), and create tensor
+   // Step 4: Apply percentile normalization, arcsinh stretch (if linear), and create tensor
    for ( int y = 0; y < outHeight; ++y )
    {
       for ( int x = 0; x < outWidth; ++x )
       {
          const size_t srcIdx = static_cast<size_t>( y ) * outWidth + x;
 
-         // First: percentile normalization to [0, 1]
+         // Percentile normalization to [0, 1]
          float r = std::clamp( (channelR[srcIdx] - r_p1) / r_range, 0.0f, 1.0f );
          float g = std::clamp( (channelG[srcIdx] - g_p1) / g_range, 0.0f, 1.0f );
          float b = std::clamp( (channelB[srcIdx] - b_p1) / b_range, 0.0f, 1.0f );
@@ -313,18 +439,10 @@ FloatTensor ONNXSegmentationModel::PreprocessImage( const Image& image ) const
             b = static_cast<float>( std::clamp( std::asinh( b / ARCSINH_SCALE ) / ARCSINH_NORM, 0.0, 1.0 ) );
          }
 
-         // Store in tensor (NCHW format)
-         tensor[(0 * outHeight + y) * outWidth + x] = r;               // Channel 0: R
-         tensor[(1 * outHeight + y) * outWidth + x] = g;               // Channel 1: G
-         tensor[(2 * outHeight + y) * outWidth + x] = b;               // Channel 2: B
-
-         // Only add color contrast channel if model expects 4 channels
-         if ( numChannels == 4 )
-         {
-            // Color contrast: B - R (range -1 to 1, no clamping needed for model)
-            const float colorContrast = b - r;
-            tensor[(3 * outHeight + y) * outWidth + x] = colorContrast;   // Channel 3: B - R
-         }
+         // Store in tensor (NCHW format) - RGB only
+         tensor[(0 * outHeight + y) * outWidth + x] = r;   // Channel 0: R
+         tensor[(1 * outHeight + y) * outWidth + x] = g;   // Channel 1: G
+         tensor[(2 * outHeight + y) * outWidth + x] = b;   // Channel 2: B
       }
    }
 

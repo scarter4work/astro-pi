@@ -47,6 +47,7 @@ struct ONNXConfig
    bool enableCpuMemArena = true;     // CPU memory arena
    int graphOptimizationLevel = 99;   // ORT_ENABLE_ALL = 99
    String logId = "NukeX";            // Session log identifier
+   bool deterministic = false;          // Force single-threaded for reproducibility
 };
 
 // ----------------------------------------------------------------------------

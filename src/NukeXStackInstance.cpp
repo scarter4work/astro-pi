@@ -29,6 +29,7 @@
 #include "engine/BayerDemosaic.h"
 #include "engine/algorithms/ArcSinhStretch.h"
 #include "engine/IStretchAlgorithm.h"
+#include "engine/Compositor.h"
 
 #include <algorithm>
 #include <cstring>
@@ -47,6 +48,7 @@ NukeXStackInstance::NukeXStackInstance( const MetaProcess* m )
    , p_useSpatialContext( TheNXSUseSpatialContextParameter->DefaultValue() )
    , p_useTargetContext( TheNXSUseTargetContextParameter->DefaultValue() )
    , p_generateMetadata( TheNXSGenerateMetadataParameter->DefaultValue() )
+   , p_enableAutoStretch( TheNXSEnableAutoStretchParameter->DefaultValue() )
    , p_outlierSigmaThreshold( static_cast<float>( TheNXSOutlierSigmaThresholdParameter->DefaultValue() ) )
    , p_minClassConfidence( static_cast<float>( TheNXSMinClassConfidenceParameter->DefaultValue() ) )
    , p_smoothingStrength( static_cast<float>( TheNXSSmoothingStrengthParameter->DefaultValue() ) )
@@ -78,6 +80,7 @@ void NukeXStackInstance::Assign( const ProcessImplementation& p )
       p_useSpatialContext       = x->p_useSpatialContext;
       p_useTargetContext        = x->p_useTargetContext;
       p_generateMetadata        = x->p_generateMetadata;
+      p_enableAutoStretch       = x->p_enableAutoStretch;
       p_outlierSigmaThreshold   = x->p_outlierSigmaThreshold;
       p_minClassConfidence      = x->p_minClassConfidence;
       p_smoothingStrength       = x->p_smoothingStrength;
@@ -341,6 +344,18 @@ bool NukeXStackInstance::ExecuteGlobal()
    auto endTime = std::chrono::high_resolution_clock::now();
    summary.totalTimeMs = std::chrono::duration<double, std::milli>(endTime - startTime).count();
 
+
+   // Apply auto-stretch to output if enabled
+   if ( p_enableAutoStretch )
+   {
+      console.WriteLn( "<br>Applying automatic stretch to integrated output..." );
+      auto stretchStart = std::chrono::high_resolution_clock::now();
+      output = QuickProcess::AutoStretch( output );
+      auto stretchEnd = std::chrono::high_resolution_clock::now();
+      double stretchMs = std::chrono::duration<double, std::milli>( stretchEnd - stretchStart ).count();
+      console.WriteLn( String().Format( "  Auto-stretch completed in %.1f ms", stretchMs ) );
+   }
+
    // Create output window
    ImageWindow outputWindow( width, height, channels,
       32, true, channels >= 3, true, "NukeXStack_Integration" );
@@ -393,6 +408,8 @@ void* NukeXStackInstance::LockParameter( const MetaParameter* p, size_type table
       return &p_useTargetContext;
    if ( p == TheNXSGenerateMetadataParameter )
       return &p_generateMetadata;
+   if ( p == TheNXSEnableAutoStretchParameter )
+      return &p_enableAutoStretch;
    if ( p == TheNXSOutlierSigmaThresholdParameter )
       return &p_outlierSigmaThreshold;
    if ( p == TheNXSMinClassConfidenceParameter )
@@ -672,16 +689,12 @@ Image NukeXStackInstance::CreateMedianReference( const std::vector<Image>& frame
             for ( size_t f = 0; f < numFrames; ++f )
                values[f] = frames[f].Pixel( x, y, c );
 
-            // Sort and take median
-            std::nth_element( values.begin(), values.begin() + numFrames / 2, values.end() );
-            float median = values[numFrames / 2];
-
-            // For even number of frames, average the two middle values
+            std::sort( values.begin(), values.end() );
+            float median;
             if ( numFrames % 2 == 0 && numFrames > 1 )
-            {
-               auto maxIt = std::max_element( values.begin(), values.begin() + numFrames / 2 );
-               median = ( *maxIt + median ) / 2.0f;
-            }
+               median = (values[numFrames / 2 - 1] + values[numFrames / 2]) / 2.0f;
+            else
+               median = values[numFrames / 2];
 
             reference.Pixel( x, y, c ) = median;
          }
@@ -736,16 +749,12 @@ Image NukeXStackInstance::CreateMedianReferenceStreaming( FrameStreamer& streame
             for ( int f = 0; f < numFrames; ++f )
                values[f] = rowData[f][x];
 
-            // Partial sort for median
-            std::nth_element( values.begin(), values.begin() + numFrames / 2, values.end() );
-            float median = values[numFrames / 2];
-
-            // Even frame count: average the two middle values
+            std::sort( values.begin(), values.end() );
+            float median;
             if ( numFrames % 2 == 0 && numFrames > 1 )
-            {
-               auto maxIt = std::max_element( values.begin(), values.begin() + numFrames / 2 );
-               median = ( *maxIt + median ) / 2.0f;
-            }
+               median = (values[numFrames / 2 - 1] + values[numFrames / 2]) / 2.0f;
+            else
+               median = values[numFrames / 2];
 
             reference.Pixel( x, y, c ) = median;
          }
@@ -789,6 +798,7 @@ bool NukeXStackInstance::RunSegmentation(
    engineConfig.modelConfig.inputWidth = 512;
    engineConfig.modelConfig.inputHeight = 512;
    engineConfig.modelConfig.useGPU = false;  // CPU for now
+   engineConfig.modelConfig.deterministic = true;
    engineConfig.cacheResults = false;        // No need for caching in stacker
    engineConfig.runAnalysis = false;         // We don't need region analysis
    engineConfig.downsampleLargeImages = true;
@@ -944,273 +954,84 @@ bool NukeXStackInstance::RunIntegration(
       summary.targetObject = context.objectName;
    }
 
-   // ML segmentation setup
+   // ML segmentation setup - median composite approach
+   // Instead of per-frame segmentation (N inferences), we run segmentation ONCE
+   // on a median composite. This is faster and produces a single consistent class map.
    std::vector<std::vector<int>> segmentationMap;
    std::vector<std::vector<float>> confidenceMap;
 
    if ( p_enableMLSegmentation )
    {
-      console.WriteLn( "<br>Running per-frame segmentation..." );
+      console.WriteLn( "<br>Creating median composite for segmentation..." );
       auto segStart = std::chrono::high_resolution_clock::now();
 
-      std::vector<PerFrameClassMap> perFrameMaps;
-      perFrameMaps.reserve( frames.size() );
+      // Step 1: Create median reference from all frames
+      Image medianRef = CreateMedianReference( frames );
 
-      int segSuccessCount = 0;
-
-      // Create and initialize segmentation engine ONCE for all frames
-      String modelPath = SegmentationEngine::GetDefaultModelPath();
-      if ( modelPath.IsEmpty() )
-         modelPath = "/opt/PixInsight/bin/nukex_segmentation.onnx";
-
-      bool engineReady = false;
-      SegmentationEngine engine;
-
-      if ( !File::Exists( modelPath ) )
+      if ( medianRef.Width() > 0 && medianRef.Height() > 0 )
       {
-         console.WarningLn( String().Format( "ONNX model not found at: %s", IsoString( modelPath ).c_str() ) );
-         console.WarningLn( "ML segmentation disabled - using statistical selection only." );
-      }
-      else
-      {
-         console.WriteLn( String().Format( "Loading segmentation model: %s", IsoString( modelPath ).c_str() ) );
+         console.WriteLn( String().Format( "Median composite: %dx%d",
+            medianRef.Width(), medianRef.Height() ) );
 
-         SegmentationEngineConfig engineConfig;
-         engineConfig.modelConfig.modelPath = modelPath;
-         engineConfig.modelConfig.inputWidth = 512;
-         engineConfig.modelConfig.inputHeight = 512;
-         engineConfig.modelConfig.useGPU = false;
-         engineConfig.cacheResults = false;
-         engineConfig.runAnalysis = false;
-         engineConfig.downsampleLargeImages = true;
-         engineConfig.maxProcessingDimension = 1024;
-
-         if ( engine.Initialize( engineConfig ) && engine.IsReady() )
+         // Step 2: Apply arcsinh stretch to the median composite
+         // (segmentation model expects stretched/visible-range input)
+         RegionStatistics stats;
          {
-            console.WriteLn( String().Format( "Using model: %s", IsoString( engine.GetModelName() ).c_str() ) );
-            engineReady = true;
+            double median, mad;
+            median = medianRef.Median();
+
+            // Compute MAD manually: median of |pixel - median|
+            Image devImage;
+            devImage.Assign( medianRef );
+            for ( int c = 0; c < devImage.NumberOfChannels(); ++c )
+            {
+               Image::sample* data = devImage.PixelData( c );
+               size_t numPx = static_cast<size_t>( devImage.Width() ) * devImage.Height();
+               for ( size_t p = 0; p < numPx; ++p )
+                  data[p] = std::abs( data[p] - static_cast<float>( median ) );
+            }
+            mad = devImage.Median();
+
+            stats.median = median;
+            stats.mad = mad;
+            stats.min = 0.0;
+            stats.max = 1.0;
+            stats.snrEstimate = ( mad > 1e-10 ) ? ( median / mad ) : 10.0;
+         }
+
+         ArcSinhStretch stretcher;
+         stretcher.AutoConfigure( stats );
+         stretcher.ApplyToImage( medianRef );
+
+         console.WriteLn( "Applied arcsinh stretch to median composite." );
+
+         // Step 3: Run segmentation ONCE on the stretched median composite
+         double segTime = 0.0;
+         if ( RunSegmentation( medianRef, segmentationMap, confidenceMap, segTime ) )
+         {
+            summary.segmentationTimeMs = segTime;
+
+            // Step 4: Pass single class map to selector
+            selector.SetSegmentation( segmentationMap, confidenceMap );
+
+            auto segEnd = std::chrono::high_resolution_clock::now();
+            double totalSegTime = std::chrono::duration<double, std::milli>(
+               segEnd - segStart ).count();
+
+            console.WriteLn( String().Format(
+               "<br>Median composite segmentation complete (%.1f ms total, %.1f ms inference)",
+               totalSegTime, segTime ) );
+            console.WriteLn( "Pixel selection will use region-aware strategies." );
          }
          else
          {
-            console.WarningLn( String().Format( "Failed to initialize segmentation engine: %s",
-               IsoString( engine.GetLastError() ).c_str() ) );
+            console.WarningLn( "<br>ML segmentation failed on median composite - "
+               "using statistical selection only." );
          }
-      }
-
-      if ( engineReady )
-      {
-         for ( size_t f = 0; f < frames.size(); ++f )
-         {
-            console.Write( String().Format( "\rSegmenting frame %d/%d...",
-               static_cast<int>( f + 1 ), static_cast<int>( frames.size() ) ) );
-            console.Flush();
-
-            // Create a temporary stretched copy for segmentation
-            Image stretchedCopy;
-            stretchedCopy.Assign( frames[f] );
-
-            // Compute statistics for auto-configuration
-            RegionStatistics stats;
-            {
-               double median, mad;
-               median = stretchedCopy.Median();
-
-               // Compute MAD manually: median of |pixel - median|
-               Image devImage;
-               devImage.Assign( stretchedCopy );
-               for ( int c = 0; c < devImage.NumberOfChannels(); ++c )
-               {
-                  Image::sample* data = devImage.PixelData( c );
-                  size_t numPx = static_cast<size_t>( devImage.Width() ) * devImage.Height();
-                  for ( size_t p = 0; p < numPx; ++p )
-                     data[p] = std::abs( data[p] - static_cast<float>( median ) );
-               }
-               mad = devImage.Median();
-
-               stats.median = median;
-               stats.mad = mad;
-               stats.min = 0.0;
-               stats.max = 1.0;
-               stats.snrEstimate = ( mad > 1e-10 ) ? ( median / mad ) : 10.0;
-            }
-
-            // Auto-configure and apply arcsinh stretch
-            ArcSinhStretch stretcher;
-            stretcher.AutoConfigure( stats );
-            stretcher.ApplyToImage( stretchedCopy );
-
-            // Run segmentation directly on the cached engine
-            SegmentationEngineResult result = engine.Process( stretchedCopy );
-
-            if ( result.isValid )
-            {
-               // Convert the class map image to PerFrameClassMap
-               int segW = result.segmentation.width;
-               int segH = result.segmentation.height;
-
-               PerFrameClassMap pfMap;
-               pfMap.segHeight = segH;
-               pfMap.segWidth = segW;
-
-               size_t mapSize = static_cast<size_t>( segW ) * segH;
-               pfMap.classLabels.resize( mapSize );
-               pfMap.confidences.resize( mapSize );
-
-               int numClasses = static_cast<int>( RegionClass::Count );
-               std::map<int, int> classCounts;
-
-               for ( int y = 0; y < segH; ++y )
-               {
-                  for ( int x = 0; x < segW; ++x )
-                  {
-                     // Convert normalized class map back to integer class indices
-                     float normalizedClass = result.segmentation.classMap.Pixel( x, y, 0 );
-                     int classIdx = static_cast<int>( normalizedClass * ( numClasses - 1 ) + 0.5f );
-                     classIdx = std::max( 0, std::min( numClasses - 1, classIdx ) );
-
-                     size_t idx = static_cast<size_t>( y ) * segW + x;
-                     pfMap.classLabels[idx] = static_cast<uint8_t>( classIdx );
-
-                     // Get confidence from the mask of the predicted class
-                     RegionClass rc = static_cast<RegionClass>( classIdx );
-                     const Image* mask = result.segmentation.GetMask( rc );
-                     if ( mask && x < mask->Width() && y < mask->Height() )
-                        pfMap.confidences[idx] = static_cast<uint8_t>(
-                           std::max( 0.0f, std::min( 1.0f, mask->Pixel( x, y, 0 ) ) ) * 255.0f );
-                     else
-                        pfMap.confidences[idx] = static_cast<uint8_t>( 0.5f * 255.0f );
-
-                     classCounts[classIdx]++;
-                  }
-               }
-
-               perFrameMaps.push_back( std::move( pfMap ) );
-               segSuccessCount++;
-
-               // Log concise per-frame class distribution (classes >5% only)
-               int totalPx = segW * segH;
-               IsoString distLine;
-               for ( const auto& pair : classCounts )
-               {
-                  double pct = 100.0 * pair.second / totalPx;
-                  if ( pct > 5.0 )
-                  {
-                     RegionClass rc = static_cast<RegionClass>( pair.first );
-                     IsoString regionName = IsoString( RegionClassDisplayName( rc ) );
-                     if ( !distLine.IsEmpty() )
-                        distLine += ", ";
-                     distLine += IsoString().Format( "%s=%.1f%%", regionName.c_str(), pct );
-                  }
-               }
-               console.WriteLn( String().Format( "\r<clrbol>Frame %d/%d: %s",
-                  static_cast<int>( f + 1 ), static_cast<int>( frames.size() ),
-                  distLine.c_str() ) );
-            }
-            else
-            {
-               // Segmentation failed for this frame - add empty map
-               perFrameMaps.push_back( PerFrameClassMap() );
-               console.WriteLn( String().Format( "\r<clrbol>Frame %d/%d: segmentation failed",
-                  static_cast<int>( f + 1 ), static_cast<int>( frames.size() ) ) );
-            }
-         }
-      }
-
-      auto segEnd = std::chrono::high_resolution_clock::now();
-      summary.segmentationTimeMs = std::chrono::duration<double, std::milli>(
-         segEnd - segStart ).count();
-
-      // Reliability guardrail: check if segmentation is unreliable
-      // If any single non-Background class dominates >60% on average across all frames,
-      // the segmentation model is likely producing unreliable results.
-      if ( segSuccessCount > 0 )
-      {
-         int numClasses = static_cast<int>( RegionClass::Count );
-         std::vector<double> avgClassCoverage( numClasses, 0.0 );
-
-         for ( const auto& pfMap : perFrameMaps )
-         {
-            if ( pfMap.segWidth == 0 || pfMap.segHeight == 0 )
-               continue;
-
-            int totalPx = pfMap.segWidth * pfMap.segHeight;
-            std::vector<int> counts( numClasses, 0 );
-            for ( size_t i = 0; i < pfMap.classLabels.size(); ++i )
-            {
-               int cls = pfMap.classLabels[i];
-               if ( cls >= 0 && cls < numClasses )
-                  counts[cls]++;
-            }
-            for ( int c = 0; c < numClasses; ++c )
-               avgClassCoverage[c] += 100.0 * counts[c] / totalPx;
-         }
-
-         // Divide by number of successfully segmented frames
-         for ( int c = 0; c < numClasses; ++c )
-            avgClassCoverage[c] /= segSuccessCount;
-
-         // Find dominant non-Background class
-         int dominantClass = -1;
-         double dominantPct = 0.0;
-         for ( int c = 1; c < numClasses; ++c )  // skip Background (0)
-         {
-            if ( avgClassCoverage[c] > dominantPct )
-            {
-               dominantPct = avgClassCoverage[c];
-               dominantClass = c;
-            }
-         }
-
-         if ( dominantClass >= 0 && dominantPct > 60.0 )
-         {
-            RegionClass rc = static_cast<RegionClass>( dominantClass );
-            IsoString regionName = IsoString( RegionClassDisplayName( rc ) );
-            console.WarningLn( String().Format(
-               "WARNING: Segmentation appears unreliable: %s dominates at %.1f%% across all frames",
-               regionName.c_str(), dominantPct ) );
-            console.WarningLn( "Falling back to statistical pixel selection (segmentation disabled)" );
-            segSuccessCount = 0;
-            perFrameMaps.clear();
-         }
-      }
-
-      if ( segSuccessCount > 0 )
-      {
-         // Pass per-frame segmentation to selector
-         selector.SetPerFrameSegmentation( perFrameMaps );
-         selector.SetImageDimensions( width, height );
-
-         // Also populate the single segmentation map from frame 0 for transition smoothing
-         if ( !perFrameMaps.empty() && perFrameMaps[0].segWidth > 0 )
-         {
-            const PerFrameClassMap& map0 = perFrameMaps[0];
-            segmentationMap.resize( map0.segHeight );
-            confidenceMap.resize( map0.segHeight );
-            for ( int y = 0; y < map0.segHeight; ++y )
-            {
-               segmentationMap[y].resize( map0.segWidth );
-               confidenceMap[y].resize( map0.segWidth );
-               for ( int x = 0; x < map0.segWidth; ++x )
-               {
-                  size_t idx = static_cast<size_t>( y ) * map0.segWidth + x;
-                  segmentationMap[y][x] = map0.classLabels[idx];
-                  confidenceMap[y][x] = map0.confidences[idx] / 255.0f;
-               }
-            }
-         }
-
-         console.WriteLn( String().Format(
-            "\r<clrbol>Per-frame segmentation complete: %d/%d frames (%.1f s)",
-            segSuccessCount, static_cast<int>( frames.size() ),
-            summary.segmentationTimeMs / 1000.0 ) );
-
-         console.WriteLn( "Pixel selection will use per-frame region-aware consensus strategies." );
       }
       else
       {
-         console.WarningLn(
-            "\r<clrbol>Per-frame segmentation failed for all frames - "
-            "using statistical selection only." );
+         console.WarningLn( "<br>Failed to create median composite for segmentation." );
       }
    }
    else

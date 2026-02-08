@@ -148,7 +148,7 @@ RegionAnalysisResult RegionAnalyzer::Analyze( const Image& image, const Image& m
 
       RegionClass complementClass = RegionClass::Background;
       if ( regionClass == RegionClass::Background )
-         complementClass = RegionClass::NebulaDark;  // Default for non-background
+         complementClass = RegionClass::DarkExtended;  // Default for non-background
 
       RegionStatistics compStats = complementStats.luminance;
       compStats.regionClass = complementClass;
@@ -311,30 +311,21 @@ RegionClass RegionAnalyzer::ClassifyRegion( const RegionStatistics& stats ) cons
    double median = stats.median;
    double snr = stats.snrEstimate;
 
-   // Very bright regions
+   // Very bright regions -> BrightCompact
    if ( median > m_config.starCoreThreshold )
    {
-      return RegionClass::StarBright;
+      return RegionClass::BrightCompact;
    }
 
    // Bright regions
    if ( median > m_config.brightThreshold )
    {
-      // Distinguish between different bright region types
+      // Narrow peak suggests stellar
       if ( stats.peakWidth < 0.05 )
-      {
-         // Narrow peak suggests stellar
-         return RegionClass::StarMedium;
-      }
-      else if ( stats.skewness > 0.5 )
-      {
-         // Positive skew suggests bright nebula or galaxy core
-         return snr > m_config.highSNRThreshold ? RegionClass::GalaxyCore : RegionClass::NebulaEmission;
-      }
-      else
-      {
-         return RegionClass::NebulaEmission;
-      }
+         return RegionClass::FaintCompact;
+
+      // Otherwise bright extended (nebula/galaxy)
+      return RegionClass::BrightExtended;
    }
 
    // Background-level regions
@@ -342,27 +333,21 @@ RegionClass RegionAnalyzer::ClassifyRegion( const RegionStatistics& stats ) cons
    {
       // Check if it's actually a dark feature
       if ( stats.min < 0.01 && stats.Range() > 0.1 )
-      {
-         return RegionClass::DustLane;
-      }
+         return RegionClass::DarkExtended;
+
       return RegionClass::Background;
    }
 
-   // Mid-tones: could be faint nebula, galaxy halo, or galaxy arm
+   // Mid-tones: could be faint nebula, galaxy, or extended emission
    if ( snr < m_config.lowSNRThreshold )
    {
-      // Low SNR suggests faint nebulosity or IFN
-      return RegionClass::NebulaDark;
-   }
-   else if ( stats.skewness < -0.3 )
-   {
-      // Negative skew suggests galaxy halo
-      return RegionClass::GalaxyElliptical;
+      // Low SNR suggests faint nebulosity - dark extended
+      return RegionClass::DarkExtended;
    }
    else
    {
-      // Default to galaxy arm for structured mid-tone regions
-      return RegionClass::GalaxySpiral;
+      // Default to bright extended for structured mid-tone regions
+      return RegionClass::BrightExtended;
    }
 }
 
@@ -375,58 +360,25 @@ IsoString RegionAnalyzer::GetRecommendedAlgorithm( RegionClass regionClass,
    switch ( regionClass )
    {
    case RegionClass::Background:
-      // Background needs gentle stretch that preserves noise characteristics
       return stats.snrEstimate > 10 ? "SAS" : "MTF";
 
-   case RegionClass::StarBright:
-   case RegionClass::StarSaturated:
-      // Bright stars need HDR-friendly stretch to prevent bloating
+   case RegionClass::BrightCompact:
       return "ArcSinh";
 
-   case RegionClass::StarMedium:
-   case RegionClass::StarFaint:
-      // Star halos need controlled expansion
+   case RegionClass::FaintCompact:
       return "GHS";
 
-   case RegionClass::NebulaEmission:
-   case RegionClass::NebulaReflection:
-   case RegionClass::NebulaPlanetary:
-      // Bright nebula benefits from color-preserving stretch
+   case RegionClass::BrightExtended:
       return stats.snrEstimate > 15 ? "RNC" : "GHS";
 
-   case RegionClass::NebulaDark:
-      // Dark nebula needs aggressive but noise-aware stretch
-      return "Log";
-
-   case RegionClass::DustLane:
-      // Dust lanes need to maintain dark detail
-      return "Histogram";
-
-   case RegionClass::GalaxyCore:
-      // Galaxy cores are similar to star cores
-      return "ArcSinh";
-
-   case RegionClass::GalaxyElliptical:
-   case RegionClass::GalaxyIrregular:
-      // Galaxy halos are like faint nebula
-      return "SAS";
-
-   case RegionClass::GalaxySpiral:
-      // Galaxy spiral arms need balanced stretch
-      return "GHS";
-
-   case RegionClass::StarClusterOpen:
-   case RegionClass::StarClusterGlobular:
-      // Star clusters need balanced stretch
-      return "GHS";
-
-   case RegionClass::ArtifactHotPixel:
-   case RegionClass::ArtifactSatellite:
-   case RegionClass::ArtifactDiffraction:
-   case RegionClass::ArtifactGradient:
-   case RegionClass::ArtifactNoise:
-      // Artifacts should be handled carefully
+   case RegionClass::DarkExtended:
       return "MTF";
+
+   case RegionClass::Artifact:
+      return "MTF";
+
+   case RegionClass::StarHalo:
+      return "GHS";
 
    default:
       return "MTF";
@@ -514,31 +466,15 @@ void RegionAnalyzer::ComputeQualityMetrics( RegionAnalysisResult& result ) const
 RegionClass RegionAnalyzer::ChannelToRegionClass( int channel )
 {
    // Standard mapping from segmentation network output channels
-   // This should match the model's output format (23 classes)
+   // This should match the model's output format (7 classes)
    static const RegionClass channelMap[] = {
-      RegionClass::Background,          // 0
-      RegionClass::StarBright,          // 1
-      RegionClass::StarMedium,          // 2
-      RegionClass::StarFaint,           // 3
-      RegionClass::StarSaturated,       // 4
-      RegionClass::NebulaEmission,      // 5
-      RegionClass::NebulaReflection,    // 6
-      RegionClass::NebulaDark,          // 7
-      RegionClass::NebulaPlanetary,     // 8
-      RegionClass::GalaxySpiral,        // 9
-      RegionClass::GalaxyElliptical,    // 10
-      RegionClass::GalaxyIrregular,     // 11
-      RegionClass::GalaxyCore,          // 12
-      RegionClass::DustLane,            // 13
-      RegionClass::StarClusterOpen,     // 14
-      RegionClass::StarClusterGlobular, // 15
-      RegionClass::ArtifactHotPixel,    // 16
-      RegionClass::ArtifactSatellite,   // 17
-      RegionClass::ArtifactDiffraction, // 18
-      RegionClass::ArtifactGradient,    // 19
-      RegionClass::ArtifactNoise,       // 20
-      RegionClass::StarHalo,            // 21
-      RegionClass::GalacticCirrus       // 22
+      RegionClass::Background,      // 0
+      RegionClass::BrightCompact,   // 1
+      RegionClass::FaintCompact,    // 2
+      RegionClass::BrightExtended,  // 3
+      RegionClass::DarkExtended,    // 4
+      RegionClass::Artifact,        // 5
+      RegionClass::StarHalo         // 6
    };
 
    if ( channel >= 0 && channel < static_cast<int>( sizeof( channelMap ) / sizeof( channelMap[0] ) ) )
@@ -557,29 +493,14 @@ double RegionAnalyzer::GetRegionPriority( RegionClass rc, const RegionStatistics
    // Higher priority regions are considered more "important" even at lower coverage
    switch ( rc )
    {
-   case RegionClass::StarBright:          return 3.0;
-   case RegionClass::StarSaturated:       return 3.0;
-   case RegionClass::GalaxyCore:          return 2.5;
-   case RegionClass::NebulaPlanetary:     return 2.2;
-   case RegionClass::NebulaEmission:      return 2.0;
-   case RegionClass::NebulaReflection:    return 2.0;
-   case RegionClass::StarMedium:          return 1.5;
-   case RegionClass::GalaxySpiral:        return 1.5;
-   case RegionClass::StarClusterGlobular: return 1.5;
-   case RegionClass::StarClusterOpen:     return 1.4;
-   case RegionClass::StarFaint:           return 1.3;
-   case RegionClass::NebulaDark:          return 1.2;
-   case RegionClass::GalaxyElliptical:    return 1.2;
-   case RegionClass::GalaxyIrregular:     return 1.2;
-   case RegionClass::DustLane:            return 1.0;
-   case RegionClass::Background:          return 0.5;
-   // Artifacts have low priority
-   case RegionClass::ArtifactHotPixel:    return 0.2;
-   case RegionClass::ArtifactSatellite:   return 0.3;
-   case RegionClass::ArtifactDiffraction: return 0.3;
-   case RegionClass::ArtifactGradient:    return 0.3;
-   case RegionClass::ArtifactNoise:       return 0.2;
-   default:                               return 1.0;
+   case RegionClass::BrightCompact:    return 3.0;
+   case RegionClass::BrightExtended:   return 2.0;
+   case RegionClass::FaintCompact:     return 1.5;
+   case RegionClass::StarHalo:         return 1.3;
+   case RegionClass::DarkExtended:     return 1.2;
+   case RegionClass::Background:       return 0.5;
+   case RegionClass::Artifact:         return 0.2;
+   default:                            return 1.0;
    }
 }
 

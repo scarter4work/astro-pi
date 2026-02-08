@@ -77,6 +77,14 @@ bool ONNXSession::LoadModel( const String& modelPath, const ONNXConfig& config )
       Ort::SessionOptions sessionOptions;
 
       sessionOptions.SetIntraOpNumThreads( config.numThreads > 0 ? config.numThreads : 0 );
+
+      // Deterministic mode: force single-threaded for bit-identical results
+      if ( config.deterministic )
+      {
+         sessionOptions.SetIntraOpNumThreads( 1 );
+         sessionOptions.SetInterOpNumThreads( 1 );
+      }
+
       sessionOptions.SetGraphOptimizationLevel(
          static_cast<GraphOptimizationLevel>( config.graphOptimizationLevel ) );
 

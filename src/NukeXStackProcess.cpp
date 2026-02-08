@@ -39,6 +39,7 @@ NukeXStackProcess::NukeXStackProcess()
    new NXSUseSpatialContext( this );
    new NXSUseTargetContext( this );
    new NXSGenerateMetadata( this );
+   new NXSEnableAutoStretch( this );
 
    // Floating point parameters
    new NXSOutlierSigmaThreshold( this );
@@ -86,7 +87,7 @@ String NukeXStackProcess::Description() const
       "<ul>"
       "<li><b>Per-pixel distribution fitting</b> - Analyzes pixel values across "
       "all frames to detect outliers and determine optimal selection</li>"
-      "<li><b>23-class ML segmentation</b> - Understands what each pixel represents "
+      "<li><b>7-class ML segmentation</b> - Understands what each pixel represents "
       "(star, nebula, background, etc.) to apply class-specific selection strategies</li>"
       "<li><b>FITS metadata context</b> - Uses target object information to inform "
       "selection (e.g., M42 expects emission nebula)</li>"

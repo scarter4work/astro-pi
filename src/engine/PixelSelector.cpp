@@ -62,8 +62,7 @@ void TargetContext::InferExpectedFeatures()
    if ( !objectName.IsEmpty() )
    {
       KnownObjects::GetExpectedFeatures( objectName,
-         expectsEmissionNebula, expectsDarkNebula, expectsGalaxy,
-         expectsStarCluster, expectsPlanetaryNebula );
+         expectsBrightExtended, expectsDarkExtended );
    }
 
    // Apply filter-based adjustments
@@ -84,8 +83,8 @@ void TargetContext::InferExpectedFeatures()
       if ( isNarrowband )
       {
          // Narrowband: stronger signal preservation, flatter background expected
-         // Almost all narrowband signal IS emission nebulosity
-         expectsEmissionNebula = true;
+         // Almost all narrowband signal IS bright extended (emission nebulosity)
+         expectsBrightExtended = true;
       }
 
       // Detect luminance filter - broadband, all features equally likely
@@ -654,7 +653,7 @@ PixelSelector::ConsensusResult PixelSelector::ComputeConsensus(
 
    // Count votes per class, weighted by confidence
    int numClasses = static_cast<int>( RegionClass::Count );
-   std::vector<float> classVotes( numClasses, 0.0f );
+   std::vector<double> classVotes( numClasses, 0.0 );
    std::vector<RegionClass> perFrameClass( numFrames );
 
    int mapsAvailable = static_cast<int>( m_perFrameClassMaps.size() );
@@ -709,38 +708,17 @@ void PixelSelector::ApplyTargetContextAdjustments(
    RegionClass regionClass,
    const std::vector<float>& values ) const
 {
-   // Boost confidence if ML class matches expected features from object name
    bool classMatchesExpected = false;
 
    switch ( regionClass )
    {
-   case RegionClass::NebulaEmission:
-      if ( m_targetContext.expectsEmissionNebula )
+   case RegionClass::BrightExtended:
+      if ( m_targetContext.expectsBrightExtended )
          classMatchesExpected = true;
       break;
 
-   case RegionClass::NebulaDark:
-   case RegionClass::DustLane:
-      if ( m_targetContext.expectsDarkNebula )
-         classMatchesExpected = true;
-      break;
-
-   case RegionClass::GalaxyCore:
-   case RegionClass::GalaxySpiral:
-   case RegionClass::GalaxyElliptical:
-   case RegionClass::GalaxyIrregular:
-      if ( m_targetContext.expectsGalaxy )
-         classMatchesExpected = true;
-      break;
-
-   case RegionClass::StarClusterOpen:
-   case RegionClass::StarClusterGlobular:
-      if ( m_targetContext.expectsStarCluster )
-         classMatchesExpected = true;
-      break;
-
-   case RegionClass::NebulaPlanetary:
-      if ( m_targetContext.expectsPlanetaryNebula )
+   case RegionClass::DarkExtended:
+      if ( m_targetContext.expectsDarkExtended )
          classMatchesExpected = true;
       break;
 
@@ -749,10 +727,7 @@ void PixelSelector::ApplyTargetContextAdjustments(
    }
 
    if ( classMatchesExpected )
-   {
-      // Boost confidence
       result.confidence = std::min( 1.0f, result.confidence + m_config.contextWeight );
-   }
 }
 
 // ----------------------------------------------------------------------------
@@ -808,43 +783,31 @@ static bool MatchesDesignation( const String& name, const String& prefix, const 
 }
 
 void GetExpectedFeatures( const String& objectName,
-                          bool& emission, bool& dark, bool& galaxy,
-                          bool& cluster, bool& planetary )
+                          bool& brightExtended, bool& darkExtended )
 {
-   emission = false;
-   dark = false;
-   galaxy = false;
-   cluster = false;
-   planetary = false;
+   brightExtended = false;
+   darkExtended = false;
 
    String upper = objectName.Uppercase();
 
-   // Check for emission nebulae
+   // Emission nebulae -> brightExtended
    if ( IsMessierEmissionNebula( upper ) || IsNGCEmissionNebula( upper ) )
    {
-      emission = true;
+      brightExtended = true;
       // Many emission nebulae also have dark regions
       if ( MatchesDesignation( upper, "M", "42" ) || upper.Contains( "ORION" ) ||
            upper.Contains( "HORSEHEAD" ) || upper.Contains( "BARNARD" ) )
-         dark = true;
+         darkExtended = true;
    }
 
-   // Check for galaxies
+   // Galaxies -> brightExtended
    if ( IsMessierGalaxy( upper ) || IsNGCGalaxy( upper ) ||
         upper.Contains( "GALAXY" ) || upper.Contains( "ANDROMEDA" ) )
-      galaxy = true;
+      brightExtended = true;
 
-   // Check for planetary nebulae
+   // Planetary nebulae -> brightExtended
    if ( IsPlanetaryNebula( upper ) )
-      planetary = true;
-
-   // Check for star clusters
-   if ( upper.Contains( "CLUSTER" ) ||
-        MatchesDesignation( upper, "M", "45" ) || MatchesDesignation( upper, "M", "7" ) ||
-        MatchesDesignation( upper, "M", "35" ) || MatchesDesignation( upper, "M", "36" ) ||
-        MatchesDesignation( upper, "M", "37" ) || MatchesDesignation( upper, "M", "38" ) ||
-        MatchesDesignation( upper, "M", "44" ) || MatchesDesignation( upper, "M", "67" ) )
-      cluster = true;
+      brightExtended = true;
 }
 
 bool IsMessierEmissionNebula( const String& name )

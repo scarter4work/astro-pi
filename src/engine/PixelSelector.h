@@ -63,11 +63,8 @@ struct TargetContext
    String instrument;               // INSTRUME
 
    // Expected feature hints based on object
-   bool expectsEmissionNebula = false;
-   bool expectsDarkNebula = false;
-   bool expectsGalaxy = false;
-   bool expectsStarCluster = false;
-   bool expectsPlanetaryNebula = false;
+   bool expectsBrightExtended = false;   // Emission nebulae, galaxies, planetary nebulae
+   bool expectsDarkExtended = false;     // Dark nebulae, dust lanes
 
    // Parse FITS headers to populate context
    void ParseFromHeaders( const FITSKeywordArray& keywords );
@@ -292,8 +289,7 @@ namespace KnownObjects
 {
    // Returns expected features for common objects
    void GetExpectedFeatures( const String& objectName,
-                             bool& emission, bool& dark, bool& galaxy,
-                             bool& cluster, bool& planetary );
+                             bool& brightExtended, bool& darkExtended );
 
    // Common object categories
    bool IsMessierEmissionNebula( const String& name );

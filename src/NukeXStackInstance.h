@@ -93,6 +93,7 @@ private:
    pcl_bool p_useSpatialContext;
    pcl_bool p_useTargetContext;
    pcl_bool p_generateMetadata;
+   pcl_bool p_enableAutoStretch = true;
 
    // Numeric parameters
    float    p_outlierSigmaThreshold;

@@ -172,6 +172,7 @@ void NukeXStackInterface::UpdateControls()
    // Outlier controls
    GUI->OutlierSigma_NumericControl.SetValue( m_instance.p_outlierSigmaThreshold );
    GUI->GenerateMetadata_CheckBox.SetChecked( m_instance.p_generateMetadata );
+   GUI->EnableAutoStretch_CheckBox.SetChecked( m_instance.p_enableAutoStretch );
 }
 
 // ----------------------------------------------------------------------------
@@ -444,6 +445,10 @@ void NukeXStackInterface::e_CheckBoxClick( Button& sender, bool checked )
    {
       m_instance.p_generateMetadata = checked;
    }
+   else if ( sender == GUI->EnableAutoStretch_CheckBox )
+   {
+      m_instance.p_enableAutoStretch = checked;
+   }
 }
 
 // ----------------------------------------------------------------------------
@@ -595,7 +600,7 @@ NukeXStackInterface::GUIData::GUIData( NukeXStackInterface& w )
    MLSegmentation_SectionBar.SetSection( MLSegmentation_Control );
 
    EnableMLSegmentation_CheckBox.SetText( "Enable ML Segmentation" );
-   EnableMLSegmentation_CheckBox.SetToolTip( "<p>Use 23-class ML semantic segmentation to identify pixel types "
+   EnableMLSegmentation_CheckBox.SetToolTip( "<p>Use 7-class ML semantic segmentation to identify pixel types "
                                               "(stars, nebula, background, etc.) and apply class-specific "
                                               "selection strategies.</p>" );
    EnableMLSegmentation_CheckBox.OnClick( (Button::click_event_handler)&NukeXStackInterface::e_CheckBoxClick, w );
@@ -728,9 +733,17 @@ NukeXStackInterface::GUIData::GUIData( NukeXStackInterface& w )
                                           "for analysis.</p>" );
    GenerateMetadata_CheckBox.OnClick( (Button::click_event_handler)&NukeXStackInterface::e_CheckBoxClick, w );
 
+   EnableAutoStretch_CheckBox.SetText( "Auto-Stretch Output" );
+   EnableAutoStretch_CheckBox.SetToolTip( "<p>Automatically apply NukeX stretch to the integrated output image. "
+                                           "This applies the full region-aware stretch pipeline to produce a "
+                                           "non-linear result ready for post-processing.</p>"
+                                           "<p>Disable this if you want the linear integrated result.</p>" );
+   EnableAutoStretch_CheckBox.OnClick( (Button::click_event_handler)&NukeXStackInterface::e_CheckBoxClick, w );
+
    Outliers_Sizer.SetSpacing( 4 );
    Outliers_Sizer.Add( OutlierSigma_NumericControl );
    Outliers_Sizer.Add( GenerateMetadata_CheckBox );
+   Outliers_Sizer.Add( EnableAutoStretch_CheckBox );
 
    Outliers_Control.SetSizer( Outliers_Sizer );
 

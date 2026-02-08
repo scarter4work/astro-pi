@@ -29,41 +29,31 @@ static bool IsClassSpecificOutlier(
 
    switch ( regionClass )
    {
-   case RegionClass::StarBright:
-   case RegionClass::StarSaturated:
-   case RegionClass::ArtifactDiffraction:
-      // Bright stars: only reject LOW outliers (clouds, tracking errors)
+   case RegionClass::BrightCompact:
+      // Reject LOW only (clouds, tracking errors)
       return ( value < mu && z > threshold );
 
-   case RegionClass::StarMedium:
-   case RegionClass::StarFaint:
-   case RegionClass::StarClusterOpen:
-   case RegionClass::StarClusterGlobular:
+   case RegionClass::FaintCompact:
    case RegionClass::StarHalo:
-      // Medium/faint stars and halos: SYMMETRIC rejection (both high noise spikes AND low outliers)
+      // Symmetric rejection
       return ( z > threshold );
 
-   case RegionClass::NebulaDark:
-   case RegionClass::DustLane:
-      // Dark features: only reject HIGH outliers
+   case RegionClass::DarkExtended:
+      // Reject HIGH only
       return ( value > mu && z > threshold );
 
-   case RegionClass::NebulaEmission:
-   case RegionClass::NebulaReflection:
-   case RegionClass::NebulaPlanetary:
-   case RegionClass::GalaxyCore:
-   case RegionClass::GalaxySpiral:
-   case RegionClass::GalaxyElliptical:
-   case RegionClass::GalaxyIrregular:
-   case RegionClass::GalacticCirrus:
-      // Emission/galaxy: reject LOW outliers, keep high signal
+   case RegionClass::BrightExtended:
+      // Reject LOW only, keep high signal
       return ( value < mu && z > threshold );
 
    case RegionClass::Background:
-   case RegionClass::ArtifactGradient:
-      // Background: reject HIGH outliers more aggressively (0.85x multiplier)
+      // Symmetric + 0.85x high outlier multiplier
       if ( value > mu && z > threshold * 0.85f )
          return true;
+      return ( z > threshold );
+
+   case RegionClass::Artifact:
+      // Symmetric, aggressive
       return ( z > threshold );
 
    default:
@@ -699,38 +689,32 @@ float PixelStackAnalyzer::SelectBestValue(
 
    switch ( regionClass )
    {
-   case RegionClass::NebulaDark:
-   case RegionClass::DustLane:
+   case RegionClass::DarkExtended:
       {
-         // SELECT MINIMUM: The darkest valid value is the correct dark nebula value
-         // Frame weight acts as a tiebreaker - prefer darker values from better frames
+         // SELECT MINIMUM
          float bestScore = std::numeric_limits<float>::max();
          for ( const auto& vp : validValues )
          {
-            // Lower values are better; frame weight reduces the score (favors weighted frames)
             float score = vp.first / GetFrameWeight( vp.second );
-            if ( score < bestScore )
+            if ( score < bestScore || (score == bestScore && vp.second < bestFrame) )
             {
                bestScore = score;
                bestFrame = vp.second;
                bestValue = vp.first;
             }
          }
-         // High confidence because we're selecting the correct extreme
          confidence = ComputeConfidence( 0.9f );
       }
       break;
 
-   case RegionClass::StarBright:
-   case RegionClass::StarSaturated:
+   case RegionClass::BrightCompact:
       {
-         // SELECT MAXIMUM: The brightest valid value preserves the star signal
-         // Frame weight boosts score - prefer brighter values from better frames
+         // SELECT MAXIMUM
          float maxScore = -std::numeric_limits<float>::max();
          for ( const auto& vp : validValues )
          {
             float score = vp.first * GetFrameWeight( vp.second );
-            if ( score > maxScore )
+            if ( score > maxScore || (score == maxScore && vp.second < bestFrame) )
             {
                maxScore = score;
                bestFrame = vp.second;
@@ -741,23 +725,40 @@ float PixelStackAnalyzer::SelectBestValue(
       }
       break;
 
-   case RegionClass::StarMedium:
-   case RegionClass::StarFaint:
-   case RegionClass::StarClusterOpen:
-   case RegionClass::StarClusterGlobular:
+   case RegionClass::FaintCompact:
       {
-         // Probability-weighted selection biased toward higher signal
-         // Uses same approach as nebula but with moderate upward bias
+         // Probability-weighted, +0.2 upward bias
          float maxScore = -std::numeric_limits<float>::max();
          for ( const auto& vp : validValues )
          {
             float v = vp.first;
             float z = std::abs( v - dist.mu ) / sigma;
             float prob = std::exp( -0.5f * z * z );
-            // Moderate upward bias (0.2) - less aggressive than nebula (0.3)
             float score = prob * (1.0f + 0.2f * (v - dist.mu) / sigma);
             score *= GetFrameWeight( vp.second );
-            if ( score > maxScore )
+            if ( score > maxScore || (score == maxScore && vp.second < bestFrame) )
+            {
+               maxScore = score;
+               bestFrame = vp.second;
+               bestValue = v;
+            }
+         }
+         confidence = ComputeConfidence( 0.8f );
+      }
+      break;
+
+   case RegionClass::BrightExtended:
+      {
+         // Probability-weighted, +0.3 upward bias
+         float maxScore = -std::numeric_limits<float>::max();
+         for ( const auto& vp : validValues )
+         {
+            float v = vp.first;
+            float z = std::abs( v - dist.mu ) / sigma;
+            float prob = std::exp( -0.5f * z * z );
+            float score = prob * (1.0f + 0.3f * (v - dist.mu) / sigma);
+            score *= GetFrameWeight( vp.second );
+            if ( score > maxScore || (score == maxScore && vp.second < bestFrame) )
             {
                maxScore = score;
                bestFrame = vp.second;
@@ -770,17 +771,16 @@ float PixelStackAnalyzer::SelectBestValue(
 
    case RegionClass::StarHalo:
       {
-         // Probability-weighted with reduced upward bias for spatial consistency
+         // Probability-weighted, +0.15 upward bias
          float maxScore = -std::numeric_limits<float>::max();
          for ( const auto& vp : validValues )
          {
             float v = vp.first;
             float z = std::abs( v - dist.mu ) / sigma;
             float prob = std::exp( -0.5f * z * z );
-            // Gentle upward bias (0.15) - halos need smoothness
             float score = prob * (1.0f + 0.15f * (v - dist.mu) / sigma);
             score *= GetFrameWeight( vp.second );
-            if ( score > maxScore )
+            if ( score > maxScore || (score == maxScore && vp.second < bestFrame) )
             {
                maxScore = score;
                bestFrame = vp.second;
@@ -791,43 +791,9 @@ float PixelStackAnalyzer::SelectBestValue(
       }
       break;
 
-   case RegionClass::NebulaEmission:
-   case RegionClass::NebulaReflection:
-   case RegionClass::NebulaPlanetary:
-   case RegionClass::GalaxyCore:
-   case RegionClass::GalaxySpiral:
-   case RegionClass::GalaxyElliptical:
-   case RegionClass::GalaxyIrregular:
-   case RegionClass::GalacticCirrus:
-      {
-         // For emission nebula, galaxies, and IFN: favor signal (higher values)
-         // but be more conservative than stars. GalacticCirrus is extremely faint -
-         // very careful signal preservation, DO NOT reject low values as they may
-         // represent real dark structure in the cirrus.
-         float maxScore = -std::numeric_limits<float>::max();
-         for ( const auto& vp : validValues )
-         {
-            float v = vp.first;
-            float z = std::abs( v - dist.mu ) / sigma;
-            float prob = std::exp( -0.5f * z * z );
-            // Score: probability weighted toward higher signal
-            float score = prob * (1.0f + 0.3f * (v - dist.mu) / sigma);
-            score *= GetFrameWeight( vp.second );
-            if ( score > maxScore )
-            {
-               maxScore = score;
-               bestFrame = vp.second;
-               bestValue = v;
-            }
-         }
-         confidence = ComputeConfidence( 0.8f );
-      }
-      break;
-
    default:
       {
-         // Default: select value closest to median (standard behavior)
-         // Frame weight acts as a tiebreaker for similarly-close values
+         // Background/Artifact: select closest to median
          std::vector<float> sortedValid;
          for ( const auto& vp : validValues )
             sortedValid.push_back( vp.first );
@@ -838,9 +804,8 @@ float PixelStackAnalyzer::SelectBestValue(
          for ( const auto& vp : validValues )
          {
             float d = std::abs( vp.first - median );
-            // Lower distance is better; divide by frame weight to favor weighted frames
             float invScore = d / GetFrameWeight( vp.second );
-            if ( invScore < bestInvScore )
+            if ( invScore < bestInvScore || (invScore == bestInvScore && vp.second < bestFrame) )
             {
                bestInvScore = invScore;
                bestFrame = vp.second;
@@ -881,104 +846,51 @@ StackAnalysisConfig PixelStackAnalyzer::GetClassAdjustedConfig( RegionClass regi
 
    switch ( regionClass )
    {
-   // Background - aggressive high outlier rejection
    case RegionClass::Background:
-   case RegionClass::ArtifactGradient:
-   case RegionClass::ArtifactNoise:
       config.outlierSigmaThreshold = 3.0f;
       config.favorHighSignal = false;
       config.favorLowSignal = false;
       config.useMedianSelection = true;
       break;
 
-   // Stars - don't reject high values
-   case RegionClass::StarBright:
-   case RegionClass::StarMedium:
-   case RegionClass::StarFaint:
-   case RegionClass::StarSaturated:
-   case RegionClass::ArtifactDiffraction:  // Diffraction spikes are star features
-      config.outlierSigmaThreshold = 4.0f;  // More permissive
-      config.favorHighSignal = true;        // Stars should be bright
+   case RegionClass::BrightCompact:
+      config.outlierSigmaThreshold = 4.0f;
+      config.favorHighSignal = true;
       config.favorLowSignal = false;
       break;
 
-   // Star clusters
-   case RegionClass::StarClusterOpen:
-   case RegionClass::StarClusterGlobular:
+   case RegionClass::FaintCompact:
       config.outlierSigmaThreshold = 3.5f;
       config.favorHighSignal = true;
       config.favorLowSignal = false;
       break;
 
-   // Emission nebula - favor signal
-   case RegionClass::NebulaEmission:
+   case RegionClass::BrightExtended:
       config.outlierSigmaThreshold = 3.5f;
       config.favorHighSignal = true;
       config.favorLowSignal = false;
       break;
 
-   // Reflection nebula
-   case RegionClass::NebulaReflection:
-      config.outlierSigmaThreshold = 3.0f;
-      config.favorHighSignal = true;
-      config.favorLowSignal = false;
-      break;
-
-   // Dark nebula - preserve dark values!
-   case RegionClass::NebulaDark:
-   case RegionClass::DustLane:
+   case RegionClass::DarkExtended:
       config.outlierSigmaThreshold = 3.0f;
       config.favorHighSignal = false;
-      config.favorLowSignal = true;    // Dark features should stay dark
+      config.favorLowSignal = true;
       break;
 
-   // Planetary nebula - preserve structure
-   case RegionClass::NebulaPlanetary:
-      config.outlierSigmaThreshold = 3.0f;
-      config.favorHighSignal = true;
+   case RegionClass::Artifact:
+      config.outlierSigmaThreshold = 2.0f;
+      config.favorHighSignal = false;
       config.favorLowSignal = false;
+      config.useMedianSelection = true;
       break;
 
-   // Galaxy features
-   case RegionClass::GalaxyCore:
-      config.outlierSigmaThreshold = 3.5f;
-      config.favorHighSignal = true;
-      config.favorLowSignal = false;
-      break;
-
-   case RegionClass::GalaxySpiral:
-   case RegionClass::GalaxyElliptical:
-   case RegionClass::GalaxyIrregular:
-      config.outlierSigmaThreshold = 3.0f;
-      config.favorHighSignal = true;
-      config.favorLowSignal = false;
-      break;
-
-   // Star halos - similar to medium stars but with more spatial consistency
    case RegionClass::StarHalo:
-      config.outlierSigmaThreshold = 3.5f;  // Between stars (4.0) and nebulae (3.0)
-      config.favorHighSignal = true;         // Preserve halo signal
+      config.outlierSigmaThreshold = 3.5f;
+      config.favorHighSignal = true;
       config.favorLowSignal = false;
-      break;
-
-   // Galactic cirrus / IFN - extremely faint, at noise floor
-   case RegionClass::GalacticCirrus:
-      config.outlierSigmaThreshold = 4.0f;  // Very permissive - don't reject faint features
-      config.favorHighSignal = true;         // Preserve faint signal
-      config.favorLowSignal = false;
-      break;
-
-   // Artifacts to reject
-   case RegionClass::ArtifactHotPixel:
-   case RegionClass::ArtifactSatellite:
-      config.outlierSigmaThreshold = 2.0f;  // Very aggressive rejection
-      config.favorHighSignal = false;
-      config.favorLowSignal = false;
-      config.useMedianSelection = true;
       break;
 
    default:
-      // Keep defaults
       break;
    }
 
@@ -1025,15 +937,10 @@ float PixelStackAnalyzer::ComputeMedian( std::vector<float>& values )
    size_t n = values.size();
    size_t mid = n / 2;
 
-   std::nth_element( values.begin(), values.begin() + mid, values.end() );
+   std::sort( values.begin(), values.end() );
 
    if ( n % 2 == 0 )
-   {
-      float upper = values[mid];
-      // Find max of lower partition for the other middle element
-      float lower = *std::max_element( values.begin(), values.begin() + mid );
-      return (lower + upper) / 2.0f;
-   }
+      return (values[mid - 1] + values[mid]) / 2.0f;
    else
       return values[mid];
 }

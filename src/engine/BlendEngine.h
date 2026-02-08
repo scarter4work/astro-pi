@@ -63,63 +63,29 @@ struct BlendConfig
       // Return defaults based on region type
       switch ( rc )
       {
-      // Stars: SHARP boundaries - minimal feathering (0.5-1.0)
-      case RegionClass::StarBright:
-      case RegionClass::StarMedium:
-      case RegionClass::StarFaint:
-      case RegionClass::StarSaturated:
+      // Bright compact: SHARP boundaries - minimal feathering
+      case RegionClass::BrightCompact:
          return 0.75;
 
-      // Star clusters: slightly more feathering than individual stars
-      case RegionClass::StarClusterOpen:
-      case RegionClass::StarClusterGlobular:
+      // Faint compact: slightly more feathering (clusters + faint stars)
+      case RegionClass::FaintCompact:
          return 1.5;
 
-      // Nebulae: SOFT boundaries - higher feathering (4-6)
-      case RegionClass::NebulaEmission:
-      case RegionClass::NebulaReflection:
-      case RegionClass::NebulaPlanetary:
+      // Bright extended: SOFT boundaries - nebulae/galaxies
+      case RegionClass::BrightExtended:
          return 5.0;
 
-      // Dark nebulae: soft but slightly less than emission
-      case RegionClass::NebulaDark:
-         return 4.5;
-
-      // Galaxies: MEDIUM feathering (2-3)
-      case RegionClass::GalaxySpiral:
-      case RegionClass::GalaxyElliptical:
-      case RegionClass::GalaxyIrregular:
-         return 2.5;
-
-      // Galaxy cores: slightly sharper than outer regions
-      case RegionClass::GalaxyCore:
-         return 2.0;
-
-      // Dust lanes: medium-soft (blend with galaxy/nebula context)
-      case RegionClass::DustLane:
-         return 3.0;
+      // Dark extended: soft boundaries
+      case RegionClass::DarkExtended:
+         return 4.0;
 
       // Artifacts: sharp boundaries - we want to isolate them
-      case RegionClass::ArtifactHotPixel:
-      case RegionClass::ArtifactSatellite:
-      case RegionClass::ArtifactDiffraction:
+      case RegionClass::Artifact:
          return 0.5;
-
-      // Gradient artifacts: very soft blending
-      case RegionClass::ArtifactGradient:
-         return 6.0;
-
-      // Noise: medium-soft
-      case RegionClass::ArtifactNoise:
-         return 4.0;
 
       // Star halos: intermediate between stars and nebulae
       case RegionClass::StarHalo:
          return 3.0;
-
-      // Galactic cirrus / IFN: very soft, extremely diffuse features
-      case RegionClass::GalacticCirrus:
-         return 8.0;
 
       // Background: use default
       case RegionClass::Background:
