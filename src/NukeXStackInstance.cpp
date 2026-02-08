@@ -959,92 +959,222 @@ bool NukeXStackInstance::RunIntegration(
 
       int segSuccessCount = 0;
 
-      for ( size_t f = 0; f < frames.size(); ++f )
+      // Create and initialize segmentation engine ONCE for all frames
+      String modelPath = SegmentationEngine::GetDefaultModelPath();
+      if ( modelPath.IsEmpty() )
+         modelPath = "/opt/PixInsight/bin/nukex_segmentation.onnx";
+
+      bool engineReady = false;
+      SegmentationEngine engine;
+
+      if ( !File::Exists( modelPath ) )
       {
-         console.Write( String().Format( "\rSegmenting frame %d/%d...",
-            static_cast<int>( f + 1 ), static_cast<int>( frames.size() ) ) );
-         console.Flush();
+         console.WarningLn( String().Format( "ONNX model not found at: %s", IsoString( modelPath ).c_str() ) );
+         console.WarningLn( "ML segmentation disabled - using statistical selection only." );
+      }
+      else
+      {
+         console.WriteLn( String().Format( "Loading segmentation model: %s", IsoString( modelPath ).c_str() ) );
 
-         // Create a temporary stretched copy for segmentation
-         Image stretchedCopy;
-         stretchedCopy.Assign( frames[f] );
+         SegmentationEngineConfig engineConfig;
+         engineConfig.modelConfig.modelPath = modelPath;
+         engineConfig.modelConfig.inputWidth = 512;
+         engineConfig.modelConfig.inputHeight = 512;
+         engineConfig.modelConfig.useGPU = false;
+         engineConfig.autoFallback = true;
+         engineConfig.cacheResults = false;
+         engineConfig.runAnalysis = false;
+         engineConfig.downsampleLargeImages = true;
+         engineConfig.maxProcessingDimension = 1024;
 
-         // Compute statistics for auto-configuration
-         RegionStatistics stats;
+         if ( engine.Initialize( engineConfig ) && engine.IsReady() )
          {
-            double median, mad;
-            median = stretchedCopy.Median();
-
-            // Compute MAD manually: median of |pixel - median|
-            Image devImage;
-            devImage.Assign( stretchedCopy );
-            for ( int c = 0; c < devImage.NumberOfChannels(); ++c )
-            {
-               Image::sample* data = devImage.PixelData( c );
-               size_t numPx = static_cast<size_t>( devImage.Width() ) * devImage.Height();
-               for ( size_t p = 0; p < numPx; ++p )
-                  data[p] = std::abs( data[p] - static_cast<float>( median ) );
-            }
-            mad = devImage.Median();
-
-            stats.median = median;
-            stats.mad = mad;
-            stats.min = 0.0;
-            stats.max = 1.0;
-            stats.snrEstimate = ( mad > 1e-10 ) ? ( median / mad ) : 10.0;
-         }
-
-         // Auto-configure and apply arcsinh stretch
-         ArcSinhStretch stretcher;
-         stretcher.AutoConfigure( stats );
-         stretcher.ApplyToImage( stretchedCopy );
-
-         // Run segmentation on the stretched copy
-         std::vector<std::vector<int>> frameClassMap;
-         std::vector<std::vector<float>> frameConfMap;
-         double segTime = 0.0;
-
-         if ( RunSegmentation( stretchedCopy, frameClassMap, frameConfMap, segTime ) )
-         {
-            // Convert to compact PerFrameClassMap
-            PerFrameClassMap pfMap;
-            pfMap.segHeight = static_cast<int>( frameClassMap.size() );
-            pfMap.segWidth = pfMap.segHeight > 0
-               ? static_cast<int>( frameClassMap[0].size() ) : 0;
-
-            size_t mapSize = static_cast<size_t>( pfMap.segWidth ) * pfMap.segHeight;
-            pfMap.classLabels.resize( mapSize );
-            pfMap.confidences.resize( mapSize );
-
-            for ( int y = 0; y < pfMap.segHeight; ++y )
-            {
-               for ( int x = 0; x < pfMap.segWidth; ++x )
-               {
-                  size_t idx = static_cast<size_t>( y ) * pfMap.segWidth + x;
-                  pfMap.classLabels[idx] = static_cast<uint8_t>(
-                     std::max( 0, std::min( static_cast<int>( RegionClass::Count ) - 1,
-                        frameClassMap[y][x] ) ) );
-                  pfMap.confidences[idx] = static_cast<uint8_t>(
-                     std::max( 0.0f, std::min( 1.0f,
-                        ( y < static_cast<int>( frameConfMap.size() ) &&
-                          x < static_cast<int>( frameConfMap[y].size() ) )
-                        ? frameConfMap[y][x] : 0.5f ) ) * 255.0f );
-               }
-            }
-
-            perFrameMaps.push_back( std::move( pfMap ) );
-            segSuccessCount++;
+            console.WriteLn( String().Format( "Using model: %s", IsoString( engine.GetModelName() ).c_str() ) );
+            engineReady = true;
          }
          else
          {
-            // Segmentation failed for this frame - add empty map
-            perFrameMaps.push_back( PerFrameClassMap() );
+            console.WarningLn( String().Format( "Failed to initialize segmentation engine: %s",
+               IsoString( engine.GetLastError() ).c_str() ) );
+         }
+      }
+
+      if ( engineReady )
+      {
+         for ( size_t f = 0; f < frames.size(); ++f )
+         {
+            console.Write( String().Format( "\rSegmenting frame %d/%d...",
+               static_cast<int>( f + 1 ), static_cast<int>( frames.size() ) ) );
+            console.Flush();
+
+            // Create a temporary stretched copy for segmentation
+            Image stretchedCopy;
+            stretchedCopy.Assign( frames[f] );
+
+            // Compute statistics for auto-configuration
+            RegionStatistics stats;
+            {
+               double median, mad;
+               median = stretchedCopy.Median();
+
+               // Compute MAD manually: median of |pixel - median|
+               Image devImage;
+               devImage.Assign( stretchedCopy );
+               for ( int c = 0; c < devImage.NumberOfChannels(); ++c )
+               {
+                  Image::sample* data = devImage.PixelData( c );
+                  size_t numPx = static_cast<size_t>( devImage.Width() ) * devImage.Height();
+                  for ( size_t p = 0; p < numPx; ++p )
+                     data[p] = std::abs( data[p] - static_cast<float>( median ) );
+               }
+               mad = devImage.Median();
+
+               stats.median = median;
+               stats.mad = mad;
+               stats.min = 0.0;
+               stats.max = 1.0;
+               stats.snrEstimate = ( mad > 1e-10 ) ? ( median / mad ) : 10.0;
+            }
+
+            // Auto-configure and apply arcsinh stretch
+            ArcSinhStretch stretcher;
+            stretcher.AutoConfigure( stats );
+            stretcher.ApplyToImage( stretchedCopy );
+
+            // Run segmentation directly on the cached engine
+            SegmentationEngineResult result = engine.Process( stretchedCopy );
+
+            if ( result.isValid )
+            {
+               // Convert the class map image to PerFrameClassMap
+               int segW = result.segmentation.width;
+               int segH = result.segmentation.height;
+
+               PerFrameClassMap pfMap;
+               pfMap.segHeight = segH;
+               pfMap.segWidth = segW;
+
+               size_t mapSize = static_cast<size_t>( segW ) * segH;
+               pfMap.classLabels.resize( mapSize );
+               pfMap.confidences.resize( mapSize );
+
+               int numClasses = static_cast<int>( RegionClass::Count );
+               std::map<int, int> classCounts;
+
+               for ( int y = 0; y < segH; ++y )
+               {
+                  for ( int x = 0; x < segW; ++x )
+                  {
+                     // Convert normalized class map back to integer class indices
+                     float normalizedClass = result.segmentation.classMap.Pixel( x, y, 0 );
+                     int classIdx = static_cast<int>( normalizedClass * ( numClasses - 1 ) + 0.5f );
+                     classIdx = std::max( 0, std::min( numClasses - 1, classIdx ) );
+
+                     size_t idx = static_cast<size_t>( y ) * segW + x;
+                     pfMap.classLabels[idx] = static_cast<uint8_t>( classIdx );
+
+                     // Get confidence from the mask of the predicted class
+                     RegionClass rc = static_cast<RegionClass>( classIdx );
+                     const Image* mask = result.segmentation.GetMask( rc );
+                     if ( mask && x < mask->Width() && y < mask->Height() )
+                        pfMap.confidences[idx] = static_cast<uint8_t>(
+                           std::max( 0.0f, std::min( 1.0f, mask->Pixel( x, y, 0 ) ) ) * 255.0f );
+                     else
+                        pfMap.confidences[idx] = static_cast<uint8_t>( 0.5f * 255.0f );
+
+                     classCounts[classIdx]++;
+                  }
+               }
+
+               perFrameMaps.push_back( std::move( pfMap ) );
+               segSuccessCount++;
+
+               // Log concise per-frame class distribution (classes >5% only)
+               int totalPx = segW * segH;
+               IsoString distLine;
+               for ( const auto& pair : classCounts )
+               {
+                  double pct = 100.0 * pair.second / totalPx;
+                  if ( pct > 5.0 )
+                  {
+                     RegionClass rc = static_cast<RegionClass>( pair.first );
+                     IsoString regionName = IsoString( RegionClassDisplayName( rc ) );
+                     if ( !distLine.IsEmpty() )
+                        distLine += ", ";
+                     distLine += IsoString().Format( "%s=%.1f%%", regionName.c_str(), pct );
+                  }
+               }
+               console.WriteLn( String().Format( "\r<clrbol>Frame %d/%d: %s",
+                  static_cast<int>( f + 1 ), static_cast<int>( frames.size() ),
+                  distLine.c_str() ) );
+            }
+            else
+            {
+               // Segmentation failed for this frame - add empty map
+               perFrameMaps.push_back( PerFrameClassMap() );
+               console.WriteLn( String().Format( "\r<clrbol>Frame %d/%d: segmentation failed",
+                  static_cast<int>( f + 1 ), static_cast<int>( frames.size() ) ) );
+            }
          }
       }
 
       auto segEnd = std::chrono::high_resolution_clock::now();
       summary.segmentationTimeMs = std::chrono::duration<double, std::milli>(
          segEnd - segStart ).count();
+
+      // Reliability guardrail: check if segmentation is unreliable
+      // If any single non-Background class dominates >60% on average across all frames,
+      // the segmentation model is likely producing unreliable results.
+      if ( segSuccessCount > 0 )
+      {
+         int numClasses = static_cast<int>( RegionClass::Count );
+         std::vector<double> avgClassCoverage( numClasses, 0.0 );
+
+         for ( const auto& pfMap : perFrameMaps )
+         {
+            if ( pfMap.segWidth == 0 || pfMap.segHeight == 0 )
+               continue;
+
+            int totalPx = pfMap.segWidth * pfMap.segHeight;
+            std::vector<int> counts( numClasses, 0 );
+            for ( size_t i = 0; i < pfMap.classLabels.size(); ++i )
+            {
+               int cls = pfMap.classLabels[i];
+               if ( cls >= 0 && cls < numClasses )
+                  counts[cls]++;
+            }
+            for ( int c = 0; c < numClasses; ++c )
+               avgClassCoverage[c] += 100.0 * counts[c] / totalPx;
+         }
+
+         // Divide by number of successfully segmented frames
+         for ( int c = 0; c < numClasses; ++c )
+            avgClassCoverage[c] /= segSuccessCount;
+
+         // Find dominant non-Background class
+         int dominantClass = -1;
+         double dominantPct = 0.0;
+         for ( int c = 1; c < numClasses; ++c )  // skip Background (0)
+         {
+            if ( avgClassCoverage[c] > dominantPct )
+            {
+               dominantPct = avgClassCoverage[c];
+               dominantClass = c;
+            }
+         }
+
+         if ( dominantClass >= 0 && dominantPct > 60.0 )
+         {
+            RegionClass rc = static_cast<RegionClass>( dominantClass );
+            IsoString regionName = IsoString( RegionClassDisplayName( rc ) );
+            console.WarningLn( String().Format(
+               "WARNING: Segmentation appears unreliable: %s dominates at %.1f%% across all frames",
+               regionName.c_str(), dominantPct ) );
+            console.WarningLn( "Falling back to statistical pixel selection (segmentation disabled)" );
+            segSuccessCount = 0;
+            perFrameMaps.clear();
+         }
+      }
 
       if ( segSuccessCount > 0 )
       {
@@ -1075,29 +1205,6 @@ bool NukeXStackInstance::RunIntegration(
             "\r<clrbol>Per-frame segmentation complete: %d/%d frames (%.1f s)",
             segSuccessCount, static_cast<int>( frames.size() ),
             summary.segmentationTimeMs / 1000.0 ) );
-
-         // Report consensus class distribution from first frame as sample
-         if ( !perFrameMaps.empty() && perFrameMaps[0].segWidth > 0 )
-         {
-            std::map<int, int> classCounts;
-            const PerFrameClassMap& map0 = perFrameMaps[0];
-            for ( size_t i = 0; i < map0.classLabels.size(); ++i )
-               classCounts[map0.classLabels[i]]++;
-
-            int totalPx = map0.segWidth * map0.segHeight;
-            console.WriteLn( "<br>Frame 1 segmentation class distribution:" );
-            for ( const auto& pair : classCounts )
-            {
-               double pct = 100.0 * pair.second / totalPx;
-               if ( pct > 0.5 )
-               {
-                  RegionClass rc = static_cast<RegionClass>( pair.first );
-                  IsoString regionName = IsoString( RegionClassDisplayName( rc ) );
-                  console.WriteLn( String().Format( "  %s: %.1f%%",
-                     regionName.c_str(), pct ) );
-               }
-            }
-         }
 
          console.WriteLn( "Pixel selection will use per-frame region-aware consensus strategies." );
       }
