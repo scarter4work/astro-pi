@@ -591,7 +591,7 @@ def main():
     logger.info("Device: %s", device)
     if device.type == "cuda":
         logger.info("GPU: %s", torch.cuda.get_device_name())
-        vram = torch.cuda.get_device_properties(0).total_mem / 1e9
+        vram = torch.cuda.get_device_properties(0).total_memory / 1e9
         logger.info("VRAM: %.1f GB", vram)
 
     # ------------------------------------------------------------------
