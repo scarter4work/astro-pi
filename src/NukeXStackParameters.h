@@ -141,6 +141,16 @@ public:
 
 extern NXSEnableAutoStretch* TheNXSEnableAutoStretchParameter;
 
+class NXSEnableRegistration : public MetaBoolean
+{
+public:
+   NXSEnableRegistration( MetaProcess* );
+   IsoString Id() const override;
+   bool DefaultValue() const override;
+};
+
+extern NXSEnableRegistration* TheNXSEnableRegistrationParameter;
+
 // ----------------------------------------------------------------------------
 // Floating Point Parameters
 // ----------------------------------------------------------------------------

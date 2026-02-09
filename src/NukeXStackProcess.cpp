@@ -40,6 +40,7 @@ NukeXStackProcess::NukeXStackProcess()
    new NXSUseTargetContext( this );
    new NXSGenerateMetadata( this );
    new NXSEnableAutoStretch( this );
+   new NXSEnableRegistration( this );
 
    // Floating point parameters
    new NXSOutlierSigmaThreshold( this );

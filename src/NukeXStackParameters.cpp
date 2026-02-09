@@ -236,6 +236,26 @@ bool NXSEnableAutoStretch::DefaultValue() const
 }
 
 // ----------------------------------------------------------------------------
+
+NXSEnableRegistration* TheNXSEnableRegistrationParameter = nullptr;
+
+NXSEnableRegistration::NXSEnableRegistration( MetaProcess* P )
+   : MetaBoolean( P )
+{
+   TheNXSEnableRegistrationParameter = this;
+}
+
+IsoString NXSEnableRegistration::Id() const
+{
+   return "enableRegistration";
+}
+
+bool NXSEnableRegistration::DefaultValue() const
+{
+   return true;
+}
+
+// ----------------------------------------------------------------------------
 // Floating Point Parameters
 // ----------------------------------------------------------------------------
 

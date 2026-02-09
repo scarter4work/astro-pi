@@ -117,6 +117,12 @@ private:
          NumericControl    OutlierSigma_NumericControl;
          CheckBox          GenerateMetadata_CheckBox;
          CheckBox          EnableAutoStretch_CheckBox;
+
+      // Frame Registration Section
+      SectionBar        Registration_SectionBar;
+      Control           Registration_Control;
+      VerticalSizer     Registration_Sizer;
+         CheckBox          EnableRegistration_CheckBox;
    };
 
    GUIData* GUI = nullptr;

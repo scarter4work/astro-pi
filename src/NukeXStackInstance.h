@@ -20,6 +20,7 @@
 #include "engine/PixelSelector.h"
 #include "engine/TransitionChecker.h"
 #include "engine/FrameStreamer.h"
+#include "engine/FrameRegistration.h"
 
 #include <vector>
 
@@ -94,6 +95,7 @@ private:
    pcl_bool p_useTargetContext;
    pcl_bool p_generateMetadata;
    pcl_bool p_enableAutoStretch = true;
+   pcl_bool p_enableRegistration = true;
 
    // Numeric parameters
    float    p_outlierSigmaThreshold;
@@ -133,6 +135,9 @@ private:
                          std::vector<std::vector<int>>& classMap,
                          std::vector<std::vector<float>>& confidenceMap,
                          double& segmentationTimeMs ) const;
+
+   // Register all frames to reference using star alignment
+   bool RegisterAllFrames( std::vector<Image>& frames ) const;
 
    friend class NukeXStackProcess;
    friend class NukeXStackInterface;

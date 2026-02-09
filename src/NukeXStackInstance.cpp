@@ -49,6 +49,7 @@ NukeXStackInstance::NukeXStackInstance( const MetaProcess* m )
    , p_useTargetContext( TheNXSUseTargetContextParameter->DefaultValue() )
    , p_generateMetadata( TheNXSGenerateMetadataParameter->DefaultValue() )
    , p_enableAutoStretch( TheNXSEnableAutoStretchParameter->DefaultValue() )
+   , p_enableRegistration( TheNXSEnableRegistrationParameter->DefaultValue() )
    , p_outlierSigmaThreshold( static_cast<float>( TheNXSOutlierSigmaThresholdParameter->DefaultValue() ) )
    , p_minClassConfidence( static_cast<float>( TheNXSMinClassConfidenceParameter->DefaultValue() ) )
    , p_smoothingStrength( static_cast<float>( TheNXSSmoothingStrengthParameter->DefaultValue() ) )
@@ -81,6 +82,7 @@ void NukeXStackInstance::Assign( const ProcessImplementation& p )
       p_useTargetContext        = x->p_useTargetContext;
       p_generateMetadata        = x->p_generateMetadata;
       p_enableAutoStretch       = x->p_enableAutoStretch;
+      p_enableRegistration      = x->p_enableRegistration;
       p_outlierSigmaThreshold   = x->p_outlierSigmaThreshold;
       p_minClassConfidence      = x->p_minClassConfidence;
       p_smoothingStrength       = x->p_smoothingStrength;
@@ -334,6 +336,10 @@ bool NukeXStackInstance::ExecuteGlobal()
          static_cast<int>( frames.size() ), width, height, channels,
          totalBytes / ( 1024.0 * 1024.0 * 1024.0 ) ) );
 
+      // Frame registration (star alignment) before integration
+      if ( p_enableRegistration && frames.size() > 1 )
+         RegisterAllFrames( frames );
+
       if ( !RunIntegration( frames, referenceKeywords, output, summary ) )
       {
          console.CriticalLn( "Integration failed." );
@@ -410,6 +416,8 @@ void* NukeXStackInstance::LockParameter( const MetaParameter* p, size_type table
       return &p_generateMetadata;
    if ( p == TheNXSEnableAutoStretchParameter )
       return &p_enableAutoStretch;
+   if ( p == TheNXSEnableRegistrationParameter )
+      return &p_enableRegistration;
    if ( p == TheNXSOutlierSigmaThresholdParameter )
       return &p_outlierSigmaThreshold;
    if ( p == TheNXSMinClassConfidenceParameter )
@@ -1328,6 +1336,28 @@ bool NukeXStackInstance::RunIntegrationStreaming(
    }
 
    return true;
+}
+
+// ----------------------------------------------------------------------------
+
+bool NukeXStackInstance::RegisterAllFrames( std::vector<Image>& frames ) const
+{
+   Console console;
+
+   FrameRegistrationConfig config;
+   config.maxStars = 200;
+   config.sensitivity = 0.5;
+   config.minMatches = 6;
+
+   FrameRegistration registration( config );
+   RegistrationSummary regSummary;
+
+   bool ok = registration.RegisterFrames( frames, regSummary );
+
+   if ( !ok )
+      console.WarningLn( "Frame registration did not complete successfully. Proceeding with unregistered frames." );
+
+   return ok;
 }
 
 // ----------------------------------------------------------------------------

@@ -173,6 +173,9 @@ void NukeXStackInterface::UpdateControls()
    GUI->OutlierSigma_NumericControl.SetValue( m_instance.p_outlierSigmaThreshold );
    GUI->GenerateMetadata_CheckBox.SetChecked( m_instance.p_generateMetadata );
    GUI->EnableAutoStretch_CheckBox.SetChecked( m_instance.p_enableAutoStretch );
+
+   // Frame Registration
+   GUI->EnableRegistration_CheckBox.SetChecked( m_instance.p_enableRegistration );
 }
 
 // ----------------------------------------------------------------------------
@@ -448,6 +451,10 @@ void NukeXStackInterface::e_CheckBoxClick( Button& sender, bool checked )
    else if ( sender == GUI->EnableAutoStretch_CheckBox )
    {
       m_instance.p_enableAutoStretch = checked;
+   }
+   else if ( sender == GUI->EnableRegistration_CheckBox )
+   {
+      m_instance.p_enableRegistration = checked;
    }
 }
 
@@ -748,6 +755,26 @@ NukeXStackInterface::GUIData::GUIData( NukeXStackInterface& w )
    Outliers_Control.SetSizer( Outliers_Sizer );
 
    // =========================================================================
+   // Frame Registration Section
+   // =========================================================================
+
+   Registration_SectionBar.SetTitle( "Frame Registration" );
+   Registration_SectionBar.SetSection( Registration_Control );
+
+   EnableRegistration_CheckBox.SetText( "Enable Star Alignment" );
+   EnableRegistration_CheckBox.SetToolTip( "<p>Automatically align all frames to a reference using triangle-matching "
+                                            "star registration before stacking.</p>"
+                                            "<p>This corrects for field drift, imperfect tracking, and dithering between "
+                                            "exposures. Frame 1 is used as the reference.</p>"
+                                            "<p>Disable this only if your frames are already precisely aligned.</p>" );
+   EnableRegistration_CheckBox.OnClick( (Button::click_event_handler)&NukeXStackInterface::e_CheckBoxClick, w );
+
+   Registration_Sizer.SetSpacing( 4 );
+   Registration_Sizer.Add( EnableRegistration_CheckBox );
+
+   Registration_Control.SetSizer( Registration_Sizer );
+
+   // =========================================================================
    // Global Layout
    // =========================================================================
 
@@ -755,6 +782,8 @@ NukeXStackInterface::GUIData::GUIData( NukeXStackInterface& w )
    Global_Sizer.SetSpacing( 6 );
    Global_Sizer.Add( InputFiles_SectionBar );
    Global_Sizer.Add( InputFiles_Control, 100 );
+   Global_Sizer.Add( Registration_SectionBar );
+   Global_Sizer.Add( Registration_Control );
    Global_Sizer.Add( Strategy_SectionBar );
    Global_Sizer.Add( Strategy_Control );
    Global_Sizer.Add( MLSegmentation_SectionBar );
