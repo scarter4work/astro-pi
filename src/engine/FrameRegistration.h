@@ -28,15 +28,16 @@ namespace pcl
 struct FrameRegistrationConfig
 {
    int    maxStars = 200;          // Maximum stars to detect per frame
+   int    triangleStars = 40;      // Use top N brightest stars for triangle building
    double sensitivity = 0.5;       // Star detection sensitivity (0-1)
    int    minMatches = 6;          // Minimum star matches for valid registration
-   double ratioTolerance = 0.01;   // Triangle side ratio matching tolerance
+   double ratioTolerance = 0.03;   // Triangle side ratio matching tolerance
    double maxTranslation = 500.0;  // Max translation in pixels before rejection
    double maxRotationDeg = 5.0;    // Max rotation in degrees before rejection
    double maxScaleDev = 0.05;      // Max |scale - 1.0| before rejection
    double nearIdentityPx = 0.5;   // Skip resampling if total displacement < this
    double outlierSigma = 2.5;      // MAD-based sigma clipping for match refinement
-   int    maxTriangles = 5000;     // Maximum triangles to generate
+   int    maxTriangles = 15000;    // Maximum triangles to generate
 };
 
 // ----------------------------------------------------------------------------

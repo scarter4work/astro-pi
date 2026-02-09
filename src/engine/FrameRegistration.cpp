@@ -203,70 +203,95 @@ std::vector<StarMatch> FrameRegistration::MatchTriangles(
    const std::vector<DetectedStar>& refStars,
    const std::vector<DetectedStar>& targetStars )
 {
-   // Vote matrix: votes[refStarIdx][targetStarIdx]
    int nRef = static_cast<int>( refStars.size() );
    int nTarget = static_cast<int>( targetStars.size() );
 
    if ( nRef == 0 || nTarget == 0 )
       return {};
 
-   std::vector<std::vector<int>> votes( nRef, std::vector<int>( nTarget, 0 ) );
+   // Vote matrix: votes[refStarIdx][targetStarIdx]
+   // Use only the triangle star subset (indices 0..triangleStars-1)
+   int voteN = std::min( nRef, m_config.triangleStars );
+   int voteM = std::min( nTarget, m_config.triangleStars );
+   std::vector<std::vector<int>> votes( voteN, std::vector<int>( voteM, 0 ) );
 
    double tol = m_config.ratioTolerance;
 
+   // Sort target triangles by r1 for binary search
+   std::vector<StarTriangle> sortedTarget( targetTri );
+   std::sort( sortedTarget.begin(), sortedTarget.end(),
+              []( const StarTriangle& a, const StarTriangle& b ) { return a.r1 < b.r1; } );
+
    for ( const auto& rt : refTri )
    {
-      for ( const auto& tt : targetTri )
+      // Binary search for target triangles with r1 in [rt.r1 - tol, rt.r1 + tol]
+      double r1Low = rt.r1 - tol;
+      double r1High = rt.r1 + tol;
+
+      auto itLow = std::lower_bound( sortedTarget.begin(), sortedTarget.end(), r1Low,
+         []( const StarTriangle& t, double val ) { return t.r1 < val; } );
+
+      for ( auto it = itLow; it != sortedTarget.end() && it->r1 <= r1High; ++it )
       {
-         // Compare triangle shapes
-         if ( std::abs( rt.r1 - tt.r1 ) < tol && std::abs( rt.r2 - tt.r2 ) < tol )
+         const auto& tt = *it;
+
+         // Check r2 tolerance
+         if ( std::abs( rt.r2 - tt.r2 ) >= tol )
+            continue;
+
+         // Triangle shapes match. Resolve vertex mapping.
+         int refVerts[3] = { rt.i, rt.j, rt.k };
+         int tarVerts[3] = { tt.i, tt.j, tt.k };
+
+         // Skip if any vertex index is outside the vote matrix bounds
+         bool skip = false;
+         for ( int m = 0; m < 3; ++m )
          {
-            // This triangle pair matches. Each vertex in the ref triangle
-            // could map to any vertex in the target triangle.
-            // We try all 3 possible vertex mappings and pick the one
-            // most consistent with previous votes.
-
-            int refVerts[3] = { rt.i, rt.j, rt.k };
-            int tarVerts[3] = { tt.i, tt.j, tt.k };
-
-            // Try each of the 6 permutations (3 rotations * 2 reflections)
-            // For simplicity, try all 6:
-            int perms[6][3] = {
-               {0,1,2}, {0,2,1}, {1,0,2}, {1,2,0}, {2,0,1}, {2,1,0}
-            };
-
-            int bestPerm = 0;
-            int bestVotes = -1;
-
-            for ( int p = 0; p < 6; ++p )
+            if ( refVerts[m] >= voteN || tarVerts[m] >= voteM )
             {
-               int v = 0;
-               for ( int m = 0; m < 3; ++m )
-                  v += votes[refVerts[m]][tarVerts[perms[p][m]]];
-               if ( v > bestVotes )
-               {
-                  bestVotes = v;
-                  bestPerm = p;
-               }
+               skip = true;
+               break;
             }
-
-            // Add votes for best permutation
-            for ( int m = 0; m < 3; ++m )
-               votes[refVerts[m]][tarVerts[perms[bestPerm][m]]]++;
          }
+         if ( skip )
+            continue;
+
+         // Try all 6 vertex permutations, pick the one most consistent with existing votes
+         static const int perms[6][3] = {
+            {0,1,2}, {0,2,1}, {1,0,2}, {1,2,0}, {2,0,1}, {2,1,0}
+         };
+
+         int bestPerm = 0;
+         int bestVoteSum = -1;
+
+         for ( int p = 0; p < 6; ++p )
+         {
+            int v = 0;
+            for ( int m = 0; m < 3; ++m )
+               v += votes[refVerts[m]][tarVerts[perms[p][m]]];
+            if ( v > bestVoteSum )
+            {
+               bestVoteSum = v;
+               bestPerm = p;
+            }
+         }
+
+         // Add votes for best permutation
+         for ( int m = 0; m < 3; ++m )
+            votes[refVerts[m]][tarVerts[perms[bestPerm][m]]]++;
       }
    }
 
-   // Extract matches: for each ref star, find the target star with most votes
+   // Extract matches: for each ref star, find best target star
+   // Use threshold of 1 vote (any triangle support is meaningful)
    std::vector<StarMatch> matches;
-   int minVotesThreshold = 2; // Require at least 2 triangle votes
 
-   for ( int ri = 0; ri < nRef; ++ri )
+   for ( int ri = 0; ri < voteN; ++ri )
    {
       int bestTarget = -1;
-      int bestVotes = minVotesThreshold - 1;
+      int bestVotes = 0; // Minimum 1 vote required
 
-      for ( int ti = 0; ti < nTarget; ++ti )
+      for ( int ti = 0; ti < voteM; ++ti )
       {
          if ( votes[ri][ti] > bestVotes )
          {
@@ -277,25 +302,11 @@ std::vector<StarMatch> FrameRegistration::MatchTriangles(
 
       if ( bestTarget >= 0 )
       {
-         // Verify this target star's best match is also this ref star (mutual best)
-         bool mutual = true;
-         for ( int ri2 = 0; ri2 < nRef; ++ri2 )
-         {
-            if ( ri2 != ri && votes[ri2][bestTarget] > bestVotes )
-            {
-               mutual = false;
-               break;
-            }
-         }
-
-         if ( mutual )
-         {
-            StarMatch match;
-            match.refIndex = ri;
-            match.targetIndex = bestTarget;
-            match.residual = 0;
-            matches.push_back( match );
-         }
+         StarMatch match;
+         match.refIndex = ri;
+         match.targetIndex = bestTarget;
+         match.residual = 0;
+         matches.push_back( match );
       }
    }
 
@@ -598,8 +609,8 @@ FrameRegistrationResult FrameRegistration::RegisterFrame(
       return result;
    }
 
-   // Build triangles for target
-   auto targetTriangles = BuildTriangles( targetStars, m_config.maxStars, m_config.maxTriangles );
+   // Build triangles for target (use triangleStars for diverse vertex coverage)
+   auto targetTriangles = BuildTriangles( targetStars, m_config.triangleStars, m_config.maxTriangles );
 
    if ( targetTriangles.empty() )
    {
@@ -730,8 +741,8 @@ bool FrameRegistration::RegisterFrames( std::vector<Image>& frames, Registration
       return false;
    }
 
-   // Build reference triangles
-   auto refTriangles = BuildTriangles( refStars, m_config.maxStars, m_config.maxTriangles );
+   // Build reference triangles (use triangleStars for diverse vertex coverage)
+   auto refTriangles = BuildTriangles( refStars, m_config.triangleStars, m_config.maxTriangles );
    console.WriteLn( String().Format( "Reference triangles: %d", static_cast<int>( refTriangles.size() ) ) );
 
    // Reference frame result (always success, identity)
