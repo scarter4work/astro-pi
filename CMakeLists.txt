@@ -3,7 +3,7 @@
 # CMake build configuration
 
 cmake_minimum_required(VERSION 3.15)
-project(NukeX VERSION 1.0.0 LANGUAGES CXX)
+project(NukeX VERSION 2.0.0 LANGUAGES CXX)
 
 # C++17 required
 set(CMAKE_CXX_STANDARD 17)
@@ -72,10 +72,13 @@ set(NUKEX_SOURCES
     src/engine/LRGBProcessor.cpp
     src/engine/Compositor.cpp
     # Layer-aware components
-    src/engine/LayerStack.cpp
     src/engine/PSFModel.cpp
     # Distribution fitting for selective stacking
     src/engine/DistributionFitter.cpp
+    # Frame processing utilities
+    src/engine/BayerDemosaic.cpp
+    src/engine/FrameStreamer.cpp
+    src/engine/FrameRegistration.cpp
     # Pixel stack analysis and selection
     src/engine/PixelStackAnalyzer.cpp
     src/engine/PixelSelector.cpp
@@ -106,6 +109,7 @@ set(NUKEX_HEADERS
     src/NukeXStackProcess.h
     src/NukeXStackInstance.h
     src/NukeXStackParameters.h
+    src/NukeXStackInterface.h
     # Engine core
     src/engine/IStretchAlgorithm.h
     src/engine/StretchLibrary.h
@@ -120,10 +124,13 @@ set(NUKEX_HEADERS
     src/engine/Compositor.h
     src/engine/Constants.h
     # Layer-aware components
-    src/engine/LayerStack.h
     src/engine/PSFModel.h
     # Distribution fitting for selective stacking
     src/engine/DistributionFitter.h
+    # Frame processing utilities
+    src/engine/BayerDemosaic.h
+    src/engine/FrameStreamer.h
+    src/engine/FrameRegistration.h
     # Pixel stack analysis and selection
     src/engine/PixelStackAnalyzer.h
     src/engine/PixelSelector.h
@@ -197,7 +204,7 @@ else()
         -fvisibility=hidden -fvisibility-inlines-hidden
         -fnon-call-exceptions
     )
-    target_compile_definitions(NukeX PRIVATE _REENTRANT)
+    target_compile_definitions(NukeX PRIVATE _REENTRANT __PCL_BUILDING_MODULE)
     if(NOT APPLE)
         target_link_options(NukeX PRIVATE
             -Wl,-z,noexecstack

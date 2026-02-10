@@ -44,7 +44,6 @@ NukeXStackProcess::NukeXStackProcess()
 
    // Floating point parameters
    new NXSOutlierSigmaThreshold( this );
-   new NXSMinClassConfidence( this );
    new NXSSmoothingStrength( this );
    new NXSTransitionThreshold( this );
 

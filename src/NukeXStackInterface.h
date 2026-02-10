@@ -92,7 +92,6 @@ private:
       Control           MLSegmentation_Control;
       VerticalSizer     MLSegmentation_Sizer;
          CheckBox          EnableMLSegmentation_CheckBox;
-         NumericControl    MinConfidence_NumericControl;
          HorizontalSizer   Context_HSizer;
             CheckBox          UseSpatialContext_CheckBox;
             CheckBox          UseTargetContext_CheckBox;

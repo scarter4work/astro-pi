@@ -506,14 +506,12 @@ void SegmentationEngine::RunPostprocessing( SegmentationEngineResult& result,
 
 // ----------------------------------------------------------------------------
 
-const SegmentationEngineResult* SegmentationEngine::GetCachedResult() const
+std::optional<SegmentationEngineResult> SegmentationEngine::GetCachedResult() const
 {
-   // NOTE: This returns a pointer to m_cachedResult which is protected by m_cacheMutex.
-   // The caller must ensure no concurrent modifications occur while using the pointer.
-   // For thread-safe access, prefer using Process() which returns a copy, or
-   // use GetAllMasks() which returns a copy of the mask data.
    std::lock_guard<std::mutex> lock( m_cacheMutex );
-   return m_cachedResult.isValid ? &m_cachedResult : nullptr;
+   if ( m_cachedResult.isValid )
+      return m_cachedResult;  // Returns a copy under the lock
+   return std::nullopt;
 }
 
 // ----------------------------------------------------------------------------
@@ -527,16 +525,16 @@ void SegmentationEngine::ClearCache()
 
 // ----------------------------------------------------------------------------
 
-const Image* SegmentationEngine::GetMask( RegionClass rc ) const
+std::optional<Image> SegmentationEngine::GetMask( RegionClass rc ) const
 {
-   // NOTE: This returns a pointer to data protected by m_cacheMutex.
-   // The caller must ensure no concurrent modifications occur while using the pointer.
-   // For thread-safe access, prefer using GetAllMasks() which returns a copy.
    std::lock_guard<std::mutex> lock( m_cacheMutex );
    if ( !m_cachedResult.isValid )
-      return nullptr;
+      return std::nullopt;
 
-   return m_cachedResult.segmentation.GetMask( rc );
+   const Image* mask = m_cachedResult.segmentation.GetMask( rc );
+   if ( mask )
+      return *mask;  // Returns a copy under the lock
+   return std::nullopt;
 }
 
 // ----------------------------------------------------------------------------
@@ -687,13 +685,15 @@ Image SegmentationVisualizer::CreateClassMapVisualization( const SegmentationRes
 
    Image visual( width, height, pcl::ColorSpace::RGB );
 
+   int numClasses = static_cast<int>( RegionClass::Count );
+
    for ( int y = 0; y < height; ++y )
    {
       for ( int x = 0; x < width; ++x )
       {
-         // Class is encoded as value/(numClasses-1)
-         int classIdx = static_cast<int>( result.classMap( x, y, 0 ) * 8 + 0.5 );
-         classIdx = std::max( 0, std::min( 8, classIdx ) );
+         // Class is encoded as value/(numClasses-1), decode with matching factor
+         int classIdx = static_cast<int>( result.classMap( x, y, 0 ) * (numClasses - 1) + 0.5 );
+         classIdx = std::max( 0, std::min( numClasses - 1, classIdx ) );
 
          RegionClass rc = static_cast<RegionClass>( classIdx );
 

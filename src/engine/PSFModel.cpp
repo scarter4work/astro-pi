@@ -559,7 +559,53 @@ Image PSFSubtractor::SubtractStars( const Image& input,
 
    for ( const auto& star : stars )
    {
-      result = SubtractStar( result, star );
+      float effectiveRadius = star.GetEffectiveRadius( 0.001f );
+      float protectionZone = star.fwhm * m_config.protectionRadius;
+
+      int x0 = Max( 0, int(star.centerX - effectiveRadius) );
+      int y0 = Max( 0, int(star.centerY - effectiveRadius) );
+      int x1 = Min( result.Width(), int(star.centerX + effectiveRadius + 1) );
+      int y1 = Min( result.Height(), int(star.centerY + effectiveRadius + 1) );
+
+      for ( int y = y0; y < y1; ++y )
+      {
+         for ( int x = x0; x < x1; ++x )
+         {
+            float dx = x - star.centerX;
+            float dy = y - star.centerY;
+            float r = std::sqrt( dx * dx + dy * dy );
+
+            // Skip protection zone
+            if ( m_config.preserveCore && r < protectionZone )
+               continue;
+
+            // Compute blend factor
+            float blendFactor = 1.0f;
+            if ( r < protectionZone + m_config.blendRadius )
+            {
+               blendFactor = (r - protectionZone) / m_config.blendRadius;
+               blendFactor = blendFactor * blendFactor * (3 - 2 * blendFactor);  // Smoothstep
+            }
+
+            // Compute PSF value to subtract
+            float psfValue = m_config.subtractSpikes ?
+                             star.EvaluateWithSpikes( float(x), float(y) ) :
+                             star.Evaluate( float(x), float(y) );
+
+            float subtractAmount = psfValue * blendFactor * m_config.maxSubtraction;
+
+            // Subtract from each channel
+            for ( int c = 0; c < Min( 3, result.NumberOfChannels() ); ++c )
+            {
+               float current = float(result( x, y, c ));
+               float colorMult = (c == 0) ? star.colorR : (c == 1) ? star.colorG : star.colorB;
+               float newValue = current - subtractAmount * colorMult;
+
+               // Don't go below background safety level
+               result( x, y, c ) = Max( double(m_config.backgroundSafety), double(newValue) );
+            }
+         }
+      }
    }
 
    return result;

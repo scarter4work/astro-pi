@@ -99,7 +99,6 @@ private:
 
    // Numeric parameters
    float    p_outlierSigmaThreshold;
-   float    p_minClassConfidence;
    float    p_smoothingStrength;
    float    p_transitionThreshold;
    int32    p_tileSize;

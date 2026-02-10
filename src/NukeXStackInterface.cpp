@@ -145,13 +145,11 @@ void NukeXStackInterface::UpdateControls()
 
    // ML Segmentation
    GUI->EnableMLSegmentation_CheckBox.SetChecked( m_instance.p_enableMLSegmentation );
-   GUI->MinConfidence_NumericControl.SetValue( m_instance.p_minClassConfidence );
    GUI->UseSpatialContext_CheckBox.SetChecked( m_instance.p_useSpatialContext );
    GUI->UseTargetContext_CheckBox.SetChecked( m_instance.p_useTargetContext );
 
    // Enable/disable dependent controls
    bool mlEnabled = m_instance.p_enableMLSegmentation;
-   GUI->MinConfidence_NumericControl.Enable( false );  // No longer used: ML class always applied
    GUI->UseSpatialContext_CheckBox.Enable( mlEnabled );
    GUI->UseTargetContext_CheckBox.Enable( mlEnabled );
 
@@ -424,7 +422,6 @@ void NukeXStackInterface::e_CheckBoxClick( Button& sender, bool checked )
    if ( sender == GUI->EnableMLSegmentation_CheckBox )
    {
       m_instance.p_enableMLSegmentation = checked;
-      // MinConfidence no longer used: ML class always applied when segmentation available
       GUI->UseSpatialContext_CheckBox.Enable( checked );
       GUI->UseTargetContext_CheckBox.Enable( checked );
    }
@@ -462,9 +459,7 @@ void NukeXStackInterface::e_CheckBoxClick( Button& sender, bool checked )
 
 void NukeXStackInterface::e_NumericValueUpdated( NumericEdit& sender, double value )
 {
-   if ( sender == GUI->MinConfidence_NumericControl )
-      m_instance.p_minClassConfidence = value;
-   else if ( sender == GUI->SmoothingStrength_NumericControl )
+   if ( sender == GUI->SmoothingStrength_NumericControl )
       m_instance.p_smoothingStrength = value;
    else if ( sender == GUI->TransitionThreshold_NumericControl )
       m_instance.p_transitionThreshold = value;
@@ -612,19 +607,6 @@ NukeXStackInterface::GUIData::GUIData( NukeXStackInterface& w )
                                               "selection strategies.</p>" );
    EnableMLSegmentation_CheckBox.OnClick( (Button::click_event_handler)&NukeXStackInterface::e_CheckBoxClick, w );
 
-   MinConfidence_NumericControl.label.SetText( "Min Confidence:" );
-   MinConfidence_NumericControl.label.SetMinWidth( labelWidth1 );
-   MinConfidence_NumericControl.slider.SetRange( 0, 100 );
-   MinConfidence_NumericControl.SetReal();
-   MinConfidence_NumericControl.SetRange( TheNXSMinClassConfidenceParameter->MinimumValue(),
-                                           TheNXSMinClassConfidenceParameter->MaximumValue() );
-   MinConfidence_NumericControl.SetPrecision( TheNXSMinClassConfidenceParameter->Precision() );
-   MinConfidence_NumericControl.edit.SetMinWidth( editWidth1 );
-   MinConfidence_NumericControl.SetToolTip( "<p>(Deprecated) ML class information is now always used when "
-                                             "segmentation is available. This parameter has no effect.</p>" );
-   MinConfidence_NumericControl.Enable( false );
-   MinConfidence_NumericControl.OnValueUpdated( (NumericEdit::value_event_handler)&NukeXStackInterface::e_NumericValueUpdated, w );
-
    UseSpatialContext_CheckBox.SetText( "Spatial Context" );
    UseSpatialContext_CheckBox.SetToolTip( "<p>Consider neighboring pixels' classes when selecting values. "
                                            "Helps smooth transitions between regions.</p>" );
@@ -642,7 +624,6 @@ NukeXStackInterface::GUIData::GUIData( NukeXStackInterface& w )
 
    MLSegmentation_Sizer.SetSpacing( 4 );
    MLSegmentation_Sizer.Add( EnableMLSegmentation_CheckBox );
-   MLSegmentation_Sizer.Add( MinConfidence_NumericControl );
    MLSegmentation_Sizer.Add( Context_HSizer );
 
    MLSegmentation_Control.SetSizer( MLSegmentation_Sizer );

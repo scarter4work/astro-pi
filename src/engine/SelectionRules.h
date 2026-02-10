@@ -201,9 +201,8 @@ public:
    // Get default rules
    static SelectionRulesEngine CreateDefaultRules();
 
-   // Serialize/deserialize rules
+   // Serialize rules
    String ToJSON() const;
-   bool FromJSON( const String& json );
 
 private:
 

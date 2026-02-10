@@ -168,19 +168,6 @@ public:
 
 extern NXSOutlierSigmaThreshold* TheNXSOutlierSigmaThresholdParameter;
 
-class NXSMinClassConfidence : public MetaFloat
-{
-public:
-   NXSMinClassConfidence( MetaProcess* );
-   IsoString Id() const override;
-   int Precision() const override;
-   double MinimumValue() const override;
-   double MaximumValue() const override;
-   double DefaultValue() const override;
-};
-
-extern NXSMinClassConfidence* TheNXSMinClassConfidenceParameter;
-
 class NXSSmoothingStrength : public MetaFloat
 {
 public:

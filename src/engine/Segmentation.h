@@ -24,6 +24,7 @@
 #include <chrono>
 #include <cstdint>
 #include <mutex>
+#include <optional>
 
 namespace pcl
 {
@@ -146,13 +147,14 @@ public:
                                                     SegmentationProgressCallback progressCallback );
 
    // Get cached result (if available and valid for this image)
-   const SegmentationEngineResult* GetCachedResult() const;
+   // Returns a copy of the cached result to avoid dangling pointer after lock release.
+   std::optional<SegmentationEngineResult> GetCachedResult() const;
 
    // Clear cache
    void ClearCache();
 
-   // Get individual masks
-   const Image* GetMask( RegionClass rc ) const;
+   // Get individual mask (returns a copy to avoid dangling pointer after lock release)
+   std::optional<Image> GetMask( RegionClass rc ) const;
    std::map<RegionClass, Image> GetAllMasks() const;
 
    // Get configuration

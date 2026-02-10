@@ -675,7 +675,7 @@ PixelSelector::ConsensusResult PixelSelector::ComputeConsensus(
    }
 
    // Find consensus class (highest weighted vote)
-   float maxVotes = 0.0f;
+   double maxVotes = 0.0;
    int consensusIdx = 0;
    for ( int c = 0; c < numClasses; ++c )
    {

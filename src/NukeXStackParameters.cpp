@@ -294,41 +294,6 @@ double NXSOutlierSigmaThreshold::DefaultValue() const
 
 // ----------------------------------------------------------------------------
 
-NXSMinClassConfidence* TheNXSMinClassConfidenceParameter = nullptr;
-
-NXSMinClassConfidence::NXSMinClassConfidence( MetaProcess* P )
-   : MetaFloat( P )
-{
-   TheNXSMinClassConfidenceParameter = this;
-}
-
-IsoString NXSMinClassConfidence::Id() const
-{
-   return "minClassConfidence";
-}
-
-int NXSMinClassConfidence::Precision() const
-{
-   return 2;
-}
-
-double NXSMinClassConfidence::MinimumValue() const
-{
-   return 0.0;
-}
-
-double NXSMinClassConfidence::MaximumValue() const
-{
-   return 1.0;
-}
-
-double NXSMinClassConfidence::DefaultValue() const
-{
-   return 0.5;
-}
-
-// ----------------------------------------------------------------------------
-
 NXSSmoothingStrength* TheNXSSmoothingStrengthParameter = nullptr;
 
 NXSSmoothingStrength::NXSSmoothingStrength( MetaProcess* P )

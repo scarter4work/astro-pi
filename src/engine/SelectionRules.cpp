@@ -405,15 +405,6 @@ String SelectionRulesEngine::ToJSON() const
 }
 
 // ----------------------------------------------------------------------------
-
-bool SelectionRulesEngine::FromJSON( const String& json )
-{
-   // Note: Full JSON parsing would require a JSON library
-   // This is a placeholder for future implementation
-   return false;
-}
-
-// ----------------------------------------------------------------------------
 // Default Rules Implementation
 // ----------------------------------------------------------------------------
 

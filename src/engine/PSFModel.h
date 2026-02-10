@@ -140,10 +140,6 @@ public:
                                                           float centerX, float centerY,
                                                           float maxRadius = 100.0f );
 
-   // Estimate PSF from multiple stars
-   [[nodiscard]] static PSFParameters EstimateFromStars( const Image& image,
-                                                          const std::vector<DPoint>& starPositions );
-
 private:
 
    PSFParameters m_params;

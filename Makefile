@@ -86,7 +86,11 @@ endif
 # PCL-specific flags
 PCL_CXXFLAGS = -D__PCL_$(shell echo $(PLATFORM) | tr a-z A-Z) \
                -D__PCL_BUILDING_MODULE \
-               -I$(PCL_INCDIR)
+               -D_REENTRANT \
+               -I$(PCL_INCDIR) \
+               -fvisibility=hidden \
+               -fvisibility-inlines-hidden \
+               -fnon-call-exceptions
 
 # ONNX Runtime configuration for ML segmentation
 # Set ONNX_DIR to custom installation or use system onnxruntime

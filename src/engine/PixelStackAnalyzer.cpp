@@ -634,7 +634,7 @@ float PixelStackAnalyzer::SelectBestValue(
    if ( validValues.empty() )
    {
       std::vector<float> allVals( values.begin(), values.end() );
-      std::nth_element( allVals.begin(), allVals.begin() + allVals.size() / 2, allVals.end() );
+      std::sort( allVals.begin(), allVals.end() );
       float median = allVals[allVals.size() / 2];
       // Find frame closest to median
       float bestDist = std::numeric_limits<float>::max();

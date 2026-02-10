@@ -112,19 +112,19 @@ bool NukeXInstance::Validate( String& info )
       info = "Saturation boost must be between 0 and 2.";
       return false;
    }
-   if ( p_blendRadius < 0 || p_blendRadius > 100 )
+   if ( p_blendRadius < 0 || p_blendRadius > 50 )
    {
-      info = "Blend radius must be between 0 and 100.";
+      info = "Blend radius must be between 0 and 50.";
       return false;
    }
-   if ( p_stretchStrength < 0 || p_stretchStrength > 1 )
+   if ( p_stretchStrength < 0 || p_stretchStrength > 2 )
    {
-      info = "Stretch strength must be between 0 and 1.";
+      info = "Stretch strength must be between 0 and 2.";
       return false;
    }
-   if ( p_blackPoint < 0 || p_blackPoint > 1 )
+   if ( p_blackPoint < 0 || p_blackPoint > 0.5 )
    {
-      info = "Black point must be between 0 and 1.";
+      info = "Black point must be between 0 and 0.5.";
       return false;
    }
    if ( p_whitePoint < 0 || p_whitePoint > 1 )
@@ -137,9 +137,9 @@ bool NukeXInstance::Validate( String& info )
       info = "Black point must be less than white point.";
       return false;
    }
-   if ( p_gamma < 0.1 || p_gamma > 10 )
+   if ( p_gamma < 0.1 || p_gamma > 5 )
    {
-      info = "Gamma must be between 0.1 and 10.";
+      info = "Gamma must be between 0.1 and 5.";
       return false;
    }
 
@@ -386,9 +386,10 @@ bool NukeXInstance::ExecuteOn( View& view )
 
    // Set up region overrides if any regions are disabled
    auto enabledRegions = GetEnabledRegions();
-   if ( enabledRegions.size() < 9 )
+   if ( enabledRegions.size() < static_cast<size_t>(RegionClass::Count) )
    {
-      console.WriteLn( String().Format( "<br>Enabled regions: %d of 9", enabledRegions.size() ) );
+      console.WriteLn( String().Format( "<br>Enabled regions: %d of %d",
+         enabledRegions.size(), static_cast<int>(RegionClass::Count) ) );
    }
 
    // If using manual algorithm, set it as override for all regions

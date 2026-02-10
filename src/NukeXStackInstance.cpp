@@ -24,7 +24,9 @@
 #include "engine/PixelStackAnalyzer.h"
 #include "engine/TransitionChecker.h"
 #include "engine/RegionStatistics.h"
+#ifdef NUKEX_USE_ONNX
 #include "engine/Segmentation.h"
+#endif
 #include "engine/FrameStreamer.h"
 #include "engine/BayerDemosaic.h"
 #include "engine/algorithms/ArcSinhStretch.h"
@@ -51,7 +53,6 @@ NukeXStackInstance::NukeXStackInstance( const MetaProcess* m )
    , p_enableAutoStretch( TheNXSEnableAutoStretchParameter->DefaultValue() )
    , p_enableRegistration( TheNXSEnableRegistrationParameter->DefaultValue() )
    , p_outlierSigmaThreshold( static_cast<float>( TheNXSOutlierSigmaThresholdParameter->DefaultValue() ) )
-   , p_minClassConfidence( static_cast<float>( TheNXSMinClassConfidenceParameter->DefaultValue() ) )
    , p_smoothingStrength( static_cast<float>( TheNXSSmoothingStrengthParameter->DefaultValue() ) )
    , p_transitionThreshold( static_cast<float>( TheNXSTransitionThresholdParameter->DefaultValue() ) )
    , p_tileSize( static_cast<int32>( TheNXSTileSizeParameter->DefaultValue() ) )
@@ -84,7 +85,6 @@ void NukeXStackInstance::Assign( const ProcessImplementation& p )
       p_enableAutoStretch       = x->p_enableAutoStretch;
       p_enableRegistration      = x->p_enableRegistration;
       p_outlierSigmaThreshold   = x->p_outlierSigmaThreshold;
-      p_minClassConfidence      = x->p_minClassConfidence;
       p_smoothingStrength       = x->p_smoothingStrength;
       p_transitionThreshold     = x->p_transitionThreshold;
       p_tileSize                = x->p_tileSize;
@@ -112,12 +112,6 @@ bool NukeXStackInstance::Validate( String& info )
    if ( p_outlierSigmaThreshold < 1.0 || p_outlierSigmaThreshold > 10.0 )
    {
       info = "Outlier sigma threshold must be between 1.0 and 10.0.";
-      return false;
-   }
-
-   if ( p_minClassConfidence < 0.0 || p_minClassConfidence > 1.0 )
-   {
-      info = "Minimum class confidence must be between 0.0 and 1.0.";
       return false;
    }
 
@@ -420,8 +414,6 @@ void* NukeXStackInstance::LockParameter( const MetaParameter* p, size_type table
       return &p_enableRegistration;
    if ( p == TheNXSOutlierSigmaThresholdParameter )
       return &p_outlierSigmaThreshold;
-   if ( p == TheNXSMinClassConfidenceParameter )
-      return &p_minClassConfidence;
    if ( p == TheNXSSmoothingStrengthParameter )
       return &p_smoothingStrength;
    if ( p == TheNXSTransitionThresholdParameter )
@@ -492,7 +484,6 @@ PixelSelectorConfig NukeXStackInstance::BuildSelectorConfig() const
 
    config.stackConfig = BuildStackConfig();
    config.useSpatialContext = p_useSpatialContext;
-   // minClassConfidence removed: ML class is always used when segmentation is available
    config.useTargetContext = p_useTargetContext;
 
    return config;
@@ -780,6 +771,7 @@ bool NukeXStackInstance::RunSegmentation(
    std::vector<std::vector<float>>& confidenceMap,
    double& segmentationTimeMs ) const
 {
+#ifdef NUKEX_USE_ONNX
    Console console;
 
    // Get the model path - look in standard locations
@@ -926,6 +918,13 @@ bool NukeXStackInstance::RunSegmentation(
    }
 
    return true;
+#else
+   (void)referenceImage;
+   (void)classMap;
+   (void)confidenceMap;
+   (void)segmentationTimeMs;
+   return false;
+#endif
 }
 
 // ----------------------------------------------------------------------------
