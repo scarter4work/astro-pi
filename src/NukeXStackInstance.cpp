@@ -1749,22 +1749,44 @@ void NukeXStackInstance::ExcludeFailedFrames(
 {
    Console console;
 
-   // Walk perFrame results in reverse order to safely erase
-   // Note: perFrame[0] is reference frame (always succeeds), start from 1
-   for ( int i = static_cast<int>( regSummary.perFrame.size() ) - 1; i >= 1; --i )
+   // Identify which frames to keep.
+   // Avoid vector::erase on Image objects — shifting PCL Images in-place
+   // via move/copy assignment can segfault. Instead, build new vectors.
+   std::vector<bool> keep( frames.size(), true );
+
+   for ( size_t i = 1; i < regSummary.perFrame.size() && i < frames.size(); ++i )
    {
       if ( !regSummary.perFrame[i].success )
       {
+         keep[i] = false;
          console.WarningLn( String().Format(
             "  Excluding frame %d (failed registration: %s)",
-            i + 1, IsoString( regSummary.perFrame[i].message ).c_str() ) );
-
-         if ( i < static_cast<int>( frames.size() ) )
-            frames.erase( frames.begin() + i );
-         if ( i < static_cast<int>( framePaths.size() ) )
-            framePaths.erase( framePaths.begin() + i );
+            static_cast<int>( i + 1 ),
+            IsoString( regSummary.perFrame[i].message ).c_str() ) );
       }
    }
+
+   // Build new vectors with only kept frames
+   std::vector<Image> keptFrames;
+   std::vector<String> keptPaths;
+   size_t keptCount = 0;
+   for ( size_t i = 0; i < frames.size(); ++i )
+      if ( keep[i] ) ++keptCount;
+   keptFrames.reserve( keptCount );
+   keptPaths.reserve( keptCount );
+
+   for ( size_t i = 0; i < frames.size(); ++i )
+   {
+      if ( keep[i] )
+      {
+         keptFrames.push_back( std::move( frames[i] ) );
+         if ( i < framePaths.size() )
+            keptPaths.push_back( std::move( framePaths[i] ) );
+      }
+   }
+
+   frames = std::move( keptFrames );
+   framePaths = std::move( keptPaths );
 
    console.WriteLn( String().Format(
       "  %d frames remaining after excluding failed registrations.",
