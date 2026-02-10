@@ -283,13 +283,14 @@ std::vector<StarMatch> FrameRegistration::MatchTriangles(
    }
 
    // Extract matches: for each ref star, find best target star
-   // Use threshold of 1 vote (any triangle support is meaningful)
+   // Require at least 3 votes for a high-confidence seed match
    std::vector<StarMatch> matches;
+   int minVotesThreshold = 3;
 
    for ( int ri = 0; ri < voteN; ++ri )
    {
       int bestTarget = -1;
-      int bestVotes = 0; // Minimum 1 vote required
+      int bestVotes = minVotesThreshold - 1;
 
       for ( int ti = 0; ti < voteM; ++ti )
       {
@@ -302,11 +303,25 @@ std::vector<StarMatch> FrameRegistration::MatchTriangles(
 
       if ( bestTarget >= 0 )
       {
-         StarMatch match;
-         match.refIndex = ri;
-         match.targetIndex = bestTarget;
-         match.residual = 0;
-         matches.push_back( match );
+         // Verify mutual best: this target's best ref match should be this ref star
+         bool mutual = true;
+         for ( int ri2 = 0; ri2 < voteN; ++ri2 )
+         {
+            if ( ri2 != ri && votes[ri2][bestTarget] > bestVotes )
+            {
+               mutual = false;
+               break;
+            }
+         }
+
+         if ( mutual )
+         {
+            StarMatch match;
+            match.refIndex = ri;
+            match.targetIndex = bestTarget;
+            match.residual = 0;
+            matches.push_back( match );
+         }
       }
    }
 
@@ -462,6 +477,86 @@ SimilarityTransform FrameRegistration::RefineMatches(
    }
 
    return T;
+}
+
+// ----------------------------------------------------------------------------
+// Expand matches using transform: project ref stars, find nearest target neighbors
+// This dramatically increases match count after an initial seed alignment
+// ----------------------------------------------------------------------------
+
+std::vector<StarMatch> FrameRegistration::ExpandMatchesWithTransform(
+   const std::vector<DetectedStar>& refStars,
+   const std::vector<DetectedStar>& targetStars,
+   const SimilarityTransform& T,
+   double searchRadius )
+{
+   std::vector<StarMatch> expanded;
+   double radiusSq = searchRadius * searchRadius;
+
+   // For each target star, transform to reference space and find nearest ref star
+   // (T maps target->ref, so T.Apply(target) gives predicted ref position)
+   std::vector<bool> refUsed( refStars.size(), false );
+   std::vector<bool> targetUsed( targetStars.size(), false );
+
+   // Build candidate list with distances
+   struct Candidate {
+      int refIdx;
+      int targetIdx;
+      double distSq;
+   };
+   std::vector<Candidate> candidates;
+
+   for ( int ti = 0; ti < static_cast<int>( targetStars.size() ); ++ti )
+   {
+      // Transform target star to reference space
+      double mappedX, mappedY;
+      T.Apply( targetStars[ti].x, targetStars[ti].y, mappedX, mappedY );
+
+      // Find nearest ref star
+      int bestRef = -1;
+      double bestDistSq = radiusSq;
+
+      for ( int ri = 0; ri < static_cast<int>( refStars.size() ); ++ri )
+      {
+         double dx = mappedX - refStars[ri].x;
+         double dy = mappedY - refStars[ri].y;
+         double dSq = dx * dx + dy * dy;
+         if ( dSq < bestDistSq )
+         {
+            bestDistSq = dSq;
+            bestRef = ri;
+         }
+      }
+
+      if ( bestRef >= 0 )
+      {
+         Candidate c;
+         c.refIdx = bestRef;
+         c.targetIdx = ti;
+         c.distSq = bestDistSq;
+         candidates.push_back( c );
+      }
+   }
+
+   // Sort by distance and greedily assign (closest first, no duplicates)
+   std::sort( candidates.begin(), candidates.end(),
+              []( const Candidate& a, const Candidate& b ) { return a.distSq < b.distSq; } );
+
+   for ( const auto& c : candidates )
+   {
+      if ( !refUsed[c.refIdx] && !targetUsed[c.targetIdx] )
+      {
+         StarMatch match;
+         match.refIndex = c.refIdx;
+         match.targetIndex = c.targetIdx;
+         match.residual = std::sqrt( c.distSq );
+         expanded.push_back( match );
+         refUsed[c.refIdx] = true;
+         targetUsed[c.targetIdx] = true;
+      }
+   }
+
+   return expanded;
 }
 
 // ----------------------------------------------------------------------------
@@ -631,7 +726,7 @@ FrameRegistrationResult FrameRegistration::RegisterFrame(
       return result;
    }
 
-   // Compute and refine transform
+   // Compute and refine initial transform from seed matches
    SimilarityTransform T = RefineMatches( refStars, targetStars, matches );
    result.starsMatched = static_cast<int>( matches.size() ); // May have changed after refinement
 
@@ -641,6 +736,16 @@ FrameRegistrationResult FrameRegistration::RegisterFrame(
       result.message = String().Format( "Frame %d: Only %d matches after refinement (need >= %d)",
          frameIndex + 1, result.starsMatched, m_config.minMatches );
       return result;
+   }
+
+   // Expand matches: use the preliminary transform to find all matching star pairs
+   // across the full star catalog (not just the triangle subset)
+   auto expandedMatches = ExpandMatchesWithTransform( refStars, targetStars, T, m_config.expandRadius );
+   if ( static_cast<int>( expandedMatches.size() ) > result.starsMatched )
+   {
+      matches = std::move( expandedMatches );
+      T = RefineMatches( refStars, targetStars, matches );
+      result.starsMatched = static_cast<int>( matches.size() );
    }
 
    // Compute final residuals

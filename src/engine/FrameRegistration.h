@@ -31,12 +31,13 @@ struct FrameRegistrationConfig
    int    triangleStars = 40;      // Use top N brightest stars for triangle building
    double sensitivity = 0.5;       // Star detection sensitivity (0-1)
    int    minMatches = 6;          // Minimum star matches for valid registration
-   double ratioTolerance = 0.03;   // Triangle side ratio matching tolerance
+   double ratioTolerance = 0.02;   // Triangle side ratio matching tolerance
    double maxTranslation = 500.0;  // Max translation in pixels before rejection
    double maxRotationDeg = 5.0;    // Max rotation in degrees before rejection
    double maxScaleDev = 0.05;      // Max |scale - 1.0| before rejection
    double nearIdentityPx = 0.5;   // Skip resampling if total displacement < this
    double outlierSigma = 2.5;      // MAD-based sigma clipping for match refinement
+   double expandRadius = 5.0;      // Search radius for transform-guided match expansion
    int    maxTriangles = 15000;    // Maximum triangles to generate
 };
 
@@ -183,6 +184,13 @@ public:
    SimilarityTransform RefineMatches( const std::vector<DetectedStar>& refStars,
                                        const std::vector<DetectedStar>& targetStars,
                                        std::vector<StarMatch>& matches );
+
+   // Expand matches: use transform to project all ref stars and find nearest target neighbors
+   std::vector<StarMatch> ExpandMatchesWithTransform(
+      const std::vector<DetectedStar>& refStars,
+      const std::vector<DetectedStar>& targetStars,
+      const SimilarityTransform& T,
+      double searchRadius );
 
    // Apply transform via bicubic resampling (in-place, per-channel, OpenMP)
    void ApplyTransform( Image& frame, const SimilarityTransform& transform );
