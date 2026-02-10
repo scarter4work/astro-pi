@@ -117,6 +117,14 @@ private:
          CheckBox          GenerateMetadata_CheckBox;
          CheckBox          EnableAutoStretch_CheckBox;
 
+      // Preprocessing Section
+      SectionBar        Preprocessing_SectionBar;
+      Control           Preprocessing_Control;
+      VerticalSizer     Preprocessing_Sizer;
+         CheckBox          EnableNormalization_CheckBox;
+         CheckBox          EnableQualityWeighting_CheckBox;
+         CheckBox          ExcludeFailedRegistration_CheckBox;
+
       // Frame Registration Section
       SectionBar        Registration_SectionBar;
       Control           Registration_Control;

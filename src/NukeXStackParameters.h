@@ -151,6 +151,36 @@ public:
 
 extern NXSEnableRegistration* TheNXSEnableRegistrationParameter;
 
+class NXSEnableNormalization : public MetaBoolean
+{
+public:
+   NXSEnableNormalization( MetaProcess* );
+   IsoString Id() const override;
+   bool DefaultValue() const override;
+};
+
+extern NXSEnableNormalization* TheNXSEnableNormalizationParameter;
+
+class NXSEnableQualityWeighting : public MetaBoolean
+{
+public:
+   NXSEnableQualityWeighting( MetaProcess* );
+   IsoString Id() const override;
+   bool DefaultValue() const override;
+};
+
+extern NXSEnableQualityWeighting* TheNXSEnableQualityWeightingParameter;
+
+class NXSExcludeFailedRegistration : public MetaBoolean
+{
+public:
+   NXSExcludeFailedRegistration( MetaProcess* );
+   IsoString Id() const override;
+   bool DefaultValue() const override;
+};
+
+extern NXSExcludeFailedRegistration* TheNXSExcludeFailedRegistrationParameter;
+
 // ----------------------------------------------------------------------------
 // Floating Point Parameters
 // ----------------------------------------------------------------------------

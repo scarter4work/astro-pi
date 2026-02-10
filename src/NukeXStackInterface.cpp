@@ -174,6 +174,11 @@ void NukeXStackInterface::UpdateControls()
 
    // Frame Registration
    GUI->EnableRegistration_CheckBox.SetChecked( m_instance.p_enableRegistration );
+
+   // Preprocessing
+   GUI->EnableNormalization_CheckBox.SetChecked( m_instance.p_enableNormalization );
+   GUI->EnableQualityWeighting_CheckBox.SetChecked( m_instance.p_enableQualityWeighting );
+   GUI->ExcludeFailedRegistration_CheckBox.SetChecked( m_instance.p_excludeFailedRegistration );
 }
 
 // ----------------------------------------------------------------------------
@@ -452,6 +457,18 @@ void NukeXStackInterface::e_CheckBoxClick( Button& sender, bool checked )
    else if ( sender == GUI->EnableRegistration_CheckBox )
    {
       m_instance.p_enableRegistration = checked;
+   }
+   else if ( sender == GUI->EnableNormalization_CheckBox )
+   {
+      m_instance.p_enableNormalization = checked;
+   }
+   else if ( sender == GUI->EnableQualityWeighting_CheckBox )
+   {
+      m_instance.p_enableQualityWeighting = checked;
+   }
+   else if ( sender == GUI->ExcludeFailedRegistration_CheckBox )
+   {
+      m_instance.p_excludeFailedRegistration = checked;
    }
 }
 
@@ -736,6 +753,38 @@ NukeXStackInterface::GUIData::GUIData( NukeXStackInterface& w )
    Outliers_Control.SetSizer( Outliers_Sizer );
 
    // =========================================================================
+   // Preprocessing Section
+   // =========================================================================
+
+   Preprocessing_SectionBar.SetTitle( "Preprocessing" );
+   Preprocessing_SectionBar.SetSection( Preprocessing_Control );
+
+   EnableNormalization_CheckBox.SetText( "Background Normalization" );
+   EnableNormalization_CheckBox.SetToolTip( "<p>Equalize sky background levels across all frames before integration. "
+                                             "Computes per-frame median and MAD, then applies scale and offset to match "
+                                             "the reference frame.</p>"
+                                             "<p>Essential when combining data from different sessions or sky conditions.</p>" );
+   EnableNormalization_CheckBox.OnClick( (Button::click_event_handler)&NukeXStackInterface::e_CheckBoxClick, w );
+
+   EnableQualityWeighting_CheckBox.SetText( "Quality Weighting" );
+   EnableQualityWeighting_CheckBox.SetToolTip( "<p>Automatically compute per-frame quality weights from star FWHM and "
+                                                "noise estimates. Better frames contribute more to the final integration.</p>"
+                                                "<p>Uses geometric mean of FWHM and noise weights, normalized to [0,1].</p>" );
+   EnableQualityWeighting_CheckBox.OnClick( (Button::click_event_handler)&NukeXStackInterface::e_CheckBoxClick, w );
+
+   ExcludeFailedRegistration_CheckBox.SetText( "Exclude Failed Registration" );
+   ExcludeFailedRegistration_CheckBox.SetToolTip( "<p>Automatically remove frames that fail star alignment from the stack. "
+                                                   "Prevents misaligned frames from corrupting the integration.</p>" );
+   ExcludeFailedRegistration_CheckBox.OnClick( (Button::click_event_handler)&NukeXStackInterface::e_CheckBoxClick, w );
+
+   Preprocessing_Sizer.SetSpacing( 4 );
+   Preprocessing_Sizer.Add( EnableNormalization_CheckBox );
+   Preprocessing_Sizer.Add( EnableQualityWeighting_CheckBox );
+   Preprocessing_Sizer.Add( ExcludeFailedRegistration_CheckBox );
+
+   Preprocessing_Control.SetSizer( Preprocessing_Sizer );
+
+   // =========================================================================
    // Frame Registration Section
    // =========================================================================
 
@@ -763,6 +812,8 @@ NukeXStackInterface::GUIData::GUIData( NukeXStackInterface& w )
    Global_Sizer.SetSpacing( 6 );
    Global_Sizer.Add( InputFiles_SectionBar );
    Global_Sizer.Add( InputFiles_Control, 100 );
+   Global_Sizer.Add( Preprocessing_SectionBar );
+   Global_Sizer.Add( Preprocessing_Control );
    Global_Sizer.Add( Registration_SectionBar );
    Global_Sizer.Add( Registration_Control );
    Global_Sizer.Add( Strategy_SectionBar );

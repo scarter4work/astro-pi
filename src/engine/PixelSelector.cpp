@@ -135,6 +135,14 @@ void PixelSelector::SetFrameWeights( const std::vector<float>& weights )
 
 // ----------------------------------------------------------------------------
 
+void PixelSelector::SetFrameNormalization( const std::vector<FrameNormalization>& norms )
+{
+   m_frameNormalization = norms;
+   m_hasFrameNormalization = !norms.empty();
+}
+
+// ----------------------------------------------------------------------------
+
 void PixelSelector::SetPerFrameSegmentation( const std::vector<PerFrameClassMap>& maps )
 {
    m_perFrameClassMaps = maps;
@@ -386,6 +394,20 @@ Image PixelSelector::ProcessStackWithMetadata(
             // Collect values from the pre-read row data
             for ( int f = 0; f < numFrames; ++f )
                pixelValues[f] = rowData[f][x];
+
+            // Apply per-frame normalization if available
+            if ( m_hasFrameNormalization )
+            {
+               for ( int f = 0; f < numFrames; ++f )
+               {
+                  if ( f < static_cast<int>( m_frameNormalization.size() ) )
+                  {
+                     pixelValues[f] = pixelValues[f] * m_frameNormalization[f].scale
+                                    + m_frameNormalization[f].offset;
+                     pixelValues[f] = std::max( 0.0f, std::min( 1.0f, pixelValues[f] ) );
+                  }
+               }
+            }
 
             // Select best pixel
             PixelSelectionResult result_pixel = SelectPixel( pixelValues, x, y );

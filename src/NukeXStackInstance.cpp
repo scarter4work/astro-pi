@@ -52,6 +52,9 @@ NukeXStackInstance::NukeXStackInstance( const MetaProcess* m )
    , p_generateMetadata( TheNXSGenerateMetadataParameter->DefaultValue() )
    , p_enableAutoStretch( TheNXSEnableAutoStretchParameter->DefaultValue() )
    , p_enableRegistration( TheNXSEnableRegistrationParameter->DefaultValue() )
+   , p_enableNormalization( TheNXSEnableNormalizationParameter->DefaultValue() )
+   , p_enableQualityWeighting( TheNXSEnableQualityWeightingParameter->DefaultValue() )
+   , p_excludeFailedRegistration( TheNXSExcludeFailedRegistrationParameter->DefaultValue() )
    , p_outlierSigmaThreshold( static_cast<float>( TheNXSOutlierSigmaThresholdParameter->DefaultValue() ) )
    , p_smoothingStrength( static_cast<float>( TheNXSSmoothingStrengthParameter->DefaultValue() ) )
    , p_transitionThreshold( static_cast<float>( TheNXSTransitionThresholdParameter->DefaultValue() ) )
@@ -84,6 +87,9 @@ void NukeXStackInstance::Assign( const ProcessImplementation& p )
       p_generateMetadata        = x->p_generateMetadata;
       p_enableAutoStretch       = x->p_enableAutoStretch;
       p_enableRegistration      = x->p_enableRegistration;
+      p_enableNormalization         = x->p_enableNormalization;
+      p_enableQualityWeighting      = x->p_enableQualityWeighting;
+      p_excludeFailedRegistration   = x->p_excludeFailedRegistration;
       p_outlierSigmaThreshold   = x->p_outlierSigmaThreshold;
       p_smoothingStrength       = x->p_smoothingStrength;
       p_transitionThreshold     = x->p_transitionThreshold;
@@ -276,6 +282,11 @@ bool NukeXStackInstance::ExecuteGlobal()
          totalFrameBytes / ( 1024.0 * 1024.0 * 1024.0 ),
          streamingThreshold / ( 1024.0 * 1024.0 * 1024.0 ) ) );
 
+      if ( p_enableRegistration )
+         console.WarningLn( "** Registration is not available in streaming mode. "
+                            "Frames will be stacked without star alignment. "
+                            "Consider using in-memory mode for better results." );
+
       if ( !RunIntegrationStreaming( streamer, referenceKeywords, output, summary ) )
       {
          console.CriticalLn( "Streaming integration failed." );
@@ -330,11 +341,44 @@ bool NukeXStackInstance::ExecuteGlobal()
          static_cast<int>( frames.size() ), width, height, channels,
          totalBytes / ( 1024.0 * 1024.0 * 1024.0 ) ) );
 
-      // Frame registration (star alignment) before integration
-      if ( p_enableRegistration && frames.size() > 1 )
-         RegisterAllFrames( frames );
+      // === Preprocessing: Background normalization ===
+      if ( p_enableNormalization && frames.size() > 1 )
+      {
+         console.WriteLn( "<br>Computing background normalization..." );
+         auto normParams = ComputeNormalizationParams( frames );
+         NormalizeFrames( frames, normParams );
+         summary.normalizedFrames = static_cast<int>( frames.size() );
+         console.WriteLn( String().Format( "Normalized %d frames to reference background.",
+            static_cast<int>( frames.size() ) ) );
+      }
 
-      if ( !RunIntegration( frames, referenceKeywords, output, summary ) )
+      // === Frame registration (star alignment) ===
+      RegistrationSummary regSummary;
+      if ( p_enableRegistration && frames.size() > 1 )
+         regSummary = RegisterAllFrames( frames );
+
+      // === Exclude failed registrations ===
+      if ( p_excludeFailedRegistration && regSummary.failedFrames > 0 )
+      {
+         ExcludeFailedFrames( frames, framePaths, regSummary );
+         summary.excludedFrames = regSummary.failedFrames;
+
+         if ( frames.size() < 2 )
+         {
+            console.CriticalLn( "All frames failed registration. Cannot integrate." );
+            return false;
+         }
+      }
+
+      // === Quality weighting ===
+      std::vector<float> frameWeights;
+      if ( p_enableQualityWeighting && frames.size() > 1 )
+      {
+         console.WriteLn( "<br>Computing frame quality weights..." );
+         frameWeights = ComputeQualityWeights( frames );
+      }
+
+      if ( !RunIntegration( frames, referenceKeywords, output, summary, frameWeights ) )
       {
          console.CriticalLn( "Integration failed." );
          return false;
@@ -412,6 +456,12 @@ void* NukeXStackInstance::LockParameter( const MetaParameter* p, size_type table
       return &p_enableAutoStretch;
    if ( p == TheNXSEnableRegistrationParameter )
       return &p_enableRegistration;
+   if ( p == TheNXSEnableNormalizationParameter )
+      return &p_enableNormalization;
+   if ( p == TheNXSEnableQualityWeightingParameter )
+      return &p_enableQualityWeighting;
+   if ( p == TheNXSExcludeFailedRegistrationParameter )
+      return &p_excludeFailedRegistration;
    if ( p == TheNXSOutlierSigmaThresholdParameter )
       return &p_outlierSigmaThreshold;
    if ( p == TheNXSSmoothingStrengthParameter )
@@ -933,7 +983,8 @@ bool NukeXStackInstance::RunIntegration(
    std::vector<Image>& frames,
    const FITSKeywordArray& keywords,
    Image& output,
-   IntegrationSummary& summary ) const
+   IntegrationSummary& summary,
+   const std::vector<float>& frameWeights ) const
 {
    Console console;
 
@@ -960,6 +1011,10 @@ bool NukeXStackInstance::RunIntegration(
       selector.SetTargetContext( context );
       summary.targetObject = context.objectName;
    }
+
+   // Pass quality weights to selector
+   if ( !frameWeights.empty() )
+      selector.SetFrameWeights( frameWeights );
 
    // ML segmentation setup - median composite approach
    // Instead of per-frame segmentation (N inferences), we run segmentation ONCE
@@ -1339,7 +1394,7 @@ bool NukeXStackInstance::RunIntegrationStreaming(
 
 // ----------------------------------------------------------------------------
 
-bool NukeXStackInstance::RegisterAllFrames( std::vector<Image>& frames ) const
+RegistrationSummary NukeXStackInstance::RegisterAllFrames( std::vector<Image>& frames ) const
 {
    Console console;
 
@@ -1351,12 +1406,369 @@ bool NukeXStackInstance::RegisterAllFrames( std::vector<Image>& frames ) const
    FrameRegistration registration( config );
    RegistrationSummary regSummary;
 
-   bool ok = registration.RegisterFrames( frames, regSummary );
+   registration.RegisterFrames( frames, regSummary );
 
-   if ( !ok )
-      console.WarningLn( "Frame registration did not complete successfully. Proceeding with unregistered frames." );
+   return regSummary;
+}
 
-   return ok;
+// ----------------------------------------------------------------------------
+
+std::vector<FrameNormalizationParams> NukeXStackInstance::ComputeNormalizationParams(
+   const std::vector<Image>& frames ) const
+{
+   Console console;
+   auto startTime = std::chrono::high_resolution_clock::now();
+
+   std::vector<FrameNormalizationParams> params( frames.size() );
+
+   // Compute per-frame luminance median and MAD
+   for ( size_t i = 0; i < frames.size(); ++i )
+   {
+      const Image& frame = frames[i];
+      int width = frame.Width();
+      int height = frame.Height();
+      int channels = frame.NumberOfChannels();
+
+      // Compute luminance values
+      std::vector<float> luminance( static_cast<size_t>( width ) * height );
+      for ( int y = 0; y < height; ++y )
+      {
+         for ( int x = 0; x < width; ++x )
+         {
+            size_t idx = static_cast<size_t>( y ) * width + x;
+            if ( channels >= 3 )
+            {
+               luminance[idx] = 0.2126f * frame.Pixel( x, y, 0 )
+                              + 0.7152f * frame.Pixel( x, y, 1 )
+                              + 0.0722f * frame.Pixel( x, y, 2 );
+            }
+            else
+            {
+               luminance[idx] = frame.Pixel( x, y, 0 );
+            }
+         }
+      }
+
+      // Compute median
+      std::vector<float> sorted = luminance;
+      std::sort( sorted.begin(), sorted.end() );
+      double median = sorted[sorted.size() / 2];
+
+      // Compute MAD
+      std::vector<float> deviations( sorted.size() );
+      for ( size_t j = 0; j < sorted.size(); ++j )
+         deviations[j] = std::abs( sorted[j] - static_cast<float>( median ) );
+      std::sort( deviations.begin(), deviations.end() );
+      double mad = deviations[deviations.size() / 2];
+
+      params[i].median = median;
+      params[i].mad = mad;
+   }
+
+   // Reference frame is frame[0]
+   double refMedian = params[0].median;
+   double refMAD = params[0].mad;
+
+   for ( size_t i = 0; i < params.size(); ++i )
+   {
+      if ( params[i].mad > 1e-10 )
+         params[i].scale = refMAD / params[i].mad;
+      else
+         params[i].scale = 1.0;
+
+      params[i].offset = refMedian - params[i].median * params[i].scale;
+
+      if ( i > 0 )
+      {
+         console.WriteLn( String().Format(
+            "  Frame %d: median=%.6f, MAD=%.6f, scale=%.4f, offset=%+.6f",
+            static_cast<int>( i + 1 ), params[i].median, params[i].mad,
+            params[i].scale, params[i].offset ) );
+      }
+   }
+
+   auto endTime = std::chrono::high_resolution_clock::now();
+   double ms = std::chrono::duration<double, std::milli>( endTime - startTime ).count();
+   console.WriteLn( String().Format( "Normalization params computed in %.1f ms", ms ) );
+
+   return params;
+}
+
+// ----------------------------------------------------------------------------
+
+void NukeXStackInstance::NormalizeFrames(
+   std::vector<Image>& frames,
+   const std::vector<FrameNormalizationParams>& params ) const
+{
+   for ( size_t i = 0; i < frames.size(); ++i )
+   {
+      if ( i >= params.size() )
+         break;
+
+      double scale = params[i].scale;
+      double offset = params[i].offset;
+
+      // Skip reference frame (scale=1, offset=0)
+      if ( std::abs( scale - 1.0 ) < 1e-10 && std::abs( offset ) < 1e-10 )
+         continue;
+
+      Image& frame = frames[i];
+      int channels = frame.NumberOfChannels();
+
+      for ( int c = 0; c < channels; ++c )
+      {
+         Image::sample* data = frame.PixelData( c );
+         size_t numPx = static_cast<size_t>( frame.Width() ) * frame.Height();
+         for ( size_t p = 0; p < numPx; ++p )
+         {
+            double val = data[p] * scale + offset;
+            data[p] = static_cast<Image::sample>( std::max( 0.0, std::min( 1.0, val ) ) );
+         }
+      }
+   }
+}
+
+// ----------------------------------------------------------------------------
+
+std::vector<FrameNormalizationParams> NukeXStackInstance::ComputeNormalizationParamsStreaming(
+   FrameStreamer& streamer ) const
+{
+   Console console;
+   int numFrames = streamer.NumFrames();
+   int width = streamer.Width();
+   int height = streamer.Height();
+   int channels = streamer.Channels();
+
+   std::vector<FrameNormalizationParams> params( numFrames );
+
+   // Sample ~100 rows evenly distributed across the image
+   int sampleRows = std::min( 100, height );
+   int rowStep = std::max( 1, height / sampleRows );
+
+   // Collect samples per frame
+   std::vector<std::vector<float>> frameSamples( numFrames );
+   for ( auto& v : frameSamples )
+      v.reserve( static_cast<size_t>( sampleRows ) * width );
+
+   for ( int row = 0; row < height; row += rowStep )
+   {
+      std::vector<std::vector<float>> rowData;
+      // Read channel 0 (or compute luminance from RGB rows)
+      if ( !streamer.ReadRow( row, 0, rowData ) )
+         break;
+
+      for ( int f = 0; f < numFrames; ++f )
+      {
+         for ( int x = 0; x < width; ++x )
+            frameSamples[f].push_back( rowData[f][x] );
+      }
+   }
+
+   // Reset streamer for subsequent use
+   streamer.ResetAllFiles();
+
+   // Compute median and MAD from samples
+   for ( int f = 0; f < numFrames; ++f )
+   {
+      std::vector<float>& samples = frameSamples[f];
+      if ( samples.empty() )
+         continue;
+
+      std::sort( samples.begin(), samples.end() );
+      double median = samples[samples.size() / 2];
+
+      std::vector<float> deviations( samples.size() );
+      for ( size_t j = 0; j < samples.size(); ++j )
+         deviations[j] = std::abs( samples[j] - static_cast<float>( median ) );
+      std::sort( deviations.begin(), deviations.end() );
+      double mad = deviations[deviations.size() / 2];
+
+      params[f].median = median;
+      params[f].mad = mad;
+   }
+
+   // Compute scale/offset relative to frame[0]
+   double refMedian = params[0].median;
+   double refMAD = params[0].mad;
+
+   for ( int f = 0; f < numFrames; ++f )
+   {
+      if ( params[f].mad > 1e-10 )
+         params[f].scale = refMAD / params[f].mad;
+      else
+         params[f].scale = 1.0;
+
+      params[f].offset = refMedian - params[f].median * params[f].scale;
+   }
+
+   console.WriteLn( String().Format(
+      "Streaming normalization: sampled %d rows, %d frames", sampleRows, numFrames ) );
+
+   return params;
+}
+
+// ----------------------------------------------------------------------------
+
+std::vector<float> NukeXStackInstance::ComputeQualityWeights(
+   const std::vector<Image>& frames ) const
+{
+   Console console;
+   auto startTime = std::chrono::high_resolution_clock::now();
+
+   std::vector<FrameQualityMetrics> metrics( frames.size() );
+
+   FrameRegistrationConfig regConfig;
+   regConfig.maxStars = 200;
+   FrameRegistration registration( regConfig );
+
+   for ( size_t i = 0; i < frames.size(); ++i )
+   {
+      const Image& frame = frames[i];
+      int width = frame.Width();
+      int height = frame.Height();
+
+      // 1. Detect stars and get count
+      std::vector<DetectedStar> stars = registration.DetectStarsInFrame( frame, 200 );
+      metrics[i].starCount = static_cast<int>( stars.size() );
+
+      // 2. Compute median FWHM from top 20 stars
+      int fwhmCount = std::min( 20, static_cast<int>( stars.size() ) );
+      if ( fwhmCount > 0 )
+      {
+         std::vector<float> fwhmValues;
+         fwhmValues.reserve( fwhmCount );
+
+         for ( int s = 0; s < fwhmCount; ++s )
+         {
+            PSFParameters psf = PSFModel::FitToStar( frame,
+               static_cast<float>( stars[s].x ),
+               static_cast<float>( stars[s].y ),
+               20.0f );
+
+            if ( psf.fwhm > 0.5f && psf.fwhm < 50.0f )
+               fwhmValues.push_back( psf.fwhm );
+         }
+
+         if ( !fwhmValues.empty() )
+         {
+            std::sort( fwhmValues.begin(), fwhmValues.end() );
+            metrics[i].medianFWHM = fwhmValues[fwhmValues.size() / 2];
+         }
+      }
+
+      // 3. Noise estimate from luminance MAD
+      {
+         std::vector<float> luminance( static_cast<size_t>( width ) * height );
+         int channels = frame.NumberOfChannels();
+         for ( int y = 0; y < height; ++y )
+         {
+            for ( int x = 0; x < width; ++x )
+            {
+               size_t idx = static_cast<size_t>( y ) * width + x;
+               if ( channels >= 3 )
+                  luminance[idx] = 0.2126f * frame.Pixel( x, y, 0 )
+                                 + 0.7152f * frame.Pixel( x, y, 1 )
+                                 + 0.0722f * frame.Pixel( x, y, 2 );
+               else
+                  luminance[idx] = frame.Pixel( x, y, 0 );
+            }
+         }
+
+         std::sort( luminance.begin(), luminance.end() );
+         float median = luminance[luminance.size() / 2];
+
+         std::vector<float> deviations( luminance.size() );
+         for ( size_t j = 0; j < luminance.size(); ++j )
+            deviations[j] = std::abs( luminance[j] - median );
+         std::sort( deviations.begin(), deviations.end() );
+         metrics[i].noiseEstimate = deviations[deviations.size() / 2] * 1.4826;
+      }
+
+      console.WriteLn( String().Format(
+         "  Frame %d: stars=%d, FWHM=%.2f px, noise=%.6f",
+         static_cast<int>( i + 1 ), metrics[i].starCount,
+         metrics[i].medianFWHM, metrics[i].noiseEstimate ) );
+   }
+
+   // Find best values
+   double bestFWHM = 1e10;
+   double bestNoise = 1e10;
+   for ( const auto& m : metrics )
+   {
+      if ( m.medianFWHM > 0 && m.medianFWHM < bestFWHM )
+         bestFWHM = m.medianFWHM;
+      if ( m.noiseEstimate > 0 && m.noiseEstimate < bestNoise )
+         bestNoise = m.noiseEstimate;
+   }
+
+   // Compute combined weights
+   std::vector<float> weights( frames.size(), 1.0f );
+   double maxWeight = 0.0;
+
+   for ( size_t i = 0; i < frames.size(); ++i )
+   {
+      double fwhmWeight = ( metrics[i].medianFWHM > 0 )
+         ? bestFWHM / metrics[i].medianFWHM : 1.0;
+      double noiseWeight = ( metrics[i].noiseEstimate > 0 )
+         ? bestNoise / metrics[i].noiseEstimate : 1.0;
+
+      double combined = std::sqrt( fwhmWeight * noiseWeight );
+      combined = std::max( 0.1, std::min( 1.0, combined ) );
+
+      weights[i] = static_cast<float>( combined );
+      if ( combined > maxWeight )
+         maxWeight = combined;
+   }
+
+   // Normalize so max = 1.0
+   if ( maxWeight > 0 )
+   {
+      for ( auto& w : weights )
+         w = static_cast<float>( w / maxWeight );
+   }
+
+   auto endTime = std::chrono::high_resolution_clock::now();
+   double ms = std::chrono::duration<double, std::milli>( endTime - startTime ).count();
+
+   console.WriteLn( String().Format( "Quality weights computed in %.1f ms:", ms ) );
+   for ( size_t i = 0; i < weights.size(); ++i )
+   {
+      console.WriteLn( String().Format( "  Frame %d: weight=%.3f",
+         static_cast<int>( i + 1 ), weights[i] ) );
+   }
+
+   return weights;
+}
+
+// ----------------------------------------------------------------------------
+
+void NukeXStackInstance::ExcludeFailedFrames(
+   std::vector<Image>& frames,
+   std::vector<String>& framePaths,
+   const RegistrationSummary& regSummary ) const
+{
+   Console console;
+
+   // Walk perFrame results in reverse order to safely erase
+   // Note: perFrame[0] is reference frame (always succeeds), start from 1
+   for ( int i = static_cast<int>( regSummary.perFrame.size() ) - 1; i >= 1; --i )
+   {
+      if ( !regSummary.perFrame[i].success )
+      {
+         console.WarningLn( String().Format(
+            "  Excluding frame %d (failed registration: %s)",
+            i + 1, IsoString( regSummary.perFrame[i].message ).c_str() ) );
+
+         if ( i < static_cast<int>( frames.size() ) )
+            frames.erase( frames.begin() + i );
+         if ( i < static_cast<int>( framePaths.size() ) )
+            framePaths.erase( framePaths.begin() + i );
+      }
+   }
+
+   console.WriteLn( String().Format(
+      "  %d frames remaining after excluding failed registrations.",
+      static_cast<int>( frames.size() ) ) );
 }
 
 // ----------------------------------------------------------------------------

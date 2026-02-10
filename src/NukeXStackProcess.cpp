@@ -41,6 +41,9 @@ NukeXStackProcess::NukeXStackProcess()
    new NXSGenerateMetadata( this );
    new NXSEnableAutoStretch( this );
    new NXSEnableRegistration( this );
+   new NXSEnableNormalization( this );
+   new NXSEnableQualityWeighting( this );
+   new NXSExcludeFailedRegistration( this );
 
    // Floating point parameters
    new NXSOutlierSigmaThreshold( this );

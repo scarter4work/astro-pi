@@ -21,6 +21,7 @@
 #include "engine/TransitionChecker.h"
 #include "engine/FrameStreamer.h"
 #include "engine/FrameRegistration.h"
+#include "engine/PSFModel.h"
 
 #include <vector>
 
@@ -56,6 +57,28 @@ struct IntegrationSummary
    double smoothingTimeMs = 0.0;
    double totalTimeMs = 0.0;
    String targetObject;
+   int normalizedFrames = 0;
+   int excludedFrames = 0;
+   double normalizationTimeMs = 0.0;
+   double qualityWeightTimeMs = 0.0;
+};
+
+// Per-frame normalization parameters
+struct FrameNormalizationParams
+{
+   double median = 0.0;     // Frame luminance median
+   double mad = 0.0;        // Frame luminance MAD
+   double scale = 1.0;      // Multiplicative scale factor
+   double offset = 0.0;     // Additive offset
+};
+
+// Per-frame quality metrics
+struct FrameQualityMetrics
+{
+   int    starCount = 0;
+   double medianFWHM = 0.0;    // Median FWHM in pixels
+   double noiseEstimate = 0.0; // MAD * 1.4826
+   double weight = 1.0;        // Combined quality weight [0.1, 1.0]
 };
 
 // ----------------------------------------------------------------------------
@@ -96,6 +119,9 @@ private:
    pcl_bool p_generateMetadata;
    pcl_bool p_enableAutoStretch = true;
    pcl_bool p_enableRegistration = true;
+   pcl_bool p_enableNormalization = true;
+   pcl_bool p_enableQualityWeighting = true;
+   pcl_bool p_excludeFailedRegistration = true;
 
    // Numeric parameters
    float    p_outlierSigmaThreshold;
@@ -116,7 +142,8 @@ private:
    bool RunIntegration( std::vector<Image>& frames,
                         const FITSKeywordArray& keywords,
                         Image& output,
-                        IntegrationSummary& summary ) const;
+                        IntegrationSummary& summary,
+                        const std::vector<float>& frameWeights = {} ) const;
 
    // Create a median reference image from the stack for segmentation
    Image CreateMedianReference( const std::vector<Image>& frames ) const;
@@ -136,7 +163,27 @@ private:
                          double& segmentationTimeMs ) const;
 
    // Register all frames to reference using star alignment
-   bool RegisterAllFrames( std::vector<Image>& frames ) const;
+   RegistrationSummary RegisterAllFrames( std::vector<Image>& frames ) const;
+
+   // Preprocessing: background normalization
+   std::vector<FrameNormalizationParams> ComputeNormalizationParams(
+      const std::vector<Image>& frames ) const;
+
+   void NormalizeFrames( std::vector<Image>& frames,
+                         const std::vector<FrameNormalizationParams>& params ) const;
+
+   // Streaming normalization: sample ~100 rows per frame for stats
+   std::vector<FrameNormalizationParams> ComputeNormalizationParamsStreaming(
+      FrameStreamer& streamer ) const;
+
+   // Quality weighting
+   std::vector<float> ComputeQualityWeights(
+      const std::vector<Image>& frames ) const;
+
+   // Failed registration exclusion
+   void ExcludeFailedFrames( std::vector<Image>& frames,
+                             std::vector<String>& framePaths,
+                             const RegistrationSummary& regSummary ) const;
 
    friend class NukeXStackProcess;
    friend class NukeXStackInterface;

@@ -121,6 +121,16 @@ struct PixelSelectorConfig
 };
 
 // ----------------------------------------------------------------------------
+// Per-frame background normalization parameters
+// ----------------------------------------------------------------------------
+
+struct FrameNormalization
+{
+   float scale = 1.0f;    // Multiplicative scale factor
+   float offset = 0.0f;   // Additive offset
+};
+
+// ----------------------------------------------------------------------------
 // PixelSelector - Main selection orchestrator
 // ----------------------------------------------------------------------------
 
@@ -213,6 +223,10 @@ public:
    /// Weights should be normalized to [0,1]. Empty means equal weight.
    void SetFrameWeights( const std::vector<float>& weights );
 
+   /// Set per-frame normalization parameters (scale/offset from background equalization)
+   /// Applied to raw pixel values before analysis in streaming mode.
+   void SetFrameNormalization( const std::vector<FrameNormalization>& norms );
+
    /// Set per-frame segmentation maps (one per frame)
    void SetPerFrameSegmentation( const std::vector<PerFrameClassMap>& maps );
 
@@ -240,6 +254,10 @@ private:
 
    // Per-frame quality weights
    std::vector<float> m_frameWeights;
+
+   // Per-frame normalization parameters
+   std::vector<FrameNormalization> m_frameNormalization;
+   bool m_hasFrameNormalization = false;
 
    // Per-frame segmentation data
    std::vector<PerFrameClassMap> m_perFrameClassMaps;

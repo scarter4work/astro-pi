@@ -256,6 +256,66 @@ bool NXSEnableRegistration::DefaultValue() const
 }
 
 // ----------------------------------------------------------------------------
+
+NXSEnableNormalization* TheNXSEnableNormalizationParameter = nullptr;
+
+NXSEnableNormalization::NXSEnableNormalization( MetaProcess* P )
+   : MetaBoolean( P )
+{
+   TheNXSEnableNormalizationParameter = this;
+}
+
+IsoString NXSEnableNormalization::Id() const
+{
+   return "enableNormalization";
+}
+
+bool NXSEnableNormalization::DefaultValue() const
+{
+   return true;
+}
+
+// ----------------------------------------------------------------------------
+
+NXSEnableQualityWeighting* TheNXSEnableQualityWeightingParameter = nullptr;
+
+NXSEnableQualityWeighting::NXSEnableQualityWeighting( MetaProcess* P )
+   : MetaBoolean( P )
+{
+   TheNXSEnableQualityWeightingParameter = this;
+}
+
+IsoString NXSEnableQualityWeighting::Id() const
+{
+   return "enableQualityWeighting";
+}
+
+bool NXSEnableQualityWeighting::DefaultValue() const
+{
+   return true;
+}
+
+// ----------------------------------------------------------------------------
+
+NXSExcludeFailedRegistration* TheNXSExcludeFailedRegistrationParameter = nullptr;
+
+NXSExcludeFailedRegistration::NXSExcludeFailedRegistration( MetaProcess* P )
+   : MetaBoolean( P )
+{
+   TheNXSExcludeFailedRegistrationParameter = this;
+}
+
+IsoString NXSExcludeFailedRegistration::Id() const
+{
+   return "excludeFailedRegistration";
+}
+
+bool NXSExcludeFailedRegistration::DefaultValue() const
+{
+   return true;
+}
+
+// ----------------------------------------------------------------------------
 // Floating Point Parameters
 // ----------------------------------------------------------------------------
 
