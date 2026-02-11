@@ -1232,6 +1232,39 @@ bool NukeXStackInstance::RunIntegrationStreaming(
    PixelSelectorConfig selectorConfig = BuildSelectorConfig();
    PixelSelector selector( selectorConfig );
 
+   // === Preprocessing: Background normalization (streaming) ===
+   if ( p_enableNormalization && streamer.NumFrames() > 1 )
+   {
+      console.WriteLn( "<br>Computing streaming background normalization..." );
+      auto normParams = ComputeNormalizationParamsStreaming( streamer );
+
+      // Log reference frame stats and scale range
+      console.WriteLn( String().Format(
+         "  Reference (frame 1): median=%.6f, MAD=%.6f",
+         normParams[0].median, normParams[0].mad ) );
+
+      double minScale = normParams[0].scale;
+      double maxScale = normParams[0].scale;
+      for ( size_t f = 1; f < normParams.size(); ++f )
+      {
+         minScale = std::min( minScale, normParams[f].scale );
+         maxScale = std::max( maxScale, normParams[f].scale );
+      }
+      console.WriteLn( String().Format(
+         "  Normalization scales range: %.2f - %.2f", minScale, maxScale ) );
+
+      // Convert FrameNormalizationParams (double) to FrameNormalization (float) for PixelSelector
+      std::vector<FrameNormalization> norms( normParams.size() );
+      for ( size_t f = 0; f < normParams.size(); ++f )
+      {
+         norms[f].scale  = static_cast<float>( normParams[f].scale );
+         norms[f].offset = static_cast<float>( normParams[f].offset );
+      }
+      selector.SetFrameNormalization( norms );
+
+      summary.normalizedFrames = streamer.NumFrames();
+   }
+
    // Parse target context from FITS headers
    if ( p_useTargetContext )
    {

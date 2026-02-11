@@ -9,8 +9,8 @@
       </p>
    </description>
    <platform os="linux" arch="x64" version="1.8.0:1.9.9">
-      <package fileName="20260210-linux-x64-NukeX.tar.gz" sha1="25ade2c8e6fc91ae1550320cdad2912d994513f7" type="module" releaseDate="20260210">
-         <title>NukeX 2.1.0.44</title>
+      <package fileName="20260210-linux-x64-NukeX.tar.gz" sha1="5428c0abc1ca819c9c80857b9366d220b32cc11e" type="module" releaseDate="20260210">
+         <title>NukeX 2.1.0.45</title>
          <description>
             <p>
                <b>NukeX - Intelligent Region-Aware Processing for PixInsight</b>
@@ -27,7 +27,7 @@
                </li>
             </ul>
             <p>
-               <b>Version 2.1.0.44 - Foundation Release</b>
+               <b>Version 2.1.0.45 - Foundation Release</b>
             </p>
             <p>
                Copyright (c) 2026 Scott Carter. All Rights Reserved.
@@ -36,4 +36,4 @@
       </package>
    </platform>
 </xri>
-<Signature developerId="scarter4work" timestamp="2026-02-10T21:41:11.370Z" encoding="Base64">ZgyPIRxfgG454W68Vh6Ks9SYnLYYjBEVo+5RTkWNlNONkoE96Ka/M6jEvyjKjATzvdZUUtiqc/ze30idAEABAg==</Signature>
+<Signature developerId="scarter4work" timestamp="2026-02-11T01:38:56.559Z" encoding="Base64">R4R71nPH6km01A6Hq/ITXDJ+HS5zX2kb+3mzu3FpV8Q6TF7lB8dfzJpboWpmaLmvRjWvN/Zfef8UzM+A+4xUBg==</Signature>
