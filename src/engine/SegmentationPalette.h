@@ -9,7 +9,7 @@
 //
 // Unified Segmentation Palette
 //
-// This header provides a consistent color palette for the 7-class
+// This header provides a consistent color palette for the 8-class
 // segmentation model (v2.0 taxonomy).
 //
 // IMPORTANT: Any changes to this palette must be synchronized with
@@ -29,10 +29,10 @@ namespace pcl
 // ----------------------------------------------------------------------------
 // Segmentation Palette
 //
-// Unified color palette for 7-class astronomical image segmentation.
+// Unified color palette for 8-class astronomical image segmentation.
 //
 // Design Rationale:
-// - Perceptually distinct: All 7 classes are visually separable
+// - Perceptually distinct: All 8 classes are visually separable
 // - Semantically meaningful: Colors match astronomical expectations
 // - Colorblind-friendly: Major categories use different hues/luminances
 //
@@ -44,13 +44,14 @@ namespace pcl
 // - DARK EXTENDED (4): Dark brown/maroon - dark nebulae, dust lanes
 // - ARTIFACT (5): Bright red - hot pixels, satellite trails
 // - STAR HALO (6): Pale yellow/gold - diffuse glow around stars
+// - VIGNETTE (7): Muted blue-gray - optical vignetting
 // ----------------------------------------------------------------------------
 
 namespace SegmentationPalette
 {
 
 // Number of segmentation classes
-constexpr int NumClasses = 7;
+constexpr int NumClasses = 8;
 
 // RGB color structure (0-255 values)
 struct RGB8
@@ -74,6 +75,7 @@ constexpr std::array<RGB8, NumClasses> Colors = {{
    { 51, 26, 38 },       // 4: DarkExtended - dark brown/maroon
    { 255, 0, 51 },       // 5: Artifact - bright red
    { 200, 200, 100 },    // 6: StarHalo - pale yellow/gold
+   { 128, 128, 192 },    // 7: Vignette - muted blue-gray
 }};
 
 // Class names (indexed by class ID)
@@ -85,6 +87,7 @@ constexpr const char* ClassNames[NumClasses] = {
    "dark_extended",
    "artifact",
    "star_halo",
+   "vignette",
 };
 
 // Human-readable display names
@@ -96,6 +99,7 @@ constexpr const char* ClassDisplayNames[NumClasses] = {
    "Dark Extended",
    "Artifact",
    "Star Halo",
+   "Vignette",
 };
 
 // ----------------------------------------------------------------------------

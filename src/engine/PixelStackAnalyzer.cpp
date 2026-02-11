@@ -56,6 +56,10 @@ static bool IsClassSpecificOutlier(
       // Symmetric, aggressive
       return ( z > threshold );
 
+   case RegionClass::Vignette:
+      // Reject LOW only (vignetted frames are systematically dimmer)
+      return ( value < mu && z > threshold );
+
    default:
       return ( z > threshold );
    }
@@ -791,6 +795,24 @@ float PixelStackAnalyzer::SelectBestValue(
       }
       break;
 
+   case RegionClass::Vignette:
+      {
+         // SELECT MAXIMUM (least-attenuated frame)
+         float maxScore = -std::numeric_limits<float>::max();
+         for ( const auto& vp : validValues )
+         {
+            float score = vp.first * GetFrameWeight( vp.second );
+            if ( score > maxScore || (score == maxScore && vp.second < bestFrame) )
+            {
+               maxScore = score;
+               bestFrame = vp.second;
+               bestValue = vp.first;
+            }
+         }
+         confidence = ComputeConfidence( 0.85f );
+      }
+      break;
+
    default:
       {
          // Background/Artifact: select closest to median
@@ -888,6 +910,13 @@ StackAnalysisConfig PixelStackAnalyzer::GetClassAdjustedConfig( RegionClass regi
       config.outlierSigmaThreshold = 3.5f;
       config.favorHighSignal = true;
       config.favorLowSignal = false;
+      break;
+
+   case RegionClass::Vignette:
+      config.outlierSigmaThreshold = 3.5f;
+      config.favorHighSignal = true;
+      config.favorLowSignal = false;
+      config.useMedianSelection = false;
       break;
 
    default:

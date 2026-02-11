@@ -39,6 +39,7 @@ struct FrameRegistrationConfig
    double outlierSigma = 2.5;      // MAD-based sigma clipping for match refinement
    double expandRadius = 5.0;      // Search radius for transform-guided match expansion
    int    maxTriangles = 15000;    // Maximum triangles to generate
+   bool   enablePhaseCorrelation = true;  // FFT-based fallback registration
 };
 
 // ----------------------------------------------------------------------------
@@ -106,6 +107,17 @@ struct StarMatch
 };
 
 // ----------------------------------------------------------------------------
+// Registration method used
+// ----------------------------------------------------------------------------
+
+enum class RegistrationMethod
+{
+   Triangle,          // Star triangle matching
+   PhaseCorrelation,  // FFT phase correlation
+   Failed             // Neither method succeeded
+};
+
+// ----------------------------------------------------------------------------
 // Per-frame registration result
 // ----------------------------------------------------------------------------
 
@@ -121,6 +133,7 @@ struct FrameRegistrationResult
    double scale = 1.0;
    bool   success = false;
    bool   skippedNearIdentity = false;
+   RegistrationMethod method = RegistrationMethod::Triangle;
    String message;
 };
 
@@ -134,6 +147,8 @@ struct RegistrationSummary
    int    registeredFrames = 0;
    int    skippedFrames = 0;      // Near-identity, no resampling needed
    int    failedFrames = 0;
+   int    phaseCorrelationRecovered = 0;
+   int    triangleSucceeded = 0;
    double totalTimeMs = 0.0;
    std::vector<FrameRegistrationResult> perFrame;
 };
@@ -195,12 +210,24 @@ public:
    // Apply transform via bicubic resampling (in-place, per-channel, OpenMP)
    void ApplyTransform( Image& frame, const SimilarityTransform& transform );
 
+   // Phase correlation registration (FFT-based)
+   FrameRegistrationResult RegisterFramePhaseCorrelation(
+      Image& frame,
+      int frameIndex );
+
 private:
 
    FrameRegistrationConfig m_config;
 
    // Bicubic (Catmull-Rom) interpolation weight
    static double CatmullRom( double t );
+
+   // Phase correlation support
+   Image m_referenceLuminance;
+   bool m_referenceInitialized = false;
+
+   // Create single-channel luminance from RGB
+   static Image CreateLuminance( const Image& image );
 };
 
 // ----------------------------------------------------------------------------

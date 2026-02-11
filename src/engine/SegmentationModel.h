@@ -95,7 +95,8 @@ struct SegmentationConfig
       RegionClass::BrightExtended,  // 3
       RegionClass::DarkExtended,    // 4
       RegionClass::Artifact,        // 5
-      RegionClass::StarHalo         // 6
+      RegionClass::StarHalo,        // 6
+      RegionClass::Vignette         // 7
    };
 };
 

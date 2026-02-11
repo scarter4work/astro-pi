@@ -1435,11 +1435,19 @@ RegistrationSummary NukeXStackInstance::RegisterAllFrames( std::vector<Image>& f
    config.maxStars = 200;
    config.sensitivity = 0.5;
    config.minMatches = 6;
+   config.enablePhaseCorrelation = true;
 
    FrameRegistration registration( config );
    RegistrationSummary regSummary;
 
    registration.RegisterFrames( frames, regSummary );
+
+   if ( regSummary.phaseCorrelationRecovered > 0 )
+   {
+      console.NoteLn( String().Format(
+         "<br>Phase correlation recovered %d frame(s) that triangle matching could not align.",
+         regSummary.phaseCorrelationRecovered ) );
+   }
 
    return regSummary;
 }

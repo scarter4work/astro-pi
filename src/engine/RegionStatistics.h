@@ -33,8 +33,9 @@ enum class RegionClass
    DarkExtended,        // Dark nebulae, dust lanes
    Artifact,            // Hot pixels, satellite trails
    StarHalo,            // Diffuse glow around stars
+   Vignette,            // Optical vignetting (corner/edge light falloff)
 
-   Count                // Number of region classes (7)
+   Count                // Number of region classes (8)
 };
 
 // Convert region class to string (matches model training names)
@@ -49,6 +50,7 @@ inline IsoString RegionClassToString( RegionClass rc )
    case RegionClass::DarkExtended:    return "dark_extended";
    case RegionClass::Artifact:        return "artifact";
    case RegionClass::StarHalo:        return "star_halo";
+   case RegionClass::Vignette:        return "vignette";
    default:                           return "unknown";
    }
 }
@@ -65,6 +67,7 @@ inline String RegionClassDisplayName( RegionClass rc )
    case RegionClass::DarkExtended:    return "Dark Extended";
    case RegionClass::Artifact:        return "Artifact";
    case RegionClass::StarHalo:        return "Star Halo";
+   case RegionClass::Vignette:        return "Vignette";
    default:                           return "Unknown";
    }
 }

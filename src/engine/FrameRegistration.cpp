@@ -12,6 +12,7 @@
 #include "FrameRegistration.h"
 
 #include <pcl/Console.h>
+#include <pcl/FFTRegistration.h>
 #include <algorithm>
 #include <cmath>
 #include <numeric>
@@ -680,6 +681,126 @@ void FrameRegistration::ApplyTransform( Image& frame, const SimilarityTransform&
 }
 
 // ----------------------------------------------------------------------------
+// Create luminance image from RGB
+// ----------------------------------------------------------------------------
+
+Image FrameRegistration::CreateLuminance( const Image& image )
+{
+   int width = image.Width();
+   int height = image.Height();
+   int channels = image.NumberOfChannels();
+
+   Image lum;
+   lum.AllocateData( width, height, 1, ColorSpace::Gray );
+
+   if ( channels >= 3 )
+   {
+      for ( int y = 0; y < height; ++y )
+         for ( int x = 0; x < width; ++x )
+            lum.Pixel( x, y, 0 ) = 0.2126f * image.Pixel( x, y, 0 )
+                                  + 0.7152f * image.Pixel( x, y, 1 )
+                                  + 0.0722f * image.Pixel( x, y, 2 );
+   }
+   else
+   {
+      for ( int y = 0; y < height; ++y )
+         for ( int x = 0; x < width; ++x )
+            lum.Pixel( x, y, 0 ) = image.Pixel( x, y, 0 );
+   }
+
+   return lum;
+}
+
+// ----------------------------------------------------------------------------
+// Phase correlation registration (FFT-based translation detection)
+// ----------------------------------------------------------------------------
+
+FrameRegistrationResult FrameRegistration::RegisterFramePhaseCorrelation(
+   Image& frame,
+   int frameIndex )
+{
+   FrameRegistrationResult result;
+   result.frameIndex = frameIndex;
+   result.method = RegistrationMethod::PhaseCorrelation;
+
+   if ( !m_referenceInitialized )
+   {
+      result.success = false;
+      result.message = String().Format( "Frame %d: Phase correlation skipped (no reference luminance)",
+         frameIndex + 1 );
+      return result;
+   }
+
+   // Create luminance of target frame
+   Image targetLum = CreateLuminance( frame );
+
+   // Run FFT phase correlation for translation
+   FFTTranslation fftTranslation;
+   fftTranslation.Initialize( m_referenceLuminance );
+   fftTranslation.Evaluate( targetLum );
+
+   float peakValue = fftTranslation.Peak();
+   float dx = fftTranslation.Delta().x;
+   float dy = fftTranslation.Delta().y;
+
+   // Quality check: peak value indicates correlation strength
+   // Typical good alignment: peak > 0.1; poor/no correlation: peak < 0.02
+   if ( peakValue < 0.02f )
+   {
+      result.success = false;
+      result.message = String().Format(
+         "Frame %d: Phase correlation too weak (peak=%.4f, dx=%.1f, dy=%.1f)",
+         frameIndex + 1, peakValue, dx, dy );
+      return result;
+   }
+
+   // Build pure translation transform
+   SimilarityTransform T;
+   T.a = 1.0;
+   T.b = 0.0;
+   T.tx = dx;
+   T.ty = dy;
+
+   // Validate translation magnitude
+   if ( T.TranslationPx() > m_config.maxTranslation )
+   {
+      result.success = false;
+      result.message = String().Format(
+         "Frame %d: Phase corr translation %.1f px exceeds limit %.1f px (peak=%.4f)",
+         frameIndex + 1, T.TranslationPx(), m_config.maxTranslation, peakValue );
+      return result;
+   }
+
+   result.dx = T.tx;
+   result.dy = T.ty;
+   result.rotationDeg = 0.0;
+   result.scale = 1.0;
+   result.rmsResidual = 0.0;  // Not applicable for phase corr
+   result.starsDetected = 0;
+   result.starsMatched = 0;
+   result.success = true;
+
+   // Check for near-identity
+   if ( T.IsNearIdentity( m_config.nearIdentityPx ) )
+   {
+      result.skippedNearIdentity = true;
+      result.message = String().Format(
+         "Frame %d: Phase corr near-identity (dx=%.2f dy=%.2f peak=%.4f), skip resampling",
+         frameIndex + 1, T.tx, T.ty, peakValue );
+      return result;
+   }
+
+   // Apply transform
+   ApplyTransform( frame, T );
+
+   result.message = String().Format(
+      "Frame %d: Phase corr dx=%.1f dy=%.1f peak=%.4f",
+      frameIndex + 1, result.dx, result.dy, peakValue );
+
+   return result;
+}
+
+// ----------------------------------------------------------------------------
 // Register a single frame against reference stars
 // ----------------------------------------------------------------------------
 
@@ -689,127 +810,159 @@ FrameRegistrationResult FrameRegistration::RegisterFrame(
    const std::vector<StarTriangle>& refTriangles,
    int frameIndex )
 {
-   FrameRegistrationResult result;
-   result.frameIndex = frameIndex;
+   // === Try triangle matching first (on a copy if phase corr is also enabled) ===
+   FrameRegistrationResult triangleResult;
+   triangleResult.frameIndex = frameIndex;
+   triangleResult.method = RegistrationMethod::Triangle;
 
    // Detect stars in target frame
    auto targetStars = DetectStarsInFrame( frame, m_config.maxStars );
-   result.starsDetected = static_cast<int>( targetStars.size() );
+   triangleResult.starsDetected = static_cast<int>( targetStars.size() );
 
-   if ( result.starsDetected < 3 )
+   bool triangleAttempted = ( triangleResult.starsDetected >= 3 );
+
+   if ( triangleAttempted )
    {
-      result.success = false;
-      result.message = String().Format( "Frame %d: Only %d stars detected (need >= 3), skipping registration",
-         frameIndex + 1, result.starsDetected );
-      return result;
+      auto targetTriangles = BuildTriangles( targetStars, m_config.triangleStars, m_config.maxTriangles );
+
+      if ( !targetTriangles.empty() )
+      {
+         auto matches = MatchTriangles( refTriangles, targetTriangles, refStars, targetStars );
+         triangleResult.starsMatched = static_cast<int>( matches.size() );
+
+         if ( triangleResult.starsMatched >= m_config.minMatches )
+         {
+            SimilarityTransform T = RefineMatches( refStars, targetStars, matches );
+            triangleResult.starsMatched = static_cast<int>( matches.size() );
+
+            if ( triangleResult.starsMatched >= m_config.minMatches )
+            {
+               // Expand matches
+               auto expandedMatches = ExpandMatchesWithTransform(
+                  refStars, targetStars, T, m_config.expandRadius );
+               if ( static_cast<int>( expandedMatches.size() ) > triangleResult.starsMatched )
+               {
+                  matches = std::move( expandedMatches );
+                  T = RefineMatches( refStars, targetStars, matches );
+                  triangleResult.starsMatched = static_cast<int>( matches.size() );
+               }
+
+               // Compute residuals
+               double sumResidSq = 0;
+               for ( const auto& m : matches )
+               {
+                  double xp, yp;
+                  T.Apply( targetStars[m.targetIndex].x, targetStars[m.targetIndex].y, xp, yp );
+                  double ddx = xp - refStars[m.refIndex].x;
+                  double ddy = yp - refStars[m.refIndex].y;
+                  sumResidSq += ddx * ddx + ddy * ddy;
+               }
+               triangleResult.rmsResidual = std::sqrt( sumResidSq / matches.size() );
+               triangleResult.dx = T.tx;
+               triangleResult.dy = T.ty;
+               triangleResult.rotationDeg = T.RotationDeg();
+               triangleResult.scale = T.Scale();
+
+               // Validate transform
+               bool valid = true;
+               if ( T.TranslationPx() > m_config.maxTranslation ) valid = false;
+               if ( std::abs( triangleResult.rotationDeg ) > m_config.maxRotationDeg ) valid = false;
+               if ( std::abs( triangleResult.scale - 1.0 ) > m_config.maxScaleDev ) valid = false;
+
+               if ( valid )
+               {
+                  triangleResult.success = true;
+
+                  // If triangle succeeded with good RMS, prefer it over phase corr
+                  if ( triangleResult.rmsResidual < 1.0 || !m_config.enablePhaseCorrelation )
+                  {
+                     // Apply triangle result directly
+                     if ( T.IsNearIdentity( m_config.nearIdentityPx ) )
+                     {
+                        triangleResult.skippedNearIdentity = true;
+                        triangleResult.message = String().Format(
+                           "Frame %d: Near-identity (dx=%.2f dy=%.2f rot=%.4f), skip resampling",
+                           frameIndex + 1, T.tx, T.ty, triangleResult.rotationDeg );
+                     }
+                     else
+                     {
+                        ApplyTransform( frame, T );
+                        triangleResult.message = String().Format(
+                           "Frame %d: %d/%d stars matched, dx=%.1f dy=%.1f rot=%.3f%c scale=%.5f RMS=%.2f px",
+                           frameIndex + 1, triangleResult.starsMatched, triangleResult.starsDetected,
+                           triangleResult.dx, triangleResult.dy, triangleResult.rotationDeg,
+                           0xB0, triangleResult.scale, triangleResult.rmsResidual );
+                     }
+                     return triangleResult;
+                  }
+                  // else: triangle succeeded but RMS >= 1.0, try phase corr too
+               }
+            }
+         }
+      }
    }
 
-   // Build triangles for target (use triangleStars for diverse vertex coverage)
-   auto targetTriangles = BuildTriangles( targetStars, m_config.triangleStars, m_config.maxTriangles );
-
-   if ( targetTriangles.empty() )
+   // === Triangle failed or had high RMS — try phase correlation ===
+   if ( m_config.enablePhaseCorrelation && m_referenceInitialized )
    {
-      result.success = false;
-      result.message = String().Format( "Frame %d: No valid triangles, skipping registration", frameIndex + 1 );
-      return result;
+      FrameRegistrationResult phaseResult = RegisterFramePhaseCorrelation( frame, frameIndex );
+
+      if ( phaseResult.success )
+      {
+         // If triangle also succeeded, compare
+         if ( triangleResult.success )
+         {
+            // Phase corr is translation-only. If triangle had rotation/scale, prefer triangle
+            // despite higher RMS (phase corr can't handle rotation)
+            bool triangleHasRotScale = ( std::abs( triangleResult.rotationDeg ) > 0.01
+                                       || std::abs( triangleResult.scale - 1.0 ) > 0.001 );
+            if ( triangleHasRotScale )
+            {
+               // Triangle is better for this frame (rotation/scale present)
+               SimilarityTransform T;
+               T.a = std::cos( triangleResult.rotationDeg * 3.14159265358979323846 / 180.0 ) * triangleResult.scale;
+               T.b = std::sin( triangleResult.rotationDeg * 3.14159265358979323846 / 180.0 ) * triangleResult.scale;
+               T.tx = triangleResult.dx;
+               T.ty = triangleResult.dy;
+               ApplyTransform( frame, T );
+               triangleResult.message = String().Format(
+                  "Frame %d: %d/%d stars matched, dx=%.1f dy=%.1f rot=%.3f%c scale=%.5f RMS=%.2f px (preferred over phase corr)",
+                  frameIndex + 1, triangleResult.starsMatched, triangleResult.starsDetected,
+                  triangleResult.dx, triangleResult.dy, triangleResult.rotationDeg,
+                  0xB0, triangleResult.scale, triangleResult.rmsResidual );
+               return triangleResult;
+            }
+         }
+
+         // Phase correlation wins (triangle failed or translation-only case)
+         phaseResult.message += " [recovered by phase correlation]";
+         return phaseResult;
+      }
    }
 
-   // Match triangles
-   auto matches = MatchTriangles( refTriangles, targetTriangles, refStars, targetStars );
-   result.starsMatched = static_cast<int>( matches.size() );
-
-   if ( result.starsMatched < m_config.minMatches )
+   // === Both methods failed ===
+   if ( triangleResult.success )
    {
-      result.success = false;
-      result.message = String().Format( "Frame %d: Only %d star matches (need >= %d), skipping registration",
-         frameIndex + 1, result.starsMatched, m_config.minMatches );
-      return result;
+      // Triangle succeeded but we somehow got here (shouldn't happen, but safety)
+      SimilarityTransform T;
+      T.a = std::cos( triangleResult.rotationDeg * 3.14159265358979323846 / 180.0 ) * triangleResult.scale;
+      T.b = std::sin( triangleResult.rotationDeg * 3.14159265358979323846 / 180.0 ) * triangleResult.scale;
+      T.tx = triangleResult.dx;
+      T.ty = triangleResult.dy;
+      ApplyTransform( frame, T );
+      return triangleResult;
    }
 
-   // Compute and refine initial transform from seed matches
-   SimilarityTransform T = RefineMatches( refStars, targetStars, matches );
-   result.starsMatched = static_cast<int>( matches.size() ); // May have changed after refinement
-
-   if ( result.starsMatched < m_config.minMatches )
-   {
-      result.success = false;
-      result.message = String().Format( "Frame %d: Only %d matches after refinement (need >= %d)",
-         frameIndex + 1, result.starsMatched, m_config.minMatches );
-      return result;
-   }
-
-   // Expand matches: use the preliminary transform to find all matching star pairs
-   // across the full star catalog (not just the triangle subset)
-   auto expandedMatches = ExpandMatchesWithTransform( refStars, targetStars, T, m_config.expandRadius );
-   if ( static_cast<int>( expandedMatches.size() ) > result.starsMatched )
-   {
-      matches = std::move( expandedMatches );
-      T = RefineMatches( refStars, targetStars, matches );
-      result.starsMatched = static_cast<int>( matches.size() );
-   }
-
-   // Compute final residuals
-   double sumResidSq = 0;
-   for ( const auto& m : matches )
-   {
-      double xp, yp;
-      T.Apply( targetStars[m.targetIndex].x, targetStars[m.targetIndex].y, xp, yp );
-      double dx = xp - refStars[m.refIndex].x;
-      double dy = yp - refStars[m.refIndex].y;
-      sumResidSq += dx * dx + dy * dy;
-   }
-   result.rmsResidual = std::sqrt( sumResidSq / matches.size() );
-
-   result.dx = T.tx;
-   result.dy = T.ty;
-   result.rotationDeg = T.RotationDeg();
-   result.scale = T.Scale();
-
-   // Validate transform
-   if ( T.TranslationPx() > m_config.maxTranslation )
-   {
-      result.success = false;
-      result.message = String().Format( "Frame %d: Translation %.1f px exceeds limit %.1f px",
-         frameIndex + 1, T.TranslationPx(), m_config.maxTranslation );
-      return result;
-   }
-
-   if ( std::abs( result.rotationDeg ) > m_config.maxRotationDeg )
-   {
-      result.success = false;
-      result.message = String().Format( "Frame %d: Rotation %.3f deg exceeds limit %.1f deg",
-         frameIndex + 1, result.rotationDeg, m_config.maxRotationDeg );
-      return result;
-   }
-
-   if ( std::abs( result.scale - 1.0 ) > m_config.maxScaleDev )
-   {
-      result.success = false;
-      result.message = String().Format( "Frame %d: Scale %.6f deviates from 1.0 by more than %.3f",
-         frameIndex + 1, result.scale, m_config.maxScaleDev );
-      return result;
-   }
-
-   result.success = true;
-
-   // Check for near-identity
-   if ( T.IsNearIdentity( m_config.nearIdentityPx ) )
-   {
-      result.skippedNearIdentity = true;
-      result.message = String().Format( "Frame %d: Near-identity (dx=%.2f dy=%.2f rot=%.4f), skip resampling",
-         frameIndex + 1, T.tx, T.ty, result.rotationDeg );
-      return result;
-   }
-
-   // Apply transform
-   ApplyTransform( frame, T );
-
-   result.message = String().Format(
-      "Frame %d: %d/%d stars matched, dx=%.1f dy=%.1f rot=%.3f° scale=%.5f RMS=%.2f px",
-      frameIndex + 1, result.starsMatched, result.starsDetected,
-      result.dx, result.dy, result.rotationDeg, result.scale, result.rmsResidual );
-
-   return result;
+   // Both failed
+   triangleResult.success = false;
+   triangleResult.method = RegistrationMethod::Failed;
+   if ( !triangleAttempted )
+      triangleResult.message = String().Format( "Frame %d: Only %d stars detected (need >= 3), both methods failed",
+         frameIndex + 1, triangleResult.starsDetected );
+   else
+      triangleResult.message = String().Format( "Frame %d: Triangle matching (%d matches) and phase correlation both failed",
+         frameIndex + 1, triangleResult.starsMatched );
+   return triangleResult;
 }
 
 // ----------------------------------------------------------------------------
@@ -846,6 +999,14 @@ bool FrameRegistration::RegisterFrames( std::vector<Image>& frames, Registration
       return false;
    }
 
+   // Initialize reference luminance for phase correlation
+   if ( m_config.enablePhaseCorrelation )
+   {
+      m_referenceLuminance = CreateLuminance( frames[0] );
+      m_referenceInitialized = true;
+      console.WriteLn( "Phase correlation enabled (FFT-based fallback)" );
+   }
+
    // Build reference triangles (use triangleStars for diverse vertex coverage)
    auto refTriangles = BuildTriangles( refStars, m_config.triangleStars, m_config.maxTriangles );
    console.WriteLn( String().Format( "Reference triangles: %d", static_cast<int>( refTriangles.size() ) ) );
@@ -875,6 +1036,11 @@ bool FrameRegistration::RegisterFrames( std::vector<Image>& frames, Registration
             summary.skippedFrames++;
          else
             summary.registeredFrames++;
+
+         if ( result.method == RegistrationMethod::Triangle )
+            summary.triangleSucceeded++;
+         else if ( result.method == RegistrationMethod::PhaseCorrelation )
+            summary.phaseCorrelationRecovered++;
       }
       else
       {
@@ -888,8 +1054,9 @@ bool FrameRegistration::RegisterFrames( std::vector<Image>& frames, Registration
    summary.totalTimeMs = std::chrono::duration<double, std::milli>( endTime - startTime ).count();
 
    console.WriteLn( String().Format(
-      "<br>Registration complete: %d registered, %d skipped (near-identity), %d failed (%.1f s)",
-      summary.registeredFrames, summary.skippedFrames, summary.failedFrames,
+      "<br>Registration complete: %d registered (%d triangle, %d phase-corr), %d skipped, %d failed (%.1f s)",
+      summary.registeredFrames, summary.triangleSucceeded, summary.phaseCorrelationRecovered,
+      summary.skippedFrames, summary.failedFrames,
       summary.totalTimeMs / 1000.0 ) );
 
    return true;
