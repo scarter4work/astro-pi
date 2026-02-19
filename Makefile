@@ -172,7 +172,7 @@ DEPS = $(SOURCES:.cpp=.d)
 # Build Targets
 # ============================================================================
 
-.PHONY: all clean install uninstall debug release info help
+.PHONY: all clean install uninstall debug release info help test
 
 all: $(TARGET)
 
@@ -223,6 +223,12 @@ clean:
 	rm -f $(ENGINE_DIR)/ONNXInference.o $(ENGINE_DIR)/SegmentationModel.o $(ENGINE_DIR)/Segmentation.o
 	rm -f $(ENGINE_DIR)/ONNXInference.d $(ENGINE_DIR)/SegmentationModel.d $(ENGINE_DIR)/Segmentation.d
 	@echo "Clean complete."
+
+# Run test suite
+test:
+	$(MAKE) -C tests clean
+	$(MAKE) -C tests build-tests
+	cd tests && ./nukex_tests
 
 # Display build information
 info:
