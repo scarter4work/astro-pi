@@ -160,6 +160,11 @@ void PixelSelector::SetSegmentation(
    m_confidenceMap = confidenceMap;
    m_segWidth = width;
    m_segHeight = height;
+   if ( m_imageWidth == 0 || m_imageHeight == 0 )
+   {
+      m_imageWidth = width;
+      m_imageHeight = height;
+   }
    m_hasSegmentation = ( width > 0 && height > 0 &&
       !segmentationMap.empty() &&
       segmentationMap.size() == static_cast<size_t>( width ) * height );
@@ -200,6 +205,11 @@ void PixelSelector::SetSegmentation(
 
    m_segWidth = width;
    m_segHeight = height;
+   if ( m_imageWidth == 0 || m_imageHeight == 0 )
+   {
+      m_imageWidth = width;
+      m_imageHeight = height;
+   }
    m_hasSegmentation = true;
 }
 
@@ -247,6 +257,11 @@ void PixelSelector::SetSegmentation( const Image& segmentationImage )
 
    m_segWidth = width;
    m_segHeight = height;
+   if ( m_imageWidth == 0 || m_imageHeight == 0 )
+   {
+      m_imageWidth = width;
+      m_imageHeight = height;
+   }
    m_hasSegmentation = true;
 }
 
@@ -316,6 +331,8 @@ Image PixelSelector::ProcessStackWithMetadata(
          // Collect values from all frames
          for ( int f = 0; f < numFrames; ++f )
          {
+            if ( channel >= frames[f]->NumberOfChannels() )
+               continue;
             const Image::sample* data = frames[f]->PixelData( channel );
             size_t idx = static_cast<size_t>( y ) * width + x;
             pixelValues[f] = static_cast<float>( data[idx] );
@@ -517,8 +534,17 @@ SpatialContext PixelSelector::GetSpatialContext( int x, int y ) const
    if ( !m_hasSegmentation )
       return context;
 
+   int sx = (m_segWidth > 1 && m_imageWidth > 1)
+      ? static_cast<int>( static_cast<float>( x ) * (m_segWidth - 1) / (m_imageWidth - 1) + 0.5f )
+      : 0;
+   int sy = (m_segHeight > 1 && m_imageHeight > 1)
+      ? static_cast<int>( static_cast<float>( y ) * (m_segHeight - 1) / (m_imageHeight - 1) + 0.5f )
+      : 0;
+   sx = std::max( 0, std::min( sx, m_segWidth - 1 ) );
+   sy = std::max( 0, std::min( sy, m_segHeight - 1 ) );
+
    context.centerClass = static_cast<int>( GetRegionClass( x, y ) );
-   context.isEdgePixel = (x == 0 || y == 0 || x >= m_segWidth - 1 || y >= m_segHeight - 1);
+   context.isEdgePixel = (sx == 0 || sy == 0 || sx >= m_segWidth - 1 || sy >= m_segHeight - 1);
 
    // Get 8-neighbor classes (clockwise from top)
    // Offsets: top, top-right, right, bottom-right, bottom, bottom-left, left, top-left
@@ -529,13 +555,19 @@ SpatialContext PixelSelector::GetSpatialContext( int x, int y ) const
 
    for ( int i = 0; i < 8; ++i )
    {
-      int nx = x + dx[i];
-      int ny = y + dy[i];
+      int nsx = sx + dx[i];
+      int nsy = sy + dy[i];
 
-      if ( nx >= 0 && nx < m_segWidth && ny >= 0 && ny < m_segHeight )
+      if ( nsx >= 0 && nsx < m_segWidth && nsy >= 0 && nsy < m_segHeight )
       {
-         context.neighborClasses[i] = static_cast<int>( GetRegionClass( nx, ny ) );
-         context.neighborConfidences[i] = GetClassConfidence( nx, ny );
+         size_t nidx = static_cast<size_t>( nsy ) * m_segWidth + nsx;
+         int classInt = (nidx < m_segmentationMap.size())
+            ? m_segmentationMap[nidx] : 0;
+         if ( classInt < 0 || classInt >= static_cast<int>( RegionClass::Count ) )
+            classInt = 0;
+         context.neighborClasses[i] = classInt;
+         context.neighborConfidences[i] = (nidx < m_confidenceMap.size())
+            ? m_confidenceMap[nidx] : 0.0f;
 
          if ( context.neighborClasses[i] >= 0 && context.neighborClasses[i] < static_cast<int>( RegionClass::Count ) )
             classCount[context.neighborClasses[i]]++;
@@ -571,10 +603,19 @@ SpatialContext PixelSelector::GetSpatialContext( int x, int y ) const
 
 RegionClass PixelSelector::GetRegionClass( int x, int y ) const
 {
-   if ( !m_hasSegmentation || x < 0 || x >= m_segWidth || y < 0 || y >= m_segHeight )
+   if ( !m_hasSegmentation )
       return RegionClass::Background;
 
-   size_t idx = static_cast<size_t>( y ) * m_segWidth + x;
+   int sx = (m_segWidth > 1 && m_imageWidth > 1)
+      ? static_cast<int>( static_cast<float>( x ) * (m_segWidth - 1) / (m_imageWidth - 1) + 0.5f )
+      : 0;
+   int sy = (m_segHeight > 1 && m_imageHeight > 1)
+      ? static_cast<int>( static_cast<float>( y ) * (m_segHeight - 1) / (m_imageHeight - 1) + 0.5f )
+      : 0;
+   sx = std::max( 0, std::min( sx, m_segWidth - 1 ) );
+   sy = std::max( 0, std::min( sy, m_segHeight - 1 ) );
+
+   size_t idx = static_cast<size_t>( sy ) * m_segWidth + sx;
    if ( idx >= m_segmentationMap.size() )
       return RegionClass::Background;
 
@@ -589,10 +630,19 @@ RegionClass PixelSelector::GetRegionClass( int x, int y ) const
 
 float PixelSelector::GetClassConfidence( int x, int y ) const
 {
-   if ( !m_hasSegmentation || x < 0 || x >= m_segWidth || y < 0 || y >= m_segHeight )
+   if ( !m_hasSegmentation )
       return 0.0f;
 
-   size_t idx = static_cast<size_t>( y ) * m_segWidth + x;
+   int sx = (m_segWidth > 1 && m_imageWidth > 1)
+      ? static_cast<int>( static_cast<float>( x ) * (m_segWidth - 1) / (m_imageWidth - 1) + 0.5f )
+      : 0;
+   int sy = (m_segHeight > 1 && m_imageHeight > 1)
+      ? static_cast<int>( static_cast<float>( y ) * (m_segHeight - 1) / (m_imageHeight - 1) + 0.5f )
+      : 0;
+   sx = std::max( 0, std::min( sx, m_segWidth - 1 ) );
+   sy = std::max( 0, std::min( sy, m_segHeight - 1 ) );
+
+   size_t idx = static_cast<size_t>( sy ) * m_segWidth + sx;
    if ( idx >= m_confidenceMap.size() )
       return 0.0f;
 

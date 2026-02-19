@@ -429,11 +429,14 @@ SegmentationEngineResult SegmentationEngine::Process( const Image& image,
       int origWidth = image.Width();
       int origHeight = image.Height();
 
-      Console().WriteLn( String().Format(
-         "Segmentation: Upscaling masks from %dx%d to %dx%d",
-         result.segmentation.masks.begin()->second.Width(),
-         result.segmentation.masks.begin()->second.Height(),
-         origWidth, origHeight ) );
+      if ( !result.segmentation.masks.empty() )
+      {
+         Console().WriteLn( String().Format(
+            "Segmentation: Upscaling masks from %dx%d to %dx%d",
+            result.segmentation.masks.begin()->second.Width(),
+            result.segmentation.masks.begin()->second.Height(),
+            origWidth, origHeight ) );
+      }
 
       for ( auto& pair : result.segmentation.masks )
       {
@@ -986,14 +989,14 @@ SegmentationResult SegmentationEngine::ProcessTiled( const Image& image )
                double wy = 1.0;
 
                if ( overlapLeft > 0 && x < overlapLeft )
-                  wx = static_cast<double>( x ) / overlapLeft;
+                  wx = static_cast<double>( x + 1 ) / (overlapLeft + 1);
                else if ( overlapRight > 0 && x >= tileWidth - overlapRight )
-                  wx = static_cast<double>( tileWidth - 1 - x ) / overlapRight;
+                  wx = static_cast<double>( tileWidth - x ) / (overlapRight + 1);
 
                if ( overlapTop > 0 && y < overlapTop )
-                  wy = static_cast<double>( y ) / overlapTop;
+                  wy = static_cast<double>( y + 1 ) / (overlapTop + 1);
                else if ( overlapBottom > 0 && y >= tileHeight - overlapBottom )
-                  wy = static_cast<double>( tileHeight - 1 - y ) / overlapBottom;
+                  wy = static_cast<double>( tileHeight - y ) / (overlapBottom + 1);
 
                double weight = wx * wy;
 
@@ -1090,14 +1093,14 @@ void SegmentationEngine::MergeTileResult( SegmentationResult& target,
             double wy = 1.0;
 
             if ( overlapLeft > 0 && x < overlapLeft )
-               wx = static_cast<double>( x ) / overlapLeft;
+               wx = static_cast<double>( x + 1 ) / (overlapLeft + 1);
             else if ( overlapRight > 0 && x >= tileWidth - overlapRight )
-               wx = static_cast<double>( tileWidth - 1 - x ) / overlapRight;
+               wx = static_cast<double>( tileWidth - x ) / (overlapRight + 1);
 
             if ( overlapTop > 0 && y < overlapTop )
-               wy = static_cast<double>( y ) / overlapTop;
+               wy = static_cast<double>( y + 1 ) / (overlapTop + 1);
             else if ( overlapBottom > 0 && y >= tileHeight - overlapBottom )
-               wy = static_cast<double>( tileHeight - 1 - y ) / overlapBottom;
+               wy = static_cast<double>( tileHeight - y ) / (overlapBottom + 1);
 
             double weight = wx * wy;
             double tileValue = tileMask( x, y, 0 );

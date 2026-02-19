@@ -35,7 +35,7 @@ std::vector<DetectedStar> FrameRegistration::DetectStarsInFrame( const Image& im
 
    int width = image.Width();
    int height = image.Height();
-   int channels = image.NumberOfChannels();
+   int channels = image.NumberOfNominalChannels();
 
    if ( width < 32 || height < 32 )
       return stars;
@@ -599,13 +599,6 @@ void FrameRegistration::ApplyTransform( Image& frame, const SimilarityTransform&
       return; // Degenerate
 
    double invDet = 1.0 / det;
-   double ia =  T.a * invDet;
-   double ib = -T.b * invDet;  // Note sign
-   double itx = -( ia * T.tx + ib * T.ty );  // Actually: -(ia*tx - ib_neg*ty) ... let me redo
-   // Correct inverse:
-   // x_src = ia*(x_out - tx) + ib_pos*(y_out - ty)  where ia = a/det, ib_pos = b/det
-   // y_src = -ib_pos*(x_out - tx) + ia*(y_out - ty)
-   // Let's just compute it directly:
 
    // Create output buffer
    std::vector<float> output( size_t( width ) * height * channels, 0.0f );
@@ -801,6 +794,7 @@ FrameRegistrationResult FrameRegistration::RegisterFrame(
    FrameRegistrationResult triangleResult;
    triangleResult.frameIndex = frameIndex;
    triangleResult.method = RegistrationMethod::Triangle;
+   SimilarityTransform lastTriangleT;
 
    // Detect stars in target frame
    auto targetStars = DetectStarsInFrame( frame, m_config.maxStars );
@@ -859,6 +853,7 @@ FrameRegistrationResult FrameRegistration::RegisterFrame(
                if ( valid )
                {
                   triangleResult.success = true;
+                  lastTriangleT = T;
 
                   // If triangle succeeded with good RMS, prefer it over phase corr
                   if ( triangleResult.rmsResidual < 1.0 || !m_config.enablePhaseCorrelation )
@@ -896,134 +891,80 @@ FrameRegistrationResult FrameRegistration::RegisterFrame(
 
       if ( phaseResult.success )
       {
-         // Phase correlation gives translation only. Apply to a temp copy,
-         // then re-run triangle matching to recover rotation + scale.
-         SimilarityTransform phaseT;
-         phaseT.a = 1.0;
-         phaseT.b = 0.0;
-         phaseT.tx = phaseResult.dx;
-         phaseT.ty = phaseResult.dy;
+         // Phase correlation provides translation only.
+         // Decide which result to use: if the original triangle matching also
+         // succeeded (but had high RMS), check whether it detected rotation/scale.
+         // Triangle shape descriptors are translation-invariant, so if triangle
+         // matched at all, its rotation/scale estimate is valid regardless of
+         // the translation offset.
 
-         // Create temp copy and apply translation
-         Image tempFrame;
-         tempFrame.Assign( frame );
-         ApplyTransform( tempFrame, phaseT );
+         SimilarityTransform chosenT;
+         FrameRegistrationResult chosenResult = phaseResult;
 
-         // Re-detect stars on the roughly-aligned frame
-         auto refinedStars = DetectStarsInFrame( tempFrame, m_config.maxStars );
-         int refinedStarCount = static_cast<int>( refinedStars.size() );
-
-         bool refinementSucceeded = false;
-         SimilarityTransform fullT = phaseT;  // Start with translation-only
-
-         if ( refinedStarCount >= 3 )
+         if ( triangleResult.success &&
+              ( std::abs( triangleResult.rotationDeg ) > 0.01 ||
+                std::abs( triangleResult.scale - 1.0 ) > 0.001 ) )
          {
-            auto refinedTriangles = BuildTriangles( refinedStars, m_config.triangleStars, m_config.maxTriangles );
+            chosenT.a  = lastTriangleT.a;
+            chosenT.b  = lastTriangleT.b;
+            chosenT.tx = phaseResult.dx;
+            chosenT.ty = phaseResult.dy;
 
-            if ( !refinedTriangles.empty() )
-            {
-               auto refinedMatches = MatchTriangles( refTriangles, refinedTriangles, refStars, refinedStars );
-
-               if ( static_cast<int>( refinedMatches.size() ) >= m_config.minMatches )
-               {
-                  SimilarityTransform refinedT = RefineMatches( refStars, refinedStars, refinedMatches );
-
-                  // Expand matches for better precision
-                  auto expandedMatches = ExpandMatchesWithTransform(
-                     refStars, refinedStars, refinedT, m_config.expandRadius );
-                  if ( static_cast<int>( expandedMatches.size() ) > static_cast<int>( refinedMatches.size() ) )
-                  {
-                     refinedMatches = std::move( expandedMatches );
-                     refinedT = RefineMatches( refStars, refinedStars, refinedMatches );
-                  }
-
-                  // Validate the refined transform
-                  bool valid = true;
-                  if ( refinedT.TranslationPx() > m_config.maxTranslation ) valid = false;
-                  if ( std::abs( refinedT.RotationDeg() ) > m_config.maxRotationDeg ) valid = false;
-                  if ( std::abs( refinedT.Scale() - 1.0 ) > m_config.maxScaleDev ) valid = false;
-
-                  if ( valid && static_cast<int>( refinedMatches.size() ) >= m_config.minMatches )
-                  {
-                     // Compute final RMS
-                     double sumResidSq = 0;
-                     for ( const auto& m : refinedMatches )
-                     {
-                        double xp, yp;
-                        refinedT.Apply( refinedStars[m.targetIndex].x, refinedStars[m.targetIndex].y, xp, yp );
-                        double ddx = xp - refStars[m.refIndex].x;
-                        double ddy = yp - refStars[m.refIndex].y;
-                        sumResidSq += ddx * ddx + ddy * ddy;
-                     }
-                     double refinedRMS = std::sqrt( sumResidSq / refinedMatches.size() );
-
-                     // The refined transform maps the temp (translated) frame to reference.
-                     // We need to compose: original -> translate -> refine = full transform.
-                     // Since temp = phaseT(original), and refinedT maps temp->ref:
-                     //   ref = refinedT(temp) = refinedT(phaseT(original))
-                     // Compose: fullT = refinedT . phaseT
-                     //   fullT.a = refinedT.a * phaseT.a - refinedT.b * phaseT.b
-                     //   fullT.b = refinedT.b * phaseT.a + refinedT.a * phaseT.b
-                     //   fullT.tx = refinedT.a * phaseT.tx - refinedT.b * phaseT.ty + refinedT.tx
-                     //   fullT.ty = refinedT.b * phaseT.tx + refinedT.a * phaseT.ty + refinedT.ty
-                     fullT.a  = refinedT.a * phaseT.a  - refinedT.b * phaseT.b;
-                     fullT.b  = refinedT.b * phaseT.a  + refinedT.a * phaseT.b;
-                     fullT.tx = refinedT.a * phaseT.tx - refinedT.b * phaseT.ty + refinedT.tx;
-                     fullT.ty = refinedT.b * phaseT.tx + refinedT.a * phaseT.ty + refinedT.ty;
-
-                     refinementSucceeded = true;
-
-                     phaseResult.starsDetected = refinedStarCount;
-                     phaseResult.starsMatched = static_cast<int>( refinedMatches.size() );
-                     phaseResult.rmsResidual = refinedRMS;
-                     phaseResult.rotationDeg = fullT.RotationDeg();
-                     phaseResult.scale = fullT.Scale();
-                     phaseResult.dx = fullT.tx;
-                     phaseResult.dy = fullT.ty;
-                     phaseResult.message = String().Format(
-                        "Frame %d: Phase corr + triangle refine: %d stars, dx=%.1f dy=%.1f rot=%.3f%c scale=%.5f RMS=%.2f px",
-                        frameIndex + 1, phaseResult.starsMatched,
-                        phaseResult.dx, phaseResult.dy, phaseResult.rotationDeg,
-                        0xB0, phaseResult.scale, phaseResult.rmsResidual );
-                  }
-               }
-            }
-         }
-
-         if ( !refinementSucceeded )
-         {
-            // Triangle refinement failed — fall back to translation-only
-            phaseResult.message = String().Format(
-               "Frame %d: Phase corr dx=%.1f dy=%.1f (translation only, %d stars found but triangle refinement failed)",
-               frameIndex + 1, phaseResult.dx, phaseResult.dy, refinedStarCount );
-         }
-
-         // Apply the final transform (full or translation-only) to the original frame
-         if ( fullT.IsNearIdentity( m_config.nearIdentityPx ) )
-         {
-            phaseResult.skippedNearIdentity = true;
-            phaseResult.message += " [near-identity, skip resampling]";
+            chosenResult = triangleResult;
+            chosenResult.dx = phaseResult.dx;
+            chosenResult.dy = phaseResult.dy;
+            chosenResult.message = String().Format(
+               "Frame %d: Hybrid (triangle rot/scale + phase-corr translation): %d/%d stars, dx=%.1f dy=%.1f rot=%.3f%c scale=%.5f RMS=%.2f px",
+               frameIndex + 1, triangleResult.starsMatched, triangleResult.starsDetected,
+               chosenResult.dx, chosenResult.dy, triangleResult.rotationDeg,
+               0xB0, triangleResult.scale, triangleResult.rmsResidual );
          }
          else
          {
-            ApplyTransform( frame, fullT );
+            // Phase correlation wins: either triangle failed entirely, or
+            // triangle was translation-only (phase corr is more robust for that).
+            chosenT.a  = 1.0;
+            chosenT.b  = 0.0;
+            chosenT.tx = phaseResult.dx;
+            chosenT.ty = phaseResult.dy;
+
+            chosenResult = phaseResult;
+            chosenResult.message += " [recovered by phase correlation]";
          }
 
-         phaseResult.message += " [recovered by phase correlation]";
-         return phaseResult;
+         // Apply the chosen transform to the original frame
+         if ( chosenT.IsNearIdentity( m_config.nearIdentityPx ) )
+         {
+            chosenResult.skippedNearIdentity = true;
+            chosenResult.message += " [near-identity, skip resampling]";
+         }
+         else
+         {
+            ApplyTransform( frame, chosenT );
+         }
+
+         return chosenResult;
       }
    }
 
    // === Both methods failed ===
    if ( triangleResult.success )
    {
-      // Triangle succeeded but we somehow got here (shouldn't happen, but safety)
       SimilarityTransform T;
-      T.a = std::cos( triangleResult.rotationDeg * 3.14159265358979323846 / 180.0 ) * triangleResult.scale;
-      T.b = std::sin( triangleResult.rotationDeg * 3.14159265358979323846 / 180.0 ) * triangleResult.scale;
+      T.a  = lastTriangleT.a;
+      T.b  = lastTriangleT.b;
       T.tx = triangleResult.dx;
       T.ty = triangleResult.dy;
-      ApplyTransform( frame, T );
+
+      if ( T.IsNearIdentity( m_config.nearIdentityPx ) )
+      {
+         triangleResult.skippedNearIdentity = true;
+         triangleResult.message += " [near-identity, skip resampling]";
+      }
+      else
+      {
+         ApplyTransform( frame, T );
+      }
       return triangleResult;
    }
 

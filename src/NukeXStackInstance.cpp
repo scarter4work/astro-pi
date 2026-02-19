@@ -267,7 +267,8 @@ bool NukeXStackInstance::ExecuteGlobal()
 
    // Compute total frame data size to decide streaming vs in-memory
    size_t totalFrameBytes = static_cast<size_t>( streamer.NumFrames() )
-      * width * height * channels * sizeof( float );
+      * static_cast<size_t>( width ) * static_cast<size_t>( height )
+      * static_cast<size_t>( channels ) * sizeof( float );
    const size_t streamingThreshold = 8ULL * 1024 * 1024 * 1024;  // 8 GB
 
    bool useStreaming = ( totalFrameBytes > streamingThreshold );
@@ -394,7 +395,8 @@ bool NukeXStackInstance::ExecuteGlobal()
    {
       console.WriteLn( "<br>Applying automatic stretch to integrated output..." );
       auto stretchStart = std::chrono::high_resolution_clock::now();
-      output = QuickProcess::AutoStretch( output );
+      Image stretched = QuickProcess::AutoStretch( output );
+      output = std::move( stretched );
       auto stretchEnd = std::chrono::high_resolution_clock::now();
       double stretchMs = std::chrono::duration<double, std::milli>( stretchEnd - stretchStart ).count();
       console.WriteLn( String().Format( "  Auto-stretch completed in %.1f ms", stretchMs ) );
@@ -437,9 +439,17 @@ bool NukeXStackInstance::ExecuteGlobal()
 void* NukeXStackInstance::LockParameter( const MetaParameter* p, size_type tableRow )
 {
    if ( p == TheNXSInputFramePathParameter )
+   {
+      if ( tableRow >= p_inputFrames.size() )
+         return nullptr;
       return p_inputFrames[tableRow].path.Begin();
+   }
    if ( p == TheNXSInputFrameEnabledParameter )
+   {
+      if ( tableRow >= p_inputFrames.size() )
+         return nullptr;
       return &p_inputFrames[tableRow].enabled;
+   }
    if ( p == TheNXSSelectionStrategyParameter )
       return &p_selectionStrategy;
    if ( p == TheNXSEnableMLSegmentationParameter )
@@ -507,7 +517,11 @@ size_type NukeXStackInstance::ParameterLength( const MetaParameter* p, size_type
       return p_inputFrames.size();
 
    if ( p == TheNXSInputFramePathParameter )
+   {
+      if ( tableRow >= p_inputFrames.size() )
+         return 0;
       return p_inputFrames[tableRow].path.Length();
+   }
 
    return 0;
 }
@@ -1493,14 +1507,16 @@ std::vector<FrameNormalizationParams> NukeXStackInstance::ComputeNormalizationPa
       // Compute median
       std::vector<float> sorted = luminance;
       std::sort( sorted.begin(), sorted.end() );
-      double median = sorted[sorted.size() / 2];
+      size_t mid = sorted.size() / 2;
+      double median = (sorted.size() % 2 == 0) ? (sorted[mid - 1] + sorted[mid]) * 0.5 : sorted[mid];
 
       // Compute MAD
       std::vector<float> deviations( sorted.size() );
       for ( size_t j = 0; j < sorted.size(); ++j )
          deviations[j] = std::abs( sorted[j] - static_cast<float>( median ) );
       std::sort( deviations.begin(), deviations.end() );
-      double mad = deviations[deviations.size() / 2];
+      mid = deviations.size() / 2;
+      double mad = (deviations.size() % 2 == 0) ? (deviations[mid - 1] + deviations[mid]) * 0.5 : deviations[mid];
 
       params[i].median = median;
       params[i].mad = mad;
@@ -1606,7 +1622,11 @@ std::vector<FrameNormalizationParams> NukeXStackInstance::ComputeNormalizationPa
    }
 
    // Reset streamer for subsequent use
-   streamer.ResetAllFiles();
+   if ( !streamer.ResetAllFiles() )
+   {
+      console.CriticalLn( "Failed to reset files for streaming normalization" );
+      return params;
+   }
 
    // Compute median and MAD from samples
    for ( int f = 0; f < numFrames; ++f )
@@ -1616,13 +1636,15 @@ std::vector<FrameNormalizationParams> NukeXStackInstance::ComputeNormalizationPa
          continue;
 
       std::sort( samples.begin(), samples.end() );
-      double median = samples[samples.size() / 2];
+      size_t mid = samples.size() / 2;
+      double median = (samples.size() % 2 == 0) ? (samples[mid - 1] + samples[mid]) * 0.5 : samples[mid];
 
       std::vector<float> deviations( samples.size() );
       for ( size_t j = 0; j < samples.size(); ++j )
          deviations[j] = std::abs( samples[j] - static_cast<float>( median ) );
       std::sort( deviations.begin(), deviations.end() );
-      double mad = deviations[deviations.size() / 2];
+      mid = deviations.size() / 2;
+      double mad = (deviations.size() % 2 == 0) ? (deviations[mid - 1] + deviations[mid]) * 0.5 : deviations[mid];
 
       params[f].median = median;
       params[f].mad = mad;
@@ -1716,13 +1738,15 @@ std::vector<float> NukeXStackInstance::ComputeQualityWeights(
          }
 
          std::sort( luminance.begin(), luminance.end() );
-         float median = luminance[luminance.size() / 2];
+         size_t mid = luminance.size() / 2;
+         float median = (luminance.size() % 2 == 0) ? (luminance[mid - 1] + luminance[mid]) * 0.5f : luminance[mid];
 
          std::vector<float> deviations( luminance.size() );
          for ( size_t j = 0; j < luminance.size(); ++j )
             deviations[j] = std::abs( luminance[j] - median );
          std::sort( deviations.begin(), deviations.end() );
-         metrics[i].noiseEstimate = deviations[deviations.size() / 2] * 1.4826;
+         mid = deviations.size() / 2;
+         metrics[i].noiseEstimate = ((deviations.size() % 2 == 0) ? (deviations[mid - 1] + deviations[mid]) * 0.5f : deviations[mid]) * 1.4826f;
       }
 
       console.WriteLn( String().Format(

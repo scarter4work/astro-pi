@@ -374,7 +374,7 @@ double DistributionFitter::ComputeMedian( std::vector<double>& values )
 
 // ----------------------------------------------------------------------------
 
-double DistributionFitter::ComputeMAD( std::vector<double>& values, double median )
+double DistributionFitter::ComputeMAD( std::vector<double> values, double median )
 {
    if ( values.empty() )
       return 0.0;
@@ -421,12 +421,8 @@ double DistributionFitter::ComputeKurtosis( const std::vector<double>& values, d
 
    size_t n = values.size();
 
-   // Excess kurtosis (Gaussian = 0)
-   double k = (sum4 / n) - 3.0;
-
-   // Bias correction
-   double correction = (n - 1.0) / ((n - 2.0) * (n - 3.0));
-   return k * ((n + 1.0) * n * correction);
+   // Excess kurtosis (Gaussian = 0), naive estimator matching PixelStackAnalyzer
+   return (sum4 / n) - 3.0;
 }
 
 // ----------------------------------------------------------------------------

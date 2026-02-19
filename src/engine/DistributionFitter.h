@@ -150,7 +150,7 @@ public:
    static double ComputeMean( const std::vector<double>& values );
    static double ComputeStdDev( const std::vector<double>& values, double mean );
    static double ComputeMedian( std::vector<double>& values );  // Modifies input!
-   static double ComputeMAD( std::vector<double>& values, double median );  // Modifies input!
+   static double ComputeMAD( std::vector<double> values, double median );
    static double ComputeSkewness( const std::vector<double>& values, double mean, double sigma );
    static double ComputeKurtosis( const std::vector<double>& values, double mean, double sigma );
 

@@ -405,7 +405,10 @@ RegionStatistics HistogramEngine::ComputeStatistics( const Image& image, int cha
    // Sort for percentiles and median
    std::sort( values.begin(), values.end() );
 
-   stats.median = values[n / 2];
+   {
+      size_t mid = n / 2;
+      stats.median = (n % 2 == 0) ? (values[mid - 1] + values[mid]) * 0.5 : values[mid];
+   }
    stats.p01 = values[size_t( n * 0.01 )];
    stats.p05 = values[size_t( n * 0.05 )];
    stats.p10 = values[size_t( n * 0.10 )];
@@ -422,7 +425,7 @@ RegionStatistics HistogramEngine::ComputeStatistics( const Image& image, int cha
       double diff = v - stats.mean;
       sumSq += diff * diff;
    }
-   stats.stdDev = std::sqrt( sumSq / n );
+   stats.stdDev = (n > 1) ? std::sqrt( sumSq / (n - 1) ) : 0.0;
 
    // Robust stats
    if ( m_config.computeRobustStats )
@@ -431,15 +434,23 @@ RegionStatistics HistogramEngine::ComputeStatistics( const Image& image, int cha
    }
 
    // Dynamic range
-   if ( min > 1e-10 )
+   if ( max > 1e-10 )
    {
-      stats.dynamicRange = std::log10( max / min );
-      stats.dynamicRangeDB = 20.0 * std::log10( max / min );
+      if ( min > 1e-10 )
+      {
+         stats.dynamicRange = std::log10( max / min );
+         stats.dynamicRangeDB = 20.0 * std::log10( max / min );
+      }
+      else
+      {
+         stats.dynamicRange = std::log10( max / 1e-10 );
+         stats.dynamicRangeDB = 20.0 * stats.dynamicRange;
+      }
    }
    else
    {
-      stats.dynamicRange = std::log10( max / 1e-10 );
-      stats.dynamicRangeDB = 20.0 * stats.dynamicRange;
+      stats.dynamicRange = 0.0;
+      stats.dynamicRangeDB = 0.0;
    }
 
    // Clipping
@@ -582,13 +593,16 @@ RegionStatistics HistogramEngine::ComputeStatistics( const Image& image, const I
    }
 
    // Dynamic range
-   if ( min > 1e-10 )
+   if ( max > 1e-10 )
    {
-      stats.dynamicRange = std::log10( max / min );
+      if ( min > 1e-10 )
+         stats.dynamicRange = std::log10( max / min );
+      else
+         stats.dynamicRange = std::log10( max / 1e-10 );
    }
    else
    {
-      stats.dynamicRange = std::log10( max / 1e-10 );
+      stats.dynamicRange = 0.0;
    }
    stats.dynamicRangeDB = 20.0 * stats.dynamicRange;
 
@@ -749,7 +763,10 @@ RegionStatistics HistogramEngine::ComputeStatistics( const std::vector<double>& 
    stats.pixelCount = n;
    stats.min = sorted.front();
    stats.max = sorted.back();
-   stats.median = sorted[n / 2];
+   {
+      size_t mid = n / 2;
+      stats.median = (n % 2 == 0) ? (sorted[mid - 1] + sorted[mid]) * 0.5 : sorted[mid];
+   }
 
    double sum = std::accumulate( values.begin(), values.end(), 0.0 );
    stats.mean = sum / n;
@@ -760,7 +777,7 @@ RegionStatistics HistogramEngine::ComputeStatistics( const std::vector<double>& 
       double diff = v - stats.mean;
       sumSq += diff * diff;
    }
-   stats.stdDev = std::sqrt( sumSq / n );
+   stats.stdDev = (n > 1) ? std::sqrt( sumSq / (n - 1) ) : 0.0;
 
    stats.mad = ComputeMAD( sorted, stats.median );
 

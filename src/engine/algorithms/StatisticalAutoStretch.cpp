@@ -187,8 +187,8 @@ void StatisticalAutoStretch::AutoConfigure( const RegionStatistics& stats )
 
    // Calculate signal compression ratio
    // How much of the dynamic range between p90 and p99 is used for signal?
-   double signalRange = stats.p90 - background;
-   double dynamicRange = stats.p99 - background;
+   double signalRange = std::max( 0.0, stats.p90 - background );
+   double dynamicRange = std::max( 0.0, stats.p99 - background );
 
    if ( dynamicRange > 1e-10 )
       m_signalCompression = signalRange / dynamicRange;

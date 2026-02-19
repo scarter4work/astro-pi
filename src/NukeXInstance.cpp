@@ -127,9 +127,9 @@ bool NukeXInstance::Validate( String& info )
       info = "Black point must be between 0 and 0.5.";
       return false;
    }
-   if ( p_whitePoint < 0 || p_whitePoint > 1 )
+   if ( p_whitePoint < 0.5 || p_whitePoint > 1 )
    {
-      info = "White point must be between 0 and 1.";
+      info = "White point must be between 0.5 and 1.";
       return false;
    }
    if ( p_blackPoint >= p_whitePoint )
@@ -412,7 +412,7 @@ bool NukeXInstance::ExecuteOn( View& view )
       switch ( image.BitsPerSample() )
       {
       case 32:
-         floatImage = static_cast<Image&>( *image );
+         floatImage.Assign( static_cast<Image&>( *image ) );
          break;
       case 64:
          floatImage = Image( static_cast<DImage&>( *image ) );

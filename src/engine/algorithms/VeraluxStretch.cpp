@@ -183,9 +183,9 @@ double VeraluxStretch::FilmCurve( double x ) const
 double VeraluxStretch::Apply( double value ) const
 {
    if ( value <= 0.0 )
-      return BlackPoint();
+      return 0.0;
    if ( value >= 1.0 )
-      return WhitePoint();
+      return 1.0;
 
    return FilmCurve( value );
 }

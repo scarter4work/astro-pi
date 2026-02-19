@@ -55,6 +55,8 @@ int NXHistogram::ValueToBin( double value ) const
 double NXHistogram::BinToValue( int bin ) const
 {
    int numBins = static_cast<int>( m_bins.size() );
+   if ( numBins <= 1 )
+      return 0.0;
    return static_cast<double>( bin ) / (numBins - 1);
 }
 
@@ -159,7 +161,7 @@ double NXHistogram::Percentile( double p ) const
          // Linear interpolation within bin
          double excess = cumulative - targetWeight;
          double binFrac = 1.0 - (m_bins[i] > 0 ? excess / m_bins[i] : 0);
-         return BinToValue( i ) + binFrac / (numBins - 1);
+         return std::min( 1.0, std::max( 0.0, BinToValue( i ) + binFrac / (numBins - 1) ) );
       }
    }
 

@@ -276,13 +276,16 @@ RegionAnalysisResult RegionAnalyzer::QuickAnalyze( const Image& image,
    stats.regionClass = RegionClass::Background;
 
    // Dynamic range
-   if ( min > 1e-10 )
+   if ( max > 1e-10 )
    {
-      stats.dynamicRange = std::log10( max / min );
+      if ( min > 1e-10 )
+         stats.dynamicRange = std::log10( max / min );
+      else
+         stats.dynamicRange = std::log10( max / 1e-10 );
    }
    else
    {
-      stats.dynamicRange = std::log10( max / 1e-10 );
+      stats.dynamicRange = 0.0;
    }
 
    // Rough SNR estimate

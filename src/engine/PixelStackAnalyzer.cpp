@@ -164,6 +164,10 @@ PixelStackMetadata PixelStackAnalyzer::AnalyzePixel( const std::vector<float>& v
    // Fit distribution to values
    meta.distribution = FitDistribution( values );
 
+   // Compute robust sigma floor from MAD (outlier-resistant, unlike raw stddev)
+   float robustSigma = ComputeMAD( std::vector<float>( values ), meta.distribution.mu ) * 1.4826f;
+   float sigmaFloor = std::max( robustSigma * 0.5f, 1e-6f );
+
    // Local rejected vector tracks ALL frames regardless of index (fixes >64 frame bug)
    std::vector<bool> rejected( values.size(), false );
 
@@ -171,8 +175,6 @@ PixelStackMetadata PixelStackAnalyzer::AnalyzePixel( const std::vector<float>& v
    float sigma = meta.distribution.sigma;
    if ( sigma < 1e-10f )
       sigma = 1e-10f;
-
-   float initialSigma = sigma;  // Save initial sigma as floor for iterative passes
 
    for ( size_t i = 0; i < values.size(); ++i )
    {
@@ -182,7 +184,7 @@ PixelStackMetadata PixelStackAnalyzer::AnalyzePixel( const std::vector<float>& v
    }
 
    // Iterative sigma clipping - refine outlier detection
-   // Use initialSigma * 0.5 as floor to prevent death spiral where sigma
+   // Use MAD-based sigmaFloor to prevent death spiral where sigma
    // shrinks each pass, causing cascading rejection of valid data
    for ( int pass = 1; pass < 3; ++pass )
    {
@@ -209,8 +211,8 @@ PixelStackMetadata PixelStackAnalyzer::AnalyzePixel( const std::vector<float>& v
       if ( newSigma < 1e-10f )
          break;
 
-      // Floor sigma at 50% of initial estimate to prevent death spiral
-      newSigma = std::max( newSigma, initialSigma * 0.5f );
+      // Floor sigma at robust MAD-based estimate to prevent death spiral
+      newSigma = std::max( newSigma, sigmaFloor );
 
       // Check for new outliers with refined statistics
       std::vector<bool> prevRejected = rejected;
@@ -277,6 +279,10 @@ PixelStackMetadata PixelStackAnalyzer::AnalyzePixelWithClass(
    // Fit distribution
    meta.distribution = FitDistribution( values );
 
+   // Compute robust sigma floor from MAD (outlier-resistant, unlike raw stddev)
+   float robustSigma = ComputeMAD( std::vector<float>( values ), meta.distribution.mu ) * 1.4826f;
+   float sigmaFloor = std::max( robustSigma * 0.5f, 1e-6f );
+
    // Get class-adjusted config for outlier detection
    StackAnalysisConfig adjustedConfig = GetClassAdjustedConfig( regionClass );
 
@@ -288,8 +294,6 @@ PixelStackMetadata PixelStackAnalyzer::AnalyzePixelWithClass(
    if ( sigma < 1e-10f )
       sigma = 1e-10f;
 
-   float initialSigma = sigma;  // Save initial sigma as floor for iterative passes
-
    for ( size_t i = 0; i < values.size(); ++i )
    {
       if ( IsClassSpecificOutlier( values[i], meta.distribution.mu, sigma, adjustedConfig.outlierSigmaThreshold, regionClass ) )
@@ -297,7 +301,7 @@ PixelStackMetadata PixelStackAnalyzer::AnalyzePixelWithClass(
    }
 
    // Iterative sigma clipping - refine outlier detection with class awareness
-   // Use initialSigma * 0.5 as floor to prevent death spiral
+   // Use MAD-based sigmaFloor to prevent death spiral
    for ( int pass = 1; pass < 3; ++pass )
    {
       // Count current valid (non-rejected) frames
@@ -323,8 +327,8 @@ PixelStackMetadata PixelStackAnalyzer::AnalyzePixelWithClass(
       if ( newSigma < 1e-10f )
          break;
 
-      // Floor sigma at 50% of initial estimate to prevent death spiral
-      newSigma = std::max( newSigma, initialSigma * 0.5f );
+      // Floor sigma at robust MAD-based estimate to prevent death spiral
+      newSigma = std::max( newSigma, sigmaFloor );
 
       // Check for new outliers with refined statistics
       std::vector<bool> prevRejected = rejected;
@@ -391,6 +395,10 @@ PixelStackMetadata PixelStackAnalyzer::AnalyzePixelWithClassAndAnomalies(
    // Fit distribution
    meta.distribution = FitDistribution( values );
 
+   // Compute robust sigma floor from MAD (outlier-resistant, unlike raw stddev)
+   float robustSigma = ComputeMAD( std::vector<float>( values ), meta.distribution.mu ) * 1.4826f;
+   float sigmaFloor = std::max( robustSigma * 0.5f, 1e-6f );
+
    // Get class-adjusted config for outlier detection
    StackAnalysisConfig adjustedConfig = GetClassAdjustedConfig( regionClass );
 
@@ -400,8 +408,6 @@ PixelStackMetadata PixelStackAnalyzer::AnalyzePixelWithClassAndAnomalies(
    float sigma = meta.distribution.sigma;
    if ( sigma < 1e-10f )
       sigma = 1e-10f;
-
-   float initialSigma = sigma;  // Save initial sigma as floor for iterative passes
 
    for ( size_t i = 0; i < values.size(); ++i )
    {
@@ -416,7 +422,7 @@ PixelStackMetadata PixelStackAnalyzer::AnalyzePixelWithClassAndAnomalies(
    }
 
    // Iterative sigma clipping (same as AnalyzePixelWithClass but with anomaly awareness)
-   // Use initialSigma * 0.5 as floor to prevent death spiral
+   // Use MAD-based sigmaFloor to prevent death spiral
    for ( int pass = 1; pass < 3; ++pass )
    {
       int validCount = 0;
@@ -441,8 +447,8 @@ PixelStackMetadata PixelStackAnalyzer::AnalyzePixelWithClassAndAnomalies(
       if ( newSigma < 1e-10f )
          break;
 
-      // Floor sigma at 50% of initial estimate to prevent death spiral
-      newSigma = std::max( newSigma, initialSigma * 0.5f );
+      // Floor sigma at robust MAD-based estimate to prevent death spiral
+      newSigma = std::max( newSigma, sigmaFloor );
 
       std::vector<bool> prevRejected = rejected;
       meta.distribution.mu = newMu;
@@ -639,7 +645,8 @@ float PixelStackAnalyzer::SelectBestValue(
    {
       std::vector<float> allVals( values.begin(), values.end() );
       std::sort( allVals.begin(), allVals.end() );
-      float median = allVals[allVals.size() / 2];
+      size_t mid = allVals.size() / 2;
+      float median = (allVals.size() % 2 == 0) ? (allVals[mid - 1] + allVals[mid]) * 0.5f : allVals[mid];
       // Find frame closest to median
       float bestDist = std::numeric_limits<float>::max();
       for ( size_t i = 0; i < values.size(); ++i )
@@ -820,7 +827,8 @@ float PixelStackAnalyzer::SelectBestValue(
          for ( const auto& vp : validValues )
             sortedValid.push_back( vp.first );
          std::sort( sortedValid.begin(), sortedValid.end() );
-         float median = sortedValid[sortedValid.size() / 2];
+         size_t mid = sortedValid.size() / 2;
+         float median = (sortedValid.size() % 2 == 0) ? (sortedValid[mid - 1] + sortedValid[mid]) * 0.5f : sortedValid[mid];
 
          float bestInvScore = std::numeric_limits<float>::max();
          for ( const auto& vp : validValues )
@@ -935,8 +943,8 @@ float PixelStackAnalyzer::ComputeMean( const std::vector<float>& values )
    if ( values.empty() )
       return 0.0f;
 
-   float sum = std::accumulate( values.begin(), values.end(), 0.0f );
-   return sum / static_cast<float>( values.size() );
+   double sum = std::accumulate( values.begin(), values.end(), 0.0 );
+   return static_cast<float>( sum / values.size() );
 }
 
 // ----------------------------------------------------------------------------
@@ -946,14 +954,14 @@ float PixelStackAnalyzer::ComputeStdDev( const std::vector<float>& values, float
    if ( values.size() < 2 )
       return 0.0f;
 
-   float sumSq = 0.0f;
+   double sumSq = 0.0;
    for ( float v : values )
    {
-      float d = v - mean;
+      double d = static_cast<double>( v ) - static_cast<double>( mean );
       sumSq += d * d;
    }
 
-   return std::sqrt( sumSq / static_cast<float>( values.size() - 1 ) );
+   return static_cast<float>( std::sqrt( sumSq / (values.size() - 1) ) );
 }
 
 // ----------------------------------------------------------------------------
@@ -994,15 +1002,15 @@ float PixelStackAnalyzer::ComputeSkewness( const std::vector<float>& values, flo
    if ( values.size() < 3 || sigma <= 0 )
       return 0.0f;
 
-   float sum3 = 0.0f;
+   double sum3 = 0.0;
    for ( float v : values )
    {
-      float z = (v - mean) / sigma;
+      double z = (static_cast<double>( v ) - static_cast<double>( mean )) / static_cast<double>( sigma );
       sum3 += z * z * z;
    }
 
-   float n = static_cast<float>( values.size() );
-   return sum3 * n / ((n - 1.0f) * (n - 2.0f));
+   double n = static_cast<double>( values.size() );
+   return static_cast<float>( sum3 * n / ((n - 1.0) * (n - 2.0)) );
 }
 
 // ----------------------------------------------------------------------------
@@ -1012,17 +1020,17 @@ float PixelStackAnalyzer::ComputeKurtosis( const std::vector<float>& values, flo
    if ( values.size() < 4 || sigma <= 0 )
       return 0.0f;
 
-   float sum4 = 0.0f;
+   double sum4 = 0.0;
    for ( float v : values )
    {
-      float z = (v - mean) / sigma;
+      double z = (static_cast<double>( v ) - static_cast<double>( mean )) / static_cast<double>( sigma );
       sum4 += z * z * z * z;
    }
 
-   float n = static_cast<float>( values.size() );
+   double n = static_cast<double>( values.size() );
 
    // Excess kurtosis (Gaussian = 0)
-   return (sum4 / n) - 3.0f;
+   return static_cast<float>( (sum4 / n) - 3.0 );
 }
 
 // ----------------------------------------------------------------------------
