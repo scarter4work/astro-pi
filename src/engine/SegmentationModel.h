@@ -81,6 +81,9 @@ struct SegmentationConfig
    // Determinism
    bool deterministic = false;          // Force deterministic inference
 
+   // Batched tile inference
+   int tileBatchSize = 4;               // Tiles per batch for ONNX inference
+
    // Processing settings
    bool applySoftmax = true;            // Apply softmax to model output
    double probabilityThreshold = 0.1;   // Min probability to include in mask
@@ -127,6 +130,24 @@ public:
    // Run segmentation on an image
    virtual SegmentationResult Segment( const Image& image ) = 0;
 
+   // Batched tile inference support
+   // Preprocess a tile image into a tensor for batch inference
+   virtual FloatTensor PreprocessTile( const Image& tile ) { return FloatTensor(); }
+
+   // Run batch inference on multiple preprocessed tensors
+   // Returns true on success, fills batchOutputs with one tensor per input
+   virtual bool RunBatchInference( const std::vector<FloatTensor>& batchInputs,
+                                    std::vector<FloatTensor>& batchOutputs )
+   { return false; }
+
+   // Postprocess a single inference output tensor back to a SegmentationResult
+   virtual SegmentationResult PostprocessTile( const FloatTensor& output,
+                                                int originalWidth, int originalHeight )
+   { return SegmentationResult(); }
+
+   // Check if batch inference is supported by this model
+   virtual bool SupportsBatchInference() const { return false; }
+
    // Get last error message
    virtual String GetLastError() const = 0;
 
@@ -162,6 +183,14 @@ public:
    bool Initialize( const SegmentationConfig& config ) override;
 
    SegmentationResult Segment( const Image& image ) override;
+
+   // Batched tile inference support
+   FloatTensor PreprocessTile( const Image& tile ) override;
+   bool RunBatchInference( const std::vector<FloatTensor>& batchInputs,
+                            std::vector<FloatTensor>& batchOutputs ) override;
+   SegmentationResult PostprocessTile( const FloatTensor& output,
+                                        int originalWidth, int originalHeight ) override;
+   bool SupportsBatchInference() const override { return m_isReady; }
 
    String GetLastError() const override { return m_lastError; }
 

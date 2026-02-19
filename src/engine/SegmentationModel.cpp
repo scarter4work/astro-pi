@@ -547,6 +547,43 @@ SegmentationResult ONNXSegmentationModel::PostprocessOutput( const FloatTensor& 
 
 // ----------------------------------------------------------------------------
 
+FloatTensor ONNXSegmentationModel::PreprocessTile( const Image& tile )
+{
+   return PreprocessImage( tile );
+}
+
+// ----------------------------------------------------------------------------
+
+bool ONNXSegmentationModel::RunBatchInference( const std::vector<FloatTensor>& batchInputs,
+                                                std::vector<FloatTensor>& batchOutputs )
+{
+   if ( !m_isReady || !m_session )
+   {
+      m_lastError = "Model not initialized";
+      return false;
+   }
+
+   int batchSize = static_cast<int>( batchInputs.size() );
+   if ( batchSize <= 0 )
+   {
+      m_lastError = "Empty batch";
+      return false;
+   }
+
+   return m_session->RunBatch( batchInputs, batchOutputs, batchSize );
+}
+
+// ----------------------------------------------------------------------------
+
+SegmentationResult ONNXSegmentationModel::PostprocessTile( const FloatTensor& output,
+                                                            int originalWidth,
+                                                            int originalHeight )
+{
+   return PostprocessOutput( output, originalWidth, originalHeight );
+}
+
+// ----------------------------------------------------------------------------
+
 SegmentationResult ONNXSegmentationModel::Segment( const Image& image )
 {
    auto startTime = std::chrono::high_resolution_clock::now();

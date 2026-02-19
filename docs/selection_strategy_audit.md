@@ -1,388 +1,364 @@
-# Selection Strategy Validation Audit
+# Selection Strategy Validation Audit (8-Class Taxonomy)
 
 **Auditor**: ASTRO-SME (Astrophotography Subject Matter Expert)
-**Date**: 2026-01-27
+**Date**: 2026-02-19
+**Supersedes**: Previous 21-class audit dated 2026-01-27
+**NukeX Version**: v2.2.x (8-class taxonomy since v2.0)
+
 **Files Reviewed**:
 - `/home/scarter4work/projects/NukeX/src/engine/SelectionRules.cpp`
+- `/home/scarter4work/projects/NukeX/src/engine/SelectionRules.h`
 - `/home/scarter4work/projects/NukeX/src/engine/PixelSelector.cpp`
 - `/home/scarter4work/projects/NukeX/src/engine/PixelStackAnalyzer.cpp`
+- `/home/scarter4work/projects/NukeX/src/engine/PixelStackAnalyzer.h`
 - `/home/scarter4work/projects/NukeX/src/engine/RegionStatistics.h`
 
 ---
 
 ## Executive Summary
 
-The NukeX intelligent pixel selection system implements **class-specific selection strategies for all 21 region classes**. The implementation is distributed across three main components:
+The NukeX intelligent pixel selection system implements class-specific strategies for all **8 region classes** introduced in the v2.0 taxonomy. The implementation spans three components:
 
-1. **SelectionRules.cpp** - Algorithm selection and stretch parameter tuning
-2. **PixelStackAnalyzer.cpp** - Per-pixel outlier detection and value selection
-3. **PixelSelector.cpp** - Target context and spatial smoothing
+1. **SelectionRules.cpp** -- Stretch algorithm selection and parameter tuning per class (used for region-aware stretching)
+2. **PixelStackAnalyzer.cpp** -- Per-pixel outlier detection (via `IsClassSpecificOutlier`) and best-value selection (via `SelectBestValue`), plus class-adjusted sigma thresholds (via `GetClassAdjustedConfig`)
+3. **PixelSelector.cpp** -- Orchestration layer: target context adjustments, spatial smoothing in transition zones, per-frame segmentation consensus
 
-Overall assessment: **MOSTLY CORRECT** with some issues requiring attention.
+### Architecture Note
+
+The selection pipeline has two distinct class-aware subsystems:
+
+- **Pixel selection** (stacking): `PixelStackAnalyzer::GetClassAdjustedConfig()` sets outlier thresholds and signal preference flags; `IsClassSpecificOutlier()` implements asymmetric rejection logic; `SelectBestValue()` chooses the pixel value from the stack.
+- **Stretch algorithm selection** (post-stacking): `SelectionRules::DefaultRules` maps each class to an optimal stretch algorithm (MTF, GHS, ArcSinh, RNC, SAS) with tuned parameters.
+
+Both subsystems receive the same `RegionClass` from the ML segmentation map but operate independently.
+
+**Overall Assessment: PASS** -- All 8 classes have astrophysically sound strategies. Two minor issues and three improvement recommendations are noted below.
 
 ---
 
-## Complete Class Coverage Analysis
+## Per-Class Analysis
 
 ### Class 0: Background
 
-| Component | Implementation | Assessment |
-|-----------|---------------|------------|
-| SelectionRules | MTF with midtones 0.15-0.35, SAS for high SNR | CORRECT |
-| PixelStackAnalyzer | `outlierSigmaThreshold=2.5f`, aggressive high outlier rejection | CORRECT |
-| PixelSelector | Standard spatial smoothing | CORRECT |
+**Description**: Sky background, gradients, noise
 
-**Strategy**: Select near median, reject high outliers (gradients, satellites)
-**Status**: PASS
+| Subsystem | Parameter / Behavior | Value |
+|-----------|---------------------|-------|
+| **Outlier sigma** | `GetClassAdjustedConfig` | **3.0** |
+| **Outlier direction** | `IsClassSpecificOutlier` | Symmetric + 0.85x tighter on high side |
+| **Signal preference** | `favorHighSignal` / `favorLowSignal` | false / false |
+| **Selection strategy** | `SelectBestValue` (default case) | Closest to median of valid values |
+| **Stretch algorithm** | `GetBackgroundRules` | SAS (SNR>15, median<0.1), MTF (SNR<8), MTF default midtones=0.25 |
+| **Stretch default** | `GetDefaultRecommendation` | MTF midtones=0.20 |
 
----
+**Astrophysical Assessment: CORRECT**
 
-### Classes 1-4: Stars
+Background pixels should converge toward the median to suppress gradients, light pollution, and satellite contamination. The asymmetric high-side penalty (0.85x multiplier on the sigma threshold for values above mu) is well-motivated: high outliers in the background are more likely to be contamination (satellites, aircraft, gradient artifacts) than legitimate signal. Low outliers in the background are less concerning since they are simply slightly darker sky. The SAS stretch for high-SNR background is appropriate for revealing faint IFN (integrated flux nebulae) or galactic cirrus.
 
-#### Class 1: StarBright
-| Component | Implementation | Assessment |
-|-----------|---------------|------------|
-| SelectionRules | ArcSinh with softness 0.05-0.3, strong HDR compression | CORRECT |
-| PixelStackAnalyzer | `outlierSigmaThreshold=4.0f`, `favorHighSignal=true` | CORRECT |
-| PixelSelector | Standard handling | CORRECT |
-
-**Strategy**: Preserve high values, reject low outliers
-**Status**: PASS
-
-#### Class 2: StarMedium
-| Component | Implementation | Assessment |
-|-----------|---------------|------------|
-| SelectionRules | GHS with stretchFactor 0.3, highlightProtection 0.8 | CORRECT |
-| PixelStackAnalyzer | `outlierSigmaThreshold=4.0f`, `favorHighSignal=true` | CORRECT |
-| PixelSelector | Standard handling | CORRECT |
-
-**Strategy**: Balanced stretch with highlight protection
-**Status**: PASS
-
-#### Class 3: StarFaint
-| Component | Implementation | Assessment |
-|-----------|---------------|------------|
-| SelectionRules | GHS with stretchFactor 0.6, highlightProtection 0.7 | CORRECT |
-| PixelStackAnalyzer | `outlierSigmaThreshold=4.0f`, `favorHighSignal=true` | CORRECT |
-| PixelSelector | Standard handling | CORRECT |
-
-**Strategy**: Moderate stretch to reveal faint stars
-**Status**: PASS
-
-#### Class 4: StarSaturated
-| Component | Implementation | Assessment |
-|-----------|---------------|------------|
-| SelectionRules | Default fallback: ArcSinh softness 0.05 | CORRECT |
-| PixelStackAnalyzer | Same as StarBright | CORRECT |
-| PixelSelector | Standard handling | CORRECT |
-
-**Strategy**: Strong HDR compression, preserve saturation
-**Status**: PASS - Note: No explicit rules in `GetAllRules()` but default fallback handles it.
+**Status: PASS**
 
 ---
 
-### Classes 5-8: Nebulae
+### Class 1: BrightCompact
 
-#### Class 5: NebulaEmission
-| Component | Implementation | Assessment |
-|-----------|---------------|------------|
-| SelectionRules | RNC/GHS, stretchFactor 0.65-1.0, highlightProtection 0.75 | CORRECT |
-| PixelStackAnalyzer | `outlierSigmaThreshold=3.5f`, `favorHighSignal=true`, asymmetric outlier rejection | CORRECT |
-| PixelSelector | Target context boost for M42, etc. | CORRECT |
+**Description**: Bright/saturated stars, diffraction spikes
 
-**Strategy**: Favor signal, reject contamination (low outliers from clouds)
-**Status**: PASS
+| Subsystem | Parameter / Behavior | Value |
+|-----------|---------------------|-------|
+| **Outlier sigma** | `GetClassAdjustedConfig` | **4.0** |
+| **Outlier direction** | `IsClassSpecificOutlier` | Reject LOW only (below mu) |
+| **Signal preference** | `favorHighSignal` | true |
+| **Selection strategy** | `SelectBestValue` | Select MAXIMUM (weighted by frame quality) |
+| **Stretch algorithm** | `GetBrightCompactRules` | ArcSinh: softness 0.02 (median>0.9), dynamic (DR>3), 0.15 (clip>1%), 0.1 default |
+| **Stretch default** | `GetDefaultRecommendation` | ArcSinh softness=0.05 |
 
-#### Class 6: NebulaReflection
-| Component | Implementation | Assessment |
-|-----------|---------------|------------|
-| SelectionRules | Default fallback: GHS stretchFactor 0.6 | ACCEPTABLE |
-| PixelStackAnalyzer | `outlierSigmaThreshold=3.0f`, `favorHighSignal=true` | CORRECT |
-| PixelSelector | Standard handling | CORRECT |
+**Astrophysical Assessment: CORRECT**
 
-**Strategy**: Similar to emission but softer stretch
-**Status**: PASS - Note: No explicit rules in `GetNebulaEmissionRules()` but separate handling exists.
+Bright stars are the most consistent features in an imaging session. A dim measurement of a bright star is almost always an error (cloud passage, tracking loss, poor seeing spreading the PSF). The 4.0-sigma threshold is appropriately permissive since bright stars have high intrinsic variance from scintillation. Selecting the maximum value preserves the true stellar brightness. ArcSinh compression is the correct stretch for handling the extreme dynamic range of stellar cores without clipping.
 
-**Recommendation**: Consider adding explicit `GetNebulaReflectionRules()` for finer control.
+The low-only rejection correctly handles the scenario where a subset of frames have reduced flux (clouds, poor transparency). A bright star reading 20% below the mean is far more suspicious than one reading 20% above.
 
-#### Class 7: NebulaDark
-| Component | Implementation | Assessment |
-|-----------|---------------|------------|
-| SelectionRules | MTF midtones 0.15-0.2, GHS stretchFactor 0.4 for detail | CORRECT |
-| PixelStackAnalyzer | `outlierSigmaThreshold=3.0f`, **`favorLowSignal=true`** | **CRITICAL - CORRECT** |
-| PixelSelector | Asymmetric outlier rejection - only rejects high outliers | CORRECT |
-
-**Strategy**: MUST preserve low values, reject high outliers
-**Status**: PASS - This is the critical dark nebula handling. The code correctly:
-1. Sets `favorLowSignal=true` to prefer darker values
-2. Only marks pixels above mu as outliers (preserves darkness)
-3. Uses gentle MTF stretch to maintain darkness
-
-#### Class 8: NebulaPlanetary
-| Component | Implementation | Assessment |
-|-----------|---------------|------------|
-| SelectionRules | ArcSinh softness 0.08 for shell structure | CORRECT |
-| PixelStackAnalyzer | `outlierSigmaThreshold=3.0f`, `favorHighSignal=true` | CORRECT |
-| PixelSelector | Target context matches PlanetaryNebula catalog | CORRECT |
-
-**Strategy**: Preserve both bright shells and dark centers
-**Status**: PASS
+**Status: PASS**
 
 ---
 
-### Classes 9-12: Galaxies
+### Class 2: FaintCompact
 
-#### Class 9: GalaxySpiral
-| Component | Implementation | Assessment |
-|-----------|---------------|------------|
-| SelectionRules | Lumpton/GHS/SAS based on SNR, stretchFactor 0.4 | CORRECT |
-| PixelStackAnalyzer | `outlierSigmaThreshold=3.0f`, `favorHighSignal=true` | CORRECT |
-| PixelSelector | Target context for M31, M51, NGC galaxies | CORRECT |
+**Description**: Medium/faint stars, star clusters
 
-**Strategy**: Preserve spiral arm detail
-**Status**: PASS
+| Subsystem | Parameter / Behavior | Value |
+|-----------|---------------------|-------|
+| **Outlier sigma** | `GetClassAdjustedConfig` | **3.5** |
+| **Outlier direction** | `IsClassSpecificOutlier` | Symmetric |
+| **Signal preference** | `favorHighSignal` | true |
+| **Selection strategy** | `SelectBestValue` | Probability-weighted with +0.2 upward bias |
+| **Stretch algorithm** | `GetFaintCompactRules` | GHS: stretchFactor 0.3 (median>0.5), 0.5 (SNR>8), dynamic default |
+| **Stretch default** | `GetDefaultRecommendation` | GHS stretchFactor=0.4, highlightProtection=0.85 |
 
-#### Class 10: GalaxyElliptical
-| Component | Implementation | Assessment |
-|-----------|---------------|------------|
-| SelectionRules | Default: GHS stretchFactor 0.5 | ACCEPTABLE |
-| PixelStackAnalyzer | Same as GalaxySpiral | CORRECT |
-| PixelSelector | Standard handling | CORRECT |
+**Astrophysical Assessment: CORRECT**
 
-**Strategy**: Smooth gradient preservation
-**Status**: PASS
+Faint compact objects (dim stars, resolved star cluster members) benefit from a nuanced approach. Unlike bright stars where maximum selection is appropriate, faint stars sit closer to the noise floor, making pure maximum selection risky (noise spikes masquerade as signal). The probability-weighted selection with a mild +0.2 upward bias is a good compromise: it favors values slightly above the mean (where real signal is more likely) while penalizing large deviations that are more likely noise.
 
-#### Class 11: GalaxyIrregular
-| Component | Implementation | Assessment |
-|-----------|---------------|------------|
-| SelectionRules | Default: GHS stretchFactor 0.55 | ACCEPTABLE |
-| PixelStackAnalyzer | Same as GalaxySpiral | CORRECT |
-| PixelSelector | Standard handling | CORRECT |
+Symmetric outlier rejection at 3.5-sigma is appropriate. Unlike bright stars, faint compact sources can have anomalously high values from cosmic rays or hot pixel bleed, so rejecting both tails is correct.
 
-**Strategy**: Detail preservation
-**Status**: PASS
+GHS stretch with moderate highlight protection preserves faint stellar photometry while preventing the brighter cluster members from washing out.
 
-#### Class 12: GalaxyCore
-| Component | Implementation | Assessment |
-|-----------|---------------|------------|
-| SelectionRules | ArcSinh softness 0.05-0.2 for HDR | CORRECT |
-| PixelStackAnalyzer | `outlierSigmaThreshold=3.5f`, `favorHighSignal=true` | CORRECT |
-| PixelSelector | Standard handling | CORRECT |
-
-**Strategy**: Strong HDR compression for bright cores
-**Status**: PASS
+**Status: PASS**
 
 ---
 
-### Class 13: DustLane
-| Component | Implementation | Assessment |
-|-----------|---------------|------------|
-| SelectionRules | Histogram shadowsClipping=0.0, MTF midtones 0.15 | CORRECT |
-| PixelStackAnalyzer | **`favorLowSignal=true`** - same as NebulaDark | **CRITICAL - CORRECT** |
-| PixelSelector | Target context matches NebulaDark | CORRECT |
+### Class 3: BrightExtended
 
-**Strategy**: Same as dark nebula - preserve darkness, reject high outliers
-**Status**: PASS
+**Description**: Emission/reflection nebulae, galaxies, cirrus
 
----
+| Subsystem | Parameter / Behavior | Value |
+|-----------|---------------------|-------|
+| **Outlier sigma** | `GetClassAdjustedConfig` | **3.5** |
+| **Outlier direction** | `IsClassSpecificOutlier` | Reject LOW only (below mu) |
+| **Signal preference** | `favorHighSignal` | true |
+| **Selection strategy** | `SelectBestValue` | Probability-weighted with +0.3 upward bias |
+| **Stretch algorithm** | `GetBrightExtendedRules` | RNC (SNR>20, median>0.3), GHS (DR>2.5), ArcSinh (median>0.8), GHS default 0.65/0.75 |
+| **Stretch default** | `GetDefaultRecommendation` | GHS stretchFactor=0.55, highlightProtection=0.75 |
+| **Target context** | `ApplyTargetContextAdjustments` | Confidence boost when `expectsBrightExtended` matches |
 
-### Classes 14-15: Star Clusters
+**Astrophysical Assessment: CORRECT**
 
-#### Class 14: StarClusterOpen
-| Component | Implementation | Assessment |
-|-----------|---------------|------------|
-| SelectionRules | GHS stretchFactor 0.4-0.5, highlightProtection 0.85 | CORRECT |
-| PixelStackAnalyzer | `outlierSigmaThreshold=3.5f`, `favorHighSignal=true` | CORRECT |
-| PixelSelector | Standard handling | CORRECT |
+Extended emission (nebulae, galaxies, IFN) is the primary science target for most deep-sky astrophotographers. The low-only rejection is correct: a frame where nebula signal drops (clouds, transparency variation) should be penalized, but a frame where nebula signal is stronger (better conditions) should never be rejected as an outlier.
 
-**Strategy**: Balance individual stars with cluster context
-**Status**: PASS
+The +0.3 upward bias is the strongest signal-favoring factor in the system, which is appropriate -- nebular signal is precious and the goal is to maximize the signal-to-noise ratio in the final stack. The probability weighting prevents pure maximum selection, which would introduce noise.
 
-#### Class 15: StarClusterGlobular
-| Component | Implementation | Assessment |
-|-----------|---------------|------------|
-| SelectionRules | ArcSinh softness 0.1 for dense cores, GHS stretchFactor 0.35 | CORRECT |
-| PixelStackAnalyzer | `outlierSigmaThreshold=3.5f`, `favorHighSignal=true` | CORRECT |
-| PixelSelector | Standard handling | CORRECT |
+The RNC (Rational Noise Compression) stretch choice for high-SNR extended objects is excellent for color preservation in nebulae. The ArcSinh fallback for very bright cores (median>0.8) correctly handles galaxy nuclei and bright emission knots.
 
-**Strategy**: HDR protection for dense cores
-**Status**: PASS
+The target context system correctly boosts confidence when FITS OBJECT keywords match known emission nebulae (M42, NGC 7000, etc.) or galaxies (M31, M51, etc.), reinforcing the ML classification.
+
+**Status: PASS**
 
 ---
 
-### Classes 16-20: Artifacts
+### Class 4: DarkExtended
 
-#### Class 16: ArtifactHotPixel
-| Component | Implementation | Assessment |
-|-----------|---------------|------------|
-| SelectionRules | MTF midtones 0.2, confidence 0.3 | CORRECT |
-| PixelStackAnalyzer | **`outlierSigmaThreshold=2.0f`**, `useMedianSelection=true` | **CORRECT - AGGRESSIVE REJECTION** |
-| PixelSelector | Standard handling | CORRECT |
+**Description**: Dark nebulae, dust lanes
 
-**Strategy**: Very aggressive outlier rejection, use median
-**Status**: PASS
+| Subsystem | Parameter / Behavior | Value |
+|-----------|---------------------|-------|
+| **Outlier sigma** | `GetClassAdjustedConfig` | **3.0** |
+| **Outlier direction** | `IsClassSpecificOutlier` | Reject HIGH only (above mu) |
+| **Signal preference** | `favorLowSignal` | true |
+| **Selection strategy** | `SelectBestValue` | Select MINIMUM (weighted by frame quality) |
+| **Stretch algorithm** | `GetDarkExtendedRules` | MTF midtones=0.15 (median<0.03), GHS 0.4/0.8 (SNR>8, median<0.1), MTF 0.2 default |
+| **Stretch default** | `GetDefaultRecommendation` | MTF midtones=0.15 |
+| **Target context** | `ApplyTargetContextAdjustments` | Confidence boost when `expectsDarkExtended` matches |
 
-#### Class 17: ArtifactSatellite
-| Component | Implementation | Assessment |
-|-----------|---------------|------------|
-| SelectionRules | Same as HotPixel | CORRECT |
-| PixelStackAnalyzer | **`outlierSigmaThreshold=2.0f`**, `useMedianSelection=true` | **CORRECT - AGGRESSIVE REJECTION** |
-| PixelSelector | Standard handling | CORRECT |
+**Astrophysical Assessment: CORRECT -- CRITICAL CLASS**
 
-**Strategy**: Very aggressive rejection of satellite trails
-**Status**: PASS
+This is the most astrophysically delicate class in the system. Dark nebulae (Barnard objects, Bok globules) and dust lanes (across galaxy disks, in H II regions) are defined by the *absence* of light. Their scientific and aesthetic value comes from being genuinely dark against brighter backgrounds.
 
-#### Class 18: ArtifactDiffraction
-| Component | Implementation | Assessment |
-|-----------|---------------|------------|
-| SelectionRules | Same as artifacts | ACCEPTABLE |
-| PixelStackAnalyzer | **Treated same as stars** (`outlierSigmaThreshold=4.0f`, `favorHighSignal=true`) | **DEBATABLE - SEE NOTES** |
-| PixelSelector | Standard handling | CORRECT |
+The implementation is correct on all counts:
 
-**Strategy**: Current implementation preserves diffraction spikes as star features
-**Status**: PASS with NOTE
+1. **High-only rejection**: A dark region that suddenly appears bright in one frame is contaminated (light pollution gradient, satellite, moonlight scatter). A dark region that appears even darker is likely more accurate.
+2. **Minimum selection**: Choosing the darkest valid frame maximizes the contrast between the dark feature and surrounding emission/stars. This is the correct strategy.
+3. **`favorLowSignal=true`**: Reinforces the selection preference.
+4. **3.0-sigma threshold**: Slightly tighter than BrightCompact (4.0) because dark features have less intrinsic variance. Consistent readings should cluster tightly; outliers are more suspicious.
+5. **MTF stretch with low midtones**: Preserves the darkness while gently lifting any embedded structure.
 
-**Note**: The decision to treat diffraction spikes like stars is defensible - they are consistent features that users may want to preserve. However, some users prefer to suppress them. Consider making this configurable.
+The target context correctly identifies known dark nebula targets (Horsehead, Barnard catalog) to boost classification confidence.
 
-#### Class 19: ArtifactGradient
-| Component | Implementation | Assessment |
-|-----------|---------------|------------|
-| SelectionRules | Same as artifacts | CORRECT |
-| PixelStackAnalyzer | `outlierSigmaThreshold=2.5f` (same as background), aggressive high rejection | CORRECT |
-| PixelSelector | Standard handling | CORRECT |
-
-**Strategy**: Aggressive background gradient suppression
-**Status**: PASS
-
-#### Class 20: ArtifactNoise
-| Component | Implementation | Assessment |
-|-----------|---------------|------------|
-| SelectionRules | Same as artifacts | CORRECT |
-| PixelStackAnalyzer | `outlierSigmaThreshold=2.5f`, median selection | CORRECT |
-| PixelSelector | Standard handling | CORRECT |
-
-**Strategy**: Noise suppression through median selection
-**Status**: PASS
+**Status: PASS**
 
 ---
 
-## Critical Validation: Dark Feature Preservation
+### Class 5: Artifact
 
-The most important validation is ensuring **dark nebulae and dust lanes preserve low values**. The code correctly implements this:
+**Description**: Hot pixels, satellite trails
 
-### PixelStackAnalyzer.cpp (lines 451-457)
-```cpp
-// Dark nebula - preserve dark values!
-case RegionClass::NebulaDark:
-case RegionClass::DustLane:
-   config.outlierSigmaThreshold = 3.0f;
-   config.favorHighSignal = false;
-   config.favorLowSignal = true;    // Dark features should stay dark
-   break;
-```
+| Subsystem | Parameter / Behavior | Value |
+|-----------|---------------------|-------|
+| **Outlier sigma** | `GetClassAdjustedConfig` | **2.0** |
+| **Outlier direction** | `IsClassSpecificOutlier` | Symmetric, aggressive |
+| **Signal preference** | `favorHighSignal` / `favorLowSignal` | false / false |
+| **Selection strategy** | `SelectBestValue` (default case) | Closest to median of valid values |
+| **Stretch algorithm** | `GetArtifactRules` | MTF midtones=0.05 (median>0.3), SAS (SNR<5), MTF 0.05 default |
+| **Stretch default** | `GetDefaultRecommendation` | MTF midtones=0.05, confidence=0.4 |
 
-### PixelStackAnalyzer.cpp (lines 177-181) - Asymmetric outlier rejection
-```cpp
-case RegionClass::NebulaDark:
-case RegionClass::DustLane:
-   // Don't reject low values as outliers for dark features
-   if ( values[i] > meta.distribution.mu && z > adjustedConfig.outlierSigmaThreshold )
-      isOutlier = true;
-   break;
-```
+**Astrophysical Assessment: CORRECT**
 
-### SelectBestValue function (lines 351-356)
-```cpp
-else if ( config.favorLowSignal && v < dist.mu )
-{
-   // Bonus for below-median values (dark nebula)
-   adjustment = 1.0f + 0.2f * (dist.mu - v) / std::max( dist.sigma, 1e-10f );
-}
-```
+Artifacts should be suppressed as aggressively as possible. The 2.0-sigma threshold is the tightest in the system, which is appropriate: hot pixels and satellite trails are transient features that should not survive stacking. Symmetric rejection catches both bright artifacts (hot pixels, satellites) and dark artifacts (cold pixels, shadow artifacts).
 
-**Assessment**: CORRECTLY IMPLEMENTED - Dark regions will preserve darkness.
+Median selection ensures that even if multiple frames contain an artifact at the same position (common for persistent hot pixels), the artifact is averaged away by the artifact-free majority. The very low MTF midtones (0.05) further suppresses any residual artifact signal in the stretch.
+
+The SAS rule for low-SNR artifact regions is a thoughtful addition -- noisy regions classified as artifacts benefit from statistical smoothing.
+
+**Status: PASS**
+
+---
+
+### Class 6: StarHalo
+
+**Description**: Diffuse glow around stars
+
+| Subsystem | Parameter / Behavior | Value |
+|-----------|---------------------|-------|
+| **Outlier sigma** | `GetClassAdjustedConfig` | **3.5** |
+| **Outlier direction** | `IsClassSpecificOutlier` | Symmetric |
+| **Signal preference** | `favorHighSignal` | true |
+| **Selection strategy** | `SelectBestValue` | Probability-weighted with +0.15 upward bias |
+| **Stretch algorithm** | `GetStarHaloRules` | GHS 0.7/0.8 (SNR>15, median>0.2), GHS 0.5/0.7 (SNR<8, median<0.1), GHS 0.6/0.75 default |
+| **Stretch default** | `GetDefaultRecommendation` | GHS stretchFactor=0.6, highlightProtection=0.75 |
+
+**Astrophysical Assessment: CORRECT**
+
+Star halos are diffuse, low-surface-brightness features surrounding bright stars, caused by optical scattering (telescope optics, atmospheric dispersion, sensor blooming). The key challenge is preserving the smooth radial gradient from stellar core to background.
+
+The symmetric rejection is appropriate: star halos should not have large frame-to-frame variation if conditions are stable. The mild +0.15 upward bias preserves the halo signal without over-emphasizing it (which would create artificially bloated halos).
+
+GHS stretch is the correct choice for star halos because it provides smooth, continuous tone mapping that preserves gradients. The highlight protection prevents the halo from merging into the stellar core.
+
+**Status: PASS**
+
+---
+
+### Class 7: Vignette
+
+**Description**: Optical vignetting (corner/edge light falloff)
+
+| Subsystem | Parameter / Behavior | Value |
+|-----------|---------------------|-------|
+| **Outlier sigma** | `GetClassAdjustedConfig` | **3.5** |
+| **Outlier direction** | `IsClassSpecificOutlier` | Reject LOW only (below mu) |
+| **Signal preference** | `favorHighSignal` | true |
+| **Selection strategy** | `SelectBestValue` | Select MAXIMUM (weighted by frame quality) |
+| **Stretch algorithm** | No explicit rules in `GetAllRules()` | Falls through to default |
+| **Stretch default** | `GetDefaultRecommendation` (default case) | MTF midtones=0.18, confidence=0.3 |
+
+**Astrophysical Assessment: CORRECT (with note)**
+
+Vignetting causes systematic light falloff toward image corners/edges due to optical path geometry. The degree of vignetting varies between frames due to sensor tilt, filter wheel position, and flexure. Selecting the maximum (least-vignetted) frame at each pixel is the correct strategy: the brightest reading represents the frame with the least optical attenuation at that position.
+
+Low-only rejection is correct: an anomalously dim value in a vignetted region is a frame with worse-than-average vignetting or additional gradient contamination. A brighter value is simply a frame with less vignetting.
+
+**Note**: The Vignette class has **no explicit stretch rules** in `DefaultRules::GetAllRules()` -- it is missing from the set. This means it falls through to the generic `GetDefaultRecommendation()` default case (MTF midtones=0.18, confidence=0.3). While this is acceptable since vignetted regions will typically be flat-corrected before stretching, explicit rules would be more robust. See Recommendations.
+
+**Status: PASS (with note on missing stretch rules)**
+
+---
+
+## Cross-Cutting Mechanisms
+
+### Iterative Sigma Clipping
+
+All class-aware paths (`AnalyzePixelWithClass`, `AnalyzePixelWithClassAndAnomalies`) perform 2 additional passes of sigma clipping after the initial outlier detection. The clipping uses MAD-based sigma floor to prevent "death spiral" where sigma shrinks each pass and progressively rejects valid data. The minimum valid frame count is `max(minFramesForStats, N/2)`, preventing over-rejection.
+
+**Assessment: CORRECT** -- The sigma floor mechanism is critical for small stacks (3-10 frames) where a single outlier can distort the sigma estimate dramatically.
+
+### Per-Frame Anomaly Detection
+
+When per-frame segmentation is available, `AnalyzePixelWithClassAndAnomalies` applies a 0.7x multiplier to the outlier threshold for frames whose segmentation class disagrees with the consensus. This is well-motivated: if a frame classifies a pixel as Background while all other frames classify it as BrightExtended, the frame likely had a transparency problem.
+
+**Assessment: CORRECT**
+
+### Spatial Smoothing at Transition Zones
+
+`PixelSelector::GetSpatialContext` detects transition zones where fewer than 5 of 8 neighbors share the center pixel's class. In transition zones, `ApplySpatialSmoothing` blends the selected value toward the median based on transition strength.
+
+**Assessment: CORRECT** -- Prevents hard boundaries between regions with different selection strategies.
+
+### Target Context
+
+`TargetContext::InferExpectedFeatures` parses FITS OBJECT and FILTER keywords to set `expectsBrightExtended` and `expectsDarkExtended` flags. Matching classes receive a confidence boost of `contextWeight`. Known object catalogs include Messier emission nebulae, galaxies, NGC objects, and planetary nebulae.
+
+**Assessment: CORRECT** -- Narrowband filter detection correctly infers `expectsBrightExtended` since narrowband signal is almost exclusively emission nebulosity.
+
+---
+
+## Summary Table
+
+| ID | Class | Outlier Sigma | Outlier Direction | Selection Strategy | Favor Signal | Stretch Algorithm | Status |
+|----|-------|:---:|---|---|---|---|:---:|
+| 0 | Background | 3.0 | Symmetric + 0.85x high penalty | Closest to median | Neither | MTF / SAS | PASS |
+| 1 | BrightCompact | 4.0 | Low only | Maximum | High | ArcSinh | PASS |
+| 2 | FaintCompact | 3.5 | Symmetric | Prob-weighted +0.2 bias | High | GHS | PASS |
+| 3 | BrightExtended | 3.5 | Low only | Prob-weighted +0.3 bias | High | RNC / GHS / ArcSinh | PASS |
+| 4 | DarkExtended | 3.0 | High only | Minimum | Low | MTF / GHS | PASS |
+| 5 | Artifact | 2.0 | Symmetric | Closest to median | Neither | MTF / SAS | PASS |
+| 6 | StarHalo | 3.5 | Symmetric | Prob-weighted +0.15 bias | High | GHS | PASS |
+| 7 | Vignette | 3.5 | Low only | Maximum | High | (no explicit rules*) | PASS* |
+
+*Vignette falls through to generic default stretch (MTF midtones=0.18, confidence=0.3). See Issue 1.
 
 ---
 
 ## Issues Found
 
-### Issue 1: Missing Explicit Rules for Some Classes (LOW PRIORITY)
+### Issue 1: Missing Vignette Stretch Rules (LOW PRIORITY)
 
-The following classes rely on default fallbacks rather than explicit rules:
+`DefaultRules::GetAllRules()` aggregates rules from 7 `Get*Rules()` functions but there is no `GetVignetteRules()`. The Vignette class falls through to the generic default case in `GetDefaultRecommendation()`, which returns MTF midtones=0.18 with confidence=0.3 (the lowest confidence in the system).
 
-| Class | Default Handler | Issue |
-|-------|-----------------|-------|
-| StarSaturated | Default in `GetDefaultRecommendation()` | No explicit rules in `GetAllRules()` |
-| NebulaReflection | Default in `GetDefaultRecommendation()` | No `GetNebulaReflectionRules()` function |
-| GalaxyElliptical | Default in `GetDefaultRecommendation()` | No explicit rules |
-| GalaxyIrregular | Default in `GetDefaultRecommendation()` | No explicit rules |
+**Impact**: Low in practice because vignetted regions should be corrected by flat fielding before stretching. However, if flat correction is imperfect or unavailable, the low-confidence generic stretch may not be optimal.
 
-**Impact**: Low - defaults are reasonable but less optimized.
+**Recommendation**: Add `GetVignetteRules()` with a gentle MTF stretch (midtones 0.20-0.25) that matches the background treatment, since vignetted regions are essentially background with systematic attenuation.
 
-**Recommendation**: Consider adding explicit rule sets for these classes for finer-grained control.
+### Issue 2: RegionStatistics.h Comment Mismatch (COSMETIC)
 
-### Issue 2: ArtifactDiffraction Strategy (DESIGN DECISION)
+Line 25 of `RegionStatistics.h` reads: `// 7 total classes (v2.0 taxonomy)`. The actual count is 8 (the `Count` enumerator equals 8, and the Vignette class was added in v2.2).
 
-Currently treated identically to stars, preserving diffraction spikes. This may not be desired by all users.
+**Impact**: None (cosmetic only, the code is correct).
 
-**Recommendation**: Consider adding a user preference toggle for diffraction spike suppression.
-
-### Issue 3: Missing Rules Header Declarations (COSMETIC)
-
-`SelectionRules.h` declares `GetNebulaEmissionRules()` but not `GetNebulaReflectionRules()` or `GetNebulaPlanetaryRules()`.
-
-**Recommendation**: Add missing rule function declarations for completeness.
+**Recommendation**: Update the comment to `// 8 total classes (v2.2 taxonomy)`.
 
 ---
 
-## Summary Table: All 21 Classes
+## Recommendations
 
-| # | Class | Strategy | outlierSigma | favorHigh | favorLow | Status |
-|---|-------|----------|--------------|-----------|----------|--------|
-| 0 | Background | Median, reject high | 2.5 | No | No | PASS |
-| 1 | StarBright | Preserve high, HDR | 4.0 | Yes | No | PASS |
-| 2 | StarMedium | Balanced GHS | 4.0 | Yes | No | PASS |
-| 3 | StarFaint | Moderate stretch | 4.0 | Yes | No | PASS |
-| 4 | StarSaturated | Strong HDR | 4.0 | Yes | No | PASS |
-| 5 | NebulaEmission | Favor signal | 3.5 | Yes | No | PASS |
-| 6 | NebulaReflection | Softer stretch | 3.0 | Yes | No | PASS |
-| 7 | NebulaDark | **PRESERVE LOW** | 3.0 | No | **Yes** | PASS |
-| 8 | NebulaPlanetary | Preserve shells | 3.0 | Yes | No | PASS |
-| 9 | GalaxySpiral | Preserve arms | 3.0 | Yes | No | PASS |
-| 10 | GalaxyElliptical | Smooth gradient | 3.0 | Yes | No | PASS |
-| 11 | GalaxyIrregular | Detail preserve | 3.0 | Yes | No | PASS |
-| 12 | GalaxyCore | HDR compression | 3.5 | Yes | No | PASS |
-| 13 | DustLane | **PRESERVE LOW** | 3.0 | No | **Yes** | PASS |
-| 14 | StarClusterOpen | Balance stars | 3.5 | Yes | No | PASS |
-| 15 | StarClusterGlobular | HDR for cores | 3.5 | Yes | No | PASS |
-| 16 | ArtifactHotPixel | Aggressive reject | 2.0 | No | No | PASS |
-| 17 | ArtifactSatellite | Aggressive reject | 2.0 | No | No | PASS |
-| 18 | ArtifactDiffraction | Preserve (as star) | 4.0 | Yes | No | PASS* |
-| 19 | ArtifactGradient | Reject high | 2.5 | No | No | PASS |
-| 20 | ArtifactNoise | Median select | 2.5 | No | No | PASS |
+### Recommendation 1: Add Vignette Stretch Rules
 
-*\* Design decision - diffraction treated as star feature, may want to make configurable*
+Create a `GetVignetteRules()` function in `DefaultRules` namespace:
+
+- Default: MTF midtones=0.22 (similar to background)
+- Low SNR: Gentle MTF midtones=0.18 to avoid amplifying noise in dimmer corners
+- High SNR: SAS (matching background behavior for consistency)
+
+This aligns the stretch behavior with the already-correct pixel selection behavior and eliminates the low-confidence fallback.
+
+### Recommendation 2: Consider Adaptive Upward Bias for BrightExtended
+
+The +0.3 upward bias in the BrightExtended probability-weighted selection is static. For very faint extended emission (IFN, outer spiral arms), this bias may not be aggressive enough, while for bright emission cores (M42 Trapezium region), it may be too aggressive (risking selection of noise peaks near saturation).
+
+Consider making the bias adaptive based on the distribution mean:
+- `mu < 0.1` (faint extended): bias +0.4 to better extract faint signal
+- `mu > 0.5` (bright extended): bias +0.15 to avoid saturation risk
+- Otherwise: current +0.3
+
+### Recommendation 3: Frame Weight Interaction with Maximum Selection
+
+For BrightCompact and Vignette classes, `SelectBestValue` selects the maximum of `value * frameWeight`. When frame weights vary significantly (e.g., a high-weight frame with slightly lower signal vs. a low-weight frame with higher signal), the weighting could override the astrophysical intent of "select the brightest actual measurement."
+
+Consider a two-stage approach for maximum-selection classes:
+1. First filter: reject frames below a minimum weight threshold
+2. Then select maximum value from the remaining frames (ignoring weight in the selection itself)
+
+This preserves the intent of maximum selection while still excluding poor-quality frames.
+
+### Recommendation 4: DarkExtended Minimum Selection and Noise Floor
+
+Selecting the minimum value for dark features is correct in principle but carries a risk: in very noisy data (low integration time, few frames), the minimum valid value may be a noise trough rather than a genuine dark absorption feature. The current sigma clipping mitigates this, but a secondary guard could be added: if the selected minimum is more than 2-sigma below the median of valid values, fall back to median selection for that pixel.
+
+### Recommendation 5: StarHalo Gradient Consistency Check
+
+Star halos have a defining characteristic: smooth radial decline from the stellar core. The current symmetric outlier rejection and mild upward bias treat each pixel independently. A potential improvement would be to incorporate the spatial context more strongly for StarHalo pixels: if a pixel's selected value would create a non-monotonic radial profile (brighter than a pixel closer to the star core), it could be flagged for smoothing. This would require spatial awareness beyond the current 8-neighbor context.
 
 ---
 
 ## Conclusion
 
-**All 21 classes have appropriate selection strategies implemented.** The critical dark nebula and dust lane handling is correctly implemented with asymmetric outlier rejection that preserves low values.
+All 8 classes in the v2.2 taxonomy have astrophysically appropriate pixel selection strategies implemented across the three-component pipeline. The system correctly handles the two most critical astrophotographic challenges:
 
-The implementation correctly follows the specification:
+1. **Dark feature preservation** (DarkExtended): High-only rejection + minimum selection ensures dark nebulae and dust lanes remain dark. **VERIFIED.**
+2. **Signal preservation** (BrightExtended, BrightCompact): Low-only rejection + maximum/upward-biased selection ensures nebular and stellar signal is not suppressed. **VERIFIED.**
 
-1. **Stars (1-4)**: Preserve high values, reject low outliers - VERIFIED
-2. **Nebulae Emission (5)**: Favor signal, reject contamination - VERIFIED
-3. **Nebulae Reflection (6)**: Similar to emission but softer - VERIFIED
-4. **Nebulae Dark (7)**: MUST preserve low values, reject high outliers - **VERIFIED**
-5. **Nebulae Planetary (8)**: High contrast, preserve both - VERIFIED
-6. **Galaxies (9-12)**: Various strategies by component - VERIFIED
-7. **Dust Lane (13)**: Same as dark nebula - preserve darkness - **VERIFIED**
-8. **Star Clusters (14-15)**: Balance individual stars - VERIFIED
-9. **Artifacts (16-20)**: Reject/suppress - VERIFIED
+The one concrete gap (missing Vignette stretch rules) has minimal practical impact and is straightforward to address.
 
 **Audit Result: PASS**
 
 ---
 
-*Generated by ASTRO-SME validation system*
+*Generated by ASTRO-SME validation system, 2026-02-19*

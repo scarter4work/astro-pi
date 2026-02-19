@@ -918,96 +918,188 @@ SegmentationResult SegmentationEngine::ProcessTiled( const Image& image )
    int totalTiles = numTilesX * numTilesY;
    int processedTiles = 0;
 
-   // TODO: Batch tile inference optimization
-   // Currently each tile is processed individually via m_model->Segment().
-   // For ONNX models with dynamic batch support, collect tiles into batches
-   // of BATCH_SIZE (e.g., 4) and use ONNXSession::RunBatch() for significantly
-   // faster throughput. This requires splitting Segment() into separate
-   // preprocess/inference/postprocess steps so that only the inference step
-   // is batched. See ONNXSession::RunBatch() in ONNXInference.h.
+   // Collect all tile metadata for batch processing
+   struct TileInfo
+   {
+      int x0, y0, tileWidth, tileHeight;
+      int gridX, gridY;  // Grid position for overlap calculation
+   };
 
-   // Process each tile
+   std::vector<TileInfo> tiles;
+   tiles.reserve( totalTiles );
+
    for ( int tileY = 0; tileY < numTilesY; ++tileY )
    {
       for ( int tileX = 0; tileX < numTilesX; ++tileX )
       {
-         // Calculate tile boundaries with overlap
-         int x0 = tileX * effectiveTileSize;
-         int y0 = tileY * effectiveTileSize;
-         int x1 = std::min( x0 + tileSize, imageWidth );
-         int y1 = std::min( y0 + tileSize, imageHeight );
-         int tileWidth = x1 - x0;
-         int tileHeight = y1 - y0;
+         TileInfo ti;
+         ti.x0 = tileX * effectiveTileSize;
+         ti.y0 = tileY * effectiveTileSize;
+         int x1 = std::min( ti.x0 + tileSize, imageWidth );
+         int y1 = std::min( ti.y0 + tileSize, imageHeight );
+         ti.tileWidth = x1 - ti.x0;
+         ti.tileHeight = y1 - ti.y0;
+         ti.gridX = tileX;
+         ti.gridY = tileY;
+         tiles.push_back( ti );
+      }
+   }
 
-         // Extract tile from image
-         Image tile( tileWidth, tileHeight, image.ColorSpace() );
-         for ( int c = 0; c < image.NumberOfNominalChannels(); ++c )
+   // Helper lambda: extract tile image from source
+   auto extractTile = [&]( const TileInfo& ti ) -> Image
+   {
+      Image tile( ti.tileWidth, ti.tileHeight, image.ColorSpace() );
+      for ( int c = 0; c < image.NumberOfNominalChannels(); ++c )
+         for ( int y = 0; y < ti.tileHeight; ++y )
+            for ( int x = 0; x < ti.tileWidth; ++x )
+               tile( x, y, c ) = image( ti.x0 + x, ti.y0 + y, c );
+      return tile;
+   };
+
+   // Helper lambda: merge a tile result into the full result and update weight map
+   auto mergeTile = [&]( const TileInfo& ti, const SegmentationResult& tileResult )
+   {
+      int overlapLeft = (ti.gridX > 0) ? overlap / 2 : 0;
+      int overlapTop = (ti.gridY > 0) ? overlap / 2 : 0;
+      int overlapRight = (ti.gridX < numTilesX - 1) ? overlap / 2 : 0;
+      int overlapBottom = (ti.gridY < numTilesY - 1) ? overlap / 2 : 0;
+
+      MergeTileResult( result, tileResult, ti.x0, ti.y0, ti.tileWidth, ti.tileHeight,
+                       overlapLeft, overlapTop, overlapRight, overlapBottom );
+
+      for ( int y = 0; y < ti.tileHeight; ++y )
+      {
+         for ( int x = 0; x < ti.tileWidth; ++x )
          {
-            for ( int y = 0; y < tileHeight; ++y )
+            double wx = 1.0;
+            double wy = 1.0;
+
+            if ( overlapLeft > 0 && x < overlapLeft )
+               wx = static_cast<double>( x + 1 ) / (overlapLeft + 1);
+            else if ( overlapRight > 0 && x >= ti.tileWidth - overlapRight )
+               wx = static_cast<double>( ti.tileWidth - x ) / (overlapRight + 1);
+
+            if ( overlapTop > 0 && y < overlapTop )
+               wy = static_cast<double>( y + 1 ) / (overlapTop + 1);
+            else if ( overlapBottom > 0 && y >= ti.tileHeight - overlapBottom )
+               wy = static_cast<double>( ti.tileHeight - y ) / (overlapBottom + 1);
+
+            double weight = wx * wy;
+
+            int px = ti.x0 + x;
+            int py = ti.y0 + y;
+            if ( px < imageWidth && py < imageHeight )
+               weightMap( px, py, 0 ) += weight;
+         }
+      }
+   };
+
+   // Determine batch size and whether batch inference is available
+   int batchSize = m_config.modelConfig.tileBatchSize;
+   bool useBatchInference = m_model->SupportsBatchInference() && batchSize > 1;
+
+   if ( useBatchInference )
+   {
+      Console().WriteLn( String().Format(
+         "Segmentation: Using batched tile inference (batch size %d)", batchSize ) );
+
+      // Process tiles in batches
+      for ( size_t batchStart = 0; batchStart < tiles.size(); batchStart += batchSize )
+      {
+         size_t batchEnd = std::min( batchStart + batchSize, tiles.size() );
+         int currentBatchSize = static_cast<int>( batchEnd - batchStart );
+
+         // Phase 1: Preprocess all tiles in this batch
+         std::vector<FloatTensor> batchInputs;
+         std::vector<Image> tileImages;  // Keep tile images for postprocess dimensions
+         batchInputs.reserve( currentBatchSize );
+         tileImages.reserve( currentBatchSize );
+
+         for ( size_t i = batchStart; i < batchEnd; ++i )
+         {
+            Image tileImg = extractTile( tiles[i] );
+            batchInputs.push_back( m_model->PreprocessTile( tileImg ) );
+            tileImages.push_back( std::move( tileImg ) );
+         }
+
+         // Phase 2: Run batched inference
+         std::vector<FloatTensor> batchOutputs;
+         bool batchOk = m_model->RunBatchInference( batchInputs, batchOutputs );
+
+         if ( !batchOk )
+         {
+            // Fallback: process this batch tile-by-tile
+            Console().WarningLn( String().Format(
+               "Segmentation: Batch inference failed (%s), falling back to per-tile",
+               IsoString( m_model->GetLastError() ).c_str() ) );
+
+            for ( size_t i = batchStart; i < batchEnd; ++i )
             {
-               for ( int x = 0; x < tileWidth; ++x )
-               {
-                  tile( x, y, c ) = image( x0 + x, y0 + y, c );
-               }
+               SegmentationResult tileResult = m_model->Segment( tileImages[i - batchStart] );
+               processedTiles++;
+
+               if ( tileResult.isValid )
+                  mergeTile( tiles[i], tileResult );
+               else
+                  Console().WarningLn( String().Format(
+                     "Segmentation: Tile %d,%d failed: %s",
+                     tiles[i].gridX, tiles[i].gridY,
+                     IsoString( tileResult.errorMessage ).c_str() ) );
+            }
+         }
+         else
+         {
+            // Phase 3: Postprocess each result
+            for ( size_t i = 0; i < static_cast<size_t>( currentBatchSize ); ++i )
+            {
+               size_t tileIdx = batchStart + i;
+               SegmentationResult tileResult = m_model->PostprocessTile(
+                  batchOutputs[i], tiles[tileIdx].tileWidth, tiles[tileIdx].tileHeight );
+               processedTiles++;
+
+               if ( tileResult.isValid )
+                  mergeTile( tiles[tileIdx], tileResult );
+               else
+                  Console().WarningLn( String().Format(
+                     "Segmentation: Tile %d,%d postprocess failed: %s",
+                     tiles[tileIdx].gridX, tiles[tileIdx].gridY,
+                     IsoString( tileResult.errorMessage ).c_str() ) );
             }
          }
 
-         // Progress report
+         // Progress report after each batch
+         double progress = 0.2 + 0.6 * processedTiles / totalTiles;
+         ReportProgress( SegmentationEventType::ModelRunning, progress,
+            String().Format( "Processed batch %d/%d (%d tiles)",
+               static_cast<int>( batchStart / batchSize ) + 1,
+               static_cast<int>( (tiles.size() + batchSize - 1) / batchSize ),
+               processedTiles ) );
+      }
+   }
+   else
+   {
+      // Non-batched fallback: process each tile individually
+      for ( size_t i = 0; i < tiles.size(); ++i )
+      {
+         Image tileImg = extractTile( tiles[i] );
+
          processedTiles++;
          double progress = 0.2 + 0.6 * processedTiles / totalTiles;
          ReportProgress( SegmentationEventType::ModelRunning, progress,
             String().Format( "Processing tile %d/%d", processedTiles, totalTiles ) );
 
-         // Run segmentation on tile
-         SegmentationResult tileResult = m_model->Segment( tile );
+         SegmentationResult tileResult = m_model->Segment( tileImg );
 
          if ( !tileResult.isValid )
          {
             Console().WarningLn( String().Format(
                "Segmentation: Tile %d,%d failed: %s",
-               tileX, tileY, IsoString( tileResult.errorMessage ).c_str() ) );
+               tiles[i].gridX, tiles[i].gridY,
+               IsoString( tileResult.errorMessage ).c_str() ) );
             continue;
          }
 
-         // Calculate overlap regions for blending
-         int overlapLeft = (tileX > 0) ? overlap / 2 : 0;
-         int overlapTop = (tileY > 0) ? overlap / 2 : 0;
-         int overlapRight = (tileX < numTilesX - 1) ? overlap / 2 : 0;
-         int overlapBottom = (tileY < numTilesY - 1) ? overlap / 2 : 0;
-
-         // Merge tile result into full result with blending
-         MergeTileResult( result, tileResult, x0, y0, tileWidth, tileHeight,
-                          overlapLeft, overlapTop, overlapRight, overlapBottom );
-
-         // Update weight map
-         for ( int y = 0; y < tileHeight; ++y )
-         {
-            for ( int x = 0; x < tileWidth; ++x )
-            {
-               // Calculate blend weight (ramp down at edges)
-               double wx = 1.0;
-               double wy = 1.0;
-
-               if ( overlapLeft > 0 && x < overlapLeft )
-                  wx = static_cast<double>( x + 1 ) / (overlapLeft + 1);
-               else if ( overlapRight > 0 && x >= tileWidth - overlapRight )
-                  wx = static_cast<double>( tileWidth - x ) / (overlapRight + 1);
-
-               if ( overlapTop > 0 && y < overlapTop )
-                  wy = static_cast<double>( y + 1 ) / (overlapTop + 1);
-               else if ( overlapBottom > 0 && y >= tileHeight - overlapBottom )
-                  wy = static_cast<double>( tileHeight - y ) / (overlapBottom + 1);
-
-               double weight = wx * wy;
-
-               int px = x0 + x;
-               int py = y0 + y;
-               if ( px < imageWidth && py < imageHeight )
-               {
-                  weightMap( px, py, 0 ) += weight;
-               }
-            }
-         }
+         mergeTile( tiles[i], tileResult );
       }
    }
 

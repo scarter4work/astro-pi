@@ -1602,22 +1602,85 @@ std::vector<FrameNormalizationParams> NukeXStackInstance::ComputeNormalizationPa
    int sampleRows = std::min( 100, height );
    int rowStep = std::max( 1, height / sampleRows );
 
-   // Collect samples per frame
+   // Collect luminance samples per frame
+   // For RGB (channels >= 3): luminance = 0.2126*R + 0.7152*G + 0.0722*B
+   // For grayscale (channels == 1): just use channel 0
    std::vector<std::vector<float>> frameSamples( numFrames );
    for ( auto& v : frameSamples )
       v.reserve( static_cast<size_t>( sampleRows ) * width );
 
-   for ( int row = 0; row < height; row += rowStep )
+   if ( channels >= 3 )
    {
-      std::vector<std::vector<float>> rowData;
-      // Read channel 0 (or compute luminance from RGB rows)
-      if ( !streamer.ReadRow( row, 0, rowData ) )
-         break;
+      // Multi-channel: read R, G, B and compute luminance.
+      // To minimize resets, read all sampled rows per channel in order.
+      // Store per-frame per-pixel R, G, B values, then compute luminance.
 
+      // Temporary storage: channelData[channel][frame][sampleIndex]
+      // We process channel-by-channel to avoid repeated file resets.
+      size_t maxSamples = static_cast<size_t>( sampleRows ) * width;
+      std::vector<std::vector<std::vector<float>>> channelData( 3 );
+      for ( int c = 0; c < 3; ++c )
+      {
+         channelData[c].resize( numFrames );
+         for ( auto& v : channelData[c] )
+            v.reserve( maxSamples );
+      }
+
+      for ( int c = 0; c < 3; ++c )
+      {
+         for ( int row = 0; row < height; row += rowStep )
+         {
+            std::vector<std::vector<float>> rowData;
+            if ( !streamer.ReadRow( row, c, rowData ) )
+            {
+               console.CriticalLn( String().Format(
+                  "Streaming normalization: failed reading row %d channel %d", row, c ) );
+               return params;
+            }
+
+            for ( int f = 0; f < numFrames; ++f )
+               channelData[c][f].insert( channelData[c][f].end(),
+                                         rowData[f].begin(), rowData[f].end() );
+         }
+
+         // Reset between channels so next channel read starts fresh
+         if ( c < 2 )
+         {
+            if ( !streamer.ResetAllFiles() )
+            {
+               console.CriticalLn( "Streaming normalization: failed to reset files between channels" );
+               return params;
+            }
+         }
+      }
+
+      // Compute luminance from the three channels
       for ( int f = 0; f < numFrames; ++f )
       {
-         for ( int x = 0; x < width; ++x )
-            frameSamples[f].push_back( rowData[f][x] );
+         size_t n = channelData[0][f].size();
+         frameSamples[f].resize( n );
+         for ( size_t j = 0; j < n; ++j )
+         {
+            frameSamples[f][j] = 0.2126f * channelData[0][f][j]
+                               + 0.7152f * channelData[1][f][j]
+                               + 0.0722f * channelData[2][f][j];
+         }
+      }
+   }
+   else
+   {
+      // Grayscale: just read channel 0
+      for ( int row = 0; row < height; row += rowStep )
+      {
+         std::vector<std::vector<float>> rowData;
+         if ( !streamer.ReadRow( row, 0, rowData ) )
+            break;
+
+         for ( int f = 0; f < numFrames; ++f )
+         {
+            frameSamples[f].insert( frameSamples[f].end(),
+                                    rowData[f].begin(), rowData[f].end() );
+         }
       }
    }
 
