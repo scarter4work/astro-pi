@@ -81,6 +81,10 @@ struct SegmentationConfig
    // Determinism
    bool deterministic = false;          // Force deterministic inference
 
+   // Force linear detection (overrides quartile ratio test)
+   // Set true when input is known to be linear (e.g., CFA/Bayer demosaiced data)
+   bool forceLinear = false;
+
    // Batched tile inference
    int tileBatchSize = 4;               // Tiles per batch for ONNX inference
 

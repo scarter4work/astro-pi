@@ -160,7 +160,8 @@ private:
    bool RunSegmentation( const Image& referenceImage,
                          std::vector<std::vector<int>>& classMap,
                          std::vector<std::vector<float>>& confidenceMap,
-                         double& segmentationTimeMs ) const;
+                         double& segmentationTimeMs,
+                         bool isCFA = false ) const;
 
    // Register all frames to reference using star alignment
    RegistrationSummary RegisterAllFrames( std::vector<Image>& frames ) const;

@@ -833,7 +833,8 @@ bool NukeXStackInstance::RunSegmentation(
    const Image& referenceImage,
    std::vector<std::vector<int>>& classMap,
    std::vector<std::vector<float>>& confidenceMap,
-   double& segmentationTimeMs ) const
+   double& segmentationTimeMs,
+   bool isCFA ) const
 {
 #ifdef NUKEX_USE_ONNX
    Console console;
@@ -863,6 +864,7 @@ bool NukeXStackInstance::RunSegmentation(
    engineConfig.modelConfig.inputHeight = 512;
    engineConfig.modelConfig.useGPU = false;  // CPU for now
    engineConfig.modelConfig.deterministic = true;
+   engineConfig.modelConfig.forceLinear = isCFA;
    engineConfig.cacheResults = false;        // No need for caching in stacker
    engineConfig.runAnalysis = false;         // We don't need region analysis
    engineConfig.downsampleLargeImages = true;
@@ -1081,9 +1083,20 @@ bool NukeXStackInstance::RunIntegration(
 
          console.WriteLn( "Applied arcsinh stretch to median composite." );
 
+         // Detect CFA/Bayer data from FITS keywords - demosaiced data is definitively linear
+         bool isCFA = false;
+         for ( const FITSHeaderKeyword& kw : keywords )
+         {
+            if ( kw.name.Uppercase().Trimmed() == "BAYERPAT" )
+            {
+               isCFA = true;
+               break;
+            }
+         }
+
          // Step 3: Run segmentation ONCE on the stretched median composite
          double segTime = 0.0;
-         if ( RunSegmentation( medianRef, segmentationMap, confidenceMap, segTime ) )
+         if ( RunSegmentation( medianRef, segmentationMap, confidenceMap, segTime, isCFA ) )
          {
             summary.segmentationTimeMs = segTime;
 
@@ -1313,7 +1326,7 @@ bool NukeXStackInstance::RunIntegrationStreaming(
             referenceImage.Width(), referenceImage.Height() ) );
 
          double segTime = 0.0;
-         if ( RunSegmentation( referenceImage, segmentationMap, confidenceMap, segTime ) )
+         if ( RunSegmentation( referenceImage, segmentationMap, confidenceMap, segTime, streamer.IsCFA() ) )
          {
             summary.segmentationTimeMs = segTime;
             selector.SetSegmentation( segmentationMap, confidenceMap );

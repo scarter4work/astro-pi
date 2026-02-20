@@ -371,12 +371,13 @@ FloatTensor ONNXSegmentationModel::PreprocessImage( const Image& image ) const
    const double denom = static_cast<double>( g_p75 ) - g_p50;
    const double numer = static_cast<double>( g_p99 ) - g_p75;
    const double quartileRatio = (denom > 1e-10) ? (numer / denom) : 0.0;
-   const bool isLinear = (quartileRatio > 5.0);
+   const bool isLinear = m_config.forceLinear || (quartileRatio > 5.0);
 
    // Debug logging to diagnose linear detection
    Console().WriteLn( String().Format(
-      "Segmentation: Data stats - p50=%.6f, p75=%.6f, p99=%.6f, quartileRatio=%.2f, isLinear=%s",
-      g_p50, g_p75, g_p99, quartileRatio, isLinear ? "true" : "false" ) );
+      "Segmentation: Data stats - p50=%.6f, p75=%.6f, p99=%.6f, quartileRatio=%.2f, isLinear=%s%s",
+      g_p50, g_p75, g_p99, quartileRatio, isLinear ? "true" : "false",
+      m_config.forceLinear ? " (forced: CFA/Bayer data)" : "" ) );
 
    // Adaptive arcsinh stretch parameters based on data compression
    double ARCSINH_SCALE = 0.1;  // default for normal data
