@@ -10,6 +10,7 @@ struct GaussianMixResult {
     double mu2, sigma2;     // component 2
     double weight;          // mixing weight for component 1 (component 2 weight = 1-weight)
     double logLikelihood;
+    int k = 5;              // number of parameters (mu1, sigma1, mu2, sigma2, weight)
     bool converged;
     int iterations;
 };

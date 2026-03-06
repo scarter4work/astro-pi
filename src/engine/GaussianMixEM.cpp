@@ -2,7 +2,6 @@
 #include "engine/GaussianMixEM.h"
 #include "engine/NumericalUtils.h"
 
-#include <boost/math/distributions/normal.hpp>
 #include <algorithm>
 #include <cmath>
 #include <limits>
@@ -15,6 +14,7 @@ namespace {
 constexpr double SIGMA_FLOOR = 1e-10;
 constexpr double WEIGHT_MIN = 0.01;
 constexpr double WEIGHT_MAX = 0.99;
+constexpr double LOG_2PI = 1.8378770664093453;
 
 double clampWeight(double w) {
     return std::max(WEIGHT_MIN, std::min(WEIGHT_MAX, w));
@@ -24,14 +24,10 @@ double floorSigma(double s) {
     return std::max(SIGMA_FLOOR, s);
 }
 
-// Log of normal PDF at x given mean mu and standard deviation sigma
+// Analytical log of normal PDF — stays in log-space, never underflows
 double logNormalPdf(double x, double mu, double sigma) {
-    boost::math::normal_distribution<double> dist(mu, sigma);
-    double p = boost::math::pdf(dist, x);
-    if (p <= 0.0) {
-        return -std::numeric_limits<double>::infinity();
-    }
-    return std::log(p);
+    double z = (x - mu) / sigma;
+    return -0.5 * (LOG_2PI + z * z) - std::log(sigma);
 }
 
 } // anonymous namespace
@@ -80,16 +76,20 @@ GaussianMixResult fitGaussianMixture2(
     std::vector<double> r1(n);  // responsibilities for component 1
 
     for (int iter = 0; iter < maxIterations; ++iter) {
-        // E-Step: compute responsibilities
+        // E-Step: compute responsibilities and accumulate log-likelihood in one pass
+        double logL = 0.0;
+        double logW1 = std::log(weight);
+        double logW2 = std::log(1.0 - weight);
+
         for (size_t i = 0; i < n; ++i) {
-            double log_r1 = std::log(weight) + logNormalPdf(data[i], mu1, sigma1);
-            double log_r2 = std::log(1.0 - weight) + logNormalPdf(data[i], mu2, sigma2);
+            double log_r1 = logW1 + logNormalPdf(data[i], mu1, sigma1);
+            double log_r2 = logW2 + logNormalPdf(data[i], mu2, sigma2);
 
             double lse[2] = {log_r1, log_r2};
             double log_total = logSumExp(lse, 2);
+            logL += log_total;
 
             r1[i] = std::exp(log_r1 - log_total);
-            // Clamp to [0, 1] for safety
             r1[i] = std::max(0.0, std::min(1.0, r1[i]));
         }
 
@@ -105,7 +105,6 @@ GaussianMixResult fitGaussianMixture2(
             sum_r2_x += r2_i * data[i];
         }
 
-        // Avoid division by zero
         if (N1 < SIGMA_FLOOR) N1 = SIGMA_FLOOR;
         if (N2 < SIGMA_FLOOR) N2 = SIGMA_FLOOR;
 
@@ -125,15 +124,6 @@ GaussianMixResult fitGaussianMixture2(
         sigma2 = floorSigma(std::sqrt(var2 / N2));
 
         weight = clampWeight(N1 / static_cast<double>(n));
-
-        // Compute log-likelihood
-        double logL = 0.0;
-        for (size_t i = 0; i < n; ++i) {
-            double log_p1 = std::log(weight) + logNormalPdf(data[i], mu1, sigma1);
-            double log_p2 = std::log(1.0 - weight) + logNormalPdf(data[i], mu2, sigma2);
-            double lse[2] = {log_p1, log_p2};
-            logL += logSumExp(lse, 2);
-        }
 
         result.iterations = iter + 1;
 
