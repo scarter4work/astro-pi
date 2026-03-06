@@ -32,3 +32,12 @@ target_include_directories(test_quality_weights PRIVATE
 target_compile_definitions(test_quality_weights PRIVATE XTENSOR_USE_XSIMD)
 target_compile_features(test_quality_weights PRIVATE cxx_std_17)
 add_test(NAME test_quality_weights COMMAND test_quality_weights)
+
+# NumericalUtils unit tests
+add_executable(test_numerical_utils unit/test_numerical_utils.cpp)
+target_link_libraries(test_numerical_utils PRIVATE Catch2::Catch2WithMain)
+target_include_directories(test_numerical_utils PRIVATE
+    ${CMAKE_SOURCE_DIR}/src
+)
+target_compile_features(test_numerical_utils PRIVATE cxx_std_17)
+add_test(NAME test_numerical_utils COMMAND test_numerical_utils)
