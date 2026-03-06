@@ -115,3 +115,27 @@ target_include_directories(test_gaussian_mix_em PRIVATE
 target_compile_definitions(test_gaussian_mix_em PRIVATE BOOST_MATH_STANDALONE=1)
 target_compile_features(test_gaussian_mix_em PRIVATE cxx_std_17)
 add_test(NAME test_gaussian_mix_em COMMAND test_gaussian_mix_em)
+
+# OutlierDetector unit tests
+add_executable(test_outlier_detector
+    unit/test_outlier_detector.cpp
+    ${CMAKE_SOURCE_DIR}/src/engine/OutlierDetector.cpp
+)
+target_link_libraries(test_outlier_detector PRIVATE Catch2::Catch2WithMain)
+target_include_directories(test_outlier_detector PRIVATE
+    ${CMAKE_SOURCE_DIR}/src
+    ${CMAKE_SOURCE_DIR}/third_party/boost_math/include
+    ${CMAKE_SOURCE_DIR}/third_party/boost_config/include
+    ${CMAKE_SOURCE_DIR}/third_party/boost_assert/include
+    ${CMAKE_SOURCE_DIR}/third_party/boost_throw_exception/include
+    ${CMAKE_SOURCE_DIR}/third_party/boost_core/include
+    ${CMAKE_SOURCE_DIR}/third_party/boost_type_traits/include
+    ${CMAKE_SOURCE_DIR}/third_party/boost_static_assert/include
+    ${CMAKE_SOURCE_DIR}/third_party/boost_mp11/include
+    ${CMAKE_SOURCE_DIR}/third_party/boost_integer/include
+    ${CMAKE_SOURCE_DIR}/third_party/boost_lexical_cast/include
+    ${CMAKE_SOURCE_DIR}/third_party/boost_predef/include
+)
+target_compile_definitions(test_outlier_detector PRIVATE BOOST_MATH_STANDALONE=1)
+target_compile_features(test_outlier_detector PRIVATE cxx_std_17)
+add_test(NAME test_outlier_detector COMMAND test_outlier_detector)
