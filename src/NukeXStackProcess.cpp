@@ -8,6 +8,7 @@
 // Copyright (c) 2026 Scott Carter
 
 #include "NukeXStackProcess.h"
+#include "NukeXStackParameters.h"
 #include "NukeXStackInstance.h"
 #include "NukeXStackInterface.h"
 
@@ -24,7 +25,26 @@ NukeXStackProcess::NukeXStackProcess()
 {
    TheNukeXStackProcess = this;
 
-   // Parameters will be registered in Task 1.3
+   // Input frames table (must be created first, then its columns)
+   NXSInputFrames* framesTable = new NXSInputFrames( this );
+   new NXSInputFramePath( framesTable );
+   new NXSInputFrameEnabled( framesTable );
+
+   // Quality weight mode enumeration
+   new NXSQualityWeightMode( this );
+
+   // Boolean parameters
+   new NXSGenerateProvenance( this );
+   new NXSGenerateDistMetadata( this );
+   new NXSEnableQualityWeighting( this );
+
+   // Floating point parameters
+   new NXSOutlierSigmaThreshold( this );
+   new NXSFWHMWeight( this );
+   new NXSEccentricityWeight( this );
+   new NXSSkyBackgroundWeight( this );
+   new NXSHFRWeight( this );
+   new NXSAltitudeWeight( this );
 }
 
 // ----------------------------------------------------------------------------

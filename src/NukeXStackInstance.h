@@ -15,8 +15,25 @@
 #include <pcl/ProcessImplementation.h>
 #include <pcl/MetaParameter.h>
 
+#include "NukeXStackParameters.h"
+
+#include <vector>
+
 namespace pcl
 {
+
+// ----------------------------------------------------------------------------
+// Input frame descriptor
+// ----------------------------------------------------------------------------
+
+struct InputFrameData
+{
+   String   path;
+   pcl_bool enabled = true;
+
+   InputFrameData() = default;
+   InputFrameData( const String& p, bool e = true ) : path( p ), enabled( e ) {}
+};
 
 // ----------------------------------------------------------------------------
 
@@ -36,7 +53,24 @@ public:
 
 private:
 
-   // Parameters will be added in Task 1.3
+   // Input frames table
+   std::vector<InputFrameData> p_inputFrames;
+
+   // Quality weight mode enumeration
+   pcl_enum p_qualityWeightMode;
+
+   // Boolean parameters
+   pcl_bool p_generateProvenance;
+   pcl_bool p_generateDistMetadata;
+   pcl_bool p_enableQualityWeighting;
+
+   // Floating point parameters
+   float    p_outlierSigmaThreshold;
+   float    p_fwhmWeight;
+   float    p_eccentricityWeight;
+   float    p_skyBackgroundWeight;
+   float    p_hfrWeight;
+   float    p_altitudeWeight;
 
    friend class NukeXStackProcess;
    friend class NukeXStackInterface;
