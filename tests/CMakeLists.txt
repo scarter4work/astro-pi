@@ -4,8 +4,15 @@
 # Catch2 v3 requires building its main library
 add_subdirectory(${CMAKE_SOURCE_DIR}/third_party/catch2 ${CMAKE_BINARY_DIR}/catch2)
 
-# Unit tests will be added here as source files are created
-# Example:
-# add_executable(nukex_tests unit/test_example.cpp)
-# target_link_libraries(nukex_tests PRIVATE Catch2::Catch2WithMain)
-# add_test(NAME nukex_tests COMMAND nukex_tests)
+# SubCube unit tests
+add_executable(test_sub_cube unit/test_sub_cube.cpp)
+target_link_libraries(test_sub_cube PRIVATE Catch2::Catch2WithMain)
+target_include_directories(test_sub_cube PRIVATE
+    ${CMAKE_SOURCE_DIR}/src
+    ${CMAKE_SOURCE_DIR}/third_party/xtensor/include
+    ${CMAKE_SOURCE_DIR}/third_party/xtl/include
+    ${CMAKE_SOURCE_DIR}/third_party/xsimd/include
+)
+target_compile_definitions(test_sub_cube PRIVATE XTENSOR_USE_XSIMD)
+target_compile_features(test_sub_cube PRIVATE cxx_std_17)
+add_test(NAME test_sub_cube COMMAND test_sub_cube)
