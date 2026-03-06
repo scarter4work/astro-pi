@@ -172,3 +172,37 @@ target_include_directories(test_pixel_selector PRIVATE
 target_compile_definitions(test_pixel_selector PRIVATE XTENSOR_USE_XSIMD BOOST_MATH_STANDALONE=1)
 target_compile_features(test_pixel_selector PRIVATE cxx_std_17)
 add_test(NAME test_pixel_selector COMMAND test_pixel_selector)
+
+# Integration test — full pipeline
+add_executable(test_full_pipeline
+    integration/test_full_pipeline.cpp
+    ${CMAKE_SOURCE_DIR}/src/engine/PixelSelector.cpp
+    ${CMAKE_SOURCE_DIR}/src/engine/DistributionFitter.cpp
+    ${CMAKE_SOURCE_DIR}/src/engine/SkewNormalFitter.cpp
+    ${CMAKE_SOURCE_DIR}/src/engine/GaussianMixEM.cpp
+    ${CMAKE_SOURCE_DIR}/src/engine/OutlierDetector.cpp
+    ${CMAKE_SOURCE_DIR}/src/engine/QualityWeights.cpp
+)
+target_link_libraries(test_full_pipeline PRIVATE Catch2::Catch2WithMain)
+target_include_directories(test_full_pipeline PRIVATE
+    ${CMAKE_SOURCE_DIR}/src
+    ${CMAKE_SOURCE_DIR}/third_party/xtensor/include
+    ${CMAKE_SOURCE_DIR}/third_party/xtl/include
+    ${CMAKE_SOURCE_DIR}/third_party/xsimd/include
+    ${CMAKE_SOURCE_DIR}/third_party/boost_math/include
+    ${CMAKE_SOURCE_DIR}/third_party/boost_config/include
+    ${CMAKE_SOURCE_DIR}/third_party/boost_assert/include
+    ${CMAKE_SOURCE_DIR}/third_party/boost_throw_exception/include
+    ${CMAKE_SOURCE_DIR}/third_party/boost_core/include
+    ${CMAKE_SOURCE_DIR}/third_party/boost_type_traits/include
+    ${CMAKE_SOURCE_DIR}/third_party/boost_static_assert/include
+    ${CMAKE_SOURCE_DIR}/third_party/boost_mp11/include
+    ${CMAKE_SOURCE_DIR}/third_party/boost_integer/include
+    ${CMAKE_SOURCE_DIR}/third_party/boost_lexical_cast/include
+    ${CMAKE_SOURCE_DIR}/third_party/boost_predef/include
+    ${CMAKE_SOURCE_DIR}/third_party/eigen
+    ${CMAKE_SOURCE_DIR}/third_party/lbfgspp/include
+)
+target_compile_definitions(test_full_pipeline PRIVATE XTENSOR_USE_XSIMD BOOST_MATH_STANDALONE=1)
+target_compile_features(test_full_pipeline PRIVATE cxx_std_17)
+add_test(NAME test_full_pipeline COMMAND test_full_pipeline)
