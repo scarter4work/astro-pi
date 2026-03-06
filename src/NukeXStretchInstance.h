@@ -7,13 +7,15 @@
 // NukeX v3 - Statistical Stacking + Stretch for PixInsight
 // Copyright (c) 2026 Scott Carter
 //
-// NukeXStretch Instance - Stub for compilation
+// NukeXStretch Instance
 
 #ifndef __NukeXStretchInstance_h
 #define __NukeXStretchInstance_h
 
 #include <pcl/ProcessImplementation.h>
 #include <pcl/MetaParameter.h>
+
+#include "NukeXStretchParameters.h"
 
 namespace pcl
 {
@@ -37,7 +39,15 @@ public:
 
 private:
 
-   // Parameters will be added when stretch is ported (Task 4.x)
+   // Process parameters
+   pcl_enum p_stretchAlgorithm;
+   pcl_bool p_autoBlackPoint;
+   float    p_contrast;
+   float    p_saturation;
+   float    p_blackPoint;
+   float    p_whitePoint;
+   float    p_gamma;
+   float    p_stretchStrength;
 
    friend class NukeXStretchProcess;
    friend class NukeXStretchInterface;

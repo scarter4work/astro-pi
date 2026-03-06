@@ -10,6 +10,7 @@
 #include "NukeXStretchProcess.h"
 #include "NukeXStretchInstance.h"
 #include "NukeXStretchInterface.h"
+#include "NukeXStretchParameters.h"
 
 namespace pcl
 {
@@ -24,7 +25,15 @@ NukeXStretchProcess::NukeXStretchProcess()
 {
    TheNukeXStretchProcess = this;
 
-   // Parameters will be registered when stretch is ported (Task 4.x)
+   // Register parameters
+   new NXSStretchAlgorithm( this );
+   new NXSAutoBlackPoint( this );
+   new NXSContrast( this );
+   new NXSSaturation( this );
+   new NXSBlackPoint( this );
+   new NXSWhitePoint( this );
+   new NXSGamma( this );
+   new NXSStretchStrength( this );
 }
 
 // ----------------------------------------------------------------------------

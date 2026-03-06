@@ -19,7 +19,9 @@
 - No ONNX Runtime dependency
 
 ### Memory Model
-- **Full 3D cube in RAM** — load all subs (width × height × N_subs) into memory
+- **Full 3D cube in RAM** — load all subs into memory
+- `xt::xtensor<float, 3, xt::layout_type::column_major>` with shape `(N_subs, height, width)`
+- **Column-major layout** — makes the first axis (N_subs / Z) fastest-varying, so Z-values at each (y,x) are contiguous at stride 1. (Plan originally said row-major, which was wrong — row-major makes the *last* axis fastest.)
 - No row-streaming or tiling for Phase 1
 - Rationale: simplifies algorithm correctness; optimize later once proven
 - Constraint: requires sufficient RAM (~32GB for 4K × 500 subs at float32)
