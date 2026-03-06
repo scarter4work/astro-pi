@@ -10,6 +10,8 @@
 #include "NukeXStackInterface.h"
 #include "NukeXStackProcess.h"
 
+#include <pcl/Console.h>
+
 namespace pcl
 {
 
@@ -29,6 +31,8 @@ NukeXStackInterface::NukeXStackInterface()
 
 NukeXStackInterface::~NukeXStackInterface()
 {
+   if ( TheNukeXStackInterface == this )
+      TheNukeXStackInterface = nullptr;
 }
 
 // ----------------------------------------------------------------------------
@@ -84,7 +88,7 @@ bool NukeXStackInterface::Launch( const MetaProcess& P, const ProcessImplementat
       ResetInstance();
 
    dynamic = false;
-   return &P == TheNukeXStackProcess;
+   return true;
 }
 
 // ----------------------------------------------------------------------------

@@ -10,6 +10,14 @@
 #include "NukeXStackInstance.h"
 #include "NukeXStackParameters.h"
 
+#include <pcl/Console.h>
+#include <pcl/StatusMonitor.h>
+#include <pcl/StandardStatus.h>
+#include <pcl/ImageWindow.h>
+#include <pcl/View.h>
+#include <pcl/Image.h>
+#include <pcl/ErrorHandler.h>
+
 namespace pcl
 {
 
@@ -81,8 +89,110 @@ bool NukeXStackInstance::CanExecuteGlobal( String& whyNot ) const
 
 bool NukeXStackInstance::ExecuteGlobal()
 {
-   // Stub - full implementation in Task 3.1
-   return false;
+   try
+   {
+      Console().WriteLn( "<end><cbr><br>NukeX v3 — Per-Pixel Statistical Inference Stacking" );
+      Console().WriteLn( String().Format( "Processing %d input frames", p_inputFrames.size() ) );
+
+      // Collect enabled frame paths
+      std::vector<nukex::FramePath> framePaths;
+      for ( const auto& frame : p_inputFrames )
+         if ( frame.enabled )
+            framePaths.push_back( { frame.path, true } );
+
+      if ( framePaths.size() < 2 )
+         throw Error( "At least 2 enabled frames are required." );
+
+      // Phase 1: Load all frames into SubCube
+      Console().WriteLn( String().Format( "<br>Phase 1: Loading %d frames into memory...", framePaths.size() ) );
+      StandardStatus status;
+      StatusMonitor monitor;
+      monitor.SetCallback( &status );
+      monitor.Initialize( "Loading sub frames", framePaths.size() );
+
+      nukex::SubCube cube = nukex::FrameLoader::Load( framePaths );
+      Console().WriteLn( String().Format( "  Cube: %d subs x %d x %d",
+                                          cube.numSubs(), cube.height(), cube.width() ) );
+
+      // Phase 2: Compute quality weights
+      Console().WriteLn( "<br>Phase 2: Computing quality weights..." );
+      std::vector<double> weights;
+      if ( p_enableQualityWeighting )
+      {
+         nukex::WeightConfig wcfg;
+         wcfg.fwhmWeight           = p_fwhmWeight;
+         wcfg.eccentricityWeight   = p_eccentricityWeight;
+         wcfg.skyBackgroundWeight  = p_skyBackgroundWeight;
+         wcfg.hfrWeight            = p_hfrWeight;
+         wcfg.altitudeWeight       = p_altitudeWeight;
+
+         std::vector<nukex::SubMetadata> metaVec;
+         for ( size_t z = 0; z < cube.numSubs(); ++z )
+            metaVec.push_back( cube.metadata( z ) );
+
+         weights = nukex::ComputeQualityWeights( metaVec, wcfg );
+      }
+      else
+      {
+         weights.assign( cube.numSubs(), 1.0 / cube.numSubs() );
+      }
+
+      // Phase 3: Per-pixel distribution fitting and selection
+      Console().WriteLn( "<br>Phase 3: Per-pixel statistical inference..." );
+      nukex::PixelSelector::Config selConfig;
+      selConfig.maxOutliers = static_cast<int>( p_outlierSigmaThreshold );
+
+      nukex::PixelSelector selector( selConfig );
+      std::vector<float> resultPixels = selector.processImage( cube, weights );
+
+      // Phase 4: Create output image
+      Console().WriteLn( "<br>Phase 4: Creating output image..." );
+      int w = static_cast<int>( cube.width() );
+      int h = static_cast<int>( cube.height() );
+
+      ImageWindow window( w, h, 1, 32, true, false, "NukeX_stack" );
+      if ( window.IsNull() )
+         throw Error( "Failed to create output image window." );
+
+      View mainView = window.MainView();
+      ImageVariant v = mainView.Image();
+
+      // Copy result pixels into the output image
+      Image& outputImage = static_cast<Image&>( *v );
+      for ( int y = 0; y < h; ++y )
+         for ( int x = 0; x < w; ++x )
+            outputImage.Pixel( x, y ) = resultPixels[y * w + x];
+
+      window.Show();
+      window.ZoomToFit();
+
+      Console().WriteLn( "<br>NukeX stacking complete." );
+      return true;
+   }
+   catch ( const std::bad_alloc& e )
+   {
+      Console().CriticalLn( "NukeX: Out of memory — " + String( e.what() ) );
+      return false;
+   }
+   catch ( const ProcessAborted& )
+   {
+      throw; // re-throw abort
+   }
+   catch ( const Error& e )
+   {
+      Console().CriticalLn( "NukeX: " + e.Message() );
+      return false;
+   }
+   catch ( const std::exception& e )
+   {
+      Console().CriticalLn( "NukeX: " + String( e.what() ) );
+      return false;
+   }
+   catch ( ... )
+   {
+      Console().CriticalLn( "NukeX: Unknown error during stacking." );
+      return false;
+   }
 }
 
 // ----------------------------------------------------------------------------
