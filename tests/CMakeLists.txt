@@ -91,3 +91,27 @@ target_include_directories(test_skew_normal_fitter PRIVATE
 target_compile_definitions(test_skew_normal_fitter PRIVATE BOOST_MATH_STANDALONE=1)
 target_compile_features(test_skew_normal_fitter PRIVATE cxx_std_17)
 add_test(NAME test_skew_normal_fitter COMMAND test_skew_normal_fitter)
+
+# GaussianMixEM unit tests
+add_executable(test_gaussian_mix_em
+    unit/test_gaussian_mix_em.cpp
+    ${CMAKE_SOURCE_DIR}/src/engine/GaussianMixEM.cpp
+)
+target_link_libraries(test_gaussian_mix_em PRIVATE Catch2::Catch2WithMain)
+target_include_directories(test_gaussian_mix_em PRIVATE
+    ${CMAKE_SOURCE_DIR}/src
+    ${CMAKE_SOURCE_DIR}/third_party/boost_math/include
+    ${CMAKE_SOURCE_DIR}/third_party/boost_config/include
+    ${CMAKE_SOURCE_DIR}/third_party/boost_assert/include
+    ${CMAKE_SOURCE_DIR}/third_party/boost_throw_exception/include
+    ${CMAKE_SOURCE_DIR}/third_party/boost_core/include
+    ${CMAKE_SOURCE_DIR}/third_party/boost_type_traits/include
+    ${CMAKE_SOURCE_DIR}/third_party/boost_static_assert/include
+    ${CMAKE_SOURCE_DIR}/third_party/boost_mp11/include
+    ${CMAKE_SOURCE_DIR}/third_party/boost_integer/include
+    ${CMAKE_SOURCE_DIR}/third_party/boost_lexical_cast/include
+    ${CMAKE_SOURCE_DIR}/third_party/boost_predef/include
+)
+target_compile_definitions(test_gaussian_mix_em PRIVATE BOOST_MATH_STANDALONE=1)
+target_compile_features(test_gaussian_mix_em PRIVATE cxx_std_17)
+add_test(NAME test_gaussian_mix_em COMMAND test_gaussian_mix_em)
