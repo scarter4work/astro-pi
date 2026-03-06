@@ -85,6 +85,9 @@ target_include_directories(NukeX PRIVATE
 # xtensor SIMD acceleration
 target_compile_definitions(NukeX PRIVATE XTENSOR_USE_XSIMD)
 
+# Boost.Math standalone mode (avoids lexical_cast/container dependencies)
+target_compile_definitions(NukeX PRIVATE BOOST_MATH_STANDALONE=1)
+
 # Link directories and libraries
 target_link_directories(NukeX PRIVATE ${PCL_LIB_DIR})
 target_link_libraries(NukeX PRIVATE ${PCL_LIBRARIES} pthread)

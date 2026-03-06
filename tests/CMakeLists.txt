@@ -41,3 +41,53 @@ target_include_directories(test_numerical_utils PRIVATE
 )
 target_compile_features(test_numerical_utils PRIVATE cxx_std_17)
 add_test(NAME test_numerical_utils COMMAND test_numerical_utils)
+
+# DistributionFitter unit tests
+add_executable(test_distribution_fitter
+    unit/test_distribution_fitter.cpp
+    ${CMAKE_SOURCE_DIR}/src/engine/DistributionFitter.cpp
+)
+target_link_libraries(test_distribution_fitter PRIVATE Catch2::Catch2WithMain)
+target_include_directories(test_distribution_fitter PRIVATE
+    ${CMAKE_SOURCE_DIR}/src
+    ${CMAKE_SOURCE_DIR}/third_party/boost_math/include
+    ${CMAKE_SOURCE_DIR}/third_party/boost_config/include
+    ${CMAKE_SOURCE_DIR}/third_party/boost_assert/include
+    ${CMAKE_SOURCE_DIR}/third_party/boost_throw_exception/include
+    ${CMAKE_SOURCE_DIR}/third_party/boost_core/include
+    ${CMAKE_SOURCE_DIR}/third_party/boost_type_traits/include
+    ${CMAKE_SOURCE_DIR}/third_party/boost_static_assert/include
+    ${CMAKE_SOURCE_DIR}/third_party/boost_mp11/include
+    ${CMAKE_SOURCE_DIR}/third_party/boost_integer/include
+    ${CMAKE_SOURCE_DIR}/third_party/boost_lexical_cast/include
+    ${CMAKE_SOURCE_DIR}/third_party/boost_predef/include
+)
+target_compile_definitions(test_distribution_fitter PRIVATE BOOST_MATH_STANDALONE=1)
+target_compile_features(test_distribution_fitter PRIVATE cxx_std_17)
+add_test(NAME test_distribution_fitter COMMAND test_distribution_fitter)
+
+# SkewNormal fitter unit tests
+add_executable(test_skew_normal_fitter
+    unit/test_skew_normal_fitter.cpp
+    ${CMAKE_SOURCE_DIR}/src/engine/SkewNormalFitter.cpp
+)
+target_link_libraries(test_skew_normal_fitter PRIVATE Catch2::Catch2WithMain)
+target_include_directories(test_skew_normal_fitter PRIVATE
+    ${CMAKE_SOURCE_DIR}/src
+    ${CMAKE_SOURCE_DIR}/third_party/boost_math/include
+    ${CMAKE_SOURCE_DIR}/third_party/boost_config/include
+    ${CMAKE_SOURCE_DIR}/third_party/boost_assert/include
+    ${CMAKE_SOURCE_DIR}/third_party/boost_throw_exception/include
+    ${CMAKE_SOURCE_DIR}/third_party/boost_core/include
+    ${CMAKE_SOURCE_DIR}/third_party/boost_type_traits/include
+    ${CMAKE_SOURCE_DIR}/third_party/boost_static_assert/include
+    ${CMAKE_SOURCE_DIR}/third_party/boost_mp11/include
+    ${CMAKE_SOURCE_DIR}/third_party/boost_integer/include
+    ${CMAKE_SOURCE_DIR}/third_party/boost_lexical_cast/include
+    ${CMAKE_SOURCE_DIR}/third_party/boost_predef/include
+    ${CMAKE_SOURCE_DIR}/third_party/eigen
+    ${CMAKE_SOURCE_DIR}/third_party/lbfgspp/include
+)
+target_compile_definitions(test_skew_normal_fitter PRIVATE BOOST_MATH_STANDALONE=1)
+target_compile_features(test_skew_normal_fitter PRIVATE cxx_std_17)
+add_test(NAME test_skew_normal_fitter COMMAND test_skew_normal_fitter)
