@@ -7,12 +7,22 @@
 // NukeX v3 - Statistical Stacking + Stretch for PixInsight
 // Copyright (c) 2026 Scott Carter
 //
-// NukeXStack Interface - Stub for compilation
+// NukeXStack Interface - GUI for statistical stacking
 
 #ifndef __NukeXStackInterface_h
 #define __NukeXStackInterface_h
 
 #include <pcl/ProcessInterface.h>
+#include <pcl/Sizer.h>
+#include <pcl/Label.h>
+#include <pcl/NumericControl.h>
+#include <pcl/ComboBox.h>
+#include <pcl/CheckBox.h>
+#include <pcl/PushButton.h>
+#include <pcl/GroupBox.h>
+#include <pcl/SectionBar.h>
+#include <pcl/Control.h>
+#include <pcl/TreeBox.h>
 
 #include "NukeXStackInstance.h"
 
@@ -44,8 +54,72 @@ private:
 
    NukeXStackInstance m_instance;
 
-   // GUI will be built out in later tasks
+   struct GUIData
+   {
+      GUIData( NukeXStackInterface& );
 
+      VerticalSizer     Global_Sizer;
+
+      // Input Files Section
+      SectionBar        InputFiles_SectionBar;
+      Control           InputFiles_Control;
+      VerticalSizer     InputFiles_Sizer;
+         TreeBox           InputFiles_TreeBox;
+         HorizontalSizer   InputFiles_Buttons_HSizer;
+            PushButton        AddFiles_PushButton;
+            PushButton        AddFolder_PushButton;
+            PushButton        Remove_PushButton;
+            PushButton        Clear_PushButton;
+            PushButton        SelectAll_PushButton;
+            PushButton        InvertSelection_PushButton;
+         HorizontalSizer   InputFiles_Info_HSizer;
+            Label             FileCount_Label;
+
+      // Outlier Rejection Section
+      SectionBar        Outliers_SectionBar;
+      Control           Outliers_Control;
+      VerticalSizer     Outliers_Sizer;
+         NumericControl    OutlierSigma_NumericControl;
+
+      // Quality Weighting Section
+      SectionBar        Quality_SectionBar;
+      Control           Quality_Control;
+      VerticalSizer     Quality_Sizer;
+         CheckBox          EnableQualityWeighting_CheckBox;
+         HorizontalSizer   QualityMode_HSizer;
+            Label             QualityMode_Label;
+            ComboBox          QualityMode_ComboBox;
+         NumericControl    FWHMWeight_NumericControl;
+         NumericControl    EccentricityWeight_NumericControl;
+         NumericControl    SkyBackgroundWeight_NumericControl;
+         NumericControl    HFRWeight_NumericControl;
+         NumericControl    AltitudeWeight_NumericControl;
+
+      // Output Section
+      SectionBar        Output_SectionBar;
+      Control           Output_Control;
+      VerticalSizer     Output_Sizer;
+         CheckBox          GenerateProvenance_CheckBox;
+         CheckBox          GenerateDistMetadata_CheckBox;
+   };
+
+   GUIData* GUI = nullptr;
+
+   void UpdateControls();
+   void UpdateFileList();
+   void UpdateFileCountLabel();
+   void AddFiles( const StringList& files );
+
+   // Event handlers
+   void e_TreeBoxNodeActivated( TreeBox& sender, TreeBox::Node& node, int col );
+   void e_TreeBoxNodeSelectionUpdated( TreeBox& sender );
+   void e_TreeBoxNodeUpdated( TreeBox& sender, TreeBox::Node& node, int col );
+   void e_ButtonClick( Button& sender, bool checked );
+   void e_ComboBoxItemSelected( ComboBox& sender, int itemIndex );
+   void e_CheckBoxClick( Button& sender, bool checked );
+   void e_NumericValueUpdated( NumericEdit& sender, double value );
+
+   friend struct GUIData;
    friend class NukeXStackProcess;
 };
 
