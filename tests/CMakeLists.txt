@@ -206,3 +206,15 @@ target_include_directories(test_full_pipeline PRIVATE
 target_compile_definitions(test_full_pipeline PRIVATE XTENSOR_USE_XSIMD BOOST_MATH_STANDALONE=1)
 target_compile_features(test_full_pipeline PRIVATE cxx_std_17)
 add_test(NAME test_full_pipeline COMMAND test_full_pipeline)
+
+# StarDetector unit tests
+add_executable(test_star_detector
+    unit/test_star_detector.cpp
+    ${CMAKE_SOURCE_DIR}/src/engine/StarDetector.cpp
+)
+target_link_libraries(test_star_detector PRIVATE Catch2::Catch2WithMain)
+target_include_directories(test_star_detector PRIVATE
+    ${CMAKE_SOURCE_DIR}/src
+)
+target_compile_features(test_star_detector PRIVATE cxx_std_17)
+add_test(NAME test_star_detector COMMAND test_star_detector)
