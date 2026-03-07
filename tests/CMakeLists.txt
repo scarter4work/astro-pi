@@ -231,3 +231,21 @@ target_include_directories(test_triangle_matcher PRIVATE
 )
 target_compile_features(test_triangle_matcher PRIVATE cxx_std_17)
 add_test(NAME test_triangle_matcher COMMAND test_triangle_matcher)
+
+# FrameAligner unit tests
+add_executable(test_frame_aligner
+    unit/test_frame_aligner.cpp
+    ${CMAKE_SOURCE_DIR}/src/engine/FrameAligner.cpp
+    ${CMAKE_SOURCE_DIR}/src/engine/TriangleMatcher.cpp
+    ${CMAKE_SOURCE_DIR}/src/engine/StarDetector.cpp
+)
+target_link_libraries(test_frame_aligner PRIVATE Catch2::Catch2WithMain)
+target_include_directories(test_frame_aligner PRIVATE
+    ${CMAKE_SOURCE_DIR}/src
+    ${CMAKE_SOURCE_DIR}/third_party/xtensor/include
+    ${CMAKE_SOURCE_DIR}/third_party/xtl/include
+    ${CMAKE_SOURCE_DIR}/third_party/xsimd/include
+)
+target_compile_definitions(test_frame_aligner PRIVATE XTENSOR_USE_XSIMD)
+target_compile_features(test_frame_aligner PRIVATE cxx_std_17)
+add_test(NAME test_frame_aligner COMMAND test_frame_aligner)
