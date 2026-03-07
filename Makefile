@@ -94,9 +94,13 @@ VENDOR_CXXFLAGS = \
     -I$(THIRD_PARTY_DIR)/boost_predef/include \
     -DXTENSOR_USE_XSIMD
 
+# Project include paths
+PROJECT_CXXFLAGS = -I$(SRC_DIR) -I$(ENGINE_DIR) -I$(ALGO_DIR) \
+                   -DBOOST_MATH_STANDALONE=1
+
 # Combined flags
 CXXFLAGS = $(CXXSTD) $(WARNINGS) $(OPT_FLAGS) $(PLATFORM_CXXFLAGS) \
-           $(PCL_CXXFLAGS) $(VENDOR_CXXFLAGS) $(OPENMP_FLAGS)
+           $(PCL_CXXFLAGS) $(VENDOR_CXXFLAGS) $(PROJECT_CXXFLAGS) $(OPENMP_FLAGS)
 
 # PCL libraries to link (static linking)
 PCL_LIBS = -lPCL-pxi -llz4-pxi -lzstd-pxi -lzlib-pxi -lRFC6234-pxi -llcms-pxi -lcminpack-pxi
@@ -137,7 +141,7 @@ DEPS = $(SOURCES:.cpp=.d)
 # Build Targets
 # ============================================================================
 
-.PHONY: all clean install uninstall debug release info help test
+.PHONY: all clean install uninstall debug release info help test sign
 
 all: $(TARGET)
 
@@ -162,11 +166,24 @@ debug:
 release:
 	$(MAKE) DEBUG=0
 
-# Install to PixInsight library directory
-install: $(TARGET)
+# Sign module for PixInsight
+SIGN_KEYS = /home/scarter4work/projects/keys/scarter4work_keys.xssk
+SIGN_PASS = ***REDACTED***
+
+sign: $(TARGET)
+	@echo "Signing $(TARGET)..."
+	$(PIXINSIGHT_DIR)/bin/PixInsight.sh \
+		--sign-module-file=$(TARGET) \
+		--xssk-file=$(SIGN_KEYS) \
+		--xssk-password="$(SIGN_PASS)"
+	@echo "Module signed."
+
+# Install to PixInsight library directory (signs first)
+install: sign
 	@echo "Installing $(TARGET) to $(OUTPUT_DIR)..."
 	@mkdir -p $(OUTPUT_DIR)
 	cp $(TARGET) $(OUTPUT_DIR)/
+	@if [ -f NukeX-pxm.xsgn ]; then cp NukeX-pxm.xsgn $(OUTPUT_DIR)/; fi
 	@echo "Installation complete."
 	@echo "Restart PixInsight to load the module."
 
@@ -214,7 +231,8 @@ help:
 	@echo "  all       - Build the module (default)"
 	@echo "  debug     - Build with debug symbols"
 	@echo "  release   - Build optimized release"
-	@echo "  install   - Install to PixInsight library"
+	@echo "  sign      - Sign module for PixInsight"
+	@echo "  install   - Sign and install to PixInsight"
 	@echo "  uninstall - Remove from PixInsight library"
 	@echo "  clean     - Remove build artifacts"
 	@echo "  test      - Run test suite via CTest"
