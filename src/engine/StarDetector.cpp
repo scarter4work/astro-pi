@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <optional>
 #include <vector>
 
 namespace nukex {
@@ -79,6 +80,107 @@ std::vector<Blob> extractBlobs(const float* image, int width, int height, double
     }
 
     return blobs;
+}
+
+std::optional<StarPosition> blobToStar(const Blob& blob, const float* image,
+                                        int width, int height,
+                                        int minSize, int maxSize,
+                                        double maxEccentricity) {
+    int blobSize = static_cast<int>(blob.size());
+
+    // Size filtering
+    if (blobSize < minSize || blobSize > maxSize)
+        return std::nullopt;
+
+    // Intensity-weighted centroid
+    double sumVal = 0.0;
+    double sumX = 0.0;
+    double sumY = 0.0;
+
+    for (const auto& [px, py] : blob) {
+        double val = static_cast<double>(image[py * width + px]);
+        sumVal += val;
+        sumX += px * val;
+        sumY += py * val;
+    }
+
+    if (sumVal <= 0.0)
+        return std::nullopt;
+
+    double cx = sumX / sumVal;
+    double cy = sumY / sumVal;
+
+    // Second moments for eccentricity
+    double Mxx = 0.0, Myy = 0.0, Mxy = 0.0;
+    for (const auto& [px, py] : blob) {
+        double val = static_cast<double>(image[py * width + px]);
+        double dx = px - cx;
+        double dy = py - cy;
+        Mxx += val * dx * dx;
+        Myy += val * dy * dy;
+        Mxy += val * dx * dy;
+    }
+    Mxx /= sumVal;
+    Myy /= sumVal;
+    Mxy /= sumVal;
+
+    // Eigenvalues of the 2x2 moment matrix [[Mxx, Mxy], [Mxy, Myy]]
+    double trace = Mxx + Myy;
+    double det = Mxx * Myy - Mxy * Mxy;
+    double disc = trace * trace - 4.0 * det;
+    if (disc < 0.0) disc = 0.0;
+
+    double sqrtDisc = std::sqrt(disc);
+    double lambda1 = (trace + sqrtDisc) / 2.0;
+    double lambda2 = (trace - sqrtDisc) / 2.0;
+
+    // Eccentricity: sqrt(1 - lambda2/lambda1)
+    double ecc = 0.0;
+    if (lambda1 > 0.0) {
+        double ratio = lambda2 / lambda1;
+        if (ratio < 0.0) ratio = 0.0;
+        if (ratio > 1.0) ratio = 1.0;
+        ecc = std::sqrt(1.0 - ratio);
+    }
+
+    if (ecc > maxEccentricity)
+        return std::nullopt;
+
+    return StarPosition{cx, cy, sumVal};
+}
+
+std::vector<StarPosition> detectStars(const float* image, int width, int height,
+                                       const DetectorConfig& config) {
+    size_t count = static_cast<size_t>(width) * height;
+
+    // Step 1: background statistics
+    auto [median, mad] = computeBackground(image, count);
+
+    // Step 2: threshold = median + sigmaThreshold * mad * 1.4826 (MAD-to-sigma)
+    double threshold = median + config.sigmaThreshold * mad * 1.4826;
+
+    // Step 3: extract blobs
+    auto blobs = extractBlobs(image, width, height, threshold);
+
+    // Step 4: filter blobs and compute centroids
+    std::vector<StarPosition> stars;
+    stars.reserve(blobs.size());
+    for (const auto& blob : blobs) {
+        auto star = blobToStar(blob, image, width, height,
+                               config.minBlobSize, config.maxBlobSize,
+                               config.maxEccentricity);
+        if (star.has_value()) {
+            stars.push_back(star.value());
+        }
+    }
+
+    // Step 5: sort by flux descending
+    std::sort(stars.begin(), stars.end(),
+              [](const StarPosition& a, const StarPosition& b) {
+                  return a.flux > b.flux;
+              });
+
+    return stars;
 }
 
 } // namespace nukex
