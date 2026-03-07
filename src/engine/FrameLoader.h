@@ -12,6 +12,7 @@
 #pragma once
 
 #include "SubCube.h"
+#include "FrameAligner.h"
 
 #include <pcl/FileFormat.h>
 #include <pcl/FileFormatInstance.h>
@@ -32,6 +33,14 @@ struct FramePath {
     bool enabled = true;
 };
 
+// Raw frame data for alignment pipeline (before building SubCube).
+struct LoadedFrames {
+    std::vector<std::vector<float>> pixelData;  // per-frame row-major pixel data
+    std::vector<SubMetadata> metadata;
+    int width;
+    int height;
+};
+
 class FrameLoader {
 public:
     // Load all enabled frames into a SubCube.
@@ -44,6 +53,9 @@ public:
     //
     // Throws: if no enabled frames, if dimension mismatch, if file I/O error
     static SubCube Load( const std::vector<FramePath>& frames );
+
+    // Load raw frame data without building SubCube (for alignment pipeline)
+    static LoadedFrames LoadRaw( const std::vector<FramePath>& frames );
 
 private:
     // Extract SubMetadata from FITS keywords

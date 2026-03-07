@@ -9,6 +9,7 @@
 
 #include "NukeXStackInstance.h"
 #include "NukeXStackParameters.h"
+#include "engine/FrameAligner.h"
 
 #include <pcl/Console.h>
 #include <pcl/StatusMonitor.h>
@@ -103,16 +104,34 @@ bool NukeXStackInstance::ExecuteGlobal()
       if ( framePaths.size() < 2 )
          throw Error( "At least 2 enabled frames are required." );
 
-      // Phase 1: Load all frames into SubCube
-      Console().WriteLn( String().Format( "<br>Phase 1: Loading %d frames into memory...", framePaths.size() ) );
+      // Phase 1: Load frames
+      Console().WriteLn( String().Format( "<br>Phase 1: Loading %d frames...", framePaths.size() ) );
       StandardStatus status;
       StatusMonitor monitor;
       monitor.SetCallback( &status );
       monitor.Initialize( "Loading sub frames", framePaths.size() );
 
-      nukex::SubCube cube = nukex::FrameLoader::Load( framePaths );
-      Console().WriteLn( String().Format( "  Cube: %d subs x %d x %d",
-                                          cube.numSubs(), cube.height(), cube.width() ) );
+      nukex::LoadedFrames raw = nukex::FrameLoader::LoadRaw( framePaths );
+
+      // Phase 1b: Align frames
+      Console().WriteLn( "<br>Phase 1b: Aligning frames..." );
+      std::vector<const float*> framePtrs;
+      for ( const auto& f : raw.pixelData )
+         framePtrs.push_back( f.data() );
+
+      nukex::AlignmentOutput aligned = nukex::alignFrames(
+         framePtrs, raw.width, raw.height );
+
+      Console().WriteLn( String().Format( "  Aligned %d frames, crop: %dx%d (from %dx%d)",
+         int( aligned.offsets.size() ),
+         aligned.crop.width(), aligned.crop.height(),
+         raw.width, raw.height ) );
+
+      // Copy metadata into aligned cube
+      for ( size_t i = 0; i < raw.metadata.size(); ++i )
+         aligned.alignedCube.setMetadata( i, raw.metadata[i] );
+
+      nukex::SubCube cube = std::move( aligned.alignedCube );
 
       // Phase 2: Compute quality weights
       Console().WriteLn( "<br>Phase 2: Computing quality weights..." );
