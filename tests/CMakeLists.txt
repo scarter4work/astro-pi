@@ -218,3 +218,16 @@ target_include_directories(test_star_detector PRIVATE
 )
 target_compile_features(test_star_detector PRIVATE cxx_std_17)
 add_test(NAME test_star_detector COMMAND test_star_detector)
+
+# TriangleMatcher unit tests
+add_executable(test_triangle_matcher
+    unit/test_triangle_matcher.cpp
+    ${CMAKE_SOURCE_DIR}/src/engine/TriangleMatcher.cpp
+    ${CMAKE_SOURCE_DIR}/src/engine/StarDetector.cpp
+)
+target_link_libraries(test_triangle_matcher PRIVATE Catch2::Catch2WithMain)
+target_include_directories(test_triangle_matcher PRIVATE
+    ${CMAKE_SOURCE_DIR}/src
+)
+target_compile_features(test_triangle_matcher PRIVATE cxx_std_17)
+add_test(NAME test_triangle_matcher COMMAND test_triangle_matcher)
