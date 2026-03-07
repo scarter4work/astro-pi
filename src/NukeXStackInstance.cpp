@@ -133,6 +133,10 @@ bool NukeXStackInstance::ExecuteGlobal()
 
       nukex::SubCube cube = std::move( aligned.alignedCube );
 
+      // Free raw frame data — no longer needed, reclaims ~N*W*H*4 bytes
+      raw.pixelData.clear();
+      raw.pixelData.shrink_to_fit();
+
       // Phase 2: Compute quality weights
       Console().WriteLn( "<br>Phase 2: Computing quality weights..." );
       std::vector<double> weights;

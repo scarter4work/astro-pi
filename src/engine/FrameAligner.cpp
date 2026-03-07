@@ -34,6 +34,8 @@ AlignmentOutput alignFrames(const std::vector<const float*>& frameData,
     size_t nFrames = frameData.size();
     if (nFrames < 2)
         throw std::invalid_argument("FrameAligner: need at least 2 frames");
+    if (referenceIdx < 0 || static_cast<size_t>(referenceIdx) >= nFrames)
+        throw std::invalid_argument("FrameAligner: referenceIdx out of range");
 
     // 1. Detect stars in all frames
     std::vector<std::vector<StarPosition>> starLists(nFrames);

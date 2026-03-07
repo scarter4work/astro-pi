@@ -10,27 +10,29 @@ namespace nukex {
 std::pair<double, double> computeBackground(const float* data, size_t count) {
     if (count == 0) return {0.0, 0.0};
 
-    // Copy and sort for median
-    std::vector<double> sorted(data, data + count);
-    std::sort(sorted.begin(), sorted.end());
-
+    // O(n) median via nth_element (avoids O(n log n) sort on multi-megapixel frames)
+    std::vector<float> buf(data, data + count);
+    std::nth_element(buf.begin(), buf.begin() + count / 2, buf.end());
     double median;
     if (count % 2 == 0) {
-        median = (sorted[count / 2 - 1] + sorted[count / 2]) / 2.0;
+        // For even count, average the two middle elements
+        float upper = buf[count / 2];
+        float lower = *std::max_element(buf.begin(), buf.begin() + count / 2);
+        median = 0.5 * (lower + upper);
     } else {
-        median = sorted[count / 2];
+        median = buf[count / 2];
     }
 
-    // Compute MAD = median(|x_i - median|)
-    std::vector<double> absdev(count);
-    for (size_t i = 0; i < count; ++i) {
-        absdev[i] = std::abs(sorted[i] - median);
-    }
-    std::sort(absdev.begin(), absdev.end());
-
+    // MAD = median(|x_i - median|)
+    std::vector<float> absdev(count);
+    for (size_t i = 0; i < count; ++i)
+        absdev[i] = std::fabs(buf[i] - static_cast<float>(median));
+    std::nth_element(absdev.begin(), absdev.begin() + count / 2, absdev.end());
     double mad;
     if (count % 2 == 0) {
-        mad = (absdev[count / 2 - 1] + absdev[count / 2]) / 2.0;
+        float upper = absdev[count / 2];
+        float lower = *std::max_element(absdev.begin(), absdev.begin() + count / 2);
+        mad = 0.5 * (lower + upper);
     } else {
         mad = absdev[count / 2];
     }

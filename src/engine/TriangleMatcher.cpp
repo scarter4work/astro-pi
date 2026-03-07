@@ -68,6 +68,9 @@ AlignmentResult matchFrames(const std::vector<StarPosition>& refStars,
             if (std::abs(td.ratioBA - rd.ratioBA) < matchTolerance &&
                 std::abs(td.ratioCA - rd.ratioCA) < matchTolerance) {
                 // Matching triangle pair — vote for all 3x3 correspondences
+                // TODO: Improve by using sorted side lengths to establish vertex
+                // ordering within each triangle, reducing noise votes from 6/9 to 0/3.
+                // Current brute-force approach works for pure-translation same-session data.
                 int tgtIdxs[3] = {td.idx0, td.idx1, td.idx2};
                 int refIdxs[3] = {rd.idx0, rd.idx1, rd.idx2};
                 for (int ri = 0; ri < 3; ++ri)
