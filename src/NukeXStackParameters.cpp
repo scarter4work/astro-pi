@@ -175,6 +175,26 @@ bool NXSEnableQualityWeighting::DefaultValue() const
 }
 
 // ----------------------------------------------------------------------------
+
+NXSEnableAutoStretch* TheNXSEnableAutoStretchParameter = nullptr;
+
+NXSEnableAutoStretch::NXSEnableAutoStretch( MetaProcess* P )
+   : MetaBoolean( P )
+{
+   TheNXSEnableAutoStretchParameter = this;
+}
+
+IsoString NXSEnableAutoStretch::Id() const
+{
+   return "enableAutoStretch";
+}
+
+bool NXSEnableAutoStretch::DefaultValue() const
+{
+   return true;
+}
+
+// ----------------------------------------------------------------------------
 // Floating Point Parameters
 // ----------------------------------------------------------------------------
 

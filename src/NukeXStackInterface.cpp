@@ -167,6 +167,7 @@ void NukeXStackInterface::UpdateControls()
    // Output
    GUI->GenerateProvenance_CheckBox.SetChecked( m_instance.p_generateProvenance );
    GUI->GenerateDistMetadata_CheckBox.SetChecked( m_instance.p_generateDistMetadata );
+   GUI->EnableAutoStretch_CheckBox.SetChecked( m_instance.p_enableAutoStretch );
 }
 
 // ----------------------------------------------------------------------------
@@ -387,6 +388,10 @@ void NukeXStackInterface::e_CheckBoxClick( Button& sender, bool checked )
    else if ( sender == GUI->GenerateDistMetadata_CheckBox )
    {
       m_instance.p_generateDistMetadata = checked;
+   }
+   else if ( sender == GUI->EnableAutoStretch_CheckBox )
+   {
+      m_instance.p_enableAutoStretch = checked;
    }
 }
 
@@ -625,9 +630,16 @@ NukeXStackInterface::GUIData::GUIData( NukeXStackInterface& w )
                                               "Useful for diagnostic analysis. Increases output file size.</p>" );
    GenerateDistMetadata_CheckBox.OnClick( (Button::click_event_handler)&NukeXStackInterface::e_CheckBoxClick, w );
 
+   EnableAutoStretch_CheckBox.SetText( "Auto-Stretch Output" );
+   EnableAutoStretch_CheckBox.SetToolTip( "<p>Automatically select and apply the best stretch "
+                                          "algorithm based on per-pixel distribution statistics. "
+                                          "Creates a second output window (NukeX_stretched).</p>" );
+   EnableAutoStretch_CheckBox.OnClick( (Button::click_event_handler)&NukeXStackInterface::e_CheckBoxClick, w );
+
    Output_Sizer.SetSpacing( 4 );
    Output_Sizer.Add( GenerateProvenance_CheckBox );
    Output_Sizer.Add( GenerateDistMetadata_CheckBox );
+   Output_Sizer.Add( EnableAutoStretch_CheckBox );
 
    Output_Control.SetSizer( Output_Sizer );
 

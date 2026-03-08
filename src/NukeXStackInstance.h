@@ -67,6 +67,7 @@ private:
    pcl_bool p_generateProvenance;
    pcl_bool p_generateDistMetadata;
    pcl_bool p_enableQualityWeighting;
+   pcl_bool p_enableAutoStretch;
 
    // Floating point parameters
    float    p_outlierSigmaThreshold;
