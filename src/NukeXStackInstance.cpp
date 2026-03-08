@@ -11,6 +11,7 @@
 #include "NukeXStackParameters.h"
 #include "engine/FrameAligner.h"
 
+#include <pcl/MetaModule.h>
 #include <pcl/Console.h>
 #include <pcl/StatusMonitor.h>
 #include <pcl/StandardStatus.h>
@@ -123,21 +124,26 @@ bool NukeXStackInstance::ExecuteGlobal()
 
       // Phase 1: Load frames
       Console().WriteLn( String().Format( "<br>Phase 1: Loading %d frames...", framePaths.size() ) );
-      StandardStatus status;
-      StatusMonitor monitor;
-      monitor.SetCallback( &status );
-      monitor.Initialize( "Loading sub frames", framePaths.size() );
+      Console().Flush();
+      Module->ProcessEvents();
 
       nukex::LoadedFrames raw = nukex::FrameLoader::LoadRaw( framePaths );
 
+      Module->ProcessEvents();
+
       // Phase 1b: Align frames
       Console().WriteLn( "<br>Phase 1b: Aligning frames..." );
+      Console().Flush();
+      Module->ProcessEvents();
+
       std::vector<const float*> framePtrs;
       for ( const auto& f : raw.pixelData )
          framePtrs.push_back( f.data() );
 
       nukex::AlignmentOutput aligned = nukex::alignFrames(
          framePtrs, raw.width, raw.height );
+
+      Module->ProcessEvents();
 
       Console().WriteLn( String().Format( "  Aligned %d frames, crop: %dx%d (from %dx%d)",
          int( aligned.offsets.size() ),
@@ -156,6 +162,8 @@ bool NukeXStackInstance::ExecuteGlobal()
 
       // Phase 2: Compute quality weights
       Console().WriteLn( "<br>Phase 2: Computing quality weights..." );
+      Console().Flush();
+      Module->ProcessEvents();
       std::vector<double> weights;
       if ( p_enableQualityWeighting )
       {
@@ -179,14 +187,22 @@ bool NukeXStackInstance::ExecuteGlobal()
 
       // Phase 3: Per-pixel distribution fitting and selection
       Console().WriteLn( "<br>Phase 3: Per-pixel statistical inference..." );
+      Console().WriteLn( String().Format( "  Image: %d x %d, %d subs", int( cube.width() ), int( cube.height() ), int( cube.numSubs() ) ) );
+      Console().Flush();
+      Module->ProcessEvents();
+
       nukex::PixelSelector::Config selConfig;
       selConfig.maxOutliers = static_cast<int>( p_outlierSigmaThreshold );
 
       nukex::PixelSelector selector( selConfig );
       std::vector<float> resultPixels = selector.processImage( cube, weights );
 
+      Module->ProcessEvents();
+
       // Phase 4: Create output image
       Console().WriteLn( "<br>Phase 4: Creating output image..." );
+      Console().Flush();
+      Module->ProcessEvents();
       int w = static_cast<int>( cube.width() );
       int h = static_cast<int>( cube.height() );
 
