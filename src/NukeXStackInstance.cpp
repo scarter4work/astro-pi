@@ -10,6 +10,8 @@
 #include "NukeXStackInstance.h"
 #include "NukeXStackParameters.h"
 #include "engine/FrameAligner.h"
+#include "engine/AutoStretchSelector.h"
+#include "engine/StretchLibrary.h"
 
 #include <pcl/MetaModule.h>
 #include <pcl/Console.h>
@@ -19,6 +21,9 @@
 #include <pcl/View.h>
 #include <pcl/Image.h>
 #include <pcl/ErrorHandler.h>
+
+#include <chrono>
+#include <algorithm>
 
 namespace pcl
 {
@@ -112,8 +117,13 @@ bool NukeXStackInstance::ExecuteGlobal()
 {
    try
    {
-      Console().WriteLn( "<end><cbr><br>NukeX v3 — Per-Pixel Statistical Inference Stacking" );
-      Console().WriteLn( String().Format( "Processing %d input frames", p_inputFrames.size() ) );
+      auto t0 = std::chrono::steady_clock::now();
+
+      Console console;
+      console.WriteLn( "<end><cbr>"
+         "\n\xe2\x95\x90\xe2\x95\x90\xe2\x95\x90\xe2\x95\x90\xe2\x95\x90\xe2\x95\x90\xe2\x95\x90\xe2\x95\x90\xe2\x95\x90\xe2\x95\x90\xe2\x95\x90\xe2\x95\x90\xe2\x95\x90\xe2\x95\x90\xe2\x95\x90\xe2\x95\x90\xe2\x95\x90\xe2\x95\x90\xe2\x95\x90\xe2\x95\x90\xe2\x95\x90\xe2\x95\x90\xe2\x95\x90\xe2\x95\x90\xe2\x95\x90\xe2\x95\x90\xe2\x95\x90\xe2\x95\x90\xe2\x95\x90\xe2\x95\x90\xe2\x95\x90\xe2\x95\x90\xe2\x95\x90\xe2\x95\x90\xe2\x95\x90\xe2\x95\x90\xe2\x95\x90\xe2\x95\x90\xe2\x95\x90\xe2\x95\x90\xe2\x95\x90\xe2\x95\x90\xe2\x95\x90\xe2\x95\x90\xe2\x95\x90\xe2\x95\x90\xe2\x95\x90\xe2\x95\x90\xe2\x95\x90\xe2\x95\x90\xe2\x95\x90"
+         "\n  NukeX v3 \xe2\x80\x94 Per-Pixel Statistical Inference Stacking"
+         "\n\xe2\x95\x90\xe2\x95\x90\xe2\x95\x90\xe2\x95\x90\xe2\x95\x90\xe2\x95\x90\xe2\x95\x90\xe2\x95\x90\xe2\x95\x90\xe2\x95\x90\xe2\x95\x90\xe2\x95\x90\xe2\x95\x90\xe2\x95\x90\xe2\x95\x90\xe2\x95\x90\xe2\x95\x90\xe2\x95\x90\xe2\x95\x90\xe2\x95\x90\xe2\x95\x90\xe2\x95\x90\xe2\x95\x90\xe2\x95\x90\xe2\x95\x90\xe2\x95\x90\xe2\x95\x90\xe2\x95\x90\xe2\x95\x90\xe2\x95\x90\xe2\x95\x90\xe2\x95\x90\xe2\x95\x90\xe2\x95\x90\xe2\x95\x90\xe2\x95\x90\xe2\x95\x90\xe2\x95\x90\xe2\x95\x90\xe2\x95\x90\xe2\x95\x90\xe2\x95\x90\xe2\x95\x90\xe2\x95\x90\xe2\x95\x90\xe2\x95\x90\xe2\x95\x90\xe2\x95\x90\xe2\x95\x90\xe2\x95\x90\xe2\x95\x90" );
 
       // Collect enabled frame paths
       std::vector<nukex::FramePath> framePaths;
@@ -125,47 +135,59 @@ bool NukeXStackInstance::ExecuteGlobal()
          throw Error( "At least 2 enabled frames are required." );
 
       // Phase 1: Load frames
-      Console().WriteLn( String().Format( "<br>Phase 1: Loading %d frames...", framePaths.size() ) );
-      Console().Flush();
+      auto tPhase1 = std::chrono::steady_clock::now();
+      console.WriteLn( String().Format( "\nPhase 1: Loading %d frames...", int( framePaths.size() ) ) );
+      console.Flush();
       Module->ProcessEvents();
 
       nukex::LoadedFrames raw = nukex::FrameLoader::LoadRaw( framePaths );
+      int numChannels = raw.numChannels;
 
+      auto elapsed1 = std::chrono::duration<double>( std::chrono::steady_clock::now() - tPhase1 ).count();
+      console.WriteLn( String().Format( "  Loaded %d frames (%d x %d, %d ch) in %.1fs",
+         int( framePaths.size() ), raw.width, raw.height, numChannels, elapsed1 ) );
       Module->ProcessEvents();
 
-      // Phase 1b: Align frames
-      Console().WriteLn( "<br>Phase 1b: Aligning frames..." );
-      Console().Flush();
+      // Phase 1b: Align (channel 0 only)
+      auto tPhase1b = std::chrono::steady_clock::now();
+      console.WriteLn( "\nPhase 1b: Aligning frames..." );
+      console.Flush();
       Module->ProcessEvents();
 
       std::vector<const float*> framePtrs;
       for ( const auto& f : raw.pixelData )
-         framePtrs.push_back( f[0].data() );  // align on channel 0
+         framePtrs.push_back( f[0].data() );
 
       nukex::AlignmentOutput aligned = nukex::alignFrames(
          framePtrs, raw.width, raw.height );
 
-      Module->ProcessEvents();
+      for ( size_t i = 0; i < aligned.offsets.size(); ++i )
+      {
+         const auto& o = aligned.offsets[i];
+         console.WriteLn( String().Format( "  [%d/%d] dx=%+d, dy=%+d (%d stars, RMS=%.2f)",
+            int( i + 1 ), int( aligned.offsets.size() ),
+            o.dx, o.dy, o.numMatchedStars, o.convergenceRMS ) );
+      }
+      console.WriteLn( String().Format( "  Crop: %d x %d (from %d x %d)",
+         aligned.crop.width(), aligned.crop.height(), raw.width, raw.height ) );
 
-      Console().WriteLn( String().Format( "  Aligned %d frames, crop: %dx%d (from %dx%d)",
-         int( aligned.offsets.size() ),
-         aligned.crop.width(), aligned.crop.height(),
-         raw.width, raw.height ) );
+      auto elapsed1b = std::chrono::duration<double>( std::chrono::steady_clock::now() - tPhase1b ).count();
+      console.WriteLn( String().Format( "  Alignment complete in %.1fs", elapsed1b ) );
+      Module->ProcessEvents();
 
       // Copy metadata into aligned cube
       for ( size_t i = 0; i < raw.metadata.size(); ++i )
          aligned.alignedCube.setMetadata( i, raw.metadata[i] );
 
-      nukex::SubCube cube = std::move( aligned.alignedCube );
+      size_t nSubs = aligned.offsets.size();
+      int cropW = aligned.crop.width();
+      int cropH = aligned.crop.height();
 
-      // Free raw frame data — no longer needed, reclaims ~N*W*H*4 bytes
-      raw.pixelData.clear();
-      raw.pixelData.shrink_to_fit();
-
-      // Phase 2: Compute quality weights
-      Console().WriteLn( "<br>Phase 2: Computing quality weights..." );
-      Console().Flush();
+      // Phase 2: Quality weights
+      console.WriteLn( "\nPhase 2: Computing quality weights..." );
+      console.Flush();
       Module->ProcessEvents();
+
       std::vector<double> weights;
       if ( p_enableQualityWeighting )
       {
@@ -177,64 +199,281 @@ bool NukeXStackInstance::ExecuteGlobal()
          wcfg.altitudeWeight       = p_altitudeWeight;
 
          std::vector<nukex::SubMetadata> metaVec;
-         for ( size_t z = 0; z < cube.numSubs(); ++z )
-            metaVec.push_back( cube.metadata( z ) );
+         for ( size_t z = 0; z < nSubs; ++z )
+            metaVec.push_back( aligned.alignedCube.metadata( z ) );
 
          weights = nukex::ComputeQualityWeights( metaVec, wcfg );
+         console.WriteLn( String().Format( "  Mode: Full | Weight range: %.2f \xe2\x80\x94 %.2f",
+            *std::min_element( weights.begin(), weights.end() ),
+            *std::max_element( weights.begin(), weights.end() ) ) );
       }
       else
       {
-         weights.assign( cube.numSubs(), 1.0 / cube.numSubs() );
+         weights.assign( nSubs, 1.0 / nSubs );
+         console.WriteLn( "  Mode: Equal weights (quality weighting disabled)" );
       }
-
-      // Phase 3: Per-pixel distribution fitting and selection
-      Console().WriteLn( "<br>Phase 3: Per-pixel statistical inference..." );
-      Console().WriteLn( String().Format( "  Image: %d x %d, %d subs", int( cube.width() ), int( cube.height() ), int( cube.numSubs() ) ) );
-      Console().Flush();
       Module->ProcessEvents();
+
+      // Phase 3: Per-channel stacking
+      auto tPhase3 = std::chrono::steady_clock::now();
+      console.WriteLn( String().Format( "\nPhase 3: Per-channel stacking..." ) );
+      console.WriteLn( String().Format( "  Image: %d x %d, %d subs, %d channel(s)",
+         cropW, cropH, int( nSubs ), numChannels ) );
+      console.Flush();
+      Module->ProcessEvents();
+
+      const char* chNames[] = { "R", "G", "B" };
+      if ( numChannels == 1 )
+         chNames[0] = "L";
+
+      std::vector<std::vector<float>> channelResults( numChannels );
+      std::vector<std::vector<uint8_t>> distTypeMaps( numChannels );
 
       nukex::PixelSelector::Config selConfig;
       selConfig.maxOutliers = static_cast<int>( p_outlierSigmaThreshold );
-
       nukex::PixelSelector selector( selConfig );
-      std::vector<float> resultPixels = selector.processImage( cube, weights );
 
+      for ( int ch = 0; ch < numChannels; ++ch )
+      {
+         console.WriteLn( String().Format( "  Channel %s (%d/%d):",
+            chNames[ch], ch + 1, numChannels ) );
+         console.Flush();
+         Module->ProcessEvents();
+
+         if ( ch == 0 )
+         {
+            // Reuse the aligned cube for channel 0
+            nukex::SubCube cube = std::move( aligned.alignedCube );
+
+            channelResults[ch] = selector.processImage( cube, weights );
+
+            // Extract distType map
+            size_t mapSize = size_t( cropH ) * size_t( cropW );
+            distTypeMaps[ch].resize( mapSize );
+            for ( size_t y = 0; y < size_t( cropH ); ++y )
+               for ( size_t x = 0; x < size_t( cropW ); ++x )
+                  distTypeMaps[ch][y * cropW + x] = cube.distType( y, x );
+
+            // Log distribution summary
+            size_t counts[4] = {};
+            for ( uint8_t t : distTypeMaps[ch] )
+               if ( t < 4 ) counts[t]++;
+            console.WriteLn( String().Format(
+               "    Distribution: %.0f%% Gaussian, %.0f%% Poisson, %.0f%% Skew-Normal, %.0f%% Bimodal",
+               100.0 * counts[0] / mapSize, 100.0 * counts[1] / mapSize,
+               100.0 * counts[2] / mapSize, 100.0 * counts[3] / mapSize ) );
+         }
+         else
+         {
+            // Build per-channel frame data and apply alignment
+            std::vector<std::vector<float>> chFrameData( nSubs );
+            for ( size_t f = 0; f < nSubs; ++f )
+               chFrameData[f] = raw.pixelData[f][ch];
+
+            nukex::SubCube cube = nukex::applyAlignment( chFrameData, aligned.offsets,
+                                                          aligned.crop, raw.width, raw.height );
+
+            // Copy metadata
+            for ( size_t i = 0; i < raw.metadata.size(); ++i )
+               cube.setMetadata( i, raw.metadata[i] );
+
+            channelResults[ch] = selector.processImage( cube, weights );
+
+            // Extract distType map
+            size_t mapSize = size_t( cropH ) * size_t( cropW );
+            distTypeMaps[ch].resize( mapSize );
+            for ( size_t y = 0; y < size_t( cropH ); ++y )
+               for ( size_t x = 0; x < size_t( cropW ); ++x )
+                  distTypeMaps[ch][y * cropW + x] = cube.distType( y, x );
+
+            // Log distribution summary
+            size_t counts[4] = {};
+            for ( uint8_t t : distTypeMaps[ch] )
+               if ( t < 4 ) counts[t]++;
+            console.WriteLn( String().Format(
+               "    Distribution: %.0f%% Gaussian, %.0f%% Poisson, %.0f%% Skew-Normal, %.0f%% Bimodal",
+               100.0 * counts[0] / mapSize, 100.0 * counts[1] / mapSize,
+               100.0 * counts[2] / mapSize, 100.0 * counts[3] / mapSize ) );
+         }
+
+         console.Flush();
+         Module->ProcessEvents();
+      }
+
+      // Free raw frame data
+      raw.pixelData.clear();
+      raw.pixelData.shrink_to_fit();
+
+      auto elapsed3 = std::chrono::duration<double>( std::chrono::steady_clock::now() - tPhase3 ).count();
+      console.WriteLn( String().Format( "  Stacking complete in %.1fs", elapsed3 ) );
       Module->ProcessEvents();
 
-      // Phase 4: Create output image
-      Console().WriteLn( "<br>Phase 4: Creating output image..." );
-      Console().Flush();
+      // Phase 4: Create linear output
+      console.WriteLn( "\nPhase 4: Creating linear output..." );
+      console.Flush();
       Module->ProcessEvents();
-      int w = static_cast<int>( cube.width() );
-      int h = static_cast<int>( cube.height() );
 
-      ImageWindow window( w, h, 1, 32, true, false, "NukeX_stack" );
+      bool isColor = ( numChannels >= 3 );
+      int outChannels = isColor ? 3 : 1;
+
+      ImageWindow window( cropW, cropH, outChannels, 32, true, isColor, "NukeX_stack" );
       if ( window.IsNull() )
          throw Error( "Failed to create output image window." );
 
       View mainView = window.MainView();
       ImageVariant v = mainView.Image();
-
-      // Copy result pixels into the output image
       Image& outputImage = static_cast<Image&>( *v );
-      for ( int y = 0; y < h; ++y )
-         for ( int x = 0; x < w; ++x )
-            outputImage.Pixel( x, y ) = resultPixels[y * w + x];
+
+      for ( int ch = 0; ch < outChannels; ++ch )
+      {
+         int srcCh = ( ch < numChannels ) ? ch : 0;
+         for ( int y = 0; y < cropH; ++y )
+            for ( int x = 0; x < cropW; ++x )
+               outputImage.Pixel( x, y, ch ) = channelResults[srcCh][y * cropW + x];
+      }
 
       window.Show();
       window.ZoomToFit();
+      console.WriteLn( String().Format( "  Window: NukeX_stack (%d x %d, %s)",
+         cropW, cropH, isColor ? "RGB" : "Mono" ) );
+      Module->ProcessEvents();
 
-      Console().WriteLn( "<br>NukeX stacking complete." );
+      // Phase 5 & 6: Auto-stretch (if enabled)
+      if ( p_enableAutoStretch )
+      {
+         console.WriteLn( "\nPhase 5: Auto-stretch selection..." );
+         console.Flush();
+         Module->ProcessEvents();
+
+         // Compute per-channel stats from stacked result
+         std::vector<nukex::ChannelStats> chStats( outChannels );
+         for ( int ch = 0; ch < outChannels; ++ch )
+         {
+            int srcCh = ( ch < numChannels ) ? ch : 0;
+            const auto& px = channelResults[srcCh];
+            size_t n = px.size();
+
+            // Mean
+            double sum = 0;
+            for ( float val : px ) sum += val;
+            chStats[ch].mean = sum / n;
+
+            // Median
+            std::vector<float> sorted = px;
+            std::sort( sorted.begin(), sorted.end() );
+            chStats[ch].median = sorted[n / 2];
+
+            // MAD
+            std::vector<float> deviations( n );
+            for ( size_t i = 0; i < n; ++i )
+               deviations[i] = std::abs( sorted[i] - static_cast<float>( chStats[ch].median ) );
+            std::sort( deviations.begin(), deviations.end() );
+            chStats[ch].mad = deviations[n / 2];
+         }
+
+         // Prepare distType maps for the output channels
+         std::vector<std::vector<uint8_t>> outDistMaps( outChannels );
+         for ( int ch = 0; ch < outChannels; ++ch )
+         {
+            int srcCh = ( ch < numChannels ) ? ch : 0;
+            outDistMaps[ch] = distTypeMaps[srcCh];
+         }
+
+         auto selection = nukex::AutoStretchSelector::Select( outDistMaps, chStats );
+
+         // Log selection
+         const char* chLabels[] = { "R", "G", "B" };
+         if ( !isColor ) chLabels[0] = "L";
+
+         for ( size_t c = 0; c < selection.fractions.size(); ++c )
+         {
+            const auto& f = selection.fractions[c];
+            console.WriteLn( String().Format(
+               "  %s: %.0f%% Gaussian, %.0f%% Poisson, %.0f%% Skew-Normal, %.0f%% Bimodal",
+               chLabels[c], f.gaussian * 100, f.poisson * 100,
+               f.skewNormal * 100, f.bimodal * 100 ) );
+         }
+         console.WriteLn( String().Format( "  Channel divergence: %.2f (%s)",
+            selection.channelDivergence,
+            selection.channelDivergence < 0.05 ? "similar" :
+            selection.channelDivergence < 0.15 ? "moderate" : "divergent" ) );
+         console.WriteLn( String( "  Selected: " ) + String( selection.reason.c_str() ) );
+         Module->ProcessEvents();
+
+         // Phase 6: Apply stretch
+         console.WriteLn( "\nPhase 6: Applying stretch..." );
+         console.Flush();
+         Module->ProcessEvents();
+
+         AlgorithmType algoType = static_cast<AlgorithmType>(
+            static_cast<int>( selection.algorithm ) );
+
+         auto algo = StretchLibrary::Instance().Create( algoType );
+         if ( algo == nullptr )
+         {
+            console.WarningLn( "  Warning: algorithm not available, falling back to GHS" );
+            algo = StretchLibrary::Instance().Create( AlgorithmType::GHS );
+         }
+
+         console.WriteLn( String( "  Algorithm: " ) + algo->Name() );
+
+         // Create stretched output window
+         ImageWindow stretchWindow( cropW, cropH, outChannels, 32, true, isColor, "NukeX_stretched" );
+         if ( stretchWindow.IsNull() )
+            throw Error( "Failed to create stretched output window." );
+
+         View stretchView = stretchWindow.MainView();
+         ImageVariant sv = stretchView.Image();
+         Image& stretchImage = static_cast<Image&>( *sv );
+
+         // Copy linear data
+         for ( int ch = 0; ch < outChannels; ++ch )
+            for ( int y = 0; y < cropH; ++y )
+               for ( int x = 0; x < cropW; ++x )
+                  stretchImage.Pixel( x, y, ch ) = outputImage.Pixel( x, y, ch );
+
+         // Auto-configure and apply
+         double med = stretchImage.Median();
+         double mad = stretchImage.MAD( med );
+         console.WriteLn( String().Format( "  Image median: %.6f, MAD: %.6f", med, mad ) );
+
+         algo->AutoConfigure( med, mad );
+
+         auto params = algo->GetParameters();
+         for ( const auto& param : params )
+            console.WriteLn( String().Format( "  %s = %.4f",
+               IsoString( param.name ).c_str(), param.value ) );
+
+         algo->ApplyToImage( stretchImage );
+
+         stretchWindow.Show();
+         stretchWindow.ZoomToFit();
+         console.WriteLn( String().Format( "  Window: NukeX_stretched (%d x %d, %s)",
+            cropW, cropH, isColor ? "RGB" : "Mono" ) );
+         Module->ProcessEvents();
+      }
+
+      // Final banner
+      auto totalElapsed = std::chrono::duration<double>( std::chrono::steady_clock::now() - t0 ).count();
+      int minutes = int( totalElapsed ) / 60;
+      double seconds = totalElapsed - minutes * 60;
+
+      console.WriteLn( String().Format(
+         "\n\xe2\x95\x90\xe2\x95\x90\xe2\x95\x90\xe2\x95\x90\xe2\x95\x90\xe2\x95\x90\xe2\x95\x90\xe2\x95\x90\xe2\x95\x90\xe2\x95\x90\xe2\x95\x90\xe2\x95\x90\xe2\x95\x90\xe2\x95\x90\xe2\x95\x90\xe2\x95\x90\xe2\x95\x90\xe2\x95\x90\xe2\x95\x90\xe2\x95\x90\xe2\x95\x90\xe2\x95\x90\xe2\x95\x90\xe2\x95\x90\xe2\x95\x90\xe2\x95\x90\xe2\x95\x90\xe2\x95\x90\xe2\x95\x90\xe2\x95\x90\xe2\x95\x90\xe2\x95\x90\xe2\x95\x90\xe2\x95\x90\xe2\x95\x90\xe2\x95\x90\xe2\x95\x90\xe2\x95\x90\xe2\x95\x90\xe2\x95\x90\xe2\x95\x90\xe2\x95\x90\xe2\x95\x90\xe2\x95\x90\xe2\x95\x90\xe2\x95\x90\xe2\x95\x90\xe2\x95\x90\xe2\x95\x90\xe2\x95\x90\xe2\x95\x90"
+         "\n  NukeX stacking complete \xe2\x80\x94 %dm %.0fs total"
+         "\n\xe2\x95\x90\xe2\x95\x90\xe2\x95\x90\xe2\x95\x90\xe2\x95\x90\xe2\x95\x90\xe2\x95\x90\xe2\x95\x90\xe2\x95\x90\xe2\x95\x90\xe2\x95\x90\xe2\x95\x90\xe2\x95\x90\xe2\x95\x90\xe2\x95\x90\xe2\x95\x90\xe2\x95\x90\xe2\x95\x90\xe2\x95\x90\xe2\x95\x90\xe2\x95\x90\xe2\x95\x90\xe2\x95\x90\xe2\x95\x90\xe2\x95\x90\xe2\x95\x90\xe2\x95\x90\xe2\x95\x90\xe2\x95\x90\xe2\x95\x90\xe2\x95\x90\xe2\x95\x90\xe2\x95\x90\xe2\x95\x90\xe2\x95\x90\xe2\x95\x90\xe2\x95\x90\xe2\x95\x90\xe2\x95\x90\xe2\x95\x90\xe2\x95\x90\xe2\x95\x90\xe2\x95\x90\xe2\x95\x90\xe2\x95\x90\xe2\x95\x90\xe2\x95\x90\xe2\x95\x90\xe2\x95\x90\xe2\x95\x90\xe2\x95\x90",
+         minutes, seconds ) );
+
       return true;
    }
    catch ( const std::bad_alloc& e )
    {
-      Console().CriticalLn( "NukeX: Out of memory — " + String( e.what() ) );
+      Console().CriticalLn( "NukeX: Out of memory \xe2\x80\x94 " + String( e.what() ) );
       return false;
    }
    catch ( const ProcessAborted& )
    {
-      throw; // re-throw abort
+      throw;
    }
    catch ( const Error& e )
    {

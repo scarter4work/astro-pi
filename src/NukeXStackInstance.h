@@ -19,6 +19,7 @@
 #include "engine/FrameLoader.h"
 #include "engine/QualityWeights.h"
 #include "engine/PixelSelector.h"
+#include "engine/AutoStretchSelector.h"
 
 #include <vector>
 
