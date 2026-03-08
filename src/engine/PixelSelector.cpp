@@ -7,8 +7,10 @@
 #include <numeric>
 #include <unordered_set>
 
+#ifdef __PCL_BUILDING_MODULE
 #include <pcl/Console.h>
 #include <pcl/MetaModule.h>
+#endif
 
 namespace nukex {
 
@@ -195,16 +197,20 @@ std::vector<float> PixelSelector::processImage(SubCube& cube,
             }
         }
 
+#ifdef __PCL_BUILDING_MODULE
         // Progress reporting from main thread (safe for PCL Console + GUI events)
         pcl::Console().Write( pcl::String().Format(
             "<end>\r  Row %zu / %zu (%.1f%%)",
             yEnd, H, 100.0 * yEnd / H ) );
         pcl::Console().Flush();
         pcl::Module->ProcessEvents();
+#endif
     }
 
+#ifdef __PCL_BUILDING_MODULE
     pcl::Console().WriteLn( pcl::String().Format(
         "<end>\r  Row %zu / %zu (100.0%%)", H, H ) );
+#endif
 
     return output;
 }

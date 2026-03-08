@@ -9,8 +9,8 @@
       </p>
    </description>
    <platform os="linux" arch="x64" version="1.8.0:1.9.9">
-      <package fileName="20260308-linux-x64-NukeX.tar.gz" sha1="76b7f552a31ec65890f995dd75f43981fcdc4582" type="module" releaseDate="20260308">
-         <title>NukeX 3.0.0.7</title>
+      <package fileName="20260308-linux-x64-NukeX.tar.gz" sha1="4e717d71bce7056755b3873ccf97c4e4e4df7074" type="module" releaseDate="20260308">
+         <title>NukeX 3.0.0.8</title>
          <description>
             <p>
                <b>NukeX v3 - Statistical Stacking + Stretch for PixInsight</b>
@@ -27,7 +27,7 @@
                </li>
             </ul>
             <p>
-               <b>Version 3.0.0.7 - Fix alignment sign error, crash-safe OpenMP</b>
+               <b>Version 3.0.0.8 - RGB per-channel stacking, distribution-aware auto-stretch selection</b>
             </p>
             <p>
                Copyright (c) 2026 Scott Carter. All Rights Reserved.
@@ -36,4 +36,4 @@
       </package>
    </platform>
 </xri>
-<Signature developerId="scarter4work" timestamp="2026-03-08T18:05:21.084Z" encoding="Base64">S1Li9DgU/NDvUbpKxomPhplDBagUtXjFEvWSfUGfIM+Wo1aQl+K6zf52JZUT0EEtMzMIrSds0z5ty6wyvfouCQ==</Signature>
+<Signature developerId="scarter4work" timestamp="2026-03-08T19:19:40.738Z" encoding="Base64">ammTPUzY680+JXMLm9NEAGtuObr1ka/QG/24FwVpaPeDO5VfTySXrTWxvYr4Yh+JCj9nxRTFJBOsjBA5fCmmBQ==</Signature>
