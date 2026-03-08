@@ -7,8 +7,12 @@
 #include "engine/OutlierDetector.h"
 #include "engine/NumericalUtils.h"
 #include <vector>
+#include <functional>
 
 namespace nukex {
+
+// Progress callback: (rowsDone, totalRows)
+using ProgressCallback = std::function<void(size_t, size_t)>;
 
 class PixelSelector {
 public:
@@ -29,7 +33,8 @@ public:
     // Process entire image -- returns a flat vector of selected pixel values
     // in row-major order (height * width)
     std::vector<float> processImage(SubCube& cube,
-                                    const std::vector<double>& qualityWeights);
+                                    const std::vector<double>& qualityWeights,
+                                    ProgressCallback progress = nullptr);
 
 private:
     Config m_config;

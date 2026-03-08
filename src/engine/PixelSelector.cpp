@@ -7,10 +7,6 @@
 #include <numeric>
 #include <unordered_set>
 
-#ifdef __PCL_BUILDING_MODULE
-#include <pcl/Console.h>
-#include <pcl/MetaModule.h>
-#endif
 
 namespace nukex {
 
@@ -162,14 +158,15 @@ float PixelSelector::processPixel(SubCube& cube, size_t y, size_t x,
 }
 
 std::vector<float> PixelSelector::processImage(SubCube& cube,
-                                                const std::vector<double>& qualityWeights)
+                                                const std::vector<double>& qualityWeights,
+                                                ProgressCallback progress)
 {
     size_t H = cube.height();
     size_t W = cube.width();
     size_t N = cube.numSubs();
     std::vector<float> output(H * W);
 
-    // Process in row chunks so progress + ProcessEvents runs on the main thread
+    // Process in row chunks so progress callback runs on the main thread
     // between parallel regions (PCL event processing is main-thread-affine).
     constexpr size_t CHUNK = 100;
 
@@ -197,20 +194,9 @@ std::vector<float> PixelSelector::processImage(SubCube& cube,
             }
         }
 
-#ifdef __PCL_BUILDING_MODULE
-        // Progress reporting from main thread (safe for PCL Console + GUI events)
-        pcl::Console().Write( pcl::String().Format(
-            "<end>\r  Row %zu / %zu (%.1f%%)",
-            yEnd, H, 100.0 * yEnd / H ) );
-        pcl::Console().Flush();
-        pcl::Module->ProcessEvents();
-#endif
+        if (progress)
+            progress(yEnd, H);
     }
-
-#ifdef __PCL_BUILDING_MODULE
-    pcl::Console().WriteLn( pcl::String().Format(
-        "<end>\r  Row %zu / %zu (100.0%%)", H, H ) );
-#endif
 
     return output;
 }

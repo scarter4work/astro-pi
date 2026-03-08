@@ -233,6 +233,13 @@ bool NukeXStackInstance::ExecuteGlobal()
       selConfig.maxOutliers = static_cast<int>( p_outlierSigmaThreshold );
       nukex::PixelSelector selector( selConfig );
 
+      // Progress bar: total rows across all channels
+      size_t totalRows = size_t( numChannels ) * size_t( cropH );
+      StandardStatus status;
+      StatusMonitor monitor;
+      monitor.SetCallback( &status );
+      monitor.Initialize( "NukeX: Stacking", totalRows );
+
       for ( int ch = 0; ch < numChannels; ++ch )
       {
          console.WriteLn( String().Format( "  Channel %s (%d/%d):",
@@ -240,12 +247,24 @@ bool NukeXStackInstance::ExecuteGlobal()
          console.Flush();
          Module->ProcessEvents();
 
+         size_t baseRows = size_t( ch ) * size_t( cropH );
+
+         // Progress callback: advances the StatusMonitor from the main thread
+         auto progressCB = [&monitor, baseRows]( size_t rowsDone, size_t /*totalRows*/ )
+         {
+            size_t target = baseRows + rowsDone;
+            size_t current = monitor.Count();
+            if ( target > current )
+               monitor += ( target - current );
+            Module->ProcessEvents();
+         };
+
          if ( ch == 0 )
          {
             // Reuse the aligned cube for channel 0
             nukex::SubCube cube = std::move( aligned.alignedCube );
 
-            channelResults[ch] = selector.processImage( cube, weights );
+            channelResults[ch] = selector.processImage( cube, weights, progressCB );
 
             // Extract distType map
             size_t mapSize = size_t( cropH ) * size_t( cropW );
@@ -277,7 +296,7 @@ bool NukeXStackInstance::ExecuteGlobal()
             for ( size_t i = 0; i < raw.metadata.size(); ++i )
                cube.setMetadata( i, raw.metadata[i] );
 
-            channelResults[ch] = selector.processImage( cube, weights );
+            channelResults[ch] = selector.processImage( cube, weights, progressCB );
 
             // Extract distType map
             size_t mapSize = size_t( cropH ) * size_t( cropW );
@@ -299,6 +318,8 @@ bool NukeXStackInstance::ExecuteGlobal()
          console.Flush();
          Module->ProcessEvents();
       }
+
+      monitor.Complete();
 
       // Free raw frame data
       raw.pixelData.clear();
