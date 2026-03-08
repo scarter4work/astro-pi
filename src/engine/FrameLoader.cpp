@@ -175,6 +175,7 @@ LoadedFrames FrameLoader::LoadRaw( const std::vector<FramePath>& frames )
 
     int refWidth    = images0[0].info.width;
     int refHeight   = images0[0].info.height;
+    int refChannels = images0[0].info.numberOfChannels;
 
     file0.Close();
 
@@ -182,12 +183,13 @@ LoadedFrames FrameLoader::LoadRaw( const std::vector<FramePath>& frames )
         throw pcl::Error( "FrameLoader: invalid dimensions in first frame" );
 
     console.WriteLn( pcl::String().Format(
-        "  Reference: %d x %d", refWidth, refHeight ) );
+        "  Reference: %d x %d, %d channel(s)", refWidth, refHeight, refChannels ) );
 
     // 3. Prepare result
     LoadedFrames result;
-    result.width  = refWidth;
-    result.height = refHeight;
+    result.width       = refWidth;
+    result.height      = refHeight;
+    result.numChannels = refChannels;
     result.pixelData.resize( enabled.size() );
     result.metadata.resize( enabled.size() );
 
@@ -242,18 +244,22 @@ LoadedFrames FrameLoader::LoadRaw( const std::vector<FramePath>& frames )
 
         file.Close();
 
-        // Store raw pixel data (first channel / luminance)
-        const pcl::Image::sample* src = img.PixelData( 0 );
+        // Store raw pixel data (all channels)
         size_t numPx = size_t( refWidth ) * size_t( refHeight );
-        result.pixelData[i].assign( src, src + numPx );
+        result.pixelData[i].resize( result.numChannels );
+        for ( int c = 0; c < result.numChannels; ++c )
+        {
+            const pcl::Image::sample* src = img.PixelData( c );
+            result.pixelData[i][c].assign( src, src + numPx );
+        }
 
         // Extract and store metadata from FITS keywords
         result.metadata[i] = ExtractMetadata( keywords );
     }
 
     console.WriteLn( pcl::String().Format(
-        "<end><cbr>FrameLoader::LoadRaw: loaded %d frames (%d x %d)",
-        int( enabled.size() ), refWidth, refHeight ) );
+        "<end><cbr>FrameLoader::LoadRaw: loaded %d frames (%d x %d, %d ch)",
+        int( enabled.size() ), refWidth, refHeight, refChannels ) );
 
     return result;
 }

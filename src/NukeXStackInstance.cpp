@@ -138,7 +138,7 @@ bool NukeXStackInstance::ExecuteGlobal()
 
       std::vector<const float*> framePtrs;
       for ( const auto& f : raw.pixelData )
-         framePtrs.push_back( f.data() );
+         framePtrs.push_back( f[0].data() );  // align on channel 0
 
       nukex::AlignmentOutput aligned = nukex::alignFrames(
          framePtrs, raw.width, raw.height );

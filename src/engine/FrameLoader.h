@@ -35,10 +35,9 @@ struct FramePath {
 
 // Raw frame data for alignment pipeline (before building SubCube).
 struct LoadedFrames {
-    std::vector<std::vector<float>> pixelData;  // per-frame row-major pixel data
+    std::vector<std::vector<std::vector<float>>> pixelData;  // [frame][channel][pixels]
     std::vector<SubMetadata> metadata;
-    int width;
-    int height;
+    int width, height, numChannels;
 };
 
 class FrameLoader {
