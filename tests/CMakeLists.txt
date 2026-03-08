@@ -249,3 +249,15 @@ target_include_directories(test_frame_aligner PRIVATE
 target_compile_definitions(test_frame_aligner PRIVATE XTENSOR_USE_XSIMD)
 target_compile_features(test_frame_aligner PRIVATE cxx_std_17)
 add_test(NAME test_frame_aligner COMMAND test_frame_aligner)
+
+# AutoStretchSelector unit tests
+add_executable(test_auto_stretch_selector
+    unit/test_auto_stretch_selector.cpp
+    ${CMAKE_SOURCE_DIR}/src/engine/AutoStretchSelector.cpp
+)
+target_link_libraries(test_auto_stretch_selector PRIVATE Catch2::Catch2WithMain)
+target_include_directories(test_auto_stretch_selector PRIVATE
+    ${CMAKE_SOURCE_DIR}/src
+)
+target_compile_features(test_auto_stretch_selector PRIVATE cxx_std_17)
+add_test(NAME test_auto_stretch_selector COMMAND test_auto_stretch_selector)
