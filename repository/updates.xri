@@ -9,8 +9,8 @@
       </p>
    </description>
    <platform os="linux" arch="x64" version="1.8.0:1.9.9">
-      <package fileName="20260307-linux-x64-NukeX.tar.gz" sha1="f6bc34642ffadc25865a2482769ebe8c0916dbf7" type="module" releaseDate="20260307">
-         <title>NukeX 3.0.0.2</title>
+      <package fileName="20260307-linux-x64-NukeX.tar.gz" sha1="55b26aec102982e3fd8b48aa6d5f5cd72b757b0d" type="module" releaseDate="20260307">
+         <title>NukeX 3.0.0.3</title>
          <description>
             <p>
                <b>NukeX v3 - Statistical Stacking + Stretch for PixInsight</b>
@@ -27,7 +27,7 @@
                </li>
             </ul>
             <p>
-               <b>Version 3.0.0.2 - Add GUI interfaces for both processes</b>
+               <b>Version 3.0.0.3 - Add GUI interfaces, fix Validate() crash</b>
             </p>
             <p>
                Copyright (c) 2026 Scott Carter. All Rights Reserved.
@@ -36,4 +36,4 @@
       </package>
    </platform>
 </xri>
-<Signature developerId="scarter4work" timestamp="2026-03-07T22:12:52.795Z" encoding="Base64">2K9U5zKD4gwBY+wrwWnrGMwrsPfssmaw6VhEozhVycfn5GTHOUaXMaPeZ/MRZGRpV+FIcziM2Et7LH/LxYFDAA==</Signature>
+<Signature developerId="scarter4work" timestamp="2026-03-08T03:45:21.921Z" encoding="Base64">b7GghfFShgtGYq42wUz6GFBmfDW0XK3R+9zHNt/rNK2uRqNhjh3jWN0+23yh0LTzaLuJynVv2WKOaZS8Ge8xBQ==</Signature>

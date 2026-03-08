@@ -70,6 +70,23 @@ void NukeXStackInstance::Assign( const ProcessImplementation& p )
 
 // ----------------------------------------------------------------------------
 
+bool NukeXStackInstance::Validate( String& info )
+{
+   int enabledCount = 0;
+   for ( const auto& frame : p_inputFrames )
+      if ( frame.enabled )
+         ++enabledCount;
+
+   if ( enabledCount < 2 )
+   {
+      info = "At least 2 enabled input frames are required for stacking.";
+      return false;
+   }
+   return true;
+}
+
+// ----------------------------------------------------------------------------
+
 bool NukeXStackInstance::CanExecuteGlobal( String& whyNot ) const
 {
    int enabledCount = 0;

@@ -48,6 +48,7 @@ public:
    NukeXStackInstance( const NukeXStackInstance& );
 
    void Assign( const ProcessImplementation& ) override;
+   bool Validate( String& info ) override;
    bool CanExecuteGlobal( String& whyNot ) const override;
    bool ExecuteGlobal() override;
    void* LockParameter( const MetaParameter*, size_type tableRow ) override;

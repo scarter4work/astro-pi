@@ -30,6 +30,7 @@ public:
    NukeXStretchInstance( const NukeXStretchInstance& );
 
    void Assign( const ProcessImplementation& ) override;
+   bool Validate( String& info ) override;
    UndoFlags UndoMode( const View& ) const override;
    bool CanExecuteOn( const View&, String& whyNot ) const override;
    bool ExecuteOn( View& ) override;

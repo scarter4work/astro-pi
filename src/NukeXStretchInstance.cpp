@@ -63,6 +63,24 @@ void NukeXStretchInstance::Assign( const ProcessImplementation& p )
 
 // ----------------------------------------------------------------------------
 
+bool NukeXStretchInstance::Validate( String& info )
+{
+   // Basic parameter validation
+   if ( p_contrast < 0 || p_contrast > 1 )
+   {
+      info = "Contrast must be between 0 and 1.";
+      return false;
+   }
+   if ( p_blackPoint >= p_whitePoint )
+   {
+      info = "Black point must be less than white point.";
+      return false;
+   }
+   return true;
+}
+
+// ----------------------------------------------------------------------------
+
 UndoFlags NukeXStretchInstance::UndoMode( const View& ) const
 {
    return UndoFlag::PixelData;
