@@ -6,6 +6,10 @@
 #include <limits>
 #include <numeric>
 #include <unordered_set>
+#include <atomic>
+
+#include <pcl/Console.h>
+#include <pcl/MetaModule.h>
 
 namespace nukex {
 
@@ -162,13 +166,35 @@ std::vector<float> PixelSelector::processImage(SubCube& cube,
     size_t H = cube.height();
     size_t W = cube.width();
     std::vector<float> output(H * W);
+    std::atomic<size_t> rowsDone{0};
 
-    // Process row by row (can be parallelized with OpenMP later)
+    #pragma omp parallel for schedule(dynamic, 4)
     for (size_t y = 0; y < H; ++y) {
         for (size_t x = 0; x < W; ++x) {
-            output[y * W + x] = processPixel(cube, y, x, qualityWeights);
+            auto result = selectBestZ(cube.zColumnPtr(y, x), cube.numSubs(), qualityWeights);
+            output[y * W + x] = result.selectedValue;
+            cube.setProvenance(y, x, result.selectedZ);
+            cube.setDistType(y, x, static_cast<uint8_t>(result.bestModel));
+        }
+
+        size_t done = rowsDone.fetch_add(1) + 1;
+
+        // Progress update every 50 rows from the first thread only
+        if (done % 50 == 0) {
+            #pragma omp critical
+            {
+                pcl::Console().Write( pcl::String().Format(
+                    "<end>\r  Row %zu / %zu (%.1f%%)",
+                    done, H, 100.0 * done / H ) );
+                pcl::Console().Flush();
+                pcl::Module->ProcessEvents();
+            }
         }
     }
+
+    pcl::Console().WriteLn( pcl::String().Format(
+        "<end>\r  Row %zu / %zu (100.0%%)", H, H ) );
+
     return output;
 }
 

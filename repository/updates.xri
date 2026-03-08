@@ -9,8 +9,8 @@
       </p>
    </description>
    <platform os="linux" arch="x64" version="1.8.0:1.9.9">
-      <package fileName="20260307-linux-x64-NukeX.tar.gz" sha1="fbe7de483dc37f31b432dbe5177e082e9911fce3" type="module" releaseDate="20260307">
-         <title>NukeX 3.0.0.4</title>
+      <package fileName="20260307-linux-x64-NukeX.tar.gz" sha1="65508083fec950a460f948d53a1d84a36e539c3d" type="module" releaseDate="20260307">
+         <title>NukeX 3.0.0.5</title>
          <description>
             <p>
                <b>NukeX v3 - Statistical Stacking + Stretch for PixInsight</b>
@@ -27,7 +27,7 @@
                </li>
             </ul>
             <p>
-               <b>Version 3.0.0.4 - Fix deadlock during stacking execution</b>
+               <b>Version 3.0.0.5 - OpenMP parallel pixel processing, progress reporting</b>
             </p>
             <p>
                Copyright (c) 2026 Scott Carter. All Rights Reserved.
@@ -36,4 +36,4 @@
       </package>
    </platform>
 </xri>
-<Signature developerId="scarter4work" timestamp="2026-03-08T04:14:55.309Z" encoding="Base64">hPLx4sufajdxyvOU6nksNqIf/rQ7PEw0gx9QU/7ZcCwIHslXKPxgC3Dar8N5AwNP6jYMGq25VF18nm5/vYU9Cw==</Signature>
+<Signature developerId="scarter4work" timestamp="2026-03-08T04:24:09.171Z" encoding="Base64">UtgFZGgu+7wLK7lej6rEZ9XN5X4RQ8Xu3Kwg11/94Qjrvuu211jq1kiEQpHiVP5DDo6bPMQLNiDKzBaCbm6ODg==</Signature>
