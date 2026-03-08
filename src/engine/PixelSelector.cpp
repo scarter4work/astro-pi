@@ -6,7 +6,6 @@
 #include <limits>
 #include <numeric>
 #include <unordered_set>
-#include <atomic>
 
 #include <pcl/Console.h>
 #include <pcl/MetaModule.h>
@@ -165,31 +164,43 @@ std::vector<float> PixelSelector::processImage(SubCube& cube,
 {
     size_t H = cube.height();
     size_t W = cube.width();
+    size_t N = cube.numSubs();
     std::vector<float> output(H * W);
-    std::atomic<size_t> rowsDone{0};
 
-    #pragma omp parallel for schedule(dynamic, 4)
-    for (size_t y = 0; y < H; ++y) {
-        for (size_t x = 0; x < W; ++x) {
-            auto result = selectBestZ(cube.zColumnPtr(y, x), cube.numSubs(), qualityWeights);
-            output[y * W + x] = result.selectedValue;
-            cube.setProvenance(y, x, result.selectedZ);
-            cube.setDistType(y, x, static_cast<uint8_t>(result.bestModel));
-        }
+    // Process in row chunks so progress + ProcessEvents runs on the main thread
+    // between parallel regions (PCL event processing is main-thread-affine).
+    constexpr size_t CHUNK = 100;
 
-        size_t done = rowsDone.fetch_add(1) + 1;
+    for (size_t yStart = 0; yStart < H; yStart += CHUNK) {
+        size_t yEnd = std::min(yStart + CHUNK, H);
 
-        // Progress update every 50 rows from the first thread only
-        if (done % 50 == 0) {
-            #pragma omp critical
-            {
-                pcl::Console().Write( pcl::String().Format(
-                    "<end>\r  Row %zu / %zu (%.1f%%)",
-                    done, H, 100.0 * done / H ) );
-                pcl::Console().Flush();
-                pcl::Module->ProcessEvents();
+        #pragma omp parallel for schedule(dynamic, 4)
+        for (size_t y = yStart; y < yEnd; ++y) {
+            for (size_t x = 0; x < W; ++x) {
+                try {
+                    auto result = selectBestZ(cube.zColumnPtr(y, x), N, qualityWeights);
+                    output[y * W + x] = result.selectedValue;
+                    cube.setProvenance(y, x, result.selectedZ);
+                    cube.setDistType(y, x, static_cast<uint8_t>(result.bestModel));
+                } catch (...) {
+                    // Fallback: simple mean of Z-column
+                    const float* col = cube.zColumnPtr(y, x);
+                    double sum = 0.0;
+                    for (size_t z = 0; z < N; ++z)
+                        sum += col[z];
+                    output[y * W + x] = static_cast<float>(sum / N);
+                    cube.setProvenance(y, x, 0);
+                    cube.setDistType(y, x, static_cast<uint8_t>(DistributionType::Gaussian));
+                }
             }
         }
+
+        // Progress reporting from main thread (safe for PCL Console + GUI events)
+        pcl::Console().Write( pcl::String().Format(
+            "<end>\r  Row %zu / %zu (%.1f%%)",
+            yEnd, H, 100.0 * yEnd / H ) );
+        pcl::Console().Flush();
+        pcl::Module->ProcessEvents();
     }
 
     pcl::Console().WriteLn( pcl::String().Format(

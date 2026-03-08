@@ -87,23 +87,24 @@ SkewNormalFitResult fitSkewNormal(const std::vector<double>& data) {
         result.iterations    = niter;
         result.converged     = true;
     } catch (...) {
-        // Fallback: return moment-based estimates
+        // Fallback: return moment-based estimates with analytical log-likelihood.
+        // Must not throw — this is called from OpenMP parallel regions.
         result.xi    = mu;
         result.omega = sigma;
         result.alpha = skew;
+        result.iterations = 0;
+        result.converged  = false;
 
-        // Compute log-likelihood at fallback parameters
+        // Approximate log-likelihood treating as Gaussian (safe, no Boost needed)
         if (sigma < 1e-15) sigma = 1e-15;
-        boost::math::skew_normal_distribution<double> dist(mu, sigma, skew);
+        double logSigma = std::log(sigma);
+        constexpr double LOG_2PI = 1.8378770664093453;
         double logL = 0.0;
         for (double val : data) {
-            double p = boost::math::pdf(dist, val);
-            if (p < 1e-300) p = 1e-300;
-            logL += std::log(p);
+            double z = (val - mu) / sigma;
+            logL += -0.5 * (LOG_2PI + z * z) - logSigma;
         }
         result.logLikelihood = logL;
-        result.iterations    = 0;
-        result.converged     = false;
     }
 
     return result;
