@@ -33,4 +33,10 @@ AlignmentOutput alignFrames(const std::vector<const float*>& frameData,
                              const DetectorConfig& detConfig = DetectorConfig{},
                              int matchMaxStars = 50);
 
+// Apply pre-computed alignment offsets to one channel's frame data.
+// Returns a SubCube with aligned, cropped pixel data.
+SubCube applyAlignment(const std::vector<std::vector<float>>& channelFrameData,
+                       const std::vector<AlignmentResult>& offsets,
+                       const CropRegion& crop, int width, int height);
+
 } // namespace nukex

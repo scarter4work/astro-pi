@@ -38,6 +38,43 @@ TEST_CASE("computeCropRegion computes correct bounding box", "[aligner]") {
     REQUIRE(crop.height() == 73);
 }
 
+TEST_CASE("applyAlignment produces aligned SubCube for single channel", "[aligner]") {
+    int W = 100, H = 80;
+    int nFrames = 3;
+
+    // Create per-frame pixel data with known patterns
+    std::vector<std::vector<float>> channelFrameData(nFrames);
+    for (int i = 0; i < nFrames; ++i) {
+        channelFrameData[i].resize(W * H);
+        for (int y = 0; y < H; ++y)
+            for (int x = 0; x < W; ++x)
+                channelFrameData[i][y * W + x] = float(i * 1000 + y * W + x);
+    }
+
+    std::vector<nukex::AlignmentResult> offsets = {
+        {0, 0, 10, 0.5, true},
+        {3, -2, 8, 0.6, true},
+        {-1, 4, 9, 0.4, true}
+    };
+
+    auto crop = nukex::computeCropRegion(offsets, W, H);
+    auto cube = nukex::applyAlignment(channelFrameData, offsets, crop, W, H);
+
+    REQUIRE(cube.numSubs() == 3);
+    REQUIRE(cube.width() == static_cast<size_t>(crop.width()));
+    REQUIRE(cube.height() == static_cast<size_t>(crop.height()));
+
+    // Verify reference frame (offset 0,0) pixel at (0,0) in crop space
+    float expected0 = float(0 * 1000 + crop.y0 * W + crop.x0);
+    REQUIRE(cube.pixel(0, 0, 0) == Catch::Approx(expected0));
+
+    // Verify frame 1 (offset 3,-2): source pixel at (crop.x0+0+3, crop.y0+0-2)
+    int srcX1 = crop.x0 + 0 + 3;
+    int srcY1 = crop.y0 + 0 + (-2);
+    float expected1 = float(1 * 1000 + srcY1 * W + srcX1);
+    REQUIRE(cube.pixel(1, 0, 0) == Catch::Approx(expected1));
+}
+
 TEST_CASE("FrameAligner aligns shifted synthetic frames", "[aligner]") {
     int W = 200, H = 150;
 

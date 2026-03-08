@@ -80,4 +80,28 @@ AlignmentOutput alignFrames(const std::vector<const float*>& frameData,
     return AlignmentOutput{std::move(cube), std::move(offsets), crop, referenceIdx};
 }
 
+SubCube applyAlignment(const std::vector<std::vector<float>>& channelFrameData,
+                       const std::vector<AlignmentResult>& offsets,
+                       const CropRegion& crop, int width, int height) {
+    size_t nFrames = channelFrameData.size();
+    SubCube cube(nFrames, crop.height(), crop.width());
+
+    for (size_t i = 0; i < nFrames; ++i) {
+        int dx = offsets[i].dx;
+        int dy = offsets[i].dy;
+        const float* src = channelFrameData[i].data();
+
+        for (int cy = 0; cy < crop.height(); ++cy) {
+            for (int cx = 0; cx < crop.width(); ++cx) {
+                int srcX = crop.x0 + cx + dx;
+                int srcY = crop.y0 + cy + dy;
+                if (srcX >= 0 && srcX < width && srcY >= 0 && srcY < height)
+                    cube.setPixel(i, cy, cx, src[srcY * width + srcX]);
+            }
+        }
+    }
+
+    return cube;
+}
+
 } // namespace nukex
