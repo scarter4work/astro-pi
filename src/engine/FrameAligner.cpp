@@ -15,10 +15,10 @@ CropRegion computeCropRegion(const std::vector<AlignmentResult>& offsets,
     }
 
     CropRegion crop;
-    crop.x0 = std::max(0, maxDx);
-    crop.y0 = std::max(0, maxDy);
-    crop.x1 = std::min(originalWidth, originalWidth + minDx);
-    crop.y1 = std::min(originalHeight, originalHeight + minDy);
+    crop.x0 = std::max(0, -minDx);
+    crop.y0 = std::max(0, -minDy);
+    crop.x1 = std::min(originalWidth, originalWidth - maxDx);
+    crop.y1 = std::min(originalHeight, originalHeight - maxDy);
 
     if (crop.width() <= 0 || crop.height() <= 0)
         throw std::runtime_error("FrameAligner: no overlap region — offsets too large");
@@ -67,8 +67,8 @@ AlignmentOutput alignFrames(const std::vector<const float*>& frameData,
 
         for (int cy = 0; cy < crop.height(); ++cy) {
             for (int cx = 0; cx < crop.width(); ++cx) {
-                int srcX = crop.x0 + cx - dx;
-                int srcY = crop.y0 + cy - dy;
+                int srcX = crop.x0 + cx + dx;
+                int srcY = crop.y0 + cy + dy;
 
                 if (srcX >= 0 && srcX < width && srcY >= 0 && srcY < height) {
                     cube.setPixel(i, cy, cx, frameData[i][srcY * width + srcX]);

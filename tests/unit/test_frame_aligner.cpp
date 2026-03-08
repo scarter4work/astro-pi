@@ -30,10 +30,10 @@ TEST_CASE("computeCropRegion computes correct bounding box", "[aligner]") {
     };
 
     auto crop = nukex::computeCropRegion(offsets, 100, 80);
-    REQUIRE(crop.x0 == 5);
-    REQUIRE(crop.y0 == 4);
-    REQUIRE(crop.x1 == 98);
-    REQUIRE(crop.y1 == 77);
+    REQUIRE(crop.x0 == 2);
+    REQUIRE(crop.y0 == 3);
+    REQUIRE(crop.x1 == 95);
+    REQUIRE(crop.y1 == 76);
     REQUIRE(crop.width() == 93);
     REQUIRE(crop.height() == 73);
 }
