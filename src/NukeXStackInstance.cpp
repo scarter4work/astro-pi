@@ -453,6 +453,42 @@ bool NukeXStackInstance::ExecuteGlobal()
                for ( int x = 0; x < cropW; ++x )
                   stretchImage.Pixel( x, y, ch ) = outputImage.Pixel( x, y, ch );
 
+         // Channel recombination: normalize per-channel backgrounds
+         if ( isColor )
+         {
+            console.WriteLn( "\n  Channel recombination (background neutralization):" );
+
+            double medians[3];
+            for ( int ch = 0; ch < 3; ++ch )
+            {
+               stretchImage.SelectChannel( ch );
+               medians[ch] = stretchImage.Median();
+            }
+            stretchImage.ResetChannelRange();
+
+            double targetMedian = ( medians[0] + medians[1] + medians[2] ) / 3.0;
+
+            for ( int ch = 0; ch < 3; ++ch )
+            {
+               const char* label = ch == 0 ? "R" : ch == 1 ? "G" : "B";
+               if ( medians[ch] > 1.0e-10 )
+               {
+                  double scale = targetMedian / medians[ch];
+                  stretchImage.SelectChannel( ch );
+                  stretchImage *= scale;
+                  console.WriteLn( String().Format(
+                     "    %s: median=%.6f, scale=%.4f", label, medians[ch], scale ) );
+               }
+               else
+               {
+                  console.WriteLn( String().Format(
+                     "    %s: median=%.6f (too low, skipping)", label, medians[ch] ) );
+               }
+            }
+            stretchImage.ResetChannelRange();
+            Module->ProcessEvents();
+         }
+
          // Auto-configure and apply
          double med = stretchImage.Median();
          double mad = stretchImage.MAD( med );
