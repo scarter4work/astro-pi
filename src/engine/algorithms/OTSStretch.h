@@ -54,10 +54,8 @@ public:
 
 private:
 
-   mutable double m_midtones = 0.5;
-   mutable bool m_needsUpdate = true;
+   double m_midtones = 0.5;
 
-   void UpdateTransferFunction() const;
    double MTF( double x, double m ) const;
 };
 

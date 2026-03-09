@@ -61,8 +61,8 @@ private:
    double StretchIteration( double x, double snrWeight ) const;
    double EstimateSNRWeight( double value ) const;
 
-   mutable double m_noiseEstimate = 0.01;
-   mutable double m_signalEstimate = 0.1;
+   double m_noiseEstimate = 0.01;
+   double m_signalEstimate = 0.1;
 };
 
 // ----------------------------------------------------------------------------

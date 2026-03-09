@@ -69,15 +69,6 @@ double OTSStretch::MTF( double x, double m ) const
 
 // ----------------------------------------------------------------------------
 
-void OTSStretch::UpdateTransferFunction() const
-{
-   if ( !m_needsUpdate )
-      return;
-   m_needsUpdate = false;
-}
-
-// ----------------------------------------------------------------------------
-
 double OTSStretch::Apply( double value ) const
 {
    double blackPoint = BlackPoint();
@@ -177,7 +168,6 @@ void OTSStretch::AutoConfigure( double median, double mad )
    SetShadows( 0.0 );
    SetHighlights( 0.0 );
 
-   m_needsUpdate = false;
 }
 
 // ----------------------------------------------------------------------------
@@ -188,7 +178,6 @@ std::unique_ptr<IStretchAlgorithm> OTSStretch::Clone() const
    for ( const AlgorithmParameter& param : m_parameters )
       clone->SetParameter( param.id, param.value );
    clone->m_midtones = m_midtones;
-   clone->m_needsUpdate = m_needsUpdate;
    return clone;
 }
 
