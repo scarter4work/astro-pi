@@ -141,7 +141,7 @@ DEPS = $(SOURCES:.cpp=.d)
 # Build Targets
 # ============================================================================
 
-.PHONY: all clean install uninstall debug release info help test sign
+.PHONY: all clean install uninstall debug release info help test sign package
 
 all: $(TARGET)
 
@@ -186,6 +186,29 @@ install: sign
 	@if [ -f NukeX-pxm.xsgn ]; then cp NukeX-pxm.xsgn $(OUTPUT_DIR)/; fi
 	@echo "Installation complete."
 	@echo "Restart PixInsight to load the module."
+
+# Package for distribution: build, sign, tarball, update manifest, sign XRI
+REPO_DIR = repository
+PKG_NAME = 20260308-linux-x64-NukeX.tar.gz
+SIGN_XRI = $(REPO_DIR)/updates.xri
+
+package: sign
+	@echo "Packaging $(PKG_NAME)..."
+	@rm -rf /tmp/nukex-pkg && mkdir -p /tmp/nukex-pkg/bin
+	@cp $(TARGET) /tmp/nukex-pkg/bin/
+	@cp NukeX-pxm.xsgn /tmp/nukex-pkg/bin/
+	@cd /tmp/nukex-pkg && tar czf $(CURDIR)/$(REPO_DIR)/$(PKG_NAME) bin/
+	@NEW_SHA=$$(sha1sum $(REPO_DIR)/$(PKG_NAME) | cut -d' ' -f1); \
+	 echo "  SHA1: $$NEW_SHA"; \
+	 sed -i "s/sha1=\"[a-f0-9]*\"/sha1=\"$$NEW_SHA\"/" $(SIGN_XRI)
+	@sed -i '/<Signature developerId=/d' $(SIGN_XRI)
+	$(PIXINSIGHT_DIR)/bin/PixInsight.sh \
+		--sign-xml-file=$(SIGN_XRI) \
+		--xssk-file=$(SIGN_KEYS) \
+		--xssk-password="$(SIGN_PASS)"
+	@rm -rf /tmp/nukex-pkg
+	@echo "Package complete: $(REPO_DIR)/$(PKG_NAME)"
+	@echo "Ready to commit and push. Run 'sudo make install' to install locally."
 
 # Uninstall from PixInsight
 uninstall:
@@ -232,7 +255,8 @@ help:
 	@echo "  debug     - Build with debug symbols"
 	@echo "  release   - Build optimized release"
 	@echo "  sign      - Sign module for PixInsight"
-	@echo "  install   - Sign and install to PixInsight"
+	@echo "  install   - Sign and install to PixInsight (use sudo)"
+	@echo "  package   - Build, sign, tarball, update manifest (for distribution)"
 	@echo "  uninstall - Remove from PixInsight library"
 	@echo "  clean     - Remove build artifacts"
 	@echo "  test      - Run test suite via CTest"
