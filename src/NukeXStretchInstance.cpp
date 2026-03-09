@@ -155,22 +155,40 @@ bool NukeXStretchInstance::ExecuteOn( View& view )
 
       console.WriteLn( "Algorithm: " + algorithm->Name() + "\n" );
 
-      // Compute basic image statistics for auto-configure
-      double median = image.Median();
-      double mad = image.MAD( median );
+      // Per-channel auto-configure and stretch to preserve color
+      int numCh = image.NumberOfChannels();
+      bool isColor = ( numCh >= 3 );
 
-      console.WriteLn( String().Format( "Image median: %.6f, MAD: %.6f\n", median, mad ) );
+      if ( isColor )
+      {
+         console.WriteLn( "Per-channel stretch:\n" );
+         for ( int ch = 0; ch < numCh; ++ch )
+         {
+            const char* label = ch == 0 ? "R" : ch == 1 ? "G" : ch == 2 ? "B" : "?";
 
-      // Auto-configure the algorithm based on image statistics
-      algorithm->AutoConfigure( median, mad );
+            image.SelectChannel( ch );
+            double median = image.Median();
+            double mad = image.MAD( median );
+            console.WriteLn( String().Format( "  %s: median=%.6f, MAD=%.6f\n", label, median, mad ) );
 
-      // Apply the stretch to the image
-      StandardStatus status;
-      StatusMonitor monitor;
-      monitor.SetCallback( &status );
-      monitor.Initialize( "Applying stretch", image.NumberOfPixels() * image.NumberOfChannels() );
+            auto chAlgo = algorithm->Clone();
+            chAlgo->AutoConfigure( median, mad );
 
-      algorithm->ApplyToImage( image );
+            Image::sample_iterator it( image, ch );
+            for ( ; it; ++it )
+               *it = chAlgo->Apply( *it );
+         }
+         image.ResetChannelRange();
+      }
+      else
+      {
+         double median = image.Median();
+         double mad = image.MAD( median );
+         console.WriteLn( String().Format( "Image median: %.6f, MAD: %.6f\n", median, mad ) );
+
+         algorithm->AutoConfigure( median, mad );
+         algorithm->ApplyToImage( image );
+      }
 
       console.WriteLn( "NukeXStretch: Done.\n" );
 

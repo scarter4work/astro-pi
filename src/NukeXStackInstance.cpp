@@ -519,19 +519,50 @@ bool NukeXStackInstance::ExecuteGlobal()
             Module->ProcessEvents();
          }
 
-         // Auto-configure and apply
-         double med = stretchImage.Median();
-         double mad = stretchImage.MAD( med );
-         console.WriteLn( String().Format( "  Image median: %.6f, MAD: %.6f", med, mad ) );
+         // Auto-configure and apply per-channel to preserve color
+         if ( isColor )
+         {
+            console.WriteLn( "\n  Per-channel stretch:" );
+            for ( int ch = 0; ch < 3; ++ch )
+            {
+               const char* label = ch == 0 ? "R" : ch == 1 ? "G" : "B";
 
-         algo->AutoConfigure( med, mad );
+               stretchImage.SelectChannel( ch );
+               double med = stretchImage.Median();
+               double mad = stretchImage.MAD( med );
+               console.WriteLn( String().Format( "    %s: median=%.6f, MAD=%.6f", label, med, mad ) );
 
-         auto params = algo->GetParameters();
-         for ( const auto& param : params )
-            console.WriteLn( String().Format( "  %s = %.4f",
-               IsoString( param.name ).c_str(), param.value ) );
+               auto chAlgo = algo->Clone();
+               chAlgo->AutoConfigure( med, mad );
 
-         algo->ApplyToImage( stretchImage );
+               // Apply to this channel only
+               Image::sample_iterator it( stretchImage, ch );
+               for ( ; it; ++it )
+                  *it = chAlgo->Apply( *it );
+            }
+            stretchImage.ResetChannelRange();
+
+            // Log parameters from last channel as representative
+            auto params = algo->GetParameters();
+            for ( const auto& param : params )
+               console.WriteLn( String().Format( "  %s = %.4f",
+                  IsoString( param.name ).c_str(), param.value ) );
+         }
+         else
+         {
+            double med = stretchImage.Median();
+            double mad = stretchImage.MAD( med );
+            console.WriteLn( String().Format( "  Image median: %.6f, MAD: %.6f", med, mad ) );
+
+            algo->AutoConfigure( med, mad );
+
+            auto params = algo->GetParameters();
+            for ( const auto& param : params )
+               console.WriteLn( String().Format( "  %s = %.4f",
+                  IsoString( param.name ).c_str(), param.value ) );
+
+            algo->ApplyToImage( stretchImage );
+         }
 
          stretchWindow.Show();
          stretchWindow.ZoomToFit();
