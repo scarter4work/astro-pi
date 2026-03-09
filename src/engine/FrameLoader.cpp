@@ -14,6 +14,7 @@
 #include <pcl/ErrorHandler.h>
 
 #include <cstring>
+#include <algorithm>
 
 namespace nukex {
 
@@ -185,15 +186,46 @@ LoadedFrames FrameLoader::LoadRaw( const std::vector<FramePath>& frames )
     console.WriteLn( pcl::String().Format(
         "  Reference: %d x %d, %d channel(s)", refWidth, refHeight, refChannels ) );
 
-    // 3. Prepare result
+    // 3. Detect if CFA debayering is needed (single-channel + Bayer pattern keyword)
+    //    Read FITS keywords from first frame to check for Bayer pattern.
+    BayerPattern bayerPattern = BayerPattern::None;
+    if ( refChannels == 1 )
+    {
+        pcl::String ext0b = pcl::File::ExtractExtension( enabled[0]->path ).Lowercase();
+        pcl::FileFormat fmt0b( ext0b, true, false );
+        pcl::FileFormatInstance f0b( fmt0b );
+        pcl::ImageDescriptionArray imgs0b;
+        if ( f0b.Open( imgs0b, enabled[0]->path ) )
+        {
+            pcl::FITSKeywordArray kw0;
+            if ( fmt0b.CanStoreKeywords() )
+                f0b.ReadFITSKeywords( kw0 );
+            f0b.Close();
+            bayerPattern = DetectBayerPattern( kw0 );
+        }
+    }
+
+    bool needsDebayer = ( refChannels == 1 && bayerPattern != BayerPattern::None );
+    int outChannels = needsDebayer ? 3 : refChannels;
+
+    if ( needsDebayer )
+    {
+        const char* patName = bayerPattern == BayerPattern::RGGB ? "RGGB" :
+                              bayerPattern == BayerPattern::GRBG ? "GRBG" :
+                              bayerPattern == BayerPattern::GBRG ? "GBRG" : "BGGR";
+        console.WriteLn( pcl::String().Format(
+            "  CFA detected (%s) — will debayer to RGB", patName ) );
+    }
+
+    // 4. Prepare result
     LoadedFrames result;
     result.width       = refWidth;
     result.height      = refHeight;
-    result.numChannels = refChannels;
+    result.numChannels = outChannels;
     result.pixelData.resize( enabled.size() );
     result.metadata.resize( enabled.size() );
 
-    // 4. Load each enabled frame
+    // 5. Load each enabled frame
     for ( size_t i = 0; i < enabled.size(); ++i )
     {
         const pcl::String& path = enabled[i]->path;
@@ -244,13 +276,27 @@ LoadedFrames FrameLoader::LoadRaw( const std::vector<FramePath>& frames )
 
         file.Close();
 
-        // Store raw pixel data (all channels)
         size_t numPx = size_t( refWidth ) * size_t( refHeight );
-        result.pixelData[i].resize( result.numChannels );
-        for ( int c = 0; c < result.numChannels; ++c )
+
+        if ( needsDebayer )
         {
-            const pcl::Image::sample* src = img.PixelData( c );
-            result.pixelData[i][c].assign( src, src + numPx );
+            // Debayer CFA → 3-channel RGB
+            const pcl::Image::sample* cfa = img.PixelData( 0 );
+            result.pixelData[i].resize( 3 );
+            DebayerBilinear( cfa, refWidth, refHeight, bayerPattern,
+                             result.pixelData[i][0],
+                             result.pixelData[i][1],
+                             result.pixelData[i][2] );
+        }
+        else
+        {
+            // Store raw pixel data (all channels as-is)
+            result.pixelData[i].resize( outChannels );
+            for ( int c = 0; c < outChannels; ++c )
+            {
+                const pcl::Image::sample* src = img.PixelData( c );
+                result.pixelData[i][c].assign( src, src + numPx );
+            }
         }
 
         // Extract and store metadata from FITS keywords
@@ -258,8 +304,9 @@ LoadedFrames FrameLoader::LoadRaw( const std::vector<FramePath>& frames )
     }
 
     console.WriteLn( pcl::String().Format(
-        "<end><cbr>FrameLoader::LoadRaw: loaded %d frames (%d x %d, %d ch)",
-        int( enabled.size() ), refWidth, refHeight, refChannels ) );
+        "<end><cbr>FrameLoader::LoadRaw: loaded %d frames (%d x %d, %d ch%s)",
+        int( enabled.size() ), refWidth, refHeight, outChannels,
+        needsDebayer ? ", debayered" : "" ) );
 
     return result;
 }
@@ -362,6 +409,147 @@ pcl::String FrameLoader::GetKeywordString( const pcl::FITSKeywordArray& keywords
         }
     }
     return defaultValue;
+}
+
+// ----------------------------------------------------------------------------
+
+BayerPattern FrameLoader::DetectBayerPattern( const pcl::FITSKeywordArray& keywords )
+{
+    // Check common FITS keywords for Bayer/CFA pattern info.
+    // BAYERPAT is standard; COLORTYP is used by some capture software.
+    for ( const pcl::FITSHeaderKeyword& kw : keywords )
+    {
+        pcl::IsoString name = kw.name.Trimmed().Uppercase();
+        if ( name == "BAYERPAT" || name == "COLORTYP" )
+        {
+            pcl::IsoString val = kw.value.Trimmed();
+            val.Unquote();
+            val.Trim();
+            val = val.Uppercase();
+
+            if ( val == "RGGB" ) return BayerPattern::RGGB;
+            if ( val == "GRBG" ) return BayerPattern::GRBG;
+            if ( val == "GBRG" ) return BayerPattern::GBRG;
+            if ( val == "BGGR" ) return BayerPattern::BGGR;
+        }
+    }
+
+    // Fallback: check XBAYROFF/YBAYROFF (Bayer offset keywords)
+    // If present, the image is CFA even without an explicit pattern keyword.
+    // Default to RGGB (most common OSC pattern).
+    for ( const pcl::FITSHeaderKeyword& kw : keywords )
+    {
+        pcl::IsoString name = kw.name.Trimmed().Uppercase();
+        if ( name == "XBAYROFF" || name == "YBAYROFF" || name == "CFATYPE" )
+            return BayerPattern::RGGB;
+    }
+
+    return BayerPattern::None;
+}
+
+// ----------------------------------------------------------------------------
+
+void FrameLoader::DebayerBilinear( const float* cfa, int W, int H,
+                                    BayerPattern pattern,
+                                    std::vector<float>& outR,
+                                    std::vector<float>& outG,
+                                    std::vector<float>& outB )
+{
+    size_t numPx = size_t( W ) * size_t( H );
+    outR.resize( numPx );
+    outG.resize( numPx );
+    outB.resize( numPx );
+
+    // Map pattern to per-pixel color indices.
+    // For a 2x2 Bayer tile, determine which color each position has:
+    //   0 = Red, 1 = Green, 2 = Blue
+    // The tile repeats across the image. Position (y,x) maps to tile (y%2, x%2).
+    int tileColor[2][2]; // [row%2][col%2] → 0=R, 1=G, 2=B
+
+    switch ( pattern )
+    {
+    case BayerPattern::RGGB:
+        tileColor[0][0] = 0; tileColor[0][1] = 1;
+        tileColor[1][0] = 1; tileColor[1][1] = 2;
+        break;
+    case BayerPattern::GRBG:
+        tileColor[0][0] = 1; tileColor[0][1] = 0;
+        tileColor[1][0] = 2; tileColor[1][1] = 1;
+        break;
+    case BayerPattern::GBRG:
+        tileColor[0][0] = 1; tileColor[0][1] = 2;
+        tileColor[1][0] = 0; tileColor[1][1] = 1;
+        break;
+    case BayerPattern::BGGR:
+        tileColor[0][0] = 2; tileColor[0][1] = 1;
+        tileColor[1][0] = 1; tileColor[1][1] = 0;
+        break;
+    default:
+        // Should not happen — fill with CFA as luminance
+        for ( size_t i = 0; i < numPx; ++i )
+            outR[i] = outG[i] = outB[i] = cfa[i];
+        return;
+    }
+
+    // Bilinear interpolation: for each pixel, the "native" color is read directly
+    // from the CFA; the other two colors are interpolated from neighbors.
+    // Clamp to image bounds.
+    auto px = [&]( int y, int x ) -> float {
+        y = std::max( 0, std::min( H - 1, y ) );
+        x = std::max( 0, std::min( W - 1, x ) );
+        return cfa[y * W + x];
+    };
+
+    for ( int y = 0; y < H; ++y )
+    {
+        for ( int x = 0; x < W; ++x )
+        {
+            int color = tileColor[y & 1][x & 1];
+            size_t idx = y * W + x;
+
+            float r, g, b;
+
+            if ( color == 0 )  // Red pixel
+            {
+                r = cfa[idx];
+                g = 0.25f * ( px(y-1,x) + px(y+1,x) + px(y,x-1) + px(y,x+1) );
+                b = 0.25f * ( px(y-1,x-1) + px(y-1,x+1) + px(y+1,x-1) + px(y+1,x+1) );
+            }
+            else if ( color == 2 )  // Blue pixel
+            {
+                b = cfa[idx];
+                g = 0.25f * ( px(y-1,x) + px(y+1,x) + px(y,x-1) + px(y,x+1) );
+                r = 0.25f * ( px(y-1,x-1) + px(y-1,x+1) + px(y+1,x-1) + px(y+1,x+1) );
+            }
+            else  // Green pixel
+            {
+                g = cfa[idx];
+
+                // Green pixels have two arrangements: on a red row or blue row
+                // Determine neighbors based on which color is in the same row
+                int rowParity = y & 1;
+                int colParity = x & 1;
+
+                // Check if horizontal neighbors are red or blue
+                int hColor = tileColor[rowParity][1 - colParity];
+
+                if ( hColor == 0 )  // Horizontal neighbor is red → red is on this row
+                {
+                    r = 0.5f * ( px(y, x-1) + px(y, x+1) );
+                    b = 0.5f * ( px(y-1, x) + px(y+1, x) );
+                }
+                else  // Horizontal neighbor is blue → blue is on this row
+                {
+                    b = 0.5f * ( px(y, x-1) + px(y, x+1) );
+                    r = 0.5f * ( px(y-1, x) + px(y+1, x) );
+                }
+            }
+
+            outR[idx] = r;
+            outG[idx] = g;
+            outB[idx] = b;
+        }
+    }
 }
 
 // ----------------------------------------------------------------------------

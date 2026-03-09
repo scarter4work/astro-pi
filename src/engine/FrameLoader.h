@@ -40,35 +40,38 @@ struct LoadedFrames {
     int width, height, numChannels;
 };
 
+// Bayer CFA pattern (2x2 tile describing the color filter layout)
+enum class BayerPattern { RGGB, GRBG, GBRG, BGGR, None };
+
 class FrameLoader {
 public:
     // Load all enabled frames into a SubCube.
-    //
-    // 1. Filter to enabled frames only
-    // 2. Open first frame to get dimensions (width, height, channels)
-    // 3. Allocate SubCube(nEnabled, height, width)
-    // 4. For each enabled frame: read image data, copy into cube, extract FITS metadata
-    // 5. Report progress via Console
-    //
-    // Throws: if no enabled frames, if dimension mismatch, if file I/O error
     static SubCube Load( const std::vector<FramePath>& frames );
 
-    // Load raw frame data without building SubCube (for alignment pipeline)
+    // Load raw frame data without building SubCube (for alignment pipeline).
+    // Automatically debayers single-channel CFA images into 3-channel RGB.
     static LoadedFrames LoadRaw( const std::vector<FramePath>& frames );
 
 private:
-    // Extract SubMetadata from FITS keywords
     static SubMetadata ExtractMetadata( const pcl::FITSKeywordArray& keywords );
 
-    // Helper: get numeric value from FITS keyword, or default if not found
     static double GetKeywordValue( const pcl::FITSKeywordArray& keywords,
                                    const pcl::IsoString& name,
                                    double defaultValue );
 
-    // Helper: get string value from FITS keyword, or default
     static pcl::String GetKeywordString( const pcl::FITSKeywordArray& keywords,
                                          const pcl::IsoString& name,
                                          const pcl::String& defaultValue );
+
+    // Detect Bayer pattern from FITS keywords
+    static BayerPattern DetectBayerPattern( const pcl::FITSKeywordArray& keywords );
+
+    // Debayer a single-channel CFA image into 3-channel RGB (bilinear interpolation)
+    static void DebayerBilinear( const float* cfa, int width, int height,
+                                  BayerPattern pattern,
+                                  std::vector<float>& outR,
+                                  std::vector<float>& outG,
+                                  std::vector<float>& outB );
 };
 
 } // namespace nukex
