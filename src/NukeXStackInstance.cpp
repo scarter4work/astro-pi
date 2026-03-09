@@ -24,9 +24,45 @@
 
 #include <chrono>
 #include <algorithm>
+#include <cctype>
 
 namespace pcl
 {
+
+// Map a FITS FILTER keyword value to an RGB channel index (0=R, 1=G, 2=B).
+// Returns -1 if the filter name is unrecognized.
+static int MapFilterToChannel( const std::string& filter )
+{
+   if ( filter.empty() )
+      return -1;
+
+   // Lowercase for case-insensitive matching
+   std::string lc = filter;
+   for ( char& c : lc )
+      c = static_cast<char>( std::tolower( static_cast<unsigned char>( c ) ) );
+
+   // Trim whitespace
+   size_t start = lc.find_first_not_of( " \t" );
+   size_t end   = lc.find_last_not_of( " \t" );
+   if ( start == std::string::npos )
+      return -1;
+   lc = lc.substr( start, end - start + 1 );
+
+   // Red channel
+   if ( lc == "red" || lc == "r" || lc == "ha" || lc == "halpha"
+        || lc == "h-alpha" || lc == "sii" || lc == "s2" )
+      return 0;
+
+   // Green channel
+   if ( lc == "green" || lc == "g" || lc == "oiii" || lc == "o3" )
+      return 1;
+
+   // Blue channel
+   if ( lc == "blue" || lc == "b" )
+      return 2;
+
+   return -1;
+}
 
 // ----------------------------------------------------------------------------
 
@@ -214,11 +250,42 @@ bool NukeXStackInstance::ExecuteGlobal()
       }
       Module->ProcessEvents();
 
+      // Detect filter-grouped RGB mode for mono camera frames
+      bool filterGrouped = false;
+      std::vector<std::vector<size_t>> filterGroups( 3 ); // R=0, G=1, B=2
+
+      if ( numChannels == 1 )
+      {
+         for ( size_t i = 0; i < nSubs; ++i )
+         {
+            int ch = MapFilterToChannel( raw.metadata[i].filter );
+            if ( ch >= 0 && ch < 3 )
+               filterGroups[ch].push_back( i );
+         }
+
+         int populated = 0;
+         for ( int c = 0; c < 3; ++c )
+            if ( !filterGroups[c].empty() )
+               ++populated;
+
+         if ( populated >= 2 )
+         {
+            filterGrouped = true;
+            numChannels = 3;
+            console.WriteLn( "\n  Filter-grouped RGB mode detected:" );
+            console.WriteLn( String().Format( "    R: %d frames, G: %d frames, B: %d frames",
+               int( filterGroups[0].size() ), int( filterGroups[1].size() ),
+               int( filterGroups[2].size() ) ) );
+            Module->ProcessEvents();
+         }
+      }
+
       // Phase 3: Per-channel stacking
       auto tPhase3 = std::chrono::steady_clock::now();
       console.WriteLn( String().Format( "\nPhase 3: Per-channel stacking..." ) );
-      console.WriteLn( String().Format( "  Image: %d x %d, %d subs, %d channel(s)",
-         cropW, cropH, int( nSubs ), numChannels ) );
+      console.WriteLn( String().Format( "  Image: %d x %d, %d subs, %d channel(s)%s",
+         cropW, cropH, int( nSubs ), numChannels,
+         filterGrouped ? " (filter-grouped)" : "" ) );
       console.Flush();
       Module->ProcessEvents();
 
@@ -240,66 +307,82 @@ bool NukeXStackInstance::ExecuteGlobal()
       monitor.SetCallback( &status );
       monitor.Initialize( "NukeX: Stacking", totalRows );
 
-      for ( int ch = 0; ch < numChannels; ++ch )
+      if ( filterGrouped )
       {
-         console.WriteLn( String().Format( "  Channel %s (%d/%d):",
-            chNames[ch], ch + 1, numChannels ) );
-         console.Flush();
-         Module->ProcessEvents();
-
-         size_t baseRows = size_t( ch ) * size_t( cropH );
-
-         // Progress callback: advances the StatusMonitor from the main thread
-         auto progressCB = [&monitor, baseRows]( size_t rowsDone, size_t /*totalRows*/ )
+         // ── Filter-grouped stacking: build per-channel SubCubes from frame subsets ──
+         for ( int ch = 0; ch < 3; ++ch )
          {
-            size_t target = baseRows + rowsDone;
-            size_t current = monitor.Count();
-            if ( target > current )
-               monitor += ( target - current );
+            console.WriteLn( String().Format( "  Channel %s (%d/%d):",
+               chNames[ch], ch + 1, 3 ) );
+            console.Flush();
             Module->ProcessEvents();
-         };
 
-         if ( ch == 0 )
-         {
-            // Reuse the aligned cube for channel 0
-            nukex::SubCube cube = std::move( aligned.alignedCube );
+            size_t baseRows = size_t( ch ) * size_t( cropH );
+            size_t mapSize  = size_t( cropH ) * size_t( cropW );
 
-            channelResults[ch] = selector.processImage( cube, weights, progressCB );
+            if ( filterGroups[ch].empty() )
+            {
+               // No frames for this channel — fill with zeros
+               channelResults[ch].assign( mapSize, 0.0f );
+               distTypeMaps[ch].assign( mapSize, 0 );
+               console.WriteLn( "    No frames — channel will be black" );
 
-            // Extract distType map
-            size_t mapSize = size_t( cropH ) * size_t( cropW );
-            distTypeMaps[ch].resize( mapSize );
-            for ( size_t y = 0; y < size_t( cropH ); ++y )
-               for ( size_t x = 0; x < size_t( cropW ); ++x )
-                  distTypeMaps[ch][y * cropW + x] = cube.distType( y, x );
+               // Advance progress bar past this channel
+               size_t target = baseRows + size_t( cropH );
+               size_t current = monitor.Count();
+               if ( target > current )
+                  monitor += ( target - current );
+               Module->ProcessEvents();
+               continue;
+            }
 
-            // Log distribution summary
-            size_t counts[4] = {};
-            for ( uint8_t t : distTypeMaps[ch] )
-               if ( t < 4 ) counts[t]++;
-            console.WriteLn( String().Format(
-               "    Distribution: %.0f%% Gaussian, %.0f%% Poisson, %.0f%% Skew-Normal, %.0f%% Bimodal",
-               100.0 * counts[0] / mapSize, 100.0 * counts[1] / mapSize,
-               100.0 * counts[2] / mapSize, 100.0 * counts[3] / mapSize ) );
-         }
-         else
-         {
-            // Build per-channel frame data and apply alignment
-            std::vector<std::vector<float>> chFrameData( nSubs );
-            for ( size_t f = 0; f < nSubs; ++f )
-               chFrameData[f] = raw.pixelData[f][ch];
+            // Build per-group frame data, offsets, weights, metadata
+            size_t groupSize = filterGroups[ch].size();
+            std::vector<std::vector<float>> groupFrameData( groupSize );
+            std::vector<nukex::AlignmentResult> groupOffsets( groupSize );
+            std::vector<double> groupWeights( groupSize );
+            std::vector<nukex::SubMetadata> groupMeta( groupSize );
 
-            nukex::SubCube cube = nukex::applyAlignment( chFrameData, aligned.offsets,
-                                                          aligned.crop, raw.width, raw.height );
+            for ( size_t g = 0; g < groupSize; ++g )
+            {
+               size_t idx = filterGroups[ch][g];
+               groupFrameData[g] = raw.pixelData[idx][0]; // mono = channel 0
+               groupOffsets[g]   = aligned.offsets[idx];
+               groupWeights[g]   = weights[idx];
+               groupMeta[g]      = raw.metadata[idx];
+            }
+
+            // Renormalize weights for this group
+            double wSum = 0;
+            for ( double w : groupWeights ) wSum += w;
+            if ( wSum > 0 )
+               for ( double& w : groupWeights ) w /= wSum;
+
+            // Build aligned SubCube for this filter group
+            nukex::SubCube cube = nukex::applyAlignment(
+               groupFrameData, groupOffsets, aligned.crop, raw.width, raw.height );
 
             // Copy metadata
-            for ( size_t i = 0; i < raw.metadata.size(); ++i )
-               cube.setMetadata( i, raw.metadata[i] );
+            for ( size_t i = 0; i < groupSize; ++i )
+               cube.setMetadata( i, groupMeta[i] );
 
-            channelResults[ch] = selector.processImage( cube, weights, progressCB );
+            console.WriteLn( String().Format( "    %d frames, stacking...",
+               int( groupSize ) ) );
+            Module->ProcessEvents();
+
+            // Progress callback
+            auto progressCB = [&monitor, baseRows]( size_t rowsDone, size_t /*totalRows*/ )
+            {
+               size_t target = baseRows + rowsDone;
+               size_t current = monitor.Count();
+               if ( target > current )
+                  monitor += ( target - current );
+               Module->ProcessEvents();
+            };
+
+            channelResults[ch] = selector.processImage( cube, groupWeights, progressCB );
 
             // Extract distType map
-            size_t mapSize = size_t( cropH ) * size_t( cropW );
             distTypeMaps[ch].resize( mapSize );
             for ( size_t y = 0; y < size_t( cropH ); ++y )
                for ( size_t x = 0; x < size_t( cropW ); ++x )
@@ -313,10 +396,84 @@ bool NukeXStackInstance::ExecuteGlobal()
                "    Distribution: %.0f%% Gaussian, %.0f%% Poisson, %.0f%% Skew-Normal, %.0f%% Bimodal",
                100.0 * counts[0] / mapSize, 100.0 * counts[1] / mapSize,
                100.0 * counts[2] / mapSize, 100.0 * counts[3] / mapSize ) );
-         }
 
-         console.Flush();
-         Module->ProcessEvents();
+            console.Flush();
+            Module->ProcessEvents();
+         }
+      }
+      else
+      {
+         // ── Standard per-channel stacking (OSC or single-channel) ──
+         for ( int ch = 0; ch < numChannels; ++ch )
+         {
+            console.WriteLn( String().Format( "  Channel %s (%d/%d):",
+               chNames[ch], ch + 1, numChannels ) );
+            console.Flush();
+            Module->ProcessEvents();
+
+            size_t baseRows = size_t( ch ) * size_t( cropH );
+
+            auto progressCB = [&monitor, baseRows]( size_t rowsDone, size_t /*totalRows*/ )
+            {
+               size_t target = baseRows + rowsDone;
+               size_t current = monitor.Count();
+               if ( target > current )
+                  monitor += ( target - current );
+               Module->ProcessEvents();
+            };
+
+            if ( ch == 0 )
+            {
+               nukex::SubCube cube = std::move( aligned.alignedCube );
+
+               channelResults[ch] = selector.processImage( cube, weights, progressCB );
+
+               size_t mapSize = size_t( cropH ) * size_t( cropW );
+               distTypeMaps[ch].resize( mapSize );
+               for ( size_t y = 0; y < size_t( cropH ); ++y )
+                  for ( size_t x = 0; x < size_t( cropW ); ++x )
+                     distTypeMaps[ch][y * cropW + x] = cube.distType( y, x );
+
+               size_t counts[4] = {};
+               for ( uint8_t t : distTypeMaps[ch] )
+                  if ( t < 4 ) counts[t]++;
+               console.WriteLn( String().Format(
+                  "    Distribution: %.0f%% Gaussian, %.0f%% Poisson, %.0f%% Skew-Normal, %.0f%% Bimodal",
+                  100.0 * counts[0] / mapSize, 100.0 * counts[1] / mapSize,
+                  100.0 * counts[2] / mapSize, 100.0 * counts[3] / mapSize ) );
+            }
+            else
+            {
+               std::vector<std::vector<float>> chFrameData( nSubs );
+               for ( size_t f = 0; f < nSubs; ++f )
+                  chFrameData[f] = raw.pixelData[f][ch];
+
+               nukex::SubCube cube = nukex::applyAlignment( chFrameData, aligned.offsets,
+                                                             aligned.crop, raw.width, raw.height );
+
+               for ( size_t i = 0; i < raw.metadata.size(); ++i )
+                  cube.setMetadata( i, raw.metadata[i] );
+
+               channelResults[ch] = selector.processImage( cube, weights, progressCB );
+
+               size_t mapSize = size_t( cropH ) * size_t( cropW );
+               distTypeMaps[ch].resize( mapSize );
+               for ( size_t y = 0; y < size_t( cropH ); ++y )
+                  for ( size_t x = 0; x < size_t( cropW ); ++x )
+                     distTypeMaps[ch][y * cropW + x] = cube.distType( y, x );
+
+               size_t counts[4] = {};
+               for ( uint8_t t : distTypeMaps[ch] )
+                  if ( t < 4 ) counts[t]++;
+               console.WriteLn( String().Format(
+                  "    Distribution: %.0f%% Gaussian, %.0f%% Poisson, %.0f%% Skew-Normal, %.0f%% Bimodal",
+                  100.0 * counts[0] / mapSize, 100.0 * counts[1] / mapSize,
+                  100.0 * counts[2] / mapSize, 100.0 * counts[3] / mapSize ) );
+            }
+
+            console.Flush();
+            Module->ProcessEvents();
+         }
       }
 
       monitor.Complete();

@@ -9,8 +9,8 @@
       </p>
    </description>
    <platform os="linux" arch="x64" version="1.8.0:1.9.9">
-      <package fileName="20260308-linux-x64-NukeX.tar.gz" sha1="7fc606d73b158c7dfcedb9b5ebe3cd45a633c6ac" type="module" releaseDate="20260308">
-         <title>NukeX 3.0.0.9</title>
+      <package fileName="20260309-linux-x64-NukeX.tar.gz" sha1="0acd6ee7af2d57dcc852636df8f0a79bc5b2e706" type="module" releaseDate="20260309">
+         <title>NukeX 3.0.0.10</title>
          <description>
             <p>
                <b>NukeX v3 - Statistical Stacking + Stretch for PixInsight</b>
@@ -27,7 +27,7 @@
                </li>
             </ul>
             <p>
-               <b>Version 3.0.0.9 - RGB stacking, channel recombination, auto-stretch, progress bar</b>
+               <b>Version 3.0.0.10 - Filter-grouped RGB for mono cameras, channel recombination, auto-stretch</b>
             </p>
             <p>
                Copyright (c) 2026 Scott Carter. All Rights Reserved.
@@ -36,4 +36,4 @@
       </package>
    </platform>
 </xri>
-<Signature developerId="scarter4work" timestamp="2026-03-09T02:35:25.297Z" encoding="Base64">ZMnTJh3PVoCfxKTieQIcvOe+WWz28HYTDnk98T88sP+6tTGMYsXFSkqcO0Os+AEl3bCzVtz8HihcGrXgn/BHBQ==</Signature>
+<Signature developerId="scarter4work" timestamp="2026-03-09T14:02:20.455Z" encoding="Base64">9N+2zxtpQMtNIFYEKM8+y+POImejDMtlQ0rOdIgEnnpXoUADu0wNosSmZGQJykLCivnNIDFZS/KC021U07p9CA==</Signature>
