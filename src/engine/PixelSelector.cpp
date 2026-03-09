@@ -2,6 +2,7 @@
 #include "engine/PixelSelector.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cmath>
 #include <limits>
 #include <numeric>
@@ -166,13 +167,19 @@ std::vector<float> PixelSelector::processImage(SubCube& cube,
     size_t N = cube.numSubs();
     std::vector<float> output(H * W);
 
-    // Process in row chunks so progress callback runs on the main thread
-    // between parallel regions (PCL event processing is main-thread-affine).
-    constexpr size_t CHUNK = 100;
+    // 10 rows per chunk: frequent UI updates for real-time progress feedback.
+    // PCL event processing is main-thread-affine, so progress callback
+    // runs between parallel regions on the main thread.
+    constexpr size_t CHUNK = 10;
+
+    std::atomic<size_t> errorCount{0};
 
     for (size_t yStart = 0; yStart < H; yStart += CHUNK) {
         size_t yEnd = std::min(yStart + CHUNK, H);
 
+        // Thread-safe: selectBestZ uses only stack-local allocations.
+        // Writes to output[y*W+x], provenance(y,x), distType(y,x) are
+        // non-overlapping across (y,x) pairs.
         #pragma omp parallel for schedule(dynamic, 4)
         for (size_t y = yStart; y < yEnd; ++y) {
             for (size_t x = 0; x < W; ++x) {
@@ -181,8 +188,11 @@ std::vector<float> PixelSelector::processImage(SubCube& cube,
                     output[y * W + x] = result.selectedValue;
                     cube.setProvenance(y, x, result.selectedZ);
                     cube.setDistType(y, x, static_cast<uint8_t>(result.bestModel));
-                } catch (...) {
-                    // Fallback: simple mean of Z-column
+                } catch (const std::bad_alloc&) {
+                    throw;  // Memory errors must propagate
+                } catch (const std::exception&) {
+                    // Fitting failure — fall back to simple mean of Z-column
+                    ++errorCount;
                     const float* col = cube.zColumnPtr(y, x);
                     double sum = 0.0;
                     for (size_t z = 0; z < N; ++z)
@@ -197,6 +207,9 @@ std::vector<float> PixelSelector::processImage(SubCube& cube,
         if (progress)
             progress(yEnd, H);
     }
+
+    // Store error count for caller to retrieve
+    m_lastErrorCount = errorCount.load();
 
     return output;
 }

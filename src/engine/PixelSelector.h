@@ -36,8 +36,12 @@ public:
                                     const std::vector<double>& qualityWeights,
                                     ProgressCallback progress = nullptr);
 
+    // Number of pixels that fell back to simple mean in the last processImage() call
+    size_t lastErrorCount() const { return m_lastErrorCount; }
+
 private:
     Config m_config;
+    size_t m_lastErrorCount = 0;
 
     struct PixelResult {
         uint32_t selectedZ;

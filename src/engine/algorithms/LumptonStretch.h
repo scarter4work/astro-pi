@@ -49,12 +49,6 @@ public:
    double Stretch() const { return GetParameter( "stretch" ); }
    void SetStretch( double s ) { SetParameter( "stretch", s ); }
 
-private:
-
-   mutable double m_normFactor = 1.0;
-   mutable double m_lastQ = -1.0;
-
-   void UpdateNormFactor() const;
 };
 
 // ----------------------------------------------------------------------------

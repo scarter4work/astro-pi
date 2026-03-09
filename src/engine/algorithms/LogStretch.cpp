@@ -45,20 +45,6 @@ String LogStretch::Description() const
 
 // ----------------------------------------------------------------------------
 
-void LogStretch::UpdateNormFactor() const
-{
-   double scale = Scale();
-   if ( std::abs( scale - m_lastScale ) > 1e-10 )
-   {
-      m_lastScale = scale;
-      m_normFactor = std::log( 1.0 + scale );
-      if ( m_normFactor < 1e-10 )
-         m_normFactor = 1.0;
-   }
-}
-
-// ----------------------------------------------------------------------------
-
 double LogStretch::Apply( double value ) const
 {
    double blackPoint = BlackPoint();
@@ -75,9 +61,11 @@ double LogStretch::Apply( double value ) const
    if ( x >= 1.0 )
       return 1.0;
 
-   UpdateNormFactor();
+   double normFactor = std::log( 1.0 + scale );
+   if ( normFactor < 1e-10 )
+      normFactor = 1.0;
 
-   double logResult = std::log( 1.0 + scale * x ) / m_normFactor;
+   double logResult = std::log( 1.0 + scale * x ) / normFactor;
 
    if ( highlightProt > 0.0 && x > highlightProt )
    {
@@ -85,7 +73,7 @@ double LogStretch::Apply( double value ) const
       double blendFactor = (x - highlightProt) / blendRange;
       blendFactor = blendFactor * blendFactor;
 
-      double logAtThreshold = std::log( 1.0 + scale * highlightProt ) / m_normFactor;
+      double logAtThreshold = std::log( 1.0 + scale * highlightProt ) / normFactor;
       double linearResult = logAtThreshold + (x - highlightProt) * (1.0 - logAtThreshold) / blendRange;
 
       logResult = logResult * (1.0 - blendFactor) + linearResult * blendFactor;

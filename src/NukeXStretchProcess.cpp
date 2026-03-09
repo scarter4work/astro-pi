@@ -63,13 +63,13 @@ String NukeXStretchProcess::Description() const
 {
    return
       "<html>"
-      "<p><b>NukeXStretch</b> - Intelligent Region-Aware Stretch</p>"
-      "<p>NukeXStretch uses AI-driven semantic segmentation to identify distinct "
-      "regions in astrophotography images and apply optimally-selected stretch "
-      "algorithms to each region independently.</p>"
-      "<p>Unlike traditional global stretches, NukeXStretch understands that star "
-      "cores, faint nebulosity, dust lanes, and galaxy halos each require "
-      "different treatment.</p>"
+      "<p><b>NukeXStretch</b> — Intelligent Auto-Stretch</p>"
+      "<p>NukeXStretch provides 11 stretch algorithms with automatic parameter "
+      "selection based on image statistics (median, MAD). When used after "
+      "NukeXStack, it leverages per-pixel distribution type maps for "
+      "distribution-aware algorithm selection.</p>"
+      "<p>Algorithms: MTF, Histogram, GHS, ArcSinh, Log, Lumpton, RNC, "
+      "Photometric, OTS, SAS, Veralux.</p>"
       "</html>";
 }
 

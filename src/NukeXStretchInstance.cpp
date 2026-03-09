@@ -102,78 +102,105 @@ bool NukeXStretchInstance::CanExecuteOn( const View& view, String& whyNot ) cons
 
 bool NukeXStretchInstance::ExecuteOn( View& view )
 {
-   AutoViewLock lock( view );
-
-   Console console;
-   console.WriteLn( "<end><cbr>NukeXStretch: Processing..." );
-
-   // Get the image from the view
-   ImageVariant imageVar = view.Image();
-
-   // Ensure we're working with 32-bit float (standard for astro processing)
-   // If not, create a 32-bit float version
-   if ( !imageVar.IsFloatSample() || imageVar.BitsPerSample() != 32 )
+   try
    {
-      console.WarningLn( "Warning: Converting image to 32-bit float." );
-      ImageVariant result;
-      result.CreateFloatImage( 32 );
-      result.CopyImage( imageVar );
-      imageVar.Free();
-      view.Image().CopyImage( result );
-      imageVar = view.Image();
+      AutoViewLock lock( view );
+
+      Console console;
+      console.WriteLn( "<end><cbr>NukeXStretch: Processing...\n" );
+
+      // Get the image from the view
+      ImageVariant imageVar = view.Image();
+
+      // Ensure we're working with 32-bit float (standard for astro processing)
+      if ( !imageVar.IsFloatSample() || imageVar.BitsPerSample() != 32 )
+      {
+         console.WarningLn( "Warning: Converting image to 32-bit float.\n" );
+         ImageVariant result;
+         result.CreateFloatImage( 32 );
+         result.CopyImage( imageVar );
+         imageVar.Free();
+         view.Image().CopyImage( result );
+         imageVar = view.Image();
+      }
+
+      // Get reference to the underlying 32-bit float Image
+      Image& image = static_cast<Image&>( *imageVar );
+
+      // Map algorithm enum to AlgorithmType
+      AlgorithmType algoType;
+      switch ( p_stretchAlgorithm )
+      {
+      case NXSStretchAlgorithm::MTF:         algoType = AlgorithmType::MTF;         break;
+      case NXSStretchAlgorithm::Histogram:   algoType = AlgorithmType::Histogram;   break;
+      case NXSStretchAlgorithm::GHS:         algoType = AlgorithmType::GHS;         break;
+      case NXSStretchAlgorithm::ArcSinh:     algoType = AlgorithmType::ArcSinh;     break;
+      case NXSStretchAlgorithm::Log:         algoType = AlgorithmType::Log;         break;
+      case NXSStretchAlgorithm::Lumpton:     algoType = AlgorithmType::Lumpton;     break;
+      case NXSStretchAlgorithm::RNC:         algoType = AlgorithmType::RNC;         break;
+      case NXSStretchAlgorithm::Photometric: algoType = AlgorithmType::Photometric; break;
+      case NXSStretchAlgorithm::OTS:         algoType = AlgorithmType::OTS;         break;
+      case NXSStretchAlgorithm::SAS:         algoType = AlgorithmType::SAS;         break;
+      case NXSStretchAlgorithm::Veralux:     algoType = AlgorithmType::Veralux;     break;
+      default:                               algoType = AlgorithmType::Auto;        break;
+      }
+
+      // Create the algorithm
+      auto algorithm = StretchLibrary::Instance().Create( algoType );
+      if ( algorithm == nullptr )
+      {
+         console.CriticalLn( "Error: Stretch algorithm not available.\n" );
+         return false;
+      }
+
+      console.WriteLn( "Algorithm: " + algorithm->Name() + "\n" );
+
+      // Compute basic image statistics for auto-configure
+      double median = image.Median();
+      double mad = image.MAD( median );
+
+      console.WriteLn( String().Format( "Image median: %.6f, MAD: %.6f\n", median, mad ) );
+
+      // Auto-configure the algorithm based on image statistics
+      algorithm->AutoConfigure( median, mad );
+
+      // Apply the stretch to the image
+      StandardStatus status;
+      StatusMonitor monitor;
+      monitor.SetCallback( &status );
+      monitor.Initialize( "Applying stretch", image.NumberOfPixels() * image.NumberOfChannels() );
+
+      algorithm->ApplyToImage( image );
+
+      console.WriteLn( "NukeXStretch: Done.\n" );
+
+      return true;
    }
-
-   // Get reference to the underlying 32-bit float Image
-   Image& image = static_cast<Image&>( *imageVar );
-
-   // Map algorithm enum to AlgorithmType
-   AlgorithmType algoType;
-   switch ( p_stretchAlgorithm )
+   catch ( const std::bad_alloc& e )
    {
-   case NXSStretchAlgorithm::MTF:         algoType = AlgorithmType::MTF;         break;
-   case NXSStretchAlgorithm::Histogram:   algoType = AlgorithmType::Histogram;   break;
-   case NXSStretchAlgorithm::GHS:         algoType = AlgorithmType::GHS;         break;
-   case NXSStretchAlgorithm::ArcSinh:     algoType = AlgorithmType::ArcSinh;     break;
-   case NXSStretchAlgorithm::Log:         algoType = AlgorithmType::Log;         break;
-   case NXSStretchAlgorithm::Lumpton:     algoType = AlgorithmType::Lumpton;     break;
-   case NXSStretchAlgorithm::RNC:         algoType = AlgorithmType::RNC;         break;
-   case NXSStretchAlgorithm::Photometric: algoType = AlgorithmType::Photometric; break;
-   case NXSStretchAlgorithm::OTS:         algoType = AlgorithmType::OTS;         break;
-   case NXSStretchAlgorithm::SAS:         algoType = AlgorithmType::SAS;         break;
-   case NXSStretchAlgorithm::Veralux:     algoType = AlgorithmType::Veralux;     break;
-   default:                               algoType = AlgorithmType::Auto;        break;
-   }
-
-   // Create the algorithm
-   auto algorithm = StretchLibrary::Instance().Create( algoType );
-   if ( algorithm == nullptr )
-   {
-      console.WriteLn( "Error: Failed to create stretch algorithm." );
+      Console().CriticalLn( "NukeXStretch: Out of memory \xe2\x80\x94 " + String( e.what() )
+         + "\nTry closing other image windows to free memory.\n" );
       return false;
    }
-
-   console.WriteLn( "Algorithm: " + algorithm->Name() );
-
-   // Compute basic image statistics for auto-configure
-   double median = image.Median();
-   double mad = image.MAD( median );
-
-   console.WriteLn( String().Format( "Image median: %.6f, MAD: %.6f", median, mad ) );
-
-   // Auto-configure the algorithm based on image statistics
-   algorithm->AutoConfigure( median, mad );
-
-   // Apply the stretch to the image
-   StandardStatus status;
-   StatusMonitor monitor;
-   monitor.SetCallback( &status );
-   monitor.Initialize( "Applying stretch", image.NumberOfPixels() * image.NumberOfChannels() );
-
-   algorithm->ApplyToImage( image );
-
-   console.WriteLn( "NukeXStretch: Done." );
-
-   return true;
+   catch ( const ProcessAborted& )
+   {
+      throw;
+   }
+   catch ( const Error& e )
+   {
+      Console().CriticalLn( "NukeXStretch: " + e.Message() + "\n" );
+      return false;
+   }
+   catch ( const std::exception& e )
+   {
+      Console().CriticalLn( "NukeXStretch: " + String( e.what() ) + "\n" );
+      return false;
+   }
+   catch ( ... )
+   {
+      Console().CriticalLn( "NukeXStretch: Unknown error during stretch.\n" );
+      return false;
+   }
 }
 
 // ----------------------------------------------------------------------------

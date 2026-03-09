@@ -55,10 +55,10 @@ IsoString NukeXModule::Name() const
 
 String NukeXModule::Description() const
 {
-   return "NukeX v3 - Statistical Stacking and Intelligent Stretch for PixInsight. "
+   return "NukeX v3 — Statistical Stacking and Intelligent Stretch for PixInsight. "
           "Includes NukeXStack (per-pixel statistical inference stacking with "
-          "distribution fitting and outlier detection) and NukeXStretch "
-          "(intelligent region-aware stretching using AI segmentation).";
+          "distribution fitting, AIC model selection, and quality weighting) and "
+          "NukeXStretch (11 stretch algorithms with automatic parameter selection).";
 }
 
 // ----------------------------------------------------------------------------

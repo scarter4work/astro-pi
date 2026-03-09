@@ -32,6 +32,7 @@ struct FitResult {
 
 FitResult fitGaussian(const std::vector<double>& data);
 FitResult fitPoisson(const std::vector<double>& data);
-// fitSkewNormal and fitBimodal will be added by other tasks
+// Skew-Normal fitter: see SkewNormalFitter.h (separate to isolate Eigen/LBFGSpp deps)
+// Bimodal fitter: see GaussianMixEM.h (separate to isolate Boost.Math deps)
 
 } // namespace nukex

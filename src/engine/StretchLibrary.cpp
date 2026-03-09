@@ -143,12 +143,12 @@ void StretchLibrary::InitializeRegistry()
                             true ),
              []() { return std::make_unique<VeraluxStretch>(); } );
 
-   // Register Auto (placeholder - defaults to GHS for now)
+   // Register Auto (AutoStretchSelector selects; factory default is GHS)
    Register( AlgorithmType::Auto,
              AlgorithmInfo( AlgorithmType::Auto,
                             "Auto",
                             "Auto (Selected)",
-                            "Automatic algorithm selection (placeholder for Phase 2).",
+                            "Automatic algorithm selection via AutoStretchSelector.",
                             true ),
              []() { return std::make_unique<GHStretch>(); } );  // Default to GHS for auto
 }
@@ -172,13 +172,8 @@ std::unique_ptr<IStretchAlgorithm> StretchLibrary::Create( AlgorithmType type ) 
       return factoryIt->second();
    }
 
-   // Fall back to MTF if requested algorithm not implemented
-   auto mtfIt = m_factories.find( AlgorithmType::MTF );
-   if ( mtfIt != m_factories.end() && mtfIt->second )
-   {
-      return mtfIt->second();
-   }
-
+   // Algorithm not found — return nullptr so the caller can handle it explicitly.
+   // Callers (ExecuteOn, ExecuteGlobal) check for nullptr and log a meaningful error.
    return nullptr;
 }
 

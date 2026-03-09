@@ -46,12 +46,6 @@ public:
    double HighlightProtection() const { return GetParameter( "highlightProtection" ); }
    void SetHighlightProtection( double hp ) { SetParameter( "highlightProtection", hp ); }
 
-private:
-
-   mutable double m_normFactor = 1.0;
-   mutable double m_lastScale = -1.0;
-
-   void UpdateNormFactor() const;
 };
 
 // ----------------------------------------------------------------------------

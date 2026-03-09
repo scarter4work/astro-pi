@@ -3,16 +3,31 @@
 
 #include <Eigen/Core>
 #include <LBFGS.h>
-#include <boost/math/distributions/skew_normal.hpp>
 
 #include <cmath>
 #include <stdexcept>
 
 namespace nukex {
 
+namespace {
+constexpr double LOG_2     = 0.6931471805599453;
+constexpr double LOG_2PI   = 1.8378770664093453;
+constexpr double SQRT_2    = 1.4142135623730951;
+constexpr double INV_SQRT2 = 0.7071067811865476;
+
+// Numerically stable log(Phi(t)) where Phi is the standard normal CDF.
+// Uses log(erfc(-t/sqrt(2))/2) which handles large negative t without underflow.
+inline double logNormalCDF(double t) {
+    return std::log(std::erfc(-t * INV_SQRT2) * 0.5);
+}
+} // anonymous namespace
+
 // Objective functor for LBFGSpp
 // Minimizes negative log-likelihood of the skew-normal distribution.
 // Parameters: x[0] = xi (location), x[1] = log(omega) (log-scale), x[2] = alpha (shape).
+//
+// Analytical log-PDF: log f(x) = log(2) - log(omega) - 0.5*log(2*pi) - 0.5*z^2 + log(Phi(alpha*z))
+// where z = (x - xi) / omega, Phi = standard normal CDF.
 class SkewNormalObjective {
 public:
     explicit SkewNormalObjective(const std::vector<double>& data) : m_data(data) {}
@@ -24,13 +39,16 @@ public:
         double alpha = x[2];
 
         if (omega < 1e-15) omega = 1e-15;
-        boost::math::skew_normal_distribution<double> dist(xi, omega, alpha);
+        double logOmega = std::log(omega);
+
+        // Per-sample constant: log(2) - log(omega) - 0.5*log(2*pi)
+        double perSampleConst = LOG_2 - logOmega - 0.5 * LOG_2PI;
 
         double negLogL = 0.0;
         for (double val : m_data) {
-            double p = boost::math::pdf(dist, val);
-            if (p < 1e-300) p = 1e-300;
-            negLogL -= std::log(p);
+            double z = (val - xi) / omega;
+            // log f(x) = perSampleConst - 0.5*z^2 + log(Phi(alpha*z))
+            negLogL -= perSampleConst - 0.5 * z * z + logNormalCDF(alpha * z);
         }
         return negLogL;
     }
@@ -86,19 +104,20 @@ SkewNormalFitResult fitSkewNormal(const std::vector<double>& data) {
         result.logLikelihood = -negLogL;
         result.iterations    = niter;
         result.converged     = true;
-    } catch (...) {
-        // Fallback: return moment-based estimates with analytical log-likelihood.
-        // Must not throw — this is called from OpenMP parallel regions.
+    } catch (const std::bad_alloc&) {
+        throw;  // Memory errors must propagate — never silently degrade
+    } catch (const std::exception&) {
+        // Optimization convergence failure — fall back to moment-based estimates.
+        // Must not throw further — called from OpenMP parallel regions.
         result.xi    = mu;
         result.omega = sigma;
         result.alpha = skew;
         result.iterations = 0;
         result.converged  = false;
 
-        // Approximate log-likelihood treating as Gaussian (safe, no Boost needed)
+        // Gaussian log-likelihood as fallback (not skew-normal — avoids Boost in error path)
         if (sigma < 1e-15) sigma = 1e-15;
         double logSigma = std::log(sigma);
-        constexpr double LOG_2PI = 1.8378770664093453;
         double logL = 0.0;
         for (double val : data) {
             double z = (val - mu) / sigma;

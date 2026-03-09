@@ -261,3 +261,32 @@ target_include_directories(test_auto_stretch_selector PRIVATE
 )
 target_compile_features(test_auto_stretch_selector PRIVATE cxx_std_17)
 add_test(NAME test_auto_stretch_selector COMMAND test_auto_stretch_selector)
+
+# Stretch algorithm unit tests (all 11 algorithms)
+add_executable(test_stretch_algorithms
+    unit/test_stretch_algorithms.cpp
+    ${CMAKE_SOURCE_DIR}/src/engine/IStretchAlgorithm.cpp
+    ${CMAKE_SOURCE_DIR}/src/engine/algorithms/MTFStretch.cpp
+    ${CMAKE_SOURCE_DIR}/src/engine/algorithms/ArcSinhStretch.cpp
+    ${CMAKE_SOURCE_DIR}/src/engine/algorithms/GHStretch.cpp
+    ${CMAKE_SOURCE_DIR}/src/engine/algorithms/HistogramStretch.cpp
+    ${CMAKE_SOURCE_DIR}/src/engine/algorithms/LogStretch.cpp
+    ${CMAKE_SOURCE_DIR}/src/engine/algorithms/LumptonStretch.cpp
+    ${CMAKE_SOURCE_DIR}/src/engine/algorithms/RNCStretch.cpp
+    ${CMAKE_SOURCE_DIR}/src/engine/algorithms/PhotometricStretch.cpp
+    ${CMAKE_SOURCE_DIR}/src/engine/algorithms/OTSStretch.cpp
+    ${CMAKE_SOURCE_DIR}/src/engine/algorithms/SASStretch.cpp
+    ${CMAKE_SOURCE_DIR}/src/engine/algorithms/VeraluxStretch.cpp
+)
+target_link_libraries(test_stretch_algorithms PRIVATE Catch2::Catch2WithMain)
+target_include_directories(test_stretch_algorithms PRIVATE
+    ${PCL_INCLUDE_DIR}
+    ${CMAKE_SOURCE_DIR}/src
+    ${CMAKE_SOURCE_DIR}/src/engine
+    ${CMAKE_SOURCE_DIR}/src/engine/algorithms
+)
+target_link_directories(test_stretch_algorithms PRIVATE ${PCL_LIB_DIR})
+target_link_libraries(test_stretch_algorithms PRIVATE ${PCL_LIBRARIES} pthread)
+target_compile_definitions(test_stretch_algorithms PRIVATE __PCL_LINUX _REENTRANT)
+target_compile_features(test_stretch_algorithms PRIVATE cxx_std_17)
+add_test(NAME test_stretch_algorithms COMMAND test_stretch_algorithms)

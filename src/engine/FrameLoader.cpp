@@ -329,8 +329,13 @@ double FrameLoader::GetKeywordValue( const pcl::FITSKeywordArray& keywords,
                 {
                     return valStr.ToDouble();
                 }
-                catch ( ... )
+                catch ( const std::bad_alloc& )
                 {
+                    throw;  // Memory errors must propagate
+                }
+                catch ( const std::exception& )
+                {
+                    // Malformed numeric value in FITS keyword — use default
                     return defaultValue;
                 }
             }

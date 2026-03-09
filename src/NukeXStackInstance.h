@@ -7,7 +7,7 @@
 // NukeX v3 - Statistical Stacking + Stretch for PixInsight
 // Copyright (c) 2026 Scott Carter
 //
-// NukeXStack Instance - Stub for compilation
+// NukeXStack Instance - Per-pixel statistical inference stacking execution
 
 #ifndef __NukeXStackInstance_h
 #define __NukeXStackInstance_h

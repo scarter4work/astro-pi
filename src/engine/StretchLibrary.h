@@ -39,7 +39,7 @@ enum class AlgorithmType
    OTS,
    SAS,
    Veralux,
-   Auto,        // Placeholder for future AI-selected stretch
+   Auto,        // Selects algorithm via AutoStretchSelector (factory default: GHS)
    Count
 };
 

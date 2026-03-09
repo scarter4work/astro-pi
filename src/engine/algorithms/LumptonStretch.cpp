@@ -51,20 +51,6 @@ String LumptonStretch::Description() const
 
 // ----------------------------------------------------------------------------
 
-void LumptonStretch::UpdateNormFactor() const
-{
-   double q = Q();
-   if ( std::abs( q - m_lastQ ) > 1e-10 )
-   {
-      m_lastQ = q;
-      m_normFactor = std::asinh( q );
-      if ( m_normFactor < 1e-10 )
-         m_normFactor = 1.0;
-   }
-}
-
-// ----------------------------------------------------------------------------
-
 double LumptonStretch::Apply( double value ) const
 {
    double blackPoint = BlackPoint();
@@ -79,8 +65,6 @@ double LumptonStretch::Apply( double value ) const
 
    if ( x <= 0.0 )
       return 0.0;
-
-   UpdateNormFactor();
 
    double scaledX = x / minimum;
    double result = std::asinh( q * scaledX );

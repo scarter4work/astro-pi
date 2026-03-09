@@ -47,20 +47,6 @@ String ArcSinhStretch::Description() const
 
 // ----------------------------------------------------------------------------
 
-void ArcSinhStretch::UpdateNormFactor() const
-{
-   double beta = Beta();
-   if ( std::abs( beta - m_lastBeta ) > 1e-10 )
-   {
-      m_lastBeta = beta;
-      m_normFactor = std::asinh( beta );
-      if ( m_normFactor < 1e-10 )
-         m_normFactor = 1.0;
-   }
-}
-
-// ----------------------------------------------------------------------------
-
 double ArcSinhStretch::Apply( double value ) const
 {
    double blackPoint = BlackPoint();
@@ -77,9 +63,11 @@ double ArcSinhStretch::Apply( double value ) const
    if ( x >= 1.0 && beta < 1.0 )
       return 1.0;
 
-   UpdateNormFactor();
+   double normFactor = std::asinh( beta );
+   if ( normFactor < 1e-10 )
+      normFactor = 1.0;
 
-   double result = std::asinh( x * beta ) / m_normFactor;
+   double result = std::asinh( x * beta ) / normFactor;
    result *= stretch;
 
    return Clamp( result );

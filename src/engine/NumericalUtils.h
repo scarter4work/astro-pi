@@ -63,7 +63,7 @@ inline double kahanMean(const double* data, size_t n) {
     return kahanSum(data, n) / static_cast<double>(n);
 }
 
-// Compensated variance (two-pass for stability)
+// Population variance (divides by n, not n-1). Kahan-compensated two-pass algorithm.
 inline double variance(const double* data, size_t n) {
     if (n < 2)
         return 0.0;

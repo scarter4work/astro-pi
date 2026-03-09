@@ -24,6 +24,7 @@
 
 #include <chrono>
 #include <algorithm>
+#include <cmath>
 
 namespace pcl
 {
@@ -161,13 +162,28 @@ bool NukeXStackInstance::ExecuteGlobal()
       nukex::AlignmentOutput aligned = nukex::alignFrames(
          framePtrs, raw.width, raw.height );
 
+      int unalignedCount = 0;
       for ( size_t i = 0; i < aligned.offsets.size(); ++i )
       {
          const auto& o = aligned.offsets[i];
-         console.WriteLn( String().Format( "  [%d/%d] dx=%+d, dy=%+d (%d stars, RMS=%.2f)",
-            int( i + 1 ), int( aligned.offsets.size() ),
-            o.dx, o.dy, o.numMatchedStars, o.convergenceRMS ) );
+         if ( o.valid )
+         {
+            console.WriteLn( String().Format( "  [%d/%d] dx=%+d, dy=%+d (%d stars, RMS=%.2f)\n",
+               int( i + 1 ), int( aligned.offsets.size() ),
+               o.dx, o.dy, o.numMatchedStars, o.convergenceRMS ) );
+         }
+         else
+         {
+            ++unalignedCount;
+            console.WarningLn( String().Format( "  [%d/%d] alignment failed — using zero offset (unaligned)\n",
+               int( i + 1 ), int( aligned.offsets.size() ) ) );
+         }
+         console.Flush();
+         Module->ProcessEvents();
       }
+      if ( unalignedCount > 0 )
+         console.WarningLn( String().Format( "  %d frame(s) could not be aligned — included with zero offset\n",
+            unalignedCount ) );
       console.WriteLn( String().Format( "  Crop: %d x %d (from %d x %d)",
          aligned.crop.width(), aligned.crop.height(), raw.width, raw.height ) );
 
@@ -230,8 +246,19 @@ bool NukeXStackInstance::ExecuteGlobal()
       std::vector<std::vector<uint8_t>> distTypeMaps( numChannels );
 
       nukex::PixelSelector::Config selConfig;
-      selConfig.maxOutliers = static_cast<int>( p_outlierSigmaThreshold );
+      // Derive maxOutliers from stack depth (use all data — outlier detection
+      // is only for pixel selection, never frame rejection)
+      selConfig.maxOutliers = std::max( 1, static_cast<int>( nSubs ) / 3 );
+      // Convert sigma threshold to ESD alpha: alpha = 2*(1 - Phi(sigma))
+      // where Phi is the standard normal CDF: Phi(x) = erfc(-x/sqrt(2))/2
+      {
+         double sigma = static_cast<double>( p_outlierSigmaThreshold );
+         double phi = std::erfc( -sigma / 1.4142135623730951 ) * 0.5;
+         selConfig.outlierAlpha = std::max( 0.001, std::min( 0.5, 2.0 * (1.0 - phi) ) );
+      }
       nukex::PixelSelector selector( selConfig );
+      console.WriteLn( String().Format( "  Outlier config: maxOutliers=%d, alpha=%.4f (sigma=%.1f)\n",
+         selConfig.maxOutliers, selConfig.outlierAlpha, double( p_outlierSigmaThreshold ) ) );
 
       // Progress bar: total rows across all channels
       size_t totalRows = size_t( numChannels ) * size_t( cropH );
@@ -249,12 +276,13 @@ bool NukeXStackInstance::ExecuteGlobal()
 
          size_t baseRows = size_t( ch ) * size_t( cropH );
 
-         auto progressCB = [&monitor, baseRows]( size_t rowsDone, size_t /*totalRows*/ )
+         auto progressCB = [&monitor, &console, baseRows]( size_t rowsDone, size_t /*totalRows*/ )
          {
             size_t target = baseRows + rowsDone;
             size_t current = monitor.Count();
             if ( target > current )
                monitor += ( target - current );
+            console.Flush();
             Module->ProcessEvents();
          };
 
@@ -262,7 +290,6 @@ bool NukeXStackInstance::ExecuteGlobal()
          {
             // Reuse the aligned cube for channel 0
             nukex::SubCube cube = std::move( aligned.alignedCube );
-
             channelResults[ch] = selector.processImage( cube, weights, progressCB );
 
             size_t mapSize = size_t( cropH ) * size_t( cropW );
@@ -275,7 +302,7 @@ bool NukeXStackInstance::ExecuteGlobal()
             for ( uint8_t t : distTypeMaps[ch] )
                if ( t < 4 ) counts[t]++;
             console.WriteLn( String().Format(
-               "    Distribution: %.0f%% Gaussian, %.0f%% Poisson, %.0f%% Skew-Normal, %.0f%% Bimodal",
+               "    Distribution: %.0f%% Gaussian, %.0f%% Poisson, %.0f%% Skew-Normal, %.0f%% Bimodal\n",
                100.0 * counts[0] / mapSize, 100.0 * counts[1] / mapSize,
                100.0 * counts[2] / mapSize, 100.0 * counts[3] / mapSize ) );
          }
@@ -304,10 +331,19 @@ bool NukeXStackInstance::ExecuteGlobal()
             for ( uint8_t t : distTypeMaps[ch] )
                if ( t < 4 ) counts[t]++;
             console.WriteLn( String().Format(
-               "    Distribution: %.0f%% Gaussian, %.0f%% Poisson, %.0f%% Skew-Normal, %.0f%% Bimodal",
+               "    Distribution: %.0f%% Gaussian, %.0f%% Poisson, %.0f%% Skew-Normal, %.0f%% Bimodal\n",
                100.0 * counts[0] / mapSize, 100.0 * counts[1] / mapSize,
                100.0 * counts[2] / mapSize, 100.0 * counts[3] / mapSize ) );
          }
+
+         // Log fitting fallback count for this channel
+         size_t errCount = selector.lastErrorCount();
+         if ( errCount > 0 )
+            console.WarningLn( String().Format(
+               "    %zu pixels fell back to simple mean (fitting failed)\n",
+               errCount ) );
+         else
+            console.WriteLn( "    All pixels fitted successfully\n" );
 
          console.Flush();
          Module->ProcessEvents();
@@ -519,7 +555,8 @@ bool NukeXStackInstance::ExecuteGlobal()
    }
    catch ( const std::bad_alloc& e )
    {
-      Console().CriticalLn( "NukeX: Out of memory \xe2\x80\x94 " + String( e.what() ) );
+      Console().CriticalLn( "NukeX: Out of memory \xe2\x80\x94 " + String( e.what() ) +
+         "\nTry reducing the number of input frames or closing other image windows.\n" );
       return false;
    }
    catch ( const ProcessAborted& )

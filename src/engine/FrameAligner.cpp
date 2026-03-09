@@ -50,8 +50,9 @@ AlignmentOutput alignFrames(const std::vector<const float*>& frameData,
         if (static_cast<int>(i) == referenceIdx) continue;
         offsets[i] = matchFrames(starLists[referenceIdx], starLists[i], matchMaxStars);
         if (!offsets[i].valid) {
-            // Fallback: zero offset (keep frame, don't reject)
-            offsets[i] = {0, 0, 0, 0.0, true};
+            // Alignment failed — keep frame with zero offset but mark as unaligned.
+            // We use ALL data: the distribution fitting pipeline handles the noise.
+            offsets[i] = {0, 0, 0, 0.0, false};
         }
     }
 
