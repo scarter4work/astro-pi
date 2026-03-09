@@ -5,6 +5,18 @@
 - Make: `make release`
 - Tests: `cd build && ctest --output-on-failure`
 
+## Release Workflow (MUST follow in order)
+1. Bump `MODULE_VERSION_BUILD` in `src/NukeXModule.cpp`
+2. Update `repository/updates.xri` title + description with new version
+3. `make clean && make release` — clean rebuild
+4. `cd build && ctest --output-on-failure` — verify all tests pass
+5. `make package` — signs module, creates tarball, updates SHA1, signs XRI
+6. `sudo make install` or `sudo cp NukeX-pxm.so NukeX-pxm.xsgn /opt/PixInsight/bin/`
+7. Commit version bump + package files together in one commit
+8. `git push`
+- **NEVER push without completing steps 1-7**
+- **NEVER skip the version bump or packaging step**
+
 ## Architecture
 - PCL/C++17 PixInsight Process Module
 - Two processes: NukeXStack (stacking) + NukeXStretch (stretching)
