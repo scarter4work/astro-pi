@@ -9,8 +9,8 @@
       </p>
    </description>
    <platform os="linux" arch="x64" version="1.8.0:1.9.9">
-      <package fileName="20260309-linux-x64-NukeX.tar.gz" sha1="8956c92a281263559d897f23164f6374f5a1ae67" type="module" releaseDate="20260309">
-         <title>NukeX 3.0.0.13</title>
+      <package fileName="20260309-linux-x64-NukeX.tar.gz" sha1="23f9f20d0d465302a62955d9071b3eb7750b4e4c" type="module" releaseDate="20260309">
+         <title>NukeX 3.0.0.14</title>
          <description>
             <p>
                <b>NukeX v3 - Statistical Stacking + Stretch for PixInsight</b>
@@ -27,7 +27,7 @@
                </li>
             </ul>
             <p>
-               <b>Version 3.0.0.13 - CFA auto-debayer, per-channel RGB stretch</b>
+               <b>Version 3.0.0.14 - MAD sigma-clip pre-filter, median pixel selection</b>
             </p>
             <p>
                Copyright (c) 2026 Scott Carter. All Rights Reserved.
@@ -36,4 +36,4 @@
       </package>
    </platform>
 </xri>
-<Signature developerId="scarter4work" timestamp="2026-03-09T20:51:48.669Z" encoding="Base64">ZksTO6OK9gwNL4bXN89MWULYqU4oHovRJ9CaA1DkE36Nnqg/2X6ccWai4cLGKkRzFlzYUQknMCLVuhaevjQhDw==</Signature>
+<Signature developerId="scarter4work" timestamp="2026-03-10T03:11:13.276Z" encoding="Base64">7dQrYvKRCetnqbHdvMZdwX/WSOqr2SEMshVVG2TKabKj8kO/kN6DKzdr/eV8i5/iBEWXVqRoePTsQzHG489kAg==</Signature>

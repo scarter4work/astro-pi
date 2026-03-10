@@ -11,6 +11,18 @@
 
 namespace nukex {
 
+namespace {
+
+// Compute median of a sorted array
+inline double medianOfSorted(const double* sorted, size_t n) {
+    if (n == 0) return 0.0;
+    return (n % 2 == 0)
+        ? (sorted[n / 2 - 1] + sorted[n / 2]) * 0.5
+        : sorted[n / 2];
+}
+
+} // anonymous namespace
+
 PixelSelector::PixelSelector()
     : m_config(Config{}) {}
 
@@ -26,59 +38,86 @@ PixelSelector::selectBestZ(const float* zColumnPtr, size_t nSubs,
     // 1. Promote float Z-column to double
     std::vector<double> zValues = promoteToDouble(zColumnPtr, nSubs);
 
-    // 2. Detect outliers using Generalized ESD
-    std::vector<size_t> outlierIndices = detectOutliersESD(
-        zValues, m_config.maxOutliers, m_config.outlierAlpha);
+    // 2a. MAD-based sigma clipping pre-filter (robust to outliers).
+    // MAD uses the median, so outliers can't inflate the scale estimate
+    // and mask their own detection (unlike mean+stddev in ESD).
+    std::vector<size_t> madOutliers = sigmaClipMAD(zValues, 3.0);
+    std::unordered_set<size_t> madOutlierSet(madOutliers.begin(),
+                                              madOutliers.end());
 
-    // Build set of outlier indices for fast lookup
-    std::unordered_set<size_t> outlierSet(outlierIndices.begin(),
-                                          outlierIndices.end());
+    // Build pre-filtered data for ESD
+    std::vector<double> preFiltered;
+    std::vector<size_t> preFilteredIndices;
+    preFiltered.reserve(nSubs);
+    preFilteredIndices.reserve(nSubs);
+    for (size_t i = 0; i < nSubs; ++i) {
+        if (madOutlierSet.find(i) == madOutlierSet.end()) {
+            preFiltered.push_back(zValues[i]);
+            preFilteredIndices.push_back(i);
+        }
+    }
 
-    // 3. Build clean data vector (exclude outlier indices)
+    // 2b. ESD on pre-filtered data (catches subtler outliers in the clean set)
+    std::unordered_set<size_t> allOutliers(madOutliers.begin(),
+                                            madOutliers.end());
+    if (preFiltered.size() >= 3) {
+        std::vector<size_t> esdLocal = detectOutliersESD(
+            preFiltered, m_config.maxOutliers, m_config.outlierAlpha);
+        for (size_t localIdx : esdLocal)
+            allOutliers.insert(preFilteredIndices[localIdx]);
+    }
+
+    // 3. Build clean data vector (exclude all outliers)
     std::vector<double> cleanData;
     std::vector<size_t> cleanIndices;
     cleanData.reserve(nSubs);
     cleanIndices.reserve(nSubs);
     for (size_t i = 0; i < nSubs; ++i) {
-        if (outlierSet.find(i) == outlierSet.end()) {
+        if (allOutliers.find(i) == allOutliers.end()) {
             cleanData.push_back(zValues[i]);
             cleanIndices.push_back(i);
         }
     }
 
-    // 4. If clean data has fewer than 3 points, fall back to quality-weighted mean
+    // 4. If too few clean points, relax to pre-filtered or all data
     if (cleanData.size() < 3) {
-        // Compute quality-weighted mean of all non-outlier Z values
-        double weightedSum = 0.0;
-        double weightSum = 0.0;
-        for (size_t idx : cleanIndices) {
-            double w = (idx < qualityWeights.size()) ? qualityWeights[idx] : 1.0;
-            weightedSum += w * zValues[idx];
-            weightSum += w;
+        if (preFiltered.size() >= 3) {
+            cleanData = preFiltered;
+            cleanIndices = preFilteredIndices;
+        } else {
+            cleanData.resize(nSubs);
+            cleanIndices.resize(nSubs);
+            for (size_t i = 0; i < nSubs; ++i) {
+                cleanData[i] = zValues[i];
+                cleanIndices[i] = i;
+            }
         }
-        double weightedMean = (weightSum > 0.0)
-            ? weightedSum / weightSum
-            : kahanMean(cleanData.data(), cleanData.size());
+    }
 
-        // Find closest Z index
+    // Compute median of clean data (robust central tendency)
+    std::vector<double> sortedClean(cleanData);
+    std::sort(sortedClean.begin(), sortedClean.end());
+    double cleanMedian = medianOfSorted(sortedClean.data(), sortedClean.size());
+
+    if (cleanData.size() < 3) {
+        // Not enough data for distribution fitting — use median
         uint32_t bestZ = 0;
         double bestDist = std::numeric_limits<double>::infinity();
         for (size_t idx : cleanIndices) {
-            double dist = std::abs(zValues[idx] - weightedMean);
+            double dist = std::abs(zValues[idx] - cleanMedian);
             if (dist < bestDist) {
                 bestDist = dist;
                 bestZ = static_cast<uint32_t>(idx);
             }
         }
-        // If no clean indices at all, just pick index 0
         if (cleanIndices.empty()) {
             bestZ = 0;
-            weightedMean = zValues[0];
+            cleanMedian = zValues[0];
         }
 
         result.selectedZ = bestZ;
-        result.bestModel = DistributionType::Gaussian;  // default fallback
-        result.selectedValue = static_cast<float>(weightedMean);
+        result.bestModel = DistributionType::Gaussian;
+        result.selectedValue = static_cast<float>(cleanMedian);
         return result;
     }
 
@@ -116,26 +155,14 @@ PixelSelector::selectBestZ(const float* zColumnPtr, size_t nSubs,
         }
     }
 
-    // 8. Choose the best Z value:
-    //    Compute quality-weighted mean of non-outlier Z values,
-    //    then find the Z index whose value is closest.
-    double weightedSum = 0.0;
-    double weightSum = 0.0;
-    for (size_t idx : cleanIndices) {
-        double w = (m_config.useQualityWeights && idx < qualityWeights.size())
-            ? qualityWeights[idx] : 1.0;
-        weightedSum += w * zValues[idx];
-        weightSum += w;
-    }
-    double weightedMean = (weightSum > 0.0)
-        ? weightedSum / weightSum
-        : kahanMean(cleanData.data(), cleanData.size());
-
-    // Find the Z index (among non-outliers) whose value is closest to the weighted mean
+    // 8. Select pixel value using median of clean data.
+    //    Median is inherently robust to residual outliers that survive
+    //    the MAD+ESD pipeline — important for background pixels where
+    //    stretch amplifies any contamination.
     uint32_t bestZ = 0;
     double bestDist = std::numeric_limits<double>::infinity();
     for (size_t idx : cleanIndices) {
-        double dist = std::abs(zValues[idx] - weightedMean);
+        double dist = std::abs(zValues[idx] - cleanMedian);
         if (dist < bestDist) {
             bestDist = dist;
             bestZ = static_cast<uint32_t>(idx);
@@ -145,7 +172,7 @@ PixelSelector::selectBestZ(const float* zColumnPtr, size_t nSubs,
     // 9. Return result
     result.selectedZ = bestZ;
     result.bestModel = bestType;
-    result.selectedValue = static_cast<float>(weightedMean);
+    result.selectedValue = static_cast<float>(cleanMedian);
     return result;
 }
 
@@ -191,13 +218,15 @@ std::vector<float> PixelSelector::processImage(SubCube& cube,
                 } catch (const std::bad_alloc&) {
                     throw;  // Memory errors must propagate
                 } catch (const std::exception&) {
-                    // Fitting failure — fall back to simple mean of Z-column
+                    // Fitting failure — fall back to median of Z-column
                     ++errorCount;
                     const float* col = cube.zColumnPtr(y, x);
-                    double sum = 0.0;
+                    std::vector<double> zv(N);
                     for (size_t z = 0; z < N; ++z)
-                        sum += col[z];
-                    output[y * W + x] = static_cast<float>(sum / N);
+                        zv[z] = static_cast<double>(col[z]);
+                    std::sort(zv.begin(), zv.end());
+                    output[y * W + x] = static_cast<float>(
+                        medianOfSorted(zv.data(), N));
                     cube.setProvenance(y, x, 0);
                     cube.setDistType(y, x, static_cast<uint8_t>(DistributionType::Gaussian));
                 }

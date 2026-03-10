@@ -199,4 +199,52 @@ std::vector<size_t> detectOutliersChauvenet(const std::vector<double>& data) {
     return outliers;
 }
 
+// ---------------------------------------------------------------------------
+// sigmaClipMAD (MAD-based robust sigma clipping)
+// ---------------------------------------------------------------------------
+
+std::vector<size_t> sigmaClipMAD(
+    const std::vector<double>& data,
+    double kappa)
+{
+    size_t n = data.size();
+    if (n < 3) return {};
+
+    // Compute median
+    std::vector<double> sorted(data);
+    std::sort(sorted.begin(), sorted.end());
+    double median = (n % 2 == 0)
+        ? (sorted[n / 2 - 1] + sorted[n / 2]) * 0.5
+        : sorted[n / 2];
+
+    // Compute MAD (Median Absolute Deviation)
+    std::vector<double> deviations(n);
+    for (size_t i = 0; i < n; ++i)
+        deviations[i] = std::abs(data[i] - median);
+    std::sort(deviations.begin(), deviations.end());
+    double mad = (n % 2 == 0)
+        ? (deviations[n / 2 - 1] + deviations[n / 2]) * 0.5
+        : deviations[n / 2];
+
+    // Scale MAD to Gaussian sigma equivalent
+    constexpr double MAD_TO_SIGMA = 1.4826;
+    double threshold = kappa * MAD_TO_SIGMA * mad;
+
+    if (threshold < 1e-15) {
+        // MAD is zero — bulk of data is at a single value.
+        // Fall back to range-based threshold to catch transients
+        // in near-constant backgrounds.
+        double range = sorted.back() - sorted.front();
+        if (range < 1e-15) return {};  // truly constant — no outliers
+        threshold = range * 0.1;
+    }
+
+    std::vector<size_t> outliers;
+    for (size_t i = 0; i < n; ++i) {
+        if (std::abs(data[i] - median) > threshold)
+            outliers.push_back(i);
+    }
+    return outliers;
+}
+
 } // namespace nukex

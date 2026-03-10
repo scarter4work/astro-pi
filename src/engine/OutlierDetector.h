@@ -12,6 +12,16 @@ std::vector<size_t> detectOutliersESD(
     int maxOutliers,
     double alpha = 0.05);
 
+// MAD-based sigma clipping: returns indices of values beyond
+// kappa * 1.4826 * MAD from the median.
+// MAD (Median Absolute Deviation) is robust to outliers — unlike stddev,
+// it doesn't inflate when outliers are present, so transients can't mask
+// their own detection.
+// The 1.4826 factor normalizes MAD to Gaussian sigma equivalence.
+std::vector<size_t> sigmaClipMAD(
+    const std::vector<double>& data,
+    double kappa = 3.0);
+
 // Returns indices of detected outliers using Chauvenet's criterion
 std::vector<size_t> detectOutliersChauvenet(
     const std::vector<double>& data);

@@ -68,3 +68,58 @@ TEST_CASE("Outlier detection handles constant data", "[outlier]") {
     auto chauv = nukex::detectOutliersChauvenet(data);
     REQUIRE(chauv.empty());
 }
+
+// --- sigmaClipMAD tests ---
+
+TEST_CASE("sigmaClipMAD detects bright transient in background", "[outlier][mad]") {
+    // Simulate 30 sky background frames with 1 airplane trail
+    std::vector<double> data(30, 0.05);
+    data[15] = 0.30;  // airplane light in frame 15
+    auto outliers = nukex::sigmaClipMAD(data, 3.0);
+    REQUIRE(outliers.size() == 1);
+    REQUIRE(outliers[0] == 15);
+}
+
+TEST_CASE("sigmaClipMAD catches multiple transients", "[outlier][mad]") {
+    std::vector<double> data(30, 0.05);
+    data[5] = 0.25;   // satellite trail
+    data[20] = 0.35;  // airplane
+    auto outliers = nukex::sigmaClipMAD(data, 3.0);
+    REQUIRE(outliers.size() == 2);
+    bool has5 = std::find(outliers.begin(), outliers.end(), 5) != outliers.end();
+    bool has20 = std::find(outliers.begin(), outliers.end(), 20) != outliers.end();
+    REQUIRE((has5 && has20));
+}
+
+TEST_CASE("sigmaClipMAD catches transient in noisy background", "[outlier][mad]") {
+    // Realistic: noisy background with one bright transient
+    std::mt19937 rng(42);
+    std::normal_distribution<double> dist(0.05, 0.002);
+    std::vector<double> data(30);
+    for (auto& d : data) d = dist(rng);
+    data[10] = 0.30;  // airplane light — ~125σ above background
+    auto outliers = nukex::sigmaClipMAD(data, 3.0);
+    bool found10 = std::find(outliers.begin(), outliers.end(), 10) != outliers.end();
+    REQUIRE(found10);
+}
+
+TEST_CASE("sigmaClipMAD no false positives on clean Gaussian", "[outlier][mad]") {
+    std::mt19937 rng(42);
+    std::normal_distribution<double> dist(0.05, 0.002);
+    std::vector<double> data(30);
+    for (auto& d : data) d = dist(rng);
+    auto outliers = nukex::sigmaClipMAD(data, 3.0);
+    REQUIRE(outliers.size() <= 1);  // 3σ should have <1% false positive rate
+}
+
+TEST_CASE("sigmaClipMAD handles constant data", "[outlier][mad]") {
+    std::vector<double> data(20, 5.0);
+    auto outliers = nukex::sigmaClipMAD(data, 3.0);
+    REQUIRE(outliers.empty());
+}
+
+TEST_CASE("sigmaClipMAD handles small samples", "[outlier][mad]") {
+    std::vector<double> data = {1.0, 100.0};
+    auto outliers = nukex::sigmaClipMAD(data, 3.0);
+    REQUIRE(outliers.empty());  // n < 3, returns empty
+}
