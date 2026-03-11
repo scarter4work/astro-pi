@@ -57,6 +57,33 @@ WARNINGS = -Wall -Wextra -Wno-unused-parameter
 # OpenMP flags for parallel processing
 OPENMP_FLAGS = -fopenmp
 
+# CUDA support (optional) — check PATH first, then common install locations
+NVCC_PATH := $(shell which nvcc 2>/dev/null)
+ifndef NVCC_PATH
+    ifneq (,$(wildcard /usr/local/cuda/bin/nvcc))
+        NVCC_PATH := /usr/local/cuda/bin/nvcc
+    endif
+endif
+ifdef NVCC_PATH
+    NUKEX_HAS_CUDA = 1
+    # Derive CUDA toolkit root from nvcc path (e.g. /usr/local/cuda-12.8/bin/nvcc -> /usr/local/cuda-12.8)
+    CUDA_TOOLKIT_ROOT := $(realpath $(dir $(NVCC_PATH))..)
+    CUDA_DIR = src/engine/cuda
+    CUDA_SOURCES = $(wildcard $(CUDA_DIR)/*.cu)
+    CUDA_OBJECTS = $(CUDA_SOURCES:.cu=.o)
+    NVCC_FLAGS = -std=c++17 -O3 -allow-unsupported-compiler \
+                 -Xcompiler "-fPIC -fvisibility=hidden" \
+                 -I$(PCL_INCDIR) -I$(CURDIR)/src -I$(CURDIR)/src/engine \
+                 -I$(CURDIR)/src/engine/algorithms \
+                 -I$(CUDA_TOOLKIT_ROOT)/include \
+                 -DNUKEX_HAS_CUDA -DBOOST_MATH_STANDALONE=1
+    CUDA_CXXFLAGS = -DNUKEX_HAS_CUDA -I$(CUDA_TOOLKIT_ROOT)/include
+    CUDA_LDFLAGS = -L$(CUDA_TOOLKIT_ROOT)/lib64 -lcudart
+else
+    CUDA_CXXFLAGS =
+    CUDA_LDFLAGS =
+endif
+
 # Optimization flags
 ifeq ($(DEBUG), 1)
     OPT_FLAGS = -g -O0 -DDEBUG
@@ -100,7 +127,8 @@ PROJECT_CXXFLAGS = -I$(SRC_DIR) -I$(ENGINE_DIR) -I$(ALGO_DIR) \
 
 # Combined flags
 CXXFLAGS = $(CXXSTD) $(WARNINGS) $(OPT_FLAGS) $(PLATFORM_CXXFLAGS) \
-           $(PCL_CXXFLAGS) $(VENDOR_CXXFLAGS) $(PROJECT_CXXFLAGS) $(OPENMP_FLAGS)
+           $(PCL_CXXFLAGS) $(VENDOR_CXXFLAGS) $(PROJECT_CXXFLAGS) $(OPENMP_FLAGS) \
+           $(CUDA_CXXFLAGS)
 
 # PCL libraries to link (static linking)
 PCL_LIBS = -lPCL-pxi -llz4-pxi -lzstd-pxi -lzlib-pxi -lRFC6234-pxi -llcms-pxi -lcminpack-pxi
@@ -109,7 +137,8 @@ LDFLAGS = $(SHARED_FLAGS) $(PLATFORM_LDFLAGS) \
           -L$(PCL_LIBDIR) \
           $(PCL_LIBS) \
           $(OPENMP_FLAGS) \
-          -lpthread
+          -lpthread \
+          $(CUDA_LDFLAGS)
 
 # ============================================================================
 # Source Files
@@ -128,11 +157,17 @@ ENGINE_SOURCES = $(wildcard $(ENGINE_DIR)/*.cpp)
 # Algorithm source files
 ALGO_SOURCES = $(wildcard $(ALGO_DIR)/*.cpp)
 
+# CUDA runtime support files (compiled with g++, not nvcc)
+CUDA_CPP_SOURCES = $(wildcard src/engine/cuda/*.cpp)
+
 # All source files
-SOURCES = $(CORE_SOURCES) $(ENGINE_SOURCES) $(ALGO_SOURCES)
+SOURCES = $(CORE_SOURCES) $(ENGINE_SOURCES) $(ALGO_SOURCES) $(CUDA_CPP_SOURCES)
 
 # Object files
 OBJECTS = $(SOURCES:.cpp=.o)
+ifdef NVCC_PATH
+    OBJECTS += $(CUDA_OBJECTS)
+endif
 
 # Dependency files
 DEPS = $(SOURCES:.cpp=.d)
@@ -154,6 +189,13 @@ $(TARGET): $(OBJECTS)
 %.o: %.cpp
 	@echo "Compiling $<..."
 	$(CXX) $(CXXFLAGS) -MMD -MP -c $< -o $@
+
+# Compile CUDA source files
+ifdef NVCC_PATH
+$(CUDA_DIR)/%.o: $(CUDA_DIR)/%.cu
+	@echo "Compiling CUDA $<..."
+	$(NVCC_PATH) $(NVCC_FLAGS) -c $< -o $@
+endif
 
 # Include dependency files
 -include $(DEPS)
@@ -220,6 +262,9 @@ uninstall:
 clean:
 	@echo "Cleaning build artifacts..."
 	rm -f $(OBJECTS) $(DEPS) $(TARGET)
+ifdef NVCC_PATH
+	rm -f $(CUDA_OBJECTS)
+endif
 	@echo "Clean complete."
 
 # Run test suite
@@ -239,6 +284,11 @@ info:
 	@echo "PCL Include:     $(PCL_INCDIR)"
 	@echo "PCL Library:     $(PCL_LIBDIR)"
 	@echo "Output Dir:      $(OUTPUT_DIR)"
+ifdef NVCC_PATH
+	@echo "CUDA:            $(NVCC_PATH)"
+else
+	@echo "CUDA:            Not found (GPU acceleration disabled)"
+endif
 	@echo ""
 	@echo "Source Files:"
 	@for src in $(SOURCES); do echo "  $$src"; done
