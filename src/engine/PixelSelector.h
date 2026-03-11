@@ -20,6 +20,7 @@ public:
         int maxOutliers = 3;          // max outliers to detect per pixel
         double outlierAlpha = 0.05;   // significance level
         bool useQualityWeights = true;
+        bool adaptiveModels = false;  // skip expensive fits when simple model fits well
     };
 
     PixelSelector();

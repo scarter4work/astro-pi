@@ -121,19 +121,40 @@ PixelSelector::selectBestZ(const float* zColumnPtr, size_t nSubs,
         return result;
     }
 
-    // 5. Fit all 4 models on clean data
+    // 5. Fit models — adaptive mode may skip expensive fits
     FitResult gaussianFit = fitGaussian(cleanData);
-    FitResult poissonFit = fitPoisson(cleanData);
-    SkewNormalFitResult skewFit = fitSkewNormal(cleanData);
-    GaussianMixResult mixFit = fitGaussianMixture2(cleanData);
-
-    // 6. Compute AIC for each model
     double aicGaussian = aic(gaussianFit.logLikelihood, gaussianFit.k);
-    double aicPoisson = aic(poissonFit.logLikelihood, poissonFit.k);
-    double aicSkew = aic(skewFit.logLikelihood, skewFit.k);
-    double aicMix = aic(mixFit.logLikelihood, mixFit.k);
 
-    // 7. Select model with lowest AIC
+    FitResult poissonFit = fitPoisson(cleanData);
+    double aicPoisson = aic(poissonFit.logLikelihood, poissonFit.k);
+
+    double aicSkew = std::numeric_limits<double>::infinity();
+    double aicMix  = std::numeric_limits<double>::infinity();
+
+    bool skipExpensive = false;
+    if (m_config.adaptiveModels) {
+        // With small N (< 6 clean points), complex models with 3-5 parameters
+        // are poorly constrained and AIC correction dominates — skip them.
+        // With larger N, skip if the best simple model's per-sample log-likelihood
+        // exceeds -1.0 (very good fit), meaning AIC/N < 2*k/N + 2.0 which for
+        // Gaussian (k=2) means AIC < 4 + 2N — essentially always good.
+        // A more targeted criterion: skip if Gaussian normalized log-likelihood
+        // is above -1.0 per sample (tight fit to data).
+        double bestSimpleAIC = std::min(aicGaussian, aicPoisson);
+        double n = static_cast<double>(cleanData.size());
+        skipExpensive = (cleanData.size() < 6)
+                     || (bestSimpleAIC / n < 2.0);  // normalized AIC indicates good fit
+    }
+
+    if (!skipExpensive) {
+        SkewNormalFitResult skewFit = fitSkewNormal(cleanData);
+        aicSkew = aic(skewFit.logLikelihood, skewFit.k);
+
+        GaussianMixResult mixFit = fitGaussianMixture2(cleanData);
+        aicMix = aic(mixFit.logLikelihood, mixFit.k);
+    }
+
+    // 6. Select model with lowest AIC
     struct ModelAIC {
         DistributionType type;
         double aicValue;

@@ -260,6 +260,7 @@ bool NukeXStackInstance::ExecuteGlobal()
          double phi = std::erfc( -sigma / 1.4142135623730951 ) * 0.5;
          selConfig.outlierAlpha = std::max( 0.001, std::min( 0.5, 2.0 * (1.0 - phi) ) );
       }
+      selConfig.adaptiveModels = p_adaptiveModels;
       nukex::PixelSelector selector( selConfig );
       console.WriteLn( String().Format( "  Outlier config: maxOutliers=%d, alpha=%.4f (sigma=%.1f)\n",
          selConfig.maxOutliers, selConfig.outlierAlpha, double( p_outlierSigmaThreshold ) ) );
