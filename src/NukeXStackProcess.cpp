@@ -38,6 +38,8 @@ NukeXStackProcess::NukeXStackProcess()
    new NXSGenerateDistMetadata( this );
    new NXSEnableQualityWeighting( this );
    new NXSEnableAutoStretch( this );
+   new NXSUseGPU( this );
+   new NXSAdaptiveModels( this );
 
    // Floating point parameters
    new NXSOutlierSigmaThreshold( this );

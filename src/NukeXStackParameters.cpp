@@ -195,6 +195,46 @@ bool NXSEnableAutoStretch::DefaultValue() const
 }
 
 // ----------------------------------------------------------------------------
+
+NXSUseGPU* TheNXSUseGPUParameter = nullptr;
+
+NXSUseGPU::NXSUseGPU( MetaProcess* P )
+   : MetaBoolean( P )
+{
+   TheNXSUseGPUParameter = this;
+}
+
+IsoString NXSUseGPU::Id() const
+{
+   return "useGPU";
+}
+
+bool NXSUseGPU::DefaultValue() const
+{
+   return true;
+}
+
+// ----------------------------------------------------------------------------
+
+NXSAdaptiveModels* TheNXSAdaptiveModelsParameter = nullptr;
+
+NXSAdaptiveModels::NXSAdaptiveModels( MetaProcess* P )
+   : MetaBoolean( P )
+{
+   TheNXSAdaptiveModelsParameter = this;
+}
+
+IsoString NXSAdaptiveModels::Id() const
+{
+   return "adaptiveModels";
+}
+
+bool NXSAdaptiveModels::DefaultValue() const
+{
+   return true;
+}
+
+// ----------------------------------------------------------------------------
 // Floating Point Parameters
 // ----------------------------------------------------------------------------
 

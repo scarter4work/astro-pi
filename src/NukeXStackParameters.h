@@ -120,6 +120,26 @@ public:
 
 extern NXSEnableAutoStretch* TheNXSEnableAutoStretchParameter;
 
+class NXSUseGPU : public MetaBoolean
+{
+public:
+   NXSUseGPU( MetaProcess* );
+   IsoString Id() const override;
+   bool DefaultValue() const override;
+};
+
+extern NXSUseGPU* TheNXSUseGPUParameter;
+
+class NXSAdaptiveModels : public MetaBoolean
+{
+public:
+   NXSAdaptiveModels( MetaProcess* );
+   IsoString Id() const override;
+   bool DefaultValue() const override;
+};
+
+extern NXSAdaptiveModels* TheNXSAdaptiveModelsParameter;
+
 // ----------------------------------------------------------------------------
 // Floating Point Parameters
 // ----------------------------------------------------------------------------

@@ -38,6 +38,8 @@ NukeXStackInstance::NukeXStackInstance( const MetaProcess* m )
    , p_generateDistMetadata( TheNXSGenerateDistMetadataParameter->DefaultValue() )
    , p_enableQualityWeighting( TheNXSEnableQualityWeightingParameter->DefaultValue() )
    , p_enableAutoStretch( TheNXSEnableAutoStretchParameter->DefaultValue() )
+   , p_useGPU( TheNXSUseGPUParameter->DefaultValue() )
+   , p_adaptiveModels( TheNXSAdaptiveModelsParameter->DefaultValue() )
    , p_outlierSigmaThreshold( static_cast<float>( TheNXSOutlierSigmaThresholdParameter->DefaultValue() ) )
    , p_fwhmWeight( static_cast<float>( TheNXSFWHMWeightParameter->DefaultValue() ) )
    , p_eccentricityWeight( static_cast<float>( TheNXSEccentricityWeightParameter->DefaultValue() ) )
@@ -68,6 +70,8 @@ void NukeXStackInstance::Assign( const ProcessImplementation& p )
       p_generateDistMetadata    = x->p_generateDistMetadata;
       p_enableQualityWeighting  = x->p_enableQualityWeighting;
       p_enableAutoStretch       = x->p_enableAutoStretch;
+      p_useGPU                  = x->p_useGPU;
+      p_adaptiveModels          = x->p_adaptiveModels;
       p_outlierSigmaThreshold   = x->p_outlierSigmaThreshold;
       p_fwhmWeight              = x->p_fwhmWeight;
       p_eccentricityWeight      = x->p_eccentricityWeight;
@@ -637,6 +641,10 @@ void* NukeXStackInstance::LockParameter( const MetaParameter* p, size_type table
       return &p_enableQualityWeighting;
    if ( p == TheNXSEnableAutoStretchParameter )
       return &p_enableAutoStretch;
+   if ( p == TheNXSUseGPUParameter )
+      return &p_useGPU;
+   if ( p == TheNXSAdaptiveModelsParameter )
+      return &p_adaptiveModels;
    if ( p == TheNXSOutlierSigmaThresholdParameter )
       return &p_outlierSigmaThreshold;
    if ( p == TheNXSFWHMWeightParameter )
