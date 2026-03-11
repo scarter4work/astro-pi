@@ -232,7 +232,7 @@ install: sign
 
 # Package for distribution: build, sign, tarball, update manifest, sign XRI
 REPO_DIR = repository
-PKG_NAME = 20260309-linux-x64-NukeX.tar.gz
+PKG_NAME = 20260311-linux-x64-NukeX.tar.gz
 SIGN_XRI = $(REPO_DIR)/updates.xri
 
 package: sign
