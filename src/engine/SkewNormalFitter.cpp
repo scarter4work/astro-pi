@@ -54,17 +54,47 @@ public:
     }
 
     // LBFGSpp requires: double operator()(const VectorXd& x, VectorXd& grad)
+    // Analytical gradients — computes NLL and gradient in a single pass.
     double operator()(const Eigen::VectorXd& x, Eigen::VectorXd& grad) {
-        double negLogL = evalNLL(x);
+        double xi    = x[0];
+        double omega = std::exp(x[1]);
+        double alpha = x[2];
 
-        // Numerical gradient via central differences
-        const double h = 1e-7;
-        for (int i = 0; i < 3; i++) {
-            Eigen::VectorXd xp = x, xm = x;
-            xp[i] += h;
-            xm[i] -= h;
-            grad[i] = (evalNLL(xp) - evalNLL(xm)) / (2.0 * h);
+        if (omega < 1e-15) omega = 1e-15;
+        double logOmega = std::log(omega);
+        double invOmega = 1.0 / omega;
+
+        double perSampleConst = LOG_2 - logOmega - 0.5 * LOG_2PI;
+        constexpr double INV_SQRT_2PI = 0.3989422804014327;
+
+        double negLogL = 0.0;
+        double g0 = 0.0, g1 = 0.0, g2 = 0.0;
+
+        for (double val : m_data) {
+            double z = (val - xi) * invOmega;
+            double az = alpha * z;
+
+            // Numerically stable log(Phi(az))
+            double logPhi = logNormalCDF(az);
+            // phi(az) = standard normal PDF at az
+            double phiAz = INV_SQRT_2PI * std::exp(-0.5 * az * az);
+            // Phi(az) = standard normal CDF at az
+            double PhiAz = std::exp(logPhi);
+            // Mills ratio guard: if Phi near zero, ratio is 0
+            double ratio = (PhiAz > 1e-300) ? phiAz / PhiAz : 0.0;
+
+            // Negative log-likelihood accumulation
+            negLogL -= perSampleConst - 0.5 * z * z + logPhi;
+
+            // Analytical gradients of negative log-likelihood
+            g0 += -z * invOmega + alpha * invOmega * ratio;  // d/d(xi)
+            g1 += 1.0 - z * z + alpha * z * ratio;           // d/d(log_omega)
+            g2 += -z * ratio;                                 // d/d(alpha)
         }
+
+        grad[0] = g0;
+        grad[1] = g1;
+        grad[2] = g2;
 
         return negLogL;
     }
@@ -89,8 +119,9 @@ SkewNormalFitResult fitSkewNormal(const std::vector<double>& data) {
 
     // Configure L-BFGS solver
     LBFGSpp::LBFGSParam<double> param;
-    param.max_iterations = 50;
-    param.epsilon        = 1e-6;
+    param.max_iterations  = 50;
+    param.epsilon         = 1e-6;
+    param.max_linesearch  = 40;   // analytical gradients need more line-search steps
     LBFGSpp::LBFGSSolver<double> solver(param);
 
     SkewNormalObjective objective(data);
