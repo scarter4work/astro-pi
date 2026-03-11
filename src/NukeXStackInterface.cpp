@@ -168,6 +168,8 @@ void NukeXStackInterface::UpdateControls()
    GUI->GenerateProvenance_CheckBox.SetChecked( m_instance.p_generateProvenance );
    GUI->GenerateDistMetadata_CheckBox.SetChecked( m_instance.p_generateDistMetadata );
    GUI->EnableAutoStretch_CheckBox.SetChecked( m_instance.p_enableAutoStretch );
+   GUI->UseGPU_CheckBox.SetChecked( m_instance.p_useGPU );
+   GUI->AdaptiveModels_CheckBox.SetChecked( m_instance.p_adaptiveModels );
 }
 
 // ----------------------------------------------------------------------------
@@ -392,6 +394,14 @@ void NukeXStackInterface::e_CheckBoxClick( Button& sender, bool checked )
    else if ( sender == GUI->EnableAutoStretch_CheckBox )
    {
       m_instance.p_enableAutoStretch = checked;
+   }
+   else if ( sender == GUI->UseGPU_CheckBox )
+   {
+      m_instance.p_useGPU = checked;
+   }
+   else if ( sender == GUI->AdaptiveModels_CheckBox )
+   {
+      m_instance.p_adaptiveModels = checked;
    }
 }
 
@@ -636,10 +646,27 @@ NukeXStackInterface::GUIData::GUIData( NukeXStackInterface& w )
                                           "Creates a second output window (NukeX_stretched).</p>" );
    EnableAutoStretch_CheckBox.OnClick( (Button::click_event_handler)&NukeXStackInterface::e_CheckBoxClick, w );
 
+   UseGPU_CheckBox.SetText( "Use GPU Acceleration" );
+   UseGPU_CheckBox.SetToolTip( "<p>Use NVIDIA CUDA GPU for pixel selection when available. "
+                                "Falls back to CPU if no compatible GPU is detected.</p>" );
+   UseGPU_CheckBox.OnClick( (Button::click_event_handler)&NukeXStackInterface::e_CheckBoxClick, w );
+#ifndef NUKEX_HAS_CUDA
+   UseGPU_CheckBox.Disable();
+   UseGPU_CheckBox.SetToolTip( "<p>GPU acceleration unavailable \xe2\x80\x94 module built without CUDA support.</p>" );
+#endif
+
+   AdaptiveModels_CheckBox.SetText( "Adaptive Model Selection" );
+   AdaptiveModels_CheckBox.SetToolTip( "<p>Skip expensive distribution fits (Skew-Normal, Bimodal) when "
+                                        "Gaussian provides an excellent fit. Significantly faster with "
+                                        "negligible impact on quality for typical data.</p>" );
+   AdaptiveModels_CheckBox.OnClick( (Button::click_event_handler)&NukeXStackInterface::e_CheckBoxClick, w );
+
    Output_Sizer.SetSpacing( 4 );
    Output_Sizer.Add( GenerateProvenance_CheckBox );
    Output_Sizer.Add( GenerateDistMetadata_CheckBox );
    Output_Sizer.Add( EnableAutoStretch_CheckBox );
+   Output_Sizer.Add( UseGPU_CheckBox );
+   Output_Sizer.Add( AdaptiveModels_CheckBox );
 
    Output_Control.SetSizer( Output_Sizer );
 

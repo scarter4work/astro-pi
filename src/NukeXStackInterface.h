@@ -102,6 +102,8 @@ private:
          CheckBox          GenerateProvenance_CheckBox;
          CheckBox          GenerateDistMetadata_CheckBox;
          CheckBox          EnableAutoStretch_CheckBox;
+         CheckBox          UseGPU_CheckBox;
+         CheckBox          AdaptiveModels_CheckBox;
    };
 
    GUIData* GUI = nullptr;
