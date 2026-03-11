@@ -1,6 +1,11 @@
 // src/engine/PixelSelector.cpp
 #include "engine/PixelSelector.h"
 
+#ifdef NUKEX_HAS_CUDA
+#include "engine/cuda/CudaPixelSelector.h"
+#include "engine/cuda/CudaRuntime.h"
+#endif
+
 #include <algorithm>
 #include <atomic>
 #include <cmath>
@@ -262,6 +267,53 @@ std::vector<float> PixelSelector::processImage(SubCube& cube,
     m_lastErrorCount = errorCount.load();
 
     return output;
+}
+
+std::vector<float> PixelSelector::processImageGPU(SubCube& cube,
+                                                    const std::vector<double>& qualityWeights,
+                                                    std::vector<uint8_t>& distTypesOut,
+                                                    ProgressCallback progress)
+{
+#ifdef NUKEX_HAS_CUDA
+    if (!cuda::isGpuAvailable()) {
+        // No GPU — fall back to CPU
+        return processImage(cube, qualityWeights, progress);
+    }
+
+    size_t H = cube.height();
+    size_t W = cube.width();
+    size_t totalPixels = H * W;
+
+    std::vector<float> output(totalPixels);
+    distTypesOut.resize(totalPixels);
+
+    cuda::GpuStackConfig gpuConfig;
+    gpuConfig.maxOutliers = m_config.maxOutliers;
+    gpuConfig.outlierAlpha = m_config.outlierAlpha;
+    gpuConfig.adaptiveModels = m_config.adaptiveModels;
+    gpuConfig.nSubs = cube.numSubs();
+    gpuConfig.height = H;
+    gpuConfig.width = W;
+
+    auto result = cuda::processImageGPU(
+        cube.cube().data(), output.data(), distTypesOut.data(), gpuConfig);
+
+    if (!result.success) {
+        // GPU failed — fall back to CPU
+        return processImage(cube, qualityWeights, progress);
+    }
+
+    // Copy distTypes into SubCube metadata
+    for (size_t y = 0; y < H; ++y)
+        for (size_t x = 0; x < W; ++x)
+            cube.setDistType(y, x, distTypesOut[y * W + x]);
+
+    return output;
+#else
+    // No CUDA compiled in — CPU only
+    (void)distTypesOut;
+    return processImage(cube, qualityWeights, progress);
+#endif
 }
 
 } // namespace nukex

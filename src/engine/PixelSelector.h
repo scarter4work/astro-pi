@@ -21,6 +21,7 @@ public:
         double outlierAlpha = 0.05;   // significance level
         bool useQualityWeights = true;
         bool adaptiveModels = false;  // skip expensive fits when simple model fits well
+        bool useGPU = false;          // use CUDA GPU acceleration when available
     };
 
     PixelSelector();
@@ -36,6 +37,12 @@ public:
     std::vector<float> processImage(SubCube& cube,
                                     const std::vector<double>& qualityWeights,
                                     ProgressCallback progress = nullptr);
+
+    // GPU-accelerated image processing (falls back to CPU on failure or no GPU)
+    std::vector<float> processImageGPU(SubCube& cube,
+                                        const std::vector<double>& qualityWeights,
+                                        std::vector<uint8_t>& distTypesOut,
+                                        ProgressCallback progress = nullptr);
 
     // Number of pixels that fell back to simple mean in the last processImage() call
     size_t lastErrorCount() const { return m_lastErrorCount; }

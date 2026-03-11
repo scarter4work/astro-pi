@@ -22,6 +22,10 @@
 #include <pcl/Image.h>
 #include <pcl/ErrorHandler.h>
 
+#ifdef NUKEX_HAS_CUDA
+#include "engine/cuda/CudaRuntime.h"
+#endif
+
 #include <chrono>
 #include <algorithm>
 #include <cmath>
@@ -261,6 +265,22 @@ bool NukeXStackInstance::ExecuteGlobal()
          selConfig.outlierAlpha = std::max( 0.001, std::min( 0.5, 2.0 * (1.0 - phi) ) );
       }
       selConfig.adaptiveModels = p_adaptiveModels;
+      selConfig.useGPU = p_useGPU;
+
+      // GPU detection
+      bool useGPU = false;
+#ifdef NUKEX_HAS_CUDA
+      if ( p_useGPU && nukex::cuda::isGpuAvailable() )
+      {
+         useGPU = true;
+         console.WriteLn( String().Format( "  GPU: %s (%zu MB VRAM)",
+            nukex::cuda::gpuName(), nukex::cuda::gpuMemoryMB() ) );
+      }
+#endif
+      console.WriteLn( String().Format( "  Compute: %s | Adaptive: %s",
+         useGPU ? "GPU (CUDA)" : "CPU (OpenMP)",
+         p_adaptiveModels ? "On" : "Off" ) );
+
       nukex::PixelSelector selector( selConfig );
       console.WriteLn( String().Format( "  Outlier config: maxOutliers=%d, alpha=%.4f (sigma=%.1f)\n",
          selConfig.maxOutliers, selConfig.outlierAlpha, double( p_outlierSigmaThreshold ) ) );
@@ -295,14 +315,23 @@ bool NukeXStackInstance::ExecuteGlobal()
          {
             // Reuse the aligned cube for channel 0
             nukex::SubCube cube = std::move( aligned.alignedCube );
-            channelResults[ch] = selector.processImage( cube, weights, progressCB );
+
+            if ( useGPU )
+            {
+               channelResults[ch] = selector.processImageGPU( cube, weights, distTypeMaps[ch], progressCB );
+            }
+            else
+            {
+               channelResults[ch] = selector.processImage( cube, weights, progressCB );
+
+               size_t mapSize = size_t( cropH ) * size_t( cropW );
+               distTypeMaps[ch].resize( mapSize );
+               for ( size_t y = 0; y < size_t( cropH ); ++y )
+                  for ( size_t x = 0; x < size_t( cropW ); ++x )
+                     distTypeMaps[ch][y * cropW + x] = cube.distType( y, x );
+            }
 
             size_t mapSize = size_t( cropH ) * size_t( cropW );
-            distTypeMaps[ch].resize( mapSize );
-            for ( size_t y = 0; y < size_t( cropH ); ++y )
-               for ( size_t x = 0; x < size_t( cropW ); ++x )
-                  distTypeMaps[ch][y * cropW + x] = cube.distType( y, x );
-
             size_t counts[4] = {};
             for ( uint8_t t : distTypeMaps[ch] )
                if ( t < 4 ) counts[t]++;
@@ -324,14 +353,22 @@ bool NukeXStackInstance::ExecuteGlobal()
             for ( size_t i = 0; i < raw.metadata.size(); ++i )
                cube.setMetadata( i, raw.metadata[i] );
 
-            channelResults[ch] = selector.processImage( cube, weights, progressCB );
+            if ( useGPU )
+            {
+               channelResults[ch] = selector.processImageGPU( cube, weights, distTypeMaps[ch], progressCB );
+            }
+            else
+            {
+               channelResults[ch] = selector.processImage( cube, weights, progressCB );
+
+               size_t mapSize = size_t( cropH ) * size_t( cropW );
+               distTypeMaps[ch].resize( mapSize );
+               for ( size_t y = 0; y < size_t( cropH ); ++y )
+                  for ( size_t x = 0; x < size_t( cropW ); ++x )
+                     distTypeMaps[ch][y * cropW + x] = cube.distType( y, x );
+            }
 
             size_t mapSize = size_t( cropH ) * size_t( cropW );
-            distTypeMaps[ch].resize( mapSize );
-            for ( size_t y = 0; y < size_t( cropH ); ++y )
-               for ( size_t x = 0; x < size_t( cropW ); ++x )
-                  distTypeMaps[ch][y * cropW + x] = cube.distType( y, x );
-
             size_t counts[4] = {};
             for ( uint8_t t : distTypeMaps[ch] )
                if ( t < 4 ) counts[t]++;
