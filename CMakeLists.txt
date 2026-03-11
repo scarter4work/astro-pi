@@ -104,7 +104,7 @@ if(MSVC)
 else()
     target_compile_options(NukeX PRIVATE
         -Wall -Wno-parentheses
-        -O3 -fPIC
+        -O3 -fPIC -march=native
         -ffunction-sections -fdata-sections
         -fvisibility=hidden -fvisibility-inlines-hidden
         -fnon-call-exceptions

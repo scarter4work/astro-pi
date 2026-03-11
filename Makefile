@@ -61,7 +61,7 @@ OPENMP_FLAGS = -fopenmp
 ifeq ($(DEBUG), 1)
     OPT_FLAGS = -g -O0 -DDEBUG
 else
-    OPT_FLAGS = -O3 -DNDEBUG
+    OPT_FLAGS = -O3 -march=native -DNDEBUG
 endif
 
 # PCL-specific flags
