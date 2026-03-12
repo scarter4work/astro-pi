@@ -739,14 +739,21 @@ __device__ FitResultDevice fitBimodalEM_device(const double* data, int n) {
         double absDiff = fabs(logL - oldLogL);
         double relDiff = (fabs(logL) > 1.0) ? absDiff / fabs(logL) : absDiff;
         if (relDiff < CONV_THRESH) {
-            result.logLikelihood = logL;
+            if (weight < 0.05 || weight > 0.95)
+                result.logLikelihood = -1e300;
+            else
+                result.logLikelihood = logL;
             return result;
         }
 
         oldLogL = logL;
     }
 
-    result.logLikelihood = oldLogL;
+    // Reject if one component dominates — not genuinely bimodal
+    if (weight < 0.05 || weight > 0.95)
+        result.logLikelihood = -1e300;
+    else
+        result.logLikelihood = oldLogL;
     return result;
 }
 
@@ -756,6 +763,12 @@ __device__ FitResultDevice fitBimodalEM_device(const double* data, int n) {
 
 __device__ double aicDevice(double logL, int k) {
     return 2.0 * k - 2.0 * logL;
+}
+
+__device__ double aiccDevice(double logL, int k, int n) {
+    double a = 2.0 * k - 2.0 * logL;
+    if (n <= k + 1) return a;
+    return a + (2.0 * k * (k + 1.0)) / (n - k - 1.0);
 }
 
 // ============================================================================
@@ -852,12 +865,12 @@ __global__ void pixelSelectionKernel(
     uint8_t bestType = DIST_GAUSSIAN;
 
     if (nClean >= 3) {
-        // 5. Fit models
+        // 5. Fit models — use AICc (corrected AIC) for small sample sizes
         FitResultDevice gaussFit = fitGaussian_device(cleanData, nClean);
-        double aicGauss = aicDevice(gaussFit.logLikelihood, gaussFit.k);
+        double aicGauss = aiccDevice(gaussFit.logLikelihood, gaussFit.k, nClean);
 
         FitResultDevice poisFit = fitPoisson_device(cleanData, nClean);
-        double aicPois = aicDevice(poisFit.logLikelihood, poisFit.k);
+        double aicPois = aiccDevice(poisFit.logLikelihood, poisFit.k, nClean);
 
         double aicSkew = 1e300;
         double aicMix  = 1e300;
@@ -871,10 +884,10 @@ __global__ void pixelSelectionKernel(
 
         if (!skipExpensive) {
             FitResultDevice skewFit = fitSkewNormal_device(cleanData, nClean);
-            aicSkew = aicDevice(skewFit.logLikelihood, skewFit.k);
+            aicSkew = aiccDevice(skewFit.logLikelihood, skewFit.k, nClean);
 
             FitResultDevice mixFit = fitBimodalEM_device(cleanData, nClean);
-            aicMix = aicDevice(mixFit.logLikelihood, mixFit.k);
+            aicMix = aiccDevice(mixFit.logLikelihood, mixFit.k, nClean);
         }
 
         // 6. Select model with lowest AIC

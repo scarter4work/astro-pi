@@ -301,6 +301,10 @@ LoadedFrames FrameLoader::LoadRaw( const std::vector<FramePath>& frames )
 
         // Extract and store metadata from FITS keywords
         result.metadata[i] = ExtractMetadata( keywords );
+
+        // If key quality metrics are missing, compute them via PCL PSF fitting
+        if ( result.metadata[i].fwhm == 0.0 && result.metadata[i].eccentricity == 0.0 )
+            ComputeFrameMetrics( img, result.metadata[i] );
     }
 
     console.WriteLn( pcl::String().Format(
@@ -549,6 +553,63 @@ void FrameLoader::DebayerBilinear( const float* cfa, int W, int H,
             outG[idx] = g;
             outB[idx] = b;
         }
+    }
+}
+
+// ----------------------------------------------------------------------------
+
+void FrameLoader::ComputeFrameMetrics( const pcl::Image& img, SubMetadata& meta )
+{
+    try
+    {
+        // Wrap image for PCL star detection (stack-local copy, non-owning alias)
+        pcl::Image imgCopy( img );
+        pcl::ImageVariant iv( &imgCopy );
+
+        // Detect stars
+        pcl::StarDetector detector;
+        detector.SetSensitivity( 0.5 );
+        detector.SetMaxDistortion( 0.6 );
+        detector.SetMinSNR( 10.0 );
+        auto stars = detector.DetectStars( iv );
+
+        if ( stars.IsEmpty() )
+            return;
+
+        // Fit PSFs on the brightest stars (capped at 50 for speed)
+        int maxFit = std::min( 50, int( stars.Length() ) );
+        double sumFWHM = 0, sumEcc = 0, sumBkg = 0;
+        int count = 0;
+
+        for ( int i = 0; i < maxFit; ++i )
+        {
+            pcl::PSFFit fit( iv, stars[i].pos, pcl::DRect( stars[i].srect ),
+                             pcl::PSFunction::Gaussian, false /*elliptical*/ );
+
+            if ( fit.psf.status == pcl::PSFFitStatus::FittedOk )
+            {
+                sumFWHM += ( fit.psf.FWHMx() + fit.psf.FWHMy() ) * 0.5;
+
+                double sx = std::max( fit.psf.sx, fit.psf.sy );
+                double sy = std::min( fit.psf.sx, fit.psf.sy );
+                sumEcc += ( sx > 0 ) ? std::sqrt( 1.0 - ( sy * sy ) / ( sx * sx ) ) : 0.0;
+
+                sumBkg += fit.psf.B;
+                ++count;
+            }
+        }
+
+        if ( count > 0 )
+        {
+            meta.fwhm          = sumFWHM / count;
+            meta.eccentricity  = sumEcc / count;
+            meta.skyBackground = sumBkg / count;
+            meta.hfr           = meta.fwhm * 0.5;  // HFR ≈ FWHM/2 for Gaussian PSF
+        }
+    }
+    catch ( ... )
+    {
+        // PCL star detection or PSF fitting failed — leave metrics at zero
     }
 }
 

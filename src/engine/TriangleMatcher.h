@@ -9,7 +9,8 @@ namespace nukex {
 struct TriangleDescriptor {
     double ratioBA;     // b/a where a >= b >= c (side lengths)
     double ratioCA;     // c/a
-    int idx0, idx1, idx2; // star indices that form this triangle
+    int idx0, idx1, idx2;       // star indices that form this triangle
+    int vertOpposite[3];        // vertex opposite [shortest, middle, longest] side
 };
 
 struct AlignmentResult {

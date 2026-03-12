@@ -17,11 +17,25 @@ TriangleDescriptor makeTriangleDescriptor(const StarPosition& s1,
                                            const StarPosition& s2,
                                            const StarPosition& s3,
                                            int idx1, int idx2, int idx3) {
-    double sides[3] = {dist(s1, s2), dist(s2, s3), dist(s1, s3)};
-    std::sort(sides, sides + 3);
-    double a = sides[2]; // longest
-    double b = sides[1]; // middle
-    double c = sides[0]; // shortest
+    // Each side has a length and the index of the vertex opposite to it
+    struct SideInfo {
+        double length;
+        int oppositeIdx;
+    };
+
+    SideInfo sideInfo[3] = {
+        {dist(s1, s2), idx3},  // side s1-s2, opposite vertex is s3
+        {dist(s2, s3), idx1},  // side s2-s3, opposite vertex is s1
+        {dist(s1, s3), idx2}   // side s1-s3, opposite vertex is s2
+    };
+
+    // Sort by length ascending: [0]=shortest, [1]=middle, [2]=longest
+    std::sort(sideInfo, sideInfo + 3,
+              [](const SideInfo& a, const SideInfo& b) { return a.length < b.length; });
+
+    double a = sideInfo[2].length; // longest
+    double b = sideInfo[1].length; // middle
+    double c = sideInfo[0].length; // shortest
 
     TriangleDescriptor desc;
     desc.ratioBA = (a > 0) ? b / a : 0;
@@ -29,6 +43,14 @@ TriangleDescriptor makeTriangleDescriptor(const StarPosition& s1,
     desc.idx0 = idx1;
     desc.idx1 = idx2;
     desc.idx2 = idx3;
+
+    // vertOpposite[i] = vertex opposite the i-th sorted side
+    // This establishes a canonical ordering: when two triangles match,
+    // vertOpposite[k] in ref corresponds to vertOpposite[k] in target.
+    desc.vertOpposite[0] = sideInfo[0].oppositeIdx;  // opposite shortest
+    desc.vertOpposite[1] = sideInfo[1].oppositeIdx;  // opposite middle
+    desc.vertOpposite[2] = sideInfo[2].oppositeIdx;  // opposite longest
+
     return desc;
 }
 
@@ -60,22 +82,17 @@ AlignmentResult matchFrames(const std::vector<StarPosition>& refStars,
     int nTgt = std::min(static_cast<int>(targetStars.size()), maxStars);
 
     // Step 3: Vote matrix — votes[refIdx][tgtIdx] = count
-    // Using a map of pair<int,int> -> int for sparse storage
     std::map<std::pair<int,int>, int> votes;
 
     for (const auto& td : tgtDescs) {
         for (const auto& rd : refDescs) {
             if (std::abs(td.ratioBA - rd.ratioBA) < matchTolerance &&
                 std::abs(td.ratioCA - rd.ratioCA) < matchTolerance) {
-                // Matching triangle pair — vote for all 3x3 correspondences
-                // TODO: Improve by using sorted side lengths to establish vertex
-                // ordering within each triangle, reducing noise votes from 6/9 to 0/3.
-                // Current brute-force approach works for pure-translation same-session data.
-                int tgtIdxs[3] = {td.idx0, td.idx1, td.idx2};
-                int refIdxs[3] = {rd.idx0, rd.idx1, rd.idx2};
-                for (int ri = 0; ri < 3; ++ri)
-                    for (int ti = 0; ti < 3; ++ti)
-                        votes[{refIdxs[ri], tgtIdxs[ti]}]++;
+                // Matching triangles — use sorted side ordering to establish
+                // vertex correspondence. vertOpposite[k] in ref maps to
+                // vertOpposite[k] in target (both opposite the k-th sorted side).
+                for (int k = 0; k < 3; ++k)
+                    votes[{rd.vertOpposite[k], td.vertOpposite[k]}]++;
             }
         }
     }
@@ -124,21 +141,39 @@ AlignmentResult matchFrames(const std::vector<StarPosition>& refStars,
     double medDx = median(dxVals);
     double medDy = median(dyVals);
 
-    // Step 7: Round to integer
+    // Step 7: Geometric consistency filter — reject star pairs whose offset
+    // deviates more than 5 pixels from the median consensus. This removes
+    // false matches that contaminate the RMS.
+    std::vector<std::pair<int,int>> filteredPairs;
+    filteredPairs.reserve(confirmedPairs.size());
+    for (const auto& [ri, ti] : confirmedPairs) {
+        double pairDx = targetStars[ti].x - refStars[ri].x;
+        double pairDy = targetStars[ti].y - refStars[ri].y;
+        double residX = pairDx - medDx;
+        double residY = pairDy - medDy;
+        if (residX * residX + residY * residY < 25.0)  // within 5 pixels
+            filteredPairs.push_back({ri, ti});
+    }
+
+    // Fall back to unfiltered if too few survived
+    if (static_cast<int>(filteredPairs.size()) < minMatches)
+        filteredPairs = confirmedPairs;
+
+    // Step 8: Round to integer
     int intDx = static_cast<int>(std::round(medDx));
     int intDy = static_cast<int>(std::round(medDy));
 
-    // Step 8: Compute RMS of residuals
+    // Step 9: Compute RMS of residuals from geometrically consistent pairs
     double sumSq = 0.0;
-    for (const auto& [ri, ti] : confirmedPairs) {
+    for (const auto& [ri, ti] : filteredPairs) {
         double resDx = (targetStars[ti].x - refStars[ri].x) - intDx;
         double resDy = (targetStars[ti].y - refStars[ri].y) - intDy;
         sumSq += resDx * resDx + resDy * resDy;
     }
-    double rms = std::sqrt(sumSq / confirmedPairs.size());
+    double rms = std::sqrt(sumSq / filteredPairs.size());
 
-    // Step 9: Valid if enough matches
-    int numMatched = static_cast<int>(confirmedPairs.size());
+    // Step 10: Valid if enough matches
+    int numMatched = static_cast<int>(filteredPairs.size());
     bool valid = numMatched >= minMatches;
 
     return AlignmentResult{intDx, intDy, numMatched, rms, valid};

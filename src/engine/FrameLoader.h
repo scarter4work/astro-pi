@@ -22,6 +22,8 @@
 #include <pcl/Console.h>
 #include <pcl/Image.h>
 #include <pcl/File.h>
+#include <pcl/StarDetector.h>
+#include <pcl/PSFFit.h>
 
 #include <vector>
 
@@ -72,6 +74,10 @@ private:
                                   std::vector<float>& outR,
                                   std::vector<float>& outG,
                                   std::vector<float>& outB );
+
+    // Compute FWHM, eccentricity, HFR, and sky background using PCL star
+    // detection + PSF fitting. Called when FITS headers lack quality metrics.
+    static void ComputeFrameMetrics( const pcl::Image& img, SubMetadata& meta );
 };
 
 } // namespace nukex

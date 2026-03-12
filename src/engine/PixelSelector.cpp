@@ -127,11 +127,16 @@ PixelSelector::selectBestZ(const float* zColumnPtr, size_t nSubs,
     }
 
     // 5. Fit models — adaptive mode may skip expensive fits
+    //    Use AICc (corrected AIC) because N is small (~30 subs).
+    //    Plain AIC under-penalizes complex models at small N, causing
+    //    Bimodal (k=5) to dominate even on unimodal data.
+    int nClean = static_cast<int>(cleanData.size());
+
     FitResult gaussianFit = fitGaussian(cleanData);
-    double aicGaussian = aic(gaussianFit.logLikelihood, gaussianFit.k);
+    double aicGaussian = aicc(gaussianFit.logLikelihood, gaussianFit.k, nClean);
 
     FitResult poissonFit = fitPoisson(cleanData);
-    double aicPoisson = aic(poissonFit.logLikelihood, poissonFit.k);
+    double aicPoisson = aicc(poissonFit.logLikelihood, poissonFit.k, nClean);
 
     double aicSkew = std::numeric_limits<double>::infinity();
     double aicMix  = std::numeric_limits<double>::infinity();
@@ -153,10 +158,13 @@ PixelSelector::selectBestZ(const float* zColumnPtr, size_t nSubs,
 
     if (!skipExpensive) {
         SkewNormalFitResult skewFit = fitSkewNormal(cleanData);
-        aicSkew = aic(skewFit.logLikelihood, skewFit.k);
+        aicSkew = aicc(skewFit.logLikelihood, skewFit.k, nClean);
 
         GaussianMixResult mixFit = fitGaussianMixture2(cleanData);
-        aicMix = aic(mixFit.logLikelihood, mixFit.k);
+        // Reject bimodal if one component dominates (weight near 0 or 1)
+        // — EM always converges to some split, even on unimodal data
+        if (mixFit.weight > 0.05 && mixFit.weight < 0.95)
+            aicMix = aicc(mixFit.logLikelihood, mixFit.k, nClean);
     }
 
     // 6. Select model with lowest AIC
