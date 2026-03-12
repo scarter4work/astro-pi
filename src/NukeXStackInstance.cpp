@@ -565,6 +565,7 @@ bool NukeXStackInstance::ExecuteGlobal()
          if ( isColor )
          {
             console.WriteLn( "\n  Per-channel stretch:" );
+            std::unique_ptr<IStretchAlgorithm> lastChAlgo;
             for ( int ch = 0; ch < 3; ++ch )
             {
                const char* label = ch == 0 ? "R" : ch == 1 ? "G" : "B";
@@ -574,18 +575,18 @@ bool NukeXStackInstance::ExecuteGlobal()
                double mad = stretchImage.MAD( med );
                console.WriteLn( String().Format( "    %s: median=%.6f, MAD=%.6f", label, med, mad ) );
 
-               auto chAlgo = algo->Clone();
-               chAlgo->AutoConfigure( med, mad );
+               lastChAlgo = algo->Clone();
+               lastChAlgo->AutoConfigure( med, mad );
 
                // Apply to this channel only
                Image::sample_iterator it( stretchImage, ch );
                for ( ; it; ++it )
-                  *it = chAlgo->Apply( *it );
+                  *it = lastChAlgo->Apply( *it );
             }
             stretchImage.ResetChannelRange();
 
             // Log parameters from last channel as representative
-            auto params = algo->GetParameters();
+            auto params = lastChAlgo->GetParameters();
             for ( const auto& param : params )
                console.WriteLn( String().Format( "  %s = %.4f",
                   IsoString( param.name ).c_str(), param.value ) );

@@ -287,6 +287,20 @@ LoadedFrames FrameLoader::LoadRaw( const std::vector<FramePath>& frames )
                              result.pixelData[i][0],
                              result.pixelData[i][1],
                              result.pixelData[i][2] );
+
+            // Build a pcl::Image from debayered RGB for metric computation
+            pcl::Image rgbImg;
+            rgbImg.AllocateData( refWidth, refHeight, 3, pcl::ColorSpace::RGB );
+            std::copy( result.pixelData[i][0].begin(), result.pixelData[i][0].end(),
+                       rgbImg.PixelData( 0 ) );
+            std::copy( result.pixelData[i][1].begin(), result.pixelData[i][1].end(),
+                       rgbImg.PixelData( 1 ) );
+            std::copy( result.pixelData[i][2].begin(), result.pixelData[i][2].end(),
+                       rgbImg.PixelData( 2 ) );
+
+            result.metadata[i] = ExtractMetadata( keywords );
+            if ( result.metadata[i].fwhm == 0.0 && result.metadata[i].eccentricity == 0.0 )
+                ComputeFrameMetrics( rgbImg, result.metadata[i] );
         }
         else
         {
@@ -297,14 +311,11 @@ LoadedFrames FrameLoader::LoadRaw( const std::vector<FramePath>& frames )
                 const pcl::Image::sample* src = img.PixelData( c );
                 result.pixelData[i][c].assign( src, src + numPx );
             }
+
+            result.metadata[i] = ExtractMetadata( keywords );
+            if ( result.metadata[i].fwhm == 0.0 && result.metadata[i].eccentricity == 0.0 )
+                ComputeFrameMetrics( img, result.metadata[i] );
         }
-
-        // Extract and store metadata from FITS keywords
-        result.metadata[i] = ExtractMetadata( keywords );
-
-        // If key quality metrics are missing, compute them via PCL PSF fitting
-        if ( result.metadata[i].fwhm == 0.0 && result.metadata[i].eccentricity == 0.0 )
-            ComputeFrameMetrics( img, result.metadata[i] );
     }
 
     console.WriteLn( pcl::String().Format(

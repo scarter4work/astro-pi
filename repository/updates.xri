@@ -9,8 +9,8 @@
       </p>
    </description>
    <platform os="linux" arch="x64" version="1.8.0:1.9.9">
-      <package fileName="20260312-linux-x64-NukeX.tar.gz" sha1="88128fc291778fbcbd2565cb94f0827136adb773" type="module" releaseDate="20260312">
-         <title>NukeX 3.0.0.17</title>
+      <package fileName="20260312-linux-x64-NukeX.tar.gz" sha1="2f5ee6c49e439cb231750942a3ab78e47b8cf6a7" type="module" releaseDate="20260312">
+         <title>NukeX 3.0.0.18</title>
          <description>
             <p>
                <b>NukeX v3 - Statistical Stacking + Stretch for PixInsight</b>
@@ -27,7 +27,7 @@
                </li>
             </ul>
             <p>
-               <b>Version 3.0.0.17 - AICc model selection, triangle matcher vertex ordering, PCL frame metrics</b>
+               <b>Version 3.0.0.18 - Fix stretch parameter logging, debayered frame metrics for quality weights</b>
             </p>
             <p>
                Copyright (c) 2026 Scott Carter. All Rights Reserved.
@@ -36,4 +36,4 @@
       </package>
    </platform>
 </xri>
-<Signature developerId="scarter4work" timestamp="2026-03-12T21:28:15.062Z" encoding="Base64">FH9elsgJDEgTZjyFp2hquEoawGO2qU6MHUhEHA+6AHJ/EIbHv66eA7WgOuc1rbCKsJwo8G8aIuvbTK7zExGQBA==</Signature>
+<Signature developerId="scarter4work" timestamp="2026-03-12T22:58:12.532Z" encoding="Base64">FYNOK0qDC3XtOYwC2hvZ+HegMcAUgB2upGCigPwrTfkHb9xCljU7WPVkhXxDFDBivuzAR76YVeTuOnKrWh6vAQ==</Signature>
