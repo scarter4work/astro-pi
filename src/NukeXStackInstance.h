@@ -69,6 +69,8 @@ private:
    pcl_bool p_generateDistMetadata;
    pcl_bool p_enableQualityWeighting;
    pcl_bool p_enableAutoStretch;
+   pcl_bool p_useGPU;
+   pcl_bool p_adaptiveModels;
 
    // Floating point parameters
    float    p_outlierSigmaThreshold;

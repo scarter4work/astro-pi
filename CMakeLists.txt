@@ -44,6 +44,28 @@ endif()
 # OpenMP support for parallel processing
 find_package(OpenMP)
 
+# Optional CUDA support for GPU acceleration
+# CudaRuntime.cpp uses the CUDA runtime API (compiled by g++, not nvcc).
+# We only need CUDAToolkit for the headers + cudart library — we do NOT
+# need enable_language(CUDA) unless we have .cu device code to compile.
+find_package(CUDAToolkit QUIET)
+if(CUDAToolkit_FOUND)
+    set(NUKEX_HAS_CUDA TRUE)
+    message(STATUS "  CUDA:          ${CUDAToolkit_VERSION} (GPU acceleration enabled)")
+    # If nvcc can work with our host compiler, enable CUDA language for .cu files
+    include(CheckLanguage)
+    set(CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS} -allow-unsupported-compiler")
+    check_language(CUDA)
+    if(CMAKE_CUDA_COMPILER)
+        enable_language(CUDA)
+        set(NUKEX_CUDA_LANGUAGE TRUE)
+    else()
+        message(STATUS "  CUDA nvcc:     Not usable (runtime API only, no .cu device code)")
+    endif()
+else()
+    message(STATUS "  CUDA:          Not found (GPU acceleration disabled)")
+endif()
+
 # Source files — populated as code is added
 file(GLOB_RECURSE NUKEX_SOURCES
     "${CMAKE_CURRENT_SOURCE_DIR}/src/*.cpp"
@@ -54,6 +76,24 @@ file(GLOB_RECURSE NUKEX_HEADERS
 
 # Create shared library
 add_library(NukeX SHARED ${NUKEX_SOURCES} ${NUKEX_HEADERS})
+
+# Conditional CUDA support
+if(NUKEX_HAS_CUDA)
+    target_compile_definitions(NukeX PRIVATE NUKEX_HAS_CUDA)
+    target_link_libraries(NukeX PRIVATE CUDA::cudart)
+    target_include_directories(NukeX PRIVATE ${CUDAToolkit_INCLUDE_DIRS})
+    # If nvcc is available, compile .cu device code
+    if(NUKEX_CUDA_LANGUAGE)
+        file(GLOB_RECURSE NUKEX_CUDA_SOURCES
+            "${CMAKE_CURRENT_SOURCE_DIR}/src/engine/cuda/*.cu"
+        )
+        target_sources(NukeX PRIVATE ${NUKEX_CUDA_SOURCES})
+        set_target_properties(NukeX PROPERTIES
+            CUDA_STANDARD 17
+            CUDA_SEPARABLE_COMPILATION ON
+        )
+    endif()
+endif()
 
 # Include directories
 target_include_directories(NukeX PRIVATE
@@ -104,7 +144,7 @@ if(MSVC)
 else()
     target_compile_options(NukeX PRIVATE
         -Wall -Wno-parentheses
-        -O3 -fPIC
+        -O3 -fPIC -march=native
         -ffunction-sections -fdata-sections
         -fvisibility=hidden -fvisibility-inlines-hidden
         -fnon-call-exceptions
@@ -159,4 +199,5 @@ message(STATUS "  Version:       ${PROJECT_VERSION}")
 message(STATUS "  PCLDIR:        ${PCLDIR}")
 message(STATUS "  C++ Standard:  17")
 message(STATUS "  OpenMP:        ${OpenMP_CXX_FOUND}")
+message(STATUS "  CUDA:          ${NUKEX_HAS_CUDA}")
 message(STATUS "")

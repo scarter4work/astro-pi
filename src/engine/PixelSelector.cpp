@@ -1,6 +1,11 @@
 // src/engine/PixelSelector.cpp
 #include "engine/PixelSelector.h"
 
+#ifdef NUKEX_HAS_CUDA
+#include "engine/cuda/CudaPixelSelector.h"
+#include "engine/cuda/CudaRuntime.h"
+#endif
+
 #include <algorithm>
 #include <atomic>
 #include <cmath>
@@ -121,19 +126,40 @@ PixelSelector::selectBestZ(const float* zColumnPtr, size_t nSubs,
         return result;
     }
 
-    // 5. Fit all 4 models on clean data
+    // 5. Fit models — adaptive mode may skip expensive fits
     FitResult gaussianFit = fitGaussian(cleanData);
-    FitResult poissonFit = fitPoisson(cleanData);
-    SkewNormalFitResult skewFit = fitSkewNormal(cleanData);
-    GaussianMixResult mixFit = fitGaussianMixture2(cleanData);
-
-    // 6. Compute AIC for each model
     double aicGaussian = aic(gaussianFit.logLikelihood, gaussianFit.k);
-    double aicPoisson = aic(poissonFit.logLikelihood, poissonFit.k);
-    double aicSkew = aic(skewFit.logLikelihood, skewFit.k);
-    double aicMix = aic(mixFit.logLikelihood, mixFit.k);
 
-    // 7. Select model with lowest AIC
+    FitResult poissonFit = fitPoisson(cleanData);
+    double aicPoisson = aic(poissonFit.logLikelihood, poissonFit.k);
+
+    double aicSkew = std::numeric_limits<double>::infinity();
+    double aicMix  = std::numeric_limits<double>::infinity();
+
+    bool skipExpensive = false;
+    if (m_config.adaptiveModels) {
+        // With small N (< 6 clean points), complex models with 3-5 parameters
+        // are poorly constrained and AIC correction dominates — skip them.
+        // With larger N, skip if the best simple model's per-sample log-likelihood
+        // exceeds -1.0 (very good fit), meaning AIC/N < 2*k/N + 2.0 which for
+        // Gaussian (k=2) means AIC < 4 + 2N — essentially always good.
+        // A more targeted criterion: skip if Gaussian normalized log-likelihood
+        // is above -1.0 per sample (tight fit to data).
+        double bestSimpleAIC = std::min(aicGaussian, aicPoisson);
+        double n = static_cast<double>(cleanData.size());
+        skipExpensive = (cleanData.size() < 6)
+                     || (bestSimpleAIC / n < 2.0);  // normalized AIC indicates good fit
+    }
+
+    if (!skipExpensive) {
+        SkewNormalFitResult skewFit = fitSkewNormal(cleanData);
+        aicSkew = aic(skewFit.logLikelihood, skewFit.k);
+
+        GaussianMixResult mixFit = fitGaussianMixture2(cleanData);
+        aicMix = aic(mixFit.logLikelihood, mixFit.k);
+    }
+
+    // 6. Select model with lowest AIC
     struct ModelAIC {
         DistributionType type;
         double aicValue;
@@ -241,6 +267,53 @@ std::vector<float> PixelSelector::processImage(SubCube& cube,
     m_lastErrorCount = errorCount.load();
 
     return output;
+}
+
+std::vector<float> PixelSelector::processImageGPU(SubCube& cube,
+                                                    const std::vector<double>& qualityWeights,
+                                                    std::vector<uint8_t>& distTypesOut,
+                                                    ProgressCallback progress)
+{
+#ifdef NUKEX_HAS_CUDA
+    if (!cuda::isGpuAvailable()) {
+        // No GPU — fall back to CPU
+        return processImage(cube, qualityWeights, progress);
+    }
+
+    size_t H = cube.height();
+    size_t W = cube.width();
+    size_t totalPixels = H * W;
+
+    std::vector<float> output(totalPixels);
+    distTypesOut.resize(totalPixels);
+
+    cuda::GpuStackConfig gpuConfig;
+    gpuConfig.maxOutliers = m_config.maxOutliers;
+    gpuConfig.outlierAlpha = m_config.outlierAlpha;
+    gpuConfig.adaptiveModels = m_config.adaptiveModels;
+    gpuConfig.nSubs = cube.numSubs();
+    gpuConfig.height = H;
+    gpuConfig.width = W;
+
+    auto result = cuda::processImageGPU(
+        cube.cube().data(), output.data(), distTypesOut.data(), gpuConfig);
+
+    if (!result.success) {
+        // GPU failed — fall back to CPU
+        return processImage(cube, qualityWeights, progress);
+    }
+
+    // Copy distTypes into SubCube metadata
+    for (size_t y = 0; y < H; ++y)
+        for (size_t x = 0; x < W; ++x)
+            cube.setDistType(y, x, distTypesOut[y * W + x]);
+
+    return output;
+#else
+    // No CUDA compiled in — CPU only
+    (void)distTypesOut;
+    return processImage(cube, qualityWeights, progress);
+#endif
 }
 
 } // namespace nukex

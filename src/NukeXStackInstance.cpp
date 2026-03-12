@@ -22,6 +22,10 @@
 #include <pcl/Image.h>
 #include <pcl/ErrorHandler.h>
 
+#ifdef NUKEX_HAS_CUDA
+#include "engine/cuda/CudaRuntime.h"
+#endif
+
 #include <chrono>
 #include <algorithm>
 #include <cmath>
@@ -38,6 +42,8 @@ NukeXStackInstance::NukeXStackInstance( const MetaProcess* m )
    , p_generateDistMetadata( TheNXSGenerateDistMetadataParameter->DefaultValue() )
    , p_enableQualityWeighting( TheNXSEnableQualityWeightingParameter->DefaultValue() )
    , p_enableAutoStretch( TheNXSEnableAutoStretchParameter->DefaultValue() )
+   , p_useGPU( TheNXSUseGPUParameter->DefaultValue() )
+   , p_adaptiveModels( TheNXSAdaptiveModelsParameter->DefaultValue() )
    , p_outlierSigmaThreshold( static_cast<float>( TheNXSOutlierSigmaThresholdParameter->DefaultValue() ) )
    , p_fwhmWeight( static_cast<float>( TheNXSFWHMWeightParameter->DefaultValue() ) )
    , p_eccentricityWeight( static_cast<float>( TheNXSEccentricityWeightParameter->DefaultValue() ) )
@@ -68,6 +74,8 @@ void NukeXStackInstance::Assign( const ProcessImplementation& p )
       p_generateDistMetadata    = x->p_generateDistMetadata;
       p_enableQualityWeighting  = x->p_enableQualityWeighting;
       p_enableAutoStretch       = x->p_enableAutoStretch;
+      p_useGPU                  = x->p_useGPU;
+      p_adaptiveModels          = x->p_adaptiveModels;
       p_outlierSigmaThreshold   = x->p_outlierSigmaThreshold;
       p_fwhmWeight              = x->p_fwhmWeight;
       p_eccentricityWeight      = x->p_eccentricityWeight;
@@ -256,6 +264,23 @@ bool NukeXStackInstance::ExecuteGlobal()
          double phi = std::erfc( -sigma / 1.4142135623730951 ) * 0.5;
          selConfig.outlierAlpha = std::max( 0.001, std::min( 0.5, 2.0 * (1.0 - phi) ) );
       }
+      selConfig.adaptiveModels = p_adaptiveModels;
+      selConfig.useGPU = p_useGPU;
+
+      // GPU detection
+      bool useGPU = false;
+#ifdef NUKEX_HAS_CUDA
+      if ( p_useGPU && nukex::cuda::isGpuAvailable() )
+      {
+         useGPU = true;
+         console.WriteLn( String().Format( "  GPU: %s (%zu MB VRAM)",
+            nukex::cuda::gpuName(), nukex::cuda::gpuMemoryMB() ) );
+      }
+#endif
+      console.WriteLn( String().Format( "  Compute: %s | Adaptive: %s",
+         useGPU ? "GPU (CUDA)" : "CPU (OpenMP)",
+         p_adaptiveModels ? "On" : "Off" ) );
+
       nukex::PixelSelector selector( selConfig );
       console.WriteLn( String().Format( "  Outlier config: maxOutliers=%d, alpha=%.4f (sigma=%.1f)\n",
          selConfig.maxOutliers, selConfig.outlierAlpha, double( p_outlierSigmaThreshold ) ) );
@@ -290,14 +315,23 @@ bool NukeXStackInstance::ExecuteGlobal()
          {
             // Reuse the aligned cube for channel 0
             nukex::SubCube cube = std::move( aligned.alignedCube );
-            channelResults[ch] = selector.processImage( cube, weights, progressCB );
+
+            if ( useGPU )
+            {
+               channelResults[ch] = selector.processImageGPU( cube, weights, distTypeMaps[ch], progressCB );
+            }
+            else
+            {
+               channelResults[ch] = selector.processImage( cube, weights, progressCB );
+
+               size_t mapSize = size_t( cropH ) * size_t( cropW );
+               distTypeMaps[ch].resize( mapSize );
+               for ( size_t y = 0; y < size_t( cropH ); ++y )
+                  for ( size_t x = 0; x < size_t( cropW ); ++x )
+                     distTypeMaps[ch][y * cropW + x] = cube.distType( y, x );
+            }
 
             size_t mapSize = size_t( cropH ) * size_t( cropW );
-            distTypeMaps[ch].resize( mapSize );
-            for ( size_t y = 0; y < size_t( cropH ); ++y )
-               for ( size_t x = 0; x < size_t( cropW ); ++x )
-                  distTypeMaps[ch][y * cropW + x] = cube.distType( y, x );
-
             size_t counts[4] = {};
             for ( uint8_t t : distTypeMaps[ch] )
                if ( t < 4 ) counts[t]++;
@@ -319,14 +353,22 @@ bool NukeXStackInstance::ExecuteGlobal()
             for ( size_t i = 0; i < raw.metadata.size(); ++i )
                cube.setMetadata( i, raw.metadata[i] );
 
-            channelResults[ch] = selector.processImage( cube, weights, progressCB );
+            if ( useGPU )
+            {
+               channelResults[ch] = selector.processImageGPU( cube, weights, distTypeMaps[ch], progressCB );
+            }
+            else
+            {
+               channelResults[ch] = selector.processImage( cube, weights, progressCB );
+
+               size_t mapSize = size_t( cropH ) * size_t( cropW );
+               distTypeMaps[ch].resize( mapSize );
+               for ( size_t y = 0; y < size_t( cropH ); ++y )
+                  for ( size_t x = 0; x < size_t( cropW ); ++x )
+                     distTypeMaps[ch][y * cropW + x] = cube.distType( y, x );
+            }
 
             size_t mapSize = size_t( cropH ) * size_t( cropW );
-            distTypeMaps[ch].resize( mapSize );
-            for ( size_t y = 0; y < size_t( cropH ); ++y )
-               for ( size_t x = 0; x < size_t( cropW ); ++x )
-                  distTypeMaps[ch][y * cropW + x] = cube.distType( y, x );
-
             size_t counts[4] = {};
             for ( uint8_t t : distTypeMaps[ch] )
                if ( t < 4 ) counts[t]++;
@@ -637,6 +679,10 @@ void* NukeXStackInstance::LockParameter( const MetaParameter* p, size_type table
       return &p_enableQualityWeighting;
    if ( p == TheNXSEnableAutoStretchParameter )
       return &p_enableAutoStretch;
+   if ( p == TheNXSUseGPUParameter )
+      return &p_useGPU;
+   if ( p == TheNXSAdaptiveModelsParameter )
+      return &p_adaptiveModels;
    if ( p == TheNXSOutlierSigmaThresholdParameter )
       return &p_outlierSigmaThreshold;
    if ( p == TheNXSFWHMWeightParameter )
