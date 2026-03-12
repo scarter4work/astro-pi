@@ -232,7 +232,7 @@ install: sign
 
 # Package for distribution: build, sign, tarball, update manifest, sign XRI
 REPO_DIR = repository
-PKG_NAME = 20260311-linux-x64-NukeX.tar.gz
+PKG_NAME = 20260312-linux-x64-NukeX.tar.gz
 SIGN_XRI = $(REPO_DIR)/updates.xri
 
 package: sign
@@ -243,7 +243,7 @@ package: sign
 	@cd /tmp/nukex-pkg && tar czf $(CURDIR)/$(REPO_DIR)/$(PKG_NAME) bin/
 	@NEW_SHA=$$(sha1sum $(REPO_DIR)/$(PKG_NAME) | cut -d' ' -f1); \
 	 echo "  SHA1: $$NEW_SHA"; \
-	 sed -i "s/sha1=\"[a-f0-9]*\"/sha1=\"$$NEW_SHA\"/" $(SIGN_XRI)
+	 sed -i "s/sha1=\"[^\"]*\"/sha1=\"$$NEW_SHA\"/" $(SIGN_XRI)
 	@sed -i '/<Signature developerId=/d' $(SIGN_XRI)
 	$(PIXINSIGHT_DIR)/bin/PixInsight.sh \
 		--sign-xml-file=$(SIGN_XRI) \

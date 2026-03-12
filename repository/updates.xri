@@ -9,8 +9,8 @@
       </p>
    </description>
    <platform os="linux" arch="x64" version="1.8.0:1.9.9">
-      <package fileName="20260311-linux-x64-NukeX.tar.gz" sha1="PLACEHOLDER" type="module" releaseDate="20260311">
-         <title>NukeX 3.0.0.15</title>
+      <package fileName="20260312-linux-x64-NukeX.tar.gz" sha1="ecd786f0cf6602104de65f51f47025289a41b8f6" type="module" releaseDate="20260312">
+         <title>NukeX 3.0.0.16</title>
          <description>
             <p>
                <b>NukeX v3 - Statistical Stacking + Stretch for PixInsight</b>
@@ -27,7 +27,7 @@
                </li>
             </ul>
             <p>
-               <b>Version 3.0.0.15 - GPU acceleration, analytical gradients, adaptive model selection</b>
+               <b>Version 3.0.0.16 - Fix package checksum, GPU acceleration, analytical gradients, adaptive models</b>
             </p>
             <p>
                Copyright (c) 2026 Scott Carter. All Rights Reserved.
@@ -36,4 +36,4 @@
       </package>
    </platform>
 </xri>
-<Signature developerId="scarter4work" timestamp="2026-03-11T23:37:51.087Z" encoding="Base64">iKSZrNl5t2er/JVK5Pa+E1cPXcWZhWvXgY4zOp3JZNtKsGY7jf7P42JY0uqHUEzwrm1EnrfrzRTb4v7snVFSAA==</Signature>
+<Signature developerId="scarter4work" timestamp="2026-03-12T20:50:05.345Z" encoding="Base64">dkNR+zoH2mjFwA6gcVl8c0fFiN22dmGJv5r1JIo+AUcE6bn0ILeBQJg3LGZ+glVRkZiwuk120fAqy4jMH/Y1Ag==</Signature>
