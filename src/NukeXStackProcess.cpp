@@ -40,6 +40,8 @@ NukeXStackProcess::NukeXStackProcess()
    new NXSEnableAutoStretch( this );
    new NXSUseGPU( this );
    new NXSAdaptiveModels( this );
+   new NXSEnableTrailDetection( this );
+   new NXSEnableSelfFlat( this );
 
    // Floating point parameters
    new NXSOutlierSigmaThreshold( this );

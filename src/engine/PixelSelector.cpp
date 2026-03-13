@@ -36,12 +36,38 @@ PixelSelector::PixelSelector(const Config& config)
 
 PixelSelector::PixelResult
 PixelSelector::selectBestZ(const float* zColumnPtr, size_t nSubs,
-                           const std::vector<double>& qualityWeights)
+                           const std::vector<double>& qualityWeights,
+                           const uint8_t* maskColumn)
 {
     PixelResult result{};
 
-    // 1. Promote float Z-column to double
-    std::vector<double> zValues = promoteToDouble(zColumnPtr, nSubs);
+    // 0. If per-frame masks are present, pre-filter masked frames
+    //    (trail-contaminated pixels are excluded before any statistics)
+    std::vector<double> zValues;
+    std::vector<size_t> originalIndices;  // maps filtered index → original frame index
+    if (maskColumn) {
+        zValues.reserve(nSubs);
+        originalIndices.reserve(nSubs);
+        for (size_t i = 0; i < nSubs; ++i) {
+            if (maskColumn[i] == 0) {
+                zValues.push_back(static_cast<double>(zColumnPtr[i]));
+                originalIndices.push_back(i);
+            }
+        }
+        // If too many masked, fall back to all frames
+        if (zValues.size() < 3) {
+            zValues = promoteToDouble(zColumnPtr, nSubs);
+            originalIndices.resize(nSubs);
+            std::iota(originalIndices.begin(), originalIndices.end(), 0);
+        }
+    } else {
+        // 1. Promote float Z-column to double (no masking)
+        zValues = promoteToDouble(zColumnPtr, nSubs);
+        originalIndices.resize(nSubs);
+        std::iota(originalIndices.begin(), originalIndices.end(), 0);
+    }
+
+    size_t nValid = zValues.size();
 
     // 2a. MAD-based sigma clipping pre-filter (robust to outliers).
     // MAD uses the median, so outliers can't inflate the scale estimate
@@ -53,9 +79,9 @@ PixelSelector::selectBestZ(const float* zColumnPtr, size_t nSubs,
     // Build pre-filtered data for ESD
     std::vector<double> preFiltered;
     std::vector<size_t> preFilteredIndices;
-    preFiltered.reserve(nSubs);
-    preFilteredIndices.reserve(nSubs);
-    for (size_t i = 0; i < nSubs; ++i) {
+    preFiltered.reserve(nValid);
+    preFilteredIndices.reserve(nValid);
+    for (size_t i = 0; i < nValid; ++i) {
         if (madOutlierSet.find(i) == madOutlierSet.end()) {
             preFiltered.push_back(zValues[i]);
             preFilteredIndices.push_back(i);
@@ -75,9 +101,9 @@ PixelSelector::selectBestZ(const float* zColumnPtr, size_t nSubs,
     // 3. Build clean data vector (exclude all outliers)
     std::vector<double> cleanData;
     std::vector<size_t> cleanIndices;
-    cleanData.reserve(nSubs);
-    cleanIndices.reserve(nSubs);
-    for (size_t i = 0; i < nSubs; ++i) {
+    cleanData.reserve(nValid);
+    cleanIndices.reserve(nValid);
+    for (size_t i = 0; i < nValid; ++i) {
         if (allOutliers.find(i) == allOutliers.end()) {
             cleanData.push_back(zValues[i]);
             cleanIndices.push_back(i);
@@ -90,9 +116,9 @@ PixelSelector::selectBestZ(const float* zColumnPtr, size_t nSubs,
             cleanData = preFiltered;
             cleanIndices = preFilteredIndices;
         } else {
-            cleanData.resize(nSubs);
-            cleanIndices.resize(nSubs);
-            for (size_t i = 0; i < nSubs; ++i) {
+            cleanData.resize(nValid);
+            cleanIndices.resize(nValid);
+            for (size_t i = 0; i < nValid; ++i) {
                 cleanData[i] = zValues[i];
                 cleanIndices[i] = i;
             }
@@ -112,7 +138,7 @@ PixelSelector::selectBestZ(const float* zColumnPtr, size_t nSubs,
             double dist = std::abs(zValues[idx] - cleanMedian);
             if (dist < bestDist) {
                 bestDist = dist;
-                bestZ = static_cast<uint32_t>(idx);
+                bestZ = static_cast<uint32_t>(originalIndices[idx]);
             }
         }
         if (cleanIndices.empty()) {
@@ -199,7 +225,8 @@ PixelSelector::selectBestZ(const float* zColumnPtr, size_t nSubs,
         double dist = std::abs(zValues[idx] - cleanMedian);
         if (dist < bestDist) {
             bestDist = dist;
-            bestZ = static_cast<uint32_t>(idx);
+            // Remap filtered index back to original frame index
+            bestZ = static_cast<uint32_t>(originalIndices[idx]);
         }
     }
 
@@ -213,7 +240,8 @@ PixelSelector::selectBestZ(const float* zColumnPtr, size_t nSubs,
 float PixelSelector::processPixel(SubCube& cube, size_t y, size_t x,
                                    const std::vector<double>& qualityWeights)
 {
-    auto result = selectBestZ(cube.zColumnPtr(y, x), cube.numSubs(), qualityWeights);
+    auto result = selectBestZ(cube.zColumnPtr(y, x), cube.numSubs(), qualityWeights,
+                              cube.maskColumnPtr(y, x));
     cube.setProvenance(y, x, result.selectedZ);
     cube.setDistType(y, x, static_cast<uint8_t>(result.bestModel));
     return result.selectedValue;
@@ -245,7 +273,8 @@ std::vector<float> PixelSelector::processImage(SubCube& cube,
         for (size_t y = yStart; y < yEnd; ++y) {
             for (size_t x = 0; x < W; ++x) {
                 try {
-                    auto result = selectBestZ(cube.zColumnPtr(y, x), N, qualityWeights);
+                    auto result = selectBestZ(cube.zColumnPtr(y, x), N, qualityWeights,
+                                              cube.maskColumnPtr(y, x));
                     output[y * W + x] = result.selectedValue;
                     cube.setProvenance(y, x, result.selectedZ);
                     cube.setDistType(y, x, static_cast<uint8_t>(result.bestModel));

@@ -235,6 +235,46 @@ bool NXSAdaptiveModels::DefaultValue() const
 }
 
 // ----------------------------------------------------------------------------
+
+NXSEnableTrailDetection* TheNXSEnableTrailDetectionParameter = nullptr;
+
+NXSEnableTrailDetection::NXSEnableTrailDetection( MetaProcess* P )
+   : MetaBoolean( P )
+{
+   TheNXSEnableTrailDetectionParameter = this;
+}
+
+IsoString NXSEnableTrailDetection::Id() const
+{
+   return "enableTrailDetection";
+}
+
+bool NXSEnableTrailDetection::DefaultValue() const
+{
+   return true;
+}
+
+// ----------------------------------------------------------------------------
+
+NXSEnableSelfFlat* TheNXSEnableSelfFlatParameter = nullptr;
+
+NXSEnableSelfFlat::NXSEnableSelfFlat( MetaProcess* P )
+   : MetaBoolean( P )
+{
+   TheNXSEnableSelfFlatParameter = this;
+}
+
+IsoString NXSEnableSelfFlat::Id() const
+{
+   return "enableSelfFlat";
+}
+
+bool NXSEnableSelfFlat::DefaultValue() const
+{
+   return true;
+}
+
+// ----------------------------------------------------------------------------
 // Floating Point Parameters
 // ----------------------------------------------------------------------------
 

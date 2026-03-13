@@ -118,6 +118,24 @@ public:
     uint8_t distType(size_t y, size_t x) const { return m_distType(y, x); }
     void setDistType(size_t y, size_t x, uint8_t t) { m_distType(y, x) = t; }
 
+    // Per-frame pixel masks (trail detection, bad pixel maps, etc.)
+    // mask(z, y, x) = 1 means pixel (y,x) in frame z is masked (should be rejected).
+    bool hasMasks() const { return m_hasMasks; }
+    void allocateMasks() {
+        m_masks = xt::xtensor<uint8_t, 3, xt::layout_type::column_major>::from_shape({m_nSubs, m_height, m_width});
+        m_masks.fill(0);
+        m_hasMasks = true;
+    }
+    uint8_t mask(size_t z, size_t y, size_t x) const {
+        return m_hasMasks ? m_masks(z, y, x) : 0;
+    }
+    void setMask(size_t z, size_t y, size_t x, uint8_t v) {
+        if (m_hasMasks) m_masks(z, y, x) = v;
+    }
+    const uint8_t* maskColumnPtr(size_t y, size_t x) const {
+        return m_hasMasks ? &m_masks(0, y, x) : nullptr;
+    }
+
     // Direct tensor access
     xt::xtensor<float, 3, xt::layout_type::column_major>& cube() { return m_cube; }
     const xt::xtensor<float, 3, xt::layout_type::column_major>& cube() const { return m_cube; }
@@ -128,6 +146,8 @@ private:
     xt::xtensor<float, 3, xt::layout_type::column_major> m_cube;  // shape: (nSubs, height, width) — column-major for contiguous Z
     xt::xtensor<uint32_t, 2> m_provenance;                        // shape: (height, width)
     xt::xtensor<uint8_t, 2>  m_distType;                          // shape: (height, width)
+    xt::xtensor<uint8_t, 3, xt::layout_type::column_major> m_masks; // shape: (nSubs, height, width) — optional per-frame masks
+    bool m_hasMasks = false;
     std::vector<SubMetadata>  m_metadata;
     size_t m_nSubs, m_height, m_width;
 };

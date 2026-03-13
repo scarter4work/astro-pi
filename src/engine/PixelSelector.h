@@ -58,7 +58,8 @@ private:
     };
 
     PixelResult selectBestZ(const float* zColumnPtr, size_t nSubs,
-                            const std::vector<double>& qualityWeights);
+                            const std::vector<double>& qualityWeights,
+                            const uint8_t* maskColumn = nullptr);
 };
 
 } // namespace nukex

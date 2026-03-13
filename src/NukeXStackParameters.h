@@ -140,6 +140,26 @@ public:
 
 extern NXSAdaptiveModels* TheNXSAdaptiveModelsParameter;
 
+class NXSEnableTrailDetection : public MetaBoolean
+{
+public:
+   NXSEnableTrailDetection( MetaProcess* );
+   IsoString Id() const override;
+   bool DefaultValue() const override;
+};
+
+extern NXSEnableTrailDetection* TheNXSEnableTrailDetectionParameter;
+
+class NXSEnableSelfFlat : public MetaBoolean
+{
+public:
+   NXSEnableSelfFlat( MetaProcess* );
+   IsoString Id() const override;
+   bool DefaultValue() const override;
+};
+
+extern NXSEnableSelfFlat* TheNXSEnableSelfFlatParameter;
+
 // ----------------------------------------------------------------------------
 // Floating Point Parameters
 // ----------------------------------------------------------------------------

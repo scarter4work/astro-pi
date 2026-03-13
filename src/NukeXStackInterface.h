@@ -104,6 +104,8 @@ private:
          CheckBox          EnableAutoStretch_CheckBox;
          CheckBox          UseGPU_CheckBox;
          CheckBox          AdaptiveModels_CheckBox;
+         CheckBox          EnableTrailDetection_CheckBox;
+         CheckBox          EnableSelfFlat_CheckBox;
    };
 
    GUIData* GUI = nullptr;

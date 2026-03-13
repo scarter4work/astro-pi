@@ -12,6 +12,8 @@
 #include "engine/FrameAligner.h"
 #include "engine/AutoStretchSelector.h"
 #include "engine/StretchLibrary.h"
+#include "engine/TrailDetector.h"
+#include "engine/FlatEstimator.h"
 
 #include <pcl/MetaModule.h>
 #include <pcl/Console.h>
@@ -44,6 +46,8 @@ NukeXStackInstance::NukeXStackInstance( const MetaProcess* m )
    , p_enableAutoStretch( TheNXSEnableAutoStretchParameter->DefaultValue() )
    , p_useGPU( TheNXSUseGPUParameter->DefaultValue() )
    , p_adaptiveModels( TheNXSAdaptiveModelsParameter->DefaultValue() )
+   , p_enableTrailDetection( TheNXSEnableTrailDetectionParameter->DefaultValue() )
+   , p_enableSelfFlat( TheNXSEnableSelfFlatParameter->DefaultValue() )
    , p_outlierSigmaThreshold( static_cast<float>( TheNXSOutlierSigmaThresholdParameter->DefaultValue() ) )
    , p_fwhmWeight( static_cast<float>( TheNXSFWHMWeightParameter->DefaultValue() ) )
    , p_eccentricityWeight( static_cast<float>( TheNXSEccentricityWeightParameter->DefaultValue() ) )
@@ -76,6 +80,8 @@ void NukeXStackInstance::Assign( const ProcessImplementation& p )
       p_enableAutoStretch       = x->p_enableAutoStretch;
       p_useGPU                  = x->p_useGPU;
       p_adaptiveModels          = x->p_adaptiveModels;
+      p_enableTrailDetection    = x->p_enableTrailDetection;
+      p_enableSelfFlat          = x->p_enableSelfFlat;
       p_outlierSigmaThreshold   = x->p_outlierSigmaThreshold;
       p_fwhmWeight              = x->p_fwhmWeight;
       p_eccentricityWeight      = x->p_eccentricityWeight;
@@ -157,6 +163,39 @@ bool NukeXStackInstance::ExecuteGlobal()
          int( framePaths.size() ), raw.width, raw.height, numChannels, elapsed1 ) );
       Module->ProcessEvents();
 
+      // Phase 1a: Self-flat correction (on unregistered frames)
+      if ( p_enableSelfFlat )
+      {
+         auto tPhase1a = std::chrono::steady_clock::now();
+         console.WriteLn( "\nPhase 1a: Self-flat correction (unregistered median)..." );
+         console.Flush();
+         Module->ProcessEvents();
+
+         nukex::FlatEstimatorConfig flatCfg;
+         flatCfg.smoothSigma = 40.0;
+         nukex::FlatEstimator flatEstimator( flatCfg );
+         auto flats = flatEstimator.applyCorrection( raw.pixelData, raw.width, raw.height );
+
+         if ( !flats.empty() )
+         {
+            // Report flat correction range (how much vignetting was corrected)
+            for ( size_t ch = 0; ch < flats.size(); ++ch )
+            {
+               float fMin = *std::min_element( flats[ch].begin(), flats[ch].end() );
+               float fMax = *std::max_element( flats[ch].begin(), flats[ch].end() );
+               const char* label = ( flats.size() >= 3 )
+                  ? ( ch == 0 ? "R" : ch == 1 ? "G" : "B" )
+                  : "L";
+               console.WriteLn( String().Format( "  %s flat range: %.3f — %.3f",
+                  label, fMin, fMax ) );
+            }
+         }
+
+         auto elapsed1a = std::chrono::duration<double>( std::chrono::steady_clock::now() - tPhase1a ).count();
+         console.WriteLn( String().Format( "  Self-flat correction complete in %.1fs", elapsed1a ) );
+         Module->ProcessEvents();
+      }
+
       // Phase 1b: Align (channel 0 only)
       auto tPhase1b = std::chrono::steady_clock::now();
       console.WriteLn( "\nPhase 1b: Aligning frames..." );
@@ -206,6 +245,65 @@ bool NukeXStackInstance::ExecuteGlobal()
       size_t nSubs = aligned.offsets.size();
       int cropW = aligned.crop.width();
       int cropH = aligned.crop.height();
+
+      // Phase 1c: Trail detection (on aligned frames)
+      if ( p_enableTrailDetection )
+      {
+         auto tPhase1c = std::chrono::steady_clock::now();
+         console.WriteLn( "\nPhase 1c: Satellite/airplane trail detection..." );
+         console.Flush();
+         Module->ProcessEvents();
+
+         nukex::TrailDetectorConfig trailCfg;
+         trailCfg.minLineLength = std::max( 100, std::max( cropW, cropH ) / 4 );
+         nukex::TrailDetector trailDetector( trailCfg );
+
+         aligned.alignedCube.allocateMasks();
+
+         int totalTrails = 0;
+         int framesWithTrails = 0;
+
+         // Extract each frame from SubCube, run trail detection, write mask back
+         for ( size_t f = 0; f < nSubs; ++f )
+         {
+            // Extract 2D frame from column-major SubCube
+            std::vector<float> frameImg( size_t( cropH ) * cropW );
+            for ( int y = 0; y < cropH; ++y )
+               for ( int x = 0; x < cropW; ++x )
+                  frameImg[y * cropW + x] = aligned.alignedCube.pixel( f, y, x );
+
+            auto mask = trailDetector.detectAndMask( frameImg.data(), cropW, cropH );
+
+            int maskedPixels = 0;
+            for ( int y = 0; y < cropH; ++y )
+               for ( int x = 0; x < cropW; ++x )
+               {
+                  if ( mask[y * cropW + x] )
+                  {
+                     aligned.alignedCube.setMask( f, y, x, 1 );
+                     ++maskedPixels;
+                  }
+               }
+
+            int nTrails = static_cast<int>( trailDetector.lastDetectedTrails().size() );
+            if ( nTrails > 0 )
+            {
+               ++framesWithTrails;
+               totalTrails += nTrails;
+               double pct = 100.0 * maskedPixels / ( cropH * cropW );
+               console.WriteLn( String().Format( "  [%d/%d] %d trail(s), %.1f%% pixels masked",
+                  int( f + 1 ), int( nSubs ), nTrails, pct ) );
+            }
+         }
+
+         auto elapsed1c = std::chrono::duration<double>( std::chrono::steady_clock::now() - tPhase1c ).count();
+         if ( framesWithTrails > 0 )
+            console.WriteLn( String().Format( "  %d trail(s) in %d frame(s), detection complete in %.1fs",
+               totalTrails, framesWithTrails, elapsed1c ) );
+         else
+            console.WriteLn( String().Format( "  No trails detected (%.1fs)", elapsed1c ) );
+         Module->ProcessEvents();
+      }
 
       // Phase 2: Quality weights
       console.WriteLn( "\nPhase 2: Computing quality weights..." );
@@ -292,6 +390,22 @@ bool NukeXStackInstance::ExecuteGlobal()
       monitor.SetCallback( &status );
       monitor.Initialize( "NukeX: Stacking", totalRows );
 
+      // Save trail masks from aligned cube (shared across all channels).
+      // Must copy before channel 0 moves the aligned cube.
+      bool hasTrailMasks = aligned.alignedCube.hasMasks();
+      std::vector<std::vector<uint8_t>> savedTrailMasks;
+      if ( hasTrailMasks && numChannels > 1 )
+      {
+         savedTrailMasks.resize( nSubs );
+         for ( size_t f = 0; f < nSubs; ++f )
+         {
+            savedTrailMasks[f].resize( size_t( cropH ) * cropW );
+            for ( int y = 0; y < cropH; ++y )
+               for ( int x = 0; x < cropW; ++x )
+                  savedTrailMasks[f][y * cropW + x] = aligned.alignedCube.mask( f, y, x );
+         }
+      }
+
       for ( int ch = 0; ch < numChannels; ++ch )
       {
          console.WriteLn( String().Format( "  Channel %s (%d/%d):",
@@ -313,7 +427,7 @@ bool NukeXStackInstance::ExecuteGlobal()
 
          if ( ch == 0 )
          {
-            // Reuse the aligned cube for channel 0
+            // Reuse the aligned cube for channel 0 (masks already attached)
             nukex::SubCube cube = std::move( aligned.alignedCube );
 
             if ( useGPU )
@@ -352,6 +466,16 @@ bool NukeXStackInstance::ExecuteGlobal()
 
             for ( size_t i = 0; i < raw.metadata.size(); ++i )
                cube.setMetadata( i, raw.metadata[i] );
+
+            // Copy trail masks from channel 0 (trails are spatial, same across channels)
+            if ( hasTrailMasks && !savedTrailMasks.empty() )
+            {
+               cube.allocateMasks();
+               for ( size_t f = 0; f < nSubs; ++f )
+                  for ( int y = 0; y < cropH; ++y )
+                     for ( int x = 0; x < cropW; ++x )
+                        cube.setMask( f, y, x, savedTrailMasks[f][y * cropW + x] );
+            }
 
             if ( useGPU )
             {
@@ -684,6 +808,10 @@ void* NukeXStackInstance::LockParameter( const MetaParameter* p, size_type table
       return &p_useGPU;
    if ( p == TheNXSAdaptiveModelsParameter )
       return &p_adaptiveModels;
+   if ( p == TheNXSEnableTrailDetectionParameter )
+      return &p_enableTrailDetection;
+   if ( p == TheNXSEnableSelfFlatParameter )
+      return &p_enableSelfFlat;
    if ( p == TheNXSOutlierSigmaThresholdParameter )
       return &p_outlierSigmaThreshold;
    if ( p == TheNXSFWHMWeightParameter )

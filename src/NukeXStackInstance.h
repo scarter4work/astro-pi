@@ -71,6 +71,8 @@ private:
    pcl_bool p_enableAutoStretch;
    pcl_bool p_useGPU;
    pcl_bool p_adaptiveModels;
+   pcl_bool p_enableTrailDetection;
+   pcl_bool p_enableSelfFlat;
 
    // Floating point parameters
    float    p_outlierSigmaThreshold;
