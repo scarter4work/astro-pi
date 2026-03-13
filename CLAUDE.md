@@ -11,11 +11,11 @@
 3. `make clean && make release` — clean rebuild
 4. `cd build && ctest --output-on-failure` — verify all tests pass
 5. `make package` — signs module, creates tarball, updates SHA1, signs XRI
-6. `sudo make install` or `sudo cp NukeX-pxm.so NukeX-pxm.xsgn /opt/PixInsight/bin/`
-7. Commit version bump + package files together in one commit
-8. `git push`
-- **NEVER push without completing steps 1-7**
+6. Commit version bump + package files together in one commit
+7. `git push`
+- **NEVER push without completing steps 1-6**
 - **NEVER skip the version bump or packaging step**
+- **Do NOT `sudo make install`** — module is installed via PixInsight's repository update mechanism
 
 ## Architecture
 - PCL/C++17 PixInsight Process Module
