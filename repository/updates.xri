@@ -9,8 +9,8 @@
       </p>
    </description>
    <platform os="linux" arch="x64" version="1.8.0:1.9.9">
-      <package fileName="20260312-linux-x64-NukeX.tar.gz" sha1="d53d6554e42d7fa003cf4e65eca4ccac0e4b1e84" type="module" releaseDate="20260312">
-         <title>NukeX 3.0.0.21</title>
+      <package fileName="20260313-linux-x64-NukeX.tar.gz" sha1="b85b781344c407f0ac115393cc01e31724b4e58c" type="module" releaseDate="20260313">
+         <title>NukeX 3.0.0.22</title>
          <description>
             <p>
                <b>NukeX v3 - Statistical Stacking + Stretch for PixInsight</b>
@@ -20,14 +20,20 @@
             </p>
             <ul>
                <li>
-                  <b>NukeXStack</b> - Per-pixel statistical inference stacking with 4 distribution models (Gaussian, Poisson, Skew-Normal, Bimodal), triangle asterism alignment, and quality weighting. Optional CUDA GPU acceleration.
+                  <b>NukeXStack</b> - Per-pixel statistical inference stacking with 4 distribution models (Gaussian, Poisson, Skew-Normal, Bimodal), triangle asterism alignment, quality weighting, and post-stretch subcube remediation (trail, dust, vignetting). Optional CUDA GPU acceleration.
                </li>
                <li>
                   <b>NukeXStretch</b> - 11 stretch algorithms (MTF, GHS, ArcSinh, Log, OTS, SAS, RNC, Veralux, Lupton, Histogram, Photometric).
                </li>
             </ul>
             <p>
-               <b>Version 3.0.0.21 - Fix GHS stretch LP/BP remap, self-flat sigma, trail threshold</b>
+               <b>Version 3.0.0.22 - Post-stretch subcube remediation (Phase 7)</b>
+            </p>
+            <p>
+               Replaces Phase 1a (self-flat) and Phase 1c (Hough trail detection) with
+               unified Phase 7: detect artifacts in stretched image, remediate through
+               subcube (trail re-selection + dust/vignetting brightness correction).
+               GPU-accelerated with CPU fallback.
             </p>
             <p>
                Copyright (c) 2026 Scott Carter. All Rights Reserved.
@@ -36,4 +42,4 @@
       </package>
    </platform>
 </xri>
-<Signature developerId="scarter4work" timestamp="2026-03-13T02:56:59.797Z" encoding="Base64">mMPw7H0KB80BEqPWV9gHTBO17NoE6l5nimcLbrEI96bGkyozVuLh21oCPMozfPjEeKWCay0uw1phmi6fS+WyCw==</Signature>
+<Signature developerId="scarter4work" timestamp="2026-03-13T18:53:21.524Z" encoding="Base64">STaXU7wQBH3hkrYIn7m1YaXaICjln97urpghj9UmXzmTfRxsDvObR4AzFH0js9o5drpIE4Qco4FXiW+xU1IhAA==</Signature>
