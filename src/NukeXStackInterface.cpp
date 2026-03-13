@@ -170,10 +170,36 @@ void NukeXStackInterface::UpdateControls()
    GUI->EnableAutoStretch_CheckBox.SetChecked( m_instance.p_enableAutoStretch );
    GUI->UseGPU_CheckBox.SetChecked( m_instance.p_useGPU );
    GUI->AdaptiveModels_CheckBox.SetChecked( m_instance.p_adaptiveModels );
+
+   // Remediation
    GUI->EnableRemediation_CheckBox.SetChecked( m_instance.p_enableRemediation );
    GUI->EnableTrailRemediation_CheckBox.SetChecked( m_instance.p_enableTrailRemediation );
    GUI->EnableDustRemediation_CheckBox.SetChecked( m_instance.p_enableDustRemediation );
    GUI->EnableVignettingRemediation_CheckBox.SetChecked( m_instance.p_enableVignettingRemediation );
+
+   GUI->TrailDilateRadius_NumericControl.SetValue( m_instance.p_trailDilateRadius );
+   GUI->TrailOutlierSigma_NumericControl.SetValue( m_instance.p_trailOutlierSigma );
+   GUI->DustDetectionSigma_NumericControl.SetValue( m_instance.p_dustDetectionSigma );
+   GUI->DustNeighborRadius_NumericControl.SetValue( m_instance.p_dustNeighborRadius );
+   GUI->DustMaxCorrectionRatio_NumericControl.SetValue( m_instance.p_dustMaxCorrectionRatio );
+   GUI->VignettingPolyOrder_NumericControl.SetValue( m_instance.p_vignettingPolyOrder );
+
+   bool remEnabled = m_instance.p_enableRemediation;
+   GUI->EnableTrailRemediation_CheckBox.Enable( remEnabled );
+   GUI->EnableDustRemediation_CheckBox.Enable( remEnabled );
+   GUI->EnableVignettingRemediation_CheckBox.Enable( remEnabled );
+
+   bool trailEnabled = remEnabled && m_instance.p_enableTrailRemediation;
+   GUI->TrailDilateRadius_NumericControl.Enable( trailEnabled );
+   GUI->TrailOutlierSigma_NumericControl.Enable( trailEnabled );
+
+   bool dustEnabled = remEnabled && m_instance.p_enableDustRemediation;
+   GUI->DustDetectionSigma_NumericControl.Enable( dustEnabled );
+   GUI->DustNeighborRadius_NumericControl.Enable( dustEnabled );
+   GUI->DustMaxCorrectionRatio_NumericControl.Enable( dustEnabled );
+
+   bool vigEnabled = remEnabled && m_instance.p_enableVignettingRemediation;
+   GUI->VignettingPolyOrder_NumericControl.Enable( vigEnabled );
 }
 
 // ----------------------------------------------------------------------------
@@ -410,18 +436,42 @@ void NukeXStackInterface::e_CheckBoxClick( Button& sender, bool checked )
    else if ( sender == GUI->EnableRemediation_CheckBox )
    {
       m_instance.p_enableRemediation = checked;
+      GUI->EnableTrailRemediation_CheckBox.Enable( checked );
+      GUI->EnableDustRemediation_CheckBox.Enable( checked );
+      GUI->EnableVignettingRemediation_CheckBox.Enable( checked );
+
+      bool trailEnabled = checked && m_instance.p_enableTrailRemediation;
+      GUI->TrailDilateRadius_NumericControl.Enable( trailEnabled );
+      GUI->TrailOutlierSigma_NumericControl.Enable( trailEnabled );
+
+      bool dustEnabled = checked && m_instance.p_enableDustRemediation;
+      GUI->DustDetectionSigma_NumericControl.Enable( dustEnabled );
+      GUI->DustNeighborRadius_NumericControl.Enable( dustEnabled );
+      GUI->DustMaxCorrectionRatio_NumericControl.Enable( dustEnabled );
+
+      bool vigEnabled = checked && m_instance.p_enableVignettingRemediation;
+      GUI->VignettingPolyOrder_NumericControl.Enable( vigEnabled );
    }
    else if ( sender == GUI->EnableTrailRemediation_CheckBox )
    {
       m_instance.p_enableTrailRemediation = checked;
+      bool trailEnabled = m_instance.p_enableRemediation && checked;
+      GUI->TrailDilateRadius_NumericControl.Enable( trailEnabled );
+      GUI->TrailOutlierSigma_NumericControl.Enable( trailEnabled );
    }
    else if ( sender == GUI->EnableDustRemediation_CheckBox )
    {
       m_instance.p_enableDustRemediation = checked;
+      bool dustEnabled = m_instance.p_enableRemediation && checked;
+      GUI->DustDetectionSigma_NumericControl.Enable( dustEnabled );
+      GUI->DustNeighborRadius_NumericControl.Enable( dustEnabled );
+      GUI->DustMaxCorrectionRatio_NumericControl.Enable( dustEnabled );
    }
    else if ( sender == GUI->EnableVignettingRemediation_CheckBox )
    {
       m_instance.p_enableVignettingRemediation = checked;
+      bool vigEnabled = m_instance.p_enableRemediation && checked;
+      GUI->VignettingPolyOrder_NumericControl.Enable( vigEnabled );
    }
 }
 
@@ -441,6 +491,18 @@ void NukeXStackInterface::e_NumericValueUpdated( NumericEdit& sender, double val
       m_instance.p_hfrWeight = value;
    else if ( sender == GUI->AltitudeWeight_NumericControl )
       m_instance.p_altitudeWeight = value;
+   else if ( sender == GUI->TrailDilateRadius_NumericControl )
+      m_instance.p_trailDilateRadius = value;
+   else if ( sender == GUI->TrailOutlierSigma_NumericControl )
+      m_instance.p_trailOutlierSigma = value;
+   else if ( sender == GUI->DustDetectionSigma_NumericControl )
+      m_instance.p_dustDetectionSigma = value;
+   else if ( sender == GUI->DustNeighborRadius_NumericControl )
+      m_instance.p_dustNeighborRadius = static_cast<int32>( value );
+   else if ( sender == GUI->DustMaxCorrectionRatio_NumericControl )
+      m_instance.p_dustMaxCorrectionRatio = value;
+   else if ( sender == GUI->VignettingPolyOrder_NumericControl )
+      m_instance.p_vignettingPolyOrder = static_cast<int32>( value );
 }
 
 // ----------------------------------------------------------------------------
@@ -681,6 +743,22 @@ NukeXStackInterface::GUIData::GUIData( NukeXStackInterface& w )
                                         "negligible impact on quality for typical data.</p>" );
    AdaptiveModels_CheckBox.OnClick( (Button::click_event_handler)&NukeXStackInterface::e_CheckBoxClick, w );
 
+   Output_Sizer.SetSpacing( 4 );
+   Output_Sizer.Add( GenerateProvenance_CheckBox );
+   Output_Sizer.Add( GenerateDistMetadata_CheckBox );
+   Output_Sizer.Add( EnableAutoStretch_CheckBox );
+   Output_Sizer.Add( UseGPU_CheckBox );
+   Output_Sizer.Add( AdaptiveModels_CheckBox );
+
+   Output_Control.SetSizer( Output_Sizer );
+
+   // =========================================================================
+   // Remediation Section
+   // =========================================================================
+
+   Remediation_SectionBar.SetTitle( "Remediation" );
+   Remediation_SectionBar.SetSection( Remediation_Control );
+
    EnableRemediation_CheckBox.SetText( "Enable Remediation" );
    EnableRemediation_CheckBox.SetToolTip( "<p>Master switch for post-stack remediation. When enabled, "
                                            "satellite trail, dust mote, and vignetting corrections "
@@ -705,18 +783,91 @@ NukeXStackInterface::GUIData::GUIData( NukeXStackInterface& w )
                                                      "fitting.</p>" );
    EnableVignettingRemediation_CheckBox.OnClick( (Button::click_event_handler)&NukeXStackInterface::e_CheckBoxClick, w );
 
-   Output_Sizer.SetSpacing( 4 );
-   Output_Sizer.Add( GenerateProvenance_CheckBox );
-   Output_Sizer.Add( GenerateDistMetadata_CheckBox );
-   Output_Sizer.Add( EnableAutoStretch_CheckBox );
-   Output_Sizer.Add( UseGPU_CheckBox );
-   Output_Sizer.Add( AdaptiveModels_CheckBox );
-   Output_Sizer.Add( EnableRemediation_CheckBox );
-   Output_Sizer.Add( EnableTrailRemediation_CheckBox );
-   Output_Sizer.Add( EnableDustRemediation_CheckBox );
-   Output_Sizer.Add( EnableVignettingRemediation_CheckBox );
+   TrailDilateRadius_NumericControl.label.SetText( "Trail Dilate Radius:" );
+   TrailDilateRadius_NumericControl.label.SetMinWidth( labelWidth1 );
+   TrailDilateRadius_NumericControl.slider.SetRange( 0, 100 );
+   TrailDilateRadius_NumericControl.SetReal();
+   TrailDilateRadius_NumericControl.SetRange( TheNXSTrailDilateRadiusParameter->MinimumValue(),
+                                               TheNXSTrailDilateRadiusParameter->MaximumValue() );
+   TrailDilateRadius_NumericControl.SetPrecision( TheNXSTrailDilateRadiusParameter->Precision() );
+   TrailDilateRadius_NumericControl.edit.SetMinWidth( editWidth1 );
+   TrailDilateRadius_NumericControl.SetToolTip( "<p>Radius in pixels for trail mask dilation. Larger values "
+                                                 "create wider masks around detected trails.</p>" );
+   TrailDilateRadius_NumericControl.OnValueUpdated( (NumericEdit::value_event_handler)&NukeXStackInterface::e_NumericValueUpdated, w );
 
-   Output_Control.SetSizer( Output_Sizer );
+   TrailOutlierSigma_NumericControl.label.SetText( "Trail Outlier Sigma:" );
+   TrailOutlierSigma_NumericControl.label.SetMinWidth( labelWidth1 );
+   TrailOutlierSigma_NumericControl.slider.SetRange( 0, 100 );
+   TrailOutlierSigma_NumericControl.SetReal();
+   TrailOutlierSigma_NumericControl.SetRange( TheNXSTrailOutlierSigmaParameter->MinimumValue(),
+                                               TheNXSTrailOutlierSigmaParameter->MaximumValue() );
+   TrailOutlierSigma_NumericControl.SetPrecision( TheNXSTrailOutlierSigmaParameter->Precision() );
+   TrailOutlierSigma_NumericControl.edit.SetMinWidth( editWidth1 );
+   TrailOutlierSigma_NumericControl.SetToolTip( "<p>MAD threshold for trail frame rejection. Frames with trail "
+                                                 "residuals above this sigma are excluded from interpolation.</p>" );
+   TrailOutlierSigma_NumericControl.OnValueUpdated( (NumericEdit::value_event_handler)&NukeXStackInterface::e_NumericValueUpdated, w );
+
+   DustDetectionSigma_NumericControl.label.SetText( "Dust Detection Sigma:" );
+   DustDetectionSigma_NumericControl.label.SetMinWidth( labelWidth1 );
+   DustDetectionSigma_NumericControl.slider.SetRange( 0, 100 );
+   DustDetectionSigma_NumericControl.SetReal();
+   DustDetectionSigma_NumericControl.SetRange( TheNXSDustDetectionSigmaParameter->MinimumValue(),
+                                                TheNXSDustDetectionSigmaParameter->MaximumValue() );
+   DustDetectionSigma_NumericControl.SetPrecision( TheNXSDustDetectionSigmaParameter->Precision() );
+   DustDetectionSigma_NumericControl.edit.SetMinWidth( editWidth1 );
+   DustDetectionSigma_NumericControl.SetToolTip( "<p>MAD threshold for dust mote detection. Lower values "
+                                                  "are more sensitive to faint dust artifacts.</p>" );
+   DustDetectionSigma_NumericControl.OnValueUpdated( (NumericEdit::value_event_handler)&NukeXStackInterface::e_NumericValueUpdated, w );
+
+   DustNeighborRadius_NumericControl.label.SetText( "Dust Neighbor Radius:" );
+   DustNeighborRadius_NumericControl.label.SetMinWidth( labelWidth1 );
+   DustNeighborRadius_NumericControl.slider.SetRange( 0, 100 );
+   DustNeighborRadius_NumericControl.SetInteger();
+   DustNeighborRadius_NumericControl.SetRange( TheNXSDustNeighborRadiusParameter->MinimumValue(),
+                                                TheNXSDustNeighborRadiusParameter->MaximumValue() );
+   DustNeighborRadius_NumericControl.edit.SetMinWidth( editWidth1 );
+   DustNeighborRadius_NumericControl.SetToolTip( "<p>Search radius in pixels for finding clean neighbor pixels "
+                                                  "used to interpolate over dust motes.</p>" );
+   DustNeighborRadius_NumericControl.OnValueUpdated( (NumericEdit::value_event_handler)&NukeXStackInterface::e_NumericValueUpdated, w );
+
+   DustMaxCorrectionRatio_NumericControl.label.SetText( "Dust Max Correction:" );
+   DustMaxCorrectionRatio_NumericControl.label.SetMinWidth( labelWidth1 );
+   DustMaxCorrectionRatio_NumericControl.slider.SetRange( 0, 100 );
+   DustMaxCorrectionRatio_NumericControl.SetReal();
+   DustMaxCorrectionRatio_NumericControl.SetRange( TheNXSDustMaxCorrectionRatioParameter->MinimumValue(),
+                                                    TheNXSDustMaxCorrectionRatioParameter->MaximumValue() );
+   DustMaxCorrectionRatio_NumericControl.SetPrecision( TheNXSDustMaxCorrectionRatioParameter->Precision() );
+   DustMaxCorrectionRatio_NumericControl.edit.SetMinWidth( editWidth1 );
+   DustMaxCorrectionRatio_NumericControl.SetToolTip( "<p>Maximum correction ratio clamp for dust mote repair. "
+                                                      "Limits how much a pixel can be brightened relative to its "
+                                                      "original value to prevent overcorrection.</p>" );
+   DustMaxCorrectionRatio_NumericControl.OnValueUpdated( (NumericEdit::value_event_handler)&NukeXStackInterface::e_NumericValueUpdated, w );
+
+   VignettingPolyOrder_NumericControl.label.SetText( "Vignetting Poly Order:" );
+   VignettingPolyOrder_NumericControl.label.SetMinWidth( labelWidth1 );
+   VignettingPolyOrder_NumericControl.slider.SetRange( 0, 100 );
+   VignettingPolyOrder_NumericControl.SetInteger();
+   VignettingPolyOrder_NumericControl.SetRange( TheNXSVignettingPolyOrderParameter->MinimumValue(),
+                                                 TheNXSVignettingPolyOrderParameter->MaximumValue() );
+   VignettingPolyOrder_NumericControl.edit.SetMinWidth( editWidth1 );
+   VignettingPolyOrder_NumericControl.SetToolTip( "<p>Degree of the radial polynomial used to model the "
+                                                   "vignetting gradient. Higher orders fit more complex "
+                                                   "profiles but risk overfitting.</p>" );
+   VignettingPolyOrder_NumericControl.OnValueUpdated( (NumericEdit::value_event_handler)&NukeXStackInterface::e_NumericValueUpdated, w );
+
+   Remediation_Sizer.SetSpacing( 4 );
+   Remediation_Sizer.Add( EnableRemediation_CheckBox );
+   Remediation_Sizer.Add( EnableTrailRemediation_CheckBox );
+   Remediation_Sizer.Add( TrailDilateRadius_NumericControl );
+   Remediation_Sizer.Add( TrailOutlierSigma_NumericControl );
+   Remediation_Sizer.Add( EnableDustRemediation_CheckBox );
+   Remediation_Sizer.Add( DustDetectionSigma_NumericControl );
+   Remediation_Sizer.Add( DustNeighborRadius_NumericControl );
+   Remediation_Sizer.Add( DustMaxCorrectionRatio_NumericControl );
+   Remediation_Sizer.Add( EnableVignettingRemediation_CheckBox );
+   Remediation_Sizer.Add( VignettingPolyOrder_NumericControl );
+
+   Remediation_Control.SetSizer( Remediation_Sizer );
 
    // =========================================================================
    // Global Layout
@@ -732,6 +883,8 @@ NukeXStackInterface::GUIData::GUIData( NukeXStackInterface& w )
    Global_Sizer.Add( Quality_Control );
    Global_Sizer.Add( Output_SectionBar );
    Global_Sizer.Add( Output_Control );
+   Global_Sizer.Add( Remediation_SectionBar );
+   Global_Sizer.Add( Remediation_Control );
 
    w.SetSizer( Global_Sizer );
 
