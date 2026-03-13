@@ -47,19 +47,21 @@ public:
     // Number of pixels that fell back to simple mean in the last processImage() call
     size_t lastErrorCount() const { return m_lastErrorCount; }
 
-private:
-    Config m_config;
-    size_t m_lastErrorCount = 0;
-
     struct PixelResult {
         uint32_t selectedZ;
         DistributionType bestModel;
         float selectedValue;
     };
 
+    // Select the best Z-value for a single pixel column.
+    // Public so that Phase 7 CPU fallback can re-select individual trail pixels.
     PixelResult selectBestZ(const float* zColumnPtr, size_t nSubs,
                             const std::vector<double>& qualityWeights,
                             const uint8_t* maskColumn = nullptr);
+
+private:
+    Config m_config;
+    size_t m_lastErrorCount = 0;
 };
 
 } // namespace nukex

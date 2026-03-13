@@ -278,6 +278,8 @@ bool NukeXStackInstance::ExecuteGlobal()
 
       std::vector<std::vector<float>> channelResults( numChannels );
       std::vector<std::vector<uint8_t>> distTypeMaps( numChannels );
+      std::vector<nukex::SubCube> channelCubes;
+      channelCubes.reserve( numChannels );
 
       nukex::PixelSelector::Config selConfig;
       // Derive maxOutliers from stack depth (use all data — outlier detection
@@ -340,31 +342,7 @@ bool NukeXStackInstance::ExecuteGlobal()
          if ( ch == 0 )
          {
             // Reuse the aligned cube for channel 0
-            nukex::SubCube cube = std::move( aligned.alignedCube );
-
-            if ( useGPU )
-            {
-               channelResults[ch] = selector.processImageGPU( cube, weights, distTypeMaps[ch], progressCB );
-            }
-            else
-            {
-               channelResults[ch] = selector.processImage( cube, weights, progressCB );
-
-               size_t mapSize = size_t( cropH ) * size_t( cropW );
-               distTypeMaps[ch].resize( mapSize );
-               for ( size_t y = 0; y < size_t( cropH ); ++y )
-                  for ( size_t x = 0; x < size_t( cropW ); ++x )
-                     distTypeMaps[ch][y * cropW + x] = cube.distType( y, x );
-            }
-
-            size_t mapSize = size_t( cropH ) * size_t( cropW );
-            size_t counts[4] = {};
-            for ( uint8_t t : distTypeMaps[ch] )
-               if ( t < 4 ) counts[t]++;
-            console.WriteLn( String().Format(
-               "    Distribution: %.0f%% Gaussian, %.0f%% Poisson, %.0f%% Skew-Normal, %.0f%% Bimodal\n",
-               100.0 * counts[0] / mapSize, 100.0 * counts[1] / mapSize,
-               100.0 * counts[2] / mapSize, 100.0 * counts[3] / mapSize ) );
+            channelCubes.push_back( std::move( aligned.alignedCube ) );
          }
          else
          {
@@ -373,27 +351,29 @@ bool NukeXStackInstance::ExecuteGlobal()
             for ( size_t f = 0; f < nSubs; ++f )
                chFrameData[f] = raw.pixelData[f][ch];
 
-            nukex::SubCube cube = nukex::applyAlignment( chFrameData, aligned.offsets,
-                                                          aligned.crop, raw.width, raw.height );
+            channelCubes.push_back( nukex::applyAlignment( chFrameData, aligned.offsets,
+                                                             aligned.crop, raw.width, raw.height ) );
 
             for ( size_t i = 0; i < raw.metadata.size(); ++i )
-               cube.setMetadata( i, raw.metadata[i] );
+               channelCubes[ch].setMetadata( i, raw.metadata[i] );
+         }
 
-            if ( useGPU )
-            {
-               channelResults[ch] = selector.processImageGPU( cube, weights, distTypeMaps[ch], progressCB );
-            }
-            else
-            {
-               channelResults[ch] = selector.processImage( cube, weights, progressCB );
+         if ( useGPU )
+         {
+            channelResults[ch] = selector.processImageGPU( channelCubes[ch], weights, distTypeMaps[ch], progressCB );
+         }
+         else
+         {
+            channelResults[ch] = selector.processImage( channelCubes[ch], weights, progressCB );
 
-               size_t mapSize = size_t( cropH ) * size_t( cropW );
-               distTypeMaps[ch].resize( mapSize );
-               for ( size_t y = 0; y < size_t( cropH ); ++y )
-                  for ( size_t x = 0; x < size_t( cropW ); ++x )
-                     distTypeMaps[ch][y * cropW + x] = cube.distType( y, x );
-            }
+            size_t mapSize = size_t( cropH ) * size_t( cropW );
+            distTypeMaps[ch].resize( mapSize );
+            for ( size_t y = 0; y < size_t( cropH ); ++y )
+               for ( size_t x = 0; x < size_t( cropW ); ++x )
+                  distTypeMaps[ch][y * cropW + x] = channelCubes[ch].distType( y, x );
+         }
 
+         {
             size_t mapSize = size_t( cropH ) * size_t( cropW );
             size_t counts[4] = {};
             for ( uint8_t t : distTypeMaps[ch] )

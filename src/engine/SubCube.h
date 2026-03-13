@@ -58,6 +58,14 @@ public:
         }
     }
 
+    // Move semantics (needed for std::vector<SubCube> storage)
+    SubCube( SubCube&& ) = default;
+    SubCube& operator=( SubCube&& ) = default;
+
+    // No copy (subcubes are large)
+    SubCube( const SubCube& ) = delete;
+    SubCube& operator=( const SubCube& ) = delete;
+
     // Dimensions
     size_t numSubs() const { return m_nSubs; }
     size_t height()  const { return m_height; }
