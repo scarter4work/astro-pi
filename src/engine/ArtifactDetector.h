@@ -28,6 +28,7 @@ struct ArtifactDetectorConfig
    // Vignetting detection
    int    vignettingPolyOrder = 4;      // Radial polynomial order
    double vignettingMinCorr   = 0.01;   // Minimum correction to report
+   double vignettingMaxCorrection = 1.5; // Upper clamp on correction factor
 };
 
 // ---------------------------------------------------------------------------

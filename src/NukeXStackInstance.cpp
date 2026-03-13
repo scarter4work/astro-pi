@@ -56,6 +56,7 @@ NukeXStackInstance::NukeXStackInstance( const MetaProcess* m )
    , p_dustCircularityMin( static_cast<float>( TheNXSDustCircularityMinParameter->DefaultValue() ) )
    , p_dustDetectionSigma( static_cast<float>( TheNXSDustDetectionSigmaParameter->DefaultValue() ) )
    , p_dustMaxCorrectionRatio( static_cast<float>( TheNXSDustMaxCorrectionRatioParameter->DefaultValue() ) )
+   , p_vignettingMaxCorrection( static_cast<float>( TheNXSVignettingMaxCorrectionParameter->DefaultValue() ) )
    , p_fwhmWeight( static_cast<float>( TheNXSFWHMWeightParameter->DefaultValue() ) )
    , p_eccentricityWeight( static_cast<float>( TheNXSEccentricityWeightParameter->DefaultValue() ) )
    , p_skyBackgroundWeight( static_cast<float>( TheNXSSkyBackgroundWeightParameter->DefaultValue() ) )
@@ -110,6 +111,7 @@ void NukeXStackInstance::Assign( const ProcessImplementation& p )
       p_dustMaxDiameter         = x->p_dustMaxDiameter;
       p_dustNeighborRadius      = x->p_dustNeighborRadius;
       p_vignettingPolyOrder     = x->p_vignettingPolyOrder;
+      p_vignettingMaxCorrection = x->p_vignettingMaxCorrection;
    }
 }
 
@@ -669,6 +671,7 @@ bool NukeXStackInstance::ExecuteGlobal()
             detConfig.dustCircularityMin  = p_dustCircularityMin;
             detConfig.dustDetectionSigma  = p_dustDetectionSigma;
             detConfig.vignettingPolyOrder = p_vignettingPolyOrder;
+            detConfig.vignettingMaxCorrection = p_vignettingMaxCorrection;
 
             nukex::ArtifactDetector detector( detConfig );
             auto detection = detector.detectAll( luminance.data(), cropW, cropH );
@@ -1025,6 +1028,8 @@ void* NukeXStackInstance::LockParameter( const MetaParameter* p, size_type table
       return &p_dustNeighborRadius;
    if ( p == TheNXSVignettingPolyOrderParameter )
       return &p_vignettingPolyOrder;
+   if ( p == TheNXSVignettingMaxCorrectionParameter )
+      return &p_vignettingMaxCorrection;
 
    return nullptr;
 }

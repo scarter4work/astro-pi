@@ -301,6 +301,19 @@ public:
 
 extern NXSVignettingPolyOrder* TheNXSVignettingPolyOrderParameter;
 
+class NXSVignettingMaxCorrection : public MetaFloat
+{
+public:
+   NXSVignettingMaxCorrection( MetaProcess* );
+   IsoString Id() const override;
+   int Precision() const override;
+   double MinimumValue() const override;
+   double MaximumValue() const override;
+   double DefaultValue() const override;
+};
+
+extern NXSVignettingMaxCorrection* TheNXSVignettingMaxCorrectionParameter;
+
 class NXSOutlierSigmaThreshold : public MetaFloat
 {
 public:

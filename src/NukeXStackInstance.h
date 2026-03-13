@@ -83,6 +83,7 @@ private:
    float    p_dustCircularityMin;
    float    p_dustDetectionSigma;
    float    p_dustMaxCorrectionRatio;
+   float    p_vignettingMaxCorrection;
    float    p_fwhmWeight;
    float    p_eccentricityWeight;
    float    p_skyBackgroundWeight;

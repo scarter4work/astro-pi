@@ -183,6 +183,7 @@ void NukeXStackInterface::UpdateControls()
    GUI->DustNeighborRadius_NumericControl.SetValue( m_instance.p_dustNeighborRadius );
    GUI->DustMaxCorrectionRatio_NumericControl.SetValue( m_instance.p_dustMaxCorrectionRatio );
    GUI->VignettingPolyOrder_NumericControl.SetValue( m_instance.p_vignettingPolyOrder );
+   GUI->VignettingMaxCorrection_NumericControl.SetValue( m_instance.p_vignettingMaxCorrection );
 
    bool remEnabled = m_instance.p_enableRemediation;
    GUI->EnableTrailRemediation_CheckBox.Enable( remEnabled );
@@ -200,6 +201,7 @@ void NukeXStackInterface::UpdateControls()
 
    bool vigEnabled = remEnabled && m_instance.p_enableVignettingRemediation;
    GUI->VignettingPolyOrder_NumericControl.Enable( vigEnabled );
+   GUI->VignettingMaxCorrection_NumericControl.Enable( vigEnabled );
 }
 
 // ----------------------------------------------------------------------------
@@ -451,6 +453,7 @@ void NukeXStackInterface::e_CheckBoxClick( Button& sender, bool checked )
 
       bool vigEnabled = checked && m_instance.p_enableVignettingRemediation;
       GUI->VignettingPolyOrder_NumericControl.Enable( vigEnabled );
+      GUI->VignettingMaxCorrection_NumericControl.Enable( vigEnabled );
    }
    else if ( sender == GUI->EnableTrailRemediation_CheckBox )
    {
@@ -472,6 +475,7 @@ void NukeXStackInterface::e_CheckBoxClick( Button& sender, bool checked )
       m_instance.p_enableVignettingRemediation = checked;
       bool vigEnabled = m_instance.p_enableRemediation && checked;
       GUI->VignettingPolyOrder_NumericControl.Enable( vigEnabled );
+      GUI->VignettingMaxCorrection_NumericControl.Enable( vigEnabled );
    }
 }
 
@@ -503,6 +507,8 @@ void NukeXStackInterface::e_NumericValueUpdated( NumericEdit& sender, double val
       m_instance.p_dustMaxCorrectionRatio = value;
    else if ( sender == GUI->VignettingPolyOrder_NumericControl )
       m_instance.p_vignettingPolyOrder = static_cast<int32>( value );
+   else if ( sender == GUI->VignettingMaxCorrection_NumericControl )
+      m_instance.p_vignettingMaxCorrection = value;
 }
 
 // ----------------------------------------------------------------------------
@@ -855,6 +861,19 @@ NukeXStackInterface::GUIData::GUIData( NukeXStackInterface& w )
                                                    "profiles but risk overfitting.</p>" );
    VignettingPolyOrder_NumericControl.OnValueUpdated( (NumericEdit::value_event_handler)&NukeXStackInterface::e_NumericValueUpdated, w );
 
+   VignettingMaxCorrection_NumericControl.label.SetText( "Vignetting Max Correction:" );
+   VignettingMaxCorrection_NumericControl.label.SetMinWidth( labelWidth1 );
+   VignettingMaxCorrection_NumericControl.slider.SetRange( 0, 100 );
+   VignettingMaxCorrection_NumericControl.SetReal();
+   VignettingMaxCorrection_NumericControl.SetRange( TheNXSVignettingMaxCorrectionParameter->MinimumValue(),
+                                                     TheNXSVignettingMaxCorrectionParameter->MaximumValue() );
+   VignettingMaxCorrection_NumericControl.SetPrecision( TheNXSVignettingMaxCorrectionParameter->Precision() );
+   VignettingMaxCorrection_NumericControl.edit.SetMinWidth( editWidth1 );
+   VignettingMaxCorrection_NumericControl.SetToolTip( "<p>Maximum allowed correction factor for vignetting. "
+                                                       "Caps extreme corrections at image corners to prevent "
+                                                       "overcorrection when sky gradient mimics vignetting.</p>" );
+   VignettingMaxCorrection_NumericControl.OnValueUpdated( (NumericEdit::value_event_handler)&NukeXStackInterface::e_NumericValueUpdated, w );
+
    Remediation_Sizer.SetSpacing( 4 );
    Remediation_Sizer.Add( EnableRemediation_CheckBox );
    Remediation_Sizer.Add( EnableTrailRemediation_CheckBox );
@@ -866,6 +885,7 @@ NukeXStackInterface::GUIData::GUIData( NukeXStackInterface& w )
    Remediation_Sizer.Add( DustMaxCorrectionRatio_NumericControl );
    Remediation_Sizer.Add( EnableVignettingRemediation_CheckBox );
    Remediation_Sizer.Add( VignettingPolyOrder_NumericControl );
+   Remediation_Sizer.Add( VignettingMaxCorrection_NumericControl );
 
    Remediation_Control.SetSizer( Remediation_Sizer );
 

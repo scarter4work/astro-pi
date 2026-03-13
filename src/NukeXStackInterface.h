@@ -119,6 +119,7 @@ private:
          NumericControl    DustNeighborRadius_NumericControl;
          NumericControl    DustMaxCorrectionRatio_NumericControl;
          NumericControl    VignettingPolyOrder_NumericControl;
+         NumericControl    VignettingMaxCorrection_NumericControl;
    };
 
    GUIData* GUI = nullptr;

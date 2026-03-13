@@ -577,12 +577,14 @@ VignettingDetectionResult ArtifactDetector::detectVignetting( const float* image
          }
 
          // Correction factor = centerBrightness / fittedBrightness
-         // Clamp to >= 1.0 (never darken)
+         // Clamp to [1.0, maxCorrection] — never darken, cap overcorrection
          double correction = 1.0;
          if ( fitted > 1e-10 )
             correction = centerBrightness / fitted;
          if ( correction < 1.0 )
             correction = 1.0;
+         if ( correction > m_config.vignettingMaxCorrection )
+            correction = m_config.vignettingMaxCorrection;
 
          result.correctionMap[y * width + x] = static_cast<float>( correction );
          if ( correction > maxCorr )

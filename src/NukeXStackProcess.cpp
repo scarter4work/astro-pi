@@ -52,6 +52,7 @@ NukeXStackProcess::NukeXStackProcess()
    new NXSDustCircularityMin( this );
    new NXSDustDetectionSigma( this );
    new NXSDustMaxCorrectionRatio( this );
+   new NXSVignettingMaxCorrection( this );
    new NXSFWHMWeight( this );
    new NXSEccentricityWeight( this );
    new NXSSkyBackgroundWeight( this );

@@ -311,7 +311,7 @@ IsoString NXSEnableVignettingRemediation::Id() const
 
 bool NXSEnableVignettingRemediation::DefaultValue() const
 {
-   return true;
+   return false;
 }
 
 // ----------------------------------------------------------------------------
@@ -489,6 +489,39 @@ double NXSDustMaxCorrectionRatio::MaximumValue() const
 double NXSDustMaxCorrectionRatio::DefaultValue() const
 {
    return 10.0;
+}
+
+NXSVignettingMaxCorrection* TheNXSVignettingMaxCorrectionParameter = nullptr;
+
+NXSVignettingMaxCorrection::NXSVignettingMaxCorrection( MetaProcess* P )
+   : MetaFloat( P )
+{
+   TheNXSVignettingMaxCorrectionParameter = this;
+}
+
+IsoString NXSVignettingMaxCorrection::Id() const
+{
+   return "vignettingMaxCorrection";
+}
+
+int NXSVignettingMaxCorrection::Precision() const
+{
+   return 1;
+}
+
+double NXSVignettingMaxCorrection::MinimumValue() const
+{
+   return 1.0;
+}
+
+double NXSVignettingMaxCorrection::MaximumValue() const
+{
+   return 10.0;
+}
+
+double NXSVignettingMaxCorrection::DefaultValue() const
+{
+   return 1.5;
 }
 
 // ----------------------------------------------------------------------------
