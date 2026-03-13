@@ -13,7 +13,7 @@ struct DetectedTrail {
 };
 
 struct TrailDetectorConfig {
-    double threshold = 2.5;       // sigma threshold for binary edge detection
+    double threshold = 1.5;       // sigma threshold for binary edge detection
     int minLineLength = 100;      // min trail length in pixels
     int maxLineGap = 20;          // max gap between trail segments
     double dilateRadius = 5.0;    // mask dilation radius (pixels)

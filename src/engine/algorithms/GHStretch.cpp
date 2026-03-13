@@ -160,9 +160,18 @@ double GHStretch::Apply( double value ) const
 
 void GHStretch::AutoConfigure( double median, double mad )
 {
-   double lp = median;
+   // Black point: clip 2.5 MAD below median
+   double bp = std::max( 0.0, median - 2.5 * mad );
+   SetBP( bp );
+
+   // Remap local point to BP-adjusted [0,1] space.
+   // Apply() remaps input as x = (value - bp) / (1 - bp), so LP must be
+   // in that same space for GHSTransform to work correctly.
+   double scale = 1.0 - bp;
+   double lp = (scale > 1e-10) ? (median - bp) / scale : median;
    SetLP( lp );
 
+   // Compute D based on remapped LP — lower LP means tighter data, needs more stretch
    double d;
    if ( lp < 0.001 )
       d = 6.0;
@@ -174,14 +183,8 @@ void GHStretch::AutoConfigure( double median, double mad )
       d = 1.0 + 1.0 * (0.5 - std::min( lp, 0.5 )) / 0.5;
    SetD( d );
 
-   // Default symmetric
+   // Default symmetric, no protection
    SetB( 0.0 );
-
-   // Set black point
-   double bp = std::max( 0.0, median - 2.5 * mad );
-   SetBP( bp );
-
-   // Default protections
    SetSP( 0.0 );
    SetHP( 0.0 );
 }

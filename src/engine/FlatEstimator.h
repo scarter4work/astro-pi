@@ -5,7 +5,7 @@
 namespace nukex {
 
 struct FlatEstimatorConfig {
-    double smoothSigma = 40.0;  // Gaussian blur sigma for self-flat smoothing
+    double smoothSigma = 200.0; // Gaussian blur sigma — must be large enough to suppress galaxy-scale structure
     bool enabled = true;
 };
 
