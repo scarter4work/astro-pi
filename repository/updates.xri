@@ -9,8 +9,8 @@
       </p>
    </description>
    <platform os="linux" arch="x64" version="1.8.0:1.9.9">
-      <package fileName="20260312-linux-x64-NukeX.tar.gz" sha1="d41db86e070fdd8709cabc7470bbadf57a2ec091" type="module" releaseDate="20260312">
-         <title>NukeX 3.0.0.19</title>
+      <package fileName="20260312-linux-x64-NukeX.tar.gz" sha1="b673be17d059685a293856a63f588d0dc90d7d3e" type="module" releaseDate="20260312">
+         <title>NukeX 3.0.0.20</title>
          <description>
             <p>
                <b>NukeX v3 - Statistical Stacking + Stretch for PixInsight</b>
@@ -27,7 +27,7 @@
                </li>
             </ul>
             <p>
-               <b>Version 3.0.0.19 - Hough trail detection, self-flat correction, per-frame pixel masking</b>
+               <b>Version 3.0.0.20 - Fix trail detection crash (optimized background estimation)</b>
             </p>
             <p>
                Copyright (c) 2026 Scott Carter. All Rights Reserved.
@@ -36,4 +36,4 @@
       </package>
    </platform>
 </xri>
-<Signature developerId="scarter4work" timestamp="2026-03-13T02:14:23.188Z" encoding="Base64">a1HwaEY0GOZgrxpOfTFshMnarUB1b44MhFtHqd+OeKCWQnBABDBjDTvdCoU4XCMAq7r1yg9h/nKFzIFaLCSRDQ==</Signature>
+<Signature developerId="scarter4work" timestamp="2026-03-13T02:40:37.496Z" encoding="Base64">gE4Z2rS2OUFtNlok1qSlIHNmz8pwx8sH5L0VYwOGHY0UtJlSv+gwGohBksKPJ6T1n+MGPYhNTetVU8+yrXkZBA==</Signature>
