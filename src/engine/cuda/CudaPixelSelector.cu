@@ -396,6 +396,11 @@ __device__ void detectOutliersESD_device(
 struct FitResultDevice {
     double logLikelihood;
     int k;
+    // Fitted parameters (only meaningful for the corresponding fit function)
+    double mu;         // Gaussian mean / Poisson lambda
+    double sigma;      // Gaussian sigma
+    // Bimodal EM
+    double mu1, sigma1, mu2, sigma2, weight;
 };
 
 __device__ FitResultDevice fitGaussian_device(const double* data, int n) {
@@ -411,6 +416,9 @@ __device__ FitResultDevice fitGaussian_device(const double* data, int n) {
         result.logLikelihood = -1e300;
         return result;
     }
+
+    result.mu = mu;
+    result.sigma = sigma;
 
     double logSigma = log(sigma);
     double logL = 0.0;
@@ -437,6 +445,8 @@ __device__ FitResultDevice fitPoisson_device(const double* data, int n) {
         result.logLikelihood = -1e300;
         return result;
     }
+
+    result.mu = lambda;  // Poisson mean = lambda
 
     double logLambda = log(lambda);
     double logL = 0.0;
@@ -739,6 +749,9 @@ __device__ FitResultDevice fitBimodalEM_device(const double* data, int n) {
         double absDiff = fabs(logL - oldLogL);
         double relDiff = (fabs(logL) > 1.0) ? absDiff / fabs(logL) : absDiff;
         if (relDiff < CONV_THRESH) {
+            result.mu1 = mu1; result.sigma1 = sigma1;
+            result.mu2 = mu2; result.sigma2 = sigma2;
+            result.weight = weight;
             if (weight < 0.05 || weight > 0.95)
                 result.logLikelihood = -1e300;
             else
@@ -749,6 +762,9 @@ __device__ FitResultDevice fitBimodalEM_device(const double* data, int n) {
         oldLogL = logL;
     }
 
+    result.mu1 = mu1; result.sigma1 = sigma1;
+    result.mu2 = mu2; result.sigma2 = sigma2;
+    result.weight = weight;
     // Reject if one component dominates — not genuinely bimodal
     if (weight < 0.05 || weight > 0.95)
         result.logLikelihood = -1e300;
@@ -874,6 +890,8 @@ __global__ void pixelSelectionKernel(
 
         double aicSkew = 1e300;
         double aicMix  = 1e300;
+        FitResultDevice mixFit;
+        mixFit.logLikelihood = -1e300;
 
         bool skipExpensive = false;
         if (adaptiveModels) {
@@ -886,7 +904,7 @@ __global__ void pixelSelectionKernel(
             FitResultDevice skewFit = fitSkewNormal_device(cleanData, nClean);
             aicSkew = aiccDevice(skewFit.logLikelihood, skewFit.k, nClean);
 
-            FitResultDevice mixFit = fitBimodalEM_device(cleanData, nClean);
+            mixFit = fitBimodalEM_device(cleanData, nClean);
             aicMix = aiccDevice(mixFit.logLikelihood, mixFit.k, nClean);
         }
 
@@ -905,9 +923,39 @@ __global__ void pixelSelectionKernel(
         if (aicMix < bestAIC) {
             bestType = DIST_BIMODAL;
         }
+
+        // 7. Distribution-aware central tendency selection
+        double selectedValue = cleanMedian;
+        if (bestType == DIST_GAUSSIAN || bestType == DIST_POISSON) {
+            // Weighted mean — optimal for symmetric distributions
+            // GPU path uses equal weights (quality weights not passed to kernel)
+            double sum = 0.0;
+            for (int i = 0; i < nClean; ++i)
+                sum += cleanData[i];
+            selectedValue = sum / nClean;
+        } else if (bestType == DIST_SKEW_NORMAL) {
+            // Median — robust to tail pull
+            selectedValue = cleanMedian;
+        } else if (bestType == DIST_BIMODAL) {
+            // Weighted mean of dominant component
+            double domMu = (mixFit.weight >= 0.5) ? mixFit.mu1 : mixFit.mu2;
+            double domSig = (mixFit.weight >= 0.5) ? mixFit.sigma1 : mixFit.sigma2;
+            double cutoff = 2.0 * fmax(domSig, 1e-10);
+            double sumV = 0.0;
+            int countV = 0;
+            for (int i = 0; i < nClean; ++i) {
+                if (fabs(cleanData[i] - domMu) <= cutoff) {
+                    sumV += cleanData[i];
+                    ++countV;
+                }
+            }
+            if (countV > 0)
+                selectedValue = sumV / countV;
+        }
+        cleanMedian = selectedValue;  // reuse variable for output
     }
 
-    // 7. Output: median of clean data
+    // 8. Output
     outputPixels[pixelIdx] = static_cast<float>(cleanMedian);
     distTypes[pixelIdx] = bestType;
 }

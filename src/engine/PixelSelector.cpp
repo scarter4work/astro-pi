@@ -215,17 +215,78 @@ PixelSelector::selectBestZ(const float* zColumnPtr, size_t nSubs,
         }
     }
 
-    // 8. Select pixel value using median of clean data.
-    //    Median is inherently robust to residual outliers that survive
-    //    the MAD+ESD pipeline — important for background pixels where
-    //    stretch amplifies any contamination.
+    // 7. Distribution-aware central tendency selection.
+    //    The best-fit distribution tells us the shape of the pixel stack,
+    //    and the optimal estimator depends on that shape:
+    //      Gaussian/Poisson  → quality-weighted mean (optimal for symmetric)
+    //      Skew-Normal       → median (robust to tail-pull)
+    //      Bimodal           → weighted mean of dominant component
+    //                          (median falls in the valley between peaks)
+    double selectedValue = cleanMedian;  // fallback
+
+    switch (bestType) {
+    case DistributionType::Gaussian:
+    case DistributionType::Poisson: {
+        // Quality-weighted mean: better-seeing frames contribute more
+        double sumWV = 0.0, sumW = 0.0;
+        for (size_t idx : cleanIndices) {
+            size_t origIdx = originalIndices[idx];
+            double w = (m_config.useQualityWeights
+                        && !qualityWeights.empty()
+                        && origIdx < qualityWeights.size())
+                     ? qualityWeights[origIdx] : 1.0;
+            if (w <= 0.0) w = 1e-10;
+            sumWV += w * zValues[idx];
+            sumW += w;
+        }
+        if (sumW > 0.0)
+            selectedValue = sumWV / sumW;
+        break;
+    }
+    case DistributionType::SkewNormal:
+        // Median is the right choice for skewed data —
+        // the mean gets pulled toward the tail
+        selectedValue = cleanMedian;
+        break;
+    case DistributionType::Bimodal: {
+        // The median of bimodal data falls in the valley between peaks,
+        // representing a value that rarely occurs. Instead, identify
+        // the dominant component and take its quality-weighted mean.
+        // Reuse the mixFit result (only valid when bimodal was fitted).
+        GaussianMixResult mixResult = fitGaussianMixture2(cleanData);
+        double dominantMu = (mixResult.weight >= 0.5) ? mixResult.mu1 : mixResult.mu2;
+        double dominantSigma = (mixResult.weight >= 0.5) ? mixResult.sigma1 : mixResult.sigma2;
+
+        // Assign each clean point to the dominant component if it's
+        // within 2 sigma of the dominant mean; otherwise exclude it
+        double sumWV = 0.0, sumW = 0.0;
+        double cutoff = 2.0 * std::max(dominantSigma, 1e-10);
+        for (size_t idx : cleanIndices) {
+            if (std::abs(zValues[idx] - dominantMu) <= cutoff) {
+                size_t origIdx = originalIndices[idx];
+                double w = (m_config.useQualityWeights
+                            && !qualityWeights.empty()
+                            && origIdx < qualityWeights.size())
+                         ? qualityWeights[origIdx] : 1.0;
+                if (w <= 0.0) w = 1e-10;
+                sumWV += w * zValues[idx];
+                sumW += w;
+            }
+        }
+        if (sumW > 0.0)
+            selectedValue = sumWV / sumW;
+        // else keep cleanMedian — component assignment failed
+        break;
+    }
+    }
+
+    // 8. Find the frame whose value is closest to the computed central tendency
     uint32_t bestZ = 0;
     double bestDist = std::numeric_limits<double>::infinity();
     for (size_t idx : cleanIndices) {
-        double dist = std::abs(zValues[idx] - cleanMedian);
+        double dist = std::abs(zValues[idx] - selectedValue);
         if (dist < bestDist) {
             bestDist = dist;
-            // Remap filtered index back to original frame index
             bestZ = static_cast<uint32_t>(originalIndices[idx]);
         }
     }
@@ -233,7 +294,7 @@ PixelSelector::selectBestZ(const float* zColumnPtr, size_t nSubs,
     // 9. Return result
     result.selectedZ = bestZ;
     result.bestModel = bestType;
-    result.selectedValue = static_cast<float>(cleanMedian);
+    result.selectedValue = static_cast<float>(selectedValue);
     return result;
 }
 
