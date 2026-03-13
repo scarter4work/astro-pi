@@ -12,6 +12,7 @@
 #include "engine/FrameAligner.h"
 #include "engine/AutoStretchSelector.h"
 #include "engine/StretchLibrary.h"
+#include "engine/ArtifactDetector.h"
 
 #include <pcl/MetaModule.h>
 #include <pcl/Console.h>
@@ -24,6 +25,7 @@
 
 #ifdef NUKEX_HAS_CUDA
 #include "engine/cuda/CudaRuntime.h"
+#include "engine/cuda/CudaRemediation.h"
 #endif
 
 #include <chrono>
@@ -567,6 +569,9 @@ bool NukeXStackInstance::ExecuteGlobal()
             Module->ProcessEvents();
          }
 
+         // Save per-channel configured stretch algorithms for Phase 7d re-stretch
+         std::vector<std::unique_ptr<IStretchAlgorithm>> stretchAlgos( outChannels );
+
          // Auto-configure and apply per-channel to preserve color
          if ( isColor )
          {
@@ -588,6 +593,8 @@ bool NukeXStackInstance::ExecuteGlobal()
                Image::sample_iterator it( stretchImage, ch );
                for ( ; it; ++it )
                   *it = lastChAlgo->Apply( *it );
+
+               stretchAlgos[ch] = lastChAlgo->Clone();
             }
             stretchImage.ResetChannelRange();
 
@@ -604,6 +611,7 @@ bool NukeXStackInstance::ExecuteGlobal()
             console.WriteLn( String().Format( "  Image median: %.6f, MAD: %.6f", med, mad ) );
 
             algo->AutoConfigure( med, mad );
+            stretchAlgos[0] = algo->Clone();
 
             auto params = algo->GetParameters();
             for ( const auto& param : params )
@@ -618,7 +626,296 @@ bool NukeXStackInstance::ExecuteGlobal()
          console.WriteLn( String().Format( "  Window: NukeX_stretched (%d x %d, %s)",
             cropW, cropH, isColor ? "RGB" : "Mono" ) );
          Module->ProcessEvents();
+
+         // ================================================================
+         // Phase 7: Post-stretch subcube remediation
+         // ================================================================
+
+         if ( p_enableRemediation )
+         {
+            auto tPhase7 = std::chrono::steady_clock::now();
+            console.WriteLn( "\nPhase 7: Post-stretch subcube remediation" );
+            console.Flush();
+            Module->ProcessEvents();
+
+            // 7a: Detection on stretched luminance
+            console.WriteLn( "  Phase 7a: Detecting artifacts in stretched image..." );
+
+            std::vector<float> luminance( size_t( cropW ) * size_t( cropH ), 0.0f );
+
+            if ( isColor )
+            {
+               for ( int y = 0; y < cropH; ++y )
+                  for ( int x = 0; x < cropW; ++x )
+                  {
+                     float r = stretchImage.Pixel( x, y, 0 );
+                     float g = stretchImage.Pixel( x, y, 1 );
+                     float b = stretchImage.Pixel( x, y, 2 );
+                     luminance[y * cropW + x] = ( r + g + b ) / 3.0f;
+                  }
+            }
+            else
+            {
+               for ( int y = 0; y < cropH; ++y )
+                  for ( int x = 0; x < cropW; ++x )
+                     luminance[y * cropW + x] = stretchImage.Pixel( x, y, 0 );
+            }
+
+            nukex::ArtifactDetectorConfig detConfig;
+            detConfig.trailDilateRadius   = p_trailDilateRadius;
+            detConfig.trailOutlierSigma   = p_trailOutlierSigma;
+            detConfig.dustMinDiameter     = p_dustMinDiameter;
+            detConfig.dustMaxDiameter     = p_dustMaxDiameter;
+            detConfig.dustCircularityMin  = p_dustCircularityMin;
+            detConfig.dustDetectionSigma  = p_dustDetectionSigma;
+            detConfig.vignettingPolyOrder = p_vignettingPolyOrder;
+
+            nukex::ArtifactDetector detector( detConfig );
+            auto detection = detector.detectAll( luminance.data(), cropW, cropH );
+
+            console.WriteLn( String().Format( "    Trails: %d pixels (%d lines)",
+               detection.trails.trailPixelCount, detection.trails.trailLineCount ) );
+            console.WriteLn( String().Format( "    Dust: %d pixels (%d blobs)",
+               detection.dust.dustPixelCount, int( detection.dust.blobs.size() ) ) );
+            console.WriteLn( String().Format( "    Vignetting: max correction %.2f",
+               detection.vignetting.maxCorrection ) );
+            Module->ProcessEvents();
+
+            bool anyRemediation = ( p_enableTrailRemediation && detection.trails.trailPixelCount > 0 )
+                                || ( p_enableDustRemediation && detection.dust.dustPixelCount > 0 )
+                                || ( p_enableVignettingRemediation && detection.vignetting.maxCorrection > 1.01 );
+
+            if ( anyRemediation )
+            {
+               // 7b: Trail remediation (per channel)
+               if ( p_enableTrailRemediation && detection.trails.trailPixelCount > 0 )
+               {
+                  console.WriteLn( "  Phase 7b: Trail remediation (re-selecting from subcube)..." );
+                  console.Flush();
+                  Module->ProcessEvents();
+
+                  // Build compact trail pixel list (local struct for portability)
+                  struct TrailPixelCoord { int x, y; };
+                  std::vector<TrailPixelCoord> trailPixels;
+                  for ( int y = 0; y < cropH; ++y )
+                     for ( int x = 0; x < cropW; ++x )
+                        if ( detection.trails.mask[y * cropW + x] )
+                           trailPixels.push_back( { x, y } );
+
+                  for ( int ch = 0; ch < outChannels; ++ch )
+                  {
+                     std::vector<float> corrected( trailPixels.size() );
+                     bool gpuOk = false;
+
+#ifdef NUKEX_HAS_CUDA
+                     if ( useGPU )
+                     {
+                        // Convert to cuda::TrailPixel for GPU API
+                        std::vector<nukex::cuda::TrailPixel> cudaTrailPixels( trailPixels.size() );
+                        for ( size_t i = 0; i < trailPixels.size(); ++i )
+                        {
+                           cudaTrailPixels[i].x = trailPixels[i].x;
+                           cudaTrailPixels[i].y = trailPixels[i].y;
+                        }
+                        gpuOk = nukex::cuda::remediateTrailsGPU(
+                           channelCubes[ch].cube().data(),
+                           channelCubes[ch].numSubs(), cropH, cropW,
+                           cudaTrailPixels, weights,
+                           p_trailOutlierSigma, corrected.data() );
+                     }
+#endif
+                     if ( !gpuOk )
+                     {
+                        // CPU fallback: mask bright outlier frames and re-select
+                        if ( !channelCubes[ch].hasMasks() )
+                           channelCubes[ch].allocateMasks();
+
+                        nukex::PixelSelector fallbackSelector( selConfig );
+                        for ( size_t i = 0; i < trailPixels.size(); ++i )
+                        {
+                           int px = trailPixels[i].x, py = trailPixels[i].y;
+                           const float* zCol = channelCubes[ch].zColumnPtr( py, px );
+
+                           // Compute median and MAD of Z-column
+                           std::vector<float> zVals( zCol, zCol + channelCubes[ch].numSubs() );
+                           std::sort( zVals.begin(), zVals.end() );
+                           float med = zVals[zVals.size() / 2];
+
+                           std::vector<float> absdev( zVals.size() );
+                           for ( size_t j = 0; j < zVals.size(); ++j )
+                              absdev[j] = std::abs( zVals[j] - med );
+                           std::sort( absdev.begin(), absdev.end() );
+                           float madVal = absdev[absdev.size() / 2] * 1.4826f;
+                           if ( madVal < 1e-10f ) madVal = 1e-10f;
+                           float threshold = med + float( p_trailOutlierSigma ) * madVal;
+
+                           // Mask bright outlier frames
+                           for ( size_t z = 0; z < channelCubes[ch].numSubs(); ++z )
+                              if ( zCol[z] > threshold )
+                                 channelCubes[ch].setMask( z, py, px, 1 );
+
+                           auto result = fallbackSelector.selectBestZ(
+                              zCol, channelCubes[ch].numSubs(), weights,
+                              channelCubes[ch].maskColumnPtr( py, px ) );
+                           corrected[i] = result.selectedValue;
+                        }
+                     }
+
+                     // Patch channelResults
+                     for ( size_t i = 0; i < trailPixels.size(); ++i )
+                     {
+                        int px = trailPixels[i].x, py = trailPixels[i].y;
+                        channelResults[ch][py * cropW + px] = corrected[i];
+                     }
+                  }
+
+                  console.WriteLn( String().Format( "    Remediated %d trail pixels per channel",
+                     int( trailPixels.size() ) ) );
+                  Module->ProcessEvents();
+               }
+
+               // 7c: Dust remediation (per channel)
+               if ( p_enableDustRemediation && detection.dust.dustPixelCount > 0 )
+               {
+                  console.WriteLn( "  Phase 7c: Dust remediation (neighbor brightness correction)..." );
+                  console.Flush();
+                  Module->ProcessEvents();
+
+                  for ( int ch = 0; ch < outChannels; ++ch )
+                  {
+                     std::vector<float> corrected( size_t( cropW ) * size_t( cropH ) );
+                     bool gpuOk = false;
+
+#ifdef NUKEX_HAS_CUDA
+                     if ( useGPU )
+                     {
+                        gpuOk = nukex::cuda::remediateDustGPU(
+                           channelResults[ch].data(), cropW, cropH,
+                           detection.dust.mask.data(),
+                           p_dustNeighborRadius, p_dustMaxCorrectionRatio,
+                           corrected.data() );
+                     }
+#endif
+                     if ( !gpuOk )
+                     {
+                        // CPU fallback: neighbor brightness ratio correction
+                        corrected = channelResults[ch]; // copy
+                        for ( int y = 0; y < cropH; ++y )
+                           for ( int x = 0; x < cropW; ++x )
+                           {
+                              if ( !detection.dust.mask[y * cropW + x] ) continue;
+                              float neighborSum = 0; int neighborCount = 0;
+                              for ( int dy = -p_dustNeighborRadius; dy <= p_dustNeighborRadius; ++dy )
+                                 for ( int dx = -p_dustNeighborRadius; dx <= p_dustNeighborRadius; ++dx )
+                                 {
+                                    int nx = x + dx, ny = y + dy;
+                                    if ( nx < 0 || nx >= cropW || ny < 0 || ny >= cropH ) continue;
+                                    if ( detection.dust.mask[ny * cropW + nx] ) continue;
+                                    if ( channelResults[ch][ny * cropW + nx] < 1e-10f ) continue;
+                                    neighborSum += channelResults[ch][ny * cropW + nx];
+                                    ++neighborCount;
+                                 }
+                              if ( neighborCount > 0 && channelResults[ch][y * cropW + x] > 1e-10f )
+                              {
+                                 float ratio = ( neighborSum / neighborCount ) / channelResults[ch][y * cropW + x];
+                                 ratio = std::min( ratio, p_dustMaxCorrectionRatio );
+                                 corrected[y * cropW + x] = channelResults[ch][y * cropW + x] * ratio;
+                              }
+                           }
+                     }
+
+                     channelResults[ch] = std::move( corrected );
+                  }
+
+                  console.WriteLn( String().Format( "    Corrected %d dust pixels per channel",
+                     detection.dust.dustPixelCount ) );
+                  Module->ProcessEvents();
+               }
+
+               // 7c (cont): Vignetting correction (per channel)
+               if ( p_enableVignettingRemediation && detection.vignetting.maxCorrection > 1.01 )
+               {
+                  console.WriteLn( "  Phase 7c: Vignetting correction..." );
+                  console.Flush();
+                  Module->ProcessEvents();
+
+                  for ( int ch = 0; ch < outChannels; ++ch )
+                  {
+                     std::vector<float> corrected( size_t( cropW ) * size_t( cropH ) );
+                     bool gpuOk = false;
+
+#ifdef NUKEX_HAS_CUDA
+                     if ( useGPU )
+                     {
+                        gpuOk = nukex::cuda::remediateVignettingGPU(
+                           channelResults[ch].data(),
+                           detection.vignetting.correctionMap.data(),
+                           cropW, cropH, corrected.data() );
+                     }
+#endif
+                     if ( !gpuOk )
+                     {
+                        for ( size_t i = 0; i < size_t( cropW ) * size_t( cropH ); ++i )
+                           corrected[i] = channelResults[ch][i] * detection.vignetting.correctionMap[i];
+                     }
+
+                     channelResults[ch] = std::move( corrected );
+                  }
+
+                  console.WriteLn( String().Format( "    Max vignetting correction: %.2f",
+                     detection.vignetting.maxCorrection ) );
+                  Module->ProcessEvents();
+               }
+
+               // 7d: Patch linear output and re-stretch
+               console.WriteLn( "  Phase 7d: Patching linear output and re-stretching..." );
+               console.Flush();
+               Module->ProcessEvents();
+
+               // Patch linear output image with corrected channelResults
+               for ( int ch = 0; ch < outChannels; ++ch )
+                  for ( int y = 0; y < cropH; ++y )
+                     for ( int x = 0; x < cropW; ++x )
+                        outputImage.Pixel( x, y, ch ) = channelResults[ch][y * cropW + x];
+
+               // Re-apply stretch to the corrected linear image
+               // Copy corrected linear data to the stretch output window
+               for ( int ch = 0; ch < outChannels; ++ch )
+                  for ( int y = 0; y < cropH; ++y )
+                     for ( int x = 0; x < cropW; ++x )
+                        stretchImage.Pixel( x, y, ch ) = outputImage.Pixel( x, y, ch );
+
+               // Re-apply per-channel stretch using saved algorithm clones
+               if ( isColor )
+               {
+                  for ( int ch = 0; ch < outChannels; ++ch )
+                  {
+                     stretchImage.SelectChannel( ch );
+                     Image::sample_iterator it( stretchImage, ch );
+                     for ( ; it; ++it )
+                        *it = stretchAlgos[ch]->Apply( *it );
+                  }
+                  stretchImage.ResetChannelRange();
+               }
+               else
+               {
+                  stretchAlgos[0]->ApplyToImage( stretchImage );
+               }
+
+               auto elapsed7 = std::chrono::duration<double>( std::chrono::steady_clock::now() - tPhase7 ).count();
+               console.WriteLn( String().Format( "  Remediation complete in %.1fs", elapsed7 ) );
+            }
+            else
+            {
+               console.WriteLn( "  No artifacts detected — skipping remediation." );
+            }
+
+            Module->ProcessEvents();
+         }
       }
+
+      // Free subcubes (no longer needed after stretch/remediation)
+      channelCubes.clear();
 
       // Final banner
       auto totalElapsed = std::chrono::duration<double>( std::chrono::steady_clock::now() - t0 ).count();
