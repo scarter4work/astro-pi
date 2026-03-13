@@ -10,6 +10,7 @@
 #include <cuda_runtime.h>
 #include <cstdio>
 #include <cmath>
+#include <initializer_list>
 
 namespace nukex {
 namespace cuda {
@@ -92,23 +93,26 @@ __global__ void trailRemediationKernel(
    insertionSortF( deviations, nSubs );
    float mad = medianF( deviations, nSubs );
 
-   float threshold = static_cast<float>( outlierSigma * MAD_TO_SIGMA ) * mad;
+   float scaledMAD = static_cast<float>( outlierSigma * MAD_TO_SIGMA ) * mad;
 
    // If MAD is zero (all identical), use range-based fallback
-   if ( threshold < 1e-15f ) {
+   if ( scaledMAD < 1e-15f ) {
       float range = sorted[nSubs - 1] - sorted[0];
       if ( range < 1e-15f ) {
          outputPixels[tid] = med;
          return;
       }
-      threshold = range * 0.1f;
+      scaledMAD = range * 0.1f;
    }
 
-   // Build clean array (exclude outliers)
+   // Upper-only threshold: trails are bright outliers, reject values above median + scaled MAD
+   float threshold = med + scaledMAD;
+
+   // Build clean array (keep only values <= threshold)
    float clean[MAX_SUBS];
    int nClean = 0;
    for ( int z = 0; z < nSubs; ++z ) {
-      if ( fabsf( local[z] - med ) <= threshold ) {
+      if ( local[z] <= threshold ) {
          clean[nClean++] = local[z];
       }
    }
@@ -204,13 +208,22 @@ __global__ void vignettingRemediationKernel(
 }
 
 // ============================================================================
-// CUDA error checking macro
+// CUDA cleanup helpers
 // ============================================================================
 
-#define CUDA_CHECK_REM(call)                              \
+static void freeAll( std::initializer_list<void*> ptrs )
+{
+   for ( void* p : ptrs )
+      if ( p ) cudaFree( p );
+}
+
+#define CUDA_CHECK_CLEANUP(call, ...)                     \
    do {                                                   \
       cudaError_t err = (call);                           \
-      if ( err != cudaSuccess ) return false;             \
+      if ( err != cudaSuccess ) {                         \
+         freeAll( { __VA_ARGS__ } );                      \
+         return false;                                    \
+      }                                                   \
    } while (0)
 
 // ============================================================================
@@ -246,17 +259,24 @@ bool remediateTrailsGPU(
    int*   d_trailY   = nullptr;
    float* d_output   = nullptr;
 
-   CUDA_CHECK_REM( cudaMalloc( &d_cube,   cubeSize * sizeof(float) ) );
-   CUDA_CHECK_REM( cudaMalloc( &d_trailX, numTrail * sizeof(int) ) );
-   CUDA_CHECK_REM( cudaMalloc( &d_trailY, numTrail * sizeof(int) ) );
-   CUDA_CHECK_REM( cudaMalloc( &d_output, numTrail * sizeof(float) ) );
+   CUDA_CHECK_CLEANUP( cudaMalloc( &d_cube,   cubeSize * sizeof(float) ),
+                        d_cube, d_trailX, d_trailY, d_output );
+   CUDA_CHECK_CLEANUP( cudaMalloc( &d_trailX, numTrail * sizeof(int) ),
+                        d_cube, d_trailX, d_trailY, d_output );
+   CUDA_CHECK_CLEANUP( cudaMalloc( &d_trailY, numTrail * sizeof(int) ),
+                        d_cube, d_trailX, d_trailY, d_output );
+   CUDA_CHECK_CLEANUP( cudaMalloc( &d_output, numTrail * sizeof(float) ),
+                        d_cube, d_trailX, d_trailY, d_output );
 
-   CUDA_CHECK_REM( cudaMemcpy( d_cube, cubeData,
-                                cubeSize * sizeof(float), cudaMemcpyHostToDevice ) );
-   CUDA_CHECK_REM( cudaMemcpy( d_trailX, hostX.data(),
-                                numTrail * sizeof(int), cudaMemcpyHostToDevice ) );
-   CUDA_CHECK_REM( cudaMemcpy( d_trailY, hostY.data(),
-                                numTrail * sizeof(int), cudaMemcpyHostToDevice ) );
+   CUDA_CHECK_CLEANUP( cudaMemcpy( d_cube, cubeData,
+                                    cubeSize * sizeof(float), cudaMemcpyHostToDevice ),
+                        d_cube, d_trailX, d_trailY, d_output );
+   CUDA_CHECK_CLEANUP( cudaMemcpy( d_trailX, hostX.data(),
+                                    numTrail * sizeof(int), cudaMemcpyHostToDevice ),
+                        d_cube, d_trailX, d_trailY, d_output );
+   CUDA_CHECK_CLEANUP( cudaMemcpy( d_trailY, hostY.data(),
+                                    numTrail * sizeof(int), cudaMemcpyHostToDevice ),
+                        d_cube, d_trailX, d_trailY, d_output );
 
    constexpr int BLOCK_SIZE = 256;
    int gridSize = ( numTrail + BLOCK_SIZE - 1 ) / BLOCK_SIZE;
@@ -270,17 +290,16 @@ bool remediateTrailsGPU(
       static_cast<float>( trailOutlierSigma ),
       d_output );
 
-   CUDA_CHECK_REM( cudaGetLastError() );
-   CUDA_CHECK_REM( cudaDeviceSynchronize() );
+   CUDA_CHECK_CLEANUP( cudaGetLastError(),
+                        d_cube, d_trailX, d_trailY, d_output );
+   CUDA_CHECK_CLEANUP( cudaDeviceSynchronize(),
+                        d_cube, d_trailX, d_trailY, d_output );
 
-   CUDA_CHECK_REM( cudaMemcpy( outputPixels, d_output,
-                                numTrail * sizeof(float), cudaMemcpyDeviceToHost ) );
+   CUDA_CHECK_CLEANUP( cudaMemcpy( outputPixels, d_output,
+                                    numTrail * sizeof(float), cudaMemcpyDeviceToHost ),
+                        d_cube, d_trailX, d_trailY, d_output );
 
-   cudaFree( d_cube );
-   cudaFree( d_trailX );
-   cudaFree( d_trailY );
-   cudaFree( d_output );
-
+   freeAll( { d_cube, d_trailX, d_trailY, d_output } );
    return true;
 }
 
@@ -299,14 +318,19 @@ bool remediateDustGPU(
    uint8_t* d_mask   = nullptr;
    float*   d_output = nullptr;
 
-   CUDA_CHECK_REM( cudaMalloc( &d_input,  totalPixels * sizeof(float) ) );
-   CUDA_CHECK_REM( cudaMalloc( &d_mask,   totalPixels * sizeof(uint8_t) ) );
-   CUDA_CHECK_REM( cudaMalloc( &d_output, totalPixels * sizeof(float) ) );
+   CUDA_CHECK_CLEANUP( cudaMalloc( &d_input,  totalPixels * sizeof(float) ),
+                        d_input, d_mask, d_output );
+   CUDA_CHECK_CLEANUP( cudaMalloc( &d_mask,   totalPixels * sizeof(uint8_t) ),
+                        d_input, d_mask, d_output );
+   CUDA_CHECK_CLEANUP( cudaMalloc( &d_output, totalPixels * sizeof(float) ),
+                        d_input, d_mask, d_output );
 
-   CUDA_CHECK_REM( cudaMemcpy( d_input, channelResult,
-                                totalPixels * sizeof(float), cudaMemcpyHostToDevice ) );
-   CUDA_CHECK_REM( cudaMemcpy( d_mask, dustMask,
-                                totalPixels * sizeof(uint8_t), cudaMemcpyHostToDevice ) );
+   CUDA_CHECK_CLEANUP( cudaMemcpy( d_input, channelResult,
+                                    totalPixels * sizeof(float), cudaMemcpyHostToDevice ),
+                        d_input, d_mask, d_output );
+   CUDA_CHECK_CLEANUP( cudaMemcpy( d_mask, dustMask,
+                                    totalPixels * sizeof(uint8_t), cudaMemcpyHostToDevice ),
+                        d_input, d_mask, d_output );
 
    constexpr int BLOCK_SIZE = 256;
    int gridSize = ( totalPixels + BLOCK_SIZE - 1 ) / BLOCK_SIZE;
@@ -318,16 +342,16 @@ bool remediateDustGPU(
       maxRatio,
       d_output );
 
-   CUDA_CHECK_REM( cudaGetLastError() );
-   CUDA_CHECK_REM( cudaDeviceSynchronize() );
+   CUDA_CHECK_CLEANUP( cudaGetLastError(),
+                        d_input, d_mask, d_output );
+   CUDA_CHECK_CLEANUP( cudaDeviceSynchronize(),
+                        d_input, d_mask, d_output );
 
-   CUDA_CHECK_REM( cudaMemcpy( correctedOutput, d_output,
-                                totalPixels * sizeof(float), cudaMemcpyDeviceToHost ) );
+   CUDA_CHECK_CLEANUP( cudaMemcpy( correctedOutput, d_output,
+                                    totalPixels * sizeof(float), cudaMemcpyDeviceToHost ),
+                        d_input, d_mask, d_output );
 
-   cudaFree( d_input );
-   cudaFree( d_mask );
-   cudaFree( d_output );
-
+   freeAll( { d_input, d_mask, d_output } );
    return true;
 }
 
@@ -344,14 +368,19 @@ bool remediateVignettingGPU(
    float* d_corrMap  = nullptr;
    float* d_output  = nullptr;
 
-   CUDA_CHECK_REM( cudaMalloc( &d_input,   totalPixels * sizeof(float) ) );
-   CUDA_CHECK_REM( cudaMalloc( &d_corrMap,  totalPixels * sizeof(float) ) );
-   CUDA_CHECK_REM( cudaMalloc( &d_output,  totalPixels * sizeof(float) ) );
+   CUDA_CHECK_CLEANUP( cudaMalloc( &d_input,   totalPixels * sizeof(float) ),
+                        d_input, d_corrMap, d_output );
+   CUDA_CHECK_CLEANUP( cudaMalloc( &d_corrMap,  totalPixels * sizeof(float) ),
+                        d_input, d_corrMap, d_output );
+   CUDA_CHECK_CLEANUP( cudaMalloc( &d_output,  totalPixels * sizeof(float) ),
+                        d_input, d_corrMap, d_output );
 
-   CUDA_CHECK_REM( cudaMemcpy( d_input, channelResult,
-                                totalPixels * sizeof(float), cudaMemcpyHostToDevice ) );
-   CUDA_CHECK_REM( cudaMemcpy( d_corrMap, correctionMap,
-                                totalPixels * sizeof(float), cudaMemcpyHostToDevice ) );
+   CUDA_CHECK_CLEANUP( cudaMemcpy( d_input, channelResult,
+                                    totalPixels * sizeof(float), cudaMemcpyHostToDevice ),
+                        d_input, d_corrMap, d_output );
+   CUDA_CHECK_CLEANUP( cudaMemcpy( d_corrMap, correctionMap,
+                                    totalPixels * sizeof(float), cudaMemcpyHostToDevice ),
+                        d_input, d_corrMap, d_output );
 
    constexpr int BLOCK_SIZE = 256;
    int gridSize = ( totalPixels + BLOCK_SIZE - 1 ) / BLOCK_SIZE;
@@ -361,20 +390,20 @@ bool remediateVignettingGPU(
       totalPixels,
       d_output );
 
-   CUDA_CHECK_REM( cudaGetLastError() );
-   CUDA_CHECK_REM( cudaDeviceSynchronize() );
+   CUDA_CHECK_CLEANUP( cudaGetLastError(),
+                        d_input, d_corrMap, d_output );
+   CUDA_CHECK_CLEANUP( cudaDeviceSynchronize(),
+                        d_input, d_corrMap, d_output );
 
-   CUDA_CHECK_REM( cudaMemcpy( correctedOutput, d_output,
-                                totalPixels * sizeof(float), cudaMemcpyDeviceToHost ) );
+   CUDA_CHECK_CLEANUP( cudaMemcpy( correctedOutput, d_output,
+                                    totalPixels * sizeof(float), cudaMemcpyDeviceToHost ),
+                        d_input, d_corrMap, d_output );
 
-   cudaFree( d_input );
-   cudaFree( d_corrMap );
-   cudaFree( d_output );
-
+   freeAll( { d_input, d_corrMap, d_output } );
    return true;
 }
 
-#undef CUDA_CHECK_REM
+#undef CUDA_CHECK_CLEANUP
 
 } // namespace cuda
 } // namespace nukex

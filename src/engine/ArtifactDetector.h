@@ -18,13 +18,14 @@ struct ArtifactDetectorConfig
    int    trailBlockSize      = 64;     // Block size for background estimation grid
    int    houghThetaBins      = 180;    // Number of angle bins (1-degree steps)
 
-   // Dust mote detection (stub)
-   double dustMinRadius       = 5.0;
-   double dustMaxRadius       = 80.0;
+   // Dust mote detection
+   int    dustMinDiameter     = 10;     // Minimum blob diameter (pixels)
+   int    dustMaxDiameter     = 160;    // Maximum blob diameter (pixels)
    double dustCircularityMin  = 0.6;
    double dustAttenuationMin  = 0.02;
+   double dustDetectionSigma  = 3.0;    // Background deficit threshold in MAD units
 
-   // Vignetting detection (stub)
+   // Vignetting detection
    int    vignettingPolyOrder = 4;      // Radial polynomial order
    double vignettingMinCorr   = 0.01;   // Minimum correction to report
 };
@@ -107,7 +108,7 @@ private:
                                             int width, int height,
                                             double dilateRadius ) const;
 
-   // --- Dust/vignetting helpers (stubs) ---
+   // --- Dust/vignetting helpers ---
    std::vector<float> localBackgroundMap( const float* image, int width, int height ) const;
    std::vector<double> fitRadialPolynomial( const float* image, int width, int height,
                                              const uint8_t* excludeMask, int order ) const;

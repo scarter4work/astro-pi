@@ -1,8 +1,9 @@
 // ----------------------------------------------------------------------------
-// ArtifactDetector.cpp — Trail detection on stretched (nonlinear) images
+// ArtifactDetector.cpp — Artifact detection on stretched (nonlinear) images
 //
 // Detects satellite/airplane trails using Hough transform on Sobel edge maps.
-// Dust mote and vignetting detectors are stubbed for future phases.
+// Detects dust motes via local background deficit + connected component analysis.
+// Detects vignetting via radial polynomial fit + multiplicative correction map.
 //
 // Copyright (c) 2026 Scott Carter
 // ----------------------------------------------------------------------------
@@ -344,51 +345,503 @@ TrailDetectionResult ArtifactDetector::detectTrails( const float* image, int wid
 }
 
 // ============================================================================
-// Stub: detectDust
+// detectDust — detect dark circular blobs (dust motes on sensor)
 // ============================================================================
 
-DustDetectionResult ArtifactDetector::detectDust( const float* /*image*/, int width, int height ) const
+DustDetectionResult ArtifactDetector::detectDust( const float* image, int width, int height ) const
 {
    DustDetectionResult result;
    result.mask.assign( width * height, 0 );
    result.dustPixelCount = 0;
+
+   if ( width < 16 || height < 16 )
+      return result;
+
+   const int N = width * height;
+
+   // 1. Compute local background map using annular ring medians
+   std::vector<float> bgMap = localBackgroundMap( image, width, height );
+
+   // 2. Compute deficit: how much darker each pixel is vs local background
+   std::vector<float> deficit( N );
+   for ( int i = 0; i < N; ++i )
+      deficit[i] = bgMap[i] - image[i];   // positive = darker than background
+
+   // 3. Compute MAD of deficit for threshold calibration
+   //    Use only positive deficits to estimate the noise scale
+   std::vector<float> deficitCopy( deficit.begin(), deficit.end() );
+   size_t mid = deficitCopy.size() / 2;
+   std::nth_element( deficitCopy.begin(), deficitCopy.begin() + mid, deficitCopy.end() );
+   double medianDeficit = deficitCopy[mid];
+
+   std::vector<float> absDevs( N );
+   for ( int i = 0; i < N; ++i )
+      absDevs[i] = std::abs( deficit[i] - static_cast<float>( medianDeficit ) );
+   size_t madMid = absDevs.size() / 2;
+   std::nth_element( absDevs.begin(), absDevs.begin() + madMid, absDevs.end() );
+   double mad = absDevs[madMid] * 1.4826;   // scale to Gaussian sigma
+
+   // When MAD is zero (nearly uniform background), any positive deficit is real.
+   // Use a small floor so the sigma multiplier still yields a meaningful threshold.
+   double threshold;
+   if ( mad < 1e-10 )
+      threshold = medianDeficit + 1e-6;   // just above the noise floor
+   else
+      threshold = medianDeficit + m_config.dustDetectionSigma * mad;
+
+   // 4. Flag pixels significantly darker than local background
+   std::vector<uint8_t> flagged( N, 0 );
+   for ( int i = 0; i < N; ++i )
+      if ( deficit[i] > threshold )
+         flagged[i] = 1;
+
+   // 5. Connected component labeling via flood fill
+   std::vector<int> labels( N, 0 );
+   int nextLabel = 1;
+
+   for ( int y = 0; y < height; ++y )
+   {
+      for ( int x = 0; x < width; ++x )
+      {
+         int idx = y * width + x;
+         if ( flagged[idx] == 0 || labels[idx] != 0 )
+            continue;
+
+         // BFS flood fill
+         int label = nextLabel++;
+         std::vector<int> stack;
+         stack.push_back( idx );
+         labels[idx] = label;
+
+         while ( !stack.empty() )
+         {
+            int ci = stack.back();
+            stack.pop_back();
+            int cy = ci / width;
+            int cx = ci % width;
+
+            // 4-connected neighbors
+            const int dx[] = { -1, 1, 0, 0 };
+            const int dy[] = { 0, 0, -1, 1 };
+            for ( int d = 0; d < 4; ++d )
+            {
+               int nx = cx + dx[d];
+               int ny = cy + dy[d];
+               if ( nx < 0 || nx >= width || ny < 0 || ny >= height )
+                  continue;
+               int ni = ny * width + nx;
+               if ( flagged[ni] && labels[ni] == 0 )
+               {
+                  labels[ni] = label;
+                  stack.push_back( ni );
+               }
+            }
+         }
+      }
+   }
+
+   int numComponents = nextLabel - 1;
+
+   // 6. For each component: compute area, bounding box, centroid, circularity
+   struct ComponentInfo
+   {
+      int area = 0;
+      int xMin = 0, xMax = 0, yMin = 0, yMax = 0;
+      double sumX = 0, sumY = 0;
+      double sumDeficit = 0;
+   };
+
+   std::vector<ComponentInfo> components( numComponents );
+   for ( int i = 0; i < numComponents; ++i )
+   {
+      components[i].xMin = width;
+      components[i].yMin = height;
+   }
+
+   for ( int y = 0; y < height; ++y )
+   {
+      for ( int x = 0; x < width; ++x )
+      {
+         int lbl = labels[y * width + x];
+         if ( lbl == 0 )
+            continue;
+         auto& c = components[lbl - 1];
+         c.area++;
+         c.sumX += x;
+         c.sumY += y;
+         c.sumDeficit += deficit[y * width + x];
+         c.xMin = std::min( c.xMin, x );
+         c.xMax = std::max( c.xMax, x );
+         c.yMin = std::min( c.yMin, y );
+         c.yMax = std::max( c.yMax, y );
+      }
+   }
+
+   // 7. Filter components and build result
+   for ( int i = 0; i < numComponents; ++i )
+   {
+      const auto& c = components[i];
+      if ( c.area == 0 )
+         continue;
+
+      // Bounding box diameter (use the larger dimension)
+      double bbWidth  = c.xMax - c.xMin + 1;
+      double bbHeight = c.yMax - c.yMin + 1;
+      double diameter = std::max( bbWidth, bbHeight );
+
+      // Diameter filter
+      if ( diameter < m_config.dustMinDiameter || diameter > m_config.dustMaxDiameter )
+         continue;
+
+      // Circularity: ratio of actual area to area of circle with this diameter
+      double idealArea = M_PI * ( diameter / 2.0 ) * ( diameter / 2.0 );
+      double circularity = c.area / idealArea;
+
+      if ( circularity < m_config.dustCircularityMin )
+         continue;
+
+      // This blob passes all filters
+      DustBlobInfo blob;
+      blob.centerX = c.sumX / c.area;
+      blob.centerY = c.sumY / c.area;
+      blob.radius = diameter / 2.0;
+      blob.circularity = circularity;
+      blob.meanAttenuation = c.sumDeficit / c.area;   // mean deficit
+
+      result.blobs.push_back( blob );
+
+      // Mark this component in the mask
+      int label = i + 1;
+      for ( int j = 0; j < N; ++j )
+         if ( labels[j] == label )
+            result.mask[j] = 1;
+   }
+
+   // Count dust pixels
+   for ( int i = 0; i < N; ++i )
+      if ( result.mask[i] )
+         ++result.dustPixelCount;
+
    return result;
 }
 
 // ============================================================================
-// Stub: detectVignetting
+// detectVignetting — radial polynomial fit + correction map
 // ============================================================================
 
-VignettingDetectionResult ArtifactDetector::detectVignetting( const float* /*image*/, int width, int height,
-                                                               const uint8_t* /*excludeMask*/ ) const
+VignettingDetectionResult ArtifactDetector::detectVignetting( const float* image, int width, int height,
+                                                               const uint8_t* excludeMask ) const
 {
    VignettingDetectionResult result;
-   result.correctionMap.assign( width * height, 1.0f );   // identity correction
+   const int N = width * height;
+   result.correctionMap.assign( N, 1.0f );
    result.maxCorrection = 1.0;
+
+   if ( width < 4 || height < 4 )
+      return result;
+
+   // 1. Fit radial polynomial to (radius, brightness) samples
+   int order = m_config.vignettingPolyOrder;
+   std::vector<double> coeffs = fitRadialPolynomial( image, width, height, excludeMask, order );
+
+   // 2. Evaluate polynomial at center (r=0) → reference brightness = c0
+   double centerBrightness = coeffs[0];
+   if ( centerBrightness <= 1e-10 )
+   {
+      // Degenerate fit — return identity
+      return result;
+   }
+
+   // 3. Build correction map
+   double cx = width / 2.0;
+   double cy = height / 2.0;
+   double maxR = std::sqrt( cx * cx + cy * cy );
+
+   double maxCorr = 1.0;
+
+   for ( int y = 0; y < height; ++y )
+   {
+      for ( int x = 0; x < width; ++x )
+      {
+         double dx = x - cx;
+         double dy = y - cy;
+         double r = std::sqrt( dx * dx + dy * dy ) / maxR;   // normalized [0, 1]
+
+         // Evaluate polynomial at this radius
+         double fitted = 0.0;
+         double rPow = 1.0;
+         for ( int k = 0; k <= order; ++k )
+         {
+            fitted += coeffs[k] * rPow;
+            rPow *= r;
+         }
+
+         // Correction factor = centerBrightness / fittedBrightness
+         // Clamp to >= 1.0 (never darken)
+         double correction = 1.0;
+         if ( fitted > 1e-10 )
+            correction = centerBrightness / fitted;
+         if ( correction < 1.0 )
+            correction = 1.0;
+
+         result.correctionMap[y * width + x] = static_cast<float>( correction );
+         if ( correction > maxCorr )
+            maxCorr = correction;
+      }
+   }
+
+   result.maxCorrection = maxCorr;
    return result;
 }
 
 // ============================================================================
-// Stub: localBackgroundMap
+// localBackgroundMap — annular ring median for each pixel
+//
+// For each pixel, computes the median brightness in an annular ring around it.
+// This gives the expected local background free from dust mote contamination.
+// Uses a coarse grid + interpolation for performance.
 // ============================================================================
 
 std::vector<float> ArtifactDetector::localBackgroundMap( const float* image, int width, int height ) const
 {
-   // For now, just return the block-median background
-   return estimateBackground( image, width, height );
+   // Annular ring radii
+   const int innerRadius = m_config.dustMaxDiameter / 2 + 5;
+   const int outerRadius = innerRadius + 15;
+   const int outerRadiusSq = outerRadius * outerRadius;
+   const int innerRadiusSq = innerRadius * innerRadius;
+
+   // Compute on a coarse grid to avoid O(N * ringSize) over every pixel.
+   // Grid step: half the inner radius, ensures good interpolation coverage.
+   const int gridStep = std::max( 4, innerRadius / 2 );
+   const int gw = ( width + gridStep - 1 ) / gridStep + 1;
+   const int gh = ( height + gridStep - 1 ) / gridStep + 1;
+
+   std::vector<float> gridValues( gw * gh, 0.0f );
+   std::vector<float> ringPixels;
+   ringPixels.reserve( outerRadiusSq * 4 );   // generous pre-allocation
+
+   for ( int gy = 0; gy < gh; ++gy )
+   {
+      for ( int gx = 0; gx < gw; ++gx )
+      {
+         int px = gx * gridStep;
+         int py = gy * gridStep;
+         if ( px >= width ) px = width - 1;
+         if ( py >= height ) py = height - 1;
+
+         ringPixels.clear();
+
+         // Collect pixels in the annular ring
+         int yStart = std::max( 0, py - outerRadius );
+         int yEnd   = std::min( height - 1, py + outerRadius );
+         int xStart = std::max( 0, px - outerRadius );
+         int xEnd   = std::min( width - 1, px + outerRadius );
+
+         for ( int y = yStart; y <= yEnd; ++y )
+         {
+            int dy = y - py;
+            int dySq = dy * dy;
+            for ( int x = xStart; x <= xEnd; ++x )
+            {
+               int dx = x - px;
+               int distSq = dx * dx + dySq;
+               if ( distSq >= innerRadiusSq && distSq <= outerRadiusSq )
+                  ringPixels.push_back( image[y * width + x] );
+            }
+         }
+
+         if ( !ringPixels.empty() )
+         {
+            size_t m = ringPixels.size() / 2;
+            std::nth_element( ringPixels.begin(), ringPixels.begin() + m, ringPixels.end() );
+            gridValues[gy * gw + gx] = ringPixels[m];
+         }
+         else
+         {
+            // Fallback: use the pixel itself (near corners/edges)
+            gridValues[gy * gw + gx] = image[py * width + px];
+         }
+      }
+   }
+
+   // Bilinear interpolation from coarse grid to full resolution
+   std::vector<float> bgMap( width * height );
+   for ( int y = 0; y < height; ++y )
+   {
+      for ( int x = 0; x < width; ++x )
+      {
+         double gxf = static_cast<double>( x ) / gridStep;
+         double gyf = static_cast<double>( y ) / gridStep;
+
+         gxf = std::max( 0.0, std::min( gxf, static_cast<double>( gw - 1 ) ) );
+         gyf = std::max( 0.0, std::min( gyf, static_cast<double>( gh - 1 ) ) );
+
+         int gx0 = static_cast<int>( gxf );
+         int gy0 = static_cast<int>( gyf );
+         int gx1 = std::min( gx0 + 1, gw - 1 );
+         int gy1 = std::min( gy0 + 1, gh - 1 );
+
+         double fx = gxf - gx0;
+         double fy = gyf - gy0;
+
+         double v00 = gridValues[gy0 * gw + gx0];
+         double v10 = gridValues[gy0 * gw + gx1];
+         double v01 = gridValues[gy1 * gw + gx0];
+         double v11 = gridValues[gy1 * gw + gx1];
+
+         bgMap[y * width + x] = static_cast<float>(
+            v00 * ( 1 - fx ) * ( 1 - fy ) +
+            v10 * fx * ( 1 - fy ) +
+            v01 * ( 1 - fx ) * fy +
+            v11 * fx * fy );
+      }
+   }
+
+   return bgMap;
 }
 
 // ============================================================================
-// Stub: fitRadialPolynomial
+// fitRadialPolynomial — least-squares polynomial fit of brightness vs radius
+//
+// Collects (radius, brightness) samples from unmasked pixels (subsampled
+// every 4th pixel for efficiency). Normalizes radius to [0, 1]. Solves
+// normal equations A^T A x = A^T b via Gaussian elimination with partial
+// pivoting.
 // ============================================================================
 
-std::vector<double> ArtifactDetector::fitRadialPolynomial( const float* /*image*/, int /*width*/, int /*height*/,
-                                                            const uint8_t* /*excludeMask*/, int order ) const
+std::vector<double> ArtifactDetector::fitRadialPolynomial( const float* image, int width, int height,
+                                                            const uint8_t* excludeMask, int order ) const
 {
-   // Return identity polynomial: c[0]=1, rest=0
-   std::vector<double> coeffs( order + 1, 0.0 );
-   if ( !coeffs.empty() )
-      coeffs[0] = 1.0;
+   const int nCoeffs = order + 1;
+
+   // Fallback: identity polynomial
+   std::vector<double> coeffs( nCoeffs, 0.0 );
+   coeffs[0] = 1.0;
+
+   if ( width < 4 || height < 4 || order < 1 )
+      return coeffs;
+
+   double cx = width / 2.0;
+   double cy = height / 2.0;
+   double maxR = std::sqrt( cx * cx + cy * cy );
+
+   if ( maxR < 1e-10 )
+      return coeffs;
+
+   // 1. Collect (r, brightness) samples — subsample every 4th pixel
+   //    Build normal equation matrices incrementally to avoid storing samples
+   //
+   //    Normal equations: (A^T A) x = A^T b
+   //    where A[i][k] = r_i^k, b[i] = brightness_i
+   //
+   //    (A^T A)[j][k] = sum_i r_i^(j+k)
+   //    (A^T b)[j]    = sum_i r_i^j * brightness_i
+
+   // We need sums of r^(j+k) for j,k in [0, order], so r^0 through r^(2*order)
+   const int maxPow = 2 * order;
+   std::vector<double> rPowSums( maxPow + 1, 0.0 );   // sum of r^p over all samples
+   std::vector<double> rBrightSums( nCoeffs, 0.0 );    // sum of r^j * brightness
+   int sampleCount = 0;
+
+   const int step = 4;
+   for ( int y = 0; y < height; y += step )
+   {
+      for ( int x = 0; x < width; x += step )
+      {
+         int idx = y * width + x;
+
+         // Skip masked pixels
+         if ( excludeMask != nullptr && excludeMask[idx] != 0 )
+            continue;
+
+         double dx = x - cx;
+         double dy = y - cy;
+         double r = std::sqrt( dx * dx + dy * dy ) / maxR;   // normalized [0, 1]
+         double brightness = static_cast<double>( image[idx] );
+
+         // Accumulate r^p sums
+         double rPow = 1.0;
+         for ( int p = 0; p <= maxPow; ++p )
+         {
+            rPowSums[p] += rPow;
+            rPow *= r;
+         }
+
+         // Accumulate r^j * brightness sums
+         rPow = 1.0;
+         for ( int j = 0; j < nCoeffs; ++j )
+         {
+            rBrightSums[j] += rPow * brightness;
+            rPow *= r;
+         }
+
+         ++sampleCount;
+      }
+   }
+
+   if ( sampleCount < nCoeffs )
+      return coeffs;   // not enough samples to fit
+
+   // 2. Build normal equation matrix (A^T A) and RHS (A^T b)
+   //    Using augmented matrix for in-place Gaussian elimination
+   //    [A^T A | A^T b]  size: nCoeffs x (nCoeffs + 1)
+   std::vector<double> aug( nCoeffs * ( nCoeffs + 1 ), 0.0 );
+   auto augIdx = [&]( int row, int col ) -> double& {
+      return aug[row * ( nCoeffs + 1 ) + col];
+   };
+
+   for ( int j = 0; j < nCoeffs; ++j )
+   {
+      for ( int k = 0; k < nCoeffs; ++k )
+         augIdx( j, k ) = rPowSums[j + k];
+      augIdx( j, nCoeffs ) = rBrightSums[j];
+   }
+
+   // 3. Gaussian elimination with partial pivoting
+   for ( int col = 0; col < nCoeffs; ++col )
+   {
+      // Find pivot
+      int pivotRow = col;
+      double pivotVal = std::abs( augIdx( col, col ) );
+      for ( int row = col + 1; row < nCoeffs; ++row )
+      {
+         double v = std::abs( augIdx( row, col ) );
+         if ( v > pivotVal )
+         {
+            pivotVal = v;
+            pivotRow = row;
+         }
+      }
+
+      if ( pivotVal < 1e-15 )
+         return coeffs;   // singular — return identity
+
+      // Swap rows
+      if ( pivotRow != col )
+      {
+         for ( int k = 0; k <= nCoeffs; ++k )
+            std::swap( augIdx( col, k ), augIdx( pivotRow, k ) );
+      }
+
+      // Eliminate below
+      double diag = augIdx( col, col );
+      for ( int row = col + 1; row < nCoeffs; ++row )
+      {
+         double factor = augIdx( row, col ) / diag;
+         for ( int k = col; k <= nCoeffs; ++k )
+            augIdx( row, k ) -= factor * augIdx( col, k );
+      }
+   }
+
+   // 4. Back substitution
+   for ( int row = nCoeffs - 1; row >= 0; --row )
+   {
+      double sum = augIdx( row, nCoeffs );
+      for ( int k = row + 1; k < nCoeffs; ++k )
+         sum -= augIdx( row, k ) * coeffs[k];
+      coeffs[row] = sum / augIdx( row, row );
+   }
+
    return coeffs;
 }
 
