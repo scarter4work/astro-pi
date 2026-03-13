@@ -40,16 +40,29 @@ NukeXStackProcess::NukeXStackProcess()
    new NXSEnableAutoStretch( this );
    new NXSUseGPU( this );
    new NXSAdaptiveModels( this );
-   new NXSEnableTrailDetection( this );
-   new NXSEnableSelfFlat( this );
+   new NXSEnableRemediation( this );
+   new NXSEnableTrailRemediation( this );
+   new NXSEnableDustRemediation( this );
+   new NXSEnableVignettingRemediation( this );
 
    // Floating point parameters
    new NXSOutlierSigmaThreshold( this );
+   new NXSTrailDilateRadius( this );
+   new NXSTrailOutlierSigma( this );
+   new NXSDustCircularityMin( this );
+   new NXSDustDetectionSigma( this );
+   new NXSDustMaxCorrectionRatio( this );
    new NXSFWHMWeight( this );
    new NXSEccentricityWeight( this );
    new NXSSkyBackgroundWeight( this );
    new NXSHFRWeight( this );
    new NXSAltitudeWeight( this );
+
+   // Integer parameters
+   new NXSDustMinDiameter( this );
+   new NXSDustMaxDiameter( this );
+   new NXSDustNeighborRadius( this );
+   new NXSVignettingPolyOrder( this );
 }
 
 // ----------------------------------------------------------------------------

@@ -170,8 +170,10 @@ void NukeXStackInterface::UpdateControls()
    GUI->EnableAutoStretch_CheckBox.SetChecked( m_instance.p_enableAutoStretch );
    GUI->UseGPU_CheckBox.SetChecked( m_instance.p_useGPU );
    GUI->AdaptiveModels_CheckBox.SetChecked( m_instance.p_adaptiveModels );
-   GUI->EnableTrailDetection_CheckBox.SetChecked( m_instance.p_enableTrailDetection );
-   GUI->EnableSelfFlat_CheckBox.SetChecked( m_instance.p_enableSelfFlat );
+   GUI->EnableRemediation_CheckBox.SetChecked( m_instance.p_enableRemediation );
+   GUI->EnableTrailRemediation_CheckBox.SetChecked( m_instance.p_enableTrailRemediation );
+   GUI->EnableDustRemediation_CheckBox.SetChecked( m_instance.p_enableDustRemediation );
+   GUI->EnableVignettingRemediation_CheckBox.SetChecked( m_instance.p_enableVignettingRemediation );
 }
 
 // ----------------------------------------------------------------------------
@@ -405,13 +407,21 @@ void NukeXStackInterface::e_CheckBoxClick( Button& sender, bool checked )
    {
       m_instance.p_adaptiveModels = checked;
    }
-   else if ( sender == GUI->EnableTrailDetection_CheckBox )
+   else if ( sender == GUI->EnableRemediation_CheckBox )
    {
-      m_instance.p_enableTrailDetection = checked;
+      m_instance.p_enableRemediation = checked;
    }
-   else if ( sender == GUI->EnableSelfFlat_CheckBox )
+   else if ( sender == GUI->EnableTrailRemediation_CheckBox )
    {
-      m_instance.p_enableSelfFlat = checked;
+      m_instance.p_enableTrailRemediation = checked;
+   }
+   else if ( sender == GUI->EnableDustRemediation_CheckBox )
+   {
+      m_instance.p_enableDustRemediation = checked;
+   }
+   else if ( sender == GUI->EnableVignettingRemediation_CheckBox )
+   {
+      m_instance.p_enableVignettingRemediation = checked;
    }
 }
 
@@ -671,18 +681,29 @@ NukeXStackInterface::GUIData::GUIData( NukeXStackInterface& w )
                                         "negligible impact on quality for typical data.</p>" );
    AdaptiveModels_CheckBox.OnClick( (Button::click_event_handler)&NukeXStackInterface::e_CheckBoxClick, w );
 
-   EnableTrailDetection_CheckBox.SetText( "Satellite Trail Detection" );
-   EnableTrailDetection_CheckBox.SetToolTip( "<p>Detect and mask satellite/airplane trails in each frame "
-                                              "using Hough transform line detection. Masked pixels are "
-                                              "excluded from stacking. Highly recommended for data with "
-                                              "satellite contamination.</p>" );
-   EnableTrailDetection_CheckBox.OnClick( (Button::click_event_handler)&NukeXStackInterface::e_CheckBoxClick, w );
+   EnableRemediation_CheckBox.SetText( "Enable Remediation" );
+   EnableRemediation_CheckBox.SetToolTip( "<p>Master switch for post-stack remediation. When enabled, "
+                                           "satellite trail, dust mote, and vignetting corrections "
+                                           "are applied to the stretched output.</p>" );
+   EnableRemediation_CheckBox.OnClick( (Button::click_event_handler)&NukeXStackInterface::e_CheckBoxClick, w );
 
-   EnableSelfFlat_CheckBox.SetText( "Self-Flat Correction" );
-   EnableSelfFlat_CheckBox.SetToolTip( "<p>Compute a synthetic flat from unregistered median stacking. "
-                                        "Corrects vignetting and dust motes without requiring separate "
-                                        "flat frames. Works best with dithered data (10+ frames).</p>" );
-   EnableSelfFlat_CheckBox.OnClick( (Button::click_event_handler)&NukeXStackInterface::e_CheckBoxClick, w );
+   EnableTrailRemediation_CheckBox.SetText( "Trail Remediation" );
+   EnableTrailRemediation_CheckBox.SetToolTip( "<p>Detect and remediate satellite/airplane trails "
+                                                "on the stretched output image using Hough transform "
+                                                "line detection and local interpolation.</p>" );
+   EnableTrailRemediation_CheckBox.OnClick( (Button::click_event_handler)&NukeXStackInterface::e_CheckBoxClick, w );
+
+   EnableDustRemediation_CheckBox.SetText( "Dust Mote Remediation" );
+   EnableDustRemediation_CheckBox.SetToolTip( "<p>Detect and correct circular dust mote artifacts "
+                                               "on the stretched output using local neighborhood "
+                                               "interpolation.</p>" );
+   EnableDustRemediation_CheckBox.OnClick( (Button::click_event_handler)&NukeXStackInterface::e_CheckBoxClick, w );
+
+   EnableVignettingRemediation_CheckBox.SetText( "Vignetting Remediation" );
+   EnableVignettingRemediation_CheckBox.SetToolTip( "<p>Detect and correct radial vignetting gradient "
+                                                     "on the stretched output using polynomial surface "
+                                                     "fitting.</p>" );
+   EnableVignettingRemediation_CheckBox.OnClick( (Button::click_event_handler)&NukeXStackInterface::e_CheckBoxClick, w );
 
    Output_Sizer.SetSpacing( 4 );
    Output_Sizer.Add( GenerateProvenance_CheckBox );
@@ -690,8 +711,10 @@ NukeXStackInterface::GUIData::GUIData( NukeXStackInterface& w )
    Output_Sizer.Add( EnableAutoStretch_CheckBox );
    Output_Sizer.Add( UseGPU_CheckBox );
    Output_Sizer.Add( AdaptiveModels_CheckBox );
-   Output_Sizer.Add( EnableTrailDetection_CheckBox );
-   Output_Sizer.Add( EnableSelfFlat_CheckBox );
+   Output_Sizer.Add( EnableRemediation_CheckBox );
+   Output_Sizer.Add( EnableTrailRemediation_CheckBox );
+   Output_Sizer.Add( EnableDustRemediation_CheckBox );
+   Output_Sizer.Add( EnableVignettingRemediation_CheckBox );
 
    Output_Control.SetSizer( Output_Sizer );
 

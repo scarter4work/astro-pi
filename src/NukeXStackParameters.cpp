@@ -236,40 +236,80 @@ bool NXSAdaptiveModels::DefaultValue() const
 
 // ----------------------------------------------------------------------------
 
-NXSEnableTrailDetection* TheNXSEnableTrailDetectionParameter = nullptr;
+NXSEnableRemediation* TheNXSEnableRemediationParameter = nullptr;
 
-NXSEnableTrailDetection::NXSEnableTrailDetection( MetaProcess* P )
+NXSEnableRemediation::NXSEnableRemediation( MetaProcess* P )
    : MetaBoolean( P )
 {
-   TheNXSEnableTrailDetectionParameter = this;
+   TheNXSEnableRemediationParameter = this;
 }
 
-IsoString NXSEnableTrailDetection::Id() const
+IsoString NXSEnableRemediation::Id() const
 {
-   return "enableTrailDetection";
+   return "enableRemediation";
 }
 
-bool NXSEnableTrailDetection::DefaultValue() const
+bool NXSEnableRemediation::DefaultValue() const
 {
    return true;
 }
 
 // ----------------------------------------------------------------------------
 
-NXSEnableSelfFlat* TheNXSEnableSelfFlatParameter = nullptr;
+NXSEnableTrailRemediation* TheNXSEnableTrailRemediationParameter = nullptr;
 
-NXSEnableSelfFlat::NXSEnableSelfFlat( MetaProcess* P )
+NXSEnableTrailRemediation::NXSEnableTrailRemediation( MetaProcess* P )
    : MetaBoolean( P )
 {
-   TheNXSEnableSelfFlatParameter = this;
+   TheNXSEnableTrailRemediationParameter = this;
 }
 
-IsoString NXSEnableSelfFlat::Id() const
+IsoString NXSEnableTrailRemediation::Id() const
 {
-   return "enableSelfFlat";
+   return "enableTrailRemediation";
 }
 
-bool NXSEnableSelfFlat::DefaultValue() const
+bool NXSEnableTrailRemediation::DefaultValue() const
+{
+   return true;
+}
+
+// ----------------------------------------------------------------------------
+
+NXSEnableDustRemediation* TheNXSEnableDustRemediationParameter = nullptr;
+
+NXSEnableDustRemediation::NXSEnableDustRemediation( MetaProcess* P )
+   : MetaBoolean( P )
+{
+   TheNXSEnableDustRemediationParameter = this;
+}
+
+IsoString NXSEnableDustRemediation::Id() const
+{
+   return "enableDustRemediation";
+}
+
+bool NXSEnableDustRemediation::DefaultValue() const
+{
+   return true;
+}
+
+// ----------------------------------------------------------------------------
+
+NXSEnableVignettingRemediation* TheNXSEnableVignettingRemediationParameter = nullptr;
+
+NXSEnableVignettingRemediation::NXSEnableVignettingRemediation( MetaProcess* P )
+   : MetaBoolean( P )
+{
+   TheNXSEnableVignettingRemediationParameter = this;
+}
+
+IsoString NXSEnableVignettingRemediation::Id() const
+{
+   return "enableVignettingRemediation";
+}
+
+bool NXSEnableVignettingRemediation::DefaultValue() const
 {
    return true;
 }
@@ -277,6 +317,301 @@ bool NXSEnableSelfFlat::DefaultValue() const
 // ----------------------------------------------------------------------------
 // Floating Point Parameters
 // ----------------------------------------------------------------------------
+
+NXSTrailDilateRadius* TheNXSTrailDilateRadiusParameter = nullptr;
+
+NXSTrailDilateRadius::NXSTrailDilateRadius( MetaProcess* P )
+   : MetaFloat( P )
+{
+   TheNXSTrailDilateRadiusParameter = this;
+}
+
+IsoString NXSTrailDilateRadius::Id() const
+{
+   return "trailDilateRadius";
+}
+
+int NXSTrailDilateRadius::Precision() const
+{
+   return 1;
+}
+
+double NXSTrailDilateRadius::MinimumValue() const
+{
+   return 1.0;
+}
+
+double NXSTrailDilateRadius::MaximumValue() const
+{
+   return 20.0;
+}
+
+double NXSTrailDilateRadius::DefaultValue() const
+{
+   return 5.0;
+}
+
+// ----------------------------------------------------------------------------
+
+NXSTrailOutlierSigma* TheNXSTrailOutlierSigmaParameter = nullptr;
+
+NXSTrailOutlierSigma::NXSTrailOutlierSigma( MetaProcess* P )
+   : MetaFloat( P )
+{
+   TheNXSTrailOutlierSigmaParameter = this;
+}
+
+IsoString NXSTrailOutlierSigma::Id() const
+{
+   return "trailOutlierSigma";
+}
+
+int NXSTrailOutlierSigma::Precision() const
+{
+   return 1;
+}
+
+double NXSTrailOutlierSigma::MinimumValue() const
+{
+   return 1.5;
+}
+
+double NXSTrailOutlierSigma::MaximumValue() const
+{
+   return 6.0;
+}
+
+double NXSTrailOutlierSigma::DefaultValue() const
+{
+   return 3.0;
+}
+
+// ----------------------------------------------------------------------------
+
+NXSDustCircularityMin* TheNXSDustCircularityMinParameter = nullptr;
+
+NXSDustCircularityMin::NXSDustCircularityMin( MetaProcess* P )
+   : MetaFloat( P )
+{
+   TheNXSDustCircularityMinParameter = this;
+}
+
+IsoString NXSDustCircularityMin::Id() const
+{
+   return "dustCircularityMin";
+}
+
+int NXSDustCircularityMin::Precision() const
+{
+   return 2;
+}
+
+double NXSDustCircularityMin::MinimumValue() const
+{
+   return 0.3;
+}
+
+double NXSDustCircularityMin::MaximumValue() const
+{
+   return 1.0;
+}
+
+double NXSDustCircularityMin::DefaultValue() const
+{
+   return 0.7;
+}
+
+// ----------------------------------------------------------------------------
+
+NXSDustDetectionSigma* TheNXSDustDetectionSigmaParameter = nullptr;
+
+NXSDustDetectionSigma::NXSDustDetectionSigma( MetaProcess* P )
+   : MetaFloat( P )
+{
+   TheNXSDustDetectionSigmaParameter = this;
+}
+
+IsoString NXSDustDetectionSigma::Id() const
+{
+   return "dustDetectionSigma";
+}
+
+int NXSDustDetectionSigma::Precision() const
+{
+   return 1;
+}
+
+double NXSDustDetectionSigma::MinimumValue() const
+{
+   return 1.0;
+}
+
+double NXSDustDetectionSigma::MaximumValue() const
+{
+   return 5.0;
+}
+
+double NXSDustDetectionSigma::DefaultValue() const
+{
+   return 2.0;
+}
+
+// ----------------------------------------------------------------------------
+
+NXSDustMaxCorrectionRatio* TheNXSDustMaxCorrectionRatioParameter = nullptr;
+
+NXSDustMaxCorrectionRatio::NXSDustMaxCorrectionRatio( MetaProcess* P )
+   : MetaFloat( P )
+{
+   TheNXSDustMaxCorrectionRatioParameter = this;
+}
+
+IsoString NXSDustMaxCorrectionRatio::Id() const
+{
+   return "dustMaxCorrectionRatio";
+}
+
+int NXSDustMaxCorrectionRatio::Precision() const
+{
+   return 1;
+}
+
+double NXSDustMaxCorrectionRatio::MinimumValue() const
+{
+   return 2.0;
+}
+
+double NXSDustMaxCorrectionRatio::MaximumValue() const
+{
+   return 50.0;
+}
+
+double NXSDustMaxCorrectionRatio::DefaultValue() const
+{
+   return 10.0;
+}
+
+// ----------------------------------------------------------------------------
+// Integer Parameters
+// ----------------------------------------------------------------------------
+
+NXSDustMinDiameter* TheNXSDustMinDiameterParameter = nullptr;
+
+NXSDustMinDiameter::NXSDustMinDiameter( MetaProcess* P )
+   : MetaInt32( P )
+{
+   TheNXSDustMinDiameterParameter = this;
+}
+
+IsoString NXSDustMinDiameter::Id() const
+{
+   return "dustMinDiameter";
+}
+
+double NXSDustMinDiameter::MinimumValue() const
+{
+   return 3;
+}
+
+double NXSDustMinDiameter::MaximumValue() const
+{
+   return 200;
+}
+
+double NXSDustMinDiameter::DefaultValue() const
+{
+   return 10;
+}
+
+// ----------------------------------------------------------------------------
+
+NXSDustMaxDiameter* TheNXSDustMaxDiameterParameter = nullptr;
+
+NXSDustMaxDiameter::NXSDustMaxDiameter( MetaProcess* P )
+   : MetaInt32( P )
+{
+   TheNXSDustMaxDiameterParameter = this;
+}
+
+IsoString NXSDustMaxDiameter::Id() const
+{
+   return "dustMaxDiameter";
+}
+
+double NXSDustMaxDiameter::MinimumValue() const
+{
+   return 10;
+}
+
+double NXSDustMaxDiameter::MaximumValue() const
+{
+   return 500;
+}
+
+double NXSDustMaxDiameter::DefaultValue() const
+{
+   return 100;
+}
+
+// ----------------------------------------------------------------------------
+
+NXSDustNeighborRadius* TheNXSDustNeighborRadiusParameter = nullptr;
+
+NXSDustNeighborRadius::NXSDustNeighborRadius( MetaProcess* P )
+   : MetaInt32( P )
+{
+   TheNXSDustNeighborRadiusParameter = this;
+}
+
+IsoString NXSDustNeighborRadius::Id() const
+{
+   return "dustNeighborRadius";
+}
+
+double NXSDustNeighborRadius::MinimumValue() const
+{
+   return 3;
+}
+
+double NXSDustNeighborRadius::MaximumValue() const
+{
+   return 50;
+}
+
+double NXSDustNeighborRadius::DefaultValue() const
+{
+   return 10;
+}
+
+// ----------------------------------------------------------------------------
+
+NXSVignettingPolyOrder* TheNXSVignettingPolyOrderParameter = nullptr;
+
+NXSVignettingPolyOrder::NXSVignettingPolyOrder( MetaProcess* P )
+   : MetaInt32( P )
+{
+   TheNXSVignettingPolyOrderParameter = this;
+}
+
+IsoString NXSVignettingPolyOrder::Id() const
+{
+   return "vignettingPolyOrder";
+}
+
+double NXSVignettingPolyOrder::MinimumValue() const
+{
+   return 1;
+}
+
+double NXSVignettingPolyOrder::MaximumValue() const
+{
+   return 6;
+}
+
+double NXSVignettingPolyOrder::DefaultValue() const
+{
+   return 3;
+}
 
 NXSOutlierSigmaThreshold* TheNXSOutlierSigmaThresholdParameter = nullptr;
 

@@ -104,8 +104,10 @@ private:
          CheckBox          EnableAutoStretch_CheckBox;
          CheckBox          UseGPU_CheckBox;
          CheckBox          AdaptiveModels_CheckBox;
-         CheckBox          EnableTrailDetection_CheckBox;
-         CheckBox          EnableSelfFlat_CheckBox;
+         CheckBox          EnableRemediation_CheckBox;
+         CheckBox          EnableTrailRemediation_CheckBox;
+         CheckBox          EnableDustRemediation_CheckBox;
+         CheckBox          EnableVignettingRemediation_CheckBox;
    };
 
    GUIData* GUI = nullptr;

@@ -140,29 +140,166 @@ public:
 
 extern NXSAdaptiveModels* TheNXSAdaptiveModelsParameter;
 
-class NXSEnableTrailDetection : public MetaBoolean
+class NXSEnableRemediation : public MetaBoolean
 {
 public:
-   NXSEnableTrailDetection( MetaProcess* );
+   NXSEnableRemediation( MetaProcess* );
    IsoString Id() const override;
    bool DefaultValue() const override;
 };
 
-extern NXSEnableTrailDetection* TheNXSEnableTrailDetectionParameter;
+extern NXSEnableRemediation* TheNXSEnableRemediationParameter;
 
-class NXSEnableSelfFlat : public MetaBoolean
+class NXSEnableTrailRemediation : public MetaBoolean
 {
 public:
-   NXSEnableSelfFlat( MetaProcess* );
+   NXSEnableTrailRemediation( MetaProcess* );
    IsoString Id() const override;
    bool DefaultValue() const override;
 };
 
-extern NXSEnableSelfFlat* TheNXSEnableSelfFlatParameter;
+extern NXSEnableTrailRemediation* TheNXSEnableTrailRemediationParameter;
+
+class NXSEnableDustRemediation : public MetaBoolean
+{
+public:
+   NXSEnableDustRemediation( MetaProcess* );
+   IsoString Id() const override;
+   bool DefaultValue() const override;
+};
+
+extern NXSEnableDustRemediation* TheNXSEnableDustRemediationParameter;
+
+class NXSEnableVignettingRemediation : public MetaBoolean
+{
+public:
+   NXSEnableVignettingRemediation( MetaProcess* );
+   IsoString Id() const override;
+   bool DefaultValue() const override;
+};
+
+extern NXSEnableVignettingRemediation* TheNXSEnableVignettingRemediationParameter;
 
 // ----------------------------------------------------------------------------
 // Floating Point Parameters
 // ----------------------------------------------------------------------------
+
+class NXSTrailDilateRadius : public MetaFloat
+{
+public:
+   NXSTrailDilateRadius( MetaProcess* );
+   IsoString Id() const override;
+   int Precision() const override;
+   double MinimumValue() const override;
+   double MaximumValue() const override;
+   double DefaultValue() const override;
+};
+
+extern NXSTrailDilateRadius* TheNXSTrailDilateRadiusParameter;
+
+class NXSTrailOutlierSigma : public MetaFloat
+{
+public:
+   NXSTrailOutlierSigma( MetaProcess* );
+   IsoString Id() const override;
+   int Precision() const override;
+   double MinimumValue() const override;
+   double MaximumValue() const override;
+   double DefaultValue() const override;
+};
+
+extern NXSTrailOutlierSigma* TheNXSTrailOutlierSigmaParameter;
+
+class NXSDustCircularityMin : public MetaFloat
+{
+public:
+   NXSDustCircularityMin( MetaProcess* );
+   IsoString Id() const override;
+   int Precision() const override;
+   double MinimumValue() const override;
+   double MaximumValue() const override;
+   double DefaultValue() const override;
+};
+
+extern NXSDustCircularityMin* TheNXSDustCircularityMinParameter;
+
+class NXSDustDetectionSigma : public MetaFloat
+{
+public:
+   NXSDustDetectionSigma( MetaProcess* );
+   IsoString Id() const override;
+   int Precision() const override;
+   double MinimumValue() const override;
+   double MaximumValue() const override;
+   double DefaultValue() const override;
+};
+
+extern NXSDustDetectionSigma* TheNXSDustDetectionSigmaParameter;
+
+class NXSDustMaxCorrectionRatio : public MetaFloat
+{
+public:
+   NXSDustMaxCorrectionRatio( MetaProcess* );
+   IsoString Id() const override;
+   int Precision() const override;
+   double MinimumValue() const override;
+   double MaximumValue() const override;
+   double DefaultValue() const override;
+};
+
+extern NXSDustMaxCorrectionRatio* TheNXSDustMaxCorrectionRatioParameter;
+
+// ----------------------------------------------------------------------------
+// Integer Parameters
+// ----------------------------------------------------------------------------
+
+class NXSDustMinDiameter : public MetaInt32
+{
+public:
+   NXSDustMinDiameter( MetaProcess* );
+   IsoString Id() const override;
+   double MinimumValue() const override;
+   double MaximumValue() const override;
+   double DefaultValue() const override;
+};
+
+extern NXSDustMinDiameter* TheNXSDustMinDiameterParameter;
+
+class NXSDustMaxDiameter : public MetaInt32
+{
+public:
+   NXSDustMaxDiameter( MetaProcess* );
+   IsoString Id() const override;
+   double MinimumValue() const override;
+   double MaximumValue() const override;
+   double DefaultValue() const override;
+};
+
+extern NXSDustMaxDiameter* TheNXSDustMaxDiameterParameter;
+
+class NXSDustNeighborRadius : public MetaInt32
+{
+public:
+   NXSDustNeighborRadius( MetaProcess* );
+   IsoString Id() const override;
+   double MinimumValue() const override;
+   double MaximumValue() const override;
+   double DefaultValue() const override;
+};
+
+extern NXSDustNeighborRadius* TheNXSDustNeighborRadiusParameter;
+
+class NXSVignettingPolyOrder : public MetaInt32
+{
+public:
+   NXSVignettingPolyOrder( MetaProcess* );
+   IsoString Id() const override;
+   double MinimumValue() const override;
+   double MaximumValue() const override;
+   double DefaultValue() const override;
+};
+
+extern NXSVignettingPolyOrder* TheNXSVignettingPolyOrderParameter;
 
 class NXSOutlierSigmaThreshold : public MetaFloat
 {

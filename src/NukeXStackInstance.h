@@ -71,16 +71,29 @@ private:
    pcl_bool p_enableAutoStretch;
    pcl_bool p_useGPU;
    pcl_bool p_adaptiveModels;
-   pcl_bool p_enableTrailDetection;
-   pcl_bool p_enableSelfFlat;
+   pcl_bool p_enableRemediation;
+   pcl_bool p_enableTrailRemediation;
+   pcl_bool p_enableDustRemediation;
+   pcl_bool p_enableVignettingRemediation;
 
    // Floating point parameters
    float    p_outlierSigmaThreshold;
+   float    p_trailDilateRadius;
+   float    p_trailOutlierSigma;
+   float    p_dustCircularityMin;
+   float    p_dustDetectionSigma;
+   float    p_dustMaxCorrectionRatio;
    float    p_fwhmWeight;
    float    p_eccentricityWeight;
    float    p_skyBackgroundWeight;
    float    p_hfrWeight;
    float    p_altitudeWeight;
+
+   // Integer parameters
+   int32    p_dustMinDiameter;
+   int32    p_dustMaxDiameter;
+   int32    p_dustNeighborRadius;
+   int32    p_vignettingPolyOrder;
 
    friend class NukeXStackProcess;
    friend class NukeXStackInterface;

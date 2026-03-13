@@ -44,14 +44,25 @@ NukeXStackInstance::NukeXStackInstance( const MetaProcess* m )
    , p_enableAutoStretch( TheNXSEnableAutoStretchParameter->DefaultValue() )
    , p_useGPU( TheNXSUseGPUParameter->DefaultValue() )
    , p_adaptiveModels( TheNXSAdaptiveModelsParameter->DefaultValue() )
-   , p_enableTrailDetection( TheNXSEnableTrailDetectionParameter->DefaultValue() )
-   , p_enableSelfFlat( TheNXSEnableSelfFlatParameter->DefaultValue() )
+   , p_enableRemediation( TheNXSEnableRemediationParameter->DefaultValue() )
+   , p_enableTrailRemediation( TheNXSEnableTrailRemediationParameter->DefaultValue() )
+   , p_enableDustRemediation( TheNXSEnableDustRemediationParameter->DefaultValue() )
+   , p_enableVignettingRemediation( TheNXSEnableVignettingRemediationParameter->DefaultValue() )
    , p_outlierSigmaThreshold( static_cast<float>( TheNXSOutlierSigmaThresholdParameter->DefaultValue() ) )
+   , p_trailDilateRadius( static_cast<float>( TheNXSTrailDilateRadiusParameter->DefaultValue() ) )
+   , p_trailOutlierSigma( static_cast<float>( TheNXSTrailOutlierSigmaParameter->DefaultValue() ) )
+   , p_dustCircularityMin( static_cast<float>( TheNXSDustCircularityMinParameter->DefaultValue() ) )
+   , p_dustDetectionSigma( static_cast<float>( TheNXSDustDetectionSigmaParameter->DefaultValue() ) )
+   , p_dustMaxCorrectionRatio( static_cast<float>( TheNXSDustMaxCorrectionRatioParameter->DefaultValue() ) )
    , p_fwhmWeight( static_cast<float>( TheNXSFWHMWeightParameter->DefaultValue() ) )
    , p_eccentricityWeight( static_cast<float>( TheNXSEccentricityWeightParameter->DefaultValue() ) )
    , p_skyBackgroundWeight( static_cast<float>( TheNXSSkyBackgroundWeightParameter->DefaultValue() ) )
    , p_hfrWeight( static_cast<float>( TheNXSHFRWeightParameter->DefaultValue() ) )
    , p_altitudeWeight( static_cast<float>( TheNXSAltitudeWeightParameter->DefaultValue() ) )
+   , p_dustMinDiameter( static_cast<int32>( TheNXSDustMinDiameterParameter->DefaultValue() ) )
+   , p_dustMaxDiameter( static_cast<int32>( TheNXSDustMaxDiameterParameter->DefaultValue() ) )
+   , p_dustNeighborRadius( static_cast<int32>( TheNXSDustNeighborRadiusParameter->DefaultValue() ) )
+   , p_vignettingPolyOrder( static_cast<int32>( TheNXSVignettingPolyOrderParameter->DefaultValue() ) )
 {
 }
 
@@ -78,14 +89,25 @@ void NukeXStackInstance::Assign( const ProcessImplementation& p )
       p_enableAutoStretch       = x->p_enableAutoStretch;
       p_useGPU                  = x->p_useGPU;
       p_adaptiveModels          = x->p_adaptiveModels;
-      p_enableTrailDetection    = x->p_enableTrailDetection;
-      p_enableSelfFlat          = x->p_enableSelfFlat;
+      p_enableRemediation             = x->p_enableRemediation;
+      p_enableTrailRemediation        = x->p_enableTrailRemediation;
+      p_enableDustRemediation         = x->p_enableDustRemediation;
+      p_enableVignettingRemediation   = x->p_enableVignettingRemediation;
       p_outlierSigmaThreshold   = x->p_outlierSigmaThreshold;
+      p_trailDilateRadius       = x->p_trailDilateRadius;
+      p_trailOutlierSigma       = x->p_trailOutlierSigma;
+      p_dustCircularityMin      = x->p_dustCircularityMin;
+      p_dustDetectionSigma      = x->p_dustDetectionSigma;
+      p_dustMaxCorrectionRatio  = x->p_dustMaxCorrectionRatio;
       p_fwhmWeight              = x->p_fwhmWeight;
       p_eccentricityWeight      = x->p_eccentricityWeight;
       p_skyBackgroundWeight     = x->p_skyBackgroundWeight;
       p_hfrWeight               = x->p_hfrWeight;
       p_altitudeWeight          = x->p_altitudeWeight;
+      p_dustMinDiameter         = x->p_dustMinDiameter;
+      p_dustMaxDiameter         = x->p_dustMaxDiameter;
+      p_dustNeighborRadius      = x->p_dustNeighborRadius;
+      p_vignettingPolyOrder     = x->p_vignettingPolyOrder;
    }
 }
 
@@ -688,12 +710,26 @@ void* NukeXStackInstance::LockParameter( const MetaParameter* p, size_type table
       return &p_useGPU;
    if ( p == TheNXSAdaptiveModelsParameter )
       return &p_adaptiveModels;
-   if ( p == TheNXSEnableTrailDetectionParameter )
-      return &p_enableTrailDetection;
-   if ( p == TheNXSEnableSelfFlatParameter )
-      return &p_enableSelfFlat;
+   if ( p == TheNXSEnableRemediationParameter )
+      return &p_enableRemediation;
+   if ( p == TheNXSEnableTrailRemediationParameter )
+      return &p_enableTrailRemediation;
+   if ( p == TheNXSEnableDustRemediationParameter )
+      return &p_enableDustRemediation;
+   if ( p == TheNXSEnableVignettingRemediationParameter )
+      return &p_enableVignettingRemediation;
    if ( p == TheNXSOutlierSigmaThresholdParameter )
       return &p_outlierSigmaThreshold;
+   if ( p == TheNXSTrailDilateRadiusParameter )
+      return &p_trailDilateRadius;
+   if ( p == TheNXSTrailOutlierSigmaParameter )
+      return &p_trailOutlierSigma;
+   if ( p == TheNXSDustCircularityMinParameter )
+      return &p_dustCircularityMin;
+   if ( p == TheNXSDustDetectionSigmaParameter )
+      return &p_dustDetectionSigma;
+   if ( p == TheNXSDustMaxCorrectionRatioParameter )
+      return &p_dustMaxCorrectionRatio;
    if ( p == TheNXSFWHMWeightParameter )
       return &p_fwhmWeight;
    if ( p == TheNXSEccentricityWeightParameter )
@@ -704,6 +740,14 @@ void* NukeXStackInstance::LockParameter( const MetaParameter* p, size_type table
       return &p_hfrWeight;
    if ( p == TheNXSAltitudeWeightParameter )
       return &p_altitudeWeight;
+   if ( p == TheNXSDustMinDiameterParameter )
+      return &p_dustMinDiameter;
+   if ( p == TheNXSDustMaxDiameterParameter )
+      return &p_dustMaxDiameter;
+   if ( p == TheNXSDustNeighborRadiusParameter )
+      return &p_dustNeighborRadius;
+   if ( p == TheNXSVignettingPolyOrderParameter )
+      return &p_vignettingPolyOrder;
 
    return nullptr;
 }
