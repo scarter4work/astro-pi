@@ -1011,6 +1011,22 @@ GpuStackResult processImageGPU(
     CUDA_CHECK(cudaMemcpy(d_cube, cubeData, cubeSize * sizeof(float),
                           cudaMemcpyHostToDevice), result);
 
+    // DIAG: verify cube data survived H2D transfer (read back first Z-column)
+    {
+        float verifyBuf[64];
+        int verifyN = (nSubs < 64) ? static_cast<int>(nSubs) : 64;
+        CUDA_CHECK(cudaMemcpy(verifyBuf, d_cube, verifyN * sizeof(float),
+                              cudaMemcpyDeviceToHost), result);
+        FILE* df = fopen("/tmp/nukex_cuda_diag.txt", "a");
+        if (df) {
+            fprintf(df, "=== CUDA DIAG (nSubs=%zu H=%zu W=%zu cubeSize=%zu) ===\n", nSubs, H, W, cubeSize);
+            fprintf(df, "H2D verify: host[0..2]=%.6f %.6f %.6f  device[0..2]=%.6f %.6f %.6f\n",
+                    cubeData[0], cubeData[1], cubeData[2],
+                    verifyBuf[0], verifyBuf[1], verifyBuf[2]);
+            fclose(df);
+        }
+    }
+
     // Launch kernel
     constexpr int BLOCK_SIZE = 256;
     int gridSize = static_cast<int>((pixelCount + BLOCK_SIZE - 1) / BLOCK_SIZE);
@@ -1030,6 +1046,20 @@ GpuStackResult processImageGPU(
     // Wait for kernel completion
     CUDA_CHECK(cudaDeviceSynchronize(), result);
 
+    // DIAG: check kernel output on device before D2H copy
+    {
+        float outVerify[10];
+        int checkN = (pixelCount < 10) ? static_cast<int>(pixelCount) : 10;
+        CUDA_CHECK(cudaMemcpy(outVerify, d_output, checkN * sizeof(float),
+                              cudaMemcpyDeviceToHost), result);
+        FILE* df = fopen("/tmp/nukex_cuda_diag.txt", "a");
+        if (df) {
+            fprintf(df, "Kernel output (device): [0..2]=%.6f %.6f %.6f\n",
+                    outVerify[0], outVerify[1], outVerify[2]);
+            fclose(df);
+        }
+    }
+
     // Copy results back
     CUDA_CHECK(cudaMemcpy(outputPixels, d_output,
                           pixelCount * sizeof(float),
@@ -1037,6 +1067,24 @@ GpuStackResult processImageGPU(
     CUDA_CHECK(cudaMemcpy(distTypes, d_distType,
                           pixelCount * sizeof(uint8_t),
                           cudaMemcpyDeviceToHost), result);
+
+    // DIAG: verify D2H output matches device
+    {
+        FILE* df = fopen("/tmp/nukex_cuda_diag.txt", "a");
+        if (df) {
+            fprintf(df, "D2H output (host):     [0..2]=%.6f %.6f %.6f\n",
+                    outputPixels[0], outputPixels[1], outputPixels[2]);
+            // Scan first 10000 outputs for range
+            float omin = outputPixels[0], omax = outputPixels[0];
+            size_t scanN = (pixelCount < 10000) ? pixelCount : 10000;
+            for (size_t i = 1; i < scanN; ++i) {
+                if (outputPixels[i] < omin) omin = outputPixels[i];
+                if (outputPixels[i] > omax) omax = outputPixels[i];
+            }
+            fprintf(df, "D2H first %zu: min=%.6f max=%.6f\n\n", scanN, omin, omax);
+            fclose(df);
+        }
+    }
 
     // Clean up
     cudaFree(d_cube);
