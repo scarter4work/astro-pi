@@ -9,8 +9,8 @@
       </p>
    </description>
    <platform os="linux" arch="x64" version="1.8.0:1.9.9">
-      <package fileName="20260313-linux-x64-NukeX.tar.gz" sha1="185531d687ab4f69f681cb79a7f0df6a4bd2958a" type="module" releaseDate="20260313">
-         <title>NukeX 3.0.0.26</title>
+      <package fileName="20260313-linux-x64-NukeX.tar.gz" sha1="edd2530d18470ecb363f78b6bff3b17a227ff271" type="module" releaseDate="20260313">
+         <title>NukeX 3.0.0.27</title>
          <description>
             <p>
                <b>NukeX v3 - Statistical Stacking + Stretch for PixInsight</b>
@@ -27,16 +27,14 @@
                </li>
             </ul>
             <p>
-               <b>Version 3.0.0.26 - Fix float FITS normalization (stacking data range bug)</b>
+               <b>Version 3.0.0.27 - Diagnostic build: SubCube data tracing</b>
             </p>
             <p>
-               Root cause fix for corrupted stacking output: float FITS files (BITPIX=-32)
-               with raw ADU values were read as-is by PCL without normalization to [0,1].
-               FrameLoader now calls img.Normalize() after ReadImage to ensure all input
-               data is in [0,1] range regardless of FITS storage format. Removed the
-               counterproductive negative pixel clamping from v25 which was masking the
-               bug by zeroing out all data. Diagnostics retained for loaded and stacked
-               data ranges.
+               Added SubCube-level diagnostics right before GPU stacking to isolate
+               where the data range corruption occurs. Samples pixel values via both
+               xtensor operator() and raw data pointer (the same pointer the GPU uses)
+               to determine if the SubCube itself is corrupted or if the GPU kernel
+               is producing bad output from good input.
             </p>
             <p>
                Copyright (c) 2026 Scott Carter. All Rights Reserved.
@@ -45,4 +43,4 @@
       </package>
    </platform>
 </xri>
-<Signature developerId="scarter4work" timestamp="2026-03-14T02:55:36.095Z" encoding="Base64">qAECn5XCpdSLQVPm1ggCzH63gl3wf0W/FaXE/8jjZ3oTJ3XwC0vFmdqJjQbykeihbPT0J7SZVjqJEMJ16XlVAQ==</Signature>
+<Signature developerId="scarter4work" timestamp="2026-03-14T16:30:58.607Z" encoding="Base64">qqYkgB/4fsDKzXlCBREbHvgWV9kLY1s06lvs3jZi8+sMma4Y52OwdSaR7ndIBOXGJWEy1kZGh5buKKw87fzoBQ==</Signature>
