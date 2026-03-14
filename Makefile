@@ -73,6 +73,7 @@ ifdef NVCC_PATH
     CUDA_OBJECTS = $(CUDA_SOURCES:.cu=.o)
     NVCC_FLAGS = -std=c++17 -O3 -allow-unsupported-compiler \
                  -ccbin /usr/bin/g++-14 \
+                 -arch=native \
                  -Xcompiler "-fPIC -fvisibility=hidden" \
                  -I$(PCL_INCDIR) -I$(CURDIR)/src -I$(CURDIR)/src/engine \
                  -I$(CURDIR)/src/engine/algorithms \

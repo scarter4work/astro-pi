@@ -9,8 +9,8 @@
       </p>
    </description>
    <platform os="linux" arch="x64" version="1.8.0:1.9.9">
-      <package fileName="20260313-linux-x64-NukeX.tar.gz" sha1="42bc3b97a17f39418e1ee4e900f43bafda3fa9c7" type="module" releaseDate="20260313">
-         <title>NukeX 3.0.0.27</title>
+      <package fileName="20260313-linux-x64-NukeX.tar.gz" sha1="a5dffab946c522a5cccc7660d6aeb0499174ab0d" type="module" releaseDate="20260313">
+         <title>NukeX 3.0.0.28</title>
          <description>
             <p>
                <b>NukeX v3 - Statistical Stacking + Stretch for PixInsight</b>
@@ -27,14 +27,14 @@
                </li>
             </ul>
             <p>
-               <b>Version 3.0.0.27 - Diagnostic build: SubCube data tracing</b>
+               <b>Version 3.0.0.28 - Native GPU arch + kernel deep trace</b>
             </p>
             <p>
-               Added SubCube-level diagnostics right before GPU stacking to isolate
-               where the data range corruption occurs. Samples pixel values via both
-               xtensor operator() and raw data pointer (the same pointer the GPU uses)
-               to determine if the SubCube itself is corrupted or if the GPU kernel
-               is producing bad output from good input.
+               Added -arch=native to nvcc to compile directly for RTX 5070 Ti (sm_120)
+               instead of relying on PTX JIT compilation. Added in-kernel raw mean
+               diagnostic to isolate whether the corruption is in Z-value reading or
+               in the fitting/selection pipeline. v27 confirmed the kernel produces
+               wrong values from correct [0,1] device input.
             </p>
             <p>
                Copyright (c) 2026 Scott Carter. All Rights Reserved.
@@ -43,4 +43,4 @@
       </package>
    </platform>
 </xri>
-<Signature developerId="scarter4work" timestamp="2026-03-14T19:07:21.537Z" encoding="Base64">aL1cuOc+s9Dh3/96hBiFWa91fumRmrbZGV/R30ytvtthYO0p9JOPo2UNfL5Mm//i2TTcerYF+heSR7MZ+KSTCQ==</Signature>
+<Signature developerId="scarter4work" timestamp="2026-03-14T19:17:06.330Z" encoding="Base64">rkgFiFvN5RRhQTCoVj91O53bcwKdfn3L7A3toBObU/Rx7XttED1V2Ga799X53tG2O5eQmNGKQgRMpP2od5pqDw==</Signature>

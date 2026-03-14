@@ -818,11 +818,13 @@ __global__ void pixelSelectionKernel(
     for (int i = 0; i < nSubs; ++i)
         zValues[i] = static_cast<double>(zColStart[i]);
 
-    // DIAG: trace pixel 1 step by step
-    if (pixelIdx == 1) {
-        printf("KERN px1: y=%d x=%d zColOff=%d\n", y, x, (int)(zColStart - cubeData));
-        printf("KERN px1 z[0..5]: %.6f %.6f %.6f %.6f %.6f %.6f\n",
-               zValues[0], zValues[1], zValues[2], zValues[3], zValues[4], zValues[5]);
+    // DIAG: compute raw mean BEFORE any processing, and trace pixel 1
+    if (pixelIdx < 3) {
+        double rawSum = 0.0;
+        for (int i = 0; i < nSubs; ++i) rawSum += zValues[i];
+        printf("KERN px%d: y=%d x=%d rawMean=%.6f z[0..3]=%.6f %.6f %.6f %.6f\n",
+               pixelIdx, y, x, rawSum / nSubs,
+               zValues[0], zValues[1], zValues[2], zValues[3]);
     }
 
     // 2a. MAD sigma-clip pre-filter
