@@ -79,7 +79,8 @@ StretchSelection AutoStretchSelector::Select(
         maxGaussian   = std::max(maxGaussian,   f.gaussian);
     }
 
-    // 4. Decision tree
+    // 4. Decision tree — MTF is the default for clean data (matches PI's STF),
+    //    specialized algorithms only when distribution patterns warrant them.
     if (result.channelDivergence > 0.15) {
         result.algorithm = StretchAlgorithm::Lumpton;
         result.reason = "High channel divergence — Lumpton preserves color ratios";
@@ -100,13 +101,9 @@ StretchSelection AutoStretchSelector::Select(
         result.algorithm = StretchAlgorithm::GHS;
         result.reason = "High Poisson fraction — GHS with aggressive parameters";
     }
-    else if (nCh >= 3 && result.channelDivergence < 0.05) {
-        result.algorithm = StretchAlgorithm::RNC;
-        result.reason = "Channels similar, broadband RGB — RNC for natural color";
-    }
-    else if (maxGaussian > 0.70) {
+    else if (maxGaussian > 0.50) {
         result.algorithm = StretchAlgorithm::MTF;
-        result.reason = "Mostly Gaussian — clean data, MTF is simple and effective";
+        result.reason = "Gaussian-dominated — MTF auto-stretch (PI STF equivalent)";
     }
     else {
         result.algorithm = StretchAlgorithm::GHS;

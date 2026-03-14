@@ -9,8 +9,8 @@
       </p>
    </description>
    <platform os="linux" arch="x64" version="1.8.0:1.9.9">
-      <package fileName="20260313-linux-x64-NukeX.tar.gz" sha1="b702ce124824c703c5f8614025fbfbb9c1b4f8a8" type="module" releaseDate="20260313">
-         <title>NukeX 3.1.0.0</title>
+      <package fileName="20260313-linux-x64-NukeX.tar.gz" sha1="45e25cead2eff2dda97683df89bf8f3e2611a7f6" type="module" releaseDate="20260313">
+         <title>NukeX 3.1.0.1</title>
          <description>
             <p>
                <b>NukeX v3 - Statistical Stacking + Stretch for PixInsight</b>
@@ -27,17 +27,15 @@
                </li>
             </ul>
             <p>
-               <b>Version 3.1.0.0 - First successful real-data stack + stretch</b>
+               <b>Version 3.1.0.1 - PI STF-equivalent auto-stretch</b>
             </p>
             <p>
-               Milestone release: first end-to-end stack and stretch of real M63 data
-               producing a valid image. Fixed critical NVIDIA PTX JIT compiler bug on
-               Blackwell (sm_120) GPUs — added -arch=native to compile directly for
-               the target GPU instead of relying on JIT compilation from default PTX.
-               The JIT bug caused corrupted kernel output (values in [-17548, +27823]
-               instead of [0,1]) and wrong distribution selection (92% Poisson instead
-               of 100% Gaussian). Also includes img.Normalize() safety for float FITS.
-               Removed all diagnostic instrumentation.
+               Auto-stretch now matches PixInsight STF strength. Fixed MTF AutoConfigure
+               to normalize median to shadow-clipped range before computing midtones
+               balance (was using raw median, producing ~45x weaker stretch). Fixed
+               AutoStretchSelector to prefer MTF for Gaussian-dominated data instead of
+               RNC. Gaussian data (the common case for calibrated broadband) now gets
+               the same aggressive stretch as pressing PI&apos;s STF button.
             </p>
             <p>
                Copyright (c) 2026 Scott Carter. All Rights Reserved.
@@ -46,4 +44,4 @@
       </package>
    </platform>
 </xri>
-<Signature developerId="scarter4work" timestamp="2026-03-14T19:33:54.091Z" encoding="Base64">JPLCJ/KZH9vxtZj/DKI7OsPjlx98ZakBg1LStRGIuQrdO1QQN1nJd4mB55Cuu6CU3Yr/Ir5vadlS5tkz1XbdBQ==</Signature>
+<Signature developerId="scarter4work" timestamp="2026-03-14T20:12:24.109Z" encoding="Base64">ohMhY2jZqMvdHmcI31BWnDYctRqAJBDfI28eXmHB1X0U6f7j1iiNsEC49O0NI1KLjMYDkAbEDhGmDl6ryb42Dw==</Signature>

@@ -7,7 +7,7 @@ static std::vector<uint8_t> uniformDistMap(size_t size, DistributionType type) {
     return std::vector<uint8_t>(size, static_cast<uint8_t>(type));
 }
 
-TEST_CASE("AutoStretchSelector: RGB Gaussian -> RNC", "[autostretch]") {
+TEST_CASE("AutoStretchSelector: RGB Gaussian -> MTF", "[autostretch]") {
     size_t sz = 1000;
     auto map = uniformDistMap(sz, DistributionType::Gaussian);
     std::vector<std::vector<uint8_t>> maps = { map, map, map };
@@ -19,9 +19,8 @@ TEST_CASE("AutoStretchSelector: RGB Gaussian -> RNC", "[autostretch]") {
     std::vector<ChannelStats> perChannel = { stats, stats, stats };
 
     auto result = AutoStretchSelector::Select(maps, perChannel);
-    // 100% Gaussian across all 3 channels, divergence=0 < 0.05 and nCh=3 → RNC
-    // The RNC rule (nCh >= 3 && divergence < 0.05) fires before the MTF rule
-    REQUIRE(result.algorithm == StretchAlgorithm::RNC);
+    // 100% Gaussian → MTF (PI STF equivalent), regardless of channel count
+    REQUIRE(result.algorithm == StretchAlgorithm::MTF);
 }
 
 TEST_CASE("AutoStretchSelector: mono Gaussian -> MTF", "[autostretch]") {

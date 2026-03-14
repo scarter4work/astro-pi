@@ -146,25 +146,25 @@ double MTFStretch::CalculateMidtonesBalance( double currentMedian, double target
 
 void MTFStretch::AutoConfigure( double median, double mad )
 {
-   // Calculate midtones balance to bring median to target
    double targetMedian = TargetMedian();
-   double currentMedian = median;
 
-   // If image is already stretched (median > 0.1), don't stretch as hard
-   if ( currentMedian > 0.1 )
-   {
-      targetMedian = std::min( targetMedian, currentMedian * 1.5 );
-   }
-
-   double midtones = CalculateMidtonesBalance( currentMedian, targetMedian );
-   SetMidtones( midtones );
-
-   // Auto-set shadow clipping based on noise level
-   double shadowClip = std::max( 0.0, median - 3.0 * mad );
+   // Shadow clipping: clip the noise floor (matches PI's STF c0=2.8)
+   double shadowClip = std::max( 0.0, median - 2.8 * mad );
    SetShadowsClip( shadowClip );
-
-   // Keep highlights at 1.0 for now (no clipping)
    SetHighlightsClip( 1.0 );
+
+   // Normalize median to the shadow-clipped range — this is what
+   // Apply() sees after clipping.  PI's STF computes m on this
+   // normalized value, which is why it stretches so aggressively.
+   double scale = 1.0 - shadowClip;
+   double normalizedMedian = (scale > 1e-10) ? (median - shadowClip) / scale : median;
+
+   // Clamp: if already bright, gentle stretch
+   if ( normalizedMedian > 0.5 )
+      targetMedian = std::max( targetMedian, normalizedMedian );
+
+   double midtones = CalculateMidtonesBalance( normalizedMedian, targetMedian );
+   SetMidtones( midtones );
 }
 
 // ----------------------------------------------------------------------------
