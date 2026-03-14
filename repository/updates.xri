@@ -9,8 +9,8 @@
       </p>
    </description>
    <platform os="linux" arch="x64" version="1.8.0:1.9.9">
-      <package fileName="20260313-linux-x64-NukeX.tar.gz" sha1="45add7170987b671476b09a548b028e9817af0b3" type="module" releaseDate="20260313">
-         <title>NukeX 3.1.0.2</title>
+      <package fileName="20260313-linux-x64-NukeX.tar.gz" sha1="88f3bb3ee87e9debc082d478144e608deae3d647" type="module" releaseDate="20260313">
+         <title>NukeX 3.1.0.3</title>
          <description>
             <p>
                <b>NukeX v3 - Statistical Stacking + Stretch for PixInsight</b>
@@ -27,15 +27,14 @@
                </li>
             </ul>
             <p>
-               <b>Version 3.1.0.2 - Entropy-optimized auto-stretch</b>
+               <b>Version 3.1.0.3 - Trail detection threshold fix</b>
             </p>
             <p>
-               Auto-stretch now uses iterative optimization instead of fixed formulas.
-               Tries MTF, GHS, and ArcSinh algorithms at multiple strength settings on
-               sampled pixels, scores each by entropy (information content) with
-               penalties for highlight clipping and noise amplification. Picks the
-               algorithm+parameters that reveal the most detail. No more hardcoded
-               target values — the stretch strength adapts to the actual image data.
+               Lowered Hough peak threshold from min(W,H)*3/4 to min(W,H)/2. The v25
+               threshold was raised to fix false positives caused by the JIT bug, but
+               with correct stacking (v3.1.0.0+) the high threshold prevents detection
+               of real satellite trails. Safety caps (max 30 lines, max 10% masked)
+               still protect against false positives.
             </p>
             <p>
                Copyright (c) 2026 Scott Carter. All Rights Reserved.
@@ -44,4 +43,4 @@
       </package>
    </platform>
 </xri>
-<Signature developerId="scarter4work" timestamp="2026-03-14T21:11:15.643Z" encoding="Base64">UY08kOYoHjv7V4NcGaD/5UPtXHL922DMLeotcOXXzjZ47RAhq+z01om7RDG3iBfcZAQnz6FerI1yW6iZbeQrAQ==</Signature>
+<Signature developerId="scarter4work" timestamp="2026-03-14T22:12:19.621Z" encoding="Base64">W5B/HbaV7Q944SbgCVtPVJ4cxn9TTduTgv2NQzafvsaDmqFFfQ3q6Jetn/FcviIi/SdYSr9G5u08TtI8rQ3xAg==</Signature>

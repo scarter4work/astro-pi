@@ -175,10 +175,11 @@ std::vector<HoughLine> ArtifactDetector::houghLines( const uint8_t* edgeMask, in
    }
 
    // Peak detection: require enough collinear edge pixels to form a real trail.
-   // A satellite trail spanning ~75% of the shorter dimension produces concentrated
-   // votes in one (rho,theta) bin. Galaxy spiral arms, stars, and noise create
-   // diffuse edge pixels whose votes spread across many bins (typically <500/bin).
-   int peakThreshold = std::max( 300, std::min( width, height ) * 3 / 4 );
+   // A satellite trail spanning ~50% of the shorter dimension produces concentrated
+   // votes in one (rho,theta) bin. Galaxy spiral arms are curves whose votes
+   // spread across many bins.  Safety caps (max 30 lines, max 10% masked)
+   // protect against false positives at lower thresholds.
+   int peakThreshold = std::max( 200, std::min( width, height ) / 2 );
 
    // Collect peaks above threshold
    struct RawPeak { double rho; double theta; int votes; };
