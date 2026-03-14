@@ -186,23 +186,6 @@ bool NukeXStackInstance::ExecuteGlobal()
       console.WriteLn( String().Format( "  Loaded %d frames (%d x %d, %d ch) in %.1fs",
          int( framePaths.size() ), raw.width, raw.height, numChannels, elapsed1 ) );
 
-      // Diagnostic: check loaded data range BEFORE any processing
-      {
-         const char* chDiag[] = { "R", "G", "B" };
-         if ( numChannels == 1 ) chDiag[0] = "L";
-         for ( int ch = 0; ch < std::min( numChannels, 3 ); ++ch )
-         {
-            const auto& px = raw.pixelData[0][ch]; // first frame
-            float lo = *std::min_element( px.begin(), px.end() );
-            float hi = *std::max_element( px.begin(), px.end() );
-            double sum = 0;
-            for ( float v : px ) sum += v;
-            console.WriteLn( String().Format(
-               "  DIAG frame[0] ch%d(%s): min=%.6f, max=%.6f, mean=%.6f",
-               ch, chDiag[ch], lo, hi, sum / px.size() ) );
-         }
-      }
-
       Module->ProcessEvents();
 
       // Phase 1b: Align (channel 0 only)
@@ -380,32 +363,6 @@ bool NukeXStackInstance::ExecuteGlobal()
                channelCubes[ch].setMetadata( i, raw.metadata[i] );
          }
 
-         // DIAG: sample SubCube data right before GPU call
-         {
-            auto& sc = channelCubes[ch];
-            size_t midY = sc.height() / 2;
-            size_t midX = sc.width() / 2;
-            // Read via xtensor operator() — same as setPixel stored
-            float p000 = sc.pixel( 0, 0, 0 );
-            float p100 = sc.pixel( 1, 0, 0 );
-            float pMid = sc.pixel( 0, midY, midX );
-            // Read via raw data pointer — same pointer the GPU gets
-            const float* raw_ptr = sc.cube().data();
-            size_t nS = sc.numSubs();
-            size_t H  = sc.height();
-            // raw_ptr[0] should == pixel(0,0,0), raw_ptr[1] should == pixel(1,0,0)
-            // raw_ptr[midY*nS + midX*nS*H] should == pixel(0,midY,midX)
-            float r0  = raw_ptr[0];
-            float r1  = raw_ptr[1];
-            float rMid = raw_ptr[midY * nS + midX * nS * H];
-            console.WriteLn( String().Format(
-               "    DIAG subcube ch%d: pixel(0,0,0)=%.6f pixel(1,0,0)=%.6f pixel(0,%d,%d)=%.6f",
-               ch, p000, p100, int( midY ), int( midX ), pMid ) );
-            console.WriteLn( String().Format(
-               "    DIAG raw_ptr:     [0]=%.6f [1]=%.6f [midYX]=%.6f  (nSubs=%d H=%d W=%d)",
-               r0, r1, rMid, int( nS ), int( H ), int( sc.width() ) ) );
-         }
-
          if ( useGPU )
          {
             channelResults[ch] = selector.processImageGPU( channelCubes[ch], weights, distTypeMaps[ch], progressCB );
@@ -453,23 +410,6 @@ bool NukeXStackInstance::ExecuteGlobal()
 
       auto elapsed3 = std::chrono::duration<double>( std::chrono::steady_clock::now() - tPhase3 ).count();
       console.WriteLn( String().Format( "  Stacking complete in %.1fs", elapsed3 ) );
-
-      // Diagnostic: log per-channel data range from stacking output
-      {
-         const char* chLabels3[] = { "R", "G", "B" };
-         if ( numChannels < 3 ) chLabels3[0] = "L";
-         for ( int ch = 0; ch < std::min( numChannels, 3 ); ++ch )
-         {
-            const auto& px = channelResults[ch];
-            float minVal = *std::min_element( px.begin(), px.end() );
-            float maxVal = *std::max_element( px.begin(), px.end() );
-            double sum = 0;
-            for ( float v : px ) sum += v;
-            console.WriteLn( String().Format(
-               "    %s: min=%.6f, max=%.6f, mean=%.6f",
-               chLabels3[ch], minVal, maxVal, sum / px.size() ) );
-         }
-      }
 
       Module->ProcessEvents();
 
