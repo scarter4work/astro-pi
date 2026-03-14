@@ -409,6 +409,38 @@ bool NukeXStackInstance::ExecuteGlobal()
 
       auto elapsed3 = std::chrono::duration<double>( std::chrono::steady_clock::now() - tPhase3 ).count();
       console.WriteLn( String().Format( "  Stacking complete in %.1fs", elapsed3 ) );
+
+      // Diagnostic: log per-channel data range from stacking output
+      {
+         const char* chLabels3[] = { "R", "G", "B" };
+         if ( numChannels < 3 ) chLabels3[0] = "L";
+         for ( int ch = 0; ch < std::min( numChannels, 3 ); ++ch )
+         {
+            const auto& px = channelResults[ch];
+            float minVal = *std::min_element( px.begin(), px.end() );
+            float maxVal = *std::max_element( px.begin(), px.end() );
+            double sum = 0;
+            for ( float v : px ) sum += v;
+            double mean = sum / px.size();
+            int negCount = 0;
+            for ( float v : px ) if ( v < 0 ) ++negCount;
+
+            console.WriteLn( String().Format(
+               "    %s: min=%.6f, max=%.6f, mean=%.6f",
+               chLabels3[ch], minVal, maxVal, mean ) );
+            if ( negCount > 0 )
+               console.WarningLn( String().Format(
+                  "    WARNING: %s has %d negative pixels (%.1f%%) — clamping to 0",
+                  chLabels3[ch], negCount, 100.0 * negCount / px.size() ) );
+         }
+
+         // Clamp negative values to 0 — stacking should never produce negatives
+         // from normalized [0,1] FITS data.  This is a defensive measure.
+         for ( auto& px : channelResults )
+            for ( float& v : px )
+               if ( v < 0.0f ) v = 0.0f;
+      }
+
       Module->ProcessEvents();
 
       // Phase 4: Create linear output
@@ -534,6 +566,9 @@ bool NukeXStackInstance::ExecuteGlobal()
             for ( int y = 0; y < cropH; ++y )
                for ( int x = 0; x < cropW; ++x )
                   stretchImage.Pixel( x, y, ch ) = outputImage.Pixel( x, y, ch );
+
+         // Ensure pixel values are in [0,1] — defense against any upstream issues
+         stretchImage.Truncate();
 
          // Channel recombination: normalize per-channel backgrounds
          if ( isColor )

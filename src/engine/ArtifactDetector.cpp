@@ -174,8 +174,11 @@ std::vector<HoughLine> ArtifactDetector::houghLines( const uint8_t* edgeMask, in
       }
    }
 
-   // Peak detection: threshold = max(100, min(W,H)/4)
-   int peakThreshold = std::max( 100, std::min( width, height ) / 4 );
+   // Peak detection: require enough collinear edge pixels to form a real trail.
+   // A satellite trail spanning ~75% of the shorter dimension produces concentrated
+   // votes in one (rho,theta) bin. Galaxy spiral arms, stars, and noise create
+   // diffuse edge pixels whose votes spread across many bins (typically <500/bin).
+   int peakThreshold = std::max( 300, std::min( width, height ) * 3 / 4 );
 
    // Collect peaks above threshold
    struct RawPeak { double rho; double theta; int votes; };
@@ -331,6 +334,12 @@ TrailDetectionResult ArtifactDetector::detectTrails( const float* image, int wid
       if ( lines.empty() )
          return result;
 
+      // Safety cap: more than 30 lines almost certainly means false positives
+      // from galaxy structure, stretched noise, or other non-trail features.
+      constexpr int MAX_TRAIL_LINES = 30;
+      if ( static_cast<int>( lines.size() ) > MAX_TRAIL_LINES )
+         return result;
+
       result.mask = generateTrailMask( lines, width, height, m_config.trailDilateRadius );
       result.trailLineCount = static_cast<int>( lines.size() );
 
@@ -339,6 +348,17 @@ TrailDetectionResult ArtifactDetector::detectTrails( const float* image, int wid
       for ( int i = 0; i < width * height; ++i )
          if ( result.mask[i] )
             ++result.trailPixelCount;
+
+      // Safety cap: if more than 10% of the image is masked, something went
+      // wrong — galaxy structure or noise triggered false positives.
+      double maskedFraction = static_cast<double>( result.trailPixelCount ) / ( width * height );
+      if ( maskedFraction > 0.10 )
+      {
+         result.mask.assign( width * height, 0 );
+         result.trailPixelCount = 0;
+         result.trailLineCount = 0;
+         return result;
+      }
    }
 
    return result;
