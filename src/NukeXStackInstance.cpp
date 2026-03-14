@@ -579,7 +579,136 @@ bool NukeXStackInstance::ExecuteGlobal()
          // Save per-channel configured stretch algorithms for Phase 7d re-stretch
          std::vector<std::unique_ptr<IStretchAlgorithm>> stretchAlgos( outChannels );
 
-         // Auto-configure and apply per-channel to preserve color
+         // ------------------------------------------------------------------
+         // Stretch optimization: try the algorithm at different strength
+         // settings on sampled pixels, score each by entropy (information
+         // content), and pick the setting that reveals the most detail
+         // without clipping highlights or amplifying noise.
+         // ------------------------------------------------------------------
+
+         // Sample ~10k pixels from channel 0 for optimization
+         stretchImage.SelectChannel( 0 );
+         double refMed = stretchImage.Median();
+         double refMad = stretchImage.MAD( refMed );
+         stretchImage.ResetChannelRange();
+
+         std::vector<float> optSample;
+         {
+            int step = std::max( 1, ( cropW * cropH ) / 10000 );
+            for ( int i = 0; i < cropW * cropH; i += step )
+               optSample.push_back( stretchImage.Pixel( i % cropW, i / cropW, 0 ) );
+         }
+
+         // Quality scoring: apply stretch to sample, compute entropy and penalties
+         auto scoreStretch = []( const std::vector<float>& sample,
+                                 IStretchAlgorithm* a ) -> double
+         {
+            // Apply
+            std::vector<double> stretched( sample.size() );
+            for ( size_t i = 0; i < sample.size(); ++i )
+               stretched[i] = a->Apply( static_cast<double>( sample[i] ) );
+
+            // 256-bin histogram entropy
+            int bins[256] = {};
+            for ( double v : stretched )
+               bins[std::min( 255, std::max( 0, int( v * 256.0 ) ) )]++;
+
+            double entropy = 0;
+            double n = static_cast<double>( stretched.size() );
+            for ( int b = 0; b < 256; ++b )
+            {
+               if ( bins[b] > 0 )
+               {
+                  double p = bins[b] / n;
+                  entropy -= p * std::log2( p );
+               }
+            }
+
+            // Clipping penalty: fraction of pixels crushed to black or white
+            int clipped = 0;
+            for ( double v : stretched )
+               if ( v >= 0.995 || v <= 0.005 ) ++clipped;
+            double clipFrac = static_cast<double>( clipped ) / n;
+
+            // Noise penalty: if stretched MAD is too high, we're amplifying noise
+            std::sort( stretched.begin(), stretched.end() );
+            double sMedian = stretched[stretched.size() / 2];
+            std::vector<double> devs( stretched.size() );
+            for ( size_t i = 0; i < stretched.size(); ++i )
+               devs[i] = std::abs( stretched[i] - sMedian );
+            std::sort( devs.begin(), devs.end() );
+            double sMad = devs[devs.size() / 2];
+            // Penalize if noise becomes >5% of dynamic range
+            double noisePenalty = ( sMad > 0.05 ) ? ( sMad - 0.05 ) * 10.0 : 0.0;
+
+            return entropy - 10.0 * clipFrac - noisePenalty;
+         };
+
+         // Try candidate algorithms at different strengths
+         struct StretchTrial
+         {
+            AlgorithmType type;
+            double paramValue;
+            double score;
+            String paramName;
+         };
+         std::vector<StretchTrial> trials;
+
+         // MTF trials: vary targetMedian
+         for ( double t = 0.08; t <= 0.30; t += 0.01 )
+         {
+            auto trial = StretchLibrary::Instance().Create( AlgorithmType::MTF );
+            trial->SetParameter( "targetMedian", t );
+            trial->AutoConfigure( refMed, refMad );
+            double sc = scoreStretch( optSample, trial.get() );
+            trials.push_back( { AlgorithmType::MTF, t, sc, "targetMedian" } );
+         }
+
+         // GHS trials: vary D
+         {
+            auto ghsBase = StretchLibrary::Instance().Create( AlgorithmType::GHS );
+            ghsBase->AutoConfigure( refMed, refMad );
+            double baseD = ghsBase->GetParameter( "D" );
+            for ( double mult = 0.3; mult <= 1.5; mult += 0.15 )
+            {
+               auto trial = ghsBase->Clone();
+               trial->SetParameter( "D", baseD * mult );
+               double sc = scoreStretch( optSample, trial.get() );
+               trials.push_back( { AlgorithmType::GHS, baseD * mult, sc, "D" } );
+            }
+         }
+
+         // ArcSinh trials: vary stretchFactor
+         {
+            auto ashBase = StretchLibrary::Instance().Create( AlgorithmType::ArcSinh );
+            ashBase->AutoConfigure( refMed, refMad );
+            double baseSF = ashBase->GetParameter( "stretchFactor" );
+            for ( double mult = 0.3; mult <= 1.5; mult += 0.15 )
+            {
+               auto trial = ashBase->Clone();
+               trial->SetParameter( "stretchFactor", baseSF * mult );
+               double sc = scoreStretch( optSample, trial.get() );
+               trials.push_back( { AlgorithmType::ArcSinh, baseSF * mult, sc, "stretchFactor" } );
+            }
+         }
+
+         // Find best trial
+         auto bestIt = std::max_element( trials.begin(), trials.end(),
+            []( const StretchTrial& a, const StretchTrial& b ) { return a.score < b.score; } );
+
+         AlgorithmType bestType = bestIt->type;
+         double bestParam = bestIt->paramValue;
+
+         console.WriteLn( String().Format( "\n  Stretch optimization: %d trials evaluated",
+            int( trials.size() ) ) );
+         console.WriteLn( String().Format( "    Best: %s (%s=%.4f, score=%.2f)",
+            IsoString( StretchLibrary::Instance().GetInfo( bestType ).name ).c_str(),
+            IsoString( bestIt->paramName ).c_str(), bestParam, bestIt->score ) );
+
+         // Create optimized algorithm
+         algo = StretchLibrary::Instance().Create( bestType );
+
+         // Per-channel stretch with optimized algorithm
          if ( isColor )
          {
             console.WriteLn( "\n  Per-channel stretch:" );
@@ -594,6 +723,8 @@ bool NukeXStackInstance::ExecuteGlobal()
                console.WriteLn( String().Format( "    %s: median=%.6f, MAD=%.6f", label, med, mad ) );
 
                lastChAlgo = algo->Clone();
+               // Set optimized parameter before AutoConfigure
+               lastChAlgo->SetParameter( IsoString( bestIt->paramName ), bestParam );
                lastChAlgo->AutoConfigure( med, mad );
 
                // Apply to this channel only
@@ -605,7 +736,7 @@ bool NukeXStackInstance::ExecuteGlobal()
             }
             stretchImage.ResetChannelRange();
 
-            // Log parameters from last channel as representative
+            // Log parameters
             auto params = lastChAlgo->GetParameters();
             for ( const auto& param : params )
                console.WriteLn( String().Format( "  %s = %.4f",
@@ -617,6 +748,7 @@ bool NukeXStackInstance::ExecuteGlobal()
             double mad = stretchImage.MAD( med );
             console.WriteLn( String().Format( "  Image median: %.6f, MAD: %.6f", med, mad ) );
 
+            algo->SetParameter( IsoString( bestIt->paramName ), bestParam );
             algo->AutoConfigure( med, mad );
             stretchAlgos[0] = algo->Clone();
 
