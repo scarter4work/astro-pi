@@ -9,8 +9,8 @@
       </p>
    </description>
    <platform os="linux" arch="x64" version="1.8.0:1.9.9">
-      <package fileName="20260313-linux-x64-NukeX.tar.gz" sha1="0350fb742172f060fe4d487a9362b7c2265085c1" type="module" releaseDate="20260313">
-         <title>NukeX 3.1.0.4</title>
+      <package fileName="20260313-linux-x64-NukeX.tar.gz" sha1="29de5585d2b998ef93ee8b1d847496217f8c72d0" type="module" releaseDate="20260313">
+         <title>NukeX 3.1.0.5</title>
          <description>
             <p>
                <b>NukeX v3 - Statistical Stacking + Stretch for PixInsight</b>
@@ -43,4 +43,4 @@
       </package>
    </platform>
 </xri>
-<Signature developerId="scarter4work" timestamp="2026-03-14T22:44:31.489Z" encoding="Base64">HoNZfLQV/nTNbdJOfkNQ9qV/OWwMXTeLUTw9NhNK57XtE3HgOjomwXJFR1F1Izo0oc42VnZPGsGj4zcOlXtCDQ==</Signature>
+<Signature developerId="scarter4work" timestamp="2026-03-14T22:52:11.863Z" encoding="Base64">85W1IcsvLwqAC7B7w6sG2fs4N9sfzTbzEsALbqnP1zTrySZFhYh4EWVoP8Fn01Hopun/CAYAq3Y+YKe8O+O6Bg==</Signature>

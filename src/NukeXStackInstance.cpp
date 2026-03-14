@@ -1025,15 +1025,48 @@ bool NukeXStackInstance::ExecuteGlobal()
                      for ( int x = 0; x < cropW; ++x )
                         stretchImage.Pixel( x, y, ch ) = outputImage.Pixel( x, y, ch );
 
+               stretchImage.Truncate();
+
+               // Re-apply background neutralization (same as Phase 6)
+               if ( isColor )
+               {
+                  double medians[3];
+                  for ( int ch = 0; ch < 3; ++ch )
+                  {
+                     stretchImage.SelectChannel( ch );
+                     medians[ch] = stretchImage.Median();
+                  }
+                  stretchImage.ResetChannelRange();
+
+                  double targetMedian = ( medians[0] + medians[1] + medians[2] ) / 3.0;
+                  for ( int ch = 0; ch < 3; ++ch )
+                  {
+                     if ( medians[ch] > 1.0e-10 )
+                     {
+                        double scale = targetMedian / medians[ch];
+                        stretchImage.SelectChannel( ch );
+                        stretchImage *= scale;
+                     }
+                  }
+                  stretchImage.ResetChannelRange();
+               }
+
                // Re-apply per-channel stretch using saved algorithm clones
                if ( isColor )
                {
                   for ( int ch = 0; ch < outChannels; ++ch )
                   {
                      stretchImage.SelectChannel( ch );
+                     double med = stretchImage.Median();
+                     double mad = stretchImage.MAD( med );
+
+                     // Re-configure with post-neutralization stats
+                     auto reAlgo = stretchAlgos[ch]->Clone();
+                     reAlgo->AutoConfigure( med, mad );
+
                      Image::sample_iterator it( stretchImage, ch );
                      for ( ; it; ++it )
-                        *it = stretchAlgos[ch]->Apply( *it );
+                        *it = reAlgo->Apply( *it );
                   }
                   stretchImage.ResetChannelRange();
                }
