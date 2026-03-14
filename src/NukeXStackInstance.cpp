@@ -185,6 +185,24 @@ bool NukeXStackInstance::ExecuteGlobal()
       auto elapsed1 = std::chrono::duration<double>( std::chrono::steady_clock::now() - tPhase1 ).count();
       console.WriteLn( String().Format( "  Loaded %d frames (%d x %d, %d ch) in %.1fs",
          int( framePaths.size() ), raw.width, raw.height, numChannels, elapsed1 ) );
+
+      // Diagnostic: check loaded data range BEFORE any processing
+      {
+         const char* chDiag[] = { "R", "G", "B" };
+         if ( numChannels == 1 ) chDiag[0] = "L";
+         for ( int ch = 0; ch < std::min( numChannels, 3 ); ++ch )
+         {
+            const auto& px = raw.pixelData[0][ch]; // first frame
+            float lo = *std::min_element( px.begin(), px.end() );
+            float hi = *std::max_element( px.begin(), px.end() );
+            double sum = 0;
+            for ( float v : px ) sum += v;
+            console.WriteLn( String().Format(
+               "  DIAG frame[0] ch%d(%s): min=%.6f, max=%.6f, mean=%.6f",
+               ch, chDiag[ch], lo, hi, sum / px.size() ) );
+         }
+      }
+
       Module->ProcessEvents();
 
       // Phase 1b: Align (channel 0 only)
@@ -421,24 +439,10 @@ bool NukeXStackInstance::ExecuteGlobal()
             float maxVal = *std::max_element( px.begin(), px.end() );
             double sum = 0;
             for ( float v : px ) sum += v;
-            double mean = sum / px.size();
-            int negCount = 0;
-            for ( float v : px ) if ( v < 0 ) ++negCount;
-
             console.WriteLn( String().Format(
                "    %s: min=%.6f, max=%.6f, mean=%.6f",
-               chLabels3[ch], minVal, maxVal, mean ) );
-            if ( negCount > 0 )
-               console.WarningLn( String().Format(
-                  "    WARNING: %s has %d negative pixels (%.1f%%) — clamping to 0",
-                  chLabels3[ch], negCount, 100.0 * negCount / px.size() ) );
+               chLabels3[ch], minVal, maxVal, sum / px.size() ) );
          }
-
-         // Clamp negative values to 0 — stacking should never produce negatives
-         // from normalized [0,1] FITS data.  This is a defensive measure.
-         for ( auto& px : channelResults )
-            for ( float& v : px )
-               if ( v < 0.0f ) v = 0.0f;
       }
 
       Module->ProcessEvents();

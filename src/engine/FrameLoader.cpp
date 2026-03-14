@@ -276,6 +276,12 @@ LoadedFrames FrameLoader::LoadRaw( const std::vector<FramePath>& frames )
 
         file.Close();
 
+        // Ensure pixel values are in [0,1] — PCL normalizes integer FITS
+        // automatically, but float FITS (BITPIX=-32) are read as-is and may
+        // contain raw ADU values if the capture software didn't normalize.
+        // Normalize() is a conditional rescale: no-op if already in [0,1].
+        img.Normalize();
+
         size_t numPx = size_t( refWidth ) * size_t( refHeight );
 
         if ( needsDebayer )
