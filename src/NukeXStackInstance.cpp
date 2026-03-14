@@ -1007,8 +1007,8 @@ bool NukeXStackInstance::ExecuteGlobal()
                   Module->ProcessEvents();
                }
 
-               // 7d: Patch linear output and re-stretch
-               console.WriteLn( "  Phase 7d: Patching linear output and re-stretching..." );
+               // 7d: Patch linear output + inpaint stretched image at trail pixels
+               console.WriteLn( "  Phase 7d: Patching linear output and inpainting stretched..." );
                console.Flush();
                Module->ProcessEvents();
 
@@ -1018,55 +1018,45 @@ bool NukeXStackInstance::ExecuteGlobal()
                      for ( int x = 0; x < cropW; ++x )
                         outputImage.Pixel( x, y, ch ) = channelResults[ch][y * cropW + x];
 
-               // Re-apply stretch to the corrected linear image
-               // Copy corrected linear data to the stretch output window
-               for ( int ch = 0; ch < outChannels; ++ch )
-                  for ( int y = 0; y < cropH; ++y )
-                     for ( int x = 0; x < cropW; ++x )
-                        stretchImage.Pixel( x, y, ch ) = outputImage.Pixel( x, y, ch );
-
-               stretchImage.Truncate();
-
-               // Re-apply background neutralization (same as Phase 6)
-               if ( isColor )
+               // Inpaint trail pixels in the STRETCHED image by averaging
+               // nearby non-trail neighbors.  This avoids the non-linear stretch
+               // amplification problem — we work directly in the visible domain.
+               if ( p_enableTrailRemediation && detection.trails.trailPixelCount > 0 )
                {
-                  double medians[3];
-                  for ( int ch = 0; ch < 3; ++ch )
-                  {
-                     stretchImage.SelectChannel( ch );
-                     medians[ch] = stretchImage.Median();
-                  }
-                  stretchImage.ResetChannelRange();
+                  const auto& trailMask = detection.trails.mask;
+                  int inpaintRadius = std::max( 3, static_cast<int>( p_trailDilateRadius ) + 2 );
 
-                  double targetMedian = ( medians[0] + medians[1] + medians[2] ) / 3.0;
-                  for ( int ch = 0; ch < 3; ++ch )
-                  {
-                     if ( medians[ch] > 1.0e-10 )
-                     {
-                        double scale = targetMedian / medians[ch];
-                        stretchImage.SelectChannel( ch );
-                        stretchImage *= scale;
-                     }
-                  }
-                  stretchImage.ResetChannelRange();
-               }
-
-               // Re-apply per-channel stretch using the exact saved algorithm
-               // clones from Phase 6 — do NOT re-AutoConfigure, as even tiny
-               // parameter differences produce visible seams at remediated pixels.
-               if ( isColor )
-               {
                   for ( int ch = 0; ch < outChannels; ++ch )
                   {
-                     Image::sample_iterator it( stretchImage, ch );
-                     for ( ; it; ++it )
-                        *it = stretchAlgos[ch]->Apply( *it );
+                     for ( int y = 0; y < cropH; ++y )
+                     {
+                        for ( int x = 0; x < cropW; ++x )
+                        {
+                           if ( !trailMask[y * cropW + x] )
+                              continue;
+
+                           // Average non-masked neighbors within radius
+                           double sum = 0;
+                           int count = 0;
+                           for ( int dy = -inpaintRadius; dy <= inpaintRadius; ++dy )
+                           {
+                              for ( int dx = -inpaintRadius; dx <= inpaintRadius; ++dx )
+                              {
+                                 int nx = x + dx, ny = y + dy;
+                                 if ( nx < 0 || nx >= cropW || ny < 0 || ny >= cropH )
+                                    continue;
+                                 if ( trailMask[ny * cropW + nx] )
+                                    continue;
+                                 sum += stretchImage.Pixel( nx, ny, ch );
+                                 ++count;
+                              }
+                           }
+
+                           if ( count > 0 )
+                              stretchImage.Pixel( x, y, ch ) = static_cast<float>( sum / count );
+                        }
+                     }
                   }
-                  stretchImage.ResetChannelRange();
-               }
-               else
-               {
-                  stretchAlgos[0]->ApplyToImage( stretchImage );
                }
 
                auto elapsed7 = std::chrono::duration<double>( std::chrono::steady_clock::now() - tPhase7 ).count();
