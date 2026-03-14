@@ -1051,22 +1051,16 @@ bool NukeXStackInstance::ExecuteGlobal()
                   stretchImage.ResetChannelRange();
                }
 
-               // Re-apply per-channel stretch using saved algorithm clones
+               // Re-apply per-channel stretch using the exact saved algorithm
+               // clones from Phase 6 — do NOT re-AutoConfigure, as even tiny
+               // parameter differences produce visible seams at remediated pixels.
                if ( isColor )
                {
                   for ( int ch = 0; ch < outChannels; ++ch )
                   {
-                     stretchImage.SelectChannel( ch );
-                     double med = stretchImage.Median();
-                     double mad = stretchImage.MAD( med );
-
-                     // Re-configure with post-neutralization stats
-                     auto reAlgo = stretchAlgos[ch]->Clone();
-                     reAlgo->AutoConfigure( med, mad );
-
                      Image::sample_iterator it( stretchImage, ch );
                      for ( ; it; ++it )
-                        *it = reAlgo->Apply( *it );
+                        *it = stretchAlgos[ch]->Apply( *it );
                   }
                   stretchImage.ResetChannelRange();
                }
