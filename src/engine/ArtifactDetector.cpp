@@ -174,24 +174,55 @@ std::vector<HoughLine> ArtifactDetector::houghLines( const uint8_t* edgeMask, in
       }
    }
 
-   // Peak detection: require enough collinear edge pixels to form a real trail.
-   // A satellite trail spanning ~50% of the shorter dimension produces concentrated
-   // votes in one (rho,theta) bin. Galaxy spiral arms are curves whose votes
-   // spread across many bins.  Safety caps (max 30 lines, max 10% masked)
-   // protect against false positives at lower thresholds.
-   int peakThreshold = std::max( 200, std::min( width, height ) / 2 );
-
-   // Collect peaks above threshold
+   // Dynamic peak detection: satellite trails produce sharp outlier spikes
+   // in the accumulator.  Compute the median and MAD of all non-zero bins,
+   // then flag bins that are statistical outliers (>5 sigma above median).
+   // This adapts to the actual edge structure — no hardcoded threshold.
    struct RawPeak { double rho; double theta; int votes; };
    std::vector<RawPeak> peaks;
 
-   for ( int ri = 0; ri < nRho; ++ri )
    {
-      for ( int ti = 0; ti < nTheta; ++ti )
+      // Collect all non-zero accumulator values
+      std::vector<int> nonZero;
+      nonZero.reserve( nRho * nTheta / 4 );
+      for ( int i = 0; i < nRho * nTheta; ++i )
+         if ( accumulator[i] > 0 )
+            nonZero.push_back( accumulator[i] );
+
+      if ( !nonZero.empty() )
       {
-         int v = accumulator[ri * nTheta + ti];
-         if ( v >= peakThreshold )
-            peaks.push_back( { ri - rhoOffset, M_PI * ti / nTheta, v } );
+         // Median of non-zero bins
+         size_t mid = nonZero.size() / 2;
+         std::nth_element( nonZero.begin(), nonZero.begin() + mid, nonZero.end() );
+         double accMedian = nonZero[mid];
+
+         // MAD
+         std::vector<double> devs( nonZero.size() );
+         for ( size_t i = 0; i < nonZero.size(); ++i )
+            devs[i] = std::abs( nonZero[i] - accMedian );
+         size_t madMid = devs.size() / 2;
+         std::nth_element( devs.begin(), devs.begin() + madMid, devs.end() );
+         double accMad = devs[madMid] * 1.4826;   // scale to sigma
+
+         // Threshold: bins that are strong outliers above the noise floor.
+         // When MAD is near zero (flat accumulator), use 3× median as floor.
+         // Always require at least 100 votes to reject tiny edge clusters.
+         int peakThreshold;
+         if ( accMad < 1.0 )
+            peakThreshold = static_cast<int>( accMedian * 3.0 + 100 );
+         else
+            peakThreshold = static_cast<int>( accMedian + 5.0 * accMad );
+         peakThreshold = std::max( peakThreshold, 100 );
+
+         for ( int ri = 0; ri < nRho; ++ri )
+         {
+            for ( int ti = 0; ti < nTheta; ++ti )
+            {
+               int v = accumulator[ri * nTheta + ti];
+               if ( v >= peakThreshold )
+                  peaks.push_back( { ri - rhoOffset, M_PI * ti / nTheta, v } );
+            }
+         }
       }
    }
 
