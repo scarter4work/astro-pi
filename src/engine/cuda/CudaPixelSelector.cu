@@ -818,6 +818,13 @@ __global__ void pixelSelectionKernel(
     for (int i = 0; i < nSubs; ++i)
         zValues[i] = static_cast<double>(zColStart[i]);
 
+    // DIAG: trace pixel 1 step by step
+    if (pixelIdx == 1) {
+        printf("KERN px1: y=%d x=%d zColOff=%d\n", y, x, (int)(zColStart - cubeData));
+        printf("KERN px1 z[0..5]: %.6f %.6f %.6f %.6f %.6f %.6f\n",
+               zValues[0], zValues[1], zValues[2], zValues[3], zValues[4], zValues[5]);
+    }
+
     // 2a. MAD sigma-clip pre-filter
     bool madOutlier[MAX_SUBS];
     sigmaClipMAD_device(zValues, nSubs, 3.0, madOutlier);
@@ -952,6 +959,20 @@ __global__ void pixelSelectionKernel(
             if (countV > 0)
                 selectedValue = sumV / countV;
         }
+        // DIAG: trace pixel 1 result
+        if (pixelIdx == 1) {
+            printf("KERN px1: nClean=%d bestType=%d selectedValue=%.6f cleanMedian=%.6f\n",
+                   nClean, bestType, selectedValue, cleanMedian);
+            printf("KERN px1 clean[0..5]: %.6f %.6f %.6f %.6f %.6f %.6f\n",
+                   nClean > 0 ? cleanData[0] : -999.0,
+                   nClean > 1 ? cleanData[1] : -999.0,
+                   nClean > 2 ? cleanData[2] : -999.0,
+                   nClean > 3 ? cleanData[3] : -999.0,
+                   nClean > 4 ? cleanData[4] : -999.0,
+                   nClean > 5 ? cleanData[5] : -999.0);
+            printf("KERN px1 aicGauss=%.2f aicPois=%.2f\n", aicGauss, aicPois);
+        }
+
         cleanMedian = selectedValue;  // reuse variable for output
     }
 
@@ -1011,18 +1032,33 @@ GpuStackResult processImageGPU(
     CUDA_CHECK(cudaMemcpy(d_cube, cubeData, cubeSize * sizeof(float),
                           cudaMemcpyHostToDevice), result);
 
-    // DIAG: verify cube data survived H2D transfer (read back first Z-column)
+    // DIAG: verify cube data survived H2D transfer at multiple offsets
     {
-        float verifyBuf[64];
-        int verifyN = (nSubs < 64) ? static_cast<int>(nSubs) : 64;
-        CUDA_CHECK(cudaMemcpy(verifyBuf, d_cube, verifyN * sizeof(float),
+        // Pixel 0 Z-column: offsets 0..nSubs-1
+        // Pixel 1 Z-column: offsets nSubs*H..nSubs*H+nSubs-1  (y=0, x=1)
+        size_t px1off = nSubs * H;  // offset of pixel (y=0, x=1)
+        size_t midoff = (H / 2) * nSubs + (W / 2) * nSubs * H;  // pixel (midY, midX)
+
+        float v_px0[4], v_px1[4], v_mid[4];
+        CUDA_CHECK(cudaMemcpy(v_px0, d_cube, 4 * sizeof(float),
                               cudaMemcpyDeviceToHost), result);
+        CUDA_CHECK(cudaMemcpy(v_px1, d_cube + px1off, 4 * sizeof(float),
+                              cudaMemcpyDeviceToHost), result);
+        CUDA_CHECK(cudaMemcpy(v_mid, d_cube + midoff, 4 * sizeof(float),
+                              cudaMemcpyDeviceToHost), result);
+
         FILE* df = fopen("/tmp/nukex_cuda_diag.txt", "a");
         if (df) {
             fprintf(df, "=== CUDA DIAG (nSubs=%zu H=%zu W=%zu cubeSize=%zu) ===\n", nSubs, H, W, cubeSize);
-            fprintf(df, "H2D verify: host[0..2]=%.6f %.6f %.6f  device[0..2]=%.6f %.6f %.6f\n",
-                    cubeData[0], cubeData[1], cubeData[2],
-                    verifyBuf[0], verifyBuf[1], verifyBuf[2]);
+            fprintf(df, "H2D px(0,0) z[0..3]: host=%.6f %.6f %.6f %.6f  dev=%.6f %.6f %.6f %.6f\n",
+                    cubeData[0], cubeData[1], cubeData[2], cubeData[3],
+                    v_px0[0], v_px0[1], v_px0[2], v_px0[3]);
+            fprintf(df, "H2D px(0,1) z[0..3]: host=%.6f %.6f %.6f %.6f  dev=%.6f %.6f %.6f %.6f  (off=%zu)\n",
+                    cubeData[px1off], cubeData[px1off+1], cubeData[px1off+2], cubeData[px1off+3],
+                    v_px1[0], v_px1[1], v_px1[2], v_px1[3], px1off);
+            fprintf(df, "H2D px(mid) z[0..3]: host=%.6f %.6f %.6f %.6f  dev=%.6f %.6f %.6f %.6f  (off=%zu)\n",
+                    cubeData[midoff], cubeData[midoff+1], cubeData[midoff+2], cubeData[midoff+3],
+                    v_mid[0], v_mid[1], v_mid[2], v_mid[3], midoff);
             fclose(df);
         }
     }
