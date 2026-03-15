@@ -278,20 +278,27 @@ __device__ void sigmaClipMAD_device(
     insertionSort(deviations, nSubs);
     double mad = medianDevice(deviations, nSubs);
 
-    double threshold = kappa * MAD_TO_SIGMA * mad;
+    double sigma = MAD_TO_SIGMA * mad;
 
-    if (threshold < 1e-15) {
-        // MAD is zero — bulk data at single value. Use range-based fallback.
+    if (sigma < 1e-15) {
         double range = sorted[nSubs - 1] - sorted[0];
         if (range < 1e-15) {
             for (int i = 0; i < nSubs; ++i) isOutlier[i] = false;
             return;
         }
-        threshold = range * 0.1;
+        sigma = range * 0.1 / kappa;
     }
 
-    for (int i = 0; i < nSubs; ++i)
-        isOutlier[i] = (fabs(zValues[i] - median) > threshold);
+    // Asymmetric clipping: bright outliers (trails, planes, cosmic rays)
+    // are more common than dark outliers in astro data. Clip bright side
+    // more aggressively to catch faint trail residuals.
+    double threshHigh = 2.5 * sigma;   // bright: 2.5σ (catches faint trails)
+    double threshLow  = 4.0 * sigma;   // dark: 4.0σ (preserves faint signal)
+
+    for (int i = 0; i < nSubs; ++i) {
+        double diff = zValues[i] - median;
+        isOutlier[i] = (diff > threshHigh) || (diff < -threshLow);
+    }
 }
 
 // ============================================================================

@@ -228,20 +228,23 @@ std::vector<size_t> sigmaClipMAD(
 
     // Scale MAD to Gaussian sigma equivalent
     constexpr double MAD_TO_SIGMA = 1.4826;
-    double threshold = kappa * MAD_TO_SIGMA * mad;
+    double sigma = MAD_TO_SIGMA * mad;
 
-    if (threshold < 1e-15) {
-        // MAD is zero — bulk of data is at a single value.
-        // Fall back to range-based threshold to catch transients
-        // in near-constant backgrounds.
+    if (sigma < 1e-15) {
         double range = sorted.back() - sorted.front();
-        if (range < 1e-15) return {};  // truly constant — no outliers
-        threshold = range * 0.1;
+        if (range < 1e-15) return {};
+        sigma = range * 0.1 / kappa;
     }
+
+    // Asymmetric clipping: bright outliers (trails, planes, cosmic rays)
+    // are more common than dark outliers in astro data.
+    double threshHigh = 2.5 * sigma;   // bright: 2.5σ
+    double threshLow  = 4.0 * sigma;   // dark: 4.0σ
 
     std::vector<size_t> outliers;
     for (size_t i = 0; i < n; ++i) {
-        if (std::abs(data[i] - median) > threshold)
+        double diff = data[i] - median;
+        if (diff > threshHigh || diff < -threshLow)
             outliers.push_back(i);
     }
     return outliers;

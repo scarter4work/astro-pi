@@ -709,25 +709,36 @@ bool NukeXStackInstance::ExecuteGlobal()
          algo = StretchLibrary::Instance().Create( bestType );
 
          // Per-channel stretch with optimized algorithm
+         // Use UNIFIED shadow clip (max of per-channel MADs) to prevent
+         // color bias — different MADs produce different shadow clips,
+         // which makes noisier channels (R) appear brighter after stretch.
          if ( isColor )
          {
             console.WriteLn( "\n  Per-channel stretch:" );
+
+            // Compute per-channel stats and find unified MAD
+            double chMed[3], chMad[3];
+            double maxMad = 0;
+            for ( int ch = 0; ch < 3; ++ch )
+            {
+               stretchImage.SelectChannel( ch );
+               chMed[ch] = stretchImage.Median();
+               chMad[ch] = stretchImage.MAD( chMed[ch] );
+               maxMad = std::max( maxMad, chMad[ch] );
+            }
+            stretchImage.ResetChannelRange();
+
             std::unique_ptr<IStretchAlgorithm> lastChAlgo;
             for ( int ch = 0; ch < 3; ++ch )
             {
                const char* label = ch == 0 ? "R" : ch == 1 ? "G" : "B";
-
-               stretchImage.SelectChannel( ch );
-               double med = stretchImage.Median();
-               double mad = stretchImage.MAD( med );
-               console.WriteLn( String().Format( "    %s: median=%.6f, MAD=%.6f", label, med, mad ) );
+               console.WriteLn( String().Format( "    %s: median=%.6f, MAD=%.6f", label, chMed[ch], chMad[ch] ) );
 
                lastChAlgo = algo->Clone();
-               // Set optimized parameter before AutoConfigure
                lastChAlgo->SetParameter( IsoString( bestIt->paramName ), bestParam );
-               lastChAlgo->AutoConfigure( med, mad );
+               // Use unified MAD (max across channels) for consistent shadow clip
+               lastChAlgo->AutoConfigure( chMed[ch], maxMad );
 
-               // Apply to this channel only
                Image::sample_iterator it( stretchImage, ch );
                for ( ; it; ++it )
                   *it = lastChAlgo->Apply( *it );
