@@ -1007,8 +1007,12 @@ bool NukeXStackInstance::ExecuteGlobal()
                   Module->ProcessEvents();
                }
 
-               // 7d: Patch linear output + inpaint stretched image at trail pixels
-               console.WriteLn( "  Phase 7d: Patching linear output and inpainting stretched..." );
+               // 7d: Rebuild stretched image from clean data
+               // The subcube re-selection (7b) produced correct linear pixel values.
+               // Rebuild the ENTIRE stretched image from scratch so that stretch
+               // parameters are computed from trail-free data.  Stars and nebula are
+               // preserved because 7b keeps their data from non-trail frames.
+               console.WriteLn( "  Phase 7d: Rebuilding stretched image from clean data..." );
                console.Flush();
                Module->ProcessEvents();
 
@@ -1018,44 +1022,93 @@ bool NukeXStackInstance::ExecuteGlobal()
                      for ( int x = 0; x < cropW; ++x )
                         outputImage.Pixel( x, y, ch ) = channelResults[ch][y * cropW + x];
 
-               // Inpaint trail pixels in the STRETCHED image by averaging
-               // nearby non-trail neighbors.  This avoids the non-linear stretch
-               // amplification problem — we work directly in the visible domain.
-               if ( p_enableTrailRemediation && detection.trails.trailPixelCount > 0 )
+               // Copy clean linear data to stretch window
+               for ( int ch = 0; ch < outChannels; ++ch )
+                  for ( int y = 0; y < cropH; ++y )
+                     for ( int x = 0; x < cropW; ++x )
+                        stretchImage.Pixel( x, y, ch ) = outputImage.Pixel( x, y, ch );
+
+               stretchImage.Truncate();
+
+               // Re-do background neutralization on clean data
+               if ( isColor )
                {
-                  const auto& trailMask = detection.trails.mask;
-                  int inpaintRadius = std::max( 3, static_cast<int>( p_trailDilateRadius ) + 2 );
-
-                  for ( int ch = 0; ch < outChannels; ++ch )
+                  double medians[3];
+                  for ( int ch = 0; ch < 3; ++ch )
                   {
-                     for ( int y = 0; y < cropH; ++y )
+                     stretchImage.SelectChannel( ch );
+                     medians[ch] = stretchImage.Median();
+                  }
+                  stretchImage.ResetChannelRange();
+
+                  double tgtMed = ( medians[0] + medians[1] + medians[2] ) / 3.0;
+                  for ( int ch = 0; ch < 3; ++ch )
+                  {
+                     if ( medians[ch] > 1.0e-10 )
                      {
-                        for ( int x = 0; x < cropW; ++x )
-                        {
-                           if ( !trailMask[y * cropW + x] )
-                              continue;
-
-                           // Average non-masked neighbors within radius
-                           double sum = 0;
-                           int count = 0;
-                           for ( int dy = -inpaintRadius; dy <= inpaintRadius; ++dy )
-                           {
-                              for ( int dx = -inpaintRadius; dx <= inpaintRadius; ++dx )
-                              {
-                                 int nx = x + dx, ny = y + dy;
-                                 if ( nx < 0 || nx >= cropW || ny < 0 || ny >= cropH )
-                                    continue;
-                                 if ( trailMask[ny * cropW + nx] )
-                                    continue;
-                                 sum += stretchImage.Pixel( nx, ny, ch );
-                                 ++count;
-                              }
-                           }
-
-                           if ( count > 0 )
-                              stretchImage.Pixel( x, y, ch ) = static_cast<float>( sum / count );
-                        }
+                        double scale = tgtMed / medians[ch];
+                        stretchImage.SelectChannel( ch );
+                        stretchImage *= scale;
                      }
+                  }
+                  stretchImage.ResetChannelRange();
+               }
+
+               // Re-do entropy-optimized stretch on clean data
+               {
+                  stretchImage.SelectChannel( 0 );
+                  double refMed2 = stretchImage.Median();
+                  double refMad2 = stretchImage.MAD( refMed2 );
+                  stretchImage.ResetChannelRange();
+
+                  // Sample clean data for optimization
+                  std::vector<float> optSample2;
+                  {
+                     int step = std::max( 1, ( cropW * cropH ) / 10000 );
+                     for ( int i = 0; i < cropW * cropH; i += step )
+                        optSample2.push_back( stretchImage.Pixel( i % cropW, i / cropW, 0 ) );
+                  }
+
+                  // Re-run stretch optimization on clean data
+                  double bestScore2 = -1e30;
+                  double bestTarget2 = 0.20;
+                  for ( double t = 0.08; t <= 0.30; t += 0.01 )
+                  {
+                     auto trial = StretchLibrary::Instance().Create( AlgorithmType::MTF );
+                     trial->SetParameter( "targetMedian", t );
+                     trial->AutoConfigure( refMed2, refMad2 );
+                     double sc = scoreStretch( optSample2, trial.get() );
+                     if ( sc > bestScore2 ) { bestScore2 = sc; bestTarget2 = t; }
+                  }
+
+                  // Apply optimized stretch to all channels
+                  if ( isColor )
+                  {
+                     for ( int ch = 0; ch < outChannels; ++ch )
+                     {
+                        stretchImage.SelectChannel( ch );
+                        double med = stretchImage.Median();
+                        double mad = stretchImage.MAD( med );
+
+                        auto chAlgo = StretchLibrary::Instance().Create( AlgorithmType::MTF );
+                        chAlgo->SetParameter( "targetMedian", bestTarget2 );
+                        chAlgo->AutoConfigure( med, mad );
+
+                        Image::sample_iterator it( stretchImage, ch );
+                        for ( ; it; ++it )
+                           *it = chAlgo->Apply( *it );
+
+                        stretchAlgos[ch] = chAlgo->Clone();
+                     }
+                     stretchImage.ResetChannelRange();
+                  }
+                  else
+                  {
+                     auto monoAlgo = StretchLibrary::Instance().Create( AlgorithmType::MTF );
+                     monoAlgo->SetParameter( "targetMedian", bestTarget2 );
+                     monoAlgo->AutoConfigure( refMed2, refMad2 );
+                     monoAlgo->ApplyToImage( stretchImage );
+                     stretchAlgos[0] = monoAlgo->Clone();
                   }
                }
 
