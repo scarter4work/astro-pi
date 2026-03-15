@@ -924,33 +924,36 @@ __global__ void pixelSelectionKernel(
             bestType = DIST_BIMODAL;
         }
 
-        // 7. Distribution-aware central tendency selection
+        // 7. Densest-cluster value selection (shortest-half mode estimator)
+        //
+        // Find the narrowest interval containing half the clean values.
+        // The center of that interval is where the data is most concentrated —
+        // the MODE of the distribution.  This naturally:
+        //   - Finds the dark cluster for background with bright contamination (trails)
+        //   - Finds the bright cluster for signal with dark contamination (dust motes)
+        //   - Matches the median for clean symmetric data
+        // Works for all distribution types — no need to switch on bestType.
         double selectedValue = cleanMedian;
-        if (bestType == DIST_GAUSSIAN || bestType == DIST_POISSON) {
-            // Weighted mean — optimal for symmetric distributions
-            // GPU path uses equal weights (quality weights not passed to kernel)
-            double sum = 0.0;
-            for (int i = 0; i < nClean; ++i)
-                sum += cleanData[i];
-            selectedValue = sum / nClean;
-        } else if (bestType == DIST_SKEW_NORMAL) {
-            // Median — robust to tail pull
-            selectedValue = cleanMedian;
-        } else if (bestType == DIST_BIMODAL) {
-            // Weighted mean of dominant component
-            double domMu = (mixFit.weight >= 0.5) ? mixFit.mu1 : mixFit.mu2;
-            double domSig = (mixFit.weight >= 0.5) ? mixFit.sigma1 : mixFit.sigma2;
-            double cutoff = 2.0 * fmax(domSig, 1e-10);
-            double sumV = 0.0;
-            int countV = 0;
-            for (int i = 0; i < nClean; ++i) {
-                if (fabs(cleanData[i] - domMu) <= cutoff) {
-                    sumV += cleanData[i];
-                    ++countV;
+        {
+            // sortedClean is already sorted from step above
+            int halfN = nClean / 2;
+            if (halfN < 1) halfN = 1;
+
+            double minRange = sortedClean[halfN - 1] - sortedClean[0];
+            int bestStart = 0;
+            for (int i = 1; i + halfN - 1 < nClean; ++i) {
+                double range = sortedClean[i + halfN - 1] - sortedClean[i];
+                if (range < minRange) {
+                    minRange = range;
+                    bestStart = i;
                 }
             }
-            if (countV > 0)
-                selectedValue = sumV / countV;
+
+            // Mode estimate: mean of the densest half
+            double sum = 0.0;
+            for (int i = bestStart; i < bestStart + halfN; ++i)
+                sum += sortedClean[i];
+            selectedValue = sum / halfN;
         }
         cleanMedian = selectedValue;  // reuse variable for output
     }

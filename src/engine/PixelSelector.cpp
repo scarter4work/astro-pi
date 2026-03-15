@@ -222,62 +222,42 @@ PixelSelector::selectBestZ(const float* zColumnPtr, size_t nSubs,
     //      Skew-Normal       → median (robust to tail-pull)
     //      Bimodal           → weighted mean of dominant component
     //                          (median falls in the valley between peaks)
-    double selectedValue = cleanMedian;  // fallback
+    // Densest-cluster value selection (shortest-half mode estimator)
+    //
+    // Find the narrowest interval containing half the clean values.
+    // The center of that interval is where the data is most concentrated —
+    // the MODE of the distribution.  This naturally:
+    //   - Finds the dark cluster for background with bright contamination (trails)
+    //   - Finds the bright cluster for signal with dark contamination (dust motes)
+    //   - Matches the median for clean symmetric data
+    double selectedValue = cleanMedian;
+    {
+        // Build sorted clean values
+        std::vector<double> sortedClean;
+        sortedClean.reserve(cleanIndices.size());
+        for (size_t idx : cleanIndices)
+            sortedClean.push_back(zValues[idx]);
+        std::sort(sortedClean.begin(), sortedClean.end());
 
-    switch (bestType) {
-    case DistributionType::Gaussian:
-    case DistributionType::Poisson: {
-        // Quality-weighted mean: better-seeing frames contribute more
-        double sumWV = 0.0, sumW = 0.0;
-        for (size_t idx : cleanIndices) {
-            size_t origIdx = originalIndices[idx];
-            double w = (m_config.useQualityWeights
-                        && !qualityWeights.empty()
-                        && origIdx < qualityWeights.size())
-                     ? qualityWeights[origIdx] : 1.0;
-            if (w <= 0.0) w = 1e-10;
-            sumWV += w * zValues[idx];
-            sumW += w;
-        }
-        if (sumW > 0.0)
-            selectedValue = sumWV / sumW;
-        break;
-    }
-    case DistributionType::SkewNormal:
-        // Median is the right choice for skewed data —
-        // the mean gets pulled toward the tail
-        selectedValue = cleanMedian;
-        break;
-    case DistributionType::Bimodal: {
-        // The median of bimodal data falls in the valley between peaks,
-        // representing a value that rarely occurs. Instead, identify
-        // the dominant component and take its quality-weighted mean.
-        // Reuse the mixFit result (only valid when bimodal was fitted).
-        GaussianMixResult mixResult = fitGaussianMixture2(cleanData);
-        double dominantMu = (mixResult.weight >= 0.5) ? mixResult.mu1 : mixResult.mu2;
-        double dominantSigma = (mixResult.weight >= 0.5) ? mixResult.sigma1 : mixResult.sigma2;
+        int N = static_cast<int>(sortedClean.size());
+        int halfN = N / 2;
+        if (halfN < 1) halfN = 1;
 
-        // Assign each clean point to the dominant component if it's
-        // within 2 sigma of the dominant mean; otherwise exclude it
-        double sumWV = 0.0, sumW = 0.0;
-        double cutoff = 2.0 * std::max(dominantSigma, 1e-10);
-        for (size_t idx : cleanIndices) {
-            if (std::abs(zValues[idx] - dominantMu) <= cutoff) {
-                size_t origIdx = originalIndices[idx];
-                double w = (m_config.useQualityWeights
-                            && !qualityWeights.empty()
-                            && origIdx < qualityWeights.size())
-                         ? qualityWeights[origIdx] : 1.0;
-                if (w <= 0.0) w = 1e-10;
-                sumWV += w * zValues[idx];
-                sumW += w;
+        double minRange = sortedClean[halfN - 1] - sortedClean[0];
+        int bestStart = 0;
+        for (int i = 1; i + halfN - 1 < N; ++i) {
+            double range = sortedClean[i + halfN - 1] - sortedClean[i];
+            if (range < minRange) {
+                minRange = range;
+                bestStart = i;
             }
         }
-        if (sumW > 0.0)
-            selectedValue = sumWV / sumW;
-        // else keep cleanMedian — component assignment failed
-        break;
-    }
+
+        // Mode estimate: mean of the densest half
+        double sum = 0.0;
+        for (int i = bestStart; i < bestStart + halfN; ++i)
+            sum += sortedClean[i];
+        selectedValue = sum / halfN;
     }
 
     // 8. Find the frame whose value is closest to the computed central tendency
