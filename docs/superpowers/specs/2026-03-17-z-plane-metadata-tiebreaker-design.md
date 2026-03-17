@@ -116,6 +116,8 @@ Input: selectedValue, bestZ, cleanIndices[], zValues[], qualityScores[], origina
 
 2. If mad == 0 or qualityScores == nullptr:
    return (no tiebreaker possible)
+   Note: mad == 0 when halfN == 1 (< 4 clean subs), so tiebreaker
+   naturally disables for very small stacks.
 
 3. bestScore = qualityScores[originalIndices[bestZ_cleanIndex]]
 
@@ -155,6 +157,8 @@ detector.SetSensitivity( 0.1 );
 detector.SetMinSNR( 5.0 );
 ```
 
+**Trade-off note**: Lower thresholds may detect noise peaks as stars on well-calibrated subs. This is acceptable for NukeX's use case (uncalibrated subs are the norm) and the quality score is advisory, not authoritative — false star detections add noise to the score but don't corrupt the statistical pixel selection.
+
 Add diagnostic output:
 ```cpp
 console.WriteLn( String().Format(
@@ -164,17 +168,23 @@ console.WriteLn( String().Format(
 
 ## GPU Path
 
-### CudaPixelSelector.cu
+### Current State
 
-- Add `const double* qualityScores` as a kernel parameter (device memory)
-- One value per sub (max 64 values) — trivial memory footprint
-- Same tiebreaker algorithm as CPU path after shortest-half mode selection
-- Host copies scores array to device before kernel launch
+The GPU kernel in `CudaPixelSelector.cu` does NOT track provenance (frame indices). It outputs only pixel values and distribution types. Provenance is only tracked on the CPU path. Additionally, provenance is currently not consumed by any downstream pipeline phase — it is diagnostic metadata only.
 
-### CudaRemediation.cu
+### CudaPixelSelector.h / CudaPixelSelector.cu
+
+- Add `const double* qualityScores` field to `GpuStackConfig` (host-side pointer, copied to device)
+- Add `uint32_t* provenanceOut` field to `GpuStackConfig` (device output buffer, optional)
+- Host copies scores array to device before kernel launch (one `double` per sub, max 64 values)
+- Kernel implements same tiebreaker algorithm as CPU path after shortest-half mode selection
+- Kernel writes winning frame index to `provenanceOut` if non-null
+
+**Note**: Since provenance is not currently consumed downstream, the GPU tiebreaker's observable effect is limited to the tiebreaker changing which frame's value is "closest" — but the pixel output is still the shortest-half mode mean. The GPU tiebreaker is included for parity with the CPU path so behavior is consistent regardless of execution path.
+
+### CudaRemediation.h / CudaRemediation.cu
 
 - Remove the unused `qualityWeights` parameter
-- Remediation re-selection uses the same `qualityScores` device array
 
 ## UI Changes
 
@@ -212,7 +222,8 @@ console.WriteLn( String().Format(
 | `src/engine/PixelSelector.h` | Replace `qualityWeights` → `qualityScores`, update Config |
 | `src/engine/PixelSelector.cpp` | Replace param, add tiebreaker after step 8 |
 | `src/engine/FrameLoader.cpp` | Fix `ComputeFrameMetrics` thresholds |
-| `src/engine/cuda/CudaPixelSelector.cu` | Add tiebreaker + scores param |
+| `src/engine/cuda/CudaPixelSelector.h` | Add `qualityScores` and `provenanceOut` to `GpuStackConfig` |
+| `src/engine/cuda/CudaPixelSelector.cu` | Add tiebreaker + scores param, provenance output |
 | `src/engine/cuda/CudaRemediation.cu` | Remove unused `qualityWeights` param |
 | `src/engine/cuda/CudaRemediation.h` | Remove unused `qualityWeights` param |
 | `src/NukeXStackInstance.h` | Remove weight params, add score extraction |
@@ -222,9 +233,11 @@ console.WriteLn( String().Format(
 | `src/NukeXStackParameters.h` | Remove weight parameter classes |
 | `src/NukeXStackParameters.cpp` | Remove weight parameter implementations |
 | `src/NukeXStackProcess.cpp` | Remove weight parameter registration |
-| `tests/test_quality_weights.cpp` | Delete |
-| `tests/test_pixel_selector.cpp` | Update signatures, add tiebreaker tests |
-| `CMakeLists.txt` | Remove QualityWeights sources, remove test file |
+| `tests/unit/test_quality_weights.cpp` | Delete |
+| `tests/unit/test_pixel_selector.cpp` | Update signatures, add tiebreaker tests |
+| `tests/integration/test_full_pipeline.cpp` | Update to remove QualityWeights dependency |
+| `tests/CMakeLists.txt` | Remove QualityWeights sources and test file |
+| `CMakeLists.txt` | Remove QualityWeights sources |
 
 ## Behavioral Guarantees
 
