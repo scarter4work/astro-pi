@@ -30,11 +30,8 @@ TEST_CASE("Full pipeline: cosmic ray rejection", "[integration]") {
     // Inject cosmic ray at (4, 12) in sub 15: spike to 5000
     cube.setPixel(15, 4, 12, 5000.0f);
 
-    // Equal quality weights (no metadata)
-    std::vector<double> weights(nSubs, 1.0 / nSubs);
-
     nukex::PixelSelector selector;
-    auto result = selector.processImage(cube, weights);
+    auto result = selector.processImage(cube, nullptr);
 
     SECTION("cosmic ray at (8,8) is rejected") {
         // Provenance should NOT select sub 5
@@ -85,10 +82,8 @@ TEST_CASE("Full pipeline: satellite trail rejection", "[integration]") {
     for (size_t x = 0; x < W; ++x)
         cube.setPixel(7, 4, x, 5000.0f);
 
-    std::vector<double> weights(nSubs, 1.0 / nSubs);
-
     nukex::PixelSelector selector;
-    auto result = selector.processImage(cube, weights);
+    auto result = selector.processImage(cube, nullptr);
 
     // All pixels in row 4 should NOT select sub 7
     for (size_t x = 0; x < W; ++x) {
@@ -122,11 +117,11 @@ TEST_CASE("Full pipeline: quality weighted selection", "[integration]") {
                 cube.setPixel(z, y, x, static_cast<float>(bad(rng)));
     }
 
-    // Give good subs higher weights
-    std::vector<double> weights = {0.15, 0.15, 0.15, 0.15, 0.15, 0.05, 0.05, 0.05, 0.05, 0.05};
+    // Give good subs higher quality scores
+    std::vector<double> scores = {0.15, 0.15, 0.15, 0.15, 0.15, 0.05, 0.05, 0.05, 0.05, 0.05};
 
     nukex::PixelSelector selector;
-    auto result = selector.processImage(cube, weights);
+    auto result = selector.processImage(cube, scores.data());
 
     // Output mean should be close to 100 (sky background)
     double sum = 0;
@@ -145,9 +140,8 @@ TEST_CASE("Full pipeline: output image dimensions", "[integration]") {
             for (size_t x = 0; x < 24; ++x)
                 cube.setPixel(z, y, x, static_cast<float>(noise(rng)));
 
-    std::vector<double> weights(5, 0.2);
     nukex::PixelSelector selector;
-    auto result = selector.processImage(cube, weights);
+    auto result = selector.processImage(cube, nullptr);
 
     REQUIRE(result.size() == 32 * 24);
 }

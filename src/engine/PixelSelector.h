@@ -17,11 +17,11 @@ using ProgressCallback = std::function<void(size_t, size_t)>;
 class PixelSelector {
 public:
     struct Config {
-        int maxOutliers = 3;          // max outliers to detect per pixel
-        double outlierAlpha = 0.05;   // significance level
-        bool useQualityWeights = true;
-        bool adaptiveModels = false;  // skip expensive fits when simple model fits well
-        bool useGPU = false;          // use CUDA GPU acceleration when available
+        int maxOutliers = 3;
+        double outlierAlpha = 0.05;
+        bool adaptiveModels = false;
+        bool useGPU = false;
+        bool enableMetadataTiebreaker = true;
     };
 
     PixelSelector();
@@ -30,17 +30,17 @@ public:
     // Process a single pixel: fit distributions, select best Z
     // Returns the selected pixel value (the stacked result for this pixel)
     float processPixel(SubCube& cube, size_t y, size_t x,
-                       const std::vector<double>& qualityWeights);
+                       const double* qualityScores = nullptr);
 
     // Process entire image -- returns a flat vector of selected pixel values
     // in row-major order (height * width)
     std::vector<float> processImage(SubCube& cube,
-                                    const std::vector<double>& qualityWeights,
+                                    const double* qualityScores = nullptr,
                                     ProgressCallback progress = nullptr);
 
     // GPU-accelerated image processing (falls back to CPU on failure or no GPU)
     std::vector<float> processImageGPU(SubCube& cube,
-                                        const std::vector<double>& qualityWeights,
+                                        const double* qualityScores,
                                         std::vector<uint8_t>& distTypesOut,
                                         ProgressCallback progress = nullptr);
 
@@ -56,7 +56,7 @@ public:
     // Select the best Z-value for a single pixel column.
     // Public so that Phase 7 CPU fallback can re-select individual trail pixels.
     PixelResult selectBestZ(const float* zColumnPtr, size_t nSubs,
-                            const std::vector<double>& qualityWeights,
+                            const double* qualityScores = nullptr,
                             const uint8_t* maskColumn = nullptr);
 
 private:

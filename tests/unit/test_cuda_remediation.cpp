@@ -30,8 +30,7 @@ TEST_CASE( "Trail re-selection excludes contaminated frame", "[remediation][trai
    cube.setMask( 9, 0, 0, 1 ); // mask the trail frame
 
    nukex::PixelSelector selector;
-   std::vector<double> weights( 10, 1.0 );
-   auto result = selector.selectBestZ( cube.zColumnPtr(0, 0), 10, weights,
+   auto result = selector.selectBestZ( cube.zColumnPtr(0, 0), 10, nullptr,
                                         cube.maskColumnPtr(0, 0) );
    REQUIRE( result.selectedValue == Catch::Approx(0.1f).margin(0.01f) );
 }
@@ -51,8 +50,7 @@ TEST_CASE( "Trail re-selection with multiple contaminated frames", "[remediation
    cube.setMask( 9, 0, 0, 1 );
 
    nukex::PixelSelector selector;
-   std::vector<double> weights( 10, 1.0 );
-   auto result = selector.selectBestZ( cube.zColumnPtr(0, 0), 10, weights,
+   auto result = selector.selectBestZ( cube.zColumnPtr(0, 0), 10, nullptr,
                                         cube.maskColumnPtr(0, 0) );
    // Should get clean median (~0.2), not trail-contaminated value
    REQUIRE( result.selectedValue == Catch::Approx(0.2f).margin(0.02f) );
@@ -74,8 +72,7 @@ TEST_CASE( "Trail re-selection falls back when too many masked", "[remediation][
    // Only frame 4 is clean -- fewer than 3, so fallback to all
 
    nukex::PixelSelector selector;
-   std::vector<double> weights( 5, 1.0 );
-   auto result = selector.selectBestZ( cube.zColumnPtr(0, 0), 5, weights,
+   auto result = selector.selectBestZ( cube.zColumnPtr(0, 0), 5, nullptr,
                                         cube.maskColumnPtr(0, 0) );
    // Should still produce a valid result (using all frames)
    REQUIRE( result.selectedValue > 0.0f );

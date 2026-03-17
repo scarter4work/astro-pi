@@ -365,11 +365,11 @@ bool NukeXStackInstance::ExecuteGlobal()
 
          if ( useGPU )
          {
-            channelResults[ch] = selector.processImageGPU( channelCubes[ch], weights, distTypeMaps[ch], progressCB );
+            channelResults[ch] = selector.processImageGPU( channelCubes[ch], weights.data(), distTypeMaps[ch], progressCB );
          }
          else
          {
-            channelResults[ch] = selector.processImage( channelCubes[ch], weights, progressCB );
+            channelResults[ch] = selector.processImage( channelCubes[ch], weights.data(), progressCB );
 
             size_t mapSize = size_t( cropH ) * size_t( cropW );
             distTypeMaps[ch].resize( mapSize );
@@ -906,7 +906,7 @@ bool NukeXStackInstance::ExecuteGlobal()
                                  channelCubes[ch].setMask( z, py, px, 1 );
 
                            auto result = fallbackSelector.selectBestZ(
-                              zCol, channelCubes[ch].numSubs(), weights,
+                              zCol, channelCubes[ch].numSubs(), weights.data(),
                               channelCubes[ch].maskColumnPtr( py, px ) );
                            corrected[i] = result.selectedValue;
                         }

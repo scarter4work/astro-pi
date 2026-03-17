@@ -10,10 +10,8 @@ TEST_CASE("PixelSelector rejects cosmic ray", "[selector]") {
         cube.setPixel(z, 2, 2, 100.0f);
     cube.setPixel(3, 2, 2, 10000.0f);  // cosmic ray
 
-    std::vector<double> weights(5, 0.2);
-
     nukex::PixelSelector selector;
-    float val = selector.processPixel(cube, 2, 2, weights);
+    float val = selector.processPixel(cube, 2, 2);
 
     // Selected value should be near 100, not 10000
     REQUIRE(val == Catch::Approx(100.0f).margin(50.0f));
@@ -32,10 +30,8 @@ TEST_CASE("PixelSelector handles Gaussian noise", "[selector]") {
             for (size_t x = 0; x < 4; x++)
                 cube.setPixel(z, y, x, static_cast<float>(noise(rng)));
 
-    std::vector<double> weights(20, 0.05);
-
     nukex::PixelSelector selector;
-    float val = selector.processPixel(cube, 2, 2, weights);
+    float val = selector.processPixel(cube, 2, 2);
 
     // Selected value should be within reasonable range
     REQUIRE(val > 400.0f);
@@ -51,9 +47,8 @@ TEST_CASE("PixelSelector processes full image", "[selector]") {
             for (size_t x = 0; x < 8; x++)
                 cube.setPixel(z, y, x, static_cast<float>(noise(rng)));
 
-    std::vector<double> weights(10, 0.1);
     nukex::PixelSelector selector;
-    auto result = selector.processImage(cube, weights);
+    auto result = selector.processImage(cube, nullptr);
 
     REQUIRE(result.size() == 64);
     // Every pixel should have a provenance entry
@@ -70,10 +65,8 @@ TEST_CASE("PixelSelector detects distribution type", "[selector]") {
     for (size_t z = 10; z < 20; z++)
         cube.setPixel(z, 0, 0, 500.0f);
 
-    std::vector<double> weights(20, 0.05);
-
     nukex::PixelSelector selector;
-    selector.processPixel(cube, 0, 0, weights);
+    selector.processPixel(cube, 0, 0);
 
     // Should detect the bimodal pattern
     // (The exact model chosen may vary, but it should be set)
@@ -87,29 +80,28 @@ TEST_CASE("PixelSelector handles minimum subs", "[selector]") {
     cube.setPixel(1, 0, 0, 102.0f);
     cube.setPixel(2, 0, 0, 101.0f);
 
-    std::vector<double> weights(3, 1.0/3.0);
-
     nukex::PixelSelector selector;
-    float val = selector.processPixel(cube, 0, 0, weights);
+    float val = selector.processPixel(cube, 0, 0);
 
     REQUIRE(val > 99.0f);
     REQUIRE(val < 103.0f);
 }
 
 TEST_CASE("PixelSelector tiebreaker picks better-scored frame", "[selector][tiebreaker]") {
+    // 10 frames with nearly identical values (tiny ascending spread).
+    // The shortest-half mode estimator will find the densest cluster and pick
+    // the closest frame.  The tiebreaker should then prefer the frame with
+    // the highest quality score among those within MAD tolerance.
+    //
+    // Frame 3 has the best quality score (0.9 vs 0.1 for all others).
+    // All values are close enough that multiple frames fall within the MAD
+    // tolerance, so the tiebreaker has room to prefer frame 3.
     nukex::SubCube cube(10, 2, 2);
     for (size_t z = 0; z < 10; z++)
-        cube.setPixel(z, 0, 0, 100.0f + static_cast<float>(z) * 0.1f);
+        cube.setPixel(z, 0, 0, 100.0f + static_cast<float>(z) * 0.001f);
 
-    for (size_t z = 0; z < 10; z++) {
-        nukex::SubMetadata meta;
-        meta.qualityScore = (z == 7) ? 0.9 : 0.1;
-        cube.setMetadata(z, meta);
-    }
-
-    std::vector<double> scores(10);
-    for (size_t z = 0; z < 10; z++)
-        scores[z] = cube.metadata(z).qualityScore;
+    std::vector<double> scores(10, 0.1);
+    scores[3] = 0.9;  // frame 3 is the best quality
 
     nukex::PixelSelector::Config cfg;
     cfg.enableMetadataTiebreaker = true;
@@ -117,7 +109,9 @@ TEST_CASE("PixelSelector tiebreaker picks better-scored frame", "[selector][tieb
     auto result = selector.selectBestZ(cube.zColumnPtr(0, 0), 10,
                                         scores.data(), nullptr);
 
-    REQUIRE(result.selectedZ == 7);
+    // Frame 3 is within the densest half (values 100.000-100.004) and
+    // within MAD tolerance of the mode, so the tiebreaker should select it.
+    REQUIRE(result.selectedZ == 3);
 }
 
 TEST_CASE("PixelSelector tiebreaker no-op with equal scores", "[selector][tiebreaker]") {

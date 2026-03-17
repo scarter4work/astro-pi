@@ -36,7 +36,7 @@ PixelSelector::PixelSelector(const Config& config)
 
 PixelSelector::PixelResult
 PixelSelector::selectBestZ(const float* zColumnPtr, size_t nSubs,
-                           const std::vector<double>& qualityWeights,
+                           const double* qualityScores,
                            const uint8_t* maskColumn)
 {
     PixelResult result{};
@@ -271,6 +271,58 @@ PixelSelector::selectBestZ(const float* zColumnPtr, size_t nSubs,
         }
     }
 
+    // 8b. Metadata tiebreaker: if multiple frames are within MAD tolerance
+    //     of the selected value, prefer the one with the best quality score.
+    if (qualityScores != nullptr && m_config.enableMetadataTiebreaker) {
+        std::vector<double> shSorted;
+        shSorted.reserve(cleanIndices.size());
+        for (size_t idx : cleanIndices)
+            shSorted.push_back(zValues[idx]);
+        std::sort(shSorted.begin(), shSorted.end());
+
+        int shN = static_cast<int>(shSorted.size());
+        int shHalf = shN / 2;
+        if (shHalf < 1) shHalf = 1;
+
+        if (shHalf > 1) {
+            double shMinRange = shSorted[shHalf - 1] - shSorted[0];
+            int shBestStart = 0;
+            for (int i = 1; i + shHalf - 1 < shN; ++i) {
+                double range = shSorted[i + shHalf - 1] - shSorted[i];
+                if (range < shMinRange) {
+                    shMinRange = range;
+                    shBestStart = i;
+                }
+            }
+
+            double shLo = shSorted[shBestStart];
+            double shHi = shSorted[shBestStart + shHalf - 1];
+            std::vector<double> shValues(shSorted.begin() + shBestStart,
+                                          shSorted.begin() + shBestStart + shHalf);
+            double shMedian = medianOfSorted(shValues.data(), shValues.size());
+            std::vector<double> shDeviations(shValues.size());
+            for (size_t i = 0; i < shValues.size(); ++i)
+                shDeviations[i] = std::abs(shValues[i] - shMedian);
+            std::sort(shDeviations.begin(), shDeviations.end());
+            double shMAD = 1.4826 * medianOfSorted(shDeviations.data(), shDeviations.size());
+
+            if (shMAD > 0.0) {
+                double bestScore = qualityScores[bestZ];
+                for (size_t idx : cleanIndices) {
+                    double val = zValues[idx];
+                    if (val >= shLo && val <= shHi &&
+                        std::abs(val - selectedValue) <= shMAD) {
+                        double score = qualityScores[originalIndices[idx]];
+                        if (score > bestScore) {
+                            bestScore = score;
+                            bestZ = static_cast<uint32_t>(originalIndices[idx]);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     // 9. Return result
     result.selectedZ = bestZ;
     result.bestModel = bestType;
@@ -279,9 +331,9 @@ PixelSelector::selectBestZ(const float* zColumnPtr, size_t nSubs,
 }
 
 float PixelSelector::processPixel(SubCube& cube, size_t y, size_t x,
-                                   const std::vector<double>& qualityWeights)
+                                   const double* qualityScores)
 {
-    auto result = selectBestZ(cube.zColumnPtr(y, x), cube.numSubs(), qualityWeights,
+    auto result = selectBestZ(cube.zColumnPtr(y, x), cube.numSubs(), qualityScores,
                               cube.maskColumnPtr(y, x));
     cube.setProvenance(y, x, result.selectedZ);
     cube.setDistType(y, x, static_cast<uint8_t>(result.bestModel));
@@ -289,7 +341,7 @@ float PixelSelector::processPixel(SubCube& cube, size_t y, size_t x,
 }
 
 std::vector<float> PixelSelector::processImage(SubCube& cube,
-                                                const std::vector<double>& qualityWeights,
+                                                const double* qualityScores,
                                                 ProgressCallback progress)
 {
     size_t H = cube.height();
@@ -314,7 +366,7 @@ std::vector<float> PixelSelector::processImage(SubCube& cube,
         for (size_t y = yStart; y < yEnd; ++y) {
             for (size_t x = 0; x < W; ++x) {
                 try {
-                    auto result = selectBestZ(cube.zColumnPtr(y, x), N, qualityWeights,
+                    auto result = selectBestZ(cube.zColumnPtr(y, x), N, qualityScores,
                                               cube.maskColumnPtr(y, x));
                     output[y * W + x] = result.selectedValue;
                     cube.setProvenance(y, x, result.selectedZ);
@@ -348,14 +400,14 @@ std::vector<float> PixelSelector::processImage(SubCube& cube,
 }
 
 std::vector<float> PixelSelector::processImageGPU(SubCube& cube,
-                                                    const std::vector<double>& qualityWeights,
+                                                    const double* qualityScores,
                                                     std::vector<uint8_t>& distTypesOut,
                                                     ProgressCallback progress)
 {
 #ifdef NUKEX_HAS_CUDA
     if (!cuda::isGpuAvailable()) {
         // No GPU — fall back to CPU
-        return processImage(cube, qualityWeights, progress);
+        return processImage(cube, qualityScores, progress);
     }
 
     size_t H = cube.height();
@@ -378,7 +430,7 @@ std::vector<float> PixelSelector::processImageGPU(SubCube& cube,
 
     if (!result.success) {
         // GPU failed — fall back to CPU
-        return processImage(cube, qualityWeights, progress);
+        return processImage(cube, qualityScores, progress);
     }
 
     // Copy distTypes into SubCube metadata
@@ -390,7 +442,7 @@ std::vector<float> PixelSelector::processImageGPU(SubCube& cube,
 #else
     // No CUDA compiled in — CPU only
     (void)distTypesOut;
-    return processImage(cube, qualityWeights, progress);
+    return processImage(cube, qualityScores, progress);
 #endif
 }
 

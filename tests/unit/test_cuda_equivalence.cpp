@@ -49,15 +49,13 @@ TEST_CASE("GPU and CPU produce equivalent results", "[cuda][equivalence]") {
         }
     }
 
-    std::vector<double> weights(nSubs, 1.0 / nSubs);
-
     // CPU path
     nukex::PixelSelector::Config config;
     config.maxOutliers = 3;
     config.outlierAlpha = 0.05;
     config.adaptiveModels = false;
     nukex::PixelSelector cpuSelector(config);
-    auto cpuResult = cpuSelector.processImage(cpuCube, weights, nullptr);
+    auto cpuResult = cpuSelector.processImage(cpuCube, nullptr, nullptr);
 
     // GPU path via direct CUDA API
     std::vector<float> gpuOutput(H * W);
@@ -108,11 +106,10 @@ TEST_CASE("GPU gracefully falls back to CPU", "[cuda][fallback]") {
             for (size_t x = 0; x < W; ++x)
                 cube.setPixel(z, y, x, 0.5f + 0.01f * z);
 
-    std::vector<double> weights(nSubs, 1.0 / nSubs);
     std::vector<uint8_t> distTypes;
 
     nukex::PixelSelector selector;
-    auto result = selector.processImageGPU(cube, weights, distTypes, nullptr);
+    auto result = selector.processImageGPU(cube, nullptr, distTypes, nullptr);
 
     // Verify output has correct size and contains valid values
     REQUIRE(result.size() == H * W);
@@ -150,15 +147,13 @@ TEST_CASE("GPU handles adaptive model selection", "[cuda][adaptive]") {
         }
     }
 
-    std::vector<double> weights(nSubs, 1.0 / nSubs);
-
     // CPU path with adaptive models
     nukex::PixelSelector::Config config;
     config.maxOutliers = 2;
     config.outlierAlpha = 0.05;
     config.adaptiveModels = true;
     nukex::PixelSelector cpuSelector(config);
-    auto cpuResult = cpuSelector.processImage(cpuCube, weights, nullptr);
+    auto cpuResult = cpuSelector.processImage(cpuCube, nullptr, nullptr);
 
     // GPU path with adaptive models
     std::vector<float> gpuOutput(H * W);

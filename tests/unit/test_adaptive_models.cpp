@@ -18,8 +18,7 @@ TEST_CASE("Adaptive model selection produces valid results for Gaussian data", "
             for (size_t x = 0; x < W; ++x)
                 cube.setPixel(z, y, x, 0.5f + 0.001f * z);
 
-    std::vector<double> weights(nSubs, 1.0 / nSubs);
-    auto result = selector.processImage(cube, weights);
+    auto result = selector.processImage(cube, nullptr);
 
     REQUIRE(result.size() == H * W);
     for (float val : result) {
@@ -39,8 +38,7 @@ TEST_CASE("Adaptive off produces same results as before", "[adaptive]") {
     for (size_t z = 0; z < nSubs; ++z)
         cube.setPixel(z, 0, 0, 0.5f + 0.001f * z);
 
-    std::vector<double> weights(nSubs, 1.0 / nSubs);
-    auto result = selector.processImage(cube, weights);
+    auto result = selector.processImage(cube, nullptr);
 
     REQUIRE(result.size() == 1);
     REQUIRE(std::isfinite(result[0]));
