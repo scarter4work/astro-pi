@@ -237,7 +237,19 @@ bool NukeXStackInstance::ExecuteGlobal()
       {
          qualityScores.resize( nSubs );
          for ( size_t z = 0; z < nSubs; ++z )
-            qualityScores[z] = aligned.alignedCube.metadata( z ).qualityScore;
+         {
+            nukex::SubMetadata meta = aligned.alignedCube.metadata( z );
+            if ( meta.fwhm > 0 || meta.eccentricity > 0 )
+            {
+               meta.qualityScore = 0.6 * (1.0 / (1.0 + meta.fwhm))
+                                 + 0.4 * (1.0 / (1.0 + meta.eccentricity));
+               aligned.alignedCube.setMetadata( z, meta );
+            }
+            qualityScores[z] = meta.qualityScore;
+            console.WriteLn( String().Format(
+               "  Sub %d: FWHM=%.2f, Ecc=%.3f, Score=%.4f",
+               int( z ), meta.fwhm, meta.eccentricity, meta.qualityScore ) );
+         }
          qualityScoresPtr = qualityScores.data();
 
          double minQ = *std::min_element( qualityScores.begin(), qualityScores.end() );

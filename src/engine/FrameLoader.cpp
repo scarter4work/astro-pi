@@ -585,9 +585,9 @@ void FrameLoader::ComputeFrameMetrics( const pcl::Image& img, SubMetadata& meta 
 
         // Detect stars
         pcl::StarDetector detector;
-        detector.SetSensitivity( 0.5 );
+        detector.SetSensitivity( 0.1 );
         detector.SetMaxDistortion( 0.6 );
-        detector.SetMinSNR( 10.0 );
+        detector.SetMinSNR( 5.0 );
         auto stars = detector.DetectStars( iv );
 
         if ( stars.IsEmpty() )
