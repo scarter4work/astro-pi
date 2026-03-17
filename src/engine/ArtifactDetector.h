@@ -20,8 +20,8 @@ struct ArtifactDetectorConfig
 
    // Dust mote detection
    int    dustMinDiameter     = 10;     // Minimum blob diameter (pixels)
-   int    dustMaxDiameter     = 160;    // Maximum blob diameter (pixels)
-   double dustCircularityMin  = 0.6;
+   int    dustMaxDiameter     = 150;    // Maximum blob diameter (pixels)
+   double dustCircularityMin  = 0.5;
    double dustAttenuationMin  = 0.02;
    double dustDetectionSigma  = 3.0;    // Background deficit threshold in MAD units
 
@@ -110,7 +110,7 @@ private:
                                             double dilateRadius ) const;
 
    // --- Dust/vignetting helpers ---
-   std::vector<float> localBackgroundMap( const float* image, int width, int height ) const;
+   std::vector<float> localBackgroundMap( const float* image, int width, int height, int kernelSize ) const;
    std::vector<double> fitRadialPolynomial( const float* image, int width, int height,
                                              const uint8_t* excludeMask, int order ) const;
 };

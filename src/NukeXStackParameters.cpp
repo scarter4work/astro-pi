@@ -375,7 +375,7 @@ double NXSDustCircularityMin::MaximumValue() const
 
 double NXSDustCircularityMin::DefaultValue() const
 {
-   return 0.7;
+   return 0.5;
 }
 
 // ----------------------------------------------------------------------------
@@ -540,7 +540,7 @@ double NXSDustMaxDiameter::MaximumValue() const
 
 double NXSDustMaxDiameter::DefaultValue() const
 {
-   return 100;
+   return 150;
 }
 
 // ----------------------------------------------------------------------------
@@ -565,12 +565,12 @@ double NXSDustNeighborRadius::MinimumValue() const
 
 double NXSDustNeighborRadius::MaximumValue() const
 {
-   return 50;
+   return 100;
 }
 
 double NXSDustNeighborRadius::DefaultValue() const
 {
-   return 10;
+   return 85;
 }
 
 // ----------------------------------------------------------------------------

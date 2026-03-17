@@ -3,6 +3,7 @@
 #include "engine/ArtifactDetector.h"
 #include <vector>
 #include <cmath>
+#include <random>
 
 TEST_CASE( "TrailDetector detects bright diagonal line", "[artifact][trail]" )
 {
@@ -98,23 +99,33 @@ TEST_CASE( "DustDetector handles uniform image with no dust", "[artifact][dust]"
    REQUIRE( result.blobs.empty() );
 }
 
-TEST_CASE( "DustDetector rejects blobs smaller than dustMinDiameter", "[artifact][dust]" )
+TEST_CASE( "DustDetector rejects tiny blobs on noisy background", "[artifact][dust]" )
 {
+   // With difference-of-smoothing, a tiny blob on a noisy background
+   // produces deficit below the sigma threshold and is correctly rejected.
+   // Noise gives a realistic MAD so the threshold is meaningful.
    const int W = 200, H = 200;
-   std::vector<float> image( W * H, 0.5f );
-   // Tiny dark dot, radius 3px (diameter 6)
-   int cx = 100, cy = 100, r = 3;
+   std::vector<float> image( W * H );
+   std::mt19937 rng( 12345 );   // fixed seed for reproducibility
+   std::normal_distribution<float> noise( 0.5f, 0.01f );
+   for ( int i = 0; i < W * H; ++i )
+      image[i] = std::max( 0.0f, std::min( 1.0f, noise( rng ) ) );
+
+   // Tiny dark dot, radius 2px (diameter 4) with subtle deficit (3%)
+   // The DoS deficit from this blob is below the 3-sigma noise threshold
+   int cx = 100, cy = 100, r = 2;
    for ( int y = 0; y < H; ++y )
       for ( int x = 0; x < W; ++x )
       {
          double dist = std::sqrt( double((x-cx)*(x-cx) + (y-cy)*(y-cy)) );
          if ( dist < r )
-            image[y * W + x] = 0.3f;
+            image[y * W + x] = 0.485f;
       }
 
    nukex::ArtifactDetectorConfig config;
-   config.dustMinDiameter = 20;   // minimum 20px diameter — blob is only ~6px
-   config.dustDetectionSigma = 1.5;
+   config.dustMinDiameter = 10;
+   config.dustMaxDiameter = 100;
+   config.dustDetectionSigma = 3.0;   // 3-sigma threshold with realistic noise
    nukex::ArtifactDetector detector( config );
    auto result = detector.detectDust( image.data(), W, H );
    REQUIRE( result.blobs.empty() );

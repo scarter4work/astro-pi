@@ -411,13 +411,21 @@ DustDetectionResult ArtifactDetector::detectDust( const float* image, int width,
 
    const int N = width * height;
 
-   // 1. Compute local background map using annular ring medians
-   std::vector<float> bgMap = localBackgroundMap( image, width, height );
+   // 1. Difference-of-smoothing: small kernel captures mote structure,
+   // large kernel captures true background. Deficit = large - small.
+   int smallKernel = std::max( 3, m_config.dustMinDiameter );
+   // Ensure odd kernel for symmetric filtering
+   if ( smallKernel % 2 == 0 ) ++smallKernel;
+   int largeKernel = static_cast<int>( m_config.dustMaxDiameter * 1.5 );
+   if ( largeKernel % 2 == 0 ) ++largeKernel;
 
-   // 2. Compute deficit: how much darker each pixel is vs local background
+   std::vector<float> smallSmooth = localBackgroundMap( image, width, height, smallKernel );
+   std::vector<float> largeSmooth = localBackgroundMap( image, width, height, largeKernel );
+
+   // 2. Compute deficit: positive = darker than surroundings at mote scale
    std::vector<float> deficit( N );
    for ( int i = 0; i < N; ++i )
-      deficit[i] = bgMap[i] - image[i];   // positive = darker than background
+      deficit[i] = largeSmooth[i] - smallSmooth[i];   // positive = darker than surroundings at mote scale
 
    // 3. Compute MAD of deficit for threshold calibration
    //    Use only positive deficits to estimate the noise scale
@@ -649,109 +657,53 @@ VignettingDetectionResult ArtifactDetector::detectVignetting( const float* image
 }
 
 // ============================================================================
-// localBackgroundMap — annular ring median for each pixel
+// localBackgroundMap — box filter (uniform average) via integral image
 //
-// For each pixel, computes the median brightness in an annular ring around it.
-// This gives the expected local background free from dust mote contamination.
-// Uses a coarse grid + interpolation for performance.
+// Computes a box-averaged version of the image at the specified kernel size.
+// Uses an integral image (prefix sum) for O(1) per-pixel lookup regardless
+// of kernel size. Total cost is O(N) to build the integral image.
 // ============================================================================
 
-std::vector<float> ArtifactDetector::localBackgroundMap( const float* image, int width, int height ) const
+std::vector<float> ArtifactDetector::localBackgroundMap( const float* image, int width, int height, int kernelSize ) const
 {
-   // Annular ring radii
-   const int innerRadius = m_config.dustMaxDiameter / 2 + 5;
-   const int outerRadius = innerRadius + 15;
-   const int outerRadiusSq = outerRadius * outerRadius;
-   const int innerRadiusSq = innerRadius * innerRadius;
+   const int N = width * height;
+   int halfK = kernelSize / 2;
 
-   // Compute on a coarse grid to avoid O(N * ringSize) over every pixel.
-   // Grid step: half the inner radius, ensures good interpolation coverage.
-   const int gridStep = std::max( 4, innerRadius / 2 );
-   const int gw = ( width + gridStep - 1 ) / gridStep + 1;
-   const int gh = ( height + gridStep - 1 ) / gridStep + 1;
+   // Build integral image (double precision to avoid float accumulation error)
+   // integral[y][x] = sum of image[0..y-1][0..x-1]
+   // Using (height+1) x (width+1) with zero padding on top and left
+   std::vector<double> integral( (size_t)( height + 1 ) * ( width + 1 ), 0.0 );
+   const int iw = width + 1;
 
-   std::vector<float> gridValues( gw * gh, 0.0f );
-   std::vector<float> ringPixels;
-   ringPixels.reserve( outerRadiusSq * 4 );   // generous pre-allocation
+   for ( int y = 0; y < height; ++y )
+      for ( int x = 0; x < width; ++x )
+         integral[( y + 1 ) * iw + ( x + 1 )] = image[y * width + x]
+            + integral[y * iw + ( x + 1 )]
+            + integral[( y + 1 ) * iw + x]
+            - integral[y * iw + x];
 
-   for ( int gy = 0; gy < gh; ++gy )
-   {
-      for ( int gx = 0; gx < gw; ++gx )
-      {
-         int px = gx * gridStep;
-         int py = gy * gridStep;
-         if ( px >= width ) px = width - 1;
-         if ( py >= height ) py = height - 1;
-
-         ringPixels.clear();
-
-         // Collect pixels in the annular ring
-         int yStart = std::max( 0, py - outerRadius );
-         int yEnd   = std::min( height - 1, py + outerRadius );
-         int xStart = std::max( 0, px - outerRadius );
-         int xEnd   = std::min( width - 1, px + outerRadius );
-
-         for ( int y = yStart; y <= yEnd; ++y )
-         {
-            int dy = y - py;
-            int dySq = dy * dy;
-            for ( int x = xStart; x <= xEnd; ++x )
-            {
-               int dx = x - px;
-               int distSq = dx * dx + dySq;
-               if ( distSq >= innerRadiusSq && distSq <= outerRadiusSq )
-                  ringPixels.push_back( image[y * width + x] );
-            }
-         }
-
-         if ( !ringPixels.empty() )
-         {
-            size_t m = ringPixels.size() / 2;
-            std::nth_element( ringPixels.begin(), ringPixels.begin() + m, ringPixels.end() );
-            gridValues[gy * gw + gx] = ringPixels[m];
-         }
-         else
-         {
-            // Fallback: use the pixel itself (near corners/edges)
-            gridValues[gy * gw + gx] = image[py * width + px];
-         }
-      }
-   }
-
-   // Bilinear interpolation from coarse grid to full resolution
-   std::vector<float> bgMap( width * height );
+   // Box average using integral image
+   std::vector<float> result( N );
    for ( int y = 0; y < height; ++y )
    {
+      int y0 = std::max( 0, y - halfK );
+      int y1 = std::min( height - 1, y + halfK );
       for ( int x = 0; x < width; ++x )
       {
-         double gxf = static_cast<double>( x ) / gridStep;
-         double gyf = static_cast<double>( y ) / gridStep;
+         int x0 = std::max( 0, x - halfK );
+         int x1 = std::min( width - 1, x + halfK );
 
-         gxf = std::max( 0.0, std::min( gxf, static_cast<double>( gw - 1 ) ) );
-         gyf = std::max( 0.0, std::min( gyf, static_cast<double>( gh - 1 ) ) );
-
-         int gx0 = static_cast<int>( gxf );
-         int gy0 = static_cast<int>( gyf );
-         int gx1 = std::min( gx0 + 1, gw - 1 );
-         int gy1 = std::min( gy0 + 1, gh - 1 );
-
-         double fx = gxf - gx0;
-         double fy = gyf - gy0;
-
-         double v00 = gridValues[gy0 * gw + gx0];
-         double v10 = gridValues[gy0 * gw + gx1];
-         double v01 = gridValues[gy1 * gw + gx0];
-         double v11 = gridValues[gy1 * gw + gx1];
-
-         bgMap[y * width + x] = static_cast<float>(
-            v00 * ( 1 - fx ) * ( 1 - fy ) +
-            v10 * fx * ( 1 - fy ) +
-            v01 * ( 1 - fx ) * fy +
-            v11 * fx * fy );
+         // Sum of rectangle [y0..y1, x0..x1] using integral image
+         double sum = integral[( y1 + 1 ) * iw + ( x1 + 1 )]
+                    - integral[y0 * iw + ( x1 + 1 )]
+                    - integral[( y1 + 1 ) * iw + x0]
+                    + integral[y0 * iw + x0];
+         int count = ( y1 - y0 + 1 ) * ( x1 - x0 + 1 );
+         result[y * width + x] = static_cast<float>( sum / count );
       }
    }
 
-   return bgMap;
+   return result;
 }
 
 // ============================================================================
