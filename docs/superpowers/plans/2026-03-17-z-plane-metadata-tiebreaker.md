@@ -330,15 +330,34 @@ In `tests/unit/test_pixel_selector.cpp`, change all 5 existing tests:
 - Replace `selector.processPixel(cube, y, x, weights)` with `selector.processPixel(cube, y, x)`
 - Replace `selector.processImage(cube, weights)` with `selector.processImage(cube, nullptr)`
 
+- [ ] **Step 8b: Update other test files that call old PixelSelector API**
+
+In `tests/unit/test_adaptive_models.cpp`:
+- Line 22: `selector.processImage(cube, weights)` → `selector.processImage(cube, nullptr)`
+- Line 43: `selector.processImage(cube, weights)` → `selector.processImage(cube, nullptr)`
+- Remove `std::vector<double> weights(...)` declarations
+
+In `tests/unit/test_cuda_equivalence.cpp`:
+- Line 60: `cpuSelector.processImage(cpuCube, weights, nullptr)` → `cpuSelector.processImage(cpuCube, nullptr, nullptr)`
+- Line 115: `selector.processImageGPU(cube, weights, distTypes, nullptr)` → `selector.processImageGPU(cube, nullptr, distTypes, nullptr)`
+- Line 161: `cpuSelector.processImage(cpuCube, weights, nullptr)` → `cpuSelector.processImage(cpuCube, nullptr, nullptr)`
+- Remove `std::vector<double> weights(...)` declarations
+
+In `tests/unit/test_cuda_remediation.cpp`:
+- Line 34: `selector.selectBestZ(..., weights, ...)` → `selector.selectBestZ(..., nullptr, ...)`
+- Line 55: `selector.selectBestZ(..., weights, ...)` → `selector.selectBestZ(..., nullptr, ...)`
+- Line 78: `selector.selectBestZ(..., weights, ...)` → `selector.selectBestZ(..., nullptr, ...)`
+- Remove `std::vector<double> weights(...)` declarations
+
 - [ ] **Step 9: Build and run tests**
 
 Run: `cd build && cmake .. -DPCLDIR=$HOME/PCL && make -j$(nproc) test_pixel_selector && ./test_pixel_selector`
-Expected: all 9 tests pass (5 existing + 4 new tiebreaker tests + 1 single-candidate test)
+Expected: all 10 tests pass (5 existing + 5 new tiebreaker tests)
 
 - [ ] **Step 10: Commit**
 
 ```bash
-git add src/engine/PixelSelector.h src/engine/PixelSelector.cpp tests/unit/test_pixel_selector.cpp
+git add src/engine/PixelSelector.h src/engine/PixelSelector.cpp tests/unit/test_pixel_selector.cpp tests/unit/test_adaptive_models.cpp tests/unit/test_cuda_equivalence.cpp tests/unit/test_cuda_remediation.cpp
 git commit -m "feat: implement metadata tiebreaker in selectBestZ CPU path"
 ```
 
@@ -469,14 +488,36 @@ Remove `${CMAKE_SOURCE_DIR}/src/engine/QualityWeights.cpp` from `test_full_pipel
 
 Remove line 9: `#include "engine/QualityWeights.h"`
 
-Update any `qualityWeights` usage in the test to use `nullptr` instead.
+Update `qualityWeights` usage in the test:
+- Line 37: `selector.processImage(cube, weights)` → `selector.processImage(cube, nullptr)`
+- Line 91: `selector.processImage(cube, weights)` → `selector.processImage(cube, nullptr)`
+- Line 129: `selector.processImage(cube, weights)` → `selector.processImage(cube, nullptr)`
+- Line 150: `selector.processImage(cube, weights)` → `selector.processImage(cube, nullptr)`
+- Remove `std::vector<double> weights(...)` declarations
 
-- [ ] **Step 12: Build and run all tests**
+- [ ] **Step 12: Remove qualityWeights from CudaRemediation**
+
+In `src/engine/cuda/CudaRemediation.h`, remove `const std::vector<double>& qualityWeights` from `remediateTrailsGPU`:
+
+```cpp
+bool remediateTrailsGPU(
+   const float* cubeData,
+   size_t nSubs, size_t height, size_t width,
+   const std::vector<TrailPixel>& trailPixels,
+   double trailOutlierSigma,
+   float* outputPixels );
+```
+
+In `src/engine/cuda/CudaRemediation.cu`, update the function signature and remove the `(void)qualityWeights;` line.
+
+Update the `remediateTrailsGPU` call site in `NukeXStackInstance.cpp` — remove the `weights` argument.
+
+- [ ] **Step 13: Build and run all tests**
 
 Run: `cd build && cmake .. -DPCLDIR=$HOME/PCL && make -j$(nproc) && ctest --output-on-failure`
 Expected: all tests pass (one fewer test binary — `test_quality_weights` is gone)
 
-- [ ] **Step 13: Commit**
+- [ ] **Step 14: Commit**
 
 ```bash
 git add -A
@@ -554,9 +595,8 @@ channelResults[ch] = selector.processImageGPU(channelCubes[ch], qualityScores.da
 
 - [ ] **Step 4: Update Phase 7 remediation calls**
 
-Find the CudaRemediation calls that pass `weights` and replace with `qualityScores`:
-The `remediateTrailsGPU` function still takes `qualityWeights` — this will be fixed in Task 5.
-For the CPU fallback `selectBestZ` calls in Phase 7, pass `qualityScores.data()` instead of `weights`.
+Find the Phase 7 CPU fallback `selectBestZ` calls in `NukeXStackInstance.cpp` and pass `qualityScores.data()` instead of `weights`.
+The `remediateTrailsGPU` signature was already updated in Task 3 Step 12 — update its call site to remove the `weights` argument if not already done.
 
 - [ ] **Step 5: Build and run tests**
 
@@ -572,13 +612,11 @@ git commit -m "feat: refactor Phase 2 to compute metadata scores, fix star detec
 
 ---
 
-### Task 5: Update UI + CudaRemediation cleanup
+### Task 5: Update UI
 
 **Files:**
 - Modify: `src/NukeXStackInterface.h:88-96` (remove weight GUI members)
 - Modify: `src/NukeXStackInterface.cpp:150-165,398-416,488-497,623-711` (simplify Quality section)
-- Modify: `src/engine/cuda/CudaRemediation.h:31` (remove qualityWeights param)
-- Modify: `src/engine/cuda/CudaRemediation.cu:237,241` (remove qualityWeights param)
 
 - [ ] **Step 1: Simplify Quality section in NukeXStackInterface.h**
 
@@ -652,33 +690,16 @@ Replace the Quality Weighting Section construction (lines 623-712) with:
    Quality_Control.SetSizer( Quality_Sizer );
 ```
 
-- [ ] **Step 7: Remove qualityWeights from CudaRemediation**
-
-In `src/engine/cuda/CudaRemediation.h`, remove `const std::vector<double>& qualityWeights` from `remediateTrailsGPU`:
-
-```cpp
-bool remediateTrailsGPU(
-   const float* cubeData,
-   size_t nSubs, size_t height, size_t width,
-   const std::vector<TrailPixel>& trailPixels,
-   double trailOutlierSigma,
-   float* outputPixels );
-```
-
-In `src/engine/cuda/CudaRemediation.cu`, update the function signature and remove the `(void)qualityWeights;` line.
-
-Update any call sites in `NukeXStackInstance.cpp` that pass `weights` / `qualityWeights` to `remediateTrailsGPU`.
-
-- [ ] **Step 8: Build and run tests**
+- [ ] **Step 7: Build and run tests**
 
 Run: `cd build && cmake .. -DPCLDIR=$HOME/PCL && make -j$(nproc) && ctest --output-on-failure`
 Expected: all tests pass
 
-- [ ] **Step 9: Commit**
+- [ ] **Step 8: Commit**
 
 ```bash
 git add -A
-git commit -m "refactor: simplify Quality UI to single tiebreaker checkbox, remove CudaRemediation qualityWeights"
+git commit -m "refactor: simplify Quality UI to single tiebreaker checkbox"
 ```
 
 ---
@@ -740,34 +761,19 @@ git commit -m "feat: add metadata tiebreaker to CUDA pixel selection kernel"
 
 ---
 
-### Task 7: Integration test update + full build verification
+### Task 7: Full clean build verification
 
-**Files:**
-- Modify: `tests/integration/test_full_pipeline.cpp`
+Integration test was already updated in Task 3 Step 11.
 
-- [ ] **Step 1: Update integration test**
-
-In `tests/integration/test_full_pipeline.cpp`:
-- Remove `#include "engine/QualityWeights.h"` (line 9)
-- Update any `qualityWeights` vector creation → pass `nullptr` to processImage
-- Verify the test still exercises the full pipeline correctly
-
-- [ ] **Step 2: Full clean build**
+- [ ] **Step 1: Full clean build**
 
 Run: `cd build && cmake .. -DPCLDIR=$HOME/PCL && make clean && make -j$(nproc)`
 Expected: clean build, no warnings about removed symbols
 
-- [ ] **Step 3: Run all tests**
+- [ ] **Step 2: Run all tests**
 
 Run: `cd build && ctest --output-on-failure`
-Expected: all tests pass (count should be one fewer than before — no `test_quality_weights`)
-
-- [ ] **Step 4: Commit**
-
-```bash
-git add tests/integration/test_full_pipeline.cpp
-git commit -m "test: update integration test for metadata tiebreaker API"
-```
+Expected: all tests pass (one fewer test binary — no `test_quality_weights`)
 
 ---
 
