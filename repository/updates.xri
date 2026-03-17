@@ -9,8 +9,8 @@
       </p>
    </description>
    <platform os="linux" arch="x64" version="1.8.0:1.9.9">
-      <package fileName="20260313-linux-x64-NukeX.tar.gz" sha1="013994e1cdf4c459ed49e1dc53f15d7e4ac24a4a" type="module" releaseDate="20260313">
-         <title>NukeX 3.1.0.10</title>
+      <package fileName="20260317-linux-x64-NukeX.tar.gz" sha1="e5287d3480c22065879744100df08da684c6c4a0" type="module" releaseDate="20260317">
+         <title>NukeX 3.1.0.11</title>
          <description>
             <p>
                <b>NukeX v3 - Statistical Stacking + Stretch for PixInsight</b>
@@ -20,21 +20,22 @@
             </p>
             <ul>
                <li>
-                  <b>NukeXStack</b> - Per-pixel statistical inference stacking with 4 distribution models (Gaussian, Poisson, Skew-Normal, Bimodal), triangle asterism alignment, quality weighting, and post-stretch subcube remediation (trail, dust, vignetting). Optional CUDA GPU acceleration.
+                  <b>NukeXStack</b> - Per-pixel statistical inference stacking with 4 distribution models (Gaussian, Poisson, Skew-Normal, Bimodal), triangle asterism alignment, metadata tiebreaker, and post-stretch subcube remediation (trail, dust, vignetting). Optional CUDA GPU acceleration.
                </li>
                <li>
                   <b>NukeXStretch</b> - 11 stretch algorithms (MTF, GHS, ArcSinh, Log, OTS, SAS, RNC, Veralux, Lupton, Histogram, Photometric).
                </li>
             </ul>
             <p>
-               <b>Version 3.1.0.3 - Dynamic trail detection</b>
+               <b>Version 3.1.0.11 - Metadata tiebreaker replaces frame weights</b>
             </p>
             <p>
-               Replaced hardcoded Hough peak threshold with dynamic outlier detection.
-               Computes median and MAD of all non-zero accumulator bins, then flags
-               bins &gt;5 sigma above median as trail candidates. Adapts to the actual
-               edge structure of each image — no threshold tuning needed. Minimum 100
-               votes to reject tiny edge clusters. Safety caps retained.
+               Replaced dead frame-level quality weights with per-Z-plane metadata
+               tiebreaker. When multiple frames produce statistically indistinguishable
+               pixel values (within 1x MAD of shortest-half cluster), the tiebreaker
+               prefers the frame with better seeing (FWHM) and tracking (eccentricity).
+               Fixed star detection thresholds for uncalibrated subs. Simplified UI
+               to single checkbox. CPU and GPU paths both implement the tiebreaker.
             </p>
             <p>
                Copyright (c) 2026 Scott Carter. All Rights Reserved.
@@ -43,4 +44,4 @@
       </package>
    </platform>
 </xri>
-<Signature developerId="scarter4work" timestamp="2026-03-15T04:19:07.572Z" encoding="Base64">9cZWR1/+vOI6tvisFf0AKxmZHg5F4Kb8wIe3PTKpxhmo6zudICr6gyZatvsnuMJ/qCBXby9ZZ9hUlTfEf3LWDA==</Signature>
+<Signature developerId="scarter4work" timestamp="2026-03-17T12:56:38.767Z" encoding="Base64">p89yn9KY0I/KSmbxp0j6snJEarTS8gtgIhK1Il1eHGUtyxpgYxsV0CF2pdAscdup3LCh1OjfrtG/5iLVy+yMDA==</Signature>
