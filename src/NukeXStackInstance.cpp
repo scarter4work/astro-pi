@@ -39,10 +39,9 @@ namespace pcl
 
 NukeXStackInstance::NukeXStackInstance( const MetaProcess* m )
    : ProcessImplementation( m )
-   , p_qualityWeightMode( NXSQualityWeightMode::Default )
    , p_generateProvenance( TheNXSGenerateProvenanceParameter->DefaultValue() )
    , p_generateDistMetadata( TheNXSGenerateDistMetadataParameter->DefaultValue() )
-   , p_enableQualityWeighting( TheNXSEnableQualityWeightingParameter->DefaultValue() )
+   , p_enableMetadataTiebreaker( TheNXSEnableMetadataTiebreakerParameter->DefaultValue() )
    , p_enableAutoStretch( TheNXSEnableAutoStretchParameter->DefaultValue() )
    , p_useGPU( TheNXSUseGPUParameter->DefaultValue() )
    , p_adaptiveModels( TheNXSAdaptiveModelsParameter->DefaultValue() )
@@ -57,11 +56,6 @@ NukeXStackInstance::NukeXStackInstance( const MetaProcess* m )
    , p_dustDetectionSigma( static_cast<float>( TheNXSDustDetectionSigmaParameter->DefaultValue() ) )
    , p_dustMaxCorrectionRatio( static_cast<float>( TheNXSDustMaxCorrectionRatioParameter->DefaultValue() ) )
    , p_vignettingMaxCorrection( static_cast<float>( TheNXSVignettingMaxCorrectionParameter->DefaultValue() ) )
-   , p_fwhmWeight( static_cast<float>( TheNXSFWHMWeightParameter->DefaultValue() ) )
-   , p_eccentricityWeight( static_cast<float>( TheNXSEccentricityWeightParameter->DefaultValue() ) )
-   , p_skyBackgroundWeight( static_cast<float>( TheNXSSkyBackgroundWeightParameter->DefaultValue() ) )
-   , p_hfrWeight( static_cast<float>( TheNXSHFRWeightParameter->DefaultValue() ) )
-   , p_altitudeWeight( static_cast<float>( TheNXSAltitudeWeightParameter->DefaultValue() ) )
    , p_dustMinDiameter( static_cast<int32>( TheNXSDustMinDiameterParameter->DefaultValue() ) )
    , p_dustMaxDiameter( static_cast<int32>( TheNXSDustMaxDiameterParameter->DefaultValue() ) )
    , p_dustNeighborRadius( static_cast<int32>( TheNXSDustNeighborRadiusParameter->DefaultValue() ) )
@@ -85,10 +79,9 @@ void NukeXStackInstance::Assign( const ProcessImplementation& p )
    if ( x != nullptr )
    {
       p_inputFrames             = x->p_inputFrames;
-      p_qualityWeightMode       = x->p_qualityWeightMode;
       p_generateProvenance      = x->p_generateProvenance;
       p_generateDistMetadata    = x->p_generateDistMetadata;
-      p_enableQualityWeighting  = x->p_enableQualityWeighting;
+      p_enableMetadataTiebreaker = x->p_enableMetadataTiebreaker;
       p_enableAutoStretch       = x->p_enableAutoStretch;
       p_useGPU                  = x->p_useGPU;
       p_adaptiveModels          = x->p_adaptiveModels;
@@ -102,11 +95,6 @@ void NukeXStackInstance::Assign( const ProcessImplementation& p )
       p_dustCircularityMin      = x->p_dustCircularityMin;
       p_dustDetectionSigma      = x->p_dustDetectionSigma;
       p_dustMaxCorrectionRatio  = x->p_dustMaxCorrectionRatio;
-      p_fwhmWeight              = x->p_fwhmWeight;
-      p_eccentricityWeight      = x->p_eccentricityWeight;
-      p_skyBackgroundWeight     = x->p_skyBackgroundWeight;
-      p_hfrWeight               = x->p_hfrWeight;
-      p_altitudeWeight          = x->p_altitudeWeight;
       p_dustMinDiameter         = x->p_dustMinDiameter;
       p_dustMaxDiameter         = x->p_dustMaxDiameter;
       p_dustNeighborRadius      = x->p_dustNeighborRadius;
@@ -238,34 +226,28 @@ bool NukeXStackInstance::ExecuteGlobal()
       int cropW = aligned.crop.width();
       int cropH = aligned.crop.height();
 
-      // Phase 2: Quality weights
-      console.WriteLn( "\nPhase 2: Computing quality weights..." );
+      // Phase 2: Quality scores for metadata tiebreaker
+      console.WriteLn( "\nPhase 2: Extracting quality scores..." );
       console.Flush();
       Module->ProcessEvents();
 
-      std::vector<double> weights;
-      if ( p_enableQualityWeighting )
+      std::vector<double> qualityScores;
+      const double* qualityScoresPtr = nullptr;
+      if ( p_enableMetadataTiebreaker )
       {
-         nukex::WeightConfig wcfg;
-         wcfg.fwhmWeight           = p_fwhmWeight;
-         wcfg.eccentricityWeight   = p_eccentricityWeight;
-         wcfg.skyBackgroundWeight  = p_skyBackgroundWeight;
-         wcfg.hfrWeight            = p_hfrWeight;
-         wcfg.altitudeWeight       = p_altitudeWeight;
-
-         std::vector<nukex::SubMetadata> metaVec;
+         qualityScores.resize( nSubs );
          for ( size_t z = 0; z < nSubs; ++z )
-            metaVec.push_back( aligned.alignedCube.metadata( z ) );
+            qualityScores[z] = aligned.alignedCube.metadata( z ).qualityScore;
+         qualityScoresPtr = qualityScores.data();
 
-         weights = nukex::ComputeQualityWeights( metaVec, wcfg );
-         console.WriteLn( String().Format( "  Mode: Full | Weight range: %.2f \xe2\x80\x94 %.2f",
-            *std::min_element( weights.begin(), weights.end() ),
-            *std::max_element( weights.begin(), weights.end() ) ) );
+         double minQ = *std::min_element( qualityScores.begin(), qualityScores.end() );
+         double maxQ = *std::max_element( qualityScores.begin(), qualityScores.end() );
+         console.WriteLn( String().Format( "  Metadata tiebreaker: ON | Score range: %.4f \xe2\x80\x94 %.4f",
+            minQ, maxQ ) );
       }
       else
       {
-         weights.assign( nSubs, 1.0 / nSubs );
-         console.WriteLn( "  Mode: Equal weights (quality weighting disabled)" );
+         console.WriteLn( "  Metadata tiebreaker: OFF (equal preference)" );
       }
       Module->ProcessEvents();
 
@@ -365,11 +347,11 @@ bool NukeXStackInstance::ExecuteGlobal()
 
          if ( useGPU )
          {
-            channelResults[ch] = selector.processImageGPU( channelCubes[ch], weights.data(), distTypeMaps[ch], progressCB );
+            channelResults[ch] = selector.processImageGPU( channelCubes[ch], qualityScoresPtr, distTypeMaps[ch], progressCB );
          }
          else
          {
-            channelResults[ch] = selector.processImage( channelCubes[ch], weights.data(), progressCB );
+            channelResults[ch] = selector.processImage( channelCubes[ch], qualityScoresPtr, progressCB );
 
             size_t mapSize = size_t( cropH ) * size_t( cropW );
             distTypeMaps[ch].resize( mapSize );
@@ -871,7 +853,7 @@ bool NukeXStackInstance::ExecuteGlobal()
                         gpuOk = nukex::cuda::remediateTrailsGPU(
                            channelCubes[ch].cube().data(),
                            channelCubes[ch].numSubs(), cropH, cropW,
-                           cudaTrailPixels, weights,
+                           cudaTrailPixels,
                            p_trailOutlierSigma, corrected.data() );
                      }
 #endif
@@ -906,7 +888,7 @@ bool NukeXStackInstance::ExecuteGlobal()
                                  channelCubes[ch].setMask( z, py, px, 1 );
 
                            auto result = fallbackSelector.selectBestZ(
-                              zCol, channelCubes[ch].numSubs(), weights.data(),
+                              zCol, channelCubes[ch].numSubs(), qualityScoresPtr,
                               channelCubes[ch].maskColumnPtr( py, px ) );
                            corrected[i] = result.selectedValue;
                         }
@@ -1194,14 +1176,12 @@ void* NukeXStackInstance::LockParameter( const MetaParameter* p, size_type table
          return nullptr;
       return &p_inputFrames[tableRow].enabled;
    }
-   if ( p == TheNXSQualityWeightModeParameter )
-      return &p_qualityWeightMode;
    if ( p == TheNXSGenerateProvenanceParameter )
       return &p_generateProvenance;
    if ( p == TheNXSGenerateDistMetadataParameter )
       return &p_generateDistMetadata;
-   if ( p == TheNXSEnableQualityWeightingParameter )
-      return &p_enableQualityWeighting;
+   if ( p == TheNXSEnableMetadataTiebreakerParameter )
+      return &p_enableMetadataTiebreaker;
    if ( p == TheNXSEnableAutoStretchParameter )
       return &p_enableAutoStretch;
    if ( p == TheNXSUseGPUParameter )
@@ -1228,16 +1208,6 @@ void* NukeXStackInstance::LockParameter( const MetaParameter* p, size_type table
       return &p_dustDetectionSigma;
    if ( p == TheNXSDustMaxCorrectionRatioParameter )
       return &p_dustMaxCorrectionRatio;
-   if ( p == TheNXSFWHMWeightParameter )
-      return &p_fwhmWeight;
-   if ( p == TheNXSEccentricityWeightParameter )
-      return &p_eccentricityWeight;
-   if ( p == TheNXSSkyBackgroundWeightParameter )
-      return &p_skyBackgroundWeight;
-   if ( p == TheNXSHFRWeightParameter )
-      return &p_hfrWeight;
-   if ( p == TheNXSAltitudeWeightParameter )
-      return &p_altitudeWeight;
    if ( p == TheNXSDustMinDiameterParameter )
       return &p_dustMinDiameter;
    if ( p == TheNXSDustMaxDiameterParameter )

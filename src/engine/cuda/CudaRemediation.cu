@@ -234,11 +234,9 @@ bool remediateTrailsGPU(
    const float* cubeData,
    size_t nSubs, size_t height, size_t width,
    const std::vector<TrailPixel>& trailPixels,
-   const std::vector<double>& qualityWeights,
    double trailOutlierSigma,
    float* outputPixels )
 {
-   (void)qualityWeights; // reserved for future weighted median
 
    int numTrail = static_cast<int>( trailPixels.size() );
    if ( numTrail == 0 ) return true; // nothing to do

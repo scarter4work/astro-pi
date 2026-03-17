@@ -53,30 +53,6 @@ public:
 extern NXSInputFrameEnabled* TheNXSInputFrameEnabledParameter;
 
 // ----------------------------------------------------------------------------
-// Quality Weight Mode Enumeration
-// ----------------------------------------------------------------------------
-
-class NXSQualityWeightMode : public MetaEnumeration
-{
-public:
-   enum { None = 0,      // No quality weighting
-          FWHMOnly = 1,  // Weight by FWHM only
-          Full = 2,      // Full multi-attribute weighting (default)
-          NumberOfItems,
-          Default = Full };
-
-   NXSQualityWeightMode( MetaProcess* );
-
-   IsoString Id() const override;
-   size_type NumberOfElements() const override;
-   IsoString ElementId( size_type ) const override;
-   int ElementValue( size_type ) const override;
-   size_type DefaultValueIndex() const override;
-};
-
-extern NXSQualityWeightMode* TheNXSQualityWeightModeParameter;
-
-// ----------------------------------------------------------------------------
 // Boolean Parameters
 // ----------------------------------------------------------------------------
 
@@ -100,15 +76,15 @@ public:
 
 extern NXSGenerateDistMetadata* TheNXSGenerateDistMetadataParameter;
 
-class NXSEnableQualityWeighting : public MetaBoolean
+class NXSEnableMetadataTiebreaker : public MetaBoolean
 {
 public:
-   NXSEnableQualityWeighting( MetaProcess* );
+   NXSEnableMetadataTiebreaker( MetaProcess* );
    IsoString Id() const override;
    bool DefaultValue() const override;
 };
 
-extern NXSEnableQualityWeighting* TheNXSEnableQualityWeightingParameter;
+extern NXSEnableMetadataTiebreaker* TheNXSEnableMetadataTiebreakerParameter;
 
 class NXSEnableAutoStretch : public MetaBoolean
 {
@@ -326,71 +302,6 @@ public:
 };
 
 extern NXSOutlierSigmaThreshold* TheNXSOutlierSigmaThresholdParameter;
-
-class NXSFWHMWeight : public MetaFloat
-{
-public:
-   NXSFWHMWeight( MetaProcess* );
-   IsoString Id() const override;
-   int Precision() const override;
-   double MinimumValue() const override;
-   double MaximumValue() const override;
-   double DefaultValue() const override;
-};
-
-extern NXSFWHMWeight* TheNXSFWHMWeightParameter;
-
-class NXSEccentricityWeight : public MetaFloat
-{
-public:
-   NXSEccentricityWeight( MetaProcess* );
-   IsoString Id() const override;
-   int Precision() const override;
-   double MinimumValue() const override;
-   double MaximumValue() const override;
-   double DefaultValue() const override;
-};
-
-extern NXSEccentricityWeight* TheNXSEccentricityWeightParameter;
-
-class NXSSkyBackgroundWeight : public MetaFloat
-{
-public:
-   NXSSkyBackgroundWeight( MetaProcess* );
-   IsoString Id() const override;
-   int Precision() const override;
-   double MinimumValue() const override;
-   double MaximumValue() const override;
-   double DefaultValue() const override;
-};
-
-extern NXSSkyBackgroundWeight* TheNXSSkyBackgroundWeightParameter;
-
-class NXSHFRWeight : public MetaFloat
-{
-public:
-   NXSHFRWeight( MetaProcess* );
-   IsoString Id() const override;
-   int Precision() const override;
-   double MinimumValue() const override;
-   double MaximumValue() const override;
-   double DefaultValue() const override;
-};
-
-extern NXSHFRWeight* TheNXSHFRWeightParameter;
-
-class NXSAltitudeWeight : public MetaFloat
-{
-public:
-   NXSAltitudeWeight( MetaProcess* );
-   IsoString Id() const override;
-   int Precision() const override;
-   double MinimumValue() const override;
-   double MaximumValue() const override;
-   double DefaultValue() const override;
-};
-
-extern NXSAltitudeWeight* TheNXSAltitudeWeightParameter;
 
 // ----------------------------------------------------------------------------
 

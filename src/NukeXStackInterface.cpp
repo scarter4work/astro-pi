@@ -146,23 +146,8 @@ void NukeXStackInterface::UpdateControls()
    // Outlier rejection
    GUI->OutlierSigma_NumericControl.SetValue( m_instance.p_outlierSigmaThreshold );
 
-   // Quality weighting
-   GUI->EnableQualityWeighting_CheckBox.SetChecked( m_instance.p_enableQualityWeighting );
-   GUI->QualityMode_ComboBox.SetCurrentItem( m_instance.p_qualityWeightMode );
-
-   bool qwEnabled = m_instance.p_enableQualityWeighting;
-   GUI->QualityMode_ComboBox.Enable( qwEnabled );
-   GUI->FWHMWeight_NumericControl.Enable( qwEnabled );
-   GUI->EccentricityWeight_NumericControl.Enable( qwEnabled );
-   GUI->SkyBackgroundWeight_NumericControl.Enable( qwEnabled );
-   GUI->HFRWeight_NumericControl.Enable( qwEnabled );
-   GUI->AltitudeWeight_NumericControl.Enable( qwEnabled );
-
-   GUI->FWHMWeight_NumericControl.SetValue( m_instance.p_fwhmWeight );
-   GUI->EccentricityWeight_NumericControl.SetValue( m_instance.p_eccentricityWeight );
-   GUI->SkyBackgroundWeight_NumericControl.SetValue( m_instance.p_skyBackgroundWeight );
-   GUI->HFRWeight_NumericControl.SetValue( m_instance.p_hfrWeight );
-   GUI->AltitudeWeight_NumericControl.SetValue( m_instance.p_altitudeWeight );
+   // Metadata tiebreaker
+   GUI->EnableMetadataTiebreaker_CheckBox.SetChecked( m_instance.p_enableMetadataTiebreaker );
 
    // Output
    GUI->GenerateProvenance_CheckBox.SetChecked( m_instance.p_generateProvenance );
@@ -397,23 +382,17 @@ void NukeXStackInterface::e_ButtonClick( Button& sender, bool /*checked*/ )
 
 void NukeXStackInterface::e_ComboBoxItemSelected( ComboBox& sender, int itemIndex )
 {
-   if ( sender == GUI->QualityMode_ComboBox )
-      m_instance.p_qualityWeightMode = itemIndex;
+   (void)sender;
+   (void)itemIndex;
 }
 
 // ----------------------------------------------------------------------------
 
 void NukeXStackInterface::e_CheckBoxClick( Button& sender, bool checked )
 {
-   if ( sender == GUI->EnableQualityWeighting_CheckBox )
+   if ( sender == GUI->EnableMetadataTiebreaker_CheckBox )
    {
-      m_instance.p_enableQualityWeighting = checked;
-      GUI->QualityMode_ComboBox.Enable( checked );
-      GUI->FWHMWeight_NumericControl.Enable( checked );
-      GUI->EccentricityWeight_NumericControl.Enable( checked );
-      GUI->SkyBackgroundWeight_NumericControl.Enable( checked );
-      GUI->HFRWeight_NumericControl.Enable( checked );
-      GUI->AltitudeWeight_NumericControl.Enable( checked );
+      m_instance.p_enableMetadataTiebreaker = checked;
    }
    else if ( sender == GUI->GenerateProvenance_CheckBox )
    {
@@ -485,16 +464,6 @@ void NukeXStackInterface::e_NumericValueUpdated( NumericEdit& sender, double val
 {
    if ( sender == GUI->OutlierSigma_NumericControl )
       m_instance.p_outlierSigmaThreshold = value;
-   else if ( sender == GUI->FWHMWeight_NumericControl )
-      m_instance.p_fwhmWeight = value;
-   else if ( sender == GUI->EccentricityWeight_NumericControl )
-      m_instance.p_eccentricityWeight = value;
-   else if ( sender == GUI->SkyBackgroundWeight_NumericControl )
-      m_instance.p_skyBackgroundWeight = value;
-   else if ( sender == GUI->HFRWeight_NumericControl )
-      m_instance.p_hfrWeight = value;
-   else if ( sender == GUI->AltitudeWeight_NumericControl )
-      m_instance.p_altitudeWeight = value;
    else if ( sender == GUI->TrailDilateRadius_NumericControl )
       m_instance.p_trailDilateRadius = value;
    else if ( sender == GUI->TrailOutlierSigma_NumericControl )
@@ -620,94 +589,16 @@ NukeXStackInterface::GUIData::GUIData( NukeXStackInterface& w )
    // Quality Weighting Section
    // =========================================================================
 
-   Quality_SectionBar.SetTitle( "Quality Weighting" );
+   Quality_SectionBar.SetTitle( "Metadata Tiebreaker" );
    Quality_SectionBar.SetSection( Quality_Control );
 
-   EnableQualityWeighting_CheckBox.SetText( "Enable Quality Weighting" );
-   EnableQualityWeighting_CheckBox.SetToolTip( "<p>Compute per-frame quality weights from FITS metadata. "
-                                                "Better frames contribute more to the final integration.</p>" );
-   EnableQualityWeighting_CheckBox.OnClick( (Button::click_event_handler)&NukeXStackInterface::e_CheckBoxClick, w );
-
-   QualityMode_Label.SetText( "Mode:" );
-   QualityMode_Label.SetTextAlignment( TextAlign::Right | TextAlign::VertCenter );
-   QualityMode_Label.SetMinWidth( labelWidth1 );
-
-   QualityMode_ComboBox.AddItem( "None" );
-   QualityMode_ComboBox.AddItem( "FWHM Only" );
-   QualityMode_ComboBox.AddItem( "Full (All Attributes)" );
-   QualityMode_ComboBox.SetToolTip( "<p><b>None</b>: Equal weights for all frames.</p>"
-                                     "<p><b>FWHM Only</b>: Weight by seeing (FWHM) only.</p>"
-                                     "<p><b>Full</b>: Geometric mean of FWHM, eccentricity, sky background, "
-                                     "HFR, and altitude weights.</p>" );
-   QualityMode_ComboBox.OnItemSelected( (ComboBox::item_event_handler)&NukeXStackInterface::e_ComboBoxItemSelected, w );
-
-   QualityMode_HSizer.SetSpacing( 4 );
-   QualityMode_HSizer.Add( QualityMode_Label );
-   QualityMode_HSizer.Add( QualityMode_ComboBox, 100 );
-
-   FWHMWeight_NumericControl.label.SetText( "FWHM Weight:" );
-   FWHMWeight_NumericControl.label.SetMinWidth( labelWidth1 );
-   FWHMWeight_NumericControl.slider.SetRange( 0, 100 );
-   FWHMWeight_NumericControl.SetReal();
-   FWHMWeight_NumericControl.SetRange( TheNXSFWHMWeightParameter->MinimumValue(),
-                                        TheNXSFWHMWeightParameter->MaximumValue() );
-   FWHMWeight_NumericControl.SetPrecision( TheNXSFWHMWeightParameter->Precision() );
-   FWHMWeight_NumericControl.edit.SetMinWidth( editWidth1 );
-   FWHMWeight_NumericControl.SetToolTip( "<p>Relative importance of FWHM (seeing) in quality weighting.</p>" );
-   FWHMWeight_NumericControl.OnValueUpdated( (NumericEdit::value_event_handler)&NukeXStackInterface::e_NumericValueUpdated, w );
-
-   EccentricityWeight_NumericControl.label.SetText( "Eccentricity Weight:" );
-   EccentricityWeight_NumericControl.label.SetMinWidth( labelWidth1 );
-   EccentricityWeight_NumericControl.slider.SetRange( 0, 100 );
-   EccentricityWeight_NumericControl.SetReal();
-   EccentricityWeight_NumericControl.SetRange( TheNXSEccentricityWeightParameter->MinimumValue(),
-                                                TheNXSEccentricityWeightParameter->MaximumValue() );
-   EccentricityWeight_NumericControl.SetPrecision( TheNXSEccentricityWeightParameter->Precision() );
-   EccentricityWeight_NumericControl.edit.SetMinWidth( editWidth1 );
-   EccentricityWeight_NumericControl.SetToolTip( "<p>Relative importance of star eccentricity (roundness).</p>" );
-   EccentricityWeight_NumericControl.OnValueUpdated( (NumericEdit::value_event_handler)&NukeXStackInterface::e_NumericValueUpdated, w );
-
-   SkyBackgroundWeight_NumericControl.label.SetText( "Sky Background Weight:" );
-   SkyBackgroundWeight_NumericControl.label.SetMinWidth( labelWidth1 );
-   SkyBackgroundWeight_NumericControl.slider.SetRange( 0, 100 );
-   SkyBackgroundWeight_NumericControl.SetReal();
-   SkyBackgroundWeight_NumericControl.SetRange( TheNXSSkyBackgroundWeightParameter->MinimumValue(),
-                                                 TheNXSSkyBackgroundWeightParameter->MaximumValue() );
-   SkyBackgroundWeight_NumericControl.SetPrecision( TheNXSSkyBackgroundWeightParameter->Precision() );
-   SkyBackgroundWeight_NumericControl.edit.SetMinWidth( editWidth1 );
-   SkyBackgroundWeight_NumericControl.SetToolTip( "<p>Relative importance of sky background level (lower is better).</p>" );
-   SkyBackgroundWeight_NumericControl.OnValueUpdated( (NumericEdit::value_event_handler)&NukeXStackInterface::e_NumericValueUpdated, w );
-
-   HFRWeight_NumericControl.label.SetText( "HFR Weight:" );
-   HFRWeight_NumericControl.label.SetMinWidth( labelWidth1 );
-   HFRWeight_NumericControl.slider.SetRange( 0, 100 );
-   HFRWeight_NumericControl.SetReal();
-   HFRWeight_NumericControl.SetRange( TheNXSHFRWeightParameter->MinimumValue(),
-                                       TheNXSHFRWeightParameter->MaximumValue() );
-   HFRWeight_NumericControl.SetPrecision( TheNXSHFRWeightParameter->Precision() );
-   HFRWeight_NumericControl.edit.SetMinWidth( editWidth1 );
-   HFRWeight_NumericControl.SetToolTip( "<p>Relative importance of half-flux radius.</p>" );
-   HFRWeight_NumericControl.OnValueUpdated( (NumericEdit::value_event_handler)&NukeXStackInterface::e_NumericValueUpdated, w );
-
-   AltitudeWeight_NumericControl.label.SetText( "Altitude Weight:" );
-   AltitudeWeight_NumericControl.label.SetMinWidth( labelWidth1 );
-   AltitudeWeight_NumericControl.slider.SetRange( 0, 100 );
-   AltitudeWeight_NumericControl.SetReal();
-   AltitudeWeight_NumericControl.SetRange( TheNXSAltitudeWeightParameter->MinimumValue(),
-                                            TheNXSAltitudeWeightParameter->MaximumValue() );
-   AltitudeWeight_NumericControl.SetPrecision( TheNXSAltitudeWeightParameter->Precision() );
-   AltitudeWeight_NumericControl.edit.SetMinWidth( editWidth1 );
-   AltitudeWeight_NumericControl.SetToolTip( "<p>Relative importance of object altitude (higher is better seeing).</p>" );
-   AltitudeWeight_NumericControl.OnValueUpdated( (NumericEdit::value_event_handler)&NukeXStackInterface::e_NumericValueUpdated, w );
+   EnableMetadataTiebreaker_CheckBox.SetText( "Enable Metadata Tiebreaker" );
+   EnableMetadataTiebreaker_CheckBox.SetToolTip( "<p>When multiple frames are statistically indistinguishable, "
+                                                  "prefer the one with better seeing and tracking (from FITS metadata).</p>" );
+   EnableMetadataTiebreaker_CheckBox.OnClick( (Button::click_event_handler)&NukeXStackInterface::e_CheckBoxClick, w );
 
    Quality_Sizer.SetSpacing( 4 );
-   Quality_Sizer.Add( EnableQualityWeighting_CheckBox );
-   Quality_Sizer.Add( QualityMode_HSizer );
-   Quality_Sizer.Add( FWHMWeight_NumericControl );
-   Quality_Sizer.Add( EccentricityWeight_NumericControl );
-   Quality_Sizer.Add( SkyBackgroundWeight_NumericControl );
-   Quality_Sizer.Add( HFRWeight_NumericControl );
-   Quality_Sizer.Add( AltitudeWeight_NumericControl );
+   Quality_Sizer.Add( EnableMetadataTiebreaker_CheckBox );
 
    Quality_Control.SetSizer( Quality_Sizer );
 

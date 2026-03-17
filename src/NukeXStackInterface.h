@@ -81,19 +81,11 @@ private:
       VerticalSizer     Outliers_Sizer;
          NumericControl    OutlierSigma_NumericControl;
 
-      // Quality Weighting Section
+      // Metadata Tiebreaker Section
       SectionBar        Quality_SectionBar;
       Control           Quality_Control;
       VerticalSizer     Quality_Sizer;
-         CheckBox          EnableQualityWeighting_CheckBox;
-         HorizontalSizer   QualityMode_HSizer;
-            Label             QualityMode_Label;
-            ComboBox          QualityMode_ComboBox;
-         NumericControl    FWHMWeight_NumericControl;
-         NumericControl    EccentricityWeight_NumericControl;
-         NumericControl    SkyBackgroundWeight_NumericControl;
-         NumericControl    HFRWeight_NumericControl;
-         NumericControl    AltitudeWeight_NumericControl;
+         CheckBox          EnableMetadataTiebreaker_CheckBox;
 
       // Output Section
       SectionBar        Output_SectionBar;

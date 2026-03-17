@@ -30,13 +30,10 @@ NukeXStackProcess::NukeXStackProcess()
    new NXSInputFramePath( framesTable );
    new NXSInputFrameEnabled( framesTable );
 
-   // Quality weight mode enumeration
-   new NXSQualityWeightMode( this );
-
    // Boolean parameters
    new NXSGenerateProvenance( this );
    new NXSGenerateDistMetadata( this );
-   new NXSEnableQualityWeighting( this );
+   new NXSEnableMetadataTiebreaker( this );
    new NXSEnableAutoStretch( this );
    new NXSUseGPU( this );
    new NXSAdaptiveModels( this );
@@ -53,11 +50,6 @@ NukeXStackProcess::NukeXStackProcess()
    new NXSDustDetectionSigma( this );
    new NXSDustMaxCorrectionRatio( this );
    new NXSVignettingMaxCorrection( this );
-   new NXSFWHMWeight( this );
-   new NXSEccentricityWeight( this );
-   new NXSSkyBackgroundWeight( this );
-   new NXSHFRWeight( this );
-   new NXSAltitudeWeight( this );
 
    // Integer parameters
    new NXSDustMinDiameter( this );
@@ -105,8 +97,8 @@ String NukeXStackProcess::Description() const
       "best-fit distribution per pixel</li>"
       "<li><b>Outlier detection</b> — Generalized ESD test identifies outlier "
       "frames per pixel for robust pixel selection</li>"
-      "<li><b>Quality weighting</b> — Per-frame weights from FITS metadata "
-      "(FWHM, eccentricity, sky background, HFR, altitude)</li>"
+      "<li><b>Metadata tiebreaker</b> — When multiple frames are statistically "
+      "indistinguishable, prefer the one with better seeing and tracking</li>"
       "<li><b>Frame alignment</b> — Triangle asterism matching with integer "
       "pixel shifts and autocrop to common overlap</li>"
       "</ul>"

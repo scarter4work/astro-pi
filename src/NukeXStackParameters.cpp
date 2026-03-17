@@ -70,49 +70,6 @@ bool NXSInputFrameEnabled::DefaultValue() const
 }
 
 // ----------------------------------------------------------------------------
-// Quality Weight Mode
-// ----------------------------------------------------------------------------
-
-NXSQualityWeightMode* TheNXSQualityWeightModeParameter = nullptr;
-
-NXSQualityWeightMode::NXSQualityWeightMode( MetaProcess* P )
-   : MetaEnumeration( P )
-{
-   TheNXSQualityWeightModeParameter = this;
-}
-
-IsoString NXSQualityWeightMode::Id() const
-{
-   return "qualityWeightMode";
-}
-
-size_type NXSQualityWeightMode::NumberOfElements() const
-{
-   return NumberOfItems;
-}
-
-IsoString NXSQualityWeightMode::ElementId( size_type i ) const
-{
-   switch ( i )
-   {
-   default:
-   case None:     return "None";
-   case FWHMOnly: return "FWHMOnly";
-   case Full:     return "Full";
-   }
-}
-
-int NXSQualityWeightMode::ElementValue( size_type i ) const
-{
-   return int( i );
-}
-
-size_type NXSQualityWeightMode::DefaultValueIndex() const
-{
-   return Default;
-}
-
-// ----------------------------------------------------------------------------
 // Boolean Parameters
 // ----------------------------------------------------------------------------
 
@@ -156,20 +113,20 @@ bool NXSGenerateDistMetadata::DefaultValue() const
 
 // ----------------------------------------------------------------------------
 
-NXSEnableQualityWeighting* TheNXSEnableQualityWeightingParameter = nullptr;
+NXSEnableMetadataTiebreaker* TheNXSEnableMetadataTiebreakerParameter = nullptr;
 
-NXSEnableQualityWeighting::NXSEnableQualityWeighting( MetaProcess* P )
+NXSEnableMetadataTiebreaker::NXSEnableMetadataTiebreaker( MetaProcess* P )
    : MetaBoolean( P )
 {
-   TheNXSEnableQualityWeightingParameter = this;
+   TheNXSEnableMetadataTiebreakerParameter = this;
 }
 
-IsoString NXSEnableQualityWeighting::Id() const
+IsoString NXSEnableMetadataTiebreaker::Id() const
 {
-   return "enableQualityWeighting";
+   return "enableMetadataTiebreaker";
 }
 
-bool NXSEnableQualityWeighting::DefaultValue() const
+bool NXSEnableMetadataTiebreaker::DefaultValue() const
 {
    return true;
 }
@@ -677,181 +634,6 @@ double NXSOutlierSigmaThreshold::MaximumValue() const
 double NXSOutlierSigmaThreshold::DefaultValue() const
 {
    return 3.0;
-}
-
-// ----------------------------------------------------------------------------
-
-NXSFWHMWeight* TheNXSFWHMWeightParameter = nullptr;
-
-NXSFWHMWeight::NXSFWHMWeight( MetaProcess* P )
-   : MetaFloat( P )
-{
-   TheNXSFWHMWeightParameter = this;
-}
-
-IsoString NXSFWHMWeight::Id() const
-{
-   return "fwhmWeight";
-}
-
-int NXSFWHMWeight::Precision() const
-{
-   return 2;
-}
-
-double NXSFWHMWeight::MinimumValue() const
-{
-   return 0.0;
-}
-
-double NXSFWHMWeight::MaximumValue() const
-{
-   return 10.0;
-}
-
-double NXSFWHMWeight::DefaultValue() const
-{
-   return 1.0;
-}
-
-// ----------------------------------------------------------------------------
-
-NXSEccentricityWeight* TheNXSEccentricityWeightParameter = nullptr;
-
-NXSEccentricityWeight::NXSEccentricityWeight( MetaProcess* P )
-   : MetaFloat( P )
-{
-   TheNXSEccentricityWeightParameter = this;
-}
-
-IsoString NXSEccentricityWeight::Id() const
-{
-   return "eccentricityWeight";
-}
-
-int NXSEccentricityWeight::Precision() const
-{
-   return 2;
-}
-
-double NXSEccentricityWeight::MinimumValue() const
-{
-   return 0.0;
-}
-
-double NXSEccentricityWeight::MaximumValue() const
-{
-   return 10.0;
-}
-
-double NXSEccentricityWeight::DefaultValue() const
-{
-   return 1.0;
-}
-
-// ----------------------------------------------------------------------------
-
-NXSSkyBackgroundWeight* TheNXSSkyBackgroundWeightParameter = nullptr;
-
-NXSSkyBackgroundWeight::NXSSkyBackgroundWeight( MetaProcess* P )
-   : MetaFloat( P )
-{
-   TheNXSSkyBackgroundWeightParameter = this;
-}
-
-IsoString NXSSkyBackgroundWeight::Id() const
-{
-   return "skyBackgroundWeight";
-}
-
-int NXSSkyBackgroundWeight::Precision() const
-{
-   return 2;
-}
-
-double NXSSkyBackgroundWeight::MinimumValue() const
-{
-   return 0.0;
-}
-
-double NXSSkyBackgroundWeight::MaximumValue() const
-{
-   return 10.0;
-}
-
-double NXSSkyBackgroundWeight::DefaultValue() const
-{
-   return 0.5;
-}
-
-// ----------------------------------------------------------------------------
-
-NXSHFRWeight* TheNXSHFRWeightParameter = nullptr;
-
-NXSHFRWeight::NXSHFRWeight( MetaProcess* P )
-   : MetaFloat( P )
-{
-   TheNXSHFRWeightParameter = this;
-}
-
-IsoString NXSHFRWeight::Id() const
-{
-   return "hfrWeight";
-}
-
-int NXSHFRWeight::Precision() const
-{
-   return 2;
-}
-
-double NXSHFRWeight::MinimumValue() const
-{
-   return 0.0;
-}
-
-double NXSHFRWeight::MaximumValue() const
-{
-   return 10.0;
-}
-
-double NXSHFRWeight::DefaultValue() const
-{
-   return 1.0;
-}
-
-// ----------------------------------------------------------------------------
-
-NXSAltitudeWeight* TheNXSAltitudeWeightParameter = nullptr;
-
-NXSAltitudeWeight::NXSAltitudeWeight( MetaProcess* P )
-   : MetaFloat( P )
-{
-   TheNXSAltitudeWeightParameter = this;
-}
-
-IsoString NXSAltitudeWeight::Id() const
-{
-   return "altitudeWeight";
-}
-
-int NXSAltitudeWeight::Precision() const
-{
-   return 2;
-}
-
-double NXSAltitudeWeight::MinimumValue() const
-{
-   return 0.0;
-}
-
-double NXSAltitudeWeight::MaximumValue() const
-{
-   return 10.0;
-}
-
-double NXSAltitudeWeight::DefaultValue() const
-{
-   return 0.3;
 }
 
 // ----------------------------------------------------------------------------

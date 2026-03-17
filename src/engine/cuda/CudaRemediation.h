@@ -20,7 +20,6 @@ struct TrailPixel { int x, y; };
 // and return the median of the remaining clean values.
 // cubeData: column-major float subcube (nSubs x H x W), Z-columns contiguous
 // trailPixels: compact list of (x,y) coordinates of trail-contaminated pixels
-// qualityWeights: per-sub weights (reserved for future weighted median)
 // trailOutlierSigma: rejection threshold in MAD units
 // outputPixels: receives corrected values (one per trail pixel)
 // Returns true on GPU success, false to fall back to CPU.
@@ -28,7 +27,6 @@ bool remediateTrailsGPU(
    const float* cubeData,
    size_t nSubs, size_t height, size_t width,
    const std::vector<TrailPixel>& trailPixels,
-   const std::vector<double>& qualityWeights,
    double trailOutlierSigma,
    float* outputPixels );
 

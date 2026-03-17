@@ -6,7 +6,6 @@
 #include <cmath>
 
 #include "engine/SubCube.h"
-#include "engine/QualityWeights.h"
 #include "engine/PixelSelector.h"
 #include "engine/NumericalUtils.h"
 

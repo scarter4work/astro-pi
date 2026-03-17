@@ -17,7 +17,6 @@
 
 #include "NukeXStackParameters.h"
 #include "engine/FrameLoader.h"
-#include "engine/QualityWeights.h"
 #include "engine/PixelSelector.h"
 #include "engine/AutoStretchSelector.h"
 
@@ -61,13 +60,10 @@ private:
    // Input frames table
    std::vector<InputFrameData> p_inputFrames;
 
-   // Quality weight mode enumeration
-   pcl_enum p_qualityWeightMode;
-
    // Boolean parameters
    pcl_bool p_generateProvenance;
    pcl_bool p_generateDistMetadata;
-   pcl_bool p_enableQualityWeighting;
+   pcl_bool p_enableMetadataTiebreaker;
    pcl_bool p_enableAutoStretch;
    pcl_bool p_useGPU;
    pcl_bool p_adaptiveModels;
@@ -84,11 +80,6 @@ private:
    float    p_dustDetectionSigma;
    float    p_dustMaxCorrectionRatio;
    float    p_vignettingMaxCorrection;
-   float    p_fwhmWeight;
-   float    p_eccentricityWeight;
-   float    p_skyBackgroundWeight;
-   float    p_hfrWeight;
-   float    p_altitudeWeight;
 
    // Integer parameters
    int32    p_dustMinDiameter;
