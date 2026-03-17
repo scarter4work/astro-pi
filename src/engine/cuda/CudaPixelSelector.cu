@@ -22,6 +22,9 @@ namespace cuda {
 
 static constexpr int MAX_SUBS = 64;
 
+// Quality scores in constant memory — broadcast efficiently to all threads
+__constant__ double d_qualityScores[64];
+
 __device__ constexpr double LOG_2PI       = 1.8378770664093453;
 __device__ constexpr double LOG_2         = 0.6931471805599453;
 __device__ constexpr double INV_SQRT2     = 0.7071067811865476;
@@ -802,12 +805,14 @@ __global__ void pixelSelectionKernel(
     const float* __restrict__ cubeData,
     float* __restrict__ outputPixels,
     uint8_t* __restrict__ distTypes,
+    uint32_t* __restrict__ provenanceOut,
     int nSubs,
     int height,
     int width,
     int maxOutliers,
     double outlierAlpha,
-    bool adaptiveModels)
+    bool adaptiveModels,
+    bool enableMetadataTiebreaker)
 {
     int pixelIdx = blockIdx.x * blockDim.x + threadIdx.x;
     int totalPixels = height * width;
@@ -855,12 +860,14 @@ __global__ void pixelSelectionKernel(
         }
     }
 
-    // 3. Build clean data
+    // 3. Build clean data (with original frame index tracking)
     double cleanData[MAX_SUBS];
+    int cleanIdx[MAX_SUBS];   // original frame index for each clean entry
     int nClean = 0;
     for (int i = 0; i < nSubs; ++i) {
         if (!allOutlier[i]) {
             cleanData[nClean] = zValues[i];
+            cleanIdx[nClean] = i;
             ++nClean;
         }
     }
@@ -869,23 +876,44 @@ __global__ void pixelSelectionKernel(
     if (nClean < 3) {
         if (nPreFiltered >= 3) {
             nClean = nPreFiltered;
-            for (int i = 0; i < nPreFiltered; ++i)
+            for (int i = 0; i < nPreFiltered; ++i) {
                 cleanData[i] = preFiltered[i];
+                cleanIdx[i] = preFilteredIdx[i];
+            }
         } else {
             nClean = nSubs;
-            for (int i = 0; i < nSubs; ++i)
+            for (int i = 0; i < nSubs; ++i) {
                 cleanData[i] = zValues[i];
+                cleanIdx[i] = i;
+            }
         }
     }
 
     // Compute median of clean data
     double sortedClean[MAX_SUBS];
-    for (int i = 0; i < nClean; ++i) sortedClean[i] = cleanData[i];
-    insertionSort(sortedClean, nClean);
+    int sortedCleanIdx[MAX_SUBS];  // original frame index, sorted alongside values
+    for (int i = 0; i < nClean; ++i) {
+        sortedClean[i] = cleanData[i];
+        sortedCleanIdx[i] = cleanIdx[i];
+    }
+    // Insertion sort both arrays together (sort by value)
+    for (int i = 1; i < nClean; ++i) {
+        double keyVal = sortedClean[i];
+        int keyIdx = sortedCleanIdx[i];
+        int j = i - 1;
+        while (j >= 0 && sortedClean[j] > keyVal) {
+            sortedClean[j + 1] = sortedClean[j];
+            sortedCleanIdx[j + 1] = sortedCleanIdx[j];
+            --j;
+        }
+        sortedClean[j + 1] = keyVal;
+        sortedCleanIdx[j + 1] = keyIdx;
+    }
     double cleanMedian = medianDevice(sortedClean, nClean);
 
     // Default outputs
     uint8_t bestType = DIST_GAUSSIAN;
+    int bestZ = 0;  // provenance: original frame index of selected pixel
 
     if (nClean >= 3) {
         // 5. Fit models — use AICc (corrected AIC) for small sample sizes
@@ -941,33 +969,83 @@ __global__ void pixelSelectionKernel(
         //   - Matches the median for clean symmetric data
         // Works for all distribution types — no need to switch on bestType.
         double selectedValue = cleanMedian;
+        int shBestStart = 0;
+        int halfN = nClean / 2;
+        if (halfN < 1) halfN = 1;
         {
             // sortedClean is already sorted from step above
-            int halfN = nClean / 2;
-            if (halfN < 1) halfN = 1;
-
             double minRange = sortedClean[halfN - 1] - sortedClean[0];
-            int bestStart = 0;
+            shBestStart = 0;
             for (int i = 1; i + halfN - 1 < nClean; ++i) {
                 double range = sortedClean[i + halfN - 1] - sortedClean[i];
                 if (range < minRange) {
                     minRange = range;
-                    bestStart = i;
+                    shBestStart = i;
                 }
             }
 
             // Mode estimate: mean of the densest half
             double sum = 0.0;
-            for (int i = bestStart; i < bestStart + halfN; ++i)
+            for (int i = shBestStart; i < shBestStart + halfN; ++i)
                 sum += sortedClean[i];
             selectedValue = sum / halfN;
         }
+
+        // Find closest frame to selected value
+        double bestDist = 1e300;
+        for (int i = 0; i < nClean; ++i) {
+            double dist = fabs(cleanData[i] - selectedValue);
+            if (dist < bestDist) {
+                bestDist = dist;
+                bestZ = cleanIdx[i];
+            }
+        }
+
+        // 7b. Metadata tiebreaker: if multiple frames are within MAD tolerance
+        //     of the selected value, prefer the one with the best quality score.
+        if (enableMetadataTiebreaker && halfN > 1) {
+            // Compute MAD of the shortest-half cluster
+            double shLo = sortedClean[shBestStart];
+            double shHi = sortedClean[shBestStart + halfN - 1];
+
+            // Compute median of the shortest-half values
+            double shValues[MAX_SUBS];
+            for (int i = 0; i < halfN; ++i)
+                shValues[i] = sortedClean[shBestStart + i];
+            double shMedian = medianDevice(shValues, halfN);
+
+            // Compute MAD of the shortest-half cluster
+            double shDeviations[MAX_SUBS];
+            for (int i = 0; i < halfN; ++i)
+                shDeviations[i] = fabs(shValues[i] - shMedian);
+            insertionSort(shDeviations, halfN);
+            double shMAD = 1.4826 * medianDevice(shDeviations, halfN);
+
+            if (shMAD > 0.0) {
+                double bestScore = d_qualityScores[bestZ];
+                for (int i = 0; i < nClean; ++i) {
+                    double val = cleanData[i];
+                    int origIdx = cleanIdx[i];
+                    if (val >= shLo && val <= shHi &&
+                        fabs(val - selectedValue) <= shMAD) {
+                        double score = d_qualityScores[origIdx];
+                        if (score > bestScore) {
+                            bestScore = score;
+                            bestZ = origIdx;
+                        }
+                    }
+                }
+            }
+        }
+
         cleanMedian = selectedValue;  // reuse variable for output
     }
 
     // 8. Output
     outputPixels[pixelIdx] = static_cast<float>(cleanMedian);
     distTypes[pixelIdx] = bestType;
+    if (provenanceOut != nullptr)
+        provenanceOut[pixelIdx] = static_cast<uint32_t>(bestZ);
 }
 
 // ============================================================================
@@ -1008,14 +1086,25 @@ GpuStackResult processImageGPU(
         return result;
     }
 
+    // Copy quality scores to constant memory (if provided)
+    if (config.qualityScores != nullptr && nSubs <= MAX_SUBS) {
+        CUDA_CHECK(cudaMemcpyToSymbol(d_qualityScores, config.qualityScores,
+                                       nSubs * sizeof(double)), result);
+    }
+
     // Allocate device memory
-    float*    d_cube     = nullptr;
-    float*    d_output   = nullptr;
-    uint8_t*  d_distType = nullptr;
+    float*    d_cube       = nullptr;
+    float*    d_output     = nullptr;
+    uint8_t*  d_distType   = nullptr;
+    uint32_t* d_provenance = nullptr;
 
     CUDA_CHECK(cudaMalloc(&d_cube,     cubeSize   * sizeof(float)),   result);
     CUDA_CHECK(cudaMalloc(&d_output,   pixelCount * sizeof(float)),   result);
     CUDA_CHECK(cudaMalloc(&d_distType, pixelCount * sizeof(uint8_t)), result);
+
+    if (config.provenanceOut != nullptr) {
+        CUDA_CHECK(cudaMalloc(&d_provenance, pixelCount * sizeof(uint32_t)), result);
+    }
 
     // Copy cube data to device
     CUDA_CHECK(cudaMemcpy(d_cube, cubeData, cubeSize * sizeof(float),
@@ -1026,13 +1115,14 @@ GpuStackResult processImageGPU(
     int gridSize = static_cast<int>((pixelCount + BLOCK_SIZE - 1) / BLOCK_SIZE);
 
     pixelSelectionKernel<<<gridSize, BLOCK_SIZE>>>(
-        d_cube, d_output, d_distType,
+        d_cube, d_output, d_distType, d_provenance,
         static_cast<int>(nSubs),
         static_cast<int>(H),
         static_cast<int>(W),
         config.maxOutliers,
         config.outlierAlpha,
-        config.adaptiveModels);
+        config.adaptiveModels,
+        config.enableMetadataTiebreaker);
 
     // Check for launch errors
     CUDA_CHECK(cudaGetLastError(), result);
@@ -1048,10 +1138,17 @@ GpuStackResult processImageGPU(
                           pixelCount * sizeof(uint8_t),
                           cudaMemcpyDeviceToHost), result);
 
+    if (config.provenanceOut != nullptr && d_provenance != nullptr) {
+        CUDA_CHECK(cudaMemcpy(config.provenanceOut, d_provenance,
+                              pixelCount * sizeof(uint32_t),
+                              cudaMemcpyDeviceToHost), result);
+    }
+
     // Clean up
     cudaFree(d_cube);
     cudaFree(d_output);
     cudaFree(d_distType);
+    cudaFree(d_provenance);
 
     result.success = true;
     return result;

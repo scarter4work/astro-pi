@@ -15,9 +15,12 @@ struct GpuStackConfig {
     int maxOutliers;
     double outlierAlpha;
     bool adaptiveModels;
+    bool enableMetadataTiebreaker;
     size_t nSubs;
     size_t height;
     size_t width;
+    const double* qualityScores;     // host pointer, copied to device constant memory
+    uint32_t* provenanceOut;         // device output, optional (nullptr OK)
 };
 
 struct GpuStackResult {

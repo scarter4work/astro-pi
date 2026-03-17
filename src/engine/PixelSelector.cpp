@@ -421,9 +421,12 @@ std::vector<float> PixelSelector::processImageGPU(SubCube& cube,
     gpuConfig.maxOutliers = m_config.maxOutliers;
     gpuConfig.outlierAlpha = m_config.outlierAlpha;
     gpuConfig.adaptiveModels = m_config.adaptiveModels;
+    gpuConfig.enableMetadataTiebreaker = m_config.enableMetadataTiebreaker;
     gpuConfig.nSubs = cube.numSubs();
     gpuConfig.height = H;
     gpuConfig.width = W;
+    gpuConfig.qualityScores = qualityScores;
+    gpuConfig.provenanceOut = nullptr;
 
     auto result = cuda::processImageGPU(
         cube.cube().data(), output.data(), distTypesOut.data(), gpuConfig);
