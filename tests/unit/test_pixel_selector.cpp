@@ -95,3 +95,95 @@ TEST_CASE("PixelSelector handles minimum subs", "[selector]") {
     REQUIRE(val > 99.0f);
     REQUIRE(val < 103.0f);
 }
+
+TEST_CASE("PixelSelector tiebreaker picks better-scored frame", "[selector][tiebreaker]") {
+    nukex::SubCube cube(10, 2, 2);
+    for (size_t z = 0; z < 10; z++)
+        cube.setPixel(z, 0, 0, 100.0f + static_cast<float>(z) * 0.1f);
+
+    for (size_t z = 0; z < 10; z++) {
+        nukex::SubMetadata meta;
+        meta.qualityScore = (z == 7) ? 0.9 : 0.1;
+        cube.setMetadata(z, meta);
+    }
+
+    std::vector<double> scores(10);
+    for (size_t z = 0; z < 10; z++)
+        scores[z] = cube.metadata(z).qualityScore;
+
+    nukex::PixelSelector::Config cfg;
+    cfg.enableMetadataTiebreaker = true;
+    nukex::PixelSelector selector(cfg);
+    auto result = selector.selectBestZ(cube.zColumnPtr(0, 0), 10,
+                                        scores.data(), nullptr);
+
+    REQUIRE(result.selectedZ == 7);
+}
+
+TEST_CASE("PixelSelector tiebreaker no-op with equal scores", "[selector][tiebreaker]") {
+    nukex::SubCube cube(10, 2, 2);
+    for (size_t z = 0; z < 10; z++)
+        cube.setPixel(z, 0, 0, 100.0f + static_cast<float>(z) * 0.1f);
+
+    std::vector<double> scores(10, 0.5);
+
+    nukex::PixelSelector::Config cfg;
+    cfg.enableMetadataTiebreaker = true;
+    nukex::PixelSelector selector(cfg);
+    auto resultWith = selector.selectBestZ(cube.zColumnPtr(0, 0), 10,
+                                            scores.data(), nullptr);
+    auto resultWithout = selector.selectBestZ(cube.zColumnPtr(0, 0), 10,
+                                              nullptr, nullptr);
+
+    REQUIRE(resultWith.selectedZ == resultWithout.selectedZ);
+    REQUIRE(resultWith.selectedValue == resultWithout.selectedValue);
+}
+
+TEST_CASE("PixelSelector tiebreaker no-op with null scores", "[selector][tiebreaker]") {
+    nukex::SubCube cube(10, 2, 2);
+    for (size_t z = 0; z < 10; z++)
+        cube.setPixel(z, 0, 0, 100.0f + static_cast<float>(z) * 0.1f);
+
+    nukex::PixelSelector selector;
+    auto result = selector.selectBestZ(cube.zColumnPtr(0, 0), 10,
+                                        nullptr, nullptr);
+
+    REQUIRE(result.selectedZ < 10);
+    REQUIRE(result.selectedValue > 99.0f);
+    REQUIRE(result.selectedValue < 102.0f);
+}
+
+TEST_CASE("PixelSelector tiebreaker zero scores graceful degradation", "[selector][tiebreaker]") {
+    nukex::SubCube cube(10, 2, 2);
+    for (size_t z = 0; z < 10; z++)
+        cube.setPixel(z, 0, 0, 100.0f + static_cast<float>(z) * 0.1f);
+
+    std::vector<double> scores(10, 0.0);
+
+    nukex::PixelSelector::Config cfg;
+    cfg.enableMetadataTiebreaker = true;
+    nukex::PixelSelector selector(cfg);
+    auto resultZero = selector.selectBestZ(cube.zColumnPtr(0, 0), 10,
+                                            scores.data(), nullptr);
+    auto resultNull = selector.selectBestZ(cube.zColumnPtr(0, 0), 10,
+                                            nullptr, nullptr);
+
+    REQUIRE(resultZero.selectedZ == resultNull.selectedZ);
+}
+
+TEST_CASE("PixelSelector tiebreaker single candidate no change", "[selector][tiebreaker]") {
+    nukex::SubCube cube(3, 2, 2);
+    cube.setPixel(0, 0, 0, 100.0f);
+    cube.setPixel(1, 0, 0, 200.0f);
+    cube.setPixel(2, 0, 0, 300.0f);
+
+    std::vector<double> scores = {0.1, 0.9, 0.1};
+
+    nukex::PixelSelector::Config cfg;
+    cfg.enableMetadataTiebreaker = true;
+    nukex::PixelSelector selector(cfg);
+    auto result = selector.selectBestZ(cube.zColumnPtr(0, 0), 3,
+                                        scores.data(), nullptr);
+
+    REQUIRE(result.selectedZ < 3);
+}

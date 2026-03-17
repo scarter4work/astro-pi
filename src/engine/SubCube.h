@@ -25,6 +25,7 @@ struct SubMetadata {
     double exposure = 0;
     double gain = 0;
     double ccdTemp = 0;
+    double qualityScore = 0.0;
     std::string object;
     std::string filter;
 };
