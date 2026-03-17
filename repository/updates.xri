@@ -9,8 +9,8 @@
       </p>
    </description>
    <platform os="linux" arch="x64" version="1.8.0:1.9.9">
-      <package fileName="20260317-linux-x64-NukeX.tar.gz" sha1="e5287d3480c22065879744100df08da684c6c4a0" type="module" releaseDate="20260317">
-         <title>NukeX 3.1.0.11</title>
+      <package fileName="20260317-linux-x64-NukeX.tar.gz" sha1="49d2faeed298255d7b9eb0566a5a15fbb970851c" type="module" releaseDate="20260317">
+         <title>NukeX 3.1.0.12</title>
          <description>
             <p>
                <b>NukeX v3 - Statistical Stacking + Stretch for PixInsight</b>
@@ -27,15 +27,15 @@
                </li>
             </ul>
             <p>
-               <b>Version 3.1.0.11 - Metadata tiebreaker replaces frame weights</b>
+               <b>Version 3.1.0.12 - Dust mote detection fix + metadata tiebreaker</b>
             </p>
             <p>
-               Replaced dead frame-level quality weights with per-Z-plane metadata
-               tiebreaker. When multiple frames produce statistically indistinguishable
-               pixel values (within 1x MAD of shortest-half cluster), the tiebreaker
-               prefers the frame with better seeing (FWHM) and tracking (eccentricity).
-               Fixed star detection thresholds for uncalibrated subs. Simplified UI
-               to single checkbox. CPU and GPU paths both implement the tiebreaker.
+               Fixed dust mote detection: replaced self-contaminated annular ring
+               background estimation with difference-of-smoothing (integral image
+               box filters). Updated defaults: dustMaxDiameter 100→150,
+               dustNeighborRadius 10→85, dustCircularityMin 0.7→0.5.
+               Also includes v3.1.0.11 metadata tiebreaker (FWHM+eccentricity
+               per-Z-plane tiebreaker replaces dead frame weights).
             </p>
             <p>
                Copyright (c) 2026 Scott Carter. All Rights Reserved.
@@ -44,4 +44,4 @@
       </package>
    </platform>
 </xri>
-<Signature developerId="scarter4work" timestamp="2026-03-17T12:56:38.767Z" encoding="Base64">p89yn9KY0I/KSmbxp0j6snJEarTS8gtgIhK1Il1eHGUtyxpgYxsV0CF2pdAscdup3LCh1OjfrtG/5iLVy+yMDA==</Signature>
+<Signature developerId="scarter4work" timestamp="2026-03-17T19:35:09.589Z" encoding="Base64">EBDkDOMSyspmBzb7Y655G0dyg6VQ23tjoimtv8mp2ITycI4ZMD2qjQ3+df/NauBHWWXPZq14CglDFXgsuDc+Cg==</Signature>
