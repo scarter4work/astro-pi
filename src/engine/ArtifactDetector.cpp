@@ -618,7 +618,7 @@ DustDetectionResult ArtifactDetector::detectDustSubcube( const float* stackedIma
       float imgMin = *std::min_element( stackedImage, stackedImage + N );
       float imgMax = *std::max_element( stackedImage, stackedImage + N );
       std::ostringstream oss;
-      oss << "[Phase3b] Stacked image: " << width << "x" << height
+      oss << "[DustDetect] Stacked image: " << width << "x" << height
           << ", value range [" << imgMin << ", " << imgMax << "]";
       emit( oss.str() );
    }
@@ -631,7 +631,7 @@ DustDetectionResult ArtifactDetector::detectDustSubcube( const float* stackedIma
 
    {
       std::ostringstream oss;
-      oss << "[Phase3b] Kernels: small=" << smallKernel << ", large=" << largeKernel
+      oss << "[DustDetect] Kernels: small=" << smallKernel << ", large=" << largeKernel
           << ", sigma=" << m_config.dustDetectionSigma;
       emit( oss.str() );
    }
@@ -668,7 +668,7 @@ DustDetectionResult ArtifactDetector::detectDustSubcube( const float* stackedIma
    float minDeficit = *std::min_element( deficit.begin(), deficit.end() );
    {
       std::ostringstream oss;
-      oss << "[Phase3b] Deficit range: " << minDeficit << " to " << maxDeficit
+      oss << "[DustDetect] Deficit range: " << minDeficit << " to " << maxDeficit
           << ", median=" << medianDef << ", MAD=" << mad
           << ", threshold=" << threshold;
       emit( oss.str() );
@@ -683,7 +683,7 @@ DustDetectionResult ArtifactDetector::detectDustSubcube( const float* stackedIma
          flagged[i] = 1;
          ++flagCount;
       }
-   emit( "[Phase3b] Flagged pixels: " + std::to_string( flagCount ) );
+   emit( "[DustDetect] Flagged pixels: " + std::to_string( flagCount ) );
 
    // Connected component labeling via flood fill (4-connected)
    std::vector<int> labels( N, 0 );
@@ -729,7 +729,7 @@ DustDetectionResult ArtifactDetector::detectDustSubcube( const float* stackedIma
    }
 
    int numComponents = nextLabel - 1;
-   emit( "[Phase3b] Connected components: " + std::to_string( numComponents ) );
+   emit( "[DustDetect] Connected components: " + std::to_string( numComponents ) );
 
    // Compute component properties
    struct ComponentInfo
@@ -790,7 +790,7 @@ DustDetectionResult ArtifactDetector::detectDustSubcube( const float* stackedIma
 
       {
          std::ostringstream oss;
-         oss << "[Phase3b] Candidate blob: center=(" << (c.sumX/c.area) << "," << (c.sumY/c.area)
+         oss << "[DustDetect] Candidate blob: center=(" << (c.sumX/c.area) << "," << (c.sumY/c.area)
              << "), diameter=" << diameter << ", area=" << c.area
              << ", circularity=" << circularity;
          emit( oss.str() );
@@ -876,7 +876,7 @@ DustDetectionResult ArtifactDetector::detectDustSubcube( const float* stackedIma
          if ( samplePixels.size() <= 20 || pixIdx == samplePixels[0] )
          {
             std::ostringstream oss;
-            oss << "[Phase3b]   Sample (" << px << "," << py << "): medDeficit="
+            oss << "[DustDetect]   Sample (" << px << "," << py << "): medDeficit="
                 << medianDeficit << ", madDeficit=" << madDeficit
                 << ", ratio=" << (medianDeficit > 0 ? madDeficit/medianDeficit : 999.0)
                 << (pixelPassed ? " PASS" : " FAIL");
@@ -886,7 +886,7 @@ DustDetectionResult ArtifactDetector::detectDustSubcube( const float* stackedIma
 
       {
          std::ostringstream oss;
-         oss << "[Phase3b] Blob verification: " << passCount << "/" << samplePixels.size()
+         oss << "[DustDetect] Blob verification: " << passCount << "/" << samplePixels.size()
              << " passed (" << (100.0*passCount/samplePixels.size()) << "%)";
          emit( oss.str() );
       }
