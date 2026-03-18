@@ -9,8 +9,8 @@
       </p>
    </description>
    <platform os="linux" arch="x64" version="1.8.0:1.9.9">
-      <package fileName="20260318-linux-x64-NukeX.tar.gz" sha1="d289483bbfcdad69e1f0e9719d9226ce88f19b26" type="module" releaseDate="20260318">
-         <title>NukeX 3.1.0.16</title>
+      <package fileName="20260318-linux-x64-NukeX.tar.gz" sha1="31a3a4d0f8980dd833a9cac3bc1e67bb6353e350" type="module" releaseDate="20260318">
+         <title>NukeX 3.1.0.17</title>
          <description>
             <p>
                <b>NukeX v3 - Statistical Stacking + Stretch for PixInsight</b>
@@ -27,15 +27,14 @@
                </li>
             </ul>
             <p>
-               <b>Version 3.1.0.16 - Aggregate subcube dust verification</b>
+               <b>Version 3.1.0.17 - Post-stretch dust detection</b>
             </p>
             <p>
-               Fixed subcube dust verification failing on all blobs in linear domain.
-               Per-pixel per-frame noise (~0.003) drowns per-pixel signal (~0.001).
-               Now aggregates deficit across all sample pixels per frame before
-               checking frame-to-frame consistency. Spatial averaging reduces noise
-               by sqrt(N), making dust detectable even at per-pixel SNR &lt; 1.
-               Console diagnostics via LogCallback retained for debugging.
+               Dust spatial detection moved from Phase 3b (linear domain) to Phase
+               7a (post-stretch) where nonlinear MTF stretch amplifies the dust
+               deficit signal. Subcube per-pixel per-frame verification retained per
+               original spec. The 8.6&amp;sigma; SNR proven on stretched data should now
+               produce verified detections. Console diagnostics via LogCallback.
             </p>
             <p>
                Copyright (c) 2026 Scott Carter. All Rights Reserved.
@@ -44,4 +43,4 @@
       </package>
    </platform>
 </xri>
-<Signature developerId="scarter4work" timestamp="2026-03-18T20:38:35.955Z" encoding="Base64">eJvN5xaw1hFg/O66p8hBvlIe6h+Hyp5ZtpOrvT1pOMp1oex88Z6EVBLLkujnUPTb+MKYq/Xqbq1qHz8pWIH9Dg==</Signature>
+<Signature developerId="scarter4work" timestamp="2026-03-18T21:25:44.175Z" encoding="Base64">se/P2pbc+psiU6LFrzzyOpqbjwRUVSl4kaIYu20+NLvK+77GQnm2TCTfsQeGnyRYVpR/ypKG4Mdwozbw1ixcCg==</Signature>
