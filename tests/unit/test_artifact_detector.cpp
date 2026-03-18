@@ -280,6 +280,9 @@ TEST_CASE( "Full detection pipeline runs without crash", "[artifact][integration
 
 TEST_CASE( "detectDustSubcube verifies against subcube consistency", "[artifact][dust][subcube]" )
 {
+   // Synthetic stretched-domain image (background 0.5) with dust mote at (32, 32)
+   // Subcube frames contain the same depression plus small per-frame noise
+   // Verification should pass: consistent deficit across all frames
    const int W = 64, H = 64;
    const int nSubs = 10;
 
@@ -324,6 +327,8 @@ TEST_CASE( "detectDustSubcube verifies against subcube consistency", "[artifact]
 
 TEST_CASE( "detectDustSubcube rejects inconsistent blobs", "[artifact][dust][subcube]" )
 {
+   // Synthetic stretched-domain image with dark blob, but subcube shows it only in half the frames
+   // Verification should reject: high inter-frame variance
    const int W = 64, H = 64;
    const int nSubs = 10;
 
