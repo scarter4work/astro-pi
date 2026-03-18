@@ -3,6 +3,8 @@
 #include <vector>
 #include <cstdint>
 #include <cstddef>
+#include <functional>
+#include <string>
 
 #include "engine/SubCube.h"
 
@@ -85,6 +87,12 @@ struct HoughLine
 };
 
 // ---------------------------------------------------------------------------
+// Logging callback — engine code stays PCL-agnostic
+// ---------------------------------------------------------------------------
+
+using LogCallback = std::function<void( const std::string& )>;
+
+// ---------------------------------------------------------------------------
 // ArtifactDetector
 // ---------------------------------------------------------------------------
 
@@ -98,7 +106,8 @@ public:
    DustDetectionResult       detectDust( const float* image, int width, int height ) const;
    DustDetectionResult       detectDustSubcube( const float* stackedImage,
                                                  const std::vector<SubCube*>& channelCubes,
-                                                 int width, int height ) const;
+                                                 int width, int height,
+                                                 LogCallback log = nullptr ) const;
    VignettingDetectionResult detectVignetting( const float* image, int width, int height,
                                                 const uint8_t* excludeMask = nullptr ) const;
    DetectionResult           detectAll( const float* image, int width, int height ) const;

@@ -14,6 +14,7 @@
 #include <cmath>
 #include <cstring>
 #include <numeric>
+#include <sstream>
 #include <vector>
 
 namespace nukex {
@@ -594,8 +595,13 @@ DustDetectionResult ArtifactDetector::detectDust( const float* image, int width,
 
 DustDetectionResult ArtifactDetector::detectDustSubcube( const float* stackedImage,
                                                           const std::vector<SubCube*>& channelCubes,
-                                                          int width, int height ) const
+                                                          int width, int height,
+                                                          LogCallback log ) const
 {
+   // Helper: emit diagnostic only if a callback was provided
+   auto emit = [&log]( const std::string& msg ) {
+      if ( log ) log( msg );
+   };
    DustDetectionResult result;
    result.mask.assign( width * height, 0 );
    result.dustPixelCount = 0;
@@ -607,11 +613,28 @@ DustDetectionResult ArtifactDetector::detectDustSubcube( const float* stackedIma
 
    // ---- Step 1: Spatial candidate detection on stacked image ----
 
+   // Diagnostic: stacked image value range
+   {
+      float imgMin = *std::min_element( stackedImage, stackedImage + N );
+      float imgMax = *std::max_element( stackedImage, stackedImage + N );
+      std::ostringstream oss;
+      oss << "[Phase3b] Stacked image: " << width << "x" << height
+          << ", value range [" << imgMin << ", " << imgMax << "]";
+      emit( oss.str() );
+   }
+
    // Difference-of-smoothing: small captures mote, large captures background
    int smallKernel = std::max( 3, m_config.dustMinDiameter );
    if ( smallKernel % 2 == 0 ) ++smallKernel;
    int largeKernel = static_cast<int>( m_config.dustMaxDiameter * 1.5 );
    if ( largeKernel % 2 == 0 ) ++largeKernel;
+
+   {
+      std::ostringstream oss;
+      oss << "[Phase3b] Kernels: small=" << smallKernel << ", large=" << largeKernel
+          << ", sigma=" << m_config.dustDetectionSigma;
+      emit( oss.str() );
+   }
 
    std::vector<float> smallSmooth = localBackgroundMap( stackedImage, width, height, smallKernel );
    std::vector<float> largeSmooth = localBackgroundMap( stackedImage, width, height, largeKernel );
@@ -643,9 +666,13 @@ DustDetectionResult ArtifactDetector::detectDustSubcube( const float* stackedIma
    // Diagnostic: deficit statistics
    float maxDeficit = *std::max_element( deficit.begin(), deficit.end() );
    float minDeficit = *std::min_element( deficit.begin(), deficit.end() );
-   std::cerr << "[Phase3b] Deficit range: " << minDeficit << " to " << maxDeficit
-             << ", median=" << medianDef << ", MAD=" << mad
-             << ", threshold=" << threshold << std::endl;
+   {
+      std::ostringstream oss;
+      oss << "[Phase3b] Deficit range: " << minDeficit << " to " << maxDeficit
+          << ", median=" << medianDef << ", MAD=" << mad
+          << ", threshold=" << threshold;
+      emit( oss.str() );
+   }
 
    // Flag pixels: deficit above threshold AND brightness exclusion
    std::vector<uint8_t> flagged( N, 0 );
@@ -656,7 +683,7 @@ DustDetectionResult ArtifactDetector::detectDustSubcube( const float* stackedIma
          flagged[i] = 1;
          ++flagCount;
       }
-   std::cerr << "[Phase3b] Flagged pixels: " << flagCount << std::endl;
+   emit( "[Phase3b] Flagged pixels: " + std::to_string( flagCount ) );
 
    // Connected component labeling via flood fill (4-connected)
    std::vector<int> labels( N, 0 );
@@ -702,6 +729,7 @@ DustDetectionResult ArtifactDetector::detectDustSubcube( const float* stackedIma
    }
 
    int numComponents = nextLabel - 1;
+   emit( "[Phase3b] Connected components: " + std::to_string( numComponents ) );
 
    // Compute component properties
    struct ComponentInfo
@@ -760,9 +788,13 @@ DustDetectionResult ArtifactDetector::detectDustSubcube( const float* stackedIma
       if ( circularity < m_config.dustCircularityMin )
          continue;
 
-      std::cerr << "[Phase3b] Candidate blob: center=(" << (c.sumX/c.area) << "," << (c.sumY/c.area)
-                << "), diameter=" << diameter << ", area=" << c.area
-                << ", circularity=" << circularity << std::endl;
+      {
+         std::ostringstream oss;
+         oss << "[Phase3b] Candidate blob: center=(" << (c.sumX/c.area) << "," << (c.sumY/c.area)
+             << "), diameter=" << diameter << ", area=" << c.area
+             << ", circularity=" << circularity;
+         emit( oss.str() );
+      }
 
       // ---- Step 2: Subcube consistency verification ----
 
@@ -855,15 +887,23 @@ DustDetectionResult ArtifactDetector::detectDustSubcube( const float* stackedIma
             ++passCount;
          // Log first few samples for diagnostics
          if ( samplePixels.size() <= 20 || pixIdx == samplePixels[0] )
-            std::cerr << "[Phase3b]   Sample (" << px << "," << py << "): medDeficit="
-                      << medianDeficit << ", madDeficit=" << madDeficit
-                      << ", ratio=" << (medianDeficit > 0 ? madDeficit/medianDeficit : 999.0)
-                      << (pixelPassed ? " PASS" : " FAIL") << std::endl;
+         {
+            std::ostringstream oss;
+            oss << "[Phase3b]   Sample (" << px << "," << py << "): medDeficit="
+                << medianDeficit << ", madDeficit=" << madDeficit
+                << ", ratio=" << (medianDeficit > 0 ? madDeficit/medianDeficit : 999.0)
+                << (pixelPassed ? " PASS" : " FAIL");
+            emit( oss.str() );
+         }
       }
 
       // Blob passes if >50% of sampled pixels pass
-      std::cerr << "[Phase3b] Blob verification: " << passCount << "/" << samplePixels.size()
-                << " passed (" << (100.0*passCount/samplePixels.size()) << "%)" << std::endl;
+      {
+         std::ostringstream oss;
+         oss << "[Phase3b] Blob verification: " << passCount << "/" << samplePixels.size()
+             << " passed (" << (100.0*passCount/samplePixels.size()) << "%)";
+         emit( oss.str() );
+      }
       if ( passCount > static_cast<int>( samplePixels.size() ) / 2 )
       {
          result.blobs.push_back( blob );

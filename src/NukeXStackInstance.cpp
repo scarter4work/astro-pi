@@ -444,7 +444,10 @@ bool NukeXStackInstance::ExecuteGlobal()
             cubePtrs.push_back( &channelCubes[ch] );
 
          dustDetection = detector.detectDustSubcube(
-            linearLum.data(), cubePtrs, cropW, cropH );
+            linearLum.data(), cubePtrs, cropW, cropH,
+            [&console]( const std::string& msg ) {
+               console.WriteLn( String( msg.c_str() ) );
+            } );
 
          console.WriteLn( String().Format(
             "  Dust: %d pixels (%d verified blobs)",

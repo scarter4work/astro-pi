@@ -9,8 +9,8 @@
       </p>
    </description>
    <platform os="linux" arch="x64" version="1.8.0:1.9.9">
-      <package fileName="20260317-linux-x64-NukeX.tar.gz" sha1="5d6d3e34df9473c637223aa7c3fc6910b2b2895f" type="module" releaseDate="20260317">
-         <title>NukeX 3.1.0.14</title>
+      <package fileName="20260317-linux-x64-NukeX.tar.gz" sha1="1aa832887cabf728f1f3b485e799c1fb31826205" type="module" releaseDate="20260317">
+         <title>NukeX 3.1.0.15</title>
          <description>
             <p>
                <b>NukeX v3 - Statistical Stacking + Stretch for PixInsight</b>
@@ -27,15 +27,15 @@
                </li>
             </ul>
             <p>
-               <b>Version 3.1.0.14 - Subcube dust detection diagnostics</b>
+               <b>Version 3.1.0.15 - Phase 3b console diagnostics</b>
             </p>
             <p>
-               Phase 3b subcube-based dust detection: detects candidates on linear
-               stacked image using difference-of-smoothing, then verifies against
-               subcube per-frame consistency (low MAD/median ratio of spatial deficit
-               across all frames). Eliminates false positives from star halos and
-               noise. Includes v3.1.0.11 metadata tiebreaker and integral image
-               box filter background estimation.
+               Dust detection diagnostics now output to PI process console via
+               LogCallback (replacing std::cerr which was invisible). Reports
+               stacked image value range, kernel sizes, deficit statistics, flagged
+               pixel count, connected components, candidate blob properties, and
+               per-sample subcube verification results. Enables live debugging of
+               the 0-blob detection issue on real data.
             </p>
             <p>
                Copyright (c) 2026 Scott Carter. All Rights Reserved.
@@ -44,4 +44,4 @@
       </package>
    </platform>
 </xri>
-<Signature developerId="scarter4work" timestamp="2026-03-18T03:51:25.799Z" encoding="Base64">owgKrwxXwvTT6tHLA26lVgMVdflUrTJyywKVhrNU+XBTopt+Ox758kn1tDuUKnY2r/ivMg2sOS/O3q0EmOkQCQ==</Signature>
+<Signature developerId="scarter4work" timestamp="2026-03-18T20:11:18.229Z" encoding="Base64">s2Z6+XNMtm+7Fhhj1f4//GVU8sydYNiAGXXZfpdgEgmKBNyFNq/2N9KWK40C9kqBMrFMu99sekoC6auIKlB0Dg==</Signature>
