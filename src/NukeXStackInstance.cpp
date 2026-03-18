@@ -407,53 +407,7 @@ bool NukeXStackInstance::ExecuteGlobal()
 
       Module->ProcessEvents();
 
-      // Phase 3b: Subcube-based dust detection (linear domain)
       nukex::DustDetectionResult dustDetection;
-      if ( p_enableDustRemediation )
-      {
-         console.WriteLn( "\nPhase 3b: Subcube dust detection..." );
-         console.Flush();
-         Module->ProcessEvents();
-
-         // Build luminance from linear stacked channels
-         size_t mapSize = size_t( cropW ) * size_t( cropH );
-         std::vector<float> linearLum( mapSize, 0.0f );
-         if ( numChannels >= 3 )
-         {
-            for ( size_t i = 0; i < mapSize; ++i )
-               linearLum[i] = 0.2126f * channelResults[0][i]
-                            + 0.7152f * channelResults[1][i]
-                            + 0.0722f * channelResults[2][i];
-         }
-         else
-         {
-            linearLum = channelResults[0];
-         }
-
-         nukex::ArtifactDetectorConfig detConfig;
-         detConfig.dustMinDiameter    = p_dustMinDiameter;
-         detConfig.dustMaxDiameter    = p_dustMaxDiameter;
-         detConfig.dustCircularityMin = p_dustCircularityMin;
-         detConfig.dustDetectionSigma = p_dustDetectionSigma;
-
-         nukex::ArtifactDetector detector( detConfig );
-
-         // Pass channel cubes for subcube verification
-         std::vector<nukex::SubCube*> cubePtrs;
-         for ( int ch = 0; ch < numChannels; ++ch )
-            cubePtrs.push_back( &channelCubes[ch] );
-
-         dustDetection = detector.detectDustSubcube(
-            linearLum.data(), cubePtrs, cropW, cropH,
-            [&console]( const std::string& msg ) {
-               console.WriteLn( String( msg.c_str() ) );
-            } );
-
-         console.WriteLn( String().Format(
-            "  Dust: %d pixels (%d verified blobs)",
-            dustDetection.dustPixelCount, int( dustDetection.blobs.size() ) ) );
-         Module->ProcessEvents();
-      }
 
       // Phase 4: Create linear output
       console.WriteLn( "\nPhase 4: Creating linear output..." );
@@ -866,9 +820,23 @@ bool NukeXStackInstance::ExecuteGlobal()
             nukex::ArtifactDetector detector( detConfig );
             auto detection = detector.detectAll( luminance.data(), cropW, cropH );
 
+            // Dust detection on stretched image, verified against subcube
+            if ( p_enableDustRemediation )
+            {
+               std::vector<nukex::SubCube*> cubePtrs;
+               for ( int ch = 0; ch < numChannels; ++ch )
+                  cubePtrs.push_back( &channelCubes[ch] );
+
+               dustDetection = detector.detectDustSubcube(
+                  luminance.data(), cubePtrs, cropW, cropH,
+                  [&console]( const std::string& msg ) {
+                     console.WriteLn( String( msg.c_str() ) );
+                  } );
+            }
+
             console.WriteLn( String().Format( "    Trails: %d pixels (%d lines)",
                detection.trails.trailPixelCount, detection.trails.trailLineCount ) );
-            console.WriteLn( String().Format( "    Dust: %d pixels (%d verified blobs, from Phase 3b)",
+            console.WriteLn( String().Format( "    Dust: %d pixels (%d verified blobs)",
                dustDetection.dustPixelCount, int( dustDetection.blobs.size() ) ) );
             console.WriteLn( String().Format( "    Vignetting: max correction %.2f",
                detection.vignetting.maxCorrection ) );
