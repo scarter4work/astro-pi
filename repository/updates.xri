@@ -9,8 +9,8 @@
       </p>
    </description>
    <platform os="linux" arch="x64" version="1.8.0:1.9.9">
-      <package fileName="20260317-linux-x64-NukeX.tar.gz" sha1="49d2faeed298255d7b9eb0566a5a15fbb970851c" type="module" releaseDate="20260317">
-         <title>NukeX 3.1.0.12</title>
+      <package fileName="20260317-linux-x64-NukeX.tar.gz" sha1="f4ca468a41df6ce8c3c3f92d0575be8dd9571887" type="module" releaseDate="20260317">
+         <title>NukeX 3.1.0.13</title>
          <description>
             <p>
                <b>NukeX v3 - Statistical Stacking + Stretch for PixInsight</b>
@@ -27,15 +27,15 @@
                </li>
             </ul>
             <p>
-               <b>Version 3.1.0.12 - Dust mote detection fix + metadata tiebreaker</b>
+               <b>Version 3.1.0.13 - Subcube-verified dust detection + metadata tiebreaker</b>
             </p>
             <p>
-               Fixed dust mote detection: replaced self-contaminated annular ring
-               background estimation with difference-of-smoothing (integral image
-               box filters). Updated defaults: dustMaxDiameter 100→150,
-               dustNeighborRadius 10→85, dustCircularityMin 0.7→0.5.
-               Also includes v3.1.0.11 metadata tiebreaker (FWHM+eccentricity
-               per-Z-plane tiebreaker replaces dead frame weights).
+               Phase 3b subcube-based dust detection: detects candidates on linear
+               stacked image using difference-of-smoothing, then verifies against
+               subcube per-frame consistency (low MAD/median ratio of spatial deficit
+               across all frames). Eliminates false positives from star halos and
+               noise. Includes v3.1.0.11 metadata tiebreaker and integral image
+               box filter background estimation.
             </p>
             <p>
                Copyright (c) 2026 Scott Carter. All Rights Reserved.
@@ -44,4 +44,4 @@
       </package>
    </platform>
 </xri>
-<Signature developerId="scarter4work" timestamp="2026-03-17T19:35:09.589Z" encoding="Base64">EBDkDOMSyspmBzb7Y655G0dyg6VQ23tjoimtv8mp2ITycI4ZMD2qjQ3+df/NauBHWWXPZq14CglDFXgsuDc+Cg==</Signature>
+<Signature developerId="scarter4work" timestamp="2026-03-18T03:31:33.853Z" encoding="Base64">FIyWLIEA1folKbwnkElEBD0wkonaV5ywfvzPjjX5hQqbaswshsaMtMxfBqp/hSAOd4Li0PIr8o1TwInaX30VCw==</Signature>
