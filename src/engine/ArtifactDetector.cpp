@@ -674,6 +674,43 @@ DustDetectionResult ArtifactDetector::detectDustSubcube( const float* stackedIma
       emit( oss.str() );
    }
 
+   // Diagnostic probe at known dust mote location (2094, 953)
+   {
+      int px = 2094, py = 953;
+      if ( px < width && py < height )
+      {
+         int idx = py * width + px;
+         std::ostringstream oss;
+         oss << "[DustDetect] PROBE (2094,953): pixel=" << stackedImage[idx]
+             << ", smallSmooth=" << smallSmooth[idx]
+             << ", largeSmooth=" << largeSmooth[idx]
+             << ", deficit=" << deficit[idx]
+             << ", threshold=" << threshold
+             << ", aboveThresh=" << (deficit[idx] > threshold ? "YES" : "NO")
+             << ", brightnessOK=" << (stackedImage[idx] <= largeSmooth[idx] ? "YES" : "NO");
+         emit( oss.str() );
+         // Also probe nearby ring for comparison
+         int probeR = 40;
+         float ringSum = 0; int ringN = 0;
+         for ( int dy = -probeR; dy <= probeR; dy += probeR )
+            for ( int dx = -probeR; dx <= probeR; dx += probeR )
+            {
+               if ( dx == 0 && dy == 0 ) continue;
+               int nx = px + dx, ny = py + dy;
+               if ( nx >= 0 && nx < width && ny >= 0 && ny < height )
+               { ringSum += stackedImage[ny * width + nx]; ++ringN; }
+            }
+         if ( ringN > 0 )
+         {
+            std::ostringstream oss2;
+            oss2 << "[DustDetect] PROBE ring: avgNeighbor=" << (ringSum/ringN)
+                 << ", centerDeficit=" << ((ringSum/ringN) - stackedImage[py*width+px])
+                 << ", relDeficit=" << ((ringSum/ringN - stackedImage[py*width+px]) / (ringSum/ringN));
+            emit( oss2.str() );
+         }
+      }
+   }
+
    // Flag pixels: deficit above threshold AND brightness exclusion
    std::vector<uint8_t> flagged( N, 0 );
    int flagCount = 0;
