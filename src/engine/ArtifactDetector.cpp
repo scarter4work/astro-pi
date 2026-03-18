@@ -816,8 +816,8 @@ DustDetectionResult ArtifactDetector::detectDustSubcube( const float* stackedIma
          continue;
       }
 
-      // Sample up to 20 pixels from the blob
-      const int maxSamples = 20;
+      // Sample up to 40 pixels from the blob for aggregate verification
+      const int maxSamples = 40;
       std::vector<int> samplePixels;
       if ( c.area <= maxSamples )
       {
@@ -835,76 +835,66 @@ DustDetectionResult ArtifactDetector::detectDustSubcube( const float* stackedIma
       size_t nSubs = cube->numSubs();
       int neighborRadius = std::max( 5, static_cast<int>( blob.radius / 2 ) );
 
-      int passCount = 0;
+      // Aggregate verification: compute mean deficit per frame across all
+      // sample pixels, then check consistency of the per-frame means.
+      // Spatial averaging over N pixels reduces noise by sqrt(N), making
+      // dust detectable even when per-pixel SNR is <1.
+      std::vector<double> frameAvgDeficit( nSubs, 0.0 );
+
       for ( int pixIdx : samplePixels )
       {
          int px = pixIdx % width;
          int py = pixIdx / width;
 
-         // Corner neighbor positions (clamped to image bounds)
          int nx0 = std::max( 0, px - neighborRadius );
          int nx1 = std::min( width - 1, px + neighborRadius );
          int ny0 = std::max( 0, py - neighborRadius );
          int ny1 = std::min( height - 1, py + neighborRadius );
 
-         // Compute per-frame deficit
-         std::vector<double> frameDeficits( nSubs );
          for ( size_t z = 0; z < nSubs; ++z )
          {
-            // neighborMean: average of Z-values at 4 corner neighbors
-            double neighborMean = 0.0;
-            int cornerCount = 0;
-            // (nx0, ny0)
-            neighborMean += cube->pixel( z, ny0, nx0 ); ++cornerCount;
-            // (nx1, ny0)
-            neighborMean += cube->pixel( z, ny0, nx1 ); ++cornerCount;
-            // (nx0, ny1)
-            neighborMean += cube->pixel( z, ny1, nx0 ); ++cornerCount;
-            // (nx1, ny1)
-            neighborMean += cube->pixel( z, ny1, nx1 ); ++cornerCount;
-            neighborMean /= cornerCount;
-
+            double neighborMean = ( cube->pixel( z, ny0, nx0 )
+                                  + cube->pixel( z, ny0, nx1 )
+                                  + cube->pixel( z, ny1, nx0 )
+                                  + cube->pixel( z, ny1, nx1 ) ) / 4.0;
             double pixelVal = cube->pixel( z, py, px );
-            frameDeficits[z] = neighborMean - pixelVal;
-         }
-
-         // Compute median and MAD of frame deficits
-         std::vector<double> sortedDeficits = frameDeficits;
-         size_t defMid = sortedDeficits.size() / 2;
-         std::nth_element( sortedDeficits.begin(), sortedDeficits.begin() + defMid, sortedDeficits.end() );
-         double medianDeficit = sortedDeficits[defMid];
-
-         std::vector<double> defAbsDevs( nSubs );
-         for ( size_t z = 0; z < nSubs; ++z )
-            defAbsDevs[z] = std::abs( frameDeficits[z] - medianDeficit );
-         size_t defMadMid = defAbsDevs.size() / 2;
-         std::nth_element( defAbsDevs.begin(), defAbsDevs.begin() + defMadMid, defAbsDevs.end() );
-         double madDeficit = 1.4826 * defAbsDevs[defMadMid];
-
-         // Pixel passes if: consistently darker AND low variance
-         bool pixelPassed = ( medianDeficit > 0 && madDeficit < medianDeficit * 0.5 );
-         if ( pixelPassed )
-            ++passCount;
-         // Log first few samples for diagnostics
-         if ( samplePixels.size() <= 20 || pixIdx == samplePixels[0] )
-         {
-            std::ostringstream oss;
-            oss << "[Phase3b]   Sample (" << px << "," << py << "): medDeficit="
-                << medianDeficit << ", madDeficit=" << madDeficit
-                << ", ratio=" << (medianDeficit > 0 ? madDeficit/medianDeficit : 999.0)
-                << (pixelPassed ? " PASS" : " FAIL");
-            emit( oss.str() );
+            frameAvgDeficit[z] += ( neighborMean - pixelVal );
          }
       }
 
-      // Blob passes if >50% of sampled pixels pass
+      // Normalize: mean deficit per sample pixel per frame
+      int nSamples = static_cast<int>( samplePixels.size() );
+      for ( size_t z = 0; z < nSubs; ++z )
+         frameAvgDeficit[z] /= nSamples;
+
+      // Compute median and MAD of per-frame aggregate deficits
+      std::vector<double> sortedDeficits = frameAvgDeficit;
+      size_t defMid = sortedDeficits.size() / 2;
+      std::nth_element( sortedDeficits.begin(), sortedDeficits.begin() + defMid, sortedDeficits.end() );
+      double medianAggDef = sortedDeficits[defMid];
+
+      std::vector<double> defAbsDevs( nSubs );
+      for ( size_t z = 0; z < nSubs; ++z )
+         defAbsDevs[z] = std::abs( frameAvgDeficit[z] - medianAggDef );
+      size_t defMadMid = defAbsDevs.size() / 2;
+      std::nth_element( defAbsDevs.begin(), defAbsDevs.begin() + defMadMid, defAbsDevs.end() );
+      double madAggDef = 1.4826 * defAbsDevs[defMadMid];
+
+      // Blob passes if aggregate deficit is consistently positive
+      // and frame-to-frame variance is moderate (MAD/median < 1.0)
+      double ratio = ( medianAggDef > 0 ) ? madAggDef / medianAggDef : 999.0;
+      bool blobPassed = ( medianAggDef > 0 && ratio < 1.0 );
+
       {
          std::ostringstream oss;
-         oss << "[Phase3b] Blob verification: " << passCount << "/" << samplePixels.size()
-             << " passed (" << (100.0*passCount/samplePixels.size()) << "%)";
+         oss << "[Phase3b] Blob verification (aggregate): medDeficit="
+             << medianAggDef << ", madDeficit=" << madAggDef
+             << ", ratio=" << ratio << ", samples=" << nSamples
+             << ( blobPassed ? " PASS" : " FAIL" );
          emit( oss.str() );
       }
-      if ( passCount > static_cast<int>( samplePixels.size() ) / 2 )
+
+      if ( blobPassed )
       {
          result.blobs.push_back( blob );
          int label = i + 1;
