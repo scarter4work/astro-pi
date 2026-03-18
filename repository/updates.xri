@@ -9,8 +9,8 @@
       </p>
    </description>
    <platform os="linux" arch="x64" version="1.8.0:1.9.9">
-      <package fileName="20260317-linux-x64-NukeX.tar.gz" sha1="f4ca468a41df6ce8c3c3f92d0575be8dd9571887" type="module" releaseDate="20260317">
-         <title>NukeX 3.1.0.13</title>
+      <package fileName="20260317-linux-x64-NukeX.tar.gz" sha1="5d6d3e34df9473c637223aa7c3fc6910b2b2895f" type="module" releaseDate="20260317">
+         <title>NukeX 3.1.0.14</title>
          <description>
             <p>
                <b>NukeX v3 - Statistical Stacking + Stretch for PixInsight</b>
@@ -27,7 +27,7 @@
                </li>
             </ul>
             <p>
-               <b>Version 3.1.0.13 - Subcube-verified dust detection + metadata tiebreaker</b>
+               <b>Version 3.1.0.14 - Subcube dust detection diagnostics</b>
             </p>
             <p>
                Phase 3b subcube-based dust detection: detects candidates on linear
@@ -44,4 +44,4 @@
       </package>
    </platform>
 </xri>
-<Signature developerId="scarter4work" timestamp="2026-03-18T03:31:33.853Z" encoding="Base64">FIyWLIEA1folKbwnkElEBD0wkonaV5ywfvzPjjX5hQqbaswshsaMtMxfBqp/hSAOd4Li0PIr8o1TwInaX30VCw==</Signature>
+<Signature developerId="scarter4work" timestamp="2026-03-18T03:51:25.799Z" encoding="Base64">owgKrwxXwvTT6tHLA26lVgMVdflUrTJyywKVhrNU+XBTopt+Ox758kn1tDuUKnY2r/ivMg2sOS/O3q0EmOkQCQ==</Signature>

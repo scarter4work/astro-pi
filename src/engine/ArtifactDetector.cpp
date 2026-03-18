@@ -640,11 +640,23 @@ DustDetectionResult ArtifactDetector::detectDustSubcube( const float* stackedIma
    else
       threshold = medianDef + m_config.dustDetectionSigma * mad;
 
+   // Diagnostic: deficit statistics
+   float maxDeficit = *std::max_element( deficit.begin(), deficit.end() );
+   float minDeficit = *std::min_element( deficit.begin(), deficit.end() );
+   std::cerr << "[Phase3b] Deficit range: " << minDeficit << " to " << maxDeficit
+             << ", median=" << medianDef << ", MAD=" << mad
+             << ", threshold=" << threshold << std::endl;
+
    // Flag pixels: deficit above threshold AND brightness exclusion
    std::vector<uint8_t> flagged( N, 0 );
+   int flagCount = 0;
    for ( int i = 0; i < N; ++i )
       if ( deficit[i] > threshold && stackedImage[i] <= largeSmooth[i] )
+      {
          flagged[i] = 1;
+         ++flagCount;
+      }
+   std::cerr << "[Phase3b] Flagged pixels: " << flagCount << std::endl;
 
    // Connected component labeling via flood fill (4-connected)
    std::vector<int> labels( N, 0 );
@@ -748,6 +760,10 @@ DustDetectionResult ArtifactDetector::detectDustSubcube( const float* stackedIma
       if ( circularity < m_config.dustCircularityMin )
          continue;
 
+      std::cerr << "[Phase3b] Candidate blob: center=(" << (c.sumX/c.area) << "," << (c.sumY/c.area)
+                << "), diameter=" << diameter << ", area=" << c.area
+                << ", circularity=" << circularity << std::endl;
+
       // ---- Step 2: Subcube consistency verification ----
 
       DustBlobInfo blob;
@@ -834,11 +850,20 @@ DustDetectionResult ArtifactDetector::detectDustSubcube( const float* stackedIma
          double madDeficit = 1.4826 * defAbsDevs[defMadMid];
 
          // Pixel passes if: consistently darker AND low variance
-         if ( medianDeficit > 0 && madDeficit < medianDeficit * 0.5 )
+         bool pixelPassed = ( medianDeficit > 0 && madDeficit < medianDeficit * 0.5 );
+         if ( pixelPassed )
             ++passCount;
+         // Log first few samples for diagnostics
+         if ( samplePixels.size() <= 20 || pixIdx == samplePixels[0] )
+            std::cerr << "[Phase3b]   Sample (" << px << "," << py << "): medDeficit="
+                      << medianDeficit << ", madDeficit=" << madDeficit
+                      << ", ratio=" << (medianDeficit > 0 ? madDeficit/medianDeficit : 999.0)
+                      << (pixelPassed ? " PASS" : " FAIL") << std::endl;
       }
 
       // Blob passes if >50% of sampled pixels pass
+      std::cerr << "[Phase3b] Blob verification: " << passCount << "/" << samplePixels.size()
+                << " passed (" << (100.0*passCount/samplePixels.size()) << "%)" << std::endl;
       if ( passCount > static_cast<int>( samplePixels.size() ) / 2 )
       {
          result.blobs.push_back( blob );
