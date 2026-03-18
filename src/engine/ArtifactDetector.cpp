@@ -586,6 +586,278 @@ DustDetectionResult ArtifactDetector::detectDust( const float* image, int width,
 }
 
 // ============================================================================
+// detectDustSubcube — detect dust on linear stacked image, verify via subcube
+//
+// Step 1: Spatial candidate detection using difference-of-smoothing deficit
+// Step 2: Subcube consistency verification — dust is present in ALL frames
+// ============================================================================
+
+DustDetectionResult ArtifactDetector::detectDustSubcube( const float* stackedImage,
+                                                          const std::vector<SubCube*>& channelCubes,
+                                                          int width, int height ) const
+{
+   DustDetectionResult result;
+   result.mask.assign( width * height, 0 );
+   result.dustPixelCount = 0;
+
+   if ( width < 16 || height < 16 )
+      return result;
+
+   const int N = width * height;
+
+   // ---- Step 1: Spatial candidate detection on stacked image ----
+
+   // Difference-of-smoothing: small captures mote, large captures background
+   int smallKernel = std::max( 3, m_config.dustMinDiameter );
+   if ( smallKernel % 2 == 0 ) ++smallKernel;
+   int largeKernel = static_cast<int>( m_config.dustMaxDiameter * 1.5 );
+   if ( largeKernel % 2 == 0 ) ++largeKernel;
+
+   std::vector<float> smallSmooth = localBackgroundMap( stackedImage, width, height, smallKernel );
+   std::vector<float> largeSmooth = localBackgroundMap( stackedImage, width, height, largeKernel );
+
+   // Deficit: positive = darker than surroundings at mote scale
+   std::vector<float> deficit( N );
+   for ( int i = 0; i < N; ++i )
+      deficit[i] = largeSmooth[i] - smallSmooth[i];
+
+   // Threshold: median + sigma * 1.4826 * MAD
+   std::vector<float> deficitCopy( deficit.begin(), deficit.end() );
+   size_t mid = deficitCopy.size() / 2;
+   std::nth_element( deficitCopy.begin(), deficitCopy.begin() + mid, deficitCopy.end() );
+   double medianDef = deficitCopy[mid];
+
+   std::vector<float> absDevs( N );
+   for ( int i = 0; i < N; ++i )
+      absDevs[i] = std::abs( deficit[i] - static_cast<float>( medianDef ) );
+   size_t madMid = absDevs.size() / 2;
+   std::nth_element( absDevs.begin(), absDevs.begin() + madMid, absDevs.end() );
+   double mad = absDevs[madMid] * 1.4826;
+
+   double threshold;
+   if ( mad < 1e-10 )
+      threshold = medianDef + 1e-6;
+   else
+      threshold = medianDef + m_config.dustDetectionSigma * mad;
+
+   // Flag pixels: deficit above threshold AND brightness exclusion
+   std::vector<uint8_t> flagged( N, 0 );
+   for ( int i = 0; i < N; ++i )
+      if ( deficit[i] > threshold && stackedImage[i] <= largeSmooth[i] )
+         flagged[i] = 1;
+
+   // Connected component labeling via flood fill (4-connected)
+   std::vector<int> labels( N, 0 );
+   int nextLabel = 1;
+
+   for ( int y = 0; y < height; ++y )
+   {
+      for ( int x = 0; x < width; ++x )
+      {
+         int idx = y * width + x;
+         if ( flagged[idx] == 0 || labels[idx] != 0 )
+            continue;
+
+         int label = nextLabel++;
+         std::vector<int> stack;
+         stack.push_back( idx );
+         labels[idx] = label;
+
+         while ( !stack.empty() )
+         {
+            int ci = stack.back();
+            stack.pop_back();
+            int cy = ci / width;
+            int cx = ci % width;
+
+            const int dx[] = { -1, 1, 0, 0 };
+            const int dy[] = { 0, 0, -1, 1 };
+            for ( int d = 0; d < 4; ++d )
+            {
+               int nx = cx + dx[d];
+               int ny = cy + dy[d];
+               if ( nx < 0 || nx >= width || ny < 0 || ny >= height )
+                  continue;
+               int ni = ny * width + nx;
+               if ( flagged[ni] && labels[ni] == 0 )
+               {
+                  labels[ni] = label;
+                  stack.push_back( ni );
+               }
+            }
+         }
+      }
+   }
+
+   int numComponents = nextLabel - 1;
+
+   // Compute component properties
+   struct ComponentInfo
+   {
+      int area = 0;
+      int xMin = 0, xMax = 0, yMin = 0, yMax = 0;
+      double sumX = 0, sumY = 0;
+      double sumDeficit = 0;
+      std::vector<int> memberPixels;   // linear indices of pixels in this blob
+   };
+
+   std::vector<ComponentInfo> components( numComponents );
+   for ( int i = 0; i < numComponents; ++i )
+   {
+      components[i].xMin = width;
+      components[i].yMin = height;
+   }
+
+   for ( int y = 0; y < height; ++y )
+   {
+      for ( int x = 0; x < width; ++x )
+      {
+         int lbl = labels[y * width + x];
+         if ( lbl == 0 )
+            continue;
+         auto& c = components[lbl - 1];
+         c.area++;
+         c.sumX += x;
+         c.sumY += y;
+         c.sumDeficit += deficit[y * width + x];
+         c.xMin = std::min( c.xMin, x );
+         c.xMax = std::max( c.xMax, x );
+         c.yMin = std::min( c.yMin, y );
+         c.yMax = std::max( c.yMax, y );
+         c.memberPixels.push_back( y * width + x );
+      }
+   }
+
+   // Filter blobs by size and circularity, then verify against subcube
+   for ( int i = 0; i < numComponents; ++i )
+   {
+      const auto& c = components[i];
+      if ( c.area == 0 )
+         continue;
+
+      double bbWidth  = c.xMax - c.xMin + 1;
+      double bbHeight = c.yMax - c.yMin + 1;
+      double diameter = std::max( bbWidth, bbHeight );
+
+      if ( diameter < m_config.dustMinDiameter || diameter > m_config.dustMaxDiameter )
+         continue;
+
+      double idealArea = M_PI * ( diameter / 2.0 ) * ( diameter / 2.0 );
+      double circularity = c.area / idealArea;
+
+      if ( circularity < m_config.dustCircularityMin )
+         continue;
+
+      // ---- Step 2: Subcube consistency verification ----
+
+      DustBlobInfo blob;
+      blob.centerX = c.sumX / c.area;
+      blob.centerY = c.sumY / c.area;
+      blob.radius = diameter / 2.0;
+      blob.circularity = circularity;
+      blob.meanAttenuation = c.sumDeficit / c.area;
+
+      // If no subcube data, accept spatial-only (graceful degradation)
+      if ( channelCubes.empty() || channelCubes[0] == nullptr )
+      {
+         result.blobs.push_back( blob );
+         int label = i + 1;
+         for ( int j = 0; j < N; ++j )
+            if ( labels[j] == label )
+               result.mask[j] = 1;
+         continue;
+      }
+
+      // Sample up to 20 pixels from the blob
+      const int maxSamples = 20;
+      std::vector<int> samplePixels;
+      if ( c.area <= maxSamples )
+      {
+         samplePixels = c.memberPixels;
+      }
+      else
+      {
+         int step = c.area / maxSamples;
+         for ( int s = 0; s < maxSamples; ++s )
+            samplePixels.push_back( c.memberPixels[s * step] );
+      }
+
+      // Use first channel cube for verification
+      const SubCube* cube = channelCubes[0];
+      size_t nSubs = cube->numSubs();
+      int neighborRadius = std::max( 5, static_cast<int>( blob.radius / 2 ) );
+
+      int passCount = 0;
+      for ( int pixIdx : samplePixels )
+      {
+         int px = pixIdx % width;
+         int py = pixIdx / width;
+
+         // Corner neighbor positions (clamped to image bounds)
+         int nx0 = std::max( 0, px - neighborRadius );
+         int nx1 = std::min( width - 1, px + neighborRadius );
+         int ny0 = std::max( 0, py - neighborRadius );
+         int ny1 = std::min( height - 1, py + neighborRadius );
+
+         // Compute per-frame deficit
+         std::vector<double> frameDeficits( nSubs );
+         for ( size_t z = 0; z < nSubs; ++z )
+         {
+            // neighborMean: average of Z-values at 4 corner neighbors
+            double neighborMean = 0.0;
+            int cornerCount = 0;
+            // (nx0, ny0)
+            neighborMean += cube->pixel( z, ny0, nx0 ); ++cornerCount;
+            // (nx1, ny0)
+            neighborMean += cube->pixel( z, ny0, nx1 ); ++cornerCount;
+            // (nx0, ny1)
+            neighborMean += cube->pixel( z, ny1, nx0 ); ++cornerCount;
+            // (nx1, ny1)
+            neighborMean += cube->pixel( z, ny1, nx1 ); ++cornerCount;
+            neighborMean /= cornerCount;
+
+            double pixelVal = cube->pixel( z, py, px );
+            frameDeficits[z] = neighborMean - pixelVal;
+         }
+
+         // Compute median and MAD of frame deficits
+         std::vector<double> sortedDeficits = frameDeficits;
+         size_t defMid = sortedDeficits.size() / 2;
+         std::nth_element( sortedDeficits.begin(), sortedDeficits.begin() + defMid, sortedDeficits.end() );
+         double medianDeficit = sortedDeficits[defMid];
+
+         std::vector<double> defAbsDevs( nSubs );
+         for ( size_t z = 0; z < nSubs; ++z )
+            defAbsDevs[z] = std::abs( frameDeficits[z] - medianDeficit );
+         size_t defMadMid = defAbsDevs.size() / 2;
+         std::nth_element( defAbsDevs.begin(), defAbsDevs.begin() + defMadMid, defAbsDevs.end() );
+         double madDeficit = 1.4826 * defAbsDevs[defMadMid];
+
+         // Pixel passes if: consistently darker AND low variance
+         if ( medianDeficit > 0 && madDeficit < medianDeficit * 0.5 )
+            ++passCount;
+      }
+
+      // Blob passes if >50% of sampled pixels pass
+      if ( passCount > static_cast<int>( samplePixels.size() ) / 2 )
+      {
+         result.blobs.push_back( blob );
+         int label = i + 1;
+         for ( int j = 0; j < N; ++j )
+            if ( labels[j] == label )
+               result.mask[j] = 1;
+      }
+   }
+
+   // Count dust pixels
+   for ( int i = 0; i < N; ++i )
+      if ( result.mask[i] )
+         ++result.dustPixelCount;
+
+   return result;
+}
+
+// ============================================================================
 // detectVignetting — radial polynomial fit + correction map
 // ============================================================================
 

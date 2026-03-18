@@ -407,6 +407,51 @@ bool NukeXStackInstance::ExecuteGlobal()
 
       Module->ProcessEvents();
 
+      // Phase 3b: Subcube-based dust detection (linear domain)
+      nukex::DustDetectionResult dustDetection;
+      if ( p_enableDustRemediation )
+      {
+         console.WriteLn( "\nPhase 3b: Subcube dust detection..." );
+         console.Flush();
+         Module->ProcessEvents();
+
+         // Build luminance from linear stacked channels
+         size_t mapSize = size_t( cropW ) * size_t( cropH );
+         std::vector<float> linearLum( mapSize, 0.0f );
+         if ( numChannels >= 3 )
+         {
+            for ( size_t i = 0; i < mapSize; ++i )
+               linearLum[i] = 0.2126f * channelResults[0][i]
+                            + 0.7152f * channelResults[1][i]
+                            + 0.0722f * channelResults[2][i];
+         }
+         else
+         {
+            linearLum = channelResults[0];
+         }
+
+         nukex::ArtifactDetectorConfig detConfig;
+         detConfig.dustMinDiameter    = p_dustMinDiameter;
+         detConfig.dustMaxDiameter    = p_dustMaxDiameter;
+         detConfig.dustCircularityMin = p_dustCircularityMin;
+         detConfig.dustDetectionSigma = p_dustDetectionSigma;
+
+         nukex::ArtifactDetector detector( detConfig );
+
+         // Pass channel cubes for subcube verification
+         std::vector<nukex::SubCube*> cubePtrs;
+         for ( int ch = 0; ch < numChannels; ++ch )
+            cubePtrs.push_back( &channelCubes[ch] );
+
+         dustDetection = detector.detectDustSubcube(
+            linearLum.data(), cubePtrs, cropW, cropH );
+
+         console.WriteLn( String().Format(
+            "  Dust: %d pixels (%d verified blobs)",
+            dustDetection.dustPixelCount, int( dustDetection.blobs.size() ) ) );
+         Module->ProcessEvents();
+      }
+
       // Phase 4: Create linear output
       console.WriteLn( "\nPhase 4: Creating linear output..." );
       console.Flush();
@@ -820,14 +865,14 @@ bool NukeXStackInstance::ExecuteGlobal()
 
             console.WriteLn( String().Format( "    Trails: %d pixels (%d lines)",
                detection.trails.trailPixelCount, detection.trails.trailLineCount ) );
-            console.WriteLn( String().Format( "    Dust: %d pixels (%d blobs)",
-               detection.dust.dustPixelCount, int( detection.dust.blobs.size() ) ) );
+            console.WriteLn( String().Format( "    Dust: %d pixels (%d verified blobs, from Phase 3b)",
+               dustDetection.dustPixelCount, int( dustDetection.blobs.size() ) ) );
             console.WriteLn( String().Format( "    Vignetting: max correction %.2f",
                detection.vignetting.maxCorrection ) );
             Module->ProcessEvents();
 
             bool anyRemediation = ( p_enableTrailRemediation && detection.trails.trailPixelCount > 0 )
-                                || ( p_enableDustRemediation && detection.dust.dustPixelCount > 0 )
+                                || ( p_enableDustRemediation && dustDetection.dustPixelCount > 0 )
                                 || ( p_enableVignettingRemediation && detection.vignetting.maxCorrection > 1.01 );
 
             if ( anyRemediation )
@@ -919,8 +964,8 @@ bool NukeXStackInstance::ExecuteGlobal()
                   Module->ProcessEvents();
                }
 
-               // 7c: Dust remediation (per channel)
-               if ( p_enableDustRemediation && detection.dust.dustPixelCount > 0 )
+               // 7c: Dust remediation (per channel) — uses Phase 3b subcube-verified mask
+               if ( p_enableDustRemediation && dustDetection.dustPixelCount > 0 )
                {
                   console.WriteLn( "  Phase 7c: Dust remediation (neighbor brightness correction)..." );
                   console.Flush();
@@ -936,7 +981,7 @@ bool NukeXStackInstance::ExecuteGlobal()
                      {
                         gpuOk = nukex::cuda::remediateDustGPU(
                            channelResults[ch].data(), cropW, cropH,
-                           detection.dust.mask.data(),
+                           dustDetection.mask.data(),
                            p_dustNeighborRadius, p_dustMaxCorrectionRatio,
                            corrected.data() );
                      }
@@ -948,14 +993,14 @@ bool NukeXStackInstance::ExecuteGlobal()
                         for ( int y = 0; y < cropH; ++y )
                            for ( int x = 0; x < cropW; ++x )
                            {
-                              if ( !detection.dust.mask[y * cropW + x] ) continue;
+                              if ( !dustDetection.mask[y * cropW + x] ) continue;
                               float neighborSum = 0; int neighborCount = 0;
                               for ( int dy = -p_dustNeighborRadius; dy <= p_dustNeighborRadius; ++dy )
                                  for ( int dx = -p_dustNeighborRadius; dx <= p_dustNeighborRadius; ++dx )
                                  {
                                     int nx = x + dx, ny = y + dy;
                                     if ( nx < 0 || nx >= cropW || ny < 0 || ny >= cropH ) continue;
-                                    if ( detection.dust.mask[ny * cropW + nx] ) continue;
+                                    if ( dustDetection.mask[ny * cropW + nx] ) continue;
                                     if ( channelResults[ch][ny * cropW + nx] < 1e-10f ) continue;
                                     neighborSum += channelResults[ch][ny * cropW + nx];
                                     ++neighborCount;
@@ -973,7 +1018,7 @@ bool NukeXStackInstance::ExecuteGlobal()
                   }
 
                   console.WriteLn( String().Format( "    Corrected %d dust pixels per channel",
-                     detection.dust.dustPixelCount ) );
+                     dustDetection.dustPixelCount ) );
                   Module->ProcessEvents();
                }
 

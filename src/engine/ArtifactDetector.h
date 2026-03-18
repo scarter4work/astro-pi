@@ -4,6 +4,8 @@
 #include <cstdint>
 #include <cstddef>
 
+#include "engine/SubCube.h"
+
 namespace nukex {
 
 // ---------------------------------------------------------------------------
@@ -94,6 +96,9 @@ public:
    // --- Primary detection methods ---
    TrailDetectionResult      detectTrails( const float* image, int width, int height ) const;
    DustDetectionResult       detectDust( const float* image, int width, int height ) const;
+   DustDetectionResult       detectDustSubcube( const float* stackedImage,
+                                                 const std::vector<SubCube*>& channelCubes,
+                                                 int width, int height ) const;
    VignettingDetectionResult detectVignetting( const float* image, int width, int height,
                                                 const uint8_t* excludeMask = nullptr ) const;
    DetectionResult           detectAll( const float* image, int width, int height ) const;

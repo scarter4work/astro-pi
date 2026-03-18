@@ -1,6 +1,7 @@
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/catch_approx.hpp>
 #include "engine/ArtifactDetector.h"
+#include "engine/SubCube.h"
 #include <vector>
 #include <cmath>
 #include <random>
@@ -271,4 +272,91 @@ TEST_CASE( "Full detection pipeline runs without crash", "[artifact][integration
    REQUIRE( result.trails.mask.size() == size_t(W * H) );
    REQUIRE( result.dust.mask.size() == size_t(W * H) );
    REQUIRE( result.vignetting.correctionMap.size() == size_t(W * H) );
+}
+
+// ============================================================================
+// Subcube-verified dust detection tests
+// ============================================================================
+
+TEST_CASE( "detectDustSubcube verifies against subcube consistency", "[artifact][dust][subcube]" )
+{
+   const int W = 64, H = 64;
+   const int nSubs = 10;
+
+   // Create a synthetic stacked image with a dust mote at (32, 32)
+   std::vector<float> stacked( W * H, 0.5f );
+   // Circular depression centered at (32, 32) radius 12
+   for ( int y = 0; y < H; ++y )
+      for ( int x = 0; x < W; ++x )
+      {
+         double dist = std::sqrt( (x - 32.0) * (x - 32.0) + (y - 32.0) * (y - 32.0) );
+         if ( dist < 12.0 )
+            stacked[y * W + x] = 0.45f;   // 10% darker
+      }
+
+   // Create subcube where every frame has the same depression (consistent = dust)
+   nukex::SubCube cube( nSubs, H, W );
+   for ( size_t z = 0; z < static_cast<size_t>( nSubs ); ++z )
+      for ( int y = 0; y < H; ++y )
+         for ( int x = 0; x < W; ++x )
+            cube.setPixel( z, y, x, stacked[y * W + x] + 0.01f * ( float( z % 3 ) - 1.0f ) );
+
+   std::vector<nukex::SubCube*> cubes = { &cube };
+
+   nukex::ArtifactDetectorConfig cfg;
+   cfg.dustMinDiameter    = 10;
+   cfg.dustMaxDiameter    = 50;
+   cfg.dustDetectionSigma = 2.0;
+   cfg.dustCircularityMin = 0.3;
+   nukex::ArtifactDetector detector( cfg );
+
+   auto result = detector.detectDustSubcube( stacked.data(), cubes, W, H );
+
+   REQUIRE( result.blobs.size() >= 1 );
+   REQUIRE( result.dustPixelCount > 0 );
+   // The blob should be near (32, 32)
+   bool foundNearCenter = false;
+   for ( const auto& blob : result.blobs )
+      if ( std::abs( blob.centerX - 32.0 ) < 15 && std::abs( blob.centerY - 32.0 ) < 15 )
+         foundNearCenter = true;
+   REQUIRE( foundNearCenter );
+}
+
+TEST_CASE( "detectDustSubcube rejects inconsistent blobs", "[artifact][dust][subcube]" )
+{
+   const int W = 64, H = 64;
+   const int nSubs = 10;
+
+   // Stacked image with a dark blob
+   std::vector<float> stacked( W * H, 0.5f );
+   for ( int y = 28; y < 36; ++y )
+      for ( int x = 28; x < 36; ++x )
+         stacked[y * W + x] = 0.45f;
+
+   // Subcube where the blob only appears in some frames (inconsistent = NOT dust)
+   nukex::SubCube cube( nSubs, H, W );
+   for ( size_t z = 0; z < static_cast<size_t>( nSubs ); ++z )
+      for ( int y = 0; y < H; ++y )
+         for ( int x = 0; x < W; ++x )
+         {
+            if ( z < 5 )
+               cube.setPixel( z, y, x, stacked[y * W + x] );
+            else
+               cube.setPixel( z, y, x, 0.5f );   // no depression in later frames
+         }
+
+   std::vector<nukex::SubCube*> cubes = { &cube };
+
+   nukex::ArtifactDetectorConfig cfg;
+   cfg.dustMinDiameter    = 5;
+   cfg.dustMaxDiameter    = 50;
+   cfg.dustDetectionSigma = 2.0;
+   cfg.dustCircularityMin = 0.3;
+   nukex::ArtifactDetector detector( cfg );
+
+   auto result = detector.detectDustSubcube( stacked.data(), cubes, W, H );
+
+   // Should reject — blob is only present in half the frames (high variance)
+   REQUIRE( result.blobs.empty() );
+   REQUIRE( result.dustPixelCount == 0 );
 }
