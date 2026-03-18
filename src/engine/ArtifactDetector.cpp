@@ -722,6 +722,52 @@ DustDetectionResult ArtifactDetector::detectDustSubcube( const float* stackedIma
       }
    emit( "[DustDetect] Flagged pixels: " + std::to_string( flagCount ) );
 
+   // Morphological closing (dilate then erode) to bridge small gaps within
+   // dust mote regions. Without this, noise causes the deficit to dip below
+   // threshold at some pixels, fragmenting the mote into many tiny components.
+   {
+      const int closeRadius = 5;
+      // Dilate: flag pixel if ANY neighbor within radius is flagged
+      std::vector<uint8_t> dilated( N, 0 );
+      for ( int y = 0; y < height; ++y )
+         for ( int x = 0; x < width; ++x )
+         {
+            if ( flagged[y * width + x] )
+            {
+               int y0 = std::max( 0, y - closeRadius );
+               int y1 = std::min( height - 1, y + closeRadius );
+               int x0 = std::max( 0, x - closeRadius );
+               int x1 = std::min( width - 1, x + closeRadius );
+               for ( int dy = y0; dy <= y1; ++dy )
+                  for ( int dx = x0; dx <= x1; ++dx )
+                     dilated[dy * width + dx] = 1;
+            }
+         }
+      // Erode: keep pixel only if ALL neighbors within radius are set
+      std::vector<uint8_t> closed( N, 0 );
+      for ( int y = 0; y < height; ++y )
+         for ( int x = 0; x < width; ++x )
+         {
+            if ( !dilated[y * width + x] ) continue;
+            int y0 = std::max( 0, y - closeRadius );
+            int y1 = std::min( height - 1, y + closeRadius );
+            int x0 = std::max( 0, x - closeRadius );
+            int x1 = std::min( width - 1, x + closeRadius );
+            bool allSet = true;
+            for ( int dy = y0; dy <= y1 && allSet; ++dy )
+               for ( int dx = x0; dx <= x1 && allSet; ++dx )
+                  if ( !dilated[dy * width + dx] )
+                     allSet = false;
+            if ( allSet )
+               closed[y * width + x] = 1;
+         }
+      flagged = std::move( closed );
+      int closedCount = 0;
+      for ( int i = 0; i < N; ++i )
+         if ( flagged[i] ) ++closedCount;
+      emit( "[DustDetect] After morphological closing (r=5): " + std::to_string( closedCount ) + " pixels" );
+   }
+
    // Connected component labeling via flood fill (4-connected)
    std::vector<int> labels( N, 0 );
    int nextLabel = 1;
