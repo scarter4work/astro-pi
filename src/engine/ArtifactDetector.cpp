@@ -919,7 +919,9 @@ DustDetectionResult ArtifactDetector::detectDustSubcube( const float* stackedIma
 
       const SubCube* cube = channelCubes[0];
       size_t nSubs = cube->numSubs();
-      int neighborRadius = std::max( 5, static_cast<int>( blob.radius / 2 ) );
+      // Neighbor radius must reach OUTSIDE the largest possible mote,
+      // not just outside the detected blob (which may be a fragment).
+      int neighborRadius = std::max( 5, m_config.dustMaxDiameter / 2 );
 
       // Accumulate deficit per frame across all sample pixels
       std::vector<double> frameAvgDeficit( nSubs, 0.0 );

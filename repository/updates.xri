@@ -9,8 +9,8 @@
       </p>
    </description>
    <platform os="linux" arch="x64" version="1.8.0:1.9.9">
-      <package fileName="20260318-linux-x64-NukeX.tar.gz" sha1="38051bba4f9cac9c148d234e409d3cedcc9136fe" type="module" releaseDate="20260318">
-         <title>NukeX 3.1.0.20</title>
+      <package fileName="20260318-linux-x64-NukeX.tar.gz" sha1="33be8b752bfdddd4eb7d5003dcba31e411f13c60" type="module" releaseDate="20260318">
+         <title>NukeX 3.1.0.21</title>
          <description>
             <p>
                <b>NukeX v3 - Statistical Stacking + Stretch for PixInsight</b>
@@ -27,7 +27,7 @@
                </li>
             </ul>
             <p>
-               <b>Version 3.1.0.20 - Morphological closing for dust detection</b>
+               <b>Version 3.1.0.21 - Fix neighbor radius for subcube verification</b>
             </p>
             <p>
                Combines post-stretch spatial detection (Phase 7a, where MTF amplifies
@@ -44,4 +44,4 @@
       </package>
    </platform>
 </xri>
-<Signature developerId="scarter4work" timestamp="2026-03-18T23:05:07.981Z" encoding="Base64">bCEJiShVBPFfhiOKaCRddY/oHzQMYIq+UPr1gjQxHR8Ay3yMNWNHDtF5TB/6w4OXkH5HLCmrrDGj+in/uiH5AQ==</Signature>
+<Signature developerId="scarter4work" timestamp="2026-03-19T01:20:49.433Z" encoding="Base64">RuAvy5bRKJfFsmfrc4zd174Hp/pgEfG+QmqoSCBDc4eAevDMUvNbVkzR5fNvDySeG8ArVku7n4J2Wf/g8xLJAw==</Signature>
