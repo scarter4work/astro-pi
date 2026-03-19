@@ -10,7 +10,7 @@
    </description>
    <platform os="linux" arch="x64" version="1.8.0:1.9.9">
       <package fileName="20260318-linux-x64-NukeX.tar.gz" sha1="5363871145a9a9b318677f035f4b1429f2a5d191" type="module" releaseDate="20260318">
-         <title>NukeX 3.1.0.25</title>
+         <title>NukeX 3.1.0.26</title>
          <description>
             <p>
                <b>NukeX v3 - Statistical Stacking + Stretch for PixInsight</b>
@@ -27,7 +27,7 @@
                </li>
             </ul>
             <p>
-               <b>Version 3.1.0.25 - Expand verified dust mask to full mote circle</b>
+               <b>Version 3.1.0.26 - Fix dust mask radius and tighten verification</b>
             </p>
             <p>
                Combines post-stretch spatial detection (Phase 7a, where MTF amplifies
@@ -44,4 +44,4 @@
       </package>
    </platform>
 </xri>
-<Signature developerId="scarter4work" timestamp="2026-03-19T16:20:24.648Z" encoding="Base64">QznOJLs3u7wbN8B7MWg9CEVRHNGINzHNph4+lZVjZKrU4hYfrgm/1tdbuLKFZVK+2yZBd+jQCLYuBajHpdHwAQ==</Signature>
+<Signature developerId="scarter4work" timestamp="2026-03-19T16:26:48.001Z" encoding="Base64">P8LOeL+zZzFt5n56XvD7s/QDeEEBurytTk/XnxEE/yMruB5bSLFBEo90Op8KdTlj+j3T3VIOf0EW9vHh02g+AQ==</Signature>
