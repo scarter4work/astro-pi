@@ -899,78 +899,90 @@ DustDetectionResult ArtifactDetector::detectDustSubcube( const float* stackedIma
          continue;
       }
 
-      // Aggregate spatial verification: average deficit across sample pixels
-      // per frame, then check consistency of per-frame means.
-      // Per-pixel SNR is <2 in individual frames — spatial averaging over K
-      // pixels reduces noise by sqrt(K), making the dust deficit detectable.
-      // See: specs/2026-03-18-aggregate-subcube-verification-amendment.md
-      const int maxSamples = 40;
-      std::vector<int> samplePixels;
-      if ( c.area <= maxSamples )
-      {
-         samplePixels = c.memberPixels;
-      }
-      else
-      {
-         int step = c.area / maxSamples;
-         for ( int s = 0; s < maxSamples; ++s )
-            samplePixels.push_back( c.memberPixels[s * step] );
-      }
+      // Radial deficit ratio verification: compare mean subcube brightness
+      // inside the blob vs a surrounding ring, per frame. The ratio normalizes
+      // out per-frame sky brightness variations — the fatal flaw in all previous
+      // approaches. See: specs/2026-03-19-radial-profile-dust-verification.md
 
       const SubCube* cube = channelCubes[0];
       size_t nSubs = cube->numSubs();
-      // Neighbor radius must reach OUTSIDE the largest possible mote,
-      // not just outside the detected blob (which may be a fragment).
-      int neighborRadius = std::max( 5, m_config.dustMaxDiameter / 2 );
+      int cx = static_cast<int>( blob.centerX );
+      int cy = static_cast<int>( blob.centerY );
 
-      // Accumulate deficit per frame across all sample pixels
-      std::vector<double> frameAvgDeficit( nSubs, 0.0 );
-      for ( int pixIdx : samplePixels )
+      // Inner sample: blob member pixels (up to 100)
+      const int maxInner = 100;
+      std::vector<int> innerPixels;
+      if ( c.area <= maxInner )
+         innerPixels = c.memberPixels;
+      else
       {
-         int px = pixIdx % width;
-         int py = pixIdx / width;
-
-         int nx0 = std::max( 0, px - neighborRadius );
-         int nx1 = std::min( width - 1, px + neighborRadius );
-         int ny0 = std::max( 0, py - neighborRadius );
-         int ny1 = std::min( height - 1, py + neighborRadius );
-
-         for ( size_t z = 0; z < nSubs; ++z )
-         {
-            double neighborMean = ( cube->pixel( z, ny0, nx0 )
-                                  + cube->pixel( z, ny0, nx1 )
-                                  + cube->pixel( z, ny1, nx0 )
-                                  + cube->pixel( z, ny1, nx1 ) ) / 4.0;
-            double pixelVal = cube->pixel( z, py, px );
-            frameAvgDeficit[z] += ( neighborMean - pixelVal );
-         }
+         int step = c.area / maxInner;
+         for ( int s = 0; s < maxInner; ++s )
+            innerPixels.push_back( c.memberPixels[s * step] );
       }
 
-      int nSamples = static_cast<int>( samplePixels.size() );
+      // Outer ring: pixels at [dustMaxDiameter/2, dustMaxDiameter] from blob center
+      // Subsampled every 5th pixel for efficiency
+      int rInner = m_config.dustMaxDiameter / 2;
+      int rOuter = m_config.dustMaxDiameter;
+      int rInnerSq = rInner * rInner;
+      int rOuterSq = rOuter * rOuter;
+      std::vector<int> outerPixels;
+      for ( int oy = std::max( 0, cy - rOuter ); oy <= std::min( height - 1, cy + rOuter ); oy += 5 )
+         for ( int ox = std::max( 0, cx - rOuter ); ox <= std::min( width - 1, cx + rOuter ); ox += 5 )
+         {
+            int dx = ox - cx, dy = oy - cy;
+            int distSq = dx * dx + dy * dy;
+            if ( distSq >= rInnerSq && distSq <= rOuterSq )
+               outerPixels.push_back( oy * width + ox );
+         }
+
+      if ( outerPixels.empty() || innerPixels.empty() )
+      {
+         emit( "[DustDetect] Blob at (" + std::to_string(cx) + "," + std::to_string(cy)
+               + "): skipped (no ring pixels)" );
+         continue;
+      }
+
+      // Compute inner/outer ratio per frame
+      std::vector<double> frameRatios;
+      frameRatios.reserve( nSubs );
       for ( size_t z = 0; z < nSubs; ++z )
-         frameAvgDeficit[z] /= nSamples;
+      {
+         double innerSum = 0;
+         for ( int idx : innerPixels )
+            innerSum += cube->pixel( z, idx / width, idx % width );
+         double innerMean = innerSum / innerPixels.size();
 
-      // Median and MAD of per-frame aggregate deficits
-      std::vector<double> sortedDeficits = frameAvgDeficit;
-      size_t defMid = sortedDeficits.size() / 2;
-      std::nth_element( sortedDeficits.begin(), sortedDeficits.begin() + defMid, sortedDeficits.end() );
-      double medianAggDef = sortedDeficits[defMid];
+         double outerSum = 0;
+         for ( int idx : outerPixels )
+            outerSum += cube->pixel( z, idx / width, idx % width );
+         double outerMean = outerSum / outerPixels.size();
 
-      std::vector<double> defAbsDevs( nSubs );
-      for ( size_t z = 0; z < nSubs; ++z )
-         defAbsDevs[z] = std::abs( frameAvgDeficit[z] - medianAggDef );
-      size_t defMadMid = defAbsDevs.size() / 2;
-      std::nth_element( defAbsDevs.begin(), defAbsDevs.begin() + defMadMid, defAbsDevs.end() );
-      double madAggDef = 1.4826 * defAbsDevs[defMadMid];
+         if ( outerMean > 1e-10 )
+            frameRatios.push_back( innerMean / outerMean );
+      }
 
-      double ratio = ( medianAggDef > 0 ) ? madAggDef / medianAggDef : 999.0;
-      bool blobPassed = ( medianAggDef > 0 && ratio < 1.0 );
+      if ( frameRatios.empty() )
+      {
+         emit( "[DustDetect] Blob at (" + std::to_string(cx) + "," + std::to_string(cy)
+               + "): skipped (zero outer mean)" );
+         continue;
+      }
+
+      // Median ratio across frames
+      std::vector<double> sorted = frameRatios;
+      size_t mid = sorted.size() / 2;
+      std::nth_element( sorted.begin(), sorted.begin() + mid, sorted.end() );
+      double medianRatio = sorted[mid];
+
+      bool blobPassed = ( medianRatio < 0.97 );
 
       {
          std::ostringstream oss;
-         oss << "[DustDetect] Blob verification (aggregate): medDeficit="
-             << medianAggDef << ", madDeficit=" << madAggDef
-             << ", ratio=" << ratio << ", samples=" << nSamples
+         oss << "[DustDetect] Blob verification (radial ratio): center=("
+             << cx << "," << cy << "), medianRatio=" << medianRatio
+             << ", inner=" << innerPixels.size() << ", outer=" << outerPixels.size()
              << ( blobPassed ? " PASS" : " FAIL" );
          emit( oss.str() );
       }
