@@ -1064,7 +1064,7 @@ DustDetectionResult ArtifactDetector::detectDustSubcube( const float* stackedIma
       std::nth_element( sorted.begin(), sorted.begin() + mid, sorted.end() );
       double medianRatio = sorted[mid];
 
-      bool blobPassed = ( medianRatio < 0.97 );
+      bool blobPassed = ( medianRatio < 0.96 );
 
       {
          std::ostringstream oss;
@@ -1078,11 +1078,10 @@ DustDetectionResult ArtifactDetector::detectDustSubcube( const float* stackedIma
       if ( blobPassed )
       {
          result.blobs.push_back( blob );
-         // Paint a filled circle covering the full mote area, not just the
-         // fragmented member pixels. The detected blob may be a small fragment
-         // of a larger mote — use rInner (= blobDiameter) as the mask radius
-         // to cover the actual mote extent.
-         int maskRadius = rInner;
+         // Expand mask to a filled circle covering the full mote extent.
+         // Use diameter/2 (the actual blob radius), not rInner which is the
+         // inner ring distance used for verification (= full blobDiameter).
+         int maskRadius = std::max( 5, static_cast<int>( diameter / 2 ) );
          int maskRadiusSq = maskRadius * maskRadius;
          for ( int my = std::max( 0, cy - maskRadius ); my <= std::min( height - 1, cy + maskRadius ); ++my )
             for ( int mx = std::max( 0, cx - maskRadius ); mx <= std::min( width - 1, cx + maskRadius ); ++mx )
