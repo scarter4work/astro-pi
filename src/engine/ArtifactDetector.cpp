@@ -1005,10 +1005,14 @@ DustDetectionResult ArtifactDetector::detectDustSubcube( const float* stackedIma
             innerPixels.push_back( c.memberPixels[s * step] );
       }
 
-      // Outer ring: pixels at [dustMaxDiameter/2, dustMaxDiameter] from blob center
-      // Subsampled every 5th pixel for efficiency
-      int rInner = m_config.dustMaxDiameter / 2;
-      int rOuter = m_config.dustMaxDiameter;
+      // Outer ring: NEARBY surroundings at [diameter, diameter*3] from blob center.
+      // Must use nearby ring because the mote may sit on a local brightness
+      // feature (galaxy halo) — far background can be at the same level as
+      // the mote center, making the ratio ~1.0. Nearby ring captures the
+      // local brightness where the deficit actually exists.
+      int blobDiam = static_cast<int>( diameter );
+      int rInner = std::max( 10, blobDiam );
+      int rOuter = std::max( 30, blobDiam * 3 );
       int rInnerSq = rInner * rInner;
       int rOuterSq = rOuter * rOuter;
       std::vector<int> outerPixels;
