@@ -617,236 +617,286 @@ DustDetectionResult ArtifactDetector::detectDustSubcube( const float* stackedIma
       return result;
 
    // =========================================================================
-   // Direct subcube scan: compute per-frame radial ratio at each grid point.
-   // A dust mote is a multiplicative sensor defect — every frame has the same
-   // attenuation at the same position. The radial ratio (inner/outer brightness)
-   // is constant across frames for dust, but varies for noise/sky features.
+   // Step 1: Compute stacked linear image from subcube mean.
+   // This is the average brightness at each pixel across all frames, in linear
+   // space. A dust mote appears as a circular depression in this image.
    // =========================================================================
 
-   const int gridStep  = 5;    // scan resolution (pixels)
-   const int innerR    = 5;    // inner disk radius for mote sampling
-   const int ringInner = 15;   // inner edge of comparison ring
-   const int ringOuter = 50;   // outer edge of comparison ring
-   const int ringSampleStep = 3;  // stride within ring
-   const double detectionThresh = 0.97;  // median ratio threshold
-
-   {
-      std::ostringstream oss;
-      oss << "[DustDetect] Subcube scan: " << width << "x" << height
-          << ", " << nSubs << " subs, grid=" << gridStep
-          << ", innerR=" << innerR << ", ring=[" << ringInner << "," << ringOuter << "]"
-          << ", thresh=" << detectionThresh;
-      emit( oss.str() );
-   }
-
-   // --- Pre-compute inner/outer pixel offset lists (relative to center) ---
-   struct PixOff { int dx, dy; };
-   std::vector<PixOff> innerOffsets, ringOffsets;
-
-   for ( int dy = -innerR; dy <= innerR; ++dy )
-      for ( int dx = -innerR; dx <= innerR; ++dx )
-         if ( dx * dx + dy * dy <= innerR * innerR )
-            innerOffsets.push_back( { dx, dy } );
-
-   for ( int dy = -ringOuter; dy <= ringOuter; dy += ringSampleStep )
-      for ( int dx = -ringOuter; dx <= ringOuter; dx += ringSampleStep )
+   emit( "[DustDetect] Computing stacked linear image from subcube mean..." );
+   std::vector<float> linearStack( N, 0.0f );
+   for ( int y = 0; y < height; ++y )
+      for ( int x = 0; x < width; ++x )
       {
-         int d2 = dx * dx + dy * dy;
-         if ( d2 >= ringInner * ringInner && d2 <= ringOuter * ringOuter )
-            ringOffsets.push_back( { dx, dy } );
-      }
-
-   emit( "[DustDetect] Inner offsets: " + std::to_string( innerOffsets.size() )
-         + ", ring offsets: " + std::to_string( ringOffsets.size() ) );
-
-   // --- Grid scan: compute per-frame radial ratio at each position ---
-   int gridW = ( width  + gridStep - 1 ) / gridStep;
-   int gridH = ( height + gridStep - 1 ) / gridStep;
-   std::vector<uint8_t> gridCandidates( gridW * gridH, 0 );
-   std::vector<double>  gridRatios( gridW * gridH, 1.0 );
-   int preFilterCount = 0;
-   int detectionCount = 0;
-
-   for ( int gy = 0; gy < gridH; ++gy )
-   {
-      int py = gy * gridStep;
-      if ( py >= height ) continue;
-
-      for ( int gx = 0; gx < gridW; ++gx )
-      {
-         int px = gx * gridStep;
-         if ( px >= width ) continue;
-
-         // Skip edges where ring would be severely truncated
-         if ( px < ringOuter || px >= width  - ringOuter ||
-              py < ringOuter || py >= height - ringOuter )
-            continue;
-
-         // Compute per-frame radial ratio
-         std::vector<double> frameRatios;
-         frameRatios.reserve( nSubs );
-
+         double sum = 0;
          for ( size_t z = 0; z < nSubs; ++z )
-         {
-            double iSum = 0;
-            for ( const auto& off : innerOffsets )
-               iSum += cube->pixel( z, py + off.dy, px + off.dx );
-            double iMean = iSum / innerOffsets.size();
-
-            double oSum = 0;
-            for ( const auto& off : ringOffsets )
-               oSum += cube->pixel( z, py + off.dy, px + off.dx );
-            double oMean = oSum / ringOffsets.size();
-
-            if ( oMean > 1e-10 )
-               frameRatios.push_back( iMean / oMean );
-         }
-
-         if ( frameRatios.size() < nSubs / 2 )
-            continue;
-
-         // Median ratio across frames
-         std::vector<double> sorted = frameRatios;
-         size_t mid = sorted.size() / 2;
-         std::nth_element( sorted.begin(), sorted.begin() + mid, sorted.end() );
-         double medRatio = sorted[mid];
-         ++preFilterCount;
-
-         if ( medRatio < detectionThresh )
-         {
-            gridCandidates[gy * gridW + gx] = 1;
-            gridRatios[gy * gridW + gx] = medRatio;
-            ++detectionCount;
-         }
+            sum += cube->pixel( z, y, x );
+         linearStack[y * width + x] = static_cast<float>( sum / nSubs );
       }
+
+   // =========================================================================
+   // Step 2: Difference-of-smoothing (DoS) on the linear stacked image.
+   // Small kernel captures mote-scale features; large kernel captures sky.
+   // deficit = large - small: positive inside a circular depression.
+   // =========================================================================
+
+   int smallKernel = std::max( 3, m_config.dustMinDiameter );
+   if ( smallKernel % 2 == 0 ) ++smallKernel;
+   int largeKernel = static_cast<int>( m_config.dustMaxDiameter * 1.5 );
+   if ( largeKernel % 2 == 0 ) ++largeKernel;
+
+   std::vector<float> smallSmooth = localBackgroundMap( linearStack.data(), width, height, smallKernel );
+   std::vector<float> largeSmooth = localBackgroundMap( linearStack.data(), width, height, largeKernel );
+
+   // Compute deficit and ALSO normalized deficit (% darker than local background)
+   std::vector<float> deficit( N );
+   std::vector<float> pctDeficit( N );
+   for ( int i = 0; i < N; ++i )
+   {
+      deficit[i] = largeSmooth[i] - smallSmooth[i];
+      pctDeficit[i] = ( largeSmooth[i] > 1e-10f )
+                    ? deficit[i] / largeSmooth[i]
+                    : 0.0f;
    }
+
+   // Threshold on % deficit using MAD
+   std::vector<float> pctCopy( pctDeficit.begin(), pctDeficit.end() );
+   size_t mid = pctCopy.size() / 2;
+   std::nth_element( pctCopy.begin(), pctCopy.begin() + mid, pctCopy.end() );
+   float medianPct = pctCopy[mid];
+
+   std::vector<float> absDevs( N );
+   for ( int i = 0; i < N; ++i )
+      absDevs[i] = std::abs( pctDeficit[i] - medianPct );
+   std::nth_element( absDevs.begin(), absDevs.begin() + mid, absDevs.end() );
+   float madPct = absDevs[mid] * 1.4826f;
+
+   float pctThreshold = medianPct + static_cast<float>( m_config.dustDetectionSigma ) * madPct;
 
    {
       std::ostringstream oss;
-      oss << "[DustDetect] Grid scan: " << preFilterCount << " points evaluated, "
-          << detectionCount << " candidates (ratio < " << detectionThresh << ")";
+      oss << "[DustDetect] Linear DoS: kernels=" << smallKernel << "/" << largeKernel
+          << ", pctDeficit median=" << medianPct << ", MAD=" << madPct
+          << ", threshold=" << pctThreshold;
       emit( oss.str() );
    }
 
-   if ( detectionCount == 0 )
+   // =========================================================================
+   // Step 3: Flag pixels with significant % deficit, connected components,
+   // circularity filter — find circular blobs.
+   // =========================================================================
+
+   std::vector<uint8_t> flagged( N, 0 );
+   int flagCount = 0;
+   for ( int i = 0; i < N; ++i )
+      if ( pctDeficit[i] > pctThreshold && linearStack[i] <= largeSmooth[i] )
+      {
+         flagged[i] = 1;
+         ++flagCount;
+      }
+   emit( "[DustDetect] Flagged pixels (pctDeficit > threshold): " + std::to_string( flagCount ) );
+
+   // Morphological closing to bridge gaps
    {
-      emit( "[DustDetect] No dust candidates found" );
-      return result;
+      const int closeRadius = 5;
+      std::vector<uint8_t> dilated( N, 0 );
+      for ( int y = 0; y < height; ++y )
+         for ( int x = 0; x < width; ++x )
+         {
+            if ( !flagged[y * width + x] ) continue;
+            int y0 = std::max( 0, y - closeRadius );
+            int y1 = std::min( height - 1, y + closeRadius );
+            int x0 = std::max( 0, x - closeRadius );
+            int x1 = std::min( width - 1, x + closeRadius );
+            for ( int dy = y0; dy <= y1; ++dy )
+               for ( int dx = x0; dx <= x1; ++dx )
+                  dilated[dy * width + dx] = 1;
+         }
+      std::vector<uint8_t> closed( N, 0 );
+      for ( int y = 0; y < height; ++y )
+         for ( int x = 0; x < width; ++x )
+         {
+            if ( !dilated[y * width + x] ) continue;
+            int y0 = std::max( 0, y - closeRadius );
+            int y1 = std::min( height - 1, y + closeRadius );
+            int x0 = std::max( 0, x - closeRadius );
+            int x1 = std::min( width - 1, x + closeRadius );
+            bool allSet = true;
+            for ( int dy = y0; dy <= y1 && allSet; ++dy )
+               for ( int dx = x0; dx <= x1 && allSet; ++dx )
+                  if ( !dilated[dy * width + dx] )
+                     allSet = false;
+            if ( allSet )
+               closed[y * width + x] = 1;
+         }
+      flagged = std::move( closed );
    }
 
-   // --- Cluster grid candidates into blobs (8-connected on the grid) ---
-   std::vector<int> gridLabels( gridW * gridH, 0 );
+   // Connected component labeling (4-connected)
+   std::vector<int> labels( N, 0 );
    int nextLabel = 1;
-
-   for ( int gy = 0; gy < gridH; ++gy )
-      for ( int gx = 0; gx < gridW; ++gx )
+   for ( int y = 0; y < height; ++y )
+      for ( int x = 0; x < width; ++x )
       {
-         int gi = gy * gridW + gx;
-         if ( !gridCandidates[gi] || gridLabels[gi] != 0 )
-            continue;
-
+         int idx = y * width + x;
+         if ( !flagged[idx] || labels[idx] ) continue;
          int label = nextLabel++;
          std::vector<int> stack;
-         stack.push_back( gi );
-         gridLabels[gi] = label;
-
+         stack.push_back( idx );
+         labels[idx] = label;
          while ( !stack.empty() )
          {
-            int ci = stack.back();
-            stack.pop_back();
-            int cy2 = ci / gridW;
-            int cx2 = ci % gridW;
-
-            const int ddx[] = { -1, 1, 0, 0, -1, -1, 1, 1 };
-            const int ddy[] = { 0, 0, -1, 1, -1, 1, -1, 1 };
-            for ( int d = 0; d < 8; ++d )
+            int ci = stack.back(); stack.pop_back();
+            int cy2 = ci / width, cx2 = ci % width;
+            const int ddx[] = { -1, 1, 0, 0 };
+            const int ddy[] = { 0, 0, -1, 1 };
+            for ( int d = 0; d < 4; ++d )
             {
                int nx = cx2 + ddx[d], ny = cy2 + ddy[d];
-               if ( nx < 0 || nx >= gridW || ny < 0 || ny >= gridH )
-                  continue;
-               int ni = ny * gridW + nx;
-               if ( gridCandidates[ni] && gridLabels[ni] == 0 )
-               {
-                  gridLabels[ni] = label;
-                  stack.push_back( ni );
-               }
+               if ( nx < 0 || nx >= width || ny < 0 || ny >= height ) continue;
+               int ni = ny * width + nx;
+               if ( flagged[ni] && !labels[ni] )
+               { labels[ni] = label; stack.push_back( ni ); }
             }
          }
       }
 
-   int numClusters = nextLabel - 1;
-   emit( "[DustDetect] Grid clusters: " + std::to_string( numClusters ) );
+   int numComponents = nextLabel - 1;
+   emit( "[DustDetect] Components: " + std::to_string( numComponents ) );
 
-   // --- Compute blob properties from each cluster and paint mask ---
-   for ( int label = 1; label <= numClusters; ++label )
+   // =========================================================================
+   // Step 4: Filter by size + circularity, verify with subcube radial ratio.
+   // =========================================================================
+
+   struct CompInfo { int area = 0; int xMin, xMax, yMin, yMax;
+      double sumX = 0, sumY = 0; std::vector<int> pixels; };
+   std::vector<CompInfo> comps( numComponents );
+   for ( auto& c : comps ) { c.xMin = width; c.yMin = height; c.xMax = 0; c.yMax = 0; }
+
+   for ( int y = 0; y < height; ++y )
+      for ( int x = 0; x < width; ++x )
+      {
+         int lbl = labels[y * width + x];
+         if ( !lbl ) continue;
+         auto& c = comps[lbl - 1];
+         c.area++;
+         c.sumX += x; c.sumY += y;
+         c.xMin = std::min( c.xMin, x ); c.xMax = std::max( c.xMax, x );
+         c.yMin = std::min( c.yMin, y ); c.yMax = std::max( c.yMax, y );
+         c.pixels.push_back( y * width + x );
+      }
+
+   for ( int i = 0; i < numComponents; ++i )
    {
-      double sumX = 0, sumY = 0;
-      int count = 0;
-      int xMin = width, xMax = 0, yMin = height, yMax = 0;
-      double minRatio = 1.0;
-
-      for ( int gy = 0; gy < gridH; ++gy )
-         for ( int gx = 0; gx < gridW; ++gx )
-         {
-            if ( gridLabels[gy * gridW + gx] != label )
-               continue;
-            int px = gx * gridStep;
-            int py = gy * gridStep;
-            sumX += px;
-            sumY += py;
-            ++count;
-            xMin = std::min( xMin, px );
-            xMax = std::max( xMax, px );
-            yMin = std::min( yMin, py );
-            yMax = std::max( yMax, py );
-            minRatio = std::min( minRatio, gridRatios[gy * gridW + gx] );
-         }
-
-      if ( count == 0 )
-         continue;
-
-      int cx = static_cast<int>( sumX / count );
-      int cy = static_cast<int>( sumY / count );
-      int bboxW = xMax - xMin + gridStep;
-      int bboxH = yMax - yMin + gridStep;
-      int diameter = std::max( bboxW, bboxH );
-
-      // Filter by size
+      const auto& c = comps[i];
+      if ( c.area == 0 ) continue;
+      double bbW = c.xMax - c.xMin + 1;
+      double bbH = c.yMax - c.yMin + 1;
+      double diameter = std::max( bbW, bbH );
       if ( diameter < m_config.dustMinDiameter || diameter > m_config.dustMaxDiameter )
-      {
-         std::ostringstream oss;
-         oss << "[DustDetect] Cluster at (" << cx << "," << cy
-             << "): diameter=" << diameter << " outside range, skipped";
-         emit( oss.str() );
          continue;
-      }
+      double idealArea = M_PI * ( diameter / 2.0 ) * ( diameter / 2.0 );
+      double circularity = c.area / idealArea;
+      if ( circularity < m_config.dustCircularityMin )
+         continue;
+
+      int cx = static_cast<int>( c.sumX / c.area );
+      int cy = static_cast<int>( c.sumY / c.area );
 
       {
          std::ostringstream oss;
-         oss << "[DustDetect] Dust blob: center=(" << cx << "," << cy
-             << "), diameter=" << diameter << ", gridPoints=" << count
-             << ", minRatio=" << minRatio;
+         oss << "[DustDetect] Candidate: center=(" << cx << "," << cy
+             << "), diam=" << diameter << ", area=" << c.area
+             << ", circ=" << circularity;
          emit( oss.str() );
       }
 
-      DustBlobInfo blob;
-      blob.centerX = cx;
-      blob.centerY = cy;
-      blob.radius  = diameter / 2.0;
-      blob.circularity = 1.0;
-      blob.meanAttenuation = 1.0 - minRatio;
-      result.blobs.push_back( blob );
+      // ---- Subcube radial ratio verification ----
+      // Use blob-matched radii: inner = blob member pixels, outer = nearby ring
+      int blobDiam = static_cast<int>( diameter );
+      int rInner = std::max( 10, blobDiam );
+      int rOuter = std::max( 30, blobDiam * 3 );
+      int rInnerSq = rInner * rInner, rOuterSq = rOuter * rOuter;
 
-      // Paint filled circle mask
-      int maskRadius = std::max( 5, diameter / 2 );
-      int maskRadiusSq = maskRadius * maskRadius;
-      for ( int my = std::max( 0, cy - maskRadius ); my <= std::min( height - 1, cy + maskRadius ); ++my )
-         for ( int mx = std::max( 0, cx - maskRadius ); mx <= std::min( width - 1, cx + maskRadius ); ++mx )
+      // Inner: blob member pixels (up to 100)
+      std::vector<int> innerPx;
+      if ( c.area <= 100 )
+         innerPx = c.pixels;
+      else
+      {
+         int step = c.area / 100;
+         for ( int s = 0; s < 100; ++s )
+            innerPx.push_back( c.pixels[s * step] );
+      }
+
+      // Outer: nearby ring
+      std::vector<int> outerPx;
+      for ( int oy = std::max( 0, cy - rOuter ); oy <= std::min( height - 1, cy + rOuter ); oy += 5 )
+         for ( int ox = std::max( 0, cx - rOuter ); ox <= std::min( width - 1, cx + rOuter ); ox += 5 )
          {
-            int ddx = mx - cx, ddy = my - cy;
-            if ( ddx * ddx + ddy * ddy <= maskRadiusSq )
-               result.mask[my * width + mx] = 1;
+            int dx = ox - cx, dy = oy - cy;
+            int d2 = dx * dx + dy * dy;
+            if ( d2 >= rInnerSq && d2 <= rOuterSq )
+               outerPx.push_back( oy * width + ox );
          }
+
+      if ( innerPx.empty() || outerPx.empty() ) continue;
+
+      // Per-frame ratio
+      std::vector<double> frameRatios;
+      frameRatios.reserve( nSubs );
+      for ( size_t z = 0; z < nSubs; ++z )
+      {
+         double iSum = 0;
+         for ( int idx : innerPx )
+            iSum += cube->pixel( z, idx / width, idx % width );
+         double iMean = iSum / innerPx.size();
+
+         double oSum = 0;
+         for ( int idx : outerPx )
+            oSum += cube->pixel( z, idx / width, idx % width );
+         double oMean = oSum / outerPx.size();
+
+         if ( oMean > 1e-10 )
+            frameRatios.push_back( iMean / oMean );
+      }
+      if ( frameRatios.empty() ) continue;
+
+      std::vector<double> sorted = frameRatios;
+      size_t fmid = sorted.size() / 2;
+      std::nth_element( sorted.begin(), sorted.begin() + fmid, sorted.end() );
+      double medRatio = sorted[fmid];
+
+      bool passed = ( medRatio < 0.97 );
+
+      {
+         std::ostringstream oss;
+         oss << "[DustDetect]   Verification: medRatio=" << medRatio
+             << ", inner=" << innerPx.size() << ", outer=" << outerPx.size()
+             << ( passed ? " PASS" : " FAIL" );
+         emit( oss.str() );
+      }
+
+      if ( passed )
+      {
+         DustBlobInfo blob;
+         blob.centerX = cx;
+         blob.centerY = cy;
+         blob.radius = diameter / 2.0;
+         blob.circularity = circularity;
+         blob.meanAttenuation = 1.0 - medRatio;
+         result.blobs.push_back( blob );
+
+         // Paint filled circle mask using detected diameter
+         int maskRadius = std::max( 5, static_cast<int>( diameter / 2 ) );
+         int maskRadiusSq = maskRadius * maskRadius;
+         for ( int my = std::max( 0, cy - maskRadius ); my <= std::min( height - 1, cy + maskRadius ); ++my )
+            for ( int mx = std::max( 0, cx - maskRadius ); mx <= std::min( width - 1, cx + maskRadius ); ++mx )
+            {
+               int ddx = mx - cx, ddy = my - cy;
+               if ( ddx * ddx + ddy * ddy <= maskRadiusSq )
+                  result.mask[my * width + mx] = 1;
+            }
+      }
    }
 
    // Count dust pixels
@@ -854,8 +904,8 @@ DustDetectionResult ArtifactDetector::detectDustSubcube( const float* stackedIma
       if ( result.mask[i] )
          ++result.dustPixelCount;
 
-   emit( "[DustDetect] Subcube detection complete: " + std::to_string( result.blobs.size() )
-         + " blobs, " + std::to_string( result.dustPixelCount ) + " pixels" );
+   emit( "[DustDetect] Result: " + std::to_string( result.blobs.size() )
+         + " verified blobs, " + std::to_string( result.dustPixelCount ) + " pixels" );
 
    return result;
 }
