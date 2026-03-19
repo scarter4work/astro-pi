@@ -695,6 +695,38 @@ DustDetectionResult ArtifactDetector::detectDustSubcube( const float* stackedIma
       }
    emit( "[DustDetect] Flagged pixels (pctDeficit > threshold): " + std::to_string( flagCount ) );
 
+   // Diagnostic: probe known mote location
+   {
+      int px = 2126, py = 954;
+      if ( px < width && py < height )
+      {
+         int idx = py * width + px;
+         std::ostringstream oss;
+         oss << "[DustDetect] PROBE (" << px << "," << py << "):"
+             << " linearStack=" << linearStack[idx]
+             << ", smallSmooth=" << smallSmooth[idx]
+             << ", largeSmooth=" << largeSmooth[idx]
+             << ", deficit=" << deficit[idx]
+             << ", pctDeficit=" << pctDeficit[idx]
+             << ", threshold=" << pctThreshold
+             << ", flagged=" << ( flagged[idx] ? "YES" : "NO" );
+         emit( oss.str() );
+
+         // Also probe nearby pixels to see the spatial pattern
+         int flaggedInRadius = 0;
+         for ( int dy = -20; dy <= 20; ++dy )
+            for ( int dx = -20; dx <= 20; ++dx )
+            {
+               int sx = px + dx, sy = py + dy;
+               if ( sx >= 0 && sx < width && sy >= 0 && sy < height )
+                  if ( dx*dx + dy*dy <= 20*20 && flagged[sy * width + sx] )
+                     ++flaggedInRadius;
+            }
+         emit( "[DustDetect] PROBE: " + std::to_string( flaggedInRadius )
+               + " flagged pixels within r=20 of mote center" );
+      }
+   }
+
    // Morphological closing to bridge gaps
    {
       const int closeRadius = 5;
@@ -762,6 +794,42 @@ DustDetectionResult ArtifactDetector::detectDustSubcube( const float* stackedIma
 
    int numComponents = nextLabel - 1;
    emit( "[DustDetect] Components: " + std::to_string( numComponents ) );
+
+   // Probe: which component contains the mote?
+   {
+      int px = 2126, py = 954;
+      if ( px < width && py < height )
+      {
+         int moteLabel = labels[py * width + px];
+         if ( moteLabel > 0 )
+         {
+            // Count pixels in this component
+            int compArea = 0;
+            int cxMin = width, cxMax = 0, cyMin = height, cyMax = 0;
+            for ( int y = 0; y < height; ++y )
+               for ( int x = 0; x < width; ++x )
+                  if ( labels[y * width + x] == moteLabel )
+                  {
+                     ++compArea;
+                     cxMin = std::min( cxMin, x );
+                     cxMax = std::max( cxMax, x );
+                     cyMin = std::min( cyMin, y );
+                     cyMax = std::max( cyMax, y );
+                  }
+            int diam = std::max( cxMax - cxMin + 1, cyMax - cyMin + 1 );
+            double ideal = M_PI * ( diam / 2.0 ) * ( diam / 2.0 );
+            double circ = compArea / ideal;
+            std::ostringstream oss;
+            oss << "[DustDetect] PROBE mote component: label=" << moteLabel
+                << ", area=" << compArea << ", bbox=[" << cxMin << "-" << cxMax
+                << "," << cyMin << "-" << cyMax << "], diam=" << diam
+                << ", circ=" << circ;
+            emit( oss.str() );
+         }
+         else
+            emit( "[DustDetect] PROBE: mote pixel NOT flagged/labeled" );
+      }
+   }
 
    // =========================================================================
    // Step 4: Filter by size + circularity, verify with subcube radial ratio.
