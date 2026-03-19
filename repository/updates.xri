@@ -9,8 +9,8 @@
       </p>
    </description>
    <platform os="linux" arch="x64" version="1.8.0:1.9.9">
-      <package fileName="20260318-linux-x64-NukeX.tar.gz" sha1="64ed313fc9fe7bd74f9b361c13bc5aad97bec026" type="module" releaseDate="20260318">
-         <title>NukeX 3.1.0.22</title>
+      <package fileName="20260318-linux-x64-NukeX.tar.gz" sha1="0733090086f4be19aaca88dc5a3c8ea5ac3e687f" type="module" releaseDate="20260318">
+         <title>NukeX 3.1.0.23</title>
          <description>
             <p>
                <b>NukeX v3 - Statistical Stacking + Stretch for PixInsight</b>
@@ -27,7 +27,7 @@
                </li>
             </ul>
             <p>
-               <b>Version 3.1.0.22 - Radial profile dust verification</b>
+               <b>Version 3.1.0.23 - Subcube diagnostic probe</b>
             </p>
             <p>
                Combines post-stretch spatial detection (Phase 7a, where MTF amplifies
@@ -44,4 +44,4 @@
       </package>
    </platform>
 </xri>
-<Signature developerId="scarter4work" timestamp="2026-03-19T01:56:45.420Z" encoding="Base64">udIamrum1dlqe3sk0g2A01p3EhsaFLOOae79rZJKsgsGY1iRGoTFO0RkazLBqm7dUMoKcs57WTkeYh1eq3kNBA==</Signature>
+<Signature developerId="scarter4work" timestamp="2026-03-19T02:10:45.557Z" encoding="Base64">5VtFn/UChQV+L5KAbyHYgVBs9H1jbeTQhFeQDfttmQvrgjsBMEecrxnOEuCpfjnLzwVmh70ahNKX3BFRnqCmDA==</Signature>

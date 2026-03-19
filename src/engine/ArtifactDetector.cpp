@@ -13,6 +13,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstring>
+#include <fstream>
 #include <numeric>
 #include <sstream>
 #include <vector>
@@ -674,40 +675,123 @@ DustDetectionResult ArtifactDetector::detectDustSubcube( const float* stackedIma
       emit( oss.str() );
    }
 
-   // Diagnostic probe at known dust mote location (2094, 953)
+   // Comprehensive diagnostic probe — writes to console AND /tmp/dust_probe.log
+   if ( !channelCubes.empty() && channelCubes[0] != nullptr )
    {
+      std::ofstream logFile( "/tmp/dust_probe.log" );
       int px = 2094, py = 953;
-      if ( px < width && py < height )
+      const SubCube* cube = channelCubes[0];
+      size_t nSubs = cube->numSubs();
+
+      if ( px < width && py < height && logFile.is_open() )
       {
+         // 1. Stretched image probe (same as before)
          int idx = py * width + px;
-         std::ostringstream oss;
-         oss << "[DustDetect] PROBE (2094,953): pixel=" << stackedImage[idx]
-             << ", smallSmooth=" << smallSmooth[idx]
-             << ", largeSmooth=" << largeSmooth[idx]
-             << ", deficit=" << deficit[idx]
-             << ", threshold=" << threshold
-             << ", aboveThresh=" << (deficit[idx] > threshold ? "YES" : "NO")
-             << ", brightnessOK=" << (stackedImage[idx] <= largeSmooth[idx] ? "YES" : "NO");
-         emit( oss.str() );
-         // Also probe nearby ring for comparison
-         int probeR = 40;
-         float ringSum = 0; int ringN = 0;
-         for ( int dy = -probeR; dy <= probeR; dy += probeR )
-            for ( int dx = -probeR; dx <= probeR; dx += probeR )
-            {
-               if ( dx == 0 && dy == 0 ) continue;
-               int nx = px + dx, ny = py + dy;
-               if ( nx >= 0 && nx < width && ny >= 0 && ny < height )
-               { ringSum += stackedImage[ny * width + nx]; ++ringN; }
-            }
-         if ( ringN > 0 )
          {
-            std::ostringstream oss2;
-            oss2 << "[DustDetect] PROBE ring: avgNeighbor=" << (ringSum/ringN)
-                 << ", centerDeficit=" << ((ringSum/ringN) - stackedImage[py*width+px])
-                 << ", relDeficit=" << ((ringSum/ringN - stackedImage[py*width+px]) / (ringSum/ringN));
-            emit( oss2.str() );
+            std::ostringstream oss;
+            oss << "[DustDetect] PROBE (2094,953): stretchedPixel=" << stackedImage[idx]
+                << ", deficit=" << deficit[idx] << ", threshold=" << threshold;
+            emit( oss.str() );
+            logFile << oss.str() << "\n";
          }
+
+         // 2. Subcube values at mote center vs outside, per frame
+         logFile << "\n=== SUBCUBE PROBE at (2094, 953) ===\n";
+         logFile << "Frame, center(2094,953), outside(2094,853), outside(2094,1053), "
+                 << "outside(1994,953), outside(2194,953), ratio_center/avg_outside\n";
+
+         std::vector<double> frameRatios;
+         for ( size_t z = 0; z < nSubs; ++z )
+         {
+            double center = cube->pixel( z, 953, 2094 );
+            // 4 points 100px away in cardinal directions
+            double n = ( 853 >= 0 ) ? cube->pixel( z, 853, 2094 ) : center;
+            double s = ( 1053 < height ) ? cube->pixel( z, 1053, 2094 ) : center;
+            double w = ( 1994 >= 0 ) ? cube->pixel( z, 953, 1994 ) : center;
+            double e = ( 2194 < width ) ? cube->pixel( z, 953, 2194 ) : center;
+            double outerMean = ( n + s + w + e ) / 4.0;
+            double ratio = ( outerMean > 1e-10 ) ? center / outerMean : 1.0;
+            frameRatios.push_back( ratio );
+            logFile << z << ", " << center << ", " << n << ", " << s << ", "
+                    << w << ", " << e << ", " << ratio << "\n";
+         }
+
+         // Median ratio
+         std::vector<double> sorted = frameRatios;
+         std::nth_element( sorted.begin(), sorted.begin() + sorted.size()/2, sorted.end() );
+         double medRatio = sorted[sorted.size()/2];
+         {
+            std::ostringstream oss;
+            oss << "[DustDetect] PROBE subcube: medianRatio(center/outside100px)=" << medRatio;
+            emit( oss.str() );
+            logFile << "\nMedian ratio: " << medRatio << "\n";
+         }
+
+         // 3. Radial profile: average subcube value at r=0,10,20,...,120
+         logFile << "\n=== RADIAL PROFILE (averaged over all frames) ===\n";
+         logFile << "radius, meanValue, numPixels\n";
+         for ( int r = 0; r <= 120; r += 10 )
+         {
+            double sum = 0; int count = 0;
+            int r0 = ( r == 0 ) ? 0 : r - 5;
+            int r1 = r + 5;
+            for ( int dy = -r1; dy <= r1; dy += 3 )
+               for ( int dx = -r1; dx <= r1; dx += 3 )
+               {
+                  int dist2 = dx*dx + dy*dy;
+                  if ( dist2 < r0*r0 || dist2 > r1*r1 ) continue;
+                  int sx = px + dx, sy = py + dy;
+                  if ( sx < 0 || sx >= width || sy < 0 || sy >= height ) continue;
+                  // Average across all frames
+                  for ( size_t z = 0; z < nSubs; ++z )
+                     sum += cube->pixel( z, sy, sx );
+                  count += nSubs;
+               }
+            double mean = ( count > 0 ) ? sum / count : 0;
+            logFile << r << ", " << mean << ", " << count/nSubs << "\n";
+            if ( r == 0 || r == 40 || r == 80 || r == 120 )
+            {
+               std::ostringstream oss;
+               oss << "[DustDetect] PROBE radial r=" << r << ": meanVal=" << mean
+                   << " (" << count/nSubs << " pixels)";
+               emit( oss.str() );
+            }
+         }
+
+         // 4. What does the verification code actually see for this blob?
+         // Find the blob near (2094, 953) and dump its inner/outer values
+         logFile << "\n=== INNER/OUTER DEBUG for blob near mote ===\n";
+         // Sample a 5x5 grid at the mote center, compute inner mean per frame
+         logFile << "Frame, innerMean(5x5@center), outerMean(ring75-150), ratio\n";
+         for ( size_t z = 0; z < nSubs; ++z )
+         {
+            double iSum = 0; int iN = 0;
+            for ( int dy = -2; dy <= 2; ++dy )
+               for ( int dx = -2; dx <= 2; ++dx )
+               {
+                  int sx = px+dx, sy = py+dy;
+                  if ( sx >= 0 && sx < width && sy >= 0 && sy < height )
+                  { iSum += cube->pixel( z, sy, sx ); ++iN; }
+               }
+            double iMean = iSum / iN;
+
+            double oSum = 0; int oN = 0;
+            for ( int oy = std::max(0,py-150); oy <= std::min(height-1,py+150); oy += 5 )
+               for ( int ox = std::max(0,px-150); ox <= std::min(width-1,px+150); ox += 5 )
+               {
+                  int ddx = ox-px, ddy = oy-py;
+                  int d2 = ddx*ddx + ddy*ddy;
+                  if ( d2 >= 75*75 && d2 <= 150*150 )
+                  { oSum += cube->pixel( z, oy, ox ); ++oN; }
+               }
+            double oMean = ( oN > 0 ) ? oSum / oN : 0;
+            double rat = ( oMean > 1e-10 ) ? iMean / oMean : 1.0;
+            logFile << z << ", " << iMean << ", " << oMean << ", " << rat << "\n";
+         }
+
+         logFile << "\nDone.\n";
+         logFile.close();
+         emit( "[DustDetect] PROBE: detailed log written to /tmp/dust_probe.log" );
       }
    }
 
