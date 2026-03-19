@@ -1078,10 +1078,19 @@ DustDetectionResult ArtifactDetector::detectDustSubcube( const float* stackedIma
       if ( blobPassed )
       {
          result.blobs.push_back( blob );
-         int label = i + 1;
-         for ( int j = 0; j < N; ++j )
-            if ( labels[j] == label )
-               result.mask[j] = 1;
+         // Paint a filled circle covering the full mote area, not just the
+         // fragmented member pixels. The detected blob may be a small fragment
+         // of a larger mote — use rInner (= blobDiameter) as the mask radius
+         // to cover the actual mote extent.
+         int maskRadius = rInner;
+         int maskRadiusSq = maskRadius * maskRadius;
+         for ( int my = std::max( 0, cy - maskRadius ); my <= std::min( height - 1, cy + maskRadius ); ++my )
+            for ( int mx = std::max( 0, cx - maskRadius ); mx <= std::min( width - 1, cx + maskRadius ); ++mx )
+            {
+               int ddx = mx - cx, ddy = my - cy;
+               if ( ddx * ddx + ddy * ddy <= maskRadiusSq )
+                  result.mask[my * width + mx] = 1;
+            }
       }
    }
 
