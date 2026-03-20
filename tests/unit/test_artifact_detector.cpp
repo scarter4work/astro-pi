@@ -484,11 +484,9 @@ TEST_CASE( "detectDustSubcube detects sensor-fixed mote with non-zero alignment 
          foundNearCenter = true;
    REQUIRE( foundNearCenter );
 
-   // Correction map should be populated
-   REQUIRE( result.correctionMap.size() == size_t( W * H ) );
-   // Correction at mote center should be > 1.0 (undoing the attenuation)
-   float centerCorrection = result.correctionMap[moteSensorY * W + moteSensorX];
-   REQUIRE( centerCorrection > 1.0f );
+   // Blobs should have valid radius for edge-referenced correction
+   for ( const auto& blob : result.blobs )
+      REQUIRE( blob.radius > 0 );
 }
 
 // ============================================================================
@@ -544,12 +542,8 @@ TEST_CASE( "detectDustSubcube expands mask for Gaussian-profile mote", "[artifac
    // should reach well beyond the core detection radius.
    REQUIRE( moteBlob->radius > 8.0 );
 
-   // Correction map should taper: center correction > edge correction
-   float centerCorr = result.correctionMap[cy * W + cx];
-   int edgeX = cx + std::max( 1, static_cast<int>( moteBlob->radius * 0.8 ) );
-   float edgeCorr = ( edgeX < W ) ? result.correctionMap[cy * W + edgeX] : 1.0f;
-   REQUIRE( centerCorr > edgeCorr );
-   REQUIRE( edgeCorr > 1.0f );
+   // Blob radius should be meaningful for edge-referenced correction
+   REQUIRE( moteBlob->radius > 0 );
 }
 
 // ============================================================================

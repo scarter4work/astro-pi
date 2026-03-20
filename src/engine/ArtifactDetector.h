@@ -57,8 +57,7 @@ struct DustBlobInfo
 
 struct DustDetectionResult
 {
-   std::vector<uint8_t> mask;    // 1 = dust pixel
-   std::vector<float> correctionMap;  // multiplicative correction (1.0 = no correction, >1.0 for dust)
+   std::vector<uint8_t> mask;    // 1 = dust pixel (kept for pixel counting)
    std::vector<DustBlobInfo> blobs;
    int dustPixelCount = 0;
 };

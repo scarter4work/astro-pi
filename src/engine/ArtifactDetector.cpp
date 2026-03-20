@@ -609,7 +609,6 @@ DustDetectionResult ArtifactDetector::detectDustSubcube( const float* stackedIma
    DustDetectionResult result;
    const int N = width * height;
    result.mask.assign( N, 0 );
-   result.correctionMap.assign( N, 1.0f );
    result.dustPixelCount = 0;
 
    if ( width < 64 || height < 64 )
@@ -899,35 +898,15 @@ DustDetectionResult ArtifactDetector::detectDustSubcube( const float* stackedIma
       blob.meanAttenuation = 0;
       result.blobs.push_back( blob );
 
-      // Paint filled circle mask and self-flat correction map with cosine taper.
-      // The taper blends the correction smoothly to 1.0 in the outer 30% of the
-      // mask radius, eliminating the visible step at the boundary.
+      // Paint filled circle mask for pixel counting.
+      // Correction is now handled by DustCorrector (edge-referenced).
       int maskRadiusSq = maskRadius * maskRadius;
-      double taperStart = maskRadius * 0.7;
-      double taperWidth = maskRadius * 0.3;
       for ( int my = std::max( 0, cy - maskRadius ); my <= std::min( height - 1, cy + maskRadius ); ++my )
          for ( int mx = std::max( 0, cx - maskRadius ); mx <= std::min( width - 1, cx + maskRadius ); ++mx )
          {
             int ddx = mx - cx, ddy = my - cy;
-            int distSq = ddx * ddx + ddy * ddy;
-            if ( distSq <= maskRadiusSq )
-            {
-               int idx = my * width + mx;
-               result.mask[idx] = 1;
-
-               float rawCorr = 1.0f;
-               if ( normalized[idx] > 0.01f )
-                  rawCorr = std::min( 1.0f / normalized[idx], 2.0f );
-
-               // Cosine taper in outer 30%
-               double dist = std::sqrt( static_cast<double>( distSq ) );
-               if ( dist > taperStart && taperWidth > 0 )
-               {
-                  double blend = 0.5 * ( 1.0 + std::cos( M_PI * ( dist - taperStart ) / taperWidth ) );
-                  rawCorr = 1.0f + static_cast<float>( blend ) * ( rawCorr - 1.0f );
-               }
-               result.correctionMap[idx] = rawCorr;
-            }
+            if ( ddx * ddx + ddy * ddy <= maskRadiusSq )
+               result.mask[my * width + mx] = 1;
          }
    }
 

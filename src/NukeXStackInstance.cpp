@@ -13,6 +13,7 @@
 #include "engine/AutoStretchSelector.h"
 #include "engine/StretchLibrary.h"
 #include "engine/ArtifactDetector.h"
+#include "engine/DustCorrector.h"
 
 #include <pcl/MetaModule.h>
 #include <pcl/Console.h>
@@ -944,84 +945,28 @@ bool NukeXStackInstance::ExecuteGlobal()
                   Module->ProcessEvents();
                }
 
-               // 7c: Dust remediation (per channel)
-               if ( p_enableDustRemediation && dustDetection.dustPixelCount > 0 )
+               // 7c: Dust remediation (per channel) — edge-referenced correction
+               if ( p_enableDustRemediation && !dustDetection.blobs.empty() )
                {
-                  // Use self-flat correction map when available (from subcube detection),
-                  // fall back to neighbor brightness for legacy detectDust() path.
-                  bool useSelfFlat = ( dustDetection.correctionMap.size()
-                                        == size_t( cropW ) * size_t( cropH ) );
+                  console.WriteLn( "  Phase 7c: Dust remediation (edge-referenced correction)..." );
+                  console.Flush();
+                  Module->ProcessEvents();
 
-                  if ( useSelfFlat )
+                  nukex::DustCorrector corrector;
+                  for ( int ch = 0; ch < outChannels; ++ch )
                   {
-                     console.WriteLn( "  Phase 7c: Dust remediation (self-flat correction)..." );
-                     console.Flush();
-                     Module->ProcessEvents();
-
-                     for ( int ch = 0; ch < outChannels; ++ch )
-                        for ( int y = 0; y < cropH; ++y )
-                           for ( int x = 0; x < cropW; ++x )
-                           {
-                              int idx = y * cropW + x;
-                              if ( !dustDetection.mask[idx] ) continue;
-                              float ratio = std::min( dustDetection.correctionMap[idx], p_dustMaxCorrectionRatio );
-                              channelResults[ch][idx] *= ratio;
-                           }
-                  }
-                  else
-                  {
-                     console.WriteLn( "  Phase 7c: Dust remediation (neighbor brightness correction)..." );
-                     console.Flush();
-                     Module->ProcessEvents();
-
-                     for ( int ch = 0; ch < outChannels; ++ch )
-                     {
-                        std::vector<float> corrected( size_t( cropW ) * size_t( cropH ) );
-                        bool gpuOk = false;
-
-#ifdef NUKEX_HAS_CUDA
-                        if ( useGPU )
-                        {
-                           gpuOk = nukex::cuda::remediateDustGPU(
-                              channelResults[ch].data(), cropW, cropH,
-                              dustDetection.mask.data(),
-                              p_dustNeighborRadius, p_dustMaxCorrectionRatio,
-                              corrected.data() );
-                        }
-#endif
-                        if ( !gpuOk )
-                        {
-                           corrected = channelResults[ch];
-                           for ( int y = 0; y < cropH; ++y )
-                              for ( int x = 0; x < cropW; ++x )
-                              {
-                                 if ( !dustDetection.mask[y * cropW + x] ) continue;
-                                 float neighborSum = 0; int neighborCount = 0;
-                                 for ( int dy = -p_dustNeighborRadius; dy <= p_dustNeighborRadius; ++dy )
-                                    for ( int dx = -p_dustNeighborRadius; dx <= p_dustNeighborRadius; ++dx )
-                                    {
-                                       int nx = x + dx, ny = y + dy;
-                                       if ( nx < 0 || nx >= cropW || ny < 0 || ny >= cropH ) continue;
-                                       if ( dustDetection.mask[ny * cropW + nx] ) continue;
-                                       if ( channelResults[ch][ny * cropW + nx] < 1e-10f ) continue;
-                                       neighborSum += channelResults[ch][ny * cropW + nx];
-                                       ++neighborCount;
-                                    }
-                                 if ( neighborCount > 0 && channelResults[ch][y * cropW + x] > 1e-10f )
-                                 {
-                                    float ratio = ( neighborSum / neighborCount ) / channelResults[ch][y * cropW + x];
-                                    ratio = std::min( ratio, p_dustMaxCorrectionRatio );
-                                    corrected[y * cropW + x] = channelResults[ch][y * cropW + x] * ratio;
-                                 }
-                              }
-                        }
-
-                        channelResults[ch] = std::move( corrected );
-                     }
+                     corrector.correct(
+                        channelResults[ch].data(), cropW, cropH,
+                        dustDetection.blobs,
+                        [&console]( const std::string& msg ) {
+                           console.WriteLn( String( msg.c_str() ) );
+                        } );
                   }
 
-                  console.WriteLn( String().Format( "    Corrected %d dust pixels per channel",
-                     dustDetection.dustPixelCount ) );
+                  int totalPixels = 0;
+                  for ( const auto& b : dustDetection.blobs )
+                     totalPixels += static_cast<int>( M_PI * b.radius * b.radius );
+                  console.WriteLn( String().Format( "    Corrected ~%d dust pixels per channel", totalPixels ) );
                   Module->ProcessEvents();
                }
 
