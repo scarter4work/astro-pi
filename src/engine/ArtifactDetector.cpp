@@ -659,21 +659,28 @@ DustDetectionResult ArtifactDetector::detectDustSubcube( const float* stackedIma
          }
       }
 
-   // Step 2: DoS on the sensor-space image to find circular deficits.
-   int smallKernel = std::max( 3, m_config.dustMinDiameter );
-   if ( smallKernel % 2 == 0 ) ++smallKernel;
-   int largeKernel = static_cast<int>( m_config.dustMaxDiameter * 1.5 );
-   if ( largeKernel % 2 == 0 ) ++largeKernel;
+   // Step 2: Self-flat correction — divide by heavily smoothed version.
+   // The smooth captures vignetting (large-scale gradient) but NOT the mote
+   // (small circle). After division, only mote-scale defects remain.
+   // This is what flat field correction does — a synthetic flat from the data.
+   int flatKernel = std::max( 201, m_config.dustMaxDiameter * 2 + 1 );
+   if ( flatKernel % 2 == 0 ) ++flatKernel;
 
-   std::vector<float> smallSmooth = localBackgroundMap( sensorStack.data(), width, height, smallKernel );
-   std::vector<float> largeSmooth = localBackgroundMap( sensorStack.data(), width, height, largeKernel );
+   std::vector<float> flatSmooth = localBackgroundMap( sensorStack.data(), width, height, flatKernel );
 
+   // Normalized image: values near 1.0 for normal pixels, < 1.0 for dust motes
+   std::vector<float> normalized( N, 1.0f );
+   for ( int i = 0; i < N; ++i )
+      if ( sensorValid[i] && flatSmooth[i] > 1e-10f )
+         normalized[i] = sensorStack[i] / flatSmooth[i];
+
+   // Deficit = 1.0 - normalized (positive for attenuated pixels)
    std::vector<float> pctDeficit( N, 0.0f );
    for ( int i = 0; i < N; ++i )
-      if ( sensorValid[i] && largeSmooth[i] > 1e-10f )
-         pctDeficit[i] = ( largeSmooth[i] - smallSmooth[i] ) / largeSmooth[i];
+      if ( sensorValid[i] )
+         pctDeficit[i] = 1.0f - normalized[i];
 
-   // Threshold using MAD (only on valid pixels)
+   // Threshold using MAD
    std::vector<float> validPcts;
    validPcts.reserve( N );
    for ( int i = 0; i < N; ++i )
@@ -694,17 +701,17 @@ DustDetectionResult ArtifactDetector::detectDustSubcube( const float* stackedIma
 
    {
       std::ostringstream oss;
-      oss << "[DustDetect] Sensor-space DoS: kernels=" << smallKernel << "/" << largeKernel
-          << ", pctDeficit median=" << medianPct << ", MAD=" << madPct
-          << ", threshold=" << pctThreshold;
+      oss << "[DustDetect] Self-flat correction: flatKernel=" << flatKernel
+          << ", deficit median=" << medianPct << ", MAD=" << madPct
+          << ", threshold=" << pctThreshold << " (" << m_config.dustDetectionSigma << "σ)";
       emit( oss.str() );
    }
 
-   // Step 3: Flag, morphological closing, connected components
+   // Step 3: Flag pixels where deficit exceeds threshold (attenuated by mote)
    std::vector<uint8_t> flagged( N, 0 );
    int flagCount = 0;
    for ( int i = 0; i < N; ++i )
-      if ( sensorValid[i] && pctDeficit[i] > pctThreshold && sensorStack[i] <= largeSmooth[i] )
+      if ( sensorValid[i] && pctDeficit[i] > pctThreshold )
       {
          flagged[i] = 1;
          ++flagCount;
