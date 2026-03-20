@@ -367,3 +367,248 @@ TEST_CASE( "detectDustSubcube rejects sky-fixed features (not sensor-fixed)", "[
    REQUIRE( result.blobs.empty() );
    REQUIRE( result.dustPixelCount == 0 );
 }
+
+// ============================================================================
+// detectDustSubcube guard clause tests
+// ============================================================================
+
+TEST_CASE( "detectDustSubcube returns empty for small image", "[artifact][dust][subcube]" )
+{
+   const int W = 32, H = 32, nSubs = 5;
+   std::vector<float> stacked( W * H, 0.5f );
+   nukex::SubCube cube( nSubs, H, W );
+   std::vector<nukex::SubCube*> cubes = { &cube };
+   std::vector<nukex::ArtifactDetector::AlignOffset> offsets( nSubs, { 0, 0 } );
+   nukex::ArtifactDetector detector;
+   auto result = detector.detectDustSubcube( stacked.data(), cubes, offsets, W, H );
+   REQUIRE( result.blobs.empty() );
+   REQUIRE( result.dustPixelCount == 0 );
+}
+
+TEST_CASE( "detectDustSubcube returns empty for null cube", "[artifact][dust][subcube]" )
+{
+   const int W = 200, H = 200, nSubs = 5;
+   std::vector<float> stacked( W * H, 0.5f );
+   std::vector<nukex::SubCube*> cubes;
+   std::vector<nukex::ArtifactDetector::AlignOffset> offsets( nSubs, { 0, 0 } );
+   nukex::ArtifactDetector detector;
+   auto result = detector.detectDustSubcube( stacked.data(), cubes, offsets, W, H );
+   REQUIRE( result.blobs.empty() );
+}
+
+TEST_CASE( "detectDustSubcube returns empty for mismatched alignment count", "[artifact][dust][subcube]" )
+{
+   const int W = 200, H = 200, nSubs = 5;
+   std::vector<float> stacked( W * H, 0.5f );
+   nukex::SubCube cube( nSubs, H, W );
+   std::vector<nukex::SubCube*> cubes = { &cube };
+   // 3 offsets for 5 subs — mismatch
+   std::vector<nukex::ArtifactDetector::AlignOffset> offsets( 3, { 0, 0 } );
+   nukex::ArtifactDetector detector;
+   auto result = detector.detectDustSubcube( stacked.data(), cubes, offsets, W, H );
+   REQUIRE( result.blobs.empty() );
+}
+
+TEST_CASE( "detectDustSubcube returns empty for too few subs", "[artifact][dust][subcube]" )
+{
+   const int W = 200, H = 200, nSubs = 2;
+   std::vector<float> stacked( W * H, 0.5f );
+   nukex::SubCube cube( nSubs, H, W );
+   std::vector<nukex::SubCube*> cubes = { &cube };
+   std::vector<nukex::ArtifactDetector::AlignOffset> offsets( nSubs, { 0, 0 } );
+   nukex::ArtifactDetector detector;
+   auto result = detector.detectDustSubcube( stacked.data(), cubes, offsets, W, H );
+   REQUIRE( result.blobs.empty() );
+}
+
+// ============================================================================
+// detectDustSubcube with non-zero alignment offsets
+// ============================================================================
+
+TEST_CASE( "detectDustSubcube detects sensor-fixed mote with non-zero alignment offsets", "[artifact][dust][subcube]" )
+{
+   // Place a mote at a fixed SENSOR position. With alignment offsets,
+   // each frame reads the mote at a different aligned position. In sensor
+   // space (alignment reversed), the mote should appear sharp and circular.
+   const int W = 300, H = 300;
+   const int nSubs = 10;
+   const int moteSensorX = 150, moteSensorY = 150;
+   const int moteRadius = 15;
+   const float bgVal = 0.5f;
+   const float moteVal = 0.44f;  // 12% deficit
+
+   // Alignment offsets — simulate dithering
+   std::vector<nukex::ArtifactDetector::AlignOffset> offsets = {
+      {0,0}, {5,3}, {-3,7}, {10,0}, {-2,-5},
+      {8,8}, {-6,4}, {3,-3}, {12,5}, {-4,10}
+   };
+
+   // Build subcube: for each frame z, the mote is at aligned position
+   // (moteSensorX - dx, moteSensorY - dy) because alignment reversal does
+   // sx + dx to get the aligned position.
+   nukex::SubCube cube( nSubs, H, W );
+   for ( size_t z = 0; z < static_cast<size_t>( nSubs ); ++z )
+   {
+      int moteAlignedX = moteSensorX - offsets[z].dx;
+      int moteAlignedY = moteSensorY - offsets[z].dy;
+      for ( int y = 0; y < H; ++y )
+         for ( int x = 0; x < W; ++x )
+         {
+            double dist = std::sqrt( double( (x - moteAlignedX) * (x - moteAlignedX)
+                                           + (y - moteAlignedY) * (y - moteAlignedY) ) );
+            cube.setPixel( z, y, x, ( dist < moteRadius ) ? moteVal : bgVal );
+         }
+   }
+
+   // Stacked image (not used by sensor-space detection, but required by API)
+   std::vector<float> stacked( W * H, bgVal );
+
+   std::vector<nukex::SubCube*> cubes = { &cube };
+
+   nukex::ArtifactDetectorConfig cfg;
+   cfg.dustMinDiameter = 10;
+   cfg.dustMaxDiameter = 80;
+   cfg.dustDetectionSigma = 3.0;
+   nukex::ArtifactDetector detector( cfg );
+
+   auto result = detector.detectDustSubcube( stacked.data(), cubes, offsets, W, H );
+
+   REQUIRE( result.blobs.size() >= 1 );
+   REQUIRE( result.dustPixelCount > 0 );
+
+   // The blob should be near the sensor-space mote center
+   bool foundNearCenter = false;
+   for ( const auto& blob : result.blobs )
+      if ( std::abs( blob.centerX - moteSensorX ) < 25
+           && std::abs( blob.centerY - moteSensorY ) < 25 )
+         foundNearCenter = true;
+   REQUIRE( foundNearCenter );
+
+   // Correction map should be populated
+   REQUIRE( result.correctionMap.size() == size_t( W * H ) );
+   // Correction at mote center should be > 1.0 (undoing the attenuation)
+   float centerCorrection = result.correctionMap[moteSensorY * W + moteSensorX];
+   REQUIRE( centerCorrection > 1.0f );
+}
+
+// ============================================================================
+// Radial extent tracing with Gaussian-profile mote
+// ============================================================================
+
+TEST_CASE( "detectDustSubcube expands mask for Gaussian-profile mote", "[artifact][dust][subcube]" )
+{
+   // A mote with gradual Gaussian falloff (not a hard circle). The detected
+   // core should be smaller than the full extent. The radial extent tracing
+   // should expand the mask beyond the core.
+   // Image must be >> flatKernel (201px) for self-flat to work.
+   const int W = 500, H = 500;
+   const int nSubs = 10;
+   const int cx = 250, cy = 250;
+   const double moteSigma = 15.0;   // Gaussian sigma in pixels
+   const double peakDeficit = 0.15;  // 15% attenuation at center
+   const float bgVal = 0.5f;
+
+   nukex::SubCube cube( nSubs, H, W );
+   for ( size_t z = 0; z < static_cast<size_t>( nSubs ); ++z )
+      for ( int y = 0; y < H; ++y )
+         for ( int x = 0; x < W; ++x )
+         {
+            double dist = std::sqrt( double( (x - cx) * (x - cx) + (y - cy) * (y - cy) ) );
+            double attenuation = peakDeficit * std::exp( -0.5 * ( dist / moteSigma ) * ( dist / moteSigma ) );
+            cube.setPixel( z, y, x, bgVal * ( 1.0f - static_cast<float>( attenuation ) ) );
+         }
+
+   std::vector<float> stacked( W * H, bgVal );
+   std::vector<nukex::SubCube*> cubes = { &cube };
+   std::vector<nukex::ArtifactDetector::AlignOffset> offsets( nSubs, { 0, 0 } );
+
+   nukex::ArtifactDetectorConfig cfg;
+   cfg.dustMinDiameter = 5;
+   cfg.dustMaxDiameter = 80;
+   cfg.dustDetectionSigma = 3.0;
+   nukex::ArtifactDetector detector( cfg );
+
+   auto result = detector.detectDustSubcube( stacked.data(), cubes, offsets, W, H );
+
+   REQUIRE( result.blobs.size() >= 1 );
+
+   // Find the blob near center
+   const nukex::DustBlobInfo* moteBlob = nullptr;
+   for ( const auto& blob : result.blobs )
+      if ( std::abs( blob.centerX - cx ) < 30 && std::abs( blob.centerY - cy ) < 30 )
+         moteBlob = &blob;
+   REQUIRE( moteBlob != nullptr );
+
+   // The mask radius should be expanded beyond the minimum (5px).
+   // With sigma=15 and 12% peak, the extent at half-sigma (dustDetectionSigma/2 = 1.5)
+   // should reach well beyond the core detection radius.
+   REQUIRE( moteBlob->radius > 8.0 );
+
+   // Correction map should taper: center correction > edge correction
+   float centerCorr = result.correctionMap[cy * W + cx];
+   int edgeX = cx + std::max( 1, static_cast<int>( moteBlob->radius * 0.8 ) );
+   float edgeCorr = ( edgeX < W ) ? result.correctionMap[cy * W + edgeX] : 1.0f;
+   REQUIRE( centerCorr > edgeCorr );
+   REQUIRE( edgeCorr > 1.0f );
+}
+
+// ============================================================================
+// Self-flat correction: mote embedded in vignetting gradient
+// ============================================================================
+
+TEST_CASE( "detectDustSubcube finds mote in vignetting gradient", "[artifact][dust][subcube]" )
+{
+   // A mote embedded in a vignetting gradient. The self-flat correction
+   // (dividing by heavy smooth) should remove the gradient and isolate the mote.
+   // Image must be >> flatKernel (201px) for self-flat to work.
+   const int W = 500, H = 500;
+   const int nSubs = 10;
+   const int cx = 250, cy = 250;
+   const int moteRadius = 15;
+
+   nukex::SubCube cube( nSubs, H, W );
+   for ( size_t z = 0; z < static_cast<size_t>( nSubs ); ++z )
+      for ( int y = 0; y < H; ++y )
+         for ( int x = 0; x < W; ++x )
+         {
+            // Mild vignetting: brightness falls off radially from center (~6% at corners)
+            double r = std::sqrt( double( (x - W/2) * (x - W/2) + (y - H/2) * (y - H/2) ) );
+            double maxR = std::sqrt( double( W/2 * W/2 + H/2 * H/2 ) );
+            double vignetting = 0.5 - 0.03 * ( r / maxR ) * ( r / maxR );
+
+            // Add mote on top of vignetting
+            double dist = std::sqrt( double( (x - cx) * (x - cx) + (y - cy) * (y - cy) ) );
+            double val = vignetting;
+            if ( dist < moteRadius )
+               val *= 0.85;   // 15% mote attenuation
+            cube.setPixel( z, y, x, static_cast<float>( val ) );
+         }
+
+   std::vector<float> stacked( W * H, 0.5f );
+   std::vector<nukex::SubCube*> cubes = { &cube };
+   std::vector<nukex::ArtifactDetector::AlignOffset> offsets( nSubs, { 0, 0 } );
+
+   nukex::ArtifactDetectorConfig cfg;
+   cfg.dustMinDiameter = 10;
+   cfg.dustMaxDiameter = 80;
+   cfg.dustDetectionSigma = 3.0;
+   nukex::ArtifactDetector detector( cfg );
+
+   auto result = detector.detectDustSubcube( stacked.data(), cubes, offsets, W, H );
+
+   // Self-flat should remove the vignetting gradient, leaving only the mote
+   REQUIRE( result.blobs.size() >= 1 );
+
+   // Mote should be near the center
+   bool foundNearCenter = false;
+   for ( const auto& blob : result.blobs )
+      if ( std::abs( blob.centerX - cx ) < 20 && std::abs( blob.centerY - cy ) < 20 )
+         foundNearCenter = true;
+   REQUIRE( foundNearCenter );
+
+   // Should NOT have flagged massive pixel counts (would indicate vignetting leak).
+   // On a 500x500 image with mild vignetting, some gradient residual is expected
+   // from the self-flat kernel boundaries. The key assertion is that the mote
+   // was found and there aren't hundreds of thousands of flagged pixels.
+   REQUIRE( result.dustPixelCount < 50000 );
+}
