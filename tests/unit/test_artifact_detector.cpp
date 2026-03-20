@@ -312,7 +312,9 @@ TEST_CASE( "detectDustSubcube verifies against subcube consistency", "[artifact]
    cfg.dustMaxDiameter    = 50;
    nukex::ArtifactDetector detector( cfg );
 
-   auto result = detector.detectDustSubcube( stacked.data(), cubes, W, H );
+   // All frames have zero alignment offset (synthetic data, no shift)
+   std::vector<nukex::ArtifactDetector::AlignOffset> offsets( nSubs, { 0, 0 } );
+   auto result = detector.detectDustSubcube( stacked.data(), cubes, offsets, W, H );
 
    REQUIRE( result.blobs.size() >= 1 );
    REQUIRE( result.dustPixelCount > 0 );
@@ -324,42 +326,44 @@ TEST_CASE( "detectDustSubcube verifies against subcube consistency", "[artifact]
    REQUIRE( foundNearCenter );
 }
 
-TEST_CASE( "detectDustSubcube rejects inconsistent blobs", "[artifact][dust][subcube]" )
+TEST_CASE( "detectDustSubcube rejects sky-fixed features (not sensor-fixed)", "[artifact][dust][subcube]" )
 {
-   // Dark blob in subcube only appears in half the frames → median ratio ≈ 1.0
-   // because the 5 frames without the blob pull the median above threshold.
+   // A dark blob at a FIXED ALIGNED position (sky feature, not sensor defect).
+   // With alignment offsets, different frames read from different sensor positions
+   // at this aligned location. In sensor space, the blob gets smeared and doesn't
+   // form a compact circular component → should NOT be detected as dust.
    const int W = 200, H = 200;
    const int nSubs = 10;
-   const int cx = 100, cy = 100;
 
-   // Stacked image with a dark blob
-   std::vector<float> stacked( W * H, 0.5f );
-   for ( int y = 95; y < 105; ++y )
-      for ( int x = 95; x < 105; ++x )
-         stacked[y * W + x] = 0.45f;
-
-   // Subcube: blob only in first 5 frames, flat background in last 5
+   // Subcube: dark blob at fixed ALIGNED position (100, 100) in every frame.
+   // This simulates a small dark nebula or galaxy feature.
    nukex::SubCube cube( nSubs, H, W );
    for ( size_t z = 0; z < static_cast<size_t>( nSubs ); ++z )
       for ( int y = 0; y < H; ++y )
          for ( int x = 0; x < W; ++x )
          {
-            if ( z < 5 )
-               cube.setPixel( z, y, x, stacked[y * W + x] );
-            else
-               cube.setPixel( z, y, x, 0.5f );   // no depression in later frames
+            double dist = std::sqrt( (x - 100.0) * (x - 100.0) + (y - 100.0) * (y - 100.0) );
+            cube.setPixel( z, y, x, ( dist < 12.0 ) ? 0.45f : 0.5f );
          }
 
    std::vector<nukex::SubCube*> cubes = { &cube };
+   std::vector<float> stacked( W * H, 0.5f );
+
+   // Alignment offsets: each frame shifted by a different amount.
+   // The sky feature stays at aligned (100,100) but maps to different sensor positions.
+   std::vector<nukex::ArtifactDetector::AlignOffset> offsets = {
+      {0,0}, {10,0}, {20,0}, {30,0}, {40,0},
+      {0,15}, {10,15}, {20,15}, {30,15}, {40,15}
+   };
 
    nukex::ArtifactDetectorConfig cfg;
    cfg.dustMinDiameter    = 5;
    cfg.dustMaxDiameter    = 50;
    nukex::ArtifactDetector detector( cfg );
 
-   auto result = detector.detectDustSubcube( stacked.data(), cubes, W, H );
+   auto result = detector.detectDustSubcube( stacked.data(), cubes, offsets, W, H );
 
-   // Should reject — median across frames is ~1.0 (inconsistent)
+   // Should reject — the blob is smeared across sensor positions, not circular
    REQUIRE( result.blobs.empty() );
    REQUIRE( result.dustPixelCount == 0 );
 }

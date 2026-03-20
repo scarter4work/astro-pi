@@ -104,8 +104,10 @@ public:
    // --- Primary detection methods ---
    TrailDetectionResult      detectTrails( const float* image, int width, int height ) const;
    DustDetectionResult       detectDust( const float* image, int width, int height ) const;
+   struct AlignOffset { int dx, dy; };
    DustDetectionResult       detectDustSubcube( const float* stackedImage,
                                                  const std::vector<SubCube*>& channelCubes,
+                                                 const std::vector<AlignOffset>& alignments,
                                                  int width, int height,
                                                  LogCallback log = nullptr ) const;
    VignettingDetectionResult detectVignetting( const float* image, int width, int height,

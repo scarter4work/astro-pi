@@ -827,8 +827,13 @@ bool NukeXStackInstance::ExecuteGlobal()
                for ( int ch = 0; ch < numChannels; ++ch )
                   cubePtrs.push_back( &channelCubes[ch] );
 
+               // Pass alignment offsets so detector can build sensor-space image
+               std::vector<nukex::ArtifactDetector::AlignOffset> alignOffsets;
+               for ( const auto& o : aligned.offsets )
+                  alignOffsets.push_back( { o.dx, o.dy } );
+
                dustDetection = detector.detectDustSubcube(
-                  luminance.data(), cubePtrs, cropW, cropH,
+                  luminance.data(), cubePtrs, alignOffsets, cropW, cropH,
                   [&console]( const std::string& msg ) {
                      console.WriteLn( String( msg.c_str() ) );
                   } );

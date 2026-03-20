@@ -9,8 +9,8 @@
       </p>
    </description>
    <platform os="linux" arch="x64" version="1.8.0:1.9.9">
-      <package fileName="20260318-linux-x64-NukeX.tar.gz" sha1="0b8c7ce05f408c0045bbf19f72a86edcf5e083f1" type="module" releaseDate="20260318">
-         <title>NukeX 3.1.0.29</title>
+      <package fileName="20260318-linux-x64-NukeX.tar.gz" sha1="7caa82e0e05628880011e0d6c60c074254749706" type="module" releaseDate="20260318">
+         <title>NukeX 3.1.0.30</title>
          <description>
             <p>
                <b>NukeX v3 - Statistical Stacking + Stretch for PixInsight</b>
@@ -27,7 +27,7 @@
                </li>
             </ul>
             <p>
-               <b>Version 3.1.0.29 - DoS on linear subcube mean + radial ratio verification</b>
+               <b>Version 3.1.0.30 - DoS on linear subcube mean + radial ratio verification</b>
             </p>
             <p>
                Computes stacked linear image from subcube mean, then runs DoS for
@@ -42,4 +42,4 @@
       </package>
    </platform>
 </xri>
-<Signature developerId="scarter4work" timestamp="2026-03-19T23:00:26.573Z" encoding="Base64">1ARY7wViiyGY5fWw1wBLDT6u3g3/Prgb0cCucq7PWsUXZECFAwsRf2orMAvaUdAGgJSF14X2VXEgVtGKkk7JBQ==</Signature>
+<Signature developerId="scarter4work" timestamp="2026-03-20T00:35:29.730Z" encoding="Base64">HLhuRN/u4sIz6d9TJeasZCBCZvglXz+8hWgWcKHUBmv7hLlDQ70mmzWNhZ2jPiE7iq0WqQuH8l7tZ+TCRO6JBw==</Signature>
