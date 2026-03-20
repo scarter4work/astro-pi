@@ -432,7 +432,9 @@ std::vector<float> PixelSelector::processImageGPU(SubCube& cube,
         cube.cube().data(), output.data(), distTypesOut.data(), gpuConfig);
 
     if (!result.success) {
-        // GPU failed — fall back to CPU
+        // GPU failed — fall back to CPU. Log error for diagnostics.
+        std::fprintf(stderr, "NukeX: GPU stacking failed: %s -- falling back to CPU\n",
+            result.errorMessage.c_str());
         return processImage(cube, qualityScores, progress);
     }
 

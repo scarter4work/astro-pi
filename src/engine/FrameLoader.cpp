@@ -462,7 +462,11 @@ BayerPattern FrameLoader::DetectBayerPattern( const pcl::FITSKeywordArray& keywo
     {
         pcl::IsoString name = kw.name.Trimmed().Uppercase();
         if ( name == "XBAYROFF" || name == "YBAYROFF" || name == "CFATYPE" )
+        {
+            pcl::Console().WarningLn( "CFA pattern not explicit -- assuming RGGB. "
+                "If colors look wrong, check BAYERPAT keyword." );
             return BayerPattern::RGGB;
+        }
     }
 
     return BayerPattern::None;
@@ -624,9 +628,15 @@ void FrameLoader::ComputeFrameMetrics( const pcl::Image& img, SubMetadata& meta 
             meta.hfr           = meta.fwhm * 0.5;  // HFR ≈ FWHM/2 for Gaussian PSF
         }
     }
-    catch ( ... )
+    catch ( const pcl::Error& e )
     {
-        // PCL star detection or PSF fitting failed — leave metrics at zero
+        pcl::Console().WarningLn( "FrameLoader: PSF metrics failed: " + e.Message()
+            + " -- frame will use default quality score" );
+    }
+    catch ( const std::exception& e )
+    {
+        pcl::Console().WarningLn( pcl::String( "FrameLoader: PSF metrics failed: " )
+            + e.what() + " -- frame will use default quality score" );
     }
 }
 

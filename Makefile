@@ -212,7 +212,7 @@ release:
 
 # Sign module for PixInsight
 SIGN_KEYS = /home/scarter4work/projects/keys/scarter4work_keys.xssk
-SIGN_PASS = ***REDACTED***
+SIGN_PASS ?= $(shell cat /tmp/.pi_codesign_pass 2>/dev/null || echo "$$PI_SIGN_PASS")
 
 sign: $(TARGET)
 	@echo "Signing $(TARGET)..."

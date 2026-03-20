@@ -590,9 +590,10 @@ bool NukeXStackInstance::ExecuteGlobal()
 
          std::vector<float> optSample;
          {
-            int step = std::max( 1, ( cropW * cropH ) / 10000 );
-            for ( int i = 0; i < cropW * cropH; i += step )
-               optSample.push_back( stretchImage.Pixel( i % cropW, i / cropW, 0 ) );
+            size_t totalPx = size_t( cropW ) * size_t( cropH );
+            size_t step = std::max( size_t( 1 ), totalPx / 10000 );
+            for ( size_t i = 0; i < totalPx; i += step )
+               optSample.push_back( stretchImage.Pixel( int( i % cropW ), int( i / cropW ), 0 ) );
          }
 
          // Quality scoring: apply stretch to sample, compute entropy and penalties
@@ -694,6 +695,7 @@ bool NukeXStackInstance::ExecuteGlobal()
 
          AlgorithmType bestType = bestIt->type;
          double bestParam = bestIt->paramValue;
+         String bestParamName = bestIt->paramName;
 
          console.WriteLn( String().Format( "\n  Stretch optimization: %d trials evaluated",
             int( trials.size() ) ) );
@@ -797,7 +799,7 @@ bool NukeXStackInstance::ExecuteGlobal()
                      float r = stretchImage.Pixel( x, y, 0 );
                      float g = stretchImage.Pixel( x, y, 1 );
                      float b = stretchImage.Pixel( x, y, 2 );
-                     luminance[y * cropW + x] = ( r + g + b ) / 3.0f;
+                     luminance[y * cropW + x] = 0.2126f * r + 0.7152f * g + 0.0722f * b;
                   }
             }
             else
@@ -892,6 +894,8 @@ bool NukeXStackInstance::ExecuteGlobal()
 #endif
                      if ( !gpuOk )
                      {
+                        if ( useGPU )
+                           console.WarningLn( "    GPU trail remediation failed -- falling back to CPU" );
                         // CPU fallback: mask bright outlier frames and re-select
                         if ( !channelCubes[ch].hasMasks() )
                            channelCubes[ch].allocateMasks();
@@ -945,7 +949,8 @@ bool NukeXStackInstance::ExecuteGlobal()
                {
                   // Use self-flat correction map when available (from subcube detection),
                   // fall back to neighbor brightness for legacy detectDust() path.
-                  bool useSelfFlat = !dustDetection.correctionMap.empty();
+                  bool useSelfFlat = ( dustDetection.correctionMap.size()
+                                        == size_t( cropW ) * size_t( cropH ) );
 
                   if ( useSelfFlat )
                   {
@@ -1043,6 +1048,8 @@ bool NukeXStackInstance::ExecuteGlobal()
 #endif
                      if ( !gpuOk )
                      {
+                        if ( useGPU )
+                           console.WarningLn( "    GPU vignetting correction failed -- falling back to CPU" );
                         for ( size_t i = 0; i < size_t( cropW ) * size_t( cropH ); ++i )
                            corrected[i] = channelResults[ch][i] * detection.vignetting.correctionMap[i];
                      }
@@ -1112,21 +1119,26 @@ bool NukeXStackInstance::ExecuteGlobal()
                   // Sample clean data for optimization
                   std::vector<float> optSample2;
                   {
-                     int step = std::max( 1, ( cropW * cropH ) / 10000 );
-                     for ( int i = 0; i < cropW * cropH; i += step )
-                        optSample2.push_back( stretchImage.Pixel( i % cropW, i / cropW, 0 ) );
+                     size_t totalPx2 = size_t( cropW ) * size_t( cropH );
+                     size_t step2 = std::max( size_t( 1 ), totalPx2 / 10000 );
+                     for ( size_t i = 0; i < totalPx2; i += step2 )
+                        optSample2.push_back( stretchImage.Pixel( int( i % cropW ), int( i / cropW ), 0 ) );
                   }
 
-                  // Re-run stretch optimization on clean data
+                  // Re-run stretch optimization on clean data using the same
+                  // algorithm type that Phase 6 selected (not hardcoded MTF).
                   double bestScore2 = -1e30;
-                  double bestTarget2 = 0.20;
-                  for ( double t = 0.08; t <= 0.30; t += 0.01 )
+                  double bestParam2 = bestParam;
+                  auto baseAlgo = StretchLibrary::Instance().Create( bestType );
+                  baseAlgo->AutoConfigure( refMed2, refMad2 );
+                  double baseParamVal = baseAlgo->GetParameter( IsoString( bestParamName ) );
+                  for ( double mult = 0.5; mult <= 1.5; mult += 0.05 )
                   {
-                     auto trial = StretchLibrary::Instance().Create( AlgorithmType::MTF );
-                     trial->SetParameter( "targetMedian", t );
-                     trial->AutoConfigure( refMed2, refMad2 );
+                     auto trial = baseAlgo->Clone();
+                     double pv = baseParamVal * mult;
+                     trial->SetParameter( IsoString( bestParamName ), pv );
                      double sc = scoreStretch( optSample2, trial.get() );
-                     if ( sc > bestScore2 ) { bestScore2 = sc; bestTarget2 = t; }
+                     if ( sc > bestScore2 ) { bestScore2 = sc; bestParam2 = pv; }
                   }
 
                   // Apply optimized stretch to all channels
@@ -1138,8 +1150,8 @@ bool NukeXStackInstance::ExecuteGlobal()
                         double med = stretchImage.Median();
                         double mad = stretchImage.MAD( med );
 
-                        auto chAlgo = StretchLibrary::Instance().Create( AlgorithmType::MTF );
-                        chAlgo->SetParameter( "targetMedian", bestTarget2 );
+                        auto chAlgo = StretchLibrary::Instance().Create( bestType );
+                        chAlgo->SetParameter( IsoString( bestParamName ), bestParam2 );
                         chAlgo->AutoConfigure( med, mad );
 
                         Image::sample_iterator it( stretchImage, ch );
@@ -1152,8 +1164,8 @@ bool NukeXStackInstance::ExecuteGlobal()
                   }
                   else
                   {
-                     auto monoAlgo = StretchLibrary::Instance().Create( AlgorithmType::MTF );
-                     monoAlgo->SetParameter( "targetMedian", bestTarget2 );
+                     auto monoAlgo = StretchLibrary::Instance().Create( bestType );
+                     monoAlgo->SetParameter( IsoString( bestParamName ), bestParam2 );
                      monoAlgo->AutoConfigure( refMed2, refMad2 );
                      monoAlgo->ApplyToImage( stretchImage );
                      stretchAlgos[0] = monoAlgo->Clone();

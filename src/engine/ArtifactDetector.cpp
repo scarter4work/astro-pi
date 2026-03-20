@@ -371,7 +371,10 @@ TrailDetectionResult ArtifactDetector::detectTrails( const float* image, int wid
       // from galaxy structure, stretched noise, or other non-trail features.
       constexpr int MAX_TRAIL_LINES = 30;
       if ( static_cast<int>( lines.size() ) > MAX_TRAIL_LINES )
-         return result;
+      {
+         result.trailLineCount = static_cast<int>( lines.size() );
+         return result;   // caller can see trailLineCount > 0 but empty mask
+      }
 
       result.mask = generateTrailMask( lines, width, height, m_config.trailDilateRadius );
       result.trailLineCount = static_cast<int>( lines.size() );
@@ -387,9 +390,10 @@ TrailDetectionResult ArtifactDetector::detectTrails( const float* image, int wid
       double maskedFraction = static_cast<double>( result.trailPixelCount ) / ( width * height );
       if ( maskedFraction > 0.10 )
       {
+         int savedLineCount = result.trailLineCount;
          result.mask.assign( width * height, 0 );
          result.trailPixelCount = 0;
-         result.trailLineCount = 0;
+         result.trailLineCount = savedLineCount;  // preserve for diagnostics
          return result;
       }
    }
@@ -673,7 +677,10 @@ DustDetectionResult ArtifactDetector::detectDustSubcube( const float* stackedIma
    std::vector<float> normalized( N, 1.0f );
    for ( int i = 0; i < N; ++i )
       if ( sensorValid[i] && flatSmooth[i] > 1e-10f )
-         normalized[i] = sensorStack[i] / flatSmooth[i];
+      {
+         float norm = sensorStack[i] / flatSmooth[i];
+         normalized[i] = std::isfinite( norm ) ? norm : 1.0f;
+      }
 
    // Deficit = 1.0 - normalized (positive for attenuated pixels)
    std::vector<float> pctDeficit( N, 0.0f );
@@ -688,6 +695,12 @@ DustDetectionResult ArtifactDetector::detectDustSubcube( const float* stackedIma
       if ( sensorValid[i] )
          validPcts.push_back( pctDeficit[i] );
 
+   if ( validPcts.empty() )
+   {
+      emit( "[DustDetect] No valid sensor pixels -- skipping dust detection" );
+      return result;
+   }
+
    size_t mid = validPcts.size() / 2;
    std::nth_element( validPcts.begin(), validPcts.begin() + mid, validPcts.end() );
    float medianPct = validPcts[mid];
@@ -698,7 +711,13 @@ DustDetectionResult ArtifactDetector::detectDustSubcube( const float* stackedIma
    std::nth_element( absDevs.begin(), absDevs.begin() + mid, absDevs.end() );
    float madPct = absDevs[mid] * 1.4826f;
 
-   float pctThreshold = medianPct + static_cast<float>( m_config.dustDetectionSigma ) * madPct;
+   // Floor guard: when MAD is zero (perfectly flat image), use small epsilon
+   // to avoid flagging half the image. Matches the guard in detectDust().
+   float pctThreshold;
+   if ( madPct < 1e-10f )
+      pctThreshold = medianPct + 1e-6f;
+   else
+      pctThreshold = medianPct + static_cast<float>( m_config.dustDetectionSigma ) * madPct;
 
    {
       std::ostringstream oss;
@@ -831,7 +850,8 @@ DustDetectionResult ArtifactDetector::detectDustSubcube( const float* stackedIma
       {
          double ringSum = 0;
          int ringCount = 0;
-         int rInnerSq = ( r - 1 ) * ( r - 1 );
+         int rInner = std::max( 0, r - 2 );
+         int rInnerSq = rInner * rInner;
          int rOuterSq = r * r;
          for ( int dy = -r; dy <= r; ++dy )
             for ( int dx = -r; dx <= r; ++dx )
@@ -839,7 +859,8 @@ DustDetectionResult ArtifactDetector::detectDustSubcube( const float* stackedIma
                int distSq = dx * dx + dy * dy;
                if ( distSq < rInnerSq || distSq > rOuterSq ) continue;
                int px = cx + dx, py = cy + dy;
-               if ( px >= 0 && px < width && py >= 0 && py < height && sensorValid[py * width + px] )
+               if ( px >= 0 && px < width && py >= 0 && py < height
+                    && sensorValid[py * width + px] )
                {
                   ringSum += pctDeficit[py * width + px];
                   ++ringCount;
@@ -887,8 +908,9 @@ DustDetectionResult ArtifactDetector::detectDustSubcube( const float* stackedIma
                result.mask[idx] = 1;
                // Correction = inverse of self-flat normalized value.
                // normalized ≈ 0.95 for 5% deficit → correction ≈ 1.053
+               // Clamp to 2.0 at source to prevent catastrophic overcorrection.
                if ( normalized[idx] > 0.01f )
-                  result.correctionMap[idx] = 1.0f / normalized[idx];
+                  result.correctionMap[idx] = std::min( 1.0f / normalized[idx], 2.0f );
             }
          }
    }
