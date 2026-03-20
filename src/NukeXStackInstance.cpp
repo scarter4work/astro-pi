@@ -952,12 +952,19 @@ bool NukeXStackInstance::ExecuteGlobal()
                   console.Flush();
                   Module->ProcessEvents();
 
+                  // Expand blob radii to cover the full mote extent.
+                  // The detector finds the high-confidence core; the visual mote
+                  // extends ~2x further due to the gradual Gaussian falloff.
+                  std::vector<nukex::DustBlobInfo> expandedBlobs = dustDetection.blobs;
+                  for ( auto& b : expandedBlobs )
+                     b.radius *= 2.0;
+
                   nukex::DustCorrector corrector;
                   for ( int ch = 0; ch < outChannels; ++ch )
                   {
                      corrector.correct(
                         channelResults[ch].data(), cropW, cropH,
-                        dustDetection.blobs,
+                        expandedBlobs,
                         [&console]( const std::string& msg ) {
                            console.WriteLn( String( msg.c_str() ) );
                         } );
