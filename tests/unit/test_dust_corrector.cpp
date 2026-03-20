@@ -157,3 +157,83 @@ TEST_CASE( "DustCorrector invokes log callback", "[dust][corrector]" )
 
    REQUIRE( logCount == 1 );
 }
+
+// ============================================================================
+// Background gradient — per-angle edge sampling should capture gradient
+// ============================================================================
+
+TEST_CASE( "DustCorrector handles background gradient", "[dust][corrector]" )
+{
+   const int W = 300, H = 300;
+   const int cx = 150, cy = 150, R = 20;
+   const float peakAtten = 0.92f;
+
+   // Background with linear gradient (galaxy proximity)
+   std::vector<float> image( W * H );
+   for ( int y = 0; y < H; ++y )
+      for ( int x = 0; x < W; ++x )
+      {
+         float bg = 0.2f + 0.002f * x;  // 0.2 at left, 0.8 at right
+         double d = std::sqrt( double((x-cx)*(x-cx) + (y-cy)*(y-cy)) );
+         float atten = 1.0f;
+         if ( d < R )
+            atten = 1.0f - (1.0f - peakAtten) * float( std::exp( -0.5 * (d*d) / (R*R/4.0) ) );
+         image[y * W + x] = bg * atten;
+      }
+
+   float bgAtCenter = 0.2f + 0.002f * cx;  // 0.5
+
+   nukex::DustBlobInfo blob;
+   blob.centerX = cx;  blob.centerY = cy;  blob.radius = R;
+
+   nukex::DustCorrector corrector;
+   corrector.correct( image.data(), W, H, { blob } );
+
+   // Center should recover to background at that position
+   float centerVal = image[cy * W + cx];
+   REQUIRE( centerVal == Catch::Approx( bgAtCenter ).margin( bgAtCenter * 0.03f ) );
+
+   // Pixels at left and right edges of the mote should recover to their local bg
+   float leftEdgeBg = 0.2f + 0.002f * (cx - R + 2);
+   float leftEdgeVal = image[cy * W + (cx - R + 2)];
+   REQUIRE( leftEdgeVal == Catch::Approx( leftEdgeBg ).margin( leftEdgeBg * 0.03f ) );
+
+   float rightEdgeBg = 0.2f + 0.002f * (cx + R - 2);
+   float rightEdgeVal = image[cy * W + (cx + R - 2)];
+   REQUIRE( rightEdgeVal == Catch::Approx( rightEdgeBg ).margin( rightEdgeBg * 0.03f ) );
+}
+
+// ============================================================================
+// Off-center mote in a gradient — asymmetric edge distances
+// ============================================================================
+
+TEST_CASE( "DustCorrector handles off-center mote in gradient", "[dust][corrector]" )
+{
+   const int W = 400, H = 300;
+   const int cx = 80, cy = 150, R = 20;  // mote near the LEFT side
+   const float peakAtten = 0.92f;
+
+   std::vector<float> image( W * H );
+   for ( int y = 0; y < H; ++y )
+      for ( int x = 0; x < W; ++x )
+      {
+         float bg = 0.15f + 0.003f * x;  // steeper gradient
+         double d = std::sqrt( double((x-cx)*(x-cx) + (y-cy)*(y-cy)) );
+         float atten = 1.0f;
+         if ( d < R )
+            atten = 1.0f - (1.0f - peakAtten) * float( std::exp( -0.5 * (d*d) / (R*R/4.0) ) );
+         image[y * W + x] = bg * atten;
+      }
+
+   float bgAtCenter = 0.15f + 0.003f * cx;  // 0.39
+
+   nukex::DustBlobInfo blob;
+   blob.centerX = cx;  blob.centerY = cy;  blob.radius = R;
+
+   nukex::DustCorrector corrector;
+   corrector.correct( image.data(), W, H, { blob } );
+
+   // Center should recover to local background
+   float centerVal = image[cy * W + cx];
+   REQUIRE( centerVal == Catch::Approx( bgAtCenter ).margin( bgAtCenter * 0.05f ) );
+}
