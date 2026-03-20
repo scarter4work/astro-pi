@@ -840,10 +840,10 @@ DustDetectionResult ArtifactDetector::detectDustSubcube( const float* stackedIma
       // The detection threshold finds the dense core; trace outward in the
       // self-flat deficit map to find where the mote fades into background.
       // Use half the detection sigma as the extent threshold.
-      // Use 1/4 of detection sigma for extent — captures the gradual mote falloff
-      // well beyond the high-confidence core. The nonlinear stretch amplifies small
-      // deficits, so the visual mote extends further than the linear self-flat shows.
-      float extentThreshold = medianPct + static_cast<float>( m_config.dustDetectionSigma * 0.25 ) * madPct;
+      // Use 1/3 of detection sigma for extent — captures the gradual mote falloff
+      // beyond the high-confidence core. Combined with the cosine taper below,
+      // this gives smooth correction that fades to zero at the boundary.
+      float extentThreshold = medianPct + static_cast<float>( m_config.dustDetectionSigma / 3.0 ) * madPct;
       int maxExtentRadius = m_config.dustMaxDiameter / 2;
       int detectedRadius = std::max( 5, static_cast<int>( diameter / 2 ) );
       int maskRadius = detectedRadius;
@@ -899,21 +899,34 @@ DustDetectionResult ArtifactDetector::detectDustSubcube( const float* stackedIma
       blob.meanAttenuation = 0;
       result.blobs.push_back( blob );
 
-      // Paint filled circle mask and self-flat correction map
+      // Paint filled circle mask and self-flat correction map with cosine taper.
+      // The taper blends the correction smoothly to 1.0 in the outer 30% of the
+      // mask radius, eliminating the visible step at the boundary.
       int maskRadiusSq = maskRadius * maskRadius;
+      double taperStart = maskRadius * 0.7;
+      double taperWidth = maskRadius * 0.3;
       for ( int my = std::max( 0, cy - maskRadius ); my <= std::min( height - 1, cy + maskRadius ); ++my )
          for ( int mx = std::max( 0, cx - maskRadius ); mx <= std::min( width - 1, cx + maskRadius ); ++mx )
          {
             int ddx = mx - cx, ddy = my - cy;
-            if ( ddx * ddx + ddy * ddy <= maskRadiusSq )
+            int distSq = ddx * ddx + ddy * ddy;
+            if ( distSq <= maskRadiusSq )
             {
                int idx = my * width + mx;
                result.mask[idx] = 1;
-               // Correction = inverse of self-flat normalized value.
-               // normalized ≈ 0.95 for 5% deficit → correction ≈ 1.053
-               // Clamp to 2.0 at source to prevent catastrophic overcorrection.
+
+               float rawCorr = 1.0f;
                if ( normalized[idx] > 0.01f )
-                  result.correctionMap[idx] = std::min( 1.0f / normalized[idx], 2.0f );
+                  rawCorr = std::min( 1.0f / normalized[idx], 2.0f );
+
+               // Cosine taper in outer 30%
+               double dist = std::sqrt( static_cast<double>( distSq ) );
+               if ( dist > taperStart && taperWidth > 0 )
+               {
+                  double blend = 0.5 * ( 1.0 + std::cos( M_PI * ( dist - taperStart ) / taperWidth ) );
+                  rawCorr = 1.0f + static_cast<float>( blend ) * ( rawCorr - 1.0f );
+               }
+               result.correctionMap[idx] = rawCorr;
             }
          }
    }
