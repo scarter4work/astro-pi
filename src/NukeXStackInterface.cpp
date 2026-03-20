@@ -142,6 +142,7 @@ void NukeXStackInterface::UpdateControls()
       return;
 
    UpdateFileList();
+   UpdateFlatList();
 
    // Outlier rejection
    GUI->OutlierSigma_NumericControl.SetValue( m_instance.p_outlierSigmaThreshold );
@@ -266,6 +267,74 @@ void NukeXStackInterface::AddFiles( const StringList& files )
 
 // ----------------------------------------------------------------------------
 
+void NukeXStackInterface::UpdateFlatList()
+{
+   if ( GUI == nullptr )
+      return;
+
+   GUI->FlatFiles_TreeBox.DisableUpdates();
+   GUI->FlatFiles_TreeBox.Clear();
+
+   for ( size_t i = 0; i < m_instance.p_flatFrames.size(); ++i )
+   {
+      const String& path = m_instance.p_flatFrames[i];
+
+      TreeBox::Node* node = new TreeBox::Node( GUI->FlatFiles_TreeBox );
+      node->SetText( 0, File::ExtractName( path ) + File::ExtractExtension( path ) );
+      node->SetText( 1, path );
+
+      FileInfo info( path );
+      if ( info.Exists() )
+      {
+         double sizeMB = info.Size() / (1024.0 * 1024.0);
+         node->SetText( 2, String().Format( "%.1f MB", sizeMB ) );
+      }
+      else
+      {
+         node->SetText( 2, "Not found" );
+      }
+   }
+
+   GUI->FlatFiles_TreeBox.EnableUpdates();
+   UpdateFlatCountLabel();
+}
+
+// ----------------------------------------------------------------------------
+
+void NukeXStackInterface::UpdateFlatCountLabel()
+{
+   if ( GUI == nullptr )
+      return;
+
+   int total = static_cast<int>( m_instance.p_flatFrames.size() );
+   GUI->FlatCount_Label.SetText( String().Format( "%d flat frames", total ) );
+}
+
+// ----------------------------------------------------------------------------
+
+void NukeXStackInterface::AddFlatFiles( const StringList& files )
+{
+   for ( const String& file : files )
+   {
+      bool exists = false;
+      for ( const auto& path : m_instance.p_flatFrames )
+      {
+         if ( path == file )
+         {
+            exists = true;
+            break;
+         }
+      }
+
+      if ( !exists )
+         m_instance.p_flatFrames.push_back( file );
+   }
+
+   UpdateFlatList();
+}
+
+// ----------------------------------------------------------------------------
+
 void NukeXStackInterface::e_TreeBoxNodeActivated( TreeBox& /*sender*/, TreeBox::Node& /*node*/, int /*col*/ )
 {
 }
@@ -375,6 +444,48 @@ void NukeXStackInterface::e_ButtonClick( Button& sender, bool /*checked*/ )
       for ( auto& frame : m_instance.p_inputFrames )
          frame.enabled = !frame.enabled;
       UpdateFileList();
+   }
+   else if ( sender == GUI->AddFlats_PushButton )
+   {
+      OpenFileDialog dlg;
+      dlg.SetCaption( "Select Flat Frames" );
+      dlg.SetFilter( FileFilter( "FITS files", ".fit .fits .fts .xisf" ) );
+      dlg.EnableMultipleSelections();
+
+      if ( dlg.Execute() )
+         AddFlatFiles( dlg.FileNames() );
+   }
+   else if ( sender == GUI->RemoveFlats_PushButton )
+   {
+      IndirectArray<TreeBox::Node> selected = GUI->FlatFiles_TreeBox.SelectedNodes();
+      if ( !selected.IsEmpty() )
+      {
+         Array<int> indices;
+         for ( const TreeBox::Node* node : selected )
+            indices.Add( GUI->FlatFiles_TreeBox.ChildIndex( node ) );
+
+         indices.Sort();
+         for ( int i = static_cast<int>( indices.Length() ) - 1; i >= 0; --i )
+         {
+            int idx = indices[i];
+            if ( idx >= 0 && static_cast<size_t>( idx ) < m_instance.p_flatFrames.size() )
+               m_instance.p_flatFrames.erase( m_instance.p_flatFrames.begin() + idx );
+         }
+
+         UpdateFlatList();
+      }
+   }
+   else if ( sender == GUI->ClearFlats_PushButton )
+   {
+      if ( !m_instance.p_flatFrames.empty() )
+      {
+         if ( MessageBox( "Remove all flat frames?", "NukeXStack",
+                          StdIcon::Question, StdButton::Yes, StdButton::No ).Execute() == StdButton::Yes )
+         {
+            m_instance.p_flatFrames.clear();
+            UpdateFlatList();
+         }
+      }
    }
 }
 
@@ -560,6 +671,57 @@ NukeXStackInterface::GUIData::GUIData( NukeXStackInterface& w )
    InputFiles_Sizer.Add( InputFiles_Info_HSizer );
 
    InputFiles_Control.SetSizer( InputFiles_Sizer );
+
+   // =========================================================================
+   // Flat Files Section (Optional Calibration)
+   // =========================================================================
+
+   FlatFiles_SectionBar.SetTitle( "Flat Frames (Optional)" );
+   FlatFiles_SectionBar.SetSection( FlatFiles_Control );
+
+   FlatFiles_TreeBox.SetMinHeight( 120 );
+   FlatFiles_TreeBox.SetNumberOfColumns( 3 );
+   FlatFiles_TreeBox.SetHeaderText( 0, "File" );
+   FlatFiles_TreeBox.SetHeaderText( 1, "Path" );
+   FlatFiles_TreeBox.SetHeaderText( 2, "Size" );
+   FlatFiles_TreeBox.SetColumnWidth( 0, 200 );
+   FlatFiles_TreeBox.SetColumnWidth( 1, 300 );
+   FlatFiles_TreeBox.SetColumnWidth( 2, 80 );
+   FlatFiles_TreeBox.EnableMultipleSelections();
+   FlatFiles_TreeBox.EnableHeaderSorting();
+   FlatFiles_TreeBox.SetToolTip( "<p>Flat calibration frames. Median-stacked and applied to lights before alignment.</p>" );
+
+   AddFlats_PushButton.SetText( "Add Files" );
+   AddFlats_PushButton.SetToolTip( "<p>Add flat calibration frames.</p>" );
+   AddFlats_PushButton.OnClick( (Button::click_event_handler)&NukeXStackInterface::e_ButtonClick, w );
+
+   RemoveFlats_PushButton.SetText( "Remove" );
+   RemoveFlats_PushButton.SetToolTip( "<p>Remove selected flat frames from the list.</p>" );
+   RemoveFlats_PushButton.OnClick( (Button::click_event_handler)&NukeXStackInterface::e_ButtonClick, w );
+
+   ClearFlats_PushButton.SetText( "Clear" );
+   ClearFlats_PushButton.SetToolTip( "<p>Remove all flat frames.</p>" );
+   ClearFlats_PushButton.OnClick( (Button::click_event_handler)&NukeXStackInterface::e_ButtonClick, w );
+
+   FlatFiles_Buttons_HSizer.SetSpacing( 4 );
+   FlatFiles_Buttons_HSizer.Add( AddFlats_PushButton );
+   FlatFiles_Buttons_HSizer.Add( RemoveFlats_PushButton );
+   FlatFiles_Buttons_HSizer.Add( ClearFlats_PushButton );
+   FlatFiles_Buttons_HSizer.AddStretch();
+
+   FlatCount_Label.SetText( "0 flat frames" );
+   FlatCount_Label.SetTextAlignment( TextAlign::Right | TextAlign::VertCenter );
+
+   FlatFiles_Info_HSizer.AddStretch();
+   FlatFiles_Info_HSizer.Add( FlatCount_Label );
+
+   FlatFiles_Sizer.SetSpacing( 4 );
+   FlatFiles_Sizer.Add( FlatFiles_TreeBox, 100 );
+   FlatFiles_Sizer.Add( FlatFiles_Buttons_HSizer );
+   FlatFiles_Sizer.Add( FlatFiles_Info_HSizer );
+
+   FlatFiles_Control.SetSizer( FlatFiles_Sizer );
+   FlatFiles_Control.Hide();
 
    // =========================================================================
    // Outlier Rejection Section
@@ -788,6 +950,8 @@ NukeXStackInterface::GUIData::GUIData( NukeXStackInterface& w )
    Global_Sizer.SetSpacing( 6 );
    Global_Sizer.Add( InputFiles_SectionBar );
    Global_Sizer.Add( InputFiles_Control, 100 );
+   Global_Sizer.Add( FlatFiles_SectionBar );
+   Global_Sizer.Add( FlatFiles_Control );
    Global_Sizer.Add( Outliers_SectionBar );
    Global_Sizer.Add( Outliers_Control );
    Global_Sizer.Add( Quality_SectionBar );

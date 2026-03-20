@@ -75,6 +75,18 @@ private:
          HorizontalSizer   InputFiles_Info_HSizer;
             Label             FileCount_Label;
 
+      // Flat Files Section (optional calibration)
+      SectionBar        FlatFiles_SectionBar;
+      Control           FlatFiles_Control;
+      VerticalSizer     FlatFiles_Sizer;
+         TreeBox           FlatFiles_TreeBox;
+         HorizontalSizer   FlatFiles_Buttons_HSizer;
+            PushButton        AddFlats_PushButton;
+            PushButton        RemoveFlats_PushButton;
+            PushButton        ClearFlats_PushButton;
+         HorizontalSizer   FlatFiles_Info_HSizer;
+            Label             FlatCount_Label;
+
       // Outlier Rejection Section
       SectionBar        Outliers_SectionBar;
       Control           Outliers_Control;
@@ -120,6 +132,9 @@ private:
    void UpdateFileList();
    void UpdateFileCountLabel();
    void AddFiles( const StringList& files );
+   void UpdateFlatList();
+   void UpdateFlatCountLabel();
+   void AddFlatFiles( const StringList& files );
 
    // Event handlers
    void e_TreeBoxNodeActivated( TreeBox& sender, TreeBox::Node& node, int col );
