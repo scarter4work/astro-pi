@@ -421,3 +421,15 @@ target_include_directories(test_dust_corrector PRIVATE
 target_compile_features(test_dust_corrector PRIVATE cxx_std_17)
 target_compile_definitions(test_dust_corrector PRIVATE XTENSOR_USE_XSIMD)
 add_test(NAME test_dust_corrector COMMAND test_dust_corrector)
+
+# FlatCalibrator unit tests
+add_executable(test_flat_calibrator
+    unit/test_flat_calibrator.cpp
+    ${CMAKE_SOURCE_DIR}/src/engine/FlatCalibrator.cpp
+)
+target_link_libraries(test_flat_calibrator PRIVATE Catch2::Catch2WithMain)
+target_include_directories(test_flat_calibrator PRIVATE
+    ${CMAKE_SOURCE_DIR}/src
+)
+target_compile_features(test_flat_calibrator PRIVATE cxx_std_17)
+add_test(NAME test_flat_calibrator COMMAND test_flat_calibrator)
