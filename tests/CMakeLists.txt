@@ -404,3 +404,19 @@ target_include_directories(test_artifact_detector PRIVATE
 )
 target_compile_features(test_artifact_detector PRIVATE cxx_std_17)
 add_test(NAME test_artifact_detector COMMAND test_artifact_detector)
+
+# DustCorrector unit tests
+add_executable(test_dust_corrector
+    unit/test_dust_corrector.cpp
+    ${CMAKE_SOURCE_DIR}/src/engine/DustCorrector.cpp
+    ${CMAKE_SOURCE_DIR}/src/engine/ArtifactDetector.cpp
+)
+target_link_libraries(test_dust_corrector PRIVATE Catch2::Catch2WithMain)
+target_include_directories(test_dust_corrector PRIVATE
+    ${CMAKE_SOURCE_DIR}/src
+    ${CMAKE_SOURCE_DIR}/third_party/xtensor/include
+    ${CMAKE_SOURCE_DIR}/third_party/xtl/include
+    ${CMAKE_SOURCE_DIR}/third_party/xsimd/include
+)
+target_compile_features(test_dust_corrector PRIVATE cxx_std_17)
+add_test(NAME test_dust_corrector COMMAND test_dust_corrector)
