@@ -538,6 +538,11 @@ bool NukeXStackInstance::ExecuteGlobal()
          stretchImage.Truncate();
 
          // Channel recombination: normalize per-channel backgrounds
+         // Compute MAD BEFORE scaling so the unified shadow clip reflects
+         // true per-channel noise, not noise inflated by the scaling factor.
+         double preScaleMad[3] = { 0, 0, 0 };
+         double preScaleMaxMad = 0;
+
          if ( isColor )
          {
             console.WriteLn( "\n  Channel recombination (background neutralization):" );
@@ -547,6 +552,8 @@ bool NukeXStackInstance::ExecuteGlobal()
             {
                stretchImage.SelectChannel( ch );
                medians[ch] = stretchImage.Median();
+               preScaleMad[ch] = stretchImage.MAD( medians[ch] );
+               preScaleMaxMad = std::max( preScaleMaxMad, preScaleMad[ch] );
             }
             stretchImage.ResetChannelRange();
 
@@ -715,15 +722,14 @@ bool NukeXStackInstance::ExecuteGlobal()
          {
             console.WriteLn( "\n  Per-channel stretch:" );
 
-            // Compute per-channel stats and find unified MAD
-            double chMed[3], chMad[3];
-            double maxMad = 0;
+            // Compute post-scaling medians, but use PRE-SCALING MAD for
+            // unified shadow clip. This prevents the channel scaling from
+            // inflating R's MAD and deepening the shadow clip for all channels.
+            double chMed[3];
             for ( int ch = 0; ch < 3; ++ch )
             {
                stretchImage.SelectChannel( ch );
                chMed[ch] = stretchImage.Median();
-               chMad[ch] = stretchImage.MAD( chMed[ch] );
-               maxMad = std::max( maxMad, chMad[ch] );
             }
             stretchImage.ResetChannelRange();
 
@@ -731,12 +737,12 @@ bool NukeXStackInstance::ExecuteGlobal()
             for ( int ch = 0; ch < 3; ++ch )
             {
                const char* label = ch == 0 ? "R" : ch == 1 ? "G" : "B";
-               console.WriteLn( String().Format( "    %s: median=%.6f, MAD=%.6f", label, chMed[ch], chMad[ch] ) );
+               console.WriteLn( String().Format( "    %s: median=%.6f, MAD=%.6f", label, chMed[ch], preScaleMad[ch] ) );
 
                lastChAlgo = algo->Clone();
                lastChAlgo->SetParameter( IsoString( bestIt->paramName ), bestParam );
-               // Use unified MAD (max across channels) for consistent shadow clip
-               lastChAlgo->AutoConfigure( chMed[ch], maxMad );
+               // Use pre-scaling unified MAD for consistent shadow clip
+               lastChAlgo->AutoConfigure( chMed[ch], preScaleMaxMad );
 
                Image::sample_iterator it( stretchImage, ch );
                for ( ; it; ++it )
