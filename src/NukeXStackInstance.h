@@ -60,6 +60,9 @@ private:
    // Input frames table
    std::vector<InputFrameData> p_inputFrames;
 
+   // Flat frames table (optional)
+   std::vector<String> p_flatFrames;
+
    // Boolean parameters
    pcl_bool p_generateProvenance;
    pcl_bool p_generateDistMetadata;

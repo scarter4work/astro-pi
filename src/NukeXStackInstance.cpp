@@ -9,6 +9,7 @@
 
 #include "NukeXStackInstance.h"
 #include "NukeXStackParameters.h"
+#include "engine/FlatCalibrator.h"
 #include "engine/FrameAligner.h"
 #include "engine/AutoStretchSelector.h"
 #include "engine/StretchLibrary.h"
@@ -80,6 +81,7 @@ void NukeXStackInstance::Assign( const ProcessImplementation& p )
    if ( x != nullptr )
    {
       p_inputFrames             = x->p_inputFrames;
+      p_flatFrames              = x->p_flatFrames;
       p_generateProvenance      = x->p_generateProvenance;
       p_generateDistMetadata    = x->p_generateDistMetadata;
       p_enableMetadataTiebreaker = x->p_enableMetadataTiebreaker;
@@ -176,6 +178,59 @@ bool NukeXStackInstance::ExecuteGlobal()
          int( framePaths.size() ), raw.width, raw.height, numChannels, elapsed1 ) );
 
       Module->ProcessEvents();
+
+      // Phase 1a: Flat calibration (optional)
+      if ( !p_flatFrames.empty() )
+      {
+         console.WriteLn( String().Format( "\nPhase 1a: Flat calibration (%d flat frames)...",
+            int( p_flatFrames.size() ) ) );
+         console.Flush();
+         Module->ProcessEvents();
+
+         // Load flat frames using the same loader (they get debayered like lights)
+         std::vector<nukex::FramePath> flatPaths;
+         for ( const auto& fp : p_flatFrames )
+            flatPaths.push_back( { fp, true } );
+
+         nukex::LoadedFrames flatRaw = nukex::FrameLoader::LoadRaw( flatPaths );
+
+         // Build master flat
+         nukex::FlatCalibrator flatCal;
+         for ( size_t i = 0; i < flatRaw.pixelData.size(); ++i )
+         {
+            flatCal.addFrame(
+               flatRaw.pixelData[i][0].data(),   // R
+               flatRaw.pixelData[i][1].data(),   // G
+               flatRaw.pixelData[i][2].data(),   // B
+               flatRaw.width, flatRaw.height );
+         }
+
+         flatCal.buildMasterFlat(
+            [&console]( const std::string& msg ) {
+               console.WriteLn( String( msg.c_str() ) );
+            } );
+
+         // Apply flat to each light frame
+         if ( flatCal.isReady() )
+         {
+            for ( size_t f = 0; f < raw.pixelData.size(); ++f )
+            {
+               flatCal.calibrate(
+                  raw.pixelData[f][0].data(),   // R
+                  raw.pixelData[f][1].data(),   // G
+                  raw.pixelData[f][2].data(),   // B
+                  raw.width, raw.height );
+            }
+            console.WriteLn( String().Format( "  Flat calibration applied to %d light frames",
+               int( raw.pixelData.size() ) ) );
+         }
+         else
+         {
+            console.WarningLn( "  Flat calibration failed \xe2\x80\x94 proceeding without flat correction" );
+         }
+
+         Module->ProcessEvents();
+      }
 
       // Phase 1b: Align (channel 0 only)
       auto tPhase1b = std::chrono::steady_clock::now();
@@ -1201,6 +1256,12 @@ void* NukeXStackInstance::LockParameter( const MetaParameter* p, size_type table
          return nullptr;
       return &p_inputFrames[tableRow].enabled;
    }
+   if ( p == TheNXSFlatFramePathParameter )
+   {
+      if ( tableRow >= p_flatFrames.size() )
+         return nullptr;
+      return p_flatFrames[tableRow].Begin();
+   }
    if ( p == TheNXSGenerateProvenanceParameter )
       return &p_generateProvenance;
    if ( p == TheNXSGenerateDistMetadataParameter )
@@ -1267,6 +1328,22 @@ bool NukeXStackInstance::AllocateParameter( size_type sizeOrLength, const MetaPa
       return true;
    }
 
+   if ( p == TheNXSFlatFramesParameter )
+   {
+      p_flatFrames.clear();
+      if ( sizeOrLength > 0 )
+         p_flatFrames.resize( sizeOrLength );
+      return true;
+   }
+
+   if ( p == TheNXSFlatFramePathParameter )
+   {
+      p_flatFrames[tableRow].Clear();
+      if ( sizeOrLength > 0 )
+         p_flatFrames[tableRow].SetLength( sizeOrLength );
+      return true;
+   }
+
    return false;
 }
 
@@ -1282,6 +1359,16 @@ size_type NukeXStackInstance::ParameterLength( const MetaParameter* p, size_type
       if ( tableRow >= p_inputFrames.size() )
          return 0;
       return p_inputFrames[tableRow].path.Length();
+   }
+
+   if ( p == TheNXSFlatFramesParameter )
+      return p_flatFrames.size();
+
+   if ( p == TheNXSFlatFramePathParameter )
+   {
+      if ( tableRow >= p_flatFrames.size() )
+         return 0;
+      return p_flatFrames[tableRow].Length();
    }
 
    return 0;

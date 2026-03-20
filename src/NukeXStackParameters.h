@@ -53,6 +53,28 @@ public:
 extern NXSInputFrameEnabled* TheNXSInputFrameEnabledParameter;
 
 // ----------------------------------------------------------------------------
+// Flat Frame List (table parameter)
+// ----------------------------------------------------------------------------
+
+class NXSFlatFrames : public MetaTable
+{
+public:
+   NXSFlatFrames( MetaProcess* );
+   IsoString Id() const override;
+};
+
+extern NXSFlatFrames* TheNXSFlatFramesParameter;
+
+class NXSFlatFramePath : public MetaString
+{
+public:
+   NXSFlatFramePath( MetaTable* );
+   IsoString Id() const override;
+};
+
+extern NXSFlatFramePath* TheNXSFlatFramePathParameter;
+
+// ----------------------------------------------------------------------------
 // Boolean Parameters
 // ----------------------------------------------------------------------------
 

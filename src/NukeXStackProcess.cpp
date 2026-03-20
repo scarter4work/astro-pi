@@ -30,6 +30,10 @@ NukeXStackProcess::NukeXStackProcess()
    new NXSInputFramePath( framesTable );
    new NXSInputFrameEnabled( framesTable );
 
+   // Flat frames table (optional)
+   NXSFlatFrames* flatTable = new NXSFlatFrames( this );
+   new NXSFlatFramePath( flatTable );
+
    // Boolean parameters
    new NXSGenerateProvenance( this );
    new NXSGenerateDistMetadata( this );

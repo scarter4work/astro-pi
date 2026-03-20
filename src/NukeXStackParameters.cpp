@@ -70,6 +70,38 @@ bool NXSInputFrameEnabled::DefaultValue() const
 }
 
 // ----------------------------------------------------------------------------
+// Flat Frame List
+// ----------------------------------------------------------------------------
+
+NXSFlatFrames* TheNXSFlatFramesParameter = nullptr;
+
+NXSFlatFrames::NXSFlatFrames( MetaProcess* P )
+   : MetaTable( P )
+{
+   TheNXSFlatFramesParameter = this;
+}
+
+IsoString NXSFlatFrames::Id() const
+{
+   return "flatFrames";
+}
+
+// ----------------------------------------------------------------------------
+
+NXSFlatFramePath* TheNXSFlatFramePathParameter = nullptr;
+
+NXSFlatFramePath::NXSFlatFramePath( MetaTable* T )
+   : MetaString( T )
+{
+   TheNXSFlatFramePathParameter = this;
+}
+
+IsoString NXSFlatFramePath::Id() const
+{
+   return "path";
+}
+
+// ----------------------------------------------------------------------------
 // Boolean Parameters
 // ----------------------------------------------------------------------------
 
