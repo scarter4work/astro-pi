@@ -9,7 +9,7 @@
       </p>
    </description>
    <platform os="linux" arch="x64" version="1.8.0:1.9.9">
-      <package fileName="20260318-linux-x64-NukeX.tar.gz" sha1="fc5c88c30c74b780f5a9bb5ed93feba2c8c5fa4d" type="module" releaseDate="20260318">
+      <package fileName="20260318-linux-x64-NukeX.tar.gz" sha1="3855ec8459b25b9f6bebb8aa4a3b3442849a9772" type="module" releaseDate="20260318">
          <title>NukeX 3.1.0.32</title>
          <description>
             <p>
@@ -42,4 +42,4 @@
       </package>
    </platform>
 </xri>
-<Signature developerId="scarter4work" timestamp="2026-03-20T06:37:39.885Z" encoding="Base64">SelSzVR00LaaCUZSatw8eWyE0RphfeuYMNImnKNhBr3Ra/xWlXfP0Ouk0SoTQFBrNV2UZRVrIIRQoaaVQnSBCA==</Signature>
+<Signature developerId="scarter4work" timestamp="2026-03-20T12:14:12.018Z" encoding="Base64">E8UczicNmSKpCqizkzrj6DUFh/9fGgNtuDacHU1mH5A5WWG/Rb81J3Mm602irgziz5MWp48Fru6F7NX5z/v3BA==</Signature>
