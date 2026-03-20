@@ -419,4 +419,5 @@ target_include_directories(test_dust_corrector PRIVATE
     ${CMAKE_SOURCE_DIR}/third_party/xsimd/include
 )
 target_compile_features(test_dust_corrector PRIVATE cxx_std_17)
+target_compile_definitions(test_dust_corrector PRIVATE XTENSOR_USE_XSIMD)
 add_test(NAME test_dust_corrector COMMAND test_dust_corrector)
