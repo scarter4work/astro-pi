@@ -410,7 +410,7 @@ double NXSDustDetectionSigma::MaximumValue() const
 
 double NXSDustDetectionSigma::DefaultValue() const
 {
-   return 2.0;
+   return 5.0;
 }
 
 // ----------------------------------------------------------------------------
