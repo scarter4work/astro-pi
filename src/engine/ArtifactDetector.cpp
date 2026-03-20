@@ -605,6 +605,7 @@ DustDetectionResult ArtifactDetector::detectDustSubcube( const float* stackedIma
    DustDetectionResult result;
    const int N = width * height;
    result.mask.assign( N, 0 );
+   result.correctionMap.assign( N, 1.0f );
    result.dustPixelCount = 0;
 
    if ( width < 64 || height < 64 )
@@ -874,14 +875,21 @@ DustDetectionResult ArtifactDetector::detectDustSubcube( const float* stackedIma
       blob.meanAttenuation = 0;
       result.blobs.push_back( blob );
 
-      // Paint filled circle mask in aligned coordinates (= sensor coords for ref frame)
+      // Paint filled circle mask and self-flat correction map
       int maskRadiusSq = maskRadius * maskRadius;
       for ( int my = std::max( 0, cy - maskRadius ); my <= std::min( height - 1, cy + maskRadius ); ++my )
          for ( int mx = std::max( 0, cx - maskRadius ); mx <= std::min( width - 1, cx + maskRadius ); ++mx )
          {
             int ddx = mx - cx, ddy = my - cy;
             if ( ddx * ddx + ddy * ddy <= maskRadiusSq )
-               result.mask[my * width + mx] = 1;
+            {
+               int idx = my * width + mx;
+               result.mask[idx] = 1;
+               // Correction = inverse of self-flat normalized value.
+               // normalized ≈ 0.95 for 5% deficit → correction ≈ 1.053
+               if ( normalized[idx] > 0.01f )
+                  result.correctionMap[idx] = 1.0f / normalized[idx];
+            }
          }
    }
 

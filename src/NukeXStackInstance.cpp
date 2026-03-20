@@ -940,57 +940,79 @@ bool NukeXStackInstance::ExecuteGlobal()
                   Module->ProcessEvents();
                }
 
-               // 7c: Dust remediation (per channel) — uses Phase 3b subcube-verified mask
+               // 7c: Dust remediation (per channel)
                if ( p_enableDustRemediation && dustDetection.dustPixelCount > 0 )
                {
-                  console.WriteLn( "  Phase 7c: Dust remediation (neighbor brightness correction)..." );
-                  console.Flush();
-                  Module->ProcessEvents();
+                  // Use self-flat correction map when available (from subcube detection),
+                  // fall back to neighbor brightness for legacy detectDust() path.
+                  bool useSelfFlat = !dustDetection.correctionMap.empty();
 
-                  for ( int ch = 0; ch < outChannels; ++ch )
+                  if ( useSelfFlat )
                   {
-                     std::vector<float> corrected( size_t( cropW ) * size_t( cropH ) );
-                     bool gpuOk = false;
+                     console.WriteLn( "  Phase 7c: Dust remediation (self-flat correction)..." );
+                     console.Flush();
+                     Module->ProcessEvents();
 
-#ifdef NUKEX_HAS_CUDA
-                     if ( useGPU )
-                     {
-                        gpuOk = nukex::cuda::remediateDustGPU(
-                           channelResults[ch].data(), cropW, cropH,
-                           dustDetection.mask.data(),
-                           p_dustNeighborRadius, p_dustMaxCorrectionRatio,
-                           corrected.data() );
-                     }
-#endif
-                     if ( !gpuOk )
-                     {
-                        // CPU fallback: neighbor brightness ratio correction
-                        corrected = channelResults[ch]; // copy
+                     for ( int ch = 0; ch < outChannels; ++ch )
                         for ( int y = 0; y < cropH; ++y )
                            for ( int x = 0; x < cropW; ++x )
                            {
-                              if ( !dustDetection.mask[y * cropW + x] ) continue;
-                              float neighborSum = 0; int neighborCount = 0;
-                              for ( int dy = -p_dustNeighborRadius; dy <= p_dustNeighborRadius; ++dy )
-                                 for ( int dx = -p_dustNeighborRadius; dx <= p_dustNeighborRadius; ++dx )
-                                 {
-                                    int nx = x + dx, ny = y + dy;
-                                    if ( nx < 0 || nx >= cropW || ny < 0 || ny >= cropH ) continue;
-                                    if ( dustDetection.mask[ny * cropW + nx] ) continue;
-                                    if ( channelResults[ch][ny * cropW + nx] < 1e-10f ) continue;
-                                    neighborSum += channelResults[ch][ny * cropW + nx];
-                                    ++neighborCount;
-                                 }
-                              if ( neighborCount > 0 && channelResults[ch][y * cropW + x] > 1e-10f )
-                              {
-                                 float ratio = ( neighborSum / neighborCount ) / channelResults[ch][y * cropW + x];
-                                 ratio = std::min( ratio, p_dustMaxCorrectionRatio );
-                                 corrected[y * cropW + x] = channelResults[ch][y * cropW + x] * ratio;
-                              }
+                              int idx = y * cropW + x;
+                              if ( !dustDetection.mask[idx] ) continue;
+                              float ratio = std::min( dustDetection.correctionMap[idx], p_dustMaxCorrectionRatio );
+                              channelResults[ch][idx] *= ratio;
                            }
-                     }
+                  }
+                  else
+                  {
+                     console.WriteLn( "  Phase 7c: Dust remediation (neighbor brightness correction)..." );
+                     console.Flush();
+                     Module->ProcessEvents();
 
-                     channelResults[ch] = std::move( corrected );
+                     for ( int ch = 0; ch < outChannels; ++ch )
+                     {
+                        std::vector<float> corrected( size_t( cropW ) * size_t( cropH ) );
+                        bool gpuOk = false;
+
+#ifdef NUKEX_HAS_CUDA
+                        if ( useGPU )
+                        {
+                           gpuOk = nukex::cuda::remediateDustGPU(
+                              channelResults[ch].data(), cropW, cropH,
+                              dustDetection.mask.data(),
+                              p_dustNeighborRadius, p_dustMaxCorrectionRatio,
+                              corrected.data() );
+                        }
+#endif
+                        if ( !gpuOk )
+                        {
+                           corrected = channelResults[ch];
+                           for ( int y = 0; y < cropH; ++y )
+                              for ( int x = 0; x < cropW; ++x )
+                              {
+                                 if ( !dustDetection.mask[y * cropW + x] ) continue;
+                                 float neighborSum = 0; int neighborCount = 0;
+                                 for ( int dy = -p_dustNeighborRadius; dy <= p_dustNeighborRadius; ++dy )
+                                    for ( int dx = -p_dustNeighborRadius; dx <= p_dustNeighborRadius; ++dx )
+                                    {
+                                       int nx = x + dx, ny = y + dy;
+                                       if ( nx < 0 || nx >= cropW || ny < 0 || ny >= cropH ) continue;
+                                       if ( dustDetection.mask[ny * cropW + nx] ) continue;
+                                       if ( channelResults[ch][ny * cropW + nx] < 1e-10f ) continue;
+                                       neighborSum += channelResults[ch][ny * cropW + nx];
+                                       ++neighborCount;
+                                    }
+                                 if ( neighborCount > 0 && channelResults[ch][y * cropW + x] > 1e-10f )
+                                 {
+                                    float ratio = ( neighborSum / neighborCount ) / channelResults[ch][y * cropW + x];
+                                    ratio = std::min( ratio, p_dustMaxCorrectionRatio );
+                                    corrected[y * cropW + x] = channelResults[ch][y * cropW + x] * ratio;
+                                 }
+                              }
+                        }
+
+                        channelResults[ch] = std::move( corrected );
+                     }
                   }
 
                   console.WriteLn( String().Format( "    Corrected %d dust pixels per channel",
