@@ -233,7 +233,9 @@ install: sign
 
 # Package for distribution: build, sign, tarball, update manifest, sign XRI
 REPO_DIR = repository
-PKG_NAME = 20260318-linux-x64-NukeX.tar.gz
+PKG_DATE = $(shell date +%Y%m%d)
+PKG_NAME = $(PKG_DATE)-linux-x64-NukeX.tar.gz
+PKG_VERSION = $(shell grep 'MODULE_VERSION_MAJOR' src/NukeXModule.cpp | head -1 | awk '{print $$3}').$(shell grep 'MODULE_VERSION_MINOR' src/NukeXModule.cpp | head -1 | awk '{print $$3}').$(shell grep 'MODULE_VERSION_REVISION' src/NukeXModule.cpp | head -1 | awk '{print $$3}').$(shell grep 'MODULE_VERSION_BUILD' src/NukeXModule.cpp | head -1 | awk '{print $$3}')
 SIGN_XRI = $(REPO_DIR)/updates.xri
 
 package: sign
@@ -244,7 +246,10 @@ package: sign
 	@cd /tmp/nukex-pkg && tar czf $(CURDIR)/$(REPO_DIR)/$(PKG_NAME) bin/
 	@NEW_SHA=$$(sha1sum $(REPO_DIR)/$(PKG_NAME) | cut -d' ' -f1); \
 	 echo "  SHA1: $$NEW_SHA"; \
-	 sed -i "s/sha1=\"[^\"]*\"/sha1=\"$$NEW_SHA\"/" $(SIGN_XRI)
+	 sed -i "s/sha1=\"[^\"]*\"/sha1=\"$$NEW_SHA\"/" $(SIGN_XRI); \
+	 sed -i "s/fileName=\"[^\"]*\"/fileName=\"$(PKG_NAME)\"/" $(SIGN_XRI); \
+	 sed -i "s/releaseDate=\"[^\"]*\"/releaseDate=\"$(PKG_DATE)\"/" $(SIGN_XRI); \
+	 sed -i "s|<title>NukeX [^<]*</title>|<title>NukeX $(PKG_VERSION)</title>|" $(SIGN_XRI)
 	@sed -i '/<Signature developerId=/d' $(SIGN_XRI)
 	$(PIXINSIGHT_DIR)/bin/PixInsight.sh \
 		--sign-xml-file=$(SIGN_XRI) \

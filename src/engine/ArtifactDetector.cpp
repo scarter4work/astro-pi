@@ -816,24 +816,65 @@ DustDetectionResult ArtifactDetector::detectDustSubcube( const float* stackedIma
       int cx = static_cast<int>( c.sumX / c.area );
       int cy = static_cast<int>( c.sumY / c.area );
 
+      // Measure true radial extent from raw deficit data.
+      // The detection threshold finds the dense core; trace outward in the
+      // self-flat deficit map to find where the mote fades into background.
+      // Use half the detection sigma as the extent threshold.
+      float extentThreshold = medianPct + static_cast<float>( m_config.dustDetectionSigma * 0.5 ) * madPct;
+      int maxExtentRadius = m_config.dustMaxDiameter / 2;
+      int detectedRadius = std::max( 5, static_cast<int>( diameter / 2 ) );
+      int maskRadius = detectedRadius;
+
+      int belowCount = 0;
+      for ( int r = detectedRadius + 1; r <= maxExtentRadius; ++r )
+      {
+         double ringSum = 0;
+         int ringCount = 0;
+         int rInnerSq = ( r - 1 ) * ( r - 1 );
+         int rOuterSq = r * r;
+         for ( int dy = -r; dy <= r; ++dy )
+            for ( int dx = -r; dx <= r; ++dx )
+            {
+               int distSq = dx * dx + dy * dy;
+               if ( distSq < rInnerSq || distSq > rOuterSq ) continue;
+               int px = cx + dx, py = cy + dy;
+               if ( px >= 0 && px < width && py >= 0 && py < height && sensorValid[py * width + px] )
+               {
+                  ringSum += pctDeficit[py * width + px];
+                  ++ringCount;
+               }
+            }
+         if ( ringCount == 0 ) break;
+         if ( ringSum / ringCount > extentThreshold )
+         {
+            maskRadius = r;
+            belowCount = 0;
+         }
+         else
+         {
+            if ( ++belowCount >= 3 )
+               break;
+         }
+      }
+
       {
          std::ostringstream oss;
          oss << "[DustDetect] Dust blob (sensor-space): center=(" << cx << "," << cy
-             << "), diam=" << diameter << ", area=" << c.area
-             << ", circ=" << circularity;
+             << "), detected_diam=" << diameter << ", area=" << c.area
+             << ", circ=" << circularity
+             << ", maskR=" << maskRadius << " (core=" << detectedRadius << ")";
          emit( oss.str() );
       }
 
       DustBlobInfo blob;
       blob.centerX = cx;
       blob.centerY = cy;
-      blob.radius = diameter / 2.0;
+      blob.radius = maskRadius;
       blob.circularity = circularity;
       blob.meanAttenuation = 0;
       result.blobs.push_back( blob );
 
       // Paint filled circle mask in aligned coordinates (= sensor coords for ref frame)
-      int maskRadius = std::max( 5, static_cast<int>( diameter / 2 ) );
       int maskRadiusSq = maskRadius * maskRadius;
       for ( int my = std::max( 0, cy - maskRadius ); my <= std::min( height - 1, cy + maskRadius ); ++my )
          for ( int mx = std::max( 0, cx - maskRadius ); mx <= std::min( width - 1, cx + maskRadius ); ++mx )
