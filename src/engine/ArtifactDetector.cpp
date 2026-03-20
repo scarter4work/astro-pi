@@ -840,7 +840,10 @@ DustDetectionResult ArtifactDetector::detectDustSubcube( const float* stackedIma
       // The detection threshold finds the dense core; trace outward in the
       // self-flat deficit map to find where the mote fades into background.
       // Use half the detection sigma as the extent threshold.
-      float extentThreshold = medianPct + static_cast<float>( m_config.dustDetectionSigma * 0.5 ) * madPct;
+      // Use 1/4 of detection sigma for extent — captures the gradual mote falloff
+      // well beyond the high-confidence core. The nonlinear stretch amplifies small
+      // deficits, so the visual mote extends further than the linear self-flat shows.
+      float extentThreshold = medianPct + static_cast<float>( m_config.dustDetectionSigma * 0.25 ) * madPct;
       int maxExtentRadius = m_config.dustMaxDiameter / 2;
       int detectedRadius = std::max( 5, static_cast<int>( diameter / 2 ) );
       int maskRadius = detectedRadius;
