@@ -193,14 +193,16 @@ TEST_CASE( "DustCorrector handles background gradient", "[dust][corrector]" )
    float centerVal = image[cy * W + cx];
    REQUIRE( centerVal == Catch::Approx( bgAtCenter ).margin( bgAtCenter * 0.03f ) );
 
-   // Pixels at left and right edges of the mote should recover to their local bg
+   // Pixels at left and right edges of the mote should recover to their local bg.
+   // Wider margin (5%) because the edge ring at R+8..R+15 samples further from
+   // the mote boundary, introducing gradient offset in the reference brightness.
    float leftEdgeBg = 0.2f + 0.002f * (cx - R + 2);
    float leftEdgeVal = image[cy * W + (cx - R + 2)];
-   REQUIRE( leftEdgeVal == Catch::Approx( leftEdgeBg ).margin( leftEdgeBg * 0.03f ) );
+   REQUIRE( leftEdgeVal == Catch::Approx( leftEdgeBg ).margin( leftEdgeBg * 0.05f ) );
 
    float rightEdgeBg = 0.2f + 0.002f * (cx + R - 2);
    float rightEdgeVal = image[cy * W + (cx + R - 2)];
-   REQUIRE( rightEdgeVal == Catch::Approx( rightEdgeBg ).margin( rightEdgeBg * 0.03f ) );
+   REQUIRE( rightEdgeVal == Catch::Approx( rightEdgeBg ).margin( rightEdgeBg * 0.05f ) );
 }
 
 // ============================================================================

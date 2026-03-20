@@ -32,8 +32,9 @@ private:
    static constexpr int ANGULAR_BINS = 72;
 
    // Edge sampling annulus: [R + EDGE_INNER, R + EDGE_OUTER] pixels from center
-   static constexpr int EDGE_INNER   = 2;
-   static constexpr int EDGE_OUTER   = 5;
+   // Pushed far enough from boundary to avoid mote's Gaussian tail contamination
+   static constexpr int EDGE_INNER   = 8;
+   static constexpr int EDGE_OUTER   = 15;
 
    // Safety clamp — never boost a pixel more than this factor
    static constexpr float MAX_CORRECTION = 1.5f;
