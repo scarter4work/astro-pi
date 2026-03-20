@@ -238,9 +238,10 @@ std::vector<size_t> sigmaClipMAD(
 
     // Asymmetric clipping: bright outliers (trails, planes, cosmic rays)
     // are more common than dark outliers in astro data.
-    // Use kappa for bright threshold, kappa * 1.6 for dark (preserving 2.5:4.0 ratio).
-    double threshHigh = kappa * sigma;
-    double threshLow  = kappa * 1.6 * sigma;
+    // Hardcoded thresholds tuned for astrophotography — kappa param is
+    // only used as a fallback divisor when sigma is near zero (line 236).
+    double threshHigh = 2.5 * sigma;   // bright: 2.5σ (tight — trails are common)
+    double threshLow  = 4.0 * sigma;   // dark: 4.0σ (loose — dark outliers rare)
 
     std::vector<size_t> outliers;
     for (size_t i = 0; i < n; ++i) {
