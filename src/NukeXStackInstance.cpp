@@ -799,7 +799,7 @@ bool NukeXStackInstance::ExecuteGlobal()
                      float r = stretchImage.Pixel( x, y, 0 );
                      float g = stretchImage.Pixel( x, y, 1 );
                      float b = stretchImage.Pixel( x, y, 2 );
-                     luminance[y * cropW + x] = 0.2126f * r + 0.7152f * g + 0.0722f * b;
+                     luminance[y * cropW + x] = ( r + g + b ) / 3.0f;
                   }
             }
             else
