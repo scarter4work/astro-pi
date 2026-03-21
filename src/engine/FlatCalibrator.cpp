@@ -142,6 +142,13 @@ void FlatCalibrator::buildMasterFlat( LogCallback log )
          master[i] /= med;
          if ( master[i] < MIN_FLAT_VALUE )
             master[i] = MIN_FLAT_VALUE;
+         // Cap correction factor — a flat value below 1/MAX_FLAT_CORRECTION
+         // means the correction (1/flat) would exceed MAX_FLAT_CORRECTION,
+         // amplifying noise more than it helps. Clamp to preserve some
+         // vignetting rather than amplify edge noise.
+         float minAllowed = 1.0f / MAX_FLAT_CORRECTION;
+         if ( master[i] < minAllowed )
+            master[i] = minAllowed;
          mn = std::min( mn, master[i] );
          mx = std::max( mx, master[i] );
       }

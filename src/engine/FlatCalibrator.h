@@ -54,6 +54,10 @@ private:
 
    // Prevent division by near-zero in the master flat
    static constexpr float MIN_FLAT_VALUE = 0.01f;
+
+   // Maximum correction factor — beyond this, vignetting is so severe
+   // that correcting amplifies noise more than it helps
+   static constexpr float MAX_FLAT_CORRECTION = 1.40f;
 };
 
 } // namespace nukex
