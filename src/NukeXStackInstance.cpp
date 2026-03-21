@@ -413,6 +413,55 @@ bool NukeXStackInstance::ExecuteGlobal()
                channelCubes[ch].setMetadata( i, raw.metadata[i] );
          }
 
+         // Pre-stacking trail rejection: for each pixel position, compute
+         // the median across all frames. Flag any frame's pixel that exceeds
+         // the median by more than 2.5σ (MAD-based). This catches satellite
+         // trails, airplane lights, and cosmic rays at the frame level before
+         // the statistical stacking sees them.
+         {
+            auto& cube = channelCubes[ch];
+            if ( !cube.hasMasks() )
+               cube.allocateMasks();
+
+            int trailMasked = 0;
+            for ( int y = 0; y < cropH; ++y )
+               for ( int x = 0; x < cropW; ++x )
+               {
+                  // Collect Z-column values
+                  std::vector<float> zCol( nSubs );
+                  for ( size_t z = 0; z < nSubs; ++z )
+                     zCol[z] = cube.pixel( z, y, x );
+
+                  // Median
+                  std::vector<float> sorted = zCol;
+                  size_t mid = sorted.size() / 2;
+                  std::nth_element( sorted.begin(), sorted.begin() + mid, sorted.end() );
+                  float median = sorted[mid];
+
+                  // MAD
+                  std::vector<float> devs( nSubs );
+                  for ( size_t z = 0; z < nSubs; ++z )
+                     devs[z] = std::abs( zCol[z] - median );
+                  std::nth_element( devs.begin(), devs.begin() + mid, devs.end() );
+                  float mad = devs[mid] * 1.4826f;
+
+                  // Flag bright outliers (trails are bright)
+                  if ( mad > 1e-10f )
+                  {
+                     float threshold = median + 2.5f * mad;
+                     for ( size_t z = 0; z < nSubs; ++z )
+                        if ( zCol[z] > threshold )
+                        {
+                           cube.setMask( z, y, x, 1 );
+                           ++trailMasked;
+                        }
+                  }
+               }
+
+            if ( ch == 0 && trailMasked > 0 )
+               console.WriteLn( String().Format( "  Pre-stack rejection: %d pixel-frames masked", trailMasked ) );
+         }
+
          if ( useGPU )
          {
             channelResults[ch] = selector.processImageGPU( channelCubes[ch], qualityScoresPtr, distTypeMaps[ch], progressCB );
