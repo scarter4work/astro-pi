@@ -89,6 +89,7 @@ private:
    int32    p_dustMaxDiameter;
    int32    p_dustNeighborRadius;
    int32    p_vignettingPolyOrder;
+   int32    p_bortleNumber;
 
    friend class NukeXStackProcess;
    friend class NukeXStackInterface;

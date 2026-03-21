@@ -299,6 +299,18 @@ public:
 
 extern NXSVignettingPolyOrder* TheNXSVignettingPolyOrderParameter;
 
+class NXSBortleNumber : public MetaInt32
+{
+public:
+   NXSBortleNumber( MetaProcess* );
+   IsoString Id() const override;
+   double MinimumValue() const override;
+   double MaximumValue() const override;
+   double DefaultValue() const override;
+};
+
+extern NXSBortleNumber* TheNXSBortleNumberParameter;
+
 class NXSVignettingMaxCorrection : public MetaFloat
 {
 public:

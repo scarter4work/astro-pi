@@ -108,22 +108,15 @@ private:
          CheckBox          EnableAutoStretch_CheckBox;
          CheckBox          UseGPU_CheckBox;
          CheckBox          AdaptiveModels_CheckBox;
+         NumericControl    BortleNumber_NumericControl;
 
       // Remediation Section
       SectionBar        Remediation_SectionBar;
       Control           Remediation_Control;
       VerticalSizer     Remediation_Sizer;
          CheckBox          EnableRemediation_CheckBox;
-         CheckBox          EnableTrailRemediation_CheckBox;
          CheckBox          EnableDustRemediation_CheckBox;
          CheckBox          EnableVignettingRemediation_CheckBox;
-         NumericControl    TrailDilateRadius_NumericControl;
-         NumericControl    TrailOutlierSigma_NumericControl;
-         NumericControl    DustDetectionSigma_NumericControl;
-         NumericControl    DustNeighborRadius_NumericControl;
-         NumericControl    DustMaxCorrectionRatio_NumericControl;
-         NumericControl    VignettingPolyOrder_NumericControl;
-         NumericControl    VignettingMaxCorrection_NumericControl;
    };
 
    GUIData* GUI = nullptr;

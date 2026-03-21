@@ -639,6 +639,38 @@ double NXSVignettingPolyOrder::DefaultValue() const
    return 3;
 }
 
+// ----------------------------------------------------------------------------
+
+NXSBortleNumber* TheNXSBortleNumberParameter = nullptr;
+
+NXSBortleNumber::NXSBortleNumber( MetaProcess* P )
+   : MetaInt32( P )
+{
+   TheNXSBortleNumberParameter = this;
+}
+
+IsoString NXSBortleNumber::Id() const
+{
+   return "bortleNumber";
+}
+
+double NXSBortleNumber::MinimumValue() const
+{
+   return 1;
+}
+
+double NXSBortleNumber::MaximumValue() const
+{
+   return 9;
+}
+
+double NXSBortleNumber::DefaultValue() const
+{
+   return 5;
+}
+
+// ----------------------------------------------------------------------------
+
 NXSOutlierSigmaThreshold* TheNXSOutlierSigmaThresholdParameter = nullptr;
 
 NXSOutlierSigmaThreshold::NXSOutlierSigmaThreshold( MetaProcess* P )

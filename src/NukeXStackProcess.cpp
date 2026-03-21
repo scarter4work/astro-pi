@@ -60,6 +60,7 @@ NukeXStackProcess::NukeXStackProcess()
    new NXSDustMaxDiameter( this );
    new NXSDustNeighborRadius( this );
    new NXSVignettingPolyOrder( this );
+   new NXSBortleNumber( this );
 }
 
 // ----------------------------------------------------------------------------

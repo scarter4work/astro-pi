@@ -62,6 +62,7 @@ NukeXStackInstance::NukeXStackInstance( const MetaProcess* m )
    , p_dustMaxDiameter( static_cast<int32>( TheNXSDustMaxDiameterParameter->DefaultValue() ) )
    , p_dustNeighborRadius( static_cast<int32>( TheNXSDustNeighborRadiusParameter->DefaultValue() ) )
    , p_vignettingPolyOrder( static_cast<int32>( TheNXSVignettingPolyOrderParameter->DefaultValue() ) )
+   , p_bortleNumber( static_cast<int32>( TheNXSBortleNumberParameter->DefaultValue() ) )
 {
 }
 
@@ -103,6 +104,7 @@ void NukeXStackInstance::Assign( const ProcessImplementation& p )
       p_dustNeighborRadius      = x->p_dustNeighborRadius;
       p_vignettingPolyOrder     = x->p_vignettingPolyOrder;
       p_vignettingMaxCorrection = x->p_vignettingMaxCorrection;
+      p_bortleNumber            = x->p_bortleNumber;
    }
 }
 
@@ -764,9 +766,15 @@ bool NukeXStackInstance::ExecuteGlobal()
          std::vector<StretchTrial> trials;
 
          // MTF trials: vary targetMedian
-         // Range capped at 0.20 — higher values produce washed-out backgrounds
-         // with insufficient contrast, especially in light-polluted skies.
-         for ( double t = 0.08; t <= 0.20; t += 0.01 )
+         // Upper bound driven by Bortle number — darker skies allow brighter
+         // backgrounds without washing out contrast.
+         double mtfMaxMedian = ( p_bortleNumber <= 3 ) ? 0.25
+                             : ( p_bortleNumber <= 5 ) ? 0.20
+                             : ( p_bortleNumber <= 7 ) ? 0.16
+                             :                           0.12;
+         console.WriteLn( String().Format( "  Bortle %d: MTF target median range [0.08, %.2f]",
+            int( p_bortleNumber ), mtfMaxMedian ) );
+         for ( double t = 0.08; t <= mtfMaxMedian; t += 0.01 )
          {
             auto trial = StretchLibrary::Instance().Create( AlgorithmType::MTF );
             trial->SetParameter( "targetMedian", t );
@@ -1355,6 +1363,8 @@ void* NukeXStackInstance::LockParameter( const MetaParameter* p, size_type table
       return &p_vignettingPolyOrder;
    if ( p == TheNXSVignettingMaxCorrectionParameter )
       return &p_vignettingMaxCorrection;
+   if ( p == TheNXSBortleNumberParameter )
+      return &p_bortleNumber;
 
    return nullptr;
 }
