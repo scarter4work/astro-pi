@@ -764,7 +764,9 @@ bool NukeXStackInstance::ExecuteGlobal()
          std::vector<StretchTrial> trials;
 
          // MTF trials: vary targetMedian
-         for ( double t = 0.08; t <= 0.30; t += 0.01 )
+         // Range capped at 0.20 — higher values produce washed-out backgrounds
+         // with insufficient contrast, especially in light-polluted skies.
+         for ( double t = 0.08; t <= 0.20; t += 0.01 )
          {
             auto trial = StretchLibrary::Instance().Create( AlgorithmType::MTF );
             trial->SetParameter( "targetMedian", t );
