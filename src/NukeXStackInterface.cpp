@@ -679,7 +679,8 @@ NukeXStackInterface::GUIData::GUIData( NukeXStackInterface& w )
    FlatFiles_SectionBar.SetTitle( "Flat Frames (Optional)" );
    FlatFiles_SectionBar.SetSection( FlatFiles_Control );
 
-   FlatFiles_TreeBox.SetMinHeight( 120 );
+   FlatFiles_TreeBox.SetMinHeight( 80 );
+   FlatFiles_TreeBox.SetMaxHeight( 150 );
    FlatFiles_TreeBox.SetNumberOfColumns( 3 );
    FlatFiles_TreeBox.SetHeaderText( 0, "File" );
    FlatFiles_TreeBox.SetHeaderText( 1, "Path" );
@@ -716,7 +717,7 @@ NukeXStackInterface::GUIData::GUIData( NukeXStackInterface& w )
    FlatFiles_Info_HSizer.Add( FlatCount_Label );
 
    FlatFiles_Sizer.SetSpacing( 4 );
-   FlatFiles_Sizer.Add( FlatFiles_TreeBox, 100 );
+   FlatFiles_Sizer.Add( FlatFiles_TreeBox );
    FlatFiles_Sizer.Add( FlatFiles_Buttons_HSizer );
    FlatFiles_Sizer.Add( FlatFiles_Info_HSizer );
 
