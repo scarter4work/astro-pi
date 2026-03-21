@@ -930,9 +930,10 @@ NukeXStackInterface::GUIData::GUIData( NukeXStackInterface& w )
 
    Remediation_Sizer.SetSpacing( 4 );
    Remediation_Sizer.Add( EnableRemediation_CheckBox );
-   Remediation_Sizer.Add( EnableTrailRemediation_CheckBox );
-   Remediation_Sizer.Add( TrailDilateRadius_NumericControl );
-   Remediation_Sizer.Add( TrailOutlierSigma_NumericControl );
+   // Trail remediation controls hidden — the Phase 7 Hough-based trail
+   // detection creates false positive artifacts. Pre-stack rejection
+   // (median + MAD per pixel-frame) handles trails in Phase 3 instead.
+   // The parameters still exist for backward compatibility.
    Remediation_Sizer.Add( EnableDustRemediation_CheckBox );
    Remediation_Sizer.Add( DustDetectionSigma_NumericControl );
    Remediation_Sizer.Add( DustNeighborRadius_NumericControl );
