@@ -260,7 +260,11 @@ IsoString NXSEnableTrailRemediation::Id() const
 
 bool NXSEnableTrailRemediation::DefaultValue() const
 {
-   return true;
+   // Disabled by default — the stacking outlier rejection (Phase 3) handles
+   // real satellite trails. The post-stretch Hough detection produces too many
+   // false positives (galaxy edges, noise) and the remediation creates bright
+   // line artifacts worse than the original trails. Users can enable manually.
+   return false;
 }
 
 // ----------------------------------------------------------------------------
