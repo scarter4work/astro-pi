@@ -140,7 +140,7 @@ IsoString NXSGenerateDistMetadata::Id() const
 
 bool NXSGenerateDistMetadata::DefaultValue() const
 {
-   return false;
+   return true;
 }
 
 // ----------------------------------------------------------------------------

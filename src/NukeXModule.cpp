@@ -10,12 +10,12 @@
 #define MODULE_VERSION_MAJOR     3
 #define MODULE_VERSION_MINOR     1
 #define MODULE_VERSION_REVISION  0
-#define MODULE_VERSION_BUILD     51
+#define MODULE_VERSION_BUILD     52
 #define MODULE_VERSION_LANGUAGE  eng
 
 #define MODULE_RELEASE_YEAR      2026
 #define MODULE_RELEASE_MONTH     3
-#define MODULE_RELEASE_DAY       21
+#define MODULE_RELEASE_DAY       22
 
 #include "NukeXModule.h"
 #include "NukeXStackProcess.h"

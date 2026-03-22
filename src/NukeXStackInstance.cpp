@@ -33,6 +33,7 @@
 #include <chrono>
 #include <algorithm>
 #include <cmath>
+#include <omp.h>
 
 namespace pcl
 {
@@ -362,6 +363,9 @@ bool NukeXStackInstance::ExecuteGlobal()
             nukex::cuda::gpuName(), nukex::cuda::gpuMemoryMB() ) );
       }
 #endif
+      if ( !useGPU )
+         console.WriteLn( String().Format( "  CPU: %d OpenMP threads",
+            omp_get_max_threads() ) );
       console.WriteLn( String().Format( "  Compute: %s | Adaptive: %s",
          useGPU ? "GPU (CUDA)" : "CPU (OpenMP)",
          p_adaptiveModels ? "On" : "Off" ) );
@@ -979,7 +983,8 @@ bool NukeXStackInstance::ExecuteGlobal()
                // 7b: Trail remediation (per channel)
                if ( p_enableTrailRemediation && detection.trails.trailPixelCount > 0 )
                {
-                  console.WriteLn( "  Phase 7b: Trail remediation (re-selecting from subcube)..." );
+                  console.WriteLn( String().Format( "  Phase 7b: Trail remediation (%s, %d pixels)...",
+                     useGPU ? "GPU" : "CPU", int( detection.trails.trailPixelCount ) ) );
                   console.Flush();
                   Module->ProcessEvents();
 
@@ -1100,7 +1105,8 @@ bool NukeXStackInstance::ExecuteGlobal()
                // 7c (cont): Vignetting correction (per channel)
                if ( p_enableVignettingRemediation && detection.vignetting.maxCorrection > 1.01 )
                {
-                  console.WriteLn( "  Phase 7c: Vignetting correction..." );
+                  console.WriteLn( String().Format( "  Phase 7c: Vignetting correction (%s)...",
+                     useGPU ? "GPU" : "CPU" ) );
                   console.Flush();
                   Module->ProcessEvents();
 

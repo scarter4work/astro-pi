@@ -137,6 +137,7 @@ private:
    void e_ComboBoxItemSelected( ComboBox& sender, int itemIndex );
    void e_CheckBoxClick( Button& sender, bool checked );
    void e_NumericValueUpdated( NumericEdit& sender, double value );
+   void e_SectionToggle( SectionBar& sender, Control& section, bool start );
 
    friend struct GUIData;
    friend class NukeXStackProcess;

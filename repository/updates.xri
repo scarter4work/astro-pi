@@ -9,8 +9,8 @@
       </p>
    </description>
    <platform os="linux" arch="x64" version="1.8.0:1.9.9">
-      <package fileName="20260321-linux-x64-NukeX.tar.gz" sha1="61851386885c7de525e130b18748aab6449190b4" type="module" releaseDate="20260321">
-         <title>NukeX 3.1.0.51</title>
+      <package fileName="20260322-linux-x64-NukeX.tar.gz" sha1="77bbd2974241ed5bcb3e547f9d6e36163424a83f" type="module" releaseDate="20260322">
+         <title>NukeX 3.1.0.52</title>
          <description>
             <p>
                <b>NukeX v3 - Statistical Stacking + Stretch for PixInsight</b>
@@ -27,11 +27,12 @@
                </li>
             </ul>
             <p>
-               <b>Version 3.1.0.33 - Lower dust detection sigma to 4.0</b>
+               <b>Version 3.1.0.52 - UI resize fix + consistent CPU/GPU logging</b>
             </p>
             <p>
-               Sensor-space self-flat dust detection with dustDetectionSigma
-               lowered from 5.0 to 4.0 for reliable mote detection.
+               SectionBar expand/collapse now resizes the process dialog correctly.
+               CPU fallback paths log compute method and thread count to match GPU output.
+               Generate Distribution Metadata defaults to on.
             </p>
             <p>
                Copyright (c) 2026 Scott Carter. All Rights Reserved.
@@ -40,4 +41,4 @@
       </package>
    </platform>
 </xri>
-<Signature developerId="scarter4work" timestamp="2026-03-21T15:34:28.137Z" encoding="Base64">GGtk4aWN3jWplPJ4eJoGeXIG2RjUiQ5Puz0Lc9xIDxTQSBsLolfWoU5LXqIVoOgloYK+Pca8/cVo/X5o4l/lDw==</Signature>
+<Signature developerId="scarter4work" timestamp="2026-03-22T15:39:59.748Z" encoding="Base64">7bTSRVcmWEWPoiojcm8GnixI1QSCWNPn1Bhnd3IuJ0Bg4Uu5vreJYFrVG5rs997uPaSuxdjwRceoMV4uZkcYCA==</Signature>

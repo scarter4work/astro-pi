@@ -531,6 +531,17 @@ void NukeXStackInterface::e_NumericValueUpdated( NumericEdit& sender, double val
       m_instance.p_bortleNumber = static_cast<int32>( value );
 }
 
+void NukeXStackInterface::e_SectionToggle( SectionBar& /*sender*/, Control& /*section*/, bool start )
+{
+   if ( !start )
+   {
+      GUI->Global_Sizer.SetSpacing( 6 );
+      SetVariableHeight();
+      AdjustToContents();
+      SetFixedHeight();
+   }
+}
+
 // ----------------------------------------------------------------------------
 // GUIData Implementation
 // ----------------------------------------------------------------------------
@@ -546,6 +557,7 @@ NukeXStackInterface::GUIData::GUIData( NukeXStackInterface& w )
 
    InputFiles_SectionBar.SetTitle( "Input Frames" );
    InputFiles_SectionBar.SetSection( InputFiles_Control );
+   InputFiles_SectionBar.OnToggleSection( (SectionBar::section_event_handler)&NukeXStackInterface::e_SectionToggle, w );
 
    InputFiles_TreeBox.SetMinHeight( 200 );
    InputFiles_TreeBox.SetNumberOfColumns( 4 );
@@ -618,6 +630,7 @@ NukeXStackInterface::GUIData::GUIData( NukeXStackInterface& w )
 
    FlatFiles_SectionBar.SetTitle( "Flat Frames (Optional)" );
    FlatFiles_SectionBar.SetSection( FlatFiles_Control );
+   FlatFiles_SectionBar.OnToggleSection( (SectionBar::section_event_handler)&NukeXStackInterface::e_SectionToggle, w );
 
    FlatFiles_TreeBox.SetMinHeight( 80 );
    FlatFiles_TreeBox.SetMaxHeight( 150 );
@@ -670,6 +683,7 @@ NukeXStackInterface::GUIData::GUIData( NukeXStackInterface& w )
 
    Outliers_SectionBar.SetTitle( "Outlier Rejection" );
    Outliers_SectionBar.SetSection( Outliers_Control );
+   Outliers_SectionBar.OnToggleSection( (SectionBar::section_event_handler)&NukeXStackInterface::e_SectionToggle, w );
 
    OutlierSigma_NumericControl.label.SetText( "Sigma Threshold:" );
    OutlierSigma_NumericControl.label.SetMinWidth( labelWidth1 );
@@ -694,6 +708,7 @@ NukeXStackInterface::GUIData::GUIData( NukeXStackInterface& w )
 
    Quality_SectionBar.SetTitle( "Metadata Tiebreaker" );
    Quality_SectionBar.SetSection( Quality_Control );
+   Quality_SectionBar.OnToggleSection( (SectionBar::section_event_handler)&NukeXStackInterface::e_SectionToggle, w );
 
    EnableMetadataTiebreaker_CheckBox.SetText( "Enable Metadata Tiebreaker" );
    EnableMetadataTiebreaker_CheckBox.SetToolTip( "<p>When multiple frames are statistically indistinguishable, "
@@ -711,6 +726,7 @@ NukeXStackInterface::GUIData::GUIData( NukeXStackInterface& w )
 
    Output_SectionBar.SetTitle( "Output" );
    Output_SectionBar.SetSection( Output_Control );
+   Output_SectionBar.OnToggleSection( (SectionBar::section_event_handler)&NukeXStackInterface::e_SectionToggle, w );
 
    GenerateProvenance_CheckBox.SetText( "Generate Provenance Data" );
    GenerateProvenance_CheckBox.SetToolTip( "<p>Record which source frame contributed each pixel in the output. "
@@ -774,6 +790,7 @@ NukeXStackInterface::GUIData::GUIData( NukeXStackInterface& w )
 
    Remediation_SectionBar.SetTitle( "Remediation" );
    Remediation_SectionBar.SetSection( Remediation_Control );
+   Remediation_SectionBar.OnToggleSection( (SectionBar::section_event_handler)&NukeXStackInterface::e_SectionToggle, w );
 
    EnableRemediation_CheckBox.SetText( "Enable Remediation" );
    EnableRemediation_CheckBox.SetToolTip( "<p>Master switch for post-stack remediation. When enabled, "
