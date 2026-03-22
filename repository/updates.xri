@@ -9,30 +9,30 @@
       </p>
    </description>
    <platform os="linux" arch="x64" version="1.8.0:1.9.9">
-      <package fileName="20260322-linux-x64-NukeX.tar.gz" sha1="fb3942c614655ac0a6429507a551e05290f10cd9" type="module" releaseDate="20260322">
-         <title>NukeX 3.1.0.53</title>
+      <package fileName="20260322-linux-x64-NukeX.tar.gz" sha1="4a5ac75259c4b5e25a548199b4fa944b36c92000" type="module" releaseDate="20260322">
+         <title>NukeX 3.2.0.0</title>
          <description>
             <p>
-               <b>NukeX v3 - Statistical Stacking + Stretch for PixInsight</b>
+               <b>NukeX v3.2 - Statistical Stacking + Stretch for PixInsight</b>
             </p>
             <p>
                NukeX v3 provides two processes for astrophotography:
             </p>
             <ul>
                <li>
-                  <b>NukeXStack</b> - Per-pixel statistical inference stacking with 4 distribution models (Gaussian, Poisson, Skew-Normal, Bimodal), triangle asterism alignment, metadata tiebreaker, and post-stretch subcube remediation (trail, dust, vignetting). Optional CUDA GPU acceleration.
+                  <b>NukeXStack</b> - Per-pixel statistical inference stacking with 4 distribution models (Gaussian, Poisson, Skew-Normal, Bimodal), triangle asterism alignment, metadata tiebreaker, flat calibration, and post-stretch subcube remediation (dust, vignetting). CUDA GPU acceleration.
                </li>
                <li>
-                  <b>NukeXStretch</b> - 11 stretch algorithms (MTF, GHS, ArcSinh, Log, OTS, SAS, RNC, Veralux, Lupton, Histogram, Photometric).
+                  <b>NukeXStretch</b> - 11 stretch algorithms (MTF, GHS, ArcSinh, Log, OTS, SAS, RNC, Veralux, Lupton, Histogram, Photometric) with Bortle-aware auto-stretch.
                </li>
             </ul>
             <p>
-               <b>Version 3.1.0.53 - Bortle spinner + sigma slider removed</b>
+               <b>Version 3.2.0.0 - First stable release</b>
             </p>
             <p>
-               SectionBar expand/collapse now resizes the process dialog correctly.
-               CPU fallback paths log compute method and thread count to match GPU output.
-               Generate Distribution Metadata defaults to on.
+               CUDA GPU stacking with real kernel execution. SectionBar UI resize.
+               Consistent CPU/GPU console logging. Bortle spinner control.
+               Simplified UI (sigma slider removed). 19 test suites, 195 test cases.
             </p>
             <p>
                Copyright (c) 2026 Scott Carter. All Rights Reserved.
@@ -41,4 +41,4 @@
       </package>
    </platform>
 </xri>
-<Signature developerId="scarter4work" timestamp="2026-03-22T16:44:34.926Z" encoding="Base64">oSm55wJ+A8J/C8CNDwSDtOVnSSLtggxywm/YlQsKNSaKnhfkmiVc/EclvaG29FNNc4uJtdcwBK2zxu2FZBRrCA==</Signature>
+<Signature developerId="scarter4work" timestamp="2026-03-22T18:03:14.040Z" encoding="Base64">Pfrpa6+lSMpNlxX09gj0943Tx+lA5aLmMj077uLdUeGd23PYdqs1X+/z62PEZm52WLgBOiy3MIIAQIR2f9JWBA==</Signature>
