@@ -12,15 +12,15 @@ namespace nukex {
 namespace cuda {
 
 struct GpuStackConfig {
-    int maxOutliers;
-    double outlierAlpha;
-    bool adaptiveModels;
-    bool enableMetadataTiebreaker;
-    size_t nSubs;
-    size_t height;
-    size_t width;
-    const double* qualityScores;     // host pointer, copied to device constant memory
-    uint32_t* provenanceOut;         // device output, optional (nullptr OK)
+    int maxOutliers = 3;
+    double outlierAlpha = 0.05;
+    bool adaptiveModels = false;
+    bool enableMetadataTiebreaker = false;
+    size_t nSubs = 0;
+    size_t height = 0;
+    size_t width = 0;
+    const double* qualityScores = nullptr;  // host pointer, copied to device constant memory
+    uint32_t* provenanceOut = nullptr;      // device output, optional (nullptr OK)
 };
 
 struct GpuStackResult {

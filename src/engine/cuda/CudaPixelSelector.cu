@@ -916,64 +916,16 @@ __global__ void pixelSelectionKernel(
     int bestZ = 0;  // provenance: original frame index of selected pixel
 
     if (nClean >= 3) {
-        // 5. Fit models — use AICc (corrected AIC) for small sample sizes
-        FitResultDevice gaussFit = fitGaussian_device(cleanData, nClean);
-        double aicGauss = aiccDevice(gaussFit.logLikelihood, gaussFit.k, nClean);
+        // 5. Shortest-half mode + tiebreaker FIRST, while sortedClean is
+        //    still valid.  Fitting functions (L-BFGS, EM) use large stack
+        //    frames that can corrupt earlier local arrays on some nvcc
+        //    versions, so we complete all sortedClean-dependent work here.
 
-        FitResultDevice poisFit = fitPoisson_device(cleanData, nClean);
-        double aicPois = aiccDevice(poisFit.logLikelihood, poisFit.k, nClean);
-
-        double aicSkew = 1e300;
-        double aicMix  = 1e300;
-        FitResultDevice mixFit;
-        mixFit.logLikelihood = -1e300;
-
-        bool skipExpensive = false;
-        if (adaptiveModels) {
-            double bestSimpleAIC = fmin(aicGauss, aicPois);
-            double nd = static_cast<double>(nClean);
-            skipExpensive = (nClean < 6) || (bestSimpleAIC / nd < 2.0);
-        }
-
-        if (!skipExpensive) {
-            FitResultDevice skewFit = fitSkewNormal_device(cleanData, nClean);
-            aicSkew = aiccDevice(skewFit.logLikelihood, skewFit.k, nClean);
-
-            mixFit = fitBimodalEM_device(cleanData, nClean);
-            aicMix = aiccDevice(mixFit.logLikelihood, mixFit.k, nClean);
-        }
-
-        // 6. Select model with lowest AIC
-        double bestAIC = aicGauss;
-        bestType = DIST_GAUSSIAN;
-
-        if (aicPois < bestAIC) {
-            bestAIC = aicPois;
-            bestType = DIST_POISSON;
-        }
-        if (aicSkew < bestAIC) {
-            bestAIC = aicSkew;
-            bestType = DIST_SKEW_NORMAL;
-        }
-        if (aicMix < bestAIC) {
-            bestType = DIST_BIMODAL;
-        }
-
-        // 7. Densest-cluster value selection (shortest-half mode estimator)
-        //
-        // Find the narrowest interval containing half the clean values.
-        // The center of that interval is where the data is most concentrated —
-        // the MODE of the distribution.  This naturally:
-        //   - Finds the dark cluster for background with bright contamination (trails)
-        //   - Finds the bright cluster for signal with dark contamination (dust motes)
-        //   - Matches the median for clean symmetric data
-        // Works for all distribution types — no need to switch on bestType.
         double selectedValue = cleanMedian;
         int shBestStart = 0;
         int halfN = nClean / 2;
         if (halfN < 1) halfN = 1;
         {
-            // sortedClean is already sorted from step above
             double minRange = sortedClean[halfN - 1] - sortedClean[0];
             shBestStart = 0;
             for (int i = 1; i + halfN - 1 < nClean; ++i) {
@@ -983,8 +935,6 @@ __global__ void pixelSelectionKernel(
                     shBestStart = i;
                 }
             }
-
-            // Mode estimate: mean of the densest half
             double sum = 0.0;
             for (int i = shBestStart; i < shBestStart + halfN; ++i)
                 sum += sortedClean[i];
@@ -1001,20 +951,16 @@ __global__ void pixelSelectionKernel(
             }
         }
 
-        // 7b. Metadata tiebreaker: if multiple frames are within MAD tolerance
-        //     of the selected value, prefer the one with the best quality score.
+        // Metadata tiebreaker (uses sortedClean — must be before fitting)
         if (enableMetadataTiebreaker && halfN > 1) {
-            // Compute MAD of the shortest-half cluster
             double shLo = sortedClean[shBestStart];
             double shHi = sortedClean[shBestStart + halfN - 1];
 
-            // Compute median of the shortest-half values
             double shValues[MAX_SUBS];
             for (int i = 0; i < halfN; ++i)
                 shValues[i] = sortedClean[shBestStart + i];
             double shMedian = medianDevice(shValues, halfN);
 
-            // Compute MAD of the shortest-half cluster
             double shDeviations[MAX_SUBS];
             for (int i = 0; i < halfN; ++i)
                 shDeviations[i] = fabs(shValues[i] - shMedian);
@@ -1038,7 +984,52 @@ __global__ void pixelSelectionKernel(
             }
         }
 
-        cleanMedian = selectedValue;  // reuse variable for output
+        cleanMedian = selectedValue;
+
+        // 6. Fit models (for distribution type metadata only — does not
+        //    affect pixel value).  These functions use large stack frames
+        //    that may corrupt sortedClean, hence they run after all
+        //    sortedClean-dependent work above.
+        FitResultDevice gaussFit = fitGaussian_device(cleanData, nClean);
+        double aicGauss = aiccDevice(gaussFit.logLikelihood, gaussFit.k, nClean);
+
+        FitResultDevice poisFit = fitPoisson_device(cleanData, nClean);
+        double aicPois = aiccDevice(poisFit.logLikelihood, poisFit.k, nClean);
+
+        double aicSkew = 1e300;
+        double aicMix  = 1e300;
+
+        bool skipExpensive = false;
+        if (adaptiveModels) {
+            double bestSimpleAIC = fmin(aicGauss, aicPois);
+            double nd = static_cast<double>(nClean);
+            skipExpensive = (nClean < 6) || (bestSimpleAIC / nd < 2.0);
+        }
+
+        if (!skipExpensive) {
+            FitResultDevice skewFit = fitSkewNormal_device(cleanData, nClean);
+            aicSkew = aiccDevice(skewFit.logLikelihood, skewFit.k, nClean);
+
+            FitResultDevice mixFit = fitBimodalEM_device(cleanData, nClean);
+            if (mixFit.weight > 0.05 && mixFit.weight < 0.95)
+                aicMix = aiccDevice(mixFit.logLikelihood, mixFit.k, nClean);
+        }
+
+        // 7. Select model with lowest AIC
+        double bestAIC = aicGauss;
+        bestType = DIST_GAUSSIAN;
+
+        if (aicPois < bestAIC) {
+            bestAIC = aicPois;
+            bestType = DIST_POISSON;
+        }
+        if (aicSkew < bestAIC) {
+            bestAIC = aicSkew;
+            bestType = DIST_SKEW_NORMAL;
+        }
+        if (aicMix < bestAIC) {
+            bestType = DIST_BIMODAL;
+        }
     }
 
     // 8. Output
@@ -1084,6 +1075,16 @@ GpuStackResult processImageGPU(
     if (nSubs > MAX_SUBS) {
         result.errorMessage = "nSubs exceeds MAX_SUBS (64)";
         return result;
+    }
+
+    // The pixel selection kernel uses large per-thread stack allocations
+    // (multiple double[MAX_SUBS] arrays + nested device function calls).
+    // Ensure adequate stack space.
+    {
+        size_t oldStackSize = 0;
+        cudaDeviceGetLimit(&oldStackSize, cudaLimitStackSize);
+        if (oldStackSize < 32768)
+            CUDA_CHECK(cudaDeviceSetLimit(cudaLimitStackSize, 32768), result);
     }
 
     // Copy quality scores to constant memory (if provided)
