@@ -21,6 +21,7 @@
 #include <pcl/PushButton.h>
 #include <pcl/GroupBox.h>
 #include <pcl/SectionBar.h>
+#include <pcl/SpinBox.h>
 #include <pcl/Control.h>
 #include <pcl/TreeBox.h>
 
@@ -87,12 +88,6 @@ private:
          HorizontalSizer   FlatFiles_Info_HSizer;
             Label             FlatCount_Label;
 
-      // Outlier Rejection Section
-      SectionBar        Outliers_SectionBar;
-      Control           Outliers_Control;
-      VerticalSizer     Outliers_Sizer;
-         NumericControl    OutlierSigma_NumericControl;
-
       // Metadata Tiebreaker Section
       SectionBar        Quality_SectionBar;
       Control           Quality_Control;
@@ -108,7 +103,9 @@ private:
          CheckBox          EnableAutoStretch_CheckBox;
          CheckBox          UseGPU_CheckBox;
          CheckBox          AdaptiveModels_CheckBox;
-         NumericControl    BortleNumber_NumericControl;
+         HorizontalSizer   BortleNumber_HSizer;
+            Label             BortleNumber_Label;
+            SpinBox           BortleNumber_SpinBox;
 
       // Remediation Section
       SectionBar        Remediation_SectionBar;
@@ -137,6 +134,7 @@ private:
    void e_ComboBoxItemSelected( ComboBox& sender, int itemIndex );
    void e_CheckBoxClick( Button& sender, bool checked );
    void e_NumericValueUpdated( NumericEdit& sender, double value );
+   void e_SpinBoxValueUpdated( SpinBox& sender, int value );
    void e_SectionToggle( SectionBar& sender, Control& section, bool start );
 
    friend struct GUIData;

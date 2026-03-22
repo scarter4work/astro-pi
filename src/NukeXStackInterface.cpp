@@ -144,9 +144,6 @@ void NukeXStackInterface::UpdateControls()
    UpdateFileList();
    UpdateFlatList();
 
-   // Outlier rejection
-   GUI->OutlierSigma_NumericControl.SetValue( m_instance.p_outlierSigmaThreshold );
-
    // Metadata tiebreaker
    GUI->EnableMetadataTiebreaker_CheckBox.SetChecked( m_instance.p_enableMetadataTiebreaker );
 
@@ -158,7 +155,7 @@ void NukeXStackInterface::UpdateControls()
    GUI->AdaptiveModels_CheckBox.SetChecked( m_instance.p_adaptiveModels );
 
    // Output — Bortle
-   GUI->BortleNumber_NumericControl.SetValue( m_instance.p_bortleNumber );
+   GUI->BortleNumber_SpinBox.SetValue( m_instance.p_bortleNumber );
 
    // Remediation
    GUI->EnableRemediation_CheckBox.SetChecked( m_instance.p_enableRemediation );
@@ -523,12 +520,15 @@ void NukeXStackInterface::e_CheckBoxClick( Button& sender, bool checked )
 
 // ----------------------------------------------------------------------------
 
-void NukeXStackInterface::e_NumericValueUpdated( NumericEdit& sender, double value )
+void NukeXStackInterface::e_NumericValueUpdated( NumericEdit& /*sender*/, double /*value*/ )
 {
-   if ( sender == GUI->OutlierSigma_NumericControl )
-      m_instance.p_outlierSigmaThreshold = value;
-   else if ( sender == GUI->BortleNumber_NumericControl )
-      m_instance.p_bortleNumber = static_cast<int32>( value );
+   // Reserved for future numeric controls
+}
+
+void NukeXStackInterface::e_SpinBoxValueUpdated( SpinBox& sender, int value )
+{
+   if ( sender == GUI->BortleNumber_SpinBox )
+      m_instance.p_bortleNumber = value;
 }
 
 void NukeXStackInterface::e_SectionToggle( SectionBar& /*sender*/, Control& /*section*/, bool start )
@@ -678,31 +678,6 @@ NukeXStackInterface::GUIData::GUIData( NukeXStackInterface& w )
    FlatFiles_Control.Hide();
 
    // =========================================================================
-   // Outlier Rejection Section
-   // =========================================================================
-
-   Outliers_SectionBar.SetTitle( "Outlier Rejection" );
-   Outliers_SectionBar.SetSection( Outliers_Control );
-   Outliers_SectionBar.OnToggleSection( (SectionBar::section_event_handler)&NukeXStackInterface::e_SectionToggle, w );
-
-   OutlierSigma_NumericControl.label.SetText( "Sigma Threshold:" );
-   OutlierSigma_NumericControl.label.SetMinWidth( labelWidth1 );
-   OutlierSigma_NumericControl.slider.SetRange( 0, 100 );
-   OutlierSigma_NumericControl.SetReal();
-   OutlierSigma_NumericControl.SetRange( TheNXSOutlierSigmaThresholdParameter->MinimumValue(),
-                                          TheNXSOutlierSigmaThresholdParameter->MaximumValue() );
-   OutlierSigma_NumericControl.SetPrecision( TheNXSOutlierSigmaThresholdParameter->Precision() );
-   OutlierSigma_NumericControl.edit.SetMinWidth( editWidth1 );
-   OutlierSigma_NumericControl.SetToolTip( "<p>Reject pixel values beyond this many standard deviations "
-                                            "from the fitted distribution. Lower values are more aggressive.</p>" );
-   OutlierSigma_NumericControl.OnValueUpdated( (NumericEdit::value_event_handler)&NukeXStackInterface::e_NumericValueUpdated, w );
-
-   Outliers_Sizer.SetSpacing( 4 );
-   Outliers_Sizer.Add( OutlierSigma_NumericControl );
-
-   Outliers_Control.SetSizer( Outliers_Sizer );
-
-   // =========================================================================
    // Quality Weighting Section
    // =========================================================================
 
@@ -759,20 +734,24 @@ NukeXStackInterface::GUIData::GUIData( NukeXStackInterface& w )
                                         "negligible impact on quality for typical data.</p>" );
    AdaptiveModels_CheckBox.OnClick( (Button::click_event_handler)&NukeXStackInterface::e_CheckBoxClick, w );
 
-   BortleNumber_NumericControl.label.SetText( "Bortle Number:" );
-   BortleNumber_NumericControl.label.SetMinWidth( labelWidth1 );
-   BortleNumber_NumericControl.slider.SetRange( 0, 8 );
-   BortleNumber_NumericControl.SetInteger();
-   BortleNumber_NumericControl.SetRange( TheNXSBortleNumberParameter->MinimumValue(),
-                                          TheNXSBortleNumberParameter->MaximumValue() );
-   BortleNumber_NumericControl.edit.SetMinWidth( editWidth1 );
-   BortleNumber_NumericControl.SetToolTip( "<p>Bortle Dark-Sky Scale (1" "\xe2\x80\x93" "9). Controls how bright the "
-                                            "background sky is allowed to be in the auto-stretched output.</p>"
-                                            "<p><b>1" "\xe2\x80\x93" "3</b> " "\xe2\x80\x94" " Excellent to good dark site (target median " "\xe2\x89\xa4" " 0.25)<br/>"
-                                            "<b>4" "\xe2\x80\x93" "5</b> " "\xe2\x80\x94" " Rural/suburban transition (target median " "\xe2\x89\xa4" " 0.20)<br/>"
-                                            "<b>6" "\xe2\x80\x93" "7</b> " "\xe2\x80\x94" " Suburban sky (target median " "\xe2\x89\xa4" " 0.16)<br/>"
-                                            "<b>8" "\xe2\x80\x93" "9</b> " "\xe2\x80\x94" " City/inner-city sky (target median " "\xe2\x89\xa4" " 0.12)</p>" );
-   BortleNumber_NumericControl.OnValueUpdated( (NumericEdit::value_event_handler)&NukeXStackInterface::e_NumericValueUpdated, w );
+   BortleNumber_Label.SetText( "Bortle Number:" );
+   BortleNumber_Label.SetMinWidth( labelWidth1 );
+   BortleNumber_Label.SetTextAlignment( TextAlign::Right | TextAlign::VertCenter );
+
+   BortleNumber_SpinBox.SetRange( int( TheNXSBortleNumberParameter->MinimumValue() ),
+                                   int( TheNXSBortleNumberParameter->MaximumValue() ) );
+   BortleNumber_SpinBox.SetToolTip( "<p>Bortle Dark-Sky Scale (1" "\xe2\x80\x93" "9). Controls how bright the "
+                                     "background sky is allowed to be in the auto-stretched output.</p>"
+                                     "<p><b>1" "\xe2\x80\x93" "3</b> " "\xe2\x80\x94" " Excellent to good dark site (target median " "\xe2\x89\xa4" " 0.25)<br/>"
+                                     "<b>4" "\xe2\x80\x93" "5</b> " "\xe2\x80\x94" " Rural/suburban transition (target median " "\xe2\x89\xa4" " 0.20)<br/>"
+                                     "<b>6" "\xe2\x80\x93" "7</b> " "\xe2\x80\x94" " Suburban sky (target median " "\xe2\x89\xa4" " 0.16)<br/>"
+                                     "<b>8" "\xe2\x80\x93" "9</b> " "\xe2\x80\x94" " City/inner-city sky (target median " "\xe2\x89\xa4" " 0.12)</p>" );
+   BortleNumber_SpinBox.OnValueUpdated( (SpinBox::value_event_handler)&NukeXStackInterface::e_SpinBoxValueUpdated, w );
+
+   BortleNumber_HSizer.SetSpacing( 4 );
+   BortleNumber_HSizer.Add( BortleNumber_Label );
+   BortleNumber_HSizer.Add( BortleNumber_SpinBox );
+   BortleNumber_HSizer.AddStretch();
 
    Output_Sizer.SetSpacing( 4 );
    Output_Sizer.Add( GenerateProvenance_CheckBox );
@@ -780,7 +759,7 @@ NukeXStackInterface::GUIData::GUIData( NukeXStackInterface& w )
    Output_Sizer.Add( EnableAutoStretch_CheckBox );
    Output_Sizer.Add( UseGPU_CheckBox );
    Output_Sizer.Add( AdaptiveModels_CheckBox );
-   Output_Sizer.Add( BortleNumber_NumericControl );
+   Output_Sizer.Add( BortleNumber_HSizer );
 
    Output_Control.SetSizer( Output_Sizer );
 
@@ -826,8 +805,6 @@ NukeXStackInterface::GUIData::GUIData( NukeXStackInterface& w )
    Global_Sizer.Add( InputFiles_Control, 100 );
    Global_Sizer.Add( FlatFiles_SectionBar );
    Global_Sizer.Add( FlatFiles_Control );
-   Global_Sizer.Add( Outliers_SectionBar );
-   Global_Sizer.Add( Outliers_Control );
    Global_Sizer.Add( Quality_SectionBar );
    Global_Sizer.Add( Quality_Control );
    Global_Sizer.Add( Output_SectionBar );
