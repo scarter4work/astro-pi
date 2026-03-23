@@ -8,10 +8,14 @@
 // Copyright (c) 2026 Scott Carter
 
 #include "cuda/CudaPixelSelector.h"
+#include "cuda/CudaWorkspace.h"
 
 #include <cuda_runtime.h>
 #include <cstdio>
 #include <cmath>
+#include <vector>
+#include <cstring>
+#include <algorithm>
 
 namespace nukex {
 namespace cuda {
@@ -19,11 +23,6 @@ namespace cuda {
 // ============================================================================
 // Constants
 // ============================================================================
-
-static constexpr int MAX_SUBS = 64;
-
-// Quality scores in constant memory — broadcast efficiently to all threads
-__constant__ double d_qualityScores[64];
 
 __device__ constexpr double LOG_2PI       = 1.8378770664093453;
 __device__ constexpr double LOG_2         = 0.6931471805599453;
@@ -261,7 +260,8 @@ __device__ double inverseStudentTDevice(double p, double df) {
 // ============================================================================
 
 __device__ void sigmaClipMAD_device(
-    const double* zValues, int nSubs, double kappa, bool* isOutlier)
+    const double* zValues, int nSubs, double kappa, bool* isOutlier,
+    double* sorted, double* deviations)
 {
     if (nSubs < 3) {
         for (int i = 0; i < nSubs; ++i) isOutlier[i] = false;
@@ -269,13 +269,11 @@ __device__ void sigmaClipMAD_device(
     }
 
     // Sort a copy to find median
-    double sorted[MAX_SUBS];
     for (int i = 0; i < nSubs; ++i) sorted[i] = zValues[i];
     insertionSort(sorted, nSubs);
     double median = medianDevice(sorted, nSubs);
 
     // Compute absolute deviations and sort for MAD
-    double deviations[MAX_SUBS];
     for (int i = 0; i < nSubs; ++i)
         deviations[i] = fabs(zValues[i] - median);
     insertionSort(deviations, nSubs);
@@ -322,7 +320,8 @@ __device__ double grubbsCriticalDevice(int n, double alpha) {
 }
 
 __device__ void detectOutliersESD_device(
-    const double* data, int n, int maxOutliers, double alpha, bool* isOutlier)
+    const double* data, int n, int maxOutliers, double alpha, bool* isOutlier,
+    double* working, int* indexMap, double* testStats, double* critVals, int* removedOrigIdx)
 {
     // Initialize all as non-outlier
     for (int i = 0; i < n; ++i) isOutlier[i] = false;
@@ -333,17 +332,11 @@ __device__ void detectOutliersESD_device(
     if (maxK > n - 2) maxK = n - 2;
 
     // Working copy with index mapping
-    double working[MAX_SUBS];
-    int indexMap[MAX_SUBS];
     int curN = n;
     for (int i = 0; i < n; ++i) {
         working[i] = data[i];
         indexMap[i] = i;
     }
-
-    double testStats[MAX_SUBS];
-    double critVals[MAX_SUBS];
-    int removedOrigIdx[MAX_SUBS];
     int nTested = 0;
 
     for (int iter = 0; iter < maxK; ++iter) {
@@ -675,7 +668,8 @@ __device__ FitResultDevice fitSkewNormal_device(const double* data, int n) {
 // Distribution fitting — Bimodal Gaussian mixture (EM, 2 components)
 // ============================================================================
 
-__device__ FitResultDevice fitBimodalEM_device(const double* data, int n) {
+__device__ FitResultDevice fitBimodalEM_device(const double* data, int n,
+    double* sorted, double* r1) {
     FitResultDevice result;
     result.k = 5;
 
@@ -685,7 +679,6 @@ __device__ FitResultDevice fitBimodalEM_device(const double* data, int n) {
     }
 
     // Sort for initialization
-    double sorted[MAX_SUBS];
     for (int i = 0; i < n; ++i) sorted[i] = data[i];
     insertionSort(sorted, n);
 
@@ -699,7 +692,6 @@ __device__ FitResultDevice fitBimodalEM_device(const double* data, int n) {
     double weight = 0.5;
 
     double oldLogL = -1e300;
-    double r1[MAX_SUBS]; // responsibilities for component 1
 
     constexpr int MAX_EM_ITER = 100;
     constexpr double CONV_THRESH = 1e-6;
@@ -802,260 +794,269 @@ __device__ double aiccDevice(double logL, int k, int n) {
 // ============================================================================
 
 __global__ void pixelSelectionKernel(
-    const float* __restrict__ cubeData,
+    const float* __restrict__ bandCube,
     float* __restrict__ outputPixels,
     uint8_t* __restrict__ distTypes,
     uint32_t* __restrict__ provenanceOut,
+    char* __restrict__ workspace,
+    const WorkspaceLayout layout,
+    const double* __restrict__ qualityScores,
     int nSubs,
-    int height,
-    int width,
-    int maxOutliers,
-    double outlierAlpha,
-    bool adaptiveModels,
-    bool enableMetadataTiebreaker)
+    int bandStartRow,
+    int bandHeight,
+    int fullWidth,
+    int bandPixels,
+    int maxOutliers, double outlierAlpha,
+    bool adaptiveModels, bool enableMetadataTiebreaker)
 {
-    int pixelIdx = blockIdx.x * blockDim.x + threadIdx.x;
-    int totalPixels = height * width;
-    if (pixelIdx >= totalPixels) return;
+    int slotIdx = blockIdx.x * blockDim.x + threadIdx.x;
 
-    int y = pixelIdx / width;
-    int x = pixelIdx % width;
+    // Per-thread workspace base pointer
+    char* myWS = workspace + static_cast<size_t>(slotIdx) * layout.bytesPerSlot;
 
-    // Z-column start in column-major (nSubs, height, width) layout:
-    // element (z, y, x) is at index z + y*nSubs + x*nSubs*height
-    const float* zColStart = cubeData + y * nSubs + x * nSubs * height;
+    // Workspace pointers (computed once per thread)
+    double* zValues       = wsPtr<double>(myWS, layout.off_zValues);
+    double* preFiltered   = wsPtr<double>(myWS, layout.off_preFiltered);
+    double* cleanData     = wsPtr<double>(myWS, layout.off_cleanData);
+    double* sortedClean   = wsPtr<double>(myWS, layout.off_sortedClean);
+    double* scratch_d1    = wsPtr<double>(myWS, layout.off_scratch_d1);
+    double* scratch_d2    = wsPtr<double>(myWS, layout.off_scratch_d2);
+    double* scratch_d3    = wsPtr<double>(myWS, layout.off_scratch_d3);
+    int*    preFilteredIdx = wsPtr<int>(myWS, layout.off_preFilteredIdx);
+    int*    cleanIdx      = wsPtr<int>(myWS, layout.off_cleanIdx);
+    int*    sortedCleanIdx = wsPtr<int>(myWS, layout.off_sortedCleanIdx);
+    int*    scratch_i1    = wsPtr<int>(myWS, layout.off_scratch_i1);
+    int*    scratch_i2    = wsPtr<int>(myWS, layout.off_scratch_i2);
+    bool*   madOutlier    = wsPtr<bool>(myWS, layout.off_madOutlier);
+    bool*   esdOutlier    = wsPtr<bool>(myWS, layout.off_esdOutlier);
+    bool*   allOutlier    = wsPtr<bool>(myWS, layout.off_allOutlier);
 
-    // 1. Promote to double
-    double zValues[MAX_SUBS];
-    for (int i = 0; i < nSubs; ++i)
-        zValues[i] = static_cast<double>(zColStart[i]);
+    // Grid-stride loop over band pixels
+    for (int bp = slotIdx; bp < bandPixels; bp += gridDim.x * blockDim.x) {
+        int localY = bp / fullWidth;
+        int x      = bp % fullWidth;
 
-    // 2a. MAD sigma-clip pre-filter
-    bool madOutlier[MAX_SUBS];
-    sigmaClipMAD_device(zValues, nSubs, 3.0, madOutlier);
+        // Z-column start in band-local layout
+        const float* zColStart = bandCube + localY * nSubs + x * nSubs * bandHeight;
 
-    // Build pre-filtered data
-    double preFiltered[MAX_SUBS];
-    int preFilteredIdx[MAX_SUBS];
-    int nPreFiltered = 0;
-    for (int i = 0; i < nSubs; ++i) {
-        if (!madOutlier[i]) {
-            preFiltered[nPreFiltered] = zValues[i];
-            preFilteredIdx[nPreFiltered] = i;
-            ++nPreFiltered;
+        // Output index in full image
+        int outputIdx = (bandStartRow + localY) * fullWidth + x;
+
+        // 1. Promote to double
+        for (int i = 0; i < nSubs; ++i)
+            zValues[i] = static_cast<double>(zColStart[i]);
+
+        // 2a. MAD sigma-clip pre-filter
+        sigmaClipMAD_device(zValues, nSubs, 3.0, madOutlier,
+                            scratch_d1, scratch_d2);
+
+        // Build pre-filtered data
+        int nPreFiltered = 0;
+        for (int i = 0; i < nSubs; ++i) {
+            if (!madOutlier[i]) {
+                preFiltered[nPreFiltered] = zValues[i];
+                preFilteredIdx[nPreFiltered] = i;
+                ++nPreFiltered;
+            }
         }
-    }
 
-    // 2b. ESD on pre-filtered data
-    bool esdOutlier[MAX_SUBS]; // relative to preFiltered array
-    bool allOutlier[MAX_SUBS]; // relative to original indices
-    for (int i = 0; i < nSubs; ++i)
-        allOutlier[i] = madOutlier[i];
+        // 2b. ESD on pre-filtered data
+        for (int i = 0; i < nSubs; ++i)
+            allOutlier[i] = madOutlier[i];
 
-    if (nPreFiltered >= 3) {
-        detectOutliersESD_device(preFiltered, nPreFiltered, maxOutliers, outlierAlpha, esdOutlier);
-        for (int i = 0; i < nPreFiltered; ++i) {
-            if (esdOutlier[i])
-                allOutlier[preFilteredIdx[i]] = true;
-        }
-    }
-
-    // 3. Build clean data (with original frame index tracking)
-    double cleanData[MAX_SUBS];
-    int cleanIdx[MAX_SUBS];   // original frame index for each clean entry
-    int nClean = 0;
-    for (int i = 0; i < nSubs; ++i) {
-        if (!allOutlier[i]) {
-            cleanData[nClean] = zValues[i];
-            cleanIdx[nClean] = i;
-            ++nClean;
-        }
-    }
-
-    // 4. Relaxation: if too few clean points, use pre-filtered or all data
-    if (nClean < 3) {
         if (nPreFiltered >= 3) {
-            nClean = nPreFiltered;
+            detectOutliersESD_device(preFiltered, nPreFiltered, maxOutliers, outlierAlpha, esdOutlier,
+                                     scratch_d1, scratch_i1, scratch_d2, scratch_d3, scratch_i2);
             for (int i = 0; i < nPreFiltered; ++i) {
-                cleanData[i] = preFiltered[i];
-                cleanIdx[i] = preFilteredIdx[i];
-            }
-        } else {
-            nClean = nSubs;
-            for (int i = 0; i < nSubs; ++i) {
-                cleanData[i] = zValues[i];
-                cleanIdx[i] = i;
+                if (esdOutlier[i])
+                    allOutlier[preFilteredIdx[i]] = true;
             }
         }
-    }
 
-    // Compute median of clean data
-    double sortedClean[MAX_SUBS];
-    int sortedCleanIdx[MAX_SUBS];  // original frame index, sorted alongside values
-    for (int i = 0; i < nClean; ++i) {
-        sortedClean[i] = cleanData[i];
-        sortedCleanIdx[i] = cleanIdx[i];
-    }
-    // Insertion sort both arrays together (sort by value)
-    for (int i = 1; i < nClean; ++i) {
-        double keyVal = sortedClean[i];
-        int keyIdx = sortedCleanIdx[i];
-        int j = i - 1;
-        while (j >= 0 && sortedClean[j] > keyVal) {
-            sortedClean[j + 1] = sortedClean[j];
-            sortedCleanIdx[j + 1] = sortedCleanIdx[j];
-            --j;
+        // 3. Build clean data (with original frame index tracking)
+        int nClean = 0;
+        for (int i = 0; i < nSubs; ++i) {
+            if (!allOutlier[i]) {
+                cleanData[nClean] = zValues[i];
+                cleanIdx[nClean] = i;
+                ++nClean;
+            }
         }
-        sortedClean[j + 1] = keyVal;
-        sortedCleanIdx[j + 1] = keyIdx;
-    }
-    double cleanMedian = medianDevice(sortedClean, nClean);
 
-    // Default outputs
-    uint8_t bestType = DIST_GAUSSIAN;
-    int bestZ = 0;  // provenance: original frame index of selected pixel
-
-    if (nClean >= 3) {
-        // 5. Shortest-half mode + tiebreaker FIRST, while sortedClean is
-        //    still valid.  Fitting functions (L-BFGS, EM) use large stack
-        //    frames that can corrupt earlier local arrays on some nvcc
-        //    versions, so we complete all sortedClean-dependent work here.
-
-        double selectedValue = cleanMedian;
-        int shBestStart = 0;
-        int halfN = nClean / 2;
-        if (halfN < 1) halfN = 1;
-        {
-            double minRange = sortedClean[halfN - 1] - sortedClean[0];
-            shBestStart = 0;
-            for (int i = 1; i + halfN - 1 < nClean; ++i) {
-                double range = sortedClean[i + halfN - 1] - sortedClean[i];
-                if (range < minRange) {
-                    minRange = range;
-                    shBestStart = i;
+        // 4. Relaxation: if too few clean points, use pre-filtered or all data
+        if (nClean < 3) {
+            if (nPreFiltered >= 3) {
+                nClean = nPreFiltered;
+                for (int i = 0; i < nPreFiltered; ++i) {
+                    cleanData[i] = preFiltered[i];
+                    cleanIdx[i] = preFilteredIdx[i];
+                }
+            } else {
+                nClean = nSubs;
+                for (int i = 0; i < nSubs; ++i) {
+                    cleanData[i] = zValues[i];
+                    cleanIdx[i] = i;
                 }
             }
-            double sum = 0.0;
-            for (int i = shBestStart; i < shBestStart + halfN; ++i)
-                sum += sortedClean[i];
-            selectedValue = sum / halfN;
         }
 
-        // Find closest frame to selected value
-        double bestDist = 1e300;
+        // Compute median of clean data
         for (int i = 0; i < nClean; ++i) {
-            double dist = fabs(cleanData[i] - selectedValue);
-            if (dist < bestDist) {
-                bestDist = dist;
-                bestZ = cleanIdx[i];
-            }
+            sortedClean[i] = cleanData[i];
+            sortedCleanIdx[i] = cleanIdx[i];
         }
+        // Insertion sort both arrays together (sort by value)
+        for (int i = 1; i < nClean; ++i) {
+            double keyVal = sortedClean[i];
+            int keyIdx = sortedCleanIdx[i];
+            int j = i - 1;
+            while (j >= 0 && sortedClean[j] > keyVal) {
+                sortedClean[j + 1] = sortedClean[j];
+                sortedCleanIdx[j + 1] = sortedCleanIdx[j];
+                --j;
+            }
+            sortedClean[j + 1] = keyVal;
+            sortedCleanIdx[j + 1] = keyIdx;
+        }
+        double cleanMedian = medianDevice(sortedClean, nClean);
 
-        // Metadata tiebreaker (uses sortedClean — must be before fitting)
-        if (enableMetadataTiebreaker && halfN > 1) {
-            double shLo = sortedClean[shBestStart];
-            double shHi = sortedClean[shBestStart + halfN - 1];
+        // Default outputs
+        uint8_t bestType = DIST_GAUSSIAN;
+        int bestZ = 0;  // provenance: original frame index of selected pixel
 
-            double shValues[MAX_SUBS];
-            for (int i = 0; i < halfN; ++i)
-                shValues[i] = sortedClean[shBestStart + i];
-            double shMedian = medianDevice(shValues, halfN);
+        if (nClean >= 3) {
+            // 5. Shortest-half mode + tiebreaker FIRST, while sortedClean is
+            //    still valid.
 
-            double shDeviations[MAX_SUBS];
-            for (int i = 0; i < halfN; ++i)
-                shDeviations[i] = fabs(shValues[i] - shMedian);
-            insertionSort(shDeviations, halfN);
-            double shMAD = 1.4826 * medianDevice(shDeviations, halfN);
+            double selectedValue = cleanMedian;
+            int shBestStart = 0;
+            int halfN = nClean / 2;
+            if (halfN < 1) halfN = 1;
+            {
+                double minRange = sortedClean[halfN - 1] - sortedClean[0];
+                shBestStart = 0;
+                for (int i = 1; i + halfN - 1 < nClean; ++i) {
+                    double range = sortedClean[i + halfN - 1] - sortedClean[i];
+                    if (range < minRange) {
+                        minRange = range;
+                        shBestStart = i;
+                    }
+                }
+                double sum = 0.0;
+                for (int i = shBestStart; i < shBestStart + halfN; ++i)
+                    sum += sortedClean[i];
+                selectedValue = sum / halfN;
+            }
 
-            if (shMAD > 0.0) {
-                double bestScore = d_qualityScores[bestZ];
-                for (int i = 0; i < nClean; ++i) {
-                    double val = cleanData[i];
-                    int origIdx = cleanIdx[i];
-                    if (val >= shLo && val <= shHi &&
-                        fabs(val - selectedValue) <= shMAD) {
-                        double score = d_qualityScores[origIdx];
-                        if (score > bestScore) {
-                            bestScore = score;
-                            bestZ = origIdx;
+            // Find closest frame to selected value
+            double bestDist = 1e300;
+            for (int i = 0; i < nClean; ++i) {
+                double dist = fabs(cleanData[i] - selectedValue);
+                if (dist < bestDist) {
+                    bestDist = dist;
+                    bestZ = cleanIdx[i];
+                }
+            }
+
+            // Metadata tiebreaker (uses sortedClean — must be before fitting)
+            if (enableMetadataTiebreaker && halfN > 1 && qualityScores != nullptr) {
+                double shLo = sortedClean[shBestStart];
+                double shHi = sortedClean[shBestStart + halfN - 1];
+
+                // Reuse scratch_d1 for shValues, scratch_d2 for shDeviations
+                double* shValues = scratch_d1;
+                for (int i = 0; i < halfN; ++i)
+                    shValues[i] = sortedClean[shBestStart + i];
+                double shMedian = medianDevice(shValues, halfN);
+
+                double* shDeviations = scratch_d2;
+                for (int i = 0; i < halfN; ++i)
+                    shDeviations[i] = fabs(shValues[i] - shMedian);
+                insertionSort(shDeviations, halfN);
+                double shMAD = 1.4826 * medianDevice(shDeviations, halfN);
+
+                if (shMAD > 0.0) {
+                    double bestScore = __ldg(&qualityScores[bestZ]);
+                    for (int i = 0; i < nClean; ++i) {
+                        double val = cleanData[i];
+                        int origIdx = cleanIdx[i];
+                        if (val >= shLo && val <= shHi &&
+                            fabs(val - selectedValue) <= shMAD) {
+                            double score = __ldg(&qualityScores[origIdx]);
+                            if (score > bestScore) {
+                                bestScore = score;
+                                bestZ = origIdx;
+                            }
                         }
                     }
                 }
             }
+
+            cleanMedian = selectedValue;
+
+            // 6. Fit models (for distribution type metadata only — does not
+            //    affect pixel value).
+            FitResultDevice gaussFit = fitGaussian_device(cleanData, nClean);
+            double aicGauss = aiccDevice(gaussFit.logLikelihood, gaussFit.k, nClean);
+
+            FitResultDevice poisFit = fitPoisson_device(cleanData, nClean);
+            double aicPois = aiccDevice(poisFit.logLikelihood, poisFit.k, nClean);
+
+            double aicSkew = 1e300;
+            double aicMix  = 1e300;
+
+            bool skipExpensive = false;
+            if (adaptiveModels) {
+                double bestSimpleAIC = fmin(aicGauss, aicPois);
+                double nd = static_cast<double>(nClean);
+                skipExpensive = (nClean < 6) || (bestSimpleAIC / nd < 2.0);
+            }
+
+            if (!skipExpensive) {
+                FitResultDevice skewFit = fitSkewNormal_device(cleanData, nClean);
+                aicSkew = aiccDevice(skewFit.logLikelihood, skewFit.k, nClean);
+
+                FitResultDevice mixFit = fitBimodalEM_device(cleanData, nClean,
+                    scratch_d1, scratch_d2);
+                if (mixFit.weight > 0.05 && mixFit.weight < 0.95)
+                    aicMix = aiccDevice(mixFit.logLikelihood, mixFit.k, nClean);
+            }
+
+            // 7. Select model with lowest AIC
+            double bestAIC = aicGauss;
+            bestType = DIST_GAUSSIAN;
+
+            if (aicPois < bestAIC) {
+                bestAIC = aicPois;
+                bestType = DIST_POISSON;
+            }
+            if (aicSkew < bestAIC) {
+                bestAIC = aicSkew;
+                bestType = DIST_SKEW_NORMAL;
+            }
+            if (aicMix < bestAIC) {
+                bestType = DIST_BIMODAL;
+            }
         }
 
-        cleanMedian = selectedValue;
-
-        // 6. Fit models (for distribution type metadata only — does not
-        //    affect pixel value).  These functions use large stack frames
-        //    that may corrupt sortedClean, hence they run after all
-        //    sortedClean-dependent work above.
-        FitResultDevice gaussFit = fitGaussian_device(cleanData, nClean);
-        double aicGauss = aiccDevice(gaussFit.logLikelihood, gaussFit.k, nClean);
-
-        FitResultDevice poisFit = fitPoisson_device(cleanData, nClean);
-        double aicPois = aiccDevice(poisFit.logLikelihood, poisFit.k, nClean);
-
-        double aicSkew = 1e300;
-        double aicMix  = 1e300;
-
-        bool skipExpensive = false;
-        if (adaptiveModels) {
-            double bestSimpleAIC = fmin(aicGauss, aicPois);
-            double nd = static_cast<double>(nClean);
-            skipExpensive = (nClean < 6) || (bestSimpleAIC / nd < 2.0);
-        }
-
-        if (!skipExpensive) {
-            FitResultDevice skewFit = fitSkewNormal_device(cleanData, nClean);
-            aicSkew = aiccDevice(skewFit.logLikelihood, skewFit.k, nClean);
-
-            FitResultDevice mixFit = fitBimodalEM_device(cleanData, nClean);
-            if (mixFit.weight > 0.05 && mixFit.weight < 0.95)
-                aicMix = aiccDevice(mixFit.logLikelihood, mixFit.k, nClean);
-        }
-
-        // 7. Select model with lowest AIC
-        double bestAIC = aicGauss;
-        bestType = DIST_GAUSSIAN;
-
-        if (aicPois < bestAIC) {
-            bestAIC = aicPois;
-            bestType = DIST_POISSON;
-        }
-        if (aicSkew < bestAIC) {
-            bestAIC = aicSkew;
-            bestType = DIST_SKEW_NORMAL;
-        }
-        if (aicMix < bestAIC) {
-            bestType = DIST_BIMODAL;
-        }
+        // 8. Output
+        outputPixels[outputIdx] = static_cast<float>(cleanMedian);
+        distTypes[outputIdx] = bestType;
+        if (provenanceOut != nullptr)
+            provenanceOut[outputIdx] = static_cast<uint32_t>(bestZ);
     }
-
-    // 8. Output
-    outputPixels[pixelIdx] = static_cast<float>(cleanMedian);
-    distTypes[pixelIdx] = bestType;
-    if (provenanceOut != nullptr)
-        provenanceOut[pixelIdx] = static_cast<uint32_t>(bestZ);
 }
 
 // ============================================================================
 // Host function: processImageGPU
 // ============================================================================
 
-// Helper macro for CUDA error checking
-#define CUDA_CHECK(call, errResult)                                           \
-    do {                                                                      \
-        cudaError_t err = (call);                                             \
-        if (err != cudaSuccess) {                                             \
-            char buf[512];                                                    \
-            snprintf(buf, sizeof(buf), "%s:%d: %s: %s",                       \
-                     __FILE__, __LINE__, #call, cudaGetErrorString(err));      \
-            (errResult).success = false;                                      \
-            (errResult).errorMessage = buf;                                   \
-            return errResult;                                                 \
-        }                                                                     \
-    } while (0)
+// RAII guard for CUDA device memory
+struct CudaMemGuard {
+    void** ptrs;
+    int count;
+    ~CudaMemGuard() { for (int i = 0; i < count; ++i) if (ptrs[i]) cudaFree(ptrs[i]); }
+};
 
 GpuStackResult processImageGPU(
     const float* cubeData,
@@ -1066,96 +1067,155 @@ GpuStackResult processImageGPU(
     GpuStackResult result;
     result.success = false;
 
-    size_t nSubs  = config.nSubs;
-    size_t H      = config.height;
-    size_t W      = config.width;
-    size_t cubeSize   = nSubs * H * W;
-    size_t pixelCount = H * W;
+    const size_t nSubs = config.nSubs;
+    const size_t H     = config.height;
+    const size_t W     = config.width;
+    const size_t totalPixels = H * W;
 
-    if (nSubs > MAX_SUBS) {
-        result.errorMessage = "nSubs exceeds MAX_SUBS (64)";
+    if (nSubs == 0 || H == 0 || W == 0) {
+        result.errorMessage = "Empty dimensions";
         return result;
     }
 
-    // The pixel selection kernel uses large per-thread stack allocations
-    // (multiple double[MAX_SUBS] arrays + nested device function calls).
-    // Ensure adequate stack space.
-    {
-        size_t oldStackSize = 0;
-        cudaDeviceGetLimit(&oldStackSize, cudaLimitStackSize);
-        if (oldStackSize < 32768)
-            CUDA_CHECK(cudaDeviceSetLimit(cudaLimitStackSize, 32768), result);
+    WorkspaceLayout layout = computeWorkspaceLayout(static_cast<int>(nSubs));
+
+    size_t freeMem = 0, totalMem = 0;
+    cudaMemGetInfo(&freeMem, &totalMem);
+
+    const size_t HEADROOM = 256ULL * 1024 * 1024;
+    size_t budget = (freeMem > HEADROOM) ? freeMem - HEADROOM : freeMem / 2;
+
+    size_t fixedBytes = totalPixels * sizeof(float)
+                      + totalPixels * sizeof(uint8_t)
+                      + nSubs * sizeof(double);
+    if (config.provenanceOut)
+        fixedBytes += totalPixels * sizeof(uint32_t);
+
+    if (budget < fixedBytes + layout.bytesPerSlot * 256) {
+        result.errorMessage = "Insufficient VRAM for GPU stacking";
+        return result;
     }
+    size_t remaining = budget - fixedBytes;
 
-    // Copy quality scores to constant memory (if provided)
-    if (config.qualityScores != nullptr && nSubs <= MAX_SUBS) {
-        CUDA_CHECK(cudaMemcpyToSymbol(d_qualityScores, config.qualityScores,
-                                       nSubs * sizeof(double)), result);
-    }
-
-    // Allocate device memory
-    float*    d_cube       = nullptr;
-    float*    d_output     = nullptr;
-    uint8_t*  d_distType   = nullptr;
-    uint32_t* d_provenance = nullptr;
-
-    CUDA_CHECK(cudaMalloc(&d_cube,     cubeSize   * sizeof(float)),   result);
-    CUDA_CHECK(cudaMalloc(&d_output,   pixelCount * sizeof(float)),   result);
-    CUDA_CHECK(cudaMalloc(&d_distType, pixelCount * sizeof(uint8_t)), result);
-
-    if (config.provenanceOut != nullptr) {
-        CUDA_CHECK(cudaMalloc(&d_provenance, pixelCount * sizeof(uint32_t)), result);
-    }
-
-    // Copy cube data to device
-    CUDA_CHECK(cudaMemcpy(d_cube, cubeData, cubeSize * sizeof(float),
-                          cudaMemcpyHostToDevice), result);
-
-    // Launch kernel
     constexpr int BLOCK_SIZE = 256;
-    int gridSize = static_cast<int>((pixelCount + BLOCK_SIZE - 1) / BLOCK_SIZE);
+    int maxBlocks = 80;
+    size_t workspaceBytes = static_cast<size_t>(maxBlocks) * BLOCK_SIZE * layout.bytesPerSlot;
 
-    pixelSelectionKernel<<<gridSize, BLOCK_SIZE>>>(
-        d_cube, d_output, d_distType, d_provenance,
-        static_cast<int>(nSubs),
-        static_cast<int>(H),
-        static_cast<int>(W),
-        config.maxOutliers,
-        config.outlierAlpha,
-        config.adaptiveModels,
-        config.enableMetadataTiebreaker);
-
-    // Check for launch errors
-    CUDA_CHECK(cudaGetLastError(), result);
-
-    // Wait for kernel completion
-    CUDA_CHECK(cudaDeviceSynchronize(), result);
-
-    // Copy results back
-    CUDA_CHECK(cudaMemcpy(outputPixels, d_output,
-                          pixelCount * sizeof(float),
-                          cudaMemcpyDeviceToHost), result);
-    CUDA_CHECK(cudaMemcpy(distTypes, d_distType,
-                          pixelCount * sizeof(uint8_t),
-                          cudaMemcpyDeviceToHost), result);
-
-    if (config.provenanceOut != nullptr && d_provenance != nullptr) {
-        CUDA_CHECK(cudaMemcpy(config.provenanceOut, d_provenance,
-                              pixelCount * sizeof(uint32_t),
-                              cudaMemcpyDeviceToHost), result);
+    while (workspaceBytes > remaining / 2 && maxBlocks > 4) {
+        maxBlocks /= 2;
+        workspaceBytes = static_cast<size_t>(maxBlocks) * BLOCK_SIZE * layout.bytesPerSlot;
     }
 
-    // Clean up
-    cudaFree(d_cube);
-    cudaFree(d_output);
-    cudaFree(d_distType);
-    cudaFree(d_provenance);
+    int numSlots = maxBlocks * BLOCK_SIZE;
+    size_t bandBudget = remaining - workspaceBytes;
+
+    size_t cubeRowBytes = nSubs * W * sizeof(float);
+    size_t bandH = bandBudget / cubeRowBytes;
+    if (bandH > H) bandH = H;
+    if (bandH < 1) bandH = 1;
+
+    float*    d_output     = nullptr;
+    uint8_t*  d_distTypes  = nullptr;
+    uint32_t* d_provenance = nullptr;
+    double*   d_quality    = nullptr;
+    char*     d_workspace  = nullptr;
+    float*    d_bandCube   = nullptr;
+
+    void* allPtrs[6] = {};
+    CudaMemGuard guard{allPtrs, 6};
+
+    auto cuCheck = [&](cudaError_t err, const char* ctx) -> bool {
+        if (err != cudaSuccess) {
+            char buf[512];
+            snprintf(buf, sizeof(buf), "%s: %s", ctx, cudaGetErrorString(err));
+            result.errorMessage = buf;
+            return false;
+        }
+        return true;
+    };
+
+    if (!cuCheck(cudaMalloc(&d_output,    totalPixels * sizeof(float)),   "alloc output"))    return result;
+    allPtrs[0] = d_output;
+    if (!cuCheck(cudaMalloc(&d_distTypes, totalPixels * sizeof(uint8_t)), "alloc distTypes")) return result;
+    allPtrs[1] = d_distTypes;
+    if (!cuCheck(cudaMalloc(&d_quality,   nSubs * sizeof(double)),        "alloc quality"))   return result;
+    allPtrs[2] = d_quality;
+    if (!cuCheck(cudaMalloc(&d_workspace, static_cast<size_t>(numSlots) * layout.bytesPerSlot), "alloc workspace")) return result;
+    allPtrs[3] = d_workspace;
+    if (!cuCheck(cudaMalloc(&d_bandCube,  bandH * W * nSubs * sizeof(float)), "alloc bandCube")) return result;
+    allPtrs[4] = d_bandCube;
+
+    if (config.provenanceOut) {
+        if (!cuCheck(cudaMalloc(&d_provenance, totalPixels * sizeof(uint32_t)), "alloc provenance")) return result;
+        allPtrs[5] = d_provenance;
+    }
+
+    if (config.qualityScores) {
+        if (!cuCheck(cudaMemcpy(d_quality, config.qualityScores,
+                                nSubs * sizeof(double), cudaMemcpyHostToDevice),
+                     "upload quality scores")) return result;
+    }
+
+    std::vector<float> bandBuf;
+    if (bandH < H)
+        bandBuf.resize(nSubs * bandH * W);
+
+    for (size_t startRow = 0; startRow < H; startRow += bandH) {
+        size_t curBandH = std::min(bandH, H - startRow);
+        size_t bandPixels = curBandH * W;
+
+        const float* uploadSrc;
+        size_t uploadBytes = nSubs * curBandH * W * sizeof(float);
+
+        if (curBandH == H) {
+            uploadSrc = cubeData;
+        } else {
+            for (size_t x = 0; x < W; ++x) {
+                std::memcpy(
+                    bandBuf.data() + x * nSubs * curBandH,
+                    cubeData + startRow * nSubs + x * nSubs * H,
+                    nSubs * curBandH * sizeof(float));
+            }
+            uploadSrc = bandBuf.data();
+        }
+
+        if (!cuCheck(cudaMemcpy(d_bandCube, uploadSrc, uploadBytes,
+                                cudaMemcpyHostToDevice), "upload band cube")) return result;
+
+        int gridBlocks = std::min(maxBlocks,
+            static_cast<int>((bandPixels + BLOCK_SIZE - 1) / BLOCK_SIZE));
+
+        pixelSelectionKernel<<<gridBlocks, BLOCK_SIZE>>>(
+            d_bandCube, d_output, d_distTypes, d_provenance,
+            d_workspace, layout,
+            config.qualityScores ? d_quality : nullptr,
+            static_cast<int>(nSubs),
+            static_cast<int>(startRow),
+            static_cast<int>(curBandH),
+            static_cast<int>(W),
+            static_cast<int>(bandPixels),
+            config.maxOutliers, config.outlierAlpha,
+            config.adaptiveModels, config.enableMetadataTiebreaker);
+
+        if (!cuCheck(cudaGetLastError(), "kernel launch")) return result;
+        if (!cuCheck(cudaDeviceSynchronize(), "kernel sync")) return result;
+    }
+
+    if (!cuCheck(cudaMemcpy(outputPixels, d_output,
+                            totalPixels * sizeof(float), cudaMemcpyDeviceToHost),
+                 "download output")) return result;
+    if (!cuCheck(cudaMemcpy(distTypes, d_distTypes,
+                            totalPixels * sizeof(uint8_t), cudaMemcpyDeviceToHost),
+                 "download distTypes")) return result;
+    if (config.provenanceOut && d_provenance) {
+        if (!cuCheck(cudaMemcpy(config.provenanceOut, d_provenance,
+                                totalPixels * sizeof(uint32_t), cudaMemcpyDeviceToHost),
+                     "download provenance")) return result;
+    }
 
     result.success = true;
     return result;
 }
-
-#undef CUDA_CHECK
 
 } // namespace cuda
 } // namespace nukex
