@@ -2,6 +2,7 @@
 // CUDA vs CPU equivalence tests for pixel selection
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/catch_approx.hpp>
+#include <random>
 #include "engine/PixelSelector.h"
 #include "engine/SubCube.h"
 
@@ -170,6 +171,104 @@ TEST_CASE("GPU handles adaptive model selection", "[cuda][adaptive]") {
     REQUIRE(cpuResult.size() == gpuOutput.size());
     for (size_t i = 0; i < cpuResult.size(); ++i) {
         REQUIRE(gpuOutput[i] == Approx(cpuResult[i]).margin(1e-4f));
+    }
+#endif
+}
+
+TEST_CASE("GPU stacking with 100 subs matches CPU", "[cuda][equivalence][high-subs]") {
+#ifndef NUKEX_HAS_CUDA
+    SKIP("CUDA support not compiled in");
+#else
+    if (!nukex::cuda::isGpuAvailable()) {
+        SKIP("No CUDA-capable GPU available");
+    }
+
+    constexpr size_t nSubs = 100;
+    constexpr size_t H = 4, W = 4;
+
+    nukex::SubCube cube(nSubs, H, W);
+    std::mt19937 rng(12345);
+    std::normal_distribution<double> noise(500.0, 15.0);
+
+    for (size_t z = 0; z < nSubs; ++z)
+        for (size_t y = 0; y < H; ++y)
+            for (size_t x = 0; x < W; ++x)
+                cube.setPixel(z, y, x, static_cast<float>(noise(rng)));
+
+    cube.setPixel(50, 2, 2, 9999.0f);
+
+    nukex::PixelSelector::Config cfg;
+    cfg.maxOutliers = 3;
+    cfg.outlierAlpha = 0.05;
+    cfg.adaptiveModels = false;
+    nukex::PixelSelector cpuSel(cfg);
+    auto cpuResult = cpuSel.processImage(cube, nullptr, nullptr);
+
+    std::vector<float> gpuOutput(H * W);
+    std::vector<uint8_t> gpuDistTypes(H * W);
+
+    nukex::cuda::GpuStackConfig gpuConfig;
+    gpuConfig.maxOutliers = 3;
+    gpuConfig.outlierAlpha = 0.05;
+    gpuConfig.adaptiveModels = false;
+    gpuConfig.nSubs = nSubs;
+    gpuConfig.height = H;
+    gpuConfig.width = W;
+
+    auto result = nukex::cuda::processImageGPU(
+        cube.cube().data(), gpuOutput.data(), gpuDistTypes.data(), gpuConfig);
+
+    REQUIRE(result.success);
+
+    for (size_t i = 0; i < cpuResult.size(); ++i) {
+        REQUIRE(gpuOutput[i] == Catch::Approx(cpuResult[i]).margin(1e-3f));
+    }
+#endif
+}
+
+TEST_CASE("GPU stacking with 256 subs matches CPU", "[cuda][equivalence][high-subs]") {
+#ifndef NUKEX_HAS_CUDA
+    SKIP("CUDA support not compiled in");
+#else
+    if (!nukex::cuda::isGpuAvailable()) {
+        SKIP("No CUDA-capable GPU available");
+    }
+
+    constexpr size_t nSubs = 256;
+    constexpr size_t H = 4, W = 4;
+
+    nukex::SubCube cube(nSubs, H, W);
+    std::mt19937 rng(67890);
+    std::normal_distribution<double> noise(300.0, 10.0);
+
+    for (size_t z = 0; z < nSubs; ++z)
+        for (size_t y = 0; y < H; ++y)
+            for (size_t x = 0; x < W; ++x)
+                cube.setPixel(z, y, x, static_cast<float>(noise(rng)));
+
+    nukex::PixelSelector::Config cfg;
+    cfg.maxOutliers = 5;
+    cfg.outlierAlpha = 0.05;
+    nukex::PixelSelector cpuSel(cfg);
+    auto cpuResult = cpuSel.processImage(cube, nullptr, nullptr);
+
+    std::vector<float> gpuOutput(H * W);
+    std::vector<uint8_t> gpuDistTypes(H * W);
+
+    nukex::cuda::GpuStackConfig gpuConfig;
+    gpuConfig.maxOutliers = 5;
+    gpuConfig.outlierAlpha = 0.05;
+    gpuConfig.nSubs = nSubs;
+    gpuConfig.height = H;
+    gpuConfig.width = W;
+
+    auto result = nukex::cuda::processImageGPU(
+        cube.cube().data(), gpuOutput.data(), gpuDistTypes.data(), gpuConfig);
+
+    REQUIRE(result.success);
+
+    for (size_t i = 0; i < cpuResult.size(); ++i) {
+        REQUIRE(gpuOutput[i] == Catch::Approx(cpuResult[i]).margin(1e-3f));
     }
 #endif
 }
