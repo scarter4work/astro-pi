@@ -8,6 +8,7 @@
 #include "engine/NumericalUtils.h"
 #include <vector>
 #include <functional>
+#include <string>
 
 namespace nukex {
 
@@ -47,6 +48,9 @@ public:
     // Number of pixels that fell back to simple mean in the last processImage() call
     size_t lastErrorCount() const { return m_lastErrorCount; }
 
+    bool lastGpuFallback() const { return m_lastGpuFallback; }
+    const std::string& lastGpuError() const { return m_lastGpuError; }
+
     struct PixelResult {
         uint32_t selectedZ;
         DistributionType bestModel;
@@ -62,6 +66,8 @@ public:
 private:
     Config m_config;
     size_t m_lastErrorCount = 0;
+    bool m_lastGpuFallback = false;
+    std::string m_lastGpuError;
 };
 
 } // namespace nukex

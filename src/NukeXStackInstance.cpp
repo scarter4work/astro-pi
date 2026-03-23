@@ -471,6 +471,13 @@ bool NukeXStackInstance::ExecuteGlobal()
          if ( useGPU )
          {
             channelResults[ch] = selector.processImageGPU( channelCubes[ch], qualityScoresPtr, distTypeMaps[ch], progressCB );
+            if ( selector.lastGpuFallback() )
+            {
+               if ( ch == 0 ) // Log once, not per-channel
+                  console.WarningLn( String().Format(
+                     "  GPU stacking failed: %s \xe2\x80\x94 fell back to CPU",
+                     selector.lastGpuError().c_str() ) );
+            }
          }
          else
          {

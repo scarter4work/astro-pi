@@ -405,8 +405,13 @@ std::vector<float> PixelSelector::processImageGPU(SubCube& cube,
                                                     ProgressCallback progress)
 {
 #ifdef NUKEX_HAS_CUDA
+    m_lastGpuFallback = false;
+    m_lastGpuError.clear();
+
     if (!cuda::isGpuAvailable()) {
         // No GPU — fall back to CPU
+        m_lastGpuFallback = true;
+        m_lastGpuError = "No CUDA-capable GPU detected at runtime";
         return processImage(cube, qualityScores, progress);
     }
 
@@ -433,6 +438,8 @@ std::vector<float> PixelSelector::processImageGPU(SubCube& cube,
 
     if (!result.success) {
         // GPU failed — fall back to CPU. Log error for diagnostics.
+        m_lastGpuFallback = true;
+        m_lastGpuError = result.errorMessage;
         std::fprintf(stderr, "NukeX: GPU stacking failed: %s -- falling back to CPU\n",
             result.errorMessage.c_str());
         return processImage(cube, qualityScores, progress);
