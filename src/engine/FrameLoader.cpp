@@ -579,7 +579,8 @@ void FrameLoader::DebayerBilinear( const float* cfa, int W, int H,
 
 // ----------------------------------------------------------------------------
 
-void FrameLoader::ComputeFrameMetrics( const pcl::Image& img, SubMetadata& meta )
+void FrameLoader::ComputeFrameMetrics( const pcl::Image& img, SubMetadata& meta,
+                                        std::string* warningOut )
 {
     try
     {
@@ -630,13 +631,16 @@ void FrameLoader::ComputeFrameMetrics( const pcl::Image& img, SubMetadata& meta 
     }
     catch ( const pcl::Error& e )
     {
-        pcl::Console().WarningLn( "FrameLoader: PSF metrics failed: " + e.Message()
-            + " -- frame will use default quality score" );
+        if ( warningOut )
+            *warningOut = "FrameLoader: PSF metrics failed: "
+                + std::string( pcl::IsoString( e.Message() ).c_str() )
+                + " -- frame will use default quality score";
     }
     catch ( const std::exception& e )
     {
-        pcl::Console().WarningLn( pcl::String( "FrameLoader: PSF metrics failed: " )
-            + e.what() + " -- frame will use default quality score" );
+        if ( warningOut )
+            *warningOut = std::string( "FrameLoader: PSF metrics failed: " )
+                + e.what() + " -- frame will use default quality score";
     }
 }
 
