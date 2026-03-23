@@ -233,7 +233,11 @@ LoadedFrames FrameLoader::LoadRaw( const std::vector<FramePath>& frames )
     std::vector<std::string> errors( N );
     std::vector<std::string> warnings( N );
 
-    // 5. Load each enabled frame (parallel — file reads overlap)
+    // 5. Load each enabled frame (parallel — CPU work overlaps with I/O)
+    //    All PCL/CFITSIO file operations are serialized (PI's CFITSIO is not
+    //    thread-safe for concurrent reads). Parallelism comes from overlapping
+    //    the post-read CPU work (normalize, debayer, PSF fitting) across frames.
+    //    IMPORTANT: never throw inside an omp critical section (undefined behavior).
     #pragma omp parallel for num_threads(LOAD_THREADS) schedule(dynamic)
     for ( size_t i = 0; i < N; ++i )
     {
@@ -249,56 +253,53 @@ LoadedFrames FrameLoader::LoadRaw( const std::vector<FramePath>& frames )
                     pcl::IsoString( pcl::File::ExtractNameAndExtension( path ) ).c_str() ) );
             }
 
-            // Create format + instance as thread-local variables (persist for ReadImage)
-            pcl::String ext = pcl::File::ExtractExtension( path ).Lowercase();
-            pcl::FileFormat format( ext, true/*read*/, false/*write*/ );
-            pcl::FileFormatInstance file( format );
-            pcl::ImageDescriptionArray images;
+            // Serialize all PCL/CFITSIO file I/O (not thread-safe)
+            pcl::Image img;
             pcl::FITSKeywordArray keywords;
             int w = 0, h = 0;
-            bool canStoreKW = format.CanStoreKeywords();
+            std::string fileError;
 
-            // Serialize: Open + keyword read (CFITSIO global handle table safety)
             #pragma omp critical(cfitsio)
             {
-                if ( !file.Open( images, path ) )
-                    throw pcl::Error( "FrameLoader: failed to open: " + path );
+                // No throws inside critical — set fileError instead
+                pcl::String ext = pcl::File::ExtractExtension( path ).Lowercase();
+                pcl::FileFormat format( ext, true/*read*/, false/*write*/ );
+                pcl::FileFormatInstance file( format );
+                pcl::ImageDescriptionArray images;
 
-                if ( images.IsEmpty() )
+                if ( !file.Open( images, path ) )
+                {
+                    fileError = "FrameLoader: failed to open: " + std::string( pcl::IsoString( path ).c_str() );
+                }
+                else if ( images.IsEmpty() )
                 {
                     file.Close();
-                    throw pcl::Error( "FrameLoader: no image data in: " + path );
+                    fileError = "FrameLoader: no image data in: " + std::string( pcl::IsoString( path ).c_str() );
                 }
+                else
+                {
+                    w = images[0].info.width;
+                    h = images[0].info.height;
 
-                w = images[0].info.width;
-                h = images[0].info.height;
+                    if ( format.CanStoreKeywords() )
+                        file.ReadFITSKeywords( keywords );
 
-                if ( canStoreKW )
-                    file.ReadFITSKeywords( keywords );
+                    if ( !file.ReadImage( img ) )
+                        fileError = "FrameLoader: failed to read image data: " + std::string( pcl::IsoString( path ).c_str() );
+
+                    file.Close();
+                }
             }
+
+            // Check for file I/O errors (outside critical — safe to throw)
+            if ( !fileError.empty() )
+                throw std::runtime_error( fileError );
 
             // Validate dimensions match reference
             if ( w != refWidth || h != refHeight )
-            {
-                #pragma omp critical(cfitsio)
-                { file.Close(); }
                 throw pcl::Error( pcl::String().Format(
                     "FrameLoader: dimension mismatch in frame %d — expected %dx%d, got %dx%d: ",
                     int( i + 1 ), refWidth, refHeight, w, h ) + path );
-            }
-
-            // PARALLEL: Read the image (each thread has its own file handle)
-            pcl::Image img;
-            if ( !file.ReadImage( img ) )
-            {
-                #pragma omp critical(cfitsio)
-                { file.Close(); }
-                throw pcl::Error( "FrameLoader: failed to read image data: " + path );
-            }
-
-            // Serialize: Close (CFITSIO global handle table safety)
-            #pragma omp critical(cfitsio)
-            { file.Close(); }
 
             // === Everything below runs in PARALLEL (no shared state) ===
 
