@@ -227,148 +227,100 @@ LoadedFrames FrameLoader::LoadRaw( const std::vector<FramePath>& frames )
     result.pixelData.resize( enabled.size() );
     result.metadata.resize( enabled.size() );
 
-    // Parallel loading: pre-allocate per-frame error/warning slots
-    const int LOAD_THREADS = 4;
-    size_t N = enabled.size();
-    std::vector<std::string> errors( N );
-    std::vector<std::string> warnings( N );
-
-    // 5. Load each enabled frame (parallel — CPU work overlaps with I/O)
-    //    All PCL/CFITSIO file operations are serialized (PI's CFITSIO is not
-    //    thread-safe for concurrent reads). Parallelism comes from overlapping
-    //    the post-read CPU work (normalize, debayer, PSF fitting) across frames.
-    //    IMPORTANT: pcl::Console is main-thread-only — never call from worker threads.
-    //    IMPORTANT: never throw inside an omp critical section (undefined behavior).
-    std::vector<std::string> logMessages( N );
-    #pragma omp parallel for num_threads(LOAD_THREADS) schedule(dynamic)
-    for ( size_t i = 0; i < N; ++i )
+    // 5. Load each enabled frame
+    for ( size_t i = 0; i < enabled.size(); ++i )
     {
-        try
+        const pcl::String& path = enabled[i]->path;
+
+        console.WriteLn( pcl::String().Format(
+            "  [%d/%d] %s",
+            int( i + 1 ), int( enabled.size() ),
+            pcl::IsoString( pcl::File::ExtractNameAndExtension( path ) ).c_str() ) );
+
+        // Open file
+        pcl::String ext = pcl::File::ExtractExtension( path ).Lowercase();
+        pcl::FileFormat format( ext, true/*read*/, false/*write*/ );
+        pcl::FileFormatInstance file( format );
+        pcl::ImageDescriptionArray images;
+
+        if ( !file.Open( images, path ) )
+            throw pcl::Error( "FrameLoader: failed to open: " + path );
+
+        if ( images.IsEmpty() )
         {
-            const pcl::String& path = enabled[i]->path;
+            file.Close();
+            throw pcl::Error( "FrameLoader: no image data in: " + path );
+        }
 
-            logMessages[i] = pcl::IsoString( pcl::File::ExtractNameAndExtension( path ) ).c_str();
+        // Validate dimensions match reference
+        int w = images[0].info.width;
+        int h = images[0].info.height;
+        if ( w != refWidth || h != refHeight )
+        {
+            file.Close();
+            throw pcl::Error( pcl::String().Format(
+                "FrameLoader: dimension mismatch in frame %d — expected %dx%d, got %dx%d: ",
+                int( i + 1 ), refWidth, refHeight, w, h ) + path );
+        }
 
-            // Serialize all PCL/CFITSIO file I/O (not thread-safe)
-            pcl::Image img;
-            pcl::FITSKeywordArray keywords;
-            int w = 0, h = 0;
-            std::string fileError;
+        // Read FITS keywords if available
+        pcl::FITSKeywordArray keywords;
+        if ( format.CanStoreKeywords() )
+            file.ReadFITSKeywords( keywords );
 
-            #pragma omp critical(cfitsio)
+        // Read the image
+        pcl::Image img;
+        if ( !file.ReadImage( img ) )
+        {
+            file.Close();
+            throw pcl::Error( "FrameLoader: failed to read image data: " + path );
+        }
+
+        file.Close();
+
+        // Ensure pixel values are in [0,1]
+        img.Normalize();
+
+        size_t numPx = size_t( refWidth ) * size_t( refHeight );
+
+        if ( needsDebayer )
+        {
+            // Debayer CFA → 3-channel RGB
+            const pcl::Image::sample* cfa = img.PixelData( 0 );
+            result.pixelData[i].resize( 3 );
+            DebayerBilinear( cfa, refWidth, refHeight, bayerPattern,
+                             result.pixelData[i][0],
+                             result.pixelData[i][1],
+                             result.pixelData[i][2] );
+
+            // Build a pcl::Image from debayered RGB for metric computation
+            pcl::Image rgbImg;
+            rgbImg.AllocateData( refWidth, refHeight, 3, pcl::ColorSpace::RGB );
+            std::copy( result.pixelData[i][0].begin(), result.pixelData[i][0].end(),
+                       rgbImg.PixelData( 0 ) );
+            std::copy( result.pixelData[i][1].begin(), result.pixelData[i][1].end(),
+                       rgbImg.PixelData( 1 ) );
+            std::copy( result.pixelData[i][2].begin(), result.pixelData[i][2].end(),
+                       rgbImg.PixelData( 2 ) );
+
+            result.metadata[i] = ExtractMetadata( keywords );
+            if ( result.metadata[i].fwhm == 0.0 && result.metadata[i].eccentricity == 0.0 )
+                ComputeFrameMetrics( rgbImg, result.metadata[i] );
+        }
+        else
+        {
+            // Store raw pixel data (all channels as-is)
+            result.pixelData[i].resize( outChannels );
+            for ( int c = 0; c < outChannels; ++c )
             {
-                // No throws inside critical — set fileError instead
-                pcl::String ext = pcl::File::ExtractExtension( path ).Lowercase();
-                pcl::FileFormat format( ext, true/*read*/, false/*write*/ );
-                pcl::FileFormatInstance file( format );
-                pcl::ImageDescriptionArray images;
-
-                if ( !file.Open( images, path ) )
-                {
-                    fileError = "FrameLoader: failed to open: " + std::string( pcl::IsoString( path ).c_str() );
-                }
-                else if ( images.IsEmpty() )
-                {
-                    file.Close();
-                    fileError = "FrameLoader: no image data in: " + std::string( pcl::IsoString( path ).c_str() );
-                }
-                else
-                {
-                    w = images[0].info.width;
-                    h = images[0].info.height;
-
-                    if ( format.CanStoreKeywords() )
-                        file.ReadFITSKeywords( keywords );
-
-                    if ( !file.ReadImage( img ) )
-                        fileError = "FrameLoader: failed to read image data: " + std::string( pcl::IsoString( path ).c_str() );
-
-                    file.Close();
-                }
+                const pcl::Image::sample* src = img.PixelData( c );
+                result.pixelData[i][c].assign( src, src + numPx );
             }
 
-            // Check for file I/O errors (outside critical — safe to throw)
-            if ( !fileError.empty() )
-                throw std::runtime_error( fileError );
-
-            // Validate dimensions match reference
-            if ( w != refWidth || h != refHeight )
-                throw pcl::Error( pcl::String().Format(
-                    "FrameLoader: dimension mismatch in frame %d — expected %dx%d, got %dx%d: ",
-                    int( i + 1 ), refWidth, refHeight, w, h ) + path );
-
-            // === Everything below runs in PARALLEL (no shared state) ===
-
-            img.Normalize();
-
-            size_t numPx = size_t( refWidth ) * size_t( refHeight );
-
-            if ( needsDebayer )
-            {
-                const pcl::Image::sample* cfa = img.PixelData( 0 );
-                result.pixelData[i].resize( 3 );
-                DebayerBilinear( cfa, refWidth, refHeight, bayerPattern,
-                                 result.pixelData[i][0],
-                                 result.pixelData[i][1],
-                                 result.pixelData[i][2] );
-
-                pcl::Image rgbImg;
-                rgbImg.AllocateData( refWidth, refHeight, 3, pcl::ColorSpace::RGB );
-                std::copy( result.pixelData[i][0].begin(), result.pixelData[i][0].end(),
-                           rgbImg.PixelData( 0 ) );
-                std::copy( result.pixelData[i][1].begin(), result.pixelData[i][1].end(),
-                           rgbImg.PixelData( 1 ) );
-                std::copy( result.pixelData[i][2].begin(), result.pixelData[i][2].end(),
-                           rgbImg.PixelData( 2 ) );
-
-                result.metadata[i] = ExtractMetadata( keywords );
-                if ( result.metadata[i].fwhm == 0.0 && result.metadata[i].eccentricity == 0.0 )
-                    ComputeFrameMetrics( rgbImg, result.metadata[i], &warnings[i] );
-            }
-            else
-            {
-                result.pixelData[i].resize( outChannels );
-                for ( int c = 0; c < outChannels; ++c )
-                {
-                    const pcl::Image::sample* src = img.PixelData( c );
-                    result.pixelData[i][c].assign( src, src + numPx );
-                }
-
-                result.metadata[i] = ExtractMetadata( keywords );
-                if ( result.metadata[i].fwhm == 0.0 && result.metadata[i].eccentricity == 0.0 )
-                    ComputeFrameMetrics( img, result.metadata[i], &warnings[i] );
-            }
+            result.metadata[i] = ExtractMetadata( keywords );
+            if ( result.metadata[i].fwhm == 0.0 && result.metadata[i].eccentricity == 0.0 )
+                ComputeFrameMetrics( img, result.metadata[i] );
         }
-        catch ( const pcl::Error& e )
-        {
-            try { errors[i] = pcl::IsoString( e.Message() ).c_str(); }
-            catch ( ... ) { errors[i] = "FrameLoader: unknown error in frame " + std::to_string( i + 1 ); }
-        }
-        catch ( const std::exception& e )
-        {
-            errors[i] = e.what();
-        }
-        catch ( ... )
-        {
-            errors[i] = "FrameLoader: unknown error in frame " + std::to_string( i + 1 );
-        }
-    }
-
-    // 6. Emit log messages + warnings from parallel region (main thread only)
-    for ( size_t i = 0; i < N; ++i )
-    {
-        if ( !logMessages[i].empty() )
-            console.WriteLn( pcl::String().Format( "  [%d/%d] %s",
-                int( i + 1 ), int( N ), logMessages[i].c_str() ) );
-        if ( !warnings[i].empty() )
-            console.WarningLn( pcl::String( warnings[i].c_str() ) );
-    }
-
-    // 7. Check for errors — throw the first one
-    for ( size_t i = 0; i < N; ++i )
-    {
-        if ( !errors[i].empty() )
-            throw pcl::Error( pcl::String( errors[i].c_str() ) );
     }
 
     console.WriteLn( pcl::String().Format(
