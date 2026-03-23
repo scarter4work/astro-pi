@@ -237,7 +237,9 @@ LoadedFrames FrameLoader::LoadRaw( const std::vector<FramePath>& frames )
     //    All PCL/CFITSIO file operations are serialized (PI's CFITSIO is not
     //    thread-safe for concurrent reads). Parallelism comes from overlapping
     //    the post-read CPU work (normalize, debayer, PSF fitting) across frames.
+    //    IMPORTANT: pcl::Console is main-thread-only — never call from worker threads.
     //    IMPORTANT: never throw inside an omp critical section (undefined behavior).
+    std::vector<std::string> logMessages( N );
     #pragma omp parallel for num_threads(LOAD_THREADS) schedule(dynamic)
     for ( size_t i = 0; i < N; ++i )
     {
@@ -245,13 +247,7 @@ LoadedFrames FrameLoader::LoadRaw( const std::vector<FramePath>& frames )
         {
             const pcl::String& path = enabled[i]->path;
 
-            #pragma omp critical(console)
-            {
-                console.WriteLn( pcl::String().Format(
-                    "  [%d/%d] %s",
-                    int( i + 1 ), int( N ),
-                    pcl::IsoString( pcl::File::ExtractNameAndExtension( path ) ).c_str() ) );
-            }
+            logMessages[i] = pcl::IsoString( pcl::File::ExtractNameAndExtension( path ) ).c_str();
 
             // Serialize all PCL/CFITSIO file I/O (not thread-safe)
             pcl::Image img;
@@ -358,9 +354,12 @@ LoadedFrames FrameLoader::LoadRaw( const std::vector<FramePath>& frames )
         }
     }
 
-    // 6. Emit any warnings from parallel region
+    // 6. Emit log messages + warnings from parallel region (main thread only)
     for ( size_t i = 0; i < N; ++i )
     {
+        if ( !logMessages[i].empty() )
+            console.WriteLn( pcl::String().Format( "  [%d/%d] %s",
+                int( i + 1 ), int( N ), logMessages[i].c_str() ) );
         if ( !warnings[i].empty() )
             console.WarningLn( pcl::String( warnings[i].c_str() ) );
     }
