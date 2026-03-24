@@ -6,3 +6,4 @@ build/
 *.xsgn
 *.d
 Testing/
+test_data/
