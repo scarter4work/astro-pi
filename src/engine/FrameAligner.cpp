@@ -116,12 +116,34 @@ AlignmentOutput alignFrames(const std::vector<const float*>& frameData,
         offsets[i] = matchFrames(starLists[referenceIdx], starLists[i],
                                   width, matchMaxStars);
 
-        // Frame rejection: RMS too high or scale anomaly
-        if (offsets[i].valid) {
-            if (offsets[i].convergenceRMS > 2.0 ||
-                offsets[i].scale < 0.95 || offsets[i].scale > 1.05) {
-                offsets[i].valid = false;
-            }
+        // Never reject an entire frame — every sub has usable data.
+        if (!offsets[i].valid) {
+            // Matching failed entirely — use identity (zero shift) as fallback.
+            // Frame will be slightly misaligned but still contributes to stacking.
+            offsets[i].a = 1.0;
+            offsets[i].b = 0.0;
+            offsets[i].tx = 0.0;
+            offsets[i].ty = 0.0;
+            offsets[i].dx = 0;
+            offsets[i].dy = 0;
+            offsets[i].scale = 1.0;
+            offsets[i].rotation = 0.0;
+            offsets[i].flipped = false;
+            offsets[i].convergenceRMS = 0.0;
+            offsets[i].numMatchedStars = 0;
+            offsets[i].valid = true;
+        } else if (offsets[i].convergenceRMS > 2.0 ||
+                   offsets[i].scale < 0.95 || offsets[i].scale > 1.05) {
+            // Similarity transform produced unreasonable result — fall back to
+            // pure translation using the median dx/dy from star matching.
+            offsets[i].a = 1.0;
+            offsets[i].b = 0.0;
+            offsets[i].tx = -offsets[i].dx;
+            offsets[i].ty = -offsets[i].dy;
+            offsets[i].scale = 1.0;
+            offsets[i].rotation = 0.0;
+            offsets[i].flipped = false;
+            offsets[i].convergenceRMS = 0.0;
         }
     }
 
