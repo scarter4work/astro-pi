@@ -4,25 +4,6 @@
 #include <cmath>
 #include "engine/FrameAligner.h"
 
-// Helper to construct a translation-only AlignmentResult (old convention: dx = target - ref)
-static nukex::AlignmentResult makeTranslation(int dx, int dy, int nStars = 10,
-                                                double rms = 0.5, bool valid = true) {
-    nukex::AlignmentResult r;
-    r.a = 1.0;
-    r.b = 0.0;
-    r.tx = -dx;  // transform convention: ref = target + tx → tx = -(target - ref) = -dx
-    r.ty = -dy;
-    r.flipped = false;
-    r.rotation = 0.0;
-    r.scale = 1.0;
-    r.dx = dx;
-    r.dy = dy;
-    r.numMatchedStars = nStars;
-    r.convergenceRMS = rms;
-    r.valid = valid;
-    return r;
-}
-
 static std::vector<float> makeSyntheticFrame(int width, int height,
                                               const std::vector<std::pair<int,int>>& starPositions,
                                               float background = 0.1f, float peak = 0.9f) {
@@ -43,9 +24,9 @@ static std::vector<float> makeSyntheticFrame(int width, int height,
 
 TEST_CASE("computeCropRegion computes correct bounding box", "[aligner]") {
     std::vector<nukex::AlignmentResult> offsets = {
-        makeTranslation(0, 0),
-        makeTranslation(5, -3, 8, 0.6),
-        makeTranslation(-2, 4, 9, 0.4)
+        {0, 0, 10, 0.5, true},
+        {5, -3, 8, 0.6, true},
+        {-2, 4, 9, 0.4, true}
     };
 
     auto crop = nukex::computeCropRegion(offsets, 100, 80);
@@ -71,9 +52,9 @@ TEST_CASE("applyAlignment produces aligned SubCube for single channel", "[aligne
     }
 
     std::vector<nukex::AlignmentResult> offsets = {
-        makeTranslation(0, 0),
-        makeTranslation(3, -2, 8, 0.6),
-        makeTranslation(-1, 4, 9, 0.4)
+        {0, 0, 10, 0.5, true},
+        {3, -2, 8, 0.6, true},
+        {-1, 4, 9, 0.4, true}
     };
 
     auto crop = nukex::computeCropRegion(offsets, W, H);
@@ -116,13 +97,9 @@ TEST_CASE("FrameAligner aligns shifted synthetic frames", "[aligner]") {
 
     auto result = nukex::alignFrames(frameData, W, H);
     REQUIRE(result.alignedCube.numSubs() == 4);
+    REQUIRE(result.alignedCube.width() < static_cast<size_t>(W));
+    REQUIRE(result.alignedCube.height() < static_cast<size_t>(H));
     REQUIRE(result.offsets.size() == 4);
     REQUIRE(result.offsets[0].dx == 0);
     REQUIRE(result.offsets[0].dy == 0);
-
-    // Valid frames should have low RMS
-    for (size_t i = 0; i < 4; ++i) {
-        if (result.offsets[i].valid)
-            REQUIRE(result.offsets[i].convergenceRMS < 2.0);
-    }
 }

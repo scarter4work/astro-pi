@@ -249,40 +249,15 @@ bool NukeXStackInstance::ExecuteGlobal()
       nukex::AlignmentOutput aligned = nukex::alignFrames(
          framePtrs, raw.width, raw.height );
 
-      int rejectedCount = 0;
       for ( size_t i = 0; i < aligned.offsets.size(); ++i )
       {
          const auto& o = aligned.offsets[i];
-         if ( o.valid )
-         {
-            if ( std::abs( o.rotation ) > 0.1 || o.flipped )
-            {
-               console.WriteLn( String().Format(
-                  "  [%d/%d] dx=%+d, dy=%+d, rot=%.1f\xc2\xb0%s (%d stars, RMS=%.2f)\n",
-                  int( i + 1 ), int( aligned.offsets.size() ),
-                  o.dx, o.dy, o.rotation, o.flipped ? " FLIP" : "",
-                  o.numMatchedStars, o.convergenceRMS ) );
-            }
-            else
-            {
-               console.WriteLn( String().Format( "  [%d/%d] dx=%+d, dy=%+d (%d stars, RMS=%.2f)\n",
-                  int( i + 1 ), int( aligned.offsets.size() ),
-                  o.dx, o.dy, o.numMatchedStars, o.convergenceRMS ) );
-            }
-         }
-         else
-         {
-            ++rejectedCount;
-            console.WarningLn( String().Format( "  [%d/%d] rejected (RMS=%.2f, scale=%.3f)\n",
-               int( i + 1 ), int( aligned.offsets.size() ),
-               o.convergenceRMS, o.scale ) );
-         }
+         console.WriteLn( String().Format( "  [%d/%d] dx=%+d, dy=%+d (%d stars, RMS=%.2f)\n",
+            int( i + 1 ), int( aligned.offsets.size() ),
+            o.dx, o.dy, o.numMatchedStars, o.convergenceRMS ) );
          console.Flush();
          Module->ProcessEvents();
       }
-      if ( rejectedCount > 0 )
-         console.WarningLn( String().Format( "  %d frame(s) rejected (bad alignment or scale)\n",
-            rejectedCount ) );
       console.WriteLn( String().Format( "  Crop: %d x %d (from %d x %d)",
          aligned.crop.width(), aligned.crop.height(), raw.width, raw.height ) );
 
