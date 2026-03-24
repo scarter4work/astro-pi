@@ -433,3 +433,19 @@ target_include_directories(test_flat_calibrator PRIVATE
 )
 target_compile_features(test_flat_calibrator PRIVATE cxx_std_17)
 add_test(NAME test_flat_calibrator COMMAND test_flat_calibrator)
+
+# TrailDetector unit tests
+add_executable(test_trail_detector
+    unit/test_trail_detector.cpp
+    ${CMAKE_SOURCE_DIR}/src/engine/TrailDetector.cpp
+)
+target_link_libraries(test_trail_detector PRIVATE Catch2::Catch2WithMain)
+target_include_directories(test_trail_detector PRIVATE
+    ${CMAKE_SOURCE_DIR}/src
+    ${CMAKE_SOURCE_DIR}/third_party/xtensor/include
+    ${CMAKE_SOURCE_DIR}/third_party/xtl/include
+    ${CMAKE_SOURCE_DIR}/third_party/xsimd/include
+)
+target_compile_definitions(test_trail_detector PRIVATE XTENSOR_USE_XSIMD)
+target_compile_features(test_trail_detector PRIVATE cxx_std_17)
+add_test(NAME test_trail_detector COMMAND test_trail_detector)
