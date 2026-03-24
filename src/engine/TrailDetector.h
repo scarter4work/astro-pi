@@ -32,7 +32,6 @@ struct TrailLine
 
 struct FrameTrailResult
 {
-    int frameIndex     = -1;
     int maskedPixels   = 0;
     int linesDetected  = 0;
     std::vector<TrailLine> lines;

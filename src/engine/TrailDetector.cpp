@@ -31,6 +31,9 @@ std::vector<uint8_t> TrailDetector::findSeeds( const float* frameData,
     std::vector<float> neighbors;
     neighbors.reserve( m_config.seedWindowSize * m_config.seedWindowSize );
 
+    std::vector<float> absDevs;
+    absDevs.reserve( m_config.seedWindowSize * m_config.seedWindowSize );
+
     for ( int y = 0; y < height; ++y )
     {
         for ( int x = 0; x < width; ++x )
@@ -66,7 +69,7 @@ std::vector<uint8_t> TrailDetector::findSeeds( const float* frameData,
             float localMedian = neighbors[mid];
 
             // Compute MAD (median absolute deviation)
-            std::vector<float> absDevs( neighbors.size() );
+            absDevs.resize( neighbors.size() );
             for ( size_t i = 0; i < neighbors.size(); ++i )
                 absDevs[i] = std::fabs( neighbors[i] - localMedian );
             size_t madMid = absDevs.size() / 2;
@@ -417,6 +420,7 @@ std::vector<uint8_t> TrailDetector::walkAndConfirm(
         std::vector<int> confirmedPixels;
         int steps = static_cast<int>( std::ceil( tMax - tMin ) );
         confirmedPixels.reserve( steps + 1 );
+        std::vector<uint8_t> visited( width * height, 0 );
 
         for ( int step = 0; step <= steps; ++step )
         {
@@ -472,10 +476,13 @@ std::vector<uint8_t> TrailDetector::walkAndConfirm(
             std::nth_element( absDevs.begin(), absDevs.begin() + madMid, absDevs.end() );
             float neighborMAD = absDevs[madMid] * 1.4826f;
 
-            // Confirm trail pixel
+            // Confirm trail pixel (deduplicate — adjacent t values can map to same pixel)
             float val = frameData[lineIdx];
-            if ( neighborMAD > 0 && val > neighborMedian + m_config.confirmSigma * neighborMAD )
+            if ( !visited[lineIdx] && neighborMAD > 1e-10f && val > neighborMedian + m_config.confirmSigma * neighborMAD )
+            {
                 confirmedPixels.push_back( lineIdx );
+                visited[lineIdx] = 1;
+            }
         }
 
         // Reject if fewer than 5 confirmed pixels
@@ -562,7 +569,6 @@ int TrailDetector::detectAndMask( SubCube& cube, LogCallback log ) const
 
     // Per-frame detection in parallel, collect results
     struct FrameResult {
-        int z;
         int maskedCount;
         std::vector<uint8_t> trailMask;
         std::vector<TrailLine> lines;
@@ -587,7 +593,6 @@ int TrailDetector::detectAndMask( SubCube& cube, LogCallback log ) const
         auto seeds = findSeeds( frame.data(), alignMask.data(), W, H );
         auto clusters = clusterSeeds( seeds, W, H );
 
-        results[z].z = z;
         if ( clusters.empty() )
         {
             results[z].maskedCount = 0;
