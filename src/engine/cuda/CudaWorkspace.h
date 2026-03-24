@@ -35,6 +35,9 @@ struct WorkspaceLayout {
     size_t off_scratch_i1;      // int[nSubs]
     size_t off_scratch_i2;      // int[nSubs]
 
+    // Mask pre-filter index
+    size_t off_validIdx;        // int[nSubs] — maps compact index → original frame index
+
     // Bool arrays
     size_t off_madOutlier;      // bool[nSubs]
     size_t off_esdOutlier;      // bool[nSubs]
@@ -63,6 +66,9 @@ inline WorkspaceLayout computeWorkspaceLayout(int nSubs)
     w.off_sortedCleanIdx  = off; off += n * sizeof(int);
     w.off_scratch_i1      = off; off += n * sizeof(int);
     w.off_scratch_i2      = off; off += n * sizeof(int);
+
+    // Mask pre-filter index (1 array)
+    w.off_validIdx        = off; off += n * sizeof(int);
 
     // Bool zone (3 arrays)
     w.off_madOutlier   = off; off += n * sizeof(bool);

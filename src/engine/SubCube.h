@@ -144,6 +144,11 @@ public:
     const uint8_t* maskColumnPtr(size_t y, size_t x) const {
         return m_hasMasks ? &m_masks(0, y, x) : nullptr;
     }
+    // Raw mask tensor data (column-major, Z-contiguous, nSubs * H * W).
+    // Used by GPU stacking to upload the full mask buffer.
+    const uint8_t* maskTensorData() const {
+        return m_hasMasks ? m_masks.data() : nullptr;
+    }
 
     // Direct tensor access
     xt::xtensor<float, 3, xt::layout_type::column_major>& cube() { return m_cube; }

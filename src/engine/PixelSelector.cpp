@@ -431,6 +431,7 @@ std::vector<float> PixelSelector::processImageGPU(SubCube& cube,
     gpuConfig.height = H;
     gpuConfig.width = W;
     gpuConfig.qualityScores = qualityScores;
+    gpuConfig.maskData = cube.maskTensorData();
     gpuConfig.provenanceOut = nullptr;
 
     auto result = cuda::processImageGPU(

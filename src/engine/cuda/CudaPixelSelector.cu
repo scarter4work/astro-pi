@@ -795,6 +795,7 @@ __device__ double aiccDevice(double logL, int k, int n) {
 
 __global__ void pixelSelectionKernel(
     const float* __restrict__ bandCube,
+    const uint8_t* __restrict__ maskBand,
     float* __restrict__ outputPixels,
     uint8_t* __restrict__ distTypes,
     uint32_t* __restrict__ provenanceOut,
@@ -827,6 +828,7 @@ __global__ void pixelSelectionKernel(
     int*    sortedCleanIdx = wsPtr<int>(myWS, layout.off_sortedCleanIdx);
     int*    scratch_i1    = wsPtr<int>(myWS, layout.off_scratch_i1);
     int*    scratch_i2    = wsPtr<int>(myWS, layout.off_scratch_i2);
+    int*    validIdx      = wsPtr<int>(myWS, layout.off_validIdx);
     bool*   madOutlier    = wsPtr<bool>(myWS, layout.off_madOutlier);
     bool*   esdOutlier    = wsPtr<bool>(myWS, layout.off_esdOutlier);
     bool*   allOutlier    = wsPtr<bool>(myWS, layout.off_allOutlier);
@@ -842,17 +844,42 @@ __global__ void pixelSelectionKernel(
         // Output index in full image
         int outputIdx = (bandStartRow + localY) * fullWidth + x;
 
-        // 1. Promote to double
-        for (int i = 0; i < nSubs; ++i)
-            zValues[i] = static_cast<double>(zColStart[i]);
+        // 0. Pre-filter by masks: compact unmasked frames into zValues,
+        //    tracking original frame indices in validIdx.
+        int nValid = 0;
+        if (maskBand != nullptr) {
+            const uint8_t* maskCol = maskBand + localY * nSubs + x * nSubs * bandHeight;
+            for (int i = 0; i < nSubs; ++i) {
+                if (maskCol[i] == 0) {
+                    zValues[nValid] = static_cast<double>(zColStart[i]);
+                    validIdx[nValid] = i;
+                    ++nValid;
+                }
+            }
+            if (nValid < 3) {
+                // Too many masked — fall back to all frames
+                nValid = nSubs;
+                for (int i = 0; i < nSubs; ++i) {
+                    zValues[i] = static_cast<double>(zColStart[i]);
+                    validIdx[i] = i;
+                }
+            }
+        } else {
+            // No masks — identity mapping
+            nValid = nSubs;
+            for (int i = 0; i < nSubs; ++i) {
+                zValues[i] = static_cast<double>(zColStart[i]);
+                validIdx[i] = i;
+            }
+        }
 
-        // 2a. MAD sigma-clip pre-filter
-        sigmaClipMAD_device(zValues, nSubs, 3.0, madOutlier,
+        // 2a. MAD sigma-clip pre-filter (on unmasked frames only)
+        sigmaClipMAD_device(zValues, nValid, 3.0, madOutlier,
                             scratch_d1, scratch_d2);
 
         // Build pre-filtered data
         int nPreFiltered = 0;
-        for (int i = 0; i < nSubs; ++i) {
+        for (int i = 0; i < nValid; ++i) {
             if (!madOutlier[i]) {
                 preFiltered[nPreFiltered] = zValues[i];
                 preFilteredIdx[nPreFiltered] = i;
@@ -861,7 +888,7 @@ __global__ void pixelSelectionKernel(
         }
 
         // 2b. ESD on pre-filtered data
-        for (int i = 0; i < nSubs; ++i)
+        for (int i = 0; i < nValid; ++i)
             allOutlier[i] = madOutlier[i];
 
         if (nPreFiltered >= 3) {
@@ -873,9 +900,9 @@ __global__ void pixelSelectionKernel(
             }
         }
 
-        // 3. Build clean data (with original frame index tracking)
+        // 3. Build clean data (with compact index tracking)
         int nClean = 0;
-        for (int i = 0; i < nSubs; ++i) {
+        for (int i = 0; i < nValid; ++i) {
             if (!allOutlier[i]) {
                 cleanData[nClean] = zValues[i];
                 cleanIdx[nClean] = i;
@@ -892,8 +919,8 @@ __global__ void pixelSelectionKernel(
                     cleanIdx[i] = preFilteredIdx[i];
                 }
             } else {
-                nClean = nSubs;
-                for (int i = 0; i < nSubs; ++i) {
+                nClean = nValid;
+                for (int i = 0; i < nValid; ++i) {
                     cleanData[i] = zValues[i];
                     cleanIdx[i] = i;
                 }
@@ -948,13 +975,15 @@ __global__ void pixelSelectionKernel(
                 selectedValue = sum / halfN;
             }
 
-            // Find closest frame to selected value
+            // Find closest frame to selected value.
+            // cleanIdx[i] is a compact index into zValues; validIdx maps
+            // that back to the original frame index for provenance output.
             double bestDist = 1e300;
             for (int i = 0; i < nClean; ++i) {
                 double dist = fabs(cleanData[i] - selectedValue);
                 if (dist < bestDist) {
                     bestDist = dist;
-                    bestZ = cleanIdx[i];
+                    bestZ = validIdx[cleanIdx[i]];
                 }
             }
 
@@ -979,13 +1008,13 @@ __global__ void pixelSelectionKernel(
                     double bestScore = __ldg(&qualityScores[bestZ]);
                     for (int i = 0; i < nClean; ++i) {
                         double val = cleanData[i];
-                        int origIdx = cleanIdx[i];
+                        int origFrame = validIdx[cleanIdx[i]];
                         if (val >= shLo && val <= shHi &&
                             fabs(val - selectedValue) <= shMAD) {
-                            double score = __ldg(&qualityScores[origIdx]);
+                            double score = __ldg(&qualityScores[origFrame]);
                             if (score > bestScore) {
                                 bestScore = score;
-                                bestZ = origIdx;
+                                bestZ = origFrame;
                             }
                         }
                     }
@@ -1109,8 +1138,10 @@ GpuStackResult processImageGPU(
     int numSlots = maxBlocks * BLOCK_SIZE;
     size_t bandBudget = remaining - workspaceBytes;
 
+    bool hasMasks = (config.maskData != nullptr);
     size_t cubeRowBytes = nSubs * W * sizeof(float);
-    size_t bandH = bandBudget / cubeRowBytes;
+    size_t maskRowBytes = hasMasks ? nSubs * W * sizeof(uint8_t) : 0;
+    size_t bandH = bandBudget / (cubeRowBytes + maskRowBytes);
     if (bandH > H) bandH = H;
     if (bandH < 1) bandH = 1;
 
@@ -1120,9 +1151,10 @@ GpuStackResult processImageGPU(
     double*   d_quality    = nullptr;
     char*     d_workspace  = nullptr;
     float*    d_bandCube   = nullptr;
+    uint8_t*  d_maskBand   = nullptr;
 
-    void* allPtrs[6] = {};
-    CudaMemGuard guard{allPtrs, 6};
+    void* allPtrs[7] = {};
+    CudaMemGuard guard{allPtrs, 7};
 
     auto cuCheck = [&](cudaError_t err, const char* ctx) -> bool {
         if (err != cudaSuccess) {
@@ -1145,9 +1177,14 @@ GpuStackResult processImageGPU(
     if (!cuCheck(cudaMalloc(&d_bandCube,  bandH * W * nSubs * sizeof(float)), "alloc bandCube")) return result;
     allPtrs[4] = d_bandCube;
 
+    if (hasMasks) {
+        if (!cuCheck(cudaMalloc(&d_maskBand, bandH * W * nSubs * sizeof(uint8_t)), "alloc maskBand")) return result;
+        allPtrs[5] = d_maskBand;
+    }
+
     if (config.provenanceOut) {
         if (!cuCheck(cudaMalloc(&d_provenance, totalPixels * sizeof(uint32_t)), "alloc provenance")) return result;
-        allPtrs[5] = d_provenance;
+        allPtrs[6] = d_provenance;
     }
 
     if (config.qualityScores) {
@@ -1157,13 +1194,18 @@ GpuStackResult processImageGPU(
     }
 
     std::vector<float> bandBuf;
-    if (bandH < H)
+    std::vector<uint8_t> maskBandBuf;
+    if (bandH < H) {
         bandBuf.resize(nSubs * bandH * W);
+        if (hasMasks)
+            maskBandBuf.resize(nSubs * bandH * W);
+    }
 
     for (size_t startRow = 0; startRow < H; startRow += bandH) {
         size_t curBandH = std::min(bandH, H - startRow);
         size_t bandPixels = curBandH * W;
 
+        // Upload cube band
         const float* uploadSrc;
         size_t uploadBytes = nSubs * curBandH * W * sizeof(float);
 
@@ -1182,11 +1224,33 @@ GpuStackResult processImageGPU(
         if (!cuCheck(cudaMemcpy(d_bandCube, uploadSrc, uploadBytes,
                                 cudaMemcpyHostToDevice), "upload band cube")) return result;
 
+        // Upload mask band (same column-major layout transform as cube)
+        if (hasMasks) {
+            const uint8_t* maskSrc;
+            size_t maskBytes = nSubs * curBandH * W * sizeof(uint8_t);
+
+            if (curBandH == H) {
+                maskSrc = config.maskData;
+            } else {
+                for (size_t x = 0; x < W; ++x) {
+                    std::memcpy(
+                        maskBandBuf.data() + x * nSubs * curBandH,
+                        config.maskData + startRow * nSubs + x * nSubs * H,
+                        nSubs * curBandH * sizeof(uint8_t));
+                }
+                maskSrc = maskBandBuf.data();
+            }
+
+            if (!cuCheck(cudaMemcpy(d_maskBand, maskSrc, maskBytes,
+                                    cudaMemcpyHostToDevice), "upload mask band")) return result;
+        }
+
         int gridBlocks = std::min(maxBlocks,
             static_cast<int>((bandPixels + BLOCK_SIZE - 1) / BLOCK_SIZE));
 
         pixelSelectionKernel<<<gridBlocks, BLOCK_SIZE>>>(
-            d_bandCube, d_output, d_distTypes, d_provenance,
+            d_bandCube, hasMasks ? d_maskBand : nullptr,
+            d_output, d_distTypes, d_provenance,
             d_workspace, layout,
             config.qualityScores ? d_quality : nullptr,
             static_cast<int>(nSubs),

@@ -20,6 +20,7 @@ struct GpuStackConfig {
     size_t height = 0;
     size_t width = 0;
     const double* qualityScores = nullptr;  // host pointer, uploaded to device global memory
+    const uint8_t* maskData = nullptr;     // host pointer, column-major (nSubs x H x W), or nullptr
     uint32_t* provenanceOut = nullptr;      // device output, optional (nullptr OK)
 };
 

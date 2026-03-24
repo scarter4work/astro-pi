@@ -272,3 +272,133 @@ TEST_CASE("GPU stacking with 256 subs matches CPU", "[cuda][equivalence][high-su
     }
 #endif
 }
+
+TEST_CASE("GPU mask pre-filtering matches CPU", "[cuda][equivalence][masks]") {
+#ifndef NUKEX_HAS_CUDA
+    SKIP("CUDA support not compiled in");
+#else
+    if (!nukex::cuda::isGpuAvailable()) {
+        SKIP("No CUDA-capable GPU available");
+    }
+
+    // 8 frames, 4x4 image. Frames 2 and 5 have a bright "trail" at specific
+    // pixels. Masks mark those pixels so the selector should skip them.
+    constexpr size_t nSubs = 8;
+    constexpr size_t H = 4;
+    constexpr size_t W = 4;
+
+    nukex::SubCube cpuCube(nSubs, H, W);
+    nukex::SubCube gpuCube(nSubs, H, W);
+
+    // Fill with clean Gaussian data around 0.5
+    std::mt19937 rng(42);
+    std::normal_distribution<double> noise(0.5, 0.01);
+    for (size_t z = 0; z < nSubs; ++z)
+        for (size_t y = 0; y < H; ++y)
+            for (size_t x = 0; x < W; ++x) {
+                float val = static_cast<float>(noise(rng));
+                cpuCube.setPixel(z, y, x, val);
+                gpuCube.setPixel(z, y, x, val);
+            }
+
+    // Inject bright trail pixels at (y=1, x=0..3) in frames 2 and 5
+    for (size_t x = 0; x < W; ++x) {
+        cpuCube.setPixel(2, 1, x, 0.95f);
+        cpuCube.setPixel(5, 1, x, 0.92f);
+        gpuCube.setPixel(2, 1, x, 0.95f);
+        gpuCube.setPixel(5, 1, x, 0.92f);
+    }
+
+    // Allocate masks and mark the trail pixels
+    cpuCube.allocateMasks();
+    gpuCube.allocateMasks();
+    for (size_t x = 0; x < W; ++x) {
+        cpuCube.setMask(2, 1, x, 1);
+        cpuCube.setMask(5, 1, x, 1);
+        gpuCube.setMask(2, 1, x, 1);
+        gpuCube.setMask(5, 1, x, 1);
+    }
+
+    // CPU path (masks flow through processImage → selectBestZ)
+    nukex::PixelSelector::Config config;
+    config.maxOutliers = 3;
+    config.outlierAlpha = 0.05;
+    config.adaptiveModels = false;
+    nukex::PixelSelector cpuSelector(config);
+    auto cpuResult = cpuSelector.processImage(cpuCube, nullptr, nullptr);
+
+    // GPU path via direct CUDA API with masks
+    std::vector<float> gpuOutput(H * W);
+    std::vector<uint8_t> gpuDistTypes(H * W);
+
+    nukex::cuda::GpuStackConfig gpuConfig;
+    gpuConfig.maxOutliers = config.maxOutliers;
+    gpuConfig.outlierAlpha = config.outlierAlpha;
+    gpuConfig.adaptiveModels = config.adaptiveModels;
+    gpuConfig.nSubs = nSubs;
+    gpuConfig.height = H;
+    gpuConfig.width = W;
+    gpuConfig.maskData = gpuCube.maskTensorData();
+
+    auto gpuResult = nukex::cuda::processImageGPU(
+        gpuCube.cube().data(), gpuOutput.data(), gpuDistTypes.data(), gpuConfig);
+
+    REQUIRE(gpuResult.success);
+
+    // GPU output should match CPU output (both use masks)
+    REQUIRE(cpuResult.size() == gpuOutput.size());
+    for (size_t i = 0; i < cpuResult.size(); ++i) {
+        REQUIRE(gpuOutput[i] == Approx(cpuResult[i]).margin(1e-4f));
+    }
+
+    // Trail row pixels should be near 0.5 (clean data), not near 0.9 (trail)
+    for (size_t x = 0; x < W; ++x) {
+        float trailRowPixel = gpuOutput[1 * W + x];
+        REQUIRE(trailRowPixel < 0.6f);
+        REQUIRE(trailRowPixel > 0.4f);
+    }
+#endif
+}
+
+TEST_CASE("GPU mask pre-filtering via PixelSelector wrapper", "[cuda][equivalence][masks]") {
+#ifndef NUKEX_HAS_CUDA
+    SKIP("CUDA support not compiled in");
+#else
+    if (!nukex::cuda::isGpuAvailable()) {
+        SKIP("No CUDA-capable GPU available");
+    }
+
+    // Test the full PixelSelector::processImageGPU path with masks.
+    constexpr size_t nSubs = 10;
+    constexpr size_t H = 4;
+    constexpr size_t W = 4;
+
+    nukex::SubCube cube(nSubs, H, W);
+
+    // Uniform clean data at 0.3
+    for (size_t z = 0; z < nSubs; ++z)
+        for (size_t y = 0; y < H; ++y)
+            for (size_t x = 0; x < W; ++x)
+                cube.setPixel(z, y, x, 0.3f);
+
+    // One frame has a bright trail at pixel (2,2)
+    cube.setPixel(3, 2, 2, 0.99f);
+
+    // Mark it
+    cube.allocateMasks();
+    cube.setMask(3, 2, 2, 1);
+
+    std::vector<uint8_t> distTypes;
+    nukex::PixelSelector::Config cfg;
+    cfg.useGPU = true;
+    nukex::PixelSelector selector(cfg);
+    auto result = selector.processImageGPU(cube, nullptr, distTypes, nullptr);
+
+    REQUIRE(result.size() == H * W);
+
+    // The masked pixel should come out ~0.3 (from the 9 clean frames), not ~0.37
+    // (which would be the mean including the 0.99 trail pixel)
+    float maskedPixel = result[2 * W + 2];
+    REQUIRE(maskedPixel == Approx(0.3f).margin(0.01f));
+#endif
+}
