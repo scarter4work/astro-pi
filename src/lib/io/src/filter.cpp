@@ -1,5 +1,7 @@
 #include "nukex/io/filter.hpp"
 
+#include <cstdlib>
+
 namespace nukex {
 
 const char* filter_class_name(FilterClass c) {
@@ -11,7 +13,7 @@ const char* filter_class_name(FilterClass c) {
         case FilterClass::NARROWBAND_SINGLE: return "NARROWBAND_SINGLE";
         case FilterClass::DUAL_NB_OSC:       return "DUAL_NB_OSC";
     }
-    return "UNKNOWN";
+    std::abort();
 }
 
 } // namespace nukex
