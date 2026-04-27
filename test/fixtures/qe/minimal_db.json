@@ -1,0 +1,45 @@
+{
+  "schema_version": 1,
+  "cameras": {
+    "ASI585MC": {
+      "sensor": "IMX585",
+      "type": "OSC",
+      "bayer": "RGGB",
+      "qe": {
+        "486": { "R": 0.03, "G": 0.65, "B": 0.70 },
+        "501": { "R": 0.03, "G": 0.85, "B": 0.50 },
+        "656": { "R": 0.73, "G": 0.32, "B": 0.03 },
+        "672": { "R": 0.71, "G": 0.33, "B": 0.05 }
+      },
+      "confidence": "high"
+    },
+    "ASI2600MC": {
+      "sensor": "IMX571",
+      "type": "OSC",
+      "bayer": "RGGB",
+      "qe": {
+        "486": { "R": 0.07, "G": 0.78, "B": 0.86 },
+        "501": { "R": 0.08, "G": 0.89, "B": 0.60 },
+        "656": { "R": 0.46, "G": 0.05, "B": 0.04 },
+        "672": { "R": 0.42, "G": 0.05, "B": 0.05 }
+      },
+      "confidence": "high"
+    }
+  },
+  "filters": {
+    "HaO3": {
+      "type": "DUAL_NB",
+      "lines": [
+        { "name": "Ha",   "wavelength_nm": 656.3, "fwhm_nm": 7.0 },
+        { "name": "OIII", "wavelength_nm": 500.7, "fwhm_nm": 7.0 }
+      ]
+    },
+    "S2O3": {
+      "type": "DUAL_NB",
+      "lines": [
+        { "name": "SII",  "wavelength_nm": 672.4, "fwhm_nm": 7.0 },
+        { "name": "OIII", "wavelength_nm": 500.7, "fwhm_nm": 7.0 }
+      ]
+    }
+  }
+}

@@ -1,0 +1,23 @@
+{
+  "schema_version": 1,
+  "cameras": {
+    "ASI585MC": {
+      "sensor": "IMX585",
+      "type": "OSC",
+      "bayer": "RGGB",
+      "qe": {
+        "656": { "R": 0.99, "G": 0.99, "B": 0.99 }
+      },
+      "confidence": "high"
+    },
+    "Custom_Cam_1": {
+      "sensor": "Custom",
+      "type": "OSC",
+      "bayer": "RGGB",
+      "qe": {
+        "656": { "R": 0.50, "G": 0.10, "B": 0.05 }
+      },
+      "confidence": "low"
+    }
+  }
+}

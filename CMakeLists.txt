@@ -56,6 +56,20 @@ if(NUKEX_BUILD_MODULE)
     include(PCLConfig)
 endif()
 
+# nlohmann/json — header-only, vendored via FetchContent. Hoisted to root
+# so any subdir (calibration, learning, future composers) can link against
+# `nlohmann_json::nlohmann_json` without depending on subdir ordering.
+include(FetchContent)
+FetchContent_Declare(
+    nlohmann_json
+    GIT_REPOSITORY https://github.com/nlohmann/json.git
+    GIT_TAG        v3.11.3
+    GIT_SHALLOW    TRUE
+)
+set(JSON_BuildTests OFF CACHE INTERNAL "")
+set(JSON_Install    OFF CACHE INTERNAL "")
+FetchContent_MakeAvailable(nlohmann_json)
+
 # Distribution guardrail. When ON, subprojects hard-fail if they detect a dep
 # graph that won't load inside PixInsight (e.g. system cfitsio → libcurl →
 # OPENSSL_3.2.0 symbols that PI's bundled libssl can't resolve).
@@ -70,6 +84,7 @@ endif()
 add_subdirectory(src/lib/core)
 add_subdirectory(src/lib/io)
 add_subdirectory(src/lib/alignment)
+add_subdirectory(src/lib/calibration)
 add_subdirectory(src/lib/fitting)
 add_subdirectory(src/lib/classify)
 add_subdirectory(src/lib/combine)

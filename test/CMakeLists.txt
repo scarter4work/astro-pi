@@ -6,6 +6,9 @@ target_include_directories(catch2_main PUBLIC
     "${CMAKE_SOURCE_DIR}/third_party/catch2"
 )
 
+# Path to test/fixtures/, used by tests that load JSON/FITS fixtures from disk.
+add_compile_definitions(NUKEX_TEST_FIXTURES_DIR="${CMAKE_SOURCE_DIR}/test/fixtures")
+
 # Helper function to add a test executable.
 #
 # `--allow-running-no-tests` is passed so that test binaries whose
@@ -43,6 +46,7 @@ nukex_add_test(test_star_detector unit/alignment/test_star_detector.cpp nukex4_a
 nukex_add_test(test_homography     unit/alignment/test_homography.cpp     nukex4_alignment)
 nukex_add_test(test_frame_aligner unit/alignment/test_frame_aligner.cpp nukex4_alignment)
 nukex_add_test(test_alignment_diag unit/alignment/test_alignment_diag.cpp nukex4_alignment)
+nukex_add_test(test_qe_database   unit/calibration/test_qe_database.cpp nukex4_calibration nukex4_io nukex4_core)
 nukex_add_test(test_robust_stats  unit/fitting/test_robust_stats.cpp   nukex4_fitting)
 nukex_add_test(test_student_t  unit/fitting/test_student_t_fitter.cpp  nukex4_fitting)
 nukex_add_test(test_gmm        unit/fitting/test_gmm_fitter.cpp       nukex4_fitting)
