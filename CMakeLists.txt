@@ -70,26 +70,14 @@ set(JSON_BuildTests OFF CACHE INTERNAL "")
 set(JSON_Install    OFF CACHE INTERNAL "")
 FetchContent_MakeAvailable(nlohmann_json)
 
-# Eigen 3.4 — header-only linear algebra library. Hoisted to root for the
-# same reason as nlohmann_json: any subdir (calibration's ChannelDecomposer,
-# future Phase B Q-solve in stacker) can link `Eigen3::Eigen`.
-#
-# We populate manually rather than calling MakeAvailable because Eigen's
-# CMakeLists has many side effects (BLAS/LAPACK linking, install targets,
-# pkg-config generation, examples) that we don't need for header-only use.
-FetchContent_Declare(
-    Eigen
-    GIT_REPOSITORY https://gitlab.com/libeigen/eigen.git
-    GIT_TAG        3.4.0
-    GIT_SHALLOW    TRUE
-)
-FetchContent_GetProperties(Eigen)
-if(NOT eigen_POPULATED)
-    FetchContent_Populate(Eigen)
-    add_library(Eigen3_headers INTERFACE)
-    target_include_directories(Eigen3_headers INTERFACE ${eigen_SOURCE_DIR})
-    add_library(Eigen3::Eigen ALIAS Eigen3_headers)
-endif()
+# Eigen — header-only linear algebra. Use the system-installed version
+# (Fedora 43 ships Eigen 5.0.1) so the whole project sees a single Eigen
+# ABI. Vendoring 3.4 here would silently shadow the system header inside
+# Ceres-touching TUs (fitting, alignment, learning) — Ceres is built
+# against system Eigen, so mismatched headers vs library is a latent ABI
+# trap. Calibration's ChannelDecomposer + future Phase B Q-solve all
+# link `Eigen3::Eigen` from this find_package call.
+find_package(Eigen3 REQUIRED NO_MODULE)
 
 # Distribution guardrail. When ON, subprojects hard-fail if they detect a dep
 # graph that won't load inside PixInsight (e.g. system cfitsio → libcurl →
