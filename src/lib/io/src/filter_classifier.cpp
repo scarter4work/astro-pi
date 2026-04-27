@@ -1,7 +1,6 @@
 #include "nukex/io/filter_classifier.hpp"
 #include "nukex/core/frame_metadata.hpp"
 
-#include <algorithm>
 #include <cctype>
 #include <unordered_map>
 
@@ -38,10 +37,10 @@ const std::unordered_map<std::string, KnownFilter>& known_table() {
         {"haoiii",    {FilterClass::DUAL_NB_OSC,       "HaO3", 578.5, 155.0}},
         {"s2o3",      {FilterClass::DUAL_NB_OSC,       "S2O3", 586.0, 170.0}},
         {"siioiii",   {FilterClass::DUAL_NB_OSC,       "S2O3", 586.0, 170.0}},
-        {"lextreme",  {FilterClass::DUAL_NB_OSC,       "L-eXtreme", 578.5, 7.0}},
-        {"lenhance",  {FilterClass::DUAL_NB_OSC,       "L-eNhance", 578.5, 25.0}},
-        {"luempro",   {FilterClass::DUAL_NB_OSC,       "L-uMpro",   578.5, 35.0}},
-        {"alpt",      {FilterClass::DUAL_NB_OSC,       "ALP-T",     578.5, 5.0}},
+        {"lextreme",  {FilterClass::DUAL_NB_OSC,       "L-eXtreme",  578.5,  7.0}},
+        {"lenhance",  {FilterClass::DUAL_NB_OSC,       "L-eNhance",  578.5, 25.0}},
+        {"lultimate", {FilterClass::DUAL_NB_OSC,       "L-Ultimate", 578.5,  3.0}},
+        {"alpt",      {FilterClass::DUAL_NB_OSC,       "ALP-T",      578.5,  5.0}},
     };
     return table;
 }
