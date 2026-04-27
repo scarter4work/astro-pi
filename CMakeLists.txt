@@ -70,6 +70,27 @@ set(JSON_BuildTests OFF CACHE INTERNAL "")
 set(JSON_Install    OFF CACHE INTERNAL "")
 FetchContent_MakeAvailable(nlohmann_json)
 
+# Eigen 3.4 — header-only linear algebra library. Hoisted to root for the
+# same reason as nlohmann_json: any subdir (calibration's ChannelDecomposer,
+# future Phase B Q-solve in stacker) can link `Eigen3::Eigen`.
+#
+# We populate manually rather than calling MakeAvailable because Eigen's
+# CMakeLists has many side effects (BLAS/LAPACK linking, install targets,
+# pkg-config generation, examples) that we don't need for header-only use.
+FetchContent_Declare(
+    Eigen
+    GIT_REPOSITORY https://gitlab.com/libeigen/eigen.git
+    GIT_TAG        3.4.0
+    GIT_SHALLOW    TRUE
+)
+FetchContent_GetProperties(Eigen)
+if(NOT eigen_POPULATED)
+    FetchContent_Populate(Eigen)
+    add_library(Eigen3_headers INTERFACE)
+    target_include_directories(Eigen3_headers INTERFACE ${eigen_SOURCE_DIR})
+    add_library(Eigen3::Eigen ALIAS Eigen3_headers)
+endif()
+
 # Distribution guardrail. When ON, subprojects hard-fail if they detect a dep
 # graph that won't load inside PixInsight (e.g. system cfitsio → libcurl →
 # OPENSSL_3.2.0 symbols that PI's bundled libssl can't resolve).
