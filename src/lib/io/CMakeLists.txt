@@ -58,6 +58,7 @@ add_library(nukex4_io STATIC
     src/debayer.cpp
     src/flat_calibration.cpp
     src/filter.cpp
+    src/filter_classifier.cpp
 )
 
 target_include_directories(nukex4_io
