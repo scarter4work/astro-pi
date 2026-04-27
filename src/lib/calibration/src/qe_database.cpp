@@ -26,35 +26,53 @@ Photosite parse_photosite_key(const std::string& key) {
 
 } // namespace
 
-LoadResult QEDatabase::load_shipped(const std::string& path) {
+namespace {
+
+std::pair<size_t, size_t> line_col_for_byte(const std::string& text, size_t byte) {
+    size_t line = 1, col = 1;
+    const size_t end = std::min(byte, text.size());
+    for (size_t i = 0; i < end; ++i) {
+        if (text[i] == '\n') { ++line; col = 1; } else { ++col; }
+    }
+    return {line, col};
+}
+
+LoadResult slurp(const std::string& path, const char* context, std::string& out_text) {
     std::ifstream f(path);
     if (!f.is_open()) {
-        return {false, "QE database missing or unreadable: " + path};
+        return {false, std::string(context) + " missing or unreadable: " + path};
     }
-    return parse_and_merge(path, /*is_override*/ false);
+    std::stringstream ss;
+    ss << f.rdbuf();
+    out_text = ss.str();
+    return {true, ""};
+}
+
+} // namespace
+
+LoadResult QEDatabase::load_shipped(const std::string& path) {
+    std::string text;
+    auto r = slurp(path, "QE database", text);
+    if (!r.ok) return r;
+    return parse_and_merge(text, "QE database");
 }
 
 LoadResult QEDatabase::load_override(const std::string& path) {
-    std::ifstream f(path);
-    if (!f.is_open()) {
-        return {false, "QE override file missing or unreadable: " + path};
-    }
-    return parse_and_merge(path, /*is_override*/ true);
+    std::string text;
+    auto r = slurp(path, "QE override", text);
+    if (!r.ok) return r;
+    return parse_and_merge(text, "QE override");
 }
 
-LoadResult QEDatabase::parse_and_merge(const std::string& path, bool is_override) {
+LoadResult QEDatabase::parse_and_merge(const std::string& text, const char* context) {
     using nlohmann::json;
-    std::ifstream f(path);
-    if (!f.is_open()) {
-        return {false, std::string(is_override ? "QE override" : "QE database") + " missing: " + path};
-    }
     json doc;
     try {
-        f >> doc;
+        doc = json::parse(text);
     } catch (const json::parse_error& e) {
+        auto [line, col] = line_col_for_byte(text, e.byte);
         std::ostringstream oss;
-        oss << (is_override ? "QE override" : "QE database")
-            << " is malformed at line " << e.byte
+        oss << context << " is malformed at line " << line << " col " << col
             << " (parser: " << e.what() << ")";
         return {false, oss.str()};
     }

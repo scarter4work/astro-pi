@@ -63,7 +63,7 @@ private:
     std::unordered_map<std::string, CameraQE>       cameras_;
     std::unordered_map<std::string, FilterPassband> filters_;
 
-    LoadResult parse_and_merge(const std::string& path, bool is_override);
+    LoadResult parse_and_merge(const std::string& text, const char* context);
 };
 
 } // namespace nukex
