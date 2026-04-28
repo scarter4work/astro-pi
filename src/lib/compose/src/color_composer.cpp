@@ -90,15 +90,20 @@ sRGBPixel ColorComposer::compose_pixel(const DerivedSlots& s) {
         sii  -= continuum_.k_SII  * s.R;
     }
 
-    // 3) Natural Lab: use broadband RGB when present (its L* is correct);
-    // fall back to L_broad * 100 (achromatic) when no RGB is available.
-    // We do NOT override the natural L* with L_broad*100 in the broadband
-    // path because L_broad is a 0..1 broadband intensity, not a CIE L*
-    // perceptual value, so the roundtrip would shift gray off identity.
+    // 3) Natural Lab: chrominance from RGB when broadband present, then
+    // override luminance with L_broad converted to CIE L* via the sRGB
+    // transfer function. This preserves LRGBSHO design intent (dedicated
+    // L drives luminance, RGB drives chrominance) AND yields identity
+    // roundtrip on the gray axis, because srgb_to_linear(L) → Y → L* via
+    // f_lab matches the natural L* of equal-RGB sRGB exactly.
     bool have_broadband = (s.R + s.G + s.B) > 0.0;
     LabColor lab_natural = have_broadband
         ? rgb_to_lab(s.R, s.G, s.B)
-        : LabColor{ L_broad * 100.0, 0.0, 0.0 };
+        : LabColor{ 0.0, 0.0, 0.0 };
+    {
+        double linear_y = srgb_to_linear(L_broad);
+        lab_natural.L = 116.0 * f_lab(linear_y) - 16.0;
+    }
 
     // 4) Emission contribution to chrominance
     double w_ha   = signal_weight(ha);
