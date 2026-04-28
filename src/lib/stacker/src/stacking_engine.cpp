@@ -424,7 +424,7 @@ StackingEngine::ExecuteResult StackingEngine::execute(
         // The classifier on the per-frame metadata picked one of the five
         // FilterClass cases below; UNKNOWN was already rejected upstream.
         // Each case dispatches the appropriate per-pixel value(s) into
-        // named voxel slots via the shared route_sample helper.
+        // named voxel slots via the shared route_sample_idx helper.
         //
         // BROADBAND_OSC additionally synthesises an "L" slot via rec709
         // luminance (0.299 R + 0.587 G + 0.114 B) — that's how we get the
