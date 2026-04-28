@@ -1,5 +1,7 @@
 #include "nukex/core/channel_config.hpp"
 
+#include <cstdlib>
+
 namespace nukex {
 
 ChannelConfig ChannelConfig::from_mode(StackingMode mode) {
@@ -132,9 +134,12 @@ ChannelConfig ChannelConfig::merge(const ChannelConfig& a, const ChannelConfig& 
         for (int i = 0; i < idx; ++i) {
             if (out.channel_names[i] == name) return;
         }
-        if (idx < MAX_CHANNELS) {
-            out.channel_names[idx++] = name;
-        }
+        // Overflow at MAX_CHANNELS means a higher-level config bug — too many
+        // distinct filter classes claiming slots. Silent truncation would
+        // corrupt the voxel layout downstream (Phase A/B route by slot index).
+        // Abort loudly so the caller surfaces the misconfiguration.
+        if (idx >= MAX_CHANNELS) std::abort();
+        out.channel_names[idx++] = name;
     };
     for (int i = 0; i < a.n_channels; ++i) append_unique(a.channel_names[i]);
     for (int i = 0; i < b.n_channels; ++i) append_unique(b.channel_names[i]);

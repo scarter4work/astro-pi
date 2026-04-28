@@ -83,6 +83,24 @@ TEST_CASE("ChannelConfig::merge unions slots from two configs", "[channel_config
     REQUIRE(merged.slot_index("B_HaO3") != -1);
 }
 
+TEST_CASE("ChannelConfig::merge preserves insertion order across both directions",
+          "[channel_config]") {
+    auto cfg_l    = ChannelConfig::from_filter({FilterClass::BROADBAND_L, "L", "ASI2600MM", {}});
+    auto cfg_hao3 = ChannelConfig::from_filter({FilterClass::DUAL_NB_OSC, "HaO3", "ASI585MC", {}});
+
+    auto a_first = ChannelConfig::merge(cfg_l, cfg_hao3);
+    REQUIRE(a_first.slot_index("L")      == 0);
+    REQUIRE(a_first.slot_index("R_HaO3") == 1);
+    REQUIRE(a_first.slot_index("G_HaO3") == 2);
+    REQUIRE(a_first.slot_index("B_HaO3") == 3);
+
+    auto b_first = ChannelConfig::merge(cfg_hao3, cfg_l);
+    REQUIRE(b_first.slot_index("R_HaO3") == 0);
+    REQUIRE(b_first.slot_index("G_HaO3") == 1);
+    REQUIRE(b_first.slot_index("B_HaO3") == 2);
+    REQUIRE(b_first.slot_index("L")      == 3);
+}
+
 TEST_CASE("ChannelConfig::slot_index returns -1 for unknown name", "[channel_config]") {
     auto cfg = ChannelConfig::from_filter({FilterClass::BROADBAND_L, "L", "ASI2600MM", {}});
     REQUIRE(cfg.slot_index("DoesNotExist") == -1);
