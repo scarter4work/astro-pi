@@ -43,8 +43,12 @@ namespace nukex {
 // engine header can forward-declare them — that keeps v4's old module
 // FilterClass enum (in src/module/filter_classifier.hpp) from
 // colliding with the new color-science enum during the migration.
-// Task 14 will delete the v4 enum and we can collapse this back to
-// in-place value members.
+//
+// TASK-14-COLLAPSE: when Task 14 deletes the v4 module-level enum,
+// grep this codebase for "TASK-14-COLLAPSE" to find every place where
+// pImpl forward declarations and unique_ptrs in the engine header /
+// ExecuteResult should revert to value members + direct includes of
+// nukex/core/channel_config.hpp.
 StackingEngine::StackingEngine(const Config& config)
     : config_(config),
       filter_classifier_(std::make_unique<FilterClassifier>()),
