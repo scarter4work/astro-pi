@@ -8,11 +8,19 @@
 #include "nukex/io/fits_reader.hpp"
 #include "nukex/io/debayer.hpp"
 #include "nukex/io/flat_calibration.hpp"
+// TASK-14-COLLAPSE: this include exists so we can dereference the
+// pImpl unique_ptr<FilterClassifier>. When the v4 module-level
+// FilterClass enum is deleted, the pImpl can revert to a value
+// member and this include can move into the header.
 #include "nukex/io/filter_classifier.hpp"
 #include "nukex/alignment/frame_aligner.hpp"
+// TASK-14-COLLAPSE: same — pImpl-only include, can move to the
+// header once the namespace collision is gone.
 #include "nukex/calibration/qe_database.hpp"
+// TASK-14-COLLAPSE: same — for ChannelDecomposer pImpl.
 #include "nukex/calibration/channel_decomposer.hpp"
 #include "nukex/classify/weight_computer.hpp"
+// TASK-14-COLLAPSE: same — for ColorComposer pImpl.
 #include "nukex/compose/color_composer.hpp"
 #include "nukex/fitting/model_selector.hpp"
 #include "nukex/fitting/robust_stats.hpp"
@@ -69,14 +77,18 @@ StackingEngine::StackingEngine(const Config& config)
     composer_   = std::make_unique<ColorComposer>();
 }
 
-// Out-of-line so the unique_ptr<FilterClassifier> / <QEDatabase> /
-// <ChannelDecomposer> / <ColorComposer> destructors can see the full
-// types from this TU's includes.
+// TASK-14-COLLAPSE: out-of-line so the unique_ptr<FilterClassifier> /
+// <QEDatabase> / <ChannelDecomposer> / <ColorComposer> destructors can
+// see the full types from this TU's includes. When the v4 module enum
+// goes away, the engine members can become value-typed and the
+// destructor can revert to `= default;` in the header.
 StackingEngine::~StackingEngine() = default;
 
-// ExecuteResult special members are out-of-line for the same
-// forward-decl reason — std::unique_ptr<Cube> needs the complete Cube
-// type at the destructor / move-ctor / move-assign instantiation.
+// TASK-14-COLLAPSE: ExecuteResult special members are out-of-line for
+// the same forward-decl reason — std::unique_ptr<Cube> needs the
+// complete Cube type at the destructor / move-ctor / move-assign
+// instantiation. Once Cube can be a value member, all of these can be
+// `= default;` in the header.
 StackingEngine::ExecuteResult::ExecuteResult() = default;
 StackingEngine::ExecuteResult::~ExecuteResult() = default;
 StackingEngine::ExecuteResult::ExecuteResult(ExecuteResult&&) noexcept = default;
@@ -214,9 +226,31 @@ StackingEngine::ExecuteResult StackingEngine::execute(
     // Allocate cube
     Cube cube(out_width, out_height, ch_config);
 
+    // FrameCache holds the *raw debayered frame* on disk, NOT the full
+    // voxel slot set. The two counts deliberately differ for OSC:
+    //   - voxel slot count = ch_config.n_channels
+    //       includes derived/synthesised slots (e.g. an "L" slot for
+    //       BROADBAND_OSC built per-frame from rec709 luminance), so
+    //       it can be 4 for a 3-channel debayered frame.
+    //   - cache channel count = whatever DebayerEngine::debayer()
+    //       actually outputs (always 3 for any Bayer pattern), or 1 for
+    //       mono passthrough.
+    // Conflating them blew up `cache.write_frame()` with an
+    // invalid_argument ("image dimensions do not match cache") on every
+    // OSC stack — derived slots like "L" never reach the cache because
+    // they're synthesised straight into the voxel.
+    //
+    // TASK-10-MIXED-CACHE: Task 10 will need to handle a mixed-class
+    // batch (e.g. mono L frames + Bayer HaO3) where per-frame
+    // cache_n_channels can differ from the value picked here off the
+    // first frame. Either rewrite the cache to allow per-frame channel
+    // counts, or split into one cache per (width,height,n_ch) signature
+    // and let Phase B iterate them.
+    int cache_n_channels = (bayer != BayerPattern::NONE) ? 3 : 1;
+
     // Allocate frame cache
     int n_frames = static_cast<int>(light_paths.size());
-    FrameCache cache(out_width, out_height, n_ch, n_frames, config_.cache_dir);
+    FrameCache cache(out_width, out_height, cache_n_channels, n_frames, config_.cache_dir);
 
     // Frame-level metadata
     std::vector<FrameStats> frame_stats(n_frames);
@@ -231,23 +265,21 @@ StackingEngine::ExecuteResult StackingEngine::execute(
                 + (flat_paths.empty() ? "" : ", " + std::to_string(flat_paths.size()) + " flat"));
     obs.begin_phase("Phase A: Loading frames", n_frames);
 
-    // Helper: route one (channel-name → value) sample into a voxel slot.
-    // Initializes the histogram range on the very first sample for the slot
-    // and then performs the standard Welford + histogram update. Slot
-    // indexing is via the cube's (possibly merged) channel_config; an
-    // unrecognized name aborts because the routing dispatch upstream is
-    // expected to have already validated it.
-    auto route_sample = [&](SubcubeVoxel& voxel,
-                            const std::string& slot_name,
-                            float value) {
-        int idx = cube.channel_config.slot_index(slot_name);
-        if (idx < 0) {
-            // Routing tried to push a sample into a slot that was never
-            // allocated by ChannelConfig::merge() — that is a programmer
-            // error in the dispatch table. Aborting beats corrupting an
-            // adjacent slot's accumulator.
-            std::abort();
-        }
+    // Helper: route one pre-resolved-index sample into a voxel slot.
+    // Initializes the histogram range on the very first sample for the
+    // slot and then performs the standard Welford + histogram update.
+    //
+    // Index-keyed variant is the *only* variant we ship — name→index
+    // resolution is hoisted to once-per-frame at each per-frame switch
+    // case below. Pre-fix this was a string-keyed lookup hit per pixel
+    // per slot (96M lookups/frame at 6000×4000 OSC, ~600ms/stack
+    // overhead). Caller is expected to bounds-check the index up-front
+    // (the per-frame switch does this and std::abort()s on missing
+    // slots — that is a programmer error in the dispatch table /
+    // ChannelConfig::merge(), not a runtime input failure).
+    auto route_sample_idx = [&](SubcubeVoxel& voxel,
+                                int idx,
+                                float value) {
         voxel.welford[idx].update(value);
         if (voxel.welford[idx].count() == 1) {
             voxel.histogram[idx].initialize_range(value - 0.1f, value + 0.1f);
@@ -281,6 +313,15 @@ StackingEngine::ExecuteResult StackingEngine::execute(
         if (frame_filter.cls == FilterClass::UNKNOWN && frame_is_bayer) {
             obs.advance(1, "  skipped — unknown FILTER='" + frame_filter.name +
                            "' on Bayer frame (add to qe_overrides.json to recover)");
+            // TASK-12-RENAME-COUNTER: this currently bumps
+            // n_frames_failed_alignment but the cause is a *filter*
+            // rejection (unknown FILTER on Bayer), not an alignment
+            // failure. The Process Console / NukeXInstance status line
+            // will misattribute the cause as "X frames failed alignment"
+            // when the real reason is "X frames had unknown filters."
+            // Task 12 (UI surfacing) should split this into
+            // n_frames_rejected_filter + n_frames_failed_alignment with
+            // separate user-facing messages.
             result.n_frames_failed_alignment++;
             continue;
         }
@@ -368,6 +409,13 @@ StackingEngine::ExecuteResult StackingEngine::execute(
         frame_fwhms[f] = frame_fwhm;
 
         if (aligned.alignment.alignment_failed) {
+            // TASK-12-RENAME-COUNTER: this is the *real* alignment
+            // failure site. The same counter is also bumped above for
+            // unknown-FILTER-on-Bayer rejections — Task 12 needs to
+            // split into n_frames_rejected_filter +
+            // n_frames_failed_alignment so the user-facing summary can
+            // distinguish "your scope wandered" from "your filter
+            // wheel reported an unknown name."
             result.n_frames_failed_alignment++;
         }
 
@@ -384,6 +432,21 @@ StackingEngine::ExecuteResult StackingEngine::execute(
         obs.advance(0, "  accumulating");
         switch (frame_filter.cls) {
             case FilterClass::BROADBAND_OSC: {
+                // Pre-resolve once per frame — not inside the pixel loop.
+                // At 6000×4000 OSC a string-keyed slot_index() call per
+                // pixel per slot costs ~600ms/stack (96M lookups). Resolving
+                // up-front reduces that to 4 calls per frame. Any -1 result
+                // means ChannelConfig::merge() produced an incomplete slot
+                // table — that is a programmer error, so we std::abort()
+                // before entering the loop rather than silently routing into
+                // a garbage index.
+                int r_idx = cube.channel_config.slot_index("R");
+                int g_idx = cube.channel_config.slot_index("G");
+                int b_idx = cube.channel_config.slot_index("B");
+                int l_idx = cube.channel_config.slot_index("L");
+                if (r_idx < 0 || g_idx < 0 || b_idx < 0 || l_idx < 0) {
+                    std::abort(); // missing BROADBAND_OSC slot — dispatch-table bug
+                }
                 for (int y = 0; y < out_height; y++) {
                     for (int x = 0; x < out_width; x++) {
                         auto& voxel = cube.at(x, y);
@@ -391,10 +454,10 @@ StackingEngine::ExecuteResult StackingEngine::execute(
                         float g = aligned.image.at(x, y, 1);
                         float b = aligned.image.at(x, y, 2);
                         float l = 0.299f * r + 0.587f * g + 0.114f * b;
-                        route_sample(voxel, "R", r);
-                        route_sample(voxel, "G", g);
-                        route_sample(voxel, "B", b);
-                        route_sample(voxel, "L", l);
+                        route_sample_idx(voxel, r_idx, r);
+                        route_sample_idx(voxel, g_idx, g);
+                        route_sample_idx(voxel, b_idx, b);
+                        route_sample_idx(voxel, l_idx, l);
                         voxel.n_frames++;
                     }
                 }
@@ -404,12 +467,22 @@ StackingEngine::ExecuteResult StackingEngine::execute(
                 std::string r_slot = "R_" + frame_filter.name;
                 std::string g_slot = "G_" + frame_filter.name;
                 std::string b_slot = "B_" + frame_filter.name;
+                // Same once-per-frame hoist as BROADBAND_OSC: 3 lookups
+                // instead of 3 × width × height per-pixel string lookups.
+                // Abort on -1 — a missing dual-NB slot is a merge() bug,
+                // not a recoverable runtime condition.
+                int r_idx = cube.channel_config.slot_index(r_slot);
+                int g_idx = cube.channel_config.slot_index(g_slot);
+                int b_idx = cube.channel_config.slot_index(b_slot);
+                if (r_idx < 0 || g_idx < 0 || b_idx < 0) {
+                    std::abort(); // missing DUAL_NB_OSC slot — dispatch-table bug
+                }
                 for (int y = 0; y < out_height; y++) {
                     for (int x = 0; x < out_width; x++) {
                         auto& voxel = cube.at(x, y);
-                        route_sample(voxel, r_slot, aligned.image.at(x, y, 0));
-                        route_sample(voxel, g_slot, aligned.image.at(x, y, 1));
-                        route_sample(voxel, b_slot, aligned.image.at(x, y, 2));
+                        route_sample_idx(voxel, r_idx, aligned.image.at(x, y, 0));
+                        route_sample_idx(voxel, g_idx, aligned.image.at(x, y, 1));
+                        route_sample_idx(voxel, b_idx, aligned.image.at(x, y, 2));
                         voxel.n_frames++;
                     }
                 }
@@ -423,10 +496,18 @@ StackingEngine::ExecuteResult StackingEngine::execute(
                 // "Ha"/"OIII"/"SII" for narrowband-single, "R"/"G"/"B"
                 // for an explicit R/G/B mono filter.
                 const std::string& slot_name = frame_filter.name;
+                // One lookup per frame instead of one per pixel — same
+                // rationale as the OSC cases above. Abort if the slot is
+                // absent: it means merge() didn't register this filter's
+                // slot, which is a dispatch-table programmer error.
+                int slot_idx = cube.channel_config.slot_index(slot_name);
+                if (slot_idx < 0) {
+                    std::abort(); // missing mono slot — dispatch-table bug
+                }
                 for (int y = 0; y < out_height; y++) {
                     for (int x = 0; x < out_width; x++) {
                         auto& voxel = cube.at(x, y);
-                        route_sample(voxel, slot_name, aligned.image.at(x, y, 0));
+                        route_sample_idx(voxel, slot_idx, aligned.image.at(x, y, 0));
                         voxel.n_frames++;
                     }
                 }

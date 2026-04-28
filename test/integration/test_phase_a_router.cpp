@@ -62,7 +62,7 @@ TEST_CASE("Phase A: BROADBAND_OSC frame synthesizes L slot",
     auto& px   = result.cube->at(8, 8);
     REQUIRE(px.welford[L_idx].mean == Catch::Approx(0.5f).margin(0.05f));
 #else
-    REQUIRE(true); // wired by Task 20 (synthetic FITS writer)
+    SKIP("wired by Task 20: synthetic FITS writer needed");
 #endif
 }
 
@@ -83,7 +83,7 @@ TEST_CASE("Phase A: HaO3 dual-NB frame routes into R_HaO3/G_HaO3/B_HaO3",
     REQUIRE(result.cube->channel_config.slot_index("B_HaO3") != -1);
     REQUIRE(result.cube->channel_config.slot_index("R") == -1);
 #else
-    REQUIRE(true);
+    SKIP("wired by Task 20: synthetic FITS writer needed");
 #endif
 }
 
@@ -102,7 +102,7 @@ TEST_CASE("Phase A: unknown FILTER on Bayer fails the batch loud at start",
     REQUIRE(result.error.find("ALP-T-fake-2026") != std::string::npos);
     REQUIRE(result.error.find("qe_overrides.json") != std::string::npos);
 #else
-    REQUIRE(true);
+    SKIP("wired by Task 20: synthetic FITS writer needed");
 #endif
 }
 
@@ -120,7 +120,7 @@ TEST_CASE("Phase A: missing FILTER on Bayer is silent BROADBAND_OSC",
     REQUIRE(result.ok);
     REQUIRE(result.cube->channel_config.slot_index("L") != -1);
 #else
-    REQUIRE(true);
+    SKIP("wired by Task 20: synthetic FITS writer needed");
 #endif
 }
 
@@ -143,6 +143,6 @@ TEST_CASE("Phase A: mixed L + HaO3 batch builds union slot config",
     REQUIRE(result.cube->channel_config.slot_index("G_HaO3") != -1);
     REQUIRE(result.cube->channel_config.slot_index("B_HaO3") != -1);
 #else
-    REQUIRE(true);
+    SKIP("wired by Task 20: synthetic FITS writer needed");
 #endif
 }

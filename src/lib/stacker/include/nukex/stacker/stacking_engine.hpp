@@ -35,7 +35,30 @@ public:
         WeightConfig          weight_config;
         ModelSelector::Config fitting_config;
         std::string           cache_dir = "/tmp";
-        std::string           qe_database_path = "share/qe_database.json"; // resolved at startup
+
+        /// Path to the shipped QE database JSON. The default resolves at
+        /// startup relative to the working directory; in a PI module install
+        /// that becomes <plugin>/share/qe_database.json, which is correct.
+        ///
+        /// Layered responsibility for the failure-at-default case:
+        ///   - The constructor loads eagerly and captures any failure in
+        ///     qe_load_error_. On the first execute() call with non-empty
+        ///     light_paths, that error is re-emitted and ok=false is
+        ///     returned. This is the INTENDED behaviour until production
+        ///     assets land:
+        ///   - Task 16 ships the actual share/qe_database.json alongside
+        ///     the PI module, at which point the default path resolves
+        ///     correctly for end users.
+        ///   - Task 12 surfaces the qe_load_error_ string in the module
+        ///     status bar (NukeXInstance.cpp:437-443 currently sees
+        ///     result.ok==false but the user only sees "** No frames were
+        ///     processed."). Until Task 12 lands the error is in the Process
+        ///     Console log, not the UI.
+        ///   - Tests MUST override this field to point at a fixture — e.g.
+        ///     std::string(NUKEX_TEST_FIXTURES_DIR) + "/qe/minimal_db.json"
+        ///     — or they will fail with a QE-load error on the first frame.
+        std::string           qe_database_path = "share/qe_database.json";
+
         std::string           qe_override_path; // optional; empty = none
         GPUExecutorConfig     gpu_config;
     };
