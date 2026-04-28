@@ -37,9 +37,13 @@ NukeXProcess::NukeXProcess()
    // Cache
    new NXCacheDirectory( this );
 
+   // QE override path (optional path to qe_overrides.json)
+   new NXQEOverridePath( this );
+
    // Output parameters (read-only; populated after ExecuteGlobal).
    new NXNFramesProcessed( this );
    new NXNFramesFailedAlignment( this );
+   new NXNFramesRejectedFilter( this );
 }
 
 IsoString NukeXProcess::Id() const

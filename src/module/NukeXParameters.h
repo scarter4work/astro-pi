@@ -107,6 +107,16 @@ public:
    String DefaultValue() const override;
 };
 
+// ── QE Override Path ─────────────────────────────────────────────
+
+class NXQEOverridePath : public MetaString
+{
+public:
+   NXQEOverridePath( MetaProcess* );
+   IsoString Id() const override;
+   String    DefaultValue() const override;
+};
+
 // ── Output (read-only, populated after ExecuteGlobal) ────────────
 //
 // Exposing these as read-only PCL parameters lets PJSR harnesses (and
@@ -141,6 +151,17 @@ public:
    bool IsReadOnly() const override;
 };
 
+class NXNFramesRejectedFilter : public MetaInt32
+{
+public:
+   NXNFramesRejectedFilter( MetaProcess* );
+   IsoString Id() const override;
+   double    DefaultValue() const override;
+   double    MinimumValue() const override;
+   double    MaximumValue() const override;
+   bool      IsReadOnly() const override;
+};
+
 // ── Global parameter pointers ────────────────────────────────────
 
 extern NXLightFrames*      TheNXLightFramesParameter;
@@ -153,8 +174,10 @@ extern NXPrimaryStretch*   TheNXPrimaryStretchParameter;
 extern NXFinishingStretch* TheNXFinishingStretchParameter;
 extern NXEnableGPU*        TheNXEnableGPUParameter;
 extern NXCacheDirectory*   TheNXCacheDirectoryParameter;
+extern NXQEOverridePath*   TheNXQEOverridePathParameter;
 extern NXNFramesProcessed*       TheNXNFramesProcessedParameter;
 extern NXNFramesFailedAlignment* TheNXNFramesFailedAlignmentParameter;
+extern NXNFramesRejectedFilter*  TheNXNFramesRejectedFilterParameter;
 
 } // namespace pcl
 

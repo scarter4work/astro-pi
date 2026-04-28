@@ -111,7 +111,8 @@ public:
         std::unique_ptr<Cube>  cube;     // populated by Phase A; consumed by Phase B (Task 10)
         DerivedStack           derived;  // Phase B Q-solve output (Task 10B)
         int                    n_frames_processed        = 0;
-        int                    n_frames_failed_alignment = 0;
+        int                    n_frames_failed_alignment = 0;  // real alignment misses only
+        int                    n_frames_rejected_filter  = 0;  // unknown FILTER on Bayer
 
         ExecuteResult();
         ~ExecuteResult();

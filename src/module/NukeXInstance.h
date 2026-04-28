@@ -55,10 +55,12 @@ public:
    pcl_enum    finishingStretch  = 0;  // NXFinishingStretch::None
    pcl_bool    enableGPU       = true;
    String      cacheDirectory  = "/tmp";
+   String      qeOverridePath;  // optional path to qe_overrides.json; empty = none
 
    // Output (populated by ExecuteGlobal, readable from PJSR).
    int32       nFramesProcessed        = 0;
-   int32       nFramesFailedAlignment  = 0;
+   int32       nFramesFailedAlignment  = 0;  // real alignment misses only
+   int32       nFramesRejectedFilter   = 0;  // unknown FILTER on Bayer (Task 12)
 
    // Phase 8: after Execute we stash enough state to save a rating row later.
    // Populated unconditionally at the end of ExecuteGlobal (even when the

@@ -329,16 +329,13 @@ StackingEngine::ExecuteResult StackingEngine::execute(
         if (frame_filter.cls == FilterClass::UNKNOWN && frame_is_bayer) {
             obs.advance(1, "  skipped — unknown FILTER='" + frame_filter.name +
                            "' on Bayer frame (add to qe_overrides.json to recover)");
-            // TASK-12-RENAME-COUNTER: this currently bumps
-            // n_frames_failed_alignment but the cause is a *filter*
-            // rejection (unknown FILTER on Bayer), not an alignment
-            // failure. The Process Console / NukeXInstance status line
-            // will misattribute the cause as "X frames failed alignment"
-            // when the real reason is "X frames had unknown filters."
-            // Task 12 (UI surfacing) should split this into
-            // n_frames_rejected_filter + n_frames_failed_alignment with
-            // separate user-facing messages.
-            result.n_frames_failed_alignment++;
+            // Filter rejection: the frame was skipped because its FILTER
+            // keyword is not present in the QE database. This is not an
+            // alignment failure — the aligner was never invoked. Track it
+            // separately so the user-facing summary can distinguish
+            // "your scope wandered" from "your filter wheel reported an
+            // unknown name." (Task 12 counter split.)
+            result.n_frames_rejected_filter++;
             continue;
         }
 
@@ -432,13 +429,11 @@ StackingEngine::ExecuteResult StackingEngine::execute(
         frame_fwhms[f] = frame_fwhm;
 
         if (aligned.alignment.alignment_failed) {
-            // TASK-12-RENAME-COUNTER: this is the *real* alignment
-            // failure site. The same counter is also bumped above for
-            // unknown-FILTER-on-Bayer rejections — Task 12 needs to
-            // split into n_frames_rejected_filter +
-            // n_frames_failed_alignment so the user-facing summary can
-            // distinguish "your scope wandered" from "your filter
-            // wheel reported an unknown name."
+            // Real alignment failure: the Groth triangle matcher ran but
+            // could not find a valid transform (too few stars, bad RMS,
+            // etc.). The frame is stacked with a 0.5x weight penalty.
+            // This counter is strictly alignment misses; filter rejections
+            // are counted separately in n_frames_rejected_filter.
             result.n_frames_failed_alignment++;
         }
 

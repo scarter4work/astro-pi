@@ -15,6 +15,7 @@
 
 // NukeX pipeline headers
 #include "nukex/stacker/stacking_engine.hpp"
+#include "nukex/compose/color_composer.hpp"
 #include "nukex/stretch/stretch_pipeline.hpp"
 #include "nukex/stretch/image_stats.hpp"
 #include "nukex/stretch/layer_loader.hpp"
@@ -304,12 +305,13 @@ void NukeXInstance::Assign( const ProcessImplementation& p )
    const NukeXInstance* x = dynamic_cast<const NukeXInstance*>( &p );
    if ( x != nullptr )
    {
-      lightFrames    = x->lightFrames;
-      flatFrames     = x->flatFrames;
+      lightFrames      = x->lightFrames;
+      flatFrames       = x->flatFrames;
       primaryStretch   = x->primaryStretch;
       finishingStretch = x->finishingStretch;
-      enableGPU      = x->enableGPU;
-      cacheDirectory = x->cacheDirectory;
+      enableGPU        = x->enableGPU;
+      cacheDirectory   = x->cacheDirectory;
+      qeOverridePath   = x->qeOverridePath;
    }
 }
 
@@ -437,6 +439,12 @@ bool NukeXInstance::ExecuteGlobal()
    nukex::StackingEngine::Config config;
    config.cache_dir = cacheDirectory.ToUTF8().c_str();
    config.gpu_config.force_cpu_fallback = !enableGPU;
+   config.qe_override_path = qeOverridePath.ToUTF8().c_str();
+   // Engine's default qe_database_path stays at "share/qe_database.json"
+   // (resolves relative to the working directory; for PI module installs
+   // that is <plugin>/share/qe_database.json — correct once Task 16 ships
+   // the file). The engine's deferred-load pattern captures any load failure
+   // in qe_load_error_ and returns ok=false + descriptive error on execute().
 
    // Execute pipeline with progress reporting
    nukex::StackingEngine engine( config );
@@ -449,6 +457,20 @@ bool NukeXInstance::ExecuteGlobal()
       return false;
    }
 
+   // QE database load failed — typically because Task 16 hasn't shipped
+   // share/qe_database.json yet, or qeOverridePath points at a malformed
+   // file. Surface it loudly so the user can act on it.
+   if ( !result.ok )
+   {
+      progress.message( String().Format(
+         "** QE database error: %s\n"
+         "** This usually means share/qe_database.json is missing from the "
+         "plugin install (Task 16 in progress) or the qe_overrides.json file "
+         "is malformed. Color-science Phase B cannot run without a QE database.",
+         result.error.c_str() ).ToUTF8().c_str() );
+      return false;
+   }
+
    if ( result.n_frames_processed == 0 )
    {
       progress.message( "** No frames were processed. Check input files." );
@@ -458,16 +480,32 @@ bool NukeXInstance::ExecuteGlobal()
    // Publish result counts to PJSR-readable output parameters before logging.
    nFramesProcessed        = result.n_frames_processed;
    nFramesFailedAlignment  = result.n_frames_failed_alignment;
+   nFramesRejectedFilter   = result.n_frames_rejected_filter;
 
    progress.message( String().Format(
-      "Stacking complete: %d frame(s) processed, %d failed alignment",
-      result.n_frames_processed, result.n_frames_failed_alignment ).ToUTF8().c_str() );
+      "Stacking complete: %d frame(s) processed, %d failed alignment, %d rejected (unknown filter)",
+      result.n_frames_processed, result.n_frames_failed_alignment,
+      result.n_frames_rejected_filter ).ToUTF8().c_str() );
+
+   // Warn if any frames were dropped due to unknown filter coverage.
+   if ( result.n_frames_rejected_filter > 0 )
+   {
+      progress.message( String().Format(
+         "** WARNING ** %d frame(s) rejected: unknown FILTER value on Bayer frame. "
+         "Add the filter to qe_overrides.json to recover those frames in a future run.",
+         result.n_frames_rejected_filter ).ToUTF8().c_str() );
+   }
 
    // Loud warnings on low alignment success rate.  Before v4.0.0.5,
    // a broken matcher silently weight-penalised 61/65 frames and the
    // only indicator was a buried summary line — the whole class of
    // "it ran, but most of my signal was at half weight" regression
    // can't be allowed to be quiet again.
+   //
+   // Rate is computed over frames that actually reached the aligner
+   // (n_frames_processed). Filter-rejected frames (n_frames_rejected_filter)
+   // are excluded — they never touched the aligner, so counting them
+   // here would falsely inflate the alignment-failure percentage.
    //
    // Thresholds:
    //   > 50% failed  → ** CRITICAL ** with remediation hint
@@ -536,6 +574,83 @@ bool NukeXInstance::ExecuteGlobal()
 
       window.Show();
       progress.message( "Stacked image opened." );
+   }
+
+   // ── ColorComposer-driven 3-channel sRGB output (Task 12) ─────
+   //
+   // Compose a 3-channel sRGB ImageWindow from the Phase B derived semantic
+   // slots (result.derived). ColorComposer turns each pixel's slot tuple
+   // into an sRGB triplet via Lab/LCH composition. This is the primary
+   // color-science display for v5; it coexists with the raw stacked window
+   // and the stretch pipeline output below (which still reads result.stacked
+   // for broadband/mono luminance work — kept for backwards compatibility).
+   if ( !result.derived.slots.empty() )
+   {
+      const int w = result.derived.width;
+      const int h = result.derived.height;
+      const int N = w * h;
+
+      nukex::ColorComposer composer;
+
+      // Pre-resolve slot data pointers — looking up by name once per pixel
+      // would re-hash the unordered_map 7 times × 24M pixels at typical sizes.
+      auto slot_ptr = [&]( const std::string& name ) -> const float* {
+         auto it = result.derived.slots.find( name );
+         return it == result.derived.slots.end() ? nullptr : it->second.data();
+      };
+      const float* L_p    = slot_ptr( "L"    );
+      const float* R_p    = slot_ptr( "R"    );
+      const float* G_p    = slot_ptr( "G"    );
+      const float* B_p    = slot_ptr( "B"    );
+      const float* Ha_p   = slot_ptr( "Ha"   );
+      const float* OIII_p = slot_ptr( "OIII" );
+      const float* SII_p  = slot_ptr( "SII"  );
+
+      ImageWindow cw( w, h, /*nc*/ 3,
+                      32, true, true, true,
+                      "NukeX_composed" );
+      View cv = cw.MainView();
+      ImageVariant cvi = cv.Image();
+
+      if ( cvi.IsFloatSample() && cvi.BitsPerSample() == 32 )
+      {
+         pcl::Image& ci = static_cast<pcl::Image&>( *cvi );
+         float* dst_r = ci.PixelData( 0 );
+         float* dst_g = ci.PixelData( 1 );
+         float* dst_b = ci.PixelData( 2 );
+         for ( int p = 0; p < N; ++p )
+         {
+            nukex::DerivedSlots ds;
+            if ( L_p    ) ds.L    = static_cast<double>( L_p[p]    );
+            if ( R_p    ) ds.R    = static_cast<double>( R_p[p]    );
+            if ( G_p    ) ds.G    = static_cast<double>( G_p[p]    );
+            if ( B_p    ) ds.B    = static_cast<double>( B_p[p]    );
+            if ( Ha_p   ) ds.Ha   = static_cast<double>( Ha_p[p]   );
+            if ( OIII_p ) ds.OIII = static_cast<double>( OIII_p[p] );
+            if ( SII_p  ) ds.SII  = static_cast<double>( SII_p[p]  );
+            nukex::sRGBPixel out = composer.compose_pixel( ds );
+            dst_r[p] = static_cast<float>( out.r );
+            dst_g[p] = static_cast<float>( out.g );
+            dst_b[p] = static_cast<float>( out.b );
+         }
+      }
+
+      // Provenance keywords: include gamut-clip diagnostic so users can
+      // compare palette choices and see how many pixels needed clipping.
+      pcl::FITSKeywordArray cw_ka = base_output_keywords(
+          NUKEX_VERSION_STRING, "composed",
+          result.n_frames_processed, result.n_frames_failed_alignment );
+      cw_ka.Append( pcl::FITSHeaderKeyword(
+          "NUKEX_GAMUT_CLIPPED",
+          pcl::IsoString().Format( "%lld",
+              static_cast<long long>( composer.gamut_clipped_count() ) ),
+          "Pixels clipped to sRGB gamut by ColorComposer" ) );
+      cw.SetKeywords( cw_ka );
+
+      cw.Show();
+      progress.message( String().Format(
+         "Composed image opened (%lld pixel(s) gamut-clipped).",
+         static_cast<long long>( composer.gamut_clipped_count() ) ).ToUTF8().c_str() );
    }
 
    // ── Stretch pipeline (Phase 7 wiring + Phase 8 context) ──────
@@ -742,9 +857,11 @@ void* NukeXInstance::LockParameter( const MetaParameter* p, size_type tableRow )
    if ( p == TheNXPrimaryStretchParameter )    return &primaryStretch;
    if ( p == TheNXFinishingStretchParameter )  return &finishingStretch;
    if ( p == TheNXEnableGPUParameter )         return &enableGPU;
-   if ( p == TheNXCacheDirectoryParameter )    return cacheDirectory.Begin();
+   if ( p == TheNXCacheDirectoryParameter )         return cacheDirectory.Begin();
+   if ( p == TheNXQEOverridePathParameter )         return qeOverridePath.Begin();
    if ( p == TheNXNFramesProcessedParameter )       return &nFramesProcessed;
    if ( p == TheNXNFramesFailedAlignmentParameter ) return &nFramesFailedAlignment;
+   if ( p == TheNXNFramesRejectedFilterParameter )  return &nFramesRejectedFilter;
    return nullptr;
 }
 
@@ -780,6 +897,12 @@ bool NukeXInstance::AllocateParameter( size_type sizeOrLength, const MetaParamet
       if ( sizeOrLength > 0 )
          cacheDirectory.SetLength( sizeOrLength );
    }
+   else if ( p == TheNXQEOverridePathParameter )
+   {
+      qeOverridePath.Clear();
+      if ( sizeOrLength > 0 )
+         qeOverridePath.SetLength( sizeOrLength );
+   }
    else
       return false;
 
@@ -793,6 +916,7 @@ size_type NukeXInstance::ParameterLength( const MetaParameter* p, size_type tabl
    if ( p == TheNXFlatFramesParameter )        return flatFrames.Length();
    if ( p == TheNXFlatFramePathParameter )     return flatFrames[tableRow].path.Length();
    if ( p == TheNXCacheDirectoryParameter )    return cacheDirectory.Length();
+   if ( p == TheNXQEOverridePathParameter )    return qeOverridePath.Length();
    return 0;
 }
 

@@ -67,6 +67,7 @@ target_link_libraries(NukeX-pxm PRIVATE
     nukex4_fitting
     nukex4_classify
     nukex4_alignment
+    nukex4_compose
     nukex4_io
     nukex4_core
 )

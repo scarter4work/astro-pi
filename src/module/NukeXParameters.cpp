@@ -138,10 +138,22 @@ NXCacheDirectory::NXCacheDirectory( MetaProcess* p ) : MetaString( p )
 IsoString NXCacheDirectory::Id() const { return "cacheDirectory"; }
 String NXCacheDirectory::DefaultValue() const { return "/tmp"; }
 
+// ── QE Override Path ─────────────────────────────────────────────
+
+NXQEOverridePath* TheNXQEOverridePathParameter = nullptr;
+
+NXQEOverridePath::NXQEOverridePath( MetaProcess* p ) : MetaString( p )
+{
+   TheNXQEOverridePathParameter = this;
+}
+IsoString NXQEOverridePath::Id() const           { return "qeOverridePath"; }
+String    NXQEOverridePath::DefaultValue() const { return ""; }
+
 // ── Output parameters ────────────────────────────────────────────
 
 NXNFramesProcessed*       TheNXNFramesProcessedParameter       = nullptr;
 NXNFramesFailedAlignment* TheNXNFramesFailedAlignmentParameter = nullptr;
+NXNFramesRejectedFilter*  TheNXNFramesRejectedFilterParameter  = nullptr;
 
 NXNFramesProcessed::NXNFramesProcessed( MetaProcess* p ) : MetaInt32( p )
 {
@@ -162,5 +174,15 @@ double    NXNFramesFailedAlignment::DefaultValue() const { return 0; }
 double    NXNFramesFailedAlignment::MinimumValue() const { return 0; }
 double    NXNFramesFailedAlignment::MaximumValue() const { return 2147483647; }
 bool      NXNFramesFailedAlignment::IsReadOnly() const   { return true; }
+
+NXNFramesRejectedFilter::NXNFramesRejectedFilter( MetaProcess* p ) : MetaInt32( p )
+{
+   TheNXNFramesRejectedFilterParameter = this;
+}
+IsoString NXNFramesRejectedFilter::Id() const           { return "nFramesRejectedFilter"; }
+double    NXNFramesRejectedFilter::DefaultValue() const { return 0; }
+double    NXNFramesRejectedFilter::MinimumValue() const { return 0; }
+double    NXNFramesRejectedFilter::MaximumValue() const { return 2147483647; }
+bool      NXNFramesRejectedFilter::IsReadOnly() const   { return true; }
 
 } // namespace pcl
