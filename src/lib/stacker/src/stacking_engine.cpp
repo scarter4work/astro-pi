@@ -896,7 +896,18 @@ StackingEngine::ExecuteResult StackingEngine::execute(
                 // a broadband single-line under a different camera than the
                 // dual-NB frames.
                 Q = decomposer_->build_q(q_build_camera, g.filter_name);
-            } catch (const SingularQError& e) {
+            } catch (const std::runtime_error& e) {
+                // ChannelDecomposer::build_q can throw any of three:
+                //   - UnknownCameraError  (camera not in QE DB; e.g. user
+                //     stacked data from a camera not yet in share/qe_database.json
+                //     and didn't supply a qe_overrides.json entry)
+                //   - UnknownFilterError  (filter name not in QE DB)
+                //   - SingularQError      (Q is rank-deficient — degenerate QE)
+                // All three are user-actionable: they indicate a missing
+                // entry in the QE DB or override file. Loud-fail with the
+                // descriptive message lets the module surface a clear
+                // remediation hint rather than terminating the process on
+                // an uncaught exception.
                 result.ok    = false;
                 result.error = std::string("Phase B Q-solve: ") + e.what();
                 return result;
