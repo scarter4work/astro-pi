@@ -1,5 +1,5 @@
-#ifndef NUKEX_IO_FILTER_HPP
-#define NUKEX_IO_FILTER_HPP
+#ifndef NUKEX_CORE_FILTER_HPP
+#define NUKEX_CORE_FILTER_HPP
 
 #include <string>
 

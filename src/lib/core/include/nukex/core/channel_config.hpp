@@ -1,6 +1,7 @@
 #pragma once
 
 #include "nukex/core/types.hpp"
+#include "nukex/core/filter.hpp"
 #include <cstdint>
 #include <string>
 
@@ -35,11 +36,15 @@ struct ChannelConfig {
     StackingMode mode          = StackingMode::MONO_L;
     uint8_t      n_channels    = 1;
     std::string  channel_names[MAX_CHANNELS];
-    uint8_t      output_rgb_mapping[3] = {0, 0, 0};
+    uint8_t      output_rgb_mapping[3] = {0, 0, 0};   // (removed in Task 18)
     BayerPattern bayer         = BayerPattern::NONE;
 
     static ChannelConfig from_mode(StackingMode mode);
+    static ChannelConfig from_filter(const Filter& f);
+    static ChannelConfig merge(const ChannelConfig& a, const ChannelConfig& b);
+
     int channel_index_for_name(const std::string& name) const;
+    int slot_index(const std::string& name) const; // == channel_index_for_name; legible alias
     bool is_mono() const;
 };
 

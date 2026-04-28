@@ -1,7 +1,7 @@
 #ifndef NUKEX_IO_FILTER_CLASSIFIER_HPP
 #define NUKEX_IO_FILTER_CLASSIFIER_HPP
 
-#include "nukex/io/filter.hpp"
+#include "nukex/core/filter.hpp"
 
 #include <string>
 

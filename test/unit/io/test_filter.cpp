@@ -1,5 +1,5 @@
 #include "catch_amalgamated.hpp"
-#include "nukex/io/filter.hpp"
+#include "nukex/core/filter.hpp"
 
 using namespace nukex;
 
