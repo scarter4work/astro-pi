@@ -5,12 +5,11 @@
 #include "nukex/core/cube.hpp"
 #include "nukex/core/frame_stats.hpp"
 #include "nukex/classify/weight_computer.hpp"
+#include "nukex/stacker/cache_sig.hpp"
 #include <vector>
 #include <cstdint>
 
 namespace nukex {
-
-class FrameCache;  // Forward declare
 
 /// Structure-of-Arrays shadow buffers for GPU transfer.
 ///
@@ -66,10 +65,11 @@ struct ShadowBuffers {
     void allocate(int batch_size, int n_channels, int max_frames);
 
     /// Extract voxel data from the cube into SoA layout.
-    /// Reads pixel values from the frame cache.
+    /// Reads per-frame pixel values via slot_refs (one entry per cube slot).
     /// start_voxel: linear index into the cube's voxel array.
     /// count: number of voxels in this batch.
-    void extract_from_cube(const Cube& cube, const FrameCache& cache,
+    void extract_from_cube(const Cube& cube,
+                           const std::vector<ChannelCacheRef>& slot_refs,
                            int start_voxel, int count, int n_channels);
 
     /// Write classification + robust stats back to voxels.

@@ -10,6 +10,7 @@
 #include "nukex/core/progress_observer.hpp"
 #include "nukex/classify/weight_computer.hpp"
 #include "nukex/io/image.hpp"
+#include "nukex/stacker/cache_sig.hpp"
 #include <vector>
 #include <functional>
 
@@ -49,7 +50,8 @@ public:
 
     void execute_phase_b(
         Cube& cube,
-        FrameCache& cache,
+        const std::vector<ChannelCacheRef>& slot_refs,
+        int n_frames_written,
         const std::vector<FrameStats>& frame_stats,
         const WeightConfig& weight_config,
         FittingFn fitting_fn,

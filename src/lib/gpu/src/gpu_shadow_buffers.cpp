@@ -1,6 +1,8 @@
 #include "nukex/gpu/gpu_shadow_buffers.hpp"
 #include "nukex/core/cube.hpp"
 #include "nukex/stacker/frame_cache.hpp"
+#include "nukex/stacker/cache_sig.hpp"
+#include <algorithm>
 #include <cstring>
 
 namespace nukex {
@@ -47,7 +49,8 @@ void ShadowBuffers::allocate(int bs, int nc, int mf) {
 }
 
 void ShadowBuffers::extract_from_cube(
-    const Cube& cube, const FrameCache& cache,
+    const Cube& cube,
+    const std::vector<ChannelCacheRef>& slot_refs,
     int start_voxel, int count, int nc) {
 
     int B = count;
@@ -68,9 +71,36 @@ void ShadowBuffers::extract_from_cube(
             welford_M2[ch * B + vi]   = voxel.welford[ch].M2;
             welford_n[ch * B + vi]    = voxel.welford[ch].n;
 
-            // Read all frame values for this pixel-channel at once
+            // Route per-frame pixel values through the slot ref.
+            // ref.cache == nullptr means no per-frame source for this slot
+            // (e.g. an unmapped synthesised slot in a degenerate config).
+            // pixel_values was zeroed by allocate() so no fill needed here —
+            // just skip; distribution fitting will use welford-only stats.
+            if (ch >= static_cast<int>(slot_refs.size())) continue;
+            const ChannelCacheRef& ref = slot_refs[ch];
+            if (ref.cache == nullptr) continue;
+
             float frame_vals[GPU_MAX_FRAMES];
-            int nf_read = cache.read_pixel(px, py, ch, frame_vals);
+            int nf_read = 0;
+
+            if (ref.kind == SlotSynthesis::DIRECT) {
+                nf_read = ref.cache->read_pixel(px, py, ref.cache_ch, frame_vals);
+
+            } else if (ref.kind == SlotSynthesis::REC709_LUMA) {
+                // Synthesise L per-frame from cached R, G, B channels.
+                // Matches Phase A's per-pixel: l = 0.299R + 0.587G + 0.114B.
+                float r_vals[GPU_MAX_FRAMES], g_vals[GPU_MAX_FRAMES], b_vals[GPU_MAX_FRAMES];
+                int n_r = ref.cache->read_pixel(px, py, 0, r_vals);
+                int n_g = ref.cache->read_pixel(px, py, 1, g_vals);
+                int n_b = ref.cache->read_pixel(px, py, 2, b_vals);
+                nf_read = std::min({n_r, n_g, n_b});
+                for (int fi = 0; fi < nf_read; ++fi) {
+                    frame_vals[fi] = 0.299f * r_vals[fi]
+                                   + 0.587f * g_vals[fi]
+                                   + 0.114f * b_vals[fi];
+                }
+            }
+
             int n_copy = std::min(nf_read, std::min(static_cast<int>(voxel.n_frames), N));
             for (int fi = 0; fi < n_copy; fi++) {
                 pixel_values[ch * N * B + fi * B + vi] = frame_vals[fi];

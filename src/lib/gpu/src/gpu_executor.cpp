@@ -1,5 +1,6 @@
 #include "nukex/gpu/gpu_executor.hpp"
 #include "nukex/gpu/fit_heartbeat.hpp"
+#include "nukex/stacker/cache_sig.hpp"
 #include "nukex/stacker/frame_cache.hpp"
 #include "nukex/core/progress_observer.hpp"
 #include <omp.h>
@@ -376,7 +377,8 @@ void GPUExecutor::execute_spatial_gpu(
 
 void GPUExecutor::execute_phase_b(
     Cube& cube,
-    FrameCache& cache,
+    const std::vector<ChannelCacheRef>& slot_refs,
+    int n_frames_written,
     const std::vector<FrameStats>& frame_stats,
     const WeightConfig& weight_config,
     FittingFn fitting_fn,
@@ -388,7 +390,7 @@ void GPUExecutor::execute_phase_b(
 
     int total_voxels = cube.total_pixels();
     int n_channels = cube.at(0, 0).n_channels;
-    int n_frames = cache.n_frames_written();
+    int n_frames = n_frames_written;
     int N = std::min(n_frames, static_cast<int>(GPU_MAX_FRAMES));
 
     int batch_size = context_.estimate_batch_size(N, n_channels);
@@ -417,7 +419,7 @@ void GPUExecutor::execute_phase_b(
                        + std::to_string(count) + " voxels)");
 
         // Step 1: Extract voxel data into SoA buffers
-        buf.extract_from_cube(cube, cache, processed, count, n_channels);
+        buf.extract_from_cube(cube, slot_refs, processed, count, n_channels);
 
         // Steps 2-3: Weight computation + robust stats (GPU or CPU)
         obs.advance(0, "  kernel 1: weight classification" + backend_tag);

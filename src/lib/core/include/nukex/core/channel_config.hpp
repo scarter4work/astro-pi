@@ -45,6 +45,9 @@ struct ChannelConfig {
 
     int channel_index_for_name(const std::string& name) const;
     int slot_index(const std::string& name) const; // == channel_index_for_name; legible alias
+    // Reverse of slot_index: returns the slot name at position i.
+    // i must be in [0, n_channels).
+    const std::string& slot_name(int i) const { return channel_names[i]; }
     bool is_mono() const;
 };
 

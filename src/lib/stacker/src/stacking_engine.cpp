@@ -1,6 +1,7 @@
 #include "nukex/stacker/stacking_engine.hpp"
 #include "nukex/core/progress_observer.hpp"
 #include "nukex/stacker/frame_cache.hpp"
+#include "nukex/stacker/cache_sig.hpp"
 #include "nukex/core/cube.hpp"
 #include "nukex/core/channel_config.hpp"
 #include "nukex/core/frame_stats.hpp"
@@ -33,6 +34,7 @@
 #include <chrono>
 #include <cstdio>
 #include <cmath>
+#include <map>
 #include <numeric>
 #include <string>
 #include <vector>
@@ -226,31 +228,35 @@ StackingEngine::ExecuteResult StackingEngine::execute(
     // Allocate cube
     Cube cube(out_width, out_height, ch_config);
 
-    // FrameCache holds the *raw debayered frame* on disk, NOT the full
-    // voxel slot set. The two counts deliberately differ for OSC:
-    //   - voxel slot count = ch_config.n_channels
-    //       includes derived/synthesised slots (e.g. an "L" slot for
-    //       BROADBAND_OSC built per-frame from rec709 luminance), so
-    //       it can be 4 for a 3-channel debayered frame.
-    //   - cache channel count = whatever DebayerEngine::debayer()
-    //       actually outputs (always 3 for any Bayer pattern), or 1 for
-    //       mono passthrough.
-    // Conflating them blew up `cache.write_frame()` with an
-    // invalid_argument ("image dimensions do not match cache") on every
-    // OSC stack — derived slots like "L" never reach the cache because
-    // they're synthesised straight into the voxel.
+    // Task 10A: one FrameCache per (width, height, n_ch) signature.
     //
-    // TASK-10-MIXED-CACHE: Task 10 will need to handle a mixed-class
-    // batch (e.g. mono L frames + Bayer HaO3) where per-frame
-    // cache_n_channels can differ from the value picked here off the
-    // first frame. Either rewrite the cache to allow per-frame channel
-    // counts, or split into one cache per (width,height,n_ch) signature
-    // and let Phase B iterate them.
-    int cache_n_channels = (bayer != BayerPattern::NONE) ? 3 : 1;
-
-    // Allocate frame cache
+    // Pre-Task-10A, a single FrameCache was allocated up-front based on the
+    // first frame's Bayer mode. That broke in two ways:
+    //   1. Mixed mono+Bayer batches OOB'd at write_frame() when frame
+    //      geometry differed from the first frame's cache dimensions.
+    //   2. BROADBAND_OSC's synthesised L slot (cube ch=3) read garbage from
+    //      a 3-channel cache during Phase B — ch=3 is out of range.
+    // Both stem from v4's implicit cube_n_ch == cache_n_ch == debayer_n_ch
+    // assumption, which v5's slot semantics broke.
+    //
+    // Fix: caches is a map keyed on (w, h, n_ch). Each frame is written to
+    // the cache matching its post-debayer geometry. Phase B reads through
+    // slot_cache_refs (built below after Phase A) instead of indexing the
+    // cache directly by cube slot index.
     int n_frames = static_cast<int>(light_paths.size());
-    FrameCache cache(out_width, out_height, cache_n_channels, n_frames, config_.cache_dir);
+    std::map<CacheSig, FrameCache> caches;
+    auto get_or_create_cache = [&](int w, int h, int n_ch) -> FrameCache& {
+        CacheSig sig{w, h, n_ch};
+        auto it = caches.find(sig);
+        if (it == caches.end()) {
+            it = caches.emplace(
+                std::piecewise_construct,
+                std::forward_as_tuple(sig),
+                std::forward_as_tuple(w, h, n_ch, n_frames, config_.cache_dir)
+            ).first;
+        }
+        return it->second;
+    };
 
     // Frame-level metadata
     std::vector<FrameStats> frame_stats(n_frames);
@@ -390,9 +396,11 @@ StackingEngine::ExecuteResult StackingEngine::execute(
                           + ")");
         }
 
-        // 5. Cache aligned frame
+        // 5. Cache aligned frame into the geometry-matched cache.
         obs.advance(0, "  caching");
-        cache.write_frame(f, aligned.image);
+        get_or_create_cache(aligned.image.width(),
+                            aligned.image.height(),
+                            aligned.image.n_channels()).write_frame(f, aligned.image);
 
         // 6. Frame-level stats
         float frame_median = compute_frame_median(aligned.image);
@@ -586,6 +594,82 @@ StackingEngine::ExecuteResult StackingEngine::execute(
         }
     }
 
+    // ── Build slot → cache routing table for Phase B ─────────────────
+    //
+    // For each cube slot, determine which FrameCache and channel index (or
+    // synthesis rule) Phase B should use to retrieve per-frame pixel values.
+    //
+    // The routing is explicit and verbose here by design: encoding
+    // (FilterClass × cache geometry) rules in a flat switch is clearer than
+    // smearing them across ChannelConfig string conventions or slot-name
+    // parsing inside the GPU executor. Every (FilterClass × cache geometry)
+    // combination must be covered; missing coverage falls through to the
+    // cache=nullptr sentinel which makes Phase B use welford-only stats.
+    std::vector<ChannelCacheRef> slot_cache_refs(cube.channel_config.n_channels);
+
+    // Grab commonly needed cache pointers once — avoids re-scanning the map
+    // per slot.
+    const FrameCache* cache_3ch = nullptr; // first 3-channel (OSC) cache
+    const FrameCache* cache_1ch = nullptr; // first 1-channel (mono) cache
+    for (auto& [sig, c] : caches) {
+        if (std::get<2>(sig) == 3 && cache_3ch == nullptr) cache_3ch = &c;
+        if (std::get<2>(sig) == 1 && cache_1ch == nullptr) cache_1ch = &c;
+    }
+
+    for (int slot_i = 0; slot_i < cube.channel_config.n_channels; ++slot_i) {
+        const std::string& name = cube.channel_config.slot_name(slot_i);
+
+        if (name == "L") {
+            // Two cases: raw mono-L filter (1ch cache) or BROADBAND_OSC
+            // synthesised L (3ch cache, no raw L in cache).
+            if (cache_1ch != nullptr) {
+                // Raw L filter: direct read from channel 0 of the mono cache.
+                slot_cache_refs[slot_i] = {cache_1ch, 0, SlotSynthesis::DIRECT};
+            } else if (cache_3ch != nullptr) {
+                // BROADBAND_OSC synthesised L: derive 0.299R+0.587G+0.114B at
+                // read time. Same formula as Phase A's voxel accumulation — keeps
+                // the distribution fitting consistent with the Welford stats.
+                slot_cache_refs[slot_i] = {cache_3ch, -1, SlotSynthesis::REC709_LUMA};
+            }
+            // If neither cache exists the slot stays at the default (nullptr),
+            // and Phase B falls back to welford-only for this slot.
+
+        } else if (name == "R" || name == "G" || name == "B") {
+            // BROADBAND_OSC raw R/G/B OR an explicit mono R/G/B filter.
+            // Prefer the 3ch (OSC) cache; fall back to the mono cache if only
+            // mono R/G/B filter frames were fed (BROADBAND_RGB batch).
+            int cache_ch_target = (name == "R") ? 0 : (name == "G") ? 1 : 2;
+            if (cache_3ch != nullptr) {
+                slot_cache_refs[slot_i] = {cache_3ch, cache_ch_target, SlotSynthesis::DIRECT};
+            } else if (cache_1ch != nullptr) {
+                // Mono R/G/B filter — a single-channel cache.
+                // Task 11 will handle mixed mono-R + mono-G + mono-B batches
+                // that need separate 1ch caches per filter; for now we assume
+                // one mono cache carries the relevant channel.
+                slot_cache_refs[slot_i] = {cache_1ch, 0, SlotSynthesis::DIRECT};
+            }
+
+        } else if (name.size() >= 2 &&
+                   (name[0] == 'R' || name[0] == 'G' || name[0] == 'B') &&
+                   name[1] == '_') {
+            // DUAL_NB_OSC: slot names like "R_HaO3", "G_HaO3", "B_S2O3".
+            // Frames were debayered into a 3-channel image; cache is 3ch.
+            if (cache_3ch != nullptr) {
+                int cache_ch_target = (name[0] == 'R') ? 0 : (name[0] == 'G') ? 1 : 2;
+                slot_cache_refs[slot_i] = {cache_3ch, cache_ch_target, SlotSynthesis::DIRECT};
+            }
+            // No 3ch cache for DUAL_NB is a classifier guard violation —
+            // fall through with cache=nullptr (welford-only Phase B).
+
+        } else {
+            // NARROWBAND_SINGLE: "Ha", "OIII", "SII", or any future mono slot.
+            // These come from mono frames → 1ch cache, channel 0.
+            if (cache_1ch != nullptr) {
+                slot_cache_refs[slot_i] = {cache_1ch, 0, SlotSynthesis::DIRECT};
+            }
+        }
+    }
+
     // ═══ PHASE B — Analysis (GPU-accelerated) ════════════════════════
 
     ModelSelector fitter(config_.fitting_config);
@@ -617,9 +701,15 @@ StackingEngine::ExecuteResult StackingEngine::execute(
         }
     };
 
+    // All caches are written in lockstep (one frame per cache per iteration),
+    // so any cache's n_frames_written() gives the correct count for Phase B.
+    int n_frames_written = caches.empty() ? 0
+                         : caches.begin()->second.n_frames_written();
+
     auto phase_b_start = std::chrono::steady_clock::now();
-    gpu.execute_phase_b(cube, cache, frame_stats, config_.weight_config,
-                         fitting_fn, stacked, noise_map, &obs);
+    gpu.execute_phase_b(cube, slot_cache_refs, n_frames_written,
+                        frame_stats, config_.weight_config,
+                        fitting_fn, stacked, noise_map, &obs);
     auto phase_b_end = std::chrono::steady_clock::now();
     long phase_b_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
                           phase_b_end - phase_b_start ).count();
