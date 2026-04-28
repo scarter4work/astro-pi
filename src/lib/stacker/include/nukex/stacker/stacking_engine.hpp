@@ -6,8 +6,10 @@
 #include "nukex/core/progress_observer.hpp"
 #include "nukex/fitting/model_selector.hpp"
 #include "nukex/gpu/gpu_config.hpp"
+#include <cstdint>
 #include <memory>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 // Forward declarations — keep the new color-science types out of this
@@ -68,6 +70,27 @@ public:
     explicit StackingEngine(const Config& config);
     ~StackingEngine();  // out-of-line so unique_ptr<incomplete> can compile
 
+    /// Phase B Q-solve output: per-pixel emission-line + broadband slot images.
+    ///
+    /// Built after the pixel-selector populates `stacked` with raw selected
+    /// per-slot values. For dual-NB groups (HaO3 / S2O3) the raw R/G/B
+    /// columns are decomposed into emission-line components via the Q matrix
+    /// from ChannelDecomposer; multi-source line slots (e.g. OIII contributed
+    /// by both HaO3 and S2O3 batches) are merged by sample-count weighted
+    /// mean. Broadband and single-line slots pass through 1:1.
+    ///
+    /// `negative_clamped_count` is a diagnostic: counts the per-pixel
+    /// emission values that the linear solve produced as < 0 (which is
+    /// physically meaningless and gets clamped to 0). A high count usually
+    /// means a degenerate Q matrix or unmodelled spectral leakage; surface
+    /// it in the user-facing summary or Process Console log.
+    struct DerivedStack {
+        int width  = 0;
+        int height = 0;
+        std::unordered_map<std::string, std::vector<float>> slots;
+        std::int64_t negative_clamped_count = 0;
+    };
+
     /// Execution result.
     ///
     /// Phase 9 (color-science overhaul, Task 9): adds explicit
@@ -87,6 +110,7 @@ public:
         Image                  noise_map;
         Image                  quality_map;
         std::unique_ptr<Cube>  cube;     // populated by Phase A; consumed by Phase B (Task 10)
+        DerivedStack           derived;  // Phase B Q-solve output (Task 10B)
         int                    n_frames_processed        = 0;
         int                    n_frames_failed_alignment = 0;
 

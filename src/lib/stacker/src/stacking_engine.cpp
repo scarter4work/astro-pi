@@ -20,6 +20,7 @@
 #include "nukex/calibration/qe_database.hpp"
 // TASK-14-COLLAPSE: same — for ChannelDecomposer pImpl.
 #include "nukex/calibration/channel_decomposer.hpp"
+#include <Eigen/Dense>
 #include "nukex/classify/weight_computer.hpp"
 // TASK-14-COLLAPSE: same — for ColorComposer pImpl.
 #include "nukex/compose/color_composer.hpp"
@@ -780,6 +781,126 @@ StackingEngine::ExecuteResult StackingEngine::execute(
 
     // Quality map
     Image quality_map = OutputAssembler::assemble_quality_map(cube);
+
+    // ═══ PHASE B FOLLOW-UP — Q-solve derived semantic slots ═══════════
+    //
+    // PixelSelector wrote the per-pixel best raw value for each cube slot
+    // into `stacked` (one image channel per slot). For dual-narrowband
+    // groups (HaO3 = Ha + OIII; S2O3 = SII + OIII) we now decompose the
+    // raw R/G/B columns into emission-line components via the camera-and-
+    // filter-specific Q matrix. Broadband + single-line slots pass through
+    // unchanged. The result lives in DerivedStack which downstream
+    // (ColorComposer, file output) reads from instead of `stacked`.
+    //
+    // Sample-count weighted mean is used for multi-source merge so that
+    // frames with more samples contribute proportionally — the simpler
+    // arithmetic mean would let a 5-frame S2O3 batch wash out a 50-frame
+    // HaO3 batch's OIII contribution.
+    {
+        DerivedStack derived;
+        derived.width  = out_width;
+        derived.height = out_height;
+        const int N = out_width * out_height;
+
+        // Helper: copy a stacked-image slot to derived (broadband passthrough).
+        // Returns immediately if the slot is absent — does NOT insert an empty
+        // entry in derived.slots (callers must null-check on lookup).
+        auto passthrough_slot = [&](const std::string& name) {
+            int idx = cube.channel_config.slot_index(name);
+            if (idx < 0) return;
+            auto& dst = derived.slots[name];
+            dst.assign(N, 0.0f);
+            for (int y = 0; y < out_height; ++y) {
+                for (int x = 0; x < out_width; ++x) {
+                    dst[y * out_width + x] = stacked.at(x, y, idx);
+                }
+            }
+        };
+        for (const char* name : {"L", "R", "G", "B", "Ha", "OIII", "SII"}) {
+            passthrough_slot(name);
+        }
+
+        // Discover dual-NB groups present in this batch.
+        struct QGroup {
+            std::string filter_name;  // "HaO3", "S2O3", ...
+            std::string r_slot, g_slot, b_slot;
+        };
+        std::vector<QGroup> groups;
+        for (const char* fname_cstr : {"HaO3", "S2O3"}) {
+            const std::string fname(fname_cstr);
+            if (cube.channel_config.slot_index("R_" + fname) >= 0) {
+                groups.push_back({fname, "R_" + fname, "G_" + fname, "B_" + fname});
+            }
+        }
+
+        // Multi-source line accumulators. Keyed by emission-line name (e.g. "OIII")
+        // since it can be contributed by both HaO3 and S2O3.
+        std::unordered_map<std::string, std::vector<double>> line_sum;
+        std::unordered_map<std::string, std::vector<int64_t>> line_n;
+        auto ensure_acc = [&](const std::string& name) {
+            if (!line_sum.count(name)) {
+                line_sum[name].assign(N, 0.0);
+                line_n  [name].assign(N, 0);
+            }
+        };
+
+        for (const auto& g : groups) {
+            int ri = cube.channel_config.slot_index(g.r_slot);
+            int gi = cube.channel_config.slot_index(g.g_slot);
+            int bi = cube.channel_config.slot_index(g.b_slot);
+
+            FilterPassband fp = qe_database_->lookup_filter(g.filter_name);
+
+            Eigen::MatrixXd Q;
+            try {
+                Q = decomposer_->build_q(first_filter.camera, g.filter_name);
+            } catch (const SingularQError& e) {
+                result.ok    = false;
+                result.error = std::string("Phase B Q-solve: ") + e.what();
+                return result;
+            }
+            auto qr = Q.colPivHouseholderQr();
+
+            for (int y = 0; y < out_height; ++y) {
+                for (int x = 0; x < out_width; ++x) {
+                    const int p = y * out_width + x;
+                    Eigen::Vector3d rgb(stacked.at(x, y, ri),
+                                        stacked.at(x, y, gi),
+                                        stacked.at(x, y, bi));
+                    Eigen::VectorXd lines = qr.solve(rgb);
+                    // Sample count is taken from the G channel's welford counter
+                    // — all three RGB slots within a dual-NB group share the same
+                    // contributing frames and therefore the same sample count.
+                    const int64_t n_samples =
+                        static_cast<int64_t>(cube.at(x, y).welford[gi].count());
+
+                    for (int j = 0; j < lines.size(); ++j) {
+                        double v = lines(j);
+                        if (v < 0.0) {
+                            v = 0.0;
+                            ++derived.negative_clamped_count;
+                        }
+                        ensure_acc(fp.lines[j].name);
+                        line_sum[fp.lines[j].name][p] += v * static_cast<double>(n_samples);
+                        line_n  [fp.lines[j].name][p] += n_samples;
+                    }
+                }
+            }
+        }
+
+        // Finalise the line slots: weighted mean.
+        for (auto& [name, sumv] : line_sum) {
+            auto& dst = derived.slots[name];
+            dst.assign(N, 0.0f);
+            for (int p = 0; p < N; ++p) {
+                if (line_n[name][p] > 0) {
+                    dst[p] = static_cast<float>(sumv[p] / static_cast<double>(line_n[name][p]));
+                }
+            }
+        }
+
+        result.derived = std::move(derived);
+    }
 
     result.stacked = std::move(stacked);
     result.noise_map = std::move(noise_map);
