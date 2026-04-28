@@ -37,6 +37,7 @@
 #include <cmath>
 #include <map>
 #include <numeric>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -259,6 +260,15 @@ StackingEngine::ExecuteResult StackingEngine::execute(
         return it->second;
     };
 
+    // Camera names of frames that contributed to a DUAL_NB_OSC slot. Used to
+    // gate the Q-solve at Phase B end: per-camera Q matrices are not yet
+    // implemented, so a multi-camera dual-NB stack would silently apply
+    // camera A's Q to camera B's data (wrong color). One camera per dual-NB
+    // batch is currently the contract; mixed-camera support is a Task 11+
+    // follow-up. Broadband / single-line slots don't go through Q-solve and
+    // therefore don't care, so we only track this for DUAL_NB_OSC frames.
+    std::set<std::string> dual_nb_cameras;
+
     // Frame-level metadata
     std::vector<FrameStats> frame_stats(n_frames);
     std::vector<float> frame_fwhms(n_frames, 0.0f);
@@ -336,6 +346,11 @@ StackingEngine::ExecuteResult StackingEngine::execute(
         // Surface mono-side warnings for downstream visibility.
         if (!filter_classifier_->last_warning().empty()) {
             obs.advance(0, std::string("  ") + filter_classifier_->last_warning());
+        }
+
+        // Track DUAL_NB_OSC cameras for the Q-solve mixed-camera guard.
+        if (frame_filter.cls == FilterClass::DUAL_NB_OSC) {
+            dual_nb_cameras.insert(frame_filter.camera);
         }
 
         // Merge per-frame config into the cube's running channel_config.
@@ -833,6 +848,33 @@ StackingEngine::ExecuteResult StackingEngine::execute(
             }
         }
 
+        // Mixed-camera guard. Q matrices are camera-specific (built from each
+        // camera's QE curve); applying camera A's Q to camera B's per-pixel
+        // values produces silently miscolored derived emission slots. Until
+        // per-frame Q dispatch lands (Task 11+), the contract is one camera
+        // per dual-NB batch. If the user fed dual-NB frames from multiple
+        // cameras we loud-fail here rather than emit garbage downstream.
+        // Broadband and single-line slots don't go through Q-solve so they
+        // pass through unchanged regardless.
+        std::string q_build_camera;
+        if (!groups.empty()) {
+            if (dual_nb_cameras.size() == 1) {
+                q_build_camera = *dual_nb_cameras.begin();
+            } else if (dual_nb_cameras.size() > 1) {
+                std::string list;
+                for (const auto& cam : dual_nb_cameras) {
+                    if (!list.empty()) list += ", ";
+                    list += cam;
+                }
+                result.ok    = false;
+                result.error = "Phase B Q-solve: dual-NB frames span multiple "
+                               "cameras (" + list + "). Per-camera Q dispatch is "
+                               "not yet implemented; stack each camera separately, "
+                               "or limit the batch to one camera.";
+                return result;
+            }
+        }
+
         // Multi-source line accumulators. Keyed by emission-line name (e.g. "OIII")
         // since it can be contributed by both HaO3 and S2O3.
         std::unordered_map<std::string, std::vector<double>> line_sum;
@@ -853,7 +895,12 @@ StackingEngine::ExecuteResult StackingEngine::execute(
 
             Eigen::MatrixXd Q;
             try {
-                Q = decomposer_->build_q(first_filter.camera, g.filter_name);
+                // Camera comes from `dual_nb_cameras` (validated above as a
+                // single-element set). Using `first_filter.camera` directly
+                // would silently misbuild Q if the first frame happened to be
+                // a broadband single-line under a different camera than the
+                // dual-NB frames.
+                Q = decomposer_->build_q(q_build_camera, g.filter_name);
             } catch (const SingularQError& e) {
                 result.ok    = false;
                 result.error = std::string("Phase B Q-solve: ") + e.what();
@@ -868,12 +915,28 @@ StackingEngine::ExecuteResult StackingEngine::execute(
                                         stacked.at(x, y, gi),
                                         stacked.at(x, y, bi));
                     Eigen::VectorXd lines = qr.solve(rgb);
-                    // Sample count is taken from the G channel's welford counter
-                    // — all three RGB slots within a dual-NB group share the same
-                    // contributing frames and therefore the same sample count.
-                    const int64_t n_samples =
-                        static_cast<int64_t>(cube.at(x, y).welford[gi].count());
+                    // Sample count is the MIN across R/G/B welford counters.
+                    // For DUAL_NB_OSC the Phase A router writes all three in
+                    // lockstep (frame-by-frame), so today the three counters
+                    // match exactly. min() is a defensive lower bound: if a
+                    // future Phase A change ever splits routing (mosaic Bayer
+                    // with a missing photosite, partial alignment failure that
+                    // contributes to only some channels) the counts could
+                    // diverge and the merge weights would silently miscount.
+                    // Picking min keeps the weighted-mean conservative under
+                    // any future divergence.
+                    const auto& vox = cube.at(x, y);
+                    const int64_t n_samples = static_cast<int64_t>(std::min({
+                        vox.welford[ri].count(),
+                        vox.welford[gi].count(),
+                        vox.welford[bi].count()
+                    }));
 
+                    // NOTE: this block is single-threaded today. If anyone
+                    // later parallelises the (y, x) loop (e.g. OpenMP over y),
+                    // the ++derived.negative_clamped_count below becomes a
+                    // data race; switch to std::atomic<int64_t> or a per-thread
+                    // accumulator with reduction at that point.
                     for (int j = 0; j < lines.size(); ++j) {
                         double v = lines(j);
                         if (v < 0.0) {
