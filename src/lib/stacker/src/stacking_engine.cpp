@@ -549,6 +549,11 @@ StackingEngine::ExecuteResult StackingEngine::execute(
     // output images need to track that merged total — keep n_ch in sync
     // with the cube's current channel count.
     n_ch = cube.channel_config.n_channels;
+    // Single-source-of-truth slot count for the rest of execute(). Future
+    // edits between here and Phase B that re-touch `merge()` should update
+    // this value rather than reading channel_config.n_channels three times
+    // (the slot_cache_refs sizing + routing loop both use this).
+    const int n_slots = n_ch;
 
     // Compute fwhm_best and backfill PSF weights
     float fwhm_best = 1e30f;
@@ -605,7 +610,7 @@ StackingEngine::ExecuteResult StackingEngine::execute(
     // parsing inside the GPU executor. Every (FilterClass × cache geometry)
     // combination must be covered; missing coverage falls through to the
     // cache=nullptr sentinel which makes Phase B use welford-only stats.
-    std::vector<ChannelCacheRef> slot_cache_refs(cube.channel_config.n_channels);
+    std::vector<ChannelCacheRef> slot_cache_refs(n_slots);
 
     // Grab commonly needed cache pointers once — avoids re-scanning the map
     // per slot.
@@ -616,7 +621,21 @@ StackingEngine::ExecuteResult StackingEngine::execute(
         if (std::get<2>(sig) == 1 && cache_1ch == nullptr) cache_1ch = &c;
     }
 
-    for (int slot_i = 0; slot_i < cube.channel_config.n_channels; ++slot_i) {
+    // Up-front count of mono R/G/B slots in this cube — needed to
+    // distinguish a single-color mono batch (safe to route slot 0 → cache
+    // ch 0) from a mixed mono-R + mono-G + mono-B batch (where the std::map
+    // collapses three same-shape (W,H,1) caches into one; routing all three
+    // slots to ch=0 would silently mix per-frame R/G/B values across slots).
+    // TASK-11-MONO-RGB will add per-filter cache tracking so the mixed case
+    // can use full Phase B stats; until then we leave cache=nullptr in that
+    // case so distribution fitting falls back loud-fail to welford-only.
+    int rgb_mono_slot_count = 0;
+    for (int j = 0; j < n_slots; ++j) {
+        const std::string& nm = cube.channel_config.slot_name(j);
+        if (nm == "R" || nm == "G" || nm == "B") ++rgb_mono_slot_count;
+    }
+
+    for (int slot_i = 0; slot_i < n_slots; ++slot_i) {
         const std::string& name = cube.channel_config.slot_name(slot_i);
 
         if (name == "L") {
@@ -641,13 +660,18 @@ StackingEngine::ExecuteResult StackingEngine::execute(
             int cache_ch_target = (name == "R") ? 0 : (name == "G") ? 1 : 2;
             if (cache_3ch != nullptr) {
                 slot_cache_refs[slot_i] = {cache_3ch, cache_ch_target, SlotSynthesis::DIRECT};
-            } else if (cache_1ch != nullptr) {
-                // Mono R/G/B filter — a single-channel cache.
-                // Task 11 will handle mixed mono-R + mono-G + mono-B batches
-                // that need separate 1ch caches per filter; for now we assume
-                // one mono cache carries the relevant channel.
+            } else if (cache_1ch != nullptr && rgb_mono_slot_count <= 1) {
+                // Single-color mono batch (only one of R/G/B present in the
+                // cube): the lone 1ch cache carries that color, slot 0 →
+                // cache ch 0. Safe.
                 slot_cache_refs[slot_i] = {cache_1ch, 0, SlotSynthesis::DIRECT};
             }
+            // TASK-11-MONO-RGB: mixed mono-R + mono-G + mono-B batches collapse
+            // into a single (W,H,1) cache via std::map<CacheSig,...>; routing
+            // all three slots to ch=0 of that cache would mix per-frame values.
+            // Leaving cache=nullptr here forces Phase B to use welford-only
+            // stats for these slots — correct (if coarser) until per-filter
+            // cache tracking lands.
 
         } else if (name.size() >= 2 &&
                    (name[0] == 'R' || name[0] == 'G' || name[0] == 'B') &&
