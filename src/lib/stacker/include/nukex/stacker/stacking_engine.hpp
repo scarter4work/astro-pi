@@ -18,6 +18,8 @@ public:
         WeightConfig          weight_config;
         ModelSelector::Config fitting_config;
         std::string           cache_dir = "/tmp";
+        std::string           qe_database_path = "share/qe_database.json"; // resolved at startup
+        std::string           qe_override_path; // optional; empty = none
         GPUExecutorConfig     gpu_config;
     };
 

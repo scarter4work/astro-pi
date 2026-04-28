@@ -63,6 +63,7 @@ nukex_add_test(test_palette       unit/compose/test_palette.cpp     nukex4_compo
 nukex_add_test(test_color_composer unit/compose/test_color_composer.cpp nukex4_compose nukex4_core)
 nukex_add_test(test_frame_cache unit/stacker/test_frame_cache.cpp nukex4_stacker)
 nukex_add_test(test_stacking_engine unit/stacker/test_stacking_engine.cpp nukex4_stacker)
+nukex_add_test(test_engine_config unit/stacker/test_engine_config.cpp nukex4_stacker nukex4_calibration nukex4_io nukex4_core)
 
 # Test utilities (PNG writer + test data loader)
 add_library(test_util STATIC
