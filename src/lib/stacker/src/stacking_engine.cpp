@@ -22,8 +22,8 @@
 #include "nukex/calibration/channel_decomposer.hpp"
 #include <Eigen/Dense>
 #include "nukex/classify/weight_computer.hpp"
-// TASK-14-COLLAPSE: same — for ColorComposer pImpl.
-#include "nukex/compose/color_composer.hpp"
+// ColorComposer is module-owned (Task 11 / Task 12). The engine produces
+// structured DerivedStack output; the module composes it for display.
 #include "nukex/fitting/model_selector.hpp"
 #include "nukex/fitting/robust_stats.hpp"
 #include "nukex/combine/pixel_selector.hpp"
@@ -78,14 +78,13 @@ StackingEngine::StackingEngine(const Config& config)
         }
     }
     decomposer_ = std::make_unique<ChannelDecomposer>(*qe_database_);
-    composer_   = std::make_unique<ColorComposer>();
 }
 
 // TASK-14-COLLAPSE: out-of-line so the unique_ptr<FilterClassifier> /
-// <QEDatabase> / <ChannelDecomposer> / <ColorComposer> destructors can
-// see the full types from this TU's includes. When the v4 module enum
-// goes away, the engine members can become value-typed and the
-// destructor can revert to `= default;` in the header.
+// <QEDatabase> / <ChannelDecomposer> destructors can see the full types
+// from this TU's includes. When the v4 module enum goes away, the
+// engine members can become value-typed and the destructor can revert
+// to `= default;` in the header.
 StackingEngine::~StackingEngine() = default;
 
 // TASK-14-COLLAPSE: ExecuteResult special members are out-of-line for
@@ -805,7 +804,8 @@ StackingEngine::ExecuteResult StackingEngine::execute(
     // raw R/G/B columns into emission-line components via the camera-and-
     // filter-specific Q matrix. Broadband + single-line slots pass through
     // unchanged. The result lives in DerivedStack which downstream
-    // (ColorComposer, file output) reads from instead of `stacked`.
+    // (NukeXInstance's ColorComposer at display time, file output) reads
+    // from instead of `stacked`.
     //
     // Sample-count weighted mean is used for multi-source merge so that
     // frames with more samples contribute proportionally — the simpler

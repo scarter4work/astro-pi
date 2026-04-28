@@ -24,7 +24,6 @@ namespace nukex {
 class FilterClassifier;
 class QEDatabase;
 class ChannelDecomposer;
-class ColorComposer;
 class Cube;
 }
 
@@ -134,7 +133,11 @@ private:
     std::unique_ptr<FilterClassifier>     filter_classifier_;
     std::unique_ptr<QEDatabase>           qe_database_;
     std::unique_ptr<ChannelDecomposer>    decomposer_;     // built lazily after QE load
-    std::unique_ptr<ColorComposer>        composer_;
+    // ColorComposer is intentionally NOT owned by the engine. Composition
+    // (DerivedSlots → 3-channel sRGB) is presentation-layer work and lives
+    // in the module (NukeXInstance), where Task 12 wires it up. The engine
+    // emits structured per-slot data via ExecuteResult.derived; consumers
+    // own when and how to compose for display.
     std::string                           qe_load_error_;  // surfaced in execute() if non-empty
 };
 
