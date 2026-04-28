@@ -50,11 +50,11 @@ public:
         ///   - Task 16 ships the actual share/qe_database.json alongside
         ///     the PI module, at which point the default path resolves
         ///     correctly for end users.
-        ///   - Task 12 surfaces the qe_load_error_ string in the module
-        ///     status bar (NukeXInstance::ExecuteGlobal currently sees
-        ///     result.ok==false but the user only sees "** No frames were
-        ///     processed."). Until Task 12 lands the error is in the Process
-        ///     Console log, not the UI.
+        ///   - Task 12 surfaces the qe_load_error_ string via Process Console
+        ///     in NukeXInstance::ExecuteGlobal (look for "QE database error:"
+        ///     above the early-return). The Console message includes a
+        ///     remediation hint pointing at qe_overrides.json + Task 16
+        ///     (shipped DB).
         ///   - Tests MUST override this field to point at a fixture — see
         ///     fs::path(NUKEX_TEST_FIXTURES_DIR) / "qe" / "minimal_db.json"
         ///     in test/unit/stacker/test_stacking_engine.cpp for the canonical
