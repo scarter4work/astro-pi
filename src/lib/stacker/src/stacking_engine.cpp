@@ -4,11 +4,16 @@
 #include "nukex/core/cube.hpp"
 #include "nukex/core/channel_config.hpp"
 #include "nukex/core/frame_stats.hpp"
+#include "nukex/core/filter.hpp"
 #include "nukex/io/fits_reader.hpp"
 #include "nukex/io/debayer.hpp"
 #include "nukex/io/flat_calibration.hpp"
+#include "nukex/io/filter_classifier.hpp"
 #include "nukex/alignment/frame_aligner.hpp"
+#include "nukex/calibration/qe_database.hpp"
+#include "nukex/calibration/channel_decomposer.hpp"
 #include "nukex/classify/weight_computer.hpp"
+#include "nukex/compose/color_composer.hpp"
 #include "nukex/fitting/model_selector.hpp"
 #include "nukex/fitting/robust_stats.hpp"
 #include "nukex/combine/pixel_selector.hpp"
@@ -26,7 +31,53 @@
 
 namespace nukex {
 
-StackingEngine::StackingEngine(const Config& config) : config_(config) {}
+// ── Constructor ──────────────────────────────────────────────────────
+//
+// QE-database load uses a deferred-fail pattern: if the JSON can't be
+// found / is malformed, the error is captured into qe_load_error_ and
+// re-emitted at the very top of execute(). We can't throw in the
+// constructor because PI module-thread construction would terminate
+// the process before the user sees a Process Console message.
+//
+// FilterClassifier and QEDatabase are heap-allocated (pImpl) so the
+// engine header can forward-declare them — that keeps v4's old module
+// FilterClass enum (in src/module/filter_classifier.hpp) from
+// colliding with the new color-science enum during the migration.
+// Task 14 will delete the v4 enum and we can collapse this back to
+// in-place value members.
+StackingEngine::StackingEngine(const Config& config)
+    : config_(config),
+      filter_classifier_(std::make_unique<FilterClassifier>()),
+      qe_database_(std::make_unique<QEDatabase>()) {
+    auto r1 = qe_database_->load_shipped(config_.qe_database_path);
+    if (!r1.ok) {
+        qe_load_error_ = r1.error;
+        return;
+    }
+    if (!config_.qe_override_path.empty()) {
+        auto r2 = qe_database_->load_override(config_.qe_override_path);
+        if (!r2.ok) {
+            qe_load_error_ = r2.error;
+            return;
+        }
+    }
+    decomposer_ = std::make_unique<ChannelDecomposer>(*qe_database_);
+    composer_   = std::make_unique<ColorComposer>();
+}
+
+// Out-of-line so the unique_ptr<FilterClassifier> / <QEDatabase> /
+// <ChannelDecomposer> / <ColorComposer> destructors can see the full
+// types from this TU's includes.
+StackingEngine::~StackingEngine() = default;
+
+// ExecuteResult special members are out-of-line for the same
+// forward-decl reason — std::unique_ptr<Cube> needs the complete Cube
+// type at the destructor / move-ctor / move-assign instantiation.
+StackingEngine::ExecuteResult::ExecuteResult() = default;
+StackingEngine::ExecuteResult::~ExecuteResult() = default;
+StackingEngine::ExecuteResult::ExecuteResult(ExecuteResult&&) noexcept = default;
+StackingEngine::ExecuteResult&
+    StackingEngine::ExecuteResult::operator=(ExecuteResult&&) noexcept = default;
 
 namespace {
 
@@ -80,14 +131,32 @@ void compute_dominant_shape(SubcubeVoxel& voxel, int n_ch) {
 
 } // anonymous namespace
 
-StackingEngine::Result StackingEngine::execute(
+StackingEngine::ExecuteResult StackingEngine::execute(
     const std::vector<std::string>& light_paths,
     const std::vector<std::string>& flat_paths,
     ProgressObserver* progress)
 {
     ProgressObserver& obs = progress ? *progress : null_progress_observer();
-    Result result;
+
+    // Empty-input shortcut runs BEFORE the QE-error surface so callers
+    // probing the engine with no work (e.g. UI initial state) don't
+    // get spurious error toasts. The default Config's qe_database_path
+    // points at a relative "share/" that may not exist outside the
+    // PI plugin install — that's fine until the user actually feeds
+    // frames in.
+    ExecuteResult result;
     if (light_paths.empty()) return result;
+
+    // Surface a deferred QE-load failure from the constructor before
+    // any per-frame work. ok=false here means the engine isn't usable
+    // for this batch and the module/UI can show the error to the user.
+    if (!qe_load_error_.empty()) {
+        obs.message(qe_load_error_);
+        ExecuteResult err{};
+        err.ok    = false;
+        err.error = qe_load_error_;
+        return err;
+    }
 
     // ═══ SETUP ═══════════════════════════════════════════════════════
 
@@ -98,16 +167,32 @@ StackingEngine::Result StackingEngine::execute(
     int raw_width = first.image.width();
     int raw_height = first.image.height();
 
-    // Detect Bayer pattern from FITS header
+    // Classify the first frame's filter (drives initial ChannelConfig).
+    Filter first_filter = filter_classifier_->classify(first.metadata);
     BayerPattern bayer = parse_bayer_pattern(first.metadata.bayer_pattern);
 
-    // Auto-detect channel config from metadata
-    ChannelConfig ch_config;
+    // Loud-fail: an unknown FILTER on Bayer data is a batch-stopper per
+    // spec §6.3 — silently treating it as plain OSC would corrupt the
+    // routing and silently mis-color downstream output.
+    if (first_filter.cls == FilterClass::UNKNOWN && bayer != BayerPattern::NONE) {
+        ExecuteResult err{};
+        err.ok    = false;
+        err.error = "FILTER='" + first_filter.name + "' on Bayer frame not in QE DB. " +
+                    "Add it to ~/.nukex4/qe_overrides.json (see docs) and retry, " +
+                    "or remove the FILTER keyword to default to plain OSC.";
+        obs.message(err.error);
+        return err;
+    }
+
+    // Surface mono-side warning if the classifier emitted one (e.g. the
+    // mono-with-FILTER guesses we accept silently but want logged).
+    if (!filter_classifier_->last_warning().empty()) {
+        obs.message(filter_classifier_->last_warning());
+    }
+
+    ChannelConfig ch_config = ChannelConfig::from_filter(first_filter);
     if (bayer != BayerPattern::NONE) {
-        ch_config = ChannelConfig::from_mode(StackingMode::OSC_RGB);
-        ch_config.bayer = bayer;  // Override with actual pattern from header
-    } else {
-        ch_config = ChannelConfig::from_mode(StackingMode::MONO_L);
+        ch_config.bayer = bayer; // FITS header wins over the from_filter() default
     }
 
     // After debayer, dimensions may change for Bayer data.
@@ -142,6 +227,30 @@ StackingEngine::Result StackingEngine::execute(
                 + (flat_paths.empty() ? "" : ", " + std::to_string(flat_paths.size()) + " flat"));
     obs.begin_phase("Phase A: Loading frames", n_frames);
 
+    // Helper: route one (channel-name → value) sample into a voxel slot.
+    // Initializes the histogram range on the very first sample for the slot
+    // and then performs the standard Welford + histogram update. Slot
+    // indexing is via the cube's (possibly merged) channel_config; an
+    // unrecognized name aborts because the routing dispatch upstream is
+    // expected to have already validated it.
+    auto route_sample = [&](SubcubeVoxel& voxel,
+                            const std::string& slot_name,
+                            float value) {
+        int idx = cube.channel_config.slot_index(slot_name);
+        if (idx < 0) {
+            // Routing tried to push a sample into a slot that was never
+            // allocated by ChannelConfig::merge() — that is a programmer
+            // error in the dispatch table. Aborting beats corrupting an
+            // adjacent slot's accumulator.
+            std::abort();
+        }
+        voxel.welford[idx].update(value);
+        if (voxel.welford[idx].count() == 1) {
+            voxel.histogram[idx].initialize_range(value - 0.1f, value + 0.1f);
+        }
+        voxel.histogram[idx].update(value);
+    };
+
     for (int f = 0; f < n_frames; f++) {
         std::string filename = light_paths[f];
         auto slash = filename.rfind('/');
@@ -158,6 +267,29 @@ StackingEngine::Result StackingEngine::execute(
 
         Image image = std::move(read_result.image);
         auto& meta = read_result.metadata;
+
+        // 1b. Per-frame filter classification — drives Phase A routing.
+        Filter frame_filter = filter_classifier_->classify(meta);
+
+        // Mid-batch unknown-on-Bayer is rejected per-frame (not the whole
+        // batch — only the first frame's UNKNOWN-on-Bayer is fatal).
+        bool frame_is_bayer = parse_bayer_pattern(meta.bayer_pattern) != BayerPattern::NONE;
+        if (frame_filter.cls == FilterClass::UNKNOWN && frame_is_bayer) {
+            obs.advance(1, "  skipped — unknown FILTER='" + frame_filter.name +
+                           "' on Bayer frame (add to qe_overrides.json to recover)");
+            result.n_frames_failed_alignment++;
+            continue;
+        }
+
+        // Surface mono-side warnings for downstream visibility.
+        if (!filter_classifier_->last_warning().empty()) {
+            obs.advance(0, std::string("  ") + filter_classifier_->last_warning());
+        }
+
+        // Merge per-frame config into the cube's running channel_config.
+        // Idempotent if the per-frame filter matches the running config.
+        ChannelConfig per_frame_cfg = ChannelConfig::from_filter(frame_filter);
+        cube.channel_config = ChannelConfig::merge(cube.channel_config, per_frame_cfg);
 
         // 2. Debayer
         if (bayer != BayerPattern::NONE) {
@@ -235,22 +367,71 @@ StackingEngine::Result StackingEngine::execute(
             result.n_frames_failed_alignment++;
         }
 
-        // 7. Accumulate into cube
+        // 7. Accumulate into cube via Phase A router.
+        //
+        // The classifier on the per-frame metadata picked one of the five
+        // FilterClass cases below; UNKNOWN was already rejected upstream.
+        // Each case dispatches the appropriate per-pixel value(s) into
+        // named voxel slots via the shared route_sample helper.
+        //
+        // BROADBAND_OSC additionally synthesises an "L" slot via rec709
+        // luminance (0.299 R + 0.587 G + 0.114 B) — that's how we get the
+        // "OSC-as-LRGB" effect that the spec promises.
         obs.advance(0, "  accumulating");
-        for (int y = 0; y < out_height; y++) {
-            for (int x = 0; x < out_width; x++) {
-                auto& voxel = cube.at(x, y);
-                for (int ch = 0; ch < n_ch; ch++) {
-                    float value = aligned.image.at(x, y, ch);
-                    voxel.welford[ch].update(value);
-                    if (voxel.welford[ch].count() == 1) {
-                        voxel.histogram[ch].initialize_range(
-                            value - 0.1f, value + 0.1f);
+        switch (frame_filter.cls) {
+            case FilterClass::BROADBAND_OSC: {
+                for (int y = 0; y < out_height; y++) {
+                    for (int x = 0; x < out_width; x++) {
+                        auto& voxel = cube.at(x, y);
+                        float r = aligned.image.at(x, y, 0);
+                        float g = aligned.image.at(x, y, 1);
+                        float b = aligned.image.at(x, y, 2);
+                        float l = 0.299f * r + 0.587f * g + 0.114f * b;
+                        route_sample(voxel, "R", r);
+                        route_sample(voxel, "G", g);
+                        route_sample(voxel, "B", b);
+                        route_sample(voxel, "L", l);
+                        voxel.n_frames++;
                     }
-                    voxel.histogram[ch].update(value);
                 }
-                voxel.n_frames++;
+                break;
             }
+            case FilterClass::DUAL_NB_OSC: {
+                std::string r_slot = "R_" + frame_filter.name;
+                std::string g_slot = "G_" + frame_filter.name;
+                std::string b_slot = "B_" + frame_filter.name;
+                for (int y = 0; y < out_height; y++) {
+                    for (int x = 0; x < out_width; x++) {
+                        auto& voxel = cube.at(x, y);
+                        route_sample(voxel, r_slot, aligned.image.at(x, y, 0));
+                        route_sample(voxel, g_slot, aligned.image.at(x, y, 1));
+                        route_sample(voxel, b_slot, aligned.image.at(x, y, 2));
+                        voxel.n_frames++;
+                    }
+                }
+                break;
+            }
+            case FilterClass::BROADBAND_L:
+            case FilterClass::NARROWBAND_SINGLE:
+            case FilterClass::BROADBAND_RGB: {
+                // Mono frames: channel 0 of the (post-debayer) image. The
+                // slot name comes from the filter — "L" for broadband-L,
+                // "Ha"/"OIII"/"SII" for narrowband-single, "R"/"G"/"B"
+                // for an explicit R/G/B mono filter.
+                const std::string& slot_name = frame_filter.name;
+                for (int y = 0; y < out_height; y++) {
+                    for (int x = 0; x < out_width; x++) {
+                        auto& voxel = cube.at(x, y);
+                        route_sample(voxel, slot_name, aligned.image.at(x, y, 0));
+                        voxel.n_frames++;
+                    }
+                }
+                break;
+            }
+            case FilterClass::UNKNOWN:
+                // Already handled at the top of the per-frame loop —
+                // reaching here means the upstream gate is broken.
+                std::abort();
         }
 
         cube.n_frames_loaded++;
@@ -269,6 +450,12 @@ StackingEngine::Result StackingEngine::execute(
     if (result.n_frames_processed == 0) return result;
 
     // ═══ BETWEEN PHASES — Global Statistics ══════════════════════════
+
+    // Phase A may have merged additional slots into cube.channel_config
+    // (e.g. mixed L + HaO3 batch grew it from 1→4). Phase B / C and the
+    // output images need to track that merged total — keep n_ch in sync
+    // with the cube's current channel count.
+    n_ch = cube.channel_config.n_channels;
 
     // Compute fwhm_best and backfill PSF weights
     float fwhm_best = 1e30f;
@@ -398,6 +585,12 @@ StackingEngine::Result StackingEngine::execute(
     result.stacked = std::move(stacked);
     result.noise_map = std::move(noise_map);
     result.quality_map = std::move(quality_map);
+    // Move the cube into a heap-allocated holder on the result so
+    // Phase B (Task 10) and the integration tests can read derived
+    // slot indices and per-voxel accumulators after execute() returns.
+    // (unique_ptr because Cube is forward-declared in the public
+    //  header — see stacking_engine.hpp namespace comment.)
+    result.cube = std::make_unique<Cube>(std::move(cube));
 
     return result;
 }

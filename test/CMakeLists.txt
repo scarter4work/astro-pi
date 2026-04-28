@@ -124,3 +124,7 @@ nukex_add_test(test_filter_classifier unit/module/test_filter_classifier.cpp nuk
 nukex_add_test(test_stretch_auto_selector unit/module/test_stretch_auto_selector.cpp nukex4_module_testlib)
 nukex_add_test(test_stretch_factory unit/module/test_stretch_factory.cpp nukex4_module_testlib)
 nukex_add_test(test_phase8_fallback unit/module/test_phase8_fallback.cpp nukex4_stretch nukex4_learning sqlite3_vendored)
+
+# Integration tests (Task 9 onward) — gated under [.integration] so they
+# don't run by default; opt in with `./test_<name> [integration]`.
+add_subdirectory(integration)
