@@ -7,6 +7,10 @@
 
 namespace nukex {
 
+// All slot values are sRGB-encoded intensities in [0, 1]. Producers
+// (Phase B derived-slot accumulator) are responsible for staying in
+// range; negative values fall through compose_pixel's gamut counter
+// and are silently clipped to 0.
 struct DerivedSlots {
     // Broadband channels (any may be zero if not in batch)
     double L = 0.0;

@@ -37,9 +37,11 @@ void xyz_to_srgb(double X, double Y, double Z, double& r, double& g, double& b) 
     double rl =  3.2404542 * X - 1.5371385 * Y - 0.4985314 * Z;
     double gl = -0.9692660 * X + 1.8760108 * Y + 0.0415560 * Z;
     double bl =  0.0556434 * X - 0.2040259 * Y + 1.0572252 * Z;
-    r = linear_to_srgb(std::max(0.0, rl));
-    g = linear_to_srgb(std::max(0.0, gl));
-    b = linear_to_srgb(std::max(0.0, bl));
+    // Don't clamp negatives here — let clip_to_gamut see them so the
+    // gamut_clipped_ counter records under-saturation as well as over.
+    r = linear_to_srgb(rl);
+    g = linear_to_srgb(gl);
+    b = linear_to_srgb(bl);
 }
 
 } // namespace
