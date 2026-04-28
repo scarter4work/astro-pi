@@ -4,6 +4,7 @@
 #include <filesystem>
 
 using namespace nukex;
+namespace fs = std::filesystem;
 
 TEST_CASE("StackingEngine: empty input produces empty result", "[engine]") {
     StackingEngine::Config cfg;
@@ -43,7 +44,7 @@ TEST_CASE("StackingEngine: M16 integration test", "[.integration][engine]") {
 
     StackingEngine::Config cfg;
     cfg.cache_dir = "/tmp";
-    cfg.qe_database_path = std::string(NUKEX_TEST_FIXTURES_DIR) + "/qe/minimal_db.json";
+    cfg.qe_database_path = (fs::path(NUKEX_TEST_FIXTURES_DIR) / "qe" / "minimal_db.json").string();
     StackingEngine engine(cfg);
 
     auto result = engine.execute(lights, {});
@@ -149,7 +150,7 @@ TEST_CASE("StackingEngine: observer phases are balanced", "[.integration][engine
     RecordingObserver obs;
     StackingEngine::Config cfg;
     cfg.cache_dir = "/tmp";
-    cfg.qe_database_path = std::string(NUKEX_TEST_FIXTURES_DIR) + "/qe/minimal_db.json";
+    cfg.qe_database_path = (fs::path(NUKEX_TEST_FIXTURES_DIR) / "qe" / "minimal_db.json").string();
     StackingEngine engine(cfg);
 
     auto result = engine.execute(lights, {}, &obs);
@@ -186,7 +187,7 @@ TEST_CASE("StackingEngine: cancellation mid-Phase-A returns partial result", "[.
 
     StackingEngine::Config cfg;
     cfg.cache_dir = "/tmp";
-    cfg.qe_database_path = std::string(NUKEX_TEST_FIXTURES_DIR) + "/qe/minimal_db.json";
+    cfg.qe_database_path = (fs::path(NUKEX_TEST_FIXTURES_DIR) / "qe" / "minimal_db.json").string();
     StackingEngine engine(cfg);
 
     auto result = engine.execute(lights, {}, &obs);
@@ -224,7 +225,7 @@ TEST_CASE("StackingEngine: cancellation mid-Phase-B returns partial result", "[.
 
     StackingEngine::Config cfg;
     cfg.cache_dir = "/tmp";
-    cfg.qe_database_path = std::string(NUKEX_TEST_FIXTURES_DIR) + "/qe/minimal_db.json";
+    cfg.qe_database_path = (fs::path(NUKEX_TEST_FIXTURES_DIR) / "qe" / "minimal_db.json").string();
     StackingEngine engine(cfg);
 
     auto result = engine.execute(lights, {}, &obs);

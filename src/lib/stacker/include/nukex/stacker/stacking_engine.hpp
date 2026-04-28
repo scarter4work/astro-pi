@@ -50,13 +50,15 @@ public:
         ///     the PI module, at which point the default path resolves
         ///     correctly for end users.
         ///   - Task 12 surfaces the qe_load_error_ string in the module
-        ///     status bar (NukeXInstance.cpp:437-443 currently sees
+        ///     status bar (NukeXInstance::ExecuteGlobal currently sees
         ///     result.ok==false but the user only sees "** No frames were
         ///     processed."). Until Task 12 lands the error is in the Process
         ///     Console log, not the UI.
-        ///   - Tests MUST override this field to point at a fixture — e.g.
-        ///     std::string(NUKEX_TEST_FIXTURES_DIR) + "/qe/minimal_db.json"
-        ///     — or they will fail with a QE-load error on the first frame.
+        ///   - Tests MUST override this field to point at a fixture — see
+        ///     fs::path(NUKEX_TEST_FIXTURES_DIR) / "qe" / "minimal_db.json"
+        ///     in test/unit/stacker/test_stacking_engine.cpp for the canonical
+        ///     pattern — or they will fail with a QE-load error on the first
+        ///     frame.
         std::string           qe_database_path = "share/qe_database.json";
 
         std::string           qe_override_path; // optional; empty = none
