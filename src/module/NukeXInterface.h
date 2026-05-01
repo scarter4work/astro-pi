@@ -89,6 +89,15 @@ private:
       HorizontalSizer GPU_Sizer;
       CheckBox       EnableGPU_CheckBox;
 
+      // QE override file picker. Optional path to a JSON file with custom
+      // camera/filter QE values that augments or replaces the shipped
+      // database. Empty string = use shipped DB only.
+      HorizontalSizer QEOverride_Sizer;
+      Label          QEOverride_Label;
+      Edit           QEOverride_Edit;
+      PushButton     QEOverride_Browse_Button;
+      PushButton     QEOverride_Clear_Button;
+
       // Phase 8 rating controls. Rate-last-run re-opens RatingDialog against
       // instance.lastRun (populated by ExecuteGlobal). SuppressRating persists
       // via TheNukeXProcess->set_rating_popup_suppressed (PCL Settings).
@@ -114,6 +123,10 @@ private:
    void e_FlatClear( Button& sender, bool checked );
    void e_ItemSelected( ComboBox& sender, int itemIndex );
    void e_OptionToggled( Button& sender, bool checked );
+
+   // QE override file picker.
+   void e_QEOverrideBrowse( Button& sender, bool checked );
+   void e_QEOverrideClear( Button& sender, bool checked );
 
    // Phase 8 rating controls.
    void e_RateLastRun( Button& sender, bool checked );

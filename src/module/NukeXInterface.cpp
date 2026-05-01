@@ -274,11 +274,46 @@ NukeXInterface::GUIData::GUIData( NukeXInterface& w )
    Rating_Sizer.Add( SuppressRating_CheckBox );
    Rating_Sizer.AddStretch();
 
+   // ── QE override file picker ──
+   // Edit is read-only; canonical input is the OpenFileDialog so the user
+   // can't paste arbitrary path strings.  All other state lives in the
+   // tooltip.
+   const char* kQEOverrideTip =
+      "Optional JSON file with custom camera/filter QE values to augment "
+      "or replace the shipped quantum-efficiency database.  Useful when "
+      "you have measured response curves for gear that isn't in the "
+      "default DB.  Leave empty to use the shipped database only.";
+   QEOverride_Label.SetText( "QE override file:" );
+   QEOverride_Label.SetTextAlignment( TextAlign::Right | TextAlign::VertCenter );
+   QEOverride_Label.SetToolTip( kQEOverrideTip );
+
+   QEOverride_Edit.SetReadOnly();
+   QEOverride_Edit.SetMinWidth( 360 );
+   QEOverride_Edit.SetText( w.instance.qeOverridePath );
+   QEOverride_Edit.SetToolTip( kQEOverrideTip );
+
+   QEOverride_Browse_Button.SetText( "Browse\xE2\x80\xA6" );  // UTF-8 ellipsis
+   QEOverride_Browse_Button.SetToolTip( "Select a QE override JSON file." );
+   QEOverride_Browse_Button.OnClick(
+      (Button::click_event_handler)&NukeXInterface::e_QEOverrideBrowse, w );
+
+   QEOverride_Clear_Button.SetText( "Clear" );
+   QEOverride_Clear_Button.SetToolTip( "Remove the QE override and use the shipped database only." );
+   QEOverride_Clear_Button.OnClick(
+      (Button::click_event_handler)&NukeXInterface::e_QEOverrideClear, w );
+
+   QEOverride_Sizer.SetSpacing( 4 );
+   QEOverride_Sizer.Add( QEOverride_Label );
+   QEOverride_Sizer.Add( QEOverride_Edit, 100 );
+   QEOverride_Sizer.Add( QEOverride_Browse_Button );
+   QEOverride_Sizer.Add( QEOverride_Clear_Button );
+
    Options_Sizer.SetSpacing( 4 );
    Options_Sizer.Add( PrimaryStretch_Sizer );
    Options_Sizer.Add( FinishingStretch_Sizer );
    Options_Sizer.Add( GPU_Sizer );
    Options_Sizer.Add( Rating_Sizer );
+   Options_Sizer.Add( QEOverride_Sizer );
 
    Options_Control.SetSizer( Options_Sizer );
 
@@ -310,6 +345,7 @@ void NukeXInterface::UpdateControls()
    GUI->PrimaryStretch_ComboBox.SetCurrentItem( instance.primaryStretch );
    GUI->FinishingStretch_ComboBox.SetCurrentItem( instance.finishingStretch );
    GUI->EnableGPU_CheckBox.SetChecked( instance.enableGPU );
+   GUI->QEOverride_Edit.SetText( instance.qeOverridePath );
 
    // Phase 8: "Rate last run" is meaningful only when ExecuteGlobal has
    // populated lastRun; SuppressRating reflects the PCL-Settings-backed
@@ -472,6 +508,26 @@ void NukeXInterface::e_OptionToggled( Button& sender, bool checked )
 {
    if ( sender == GUI->EnableGPU_CheckBox )
       instance.enableGPU = checked;
+}
+
+// ── QE override file picker handlers ─────────────────────────────
+
+void NukeXInterface::e_QEOverrideBrowse( Button&, bool )
+{
+   OpenFileDialog d;
+   d.SetCaption( "NukeX: Select QE Override JSON File" );
+   d.SetFilter( FileFilter( "JSON Files", StringList() << ".json" ) );
+   if ( d.Execute() && !d.FileNames().IsEmpty() )
+   {
+      instance.qeOverridePath = d.FileName();
+      GUI->QEOverride_Edit.SetText( instance.qeOverridePath );
+   }
+}
+
+void NukeXInterface::e_QEOverrideClear( Button&, bool )
+{
+   instance.qeOverridePath.Clear();
+   GUI->QEOverride_Edit.Clear();
 }
 
 // ── Phase 8 rating handlers ──────────────────────────────────────
