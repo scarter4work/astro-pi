@@ -1,8 +1,26 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
   "title": "PixInsight JavaScript Runtime (PJSR) API Schema",
-  "version": "1.0.0",
-  "description": "Comprehensive API schema for PJSR scripting in PixInsight - based on SpiderMonkey 24 (ECMA 262-5)",
+  "version": "2.0.0",
+  "description": "API schema for PJSR scripting in PixInsight 1.9.4+ (V8 runtime, ECMAScript 2025) with legacy SpiderMonkey 24 support",
+
+  "engines": {
+    "v8": {
+      "since": "1.9.4",
+      "default": false,
+      "ecmascript": "2025",
+      "directiveValues": ["v8", "v8-new", "v8-default", "v8-private"],
+      "description": "V8-based JavaScript runtime introduced in PixInsight 1.9.4 Lockhart. Supports modern ECMAScript including classes, private fields, async/await, and WebAssembly-backed FMath."
+    },
+    "sm": {
+      "since": "legacy",
+      "default": true,
+      "deprecated": true,
+      "ecmascript": "ES5",
+      "directiveValues": ["sm"],
+      "description": "Legacy SpiderMonkey 24 engine. Default for backward compatibility but scheduled for removal in a future PixInsight 1.9 Lockhart release. Not available on macOS ARM64."
+    }
+  },
 
   "globalObjects": {
     "console": {
@@ -41,13 +59,25 @@
 
     "jsAutoGC": {
       "type": "Boolean",
-      "description": "Global flag to enable/disable automatic garbage collection"
+      "description": "Global flag to enable/disable automatic garbage collection (SpiderMonkey only)",
+      "deprecatedIn": "v8",
+      "replacedBy": "V8 manages garbage collection autonomously; use Image.free() / Bitmap.clear() for explicit deallocation"
     },
 
     "jsGarbageCollect": {
       "type": "function",
       "signature": "jsGarbageCollect()",
-      "description": "Force immediate garbage collection"
+      "description": "Force immediate garbage collection (SpiderMonkey only)",
+      "deprecatedIn": "v8",
+      "replacedBy": "Image.free() / Bitmap.clear()"
+    },
+
+    "gc": {
+      "type": "function",
+      "signature": "gc()",
+      "description": "Force garbage collection. Has no effect under V8 (which manages GC autonomously).",
+      "deprecatedIn": "v8",
+      "replacedBy": "Image.free() / Bitmap.clear() for explicit deallocation"
     }
   },
 
@@ -101,7 +131,12 @@
         "maximum": { "signature": "maximum(channel?: Number): Number", "description": "Get maximum value" },
         "initSampleIterator": { "signature": "initSampleIterator()", "description": "Initialize sample iterator" },
         "nextSample": { "signature": "nextSample(): Boolean", "description": "Move to next sample" },
-        "sampleValue": { "signature": "sampleValue(): Number", "description": "Get current sample value" }
+        "sampleValue": { "signature": "sampleValue(): Number", "description": "Get current sample value" },
+        "forEachSample": { "signature": "forEachSample(callback)", "description": "Iterate over samples", "removedIn": "v8", "replacedBy": "ImageIterator" },
+        "forEachMutableSample": { "signature": "forEachMutableSample(callback)", "description": "Iterate and mutate samples", "removedIn": "v8", "replacedBy": "ImageIterator" },
+        "forEachPixel": { "signature": "forEachPixel(callback)", "description": "Iterate over pixels", "removedIn": "v8", "replacedBy": "ImageIterator" },
+        "forEachMutablePixel": { "signature": "forEachMutablePixel(callback)", "description": "Iterate and mutate pixels", "removedIn": "v8", "replacedBy": "ImageIterator" },
+        "free": { "signature": "free()", "description": "Explicitly deallocate underlying pixel buffer. Recommended in V8 (no automatic gc())." }
       }
     },
 
@@ -693,6 +728,264 @@
         "onDownloadDataAvailable": { "signature": "onDownloadDataAvailable(data: ByteArray)", "description": "Data received" },
         "onTransferProgress": { "signature": "onTransferProgress(current: Number, total: Number)", "description": "Progress update" }
       }
+    },
+
+    "FMath": {
+      "description": "Fast Math alternative implemented with WebAssembly ahead-of-time compilation. Provides all standard Math functions plus PJSR extensions, typically an order of magnitude faster than Math.* in heavy-computation loops.",
+      "availableIn": ["v8"],
+      "since": "1.9.4",
+      "staticMethods": {
+        "abs": { "signature": "FMath.abs(x: Number): Number", "description": "Absolute value" },
+        "sqrt": { "signature": "FMath.sqrt(x: Number): Number", "description": "Square root" },
+        "pow": { "signature": "FMath.pow(x: Number, y: Number): Number", "description": "x raised to y" },
+        "exp": { "signature": "FMath.exp(x: Number): Number", "description": "e raised to x" },
+        "log": { "signature": "FMath.log(x: Number): Number", "description": "Natural logarithm" },
+        "log2": { "signature": "FMath.log2(x: Number): Number", "description": "Base-2 logarithm" },
+        "log10": { "signature": "FMath.log10(x: Number): Number", "description": "Base-10 logarithm" },
+        "sin": { "signature": "FMath.sin(x: Number): Number", "description": "Sine" },
+        "cos": { "signature": "FMath.cos(x: Number): Number", "description": "Cosine" },
+        "tan": { "signature": "FMath.tan(x: Number): Number", "description": "Tangent" },
+        "asin": { "signature": "FMath.asin(x: Number): Number", "description": "Arc sine" },
+        "acos": { "signature": "FMath.acos(x: Number): Number", "description": "Arc cosine" },
+        "atan": { "signature": "FMath.atan(x: Number): Number", "description": "Arc tangent" },
+        "atan2": { "signature": "FMath.atan2(y: Number, x: Number): Number", "description": "Two-argument arc tangent" },
+        "floor": { "signature": "FMath.floor(x: Number): Number", "description": "Round down" },
+        "ceil": { "signature": "FMath.ceil(x: Number): Number", "description": "Round up" },
+        "round": { "signature": "FMath.round(x: Number): Number", "description": "Round to nearest" },
+        "trunc": { "signature": "FMath.trunc(x: Number): Number", "description": "Truncate fractional" },
+        "min": { "signature": "FMath.min(...values: Number): Number", "description": "Minimum value" },
+        "max": { "signature": "FMath.max(...values: Number): Number", "description": "Maximum value" },
+        "sign": { "signature": "FMath.sign(x: Number): Number", "description": "Sign of x" },
+        "mtf": { "signature": "FMath.mtf(m: Number, x: Number): Number", "description": "Midtones transfer function" },
+        "hypot": { "signature": "FMath.hypot(...values: Number): Number", "description": "Euclidean norm" },
+        "deg": { "signature": "FMath.deg(rad: Number): Number", "description": "Radians to degrees" },
+        "rad": { "signature": "FMath.rad(deg: Number): Number", "description": "Degrees to radians" }
+      }
+    },
+
+    "Stat": {
+      "description": "Statistical calculations. Replaces deprecated Math.* statistical extensions with a properly namespaced interface.",
+      "availableIn": ["v8"],
+      "since": "1.9.4",
+      "staticMethods": {
+        "median": { "signature": "Stat.median(values: Array|TypedArray): Number", "description": "Median value" },
+        "MAD": { "signature": "Stat.MAD(values: Array|TypedArray, center?: Number): Number", "description": "Median absolute deviation" },
+        "mean": { "signature": "Stat.mean(values: Array|TypedArray): Number", "description": "Arithmetic mean" },
+        "stdDev": { "signature": "Stat.stdDev(values: Array|TypedArray): Number", "description": "Standard deviation" },
+        "variance": { "signature": "Stat.variance(values: Array|TypedArray): Number", "description": "Variance" },
+        "avgDev": { "signature": "Stat.avgDev(values: Array|TypedArray, center?: Number): Number", "description": "Average absolute deviation" },
+        "biweightMidvariance": { "signature": "Stat.biweightMidvariance(values: Array|TypedArray): Number", "description": "Biweight midvariance" },
+        "qn": { "signature": "Stat.qn(values: Array|TypedArray): Number", "description": "Qn scale estimator" },
+        "sn": { "signature": "Stat.sn(values: Array|TypedArray): Number", "description": "Sn scale estimator" },
+        "minimum": { "signature": "Stat.minimum(values: Array|TypedArray): Number", "description": "Minimum" },
+        "maximum": { "signature": "Stat.maximum(values: Array|TypedArray): Number", "description": "Maximum" }
+      }
+    },
+
+    "ImageIterator": {
+      "description": "Direct, near-native-speed access to image pixel data using V8 typed arrays backed by the image's pixel buffer. Replaces Image.forEachSample/forEachPixel.",
+      "availableIn": ["v8"],
+      "since": "1.9.4",
+      "constructors": [
+        { "signature": "ImageIterator(image: Image, channel?: Number)", "description": "Create iterator over a single channel of an image" }
+      ],
+      "properties": {
+        "width": { "type": "Number", "readonly": true, "description": "Width in pixels" },
+        "height": { "type": "Number", "readonly": true, "description": "Height in pixels" }
+      },
+      "methods": {
+        "toReal": { "signature": "toReal(sample: Number): Number", "description": "Convert a raw sample to a Number in [0,1] using the image's native range" },
+        "toSample": { "signature": "toSample(value: Number): Number", "description": "Convert a [0,1] real to the image's native sample type" }
+      },
+      "notes": "Access pixels with array subscripts: iter[y][x] returns the raw sample value. For integer images, use toReal()/toSample() to bridge between [0,1] semantics and the integer storage range."
+    },
+
+    "StarDetector": {
+      "description": "Star detection engine implemented in core C++ for high performance. Promoted from JavaScript implementation in pjsr/StarDetector.jsh. Returns an array of StarData objects from stars(image).",
+      "availableIn": ["v8"],
+      "since": "1.9.4",
+      "constructors": [
+        { "signature": "StarDetector()", "description": "Create a detector with default parameters" }
+      ],
+      "properties": {
+        "structureLayers": { "type": "Number", "description": "Wavelet structure layers (default 5)" },
+        "noiseLayers": { "type": "Number", "description": "Wavelet noise layers (default 0)" },
+        "hotPixelFilterRadius": { "type": "Number", "description": "Hot pixel filter radius" },
+        "applyHotPixelFilterToDetectionImage": { "type": "Boolean", "description": "Apply hot pixel filter to detection image" },
+        "noiseReductionFilterRadius": { "type": "Number", "description": "Noise reduction filter radius" },
+        "sensitivity": { "type": "Number", "description": "Detection sensitivity" },
+        "peakResponse": { "type": "Number", "description": "Peak response threshold" },
+        "maxDistortion": { "type": "Number", "description": "Maximum star distortion" },
+        "upperLimit": { "type": "Number", "description": "Upper saturation limit" },
+        "fitPSF": { "type": "Boolean", "description": "Fit an elliptical Gaussian to each detected source for sub-pixel position accuracy" }
+      },
+      "methods": {
+        "stars": { "signature": "stars(image: Image): Array<StarData>", "description": "Detect stars in the given image" }
+      }
+    },
+
+    "StarData": {
+      "description": "Result record for a single detected star from StarDetector.stars().",
+      "availableIn": ["v8"],
+      "since": "1.9.4",
+      "properties": {
+        "pos": { "type": "Point", "description": "Sub-pixel star centroid" },
+        "srect": { "type": "Rect", "description": "Source rectangle (bounding box)" },
+        "flux": { "type": "Number", "description": "Total flux" },
+        "bkg": { "type": "Number", "description": "Local background" },
+        "size": { "type": "Number", "description": "Detected size in pixels" }
+      }
+    },
+
+    "PSF": {
+      "description": "Point spread function fitting via Levenberg-Marquardt. Fully multithreaded native C++ implementation. Used by SpectrophotometricColorCalibration, LocalNormalization, and astrometry tools.",
+      "availableIn": ["v8"],
+      "since": "1.9.4",
+      "staticMethods": {
+        "fitStars": { "signature": "PSF.fitStars(image: Image, stars: Array<StarData>, psfFunction?: Number): Array<PSFData>", "description": "Fit PSF models to detected stars. psfFunction is one of PSFunction.* (Auto, Gaussian, Moffat, MoffatA, Moffat8, Moffat6, Moffat4, Moffat25, Moffat15, Lorentzian)." }
+      }
+    },
+
+    "PSFData": {
+      "description": "Result record for a single fitted point spread function.",
+      "availableIn": ["v8"],
+      "since": "1.9.4",
+      "properties": {
+        "B": { "type": "Number", "description": "Local background (fitted)" },
+        "A": { "type": "Number", "description": "Peak amplitude" },
+        "x": { "type": "Number", "description": "Sub-pixel X centroid" },
+        "y": { "type": "Number", "description": "Sub-pixel Y centroid" },
+        "fwhmX": { "type": "Number", "description": "FWHM along X" },
+        "fwhmY": { "type": "Number", "description": "FWHM along Y" },
+        "theta": { "type": "Number", "description": "Rotation angle (radians)" },
+        "beta": { "type": "Number", "description": "Moffat beta exponent" },
+        "functionName": { "type": "String", "description": "Fitted function type name" },
+        "signal": { "type": "Number", "description": "Total signal integral" },
+        "mad": { "type": "Number", "description": "Mean absolute deviation of residuals" }
+      }
+    },
+
+    "BRQuadTree": {
+      "description": "Bucket-region quadtree for 2D spatial partitioning. Used in image analysis and matching algorithms. Replaces pjsr/BRQuadTree.jsh.",
+      "availableIn": ["v8"],
+      "since": "1.9.4",
+      "constructors": [
+        { "signature": "BRQuadTree(bounds: Rect, bucketCapacity?: Number)", "description": "Create a quadtree spanning the given bounds" }
+      ],
+      "methods": {
+        "insert": { "signature": "insert(point: Point, data?: any)", "description": "Insert a point with associated data" },
+        "search": { "signature": "search(rect: Rect): Array", "description": "Find all points within a rectangle" },
+        "nearest": { "signature": "nearest(point: Point, k?: Number): Array", "description": "Find k nearest neighbors" },
+        "clear": { "signature": "clear()", "description": "Remove all points" }
+      }
+    },
+
+    "XMLDocument": {
+      "description": "XML document. Provides parsing and serialization of XML, including in-place inspection of XISF headers.",
+      "availableIn": ["v8"],
+      "since": "1.9.4",
+      "constructors": [
+        { "signature": "XMLDocument()", "description": "Create an empty XML document" }
+      ],
+      "properties": {
+        "xml": { "type": "XMLDeclaration", "description": "The <?xml ...?> declaration node" },
+        "rootElement": { "type": "XMLElement", "description": "The root element" },
+        "autoFormatting": { "type": "Boolean", "description": "If true, serialize with indentation" }
+      },
+      "methods": {
+        "addNode": { "signature": "addNode(node: XMLNode)", "description": "Add a top-level node (comment, declaration, etc.)" },
+        "parse": { "signature": "parse(source: String)", "description": "Parse an XML document from a string" },
+        "serializeToFile": { "signature": "serializeToFile(path: String)", "description": "Write the XML document to a file" },
+        "serialize": { "signature": "serialize(): String", "description": "Serialize to a string" }
+      }
+    },
+
+    "XMLDeclaration": {
+      "description": "The <?xml version=... encoding=... ?> processing instruction.",
+      "availableIn": ["v8"],
+      "since": "1.9.4",
+      "constructors": [
+        { "signature": "XMLDeclaration(version: String, encoding?: String, standalone?: Boolean)", "description": "Create an XML declaration node" }
+      ]
+    },
+
+    "XMLComment": {
+      "description": "XML comment node.",
+      "availableIn": ["v8"],
+      "since": "1.9.4",
+      "constructors": [
+        { "signature": "XMLComment(text: String)", "description": "Create a comment node" }
+      ]
+    },
+
+    "XMLElement": {
+      "description": "XML element. Supports fluent attribute and child-node construction.",
+      "availableIn": ["v8"],
+      "since": "1.9.4",
+      "constructors": [
+        { "signature": "XMLElement(tagName: String)", "description": "Create an element with the given tag name" }
+      ],
+      "methods": {
+        "setAttribute": { "signature": "setAttribute(name: String, value: String): XMLElement", "description": "Set a single attribute (fluent)" },
+        "setAttributes": { "signature": "setAttributes(pairs: Array<[String,String]>): XMLElement", "description": "Set multiple attributes at once (fluent)" },
+        "addChildNode": { "signature": "addChildNode(node: XMLNode): XMLElement", "description": "Append a child node (fluent)" }
+      }
+    },
+
+    "XMLText": {
+      "description": "XML text node.",
+      "availableIn": ["v8"],
+      "since": "1.9.4",
+      "constructors": [
+        { "signature": "XMLText(text: String)", "description": "Create a text node" }
+      ]
+    },
+
+    "System": {
+      "description": "Non-instantiable. Host machine and operating system information.",
+      "availableIn": ["v8"],
+      "since": "1.9.4",
+      "staticMethods": {
+        "physicalMemoryStatus": { "signature": "System.physicalMemoryStatus(): Object", "description": "Returns {totalBytes, availableBytes} BigInt fields describing physical memory" },
+        "cpuCount": { "signature": "System.cpuCount: Number", "description": "Number of logical CPU cores" }
+      },
+      "properties": {
+        "osName": { "type": "String", "readonly": true, "description": "Operating system identifier" }
+      }
+    },
+
+    "CoreApplication": {
+      "description": "Non-instantiable. Information about the PixInsight core application. Replaces many deprecated Global.* extensions.",
+      "availableIn": ["v8"],
+      "since": "1.9.4",
+      "staticMethods": {
+        "ensureMinimumVersion": { "signature": "CoreApplication.ensureMinimumVersion(major: Number, minor: Number, release: Number)", "description": "Throw if the running PixInsight version is older than the required minimum. Call this near the top of every script." },
+        "version": { "signature": "CoreApplication.version: String", "description": "Application version string" }
+      },
+      "properties": {
+        "buildId": { "type": "String", "readonly": true, "description": "Build identifier" }
+      }
+    },
+
+    "Runtime": {
+      "description": "Non-instantiable. Information about the active JavaScript runtime.",
+      "availableIn": ["v8"],
+      "since": "1.9.4",
+      "staticMethods": {
+        "engine": { "signature": "Runtime.engine: String", "description": "Active engine identifier ('v8' or 'sm')" }
+      }
+    },
+
+    "VectorGraphics": {
+      "description": "Graphics with floating-point coordinates. Removed in the V8 runtime: the standard Graphics class now handles all coordinate types.",
+      "removedIn": "v8",
+      "replacedBy": "Graphics"
+    },
+
+    "ImageStatistics": {
+      "description": "Image statistics object. Removed in V8: equivalent functionality is now on Image directly.",
+      "removedIn": "v8",
+      "replacedBy": "Image.median(), Image.MAD(), Image.stdDev(), Image.rangeClippingEnabled, etc."
     }
   },
 
@@ -1218,8 +1511,148 @@
       "MaskMode_Replace": { "value": 0, "description": "Replace mode" },
       "MaskMode_Multiply": { "value": 1, "description": "Multiply mode" },
       "MaskMode_ScreenAdd": { "value": 2, "description": "Screen/add mode" }
+    },
+    "v8ConstantClasses": {
+      "description": "Under V8, flat *_NAME constants are deprecated in favor of static class properties. The classes below contain the V8 forms; existing flat constants remain documented but emit deprecation warnings on V8.",
+      "availableIn": ["v8"],
+      "since": "1.9.4",
+      "classes": {
+        "StdIcon": { "members": ["NoIcon", "Question", "Information", "Warning", "Error"], "replaces": "StdIcon_*" },
+        "StdButton": { "members": ["NoButton", "Ok", "Cancel", "Yes", "No", "Abort", "Retry", "Ignore"], "replaces": "StdButton_*" },
+        "StdDialogCode": { "members": ["Ok", "Cancel"], "replaces": "StdDialogCode_*" },
+        "StdCursor": { "members": ["Arrow", "UpArrow", "Cross", "Wait", "IBeam", "SizeVer", "SizeHor", "SizeBDiag", "SizeFDiag", "SizeAll", "OpenHand", "ClosedHand", "PointingHand", "Forbidden"], "replaces": "StdCursor_*" },
+        "CipherAlgorithm": { "members": ["AES128", "AES192", "AES256"], "replaces": "Cipher_*" },
+        "CompressionAlgorithm": { "members": ["None", "Zlib", "LZ4", "LZ4HC", "Zstandard"], "replaces": "Compression_*" },
+        "FileFlag": { "members": ["Read", "Write", "ReadWrite", "Truncate", "Append", "Text", "Binary"], "replaces": "FileType_* / File_Attribute_* / FilePermission_*" },
+        "GradientSpreadMode": { "members": ["Pad", "Reflect", "Repeat"], "replaces": "GradientSpread_*" },
+        "InterpolationAlgorithm": { "members": ["NearestNeighbor", "Bilinear", "BicubicSpline", "BicubicBSpline", "Lanczos3", "Lanczos4", "MitchellNetravali", "CatmullRomSpline", "CubicBSpline", "Auto"], "replaces": "Interpolation_*" },
+        "KeyCode": { "members": ["A through Z, F1-F12, Space, Enter, Escape, ..."], "replaces": "Key_*" },
+        "MorphologicalOp": { "members": ["Erosion", "Dilation", "Opening", "Closing", "Median", "Selection", "Midpoint"], "replaces": "MorphOp_*" },
+        "RadialBasisFunction": { "members": ["VariableShape", "ThinPlateSpline", "DDMThinPlateSpline", "Multiquadric", "InverseMultiquadric", "Gaussian"], "replaces": "RBFType_*" },
+        "ReadTextOption": { "members": ["RemoveEmptyLines", "TrimTrailingSpaces", "TrimLeadingSpaces"], "replaces": "ReadTextOptions_*" },
+        "PixelSampleType": { "members": ["UInt8", "UInt16", "UInt32", "UInt64", "Real32", "Real64", "Complex32", "Complex64"], "replaces": "SampleType_*" },
+        "TextAlignment": { "members": ["Left", "Right", "Center", "Justify", "Top", "Bottom", "VertCenter"], "replaces": "TextAlign_*" },
+        "PropertyAttribute": { "members": ["Invalid", "Writable", "Reserved", "Volatile", "Permanent", "NotSerializable", "Storable", "Notify", "Mutable", "Protected"], "replaces": "new in V8" },
+        "PropertyType": { "members": ["Invalid", "Boolean", "Int8", "Int16", "Int32", "Int64", "UInt8", "UInt16", "UInt32", "UInt64", "Float", "Double", "String8", "UCString", "ByteArray", "Vector", "Matrix"], "replaces": "new in V8" },
+        "SeekMode": { "members": ["FromBegin", "FromCurrent", "FromEnd"], "replaces": "new in V8" },
+        "DataType": { "members": ["Boolean", "Int8", "Int16", "Int32", "Int64", "UInt8", "UInt16", "UInt32", "UInt64", "Float", "Double", "Real32", "Real64", "Complex32", "Complex64", "String8", "UCString", "ByteArray", "Vector", "Matrix"], "replaces": "DataType_*" },
+        "UndoFlag": { "members": ["NoSwapFile", "Keywords", "PixelData", "RGBWS", "ICCProfile", "Metadata", "Properties", "DefaultMode", "All"], "replaces": "UndoFlag_*" },
+        "PSFunction": { "members": ["Auto", "Gaussian", "Moffat", "MoffatA", "Moffat8", "Moffat6", "Moffat4", "Moffat25", "Moffat15", "Lorentzian"], "replaces": "new in V8" },
+        "FrameStyle": { "members": ["Flat", "Box", "Panel", "StyledPanel", "Raised", "Sunken", "Plain"], "replaces": "FrameStyle_*" },
+        "FocusStyle": { "members": ["NoFocus", "TabFocus", "ClickFocus", "StrongFocus", "WheelFocus"], "replaces": "FocusStyle_*" }
+      }
     }
   },
+
+  "lintRules": [
+    {
+      "id": "v8-no-base-inheritance",
+      "appliesToEngines": ["v8"],
+      "severity": "error",
+      "match": { "type": "code-pattern", "regex": "this\\.__base__\\s*=" },
+      "message": "__base__ inheritance is broken under V8 (it does not error, but inheritance silently does nothing). Use a JavaScript class with `extends` and `super()`.",
+      "fix": "class FooDialog extends Dialog {\n  constructor( foo, bar = 42 ) {\n    super();\n    this.foo = foo;\n    this.bar = bar;\n  }\n}",
+      "docUrl": "https://pixinsight.net/dev/index.php?ams/the-new-v8-javascript-runtime-in-pixinsight-1-9-4-script-porting-guide.13/page/replacing-constructor-functions-with-classes.4/"
+    },
+    {
+      "id": "v8-no-prototype-process-constants",
+      "appliesToEngines": ["v8"],
+      "severity": "error",
+      "match": { "type": "code-pattern", "regex": "\\b[A-Z][A-Za-z0-9]*\\.prototype\\.[A-Z][A-Za-z0-9]*" },
+      "message": "Process constants are static properties of the class itself, not on .prototype. Remove '.prototype' from the access (e.g. `StarAlignment.OutputMatrix` not `StarAlignment.prototype.OutputMatrix`)."
+    },
+    {
+      "id": "v8-no-prototype-class-assign",
+      "appliesToEngines": ["v8"],
+      "severity": "error",
+      "match": { "type": "code-pattern", "regex": "\\w+\\.prototype\\s*=\\s*new\\s+[A-Z]\\w+" },
+      "message": "Assigning `Foo.prototype = new Base` is a SpiderMonkey-only inheritance trick. Use `class Foo extends Base { ... }` under V8."
+    },
+    {
+      "id": "v8-deprecated-gc",
+      "appliesToEngines": ["v8"],
+      "severity": "warning",
+      "match": { "type": "function-call", "name": "gc" },
+      "message": "gc() is deprecated in V8 and has no effect. Use Image.free() and Bitmap.clear() for explicit memory management of large native buffers."
+    },
+    {
+      "id": "v8-deprecated-jsGarbageCollect",
+      "appliesToEngines": ["v8"],
+      "severity": "warning",
+      "match": { "type": "function-call", "name": "jsGarbageCollect" },
+      "message": "jsGarbageCollect() is deprecated in V8. V8 manages GC autonomously; call Image.free() / Bitmap.clear() instead."
+    },
+    {
+      "id": "v8-removed-VectorGraphics",
+      "appliesToEngines": ["v8"],
+      "severity": "error",
+      "match": { "type": "symbol-use", "name": "VectorGraphics" },
+      "message": "VectorGraphics is not available in V8. Use the Graphics class — it handles floating-point coordinates natively."
+    },
+    {
+      "id": "v8-removed-ImageStatistics",
+      "appliesToEngines": ["v8"],
+      "severity": "error",
+      "match": { "type": "symbol-use", "name": "ImageStatistics" },
+      "message": "ImageStatistics is removed in V8. Use Image.median(), Image.MAD(), Image.stdDev(), Image.rangeClippingEnabled, etc."
+    },
+    {
+      "id": "v8-removed-image-foreach",
+      "appliesToEngines": ["v8"],
+      "severity": "error",
+      "match": { "type": "code-pattern", "regex": "\\.(?:forEachSample|forEachMutableSample|forEachPixel|forEachMutablePixel)\\s*\\(" },
+      "message": "Image.forEachSample/forEachPixel and their mutable variants are removed in V8. Use the new ImageIterator class for near-native-speed pixel access."
+    },
+    {
+      "id": "v8-removed-showAlias",
+      "appliesToEngines": ["v8"],
+      "severity": "error",
+      "match": { "type": "code-pattern", "regex": "\\.(?:showAlias|hideAlias)\\s*\\(" },
+      "message": "Control.showAlias()/hideAlias() are removed in V8. Layout updates are handled automatically — delete these calls."
+    },
+    {
+      "id": "v8-deprecated-pjsr-include",
+      "appliesToEngines": ["v8"],
+      "severity": "warning",
+      "match": { "type": "include", "pathPrefix": "pjsr/" },
+      "message": "PJSR header files (#include <pjsr/...>) are deprecated under V8. Constants are available directly as static class properties (e.g. StdIcon.Warning instead of StdIcon_Warning). Remove the #include."
+    },
+    {
+      "id": "v8-deprecated-flat-constants",
+      "appliesToEngines": ["v8"],
+      "severity": "warning",
+      "match": { "type": "symbol-use", "regex": "^(StdIcon|StdButton|StdDialogCode|StdCursor|Cipher|Compression|FileType|File_Attribute|FilePermission|GradientSpread|Interpolation|Key|MorphOp|RBFType|ReadTextOptions|SampleType|TextAlign|DataType|UndoFlag|FrameStyle|FocusStyle|MaskMode|ImageOp|ColorSpace|MaskInversion)_[A-Za-z0-9]+$" },
+      "message": "Flat *_CONSTANT names are deprecated under V8. Use the corresponding static class property (e.g. StdIcon.Warning instead of StdIcon_Warning)."
+    },
+    {
+      "id": "v8-deprecated-math-stats",
+      "appliesToEngines": ["v8"],
+      "severity": "warning",
+      "match": { "type": "code-pattern", "regex": "\\bMath\\.(?:median|MAD|avgDev|biweightMidvariance|qn|sn|mtf)\\b" },
+      "message": "Math.* statistical extensions are deprecated under V8. Use Stat.* (Stat.median, Stat.MAD, Stat.stdDev, ...) or FMath.mtf for midtones."
+    },
+    {
+      "id": "v8-recommend-FMath-in-hot-loop",
+      "appliesToEngines": ["v8"],
+      "severity": "hint",
+      "match": { "type": "code-pattern", "regex": "for\\s*\\([^)]*\\)[^{]*\\{[^}]*(?<![A-Za-z])Math\\.[a-z]" },
+      "message": "Heavy Math.* usage inside a tight loop runs much faster as FMath.* under V8 (WebAssembly-backed, near-native speed)."
+    },
+    {
+      "id": "v8-recommend-ensureMinimumVersion",
+      "appliesToEngines": ["v8"],
+      "severity": "hint",
+      "match": { "type": "missing-call", "name": "CoreApplication.ensureMinimumVersion" },
+      "message": "V8 scripts should call CoreApplication.ensureMinimumVersion(1, 9, 4) near the top of the script to fail fast on older PixInsight versions."
+    },
+    {
+      "id": "sm-consider-migrating-to-v8",
+      "appliesToEngines": ["sm"],
+      "severity": "hint",
+      "match": { "type": "missing-directive", "name": "#engine" },
+      "message": "No #engine directive present — this script will run on the legacy SpiderMonkey engine (default). Consider adding `#engine v8` near the top to opt into the modern V8 runtime introduced in PixInsight 1.9.4."
+    }
+  ],
 
   "preprocessorDirectives": {
     "#include": { "description": "Include a JavaScript header file (.jsh)", "example": "#include <pjsr/DataType.jsh>" },
@@ -1234,7 +1667,10 @@
     "#else": { "description": "Else branch of conditional", "example": "#else" },
     "#endif": { "description": "End conditional block", "example": "#endif" },
     "#feature-id": { "description": "Declare script feature identifier", "example": "#feature-id MyScript" },
-    "#feature-info": { "description": "Script description", "example": "#feature-info A description" }
+    "#feature-info": { "description": "Script description", "example": "#feature-info A description" },
+    "#feature-icon": { "description": "Declare script feature icon", "example": "#feature-icon @script_icons_dir/MyScript.svg" },
+    "#script-id": { "description": "Declare script identifier", "example": "#script-id MyScript" },
+    "#engine": { "description": "Select the JavaScript runtime engine. Must be the first directive in a script's main file. Values: v8, v8-new, v8-default, v8-private, sm. Default (if omitted) is sm.", "example": "#engine v8", "since": "1.9.4" }
   },
 
   "builtInVariables": {
@@ -1276,6 +1712,26 @@
     "fileIO": {
       "description": "File reading/writing pattern",
       "template": "// Write text file\nvar f = new File;\nf.createForWriting(filePath);\nf.outTextLn(\"Line 1\");\nf.outTextLn(\"Line 2\");\nf.close();\n\n// Read text file\nvar f = new File;\nf.openForReading(filePath);\nvar lines = File.readLines(filePath);\nf.close();\n\n// Read binary data\nvar f = new File;\nf.openForReading(filePath);\nvar value = f.read(DataType_Real32);\nvar array = f.read(DataType_Real64, 100);\nf.close();"
+    },
+    "scriptTemplateV8": {
+      "description": "Standard V8 script structure (PixInsight 1.9.4+)",
+      "engine": "v8",
+      "template": "#engine v8\n\n#feature-id    MyScript : Utilities > My Script\n#feature-info  A brief description of what this script does.\n\nCoreApplication.ensureMinimumVersion( 1, 9, 4 );\n\n(() =>\n{\n   console.show();\n\n   // Your code here.\n})();\n"
+    },
+    "dialogTemplateV8": {
+      "description": "V8 dialog using class-based inheritance",
+      "engine": "v8",
+      "template": "#engine v8\n\n#feature-id    MyDialog : Utilities > My Dialog\n#feature-info  A dialog example.\n\nCoreApplication.ensureMinimumVersion( 1, 9, 4 );\n\n// Use a class expression so re-running the script in a long-lived runtime is safe.\nvar MyDialog = class extends Dialog\n{\n   constructor()\n   {\n      super();\n      this.windowTitle = \"My Script\";\n\n      this.label = new Label( this );\n      this.label.text = \"Hello World\";\n\n      this.okButton = new PushButton( this );\n      this.okButton.text = \"OK\";\n      this.okButton.onClick = () => this.ok();\n\n      this.cancelButton = new PushButton( this );\n      this.cancelButton.text = \"Cancel\";\n      this.cancelButton.onClick = () => this.cancel();\n\n      let buttons = new HorizontalSizer;\n      buttons.addStretch();\n      buttons.add( this.okButton );\n      buttons.addSpacing( 8 );\n      buttons.add( this.cancelButton );\n\n      this.sizer = new VerticalSizer;\n      this.sizer.margin = 8;\n      this.sizer.spacing = 8;\n      this.sizer.add( this.label );\n      this.sizer.addStretch();\n      this.sizer.add( buttons );\n\n      this.adjustToContents();\n   }\n};\n\n(new MyDialog).execute();\n"
+    },
+    "imageProcessingV8": {
+      "description": "Image processing under V8 using ImageIterator and explicit memory management",
+      "engine": "v8",
+      "template": "#engine v8\n\nCoreApplication.ensureMinimumVersion( 1, 9, 4 );\n\n(() =>\n{\n   console.show();\n\n   let window = ImageWindow.activeWindow;\n   if ( window.isNull )\n   {\n      console.criticalln( \"No active image window.\" );\n      return;\n   }\n\n   let view = window.currentView;\n   view.beginProcess( UndoFlag.PixelData );\n   try\n   {\n      let image = view.image;\n\n      // Iterate the image at near-native speed.\n      for ( let c = 0; c < image.numberOfNominalChannels; ++c )\n      {\n         let i = new ImageIterator( image, c );\n         for ( let y = 0, h = i.height; y < h; ++y )\n            for ( let x = 0, w = i.width; x < w; ++x )\n               i[y][x] = FMath.mtf( 0.5, i[y][x] );\n      }\n   }\n   catch ( error )\n   {\n      console.criticalln( \"Error: \" + error.message );\n   }\n   view.endProcess();\n})();\n"
+    },
+    "starDetectionV8": {
+      "description": "Star detection and PSF fitting under V8",
+      "engine": "v8",
+      "template": "#engine v8\n\nCoreApplication.ensureMinimumVersion( 1, 9, 4 );\n\n(() =>\n{\n   console.show();\n\n   let image = ImageWindow.activeWindow.mainView.image;\n   image.statusEnabled = true;\n\n   let D = new StarDetector;\n   D.fitPSF = true;\n\n   let stars = D.stars( image );\n   console.writeln( format( \"* %u stars detected.\", stars.length ) );\n\n   let P = PSF.fitStars( image, stars, PSFunction.Auto );\n   console.writeln( format( \"* %u valid PSF fits.\", P.length ) );\n\n   for ( let i = 0; i < Math.min( P.length, 10 ); ++i )\n   {\n      let p = P[i];\n      console.writeln( format( \"  star %3u: x=%.2f y=%.2f FWHM=%.2fx%.2f signal=%.3e\",\n         i, p.x, p.y, p.fwhmX, p.fwhmY, p.signal ) );\n   }\n})();\n"
     }
   }
 }
