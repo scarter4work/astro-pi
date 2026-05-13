@@ -100,13 +100,16 @@ describe('PJSRAnalyzer', () => {
     assert.strictEqual(mismatchDiagnostic.severity, 'error');
   });
 
-  test('suggests V8 migration on SM-default scripts', () => {
+  test('suggests V8 migration on SM-default scripts and reports no errors', () => {
     const code = 'function main() {}';
     const result = analyzer.analyze(code);
 
     const migrationHint = result.diagnostics.find(d => d.ruleId === 'sm-consider-migrating-to-v8');
     assert.ok(migrationHint, 'expected sm-consider-migrating-to-v8 hint');
     assert.strictEqual(migrationHint.severity, 'hint');
+
+    const errors = result.diagnostics.filter(d => d.severity === 'error');
+    assert.strictEqual(errors.length, 0, `clean SM script should have no errors, got: ${JSON.stringify(errors)}`);
   });
 
   test('validates code', () => {
@@ -305,6 +308,46 @@ describe('V8 Engine Awareness', () => {
     const d = r.diagnostics.find(x => x.ruleId === 'v8-recommend-ensureMinimumVersion');
     assert.ok(d, 'expected v8-recommend-ensureMinimumVersion hint');
     assert.strictEqual(d.severity, 'hint');
+  });
+
+  test('function-call rule ignores method calls (e.g. obj.gc() is not flagged)', () => {
+    // gc() as a method call on an object is not the deprecated global gc().
+    const code = '#engine v8\nCoreApplication.ensureMinimumVersion(1,9,4);\nlet obj = {gc: () => {}};\nobj.gc();';
+    const r = analyzer.analyze(code);
+    const d = r.diagnostics.find(x => x.ruleId === 'v8-deprecated-gc');
+    assert.strictEqual(d, undefined, 'method-style .gc() should not trigger v8-deprecated-gc');
+  });
+
+  test('invalid schema regex surfaces as a diagnostic, not a crash', () => {
+    // Drive the safe-regex path: temporarily inject a bad rule via a private cache,
+    // then run analyze on minimal input.
+    const localAnalyzer = new PJSRAnalyzer();
+    const original = localAnalyzer.schema.lintRules;
+    localAnalyzer.schema.lintRules = [
+      { id: 'bad-rule', appliesToEngines: ['v8'], severity: 'error',
+        match: { type: 'code-pattern', regex: '(unclosed' }, message: 'should never see this' }
+    ];
+    try {
+      const r = localAnalyzer.analyze('#engine v8\nlet x = 1;');
+      const d = r.diagnostics.find(x => x.ruleId === 'schema-invalid-regex');
+      assert.ok(d, 'expected schema-invalid-regex diagnostic from malformed pattern');
+      assert.strictEqual(d.severity, 'error');
+    } finally {
+      localAnalyzer.schema.lintRules = original;
+    }
+  });
+
+  test('method-level removedIn metadata surfaces via lifecycle pass', () => {
+    // Image.forEachSample has removedIn:"v8" at method level. The
+    // v8-removed-image-foreach lint rule covers the method-access pattern;
+    // additionally, an identifier-only reference to forEachSample should
+    // surface via the lifecycle table since it recurses into methods.
+    const code = '#engine v8\nCoreApplication.ensureMinimumVersion(1,9,4);\nlet fn = forEachSample;';
+    const r = analyzer.analyze(code);
+    const d = r.diagnostics.find(x =>
+      (x.ruleId === 'v8-removed-symbol' || x.ruleId === 'v8-removed-image-foreach') &&
+      x.excerpt && x.excerpt.includes('forEachSample'));
+    assert.ok(d, 'expected method-level removedIn metadata to surface');
   });
 
   test('clean V8 script produces no errors', () => {
