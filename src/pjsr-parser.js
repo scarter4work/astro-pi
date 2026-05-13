@@ -85,8 +85,9 @@ const KEYWORDS = new Set([
  */
 const PREPROCESSOR_DIRECTIVES = new Set([
   '#include', '#define', '#ifdef', '#ifndef', '#if', '#iflt', '#ifle',
-  '#ifgt', '#ifge', '#else', '#endif', '#feature-id', '#feature-info',
-  '#error', '#warning'
+  '#ifgt', '#ifge', '#ifeq', '#ifneq', '#ifgteq', '#iflteq', '#ifoneof', '#ifnoneof',
+  '#else', '#endif', '#feature-id', '#feature-info', '#feature-icon',
+  '#script-id', '#engine', '#error', '#warning', '#undef'
 ]);
 
 /**
@@ -360,7 +361,9 @@ class PJSRAnalyzer {
       variables: [],
       processInstances: [],
       diagnostics: [],
-      usedPJSRObjects: new Set()
+      usedPJSRObjects: new Set(),
+      engine: null,
+      engineDirective: null
     };
 
     // Analyze tokens
@@ -443,7 +446,22 @@ class PJSRAnalyzer {
       if (match) {
         analysis.features.info = match[1].trim();
       }
+    } else if (value.startsWith('#engine')) {
+      const match = value.match(/#engine\s+(\S+)/);
+      if (match) {
+        const raw = match[1].trim();
+        analysis.engineDirective = raw;
+        analysis.engine = raw === 'sm' ? 'sm' : 'v8';
+      }
     }
+  }
+
+  /**
+   * Resolve the engine context for diagnostics.
+   * Returns 'v8' if any #engine v8* directive present, 'sm' otherwise (SM is the default).
+   */
+  resolveEngine(analysis) {
+    return analysis.engine || 'sm';
   }
 
   isPJSRClass(name) {
@@ -515,45 +533,183 @@ class PJSRAnalyzer {
   }
 
   runDiagnostics(code, tokens, analysis) {
-    // Check for common issues
+    const engine = this.resolveEngine(analysis);
 
-    // Missing jsAutoGC
-    if (!code.includes('jsAutoGC')) {
-      analysis.diagnostics.push({
-        severity: 'hint',
-        message: 'Consider enabling jsAutoGC = true for automatic garbage collection',
-        line: 1
-      });
-    }
-
-    // Check for deprecated patterns
-    if (code.includes('__base__') && !code.includes('prototype')) {
-      analysis.diagnostics.push({
-        severity: 'info',
-        message: 'Using __base__ inheritance pattern - ensure prototype is properly set',
-        line: 1
-      });
-    }
-
-    // Missing version check
-    if (!code.includes('__PI_VERSION__') && analysis.includes.length > 0) {
-      analysis.diagnostics.push({
-        severity: 'warning',
-        message: 'Consider adding a PixInsight version check with #iflt __PI_VERSION__',
-        line: 1
-      });
-    }
-
-    // Check beginProcess/endProcess pairing
+    // Engine-independent structural check: beginProcess/endProcess pairing.
     const beginCount = (code.match(/\.beginProcess\s*\(/g) || []).length;
     const endCount = (code.match(/\.endProcess\s*\(/g) || []).length;
     if (beginCount !== endCount) {
       analysis.diagnostics.push({
         severity: 'error',
         message: `Mismatched beginProcess/endProcess calls (${beginCount} begins, ${endCount} ends)`,
-        line: 1
+        line: 1,
+        ruleId: 'structural-begin-end-mismatch'
       });
     }
+
+    // Apply schema-defined lint rules for the active engine.
+    const rules = this.schema.lintRules || [];
+    for (const rule of rules) {
+      if (!Array.isArray(rule.appliesToEngines) || !rule.appliesToEngines.includes(engine)) {
+        continue;
+      }
+      this.applyLintRule(rule, code, tokens, analysis);
+    }
+
+    // Symbol-level lifecycle diagnostics from per-symbol metadata.
+    this.applySymbolLifecycleDiagnostics(engine, code, tokens, analysis);
+
+    // Dedup: collapse diagnostics that share line + excerpt (e.g. a named lint
+    // rule and the schema-lifecycle pass both flagging the same symbol).
+    const seen = new Set();
+    analysis.diagnostics = analysis.diagnostics.filter(d => {
+      const k = `${d.line}|${d.excerpt || ''}|${d.severity}`;
+      if (seen.has(k)) return false;
+      seen.add(k);
+      return true;
+    });
+  }
+
+  /**
+   * Apply a single schema-defined lint rule. Supported match types:
+   * code-pattern, function-call, member-access, include, symbol-use,
+   * missing-call, missing-directive.
+   */
+  applyLintRule(rule, code, tokens, analysis) {
+    const m = rule.match || {};
+    let hit = null;
+
+    if (m.type === 'code-pattern') {
+      if (!m.regex) return;
+      const re = new RegExp(m.regex);
+      const match = code.match(re);
+      if (match) hit = { line: this.lineOf(code, match.index), excerpt: match[0] };
+    } else if (m.type === 'function-call') {
+      if (!m.name) return;
+      const re = new RegExp(`\\b${m.name}\\s*\\(`);
+      const match = code.match(re);
+      if (match) hit = { line: this.lineOf(code, match.index), excerpt: m.name + '(' };
+    } else if (m.type === 'member-access') {
+      if (!m.pattern) return;
+      const re = new RegExp(m.pattern);
+      const match = code.match(re);
+      if (match) hit = { line: this.lineOf(code, match.index), excerpt: match[0] };
+    } else if (m.type === 'include') {
+      const prefix = m.pathPrefix || '';
+      for (const inc of analysis.includes) {
+        if (inc.path.startsWith(prefix)) {
+          hit = { line: inc.line, excerpt: `#include <${inc.path}>` };
+          break;
+        }
+      }
+    } else if (m.type === 'symbol-use') {
+      const re = m.regex ? new RegExp(m.regex) : (m.name ? new RegExp(`\\b${m.name}\\b`) : null);
+      if (!re) return;
+      for (const t of tokens) {
+        if (t.type === 'IDENTIFIER' && re.test(t.value)) {
+          hit = { line: t.line, excerpt: t.value };
+          break;
+        }
+      }
+    } else if (m.type === 'missing-call') {
+      if (!m.name) return;
+      const re = new RegExp(`\\b${m.name.replace(/\./g, '\\.')}\\s*\\(`);
+      if (!re.test(code)) hit = { line: 1, excerpt: m.name };
+    } else if (m.type === 'missing-directive') {
+      if (!m.name) return;
+      const directive = m.name.startsWith('#') ? m.name : `#${m.name}`;
+      const hasDirective = tokens.some(t => t.type === 'PREPROCESSOR' && t.value.startsWith(directive));
+      if (!hasDirective) hit = { line: 1, excerpt: directive };
+    } else {
+      return;
+    }
+
+    if (hit) {
+      analysis.diagnostics.push({
+        severity: rule.severity || 'warning',
+        message: rule.message,
+        line: hit.line,
+        ruleId: rule.id,
+        excerpt: hit.excerpt,
+        ...(rule.fix ? { fix: rule.fix } : {}),
+        ...(rule.docUrl ? { docUrl: rule.docUrl } : {})
+      });
+    }
+  }
+
+  /**
+   * Walk identifier tokens and emit diagnostics for any that resolve to a
+   * schema entry with removedIn / deprecatedIn matching the active engine.
+   */
+  applySymbolLifecycleDiagnostics(engine, code, tokens, analysis) {
+    const symbolTable = this.buildSymbolLifecycleTable();
+    const alreadyFlagged = new Set(
+      analysis.diagnostics
+        .filter(d => d.excerpt)
+        .map(d => d.excerpt.replace(/[(\s].*$/, ''))
+    );
+    const seen = new Set();
+    for (const t of tokens) {
+      if (t.type !== 'IDENTIFIER') continue;
+      if (seen.has(t.value)) continue;
+      if (alreadyFlagged.has(t.value)) { seen.add(t.value); continue; }
+      const entry = symbolTable[t.value];
+      if (!entry) continue;
+      seen.add(t.value);
+      if (entry.removedIn === engine) {
+        analysis.diagnostics.push({
+          severity: 'error',
+          message: `${t.value} is removed under the ${engine} engine.` + (entry.replacedBy ? ` Use ${entry.replacedBy}.` : ''),
+          line: t.line,
+          ruleId: `${engine}-removed-symbol`,
+          excerpt: t.value
+        });
+      } else if (entry.deprecatedIn === engine) {
+        analysis.diagnostics.push({
+          severity: 'warning',
+          message: `${t.value} is deprecated under the ${engine} engine.` + (entry.replacedBy ? ` Use ${entry.replacedBy}.` : ''),
+          line: t.line,
+          ruleId: `${engine}-deprecated-symbol`,
+          excerpt: t.value
+        });
+      }
+    }
+  }
+
+  /**
+   * Build a flat {symbolName: {removedIn, deprecatedIn, availableIn, replacedBy}}
+   * table by walking the schema's class containers.
+   */
+  buildSymbolLifecycleTable() {
+    if (this._symbolLifecycleCache) return this._symbolLifecycleCache;
+    const table = {};
+    const containers = ['globalObjects', 'coreClasses', 'uiControls'];
+    for (const c of containers) {
+      const group = this.schema[c];
+      if (!group) continue;
+      for (const [name, def] of Object.entries(group)) {
+        if (def && (def.removedIn || def.deprecatedIn || def.availableIn)) {
+          table[name] = {
+            removedIn: def.removedIn,
+            deprecatedIn: def.deprecatedIn,
+            availableIn: def.availableIn,
+            replacedBy: def.replacedBy
+          };
+        }
+      }
+    }
+    this._symbolLifecycleCache = table;
+    return table;
+  }
+
+  /** Compute 1-indexed line number for a character offset in code. */
+  lineOf(code, offset) {
+    if (offset == null) return 1;
+    let line = 1;
+    for (let i = 0; i < offset && i < code.length; i++) {
+      if (code[i] === '\n') line++;
+    }
+    return line;
   }
 
   /**

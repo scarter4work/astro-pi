@@ -100,15 +100,13 @@ describe('PJSRAnalyzer', () => {
     assert.strictEqual(mismatchDiagnostic.severity, 'error');
   });
 
-  test('suggests jsAutoGC', () => {
+  test('suggests V8 migration on SM-default scripts', () => {
     const code = 'function main() {}';
     const result = analyzer.analyze(code);
 
-    const gcHint = result.diagnostics.find(d =>
-      d.message.includes('jsAutoGC')
-    );
-    assert.ok(gcHint);
-    assert.strictEqual(gcHint.severity, 'hint');
+    const migrationHint = result.diagnostics.find(d => d.ruleId === 'sm-consider-migrating-to-v8');
+    assert.ok(migrationHint, 'expected sm-consider-migrating-to-v8 hint');
+    assert.strictEqual(migrationHint.severity, 'hint');
   });
 
   test('validates code', () => {
@@ -218,6 +216,163 @@ describe('Code Completions', () => {
     assert.ok(completions.some(c => c.kind === 'keyword'));
     assert.ok(completions.some(c => c.label === 'console'));
     assert.ok(completions.some(c => c.label === 'ImageWindow'));
+  });
+});
+
+describe('V8 Engine Awareness', () => {
+  const analyzer = new PJSRAnalyzer();
+
+  test('detects #engine v8 directive', () => {
+    const r = analyzer.analyze('#engine v8\nlet x = 1;');
+    assert.strictEqual(r.engine, 'v8');
+    assert.strictEqual(r.engineDirective, 'v8');
+  });
+
+  test('detects #engine v8-new variant', () => {
+    const r = analyzer.analyze('#engine v8-new\nlet x = 1;');
+    assert.strictEqual(r.engine, 'v8');
+    assert.strictEqual(r.engineDirective, 'v8-new');
+  });
+
+  test('detects #engine sm explicitly', () => {
+    const r = analyzer.analyze('#engine sm\nfunction main(){}');
+    assert.strictEqual(r.engine, 'sm');
+  });
+
+  test('absence of #engine defaults to sm', () => {
+    const r = analyzer.analyze('function main(){}');
+    assert.strictEqual(r.engine, null);
+    assert.strictEqual(analyzer.resolveEngine(r), 'sm');
+  });
+
+  test('flags __base__ inheritance as error under v8', () => {
+    const code = '#engine v8\nfunction Foo() { this.__base__ = Dialog; }';
+    const r = analyzer.analyze(code);
+    const d = r.diagnostics.find(x => x.ruleId === 'v8-no-base-inheritance');
+    assert.ok(d, 'expected v8-no-base-inheritance diagnostic');
+    assert.strictEqual(d.severity, 'error');
+  });
+
+  test('does not flag __base__ under sm', () => {
+    const code = 'function Foo() { this.__base__ = Dialog; }';
+    const r = analyzer.analyze(code);
+    const d = r.diagnostics.find(x => x.ruleId === 'v8-no-base-inheritance');
+    assert.strictEqual(d, undefined);
+  });
+
+  test('flags gc() as deprecated warning under v8', () => {
+    const code = '#engine v8\nCoreApplication.ensureMinimumVersion(1,9,4);\ngc();';
+    const r = analyzer.analyze(code);
+    const d = r.diagnostics.find(x => x.ruleId === 'v8-deprecated-gc');
+    assert.ok(d, 'expected v8-deprecated-gc diagnostic');
+    assert.strictEqual(d.severity, 'warning');
+  });
+
+  test('flags VectorGraphics as removed under v8', () => {
+    const code = '#engine v8\nCoreApplication.ensureMinimumVersion(1,9,4);\nlet g = new VectorGraphics(bitmap);';
+    const r = analyzer.analyze(code);
+    const d = r.diagnostics.find(x =>
+      x.ruleId === 'v8-removed-VectorGraphics' || (x.excerpt === 'VectorGraphics' && x.severity === 'error'));
+    assert.ok(d, 'expected VectorGraphics removed diagnostic');
+    assert.strictEqual(d.severity, 'error');
+  });
+
+  test('flags ImageStatistics as removed under v8 via schema lifecycle', () => {
+    const code = '#engine v8\nCoreApplication.ensureMinimumVersion(1,9,4);\nlet s = new ImageStatistics(image);';
+    const r = analyzer.analyze(code);
+    const d = r.diagnostics.find(x => x.excerpt === 'ImageStatistics' && x.severity === 'error');
+    assert.ok(d, 'expected ImageStatistics removed diagnostic');
+  });
+
+  test('flags flat StdIcon_* constants under v8', () => {
+    const code = '#engine v8\nCoreApplication.ensureMinimumVersion(1,9,4);\nlet x = StdIcon_Warning;';
+    const r = analyzer.analyze(code);
+    const d = r.diagnostics.find(x => x.ruleId === 'v8-deprecated-flat-constants');
+    assert.ok(d, 'expected v8-deprecated-flat-constants diagnostic');
+    assert.strictEqual(d.severity, 'warning');
+  });
+
+  test('flags <pjsr/...> includes under v8', () => {
+    const code = '#engine v8\nCoreApplication.ensureMinimumVersion(1,9,4);\n#include <pjsr/StdIcon.jsh>';
+    const r = analyzer.analyze(code);
+    const d = r.diagnostics.find(x => x.ruleId === 'v8-deprecated-pjsr-include');
+    assert.ok(d, 'expected v8-deprecated-pjsr-include diagnostic');
+  });
+
+  test('recommends ensureMinimumVersion when missing under v8', () => {
+    const code = '#engine v8\nlet x = 1;';
+    const r = analyzer.analyze(code);
+    const d = r.diagnostics.find(x => x.ruleId === 'v8-recommend-ensureMinimumVersion');
+    assert.ok(d, 'expected v8-recommend-ensureMinimumVersion hint');
+    assert.strictEqual(d.severity, 'hint');
+  });
+
+  test('clean V8 script produces no errors', () => {
+    const code = `#engine v8
+
+#feature-id MyScript
+
+CoreApplication.ensureMinimumVersion(1, 9, 4);
+
+(() => {
+  let image = ImageWindow.activeWindow.mainView.image;
+  let D = new StarDetector;
+  let stars = D.stars(image);
+  console.writeln(stars.length);
+})();
+`;
+    const r = analyzer.analyze(code);
+    const errors = r.diagnostics.filter(d => d.severity === 'error');
+    assert.strictEqual(errors.length, 0, `expected no errors, got: ${JSON.stringify(errors)}`);
+  });
+});
+
+describe('V8 Schema Additions', () => {
+  test('engines section present', () => {
+    assert.ok(pjsrSchema.engines, 'expected engines section');
+    assert.ok(pjsrSchema.engines.v8);
+    assert.ok(pjsrSchema.engines.sm);
+    assert.strictEqual(pjsrSchema.engines.v8.since, '1.9.4');
+  });
+
+  test('lintRules present and well-formed', () => {
+    assert.ok(Array.isArray(pjsrSchema.lintRules));
+    assert.ok(pjsrSchema.lintRules.length > 5);
+    for (const r of pjsrSchema.lintRules) {
+      assert.ok(r.id, `rule missing id: ${JSON.stringify(r)}`);
+      assert.ok(Array.isArray(r.appliesToEngines), `rule ${r.id} missing appliesToEngines`);
+      assert.ok(r.severity);
+      assert.ok(r.match && r.match.type);
+      assert.ok(r.message);
+    }
+  });
+
+  test('V8 core classes added', () => {
+    assert.ok(pjsrSchema.coreClasses.FMath);
+    assert.ok(pjsrSchema.coreClasses.Stat);
+    assert.ok(pjsrSchema.coreClasses.ImageIterator);
+    assert.ok(pjsrSchema.coreClasses.PSF);
+    assert.ok(pjsrSchema.coreClasses.BRQuadTree);
+    assert.ok(pjsrSchema.coreClasses.XMLDocument);
+    assert.ok(pjsrSchema.coreClasses.System);
+    assert.ok(pjsrSchema.coreClasses.CoreApplication);
+  });
+
+  test('removed-in-v8 classes documented', () => {
+    assert.strictEqual(pjsrSchema.coreClasses.VectorGraphics.removedIn, 'v8');
+    assert.strictEqual(pjsrSchema.coreClasses.ImageStatistics.removedIn, 'v8');
+  });
+
+  test('V8 templates added', () => {
+    assert.ok(pjsrSchema.commonPatterns.scriptTemplateV8);
+    assert.ok(pjsrSchema.commonPatterns.dialogTemplateV8);
+    assert.ok(pjsrSchema.commonPatterns.imageProcessingV8);
+    assert.ok(pjsrSchema.commonPatterns.starDetectionV8);
+    assert.ok(pjsrSchema.commonPatterns.scriptTemplateV8.template.includes('#engine v8'));
+  });
+
+  test('#engine preprocessor directive documented', () => {
+    assert.ok(pjsrSchema.preprocessorDirectives['#engine']);
   });
 });
 
