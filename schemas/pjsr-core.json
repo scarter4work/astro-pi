@@ -1511,12 +1511,14 @@
       "MaskMode_Replace": { "value": 0, "description": "Replace mode" },
       "MaskMode_Multiply": { "value": 1, "description": "Multiply mode" },
       "MaskMode_ScreenAdd": { "value": 2, "description": "Screen/add mode" }
-    },
-    "v8ConstantClasses": {
-      "description": "Under V8, flat *_NAME constants are deprecated in favor of static class properties. The classes below contain the V8 forms; existing flat constants remain documented but emit deprecation warnings on V8.",
-      "availableIn": ["v8"],
-      "since": "1.9.4",
-      "classes": {
+    }
+  },
+
+  "v8ConstantClasses": {
+    "description": "Under V8, flat *_NAME constants are deprecated in favor of static class properties. The classes below contain the V8 forms; existing flat constants remain documented but emit deprecation warnings on V8.",
+    "availableIn": ["v8"],
+    "since": "1.9.4",
+    "classes": {
         "StdIcon": { "members": ["NoIcon", "Question", "Information", "Warning", "Error"], "replaces": "StdIcon_*" },
         "StdButton": { "members": ["NoButton", "Ok", "Cancel", "Yes", "No", "Abort", "Retry", "Ignore"], "replaces": "StdButton_*" },
         "StdDialogCode": { "members": ["Ok", "Cancel"], "replaces": "StdDialogCode_*" },
@@ -1541,7 +1543,6 @@
         "FrameStyle": { "members": ["Flat", "Box", "Panel", "StyledPanel", "Raised", "Sunken", "Plain"], "replaces": "FrameStyle_*" },
         "FocusStyle": { "members": ["NoFocus", "TabFocus", "ClickFocus", "StrongFocus", "WheelFocus"], "replaces": "FocusStyle_*" }
       }
-    }
   },
 
   "lintRules": [

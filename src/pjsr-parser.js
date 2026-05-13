@@ -579,19 +579,40 @@ class PJSRAnalyzer {
     const m = rule.match || {};
     let hit = null;
 
+    // Wrap regex construction so a malformed schema regex surfaces as a
+    // diagnostic instead of crashing analyze() and losing all other results.
+    const safeRegex = (pattern) => {
+      try {
+        return new RegExp(pattern);
+      } catch (e) {
+        analysis.diagnostics.push({
+          severity: 'error',
+          message: `Schema lint rule '${rule.id}' has an invalid regex: ${e.message}`,
+          line: 1,
+          ruleId: 'schema-invalid-regex',
+          excerpt: pattern
+        });
+        return null;
+      }
+    };
+
     if (m.type === 'code-pattern') {
       if (!m.regex) return;
-      const re = new RegExp(m.regex);
+      const re = safeRegex(m.regex);
+      if (!re) return;
       const match = code.match(re);
       if (match) hit = { line: this.lineOf(code, match.index), excerpt: match[0] };
     } else if (m.type === 'function-call') {
       if (!m.name) return;
-      const re = new RegExp(`\\b${m.name}\\s*\\(`);
+      // (?<!\.) excludes method calls like obj.gc() — only matches the free function call.
+      const re = safeRegex(`(?<![A-Za-z0-9_$.])${m.name.replace(/\./g, '\\.')}\\s*\\(`);
+      if (!re) return;
       const match = code.match(re);
       if (match) hit = { line: this.lineOf(code, match.index), excerpt: m.name + '(' };
     } else if (m.type === 'member-access') {
       if (!m.pattern) return;
-      const re = new RegExp(m.pattern);
+      const re = safeRegex(m.pattern);
+      if (!re) return;
       const match = code.match(re);
       if (match) hit = { line: this.lineOf(code, match.index), excerpt: match[0] };
     } else if (m.type === 'include') {
@@ -603,7 +624,7 @@ class PJSRAnalyzer {
         }
       }
     } else if (m.type === 'symbol-use') {
-      const re = m.regex ? new RegExp(m.regex) : (m.name ? new RegExp(`\\b${m.name}\\b`) : null);
+      const re = m.regex ? safeRegex(m.regex) : (m.name ? safeRegex(`\\b${m.name}\\b`) : null);
       if (!re) return;
       for (const t of tokens) {
         if (t.type === 'IDENTIFIER' && re.test(t.value)) {
@@ -613,7 +634,8 @@ class PJSRAnalyzer {
       }
     } else if (m.type === 'missing-call') {
       if (!m.name) return;
-      const re = new RegExp(`\\b${m.name.replace(/\./g, '\\.')}\\s*\\(`);
+      const re = safeRegex(`\\b${m.name.replace(/\./g, '\\.')}\\s*\\(`);
+      if (!re) return;
       if (!re.test(code)) hit = { line: 1, excerpt: m.name };
     } else if (m.type === 'missing-directive') {
       if (!m.name) return;
@@ -684,17 +706,33 @@ class PJSRAnalyzer {
     if (this._symbolLifecycleCache) return this._symbolLifecycleCache;
     const table = {};
     const containers = ['globalObjects', 'coreClasses', 'uiControls'];
-    for (const c of containers) {
-      const group = this.schema[c];
-      if (!group) continue;
-      for (const [name, def] of Object.entries(group)) {
-        if (def && (def.removedIn || def.deprecatedIn || def.availableIn)) {
+    const collect = (name, def) => {
+      if (def && (def.removedIn || def.deprecatedIn || def.availableIn)) {
+        // Don't overwrite an existing class-level entry with a method-level
+        // entry that shares the name — class-level takes precedence.
+        if (!(name in table)) {
           table[name] = {
             removedIn: def.removedIn,
             deprecatedIn: def.deprecatedIn,
             availableIn: def.availableIn,
             replacedBy: def.replacedBy
           };
+        }
+      }
+    };
+    for (const c of containers) {
+      const group = this.schema[c];
+      if (!group) continue;
+      for (const [name, def] of Object.entries(group)) {
+        collect(name, def);
+        // Descend into method-level metadata so e.g. Image.forEachSample's
+        // removedIn metadata is surfaced for identifier tokens like 'forEachSample'.
+        for (const subKey of ['methods', 'staticMethods', 'properties']) {
+          const sub = def && def[subKey];
+          if (!sub || typeof sub !== 'object') continue;
+          for (const [memberName, memberDef] of Object.entries(sub)) {
+            collect(memberName, memberDef);
+          }
         }
       }
     }
