@@ -1,24 +1,35 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
   "title": "PixInsight JavaScript Runtime (PJSR) API Schema",
-  "version": "2.0.0",
-  "description": "API schema for PJSR scripting in PixInsight 1.9.4+ (V8 runtime, ECMAScript 2025) with legacy SpiderMonkey 24 support",
+  "version": "2.1.0",
+  "description": "API schema for PJSR scripting in PixInsight 1.9.4+ (V8 runtime, ECMAScript 2025). Legacy SpiderMonkey 24 engine is removed in 1.9.4 Lockhart.",
+
+  "versions": {
+    "1.9.4": {
+      "codename": "Lockhart",
+      "released": "2026-05-12",
+      "buildMin": 1690,
+      "smEngineRemoved": true,
+      "notes": "First release shipping V8 as the only available JavaScript runtime. Legacy 'sm' engine fully removed (forum thread 27198). Some process property definitions changed non-backward-compatibly (ABE, SubframeSelector; see forum thread 27213)."
+    }
+  },
 
   "engines": {
     "v8": {
       "since": "1.9.4",
-      "default": false,
+      "default": true,
       "ecmascript": "2025",
       "directiveValues": ["v8", "v8-new", "v8-default", "v8-private"],
-      "description": "V8-based JavaScript runtime introduced in PixInsight 1.9.4 Lockhart. Supports modern ECMAScript including classes, private fields, async/await, and WebAssembly-backed FMath."
+      "description": "V8-based JavaScript runtime. Sole runtime in PixInsight 1.9.4 Lockhart and later. Supports modern ECMAScript including classes, private fields, async/await, and WebAssembly-backed FMath."
     },
     "sm": {
       "since": "legacy",
-      "default": true,
+      "default": false,
       "deprecated": true,
+      "removedIn": "1.9.4",
       "ecmascript": "ES5",
       "directiveValues": ["sm"],
-      "description": "Legacy SpiderMonkey 24 engine. Default for backward compatibility but scheduled for removal in a future PixInsight 1.9 Lockhart release. Not available on macOS ARM64."
+      "description": "Legacy SpiderMonkey 24 engine. Removed in PixInsight 1.9.4 Lockhart (build 1690, 2026-05-12). Scripts using #engine sm or omitting #engine entirely fail to run in 1.9.4+. See https://pixinsight.com/forum/index.php?threads/legacy-sm-javascript-missing-also-fonts-missing.27198/"
     }
   },
 
@@ -566,7 +577,8 @@
         "mirrored": { "signature": "mirrored(horizontal?: Boolean, vertical?: Boolean): Bitmap", "description": "Get mirrored copy" },
         "rotated": { "signature": "rotated(angle: Number): Bitmap", "description": "Get rotated copy" },
         "load": { "signature": "load(filePath: String)", "description": "Load from file" },
-        "save": { "signature": "save(filePath: String, quality?: Number)", "description": "Save to file" }
+        "save": { "signature": "save(filePath: String, quality?: Number)", "description": "Save to file" },
+        "clear": { "signature": "clear()", "description": "Release underlying bitmap data. Recommended in V8 for explicit memory release (V8 cannot force GC).", "availableIn": ["v8"] }
       }
     },
 
@@ -1649,15 +1661,117 @@
     {
       "id": "sm-consider-migrating-to-v8",
       "appliesToEngines": ["sm"],
+      "requiresVersionRange": "<1.9.4",
       "severity": "hint",
       "match": { "type": "missing-directive", "name": "#engine" },
       "message": "No #engine directive present — this script will run on the legacy SpiderMonkey engine (default). Consider adding `#engine v8` near the top to opt into the modern V8 runtime introduced in PixInsight 1.9.4."
+    },
+    {
+      "id": "v1.9.4-no-engine-directive-error",
+      "appliesToEngines": ["sm"],
+      "requiresVersionRange": ">=1.9.4",
+      "severity": "error",
+      "match": { "type": "missing-directive", "name": "#engine" },
+      "message": "PixInsight 1.9.4 (Lockhart) removed the legacy 'sm' JavaScript engine. Scripts that omit #engine fail to run. Add `#engine v8` near the top of the script.",
+      "docUrl": "https://pixinsight.com/forum/index.php?threads/legacy-sm-javascript-missing-also-fonts-missing.27198/"
+    },
+    {
+      "id": "v1.9.4-sm-engine-removed",
+      "appliesToEngines": ["sm"],
+      "requiresVersionRange": ">=1.9.4",
+      "severity": "error",
+      "match": { "type": "code-pattern", "regex": "^#engine\\s+sm\\b" },
+      "message": "The 'sm' JavaScript engine is removed in PixInsight 1.9.4 Lockhart. Replace `#engine sm` with `#engine v8` and port the script to the V8 runtime.",
+      "docUrl": "https://pixinsight.net/dev/index.php?ams/the-new-v8-javascript-runtime-in-pixinsight-1-9-4-script-porting-guide.13/"
+    },
+    {
+      "id": "v8-no-js-modules",
+      "appliesToEngines": ["v8"],
+      "severity": "error",
+      "match": { "type": "code-pattern", "regex": "^\\s*(?:import|export)\\s+" },
+      "message": "JavaScript modules (import/export) are not supported by the PJSR V8 runtime. Use `#include` directives instead.",
+      "docUrl": "https://pixinsight.net/dev/index.php?ams/the-new-v8-javascript-runtime-in-pixinsight-1-9-4-script-porting-guide.13/page/limitations.8/"
+    },
+    {
+      "id": "v8-imagewindow-purge-no-bool-args",
+      "appliesToEngines": ["v8"],
+      "severity": "error",
+      "match": { "type": "code-pattern", "regex": "\\.purge\\s*\\(\\s*(?:true|false|0|1)" },
+      "message": "ImageWindow.purge() no longer accepts boolean arguments under V8 — it takes no arguments and purges all transient data. Update the call.",
+      "docUrl": "https://pixinsight.net/dev/index.php?ams/the-new-v8-javascript-runtime-in-pixinsight-1-9-4-script-porting-guide.13/page/breaking-changes-and-deprecated-functions.7/"
+    },
+    {
+      "id": "v8-compression-array-shape",
+      "appliesToEngines": ["v8"],
+      "severity": "info",
+      "match": { "type": "code-pattern", "regex": "\\.compress\\s*\\([^)]*\\)\\s*\\[\\s*\\d+\\s*\\]\\s*\\[" },
+      "message": "Compression.compress() now returns an array of objects ({compressedData, uncompressedSize, checksum}), not an array of arrays. Access subblock fields by name (e.g. `result[i].compressedData`).",
+      "docUrl": "https://pixinsight.net/dev/index.php?ams/the-new-v8-javascript-runtime-in-pixinsight-1-9-4-script-porting-guide.13/page/breaking-changes-and-deprecated-functions.7/"
+    },
+    {
+      "id": "v8-ephemerisfile-shape-change",
+      "appliesToEngines": ["v8"],
+      "severity": "info",
+      "match": { "type": "code-pattern", "regex": "(?:EphemerisFile\\b[\\s\\S]{0,200}?(?:\\.objects|\\.visibleObjects\\s*\\()\\s*\\[\\s*\\d+\\s*\\]\\s*\\[)" },
+      "message": "EphemerisFile.objects and EphemerisFile.visibleObjects() now return arrays of objects, not arrays of arrays. Access object fields by name.",
+      "docUrl": "https://pixinsight.net/dev/index.php?ams/the-new-v8-javascript-runtime-in-pixinsight-1-9-4-script-porting-guide.13/page/breaking-changes-and-deprecated-functions.7/"
+    },
+    {
+      "id": "v8-null-vs-isnull-view",
+      "appliesToEngines": ["v8"],
+      "severity": "info",
+      "match": { "type": "code-pattern", "regex": "\\.(?:viewById|previewById)\\s*\\([^)]*\\)\\s*\\.\\s*isNull\\b" },
+      "message": "Under V8, viewById() and previewById() return null (not an invalid View) when not found. Replace `.isNull` checks with `=== null` or `== null`.",
+      "docUrl": "https://pixinsight.net/dev/index.php?ams/the-new-v8-javascript-runtime-in-pixinsight-1-9-4-script-porting-guide.13/page/breaking-changes-and-deprecated-functions.7/"
+    },
+    {
+      "id": "v8-view-window-image-null",
+      "appliesToEngines": ["v8"],
+      "severity": "info",
+      "match": { "type": "code-pattern", "regex": "\\.(?:window|image)\\.\\s*isNull\\b" },
+      "message": "Under V8, View.window and View.image return null when the view is invalid. Replace `.isNull` with a `=== null` check.",
+      "docUrl": "https://pixinsight.net/dev/index.php?ams/the-new-v8-javascript-runtime-in-pixinsight-1-9-4-script-porting-guide.13/page/breaking-changes-and-deprecated-functions.7/"
+    },
+    {
+      "id": "v8-discourage-v8-default",
+      "appliesToEngines": ["v8"],
+      "severity": "info",
+      "match": { "type": "code-pattern", "regex": "^#engine\\s+v8-default\\b" },
+      "message": "`#engine v8-default` runs on a long-lived shared V8 runtime. Use `#engine v8` or `#engine v8-private` for production scripts to avoid runtime pollution and re-declaration errors.",
+      "docUrl": "https://pixinsight.net/dev/index.php?ams/the-new-v8-javascript-runtime-in-pixinsight-1-9-4-script-porting-guide.13/page/runtime-selection.2/"
+    },
+    {
+      "id": "v1.9.4-abe-property-changes",
+      "appliesToEngines": ["v8"],
+      "requiresVersionRange": ">=1.9.4",
+      "severity": "hint",
+      "match": { "type": "code-pattern", "regex": "new\\s+ProcessInstance\\s*\\(\\s*[\"']AutomaticBackgroundExtractor[\"']\\s*\\)" },
+      "message": "AutomaticBackgroundExtractor property definitions changed non-backward-compatibly in 1.9.4 to accommodate the V8 runtime. Process icons saved on 1.9.3 may not load. Re-create the process icon in 1.9.4 if it fails.",
+      "docUrl": "https://pixinsight.com/forum/index.php?threads/changes-to-process-properties-in-1-9-4.27213/"
+    },
+    {
+      "id": "v1.9.4-sfs-property-changes",
+      "appliesToEngines": ["v8"],
+      "requiresVersionRange": ">=1.9.4",
+      "severity": "hint",
+      "match": { "type": "code-pattern", "regex": "new\\s+ProcessInstance\\s*\\(\\s*[\"']SubframeSelector[\"']\\s*\\)" },
+      "message": "SubframeSelector property definitions changed non-backward-compatibly in 1.9.4 to accommodate the V8 runtime. Process icons saved on 1.9.3 may not load. Re-create the process icon in 1.9.4 if it fails.",
+      "docUrl": "https://pixinsight.com/forum/index.php?threads/changes-to-process-properties-in-1-9-4.27213/"
+    },
+    {
+      "id": "v8-private-field-preprocessor-collision",
+      "appliesToEngines": ["v8"],
+      "severity": "warning",
+      "match": { "type": "code-pattern", "regex": "#(?:define|undef|if|ifdef|ifndef|ifeq|ifneq|ifgt|ifge|iflt|ifle|ifoneof|ifnoneof|else|endif|engine|error|warning|include|feature-id|feature-info|feature-icon|script-id)\\s*[=;,)\\s]" },
+      "message": "If this `#name` appears as a private class field inside a class body (e.g. `class X { #engine = ... }`), it collides with a reserved PixInsight preprocessor directive. Rename the private field (e.g. `#_engine`).",
+      "docUrl": "https://pixinsight.net/dev/index.php?ams/the-new-v8-javascript-runtime-in-pixinsight-1-9-4-script-porting-guide.13/page/limitations.8/"
     }
   ],
 
   "preprocessorDirectives": {
     "#include": { "description": "Include a JavaScript header file (.jsh)", "example": "#include <pjsr/DataType.jsh>" },
     "#define": { "description": "Define a constant or macro", "example": "#define VERSION \"1.0\"" },
+    "#undef": { "description": "Undefine a previously defined macro", "example": "#undef DEBUG" },
     "#ifdef": { "description": "Conditional compilation if defined", "example": "#ifdef DEBUG" },
     "#ifndef": { "description": "Conditional compilation if not defined", "example": "#ifndef RELEASE" },
     "#if": { "description": "Conditional compilation with expression", "example": "#if VERSION > 1" },
@@ -1665,13 +1779,19 @@
     "#ifle": { "description": "Conditional if less or equal", "example": "#ifle __PI_VERSION__ 01.08.03" },
     "#ifgt": { "description": "Conditional if greater than", "example": "#ifgt __PI_VERSION__ 01.07.00" },
     "#ifge": { "description": "Conditional if greater or equal", "example": "#ifge __PI_VERSION__ 01.08.00" },
+    "#ifeq": { "description": "Conditional if equal", "example": "#ifeq __PI_PLATFORM__ Linux" },
+    "#ifneq": { "description": "Conditional if not equal", "example": "#ifneq __PI_PLATFORM__ macOS" },
+    "#ifoneof": { "description": "Conditional if value matches any of a list", "example": "#ifoneof __PI_PLATFORM__ Linux,macOS" },
+    "#ifnoneof": { "description": "Conditional if value matches none of a list", "example": "#ifnoneof __PI_PLATFORM__ Windows" },
     "#else": { "description": "Else branch of conditional", "example": "#else" },
     "#endif": { "description": "End conditional block", "example": "#endif" },
+    "#error": { "description": "Emit a compile-time error and abort", "example": "#error This script requires PixInsight 1.9.4 or higher." },
+    "#warning": { "description": "Emit a compile-time warning", "example": "#warning Untested on this platform" },
     "#feature-id": { "description": "Declare script feature identifier", "example": "#feature-id MyScript" },
     "#feature-info": { "description": "Script description", "example": "#feature-info A description" },
     "#feature-icon": { "description": "Declare script feature icon", "example": "#feature-icon @script_icons_dir/MyScript.svg" },
     "#script-id": { "description": "Declare script identifier", "example": "#script-id MyScript" },
-    "#engine": { "description": "Select the JavaScript runtime engine. Must be the first directive in a script's main file. Values: v8, v8-new, v8-default, v8-private, sm. Default (if omitted) is sm.", "example": "#engine v8", "since": "1.9.4" }
+    "#engine": { "description": "Select the JavaScript runtime engine. Must be the first directive in a script's main file. Values: v8, v8-new, v8-default, v8-private, sm. In PixInsight 1.9.4 (Lockhart) the 'sm' engine is removed; scripts that omit #engine or specify 'sm' fail to run. Use 'v8' for new scripts.", "example": "#engine v8", "since": "1.9.4" }
   },
 
   "builtInVariables": {
