@@ -419,5 +419,191 @@ describe('V8 Schema Additions', () => {
   });
 });
 
+describe('Target Version Detection (1.9.4 awareness)', () => {
+  const analyzer = new PJSRAnalyzer();
+
+  test('detects target version from CoreApplication.ensureMinimumVersion', () => {
+    const code = '#engine v8\nCoreApplication.ensureMinimumVersion(1, 9, 4);\nlet x = 1;';
+    const r = analyzer.analyze(code);
+    assert.strictEqual(r.targetVersion, '1.9.4');
+  });
+
+  test('detects target version from #ifge __PI_VERSION__ fallback', () => {
+    const code = '#engine v8\n#ifge __PI_VERSION__ 01.09.04\nlet x = 1;\n#endif';
+    const r = analyzer.analyze(code);
+    assert.strictEqual(r.targetVersion, '1.9.4');
+  });
+
+  test('targetVersion is null when no declaration found', () => {
+    const code = '#engine v8\nlet x = 1;';
+    const r = analyzer.analyze(code);
+    assert.strictEqual(r.targetVersion, null);
+  });
+
+  test('compareVersions orders releases correctly', () => {
+    assert.strictEqual(PJSRAnalyzer.compareVersions('1.9.4', '1.9.4'), 0);
+    assert.strictEqual(PJSRAnalyzer.compareVersions('1.9.3', '1.9.4'), -1);
+    assert.strictEqual(PJSRAnalyzer.compareVersions('1.9.4', '1.9.3'), 1);
+    assert.strictEqual(PJSRAnalyzer.compareVersions('1.9.4.1', '1.9.4'), 1);
+  });
+
+  test('>=1.9.4 rule fires when target is 1.9.4', () => {
+    const code = '#engine sm\nCoreApplication.ensureMinimumVersion(1, 9, 4);\nlet x = 1;';
+    const r = analyzer.analyze(code);
+    const d = r.diagnostics.find(x => x.ruleId === 'v1.9.4-sm-engine-removed');
+    assert.ok(d, 'expected v1.9.4-sm-engine-removed error');
+    assert.strictEqual(d.severity, 'error');
+  });
+
+  test('>=1.9.4 rule suppressed when target unknown', () => {
+    const code = '#engine sm\nlet x = 1;';
+    const r = analyzer.analyze(code);
+    const d = r.diagnostics.find(x => x.ruleId === 'v1.9.4-sm-engine-removed');
+    assert.strictEqual(d, undefined, 'rule should not fire without a declared target version');
+  });
+
+  test('no-engine-directive escalates to error when target is 1.9.4', () => {
+    // Engine resolver defaults to sm when no #engine; the version-conditional
+    // rule kicks in because ensureMinimumVersion declares 1.9.4.
+    const code = 'CoreApplication.ensureMinimumVersion(1, 9, 4);\nfunction main(){}';
+    const r = analyzer.analyze(code);
+    const errRule = r.diagnostics.find(x => x.ruleId === 'v1.9.4-no-engine-directive-error');
+    assert.ok(errRule, 'expected hard error for missing #engine under 1.9.4 target');
+    assert.strictEqual(errRule.severity, 'error');
+  });
+
+  test('migration hint suppressed when target is 1.9.4 (avoids dup with hard error)', () => {
+    const code = 'CoreApplication.ensureMinimumVersion(1, 9, 4);\nfunction main(){}';
+    const r = analyzer.analyze(code);
+    const hint = r.diagnostics.find(x => x.ruleId === 'sm-consider-migrating-to-v8');
+    assert.strictEqual(hint, undefined, 'lenient hint should not fire when target is known >=1.9.4');
+  });
+
+  test('migration hint still fires when target is unknown', () => {
+    const code = 'function main(){}';
+    const r = analyzer.analyze(code);
+    const hint = r.diagnostics.find(x => x.ruleId === 'sm-consider-migrating-to-v8');
+    assert.ok(hint, 'expected migration hint on legacy/unknown-target script');
+  });
+
+  test('ABE instantiation under 1.9.4 emits hint', () => {
+    const code = '#engine v8\nCoreApplication.ensureMinimumVersion(1, 9, 4);\nlet P = new ProcessInstance("AutomaticBackgroundExtractor");';
+    const r = analyzer.analyze(code);
+    const d = r.diagnostics.find(x => x.ruleId === 'v1.9.4-abe-property-changes');
+    assert.ok(d, 'expected ABE property-change hint');
+    assert.strictEqual(d.severity, 'hint');
+  });
+
+  test('SubframeSelector instantiation under 1.9.4 emits hint', () => {
+    const code = '#engine v8\nCoreApplication.ensureMinimumVersion(1, 9, 4);\nlet P = new ProcessInstance("SubframeSelector");';
+    const r = analyzer.analyze(code);
+    const d = r.diagnostics.find(x => x.ruleId === 'v1.9.4-sfs-property-changes');
+    assert.ok(d, 'expected SubframeSelector property-change hint');
+  });
+
+  test('ABE hint suppressed when no target version declared', () => {
+    const code = '#engine v8\nlet P = new ProcessInstance("AutomaticBackgroundExtractor");';
+    const r = analyzer.analyze(code);
+    const d = r.diagnostics.find(x => x.ruleId === 'v1.9.4-abe-property-changes');
+    assert.strictEqual(d, undefined);
+  });
+});
+
+describe('New V8 Lint Rules', () => {
+  const analyzer = new PJSRAnalyzer();
+
+  test('flags import/export as not supported under v8', () => {
+    const code = '#engine v8\nimport { foo } from "bar";';
+    const r = analyzer.analyze(code);
+    const d = r.diagnostics.find(x => x.ruleId === 'v8-no-js-modules');
+    assert.ok(d, 'expected v8-no-js-modules error');
+    assert.strictEqual(d.severity, 'error');
+  });
+
+  test('flags ImageWindow.purge(true) as error under v8', () => {
+    const code = '#engine v8\nCoreApplication.ensureMinimumVersion(1,9,4);\nwindow.purge(true);';
+    const r = analyzer.analyze(code);
+    const d = r.diagnostics.find(x => x.ruleId === 'v8-imagewindow-purge-no-bool-args');
+    assert.ok(d, 'expected v8-imagewindow-purge-no-bool-args error');
+  });
+
+  test('flags Compression.compress()[0][0] shape access', () => {
+    const code = '#engine v8\nCoreApplication.ensureMinimumVersion(1,9,4);\nlet b = result.compress(data)[0][0];';
+    const r = analyzer.analyze(code);
+    const d = r.diagnostics.find(x => x.ruleId === 'v8-compression-array-shape');
+    assert.ok(d, 'expected compression shape diagnostic');
+  });
+
+  test('flags .viewById(id).isNull check', () => {
+    const code = '#engine v8\nCoreApplication.ensureMinimumVersion(1,9,4);\nif (view.viewById("foo").isNull) {}';
+    const r = analyzer.analyze(code);
+    const d = r.diagnostics.find(x => x.ruleId === 'v8-null-vs-isnull-view');
+    assert.ok(d, 'expected v8-null-vs-isnull-view diagnostic');
+  });
+
+  test('flags v8-default as discouraged', () => {
+    const code = '#engine v8-default\nlet x = 1;';
+    const r = analyzer.analyze(code);
+    const d = r.diagnostics.find(x => x.ruleId === 'v8-discourage-v8-default');
+    assert.ok(d, 'expected v8-discourage-v8-default info');
+  });
+
+  test('clean explicit V8 script with target produces no errors', () => {
+    const code = `#engine v8
+
+CoreApplication.ensureMinimumVersion(1, 9, 4);
+
+(() => {
+  let image = ImageWindow.activeWindow.mainView.image;
+  console.writeln(image.width);
+})();
+`;
+    const r = analyzer.analyze(code);
+    const errors = r.diagnostics.filter(d => d.severity === 'error');
+    assert.strictEqual(errors.length, 0, `expected no errors, got: ${JSON.stringify(errors)}`);
+  });
+});
+
+describe('1.9.4 Schema Additions', () => {
+  test('versions block present with 1.9.4 metadata', () => {
+    assert.ok(pjsrSchema.versions, 'expected versions block');
+    assert.ok(pjsrSchema.versions['1.9.4'], 'expected 1.9.4 entry');
+    assert.strictEqual(pjsrSchema.versions['1.9.4'].smEngineRemoved, true);
+  });
+
+  test('sm engine marked removedIn 1.9.4', () => {
+    assert.strictEqual(pjsrSchema.engines.sm.removedIn, '1.9.4');
+    assert.strictEqual(pjsrSchema.engines.sm.default, false);
+  });
+
+  test('new preprocessor directives present', () => {
+    const d = pjsrSchema.preprocessorDirectives;
+    assert.ok('#ifeq' in d);
+    assert.ok('#ifneq' in d);
+    assert.ok('#ifoneof' in d);
+    assert.ok('#ifnoneof' in d);
+    assert.ok('#undef' in d);
+    assert.ok('#error' in d);
+    assert.ok('#warning' in d);
+  });
+
+  test('Bitmap.clear (v8 explicit-free helper) documented', () => {
+    const bm = pjsrSchema.coreClasses.Bitmap;
+    assert.ok(bm.methods.clear, 'expected Bitmap.clear method');
+    assert.deepStrictEqual(bm.methods.clear.availableIn, ['v8']);
+  });
+
+  test('new 1.9.4-conditional lint rules carry requiresVersionRange', () => {
+    const rules = pjsrSchema.lintRules;
+    const conditional = rules.filter(r => r.requiresVersionRange);
+    assert.ok(conditional.length >= 4, `expected several version-conditional rules, got ${conditional.length}`);
+    // 1.9.4 hard error
+    const smRemoved = rules.find(r => r.id === 'v1.9.4-sm-engine-removed');
+    assert.ok(smRemoved);
+    assert.strictEqual(smRemoved.requiresVersionRange, '>=1.9.4');
+    assert.strictEqual(smRemoved.severity, 'error');
+  });
+});
+
 // Run tests
 console.log('Running PJSR Parser tests...\n');

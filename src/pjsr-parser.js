@@ -363,7 +363,8 @@ class PJSRAnalyzer {
       diagnostics: [],
       usedPJSRObjects: new Set(),
       engine: null,
-      engineDirective: null
+      engineDirective: null,
+      targetVersion: null
     };
 
     // Analyze tokens
@@ -464,6 +465,71 @@ class PJSRAnalyzer {
     return analysis.engine || 'sm';
   }
 
+  /**
+   * Resolve the target PixInsight version by scanning the source for
+   * CoreApplication.ensureMinimumVersion(major, minor, release, [revision]).
+   * Returns a semver-ish string like "1.9.4" or null when no declaration is found.
+   *
+   * Falls back to scanning preprocessor `#ifge __PI_VERSION__ NN.NN.NN` patterns
+   * so legacy scripts using the older guard style are still detected.
+   */
+  resolveTargetVersion(code, analysis) {
+    const m = code.match(/CoreApplication\s*\.\s*ensureMinimumVersion\s*\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)/);
+    if (m) return `${m[1]}.${m[2]}.${m[3]}`;
+    // Preprocessor fallback: #ifge __PI_VERSION__ 01.09.04
+    for (const t of analysis.tokens) {
+      if (t.type !== 'PREPROCESSOR') continue;
+      const pm = t.value.match(/#(?:ifge|if)\s+__PI_VERSION__\s+(\d+)\.(\d+)\.(\d+)/);
+      if (pm) return `${parseInt(pm[1])}.${parseInt(pm[2])}.${parseInt(pm[3])}`;
+    }
+    return null;
+  }
+
+  /**
+   * Compare two semver-ish strings ("1.9.4"). Returns -1/0/1.
+   */
+  static compareVersions(a, b) {
+    const pa = a.split('.').map(n => parseInt(n, 10));
+    const pb = b.split('.').map(n => parseInt(n, 10));
+    const len = Math.max(pa.length, pb.length);
+    for (let i = 0; i < len; i++) {
+      const ai = pa[i] || 0;
+      const bi = pb[i] || 0;
+      if (ai < bi) return -1;
+      if (ai > bi) return 1;
+    }
+    return 0;
+  }
+
+  /**
+   * Test whether a rule's requiresVersionRange constraint is satisfied.
+   *
+   * Semantics:
+   *   - `">=X.Y.Z"` is STRICT: fires only when targetVersion is known AND >= X.Y.Z.
+   *     Used for rules that flag breaking behavior — we don't want false positives
+   *     on scripts that aren't declaring a target version.
+   *   - `"<X.Y.Z"` is LENIENT: fires when target is known AND < X.Y.Z, OR when
+   *     target is unknown. Used for migration hints that should still nudge
+   *     legacy scripts even without an ensureMinimumVersion call.
+   *   - No constraint: always fires.
+   */
+  ruleVersionApplies(rule, targetVersion) {
+    const range = rule.requiresVersionRange;
+    if (!range) return true;
+    const ge = range.match(/^>=\s*([\d.]+)$/);
+    if (ge) {
+      if (!targetVersion) return false;
+      return PJSRAnalyzer.compareVersions(targetVersion, ge[1]) >= 0;
+    }
+    const lt = range.match(/^<\s*([\d.]+)$/);
+    if (lt) {
+      if (!targetVersion) return true; // unknown counts as legacy
+      return PJSRAnalyzer.compareVersions(targetVersion, lt[1]) < 0;
+    }
+    // Unknown range syntax — be conservative, suppress the rule.
+    return false;
+  }
+
   isPJSRClass(name) {
     return this.schema.coreClasses && name in this.schema.coreClasses ||
            this.schema.uiControls && name in this.schema.uiControls ||
@@ -534,6 +600,7 @@ class PJSRAnalyzer {
 
   runDiagnostics(code, tokens, analysis) {
     const engine = this.resolveEngine(analysis);
+    analysis.targetVersion = this.resolveTargetVersion(code, analysis);
 
     // Engine-independent structural check: beginProcess/endProcess pairing.
     const beginCount = (code.match(/\.beginProcess\s*\(/g) || []).length;
@@ -547,10 +614,13 @@ class PJSRAnalyzer {
       });
     }
 
-    // Apply schema-defined lint rules for the active engine.
+    // Apply schema-defined lint rules for the active engine + target version.
     const rules = this.schema.lintRules || [];
     for (const rule of rules) {
       if (!Array.isArray(rule.appliesToEngines) || !rule.appliesToEngines.includes(engine)) {
+        continue;
+      }
+      if (!this.ruleVersionApplies(rule, analysis.targetVersion)) {
         continue;
       }
       this.applyLintRule(rule, code, tokens, analysis);
@@ -581,9 +651,13 @@ class PJSRAnalyzer {
 
     // Wrap regex construction so a malformed schema regex surfaces as a
     // diagnostic instead of crashing analyze() and losing all other results.
+    // Default flag is 'm' (multiline) so ^/$ anchors match line boundaries —
+    // this lets rule authors write `^#engine sm` without having to think about
+    // file-start vs line-start. Individual rules may set match.flags to override.
     const safeRegex = (pattern) => {
+      const flags = m.flags || 'm';
       try {
-        return new RegExp(pattern);
+        return new RegExp(pattern, flags);
       } catch (e) {
         analysis.diagnostics.push({
           severity: 'error',
