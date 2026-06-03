@@ -6,7 +6,7 @@
       <p>Repository: https://github.com/scarter4work/EZ-Stretch-BSC</p>
    </description>
    <platform os="all" arch="noarch" version="1.8.0:2.0.0">
-      <package fileName="EZStretch_v1.0.9.zip" sha1="6570a198bbf9a0cdb77156b6f133bdc8f3a98871" type="script" releaseDate="20260111">
+      <package fileName="EZStretch_v1.0.9.zip" sha1="57d3f5f78e77c41c52b000de937cc7fa220b627b" type="script" releaseDate="20260111">
          <title>EZ Stretch</title>
          <description>
             <p>
@@ -23,7 +23,7 @@
             <p>- Mouse wheel zoom in preview</p>
          </description>
       </package>
-      <package fileName="EZDonutRepair_v1.0.2.zip" sha1="011125e6aa44f1d62b4a99608b2a97f9d44eca73" type="script" releaseDate="20260111">
+      <package fileName="EZDonutRepair_v1.0.2.zip" sha1="84ebcd4e7058e13566e47a34787253e84239aeae" type="script" releaseDate="20260111">
          <title>EZ Donut Repair</title>
          <description>
             <p>
@@ -40,6 +40,22 @@
             <p>- Based on DonutRepair by Chick Dee (CC BY-NC 4.0)</p>
          </description>
       </package>
+      <package fileName="EZHazeKill_v1.0.0.zip" sha1="5a0a9723341405b5fe077bf65b75a12ba2ca0144" type="script" releaseDate="20260603">
+         <title>EZ Haze Kill</title>
+         <description>
+            <p>
+               <b>EZ Haze Kill v1.0.0</b>
+            </p>
+            <p>Detects and removes flat background haze left after gradient extraction.</p>
+            <p>
+               <b>Features:</b>
+            </p>
+            <p>- Measures each channel's background level and reports the color-cast spread</p>
+            <p>- Subtracts every channel to a common neutral target via PixelMath (undoable)</p>
+            <p>- Supports RGB color and mono images</p>
+            <p>- For moon-washed / light-polluted frames after GraXpert or DBE</p>
+         </description>
+      </package>
    </platform>
 </xri>
-<Signature developerId="scarter4work" timestamp="2026-01-11T03:45:17.758Z" encoding="Base64">B8+iWFMjo9CbWjaYdyX0Z7tZ54+tjhwrkOiI9hF4PKn8SypMtH3xRZOa9bVkwDnrx1dQlnTYfpE1Y1pe54gZCA==</Signature>
+<Signature developerId="scarter4work" timestamp="2026-06-03T20:49:52.878Z" encoding="Base64">bFTvLLulmxbXL/oVPLz6siHXcIe18Mfq04Pn9LxxuXKkWwZvux+cpSNZ1NMNd/3ePZaUxbDE40MVNFfyY6i+Ag==</Signature>

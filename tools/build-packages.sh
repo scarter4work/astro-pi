@@ -36,6 +36,13 @@ packages = {
             ("EZDonutRepair.xsgn", f"{install_base}/EZDonutRepair.xsgn"),
         ]
     },
+    "EZHazeKill": {
+        "version": "1.0.0",
+        "files": [
+            ("EZHazeKill.js", f"{install_base}/EZHazeKill.js"),
+            ("EZHazeKill.xsgn", f"{install_base}/EZHazeKill.xsgn"),
+        ]
+    },
 }
 
 results = []

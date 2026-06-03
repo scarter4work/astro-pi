@@ -18,7 +18,8 @@ var DEFAULT_KEYS = "/home/scarter4work/projects/keys/scarter4work_keys.xssk";
 // Files to sign - add new scripts here
 var PROJECT_SCRIPTS = [
    PROJECT_DIR + "/src/scripts/EZ Stretch BSC/EZStretch.js",
-   PROJECT_DIR + "/src/scripts/EZ Stretch BSC/EZDonutRepair.js"
+   PROJECT_DIR + "/src/scripts/EZ Stretch BSC/EZDonutRepair.js",
+   PROJECT_DIR + "/src/scripts/EZ Stretch BSC/EZHazeKill.js"
 ];
 
 var XRI_FILES = [

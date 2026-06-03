@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+PixInsight XML Code Signature Format - XSGN version 1.0
+Created with pi_codesign.py - https://pixinsight.com/
+-->
+<xsgn version="1.0" xmlns="http://www.pixinsight.com/xsgn" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://www.pixinsight.com/xsgn http://pixinsight.com/xsgn/xsgn-1.0.xsd">
+   <CreationTime>2026-06-03T20:48:47.449Z</CreationTime>
+   <Signature version="1.0" scriptId="EZHazeKill" developerId="scarter4work">
+      <Timestamp>2026-06-03T20:48:47.449Z</Timestamp>
+      <CodeSignature encoding="Base64">zRwbwO6BJvOUhaaimzqu1vX9yYhWJFCMoPLpG/Yrpniro/TtI1FCcJaGlfbjF8hAob/2TJxUcOL9lRebe8SODA==</CodeSignature>
+   </Signature>
+</xsgn>
