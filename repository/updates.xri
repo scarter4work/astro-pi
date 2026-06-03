@@ -6,7 +6,7 @@
       <p>Repository: https://github.com/scarter4work/EZ-Stretch-BSC</p>
    </description>
    <platform os="all" arch="noarch" version="1.8.0:2.0.0">
-      <package fileName="EZStretch_v1.0.9.zip" sha1="57d3f5f78e77c41c52b000de937cc7fa220b627b" type="script" releaseDate="20260111">
+      <package fileName="EZStretch_v1.0.9.zip" sha1="79fefe9b353eb52cbef134100a73b72f686cdecc" type="script" releaseDate="20260111">
          <title>EZ Stretch</title>
          <description>
             <p>
@@ -23,7 +23,7 @@
             <p>- Mouse wheel zoom in preview</p>
          </description>
       </package>
-      <package fileName="EZDonutRepair_v1.0.2.zip" sha1="84ebcd4e7058e13566e47a34787253e84239aeae" type="script" releaseDate="20260111">
+      <package fileName="EZDonutRepair_v1.0.2.zip" sha1="adcabdb18f766d94b5ae5b9be5d04108403f699f" type="script" releaseDate="20260111">
          <title>EZ Donut Repair</title>
          <description>
             <p>
@@ -40,7 +40,7 @@
             <p>- Based on DonutRepair by Chick Dee (CC BY-NC 4.0)</p>
          </description>
       </package>
-      <package fileName="EZHazeKill_v1.0.0.zip" sha1="5a0a9723341405b5fe077bf65b75a12ba2ca0144" type="script" releaseDate="20260603">
+      <package fileName="EZHazeKill_v1.0.0.zip" sha1="4aef1ae28a9e6529873281797582c47e69675c43" type="script" releaseDate="20260603">
          <title>EZ Haze Kill</title>
          <description>
             <p>
@@ -50,7 +50,7 @@
             <p>
                <b>Features:</b>
             </p>
-            <p>- Measures each channel's background level and reports the color-cast spread</p>
+            <p>- Measures each channel&apos;s background level and reports the color-cast spread</p>
             <p>- Subtracts every channel to a common neutral target via PixelMath (undoable)</p>
             <p>- Supports RGB color and mono images</p>
             <p>- For moon-washed / light-polluted frames after GraXpert or DBE</p>
@@ -58,4 +58,4 @@
       </package>
    </platform>
 </xri>
-<Signature developerId="scarter4work" timestamp="2026-06-03T20:49:52.878Z" encoding="Base64">bFTvLLulmxbXL/oVPLz6siHXcIe18Mfq04Pn9LxxuXKkWwZvux+cpSNZ1NMNd/3ePZaUxbDE40MVNFfyY6i+Ag==</Signature>
+<Signature developerId="scarter4work" timestamp="2026-06-03T23:37:49.916Z" encoding="Base64">qW6XlZAPjK6oPBsZbmF2Ultf3C43Azef+Qf1kV+Hc2JMmgtKlhN+sstnwMshEzsB4GfrHJbDS4KuVWmFuGlSBA==</Signature>

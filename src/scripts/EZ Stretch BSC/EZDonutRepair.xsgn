@@ -1,12 +1,12 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!--
 PixInsight XML Code Signature Format - XSGN version 1.0
-Created with PixInsight software - https://pixinsight.com/
+Created with pi_codesign.py - https://pixinsight.com/
 -->
 <xsgn version="1.0" xmlns="http://www.pixinsight.com/xsgn" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://www.pixinsight.com/xsgn http://pixinsight.com/xsgn/xsgn-1.0.xsd">
-   <CreationTime>2026-01-11T03:45:17.757Z</CreationTime>
+   <CreationTime>2026-06-03T23:37:49.730Z</CreationTime>
    <Signature version="1.0" scriptId="EZDonutRepair" developerId="scarter4work">
-      <Timestamp>2026-01-11T03:45:17.757Z</Timestamp>
-      <CodeSignature encoding="Base64">Tv6f2Svn+fzwkp0dFpa+UnMb70FD+ogu886APKrCMZqXRw45C+lDYlBqs8tJ9DadnmzKRUc9WB7V9RH6Qs/6Bw==</CodeSignature>
+      <Timestamp>2026-06-03T23:37:49.730Z</Timestamp>
+      <CodeSignature encoding="Base64">fyF5qiXN9ldBCPeWjcj2D8qnuSmA9QHn0zp1t7Ovsy701g/mEuL2W4Cgjnf9FDtyp83cdjR3gnoS+dc5xYbzCg==</CodeSignature>
    </Signature>
 </xsgn>
