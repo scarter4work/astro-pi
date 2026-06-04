@@ -6,7 +6,7 @@
       <p>Repository: https://github.com/scarter4work/EZ-Stretch-BSC</p>
    </description>
    <platform os="all" arch="noarch" version="1.8.0:2.0.0">
-      <package fileName="EZStretch_v1.0.9.zip" sha1="79fefe9b353eb52cbef134100a73b72f686cdecc" type="script" releaseDate="20260111">
+      <package fileName="EZStretch_v1.0.9.zip" sha1="665b446d3e2f8267209355104c0b61737cbff2ce" type="script" releaseDate="20260604">
          <title>EZ Stretch</title>
          <description>
             <p>
@@ -23,7 +23,7 @@
             <p>- Mouse wheel zoom in preview</p>
          </description>
       </package>
-      <package fileName="EZDonutRepair_v1.0.2.zip" sha1="adcabdb18f766d94b5ae5b9be5d04108403f699f" type="script" releaseDate="20260111">
+      <package fileName="EZDonutRepair_v1.0.2.zip" sha1="6c847698da183f006d1ff0425765ec6fa57f8f3c" type="script" releaseDate="20260604">
          <title>EZ Donut Repair</title>
          <description>
             <p>
@@ -40,7 +40,7 @@
             <p>- Based on DonutRepair by Chick Dee (CC BY-NC 4.0)</p>
          </description>
       </package>
-      <package fileName="EZHazeKill_v1.0.0.zip" sha1="4aef1ae28a9e6529873281797582c47e69675c43" type="script" releaseDate="20260603">
+      <package fileName="EZHazeKill_v1.0.0.zip" sha1="70b4fafd19a4a2bb39cf449f95017ad55dae7b2f" type="script" releaseDate="20260604">
          <title>EZ Haze Kill</title>
          <description>
             <p>
@@ -58,4 +58,4 @@
       </package>
    </platform>
 </xri>
-<Signature developerId="scarter4work" timestamp="2026-06-03T23:37:49.916Z" encoding="Base64">qW6XlZAPjK6oPBsZbmF2Ultf3C43Azef+Qf1kV+Hc2JMmgtKlhN+sstnwMshEzsB4GfrHJbDS4KuVWmFuGlSBA==</Signature>
+<Signature developerId="scarter4work" timestamp="2026-06-04T20:00:02.403Z" encoding="Base64">D7kH53pe2rkyE+JZQByZT7SgcCsufjYonK7a2F6ePx/rQGFIyNR6lciNFHGrlGhNKVCkGiWG8A4/G/akf4U1Dw==</Signature>

@@ -8,11 +8,18 @@
 #
 # Requires the signing password in /tmp/.pi_codesign_pass
 #
-# Two signers, because PixInsight only exposes a CLI signer for XML, not scripts:
+# Both signers are PixInsight-native, so signatures are guaranteed PI-valid:
 #   - updates.xri  -> native `PixInsight.sh --sign-xml-file` (NukeX pattern).
-#                     A short-lived core process; signature guaranteed PI-valid.
-#   - *.js scripts -> tools/pi_codesign.py standalone Ed25519 signer, using keys
-#                     extracted to ~/.pi_signing_keys.json (DumpKeys.js, one-time).
+#                     A short-lived core process.
+#   - *.js scripts -> tools/SignScriptsNative.js, run via PI automation mode,
+#                     which calls Security.generateScriptSignatureFile() - the
+#                     exact code path PI's loader verifies against.
+#
+# DO NOT use tools/pi_codesign.py for scripts. It reimplements Ed25519 from the
+# outside and guessed the signed-message format wrong: signatures were internally
+# self-consistent but PI rejected every script with "Invalid code signature".
+# (The key was correct; only the message canonicalization differed.) Native
+# signing sidesteps the whole problem - see git history / 2026-06 debugging.
 #
 # IMPORTANT ordering: .xsgn files embed a timestamp, so signing is NOT
 # deterministic - each run changes the file and therefore the package SHA1.
@@ -29,10 +36,12 @@ set -u
 TARGET="${1:-all}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
-PI="${PIXINSIGHT_DIR:-/opt/PixInsight}/bin/PixInsight.sh"
+PI_DIR="${PIXINSIGHT_DIR:-/opt/PixInsight}"
+PI="$PI_DIR/bin/PixInsight.sh"
 KEYS_XSSK="/home/scarter4work/projects/keys/scarter4work_keys.xssk"
-KEYS_JSON="$HOME/.pi_signing_keys.json"
 PASS_FILE="/tmp/.pi_codesign_pass"
+NATIVE_SIGNER="$SCRIPT_DIR/SignScriptsNative.js"
+SIGN_RESULT="/tmp/.ez_sign_result.json"
 SCRIPTS_DIR="$PROJECT_DIR/src/scripts/EZ Stretch BSC"
 XRI="$PROJECT_DIR/repository/updates.xri"
 
@@ -46,17 +55,33 @@ if [ ! -f "$PASS_FILE" ]; then
 fi
 
 sign_scripts() {
-    echo "Scripts (pi_codesign.py):"
-    if [ ! -f "$KEYS_JSON" ]; then
-        echo "  ERROR: $KEYS_JSON missing. Run DumpKeys.js in PixInsight once to extract keys." >&2
-        exit 1
+    echo "Scripts (PixInsight native, automation mode):"
+    if [ ! -f "$NATIVE_SIGNER" ]; then
+        echo "  ERROR: native signer not found: $NATIVE_SIGNER" >&2; exit 1
     fi
-    local js_files=()
-    local s
-    for s in "${SCRIPTS[@]}"; do
-        [ -f "$SCRIPTS_DIR/$s.js" ] && js_files+=( "$SCRIPTS_DIR/$s.js" )
-    done
-    python3 "$SCRIPT_DIR/pi_codesign.py" -k "$KEYS_JSON" "${js_files[@]}" || exit 1
+    # The script (SignScriptsNative.js) writes $SIGN_RESULT; we trust that file,
+    # not the exit code, because PI automation-mode console output never reaches
+    # stdout and the process exits 0 even on a silent no-op.
+    rm -f "$SIGN_RESULT"
+    LD_LIBRARY_PATH="$PI_DIR/bin/lib:$PI_DIR/bin:${LD_LIBRARY_PATH:-}" \
+        "$PI" -n --automation-mode --no-startup-scripts --no-startup-check-updates \
+              --no-startup-gui-messages -r="$NATIVE_SIGNER" --force-exit >/dev/null 2>&1
+
+    if [ ! -f "$SIGN_RESULT" ]; then
+        echo "  ERROR: signer produced no result file - did PixInsight run? ($SIGN_RESULT)" >&2; exit 1
+    fi
+    if ! python3 - "$SIGN_RESULT" "${SCRIPTS[@]}" <<'PY'
+import json, sys
+res = json.load(open(sys.argv[1])); want = set(sys.argv[2:])
+ok = res.get("ok") and set(res.get("signed", [])) >= want and not res.get("failed")
+for s in res.get("signed", []): print(f"  Signed: {s}")
+for f in res.get("failed", []): print(f"  FAILED: {f}", file=sys.stderr)
+if res.get("error"): print(f"  ERROR: {res['error']}", file=sys.stderr)
+sys.exit(0 if ok else 1)
+PY
+    then
+        echo "  ERROR: native script signing failed (see above)" >&2; exit 1
+    fi
 }
 
 sign_xri() {
