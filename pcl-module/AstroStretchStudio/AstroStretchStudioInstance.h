@@ -34,6 +34,9 @@ public:
    // Default initialization
    void SetDefaultParameters();
 
+   // Real-time preview
+   void Preview( UInt16Image& image ) const;
+
    // Algorithm selection
    pcl_enum p_algorithm;
 
@@ -43,6 +46,12 @@ public:
    double   p_otsStretchIntensity;
    double   p_otsProtectHighlights;
    pcl_bool p_otsPreserveColor;
+
+   // OTS HDR Parameters
+   pcl_bool p_otsHDREnabled;
+   double   p_otsHDRAmount;
+   double   p_otsHDRThreshold;
+   double   p_otsStarProtection;
 
    // SAS Parameters
    int32    p_sasNumScales;
@@ -56,11 +65,21 @@ public:
    pcl_bool p_sasFlattenBackground;
    pcl_bool p_sasPreserveColor;
 
+   // Zone HDR Parameters
+   pcl_bool p_zoneHDREnabled;
+   pcl_enum p_zonePreviewMode;
+   int32    p_zoneCount;
+   double   p_zoneIntensity[8];    // Per-zone intensity adjustment (-1 to +1)
+   double   p_zoneSaturation[8];   // Per-zone saturation adjustment (-1 to +1)
+   int32    p_zoneSelectedIndex;   // For solo preview mode
+
 private:
 
    // Internal processing methods
    void ApplyOTS( Image& image ) const;
    void ApplySAS( Image& image ) const;
+   void ApplyHDR( Image& L ) const;
+   void ApplyZoneHDR( Image& image ) const;
 
    // OTS helpers
    void GenerateTargetCDF( FVector& cdf, int objectType, double bgTarget ) const;

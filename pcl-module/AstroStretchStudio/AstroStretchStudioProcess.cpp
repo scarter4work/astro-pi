@@ -27,6 +27,10 @@ AstroStretchStudioProcess::AstroStretchStudioProcess()
    new ASSOTSStretchIntensity( this );
    new ASSOTSProtectHighlights( this );
    new ASSOTSPreserveColor( this );
+   new ASSOTSHDREnabled( this );
+   new ASSOTSHDRAmount( this );
+   new ASSOTSHDRThreshold( this );
+   new ASSOTSStarProtection( this );
    new ASSSASNumScales( this );
    new ASSSASBackgroundTarget( this );
    new ASSSASFineScaleGain( this );
@@ -37,6 +41,12 @@ AstroStretchStudioProcess::AstroStretchStudioProcess()
    new ASSSASNoiseThreshold( this );
    new ASSSASFlattenBackground( this );
    new ASSSASPreserveColor( this );
+   new ASSZoneHDREnabled( this );
+   new ASSZonePreviewMode( this );
+   new ASSZoneCount( this );
+   new ASSZoneIntensity( this );
+   new ASSZoneSaturation( this );
+   new ASSZoneSelectedIndex( this );
 }
 
 // ----------------------------------------------------------------------------
@@ -80,7 +90,7 @@ String AstroStretchStudioProcess::Description() const
 
 // ----------------------------------------------------------------------------
 
-String AstroStretchStudioProcess::IconImageSVG() const
+IsoString AstroStretchStudioProcess::IconImageSVG() const
 {
    return
       "<svg width=\"32\" height=\"32\" viewBox=\"0 0 32 32\" xmlns=\"http://www.w3.org/2000/svg\">"

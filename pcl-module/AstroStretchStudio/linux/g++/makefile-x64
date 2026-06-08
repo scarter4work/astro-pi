@@ -21,7 +21,8 @@ SRC_FILES = \
    ../../AstroStretchStudioInterface.cpp \
    ../../AstroStretchStudioModule.cpp \
    ../../AstroStretchStudioParameters.cpp \
-   ../../AstroStretchStudioProcess.cpp
+   ../../AstroStretchStudioProcess.cpp \
+   ../../AstroStretchStudioZoneHDR.cpp
 
 #
 # Object files
@@ -32,7 +33,8 @@ OBJ_FILES = \
    $(OBJ_DIR)/AstroStretchStudioInterface.o \
    $(OBJ_DIR)/AstroStretchStudioModule.o \
    $(OBJ_DIR)/AstroStretchStudioParameters.o \
-   $(OBJ_DIR)/AstroStretchStudioProcess.o
+   $(OBJ_DIR)/AstroStretchStudioProcess.o \
+   $(OBJ_DIR)/AstroStretchStudioZoneHDR.o
 
 #
 # Dependency files
@@ -43,7 +45,8 @@ DEP_FILES = \
    $(OBJ_DIR)/AstroStretchStudioInterface.d \
    $(OBJ_DIR)/AstroStretchStudioModule.d \
    $(OBJ_DIR)/AstroStretchStudioParameters.d \
-   $(OBJ_DIR)/AstroStretchStudioProcess.d
+   $(OBJ_DIR)/AstroStretchStudioProcess.d \
+   $(OBJ_DIR)/AstroStretchStudioZoneHDR.d
 
 #
 # Rules
@@ -52,7 +55,7 @@ DEP_FILES = \
 -include $(DEP_FILES)
 
 $(OBJ_DIR)/AstroStretchStudio-pxm.so: $(OBJ_FILES)
-	g++ -m64 -fPIC -pthread -Wl,-fuse-ld=gold -Wl,--gc-sections -Wl,-z,noexecstack -Wl,-O1 -Wl,--no-undefined -shared -L"$(PCLLIBDIR64)" -L"$(PCLBINDIR64)/lib" -o $@ $(OBJ_FILES) -lpthread -lPCL-pxi -llz4-pxi -lzstd-pxi -lzlib-pxi -lRFC6234-pxi -llcms-pxi -lcminpack-pxi
+	g++ -m64 -fPIC -pthread -Wl,--gc-sections -Wl,-z,noexecstack -Wl,-O1 -shared -L"$(PCLLIBDIR64)" -L"$(PCLBINDIR64)/lib" -o $@ $(OBJ_FILES) -lpthread -lPCL-pxi -llz4-pxi -lzstd-pxi -lzlib-pxi -lRFC6234-pxi -llcms-pxi -lcminpack-pxi
 	$(MAKE) -f ./makefile-x64 --no-print-directory post-build
 
 .PHONY: clean
@@ -64,5 +67,5 @@ post-build:
 	cp $(OBJ_DIR)/AstroStretchStudio-pxm.so $(PCLBINDIR64)
 
 $(OBJ_DIR)/%.o: ../../%.cpp
-	g++ -c -pipe -pthread -m64 -fPIC -D_REENTRANT -D__PCL_LINUX -D__PCL_CUDA -D__PCL_AVX2 -I"$(PCLINCDIR)" -I"$(PCLSRCDIR)/3rdparty" -mtune=znver3 -mfpmath=sse -msse4.2 -mavx2 -mfma -ffast-math -fomit-frame-pointer -ffunction-sections -fdata-sections -fno-rtti -std=c++17 -O3 -flto -fvisibility=hidden -fvisibility-inlines-hidden -fnon-call-exceptions -Wall -Wno-parentheses -Wno-extern-c-compat -MMD -MP -MF"$(@:%.o=%.d)" -o"$@" "$<"
+	g++ -c -pipe -pthread -m64 -fPIC -D_REENTRANT -D__PCL_LINUX -D__PCL_CUDA -D__PCL_AVX2 -I"$(PCLINCDIR)" -I"$(PCLSRCDIR)/3rdparty" -mtune=znver3 -mfpmath=sse -msse4.2 -mavx2 -mfma -ffast-math -fomit-frame-pointer -ffunction-sections -fdata-sections -std=c++17 -O3 -flto -fvisibility=hidden -fvisibility-inlines-hidden -fnon-call-exceptions -Wall -Wno-parentheses -Wno-extern-c-compat -MMD -MP -MF"$(@:%.o=%.d)" -o"$@" "$<"
 	@echo ' '

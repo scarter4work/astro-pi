@@ -15,6 +15,10 @@ ASSOTSBackgroundTarget*    TheASSOTSBackgroundTargetParameter = nullptr;
 ASSOTSStretchIntensity*    TheASSOTSStretchIntensityParameter = nullptr;
 ASSOTSProtectHighlights*   TheASSOTSProtectHighlightsParameter = nullptr;
 ASSOTSPreserveColor*       TheASSOTSPreserveColorParameter = nullptr;
+ASSOTSHDREnabled*          TheASSOTSHDREnabledParameter = nullptr;
+ASSOTSHDRAmount*           TheASSOTSHDRAmountParameter = nullptr;
+ASSOTSHDRThreshold*        TheASSOTSHDRThresholdParameter = nullptr;
+ASSOTSStarProtection*      TheASSOTSStarProtectionParameter = nullptr;
 ASSSASNumScales*           TheASSSASNumScalesParameter = nullptr;
 ASSSASBackgroundTarget*    TheASSSASBackgroundTargetParameter = nullptr;
 ASSSASFineScaleGain*       TheASSSASFineScaleGainParameter = nullptr;
@@ -25,6 +29,12 @@ ASSSASHighlightProtection* TheASSSASHighlightProtectionParameter = nullptr;
 ASSSASNoiseThreshold*      TheASSSASNoiseThresholdParameter = nullptr;
 ASSSASFlattenBackground*   TheASSSASFlattenBackgroundParameter = nullptr;
 ASSSASPreserveColor*       TheASSSASPreserveColorParameter = nullptr;
+ASSZoneHDREnabled*         TheASSZoneHDREnabledParameter = nullptr;
+ASSZonePreviewMode*        TheASSZonePreviewModeParameter = nullptr;
+ASSZoneCount*              TheASSZoneCountParameter = nullptr;
+ASSZoneIntensity*          TheASSZoneIntensityParameter = nullptr;
+ASSZoneSaturation*         TheASSZoneSaturationParameter = nullptr;
+ASSZoneSelectedIndex*      TheASSZoneSelectedIndexParameter = nullptr;
 
 // ----------------------------------------------------------------------------
 // Algorithm Selection
@@ -168,7 +178,7 @@ double ASSOTSStretchIntensity::MaximumValue() const
 
 double ASSOTSStretchIntensity::DefaultValue() const
 {
-   return 0.75;
+   return 0.40;
 }
 
 // ----------------------------------------------------------------------------
@@ -218,6 +228,121 @@ IsoString ASSOTSPreserveColor::Id() const
 bool ASSOTSPreserveColor::DefaultValue() const
 {
    return true;
+}
+
+// ----------------------------------------------------------------------------
+// OTS HDR Parameters
+// ----------------------------------------------------------------------------
+
+ASSOTSHDREnabled::ASSOTSHDREnabled( MetaProcess* P ) : MetaBoolean( P )
+{
+   TheASSOTSHDREnabledParameter = this;
+}
+
+IsoString ASSOTSHDREnabled::Id() const
+{
+   return "otsHDREnabled";
+}
+
+bool ASSOTSHDREnabled::DefaultValue() const
+{
+   return false;
+}
+
+// ----------------------------------------------------------------------------
+
+ASSOTSHDRAmount::ASSOTSHDRAmount( MetaProcess* P ) : MetaFloat( P )
+{
+   TheASSOTSHDRAmountParameter = this;
+}
+
+IsoString ASSOTSHDRAmount::Id() const
+{
+   return "otsHDRAmount";
+}
+
+int ASSOTSHDRAmount::Precision() const
+{
+   return 2;
+}
+
+double ASSOTSHDRAmount::MinimumValue() const
+{
+   return 0.0;
+}
+
+double ASSOTSHDRAmount::MaximumValue() const
+{
+   return 1.0;
+}
+
+double ASSOTSHDRAmount::DefaultValue() const
+{
+   return 0.5;
+}
+
+// ----------------------------------------------------------------------------
+
+ASSOTSHDRThreshold::ASSOTSHDRThreshold( MetaProcess* P ) : MetaFloat( P )
+{
+   TheASSOTSHDRThresholdParameter = this;
+}
+
+IsoString ASSOTSHDRThreshold::Id() const
+{
+   return "otsHDRThreshold";
+}
+
+int ASSOTSHDRThreshold::Precision() const
+{
+   return 2;
+}
+
+double ASSOTSHDRThreshold::MinimumValue() const
+{
+   return 0.3;
+}
+
+double ASSOTSHDRThreshold::MaximumValue() const
+{
+   return 0.9;
+}
+
+double ASSOTSHDRThreshold::DefaultValue() const
+{
+   return 0.6;
+}
+
+// ----------------------------------------------------------------------------
+
+ASSOTSStarProtection::ASSOTSStarProtection( MetaProcess* P ) : MetaFloat( P )
+{
+   TheASSOTSStarProtectionParameter = this;
+}
+
+IsoString ASSOTSStarProtection::Id() const
+{
+   return "otsStarProtection";
+}
+
+int ASSOTSStarProtection::Precision() const
+{
+   return 2;
+}
+
+double ASSOTSStarProtection::MinimumValue() const
+{
+   return 0.0;
+}
+
+double ASSOTSStarProtection::MaximumValue() const
+{
+   return 1.0;
+}
+
+double ASSOTSStarProtection::DefaultValue() const
+{
+   return 0.8;
 }
 
 // ----------------------------------------------------------------------------
@@ -342,7 +467,7 @@ double ASSSASMidScaleGain::MaximumValue() const
 
 double ASSSASMidScaleGain::DefaultValue() const
 {
-   return 2.5;
+   return 1.5;
 }
 
 // ----------------------------------------------------------------------------
@@ -374,7 +499,7 @@ double ASSSASCoarseScaleGain::MaximumValue() const
 
 double ASSSASCoarseScaleGain::DefaultValue() const
 {
-   return 4.0;
+   return 2.0;
 }
 
 // ----------------------------------------------------------------------------
@@ -406,7 +531,7 @@ double ASSSASCompressionAlpha::MaximumValue() const
 
 double ASSSASCompressionAlpha::DefaultValue() const
 {
-   return 8.0;
+   return 5.0;
 }
 
 // ----------------------------------------------------------------------------
@@ -505,6 +630,181 @@ IsoString ASSSASPreserveColor::Id() const
 bool ASSSASPreserveColor::DefaultValue() const
 {
    return true;
+}
+
+// ----------------------------------------------------------------------------
+// Zone HDR Parameters
+// ----------------------------------------------------------------------------
+
+ASSZoneHDREnabled::ASSZoneHDREnabled( MetaProcess* P ) : MetaBoolean( P )
+{
+   TheASSZoneHDREnabledParameter = this;
+}
+
+IsoString ASSZoneHDREnabled::Id() const
+{
+   return "zoneHDREnabled";
+}
+
+bool ASSZoneHDREnabled::DefaultValue() const
+{
+   return false;
+}
+
+// ----------------------------------------------------------------------------
+
+ASSZonePreviewMode::ASSZonePreviewMode( MetaProcess* P ) : MetaEnumeration( P )
+{
+   TheASSZonePreviewModeParameter = this;
+}
+
+IsoString ASSZonePreviewMode::Id() const
+{
+   return "zonePreviewMode";
+}
+
+size_type ASSZonePreviewMode::NumberOfElements() const
+{
+   return NumberOfItems;
+}
+
+IsoString ASSZonePreviewMode::ElementId( size_type i ) const
+{
+   switch ( i )
+   {
+   case Off:         return "Off";
+   case MaskOverlay: return "MaskOverlay";
+   case SoloZone:    return "SoloZone";
+   default:          return IsoString();
+   }
+}
+
+int ASSZonePreviewMode::ElementValue( size_type i ) const
+{
+   return int( i );
+}
+
+size_type ASSZonePreviewMode::DefaultValueIndex() const
+{
+   return size_type( Default );
+}
+
+// ----------------------------------------------------------------------------
+
+ASSZoneCount::ASSZoneCount( MetaProcess* P ) : MetaInt32( P )
+{
+   TheASSZoneCountParameter = this;
+}
+
+IsoString ASSZoneCount::Id() const
+{
+   return "zoneCount";
+}
+
+double ASSZoneCount::MinimumValue() const
+{
+   return 0;
+}
+
+double ASSZoneCount::MaximumValue() const
+{
+   return 8;
+}
+
+double ASSZoneCount::DefaultValue() const
+{
+   return 0;
+}
+
+// ----------------------------------------------------------------------------
+
+ASSZoneIntensity::ASSZoneIntensity( MetaProcess* P ) : MetaFloat( P )
+{
+   TheASSZoneIntensityParameter = this;
+}
+
+IsoString ASSZoneIntensity::Id() const
+{
+   return "zoneIntensity";
+}
+
+int ASSZoneIntensity::Precision() const
+{
+   return 2;
+}
+
+double ASSZoneIntensity::MinimumValue() const
+{
+   return -1.0;
+}
+
+double ASSZoneIntensity::MaximumValue() const
+{
+   return 1.0;
+}
+
+double ASSZoneIntensity::DefaultValue() const
+{
+   return 0.0;
+}
+
+// ----------------------------------------------------------------------------
+
+ASSZoneSaturation::ASSZoneSaturation( MetaProcess* P ) : MetaFloat( P )
+{
+   TheASSZoneSaturationParameter = this;
+}
+
+IsoString ASSZoneSaturation::Id() const
+{
+   return "zoneSaturation";
+}
+
+int ASSZoneSaturation::Precision() const
+{
+   return 2;
+}
+
+double ASSZoneSaturation::MinimumValue() const
+{
+   return -1.0;
+}
+
+double ASSZoneSaturation::MaximumValue() const
+{
+   return 1.0;
+}
+
+double ASSZoneSaturation::DefaultValue() const
+{
+   return 0.0;
+}
+
+// ----------------------------------------------------------------------------
+
+ASSZoneSelectedIndex::ASSZoneSelectedIndex( MetaProcess* P ) : MetaInt32( P )
+{
+   TheASSZoneSelectedIndexParameter = this;
+}
+
+IsoString ASSZoneSelectedIndex::Id() const
+{
+   return "zoneSelectedIndex";
+}
+
+double ASSZoneSelectedIndex::MinimumValue() const
+{
+   return 0;
+}
+
+double ASSZoneSelectedIndex::MaximumValue() const
+{
+   return 7;
+}
+
+double ASSZoneSelectedIndex::DefaultValue() const
+{
+   return 0;
 }
 
 // ----------------------------------------------------------------------------

@@ -14,6 +14,13 @@
 #include <pcl/Console.h>
 #include <pcl/MetaModule.h>
 
+// Module version information
+#define MODULE_VERSION_MAJOR     01
+#define MODULE_VERSION_MINOR     00
+#define MODULE_VERSION_REVISION  00
+#define MODULE_VERSION_BUILD     0001
+#define MODULE_VERSION_LANGUAGE  eng
+
 namespace pcl
 {
 
@@ -27,7 +34,11 @@ AstroStretchStudioModule::AstroStretchStudioModule()
 
 const char* AstroStretchStudioModule::Version() const
 {
-   return PCL_MODULE_VERSION;
+   return PCL_MODULE_VERSION( MODULE_VERSION_MAJOR,
+                              MODULE_VERSION_MINOR,
+                              MODULE_VERSION_REVISION,
+                              MODULE_VERSION_BUILD,
+                              MODULE_VERSION_LANGUAGE );
 }
 
 // ----------------------------------------------------------------------------
