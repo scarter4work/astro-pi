@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<xri version="1.0" xmlns="http://www.pixinsight.com/xri" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://www.pixinsight.com/xri http://pixinsight.com/xri/xri-1.0.xsd">
+   <description>
+      <p>
+         <b>NukeX Update Repository</b>
+      </p>
+      <p>
+         Intelligent region-aware processing for PixInsight by Scott Carter.
+      </p>
+   </description>
+   <platform os="linux" arch="x64" version="1.8.0:1.9.9">
+      <package fileName="20260219-linux-x64-NukeX.tar.gz" sha1="bab3faf4876a6ad96b24492df1d327f86cc4c34a" type="module" releaseDate="20260219">
+         <title>NukeX 2.2.0.50</title>
+         <description>
+            <p>
+               <b>NukeX - Intelligent Region-Aware Processing for PixInsight</b>
+            </p>
+            <p>
+               NukeX provides two powerful processes for astrophotography:
+            </p>
+            <ul>
+               <li>
+                  <b>NukeX</b> - Statistical image stretching with multiple algorithms (MTF, GHS, ArcSinh, Log, etc.)
+               </li>
+               <li>
+                  <b>NukeXStack</b> - Intelligent pixel selection for subframe integration with per-frame normalization, quality weighting, and failed registration exclusion.
+               </li>
+            </ul>
+            <p>
+               <b>Version 2.2.0.50 - Fix CFA/Bayer linear detection for segmentation preprocessing</b>
+            </p>
+            <p>
+               Copyright (c) 2026 Scott Carter. All Rights Reserved.
+            </p>
+         </description>
+      </package>
+   </platform>
+</xri>
+<Signature developerId="scarter4work" timestamp="2026-02-20T04:03:33.561Z" encoding="Base64">YwjgS/h23cZA00Pq2/tDEHifyjTKpjs1jsGfggGKYE+wIDcHsNO4eHdr0lLU7JbjykFsoNiSLijVKLhsLpu4BA==</Signature>
