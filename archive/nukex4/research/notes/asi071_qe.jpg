@@ -1,0 +1,501 @@
+<!doctype html>
+<html lang="en-US" class="no-js">
+<head> 
+<meta charset="UTF-8" />  
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1"><link rel="icon" type="image/png" href="https://astronomy-imaging-camera.com/wp-content/uploads/ZWO-Logo-2.png"><link rel="alternate" type="application/rss+xml" title="ZWO ASI RSS Feed" href="https://astronomy-imaging-camera.com/feed/" />
+<link rel="alternate" type="application/atom+xml" title="ZWO ASI Atom Feed" href="https://astronomy-imaging-camera.com/feed/atom/" />
+<link rel="pingback" href="https://astronomy-imaging-camera.com/xmlrpc.php" />
+<!-- Google Tag Manager -->
+<script>(function(w,d,s,l,i){w[l]=w[l]||[];w[l].push({'gtm.start':
+new Date().getTime(),event:'gtm.js'});var f=d.getElementsByTagName(s)[0],
+j=d.createElement(s),dl=l!='dataLayer'?'&l='+l:'';j.async=true;j.src=
+'https://www.googletagmanager.com/gtm.js?id='+i+dl;f.parentNode.insertBefore(j,f);
+})(window,document,'script','dataLayer','GTM-578V74R');</script>
+
+<!-- Google tag (gtag.js) -->
+<script async src="https://www.googletagmanager.com/gtag/js?id=G-9QC36KZDRG"></script>
+<script>
+  window.dataLayer = window.dataLayer || [];
+  function gtag(){dataLayer.push(arguments);}
+  gtag('js', new Date());
+
+  gtag('config', 'G-9QC36KZDRG');
+</script>
+<!-- End Google Tag Manager --><title>Page not found &#8211; ZWO ASI</title>
+<meta name='robots' content='max-image-preview:large' />
+<link rel='dns-prefetch' href='//connect.facebook.net' />
+<link rel='dns-prefetch' href='//fonts.googleapis.com' />
+<link rel="alternate" type="application/rss+xml" title="ZWO ASI &raquo; Feed" href="https://astronomy-imaging-camera.com/feed/" />
+<link rel="alternate" type="application/rss+xml" title="ZWO ASI &raquo; Comments Feed" href="https://astronomy-imaging-camera.com/comments/feed/" />
+<script type="text/javascript">
+/* <![CDATA[ */
+window._wpemojiSettings = {"baseUrl":"https:\/\/s.w.org\/images\/core\/emoji\/15.0.3\/72x72\/","ext":".png","svgUrl":"https:\/\/s.w.org\/images\/core\/emoji\/15.0.3\/svg\/","svgExt":".svg","source":{"concatemoji":"http:\/\/astronomy-imaging-camera.com\/wp-includes\/js\/wp-emoji-release.min.js?ver=6.5.8"}};
+/*! This file is auto-generated */
+!function(i,n){var o,s,e;function c(e){try{var t={supportTests:e,timestamp:(new Date).valueOf()};sessionStorage.setItem(o,JSON.stringify(t))}catch(e){}}function p(e,t,n){e.clearRect(0,0,e.canvas.width,e.canvas.height),e.fillText(t,0,0);var t=new Uint32Array(e.getImageData(0,0,e.canvas.width,e.canvas.height).data),r=(e.clearRect(0,0,e.canvas.width,e.canvas.height),e.fillText(n,0,0),new Uint32Array(e.getImageData(0,0,e.canvas.width,e.canvas.height).data));return t.every(function(e,t){return e===r[t]})}function u(e,t,n){switch(t){case"flag":return n(e,"\ud83c\udff3\ufe0f\u200d\u26a7\ufe0f","\ud83c\udff3\ufe0f\u200b\u26a7\ufe0f")?!1:!n(e,"\ud83c\uddfa\ud83c\uddf3","\ud83c\uddfa\u200b\ud83c\uddf3")&&!n(e,"\ud83c\udff4\udb40\udc67\udb40\udc62\udb40\udc65\udb40\udc6e\udb40\udc67\udb40\udc7f","\ud83c\udff4\u200b\udb40\udc67\u200b\udb40\udc62\u200b\udb40\udc65\u200b\udb40\udc6e\u200b\udb40\udc67\u200b\udb40\udc7f");case"emoji":return!n(e,"\ud83d\udc26\u200d\u2b1b","\ud83d\udc26\u200b\u2b1b")}return!1}function f(e,t,n){var r="undefined"!=typeof WorkerGlobalScope&&self instanceof WorkerGlobalScope?new OffscreenCanvas(300,150):i.createElement("canvas"),a=r.getContext("2d",{willReadFrequently:!0}),o=(a.textBaseline="top",a.font="600 32px Arial",{});return e.forEach(function(e){o[e]=t(a,e,n)}),o}function t(e){var t=i.createElement("script");t.src=e,t.defer=!0,i.head.appendChild(t)}"undefined"!=typeof Promise&&(o="wpEmojiSettingsSupports",s=["flag","emoji"],n.supports={everything:!0,everythingExceptFlag:!0},e=new Promise(function(e){i.addEventListener("DOMContentLoaded",e,{once:!0})}),new Promise(function(t){var n=function(){try{var e=JSON.parse(sessionStorage.getItem(o));if("object"==typeof e&&"number"==typeof e.timestamp&&(new Date).valueOf()<e.timestamp+604800&&"object"==typeof e.supportTests)return e.supportTests}catch(e){}return null}();if(!n){if("undefined"!=typeof Worker&&"undefined"!=typeof OffscreenCanvas&&"undefined"!=typeof URL&&URL.createObjectURL&&"undefined"!=typeof Blob)try{var e="postMessage("+f.toString()+"("+[JSON.stringify(s),u.toString(),p.toString()].join(",")+"));",r=new Blob([e],{type:"text/javascript"}),a=new Worker(URL.createObjectURL(r),{name:"wpTestEmojiSupports"});return void(a.onmessage=function(e){c(n=e.data),a.terminate(),t(n)})}catch(e){}c(n=f(s,u,p))}t(n)}).then(function(e){for(var t in e)n.supports[t]=e[t],n.supports.everything=n.supports.everything&&n.supports[t],"flag"!==t&&(n.supports.everythingExceptFlag=n.supports.everythingExceptFlag&&n.supports[t]);n.supports.everythingExceptFlag=n.supports.everythingExceptFlag&&!n.supports.flag,n.DOMReady=!1,n.readyCallback=function(){n.DOMReady=!0}}).then(function(){return e}).then(function(){var e;n.supports.everything||(n.readyCallback(),(e=n.source||{}).concatemoji?t(e.concatemoji):e.wpemoji&&e.twemoji&&(t(e.twemoji),t(e.wpemoji)))}))}((window,document),window._wpemojiSettings);
+/* ]]> */
+</script>
+<link rel='stylesheet' id='ppm-accordion-plugin-style-css' href='https://astronomy-imaging-camera.com/wp-content/plugins/ppm-accordion/css/style.css?ver=6.5.8' type='text/css' media='all' />
+<style id='wp-emoji-styles-inline-css' type='text/css'>
+
+	img.wp-smiley, img.emoji {
+		display: inline !important;
+		border: none !important;
+		box-shadow: none !important;
+		height: 1em !important;
+		width: 1em !important;
+		margin: 0 0.07em !important;
+		vertical-align: -0.1em !important;
+		background: none !important;
+		padding: 0 !important;
+	}
+</style>
+<link rel='stylesheet' id='wp-block-library-css' href="https://astronomy-imaging-camera.com/wp-includes/css/dist/block-library/style.min.css?ver=6.5.8" type='text/css' media='all' />
+<style id='classic-theme-styles-inline-css' type='text/css'>
+/*! This file is auto-generated */
+.wp-block-button__link{color:#fff;background-color:#32373c;border-radius:9999px;box-shadow:none;text-decoration:none;padding:calc(.667em + 2px) calc(1.333em + 2px);font-size:1.125em}.wp-block-file__button{background:#32373c;color:#fff;text-decoration:none}
+</style>
+<style id='global-styles-inline-css' type='text/css'>
+body{--wp--preset--color--black: #000000;--wp--preset--color--cyan-bluish-gray: #abb8c3;--wp--preset--color--white: #ffffff;--wp--preset--color--pale-pink: #f78da7;--wp--preset--color--vivid-red: #cf2e2e;--wp--preset--color--luminous-vivid-orange: #ff6900;--wp--preset--color--luminous-vivid-amber: #fcb900;--wp--preset--color--light-green-cyan: #7bdcb5;--wp--preset--color--vivid-green-cyan: #00d084;--wp--preset--color--pale-cyan-blue: #8ed1fc;--wp--preset--color--vivid-cyan-blue: #0693e3;--wp--preset--color--vivid-purple: #9b51e0;--wp--preset--gradient--vivid-cyan-blue-to-vivid-purple: linear-gradient(135deg,rgba(6,147,227,1) 0%,rgb(155,81,224) 100%);--wp--preset--gradient--light-green-cyan-to-vivid-green-cyan: linear-gradient(135deg,rgb(122,220,180) 0%,rgb(0,208,130) 100%);--wp--preset--gradient--luminous-vivid-amber-to-luminous-vivid-orange: linear-gradient(135deg,rgba(252,185,0,1) 0%,rgba(255,105,0,1) 100%);--wp--preset--gradient--luminous-vivid-orange-to-vivid-red: linear-gradient(135deg,rgba(255,105,0,1) 0%,rgb(207,46,46) 100%);--wp--preset--gradient--very-light-gray-to-cyan-bluish-gray: linear-gradient(135deg,rgb(238,238,238) 0%,rgb(169,184,195) 100%);--wp--preset--gradient--cool-to-warm-spectrum: linear-gradient(135deg,rgb(74,234,220) 0%,rgb(151,120,209) 20%,rgb(207,42,186) 40%,rgb(238,44,130) 60%,rgb(251,105,98) 80%,rgb(254,248,76) 100%);--wp--preset--gradient--blush-light-purple: linear-gradient(135deg,rgb(255,206,236) 0%,rgb(152,150,240) 100%);--wp--preset--gradient--blush-bordeaux: linear-gradient(135deg,rgb(254,205,165) 0%,rgb(254,45,45) 50%,rgb(107,0,62) 100%);--wp--preset--gradient--luminous-dusk: linear-gradient(135deg,rgb(255,203,112) 0%,rgb(199,81,192) 50%,rgb(65,88,208) 100%);--wp--preset--gradient--pale-ocean: linear-gradient(135deg,rgb(255,245,203) 0%,rgb(182,227,212) 50%,rgb(51,167,181) 100%);--wp--preset--gradient--electric-grass: linear-gradient(135deg,rgb(202,248,128) 0%,rgb(113,206,126) 100%);--wp--preset--gradient--midnight: linear-gradient(135deg,rgb(2,3,129) 0%,rgb(40,116,252) 100%);--wp--preset--font-size--small: 13px;--wp--preset--font-size--medium: 20px;--wp--preset--font-size--large: 36px;--wp--preset--font-size--x-large: 42px;--wp--preset--spacing--20: 0.44rem;--wp--preset--spacing--30: 0.67rem;--wp--preset--spacing--40: 1rem;--wp--preset--spacing--50: 1.5rem;--wp--preset--spacing--60: 2.25rem;--wp--preset--spacing--70: 3.38rem;--wp--preset--spacing--80: 5.06rem;--wp--preset--shadow--natural: 6px 6px 9px rgba(0, 0, 0, 0.2);--wp--preset--shadow--deep: 12px 12px 50px rgba(0, 0, 0, 0.4);--wp--preset--shadow--sharp: 6px 6px 0px rgba(0, 0, 0, 0.2);--wp--preset--shadow--outlined: 6px 6px 0px -3px rgba(255, 255, 255, 1), 6px 6px rgba(0, 0, 0, 1);--wp--preset--shadow--crisp: 6px 6px 0px rgba(0, 0, 0, 1);}:where(.is-layout-flex){gap: 0.5em;}:where(.is-layout-grid){gap: 0.5em;}body .is-layout-flex{display: flex;}body .is-layout-flex{flex-wrap: wrap;align-items: center;}body .is-layout-flex > *{margin: 0;}body .is-layout-grid{display: grid;}body .is-layout-grid > *{margin: 0;}:where(.wp-block-columns.is-layout-flex){gap: 2em;}:where(.wp-block-columns.is-layout-grid){gap: 2em;}:where(.wp-block-post-template.is-layout-flex){gap: 1.25em;}:where(.wp-block-post-template.is-layout-grid){gap: 1.25em;}.has-black-color{color: var(--wp--preset--color--black) !important;}.has-cyan-bluish-gray-color{color: var(--wp--preset--color--cyan-bluish-gray) !important;}.has-white-color{color: var(--wp--preset--color--white) !important;}.has-pale-pink-color{color: var(--wp--preset--color--pale-pink) !important;}.has-vivid-red-color{color: var(--wp--preset--color--vivid-red) !important;}.has-luminous-vivid-orange-color{color: var(--wp--preset--color--luminous-vivid-orange) !important;}.has-luminous-vivid-amber-color{color: var(--wp--preset--color--luminous-vivid-amber) !important;}.has-light-green-cyan-color{color: var(--wp--preset--color--light-green-cyan) !important;}.has-vivid-green-cyan-color{color: var(--wp--preset--color--vivid-green-cyan) !important;}.has-pale-cyan-blue-color{color: var(--wp--preset--color--pale-cyan-blue) !important;}.has-vivid-cyan-blue-color{color: var(--wp--preset--color--vivid-cyan-blue) !important;}.has-vivid-purple-color{color: var(--wp--preset--color--vivid-purple) !important;}.has-black-background-color{background-color: var(--wp--preset--color--black) !important;}.has-cyan-bluish-gray-background-color{background-color: var(--wp--preset--color--cyan-bluish-gray) !important;}.has-white-background-color{background-color: var(--wp--preset--color--white) !important;}.has-pale-pink-background-color{background-color: var(--wp--preset--color--pale-pink) !important;}.has-vivid-red-background-color{background-color: var(--wp--preset--color--vivid-red) !important;}.has-luminous-vivid-orange-background-color{background-color: var(--wp--preset--color--luminous-vivid-orange) !important;}.has-luminous-vivid-amber-background-color{background-color: var(--wp--preset--color--luminous-vivid-amber) !important;}.has-light-green-cyan-background-color{background-color: var(--wp--preset--color--light-green-cyan) !important;}.has-vivid-green-cyan-background-color{background-color: var(--wp--preset--color--vivid-green-cyan) !important;}.has-pale-cyan-blue-background-color{background-color: var(--wp--preset--color--pale-cyan-blue) !important;}.has-vivid-cyan-blue-background-color{background-color: var(--wp--preset--color--vivid-cyan-blue) !important;}.has-vivid-purple-background-color{background-color: var(--wp--preset--color--vivid-purple) !important;}.has-black-border-color{border-color: var(--wp--preset--color--black) !important;}.has-cyan-bluish-gray-border-color{border-color: var(--wp--preset--color--cyan-bluish-gray) !important;}.has-white-border-color{border-color: var(--wp--preset--color--white) !important;}.has-pale-pink-border-color{border-color: var(--wp--preset--color--pale-pink) !important;}.has-vivid-red-border-color{border-color: var(--wp--preset--color--vivid-red) !important;}.has-luminous-vivid-orange-border-color{border-color: var(--wp--preset--color--luminous-vivid-orange) !important;}.has-luminous-vivid-amber-border-color{border-color: var(--wp--preset--color--luminous-vivid-amber) !important;}.has-light-green-cyan-border-color{border-color: var(--wp--preset--color--light-green-cyan) !important;}.has-vivid-green-cyan-border-color{border-color: var(--wp--preset--color--vivid-green-cyan) !important;}.has-pale-cyan-blue-border-color{border-color: var(--wp--preset--color--pale-cyan-blue) !important;}.has-vivid-cyan-blue-border-color{border-color: var(--wp--preset--color--vivid-cyan-blue) !important;}.has-vivid-purple-border-color{border-color: var(--wp--preset--color--vivid-purple) !important;}.has-vivid-cyan-blue-to-vivid-purple-gradient-background{background: var(--wp--preset--gradient--vivid-cyan-blue-to-vivid-purple) !important;}.has-light-green-cyan-to-vivid-green-cyan-gradient-background{background: var(--wp--preset--gradient--light-green-cyan-to-vivid-green-cyan) !important;}.has-luminous-vivid-amber-to-luminous-vivid-orange-gradient-background{background: var(--wp--preset--gradient--luminous-vivid-amber-to-luminous-vivid-orange) !important;}.has-luminous-vivid-orange-to-vivid-red-gradient-background{background: var(--wp--preset--gradient--luminous-vivid-orange-to-vivid-red) !important;}.has-very-light-gray-to-cyan-bluish-gray-gradient-background{background: var(--wp--preset--gradient--very-light-gray-to-cyan-bluish-gray) !important;}.has-cool-to-warm-spectrum-gradient-background{background: var(--wp--preset--gradient--cool-to-warm-spectrum) !important;}.has-blush-light-purple-gradient-background{background: var(--wp--preset--gradient--blush-light-purple) !important;}.has-blush-bordeaux-gradient-background{background: var(--wp--preset--gradient--blush-bordeaux) !important;}.has-luminous-dusk-gradient-background{background: var(--wp--preset--gradient--luminous-dusk) !important;}.has-pale-ocean-gradient-background{background: var(--wp--preset--gradient--pale-ocean) !important;}.has-electric-grass-gradient-background{background: var(--wp--preset--gradient--electric-grass) !important;}.has-midnight-gradient-background{background: var(--wp--preset--gradient--midnight) !important;}.has-small-font-size{font-size: var(--wp--preset--font-size--small) !important;}.has-medium-font-size{font-size: var(--wp--preset--font-size--medium) !important;}.has-large-font-size{font-size: var(--wp--preset--font-size--large) !important;}.has-x-large-font-size{font-size: var(--wp--preset--font-size--x-large) !important;}
+.wp-block-navigation a:where(:not(.wp-element-button)){color: inherit;}
+:where(.wp-block-post-template.is-layout-flex){gap: 1.25em;}:where(.wp-block-post-template.is-layout-grid){gap: 1.25em;}
+:where(.wp-block-columns.is-layout-flex){gap: 2em;}:where(.wp-block-columns.is-layout-grid){gap: 2em;}
+.wp-block-pullquote{font-size: 1.5em;line-height: 1.6;}
+</style>
+<link rel='stylesheet' id='layerslider-css' href="https://astronomy-imaging-camera.com/wp-content/plugins/LayerSlider/static/css/layerslider.css?ver=5.3.2" type='text/css' media='all' />
+<link rel='stylesheet' id='ls-google-fonts-css' href="https://fonts.googleapis.com/css?family=Lato:100,300,regular,700,900%7COpen+Sans:300%7CIndie+Flower:regular%7COswald:300,regular,700&#038;subset=latin%2Clatin-ext" type='text/css' media='all' />
+<link rel='stylesheet' id='cld-font-awesome-css' href="https://astronomy-imaging-camera.com/wp-content/plugins/comments-like-dislike/css/font-awesome.min.css?ver=1.0.5" type='text/css' media='all' />
+<link rel='stylesheet' id='cld-frontend-css' href="https://astronomy-imaging-camera.com/wp-content/plugins/comments-like-dislike/css/cld-frontend.css?ver=1.0.5" type='text/css' media='all' />
+<link rel='stylesheet' id='rs-plugin-settings-css' href="https://astronomy-imaging-camera.com/wp-content/plugins/revslider/rs-plugin/css/settings.css?ver=4.6.5" type='text/css' media='all' />
+<style id='rs-plugin-settings-inline-css' type='text/css'>
+.tp-caption a{color:#ff7302;text-shadow:none;-webkit-transition:all 0.2s ease-out;-moz-transition:all 0.2s ease-out;-o-transition:all 0.2s ease-out;-ms-transition:all 0.2s ease-out}.tp-caption a:hover{color:#ffa902}
+</style>
+<link rel='stylesheet' id='Rich_Web_Tabs-css' href="https://astronomy-imaging-camera.com/wp-content/plugins/tabbed/Style/Tabs-Rich-Web-Widget.css?ver=6.5.8" type='text/css' media='all' />
+<link rel='stylesheet' id='fontawesome-css-css' href="https://astronomy-imaging-camera.com/wp-content/plugins/tabbed/Style/richwebicons.css?ver=6.5.8" type='text/css' media='all' />
+<link rel='stylesheet' id='woocommerce-layout-css' href='//astronomy-imaging-camera.com/wp-content/plugins/woocommerce/assets/css/woocommerce-layout.css?ver=2.5.5' type='text/css' media='all' />
+<link rel='stylesheet' id='woocommerce-smallscreen-css' href='//astronomy-imaging-camera.com/wp-content/plugins/woocommerce/assets/css/woocommerce-smallscreen.css?ver=2.5.5' type='text/css' media='only screen and (max-width: 768px)' />
+<link rel='stylesheet' id='woocommerce-general-css' href='//astronomy-imaging-camera.com/wp-content/plugins/woocommerce/assets/css/woocommerce.css?ver=2.5.5' type='text/css' media='all' />
+<link rel='stylesheet' id='spu-public-css-css' href="https://astronomy-imaging-camera.com/wp-content/plugins/popups/public/assets/css/public.css?ver=1.9.3.8" type='text/css' media='all' />
+<link rel='stylesheet' id='normalize-css' href="https://astronomy-imaging-camera.com/wp-content/themes/rttheme18/css/normalize.css?ver=6.5.8" type='text/css' media='all' />
+<link rel='stylesheet' id='theme-framework-css' href="https://astronomy-imaging-camera.com/wp-content/themes/rttheme18/css/rt-css-framework.css?ver=6.5.8" type='text/css' media='all' />
+<link rel='stylesheet' id='fontello-css' href="https://astronomy-imaging-camera.com/wp-content/themes/rttheme18/css/fontello/css/fontello.css?ver=6.5.8" type='text/css' media='all' />
+<link rel='stylesheet' id='jackbox-css' href="https://astronomy-imaging-camera.com/wp-content/themes/rttheme18/js/lightbox/css/jackbox.min.css?ver=6.5.8" type='text/css' media='all' />
+<link rel='stylesheet' id='theme-style-all-css' href="https://astronomy-imaging-camera.com/wp-content/themes/rttheme18/css/style.css?ver=6.5.8" type='text/css' media='all' />
+<link rel='stylesheet' id='jquery-owl-carousel-css' href="https://astronomy-imaging-camera.com/wp-content/themes/rttheme18/css/owl.carousel.css?ver=6.5.8" type='text/css' media='all' />
+<link rel='stylesheet' id='flex-slider-css-css' href="https://astronomy-imaging-camera.com/wp-content/themes/rttheme18/css/flexslider.css?ver=6.5.8" type='text/css' media='all' />
+<link rel='stylesheet' id='progression-player-css' href="https://astronomy-imaging-camera.com/wp-content/themes/rttheme18/js/video_player/progression-player.css?ver=6.5.8" type='text/css' media='all' />
+<link rel='stylesheet' id='progression-skin-minimal-light-css' href="https://astronomy-imaging-camera.com/wp-content/themes/rttheme18/js/video_player/skin-minimal-light.css?ver=6.5.8" type='text/css' media='all' />
+<link rel='stylesheet' id='isotope-css-css' href="https://astronomy-imaging-camera.com/wp-content/themes/rttheme18/css/isotope.css?ver=6.5.8" type='text/css' media='all' />
+<link rel='stylesheet' id='jquery-colortip-css' href="https://astronomy-imaging-camera.com/wp-content/themes/rttheme18/css/colortip-1.0-jquery.css?ver=6.5.8" type='text/css' media='all' />
+<link rel='stylesheet' id='animate-css' href="https://astronomy-imaging-camera.com/wp-content/themes/rttheme18/css/animate.css?ver=6.5.8" type='text/css' media='all' />
+<!--[if IE 7]>
+<link rel='stylesheet' id='theme-ie7-css' href='http://astronomy-imaging-camera.com/wp-content/themes/rttheme18/css/ie7.css?ver=6.5.8' type='text/css' media='all' />
+<![endif]-->
+<!--[if lt IE 9]>
+<link rel='stylesheet' id='theme-ltie9-css' href='http://astronomy-imaging-camera.com/wp-content/themes/rttheme18/css/before_ie9.css?ver=6.5.8' type='text/css' media='all' />
+<![endif]-->
+<link rel='stylesheet' id='newsletter-css' href="https://astronomy-imaging-camera.com/wp-content/plugins/newsletter/style.css?ver=7.2.2" type='text/css' media='all' />
+<link rel='stylesheet' id='rt-woocommerce-styles-css' href="https://astronomy-imaging-camera.com/wp-content/themes/rttheme18/woocommerce/css/woocommerce.css?ver=6.5.8" type='text/css' media='all' />
+<link rel='stylesheet' id='theme-skin-css' href="https://astronomy-imaging-camera.com/wp-content/themes/rttheme18/css/rose-style.css?ver=6.5.8" type='text/css' media='all' />
+<style id='theme-skin-inline-css' type='text/css'>
+.retina#logo{background: url('https://astronomy-imaging-camera.com/wp-content/uploads/logo-zwo_112017-1.jpg') no-repeat scroll 0 0 / 100% auto transparent;-moz-background-size:100%;-webkit-background-size:100%;-o-background-size:100%; background-size: 100%;} .retina#logo img{display: none;}
+#navigation_bar > ul > li > a{font-family:'PT Sans Narrow',sans-serif;font-weight:normal !important}.flex-caption,.pricing_table .table_wrap ul > li.caption,.pricing_table .table_wrap.highlight ul > li.caption,.banner p,.sidebar .featured_article_title,.footer_widgets_row .featured_article_title,.latest-news a.title,h1,h2,h3,h4,h5{font-family:'PT Sans Narrow',sans-serif;font-weight:normal !important}body,#navigation_bar > ul > li > a span,.product_info h5,.product_item_holder h5,#slogan_text{font-family:'PT Sans',sans-serif;font-weight:400 !important}.testimonial .text,blockquote p{font-family:'PT Serif',sans-serif;font-weight:normal !important}#navigation_bar > ul > li > a{font-size:17px}body{font-size:14px}#navigation_bar > ul > li > a,#navigation .sub-menu li a,#navigation .multicolumn-holder a,#navigation .multicolumn-holder .column-heading > span,#navigation .multicolumn-holder .column-heading > a,#navigation .multicolumn-holder a:hover,#navigation ul.sub-menu li:hover > a{color:#202020}#navigation .multicolumn-holder a:hover{opacity:0.8}#navigation_bar > ul > li > a span,#navigation_bar ul ul > li > a span,#navigation_bar .multicolumn-holder ul > li:hover > a span,body .search-bar form input{color:#202020}#navigation_bar > ul > li.current_page_item > a:after,#navigation_bar > ul > li.current-menu-ancestor > a:after,#navigation_bar > ul > li:hover > a:after,#navigation_bar > ul > li > a:after{background-color:#ee3939}#navigation .sub-menu li a:hover,#navigation .sub-menu li:hover > a{box-shadow:inset 2px 0 0 #ee3939}#navigation_bar > ul > li.current_page_item > a,#navigation_bar > ul > li.current-menu-ancestor > a,#navigation_bar > ul > li > a:hover,#navigation_bar > ul > li:hover > a{color:#ee3939}#navigation_bar > ul > li.current_page_item > a span,#navigation_bar > ul > li.current-menu-ancestor > a span,#navigation_bar > ul > li > a:hover span,#navigation_bar > ul > li:hover > a span{color:#202020}.boxed-body{background-color:#efefef}.boxed-body{background-image:none}.top_content .social_share .s_buttons,.top_content .woocommerce span.onsale,.woocommerce-page .top_content span.onsale,.woocommerce .top_content mark,.top_content .woocommerce .addresses .title .edit,.woocommerce-page .top_content .addresses .title .edit,.top_content .flex-active-slide .caption-one,.top_content .flexslider .flex-direction-nav a,.top_content .flexslider .carousel .flex-direction-nav a,.top_content .imgeffect a,.top_content .featured .default_icon .heading_icon,.top_content .medium_rounded_icon,.top_content .big_square_icon,.top_content .title_icon,.top_content .button_.default,.top_content .pricing_table .table_wrap.highlight ul > li.price div:before,.top_content .featured a.read_more,.top_content .featured a.more-link,.top_content .carousel-holder.with_heading .owl-controls .owl-buttons div,.top_content .rt-toggle ol li .toggle-number,.top_content .rt-toggle ol li.open .toggle-number,.top_content .latest-news .featured-image .date,.top_content .social_share .icon-share:before,.top_content .commententry .navigation > div,.top_content .commententry .navigation a,.top_content .blog_list h1[class^="icon-"]:before,.top_content .blog_list h2[class^="icon-"]:before,.top_content hr.style-six:before,.top_content .with_borders .box:before,.top_content .portfolio_boxes .box:before,.top_content .with_borders .box:after,.top_content .portfolio_boxes .box:after,.top_content .tab-style-three .tabs .with_icon a.current > span:before,.top_content .sidebar .featured_article_title:before{background:#ee3939}.top_content .pricing_table .table_wrap.highlight ul > li.caption,.top_content .flex-active-slide .caption-one,.top_content .flexslider .flex-direction-nav a,.top_content .flexslider .carousel .flex-direction-nav a,.top_content .imgeffect a,.top_content .chained_contents > ul li:hover .image.chanied_media_holder:after,.top_content .chained_contents li:hover .icon_holder.rounded:before{background-color:#ee3939}.top_content a,.top_content .widget_archive ul li a:hover,.top_content .widget_links ul li a:hover,.top_content .widget_nav_menu ul li a:hover,.top_content .widget_categories ul li a:hover,.top_content .widget_meta ul li a:hover,.top_content .widget_recent_entries  ul li a:hover,.top_content .widget_pages  ul li a:hover,.top_content .widget_rss ul li a:hover,.top_content .widget_recent_comments ul li a:hover,.top_content .widget_rt_categories ul li a:hover,.top_content .widget_product_categories ul li a:hover,.top_content .imgeffect a:hover,.top_content .woocommerce .star-rating,.woocommerce-page .top_content  .star-rating,.top_content .woocommerce .cart-collaterals .cart_totals h2:before,.woocommerce-page .top_content .cart-collaterals .cart_totals h2:before,.top_content .woocommerce .cart-collaterals .shipping_calculator h2:before,.woocommerce-page .top_content .cart-collaterals .shipping_calculator h2:before,.woocommerce-account .top_content .woocommerce .addresses h3:before,.top_content .heading_icon,.top_content .large_icon,.top_content .big_icon,.top_content .big_rounded_icon,.top_content .featured a.read_more:hover,.top_content a.more-link:hover,.top_content .latest-news-2 a.title:hover,.top_content .social_share:hover .icon-share:before,.top_content h1 a:hover,.top_content h2 a:hover,.top_content h3 a:hover,.top_content h4 a:hover,.top_content h5 a:hover,.top_content h6 a:hover,.top_content .with_icons.colored > li span,.top_content #reply-title:before,.top_content a,.top_content .widget_archive ul li a:hover,.top_content .widget_links ul li a:hover,.top_content .widget_nav_menu ul li a:hover,.top_content .widget_categories ul li a:hover,.top_content .widget_meta ul li a:hover,.top_content .widget_recent_entries ul li a:hover,.top_content .widget_pages ul li a:hover,.top_content .widget_rss ul li a:hover,.top_content .widget_recent_comments ul li a:hover,.top_content .widget_rt_categories ul li a:hover,.top_content .widget_product_categories ul li a:hover,.top_content .imgeffect a:hover,.top_content .heading_icon,.top_content .large_icon,.top_content .big_icon,.top_content .big_rounded_icon,.top_content a.read_more:hover,.top_content a.more-link:hover,.top_content .latest-news-2 a.title:hover,.top_content .social_share:hover .icon-share:before,.top_content .with_icons.colored > li span,.top_content #reply-title:before,.top_content .content.full > .row > hr.style-six:after,.top_content .pin:after,.top_content .filter_navigation li a.active:before,.top_content .filter_navigation li a.active,.top_content .filter_navigation li a:hover,.top_content hr.style-eight:after,.top_content ul.page-numbers li a:hover,.top_content ul.page-numbers li .current,.top_content .widget ul li.current-menu-item > a,.top_content .widget_rt_categories ul li.current-cat > a,.top_content .widget_product_categories ul li.current-cat > a{color:#ee3939}.top_content .big_rounded_icon.loaded,.top_content .featured a.read_more,.top_content .featured a.more-link,.top_content .social_share .s_buttons,.top_content .pin:after,.top_content hr.style-eight,.top_content .with_icons.icon_borders.colored li span{border-color:#ee3939}.top_content .tabs_wrap .tabs a.current,.top_content .tabs_wrap .tabs a.current:hover,.top_content .tabs_wrap .tabs a:hover,.top_content .tabs_wrap .tabs li.current a{border-bottom-color:#ee3939}.top_content .vertical_tabs ul.tabs a.current,.top_content .vertical_tabs ul.tabs a.current:hover,.top_content .vertical_tabs ul.tabs a:hover,.top_content .vertical_tabs ul.tabs li.current a{border-right-color:#ee3939}.top_content .imgeffect a,.top_content .featured a.read_more{color:#fff}.top_content .imgeffect a:hover,.top_content .featured a.read_more:hover{background:#fff}.top_content,.top_content .tabs_wrap .tabs a,.top_content .banner .featured_text,.top_content .rt_form input[type="button"],.top_content .rt_form input[type="submit"],.top_content .rt_form input[type="text"],.top_content .rt_form select,.top_content .rt_form textarea,.top_content .woocommerce a.button,.woocommerce-page .top_content a.button,.top_content .top_content .woocommerce button.button,.woocommerce-page .top_content button.button,.top_content .woocommerce input.button,.woocommerce-page .top_content input.button,.top_content .woocommerce #respond input#submit,.woocommerce-page .top_content #respond input#submit,.top_content .woocommerce #content input.button,.woocommerce-page .top_content #content input.button,.top_content .woocommerce a.button.alt,.woocommerce-page .top_content a.button.alt,.top_content .woocommerce button.button.alt,.woocommerce-page .top_content button.button.alt,.top_content .woocommerce input.button.alt,.woocommerce-page .top_content input.button.alt,.top_content .woocommerce #respond input#submit.alt,.woocommerce-page .top_content #respond input#submit.alt,.top_content .woocommerce #content input.button.alt,.woocommerce-page .top_content #content input.button.alt,.top_content .widget_archive ul li a,.top_content .widget_links ul li a,.top_content .widget_nav_menu ul li a,.top_content .widget_categories ul li a,.top_content .widget_meta ul li a,.top_content .widget_recent_entries ul li a,.top_content .widget_pages ul li a,.top_content .widget_rss ul li a,.top_content .widget_recent_comments ul li a,.top_content .widget_product_categories ul li a,.top_content .info_box,.top_content .breadcrumb,.top_content .page-numbers li a,.top_content .page-numbers li > span,.top_content .rt_comments ol.commentlist li a,.top_content .cancel-reply a,.top_content .rt_comments ol.commentlist li .comment-body .comment-meta a,.top_content #cancel-comment-reply-link,.top_content .breadcrumb a,.top_content .breadcrumb span,.top_content #slogan_text,.top_content .filter_navigation li a,.top_content .widget ul{color:#202020}.top_content .blog_list .post_data,.top_content .blog_list .post_data a,.top_content .woocommerce .star-rating,.top_content .woocommerce-page .star-rating,.top_content .testimonial .text .icon-quote-left,.top_content .testimonial .text .icon-quote-right,.top_content .client_info,.top_content .rt_form label,.top_content i.decs_text,.top_content .client_info,.top_content .with_icons > li span,.top_content .with_icons.light > li span,.top_content .price del,.top_content .product_meta,.top_content span.top,.top_content .rt_comments ol.commentlist li .comment-body .comment-meta,.top_content .cancel-reply,.top_content .rt_comments ol.commentlist li .comment-body .author-name,.top_content .rt_comments ol.commentlist li p,.top_content li.comment #respond,.top_content .recent_posts .widget-meta,.top_content .content_block.archives .head_text h1,.top_content .content_block.archives .head_text h2{color:#ee3939}.top_content h1 a,.top_content h2 a,.top_content h3 a,.top_content h4 a,.top_content h5 a,.top_content h6 a,.top_content h1,.top_content h2,.top_content h3,.top_content h4,.top_content h5,.top_content h6,.top_content .latest-news-2 .title,.top_content.woocommerce ul.cart_list li a,.top_content .woocommerce ul.product_list_widget li a,.woocommerce-page .top_content ul.cart_list li a,.woocommerce-page .top_content ul.product_list_widget li a,.top_content .heading h1,.top_content .heading h2,.top_content .footer .featured_article_title,.top_content .recent_posts .title a{color:#ee3939}.top_content h1 a:hover,.top_content h2 a:hover,.top_content h3 a:hover,.top_content h4 a:hover,.top_content h5 a:hover,.top_content h6 a:hover,.top_content .latest-news-2 .title:hover,.top_content .woocommerce  ul.cart_list li a:hover,.top_content .woocommerce ul.product_list_widget li a:hover,.woocommerce-page .top_content ul.cart_list li a:hover,.woocommerce-page .top_content ul.product_list_widget li a:hover{color:#ee3939}.top_content a,.top_content .latest-news a.title,.top_content .doc_icons ul li a,.top_content .filter_navigation li a.active:before{color:#ee3939}.top_content a:hover,.top_content .latest-news a.title:hover,.top_content .doc_icons ul li a:hover,.top_content .woocommerce ul.cart_list li a:hover,.top_content .woocommerce ul.product_list_widget li a:hover,.woocommerce-page .top_content ul.cart_list li a:hover,.woocommerce-page .top_content ul.product_list_widget li a:hover,.top_content .rt_comments ol.commentlist li .comment-body .comment-meta a:hover,.top_content #cancel-comment-reply-link:hover,.top_content .breadcrumb a:hover span,.top_content .blog_list .post_data a:hover,.top_content .widget ul li a:hover{color:#ee3939}.top_content{background-color:#f5f5f5}.top_content .caption.embedded .featured_article_title,.top_content hr.style-one:after,.top_content hr.style-two:after,.top_content hr.style-three:after,.top_content .flexslider,.top_content span.top,.top_content .rt_comments ol ul.children,.top_content .flags,.top_content hr.style-six:after{background-color:#f5f5f5}.top_content div.date_box{background:#f5f5f5;box-shadow:1px 2px 0 0 rgba(0,0,0,0.1);-moz-box-shadow:1px 2px 0 0 rgba(0,0,0,0.1);-webkit-box-shadow:1px 2px 0 0 rgba(0,0,0,0.1)}.top_content div.date_box .day{border-bottom:0}.top_content.top_content{border:0}.top_content .rt_form input[type="text"],.top_content .rt_form select,.top_content .rt_form textarea,.top_content .rt_form input:focus,.top_content .rt_form select:focus,.top_content .rt_form textarea:focus,.top_content .tab-style-two ul.tabs a,.top_content .tab-style-two ul.tabs,.top_content .tab-style-two ul.tabs a.current,.top_content .tab-style-two ul.tabs a.current:hover,.top_content .tab-style-two ul.tabs a:hover,.top_content .tab-style-two ul.tabs li.current a,.top_content .wooselect{box-shadow:none;-webkit-box-shadow:none;-moz-box-shadow:none}.top_content .rt_form input[type="button"],.top_content .rt_form input[type="submit"],.top_content .woocommerce a.button,.woocommerce-page .top_content a.button,.top_content .woocommerce button.button,.woocommerce-page .top_content button.button,.top_content .woocommerce input.button,.woocommerce-page .top_content input.button,.top_content .woocommerce #respond input#submit,.woocommerce-page .top_content #respond input#submit,.top_content .woocommerce #content input.button,.woocommerce-page .top_content #content input.button,.top_content .woocommerce a.button.alt,.woocommerce-page .top_content a.button.alt,.top_content .woocommerce button.button.alt,.woocommerce-page .top_content button.button.alt,.top_content .woocommerce input.button.alt,.woocommerce-page .top_content input.button.alt,.top_content .woocommerce #respond input#submit.alt,.woocommerce-page .top_content #respond input#submit.alt,.top_content .woocommerce #content input.button.alt,.woocommerce-page .top_content #content input.button.alt{text-shadow:1px 1px 0 rgba(0,0,0,0.1);-moz-text-shadow:1px 1px 0 rgba(0,0,0,0.1);-webkit-text-shadow:1px 1px 0 rgba(0,0,0,0.1)}.top_content ul.page-numbers{box-shadow:0 2px 1px rgba(0,0,0,0.05),0 0 0 1px rgba(255,255,255,0.2) inset}.top_content{background-image:none}.content_block_background .social_share .s_buttons,.content_block_background .woocommerce span.onsale,.woocommerce-page .content_block_background span.onsale,.woocommerce .content_block_background mark,.content_block_background .woocommerce .addresses .title .edit,.woocommerce-page .content_block_background .addresses .title .edit,.content_block_background .flex-active-slide .caption-one,.content_block_background .flexslider .flex-direction-nav a,.content_block_background .flexslider .carousel .flex-direction-nav a,.content_block_background .imgeffect a,.content_block_background .featured .default_icon .heading_icon,.content_block_background .medium_rounded_icon,.content_block_background .big_square_icon,.content_block_background .title_icon,.content_block_background .button_.default,.content_block_background .pricing_table .table_wrap.highlight ul > li.price div:before,.content_block_background .featured a.read_more,.content_block_background .featured a.more-link,.content_block_background .carousel-holder.with_heading .owl-controls .owl-buttons div,.content_block_background .rt-toggle ol li .toggle-number,.content_block_background .rt-toggle ol li.open .toggle-number,.content_block_background .latest-news .featured-image .date,.content_block_background .social_share .icon-share:before,.content_block_background .commententry .navigation > div,.content_block_background .commententry .navigation a,.content_block_background .blog_list h1[class^="icon-"]:before,.content_block_background .blog_list h2[class^="icon-"]:before,.content_block_background hr.style-six:before,.content_block_background .with_borders .box:before,.content_block_background .portfolio_boxes .box:before,.content_block_background .with_borders .box:after,.content_block_background .portfolio_boxes .box:after,.content_block_background .tab-style-three .tabs .with_icon a.current > span:before,.content_block_background .sidebar .featured_article_title:before{background:#ee3939}.content_block_background .pricing_table .table_wrap.highlight ul > li.caption,.content_block_background .flex-active-slide .caption-one,.content_block_background .flexslider .flex-direction-nav a,.content_block_background .flexslider .carousel .flex-direction-nav a,.content_block_background .imgeffect a,.content_block_background .chained_contents > ul li:hover .image.chanied_media_holder:after,.content_block_background .chained_contents li:hover .icon_holder.rounded:before{background-color:#ee3939}.content_block_background a,.content_block_background .widget_archive ul li a:hover,.content_block_background .widget_links ul li a:hover,.content_block_background .widget_nav_menu ul li a:hover,.content_block_background .widget_categories ul li a:hover,.content_block_background .widget_meta ul li a:hover,.content_block_background .widget_recent_entries  ul li a:hover,.content_block_background .widget_pages  ul li a:hover,.content_block_background .widget_rss ul li a:hover,.content_block_background .widget_recent_comments ul li a:hover,.content_block_background .widget_rt_categories ul li a:hover,.content_block_background .widget_product_categories ul li a:hover,.content_block_background .imgeffect a:hover,.content_block_background .woocommerce .star-rating,.woocommerce-page .content_block_background  .star-rating,.content_block_background .woocommerce .cart-collaterals .cart_totals h2:before,.woocommerce-page .content_block_background .cart-collaterals .cart_totals h2:before,.content_block_background .woocommerce .cart-collaterals .shipping_calculator h2:before,.woocommerce-page .content_block_background .cart-collaterals .shipping_calculator h2:before,.woocommerce-account .content_block_background .woocommerce .addresses h3:before,.content_block_background .heading_icon,.content_block_background .large_icon,.content_block_background .big_icon,.content_block_background .big_rounded_icon,.content_block_background .featured a.read_more:hover,.content_block_background a.more-link:hover,.content_block_background .latest-news-2 a.title:hover,.content_block_background .social_share:hover .icon-share:before,.content_block_background h1 a:hover,.content_block_background h2 a:hover,.content_block_background h3 a:hover,.content_block_background h4 a:hover,.content_block_background h5 a:hover,.content_block_background h6 a:hover,.content_block_background .with_icons.colored > li span,.content_block_background #reply-title:before,.content_block_background a,.content_block_background .widget_archive ul li a:hover,.content_block_background .widget_links ul li a:hover,.content_block_background .widget_nav_menu ul li a:hover,.content_block_background .widget_categories ul li a:hover,.content_block_background .widget_meta ul li a:hover,.content_block_background .widget_recent_entries ul li a:hover,.content_block_background .widget_pages ul li a:hover,.content_block_background .widget_rss ul li a:hover,.content_block_background .widget_recent_comments ul li a:hover,.content_block_background .widget_rt_categories ul li a:hover,.content_block_background .widget_product_categories ul li a:hover,.content_block_background .imgeffect a:hover,.content_block_background .heading_icon,.content_block_background .large_icon,.content_block_background .big_icon,.content_block_background .big_rounded_icon,.content_block_background a.read_more:hover,.content_block_background a.more-link:hover,.content_block_background .latest-news-2 a.title:hover,.content_block_background .social_share:hover .icon-share:before,.content_block_background .with_icons.colored > li span,.content_block_background #reply-title:before,.content_block_background .content.full > .row > hr.style-six:after,.content_block_background .pin:after,.content_block_background .filter_navigation li a.active:before,.content_block_background .filter_navigation li a.active,.content_block_background .filter_navigation li a:hover,.content_block_background hr.style-eight:after,.content_block_background ul.page-numbers li a:hover,.content_block_background ul.page-numbers li .current,.content_block_background .widget ul li.current-menu-item > a,.content_block_background .widget_rt_categories ul li.current-cat > a,.content_block_background .widget_product_categories ul li.current-cat > a{color:#ee3939}.content_block_background .big_rounded_icon.loaded,.content_block_background .featured a.read_more,.content_block_background .featured a.more-link,.content_block_background .social_share .s_buttons,.content_block_background .pin:after,.content_block_background hr.style-eight,.content_block_background .with_icons.icon_borders.colored li span{border-color:#ee3939}.content_block_background .tabs_wrap .tabs a.current,.content_block_background .tabs_wrap .tabs a.current:hover,.content_block_background .tabs_wrap .tabs a:hover,.content_block_background .tabs_wrap .tabs li.current a{border-bottom-color:#ee3939}.content_block_background .vertical_tabs ul.tabs a.current,.content_block_background .vertical_tabs ul.tabs a.current:hover,.content_block_background .vertical_tabs ul.tabs a:hover,.content_block_background .vertical_tabs ul.tabs li.current a{border-right-color:#ee3939}.content_block_background .imgeffect a,.content_block_background .featured a.read_more{color:#fff}.content_block_background .imgeffect a:hover,.content_block_background .featured a.read_more:hover{background:#fff}.content_block_background,.content_block_background .tabs_wrap .tabs a,.content_block_background .banner .featured_text,.content_block_background .rt_form input[type="button"],.content_block_background .rt_form input[type="submit"],.content_block_background .rt_form input[type="text"],.content_block_background .rt_form select,.content_block_background .rt_form textarea,.content_block_background .woocommerce a.button,.woocommerce-page .content_block_background a.button,.content_block_background .content_block_background .woocommerce button.button,.woocommerce-page .content_block_background button.button,.content_block_background .woocommerce input.button,.woocommerce-page .content_block_background input.button,.content_block_background .woocommerce #respond input#submit,.woocommerce-page .content_block_background #respond input#submit,.content_block_background .woocommerce #content input.button,.woocommerce-page .content_block_background #content input.button,.content_block_background .woocommerce a.button.alt,.woocommerce-page .content_block_background a.button.alt,.content_block_background .woocommerce button.button.alt,.woocommerce-page .content_block_background button.button.alt,.content_block_background .woocommerce input.button.alt,.woocommerce-page .content_block_background input.button.alt,.content_block_background .woocommerce #respond input#submit.alt,.woocommerce-page .content_block_background #respond input#submit.alt,.content_block_background .woocommerce #content input.button.alt,.woocommerce-page .content_block_background #content input.button.alt,.content_block_background .widget_archive ul li a,.content_block_background .widget_links ul li a,.content_block_background .widget_nav_menu ul li a,.content_block_background .widget_categories ul li a,.content_block_background .widget_meta ul li a,.content_block_background .widget_recent_entries ul li a,.content_block_background .widget_pages ul li a,.content_block_background .widget_rss ul li a,.content_block_background .widget_recent_comments ul li a,.content_block_background .widget_product_categories ul li a,.content_block_background .info_box,.content_block_background .breadcrumb,.content_block_background .page-numbers li a,.content_block_background .page-numbers li > span,.content_block_background .rt_comments ol.commentlist li a,.content_block_background .cancel-reply a,.content_block_background .rt_comments ol.commentlist li .comment-body .comment-meta a,.content_block_background #cancel-comment-reply-link,.content_block_background .breadcrumb a,.content_block_background .breadcrumb span,.content_block_background #slogan_text,.content_block_background .filter_navigation li a,.content_block_background .widget ul{color:#202020}.content_block_background h1 a,.content_block_background h2 a,.content_block_background h3 a,.content_block_background h4 a,.content_block_background h5 a,.content_block_background h6 a,.content_block_background h1,.content_block_background h2,.content_block_background h3,.content_block_background h4,.content_block_background h5,.content_block_background h6,.content_block_background .latest-news-2 .title,.content_block_background.woocommerce ul.cart_list li a,.content_block_background .woocommerce ul.product_list_widget li a,.woocommerce-page .content_block_background ul.cart_list li a,.woocommerce-page .content_block_background ul.product_list_widget li a,.content_block_background .heading h1,.content_block_background .heading h2,.content_block_background .footer .featured_article_title,.content_block_background .recent_posts .title a{color:#ee3939}.content_block_background a,.content_block_background .latest-news a.title,.content_block_background .doc_icons ul li a,.content_block_background .filter_navigation li a.active:before{color:#ee3939}.content_block_background a:hover,.content_block_background .latest-news a.title:hover,.content_block_background .doc_icons ul li a:hover,.content_block_background .woocommerce ul.cart_list li a:hover,.content_block_background .woocommerce ul.product_list_widget li a:hover,.woocommerce-page .content_block_background ul.cart_list li a:hover,.woocommerce-page .content_block_background ul.product_list_widget li a:hover,.content_block_background .rt_comments ol.commentlist li .comment-body .comment-meta a:hover,.content_block_background #cancel-comment-reply-link:hover,.content_block_background .breadcrumb a:hover span,.content_block_background .blog_list .post_data a:hover,.content_block_background .widget ul li a:hover{color:#ee3939}.content_holder .content_footer .social_share .s_buttons,.content_holder .content_footer .woocommerce span.onsale,.woocommerce-page .content_holder .content_footer span.onsale,.woocommerce .content_holder .content_footer mark,.content_holder .content_footer .woocommerce .addresses .title .edit,.woocommerce-page .content_holder .content_footer .addresses .title .edit,.content_holder .content_footer .flex-active-slide .caption-one,.content_holder .content_footer .flexslider .flex-direction-nav a,.content_holder .content_footer .flexslider .carousel .flex-direction-nav a,.content_holder .content_footer .imgeffect a,.content_holder .content_footer .featured .default_icon .heading_icon,.content_holder .content_footer .medium_rounded_icon,.content_holder .content_footer .big_square_icon,.content_holder .content_footer .title_icon,.content_holder .content_footer .button_.default,.content_holder .content_footer .pricing_table .table_wrap.highlight ul > li.price div:before,.content_holder .content_footer .featured a.read_more,.content_holder .content_footer .featured a.more-link,.content_holder .content_footer .carousel-holder.with_heading .owl-controls .owl-buttons div,.content_holder .content_footer .rt-toggle ol li .toggle-number,.content_holder .content_footer .rt-toggle ol li.open .toggle-number,.content_holder .content_footer .latest-news .featured-image .date,.content_holder .content_footer .social_share .icon-share:before,.content_holder .content_footer .commententry .navigation > div,.content_holder .content_footer .commententry .navigation a,.content_holder .content_footer .blog_list h1[class^="icon-"]:before,.content_holder .content_footer .blog_list h2[class^="icon-"]:before,.content_holder .content_footer hr.style-six:before,.content_holder .content_footer .with_borders .box:before,.content_holder .content_footer .portfolio_boxes .box:before,.content_holder .content_footer .with_borders .box:after,.content_holder .content_footer .portfolio_boxes .box:after,.content_holder .content_footer .tab-style-three .tabs .with_icon a.current > span:before,.content_holder .content_footer .sidebar .featured_article_title:before{background:#202020}.content_holder .content_footer .pricing_table .table_wrap.highlight ul > li.caption,.content_holder .content_footer .flex-active-slide .caption-one,.content_holder .content_footer .flexslider .flex-direction-nav a,.content_holder .content_footer .flexslider .carousel .flex-direction-nav a,.content_holder .content_footer .imgeffect a,.content_holder .content_footer .chained_contents > ul li:hover .image.chanied_media_holder:after,.content_holder .content_footer .chained_contents li:hover .icon_holder.rounded:before{background-color:#202020}.content_holder .content_footer a,.content_holder .content_footer .widget_archive ul li a:hover,.content_holder .content_footer .widget_links ul li a:hover,.content_holder .content_footer .widget_nav_menu ul li a:hover,.content_holder .content_footer .widget_categories ul li a:hover,.content_holder .content_footer .widget_meta ul li a:hover,.content_holder .content_footer .widget_recent_entries  ul li a:hover,.content_holder .content_footer .widget_pages  ul li a:hover,.content_holder .content_footer .widget_rss ul li a:hover,.content_holder .content_footer .widget_recent_comments ul li a:hover,.content_holder .content_footer .widget_rt_categories ul li a:hover,.content_holder .content_footer .widget_product_categories ul li a:hover,.content_holder .content_footer .imgeffect a:hover,.content_holder .content_footer .woocommerce .star-rating,.woocommerce-page .content_holder .content_footer  .star-rating,.content_holder .content_footer .woocommerce .cart-collaterals .cart_totals h2:before,.woocommerce-page .content_holder .content_footer .cart-collaterals .cart_totals h2:before,.content_holder .content_footer .woocommerce .cart-collaterals .shipping_calculator h2:before,.woocommerce-page .content_holder .content_footer .cart-collaterals .shipping_calculator h2:before,.woocommerce-account .content_holder .content_footer .woocommerce .addresses h3:before,.content_holder .content_footer .heading_icon,.content_holder .content_footer .large_icon,.content_holder .content_footer .big_icon,.content_holder .content_footer .big_rounded_icon,.content_holder .content_footer .featured a.read_more:hover,.content_holder .content_footer a.more-link:hover,.content_holder .content_footer .latest-news-2 a.title:hover,.content_holder .content_footer .social_share:hover .icon-share:before,.content_holder .content_footer h1 a:hover,.content_holder .content_footer h2 a:hover,.content_holder .content_footer h3 a:hover,.content_holder .content_footer h4 a:hover,.content_holder .content_footer h5 a:hover,.content_holder .content_footer h6 a:hover,.content_holder .content_footer .with_icons.colored > li span,.content_holder .content_footer #reply-title:before,.content_holder .content_footer a,.content_holder .content_footer .widget_archive ul li a:hover,.content_holder .content_footer .widget_links ul li a:hover,.content_holder .content_footer .widget_nav_menu ul li a:hover,.content_holder .content_footer .widget_categories ul li a:hover,.content_holder .content_footer .widget_meta ul li a:hover,.content_holder .content_footer .widget_recent_entries ul li a:hover,.content_holder .content_footer .widget_pages ul li a:hover,.content_holder .content_footer .widget_rss ul li a:hover,.content_holder .content_footer .widget_recent_comments ul li a:hover,.content_holder .content_footer .widget_rt_categories ul li a:hover,.content_holder .content_footer .widget_product_categories ul li a:hover,.content_holder .content_footer .imgeffect a:hover,.content_holder .content_footer .heading_icon,.content_holder .content_footer .large_icon,.content_holder .content_footer .big_icon,.content_holder .content_footer .big_rounded_icon,.content_holder .content_footer a.read_more:hover,.content_holder .content_footer a.more-link:hover,.content_holder .content_footer .latest-news-2 a.title:hover,.content_holder .content_footer .social_share:hover .icon-share:before,.content_holder .content_footer .with_icons.colored > li span,.content_holder .content_footer #reply-title:before,.content_holder .content_footer .content.full > .row > hr.style-six:after,.content_holder .content_footer .pin:after,.content_holder .content_footer .filter_navigation li a.active:before,.content_holder .content_footer .filter_navigation li a.active,.content_holder .content_footer .filter_navigation li a:hover,.content_holder .content_footer hr.style-eight:after,.content_holder .content_footer ul.page-numbers li a:hover,.content_holder .content_footer ul.page-numbers li .current,.content_holder .content_footer .widget ul li.current-menu-item > a,.content_holder .content_footer .widget_rt_categories ul li.current-cat > a,.content_holder .content_footer .widget_product_categories ul li.current-cat > a{color:#202020}.content_holder .content_footer .big_rounded_icon.loaded,.content_holder .content_footer .featured a.read_more,.content_holder .content_footer .featured a.more-link,.content_holder .content_footer .social_share .s_buttons,.content_holder .content_footer .pin:after,.content_holder .content_footer hr.style-eight,.content_holder .content_footer .with_icons.icon_borders.colored li span{border-color:#202020}.content_holder .content_footer .tabs_wrap .tabs a.current,.content_holder .content_footer .tabs_wrap .tabs a.current:hover,.content_holder .content_footer .tabs_wrap .tabs a:hover,.content_holder .content_footer .tabs_wrap .tabs li.current a{border-bottom-color:#202020}.content_holder .content_footer .vertical_tabs ul.tabs a.current,.content_holder .content_footer .vertical_tabs ul.tabs a.current:hover,.content_holder .content_footer .vertical_tabs ul.tabs a:hover,.content_holder .content_footer .vertical_tabs ul.tabs li.current a{border-right-color:#202020}.content_holder .content_footer .imgeffect a,.content_holder .content_footer .featured a.read_more{color:#fff}.content_holder .content_footer .imgeffect a:hover,.content_holder .content_footer .featured a.read_more:hover{background:#fff}.content_holder .content_footer,.content_holder .content_footer .tabs_wrap .tabs a,.content_holder .content_footer .banner .featured_text,.content_holder .content_footer .rt_form input[type="button"],.content_holder .content_footer .rt_form input[type="submit"],.content_holder .content_footer .rt_form input[type="text"],.content_holder .content_footer .rt_form select,.content_holder .content_footer .rt_form textarea,.content_holder .content_footer .woocommerce a.button,.woocommerce-page .content_holder .content_footer a.button,.content_holder .content_footer .content_holder .content_footer .woocommerce button.button,.woocommerce-page .content_holder .content_footer button.button,.content_holder .content_footer .woocommerce input.button,.woocommerce-page .content_holder .content_footer input.button,.content_holder .content_footer .woocommerce #respond input#submit,.woocommerce-page .content_holder .content_footer #respond input#submit,.content_holder .content_footer .woocommerce #content input.button,.woocommerce-page .content_holder .content_footer #content input.button,.content_holder .content_footer .woocommerce a.button.alt,.woocommerce-page .content_holder .content_footer a.button.alt,.content_holder .content_footer .woocommerce button.button.alt,.woocommerce-page .content_holder .content_footer button.button.alt,.content_holder .content_footer .woocommerce input.button.alt,.woocommerce-page .content_holder .content_footer input.button.alt,.content_holder .content_footer .woocommerce #respond input#submit.alt,.woocommerce-page .content_holder .content_footer #respond input#submit.alt,.content_holder .content_footer .woocommerce #content input.button.alt,.woocommerce-page .content_holder .content_footer #content input.button.alt,.content_holder .content_footer .widget_archive ul li a,.content_holder .content_footer .widget_links ul li a,.content_holder .content_footer .widget_nav_menu ul li a,.content_holder .content_footer .widget_categories ul li a,.content_holder .content_footer .widget_meta ul li a,.content_holder .content_footer .widget_recent_entries ul li a,.content_holder .content_footer .widget_pages ul li a,.content_holder .content_footer .widget_rss ul li a,.content_holder .content_footer .widget_recent_comments ul li a,.content_holder .content_footer .widget_product_categories ul li a,.content_holder .content_footer .info_box,.content_holder .content_footer .breadcrumb,.content_holder .content_footer .page-numbers li a,.content_holder .content_footer .page-numbers li > span,.content_holder .content_footer .rt_comments ol.commentlist li a,.content_holder .content_footer .cancel-reply a,.content_holder .content_footer .rt_comments ol.commentlist li .comment-body .comment-meta a,.content_holder .content_footer #cancel-comment-reply-link,.content_holder .content_footer .breadcrumb a,.content_holder .content_footer .breadcrumb span,.content_holder .content_footer #slogan_text,.content_holder .content_footer .filter_navigation li a,.content_holder .content_footer .widget ul{color:#202020}.content_holder .content_footer .blog_list .post_data,.content_holder .content_footer .blog_list .post_data a,.content_holder .content_footer .woocommerce .star-rating,.content_holder .content_footer .woocommerce-page .star-rating,.content_holder .content_footer .testimonial .text .icon-quote-left,.content_holder .content_footer .testimonial .text .icon-quote-right,.content_holder .content_footer .client_info,.content_holder .content_footer .rt_form label,.content_holder .content_footer i.decs_text,.content_holder .content_footer .client_info,.content_holder .content_footer .with_icons > li span,.content_holder .content_footer .with_icons.light > li span,.content_holder .content_footer .price del,.content_holder .content_footer .product_meta,.content_holder .content_footer span.top,.content_holder .content_footer .rt_comments ol.commentlist li .comment-body .comment-meta,.content_holder .content_footer .cancel-reply,.content_holder .content_footer .rt_comments ol.commentlist li .comment-body .author-name,.content_holder .content_footer .rt_comments ol.commentlist li p,.content_holder .content_footer li.comment #respond,.content_holder .content_footer .recent_posts .widget-meta,.content_holder .content_footer .content_block.archives .head_text h1,.content_holder .content_footer .content_block.archives .head_text h2{color:#202020}.content_holder .content_footer h1 a,.content_holder .content_footer h2 a,.content_holder .content_footer h3 a,.content_holder .content_footer h4 a,.content_holder .content_footer h5 a,.content_holder .content_footer h6 a,.content_holder .content_footer h1,.content_holder .content_footer h2,.content_holder .content_footer h3,.content_holder .content_footer h4,.content_holder .content_footer h5,.content_holder .content_footer h6,.content_holder .content_footer .latest-news-2 .title,.content_holder .content_footer.woocommerce ul.cart_list li a,.content_holder .content_footer .woocommerce ul.product_list_widget li a,.woocommerce-page .content_holder .content_footer ul.cart_list li a,.woocommerce-page .content_holder .content_footer ul.product_list_widget li a,.content_holder .content_footer .heading h1,.content_holder .content_footer .heading h2,.content_holder .content_footer .footer .featured_article_title,.content_holder .content_footer .recent_posts .title a{color:#ee3939}.content_holder .content_footer h1 a:hover,.content_holder .content_footer h2 a:hover,.content_holder .content_footer h3 a:hover,.content_holder .content_footer h4 a:hover,.content_holder .content_footer h5 a:hover,.content_holder .content_footer h6 a:hover,.content_holder .content_footer .latest-news-2 .title:hover,.content_holder .content_footer .woocommerce  ul.cart_list li a:hover,.content_holder .content_footer .woocommerce ul.product_list_widget li a:hover,.woocommerce-page .content_holder .content_footer ul.cart_list li a:hover,.woocommerce-page .content_holder .content_footer ul.product_list_widget li a:hover{color:#202020}.content_holder .content_footer a,.content_holder .content_footer .latest-news a.title,.content_holder .content_footer .doc_icons ul li a,.content_holder .content_footer .filter_navigation li a.active:before{color:#ee3939}.content_holder .content_footer a:hover,.content_holder .content_footer .latest-news a.title:hover,.content_holder .content_footer .doc_icons ul li a:hover,.content_holder .content_footer .woocommerce ul.cart_list li a:hover,.content_holder .content_footer .woocommerce ul.product_list_widget li a:hover,.woocommerce-page .content_holder .content_footer ul.cart_list li a:hover,.woocommerce-page .content_holder .content_footer ul.product_list_widget li a:hover,.content_holder .content_footer .rt_comments ol.commentlist li .comment-body .comment-meta a:hover,.content_holder .content_footer #cancel-comment-reply-link:hover,.content_holder .content_footer .breadcrumb a:hover span,.content_holder .content_footer .blog_list .post_data a:hover,.content_holder .content_footer .widget ul li a:hover{color:#ee3939}.content_holder .content_footer{background-color:#f5f5f5}.content_holder .content_footer .caption.embedded .featured_article_title,.content_holder .content_footer hr.style-one:after,.content_holder .content_footer hr.style-two:after,.content_holder .content_footer hr.style-three:after,.content_holder .content_footer .flexslider,.content_holder .content_footer span.top,.content_holder .content_footer .rt_comments ol ul.children,.content_holder .content_footer .flags,.content_holder .content_footer hr.style-six:after{background-color:#f5f5f5}.content_holder .content_footer div.date_box{background:#f5f5f5;box-shadow:1px 2px 0 0 rgba(0,0,0,0.1);-moz-box-shadow:1px 2px 0 0 rgba(0,0,0,0.1);-webkit-box-shadow:1px 2px 0 0 rgba(0,0,0,0.1)}.content_holder .content_footer div.date_box .day{border-bottom:0}.content_holder .content_footer.top_content{border:0}.content_holder .content_footer .rt_form input[type="text"],.content_holder .content_footer .rt_form select,.content_holder .content_footer .rt_form textarea,.content_holder .content_footer .rt_form input:focus,.content_holder .content_footer .rt_form select:focus,.content_holder .content_footer .rt_form textarea:focus,.content_holder .content_footer .tab-style-two ul.tabs a,.content_holder .content_footer .tab-style-two ul.tabs,.content_holder .content_footer .tab-style-two ul.tabs a.current,.content_holder .content_footer .tab-style-two ul.tabs a.current:hover,.content_holder .content_footer .tab-style-two ul.tabs a:hover,.content_holder .content_footer .tab-style-two ul.tabs li.current a,.content_holder .content_footer .wooselect{box-shadow:none;-webkit-box-shadow:none;-moz-box-shadow:none}.content_holder .content_footer .rt_form input[type="button"],.content_holder .content_footer .rt_form input[type="submit"],.content_holder .content_footer .woocommerce a.button,.woocommerce-page .content_holder .content_footer a.button,.content_holder .content_footer .woocommerce button.button,.woocommerce-page .content_holder .content_footer button.button,.content_holder .content_footer .woocommerce input.button,.woocommerce-page .content_holder .content_footer input.button,.content_holder .content_footer .woocommerce #respond input#submit,.woocommerce-page .content_holder .content_footer #respond input#submit,.content_holder .content_footer .woocommerce #content input.button,.woocommerce-page .content_holder .content_footer #content input.button,.content_holder .content_footer .woocommerce a.button.alt,.woocommerce-page .content_holder .content_footer a.button.alt,.content_holder .content_footer .woocommerce button.button.alt,.woocommerce-page .content_holder .content_footer button.button.alt,.content_holder .content_footer .woocommerce input.button.alt,.woocommerce-page .content_holder .content_footer input.button.alt,.content_holder .content_footer .woocommerce #respond input#submit.alt,.woocommerce-page .content_holder .content_footer #respond input#submit.alt,.content_holder .content_footer .woocommerce #content input.button.alt,.woocommerce-page .content_holder .content_footer #content input.button.alt{text-shadow:1px 1px 0 rgba(0,0,0,0.1);-moz-text-shadow:1px 1px 0 rgba(0,0,0,0.1);-webkit-text-shadow:1px 1px 0 rgba(0,0,0,0.1)}.content_holder .content_footer ul.page-numbers{box-shadow:0 2px 1px rgba(0,0,0,0.05),0 0 0 1px rgba(255,255,255,0.2) inset}.content_holder .content_footer{background-image:none}.top_links a,.top_links{color:#202020}.top_links a:hover{color:#ee3939}#top_bar .social_media li a{background-color:#ee3939}#footer .part1{color:#202020}ul.footer_links a,ul.footer_links,#footer .part1 a{color:#ee3939}ul.footer_links a:hover,#footer .part1 a:hover{color:#ee3939}#footer .social_media li a{background-color:#8a8a8a}#footer{background-color:#ffffff}#footer .caption.embedded .featured_article_title,#footer hr.style-one:after,#footer hr.style-two:after,#footer hr.style-three:after,#footer .flexslider,#footer span.top,#footer .rt_comments ol ul.children,#footer .flags,#footer hr.style-six:after{background-color:#ffffff}#footer div.date_box{background:#ffffff;box-shadow:1px 2px 0 0 rgba(0,0,0,0.1);-moz-box-shadow:1px 2px 0 0 rgba(0,0,0,0.1);-webkit-box-shadow:1px 2px 0 0 rgba(0,0,0,0.1)}#footer div.date_box .day{border-bottom:0}#footer.top_content{border:0}#footer .rt_form input[type="text"],#footer .rt_form select,#footer .rt_form textarea,#footer .rt_form input:focus,#footer .rt_form select:focus,#footer .rt_form textarea:focus,#footer .tab-style-two ul.tabs a,#footer .tab-style-two ul.tabs,#footer .tab-style-two ul.tabs a.current,#footer .tab-style-two ul.tabs a.current:hover,#footer .tab-style-two ul.tabs a:hover,#footer .tab-style-two ul.tabs li.current a,#footer .wooselect{box-shadow:none;-webkit-box-shadow:none;-moz-box-shadow:none}#footer .rt_form input[type="button"],#footer .rt_form input[type="submit"],#footer .woocommerce a.button,.woocommerce-page #footer a.button,#footer .woocommerce button.button,.woocommerce-page #footer button.button,#footer .woocommerce input.button,.woocommerce-page #footer input.button,#footer .woocommerce #respond input#submit,.woocommerce-page #footer #respond input#submit,#footer .woocommerce #content input.button,.woocommerce-page #footer #content input.button,#footer .woocommerce a.button.alt,.woocommerce-page #footer a.button.alt,#footer .woocommerce button.button.alt,.woocommerce-page #footer button.button.alt,#footer .woocommerce input.button.alt,.woocommerce-page #footer input.button.alt,#footer .woocommerce #respond input#submit.alt,.woocommerce-page #footer #respond input#submit.alt,#footer .woocommerce #content input.button.alt,.woocommerce-page #footer #content input.button.alt{text-shadow:1px 1px 0 rgba(0,0,0,0.1);-moz-text-shadow:1px 1px 0 rgba(0,0,0,0.1);-webkit-text-shadow:1px 1px 0 rgba(0,0,0,0.1)}#footer ul.page-numbers{box-shadow:0 2px 1px rgba(0,0,0,0.05),0 0 0 1px rgba(255,255,255,0.2) inset}#footer{background-image:none}@media only screen and (min-width:960px){.header-design2 .default_position #navigation_bar > ul > li > a{line-height:80px}.header-design2 #logo img{max-height:60px}.header-design2  #logo h1,.header-design2  #logo h1 a{padding:0;line-height:60px}.header-design2 .section_logo > section{display:table;height:60px}.header-design2 #logo > a{display:table-cell;vertical-align:middle}}.icon-info::before{content:''}.tab-style-three .with_icon a > span:before{background:rgba(0,0,0,0.25);color:#fff;display:none}.woocommerce table.shop_attributes td{padding:0 0 0 16px}.widget.widget_newsletterwidget > div.tnp.tnp-widget > form > div.tnp-field.tnp-field-button > input{background-color:#ee3939}.woocommerce .star-rating,.woocommerce-page .star-rating{width:74px}footer .footer_info{padding:0px 0 0px}.social_media{margin:-40px 0
+}
+</style>
+<link rel='stylesheet' id='menu-css' href='//fonts.googleapis.com/css?family=PT+Sans+Narrow&#038;subset=latin%2Clatin-ext&#038;ver=6.5.8' type='text/css' media='all' />
+<link rel='stylesheet' id='body-css' href='//fonts.googleapis.com/css?family=PT+Sans%3A400%2C400italic&#038;ver=6.5.8' type='text/css' media='all' />
+<link rel='stylesheet' id='serif-css' href='//fonts.googleapis.com/css?family=PT+Serif&#038;ver=6.5.8' type='text/css' media='all' />
+<link rel='stylesheet' id='theme-style-css' href="https://astronomy-imaging-camera.com/wp-content/themes/rttheme18/style.css?ver=6.5.8" type='text/css' media='all' />
+<script type="text/javascript" src="https://astronomy-imaging-camera.com/wp-includes/js/jquery/jquery.min.js?ver=3.7.1" id="jquery-core-js"></script>
+<script type="text/javascript" src="https://astronomy-imaging-camera.com/wp-includes/js/jquery/jquery-migrate.min.js?ver=3.4.1" id="jquery-migrate-js"></script>
+<script type="text/javascript" src="https://astronomy-imaging-camera.com/wp-content/plugins/ppm-accordion/js/ppm-accordion-main.js?ver=6.5.8" id="ppm-accordion-plugin-main-js"></script>
+<script type="text/javascript" src="https://astronomy-imaging-camera.com/wp-content/plugins/LayerSlider/static/js/greensock.js?ver=1.11.8" id="greensock-js"></script>
+<script type="text/javascript" src="https://astronomy-imaging-camera.com/wp-content/plugins/LayerSlider/static/js/layerslider.kreaturamedia.jquery.js?ver=5.3.2" id="layerslider-js"></script>
+<script type="text/javascript" src="https://astronomy-imaging-camera.com/wp-content/plugins/LayerSlider/static/js/layerslider.transitions.js?ver=5.3.2" id="layerslider-transitions-js"></script>
+<script type="text/javascript" id="cld-frontend-js-extra">
+/* <![CDATA[ */
+var cld_js_object = {"admin_ajax_url":"https:\/\/astronomy-imaging-camera.com\/wp-admin\/admin-ajax.php","admin_ajax_nonce":"fd2b752462"};
+/* ]]> */
+</script>
+<script type="text/javascript" src="https://astronomy-imaging-camera.com/wp-content/plugins/comments-like-dislike/js/cld-frontend.js?ver=1.0.5" id="cld-frontend-js"></script>
+<script type="text/javascript" src="https://astronomy-imaging-camera.com/wp-content/plugins/revslider/rs-plugin/js/jquery.themepunch.tools.min.js?ver=4.6.5" id="tp-tools-js"></script>
+<script type="text/javascript" src="https://astronomy-imaging-camera.com/wp-content/plugins/revslider/rs-plugin/js/jquery.themepunch.revolution.min.js?ver=4.6.5" id="revmin-js"></script>
+<script type="text/javascript" src="https://astronomy-imaging-camera.com/wp-includes/js/jquery/ui/core.min.js?ver=1.13.2" id="jquery-ui-core-js"></script>
+<script type="text/javascript" src="https://astronomy-imaging-camera.com/wp-includes/js/jquery/ui/effect.min.js?ver=1.13.2" id="jquery-effects-core-js"></script>
+<script type="text/javascript" src="https://astronomy-imaging-camera.com/wp-includes/js/jquery/ui/effect-blind.min.js?ver=1.13.2" id="jquery-effects-blind-js"></script>
+<script type="text/javascript" src="https://astronomy-imaging-camera.com/wp-includes/js/jquery/ui/effect-bounce.min.js?ver=1.13.2" id="jquery-effects-bounce-js"></script>
+<script type="text/javascript" src="https://astronomy-imaging-camera.com/wp-includes/js/jquery/ui/effect-clip.min.js?ver=1.13.2" id="jquery-effects-clip-js"></script>
+<script type="text/javascript" src="https://astronomy-imaging-camera.com/wp-includes/js/jquery/ui/effect-drop.min.js?ver=1.13.2" id="jquery-effects-drop-js"></script>
+<script type="text/javascript" src="https://astronomy-imaging-camera.com/wp-includes/js/jquery/ui/effect-explode.min.js?ver=1.13.2" id="jquery-effects-explode-js"></script>
+<script type="text/javascript" src="https://astronomy-imaging-camera.com/wp-includes/js/jquery/ui/effect-fade.min.js?ver=1.13.2" id="jquery-effects-fade-js"></script>
+<script type="text/javascript" src="https://astronomy-imaging-camera.com/wp-includes/js/jquery/ui/effect-fold.min.js?ver=1.13.2" id="jquery-effects-fold-js"></script>
+<script type="text/javascript" src="https://astronomy-imaging-camera.com/wp-includes/js/jquery/ui/effect-highlight.min.js?ver=1.13.2" id="jquery-effects-highlight-js"></script>
+<script type="text/javascript" src="https://astronomy-imaging-camera.com/wp-includes/js/jquery/ui/effect-pulsate.min.js?ver=1.13.2" id="jquery-effects-pulsate-js"></script>
+<script type="text/javascript" src="https://astronomy-imaging-camera.com/wp-includes/js/jquery/ui/effect-size.min.js?ver=1.13.2" id="jquery-effects-size-js"></script>
+<script type="text/javascript" src="https://astronomy-imaging-camera.com/wp-includes/js/jquery/ui/effect-scale.min.js?ver=1.13.2" id="jquery-effects-scale-js"></script>
+<script type="text/javascript" src="https://astronomy-imaging-camera.com/wp-includes/js/jquery/ui/effect-shake.min.js?ver=1.13.2" id="jquery-effects-shake-js"></script>
+<script type="text/javascript" src="https://astronomy-imaging-camera.com/wp-includes/js/jquery/ui/effect-slide.min.js?ver=1.13.2" id="jquery-effects-slide-js"></script>
+<script type="text/javascript" src="https://astronomy-imaging-camera.com/wp-includes/js/jquery/ui/effect-puff.min.js?ver=1.13.2" id="jquery-effects-puff-js"></script>
+<script type="text/javascript" id="Rich_Web_Tabs-js-extra">
+/* <![CDATA[ */
+var object = {"ajaxurl":"https:\/\/astronomy-imaging-camera.com\/wp-admin\/admin-ajax.php"};
+/* ]]> */
+</script>
+<script type="text/javascript" src="https://astronomy-imaging-camera.com/wp-content/plugins/tabbed/Scripts/Tabs-Rich-Web-Widget.js?ver=6.5.8" id="Rich_Web_Tabs-js"></script>
+<script type="text/javascript" src="//connect.facebook.net/en_US/sdk.js#xfbml=1&amp;version=v2.3" id="spu-facebook-js"></script>
+<script type="text/javascript" src="https://astronomy-imaging-camera.com/wp-content/themes/rttheme18/js/modernizr.min.js?ver=6.5.8" id="modernizr-js"></script>
+<script type="text/javascript" src="https://astronomy-imaging-camera.com/wp-content/themes/rttheme18/js/jquery.customselect.min.js?ver=6.5.8" id="jquery-custom-select-js"></script>
+<link rel="https://api.w.org/" href="https://astronomy-imaging-camera.com/wp-json/" /><link rel="EditURI" type="application/rsd+xml" title="RSD" href="https://astronomy-imaging-camera.com/xmlrpc.php?rsd" />
+<meta name="generator" content="WordPress 6.5.8" />
+<meta name="generator" content="WooCommerce 2.5.5" />
+<style>a.cld-like-dislike-trigger {color: #ee3939;}span.cld-count-wrap {color: #636363;}</style>		<script type="text/javascript">
+			jQuery(document).ready(function() {
+				// CUSTOM AJAX CONTENT LOADING FUNCTION
+				var ajaxRevslider = function(obj) {
+				
+					// obj.type : Post Type
+					// obj.id : ID of Content to Load
+					// obj.aspectratio : The Aspect Ratio of the Container / Media
+					// obj.selector : The Container Selector where the Content of Ajax will be injected. It is done via the Essential Grid on Return of Content
+					
+					var content = "";
+
+					data = {};
+					
+					data.action = 'revslider_ajax_call_front';
+					data.client_action = 'get_slider_html';
+					data.token = '746f42dc4a';
+					data.type = obj.type;
+					data.id = obj.id;
+					data.aspectratio = obj.aspectratio;
+					
+					// SYNC AJAX REQUEST
+					jQuery.ajax({
+						type:"post",
+						url:"https://astronomy-imaging-camera.com/wp-admin/admin-ajax.php",
+						dataType: 'json',
+						data:data,
+						async:false,
+						success: function(ret, textStatus, XMLHttpRequest) {
+							if(ret.success == true)
+								content = ret.data;								
+						},
+						error: function(e) {
+							console.log(e);
+						}
+					});
+					
+					 // FIRST RETURN THE CONTENT WHEN IT IS LOADED !!
+					 return content;						 
+				};
+				
+				// CUSTOM AJAX FUNCTION TO REMOVE THE SLIDER
+				var ajaxRemoveRevslider = function(obj) {
+					return jQuery(obj.selector+" .rev_slider").revkill();
+				};
+
+				// EXTEND THE AJAX CONTENT LOADING TYPES WITH TYPE AND FUNCTION
+				var extendessential = setInterval(function() {
+					if (jQuery.fn.tpessential != undefined) {
+						clearInterval(extendessential);
+						if(typeof(jQuery.fn.tpessential.defaults) !== 'undefined') {
+							jQuery.fn.tpessential.defaults.ajaxTypes.push({type:"revslider",func:ajaxRevslider,killfunc:ajaxRemoveRevslider,openAnimationSpeed:0.3});   
+							// type:  Name of the Post to load via Ajax into the Essential Grid Ajax Container
+							// func: the Function Name which is Called once the Item with the Post Type has been clicked
+							// killfunc: function to kill in case the Ajax Window going to be removed (before Remove function !
+							// openAnimationSpeed: how quick the Ajax Content window should be animated (default is 0.3)
+						}
+					}
+				},30);
+			});
+		</script>
+		<!--[if lt IE 9]><script src="http://astronomy-imaging-camera.com/wp-content/themes/rttheme18/js/html5shiv.js"></script><![endif]--><!--[if gte IE 9]> <style type="text/css"> .gradient { filter: none; } </style> <![endif]--><link rel="icon" href="https://astronomy-imaging-camera.com/wp-content/uploads/cropped-ZWO-logo-small-32x32.png" sizes="32x32" />
+<link rel="icon" href="https://astronomy-imaging-camera.com/wp-content/uploads/cropped-ZWO-logo-small-192x192.png" sizes="192x192" />
+<link rel="apple-touch-icon" href="https://astronomy-imaging-camera.com/wp-content/uploads/cropped-ZWO-logo-small-180x180.png" />
+<meta name="msapplication-TileImage" content="https://astronomy-imaging-camera.com/wp-content/uploads/cropped-ZWO-logo-small-270x270.png" />
+</head>
+<body class="error404  responsive menu-style-two with_subs full boxed-body wide header-design1">
+
+			<script type="text/javascript">
+			/* <![CDATA[ */ 
+				document.getElementsByTagName("html")[0].className.replace(/\no-js\b/, "js");
+				window.onerror=function(){				
+					document.getElementById("rt_loading").removeAttribute("class");
+				}			 	
+			/* ]]> */	
+			</script> 
+		
+<!-- background wrapper -->
+<div id="container">   
+
+
+	<!-- mobile actions -->
+	<section id="mobile_bar" class="clearfix">
+		<div class="mobile_menu_control icon-menu"></div>
+		<div class="top_bar_control icon-cog"></div>    
+	</section>
+	<!-- / end section #mobile_bar -->    
+
+		<!-- top bar -->
+	<section id="top_bar" class="clearfix">
+		<div class="top_bar_container">    
+
+
+					<ul id="top_navigation" class="top_links">
+
+						<!--  top links -->
+													<li id="menu-item-708" class="menu-item menu-item-type-custom menu-item-object-custom menu-item-708"><a href="https://www.zwoastro.com/cn">中文</a></li>
+<li id="menu-item-25409" class="menu-item menu-item-type-custom menu-item-object-custom menu-item-25409"><a href="https://support.astronomy-imaging-camera.com">Contact Us</a></li>
+					              
+
+
+																									
+															<li class="icon-login"><a href="https://astronomy-imaging-camera.com/my-account/" title="Login / Register">Login / Register</a></li>
+													  			
+
+							<li class="icon-basket"><span><a class="cart-contents" href="https://astronomy-imaging-camera.com/cart/" title="View your shopping cart">0 items - <span class="amount">&#36;0.00</span></a></span></li>					
+							 
+
+						
+
+						
+						
+					</ul>
+
+
+					<ul class="social_media"><li class="mail"><a class="icon-mail" target="_blank" href="/cdn-cgi/l/email-protection#b1d8dfd7def1cbc6dec1c5d8d2d0dd9fd2dedc" title="Email"><span>E-mail</span></a></li><li class="facebook"><a class="icon-facebook" target="_blank" href="https://www.facebook.com/ZwoDesignAstronomyCameras" title="Facebook"><span>Facebook</span></a></li></ul>
+
+		</div><!-- / end div .top_bar_container -->    
+	</section><!-- / end section #top_bar -->    
+	    
+
+
+		<!-- header -->
+	<header id="header"> 
+
+		<!-- header contents -->
+		<section id="header_contents" class="clearfix">
+				 
+				<section class="section_widget first six"></section><!-- end section .section_widget -->
+			<section class="section_logo logo_center two-three">			 
+				<!-- logo -->
+				<section id="logo">			 
+					 <a href="https://astronomy-imaging-camera.com" title="ZWO ASI"><img src="https://astronomy-imaging-camera.com/wp-content/uploads/logo-zwo_112017-1.jpg" alt="ZWO ASI" data-retina="https://astronomy-imaging-camera.com/wp-content/uploads/logo-zwo_112017-1.jpg"/></a> 
+				</section><!-- end section #logo -->
+			</section><!-- end section #logo -->	
+			<section class="section_widget second six">
+			<section id="slogan_text" class="right_side ">
+				 
+			</section></section><!-- end section .section_widget -->
+		</section><!-- end section #header_contents -->  	
+
+
+		<!-- navigation -->   
+		<div class="nav_shadow sticky"><div class="nav_border"> 
+
+			<nav id="navigation_bar" class="navigation  with_search with_subs with_small_logo"><div id="sticky_logo"><a href="https://astronomy-imaging-camera.com" title="ZWO ASI"><img src="https://astronomy-imaging-camera.com/wp-content/uploads/logo-zwo_112017-1.jpg" alt="ZWO ASI" /></a></div><ul id="navigation" class="menu"><li id='menu-item-24'  class="menu-item menu-item-type-post_type menu-item-object-page menu-item-home top-level-0" data-column-size='0'><a  href="https://astronomy-imaging-camera.com/">HOME<span>go to home</span></a> </li>
+<li id='menu-item-4331'  class="menu-item menu-item-type-custom menu-item-object-custom menu-item-has-children hasSubMenu top-level-1" data-column-size='0'><a  href="/zwo-all-products/">PRODUCTS<span>info &#038; buy now</span></a> 
+<ul class="sub-menu">
+<li id='menu-item-56788'  class="menu-item menu-item-type-taxonomy menu-item-object-product_cat"><a  href="https://astronomy-imaging-camera.com/product-category/new-products/">New Arrival</a> </li>
+<li id='menu-item-57156'  class="menu-item menu-item-type-taxonomy menu-item-object-product_cat"><a  href="https://astronomy-imaging-camera.com/product-category/seestar/">Seestar</a> </li>
+<li id='menu-item-56787'  class="menu-item menu-item-type-taxonomy menu-item-object-product_cat"><a  href="https://astronomy-imaging-camera.com/product-category/mounts/">Mounts</a> </li>
+<li id='menu-item-57467'  class="menu-item menu-item-type-taxonomy menu-item-object-product_cat"><a  href="https://astronomy-imaging-camera.com/product-category/telescopes/">Telescopes</a> </li>
+<li id='menu-item-52984'  class="menu-item menu-item-type-custom menu-item-object-custom menu-item-has-children hasSubMenu"><a  href="https://astronomy-imaging-camera.com/product-category/asiair">ASIAIR</a> 
+	<ul class="sub-menu">
+<li id='menu-item-34515'  class="menu-item menu-item-type-custom menu-item-object-custom"><a  href="/product/asiair-plus">ASIAIR Plus</a> </li>
+<li id='menu-item-50982'  class="menu-item menu-item-type-custom menu-item-object-custom"><a  href="https://astronomy-imaging-camera.com/product/asiair-mini">ASIAIR Mini</a> </li>
+	</ul>
+</li>
+<li id='menu-item-57929'  class="menu-item menu-item-type-taxonomy menu-item-object-product_cat menu-item-has-children hasSubMenu"><a  href="https://astronomy-imaging-camera.com/product-category/cameras/">Cameras</a> 
+	<ul class="sub-menu">
+<li id='menu-item-13488'  class="menu-item menu-item-type-taxonomy menu-item-object-product_cat"><a  href="https://astronomy-imaging-camera.com/product-category/cameras/dso-cameras/">DSO Cooled Cameras</a> </li>
+<li id='menu-item-13489'  class="menu-item menu-item-type-taxonomy menu-item-object-product_cat"><a  href="https://astronomy-imaging-camera.com/product-category/cameras/planetary-cameras/">Planetary Cameras</a> </li>
+<li id='menu-item-13490'  class="menu-item menu-item-type-taxonomy menu-item-object-product_cat"><a  href="https://astronomy-imaging-camera.com/product-category/cameras/guiding-cameras/">Guide Cameras</a> </li>
+	</ul>
+</li>
+<li id='menu-item-4595'  class="menu-item menu-item-type-taxonomy menu-item-object-product_cat"><a  href="https://astronomy-imaging-camera.com/product-category/filterfilter-wheel/">Filter &#038; Filter wheel</a> </li>
+<li id='menu-item-13217'  class="menu-item menu-item-type-taxonomy menu-item-object-product_cat"><a  href="https://astronomy-imaging-camera.com/product-category/accessories/">Accessories</a> </li>
+<li id='menu-item-13216'  class="menu-item menu-item-type-taxonomy menu-item-object-product_cat"><a  href="https://astronomy-imaging-camera.com/product-category/discontinued-product/">Discontinued Product</a> </li>
+</ul>
+</li>
+<li id='menu-item-10786'  class="menu-item menu-item-type-custom menu-item-object-custom menu-item-has-children hasSubMenu top-level-2" data-column-size='0'><a >EXPLORE<span>useful articles</span></a> 
+<ul class="sub-menu">
+<li id='menu-item-10828'  class="menu-item menu-item-type-custom menu-item-object-custom"><a  href="/blog/news/">Product News</a> </li>
+<li id='menu-item-15950'  class="menu-item menu-item-type-taxonomy menu-item-object-category"><a  href="https://astronomy-imaging-camera.com/category/asiair/">ASIAIR</a> </li>
+<li id='menu-item-15952'  class="menu-item menu-item-type-taxonomy menu-item-object-category"><a  href="https://astronomy-imaging-camera.com/category/asiweek/">ASIWEEK</a> </li>
+<li id='menu-item-15951'  class="menu-item menu-item-type-taxonomy menu-item-object-category"><a  href="https://astronomy-imaging-camera.com/category/tutorials/">Tutorials</a> </li>
+<li id='menu-item-15953'  class="menu-item menu-item-type-taxonomy menu-item-object-category"><a  href="https://astronomy-imaging-camera.com/category/astrobio/">Astro Bio&#8217;s</a> </li>
+<li id='menu-item-55024'  class="menu-item menu-item-type-custom menu-item-object-custom"><a  href="https://astronomy-imaging-camera.com/customer-story">Customer Story</a> </li>
+</ul>
+</li>
+<li id='menu-item-18'  class="menu-item menu-item-type-post_type menu-item-object-page top-level-3" data-column-size='0'><a  href="https://astronomy-imaging-camera.com/gallery/">GALLERY<span>users references</span></a> </li>
+<li id='menu-item-54948'  class="menu-item menu-item-type-custom menu-item-object-custom top-level-4" data-column-size='0'><a  href="https://www.zwoastro.com/our-dealers/">DEALERS<span>&nbsp;</span></a> </li>
+<li id='menu-item-68'  class="menu-item menu-item-type-custom menu-item-object-custom menu-item-has-children hasSubMenu top-level-5" data-column-size='0'><a >SUPPORT<span>manual &#038; software</span></a> 
+<ul class="sub-menu">
+<li id='menu-item-54932'  class="menu-item menu-item-type-custom menu-item-object-custom"><a  href="https://www.zwoastro.com/software/">Software</a> </li>
+<li id='menu-item-3483'  class="menu-item menu-item-type-post_type menu-item-object-page"><a  href="https://astronomy-imaging-camera.com/review/">Review</a> </li>
+<li id='menu-item-25410'  class="menu-item menu-item-type-custom menu-item-object-custom"><a  href="https://www.zwoastro.com/contact-us/">Contact Us</a> </li>
+<li id='menu-item-59418'  class="menu-item menu-item-type-custom menu-item-object-custom"><a  href="https://www.zwoastro.com/guides-and-manuals/">Manuals</a> </li>
+</ul>
+</li>
+<li id='menu-item-327'  class="menu-item menu-item-type-custom menu-item-object-custom top-level-6" data-column-size='0'><a  target="_blank" href="//bbs.zwoastro.com">FORUM<span>QA &#038; share</span></a> </li>
+<li id='menu-item-14256'  class="menu-item menu-item-type-custom menu-item-object-custom menu-item-has-children hasSubMenu top-level-7" data-column-size='0'><a >OUR STORY<span>company info</span></a> 
+<ul class="sub-menu">
+<li id='menu-item-53630'  class="menu-item menu-item-type-custom menu-item-object-custom"><a  href="https://www.zwoastro.com/company-profile/">About Us</a> </li>
+<li id='menu-item-15964'  class="menu-item menu-item-type-custom menu-item-object-custom"><a  href="https://www.zwoastro.com/our-expertise/">Timeline</a> </li>
+</ul>
+</li>
+</ul>
+					<!-- search -->
+					<div class="search-bar">
+						<form action="https://astronomy-imaging-camera.com/" method="get" class="showtextback" id="menu_search">
+							<fieldset>							
+								<input type="text" class="search_text showtextback" name="s" id="menu_search_field" value="Search" />		
+								<div class="icon-search-1"></div>					
+							</fieldset>
+						</form>
+					</div>
+					<!-- / search-->
+				 
+
+			</nav>
+		</div></div>
+		<!-- / navigation  --> 
+
+	</header><!-- end tag #header --> 	
+
+
+
+		<!-- content holder --> 
+		<div class="content_holder">
+
+		<section class="top_content clearfix"><section class="info_bar clearfix "><section class="heading"><h1>404 - Page Not Found</h1></section> <section class="breadcrumb"><div itemscope itemtype="http://data-vocabulary.org/Breadcrumb"><a class="icon-home" href="https://astronomy-imaging-camera.com" itemprop="url"><span itemprop="title" title="ZWO ASI">Home</span></a> <span class="icon-angle-right"></span> 
+<div itemscope itemprop="child" itemtype="http://data-vocabulary.org/Breadcrumb"><span itemprop="title" title="Error 404">Error 404</span></div></div></section></section></section>		
+			<div class="content_second_background">
+				<div class="content_area clearfix"> 
+		
+
+													
+<section class="content_block_background">
+	<section class="content_block clearfix">
+		<section id="page-404" class="content full" >		
+			<div class="row"> 
+
+		 		<div class="clearfix page-404">	
+					
+					<div class="box three first">
+						<span class="icon-address"></span>
+					</div>
+
+					<div class="box two-three last">
+						<h1>404</h1>
+
+						<p>Apologies, but the page you requested could not be found. Perhaps searching will help.</p>
+
+						<form method="get" id="searchform" action="https://astronomy-imaging-camera.com/"  class="showtextback rt_form">
+<ul>
+    <li><input type="text" class='search showtextback' value="type and hit enter.." name="s" id="s" /></li>
+</ul>
+</form>
+<div class="space margin-b20"></div>					</div>
+
+				</div>
+
+
+			</div>
+		</section><!-- / end section .content -->   
+	</section>
+</section>
+							
+	
+				</div><!-- / end div .content_area -->  
+
+				<div class="content_footer footer_widgets_holder"><section class="footer_widgets clearfix"><div class="row clearfix footer_widgets_row"><div id="footer-column-1" class="box one"><div class="box one footer clearfix widget widget_text"><div class="caption"><h3 class="featured_article_title">Deep-Sky imaging</h3></div><div class="space margin-b20"></div>			<div class="textwidget"><p style="text-align: justify; font-weight: 200;">Famous  low noise cooled ZWO ASI cameras. Color or Mono CMOS sensors to be cooled to 35C to 40C degrees below ambient! <a title="Deep sky astrography" href="//astronomy-imaging-camera.com/product-category/asi-cooled-cameras/">more <span class="icon-right-open" style="font-size:10px"></span></a></p>
+</div>
+		</div></div></div></section></div>
+
+	        </div><!-- / end div .content_second_background -->  
+	    </div><!-- / end div .content_holder -->  
+	</div><!-- end div #container --> 
+
+    <!-- footer -->
+    <footer id="footer">
+     
+        <!-- footer info -->
+        <div class="footer_info">       
+                
+            <!-- left side -->
+            <div class="part1">
+
+					<!-- footer nav -->
+										    				    
+					<!-- copyright text -->
+					<div class="copyright"><script data-cfasync="false" src="/cdn-cgi/scripts/5c5dd728/cloudflare-static/email-decode.min.js"></script><script type="text/javascript" src="https://admins.api.cn.zwo.biz/api/v1/footer/copyright.js"></script>
+<script type="text/javascript">
+  var ZWOFooterRefreshRequest = ZWOFooter(document.getElementsByClassName('footer_info')[0], function () {
+    return 'en';
+  });
+
+jQuery(".menu > li > a").addClass("menu_a_ele")
+</script>
+</script>					</div><!-- / end div .copyright -->	            
+                
+            </div><!-- / end div .part1 -->
+            
+			<!-- social media icons -->				
+			<ul class="social_media"><li class="mail"><a class="icon-mail" target="_blank" href="/cdn-cgi/l/email-protection#99f0f7fff6d9e3eef6e9edf0faf8f5b7faf6f4" title="Email"><span>E-mail</span></a></li><li class="facebook"><a class="icon-facebook" target="_blank" href="https://www.facebook.com/ZwoDesignAstronomyCameras" title="Facebook"><span>Facebook</span></a></li></ul><!-- / end ul .social_media_icons -->
+
+        </div><!-- / end div .footer_info -->
+            
+    </footer>
+    <!-- / footer -->
+
+
+<!-- Google Tag Manager (noscript) -->
+<noscript><iframe src="https://www.googletagmanager.com/ns.html?id=GTM-578V74R"
+height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
+<!-- End Google Tag Manager (noscript) -->  
+
+<script data-cfasync="false" src="/cdn-cgi/scripts/5c5dd728/cloudflare-static/email-decode.min.js"></script><script type="text/javascript" src="https://astronomy-imaging-camera.com/wp-content/plugins/ppm-accordion/js/ppm-accordion-active.js?ver=1.0" id="ppm-accordion-plugin-script-active-js"></script>
+<script type="text/javascript" id="wc-add-to-cart-js-extra">
+/* <![CDATA[ */
+var wc_add_to_cart_params = {"ajax_url":"\/wp-admin\/admin-ajax.php","wc_ajax_url":"\/wp-content\/uploads\/071QE.jpg?wc-ajax=%%endpoint%%","i18n_view_cart":"View Cart","cart_url":"https:\/\/astronomy-imaging-camera.com\/cart\/","is_cart":"","cart_redirect_after_add":"no"};
+/* ]]> */
+</script>
+<script type="text/javascript" src="//astronomy-imaging-camera.com/wp-content/plugins/woocommerce/assets/js/frontend/add-to-cart.min.js?ver=2.5.5" id="wc-add-to-cart-js"></script>
+<script type="text/javascript" src="//astronomy-imaging-camera.com/wp-content/plugins/woocommerce/assets/js/jquery-blockui/jquery.blockUI.min.js?ver=2.70" id="jquery-blockui-js"></script>
+<script type="text/javascript" id="woocommerce-js-extra">
+/* <![CDATA[ */
+var woocommerce_params = {"ajax_url":"\/wp-admin\/admin-ajax.php","wc_ajax_url":"\/wp-content\/uploads\/071QE.jpg?wc-ajax=%%endpoint%%"};
+/* ]]> */
+</script>
+<script type="text/javascript" src="//astronomy-imaging-camera.com/wp-content/plugins/woocommerce/assets/js/frontend/woocommerce.min.js?ver=2.5.5" id="woocommerce-js"></script>
+<script type="text/javascript" src="//astronomy-imaging-camera.com/wp-content/plugins/woocommerce/assets/js/jquery-cookie/jquery.cookie.min.js?ver=1.4.1" id="jquery-cookie-js"></script>
+<script type="text/javascript" id="wc-cart-fragments-js-extra">
+/* <![CDATA[ */
+var wc_cart_fragments_params = {"ajax_url":"\/wp-admin\/admin-ajax.php","wc_ajax_url":"\/wp-content\/uploads\/071QE.jpg?wc-ajax=%%endpoint%%","fragment_name":"wc_fragments"};
+/* ]]> */
+</script>
+<script type="text/javascript" src="//astronomy-imaging-camera.com/wp-content/plugins/woocommerce/assets/js/frontend/cart-fragments.min.js?ver=2.5.5" id="wc-cart-fragments-js"></script>
+<script type="text/javascript" id="spu-public-js-extra">
+/* <![CDATA[ */
+var spuvar = {"is_admin":"","disable_style":"","ajax_mode":"1","ajax_url":"https:\/\/astronomy-imaging-camera.com\/wp-admin\/admin-ajax.php","ajax_mode_url":"http:\/\/astronomy-imaging-camera.com\/?spu_action=spu_load","pid":"0","is_front_page":"","is_category":"","site_url":"http:\/\/astronomy-imaging-camera.com","is_archive":"","is_search":"","is_preview":"","seconds_confirmation_close":"5"};
+var spuvar_social = {"facebook":"1"};
+/* ]]> */
+</script>
+<script type="text/javascript" src="https://astronomy-imaging-camera.com/wp-content/plugins/popups/public/assets/js/public.js?ver=1.9.3.8" id="spu-public-js"></script>
+<script type="text/javascript" src="https://astronomy-imaging-camera.com/wp-content/themes/rttheme18/js/jquery.easing.1.3.js?ver=6.5.8" id="jquery-easing-js"></script>
+<script type="text/javascript" src="https://astronomy-imaging-camera.com/wp-content/themes/rttheme18/js/jquery.tools.min.js?ver=6.5.8" id="jquery-tools-js"></script>
+<script type="text/javascript" src="https://astronomy-imaging-camera.com/wp-content/themes/rttheme18/js/waypoints.min.js?ver=6.5.8" id="waypoints-js"></script>
+<script type="text/javascript" src="https://astronomy-imaging-camera.com/wp-content/themes/rttheme18/js/video_player/mediaelement-and-player.min.js?ver=6.5.8" id="mediaelement-and-player-js"></script>
+<script type="text/javascript" src="https://astronomy-imaging-camera.com/wp-content/themes/rttheme18/js/lightbox/js/jackbox-packed.min.js?ver=6.5.8" id="jackbox-js"></script>
+<script type="text/javascript" src="https://astronomy-imaging-camera.com/wp-content/themes/rttheme18/js/colortip-1.0-jquery.js?ver=6.5.8" id="colortip-js-js"></script>
+<script type="text/javascript" src="https://astronomy-imaging-camera.com/wp-content/themes/rttheme18/js/jquery.flexslider.js?ver=6.5.8" id="flex-slider-js"></script>
+<script type="text/javascript" id="rt-theme-scripts-js-extra">
+/* <![CDATA[ */
+var rt_theme_params = {"ajax_url":"https:\/\/astronomy-imaging-camera.com\/wp-admin\/admin-ajax.php","rttheme_template_dir":"http:\/\/astronomy-imaging-camera.com\/wp-content\/themes\/rttheme18","sticky_logo":"on","content_animations":"","page_loading":""};
+/* ]]> */
+</script>
+<script type="text/javascript" src="https://astronomy-imaging-camera.com/wp-content/themes/rttheme18/js/script.js?ver=6.5.8" id="rt-theme-scripts-js"></script>
+<script type="text/javascript" src="https://astronomy-imaging-camera.com/wp-content/themes/rttheme18/js/owl.carousel.min.js?ver=6.5.8" id="jquery-owl-carousel-js"></script>
+</body>
+</html>

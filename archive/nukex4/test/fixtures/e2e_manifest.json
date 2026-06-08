@@ -1,0 +1,42 @@
+{
+  "schema_version": 1,
+  "description": "Phase 7 E2E validation corpus. Extend as more test datasets become available. Only NGC7635 LRGB-mono is currently configured; other cases are placeholders marked skip:true.",
+  "cases": [
+    {
+      "name": "lrgb_mono_ngc7635",
+      "filter_class_expected": "LRGB-mono",
+      "light_dir": "/mnt/qnap/astro_data/NGC7635/L/Lights",
+      "flat_dir": "",
+      "primary_stretch": 0,
+      "primary_stretch_label": "Auto",
+      "finishing_stretch": 0,
+      "finishing_stretch_label": "None",
+      "wall_time_budget_s": 900,
+      "min_frames_ok_alignment": 65,
+      "dropdown_sweep": [
+        { "primary_stretch": 2, "label": "GHS" },
+        { "primary_stretch": 3, "label": "MTF" },
+        { "primary_stretch": 4, "label": "ArcSinh" }
+      ]
+    },
+    {
+      "name": "bayer_rgb_placeholder",
+      "skip": true,
+      "skip_reason": "no Bayer-RGB test corpus configured on this machine"
+    },
+    {
+      "name": "narrowband_placeholder",
+      "skip": true,
+      "skip_reason": "no narrowband LRGB test corpus configured on this machine"
+    },
+    {
+      "name": "lrgb_mono_large_stress_placeholder",
+      "skip": true,
+      "skip_reason": "no large-frame-count stress corpus configured on this machine"
+    }
+  ],
+  "phaseB_baseline_file": "phaseB_baseline_ms.txt",
+  "phaseB_speedup_min": 1.5,
+  "output_root": "/tmp/nukex_e2e",
+  "golden_dir": "test/fixtures/golden"
+}
