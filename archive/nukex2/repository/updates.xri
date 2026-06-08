@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<xri version="1.0" xmlns="http://www.pixinsight.com/xri" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://www.pixinsight.com/xri http://pixinsight.com/xri/xri-1.0.xsd">
+   <description>
+      <p>
+         <b>NukeX Update Repository</b>
+      </p>
+      <p>
+         Intelligent region-aware processing for PixInsight by Scott Carter.
+      </p>
+   </description>
+   <platform os="linux" arch="x64" version="1.8.0:1.9.9">
+      <package fileName="20260118-linux-x64-NukeX.tar.gz" sha1="92a04428d539147aa89059687396980a91de46b0" type="module" releaseDate="20260118">
+         <title>NukeX 1.1.0 - Intelligent Astrophotography Processing</title>
+         <description>
+            <p>
+               <b>NukeX - Intelligent Region-Aware Processing for PixInsight</b>
+            </p>
+            <p>
+               NukeX provides two powerful processes for astrophotography:
+            </p>
+            <ul>
+               <li>
+                  <b>NukeX</b> - Region-aware image stretching using AI segmentation.
+               </li>
+               <li>
+                  <b>NukeXStack</b> - Intelligent pixel selection for subframe integration with automatic pre-stretching of linear data.
+               </li>
+            </ul>
+            <p>
+               <b>New in 1.1.0:</b> NukeXStack now supports pre-stretching linear subframes before integration.
+            </p>
+            <p>
+               Copyright (c) 2026 Scott Carter. All Rights Reserved.
+            </p>
+         </description>
+      </package>
+   </platform>
+</xri>
+<Signature developerId="scarter4work" timestamp="2026-01-19T20:04:43.652Z" encoding="Base64">CLQ/cxVX9TDJ251vOXy/auon38mxN+NvQgxhehQ09fr19yswD9sP5L8TeZyMtSz59oJMI2snt9GGDjQ6A5loAA==</Signature>
