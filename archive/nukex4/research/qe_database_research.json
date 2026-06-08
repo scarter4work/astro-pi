@@ -1,0 +1,2354 @@
+{
+  "_meta": {
+    "researched_at": "2026-04-26",
+    "researcher": "Claude Code research agent (Sony-sensor-first scope, broader-coverage replacement)",
+    "data_status": "complete",
+    "cameras_covered": 55,
+    "filters_covered": 87,
+    "sensors_covered": 22,
+    "gaps": [
+      "Sony IMX571 mono OSC color values: green channel inferred ~95% of mono peak, red/blue ~85% — need direct OSC absolute-QE plots to confirm.",
+      "IMX455 wavelength-specific QE is partly inferred; lab papers (Gill et al., Alarcon et al.) report Halpha 50-55% — used midpoint 50/55%, not text-quoted at every wavelength.",
+      "IMX226, IMX492 detailed wavelength values are interpolated from typical STARVIS curves rather than text-published; confidence: low.",
+      "Older Sony CCDs (ICX805) have only relative-shape data published in text form; absolute wavelength values estimated from EXview HAD II family curves.",
+      "Astrodon LRGB Gen2 E-series exact passbands are inferred from text descriptions (the 'about 60 nm wide red' claim); precise band edges not text-published.",
+      "Chroma 8 nm Halpha and 8 nm SII filters: existence confirmed but precise transmission values not text-published.",
+      "Baader UHC-S exact dual-passband edges inferred from descriptive text; full transmission curve only available as plot.",
+      "IDAS LPS D1/D2/D3 exact passband shapes are inferred from review text; precise band edges only published as plots.",
+      "Canon EOS Ra: Canon does not publish QE numbers — entries are estimates from typical Canon BSI behavior + astro-mod 4x Halpha factor.",
+      "Several mono variants (e.g. IMX294 mono) have peak QE published but per-wavelength values inferred from RGB envelope.",
+      "Player One Apollo / Ares specific QE numbers not text-published — inherit from sensor entry only."
+    ],
+    "methodology_notes": "Sony IMX sensor-level data captured first; per-camera entries inherit from sensor data with confidence: medium where the chip + IR-cut stack is comparable. Wavelengths: 486 nm = Hbeta, 501 nm = OIII, 656 nm = Halpha, 672 nm = SII. Image-only sources (.jpg/.png/.webp/.pdf) were strictly AVOIDED per crash-safety rule (no Read on .jpg/.png/.webp/.pdf was performed at any point). Values come exclusively from manufacturer HTML spec text, sensor datasheet text excerpts, and reputable third-party text references (QHYCCD published measurements, ZWO product pages, Cloudy Nights threads transcribing manufacturer numbers, astrojolo.com, Atik Cameras spec text, Player One/Optolong/Baader/Antlia spec pages). Inferences for color OSC chips: when only mono peak QE is text-known, OSC channel QE estimated from typical Bayer dye-stack absorption (red/blue ~85% of mono peak, green ~95%) and noted with confidence: medium plus explicit inference notes. The four salvage entries (ASI585MC, ASI585MM, QHY268M, ASI294MC) carry their original source URLs (including the .jpg URLs) for traceability — but those images were never re-Read by this agent. Same-sensor inference is the dominant strategy: per-camera entries with qe_inherits_from_sensor: true should be looked up via sensors[<sensor>].qe."
+  },
+  "sensors": {
+    "IMX585": {
+      "manufacturer": "Sony Semiconductor",
+      "type": "both-variants",
+      "format": "Type 1/1.2 (4/3 class) BSI CMOS, 3856x2180, 2.9um pixel, STARVIS 2",
+      "qe": {
+        "486": { "R": 0.03, "Gr": 0.65, "Gb": 0.65, "B": 0.70, "mono_pk": 0.85 },
+        "501": { "R": 0.03, "Gr": 0.85, "Gb": 0.85, "B": 0.50, "mono_pk": 0.912 },
+        "656": { "R": 0.73, "Gr": 0.32, "Gb": 0.32, "B": 0.03, "mono_pk": 0.809 },
+        "672": { "R": 0.71, "Gr": 0.33, "Gb": 0.33, "B": 0.05, "mono_pk": 0.787 }
+      },
+      "peak_qe_pct": 91,
+      "peak_qe_wavelength_nm": 525,
+      "source_urls": [
+        "https://www.qhyccd.com/quantum-efficiency-performance-of-the-imx585-sensor-in-the-minicam8/",
+        "https://www.zwoastro.com/product/asi585mc-pro/"
+      ],
+      "confidence": "high",
+      "notes": "Color values from ASI585MC absolute QE plot extraction (salvaged). Mono values from QHYCCD miniCAM8M (IMX585 mono) measurements: explicit at 501.0/656.3/671.6 nm. 486 nm mono interpolated. STARVIS 2 family."
+    },
+    "IMX571": {
+      "manufacturer": "Sony Semiconductor",
+      "type": "both-variants",
+      "format": "APS-C BSI CMOS, 6248x4176, 3.76um pixel",
+      "qe": {
+        "486": { "R": 0.07, "Gr": 0.78, "Gb": 0.78, "B": 0.86, "mono_pk": 0.89 },
+        "501": { "R": 0.08, "Gr": 0.89, "Gb": 0.89, "B": 0.60, "mono_pk": 0.90 },
+        "656": { "R": 0.46, "Gr": 0.05, "Gb": 0.05, "B": 0.04, "mono_pk": 0.50 },
+        "672": { "R": 0.42, "Gr": 0.05, "Gb": 0.05, "B": 0.05, "mono_pk": 0.46 }
+      },
+      "peak_qe_pct": 91,
+      "peak_qe_wavelength_nm": 540,
+      "source_urls": [
+        "https://www.qhyccd.com/measuring-the-absolute-qe-of-the-qhy268m/",
+        "https://www.qhyccd.com/scientific-camera-qhy268m-pro/",
+        "https://www.zwoastro.com/product/asi2600mm-pro/"
+      ],
+      "confidence": "high",
+      "notes": "Mono values from QHY268M absolute-QE curve extraction (salvaged). QHY confirmed text-published 'OIII at least 87%, peak at least 90%'. OSC R/G/B inferred from typical Bayer dye-stack: green ~95% of mono peak, red/blue ~85%. Used in ASI2600MC/MM, QHY268C/M, Player One Poseidon, ATIK ATR3-26000, QSI 726, and others."
+    },
+    "IMX455": {
+      "manufacturer": "Sony Semiconductor",
+      "type": "both-variants",
+      "format": "Full-frame (35mm) BSI CMOS, 9576x6388, 3.76um pixel, 61.17 MP",
+      "qe": {
+        "486": { "R": 0.07, "Gr": 0.77, "Gb": 0.77, "B": 0.85, "mono_pk": 0.88 },
+        "501": { "R": 0.08, "Gr": 0.86, "Gb": 0.86, "B": 0.58, "mono_pk": 0.88 },
+        "656": { "R": 0.50, "Gr": 0.05, "Gb": 0.05, "B": 0.04, "mono_pk": 0.55 },
+        "672": { "R": 0.47, "Gr": 0.05, "Gb": 0.05, "B": 0.05, "mono_pk": 0.50 }
+      },
+      "peak_qe_pct": 90,
+      "peak_qe_wavelength_nm": 540,
+      "source_urls": [
+        "https://www.qhyccd.com/scientific-camera-qhy600pro-imx455/",
+        "https://www.cloudynights.com/topic/798063-quantum-efficiency-of-the-sony-imx455-in-qhy600-and-imx492-in-qhy294/",
+        "https://www.atik-cameras.com/news/sony-imx455-sensor-complete-technical-guide/"
+      ],
+      "confidence": "medium",
+      "notes": "Same 3.76um pixel architecture as IMX571, scaled to 35mm full frame. Mono peak QHY-published 90%; ZWO ASI6200MM published 91%. Halpha QE measured at ~50-55% via lab work (Gill et al., Alarcon et al., Cloudy Nights). OSC R/G/B inferred via Bayer stack typical attenuation."
+    },
+    "IMX410": {
+      "manufacturer": "Sony Semiconductor",
+      "type": "OSC",
+      "format": "Full-frame (36x24mm) BSI CMOS, 6064x4040, 5.94um pixel, 24.6 MP",
+      "qe": {
+        "486": { "R": 0.05, "Gr": 0.65, "Gb": 0.65, "B": 0.74 },
+        "501": { "R": 0.06, "Gr": 0.78, "Gb": 0.78, "B": 0.50 },
+        "656": { "R": 0.62, "Gr": 0.05, "Gb": 0.05, "B": 0.04 },
+        "672": { "R": 0.58, "Gr": 0.05, "Gb": 0.05, "B": 0.05 }
+      },
+      "peak_qe_pct": 80,
+      "peak_qe_wavelength_nm": 530,
+      "source_urls": [
+        "https://astrofactors.com/products/qhy410c",
+        "https://www.zwoastro.com/product/asi2400mc-pro/",
+        "https://www.sony-semicon.com/files/62/pdf/p-13_IMX410CQK_Flyer.pdf"
+      ],
+      "confidence": "medium",
+      "notes": "Used in QHY410C, ASI2400MC, Nikon Z6, Sony A7 III. Peak QE 80% (back-illuminated). No mono variant exists. OSC values inferred from typical Bayer stack against 80% peak."
+    },
+    "IMX294": {
+      "manufacturer": "Sony Semiconductor",
+      "type": "both-variants",
+      "format": "Type 4/3 BSI CMOS, 4144x2822, 4.63um pixel, 11.65 MP",
+      "qe": {
+        "486": { "R": 0.04, "Gr": 0.41, "Gb": 0.41, "B": 0.55, "mono_pk": 0.66 },
+        "501": { "R": 0.045, "Gr": 0.64, "Gb": 0.64, "B": 0.38, "mono_pk": 0.71 },
+        "656": { "R": 0.59, "Gr": 0.03, "Gb": 0.03, "B": 0.02, "mono_pk": 0.52 },
+        "672": { "R": 0.56, "Gr": 0.04, "Gb": 0.04, "B": 0.03, "mono_pk": 0.48 }
+      },
+      "peak_qe_pct": 75,
+      "peak_qe_wavelength_nm": 530,
+      "source_urls": [
+        "https://astronomy-imaging-camera.com/product/asi294mc-pro",
+        "https://www.sony-semicon.com/files/62/flyer_security/IMX294CJK_Flyer.pdf"
+      ],
+      "confidence": "medium",
+      "notes": "Color values from ASI294MC plot extraction (salvaged). Mono values for IMX294MM-equivalent inferred — IMX294 in mono variant adds ~5-10% over color green channel. 4-corner color filter pattern (close to RGGB)."
+    },
+    "IMX464": {
+      "manufacturer": "Sony Semiconductor",
+      "type": "OSC",
+      "format": "Type 1/1.8 BSI CMOS, 2712x1538, 2.9um pixel, 4.2 MP, STARVIS",
+      "qe": {
+        "486": { "R": 0.04, "Gr": 0.70, "Gb": 0.70, "B": 0.81 },
+        "501": { "R": 0.04, "Gr": 0.85, "Gb": 0.85, "B": 0.56 },
+        "656": { "R": 0.74, "Gr": 0.05, "Gb": 0.05, "B": 0.04 },
+        "672": { "R": 0.72, "Gr": 0.05, "Gb": 0.05, "B": 0.05 }
+      },
+      "peak_qe_pct": 91,
+      "peak_qe_wavelength_nm": 525,
+      "source_urls": [
+        "https://player-one-astronomy.com/product/neptune-c-ii-usb3-0-color-camera-imx464/",
+        "https://astronomy-imaging-camera.com/product/asi464mc"
+      ],
+      "confidence": "medium",
+      "notes": "Player One reports peak QE ~91%. Higher NIR sensitivity than IMX462 (deeper photodiode wells)."
+    },
+    "IMX462": {
+      "manufacturer": "Sony Semiconductor",
+      "type": "OSC",
+      "format": "Type 1/2.8 BSI CMOS, 1944x1096, 2.9um pixel, 2.1 MP, STARVIS",
+      "qe": {
+        "486": { "R": 0.04, "Gr": 0.62, "Gb": 0.62, "B": 0.76 },
+        "501": { "R": 0.04, "Gr": 0.81, "Gb": 0.81, "B": 0.50 },
+        "656": { "R": 0.72, "Gr": 0.05, "Gb": 0.05, "B": 0.04 },
+        "672": { "R": 0.70, "Gr": 0.05, "Gb": 0.05, "B": 0.05 }
+      },
+      "peak_qe_pct": 87,
+      "peak_qe_wavelength_nm": 530,
+      "source_urls": [
+        "https://player-one-astronomy.com/product/mars-color-camera/",
+        "https://astronomy-imaging-camera.com/product/asi462mccolor/",
+        "https://www.qhyccd.com/planetary-camera-qhy5iii462c/"
+      ],
+      "confidence": "medium",
+      "notes": "Sixth-gen Sony Exmor R with deeper pixels. Excellent NIR response (~50% at 850nm). Peak QE typically 80-87% depending on source. Used in ASI462MC, QHY5III462C, Player One Mars-C/Mars-M-II."
+    },
+    "IMX178": {
+      "manufacturer": "Sony Semiconductor",
+      "type": "both-variants",
+      "format": "Type 1/1.8 BSI CMOS, 3096x2080, 2.4um pixel, 6.4 MP, STARVIS",
+      "qe": {
+        "486": { "R": 0.04, "Gr": 0.55, "Gb": 0.55, "B": 0.65, "mono_pk": 0.81 },
+        "501": { "R": 0.05, "Gr": 0.74, "Gb": 0.74, "B": 0.45, "mono_pk": 0.81 },
+        "656": { "R": 0.61, "Gr": 0.04, "Gb": 0.04, "B": 0.03, "mono_pk": 0.55 },
+        "672": { "R": 0.58, "Gr": 0.05, "Gb": 0.05, "B": 0.04, "mono_pk": 0.50 }
+      },
+      "peak_qe_pct": 81,
+      "peak_qe_wavelength_nm": 530,
+      "source_urls": [
+        "https://astronomy-imaging-camera.com/product/asi178mm-mono/",
+        "https://www.altairastro.help/sensor/sony-imx178/"
+      ],
+      "confidence": "medium",
+      "notes": "Peak QE typically reported 81% mono. Color version Bayer-attenuated. Older STARVIS generation."
+    },
+    "IMX183": {
+      "manufacturer": "Sony Semiconductor",
+      "type": "both-variants",
+      "format": "Type 1 BSI CMOS, 5544x3694, 2.4um pixel, 20.18 MP",
+      "qe": {
+        "486": { "R": 0.04, "Gr": 0.58, "Gb": 0.58, "B": 0.70, "mono_pk": 0.84 },
+        "501": { "R": 0.05, "Gr": 0.78, "Gb": 0.78, "B": 0.50, "mono_pk": 0.84 },
+        "656": { "R": 0.62, "Gr": 0.04, "Gb": 0.04, "B": 0.03, "mono_pk": 0.62 },
+        "672": { "R": 0.58, "Gr": 0.04, "Gb": 0.04, "B": 0.04, "mono_pk": 0.55 }
+      },
+      "peak_qe_pct": 84,
+      "peak_qe_wavelength_nm": 535,
+      "source_urls": [
+        "https://us.zwoastro.com/products/asi183mm-mc",
+        "https://www.zwoastro.com/product/asi183/"
+      ],
+      "confidence": "medium",
+      "notes": "ZWO product page: peak QE 84%, Halpha QE >60% (matches 62% estimate). Color and mono use same chip, color attenuated by Bayer."
+    },
+    "IMX174": {
+      "manufacturer": "Sony Semiconductor",
+      "type": "mono",
+      "format": "Type 1/1.2 global-shutter CMOS, 1936x1216, 5.86um pixel, 2.3 MP, Pregius Gen1",
+      "qe": {
+        "486": { "mono": 0.71 },
+        "501": { "mono": 0.74 },
+        "656": { "mono": 0.55 },
+        "672": { "mono": 0.50 }
+      },
+      "peak_qe_pct": 78,
+      "peak_qe_wavelength_nm": 530,
+      "source_urls": [
+        "https://telescopes.net/zwo-asi174mm-monochrome-cmos-cooled-camera.html",
+        "https://rouzastro.com/off-axis-guiding-imx174-based-guide-cameras-from-zwo-and-qhyccd/"
+      ],
+      "confidence": "medium",
+      "notes": "Pregius global-shutter CMOS. Peak QE 77-78% mono. Excellent for guiding/lucky-imaging. Wavelength QE estimates from typical Pregius spectral response shape."
+    },
+    "IMX533": {
+      "manufacturer": "Sony Semiconductor",
+      "type": "both-variants",
+      "format": "Type 1 (square) BSI CMOS, 3008x3008, 3.76um pixel, 9.0 MP",
+      "qe": {
+        "486": { "R": 0.07, "Gr": 0.77, "Gb": 0.77, "B": 0.86, "mono_pk": 0.87 },
+        "501": { "R": 0.08, "Gr": 0.85, "Gb": 0.85, "B": 0.55, "mono_pk": 0.91 },
+        "656": { "R": 0.50, "Gr": 0.05, "Gb": 0.05, "B": 0.04, "mono_pk": 0.55 },
+        "672": { "R": 0.47, "Gr": 0.05, "Gb": 0.05, "B": 0.05, "mono_pk": 0.50 }
+      },
+      "peak_qe_pct": 91,
+      "peak_qe_wavelength_nm": 540,
+      "source_urls": [
+        "https://agenaastro.com/zwo-asi533mc-cmos-color-astronomy-camera.html",
+        "https://www.highpointscientific.com/zwo-asi533mc-usb-3-color-cmos-astronomy-camera-asi533mc"
+      ],
+      "confidence": "medium",
+      "notes": "ZWO published: ASI533MM peak QE >91%, ASI533MC peak QE >80%. Same fab as IMX571 family. Square 1-inch sensor. Used in ASI533MC/MM, Player One Saturn-C."
+    },
+    "IMX676": {
+      "manufacturer": "Sony Semiconductor",
+      "type": "both-variants",
+      "format": "Type 1/1.6 (square) BSI CMOS, 3552x3552, 2.0um pixel, 12.6 MP, STARVIS 2",
+      "qe": {
+        "486": { "R": 0.05, "Gr": 0.66, "Gb": 0.66, "B": 0.75, "mono_pk": 0.78 },
+        "501": { "R": 0.06, "Gr": 0.78, "Gb": 0.78, "B": 0.50, "mono_pk": 0.83 },
+        "656": { "R": 0.60, "Gr": 0.05, "Gb": 0.05, "B": 0.04, "mono_pk": 0.55 },
+        "672": { "R": 0.57, "Gr": 0.05, "Gb": 0.05, "B": 0.05, "mono_pk": 0.50 }
+      },
+      "peak_qe_pct": 83,
+      "peak_qe_wavelength_nm": 530,
+      "source_urls": [
+        "https://www.bhphotovideo.com/c/product/1944371-REG/zwo_asi676mm_zwo.html",
+        "https://www.sony-semicon.com/files/62/flyer_security/IMX676-AACR1_Flyer.pdf"
+      ],
+      "confidence": "medium",
+      "notes": "STARVIS 2. ZWO measured peak QE 83% mono. Square 1/1.6\" form factor. Used in ASI676MM/MC."
+    },
+    "IMX678": {
+      "manufacturer": "Sony Semiconductor",
+      "type": "both-variants",
+      "format": "Type 1/1.8 BSI CMOS, 3840x2160, 2.0um pixel, 8.29 MP, STARVIS 2",
+      "qe": {
+        "486": { "R": 0.05, "Gr": 0.66, "Gb": 0.66, "B": 0.76, "mono_pk": 0.78 },
+        "501": { "R": 0.06, "Gr": 0.78, "Gb": 0.78, "B": 0.51, "mono_pk": 0.83 },
+        "656": { "R": 0.62, "Gr": 0.05, "Gb": 0.05, "B": 0.04, "mono_pk": 0.55 },
+        "672": { "R": 0.59, "Gr": 0.05, "Gb": 0.05, "B": 0.05, "mono_pk": 0.50 }
+      },
+      "peak_qe_pct": 83,
+      "peak_qe_wavelength_nm": 530,
+      "source_urls": [
+        "https://www.bhphotovideo.com/c/product/1824013-REG/zwo_asi678mc_usb3_0_color_astronomy.html",
+        "https://www.sony-semicon.com/files/62/flyer_security/IMX678-AAQR_AAQR1_Flyer.pdf"
+      ],
+      "confidence": "medium",
+      "notes": "STARVIS 2 family with IMX676. Peak QE 83%. Used in ASI678MC/MM, Player One Apollo-C/M."
+    },
+    "IMX485": {
+      "manufacturer": "Sony Semiconductor",
+      "type": "OSC",
+      "format": "Type 1/1.2 BSI CMOS, 3840x2160, 2.9um pixel, 8.29 MP, STARVIS",
+      "qe": {
+        "486": { "R": 0.04, "Gr": 0.64, "Gb": 0.64, "B": 0.78 },
+        "501": { "R": 0.04, "Gr": 0.81, "Gb": 0.81, "B": 0.52 },
+        "656": { "R": 0.66, "Gr": 0.05, "Gb": 0.05, "B": 0.04 },
+        "672": { "R": 0.62, "Gr": 0.05, "Gb": 0.05, "B": 0.05 }
+      },
+      "peak_qe_pct": 85,
+      "peak_qe_wavelength_nm": 530,
+      "source_urls": [
+        "https://astronomy-imaging-camera.com/product/asi485mc/",
+        "https://i.zwoastro.com/zwo-website/manuals/ASI485_Manual_EN_V1.0.pdf"
+      ],
+      "confidence": "medium",
+      "notes": "ZWO published peak QE 85% at 530nm. STARVIS first generation. Color-only (no mono variant produced for astro)."
+    },
+    "IMX264": {
+      "manufacturer": "Sony Semiconductor",
+      "type": "both-variants",
+      "format": "Type 2/3 global-shutter CMOS, 2448x2048, 3.45um pixel, 5.0 MP, Pregius Gen2",
+      "qe": {
+        "486": { "mono": 0.66 },
+        "501": { "mono": 0.69 },
+        "656": { "mono": 0.45 },
+        "672": { "mono": 0.40 }
+      },
+      "peak_qe_pct": 70,
+      "peak_qe_wavelength_nm": 540,
+      "source_urls": [
+        "https://www.e-consystems.com/sony-imx264-camera.asp",
+        "https://framos.com/products/sensors/area-sensors/imx264lqr-c-18254/"
+      ],
+      "confidence": "medium",
+      "notes": "Sony Pregius Gen2 global-shutter. Peak QE ~70%. Used in QHY264, ASI264MM, machine-vision applications."
+    },
+    "IMX226": {
+      "manufacturer": "Sony Semiconductor",
+      "type": "OSC",
+      "format": "Type 1/1.7 CMOS, 4072x3046, 1.85um pixel, 12.4 MP, STARVIS",
+      "qe": {
+        "486": { "R": 0.05, "Gr": 0.55, "Gb": 0.55, "B": 0.68 },
+        "501": { "R": 0.05, "Gr": 0.71, "Gb": 0.71, "B": 0.45 },
+        "656": { "R": 0.58, "Gr": 0.05, "Gb": 0.05, "B": 0.03 },
+        "672": { "R": 0.55, "Gr": 0.05, "Gb": 0.05, "B": 0.04 }
+      },
+      "peak_qe_pct": 75,
+      "peak_qe_wavelength_nm": 530,
+      "source_urls": [
+        "https://www.cloudynights.com/topic/798063-quantum-efficiency-of-the-sony-imx455-in-qhy600-and-imx492-in-qhy294/",
+        "https://machinevisionstore.com/catalog/details/1824"
+      ],
+      "confidence": "low",
+      "notes": "Older 1.85um pixel STARVIS. Often confused with IMX224. Peak QE estimates 75-80%."
+    },
+    "IMX224": {
+      "manufacturer": "Sony Semiconductor",
+      "type": "OSC",
+      "format": "Type 1/3 BSI CMOS, 1304x976, 3.75um pixel, 1.27 MP, STARVIS",
+      "qe": {
+        "486": { "R": 0.05, "Gr": 0.60, "Gb": 0.60, "B": 0.72 },
+        "501": { "R": 0.05, "Gr": 0.76, "Gb": 0.76, "B": 0.48 },
+        "656": { "R": 0.65, "Gr": 0.05, "Gb": 0.05, "B": 0.03 },
+        "672": { "R": 0.62, "Gr": 0.05, "Gb": 0.05, "B": 0.04 }
+      },
+      "peak_qe_pct": 80,
+      "peak_qe_wavelength_nm": 530,
+      "source_urls": [
+        "https://astronomy-imaging-camera.com/product/asi224mc",
+        "https://www.cloudynights.com/topic/798063-quantum-efficiency-of-the-sony-imx455-in-qhy600-and-imx492-in-qhy294/"
+      ],
+      "confidence": "medium",
+      "notes": "ZWO ASI224MC reported peak QE 80%. Original STARVIS. Excellent NIR response for planetary."
+    },
+    "IMX492": {
+      "manufacturer": "Sony Semiconductor",
+      "type": "both-variants",
+      "format": "Type 4/3 BSI CMOS, 8288x5644, 2.315um pixel, 47 MP",
+      "qe": {
+        "486": { "R": 0.04, "Gr": 0.55, "Gb": 0.55, "B": 0.65, "mono_pk": 0.70 },
+        "501": { "R": 0.05, "Gr": 0.65, "Gb": 0.65, "B": 0.40, "mono_pk": 0.72 },
+        "656": { "R": 0.55, "Gr": 0.04, "Gb": 0.04, "B": 0.03, "mono_pk": 0.50 },
+        "672": { "R": 0.52, "Gr": 0.04, "Gb": 0.04, "B": 0.04, "mono_pk": 0.45 }
+      },
+      "peak_qe_pct": 75,
+      "peak_qe_wavelength_nm": 530,
+      "source_urls": [
+        "https://www.cloudynights.com/topic/798063-quantum-efficiency-of-the-sony-imx455-in-qhy600-and-imx492-in-qhy294/"
+      ],
+      "confidence": "low",
+      "notes": "Used in QHY294C/M (Pro). Smaller-pixel relative of IMX294. QHY uses pixel-binning to expose either at full 47MP@2.315um or binned 11.7MP@4.63um. Peak QE estimated 70-75%."
+    },
+    "KAF-8300": {
+      "manufacturer": "Kodak/ON Semi",
+      "type": "mono",
+      "format": "Type 4/3 interline CCD, 3358x2536, 5.4um pixel, 8.5 MP",
+      "qe": {
+        "486": { "mono": 0.45 },
+        "501": { "mono": 0.50 },
+        "656": { "mono": 0.40 },
+        "672": { "mono": 0.36 }
+      },
+      "peak_qe_pct": 56,
+      "peak_qe_wavelength_nm": 540,
+      "source_urls": [
+        "https://www.onsemi.com/download/data-sheet/pdf/kaf-8300-d.pdf",
+        "https://www.robani.ch/KAF-8300ProductSummary.pdf"
+      ],
+      "confidence": "high",
+      "notes": "Kodak datasheet (now ON Semi): peak QE 56% at 540nm with microlens + AR glass. Used in Atik 383L+, QSI 583, Moravian G3-8300."
+    },
+    "KAF-16200": {
+      "manufacturer": "Kodak/ON Semi",
+      "type": "both-variants",
+      "format": "APS-H interline CCD, 4540x3624, 6.0um pixel, 16.4 MP",
+      "qe": {
+        "486": { "mono": 0.45 },
+        "501": { "mono": 0.50 },
+        "656": { "mono": 0.42 },
+        "672": { "mono": 0.38 }
+      },
+      "peak_qe_pct": 56,
+      "peak_qe_wavelength_nm": 540,
+      "source_urls": [
+        "https://www.cloudynights.com/topic/518791-kaf-16200-datasheet-released",
+        "https://stargazerslounge.com/topic/257490-kaf-16200-new-sensor-from-on-semi/"
+      ],
+      "confidence": "high",
+      "notes": "Kodak datasheet: peak QE 56% at 540nm. Used in Atik 16200, Moravian G3-16200, FLI Microline ML16200."
+    },
+    "ICX694": {
+      "manufacturer": "Sony Semiconductor",
+      "type": "both-variants",
+      "format": "Type 1 EXview HAD II CCD, 2750x2200, 4.54um pixel, 6.0 MP",
+      "qe": {
+        "486": { "mono": 0.65 },
+        "501": { "mono": 0.67 },
+        "656": { "mono": 0.65 },
+        "672": { "mono": 0.60 }
+      },
+      "peak_qe_pct": 77,
+      "peak_qe_wavelength_nm": 540,
+      "source_urls": [
+        "https://blog.astrofotky.cz/pavelpech/?p=864",
+        "https://astrojolo.com/gears/astrophotography-cameras-quantum-efficiency/"
+      ],
+      "confidence": "medium",
+      "notes": "EXview HAD II with very flat broadband response. Mono peak ~77%, OIII ~67%, Halpha ~65%. Used in Atik 460EX, QHY22, QSI660, Moravian G3."
+    },
+    "ICX805": {
+      "manufacturer": "Sony Semiconductor",
+      "type": "mono",
+      "format": "Type 1 EXview HAD II CCD, 3380x2704, 3.69um pixel, 9.1 MP",
+      "qe": {
+        "486": { "mono": 0.55 },
+        "501": { "mono": 0.60 },
+        "656": { "mono": 0.50 },
+        "672": { "mono": 0.45 }
+      },
+      "peak_qe_pct": 70,
+      "peak_qe_wavelength_nm": 540,
+      "source_urls": [
+        "https://blog.astrofotky.cz/pavelpech/?p=864"
+      ],
+      "confidence": "low",
+      "notes": "EXview HAD II. Used in QSI 690, Atik 490EX. QE estimates inferred from EXview HAD II family curves; precise numerical wavelength values not text-published."
+    }
+  },
+  "cameras": {
+    "asi585mc": {
+      "manufacturer": "ZWO",
+      "sensor": "IMX585",
+      "type": "OSC",
+      "bayer_pattern": "RGGB",
+      "qe_inherits_from_sensor": false,
+      "qe": {
+        "486": { "R": 0.03, "Gr": 0.65, "Gb": 0.65, "B": 0.70 },
+        "501": { "R": 0.03, "Gr": 0.85, "Gb": 0.85, "B": 0.50 },
+        "656": { "R": 0.73, "Gr": 0.32, "Gb": 0.32, "B": 0.03 },
+        "672": { "R": 0.71, "Gr": 0.33, "Gb": 0.33, "B": 0.05 }
+      },
+      "source_urls": [
+        "https://www.zwoastro.com/product/asi585mc-pro/"
+      ],
+      "confidence": "high",
+      "notes": "Salvaged from prior agent's ZWO absolute-QE plot extraction. Peak QE 91%."
+    },
+    "asi585mm": {
+      "manufacturer": "ZWO",
+      "sensor": "IMX585",
+      "type": "mono",
+      "bayer_pattern": null,
+      "qe_inherits_from_sensor": true,
+      "source_urls": [
+        "https://www.qhyccd.com/quantum-efficiency-performance-of-the-imx585-sensor-in-the-minicam8/",
+        "https://www.zwoastro.com/product/asi585mm-pro/"
+      ],
+      "confidence": "medium",
+      "notes": "Inherits IMX585 mono QE from sensor entry."
+    },
+    "qhy268m": {
+      "manufacturer": "QHYCCD",
+      "sensor": "IMX571",
+      "type": "mono",
+      "bayer_pattern": null,
+      "qe_inherits_from_sensor": false,
+      "qe": {
+        "486": { "mono": 0.89 },
+        "501": { "mono": 0.90 },
+        "656": { "mono": 0.50 },
+        "672": { "mono": 0.46 }
+      },
+      "source_urls": [
+        "https://www.qhyccd.com/measuring-the-absolute-qe-of-the-qhy268m/",
+        "https://www.qhyccd.com/scientific-camera-qhy268m-pro/"
+      ],
+      "confidence": "high",
+      "notes": "Salvaged QHY269M curve extraction; QHY explicitly published 'OIII at least 87%, peak at least 90%'."
+    },
+    "asi294mc": {
+      "manufacturer": "ZWO",
+      "sensor": "IMX294",
+      "type": "OSC",
+      "bayer_pattern": "RGGB",
+      "qe_inherits_from_sensor": false,
+      "qe": {
+        "486": { "R": 0.04, "Gr": 0.41, "Gb": 0.41, "B": 0.55 },
+        "501": { "R": 0.045, "Gr": 0.64, "Gb": 0.64, "B": 0.38 },
+        "656": { "R": 0.59, "Gr": 0.03, "Gb": 0.03, "B": 0.02 },
+        "672": { "R": 0.56, "Gr": 0.04, "Gb": 0.04, "B": 0.03 }
+      },
+      "source_urls": [
+        "https://astronomy-imaging-camera.com/product/asi294mc-pro"
+      ],
+      "confidence": "medium",
+      "notes": "Salvaged plot extraction; peak QE 75% applied. 4-corner color filter pattern treated as RGGB."
+    },
+    "asi294mm": {
+      "manufacturer": "ZWO",
+      "sensor": "IMX294",
+      "type": "mono",
+      "bayer_pattern": null,
+      "qe_inherits_from_sensor": true,
+      "source_urls": [
+        "https://astronomy-imaging-camera.com/product/asi294mm-pro/"
+      ],
+      "confidence": "medium",
+      "notes": "Inherits IMX294 mono envelope from sensor entry. ZWO published peak QE ~75-78% mono."
+    },
+    "asi2600mc": {
+      "manufacturer": "ZWO",
+      "sensor": "IMX571",
+      "type": "OSC",
+      "bayer_pattern": "RGGB",
+      "qe_inherits_from_sensor": true,
+      "source_urls": [
+        "https://www.zwoastro.com/product/asi2600mc-pro/",
+        "https://i.zwoastro.com/zwo-website/manuals/ZWO_ASI2600_Manual_EN.pdf"
+      ],
+      "confidence": "medium",
+      "notes": "Inherits IMX571 OSC. ZWO published peak QE ~80-91% (color version typically ~80%)."
+    },
+    "asi2600mm": {
+      "manufacturer": "ZWO",
+      "sensor": "IMX571",
+      "type": "mono",
+      "bayer_pattern": null,
+      "qe_inherits_from_sensor": true,
+      "source_urls": [
+        "https://www.zwoastro.com/product/asi2600mm-pro/",
+        "https://i.zwoastro.com/zwo-website/manuals/ZWO_ASI2600_Manual_EN.pdf"
+      ],
+      "confidence": "medium",
+      "notes": "Inherits IMX571 mono. ZWO peak QE 91%."
+    },
+    "qhy268c": {
+      "manufacturer": "QHYCCD",
+      "sensor": "IMX571",
+      "type": "OSC",
+      "bayer_pattern": "RGGB",
+      "qe_inherits_from_sensor": true,
+      "source_urls": [
+        "https://www.qhyccd.com/scientific-camera-qhy268c-pro/"
+      ],
+      "confidence": "medium",
+      "notes": "Inherits IMX571 OSC. Same chip as QHY268M and ASI2600MC."
+    },
+    "asi6200mc": {
+      "manufacturer": "ZWO",
+      "sensor": "IMX455",
+      "type": "OSC",
+      "bayer_pattern": "RGGB",
+      "qe_inherits_from_sensor": true,
+      "source_urls": [
+        "https://www.zwoastro.com/product/asi6200/",
+        "https://astronomics.com/products/zwo-asi6200mc-pro-usb-3-0-cooled-color-astronomy-imaging-camera"
+      ],
+      "confidence": "medium",
+      "notes": "Inherits IMX455 OSC. ZWO published peak QE 80% color version."
+    },
+    "asi6200mm": {
+      "manufacturer": "ZWO",
+      "sensor": "IMX455",
+      "type": "mono",
+      "bayer_pattern": null,
+      "qe_inherits_from_sensor": true,
+      "source_urls": [
+        "https://www.zwoastro.com/product/asi6200/",
+        "https://astronomics.com/products/zwo-asi6200mm-pro-usb-3-0-cooled-monochrome-astronomy-imaging-camera"
+      ],
+      "confidence": "medium",
+      "notes": "Inherits IMX455 mono. ZWO published peak QE 91%."
+    },
+    "qhy600m": {
+      "manufacturer": "QHYCCD",
+      "sensor": "IMX455",
+      "type": "mono",
+      "bayer_pattern": null,
+      "qe_inherits_from_sensor": true,
+      "source_urls": [
+        "https://www.qhyccd.com/scientific-camera-qhy600pro-imx455/",
+        "https://www.qhyccd.com/astronomical-camera-qhy600/"
+      ],
+      "confidence": "medium",
+      "notes": "Inherits IMX455 mono. QHY published peak QE 90%."
+    },
+    "qhy600c": {
+      "manufacturer": "QHYCCD",
+      "sensor": "IMX455",
+      "type": "OSC",
+      "bayer_pattern": "RGGB",
+      "qe_inherits_from_sensor": true,
+      "source_urls": [
+        "https://www.qhyccd.com/scientific-camera-qhy600pro-imx455/"
+      ],
+      "confidence": "medium",
+      "notes": "Inherits IMX455 OSC."
+    },
+    "asi2400mc": {
+      "manufacturer": "ZWO",
+      "sensor": "IMX410",
+      "type": "OSC",
+      "bayer_pattern": "RGGB",
+      "qe_inherits_from_sensor": true,
+      "source_urls": [
+        "https://www.zwoastro.com/product/asi2400mc-pro/"
+      ],
+      "confidence": "medium",
+      "notes": "Inherits IMX410 OSC. Peak QE 80%. Full-frame, 5.94um pixel."
+    },
+    "qhy128c": {
+      "manufacturer": "QHYCCD",
+      "sensor": "IMX410",
+      "type": "OSC",
+      "bayer_pattern": "RGGB",
+      "qe_inherits_from_sensor": true,
+      "source_urls": [
+        "https://astrofactors.com/products/qhy410c"
+      ],
+      "confidence": "medium",
+      "notes": "Same IMX410 chip as ASI2400MC, QHY410C. (QHY128C uses IMX410; QHY128A uses IMX128.)"
+    },
+    "qhy410c": {
+      "manufacturer": "QHYCCD",
+      "sensor": "IMX410",
+      "type": "OSC",
+      "bayer_pattern": "RGGB",
+      "qe_inherits_from_sensor": true,
+      "source_urls": [
+        "https://astrofactors.com/products/qhy410c"
+      ],
+      "confidence": "medium",
+      "notes": "Inherits IMX410. QHY published peak QE 80% with AR+AR coated optical window."
+    },
+    "qhy294c": {
+      "manufacturer": "QHYCCD",
+      "sensor": "IMX294",
+      "type": "OSC",
+      "bayer_pattern": "RGGB",
+      "qe_inherits_from_sensor": true,
+      "source_urls": [
+        "https://telescopes.net/qhyccd-qhy294c-sony-imx294-color-cmos-camera.html"
+      ],
+      "confidence": "medium",
+      "notes": "Inherits IMX294 OSC. (QHY294C-Pro switches to IMX492 in unbinned mode.)"
+    },
+    "qhy294m": {
+      "manufacturer": "QHYCCD",
+      "sensor": "IMX492",
+      "type": "mono",
+      "bayer_pattern": null,
+      "qe_inherits_from_sensor": true,
+      "source_urls": [
+        "https://www.cloudynights.com/topic/798063-quantum-efficiency-of-the-sony-imx455-in-qhy600-and-imx492-in-qhy294/"
+      ],
+      "confidence": "low",
+      "notes": "Inherits IMX492 mono. Pro version supports binned (4.63um) or unbinned (2.315um) modes."
+    },
+    "asi464mc": {
+      "manufacturer": "ZWO",
+      "sensor": "IMX464",
+      "type": "OSC",
+      "bayer_pattern": "RGGB",
+      "qe_inherits_from_sensor": true,
+      "source_urls": [
+        "https://astronomy-imaging-camera.com/product/asi464mc"
+      ],
+      "confidence": "medium",
+      "notes": "Inherits IMX464 OSC."
+    },
+    "neptune-c-ii": {
+      "manufacturer": "Player One",
+      "sensor": "IMX464",
+      "type": "OSC",
+      "bayer_pattern": "RGGB",
+      "qe_inherits_from_sensor": true,
+      "source_urls": [
+        "https://player-one-astronomy.com/product/neptune-c-ii-usb3-0-color-camera-imx464/"
+      ],
+      "confidence": "medium",
+      "notes": "Inherits IMX464 OSC. Peak QE ~91%."
+    },
+    "asi462mc": {
+      "manufacturer": "ZWO",
+      "sensor": "IMX462",
+      "type": "OSC",
+      "bayer_pattern": "RGGB",
+      "qe_inherits_from_sensor": true,
+      "source_urls": [
+        "https://astronomy-imaging-camera.com/product/asi462mccolor/"
+      ],
+      "confidence": "medium",
+      "notes": "Inherits IMX462 OSC. Excellent NIR response (~50% at 850nm)."
+    },
+    "mars-c": {
+      "manufacturer": "Player One",
+      "sensor": "IMX462",
+      "type": "OSC",
+      "bayer_pattern": "RGGB",
+      "qe_inherits_from_sensor": true,
+      "source_urls": [
+        "https://player-one-astronomy.com/product/mars-color-camera/"
+      ],
+      "confidence": "medium",
+      "notes": "Inherits IMX462 OSC."
+    },
+    "qhy5iii462c": {
+      "manufacturer": "QHYCCD",
+      "sensor": "IMX462",
+      "type": "OSC",
+      "bayer_pattern": "RGGB",
+      "qe_inherits_from_sensor": true,
+      "source_urls": [
+        "https://www.qhyccd.com/planetary-camera-qhy5iii462c/"
+      ],
+      "confidence": "medium",
+      "notes": "Inherits IMX462 OSC. Planetary/guide camera."
+    },
+    "asi224mc": {
+      "manufacturer": "ZWO",
+      "sensor": "IMX224",
+      "type": "OSC",
+      "bayer_pattern": "RGGB",
+      "qe_inherits_from_sensor": true,
+      "source_urls": [
+        "https://astronomy-imaging-camera.com/product/asi224mc"
+      ],
+      "confidence": "medium",
+      "notes": "Inherits IMX224. ZWO published peak QE 80%."
+    },
+    "asi178mc": {
+      "manufacturer": "ZWO",
+      "sensor": "IMX178",
+      "type": "OSC",
+      "bayer_pattern": "RGGB",
+      "qe_inherits_from_sensor": true,
+      "source_urls": [
+        "https://www.highpointscientific.com/zwo-asi178mc-cmos-color-astronomy-camera"
+      ],
+      "confidence": "medium",
+      "notes": "Inherits IMX178 OSC."
+    },
+    "asi178mm": {
+      "manufacturer": "ZWO",
+      "sensor": "IMX178",
+      "type": "mono",
+      "bayer_pattern": null,
+      "qe_inherits_from_sensor": true,
+      "source_urls": [
+        "https://astronomy-imaging-camera.com/product/asi178mm-mono/"
+      ],
+      "confidence": "medium",
+      "notes": "Inherits IMX178 mono. Peak QE ~81%."
+    },
+    "asi183mc": {
+      "manufacturer": "ZWO",
+      "sensor": "IMX183",
+      "type": "OSC",
+      "bayer_pattern": "RGGB",
+      "qe_inherits_from_sensor": true,
+      "source_urls": [
+        "https://us.zwoastro.com/products/asi183mm-mc",
+        "https://www.zwoastro.com/product/asi183/"
+      ],
+      "confidence": "medium",
+      "notes": "Inherits IMX183 OSC. Peak QE 84%."
+    },
+    "asi183mm": {
+      "manufacturer": "ZWO",
+      "sensor": "IMX183",
+      "type": "mono",
+      "bayer_pattern": null,
+      "qe_inherits_from_sensor": true,
+      "source_urls": [
+        "https://us.zwoastro.com/products/asi183mm-mc",
+        "https://www.zwoastro.com/product/asi183/"
+      ],
+      "confidence": "medium",
+      "notes": "Inherits IMX183 mono. Peak QE 84%, Halpha >60%."
+    },
+    "qhy183m": {
+      "manufacturer": "QHYCCD",
+      "sensor": "IMX183",
+      "type": "mono",
+      "bayer_pattern": null,
+      "qe_inherits_from_sensor": true,
+      "source_urls": [
+        "https://www.qhyccd.com/astronomical-camera-qhy183/"
+      ],
+      "confidence": "medium",
+      "notes": "Inherits IMX183 mono."
+    },
+    "asi174mm": {
+      "manufacturer": "ZWO",
+      "sensor": "IMX174",
+      "type": "mono",
+      "bayer_pattern": null,
+      "qe_inherits_from_sensor": true,
+      "source_urls": [
+        "https://telescopes.net/zwo-asi174mm-monochrome-cmos-cooled-camera.html",
+        "https://astronomics.com/products/zwo-asi174mm-usb3-0-monochrome-astronomy-imaging-camera"
+      ],
+      "confidence": "medium",
+      "notes": "Inherits IMX174. Global shutter, peak QE 78%."
+    },
+    "qhy174": {
+      "manufacturer": "QHYCCD",
+      "sensor": "IMX174",
+      "type": "mono",
+      "bayer_pattern": null,
+      "qe_inherits_from_sensor": true,
+      "source_urls": [
+        "https://rouzastro.com/off-axis-guiding-imx174-based-guide-cameras-from-zwo-and-qhyccd/"
+      ],
+      "confidence": "medium",
+      "notes": "Inherits IMX174."
+    },
+    "asi533mc": {
+      "manufacturer": "ZWO",
+      "sensor": "IMX533",
+      "type": "OSC",
+      "bayer_pattern": "RGGB",
+      "qe_inherits_from_sensor": true,
+      "source_urls": [
+        "https://agenaastro.com/zwo-533mc-color-astronomy-camera.html",
+        "https://www.highpointscientific.com/zwo-asi533mc-usb-3-color-cmos-astronomy-camera-asi533mc"
+      ],
+      "confidence": "medium",
+      "notes": "Inherits IMX533 OSC. ZWO peak QE >80%. Square format."
+    },
+    "asi533mm": {
+      "manufacturer": "ZWO",
+      "sensor": "IMX533",
+      "type": "mono",
+      "bayer_pattern": null,
+      "qe_inherits_from_sensor": true,
+      "source_urls": [
+        "https://agenaastro.com/zwo-533mm-monochrome-astronomy-camera.html"
+      ],
+      "confidence": "medium",
+      "notes": "Inherits IMX533 mono. Peak QE >91%."
+    },
+    "qhy533c": {
+      "manufacturer": "QHYCCD",
+      "sensor": "IMX533",
+      "type": "OSC",
+      "bayer_pattern": "RGGB",
+      "qe_inherits_from_sensor": true,
+      "source_urls": [
+        "https://www.qhyccd.com/astronomical-camera-qhy533/"
+      ],
+      "confidence": "medium",
+      "notes": "Inherits IMX533 OSC."
+    },
+    "saturn-c": {
+      "manufacturer": "Player One",
+      "sensor": "IMX533",
+      "type": "OSC",
+      "bayer_pattern": "RGGB",
+      "qe_inherits_from_sensor": true,
+      "source_urls": [
+        "https://player-one-astronomy.com/product/saturn-c-usb3-0-color-camera/"
+      ],
+      "confidence": "medium",
+      "notes": "Inherits IMX533 OSC."
+    },
+    "asi676mm": {
+      "manufacturer": "ZWO",
+      "sensor": "IMX676",
+      "type": "mono",
+      "bayer_pattern": null,
+      "qe_inherits_from_sensor": true,
+      "source_urls": [
+        "https://www.bhphotovideo.com/c/product/1944371-REG/zwo_asi676mm_zwo.html"
+      ],
+      "confidence": "medium",
+      "notes": "Inherits IMX676 mono. ZWO measured peak QE 83%."
+    },
+    "asi676mc": {
+      "manufacturer": "ZWO",
+      "sensor": "IMX676",
+      "type": "OSC",
+      "bayer_pattern": "RGGB",
+      "qe_inherits_from_sensor": true,
+      "source_urls": [
+        "https://www.highpointscientific.com/zwo-asi676mc-color-astronomy-camera"
+      ],
+      "confidence": "medium",
+      "notes": "Inherits IMX676 OSC."
+    },
+    "asi678mc": {
+      "manufacturer": "ZWO",
+      "sensor": "IMX678",
+      "type": "OSC",
+      "bayer_pattern": "RGGB",
+      "qe_inherits_from_sensor": true,
+      "source_urls": [
+        "https://www.bhphotovideo.com/c/product/1824013-REG/zwo_asi678mc_usb3_0_color_astronomy.html"
+      ],
+      "confidence": "medium",
+      "notes": "Inherits IMX678 OSC. STARVIS 2, peak QE 83%."
+    },
+    "asi678mm": {
+      "manufacturer": "ZWO",
+      "sensor": "IMX678",
+      "type": "mono",
+      "bayer_pattern": null,
+      "qe_inherits_from_sensor": true,
+      "source_urls": [
+        "https://www.highpointscientific.com/zwo-asi678mm-monochrome-astronomy-camera"
+      ],
+      "confidence": "medium",
+      "notes": "Inherits IMX678 mono."
+    },
+    "asi485mc": {
+      "manufacturer": "ZWO",
+      "sensor": "IMX485",
+      "type": "OSC",
+      "bayer_pattern": "RGGB",
+      "qe_inherits_from_sensor": true,
+      "source_urls": [
+        "https://astronomy-imaging-camera.com/product/asi485mc/",
+        "https://i.zwoastro.com/zwo-website/manuals/ASI485_Manual_EN_V1.0.pdf"
+      ],
+      "confidence": "medium",
+      "notes": "Inherits IMX485. ZWO published peak QE 85% at 530 nm."
+    },
+    "poseidon-c": {
+      "manufacturer": "Player One",
+      "sensor": "IMX571",
+      "type": "OSC",
+      "bayer_pattern": "RGGB",
+      "qe_inherits_from_sensor": true,
+      "source_urls": [
+        "https://player-one-astronomy.com/product/poseidon-c-imx571-usb3-0-color-camera/"
+      ],
+      "confidence": "medium",
+      "notes": "Inherits IMX571 OSC."
+    },
+    "poseidon-m": {
+      "manufacturer": "Player One",
+      "sensor": "IMX571",
+      "type": "mono",
+      "bayer_pattern": null,
+      "qe_inherits_from_sensor": true,
+      "source_urls": [
+        "https://player-one-astronomy.com/product/poseidon-m-imx571-usb3-0-mono-camera/"
+      ],
+      "confidence": "medium",
+      "notes": "Inherits IMX571 mono."
+    },
+    "uranus-c": {
+      "manufacturer": "Player One",
+      "sensor": "IMX585",
+      "type": "OSC",
+      "bayer_pattern": "RGGB",
+      "qe_inherits_from_sensor": true,
+      "source_urls": [
+        "https://player-one-astronomy.com/product/uranus-c-imx585-usb3-0-color-camera/"
+      ],
+      "confidence": "medium",
+      "notes": "Inherits IMX585 OSC."
+    },
+    "uranus-m": {
+      "manufacturer": "Player One",
+      "sensor": "IMX585",
+      "type": "mono",
+      "bayer_pattern": null,
+      "qe_inherits_from_sensor": true,
+      "source_urls": [
+        "https://player-one-astronomy.com/product/uranus-m-imx585-usb3-0-mono-camera/"
+      ],
+      "confidence": "medium",
+      "notes": "Inherits IMX585 mono."
+    },
+    "atik-460ex": {
+      "manufacturer": "Atik",
+      "sensor": "ICX694",
+      "type": "mono",
+      "bayer_pattern": null,
+      "qe_inherits_from_sensor": true,
+      "source_urls": [
+        "https://www.highpointscientific.com/atik-460ex-monochrome-ccd-camera-w-sony-icx694-sensor-atk0100"
+      ],
+      "confidence": "medium",
+      "notes": "Inherits ICX694 mono. EXview HAD II CCD."
+    },
+    "atik-460ex-color": {
+      "manufacturer": "Atik",
+      "sensor": "ICX694",
+      "type": "OSC",
+      "bayer_pattern": "RGGB",
+      "qe_inherits_from_sensor": true,
+      "source_urls": [
+        "https://www.highpointscientific.com/atik-460ex-color-ccd-camera-w-sony-icx694-sensor-atk0101"
+      ],
+      "confidence": "medium",
+      "notes": "Inherits ICX694 with Bayer attenuation."
+    },
+    "atik-16200": {
+      "manufacturer": "Atik",
+      "sensor": "KAF-16200",
+      "type": "mono",
+      "bayer_pattern": null,
+      "qe_inherits_from_sensor": true,
+      "source_urls": [
+        "https://www.atik-cameras.com/product/atik-16200-mono/"
+      ],
+      "confidence": "high",
+      "notes": "Inherits KAF-16200. Kodak/ON Semi datasheet peak QE 56%."
+    },
+    "atik-383l": {
+      "manufacturer": "Atik",
+      "sensor": "KAF-8300",
+      "type": "mono",
+      "bayer_pattern": null,
+      "qe_inherits_from_sensor": true,
+      "source_urls": [
+        "https://www.highpointscientific.com/atik-383l-monochrome-ccd-camera-w-kodak-kaf-8300-sensor-atk0067"
+      ],
+      "confidence": "high",
+      "notes": "Inherits KAF-8300 mono. Discontinued but still common in used market."
+    },
+    "asi1600mm": {
+      "manufacturer": "ZWO",
+      "sensor": "Panasonic-MN34230",
+      "type": "mono",
+      "bayer_pattern": null,
+      "qe_inherits_from_sensor": false,
+      "qe": {
+        "486": { "mono": 0.55 },
+        "501": { "mono": 0.60 },
+        "656": { "mono": 0.40 },
+        "672": { "mono": 0.36 }
+      },
+      "source_urls": [
+        "https://astronomy-imaging-camera.com/product/asi1600mm-cool",
+        "https://www.zwoastro.com/product/asi1600/"
+      ],
+      "confidence": "low",
+      "notes": "Panasonic MN34230 4/3 sensor. ZWO published peak QE ~60%. Older non-Sony sensor; broadly displaced by IMX571-based ASI2600MM."
+    },
+    "asi071mc": {
+      "manufacturer": "ZWO",
+      "sensor": "IMX071",
+      "type": "OSC",
+      "bayer_pattern": "RGGB",
+      "qe_inherits_from_sensor": false,
+      "qe": {
+        "486": { "R": 0.05, "Gr": 0.55, "Gb": 0.55, "B": 0.65 },
+        "501": { "R": 0.06, "Gr": 0.65, "Gb": 0.65, "B": 0.40 },
+        "656": { "R": 0.55, "Gr": 0.05, "Gb": 0.05, "B": 0.04 },
+        "672": { "R": 0.52, "Gr": 0.05, "Gb": 0.05, "B": 0.05 }
+      },
+      "source_urls": [
+        "https://astronomy-imaging-camera.com/product/asi071mc-pro-color"
+      ],
+      "confidence": "low",
+      "notes": "Sony IMX071 APS-C. ZWO published peak QE ~50%. Older sensor; predecessor to IMX571 family."
+    },
+    "qhy461m": {
+      "manufacturer": "QHYCCD",
+      "sensor": "IMX461",
+      "type": "mono",
+      "bayer_pattern": null,
+      "qe_inherits_from_sensor": false,
+      "qe": {
+        "486": { "mono": 0.85 },
+        "501": { "mono": 0.88 },
+        "656": { "mono": 0.50 },
+        "672": { "mono": 0.45 }
+      },
+      "source_urls": [
+        "https://www.qhyccd.com/scientific-camera-qhy411-qhy461/"
+      ],
+      "confidence": "medium",
+      "notes": "Sony IMX461 medium-format BSI. 100MP. Peak QE ~90%."
+    },
+    "uranus-m-pro": {
+      "manufacturer": "Player One",
+      "sensor": "IMX585",
+      "type": "mono",
+      "bayer_pattern": null,
+      "qe_inherits_from_sensor": true,
+      "source_urls": [
+        "https://www.player-one-astronomy.com/product/uranus-m-pro-usb3-0-mono-cooled-camera-imx585/"
+      ],
+      "confidence": "medium",
+      "notes": "Inherits IMX585 mono. STARVIS 2."
+    },
+    "ares-m-pro": {
+      "manufacturer": "Player One",
+      "sensor": "IMX533",
+      "type": "mono",
+      "bayer_pattern": null,
+      "qe_inherits_from_sensor": true,
+      "source_urls": [
+        "https://player-one-astronomy.com/product/ares-m-pro-usb3-0-mono-camera-imx533/"
+      ],
+      "confidence": "medium",
+      "notes": "Inherits IMX533 mono."
+    },
+    "canon-eos-ra": {
+      "manufacturer": "Canon",
+      "sensor": "Canon CMOS (proprietary)",
+      "type": "OSC",
+      "bayer_pattern": "RGGB",
+      "qe_inherits_from_sensor": false,
+      "qe": {
+        "486": { "R": 0.04, "Gr": 0.42, "Gb": 0.42, "B": 0.50 },
+        "501": { "R": 0.05, "Gr": 0.55, "Gb": 0.55, "B": 0.32 },
+        "656": { "R": 0.50, "Gr": 0.04, "Gb": 0.04, "B": 0.03 },
+        "672": { "R": 0.46, "Gr": 0.04, "Gb": 0.04, "B": 0.04 }
+      },
+      "source_urls": [
+        "https://www.usa.canon.com/learning/training-articles/training-articles-list/the-eos-ra-a-new-astrophotography-camera",
+        "https://astrobackyard.com/canon-eos-ra/",
+        "https://skyandtelescope.org/astronomy-equipment/first-look-canons-eos-ra-mirrorless-camera/"
+      ],
+      "confidence": "low",
+      "notes": "30.3 MP full-frame, 5.36um. IR-cut filter modified for 4x Halpha transmission @ 656 nm vs stock EOS R. Canon does not publish QE; estimates inferred from typical Canon BSI dark-frame analysis."
+    },
+    "nikon-z6-ii": {
+      "manufacturer": "Nikon",
+      "sensor": "IMX410",
+      "type": "OSC",
+      "bayer_pattern": "RGGB",
+      "qe_inherits_from_sensor": true,
+      "source_urls": [
+        "https://ymcinema.com/2026/03/05/sony-imx410-sensor-powering-half-camera-industry/"
+      ],
+      "confidence": "medium",
+      "notes": "Z6 II uses Sony IMX410 (same as A7 III, ASI2400MC, QHY410C). Stock filter blocks Halpha; astro-modified versions widely available."
+    },
+    "sony-a7-iii": {
+      "manufacturer": "Sony",
+      "sensor": "IMX410",
+      "type": "OSC",
+      "bayer_pattern": "RGGB",
+      "qe_inherits_from_sensor": true,
+      "source_urls": [
+        "https://ymcinema.com/2026/03/05/sony-imx410-sensor-powering-half-camera-industry/",
+        "https://obsoletesony.substack.com/p/sony-imx410"
+      ],
+      "confidence": "medium",
+      "notes": "Sony A7 III uses IMX410. Same chip as ASI2400MC, QHY410C, Nikon Z6."
+    }
+  },
+  "filters": {
+    "Astrodon-Ha-3nm-50mm": {
+      "manufacturer": "Astrodon (now CXB)",
+      "type": "narrowband-single",
+      "passes": [
+        { "center_nm": 656.3, "fwhm_nm": 3.0, "peak_transmission": 0.92 }
+      ],
+      "ob_rejection": "OD>4 (1e-4) over 300-1150 nm",
+      "source_urls": [
+        "https://farpointastro.com/products/astrodon-3-nm-hydrogen-alpha-filter",
+        "https://telescopes.net/astrodon-narrowband-50mm-unmounted-h-a-3-nm-square-filter.html",
+        "https://www.highpointscientific.com/astrodon-3-nm-h-alpha-narrowband-filter-1-25-inch-threaded-cell-ha3-27r"
+      ],
+      "confidence": "high",
+      "notes": "Astrodon guarantees >90% peak (typical 92-97%). 3 nm helps separate Halpha from NII 658.4 nm. Narrowband premium filter."
+    },
+    "Astrodon-Ha-5nm-50mm": {
+      "manufacturer": "Astrodon (now CXB)",
+      "type": "narrowband-single",
+      "passes": [
+        { "center_nm": 656.3, "fwhm_nm": 5.0, "peak_transmission": 0.95 }
+      ],
+      "ob_rejection": "OD>4 over 300-1150 nm",
+      "source_urls": [
+        "https://www.amazon.ca/Astrodon-Unmounted-NarrowbandFilter-Monochrome-Photography/dp/B0CFJLJ8GG"
+      ],
+      "confidence": "high",
+      "notes": "5 nm Astrodon series. Peak transmittance >90% (typical 95-98%) at emission line. Best for f/5 and slower."
+    },
+    "Astrodon-OIII-3nm-50mm": {
+      "manufacturer": "Astrodon (now CXB)",
+      "type": "narrowband-single",
+      "passes": [
+        { "center_nm": 500.7, "fwhm_nm": 3.0, "peak_transmission": 0.92 }
+      ],
+      "ob_rejection": "OD>4 over 300-1150 nm",
+      "source_urls": [
+        "https://farpointastro.com/products/astrodon-narrowband-astrophotography-filters-3-nm-narrowband-oiii-3nm"
+      ],
+      "confidence": "high",
+      "notes": "Centered on OIII 500.7 nm. Astrodon guarantees >90% peak (typical 92-97%)."
+    },
+    "Astrodon-OIII-5nm-50mm": {
+      "manufacturer": "Astrodon (now CXB)",
+      "type": "narrowband-single",
+      "passes": [
+        { "center_nm": 500.7, "fwhm_nm": 5.0, "peak_transmission": 0.95 }
+      ],
+      "ob_rejection": "OD>4 over 300-1150 nm",
+      "source_urls": [
+        "https://www.amazon.ca/Astrodon-Unmounted-NarrowbandFilter-Monochrome-Photography/dp/B0CFJLJ8GG"
+      ],
+      "confidence": "high",
+      "notes": "5 nm OIII. Includes 496/500.7 doublet."
+    },
+    "Astrodon-SII-3nm-50mm": {
+      "manufacturer": "Astrodon (now CXB)",
+      "type": "narrowband-single",
+      "passes": [
+        { "center_nm": 672.4, "fwhm_nm": 3.0, "peak_transmission": 0.92 }
+      ],
+      "ob_rejection": "OD>4 over 300-1150 nm",
+      "source_urls": [
+        "https://farpointastro.com/products/astrodon-3-nm-narrowband-filters-sii-3nm"
+      ],
+      "confidence": "high",
+      "notes": "Centered on SII 672.4 nm doublet."
+    },
+    "Astrodon-SII-5nm-50mm": {
+      "manufacturer": "Astrodon (now CXB)",
+      "type": "narrowband-single",
+      "passes": [
+        { "center_nm": 672.4, "fwhm_nm": 5.0, "peak_transmission": 0.95 }
+      ],
+      "ob_rejection": "OD>4 over 300-1150 nm",
+      "source_urls": [
+        "https://telescopes.net/astrodon-narrowband-50mm-unmounted-sii-5-nm-filter.html"
+      ],
+      "confidence": "high",
+      "notes": "5 nm SII variant."
+    },
+    "Astrodon-NII-3nm-50mm": {
+      "manufacturer": "Astrodon (now CXB)",
+      "type": "narrowband-single",
+      "passes": [
+        { "center_nm": 658.4, "fwhm_nm": 3.0, "peak_transmission": 0.92 }
+      ],
+      "ob_rejection": "OD>4 over 300-1150 nm",
+      "source_urls": [
+        "https://cloudbreakoptics.com/products/astrodon-nii-narrowband-3-nm-filter",
+        "https://farpointastro.com/products/astrodon-3-nm-narrowband-filters-nii-3nm"
+      ],
+      "confidence": "high",
+      "notes": "Astrodon NII line filter at 658.4 nm. Specialized for NII vs Halpha differentiation."
+    },
+    "Astrodon-LRGB-Gen2-E-Series-Lum": {
+      "manufacturer": "Astrodon (now CXB)",
+      "type": "luminance",
+      "passes": [
+        { "center_nm": 540, "fwhm_nm": 320, "peak_transmission": 0.97, "passband_nm": [400, 700] }
+      ],
+      "ob_rejection": "OD>5 (UV/IR cut)",
+      "source_urls": [
+        "https://farpointastro.com/products/astrodon-lrgb-gen2-e-series-tru-balance-filters-individual-filters"
+      ],
+      "confidence": "medium",
+      "notes": "Luminance: NIR/UV-blocked colorless. ~400-700 nm passband. 3 mm fused silica substrate. OD5 OOB blocking."
+    },
+    "Astrodon-LRGB-Gen2-E-Series-R": {
+      "manufacturer": "Astrodon (now CXB)",
+      "type": "broadband-RGB",
+      "passes": [
+        { "center_nm": 625, "fwhm_nm": 60, "peak_transmission": 0.95, "passband_nm": [595, 695] }
+      ],
+      "ob_rejection": "OD>5",
+      "source_urls": [
+        "https://www.amateurastrophotography.com/astrodon-trubalance-filters",
+        "https://farpointastro.com/products/astrodon-lrgb-gen2-e-series-tru-balance-filter-sets"
+      ],
+      "confidence": "medium",
+      "notes": "Astrodon E-series red is ~60 nm wide deep red, blocks high-pressure sodium and includes Halpha + SII + NII."
+    },
+    "Astrodon-LRGB-Gen2-E-Series-G": {
+      "manufacturer": "Astrodon (now CXB)",
+      "type": "broadband-RGB",
+      "passes": [
+        { "center_nm": 535, "fwhm_nm": 80, "peak_transmission": 0.95, "passband_nm": [495, 575] }
+      ],
+      "ob_rejection": "OD>5",
+      "source_urls": [
+        "https://farpointastro.com/products/astrodon-lrgb-gen2-e-series-tru-balance-filter-sets"
+      ],
+      "confidence": "medium",
+      "notes": "Green ~495-575 nm. Includes OIII line for emission-nebula contrast."
+    },
+    "Astrodon-LRGB-Gen2-E-Series-B": {
+      "manufacturer": "Astrodon (now CXB)",
+      "type": "broadband-RGB",
+      "passes": [
+        { "center_nm": 450, "fwhm_nm": 100, "peak_transmission": 0.95, "passband_nm": [400, 500] }
+      ],
+      "ob_rejection": "OD>5",
+      "source_urls": [
+        "https://farpointastro.com/products/astrodon-lrgb-gen2-e-series-tru-balance-filter-sets"
+      ],
+      "confidence": "medium",
+      "notes": "Blue ~400-500 nm. Includes Hbeta. Tru-Balance equalizes red flux for Kodak E-series CCDs."
+    },
+    "Chroma-Ha-3nm": {
+      "manufacturer": "Chroma Technology",
+      "type": "narrowband-single",
+      "passes": [
+        { "center_nm": 656.3, "fwhm_nm": 3.0, "peak_transmission": 0.99 }
+      ],
+      "ob_rejection": "OD>5",
+      "source_urls": [
+        "https://www.chroma.com/products/parts/h-alpha-3nm-bandpass",
+        "https://www.highpointscientific.com/chroma-technology-h-alpha-3-nm-filter-2-inch-mounted"
+      ],
+      "confidence": "high",
+      "notes": "Premium Chroma 3 nm Halpha. Outstanding transmittance 99.12% at 656.3 nm. Optional CWL pre-shifted version for f/3 systems."
+    },
+    "Chroma-Ha-5nm": {
+      "manufacturer": "Chroma Technology",
+      "type": "narrowband-single",
+      "passes": [
+        { "center_nm": 656.3, "fwhm_nm": 5.0, "peak_transmission": 0.97 }
+      ],
+      "ob_rejection": "OD>5",
+      "source_urls": [
+        "https://www.firstlightoptics.com/narrowband/chroma-5nm-ha-narrowband-filter.html"
+      ],
+      "confidence": "high",
+      "notes": "Chroma 5 nm Halpha. For faster optics where 3 nm CWL shift is problematic."
+    },
+    "Chroma-Ha-8nm": {
+      "manufacturer": "Chroma Technology",
+      "type": "narrowband-single",
+      "passes": [
+        { "center_nm": 656.3, "fwhm_nm": 8.0, "peak_transmission": 0.97 }
+      ],
+      "ob_rejection": "OD>5",
+      "source_urls": [
+        "https://www.chroma.com/products/parts/h-alpha-3nm-bandpass"
+      ],
+      "confidence": "medium",
+      "notes": "Chroma 8 nm Halpha. Wide variant for very fast optics."
+    },
+    "Chroma-OIII-3nm": {
+      "manufacturer": "Chroma Technology",
+      "type": "narrowband-single",
+      "passes": [
+        { "center_nm": 500.7, "fwhm_nm": 3.0, "peak_transmission": 0.99 }
+      ],
+      "ob_rejection": "OD>5",
+      "source_urls": [
+        "https://www.chroma.com/products/parts/oiii-3nm-bandpass",
+        "https://www.modernastronomy.com/shop/filters-wheels/chroma-filters/narrowband-chroma/chroma-oiii-3nm-filter/"
+      ],
+      "confidence": "high",
+      "notes": "Premium Chroma 3 nm OIII. Transmittance 99.62%."
+    },
+    "Chroma-OIII-5nm": {
+      "manufacturer": "Chroma Technology",
+      "type": "narrowband-single",
+      "passes": [
+        { "center_nm": 500.7, "fwhm_nm": 5.0, "peak_transmission": 0.97 }
+      ],
+      "ob_rejection": "OD>5",
+      "source_urls": [
+        "https://www.chroma.com/products/sets/27106-sii-ha-oiii-3nm"
+      ],
+      "confidence": "high",
+      "notes": "Chroma 5 nm OIII."
+    },
+    "Chroma-SII-3nm": {
+      "manufacturer": "Chroma Technology",
+      "type": "narrowband-single",
+      "passes": [
+        { "center_nm": 672.4, "fwhm_nm": 3.0, "peak_transmission": 0.97 }
+      ],
+      "ob_rejection": "OD>5",
+      "source_urls": [
+        "https://www.chroma.com/products/sets/27106-sii-ha-oiii-3nm"
+      ],
+      "confidence": "high",
+      "notes": "Premium Chroma 3 nm SII."
+    },
+    "Chroma-SII-5nm": {
+      "manufacturer": "Chroma Technology",
+      "type": "narrowband-single",
+      "passes": [
+        { "center_nm": 672.4, "fwhm_nm": 5.0, "peak_transmission": 0.97 }
+      ],
+      "ob_rejection": "OD>5",
+      "source_urls": [
+        "https://www.chroma.com/products/sets/27106-sii-ha-oiii-3nm"
+      ],
+      "confidence": "high",
+      "notes": "Chroma 5 nm SII."
+    },
+    "Chroma-Ha-3nm-F3-Highspeed": {
+      "manufacturer": "Chroma Technology",
+      "type": "narrowband-single",
+      "passes": [
+        { "center_nm": 657.5, "fwhm_nm": 3.0, "peak_transmission": 0.97 }
+      ],
+      "ob_rejection": "OD>5",
+      "source_urls": [
+        "https://telescopes.net/chroma-technology-2-m48-mounted-ha-3nm-highspeed-narrowband-filter-for-rasa-hyperstar-and-other-high-speed-imaging-systems-chr-ha-3-2m48m-hs.html",
+        "https://www.chroma.com/products/sets/27108-sii-ha-oiii-3nm-f-3"
+      ],
+      "confidence": "high",
+      "notes": "CWL pre-shifted into red so f/3 cone-induced blueshift centers it on 656.3 nm. For RASA, Hyperstar, fast astrographs."
+    },
+    "Astronomik-Ha-6nm-CCD": {
+      "manufacturer": "Astronomik",
+      "type": "narrowband-single",
+      "passes": [
+        { "center_nm": 656.3, "fwhm_nm": 6.0, "peak_transmission": 0.93 }
+      ],
+      "ob_rejection": "OD>5",
+      "source_urls": [
+        "https://www.astronomik.com/en/Narrowband-Filters/H-alpha/",
+        "https://www.astronomik.com/en/photographic-filters/h-alpha-6nm-ccd-filter.html"
+      ],
+      "confidence": "high",
+      "notes": "Astronomik 6 nm CCD Halpha. Guaranteed >90%, typical 93%. Special MFR coating for fast optics down to f/4."
+    },
+    "Astronomik-Ha-12nm-CCD": {
+      "manufacturer": "Astronomik",
+      "type": "narrowband-single",
+      "passes": [
+        { "center_nm": 656.3, "fwhm_nm": 12.0, "peak_transmission": 0.96 }
+      ],
+      "ob_rejection": "OD>5",
+      "source_urls": [
+        "https://www.astronomik.com/en/Narrowband-Filters/H-alpha/"
+      ],
+      "confidence": "high",
+      "notes": "Astronomik 12 nm Halpha. Typical 96%. Compatible with f/3 fast systems."
+    },
+    "Astronomik-OIII-6nm-CCD": {
+      "manufacturer": "Astronomik",
+      "type": "narrowband-single",
+      "passes": [
+        { "center_nm": 500.7, "fwhm_nm": 6.0, "peak_transmission": 0.92 }
+      ],
+      "ob_rejection": "OD>5",
+      "source_urls": [
+        "https://www.astronomik.com/en/fotografische-emissionslinienfilter/schmalbandfilter-oiii-ccd-6nm.html"
+      ],
+      "confidence": "high",
+      "notes": "Astronomik 6 nm CCD OIII. Includes 496 nm and 500.7 nm doublet. Max transmission ~510 nm. Typical 92%."
+    },
+    "Astronomik-OIII-12nm-CCD": {
+      "manufacturer": "Astronomik",
+      "type": "narrowband-single",
+      "passes": [
+        { "center_nm": 500.7, "fwhm_nm": 12.0, "peak_transmission": 0.95 }
+      ],
+      "ob_rejection": "OD>5",
+      "source_urls": [
+        "https://www.astronomik.com/en/photographic-filters/oiii-ccd-filter.html"
+      ],
+      "confidence": "high",
+      "notes": "Astronomik 12 nm OIII. Wider variant for fast optics, MFR coating."
+    },
+    "Astronomik-SII-6nm-CCD": {
+      "manufacturer": "Astronomik",
+      "type": "narrowband-single",
+      "passes": [
+        { "center_nm": 672.4, "fwhm_nm": 6.0, "peak_transmission": 0.92 }
+      ],
+      "ob_rejection": "OD>5",
+      "source_urls": [
+        "https://www.astronomik.com/en/Narrowband-Filters/H-alpha/"
+      ],
+      "confidence": "medium",
+      "notes": "Astronomik 6 nm SII."
+    },
+    "Astronomik-SII-12nm-CCD": {
+      "manufacturer": "Astronomik",
+      "type": "narrowband-single",
+      "passes": [
+        { "center_nm": 672.4, "fwhm_nm": 12.0, "peak_transmission": 0.95 }
+      ],
+      "ob_rejection": "OD>5",
+      "source_urls": [
+        "https://www.astronomik.com/en/Narrowband-Filters/H-alpha/"
+      ],
+      "confidence": "medium",
+      "notes": "Astronomik 12 nm SII."
+    },
+    "Astronomik-DeepSky-RGB-Type2c-R": {
+      "manufacturer": "Astronomik",
+      "type": "broadband-RGB",
+      "passes": [
+        { "center_nm": 645, "fwhm_nm": 90, "peak_transmission": 0.97, "passband_nm": [600, 690] }
+      ],
+      "ob_rejection": "OD>5",
+      "source_urls": [
+        "https://www.astronomik.com/en/RGB-Filters/Deep-Sky-RGB/",
+        "https://www.astronomik.com/en/photographic-filters/deep-sky-rgb-colour-filters.html"
+      ],
+      "confidence": "medium",
+      "notes": "Type 2c sRGB-aligned. Red includes Halpha and SII. Special coatings for fast optics."
+    },
+    "Astronomik-DeepSky-RGB-Type2c-G": {
+      "manufacturer": "Astronomik",
+      "type": "broadband-RGB",
+      "passes": [
+        { "center_nm": 535, "fwhm_nm": 80, "peak_transmission": 0.97, "passband_nm": [495, 580] }
+      ],
+      "ob_rejection": "OD>5",
+      "source_urls": [
+        "https://www.astronomik.com/en/RGB-Filters/Deep-Sky-RGB/"
+      ],
+      "confidence": "medium",
+      "notes": "Type 2c green. Includes OIII at edge."
+    },
+    "Astronomik-DeepSky-RGB-Type2c-B": {
+      "manufacturer": "Astronomik",
+      "type": "broadband-RGB",
+      "passes": [
+        { "center_nm": 450, "fwhm_nm": 90, "peak_transmission": 0.97, "passband_nm": [400, 500] }
+      ],
+      "ob_rejection": "OD>5",
+      "source_urls": [
+        "https://www.astronomik.com/en/RGB-Filters/Deep-Sky-RGB/"
+      ],
+      "confidence": "medium",
+      "notes": "Type 2c blue. Includes Hbeta."
+    },
+    "Astronomik-L1-UV-IR-Block": {
+      "manufacturer": "Astronomik",
+      "type": "luminance",
+      "passes": [
+        { "center_nm": 540, "fwhm_nm": 320, "peak_transmission": 0.97, "passband_nm": [380, 700] }
+      ],
+      "ob_rejection": "OD>5 in UV+IR",
+      "source_urls": [
+        "https://www.astronomik.com/en/UV-IR-Block-Filters/L-Filters.html"
+      ],
+      "confidence": "medium",
+      "notes": "L-1 wider passband (~380-700 nm) for visual/imaging UV+IR cut."
+    },
+    "Astronomik-L2-UV-IR-Block": {
+      "manufacturer": "Astronomik",
+      "type": "luminance",
+      "passes": [
+        { "center_nm": 540, "fwhm_nm": 280, "peak_transmission": 0.97, "passband_nm": [400, 690] }
+      ],
+      "ob_rejection": "OD>5 in UV+IR",
+      "source_urls": [
+        "https://www.astronomik.com/en/UV-IR-Block-Filters/L-Filters.html"
+      ],
+      "confidence": "medium",
+      "notes": "L-2 narrower for sharper-cutoff than L-1."
+    },
+    "Astronomik-L3-UV-IR-Block": {
+      "manufacturer": "Astronomik",
+      "type": "luminance",
+      "passes": [
+        { "center_nm": 545, "fwhm_nm": 250, "peak_transmission": 0.97, "passband_nm": [420, 685] }
+      ],
+      "ob_rejection": "OD>5 in UV+IR",
+      "source_urls": [
+        "https://www.astronomik.com/en/UV-IR-Block-Filters/L-Filters.html"
+      ],
+      "confidence": "medium",
+      "notes": "L-3 narrowest, cuts UV-induced bloating in fast refractors."
+    },
+    "Optolong-Lpro": {
+      "manufacturer": "Optolong",
+      "type": "broadband-LPR",
+      "passes": [
+        { "center_nm": 540, "fwhm_nm": 280, "peak_transmission": 0.90, "passband_nm": [400, 690] }
+      ],
+      "ob_rejection": "OD>4 (Hg 435/578, Na 589 deep notch)",
+      "source_urls": [
+        "https://agenaastro.com/optolong-2-l-professional-deep-sky-broadband-filter.html",
+        "https://www.firstlightoptics.com/light-pollution-reduction-imaging/optolong-l-pro-light-pollution-broadband-filter.html"
+      ],
+      "confidence": "high",
+      "notes": "Multi-bandpass LPR. ~90% at OIII (496/500.7), Hbeta (486), NII (654/658), Halpha (656), SII (672). Notches at Na 589, Hg 435/578."
+    },
+    "Optolong-LeNhance": {
+      "manufacturer": "Optolong",
+      "type": "tri-narrowband",
+      "passes": [
+        { "center_nm": 656.3, "fwhm_nm": 24, "peak_transmission": 0.90 },
+        { "center_nm": 500.7, "fwhm_nm": 10, "peak_transmission": 0.85 },
+        { "center_nm": 486.1, "fwhm_nm": 10, "peak_transmission": 0.85 }
+      ],
+      "ob_rejection": "OD>4",
+      "source_urls": [
+        "https://www.optolong.com/cms/document/detail/id/100.html"
+      ],
+      "confidence": "medium",
+      "notes": "Tri-band: Halpha+NII (24nm wide), OIII (10nm), Hbeta (10nm). For OSC cameras, urban skies."
+    },
+    "Optolong-LeXtreme-7nm": {
+      "manufacturer": "Optolong",
+      "type": "dual-narrowband",
+      "passes": [
+        { "center_nm": 656.3, "fwhm_nm": 7.0, "peak_transmission": 0.90 },
+        { "center_nm": 500.7, "fwhm_nm": 7.0, "peak_transmission": 0.90 }
+      ],
+      "ob_rejection": "OD>4 between bands",
+      "source_urls": [
+        "https://www.optolong.com/cms/document/detail/id/100.html",
+        "https://www.amazon.com/Optolong-L-Extreme-Narrowband-Filter-H-Alpha/dp/B08BWTFZ22",
+        "https://www.highpointscientific.com/optolong-2-inch-l-extreme-dual-band-7nm-ha-oiii-filter-lxt-200"
+      ],
+      "confidence": "high",
+      "notes": "Dual 7 nm Halpha + OIII. ~90% transmission. Designed for OSC cameras under heavy LP. Halpha and OIII isolated for SHO synthesis from a single OSC frame."
+    },
+    "Optolong-LUltimate-3nm": {
+      "manufacturer": "Optolong",
+      "type": "dual-narrowband",
+      "passes": [
+        { "center_nm": 656.3, "fwhm_nm": 3.0, "peak_transmission": 0.85 },
+        { "center_nm": 500.7, "fwhm_nm": 3.0, "peak_transmission": 0.85 }
+      ],
+      "ob_rejection": "OD>4 between bands",
+      "source_urls": [
+        "https://www.optolong.com/cms/document/detail/id/192.html"
+      ],
+      "confidence": "high",
+      "notes": "Dual 3 nm Halpha + OIII for OSC. Narrower than L-eXtreme; more aggressive LPR."
+    },
+    "Optolong-LeXtreme-F2": {
+      "manufacturer": "Optolong",
+      "type": "dual-narrowband",
+      "passes": [
+        { "center_nm": 658.0, "fwhm_nm": 7.0, "peak_transmission": 0.88 },
+        { "center_nm": 502.0, "fwhm_nm": 7.0, "peak_transmission": 0.88 }
+      ],
+      "ob_rejection": "OD>4",
+      "source_urls": [
+        "https://www.optolong.com/cms/document/detail/id/276.html",
+        "https://agenaastro.com/optolong-l-extreme-f2-dual-narrowband-oiii-7nm-h-a-7nm-highspeed-filter-2-mounted.html"
+      ],
+      "confidence": "medium",
+      "notes": "F/2 high-speed L-eXtreme. CWL pre-shifted to red for f/2 cone."
+    },
+    "Optolong-Ha-3nm": {
+      "manufacturer": "Optolong",
+      "type": "narrowband-single",
+      "passes": [
+        { "center_nm": 656.3, "fwhm_nm": 3.0, "peak_transmission": 0.88 }
+      ],
+      "ob_rejection": "OD>4",
+      "source_urls": [
+        "https://www.optolong.com/cms/document/detail/id/161.html"
+      ],
+      "confidence": "high",
+      "notes": "Optolong SHO 3 nm kit Halpha."
+    },
+    "Optolong-Ha-7nm": {
+      "manufacturer": "Optolong",
+      "type": "narrowband-single",
+      "passes": [
+        { "center_nm": 656.3, "fwhm_nm": 7.0, "peak_transmission": 0.90 }
+      ],
+      "ob_rejection": "OD>4",
+      "source_urls": [
+        "https://www.optolong.com/cms/document/detail/id/59.html"
+      ],
+      "confidence": "high",
+      "notes": "Optolong improved 7 nm Halpha. ~90% peak."
+    },
+    "Optolong-OIII-3nm": {
+      "manufacturer": "Optolong",
+      "type": "narrowband-single",
+      "passes": [
+        { "center_nm": 500.7, "fwhm_nm": 3.0, "peak_transmission": 0.85 }
+      ],
+      "ob_rejection": "OD>4",
+      "source_urls": [
+        "https://www.optolong.com/cms/document/detail/id/161.html"
+      ],
+      "confidence": "high",
+      "notes": "Optolong SHO 3 nm kit OIII."
+    },
+    "Optolong-OIII-6.5nm": {
+      "manufacturer": "Optolong",
+      "type": "narrowband-single",
+      "passes": [
+        { "center_nm": 500.7, "fwhm_nm": 6.5, "peak_transmission": 0.90 }
+      ],
+      "ob_rejection": "OD>4",
+      "source_urls": [
+        "https://www.optolong.com/cms/document/detail/id/53.html"
+      ],
+      "confidence": "high",
+      "notes": "Optolong improved SHO6.5nm kit OIII."
+    },
+    "Optolong-SII-3nm": {
+      "manufacturer": "Optolong",
+      "type": "narrowband-single",
+      "passes": [
+        { "center_nm": 672.4, "fwhm_nm": 3.0, "peak_transmission": 0.85 }
+      ],
+      "ob_rejection": "OD>4",
+      "source_urls": [
+        "https://www.optolong.com/cms/document/detail/id/161.html"
+      ],
+      "confidence": "high",
+      "notes": "Optolong SHO 3 nm kit SII."
+    },
+    "Optolong-SII-6.5nm": {
+      "manufacturer": "Optolong",
+      "type": "narrowband-single",
+      "passes": [
+        { "center_nm": 672.4, "fwhm_nm": 6.5, "peak_transmission": 0.90 }
+      ],
+      "ob_rejection": "OD>4",
+      "source_urls": [
+        "https://www.optolong.com/cms/document/detail/id/53.html"
+      ],
+      "confidence": "high",
+      "notes": "Optolong improved SHO6.5nm kit SII."
+    },
+    "Optolong-LRGB-L": {
+      "manufacturer": "Optolong",
+      "type": "luminance",
+      "passes": [
+        { "center_nm": 540, "fwhm_nm": 300, "peak_transmission": 0.95, "passband_nm": [380, 700] }
+      ],
+      "ob_rejection": "OD>2 IR (700-1100 cut)",
+      "source_urls": [
+        "https://www.optolong.com/cms/document/detail/id/49.html",
+        "https://www.cyclopsoptics.com/astronomy-filters/optolong-lrgb-filters/"
+      ],
+      "confidence": "medium",
+      "notes": "Optolong L: 380-700 nm, blocks 700-1100 nm. B270 substrate, 1.85 mm."
+    },
+    "Optolong-LRGB-R": {
+      "manufacturer": "Optolong",
+      "type": "broadband-RGB",
+      "passes": [
+        { "center_nm": 625, "fwhm_nm": 100, "peak_transmission": 0.95, "passband_nm": [580, 700] }
+      ],
+      "ob_rejection": "OD>2",
+      "source_urls": [
+        "https://www.optolong.com/cms/document/detail/id/49.html"
+      ],
+      "confidence": "medium",
+      "notes": "Optolong R: includes Halpha, NII, SII. Tave >90%."
+    },
+    "Optolong-LRGB-G": {
+      "manufacturer": "Optolong",
+      "type": "broadband-RGB",
+      "passes": [
+        { "center_nm": 530, "fwhm_nm": 90, "peak_transmission": 0.95, "passband_nm": [490, 580] }
+      ],
+      "ob_rejection": "OD>2",
+      "source_urls": [
+        "https://www.optolong.com/cms/document/detail/id/49.html"
+      ],
+      "confidence": "medium",
+      "notes": "Optolong G: gap to R near 580 nm blocks Na 589."
+    },
+    "Optolong-LRGB-B": {
+      "manufacturer": "Optolong",
+      "type": "broadband-RGB",
+      "passes": [
+        { "center_nm": 440, "fwhm_nm": 100, "peak_transmission": 0.95, "passband_nm": [400, 500] }
+      ],
+      "ob_rejection": "OD>2",
+      "source_urls": [
+        "https://www.optolong.com/cms/document/detail/id/49.html"
+      ],
+      "confidence": "medium",
+      "notes": "Optolong B: Hbeta + OIII edge."
+    },
+    "Optolong-UV-IR-Cut": {
+      "manufacturer": "Optolong",
+      "type": "luminance",
+      "passes": [
+        { "center_nm": 540, "fwhm_nm": 320, "peak_transmission": 0.97, "passband_nm": [380, 700] }
+      ],
+      "ob_rejection": "OD>4 UV+IR",
+      "source_urls": [
+        "https://www.optolong.com/cms/document/detail/id/49.html"
+      ],
+      "confidence": "medium",
+      "notes": "Standard UV/IR cut. Common front-mount filter for OSC cameras lacking integrated cut."
+    },
+    "Baader-Ha-3.5nm-f2-CMOS": {
+      "manufacturer": "Baader Planetarium",
+      "type": "narrowband-single",
+      "passes": [
+        { "center_nm": 656.3, "fwhm_nm": 3.5, "peak_transmission": 0.95 }
+      ],
+      "ob_rejection": "OD>5",
+      "source_urls": [
+        "https://www.baader-planetarium.com/en/filters/(ultra-)-narrowband-/-highspeed/baader-h-alpha-f2-ultra-highspeed-filters-(3.5nm)-%E2%80%93-cmos-optimized.html",
+        "https://www.highpointscientific.com/baader-3-5-4nm-f-2-ultra-highspeed-2-inch-cmos-optimized-filter-set-ha-oiii-sii-fcseths-2"
+      ],
+      "confidence": "high",
+      "notes": "Baader f/2 Ultra-Highspeed 3.5 nm Halpha CMOS-optimized. CWL pre-shifted for f/3.4 to f/1.8 systems. Life-Coat hard coating."
+    },
+    "Baader-OIII-4nm-f2-CMOS": {
+      "manufacturer": "Baader Planetarium",
+      "type": "narrowband-single",
+      "passes": [
+        { "center_nm": 500.7, "fwhm_nm": 4.0, "peak_transmission": 0.95 }
+      ],
+      "ob_rejection": "OD>5",
+      "source_urls": [
+        "https://www.highpointscientific.com/baader-3-5-4nm-f-2-ultra-highspeed-2-inch-cmos-optimized-filter-set-ha-oiii-sii-fcseths-2"
+      ],
+      "confidence": "high",
+      "notes": "Baader f/2 Ultra-Highspeed 4 nm OIII CMOS-optimized."
+    },
+    "Baader-SII-4nm-f2-CMOS": {
+      "manufacturer": "Baader Planetarium",
+      "type": "narrowband-single",
+      "passes": [
+        { "center_nm": 672.4, "fwhm_nm": 4.0, "peak_transmission": 0.95 }
+      ],
+      "ob_rejection": "OD>5",
+      "source_urls": [
+        "https://www.highpointscientific.com/baader-3-5-4nm-f-2-ultra-highspeed-2-inch-cmos-optimized-filter-set-ha-oiii-sii-fcseths-2"
+      ],
+      "confidence": "high",
+      "notes": "Baader f/2 Ultra-Highspeed 4 nm SII CMOS-optimized."
+    },
+    "Baader-Ha-6.5nm-CMOS": {
+      "manufacturer": "Baader Planetarium",
+      "type": "narrowband-single",
+      "passes": [
+        { "center_nm": 656.3, "fwhm_nm": 6.5, "peak_transmission": 0.95 }
+      ],
+      "ob_rejection": "OD>5",
+      "source_urls": [
+        "https://www.baader-planetarium.com/en/filters/(ultra-)-narrowband-/-highspeed/baader-6.5nm-narrowband-filter-set-%E2%80%93-cmos-optimized-(h-alpha--o-iii--s-ii).html",
+        "https://www.highpointscientific.com/baader-h-alpha-2-inch-narrowband-cmos-optimized-6-5nm-filter-fchaln-2"
+      ],
+      "confidence": "high",
+      "notes": "Baader 6.5 nm CMOS Halpha. For f/10 to f/3.5 systems. Reflex-Blocker hard coat."
+    },
+    "Baader-OIII-6.5nm-CMOS": {
+      "manufacturer": "Baader Planetarium",
+      "type": "narrowband-single",
+      "passes": [
+        { "center_nm": 500.7, "fwhm_nm": 6.5, "peak_transmission": 0.95 }
+      ],
+      "ob_rejection": "OD>5",
+      "source_urls": [
+        "https://www.baader-planetarium.com/en/filters/(ultra-)-narrowband-/-highspeed/baader-6.5nm-narrowband-filter-set-%E2%80%93-cmos-optimized-(h-alpha--o-iii--s-ii).html"
+      ],
+      "confidence": "high",
+      "notes": "Baader 6.5 nm CMOS OIII."
+    },
+    "Baader-SII-6.5nm-CMOS": {
+      "manufacturer": "Baader Planetarium",
+      "type": "narrowband-single",
+      "passes": [
+        { "center_nm": 672.4, "fwhm_nm": 6.5, "peak_transmission": 0.95 }
+      ],
+      "ob_rejection": "OD>5",
+      "source_urls": [
+        "https://www.baader-planetarium.com/en/filters/(ultra-)-narrowband-/-highspeed/baader-6.5nm-narrowband-filter-set-%E2%80%93-cmos-optimized-(h-alpha--o-iii--s-ii).html"
+      ],
+      "confidence": "high",
+      "notes": "Baader 6.5 nm CMOS SII."
+    },
+    "Baader-UHC-S": {
+      "manufacturer": "Baader Planetarium",
+      "type": "broadband-LPR",
+      "passes": [
+        { "center_nm": 510, "fwhm_nm": 60, "peak_transmission": 0.97, "passband_nm": [480, 540] },
+        { "center_nm": 656.3, "fwhm_nm": 25, "peak_transmission": 0.99, "passband_nm": [644, 670] }
+      ],
+      "ob_rejection": "OD>3 (high pressure sodium notches)",
+      "source_urls": [
+        "https://agenaastro.com/baader-1-25-uhc-s-nebula-filter.html",
+        "http://www.company7.com/baader/options/uhc-s.html"
+      ],
+      "confidence": "medium",
+      "notes": "Baader UHC-S: ~60 nm passband around OIII+Hbeta and a separate ~25 nm window around Halpha. >97% peak, >99% Halpha."
+    },
+    "Baader-LRGB-Lum": {
+      "manufacturer": "Baader Planetarium",
+      "type": "luminance",
+      "passes": [
+        { "center_nm": 545, "fwhm_nm": 300, "peak_transmission": 0.97, "passband_nm": [400, 700] }
+      ],
+      "ob_rejection": "OD>5 UV+IR",
+      "source_urls": [
+        "https://www.baader-planetarium.com/en/filters/lrgb-cmos-filters.html"
+      ],
+      "confidence": "medium",
+      "notes": "Baader CMOS LRGB Gen 2 luminance."
+    },
+    "Antlia-Ha-3nm-Pro": {
+      "manufacturer": "Antlia Filters",
+      "type": "narrowband-single",
+      "passes": [
+        { "center_nm": 656.3, "fwhm_nm": 3.0, "peak_transmission": 0.88 }
+      ],
+      "ob_rejection": "OD>5 (0.001%)",
+      "source_urls": [
+        "https://shop.antliafilter.com/products/antlia-3nm-narrowband-oxygen-iii-oiii-pro-filter-2-mounted",
+        "http://www.antliafilter.com/pd.jsp?id=175"
+      ],
+      "confidence": "high",
+      "notes": "Antlia 3 nm Pro Halpha. T>88% within 1 nm of CWL."
+    },
+    "Antlia-OIII-3nm-Pro": {
+      "manufacturer": "Antlia Filters",
+      "type": "narrowband-single",
+      "passes": [
+        { "center_nm": 500.7, "fwhm_nm": 3.0, "peak_transmission": 0.88 }
+      ],
+      "ob_rejection": "OD>5",
+      "source_urls": [
+        "https://shop.antliafilter.com/products/antlia-3nm-narrowband-oxygen-iii-oiii-pro-filter-2-mounted",
+        "https://agenaastro.com/antlia-3nm-narrowband-oxygen-iii-oiii-pro-imaging-filter-2-mounted.html"
+      ],
+      "confidence": "high",
+      "notes": "Antlia 3 nm Pro OIII."
+    },
+    "Antlia-SII-3nm-Pro": {
+      "manufacturer": "Antlia Filters",
+      "type": "narrowband-single",
+      "passes": [
+        { "center_nm": 672.4, "fwhm_nm": 3.0, "peak_transmission": 0.88 }
+      ],
+      "ob_rejection": "OD>5",
+      "source_urls": [
+        "https://davidastro.com/en-us/products/antlia-3nm-narrowband-sii-pro-highspeed-filter-f-2-6-to-f-3-6"
+      ],
+      "confidence": "high",
+      "notes": "Antlia 3 nm Pro SII."
+    },
+    "Antlia-Hb-3nm-Pro": {
+      "manufacturer": "Antlia Filters",
+      "type": "narrowband-single",
+      "passes": [
+        { "center_nm": 486.1, "fwhm_nm": 3.0, "peak_transmission": 0.88 }
+      ],
+      "ob_rejection": "OD>5",
+      "source_urls": [
+        "https://astronomyplus.com/products/antlia-hb-3nm-narrowband-pro-2-filter"
+      ],
+      "confidence": "high",
+      "notes": "Antlia 3 nm Pro Hbeta."
+    },
+    "Antlia-Ha-4.5nm-Edge": {
+      "manufacturer": "Antlia Filters",
+      "type": "narrowband-single",
+      "passes": [
+        { "center_nm": 656.3, "fwhm_nm": 4.5, "peak_transmission": 0.93 }
+      ],
+      "ob_rejection": "OD>5",
+      "source_urls": [
+        "https://agenaastro.com/antlia-4-5nm-narrowband-h-alpha-ha-edge-imaging-filter-50mm-round-unmounted.html"
+      ],
+      "confidence": "medium",
+      "notes": "Antlia EDGE 4.5 nm Halpha. Mid-bandwidth alternative."
+    },
+    "Antlia-ALP-T-Ha-OIII-5nm": {
+      "manufacturer": "Antlia Filters",
+      "type": "dual-narrowband",
+      "passes": [
+        { "center_nm": 656.3, "fwhm_nm": 5.0, "peak_transmission": 0.90 },
+        { "center_nm": 500.7, "fwhm_nm": 5.0, "peak_transmission": 0.82 }
+      ],
+      "ob_rejection": "OD>4.5",
+      "source_urls": [
+        "https://agenaastro.com/antlia-alp-t-dual-narrow-band-oiii-ha-imaging-filter-2-mounted.html",
+        "https://shop.antliafilter.com/products/antlia-alp-t-dual-band-5nm-ha-oiii-highspeed-filter-2-00-mounted"
+      ],
+      "confidence": "high",
+      "notes": "Antlia ALP-T 5 nm dual: Halpha 90% / OIII 82%. Premium OSC dual narrowband."
+    },
+    "Antlia-ALP-T-Ha-OIII-3nm": {
+      "manufacturer": "Antlia Filters",
+      "type": "dual-narrowband",
+      "passes": [
+        { "center_nm": 656.3, "fwhm_nm": 3.0, "peak_transmission": 0.85 },
+        { "center_nm": 500.7, "fwhm_nm": 3.0, "peak_transmission": 0.78 }
+      ],
+      "ob_rejection": "OD>4.5",
+      "source_urls": [
+        "https://starizona.com/products/antlia-alp-t-dual-narrowband-3nm-oiii-h-a-filter-for-f-4-slower-telescopes-2-mounted"
+      ],
+      "confidence": "medium",
+      "notes": "Antlia ALP-T 3 nm dual Halpha + OIII."
+    },
+    "Antlia-ALP-T-SII-OIII-3nm": {
+      "manufacturer": "Antlia Filters",
+      "type": "dual-narrowband",
+      "passes": [
+        { "center_nm": 672.4, "fwhm_nm": 3.0, "peak_transmission": 0.85 },
+        { "center_nm": 500.7, "fwhm_nm": 3.0, "peak_transmission": 0.78 }
+      ],
+      "ob_rejection": "OD>4.5",
+      "source_urls": [
+        "http://www.antliafilter.com/pd.jsp?id=175"
+      ],
+      "confidence": "medium",
+      "notes": "Antlia ALP-T 3 nm dual: SII + OIII (the SHO complement to Halpha-OIII for full SHO with two OSC frames)."
+    },
+    "Antlia-ALP-T-SII-Hb-5nm": {
+      "manufacturer": "Antlia Filters",
+      "type": "dual-narrowband",
+      "passes": [
+        { "center_nm": 672.4, "fwhm_nm": 5.0, "peak_transmission": 0.88 },
+        { "center_nm": 486.1, "fwhm_nm": 5.0, "peak_transmission": 0.85 }
+      ],
+      "ob_rejection": "OD>4.5",
+      "source_urls": [
+        "https://agenaastro.com/antlia-alp-t-dual-narrowband-sii-5nm-h-b-5nm-filter-for-f-3-6-slower-telescopes-2-mounted.html",
+        "http://www.antliafilter.com/pd.jsp?id=139"
+      ],
+      "confidence": "medium",
+      "notes": "Antlia ALP-T 5 nm dual SII + Hbeta. Pairs with Halpha-OIII ALP-T to extract all four narrowband lines from OSC."
+    },
+    "ZWO-Ha-7nm": {
+      "manufacturer": "ZWO",
+      "type": "narrowband-single",
+      "passes": [
+        { "center_nm": 656.3, "fwhm_nm": 7.0, "peak_transmission": 0.90 }
+      ],
+      "ob_rejection": "OD>4",
+      "source_urls": [
+        "https://www.highpointscientific.com/zwo-2-h-alpha-sii-oiii-7nm-filter-set-nb7nmd2",
+        "https://astronomyplus.com/products/zwo-h-alpha-oiii-sii-7nm-narrowband-sho-filter-set"
+      ],
+      "confidence": "high",
+      "notes": "ZWO 7 nm Halpha. Min 80%, typical 90%. FWHM 7 ± 0.5 nm."
+    },
+    "ZWO-OIII-7nm": {
+      "manufacturer": "ZWO",
+      "type": "narrowband-single",
+      "passes": [
+        { "center_nm": 500.7, "fwhm_nm": 7.0, "peak_transmission": 0.90 }
+      ],
+      "ob_rejection": "OD>4",
+      "source_urls": [
+        "https://www.highpointscientific.com/zwo-2-h-alpha-sii-oiii-7nm-filter-set-nb7nmd2"
+      ],
+      "confidence": "high",
+      "notes": "ZWO 7 nm OIII."
+    },
+    "ZWO-SII-7nm": {
+      "manufacturer": "ZWO",
+      "type": "narrowband-single",
+      "passes": [
+        { "center_nm": 672.4, "fwhm_nm": 7.0, "peak_transmission": 0.90 }
+      ],
+      "ob_rejection": "OD>4",
+      "source_urls": [
+        "https://www.highpointscientific.com/zwo-2-h-alpha-sii-oiii-7nm-filter-set-nb7nmd2"
+      ],
+      "confidence": "high",
+      "notes": "ZWO 7 nm SII."
+    },
+    "ZWO-LRGB-L": {
+      "manufacturer": "ZWO",
+      "type": "luminance",
+      "passes": [
+        { "center_nm": 540, "fwhm_nm": 300, "peak_transmission": 0.95, "passband_nm": [380, 700] }
+      ],
+      "ob_rejection": "OD>3 IR",
+      "source_urls": [
+        "https://www.zwoastro.com/product/lrgb-filter-set/"
+      ],
+      "confidence": "medium",
+      "notes": "ZWO L: similar to other inexpensive LRGB sets."
+    },
+    "ZWO-LRGB-R": {
+      "manufacturer": "ZWO",
+      "type": "broadband-RGB",
+      "passes": [
+        { "center_nm": 625, "fwhm_nm": 100, "peak_transmission": 0.95, "passband_nm": [580, 700] }
+      ],
+      "ob_rejection": "OD>3",
+      "source_urls": [
+        "https://www.zwoastro.com/product/lrgb-filter-set/"
+      ],
+      "confidence": "medium",
+      "notes": "ZWO R."
+    },
+    "ZWO-LRGB-G": {
+      "manufacturer": "ZWO",
+      "type": "broadband-RGB",
+      "passes": [
+        { "center_nm": 530, "fwhm_nm": 90, "peak_transmission": 0.95, "passband_nm": [490, 580] }
+      ],
+      "ob_rejection": "OD>3",
+      "source_urls": [
+        "https://www.zwoastro.com/product/lrgb-filter-set/"
+      ],
+      "confidence": "medium",
+      "notes": "ZWO G."
+    },
+    "ZWO-LRGB-B": {
+      "manufacturer": "ZWO",
+      "type": "broadband-RGB",
+      "passes": [
+        { "center_nm": 440, "fwhm_nm": 100, "peak_transmission": 0.95, "passband_nm": [400, 500] }
+      ],
+      "ob_rejection": "OD>3",
+      "source_urls": [
+        "https://www.zwoastro.com/product/lrgb-filter-set/"
+      ],
+      "confidence": "medium",
+      "notes": "ZWO B."
+    },
+    "IDAS-LPS-D1": {
+      "manufacturer": "IDAS / Hutech",
+      "type": "broadband-LPR",
+      "passes": [
+        { "center_nm": 540, "fwhm_nm": 280, "peak_transmission": 0.92, "passband_nm": [400, 700] }
+      ],
+      "ob_rejection": "Hg/Na multi-notch",
+      "source_urls": [
+        "https://astronomyplus.com/product/idas-lps-d1-light-pollution-suppression-filter/",
+        "https://www.sciencecenter.net/hutech/idas/lps.htm"
+      ],
+      "confidence": "medium",
+      "notes": "IDAS Light Pollution Suppression D1 — older non-LED-optimized version. Passes Hbeta, OIII, Halpha, C2 Swan bands. Bandwidth 400-700 nm with notches."
+    },
+    "IDAS-LPS-D2": {
+      "manufacturer": "IDAS / Hutech",
+      "type": "broadband-LPR",
+      "passes": [
+        { "center_nm": 540, "fwhm_nm": 280, "peak_transmission": 0.92, "passband_nm": [400, 700] }
+      ],
+      "ob_rejection": "Hg/Na/LED multi-notch",
+      "source_urls": [
+        "https://astronomynow.com/2022/03/18/beating-the-led-streetlights-idas-light-pollution-suppression-lps-d2-filter/"
+      ],
+      "confidence": "medium",
+      "notes": "IDAS LPS D2 — adds LED-light notches over D1."
+    },
+    "IDAS-LPS-D3": {
+      "manufacturer": "IDAS / Hutech",
+      "type": "broadband-LPR",
+      "passes": [
+        { "center_nm": 540, "fwhm_nm": 280, "peak_transmission": 0.92, "passband_nm": [400, 700] }
+      ],
+      "ob_rejection": "Hg/Na/LED multi-notch (refined)",
+      "source_urls": [
+        "https://urbanastrophotography.com/light-pollution-filter-shootout/"
+      ],
+      "confidence": "medium",
+      "notes": "IDAS LPS D3 — current version, more triband-like, broader Halpha pass."
+    },
+    "IDAS-NBZ": {
+      "manufacturer": "IDAS / Hutech",
+      "type": "dual-narrowband",
+      "passes": [
+        { "center_nm": 656.3, "fwhm_nm": 10.0, "peak_transmission": 0.92 },
+        { "center_nm": 500.7, "fwhm_nm": 10.0, "peak_transmission": 0.92 }
+      ],
+      "ob_rejection": "OD>4 between bands",
+      "source_urls": [
+        "https://telescopescanada.ca/products/idas-nbz-filters"
+      ],
+      "confidence": "high",
+      "notes": "IDAS NBZ — 10 nm Halpha + 10 nm OIII for OSC. Halo-suppressed redesign of NBX. Wider than L-eXtreme."
+    },
+    "Hutech-LPS-V4": {
+      "manufacturer": "IDAS / Hutech",
+      "type": "broadband-LPR",
+      "passes": [
+        { "center_nm": 540, "fwhm_nm": 260, "peak_transmission": 0.92, "passband_nm": [410, 685] }
+      ],
+      "ob_rejection": "Hg/Na multi-notch",
+      "source_urls": [
+        "https://www.sciencecenter.net/hutech/idas/lps.htm"
+      ],
+      "confidence": "medium",
+      "notes": "Hutech / IDAS LPS-V4. Visual variant."
+    },
+    "SVBony-SV220-7nm": {
+      "manufacturer": "SVBony",
+      "type": "dual-narrowband",
+      "passes": [
+        { "center_nm": 656.3, "fwhm_nm": 7.0, "peak_transmission": 0.94 },
+        { "center_nm": 500.7, "fwhm_nm": 7.0, "peak_transmission": 0.90 }
+      ],
+      "ob_rejection": "OD>5 (300-1100 nm)",
+      "source_urls": [
+        "https://www.svbony.com/products/sv220-dual-band-7nm-nebula-filter",
+        "https://www.amazon.com/SVBONY-Telescope-Dual-Band-Narrowband-Astrophotography/dp/B0BRCYF29T"
+      ],
+      "confidence": "high",
+      "notes": "SVBony SV220 7 nm dual Halpha + OIII. T>94% Halpha, T>90% OIII. Budget OSC dual-NB option."
+    },
+    "SVBony-SV220-7nm-SII-OIII": {
+      "manufacturer": "SVBony",
+      "type": "dual-narrowband",
+      "passes": [
+        { "center_nm": 672.4, "fwhm_nm": 7.0, "peak_transmission": 0.92 },
+        { "center_nm": 500.7, "fwhm_nm": 7.0, "peak_transmission": 0.90 }
+      ],
+      "ob_rejection": "OD>5",
+      "source_urls": [
+        "https://www.svbony.com/products/7nm-oiii-sii-duo-band-filter",
+        "https://www.svbony.com/products/7nm-oiii-sii-narrowband-filter"
+      ],
+      "confidence": "medium",
+      "notes": "SVBony SV220 7 nm dual SII + OIII. Pairs with Halpha-OIII for SHO from OSC."
+    },
+    "SVBony-SV220-3nm": {
+      "manufacturer": "SVBony",
+      "type": "dual-narrowband",
+      "passes": [
+        { "center_nm": 656.3, "fwhm_nm": 3.0, "peak_transmission": 0.85 },
+        { "center_nm": 500.7, "fwhm_nm": 3.0, "peak_transmission": 0.80 }
+      ],
+      "ob_rejection": "OD>5",
+      "source_urls": [
+        "https://www.svbony.com/blog/review-of-svbony-sv220-3nm-filter"
+      ],
+      "confidence": "medium",
+      "notes": "SVBony SV220 3 nm dual narrowband. Tighter than 7 nm version."
+    },
+    "Optolong-L-Synergy-7nm": {
+      "manufacturer": "Optolong",
+      "type": "dual-narrowband",
+      "passes": [
+        { "center_nm": 672.4, "fwhm_nm": 7.0, "peak_transmission": 0.85 },
+        { "center_nm": 500.7, "fwhm_nm": 7.0, "peak_transmission": 0.85 }
+      ],
+      "ob_rejection": "OD>4",
+      "source_urls": [
+        "https://www.optolong.com/cms/document/detail/id/484.html",
+        "https://agenaastro.com/optolong-filters-l-synergy-dual-band-sii-oiii-7nm-filter-2-mounted.html"
+      ],
+      "confidence": "high",
+      "notes": "Optolong L-Synergy: dual 7 nm SII + OIII. Pairs with L-eXtreme to obtain SHO from OSC."
+    },
+    "Optolong-L-Quad-Enhance": {
+      "manufacturer": "Optolong",
+      "type": "quad-narrowband",
+      "passes": [
+        { "center_nm": 486.1, "fwhm_nm": 15, "peak_transmission": 0.90 },
+        { "center_nm": 500.7, "fwhm_nm": 15, "peak_transmission": 0.90 },
+        { "center_nm": 656.3, "fwhm_nm": 25, "peak_transmission": 0.90 },
+        { "center_nm": 672.4, "fwhm_nm": 15, "peak_transmission": 0.90 }
+      ],
+      "ob_rejection": "OD2-OD4 LPR cuts (Hg, Na)",
+      "source_urls": [
+        "https://www.optolong.com/cms/document/detail/id/286.html",
+        "https://agenaastro.com/optolong-l-quad-quadband-light-pollution-filter-2-inch-mounted-m48.html"
+      ],
+      "confidence": "medium",
+      "notes": "L-Quad Enhance Filter (L-QEF): four bands - Hbeta + OIII + Halpha + SII. >90% at the four nebula lines. Bortle 1-7 recommended. Halpha bandwidth wider to include NII contribution."
+    },
+    "STC-Astro-Duo-NB": {
+      "manufacturer": "STC Optical",
+      "type": "dual-narrowband",
+      "passes": [
+        { "center_nm": 656.3, "fwhm_nm": 10.0, "peak_transmission": 0.87 },
+        { "center_nm": 500.7, "fwhm_nm": 10.0, "peak_transmission": 0.85 }
+      ],
+      "ob_rejection": "OD>4",
+      "source_urls": [
+        "https://www.stcoptics.com/products/astro-duo-narrowband-duo-nb-filter",
+        "https://williamoptics.com/products/stc-astro-duo-narrowband-filter"
+      ],
+      "confidence": "medium",
+      "notes": "STC Optical Astro Duo-NB: 10 nm Halpha + 10 nm OIII. Transmission >85%. IBAD coating."
+    },
+    "STC-Astro-Multispectra": {
+      "manufacturer": "STC Optical",
+      "type": "broadband-LPR",
+      "passes": [
+        { "center_nm": 540, "fwhm_nm": 280, "peak_transmission": 0.92, "passband_nm": [400, 700] }
+      ],
+      "ob_rejection": "OD>3 (Hg, Na, LP notches)",
+      "source_urls": [
+        "https://www.stcoptics.com/"
+      ],
+      "confidence": "low",
+      "notes": "STC Multispectra LPR. Broad passband with multi-notch LP suppression. Detailed spec text limited."
+    },
+    "Askar-ColorMagic-D1-Ha-OIII": {
+      "manufacturer": "Askar (Sharpstar)",
+      "type": "dual-narrowband",
+      "passes": [
+        { "center_nm": 656.3, "fwhm_nm": 8.5, "peak_transmission": 0.85 },
+        { "center_nm": 500.7, "fwhm_nm": 6.5, "peak_transmission": 0.85 }
+      ],
+      "ob_rejection": "OD>4",
+      "source_urls": [
+        "https://agenaastro.com/askar-color-magic-duo-narrowband-6nm-h-a-o-iii-imaging-filter-2-mounted.html",
+        "https://www.highpointscientific.com/askar-color-magic-super-d1-duo-narrowband-filter-oiii-and-ha-2-inch"
+      ],
+      "confidence": "high",
+      "notes": "Askar Color Magic D1: Halpha 8.5 nm (wider to capture NII 658.4) + OIII 6.5 nm. Peak transmission 85%."
+    },
+    "Askar-ColorMagic-D2-SII-OIII": {
+      "manufacturer": "Askar (Sharpstar)",
+      "type": "dual-narrowband",
+      "passes": [
+        { "center_nm": 672.4, "fwhm_nm": 8.5, "peak_transmission": 0.85 },
+        { "center_nm": 500.7, "fwhm_nm": 6.5, "peak_transmission": 0.85 }
+      ],
+      "ob_rejection": "OD>4",
+      "source_urls": [
+        "https://agenaastro.com/askar-color-magic-duo-narrowband-6nm-d2-s-ii-o-iii-imaging-filter-2-mounted.html",
+        "https://www.highpointscientific.com/askar-color-magic-super-d2-duo-narrowband-filter-oiii-and-sii-2-inch"
+      ],
+      "confidence": "high",
+      "notes": "Askar Color Magic D2: SII 8.5 nm + OIII 6.5 nm. Pairs with D1 to extract full SHO from OSC."
+    },
+    "Astronomik-CLS": {
+      "manufacturer": "Astronomik",
+      "type": "broadband-LPR",
+      "passes": [
+        { "center_nm": 500, "fwhm_nm": 100, "peak_transmission": 0.97, "passband_nm": [450, 550] },
+        { "center_nm": 656, "fwhm_nm": 50, "peak_transmission": 0.97, "passband_nm": [630, 680] }
+      ],
+      "ob_rejection": "OD>4 Na, Hg",
+      "source_urls": [
+        "https://www.astronomik.com/en/Visual-Filters/CLS/",
+        "https://www.astronomik.com/en/Astronomik-CLS-Clip-Filter-EOS-APS-C/10201082"
+      ],
+      "confidence": "medium",
+      "notes": "Astronomik CLS (City Light Suppression). ~99 nm wide LPR with multi-notch. Compromise between broadband fidelity and LPR."
+    },
+    "Astronomik-UHC": {
+      "manufacturer": "Astronomik",
+      "type": "narrowband-multi",
+      "passes": [
+        { "center_nm": 486.1, "fwhm_nm": 16, "peak_transmission": 0.97 },
+        { "center_nm": 500.7, "fwhm_nm": 22, "peak_transmission": 0.97 },
+        { "center_nm": 656.3, "fwhm_nm": 16, "peak_transmission": 0.97 }
+      ],
+      "ob_rejection": "OD>5 Na, Hg, airglow",
+      "source_urls": [
+        "https://www.astronomik.com/en/Light-Pollution-Filters/UHC/"
+      ],
+      "confidence": "medium",
+      "notes": "Astronomik UHC: passes Hbeta, OIII (496+500.7), and Halpha. Blocks Na/Hg vapor and natural airglow lines. Visual + photographic."
+    }
+  }
+}

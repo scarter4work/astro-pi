@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<xri version="1.0">
+   <description>
+      <title>NukeX v4 — Distribution-Fitted Stacking</title>
+      <copyright>Copyright (c) 2026 Scott Carter</copyright>
+   </description>
+   <platform os="linux" arch="x64" version="1.8.0:1.9.9">
+      <package fileName="20260425-linux-x64-NukeX.tar.gz" sha1="e3895e0ceaaa82c8c30d45f69e2c365e55c04b48" type="module" releaseDate="20260425">
+         <title>NukeX</title>
+         <description>NukeX v4 — Distribution-Fitted Stacking. v4.0.0.7: polish on top of v4.0.0.6 (pixel output bit-identical). (1) WARNING / CRITICAL Process Console messages when more than 10 / 50 percent of frames fail alignment — no more silent 94-percent-failed-alignment regressions. (2) Auto-selector rationale now names the FITS values (FILTER / BAYERPAT / NAXIS3) that drove the choice. (3) Tooltips on every interface control: stretch dropdowns, GPU checkbox, frame list buttons and tree boxes. (4) Validate() now checks cache-directory writability at Execute-button time; low-frame advisory at ExecuteGlobal. (5) FITS provenance keywords (CREATOR, NUKEXVER, NFRAMES, NFAILALN, PRIMSTR) on all output windows. (6) Defensive case-fold in the narrowband filter classifier. (7) ctest runs all 45 tests in 94 seconds with no exclusion list; heavy cases tagged as opt-in. Earlier v4.0.0.5 shipped the major engine fixes: Groth triangle alignment (0/65 failed instead of 61/65), 9.35x Phase B OpenMP speedup, Ceres isfinite guard.</description>
+      </package>
+   </platform>
+</xri>
+<Signature developerId="scarter4work" timestamp="2026-04-25T17:12:41.055Z" encoding="Base64">J+aT1lamkpkn//Y4CZ3Fhi8fe4c6CiFfDtiEvkZ9u+MThWhCeytOR/km3B+wirNHITE6i57tH/ToNVa6L1n1CA==</Signature>
