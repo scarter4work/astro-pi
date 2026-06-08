@@ -58,7 +58,7 @@ IsoString NukeXProcess::Categories() const
 
 uint32 NukeXProcess::Version() const
 {
-   return 0x400;  // Version 4.0.0
+   return 0x500;  // Version 5.0.0
 }
 
 String NukeXProcess::Description() const
