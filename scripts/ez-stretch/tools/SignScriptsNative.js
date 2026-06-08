@@ -23,7 +23,7 @@
 var KEYS_FILE   = "/home/scarter4work/projects/keys/scarter4work_keys.xssk";
 var PASS_FILE   = "/tmp/.pi_codesign_pass";
 var RESULT_FILE = "/tmp/.ez_sign_result.json";
-var PROJECT_DIR = "/home/scarter4work/projects/EZ-suite-bsc/EZ-Stretch-BSC";
+var PROJECT_DIR = "/home/scarter4work/projects/astro-pi/scripts/ez-stretch";
 var SCRIPTS_DIR = PROJECT_DIR + "/src/scripts/EZ Stretch BSC";
 
 var SCRIPTS = [ "EZStretch", "EZDonutRepair", "EZHazeKill" ];
