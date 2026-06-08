@@ -6,35 +6,44 @@
       <p>Repository: https://raw.githubusercontent.com/scarter4work/astro-pi/main/repository/</p>
    </description>
    <platform os="linux" arch="x64" version="1.8.0:2.0.0">
-      <package fileName="REPLACE-NukeX.tar.gz" sha1="0000000000000000000000000000000000000000" type="module" releaseDate="20260608">
+      <package fileName="20260608-linux-x64-NukeX.tar.gz" sha1="91550360e417c1493833e64cfc370c47a02366a5" type="module" releaseDate="20260608">
          <title>NukeX</title>
          <description>
-            <p><b>NukeX 5.0.0</b></p>
+            <p>
+               <b>NukeX 5.0.0</b>
+            </p>
             <p>Astrophotography integration and stretching module.</p>
          </description>
       </package>
    </platform>
    <platform os="all" arch="noarch" version="1.8.0:2.0.0">
-      <package fileName="EZStretch_v1.0.9.zip" sha1="0000000000000000000000000000000000000000" type="script" releaseDate="20260608">
+      <package fileName="EZStretch_v1.0.9.zip" sha1="c4d7805d4beef51141f19bbe6ce5f0afb56f7554" type="script" releaseDate="20260608">
          <title>EZ Stretch</title>
          <description>
-            <p><b>EZ Stretch v1.0.9</b></p>
+            <p>
+               <b>EZ Stretch v1.0.9</b>
+            </p>
             <p>Unified stretch suite combining three algorithms in a single interface.</p>
          </description>
       </package>
-      <package fileName="EZDonutRepair_v1.0.2.zip" sha1="0000000000000000000000000000000000000000" type="script" releaseDate="20260608">
+      <package fileName="EZDonutRepair_v1.0.2.zip" sha1="64106f76943d9c9677fd8156006de339cee1a2b9" type="script" releaseDate="20260608">
          <title>EZ Donut Repair</title>
          <description>
-            <p><b>EZ Donut Repair v1.0.2</b></p>
+            <p>
+               <b>EZ Donut Repair v1.0.2</b>
+            </p>
             <p>Removes donut/dust artifacts from astrophotography frames.</p>
          </description>
       </package>
-      <package fileName="EZHazeKill_v1.0.0.zip" sha1="0000000000000000000000000000000000000000" type="script" releaseDate="20260608">
+      <package fileName="EZHazeKill_v1.0.0.zip" sha1="a712c4523ef1571eebbf15bf66af669aff8e0009" type="script" releaseDate="20260608">
          <title>EZ Haze Kill</title>
          <description>
-            <p><b>EZ Haze Kill v1.0.0</b></p>
+            <p>
+               <b>EZ Haze Kill v1.0.0</b>
+            </p>
             <p>Gradient and haze reduction.</p>
          </description>
       </package>
    </platform>
 </xri>
+<Signature developerId="scarter4work" timestamp="2026-06-08T21:00:37.613Z" encoding="Base64">hNh397gtmTLS/aAUn7wqoOKjlCfwv7YGMxnKFer2CGbRjiqZFcMKBPOuFskB+sItdU8yHoMNTD5jB+YrVoezBQ==</Signature>
