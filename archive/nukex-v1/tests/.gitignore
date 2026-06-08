@@ -1,0 +1,4 @@
+nukex_tests
+*.o
+*.test.o
+*.d
