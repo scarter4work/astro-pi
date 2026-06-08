@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64">
+  <defs>
+    <linearGradient id="bgGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#1a1a2e;stop-opacity:1"/>
+      <stop offset="100%" style="stop-color:#16213e;stop-opacity:1"/>
+    </linearGradient>
+    <linearGradient id="glowGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#e94560;stop-opacity:1"/>
+      <stop offset="50%" style="stop-color:#ff6b6b;stop-opacity:1"/>
+      <stop offset="100%" style="stop-color:#feca57;stop-opacity:1"/>
+    </linearGradient>
+    <filter id="glow">
+      <feGaussianBlur stdDeviation="2" result="coloredBlur"/>
+      <feMerge>
+        <feMergeNode in="coloredBlur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+  </defs>
+
+  <!-- Background circle -->
+  <circle cx="32" cy="32" r="30" fill="url(#bgGrad)" stroke="#0f3460" stroke-width="2"/>
+
+  <!-- Outer ring representing regions -->
+  <circle cx="32" cy="32" r="24" fill="none" stroke="url(#glowGrad)" stroke-width="3" opacity="0.6"/>
+
+  <!-- Inner explosion/stretch symbol -->
+  <g filter="url(#glow)">
+    <!-- Central star burst -->
+    <path d="M32 12 L34 28 L50 26 L36 32 L50 38 L34 36 L32 52 L30 36 L14 38 L28 32 L14 26 L30 28 Z"
+          fill="url(#glowGrad)"/>
+  </g>
+
+  <!-- Small accent stars representing detected regions -->
+  <circle cx="18" cy="18" r="2" fill="#feca57" opacity="0.8"/>
+  <circle cx="46" cy="20" r="1.5" fill="#ff6b6b" opacity="0.8"/>
+  <circle cx="48" cy="44" r="2" fill="#e94560" opacity="0.8"/>
+  <circle cx="16" cy="46" r="1.5" fill="#feca57" opacity="0.8"/>
+
+  <!-- N and X letters subtly integrated -->
+  <text x="22" y="38" font-family="Arial, sans-serif" font-size="10" font-weight="bold" fill="#ffffff" opacity="0.9">N</text>
+  <text x="35" y="38" font-family="Arial, sans-serif" font-size="10" font-weight="bold" fill="#ffffff" opacity="0.9">X</text>
+</svg>
