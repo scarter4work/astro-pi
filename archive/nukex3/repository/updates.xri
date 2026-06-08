@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<xri version="1.0" xmlns="http://www.pixinsight.com/xri" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://www.pixinsight.com/xri http://pixinsight.com/xri/xri-1.0.xsd">
+   <description>
+      <p>
+         <b>NukeX v3 Update Repository</b>
+      </p>
+      <p>
+         Statistical stacking and stretch for PixInsight by Scott Carter.
+      </p>
+   </description>
+   <platform os="linux" arch="x64" version="1.8.0:1.9.9">
+      <package fileName="20260328-linux-x64-NukeX.tar.gz" sha1="f27da08085e421020c8a20fb272bde8e11e32a58" type="module" releaseDate="20260328">
+         <title>NukeX 3.2.0.12</title>
+         <description>
+            <p>
+               <b>NukeX v3.2 - Statistical Stacking + Stretch for PixInsight</b>
+            </p>
+            <p>
+               NukeX v3 provides two processes for astrophotography:
+            </p>
+            <ul>
+               <li>
+                  <b>NukeXStack</b> - Per-pixel statistical inference stacking with 4 distribution models (Gaussian, Poisson, Skew-Normal, Bimodal), triangle asterism alignment, metadata tiebreaker, flat calibration, and post-stretch subcube remediation (dust, vignetting). CUDA GPU acceleration.
+               </li>
+               <li>
+                  <b>NukeXStretch</b> - 11 stretch algorithms (MTF, GHS, ArcSinh, Log, OTS, SAS, RNC, Veralux, Lupton, Histogram, Photometric) with Bortle-aware auto-stretch.
+               </li>
+            </ul>
+            <p>
+               <b>Version 3.2.0.0 - First stable release</b>
+            </p>
+            <p>
+               CUDA GPU stacking with real kernel execution. SectionBar UI resize.
+               Consistent CPU/GPU console logging. Bortle spinner control.
+               Simplified UI (sigma slider removed). 19 test suites, 195 test cases.
+            </p>
+            <p>
+               Copyright (c) 2026 Scott Carter. All Rights Reserved.
+            </p>
+         </description>
+      </package>
+   </platform>
+</xri>
+<Signature developerId="scarter4work" timestamp="2026-03-28T15:13:44.182Z" encoding="Base64">lo+t/O0kOMN7ct2EEQi/F2WJwzWJ8XPaIjCaK99OwahS5SMA4iUh/Su02B94h3KWsBD2eq3375l8NQ6K4AgKCg==</Signature>
