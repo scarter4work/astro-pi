@@ -1,0 +1,1858 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "PixInsight JavaScript Runtime (PJSR) API Schema",
+  "version": "2.1.0",
+  "description": "API schema for PJSR scripting in PixInsight 1.9.4+ (V8 runtime, ECMAScript 2025). Legacy SpiderMonkey 24 engine is removed in 1.9.4 Lockhart.",
+
+  "versions": {
+    "1.9.4": {
+      "codename": "Lockhart",
+      "released": "2026-05-12",
+      "buildMin": 1690,
+      "smEngineRemoved": true,
+      "notes": "First release shipping V8 as the only available JavaScript runtime. Legacy 'sm' engine fully removed (forum thread 27198). Some process property definitions changed non-backward-compatibly (ABE, SubframeSelector; see forum thread 27213)."
+    }
+  },
+
+  "engines": {
+    "v8": {
+      "since": "1.9.4",
+      "default": true,
+      "ecmascript": "2025",
+      "directiveValues": ["v8", "v8-new", "v8-default", "v8-private"],
+      "description": "V8-based JavaScript runtime. Sole runtime in PixInsight 1.9.4 Lockhart and later. Supports modern ECMAScript including classes, private fields, async/await, and WebAssembly-backed FMath."
+    },
+    "sm": {
+      "since": "legacy",
+      "default": false,
+      "deprecated": true,
+      "removedIn": "1.9.4",
+      "ecmascript": "ES5",
+      "directiveValues": ["sm"],
+      "description": "Legacy SpiderMonkey 24 engine. Removed in PixInsight 1.9.4 Lockhart (build 1690, 2026-05-12). Scripts using #engine sm or omitting #engine entirely fail to run in 1.9.4+. See https://pixinsight.com/forum/index.php?threads/legacy-sm-javascript-missing-also-fonts-missing.27198/"
+    }
+  },
+
+  "globalObjects": {
+    "console": {
+      "description": "Console output interface for script debugging and logging",
+      "methods": {
+        "show": { "signature": "show()", "returns": "void", "description": "Shows the process console window" },
+        "hide": { "signature": "hide()", "returns": "void", "description": "Hides the process console window" },
+        "clear": { "signature": "clear()", "returns": "void", "description": "Clears all console output" },
+        "flush": { "signature": "flush()", "returns": "void", "description": "Flushes pending console output" },
+        "write": { "signature": "write(text: String)", "returns": "void", "description": "Writes text without newline" },
+        "writeln": { "signature": "writeln(text: String)", "returns": "void", "description": "Writes text with newline" },
+        "note": { "signature": "note(text: String)", "returns": "void", "description": "Writes a note message" },
+        "warning": { "signature": "warning(text: String)", "returns": "void", "description": "Writes a warning message" },
+        "critical": { "signature": "critical(text: String)", "returns": "void", "description": "Writes a critical error message" }
+      },
+      "properties": {
+        "abortEnabled": { "type": "Boolean", "description": "Enable/disable abort button in console" }
+      }
+    },
+
+    "Parameters": {
+      "description": "Interface for process parameter persistence",
+      "methods": {
+        "has": { "signature": "has(key: String): Boolean", "description": "Check if parameter exists" },
+        "get": { "signature": "get(key: String): any", "description": "Get parameter value" },
+        "set": { "signature": "set(key: String, value: any)", "description": "Set parameter value" },
+        "remove": { "signature": "remove(key: String)", "description": "Remove a parameter" },
+        "clear": { "signature": "clear()", "description": "Clear all parameters" }
+      },
+      "properties": {
+        "isGlobalTarget": { "type": "Boolean", "description": "True if executing on global context" },
+        "isViewTarget": { "type": "Boolean", "description": "True if executing on a view" },
+        "targetView": { "type": "View", "description": "The target view if isViewTarget is true" }
+      }
+    },
+
+    "jsAutoGC": {
+      "type": "Boolean",
+      "description": "Global flag to enable/disable automatic garbage collection (SpiderMonkey only)",
+      "deprecatedIn": "v8",
+      "replacedBy": "V8 manages garbage collection autonomously; use Image.free() / Bitmap.clear() for explicit deallocation"
+    },
+
+    "jsGarbageCollect": {
+      "type": "function",
+      "signature": "jsGarbageCollect()",
+      "description": "Force immediate garbage collection (SpiderMonkey only)",
+      "deprecatedIn": "v8",
+      "replacedBy": "Image.free() / Bitmap.clear()"
+    },
+
+    "gc": {
+      "type": "function",
+      "signature": "gc()",
+      "description": "Force garbage collection. Has no effect under V8 (which manages GC autonomously).",
+      "deprecatedIn": "v8",
+      "replacedBy": "Image.free() / Bitmap.clear() for explicit deallocation"
+    }
+  },
+
+  "coreClasses": {
+    "Image": {
+      "description": "Core class representing a 2D image with multiple channels",
+      "constructors": [
+        { "signature": "Image()", "description": "Creates an empty image" },
+        { "signature": "Image(width: Number, height: Number, numberOfChannels?: Number, colorSpace?: Number, bitsPerSample?: Number)", "description": "Creates an image with specified dimensions" },
+        { "signature": "Image(sourceImage: Image)", "description": "Creates a copy of an existing image" }
+      ],
+      "properties": {
+        "width": { "type": "Number", "readonly": true, "description": "Image width in pixels" },
+        "height": { "type": "Number", "readonly": true, "description": "Image height in pixels" },
+        "numberOfChannels": { "type": "Number", "readonly": true, "description": "Number of channels" },
+        "colorSpace": { "type": "Number", "description": "Color space identifier (RGB, Grayscale, etc.)" },
+        "bitsPerSample": { "type": "Number", "readonly": true, "description": "Bits per sample (8, 16, 32, 64)" },
+        "isColor": { "type": "Boolean", "readonly": true, "description": "True if image is in color space" },
+        "isGrayscale": { "type": "Boolean", "readonly": true, "description": "True if image is grayscale" },
+        "bounds": { "type": "Rect", "readonly": true, "description": "Image bounds rectangle" },
+        "selectedChannel": { "type": "Number", "description": "Currently selected channel for operations" },
+        "rangeClippingEnabled": { "type": "Boolean", "description": "Enable range clipping on pixel operations" },
+        "rangeClipLow": { "type": "Number", "description": "Lower clipping bound" },
+        "rangeClipHigh": { "type": "Number", "description": "Upper clipping bound" }
+      },
+      "methods": {
+        "sample": { "signature": "sample(x: Number, y: Number, channel?: Number): Number", "description": "Get pixel sample value" },
+        "setSample": { "signature": "setSample(value: Number, x: Number, y: Number, channel?: Number)", "description": "Set pixel sample value" },
+        "apply": { "signature": "apply(value: Number|Image, op?: Number)", "description": "Apply arithmetic/logical operation" },
+        "assign": { "signature": "assign(image: Image)", "description": "Assign another image's data" },
+        "fill": { "signature": "fill(value: Number)", "description": "Fill image with constant value" },
+        "invert": { "signature": "invert()", "description": "Invert pixel values" },
+        "truncate": { "signature": "truncate(low?: Number, high?: Number)", "description": "Truncate pixel values to range" },
+        "normalize": { "signature": "normalize(low?: Number, high?: Number)", "description": "Normalize pixel values" },
+        "rescale": { "signature": "rescale(low?: Number, high?: Number)", "description": "Rescale pixel values" },
+        "binarize": { "signature": "binarize(threshold?: Number)", "description": "Binarize image" },
+        "crop": { "signature": "crop(left: Number, top: Number, right: Number, bottom: Number)", "description": "Crop image" },
+        "cropBy": { "signature": "cropBy(left: Number, top: Number, right: Number, bottom: Number)", "description": "Crop image by margins" },
+        "shift": { "signature": "shift(dx: Number, dy: Number)", "description": "Shift image by offset" },
+        "rotate": { "signature": "rotate(angle: Number)", "description": "Rotate image by angle in radians" },
+        "mirror": { "signature": "mirror(horizontal?: Boolean, vertical?: Boolean)", "description": "Mirror image" },
+        "resample": { "signature": "resample(scale: Number|Array)", "description": "Resample image" },
+        "convolve": { "signature": "convolve(kernel: Matrix)", "description": "Convolve with kernel" },
+        "morphologicalTransformation": { "signature": "morphologicalTransformation(op: Number, structure: Matrix)", "description": "Apply morphological operation" },
+        "median": { "signature": "median(channel?: Number): Number", "description": "Compute median value" },
+        "mean": { "signature": "mean(channel?: Number): Number", "description": "Compute mean value" },
+        "stdDev": { "signature": "stdDev(channel?: Number): Number", "description": "Compute standard deviation" },
+        "avgDev": { "signature": "avgDev(channel?: Number): Number", "description": "Compute average deviation" },
+        "MAD": { "signature": "MAD(channel?: Number): Number", "description": "Compute median absolute deviation" },
+        "minimum": { "signature": "minimum(channel?: Number): Number", "description": "Get minimum value" },
+        "maximum": { "signature": "maximum(channel?: Number): Number", "description": "Get maximum value" },
+        "initSampleIterator": { "signature": "initSampleIterator()", "description": "Initialize sample iterator" },
+        "nextSample": { "signature": "nextSample(): Boolean", "description": "Move to next sample" },
+        "sampleValue": { "signature": "sampleValue(): Number", "description": "Get current sample value" },
+        "forEachSample": { "signature": "forEachSample(callback)", "description": "Iterate over samples", "removedIn": "v8", "replacedBy": "ImageIterator" },
+        "forEachMutableSample": { "signature": "forEachMutableSample(callback)", "description": "Iterate and mutate samples", "removedIn": "v8", "replacedBy": "ImageIterator" },
+        "forEachPixel": { "signature": "forEachPixel(callback)", "description": "Iterate over pixels", "removedIn": "v8", "replacedBy": "ImageIterator" },
+        "forEachMutablePixel": { "signature": "forEachMutablePixel(callback)", "description": "Iterate and mutate pixels", "removedIn": "v8", "replacedBy": "ImageIterator" },
+        "free": { "signature": "free()", "description": "Explicitly deallocate underlying pixel buffer. Recommended in V8 (no automatic gc())." }
+      }
+    },
+
+    "ImageWindow": {
+      "description": "High-level interface to a PixInsight image window",
+      "constructors": [
+        { "signature": "ImageWindow(width: Number, height: Number, numberOfChannels?: Number, bitsPerSample?: Number, floatSample?: Boolean, color?: Boolean, id?: String)", "description": "Create a new image window" }
+      ],
+      "staticMethods": {
+        "activeWindow": { "signature": "ImageWindow.activeWindow: ImageWindow", "description": "Get the currently active image window" },
+        "windowById": { "signature": "ImageWindow.windowById(id: String): ImageWindow", "description": "Get window by identifier" },
+        "windows": { "signature": "ImageWindow.windows: Array<ImageWindow>", "description": "Array of all open image windows" },
+        "open": { "signature": "ImageWindow.open(filePath: String, id?: String): Array<ImageWindow>", "description": "Open image file(s)" }
+      },
+      "properties": {
+        "mainView": { "type": "View", "readonly": true, "description": "The main view of this window" },
+        "currentView": { "type": "View", "description": "Currently selected view (main or preview)" },
+        "previews": { "type": "Array<View>", "readonly": true, "description": "Array of preview views" },
+        "isNull": { "type": "Boolean", "readonly": true, "description": "True if window reference is null" },
+        "filePath": { "type": "String", "readonly": true, "description": "Full path of associated file" },
+        "fileInfo": { "type": "Object", "readonly": true, "description": "File format information" },
+        "keywords": { "type": "Array", "description": "FITS keywords array" },
+        "mask": { "type": "ImageWindow", "description": "Mask window reference" },
+        "maskEnabled": { "type": "Boolean", "description": "Is mask enabled" },
+        "maskInverted": { "type": "Boolean", "description": "Is mask inverted" },
+        "maskVisible": { "type": "Boolean", "description": "Is mask visible" },
+        "maskMode": { "type": "Number", "description": "Mask display mode" },
+        "hasMaskReferences": { "type": "Boolean", "readonly": true, "description": "Is used as mask by other windows" },
+        "modified": { "type": "Boolean", "readonly": true, "description": "Has unsaved modifications" },
+        "visible": { "type": "Boolean", "description": "Window visibility" },
+        "iconized": { "type": "Boolean", "description": "Window iconized state" },
+        "zoomFactor": { "type": "Number", "description": "Current zoom factor" },
+        "viewportPosition": { "type": "Point", "description": "Viewport scroll position" }
+      },
+      "methods": {
+        "show": { "signature": "show()", "description": "Show the window" },
+        "hide": { "signature": "hide()", "description": "Hide the window" },
+        "close": { "signature": "close()", "description": "Close the window" },
+        "forceClose": { "signature": "forceClose()", "description": "Force close without save prompt" },
+        "save": { "signature": "save()", "description": "Save to current file" },
+        "saveAs": { "signature": "saveAs(filePath: String, queryOptions?: Boolean, allowMessages?: Boolean, strict?: Boolean)", "description": "Save to specified file" },
+        "regenerateAstrometricSolution": { "signature": "regenerateAstrometricSolution()", "description": "Regenerate astrometric solution" },
+        "createPreview": { "signature": "createPreview(rect: Rect, id?: String): View", "description": "Create a preview" },
+        "deletePreview": { "signature": "deletePreview(view: View)", "description": "Delete a preview" },
+        "deletePreviews": { "signature": "deletePreviews()", "description": "Delete all previews" },
+        "purge": { "signature": "purge()", "description": "Purge image data cache" },
+        "isMaskCompatible": { "signature": "isMaskCompatible(window: ImageWindow): Boolean", "description": "Check mask compatibility" },
+        "isMaskOf": { "signature": "isMaskOf(window: ImageWindow): Boolean", "description": "Check if this is a mask of window" },
+        "removeMask": { "signature": "removeMask()", "description": "Remove mask" },
+        "removeMaskReferences": { "signature": "removeMaskReferences()", "description": "Remove all mask references" },
+        "undo": { "signature": "undo(n?: Number)", "description": "Undo operations" },
+        "redo": { "signature": "redo(n?: Number)", "description": "Redo operations" },
+        "zoomToFit": { "signature": "zoomToFit()", "description": "Zoom to fit window" },
+        "fitWindow": { "signature": "fitWindow()", "description": "Fit window to image" },
+        "setViewport": { "signature": "setViewport(x: Number, y: Number, zoom?: Number)", "description": "Set viewport position and zoom" }
+      }
+    },
+
+    "View": {
+      "description": "Interface to an image view (main view or preview)",
+      "properties": {
+        "id": { "type": "String", "description": "View identifier" },
+        "fullId": { "type": "String", "readonly": true, "description": "Full identifier including window" },
+        "isMainView": { "type": "Boolean", "readonly": true, "description": "Is this the main view" },
+        "isPreview": { "type": "Boolean", "readonly": true, "description": "Is this a preview" },
+        "isNull": { "type": "Boolean", "readonly": true, "description": "Is view reference null" },
+        "image": { "type": "Image", "readonly": true, "description": "The image object" },
+        "window": { "type": "ImageWindow", "readonly": true, "description": "Parent window" },
+        "stf": { "type": "Array", "description": "Screen transfer function parameters" },
+        "histogramTransformation": { "type": "Array", "description": "Histogram transformation parameters" }
+      },
+      "methods": {
+        "beginProcess": { "signature": "beginProcess(undo?: Number)", "description": "Begin processing (start undo block)" },
+        "endProcess": { "signature": "endProcess()", "description": "End processing (commit undo block)" },
+        "computeProperty": { "signature": "computeProperty(key: String): any", "description": "Compute a view property" },
+        "setPropertyValue": { "signature": "setPropertyValue(key: String, value: any)", "description": "Set a view property" },
+        "propertyValue": { "signature": "propertyValue(key: String): any", "description": "Get a view property value" }
+      },
+      "staticMethods": {
+        "viewById": { "signature": "View.viewById(id: String): View", "description": "Get view by identifier" }
+      }
+    },
+
+    "ProcessInstance": {
+      "description": "Interface to execute PixInsight processes programmatically",
+      "constructors": [
+        { "signature": "ProcessInstance(processId: String)", "description": "Create instance of a process" }
+      ],
+      "staticMethods": {
+        "fromIcon": { "signature": "ProcessInstance.fromIcon(iconId: String): ProcessInstance", "description": "Create from process icon" },
+        "icons": { "signature": "ProcessInstance.icons(): Array<String>", "description": "Get all process icon identifiers" }
+      },
+      "methods": {
+        "executeOn": { "signature": "executeOn(view: View, swapFile?: String): Boolean", "description": "Execute on a view" },
+        "executeGlobal": { "signature": "executeGlobal(): Boolean", "description": "Execute globally" },
+        "launch": { "signature": "launch()", "description": "Launch process interface" },
+        "launchInterface": { "signature": "launchInterface()", "description": "Launch process interface window" },
+        "canExecuteOn": { "signature": "canExecuteOn(view: View): Boolean", "description": "Check if can execute on view" },
+        "canExecuteGlobal": { "signature": "canExecuteGlobal(): Boolean", "description": "Check if can execute globally" },
+        "toSource": { "signature": "toSource(): String", "description": "Convert to JavaScript source code" }
+      }
+    },
+
+    "Dialog": {
+      "description": "Modal dialog window for user interaction",
+      "constructors": [
+        { "signature": "Dialog()", "description": "Create a new dialog" },
+        { "signature": "Dialog(parent: Control)", "description": "Create dialog with parent" }
+      ],
+      "properties": {
+        "windowTitle": { "type": "String", "description": "Dialog window title" },
+        "userResizable": { "type": "Boolean", "description": "Allow user resizing" },
+        "minWidth": { "type": "Number", "description": "Minimum width" },
+        "minHeight": { "type": "Number", "description": "Minimum height" },
+        "maxWidth": { "type": "Number", "description": "Maximum width" },
+        "maxHeight": { "type": "Number", "description": "Maximum height" }
+      },
+      "methods": {
+        "execute": { "signature": "execute(): Number", "description": "Execute modal dialog" },
+        "cancel": { "signature": "cancel()", "description": "Cancel and close dialog" },
+        "ok": { "signature": "ok()", "description": "Accept and close dialog" },
+        "done": { "signature": "done(result: Number)", "description": "Close with result code" }
+      },
+      "eventHandlers": {
+        "onExecute": { "signature": "onExecute()", "description": "Called when dialog is executed" },
+        "onReturn": { "signature": "onReturn(result: Number)", "description": "Called when dialog returns" }
+      }
+    },
+
+    "Control": {
+      "description": "Base class for all UI controls",
+      "properties": {
+        "enabled": { "type": "Boolean", "description": "Control enabled state" },
+        "visible": { "type": "Boolean", "description": "Control visibility" },
+        "width": { "type": "Number", "description": "Control width" },
+        "height": { "type": "Number", "description": "Control height" },
+        "minWidth": { "type": "Number", "description": "Minimum width" },
+        "minHeight": { "type": "Number", "description": "Minimum height" },
+        "maxWidth": { "type": "Number", "description": "Maximum width" },
+        "maxHeight": { "type": "Number", "description": "Maximum height" },
+        "toolTip": { "type": "String", "description": "Tooltip text" },
+        "cursor": { "type": "Number", "description": "Mouse cursor type" },
+        "focusStyle": { "type": "Number", "description": "Focus style" },
+        "sizer": { "type": "Sizer", "readonly": true, "description": "Control's sizer" },
+        "font": { "type": "Font", "description": "Control font" },
+        "backgroundColor": { "type": "Number", "description": "Background color" },
+        "foregroundColor": { "type": "Number", "description": "Foreground/text color" }
+      },
+      "methods": {
+        "show": { "signature": "show()", "description": "Show control" },
+        "hide": { "signature": "hide()", "description": "Hide control" },
+        "setFixedWidth": { "signature": "setFixedWidth(width: Number)", "description": "Set fixed width" },
+        "setFixedHeight": { "signature": "setFixedHeight(height: Number)", "description": "Set fixed height" },
+        "setFixedSize": { "signature": "setFixedSize(width: Number, height: Number)", "description": "Set fixed size" },
+        "setMinWidth": { "signature": "setMinWidth(width: Number)", "description": "Set minimum width" },
+        "setMinHeight": { "signature": "setMinHeight(height: Number)", "description": "Set minimum height" },
+        "setMaxWidth": { "signature": "setMaxWidth(width: Number)", "description": "Set maximum width" },
+        "setMaxHeight": { "signature": "setMaxHeight(height: Number)", "description": "Set maximum height" },
+        "setScaledFixedWidth": { "signature": "setScaledFixedWidth(width: Number)", "description": "Set fixed width (DPI scaled)" },
+        "setScaledFixedHeight": { "signature": "setScaledFixedHeight(height: Number)", "description": "Set fixed height (DPI scaled)" },
+        "setScaledMinWidth": { "signature": "setScaledMinWidth(width: Number)", "description": "Set minimum width (DPI scaled)" },
+        "setScaledMinHeight": { "signature": "setScaledMinHeight(height: Number)", "description": "Set minimum height (DPI scaled)" },
+        "adjustToContents": { "signature": "adjustToContents()", "description": "Resize to fit contents" },
+        "focus": { "signature": "focus()", "description": "Set keyboard focus" },
+        "update": { "signature": "update()", "description": "Schedule repaint" },
+        "repaint": { "signature": "repaint()", "description": "Immediate repaint" }
+      },
+      "eventHandlers": {
+        "onShow": { "signature": "onShow()", "description": "Called when shown" },
+        "onHide": { "signature": "onHide()", "description": "Called when hidden" },
+        "onGetFocus": { "signature": "onGetFocus()", "description": "Called when focused" },
+        "onLoseFocus": { "signature": "onLoseFocus()", "description": "Called when focus lost" },
+        "onMousePress": { "signature": "onMousePress(x: Number, y: Number, button: Number, modifiers: Number)", "description": "Mouse press event" },
+        "onMouseRelease": { "signature": "onMouseRelease(x: Number, y: Number, button: Number, modifiers: Number)", "description": "Mouse release event" },
+        "onMouseMove": { "signature": "onMouseMove(x: Number, y: Number, modifiers: Number)", "description": "Mouse move event" },
+        "onMouseWheel": { "signature": "onMouseWheel(x: Number, y: Number, delta: Number, modifiers: Number)", "description": "Mouse wheel event" },
+        "onKeyPress": { "signature": "onKeyPress(keyCode: Number, modifiers: Number): Boolean", "description": "Key press event" },
+        "onKeyRelease": { "signature": "onKeyRelease(keyCode: Number, modifiers: Number): Boolean", "description": "Key release event" },
+        "onPaint": { "signature": "onPaint(x0: Number, y0: Number, x1: Number, y1: Number)", "description": "Paint event" },
+        "onResize": { "signature": "onResize(newWidth: Number, newHeight: Number, oldWidth: Number, oldHeight: Number)", "description": "Resize event" }
+      }
+    },
+
+    "Sizer": {
+      "description": "Layout manager for organizing controls",
+      "constructors": [
+        { "signature": "Sizer(vertical?: Boolean)", "description": "Create vertical or horizontal sizer" }
+      ],
+      "properties": {
+        "margin": { "type": "Number", "description": "Outer margin" },
+        "spacing": { "type": "Number", "description": "Space between items" },
+        "scaledMargin": { "type": "Number", "description": "DPI-scaled margin" },
+        "scaledSpacing": { "type": "Number", "description": "DPI-scaled spacing" }
+      },
+      "methods": {
+        "add": { "signature": "add(item: Control|Sizer, stretch?: Number, align?: Number)", "description": "Add item to sizer" },
+        "addSpacing": { "signature": "addSpacing(size: Number)", "description": "Add fixed spacing" },
+        "addScaledSpacing": { "signature": "addScaledSpacing(size: Number)", "description": "Add DPI-scaled spacing" },
+        "addStretch": { "signature": "addStretch(stretch?: Number)", "description": "Add stretchable space" },
+        "insert": { "signature": "insert(index: Number, item: Control|Sizer, stretch?: Number)", "description": "Insert item at index" },
+        "remove": { "signature": "remove(item: Control|Sizer)", "description": "Remove item from sizer" }
+      }
+    },
+
+    "File": {
+      "description": "File I/O operations",
+      "constructors": [
+        { "signature": "File()", "description": "Create file object" },
+        { "signature": "File(path: String, mode?: Number)", "description": "Create and open file" }
+      ],
+      "staticMethods": {
+        "exists": { "signature": "File.exists(path: String): Boolean", "description": "Check if file exists" },
+        "remove": { "signature": "File.remove(path: String)", "description": "Delete file" },
+        "copy": { "signature": "File.copy(source: String, dest: String)", "description": "Copy file" },
+        "move": { "signature": "File.move(source: String, dest: String)", "description": "Move/rename file" },
+        "createDirectory": { "signature": "File.createDirectory(path: String, recursive?: Boolean)", "description": "Create directory" },
+        "removeDirectory": { "signature": "File.removeDirectory(path: String)", "description": "Remove directory" },
+        "extractDrive": { "signature": "File.extractDrive(path: String): String", "description": "Extract drive letter" },
+        "extractDirectory": { "signature": "File.extractDirectory(path: String): String", "description": "Extract directory path" },
+        "extractName": { "signature": "File.extractName(path: String): String", "description": "Extract file name" },
+        "extractExtension": { "signature": "File.extractExtension(path: String): String", "description": "Extract file extension" },
+        "extractSuffix": { "signature": "File.extractSuffix(path: String): String", "description": "Extract file suffix (with dot)" },
+        "changeExtension": { "signature": "File.changeExtension(path: String, ext: String): String", "description": "Change file extension" },
+        "appendToName": { "signature": "File.appendToName(path: String, suffix: String): String", "description": "Append to filename" },
+        "fullPath": { "signature": "File.fullPath(path: String): String", "description": "Get absolute path" },
+        "systemTempDirectory": { "type": "String", "description": "System temp directory" }
+      },
+      "methods": {
+        "open": { "signature": "open(path: String, mode: Number)", "description": "Open file" },
+        "openOrCreate": { "signature": "openOrCreate(path: String)", "description": "Open or create file" },
+        "create": { "signature": "create(path: String)", "description": "Create new file" },
+        "createForWriting": { "signature": "createForWriting(path: String)", "description": "Create for writing" },
+        "close": { "signature": "close()", "description": "Close file" },
+        "flush": { "signature": "flush()", "description": "Flush buffers" },
+        "read": { "signature": "read(dataType: Number, count?: Number): any", "description": "Read data" },
+        "write": { "signature": "write(data: any, dataType: Number)", "description": "Write data" },
+        "seek": { "signature": "seek(position: Number, mode?: Number)", "description": "Seek to position" },
+        "position": { "type": "Number", "readonly": true, "description": "Current position" },
+        "size": { "type": "Number", "readonly": true, "description": "File size" },
+        "isOpen": { "type": "Boolean", "readonly": true, "description": "Is file open" },
+        "isEOF": { "type": "Boolean", "readonly": true, "description": "At end of file" },
+        "path": { "type": "String", "readonly": true, "description": "File path" },
+        "outText": { "signature": "outText(text: String)", "description": "Write text" },
+        "outTextLn": { "signature": "outTextLn(text: String)", "description": "Write text with newline" }
+      }
+    },
+
+    "FileFormat": {
+      "description": "Interface to image file formats",
+      "constructors": [
+        { "signature": "FileFormat(formatId: String)", "description": "Create format by ID" },
+        { "signature": "FileFormat(extension: String, read: Boolean, write: Boolean)", "description": "Create format by extension" }
+      ],
+      "staticMethods": {
+        "supportedFormats": { "signature": "FileFormat.supportedFormats(): Array", "description": "Get all supported formats" }
+      },
+      "properties": {
+        "name": { "type": "String", "readonly": true, "description": "Format name" },
+        "extensions": { "type": "Array", "readonly": true, "description": "Supported extensions" },
+        "canRead": { "type": "Boolean", "readonly": true, "description": "Can read format" },
+        "canWrite": { "type": "Boolean", "readonly": true, "description": "Can write format" },
+        "canStoreKeywords": { "type": "Boolean", "readonly": true, "description": "Supports keywords" },
+        "canStoreICCProfiles": { "type": "Boolean", "readonly": true, "description": "Supports ICC profiles" },
+        "canStoreProperties": { "type": "Boolean", "readonly": true, "description": "Supports properties" }
+      }
+    },
+
+    "FileFormatInstance": {
+      "description": "Instance for reading/writing image files",
+      "constructors": [
+        { "signature": "FileFormatInstance(format: FileFormat)", "description": "Create instance from format" }
+      ],
+      "methods": {
+        "open": { "signature": "open(path: String, hints?: String): Array", "description": "Open file for reading" },
+        "create": { "signature": "create(path: String, hints?: String, count?: Number): Boolean", "description": "Create file for writing" },
+        "close": { "signature": "close()", "description": "Close file" },
+        "readImage": { "signature": "readImage(image: Image): Boolean", "description": "Read image data" },
+        "writeImage": { "signature": "writeImage(image: Image): Boolean", "description": "Write image data" },
+        "keywords": { "type": "Array", "description": "FITS keywords" },
+        "iccProfile": { "type": "ByteArray", "description": "ICC profile data" }
+      }
+    },
+
+    "Matrix": {
+      "description": "64-bit floating point matrix",
+      "constructors": [
+        { "signature": "Matrix()", "description": "Create empty matrix" },
+        { "signature": "Matrix(rows: Number, cols: Number, initValue?: Number)", "description": "Create with dimensions" },
+        { "signature": "Matrix(array: Array)", "description": "Create from 2D array" }
+      ],
+      "properties": {
+        "rows": { "type": "Number", "readonly": true, "description": "Number of rows" },
+        "cols": { "type": "Number", "readonly": true, "description": "Number of columns" },
+        "length": { "type": "Number", "readonly": true, "description": "Total elements" }
+      },
+      "methods": {
+        "at": { "signature": "at(row: Number, col: Number): Number", "description": "Get element" },
+        "assign": { "signature": "assign(matrix: Matrix)", "description": "Copy from matrix" },
+        "add": { "signature": "add(matrix: Matrix|Number): Matrix", "description": "Add matrix or scalar" },
+        "sub": { "signature": "sub(matrix: Matrix|Number): Matrix", "description": "Subtract matrix or scalar" },
+        "mul": { "signature": "mul(matrix: Matrix|Number): Matrix", "description": "Multiply by matrix or scalar" },
+        "div": { "signature": "div(value: Number): Matrix", "description": "Divide by scalar" },
+        "transpose": { "signature": "transpose(): Matrix", "description": "Get transpose" },
+        "inverse": { "signature": "inverse(): Matrix", "description": "Get inverse" },
+        "toArray": { "signature": "toArray(): Array", "description": "Convert to 2D array" }
+      }
+    },
+
+    "Vector": {
+      "description": "64-bit floating point vector",
+      "constructors": [
+        { "signature": "Vector()", "description": "Create empty vector" },
+        { "signature": "Vector(length: Number, initValue?: Number)", "description": "Create with length" },
+        { "signature": "Vector(array: Array)", "description": "Create from array" }
+      ],
+      "properties": {
+        "length": { "type": "Number", "readonly": true, "description": "Vector length" }
+      },
+      "methods": {
+        "at": { "signature": "at(index: Number): Number", "description": "Get element" },
+        "add": { "signature": "add(vector: Vector|Number): Vector", "description": "Add vector or scalar" },
+        "sub": { "signature": "sub(vector: Vector|Number): Vector", "description": "Subtract vector or scalar" },
+        "mul": { "signature": "mul(vector: Vector|Number): Vector", "description": "Multiply by vector or scalar" },
+        "div": { "signature": "div(value: Number): Vector", "description": "Divide by scalar" },
+        "dot": { "signature": "dot(vector: Vector): Number", "description": "Dot product" },
+        "norm": { "signature": "norm(): Number", "description": "Euclidean norm" },
+        "sum": { "signature": "sum(): Number", "description": "Sum of elements" },
+        "mean": { "signature": "mean(): Number", "description": "Mean value" },
+        "toArray": { "signature": "toArray(): Array", "description": "Convert to array" }
+      }
+    },
+
+    "Point": {
+      "description": "2D point with integer or floating-point coordinates",
+      "constructors": [
+        { "signature": "Point()", "description": "Create point at origin" },
+        { "signature": "Point(x: Number, y: Number)", "description": "Create point at coordinates" }
+      ],
+      "properties": {
+        "x": { "type": "Number", "description": "X coordinate" },
+        "y": { "type": "Number", "description": "Y coordinate" }
+      },
+      "methods": {
+        "moveTo": { "signature": "moveTo(x: Number, y: Number)", "description": "Move to coordinates" },
+        "moveBy": { "signature": "moveBy(dx: Number, dy: Number)", "description": "Move by offset" }
+      }
+    },
+
+    "Rect": {
+      "description": "Rectangle with integer coordinates",
+      "constructors": [
+        { "signature": "Rect()", "description": "Create empty rectangle" },
+        { "signature": "Rect(x0: Number, y0: Number, x1: Number, y1: Number)", "description": "Create from coordinates" },
+        { "signature": "Rect(width: Number, height: Number)", "description": "Create from dimensions" }
+      ],
+      "properties": {
+        "x0": { "type": "Number", "description": "Left edge" },
+        "y0": { "type": "Number", "description": "Top edge" },
+        "x1": { "type": "Number", "description": "Right edge" },
+        "y1": { "type": "Number", "description": "Bottom edge" },
+        "width": { "type": "Number", "description": "Width" },
+        "height": { "type": "Number", "description": "Height" },
+        "left": { "type": "Number", "description": "Left edge (alias)" },
+        "top": { "type": "Number", "description": "Top edge (alias)" },
+        "right": { "type": "Number", "description": "Right edge (alias)" },
+        "bottom": { "type": "Number", "description": "Bottom edge (alias)" },
+        "center": { "type": "Point", "readonly": true, "description": "Center point" },
+        "area": { "type": "Number", "readonly": true, "description": "Area in pixels" }
+      },
+      "methods": {
+        "moveTo": { "signature": "moveTo(x: Number, y: Number)", "description": "Move to position" },
+        "moveBy": { "signature": "moveBy(dx: Number, dy: Number)", "description": "Move by offset" },
+        "resizeTo": { "signature": "resizeTo(width: Number, height: Number)", "description": "Resize" },
+        "resizeBy": { "signature": "resizeBy(dw: Number, dh: Number)", "description": "Resize by delta" },
+        "inflate": { "signature": "inflate(dx: Number, dy?: Number)", "description": "Inflate rectangle" },
+        "deflate": { "signature": "deflate(dx: Number, dy?: Number)", "description": "Deflate rectangle" },
+        "includes": { "signature": "includes(point: Point): Boolean", "description": "Check if point inside" },
+        "intersects": { "signature": "intersects(rect: Rect): Boolean", "description": "Check intersection" },
+        "unite": { "signature": "unite(rect: Rect): Rect", "description": "Union of rectangles" },
+        "intersect": { "signature": "intersect(rect: Rect): Rect", "description": "Intersection" }
+      }
+    },
+
+    "Font": {
+      "description": "Font for text rendering",
+      "constructors": [
+        { "signature": "Font(family?: String, size?: Number)", "description": "Create font" }
+      ],
+      "properties": {
+        "family": { "type": "String", "description": "Font family name" },
+        "pointSize": { "type": "Number", "description": "Point size" },
+        "pixelSize": { "type": "Number", "description": "Pixel size" },
+        "bold": { "type": "Boolean", "description": "Bold style" },
+        "italic": { "type": "Boolean", "description": "Italic style" },
+        "underline": { "type": "Boolean", "description": "Underline style" },
+        "strikeOut": { "type": "Boolean", "description": "Strikeout style" },
+        "weight": { "type": "Number", "description": "Font weight" },
+        "stretch": { "type": "Number", "description": "Font stretch" }
+      },
+      "methods": {
+        "width": { "signature": "width(text: String): Number", "description": "Get text width in pixels" },
+        "height": { "signature": "height(): Number", "description": "Get line height in pixels" },
+        "ascent": { "signature": "ascent(): Number", "description": "Get font ascent" },
+        "descent": { "signature": "descent(): Number", "description": "Get font descent" }
+      }
+    },
+
+    "Bitmap": {
+      "description": "In-memory bitmap image for graphics operations",
+      "constructors": [
+        { "signature": "Bitmap()", "description": "Create empty bitmap" },
+        { "signature": "Bitmap(width: Number, height: Number, format?: Number)", "description": "Create with dimensions" },
+        { "signature": "Bitmap(filePath: String)", "description": "Load from file" }
+      ],
+      "properties": {
+        "width": { "type": "Number", "readonly": true, "description": "Bitmap width" },
+        "height": { "type": "Number", "readonly": true, "description": "Bitmap height" },
+        "format": { "type": "Number", "readonly": true, "description": "Pixel format" },
+        "isEmpty": { "type": "Boolean", "readonly": true, "description": "Is bitmap empty" }
+      },
+      "methods": {
+        "fill": { "signature": "fill(color: Number)", "description": "Fill with color" },
+        "pixel": { "signature": "pixel(x: Number, y: Number): Number", "description": "Get pixel color" },
+        "setPixel": { "signature": "setPixel(x: Number, y: Number, color: Number)", "description": "Set pixel color" },
+        "copy": { "signature": "copy(rect?: Rect): Bitmap", "description": "Copy bitmap or region" },
+        "scaled": { "signature": "scaled(width: Number, height: Number): Bitmap", "description": "Get scaled copy" },
+        "mirrored": { "signature": "mirrored(horizontal?: Boolean, vertical?: Boolean): Bitmap", "description": "Get mirrored copy" },
+        "rotated": { "signature": "rotated(angle: Number): Bitmap", "description": "Get rotated copy" },
+        "load": { "signature": "load(filePath: String)", "description": "Load from file" },
+        "save": { "signature": "save(filePath: String, quality?: Number)", "description": "Save to file" },
+        "clear": { "signature": "clear()", "description": "Release underlying bitmap data. Recommended in V8 for explicit memory release (V8 cannot force GC).", "availableIn": ["v8"] }
+      }
+    },
+
+    "Graphics": {
+      "description": "2D graphics drawing context",
+      "constructors": [
+        { "signature": "Graphics(bitmap: Bitmap)", "description": "Create graphics for bitmap" },
+        { "signature": "Graphics(control: Control)", "description": "Create graphics for control" }
+      ],
+      "properties": {
+        "pen": { "type": "Pen", "description": "Current pen" },
+        "brush": { "type": "Brush", "description": "Current brush" },
+        "font": { "type": "Font", "description": "Current font" },
+        "antialiasing": { "type": "Boolean", "description": "Enable antialiasing" },
+        "textAntialiasing": { "type": "Boolean", "description": "Enable text antialiasing" },
+        "smoothInterpolation": { "type": "Boolean", "description": "Enable smooth interpolation" },
+        "compositionOperator": { "type": "Number", "description": "Composition operator" },
+        "opacity": { "type": "Number", "description": "Drawing opacity (0-1)" },
+        "clipRect": { "type": "Rect", "description": "Clipping rectangle" },
+        "transformationEnabled": { "type": "Boolean", "description": "Enable transformations" }
+      },
+      "methods": {
+        "begin": { "signature": "begin()", "description": "Begin painting (for Control)" },
+        "end": { "signature": "end()", "description": "End painting" },
+        "drawPoint": { "signature": "drawPoint(x: Number, y: Number)", "description": "Draw point" },
+        "drawLine": { "signature": "drawLine(x0: Number, y0: Number, x1: Number, y1: Number)", "description": "Draw line" },
+        "drawRect": { "signature": "drawRect(x: Number, y: Number, width: Number, height: Number)", "description": "Draw rectangle outline" },
+        "fillRect": { "signature": "fillRect(x: Number, y: Number, width: Number, height: Number, brush?: Brush)", "description": "Fill rectangle" },
+        "strokeRect": { "signature": "strokeRect(x: Number, y: Number, width: Number, height: Number, pen?: Pen)", "description": "Stroke rectangle" },
+        "drawCircle": { "signature": "drawCircle(cx: Number, cy: Number, radius: Number)", "description": "Draw circle" },
+        "drawEllipse": { "signature": "drawEllipse(x: Number, y: Number, rx: Number, ry: Number)", "description": "Draw ellipse" },
+        "drawPolygon": { "signature": "drawPolygon(points: Array)", "description": "Draw polygon" },
+        "drawText": { "signature": "drawText(x: Number, y: Number, text: String)", "description": "Draw text" },
+        "drawTextRect": { "signature": "drawTextRect(x: Number, y: Number, width: Number, height: Number, text: String, align?: Number)", "description": "Draw text in rectangle" },
+        "drawBitmap": { "signature": "drawBitmap(x: Number, y: Number, bitmap: Bitmap)", "description": "Draw bitmap" },
+        "drawScaledBitmap": { "signature": "drawScaledBitmap(x: Number, y: Number, width: Number, height: Number, bitmap: Bitmap)", "description": "Draw scaled bitmap" },
+        "translateTransformation": { "signature": "translateTransformation(dx: Number, dy: Number)", "description": "Translate transform" },
+        "rotateTransformation": { "signature": "rotateTransformation(angle: Number)", "description": "Rotate transform" },
+        "scaleTransformation": { "signature": "scaleTransformation(sx: Number, sy?: Number)", "description": "Scale transform" },
+        "resetTransformation": { "signature": "resetTransformation()", "description": "Reset transformation" }
+      }
+    },
+
+    "Pen": {
+      "description": "Pen for drawing outlines",
+      "constructors": [
+        { "signature": "Pen(color?: Number, width?: Number)", "description": "Create pen" }
+      ],
+      "properties": {
+        "color": { "type": "Number", "description": "Pen color" },
+        "width": { "type": "Number", "description": "Pen width" },
+        "style": { "type": "Number", "description": "Pen style (solid, dash, etc.)" },
+        "cap": { "type": "Number", "description": "Line cap style" },
+        "join": { "type": "Number", "description": "Line join style" }
+      }
+    },
+
+    "Brush": {
+      "description": "Brush for filling shapes",
+      "constructors": [
+        { "signature": "Brush(color?: Number)", "description": "Create solid brush" },
+        { "signature": "Brush(gradient: Gradient)", "description": "Create gradient brush" }
+      ],
+      "properties": {
+        "color": { "type": "Number", "description": "Brush color" },
+        "style": { "type": "Number", "description": "Brush style" }
+      }
+    },
+
+    "ByteArray": {
+      "description": "Array of bytes for binary data",
+      "constructors": [
+        { "signature": "ByteArray()", "description": "Create empty array" },
+        { "signature": "ByteArray(length: Number)", "description": "Create with length" },
+        { "signature": "ByteArray(string: String, encoding?: String)", "description": "Create from string" }
+      ],
+      "properties": {
+        "length": { "type": "Number", "description": "Array length" }
+      },
+      "methods": {
+        "at": { "signature": "at(index: Number): Number", "description": "Get byte value" },
+        "toString": { "signature": "toString(encoding?: String): String", "description": "Convert to string" },
+        "toBase64": { "signature": "toBase64(): String", "description": "Convert to Base64" },
+        "fromBase64": { "signature": "fromBase64(base64: String): ByteArray", "description": "Create from Base64" },
+        "hash": { "signature": "hash(algorithm: Number): ByteArray", "description": "Compute hash" }
+      }
+    },
+
+    "Timer": {
+      "description": "Timer for periodic or single-shot events",
+      "constructors": [
+        { "signature": "Timer()", "description": "Create timer" }
+      ],
+      "properties": {
+        "interval": { "type": "Number", "description": "Interval in milliseconds" },
+        "singleShot": { "type": "Boolean", "description": "Single shot mode" },
+        "isRunning": { "type": "Boolean", "readonly": true, "description": "Is timer running" }
+      },
+      "methods": {
+        "start": { "signature": "start()", "description": "Start timer" },
+        "stop": { "signature": "stop()", "description": "Stop timer" }
+      },
+      "eventHandlers": {
+        "onTimeout": { "signature": "onTimeout()", "description": "Timer timeout event" }
+      }
+    },
+
+    "ExternalProcess": {
+      "description": "Execute external programs",
+      "constructors": [
+        { "signature": "ExternalProcess()", "description": "Create process object" }
+      ],
+      "methods": {
+        "start": { "signature": "start(program: String, arguments?: Array)", "description": "Start process" },
+        "waitForStarted": { "signature": "waitForStarted(timeout?: Number): Boolean", "description": "Wait for process to start" },
+        "waitForFinished": { "signature": "waitForFinished(timeout?: Number): Boolean", "description": "Wait for process to finish" },
+        "kill": { "signature": "kill()", "description": "Kill process" },
+        "write": { "signature": "write(data: ByteArray|String)", "description": "Write to stdin" },
+        "read": { "signature": "read(): ByteArray", "description": "Read from stdout" },
+        "readError": { "signature": "readError(): ByteArray", "description": "Read from stderr" }
+      },
+      "properties": {
+        "workingDirectory": { "type": "String", "description": "Working directory" },
+        "exitCode": { "type": "Number", "readonly": true, "description": "Exit code" },
+        "exitStatus": { "type": "Number", "readonly": true, "description": "Exit status" },
+        "isRunning": { "type": "Boolean", "readonly": true, "description": "Is process running" }
+      },
+      "eventHandlers": {
+        "onStarted": { "signature": "onStarted()", "description": "Process started" },
+        "onFinished": { "signature": "onFinished(exitCode: Number, exitStatus: Number)", "description": "Process finished" },
+        "onError": { "signature": "onError(error: Number)", "description": "Process error" },
+        "onStandardOutput": { "signature": "onStandardOutput()", "description": "Stdout data available" },
+        "onStandardError": { "signature": "onStandardError()", "description": "Stderr data available" }
+      }
+    },
+
+    "NetworkTransfer": {
+      "description": "HTTP/FTP network transfers",
+      "constructors": [
+        { "signature": "NetworkTransfer()", "description": "Create transfer object" }
+      ],
+      "methods": {
+        "setURL": { "signature": "setURL(url: String)", "description": "Set transfer URL" },
+        "download": { "signature": "download(): Boolean", "description": "Download file" },
+        "upload": { "signature": "upload(): Boolean", "description": "Upload file" },
+        "abort": { "signature": "abort()", "description": "Abort transfer" }
+      },
+      "properties": {
+        "downloadedData": { "type": "ByteArray", "readonly": true, "description": "Downloaded data" },
+        "uploadData": { "type": "ByteArray", "description": "Data to upload" },
+        "outputFilePath": { "type": "String", "description": "Output file path" },
+        "uploadFilePath": { "type": "String", "description": "File to upload" },
+        "responseCode": { "type": "Number", "readonly": true, "description": "HTTP response code" },
+        "contentType": { "type": "String", "readonly": true, "description": "Content type" },
+        "ok": { "type": "Boolean", "readonly": true, "description": "Transfer successful" },
+        "errorInformation": { "type": "String", "readonly": true, "description": "Error details" }
+      },
+      "eventHandlers": {
+        "onDownloadDataAvailable": { "signature": "onDownloadDataAvailable(data: ByteArray)", "description": "Data received" },
+        "onTransferProgress": { "signature": "onTransferProgress(current: Number, total: Number)", "description": "Progress update" }
+      }
+    },
+
+    "FMath": {
+      "description": "Fast Math alternative implemented with WebAssembly ahead-of-time compilation. Provides all standard Math functions plus PJSR extensions, typically an order of magnitude faster than Math.* in heavy-computation loops.",
+      "availableIn": ["v8"],
+      "since": "1.9.4",
+      "staticMethods": {
+        "abs": { "signature": "FMath.abs(x: Number): Number", "description": "Absolute value" },
+        "sqrt": { "signature": "FMath.sqrt(x: Number): Number", "description": "Square root" },
+        "pow": { "signature": "FMath.pow(x: Number, y: Number): Number", "description": "x raised to y" },
+        "exp": { "signature": "FMath.exp(x: Number): Number", "description": "e raised to x" },
+        "log": { "signature": "FMath.log(x: Number): Number", "description": "Natural logarithm" },
+        "log2": { "signature": "FMath.log2(x: Number): Number", "description": "Base-2 logarithm" },
+        "log10": { "signature": "FMath.log10(x: Number): Number", "description": "Base-10 logarithm" },
+        "sin": { "signature": "FMath.sin(x: Number): Number", "description": "Sine" },
+        "cos": { "signature": "FMath.cos(x: Number): Number", "description": "Cosine" },
+        "tan": { "signature": "FMath.tan(x: Number): Number", "description": "Tangent" },
+        "asin": { "signature": "FMath.asin(x: Number): Number", "description": "Arc sine" },
+        "acos": { "signature": "FMath.acos(x: Number): Number", "description": "Arc cosine" },
+        "atan": { "signature": "FMath.atan(x: Number): Number", "description": "Arc tangent" },
+        "atan2": { "signature": "FMath.atan2(y: Number, x: Number): Number", "description": "Two-argument arc tangent" },
+        "floor": { "signature": "FMath.floor(x: Number): Number", "description": "Round down" },
+        "ceil": { "signature": "FMath.ceil(x: Number): Number", "description": "Round up" },
+        "round": { "signature": "FMath.round(x: Number): Number", "description": "Round to nearest" },
+        "trunc": { "signature": "FMath.trunc(x: Number): Number", "description": "Truncate fractional" },
+        "min": { "signature": "FMath.min(...values: Number): Number", "description": "Minimum value" },
+        "max": { "signature": "FMath.max(...values: Number): Number", "description": "Maximum value" },
+        "sign": { "signature": "FMath.sign(x: Number): Number", "description": "Sign of x" },
+        "mtf": { "signature": "FMath.mtf(m: Number, x: Number): Number", "description": "Midtones transfer function" },
+        "hypot": { "signature": "FMath.hypot(...values: Number): Number", "description": "Euclidean norm" },
+        "deg": { "signature": "FMath.deg(rad: Number): Number", "description": "Radians to degrees" },
+        "rad": { "signature": "FMath.rad(deg: Number): Number", "description": "Degrees to radians" }
+      }
+    },
+
+    "Stat": {
+      "description": "Statistical calculations. Replaces deprecated Math.* statistical extensions with a properly namespaced interface.",
+      "availableIn": ["v8"],
+      "since": "1.9.4",
+      "staticMethods": {
+        "median": { "signature": "Stat.median(values: Array|TypedArray): Number", "description": "Median value" },
+        "MAD": { "signature": "Stat.MAD(values: Array|TypedArray, center?: Number): Number", "description": "Median absolute deviation" },
+        "mean": { "signature": "Stat.mean(values: Array|TypedArray): Number", "description": "Arithmetic mean" },
+        "stdDev": { "signature": "Stat.stdDev(values: Array|TypedArray): Number", "description": "Standard deviation" },
+        "variance": { "signature": "Stat.variance(values: Array|TypedArray): Number", "description": "Variance" },
+        "avgDev": { "signature": "Stat.avgDev(values: Array|TypedArray, center?: Number): Number", "description": "Average absolute deviation" },
+        "biweightMidvariance": { "signature": "Stat.biweightMidvariance(values: Array|TypedArray): Number", "description": "Biweight midvariance" },
+        "qn": { "signature": "Stat.qn(values: Array|TypedArray): Number", "description": "Qn scale estimator" },
+        "sn": { "signature": "Stat.sn(values: Array|TypedArray): Number", "description": "Sn scale estimator" },
+        "minimum": { "signature": "Stat.minimum(values: Array|TypedArray): Number", "description": "Minimum" },
+        "maximum": { "signature": "Stat.maximum(values: Array|TypedArray): Number", "description": "Maximum" }
+      }
+    },
+
+    "ImageIterator": {
+      "description": "Direct, near-native-speed access to image pixel data using V8 typed arrays backed by the image's pixel buffer. Replaces Image.forEachSample/forEachPixel.",
+      "availableIn": ["v8"],
+      "since": "1.9.4",
+      "constructors": [
+        { "signature": "ImageIterator(image: Image, channel?: Number)", "description": "Create iterator over a single channel of an image" }
+      ],
+      "properties": {
+        "width": { "type": "Number", "readonly": true, "description": "Width in pixels" },
+        "height": { "type": "Number", "readonly": true, "description": "Height in pixels" }
+      },
+      "methods": {
+        "toReal": { "signature": "toReal(sample: Number): Number", "description": "Convert a raw sample to a Number in [0,1] using the image's native range" },
+        "toSample": { "signature": "toSample(value: Number): Number", "description": "Convert a [0,1] real to the image's native sample type" }
+      },
+      "notes": "Access pixels with array subscripts: iter[y][x] returns the raw sample value. For integer images, use toReal()/toSample() to bridge between [0,1] semantics and the integer storage range."
+    },
+
+    "StarDetector": {
+      "description": "Star detection engine implemented in core C++ for high performance. Promoted from JavaScript implementation in pjsr/StarDetector.jsh. Returns an array of StarData objects from stars(image).",
+      "availableIn": ["v8"],
+      "since": "1.9.4",
+      "constructors": [
+        { "signature": "StarDetector()", "description": "Create a detector with default parameters" }
+      ],
+      "properties": {
+        "structureLayers": { "type": "Number", "description": "Wavelet structure layers (default 5)" },
+        "noiseLayers": { "type": "Number", "description": "Wavelet noise layers (default 0)" },
+        "hotPixelFilterRadius": { "type": "Number", "description": "Hot pixel filter radius" },
+        "applyHotPixelFilterToDetectionImage": { "type": "Boolean", "description": "Apply hot pixel filter to detection image" },
+        "noiseReductionFilterRadius": { "type": "Number", "description": "Noise reduction filter radius" },
+        "sensitivity": { "type": "Number", "description": "Detection sensitivity" },
+        "peakResponse": { "type": "Number", "description": "Peak response threshold" },
+        "maxDistortion": { "type": "Number", "description": "Maximum star distortion" },
+        "upperLimit": { "type": "Number", "description": "Upper saturation limit" },
+        "fitPSF": { "type": "Boolean", "description": "Fit an elliptical Gaussian to each detected source for sub-pixel position accuracy" }
+      },
+      "methods": {
+        "stars": { "signature": "stars(image: Image): Array<StarData>", "description": "Detect stars in the given image" }
+      }
+    },
+
+    "StarData": {
+      "description": "Result record for a single detected star from StarDetector.stars().",
+      "availableIn": ["v8"],
+      "since": "1.9.4",
+      "properties": {
+        "pos": { "type": "Point", "description": "Sub-pixel star centroid" },
+        "srect": { "type": "Rect", "description": "Source rectangle (bounding box)" },
+        "flux": { "type": "Number", "description": "Total flux" },
+        "bkg": { "type": "Number", "description": "Local background" },
+        "size": { "type": "Number", "description": "Detected size in pixels" }
+      }
+    },
+
+    "PSF": {
+      "description": "Point spread function fitting via Levenberg-Marquardt. Fully multithreaded native C++ implementation. Used by SpectrophotometricColorCalibration, LocalNormalization, and astrometry tools.",
+      "availableIn": ["v8"],
+      "since": "1.9.4",
+      "staticMethods": {
+        "fitStars": { "signature": "PSF.fitStars(image: Image, stars: Array<StarData>, psfFunction?: Number): Array<PSFData>", "description": "Fit PSF models to detected stars. psfFunction is one of PSFunction.* (Auto, Gaussian, Moffat, MoffatA, Moffat8, Moffat6, Moffat4, Moffat25, Moffat15, Lorentzian)." }
+      }
+    },
+
+    "PSFData": {
+      "description": "Result record for a single fitted point spread function.",
+      "availableIn": ["v8"],
+      "since": "1.9.4",
+      "properties": {
+        "B": { "type": "Number", "description": "Local background (fitted)" },
+        "A": { "type": "Number", "description": "Peak amplitude" },
+        "x": { "type": "Number", "description": "Sub-pixel X centroid" },
+        "y": { "type": "Number", "description": "Sub-pixel Y centroid" },
+        "fwhmX": { "type": "Number", "description": "FWHM along X" },
+        "fwhmY": { "type": "Number", "description": "FWHM along Y" },
+        "theta": { "type": "Number", "description": "Rotation angle (radians)" },
+        "beta": { "type": "Number", "description": "Moffat beta exponent" },
+        "functionName": { "type": "String", "description": "Fitted function type name" },
+        "signal": { "type": "Number", "description": "Total signal integral" },
+        "mad": { "type": "Number", "description": "Mean absolute deviation of residuals" }
+      }
+    },
+
+    "BRQuadTree": {
+      "description": "Bucket-region quadtree for 2D spatial partitioning. Used in image analysis and matching algorithms. Replaces pjsr/BRQuadTree.jsh.",
+      "availableIn": ["v8"],
+      "since": "1.9.4",
+      "constructors": [
+        { "signature": "BRQuadTree(bounds: Rect, bucketCapacity?: Number)", "description": "Create a quadtree spanning the given bounds" }
+      ],
+      "methods": {
+        "insert": { "signature": "insert(point: Point, data?: any)", "description": "Insert a point with associated data" },
+        "search": { "signature": "search(rect: Rect): Array", "description": "Find all points within a rectangle" },
+        "nearest": { "signature": "nearest(point: Point, k?: Number): Array", "description": "Find k nearest neighbors" },
+        "clear": { "signature": "clear()", "description": "Remove all points" }
+      }
+    },
+
+    "XMLDocument": {
+      "description": "XML document. Provides parsing and serialization of XML, including in-place inspection of XISF headers.",
+      "availableIn": ["v8"],
+      "since": "1.9.4",
+      "constructors": [
+        { "signature": "XMLDocument()", "description": "Create an empty XML document" }
+      ],
+      "properties": {
+        "xml": { "type": "XMLDeclaration", "description": "The <?xml ...?> declaration node" },
+        "rootElement": { "type": "XMLElement", "description": "The root element" },
+        "autoFormatting": { "type": "Boolean", "description": "If true, serialize with indentation" }
+      },
+      "methods": {
+        "addNode": { "signature": "addNode(node: XMLNode)", "description": "Add a top-level node (comment, declaration, etc.)" },
+        "parse": { "signature": "parse(source: String)", "description": "Parse an XML document from a string" },
+        "serializeToFile": { "signature": "serializeToFile(path: String)", "description": "Write the XML document to a file" },
+        "serialize": { "signature": "serialize(): String", "description": "Serialize to a string" }
+      }
+    },
+
+    "XMLDeclaration": {
+      "description": "The <?xml version=... encoding=... ?> processing instruction.",
+      "availableIn": ["v8"],
+      "since": "1.9.4",
+      "constructors": [
+        { "signature": "XMLDeclaration(version: String, encoding?: String, standalone?: Boolean)", "description": "Create an XML declaration node" }
+      ]
+    },
+
+    "XMLComment": {
+      "description": "XML comment node.",
+      "availableIn": ["v8"],
+      "since": "1.9.4",
+      "constructors": [
+        { "signature": "XMLComment(text: String)", "description": "Create a comment node" }
+      ]
+    },
+
+    "XMLElement": {
+      "description": "XML element. Supports fluent attribute and child-node construction.",
+      "availableIn": ["v8"],
+      "since": "1.9.4",
+      "constructors": [
+        { "signature": "XMLElement(tagName: String)", "description": "Create an element with the given tag name" }
+      ],
+      "methods": {
+        "setAttribute": { "signature": "setAttribute(name: String, value: String): XMLElement", "description": "Set a single attribute (fluent)" },
+        "setAttributes": { "signature": "setAttributes(pairs: Array<[String,String]>): XMLElement", "description": "Set multiple attributes at once (fluent)" },
+        "addChildNode": { "signature": "addChildNode(node: XMLNode): XMLElement", "description": "Append a child node (fluent)" }
+      }
+    },
+
+    "XMLText": {
+      "description": "XML text node.",
+      "availableIn": ["v8"],
+      "since": "1.9.4",
+      "constructors": [
+        { "signature": "XMLText(text: String)", "description": "Create a text node" }
+      ]
+    },
+
+    "System": {
+      "description": "Non-instantiable. Host machine and operating system information.",
+      "availableIn": ["v8"],
+      "since": "1.9.4",
+      "staticMethods": {
+        "physicalMemoryStatus": { "signature": "System.physicalMemoryStatus(): Object", "description": "Returns {totalBytes, availableBytes} BigInt fields describing physical memory" },
+        "cpuCount": { "signature": "System.cpuCount: Number", "description": "Number of logical CPU cores" }
+      },
+      "properties": {
+        "osName": { "type": "String", "readonly": true, "description": "Operating system identifier" }
+      }
+    },
+
+    "CoreApplication": {
+      "description": "Non-instantiable. Information about the PixInsight core application. Replaces many deprecated Global.* extensions.",
+      "availableIn": ["v8"],
+      "since": "1.9.4",
+      "staticMethods": {
+        "ensureMinimumVersion": { "signature": "CoreApplication.ensureMinimumVersion(major: Number, minor: Number, release: Number)", "description": "Throw if the running PixInsight version is older than the required minimum. Call this near the top of every script." },
+        "version": { "signature": "CoreApplication.version: String", "description": "Application version string" }
+      },
+      "properties": {
+        "buildId": { "type": "String", "readonly": true, "description": "Build identifier" }
+      }
+    },
+
+    "Runtime": {
+      "description": "Non-instantiable. Information about the active JavaScript runtime.",
+      "availableIn": ["v8"],
+      "since": "1.9.4",
+      "staticMethods": {
+        "engine": { "signature": "Runtime.engine: String", "description": "Active engine identifier ('v8' or 'sm')" }
+      }
+    },
+
+    "VectorGraphics": {
+      "description": "Graphics with floating-point coordinates. Removed in the V8 runtime: the standard Graphics class now handles all coordinate types.",
+      "removedIn": "v8",
+      "replacedBy": "Graphics"
+    },
+
+    "ImageStatistics": {
+      "description": "Image statistics object. Removed in V8: equivalent functionality is now on Image directly.",
+      "removedIn": "v8",
+      "replacedBy": "Image.median(), Image.MAD(), Image.stdDev(), Image.rangeClippingEnabled, etc."
+    }
+  },
+
+  "uiControls": {
+    "Label": {
+      "description": "Text label control",
+      "constructors": [
+        { "signature": "Label(parent?: Control)", "description": "Create label" }
+      ],
+      "properties": {
+        "text": { "type": "String", "description": "Label text" },
+        "textAlignment": { "type": "Number", "description": "Text alignment" },
+        "wordWrapping": { "type": "Boolean", "description": "Enable word wrapping" },
+        "useRichText": { "type": "Boolean", "description": "Enable rich text (HTML)" }
+      }
+    },
+
+    "PushButton": {
+      "description": "Push button control",
+      "constructors": [
+        { "signature": "PushButton(parent?: Control)", "description": "Create push button" }
+      ],
+      "properties": {
+        "text": { "type": "String", "description": "Button text" },
+        "icon": { "type": "Bitmap", "description": "Button icon" },
+        "default": { "type": "Boolean", "description": "Is default button" }
+      },
+      "eventHandlers": {
+        "onClick": { "signature": "onClick()", "description": "Button clicked" }
+      }
+    },
+
+    "ToolButton": {
+      "description": "Toolbar button control",
+      "constructors": [
+        { "signature": "ToolButton(parent?: Control)", "description": "Create tool button" }
+      ],
+      "properties": {
+        "text": { "type": "String", "description": "Button text" },
+        "icon": { "type": "Bitmap", "description": "Button icon" },
+        "checkable": { "type": "Boolean", "description": "Can be checked" },
+        "checked": { "type": "Boolean", "description": "Checked state" }
+      },
+      "eventHandlers": {
+        "onClick": { "signature": "onClick()", "description": "Button clicked" },
+        "onCheck": { "signature": "onCheck(checked: Boolean)", "description": "Check state changed" }
+      }
+    },
+
+    "CheckBox": {
+      "description": "Checkbox control",
+      "constructors": [
+        { "signature": "CheckBox(parent?: Control)", "description": "Create checkbox" }
+      ],
+      "properties": {
+        "text": { "type": "String", "description": "Checkbox text" },
+        "checked": { "type": "Boolean", "description": "Checked state" },
+        "tristate": { "type": "Boolean", "description": "Enable tristate mode" },
+        "state": { "type": "Number", "description": "Check state value" }
+      },
+      "eventHandlers": {
+        "onClick": { "signature": "onClick()", "description": "Checkbox clicked" },
+        "onCheck": { "signature": "onCheck(state: Number)", "description": "Check state changed" }
+      }
+    },
+
+    "RadioButton": {
+      "description": "Radio button control",
+      "constructors": [
+        { "signature": "RadioButton(parent?: Control)", "description": "Create radio button" }
+      ],
+      "properties": {
+        "text": { "type": "String", "description": "Radio button text" },
+        "checked": { "type": "Boolean", "description": "Checked state" }
+      },
+      "eventHandlers": {
+        "onClick": { "signature": "onClick()", "description": "Radio button clicked" },
+        "onCheck": { "signature": "onCheck(checked: Boolean)", "description": "Check state changed" }
+      }
+    },
+
+    "Edit": {
+      "description": "Single-line text edit control",
+      "constructors": [
+        { "signature": "Edit(parent?: Control)", "description": "Create text edit" }
+      ],
+      "properties": {
+        "text": { "type": "String", "description": "Edit text" },
+        "readOnly": { "type": "Boolean", "description": "Read-only mode" },
+        "maxLength": { "type": "Number", "description": "Maximum text length" },
+        "passwordMode": { "type": "Boolean", "description": "Password entry mode" }
+      },
+      "methods": {
+        "selectAll": { "signature": "selectAll()", "description": "Select all text" },
+        "clear": { "signature": "clear()", "description": "Clear text" }
+      },
+      "eventHandlers": {
+        "onTextUpdated": { "signature": "onTextUpdated(text: String)", "description": "Text changed" },
+        "onEditCompleted": { "signature": "onEditCompleted()", "description": "Editing completed" },
+        "onReturnPressed": { "signature": "onReturnPressed()", "description": "Return key pressed" }
+      }
+    },
+
+    "TextBox": {
+      "description": "Multi-line text edit control",
+      "constructors": [
+        { "signature": "TextBox(parent?: Control)", "description": "Create text box" }
+      ],
+      "properties": {
+        "text": { "type": "String", "description": "Text content" },
+        "readOnly": { "type": "Boolean", "description": "Read-only mode" },
+        "lineWrap": { "type": "Boolean", "description": "Enable line wrapping" }
+      },
+      "methods": {
+        "selectAll": { "signature": "selectAll()", "description": "Select all text" },
+        "clear": { "signature": "clear()", "description": "Clear text" },
+        "insert": { "signature": "insert(text: String)", "description": "Insert text at cursor" }
+      },
+      "eventHandlers": {
+        "onTextUpdated": { "signature": "onTextUpdated(text: String)", "description": "Text changed" }
+      }
+    },
+
+    "SpinBox": {
+      "description": "Integer spin box control",
+      "constructors": [
+        { "signature": "SpinBox(parent?: Control)", "description": "Create spin box" }
+      ],
+      "properties": {
+        "value": { "type": "Number", "description": "Current value" },
+        "minimum": { "type": "Number", "description": "Minimum value" },
+        "maximum": { "type": "Number", "description": "Maximum value" },
+        "stepSize": { "type": "Number", "description": "Step increment" },
+        "wrapping": { "type": "Boolean", "description": "Enable wrapping" }
+      },
+      "methods": {
+        "setRange": { "signature": "setRange(min: Number, max: Number)", "description": "Set value range" }
+      },
+      "eventHandlers": {
+        "onValueUpdated": { "signature": "onValueUpdated(value: Number)", "description": "Value changed" }
+      }
+    },
+
+    "Slider": {
+      "description": "Slider control",
+      "constructors": [
+        { "signature": "Slider(parent?: Control)", "description": "Create slider" }
+      ],
+      "properties": {
+        "value": { "type": "Number", "description": "Current value" },
+        "minValue": { "type": "Number", "description": "Minimum value" },
+        "maxValue": { "type": "Number", "description": "Maximum value" },
+        "pageSize": { "type": "Number", "description": "Page increment" },
+        "tickInterval": { "type": "Number", "description": "Tick mark interval" },
+        "tickStyle": { "type": "Number", "description": "Tick mark style" }
+      },
+      "methods": {
+        "setRange": { "signature": "setRange(min: Number, max: Number)", "description": "Set value range" }
+      },
+      "eventHandlers": {
+        "onValueUpdated": { "signature": "onValueUpdated(value: Number)", "description": "Value changed" }
+      }
+    },
+
+    "HorizontalSlider": {
+      "extends": "Slider",
+      "description": "Horizontal slider control"
+    },
+
+    "VerticalSlider": {
+      "extends": "Slider",
+      "description": "Vertical slider control"
+    },
+
+    "ComboBox": {
+      "description": "Dropdown combo box control",
+      "constructors": [
+        { "signature": "ComboBox(parent?: Control)", "description": "Create combo box" }
+      ],
+      "properties": {
+        "currentItem": { "type": "Number", "description": "Selected item index" },
+        "editEnabled": { "type": "Boolean", "description": "Allow text editing" },
+        "editText": { "type": "String", "description": "Edit text" },
+        "numberOfItems": { "type": "Number", "readonly": true, "description": "Number of items" }
+      },
+      "methods": {
+        "addItem": { "signature": "addItem(text: String)", "description": "Add item" },
+        "insertItem": { "signature": "insertItem(index: Number, text: String)", "description": "Insert item" },
+        "removeItem": { "signature": "removeItem(index: Number)", "description": "Remove item" },
+        "clear": { "signature": "clear()", "description": "Remove all items" },
+        "itemText": { "signature": "itemText(index: Number): String", "description": "Get item text" },
+        "setItemText": { "signature": "setItemText(index: Number, text: String)", "description": "Set item text" }
+      },
+      "eventHandlers": {
+        "onItemSelected": { "signature": "onItemSelected(index: Number)", "description": "Item selected" },
+        "onEditTextUpdated": { "signature": "onEditTextUpdated()", "description": "Edit text changed" }
+      }
+    },
+
+    "TreeBox": {
+      "description": "Tree view control",
+      "constructors": [
+        { "signature": "TreeBox(parent?: Control)", "description": "Create tree box" }
+      ],
+      "properties": {
+        "numberOfColumns": { "type": "Number", "description": "Number of columns" },
+        "numberOfChildren": { "type": "Number", "readonly": true, "description": "Number of root items" },
+        "currentNode": { "type": "TreeBoxNode", "description": "Currently selected node" },
+        "selectedNodes": { "type": "Array", "readonly": true, "description": "Selected nodes" },
+        "multipleSelection": { "type": "Boolean", "description": "Allow multiple selection" },
+        "headerVisible": { "type": "Boolean", "description": "Show header" },
+        "indentSize": { "type": "Number", "description": "Indentation size" }
+      },
+      "methods": {
+        "setHeaderText": { "signature": "setHeaderText(column: Number, text: String)", "description": "Set column header" },
+        "setColumnWidth": { "signature": "setColumnWidth(column: Number, width: Number)", "description": "Set column width" },
+        "add": { "signature": "add(node: TreeBoxNode)", "description": "Add root node" },
+        "insert": { "signature": "insert(index: Number, node: TreeBoxNode)", "description": "Insert root node" },
+        "remove": { "signature": "remove(index: Number)", "description": "Remove root node" },
+        "clear": { "signature": "clear()", "description": "Clear all nodes" },
+        "child": { "signature": "child(index: Number): TreeBoxNode", "description": "Get root node by index" },
+        "adjustColumnWidthToContents": { "signature": "adjustColumnWidthToContents(column: Number)", "description": "Auto-fit column" }
+      },
+      "eventHandlers": {
+        "onCurrentNodeUpdated": { "signature": "onCurrentNodeUpdated(node: TreeBoxNode)", "description": "Selection changed" },
+        "onNodeActivated": { "signature": "onNodeActivated(node: TreeBoxNode)", "description": "Node double-clicked" },
+        "onNodeExpanded": { "signature": "onNodeExpanded(node: TreeBoxNode)", "description": "Node expanded" },
+        "onNodeCollapsed": { "signature": "onNodeCollapsed(node: TreeBoxNode)", "description": "Node collapsed" }
+      }
+    },
+
+    "TreeBoxNode": {
+      "description": "Node in a TreeBox control",
+      "constructors": [
+        { "signature": "TreeBoxNode(treeBox?: TreeBox)", "description": "Create tree node" }
+      ],
+      "properties": {
+        "expanded": { "type": "Boolean", "description": "Node expanded state" },
+        "selected": { "type": "Boolean", "description": "Node selected state" },
+        "checkable": { "type": "Boolean", "description": "Node can be checked" },
+        "checked": { "type": "Boolean", "description": "Node checked state" },
+        "numberOfChildren": { "type": "Number", "readonly": true, "description": "Number of children" },
+        "parent": { "type": "TreeBoxNode", "readonly": true, "description": "Parent node" }
+      },
+      "methods": {
+        "setText": { "signature": "setText(column: Number, text: String)", "description": "Set cell text" },
+        "text": { "signature": "text(column: Number): String", "description": "Get cell text" },
+        "setIcon": { "signature": "setIcon(column: Number, icon: Bitmap)", "description": "Set cell icon" },
+        "add": { "signature": "add(node: TreeBoxNode)", "description": "Add child node" },
+        "insert": { "signature": "insert(index: Number, node: TreeBoxNode)", "description": "Insert child node" },
+        "remove": { "signature": "remove(index: Number)", "description": "Remove child node" },
+        "child": { "signature": "child(index: Number): TreeBoxNode", "description": "Get child by index" }
+      }
+    },
+
+    "GroupBox": {
+      "description": "Container with border and title",
+      "constructors": [
+        { "signature": "GroupBox(parent?: Control)", "description": "Create group box" }
+      ],
+      "properties": {
+        "title": { "type": "String", "description": "Group box title" },
+        "titleCheckBox": { "type": "Boolean", "description": "Show title checkbox" },
+        "checked": { "type": "Boolean", "description": "Checkbox state" }
+      },
+      "eventHandlers": {
+        "onCheck": { "signature": "onCheck(checked: Boolean)", "description": "Checkbox changed" }
+      }
+    },
+
+    "TabBox": {
+      "description": "Tabbed container control",
+      "constructors": [
+        { "signature": "TabBox(parent?: Control)", "description": "Create tab box" }
+      ],
+      "properties": {
+        "currentPageIndex": { "type": "Number", "description": "Selected tab index" },
+        "numberOfPages": { "type": "Number", "readonly": true, "description": "Number of tabs" }
+      },
+      "methods": {
+        "addPage": { "signature": "addPage(page: Control, title: String)", "description": "Add tab page" },
+        "insertPage": { "signature": "insertPage(index: Number, page: Control, title: String)", "description": "Insert tab page" },
+        "removePage": { "signature": "removePage(index: Number)", "description": "Remove tab page" },
+        "setPageLabel": { "signature": "setPageLabel(index: Number, text: String)", "description": "Set tab title" },
+        "pageLabel": { "signature": "pageLabel(index: Number): String", "description": "Get tab title" }
+      },
+      "eventHandlers": {
+        "onPageSelected": { "signature": "onPageSelected(index: Number)", "description": "Tab changed" }
+      }
+    },
+
+    "ScrollBox": {
+      "description": "Scrollable container control",
+      "constructors": [
+        { "signature": "ScrollBox(parent?: Control)", "description": "Create scroll box" }
+      ],
+      "properties": {
+        "horizontalScrollPosition": { "type": "Number", "description": "Horizontal scroll position" },
+        "verticalScrollPosition": { "type": "Number", "description": "Vertical scroll position" },
+        "pageWidth": { "type": "Number", "description": "Visible width" },
+        "pageHeight": { "type": "Number", "description": "Visible height" },
+        "lineWidth": { "type": "Number", "description": "Scroll line width" },
+        "lineHeight": { "type": "Number", "description": "Scroll line height" }
+      },
+      "methods": {
+        "setHorizontalScrollRange": { "signature": "setHorizontalScrollRange(min: Number, max: Number)", "description": "Set H scroll range" },
+        "setVerticalScrollRange": { "signature": "setVerticalScrollRange(min: Number, max: Number)", "description": "Set V scroll range" }
+      },
+      "eventHandlers": {
+        "onHorizontalScrollPosUpdated": { "signature": "onHorizontalScrollPosUpdated(pos: Number)", "description": "H scroll changed" },
+        "onVerticalScrollPosUpdated": { "signature": "onVerticalScrollPosUpdated(pos: Number)", "description": "V scroll changed" }
+      }
+    },
+
+    "ViewList": {
+      "description": "Dropdown list of image views",
+      "constructors": [
+        { "signature": "ViewList(parent?: Control)", "description": "Create view list" }
+      ],
+      "properties": {
+        "currentView": { "type": "View", "description": "Selected view" },
+        "excludeIdentifiersPattern": { "type": "String", "description": "Pattern to exclude views" },
+        "includeMainViews": { "type": "Boolean", "description": "Include main views" },
+        "includePreviews": { "type": "Boolean", "description": "Include previews" }
+      },
+      "methods": {
+        "getAll": { "signature": "getAll()", "description": "Populate with all views" },
+        "getMainViews": { "signature": "getMainViews()", "description": "Populate with main views" },
+        "getPreviews": { "signature": "getPreviews()", "description": "Populate with previews" },
+        "remove": { "signature": "remove(view: View)", "description": "Remove view from list" }
+      },
+      "eventHandlers": {
+        "onViewSelected": { "signature": "onViewSelected(view: View)", "description": "View selected" }
+      }
+    },
+
+    "Frame": {
+      "description": "Frame container with border styles",
+      "constructors": [
+        { "signature": "Frame(parent?: Control)", "description": "Create frame" }
+      ],
+      "properties": {
+        "frameStyle": { "type": "Number", "description": "Frame border style" },
+        "lineWidth": { "type": "Number", "description": "Border line width" }
+      }
+    },
+
+    "ProgressDialog": {
+      "description": "Progress dialog with cancel support",
+      "constructors": [
+        { "signature": "ProgressDialog()", "description": "Create progress dialog" }
+      ],
+      "properties": {
+        "text": { "type": "String", "description": "Progress message" },
+        "currentCount": { "type": "Number", "description": "Current progress" },
+        "totalCount": { "type": "Number", "description": "Total count" }
+      },
+      "methods": {
+        "open": { "signature": "open()", "description": "Open dialog" },
+        "close": { "signature": "close()", "description": "Close dialog" },
+        "update": { "signature": "update(count: Number)", "description": "Update progress" }
+      }
+    }
+  },
+
+  "constants": {
+    "colorSpaces": {
+      "ColorSpace_Gray": { "value": 0, "description": "Grayscale color space" },
+      "ColorSpace_RGB": { "value": 1, "description": "RGB color space" },
+      "ColorSpace_CIEXYZ": { "value": 2, "description": "CIE XYZ color space" },
+      "ColorSpace_CIELab": { "value": 3, "description": "CIE L*a*b* color space" },
+      "ColorSpace_CIELch": { "value": 4, "description": "CIE L*c*h* color space" },
+      "ColorSpace_HSV": { "value": 5, "description": "HSV color space" },
+      "ColorSpace_HSI": { "value": 6, "description": "HSI color space" }
+    },
+    "dataTypes": {
+      "DataType_Boolean": { "value": 0, "description": "Boolean data type" },
+      "DataType_Int8": { "value": 1, "description": "8-bit signed integer" },
+      "DataType_UInt8": { "value": 2, "description": "8-bit unsigned integer" },
+      "DataType_Int16": { "value": 3, "description": "16-bit signed integer" },
+      "DataType_UInt16": { "value": 4, "description": "16-bit unsigned integer" },
+      "DataType_Int32": { "value": 5, "description": "32-bit signed integer" },
+      "DataType_UInt32": { "value": 6, "description": "32-bit unsigned integer" },
+      "DataType_Int64": { "value": 7, "description": "64-bit signed integer" },
+      "DataType_UInt64": { "value": 8, "description": "64-bit unsigned integer" },
+      "DataType_Real32": { "value": 9, "description": "32-bit float" },
+      "DataType_Float": { "value": 9, "description": "Alias for Real32" },
+      "DataType_Real64": { "value": 10, "description": "64-bit float" },
+      "DataType_Double": { "value": 10, "description": "Alias for Real64" },
+      "DataType_Complex32": { "value": 11, "description": "32-bit complex" },
+      "DataType_Complex64": { "value": 12, "description": "64-bit complex" },
+      "DataType_String8": { "value": 13, "description": "ISO 8859-1 string" },
+      "DataType_UCString": { "value": 14, "description": "Unicode string" },
+      "DataType_ByteArray": { "value": 15, "description": "Byte array" },
+      "DataType_Vector": { "value": 16, "description": "Vector" },
+      "DataType_Matrix": { "value": 17, "description": "Matrix" }
+    },
+    "imageOperations": {
+      "ImageOp_Nop": { "value": 0, "description": "No operation" },
+      "ImageOp_Mov": { "value": 1, "description": "Move/assign" },
+      "ImageOp_Add": { "value": 2, "description": "Addition" },
+      "ImageOp_Sub": { "value": 3, "description": "Subtraction" },
+      "ImageOp_Mul": { "value": 4, "description": "Multiplication" },
+      "ImageOp_Div": { "value": 5, "description": "Division" },
+      "ImageOp_Pow": { "value": 6, "description": "Power" },
+      "ImageOp_Dif": { "value": 7, "description": "Absolute difference" },
+      "ImageOp_Min": { "value": 8, "description": "Minimum" },
+      "ImageOp_Max": { "value": 9, "description": "Maximum" },
+      "ImageOp_Or": { "value": 10, "description": "Bitwise OR" },
+      "ImageOp_And": { "value": 11, "description": "Bitwise AND" },
+      "ImageOp_Xor": { "value": 12, "description": "Bitwise XOR" },
+      "ImageOp_Not": { "value": 13, "description": "Bitwise NOT" },
+      "ImageOp_Nor": { "value": 14, "description": "Bitwise NOR" },
+      "ImageOp_Nand": { "value": 15, "description": "Bitwise NAND" },
+      "ImageOp_Xnor": { "value": 16, "description": "Bitwise XNOR" },
+      "ImageOp_ColorBurn": { "value": 17, "description": "Color burn blend" },
+      "ImageOp_LinearBurn": { "value": 18, "description": "Linear burn blend" },
+      "ImageOp_Screen": { "value": 19, "description": "Screen blend" },
+      "ImageOp_ColorDodge": { "value": 20, "description": "Color dodge blend" },
+      "ImageOp_Overlay": { "value": 21, "description": "Overlay blend" },
+      "ImageOp_SoftLight": { "value": 22, "description": "Soft light blend" },
+      "ImageOp_HardLight": { "value": 23, "description": "Hard light blend" },
+      "ImageOp_VividLight": { "value": 24, "description": "Vivid light blend" },
+      "ImageOp_LinearLight": { "value": 25, "description": "Linear light blend" },
+      "ImageOp_PinLight": { "value": 26, "description": "Pin light blend" },
+      "ImageOp_Exclusion": { "value": 27, "description": "Exclusion blend" }
+    },
+    "morphologicalOperations": {
+      "MorphOp_Erosion": { "value": 0, "description": "Morphological erosion" },
+      "MorphOp_Dilation": { "value": 1, "description": "Morphological dilation" },
+      "MorphOp_Opening": { "value": 2, "description": "Morphological opening" },
+      "MorphOp_Closing": { "value": 3, "description": "Morphological closing" },
+      "MorphOp_Median": { "value": 4, "description": "Morphological median" },
+      "MorphOp_Selection": { "value": 5, "description": "Selection filter" },
+      "MorphOp_Midpoint": { "value": 6, "description": "Midpoint filter" }
+    },
+    "interpolationMethods": {
+      "Interpolation_NearestNeighbor": { "value": 0, "description": "Nearest neighbor" },
+      "Interpolation_Bilinear": { "value": 1, "description": "Bilinear" },
+      "Interpolation_BicubicSpline": { "value": 2, "description": "Bicubic spline" },
+      "Interpolation_BicubicBSpline": { "value": 3, "description": "Bicubic B-spline" },
+      "Interpolation_Lanczos3": { "value": 4, "description": "Lanczos-3" },
+      "Interpolation_Lanczos4": { "value": 5, "description": "Lanczos-4" },
+      "Interpolation_MitchellNetravali": { "value": 6, "description": "Mitchell-Netravali" },
+      "Interpolation_CatmullRomSpline": { "value": 7, "description": "Catmull-Rom spline" },
+      "Interpolation_CubicBSpline": { "value": 8, "description": "Cubic B-spline" },
+      "Interpolation_Auto": { "value": 9, "description": "Automatic selection" }
+    },
+    "dialogCodes": {
+      "StdDialogCode_Ok": { "value": 1, "description": "Dialog accepted" },
+      "StdDialogCode_Cancel": { "value": 0, "description": "Dialog cancelled" }
+    },
+    "buttonCodes": {
+      "StdButton_NoButton": { "value": 0, "description": "No button" },
+      "StdButton_Ok": { "value": 1, "description": "OK button" },
+      "StdButton_Cancel": { "value": 2, "description": "Cancel button" },
+      "StdButton_Yes": { "value": 4, "description": "Yes button" },
+      "StdButton_No": { "value": 8, "description": "No button" },
+      "StdButton_Abort": { "value": 16, "description": "Abort button" },
+      "StdButton_Retry": { "value": 32, "description": "Retry button" },
+      "StdButton_Ignore": { "value": 64, "description": "Ignore button" }
+    },
+    "iconCodes": {
+      "StdIcon_NoIcon": { "value": 0, "description": "No icon" },
+      "StdIcon_Question": { "value": 1, "description": "Question icon" },
+      "StdIcon_Information": { "value": 2, "description": "Information icon" },
+      "StdIcon_Warning": { "value": 3, "description": "Warning icon" },
+      "StdIcon_Error": { "value": 4, "description": "Error icon" }
+    },
+    "textAlignment": {
+      "TextAlign_Left": { "value": 1, "description": "Left align" },
+      "TextAlign_Right": { "value": 2, "description": "Right align" },
+      "TextAlign_HorzCenter": { "value": 4, "description": "Horizontal center" },
+      "TextAlign_Top": { "value": 32, "description": "Top align" },
+      "TextAlign_Bottom": { "value": 64, "description": "Bottom align" },
+      "TextAlign_VertCenter": { "value": 128, "description": "Vertical center" },
+      "TextAlign_Center": { "value": 132, "description": "Center both" }
+    },
+    "frameStyles": {
+      "FrameStyle_Flat": { "value": 0, "description": "Flat frame" },
+      "FrameStyle_Box": { "value": 1, "description": "Box frame" },
+      "FrameStyle_Raised": { "value": 32, "description": "Raised frame" },
+      "FrameStyle_Sunken": { "value": 48, "description": "Sunken frame" },
+      "FrameStyle_Styled": { "value": 64, "description": "Styled frame" }
+    },
+    "focusStyles": {
+      "FocusStyle_NoFocus": { "value": 0, "description": "No focus" },
+      "FocusStyle_Tab": { "value": 1, "description": "Tab focus" },
+      "FocusStyle_Click": { "value": 2, "description": "Click focus" },
+      "FocusStyle_Wheel": { "value": 4, "description": "Wheel focus" },
+      "FocusStyle_All": { "value": 7, "description": "All focus modes" }
+    },
+    "cursors": {
+      "StdCursor_NoCursor": { "value": 0, "description": "Hidden cursor" },
+      "StdCursor_Arrow": { "value": 1, "description": "Arrow cursor" },
+      "StdCursor_InvArrow": { "value": 2, "description": "Inverted arrow" },
+      "StdCursor_Wait": { "value": 3, "description": "Wait cursor" },
+      "StdCursor_Crossmark": { "value": 4, "description": "Crossmark cursor" },
+      "StdCursor_IBeam": { "value": 5, "description": "I-beam text cursor" },
+      "StdCursor_UpArrow": { "value": 6, "description": "Up arrow cursor" },
+      "StdCursor_SizeVert": { "value": 7, "description": "Vertical resize" },
+      "StdCursor_SizeHorz": { "value": 8, "description": "Horizontal resize" },
+      "StdCursor_SizeFDiag": { "value": 9, "description": "Forward diagonal resize" },
+      "StdCursor_SizeBDiag": { "value": 10, "description": "Backward diagonal resize" },
+      "StdCursor_SizeAll": { "value": 11, "description": "All directions resize" },
+      "StdCursor_OpenHand": { "value": 12, "description": "Open hand" },
+      "StdCursor_ClosedHand": { "value": 13, "description": "Closed hand" },
+      "StdCursor_PointingHand": { "value": 14, "description": "Pointing hand" },
+      "StdCursor_Forbidden": { "value": 15, "description": "Forbidden cursor" }
+    },
+    "undoFlags": {
+      "UndoFlag_NoSwapFile": { "value": 0, "description": "No swap file" },
+      "UndoFlag_Keywords": { "value": 1, "description": "Save keywords" },
+      "UndoFlag_PixelData": { "value": 2, "description": "Save pixel data" },
+      "UndoFlag_RGBWS": { "value": 4, "description": "Save RGB working space" },
+      "UndoFlag_ICCProfile": { "value": 8, "description": "Save ICC profile" },
+      "UndoFlag_Metadata": { "value": 16, "description": "Save metadata" },
+      "UndoFlag_Properties": { "value": 32, "description": "Save properties" },
+      "UndoFlag_DefaultMode": { "value": 63, "description": "Default save mode" },
+      "UndoFlag_All": { "value": 63, "description": "Save all" }
+    },
+    "maskModes": {
+      "MaskMode_Replace": { "value": 0, "description": "Replace mode" },
+      "MaskMode_Multiply": { "value": 1, "description": "Multiply mode" },
+      "MaskMode_ScreenAdd": { "value": 2, "description": "Screen/add mode" }
+    }
+  },
+
+  "v8ConstantClasses": {
+    "description": "Under V8, flat *_NAME constants are deprecated in favor of static class properties. The classes below contain the V8 forms; existing flat constants remain documented but emit deprecation warnings on V8.",
+    "availableIn": ["v8"],
+    "since": "1.9.4",
+    "classes": {
+        "StdIcon": { "members": ["NoIcon", "Question", "Information", "Warning", "Error"], "replaces": "StdIcon_*" },
+        "StdButton": { "members": ["NoButton", "Ok", "Cancel", "Yes", "No", "Abort", "Retry", "Ignore"], "replaces": "StdButton_*" },
+        "StdDialogCode": { "members": ["Ok", "Cancel"], "replaces": "StdDialogCode_*" },
+        "StdCursor": { "members": ["Arrow", "UpArrow", "Cross", "Wait", "IBeam", "SizeVer", "SizeHor", "SizeBDiag", "SizeFDiag", "SizeAll", "OpenHand", "ClosedHand", "PointingHand", "Forbidden"], "replaces": "StdCursor_*" },
+        "CipherAlgorithm": { "members": ["AES128", "AES192", "AES256"], "replaces": "Cipher_*" },
+        "CompressionAlgorithm": { "members": ["None", "Zlib", "LZ4", "LZ4HC", "Zstandard"], "replaces": "Compression_*" },
+        "FileFlag": { "members": ["Read", "Write", "ReadWrite", "Truncate", "Append", "Text", "Binary"], "replaces": "FileType_* / File_Attribute_* / FilePermission_*" },
+        "GradientSpreadMode": { "members": ["Pad", "Reflect", "Repeat"], "replaces": "GradientSpread_*" },
+        "InterpolationAlgorithm": { "members": ["NearestNeighbor", "Bilinear", "BicubicSpline", "BicubicBSpline", "Lanczos3", "Lanczos4", "MitchellNetravali", "CatmullRomSpline", "CubicBSpline", "Auto"], "replaces": "Interpolation_*" },
+        "KeyCode": { "members": ["A through Z, F1-F12, Space, Enter, Escape, ..."], "replaces": "Key_*" },
+        "MorphologicalOp": { "members": ["Erosion", "Dilation", "Opening", "Closing", "Median", "Selection", "Midpoint"], "replaces": "MorphOp_*" },
+        "RadialBasisFunction": { "members": ["VariableShape", "ThinPlateSpline", "DDMThinPlateSpline", "Multiquadric", "InverseMultiquadric", "Gaussian"], "replaces": "RBFType_*" },
+        "ReadTextOption": { "members": ["RemoveEmptyLines", "TrimTrailingSpaces", "TrimLeadingSpaces"], "replaces": "ReadTextOptions_*" },
+        "PixelSampleType": { "members": ["UInt8", "UInt16", "UInt32", "UInt64", "Real32", "Real64", "Complex32", "Complex64"], "replaces": "SampleType_*" },
+        "TextAlignment": { "members": ["Left", "Right", "Center", "Justify", "Top", "Bottom", "VertCenter"], "replaces": "TextAlign_*" },
+        "PropertyAttribute": { "members": ["Invalid", "Writable", "Reserved", "Volatile", "Permanent", "NotSerializable", "Storable", "Notify", "Mutable", "Protected"], "replaces": "new in V8" },
+        "PropertyType": { "members": ["Invalid", "Boolean", "Int8", "Int16", "Int32", "Int64", "UInt8", "UInt16", "UInt32", "UInt64", "Float", "Double", "String8", "UCString", "ByteArray", "Vector", "Matrix"], "replaces": "new in V8" },
+        "SeekMode": { "members": ["FromBegin", "FromCurrent", "FromEnd"], "replaces": "new in V8" },
+        "DataType": { "members": ["Boolean", "Int8", "Int16", "Int32", "Int64", "UInt8", "UInt16", "UInt32", "UInt64", "Float", "Double", "Real32", "Real64", "Complex32", "Complex64", "String8", "UCString", "ByteArray", "Vector", "Matrix"], "replaces": "DataType_*" },
+        "UndoFlag": { "members": ["NoSwapFile", "Keywords", "PixelData", "RGBWS", "ICCProfile", "Metadata", "Properties", "DefaultMode", "All"], "replaces": "UndoFlag_*" },
+        "PSFunction": { "members": ["Auto", "Gaussian", "Moffat", "MoffatA", "Moffat8", "Moffat6", "Moffat4", "Moffat25", "Moffat15", "Lorentzian"], "replaces": "new in V8" },
+        "FrameStyle": { "members": ["Flat", "Box", "Panel", "StyledPanel", "Raised", "Sunken", "Plain"], "replaces": "FrameStyle_*" },
+        "FocusStyle": { "members": ["NoFocus", "TabFocus", "ClickFocus", "StrongFocus", "WheelFocus"], "replaces": "FocusStyle_*" }
+      }
+  },
+
+  "lintRules": [
+    {
+      "id": "v8-no-base-inheritance",
+      "appliesToEngines": ["v8"],
+      "severity": "error",
+      "match": { "type": "code-pattern", "regex": "this\\.__base__\\s*=" },
+      "message": "__base__ inheritance is broken under V8 (it does not error, but inheritance silently does nothing). Use a JavaScript class with `extends` and `super()`.",
+      "fix": "class FooDialog extends Dialog {\n  constructor( foo, bar = 42 ) {\n    super();\n    this.foo = foo;\n    this.bar = bar;\n  }\n}",
+      "docUrl": "https://pixinsight.net/dev/index.php?ams/the-new-v8-javascript-runtime-in-pixinsight-1-9-4-script-porting-guide.13/page/replacing-constructor-functions-with-classes.4/"
+    },
+    {
+      "id": "v8-no-prototype-process-constants",
+      "appliesToEngines": ["v8"],
+      "severity": "error",
+      "match": { "type": "code-pattern", "regex": "\\b[A-Z][A-Za-z0-9]*\\.prototype\\.[A-Z][A-Za-z0-9]*" },
+      "message": "Process constants are static properties of the class itself, not on .prototype. Remove '.prototype' from the access (e.g. `StarAlignment.OutputMatrix` not `StarAlignment.prototype.OutputMatrix`)."
+    },
+    {
+      "id": "v8-no-prototype-class-assign",
+      "appliesToEngines": ["v8"],
+      "severity": "error",
+      "match": { "type": "code-pattern", "regex": "\\w+\\.prototype\\s*=\\s*new\\s+[A-Z]\\w+" },
+      "message": "Assigning `Foo.prototype = new Base` is a SpiderMonkey-only inheritance trick. Use `class Foo extends Base { ... }` under V8."
+    },
+    {
+      "id": "v8-deprecated-gc",
+      "appliesToEngines": ["v8"],
+      "severity": "warning",
+      "match": { "type": "function-call", "name": "gc" },
+      "message": "gc() is deprecated in V8 and has no effect. Use Image.free() and Bitmap.clear() for explicit memory management of large native buffers."
+    },
+    {
+      "id": "v8-deprecated-jsGarbageCollect",
+      "appliesToEngines": ["v8"],
+      "severity": "warning",
+      "match": { "type": "function-call", "name": "jsGarbageCollect" },
+      "message": "jsGarbageCollect() is deprecated in V8. V8 manages GC autonomously; call Image.free() / Bitmap.clear() instead."
+    },
+    {
+      "id": "v8-removed-VectorGraphics",
+      "appliesToEngines": ["v8"],
+      "severity": "error",
+      "match": { "type": "symbol-use", "name": "VectorGraphics" },
+      "message": "VectorGraphics is not available in V8. Use the Graphics class — it handles floating-point coordinates natively."
+    },
+    {
+      "id": "v8-removed-ImageStatistics",
+      "appliesToEngines": ["v8"],
+      "severity": "error",
+      "match": { "type": "symbol-use", "name": "ImageStatistics" },
+      "message": "ImageStatistics is removed in V8. Use Image.median(), Image.MAD(), Image.stdDev(), Image.rangeClippingEnabled, etc."
+    },
+    {
+      "id": "v8-removed-image-foreach",
+      "appliesToEngines": ["v8"],
+      "severity": "error",
+      "match": { "type": "code-pattern", "regex": "\\.(?:forEachSample|forEachMutableSample|forEachPixel|forEachMutablePixel)\\s*\\(" },
+      "message": "Image.forEachSample/forEachPixel and their mutable variants are removed in V8. Use the new ImageIterator class for near-native-speed pixel access."
+    },
+    {
+      "id": "v8-removed-showAlias",
+      "appliesToEngines": ["v8"],
+      "severity": "error",
+      "match": { "type": "code-pattern", "regex": "\\.(?:showAlias|hideAlias)\\s*\\(" },
+      "message": "Control.showAlias()/hideAlias() are removed in V8. Layout updates are handled automatically — delete these calls."
+    },
+    {
+      "id": "v8-deprecated-pjsr-include",
+      "appliesToEngines": ["v8"],
+      "severity": "warning",
+      "match": { "type": "include", "pathPrefix": "pjsr/" },
+      "message": "PJSR header files (#include <pjsr/...>) are deprecated under V8. Constants are available directly as static class properties (e.g. StdIcon.Warning instead of StdIcon_Warning). Remove the #include."
+    },
+    {
+      "id": "v8-deprecated-flat-constants",
+      "appliesToEngines": ["v8"],
+      "severity": "warning",
+      "match": { "type": "symbol-use", "regex": "^(StdIcon|StdButton|StdDialogCode|StdCursor|Cipher|Compression|FileType|File_Attribute|FilePermission|GradientSpread|Interpolation|Key|MorphOp|RBFType|ReadTextOptions|SampleType|TextAlign|DataType|UndoFlag|FrameStyle|FocusStyle|MaskMode|ImageOp|ColorSpace|MaskInversion)_[A-Za-z0-9]+$" },
+      "message": "Flat *_CONSTANT names are deprecated under V8. Use the corresponding static class property (e.g. StdIcon.Warning instead of StdIcon_Warning)."
+    },
+    {
+      "id": "v8-deprecated-math-stats",
+      "appliesToEngines": ["v8"],
+      "severity": "warning",
+      "match": { "type": "code-pattern", "regex": "\\bMath\\.(?:median|MAD|avgDev|biweightMidvariance|qn|sn|mtf)\\b" },
+      "message": "Math.* statistical extensions are deprecated under V8. Use Stat.* (Stat.median, Stat.MAD, Stat.stdDev, ...) or FMath.mtf for midtones."
+    },
+    {
+      "id": "v8-recommend-FMath-in-hot-loop",
+      "appliesToEngines": ["v8"],
+      "severity": "hint",
+      "match": { "type": "code-pattern", "regex": "for\\s*\\([^)]*\\)[^{]*\\{[^}]*(?<![A-Za-z])Math\\.[a-z]" },
+      "message": "Heavy Math.* usage inside a tight loop runs much faster as FMath.* under V8 (WebAssembly-backed, near-native speed)."
+    },
+    {
+      "id": "v8-recommend-ensureMinimumVersion",
+      "appliesToEngines": ["v8"],
+      "severity": "hint",
+      "match": { "type": "missing-call", "name": "CoreApplication.ensureMinimumVersion" },
+      "message": "V8 scripts should call CoreApplication.ensureMinimumVersion(1, 9, 4) near the top of the script to fail fast on older PixInsight versions."
+    },
+    {
+      "id": "sm-consider-migrating-to-v8",
+      "appliesToEngines": ["sm"],
+      "requiresVersionRange": "<1.9.4",
+      "severity": "hint",
+      "match": { "type": "missing-directive", "name": "#engine" },
+      "message": "No #engine directive present — this script will run on the legacy SpiderMonkey engine (default). Consider adding `#engine v8` near the top to opt into the modern V8 runtime introduced in PixInsight 1.9.4."
+    },
+    {
+      "id": "v1.9.4-no-engine-directive-error",
+      "appliesToEngines": ["sm"],
+      "requiresVersionRange": ">=1.9.4",
+      "severity": "error",
+      "match": { "type": "missing-directive", "name": "#engine" },
+      "message": "PixInsight 1.9.4 (Lockhart) removed the legacy 'sm' JavaScript engine. Scripts that omit #engine fail to run. Add `#engine v8` near the top of the script.",
+      "docUrl": "https://pixinsight.com/forum/index.php?threads/legacy-sm-javascript-missing-also-fonts-missing.27198/"
+    },
+    {
+      "id": "v1.9.4-sm-engine-removed",
+      "appliesToEngines": ["sm"],
+      "requiresVersionRange": ">=1.9.4",
+      "severity": "error",
+      "match": { "type": "code-pattern", "regex": "^#engine\\s+sm\\b" },
+      "message": "The 'sm' JavaScript engine is removed in PixInsight 1.9.4 Lockhart. Replace `#engine sm` with `#engine v8` and port the script to the V8 runtime.",
+      "docUrl": "https://pixinsight.net/dev/index.php?ams/the-new-v8-javascript-runtime-in-pixinsight-1-9-4-script-porting-guide.13/"
+    },
+    {
+      "id": "v8-no-js-modules",
+      "appliesToEngines": ["v8"],
+      "severity": "error",
+      "match": { "type": "code-pattern", "regex": "^\\s*(?:import|export)\\s+" },
+      "message": "JavaScript modules (import/export) are not supported by the PJSR V8 runtime. Use `#include` directives instead.",
+      "docUrl": "https://pixinsight.net/dev/index.php?ams/the-new-v8-javascript-runtime-in-pixinsight-1-9-4-script-porting-guide.13/page/limitations.8/"
+    },
+    {
+      "id": "v8-imagewindow-purge-no-bool-args",
+      "appliesToEngines": ["v8"],
+      "severity": "error",
+      "match": { "type": "code-pattern", "regex": "\\.purge\\s*\\(\\s*(?:true|false|0|1)" },
+      "message": "ImageWindow.purge() no longer accepts boolean arguments under V8 — it takes no arguments and purges all transient data. Update the call.",
+      "docUrl": "https://pixinsight.net/dev/index.php?ams/the-new-v8-javascript-runtime-in-pixinsight-1-9-4-script-porting-guide.13/page/breaking-changes-and-deprecated-functions.7/"
+    },
+    {
+      "id": "v8-compression-array-shape",
+      "appliesToEngines": ["v8"],
+      "severity": "info",
+      "match": { "type": "code-pattern", "regex": "\\.compress\\s*\\([^)]*\\)\\s*\\[\\s*\\d+\\s*\\]\\s*\\[" },
+      "message": "Compression.compress() now returns an array of objects ({compressedData, uncompressedSize, checksum}), not an array of arrays. Access subblock fields by name (e.g. `result[i].compressedData`).",
+      "docUrl": "https://pixinsight.net/dev/index.php?ams/the-new-v8-javascript-runtime-in-pixinsight-1-9-4-script-porting-guide.13/page/breaking-changes-and-deprecated-functions.7/"
+    },
+    {
+      "id": "v8-ephemerisfile-shape-change",
+      "appliesToEngines": ["v8"],
+      "severity": "info",
+      "match": { "type": "code-pattern", "regex": "(?:EphemerisFile\\b[\\s\\S]{0,200}?(?:\\.objects|\\.visibleObjects\\s*\\()\\s*\\[\\s*\\d+\\s*\\]\\s*\\[)" },
+      "message": "EphemerisFile.objects and EphemerisFile.visibleObjects() now return arrays of objects, not arrays of arrays. Access object fields by name.",
+      "docUrl": "https://pixinsight.net/dev/index.php?ams/the-new-v8-javascript-runtime-in-pixinsight-1-9-4-script-porting-guide.13/page/breaking-changes-and-deprecated-functions.7/"
+    },
+    {
+      "id": "v8-null-vs-isnull-view",
+      "appliesToEngines": ["v8"],
+      "severity": "info",
+      "match": { "type": "code-pattern", "regex": "\\.(?:viewById|previewById)\\s*\\([^)]*\\)\\s*\\.\\s*isNull\\b" },
+      "message": "Under V8, viewById() and previewById() return null (not an invalid View) when not found. Replace `.isNull` checks with `=== null` or `== null`.",
+      "docUrl": "https://pixinsight.net/dev/index.php?ams/the-new-v8-javascript-runtime-in-pixinsight-1-9-4-script-porting-guide.13/page/breaking-changes-and-deprecated-functions.7/"
+    },
+    {
+      "id": "v8-view-window-image-null",
+      "appliesToEngines": ["v8"],
+      "severity": "info",
+      "match": { "type": "code-pattern", "regex": "\\.(?:window|image)\\.\\s*isNull\\b" },
+      "message": "Under V8, View.window and View.image return null when the view is invalid. Replace `.isNull` with a `=== null` check.",
+      "docUrl": "https://pixinsight.net/dev/index.php?ams/the-new-v8-javascript-runtime-in-pixinsight-1-9-4-script-porting-guide.13/page/breaking-changes-and-deprecated-functions.7/"
+    },
+    {
+      "id": "v8-discourage-v8-default",
+      "appliesToEngines": ["v8"],
+      "severity": "info",
+      "match": { "type": "code-pattern", "regex": "^#engine\\s+v8-default\\b" },
+      "message": "`#engine v8-default` runs on a long-lived shared V8 runtime. Use `#engine v8` or `#engine v8-private` for production scripts to avoid runtime pollution and re-declaration errors.",
+      "docUrl": "https://pixinsight.net/dev/index.php?ams/the-new-v8-javascript-runtime-in-pixinsight-1-9-4-script-porting-guide.13/page/runtime-selection.2/"
+    },
+    {
+      "id": "v1.9.4-abe-property-changes",
+      "appliesToEngines": ["v8"],
+      "requiresVersionRange": ">=1.9.4",
+      "severity": "hint",
+      "match": { "type": "code-pattern", "regex": "new\\s+ProcessInstance\\s*\\(\\s*[\"']AutomaticBackgroundExtractor[\"']\\s*\\)" },
+      "message": "AutomaticBackgroundExtractor property definitions changed non-backward-compatibly in 1.9.4 to accommodate the V8 runtime. Process icons saved on 1.9.3 may not load. Re-create the process icon in 1.9.4 if it fails.",
+      "docUrl": "https://pixinsight.com/forum/index.php?threads/changes-to-process-properties-in-1-9-4.27213/"
+    },
+    {
+      "id": "v1.9.4-sfs-property-changes",
+      "appliesToEngines": ["v8"],
+      "requiresVersionRange": ">=1.9.4",
+      "severity": "hint",
+      "match": { "type": "code-pattern", "regex": "new\\s+ProcessInstance\\s*\\(\\s*[\"']SubframeSelector[\"']\\s*\\)" },
+      "message": "SubframeSelector property definitions changed non-backward-compatibly in 1.9.4 to accommodate the V8 runtime. Process icons saved on 1.9.3 may not load. Re-create the process icon in 1.9.4 if it fails.",
+      "docUrl": "https://pixinsight.com/forum/index.php?threads/changes-to-process-properties-in-1-9-4.27213/"
+    },
+    {
+      "id": "v8-private-field-preprocessor-collision",
+      "appliesToEngines": ["v8"],
+      "severity": "warning",
+      "match": { "type": "code-pattern", "regex": "#(?:define|undef|if|ifdef|ifndef|ifeq|ifneq|ifgt|ifge|iflt|ifle|ifoneof|ifnoneof|else|endif|engine|error|warning|include|feature-id|feature-info|feature-icon|script-id)\\s*[=;,)\\s]" },
+      "message": "If this `#name` appears as a private class field inside a class body (e.g. `class X { #engine = ... }`), it collides with a reserved PixInsight preprocessor directive. Rename the private field (e.g. `#_engine`).",
+      "docUrl": "https://pixinsight.net/dev/index.php?ams/the-new-v8-javascript-runtime-in-pixinsight-1-9-4-script-porting-guide.13/page/limitations.8/"
+    }
+  ],
+
+  "preprocessorDirectives": {
+    "#include": { "description": "Include a JavaScript header file (.jsh)", "example": "#include <pjsr/DataType.jsh>" },
+    "#define": { "description": "Define a constant or macro", "example": "#define VERSION \"1.0\"" },
+    "#undef": { "description": "Undefine a previously defined macro", "example": "#undef DEBUG" },
+    "#ifdef": { "description": "Conditional compilation if defined", "example": "#ifdef DEBUG" },
+    "#ifndef": { "description": "Conditional compilation if not defined", "example": "#ifndef RELEASE" },
+    "#if": { "description": "Conditional compilation with expression", "example": "#if VERSION > 1" },
+    "#iflt": { "description": "Conditional if less than", "example": "#iflt __PI_VERSION__ 01.08.00" },
+    "#ifle": { "description": "Conditional if less or equal", "example": "#ifle __PI_VERSION__ 01.08.03" },
+    "#ifgt": { "description": "Conditional if greater than", "example": "#ifgt __PI_VERSION__ 01.07.00" },
+    "#ifge": { "description": "Conditional if greater or equal", "example": "#ifge __PI_VERSION__ 01.08.00" },
+    "#ifeq": { "description": "Conditional if equal", "example": "#ifeq __PI_PLATFORM__ Linux" },
+    "#ifneq": { "description": "Conditional if not equal", "example": "#ifneq __PI_PLATFORM__ macOS" },
+    "#ifoneof": { "description": "Conditional if value matches any of a list", "example": "#ifoneof __PI_PLATFORM__ Linux,macOS" },
+    "#ifnoneof": { "description": "Conditional if value matches none of a list", "example": "#ifnoneof __PI_PLATFORM__ Windows" },
+    "#else": { "description": "Else branch of conditional", "example": "#else" },
+    "#endif": { "description": "End conditional block", "example": "#endif" },
+    "#error": { "description": "Emit a compile-time error and abort", "example": "#error This script requires PixInsight 1.9.4 or higher." },
+    "#warning": { "description": "Emit a compile-time warning", "example": "#warning Untested on this platform" },
+    "#feature-id": { "description": "Declare script feature identifier", "example": "#feature-id MyScript" },
+    "#feature-info": { "description": "Script description", "example": "#feature-info A description" },
+    "#feature-icon": { "description": "Declare script feature icon", "example": "#feature-icon @script_icons_dir/MyScript.svg" },
+    "#script-id": { "description": "Declare script identifier", "example": "#script-id MyScript" },
+    "#engine": { "description": "Select the JavaScript runtime engine. Must be the first directive in a script's main file. Values: v8, v8-new, v8-default, v8-private, sm. In PixInsight 1.9.4 (Lockhart) the 'sm' engine is removed; scripts that omit #engine or specify 'sm' fail to run. Use 'v8' for new scripts.", "example": "#engine v8", "since": "1.9.4" }
+  },
+
+  "builtInVariables": {
+    "__PI_VERSION__": { "description": "PixInsight version as integer (e.g., 01080300)" },
+    "__PI_BUILD__": { "description": "PixInsight build number" },
+    "__PI_MAJOR__": { "description": "PixInsight major version number" },
+    "__PI_MINOR__": { "description": "PixInsight minor version number" },
+    "__PI_RELEASE__": { "description": "PixInsight release number" },
+    "__PI_REVISION__": { "description": "PixInsight revision number" },
+    "coreId": { "description": "PixInsight Core application identifier" },
+    "coreVersionBuild": { "description": "Core version and build string" },
+    "coreVersionMajor": { "description": "Core major version" },
+    "coreVersionMinor": { "description": "Core minor version" },
+    "coreVersionRelease": { "description": "Core release version" },
+    "coreVersionRevision": { "description": "Core revision" }
+  },
+
+  "commonPatterns": {
+    "scriptTemplate": {
+      "description": "Standard script structure",
+      "template": "// Feature declaration\n#feature-id MyScript\n#feature-info A brief description.\n\n// Includes\n#include <pjsr/DataType.jsh>\n#include <pjsr/StdButton.jsh>\n#include <pjsr/StdIcon.jsh>\n\n// Version check\n#iflt __PI_VERSION__ 01.08.00\n#error This script requires PixInsight 1.8.0 or higher.\n#endif\n\n// Enable auto garbage collection\njsAutoGC = true;\n\n// Main execution\nfunction main() {\n    // Your code here\n}\n\nmain();"
+    },
+    "dialogTemplate": {
+      "description": "Standard dialog pattern",
+      "template": "function MyDialog() {\n    this.__base__ = Dialog;\n    this.__base__();\n\n    this.windowTitle = \"My Script\";\n\n    // Create controls\n    this.label = new Label(this);\n    this.label.text = \"Hello World\";\n\n    // Create buttons\n    this.okButton = new PushButton(this);\n    this.okButton.text = \"OK\";\n    this.okButton.onClick = function() {\n        this.dialog.ok();\n    };\n\n    this.cancelButton = new PushButton(this);\n    this.cancelButton.text = \"Cancel\";\n    this.cancelButton.onClick = function() {\n        this.dialog.cancel();\n    };\n\n    // Layout with sizers\n    this.buttonSizer = new HorizontalSizer;\n    this.buttonSizer.addStretch();\n    this.buttonSizer.add(this.okButton);\n    this.buttonSizer.addSpacing(8);\n    this.buttonSizer.add(this.cancelButton);\n\n    this.sizer = new VerticalSizer;\n    this.sizer.margin = 8;\n    this.sizer.spacing = 8;\n    this.sizer.add(this.label);\n    this.sizer.addStretch();\n    this.sizer.add(this.buttonSizer);\n\n    this.adjustToContents();\n}\n\nMyDialog.prototype = new Dialog;"
+    },
+    "imageProcessing": {
+      "description": "Standard image processing pattern",
+      "template": "// Get active window\nvar window = ImageWindow.activeWindow;\nif (window.isNull) {\n    console.criticalln(\"No active image window.\");\n    return;\n}\n\nvar view = window.currentView;\nvar image = view.image;\n\n// Begin processing with undo support\nview.beginProcess(UndoFlag_PixelData);\n\ntry {\n    // Your image processing here\n    // e.g., image.apply(0.5, ImageOp_Mul);\n}\ncatch (error) {\n    console.criticalln(\"Error: \" + error.message);\n}\n\n// End processing\nview.endProcess();"
+    },
+    "batchProcessing": {
+      "description": "Batch processing pattern",
+      "template": "var targetFiles = [];\n\nfunction addFiles(files) {\n    for (var i = 0; i < files.length; ++i) {\n        if (File.exists(files[i]))\n            targetFiles.push(files[i]);\n    }\n}\n\nfunction processFiles() {\n    for (var i = 0; i < targetFiles.length; ++i) {\n        console.writeln(\"Processing: \" + targetFiles[i]);\n        \n        var windows = ImageWindow.open(targetFiles[i]);\n        if (windows.length == 0)\n            continue;\n            \n        var window = windows[0];\n        var view = window.mainView;\n        \n        // Process the image\n        view.beginProcess();\n        // ... your processing code ...\n        view.endProcess();\n        \n        // Save and close\n        var outputPath = File.changeExtension(targetFiles[i], \".processed.xisf\");\n        window.saveAs(outputPath, false, false, false);\n        window.forceClose();\n    }\n}"
+    },
+    "processExecution": {
+      "description": "Execute PixInsight process programmatically",
+      "template": "// Create process instance\nvar P = new ProcessInstance(\"HistogramTransformation\");\n\n// Set parameters (check Object Explorer for parameter names)\n// P.H = [[0, 0.5, 1, 0, 1], ...];\n\n// Execute on current view\nvar window = ImageWindow.activeWindow;\nif (!window.isNull) {\n    P.executeOn(window.currentView);\n}\n\n// Or execute globally\n// P.executeGlobal();"
+    },
+    "fileIO": {
+      "description": "File reading/writing pattern",
+      "template": "// Write text file\nvar f = new File;\nf.createForWriting(filePath);\nf.outTextLn(\"Line 1\");\nf.outTextLn(\"Line 2\");\nf.close();\n\n// Read text file\nvar f = new File;\nf.openForReading(filePath);\nvar lines = File.readLines(filePath);\nf.close();\n\n// Read binary data\nvar f = new File;\nf.openForReading(filePath);\nvar value = f.read(DataType_Real32);\nvar array = f.read(DataType_Real64, 100);\nf.close();"
+    },
+    "scriptTemplateV8": {
+      "description": "Standard V8 script structure (PixInsight 1.9.4+)",
+      "engine": "v8",
+      "template": "#engine v8\n\n#feature-id    MyScript : Utilities > My Script\n#feature-info  A brief description of what this script does.\n\nCoreApplication.ensureMinimumVersion( 1, 9, 4 );\n\n(() =>\n{\n   console.show();\n\n   // Your code here.\n})();\n"
+    },
+    "dialogTemplateV8": {
+      "description": "V8 dialog using class-based inheritance",
+      "engine": "v8",
+      "template": "#engine v8\n\n#feature-id    MyDialog : Utilities > My Dialog\n#feature-info  A dialog example.\n\nCoreApplication.ensureMinimumVersion( 1, 9, 4 );\n\n// Use a class expression so re-running the script in a long-lived runtime is safe.\nvar MyDialog = class extends Dialog\n{\n   constructor()\n   {\n      super();\n      this.windowTitle = \"My Script\";\n\n      this.label = new Label( this );\n      this.label.text = \"Hello World\";\n\n      this.okButton = new PushButton( this );\n      this.okButton.text = \"OK\";\n      this.okButton.onClick = () => this.ok();\n\n      this.cancelButton = new PushButton( this );\n      this.cancelButton.text = \"Cancel\";\n      this.cancelButton.onClick = () => this.cancel();\n\n      let buttons = new HorizontalSizer;\n      buttons.addStretch();\n      buttons.add( this.okButton );\n      buttons.addSpacing( 8 );\n      buttons.add( this.cancelButton );\n\n      this.sizer = new VerticalSizer;\n      this.sizer.margin = 8;\n      this.sizer.spacing = 8;\n      this.sizer.add( this.label );\n      this.sizer.addStretch();\n      this.sizer.add( buttons );\n\n      this.adjustToContents();\n   }\n};\n\n(new MyDialog).execute();\n"
+    },
+    "imageProcessingV8": {
+      "description": "Image processing under V8 using ImageIterator and explicit memory management",
+      "engine": "v8",
+      "template": "#engine v8\n\nCoreApplication.ensureMinimumVersion( 1, 9, 4 );\n\n(() =>\n{\n   console.show();\n\n   let window = ImageWindow.activeWindow;\n   if ( window.isNull )\n   {\n      console.criticalln( \"No active image window.\" );\n      return;\n   }\n\n   let view = window.currentView;\n   view.beginProcess( UndoFlag.PixelData );\n   try\n   {\n      let image = view.image;\n\n      // Iterate the image at near-native speed.\n      for ( let c = 0; c < image.numberOfNominalChannels; ++c )\n      {\n         let i = new ImageIterator( image, c );\n         for ( let y = 0, h = i.height; y < h; ++y )\n            for ( let x = 0, w = i.width; x < w; ++x )\n               i[y][x] = FMath.mtf( 0.5, i[y][x] );\n      }\n   }\n   catch ( error )\n   {\n      console.criticalln( \"Error: \" + error.message );\n   }\n   view.endProcess();\n})();\n"
+    },
+    "starDetectionV8": {
+      "description": "Star detection and PSF fitting under V8",
+      "engine": "v8",
+      "template": "#engine v8\n\nCoreApplication.ensureMinimumVersion( 1, 9, 4 );\n\n(() =>\n{\n   console.show();\n\n   let image = ImageWindow.activeWindow.mainView.image;\n   image.statusEnabled = true;\n\n   let D = new StarDetector;\n   D.fitPSF = true;\n\n   let stars = D.stars( image );\n   console.writeln( format( \"* %u stars detected.\", stars.length ) );\n\n   let P = PSF.fitStars( image, stars, PSFunction.Auto );\n   console.writeln( format( \"* %u valid PSF fits.\", P.length ) );\n\n   for ( let i = 0; i < Math.min( P.length, 10 ); ++i )\n   {\n      let p = P[i];\n      console.writeln( format( \"  star %3u: x=%.2f y=%.2f FWHM=%.2fx%.2f signal=%.3e\",\n         i, p.x, p.y, p.fwhmX, p.fwhmY, p.signal ) );\n   }\n})();\n"
+    }
+  }
+}

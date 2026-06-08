@@ -1,0 +1,1457 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "PJSR Extended API Schema",
+  "version": "2.1.0",
+  "description": "Extended API definitions from PixInsight GitLab repositories - supplements pjsr-core.json",
+  "source": "https://gitlab.com/pixinsight/PJSR",
+  "lastUpdated": "2026-05-14",
+  "v8Caveat": "All classes defined in this schema come from .jsh include files written in SpiderMonkey-era JavaScript (this.__base__ pattern). They continue to load under V8 but inheritance silently fails. Use the core C++ equivalents (e.g. StarDetector core, BRQuadTree, ImageIterator) under V8 where available.",
+
+  "uiControlClasses": {
+    "StarDetector": {
+      "description": "Star detection engine for finding stars in images",
+      "sourceFile": "pjsr/StarDetector.jsh",
+      "version": 2.01,
+      "properties": {
+        "structureLayers": { "type": "Number", "default": 5, "description": "Number of wavelet layers for structure detection" },
+        "hotPixelFilterRadius": { "type": "Number", "default": 1, "description": "Hot pixel filter radius" },
+        "applyHotPixelFilterToDetectionImage": { "type": "Boolean", "default": false, "description": "Apply hot pixel filter to detection image" },
+        "noiseReductionFilterRadius": { "type": "Number", "default": 0, "description": "Noise reduction filter radius" },
+        "sensitivity": { "type": "Number", "default": 0.5, "range": "0-1", "description": "Detection sensitivity" },
+        "peakResponse": { "type": "Number", "default": 0.5, "range": "0-1", "description": "Peak response threshold" },
+        "allowClusteredSources": { "type": "Boolean", "default": false, "description": "Allow detection of clustered sources" },
+        "localDetectionFilterRadius": { "type": "Number", "default": 2, "description": "Local detection filter radius" },
+        "localMaximaDetectionLimit": { "type": "Number", "default": 0.75, "description": "Local maxima detection limit" },
+        "noLocalMaximaDetection": { "type": "Boolean", "default": false, "description": "Disable local maxima detection" },
+        "maxDistortion": { "type": "Number", "default": 0.6, "range": "0-1", "description": "Maximum star distortion" },
+        "brightThreshold": { "type": "Number", "default": 3, "description": "Bright star threshold" },
+        "minSNR": { "type": "Number", "default": 0, "description": "Minimum signal-to-noise ratio" },
+        "minStructureSize": { "type": "Number", "default": 1, "description": "Minimum structure size" },
+        "upperLimit": { "type": "Number", "default": 1.0, "description": "Upper detection limit" },
+        "invert": { "type": "Boolean", "default": false, "description": "Invert detection (for dark features)" },
+        "xyStretch": { "type": "Number", "default": 1.5, "description": "XY stretch factor" },
+        "progressCallback": { "type": "Function", "optional": true, "description": "Progress reporting callback" },
+        "mask": { "type": "Image", "optional": true, "description": "Optional mask for restricted detection" }
+      },
+      "methods": {
+        "stars": { "signature": "stars(image: Image): Array<Star>", "description": "Find all stars in image" },
+        "hotPixelFilter": { "signature": "hotPixelFilter(image: Image)", "description": "Remove hot pixels via median filtering" },
+        "getStructureMap": { "signature": "getStructureMap(map: Image)", "description": "Isolate detection structures" },
+        "getLocalMaximaMap": { "signature": "getLocalMaximaMap(map: Image)", "description": "Detect local maxima" },
+        "starParameters": { "signature": "starParameters(image, rect, starPoints, lmMap): Object", "description": "Compute star metrics" },
+        "createStructureMapWindow": { "signature": "createStructureMapWindow(image: Image): ImageWindow", "description": "Visualize binary structure map" },
+        "createLocalMaximaMapWindow": { "signature": "createLocalMaximaMapWindow(image: Image): ImageWindow", "description": "Visualize local maxima" },
+        "test": { "signature": "test(image, createStarMaskWindow, maxStars)", "description": "Comprehensive testing" }
+      },
+      "relatedClasses": {
+        "Star": {
+          "description": "Detected star data",
+          "constructor": "Star(pos, flux, bkg, rect, size, nmax)",
+          "properties": {
+            "pos": { "type": "Point", "description": "Centroid position" },
+            "flux": { "type": "Number", "description": "Total flux in normalized intensity" },
+            "bkg": { "type": "Number", "description": "Mean local background" },
+            "rect": { "type": "Rect", "description": "Detection region coordinates" },
+            "size": { "type": "Number", "description": "Area in square pixels" },
+            "nmax": { "type": "Number", "description": "Number of local maxima" }
+          }
+        }
+      }
+    },
+
+    "NumericEdit": {
+      "description": "Label/edit control compound for numeric parameter modification",
+      "sourceFile": "pjsr/NumericControl.jsh",
+      "properties": {
+        "value": { "type": "Number", "description": "Current numeric value" },
+        "lowerBound": { "type": "Number", "description": "Minimum acceptable value" },
+        "upperBound": { "type": "Number", "description": "Maximum acceptable value" },
+        "real": { "type": "Boolean", "description": "Real vs integer parameter mode" },
+        "precision": { "type": "Number", "range": "0-16", "description": "Decimal digits" },
+        "fixed": { "type": "Boolean", "description": "Literal vs significant digits mode" },
+        "sign": { "type": "Boolean", "description": "Force sign character display" },
+        "scientific": { "type": "Boolean", "description": "Enable scientific notation" },
+        "sciTriggerExp": { "type": "Number", "description": "Exponent threshold for notation" },
+        "autoEditWidth": { "type": "Boolean", "description": "Auto-adjust edit control width" },
+        "useRegExp": { "type": "Boolean", "description": "Enable input validation via regex" },
+        "hasError": { "type": "Boolean", "description": "Invalid input flag" },
+        "label": { "type": "Label", "description": "Text label component" },
+        "edit": { "type": "Edit", "description": "Text input component" },
+        "sizer": { "type": "HorizontalSizer", "description": "Layout container" }
+      },
+      "methods": {
+        "setValue": { "signature": "setValue(value: Number)", "description": "Set and constrain value" },
+        "updateControls": { "signature": "updateControls()", "description": "Refresh display text" },
+        "valueAsString": { "signature": "valueAsString(value: Number): String", "description": "Format value for display" },
+        "setReal": { "signature": "setReal(real: Boolean)", "description": "Toggle real/integer mode" },
+        "setRange": { "signature": "setRange(lr: Number, ur: Number)", "description": "Define bounds" },
+        "setPrecision": { "signature": "setPrecision(precision: Number)", "description": "Set decimal places" },
+        "enableFixedPrecision": { "signature": "enableFixedPrecision(enable: Boolean)", "description": "Toggle precision mode" },
+        "enableFixedSign": { "signature": "enableFixedSign(enable: Boolean)", "description": "Toggle sign display" },
+        "enableScientificNotation": { "signature": "enableScientificNotation(enable: Boolean)", "description": "Toggle notation" },
+        "setScientificNotationTriggerExponent": { "signature": "setScientificNotationTriggerExponent(exp10: Number)", "description": "Set threshold" },
+        "enableValidatingRegExp": { "signature": "enableValidatingRegExp(enable: Boolean)", "description": "Toggle validation" },
+        "evaluate": { "signature": "evaluate()", "description": "Parse and validate user input" }
+      },
+      "events": {
+        "onValueUpdated": { "signature": "onValueUpdated(value: Number)", "description": "Fires when value changes" }
+      }
+    },
+
+    "NumericControl": {
+      "description": "Extended compound control with slider functionality",
+      "extends": "NumericEdit",
+      "sourceFile": "pjsr/NumericControl.jsh",
+      "additionalProperties": {
+        "slider": { "type": "HorizontalSlider", "description": "Draggable slider component" },
+        "exponential": { "type": "Boolean", "description": "Enable exponential response curve" }
+      },
+      "additionalMethods": {
+        "sliderValueToControl": { "signature": "sliderValueToControl(sliderValue: Number): Number", "description": "Convert slider position to control value" },
+        "controlValueToSlider": { "signature": "controlValueToSlider(value: Number): Number", "description": "Convert control value to slider position" }
+      }
+    },
+
+    "SectionBar": {
+      "description": "Collapsible/extensible section control for dialogs",
+      "sourceFile": "pjsr/SectionBar.jsh",
+      "constructor": "SectionBar(parent?, title?, collapsible?)",
+      "properties": {
+        "objectId": { "type": "String", "value": "IWSectionBar", "description": "Object identifier" },
+        "focusStyle": { "type": "Number", "value": "FocusStyle_NoFocus", "description": "Focus style" },
+        "collapsible": { "type": "Boolean", "description": "Enable collapse/expand" },
+        "section": { "type": "Control", "description": "Associated collapsible section" },
+        "checkBox": { "type": "CheckBox", "optional": true, "description": "Optional checkbox" },
+        "label": { "type": "Label", "description": "Title label" },
+        "button": { "type": "ToolButton", "optional": true, "description": "Collapse/expand button" }
+      },
+      "methods": {
+        "hasCheckBox": { "signature": "hasCheckBox(): Boolean", "description": "Check if checkbox exists" },
+        "isChecked": { "signature": "isChecked(): Boolean", "description": "Get checkbox state" },
+        "enableCheckBox": { "signature": "enableCheckBox()", "description": "Create and initialize checkbox" },
+        "title": { "signature": "title(): String", "description": "Get section title" },
+        "setTitle": { "signature": "setTitle(title: String)", "description": "Set section title" },
+        "hasSection": { "signature": "hasSection(): Boolean", "description": "Check if section exists" },
+        "setSection": { "signature": "setSection(section: Control)", "description": "Associate control section" },
+        "isExpanded": { "signature": "isExpanded(): Boolean", "description": "Check if expanded" },
+        "isCollapsed": { "signature": "isCollapsed(): Boolean", "description": "Check if collapsed" },
+        "toggleSection": { "signature": "toggleSection()", "description": "Toggle section visibility" },
+        "updateSection": { "signature": "updateSection()", "description": "Refresh section layout" },
+        "updateIcon": { "signature": "updateIcon()", "description": "Update collapse/expand icon" }
+      },
+      "events": {
+        "onToggleSection": { "signature": "onToggleSection(sectionBar, toggleBegin)", "description": "Before/after toggle" },
+        "onCheckSection": { "signature": "onCheckSection(sectionBar)", "description": "Checkbox state changed" }
+      }
+    },
+
+    "ColorComboBox": {
+      "description": "CSS3 color selection combo box with 143 colors",
+      "extends": "ComboBox",
+      "sourceFile": "pjsr/ColorComboBox.jsh",
+      "constructor": "ColorComboBox(parent)",
+      "properties": {
+        "customRGBA": { "type": "Number", "description": "Stores non-standard color selection" }
+      },
+      "methods": {
+        "colorForIndex": { "signature": "colorForIndex(index: Number): Number", "description": "Get RGBA for index" },
+        "currentColor": { "signature": "currentColor(): Number", "description": "Get selected color value" },
+        "setCurrentColor": { "signature": "setCurrentColor(rgba: Number)", "description": "Set selection" }
+      },
+      "events": {
+        "onCurrentColorChanged": { "signature": "onCurrentColorChanged(rgba: Number)", "description": "Highlight changed" },
+        "onColorSelected": { "signature": "onColorSelected(rgba: Number)", "description": "Selection made" }
+      },
+      "relatedClasses": {
+        "ComboColor": {
+          "constructor": "ComboColor(value, name)",
+          "properties": {
+            "value": { "type": "Number", "description": "RGBA color value" },
+            "name": { "type": "String", "description": "Color name" },
+            "H": { "type": "Number", "description": "Hue value (-1 for grays)" },
+            "V": { "type": "Number", "description": "Brightness value" }
+          },
+          "methods": {
+            "icon": { "signature": "icon(size, margin): Bitmap", "description": "Generate color swatch icon" },
+            "title": { "signature": "title(): String", "description": "Get color name" },
+            "isEqualTo": { "signature": "isEqualTo(c: ComboColor): Boolean", "description": "Compare colors" }
+          },
+          "staticMethods": {
+            "initColors": { "signature": "ComboColor.initColors()", "description": "Populate color array" },
+            "searchColor": { "signature": "ComboColor.searchColor(rgba): Number", "description": "Binary search for color index" }
+          }
+        }
+      }
+    },
+
+    "SimpleColorDialog": {
+      "description": "Modal dialog for ARGB color selection with RGB/Alpha sliders",
+      "extends": "Dialog",
+      "sourceFile": "pjsr/SimpleColorDialog.jsh",
+      "constructor": "SimpleColorDialog(color?)",
+      "properties": {
+        "color": { "type": "Number", "default": "0xff000000", "description": "Current ARGB color value" },
+        "grayscale": { "type": "Boolean", "default": false, "description": "Grayscale mode" },
+        "alphaEnabled": { "type": "Boolean", "default": true, "description": "Show alpha channel control" },
+        "savedColor": { "type": "Number", "description": "Backup color for cancel" }
+      },
+      "controls": {
+        "V0": { "type": "NumericControl", "range": "0-255", "description": "Red/Gray channel" },
+        "V1": { "type": "NumericControl", "range": "0-255", "description": "Green channel" },
+        "V2": { "type": "NumericControl", "range": "0-255", "description": "Blue channel" },
+        "V3": { "type": "NumericControl", "range": "0-255", "description": "Alpha channel" },
+        "sample_Control": { "type": "Control", "description": "Live color preview" }
+      }
+    },
+
+    "CoordinatesEditor": {
+      "description": "Editor for Right Ascension/Declination coordinates",
+      "sourceFile": "AdP/CommonUIControls.js",
+      "constructor": "CoordinatesEditor(parent)",
+      "properties": {
+        "ra": { "type": "Number", "description": "Right ascension in degrees" },
+        "dec": { "type": "Number", "description": "Declination in degrees" }
+      },
+      "methods": {
+        "setCoordinates": { "signature": "setCoordinates(ra: Number, dec: Number)", "description": "Set RA/Dec values" },
+        "getCoordinates": { "signature": "getCoordinates(): Object", "description": "Get {ra, dec} object" }
+      },
+      "events": {
+        "onCoordinatesChanged": { "signature": "onCoordinatesChanged(ra, dec)", "description": "Coordinates changed" }
+      }
+    },
+
+    "FontControl": {
+      "description": "Font properties control with face, size, bold, italic",
+      "sourceFile": "AdP/CommonUIControls.js",
+      "properties": {
+        "face": { "type": "String", "description": "Font face name" },
+        "size": { "type": "Number", "range": "4-120", "description": "Font size in points" },
+        "bold": { "type": "Boolean", "description": "Bold style" },
+        "italic": { "type": "Boolean", "description": "Italic style" }
+      }
+    },
+
+    "DateTimeEditor": {
+      "description": "Date and optional time input control",
+      "sourceFile": "AdP/CommonUIControls.js",
+      "properties": {
+        "jd": { "type": "Number", "description": "Julian Day value" },
+        "year": { "type": "Number", "description": "Year component" },
+        "month": { "type": "Number", "description": "Month component (1-12)" },
+        "day": { "type": "Number", "description": "Day component" },
+        "hour": { "type": "Number", "description": "Hour component" },
+        "minute": { "type": "Number", "description": "Minute component" },
+        "second": { "type": "Number", "description": "Second component" }
+      }
+    },
+
+    "GeodeticCoordinatesEditor": {
+      "description": "Observer position using geodetic coordinates",
+      "sourceFile": "AdP/CommonUIControls.js",
+      "properties": {
+        "longitude": { "type": "Number", "description": "Longitude in degrees" },
+        "latitude": { "type": "Number", "description": "Latitude in degrees" },
+        "altitude": { "type": "Number", "description": "Altitude in meters" }
+      }
+    },
+
+    "TransparentColorControl": {
+      "description": "Color selection with alpha channel",
+      "sourceFile": "AdP/CommonUIControls.js",
+      "components": ["ColorComboBox", "SpinBox (alpha 0-255)", "Color picker button"]
+    }
+  },
+
+  "astrometryClasses": {
+    "ImageMetadata": {
+      "description": "Manages astrometric solutions and WCS metadata for images",
+      "sourceFile": "AdP/WCSmetadata.jsh",
+      "extends": "ObjectWithSettings",
+      "properties": {
+        "focal": { "type": "Number", "description": "Focal length in mm" },
+        "useFocal": { "type": "Boolean", "description": "Use focal length vs resolution" },
+        "xpixsz": { "type": "Number", "description": "Pixel size in microns" },
+        "resolution": { "type": "Number", "description": "Image resolution in arcsec/pixel" },
+        "referenceSystem": { "type": "String", "description": "ICRS or GCRS" },
+        "ra": { "type": "Number", "description": "Right ascension in degrees" },
+        "dec": { "type": "Number", "description": "Declination in degrees" },
+        "epoch": { "type": "Number", "description": "Epoch of observation" },
+        "endTime": { "type": "Number", "description": "End time of observation" },
+        "observationTime": { "type": "Number", "description": "Observation time (JD)" },
+        "topocentric": { "type": "Boolean", "description": "Topocentric correction enabled" },
+        "obsLongitude": { "type": "Number", "description": "Observer longitude" },
+        "obsLatitude": { "type": "Number", "description": "Observer latitude" },
+        "obsHeight": { "type": "Number", "description": "Observer height" },
+        "scalingFactor": { "type": "Number", "description": "Image scaling factor" },
+        "sourceImageWindow": { "type": "ImageWindow", "description": "Source image window" },
+        "ref_I_G": { "type": "Matrix", "description": "Image to celestial transformation matrix" },
+        "ref_G_I": { "type": "Matrix", "description": "Celestial to image transformation matrix" },
+        "controlPoints": { "type": "Object", "description": "Control points for spline transformations" },
+        "projection": { "type": "Object", "description": "Projection system parameters" },
+        "useSurfaceSplines": { "type": "Boolean", "description": "Use surface splines for transformations" }
+      },
+      "methods": {
+        "ExtractMetadata": { "signature": "ExtractMetadata(window: ImageWindow)", "description": "Extract full astrometric solution" },
+        "GetWCSvalues": { "signature": "GetWCSvalues(): Object", "description": "Get WCS values" },
+        "UpdateBasicKeywords": { "signature": "UpdateBasicKeywords(window: ImageWindow)", "description": "Update basic keywords" },
+        "UpdateWCSKeywords": { "signature": "UpdateWCSKeywords(window: ImageWindow)", "description": "Update WCS keywords" },
+        "SaveKeywords": { "signature": "SaveKeywords(window: ImageWindow)", "description": "Save keywords to window" },
+        "SaveProperties": { "signature": "SaveProperties(window: ImageWindow)", "description": "Save properties" },
+        "Clone": { "signature": "Clone(): ImageMetadata", "description": "Create copy" },
+        "Convert_I_RD": { "signature": "Convert_I_RD(x: Number, y: Number): Object", "description": "Image to RA/Dec" },
+        "Convert_RD_I": { "signature": "Convert_RD_I(ra: Number, dec: Number): Object", "description": "RA/Dec to image" },
+        "Convert_RD_I_Points": { "signature": "Convert_RD_I_Points(points: Array): Array", "description": "Convert multiple points" },
+        "DistanceI": { "signature": "DistanceI(x1, y1, x2, y2): Number", "description": "Distance in image coords" },
+        "FindImageBounds": { "signature": "FindImageBounds(): Rect", "description": "Find image bounds" },
+        "CheckOscillation": { "signature": "CheckOscillation(coords: Array): Boolean", "description": "Check for oscillation" },
+        "insideImageBoundaries": { "signature": "insideImageBoundaries(x, y): Boolean", "description": "Check if inside image" },
+        "hasOfDateCoordinates": { "signature": "hasOfDateCoordinates(): Boolean", "description": "Check of-date coords" },
+        "searchCenterCoordinates": { "signature": "searchCenterCoordinates(): Object", "description": "Search center" },
+        "convertRADecFromApparentToAstrometric": { "signature": "convertRADecFromApparentToAstrometric(ra, dec): Object", "description": "Apparent to astrometric" },
+        "ensureValidReferenceSystemForSolution": { "signature": "ensureValidReferenceSystemForSolution()", "description": "Validate reference system" }
+      },
+      "staticMethods": {
+        "Distance": { "signature": "ImageMetadata.Distance(ra1, dec1, ra2, dec2): Number", "description": "Spherical distance in degrees" },
+        "DistanceFast": { "signature": "ImageMetadata.DistanceFast(ra1, dec1, ra2, dec2): Number", "description": "Fast distance calculation" }
+      }
+    },
+
+    "WCSKeywords": {
+      "description": "Reads and parses WCS metadata from FITS headers",
+      "sourceFile": "AdP/WCSmetadata.jsh",
+      "supportedProjections": ["TAN", "STG", "CAR", "MER", "AIT", "ZEA", "SIN"],
+      "properties": {
+        "radesys": { "type": "String", "description": "Reference frame (ICRS/FK5)" },
+        "objctra": { "type": "String", "description": "Object RA string" },
+        "objctdec": { "type": "String", "description": "Object Dec string" },
+        "ctype1": { "type": "String", "description": "Coordinate type for axis 1 (e.g., 'RA---TAN')" },
+        "ctype2": { "type": "String", "description": "Coordinate type for axis 2 (e.g., 'DEC--TAN')" },
+        "crpix1": { "type": "Number", "description": "Reference pixel X coordinate" },
+        "crpix2": { "type": "Number", "description": "Reference pixel Y coordinate" },
+        "crval1": { "type": "Number", "description": "Celestial coordinate at reference pixel (RA in degrees)" },
+        "crval2": { "type": "Number", "description": "Celestial coordinate at reference pixel (Dec in degrees)" },
+        "cd1_1": { "type": "Number", "description": "CD matrix element 1,1" },
+        "cd1_2": { "type": "Number", "description": "CD matrix element 1,2" },
+        "cd2_1": { "type": "Number", "description": "CD matrix element 2,1" },
+        "cd2_2": { "type": "Number", "description": "CD matrix element 2,2" },
+        "cdelt1": { "type": "Number", "description": "Coordinate increment axis 1" },
+        "cdelt2": { "type": "Number", "description": "Coordinate increment axis 2" },
+        "crota1": { "type": "Number", "description": "Rotation angle axis 1" },
+        "crota2": { "type": "Number", "description": "Rotation angle axis 2" },
+        "pv1_1": { "type": "Number", "description": "Projection parameter" },
+        "pv1_2": { "type": "Number", "description": "Projection parameter" },
+        "lonpole": { "type": "Number", "description": "Longitude of celestial pole" },
+        "latpole": { "type": "Number", "description": "Latitude of celestial pole" },
+        "epoch": { "type": "Number", "description": "Epoch of observation" },
+        "equinox": { "type": "Number", "description": "Equinox of coordinates" },
+        "focallen": { "type": "Number", "description": "Focal length in mm" },
+        "xpixsz": { "type": "Number", "description": "Pixel size X in microns" },
+        "ypixsz": { "type": "Number", "description": "Pixel size Y in microns" },
+        "longobs": { "type": "Number", "description": "Observer longitude" },
+        "latobs": { "type": "Number", "description": "Observer latitude" },
+        "altobs": { "type": "Number", "description": "Observer altitude" },
+        "observationTime": { "type": "Number", "description": "Observation time (JD)" }
+      },
+      "methods": {
+        "Read": { "signature": "Read(window: ImageWindow)", "description": "Read WCS from image window" },
+        "ExtractDate": { "signature": "ExtractDate(keywords: Array): Number", "description": "Extract observation date" },
+        "CreateProjection": { "signature": "CreateProjection(): Object", "description": "Create projection object" }
+      }
+    },
+
+    "DMSangle": {
+      "description": "Degrees/Minutes/Seconds angle representation",
+      "sourceFile": "AdP/WCSmetadata.jsh",
+      "properties": {
+        "deg": { "type": "Number", "description": "Degrees component" },
+        "min": { "type": "Number", "description": "Minutes component" },
+        "sec": { "type": "Number", "description": "Seconds component" },
+        "sign": { "type": "Number", "description": "Sign (+1 or -1)" }
+      },
+      "methods": {
+        "GetValue": { "signature": "GetValue(): Number", "description": "Get decimal value" },
+        "ToString": { "signature": "ToString(): String", "description": "Format as DMS string" }
+      },
+      "staticMethods": {
+        "FromString": { "signature": "DMSangle.FromString(str, format): Number", "description": "Parse DMS string (HMS for hours, DMS for degrees)" },
+        "FromAngle": { "signature": "DMSangle.FromAngle(value: Number): DMSangle", "description": "Create from decimal angle" }
+      }
+    },
+
+    "ReferNPolyn": {
+      "description": "Polynomial reference transformation matrix",
+      "extends": "Matrix",
+      "sourceFile": "AdP/WCSmetadata.jsh",
+      "constructor": "ReferNPolyn(polDegree)",
+      "properties": {
+        "polDegree": { "type": "Number", "description": "Polynomial degree" }
+      },
+      "methods": {
+        "apply": { "signature": "apply(x, y): Object", "description": "Apply transformation" },
+        "applyToPoints": { "signature": "applyToPoints(points: Array): Array", "description": "Transform multiple points" },
+        "GetPointCoef": { "signature": "GetPointCoef(x, y): Array", "description": "Get point coefficients" },
+        "GetNumCoef": { "signature": "GetNumCoef(): Number", "description": "Get number of coefficients" },
+        "ToLinearMatrix": { "signature": "ToLinearMatrix(): Matrix", "description": "Convert to linear matrix" },
+        "FromLinearMatrix": { "signature": "FromLinearMatrix(matrix: Matrix)", "description": "Initialize from matrix" }
+      }
+    },
+
+    "ReferSpline": {
+      "description": "Surface spline reference transformation",
+      "sourceFile": "AdP/WCSmetadata.jsh",
+      "constructor": "ReferSpline(P1, P2, rbfType, maxSplinePoints, order, smoothing, simplify, rejectFraction, incremental)",
+      "properties": {
+        "rbfType": { "type": "Number", "description": "Radial basis function type" },
+        "maxSplinePoints": { "type": "Number", "description": "Maximum spline control points" },
+        "order": { "type": "Number", "description": "Spline order (2-6)" },
+        "smoothing": { "type": "Number", "description": "Smoothing coefficient" },
+        "simplify": { "type": "Boolean", "description": "Simplify spline" },
+        "rejectFraction": { "type": "Number", "description": "Outlier rejection fraction" },
+        "incremental": { "type": "Boolean", "description": "Incremental mode" },
+        "truncated": { "type": "Boolean", "description": "Truncation flag" },
+        "inverse": { "type": "ReferSpline", "description": "Inverse transformation" }
+      },
+      "methods": {
+        "apply": { "signature": "apply(x, y): Object", "description": "Apply transformation" },
+        "applyToPoints": { "signature": "applyToPoints(points: Array): Array", "description": "Transform multiple points" },
+        "rbfTypeToPropertyValue": { "signature": "rbfTypeToPropertyValue(): String", "description": "Get RBF type property value" }
+      },
+      "staticMethods": {
+        "rbfTypeFromPropertyValue": { "signature": "ReferSpline.rbfTypeFromPropertyValue(value): Number", "description": "Parse RBF type from property" }
+      }
+    },
+
+    "ObjectWithSettings": {
+      "description": "Base class for objects that persist settings",
+      "sourceFile": "AdP/WCSmetadata.jsh",
+      "constructor": "ObjectWithSettings(module, prefix, properties)",
+      "methods": {
+        "MakeSettingsKey": { "signature": "MakeSettingsKey(key): String", "description": "Create full settings key" },
+        "LoadSettings": { "signature": "LoadSettings()", "description": "Load from settings" },
+        "SaveSettings": { "signature": "SaveSettings()", "description": "Save to settings" },
+        "DeleteSettings": { "signature": "DeleteSettings()", "description": "Delete settings" },
+        "MakeParamsKey": { "signature": "MakeParamsKey(key): String", "description": "Create parameters key" },
+        "LoadParameters": { "signature": "LoadParameters()", "description": "Load parameters" },
+        "SaveParameters": { "signature": "SaveParameters()", "description": "Save parameters" }
+      }
+    }
+  },
+
+  "catalogClasses": {
+    "CatalogRecord": {
+      "description": "Represents an individual catalog object entry",
+      "sourceFile": "AdP/AstronomicalCatalogs.jsh",
+      "properties": {
+        "posRD": { "type": "Point", "description": "Position in RA/Dec (degrees)" },
+        "name": { "type": "String", "description": "Object name/identifier" },
+        "magnitude": { "type": "Number", "description": "Visual magnitude" },
+        "diameter": { "type": "Number", "description": "Object diameter (arcminutes)" },
+        "axisRatio": { "type": "Number", "description": "Major/minor axis ratio" },
+        "positionAngle": { "type": "Number", "description": "Position angle (degrees)" }
+      }
+    },
+
+    "Catalog": {
+      "description": "Base class for astronomical catalog implementations",
+      "sourceFile": "AdP/AstronomicalCatalogs.jsh",
+      "properties": {
+        "id": { "type": "String", "description": "Catalog identifier" },
+        "name": { "type": "String", "description": "Catalog display name" },
+        "objects": { "type": "Array", "description": "Array of CatalogRecord objects" }
+      },
+      "methods": {
+        "Load": { "signature": "Load(metadata: ImageMetadata)", "description": "Load catalog objects for image field" },
+        "Validate": { "signature": "Validate(): Boolean", "description": "Verify catalog integrity" },
+        "GetEditControls": { "signature": "GetEditControls(parent: Control, width: Number): Array", "description": "Generate UI controls" },
+        "GetDefaultLabels": { "signature": "GetDefaultLabels(): Array", "description": "Get display field configuration" }
+      }
+    },
+
+    "CatalogWithMagnitudeFilters": {
+      "description": "Catalog with magnitude filtering capabilities",
+      "extends": "Catalog",
+      "sourceFile": "AdP/AstronomicalCatalogs.jsh",
+      "additionalProperties": {
+        "minMagnitude": { "type": "Number", "description": "Minimum magnitude filter" },
+        "maxMagnitude": { "type": "Number", "description": "Maximum magnitude filter" }
+      }
+    },
+
+    "VizierCatalog": {
+      "description": "Online catalog access via VizieR service",
+      "extends": "CatalogWithMagnitudeFilters",
+      "sourceFile": "AdP/AstronomicalCatalogs.jsh",
+      "catalogs": [
+        "Hipparcos", "Tycho-2", "USNO-B1", "UCAC3", "PPMX", "PPMXL",
+        "WDS", "PGC", "Milliquas", "LBN", "LDN", "CGPN", "NOMAD-1 B-V"
+      ],
+      "methods": {
+        "UrlBuilder": { "signature": "UrlBuilder(): String", "description": "Construct VizieR query URL" },
+        "ParseRecord": { "signature": "ParseRecord(data: String): CatalogRecord", "description": "Parse VizieR response" },
+        "CreateMagFilter": { "signature": "CreateMagFilter(minMag: Number, maxMag: Number): String", "description": "Create magnitude filter query" }
+      },
+      "relatedClasses": {
+        "VizierCache": {
+          "description": "Caching mechanism for VizieR query results"
+        }
+      }
+    },
+
+    "LocalFileCatalog": {
+      "description": "CSV file-based local catalogs",
+      "extends": "Catalog",
+      "sourceFile": "AdP/AstronomicalCatalogs.jsh",
+      "catalogs": ["Messier", "NGC-IC", "NamedStars", "Sharpless", "VdB", "Barnard"]
+    },
+
+    "CatalogRegister": {
+      "description": "Registry system for discovering catalogs",
+      "sourceFile": "AdP/AstronomicalCatalogs.jsh",
+      "methods": {
+        "GetCatalogById": { "signature": "GetCatalogById(id: String): Catalog", "description": "Find catalog by ID" },
+        "GetCatalogByName": { "signature": "GetCatalogByName(name: String): Catalog", "description": "Find catalog by name" },
+        "GetAllCatalogs": { "signature": "GetAllCatalogs(): Array", "description": "Get all registered catalogs" }
+      }
+    },
+
+    "supportedCatalogs": {
+      "description": "Full list of 26 supported astronomical catalogs",
+      "solarSystem": ["Visible Planets", "Asteroids", "Kuiper Belt Objects", "Custom XEPH Files"],
+      "stars": ["Bright Stars (HR)", "Hipparcos", "Tycho-2", "HD Cross-Reference", "PPMX", "PPMXL", "USNO-B1", "UCAC3", "NOMAD-1 B-V"],
+      "deepSky": ["Messier", "NGC-IC", "PGC", "Named Stars", "Sharpless", "VdB", "Barnard", "LBN", "LDN", "CGPN"],
+      "extragalactic": ["Milliquas (quasars)", "WDS (double stars)"]
+    }
+  },
+
+  "annotationClasses": {
+    "Layer": {
+      "description": "Base class for annotation layers",
+      "sourceFile": "AdP/AnnotateImage.js",
+      "properties": {
+        "visible": { "type": "Boolean", "description": "Layer visibility" },
+        "graphicProperties": { "type": "GraphicProperties", "description": "Visual attributes" }
+      },
+      "methods": {
+        "Draw": { "signature": "Draw(graphics, metadata)", "description": "Render layer" },
+        "newLinePen": { "signature": "newLinePen(): Pen", "description": "Create line pen" },
+        "newLabelFont": { "signature": "newLabelFont(): Font", "description": "Create label font" },
+        "newLabelPen": { "signature": "newLabelPen(): Pen", "description": "Create label pen" }
+      }
+    },
+
+    "GraphicProperties": {
+      "description": "Visual attributes for annotations",
+      "sourceFile": "AdP/AnnotateImage.js",
+      "properties": {
+        "markerColor": { "type": "Number", "description": "Marker color (ARGB)" },
+        "markerWidth": { "type": "Number", "description": "Marker line width" },
+        "labelFontFace": { "type": "String", "description": "Label font name" },
+        "labelFontSize": { "type": "Number", "description": "Label font size" },
+        "labelFontBold": { "type": "Boolean", "description": "Bold labels" },
+        "labelFontItalic": { "type": "Boolean", "description": "Italic labels" },
+        "labelColor": { "type": "Number", "description": "Label color (ARGB)" }
+      },
+      "methods": {
+        "GetEditControls": { "signature": "GetEditControls(parent, width): Array", "description": "Generate UI controls" }
+      }
+    },
+
+    "layerTypes": {
+      "GridLayerBase": { "description": "Equatorial coordinate grid" },
+      "EclipticLayer": { "description": "Ecliptic circle with J2000.0 epoch" },
+      "GalacticEquatorLayer": { "description": "Galactic equator via ICRS" },
+      "ConstLinesLayer": { "description": "Constellation lines from JSON" },
+      "ConstBordersLayer": { "description": "Constellation borders" },
+      "CatalogLayer": { "description": "Catalog object rendering" },
+      "TextLayer": { "description": "User text with variable expansion" }
+    },
+
+    "textVariables": {
+      "description": "Supported text variables for TextLayer",
+      "variables": ["%RA", "%DEC", "%RESOLUTION", "%KEY-XXXX"]
+    }
+  },
+
+  "colorUtilities": {
+    "Color": {
+      "description": "Color manipulation utilities",
+      "sourceFile": "pjsr/Color.jsh",
+      "extractionMethods": {
+        "alpha": { "signature": "Color.alpha(rgba: Number): Number", "description": "Extract alpha (bits 24-31)" },
+        "red": { "signature": "Color.red(rgba: Number): Number", "description": "Extract red (bits 16-23)" },
+        "green": { "signature": "Color.green(rgba: Number): Number", "description": "Extract green (bits 8-15)" },
+        "blue": { "signature": "Color.blue(rgba: Number): Number", "description": "Extract blue (bits 0-7)" }
+      },
+      "normalizedMethods": {
+        "alphaF": { "signature": "Color.alphaF(rgba: Number): Number", "description": "Alpha normalized (0.0-1.0)" },
+        "redF": { "signature": "Color.redF(rgba: Number): Number", "description": "Red normalized (0.0-1.0)" },
+        "greenF": { "signature": "Color.greenF(rgba: Number): Number", "description": "Green normalized (0.0-1.0)" },
+        "blueF": { "signature": "Color.blueF(rgba: Number): Number", "description": "Blue normalized (0.0-1.0)" }
+      },
+      "analysisMethods": {
+        "isGray": { "signature": "Color.isGray(rgba: Number): Boolean", "description": "Check if equal RGB" },
+        "hue": { "signature": "Color.hue(rgba: Number): Number", "description": "Calculate hue" },
+        "value": { "signature": "Color.value(rgba: Number): Number", "description": "Get brightness" },
+        "hsvSaturation": { "signature": "Color.hsvSaturation(rgba: Number): Number", "description": "HSV saturation" },
+        "hsiSaturation": { "signature": "Color.hsiSaturation(rgba: Number): Number", "description": "HSI saturation" }
+      },
+      "channelMethods": {
+        "clearAlpha": { "signature": "Color.clearAlpha(rgba: Number): Number", "description": "Zero alpha channel" },
+        "clearRed": { "signature": "Color.clearRed(rgba: Number): Number", "description": "Zero red channel" },
+        "clearGreen": { "signature": "Color.clearGreen(rgba: Number): Number", "description": "Zero green channel" },
+        "clearBlue": { "signature": "Color.clearBlue(rgba: Number): Number", "description": "Zero blue channel" },
+        "setAlpha": { "signature": "Color.setAlpha(rgba, alpha: Number): Number", "description": "Set alpha channel" },
+        "setRed": { "signature": "Color.setRed(rgba, red: Number): Number", "description": "Set red channel" },
+        "setGreen": { "signature": "Color.setGreen(rgba, green: Number): Number", "description": "Set green channel" },
+        "setBlue": { "signature": "Color.setBlue(rgba, blue: Number): Number", "description": "Set blue channel" }
+      },
+      "constructionMethods": {
+        "rgbaColor": { "signature": "Color.rgbaColor(r, g, b, a?: Number): Number", "description": "Create from integer components" },
+        "rgbaColorF": { "signature": "Color.rgbaColorF(r, g, b, a?: Number): Number", "description": "Create from normalized floats" }
+      },
+      "conversionMethods": {
+        "rgbColorToHexString": { "signature": "Color.rgbColorToHexString(rgba: Number): String", "description": "Convert to #RRGGBB" },
+        "rgbaColorToHexString": { "signature": "Color.rgbaColorToHexString(rgba: Number): String", "description": "Convert to #RRGGBBAA" }
+      },
+      "predefinedColors": ["TRANSPARENT", "BLACK", "WHITE", "GRAY", "RED", "GREEN", "BLUE"]
+    }
+  },
+
+  "mathUtilities": {
+    "DMath": {
+      "description": "Degree-based trigonometry utilities",
+      "sourceFile": "AdP/WCSmetadata.jsh",
+      "constants": {
+        "DEG2RAD": { "value": "Math.PI/180", "description": "Degrees to radians" },
+        "RAD2DEG": { "value": "180/Math.PI", "description": "Radians to degrees" }
+      },
+      "methods": {
+        "sin": { "signature": "DMath.sin(degrees: Number): Number", "description": "Sine of angle in degrees" },
+        "cos": { "signature": "DMath.cos(degrees: Number): Number", "description": "Cosine of angle in degrees" },
+        "tan": { "signature": "DMath.tan(degrees: Number): Number", "description": "Tangent of angle in degrees" },
+        "asin": { "signature": "DMath.asin(value: Number): Number", "description": "Arcsine returning degrees" },
+        "acos": { "signature": "DMath.acos(value: Number): Number", "description": "Arccosine returning degrees" },
+        "atan": { "signature": "DMath.atan(value: Number): Number", "description": "Arctangent returning degrees" },
+        "atan2": { "signature": "DMath.atan2(y: Number, x: Number): Number", "description": "Two-argument arctangent returning degrees" }
+      }
+    },
+
+    "MultipleLinearRegression": {
+      "description": "Multiple linear regression for coordinate transformations",
+      "sourceFile": "AdP/WCSmetadata.jsh",
+      "signature": "MultipleLinearRegression(polDegree, coords1, coords2): Matrix",
+      "returns": "Correction matrix transforming coordinates"
+    },
+
+    "MultipleLinearRegressionHelmert": {
+      "description": "Helmert transformation calculation",
+      "sourceFile": "AdP/WCSmetadata.jsh",
+      "signature": "MultipleLinearRegressionHelmert(coords1, coords2, ref1, ref2): Matrix",
+      "returns": "Helmert transformation matrix"
+    }
+  },
+
+  "transformClasses": {
+    "Homography": {
+      "description": "2D projective transformation (homography) computed from two sets of point correspondences. SpiderMonkey-style JavaScript class; loads under V8 but inheritance/prototype operations subject to the same caveats as other .jsh classes.",
+      "sourceFile": "pjsr/Homography.jsh",
+      "legacyInheritance": true,
+      "deprecatedIn": "v8",
+      "replacedBy": "core C++ equivalent (no direct replacement yet — port to use Matrix.apply with explicit homography matrix)",
+      "constructors": [
+        { "signature": "Homography(P1: Array<Point>, P2: Array<Point>)", "description": "Compute homography from two corresponding point arrays" }
+      ],
+      "methods": {
+        "apply": { "signature": "apply(p: Point): Point", "description": "Apply the homography to a point" },
+        "inverse": { "signature": "inverse(): Homography", "description": "Compute the inverse homography" },
+        "isValid": { "signature": "isValid(): Boolean", "description": "Whether the homography was computed successfully" },
+        "isAffine": { "signature": "isAffine(): Boolean", "description": "Whether the homography is purely affine (no perspective)" }
+      },
+      "properties": {
+        "H": { "type": "Matrix", "description": "3x3 homography matrix" },
+        "T": { "type": "Matrix", "description": "Normalization translation" },
+        "N": { "type": "Number", "description": "Number of point correspondences used" }
+      }
+    },
+    "RANSACPointMatcher": {
+      "description": "RANSAC-based robust point matching, returning a homography plus inlier statistics. Used for image registration. SpiderMonkey-style class; see v8Caveat in schema header.",
+      "sourceFile": "pjsr/RANSACPointMatcher.jsh",
+      "legacyInheritance": true,
+      "deprecatedIn": "v8",
+      "constructors": [
+        { "signature": "RANSACPointMatcher(P1: Array<Point>, P2: Array<Point>, tolerance?: Number, maxIterations?: Number, klen?: Number, kovl?: Number, kreg?: Number, krms?: Number)", "description": "Match two point sets robustly and produce a homography. tolerance is the inlier distance threshold." }
+      ],
+      "properties": {
+        "H": { "type": "Matrix", "description": "Estimated homography matrix" },
+        "RMS": { "type": "Number", "description": "RMS error of inliers" },
+        "EDV": { "type": "Number", "description": "Edge deviation measure" },
+        "PEX": { "type": "Number", "description": "Translation/X component" },
+        "PEY": { "type": "Number", "description": "Translation/Y component" },
+        "INL": { "type": "Number", "description": "Number of inlier correspondences" },
+        "OVL": { "type": "Number", "description": "Overlap quality" },
+        "REG": { "type": "Number", "description": "Regularity score" },
+        "QLT": { "type": "Number", "description": "Composite quality score" },
+        "NIT": { "type": "Number", "description": "Iterations actually performed" },
+        "MIT": { "type": "Number", "description": "Max iterations limit" },
+        "M1": { "type": "Array<Point>", "description": "Matched points from set 1 (inliers only)" },
+        "M2": { "type": "Array<Point>", "description": "Matched points from set 2 (inliers only)" },
+        "I": { "type": "Array<Number>", "description": "Inlier indices into the original point arrays" }
+      },
+      "constants": {
+        "RANSAC_PM_MIN_ITERATIONS": { "value": 35, "description": "Minimum iterations a RANSAC run will execute" }
+      }
+    },
+    "QuadTreeNode": {
+      "description": "Quadtree node used by older PJSR utilities. Companion to (and superseded by) the core C++ BRQuadTree class in V8. SpiderMonkey-style class.",
+      "sourceFile": "pjsr/QuadTreeNode.jsh",
+      "legacyInheritance": true,
+      "deprecatedIn": "v8",
+      "replacedBy": "BRQuadTree (core class)",
+      "constructors": [
+        { "signature": "QuadTreeNode(rect: Rect, index?: Array)", "description": "Build a node over a rectangle with optional indexed contents" }
+      ],
+      "methods": {
+        "isLeaf": { "signature": "isLeaf(): Boolean", "description": "Whether this node has no children (i.e. holds points directly)" },
+        "includes": { "signature": "includes(point: Point): Boolean", "description": "Test whether the node's rect contains a point" },
+        "intersects": { "signature": "intersects(rect: Rect): Boolean", "description": "Test whether the node's rect overlaps a rect" }
+      },
+      "properties": {
+        "rect": { "type": "Rect", "description": "Node bounding rectangle" },
+        "index": { "type": "Array", "description": "Indexed point payload (leaf nodes only)" },
+        "nw": { "type": "QuadTreeNode", "description": "NW child" },
+        "ne": { "type": "QuadTreeNode", "description": "NE child" },
+        "sw": { "type": "QuadTreeNode", "description": "SW child" },
+        "se": { "type": "QuadTreeNode", "description": "SE child" }
+      }
+    }
+  },
+
+  "calibrationClasses": {
+    "LDDEngine": {
+      "description": "Linear Defect Detection engine — finds defective columns or rows in calibration frames. Pure-JavaScript engine from pjsr/LinearDefectDetection.jsh. SpiderMonkey-style class; see v8Caveat.",
+      "sourceFile": "pjsr/LinearDefectDetection.jsh",
+      "legacyInheritance": true,
+      "deprecatedIn": "v8",
+      "constructors": [
+        { "signature": "LDDEngine()", "description": "Create with default parameters" }
+      ],
+      "methods": {
+        "defineWindowsAndImages": { "signature": "defineWindowsAndImages(view: View)", "description": "Pick the active image and prepare working windows" },
+        "multiscaleIsolation": { "signature": "multiscaleIsolation()", "description": "Isolate structures via wavelet layers" },
+        "iterativeStatistics": { "signature": "iterativeStatistics()", "description": "Compute robust statistics over the isolated layer" },
+        "partialLineDetection": { "signature": "partialLineDetection()", "description": "Detect partial line defects" },
+        "execute": { "signature": "execute(): Array", "description": "Run the full detection pipeline; returns lineList" }
+      },
+      "properties": {
+        "detectColumns": { "type": "Boolean", "default": true, "description": "Detect column defects (false → rows)" },
+        "detectPartialLines": { "type": "Boolean", "default": true, "description": "Also detect partial-length defects" },
+        "layersToRemove": { "type": "Number", "default": 9, "description": "Number of wavelet layers to remove" },
+        "rejectionLimit": { "type": "Number", "default": 3, "description": "Sigma rejection limit for statistics" },
+        "detectionThreshold": { "type": "Number", "default": 5, "description": "Detection threshold (sigma above background)" },
+        "partialLineDetectionThreshold": { "type": "Number", "default": 5, "description": "Threshold for partial-line detection" },
+        "imageShift": { "type": "Number", "default": 50, "description": "Window shift in pixels" },
+        "closeFormerWorkingImages": { "type": "Boolean", "default": true, "description": "Close intermediate images after processing" },
+        "outputDir": { "type": "String", "default": "", "description": "Optional output directory for defect maps" }
+      },
+      "constants": {
+        "LDD_DEFAULT_DETECT_COLUMNS": { "value": true },
+        "LDD_DEFAULT_DETECT_PARTIAL_LINES": { "value": true },
+        "LDD_DEFAULT_LAYERS_TO_REMOVE": { "value": 9 },
+        "LDD_DEFAULT_REJECTION_LIMIT": { "value": 3 },
+        "LDD_DEFAULT_DETECTION_THRESHOLD": { "value": 5 },
+        "LDD_DEFAULT_PARTIAL_LINE_DETECTION_THRESHOLD": { "value": 5 },
+        "LDD_DEFAULT_IMAGE_SHIFT": { "value": 50 },
+        "LDD_DEFAULT_CLOSE_FORMER_WORKING_IMAGES": { "value": true },
+        "LDD_DEFAULT_OUTPUT_DIR": { "value": "" }
+      }
+    },
+    "LPSEngine": {
+      "description": "Linear Pattern Subtraction engine — removes column or row patterns from calibration frames using a defect table. Companion to LDDEngine. Pure-JavaScript; SpiderMonkey-style class.",
+      "sourceFile": "pjsr/LinearPatternSubtraction.jsh",
+      "legacyInheritance": true,
+      "deprecatedIn": "v8",
+      "constructors": [
+        { "signature": "LPSEngine()", "description": "Create with default parameters" }
+      ],
+      "methods": {
+        "defineWindowsAndImages": { "signature": "defineWindowsAndImages(view: View)", "description": "Prepare working images from the active view" },
+        "iterativeStatistics": { "signature": "iterativeStatistics()", "description": "Compute robust background statistics" },
+        "executeGlobalRejection": { "signature": "executeGlobalRejection()", "description": "Run global rejection across all input frames" },
+        "executeOnActiveImage": { "signature": "executeOnActiveImage()", "description": "Apply pattern subtraction to the active image" },
+        "execute": { "signature": "execute()", "description": "Run the full pipeline" }
+      },
+      "properties": {
+        "inputFiles": { "type": "Array<String>", "default": [], "description": "Input frame paths" },
+        "targetIsActiveImage": { "type": "Boolean", "default": false, "description": "Operate on active image instead of inputFiles" },
+        "closeFormerWorkingImages": { "type": "Boolean", "default": false },
+        "outputDir": { "type": "String", "default": "" },
+        "correctColumns": { "type": "Boolean", "default": true, "description": "Subtract column patterns (false → rows)" },
+        "correctEntireImage": { "type": "Boolean", "default": false, "description": "Apply subtraction over the full frame, not just defect regions" },
+        "defectTableFilePath": { "type": "String", "default": "", "description": "Path to a defect-line table (produced by LDD)" },
+        "postfix": { "type": "String", "default": "_lps", "description": "Output-file postfix" },
+        "layersToRemove": { "type": "Number", "default": 9 },
+        "globalRejection": { "type": "Boolean", "description": "Enable global rejection" },
+        "globalRejectionLimit": { "type": "Number" },
+        "backgroundReferenceLeft": { "type": "Number" },
+        "backgroundReferenceTop": { "type": "Number" },
+        "backgroundReferenceWidth": { "type": "Number" },
+        "backgroundReferenceHeight": { "type": "Number" }
+      }
+    }
+  },
+
+  "testingHelpers": {
+    "description": "Assertion and test-suite helpers from pjsr/Assert.jsh and pjsr/Test.jsh. All use SpiderMonkey-style inheritance (Test uses `this.__base__ = Object`); under V8 the assert functions still work but Test's inheritance silently no-ops.",
+    "assert": {
+      "kind": "function",
+      "sourceFile": "pjsr/Assert.jsh",
+      "signature": "assert(condition: Boolean, message?: String, caller?: Function)",
+      "description": "Throw an Error if condition is falsy. Includes caller information when available.",
+      "deprecatedIn": "v8",
+      "replacedBy": "Standard `if (!condition) throw new Error(...)` or any V8 test framework"
+    },
+    "assertType": {
+      "kind": "function",
+      "sourceFile": "pjsr/Assert.jsh",
+      "signature": "assertType(expected: any, value: any, caller?: Function)",
+      "description": "Assert that `typeof value === typeof expected`.",
+      "deprecatedIn": "v8"
+    },
+    "assertValue": {
+      "kind": "function",
+      "sourceFile": "pjsr/Assert.jsh",
+      "signature": "assertValue(expected: any, value: any, caller?: Function)",
+      "description": "Assert that value strictly equals expected (also checks type).",
+      "deprecatedIn": "v8"
+    },
+    "Test": {
+      "kind": "class",
+      "sourceFile": "pjsr/Test.jsh",
+      "description": "Simple test-suite framework. Uses SpiderMonkey-style inheritance (this.__base__ = Object), which silently does nothing under V8. Migrate to a V8-compatible class-based test framework or Node-style tests if running on 1.9.4+.",
+      "legacyInheritance": true,
+      "deprecatedIn": "v8",
+      "constructors": [
+        { "signature": "Test(name: String, parent?: Test)", "description": "Create a test or test-case" }
+      ],
+      "methods": {
+        "add": { "signature": "add(test: Test|Function)", "description": "Add a child test (suite) or test case (function)" },
+        "run": { "signature": "run()", "description": "Run the test/suite, logging pass/fail" },
+        "begin": { "signature": "begin()", "description": "Hook called before run() iterates children" },
+        "end": { "signature": "end()", "description": "Hook called after run() finishes" }
+      },
+      "properties": {
+        "name": { "type": "String", "description": "Test name" },
+        "parent": { "type": "Test", "description": "Parent suite (undefined for the root)" },
+        "children": { "type": "Array<Test>", "description": "Child tests" },
+        "succeeded": { "type": "Number", "description": "Pass count after run()" },
+        "failed": { "type": "Number", "description": "Fail count after run()" },
+        "total": { "type": "Number", "description": "Total cases run" }
+      },
+      "staticMethods": {
+        "log": { "signature": "Test.log(line: String)", "description": "Append a line to the global log" },
+        "clearLog": { "signature": "Test.clearLog()", "description": "Reset the global log" },
+        "logText": { "signature": "Test.logText(): String", "description": "Get the accumulated log text" }
+      }
+    }
+  },
+
+  "legacyHelperClasses": {
+    "StarDetectorV1": {
+      "description": "Legacy v1 JavaScript StarDetector from pjsr/StarDetectorV1.jsh, retained alongside (but superseded by) the core C++ `StarDetector` introduced in 1.9.4. Uses SpiderMonkey-style inheritance.",
+      "sourceFile": "pjsr/StarDetectorV1.jsh",
+      "legacyInheritance": true,
+      "deprecatedIn": "v8",
+      "replacedBy": "StarDetector (core class in pjsr-core.json)",
+      "version": 1.25,
+      "constructors": [
+        { "signature": "StarDetector()", "description": "Create with default parameters" }
+      ],
+      "methods": {
+        "stars": { "signature": "stars(image: Image): Array<Star>", "description": "Find all stars in image (returns v1 Star objects, not StarData)" },
+        "hotPixelFilter": { "signature": "hotPixelFilter(image: Image)", "description": "Remove hot pixels via median filtering" },
+        "getStructureMap": { "signature": "getStructureMap(map: Image)", "description": "Isolate detection structures" },
+        "createStructureMapWindow": { "signature": "createStructureMapWindow(image: Image): ImageWindow", "description": "Build a structure map window for inspection" },
+        "starParameters": { "signature": "starParameters(image, rect, starPoints, lmMap): Object", "description": "Compute star metrics" },
+        "test": { "signature": "test(image: Image)", "description": "Diagnostic test mode" }
+      }
+    },
+    "Star": {
+      "description": "v1 star record produced by StarDetectorV1. Distinct from core `StarData` returned by the V8 StarDetector class.",
+      "sourceFile": "pjsr/StarDetectorV1.jsh",
+      "deprecatedIn": "v8",
+      "replacedBy": "StarData (core class)",
+      "constructors": [
+        { "signature": "Star(pos: Point, flux: Number, size: Number)", "description": "Build a star record" }
+      ],
+      "properties": {
+        "pos": { "type": "Point", "description": "Centroid position" },
+        "flux": { "type": "Number", "description": "Integrated flux" },
+        "size": { "type": "Number", "description": "Approximate size in pixels" }
+      }
+    }
+  },
+
+  "constants": {
+    "dataTypes": {
+      "description": "Data type constants for File I/O (pjsr/DataType.jsh)",
+      "DataType_Boolean": { "value": 0, "description": "Native Boolean type" },
+      "DataType_Int8": { "value": 1, "description": "8-bit signed integer" },
+      "DataType_UInt8": { "value": 2, "description": "8-bit unsigned integer" },
+      "DataType_Int16": { "value": 3, "description": "16-bit signed integer" },
+      "DataType_UInt16": { "value": 4, "description": "16-bit unsigned integer" },
+      "DataType_Int32": { "value": 5, "description": "32-bit signed integer" },
+      "DataType_UInt32": { "value": 6, "description": "32-bit unsigned integer" },
+      "DataType_Int64": { "value": 7, "description": "64-bit signed integer" },
+      "DataType_UInt64": { "value": 8, "description": "64-bit unsigned integer" },
+      "DataType_Real32": { "value": 9, "description": "32-bit IEEE 754 floating point" },
+      "DataType_Real64": { "value": 10, "description": "64-bit IEEE 754 floating point" },
+      "DataType_Complex32": { "value": 11, "description": "Native Complex type, 32-bit IEEE 754" },
+      "DataType_Complex64": { "value": 12, "description": "Native Complex type, 64-bit IEEE 754" },
+      "DataType_String8": { "value": 13, "description": "ISO 8859-1 string (8-bit characters)" },
+      "DataType_UCString": { "value": 14, "description": "Unicode string (16-bit characters)" },
+      "DataType_ByteArray": { "value": 15, "description": "Native ByteArray type" },
+      "DataType_Vector": { "value": 16, "description": "Native Vector type" },
+      "DataType_Matrix": { "value": 17, "description": "Native Matrix type" },
+      "DataType_Float32Array": { "value": 18, "description": "Float32Array" },
+      "DataType_Float64Array": { "value": 19, "description": "Float64Array" },
+      "DataType_Int32Array": { "value": 20, "description": "Int32Array" },
+      "DataType_Uint32Array": { "value": 21, "description": "Uint32Array" },
+      "DataType_Int16Array": { "value": 22, "description": "Int16Array" },
+      "DataType_Uint16Array": { "value": 23, "description": "Uint16Array" },
+      "DataType_Int8Array": { "value": 24, "description": "Int8Array" },
+      "DataType_Uint8Array": { "value": 25, "description": "Uint8Array" },
+      "DataType_Uint8ClampedArray": { "value": 26, "description": "Uint8ClampedArray" },
+      "aliases": {
+        "DataType_Float": "DataType_Real32",
+        "DataType_Double": "DataType_Real64",
+        "DataType_String": "DataType_String8"
+      }
+    },
+
+    "brushStyles": {
+      "description": "Brush fill styles (pjsr/BrushStyle.jsh)",
+      "BrushStyle_Empty": { "value": 0, "description": "Empty brush (no fill)" },
+      "BrushStyle_Solid": { "value": 1, "description": "Solid pattern brush" },
+      "BrushStyle_Dense": { "value": 2, "description": "Dense pattern brush" },
+      "BrushStyle_HalfTone": { "value": 3, "description": "50% pattern brush" },
+      "BrushStyle_Sparse": { "value": 4, "description": "Sparse pattern brush" },
+      "BrushStyle_HorizontalHatch": { "value": 5, "description": "Horizontal line hatching" },
+      "BrushStyle_VerticalHatch": { "value": 6, "description": "Vertical line hatching" },
+      "BrushStyle_CrossHatch": { "value": 7, "description": "Crossed line hatching" },
+      "BrushStyle_ForwardDiagonalHatch": { "value": 8, "description": "Forward diagonal hatching" },
+      "BrushStyle_BackwardDiagonalHatch": { "value": 9, "description": "Backward diagonal hatching" },
+      "BrushStyle_CrossDiagonalHatch": { "value": 10, "description": "Crossed diagonal hatching" },
+      "BrushStyle_Stipple": { "value": 11, "description": "Fill with a tiled Bitmap" },
+      "BrushStyle_LinearGradient": { "value": 12, "description": "Linear gradient fill" },
+      "BrushStyle_RadialGradient": { "value": 13, "description": "Radial gradient fill" },
+      "BrushStyle_ConicalGradient": { "value": 14, "description": "Conical gradient fill" }
+    },
+
+    "penStyles": {
+      "description": "Pen line styles (pjsr/PenStyle.jsh)",
+      "PenStyle_Empty": { "value": 0, "description": "Nothing drawn" },
+      "PenStyle_Solid": { "value": 1, "description": "Continuous line" },
+      "PenStyle_Dash": { "value": 2, "description": "Dashed pattern" },
+      "PenStyle_Dot": { "value": 3, "description": "Dotted pattern" },
+      "PenStyle_DashDot": { "value": 4, "description": "Alternating dashes and dots" },
+      "PenStyle_DashDotDot": { "value": 5, "description": "Dashes followed by pairs of dots" }
+    },
+
+    "penCaps": {
+      "description": "Pen cap styles (pjsr/PenCap.jsh)",
+      "PenCap_Flat": { "value": 0, "description": "Square caps not reaching line end points" },
+      "PenCap_Square": { "value": 1, "description": "Square caps extending beyond end points" },
+      "PenCap_Round": { "value": 2, "description": "Round caps centered at line end points" }
+    },
+
+    "penJoins": {
+      "description": "Pen join styles (pjsr/PenJoin.jsh)",
+      "PenJoin_Miter": { "value": 0, "description": "Lines joined by sharp corners" },
+      "PenJoin_Bevel": { "value": 1, "description": "Lines joined by flat corners" },
+      "PenJoin_Round": { "value": 2, "description": "Circular arcs between lines" }
+    },
+
+    "fontFamilies": {
+      "description": "Font family constants (pjsr/FontFamily.jsh)",
+      "FontFamily_Default": { "value": 0, "description": "Default font" },
+      "FontFamily_SansSerif": { "value": 1, "description": "Sans serif (Helvetica, Swiss, Arial)" },
+      "FontFamily_Serif": { "value": 2, "description": "Serif (Times, Garamond)" },
+      "FontFamily_Script": { "value": 3, "description": "Script/handwriting fonts" },
+      "FontFamily_TypeWriter": { "value": 4, "description": "Fixed-pitch (DejaVu, Courier)" },
+      "FontFamily_Decorative": { "value": 5, "description": "Decorative fonts (OldEnglish)" },
+      "FontFamily_Symbol": { "value": 6, "description": "Mathematical and Greek symbols" },
+      "aliases": {
+        "FontFamily_Helvetica": "FontFamily_SansSerif",
+        "FontFamily_Swiss": "FontFamily_SansSerif",
+        "FontFamily_Times": "FontFamily_Serif",
+        "FontFamily_Courier": "FontFamily_TypeWriter",
+        "FontFamily_Teletype": "FontFamily_TypeWriter",
+        "FontFamily_Monospace": "FontFamily_TypeWriter",
+        "FontFamily_OldEnglish": "FontFamily_Decorative"
+      }
+    },
+
+    "fontWeights": {
+      "description": "Font weight constants (pjsr/FontWeight.jsh)",
+      "FontWeight_Thin": { "value": 100, "description": "Thin weight" },
+      "FontWeight_ExtraLight": { "value": 200, "description": "Extra light weight" },
+      "FontWeight_Light": { "value": 300, "description": "Light weight" },
+      "FontWeight_Normal": { "value": 400, "description": "Normal weight" },
+      "FontWeight_Medium": { "value": 500, "description": "Medium weight" },
+      "FontWeight_SemiBold": { "value": 600, "description": "Semi-bold weight" },
+      "FontWeight_Bold": { "value": 700, "description": "Bold weight" },
+      "FontWeight_ExtraBold": { "value": 800, "description": "Extra bold weight" },
+      "FontWeight_Heavy": { "value": 850, "description": "Heavy weight" },
+      "FontWeight_Black": { "value": 900, "description": "Black weight" },
+      "aliases": {
+        "FontWeight_UltraLight": "FontWeight_ExtraLight",
+        "FontWeight_Regular": "FontWeight_Normal",
+        "FontWeight_DemiBold": "FontWeight_SemiBold",
+        "FontWeight_UltraBold": "FontWeight_ExtraBold"
+      }
+    },
+
+    "compositionOps": {
+      "description": "Graphics composition operators (pjsr/CompositionOp.jsh)",
+      "porterDuff": {
+        "CompositionOp_Clear": { "value": 0, "description": "Clear" },
+        "CompositionOp_Source": { "value": 1, "description": "A" },
+        "CompositionOp_Destination": { "value": 2, "description": "B" },
+        "CompositionOp_SourceOver": { "value": 3, "description": "A over B" },
+        "CompositionOp_DestinationOver": { "value": 4, "description": "B over A" },
+        "CompositionOp_SourceIn": { "value": 5, "description": "A in B" },
+        "CompositionOp_DestinationIn": { "value": 6, "description": "B in A" },
+        "CompositionOp_SourceOut": { "value": 7, "description": "A out B" },
+        "CompositionOp_DestinationOut": { "value": 8, "description": "B out A" },
+        "CompositionOp_SourceAtop": { "value": 9, "description": "A atop B" },
+        "CompositionOp_DestinationAtop": { "value": 10, "description": "B atop A" },
+        "CompositionOp_Xor": { "value": 11, "description": "A xor B" }
+      },
+      "extended": {
+        "CompositionOp_Min": { "value": 12, "description": "Min(A, B)" },
+        "CompositionOp_Max": { "value": 13, "description": "Max(A, B)" },
+        "CompositionOp_Add": { "value": 14, "description": "A + B" },
+        "CompositionOp_Multiply": { "value": 15, "description": "A * B" },
+        "CompositionOp_Screen": { "value": 16, "description": "~A * ~B" },
+        "CompositionOp_Overlay": { "value": 17, "description": "Conditional blend" },
+        "CompositionOp_ColorDodge": { "value": 18, "description": "A/~B" },
+        "CompositionOp_ColorBurn": { "value": 19, "description": "~(~A/B)" },
+        "CompositionOp_HardLight": { "value": 20, "description": "Conditional blend" },
+        "CompositionOp_SoftLight": { "value": 21, "description": "Conditional blend" },
+        "CompositionOp_Difference": { "value": 22, "description": "Abs(A - B)" },
+        "CompositionOp_Exclusion": { "value": 23, "description": "0.5 - 2*(A-0.5)*(B-0.5)" }
+      }
+    },
+
+    "stdCursors": {
+      "description": "Standard cursor shapes (pjsr/StdCursor.jsh)",
+      "StdCursor_NoCursor": { "value": 0, "description": "No cursor shown" },
+      "StdCursor_Arrow": { "value": 1, "description": "Standard arrow (pointing left)" },
+      "StdCursor_InvArrow": { "value": 2, "description": "Inverted arrow (pointing right)" },
+      "StdCursor_UpArrow": { "value": 3, "description": "Upwards arrow" },
+      "StdCursor_DownArrow": { "value": 4, "description": "Downwards arrow" },
+      "StdCursor_LeftArrow": { "value": 5, "description": "Leftwards arrow" },
+      "StdCursor_RightArrow": { "value": 6, "description": "Rightwards arrow" },
+      "StdCursor_Checkmark": { "value": 7, "description": "Checkmark (ok)" },
+      "StdCursor_Crossmark": { "value": 8, "description": "Crossmark (cancel)" },
+      "StdCursor_Accept": { "value": 9, "description": "Arrow + checkmark" },
+      "StdCursor_Reject": { "value": 10, "description": "Arrow + crossmark" },
+      "StdCursor_Add": { "value": 11, "description": "Arrow + plus sign" },
+      "StdCursor_Copy": { "value": 12, "description": "Arrow + square" },
+      "StdCursor_Cross": { "value": 13, "description": "Crosshair" },
+      "StdCursor_Hourglass": { "value": 14, "description": "Hourglass (Windows wait)" },
+      "StdCursor_Watch": { "value": 15, "description": "Watch (Mac wait)" },
+      "StdCursor_ArrowWait": { "value": 16, "description": "Arrow + hourglass/watch" },
+      "StdCursor_ArrowQuestion": { "value": 17, "description": "Arrow + question mark" },
+      "StdCursor_IBeam": { "value": 18, "description": "I-beam (text edition)" },
+      "StdCursor_VerticalSize": { "value": 19, "description": "Vertical resize" },
+      "StdCursor_HorizontalSize": { "value": 20, "description": "Horizontal resize" },
+      "StdCursor_ForwardDiagonalSize": { "value": 21, "description": "Forward diagonal resize (/)" },
+      "StdCursor_BackwardDiagonalSize": { "value": 22, "description": "Backward diagonal resize (\\)" },
+      "StdCursor_SizeAll": { "value": 23, "description": "Resize in all directions" },
+      "StdCursor_VerticalSplit": { "value": 24, "description": "Split vertical" },
+      "StdCursor_HorizontalSplit": { "value": 25, "description": "Split horizontal" },
+      "StdCursor_Hand": { "value": 26, "description": "Pointing hand" },
+      "StdCursor_OpenHand": { "value": 27, "description": "Open hand" },
+      "StdCursor_ClosedHand": { "value": 28, "description": "Closed hand" },
+      "StdCursor_SquarePlus": { "value": 29, "description": "Plus in square (zoom in)" },
+      "StdCursor_SquareMinus": { "value": 30, "description": "Minus in square (zoom out)" },
+      "StdCursor_CirclePlus": { "value": 31, "description": "Plus in circle (zoom in)" },
+      "StdCursor_CircleMinus": { "value": 32, "description": "Minus in circle (zoom out)" },
+      "StdCursor_Forbidden": { "value": 33, "description": "Stop/forbidden cursor" },
+      "aliases": {
+        "StdCursor_Wait": "StdCursor_Watch",
+        "StdCursor_PointingHand": "StdCursor_Hand"
+      }
+    },
+
+    "textAlign": {
+      "description": "Text alignment constants (pjsr/TextAlign.jsh)",
+      "TextAlign_Left": { "value": "0x01", "description": "Left alignment" },
+      "TextAlign_Right": { "value": "0x02", "description": "Right alignment" },
+      "TextAlign_HorzCenter": { "value": "0x04", "description": "Centered horizontally" },
+      "TextAlign_Justify": { "value": "0x08", "description": "Left and right justified" },
+      "TextAlign_Top": { "value": "0x20", "description": "Top alignment" },
+      "TextAlign_Bottom": { "value": "0x40", "description": "Bottom alignment" },
+      "TextAlign_VertCenter": { "value": "0x80", "description": "Centered vertically" },
+      "TextAlign_Center": { "value": "0x84", "description": "Horizontal and vertical centering" },
+      "TextAlign_Default": { "value": "0x21", "description": "Default (left + top)" },
+      "TextAlign_Unknown": { "value": "0x00", "description": "Unknown alignment" }
+    },
+
+    "stdIcons": {
+      "description": "MessageBox icon constants (pjsr/StdIcon.jsh)",
+      "StdIcon_NoIcon": { "value": 0, "description": "No icon" },
+      "StdIcon_Question": { "value": 1, "description": "Question mark icon" },
+      "StdIcon_Information": { "value": 2, "description": "Information icon" },
+      "StdIcon_Warning": { "value": 3, "description": "Warning icon" },
+      "StdIcon_Error": { "value": 4, "description": "Error icon" }
+    },
+
+    "stdDialogCodes": {
+      "description": "Dialog result codes (pjsr/StdDialogCode.jsh)",
+      "StdDialogCode_Ok": { "value": 1, "description": "Dialog accepted (OK clicked)" },
+      "StdDialogCode_Cancel": { "value": 0, "description": "Dialog rejected (Cancel clicked)" }
+    },
+
+    "frameStyles": {
+      "description": "Frame border styles (pjsr/FrameStyle.jsh)",
+      "FrameStyle_Flat": { "value": 0, "description": "No frame drawn" },
+      "FrameStyle_Box": { "value": 1, "description": "Simple rectangular frame" },
+      "FrameStyle_Raised": { "value": 2, "description": "Raised 3-D panel" },
+      "FrameStyle_Sunken": { "value": 3, "description": "Sunken 3-D panel" },
+      "FrameStyle_Styled": { "value": 4, "description": "Platform-dependent style" }
+    },
+
+    "focusStyles": {
+      "description": "Control focus styles (pjsr/FocusStyle.jsh)",
+      "FocusStyle_NoFocus": { "value": "0x00", "description": "Control doesn't accept focus" },
+      "FocusStyle_Tab": { "value": "0x01", "description": "Focus via tab key" },
+      "FocusStyle_Click": { "value": "0x02", "description": "Focus via mouse click" },
+      "FocusStyle_Wheel": { "value": "0x04", "description": "Focus via mouse wheel" },
+      "FocusStyle_TextListTab": { "value": "0x08", "description": "Mac OS X only" }
+    },
+
+    "fillRules": {
+      "description": "Polygon fill rules (pjsr/FillRule.jsh)",
+      "FillRule_OddEven": { "value": 0, "description": "Odd-even (parity) fill rule" },
+      "FillRule_Winding": { "value": 1, "description": "Nonzero winding fill rule" }
+    },
+
+    "bitmapFormats": {
+      "description": "Bitmap pixel formats (pjsr/BitmapFormat.jsh)",
+      "BitmapFormat_ARGB32": { "value": 0, "description": "AARRGGBB (alpha included)" },
+      "BitmapFormat_RGB32": { "value": 1, "description": "ffRRGGBB (alpha ignored)" },
+      "BitmapFormat_Invalid": { "value": -1, "description": "Invalid format" }
+    },
+
+    "morphOps": {
+      "description": "Morphological operations (pjsr/MorphOp.jsh)",
+      "MorphOp_Erosion": { "value": 0, "description": "Erosion operator" },
+      "MorphOp_Dilation": { "value": 1, "description": "Dilation operator" },
+      "MorphOp_Closing": { "value": 2, "description": "Closing (erosion+dilation)" },
+      "MorphOp_Opening": { "value": 3, "description": "Opening (dilation+erosion)" },
+      "MorphOp_Median": { "value": 4, "description": "Morphological median" },
+      "MorphOp_Selection": { "value": 5, "description": "Morphological selection" },
+      "MorphOp_Midpoint": { "value": 6, "description": "Midpoint: (min + max)/2" }
+    },
+
+    "maskModes": {
+      "description": "Mask rendering modes (pjsr/MaskMode.jsh)",
+      "MaskMode_Replace": { "value": 0, "description": "Replace image by mask" },
+      "MaskMode_Multiply": { "value": 1, "description": "Multiply image by mask (PI traditional)" },
+      "MaskMode_OverlayRed": { "value": 2, "description": "Red mask overlay" },
+      "MaskMode_OverlayGreen": { "value": 3, "description": "Green mask overlay" },
+      "MaskMode_OverlayBlue": { "value": 4, "description": "Blue mask overlay" },
+      "MaskMode_OverlayYellow": { "value": 5, "description": "Yellow mask (red + green)" },
+      "MaskMode_OverlayMagenta": { "value": 6, "description": "Magenta mask (red + blue)" },
+      "MaskMode_OverlayCyan": { "value": 7, "description": "Cyan mask (green + blue)" },
+      "MaskMode_OverlayOrange": { "value": 8, "description": "Orange mask (red + 1/2*green)" },
+      "MaskMode_OverlayViolet": { "value": 9, "description": "Violet mask (1/2*red + blue)" },
+      "MaskMode_Default": { "value": 2, "alias": "MaskMode_OverlayRed", "description": "Default (red overlay)" }
+    },
+
+    "sizerAlignment": {
+      "description": "Sizer alignment constants (pjsr/Sizer.jsh)",
+      "Align_Expand": { "value": 0, "description": "Expand to fill available space" },
+      "Align_Left": { "value": 1, "description": "Align to left side" },
+      "Align_Right": { "value": 2, "description": "Align to right side" },
+      "Align_Center": { "value": 3, "description": "Center within available space" },
+      "aliases": {
+        "Align_Top": "Align_Left",
+        "Align_Bottom": "Align_Right",
+        "Align_Default": "Align_Expand"
+      }
+    },
+
+    "cipherAlgorithms": {
+      "description": "Encryption algorithms (pjsr/Cipher.jsh)",
+      "Cipher_AES256": { "value": 256, "description": "AES-256 encryption" }
+    }
+  },
+
+  "extendedConstants": {
+    "undoFlags": {
+      "description": "Extended undo flag constants",
+      "UndoFlag_DefaultMode": { "value": "0x00000000", "description": "Save pixel data, astrometric solution and previews" },
+      "UndoFlag_PixelData": { "value": "0x00000001", "description": "Save pixel data" },
+      "UndoFlag_RGBWS": { "value": "0x00000002", "description": "RGB Working Space data" },
+      "UndoFlag_ICCProfile": { "value": "0x00000004", "description": "ICC profile" },
+      "UndoFlag_Keywords": { "value": "0x00000008", "description": "FITS keywords" },
+      "UndoFlag_FormatData": { "value": "0x00000020", "description": "Format-specific data" },
+      "UndoFlag_ImageId": { "value": "0x00000040", "description": "Image identifier" },
+      "UndoFlag_Resolution": { "value": "0x00000080", "description": "Image resolution" },
+      "UndoFlag_AstrometricSolution": { "value": "0x00000100", "description": "Astrometric solution" },
+      "UndoFlag_All": { "value": "0x000FFFFF", "description": "Save all data items" },
+      "UndoFlag_ExcludePreviews": { "value": "0x80000000", "description": "Don't preserve preview states" },
+      "UndoFlag_ExcludeMaskRelations": { "value": "0x40000000", "description": "Don't preserve masking dependencies" },
+      "UndoFlag_NoSwapFile": { "value": "0xFFFFFFFF", "description": "Don't generate a swap file" }
+    },
+
+    "propertyTypes": {
+      "description": "Property type constants for View.setPropertyValue()",
+      "PropertyType_Auto": { "value": 0, "description": "Auto-detect type" },
+      "PropertyType_Boolean": { "value": 1, "description": "Boolean" },
+      "PropertyType_Int8": { "value": 2, "description": "8-bit signed integer" },
+      "PropertyType_Int16": { "value": 3, "description": "16-bit signed integer" },
+      "PropertyType_Int32": { "value": 4, "description": "32-bit signed integer" },
+      "PropertyType_Int64": { "value": 5, "description": "64-bit signed integer" },
+      "PropertyType_UInt8": { "value": 6, "description": "8-bit unsigned integer" },
+      "PropertyType_UInt16": { "value": 7, "description": "16-bit unsigned integer" },
+      "PropertyType_UInt32": { "value": 8, "description": "32-bit unsigned integer" },
+      "PropertyType_UInt64": { "value": 9, "description": "64-bit unsigned integer" },
+      "PropertyType_Float32": { "value": 10, "description": "32-bit float" },
+      "PropertyType_Float64": { "value": 11, "description": "64-bit float" },
+      "PropertyType_Complex32": { "value": 12, "description": "32-bit complex" },
+      "PropertyType_Complex64": { "value": 13, "description": "64-bit complex" },
+      "PropertyType_TimePoint": { "value": 14, "description": "Time point" },
+      "PropertyType_ByteArray": { "value": 45, "description": "Byte array" },
+      "PropertyType_String16": { "value": 46, "description": "Unicode string" },
+      "PropertyType_String8": { "value": 47, "description": "ISO 8859-1 string" }
+    },
+
+    "propertyAttributes": {
+      "description": "Property attribute flags",
+      "PropertyAttribute_WriteProtected": { "value": "0x00000001", "description": "Only creator module can modify" },
+      "PropertyAttribute_ReadProtected": { "value": "0x00000002", "description": "Only creator module can read" },
+      "PropertyAttribute_Volatile": { "value": "0x00000010", "description": "Not stored in processing histories" },
+      "PropertyAttribute_Permanent": { "value": "0x00000020", "description": "Preserved across undo/redo" },
+      "PropertyAttribute_NotSerializable": { "value": "0x00000040", "description": "Not stored in projects" },
+      "PropertyAttribute_Storable": { "value": "0x00000080", "description": "Can be stored in image files" },
+      "PropertyAttribute_Reserved": { "value": "0x10000000", "description": "Reserved by PixInsight Core" },
+      "PropertyAttribute_NoChange": { "value": "0x80000000", "description": "Preserve existing attributes" }
+    },
+
+    "sampleTypes": {
+      "description": "Image sample data types",
+      "SampleType_Integer": { "value": 0, "description": "8, 16, 32-bit unsigned integers" },
+      "SampleType_Real": { "value": 1, "description": "32, 64-bit IEEE 754 floating point" },
+      "SampleType_Complex": { "value": 2, "description": "32, 64-bit IEEE 754 complex" }
+    },
+
+    "compression": {
+      "description": "Data compression codecs",
+      "Compression_ZLib": { "value": 1, "description": "ZLib/Deflate compression" },
+      "Compression_LZ4": { "value": 4, "description": "LZ4 fast compression" },
+      "Compression_LZ4HC": { "value": 41, "description": "LZ4 high compression" },
+      "Compression_Zstd": { "value": 5, "description": "Zstandard compression" }
+    },
+
+    "cryptographicHashes": {
+      "description": "Cryptographic hash algorithms",
+      "CryptographicHash_MD5": { "value": 5, "description": "MD5 (legacy)" },
+      "CryptographicHash_SHA1": { "value": 1, "description": "SHA-1 (legacy)" },
+      "CryptographicHash_SHA224": { "value": 224, "description": "SHA-224" },
+      "CryptographicHash_SHA256": { "value": 256, "description": "SHA-256" },
+      "CryptographicHash_SHA384": { "value": 384, "description": "SHA-384" },
+      "CryptographicHash_SHA512": { "value": 512, "description": "SHA-512" },
+      "CryptographicHash_SHA3_256": { "value": 3256, "description": "SHA3-256 (Keccak)" },
+      "CryptographicHash_SHA3_512": { "value": 3512, "description": "SHA3-512 (Keccak)" }
+    },
+
+    "interpolation": {
+      "description": "Pixel interpolation algorithms",
+      "Interpolation_Auto": { "value": -1, "description": "Automatic selection" },
+      "Interpolation_NearestNeighbor": { "value": 0, "description": "Nearest neighbor" },
+      "Interpolation_Bilinear": { "value": 1, "description": "Bilinear" },
+      "Interpolation_BicubicSpline": { "value": 2, "description": "Bicubic spline" },
+      "Interpolation_BicubicBSpline": { "value": 3, "description": "Bicubic B-spline" },
+      "Interpolation_Lanczos3": { "value": 4, "description": "Lanczos-3" },
+      "Interpolation_Lanczos4": { "value": 5, "description": "Lanczos-4" },
+      "Interpolation_Lanczos5": { "value": 6, "description": "Lanczos-5" },
+      "Interpolation_MitchellNetravaliFilter": { "value": 7, "description": "Mitchell-Netravali" },
+      "Interpolation_CatmullRomSplineFilter": { "value": 8, "description": "Catmull-Rom spline" },
+      "Interpolation_CubicBSplineFilter": { "value": 9, "description": "Cubic B-spline" },
+      "aliases": { "Interpolation_Bicubic": "Interpolation_BicubicSpline" }
+    },
+
+    "imageOperations": {
+      "description": "Image arithmetic/blend operations with formulas",
+      "ImageOp_Nop": { "value": 0, "formula": "No operation", "description": "No operation" },
+      "ImageOp_Mov": { "value": 1, "formula": "a = b", "description": "Move/assign" },
+      "ImageOp_Add": { "value": 2, "formula": "a + b", "description": "Addition" },
+      "ImageOp_Sub": { "value": 3, "formula": "a - b", "description": "Subtraction" },
+      "ImageOp_Mul": { "value": 4, "formula": "a * b", "description": "Multiplication" },
+      "ImageOp_Div": { "value": 5, "formula": "a / b", "description": "Division" },
+      "ImageOp_Pow": { "value": 6, "formula": "Pow(a, b)", "description": "Power" },
+      "ImageOp_Dif": { "value": 7, "formula": "|a - b|", "description": "Absolute difference" },
+      "ImageOp_Min": { "value": 8, "formula": "Min(a, b)", "description": "Minimum" },
+      "ImageOp_Max": { "value": 9, "formula": "Max(a, b)", "description": "Maximum" },
+      "ImageOp_Or": { "value": 10, "formula": "a | b", "description": "Bitwise OR" },
+      "ImageOp_And": { "value": 11, "formula": "a & b", "description": "Bitwise AND" },
+      "ImageOp_Xor": { "value": 12, "formula": "a ^ b", "description": "Bitwise XOR" },
+      "ImageOp_Not": { "value": 13, "formula": "~a", "description": "Bitwise NOT" },
+      "ImageOp_Nor": { "value": 14, "formula": "~(a | b)", "description": "Bitwise NOR" },
+      "ImageOp_Nand": { "value": 15, "formula": "~(a & b)", "description": "Bitwise NAND" },
+      "ImageOp_Xnor": { "value": 16, "formula": "~(a ^ b)", "description": "Bitwise XNOR" },
+      "ImageOp_ColorBurn": { "value": 17, "formula": "1 - Min((1-a)/b, 1)", "description": "Color burn blend" },
+      "ImageOp_LinearBurn": { "value": 18, "formula": "a + b - 1", "description": "Linear burn blend" },
+      "ImageOp_Screen": { "value": 19, "formula": "1 - (1-a)*(1-b)", "description": "Screen blend" },
+      "ImageOp_ColorDodge": { "value": 20, "formula": "Min(a/(1-b), 1)", "description": "Color dodge blend" },
+      "ImageOp_Overlay": { "value": 21, "formula": "Conditional", "description": "Overlay blend" },
+      "ImageOp_SoftLight": { "value": 22, "formula": "Conditional", "description": "Soft light blend" },
+      "ImageOp_HardLight": { "value": 23, "formula": "Conditional", "description": "Hard light blend" },
+      "ImageOp_VividLight": { "value": 24, "formula": "Conditional", "description": "Vivid light blend" },
+      "ImageOp_LinearLight": { "value": 25, "formula": "Conditional", "description": "Linear light blend" },
+      "ImageOp_PinLight": { "value": 26, "formula": "Conditional", "description": "Pin light blend" },
+      "ImageOp_Exclusion": { "value": 27, "formula": "0.5 - 2*(a-0.5)*(b-0.5)", "description": "Exclusion blend" }
+    },
+
+    "colorSpaces": {
+      "description": "Color space identifiers",
+      "ColorSpace_Unknown": { "value": -1, "description": "Unknown or unsupported" },
+      "ColorSpace_Gray": { "value": 0, "description": "Grayscale monochrome" },
+      "ColorSpace_RGB": { "value": 1, "description": "RGB color space" },
+      "ColorSpace_CIEXYZ": { "value": 2, "description": "CIE XYZ color space" },
+      "ColorSpace_CIELab": { "value": 3, "description": "CIE L*a*b* color space" },
+      "ColorSpace_CIELch": { "value": 4, "description": "CIE L*c*h* color space" },
+      "ColorSpace_HSV": { "value": 5, "description": "HSV: Hue, Saturation, Value" },
+      "ColorSpace_HSI": { "value": 6, "description": "HSI: Hue, Saturation, Intensity" }
+    },
+
+    "buttonCodes": {
+      "description": "MessageBox button constants",
+      "StdButton_NoButton": { "value": 0, "description": "No button" },
+      "StdButton_Ok": { "value": 1, "description": "OK button" },
+      "StdButton_Cancel": { "value": 2, "description": "Cancel button" },
+      "StdButton_Yes": { "value": 3, "description": "Yes button" },
+      "StdButton_No": { "value": 4, "description": "No button" },
+      "StdButton_Abort": { "value": 5, "description": "Abort button" },
+      "StdButton_Retry": { "value": 6, "description": "Retry button" },
+      "StdButton_Ignore": { "value": 7, "description": "Ignore button" },
+      "StdButton_YesToAll": { "value": 8, "description": "Yes to All button" },
+      "StdButton_NoToAll": { "value": 9, "description": "No to All button" }
+    },
+    "linearTransformations": {
+      "description": "Transformation types recognized by RANSACPointMatcher (pjsr/LinearTransformation.jsh)",
+      "LinearTransformation_Projective": { "value": 0, "description": "Full projective transformation (homography)" },
+      "LinearTransformation_Match": { "value": 1, "description": "Best match within tolerance (no specific transformation form)" },
+      "LinearTransformation_Translation": { "value": 2, "description": "Pure translation" },
+      "LinearTransformation_Translation_Rotation": { "value": 3, "description": "Translation + rotation + reflection" }
+    }
+  },
+
+  "extendedImageWindowMethods": {
+    "description": "Additional ImageWindow methods from PCL headers",
+    "astrometry": {
+      "HasAstrometricSolution": { "signature": "HasAstrometricSolution(): Boolean", "description": "Check if image has astrometric solution" },
+      "RegenerateAstrometricSolution": { "signature": "RegenerateAstrometricSolution(allowMessages?: Boolean): Boolean", "description": "Regenerate astrometric solution from metadata" },
+      "CopyAstrometricSolution": { "signature": "CopyAstrometricSolution(source: ImageWindow): Boolean", "description": "Copy solution from another window" },
+      "ClearAstrometricSolution": { "signature": "ClearAstrometricSolution()", "description": "Remove astrometric solution" },
+      "ImageToCelestial": { "signature": "ImageToCelestial(x: Number, y: Number): Object", "description": "Convert image coordinates to RA/Dec" },
+      "CelestialToImage": { "signature": "CelestialToImage(ra: Number, dec: Number): Object", "description": "Convert RA/Dec to image coordinates" }
+    },
+    "iccProfiles": {
+      "GetICCProfile": { "signature": "GetICCProfile(): ByteArray", "description": "Get ICC color profile" },
+      "SetICCProfile": { "signature": "SetICCProfile(icc: ByteArray)", "description": "Set ICC color profile" },
+      "DeleteICCProfile": { "signature": "DeleteICCProfile()", "description": "Remove ICC profile" },
+      "EnableColorManagement": { "signature": "EnableColorManagement(enable?: Boolean)", "description": "Enable/disable color management" },
+      "EnableProofing": { "signature": "EnableProofing(enable?: Boolean)", "description": "Enable/disable soft proofing" },
+      "EnableGamutCheck": { "signature": "EnableGamutCheck(enable?: Boolean)", "description": "Enable/disable gamut check" }
+    },
+    "rgbWorkingSpace": {
+      "GetRGBWS": { "signature": "GetRGBWS(): RGBColorSystem", "description": "Get RGB working space" },
+      "SetRGBWS": { "signature": "SetRGBWS(rgbws: RGBColorSystem)", "description": "Set RGB working space" },
+      "UsingGlobalRGBWS": { "signature": "UsingGlobalRGBWS(): Boolean", "description": "Check if using global RGBWS" },
+      "UseGlobalRGBWS": { "signature": "UseGlobalRGBWS()", "description": "Switch to global RGBWS" }
+    },
+    "viewport": {
+      "FitWindow": { "signature": "FitWindow()", "description": "Fit window to image" },
+      "ZoomToFit": { "signature": "ZoomToFit(optimal?: Boolean, allowMag?: Boolean)", "description": "Zoom to fit window" },
+      "ZoomIn": { "signature": "ZoomIn()", "description": "Zoom in one level" },
+      "ZoomOut": { "signature": "ZoomOut()", "description": "Zoom out one level" },
+      "ViewportToImage": { "signature": "ViewportToImage(x: Number, y: Number): Point", "description": "Convert viewport to image coords" },
+      "ImageToViewport": { "signature": "ImageToViewport(x: Number, y: Number): Point", "description": "Convert image to viewport coords" }
+    }
+  },
+
+  "webServices": {
+    "Sesame": {
+      "description": "Astronomical object name resolver",
+      "endpoints": [
+        "https://cdsweb.u-strasbg.fr/cgi-bin/nph-sesame",
+        "https://vizier.cfa.harvard.edu/viz-bin/nph-sesame"
+      ],
+      "returns": "Object identifiers, equatorial positions, and alternate names"
+    },
+    "VizieR": {
+      "description": "Online astronomical catalog service",
+      "endpoint": "https://vizier.u-strasbg.fr/viz-bin/votable",
+      "catalogs": ["I/239 (Hipparcos)", "I/259 (Tycho-2)", "I/284 (USNO-B1)", "I/289 (UCAC3)", "I/322A (PPMXL)"]
+    }
+  },
+
+  "includeFiles": {
+    "description": "Standard PJSR include files and their purposes",
+    "constants": [
+      { "file": "pjsr/DataType.jsh", "description": "Data type constants for File I/O" },
+      { "file": "pjsr/ImageOp.jsh", "description": "Image arithmetic/blend operations" },
+      { "file": "pjsr/ColorSpace.jsh", "description": "Color space identifiers" },
+      { "file": "pjsr/UndoFlag.jsh", "description": "Undo operation flags" },
+      { "file": "pjsr/Interpolation.jsh", "description": "Pixel interpolation algorithms" },
+      { "file": "pjsr/SampleType.jsh", "description": "Image sample data types" },
+      { "file": "pjsr/Compression.jsh", "description": "Data compression codecs" },
+      { "file": "pjsr/CryptographicHash.jsh", "description": "Hash algorithm constants" },
+      { "file": "pjsr/PropertyType.jsh", "description": "Property type identifiers" },
+      { "file": "pjsr/PropertyAttribute.jsh", "description": "Property attribute flags" },
+      { "file": "pjsr/MorphOp.jsh", "description": "Morphological operations" },
+      { "file": "pjsr/MaskMode.jsh", "description": "Mask display modes" }
+    ],
+    "ui": [
+      { "file": "pjsr/StdButton.jsh", "description": "MessageBox button constants" },
+      { "file": "pjsr/StdIcon.jsh", "description": "MessageBox icon constants" },
+      { "file": "pjsr/StdDialogCode.jsh", "description": "Dialog result codes" },
+      { "file": "pjsr/StdCursor.jsh", "description": "Standard cursor types" },
+      { "file": "pjsr/FrameStyle.jsh", "description": "Frame border styles" },
+      { "file": "pjsr/FocusStyle.jsh", "description": "Control focus styles" },
+      { "file": "pjsr/TextAlign.jsh", "description": "Text alignment constants" },
+      { "file": "pjsr/Sizer.jsh", "description": "Sizer alignment constants and HorizontalSizer/VerticalSizer classes" },
+      { "file": "pjsr/SectionBar.jsh", "description": "SectionBar control class" },
+      { "file": "pjsr/NumericControl.jsh", "description": "NumericEdit and NumericControl classes" },
+      { "file": "pjsr/ColorComboBox.jsh", "description": "Color selection combo box with 143 CSS3 colors" },
+      { "file": "pjsr/SimpleColorDialog.jsh", "description": "Simple ARGB color picker dialog" }
+    ],
+    "graphics": [
+      { "file": "pjsr/BitmapFormat.jsh", "description": "Bitmap pixel formats" },
+      { "file": "pjsr/BrushStyle.jsh", "description": "Brush fill styles (15 types including gradients)" },
+      { "file": "pjsr/PenStyle.jsh", "description": "Pen line styles (6 types)" },
+      { "file": "pjsr/PenCap.jsh", "description": "Pen cap styles (3 types)" },
+      { "file": "pjsr/PenJoin.jsh", "description": "Pen join styles (3 types)" },
+      { "file": "pjsr/FillRule.jsh", "description": "Path fill rules (odd-even and winding)" },
+      { "file": "pjsr/CompositionOp.jsh", "description": "Graphics composition operators (24 Porter-Duff and blend modes)" },
+      { "file": "pjsr/FontFamily.jsh", "description": "Font family constants (7 families with aliases)" },
+      { "file": "pjsr/FontWeight.jsh", "description": "Font weight constants (100-900 range)" }
+    ],
+    "utilities": [
+      { "file": "pjsr/StarDetector.jsh", "description": "Star detection engine" },
+      { "file": "pjsr/Color.jsh", "description": "Color manipulation utilities" },
+      { "file": "pjsr/Cipher.jsh", "description": "Encryption utilities (AES-256)" }
+    ],
+    "astrometry": [
+      { "file": "AdP/WCSmetadata.jsh", "description": "WCS metadata and coordinate transformations" },
+      { "file": "AdP/AstronomicalCatalogs.jsh", "description": "Astronomical catalog access (26 catalogs)" },
+      { "file": "AdP/CommonUIControls.js", "description": "Astronomical UI controls (coordinates, dates, fonts)" }
+    ]
+  }
+}
