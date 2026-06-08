@@ -1,0 +1,9 @@
+build/
+*.o
+*.so
+*.dylib
+*.dll
+*.xsgn
+*.d
+Testing/
+test_data/

@@ -1,0 +1,102 @@
+//     ____       __ __  __
+//    / __ \___  / // / / /
+//   / /_/ / _ \/ // /_/ /
+//  / ____/  __/__  __/_/
+// /_/    \___/  /_/ (_)
+//
+// NukeX v3 - Statistical Stacking + Stretch for PixInsight
+// Copyright (c) 2026 Scott Carter
+//
+// NukeXStack Instance - Per-pixel statistical inference stacking execution
+
+#ifndef __NukeXStackInstance_h
+#define __NukeXStackInstance_h
+
+#include <pcl/ProcessImplementation.h>
+#include <pcl/MetaParameter.h>
+
+#include "NukeXStackParameters.h"
+#include "engine/FrameLoader.h"
+#include "engine/PixelSelector.h"
+#include "engine/AutoStretchSelector.h"
+
+#include <vector>
+
+namespace pcl
+{
+
+// ----------------------------------------------------------------------------
+// Input frame descriptor
+// ----------------------------------------------------------------------------
+
+struct InputFrameData
+{
+   String   path;
+   pcl_bool enabled = true;
+
+   InputFrameData() = default;
+   InputFrameData( const String& p, bool e = true ) : path( p ), enabled( e ) {}
+};
+
+// ----------------------------------------------------------------------------
+
+class NukeXStackInstance : public ProcessImplementation
+{
+public:
+
+   NukeXStackInstance( const MetaProcess* );
+   NukeXStackInstance( const NukeXStackInstance& );
+
+   void Assign( const ProcessImplementation& ) override;
+   bool Validate( String& info ) override;
+   bool CanExecuteGlobal( String& whyNot ) const override;
+   bool ExecuteGlobal() override;
+   void* LockParameter( const MetaParameter*, size_type tableRow ) override;
+   bool AllocateParameter( size_type sizeOrLength, const MetaParameter*, size_type tableRow ) override;
+   size_type ParameterLength( const MetaParameter*, size_type tableRow ) const override;
+
+private:
+
+   // Input frames table
+   std::vector<InputFrameData> p_inputFrames;
+
+   // Flat frames table (optional)
+   std::vector<String> p_flatFrames;
+
+   // Boolean parameters
+   pcl_bool p_generateProvenance;
+   pcl_bool p_generateDistMetadata;
+   pcl_bool p_enableMetadataTiebreaker;
+   pcl_bool p_enableAutoStretch;
+   pcl_bool p_useGPU;
+   pcl_bool p_adaptiveModels;
+   pcl_bool p_enableRemediation;
+   pcl_bool p_enableTrailRemediation;
+   pcl_bool p_enableDustRemediation;
+   pcl_bool p_enableVignettingRemediation;
+
+   // Floating point parameters
+   float    p_outlierSigmaThreshold;
+   float    p_trailDilateRadius;
+   float    p_trailOutlierSigma;
+   float    p_dustCircularityMin;
+   float    p_dustDetectionSigma;
+   float    p_dustMaxCorrectionRatio;
+   float    p_vignettingMaxCorrection;
+
+   // Integer parameters
+   int32    p_dustMinDiameter;
+   int32    p_dustMaxDiameter;
+   int32    p_dustNeighborRadius;
+   int32    p_vignettingPolyOrder;
+   int32    p_bortleNumber;
+
+   friend class NukeXStackProcess;
+   friend class NukeXStackInterface;
+};
+
+// ----------------------------------------------------------------------------
+
+} // namespace pcl
+
+#endif // __NukeXStackInstance_h

@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "pcl": {
+      "command": "node",
+      "args": ["src/mcp-server.js"],
+      "cwd": "/home/scarter4work/projects/EZ-suite-bsc/pcl_parser"
+    }
+  }
+}
