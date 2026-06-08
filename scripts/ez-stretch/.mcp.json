@@ -1,0 +1,14 @@
+{
+  "mcpServers": {
+    "pjsr": {
+      "command": "node",
+      "args": ["../pjsr_parser/src/mcp-server.js"],
+      "description": "PJSR language parser with code analysis, completions, and validation"
+    },
+    "pcl": {
+      "command": "node",
+      "args": ["../pcl_parser/src/mcp-server.js"],
+      "description": "PCL C++ parser with code analysis and documentation"
+    }
+  }
+}

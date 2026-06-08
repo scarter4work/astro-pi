@@ -1,0 +1,411 @@
+{
+  "version": "0.1.0",
+  "last_updated": "2025-12-28",
+  "filters": {
+    "Optolong L-eNhance": {
+      "manufacturer": "Optolong",
+      "type": "dual-narrowband",
+      "description": "Tri-band filter passing Ha, Hb, and OIII for OSC cameras",
+      "bandpasses": [
+        {"name": "Hb", "center_nm": 486.1, "fwhm_nm": 24, "peak_transmission": 0.90},
+        {"name": "OIII", "center_nm": 500.7, "fwhm_nm": 24, "peak_transmission": 0.90},
+        {"name": "Ha", "center_nm": 656.3, "fwhm_nm": 10, "peak_transmission": 0.90}
+      ],
+      "transmission_curve": {
+        "type": "multi-bandpass",
+        "wavelength_nm": [400, 450, 470, 480, 486, 492, 496, 501, 506, 512, 520, 550, 600, 640, 650, 656, 662, 670, 700, 750],
+        "transmission_percent": [0, 0, 2, 40, 90, 88, 90, 90, 88, 40, 2, 0, 0, 2, 40, 90, 40, 2, 0, 0]
+      },
+      "rgb_channel_mapping": {
+        "description": "Which emission lines fall in which Bayer channel",
+        "R": ["Ha"],
+        "G": ["OIII", "Hb"],
+        "B": ["OIII", "Hb"]
+      },
+      "aliases": ["L-eNhance", "LeNhance", "L-Enhance", "Optolong LeN", "L eNhance"],
+      "fits_patterns": ["*eNhance*", "*L-eN*", "*LeN*", "*Enhance*"],
+      "source": "Optolong official specifications",
+      "source_url": "https://www.optolong.com/cms/document/detail/id/16.html"
+    },
+    "Optolong L-eXtreme": {
+      "manufacturer": "Optolong",
+      "type": "dual-narrowband",
+      "description": "Dual-band 7nm filter for Ha and OIII only",
+      "bandpasses": [
+        {"name": "OIII", "center_nm": 500.7, "fwhm_nm": 7, "peak_transmission": 0.90},
+        {"name": "Ha", "center_nm": 656.3, "fwhm_nm": 7, "peak_transmission": 0.90}
+      ],
+      "transmission_curve": {
+        "type": "multi-bandpass",
+        "wavelength_nm": [400, 490, 496, 500.7, 505, 511, 550, 640, 652, 656.3, 660, 666, 700],
+        "transmission_percent": [0, 2, 50, 90, 50, 2, 0, 2, 50, 90, 50, 2, 0]
+      },
+      "rgb_channel_mapping": {
+        "R": ["Ha"],
+        "G": ["OIII"],
+        "B": ["OIII"]
+      },
+      "aliases": ["L-eXtreme", "LExtreme", "L-Xtreme", "Optolong LeX", "L eXtreme"],
+      "fits_patterns": ["*eXtreme*", "*L-eX*", "*LeX*", "*Extreme*"],
+      "source": "Optolong official specifications",
+      "source_url": "https://www.optolong.com/cms/document/detail/id/100.html"
+    },
+    "Optolong L-Pro": {
+      "manufacturer": "Optolong",
+      "type": "broadband-LPR",
+      "description": "Broadband light pollution reduction filter",
+      "bandpasses": [
+        {"name": "Visual", "center_nm": 550, "fwhm_nm": 300, "peak_transmission": 0.95}
+      ],
+      "transmission_curve": {
+        "type": "notch-filter",
+        "description": "Blocks sodium and mercury emission lines while passing most visual spectrum",
+        "wavelength_nm": [380, 420, 450, 500, 550, 580, 589, 595, 620, 656, 700],
+        "transmission_percent": [85, 90, 95, 95, 95, 50, 5, 50, 95, 95, 85]
+      },
+      "aliases": ["L-Pro", "LPro", "Optolong LPro"],
+      "fits_patterns": ["*L-Pro*", "*LPro*"],
+      "source": "Optolong"
+    },
+    "Astronomik Ha 6nm": {
+      "manufacturer": "Astronomik",
+      "type": "narrowband",
+      "description": "6nm hydrogen-alpha narrowband filter",
+      "bandpasses": [
+        {"name": "Ha", "center_nm": 656.3, "fwhm_nm": 6, "peak_transmission": 0.96}
+      ],
+      "transmission_curve": {
+        "type": "gaussian",
+        "center_nm": 656.3,
+        "fwhm_nm": 6,
+        "peak_transmission": 0.96
+      },
+      "aliases": ["Ha 6nm", "H-alpha 6nm", "Astronomik Ha", "Ha6", "Halpha 6nm"],
+      "fits_patterns": ["*Ha*6*", "*H-alpha*6*", "*Halpha*6*", "*656*"],
+      "source": "Astronomik"
+    },
+    "Astronomik Ha 12nm": {
+      "manufacturer": "Astronomik",
+      "type": "narrowband",
+      "description": "12nm hydrogen-alpha narrowband filter",
+      "bandpasses": [
+        {"name": "Ha", "center_nm": 656.3, "fwhm_nm": 12, "peak_transmission": 0.96}
+      ],
+      "transmission_curve": {
+        "type": "gaussian",
+        "center_nm": 656.3,
+        "fwhm_nm": 12,
+        "peak_transmission": 0.96
+      },
+      "aliases": ["Ha 12nm", "H-alpha 12nm", "Ha12"],
+      "fits_patterns": ["*Ha*12*", "*H-alpha*12*"],
+      "source": "Astronomik"
+    },
+    "Astronomik OIII 6nm": {
+      "manufacturer": "Astronomik",
+      "type": "narrowband",
+      "description": "6nm oxygen-III narrowband filter",
+      "bandpasses": [
+        {"name": "OIII", "center_nm": 500.7, "fwhm_nm": 6, "peak_transmission": 0.95}
+      ],
+      "transmission_curve": {
+        "type": "gaussian",
+        "center_nm": 500.7,
+        "fwhm_nm": 6,
+        "peak_transmission": 0.95
+      },
+      "aliases": ["OIII 6nm", "O-III 6nm", "O3 6nm", "Oxygen III 6nm"],
+      "fits_patterns": ["*OIII*6*", "*O-III*6*", "*O3*6*", "*500*", "*501*"],
+      "source": "Astronomik"
+    },
+    "Astronomik OIII 12nm": {
+      "manufacturer": "Astronomik",
+      "type": "narrowband",
+      "description": "12nm oxygen-III narrowband filter",
+      "bandpasses": [
+        {"name": "OIII", "center_nm": 500.7, "fwhm_nm": 12, "peak_transmission": 0.95}
+      ],
+      "transmission_curve": {
+        "type": "gaussian",
+        "center_nm": 500.7,
+        "fwhm_nm": 12,
+        "peak_transmission": 0.95
+      },
+      "aliases": ["OIII 12nm", "O-III 12nm", "O3 12nm"],
+      "fits_patterns": ["*OIII*12*", "*O-III*12*"],
+      "source": "Astronomik"
+    },
+    "Astronomik SII 6nm": {
+      "manufacturer": "Astronomik",
+      "type": "narrowband",
+      "description": "6nm sulfur-II narrowband filter",
+      "bandpasses": [
+        {"name": "SII", "center_nm": 672.4, "fwhm_nm": 6, "peak_transmission": 0.95}
+      ],
+      "transmission_curve": {
+        "type": "gaussian",
+        "center_nm": 672.4,
+        "fwhm_nm": 6,
+        "peak_transmission": 0.95
+      },
+      "aliases": ["SII 6nm", "S-II 6nm", "S2 6nm", "Sulfur II 6nm"],
+      "fits_patterns": ["*SII*6*", "*S-II*6*", "*S2*6*", "*672*"],
+      "source": "Astronomik"
+    },
+    "Astronomik SII 12nm": {
+      "manufacturer": "Astronomik",
+      "type": "narrowband",
+      "description": "12nm sulfur-II narrowband filter",
+      "bandpasses": [
+        {"name": "SII", "center_nm": 672.4, "fwhm_nm": 12, "peak_transmission": 0.95}
+      ],
+      "transmission_curve": {
+        "type": "gaussian",
+        "center_nm": 672.4,
+        "fwhm_nm": 12,
+        "peak_transmission": 0.95
+      },
+      "aliases": ["SII 12nm", "S-II 12nm", "S2 12nm"],
+      "fits_patterns": ["*SII*12*", "*S-II*12*"],
+      "source": "Astronomik"
+    },
+    "Chroma Ha 3nm": {
+      "manufacturer": "Chroma",
+      "type": "narrowband",
+      "description": "Ultra-narrowband 3nm hydrogen-alpha filter",
+      "bandpasses": [
+        {"name": "Ha", "center_nm": 656.3, "fwhm_nm": 3, "peak_transmission": 0.90}
+      ],
+      "transmission_curve": {
+        "type": "gaussian",
+        "center_nm": 656.3,
+        "fwhm_nm": 3,
+        "peak_transmission": 0.90
+      },
+      "aliases": ["Ha 3nm", "Chroma Ha", "Ha3"],
+      "fits_patterns": ["*Ha*3*", "*Chroma*Ha*"],
+      "source": "Chroma Technology"
+    },
+    "Chroma OIII 3nm": {
+      "manufacturer": "Chroma",
+      "type": "narrowband",
+      "description": "Ultra-narrowband 3nm oxygen-III filter",
+      "bandpasses": [
+        {"name": "OIII", "center_nm": 500.7, "fwhm_nm": 3, "peak_transmission": 0.90}
+      ],
+      "transmission_curve": {
+        "type": "gaussian",
+        "center_nm": 500.7,
+        "fwhm_nm": 3,
+        "peak_transmission": 0.90
+      },
+      "aliases": ["OIII 3nm", "Chroma OIII", "O3 3nm"],
+      "fits_patterns": ["*OIII*3*", "*Chroma*OIII*"],
+      "source": "Chroma Technology"
+    },
+    "Chroma SII 3nm": {
+      "manufacturer": "Chroma",
+      "type": "narrowband",
+      "description": "Ultra-narrowband 3nm sulfur-II filter",
+      "bandpasses": [
+        {"name": "SII", "center_nm": 672.4, "fwhm_nm": 3, "peak_transmission": 0.90}
+      ],
+      "transmission_curve": {
+        "type": "gaussian",
+        "center_nm": 672.4,
+        "fwhm_nm": 3,
+        "peak_transmission": 0.90
+      },
+      "aliases": ["SII 3nm", "Chroma SII", "S2 3nm"],
+      "fits_patterns": ["*SII*3*", "*Chroma*SII*"],
+      "source": "Chroma Technology"
+    },
+    "ZWO Ha 7nm": {
+      "manufacturer": "ZWO",
+      "type": "narrowband",
+      "description": "7nm hydrogen-alpha narrowband filter",
+      "bandpasses": [
+        {"name": "Ha", "center_nm": 656.3, "fwhm_nm": 7, "peak_transmission": 0.90}
+      ],
+      "transmission_curve": {
+        "type": "gaussian",
+        "center_nm": 656.3,
+        "fwhm_nm": 7,
+        "peak_transmission": 0.90
+      },
+      "aliases": ["ZWO Ha", "Ha 7nm"],
+      "fits_patterns": ["*ZWO*Ha*", "*Ha*7*"],
+      "source": "ZWO"
+    },
+    "ZWO OIII 7nm": {
+      "manufacturer": "ZWO",
+      "type": "narrowband",
+      "description": "7nm oxygen-III narrowband filter",
+      "bandpasses": [
+        {"name": "OIII", "center_nm": 500.7, "fwhm_nm": 7, "peak_transmission": 0.90}
+      ],
+      "transmission_curve": {
+        "type": "gaussian",
+        "center_nm": 500.7,
+        "fwhm_nm": 7,
+        "peak_transmission": 0.90
+      },
+      "aliases": ["ZWO OIII", "OIII 7nm"],
+      "fits_patterns": ["*ZWO*OIII*", "*OIII*7*"],
+      "source": "ZWO"
+    },
+    "ZWO SII 7nm": {
+      "manufacturer": "ZWO",
+      "type": "narrowband",
+      "description": "7nm sulfur-II narrowband filter",
+      "bandpasses": [
+        {"name": "SII", "center_nm": 672.4, "fwhm_nm": 7, "peak_transmission": 0.90}
+      ],
+      "transmission_curve": {
+        "type": "gaussian",
+        "center_nm": 672.4,
+        "fwhm_nm": 7,
+        "peak_transmission": 0.90
+      },
+      "aliases": ["ZWO SII", "SII 7nm"],
+      "fits_patterns": ["*ZWO*SII*", "*SII*7*"],
+      "source": "ZWO"
+    },
+    "Baader Ha 7nm": {
+      "manufacturer": "Baader",
+      "type": "narrowband",
+      "description": "7nm hydrogen-alpha filter",
+      "bandpasses": [
+        {"name": "Ha", "center_nm": 656.3, "fwhm_nm": 7, "peak_transmission": 0.92}
+      ],
+      "transmission_curve": {
+        "type": "gaussian",
+        "center_nm": 656.3,
+        "fwhm_nm": 7,
+        "peak_transmission": 0.92
+      },
+      "aliases": ["Baader Ha", "Baader H-alpha"],
+      "fits_patterns": ["*Baader*Ha*", "*Baader*H-alpha*"],
+      "source": "Baader Planetarium"
+    },
+    "Antlia ALP-T Dual Band": {
+      "manufacturer": "Antlia",
+      "type": "dual-narrowband",
+      "description": "5nm dual-band Ha/OIII filter",
+      "bandpasses": [
+        {"name": "OIII", "center_nm": 500.7, "fwhm_nm": 5, "peak_transmission": 0.90},
+        {"name": "Ha", "center_nm": 656.3, "fwhm_nm": 5, "peak_transmission": 0.90}
+      ],
+      "transmission_curve": {
+        "type": "multi-bandpass",
+        "wavelength_nm": [450, 495, 500.7, 506, 550, 650, 656.3, 662, 700],
+        "transmission_percent": [0, 10, 90, 10, 0, 10, 90, 10, 0]
+      },
+      "aliases": ["ALP-T", "Antlia Dual Band", "Antlia Ha OIII"],
+      "fits_patterns": ["*Antlia*", "*ALP-T*"],
+      "source": "Antlia"
+    },
+    "IDAS NBZ": {
+      "manufacturer": "IDAS",
+      "type": "dual-narrowband",
+      "description": "Dual-band nebula filter",
+      "bandpasses": [
+        {"name": "OIII", "center_nm": 500.7, "fwhm_nm": 15, "peak_transmission": 0.90},
+        {"name": "Ha", "center_nm": 656.3, "fwhm_nm": 12, "peak_transmission": 0.90}
+      ],
+      "transmission_curve": {
+        "type": "multi-bandpass",
+        "wavelength_nm": [450, 485, 500.7, 515, 550, 640, 656.3, 670, 700],
+        "transmission_percent": [0, 30, 90, 30, 0, 30, 90, 30, 0]
+      },
+      "aliases": ["NBZ", "IDAS Nebula Booster"],
+      "fits_patterns": ["*IDAS*", "*NBZ*"],
+      "source": "Hutech"
+    }
+  },
+  "defaults": {
+    "Luminance": {
+      "type": "broadband",
+      "description": "Standard luminance / clear filter",
+      "transmission_curve": {
+        "type": "flat",
+        "wavelength_range_nm": [400, 700],
+        "transmission_percent": 95
+      },
+      "aliases": ["L", "Lum", "Clear", "No Filter"],
+      "fits_patterns": ["*Lum*", "*Clear*", "L"]
+    },
+    "Red": {
+      "type": "broadband",
+      "description": "Standard RGB Red filter",
+      "transmission_curve": {
+        "type": "bandpass",
+        "center_nm": 625,
+        "fwhm_nm": 100,
+        "peak_transmission": 0.95
+      },
+      "aliases": ["R", "Red"],
+      "fits_patterns": ["Red", "R"]
+    },
+    "Green": {
+      "type": "broadband",
+      "description": "Standard RGB Green filter",
+      "transmission_curve": {
+        "type": "bandpass",
+        "center_nm": 530,
+        "fwhm_nm": 100,
+        "peak_transmission": 0.95
+      },
+      "aliases": ["G", "Green"],
+      "fits_patterns": ["Green", "G"]
+    },
+    "Blue": {
+      "type": "broadband",
+      "description": "Standard RGB Blue filter",
+      "transmission_curve": {
+        "type": "bandpass",
+        "center_nm": 450,
+        "fwhm_nm": 100,
+        "peak_transmission": 0.95
+      },
+      "aliases": ["B", "Blue"],
+      "fits_patterns": ["Blue", "B"]
+    },
+    "Ha (generic)": {
+      "type": "narrowband",
+      "description": "Generic Ha profile when specific filter unknown",
+      "transmission_curve": {
+        "type": "gaussian",
+        "center_nm": 656.3,
+        "fwhm_nm": 7,
+        "peak_transmission": 0.90
+      },
+      "aliases": ["Ha", "H-alpha", "Halpha", "H alpha"],
+      "fits_patterns": ["*Ha*", "*H-alpha*", "*Halpha*"]
+    },
+    "OIII (generic)": {
+      "type": "narrowband",
+      "description": "Generic OIII profile when specific filter unknown",
+      "transmission_curve": {
+        "type": "gaussian",
+        "center_nm": 500.7,
+        "fwhm_nm": 7,
+        "peak_transmission": 0.90
+      },
+      "aliases": ["OIII", "O-III", "O3", "Oxygen III"],
+      "fits_patterns": ["*OIII*", "*O-III*", "*O3*"]
+    },
+    "SII (generic)": {
+      "type": "narrowband",
+      "description": "Generic SII profile when specific filter unknown",
+      "transmission_curve": {
+        "type": "gaussian",
+        "center_nm": 672.4,
+        "fwhm_nm": 7,
+        "peak_transmission": 0.90
+      },
+      "aliases": ["SII", "S-II", "S2", "Sulfur II"],
+      "fits_patterns": ["*SII*", "*S-II*", "*S2*"]
+    }
+  }
+}

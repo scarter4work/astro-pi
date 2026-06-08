@@ -1,0 +1,61 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<xri version="1.0">
+   <description>
+      <p>EZ Stretch BSC - PixInsight Scripts Suite</p>
+      <p>Image processing scripts for astrophotography.</p>
+      <p>Repository: https://github.com/scarter4work/EZ-Stretch-BSC</p>
+   </description>
+   <platform os="all" arch="noarch" version="1.8.0:2.0.0">
+      <package fileName="EZStretch_v1.0.9.zip" sha1="665b446d3e2f8267209355104c0b61737cbff2ce" type="script" releaseDate="20260604">
+         <title>EZ Stretch</title>
+         <description>
+            <p>
+               <b>EZ Stretch v1.0.9</b>
+            </p>
+            <p>Unified stretch suite combining three algorithms in a single interface.</p>
+            <p>
+               <b>Features:</b>
+            </p>
+            <p>- Lupton RGB: Color-preserving asinh stretch (Lupton et al. 2004)</p>
+            <p>- RNC-ColorStretch: Power stretch with color recovery (Roger Clark)</p>
+            <p>- PhotometricStretch: Physics-based stretch with QE weighting</p>
+            <p>- Real-time preview with Before/Split/After modes</p>
+            <p>- Mouse wheel zoom in preview</p>
+         </description>
+      </package>
+      <package fileName="EZDonutRepair_v1.0.2.zip" sha1="6c847698da183f006d1ff0425765ec6fa57f8f3c" type="script" releaseDate="20260604">
+         <title>EZ Donut Repair</title>
+         <description>
+            <p>
+               <b>EZ Donut Repair v1.0.2</b>
+            </p>
+            <p>Repairs circular dust donuts in both color and mono images.</p>
+            <p>
+               <b>Features:</b>
+            </p>
+            <p>- Supports RGB color images (processes each channel)</p>
+            <p>- Supports mono images</p>
+            <p>- Draw ellipse around donut to repair</p>
+            <p>- Move, rotate, resize shapes</p>
+            <p>- Based on DonutRepair by Chick Dee (CC BY-NC 4.0)</p>
+         </description>
+      </package>
+      <package fileName="EZHazeKill_v1.0.0.zip" sha1="70b4fafd19a4a2bb39cf449f95017ad55dae7b2f" type="script" releaseDate="20260604">
+         <title>EZ Haze Kill</title>
+         <description>
+            <p>
+               <b>EZ Haze Kill v1.0.0</b>
+            </p>
+            <p>Detects and removes flat background haze left after gradient extraction.</p>
+            <p>
+               <b>Features:</b>
+            </p>
+            <p>- Measures each channel&apos;s background level and reports the color-cast spread</p>
+            <p>- Subtracts every channel to a common neutral target via PixelMath (undoable)</p>
+            <p>- Supports RGB color and mono images</p>
+            <p>- For moon-washed / light-polluted frames after GraXpert or DBE</p>
+         </description>
+      </package>
+   </platform>
+</xri>
+<Signature developerId="scarter4work" timestamp="2026-06-04T20:00:02.403Z" encoding="Base64">D7kH53pe2rkyE+JZQByZT7SgcCsufjYonK7a2F6ePx/rQGFIyNR6lciNFHGrlGhNKVCkGiWG8A4/G/akf4U1Dw==</Signature>

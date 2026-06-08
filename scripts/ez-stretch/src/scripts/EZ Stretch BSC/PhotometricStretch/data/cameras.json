@@ -1,0 +1,206 @@
+{
+  "version": "0.1.0",
+  "last_updated": "2025-12-28",
+  "cameras": {
+    "ZWO ASI2600MC Pro": {
+      "sensor": "IMX571",
+      "type": "OSC",
+      "bayer_pattern": "RGGB",
+      "cooled": true,
+      "aliases": ["ASI2600MC", "ASI2600", "ZWO 2600MC", "ASI2600MC-Pro"],
+      "fits_patterns": ["*ASI2600*", "*2600MC*", "*ASI 2600*"]
+    },
+    "ZWO ASI2600MM Pro": {
+      "sensor": "IMX571",
+      "type": "Mono",
+      "bayer_pattern": null,
+      "cooled": true,
+      "aliases": ["ASI2600MM", "ZWO 2600MM", "ASI2600MM-Pro"],
+      "fits_patterns": ["*ASI2600MM*", "*2600MM*"]
+    },
+    "ZWO ASI533MC Pro": {
+      "sensor": "IMX533",
+      "type": "OSC",
+      "bayer_pattern": "RGGB",
+      "cooled": true,
+      "aliases": ["ASI533MC", "ASI533", "ZWO 533MC"],
+      "fits_patterns": ["*ASI533*", "*533MC*"]
+    },
+    "ZWO ASI533MM Pro": {
+      "sensor": "IMX533",
+      "type": "Mono",
+      "bayer_pattern": null,
+      "cooled": true,
+      "aliases": ["ASI533MM", "ZWO 533MM"],
+      "fits_patterns": ["*ASI533MM*", "*533MM*"]
+    },
+    "ZWO ASI6200MC Pro": {
+      "sensor": "IMX455",
+      "type": "OSC",
+      "bayer_pattern": "RGGB",
+      "cooled": true,
+      "aliases": ["ASI6200MC", "ASI6200", "ZWO 6200MC"],
+      "fits_patterns": ["*ASI6200*", "*6200MC*"]
+    },
+    "ZWO ASI6200MM Pro": {
+      "sensor": "IMX455",
+      "type": "Mono",
+      "bayer_pattern": null,
+      "cooled": true,
+      "aliases": ["ASI6200MM", "ZWO 6200MM"],
+      "fits_patterns": ["*ASI6200MM*", "*6200MM*"]
+    },
+    "ZWO ASI585MC": {
+      "sensor": "IMX585",
+      "type": "OSC",
+      "bayer_pattern": "RGGB",
+      "cooled": true,
+      "aliases": ["ASI585MC", "ASI585"],
+      "fits_patterns": ["*ASI585*", "*585MC*"]
+    },
+    "ZWO ASI294MC Pro": {
+      "sensor": "IMX294",
+      "type": "OSC",
+      "bayer_pattern": "RGGB",
+      "cooled": true,
+      "aliases": ["ASI294MC", "ASI294", "ZWO 294MC"],
+      "fits_patterns": ["*ASI294*", "*294MC*"]
+    },
+    "ZWO ASI294MM Pro": {
+      "sensor": "IMX294",
+      "type": "Mono",
+      "bayer_pattern": null,
+      "cooled": true,
+      "aliases": ["ASI294MM", "ZWO 294MM"],
+      "fits_patterns": ["*ASI294MM*", "*294MM*"]
+    },
+    "ZWO ASI183MC Pro": {
+      "sensor": "IMX183",
+      "type": "OSC",
+      "bayer_pattern": "RGGB",
+      "cooled": true,
+      "aliases": ["ASI183MC", "ASI183"],
+      "fits_patterns": ["*ASI183*", "*183MC*"]
+    },
+    "ZWO ASI183MM Pro": {
+      "sensor": "IMX183",
+      "type": "Mono",
+      "bayer_pattern": null,
+      "cooled": true,
+      "aliases": ["ASI183MM"],
+      "fits_patterns": ["*ASI183MM*", "*183MM*"]
+    },
+    "QHY268M": {
+      "sensor": "IMX571",
+      "type": "Mono",
+      "bayer_pattern": null,
+      "cooled": true,
+      "aliases": ["QHY 268M", "QHY268 Mono", "QHY268M-PH"],
+      "fits_patterns": ["*QHY268*", "*268M*"]
+    },
+    "QHY268C": {
+      "sensor": "IMX571",
+      "type": "OSC",
+      "bayer_pattern": "RGGB",
+      "cooled": true,
+      "aliases": ["QHY 268C", "QHY268 Color"],
+      "fits_patterns": ["*QHY268C*", "*268C*"]
+    },
+    "QHY600M": {
+      "sensor": "IMX455",
+      "type": "Mono",
+      "bayer_pattern": null,
+      "cooled": true,
+      "aliases": ["QHY 600M", "QHY600 Mono", "QHY600M-PH"],
+      "fits_patterns": ["*QHY600*", "*600M*"]
+    },
+    "QHY600C": {
+      "sensor": "IMX455",
+      "type": "OSC",
+      "bayer_pattern": "RGGB",
+      "cooled": true,
+      "aliases": ["QHY 600C", "QHY600 Color"],
+      "fits_patterns": ["*QHY600C*"]
+    },
+    "QHY533M": {
+      "sensor": "IMX533",
+      "type": "Mono",
+      "bayer_pattern": null,
+      "cooled": true,
+      "aliases": ["QHY 533M"],
+      "fits_patterns": ["*QHY533*", "*533M*"]
+    },
+    "Atik Horizon II": {
+      "sensor": "IMX571",
+      "type": "OSC",
+      "bayer_pattern": "RGGB",
+      "cooled": true,
+      "aliases": ["Horizon II", "Atik Horizon"],
+      "fits_patterns": ["*Horizon*", "*ATIK*Horizon*"]
+    },
+    "Atik APX60": {
+      "sensor": "IMX455",
+      "type": "Mono",
+      "bayer_pattern": null,
+      "cooled": true,
+      "aliases": ["APX60", "Atik APX 60"],
+      "fits_patterns": ["*APX60*", "*APX 60*"]
+    },
+    "Player One Poseidon-M": {
+      "sensor": "IMX571",
+      "type": "Mono",
+      "bayer_pattern": null,
+      "cooled": true,
+      "aliases": ["Poseidon-M", "Poseidon M"],
+      "fits_patterns": ["*Poseidon*", "*Player One*IMX571*"]
+    },
+    "Player One Poseidon-C": {
+      "sensor": "IMX571",
+      "type": "OSC",
+      "bayer_pattern": "RGGB",
+      "cooled": true,
+      "aliases": ["Poseidon-C", "Poseidon C"],
+      "fits_patterns": ["*Poseidon*C*"]
+    },
+    "SBIG ST-8300M": {
+      "sensor": "KAF-8300",
+      "type": "Mono",
+      "bayer_pattern": null,
+      "cooled": true,
+      "aliases": ["ST-8300M", "ST8300M", "SBIG 8300"],
+      "fits_patterns": ["*ST-8300*", "*ST8300*", "*KAF-8300*"]
+    },
+    "SBIG STF-8300M": {
+      "sensor": "KAF-8300",
+      "type": "Mono",
+      "bayer_pattern": null,
+      "cooled": true,
+      "aliases": ["STF-8300M", "STF8300M"],
+      "fits_patterns": ["*STF-8300*", "*STF8300*"]
+    },
+    "Atik 460EX": {
+      "sensor": "ICX694",
+      "type": "Mono",
+      "bayer_pattern": null,
+      "cooled": true,
+      "aliases": ["460EX", "Atik 460"],
+      "fits_patterns": ["*460EX*", "*Atik*460*"]
+    },
+    "QHY22": {
+      "sensor": "ICX694",
+      "type": "Mono",
+      "bayer_pattern": null,
+      "cooled": true,
+      "aliases": ["QHY 22"],
+      "fits_patterns": ["*QHY22*"]
+    },
+    "ToupTek ATR3CMOS26000KPA": {
+      "sensor": "IMX571",
+      "type": "OSC",
+      "bayer_pattern": "RGGB",
+      "cooled": true,
+      "aliases": ["ATR3CMOS26000KPA", "ToupTek 26000", "ToupTek IMX571"],
+      "fits_patterns": ["*ToupTek*26000*", "*ATR3CMOS*", "*TOUPCAM*"]
+    }
+  }
+}
