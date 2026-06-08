@@ -1,0 +1,20 @@
+{
+  "name": "pjsr-parser",
+  "description": "Expert PJSR (PixInsight JavaScript Runtime) scripting assistance with code analysis, completions, validation, and comprehensive API documentation for astrophotography image processing",
+  "version": "1.0.0",
+  "author": {
+    "name": "Brian Scott Carter",
+    "email": "scarter4work@yahoo.com"
+  },
+  "homepage": "https://github.com/scarter4work/pjsr-parser-server",
+  "repository": "https://github.com/scarter4work/pjsr-parser-server",
+  "license": "MIT",
+  "keywords": [
+    "pixinsight",
+    "pjsr",
+    "astrophotography",
+    "scripting",
+    "image-processing",
+    "astronomy"
+  ]
+}

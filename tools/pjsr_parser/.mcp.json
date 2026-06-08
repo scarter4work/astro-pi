@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "pjsr": {
+      "command": "node",
+      "args": ["${CLAUDE_PLUGIN_ROOT}/src/mcp-server.js"],
+      "description": "PJSR language parser with code analysis, completions, and validation tools"
+    }
+  }
+}
