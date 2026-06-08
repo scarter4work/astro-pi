@@ -25,7 +25,7 @@
 #include "engine/TransitionChecker.h"
 #include "engine/Segmentation.h"
 #include "engine/StretchLibrary.h"
-#include "engine/Compositor.h"
+#include "engine/algorithms/StatisticalAutoStretch.h"
 
 #include <algorithm>
 
@@ -443,50 +443,26 @@ StackAnalysisConfig NukeXStackInstance::BuildStackConfig() const
 
 bool NukeXStackInstance::PreStretchFrame( Image& frame ) const
 {
-   // Build compositor config for pre-stretching
-   // Keep it simple - no segmentation needed for pre-stretch, just statistical stretch
-   CompositorConfig config;
+   // Use StatisticalAutoStretch directly - the simplest possible approach.
+   // This bypasses ALL complex infrastructure (Compositor, RegionAnalyzer,
+   // SelectionRulesEngine, StretchLibrary) and just applies the stretch.
+   //
+   // StatisticalAutoStretch computes statistics directly from the image
+   // and applies an MTF-based stretch automatically.
 
-   // CRITICAL: Disable segmentation for pre-stretching
-   // This prevents any ONNX/segmentation model initialization
-   config.useSegmentation = false;
+   StatisticalAutoStretch stretcher;
 
-   // Let compositor pick best stretch algorithm based on image statistics
-   config.useAutoSelection = true;
+   // Configure based on strength parameter
+   // Lower targetBackground = more aggressive stretch
+   // strength 0.0 -> targetBackground 0.25 (gentle)
+   // strength 0.5 -> targetBackground 0.15 (medium)
+   // strength 1.0 -> targetBackground 0.08 (aggressive)
+   double targetBg = 0.25 - (p_preStretchStrength * 0.17);
+   stretcher.SetTargetBackground( targetBg );
 
-   // We're processing individual frames, not LRGB combined
-   config.useLRGBMode = false;
-
-   // Don't apply final tone mapping - we just want the stretch
-   config.applyToneMapping = false;
-
-   // Use the pre-stretch strength parameter
-   config.globalStrength = p_preStretchStrength;
-
-   // Neutral contrast and saturation
-   config.globalContrast = 0.0;
-   config.globalSaturation = 0.0;
-
-   // Simple blending (not really used without segmentation, but set reasonable defaults)
-   config.blendConfig.featherRadius = 8.0f;
-   config.blendConfig.normalizeWeights = true;
-
-   // Use parallel processing for speed
-   config.useParallelBlend = true;
-
-   // Create compositor and process
-   Compositor compositor( config );
-
-   CompositorResult result = compositor.Process( frame, nullptr );
-
-   if ( !result.isValid )
-   {
-      Console().WarningLn( "PreStretch: Compositor failed - " + result.errorMessage );
-      return false;
-   }
-
-   // Copy result back to frame
-   frame = result.outputImage;
+   // Apply the stretch directly to the frame
+   // This computes statistics internally and applies the transformation
+   stretcher.ApplyToImage( frame, nullptr );
 
    return true;
 }
