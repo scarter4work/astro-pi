@@ -3,39 +3,28 @@ project(BayesianAstro VERSION 1.0.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
-# PixInsight SDK path (set via environment or command line)
-if(NOT DEFINED PIXINSIGHT_SDK)
-    set(PIXINSIGHT_SDK $ENV{PIXINSIGHT_SDK})
-endif()
+# PixInsight paths
+set(PCLDIR "/opt/PixInsight")
+set(PCLINCDIR "${PCLDIR}/include")
+set(PCLSRCDIR "${PCLDIR}/src")
+set(PCLLIBDIR "${PCLDIR}/bin")
 
-if(NOT PIXINSIGHT_SDK)
-    message(FATAL_ERROR "PIXINSIGHT_SDK not set. Set environment variable or pass -DPIXINSIGHT_SDK=<path>")
-endif()
+# Julia paths (auto-detect)
+execute_process(
+    COMMAND julia -e "print(joinpath(Sys.BINDIR, Base.INCLUDEDIR, \"julia\"))"
+    OUTPUT_VARIABLE JULIA_INCLUDE_DIR
+    OUTPUT_STRIP_TRAILING_WHITESPACE
+)
+execute_process(
+    COMMAND julia -e "print(joinpath(Sys.BINDIR, Base.LIBDIR))"
+    OUTPUT_VARIABLE JULIA_LIB_DIR
+    OUTPUT_STRIP_TRAILING_WHITESPACE
+)
 
-# Julia path
-find_package(Julia QUIET)
-if(NOT Julia_FOUND)
-    # Manual Julia detection
-    if(NOT DEFINED JULIA_DIR)
-        set(JULIA_DIR $ENV{JULIA_DIR})
-    endif()
-
-    if(JULIA_DIR)
-        set(Julia_INCLUDE_DIRS "${JULIA_DIR}/include/julia")
-        set(Julia_LIBRARY "${JULIA_DIR}/lib/libjulia.so")
-        if(WIN32)
-            set(Julia_LIBRARY "${JULIA_DIR}/bin/libjulia.dll")
-        endif()
-    endif()
-endif()
-
-# Qt6 for WebEngine (embedded React UI)
-find_package(Qt6 REQUIRED COMPONENTS Core Widgets WebEngineWidgets WebChannel)
-
-# PixInsight Class Library
-set(PCL_INCLUDE_DIR "${PIXINSIGHT_SDK}/include")
-set(PCL_LIBRARY_DIR "${PIXINSIGHT_SDK}/lib")
+message(STATUS "Julia include: ${JULIA_INCLUDE_DIR}")
+message(STATUS "Julia lib: ${JULIA_LIB_DIR}")
 
 # Source files
 set(SOURCES
@@ -47,62 +36,75 @@ set(SOURCES
     src/JuliaRuntime.cpp
 )
 
-set(HEADERS
-    include/BayesianAstroModule.h
-    include/BayesianAstroProcess.h
-    include/BayesianAstroInstance.h
-    include/BayesianAstroInterface.h
-    include/BayesianAstroParameters.h
-    include/JuliaRuntime.h
-)
+# PCL source files needed for module
+file(GLOB PCL_SOURCES "${PCLSRCDIR}/pcl/*.cpp")
+# Exclude platform-specific files
+list(FILTER PCL_SOURCES EXCLUDE REGEX ".*/(freebsd|macosx|windows|host)/.*")
+list(FILTER PCL_SOURCES EXCLUDE REGEX ".*/Win32Exception\\.cpp$")
+list(FILTER PCL_SOURCES EXCLUDE REGEX ".*/GetVolumeAvailableCapacity\\.mm$")
 
 # Build shared library (PixInsight module)
-add_library(BayesianAstro SHARED ${SOURCES} ${HEADERS})
+add_library(BayesianAstro-pxm SHARED ${SOURCES})
 
-target_include_directories(BayesianAstro PRIVATE
+# Compile flags matching PixInsight's build
+target_compile_options(BayesianAstro-pxm PRIVATE
+    -m64
+    -march=x86-64
+    -mtune=znver3
+    -mfpmath=sse
+    -msse4.2
+    -minline-all-stringops
+    -O3
+    -ffast-math
+    -fvisibility=hidden
+    -fvisibility-inlines-hidden
+    -fnon-call-exceptions
+    -fPIC
+    -pthread
+    -Wno-deprecated-declarations
+)
+
+target_compile_definitions(BayesianAstro-pxm PRIVATE
+    _REENTRANT
+    __PCL_LINUX
+    __PCL_BUILDING_SHARED_LIBRARY
+)
+
+target_include_directories(BayesianAstro-pxm PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/include
-    ${PCL_INCLUDE_DIR}
-    ${Julia_INCLUDE_DIRS}
+    ${PCLINCDIR}
+    ${JULIA_INCLUDE_DIR}
 )
 
-target_link_directories(BayesianAstro PRIVATE
-    ${PCL_LIBRARY_DIR}
+# Link options
+target_link_options(BayesianAstro-pxm PRIVATE
+    -m64
+    -pthread
+    -rdynamic
+    -Wl,-z,noexecstack
+    -Wl,-O1
+    -Wl,--gc-sections
 )
 
-target_link_libraries(BayesianAstro PRIVATE
+target_link_directories(BayesianAstro-pxm PRIVATE
+    ${PCLLIBDIR}
+    ${JULIA_LIB_DIR}
+)
+
+target_link_libraries(BayesianAstro-pxm PRIVATE
     PCL-pxi
-    Qt6::Core
-    Qt6::Widgets
-    Qt6::WebEngineWidgets
-    Qt6::WebChannel
-    ${Julia_LIBRARY}
+    julia
+    -Wl,-Bsymbolic
 )
 
-# Platform-specific settings
-if(WIN32)
-    set_target_properties(BayesianAstro PROPERTIES
-        SUFFIX ".dll"
-        PREFIX ""
-    )
-elseif(APPLE)
-    set_target_properties(BayesianAstro PROPERTIES
-        SUFFIX ".dylib"
-        PREFIX ""
-    )
-else()
-    set_target_properties(BayesianAstro PROPERTIES
-        SUFFIX ".so"
-        PREFIX ""
-    )
-endif()
-
-# Install rules
-install(TARGETS BayesianAstro
-    LIBRARY DESTINATION lib
-    RUNTIME DESTINATION bin
+# Output settings
+set_target_properties(BayesianAstro-pxm PROPERTIES
+    PREFIX ""
+    SUFFIX ".so"
+    LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}"
 )
 
-# Copy React UI assets
-install(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/../ui/dist/
-    DESTINATION share/BayesianAstro/ui
+# Install rule
+install(TARGETS BayesianAstro-pxm
+    LIBRARY DESTINATION "${PCLDIR}/bin"
 )

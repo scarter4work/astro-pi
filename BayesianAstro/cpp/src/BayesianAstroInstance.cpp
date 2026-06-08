@@ -7,7 +7,7 @@
 #include "JuliaRuntime.h"
 
 #include <pcl/Console.h>
-#include <pcl/StdStatus.h>
+#include <pcl/StandardStatus.h>
 
 namespace pcl
 {
@@ -59,7 +59,7 @@ bool BayesianAstroInstance::IsHistoryUpdater(const View&) const
 
 UndoFlags BayesianAstroInstance::UndoMode(const View&) const
 {
-    return UndoFlag::None;
+    return UndoFlag::DefaultMode;
 }
 
 bool BayesianAstroInstance::CanExecuteOn(const View&, String& whyNot) const
@@ -105,7 +105,7 @@ bool BayesianAstroInstance::ExecuteGlobal()
 
     // Build config
     ProcessingConfig config;
-    config.fusionStrategy = static_cast<FusionStrategy>(p_fusionStrategy + 1);  // Julia is 1-indexed
+    config.fusionStrategy = static_cast<pcl::FusionStrategy>(p_fusionStrategy + 1);  // Julia is 1-indexed
     config.outlierSigma = p_outlierSigma;
     config.confidenceThreshold = p_confidenceThreshold;
     config.useGPU = p_useGPU;
@@ -114,10 +114,9 @@ bool BayesianAstroInstance::ExecuteGlobal()
     StandardStatus status;
     StatusMonitor monitor;
     monitor.SetCallback(&status);
-    monitor.Initialize("BayesianAstro", 100);
+    monitor.Initialize("BayesianAstro", p_inputFiles.Length());
 
     auto progressCallback = [&](int percent, const std::string& msg) {
-        monitor.Complete(percent);
         console.WriteLn(String(msg.c_str()));
     };
 
@@ -130,7 +129,7 @@ bool BayesianAstroInstance::ExecuteGlobal()
         progressCallback
     );
 
-    monitor.Complete(100);
+    monitor.Complete();
 
     if (!result.success)
     {

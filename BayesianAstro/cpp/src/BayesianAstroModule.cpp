@@ -5,10 +5,6 @@
 #include "BayesianAstroModule.h"
 #include "BayesianAstroProcess.h"
 #include "BayesianAstroInterface.h"
-#include "JuliaRuntime.h"
-
-#include <pcl/Console.h>
-#include <pcl/ErrorHandler.h>
 
 namespace pcl
 {
@@ -22,7 +18,8 @@ BayesianAstroModule::BayesianAstroModule()
 
 const char* BayesianAstroModule::Version() const
 {
-    return "1.0.0";
+    // Format: PIXINSIGHT_MODULE_VERSION_MM.mm.rr.bbbb.LLL
+    return "PIXINSIGHT_MODULE_VERSION_01.00.00.0001.eng";
 }
 
 IsoString BayesianAstroModule::Name() const
@@ -75,29 +72,37 @@ void BayesianAstroModule::GetReleaseDate(int& year, int& month, int& day) const
     day = 30;
 }
 
+// Module singleton accessor - creates module on first call
+// Uses heap allocation with intentional non-deletion to avoid static destruction order issues
+BayesianAstroModule* GetBayesianAstroModuleInstance()
+{
+    static BayesianAstroModule* s_instance = new BayesianAstroModule;
+    return s_instance;
+}
+
+// Static initializer to ensure Module global is set before IdentifyPixInsightModule
+namespace {
+    struct ModuleInitializer {
+        ModuleInitializer() {
+            GetBayesianAstroModuleInstance();
+        }
+    };
+    static ModuleInitializer s_moduleInit;
+}
+
 } // namespace pcl
 
-// Module entry points
+// Module entry point - IdentifyPixInsightModule is provided by PCL's API.cpp
+// which uses APIInitializer to properly identify the module through TheBayesianAstroModule
 
 PCL_MODULE_EXPORT int InstallPixInsightModule(int mode)
 {
-    new pcl::BayesianAstroModule;
+    // Module instance is created via GetBayesianAstroModuleInstance() static initializer
 
     if (mode == pcl::InstallMode::FullInstall)
     {
-        // Initialize Julia runtime
-        try
-        {
-            if (!pcl::JuliaRuntime::Instance().Initialize())
-            {
-                pcl::Console().CriticalLn("** BayesianAstro: Failed to initialize Julia runtime");
-                // Continue anyway - will fail gracefully at execution time
-            }
-        }
-        catch (...)
-        {
-            pcl::Console().WarningLn("** BayesianAstro: Julia initialization deferred");
-        }
+        // Julia runtime is initialized lazily on first use
+        // to avoid issues with signal handlers during module load
 
         new pcl::BayesianAstroProcess;
         new pcl::BayesianAstroInterface;

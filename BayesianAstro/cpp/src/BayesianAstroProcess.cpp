@@ -18,7 +18,11 @@ BayesianAstroProcess::BayesianAstroProcess()
 
     // Register parameters
     new BAFusionStrategy(this);
-    new BAInputFiles(this);
+
+    // Input files table with its column
+    BAInputFiles* inputFiles = new BAInputFiles(this);
+    new BAInputFilePath(inputFiles);  // Column for the table
+
     new BAOutlierSigma(this);
     new BAConfidenceThreshold(this);
     new BAUseGPU(this);

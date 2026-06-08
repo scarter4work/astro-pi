@@ -1,180 +1,17 @@
 /**
  * BayesianAstro Interface Implementation
- *
- * Process interface with embedded React UI via QWebEngineView.
  */
 
 #include "BayesianAstroInterface.h"
 #include "BayesianAstroProcess.h"
 
-#include <pcl/Console.h>
-#include <pcl/ErrorHandler.h>
-
-#include <QVBoxLayout>
-#include <QUrl>
-#include <QDir>
-#include <QCoreApplication>
+#include <pcl/File.h>
+#include <pcl/FileDialog.h>
 
 namespace pcl
 {
 
 BayesianAstroInterface* TheBayesianAstroInterface = nullptr;
-
-// ============================================================================
-// BayesianAstroBridge Implementation
-// ============================================================================
-
-BayesianAstroBridge::BayesianAstroBridge(QObject* parent)
-    : QObject(parent)
-{
-}
-
-int BayesianAstroBridge::fusionStrategy() const
-{
-    return m_instance ? m_instance->FusionStrategy() : 1;
-}
-
-void BayesianAstroBridge::setFusionStrategy(int value)
-{
-    if (m_instance && m_instance->FusionStrategy() != value)
-    {
-        m_instance->SetFusionStrategy(value);
-        emit fusionStrategyChanged();
-    }
-}
-
-float BayesianAstroBridge::outlierSigma() const
-{
-    return m_instance ? m_instance->OutlierSigma() : 3.0f;
-}
-
-void BayesianAstroBridge::setOutlierSigma(float value)
-{
-    if (m_instance)
-    {
-        m_instance->SetOutlierSigma(value);
-        emit outlierSigmaChanged();
-    }
-}
-
-float BayesianAstroBridge::confidenceThreshold() const
-{
-    return m_instance ? m_instance->ConfidenceThreshold() : 0.1f;
-}
-
-void BayesianAstroBridge::setConfidenceThreshold(float value)
-{
-    if (m_instance)
-    {
-        m_instance->SetConfidenceThreshold(value);
-        emit confidenceThresholdChanged();
-    }
-}
-
-bool BayesianAstroBridge::useGPU() const
-{
-    return m_instance ? m_instance->UseGPU() : true;
-}
-
-void BayesianAstroBridge::setUseGPU(bool value)
-{
-    if (m_instance)
-    {
-        m_instance->SetUseGPU(value);
-        emit useGPUChanged();
-    }
-}
-
-bool BayesianAstroBridge::generateConfidenceMap() const
-{
-    return m_instance ? m_instance->GenerateConfidenceMap() : true;
-}
-
-void BayesianAstroBridge::setGenerateConfidenceMap(bool value)
-{
-    if (m_instance)
-    {
-        m_instance->SetGenerateConfidenceMap(value);
-        emit generateConfidenceMapChanged();
-    }
-}
-
-void BayesianAstroBridge::addFiles(const QStringList& paths)
-{
-    if (!m_instance) return;
-
-    for (const QString& path : paths)
-    {
-        m_instance->AddInputFile(String(path.toUtf8().constData()));
-    }
-    emit filesChanged();
-}
-
-void BayesianAstroBridge::removeFile(int index)
-{
-    // TODO: Implement removal by index
-    emit filesChanged();
-}
-
-void BayesianAstroBridge::clearFiles()
-{
-    if (m_instance)
-    {
-        m_instance->ClearInputFiles();
-        emit filesChanged();
-    }
-}
-
-QStringList BayesianAstroBridge::getFiles() const
-{
-    QStringList result;
-    if (m_instance)
-    {
-        for (const String& s : m_instance->InputFiles())
-            result.append(QString::fromUtf8(s.ToUTF8().c_str()));
-    }
-    return result;
-}
-
-void BayesianAstroBridge::execute()
-{
-    if (!m_instance) return;
-
-    try
-    {
-        bool success = m_instance->ExecuteGlobal();
-        emit executionComplete(success, success ? "Processing complete" : "Processing failed");
-    }
-    catch (const Exception& e)
-    {
-        emit executionComplete(false, QString::fromUtf8(e.Message().ToUTF8().c_str()));
-    }
-    catch (...)
-    {
-        emit executionComplete(false, "Unknown error occurred");
-    }
-}
-
-void BayesianAstroBridge::setOutputDirectory(const QString& path)
-{
-    if (m_instance)
-        m_instance->SetOutputDirectory(String(path.toUtf8().constData()));
-}
-
-void BayesianAstroBridge::setOutputPrefix(const QString& prefix)
-{
-    if (m_instance)
-        m_instance->SetOutputPrefix(String(prefix.toUtf8().constData()));
-}
-
-void BayesianAstroBridge::reportProgress(int percent, const QString& status)
-{
-    emit progressUpdated(percent, status);
-}
-
-// ============================================================================
-// BayesianAstroInterface Implementation
-// ============================================================================
 
 BayesianAstroInterface::BayesianAstroInterface()
     : m_instance(TheBayesianAstroProcess)
@@ -184,22 +21,6 @@ BayesianAstroInterface::BayesianAstroInterface()
 
 BayesianAstroInterface::~BayesianAstroInterface()
 {
-    if (m_webView)
-    {
-        delete m_webView;
-        m_webView = nullptr;
-    }
-    if (m_webChannel)
-    {
-        delete m_webChannel;
-        m_webChannel = nullptr;
-    }
-    if (m_bridge)
-    {
-        delete m_bridge;
-        m_bridge = nullptr;
-    }
-
     TheBayesianAstroInterface = nullptr;
 }
 
@@ -215,17 +36,17 @@ MetaProcess* BayesianAstroInterface::Process() const
 
 String BayesianAstroInterface::IconImageSVGFile() const
 {
-    return String();  // TODO: Add icon
+    return String();
 }
 
 InterfaceFeatures BayesianAstroInterface::Features() const
 {
-    return InterfaceFeature::Default;
+    return InterfaceFeature::Default | InterfaceFeature::ApplyGlobalButton;
 }
 
 void BayesianAstroInterface::ApplyInstance() const
 {
-    m_instance.ExecuteGlobal();
+    m_instance.LaunchGlobal();
 }
 
 void BayesianAstroInterface::ResetInstance()
@@ -239,6 +60,202 @@ bool BayesianAstroInterface::Launch(const MetaProcess&, const ProcessImplementat
     if (instance != nullptr)
         ImportProcess(*instance);
 
+    // Build GUI only once
+    if (!m_guiInitialized)
+    {
+        int labelWidth = Font().Width(String("Confidence Threshold:") + 'M');
+
+        // === Allocate controls ===
+        Global_Sizer = new VerticalSizer;
+
+        // Input files section
+        InputFiles_SectionBar = new SectionBar;
+        InputFiles_Control = new Control;
+        InputFiles_Sizer = new HorizontalSizer;
+        InputFiles_TreeBox = new TreeBox;
+        InputFilesButtons_Sizer = new VerticalSizer;
+        AddFiles_ToolButton = new ToolButton;
+        RemoveFiles_ToolButton = new ToolButton;
+        ClearFiles_ToolButton = new ToolButton;
+
+        // Parameters section
+        Parameters_SectionBar = new SectionBar;
+        Parameters_Control = new Control;
+        Parameters_Sizer = new VerticalSizer;
+        FusionStrategy_Sizer = new HorizontalSizer;
+        FusionStrategy_Label = new Label;
+        FusionStrategy_ComboBox = new ComboBox;
+        OutlierSigma_NumericControl = new NumericControl;
+        ConfidenceThreshold_NumericControl = new NumericControl;
+        Options_Sizer = new HorizontalSizer;
+        UseGPU_CheckBox = new CheckBox;
+        GenerateConfidenceMap_CheckBox = new CheckBox;
+
+        // Output section
+        Output_SectionBar = new SectionBar;
+        Output_Control = new Control;
+        Output_Sizer = new VerticalSizer;
+        OutputDir_Sizer = new HorizontalSizer;
+        OutputDir_Label = new Label;
+        OutputDir_Edit = new Edit;
+        OutputDir_ToolButton = new ToolButton;
+        OutputPrefix_Sizer = new HorizontalSizer;
+        OutputPrefix_Label = new Label;
+        OutputPrefix_Edit = new Edit;
+
+        // === Input Files Section ===
+
+        InputFiles_TreeBox->SetMinHeight(120);
+        InputFiles_TreeBox->SetNumberOfColumns(1);
+        InputFiles_TreeBox->SetHeaderText(0, "Input Files");
+        InputFiles_TreeBox->EnableMultipleSelections();
+        InputFiles_TreeBox->DisableRootDecoration();
+        InputFiles_TreeBox->EnableAlternateRowColor();
+        InputFiles_TreeBox->OnNodeSelectionUpdated((TreeBox::tree_event_handler)&BayesianAstroInterface::e_NodeSelectionUpdated, *this);
+
+        AddFiles_ToolButton->SetIcon(ScaledResource(":/icons/document-open.png"));
+        AddFiles_ToolButton->SetScaledFixedSize(22, 22);
+        AddFiles_ToolButton->SetToolTip("<p>Add FITS files</p>");
+        AddFiles_ToolButton->OnClick((Button::click_event_handler)&BayesianAstroInterface::e_Click, *this);
+
+        RemoveFiles_ToolButton->SetIcon(ScaledResource(":/icons/delete.png"));
+        RemoveFiles_ToolButton->SetScaledFixedSize(22, 22);
+        RemoveFiles_ToolButton->SetToolTip("<p>Remove selected files</p>");
+        RemoveFiles_ToolButton->OnClick((Button::click_event_handler)&BayesianAstroInterface::e_Click, *this);
+
+        ClearFiles_ToolButton->SetIcon(ScaledResource(":/icons/clear.png"));
+        ClearFiles_ToolButton->SetScaledFixedSize(22, 22);
+        ClearFiles_ToolButton->SetToolTip("<p>Clear all files</p>");
+        ClearFiles_ToolButton->OnClick((Button::click_event_handler)&BayesianAstroInterface::e_Click, *this);
+
+        InputFilesButtons_Sizer->SetSpacing(4);
+        InputFilesButtons_Sizer->Add(*AddFiles_ToolButton);
+        InputFilesButtons_Sizer->Add(*RemoveFiles_ToolButton);
+        InputFilesButtons_Sizer->Add(*ClearFiles_ToolButton);
+        InputFilesButtons_Sizer->AddStretch();
+
+        InputFiles_Sizer->SetSpacing(4);
+        InputFiles_Sizer->Add(*InputFiles_TreeBox, 100);
+        InputFiles_Sizer->Add(*InputFilesButtons_Sizer);
+
+        InputFiles_Control->SetSizer(*InputFiles_Sizer);
+
+        InputFiles_SectionBar->SetTitle("Input Files");
+        InputFiles_SectionBar->SetSection(*InputFiles_Control);
+
+        // === Parameters Section ===
+
+        FusionStrategy_Label->SetText("Fusion Strategy:");
+        FusionStrategy_Label->SetFixedWidth(labelWidth);
+        FusionStrategy_Label->SetTextAlignment(TextAlign::Right | TextAlign::VertCenter);
+
+        FusionStrategy_ComboBox->AddItem("MLE (Maximum Likelihood)");
+        FusionStrategy_ComboBox->AddItem("Confidence Weighted");
+        FusionStrategy_ComboBox->AddItem("Lucky Imaging");
+        FusionStrategy_ComboBox->AddItem("Multi-Scale");
+        FusionStrategy_ComboBox->OnItemSelected((ComboBox::item_event_handler)&BayesianAstroInterface::e_ItemSelected, *this);
+
+        FusionStrategy_Sizer->SetSpacing(4);
+        FusionStrategy_Sizer->Add(*FusionStrategy_Label);
+        FusionStrategy_Sizer->Add(*FusionStrategy_ComboBox, 100);
+
+        OutlierSigma_NumericControl->label.SetText("Outlier Sigma:");
+        OutlierSigma_NumericControl->label.SetFixedWidth(labelWidth);
+        OutlierSigma_NumericControl->slider.SetRange(0, 100);
+        OutlierSigma_NumericControl->SetReal();
+        OutlierSigma_NumericControl->SetRange(0.5, 10.0);
+        OutlierSigma_NumericControl->SetPrecision(2);
+        OutlierSigma_NumericControl->OnValueUpdated((NumericEdit::value_event_handler)&BayesianAstroInterface::e_ValueUpdated, *this);
+
+        ConfidenceThreshold_NumericControl->label.SetText("Confidence Threshold:");
+        ConfidenceThreshold_NumericControl->label.SetFixedWidth(labelWidth);
+        ConfidenceThreshold_NumericControl->slider.SetRange(0, 100);
+        ConfidenceThreshold_NumericControl->SetReal();
+        ConfidenceThreshold_NumericControl->SetRange(0.0, 1.0);
+        ConfidenceThreshold_NumericControl->SetPrecision(2);
+        ConfidenceThreshold_NumericControl->OnValueUpdated((NumericEdit::value_event_handler)&BayesianAstroInterface::e_ValueUpdated, *this);
+
+        UseGPU_CheckBox->SetText("Use GPU Acceleration");
+        UseGPU_CheckBox->OnClick((Button::click_event_handler)&BayesianAstroInterface::e_Click, *this);
+
+        GenerateConfidenceMap_CheckBox->SetText("Generate Confidence Map");
+        GenerateConfidenceMap_CheckBox->OnClick((Button::click_event_handler)&BayesianAstroInterface::e_Click, *this);
+
+        Options_Sizer->SetSpacing(16);
+        Options_Sizer->Add(*UseGPU_CheckBox);
+        Options_Sizer->Add(*GenerateConfidenceMap_CheckBox);
+        Options_Sizer->AddStretch();
+
+        Parameters_Sizer->SetSpacing(4);
+        Parameters_Sizer->Add(*FusionStrategy_Sizer);
+        Parameters_Sizer->Add(*OutlierSigma_NumericControl);
+        Parameters_Sizer->Add(*ConfidenceThreshold_NumericControl);
+        Parameters_Sizer->Add(*Options_Sizer);
+
+        Parameters_Control->SetSizer(*Parameters_Sizer);
+
+        Parameters_SectionBar->SetTitle("Processing Parameters");
+        Parameters_SectionBar->SetSection(*Parameters_Control);
+
+        // === Output Section ===
+
+        OutputDir_Label->SetText("Output Directory:");
+        OutputDir_Label->SetFixedWidth(labelWidth);
+        OutputDir_Label->SetTextAlignment(TextAlign::Right | TextAlign::VertCenter);
+
+        OutputDir_Edit->SetReadOnly();
+        OutputDir_Edit->OnEditCompleted((Edit::edit_event_handler)&BayesianAstroInterface::e_EditCompleted, *this);
+
+        OutputDir_ToolButton->SetIcon(ScaledResource(":/icons/select-file.png"));
+        OutputDir_ToolButton->SetScaledFixedSize(22, 22);
+        OutputDir_ToolButton->SetToolTip("<p>Select output directory</p>");
+        OutputDir_ToolButton->OnClick((Button::click_event_handler)&BayesianAstroInterface::e_Click, *this);
+
+        OutputDir_Sizer->SetSpacing(4);
+        OutputDir_Sizer->Add(*OutputDir_Label);
+        OutputDir_Sizer->Add(*OutputDir_Edit, 100);
+        OutputDir_Sizer->Add(*OutputDir_ToolButton);
+
+        OutputPrefix_Label->SetText("Output Prefix:");
+        OutputPrefix_Label->SetFixedWidth(labelWidth);
+        OutputPrefix_Label->SetTextAlignment(TextAlign::Right | TextAlign::VertCenter);
+
+        OutputPrefix_Edit->OnEditCompleted((Edit::edit_event_handler)&BayesianAstroInterface::e_EditCompleted, *this);
+
+        OutputPrefix_Sizer->SetSpacing(4);
+        OutputPrefix_Sizer->Add(*OutputPrefix_Label);
+        OutputPrefix_Sizer->Add(*OutputPrefix_Edit, 100);
+
+        Output_Sizer->SetSpacing(4);
+        Output_Sizer->Add(*OutputDir_Sizer);
+        Output_Sizer->Add(*OutputPrefix_Sizer);
+
+        Output_Control->SetSizer(*Output_Sizer);
+
+        Output_SectionBar->SetTitle("Output");
+        Output_SectionBar->SetSection(*Output_Control);
+
+        // === Global Layout ===
+
+        Global_Sizer->SetMargin(8);
+        Global_Sizer->SetSpacing(6);
+        Global_Sizer->Add(*InputFiles_SectionBar);
+        Global_Sizer->Add(*InputFiles_Control);
+        Global_Sizer->Add(*Parameters_SectionBar);
+        Global_Sizer->Add(*Parameters_Control);
+        Global_Sizer->Add(*Output_SectionBar);
+        Global_Sizer->Add(*Output_Control);
+
+        SetSizer(*Global_Sizer);
+
+        SetScaledMinWidth(500);
+        AdjustToContents();
+
+        m_guiInitialized = true;
+    }
+
+    UpdateControls();
+
     dynamic = false;
     return true;
 }
@@ -250,12 +267,10 @@ ProcessImplementation* BayesianAstroInterface::NewProcess() const
 
 bool BayesianAstroInterface::ValidateProcess(const ProcessImplementation& p, String& whyNot) const
 {
-    if (dynamic_cast<const BayesianAstroInstance*>(&p) == nullptr)
-    {
-        whyNot = "Not a BayesianAstro instance";
-        return false;
-    }
-    return true;
+    if (dynamic_cast<const BayesianAstroInstance*>(&p) != nullptr)
+        return true;
+    whyNot = "Not a BayesianAstro instance.";
+    return false;
 }
 
 bool BayesianAstroInterface::RequiresInstanceValidation() const
@@ -265,67 +280,132 @@ bool BayesianAstroInterface::RequiresInstanceValidation() const
 
 bool BayesianAstroInterface::ImportProcess(const ProcessImplementation& p)
 {
-    m_instance.Assign(p);
-    SyncInstanceToUI();
+    const BayesianAstroInstance* instance = dynamic_cast<const BayesianAstroInstance*>(&p);
+    if (instance == nullptr)
+        return false;
+
+    m_instance = *instance;
+    UpdateControls();
     return true;
 }
 
-QWidget* BayesianAstroInterface::CreateWidget()
+void BayesianAstroInterface::UpdateControls()
 {
-    QWidget* container = new QWidget();
-    QVBoxLayout* layout = new QVBoxLayout(container);
-    layout->setContentsMargins(0, 0, 0, 0);
+    if (!m_guiInitialized)
+        return;
 
-    InitializeWebView();
+    FusionStrategy_ComboBox->SetCurrentItem(m_instance.p_fusionStrategy);
+    OutlierSigma_NumericControl->SetValue(m_instance.p_outlierSigma);
+    ConfidenceThreshold_NumericControl->SetValue(m_instance.p_confidenceThreshold);
+    UseGPU_CheckBox->SetChecked(m_instance.p_useGPU);
+    GenerateConfidenceMap_CheckBox->SetChecked(m_instance.p_generateConfidenceMap);
+    OutputDir_Edit->SetText(m_instance.p_outputDirectory);
+    OutputPrefix_Edit->SetText(m_instance.p_outputPrefix);
 
-    layout->addWidget(m_webView);
-    container->setMinimumSize(800, 600);
-
-    return container;
+    UpdateInputFilesList();
 }
 
-void BayesianAstroInterface::InitializeWebView()
+void BayesianAstroInterface::UpdateInputFilesList()
 {
-    m_webView = new QWebEngineView();
-    m_webChannel = new QWebChannel(m_webView->page());
-    m_bridge = new BayesianAstroBridge();
+    InputFiles_TreeBox->DisableUpdates();
+    InputFiles_TreeBox->Clear();
 
-    m_bridge->SetInstance(&m_instance);
-
-    // Register bridge object for JavaScript access
-    m_webChannel->registerObject(QStringLiteral("bayesianAstro"), m_bridge);
-    m_webView->page()->setWebChannel(m_webChannel);
-
-    // Load React app from bundled assets
-    QString uiPath = QCoreApplication::applicationDirPath() + "/share/BayesianAstro/ui/index.html";
-
-    if (QDir().exists(uiPath))
+    for (const String& path : m_instance.p_inputFiles)
     {
-        m_webView->load(QUrl::fromLocalFile(uiPath));
+        TreeBox::Node* node = new TreeBox::Node(*InputFiles_TreeBox);
+        node->SetText(0, File::ExtractNameAndSuffix(path));
+        node->SetToolTip(0, path);
     }
-    else
+
+    InputFiles_TreeBox->EnableUpdates();
+}
+
+void BayesianAstroInterface::e_Click(Button& sender, bool checked)
+{
+    if (sender == *AddFiles_ToolButton)
     {
-        // Development fallback - load from dev server
-        m_webView->load(QUrl("http://localhost:5173"));
+        OpenFileDialog dlg;
+        dlg.SetCaption("Select FITS Files");
+        dlg.EnableMultipleSelections();
+        dlg.SetFilter(FileFilter("FITS Files", StringList() << ".fit" << ".fits" << ".fts"));
+
+        if (dlg.Execute())
+        {
+            for (const String& path : dlg.FileNames())
+                m_instance.p_inputFiles.Add(path);
+            UpdateInputFilesList();
+        }
+    }
+    else if (sender == *RemoveFiles_ToolButton)
+    {
+        IndirectArray<TreeBox::Node> selected = InputFiles_TreeBox->SelectedNodes();
+        for (int i = selected.Length() - 1; i >= 0; --i)
+        {
+            int index = InputFiles_TreeBox->ChildIndex(selected[i]);
+            if (index >= 0 && index < int(m_instance.p_inputFiles.Length()))
+                m_instance.p_inputFiles.Remove(m_instance.p_inputFiles.At(index));
+        }
+        UpdateInputFilesList();
+    }
+    else if (sender == *ClearFiles_ToolButton)
+    {
+        m_instance.p_inputFiles.Clear();
+        UpdateInputFilesList();
+    }
+    else if (sender == *OutputDir_ToolButton)
+    {
+        GetDirectoryDialog dlg;
+        dlg.SetCaption("Select Output Directory");
+        if (!m_instance.p_outputDirectory.IsEmpty())
+            dlg.SetInitialPath(m_instance.p_outputDirectory);
+
+        if (dlg.Execute())
+        {
+            m_instance.p_outputDirectory = dlg.Directory();
+            OutputDir_Edit->SetText(m_instance.p_outputDirectory);
+        }
+    }
+    else if (sender == *UseGPU_CheckBox)
+    {
+        m_instance.p_useGPU = checked;
+    }
+    else if (sender == *GenerateConfidenceMap_CheckBox)
+    {
+        m_instance.p_generateConfidenceMap = checked;
     }
 }
 
-void BayesianAstroInterface::SyncInstanceToUI()
+void BayesianAstroInterface::e_ItemSelected(ComboBox& sender, int itemIndex)
 {
-    if (m_bridge)
+    if (sender == *FusionStrategy_ComboBox)
     {
-        emit m_bridge->fusionStrategyChanged();
-        emit m_bridge->outlierSigmaChanged();
-        emit m_bridge->confidenceThresholdChanged();
-        emit m_bridge->useGPUChanged();
-        emit m_bridge->generateConfidenceMapChanged();
-        emit m_bridge->filesChanged();
+        m_instance.p_fusionStrategy = itemIndex;
     }
 }
 
-void BayesianAstroInterface::SyncUIToInstance()
+void BayesianAstroInterface::e_ValueUpdated(NumericEdit& sender, double value)
 {
-    // UI changes are synced immediately via property setters
+    if (&sender == static_cast<NumericEdit*>(OutlierSigma_NumericControl))
+    {
+        m_instance.p_outlierSigma = value;
+    }
+    else if (&sender == static_cast<NumericEdit*>(ConfidenceThreshold_NumericControl))
+    {
+        m_instance.p_confidenceThreshold = value;
+    }
+}
+
+void BayesianAstroInterface::e_EditCompleted(Edit& sender)
+{
+    if (sender == *OutputPrefix_Edit)
+    {
+        m_instance.p_outputPrefix = sender.Text();
+    }
+}
+
+void BayesianAstroInterface::e_NodeSelectionUpdated(TreeBox& sender)
+{
+    // Could enable/disable remove button based on selection
 }
 
 } // namespace pcl

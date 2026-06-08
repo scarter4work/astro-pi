@@ -1,7 +1,8 @@
 /**
  * BayesianAstro Interface
  *
- * Process interface with embedded React UI via QWebEngineView.
+ * Process interface using native PCL controls.
+ * GUI elements are created in Launch() as pointers to avoid construction issues.
  */
 
 #ifndef __BayesianAstroInterface_h
@@ -9,74 +10,21 @@
 
 #include <pcl/ProcessInterface.h>
 #include <pcl/Sizer.h>
-
-#include <QtWebEngineWidgets/QWebEngineView>
-#include <QtWebChannel/QWebChannel>
-#include <QWidget>
+#include <pcl/SectionBar.h>
+#include <pcl/ToolButton.h>
+#include <pcl/PushButton.h>
+#include <pcl/NumericControl.h>
+#include <pcl/TreeBox.h>
+#include <pcl/ComboBox.h>
+#include <pcl/CheckBox.h>
+#include <pcl/Label.h>
+#include <pcl/Edit.h>
+#include <pcl/GroupBox.h>
 
 #include "BayesianAstroInstance.h"
 
 namespace pcl
 {
-
-// Bridge object exposed to JavaScript via QWebChannel
-class BayesianAstroBridge : public QObject
-{
-    Q_OBJECT
-    Q_PROPERTY(int fusionStrategy READ fusionStrategy WRITE setFusionStrategy NOTIFY fusionStrategyChanged)
-    Q_PROPERTY(float outlierSigma READ outlierSigma WRITE setOutlierSigma NOTIFY outlierSigmaChanged)
-    Q_PROPERTY(float confidenceThreshold READ confidenceThreshold WRITE setConfidenceThreshold NOTIFY confidenceThresholdChanged)
-    Q_PROPERTY(bool useGPU READ useGPU WRITE setUseGPU NOTIFY useGPUChanged)
-    Q_PROPERTY(bool generateConfidenceMap READ generateConfidenceMap WRITE setGenerateConfidenceMap NOTIFY generateConfidenceMapChanged)
-
-public:
-    explicit BayesianAstroBridge(QObject* parent = nullptr);
-
-    // Property accessors
-    int fusionStrategy() const;
-    void setFusionStrategy(int value);
-
-    float outlierSigma() const;
-    void setOutlierSigma(float value);
-
-    float confidenceThreshold() const;
-    void setConfidenceThreshold(float value);
-
-    bool useGPU() const;
-    void setUseGPU(bool value);
-
-    bool generateConfidenceMap() const;
-    void setGenerateConfidenceMap(bool value);
-
-    // Link to instance
-    void SetInstance(BayesianAstroInstance* instance) { m_instance = instance; }
-
-public slots:
-    // Called from JavaScript
-    void addFiles(const QStringList& paths);
-    void removeFile(int index);
-    void clearFiles();
-    QStringList getFiles() const;
-    void execute();
-    void setOutputDirectory(const QString& path);
-    void setOutputPrefix(const QString& prefix);
-
-    // Progress reporting
-    void reportProgress(int percent, const QString& status);
-
-signals:
-    void fusionStrategyChanged();
-    void outlierSigmaChanged();
-    void confidenceThresholdChanged();
-    void useGPUChanged();
-    void generateConfidenceMapChanged();
-    void filesChanged();
-    void progressUpdated(int percent, const QString& status);
-    void executionComplete(bool success, const QString& message);
-
-private:
-    BayesianAstroInstance* m_instance = nullptr;
-};
 
 class BayesianAstroInterface : public ProcessInterface
 {
@@ -96,20 +44,63 @@ public:
     bool RequiresInstanceValidation() const override;
     bool ImportProcess(const ProcessImplementation&) override;
 
-    // Qt widget for embedding in PixInsight dialog
-    QWidget* CreateWidget();
-
 private:
     BayesianAstroInstance m_instance;
+    bool m_guiInitialized = false;
 
-    // Qt components
-    QWebEngineView* m_webView = nullptr;
-    QWebChannel* m_webChannel = nullptr;
-    BayesianAstroBridge* m_bridge = nullptr;
+    // GUI elements - pointers created in Launch()
+    VerticalSizer*      Global_Sizer = nullptr;
 
-    void InitializeWebView();
-    void SyncInstanceToUI();
-    void SyncUIToInstance();
+    // Input files section
+    SectionBar*         InputFiles_SectionBar = nullptr;
+    Control*            InputFiles_Control = nullptr;
+    HorizontalSizer*    InputFiles_Sizer = nullptr;
+    TreeBox*            InputFiles_TreeBox = nullptr;
+    VerticalSizer*      InputFilesButtons_Sizer = nullptr;
+    ToolButton*         AddFiles_ToolButton = nullptr;
+    ToolButton*         RemoveFiles_ToolButton = nullptr;
+    ToolButton*         ClearFiles_ToolButton = nullptr;
+
+    // Processing parameters section
+    SectionBar*         Parameters_SectionBar = nullptr;
+    Control*            Parameters_Control = nullptr;
+    VerticalSizer*      Parameters_Sizer = nullptr;
+
+    HorizontalSizer*    FusionStrategy_Sizer = nullptr;
+    Label*              FusionStrategy_Label = nullptr;
+    ComboBox*           FusionStrategy_ComboBox = nullptr;
+
+    NumericControl*     OutlierSigma_NumericControl = nullptr;
+    NumericControl*     ConfidenceThreshold_NumericControl = nullptr;
+
+    HorizontalSizer*    Options_Sizer = nullptr;
+    CheckBox*           UseGPU_CheckBox = nullptr;
+    CheckBox*           GenerateConfidenceMap_CheckBox = nullptr;
+
+    // Output section
+    SectionBar*         Output_SectionBar = nullptr;
+    Control*            Output_Control = nullptr;
+    VerticalSizer*      Output_Sizer = nullptr;
+
+    HorizontalSizer*    OutputDir_Sizer = nullptr;
+    Label*              OutputDir_Label = nullptr;
+    Edit*               OutputDir_Edit = nullptr;
+    ToolButton*         OutputDir_ToolButton = nullptr;
+
+    HorizontalSizer*    OutputPrefix_Sizer = nullptr;
+    Label*              OutputPrefix_Label = nullptr;
+    Edit*               OutputPrefix_Edit = nullptr;
+
+    // Event handlers
+    void e_Click(Button& sender, bool checked);
+    void e_ItemSelected(ComboBox& sender, int itemIndex);
+    void e_ValueUpdated(NumericEdit& sender, double value);
+    void e_EditCompleted(Edit& sender);
+    void e_NodeSelectionUpdated(TreeBox& sender);
+
+    // Helper methods
+    void UpdateControls();
+    void UpdateInputFilesList();
 };
 
 extern BayesianAstroInterface* TheBayesianAstroInterface;
