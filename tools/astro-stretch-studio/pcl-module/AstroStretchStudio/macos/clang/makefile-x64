@@ -1,0 +1,69 @@
+######################################################################
+# PixInsight Makefile Generator Script v1.129
+# Copyright (C) 2009-2023 Pleiades Astrophoto
+######################################################################
+# Generated on 2024-01-10
+# Project id ...... AstroStretchStudio
+# Dependencies .... PCL
+######################################################################
+
+OBJ_DIR="$(PCLSRCDIR)/pcl/AstroStretchStudio/macos/clang/x64/Release"
+
+.PHONY: all
+all: $(OBJ_DIR)/AstroStretchStudio-pxm.dylib
+
+#
+# Source files
+#
+
+SRC_FILES = \
+   ../../AstroStretchStudioInstance.cpp \
+   ../../AstroStretchStudioInterface.cpp \
+   ../../AstroStretchStudioModule.cpp \
+   ../../AstroStretchStudioParameters.cpp \
+   ../../AstroStretchStudioProcess.cpp
+
+#
+# Object files
+#
+
+OBJ_FILES = \
+   $(OBJ_DIR)/AstroStretchStudioInstance.o \
+   $(OBJ_DIR)/AstroStretchStudioInterface.o \
+   $(OBJ_DIR)/AstroStretchStudioModule.o \
+   $(OBJ_DIR)/AstroStretchStudioParameters.o \
+   $(OBJ_DIR)/AstroStretchStudioProcess.o
+
+#
+# Dependency files
+#
+
+DEP_FILES = \
+   $(OBJ_DIR)/AstroStretchStudioInstance.d \
+   $(OBJ_DIR)/AstroStretchStudioInterface.d \
+   $(OBJ_DIR)/AstroStretchStudioModule.d \
+   $(OBJ_DIR)/AstroStretchStudioParameters.d \
+   $(OBJ_DIR)/AstroStretchStudioProcess.d
+
+#
+# Rules
+#
+
+-include $(DEP_FILES)
+
+$(OBJ_DIR)/AstroStretchStudio-pxm.dylib: $(OBJ_FILES)
+	clang++ -arch x86_64 -fPIC -headerpad_max_install_names -Wl,-syslibroot,/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk -mmacosx-version-min=11 -stdlib=libc++ -Wl,-dead_strip -Wl,-undefined,error -dynamiclib -install_name @rpath/AstroStretchStudio-pxm.dylib -L"$(PCLLIBDIR64)" -L"$(PCLBINDIR64)" -o $@ $(OBJ_FILES) -lpthread -lPCL-pxi -llz4-pxi -lzstd-pxi -lzlib-pxi -lRFC6234-pxi -llcms-pxi -lcminpack-pxi
+	$(MAKE) -f ./makefile-x64 --no-print-directory post-build
+
+.PHONY: clean
+clean:
+	rm -f $(OBJ_FILES) $(DEP_FILES) $(OBJ_DIR)/AstroStretchStudio-pxm.dylib
+
+.PHONY: post-build
+post-build:
+	cp $(OBJ_DIR)/AstroStretchStudio-pxm.dylib $(PCLBINDIR64)
+	install_name_tool -change @rpath/libPCL-pxi.dylib $(PCLBINDIR64)/libPCL-pxi.dylib $(PCLBINDIR64)/AstroStretchStudio-pxm.dylib
+
+$(OBJ_DIR)/%.o: ../../%.cpp
+	clang++ -c -pipe -pthread -arch x86_64 -fPIC -isysroot /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk -mmacosx-version-min=11 -D_REENTRANT -D__PCL_MACOSX -I"$(PCLINCDIR)" -I"$(PCLSRCDIR)/3rdparty" -mtune=skylake -mssse3 -msse4.1 -msse4.2 -ffast-math -fvisibility=hidden -fvisibility-inlines-hidden -std=c++17 -stdlib=libc++ -O3 -fno-rtti -Wall -Wno-parentheses -Wno-extern-c-compat -MMD -MP -MF"$(@:%.o=%.d)" -o"$@" "$<"
+	@echo ' '

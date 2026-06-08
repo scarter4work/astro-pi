@@ -1,0 +1,71 @@
+######################################################################
+# PixInsight Makefile Generator Script v1.129
+# Copyright (C) 2009-2023 Pleiades Astrophoto
+######################################################################
+# Generated on 2024-01-10
+# Project id ...... AstroStretchStudio
+# Dependencies .... PCL
+######################################################################
+
+OBJ_DIR="$(PCLSRCDIR)/pcl/AstroStretchStudio/linux/g++/x64/Release"
+
+.PHONY: all
+all: $(OBJ_DIR)/AstroStretchStudio-pxm.so
+
+#
+# Source files
+#
+
+SRC_FILES = \
+   ../../AstroStretchStudioInstance.cpp \
+   ../../AstroStretchStudioInterface.cpp \
+   ../../AstroStretchStudioModule.cpp \
+   ../../AstroStretchStudioParameters.cpp \
+   ../../AstroStretchStudioProcess.cpp \
+   ../../AstroStretchStudioZoneHDR.cpp
+
+#
+# Object files
+#
+
+OBJ_FILES = \
+   $(OBJ_DIR)/AstroStretchStudioInstance.o \
+   $(OBJ_DIR)/AstroStretchStudioInterface.o \
+   $(OBJ_DIR)/AstroStretchStudioModule.o \
+   $(OBJ_DIR)/AstroStretchStudioParameters.o \
+   $(OBJ_DIR)/AstroStretchStudioProcess.o \
+   $(OBJ_DIR)/AstroStretchStudioZoneHDR.o
+
+#
+# Dependency files
+#
+
+DEP_FILES = \
+   $(OBJ_DIR)/AstroStretchStudioInstance.d \
+   $(OBJ_DIR)/AstroStretchStudioInterface.d \
+   $(OBJ_DIR)/AstroStretchStudioModule.d \
+   $(OBJ_DIR)/AstroStretchStudioParameters.d \
+   $(OBJ_DIR)/AstroStretchStudioProcess.d \
+   $(OBJ_DIR)/AstroStretchStudioZoneHDR.d
+
+#
+# Rules
+#
+
+-include $(DEP_FILES)
+
+$(OBJ_DIR)/AstroStretchStudio-pxm.so: $(OBJ_FILES)
+	g++ -m64 -fPIC -pthread -Wl,--gc-sections -Wl,-z,noexecstack -Wl,-O1 -shared -L"$(PCLLIBDIR64)" -L"$(PCLBINDIR64)/lib" -o $@ $(OBJ_FILES) -lpthread -lPCL-pxi -llz4-pxi -lzstd-pxi -lzlib-pxi -lRFC6234-pxi -llcms-pxi -lcminpack-pxi
+	$(MAKE) -f ./makefile-x64 --no-print-directory post-build
+
+.PHONY: clean
+clean:
+	rm -f $(OBJ_FILES) $(DEP_FILES) $(OBJ_DIR)/AstroStretchStudio-pxm.so
+
+.PHONY: post-build
+post-build:
+	cp $(OBJ_DIR)/AstroStretchStudio-pxm.so $(PCLBINDIR64)
+
+$(OBJ_DIR)/%.o: ../../%.cpp
+	g++ -c -pipe -pthread -m64 -fPIC -D_REENTRANT -D__PCL_LINUX -D__PCL_CUDA -D__PCL_AVX2 -I"$(PCLINCDIR)" -I"$(PCLSRCDIR)/3rdparty" -mtune=znver3 -mfpmath=sse -msse4.2 -mavx2 -mfma -ffast-math -fomit-frame-pointer -ffunction-sections -fdata-sections -std=c++17 -O3 -flto -fvisibility=hidden -fvisibility-inlines-hidden -fnon-call-exceptions -Wall -Wno-parentheses -Wno-extern-c-compat -MMD -MP -MF"$(@:%.o=%.d)" -o"$@" "$<"
+	@echo ' '
