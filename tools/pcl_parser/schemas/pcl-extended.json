@@ -1,0 +1,565 @@
+{
+  "version": "1.0.0",
+  "description": "PCL Extended API Schema - Advanced and specialized classes",
+
+  "classes": {
+    "ATrousWaveletTransform": {
+      "header": "ATrousWaveletTransform.h",
+      "category": "multiscale",
+      "description": "A trous (with holes) wavelet transform for multiscale image decomposition.",
+      "baseClass": "RedundantMultiscaleTransform",
+      "constructors": [
+        {"signature": "ATrousWaveletTransform(const KernelFilter& filter, int numberOfLayers = 4)", "description": "Creates transform with kernel"}
+      ],
+      "methods": {
+        "SetScalingFunction": {"signature": "void SetScalingFunction(const KernelFilter& filter)", "description": "Sets scaling function kernel"},
+        "SetNumberOfLayers": {"signature": "void SetNumberOfLayers(int n)", "description": "Sets number of wavelet layers"}
+      }
+    },
+
+    "MultiscaleLinearTransform": {
+      "header": "MultiscaleLinearTransform.h",
+      "category": "multiscale",
+      "description": "Linear wavelet transform for image decomposition.",
+      "baseClass": "RedundantMultiscaleTransform",
+      "constructors": [
+        {"signature": "MultiscaleLinearTransform(int numberOfLayers = 4)", "description": "Creates linear multiscale transform"}
+      ]
+    },
+
+    "MultiscaleMedianTransform": {
+      "header": "MultiscaleMedianTransform.h",
+      "category": "multiscale",
+      "description": "Median-based multiscale transform for noise reduction.",
+      "baseClass": "RedundantMultiscaleTransform",
+      "constructors": [
+        {"signature": "MultiscaleMedianTransform(int numberOfLayers = 4)", "description": "Creates median multiscale transform"}
+      ]
+    },
+
+    "EphemerisFile": {
+      "header": "EphemerisFile.h",
+      "category": "astrometry",
+      "description": "Access to solar system ephemeris data files.",
+      "constructors": [
+        {"signature": "EphemerisFile()", "description": "Creates ephemeris file accessor"},
+        {"signature": "EphemerisFile(const String& filePath)", "description": "Opens ephemeris file"}
+      ],
+      "methods": {
+        "Open": {"signature": "void Open(const String& filePath)", "description": "Opens ephemeris file"},
+        "Close": {"signature": "void Close()", "description": "Closes file"},
+        "IsOpen": {"signature": "bool IsOpen() const", "description": "Returns open status"},
+        "ConstantValue": {"signature": "double ConstantValue(const IsoString& name) const", "description": "Returns ephemeris constant"},
+        "StateVector": {"signature": "Vector StateVector(const IsoString& objectId, const TimePoint& t) const", "description": "Returns position/velocity state vector"}
+      },
+      "staticMethods": {
+        "FundamentalEphemerides": {"signature": "static EphemerisFile& FundamentalEphemerides()", "description": "Returns DE ephemeris file"}
+      }
+    },
+
+    "Position": {
+      "header": "Position.h",
+      "category": "astrometry",
+      "description": "Astronomical position calculations including apparent place and coordinate transformations.",
+      "constructors": [
+        {"signature": "Position(const TimePoint& t, const IsoString& timescale = \"TDB\")", "description": "Creates position calculator for time"}
+      ],
+      "methods": {
+        "SetObserver": {"signature": "void SetObserver(const ObserverPosition& observer)", "description": "Sets observer position"},
+        "Geometric": {"signature": "Vector Geometric(const IsoString& object) const", "description": "Returns geometric position"},
+        "Astrometric": {"signature": "Vector Astrometric(const IsoString& object) const", "description": "Returns astrometric position"},
+        "Apparent": {"signature": "Vector Apparent(const IsoString& object) const", "description": "Returns apparent position"},
+        "True": {"signature": "Vector True(const IsoString& object) const", "description": "Returns true position"}
+      }
+    },
+
+    "TimePoint": {
+      "header": "TimePoint.h",
+      "category": "astrometry",
+      "description": "High-precision time point representation.",
+      "constructors": [
+        {"signature": "TimePoint()", "description": "Creates current time"},
+        {"signature": "TimePoint(int year, int month, double day)", "description": "Creates from calendar date"},
+        {"signature": "TimePoint(double jd)", "description": "Creates from Julian Date"}
+      ],
+      "methods": {
+        "JD": {"signature": "double JD() const", "description": "Returns Julian Date"},
+        "MJD": {"signature": "double MJD() const", "description": "Returns Modified Julian Date"},
+        "Year": {"signature": "int Year() const", "description": "Returns year"},
+        "Month": {"signature": "int Month() const", "description": "Returns month"},
+        "Day": {"signature": "double Day() const", "description": "Returns day with fraction"},
+        "DayOfYear": {"signature": "int DayOfYear() const", "description": "Returns day of year"},
+        "DayOfWeek": {"signature": "int DayOfWeek() const", "description": "Returns day of week"},
+        "ToString": {"signature": "String ToString(const IsoString& format) const", "description": "Formats as string"}
+      },
+      "staticMethods": {
+        "Now": {"signature": "static TimePoint Now()", "description": "Returns current UTC time"},
+        "J2000": {"signature": "static TimePoint J2000()", "description": "Returns J2000.0 epoch"}
+      }
+    },
+
+    "GaiaDatabaseFile": {
+      "header": "GaiaDatabaseFile.h",
+      "category": "catalogs",
+      "description": "Access to Gaia star catalog database files.",
+      "constructors": [
+        {"signature": "GaiaDatabaseFile(const String& filePath)", "description": "Opens Gaia database file"}
+      ],
+      "methods": {
+        "Search": {"signature": "Array<GaiaStarData> Search(const DPoint& center, double radius) const", "description": "Searches stars in region"},
+        "SearchByMagnitude": {"signature": "Array<GaiaStarData> SearchByMagnitude(double maxMag, const DPoint& center, double radius) const", "description": "Searches by magnitude limit"}
+      }
+    },
+
+    "APASSDatabaseFile": {
+      "header": "APASSDatabaseFile.h",
+      "category": "catalogs",
+      "description": "Access to APASS photometric catalog database.",
+      "constructors": [
+        {"signature": "APASSDatabaseFile(const String& filePath)", "description": "Opens APASS database file"}
+      ],
+      "methods": {
+        "Search": {"signature": "Array<APASSStarData> Search(const DPoint& center, double radius) const", "description": "Searches stars in region"}
+      }
+    },
+
+    "ViewList": {
+      "header": "ViewList.h",
+      "category": "ui",
+      "description": "Control for selecting views from open images.",
+      "baseClass": "Control",
+      "constructors": [
+        {"signature": "ViewList(Control& parent = Control::Null())", "description": "Creates view list control"}
+      ],
+      "methods": {
+        "GetCurrentView": {"signature": "View GetCurrentView() const", "description": "Returns selected view"},
+        "Regenerate": {"signature": "void Regenerate(bool includeMainViews = true, bool includePreviews = true)", "description": "Refreshes view list"},
+        "ExcludeView": {"signature": "void ExcludeView(const View& view)", "description": "Excludes view from list"},
+        "OnViewSelected": {"signature": "void OnViewSelected(view_event_handler handler, Control& receiver)", "description": "Sets selection handler"}
+      }
+    },
+
+    "SectionBar": {
+      "header": "SectionBar.h",
+      "category": "ui",
+      "description": "Collapsible section header for parameter groups.",
+      "baseClass": "Control",
+      "constructors": [
+        {"signature": "SectionBar(Control& parent = Control::Null())", "description": "Creates section bar"}
+      ],
+      "methods": {
+        "SetTitle": {"signature": "void SetTitle(const String& title)", "description": "Sets section title"},
+        "SetSection": {"signature": "void SetSection(Control& section)", "description": "Sets content control"},
+        "IsExpanded": {"signature": "bool IsExpanded() const", "description": "Returns expanded state"},
+        "Expand": {"signature": "void Expand()", "description": "Expands section"},
+        "Collapse": {"signature": "void Collapse()", "description": "Collapses section"}
+      }
+    },
+
+    "Slider": {
+      "header": "Slider.h",
+      "category": "ui",
+      "description": "Slider control for numeric value selection.",
+      "baseClass": "Control",
+      "constructors": [
+        {"signature": "Slider(Control& parent = Control::Null())", "description": "Creates slider"}
+      ],
+      "methods": {
+        "Value": {"signature": "int Value() const", "description": "Returns current value"},
+        "SetValue": {"signature": "void SetValue(int value)", "description": "Sets current value"},
+        "SetRange": {"signature": "void SetRange(int minValue, int maxValue)", "description": "Sets value range"},
+        "MinValue": {"signature": "int MinValue() const", "description": "Returns minimum"},
+        "MaxValue": {"signature": "int MaxValue() const", "description": "Returns maximum"},
+        "SetTickInterval": {"signature": "void SetTickInterval(int interval)", "description": "Sets tick mark interval"},
+        "SetTickStyle": {"signature": "void SetTickStyle(int style)", "description": "Sets tick mark style"},
+        "OnValueUpdated": {"signature": "void OnValueUpdated(value_event_handler handler, Control& receiver)", "description": "Sets value change handler"}
+      }
+    },
+
+    "ToolButton": {
+      "header": "ToolButton.h",
+      "category": "ui",
+      "description": "Toolbar-style button with icon.",
+      "baseClass": "Button",
+      "constructors": [
+        {"signature": "ToolButton(Control& parent = Control::Null())", "description": "Creates tool button"}
+      ],
+      "methods": {
+        "SetIcon": {"signature": "void SetIcon(const Bitmap& icon)", "description": "Sets button icon"},
+        "SetScaledFixedSize": {"signature": "void SetScaledFixedSize(int size)", "description": "Sets scaled size"},
+        "SetCheckable": {"signature": "void SetCheckable(bool checkable = true)", "description": "Makes toggle button"},
+        "IsChecked": {"signature": "bool IsChecked() const", "description": "Returns checked state"},
+        "SetChecked": {"signature": "void SetChecked(bool checked = true)", "description": "Sets checked state"}
+      }
+    },
+
+    "TextBox": {
+      "header": "TextBox.h",
+      "category": "ui",
+      "description": "Multi-line text editing control.",
+      "baseClass": "Control",
+      "constructors": [
+        {"signature": "TextBox(Control& parent = Control::Null())", "description": "Creates text box"}
+      ],
+      "methods": {
+        "Text": {"signature": "String Text() const", "description": "Returns text content"},
+        "SetText": {"signature": "void SetText(const String& text)", "description": "Sets text content"},
+        "Insert": {"signature": "void Insert(const String& text)", "description": "Inserts text at cursor"},
+        "Clear": {"signature": "void Clear()", "description": "Clears content"},
+        "IsReadOnly": {"signature": "bool IsReadOnly() const", "description": "Returns read-only state"},
+        "SetReadOnly": {"signature": "void SetReadOnly(bool readOnly = true)", "description": "Sets read-only state"},
+        "SetScaledMinSize": {"signature": "void SetScaledMinSize(int w, int h)", "description": "Sets scaled minimum size"}
+      }
+    },
+
+    "CodeEditor": {
+      "header": "CodeEditor.h",
+      "category": "ui",
+      "description": "Syntax-highlighting code editor control.",
+      "baseClass": "Control",
+      "constructors": [
+        {"signature": "CodeEditor(Control& parent = Control::Null())", "description": "Creates code editor"}
+      ],
+      "methods": {
+        "Text": {"signature": "String Text() const", "description": "Returns code text"},
+        "SetText": {"signature": "void SetText(const String& text)", "description": "Sets code text"},
+        "SetLanguage": {"signature": "void SetLanguage(const IsoString& language)", "description": "Sets syntax language"},
+        "SetLineNumbers": {"signature": "void SetLineNumbers(bool show = true)", "description": "Shows line numbers"},
+        "GotoLine": {"signature": "void GotoLine(int line)", "description": "Scrolls to line"},
+        "OnTextChanged": {"signature": "void OnTextChanged(edit_event_handler handler, Control& receiver)", "description": "Sets change handler"}
+      }
+    },
+
+    "FileDialog": {
+      "header": "FileDialog.h",
+      "category": "ui",
+      "description": "File open/save dialog.",
+      "constructors": [
+        {"signature": "FileDialog()", "description": "Creates file dialog"}
+      ],
+      "methods": {
+        "SetCaption": {"signature": "void SetCaption(const String& caption)", "description": "Sets dialog title"},
+        "SetInitialPath": {"signature": "void SetInitialPath(const String& path)", "description": "Sets initial directory"},
+        "SetFilter": {"signature": "void SetFilter(const String& filter)", "description": "Sets file filter"},
+        "Execute": {"signature": "bool Execute()", "description": "Shows dialog, returns true if accepted"},
+        "FileName": {"signature": "String FileName() const", "description": "Returns selected file"},
+        "FileNames": {"signature": "StringList FileNames() const", "description": "Returns selected files (multi-select)"}
+      }
+    },
+
+    "OpenFileDialog": {
+      "header": "FileDialog.h",
+      "category": "ui",
+      "description": "File open dialog.",
+      "baseClass": "FileDialog",
+      "constructors": [
+        {"signature": "OpenFileDialog()", "description": "Creates open file dialog"}
+      ],
+      "methods": {
+        "EnableMultipleSelections": {"signature": "void EnableMultipleSelections(bool enable = true)", "description": "Enables multi-select"}
+      }
+    },
+
+    "SaveFileDialog": {
+      "header": "FileDialog.h",
+      "category": "ui",
+      "description": "File save dialog.",
+      "baseClass": "FileDialog",
+      "constructors": [
+        {"signature": "SaveFileDialog()", "description": "Creates save file dialog"}
+      ],
+      "methods": {
+        "SetOverwritePrompt": {"signature": "void SetOverwritePrompt(bool prompt = true)", "description": "Enables overwrite confirmation"}
+      }
+    },
+
+    "MessageBox": {
+      "header": "MessageBox.h",
+      "category": "ui",
+      "description": "Standard message box dialogs.",
+      "staticMethods": {
+        "Show": {"signature": "static int Show(const String& text, const String& caption = String(), int buttons = StdButton::Ok, int icon = StdIcon::Information)", "description": "Shows message box"},
+        "Critical": {"signature": "static int Critical(const String& text, const String& caption = String(), int buttons = StdButton::Ok)", "description": "Shows critical error"},
+        "Warning": {"signature": "static int Warning(const String& text, const String& caption = String(), int buttons = StdButton::Ok)", "description": "Shows warning"},
+        "Information": {"signature": "static int Information(const String& text, const String& caption = String(), int buttons = StdButton::Ok)", "description": "Shows information"},
+        "Question": {"signature": "static int Question(const String& text, const String& caption = String(), int buttons = StdButton::Yes | StdButton::No)", "description": "Shows question"}
+      }
+    },
+
+    "KernelFilter": {
+      "header": "KernelFilter.h",
+      "category": "filter",
+      "description": "Convolution kernel filter definition.",
+      "constructors": [
+        {"signature": "KernelFilter()", "description": "Creates null filter"},
+        {"signature": "KernelFilter(const float* k, int size)", "description": "Creates from array"},
+        {"signature": "KernelFilter(const FMatrix& k)", "description": "Creates from matrix"}
+      ],
+      "methods": {
+        "Normalize": {"signature": "void Normalize()", "description": "Normalizes kernel coefficients"},
+        "Size": {"signature": "int Size() const", "description": "Returns kernel size"},
+        "Coefficient": {"signature": "float Coefficient(int i, int j) const", "description": "Returns coefficient"},
+        "Weight": {"signature": "double Weight() const", "description": "Returns sum of coefficients"}
+      }
+    },
+
+    "GaussianFilter": {
+      "header": "GaussianFilter.h",
+      "category": "filter",
+      "description": "Gaussian convolution kernel.",
+      "baseClass": "KernelFilter",
+      "constructors": [
+        {"signature": "GaussianFilter(float sigma = 2)", "description": "Creates Gaussian kernel"},
+        {"signature": "GaussianFilter(int size, float sigma)", "description": "Creates with specific size"}
+      ],
+      "methods": {
+        "Sigma": {"signature": "float Sigma() const", "description": "Returns sigma value"}
+      }
+    },
+
+    "SeparableFilter": {
+      "header": "SeparableFilter.h",
+      "category": "filter",
+      "description": "Separable convolution filter for efficient processing.",
+      "constructors": [
+        {"signature": "SeparableFilter()", "description": "Creates null filter"},
+        {"signature": "SeparableFilter(const FVector& rowFilter, const FVector& colFilter)", "description": "Creates from row/column vectors"}
+      ],
+      "methods": {
+        "RowFilter": {"signature": "FVector RowFilter() const", "description": "Returns row filter"},
+        "ColFilter": {"signature": "FVector ColFilter() const", "description": "Returns column filter"},
+        "Size": {"signature": "int Size() const", "description": "Returns filter size"}
+      }
+    },
+
+    "SurfaceSpline": {
+      "header": "SurfaceSpline.h",
+      "category": "math",
+      "description": "2D surface spline interpolation.",
+      "constructors": [
+        {"signature": "SurfaceSpline()", "description": "Creates surface spline"}
+      ],
+      "methods": {
+        "Initialize": {"signature": "void Initialize(const DVector& x, const DVector& y, const DVector& z, int order = 2)", "description": "Initializes spline from points"},
+        "Evaluate": {"signature": "double Evaluate(double x, double y) const", "description": "Evaluates spline at point"},
+        "Clear": {"signature": "void Clear()", "description": "Clears spline data"},
+        "IsValid": {"signature": "bool IsValid() const", "description": "Returns true if initialized"}
+      }
+    },
+
+    "ChebyshevFit": {
+      "header": "ChebyshevFit.h",
+      "category": "math",
+      "description": "Chebyshev polynomial fitting.",
+      "constructors": [
+        {"signature": "ChebyshevFit(const DVector& x, const DVector& y, int order)", "description": "Creates fit from data"}
+      ],
+      "methods": {
+        "Evaluate": {"signature": "double Evaluate(double x) const", "description": "Evaluates polynomial at point"},
+        "Derivative": {"signature": "double Derivative(double x) const", "description": "Evaluates derivative"},
+        "Order": {"signature": "int Order() const", "description": "Returns polynomial order"},
+        "Coefficient": {"signature": "double Coefficient(int i) const", "description": "Returns coefficient"}
+      }
+    },
+
+    "LinearFit": {
+      "header": "LinearFit.h",
+      "category": "math",
+      "description": "Linear regression fitting.",
+      "constructors": [
+        {"signature": "LinearFit(const DVector& x, const DVector& y)", "description": "Creates linear fit"}
+      ],
+      "methods": {
+        "Evaluate": {"signature": "double Evaluate(double x) const", "description": "Evaluates at point"},
+        "Slope": {"signature": "double Slope() const", "description": "Returns slope"},
+        "Intercept": {"signature": "double Intercept() const", "description": "Returns y-intercept"},
+        "Correlation": {"signature": "double Correlation() const", "description": "Returns correlation coefficient"},
+        "IsValid": {"signature": "bool IsValid() const", "description": "Returns true if valid"}
+      }
+    },
+
+    "Random": {
+      "header": "Random.h",
+      "category": "math",
+      "description": "Random number generation.",
+      "constructors": [
+        {"signature": "Random(uint32 seed = 0)", "description": "Creates generator with seed"}
+      ],
+      "methods": {
+        "UI32": {"signature": "uint32 UI32()", "description": "Returns random 32-bit unsigned"},
+        "UI64": {"signature": "uint64 UI64()", "description": "Returns random 64-bit unsigned"},
+        "Uniform": {"signature": "double Uniform()", "description": "Returns [0,1) uniform random"},
+        "UniformI": {"signature": "int UniformI(int maxValue)", "description": "Returns [0,max) uniform integer"},
+        "Normal": {"signature": "double Normal(double mean = 0, double sigma = 1)", "description": "Returns normal random"},
+        "Poisson": {"signature": "int Poisson(double lambda)", "description": "Returns Poisson random"}
+      },
+      "staticMethods": {
+        "Seed32": {"signature": "static uint32 Seed32()", "description": "Returns random seed from system"}
+      }
+    },
+
+    "NetworkTransfer": {
+      "header": "NetworkTransfer.h",
+      "category": "network",
+      "description": "HTTP/HTTPS network file transfer.",
+      "constructors": [
+        {"signature": "NetworkTransfer()", "description": "Creates network transfer object"}
+      ],
+      "methods": {
+        "SetURL": {"signature": "void SetURL(const String& url)", "description": "Sets target URL"},
+        "Download": {"signature": "bool Download()", "description": "Downloads from URL"},
+        "Upload": {"signature": "bool Upload(const String& filePath)", "description": "Uploads file to URL"},
+        "Response": {"signature": "ByteArray Response() const", "description": "Returns response data"},
+        "ResponseCode": {"signature": "int ResponseCode() const", "description": "Returns HTTP status code"},
+        "ContentType": {"signature": "String ContentType() const", "description": "Returns content type"},
+        "OnDownloadProgress": {"signature": "void OnDownloadProgress(progress_event_handler handler)", "description": "Sets progress handler"}
+      }
+    },
+
+    "ElapsedTime": {
+      "header": "ElapsedTime.h",
+      "category": "utility",
+      "description": "High-resolution elapsed time measurement.",
+      "constructors": [
+        {"signature": "ElapsedTime()", "description": "Creates and starts timer"}
+      ],
+      "methods": {
+        "Reset": {"signature": "void Reset()", "description": "Resets timer to zero"},
+        "Seconds": {"signature": "double Seconds() const", "description": "Returns elapsed seconds"},
+        "Milliseconds": {"signature": "double Milliseconds() const", "description": "Returns elapsed milliseconds"},
+        "ToString": {"signature": "String ToString() const", "description": "Formats as string"}
+      }
+    },
+
+    "Settings": {
+      "header": "Settings.h",
+      "category": "utility",
+      "description": "Persistent settings storage.",
+      "staticMethods": {
+        "Read": {"signature": "static Variant Read(const IsoString& key, const Variant& defaultValue = Variant())", "description": "Reads setting value"},
+        "ReadGlobal": {"signature": "static Variant ReadGlobal(const IsoString& key, const Variant& defaultValue = Variant())", "description": "Reads global setting"},
+        "Write": {"signature": "static void Write(const IsoString& key, const Variant& value)", "description": "Writes setting value"},
+        "WriteGlobal": {"signature": "static void WriteGlobal(const IsoString& key, const Variant& value)", "description": "Writes global setting"},
+        "Remove": {"signature": "static void Remove(const IsoString& key)", "description": "Removes setting"}
+      }
+    },
+
+    "Compression": {
+      "header": "Compression.h",
+      "category": "utility",
+      "description": "Data compression algorithms.",
+      "staticMethods": {
+        "ZLibCompress": {"signature": "static ByteArray ZLibCompress(const ByteArray& data, int level = 6)", "description": "Compresses with zlib"},
+        "ZLibUncompress": {"signature": "static ByteArray ZLibUncompress(const ByteArray& data)", "description": "Decompresses zlib data"},
+        "LZ4Compress": {"signature": "static ByteArray LZ4Compress(const ByteArray& data)", "description": "Compresses with LZ4"},
+        "LZ4Uncompress": {"signature": "static ByteArray LZ4Uncompress(const ByteArray& data, size_type uncompressedSize)", "description": "Decompresses LZ4 data"},
+        "ZstdCompress": {"signature": "static ByteArray ZstdCompress(const ByteArray& data, int level = 3)", "description": "Compresses with Zstandard"},
+        "ZstdUncompress": {"signature": "static ByteArray ZstdUncompress(const ByteArray& data)", "description": "Decompresses Zstd data"}
+      }
+    },
+
+    "Cryptography": {
+      "header": "Cryptography.h",
+      "category": "utility",
+      "description": "Cryptographic hash functions.",
+      "staticMethods": {
+        "MD5": {"signature": "static ByteArray MD5(const ByteArray& data)", "description": "Computes MD5 hash"},
+        "SHA1": {"signature": "static ByteArray SHA1(const ByteArray& data)", "description": "Computes SHA-1 hash"},
+        "SHA256": {"signature": "static ByteArray SHA256(const ByteArray& data)", "description": "Computes SHA-256 hash"},
+        "SHA512": {"signature": "static ByteArray SHA512(const ByteArray& data)", "description": "Computes SHA-512 hash"}
+      }
+    }
+  },
+
+  "includeFiles": {
+    "pcl/Image.h": {
+      "description": "Image class and pixel traits",
+      "provides": ["Image", "GenericImage", "PixelTraits"]
+    },
+    "pcl/ImageWindow.h": {
+      "description": "Image window management",
+      "provides": ["ImageWindow"]
+    },
+    "pcl/View.h": {
+      "description": "Image view access",
+      "provides": ["View"]
+    },
+    "pcl/Console.h": {
+      "description": "Process console output",
+      "provides": ["Console"]
+    },
+    "pcl/MetaModule.h": {
+      "description": "Module definition base class",
+      "provides": ["MetaModule"]
+    },
+    "pcl/MetaProcess.h": {
+      "description": "Process metadata definition",
+      "provides": ["MetaProcess"]
+    },
+    "pcl/ProcessImplementation.h": {
+      "description": "Process execution implementation",
+      "provides": ["ProcessImplementation"]
+    },
+    "pcl/ProcessInterface.h": {
+      "description": "Process GUI interface",
+      "provides": ["ProcessInterface", "InterfaceFeatures"]
+    },
+    "pcl/MetaParameter.h": {
+      "description": "Process parameter definitions",
+      "provides": ["MetaParameter", "MetaNumericParameter", "MetaBoolean", "MetaEnumeration"]
+    },
+    "pcl/Dialog.h": {
+      "description": "Dialog windows",
+      "provides": ["Dialog"]
+    },
+    "pcl/Sizer.h": {
+      "description": "Layout managers",
+      "provides": ["Sizer", "HorizontalSizer", "VerticalSizer"]
+    },
+    "pcl/Thread.h": {
+      "description": "Threading support",
+      "provides": ["Thread", "ThreadPriority"]
+    },
+    "pcl/XISF.h": {
+      "description": "XISF file format support",
+      "provides": ["XISFReader", "XISFWriter", "XISFOptions"]
+    },
+    "pcl/Graphics.h": {
+      "description": "2D graphics drawing",
+      "provides": ["Graphics"]
+    },
+    "pcl/Bitmap.h": {
+      "description": "Raster image for UI",
+      "provides": ["Bitmap"]
+    }
+  },
+
+  "moduleStructure": {
+    "requiredFiles": [
+      {"name": "Module.cpp", "description": "Module entry point and definition"},
+      {"name": "Module.h", "description": "Module header with version defines"},
+      {"name": "Process.cpp", "description": "Process implementation"},
+      {"name": "Process.h", "description": "MetaProcess declaration"},
+      {"name": "ProcessParameters.cpp", "description": "Parameter definitions"},
+      {"name": "ProcessParameters.h", "description": "MetaParameter declarations"},
+      {"name": "ProcessInstance.cpp", "description": "Instance implementation"},
+      {"name": "ProcessInstance.h", "description": "ProcessImplementation subclass"},
+      {"name": "ProcessInterface.cpp", "description": "GUI implementation"},
+      {"name": "ProcessInterface.h", "description": "ProcessInterface subclass"}
+    ],
+    "optionalFiles": [
+      {"name": "ProcessEngine.cpp", "description": "Core algorithm implementation"},
+      {"name": "ProcessEngine.h", "description": "Algorithm class declaration"}
+    ],
+    "macros": {
+      "MODULE_VERSION_MAJOR": "Major version number",
+      "MODULE_VERSION_MINOR": "Minor version number",
+      "MODULE_VERSION_REVISION": "Revision number",
+      "MODULE_VERSION_BUILD": "Build number",
+      "MODULE_VERSION_LANGUAGE": "Language code (e.g., \"eng\")",
+      "MODULE_RELEASE_YEAR": "Release year",
+      "MODULE_RELEASE_MONTH": "Release month",
+      "MODULE_RELEASE_DAY": "Release day"
+    }
+  }
+}

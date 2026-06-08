@@ -1,0 +1,28 @@
+{
+  "name": "pcl-parser-server",
+  "version": "1.0.0",
+  "description": "PCL (PixInsight Class Library) parser server for C++ module development",
+  "type": "module",
+  "main": "src/server.js",
+  "scripts": {
+    "start": "node src/server.js",
+    "mcp": "node src/mcp-server.js",
+    "test": "node --test src/test.js"
+  },
+  "keywords": [
+    "pixinsight",
+    "pcl",
+    "astrophotography",
+    "image-processing",
+    "parser",
+    "language-server"
+  ],
+  "author": "scarter4work",
+  "license": "MIT",
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.27.0"
+  }
+}

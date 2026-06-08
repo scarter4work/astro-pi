@@ -1,0 +1,13 @@
+{
+  "name": "pcl-parser-server",
+  "version": "1.0.0",
+  "description": "PCL (PixInsight Class Library) parser server for C++ module development",
+  "author": "scarter4work",
+  "repository": "https://github.com/scarter4work/pcl-parser-server",
+  "mcp": {
+    "command": "node",
+    "args": ["src/mcp-server.js"]
+  },
+  "skills": ["pcl"],
+  "commands": ["pcl-analyze", "pcl-class", "pcl-template", "pcl-help"]
+}

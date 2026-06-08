@@ -1,0 +1,1214 @@
+{
+  "version": "1.0.0",
+  "description": "PCL (PixInsight Class Library) Core API Schema",
+  "documentation": "https://pixinsight.com/developer/pcl/",
+  "repository": "https://gitlab.com/pixinsight/PCL",
+
+  "namespaces": {
+    "pcl": {
+      "description": "Primary namespace containing all PixInsight Class Library components"
+    }
+  },
+
+  "classes": {
+    "Image": {
+      "header": "Image.h",
+      "category": "image",
+      "description": "Core class representing a 2D image with multiple channels. Supports various pixel formats and color spaces.",
+      "baseClass": "AbstractImage",
+      "constructors": [
+        {"signature": "Image()", "description": "Creates an empty image"},
+        {"signature": "Image(int width, int height, int numberOfChannels = 1, int colorSpace = ColorSpace::Gray)", "description": "Creates image with specified dimensions"},
+        {"signature": "Image(const Image& image)", "description": "Copy constructor (shares pixel data)"},
+        {"signature": "Image(Image&& image)", "description": "Move constructor"}
+      ],
+      "methods": {
+        "Width": {"signature": "int Width() const", "description": "Returns image width in pixels"},
+        "Height": {"signature": "int Height() const", "description": "Returns image height in pixels"},
+        "NumberOfChannels": {"signature": "int NumberOfChannels() const", "description": "Returns total number of channels"},
+        "ColorSpace": {"signature": "int ColorSpace() const", "description": "Returns current color space"},
+        "BitsPerSample": {"signature": "int BitsPerSample() const", "description": "Returns bits per sample"},
+        "Sample": {"signature": "double Sample(int x, int y, int channel = 0) const", "description": "Returns pixel sample at position"},
+        "SetSample": {"signature": "void SetSample(double value, int x, int y, int channel = 0)", "description": "Sets pixel sample at position"},
+        "Apply": {"signature": "void Apply(double value, int op = ImageOp::Mov)", "description": "Applies operation with scalar to all pixels"},
+        "Invert": {"signature": "void Invert()", "description": "Inverts pixel values"},
+        "Normalize": {"signature": "void Normalize(double low = 0, double high = 1)", "description": "Normalizes to range"},
+        "Rescale": {"signature": "void Rescale(double low = 0, double high = 1)", "description": "Rescales pixel values"},
+        "Binarize": {"signature": "void Binarize(double threshold = 0.5)", "description": "Converts to binary image"},
+        "SelectChannel": {"signature": "void SelectChannel(int channel)", "description": "Selects active channel for operations"},
+        "ResetSelections": {"signature": "void ResetSelections()", "description": "Resets channel and ROI selections"},
+        "SetColorSpace": {"signature": "void SetColorSpace(int colorSpace)", "description": "Converts to color space"},
+        "GetLuminance": {"signature": "void GetLuminance(Image& luminance) const", "description": "Extracts luminance channel"},
+        "SetLuminance": {"signature": "void SetLuminance(const Image& luminance)", "description": "Replaces luminance channel"},
+        "Median": {"signature": "double Median(int channel = -1) const", "description": "Returns median pixel value"},
+        "Mean": {"signature": "double Mean(int channel = -1) const", "description": "Returns mean pixel value"},
+        "StdDev": {"signature": "double StdDev(int channel = -1) const", "description": "Returns standard deviation"},
+        "AllocateData": {"signature": "void AllocateData(int width, int height, int numberOfChannels = 1, int colorSpace = ColorSpace::Gray)", "description": "Allocates new image data"},
+        "FreeData": {"signature": "void FreeData()", "description": "Frees image data"},
+        "SetStatusCallback": {"signature": "void SetStatusCallback(StatusCallback* callback)", "description": "Sets status callback for progress"}
+      }
+    },
+
+    "ImageWindow": {
+      "header": "ImageWindow.h",
+      "category": "image",
+      "description": "Represents a PixInsight image window containing views and providing GUI integration.",
+      "constructors": [
+        {"signature": "ImageWindow()", "description": "Creates null window reference"},
+        {"signature": "ImageWindow(int width, int height, int numberOfChannels = 1, int bitsPerSample = 32, bool floatSample = true, bool color = false, const IsoString& id = IsoString())", "description": "Creates new image window"}
+      ],
+      "methods": {
+        "MainView": {"signature": "View MainView() const", "description": "Returns main view of the window"},
+        "CurrentView": {"signature": "View CurrentView() const", "description": "Returns currently selected view"},
+        "Show": {"signature": "void Show(bool fitWindow = true)", "description": "Shows the window"},
+        "Hide": {"signature": "void Hide()", "description": "Hides the window"},
+        "Close": {"signature": "void Close()", "description": "Closes the window"},
+        "ZoomToFit": {"signature": "void ZoomToFit(bool allowMagnification = true)", "description": "Zooms to fit view"},
+        "Regenerate": {"signature": "void Regenerate()", "description": "Regenerates screen rendition"},
+        "IsNull": {"signature": "bool IsNull() const", "description": "Returns true if null reference"},
+        "FilePath": {"signature": "String FilePath() const", "description": "Returns file path if any"},
+        "SetViewIdSampleFormat": {"signature": "void SetViewIdSampleFormat(const IsoString& id, int bitsPerSample, bool floatSample)", "description": "Sets view properties"},
+        "BringToFront": {"signature": "void BringToFront()", "description": "Brings window to front"},
+        "SendToBack": {"signature": "void SendToBack()", "description": "Sends window to back"},
+        "Keywords": {"signature": "FITSKeywordArray Keywords() const", "description": "Returns FITS keywords"}
+      },
+      "staticMethods": {
+        "AllWindows": {"signature": "static Array<ImageWindow> AllWindows()", "description": "Returns all open windows"},
+        "WindowById": {"signature": "static ImageWindow WindowById(const IsoString& id)", "description": "Finds window by identifier"},
+        "ActiveWindow": {"signature": "static ImageWindow ActiveWindow()", "description": "Returns active window"}
+      }
+    },
+
+    "View": {
+      "header": "View.h",
+      "category": "image",
+      "description": "Represents a view of an image within an ImageWindow.",
+      "methods": {
+        "Image": {"signature": "ImageVariant Image() const", "description": "Returns image variant"},
+        "GetImage": {"signature": "void GetImage(pcl::Image& image) const", "description": "Copies view image to local"},
+        "SetImage": {"signature": "void SetImage(const pcl::Image& image)", "description": "Sets view image from local"},
+        "Id": {"signature": "IsoString Id() const", "description": "Returns view identifier"},
+        "FullId": {"signature": "IsoString FullId() const", "description": "Returns full identifier path"},
+        "Window": {"signature": "ImageWindow Window() const", "description": "Returns parent window"},
+        "IsMainView": {"signature": "bool IsMainView() const", "description": "Returns true if main view"},
+        "IsPreview": {"signature": "bool IsPreview() const", "description": "Returns true if preview"},
+        "Lock": {"signature": "void Lock(bool notify = true)", "description": "Locks view for writing"},
+        "Unlock": {"signature": "void Unlock(bool notify = true)", "description": "Unlocks view"},
+        "IsLocked": {"signature": "bool IsLocked() const", "description": "Returns lock status"}
+      },
+      "staticMethods": {
+        "AllViews": {"signature": "static Array<View> AllViews(bool excludePreviews = false)", "description": "Returns all views"},
+        "ViewById": {"signature": "static View ViewById(const IsoString& id)", "description": "Finds view by ID"}
+      }
+    },
+
+    "Console": {
+      "header": "Console.h",
+      "category": "core",
+      "description": "Interface to PixInsight's process console for text output and user interaction.",
+      "constructors": [
+        {"signature": "Console()", "description": "Creates console interface"}
+      ],
+      "methods": {
+        "Write": {"signature": "void Write(const String& text)", "description": "Writes text without newline"},
+        "WriteLn": {"signature": "void WriteLn(const String& text = String())", "description": "Writes text with newline"},
+        "Note": {"signature": "void Note(const String& text)", "description": "Writes note (blue text)"},
+        "NoteLn": {"signature": "void NoteLn(const String& text)", "description": "Writes note line"},
+        "Warning": {"signature": "void Warning(const String& text)", "description": "Writes warning (amber text)"},
+        "WarningLn": {"signature": "void WarningLn(const String& text)", "description": "Writes warning line"},
+        "Critical": {"signature": "void Critical(const String& text)", "description": "Writes critical (red text)"},
+        "CriticalLn": {"signature": "void CriticalLn(const String& text)", "description": "Writes critical line"},
+        "Show": {"signature": "void Show()", "description": "Shows console window"},
+        "Hide": {"signature": "void Hide()", "description": "Hides console window"},
+        "Clear": {"signature": "void Clear()", "description": "Clears console text"},
+        "Flush": {"signature": "void Flush()", "description": "Flushes output buffer"},
+        "AbortEnabled": {"signature": "bool AbortEnabled() const", "description": "Returns if abort is enabled"},
+        "EnableAbort": {"signature": "void EnableAbort()", "description": "Enables abort button"},
+        "DisableAbort": {"signature": "void DisableAbort()", "description": "Disables abort button"},
+        "AbortRequested": {"signature": "bool AbortRequested() const", "description": "Returns if abort was clicked"}
+      }
+    },
+
+    "String": {
+      "header": "String.h",
+      "category": "core",
+      "description": "Unicode string class with comprehensive string manipulation methods.",
+      "constructors": [
+        {"signature": "String()", "description": "Creates empty string"},
+        {"signature": "String(const char* s)", "description": "Creates from C string"},
+        {"signature": "String(const wchar_t* s)", "description": "Creates from wide C string"},
+        {"signature": "String(const String& s)", "description": "Copy constructor"},
+        {"signature": "String(char c, int n = 1)", "description": "Creates from repeated character"}
+      ],
+      "methods": {
+        "Length": {"signature": "size_type Length() const", "description": "Returns string length"},
+        "IsEmpty": {"signature": "bool IsEmpty() const", "description": "Returns true if empty"},
+        "Clear": {"signature": "void Clear()", "description": "Clears string"},
+        "Append": {"signature": "String& Append(const String& s)", "description": "Appends string"},
+        "Prepend": {"signature": "String& Prepend(const String& s)", "description": "Prepends string"},
+        "Insert": {"signature": "String& Insert(size_type pos, const String& s)", "description": "Inserts at position"},
+        "Delete": {"signature": "String& Delete(size_type pos, size_type n = 1)", "description": "Deletes characters"},
+        "Replace": {"signature": "String& Replace(const String& s1, const String& s2)", "description": "Replaces occurrences"},
+        "Substring": {"signature": "String Substring(size_type pos, size_type n = maxPos) const", "description": "Returns substring"},
+        "Left": {"signature": "String Left(size_type n) const", "description": "Returns left n characters"},
+        "Right": {"signature": "String Right(size_type n) const", "description": "Returns right n characters"},
+        "Trimmed": {"signature": "String Trimmed() const", "description": "Returns trimmed copy"},
+        "TrimmedLeft": {"signature": "String TrimmedLeft() const", "description": "Returns left-trimmed copy"},
+        "TrimmedRight": {"signature": "String TrimmedRight() const", "description": "Returns right-trimmed copy"},
+        "Uppercase": {"signature": "String Uppercase() const", "description": "Returns uppercase copy"},
+        "Lowercase": {"signature": "String Lowercase() const", "description": "Returns lowercase copy"},
+        "StartsWith": {"signature": "bool StartsWith(const String& s) const", "description": "Tests prefix"},
+        "EndsWith": {"signature": "bool EndsWith(const String& s) const", "description": "Tests suffix"},
+        "Contains": {"signature": "bool Contains(const String& s) const", "description": "Tests containment"},
+        "Find": {"signature": "size_type Find(const String& s, size_type pos = 0) const", "description": "Finds substring"},
+        "FindLast": {"signature": "size_type FindLast(const String& s) const", "description": "Finds last occurrence"},
+        "ToInt": {"signature": "int ToInt(int base = 10) const", "description": "Converts to integer"},
+        "ToDouble": {"signature": "double ToDouble() const", "description": "Converts to double"},
+        "Format": {"signature": "String& Format(const char* fmt, ...)", "description": "Printf-style formatting"}
+      },
+      "staticMethods": {
+        "ToHex": {"signature": "static String ToHex(uint64 value)", "description": "Converts to hex string"}
+      }
+    },
+
+    "IsoString": {
+      "header": "String.h",
+      "category": "core",
+      "description": "ISO 8859-1 string class for identifiers and ASCII text.",
+      "baseClass": "GenericString<char>",
+      "constructors": [
+        {"signature": "IsoString()", "description": "Creates empty string"},
+        {"signature": "IsoString(const char* s)", "description": "Creates from C string"}
+      ],
+      "methods": {
+        "UTF8ToUTF16": {"signature": "String UTF8ToUTF16() const", "description": "Converts UTF-8 to UTF-16"},
+        "ToUTF8": {"signature": "IsoString ToUTF8() const", "description": "Encodes as UTF-8"}
+      }
+    },
+
+    "Array": {
+      "header": "Array.h",
+      "category": "container",
+      "description": "Dynamic array container template with automatic memory management.",
+      "constructors": [
+        {"signature": "Array()", "description": "Creates empty array"},
+        {"signature": "Array(size_type n)", "description": "Creates with n default elements"},
+        {"signature": "Array(size_type n, const T& v)", "description": "Creates with n copies of v"}
+      ],
+      "methods": {
+        "Length": {"signature": "size_type Length() const", "description": "Returns element count"},
+        "Size": {"signature": "size_type Size() const", "description": "Alias for Length"},
+        "IsEmpty": {"signature": "bool IsEmpty() const", "description": "Returns true if empty"},
+        "Capacity": {"signature": "size_type Capacity() const", "description": "Returns allocated capacity"},
+        "Add": {"signature": "void Add(const T& v)", "description": "Appends element"},
+        "Append": {"signature": "void Append(const T& v)", "description": "Alias for Add"},
+        "Insert": {"signature": "iterator Insert(iterator pos, const T& v)", "description": "Inserts at position"},
+        "Remove": {"signature": "void Remove(iterator pos)", "description": "Removes at position"},
+        "Clear": {"signature": "void Clear()", "description": "Removes all elements"},
+        "Reserve": {"signature": "void Reserve(size_type n)", "description": "Reserves capacity"},
+        "Shrink": {"signature": "void Shrink()", "description": "Releases unused capacity"},
+        "At": {"signature": "T& At(size_type i)", "description": "Accesses element with bounds check"},
+        "Begin": {"signature": "iterator Begin()", "description": "Returns begin iterator"},
+        "End": {"signature": "iterator End()", "description": "Returns end iterator"},
+        "First": {"signature": "T& First()", "description": "Returns first element"},
+        "Last": {"signature": "T& Last()", "description": "Returns last element"},
+        "Contains": {"signature": "bool Contains(const T& v) const", "description": "Tests if contains value"},
+        "IndexOf": {"signature": "size_type IndexOf(const T& v) const", "description": "Finds value index"},
+        "Sort": {"signature": "void Sort()", "description": "Sorts elements"}
+      }
+    },
+
+    "Vector": {
+      "header": "Vector.h",
+      "category": "math",
+      "description": "Mathematical vector class with linear algebra operations.",
+      "constructors": [
+        {"signature": "Vector()", "description": "Creates empty vector"},
+        {"signature": "Vector(int length)", "description": "Creates zero vector of length"},
+        {"signature": "Vector(double value, int length)", "description": "Creates vector filled with value"},
+        {"signature": "Vector(const double* data, int length)", "description": "Creates from array"}
+      ],
+      "methods": {
+        "Length": {"signature": "int Length() const", "description": "Returns number of components"},
+        "At": {"signature": "double& At(int i)", "description": "Accesses component"},
+        "Dot": {"signature": "double Dot(const Vector& v) const", "description": "Computes dot product"},
+        "Cross": {"signature": "Vector Cross(const Vector& v) const", "description": "Computes cross product (3D)"},
+        "L2Norm": {"signature": "double L2Norm() const", "description": "Computes Euclidean norm"},
+        "L1Norm": {"signature": "double L1Norm() const", "description": "Computes L1 norm"},
+        "Unit": {"signature": "Vector Unit() const", "description": "Returns unit vector"},
+        "Sum": {"signature": "double Sum() const", "description": "Returns sum of components"},
+        "Mean": {"signature": "double Mean() const", "description": "Returns mean value"},
+        "Variance": {"signature": "double Variance() const", "description": "Returns variance"},
+        "StdDev": {"signature": "double StdDev() const", "description": "Returns standard deviation"},
+        "Median": {"signature": "double Median() const", "description": "Returns median value"},
+        "Min": {"signature": "double Min() const", "description": "Returns minimum value"},
+        "Max": {"signature": "double Max() const", "description": "Returns maximum value"},
+        "MinComponent": {"signature": "int MinComponent() const", "description": "Returns index of min"},
+        "MaxComponent": {"signature": "int MaxComponent() const", "description": "Returns index of max"},
+        "Sorted": {"signature": "Vector Sorted() const", "description": "Returns sorted copy"},
+        "Reverse": {"signature": "void Reverse()", "description": "Reverses in place"}
+      }
+    },
+
+    "Matrix": {
+      "header": "Matrix.h",
+      "category": "math",
+      "description": "Mathematical matrix class for linear algebra and transformations.",
+      "constructors": [
+        {"signature": "Matrix()", "description": "Creates empty matrix"},
+        {"signature": "Matrix(int rows, int cols)", "description": "Creates zero matrix"},
+        {"signature": "Matrix(double value, int rows, int cols)", "description": "Creates filled matrix"},
+        {"signature": "Matrix(const double* data, int rows, int cols)", "description": "Creates from array"}
+      ],
+      "methods": {
+        "Rows": {"signature": "int Rows() const", "description": "Returns row count"},
+        "Cols": {"signature": "int Cols() const", "description": "Returns column count"},
+        "Columns": {"signature": "int Columns() const", "description": "Alias for Cols"},
+        "NumberOfElements": {"signature": "int NumberOfElements() const", "description": "Returns total element count"},
+        "At": {"signature": "double& At(int row, int col)", "description": "Accesses element"},
+        "RowVector": {"signature": "Vector RowVector(int row) const", "description": "Returns row as vector"},
+        "ColumnVector": {"signature": "Vector ColumnVector(int col) const", "description": "Returns column as vector"},
+        "Transpose": {"signature": "Matrix Transpose() const", "description": "Returns transpose"},
+        "Inverse": {"signature": "Matrix Inverse() const", "description": "Returns inverse"},
+        "Determinant": {"signature": "double Determinant() const", "description": "Computes determinant"},
+        "Trace": {"signature": "double Trace() const", "description": "Computes trace"},
+        "SVD": {"signature": "void SVD(Matrix& U, Vector& S, Matrix& V) const", "description": "Singular value decomposition"},
+        "UnitMatrix": {"signature": "static Matrix UnitMatrix(int n)", "description": "Creates identity matrix"}
+      }
+    },
+
+    "Thread": {
+      "header": "Thread.h",
+      "category": "threading",
+      "description": "Thread class for parallel processing.",
+      "constructors": [
+        {"signature": "Thread()", "description": "Creates thread object"}
+      ],
+      "methods": {
+        "Run": {"signature": "virtual void Run()", "description": "Override to implement thread work"},
+        "Start": {"signature": "void Start(ThreadPriority priority = ThreadPriority::Inherit)", "description": "Starts thread execution"},
+        "Wait": {"signature": "void Wait()", "description": "Waits for thread completion"},
+        "IsActive": {"signature": "bool IsActive() const", "description": "Returns true if running"},
+        "Priority": {"signature": "ThreadPriority Priority() const", "description": "Returns thread priority"},
+        "SetPriority": {"signature": "void SetPriority(ThreadPriority priority)", "description": "Sets thread priority"}
+      },
+      "staticMethods": {
+        "NumberOfThreads": {"signature": "static int NumberOfThreads(int count, int overheadLimit = 1)", "description": "Calculates optimal thread count"},
+        "IsRootThread": {"signature": "static bool IsRootThread()", "description": "Returns true if main thread"},
+        "Sleep": {"signature": "static void Sleep(unsigned ms)", "description": "Sleeps for milliseconds"}
+      }
+    },
+
+    "Mutex": {
+      "header": "Mutex.h",
+      "category": "threading",
+      "description": "Mutual exclusion lock for thread synchronization.",
+      "constructors": [
+        {"signature": "Mutex()", "description": "Creates mutex"}
+      ],
+      "methods": {
+        "Lock": {"signature": "void Lock()", "description": "Acquires lock"},
+        "Unlock": {"signature": "void Unlock()", "description": "Releases lock"},
+        "TryLock": {"signature": "bool TryLock()", "description": "Tries to acquire lock"}
+      }
+    },
+
+    "AutoLock": {
+      "header": "AutoLock.h",
+      "category": "threading",
+      "description": "RAII wrapper for automatic mutex locking/unlocking.",
+      "constructors": [
+        {"signature": "AutoLock(Mutex& mutex)", "description": "Locks mutex on construction"}
+      ]
+    },
+
+    "File": {
+      "header": "File.h",
+      "category": "file",
+      "description": "File I/O class with comprehensive file operations.",
+      "constructors": [
+        {"signature": "File()", "description": "Creates unopened file object"},
+        {"signature": "File(const String& path, FileMode mode)", "description": "Opens file at path"}
+      ],
+      "methods": {
+        "Open": {"signature": "void Open(const String& path, FileMode mode)", "description": "Opens file"},
+        "Close": {"signature": "void Close()", "description": "Closes file"},
+        "IsOpen": {"signature": "bool IsOpen() const", "description": "Returns open status"},
+        "Read": {"signature": "size_type Read(void* buffer, size_type size)", "description": "Reads bytes"},
+        "Write": {"signature": "size_type Write(const void* buffer, size_type size)", "description": "Writes bytes"},
+        "ReadLine": {"signature": "bool ReadLine(IsoString& line)", "description": "Reads text line"},
+        "WriteLine": {"signature": "void WriteLine(const IsoString& line)", "description": "Writes text line"},
+        "Position": {"signature": "fpos_type Position() const", "description": "Returns file position"},
+        "SetPosition": {"signature": "void SetPosition(fpos_type pos)", "description": "Sets file position"},
+        "Seek": {"signature": "void Seek(fpos_type offset, SeekMode mode)", "description": "Seeks relative position"},
+        "SeekEnd": {"signature": "void SeekEnd()", "description": "Seeks to end"},
+        "Rewind": {"signature": "void Rewind()", "description": "Seeks to beginning"},
+        "Size": {"signature": "fsize_type Size() const", "description": "Returns file size"},
+        "Flush": {"signature": "void Flush()", "description": "Flushes buffers"},
+        "Path": {"signature": "String Path() const", "description": "Returns file path"}
+      },
+      "staticMethods": {
+        "Exists": {"signature": "static bool Exists(const String& path)", "description": "Tests if file exists"},
+        "Remove": {"signature": "static void Remove(const String& path)", "description": "Deletes file"},
+        "Copy": {"signature": "static void Copy(const String& src, const String& dst)", "description": "Copies file"},
+        "Move": {"signature": "static void Move(const String& src, const String& dst)", "description": "Moves/renames file"},
+        "CreateDirectory": {"signature": "static void CreateDirectory(const String& path)", "description": "Creates directory"},
+        "RemoveDirectory": {"signature": "static void RemoveDirectory(const String& path)", "description": "Removes directory"},
+        "ReadTextFile": {"signature": "static IsoString ReadTextFile(const String& path)", "description": "Reads entire text file"},
+        "WriteTextFile": {"signature": "static void WriteTextFile(const String& path, const IsoString& text)", "description": "Writes text file"}
+      }
+    },
+
+    "XISFReader": {
+      "header": "XISF.h",
+      "category": "file",
+      "description": "Reader for XISF (Extensible Image Serialization Format) files.",
+      "constructors": [
+        {"signature": "XISFReader()", "description": "Creates reader object"}
+      ],
+      "methods": {
+        "Open": {"signature": "void Open(const String& filePath)", "description": "Opens XISF file for reading"},
+        "Close": {"signature": "void Close()", "description": "Closes file"},
+        "IsOpen": {"signature": "bool IsOpen() const", "description": "Returns open status"},
+        "FilePath": {"signature": "String FilePath() const", "description": "Returns file path"},
+        "NumberOfImages": {"signature": "int NumberOfImages() const", "description": "Returns image count"},
+        "SelectImage": {"signature": "void SelectImage(int index)", "description": "Selects image by index"},
+        "ImageId": {"signature": "IsoString ImageId() const", "description": "Returns current image ID"},
+        "ImageOptions": {"signature": "ImageOptions ImageOptions() const", "description": "Returns image options"},
+        "ReadImage": {"signature": "void ReadImage(Image& image)", "description": "Reads current image"},
+        "ReadImage32": {"signature": "void ReadImage(FImage& image)", "description": "Reads as 32-bit float"},
+        "ReadImage64": {"signature": "void ReadImage(DImage& image)", "description": "Reads as 64-bit float"},
+        "Keywords": {"signature": "FITSKeywordArray Keywords() const", "description": "Returns FITS keywords"},
+        "ReadProperty": {"signature": "Variant ReadProperty(const IsoString& id)", "description": "Reads property value"}
+      }
+    },
+
+    "XISFWriter": {
+      "header": "XISF.h",
+      "category": "file",
+      "description": "Writer for XISF (Extensible Image Serialization Format) files.",
+      "constructors": [
+        {"signature": "XISFWriter()", "description": "Creates writer object"}
+      ],
+      "methods": {
+        "Create": {"signature": "void Create(const String& filePath)", "description": "Creates XISF file for writing"},
+        "Close": {"signature": "void Close()", "description": "Closes file"},
+        "IsOpen": {"signature": "bool IsOpen() const", "description": "Returns open status"},
+        "SetOptions": {"signature": "void SetOptions(const ImageOptions& options)", "description": "Sets image options"},
+        "SetImageId": {"signature": "void SetImageId(const IsoString& id)", "description": "Sets image identifier"},
+        "WriteImage": {"signature": "void WriteImage(const Image& image)", "description": "Writes image data"},
+        "SetKeywords": {"signature": "void SetKeywords(const FITSKeywordArray& keywords)", "description": "Sets FITS keywords"},
+        "WriteProperty": {"signature": "void WriteProperty(const IsoString& id, const Variant& value)", "description": "Writes property"}
+      }
+    },
+
+    "MetaModule": {
+      "header": "MetaModule.h",
+      "category": "module",
+      "description": "Base class for PixInsight module definitions. Each module must have exactly one MetaModule subclass.",
+      "methods": {
+        "Version": {"signature": "virtual const char* Version() const", "description": "Returns version string"},
+        "Name": {"signature": "virtual IsoString Name() const", "description": "Returns module name"},
+        "Description": {"signature": "virtual String Description() const", "description": "Returns description"},
+        "Company": {"signature": "virtual String Company() const", "description": "Returns company name"},
+        "Author": {"signature": "virtual String Author() const", "description": "Returns author name"},
+        "Copyright": {"signature": "virtual String Copyright() const", "description": "Returns copyright"},
+        "TradeMarks": {"signature": "virtual String TradeMarks() const", "description": "Returns trademarks"},
+        "OriginalFileName": {"signature": "virtual String OriginalFileName() const", "description": "Returns original file name"},
+        "GetReleaseDate": {"signature": "virtual void GetReleaseDate(int& year, int& month, int& day) const", "description": "Returns release date"},
+        "OnLoad": {"signature": "virtual void OnLoad()", "description": "Called when module loads"},
+        "OnUnload": {"signature": "virtual void OnUnload()", "description": "Called when module unloads"}
+      }
+    },
+
+    "MetaProcess": {
+      "header": "MetaProcess.h",
+      "category": "module",
+      "description": "Describes a process that can be instantiated and executed.",
+      "methods": {
+        "Id": {"signature": "virtual IsoString Id() const = 0", "description": "Returns unique process identifier"},
+        "Aliases": {"signature": "virtual IsoString Aliases() const", "description": "Returns process aliases"},
+        "Categories": {"signature": "virtual IsoString Categories() const", "description": "Returns category list"},
+        "Description": {"signature": "virtual String Description() const", "description": "Returns description"},
+        "ScriptComment": {"signature": "virtual String ScriptComment() const", "description": "Returns script documentation"},
+        "IconImageSVG": {"signature": "virtual IsoString IconImageSVG() const", "description": "Returns SVG icon"},
+        "CanProcessViews": {"signature": "virtual bool CanProcessViews() const", "description": "Returns true if can process views"},
+        "CanProcessGlobal": {"signature": "virtual bool CanProcessGlobal() const", "description": "Returns true if can execute globally"},
+        "IsAssignable": {"signature": "virtual bool IsAssignable() const", "description": "Returns true if assignable"},
+        "NeedsValidation": {"signature": "virtual bool NeedsValidation() const", "description": "Returns true if needs validation"},
+        "Clone": {"signature": "virtual ProcessImplementation* Clone(const ProcessImplementation&) const = 0", "description": "Clones implementation"}
+      }
+    },
+
+    "ProcessImplementation": {
+      "header": "ProcessImplementation.h",
+      "category": "module",
+      "description": "Holds the actual parameters and implements execution of a process.",
+      "methods": {
+        "Meta": {"signature": "virtual const MetaProcess* Meta() const = 0", "description": "Returns meta process"},
+        "IsHistoryUpdater": {"signature": "virtual bool IsHistoryUpdater(const View& view) const", "description": "Returns true if updates history"},
+        "IsMaskable": {"signature": "virtual bool IsMaskable(const View& view, const ImageWindow& mask) const", "description": "Returns true if maskable"},
+        "ExecuteOn": {"signature": "virtual bool ExecuteOn(View& view)", "description": "Executes on view"},
+        "ExecuteGlobal": {"signature": "virtual bool ExecuteGlobal()", "description": "Executes globally"},
+        "CanExecuteOn": {"signature": "virtual bool CanExecuteOn(const View& view, String& whyNot) const", "description": "Returns true if can execute"},
+        "CanExecuteGlobal": {"signature": "virtual bool CanExecuteGlobal(String& whyNot) const", "description": "Returns true if can execute globally"},
+        "BeforeExecution": {"signature": "virtual void BeforeExecution(View& view)", "description": "Called before execution"},
+        "AfterExecution": {"signature": "virtual void AfterExecution(View& view)", "description": "Called after execution"}
+      }
+    },
+
+    "ProcessInterface": {
+      "header": "ProcessInterface.h",
+      "category": "module",
+      "description": "Provides the graphical user interface for a process.",
+      "baseClass": "Control",
+      "methods": {
+        "Id": {"signature": "virtual IsoString Id() const = 0", "description": "Returns interface identifier"},
+        "Aliases": {"signature": "virtual IsoString Aliases() const", "description": "Returns aliases"},
+        "Process": {"signature": "virtual MetaProcess* Process() const = 0", "description": "Returns associated process"},
+        "IconImageSVG": {"signature": "virtual IsoString IconImageSVG() const", "description": "Returns SVG icon"},
+        "Features": {"signature": "virtual InterfaceFeatures Features() const", "description": "Returns feature flags"},
+        "Launch": {"signature": "virtual bool Launch(const MetaProcess&, const ProcessImplementation*, bool& dynamic, unsigned& flags)", "description": "Launches interface"},
+        "ApplyInstance": {"signature": "virtual void ApplyInstance() const", "description": "Applies current instance"},
+        "ResetInstance": {"signature": "virtual void ResetInstance()", "description": "Resets to defaults"},
+        "NewProcess": {"signature": "virtual ProcessImplementation* NewProcess() const", "description": "Creates new instance"},
+        "ImportProcess": {"signature": "virtual bool ImportProcess(const ProcessImplementation&)", "description": "Imports instance"},
+        "ValidateProcess": {"signature": "virtual bool ValidateProcess(const ProcessImplementation&, String& whyNot) const", "description": "Validates instance"}
+      }
+    },
+
+    "MetaParameter": {
+      "header": "MetaParameter.h",
+      "category": "module",
+      "description": "Describes a process parameter.",
+      "methods": {
+        "Id": {"signature": "virtual IsoString Id() const = 0", "description": "Returns parameter identifier"},
+        "Aliases": {"signature": "virtual IsoString Aliases() const", "description": "Returns aliases"},
+        "Description": {"signature": "virtual String Description() const", "description": "Returns description"},
+        "ScriptComment": {"signature": "virtual String ScriptComment() const", "description": "Returns script documentation"}
+      }
+    },
+
+    "Dialog": {
+      "header": "Dialog.h",
+      "category": "ui",
+      "description": "Modal or modeless dialog window.",
+      "baseClass": "Control",
+      "constructors": [
+        {"signature": "Dialog(Control& parent = Control::Null())", "description": "Creates dialog"}
+      ],
+      "methods": {
+        "Execute": {"signature": "int Execute()", "description": "Shows modal dialog, returns result"},
+        "Open": {"signature": "void Open()", "description": "Shows modeless dialog"},
+        "Ok": {"signature": "void Ok()", "description": "Closes with OK result"},
+        "Cancel": {"signature": "void Cancel()", "description": "Closes with Cancel result"},
+        "Return": {"signature": "void Return(int retVal)", "description": "Closes with custom result"},
+        "SetWindowTitle": {"signature": "void SetWindowTitle(const String& title)", "description": "Sets window title"},
+        "OnExecute": {"signature": "void OnExecute(execute_event_handler handler, Control& receiver)", "description": "Sets execute handler"},
+        "OnReturn": {"signature": "void OnReturn(return_event_handler handler, Control& receiver)", "description": "Sets return handler"}
+      }
+    },
+
+    "Control": {
+      "header": "Control.h",
+      "category": "ui",
+      "description": "Base class for all UI controls and widgets.",
+      "constructors": [
+        {"signature": "Control(Control& parent = Control::Null(), uint32 flags = 0)", "description": "Creates control"}
+      ],
+      "methods": {
+        "SetSizer": {"signature": "void SetSizer(Sizer& sizer)", "description": "Sets layout sizer"},
+        "AdjustToContents": {"signature": "void AdjustToContents()", "description": "Resizes to fit contents"},
+        "SetMinSize": {"signature": "void SetMinSize(int w, int h)", "description": "Sets minimum size"},
+        "SetMaxSize": {"signature": "void SetMaxSize(int w, int h)", "description": "Sets maximum size"},
+        "SetFixedSize": {"signature": "void SetFixedSize(int w, int h)", "description": "Sets fixed size"},
+        "SetFixedSize": {"signature": "void SetFixedSize()", "description": "Locks current size"},
+        "Width": {"signature": "int Width() const", "description": "Returns width"},
+        "Height": {"signature": "int Height() const", "description": "Returns height"},
+        "Show": {"signature": "void Show()", "description": "Shows control"},
+        "Hide": {"signature": "void Hide()", "description": "Hides control"},
+        "Enable": {"signature": "void Enable(bool enable = true)", "description": "Enables control"},
+        "Disable": {"signature": "void Disable()", "description": "Disables control"},
+        "IsEnabled": {"signature": "bool IsEnabled() const", "description": "Returns enabled state"},
+        "SetToolTip": {"signature": "void SetToolTip(const String& tip)", "description": "Sets tooltip text"},
+        "Focus": {"signature": "void Focus()", "description": "Sets keyboard focus"},
+        "Update": {"signature": "void Update()", "description": "Schedules repaint"},
+        "Repaint": {"signature": "void Repaint()", "description": "Immediate repaint"},
+        "OnPaint": {"signature": "void OnPaint(paint_event_handler handler, Control& receiver)", "description": "Sets paint handler"},
+        "OnResize": {"signature": "void OnResize(resize_event_handler handler, Control& receiver)", "description": "Sets resize handler"},
+        "OnKeyPress": {"signature": "void OnKeyPress(keyboard_event_handler handler, Control& receiver)", "description": "Sets key press handler"},
+        "OnMousePress": {"signature": "void OnMousePress(mouse_button_event_handler handler, Control& receiver)", "description": "Sets mouse press handler"}
+      }
+    },
+
+    "Sizer": {
+      "header": "Sizer.h",
+      "category": "ui",
+      "description": "Base class for layout managers.",
+      "methods": {
+        "Add": {"signature": "void Add(Control& control, int stretchFactor = 0)", "description": "Adds control to layout"},
+        "AddSpacing": {"signature": "void AddSpacing(int size)", "description": "Adds fixed spacing"},
+        "AddStretch": {"signature": "void AddStretch(int stretchFactor = 100)", "description": "Adds stretchy space"},
+        "Insert": {"signature": "void Insert(int index, Control& control, int stretchFactor = 0)", "description": "Inserts control"},
+        "Remove": {"signature": "void Remove(Control& control)", "description": "Removes control"},
+        "SetMargin": {"signature": "void SetMargin(int margin)", "description": "Sets outer margin"},
+        "SetSpacing": {"signature": "void SetSpacing(int spacing)", "description": "Sets between-item spacing"}
+      }
+    },
+
+    "HorizontalSizer": {
+      "header": "Sizer.h",
+      "category": "ui",
+      "description": "Horizontal box layout manager.",
+      "baseClass": "Sizer",
+      "constructors": [
+        {"signature": "HorizontalSizer()", "description": "Creates horizontal sizer"}
+      ]
+    },
+
+    "VerticalSizer": {
+      "header": "Sizer.h",
+      "category": "ui",
+      "description": "Vertical box layout manager.",
+      "baseClass": "Sizer",
+      "constructors": [
+        {"signature": "VerticalSizer()", "description": "Creates vertical sizer"}
+      ]
+    },
+
+    "Label": {
+      "header": "Label.h",
+      "category": "ui",
+      "description": "Static text label control.",
+      "baseClass": "Control",
+      "constructors": [
+        {"signature": "Label(Control& parent = Control::Null())", "description": "Creates label"}
+      ],
+      "methods": {
+        "Text": {"signature": "String Text() const", "description": "Returns label text"},
+        "SetText": {"signature": "void SetText(const String& text)", "description": "Sets label text"},
+        "SetTextAlignment": {"signature": "void SetTextAlignment(int align)", "description": "Sets text alignment"},
+        "SetWordWrapping": {"signature": "void SetWordWrapping(bool enable = true)", "description": "Enables word wrap"}
+      }
+    },
+
+    "PushButton": {
+      "header": "PushButton.h",
+      "category": "ui",
+      "description": "Standard push button control.",
+      "baseClass": "Button",
+      "constructors": [
+        {"signature": "PushButton(Control& parent = Control::Null())", "description": "Creates button"}
+      ],
+      "methods": {
+        "Text": {"signature": "String Text() const", "description": "Returns button text"},
+        "SetText": {"signature": "void SetText(const String& text)", "description": "Sets button text"},
+        "SetIcon": {"signature": "void SetIcon(const Bitmap& icon)", "description": "Sets button icon"},
+        "SetDefault": {"signature": "void SetDefault(bool isDefault = true)", "description": "Makes default button"},
+        "OnClick": {"signature": "void OnClick(click_event_handler handler, Control& receiver)", "description": "Sets click handler"}
+      }
+    },
+
+    "CheckBox": {
+      "header": "CheckBox.h",
+      "category": "ui",
+      "description": "Checkbox control for boolean values.",
+      "baseClass": "Button",
+      "constructors": [
+        {"signature": "CheckBox(Control& parent = Control::Null())", "description": "Creates checkbox"}
+      ],
+      "methods": {
+        "Text": {"signature": "String Text() const", "description": "Returns checkbox text"},
+        "SetText": {"signature": "void SetText(const String& text)", "description": "Sets checkbox text"},
+        "IsChecked": {"signature": "bool IsChecked() const", "description": "Returns checked state"},
+        "SetChecked": {"signature": "void SetChecked(bool checked = true)", "description": "Sets checked state"},
+        "OnClick": {"signature": "void OnClick(click_event_handler handler, Control& receiver)", "description": "Sets click handler"}
+      }
+    },
+
+    "RadioButton": {
+      "header": "RadioButton.h",
+      "category": "ui",
+      "description": "Radio button for mutually exclusive options.",
+      "baseClass": "Button",
+      "constructors": [
+        {"signature": "RadioButton(Control& parent = Control::Null())", "description": "Creates radio button"}
+      ],
+      "methods": {
+        "Text": {"signature": "String Text() const", "description": "Returns button text"},
+        "SetText": {"signature": "void SetText(const String& text)", "description": "Sets button text"},
+        "IsChecked": {"signature": "bool IsChecked() const", "description": "Returns checked state"},
+        "SetChecked": {"signature": "void SetChecked(bool checked = true)", "description": "Sets checked state"}
+      }
+    },
+
+    "Edit": {
+      "header": "Edit.h",
+      "category": "ui",
+      "description": "Single-line text input control.",
+      "baseClass": "Control",
+      "constructors": [
+        {"signature": "Edit(Control& parent = Control::Null())", "description": "Creates edit control"}
+      ],
+      "methods": {
+        "Text": {"signature": "String Text() const", "description": "Returns text content"},
+        "SetText": {"signature": "void SetText(const String& text)", "description": "Sets text content"},
+        "SetMinWidth": {"signature": "void SetMinWidth(int width)", "description": "Sets minimum width"},
+        "IsReadOnly": {"signature": "bool IsReadOnly() const", "description": "Returns read-only state"},
+        "SetReadOnly": {"signature": "void SetReadOnly(bool readOnly = true)", "description": "Sets read-only state"},
+        "OnEditCompleted": {"signature": "void OnEditCompleted(edit_event_handler handler, Control& receiver)", "description": "Sets completion handler"},
+        "OnTextUpdated": {"signature": "void OnTextUpdated(edit_event_handler handler, Control& receiver)", "description": "Sets text change handler"}
+      }
+    },
+
+    "SpinBox": {
+      "header": "SpinBox.h",
+      "category": "ui",
+      "description": "Numeric input with spinner buttons.",
+      "baseClass": "Control",
+      "constructors": [
+        {"signature": "SpinBox(Control& parent = Control::Null())", "description": "Creates spin box"}
+      ],
+      "methods": {
+        "Value": {"signature": "int Value() const", "description": "Returns current value"},
+        "SetValue": {"signature": "void SetValue(int value)", "description": "Sets current value"},
+        "SetRange": {"signature": "void SetRange(int minValue, int maxValue)", "description": "Sets valid range"},
+        "MinValue": {"signature": "int MinValue() const", "description": "Returns minimum value"},
+        "MaxValue": {"signature": "int MaxValue() const", "description": "Returns maximum value"},
+        "OnValueUpdated": {"signature": "void OnValueUpdated(value_event_handler handler, Control& receiver)", "description": "Sets value change handler"}
+      }
+    },
+
+    "NumericControl": {
+      "header": "NumericControl.h",
+      "category": "ui",
+      "description": "Numeric input with label and slider.",
+      "baseClass": "Control",
+      "constructors": [
+        {"signature": "NumericControl(Control& parent = Control::Null())", "description": "Creates numeric control"}
+      ],
+      "methods": {
+        "Value": {"signature": "double Value() const", "description": "Returns current value"},
+        "SetValue": {"signature": "void SetValue(double value)", "description": "Sets current value"},
+        "SetRange": {"signature": "void SetRange(double minValue, double maxValue)", "description": "Sets valid range"},
+        "SetPrecision": {"signature": "void SetPrecision(int precision)", "description": "Sets decimal precision"},
+        "SetReal": {"signature": "void SetReal(bool real = true)", "description": "Sets floating-point mode"},
+        "SetInteger": {"signature": "void SetInteger(bool integer = true)", "description": "Sets integer mode"},
+        "OnValueUpdated": {"signature": "void OnValueUpdated(value_event_handler handler, Control& receiver)", "description": "Sets value change handler"},
+        "label": {"signature": "Label label", "description": "The label component"},
+        "slider": {"signature": "Slider slider", "description": "The slider component"},
+        "edit": {"signature": "Edit edit", "description": "The edit component"}
+      }
+    },
+
+    "ComboBox": {
+      "header": "ComboBox.h",
+      "category": "ui",
+      "description": "Dropdown selection control.",
+      "baseClass": "Control",
+      "constructors": [
+        {"signature": "ComboBox(Control& parent = Control::Null())", "description": "Creates combo box"}
+      ],
+      "methods": {
+        "AddItem": {"signature": "void AddItem(const String& text)", "description": "Adds item"},
+        "InsertItem": {"signature": "void InsertItem(int index, const String& text)", "description": "Inserts item"},
+        "RemoveItem": {"signature": "void RemoveItem(int index)", "description": "Removes item"},
+        "Clear": {"signature": "void Clear()", "description": "Removes all items"},
+        "NumberOfItems": {"signature": "int NumberOfItems() const", "description": "Returns item count"},
+        "CurrentItem": {"signature": "int CurrentItem() const", "description": "Returns selected index"},
+        "SetCurrentItem": {"signature": "void SetCurrentItem(int index)", "description": "Sets selection"},
+        "ItemText": {"signature": "String ItemText(int index) const", "description": "Returns item text"},
+        "OnItemSelected": {"signature": "void OnItemSelected(item_event_handler handler, Control& receiver)", "description": "Sets selection handler"}
+      }
+    },
+
+    "TreeBox": {
+      "header": "TreeBox.h",
+      "category": "ui",
+      "description": "Tree view control for hierarchical data.",
+      "baseClass": "Control",
+      "constructors": [
+        {"signature": "TreeBox(Control& parent = Control::Null())", "description": "Creates tree box"}
+      ],
+      "methods": {
+        "NumberOfColumns": {"signature": "int NumberOfColumns() const", "description": "Returns column count"},
+        "SetNumberOfColumns": {"signature": "void SetNumberOfColumns(int n)", "description": "Sets column count"},
+        "SetHeaderText": {"signature": "void SetHeaderText(int col, const String& text)", "description": "Sets column header"},
+        "NumberOfChildren": {"signature": "int NumberOfChildren() const", "description": "Returns child count"},
+        "Child": {"signature": "TreeBox::Node* Child(int index) const", "description": "Returns child node"},
+        "CurrentNode": {"signature": "TreeBox::Node* CurrentNode() const", "description": "Returns selected node"},
+        "Clear": {"signature": "void Clear()", "description": "Removes all nodes"},
+        "OnCurrentNodeUpdated": {"signature": "void OnCurrentNodeUpdated(node_event_handler handler, Control& receiver)", "description": "Sets selection handler"},
+        "OnNodeActivated": {"signature": "void OnNodeActivated(node_event_handler handler, Control& receiver)", "description": "Sets activation handler"}
+      }
+    },
+
+    "GroupBox": {
+      "header": "GroupBox.h",
+      "category": "ui",
+      "description": "Container control with titled frame.",
+      "baseClass": "Control",
+      "constructors": [
+        {"signature": "GroupBox(Control& parent = Control::Null())", "description": "Creates group box"}
+      ],
+      "methods": {
+        "Title": {"signature": "String Title() const", "description": "Returns title text"},
+        "SetTitle": {"signature": "void SetTitle(const String& title)", "description": "Sets title text"}
+      }
+    },
+
+    "TabBox": {
+      "header": "TabBox.h",
+      "category": "ui",
+      "description": "Tabbed container control.",
+      "baseClass": "Control",
+      "constructors": [
+        {"signature": "TabBox(Control& parent = Control::Null())", "description": "Creates tab box"}
+      ],
+      "methods": {
+        "AddPage": {"signature": "void AddPage(Control& page, const String& label)", "description": "Adds tab page"},
+        "InsertPage": {"signature": "void InsertPage(int index, Control& page, const String& label)", "description": "Inserts tab page"},
+        "RemovePage": {"signature": "void RemovePage(int index)", "description": "Removes tab page"},
+        "NumberOfPages": {"signature": "int NumberOfPages() const", "description": "Returns page count"},
+        "CurrentPageIndex": {"signature": "int CurrentPageIndex() const", "description": "Returns active page index"},
+        "SetCurrentPageIndex": {"signature": "void SetCurrentPageIndex(int index)", "description": "Sets active page"},
+        "PageLabel": {"signature": "String PageLabel(int index) const", "description": "Returns page label"},
+        "SetPageLabel": {"signature": "void SetPageLabel(int index, const String& label)", "description": "Sets page label"},
+        "OnPageSelected": {"signature": "void OnPageSelected(page_event_handler handler, Control& receiver)", "description": "Sets page change handler"}
+      }
+    },
+
+    "ScrollBox": {
+      "header": "ScrollBox.h",
+      "category": "ui",
+      "description": "Scrollable container control.",
+      "baseClass": "Control",
+      "constructors": [
+        {"signature": "ScrollBox(Control& parent = Control::Null())", "description": "Creates scroll box"}
+      ],
+      "methods": {
+        "SetScaledMinSize": {"signature": "void SetScaledMinSize(int w, int h)", "description": "Sets scaled minimum size"},
+        "HorizontalScrollPosition": {"signature": "int HorizontalScrollPosition() const", "description": "Returns horizontal scroll"},
+        "VerticalScrollPosition": {"signature": "int VerticalScrollPosition() const", "description": "Returns vertical scroll"},
+        "SetHorizontalScrollPosition": {"signature": "void SetHorizontalScrollPosition(int pos)", "description": "Sets horizontal scroll"},
+        "SetVerticalScrollPosition": {"signature": "void SetVerticalScrollPosition(int pos)", "description": "Sets vertical scroll"}
+      }
+    },
+
+    "Graphics": {
+      "header": "Graphics.h",
+      "category": "graphics",
+      "description": "2D graphics drawing context.",
+      "constructors": [
+        {"signature": "Graphics(Bitmap& bitmap)", "description": "Creates graphics for bitmap"},
+        {"signature": "Graphics(Control& control)", "description": "Creates graphics for control"}
+      ],
+      "methods": {
+        "DrawLine": {"signature": "void DrawLine(int x1, int y1, int x2, int y2)", "description": "Draws line"},
+        "DrawRect": {"signature": "void DrawRect(int x, int y, int w, int h)", "description": "Draws rectangle outline"},
+        "FillRect": {"signature": "void FillRect(int x, int y, int w, int h, const Brush& brush)", "description": "Fills rectangle"},
+        "DrawEllipse": {"signature": "void DrawEllipse(int x, int y, int w, int h)", "description": "Draws ellipse outline"},
+        "FillEllipse": {"signature": "void FillEllipse(int x, int y, int w, int h, const Brush& brush)", "description": "Fills ellipse"},
+        "DrawText": {"signature": "void DrawText(int x, int y, const String& text)", "description": "Draws text"},
+        "DrawTextRect": {"signature": "void DrawTextRect(int x, int y, int w, int h, const String& text, int align = 0)", "description": "Draws text in rectangle"},
+        "DrawBitmap": {"signature": "void DrawBitmap(int x, int y, const Bitmap& bitmap)", "description": "Draws bitmap"},
+        "DrawScaledBitmap": {"signature": "void DrawScaledBitmap(int x, int y, int w, int h, const Bitmap& bitmap)", "description": "Draws scaled bitmap"},
+        "SetPen": {"signature": "void SetPen(const Pen& pen)", "description": "Sets drawing pen"},
+        "SetBrush": {"signature": "void SetBrush(const Brush& brush)", "description": "Sets fill brush"},
+        "SetFont": {"signature": "void SetFont(const Font& font)", "description": "Sets text font"},
+        "SetOpacity": {"signature": "void SetOpacity(double opacity)", "description": "Sets opacity (0-1)"},
+        "EnableAntialiasing": {"signature": "void EnableAntialiasing(bool enable = true)", "description": "Enables antialiasing"},
+        "BeginPaint": {"signature": "void BeginPaint()", "description": "Begins paint transaction"},
+        "EndPaint": {"signature": "void EndPaint()", "description": "Ends paint transaction"}
+      }
+    },
+
+    "Bitmap": {
+      "header": "Bitmap.h",
+      "category": "graphics",
+      "description": "Raster image for UI and rendering.",
+      "constructors": [
+        {"signature": "Bitmap()", "description": "Creates null bitmap"},
+        {"signature": "Bitmap(int width, int height)", "description": "Creates bitmap with dimensions"},
+        {"signature": "Bitmap(const String& filePath)", "description": "Loads bitmap from file"}
+      ],
+      "methods": {
+        "Width": {"signature": "int Width() const", "description": "Returns width"},
+        "Height": {"signature": "int Height() const", "description": "Returns height"},
+        "IsNull": {"signature": "bool IsNull() const", "description": "Returns true if null"},
+        "Pixel": {"signature": "RGBA Pixel(int x, int y) const", "description": "Returns pixel color"},
+        "SetPixel": {"signature": "void SetPixel(int x, int y, RGBA color)", "description": "Sets pixel color"},
+        "Fill": {"signature": "void Fill(RGBA color)", "description": "Fills with solid color"},
+        "Load": {"signature": "void Load(const String& filePath)", "description": "Loads from file"},
+        "Save": {"signature": "void Save(const String& filePath, int quality = 90) const", "description": "Saves to file"}
+      }
+    },
+
+    "Pen": {
+      "header": "Pen.h",
+      "category": "graphics",
+      "description": "Defines line and outline drawing style.",
+      "constructors": [
+        {"signature": "Pen()", "description": "Creates default pen"},
+        {"signature": "Pen(RGBA color, double width = 1)", "description": "Creates pen with color and width"}
+      ],
+      "methods": {
+        "Color": {"signature": "RGBA Color() const", "description": "Returns pen color"},
+        "SetColor": {"signature": "void SetColor(RGBA color)", "description": "Sets pen color"},
+        "Width": {"signature": "double Width() const", "description": "Returns pen width"},
+        "SetWidth": {"signature": "void SetWidth(double width)", "description": "Sets pen width"}
+      }
+    },
+
+    "Brush": {
+      "header": "Brush.h",
+      "category": "graphics",
+      "description": "Defines fill style for shapes.",
+      "constructors": [
+        {"signature": "Brush()", "description": "Creates default brush"},
+        {"signature": "Brush(RGBA color)", "description": "Creates solid brush"}
+      ],
+      "methods": {
+        "Color": {"signature": "RGBA Color() const", "description": "Returns brush color"},
+        "SetColor": {"signature": "void SetColor(RGBA color)", "description": "Sets brush color"}
+      }
+    },
+
+    "Font": {
+      "header": "Font.h",
+      "category": "graphics",
+      "description": "Font for text rendering.",
+      "constructors": [
+        {"signature": "Font()", "description": "Creates default font"},
+        {"signature": "Font(const String& family, double pointSize = 12)", "description": "Creates font with family and size"}
+      ],
+      "methods": {
+        "Family": {"signature": "String Family() const", "description": "Returns font family"},
+        "SetFamily": {"signature": "void SetFamily(const String& family)", "description": "Sets font family"},
+        "PointSize": {"signature": "double PointSize() const", "description": "Returns point size"},
+        "SetPointSize": {"signature": "void SetPointSize(double size)", "description": "Sets point size"},
+        "IsBold": {"signature": "bool IsBold() const", "description": "Returns bold state"},
+        "SetBold": {"signature": "void SetBold(bool bold = true)", "description": "Sets bold"},
+        "IsItalic": {"signature": "bool IsItalic() const", "description": "Returns italic state"},
+        "SetItalic": {"signature": "void SetItalic(bool italic = true)", "description": "Sets italic"}
+      }
+    },
+
+    "Exception": {
+      "header": "Exception.h",
+      "category": "error",
+      "description": "Base exception class for error handling.",
+      "constructors": [
+        {"signature": "Exception(const String& message)", "description": "Creates exception with message"}
+      ],
+      "methods": {
+        "Message": {"signature": "String Message() const", "description": "Returns error message"},
+        "Show": {"signature": "void Show() const", "description": "Shows error dialog"}
+      }
+    },
+
+    "Error": {
+      "header": "Exception.h",
+      "category": "error",
+      "description": "General error exception.",
+      "baseClass": "Exception",
+      "constructors": [
+        {"signature": "Error(const String& message)", "description": "Creates error with message"}
+      ]
+    },
+
+    "StandardStatus": {
+      "header": "StandardStatus.h",
+      "category": "status",
+      "description": "Standard progress indicator callback.",
+      "baseClass": "StatusCallback",
+      "constructors": [
+        {"signature": "StandardStatus()", "description": "Creates status callback"}
+      ]
+    },
+
+    "StatusMonitor": {
+      "header": "StatusMonitor.h",
+      "category": "status",
+      "description": "Progress monitoring interface.",
+      "methods": {
+        "Initialize": {"signature": "void Initialize(const String& info, size_type count)", "description": "Initializes monitor"},
+        "SetCallback": {"signature": "void SetCallback(StatusCallback* callback)", "description": "Sets callback"},
+        "Complete": {"signature": "void Complete()", "description": "Marks complete"}
+      }
+    },
+
+    "StarDetector": {
+      "header": "StarDetector.h",
+      "category": "analysis",
+      "description": "Automatic star detection algorithm.",
+      "constructors": [
+        {"signature": "StarDetector()", "description": "Creates star detector"}
+      ],
+      "methods": {
+        "SetStructureLayers": {"signature": "void SetStructureLayers(int layers)", "description": "Sets wavelet layers"},
+        "SetSensitivity": {"signature": "void SetSensitivity(float sensitivity)", "description": "Sets detection sensitivity"},
+        "SetPeakResponse": {"signature": "void SetPeakResponse(float response)", "description": "Sets peak response threshold"},
+        "SetMaxStarDistortion": {"signature": "void SetMaxStarDistortion(float distortion)", "description": "Sets max distortion"},
+        "DetectStars": {"signature": "Array<Star> DetectStars(const Image& image)", "description": "Detects stars in image"}
+      }
+    },
+
+    "PSFFit": {
+      "header": "PSFFit.h",
+      "category": "analysis",
+      "description": "Point Spread Function fitting.",
+      "constructors": [
+        {"signature": "PSFFit(const Image& image, const Point& pos, const Rect& rect, PSFunction function = PSFunction::Gaussian)", "description": "Creates PSF fit"}
+      ],
+      "methods": {
+        "IsValid": {"signature": "bool IsValid() const", "description": "Returns true if fit converged"},
+        "Centroid": {"signature": "DPoint Centroid() const", "description": "Returns fitted centroid"},
+        "FWHM": {"signature": "double FWHM() const", "description": "Returns fitted FWHM"},
+        "Amplitude": {"signature": "double Amplitude() const", "description": "Returns fitted amplitude"},
+        "Background": {"signature": "double Background() const", "description": "Returns fitted background"},
+        "MAD": {"signature": "double MAD() const", "description": "Returns mean absolute deviation"}
+      }
+    },
+
+    "AstrometricMetadata": {
+      "header": "AstrometricMetadata.h",
+      "category": "astrometry",
+      "description": "World Coordinate System (WCS) metadata for images.",
+      "constructors": [
+        {"signature": "AstrometricMetadata(const ImageWindow& window)", "description": "Creates from window metadata"}
+      ],
+      "methods": {
+        "IsValid": {"signature": "bool IsValid() const", "description": "Returns true if valid WCS"},
+        "ReferenceCoordinates": {"signature": "DPoint ReferenceCoordinates() const", "description": "Returns reference RA/Dec"},
+        "ImageToWorld": {"signature": "bool ImageToWorld(DPoint& world, const DPoint& image) const", "description": "Converts image to world coordinates"},
+        "WorldToImage": {"signature": "bool WorldToImage(DPoint& image, const DPoint& world) const", "description": "Converts world to image coordinates"},
+        "Resolution": {"signature": "double Resolution() const", "description": "Returns arcsec/pixel"},
+        "Rotation": {"signature": "double Rotation() const", "description": "Returns rotation angle"}
+      }
+    },
+
+    "Convolution": {
+      "header": "Convolution.h",
+      "category": "transform",
+      "description": "Spatial domain convolution transformation.",
+      "baseClass": "ImageTransformation",
+      "constructors": [
+        {"signature": "Convolution()", "description": "Creates convolution transform"},
+        {"signature": "Convolution(const KernelFilter& filter)", "description": "Creates with kernel filter"}
+      ],
+      "methods": {
+        "SetFilter": {"signature": "void SetFilter(const KernelFilter& filter)", "description": "Sets convolution kernel"},
+        "EnableHighPassRescaling": {"signature": "void EnableHighPassRescaling(bool enable = true)", "description": "Enables high-pass rescaling"}
+      }
+    },
+
+    "FFTConvolution": {
+      "header": "FFTConvolution.h",
+      "category": "transform",
+      "description": "FFT-based convolution for large kernels.",
+      "baseClass": "ImageTransformation",
+      "constructors": [
+        {"signature": "FFTConvolution()", "description": "Creates FFT convolution transform"},
+        {"signature": "FFTConvolution(const KernelFilter& filter)", "description": "Creates with kernel filter"}
+      ],
+      "methods": {
+        "SetFilter": {"signature": "void SetFilter(const KernelFilter& filter)", "description": "Sets convolution kernel"}
+      }
+    },
+
+    "MorphologicalTransformation": {
+      "header": "MorphologicalTransformation.h",
+      "category": "transform",
+      "description": "Morphological image transformation.",
+      "baseClass": "ImageTransformation",
+      "constructors": [
+        {"signature": "MorphologicalTransformation()", "description": "Creates morphological transform"}
+      ],
+      "methods": {
+        "SetOperator": {"signature": "void SetOperator(const MorphologicalOperator& op)", "description": "Sets morphological operator"},
+        "SetStructure": {"signature": "void SetStructure(const StructuringElement& element)", "description": "Sets structuring element"},
+        "SetInterlacing": {"signature": "void SetInterlacing(int distance)", "description": "Sets interlacing distance"}
+      }
+    },
+
+    "HistogramTransformation": {
+      "header": "HistogramTransformation.h",
+      "category": "transform",
+      "description": "Histogram-based image transformation.",
+      "baseClass": "ImageTransformation",
+      "constructors": [
+        {"signature": "HistogramTransformation()", "description": "Creates histogram transform"}
+      ],
+      "methods": {
+        "SetMidtonesBalance": {"signature": "void SetMidtonesBalance(double m)", "description": "Sets midtones balance"},
+        "SetClippingLow": {"signature": "void SetClippingLow(double c)", "description": "Sets shadows clipping"},
+        "SetClippingHigh": {"signature": "void SetClippingHigh(double c)", "description": "Sets highlights clipping"},
+        "SetRange": {"signature": "void SetRange(double low, double high)", "description": "Sets output range"}
+      }
+    },
+
+    "Resample": {
+      "header": "Resample.h",
+      "category": "geometry",
+      "description": "Image resampling/resizing transformation.",
+      "baseClass": "GeometricTransformation",
+      "constructors": [
+        {"signature": "Resample()", "description": "Creates resample transform"},
+        {"signature": "Resample(double scale)", "description": "Creates with uniform scale"},
+        {"signature": "Resample(double scaleX, double scaleY)", "description": "Creates with separate scales"}
+      ],
+      "methods": {
+        "SetScale": {"signature": "void SetScale(double scale)", "description": "Sets uniform scale factor"},
+        "SetScaleXY": {"signature": "void SetScaleXY(double scaleX, double scaleY)", "description": "Sets separate scale factors"},
+        "SetAbsoluteMode": {"signature": "void SetAbsoluteMode(bool absolute = true)", "description": "Sets absolute dimension mode"},
+        "SetAbsoluteDimensions": {"signature": "void SetAbsoluteDimensions(int width, int height)", "description": "Sets absolute dimensions"}
+      }
+    },
+
+    "Rotation": {
+      "header": "Rotation.h",
+      "category": "geometry",
+      "description": "Image rotation transformation.",
+      "baseClass": "GeometricTransformation",
+      "constructors": [
+        {"signature": "Rotation()", "description": "Creates rotation transform"},
+        {"signature": "Rotation(double angle)", "description": "Creates with angle in radians"}
+      ],
+      "methods": {
+        "SetAngle": {"signature": "void SetAngle(double angle)", "description": "Sets rotation angle"},
+        "SetCenter": {"signature": "void SetCenter(double x, double y)", "description": "Sets rotation center"}
+      }
+    },
+
+    "Translation": {
+      "header": "Translation.h",
+      "category": "geometry",
+      "description": "Image translation transformation.",
+      "baseClass": "GeometricTransformation",
+      "constructors": [
+        {"signature": "Translation()", "description": "Creates translation transform"},
+        {"signature": "Translation(double dx, double dy)", "description": "Creates with delta"}
+      ],
+      "methods": {
+        "SetDelta": {"signature": "void SetDelta(double dx, double dy)", "description": "Sets translation offset"}
+      }
+    },
+
+    "Crop": {
+      "header": "Crop.h",
+      "category": "geometry",
+      "description": "Image cropping/canvas resizing transformation.",
+      "baseClass": "GeometricTransformation",
+      "constructors": [
+        {"signature": "Crop()", "description": "Creates crop transform"},
+        {"signature": "Crop(double left, double top, double right, double bottom)", "description": "Creates with margins"}
+      ],
+      "methods": {
+        "SetMargins": {"signature": "void SetMargins(double left, double top, double right, double bottom)", "description": "Sets crop margins"},
+        "SetFillColor": {"signature": "void SetFillColor(const DVector& color)", "description": "Sets fill color for expansion"}
+      }
+    }
+  },
+
+  "constants": {
+    "colorSpaces": {
+      "ColorSpace::Unknown": {"value": 0, "description": "Unknown color space"},
+      "ColorSpace::Gray": {"value": 1, "description": "Grayscale"},
+      "ColorSpace::RGB": {"value": 2, "description": "RGB color"},
+      "ColorSpace::CIELab": {"value": 3, "description": "CIE L*a*b*"},
+      "ColorSpace::CIEXYZ": {"value": 4, "description": "CIE XYZ"},
+      "ColorSpace::CIELch": {"value": 5, "description": "CIE L*c*h*"},
+      "ColorSpace::HSV": {"value": 6, "description": "HSV"},
+      "ColorSpace::HSI": {"value": 7, "description": "HSI"}
+    },
+    "imageOperations": {
+      "ImageOp::Nop": {"value": 0, "description": "No operation"},
+      "ImageOp::Mov": {"value": 1, "description": "Move/assign"},
+      "ImageOp::Add": {"value": 2, "description": "Addition"},
+      "ImageOp::Sub": {"value": 3, "description": "Subtraction"},
+      "ImageOp::Mul": {"value": 4, "description": "Multiplication"},
+      "ImageOp::Div": {"value": 5, "description": "Division"},
+      "ImageOp::Pow": {"value": 6, "description": "Power"},
+      "ImageOp::Dif": {"value": 7, "description": "Absolute difference"},
+      "ImageOp::Min": {"value": 8, "description": "Minimum"},
+      "ImageOp::Max": {"value": 9, "description": "Maximum"},
+      "ImageOp::Or": {"value": 10, "description": "Bitwise OR"},
+      "ImageOp::And": {"value": 11, "description": "Bitwise AND"},
+      "ImageOp::Xor": {"value": 12, "description": "Bitwise XOR"},
+      "ImageOp::Not": {"value": 13, "description": "Bitwise NOT"},
+      "ImageOp::Nor": {"value": 14, "description": "Bitwise NOR"},
+      "ImageOp::Nand": {"value": 15, "description": "Bitwise NAND"},
+      "ImageOp::Xnor": {"value": 16, "description": "Bitwise XNOR"},
+      "ImageOp::ColorBurn": {"value": 17, "description": "Color burn blend"},
+      "ImageOp::LinearBurn": {"value": 18, "description": "Linear burn blend"},
+      "ImageOp::Screen": {"value": 19, "description": "Screen blend"},
+      "ImageOp::ColorDodge": {"value": 20, "description": "Color dodge blend"},
+      "ImageOp::Overlay": {"value": 21, "description": "Overlay blend"},
+      "ImageOp::SoftLight": {"value": 22, "description": "Soft light blend"},
+      "ImageOp::HardLight": {"value": 23, "description": "Hard light blend"},
+      "ImageOp::VividLight": {"value": 24, "description": "Vivid light blend"},
+      "ImageOp::LinearLight": {"value": 25, "description": "Linear light blend"},
+      "ImageOp::PinLight": {"value": 26, "description": "Pin light blend"},
+      "ImageOp::Exclusion": {"value": 27, "description": "Exclusion blend"}
+    },
+    "interpolationMethods": {
+      "Interpolation::NearestNeighbor": {"value": 0, "description": "Nearest neighbor"},
+      "Interpolation::Bilinear": {"value": 1, "description": "Bilinear"},
+      "Interpolation::Bicubic": {"value": 2, "description": "Bicubic spline"},
+      "Interpolation::BicubicSpline": {"value": 3, "description": "Bicubic spline"},
+      "Interpolation::BicubicBSpline": {"value": 4, "description": "Bicubic B-spline"},
+      "Interpolation::Lanczos3": {"value": 5, "description": "Lanczos-3"},
+      "Interpolation::Lanczos4": {"value": 6, "description": "Lanczos-4"},
+      "Interpolation::Lanczos5": {"value": 7, "description": "Lanczos-5"},
+      "Interpolation::Mitchell": {"value": 8, "description": "Mitchell-Netravali"},
+      "Interpolation::CatmullRom": {"value": 9, "description": "Catmull-Rom spline"}
+    },
+    "threadPriorities": {
+      "ThreadPriority::Inherit": {"value": 0, "description": "Inherit from parent"},
+      "ThreadPriority::Idle": {"value": 1, "description": "Idle priority"},
+      "ThreadPriority::Lowest": {"value": 2, "description": "Lowest priority"},
+      "ThreadPriority::Low": {"value": 3, "description": "Low priority"},
+      "ThreadPriority::Normal": {"value": 4, "description": "Normal priority"},
+      "ThreadPriority::High": {"value": 5, "description": "High priority"},
+      "ThreadPriority::Highest": {"value": 6, "description": "Highest priority"},
+      "ThreadPriority::TimeCritical": {"value": 7, "description": "Time critical"}
+    },
+    "fileModes": {
+      "FileMode::Read": {"value": 1, "description": "Open for reading"},
+      "FileMode::Write": {"value": 2, "description": "Open for writing"},
+      "FileMode::ReadWrite": {"value": 3, "description": "Open for read/write"},
+      "FileMode::Create": {"value": 4, "description": "Create new file"},
+      "FileMode::Truncate": {"value": 8, "description": "Truncate existing"},
+      "FileMode::Append": {"value": 16, "description": "Append to end"}
+    },
+    "textAlignment": {
+      "TextAlign::Left": {"value": 1, "description": "Left alignment"},
+      "TextAlign::Right": {"value": 2, "description": "Right alignment"},
+      "TextAlign::HCenter": {"value": 4, "description": "Horizontal center"},
+      "TextAlign::Top": {"value": 8, "description": "Top alignment"},
+      "TextAlign::Bottom": {"value": 16, "description": "Bottom alignment"},
+      "TextAlign::VCenter": {"value": 32, "description": "Vertical center"},
+      "TextAlign::Center": {"value": 36, "description": "Center (H+V)"}
+    }
+  },
+
+  "typedefs": {
+    "FImage": {"definition": "GenericImage<FloatPixelTraits>", "description": "32-bit floating point image"},
+    "DImage": {"definition": "GenericImage<DoublePixelTraits>", "description": "64-bit floating point image"},
+    "ComplexImage": {"definition": "GenericImage<ComplexPixelTraits>", "description": "Complex image"},
+    "UInt8Image": {"definition": "GenericImage<UInt8PixelTraits>", "description": "8-bit unsigned integer image"},
+    "UInt16Image": {"definition": "GenericImage<UInt16PixelTraits>", "description": "16-bit unsigned integer image"},
+    "UInt32Image": {"definition": "GenericImage<UInt32PixelTraits>", "description": "32-bit unsigned integer image"},
+    "RGBA": {"definition": "uint32", "description": "32-bit RGBA color value"},
+    "DPoint": {"definition": "GenericPoint<double>", "description": "2D point with double coordinates"},
+    "Point": {"definition": "GenericPoint<int>", "description": "2D point with integer coordinates"},
+    "DRect": {"definition": "GenericRectangle<double>", "description": "Rectangle with double coordinates"},
+    "Rect": {"definition": "GenericRectangle<int>", "description": "Rectangle with integer coordinates"},
+    "DVector": {"definition": "GenericVector<double>", "description": "Vector of doubles"},
+    "FVector": {"definition": "GenericVector<float>", "description": "Vector of floats"},
+    "IVector": {"definition": "GenericVector<int>", "description": "Vector of integers"},
+    "DMatrix": {"definition": "GenericMatrix<double>", "description": "Matrix of doubles"},
+    "FMatrix": {"definition": "GenericMatrix<float>", "description": "Matrix of floats"}
+  }
+}
