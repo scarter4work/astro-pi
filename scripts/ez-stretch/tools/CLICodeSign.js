@@ -12,7 +12,7 @@
 #feature-info  Command-line code signing utility for batch signing scripts
 
 // Project-specific configuration
-var PROJECT_DIR = "/home/scarter4work/projects/EZ-suite-bsc/EZ-Stretch-BSC";
+var PROJECT_DIR = "/home/scarter4work/projects/astro-pi/scripts/ez-stretch";
 var DEFAULT_KEYS = "/home/scarter4work/projects/keys/scarter4work_keys.xssk";
 
 // Files to sign - add new scripts here
