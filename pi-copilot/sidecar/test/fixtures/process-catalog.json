@@ -1,0 +1,21 @@
+{
+  "generatedAt": "fixture",
+  "piVersion": "fixture",
+  "processes": {
+    "SCNR": {
+      "id": "SCNR",
+      "summary": "Subtractive Chromatic Noise Reduction — remove a color cast (usually green).",
+      "params": {
+        "amount": { "type": "number", "default": 1 },
+        "preserveLightness": { "type": "boolean", "default": true }
+      },
+      "template": "var P = new SCNR;\nP.amount = 1;\nP.preserveLightness = true;\nP.executeOn(view, false);"
+    },
+    "HistogramTransformation": {
+      "id": "HistogramTransformation",
+      "summary": "Linear histogram stretch / clipping.",
+      "params": { "H": { "type": "array", "default": [] } },
+      "template": "var P = new HistogramTransformation;\nP.executeOn(view, false);"
+    }
+  }
+}
