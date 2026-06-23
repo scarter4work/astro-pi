@@ -33,21 +33,38 @@ export function createServer(overrides = {}) {
       }
       send(404, { error: 'not found' });
     } catch (e) {
-      send(500, { error: String((e && e.message) || e) });
+      send(e.statusCode || 500, { error: String((e && e.message) || e) });
     }
   });
 }
 
+const MAX_BODY = 1_000_000; // 1 MB
+
 function readJson(req) {
   return new Promise((resolve, reject) => {
     let data = '';
-    req.on('data', (c) => { data += c; });
-    req.on('end', () => { try { resolve(data ? JSON.parse(data) : {}); } catch (e) { reject(e); } });
+    let rejected = false;
+    req.on('data', (c) => {
+      if (rejected) return;
+      data += c;
+      if (data.length > MAX_BODY) {
+        rejected = true;
+        const err = new Error('Request body too large');
+        err.statusCode = 413;
+        // Drain remaining data so the socket stays open for the 413 response.
+        req.resume();
+        reject(err);
+      }
+    });
+    req.on('end', () => {
+      if (rejected) return;
+      try { resolve(data ? JSON.parse(data) : {}); } catch (e) { reject(e); }
+    });
     req.on('error', reject);
   });
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {
   const port = Number(process.env.PORT || 8765);
-  createServer().listen(port, () => console.log(`PI Copilot sidecar on http://localhost:${port}`));
+  createServer().listen(port, '127.0.0.1', () => console.log(`PI Copilot sidecar on http://localhost:${port}`));
 }
