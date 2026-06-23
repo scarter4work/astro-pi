@@ -44,13 +44,12 @@ async function runUntilClient(s, deps) {
   const { backend, grounding, maxRetries = 3 } = deps;
   for (let guard = 0; guard < 20; guard++) {
     const resp = await backend.chat(s.messages, TOOLS);
-    s.messages.push({
-      role: 'assistant',
-      content: resp.content || '',
-      tool_calls: resp.toolCalls.map(tc => ({ function: { name: tc.name, arguments: tc.arguments } })),
-    });
+    const hasCalls = resp.toolCalls && resp.toolCalls.length > 0;
+    const assistantMsg = { role: 'assistant', content: resp.content || '' };
+    if (hasCalls) assistantMsg.tool_calls = resp.toolCalls.map(tc => ({ function: { name: tc.name, arguments: tc.arguments } }));
+    s.messages.push(assistantMsg);
 
-    if (!resp.toolCalls || resp.toolCalls.length === 0) {
+    if (!hasCalls) {
       return { type: 'message', text: resp.content || '' };
     }
 

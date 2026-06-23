@@ -67,6 +67,30 @@ test('retry exhaustion surfaces the real validation error as a message', async (
   assert.ok(r.text.includes('still bad'));
 });
 
+test('list_processes is resolved in-process, then turn continues', async () => {
+  let called = false;
+  const grounding = { ...baseGrounding, listProcesses: () => { called = true; return [{ id: 'SCNR', summary: 's' }]; } };
+  const backend = mockBackend([
+    { content: '', toolCalls: [{ name: 'list_processes', arguments: {} }] },
+    { content: 'here they are', toolCalls: [] },
+  ]);
+  const store = createSessionStore();
+  const r = await chat(store, 's7', 'what processes exist', deps(backend, grounding));
+  assert.equal(called, true);
+  assert.deepEqual(r, { type: 'message', text: 'here they are' });
+});
+
+test('unknown tool name feeds error back to model and loop continues to message', async () => {
+  const backend = mockBackend([
+    { content: '', toolCalls: [{ name: undefined, arguments: {} }] },
+    { content: 'recovered', toolCalls: [] },
+  ]);
+  const store = createSessionStore();
+  const r = await chat(store, 's8', 'do something', deps(backend));
+  assert.equal(r.type, 'message');
+  assert.equal(r.text, 'recovered');
+});
+
 test('get_view_context pauses, and cont feeds the result back', async () => {
   const backend = mockBackend([
     { content: '', toolCalls: [{ name: 'get_view_context', arguments: {} }] },
