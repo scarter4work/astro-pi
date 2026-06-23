@@ -42,3 +42,14 @@ test('unknown route returns 404', async () => {
   assert.equal(res.status, 404);
   srv.close();
 });
+
+test('POST /chat with oversized body returns 413', async () => {
+  const backend = { name: 'mock', model: 'm', async chat() { return { content: '', toolCalls: [] }; } };
+  const { srv, port } = await start({ backend, grounding: stubGrounding, systemPrompt: 'sys' });
+  const res = await fetch(`http://127.0.0.1:${port}/chat`, {
+    method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ sessionId: 'a', message: 'x'.repeat(1_000_001) }),
+  });
+  assert.equal(res.status, 413);
+  srv.close();
+});
