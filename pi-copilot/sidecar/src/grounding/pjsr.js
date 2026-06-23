@@ -12,11 +12,11 @@ export function createGrounding({ catalogPath = DEFAULT_CATALOG } = {}) {
 
   return {
     validate(code) {
-      const { valid, diagnostics } = analyzer.validate(code);
+      const { diagnostics } = analyzer.validate(code);
       const errors = diagnostics
         .filter(d => d.severity === 'error')
         .map(d => ({ message: d.message, line: d.line }));
-      return { valid, errors };
+      return { valid: errors.length === 0, errors };
     },
 
     listProcesses() {
