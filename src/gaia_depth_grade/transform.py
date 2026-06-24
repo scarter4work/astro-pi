@@ -12,8 +12,8 @@ def depth_strength(r_med, p_low=5.0, p_high=95.0, neutral=0.0) -> np.ndarray:
     logr = np.log10(r[finite])
     lo = np.percentile(logr, p_low)
     hi = np.percentile(logr, p_high)
-    if hi <= lo:
-        out[finite] = 1.0
+    if hi <= lo:           # degenerate: no distance spread -> neutral, not a boost
+        out[finite] = float(neutral)
         return out
     norm = (np.clip(logr, lo, hi) - lo) / (hi - lo)  # 0=near..1=far
     out[finite] = 1.0 - 2.0 * norm                    # +1 near .. -1 far
