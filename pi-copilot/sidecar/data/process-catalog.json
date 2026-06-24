@@ -1,0 +1,1756 @@
+{
+  "generatedAt": "2026-06-24T01:17:34.269Z",
+  "piVersion": "1.9.4",
+  "processes": {
+    "SCNR": {
+      "id": "SCNR",
+      "summary": "Subtractive Chromatic Noise Reduction — remove a color cast (usually green).",
+      "params": {
+        "amount": {
+          "type": "number",
+          "default": 1
+        },
+        "protectionMethod": {
+          "type": "number",
+          "default": 2
+        },
+        "colorToRemove": {
+          "type": "number",
+          "default": 1
+        },
+        "preserveLightness": {
+          "type": "boolean",
+          "default": true
+        },
+        "preserveLuminance": {
+          "type": "boolean",
+          "default": true
+        }
+      },
+      "template": "var P = new SCNR;\nP.amount = 1;\nP.protectionMethod = 2;\nP.colorToRemove = 1;\nP.preserveLightness = true;\nP.preserveLuminance = true;\nP.executeOn(view, false);"
+    },
+    "CurvesTransformation": {
+      "id": "CurvesTransformation",
+      "summary": "Per-channel curve adjustment for tone and color.",
+      "params": {
+        "R": {
+          "type": "array",
+          "default": [
+            [
+              0,
+              0
+            ],
+            [
+              1,
+              1
+            ]
+          ]
+        },
+        "Rt": {
+          "type": "number",
+          "default": 2
+        },
+        "G": {
+          "type": "array",
+          "default": [
+            [
+              0,
+              0
+            ],
+            [
+              1,
+              1
+            ]
+          ]
+        },
+        "Gt": {
+          "type": "number",
+          "default": 2
+        },
+        "B": {
+          "type": "array",
+          "default": [
+            [
+              0,
+              0
+            ],
+            [
+              1,
+              1
+            ]
+          ]
+        },
+        "Bt": {
+          "type": "number",
+          "default": 2
+        },
+        "K": {
+          "type": "array",
+          "default": [
+            [
+              0,
+              0
+            ],
+            [
+              1,
+              1
+            ]
+          ]
+        },
+        "Kt": {
+          "type": "number",
+          "default": 2
+        },
+        "A": {
+          "type": "array",
+          "default": [
+            [
+              0,
+              0
+            ],
+            [
+              1,
+              1
+            ]
+          ]
+        },
+        "At": {
+          "type": "number",
+          "default": 2
+        },
+        "L": {
+          "type": "array",
+          "default": [
+            [
+              0,
+              0
+            ],
+            [
+              1,
+              1
+            ]
+          ]
+        },
+        "Lt": {
+          "type": "number",
+          "default": 2
+        },
+        "a": {
+          "type": "array",
+          "default": [
+            [
+              0,
+              0
+            ],
+            [
+              1,
+              1
+            ]
+          ]
+        },
+        "at": {
+          "type": "number",
+          "default": 2
+        },
+        "b": {
+          "type": "array",
+          "default": [
+            [
+              0,
+              0
+            ],
+            [
+              1,
+              1
+            ]
+          ]
+        },
+        "bt": {
+          "type": "number",
+          "default": 2
+        },
+        "c": {
+          "type": "array",
+          "default": [
+            [
+              0,
+              0
+            ],
+            [
+              1,
+              1
+            ]
+          ]
+        },
+        "ct": {
+          "type": "number",
+          "default": 2
+        },
+        "H": {
+          "type": "array",
+          "default": [
+            [
+              0,
+              0
+            ],
+            [
+              1,
+              1
+            ]
+          ]
+        },
+        "Ht": {
+          "type": "number",
+          "default": 2
+        },
+        "S": {
+          "type": "array",
+          "default": [
+            [
+              0,
+              0
+            ],
+            [
+              1,
+              1
+            ]
+          ]
+        },
+        "St": {
+          "type": "number",
+          "default": 2
+        }
+      },
+      "template": "var P = new CurvesTransformation;\nP.R = [[0,0],[1,1]];\nP.Rt = 2;\nP.G = [[0,0],[1,1]];\nP.Gt = 2;\nP.B = [[0,0],[1,1]];\nP.Bt = 2;\nP.K = [[0,0],[1,1]];\nP.Kt = 2;\nP.A = [[0,0],[1,1]];\nP.At = 2;\nP.L = [[0,0],[1,1]];\nP.Lt = 2;\nP.a = [[0,0],[1,1]];\nP.at = 2;\nP.b = [[0,0],[1,1]];\nP.bt = 2;\nP.c = [[0,0],[1,1]];\nP.ct = 2;\nP.H = [[0,0],[1,1]];\nP.Ht = 2;\nP.S = [[0,0],[1,1]];\nP.St = 2;\nP.executeOn(view, false);"
+    },
+    "HistogramTransformation": {
+      "id": "HistogramTransformation",
+      "summary": "Linear histogram stretch / clipping (the nonlinear stretch workhorse).",
+      "params": {
+        "H": {
+          "type": "array",
+          "default": [
+            [
+              0,
+              0.5,
+              1,
+              0,
+              1
+            ],
+            [
+              0,
+              0.5,
+              1,
+              0,
+              1
+            ],
+            [
+              0,
+              0.5,
+              1,
+              0,
+              1
+            ],
+            [
+              0,
+              0.5,
+              1,
+              0,
+              1
+            ],
+            [
+              0,
+              0.5,
+              1,
+              0,
+              1
+            ]
+          ]
+        }
+      },
+      "template": "var P = new HistogramTransformation;\nP.H = [[0,0.5,1,0,1],[0,0.5,1,0,1],[0,0.5,1,0,1],[0,0.5,1,0,1],[0,0.5,1,0,1]];\nP.executeOn(view, false);"
+    },
+    "BackgroundNeutralization": {
+      "id": "BackgroundNeutralization",
+      "summary": "Neutralize the background color cast using a reference region.",
+      "params": {
+        "backgroundReferenceViewId": {
+          "type": "string",
+          "default": ""
+        },
+        "backgroundLow": {
+          "type": "number",
+          "default": 0
+        },
+        "backgroundHigh": {
+          "type": "number",
+          "default": 0.10000000149011612
+        },
+        "useROI": {
+          "type": "boolean",
+          "default": false
+        },
+        "roiX0": {
+          "type": "number",
+          "default": 0
+        },
+        "roiY0": {
+          "type": "number",
+          "default": 0
+        },
+        "roiX1": {
+          "type": "number",
+          "default": 0
+        },
+        "roiY1": {
+          "type": "number",
+          "default": 0
+        },
+        "mode": {
+          "type": "number",
+          "default": 2
+        },
+        "targetBackground": {
+          "type": "number",
+          "default": 0.0010000000474974513
+        }
+      },
+      "template": "var P = new BackgroundNeutralization;\nP.backgroundReferenceViewId = \"\";\nP.backgroundLow = 0;\nP.backgroundHigh = 0.10000000149011612;\nP.useROI = false;\nP.roiX0 = 0;\nP.roiY0 = 0;\nP.roiX1 = 0;\nP.roiY1 = 0;\nP.mode = 2;\nP.targetBackground = 0.0010000000474974513;\nP.executeOn(view, false);"
+    },
+    "ColorCalibration": {
+      "id": "ColorCalibration",
+      "summary": "White-balance the image from background + reference samples.",
+      "params": {
+        "whiteReferenceViewId": {
+          "type": "string",
+          "default": ""
+        },
+        "whiteLow": {
+          "type": "number",
+          "default": 0
+        },
+        "whiteHigh": {
+          "type": "number",
+          "default": 0.8999999761581421
+        },
+        "whiteUseROI": {
+          "type": "boolean",
+          "default": false
+        },
+        "whiteROIX0": {
+          "type": "number",
+          "default": 0
+        },
+        "whiteROIY0": {
+          "type": "number",
+          "default": 0
+        },
+        "whiteROIX1": {
+          "type": "number",
+          "default": 0
+        },
+        "whiteROIY1": {
+          "type": "number",
+          "default": 0
+        },
+        "structureDetection": {
+          "type": "boolean",
+          "default": true
+        },
+        "structureLayers": {
+          "type": "number",
+          "default": 5
+        },
+        "noiseLayers": {
+          "type": "number",
+          "default": 1
+        },
+        "manualWhiteBalance": {
+          "type": "boolean",
+          "default": false
+        },
+        "manualRedFactor": {
+          "type": "number",
+          "default": 1
+        },
+        "manualGreenFactor": {
+          "type": "number",
+          "default": 1
+        },
+        "manualBlueFactor": {
+          "type": "number",
+          "default": 1
+        },
+        "backgroundReferenceViewId": {
+          "type": "string",
+          "default": ""
+        },
+        "backgroundLow": {
+          "type": "number",
+          "default": 0
+        },
+        "backgroundHigh": {
+          "type": "number",
+          "default": 0.10000000149011612
+        },
+        "backgroundUseROI": {
+          "type": "boolean",
+          "default": false
+        },
+        "backgroundROIX0": {
+          "type": "number",
+          "default": 0
+        },
+        "backgroundROIY0": {
+          "type": "number",
+          "default": 0
+        },
+        "backgroundROIX1": {
+          "type": "number",
+          "default": 0
+        },
+        "backgroundROIY1": {
+          "type": "number",
+          "default": 0
+        },
+        "outputWhiteReferenceMask": {
+          "type": "boolean",
+          "default": false
+        },
+        "outputBackgroundReferenceMask": {
+          "type": "boolean",
+          "default": false
+        }
+      },
+      "template": "var P = new ColorCalibration;\nP.whiteReferenceViewId = \"\";\nP.whiteLow = 0;\nP.whiteHigh = 0.8999999761581421;\nP.whiteUseROI = false;\nP.whiteROIX0 = 0;\nP.whiteROIY0 = 0;\nP.whiteROIX1 = 0;\nP.whiteROIY1 = 0;\nP.structureDetection = true;\nP.structureLayers = 5;\nP.noiseLayers = 1;\nP.manualWhiteBalance = false;\nP.manualRedFactor = 1;\nP.manualGreenFactor = 1;\nP.manualBlueFactor = 1;\nP.backgroundReferenceViewId = \"\";\nP.backgroundLow = 0;\nP.backgroundHigh = 0.10000000149011612;\nP.backgroundUseROI = false;\nP.backgroundROIX0 = 0;\nP.backgroundROIY0 = 0;\nP.backgroundROIX1 = 0;\nP.backgroundROIY1 = 0;\nP.outputWhiteReferenceMask = false;\nP.outputBackgroundReferenceMask = false;\nP.executeOn(view, false);"
+    },
+    "AutomaticBackgroundExtractor": {
+      "id": "AutomaticBackgroundExtractor",
+      "summary": "Model and subtract background gradients automatically.",
+      "params": {
+        "tolerance": {
+          "type": "number",
+          "default": 1
+        },
+        "deviation": {
+          "type": "number",
+          "default": 0.800000011920929
+        },
+        "unbalance": {
+          "type": "number",
+          "default": 1.7999999523162842
+        },
+        "minBoxFraction": {
+          "type": "number",
+          "default": 0.05000000074505806
+        },
+        "maxBackground": {
+          "type": "number",
+          "default": 1
+        },
+        "minBackground": {
+          "type": "number",
+          "default": 0
+        },
+        "useBrightnessLimits": {
+          "type": "boolean",
+          "default": false
+        },
+        "useLuminanceLimits": {
+          "type": "boolean",
+          "default": false
+        },
+        "polyDegree": {
+          "type": "number",
+          "default": 4
+        },
+        "boxSize": {
+          "type": "number",
+          "default": 5
+        },
+        "boxSeparation": {
+          "type": "number",
+          "default": 5
+        },
+        "modelImageSampleFormat": {
+          "type": "number",
+          "default": 3
+        },
+        "abeDownsample": {
+          "type": "number",
+          "default": 2
+        },
+        "writeSampleBoxes": {
+          "type": "boolean",
+          "default": false
+        },
+        "justTrySamples": {
+          "type": "boolean",
+          "default": false
+        },
+        "targetCorrection": {
+          "type": "number",
+          "default": 0
+        },
+        "normalize": {
+          "type": "boolean",
+          "default": false
+        },
+        "discardModel": {
+          "type": "boolean",
+          "default": false
+        },
+        "replaceTarget": {
+          "type": "boolean",
+          "default": false
+        },
+        "correctedImageId": {
+          "type": "string",
+          "default": ""
+        },
+        "correctedImageSampleFormat": {
+          "type": "number",
+          "default": 0
+        },
+        "verboseCoefficients": {
+          "type": "boolean",
+          "default": false
+        },
+        "compareModel": {
+          "type": "boolean",
+          "default": false
+        },
+        "compareFactor": {
+          "type": "number",
+          "default": 10
+        }
+      },
+      "template": "var P = new AutomaticBackgroundExtractor;\nP.tolerance = 1;\nP.deviation = 0.800000011920929;\nP.unbalance = 1.7999999523162842;\nP.minBoxFraction = 0.05000000074505806;\nP.maxBackground = 1;\nP.minBackground = 0;\nP.useBrightnessLimits = false;\nP.useLuminanceLimits = false;\nP.polyDegree = 4;\nP.boxSize = 5;\nP.boxSeparation = 5;\nP.modelImageSampleFormat = 3;\nP.abeDownsample = 2;\nP.writeSampleBoxes = false;\nP.justTrySamples = false;\nP.targetCorrection = 0;\nP.normalize = false;\nP.discardModel = false;\nP.replaceTarget = false;\nP.correctedImageId = \"\";\nP.correctedImageSampleFormat = 0;\nP.verboseCoefficients = false;\nP.compareModel = false;\nP.compareFactor = 10;\nP.executeOn(view, false);"
+    },
+    "DynamicBackgroundExtraction": {
+      "id": "DynamicBackgroundExtraction",
+      "summary": "Sample-based background gradient modeling and subtraction.",
+      "params": {
+        "data": {
+          "type": "array",
+          "default": []
+        },
+        "numberOfChannels": {
+          "type": "number",
+          "default": 1
+        },
+        "derivativeOrder": {
+          "type": "number",
+          "default": 2
+        },
+        "smoothing": {
+          "type": "number",
+          "default": 0.25
+        },
+        "ignoreWeights": {
+          "type": "boolean",
+          "default": false
+        },
+        "modelId": {
+          "type": "string",
+          "default": ""
+        },
+        "modelWidth": {
+          "type": "number",
+          "default": 0
+        },
+        "modelHeight": {
+          "type": "number",
+          "default": 0
+        },
+        "downsample": {
+          "type": "number",
+          "default": 2
+        },
+        "modelSampleFormat": {
+          "type": "number",
+          "default": 4
+        },
+        "targetCorrection": {
+          "type": "number",
+          "default": 0
+        },
+        "normalize": {
+          "type": "boolean",
+          "default": false
+        },
+        "discardModel": {
+          "type": "boolean",
+          "default": false
+        },
+        "replaceTarget": {
+          "type": "boolean",
+          "default": false
+        },
+        "correctedImageId": {
+          "type": "string",
+          "default": ""
+        },
+        "correctedImageSampleFormat": {
+          "type": "number",
+          "default": 0
+        },
+        "samples": {
+          "type": "array",
+          "default": []
+        },
+        "imageWidth": {
+          "type": "number",
+          "default": 0
+        },
+        "imageHeight": {
+          "type": "number",
+          "default": 0
+        },
+        "symmetryCenterX": {
+          "type": "number",
+          "default": 0.5
+        },
+        "symmetryCenterY": {
+          "type": "number",
+          "default": 0.5
+        },
+        "tolerance": {
+          "type": "number",
+          "default": 0.5
+        },
+        "shadowsRelaxation": {
+          "type": "number",
+          "default": 3
+        },
+        "minSampleFraction": {
+          "type": "number",
+          "default": 0.05000000074505806
+        },
+        "defaultSampleRadius": {
+          "type": "number",
+          "default": 5
+        },
+        "samplesPerRow": {
+          "type": "number",
+          "default": 10
+        },
+        "minWeight": {
+          "type": "number",
+          "default": 0.75
+        },
+        "sampleColor": {
+          "type": "number",
+          "default": 4292927712
+        },
+        "selectedSampleColor": {
+          "type": "number",
+          "default": 4278255360
+        },
+        "selectedSampleFillColor": {
+          "type": "number",
+          "default": 0
+        },
+        "badSampleColor": {
+          "type": "number",
+          "default": 4294901760
+        },
+        "badSampleFillColor": {
+          "type": "number",
+          "default": 2164195328
+        },
+        "axisColor": {
+          "type": "number",
+          "default": 4292927712
+        }
+      },
+      "template": "var P = new DynamicBackgroundExtraction;\nP.data = [];\nP.numberOfChannels = 1;\nP.derivativeOrder = 2;\nP.smoothing = 0.25;\nP.ignoreWeights = false;\nP.modelId = \"\";\nP.modelWidth = 0;\nP.modelHeight = 0;\nP.downsample = 2;\nP.modelSampleFormat = 4;\nP.targetCorrection = 0;\nP.normalize = false;\nP.discardModel = false;\nP.replaceTarget = false;\nP.correctedImageId = \"\";\nP.correctedImageSampleFormat = 0;\nP.samples = [];\nP.imageWidth = 0;\nP.imageHeight = 0;\nP.symmetryCenterX = 0.5;\nP.symmetryCenterY = 0.5;\nP.tolerance = 0.5;\nP.shadowsRelaxation = 3;\nP.minSampleFraction = 0.05000000074505806;\nP.defaultSampleRadius = 5;\nP.samplesPerRow = 10;\nP.minWeight = 0.75;\nP.sampleColor = 4292927712;\nP.selectedSampleColor = 4278255360;\nP.selectedSampleFillColor = 0;\nP.badSampleColor = 4294901760;\nP.badSampleFillColor = 2164195328;\nP.axisColor = 4292927712;\nP.executeOn(view, false);"
+    },
+    "MultiscaleLinearTransform": {
+      "id": "MultiscaleLinearTransform",
+      "summary": "Wavelet-based multiscale noise reduction / sharpening.",
+      "params": {
+        "layers": {
+          "type": "array",
+          "default": [
+            [
+              true,
+              true,
+              0,
+              false,
+              3,
+              1,
+              1
+            ],
+            [
+              true,
+              true,
+              0,
+              false,
+              3,
+              1,
+              1
+            ],
+            [
+              true,
+              true,
+              0,
+              false,
+              3,
+              1,
+              1
+            ],
+            [
+              true,
+              true,
+              0,
+              false,
+              3,
+              1,
+              1
+            ],
+            [
+              true,
+              true,
+              0,
+              false,
+              3,
+              1,
+              1
+            ]
+          ]
+        },
+        "transform": {
+          "type": "number",
+          "default": 0
+        },
+        "scaleDelta": {
+          "type": "number",
+          "default": 0
+        },
+        "scalingFunctionData": {
+          "type": "array",
+          "default": [
+            0.25,
+            0.5,
+            0.25,
+            0.5,
+            1,
+            0.5,
+            0.25,
+            0.5,
+            0.25
+          ]
+        },
+        "scalingFunctionRowFilter": {
+          "type": "array",
+          "default": [
+            0.5,
+            1,
+            0.5
+          ]
+        },
+        "scalingFunctionColFilter": {
+          "type": "array",
+          "default": [
+            0.5,
+            1,
+            0.5
+          ]
+        },
+        "scalingFunctionNoiseSigma": {
+          "type": "array",
+          "default": [
+            0.8003000020980835,
+            0.2728999853134155,
+            0.11980000138282776,
+            0.05779999867081642,
+            0.028699999675154686,
+            0.014299999922513962,
+            0.007199999876320362,
+            0.003599999938160181,
+            0.0019000000320374966,
+            0.0010000000474974513
+          ]
+        },
+        "scalingFunctionName": {
+          "type": "string",
+          "default": "Linear Interpolation (3)"
+        },
+        "linearMask": {
+          "type": "boolean",
+          "default": false
+        },
+        "linearMaskAmpFactor": {
+          "type": "number",
+          "default": 100
+        },
+        "linearMaskSmoothness": {
+          "type": "number",
+          "default": 1
+        },
+        "linearMaskInverted": {
+          "type": "boolean",
+          "default": true
+        },
+        "linearMaskPreview": {
+          "type": "boolean",
+          "default": false
+        },
+        "largeScaleFunction": {
+          "type": "number",
+          "default": 0
+        },
+        "curveBreakPoint": {
+          "type": "number",
+          "default": 0.75
+        },
+        "noiseThresholding": {
+          "type": "boolean",
+          "default": false
+        },
+        "noiseThresholdingAmount": {
+          "type": "number",
+          "default": 1
+        },
+        "noiseThreshold": {
+          "type": "number",
+          "default": 3
+        },
+        "softThresholding": {
+          "type": "boolean",
+          "default": true
+        },
+        "useMultiresolutionSupport": {
+          "type": "boolean",
+          "default": false
+        },
+        "deringing": {
+          "type": "boolean",
+          "default": false
+        },
+        "deringingDark": {
+          "type": "number",
+          "default": 0.10000000149011612
+        },
+        "deringingBright": {
+          "type": "number",
+          "default": 0
+        },
+        "outputDeringingMaps": {
+          "type": "boolean",
+          "default": false
+        },
+        "lowRange": {
+          "type": "number",
+          "default": 0
+        },
+        "highRange": {
+          "type": "number",
+          "default": 0
+        },
+        "previewMode": {
+          "type": "number",
+          "default": 0
+        },
+        "previewLayer": {
+          "type": "number",
+          "default": 0
+        },
+        "toLuminance": {
+          "type": "boolean",
+          "default": true
+        },
+        "toChrominance": {
+          "type": "boolean",
+          "default": true
+        },
+        "linear": {
+          "type": "boolean",
+          "default": false
+        }
+      },
+      "template": "var P = new MultiscaleLinearTransform;\nP.layers = [[true,true,0,false,3,1,1],[true,true,0,false,3,1,1],[true,true,0,false,3,1,1],[true,true,0,false,3,1,1],[true,true,0,false,3,1,1]];\nP.transform = 0;\nP.scaleDelta = 0;\nP.scalingFunctionData = [0.25,0.5,0.25,0.5,1,0.5,0.25,0.5,0.25];\nP.scalingFunctionRowFilter = [0.5,1,0.5];\nP.scalingFunctionColFilter = [0.5,1,0.5];\nP.scalingFunctionNoiseSigma = [0.8003000020980835,0.2728999853134155,0.11980000138282776,0.05779999867081642,0.028699999675154686,0.014299999922513962,0.007199999876320362,0.003599999938160181,0.0019000000320374966,0.0010000000474974513];\nP.scalingFunctionName = \"Linear Interpolation (3)\";\nP.linearMask = false;\nP.linearMaskAmpFactor = 100;\nP.linearMaskSmoothness = 1;\nP.linearMaskInverted = true;\nP.linearMaskPreview = false;\nP.largeScaleFunction = 0;\nP.curveBreakPoint = 0.75;\nP.noiseThresholding = false;\nP.noiseThresholdingAmount = 1;\nP.noiseThreshold = 3;\nP.softThresholding = true;\nP.useMultiresolutionSupport = false;\nP.deringing = false;\nP.deringingDark = 0.10000000149011612;\nP.deringingBright = 0;\nP.outputDeringingMaps = false;\nP.lowRange = 0;\nP.highRange = 0;\nP.previewMode = 0;\nP.previewLayer = 0;\nP.toLuminance = true;\nP.toChrominance = true;\nP.linear = false;\nP.executeOn(view, false);"
+    },
+    "MultiscaleMedianTransform": {
+      "id": "MultiscaleMedianTransform",
+      "summary": "Median multiscale transform for structure-preserving denoise.",
+      "params": {
+        "layers": {
+          "type": "array",
+          "default": [
+            [
+              true,
+              true,
+              0,
+              false,
+              1,
+              1,
+              0
+            ],
+            [
+              true,
+              true,
+              0,
+              false,
+              1,
+              1,
+              0
+            ],
+            [
+              true,
+              true,
+              0,
+              false,
+              1,
+              1,
+              0
+            ],
+            [
+              true,
+              true,
+              0,
+              false,
+              1,
+              1,
+              0
+            ],
+            [
+              true,
+              true,
+              0,
+              false,
+              1,
+              1,
+              0
+            ]
+          ]
+        },
+        "transform": {
+          "type": "number",
+          "default": 0
+        },
+        "medianWaveletThreshold": {
+          "type": "number",
+          "default": 5
+        },
+        "scaleDelta": {
+          "type": "number",
+          "default": 0
+        },
+        "linearMask": {
+          "type": "boolean",
+          "default": false
+        },
+        "linearMaskAmpFactor": {
+          "type": "number",
+          "default": 100
+        },
+        "linearMaskSmoothness": {
+          "type": "number",
+          "default": 1
+        },
+        "linearMaskInverted": {
+          "type": "boolean",
+          "default": true
+        },
+        "linearMaskPreview": {
+          "type": "boolean",
+          "default": false
+        },
+        "lowRange": {
+          "type": "number",
+          "default": 0
+        },
+        "highRange": {
+          "type": "number",
+          "default": 0
+        },
+        "previewMode": {
+          "type": "number",
+          "default": 0
+        },
+        "previewLayer": {
+          "type": "number",
+          "default": 0
+        },
+        "toLuminance": {
+          "type": "boolean",
+          "default": true
+        },
+        "toChrominance": {
+          "type": "boolean",
+          "default": true
+        },
+        "linear": {
+          "type": "boolean",
+          "default": false
+        }
+      },
+      "template": "var P = new MultiscaleMedianTransform;\nP.layers = [[true,true,0,false,1,1,0],[true,true,0,false,1,1,0],[true,true,0,false,1,1,0],[true,true,0,false,1,1,0],[true,true,0,false,1,1,0]];\nP.transform = 0;\nP.medianWaveletThreshold = 5;\nP.scaleDelta = 0;\nP.linearMask = false;\nP.linearMaskAmpFactor = 100;\nP.linearMaskSmoothness = 1;\nP.linearMaskInverted = true;\nP.linearMaskPreview = false;\nP.lowRange = 0;\nP.highRange = 0;\nP.previewMode = 0;\nP.previewLayer = 0;\nP.toLuminance = true;\nP.toChrominance = true;\nP.linear = false;\nP.executeOn(view, false);"
+    },
+    "TGVDenoise": {
+      "id": "TGVDenoise",
+      "summary": "Total Generalized Variation denoising.",
+      "params": {
+        "rgbkMode": {
+          "type": "boolean",
+          "default": true
+        },
+        "filterEnabledL": {
+          "type": "boolean",
+          "default": true
+        },
+        "filterEnabledC": {
+          "type": "boolean",
+          "default": true
+        },
+        "strengthL": {
+          "type": "number",
+          "default": 5
+        },
+        "strengthC": {
+          "type": "number",
+          "default": 7
+        },
+        "edgeProtectionL": {
+          "type": "number",
+          "default": 0.002
+        },
+        "edgeProtectionC": {
+          "type": "number",
+          "default": 0.003
+        },
+        "smoothnessL": {
+          "type": "number",
+          "default": 2
+        },
+        "smoothnessC": {
+          "type": "number",
+          "default": 2
+        },
+        "maxIterationsL": {
+          "type": "number",
+          "default": 100
+        },
+        "maxIterationsC": {
+          "type": "number",
+          "default": 100
+        },
+        "convergenceEnabledL": {
+          "type": "boolean",
+          "default": false
+        },
+        "convergenceEnabledC": {
+          "type": "boolean",
+          "default": false
+        },
+        "convergenceLimitL": {
+          "type": "number",
+          "default": 0.004
+        },
+        "convergenceLimitC": {
+          "type": "number",
+          "default": 0.004
+        },
+        "supportEnabled": {
+          "type": "boolean",
+          "default": false
+        },
+        "supportViewId": {
+          "type": "string",
+          "default": ""
+        },
+        "supportPreview": {
+          "type": "boolean",
+          "default": false
+        },
+        "supportRemovedWaveletLayers": {
+          "type": "number",
+          "default": 0
+        },
+        "supportShadowsClip": {
+          "type": "number",
+          "default": 0
+        },
+        "supportHighlightsClip": {
+          "type": "number",
+          "default": 1
+        },
+        "supportMidtonesBalance": {
+          "type": "number",
+          "default": 0.5
+        }
+      },
+      "template": "var P = new TGVDenoise;\nP.rgbkMode = true;\nP.filterEnabledL = true;\nP.filterEnabledC = true;\nP.strengthL = 5;\nP.strengthC = 7;\nP.edgeProtectionL = 0.002;\nP.edgeProtectionC = 0.003;\nP.smoothnessL = 2;\nP.smoothnessC = 2;\nP.maxIterationsL = 100;\nP.maxIterationsC = 100;\nP.convergenceEnabledL = false;\nP.convergenceEnabledC = false;\nP.convergenceLimitL = 0.004;\nP.convergenceLimitC = 0.004;\nP.supportEnabled = false;\nP.supportViewId = \"\";\nP.supportPreview = false;\nP.supportRemovedWaveletLayers = 0;\nP.supportShadowsClip = 0;\nP.supportHighlightsClip = 1;\nP.supportMidtonesBalance = 0.5;\nP.executeOn(view, false);"
+    },
+    "Convolution": {
+      "id": "Convolution",
+      "summary": "Gaussian/custom kernel blur.",
+      "params": {
+        "mode": {
+          "type": "number",
+          "default": 0
+        },
+        "sigma": {
+          "type": "number",
+          "default": 2
+        },
+        "shape": {
+          "type": "number",
+          "default": 2
+        },
+        "aspectRatio": {
+          "type": "number",
+          "default": 1
+        },
+        "rotationAngle": {
+          "type": "number",
+          "default": 0
+        },
+        "filterSource": {
+          "type": "string",
+          "default": ""
+        },
+        "rescaleHighPass": {
+          "type": "boolean",
+          "default": false
+        },
+        "viewId": {
+          "type": "string",
+          "default": ""
+        }
+      },
+      "template": "var P = new Convolution;\nP.mode = 0;\nP.sigma = 2;\nP.shape = 2;\nP.aspectRatio = 1;\nP.rotationAngle = 0;\nP.filterSource = \"\";\nP.rescaleHighPass = false;\nP.viewId = \"\";\nP.executeOn(view, false);"
+    },
+    "UnsharpMask": {
+      "id": "UnsharpMask",
+      "summary": "Edge sharpening via unsharp masking.",
+      "params": {
+        "sigma": {
+          "type": "number",
+          "default": 2
+        },
+        "amount": {
+          "type": "number",
+          "default": 0.800000011920929
+        },
+        "useLuminance": {
+          "type": "boolean",
+          "default": true
+        },
+        "linear": {
+          "type": "boolean",
+          "default": false
+        },
+        "deringing": {
+          "type": "boolean",
+          "default": false
+        },
+        "deringingDark": {
+          "type": "number",
+          "default": 0.10000000149011612
+        },
+        "deringingBright": {
+          "type": "number",
+          "default": 0
+        },
+        "outputDeringingMaps": {
+          "type": "boolean",
+          "default": false
+        },
+        "rangeLow": {
+          "type": "number",
+          "default": 0
+        },
+        "rangeHigh": {
+          "type": "number",
+          "default": 0
+        }
+      },
+      "template": "var P = new UnsharpMask;\nP.sigma = 2;\nP.amount = 0.800000011920929;\nP.useLuminance = true;\nP.linear = false;\nP.deringing = false;\nP.deringingDark = 0.10000000149011612;\nP.deringingBright = 0;\nP.outputDeringingMaps = false;\nP.rangeLow = 0;\nP.rangeHigh = 0;\nP.executeOn(view, false);"
+    },
+    "MorphologicalTransformation": {
+      "id": "MorphologicalTransformation",
+      "summary": "Morphological operators (erosion/dilation) — e.g. star reduction.",
+      "params": {
+        "operator": {
+          "type": "number",
+          "default": 0
+        },
+        "interlacingDistance": {
+          "type": "number",
+          "default": 1
+        },
+        "lowThreshold": {
+          "type": "number",
+          "default": 0
+        },
+        "highThreshold": {
+          "type": "number",
+          "default": 0
+        },
+        "numberOfIterations": {
+          "type": "number",
+          "default": 1
+        },
+        "amount": {
+          "type": "number",
+          "default": 1
+        },
+        "selectionPoint": {
+          "type": "number",
+          "default": 0.5
+        },
+        "structureName": {
+          "type": "string",
+          "default": ""
+        },
+        "structureSize": {
+          "type": "number",
+          "default": 3
+        },
+        "structureWayTable": {
+          "type": "array",
+          "default": [
+            [
+              [
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1
+              ]
+            ]
+          ]
+        }
+      },
+      "template": "var P = new MorphologicalTransformation;\nP.operator = 0;\nP.interlacingDistance = 1;\nP.lowThreshold = 0;\nP.highThreshold = 0;\nP.numberOfIterations = 1;\nP.amount = 1;\nP.selectionPoint = 0.5;\nP.structureName = \"\";\nP.structureSize = 3;\nP.structureWayTable = [[[1,1,1,1,1,1,1,1,1]]];\nP.executeOn(view, false);"
+    },
+    "RangeSelection": {
+      "id": "RangeSelection",
+      "summary": "Build a mask from a pixel value range.",
+      "params": {
+        "lowRange": {
+          "type": "number",
+          "default": 0
+        },
+        "highRange": {
+          "type": "number",
+          "default": 1
+        },
+        "fuzziness": {
+          "type": "number",
+          "default": 0
+        },
+        "smoothness": {
+          "type": "number",
+          "default": 0
+        },
+        "screening": {
+          "type": "boolean",
+          "default": false
+        },
+        "toLightness": {
+          "type": "boolean",
+          "default": true
+        },
+        "invert": {
+          "type": "boolean",
+          "default": false
+        }
+      },
+      "template": "var P = new RangeSelection;\nP.lowRange = 0;\nP.highRange = 1;\nP.fuzziness = 0;\nP.smoothness = 0;\nP.screening = false;\nP.toLightness = true;\nP.invert = false;\nP.executeOn(view, false);"
+    },
+    "PixelMath": {
+      "id": "PixelMath",
+      "summary": "Arbitrary per-pixel expression evaluation.",
+      "params": {
+        "expression": {
+          "type": "string",
+          "default": ""
+        },
+        "expression0": {
+          "type": "string",
+          "default": ""
+        },
+        "expression1": {
+          "type": "string",
+          "default": ""
+        },
+        "expression2": {
+          "type": "string",
+          "default": ""
+        },
+        "expression3": {
+          "type": "string",
+          "default": ""
+        },
+        "useSingleExpression": {
+          "type": "boolean",
+          "default": true
+        },
+        "symbols": {
+          "type": "string",
+          "default": ""
+        },
+        "variables": {
+          "type": "string",
+          "default": ""
+        },
+        "clearImageCacheAndExit": {
+          "type": "boolean",
+          "default": false
+        },
+        "cacheGeneratedImages": {
+          "type": "boolean",
+          "default": false
+        },
+        "generateOutput": {
+          "type": "boolean",
+          "default": true
+        },
+        "singleThreaded": {
+          "type": "boolean",
+          "default": false
+        },
+        "optimization": {
+          "type": "boolean",
+          "default": true
+        },
+        "use64BitWorkingImage": {
+          "type": "boolean",
+          "default": false
+        },
+        "rescale": {
+          "type": "boolean",
+          "default": false
+        },
+        "rescaleLower": {
+          "type": "number",
+          "default": 0
+        },
+        "rescaleUpper": {
+          "type": "number",
+          "default": 1
+        },
+        "truncate": {
+          "type": "boolean",
+          "default": true
+        },
+        "truncateLower": {
+          "type": "number",
+          "default": 0
+        },
+        "truncateUpper": {
+          "type": "number",
+          "default": 1
+        },
+        "createNewImage": {
+          "type": "boolean",
+          "default": false
+        },
+        "showNewImage": {
+          "type": "boolean",
+          "default": true
+        },
+        "newImageId": {
+          "type": "string",
+          "default": ""
+        },
+        "newImageWidth": {
+          "type": "number",
+          "default": 0
+        },
+        "newImageHeight": {
+          "type": "number",
+          "default": 0
+        },
+        "newImageAlpha": {
+          "type": "boolean",
+          "default": false
+        },
+        "newImageColorSpace": {
+          "type": "number",
+          "default": 0
+        },
+        "newImageSampleFormat": {
+          "type": "number",
+          "default": 0
+        },
+        "outputData": {
+          "type": "array",
+          "default": []
+        }
+      },
+      "template": "var P = new PixelMath;\nP.expression = \"\";\nP.expression0 = \"\";\nP.expression1 = \"\";\nP.expression2 = \"\";\nP.expression3 = \"\";\nP.useSingleExpression = true;\nP.symbols = \"\";\nP.variables = \"\";\nP.clearImageCacheAndExit = false;\nP.cacheGeneratedImages = false;\nP.generateOutput = true;\nP.singleThreaded = false;\nP.optimization = true;\nP.use64BitWorkingImage = false;\nP.rescale = false;\nP.rescaleLower = 0;\nP.rescaleUpper = 1;\nP.truncate = true;\nP.truncateLower = 0;\nP.truncateUpper = 1;\nP.createNewImage = false;\nP.showNewImage = true;\nP.newImageId = \"\";\nP.newImageWidth = 0;\nP.newImageHeight = 0;\nP.newImageAlpha = false;\nP.newImageColorSpace = 0;\nP.newImageSampleFormat = 0;\nP.outputData = [];\nP.executeOn(view, false);"
+    },
+    "Resample": {
+      "id": "Resample",
+      "summary": "Resize / rescale the image.",
+      "params": {
+        "xSize": {
+          "type": "number",
+          "default": 1
+        },
+        "ySize": {
+          "type": "number",
+          "default": 1
+        },
+        "mode": {
+          "type": "number",
+          "default": 0
+        },
+        "absoluteMode": {
+          "type": "number",
+          "default": 0
+        },
+        "xResolution": {
+          "type": "number",
+          "default": 72
+        },
+        "yResolution": {
+          "type": "number",
+          "default": 72
+        },
+        "metric": {
+          "type": "boolean",
+          "default": false
+        },
+        "forceResolution": {
+          "type": "boolean",
+          "default": false
+        },
+        "interpolation": {
+          "type": "number",
+          "default": 9
+        },
+        "clampingThreshold": {
+          "type": "number",
+          "default": 0.30000001192092896
+        },
+        "smoothness": {
+          "type": "number",
+          "default": 1.5
+        },
+        "gammaCorrection": {
+          "type": "boolean",
+          "default": false
+        },
+        "noGUIMessages": {
+          "type": "boolean",
+          "default": false
+        }
+      },
+      "template": "var P = new Resample;\nP.xSize = 1;\nP.ySize = 1;\nP.mode = 0;\nP.absoluteMode = 0;\nP.xResolution = 72;\nP.yResolution = 72;\nP.metric = false;\nP.forceResolution = false;\nP.interpolation = 9;\nP.clampingThreshold = 0.30000001192092896;\nP.smoothness = 1.5;\nP.gammaCorrection = false;\nP.noGUIMessages = false;\nP.executeOn(view, false);"
+    },
+    "IntegerResample": {
+      "id": "IntegerResample",
+      "summary": "Integer downsample (binning).",
+      "params": {
+        "zoomFactor": {
+          "type": "number",
+          "default": -2
+        },
+        "downsamplingMode": {
+          "type": "number",
+          "default": 0
+        },
+        "subsampleMode": {
+          "type": "number",
+          "default": 0
+        },
+        "xResolution": {
+          "type": "number",
+          "default": 72
+        },
+        "yResolution": {
+          "type": "number",
+          "default": 72
+        },
+        "metric": {
+          "type": "boolean",
+          "default": false
+        },
+        "forceResolution": {
+          "type": "boolean",
+          "default": false
+        },
+        "gammaCorrection": {
+          "type": "boolean",
+          "default": false
+        },
+        "noGUIMessages": {
+          "type": "boolean",
+          "default": false
+        }
+      },
+      "template": "var P = new IntegerResample;\nP.zoomFactor = -2;\nP.downsamplingMode = 0;\nP.subsampleMode = 0;\nP.xResolution = 72;\nP.yResolution = 72;\nP.metric = false;\nP.forceResolution = false;\nP.gammaCorrection = false;\nP.noGUIMessages = false;\nP.executeOn(view, false);"
+    },
+    "Crop": {
+      "id": "Crop",
+      "summary": "Crop the image to a geometry.",
+      "params": {
+        "leftMargin": {
+          "type": "number",
+          "default": 0
+        },
+        "topMargin": {
+          "type": "number",
+          "default": 0
+        },
+        "rightMargin": {
+          "type": "number",
+          "default": 0
+        },
+        "bottomMargin": {
+          "type": "number",
+          "default": 0
+        },
+        "mode": {
+          "type": "number",
+          "default": 1
+        },
+        "xResolution": {
+          "type": "number",
+          "default": 72
+        },
+        "yResolution": {
+          "type": "number",
+          "default": 72
+        },
+        "metric": {
+          "type": "boolean",
+          "default": false
+        },
+        "forceResolution": {
+          "type": "boolean",
+          "default": false
+        },
+        "red": {
+          "type": "number",
+          "default": 0
+        },
+        "green": {
+          "type": "number",
+          "default": 0
+        },
+        "blue": {
+          "type": "number",
+          "default": 0
+        },
+        "alpha": {
+          "type": "number",
+          "default": 1
+        },
+        "noGUIMessages": {
+          "type": "boolean",
+          "default": false
+        }
+      },
+      "template": "var P = new Crop;\nP.leftMargin = 0;\nP.topMargin = 0;\nP.rightMargin = 0;\nP.bottomMargin = 0;\nP.mode = 1;\nP.xResolution = 72;\nP.yResolution = 72;\nP.metric = false;\nP.forceResolution = false;\nP.red = 0;\nP.green = 0;\nP.blue = 0;\nP.alpha = 1;\nP.noGUIMessages = false;\nP.executeOn(view, false);"
+    },
+    "Rotation": {
+      "id": "Rotation",
+      "summary": "Rotate the image by an arbitrary angle.",
+      "params": {
+        "angle": {
+          "type": "number",
+          "default": 0
+        },
+        "optimizeFast": {
+          "type": "boolean",
+          "default": true
+        },
+        "interpolation": {
+          "type": "number",
+          "default": 9
+        },
+        "clampingThreshold": {
+          "type": "number",
+          "default": 0.30000001192092896
+        },
+        "smoothness": {
+          "type": "number",
+          "default": 1.5
+        },
+        "gammaCorrection": {
+          "type": "boolean",
+          "default": false
+        },
+        "red": {
+          "type": "number",
+          "default": 0
+        },
+        "green": {
+          "type": "number",
+          "default": 0
+        },
+        "blue": {
+          "type": "number",
+          "default": 0
+        },
+        "alpha": {
+          "type": "number",
+          "default": 1
+        },
+        "noGUIMessages": {
+          "type": "boolean",
+          "default": false
+        }
+      },
+      "template": "var P = new Rotation;\nP.angle = 0;\nP.optimizeFast = true;\nP.interpolation = 9;\nP.clampingThreshold = 0.30000001192092896;\nP.smoothness = 1.5;\nP.gammaCorrection = false;\nP.red = 0;\nP.green = 0;\nP.blue = 0;\nP.alpha = 1;\nP.noGUIMessages = false;\nP.executeOn(view, false);"
+    },
+    "ChannelExtraction": {
+      "id": "ChannelExtraction",
+      "summary": "Extract channels (RGB/HSV/CIE) into separate images.",
+      "params": {
+        "colorSpace": {
+          "type": "number",
+          "default": 0
+        },
+        "channels": {
+          "type": "array",
+          "default": [
+            [
+              true,
+              ""
+            ],
+            [
+              true,
+              ""
+            ],
+            [
+              true,
+              ""
+            ]
+          ]
+        },
+        "sampleFormat": {
+          "type": "number",
+          "default": 0
+        },
+        "inheritAstrometricSolution": {
+          "type": "boolean",
+          "default": true
+        }
+      },
+      "template": "var P = new ChannelExtraction;\nP.colorSpace = 0;\nP.channels = [[true,\"\"],[true,\"\"],[true,\"\"]];\nP.sampleFormat = 0;\nP.inheritAstrometricSolution = true;\nP.executeOn(view, false);"
+    },
+    "ChannelCombination": {
+      "id": "ChannelCombination",
+      "summary": "Combine separate channel images into one.",
+      "params": {
+        "colorSpace": {
+          "type": "number",
+          "default": 0
+        },
+        "channels": {
+          "type": "array",
+          "default": [
+            [
+              true,
+              ""
+            ],
+            [
+              true,
+              ""
+            ],
+            [
+              true,
+              ""
+            ]
+          ]
+        },
+        "inheritAstrometricSolution": {
+          "type": "boolean",
+          "default": true
+        }
+      },
+      "template": "var P = new ChannelCombination;\nP.colorSpace = 0;\nP.channels = [[true,\"\"],[true,\"\"],[true,\"\"]];\nP.inheritAstrometricSolution = true;\nP.executeOn(view, false);"
+    },
+    "RGBWorkingSpace": {
+      "id": "RGBWorkingSpace",
+      "summary": "Set the RGB working space parameters.",
+      "params": {
+        "channels": {
+          "type": "array",
+          "default": [
+            [
+              0.22249099612236023,
+              0.6484310030937195,
+              0.33085599541664124
+            ],
+            [
+              0.7168880105018616,
+              0.321152001619339,
+              0.5978710055351257
+            ],
+            [
+              0.060621000826358795,
+              0.1558859944343567,
+              0.06604400277137756
+            ]
+          ]
+        },
+        "gamma": {
+          "type": "number",
+          "default": 2.200000047683716
+        },
+        "sRGBGamma": {
+          "type": "boolean",
+          "default": true
+        },
+        "applyGlobalRGBWS": {
+          "type": "boolean",
+          "default": false
+        }
+      },
+      "template": "var P = new RGBWorkingSpace;\nP.channels = [[0.22249099612236023,0.6484310030937195,0.33085599541664124],[0.7168880105018616,0.321152001619339,0.5978710055351257],[0.060621000826358795,0.1558859944343567,0.06604400277137756]];\nP.gamma = 2.200000047683716;\nP.sRGBGamma = true;\nP.applyGlobalRGBWS = false;\nP.executeOn(view, false);"
+    },
+    "Binarize": {
+      "id": "Binarize",
+      "summary": "Threshold the image to binary.",
+      "params": {
+        "thresholdRK": {
+          "type": "number",
+          "default": 0.5
+        },
+        "thresholdG": {
+          "type": "number",
+          "default": 0.5
+        },
+        "thresholdB": {
+          "type": "number",
+          "default": 0.5
+        },
+        "isGlobal": {
+          "type": "boolean",
+          "default": true
+        }
+      },
+      "template": "var P = new Binarize;\nP.thresholdRK = 0.5;\nP.thresholdG = 0.5;\nP.thresholdB = 0.5;\nP.isGlobal = true;\nP.executeOn(view, false);"
+    },
+    "Invert": {
+      "id": "Invert",
+      "summary": "Invert pixel values.",
+      "params": {},
+      "template": "var P = new Invert;\nP.executeOn(view, false);"
+    },
+    "Rescale": {
+      "id": "Rescale",
+      "summary": "Rescale pixel values to the full dynamic range.",
+      "params": {
+        "mode": {
+          "type": "number",
+          "default": 0
+        }
+      },
+      "template": "var P = new Rescale;\nP.mode = 0;\nP.executeOn(view, false);"
+    }
+  }
+}
