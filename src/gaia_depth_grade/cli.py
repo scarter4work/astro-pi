@@ -52,7 +52,7 @@ def grade_array(image, header, config: GradeConfig, source: DistanceSource):
 def write_fits(path, image, header, qa):
     data = np.moveaxis(image, -1, 0) if image.ndim == 3 else image
     hdr = header.copy()
-    hdr["DEPTHTAG"] = HONESTY[:68]
+    hdr["DEPTHTAG"] = HONESTY   # astropy CONTINUE stores the full verbatim string
     hdr.add_history(HONESTY)
     fits.PrimaryHDU(data=data.astype(np.float32), header=hdr).writeto(path, overwrite=True)
     with open(path + ".qa.json", "w") as fh:

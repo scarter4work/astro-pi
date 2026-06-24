@@ -57,6 +57,7 @@ def test_write_fits_has_honesty_tag(tmp_path, simple_wcs_header):
     out = tmp_path / "g.fits"
     write_fits(str(out), img, simple_wcs_header, {"match_rate": 1.0})
     hdr = fits.getheader(str(out))
-    assert HONESTY in str(hdr.get("DEPTHTAG", "")) or any(HONESTY in str(c) for c in hdr["HISTORY"])
+    assert hdr.get("DEPTHTAG", "") == HONESTY            # full verbatim tag, no truncation
+    assert any(HONESTY in str(c) for c in hdr["HISTORY"])
     qa = json.loads((tmp_path / "g.fits.qa.json").read_text())
     assert qa["match_rate"] == 1.0
