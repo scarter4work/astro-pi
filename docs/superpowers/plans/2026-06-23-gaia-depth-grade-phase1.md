@@ -1129,12 +1129,17 @@ def render_stars(stars_layer, detected, modulation, base_sigma_px):
         # brightness
         win *= b
 
-        # size/glow: add a Gaussian halo of extra integrated weight
+        # size/glow: add a peak-normalized Gaussian halo whose peak amplitude
+        # is (zsize-1)*flux and whose width scales with zsize. Peak-normalizing
+        # (not area-normalizing) is what makes a size increase visibly widen the
+        # star's footprint rather than just adding a negligible flux spread.
         if abs(zsize - 1.0) > 1e-9:
             h, w = win.shape[0], win.shape[1]
             cx, cy = x - xs.start, y - ys.start
             stamp = _gaussian_stamp(h, w, cx, cy, base_sigma_px * zsize)
-            stamp /= stamp.sum() if stamp.sum() > 0 else 1.0
+            peak = stamp.max()
+            if peak > 0:
+                stamp = stamp / peak
             extra = (zsize - 1.0) * flux
             if is_color:
                 for c in range(win.shape[2]):
