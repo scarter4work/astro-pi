@@ -1061,13 +1061,16 @@ def test_brightness_down_decreases_peak():
 
 def test_size_up_widens_footprint():
     img, det = _one_star_layer()
-    def above_half(a):
-        return int((a > a.max() * 0.5).sum())
-    base_area = above_half(img)
+    # Measure spatial extent with a FIXED absolute threshold. A relative
+    # max*0.5 threshold rises as the glow raises the peak, masking the
+    # widening; a fixed threshold counts the genuinely-expanded wings.
+    def above_thresh(a, t=0.1):
+        return int((a > t).sum())
+    base_area = above_thresh(img)
     m = Modulation(brightness=np.array([1.0]), size=np.array([1.6]),
                    contrast=np.array([0.0]), saturation=np.array([1.0]))
     out = render_stars(img, det, m, base_sigma_px=2.0)
-    assert above_half(out) > base_area
+    assert above_thresh(out) > base_area
 
 
 def test_output_clipped_and_color_shape_preserved():
