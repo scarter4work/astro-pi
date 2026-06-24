@@ -8,44 +8,18 @@ import numpy as np
 from astropy.io import fits
 
 from .config import GradeConfig, load_config
-from .detect import detect_stars
 from .distances import DistanceSource, GaiaStarSource
-from .match import cross_match
-from .modulate import compute_modulation
-from .render import render_stars
-from .transform import effective_strength
-from .wcs import field_footprint, load_wcs
+from .pipeline import prepare_grade, render_from_prep
 
 log = logging.getLogger(__name__)
 HONESTY = "GAIA depth-derived; physically motivated, not per-pixel correct for gas"
 
 
-def _luminance(image: np.ndarray) -> np.ndarray:
-    return image.mean(axis=2) if image.ndim == 3 else image
-
-
 def grade_array(image, header, config: GradeConfig, source: DistanceSource):
-    wcs = load_wcs(header)
-    lum = _luminance(image)
-    detected = detect_stars(lum, config.detect_fwhm, config.detect_threshold_sigma)
-    fp = field_footprint(wcs, lum.shape)
-    catalog = source.distances_for(fp)
-    matched, stats = cross_match(detected, catalog, wcs, config.match_tolerance_px)
-    strength = effective_strength(
-        np.asarray(matched["r_med_geo"]), np.asarray(matched["r_lo_geo"]),
-        np.asarray(matched["r_hi_geo"]), config.p_low, config.p_high, config.neutral_strength)
-    modulation = compute_modulation(strength, config.gains)
-    graded = render_stars(image, matched, modulation, config.base_sigma_px)
-
-    low = stats.match_rate < config.min_match_rate
-    if low:
-        log.warning("LOW MATCH RATE %.2f < %.2f — depth grade is unreliable",
-                    stats.match_rate, config.min_match_rate)
-    qa = {
-        "n_detected": stats.n_detected, "n_matched": stats.n_matched,
-        "match_rate": stats.match_rate, "median_offset_px": stats.median_offset_px,
-        "low_match_warning": bool(low),
-    }
+    """One-shot grade: prepare (detect+query+match) then render. Equivalent to
+    `prepare_grade` followed by `render_from_prep`."""
+    table, qa = prepare_grade(image, header, config, source)
+    graded = render_from_prep(image, table, config)
     return graded, qa
 
 

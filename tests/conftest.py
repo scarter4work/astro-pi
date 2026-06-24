@@ -1,7 +1,31 @@
 import numpy as np
 import pytest
 from astropy.io import fits
+from astropy.table import Table
 from astropy.wcs import WCS
+
+from gaia_depth_grade.distances import DistanceSource
+
+
+class FakeTwoStarSource(DistanceSource):
+    """Catalog with one near (100 pc) and one far (2000 pc) star at given pixels."""
+
+    def __init__(self, wcs, near_xy, far_xy):
+        self._w = wcs
+        self._near = near_xy
+        self._far = far_xy
+
+    def distances_for(self, footprint):
+        sky = self._w.pixel_to_world(
+            [self._near[0], self._far[0]], [self._near[1], self._far[1]])
+        t = Table()
+        t["ra"] = sky.ra.deg
+        t["dec"] = sky.dec.deg
+        t["r_med_geo"] = [100.0, 2000.0]
+        t["r_lo_geo"] = [98.0, 1900.0]
+        t["r_hi_geo"] = [102.0, 2100.0]
+        t["source_id"] = [1, 2]
+        return t
 
 
 @pytest.fixture
@@ -34,3 +58,19 @@ def synthetic_stars():
     for x, y, f in truth:
         _gaussian_star(img, x, y, f, sigma=2.0)
     return img, truth
+
+
+@pytest.fixture
+def two_star_scene(simple_wcs_header):
+    """(header, mono image, source, near_xy, far_xy) for a near+far two-star frame."""
+    from gaia_depth_grade.wcs import load_wcs
+
+    w = load_wcs(simple_wcs_header)
+    ny, nx = 200, 300
+    yy, xx = np.mgrid[0:ny, 0:nx]
+    near = (90.0, 100.0)
+    far = (210.0, 100.0)
+    img = np.zeros((ny, nx))
+    for (x, y) in (near, far):
+        img += 0.4 * np.exp(-((xx - x) ** 2 + (yy - y) ** 2) / (2 * 2.0**2))
+    return simple_wcs_header, img, FakeTwoStarSource(w, near, far), near, far
