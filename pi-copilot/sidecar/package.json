@@ -1,0 +1,16 @@
+{
+  "name": "pi-copilot-sidecar",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "PI Copilot sidecar — model agent loop + pjsr_parser grounding (Phase 0).",
+  "scripts": {
+    "start": "node src/server.js",
+    "test": "node --test test/*.test.js",
+    "battery": "node test/battery.js"
+  },
+  "dependencies": {
+    "pjsr-parser-server": "file:../../../EZ-suite-bsc/pjsr_parser"
+  },
+  "engines": { "node": ">=18.0.0" }
+}
