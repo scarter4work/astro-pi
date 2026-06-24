@@ -1,6 +1,9 @@
 # Gaia Depth Grade
 
-**Status:** Idea / pre-MVP — captured 2026-06-23. Conversation to be continued in a fresh session.
+**Status:** Phase 1 (star-field depth) implemented — 2026-06-23. Python core complete and
+tested (29 tests); PJSR harness wrapper present (manual validation in PixInsight pending).
+Design spec: `docs/superpowers/specs/2026-06-23-gaia-depth-grade-design.md`.
+Implementation plan: `docs/superpowers/plans/2026-06-23-gaia-depth-grade-phase1.md`.
 
 A physically-grounded "depth" grade for astrophotographs. Instead of faking depth with
 aesthetic local-contrast tricks (LHE, masked curves), use **real 3D distance data from
@@ -103,6 +106,26 @@ existing headless PI harness.
 
 ---
 
+## Setup
+
+```bash
+cd /home/scarter4work/projects/gaia-depth-grade
+uv venv --python 3.14 .venv
+. .venv/bin/activate
+uv pip install -e .          # installs the package so `python -m gaia_depth_grade.cli` resolves
+pytest                       # 29 tests, all green
+```
+
+The editable install is required for the PJSR wrapper, which invokes
+`python -m gaia_depth_grade.cli grade <in.fits> <out.fits>`.
+
+CLI directly (outside the harness, on a star-layer FITS that already has WCS):
+```bash
+python -m gaia_depth_grade.cli grade stars_in.fits stars_out.fits [--config grade.toml]
+```
+
+---
+
 ## Running the depth grade (PixInsight harness)
 
 The Python core is wrapped in a PJSR script that runs inside PixInsight's automation harness.
@@ -123,6 +146,11 @@ Output: a new window `<image_id>_depthgraded` containing the depth-graded result
 
 ---
 
-## Next step
-Resume with a proper brainstorm → scope the MVP (star-field version on an existing frame),
-nail the contrast-mapping function, then write a plan.
+## Next steps
+- **Validate Phase 1 in the live PixInsight harness** on a real master (e.g. newest combined
+  master in `~/projects/processing/master/`). Verify the PJSR API assumptions that CI can't:
+  StarXTerminator headless scriptability + `_stars` window naming, `ImageSolver.SolveImage`,
+  `ImageWindow.saveAs` signature, and the screen-blend recombine. Then tune the modulation
+  gains against the look.
+- **Phase 2 — dust depth:** add a `DustMapSource` (Edenhofer+ 2024 via `dustmaps`)
+  implementing the same `DistanceSource` interface; the entire downstream pipeline is reused.

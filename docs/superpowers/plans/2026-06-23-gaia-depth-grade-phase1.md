@@ -76,8 +76,9 @@ cd /home/scarter4work/projects/gaia-depth-grade
 uv venv --python 3.14 .venv
 . .venv/bin/activate
 uv pip install "numpy>=2" scipy "astropy>=7" photutils astroquery pytest
+uv pip install -e .          # install the package itself so `python -m gaia_depth_grade.cli` resolves (required by the PJSR wrapper)
 ```
-Expected: all install without error. If `photutils` has no 3.14 wheel, fall back: `uv venv --python 3.13 .venv` and re-run (note the chosen version in the commit message).
+Expected: all install without error. (Run `uv pip install -e .` again after `pyproject.toml` exists in Step 2 if it failed here.) If `photutils` has no 3.14 wheel, fall back: `uv venv --python 3.13 .venv` and re-run (note the chosen version in the commit message).
 
 - [ ] **Step 2: Write `pyproject.toml`**
 
