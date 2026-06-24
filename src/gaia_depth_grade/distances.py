@@ -24,7 +24,9 @@ def build_adql(footprint: FieldFootprint) -> str:
     return (
         "SELECT g.ra, g.dec, d.r_med_geo, d.r_lo_geo, d.r_hi_geo, g.source_id "
         "FROM gaiadr3.gaia_source AS g "
-        "JOIN gaiadr3.distances AS d ON g.source_id = d.source_id "
+        # Bailer-Jones (2021) geometric distances: published as external.gaiaedr3_distance
+        # on the ESA Gaia archive (keyed by DR3 source_id). There is no gaiadr3.distances.
+        "JOIN external.gaiaedr3_distance AS d ON g.source_id = d.source_id "
         "WHERE 1 = CONTAINS(POINT('ICRS', g.ra, g.dec), "
         f"CIRCLE('ICRS', {ra}, {dec}, {r})) "
         "AND d.r_med_geo IS NOT NULL"

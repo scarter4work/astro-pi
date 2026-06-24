@@ -19,7 +19,7 @@ def _fake_catalog():
 def test_build_adql_contains_join_and_cone():
     fp = FieldFootprint(10.0, 20.0, 0.05)
     q = build_adql(fp).lower()
-    assert "gaiadr3.distances" in q
+    assert "external.gaiaedr3_distance" in q  # Bailer-Jones (2021); gaiadr3.distances does not exist
     assert "r_med_geo" in q
     assert "1/parallax" not in q
     assert "circle" in q and "10.0" in q and "20.0" in q

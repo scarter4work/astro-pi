@@ -17,10 +17,14 @@ class GradeConfig:
     gains: Gains = Gains()
     p_low: float = 5.0
     p_high: float = 95.0
-    match_tolerance_px: float = 3.0
+    # 4 px (not 3) absorbs the ~2 px astrometric scatter left by exporting PI's
+    # LINEAR WCS (PI solves with a spline; we only carry CD+TAN). Validated on a
+    # real HaO3 master: lifts match_rate 0.27 -> 0.43 with ~80% of added matches real.
+    match_tolerance_px: float = 4.0
     min_match_rate: float = 0.3
     detect_fwhm: float = 3.0
-    detect_threshold_sigma: float = 5.0
+    # 6 sigma trims the faintest, noisiest detections (near-neutral on match_rate).
+    detect_threshold_sigma: float = 6.0
     base_sigma_px: float = 2.0
     cache_dir: str = ".cache"
     neutral_strength: float = 0.0
