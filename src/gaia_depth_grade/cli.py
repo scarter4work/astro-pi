@@ -77,6 +77,11 @@ def main(argv=None):
         sp.add_argument("--config", default=None)
     args = p.parse_args(argv)
 
+    if args.cmd == "debug":
+        # Phase 1 has no depth-colored overlay yet. Fail loudly rather than
+        # silently behaving like `grade` (no silent fallbacks).
+        raise SystemExit("debug mode (depth-colored overlay) is not implemented in Phase 1")
+
     logging.basicConfig(level=logging.INFO)
     cfg = load_config(args.config)
     image, header = _read_image(args.input)

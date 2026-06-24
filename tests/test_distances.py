@@ -50,5 +50,15 @@ def test_empty_query_raises(tmp_path, monkeypatch):
         src.distances_for(FieldFootprint(10.0, 20.0, 0.05))
 
 
+def test_tap_failure_raises_runtimeerror(tmp_path, monkeypatch):
+    src = GaiaStarSource(cache_dir=str(tmp_path))
+    def boom(adql):
+        raise ConnectionError("network down")
+    monkeypatch.setattr(src, "_run_query", boom)
+    with pytest.raises(RuntimeError) as exc:
+        src.distances_for(FieldFootprint(10.0, 20.0, 0.05))
+    assert "network down" in str(exc.value)
+
+
 def test_is_distance_source():
     assert issubclass(GaiaStarSource, DistanceSource)

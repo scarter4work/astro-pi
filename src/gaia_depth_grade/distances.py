@@ -38,7 +38,7 @@ class GaiaStarSource(DistanceSource):
 
     def _cache_path(self, footprint: FieldFootprint) -> str:
         key = f"{footprint.center_ra:.6f}_{footprint.center_dec:.6f}_{footprint.radius_deg:.6f}"
-        digest = hashlib.sha1(key.encode()).hexdigest()[:16]
+        digest = hashlib.sha1(key.encode(), usedforsecurity=False).hexdigest()[:16]
         return os.path.join(self.cache_dir, f"gaia_{digest}.ecsv")
 
     def _run_query(self, adql: str) -> Table:

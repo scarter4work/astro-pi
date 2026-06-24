@@ -17,12 +17,14 @@ def _one_star_layer(flux=0.5, x=32, y=32, sigma=2.0):
 
 def test_brightness_up_increases_peak():
     img, det = _one_star_layer()
+    img_before = img.copy()
     base_peak = img.max()
     m = Modulation(brightness=np.array([1.5]), size=np.array([1.0]),
                    contrast=np.array([0.0]), saturation=np.array([1.0]))
     out = render_stars(img, det, m, base_sigma_px=2.0)
     assert out.max() > base_peak
     assert np.shares_memory(out, img) is False  # input not mutated
+    assert np.array_equal(img, img_before)  # input values untouched, not just non-shared
 
 
 def test_brightness_down_decreases_peak():

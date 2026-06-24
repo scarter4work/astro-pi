@@ -27,7 +27,7 @@ def measure_fwhm(image: np.ndarray, x: float, y: float, box: int = 7) -> float:
 
 
 def detect_stars(image: np.ndarray, fwhm: float, threshold_sigma: float) -> Table:
-    mean, median, std = sigma_clipped_stats(image, sigma=3.0)
+    _, median, std = sigma_clipped_stats(image, sigma=3.0)
     finder = DAOStarFinder(fwhm=fwhm, threshold=threshold_sigma * std)
     found = finder(image - median)
     if found is None or len(found) == 0:

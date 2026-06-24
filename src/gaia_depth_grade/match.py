@@ -23,7 +23,7 @@ def cross_match(detected: Table, catalog: Table, wcs, tolerance_px: float):
         out[col] = np.full(n, np.nan, dtype=float)
 
     if n == 0 or len(catalog) == 0:
-        return out, MatchStats(n, 0, 0.0 if n else 0.0, float("nan"))
+        return out, MatchStats(n, 0, 0.0, float("nan"))
 
     cat_x, cat_y = wcs.world_to_pixel_values(catalog["ra"], catalog["dec"])
     det_xy = np.column_stack([np.asarray(out["x"]), np.asarray(out["y"])])
