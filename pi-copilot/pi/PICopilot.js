@@ -160,10 +160,13 @@ function CopilotDialog() {
 CopilotDialog.prototype = new Dialog;
 
 function main() {
-   // show() (modeless) instead of execute() (modal): keep PixInsight usable —
-   // switch views, inspect the image — while the chat panel stays open. PI keeps
-   // the modeless dialog and its event handlers alive after this script returns.
-   var dlg = new CopilotDialog();
-   dlg.show();
+   // Modal: a one-shot "Execute Script File" tears down the JS context (and the
+   // dialog + its handlers) the moment main() returns, so a modeless show() dialog
+   // dies mid-render. execute() keeps the context alive until the panel is closed.
+   // Trade-off: PixInsight is blocked while the panel is open. A non-blocking panel
+   // that lets you use PI simultaneously is a ProcessInterface — a Phase 2 change,
+   // not a thin script. (All shipped EZ-Stretch/NukeX dialogs are modal for the
+   // same reason.)
+   (new CopilotDialog).execute();
 }
 main();
