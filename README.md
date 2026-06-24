@@ -103,6 +103,26 @@ existing headless PI harness.
 
 ---
 
+## Running the depth grade (PixInsight harness)
+
+The Python core is wrapped in a PJSR script that runs inside PixInsight's automation harness.
+The script orchestrates:
+1. Plate-solving via ImageSolver
+2. Star/starless split via StarXTerminator
+3. Passing the stars layer to the Python CLI
+4. Recombining the modulated stars over the starless layer
+
+**Invocation:**
+```bash
+xvfb-run -a /opt/PixInsight/bin/PixInsight.sh --automation-mode \
+  --run=/home/scarter4work/projects/gaia-depth-grade/pjsr/gaia_depth_grade.js
+```
+
+The script expects the active PixInsight window to contain the master image to be graded.
+Output: a new window `<image_id>_depthgraded` containing the depth-graded result.
+
+---
+
 ## Next step
 Resume with a proper brainstorm → scope the MVP (star-field version on an existing frame),
 nail the contrast-mapping function, then write a plan.
