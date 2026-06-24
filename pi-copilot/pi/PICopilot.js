@@ -159,5 +159,11 @@ function CopilotDialog() {
 }
 CopilotDialog.prototype = new Dialog;
 
-function main() { (new CopilotDialog).execute(); }
+function main() {
+   // show() (modeless) instead of execute() (modal): keep PixInsight usable —
+   // switch views, inspect the image — while the chat panel stays open. PI keeps
+   // the modeless dialog and its event handlers alive after this script returns.
+   var dlg = new CopilotDialog();
+   dlg.show();
+}
 main();
