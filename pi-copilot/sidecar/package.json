@@ -6,7 +6,7 @@
   "description": "PI Copilot sidecar — model agent loop + pjsr_parser grounding (Phase 0).",
   "scripts": {
     "start": "node src/server.js",
-    "test": "node --test",
+    "test": "node --test test/*.test.js",
     "battery": "node test/battery.js"
   },
   "dependencies": {
