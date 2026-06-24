@@ -1436,9 +1436,10 @@ function gradeWindow(view) {
    // 5. Read the modulated stars layer back.
    var graded = ImageWindow.open(outPath)[0];
 
-   // 6. Recombine (screen) modulated stars over starless.
+   // 6. Recombine modulated stars over starless via screen blend.
+   //    Screen: result = 1 - (1-A)*(1-B), written in PixelMath as ~((~A)*(~B)).
    var PM = new PixelMath;
-   PM.expression = "combine(" + starless.id + ", " + graded.mainView.id + ", op_screen)";
+   PM.expression = "~((~" + starless.id + ") * (~" + graded.mainView.id + "))";
    PM.createNewImage = true;
    PM.newImageId = view.id + "_depthgraded";
    PM.executeOn(starless);
