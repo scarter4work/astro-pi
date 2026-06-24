@@ -736,7 +736,7 @@ def cross_match(detected: Table, catalog: Table, wcs, tolerance_px: float):
         out[col] = np.full(n, np.nan, dtype=float)
 
     if n == 0 or len(catalog) == 0:
-        return out, MatchStats(n, 0, 0.0 if n else 0.0, float("nan"))
+        return out, MatchStats(n, 0, 0.0, float("nan"))
 
     cat_x, cat_y = wcs.world_to_pixel_values(catalog["ra"], catalog["dec"])
     det_xy = np.column_stack([np.asarray(out["x"]), np.asarray(out["y"])])
@@ -1349,6 +1349,11 @@ def main(argv=None):
         sp.add_argument("input"); sp.add_argument("output")
         sp.add_argument("--config", default=None)
     args = p.parse_args(argv)
+
+    if args.cmd == "debug":
+        # Phase 1 has no depth-colored overlay yet. Fail loudly rather than
+        # silently behaving like `grade` (no silent fallbacks).
+        raise SystemExit("debug mode (depth-colored overlay) is not implemented in Phase 1")
 
     logging.basicConfig(level=logging.INFO)
     cfg = load_config(args.config)
