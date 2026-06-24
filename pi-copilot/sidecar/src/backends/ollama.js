@@ -12,6 +12,9 @@ export function parseTextualToolCalls(content) {
   while ((m = reA.exec(content)) !== null) {
     let args = {};
     const inner = m[2].trim();
+    // Non-JSON inner text is intentionally dropped to {}: the loop then dispatches
+    // the tool with empty args, gets a clear error back, and the model self-corrects
+    // — preferable to throwing here and losing the recovered tool name.
     if (inner) { try { args = JSON.parse(inner); } catch (e) { /* leave {} */ } }
     calls.push({ name: m[1], arguments: args });
   }
