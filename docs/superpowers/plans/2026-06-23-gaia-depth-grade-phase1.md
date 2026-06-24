@@ -1257,7 +1257,8 @@ def test_write_fits_has_honesty_tag(tmp_path, simple_wcs_header):
     out = tmp_path / "g.fits"
     write_fits(str(out), img, simple_wcs_header, {"match_rate": 1.0})
     hdr = fits.getheader(str(out))
-    assert HONESTY in str(hdr.get("DEPTHTAG", "")) or any(HONESTY in str(c) for c in hdr["HISTORY"])
+    assert hdr.get("DEPTHTAG", "") == HONESTY            # full verbatim tag, no truncation
+    assert any(HONESTY in str(c) for c in hdr["HISTORY"])
     qa = json.loads((tmp_path / "g.fits.qa.json").read_text())
     assert qa["match_rate"] == 1.0
 ```
@@ -1324,7 +1325,7 @@ def grade_array(image, header, config: GradeConfig, source: DistanceSource):
 def write_fits(path, image, header, qa):
     data = np.moveaxis(image, -1, 0) if image.ndim == 3 else image
     hdr = header.copy()
-    hdr["DEPTHTAG"] = HONESTY[:68]
+    hdr["DEPTHTAG"] = HONESTY   # astropy CONTINUE stores the full verbatim string
     hdr.add_history(HONESTY)
     fits.PrimaryHDU(data=data.astype(np.float32), header=hdr).writeto(path, overwrite=True)
     with open(path + ".qa.json", "w") as fh:
