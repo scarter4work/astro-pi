@@ -647,7 +647,7 @@ git commit -m "feat: DistanceSource interface and Gaia/Bailer-Jones query with c
 - Consumes: detection `Table` (cols `x, y, flux, fwhm`) from Task 3; catalog `Table` (cols `ra, dec, r_*_geo, source_id`) from Task 4; `astropy.wcs.WCS` from Task 2.
 - Produces:
   - `MatchStats(n_detected: int, n_matched: int, match_rate: float, median_offset_px: float)` — frozen dataclass.
-  - `cross_match(detected, catalog, wcs, tolerance_px, neutral_strength_distance=None) -> tuple[Table, MatchStats]`. Returns `detected` plus columns `matched` (bool), `r_med_geo`, `r_lo_geo`, `r_hi_geo` (nan where unmatched). Matching projects catalog `ra/dec` to pixels via `wcs`, then nearest-neighbor within `tolerance_px` (scipy `cKDTree`). Each catalog source matches at most one detection (closest wins).
+  - `cross_match(detected, catalog, wcs, tolerance_px) -> tuple[Table, MatchStats]`. Returns `detected` plus columns `matched` (bool), `r_med_geo`, `r_lo_geo`, `r_hi_geo` (nan where unmatched). (Neutral depth for unmatched stars is applied downstream in `transform.effective_strength` via `config.neutral_strength`, not here.) Matching projects catalog `ra/dec` to pixels via `wcs`, then nearest-neighbor within `tolerance_px` (scipy `cKDTree`). Each catalog source matches at most one detection (closest wins).
 
 - [ ] **Step 1: Write the failing test**
 
