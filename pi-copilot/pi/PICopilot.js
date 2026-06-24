@@ -8,7 +8,11 @@
 #include <pjsr/StdIcon.jsh>
 
 #define SIDECAR  "http://localhost:8765"
-#define SESSION  "pi-" + (new Date()).getTime()
+
+// NOT a #define: a macro re-expands on every use, so `new Date().getTime()` would
+// produce a DIFFERENT session id for each call — /chat would register one id and
+// /continue would ask for another ("Unknown session"). Compute it once here.
+var SESSION = "pi-" + (new Date()).getTime();
 
 // --- HTTP via NetworkTransfer (API verified against the live sidecar) ---------
 // GET  -> setURL + onDownloadDataAvailable callback + download()
