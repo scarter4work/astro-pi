@@ -1,0 +1,24 @@
+[project]
+name = "gaia-depth-grade"
+version = "1.0.0"
+description = "Physically-grounded depth grade for astrophotographs using Gaia distances"
+requires-python = ">=3.13"
+dependencies = ["numpy>=2", "scipy", "astropy>=7", "photutils", "astroquery", "pillow"]
+
+[project.optional-dependencies]
+dev = ["pytest"]
+# matplotlib is build-time only: it satisfies the astropy contrib hook's
+# collect_submodules import of astropy.visualization.wcsaxes; it is excluded
+# from the frozen binary (see tools/gaia-depth-grade-sidecar.spec).
+build = ["pyinstaller>=6", "matplotlib"]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
