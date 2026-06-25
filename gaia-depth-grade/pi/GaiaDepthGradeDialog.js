@@ -6,7 +6,7 @@
 //
 // Run from PixInsight: Script > Execute Script... -> this file. Prepare works on a
 // DUPLICATE of the target so your master is never modified.
-#feature-id    Utilities > Gaia Depth Grade
+#feature-id    scarter4work > Gaia Depth Grade
 #script-id     GaiaDepthGrade
 #feature-info  Physically-grounded depth grade for astrophotographs using Gaia distances.
 #include "gaia_depth_grade_lib.jsh"

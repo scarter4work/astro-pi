@@ -44,15 +44,15 @@
             <p>Gradient and haze reduction.</p>
          </description>
       </package>
-      <package fileName="gaia-depth-grade_v1.0.0.zip" sha1="adc80976ee530e037a7d61f15dbe9c44097ffe7d" type="script" releaseDate="20260625">
+      <package fileName="gaia-depth-grade_v1.0.1.zip" sha1="d27417b85d68e32855cd55edfbb1805d7d98d464" type="script" releaseDate="20260625">
          <title>Gaia Depth Grade</title>
          <description>
             <p>
-               <b>Gaia Depth Grade v1.0.0</b>
+               <b>Gaia Depth Grade v1.0.1</b>
             </p>
             <p>Physically-grounded depth grade for astrophotographs using Gaia distances. On first run it fetches a frozen Python sidecar (~95 MB, linux-x64) from GitHub Releases and verifies it by SHA-256. Requires StarXTerminator.</p>
          </description>
       </package>
    </platform>
 </xri>
-<Signature developerId="scarter4work" timestamp="2026-06-25T20:13:52.983Z" encoding="Base64">vHMmDrI2wkNDCofqgwHWlaXJ8/Wyl1Y0uNyl+X8MsfFZG28yo8QWaN9aRpTUExFDL2oNUNBK375HDOBKJ9TfAw==</Signature>
+<Signature developerId="scarter4work" timestamp="2026-06-25T21:26:56.966Z" encoding="Base64">pw2N1JRPAST+k7dFfbk4aYhJDY09fTQNK9M51RLryUFeJtqn+xMyetNmhDKSULNR/zrd+wia2PEI+1IItbmkCA==</Signature>
