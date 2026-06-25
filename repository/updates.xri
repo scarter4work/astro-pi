@@ -6,7 +6,7 @@
       <p>Repository: https://raw.githubusercontent.com/scarter4work/astro-pi/main/repository/</p>
    </description>
    <platform os="linux" arch="x64" version="1.8.0:2.0.0">
-      <package fileName="20260608-linux-x64-NukeX.tar.gz" sha1="91550360e417c1493833e64cfc370c47a02366a5" type="module" releaseDate="20260608">
+      <package fileName="20260625-linux-x64-NukeX.tar.gz" sha1="b95f010cf327720474bd4013e88b971dc2348b97" type="module" releaseDate="20260625">
          <title>NukeX</title>
          <description>
             <p>
@@ -17,34 +17,34 @@
       </package>
    </platform>
    <platform os="all" arch="noarch" version="1.8.0:2.0.0">
-      <package fileName="EZStretch_v1.0.9.zip" sha1="c4d7805d4beef51141f19bbe6ce5f0afb56f7554" type="script" releaseDate="20260608">
+      <package fileName="EZStretch_v1.0.10.zip" sha1="1f826b66a86c70416dcb3d544cacb82dec81716a" type="script" releaseDate="20260625">
          <title>EZ Stretch</title>
          <description>
             <p>
-               <b>EZ Stretch v1.0.9</b>
+               <b>EZ Stretch v1.0.10</b>
             </p>
             <p>Unified stretch suite combining three algorithms in a single interface.</p>
          </description>
       </package>
-      <package fileName="EZDonutRepair_v1.0.2.zip" sha1="64106f76943d9c9677fd8156006de339cee1a2b9" type="script" releaseDate="20260608">
+      <package fileName="EZDonutRepair_v1.0.3.zip" sha1="789af886176ef9c0a769d52519dde1a12e2651a8" type="script" releaseDate="20260625">
          <title>EZ Donut Repair</title>
          <description>
             <p>
-               <b>EZ Donut Repair v1.0.2</b>
+               <b>EZ Donut Repair v1.0.3</b>
             </p>
             <p>Removes donut/dust artifacts from astrophotography frames.</p>
          </description>
       </package>
-      <package fileName="EZHazeKill_v1.0.0.zip" sha1="a712c4523ef1571eebbf15bf66af669aff8e0009" type="script" releaseDate="20260608">
+      <package fileName="EZHazeKill_v1.0.1.zip" sha1="291a4054cff062d21ae7f53617a9d08c6afef3f5" type="script" releaseDate="20260625">
          <title>EZ Haze Kill</title>
          <description>
             <p>
-               <b>EZ Haze Kill v1.0.0</b>
+               <b>EZ Haze Kill v1.0.1</b>
             </p>
             <p>Gradient and haze reduction.</p>
          </description>
       </package>
-      <package fileName="gaia-depth-grade_v1.0.1.zip" sha1="d27417b85d68e32855cd55edfbb1805d7d98d464" type="script" releaseDate="20260625">
+      <package fileName="gaia-depth-grade_v1.0.1.zip" sha1="70bbee1f1edfe0add2d70d30a98357e4aaa070a9" type="script" releaseDate="20260625">
          <title>Gaia Depth Grade</title>
          <description>
             <p>
@@ -55,4 +55,4 @@
       </package>
    </platform>
 </xri>
-<Signature developerId="scarter4work" timestamp="2026-06-25T21:26:56.966Z" encoding="Base64">pw2N1JRPAST+k7dFfbk4aYhJDY09fTQNK9M51RLryUFeJtqn+xMyetNmhDKSULNR/zrd+wia2PEI+1IItbmkCA==</Signature>
+<Signature developerId="scarter4work" timestamp="2026-06-25T22:18:57.729Z" encoding="Base64">HJ+QZuXwFyWEE5KZ4RMkxCHaTeMgeFZUYI1SfREvRlltwlQ/qGf4KnVUNnqyCjpWBvV/IzdZSezbuHCbM1g4Dw==</Signature>

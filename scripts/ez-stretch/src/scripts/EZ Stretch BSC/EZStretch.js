@@ -9,7 +9,7 @@
 //
 // ============================================================================
 
-#feature-id    EZ Stretch BSC > EZ Stretch
+#feature-id    scarter4work > EZ Stretch
 #script-id     EZStretch
 #feature-info  Unified stretch suite combining Lupton RGB, RNC-ColorStretch, \
                and PhotometricStretch into a single interface. Select your \
@@ -32,7 +32,7 @@
 #error This script requires PixInsight 1.8.0 or higher.
 #endif
 
-#define VERSION "1.0.9"
+#define VERSION "1.0.10"
 #define TITLE   "EZ Stretch"
 
 var jsAutoGC = true;
