@@ -135,13 +135,18 @@ The script orchestrates:
 3. Passing the stars layer to the Python CLI
 4. Recombining the modulated stars over the starless layer
 
-**Invocation:**
+**Interactive (recommended):** open a master, then **Script ▸ Execute Script…** →
+`pi/GaiaDepthGradeDialog.js`. A two-phase dialog (Prepare → Preview → Execute) with a
+live preview and gain sliders.
+
+**Headless harness:**
 ```bash
-xvfb-run -a /opt/PixInsight/bin/PixInsight.sh --automation-mode \
-  --run=/home/scarter4work/projects/gaia-depth-grade/pjsr/gaia_depth_grade.js
+DISPLAY=:95 GAIA_DEPTH_INPUT=/path/master.xisf GAIA_DEPTH_OUTPUT=/path/out.xisf \
+  /opt/PixInsight/bin/PixInsight.sh -n --automation-mode \
+    --run=/home/scarter4work/projects/astro-pi/gaia-depth-grade/pi/gaia_depth_grade.js
 ```
 
-The script expects the active PixInsight window to contain the master image to be graded.
+The harness runs on the active PixInsight window (or `GAIA_DEPTH_INPUT`).
 Output: a new window `<image_id>_depthgraded` containing the depth-graded result.
 
 ---
