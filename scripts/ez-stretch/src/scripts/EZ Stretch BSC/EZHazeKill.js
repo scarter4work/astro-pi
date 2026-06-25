@@ -17,7 +17,7 @@
 //
 // ============================================================================
 
-#feature-id    EZ Stretch BSC > EZ Haze Kill
+#feature-id    scarter4work > EZ Haze Kill
 #script-id     EZHazeKill
 #feature-info  Detects and removes flat background haze (residual sky pedestal \
                and color cast) left after gradient extraction.
@@ -30,7 +30,7 @@
 #include <pjsr/TextAlign.jsh>
 
 #define TITLE   "EZ Haze Kill"
-#define VERSION "1.0.0"
+#define VERSION "1.0.1"
 
 var jsAutoGC = true;
 

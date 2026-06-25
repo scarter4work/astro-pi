@@ -14,7 +14,7 @@
 //
 // ============================================================================
 
-#feature-id    EZ Stretch BSC > EZ Donut Repair
+#feature-id    scarter4work > EZ Donut Repair
 #script-id     EZDonutRepair
 #feature-info  Repairs circular dust donuts in both color and mono images. \
                Based on DonutRepair by Chick Dee, extended for RGB support.
@@ -32,7 +32,7 @@
 #include <pjsr/ButtonCodes.jsh>
 
 #define TITLE "EZ Donut Repair"
-#define VERSION "1.0.2"
+#define VERSION "1.0.3"
 
 var jsAutoGC = true;
 

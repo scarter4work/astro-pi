@@ -53,7 +53,7 @@ IsoString NukeXProcess::Id() const
 
 IsoString NukeXProcess::Categories() const
 {
-   return "ImageIntegration";
+   return "scarter4work";
 }
 
 uint32 NukeXProcess::Version() const

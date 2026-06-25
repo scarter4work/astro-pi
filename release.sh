@@ -75,14 +75,19 @@ s=re.sub(r'fileName="[^"]*NukeX\.tar\.gz"', 'fileName="'+fn+'"', s)
 open(mf,'w').write(s)
 PY
 
-echo "== 3b/6 package EZ script zips =="
-declare -A EZVER=( [EZStretch]=1.0.9 [EZDonutRepair]=1.0.2 [EZHazeKill]=1.0.0 )
+echo "== 3b/6 package EZ script zips (install under src/scripts/scarter4work) =="
+declare -A EZVER=( [EZStretch]=1.0.10 [EZDonutRepair]=1.0.3 [EZHazeKill]=1.0.1 )
+EZSRC="$ROOT/scripts/ez-stretch/src/scripts/EZ Stretch BSC"
 for name in EZStretch EZDonutRepair EZHazeKill; do
   ver="${EZVER[$name]}"
   zipname="${name}_v${ver}.zip"
-  ( cd "$ROOT/scripts/ez-stretch" && \
-    rm -f "$REPO/$zipname" && \
-    zip -q "$REPO/$zipname" "src/scripts/EZ Stretch BSC/$name.js" "src/scripts/EZ Stretch BSC/$name.xsgn" )
+  # Stage into src/scripts/scarter4work/ so the menu and the on-disk folder both
+  # read scarter4work (the #feature-id in each .js already points there).
+  stage="$(mktemp -d)"; mkdir -p "$stage/src/scripts/scarter4work"
+  cp "$EZSRC/$name.js" "$EZSRC/$name.xsgn" "$stage/src/scripts/scarter4work/"
+  rm -f "$REPO/$zipname"
+  ( cd "$stage" && zip -qr "$REPO/$zipname" src )
+  rm -rf "$stage"
   [ -f "$REPO/$zipname" ] || die "zip $zipname not produced"
 done
 
@@ -108,9 +113,9 @@ rm -rf "$GAIA_STAGE"
 
 echo "== 4/6 write fileName/sha1/releaseDate into ONE manifest =="
 write_pkg "$REPO/updates.xri" "$MOD_TGZ"                  "$(sha1 "$REPO/$MOD_TGZ")"
-write_pkg "$REPO/updates.xri" "EZStretch_v1.0.9.zip"      "$(sha1 "$REPO/EZStretch_v1.0.9.zip")"
-write_pkg "$REPO/updates.xri" "EZDonutRepair_v1.0.2.zip"  "$(sha1 "$REPO/EZDonutRepair_v1.0.2.zip")"
-write_pkg "$REPO/updates.xri" "EZHazeKill_v1.0.0.zip"     "$(sha1 "$REPO/EZHazeKill_v1.0.0.zip")"
+write_pkg "$REPO/updates.xri" "EZStretch_v1.0.10.zip"     "$(sha1 "$REPO/EZStretch_v1.0.10.zip")"
+write_pkg "$REPO/updates.xri" "EZDonutRepair_v1.0.3.zip"  "$(sha1 "$REPO/EZDonutRepair_v1.0.3.zip")"
+write_pkg "$REPO/updates.xri" "EZHazeKill_v1.0.1.zip"     "$(sha1 "$REPO/EZHazeKill_v1.0.1.zip")"
 write_pkg "$REPO/updates.xri" "$GAIA_ZIP"                 "$(sha1 "$REPO/$GAIA_ZIP")"
 
 echo "== 5/6 sign manifest LAST =="
