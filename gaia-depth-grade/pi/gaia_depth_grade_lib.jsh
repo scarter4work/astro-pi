@@ -21,7 +21,7 @@
 #define USE_SOLVER_LIBRARY true
 #include "/opt/PixInsight/src/scripts/AdP/ImageSolver.js"
 
-#define PY_BIN   "/home/scarter4work/projects/gaia-depth-grade/.venv/bin/python"
+#define PY_BIN   "/home/scarter4work/projects/astro-pi/gaia-depth-grade/.venv/bin/python"
 #define PKG      "gaia_depth_grade.cli"
 #define TMP_DIR  "/tmp/gaia_depth_grade"
 

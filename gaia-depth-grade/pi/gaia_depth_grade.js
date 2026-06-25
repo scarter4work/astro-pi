@@ -10,7 +10,7 @@
 //   Xvfb :95 -screen 0 1600x1000x24 &
 //   DISPLAY=:95 GAIA_DEPTH_INPUT=/path/master.xisf GAIA_DEPTH_OUTPUT=/path/out.xisf \
 //     /opt/PixInsight/bin/PixInsight.sh -n --automation-mode \
-//       --run=/abs/path/pjsr/gaia_depth_grade.js
+//       --run=/abs/path/pi/gaia_depth_grade.js
 //
 // Shared helpers (solver preamble, run, splitStars, writeWcsKeywords, solveAndSplit):
 #include "gaia_depth_grade_lib.jsh"
