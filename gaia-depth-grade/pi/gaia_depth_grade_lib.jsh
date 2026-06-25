@@ -3,6 +3,7 @@
 // runner, WCS-keyword export, StarXTerminator split, and a solve+split helper.
 #ifndef __GAIA_DEPTH_GRADE_LIB_JSH
 #define __GAIA_DEPTH_GRADE_LIB_JSH
+#script-id     GaiaDepthGradeLib
 
 // ImageSolver is a script-library object, not a core process. Including it with
 // USE_SOLVER_LIBRARY exposes the class instead of launching its GUI main(), but
@@ -21,9 +22,17 @@
 #define USE_SOLVER_LIBRARY true
 #include "/opt/PixInsight/src/scripts/AdP/ImageSolver.js"
 
-#define PY_BIN   "/home/scarter4work/projects/astro-pi/gaia-depth-grade/.venv/bin/python"
-#define PKG      "gaia_depth_grade.cli"
 #define TMP_DIR  "/tmp/gaia_depth_grade"
+
+// --- Frozen sidecar (the Python core, shipped as a PyInstaller binary) ---------
+// The public user has no Python; the Python core is fetched on first run from a
+// GitHub Release asset and cached. These three are bumped per sidecar release;
+// SIDECAR_SHA256 MUST match the uploaded asset byte-for-byte (verified below).
+#define SIDECAR_VERSION  "1.0.0"
+#define SIDECAR_TGZ      "gaia-depth-grade-sidecar-1.0.0-linux-x64.tar.gz"
+#define SIDECAR_URL      "https://github.com/scarter4work/astro-pi/releases/download/gaia-depth-grade-v1.0.0/gaia-depth-grade-sidecar-1.0.0-linux-x64.tar.gz"
+#define SIDECAR_SHA256   "dc34af141f091687a50b9a972f9422fcc114a2c86467316d4d1c7d3d764ca934"
+#define SIDECAR_NAME     "gaia-depth-grade-sidecar"
 
 function gdgEnsureDir(d) {
    if (!File.directoryExists(d))   // createDirectory throws if it exists
@@ -32,21 +41,111 @@ function gdgEnsureDir(d) {
 
 function gdgQuote(s) { return "\"" + s + "\""; }
 
+// PI exports its own LD_LIBRARY_PATH (/opt/PixInsight/bin/lib) to every child
+// process, so an external binary loads PI's bundled libs (e.g. an older libssl
+// without OPENSSL_3.2.0) instead of the system's and fails to link. Run every
+// external command through `env -u LD_LIBRARY_PATH` so curl, the frozen sidecar,
+// and the coreutils below all link against the system libraries.
+function scrub(cmd) { return "/usr/bin/env -u LD_LIBRARY_PATH " + cmd; }
+
 // ExternalProcess(commandLineString) starts a shell command and runs it; the
 // constructor wants a single string (an array throws "String expected"), and
 // p.start(program,args) returns a non-bool here, so use the canonical form:
 // construct with a quoted command line, waitForFinished(), check exitCode.
 function run(cmd) {
-   var p = new ExternalProcess(cmd);
+   var p = new ExternalProcess(scrub(cmd));
    p.waitForFinished();
    if (p.exitCode != 0)
       throw new Error("command failed (exit " + p.exitCode + "): " + cmd +
                       "\n" + p.stderr);
 }
 
-// Build a Python CLI command line: PY_BIN -m PKG <args...> (all quoted).
-function pyCmd(args) {
-   var s = gdgQuote(PY_BIN) + " -m " + PKG;
+// Like run(), but capture and return trimmed stdout (used to probe --version and
+// to read sha256sum's digest). Throws loudly on a non-zero exit.
+function runCapture(cmd) {
+   var p = new ExternalProcess(scrub(cmd));
+   p.waitForFinished();
+   if (p.exitCode != 0)
+      throw new Error("command failed (exit " + p.exitCode + "): " + cmd + "\n" + p.stderr);
+   return p.stdout.toString().trim();
+}
+
+// Download `url` to `path`. GitHub Release assets 302-redirect to a signed CDN
+// URL, and PI's NetworkTransfer does NOT follow redirects (no CURLOPT_FOLLOWLOCATION
+// in NetworkTransfer.cpp) — it "succeeds" with the empty redirect body. So we shell
+// out to curl, then wget; both follow redirects. Phase 1 is linux-x64 only, where
+// one of the two is effectively always present; we fail loudly if neither works.
+function tryDownload(cmd) {
+   try {
+      var p = new ExternalProcess(scrub(cmd));
+      p.waitForFinished();
+      return p.exitCode == 0;
+   } catch (e) {
+      return false;   // program not found / failed to start -> try the next tool
+   }
+}
+
+function downloadTo(url, path) {
+   if (tryDownload("curl -fsSL -o " + gdgQuote(path) + " " + gdgQuote(url)))
+      return;
+   if (tryDownload("wget -q -O " + gdgQuote(path) + " " + gdgQuote(url)))
+      return;
+   throw new Error("sidecar download failed for " + url +
+                   " — install curl or wget and ensure network access, then retry.");
+}
+
+// Resolve the frozen sidecar binary, fetching+verifying+caching it on first run.
+// Cache: ~/.astro-pi/gaia-depth-grade/bin/<SIDECAR_NAME>. Loud on every failure
+// path (unsupported platform, download error, sha256 mismatch, bad archive) —
+// never returns a partial/placeholder binary.
+function sidecarBin() {
+   if (CoreApplication.platform != "Linux")
+      throw new Error("the Gaia Depth Grade sidecar is not yet available for platform '" +
+                      CoreApplication.platform + "' (Phase 1 ships linux-x64 only).");
+
+   var binDir = File.homeDirectory + "/.astro-pi/gaia-depth-grade/bin";
+   var bin = binDir + "/" + SIDECAR_NAME;
+
+   // Cached and version-matched? Use it. A version mismatch (or a binary that
+   // won't report its version) is treated as missing -> re-download.
+   if (File.exists(bin)) {
+      var cached = "";
+      try { cached = runCapture(gdgQuote(bin) + " --version"); } catch (e) { cached = ""; }
+      if (cached == SIDECAR_VERSION)
+         return bin;
+   }
+
+   gdgEnsureDir(binDir);
+   console.noteln("Gaia Depth Grade: fetching sidecar v" + SIDECAR_VERSION + " (~95 MB, first run only)...");
+   var tmpTgz = File.systemTempDirectory + "/" + SIDECAR_TGZ;
+   downloadTo(SIDECAR_URL, tmpTgz);
+
+   var got = runCapture("sha256sum " + gdgQuote(tmpTgz)).split(/\s+/)[0];
+   if (got != SIDECAR_SHA256) {
+      File.remove(tmpTgz);
+      throw new Error("sidecar sha256 mismatch (download corrupt or tampered): got " +
+                      got + ", expected " + SIDECAR_SHA256 + " — aborting.");
+   }
+
+   run("tar -xzf " + gdgQuote(tmpTgz) + " -C " + gdgQuote(binDir));
+   File.remove(tmpTgz);
+   if (!File.exists(bin))
+      throw new Error("sidecar archive did not contain " + SIDECAR_NAME);
+   run("chmod +x " + gdgQuote(bin));
+
+   var installed = runCapture(gdgQuote(bin) + " --version");
+   if (installed != SIDECAR_VERSION)
+      throw new Error("installed sidecar reports version '" + installed +
+                      "', expected '" + SIDECAR_VERSION + "'");
+   console.noteln("Gaia Depth Grade: sidecar ready at " + bin);
+   return bin;
+}
+
+// Build a sidecar command line: <sidecar> <subcommand> <args...>. The frozen
+// binary takes the subcommand directly (no `-m`), and resolving it triggers the
+// first-run fetch above. Args are pre-quoted by callers.
+function sidecarCmd(args) {
+   var s = gdgQuote(sidecarBin());
    for (var i = 0; i < args.length; ++i)
       s += " " + args[i];
    return s;
@@ -84,6 +183,9 @@ function writeWcsKeywords(win, metadata) {
 // StarXTerminator creates a separate stars window. Capture it by diffing the open
 // window set rather than trusting a fixed "<id>_stars" naming convention.
 function splitStars(view) {
+   if (typeof StarXTerminator == "undefined")
+      throw new Error("StarXTerminator is required (a paid PixInsight module) but is not " +
+                      "installed. Install it, then re-run Gaia Depth Grade.");
    var before = {};
    var ws = ImageWindow.windows;
    for (var i = 0; i < ws.length; ++i)
