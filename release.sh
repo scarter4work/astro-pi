@@ -47,6 +47,21 @@ XSGN="${SO%-pxm.so}-pxm.xsgn"
 echo "== 2b/6 native-sign EZ scripts =="
 ( cd "$ROOT/scripts/ez-stretch" && bash tools/sign.sh scripts )
 
+echo "== 2c/6 native-sign gaia-depth-grade scripts =="
+# Signs pi/*.js + the shared *.jsh -> *.xsgn and verifies each via getScriptSignature.
+# Writes /tmp/.gaia_sign_result.json (automation-mode console never reaches stdout).
+rm -f /tmp/.gaia_sign_result.json
+LD_LIBRARY_PATH="${ASTROPI_PI_DIR:-/opt/PixInsight}/bin/lib:${ASTROPI_PI_DIR:-/opt/PixInsight}/bin" \
+  "$PI" -n --automation-mode --no-startup-scripts --no-startup-check-updates \
+        --no-startup-gui-messages -r="$ROOT/gaia-depth-grade/tools/SignGaiaScriptsNative.js" \
+        --force-exit >/dev/null 2>&1 || true
+python3 - /tmp/.gaia_sign_result.json <<'PY' || die "gaia script signing/verification failed"
+import json,sys
+r=json.load(open(sys.argv[1]))
+assert r.get("ok"), r
+print("  signed+verified:", ", ".join(r["verified"]))
+PY
+
 echo "== 3/6 package module tarball =="
 mkdir -p "$REPO/bin"
 cp "$SO" "$XSGN" "$REPO/bin/"
@@ -71,11 +86,32 @@ for name in EZStretch EZDonutRepair EZHazeKill; do
   [ -f "$REPO/$zipname" ] || die "zip $zipname not produced"
 done
 
+echo "== 3c/6 package gaia-depth-grade script zip =="
+# Mirror PI's install layout (src/scripts/GaiaDepthGrade/) so the package extracts
+# into PixInsight's scripts tree; bundle the 3 sources + their .xsgn.
+GAIA_VER=1.0.0
+GAIA_ZIP="gaia-depth-grade_v${GAIA_VER}.zip"
+GAIA_STAGE="$(mktemp -d)"
+mkdir -p "$GAIA_STAGE/src/scripts/GaiaDepthGrade"
+cp "$ROOT/gaia-depth-grade/pi/gaia_depth_grade.js"        "$ROOT/gaia-depth-grade/pi/gaia_depth_grade.xsgn" \
+   "$ROOT/gaia-depth-grade/pi/GaiaDepthGradeDialog.js"    "$ROOT/gaia-depth-grade/pi/GaiaDepthGradeDialog.xsgn" \
+   "$ROOT/gaia-depth-grade/pi/gaia_depth_grade_lib.jsh"   "$ROOT/gaia-depth-grade/pi/gaia_depth_grade_lib.xsgn" \
+   "$GAIA_STAGE/src/scripts/GaiaDepthGrade/"
+rm -f "$REPO/$GAIA_ZIP"
+( cd "$GAIA_STAGE" && zip -qr "$REPO/$GAIA_ZIP" src )
+rm -rf "$GAIA_STAGE"
+[ -f "$REPO/$GAIA_ZIP" ] || die "zip $GAIA_ZIP not produced"
+# NOTE: the frozen sidecar binary is NOT packaged here — it lives on GitHub Releases
+# (>100MB), pinned by SIDECAR_URL/SIDECAR_SHA256 in pi/gaia_depth_grade_lib.jsh.
+# After bumping the sidecar, rebuild+upload it (gaia-depth-grade/tools/build-sidecar.sh)
+# and update those pins; this script only ships the thin signed scripts.
+
 echo "== 4/6 write fileName/sha1/releaseDate into ONE manifest =="
 write_pkg "$REPO/updates.xri" "$MOD_TGZ"                  "$(sha1 "$REPO/$MOD_TGZ")"
 write_pkg "$REPO/updates.xri" "EZStretch_v1.0.9.zip"      "$(sha1 "$REPO/EZStretch_v1.0.9.zip")"
 write_pkg "$REPO/updates.xri" "EZDonutRepair_v1.0.2.zip"  "$(sha1 "$REPO/EZDonutRepair_v1.0.2.zip")"
 write_pkg "$REPO/updates.xri" "EZHazeKill_v1.0.0.zip"     "$(sha1 "$REPO/EZHazeKill_v1.0.0.zip")"
+write_pkg "$REPO/updates.xri" "$GAIA_ZIP"                 "$(sha1 "$REPO/$GAIA_ZIP")"
 
 echo "== 5/6 sign manifest LAST =="
 sed -i '/<Signature developerId=/d' "$REPO/updates.xri"
