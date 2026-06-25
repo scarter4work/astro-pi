@@ -89,7 +89,7 @@ done
 echo "== 3c/6 package gaia-depth-grade script zip =="
 # Mirror PI's install layout (src/scripts/GaiaDepthGrade/) so the package extracts
 # into PixInsight's scripts tree; bundle the 3 sources + their .xsgn.
-GAIA_VER=1.0.0
+GAIA_VER=1.0.1   # script package version; the frozen sidecar is independent (see *_lib.jsh pins)
 GAIA_ZIP="gaia-depth-grade_v${GAIA_VER}.zip"
 GAIA_STAGE="$(mktemp -d)"
 mkdir -p "$GAIA_STAGE/src/scripts/GaiaDepthGrade"
