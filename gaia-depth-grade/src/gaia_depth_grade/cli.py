@@ -7,6 +7,7 @@ import logging
 import numpy as np
 from astropy.io import fits
 
+from . import __version__
 from .cache import load_prep, save_prep
 from .config import Gains, GradeConfig, load_config
 from .display import autostretch, screen_blend, write_png
@@ -61,6 +62,10 @@ def _add_render_args(sp):
 
 def main(argv=None):
     p = argparse.ArgumentParser("gaia_depth_grade")
+    # Bare version string: the PJSR bootstrap probes `<sidecar> --version` and
+    # compares the output verbatim to the pinned SIDECAR_VERSION. The version
+    # action fires (and exits) before the required-subcommand check below.
+    p.add_argument("--version", action="version", version=__version__)
     sub = p.add_subparsers(dest="cmd", required=True)
 
     for name in ("grade", "debug"):

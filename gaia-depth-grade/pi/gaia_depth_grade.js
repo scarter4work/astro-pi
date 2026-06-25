@@ -13,6 +13,7 @@
 //       --run=/abs/path/pi/gaia_depth_grade.js
 //
 // Shared helpers (solver preamble, run, splitStars, writeWcsKeywords, solveAndSplit):
+#script-id     GaiaDepthGradeHeadless
 #include "gaia_depth_grade_lib.jsh"
 
 function gradeWindow(window) {
@@ -31,7 +32,7 @@ function gradeWindow(window) {
       throw new Error("failed to save stars FITS: " + inPath);
 
    // 4. Run the Python depth grade.
-   run(pyCmd(["grade", gdgQuote(inPath), gdgQuote(outPath)]));
+   run(sidecarCmd(["grade", gdgQuote(inPath), gdgQuote(outPath)]));
 
    // 5. Read the modulated stars layer back.
    var graded = ImageWindow.open(outPath)[0];

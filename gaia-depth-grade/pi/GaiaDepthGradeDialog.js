@@ -6,6 +6,9 @@
 //
 // Run from PixInsight: Script > Execute Script... -> this file. Prepare works on a
 // DUPLICATE of the target so your master is never modified.
+#feature-id    Utilities > Gaia Depth Grade
+#script-id     GaiaDepthGrade
+#feature-info  Physically-grounded depth grade for astrophotographs using Gaia distances.
 #include "gaia_depth_grade_lib.jsh"
 #include <pjsr/Sizer.jsh>
 #include <pjsr/NumericControl.jsh>
@@ -303,8 +306,8 @@ GaiaDepthGradeDialog.prototype.doPrepare = function () {
       this.fullW = img.width; this.fullH = img.height;
       this.insetCx = Math.round(this.fullW / 2); this.insetCy = Math.round(this.fullH / 2);
 
-      this.setStatus("Running Python prepare (detect + Gaia query)…");
-      run(pyCmd(["prepare", gdgQuote(this.starsPath), gdgQuote(this.cacheDir),
+      this.setStatus("Running prepare (detect + Gaia query)…");
+      run(sidecarCmd(["prepare", gdgQuote(this.starsPath), gdgQuote(this.cacheDir),
                  "--config", gdgQuote(this.writePrepareConfig())]));
 
       split.stars.forceClose();
@@ -369,7 +372,7 @@ GaiaDepthGradeDialog.prototype.doPreview = function () {
                   gdgQuote(this.starlessPath), gdgQuote(this.fullPng),
                   "--inset", gdgQuote(this.insetPng), "--region", this.insetRegion(),
                   "--max-width", String(PREVIEW_W)].concat(this.renderArgs());
-      run(pyCmd(args));
+      run(sidecarCmd(args));
       this.previewBmp = new Bitmap(this.fullPng);
       this.insetBmp = new Bitmap(this.insetPng);
       this.previewStale = false;
@@ -392,7 +395,7 @@ GaiaDepthGradeDialog.prototype.doExecute = function () {
       this.cursor = new Cursor(StdCursor_Wait);
       this.setStatus("Executing: full-res render + recombine…");
       var gradedPath = this.cacheDir + "/graded_full.fits";
-      run(pyCmd(["render", gdgQuote(this.cacheDir), gdgQuote(this.starsPath),
+      run(sidecarCmd(["render", gdgQuote(this.cacheDir), gdgQuote(this.starsPath),
                  gdgQuote(gradedPath)].concat(this.renderArgs())));
 
       starlessWin = ImageWindow.open(this.starlessPath)[0];
