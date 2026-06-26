@@ -28,10 +28,10 @@
 // The public user has no Python; the Python core is fetched on first run from a
 // GitHub Release asset and cached. These three are bumped per sidecar release;
 // SIDECAR_SHA256 MUST match the uploaded asset byte-for-byte (verified below).
-#define SIDECAR_VERSION  "1.0.1"
-#define SIDECAR_TGZ      "gaia-depth-grade-sidecar-1.0.1-linux-x64.tar.gz"
-#define SIDECAR_URL      "https://github.com/scarter4work/astro-pi/releases/download/gaia-depth-grade-v1.0.1/gaia-depth-grade-sidecar-1.0.1-linux-x64.tar.gz"
-#define SIDECAR_SHA256   "36996103dd881792e2e14545bad70f2d43288fe7fd68dad4c81c16da6e0f1ce3"
+#define SIDECAR_VERSION  "1.0.2"
+#define SIDECAR_TGZ      "gaia-depth-grade-sidecar-1.0.2-linux-x64.tar.gz"
+#define SIDECAR_URL      "https://github.com/scarter4work/astro-pi/releases/download/gaia-depth-grade-v1.0.2/gaia-depth-grade-sidecar-1.0.2-linux-x64.tar.gz"
+#define SIDECAR_SHA256   "f4770a9116c445256f4cfec918d9c2ddd3d6bdb3867f6c119e0bc8a36d02c2cc"
 #define SIDECAR_NAME     "gaia-depth-grade-sidecar"
 
 function gdgEnsureDir(d) {
@@ -48,13 +48,24 @@ function gdgQuote(s) { return "\"" + s + "\""; }
 // and the coreutils below all link against the system libraries.
 function scrub(cmd) { return "/usr/bin/env -u LD_LIBRARY_PATH " + cmd; }
 
-// ExternalProcess(commandLineString) starts a shell command and runs it; the
-// constructor wants a single string (an array throws "String expected"), and
-// p.start(program,args) returns a non-bool here, so use the canonical form:
-// construct with a quoted command line, waitForFinished(), check exitCode.
+// ExternalProcess(commandLineString) starts a shell command immediately; the
+// constructor wants a single string (an array throws "String expected").
+//
+// Do NOT use waitForFinished(): in PI it can return BEFORE a long-running child
+// actually exits, so exitCode reads as 0 prematurely — a `prepare` whose Gaia
+// query takes minutes (or fails) would look like success and we'd march on to
+// preview with no prep.npz. Instead spin on the process state while pumping the
+// event loop, exactly as PI's own bundled scripts (SetiAstro, BlindSolver2000)
+// do for long external tools. This blocks until the child truly finishes and
+// keeps the UI responsive.
+function spinUntilDone(p) {
+   while (p.isStarting) processEvents();
+   while (p.isRunning) processEvents();
+}
+
 function run(cmd) {
    var p = new ExternalProcess(scrub(cmd));
-   p.waitForFinished();
+   spinUntilDone(p);
    if (p.exitCode != 0)
       throw new Error("command failed (exit " + p.exitCode + "): " + cmd +
                       "\n" + p.stderr);
@@ -64,7 +75,7 @@ function run(cmd) {
 // to read sha256sum's digest). Throws loudly on a non-zero exit.
 function runCapture(cmd) {
    var p = new ExternalProcess(scrub(cmd));
-   p.waitForFinished();
+   spinUntilDone(p);
    if (p.exitCode != 0)
       throw new Error("command failed (exit " + p.exitCode + "): " + cmd + "\n" + p.stderr);
    return p.stdout.toString().trim();
@@ -78,7 +89,7 @@ function runCapture(cmd) {
 function tryDownload(cmd) {
    try {
       var p = new ExternalProcess(scrub(cmd));
-      p.waitForFinished();
+      spinUntilDone(p);   // 95 MB fetch — must wait for true completion, not a premature return
       return p.exitCode == 0;
    } catch (e) {
       return false;   // program not found / failed to start -> try the next tool
@@ -162,11 +173,24 @@ function writeWcsKeywords(win, metadata) {
    var wcs = metadata.GetWCSvalues();
    var kw = win.keywords;
    function add(n, v, c) { kw.push(new FITSKeyword(n, v, c)); }
+
+   // Y-AXIS CONVENTION FLIP (load-bearing). PI's solver expresses CRPIX2/CD in
+   // its own TOP-origin raster, but ImageWindow.saveAs() writes the pixel data
+   // BOTTOM-up (FITS standard). If we emitted the solver values verbatim, every
+   // star would land mirrored across the image midline and astropy would match
+   // detections to sky at chance level (measured match_rate ~0.10, ~random for
+   // the field density). Emit the WCS already in FITS bottom-up convention:
+   // reflect CRPIX2 about the image (H+1-CRPIX2) and negate the Y (column-2) CD
+   // terms (CD1_2, CD2_2). Verified on a real Cygnus master: match_rate
+   // 0.10 -> 0.73 with a 0.24 px median residual. CRVAL/PV/LONPOLE/LATPOLE are
+   // projection parameters, unaffected by a pixel-axis reflection.
+   var H = win.mainView.image.height;
+
    add("RADESYS", "'" + metadata.referenceSystem + "'", "Reference system of celestial coordinates");
    add("CTYPE1", wcs.ctype1, "Axis1 projection");
    add("CTYPE2", wcs.ctype2, "Axis2 projection");
    add("CRPIX1", format("%.8f", wcs.crpix1), "Axis1 reference pixel");
-   add("CRPIX2", format("%.8f", wcs.crpix2), "Axis2 reference pixel");
+   add("CRPIX2", format("%.8f", (H + 1) - wcs.crpix2), "Axis2 reference pixel (FITS bottom-up)");
    if (wcs.crval1 != null) add("CRVAL1", format("%.16f", wcs.crval1), "Axis1 reference value");
    if (wcs.crval2 != null) add("CRVAL2", format("%.16f", wcs.crval2), "Axis2 reference value");
    if (wcs.pv1_1 != null) add("PV1_1", format("%.16f", wcs.pv1_1), "Native longitude of the reference point");
@@ -174,9 +198,9 @@ function writeWcsKeywords(win, metadata) {
    if (wcs.lonpole != null) add("LONPOLE", format("%.16f", wcs.lonpole), "Longitude of the celestial pole");
    if (wcs.latpole != null) add("LATPOLE", format("%.16f", wcs.latpole), "Latitude of the celestial pole");
    add("CD1_1", format("%.16f", wcs.cd1_1), "Scale matrix (1,1)");
-   add("CD1_2", format("%.16f", wcs.cd1_2), "Scale matrix (1,2)");
+   add("CD1_2", format("%.16f", -wcs.cd1_2), "Scale matrix (1,2) (Y flipped to FITS bottom-up)");
    add("CD2_1", format("%.16f", wcs.cd2_1), "Scale matrix (2,1)");
-   add("CD2_2", format("%.16f", wcs.cd2_2), "Scale matrix (2,2)");
+   add("CD2_2", format("%.16f", -wcs.cd2_2), "Scale matrix (2,2) (Y flipped to FITS bottom-up)");
    win.keywords = kw;
 }
 

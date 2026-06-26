@@ -173,7 +173,8 @@ function GaiaDepthGradeDialog() {
    // ---------- buttons + status ----------
    this.prepareButton = new PushButton(this);
    this.prepareButton.text = "Prepare";
-   this.prepareButton.toolTip = "Solve + StarXTerminator + Gaia match (~50s). Run once per target.";
+   this.prepareButton.toolTip = "Solve + StarXTerminator + Gaia match. Run once per target " +
+      "(dense fields: the first Gaia query can take a few minutes, then it's cached).";
    this.prepareButton.onClick = function () { dialog.doPrepare(); };
 
    this.previewButton = new PushButton(this);
@@ -306,9 +307,21 @@ GaiaDepthGradeDialog.prototype.doPrepare = function () {
       this.fullW = img.width; this.fullH = img.height;
       this.insetCx = Math.round(this.fullW / 2); this.insetCy = Math.round(this.fullH / 2);
 
-      this.setStatus("Running prepare (detect + Gaia query)…");
+      this.setStatus("Running prepare (detect + Gaia query). On a dense field the " +
+                     "Gaia async query can take several minutes the first time; the " +
+                     "result is cached so re-runs are fast…");
       run(sidecarCmd(["prepare", gdgQuote(this.starsPath), gdgQuote(this.cacheDir),
                  "--config", gdgQuote(this.writePrepareConfig())]));
+
+      // Defense-in-depth: a prepare that fails must NOT look like success. If the
+      // Gaia query or detection threw, the sidecar exited non-zero (run() throws)
+      // — but verify the artifacts exist before we trust them and run preview, so
+      // a missing prep.npz/qa.json surfaces loudly instead of failing in preview.
+      if (!File.exists(this.cacheDir + "/prep.npz") ||
+          !File.exists(this.cacheDir + "/qa.json"))
+         throw new Error("prepare produced no output (prep.npz/qa.json missing) — the " +
+                         "Gaia query or detection step failed. See the console above " +
+                         "for the sidecar error.");
 
       split.stars.forceClose();
       split.starless.forceClose();   // == dup; reopened from FITS at Execute time
@@ -350,7 +363,7 @@ GaiaDepthGradeDialog.prototype.readQa = function () {
 };
 
 GaiaDepthGradeDialog.prototype.qaSummary = function (qa) {
-   if (qa == null) return "Prepared.";
+   if (qa == null) return "Prepared, but QA summary is unavailable (qa.json missing/unreadable).";
    var s = format("Prepared: %d/%d matched (rate %.2f, offset %.1f px)",
                   qa.n_matched, qa.n_detected, qa.match_rate, qa.median_offset_px);
    if (qa.low_match_warning) s += "  ⚠ LOW MATCH — depth grade unreliable";

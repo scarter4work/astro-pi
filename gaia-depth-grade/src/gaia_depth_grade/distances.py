@@ -59,33 +59,25 @@ class GaiaStarSource(DistanceSource):
         digest = hashlib.sha1(key.encode(), usedforsecurity=False).hexdigest()[:16]
         return os.path.join(self.cache_dir, f"gaia_{digest}.ecsv")
 
-    # Page size, kept under the anonymous synchronous-TAP server cap (~2000 rows).
-    _PAGE = 1900
-    # Safety bound on pages so a pathologically dense field can't loop forever.
-    _MAX_PAGES = 200
+    # Safety bound on returned rows. A dense field (Cygnus mag<18) yields ~27k
+    # sources; this only guards an unbounded result. We warn (never silently
+    # truncate) if it is ever hit.
+    _TOP = 600000
+    _RETRIES = 3
 
-    def _sync_page(self, adql: str) -> Table:
+    def _fetch(self, adql: str) -> Table:
         from astroquery.gaia import Gaia
 
-        # SYNCHRONOUS endpoint only: launch_job_async intermittently returns HTTP
-        # 500 "Cannot find result" (the server loses the async job's output under
-        # load/maintenance) and is slow even when it works. The sync endpoint
-        # returns results inline and is reliable. Retry to ride out transient hiccups.
-        last: Exception | None = None
-        for attempt in range(1, 4):
-            try:
-                return Gaia.launch_job(adql).get_results()
-            except Exception as exc:  # noqa: BLE001 - retry then surface the real error
-                last = exc
-                log.warning("Gaia sync query attempt %d/3 failed: %s", attempt, exc)
-        raise RuntimeError(f"Gaia TAP query failed after 3 attempts: {last}") from last
+        # ASYNCHRONOUS endpoint: a dense field needs the full mag-cut catalogue
+        # (tens of thousands of sources, each joined to external.gaiaedr3_distance).
+        # The sync endpoint 408s on that — its ~60s wall-clock can't finish the
+        # distance-table join over the full cone even WITHOUT the sort, and it
+        # caps ~2000 rows anyway. The async TAP service is built for heavy
+        # queries; the caller retries it to ride out the archive's intermittent
+        # HTTP 500 "lost result" / 408 under load.
+        return Gaia.launch_job_async(adql).get_results()
 
     def _run_query(self, footprint: FieldFootprint) -> Table:
-        # Keyset pagination by magnitude: the sync endpoint caps each response, so
-        # we walk the catalogue brightest-first, advancing the cursor to the last
-        # page's faintest magnitude, until a short page signals exhaustion. This
-        # gets full-field coverage from the reliable endpoint (a dense field that
-        # used to need the unlimited async query now just takes a few more pages).
         # LOUD about the cut (no silent cap): announce the policy up front. We
         # can't count what we deliberately never fetch, so the honest signal is
         # to state the limit in effect, not a post-hoc "excluded N" tally.
@@ -94,30 +86,22 @@ class GaiaStarSource(DistanceSource):
                         "excluded by design (Bailer-Jones distances unreliable "
                         "faintward). Set gaia_mag_limit=None to include them.",
                         self.mag_limit)
-        pages: list[Table] = []
-        seen: set[int] = set()
-        cursor: float | None = None
-        for _ in range(self._MAX_PAGES):
-            page = self._sync_page(
-                build_adql(footprint, self._PAGE, cursor, self.mag_limit))
-            fresh = [r for r in page if int(r["source_id"]) not in seen]
-            for r in fresh:
-                seen.add(int(r["source_id"]))
-            if fresh:
-                pages.append(Table(rows=fresh, names=page.colnames))
-            if len(page) < self._PAGE or not fresh:
-                break
-            cursor = float(max(page["phot_g_mean_mag"]))
-        else:
-            log.warning("Gaia pagination hit the %d-page cap; field may be undersampled.",
-                        self._MAX_PAGES)
-        if not pages:
-            return Table(names=("ra", "dec", "r_med_geo", "r_lo_geo", "r_hi_geo",
-                                "source_id", "phot_g_mean_mag"))
-        from astropy.table import vstack
-        combined = vstack(pages)
-        log.info("Gaia: %d sources over %d page(s)", len(combined), len(pages))
-        return combined
+        adql = build_adql(footprint, self._TOP, mag_lt=self.mag_limit)
+        last: Exception | None = None
+        for attempt in range(1, self._RETRIES + 1):
+            try:
+                tbl = self._fetch(adql)
+                if len(tbl) >= self._TOP:
+                    log.warning("Gaia returned the %d-row safety cap; field may be "
+                                "undersampled — lower gaia_mag_limit.", self._TOP)
+                log.info("Gaia (async): %d sources", len(tbl))
+                return tbl
+            except Exception as exc:  # noqa: BLE001 - retry then surface the real error
+                last = exc
+                log.warning("Gaia async attempt %d/%d failed: %s",
+                            attempt, self._RETRIES, exc)
+        raise RuntimeError(
+            f"Gaia async query failed after {self._RETRIES} attempts: {last}") from last
 
     def distances_for(self, footprint: FieldFootprint) -> Table:
         path = self._cache_path(footprint)
