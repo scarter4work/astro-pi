@@ -18,7 +18,7 @@ def test_grade_equals_prepare_then_render(tmp_path, two_star_scene, monkeypatch)
     header, img, src, near, far = two_star_scene
     stars = tmp_path / "stars.fits"
     _write_fits(stars, img, header)
-    monkeypatch.setattr("gaia_depth_grade.cli.GaiaStarSource", lambda cache_dir: src)
+    monkeypatch.setattr("gaia_depth_grade.cli.GaiaStarSource", lambda cache_dir, mag_limit=None: src)
 
     g = tmp_path / "g.fits"
     main(["grade", str(stars), str(g)])
@@ -37,7 +37,7 @@ def test_preview_writes_full_and_inset(tmp_path, two_star_scene, monkeypatch):
     _write_fits(stars, img, header)
     starless = tmp_path / "starless.fits"
     _write_fits(starless, np.zeros_like(img), header)
-    monkeypatch.setattr("gaia_depth_grade.cli.GaiaStarSource", lambda cache_dir: src)
+    monkeypatch.setattr("gaia_depth_grade.cli.GaiaStarSource", lambda cache_dir, mag_limit=None: src)
 
     cache = tmp_path / "cache"
     main(["prepare", str(stars), str(cache)])

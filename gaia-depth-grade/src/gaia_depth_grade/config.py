@@ -28,6 +28,12 @@ class GradeConfig:
     base_sigma_px: float = 2.0
     cache_dir: str = ".cache"
     neutral_strength: float = 0.0
+    # Drop Gaia sources fainter than this G magnitude before matching. Bailer-Jones
+    # geometric distances grow unreliable faintward, and faint sources also dominate
+    # the catalogue count in dense fields (Cygnus: 160k in a 0.74deg cone) without
+    # improving the visual depth effect. Cutting them speeds the (paginated, sync)
+    # query and raises match quality. Set to None to disable the cut (full depth).
+    gaia_mag_limit: float | None = 18.0
 
 
 def _apply(obj, data: dict):
