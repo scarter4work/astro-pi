@@ -33,6 +33,41 @@ def test_build_adql_keyset_cursor():
     assert "g.phot_g_mean_mag > 17.5" in build_adql(fp, 1900, 17.5)   # later page advances cursor
 
 
+def test_build_adql_magnitude_cut():
+    fp = FieldFootprint(10.0, 20.0, 0.05)
+    assert "phot_g_mean_mag <" not in build_adql(fp, 1900)                  # no cut by default
+    assert "g.phot_g_mean_mag < 18.0" in build_adql(fp, 1900, mag_lt=18.0)  # upper bound applied
+
+
+def test_build_adql_cursor_and_cut_coexist():
+    fp = FieldFootprint(10.0, 20.0, 0.05)
+    q = build_adql(fp, 1900, mag_gt=15.0, mag_lt=18.0)
+    assert "g.phot_g_mean_mag > 15.0" in q  # moving lower-bound cursor
+    assert "g.phot_g_mean_mag < 18.0" in q  # fixed upper-bound cut
+
+
+def test_mag_limit_changes_cache_path():
+    # A different cut is a different result set; the cache must not collide.
+    fp = FieldFootprint(10.0, 20.0, 0.05)
+    a = GaiaStarSource(cache_dir="/tmp", mag_limit=18.0)._cache_path(fp)
+    b = GaiaStarSource(cache_dir="/tmp", mag_limit=17.0)._cache_path(fp)
+    none = GaiaStarSource(cache_dir="/tmp", mag_limit=None)._cache_path(fp)
+    assert a != b != none and a != none
+
+
+def test_mag_limit_threads_into_query(tmp_path, monkeypatch):
+    captured = {}
+    src = GaiaStarSource(cache_dir=str(tmp_path), mag_limit=18.0)
+
+    def fake_page(adql):
+        captured["adql"] = adql
+        return _fake_catalog()  # short page (< _PAGE) → pagination stops after one call
+
+    monkeypatch.setattr(src, "_sync_page", fake_page)
+    src.distances_for(FieldFootprint(10.0, 20.0, 0.05))
+    assert "g.phot_g_mean_mag < 18.0" in captured["adql"]
+
+
 def test_gaiastarsource_caches(tmp_path, monkeypatch):
     src = GaiaStarSource(cache_dir=str(tmp_path))
     calls = {"n": 0}

@@ -19,12 +19,17 @@ class DistanceSource(abc.ABC):
     def distances_for(self, footprint: FieldFootprint) -> Table: ...
 
 
-def build_adql(footprint: FieldFootprint, top: int, mag_gt: float | None = None) -> str:
+def build_adql(footprint: FieldFootprint, top: int,
+               mag_gt: float | None = None, mag_lt: float | None = None) -> str:
     ra, dec, r = footprint.center_ra, footprint.center_dec, footprint.radius_deg
-    # `top` keeps each page within the sync endpoint's server-side cap; mag_gt is
-    # the keyset cursor (see GaiaStarSource._run_query) so successive pages walk
-    # the catalogue brightest-first without ever needing the unreliable async API.
+    # `top` keeps each page within the sync endpoint's server-side cap. Two
+    # constraints share phot_g_mean_mag: mag_gt is the keyset cursor (a moving
+    # lower bound — see GaiaStarSource._run_query — so pages walk brightest-first
+    # without the unreliable async API), and mag_lt is the fixed magnitude cut
+    # (an upper bound that drops faint, distance-unreliable sources up front).
     mag_clause = f"AND g.phot_g_mean_mag > {mag_gt} " if mag_gt is not None else ""
+    if mag_lt is not None:
+        mag_clause += f"AND g.phot_g_mean_mag < {mag_lt} "
     return (
         f"SELECT TOP {top} "
         "g.ra, g.dec, d.r_med_geo, d.r_lo_geo, d.r_hi_geo, g.source_id, g.phot_g_mean_mag "
@@ -41,12 +46,16 @@ def build_adql(footprint: FieldFootprint, top: int, mag_gt: float | None = None)
 
 
 class GaiaStarSource(DistanceSource):
-    def __init__(self, cache_dir: str):
+    def __init__(self, cache_dir: str, mag_limit: float | None = None):
         self.cache_dir = cache_dir
+        self.mag_limit = mag_limit
         os.makedirs(cache_dir, exist_ok=True)
 
     def _cache_path(self, footprint: FieldFootprint) -> str:
-        key = f"{footprint.center_ra:.6f}_{footprint.center_dec:.6f}_{footprint.radius_deg:.6f}"
+        # mag_limit is part of the cache identity: a different cut is a different
+        # result set, so changing it must NOT silently return a stale file.
+        key = (f"{footprint.center_ra:.6f}_{footprint.center_dec:.6f}"
+               f"_{footprint.radius_deg:.6f}_mag{self.mag_limit}")
         digest = hashlib.sha1(key.encode(), usedforsecurity=False).hexdigest()[:16]
         return os.path.join(self.cache_dir, f"gaia_{digest}.ecsv")
 
@@ -77,11 +86,20 @@ class GaiaStarSource(DistanceSource):
         # page's faintest magnitude, until a short page signals exhaustion. This
         # gets full-field coverage from the reliable endpoint (a dense field that
         # used to need the unlimited async query now just takes a few more pages).
+        # LOUD about the cut (no silent cap): announce the policy up front. We
+        # can't count what we deliberately never fetch, so the honest signal is
+        # to state the limit in effect, not a post-hoc "excluded N" tally.
+        if self.mag_limit is not None:
+            log.warning("Gaia: magnitude cut G<%.1f in effect — fainter sources "
+                        "excluded by design (Bailer-Jones distances unreliable "
+                        "faintward). Set gaia_mag_limit=None to include them.",
+                        self.mag_limit)
         pages: list[Table] = []
         seen: set[int] = set()
         cursor: float | None = None
         for _ in range(self._MAX_PAGES):
-            page = self._sync_page(build_adql(footprint, self._PAGE, cursor))
+            page = self._sync_page(
+                build_adql(footprint, self._PAGE, cursor, self.mag_limit))
             fresh = [r for r in page if int(r["source_id"]) not in seen]
             for r in fresh:
                 seen.add(int(r["source_id"]))

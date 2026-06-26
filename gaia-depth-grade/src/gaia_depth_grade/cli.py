@@ -100,7 +100,7 @@ def main(argv=None):
     if args.cmd == "grade":
         cfg = load_config(args.config)
         image, header = _read_image(args.input)
-        source = GaiaStarSource(cfg.cache_dir)
+        source = GaiaStarSource(cfg.cache_dir, cfg.gaia_mag_limit)
         graded, qa = grade_array(image, header, cfg, source)
         write_fits(args.output, graded, header, qa)
         log.info("wrote %s (qa: %s)", args.output, qa)
@@ -109,7 +109,7 @@ def main(argv=None):
     if args.cmd == "prepare":
         cfg = load_config(args.config)
         image, header = _read_image(args.stars)
-        source = GaiaStarSource(cfg.cache_dir)
+        source = GaiaStarSource(cfg.cache_dir, cfg.gaia_mag_limit)
         table, qa = prepare_grade(image, header, cfg, source)
         save_prep(args.cache_dir, table, qa)
         log.info("prepared %s -> %s (qa: %s)", args.stars, args.cache_dir, qa)
