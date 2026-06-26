@@ -59,13 +59,39 @@ def test_mag_limit_threads_into_query(tmp_path, monkeypatch):
     captured = {}
     src = GaiaStarSource(cache_dir=str(tmp_path), mag_limit=18.0)
 
-    def fake_page(adql):
+    def fake_fetch(adql):
         captured["adql"] = adql
-        return _fake_catalog()  # short page (< _PAGE) → pagination stops after one call
+        return _fake_catalog()
 
-    monkeypatch.setattr(src, "_sync_page", fake_page)
+    monkeypatch.setattr(src, "_fetch", fake_fetch)
     src.distances_for(FieldFootprint(10.0, 20.0, 0.05))
     assert "g.phot_g_mean_mag < 18.0" in captured["adql"]
+
+
+def test_run_query_retries_then_succeeds(tmp_path, monkeypatch):
+    # The async endpoint intermittently 500s under load; _run_query must retry
+    # the whole job and only surface the error after exhausting attempts.
+    src = GaiaStarSource(cache_dir=str(tmp_path), mag_limit=18.0)
+    calls = {"n": 0}
+
+    def flaky(adql):
+        calls["n"] += 1
+        if calls["n"] < 3:
+            raise ConnectionError("Error 500: Cannot find result")
+        return _fake_catalog()
+
+    monkeypatch.setattr(src, "_fetch", flaky)
+    tbl = src.distances_for(FieldFootprint(10.0, 20.0, 0.05))
+    assert calls["n"] == 3 and len(tbl) == 2
+
+
+def test_run_query_raises_after_exhausting_retries(tmp_path, monkeypatch):
+    src = GaiaStarSource(cache_dir=str(tmp_path), mag_limit=18.0)
+    monkeypatch.setattr(src, "_fetch", lambda adql: (_ for _ in ()).throw(
+        ConnectionError("Error 408: Job timeout/aborted")))
+    with pytest.raises(RuntimeError) as exc:
+        src.distances_for(FieldFootprint(10.0, 20.0, 0.05))
+    assert "408" in str(exc.value)
 
 
 def test_gaiastarsource_caches(tmp_path, monkeypatch):
