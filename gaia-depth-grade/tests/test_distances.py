@@ -18,11 +18,19 @@ def _fake_catalog():
 
 def test_build_adql_contains_join_and_cone():
     fp = FieldFootprint(10.0, 20.0, 0.05)
-    q = build_adql(fp).lower()
+    q = build_adql(fp, 1900).lower()
     assert "external.gaiaedr3_distance" in q  # Bailer-Jones (2021); gaiadr3.distances does not exist
     assert "r_med_geo" in q
     assert "1/parallax" not in q
     assert "circle" in q and "10.0" in q and "20.0" in q
+    assert "top 1900" in q                       # page bounded under the sync cap
+    assert "order by g.phot_g_mean_mag asc" in q  # brightest-first for keyset paging
+
+
+def test_build_adql_keyset_cursor():
+    fp = FieldFootprint(10.0, 20.0, 0.05)
+    assert "phot_g_mean_mag >" not in build_adql(fp, 1900)            # first page: no cursor
+    assert "g.phot_g_mean_mag > 17.5" in build_adql(fp, 1900, 17.5)   # later page advances cursor
 
 
 def test_gaiastarsource_caches(tmp_path, monkeypatch):
