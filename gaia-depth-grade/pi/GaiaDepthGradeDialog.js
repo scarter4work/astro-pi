@@ -51,8 +51,11 @@ function GaiaDepthGradeDialog() {
    this.fullPng = this.cacheDir + "/preview_full.png";
    this.insetPng = this.cacheDir + "/preview_inset.png";
 
-   // live render params
-   this.gBrightness = 0.5; this.gSize = 0.4; this.gContrast = 0.3; this.gSaturation = 0.3;
+   // live render params. Defaults tuned for "more depth, low grain" (validated on a
+   // real HaO3 master): lead with SIZE (additive near-star glow — clean depth cue,
+   // no noise) and keep CONTRAST low (unsharp is the grain driver). Measured ~3x the
+   // foreground-star prominence of the old 0.5/0.4/0.3/0.3 at slightly LOWER grain.
+   this.gBrightness = 0.65; this.gSize = 0.85; this.gContrast = 0.12; this.gSaturation = 0.4;
    this.baseSigma = 2.0; this.pLow = 5.0; this.pHigh = 95.0;
    // prepare-time params
    this.detectSigma = 6.0; this.matchTol = 4.0;
