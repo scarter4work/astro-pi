@@ -226,14 +226,23 @@ function _searchGaia(P, paths, ra, dec, radiusDeg, magHigh) {
       P.dataRelease = order[i];
       P.command = "configure";
       P.executeGlobal();
-      if (!P.isValid) { why = "configure invalid for data release " + order[i]; continue; }
+      if (!P.isValid) {
+         why = "configure invalid for data release " + order[i];
+         console.noteln("  Gaia release " + order[i] + ": configure invalid"); continue;
+      }
       P.command = "search";
       P.centerRA = ra; P.centerDec = dec; P.radius = radiusDeg;
       P.magnitudeLow = -5.0; P.magnitudeHigh = magHigh;
       P.sourceLimit = 4294967295;
       P.requiredFlags = 0; P.inclusionFlags = 0; P.exclusionFlags = 0;
       P.verbosity = 0; P.generateTextOutput = false;
-      if (!P.executeGlobal()) { why = "search failed for data release " + order[i]; continue; }
+      if (!P.executeGlobal()) {
+         why = "search failed for data release " + order[i];
+         console.noteln("  Gaia release " + order[i] + ": search executeGlobal()=false"); continue;
+      }
+      console.noteln("  Gaia release " + order[i] + " @ (" + format("%.4f", ra) + "," +
+                     format("%.4f", dec) + ") r=" + format("%.3f", radiusDeg) +
+                     "deg mag<=" + magHigh + ": " + P.sources.length + " sources");
       if (P.sources.length > 0) return P.sources;   // real data — this release matches the files
       why = "data release " + order[i] + " configured but returned 0 sources";
    }
@@ -247,22 +256,31 @@ function queryLocalGaiaDR3(ra, dec, radiusDeg, magHigh, outPath) {
       throw new Error("PixInsight's Gaia process is unavailable — cannot use offline mode. " +
                       "Uncheck 'Offline' to use the online catalogue.");
    var P = new Gaia;
-   if (P.databaseFilePaths.length == 0) {
-      var disc = discoverGaiaDbPaths();
-      if (disc.length == 0)
-         throw new Error("No local Gaia DR3 database is configured in PixInsight (the one " +
-                         "plate-solving uses). Configure it, or uncheck 'Offline' to use the " +
-                         "online catalogue.");
-      var rows = [];
-      for (var i = 0; i < disc.length; ++i) rows.push([disc[i]]);
-      P.databaseFilePaths = rows;
+   // Trust DISCOVERY over inheritance. A fresh automation `new Gaia` inherits an
+   // EMPTY databaseFilePaths and discovery yields the working .xpsd set (verified:
+   // 19,385 sources). But in an interactive GUI session `new Gaia` inherits the
+   // user's persistent process state, whose databaseFilePaths has been observed to
+   // configure-valid yet return 0 sources — the actual cause of the "0 sources"
+   // failure. Discovery parses the same database PI plate-solves with, so it is
+   // deterministic; use it first and fall back to the inherited list only if
+   // discovery finds nothing.
+   var inheritedLen = P.databaseFilePaths.length;
+   var paths = discoverGaiaDbPaths();
+   var pathSrc = "discovered";
+   if (paths.length == 0) {
+      paths = [];
+      for (var p = 0; p < inheritedLen; ++p) paths.push(P.databaseFilePaths[p][0]);
+      pathSrc = "inherited";
    }
-   // The flat list of .xpsd paths actually in play — inherited from the user's
-   // interactive Gaia process, or discovered above — so _searchGaia can choose the
-   // release that matches the files instead of trusting PI's DR3/DR3SP slot labels.
-   var paths = [];
-   for (var p = 0; p < P.databaseFilePaths.length; ++p)
-      paths.push(P.databaseFilePaths[p][0]);
+   if (paths.length == 0)
+      throw new Error("No local Gaia DR3 database is configured in PixInsight (the one " +
+                      "plate-solving uses). Configure it, or uncheck 'Offline' to use the " +
+                      "online catalogue.");
+   var rows = [];
+   for (var i = 0; i < paths.length; ++i) rows.push([paths[i]]);
+   P.databaseFilePaths = rows;   // override any inherited list with the resolved one
+   console.noteln("offline Gaia DR3: using " + paths.length + " " + pathSrc +
+                  " db file(s) (interactive instance inherited " + inheritedLen + " path(s))");
    var s = _searchGaia(P, paths, ra, dec, radiusDeg, magHigh);
    var f = new File;
    f.createForWriting(outPath);
