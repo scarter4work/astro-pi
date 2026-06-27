@@ -57,6 +57,9 @@ function GaiaDepthGradeDialog() {
    // foreground-star prominence of the old 0.5/0.4/0.3/0.3 at slightly LOWER grain.
    this.gBrightness = 0.65; this.gSize = 0.85; this.gContrast = 0.12; this.gSaturation = 0.4;
    this.baseSigma = 2.0; this.pLow = 5.0; this.pHigh = 95.0;
+   // Nebula (starless-layer) depth — opt-in. Structure drives where it varies;
+   // the Gaia depth budget scales how strong it is, so it matches the star depths.
+   this.nebEnabled = false; this.nebStrength = 1.0; this.nebAtmos = 1.0; this.nebStructure = 1.0;
    // prepare-time params
    this.detectSigma = 6.0; this.matchTol = 4.0;
 
@@ -140,6 +143,15 @@ function GaiaDepthGradeDialog() {
    this.ncPLow       = liveSlider("p_low:",      this.pLow,        0, 50, 1, function (v) { dialog.pLow = v; });
    this.ncPHigh      = liveSlider("p_high:",     this.pHigh,       50, 100, 1, function (v) { dialog.pHigh = v; });
 
+   // Nebula depth (opt-in): grade the starless layer too.
+   this.nebCheck = new CheckBox(this);
+   this.nebCheck.text = "Grade the nebula too (depth from structure, scaled to Gaia)";
+   this.nebCheck.checked = this.nebEnabled;
+   this.nebCheck.onCheck = function (c) { dialog.nebEnabled = c; dialog.markPreviewStale(); };
+   this.ncNebStrength  = liveSlider("Nebula depth:", this.nebStrength,  0, 2, 2, function (v) { dialog.nebStrength = v; });
+   this.ncNebAtmos     = liveSlider("  atmospheric:", this.nebAtmos,    0, 2, 2, function (v) { dialog.nebAtmos = v; });
+   this.ncNebStructure = liveSlider("  structure:",   this.nebStructure, 0, 2, 2, function (v) { dialog.nebStructure = v; });
+
    this.liveGroup = new VerticalSizer;
    this.liveGroup.spacing = 4;
    var liveTitle = new Label(this); liveTitle.text = "Look (live — Preview to apply)"; liveTitle.styleSheet = "font-weight: bold;";
@@ -147,6 +159,8 @@ function GaiaDepthGradeDialog() {
    this.liveGroup.add(this.ncBrightness); this.liveGroup.add(this.ncSize);
    this.liveGroup.add(this.ncContrast); this.liveGroup.add(this.ncSaturation);
    this.liveGroup.add(this.ncBaseSigma); this.liveGroup.add(this.ncPLow); this.liveGroup.add(this.ncPHigh);
+   this.liveGroup.add(this.nebCheck);
+   this.liveGroup.add(this.ncNebStrength); this.liveGroup.add(this.ncNebAtmos); this.liveGroup.add(this.ncNebStructure);
 
    // ---------- prepare-time fields ----------
    function prepEdit(label, value, lo, hi, prec, setter) {
@@ -294,10 +308,15 @@ GaiaDepthGradeDialog.prototype.gainsArg = function () {
 };
 
 GaiaDepthGradeDialog.prototype.renderArgs = function () {
-   return ["--gains", this.gainsArg(),
-           "--p-low", format("%.3f", this.pLow),
-           "--p-high", format("%.3f", this.pHigh),
-           "--base-sigma", format("%.3f", this.baseSigma)];
+   var a = ["--gains", this.gainsArg(),
+            "--p-low", format("%.3f", this.pLow),
+            "--p-high", format("%.3f", this.pHigh),
+            "--base-sigma", format("%.3f", this.baseSigma)];
+   if (this.nebEnabled && this.nebStrength > 0)
+      a = a.concat(["--nebula-strength", format("%.4f", this.nebStrength),
+                    "--nebula-atmos", format("%.4f", this.nebAtmos),
+                    "--nebula-structure", format("%.4f", this.nebStructure)]);
+   return a;
 };
 
 GaiaDepthGradeDialog.prototype.doPrepare = function () {
@@ -440,7 +459,17 @@ GaiaDepthGradeDialog.prototype.doExecute = function () {
       run(sidecarCmd(["render", gdgQuote(this.cacheDir), gdgQuote(this.starsPath),
                  gdgQuote(gradedPath)].concat(this.renderArgs())));
 
-      starlessWin = ImageWindow.open(this.starlessPath)[0];
+      // Nebula depth (opt-in): grade the starless layer to a FITS and blend THAT
+      // instead of the raw starless, so the recombine carries the nebula depth too.
+      var starlessForBlend = this.starlessPath;
+      if (this.nebEnabled && this.nebStrength > 0) {
+         var nebPath = this.cacheDir + "/nebula_full.fits";
+         run(sidecarCmd(["nebula", gdgQuote(this.cacheDir), gdgQuote(this.starlessPath),
+                    gdgQuote(nebPath)].concat(this.renderArgs())));
+         starlessForBlend = nebPath;
+      }
+
+      starlessWin = ImageWindow.open(starlessForBlend)[0];
       gradedWin = ImageWindow.open(gradedPath)[0];
 
       var PM = new PixelMath;
