@@ -28,10 +28,10 @@
 // The public user has no Python; the Python core is fetched on first run from a
 // GitHub Release asset and cached. These three are bumped per sidecar release;
 // SIDECAR_SHA256 MUST match the uploaded asset byte-for-byte (verified below).
-#define SIDECAR_VERSION  "1.0.3"
-#define SIDECAR_TGZ      "gaia-depth-grade-sidecar-1.0.3-linux-x64.tar.gz"
-#define SIDECAR_URL      "https://github.com/scarter4work/astro-pi/releases/download/gaia-depth-grade-v1.0.3/gaia-depth-grade-sidecar-1.0.3-linux-x64.tar.gz"
-#define SIDECAR_SHA256   "bdf064ed1cde0136059f09ba620f3249bd6e6452991d3b8a4d4d34d933b74821"
+#define SIDECAR_VERSION  "1.0.4"
+#define SIDECAR_TGZ      "gaia-depth-grade-sidecar-1.0.4-linux-x64.tar.gz"
+#define SIDECAR_URL      "https://github.com/scarter4work/astro-pi/releases/download/gaia-depth-grade-v1.0.4/gaia-depth-grade-sidecar-1.0.4-linux-x64.tar.gz"
+#define SIDECAR_SHA256   "4d48cd3230678fb23741742d01787cff408e30b72d42b2632427327b5e4061af"
 #define SIDECAR_NAME     "gaia-depth-grade-sidecar"
 
 function gdgEnsureDir(d) {
@@ -160,6 +160,99 @@ function sidecarCmd(args) {
    for (var i = 0; i < args.length; ++i)
       s += " " + args[i];
    return s;
+}
+
+// --- Offline local Gaia DR3 -------------------------------------------------
+// Query the local Gaia DR3 database (the same .xpsd files PI uses for
+// plate-solving, so every user of this tool already has them) via PI's Gaia
+// process, and write a clean ra/dec/parallax/G TSV for the sidecar. This is the
+// fast, offline alternative to the online Bailer-Jones query — distances come
+// from parallax (see local_gaia.py). Source record layout (Gaia.sources rows):
+// [ra, dec, parallax, pmRA, pmDec, magG, magBP, magRP, flags, flux...].
+
+// Pull the configured DR3/DR3SP .xpsd paths out of PI's core settings file.
+// A `new Gaia` inherits the user's configured databaseFilePaths in an
+// interactive session; this is the fallback when that list is empty.
+function _extractGaiaDbPaths(txt, key) {
+   var out = [];
+   var re = new RegExp(key + '\\d+"\\s+t="s">([^<]+\\.xpsd)', "g");
+   var m;
+   while ((m = re.exec(txt)) != null)
+      out.push(m[1]);
+   return out;
+}
+
+function discoverGaiaDbPaths() {
+   var dir = File.homeDirectory + "/.PixInsight";
+   if (!File.directoryExists(dir))
+      return [];
+   var settings = [];
+   var ff = new FileFind;
+   if (ff.begin(dir + "/core-*-pxi.settings")) {
+      do { if (!ff.isDirectory) settings.push(dir + "/" + ff.name); } while (ff.next());
+   }
+   for (var i = 0; i < settings.length; ++i) {
+      var txt = File.readTextFile(settings[i]);
+      // Prefer base DR3 (full astrometric catalogue) over the DR3SP subset.
+      var dr3 = _extractGaiaDbPaths(txt, "DR3DatabaseFilePath");
+      if (dr3.length) return dr3;
+      var sp = _extractGaiaDbPaths(txt, "DR3SPDatabaseFilePath");
+      if (sp.length) return sp;
+   }
+   return [];
+}
+
+// Configure the process against whichever data release its database supports
+// (base DR3 first, then DR3SP) — so we never have to know which one is installed.
+function _configureGaia(P) {
+   var releases = [Gaia.prototype.DataRelease_3, Gaia.prototype.DataRelease_3_SP];
+   for (var i = 0; i < releases.length; ++i) {
+      P.dataRelease = releases[i];
+      P.command = "configure";
+      P.executeGlobal();
+      if (P.isValid) return true;
+   }
+   return false;
+}
+
+function queryLocalGaiaDR3(ra, dec, radiusDeg, magHigh, outPath) {
+   if (typeof Gaia == "undefined")
+      throw new Error("PixInsight's Gaia process is unavailable — cannot use offline mode. " +
+                      "Uncheck 'Offline' to use the online catalogue.");
+   var P = new Gaia;
+   if (P.databaseFilePaths.length == 0) {
+      var paths = discoverGaiaDbPaths();
+      if (paths.length == 0)
+         throw new Error("No local Gaia DR3 database is configured in PixInsight (the one " +
+                         "plate-solving uses). Configure it, or uncheck 'Offline' to use the " +
+                         "online catalogue.");
+      var rows = [];
+      for (var i = 0; i < paths.length; ++i) rows.push([paths[i]]);
+      P.databaseFilePaths = rows;
+   }
+   if (!_configureGaia(P))
+      throw new Error("the local Gaia database failed to configure (isValid=false) — " +
+                      "the .xpsd files may be missing or unreadable.");
+   P.command = "search";
+   P.centerRA = ra; P.centerDec = dec; P.radius = radiusDeg;
+   P.magnitudeLow = -5.0; P.magnitudeHigh = magHigh;
+   P.sourceLimit = 4294967295;
+   P.requiredFlags = 0; P.inclusionFlags = 0; P.exclusionFlags = 0;
+   P.verbosity = 0; P.generateTextOutput = false;
+   if (!P.executeGlobal())
+      throw new Error("local Gaia DR3 cone search failed.");
+   var s = P.sources;
+   var f = new File;
+   f.createForWriting(outPath);
+   var buf = "ra\tdec\tparallax\tphot_g_mean_mag\n";   // sidecar parses these 4 columns
+   for (var j = 0; j < s.length; ++j) {
+      var r = s[j];
+      buf += r[0] + "\t" + r[1] + "\t" + r[2] + "\t" + r[5] + "\n";
+      if (buf.length > 1048576) { f.outText(buf); buf = ""; }   // flush ~1 MB chunks
+   }
+   f.outText(buf); f.close();
+   console.noteln("offline Gaia DR3: " + s.length + " sources -> " + outPath);
+   return s.length;
 }
 
 // Write standard FITS WCS keywords (CTYPE/CRVAL/CD) from the solver's solution
