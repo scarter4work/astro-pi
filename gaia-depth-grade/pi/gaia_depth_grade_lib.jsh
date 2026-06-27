@@ -67,18 +67,45 @@ function run(cmd) {
    var p = new ExternalProcess(scrub(cmd));
    spinUntilDone(p);
    if (p.exitCode != 0)
+      // PI merges child stderr into .stdout, so .stderr is empty — report .stdout
+      // or the real sidecar error (e.g. a Python traceback) is lost.
       throw new Error("command failed (exit " + p.exitCode + "): " + cmd +
-                      "\n" + p.stderr);
+                      "\n" + p.stdout);
 }
 
-// Like run(), but capture and return trimmed stdout (used to probe --version and
-// to read sha256sum's digest). Throws loudly on a non-zero exit.
+// Like run(), but capture and return trimmed output. Throws loudly on non-zero exit.
+// IMPORTANT: PI's ExternalProcess MERGES the child's stderr into `.stdout` (verified:
+// `.stderr` comes back empty), so the returned text can contain stderr diagnostics
+// ahead of the real payload. Callers that parse structured output must tolerate
+// leading noise — see parseFootprint() for why the footprint triplet is read from
+// the LAST line, not split blindly off the front.
 function runCapture(cmd) {
    var p = new ExternalProcess(scrub(cmd));
    spinUntilDone(p);
    if (p.exitCode != 0)
-      throw new Error("command failed (exit " + p.exitCode + "): " + cmd + "\n" + p.stderr);
+      throw new Error("command failed (exit " + p.exitCode + "): " + cmd + "\n" + p.stdout);
    return p.stdout.toString().trim();
+}
+
+// Extract [ra, dec, radiusDeg] from `footprint` output. Because PI merges the
+// sidecar's stderr into stdout, the blob is "<astropy FITS warnings…>\n<ra dec r>".
+// The numeric line is printed AFTER the FITS is opened, so it is reliably last;
+// scan from the end for the first line that parses as three finite numbers. Fails
+// loudly rather than letting a non-numeric token become NaN (the cause of the
+// "0 sources" bug: a NaN cone center silently returns an empty catalogue).
+function parseFootprint(blob) {
+   var lines = blob.split(/\r?\n/);
+   for (var i = lines.length - 1; i >= 0; --i) {
+      var t = lines[i].trim();
+      if (!t) continue;
+      var parts = t.split(/\s+/);
+      if (parts.length >= 3) {
+         var ra = parseFloat(parts[0]), dec = parseFloat(parts[1]), r = parseFloat(parts[2]);
+         if (isFinite(ra) && isFinite(dec) && isFinite(r))
+            return [ra, dec, r];
+      }
+   }
+   throw new Error("could not parse a center RA/Dec/radius from footprint output:\n" + blob);
 }
 
 // Download `url` to `path`. GitHub Release assets 302-redirect to a signed CDN

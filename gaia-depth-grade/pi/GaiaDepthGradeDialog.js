@@ -327,10 +327,9 @@ GaiaDepthGradeDialog.prototype.doPrepare = function () {
          // WCS math), cone-query the local Gaia DR3, and feed the result in.
          this.setStatus("Querying local Gaia DR3 (offline)…");
          var fpLine = runCapture(sidecarCmd(["footprint", gdgQuote(this.starsPath)]));
-         var fp = fpLine.split(/\s+/);
+         var fp = parseFootprint(fpLine);   // robust to PI merging stderr warnings into stdout
          var tsv = this.cacheDir + "/gaia_local.tsv";
-         var n = queryLocalGaiaDR3(parseFloat(fp[0]), parseFloat(fp[1]), parseFloat(fp[2]),
-                                   GDG_MAG_LIMIT, tsv);
+         var n = queryLocalGaiaDR3(fp[0], fp[1], fp[2], GDG_MAG_LIMIT, tsv);
          this.setStatus("Local Gaia DR3: " + n + " sources. Running prepare (detect + match)…");
          prepareArgs.push("--gaia-tsv", gdgQuote(tsv));
       } else {
