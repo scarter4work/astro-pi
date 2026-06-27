@@ -34,6 +34,10 @@ class GradeConfig:
     # improving the visual depth effect. Cutting them speeds the (paginated, sync)
     # query and raises match quality. Set to None to disable the cut (full depth).
     gaia_mag_limit: float | None = 18.0
+    # Parallax signal-to-noise floor for the offline local-DR3 source (PI's Gaia
+    # process gives parallax but no error, so we synthesize sigma from G and cut
+    # on parallax/sigma). Sources below this are dropped loudly. Unused online.
+    gaia_parallax_snr: float = 5.0
 
 
 def _apply(obj, data: dict):

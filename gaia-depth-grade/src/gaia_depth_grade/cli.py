@@ -18,6 +18,16 @@ log = logging.getLogger(__name__)
 HONESTY = "GAIA depth-derived; physically motivated, not per-pixel correct for gas"
 
 
+def _make_source(cfg: GradeConfig, gaia_tsv: str | None) -> DistanceSource:
+    """Pick the distance source: offline local-DR3 export if given, else the
+    online Bailer-Jones (async Gaia TAP) query."""
+    if gaia_tsv:
+        from .local_gaia import LocalGaiaSource
+        log.info("using offline local Gaia DR3 export: %s", gaia_tsv)
+        return LocalGaiaSource(gaia_tsv, cfg.gaia_mag_limit, cfg.gaia_parallax_snr)
+    return GaiaStarSource(cfg.cache_dir, cfg.gaia_mag_limit)
+
+
 def grade_array(image, header, config: GradeConfig, source: DistanceSource):
     """One-shot grade: prepare (detect+query+match) then render. Equivalent to
     `prepare_grade` followed by `render_from_prep`."""
@@ -76,6 +86,13 @@ def main(argv=None):
     pp = sub.add_parser("prepare")
     pp.add_argument("stars"); pp.add_argument("cache_dir")
     pp.add_argument("--config", default=None)
+    # Offline mode: a tab-separated ra/dec/parallax/G export from PI's local Gaia
+    # DR3 database. When given, distances come from parallax instead of the slow
+    # online Bailer-Jones query.
+    pp.add_argument("--gaia-tsv", dest="gaia_tsv", default=None)
+
+    fp = sub.add_parser("footprint")   # print "RA DEC RADIUS_DEG" for a stars FITS
+    fp.add_argument("stars")
 
     rp = sub.add_parser("render")
     rp.add_argument("cache_dir"); rp.add_argument("stars"); rp.add_argument("output")
@@ -106,10 +123,20 @@ def main(argv=None):
         log.info("wrote %s (qa: %s)", args.output, qa)
         return 0
 
+    if args.cmd == "footprint":
+        # Reuse the tested field_footprint so the PJSR dialog never does its own
+        # coordinate math: it runs this, then cone-queries the local Gaia DB.
+        from .wcs import load_wcs, field_footprint
+        image, header = _read_image(args.stars)
+        lum = image.mean(axis=2) if image.ndim == 3 else image
+        f = field_footprint(load_wcs(header), lum.shape)
+        print(f"{f.center_ra:.8f} {f.center_dec:.8f} {f.radius_deg:.8f}")
+        return 0
+
     if args.cmd == "prepare":
         cfg = load_config(args.config)
         image, header = _read_image(args.stars)
-        source = GaiaStarSource(cfg.cache_dir, cfg.gaia_mag_limit)
+        source = _make_source(cfg, args.gaia_tsv)
         table, qa = prepare_grade(image, header, cfg, source)
         save_prep(args.cache_dir, table, qa)
         log.info("prepared %s -> %s (qa: %s)", args.stars, args.cache_dir, qa)

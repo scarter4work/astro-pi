@@ -18,6 +18,7 @@
 #define PREVIEW_W      760
 #define PREVIEW_H      420
 #define INSET_PX       256        // 1:1 inset size in full-res pixels
+#define GDG_MAG_LIMIT  18.0       // G-mag cut for the offline cone query (matches the sidecar default)
 
 function duplicateWindow(srcWindow, newId) {
    var img = srcWindow.mainView.image;
@@ -163,6 +164,18 @@ function GaiaDepthGradeDialog() {
    var prepTitle = new Label(this); prepTitle.text = "Matching (changing these needs re-Prepare)"; prepTitle.styleSheet = "font-weight: bold;";
    this.prepGroup.add(prepTitle);
    this.prepGroup.add(this.neDetect); this.prepGroup.add(this.neMatch);
+
+   // Offline (local Gaia DR3) vs online (Bailer-Jones). Default offline: it uses
+   // the local .xpsd database PI already needs for plate-solving, so it's instant
+   // and needs no network — at the cost of parallax-based (not Bailer-Jones)
+   // distances and the coverage of whichever DR3 database is installed.
+   this.offlineCheck = new CheckBox(this);
+   this.offlineCheck.text = "Offline (local Gaia DR3) — fast";
+   this.offlineCheck.checked = true;
+   this.offlineCheck.toolTip = "Checked: cone-query the local Gaia DR3 database (instant, offline; " +
+      "parallax distances). Unchecked: the online Bailer-Jones catalogue (more sources, but the " +
+      "ESA archive can be slow or down).";
+   this.prepGroup.add(this.offlineCheck);
    this.prepGroup.addStretch();
 
    this.controlsSizer = new HorizontalSizer;
@@ -307,11 +320,25 @@ GaiaDepthGradeDialog.prototype.doPrepare = function () {
       this.fullW = img.width; this.fullH = img.height;
       this.insetCx = Math.round(this.fullW / 2); this.insetCy = Math.round(this.fullH / 2);
 
-      this.setStatus("Running prepare (detect + Gaia query). On a dense field the " +
-                     "Gaia async query can take several minutes the first time; the " +
-                     "result is cached so re-runs are fast…");
-      run(sidecarCmd(["prepare", gdgQuote(this.starsPath), gdgQuote(this.cacheDir),
-                 "--config", gdgQuote(this.writePrepareConfig())]));
+      var prepareArgs = ["prepare", gdgQuote(this.starsPath), gdgQuote(this.cacheDir),
+                         "--config", gdgQuote(this.writePrepareConfig())];
+      if (this.offlineCheck.checked) {
+         // Offline: ask the sidecar for the field footprint (reusing its tested
+         // WCS math), cone-query the local Gaia DR3, and feed the result in.
+         this.setStatus("Querying local Gaia DR3 (offline)…");
+         var fpLine = runCapture(sidecarCmd(["footprint", gdgQuote(this.starsPath)]));
+         var fp = fpLine.split(/\s+/);
+         var tsv = this.cacheDir + "/gaia_local.tsv";
+         var n = queryLocalGaiaDR3(parseFloat(fp[0]), parseFloat(fp[1]), parseFloat(fp[2]),
+                                   GDG_MAG_LIMIT, tsv);
+         this.setStatus("Local Gaia DR3: " + n + " sources. Running prepare (detect + match)…");
+         prepareArgs.push("--gaia-tsv", gdgQuote(tsv));
+      } else {
+         this.setStatus("Running prepare (detect + online Gaia query). On a dense field the " +
+                        "async query can take several minutes the first time; the result is " +
+                        "cached so re-runs are fast…");
+      }
+      run(sidecarCmd(prepareArgs));
 
       // Defense-in-depth: a prepare that fails must NOT look like success. If the
       // Gaia query or detection threw, the sidecar exited non-zero (run() throws)

@@ -6,7 +6,7 @@
       <p>Repository: https://raw.githubusercontent.com/scarter4work/astro-pi/main/repository/</p>
    </description>
    <platform os="linux" arch="x64" version="1.8.0:2.0.0">
-      <package fileName="20260626-linux-x64-NukeX.tar.gz" sha1="574bcf82439e416a210aaa78fccf0f1a200ad83b" type="module" releaseDate="20260626">
+      <package fileName="20260626-linux-x64-NukeX.tar.gz" sha1="3b502640272c2ac541c007bdede090545d4f8f04" type="module" releaseDate="20260626">
          <title>NukeX</title>
          <description>
             <p>
@@ -17,7 +17,7 @@
       </package>
    </platform>
    <platform os="all" arch="noarch" version="1.8.0:2.0.0">
-      <package fileName="EZStretch_v1.0.10.zip" sha1="6b97a2bbbd542472602edfdb0e9428e7c5e2f2d0" type="script" releaseDate="20260626">
+      <package fileName="EZStretch_v1.0.10.zip" sha1="689c83da6e6ef3a029947a496326291746d541a1" type="script" releaseDate="20260626">
          <title>EZ Stretch</title>
          <description>
             <p>
@@ -26,7 +26,7 @@
             <p>Unified stretch suite combining three algorithms in a single interface.</p>
          </description>
       </package>
-      <package fileName="EZDonutRepair_v1.0.3.zip" sha1="ef1df5280fcf26d5579171499ff68c61b86ce98c" type="script" releaseDate="20260626">
+      <package fileName="EZDonutRepair_v1.0.3.zip" sha1="cfb00f291579d3de86c256618d6eb45c6954ab54" type="script" releaseDate="20260626">
          <title>EZ Donut Repair</title>
          <description>
             <p>
@@ -35,7 +35,7 @@
             <p>Removes donut/dust artifacts from astrophotography frames.</p>
          </description>
       </package>
-      <package fileName="EZHazeKill_v1.0.1.zip" sha1="f1feece474ee76bc37815dad04ea2078ef37905a" type="script" releaseDate="20260626">
+      <package fileName="EZHazeKill_v1.0.1.zip" sha1="473f97591f1e29c6e1a9d08b4e1d1b2b4c7ccf85" type="script" releaseDate="20260626">
          <title>EZ Haze Kill</title>
          <description>
             <p>
@@ -44,15 +44,15 @@
             <p>Gradient and haze reduction.</p>
          </description>
       </package>
-      <package fileName="gaia-depth-grade_v1.0.4.zip" sha1="3ef4451af047c7809a60edbbc9658e90443297fa" type="script" releaseDate="20260626">
+      <package fileName="gaia-depth-grade_v1.0.5.zip" sha1="4344ab3d27a7f4eecdc6a01e1f192f024bf642ca" type="script" releaseDate="20260626">
          <title>Gaia Depth Grade</title>
          <description>
             <p>
-               <b>Gaia Depth Grade v1.0.4</b>
+               <b>Gaia Depth Grade v1.0.5</b>
             </p>
-            <p>Physically-grounded depth grade for astrophotographs using Gaia distances. On first run it fetches a frozen Python sidecar (~95 MB, linux-x64) from GitHub Releases and verifies it by SHA-256. Requires StarXTerminator.</p>
+            <p>Physically-grounded depth grade for astrophotographs using Gaia distances. Defaults to the offline local Gaia DR3 database (the one PixInsight uses for plate-solving); an online Bailer-Jones option is available. On first run it fetches a frozen Python sidecar (~95 MB, linux-x64) from GitHub Releases and verifies it by SHA-256. Requires StarXTerminator.</p>
          </description>
       </package>
    </platform>
 </xri>
-<Signature developerId="scarter4work" timestamp="2026-06-26T21:57:15.547Z" encoding="Base64">sLBtAzvLBJym5OkQt/t3VqejbGQdAgecc5PGzRCm11ijoLnopl32hJa4wX8U6HK1yCAZ3pIAx+HLdRzFzMZQBQ==</Signature>
+<Signature developerId="scarter4work" timestamp="2026-06-27T01:23:02.672Z" encoding="Base64">hFDvXzf+MWPmuo9De9PxcFkTxTksinU6Kl6cV5fXJUzxShoyG7qiptOGxPZTwXXfhZm4tHFoYIIgt0uZcWYPDA==</Signature>
