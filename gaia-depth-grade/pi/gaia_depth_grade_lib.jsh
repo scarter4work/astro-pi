@@ -202,17 +202,44 @@ function discoverGaiaDbPaths() {
    return [];
 }
 
-// Configure the process against whichever data release its database supports
-// (base DR3 first, then DR3SP) — so we never have to know which one is installed.
-function _configureGaia(P) {
-   var releases = [Gaia.prototype.DataRelease_3, Gaia.prototype.DataRelease_3_SP];
-   for (var i = 0; i < releases.length; ++i) {
-      P.dataRelease = releases[i];
+// Does this set of .xpsd paths hold the DR3SP (spectrophotometry) subset?
+// PI's official subset databases are named `gdr3sp-*.xpsd`; a user can drop them
+// into the base-"DR3" slot, so the filename — not PI's slot label — is the only
+// trustworthy signal of which data release the files actually contain.
+function _looksLikeSP(paths) {
+   for (var i = 0; i < paths.length; ++i)
+      if (/gdr3sp|dr3sp|[_\-.]sp[_\-.]/i.test(paths[i]))
+         return true;
+   return false;
+}
+
+// Configure + cone-search, trying the file-appropriate data release first and the
+// other as a fallback. Critical: configuring DR3SP files under base DataRelease_3
+// reports isValid=true yet every search returns zero rows — so we must NOT trust
+// isValid as success. For a field we know is covered (it plate-solved), "0 sources"
+// means we picked the wrong release, so we retry the other one before giving up.
+function _searchGaia(P, paths, ra, dec, radiusDeg, magHigh) {
+   var sp = Gaia.prototype.DataRelease_3_SP, base = Gaia.prototype.DataRelease_3;
+   var order = _looksLikeSP(paths) ? [sp, base] : [base, sp];
+   var why = "configure never succeeded";
+   for (var i = 0; i < order.length; ++i) {
+      P.dataRelease = order[i];
       P.command = "configure";
       P.executeGlobal();
-      if (P.isValid) return true;
+      if (!P.isValid) { why = "configure invalid for data release " + order[i]; continue; }
+      P.command = "search";
+      P.centerRA = ra; P.centerDec = dec; P.radius = radiusDeg;
+      P.magnitudeLow = -5.0; P.magnitudeHigh = magHigh;
+      P.sourceLimit = 4294967295;
+      P.requiredFlags = 0; P.inclusionFlags = 0; P.exclusionFlags = 0;
+      P.verbosity = 0; P.generateTextOutput = false;
+      if (!P.executeGlobal()) { why = "search failed for data release " + order[i]; continue; }
+      if (P.sources.length > 0) return P.sources;   // real data — this release matches the files
+      why = "data release " + order[i] + " configured but returned 0 sources";
    }
-   return false;
+   throw new Error("local Gaia cone search returned no sources for any data release (" + why +
+                   "). The configured .xpsd files may not cover this field, or PI's DR3 / DR3SP " +
+                   "database slots are pointed at the wrong files.");
 }
 
 function queryLocalGaiaDR3(ra, dec, radiusDeg, magHigh, outPath) {
@@ -221,27 +248,22 @@ function queryLocalGaiaDR3(ra, dec, radiusDeg, magHigh, outPath) {
                       "Uncheck 'Offline' to use the online catalogue.");
    var P = new Gaia;
    if (P.databaseFilePaths.length == 0) {
-      var paths = discoverGaiaDbPaths();
-      if (paths.length == 0)
+      var disc = discoverGaiaDbPaths();
+      if (disc.length == 0)
          throw new Error("No local Gaia DR3 database is configured in PixInsight (the one " +
                          "plate-solving uses). Configure it, or uncheck 'Offline' to use the " +
                          "online catalogue.");
       var rows = [];
-      for (var i = 0; i < paths.length; ++i) rows.push([paths[i]]);
+      for (var i = 0; i < disc.length; ++i) rows.push([disc[i]]);
       P.databaseFilePaths = rows;
    }
-   if (!_configureGaia(P))
-      throw new Error("the local Gaia database failed to configure (isValid=false) — " +
-                      "the .xpsd files may be missing or unreadable.");
-   P.command = "search";
-   P.centerRA = ra; P.centerDec = dec; P.radius = radiusDeg;
-   P.magnitudeLow = -5.0; P.magnitudeHigh = magHigh;
-   P.sourceLimit = 4294967295;
-   P.requiredFlags = 0; P.inclusionFlags = 0; P.exclusionFlags = 0;
-   P.verbosity = 0; P.generateTextOutput = false;
-   if (!P.executeGlobal())
-      throw new Error("local Gaia DR3 cone search failed.");
-   var s = P.sources;
+   // The flat list of .xpsd paths actually in play — inherited from the user's
+   // interactive Gaia process, or discovered above — so _searchGaia can choose the
+   // release that matches the files instead of trusting PI's DR3/DR3SP slot labels.
+   var paths = [];
+   for (var p = 0; p < P.databaseFilePaths.length; ++p)
+      paths.push(P.databaseFilePaths[p][0]);
+   var s = _searchGaia(P, paths, ra, dec, radiusDeg, magHigh);
    var f = new File;
    f.createForWriting(outPath);
    var buf = "ra\tdec\tparallax\tphot_g_mean_mag\n";   // sidecar parses these 4 columns
