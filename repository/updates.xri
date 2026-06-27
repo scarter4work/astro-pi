@@ -6,7 +6,7 @@
       <p>Repository: https://raw.githubusercontent.com/scarter4work/astro-pi/main/repository/</p>
    </description>
    <platform os="linux" arch="x64" version="1.8.0:2.0.0">
-      <package fileName="20260627-linux-x64-NukeX.tar.gz" sha1="853ce0840c15af19e5d7fcb337ef0b8c43d2f273" type="module" releaseDate="20260627">
+      <package fileName="20260627-linux-x64-NukeX.tar.gz" sha1="738e9dbf4a190936298b3028367c6c9b00d1dda3" type="module" releaseDate="20260627">
          <title>NukeX</title>
          <description>
             <p>
@@ -17,7 +17,7 @@
       </package>
    </platform>
    <platform os="all" arch="noarch" version="1.8.0:2.0.0">
-      <package fileName="EZStretch_v1.0.10.zip" sha1="66bc3c36885f608537fd762f49752df4b480db95" type="script" releaseDate="20260627">
+      <package fileName="EZStretch_v1.0.10.zip" sha1="8d060150a4d6cba7592efa2dfa6d06bd1938f5b1" type="script" releaseDate="20260627">
          <title>EZ Stretch</title>
          <description>
             <p>
@@ -26,7 +26,7 @@
             <p>Unified stretch suite combining three algorithms in a single interface.</p>
          </description>
       </package>
-      <package fileName="EZDonutRepair_v1.0.3.zip" sha1="a0f3ffe06f334c95ca768eab7e63a770513bfa92" type="script" releaseDate="20260627">
+      <package fileName="EZDonutRepair_v1.0.3.zip" sha1="a66ba7e6353e5e2a48c2c7f101444eeb45c8491e" type="script" releaseDate="20260627">
          <title>EZ Donut Repair</title>
          <description>
             <p>
@@ -35,7 +35,7 @@
             <p>Removes donut/dust artifacts from astrophotography frames.</p>
          </description>
       </package>
-      <package fileName="EZHazeKill_v1.0.1.zip" sha1="eb2612c53eb96ba193441e365d929e024072d78c" type="script" releaseDate="20260627">
+      <package fileName="EZHazeKill_v1.0.1.zip" sha1="0772d187a615b2a68c1042226bbba2c31914078c" type="script" releaseDate="20260627">
          <title>EZ Haze Kill</title>
          <description>
             <p>
@@ -44,16 +44,16 @@
             <p>Gradient and haze reduction.</p>
          </description>
       </package>
-      <package fileName="gaia-depth-grade_v1.0.6.zip" sha1="92e2adf4dedead21f7f3a6785884fd41d6ea6fab" type="script" releaseDate="20260627">
+      <package fileName="gaia-depth-grade_v1.0.7.zip" sha1="55967e4668bfecc61877d876219142695ce43b50" type="script" releaseDate="20260627">
          <title>Gaia Depth Grade</title>
          <description>
             <p>
-               <b>Gaia Depth Grade v1.0.6</b>
+               <b>Gaia Depth Grade v1.0.7</b>
             </p>
             <p>Physically-grounded depth grade for astrophotographs using Gaia distances. Defaults to the offline local Gaia DR3 database (the one PixInsight uses for plate-solving); an online Bailer-Jones option is available. On first run it fetches a frozen Python sidecar (~95 MB, linux-x64) from GitHub Releases and verifies it by SHA-256. Requires StarXTerminator.</p>
-            <p>v1.0.6: the offline query now selects the Gaia data release that matches the actual .xpsd files instead of trusting PixInsight&apos;s DR3/DR3SP slot labels, and treats a valid-but-empty search as a wrong-release signal (retrying the other release). Fixes &quot;0 sources&quot; when DR3SP subset files are configured in the base-DR3 slot.</p>
+            <p>v1.0.7: fixes offline mode returning &quot;0 sources&quot; in an interactive session. The query now always resolves the local Gaia database by discovery (parsing the same configuration PixInsight plate-solves with) instead of trusting the parameters an interactive Gaia process instance inherits, which could configure-valid yet search empty. Adds per-release source-count logging to the console. (v1.0.6 data-release matching retained as a defensive fallback.)</p>
          </description>
       </package>
    </platform>
 </xri>
-<Signature developerId="scarter4work" timestamp="2026-06-27T16:36:22.040Z" encoding="Base64">lB0SlQCyaXfs+bnP7+s7jK3502OxA8K8TDWrbVRws2EpFPWP75d+dFRgUTxLwzonXiQMd8tXFANv377JxwmVBA==</Signature>
+<Signature developerId="scarter4work" timestamp="2026-06-27T17:08:42.942Z" encoding="Base64">Ma5nyhK1p+ieFYu2zV4Qeg3bhzZ9QrrepoW27Yut2dMpgmIeZK2UC3Ur0NrD60ISOgN76PkIr28jDpsl7Z59CA==</Signature>
