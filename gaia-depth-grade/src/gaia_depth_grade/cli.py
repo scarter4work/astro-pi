@@ -68,6 +68,19 @@ def _add_render_args(sp):
     sp.add_argument("--p-low", dest="p_low", type=float, default=5.0)
     sp.add_argument("--p-high", dest="p_high", type=float, default=95.0)
     sp.add_argument("--base-sigma", dest="base_sigma", type=float, default=2.0)
+    # Nebula (starless-layer) depth — opt-in; strength 0 disables it entirely.
+    sp.add_argument("--nebula-strength", dest="nebula_strength", type=float, default=0.0)
+    sp.add_argument("--nebula-atmos", dest="nebula_atmos", type=float, default=1.0)
+    sp.add_argument("--nebula-structure", dest="nebula_structure", type=float, default=1.0)
+
+
+def _graded_nebula(starless, table, args):
+    """Grade the starless layer if nebula depth is enabled, else return it as-is."""
+    if getattr(args, "nebula_strength", 0.0) <= 0.0:
+        return starless
+    from .nebula import render_nebula
+    return render_nebula(starless, table, strength=args.nebula_strength,
+                         atmos=args.nebula_atmos, structure=args.nebula_structure)
 
 
 def main(argv=None):
@@ -97,6 +110,10 @@ def main(argv=None):
     rp = sub.add_parser("render")
     rp.add_argument("cache_dir"); rp.add_argument("stars"); rp.add_argument("output")
     _add_render_args(rp)
+
+    np_ = sub.add_parser("nebula")   # grade the starless layer -> FITS (for Execute)
+    np_.add_argument("cache_dir"); np_.add_argument("starless"); np_.add_argument("output")
+    _add_render_args(np_)
 
     vp = sub.add_parser("preview")
     vp.add_argument("cache_dir"); vp.add_argument("stars"); vp.add_argument("starless")
@@ -151,12 +168,21 @@ def main(argv=None):
         log.info("rendered %s", args.output)
         return 0
 
+    if args.cmd == "nebula":
+        table, qa = load_prep(args.cache_dir)
+        starless, header = _read_image(args.starless)
+        graded = _graded_nebula(starless, table, args)
+        write_fits(args.output, graded, header, qa)
+        log.info("nebula-graded %s -> %s", args.starless, args.output)
+        return 0
+
     if args.cmd == "preview":
         cfg = _render_config(args)
         table, _ = load_prep(args.cache_dir)
         stars, _ = _read_image(args.stars)
         starless, _ = _read_image(args.starless)
         graded = render_from_prep(stars, table, cfg)
+        starless = _graded_nebula(starless, table, args)
         stretched = autostretch(screen_blend(graded, starless))
         write_png(stretched, args.out_full, max_width=args.max_width)
         if args.inset and args.region:
