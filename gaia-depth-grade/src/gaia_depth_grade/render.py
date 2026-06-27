@@ -63,7 +63,14 @@ def render_stars(stars_layer, detected, modulation, base_sigma_px):
         # (zsize-1)*flux, width scaling with zsize), feathered to 0 at the edge.
         # Peak-normalizing (not area-normalizing) is what makes a size increase
         # visibly widen the star's footprint rather than just spreading flux.
-        if abs(zsize - 1.0) > 1e-9:
+        #
+        # ONE-SIDED on purpose: only enlarge (zsize > 1). For a FAR star zsize < 1,
+        # so (zsize-1)*flux is negative and this would SUBTRACT a flux-scaled
+        # Gaussian — over-subtracting past the star's own light, clipping to black,
+        # and leaving a dark ring/donut (worst on the bright halos around big stars).
+        # Far stars are made to recede by the brightness dimming (b < 1) above, never
+        # by digging negative flux here.
+        if zsize > 1.0 + 1e-9:
             stamp = _gaussian_stamp(h, w, cx, cy, base_sigma_px * zsize)
             peak = stamp.max()
             if peak > 0:
@@ -72,10 +79,17 @@ def render_stars(stars_layer, detected, modulation, base_sigma_px):
             extra = (zsize - 1.0) * flux
             win += extra * (stamp[..., None] if is_color else stamp)
 
-        # local contrast (unsharp), feathered
+        # local contrast (unsharp), feathered, with NOISE CORING. Plain unsharp
+        # amplifies every high frequency including single-pixel sensor noise, which
+        # coarsens the grain ("pixelation" on close zoom). Soft-threshold the
+        # high-pass by a robust local noise estimate (MAD) so sub-noise wiggles are
+        # held back while real, many-sigma star detail passes through unharmed.
         if abs(camount) > 1e-9:
             blur = gaussian_filter(win, sigma=base_sigma_px, axes=(0, 1) if is_color else None)
-            win += camount * wtaper * (win - blur)
+            hp = win - blur
+            nz = 1.4826 * np.median(np.abs(hp - np.median(hp)))   # ~sigma of the noise
+            hp = np.sign(hp) * np.maximum(np.abs(hp) - 0.75 * nz, 0.0)
+            win += camount * wtaper * hp
 
         # saturation (color only), feathered
         if is_color and abs(sat - 1.0) > 1e-9:
