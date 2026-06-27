@@ -6,7 +6,7 @@
       <p>Repository: https://raw.githubusercontent.com/scarter4work/astro-pi/main/repository/</p>
    </description>
    <platform os="linux" arch="x64" version="1.8.0:2.0.0">
-      <package fileName="20260627-linux-x64-NukeX.tar.gz" sha1="48e732379d14e2e74a5807c68e2564a3015ef4a8" type="module" releaseDate="20260627">
+      <package fileName="20260627-linux-x64-NukeX.tar.gz" sha1="144ca98276ba2f2187113704b26deb1ec5f112f8" type="module" releaseDate="20260627">
          <title>NukeX</title>
          <description>
             <p>
@@ -17,7 +17,7 @@
       </package>
    </platform>
    <platform os="all" arch="noarch" version="1.8.0:2.0.0">
-      <package fileName="EZStretch_v1.0.10.zip" sha1="62d8581fc59fb6b1b16094e5e84c4eb5ed9b85e7" type="script" releaseDate="20260627">
+      <package fileName="EZStretch_v1.0.10.zip" sha1="8e8938bbd7984b431b738a67a775d186df32beea" type="script" releaseDate="20260627">
          <title>EZ Stretch</title>
          <description>
             <p>
@@ -26,7 +26,7 @@
             <p>Unified stretch suite combining three algorithms in a single interface.</p>
          </description>
       </package>
-      <package fileName="EZDonutRepair_v1.0.3.zip" sha1="84d0f5a96e4b894370de8424f210a0b82c96c4aa" type="script" releaseDate="20260627">
+      <package fileName="EZDonutRepair_v1.0.3.zip" sha1="7ce5b13c83ca2210f024dbe1da86c973cbeee8a0" type="script" releaseDate="20260627">
          <title>EZ Donut Repair</title>
          <description>
             <p>
@@ -35,7 +35,7 @@
             <p>Removes donut/dust artifacts from astrophotography frames.</p>
          </description>
       </package>
-      <package fileName="EZHazeKill_v1.0.1.zip" sha1="21ed6b5afaaae55804ab103e5afe658554928fd6" type="script" releaseDate="20260627">
+      <package fileName="EZHazeKill_v1.0.1.zip" sha1="448cd8b1f1e9e862f6e3b59fbec99774d2e65fe9" type="script" releaseDate="20260627">
          <title>EZ Haze Kill</title>
          <description>
             <p>
@@ -44,16 +44,16 @@
             <p>Gradient and haze reduction.</p>
          </description>
       </package>
-      <package fileName="gaia-depth-grade_v1.0.8.zip" sha1="2c095545e0a3be791394cf5f203eb9608aaff999" type="script" releaseDate="20260627">
+      <package fileName="gaia-depth-grade_v1.0.9.zip" sha1="4079e8d965d451ed3275416567bb00219a3a3d20" type="script" releaseDate="20260627">
          <title>Gaia Depth Grade</title>
          <description>
             <p>
-               <b>Gaia Depth Grade v1.0.8</b>
+               <b>Gaia Depth Grade v1.0.9</b>
             </p>
             <p>Physically-grounded depth grade for astrophotographs using Gaia distances. Defaults to the offline local Gaia DR3 database (the one PixInsight uses for plate-solving); an online Bailer-Jones option is available. On first run it fetches a frozen Python sidecar (~95 MB, linux-x64) from GitHub Releases and verifies it by SHA-256. Requires StarXTerminator.</p>
-            <p>v1.0.8: real fix for offline &quot;0 sources&quot;. PixInsight merges a child process&apos;s stderr into stdout, so the sidecar&apos;s harmless astropy FITS warnings polluted the captured &quot;footprint&quot; output and the cone center parsed as NaN — yielding an empty catalogue. The footprint triplet is now parsed robustly (read from the last numeric line, fails loudly instead of producing NaN), and process errors now surface the merged output. Verified end-to-end (19,385 sources). Supersedes the v1.0.6/v1.0.7 attempts.</p>
+            <p>v1.0.9 (sidecar 1.0.5): render quality. Dark rings/donuts around bright stars are gone — the size/glow term is now one-sided (far stars no longer subtract a flux-scaled Gaussian that punched a black hole). Local-contrast now uses noise coring to cut grain/pixelation on close zoom while preserving star detail. First run re-fetches the ~95 MB sidecar.</p>
          </description>
       </package>
    </platform>
 </xri>
-<Signature developerId="scarter4work" timestamp="2026-06-27T17:28:40.024Z" encoding="Base64">M1rUOR9H3p21hIysKQ/kwIvKehuxP/mWu9kASr3N32aE3iAAw3XCZntop7JdvGM2uhpMTmRCFES4x/yqqa2gAg==</Signature>
+<Signature developerId="scarter4work" timestamp="2026-06-27T18:17:41.030Z" encoding="Base64">RA+RLWssi29cskwGN1uz5GURAd1mT93iniUokLi5zVoZfj1alQZcIs/VK2ROTnop2ULfnVVEk0qvymQ0kykmAg==</Signature>

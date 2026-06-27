@@ -28,10 +28,10 @@
 // The public user has no Python; the Python core is fetched on first run from a
 // GitHub Release asset and cached. These three are bumped per sidecar release;
 // SIDECAR_SHA256 MUST match the uploaded asset byte-for-byte (verified below).
-#define SIDECAR_VERSION  "1.0.4"
-#define SIDECAR_TGZ      "gaia-depth-grade-sidecar-1.0.4-linux-x64.tar.gz"
-#define SIDECAR_URL      "https://github.com/scarter4work/astro-pi/releases/download/gaia-depth-grade-v1.0.4/gaia-depth-grade-sidecar-1.0.4-linux-x64.tar.gz"
-#define SIDECAR_SHA256   "4d48cd3230678fb23741742d01787cff408e30b72d42b2632427327b5e4061af"
+#define SIDECAR_VERSION  "1.0.5"
+#define SIDECAR_TGZ      "gaia-depth-grade-sidecar-1.0.5-linux-x64.tar.gz"
+#define SIDECAR_URL      "https://github.com/scarter4work/astro-pi/releases/download/gaia-depth-grade-v1.0.5/gaia-depth-grade-sidecar-1.0.5-linux-x64.tar.gz"
+#define SIDECAR_SHA256   "cfd4e44d095e877e5dbdec88675efe10d8b300a3935e6da86826c3bc6a443098"
 #define SIDECAR_NAME     "gaia-depth-grade-sidecar"
 
 function gdgEnsureDir(d) {
