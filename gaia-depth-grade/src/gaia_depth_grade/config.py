@@ -10,6 +10,9 @@ class Gains:
     size: float = 0.4
     contrast: float = 0.3
     saturation: float = 0.3
+    # Overall intensity of the synthetic star-shine halo on enlarged stars.
+    # Independent of `size` (footprint) so glow can be dialed without re-widening.
+    halo_gain: float = 1.0
 
 
 @dataclass(frozen=True)
@@ -38,6 +41,13 @@ class GradeConfig:
     # process gives parallax but no error, so we synthesize sigma from G and cut
     # on parallax/sigma). Sources below this are dropped loudly. Unused online.
     gaia_parallax_snr: float = 5.0
+    # Star-shine halo (enlarged stars). The halo's radial shape is stacked from the
+    # bright, unsaturated, isolated stars in the layer; need at least `halo_min_refs`
+    # of them or we fall back (loudly) to a Moffat of slope `halo_moffat_beta`. The
+    # profile/halo extends to `halo_radius_sigma * base_sigma_px`.
+    halo_min_refs: int = 8
+    halo_radius_sigma: float = 8.0
+    halo_moffat_beta: float = 2.5
 
 
 def _apply(obj, data: dict):

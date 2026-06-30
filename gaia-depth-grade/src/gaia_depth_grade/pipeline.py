@@ -17,6 +17,7 @@ from .detect import detect_stars
 from .distances import DistanceSource
 from .match import cross_match
 from .modulate import compute_modulation
+from .psf import build_halo_profile
 from .render import render_stars
 from .transform import effective_strength
 from .wcs import field_footprint, load_wcs
@@ -61,4 +62,8 @@ def render_from_prep(stars_layer, table, config: GradeConfig):
         np.asarray(table["r_hi_geo"]), config.p_low, config.p_high,
         config.neutral_strength)
     modulation = compute_modulation(strength, config.gains)
-    return render_stars(stars_layer, table, modulation, config.base_sigma_px)
+    # Build the star-shine halo profile from the very layer we're about to grade, so
+    # enlarged stars wear the same glow as the real bright stars beside them.
+    halo = build_halo_profile(stars_layer, table, config.base_sigma_px, config)
+    return render_stars(stars_layer, table, modulation, config.base_sigma_px,
+                        halo_profile=halo, halo_gain=config.gains.halo_gain)
