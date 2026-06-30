@@ -5,17 +5,28 @@ import math
 import numpy as np
 from scipy.ndimage import gaussian_filter
 
+from .psf import moffat_profile
+
+
+def _core_color(win, cx, cy, base_sigma_px):
+    """Mean per-channel colour over the star's core, normalized so the brightest
+    channel is 1.0. Multiplying the (luminance-scaled) halo by this tints it to the
+    star's own hue — a blue star gets a blue glow, a red star a red one."""
+    h, w = win.shape[0], win.shape[1]
+    yy, xx = np.mgrid[0:h, 0:w]
+    core = np.sqrt((xx - cx) ** 2 + (yy - cy) ** 2) <= max(base_sigma_px, 1.0)
+    if not core.any():
+        return np.ones(win.shape[2])
+    rgb = win[core].mean(axis=0)
+    m = rgb.max()
+    return rgb / m if m > 0 else np.ones_like(rgb)
+
 
 def _window_slice(x, y, rad, shape):
     ny, nx = shape[0], shape[1]
     x0, x1 = max(0, int(x) - rad), min(nx, int(x) + rad + 1)
     y0, y1 = max(0, int(y) - rad), min(ny, int(y) + rad + 1)
     return slice(y0, y1), slice(x0, x1)
-
-
-def _gaussian_stamp(h, w, cx, cy, sigma):
-    yy, xx = np.mgrid[0:h, 0:w]
-    return np.exp(-((xx - cx) ** 2 + (yy - cy) ** 2) / (2 * sigma**2))
 
 
 def _radial_taper(h, w, cx, cy, rad):
@@ -30,9 +41,16 @@ def _radial_taper(h, w, cx, cy, rad):
     return 0.5 * (1.0 + np.cos(np.pi * np.clip(r / rad, 0.0, 1.0)))
 
 
-def render_stars(stars_layer, detected, modulation, base_sigma_px):
+def render_stars(stars_layer, detected, modulation, base_sigma_px,
+                 halo_profile=None, halo_gain=1.0):
     out = np.array(stars_layer, dtype=float, copy=True)
     is_color = out.ndim == 3
+
+    # The enlarge branch adds a halo whose radial *shape* comes from this profile.
+    # In production it is the image-derived PSF (built in render_from_prep); when a
+    # caller supplies none (direct/test use) we fall back to a natural Moffat.
+    if halo_profile is None:
+        halo_profile = moffat_profile(base_sigma_px, beta=2.5, radius_px=8.0 * base_sigma_px)
 
     for i in range(len(detected)):
         x, y = float(detected["x"][i]), float(detected["y"][i])
@@ -59,25 +77,32 @@ def render_stars(stars_layer, detected, modulation, base_sigma_px):
         if abs(b - 1.0) > 1e-9:
             win *= 1.0 + (b - 1.0) * wtaper
 
-        # size/glow: add a peak-normalized Gaussian halo (peak amplitude
-        # (zsize-1)*flux, width scaling with zsize), feathered to 0 at the edge.
-        # Peak-normalizing (not area-normalizing) is what makes a size increase
-        # visibly widen the star's footprint rather than just spreading flux.
+        # size/glow: add a star-shine halo whose radial SHAPE is `halo_profile`
+        # (the image's own bright-star PSF, wings and all — not a fast-collapsing
+        # Gaussian), stretched by zsize so the footprint genuinely widens, feathered
+        # to 0 at the window edge, and tinted to the star's own colour so it blends
+        # in instead of reading as a pasted-on grey blob. Amplitude is anchored to
+        # the star's ACTUAL peak pixel (not DAO flux) so the glow sits correctly on
+        # the real core, and scaled by the user's halo_gain.
         #
-        # ONE-SIDED on purpose: only enlarge (zsize > 1). For a FAR star zsize < 1,
-        # so (zsize-1)*flux is negative and this would SUBTRACT a flux-scaled
-        # Gaussian — over-subtracting past the star's own light, clipping to black,
-        # and leaving a dark ring/donut (worst on the bright halos around big stars).
-        # Far stars are made to recede by the brightness dimming (b < 1) above, never
-        # by digging negative flux here.
+        # ONE-SIDED on purpose: only enlarge (zsize > 1). A far star (zsize < 1)
+        # would give negative amplitude here, over-subtracting past the star's own
+        # light into a dark ring/donut. Far stars recede via the brightness dimming
+        # (b < 1) above, never by digging negative flux here.
         if zsize > 1.0 + 1e-9:
-            stamp = _gaussian_stamp(h, w, cx, cy, base_sigma_px * zsize)
-            peak = stamp.max()
-            if peak > 0:
-                stamp = stamp / peak
-            stamp = stamp * taper
-            extra = (zsize - 1.0) * flux
-            win += extra * (stamp[..., None] if is_color else stamp)
+            r = np.sqrt((np.arange(w)[None, :] - cx) ** 2
+                        + (np.arange(h)[:, None] - cy) ** 2)
+            shape = halo_profile.sample(r / zsize) * taper   # stretch + feather
+            core = np.sqrt((np.arange(w)[None, :] - cx) ** 2
+                           + (np.arange(h)[:, None] - cy) ** 2) <= max(base_sigma_px, 1.0)
+            lum = win.mean(axis=2) if is_color else win
+            peak_core = float(lum[core].max()) if core.any() else float(lum.max())
+            extra = halo_gain * (zsize - 1.0) * peak_core
+            if is_color:
+                color = _core_color(win, cx, cy, base_sigma_px)
+                win += extra * shape[..., None] * color
+            else:
+                win += extra * shape
 
         # local contrast (unsharp), feathered, with NOISE CORING. Plain unsharp
         # amplifies every high frequency including single-pixel sensor noise, which
