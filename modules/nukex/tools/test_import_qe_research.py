@@ -206,6 +206,79 @@ def test_rejects_ambiguous_mono_aliases(tmp_path):
     assert "Ambiguous" in r.stderr
 
 
+def test_rejects_non_integer_wavelength_key(tmp_path):
+    """The C++ loader does `int wl = std::stoi(wlit.key())` with no
+    validation (qe_database.cpp): a key like "656.5" would silently
+    truncate to 656 (data corruption). Must be a hard error at import
+    time instead."""
+    src = tmp_path / "research.json"
+    src.write_text(json.dumps({
+        "cameras": {
+            "BadWavelength": {
+                "sensor": "S",
+                "type": "OSC",
+                "confidence": "high",
+                "qe": {"656.5": {"R": 0.5}},
+            }
+        },
+        "filters": {}
+    }))
+    dst = tmp_path / "shipped.json"
+    r = run_import(src, dst)
+    assert r.returncode != 0
+    assert "656.5" in r.stderr
+    assert not dst.exists()
+
+
+def test_rejects_g_and_gr_gb_conflict(tmp_path):
+    """If a wavelength dict has both a merged "G" and separate "Gr"/"Gb"
+    readings, silently preferring "G" would drop real data -- the exact
+    silent-fallback pattern this repo forbids. Must hard-error, matching
+    the mono "mono"/"mono_pk" ambiguity handling."""
+    src = tmp_path / "research.json"
+    src.write_text(json.dumps({
+        "cameras": {
+            "GreenConflict": {
+                "sensor": "S",
+                "type": "OSC",
+                "confidence": "high",
+                "qe": {"656": {"G": 0.5, "Gr": 0.4, "Gb": 0.6}},
+            }
+        },
+        "filters": {}
+    }))
+    dst = tmp_path / "shipped.json"
+    r = run_import(src, dst)
+    assert r.returncode != 0
+    assert "GreenConflict" in r.stderr
+    assert not dst.exists()
+
+
+def test_rejects_invalid_confidence_value(tmp_path):
+    """Only the presence of 'confidence' was previously checked -- a typo
+    like "medium-high" would silently become QEConfidence::UNKNOWN in the
+    C++ loader (parse_confidence()). Must hard-error on any value outside
+    the loader's recognised set (high/medium/low)."""
+    src = tmp_path / "research.json"
+    src.write_text(json.dumps({
+        "cameras": {
+            "BadConfidence": {
+                "sensor": "S",
+                "type": "OSC",
+                "confidence": "medium-high",
+                "qe": {"656": {"R": 0.5}},
+            }
+        },
+        "filters": {}
+    }))
+    dst = tmp_path / "shipped.json"
+    r = run_import(src, dst)
+    assert r.returncode != 0
+    assert "BadConfidence" in r.stderr
+    assert "medium-high" in r.stderr
+    assert not dst.exists()
+
+
 def test_rejects_out_of_range_qe_value(tmp_path):
     src = tmp_path / "research.json"
     src.write_text(json.dumps({
@@ -281,6 +354,60 @@ def test_filter_multi_pass_and_unknown_wavelength_falls_back_to_numeric_name(tmp
     assert [l["name"] for l in tri] == ["Halpha", "OIII", "Hbeta"]
     broadband = out["filters"]["Generic-Broadband-Red"]["lines"]
     assert broadband == [{"name": "625nm", "wavelength_nm": 625, "fwhm_nm": 90}]
+
+
+def test_filter_nii_line_named(tmp_path):
+    """Real research data has Astrodon-NII-3nm-50mm passing at 658.4nm --
+    unambiguously NII. KNOWN_LINES_NM must name it rather than falling
+    back to a generic "658.4nm" label. The nearby 657.5/658.0nm passes
+    the script deliberately leaves generic must NOT be captured by the
+    tolerance widening this requires -- in particular the real
+    Optolong-LeXtreme-F2 filter's Halpha pass, deliberately pre-shifted
+    to 658.0nm for f/2 optics (see its research `notes`), must NOT be
+    mislabelled "NII" just because it now sits within the default 0.3nm
+    tolerance of the new NII line."""
+    src = tmp_path / "research.json"
+    src.write_text(json.dumps({
+        "cameras": {},
+        "filters": {
+            "Astrodon-NII-3nm-50mm": {
+                "type": "narrowband-single",
+                "passes": [
+                    {"center_nm": 658.4, "fwhm_nm": 3.0, "peak_transmission": 0.9}
+                ],
+            },
+            "Generic-Ambiguous-657_5": {
+                "type": "narrowband-single",
+                "passes": [
+                    {"center_nm": 657.5, "fwhm_nm": 3.0, "peak_transmission": 0.9}
+                ],
+            },
+            "Optolong-LeXtreme-F2": {
+                "type": "dual-narrowband",
+                "passes": [
+                    {"center_nm": 658.0, "fwhm_nm": 7.0, "peak_transmission": 0.88},
+                    {"center_nm": 502.0, "fwhm_nm": 7.0, "peak_transmission": 0.88},
+                ],
+            },
+        }
+    }))
+    dst = tmp_path / "shipped.json"
+    r = run_import(src, dst)
+    assert r.returncode == 0, r.stderr
+    out = json.loads(dst.read_text())
+    assert out["filters"]["Astrodon-NII-3nm-50mm"]["lines"] == [
+        {"name": "NII", "wavelength_nm": 658.4, "fwhm_nm": 3.0}
+    ]
+    # 657.5nm stays generic -- not close enough to Halpha (656.3) or
+    # NII (658.3) within the 0.3nm tolerance.
+    assert out["filters"]["Generic-Ambiguous-657_5"]["lines"] == [
+        {"name": "657.5nm", "wavelength_nm": 657.5, "fwhm_nm": 3.0}
+    ]
+    # 658.0nm is a genuine (pre-shifted) Halpha pass, not NII -- it must
+    # stay generic under NII's tighter 0.15nm override tolerance.
+    lextreme = out["filters"]["Optolong-LeXtreme-F2"]["lines"]
+    assert lextreme[0] == {"name": "658nm", "wavelength_nm": 658.0, "fwhm_nm": 7.0}
+    assert lextreme[1] == {"name": "502nm", "wavelength_nm": 502.0, "fwhm_nm": 7.0}
 
 
 def test_filter_lines_passthrough_when_already_shipping_shape(tmp_path):
