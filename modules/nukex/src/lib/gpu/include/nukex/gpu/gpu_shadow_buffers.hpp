@@ -33,7 +33,39 @@ struct ShadowBuffers {
     std::vector<float>    welford_M2;       // [n_ch * batch]
     std::vector<uint32_t> welford_n;        // [n_ch * batch]
     std::vector<float>    pixel_values;     // [n_ch * max_frames * batch]
-    std::vector<uint16_t> n_frames;         // [batch]
+    std::vector<uint16_t> n_frames;         // [batch] — per-voxel UNION frame
+                                            // count (liveness gate only; not a
+                                            // per-channel loop bound anymore)
+
+    // ── Per-channel real-sample accounting (heterogeneous-geometry fix) ──
+    //
+    // Phase B's per-voxel `n_frames` scalar is the UNION of frame counts
+    // across all channels; for a heterogeneous batch (e.g. mono-L + debayered
+    // OSC) it exceeds any single channel's real sample count and, used as a
+    // uniform kernel loop bound, walks `fi` past channel `ch`'s data into
+    // channel `ch+1` (aliasing) or out of bounds. These two arrays replace it
+    // with correct PER-CHANNEL accounting.
+    //
+    // channel_n_frames[ch]      = number of real (written) frames feeding
+    //                             channel ch. Uniform across all voxels in the
+    //                             batch (it is a property of the slot's cache,
+    //                             not the voxel). This is the correct loop
+    //                             bound for kernel per-channel inner loops.
+    //
+    // channel_frame_remap[ch*N+k] = the GLOBAL frame index of channel ch's
+    //                             k-th real sample, so kernels index the flat
+    //                             per-frame frame_stats[] as
+    //                             frame_stats[remap[ch*N+fi]] instead of the
+    //                             (now-wrong) frame_stats[fi].
+    //
+    // Defaults from allocate(): channel_n_frames[ch] = max_frames and
+    // channel_frame_remap[ch*N+k] = k (identity). That makes buffers built
+    // directly by tests (which populate `pixel_values`/`n_frames` densely at
+    // [0..N-1] and never call extract_from_cube) behave byte-identically to
+    // the pre-fix per-voxel loops. extract_from_cube() overwrites both from
+    // the slot's cache for the real Phase B path.
+    std::vector<uint16_t> channel_n_frames;   // [n_ch]
+    std::vector<int32_t>  channel_frame_remap; // [n_ch * max_frames]
 
     // ── Intermediate (persist on device across kernel passes) ─────────
     std::vector<float>    pixel_weights;    // [n_ch * max_frames * batch]

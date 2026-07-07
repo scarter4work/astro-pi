@@ -43,10 +43,18 @@ public:
     /// Run the full Phase B pipeline on the cube.
     /// fitting_fn: called per-voxel to run distribution fitting (Ceres).
     ///   signature: void(SubcubeVoxel& voxel, const float* values,
-    ///                    const float* weights, int n_frames, int n_channels,
+    ///                    const float* weights, int stride_N, int n_channels,
+    ///                    const uint16_t* n_frames_per_channel,
     ///                    const FrameStats* frame_stats)
+    ///
+    /// values/weights are laid out [ch * stride_N + fi]. Only the first
+    /// n_frames_per_channel[ch] positions of each channel are REAL samples
+    /// (a heterogeneous-geometry channel may have fewer real frames than the
+    /// stride N); positions beyond that are zero-padding and MUST NOT be fed
+    /// to the fitter. The callback iterates channels and passes each
+    /// channel's own real-sample count to the model selector.
     using FittingFn = std::function<void(SubcubeVoxel&, const float*, const float*,
-                                          int, int, const FrameStats*)>;
+                                          int, int, const uint16_t*, const FrameStats*)>;
 
     /// Returns the number of voxel-channels that fell back to the median
     /// of raw per-frame samples because the Phase B distribution fit did

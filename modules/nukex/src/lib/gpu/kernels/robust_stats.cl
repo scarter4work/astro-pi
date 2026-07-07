@@ -10,7 +10,8 @@
 
 __kernel void robust_stats(
     __global const float*   pixel_values,       // [C * N * B]
-    __global const ushort*  n_frames_in,        // [B]
+    __global const ushort*  n_frames_in,        // [B] — per-voxel union count (unused; kept for arg parity)
+    __global const ushort*  channel_n_frames,   // [C] — per-channel real-sample count
     int n_channels,
     int max_frames,
     int batch_size,
@@ -27,15 +28,16 @@ __kernel void robust_stats(
     int ch = gid / B;
     if (ch >= C || vi >= B) return;
 
-    int nf = (int)n_frames_in[vi];
-    if (nf < 2) {
+    // Per-channel real-sample count (was the shared per-voxel scalar).
+    int nf_ch = (int)channel_n_frames[ch];
+    if (nf_ch < 2) {
         mad_out[ch * B + vi] = 0.0f;
         biweight_midvar_out[ch * B + vi] = 0.0f;
         iqr_out[ch * B + vi] = 0.0f;
         return;
     }
 
-    int n = min(nf, GPU_MAX_FRAMES);
+    int n = min(nf_ch, GPU_MAX_FRAMES);
 
     // Load values into private memory
     float vals[GPU_MAX_FRAMES];
