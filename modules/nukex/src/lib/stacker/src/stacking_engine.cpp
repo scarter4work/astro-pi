@@ -741,9 +741,10 @@ StackingEngine::ExecuteResult StackingEngine::execute(
                          : caches.begin()->second.n_frames_written();
 
     auto phase_b_start = std::chrono::steady_clock::now();
-    gpu.execute_phase_b(cube, slot_cache_refs, n_frames_written,
-                        frame_stats, config_.weight_config,
-                        fitting_fn, stacked, noise_map, &obs);
+    result.low_n_fallback_count =
+        gpu.execute_phase_b(cube, slot_cache_refs, n_frames_written,
+                            frame_stats, config_.weight_config,
+                            fitting_fn, stacked, noise_map, &obs);
     auto phase_b_end = std::chrono::steady_clock::now();
     long phase_b_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
                           phase_b_end - phase_b_start ).count();

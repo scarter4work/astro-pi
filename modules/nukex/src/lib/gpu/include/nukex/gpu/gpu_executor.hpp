@@ -48,7 +48,11 @@ public:
     using FittingFn = std::function<void(SubcubeVoxel&, const float*, const float*,
                                           int, int, const FrameStats*)>;
 
-    void execute_phase_b(
+    /// Returns the number of voxel-channels that fell back to the median
+    /// of raw per-frame samples because the Phase B distribution fit did
+    /// not converge (sparse coverage, <3 contributing frames) — see
+    /// ShadowBuffers::low_n_fallback_count. 0 when every fit converged.
+    std::int64_t execute_phase_b(
         Cube& cube,
         const std::vector<ChannelCacheRef>& slot_refs,
         int n_frames_written,

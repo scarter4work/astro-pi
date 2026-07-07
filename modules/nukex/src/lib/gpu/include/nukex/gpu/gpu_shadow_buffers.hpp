@@ -56,10 +56,30 @@ struct ShadowBuffers {
     std::vector<float>    dist_uncertainty;   // [n_ch * batch]
     std::vector<float>    dist_confidence;    // [n_ch * batch]
 
+    /// Whether the Phase B model-selection fit converged for this
+    /// voxel-channel (1 = converged, 0 = did not — e.g. KDEFitter's
+    /// hard n<3 floor for sparse-coverage voxels). Populated by
+    /// extract_distributions() from ZDistribution::shape (UNKNOWN means
+    /// no fitter converged; every converged fitter sets a real shape).
+    /// Defaults to 1 (converged) on allocate() so buffers built directly
+    /// by tests/other callers that never populate this field keep the
+    /// pre-existing "trust dist_true_signal" behaviour.
+    /// select_pixels() falls back to the median of the raw per-frame
+    /// samples when this is 0, instead of silently emitting the
+    /// zeroed/default true_signal_estimate.
+    std::vector<uint8_t>  dist_converged;     // [n_ch * batch]
+
     // ── Selection output (device → host) ──────────────────────────────
     std::vector<float>    output_value;       // [n_ch * batch]
     std::vector<float>    noise_sigma;        // [n_ch * batch]
     std::vector<float>    snr_out;            // [n_ch * batch]
+
+    /// Running count of voxel-channels that hit the !converged median
+    /// fallback in select_pixels(), accumulated across every batch
+    /// processed against this buffer since the last allocate(). Reset
+    /// to 0 by allocate(); observability hook so Phase B can report
+    /// sparse-coverage fallback usage instead of it being silent.
+    std::int64_t           low_n_fallback_count = 0;
 
     /// Allocate all buffers for a given batch size.
     void allocate(int batch_size, int n_channels, int max_frames);
