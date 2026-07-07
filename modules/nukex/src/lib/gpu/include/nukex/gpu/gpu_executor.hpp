@@ -82,17 +82,29 @@ public:
 
     /// Execute kernels 1+2 on a shadow buffer batch.
     /// Public for GPU vs CPU agreement testing.
+    ///
+    /// n_frames is the per-channel dense stride N (= max real-sample count
+    /// across channels). n_frames_total is the GLOBAL frame count (=
+    /// frame_stats.size()): the per-frame constant arrays (frame_weight,
+    /// psf_weight, cloud_score, frame_exposure, …) are SHARED across channels
+    /// and indexed by the GLOBAL frame index gf = channel_frame_remap[ch*N+fi],
+    /// which for a heterogeneous-geometry batch can exceed N. They must be
+    /// sized by the global count, not N, or the kernel reads out of bounds.
     void execute_batch_gpu(ShadowBuffers& buf, const FrameStats* fs,
                            const WeightConfig& wc, int batch_size,
-                           int n_channels, int n_frames);
+                           int n_channels, int n_frames, int n_frames_total);
 
     void execute_batch_cpu(ShadowBuffers& buf, const FrameStats* fs,
                            const WeightConfig& wc, int batch_size,
                            int n_channels, int n_frames);
 
     /// Execute kernel 3 (select_pixels) on GPU for a batch.
+    /// See execute_batch_gpu for the n_frames (stride N) vs n_frames_total
+    /// (global count, for sizing the gf-indexed per-frame noise arrays)
+    /// distinction.
     void execute_select_gpu(ShadowBuffers& buf, const FrameStats* fs,
-                            int batch_size, int n_channels, int n_frames);
+                            int batch_size, int n_channels, int n_frames,
+                            int n_frames_total);
 
     /// Execute kernel 4 (spatial_context) on GPU.
     void execute_spatial_gpu(const Image& stacked,

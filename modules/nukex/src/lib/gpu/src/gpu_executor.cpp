@@ -57,7 +57,8 @@ static cl_mem create_buf(cl_context ctx, cl_mem_flags flags, size_t size, void* 
 
 void GPUExecutor::execute_batch_gpu(
     ShadowBuffers& buf, const FrameStats* fs,
-    const WeightConfig& wc, int batch_size, int n_channels, int n_frames) {
+    const WeightConfig& wc, int batch_size, int n_channels, int n_frames,
+    int n_frames_total) {
 
     if (!kernels_.is_compiled()) {
         execute_batch_cpu(buf, fs, wc, batch_size, n_channels, n_frames);
@@ -67,6 +68,11 @@ void GPUExecutor::execute_batch_gpu(
     cl_context ctx = context_.context();
     cl_command_queue queue = context_.queue();
     int B = batch_size, C = n_channels, N = n_frames;
+    // GLOBAL frame count: the per-frame constant arrays below are shared
+    // across channels and random-accessed by the global frame index gf
+    // (= channel_frame_remap[ch*N+fi]), which for a heterogeneous-geometry
+    // batch can exceed N. Size them by NG, never by N.
+    int NG = n_frames_total;
 
     // ── Create GPU buffers ──
     // Input buffers
@@ -86,27 +92,22 @@ void GPUExecutor::execute_batch_gpu(
     cl_mem d_channel_remap = create_buf(ctx, CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR,
         C * N * sizeof(int32_t), buf.channel_frame_remap.data());
 
-    // Frame-level constants
-    std::vector<float> frame_weight(N), psf_weight(N), cloud_score(N), frame_exposure(N);
-    std::vector<float> frame_read_noise(N), frame_gain(N);
-    std::vector<uint8_t> frame_has_noise(N);
-    for (int i = 0; i < N; i++) {
+    // Frame-level constants — GLOBAL-length (NG), indexed by gf, not fi.
+    std::vector<float> frame_weight(NG), psf_weight(NG), cloud_score(NG), frame_exposure(NG);
+    for (int i = 0; i < NG; i++) {
         frame_weight[i] = fs[i].frame_weight;
         psf_weight[i] = fs[i].psf_weight;
         cloud_score[i] = fs[i].cloud_score;
         frame_exposure[i] = fs[i].exposure;
-        frame_read_noise[i] = fs[i].read_noise;
-        frame_gain[i] = fs[i].gain;
-        frame_has_noise[i] = fs[i].has_noise_keywords ? 1 : 0;
     }
     cl_mem d_frame_weight = create_buf(ctx, CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR,
-        N * sizeof(float), frame_weight.data());
+        NG * sizeof(float), frame_weight.data());
     cl_mem d_psf_weight = create_buf(ctx, CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR,
-        N * sizeof(float), psf_weight.data());
+        NG * sizeof(float), psf_weight.data());
     cl_mem d_cloud_score = create_buf(ctx, CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR,
-        N * sizeof(float), cloud_score.data());
+        NG * sizeof(float), cloud_score.data());
     cl_mem d_frame_exposure = create_buf(ctx, CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR,
-        N * sizeof(float), frame_exposure.data());
+        NG * sizeof(float), frame_exposure.data());
 
     // Output/intermediate buffers
     cl_mem d_pixel_weights = create_buf(ctx, CL_MEM_READ_WRITE,
@@ -225,7 +226,7 @@ void GPUExecutor::execute_batch_gpu(
 
 void GPUExecutor::execute_select_gpu(
     ShadowBuffers& buf, const FrameStats* fs,
-    int batch_size, int n_channels, int n_frames) {
+    int batch_size, int n_channels, int n_frames, int n_frames_total) {
 
     if (!kernels_.is_compiled()) {
         GPUCPUFallback::select_pixels(buf, fs, batch_size, n_channels, n_frames);
@@ -235,11 +236,14 @@ void GPUExecutor::execute_select_gpu(
     cl_context ctx = context_.context();
     cl_command_queue queue = context_.queue();
     int B = batch_size, C = n_channels, N = n_frames;
+    // GLOBAL frame count — the noise-model arrays are shared across channels
+    // and random-accessed by the global frame index gf (see execute_batch_gpu).
+    int NG = n_frames_total;
 
-    // Prepare frame-level noise model arrays
-    std::vector<float> frame_read_noise(N), frame_gain(N);
-    std::vector<uint8_t> frame_has_noise(N);
-    for (int i = 0; i < N; i++) {
+    // Prepare frame-level noise model arrays — GLOBAL-length (NG), gf-indexed.
+    std::vector<float> frame_read_noise(NG), frame_gain(NG);
+    std::vector<uint8_t> frame_has_noise(NG);
+    for (int i = 0; i < NG; i++) {
         frame_read_noise[i] = fs[i].read_noise;
         frame_gain[i] = fs[i].gain;
         frame_has_noise[i] = fs[i].has_noise_keywords ? 1 : 0;
@@ -261,11 +265,11 @@ void GPUExecutor::execute_select_gpu(
     cl_mem d_channel_remap = create_buf(ctx, CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR,
         C * N * sizeof(int32_t), buf.channel_frame_remap.data());
     cl_mem d_read_noise = create_buf(ctx, CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR,
-        N * sizeof(float), frame_read_noise.data());
+        NG * sizeof(float), frame_read_noise.data());
     cl_mem d_gain = create_buf(ctx, CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR,
-        N * sizeof(float), frame_gain.data());
+        NG * sizeof(float), frame_gain.data());
     cl_mem d_has_noise = create_buf(ctx, CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR,
-        N * sizeof(uint8_t), frame_has_noise.data());
+        NG * sizeof(uint8_t), frame_has_noise.data());
     cl_mem d_welford_M2 = create_buf(ctx, CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR,
         C * B * sizeof(float), buf.welford_M2.data());
     cl_mem d_welford_n = create_buf(ctx, CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR,
@@ -385,13 +389,14 @@ void GPUExecutor::execute_spatial_gpu(
 
 void GPUExecutor::execute_batch_gpu(
     ShadowBuffers& buf, const FrameStats* fs,
-    const WeightConfig& wc, int batch_size, int n_channels, int n_frames) {
+    const WeightConfig& wc, int batch_size, int n_channels, int n_frames,
+    int /*n_frames_total*/) {
     execute_batch_cpu(buf, fs, wc, batch_size, n_channels, n_frames);
 }
 
 void GPUExecutor::execute_select_gpu(
     ShadowBuffers& buf, const FrameStats* fs,
-    int batch_size, int n_channels, int n_frames) {
+    int batch_size, int n_channels, int n_frames, int /*n_frames_total*/) {
     GPUCPUFallback::select_pixels(buf, fs, batch_size, n_channels, n_frames);
 }
 
@@ -468,7 +473,8 @@ std::int64_t GPUExecutor::execute_phase_b(
         obs.advance(0, "  kernel 2: robust statistics" + backend_tag);
         if (use_gpu) {
             execute_batch_gpu(buf, frame_stats.data(), weight_config,
-                              count, n_channels, N);
+                              count, n_channels, N,
+                              static_cast<int>(frame_stats.size()));
         } else {
             execute_batch_cpu(buf, frame_stats.data(), weight_config,
                               count, n_channels, N);
@@ -527,7 +533,8 @@ std::int64_t GPUExecutor::execute_phase_b(
         // Step 7: Pixel selection (GPU or CPU)
         obs.advance(0, "  kernel 3: pixel selection" + backend_tag);
         if (use_gpu) {
-            execute_select_gpu(buf, frame_stats.data(), count, n_channels, N);
+            execute_select_gpu(buf, frame_stats.data(), count, n_channels, N,
+                               static_cast<int>(frame_stats.size()));
         } else {
             GPUCPUFallback::select_pixels(buf, frame_stats.data(),
                                            count, n_channels, N);
