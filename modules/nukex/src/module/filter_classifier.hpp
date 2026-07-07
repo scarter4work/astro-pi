@@ -17,7 +17,10 @@ enum class FilterClass {
 };
 
 FilterClass classify_filter(const FITSMetadata& meta);
-const char* filter_class_name(FilterClass c);
+// NOTE (Task 14): filter_class_name(FilterClass) was removed from here --
+// see the comment above classify_filter's definition in filter_classifier.cpp
+// for why (it collided at link time with nukex::filter_class_name in
+// nukex/core/filter.hpp, both being "nukex::filter_class_name(nukex::FilterClass)").
 
 } // namespace nukex
 

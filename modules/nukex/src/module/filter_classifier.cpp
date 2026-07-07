@@ -36,14 +36,19 @@ FilterClass classify_filter(const FITSMetadata& meta) {
     return FilterClass::LRGB_MONO;
 }
 
-const char* filter_class_name(FilterClass c) {
-    switch (c) {
-        case FilterClass::LRGB_MONO:  return "LRGB-mono";
-        case FilterClass::LRGB_COLOR: return "LRGB-color";
-        case FilterClass::BAYER_RGB:  return "Bayer-RGB";
-        case FilterClass::NARROWBAND: return "Narrowband";
-    }
-    return "unknown";
-}
+// NOTE (Task 14): the old filter_class_name(FilterClass) free function that
+// used to live here was removed. It shared its exact mangled name with
+// nukex::filter_class_name(nukex::FilterClass) in nukex/core/filter.hpp
+// (the NEW 6-value FilterClass) -- both this module's old FilterClass and
+// the lib's new FilterClass are named "nukex::FilterClass", so the two
+// same-named-and-signatured functions collided at LINK time (an ODR
+// violation invisible to the compiler, since each TU only ever sees one
+// definition). NukeX-pxm.so was silently binding every filter_class_name
+// call -- including the ones added by Task 14 that pass the NEW enum --
+// to this OLD function body, printing wrong class names in the auto-select
+// rationale log. This function was unused by anything except itself (grep
+// confirmed no external caller), so removing it is the minimal correct
+// fix. Do not re-add it without renaming, since filter_classifier.{hpp,cpp}
+// itself is not going away until Task 19.
 
 } // namespace nukex

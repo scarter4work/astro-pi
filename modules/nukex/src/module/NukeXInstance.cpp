@@ -8,7 +8,8 @@
 
 #include "NukeXProgress.h"
 #include "RatingDialog.h"
-#include "filter_classifier.hpp"
+#include "nukex/io/filter_classifier.hpp"
+#include "nukex/core/frame_metadata.hpp"
 #include <pcl/ImageWindow.h>
 #include <pcl/View.h>
 #include <pcl/FITSHeaderKeyword.h>
@@ -77,30 +78,27 @@ pcl::FITSKeywordArray base_output_keywords(
 
 // Phase 8 rating-popup filter-class encoding.
 //
-// The plan's rating-axis encoding (per RatingDialog) is:
-//   0 = LRGB_mono, 1 = Bayer_RGB, 2 = Narrowband_HaO3, 3 = Narrowband_S2O3
-//
-// Our FilterClass enum is:
-//   LRGB_MONO=0, LRGB_COLOR=1, BAYER_RGB=2, NARROWBAND=3
-//
-// The ONLY semantic contract at Task 17 is "filter_class == 1 shows color
-// axis; everything else hides it" — i.e. only a Bayer mosaic run offers
-// meaningful color-balance feedback. LRGB_COLOR (separate RGB channel
-// stacks) collapses to the same no-color-slider UI as mono for this
-// dialog: users rate brightness, saturation, star bloat, overall.
-// Narrowband Ha-O3 vs S2-O3 distinction is not derivable from FITS
-// metadata today and is deferred to Phase 8.5 with explicit filter
-// assignment.
+// `runs.filter_class` (DB schema v2) and the RatingDialog `int` are now the
+// SAME identity-code space as nukex::FilterClass (nukex/core/filter.hpp):
+//   UNKNOWN=0, BROADBAND_L=1, BROADBAND_RGB=2, BROADBAND_OSC=3,
+//   NARROWBAND_SINGLE=4, DUAL_NB_OSC=5
+// This is an identity map, not a UI color-axis collapse — see
+// RatingDialog.h for the color-axis show/hide rule that now keys off
+// BROADBAND_RGB/BROADBAND_OSC instead of a magic "== 1".
 int filter_class_to_rating_int( nukex::FilterClass fc )
 {
-   switch ( fc )
-   {
-   case nukex::FilterClass::LRGB_MONO:  return 0;
-   case nukex::FilterClass::LRGB_COLOR: return 0; // treat as mono for color-axis purposes
-   case nukex::FilterClass::BAYER_RGB:  return 1;
-   case nukex::FilterClass::NARROWBAND: return 2; // Ha-O3 default; S2-O3 distinction deferred
-   }
-   return 0;
+   return static_cast<int>( fc );
+}
+
+// Minimal FITSMetadata -> FrameMetadata bridge for FilterClassifier.
+// classify() only reads .filter and .bayer_pattern (see
+// nukex/io/filter_classifier.cpp), so that's all this populates.
+nukex::FrameMetadata to_frame_metadata( const nukex::FITSMetadata& meta )
+{
+   nukex::FrameMetadata fm;
+   fm.filter        = meta.filter;
+   fm.bayer_pattern = meta.bayer_pat;
+   return fm;
 }
 
 // Serialize the trainable params on `op` to a compact JSON object so Task
@@ -704,7 +702,8 @@ bool NukeXInstance::ExecuteGlobal()
          lastRun.stats               = stats;
          lastRun.stretch_name        = primary_op->name;
          lastRun.filter_class        =
-             filter_class_to_rating_int( nukex::classify_filter( meta ) );
+             filter_class_to_rating_int(
+                nukex::FilterClassifier{}.classify( to_frame_metadata( meta ) ).cls );
          lastRun.target_class        = 0; // TODO(Phase 8.5): FITS OBJECT -> class
          lastRun.params_json_applied = op_trainable_params_json( *primary_op );
          // Fresh 128-bit run id. std::rand is not seeded anywhere in NukeX
