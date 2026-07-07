@@ -16,10 +16,10 @@ __kernel void classify_weights(
     __global const ushort*  channel_n_frames,   // [C] — per-channel real-sample count
     __global const int*     channel_frame_remap,// [C * N] — (ch,pos)→global frame index
     // Frame-level constants (read-only, shared across all work-items)
-    __global const float*   frame_weight,       // [N]
-    __global const float*   psf_weight,         // [N]
-    __global const float*   cloud_score,        // [N]
-    __global const float*   frame_exposure,     // [N]
+    __global const float*   frame_weight,       // [NG] global frame count, indexed by gf
+    __global const float*   psf_weight,         // [NG] global frame count, indexed by gf
+    __global const float*   cloud_score,        // [NG] global frame count, indexed by gf
+    __global const float*   frame_exposure,     // [NG] global frame count, indexed by gf
     // WeightConfig scalars
     float sigma_threshold,
     float sigma_scale,
