@@ -102,14 +102,34 @@ KNOWN_LINES_NM = {
     486.1: "Hbeta",
     500.7: "OIII",
     656.3: "Halpha",
+    658.3: "NII",
     672.4: "SII",
 }
 LINE_NAME_TOLERANCE_NM = 0.3
 
+# NII (658.3nm) sits only 1.7nm from Halpha (656.3nm), well inside two
+# filters' *combined* default tolerance windows. In particular the real
+# research data has "Optolong-LeXtreme-F2" -- a Halpha+OIII dual-narrowband
+# filter with its Halpha pass deliberately pre-shifted to 658.0nm for f/2
+# optics (see its `notes`) -- which is 0.3nm from the NII line under the
+# default tolerance and would otherwise be mislabelled "NII". Only the
+# genuine Astrodon NII filter (658.4nm, 0.1nm away) should match, so NII
+# gets its own tighter override instead of loosening the shared default.
+LINE_NAME_TOLERANCE_OVERRIDES_NM = {
+    658.3: 0.15,
+}
+
+# Confidence strings the C++ loader's parse_confidence() explicitly
+# recognises (src/lib/calibration/src/qe_database.cpp). Anything else
+# silently becomes QEConfidence::UNKNOWN in the loader, so a typo here
+# must be a hard error at import time, not a silent downgrade.
+ALLOWED_CONFIDENCE_VALUES = frozenset(("high", "medium", "low"))
+
 
 def _line_name_for_wavelength(wavelength_nm):
     for known_wl, name in KNOWN_LINES_NM.items():
-        if abs(wavelength_nm - known_wl) <= LINE_NAME_TOLERANCE_NM:
+        tolerance = LINE_NAME_TOLERANCE_OVERRIDES_NM.get(known_wl, LINE_NAME_TOLERANCE_NM)
+        if abs(wavelength_nm - known_wl) <= tolerance:
             return name
     return f"{wavelength_nm:g}nm"
 
@@ -119,12 +139,24 @@ def normalise_qe_block(qe, camera_name):
     the shipping form using only the photosite tokens the C++ loader's
     parse_photosite_key() explicitly recognises (R, G, B, mono_pk).
 
-    Raises ValueError on unrecognised photosite keys, ambiguous mono
-    aliasing (both "mono" and "mono_pk" present for one wavelength), or
-    QE values outside the physically valid [0, 1] range.
+    Raises ValueError on unrecognised photosite keys, non-integer
+    wavelength keys, a merged "G" coexisting with separate "Gr"/"Gb"
+    readings for the same wavelength, ambiguous mono aliasing (both
+    "mono" and "mono_pk" present for one wavelength), or QE values
+    outside the physically valid [0, 1] range.
     """
     out = {}
     for wl, sites in qe.items():
+        # The C++ loader does `int wl = std::stoi(wlit.key())` with no
+        # validation (qe_database.cpp): a key like "656.5" silently
+        # truncates to 656 (data corruption) and a key like "Ha" throws
+        # uncaught. Require a plain integer string here instead.
+        if not wl.isdigit():
+            raise ValueError(
+                f"Camera '{camera_name}' has non-integer wavelength key "
+                f"{wl!r}; expected a plain integer string (e.g. '656')"
+            )
+
         unknown = set(sites) - KNOWN_PHOTOSITE_KEYS
         if unknown:
             raise ValueError(
@@ -140,6 +172,13 @@ def normalise_qe_block(qe, camera_name):
                 s[key] = sites[key]
 
         if "G" in sites:
+            split_present = [k for k in GREEN_SPLIT_KEYS if k in sites]
+            if split_present:
+                raise ValueError(
+                    f"Camera '{camera_name}' wavelength {wl!r} has both a "
+                    f"merged 'G' and separate {split_present} readings; "
+                    f"ambiguous which is authoritative"
+                )
             s["G"] = sites["G"]
         else:
             gr = sites.get("Gr")
@@ -214,6 +253,11 @@ def validate_camera(name, cam):
     missing = [f for f in REQUIRED_CAMERA_FIELDS if f not in cam]
     if missing:
         raise ValueError(f"Camera '{name}' missing required fields: {missing}")
+    if cam["confidence"] not in ALLOWED_CONFIDENCE_VALUES:
+        raise ValueError(
+            f"Camera '{name}' has invalid confidence {cam['confidence']!r}; "
+            f"expected one of {sorted(ALLOWED_CONFIDENCE_VALUES)}"
+        )
     if "qe" not in cam or not cam["qe"]:
         raise ValueError(
             f"Camera '{name}' missing 'qe' block (after inheritance resolution)"
