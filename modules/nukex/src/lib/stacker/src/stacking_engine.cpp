@@ -325,7 +325,17 @@ StackingEngine::ExecuteResult StackingEngine::execute(
 
         // Mid-batch unknown-on-Bayer is rejected per-frame (not the whole
         // batch — only the first frame's UNKNOWN-on-Bayer is fatal).
-        bool frame_is_bayer = parse_bayer_pattern(meta.bayer_pattern) != BayerPattern::NONE;
+        //
+        // frame_bayer is THIS frame's own Bayer pattern, independent of the
+        // outer `bayer` (which reflects only light_paths[0] and is legitimately
+        // scoped to the pre-loop unknown-on-Bayer check / initial ChannelConfig
+        // above). It must drive this frame's debayer step below — reusing the
+        // stale outer `bayer` here previously meant a mixed batch (e.g. a mono
+        // frame first) latched the whole batch to the first frame's pattern,
+        // silently skipping (or wrongly applying) debayering for every other
+        // frame and corrupting downstream DUAL_NB_OSC/BROADBAND_OSC routing.
+        BayerPattern frame_bayer = parse_bayer_pattern(meta.bayer_pattern);
+        bool frame_is_bayer = frame_bayer != BayerPattern::NONE;
         if (frame_filter.cls == FilterClass::UNKNOWN && frame_is_bayer) {
             obs.advance(1, "  skipped — unknown FILTER='" + frame_filter.name +
                            "' on Bayer frame (add to qe_overrides.json to recover)");
@@ -354,10 +364,11 @@ StackingEngine::ExecuteResult StackingEngine::execute(
         ChannelConfig per_frame_cfg = ChannelConfig::from_filter(frame_filter);
         cube.channel_config = ChannelConfig::merge(cube.channel_config, per_frame_cfg);
 
-        // 2. Debayer
-        if (bayer != BayerPattern::NONE) {
+        // 2. Debayer — use THIS frame's own pattern (frame_bayer), not the
+        // outer first-frame-only `bayer`. See frame_bayer comment above.
+        if (frame_bayer != BayerPattern::NONE) {
             obs.advance(0, "  debayering (" + meta.bayer_pattern + ")");
-            image = DebayerEngine::debayer(image, bayer);
+            image = DebayerEngine::debayer(image, frame_bayer);
         }
 
         // 3. Flat correct
