@@ -15,9 +15,9 @@ __kernel void select_pixels(
     __global const ushort*  channel_n_frames,   // [C] — per-channel real-sample count
     __global const int*     channel_frame_remap,// [C * N] — (ch,pos)→global frame index
     // Frame-level noise model
-    __global const float*   frame_read_noise,   // [N]
-    __global const float*   frame_gain,         // [N]
-    __global const uchar*   frame_has_noise_kw, // [N]
+    __global const float*   frame_read_noise,   // [NG] global frame count, indexed by gf
+    __global const float*   frame_gain,         // [NG] global frame count, indexed by gf
+    __global const uchar*   frame_has_noise_kw, // [NG] global frame count, indexed by gf
     // Welford variance for fallback
     __global const float*   welford_M2,         // [C * B]
     __global const uint*    welford_n,          // [C * B]
