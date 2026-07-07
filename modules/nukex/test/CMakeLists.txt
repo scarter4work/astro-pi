@@ -96,6 +96,7 @@ nukex_add_test(test_layer_loader unit/stretch/test_layer_loader.cpp nukex4_stret
 # Learning library tests (Phase 8 stats-driven tuning)
 nukex_add_test(test_ridge_regression unit/learning/test_ridge_regression.cpp nukex4_learning)
 nukex_add_test(test_rating_db unit/learning/test_rating_db.cpp nukex4_learning sqlite3_vendored)
+nukex_add_test(test_rating_db_migration unit/learning/test_rating_db_migration.cpp nukex4_learning sqlite3_vendored)
 nukex_add_test(test_train_model unit/learning/test_train_model.cpp nukex4_learning sqlite3_vendored)
 nukex_add_test(test_atomic_write unit/learning/test_atomic_write.cpp nukex4_learning)
 
