@@ -19,6 +19,21 @@
 // Why the captured log file: Console.writeln does not reach shell stdout;
 // we wrap everything in Console.beginLog()/endLog() and persist.
 // See memory: reference_pjsr_automation_quirks.md.
+//
+// schema_version 2 (v5 color-science overhaul) adds two per-case flags,
+// both consumed only in the golden-check block of runCase():
+//   preserve_bit_identical: true — the regression floor. Behaves exactly
+//     like the pre-v5 default (compare to golden if one exists, fail loud
+//     on any mismatch; degrade gracefully — flagged, not failed — if no
+//     golden exists yet). Never auto-writes a golden on its own; that
+//     would silently move the floor instead of requiring an explicit,
+//     reviewed `regen=1` run. Used by sweep_ghs/sweep_mtf/sweep_arcsinh,
+//     which run against the mono-L NGC7635 corpus so color/composer code
+//     is never exercised and the curve math is provably unchanged.
+//   rebaseline_v5: true — brand-new v5 baseline. Same compare-and-fail-
+//     loud behaviour once a golden exists, but auto-writes the golden on
+//     the first run (no golden present yet) even without a global
+//     regen=1, since these cases have no prior baseline to diff against.
 
 function parseArgs() {
    var out = {
@@ -338,13 +353,22 @@ function runCase(tc, manifest, out_root, regen, golden_dir) {
          current_sweep[sr.label] = { stretched: sr.pixel_hashes.stretched.fnv1a_hex };
    }
 
+   // rebaseline_v5 cases auto-bootstrap their own golden the first time
+   // they run, even without a global regen=1 — they're brand-new v5 cases
+   // with no prior baseline to compare against. preserve_bit_identical
+   // cases deliberately do NOT get this treatment: that would let a
+   // regression silently become the new floor instead of requiring an
+   // explicit, reviewed regen=1. See schema_version 2 note at file top.
+   var golden_exists = File.exists(golden_path);
+   var should_write_golden = regen || (tc.rebaseline_v5 === true && !golden_exists);
+
    var golden_check = { checked: false };
-   if (regen) {
+   if (should_write_golden) {
       ensureDir(golden_dir);
       File.writeTextFile(golden_path,
          JSON.stringify({ primary: current_primary, sweep: current_sweep }) + "\n");
       golden_check = { checked: false, wrote: golden_path };
-   } else if (File.exists(golden_path)) {
+   } else if (golden_exists) {
       var g = readJson(golden_path);
       var match = true;
       var diffs = {};
