@@ -80,6 +80,11 @@ void GPUExecutor::execute_batch_gpu(
         C * N * B * sizeof(float), buf.pixel_values.data());
     cl_mem d_n_frames = create_buf(ctx, CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR,
         B * sizeof(uint16_t), buf.n_frames.data());
+    // Per-channel real-sample accounting (heterogeneous-geometry fix).
+    cl_mem d_channel_n_frames = create_buf(ctx, CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR,
+        C * sizeof(uint16_t), buf.channel_n_frames.data());
+    cl_mem d_channel_remap = create_buf(ctx, CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR,
+        C * N * sizeof(int32_t), buf.channel_frame_remap.data());
 
     // Frame-level constants
     std::vector<float> frame_weight(N), psf_weight(N), cloud_score(N), frame_exposure(N);
@@ -126,6 +131,8 @@ void GPUExecutor::execute_batch_gpu(
         clSetKernelArg(k, arg++, sizeof(cl_mem), &d_welford_n);
         clSetKernelArg(k, arg++, sizeof(cl_mem), &d_pixel_values);
         clSetKernelArg(k, arg++, sizeof(cl_mem), &d_n_frames);
+        clSetKernelArg(k, arg++, sizeof(cl_mem), &d_channel_n_frames);
+        clSetKernelArg(k, arg++, sizeof(cl_mem), &d_channel_remap);
         clSetKernelArg(k, arg++, sizeof(cl_mem), &d_frame_weight);
         clSetKernelArg(k, arg++, sizeof(cl_mem), &d_psf_weight);
         clSetKernelArg(k, arg++, sizeof(cl_mem), &d_cloud_score);
@@ -154,6 +161,7 @@ void GPUExecutor::execute_batch_gpu(
         int arg = 0;
         clSetKernelArg(k, arg++, sizeof(cl_mem), &d_pixel_values);
         clSetKernelArg(k, arg++, sizeof(cl_mem), &d_n_frames);
+        clSetKernelArg(k, arg++, sizeof(cl_mem), &d_channel_n_frames);
         clSetKernelArg(k, arg++, sizeof(int), &C);
         clSetKernelArg(k, arg++, sizeof(int), &N);
         clSetKernelArg(k, arg++, sizeof(int), &B);
@@ -195,6 +203,8 @@ void GPUExecutor::execute_batch_gpu(
     clReleaseMemObject(d_welford_n);
     clReleaseMemObject(d_pixel_values);
     clReleaseMemObject(d_n_frames);
+    clReleaseMemObject(d_channel_n_frames);
+    clReleaseMemObject(d_channel_remap);
     clReleaseMemObject(d_frame_weight);
     clReleaseMemObject(d_psf_weight);
     clReleaseMemObject(d_cloud_score);
@@ -246,6 +256,10 @@ void GPUExecutor::execute_select_gpu(
         C * N * B * sizeof(float), buf.pixel_weights.data());
     cl_mem d_n_frames = create_buf(ctx, CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR,
         B * sizeof(uint16_t), buf.n_frames.data());
+    cl_mem d_channel_n_frames = create_buf(ctx, CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR,
+        C * sizeof(uint16_t), buf.channel_n_frames.data());
+    cl_mem d_channel_remap = create_buf(ctx, CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR,
+        C * N * sizeof(int32_t), buf.channel_frame_remap.data());
     cl_mem d_read_noise = create_buf(ctx, CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR,
         N * sizeof(float), frame_read_noise.data());
     cl_mem d_gain = create_buf(ctx, CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR,
@@ -269,6 +283,8 @@ void GPUExecutor::execute_select_gpu(
     clSetKernelArg(k, arg++, sizeof(cl_mem), &d_pixel_values);
     clSetKernelArg(k, arg++, sizeof(cl_mem), &d_pixel_weights);
     clSetKernelArg(k, arg++, sizeof(cl_mem), &d_n_frames);
+    clSetKernelArg(k, arg++, sizeof(cl_mem), &d_channel_n_frames);
+    clSetKernelArg(k, arg++, sizeof(cl_mem), &d_channel_remap);
     clSetKernelArg(k, arg++, sizeof(cl_mem), &d_read_noise);
     clSetKernelArg(k, arg++, sizeof(cl_mem), &d_gain);
     clSetKernelArg(k, arg++, sizeof(cl_mem), &d_has_noise);
@@ -304,6 +320,8 @@ void GPUExecutor::execute_select_gpu(
     clReleaseMemObject(d_pixel_values);
     clReleaseMemObject(d_pixel_weights);
     clReleaseMemObject(d_n_frames);
+    clReleaseMemObject(d_channel_n_frames);
+    clReleaseMemObject(d_channel_remap);
     clReleaseMemObject(d_read_noise);
     clReleaseMemObject(d_gain);
     clReleaseMemObject(d_has_noise);
@@ -405,7 +423,15 @@ std::int64_t GPUExecutor::execute_phase_b(
     ProgressObserver& obs = progress ? *progress : null_progress_observer();
 
     int total_voxels = cube.total_pixels();
-    int n_channels = cube.at(0, 0).n_channels;
+    // Use the cube's channel_config as the authoritative slot count, NOT the
+    // per-voxel n_channels field. The latter is frozen at cube-construction
+    // time (from the first frame's geometry); a heterogeneous batch where
+    // ChannelConfig::merge() grows the slot table mid-Phase-A (e.g. a mono-L
+    // frame first, then a debayered OSC/dual-NB frame) leaves voxel.n_channels
+    // stale at the initial count. Reading it here would silently drop every
+    // slot the merge added — processing only the first frame's channels and
+    // emitting all-zero output for the rest.
+    int n_channels = cube.channel_config.n_channels;
     int n_frames = n_frames_written;
     int N = std::min(n_frames, static_cast<int>(GPU_MAX_FRAMES));
 
@@ -489,7 +515,8 @@ std::int64_t GPUExecutor::execute_phase_b(
             }
 
             fitting_fn(voxel, vals.data(), wts.data(), N,
-                        n_channels, frame_stats.data());
+                        n_channels, buf.channel_n_frames.data(),
+                        frame_stats.data());
 
             hb.tick(omp_get_thread_num(), obs);
         }

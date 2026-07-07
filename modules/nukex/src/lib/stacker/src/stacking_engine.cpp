@@ -737,19 +737,34 @@ StackingEngine::ExecuteResult StackingEngine::execute(
 
     // Fitting callback — called per-voxel by the GPU executor after
     // kernels 1+2 complete. Runs the Ceres-based model selection cascade.
+    // values/weights are [ch * stride_N + fi]. Each channel may have fewer
+    // REAL samples than stride_N (heterogeneous geometry) — feed the fitter
+    // only that channel's real-sample count, not the padded stride, so a
+    // channel's zero-padding never enters the distribution fit.
     auto fitting_fn = [&fitter](SubcubeVoxel& voxel,
                                  const float* values, const float* weights,
-                                 int nf, int nc,
+                                 int stride_N, int nc,
+                                 const uint16_t* nf_per_ch,
                                  const FrameStats* /*fs*/) {
         for (int ch = 0; ch < nc; ch++) {
-            fitter.select(values + ch * nf, weights + ch * nf, nf, voxel, ch);
+            fitter.select(values + ch * stride_N, weights + ch * stride_N,
+                          static_cast<int>(nf_per_ch[ch]), voxel, ch);
         }
     };
 
-    // All caches are written in lockstep (one frame per cache per iteration),
-    // so any cache's n_frames_written() gives the correct count for Phase B.
-    int n_frames_written = caches.empty() ? 0
-                         : caches.begin()->second.n_frames_written();
+    // Phase B's shadow-buffer stride N must be large enough to hold the
+    // channel with the MOST real samples. For a heterogeneous batch the
+    // caches are NOT written in lockstep — each cache only receives the
+    // frames matching its own geometry — so the old `caches.begin()`
+    // single-cache selection under-counted (it picked one arbitrary cache).
+    // Use the max real-sample count (written_frames().size(), NOT
+    // n_frames_written() which counts interior gaps) across all caches.
+    int n_frames_written = 0;
+    for (auto& [sig, c] : caches) {
+        (void)sig;
+        n_frames_written = std::max<int>(
+            n_frames_written, static_cast<int>(c.written_frames().size()));
+    }
 
     auto phase_b_start = std::chrono::steady_clock::now();
     result.low_n_fallback_count =

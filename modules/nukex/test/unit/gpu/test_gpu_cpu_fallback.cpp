@@ -282,6 +282,97 @@ TEST_CASE("CPU Fallback: select_pixels trusts dist_true_signal when "
 }
 
 // ══════════════════════════════════════════════════════════
+// Per-channel frame accounting (heterogeneous-geometry fix)
+// ══════════════════════════════════════════════════════════
+//
+// Models the mixed mono-L + Bayer batch at the kernel level: two channels,
+// each with a SINGLE real sample, but the two samples come from DIFFERENT
+// global frames. The per-voxel union count (n_frames[vi]) is 2. The old
+// per-voxel kernels looped fi<2 for every channel and indexed
+// frame_stats[fi] directly, which (a) walked channel 0's loop into channel
+// 1's pixel_values slot (aliasing) and (b) read the wrong frame_stats. The
+// per-channel accounting must loop only channel_n_frames[ch] and index
+// frame_stats[channel_frame_remap[ch*N+fi]].
+
+TEST_CASE("Per-channel accounting: classify_weights respects per-channel count "
+          "and frame remap (no cross-channel aliasing)", "[gpu][fallback]") {
+    int B = 1, C = 2, N = 2;
+    ShadowBuffers buf;
+    buf.allocate(B, C, N);
+
+    // Union of contributing frames across channels = 2 (liveness gate only).
+    buf.n_frames[0] = 2;
+
+    // Channel 0: 1 real sample, from GLOBAL frame 0.
+    buf.channel_n_frames[0] = 1;
+    buf.channel_frame_remap[0 * N + 0] = 0;
+    buf.pixel_values[0 * N * B + 0 * B + 0] = 0.6f;
+    buf.welford_mean[0 * B + 0] = 0.6f;
+    buf.welford_n[0 * B + 0] = 1;
+
+    // Channel 1: 1 real sample, from GLOBAL frame 1.
+    buf.channel_n_frames[1] = 1;
+    buf.channel_frame_remap[1 * N + 0] = 1;
+    buf.pixel_values[1 * N * B + 0 * B + 0] = 0.3f;
+    buf.welford_mean[1 * B + 0] = 0.3f;
+    buf.welford_n[1 * B + 0] = 1;
+
+    // Distinct per-frame stats so we can prove the remap picked the right one.
+    auto fs = make_frame_stats(N);
+    fs[0].exposure = 100.0f;
+    fs[1].exposure = 200.0f;
+    WeightConfig config;
+
+    GPUCPUFallback::classify_weights(buf, fs.data(), config, B, C, N);
+
+    // Summaries accumulate over channel 0's REAL frames only (global frame 0).
+    // Aliasing (looping fi<2) would have added fs[1].exposure too → 300.
+    REQUIRE(buf.total_exposure_out[0] == Catch::Approx(100.0f));
+
+    // Channel 1's weight must be written at its own dense position 0 (not
+    // overwritten by / aliased from channel 0's loop). weight_floor is the
+    // minimum, so a real positive weight confirms the slot was populated.
+    REQUIRE(buf.pixel_weights[1 * N * B + 0 * B + 0] >= config.weight_floor);
+    // Channel 0's padding position (fi=1) must remain untouched at 0 — the
+    // loop bound is 1, so it was never written.
+    REQUIRE(buf.pixel_weights[0 * N * B + 1 * B + 0] == 0.0f);
+}
+
+TEST_CASE("Per-channel accounting: select_pixels median fallback uses "
+          "per-channel count, not the per-voxel union", "[gpu][fallback]") {
+    int B = 1, C = 2, N = 2;
+    ShadowBuffers buf;
+    buf.allocate(B, C, N);
+
+    buf.n_frames[0] = 2;  // union
+
+    buf.channel_n_frames[0] = 1;
+    buf.channel_frame_remap[0 * N + 0] = 0;
+    buf.pixel_values[0 * N * B + 0 * B + 0] = 0.6f;   // ch0 real sample
+    buf.pixel_weights[0 * N * B + 0 * B + 0] = 1.0f;
+
+    buf.channel_n_frames[1] = 1;
+    buf.channel_frame_remap[1 * N + 0] = 1;
+    buf.pixel_values[1 * N * B + 0 * B + 0] = 0.3f;   // ch1 real sample
+    buf.pixel_weights[1 * N * B + 0 * B + 0] = 1.0f;
+
+    // Force the sparse-coverage median fallback for both channels.
+    buf.dist_true_signal[0 * B + 0] = 0.0f;
+    buf.dist_true_signal[1 * B + 0] = 0.0f;
+    buf.dist_converged[0 * B + 0] = 0;
+    buf.dist_converged[1 * B + 0] = 0;
+
+    auto fs = make_frame_stats(N);
+    GPUCPUFallback::select_pixels(buf, fs.data(), B, C, N);
+
+    // Each channel's median is over its OWN single real sample. Under the old
+    // per-voxel bound (n=2) channel 0 would median [0.6, aliased-0.3] = 0.45.
+    REQUIRE(buf.output_value[0 * B + 0] == Catch::Approx(0.6f));
+    REQUIRE(buf.output_value[1 * B + 0] == Catch::Approx(0.3f));
+    REQUIRE(buf.low_n_fallback_count == 2);
+}
+
+// ══════════════════════════════════════════════════════════
 // Kernel 4: spatial_context
 // ══════════════════════════════════════════════════════════
 

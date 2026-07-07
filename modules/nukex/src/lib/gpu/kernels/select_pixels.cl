@@ -11,7 +11,9 @@ __kernel void select_pixels(
     __global const uchar*   dist_converged,     // [C * B] — 1=converged, 0=fit failed (n<3)
     __global const float*   pixel_values,       // [C * N * B]
     __global const float*   pixel_weights,      // [C * N * B]
-    __global const ushort*  n_frames_in,        // [B]
+    __global const ushort*  n_frames_in,        // [B] — per-voxel union count (unused; kept for arg parity)
+    __global const ushort*  channel_n_frames,   // [C] — per-channel real-sample count
+    __global const int*     channel_frame_remap,// [C * N] — (ch,pos)→global frame index
     // Frame-level noise model
     __global const float*   frame_read_noise,   // [N]
     __global const float*   frame_gain,         // [N]
@@ -38,7 +40,8 @@ __kernel void select_pixels(
     int ch = gid / B;
     if (ch >= C || vi >= B) return;
 
-    int nf = (int)n_frames_in[vi];
+    // Per-channel real-sample count (was the shared per-voxel scalar).
+    int nf = (int)channel_n_frames[ch];
     float out_val = dist_true_signal[ch * B + vi];
     fallback_flag[ch * B + vi] = 0;
 
@@ -75,10 +78,13 @@ __kernel void select_pixels(
         float w = pixel_weights[ch * N * B + fi * B + vi];
         float value = pixel_values[ch * N * B + fi * B + vi];
 
+        // Global frame index of this channel's fi-th real sample.
+        int gf = channel_frame_remap[ch * N + fi];
+
         float sigma2;
-        if (frame_has_noise_kw[fi]) {
-            float g = max(frame_gain[fi], 1.0e-10f);
-            float rn = frame_read_noise[fi];
+        if (frame_has_noise_kw[gf]) {
+            float g = max(frame_gain[gf], 1.0e-10f);
+            float rn = frame_read_noise[gf];
             float value_adu = value * 65535.0f;
             float shot_var = value_adu / g;
             float read_var = (rn * rn) / (g * g);
