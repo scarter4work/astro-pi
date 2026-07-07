@@ -34,7 +34,7 @@
 
 #include <filesystem>
 
-#define WIRED_BY_TASK_20 0
+#define WIRED_BY_TASK_20 1
 
 using namespace nukex;
 namespace fs = std::filesystem;

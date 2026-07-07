@@ -70,17 +70,24 @@ nukex_add_test(test_stacking_engine unit/stacker/test_stacking_engine.cpp nukex4
 nukex_add_test(test_engine_config unit/stacker/test_engine_config.cpp nukex4_stacker nukex4_calibration nukex4_io nukex4_core)
 nukex_add_test(test_cache_sig_dispatch unit/stacker/test_cache_sig_dispatch.cpp nukex4_stacker nukex4_core nukex4_io)
 
-# Test utilities (PNG writer + test data loader)
+# Test utilities (PNG writer + test data loader + synthetic-FITS writer)
 add_library(test_util STATIC
     util/png_writer.cpp
     util/test_data_loader.cpp
+    util/mini_fits_writer.cpp
 )
 target_include_directories(test_util PUBLIC
     "${CMAKE_SOURCE_DIR}/test/util"
     "${CMAKE_SOURCE_DIR}/third_party/stb"
     "${CMAKE_SOURCE_DIR}/third_party/catch2"
 )
-target_link_libraries(test_util PUBLIC nukex4_io nukex4_stretch)
+target_link_libraries(test_util
+    PUBLIC nukex4_io nukex4_stretch nukex4_calibration
+    PRIVATE cfitsio
+)
+
+nukex_add_test(test_mini_fits_writer util/test_mini_fits_writer.cpp nukex4_io test_util)
+nukex_add_test(test_png_writer util/test_png_writer.cpp nukex4_io test_util)
 
 nukex_add_test(test_stretch_pipeline unit/stretch/test_stretch_pipeline.cpp nukex4_stretch)
 nukex_add_test(test_mtf unit/stretch/test_mtf.cpp nukex4_stretch test_util)
