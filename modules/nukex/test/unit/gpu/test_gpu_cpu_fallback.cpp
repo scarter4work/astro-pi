@@ -210,6 +210,77 @@ TEST_CASE("CPU Fallback: select_pixels produces valid output", "[gpu][fallback]"
     }
 }
 
+TEST_CASE("CPU Fallback: select_pixels falls back to median when the fit "
+          "did not converge (n=1)", "[gpu][fallback]") {
+    // Reproduces the KDEFitter::fit n<3 case: dist_true_signal is left at
+    // its zeroed default and dist_converged is explicitly false. Without
+    // the fallback this silently stacks to 0.0f instead of the one
+    // available sample.
+    int B = 1, C = 1, N = 1;
+    ShadowBuffers buf;
+    buf.allocate(B, C, N);
+
+    buf.n_frames[0] = 1;
+    buf.pixel_values[0] = 0.42f;   // ch=0,fi=0,vi=0
+    buf.pixel_weights[0] = 1.0f;
+
+    buf.dist_true_signal[0] = 0.0f;  // what a !converged FitResult leaves
+    buf.dist_converged[0] = 0;
+
+    auto fs = make_frame_stats(N);
+    REQUIRE(buf.low_n_fallback_count == 0);
+
+    GPUCPUFallback::select_pixels(buf, fs.data(), B, C, N);
+
+    REQUIRE(buf.output_value[0] == Catch::Approx(0.42f));
+    REQUIRE(buf.low_n_fallback_count == 1);
+}
+
+TEST_CASE("CPU Fallback: select_pixels falls back to median when the fit "
+          "did not converge (n=2)", "[gpu][fallback]") {
+    int B = 1, C = 1, N = 2;
+    ShadowBuffers buf;
+    buf.allocate(B, C, N);
+
+    buf.n_frames[0] = 2;
+    buf.pixel_values[0 * B + 0] = 0.3f;  // fi=0
+    buf.pixel_values[1 * B + 0] = 0.7f;  // fi=1
+    buf.pixel_weights[0 * B + 0] = 1.0f;
+    buf.pixel_weights[1 * B + 0] = 1.0f;
+
+    buf.dist_true_signal[0] = 0.0f;
+    buf.dist_converged[0] = 0;
+
+    auto fs = make_frame_stats(N);
+
+    GPUCPUFallback::select_pixels(buf, fs.data(), B, C, N);
+
+    float expected_median = 0.5f * (0.3f + 0.7f);  // n even -> avg of both
+    REQUIRE(buf.output_value[0] == Catch::Approx(expected_median));
+    REQUIRE(buf.low_n_fallback_count == 1);
+}
+
+TEST_CASE("CPU Fallback: select_pixels trusts dist_true_signal when "
+          "converged (no fallback, no counter)", "[gpu][fallback]") {
+    // Control case: dist_converged defaults to 1 (true) from allocate();
+    // a converged fit's true_signal_estimate must pass through untouched
+    // and the fallback counter must stay at 0.
+    int B = 1, C = 1, N = 1;
+    ShadowBuffers buf;
+    buf.allocate(B, C, N);
+
+    buf.n_frames[0] = 1;
+    buf.pixel_values[0] = 0.42f;
+    buf.pixel_weights[0] = 1.0f;
+    buf.dist_true_signal[0] = 0.9f;  // converged fit's mode estimate
+
+    auto fs = make_frame_stats(N);
+    GPUCPUFallback::select_pixels(buf, fs.data(), B, C, N);
+
+    REQUIRE(buf.output_value[0] == Catch::Approx(0.9f));
+    REQUIRE(buf.low_n_fallback_count == 0);
+}
+
 // ══════════════════════════════════════════════════════════
 // Kernel 4: spatial_context
 // ══════════════════════════════════════════════════════════

@@ -114,6 +114,15 @@ public:
         int                    n_frames_failed_alignment = 0;  // real alignment misses only
         int                    n_frames_rejected_filter  = 0;  // unknown FILTER on Bayer
 
+        /// Diagnostic: number of voxel-channels where Phase B's distribution
+        /// fit did not converge (sparse coverage, <3 contributing frames —
+        /// e.g. KDEFitter's hard n<3 floor) and were recombined via the
+        /// median of the raw per-frame samples instead of the (otherwise
+        /// zeroed/default) fitted true_signal_estimate. A high count means
+        /// most of the batch is under-covered for robust mode-finding;
+        /// surface it in the user-facing summary or Process Console log.
+        std::int64_t           low_n_fallback_count      = 0;
+
         ExecuteResult();
         ~ExecuteResult();
         ExecuteResult(ExecuteResult&&) noexcept;

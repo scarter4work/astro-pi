@@ -41,11 +41,14 @@ void ShadowBuffers::allocate(int bs, int nc, int mf) {
     dist_true_signal.resize(C * B, 0.0f);
     dist_uncertainty.resize(C * B, 0.0f);
     dist_confidence.resize(C * B, 0.0f);
+    dist_converged.assign(C * B, 1);  // default: trust dist_true_signal as-is
 
     // Selection output
     output_value.resize(C * B, 0.0f);
     noise_sigma.resize(C * B, 0.0f);
     snr_out.resize(C * B, 0.0f);
+
+    low_n_fallback_count = 0;
 }
 
 void ShadowBuffers::extract_from_cube(
@@ -154,6 +157,15 @@ void ShadowBuffers::extract_distributions(
             dist_true_signal[ch * B + vi] = voxel.distribution[ch].true_signal_estimate;
             dist_uncertainty[ch * B + vi] = voxel.distribution[ch].signal_uncertainty;
             dist_confidence[ch * B + vi]  = voxel.distribution[ch].confidence;
+
+            // Every fitter (StudentT/GMM/Contamination/KDE) only assigns a
+            // real DistributionShape after setting converged = true; the
+            // default-constructed FitResult returned on failure (e.g.
+            // KDEFitter::fit's n<3 floor) leaves shape == UNKNOWN. That
+            // makes shape a reliable per-channel proxy for FitResult::converged,
+            // which itself isn't carried on ZDistribution.
+            dist_converged[ch * B + vi] =
+                (voxel.distribution[ch].shape != DistributionShape::UNKNOWN) ? 1 : 0;
         }
     }
 }

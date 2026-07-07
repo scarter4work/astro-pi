@@ -197,6 +197,31 @@ void GPUCPUFallback::select_pixels(
         for (int ch = 0; ch < C; ch++) {
             float out_val = buf.dist_true_signal[ch * B + vi];
 
+            // Sparse-coverage fallback: the Phase B model-selection fit
+            // (StudentT/GMM/Contamination/KDE) did NOT converge for this
+            // voxel-channel — most commonly KDEFitter's hard n<3 floor,
+            // which cannot do robust mode-finding on 1-2 samples. Trusting
+            // dist_true_signal in that case silently emits its zeroed
+            // default (see distribution.hpp's ZDistribution defaults),
+            // i.e. silent data loss for any voxel with <3 contributing
+            // frames. Fall back to the median of the raw per-frame samples
+            // instead — the correct robust combine when there are too few
+            // frames to reject outliers — and count it so the fallback is
+            // observable rather than silent.
+            bool converged = buf.dist_converged.empty()
+                            || buf.dist_converged[ch * B + vi] != 0;
+            if (!converged) {
+                int n = std::min(nf, static_cast<int>(GPU_MAX_FRAMES));
+                float vals[GPU_MAX_FRAMES];
+                for (int fi = 0; fi < n; fi++)
+                    vals[fi] = buf.pixel_values[ch * N * B + fi * B + vi];
+                if (n > 0) {
+                    insertion_sort(vals, n);
+                    out_val = sorted_median(vals, n);
+                }
+                ++buf.low_n_fallback_count;
+            }
+
             // Noise propagation (mirrors pixel_selector.cpp)
             double weight_sum = 0.0;
             double variance_sum = 0.0;

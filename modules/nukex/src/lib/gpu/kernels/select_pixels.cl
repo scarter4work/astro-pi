@@ -8,6 +8,7 @@
 
 __kernel void select_pixels(
     __global const float*   dist_true_signal,   // [C * B]
+    __global const uchar*   dist_converged,     // [C * B] — 1=converged, 0=fit failed (n<3)
     __global const float*   pixel_values,       // [C * N * B]
     __global const float*   pixel_weights,      // [C * N * B]
     __global const ushort*  n_frames_in,        // [B]
@@ -25,7 +26,8 @@ __kernel void select_pixels(
     // Outputs
     __global float* output_value,               // [C * B]
     __global float* noise_sigma,                // [C * B]
-    __global float* snr_out                     // [C * B]
+    __global float* snr_out,                    // [C * B]
+    __global uchar* fallback_flag               // [C * B] — 1 where median fallback fired
 ) {
     int gid = get_global_id(0);
     int B = batch_size;
@@ -38,6 +40,25 @@ __kernel void select_pixels(
 
     int nf = (int)n_frames_in[vi];
     float out_val = dist_true_signal[ch * B + vi];
+    fallback_flag[ch * B + vi] = 0;
+
+    // Sparse-coverage fallback: mirrors gpu_cpu_fallback.cpp::select_pixels()
+    // exactly. When the Phase B model-selection fit did not converge for
+    // this voxel-channel (dist_converged == 0 — e.g. KDEFitter's hard n<3
+    // floor), dist_true_signal is a zeroed default and must not be trusted
+    // as the stacked value. Recombine via the median of the raw per-frame
+    // samples instead, and flag it so the fallback is observable.
+    if (!dist_converged[ch * B + vi]) {
+        int n = min(nf, GPU_MAX_FRAMES);
+        float vals[GPU_MAX_FRAMES];
+        for (int fi = 0; fi < n; fi++)
+            vals[fi] = pixel_values[ch * N * B + fi * B + vi];
+        if (n > 0) {
+            insertion_sort_f(vals, n);
+            out_val = sorted_median_f(vals, n);
+        }
+        fallback_flag[ch * B + vi] = 1;
+    }
 
     // Compute welford variance for fallback
     float w_M2 = welford_M2[ch * B + vi];
