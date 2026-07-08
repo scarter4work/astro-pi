@@ -29,8 +29,12 @@ struct RatingResult {
 
 class RatingDialog : public Dialog {
 public:
-    // filter_class: 0 = LRGB_mono, 1 = Bayer_RGB, 2 = Narrowband_HaO3, 3 = Narrowband_S2O3.
-    // Color axis is hidden for filter_class != 1.
+    // filter_class: nukex::FilterClass identity code (nukex/core/filter.hpp) --
+    // UNKNOWN=0, BROADBAND_L=1, BROADBAND_RGB=2, BROADBAND_OSC=3,
+    // NARROWBAND_SINGLE=4, DUAL_NB_OSC=5.
+    // Color axis is shown iff the class is a colour-capable broadband
+    // mosaic/OSC frame: BROADBAND_RGB(2) or BROADBAND_OSC(3). Mono, narrowband,
+    // and dual-NB OSC runs hide the color slider.
     RatingDialog(int filter_class);
 
     RatingResult Run();

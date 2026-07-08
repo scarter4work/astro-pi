@@ -110,6 +110,13 @@ if(NUKEX_BUILD_TESTS)
     add_subdirectory(test)
 endif()
 
+# Shipping QE calibration database (Task 16). Real shipping into the
+# release tarball is astro-pi's root ./release.sh's job (Task 23); this
+# install rule documents intent for a standalone `cmake --install`.
+install(FILES share/qe_database.json
+        DESTINATION share
+        COMPONENT runtime)
+
 # Release packaging (`make sign`, `make package`).  Always wired — the
 # NukeX-pxm target is always added by src/module/CMakeLists.txt in this
 # project, regardless of NUKEX_BUILD_MODULE, so the targets are safe to

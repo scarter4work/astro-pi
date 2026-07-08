@@ -65,7 +65,11 @@ StackingEngine::StackingEngine(const Config& config)
     : config_(config),
       filter_classifier_(std::make_unique<FilterClassifier>()),
       qe_database_(std::make_unique<QEDatabase>()) {
-    auto r1 = qe_database_->load_shipped(config_.qe_database_path);
+    // Empty path => the compiled-in database (production). A non-empty path is
+    // a test fixture or advanced override loaded from disk. See Config docs.
+    auto r1 = config_.qe_database_path.empty()
+                  ? qe_database_->load_embedded()
+                  : qe_database_->load_shipped(config_.qe_database_path);
     if (!r1.ok) {
         qe_load_error_ = r1.error;
         return;
@@ -159,10 +163,9 @@ StackingEngine::ExecuteResult StackingEngine::execute(
 
     // Empty-input shortcut runs BEFORE the QE-error surface so callers
     // probing the engine with no work (e.g. UI initial state) don't
-    // get spurious error toasts. The default Config's qe_database_path
-    // points at a relative "share/" that may not exist outside the
-    // PI plugin install — that's fine until the user actually feeds
-    // frames in.
+    // get spurious error toasts. (The production DB is compiled in and
+    // always loads; this ordering just avoids emitting any deferred parse
+    // error before the user has actually asked for work.)
     ExecuteResult result;
     if (light_paths.empty()) return result;
 
@@ -325,7 +328,17 @@ StackingEngine::ExecuteResult StackingEngine::execute(
 
         // Mid-batch unknown-on-Bayer is rejected per-frame (not the whole
         // batch — only the first frame's UNKNOWN-on-Bayer is fatal).
-        bool frame_is_bayer = parse_bayer_pattern(meta.bayer_pattern) != BayerPattern::NONE;
+        //
+        // frame_bayer is THIS frame's own Bayer pattern, independent of the
+        // outer `bayer` (which reflects only light_paths[0] and is legitimately
+        // scoped to the pre-loop unknown-on-Bayer check / initial ChannelConfig
+        // above). It must drive this frame's debayer step below — reusing the
+        // stale outer `bayer` here previously meant a mixed batch (e.g. a mono
+        // frame first) latched the whole batch to the first frame's pattern,
+        // silently skipping (or wrongly applying) debayering for every other
+        // frame and corrupting downstream DUAL_NB_OSC/BROADBAND_OSC routing.
+        BayerPattern frame_bayer = parse_bayer_pattern(meta.bayer_pattern);
+        bool frame_is_bayer = frame_bayer != BayerPattern::NONE;
         if (frame_filter.cls == FilterClass::UNKNOWN && frame_is_bayer) {
             obs.advance(1, "  skipped — unknown FILTER='" + frame_filter.name +
                            "' on Bayer frame (add to qe_overrides.json to recover)");
@@ -354,10 +367,11 @@ StackingEngine::ExecuteResult StackingEngine::execute(
         ChannelConfig per_frame_cfg = ChannelConfig::from_filter(frame_filter);
         cube.channel_config = ChannelConfig::merge(cube.channel_config, per_frame_cfg);
 
-        // 2. Debayer
-        if (bayer != BayerPattern::NONE) {
+        // 2. Debayer — use THIS frame's own pattern (frame_bayer), not the
+        // outer first-frame-only `bayer`. See frame_bayer comment above.
+        if (frame_bayer != BayerPattern::NONE) {
             obs.advance(0, "  debayering (" + meta.bayer_pattern + ")");
-            image = DebayerEngine::debayer(image, bayer);
+            image = DebayerEngine::debayer(image, frame_bayer);
         }
 
         // 3. Flat correct
@@ -726,24 +740,40 @@ StackingEngine::ExecuteResult StackingEngine::execute(
 
     // Fitting callback — called per-voxel by the GPU executor after
     // kernels 1+2 complete. Runs the Ceres-based model selection cascade.
+    // values/weights are [ch * stride_N + fi]. Each channel may have fewer
+    // REAL samples than stride_N (heterogeneous geometry) — feed the fitter
+    // only that channel's real-sample count, not the padded stride, so a
+    // channel's zero-padding never enters the distribution fit.
     auto fitting_fn = [&fitter](SubcubeVoxel& voxel,
                                  const float* values, const float* weights,
-                                 int nf, int nc,
+                                 int stride_N, int nc,
+                                 const uint16_t* nf_per_ch,
                                  const FrameStats* /*fs*/) {
         for (int ch = 0; ch < nc; ch++) {
-            fitter.select(values + ch * nf, weights + ch * nf, nf, voxel, ch);
+            fitter.select(values + ch * stride_N, weights + ch * stride_N,
+                          static_cast<int>(nf_per_ch[ch]), voxel, ch);
         }
     };
 
-    // All caches are written in lockstep (one frame per cache per iteration),
-    // so any cache's n_frames_written() gives the correct count for Phase B.
-    int n_frames_written = caches.empty() ? 0
-                         : caches.begin()->second.n_frames_written();
+    // Phase B's shadow-buffer stride N must be large enough to hold the
+    // channel with the MOST real samples. For a heterogeneous batch the
+    // caches are NOT written in lockstep — each cache only receives the
+    // frames matching its own geometry — so the old `caches.begin()`
+    // single-cache selection under-counted (it picked one arbitrary cache).
+    // Use the max real-sample count (written_frames().size(), NOT
+    // n_frames_written() which counts interior gaps) across all caches.
+    int n_frames_written = 0;
+    for (auto& [sig, c] : caches) {
+        (void)sig;
+        n_frames_written = std::max<int>(
+            n_frames_written, static_cast<int>(c.written_frames().size()));
+    }
 
     auto phase_b_start = std::chrono::steady_clock::now();
-    gpu.execute_phase_b(cube, slot_cache_refs, n_frames_written,
-                        frame_stats, config_.weight_config,
-                        fitting_fn, stacked, noise_map, &obs);
+    result.low_n_fallback_count =
+        gpu.execute_phase_b(cube, slot_cache_refs, n_frames_written,
+                            frame_stats, config_.weight_config,
+                            fitting_fn, stacked, noise_map, &obs);
     auto phase_b_end = std::chrono::steady_clock::now();
     long phase_b_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
                           phase_b_end - phase_b_start ).count();

@@ -1,38 +1,110 @@
 {
-  "schema_version": 1,
-  "description": "Phase 7 E2E validation corpus. Extend as more test datasets become available. Only NGC7635 LRGB-mono is currently configured; other cases are placeholders marked skip:true.",
+  "schema_version": 2,
+  "description": "v5 color-science overhaul E2E corpus. sweep_ghs/sweep_mtf/sweep_arcsinh are the bit-identical regression floor (stretch math is unchanged by the color-science overhaul, run against the same mono-L corpus so color/composer code never enters the path). mono_lrgb_ngc7635_v5 is the only live color-science case on this machine; bayer_rgb_ngc7635_v5, bayer_nb_hao3_m27, bayer_nb_s2o3_target and lrgbsho_target are scaffolded but skip:true until their corpora are captured.",
   "cases": [
     {
-      "name": "lrgb_mono_ngc7635",
-      "filter_class_expected": "LRGB-mono",
+      "name": "sweep_ghs",
+      "type": "stretch_sweep",
+      "stretch": "GHS",
+      "filter_class_expected": "BROADBAND_L",
+      "light_dir": "/mnt/qnap/astro_data/NGC7635/L/Lights",
+      "flat_dir": "",
+      "primary_stretch": 2,
+      "finishing_stretch": 0,
+      "wall_time_budget_s": 900,
+      "min_frames_ok_alignment": 65,
+      "preserve_bit_identical": true
+    },
+    {
+      "name": "sweep_mtf",
+      "type": "stretch_sweep",
+      "stretch": "MTF",
+      "filter_class_expected": "BROADBAND_L",
+      "light_dir": "/mnt/qnap/astro_data/NGC7635/L/Lights",
+      "flat_dir": "",
+      "primary_stretch": 3,
+      "finishing_stretch": 0,
+      "wall_time_budget_s": 900,
+      "min_frames_ok_alignment": 65,
+      "preserve_bit_identical": true
+    },
+    {
+      "name": "sweep_arcsinh",
+      "type": "stretch_sweep",
+      "stretch": "ArcSinh",
+      "filter_class_expected": "BROADBAND_L",
+      "light_dir": "/mnt/qnap/astro_data/NGC7635/L/Lights",
+      "flat_dir": "",
+      "primary_stretch": 4,
+      "finishing_stretch": 0,
+      "wall_time_budget_s": 900,
+      "min_frames_ok_alignment": 65,
+      "preserve_bit_identical": true
+    },
+    {
+      "name": "mono_lrgb_ngc7635_v5",
+      "filter_class_expected": "BROADBAND_L",
       "light_dir": "/mnt/qnap/astro_data/NGC7635/L/Lights",
       "flat_dir": "",
       "primary_stretch": 0,
       "primary_stretch_label": "Auto",
       "finishing_stretch": 0,
-      "finishing_stretch_label": "None",
       "wall_time_budget_s": 900,
       "min_frames_ok_alignment": 65,
-      "dropdown_sweep": [
-        { "primary_stretch": 2, "label": "GHS" },
-        { "primary_stretch": 3, "label": "MTF" },
-        { "primary_stretch": 4, "label": "ArcSinh" }
-      ]
+      "rebaseline_v5": true
     },
     {
-      "name": "bayer_rgb_placeholder",
+      "name": "bayer_rgb_ngc7635_v5",
+      "filter_class_expected": "BROADBAND_OSC",
+      "light_dir": "/mnt/qnap/astro_data/NGC7635/OSC/Lights",
+      "flat_dir": "",
+      "primary_stretch": 0,
+      "finishing_stretch": 0,
+      "wall_time_budget_s": 900,
+      "min_frames_ok_alignment": 30,
+      "rebaseline_v5": true,
       "skip": true,
-      "skip_reason": "no Bayer-RGB test corpus configured on this machine"
+      "skip_reason": "no NGC7635 OSC/Bayer-RGB corpus on this machine — /mnt/qnap/astro_data/NGC7635/OSC/Lights does not exist. The NGC7635 corpus captured here is filter-wheel LRGB only (L/R/G/B/Ha dirs), not one-shot-color."
     },
     {
-      "name": "narrowband_placeholder",
+      "name": "bayer_nb_hao3_m27",
+      "filter_class_expected": "DUAL_NB_OSC",
+      "light_dir": "/mnt/qnap/astro_data/M27/HaO3/Lights",
+      "flat_dir": "",
+      "primary_stretch": 0,
+      "finishing_stretch": 0,
+      "wall_time_budget_s": 900,
+      "min_frames_ok_alignment": 20,
+      "rebaseline_v5": true,
+      "visual_bar": "no green cast; calibrated red+cyan distribution",
       "skip": true,
-      "skip_reason": "no narrowband LRGB test corpus configured on this machine"
+      "skip_reason": "no HaO3 dual-NB OSC corpus — /mnt/qnap/astro_data/M27/HaO3/Lights does not exist. The M27 corpus captured here is LRGB-mono (single Light/ dir mixing L/R/G/B filter-wheel frames), not dual-narrowband OSC — this is the motivating case for a future capture session, not for this run."
     },
     {
-      "name": "lrgb_mono_large_stress_placeholder",
+      "name": "bayer_nb_s2o3_target",
+      "filter_class_expected": "DUAL_NB_OSC",
+      "light_dir": "/mnt/qnap/astro_data/SH2-101/S2O3/Lights",
+      "flat_dir": "",
+      "primary_stretch": 0,
+      "finishing_stretch": 0,
+      "wall_time_budget_s": 900,
+      "min_frames_ok_alignment": 20,
+      "rebaseline_v5": true,
       "skip": true,
-      "skip_reason": "no large-frame-count stress corpus configured on this machine"
+      "skip_reason": "no S2O3 dual-NB corpus — /mnt/qnap/astro_data/SH2-101/S2O3/Lights does not exist; SH2-101 has not been captured on this machine at all."
+    },
+    {
+      "name": "lrgbsho_target",
+      "filter_class_expected": "MIXED",
+      "light_dir": "/mnt/qnap/astro_data/M27/LRGBSHO/Lights",
+      "flat_dir": "",
+      "primary_stretch": 0,
+      "finishing_stretch": 0,
+      "wall_time_budget_s": 900,
+      "min_frames_ok_alignment": 50,
+      "rebaseline_v5": true,
+      "skip": true,
+      "skip_reason": "no mixed LRGB+HaO3 corpus — /mnt/qnap/astro_data/M27/LRGBSHO/Lights does not exist. M27 corpus captured here is LRGB-mono only (no narrowband channels), so there is nothing to combine with L/R/G/B."
     }
   ],
   "phaseB_baseline_file": "phaseB_baseline_ms.txt",

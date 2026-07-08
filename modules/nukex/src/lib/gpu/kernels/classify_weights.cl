@@ -12,12 +12,14 @@ __kernel void classify_weights(
     __global const float*   welford_M2,         // [C * B]
     __global const uint*    welford_n,          // [C * B]
     __global const float*   pixel_values,       // [C * N * B]
-    __global const ushort*  n_frames_in,        // [B]
+    __global const ushort*  n_frames_in,        // [B] — per-voxel union count (liveness gate)
+    __global const ushort*  channel_n_frames,   // [C] — per-channel real-sample count
+    __global const int*     channel_frame_remap,// [C * N] — (ch,pos)→global frame index
     // Frame-level constants (read-only, shared across all work-items)
-    __global const float*   frame_weight,       // [N]
-    __global const float*   psf_weight,         // [N]
-    __global const float*   cloud_score,        // [N]
-    __global const float*   frame_exposure,     // [N]
+    __global const float*   frame_weight,       // [NG] global frame count, indexed by gf
+    __global const float*   psf_weight,         // [NG] global frame count, indexed by gf
+    __global const float*   cloud_score,        // [NG] global frame count, indexed by gf
+    __global const float*   frame_exposure,     // [NG] global frame count, indexed by gf
     // WeightConfig scalars
     float sigma_threshold,
     float sigma_scale,
@@ -61,10 +63,16 @@ __kernel void classify_weights(
         float variance = (w_n > 1) ? max(0.0f, w_M2) / (float)(w_n - 1) : 0.0f;
         float stddev = sqrt(variance);
 
-        for (int fi = 0; fi < nf; fi++) {
+        // Per-channel real-sample count + local→global frame remap.
+        int nf_ch = (int)channel_n_frames[ch];
+
+        for (int fi = 0; fi < nf_ch; fi++) {
             float value = pixel_values[ch * N * B + fi * B + vi];
 
-            float w = frame_weight[fi] * psf_weight[fi];
+            // Global frame index of this channel's fi-th real sample.
+            int gf = channel_frame_remap[ch * N + fi];
+
+            float w = frame_weight[gf] * psf_weight[gf];
 
             if (stddev > 1.0e-30f) {
                 float sigma_score = fabs(value - w_mean) / stddev;
@@ -78,23 +86,26 @@ __kernel void classify_weights(
                 }
             }
 
-            w *= cloud_score[fi];
+            w *= cloud_score[gf];
             w = max(w, weight_floor);
 
             pixel_weights_out[ch * N * B + fi * B + vi] = w;
 
             if (ch == 0) {
                 weight_sum += w;
-                total_exp += frame_exposure[fi];
-                if (cloud_score[fi] < 0.5f) cloud_count++;
+                total_exp += frame_exposure[gf];
+                if (cloud_score[gf] < 0.5f) cloud_count++;
             }
         }
     }
 
+    // Summaries accumulate over channel 0's real samples; normalise by its
+    // real-sample count.
+    int nf_ch0 = (int)channel_n_frames[0];
     cloud_count_out[vi] = cloud_count;
     trail_count_out[vi] = trail_count;
     worst_sigma_out[vi] = worst_sigma;
     best_sigma_out[vi]  = (best_sigma < 1.0e29f) ? best_sigma : 0.0f;
-    mean_weight_out[vi] = (nf > 0) ? weight_sum / (float)nf : 0.0f;
+    mean_weight_out[vi] = (nf_ch0 > 0) ? weight_sum / (float)nf_ch0 : 0.0f;
     total_exposure_out[vi] = total_exp;
 }

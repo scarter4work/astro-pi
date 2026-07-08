@@ -34,7 +34,7 @@
 
 #include <filesystem>
 
-#define WIRED_BY_TASK_20 0
+#define WIRED_BY_TASK_20 1
 
 using namespace nukex;
 namespace fs = std::filesystem;
@@ -137,6 +137,80 @@ TEST_CASE("Phase B Q-solve: HaO3 + S2O3 mixed → multi-source OIII merge",
     // With n_HaO3=1 sample and n_S2O3=1 sample the blend is equal here;
     // actual multi-frame tests (10 vs 5) live in the fixture generator.
     REQUIRE(result.derived.slots.at("OIII")[8 * 16 + 8] > 0.0f);
+#else
+    SKIP("wired by Task 20: synthetic FITS writer needed");
+#endif
+}
+
+// Regression test for the FrameCache global-vs-per-cache-index defect
+// surfaced (but explicitly left unfixed, out of scope) by task-20b-report.md
+// ("Follow-up surfaced" section) and diagnosed in task-20c-report.md.
+//
+// Task 10A gave the engine one FrameCache per (width, height, n_channels)
+// geometry signature (stacking_engine.cpp's `caches` map / get_or_create_cache).
+// FrameCache::write_frame(frame_index, ...) is called with the batch's
+// GLOBAL frame index (stacking_engine.cpp's per-frame loop, "cache aligned
+// frame" step), and FrameCache::n_frames_written() reports
+// max(frame_index + 1, current) -- the highest global index ever written to
+// THAT cache, plus one.
+//
+// On a batch that spans more than one geometry (e.g. a mono L frame + a
+// debayered HaO3 frame, exactly the mixed batch task-20b's Phase A
+// regression test constructs), each cache only receives the SUBSET of
+// global frame indices whose frames match its own geometry. A cache that
+// only ever receives global index 1 (out of a 2-frame batch) reports
+// n_frames_written() == 2, with position 0 unwritten -- it reads back as
+// zero from the cache's zero-filled backing file. Phase B's distribution
+// fitting then includes that phantom zero-valued "frame" in its per-voxel
+// fit, corrupting the derived Q-solve output.
+//
+// task-20b's own regression test could only assert on Phase A's welford
+// stats (populated synchronously during accumulation, independent of
+// FrameCache) -- it explicitly could NOT assert on Phase B's derived
+// Ha/OIII output because of this bug. This case closes that gap: same
+// mixed-batch construction (mono L first, engineered Bayer HaO3 second),
+// but asserting on the Phase B *derived* Q-solve output, which only a
+// correct FrameCache fix can make pass.
+TEST_CASE("Phase B Q-solve: mixed mono-L + Bayer-HaO3 batch recovers correct "
+          "Ha/OIII/L despite spanning two FrameCache geometries",
+          "[.integration][phase_b]") {
+#if WIRED_BY_TASK_20
+    auto t1 = fs::temp_directory_path() / "phase_b_mixed_mono_l.fits";
+    auto t2 = fs::temp_directory_path() / "phase_b_mixed_hao3.fits";
+    // Mono L frame FIRST -- global frame index 0. Written only into the
+    // (w,h,1) cache.
+    test_util::write_synthetic_mono(t1.string(), 16, 16, "ASI2600MM", "L", 0.6f);
+    // Genuine Bayer HaO3 frame SECOND -- global frame index 1. Written
+    // only into the (w,h,3) cache (post-debayer geometry). Engineered
+    // Ha/OIII targets so the Q-solve has a non-degenerate answer to check.
+    const float ha_target   = 0.5f;
+    const float oiii_target = 0.3f;
+    test_util::write_synthetic_q_solved_hao3(t2.string(), 16, 16, "ASI585MC",
+                                              ha_target, oiii_target);
+
+    StackingEngine::Config cfg;
+    cfg.qe_database_path = (fs::path(NUKEX_TEST_FIXTURES_DIR) / "qe" / "minimal_db.json").string();
+    StackingEngine engine(cfg);
+    auto result = engine.execute({t1.string(), t2.string()}, {}, nullptr);
+
+    REQUIRE(result.ok);
+
+    // The mono frame's L slot must survive Phase B untouched by the Bayer
+    // frame's cache.
+    REQUIRE(result.derived.slots.count("L") == 1);
+    float l_val = result.derived.slots.at("L")[8 * 16 + 8];
+    REQUIRE(l_val == Catch::Approx(0.6f).margin(0.05f));
+
+    // The Bayer frame's Q-solve must recover the engineered Ha/OIII values
+    // -- not a value corrupted by averaging in a phantom all-zero "frame"
+    // from the (w,h,3) cache's unwritten global-index-0 slot.
+    REQUIRE(result.derived.slots.count("Ha")   == 1);
+    REQUIRE(result.derived.slots.count("OIII") == 1);
+    float ha_val   = result.derived.slots.at("Ha")  [8 * 16 + 8];
+    float oiii_val = result.derived.slots.at("OIII")[8 * 16 + 8];
+    REQUIRE(ha_val   == Catch::Approx(ha_target).margin(0.02f));
+    REQUIRE(oiii_val == Catch::Approx(oiii_target).margin(0.02f));
+    REQUIRE(result.derived.negative_clamped_count == 0);
 #else
     SKIP("wired by Task 20: synthetic FITS writer needed");
 #endif

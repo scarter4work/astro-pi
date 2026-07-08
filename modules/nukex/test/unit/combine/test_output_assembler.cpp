@@ -2,11 +2,12 @@
 #include "nukex/combine/output_assembler.hpp"
 #include "nukex/core/cube.hpp"
 #include "nukex/core/channel_config.hpp"
+#include "nukex/core/filter.hpp"
 
 using namespace nukex;
 
 TEST_CASE("OutputAssembler: quality map has 4 channels", "[assembler]") {
-    auto config = ChannelConfig::from_mode(StackingMode::MONO_L);
+    auto config = ChannelConfig::from_filter(Filter{FilterClass::BROADBAND_L, "L", "ASI2600MM", {}});
     Cube cube(8, 8, config);
 
     for (int y = 0; y < 8; y++)
@@ -30,7 +31,7 @@ TEST_CASE("OutputAssembler: quality map has 4 channels", "[assembler]") {
 }
 
 TEST_CASE("OutputAssembler: shape channel encodes dominant_shape correctly", "[assembler]") {
-    auto config = ChannelConfig::from_mode(StackingMode::MONO_L);
+    auto config = ChannelConfig::from_filter(Filter{FilterClass::BROADBAND_L, "L", "ASI2600MM", {}});
     Cube cube(4, 4, config);
 
     cube.at(0, 0).dominant_shape = DistributionShape::GAUSSIAN;

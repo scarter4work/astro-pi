@@ -84,6 +84,10 @@ FrameCache::FrameCache(FrameCache&& other) noexcept
       n_channels_(other.n_channels_), max_frames_(other.max_frames_),
       n_frames_written_(other.n_frames_written_.load(std::memory_order_relaxed))
 {
+    {
+        std::lock_guard<std::mutex> lk(other.written_mutex_);
+        written_frames_ = std::move(other.written_frames_);
+    }
     other.fd_ = -1;
     other.mapped_ = nullptr;
     other.mapped_size_ = 0;
@@ -102,6 +106,10 @@ FrameCache& FrameCache::operator=(FrameCache&& other) noexcept {
         max_frames_ = other.max_frames_;
         n_frames_written_.store(other.n_frames_written_.load(std::memory_order_relaxed),
                                 std::memory_order_relaxed);
+        {
+            std::lock_guard<std::mutex> lk(other.written_mutex_);
+            written_frames_ = std::move(other.written_frames_);
+        }
         other.fd_ = -1;
         other.mapped_ = nullptr;
         other.mapped_size_ = 0;
@@ -129,6 +137,18 @@ void FrameCache::write_frame(int frame_index, const Image& aligned) {
     if (frame_index >= current) {
         n_frames_written_.store(frame_index + 1, std::memory_order_relaxed);
     }
+
+    // Track the set of real (written) global frame indices so Phase B can do
+    // per-channel frame accounting (dense reads + local→global frame_stats
+    // remap) for heterogeneous-geometry batches. Dedup guards the (rare)
+    // double-write of the same frame_index.
+    {
+        std::lock_guard<std::mutex> lk(written_mutex_);
+        if (std::find(written_frames_.begin(), written_frames_.end(), frame_index)
+                == written_frames_.end()) {
+            written_frames_.push_back(frame_index);
+        }
+    }
 }
 
 int FrameCache::read_pixel(int x, int y, int ch, float* out_values) const {
@@ -143,6 +163,25 @@ int FrameCache::read_pixel(int x, int y, int ch, float* out_values) const {
     }
 
     return n;
+}
+
+int FrameCache::read_pixel_dense(int x, int y, int ch, float* out_values) const {
+    if (!mapped_) return 0;
+
+    // Snapshot the written-frame set under lock, then decode outside the
+    // lock (mapped_ storage at a written global index is immutable once
+    // written in Phase A, and Phase B reads happen after Phase A completes).
+    std::vector<int> frames;
+    {
+        std::lock_guard<std::mutex> lk(written_mutex_);
+        frames = written_frames_;
+    }
+
+    int k = 0;
+    for (int gf : frames) {
+        out_values[k++] = decode(mapped_[offset(x, y, ch, gf)]);
+    }
+    return k;
 }
 
 } // namespace nukex
