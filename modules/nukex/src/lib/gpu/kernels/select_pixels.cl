@@ -1,4 +1,4 @@
-// ── NukeX v4: Kernel 3 — Pixel Selection + Noise Propagation ────
+// ── NukeX v5: Kernel 3 — Pixel Selection + Noise Propagation ────
 // One work-item per (voxel, channel) pair.
 // Global size = batch_size * n_channels.
 //

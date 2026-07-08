@@ -3,6 +3,7 @@
 
 #include <cctype>
 #include <unordered_map>
+#include <unordered_set>
 
 namespace nukex {
 
@@ -45,6 +46,24 @@ const std::unordered_map<std::string, KnownFilter>& known_table() {
     return table;
 }
 
+// Filter-wheel slot labels that denote NO narrowband isolation — i.e. a clear
+// slot or a broadband light-pollution / UV-IR-cut filter. These pass the full
+// visible band, so for channel routing they are equivalent to "no filter":
+// Bayer -> BROADBAND_OSC (plain RGB debayer), mono -> BROADBAND_L. Recognising
+// them here prevents a spurious UNKNOWN-on-Bayer hard-abort (they are not
+// narrowband filters, so there is nothing to mis-colour by treating them as OSC).
+// Normalized form = lowercased alphanumerics only (see normalize_name).
+bool is_clear_broadband(const std::string& normalized) {
+    static const std::unordered_set<std::string> clear = {
+        "full",                                   // Optolong L-Pro / L-QEF slot label (user kit)
+        "clear", "none", "open", "nofilter", "no", // generic no-filter slots
+        "lpro", "optolonglpro",                   // Optolong L-Pro (broadband LP)
+        "lqef", "lquadenhance", "lquad",          // Optolong L-Quad Enhance
+        "uvir", "uvircut", "ircut", "luvir",      // UV/IR-cut (broadband)
+    };
+    return clear.count(normalized) != 0;
+}
+
 } // namespace
 
 std::string FilterClassifier::normalize_name(const std::string& raw) {
@@ -79,14 +98,17 @@ Filter FilterClassifier::classify(const FrameMetadata& meta) {
     Filter out;
     out.camera = meta.instrument;
 
-    if (normalized.empty()) {
+    // Empty filter, or a clear/broadband-LP slot label (e.g. "Full", "Clear",
+    // L-Pro, L-QEF): no narrowband isolation -> plain broadband routing. Keep
+    // the original label for logging when the frame named a filter.
+    if (normalized.empty() || is_clear_broadband(normalized)) {
         if (is_bayer) {
             out.cls       = FilterClass::BROADBAND_OSC;
-            out.name      = "OSC";
+            out.name      = normalized.empty() ? "OSC" : meta.filter;
             out.bandwidth = BandwidthSpec{550.0, 300.0};
         } else {
             out.cls       = FilterClass::BROADBAND_L;
-            out.name      = "L_unnamed";
+            out.name      = normalized.empty() ? "L_unnamed" : meta.filter;
             out.bandwidth = BandwidthSpec{550.0, 300.0};
         }
         return out;

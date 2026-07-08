@@ -1,4 +1,4 @@
-// ── NukeX v4: Kernel 4 — Spatial Context ────────────────────────
+// ── NukeX v5: Kernel 4 — Spatial Context ────────────────────────
 // One work-item per pixel. Global size = width * height.
 //
 // Computes Sobel gradient magnitude, local background (biweight location),

@@ -4,6 +4,7 @@
 #include "NukeXInterface.h"
 #include "NukeXProcess.h"
 #include "NukeXParameters.h"
+#include "NukeXVersion.h"
 #include "RatingDialog.h"
 
 #include <pcl/FileDialog.h>
@@ -62,7 +63,7 @@ bool NukeXInterface::Launch( const MetaProcess&, const ProcessImplementation*, b
    if ( GUI == nullptr )
    {
       GUI = new GUIData( *this );
-      SetWindowTitle( "NukeX v4" );
+      SetWindowTitle( "NukeX v" NUKEX_STR(NUKEX_MODULE_VERSION_MAJOR) );
       UpdateControls();
    }
 

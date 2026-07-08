@@ -43,7 +43,7 @@ IsoString NukeXModule::Name() const
 
 String NukeXModule::Description() const
 {
-   return "NukeX v4 — Distribution-Fitted Stacking. "
+   return "NukeX v" NUKEX_STR(NUKEX_MODULE_VERSION_MAJOR) " — Distribution-Fitted Stacking. "
           "Per-pixel distribution fitting (Student-t, GMM, Contamination, KDE) "
           "with GPU-accelerated weight computation, 10 scientifically validated "
           "stretch operations, and automatic channel/filter detection.";

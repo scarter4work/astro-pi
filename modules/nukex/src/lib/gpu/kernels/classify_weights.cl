@@ -1,4 +1,4 @@
-// ── NukeX v4: Kernel 1 — Weight Computation + Classification ────
+// ── NukeX v5: Kernel 1 — Weight Computation + Classification ────
 // One work-item per voxel. Processes all channels and all frames.
 //
 // Memory layout (channel-major, coalesced):

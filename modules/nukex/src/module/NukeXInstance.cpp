@@ -395,7 +395,8 @@ bool NukeXInstance::CanExecuteGlobal( String& whyNot ) const
 bool NukeXInstance::ExecuteGlobal()
 {
    NukeXProgress progress;
-   progress.message( "NukeX v4 \xe2\x80\x94 Distribution-Fitted Stacking" );
+   progress.message( "NukeX v" NUKEX_STR(NUKEX_MODULE_VERSION_MAJOR)
+                     " \xe2\x80\x94 Distribution-Fitted Stacking" );
    progress.message( String().Format( "Processing %zu light frame(s)", lightFrames.Length() ).ToUTF8().c_str() );
 
    // Collect enabled file paths
@@ -841,7 +842,7 @@ bool NukeXInstance::ExecuteGlobal()
       progress.message( "Noise map opened." );
    }
 
-   progress.message( "NukeX v4 done." );
+   progress.message( "NukeX v" NUKEX_STR(NUKEX_MODULE_VERSION_MAJOR) " done." );
    return true;
 }
 
