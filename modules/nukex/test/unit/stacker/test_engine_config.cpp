@@ -6,7 +6,10 @@ using namespace nukex;
 TEST_CASE("StackingEngine::Config has QE paths with sensible defaults", "[engine_config]") {
     StackingEngine::Config c;
     REQUIRE(c.cache_dir == "/tmp");
-    REQUIRE(c.qe_database_path.find("qe_database.json") != std::string::npos);
+    // Empty by default => the engine uses the QE database compiled into the
+    // module binary (no file lookup, no CWD dependency). A non-empty path is
+    // a test fixture or advanced override.
+    REQUIRE(c.qe_database_path.empty());
     REQUIRE(c.qe_override_path.empty()); // optional, no default
 }
 

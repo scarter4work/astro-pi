@@ -8,6 +8,8 @@
 #include "nukex/calibration/qe_database.hpp"
 
 #include <filesystem>
+#include <fstream>
+#include <sstream>
 
 using namespace nukex;
 namespace fs = std::filesystem;
@@ -47,4 +49,29 @@ TEST_CASE("QEDatabase: shipping DB — known filters resolve", "[qe_database][sh
     REQUIRE(db.has_filter("Antlia-Ha-3nm-Pro"));
     REQUIRE(db.has_filter("Antlia-OIII-3nm-Pro"));
     REQUIRE_FALSE(db.has_filter("DoesNotExist"));
+}
+
+// The production path: the QE database compiled into the module binary must
+// load with NO file present and regardless of the process working directory.
+// This is the exact scenario that broke on end-user installs (bare relative
+// "share/qe_database.json" resolved against an unpredictable CWD).
+TEST_CASE("QEDatabase: embedded DB loads independent of file/CWD", "[qe_database][embedded]") {
+    QEDatabase db;
+    auto result = db.load_embedded();
+    REQUIRE(result.ok);
+    REQUIRE(db.n_cameras() >= 50);
+    REQUIRE(db.n_filters() >= 80);
+    // The user's camera (ASI2400MC dual-NB OSC) must resolve from the built-in DB.
+    REQUIRE(db.has_camera("asi2400mc"));
+    REQUIRE(db.has_filter("Antlia-Ha-3nm-Pro"));
+}
+
+// Guards the codegen: the bytes compiled in must be byte-identical to the
+// on-disk source, so the shipping binary can never drift from share/qe_database.json.
+TEST_CASE("QEDatabase: embedded JSON is byte-identical to on-disk source", "[qe_database][embedded]") {
+    std::ifstream f(shipped_db_path().string(), std::ios::binary);
+    REQUIRE(f.is_open());
+    std::stringstream ss;
+    ss << f.rdbuf();
+    REQUIRE(embedded_qe_database_json() == ss.str());
 }

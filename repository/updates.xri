@@ -6,18 +6,18 @@
       <p>Repository: https://raw.githubusercontent.com/scarter4work/astro-pi/main/repository/</p>
    </description>
    <platform os="linux" arch="x64" version="1.8.0:2.0.0">
-      <package fileName="20260707-linux-x64-NukeX.tar.gz" sha1="476e25814ce1e949328fd98691909c60c8924894" type="module" releaseDate="20260707">
+      <package fileName="20260708-linux-x64-NukeX.tar.gz" sha1="7edb3e37a4548334551431dbbf506968e5b2568e" type="module" releaseDate="20260708">
          <title>NukeX</title>
          <description>
             <p>
-               <b>NukeX 5.0.0</b>
+               <b>NukeX 5.1.0</b>
             </p>
-            <p>Astrophotography integration and stretching module.</p>
+            <p>Astrophotography integration and stretching module. v5.1.0 is a color-science overhaul: physically-grounded, QE-database-driven channel decomposition for OSC/mono and dual-narrowband workflows (fixes the v4 green cast), with per-channel frame accounting for heterogeneous-geometry batches. The QE database is now compiled into the module, so it installs with no extra files.</p>
          </description>
       </package>
    </platform>
    <platform os="all" arch="noarch" version="1.8.0:2.0.0">
-      <package fileName="EZStretch_v1.0.10.zip" sha1="f5d71655ec7e0fd3af19337081ef2e68b568f528" type="script" releaseDate="20260707">
+      <package fileName="EZStretch_v1.0.10.zip" sha1="b77f80323cdfe831c24cb14537ccbbf1ad08c840" type="script" releaseDate="20260708">
          <title>EZ Stretch</title>
          <description>
             <p>
@@ -26,7 +26,7 @@
             <p>Unified stretch suite combining three algorithms in a single interface.</p>
          </description>
       </package>
-      <package fileName="EZDonutRepair_v1.0.3.zip" sha1="5645980e1d4a8921090076a8c601d39bf2cbe855" type="script" releaseDate="20260707">
+      <package fileName="EZDonutRepair_v1.0.3.zip" sha1="dbfbc2ec00da3d496409d1a45b1a2628fb1bb2eb" type="script" releaseDate="20260708">
          <title>EZ Donut Repair</title>
          <description>
             <p>
@@ -35,7 +35,7 @@
             <p>Removes donut/dust artifacts from astrophotography frames.</p>
          </description>
       </package>
-      <package fileName="EZHazeKill_v1.0.1.zip" sha1="fd392547372f2d9e4ca78920ba2e4e20a33b46f0" type="script" releaseDate="20260707">
+      <package fileName="EZHazeKill_v1.0.1.zip" sha1="7f7737d799fcacfae2786d95ab8044433728757a" type="script" releaseDate="20260708">
          <title>EZ Haze Kill</title>
          <description>
             <p>
@@ -44,7 +44,7 @@
             <p>Gradient and haze reduction.</p>
          </description>
       </package>
-      <package fileName="gaia-depth-grade_v1.0.12.zip" sha1="c936ddf7f86317f38b815a237d7daf4021db5a48" type="script" releaseDate="20260707">
+      <package fileName="gaia-depth-grade_v1.0.12.zip" sha1="16782541b897aa3720a574fababeb033286ab25c" type="script" releaseDate="20260708">
          <title>Gaia Depth Grade</title>
          <description>
             <p>
@@ -57,4 +57,4 @@
       </package>
    </platform>
 </xri>
-<Signature developerId="scarter4work" timestamp="2026-07-07T13:36:32.351Z" encoding="Base64">z2+Jbkk52pz//zuH6ahqAiq+szF90VhE4Wu6WA4++5AzzHoomeM2iwOPX/W8s32XSy3tW/2U6rMHQNOv9BE3BQ==</Signature>
+<Signature developerId="scarter4work" timestamp="2026-07-08T21:52:46.303Z" encoding="Base64">MJ37aeF7zj/xBvro4DAXkNkChxyFOmLvrZUm1BBqei3ghrzCvyQuLbF4fRsX0ksgoef923YEYFcFUhTsJeHoDw==</Signature>

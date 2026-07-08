@@ -438,11 +438,11 @@ bool NukeXInstance::ExecuteGlobal()
    config.cache_dir = cacheDirectory.ToUTF8().c_str();
    config.gpu_config.force_cpu_fallback = !enableGPU;
    config.qe_override_path = qeOverridePath.ToUTF8().c_str();
-   // Engine's default qe_database_path stays at "share/qe_database.json"
-   // (resolves relative to the working directory; for PI module installs
-   // that is <plugin>/share/qe_database.json — correct once Task 16 ships
-   // the file). The engine's deferred-load pattern captures any load failure
-   // in qe_load_error_ and returns ok=false + descriptive error on execute().
+   // Leave config.qe_database_path empty so the engine uses the QE database
+   // compiled into this module binary — no loose file to install, no
+   // working-directory dependency. A user-supplied qeOverridePath (above) is
+   // still layered on top. The engine's deferred-load pattern captures any
+   // parse failure in qe_load_error_ and returns ok=false on execute().
 
    // Execute pipeline with progress reporting
    nukex::StackingEngine engine( config );
@@ -455,16 +455,16 @@ bool NukeXInstance::ExecuteGlobal()
       return false;
    }
 
-   // QE database load failed — typically because Task 16 hasn't shipped
-   // share/qe_database.json yet, or qeOverridePath points at a malformed
-   // file. Surface it loudly so the user can act on it.
+   // QE database load failed. The database is compiled into the module, so
+   // this should only happen if a user-supplied QE override file is malformed.
+   // Surface it loudly so the user can act on it.
    if ( !result.ok )
    {
       progress.message( String().Format(
          "** QE database error: %s\n"
-         "** This usually means share/qe_database.json is missing from the "
-         "plugin install (Task 16 in progress) or the qe_overrides.json file "
-         "is malformed. Color-science Phase B cannot run without a QE database.",
+         "** The built-in QE database failed to load, or your QE override file "
+         "is malformed. Color-science Phase B cannot run without a valid QE "
+         "database; check the QE override path if you set one.",
          result.error.c_str() ).ToUTF8().c_str() );
       return false;
    }
