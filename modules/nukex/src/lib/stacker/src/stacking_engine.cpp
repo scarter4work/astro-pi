@@ -65,7 +65,11 @@ StackingEngine::StackingEngine(const Config& config)
     : config_(config),
       filter_classifier_(std::make_unique<FilterClassifier>()),
       qe_database_(std::make_unique<QEDatabase>()) {
-    auto r1 = qe_database_->load_shipped(config_.qe_database_path);
+    // Empty path => the compiled-in database (production). A non-empty path is
+    // a test fixture or advanced override loaded from disk. See Config docs.
+    auto r1 = config_.qe_database_path.empty()
+                  ? qe_database_->load_embedded()
+                  : qe_database_->load_shipped(config_.qe_database_path);
     if (!r1.ok) {
         qe_load_error_ = r1.error;
         return;
@@ -159,10 +163,9 @@ StackingEngine::ExecuteResult StackingEngine::execute(
 
     // Empty-input shortcut runs BEFORE the QE-error surface so callers
     // probing the engine with no work (e.g. UI initial state) don't
-    // get spurious error toasts. The default Config's qe_database_path
-    // points at a relative "share/" that may not exist outside the
-    // PI plugin install — that's fine until the user actually feeds
-    // frames in.
+    // get spurious error toasts. (The production DB is compiled in and
+    // always loads; this ordering just avoids emitting any deferred parse
+    // error before the user has actually asked for work.)
     ExecuteResult result;
     if (light_paths.empty()) return result;
 

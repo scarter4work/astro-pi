@@ -50,6 +50,10 @@ LoadResult slurp(const std::string& path, const char* context, std::string& out_
 
 } // namespace
 
+LoadResult QEDatabase::load_embedded() {
+    return parse_and_merge(embedded_qe_database_json(), "QE database (embedded)");
+}
+
 LoadResult QEDatabase::load_shipped(const std::string& path) {
     std::string text;
     auto r = slurp(path, "QE database", text);
