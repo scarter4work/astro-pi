@@ -37,30 +37,19 @@ public:
         ModelSelector::Config fitting_config;
         std::string           cache_dir = "/tmp";
 
-        /// Path to the shipped QE database JSON. The default resolves at
-        /// startup relative to the working directory; in a PI module install
-        /// that becomes <plugin>/share/qe_database.json, which is correct.
+        /// Selects the source of the shipped QE database:
+        ///   - EMPTY (production default): load the database compiled INTO the
+        ///     module binary (nukex::embedded_qe_database_json()). There is no
+        ///     file to find and no working-directory assumption, so this can
+        ///     never fail with "not found" on an end user's machine.
+        ///   - NON-EMPTY: load the database from this file path instead. Used by
+        ///     tests to inject a controlled fixture (see NUKEX_TEST_FIXTURES_DIR
+        ///     / "qe" / "minimal_db.json") and available as an advanced override.
         ///
-        /// Layered responsibility for the failure-at-default case:
-        ///   - The constructor loads eagerly and captures any failure in
-        ///     qe_load_error_. On the first execute() call with non-empty
-        ///     light_paths, that error is re-emitted and ok=false is
-        ///     returned. This is the INTENDED behaviour until production
-        ///     assets land:
-        ///   - Task 16 ships the actual share/qe_database.json alongside
-        ///     the PI module, at which point the default path resolves
-        ///     correctly for end users.
-        ///   - Task 12 surfaces the qe_load_error_ string via Process Console
-        ///     in NukeXInstance::ExecuteGlobal (look for "QE database error:"
-        ///     above the early-return). The Console message includes a
-        ///     remediation hint pointing at qe_overrides.json + Task 16
-        ///     (shipped DB).
-        ///   - Tests MUST override this field to point at a fixture — see
-        ///     fs::path(NUKEX_TEST_FIXTURES_DIR) / "qe" / "minimal_db.json"
-        ///     in test/unit/stacker/test_stacking_engine.cpp for the canonical
-        ///     pattern — or they will fail with a QE-load error on the first
-        ///     frame.
-        std::string           qe_database_path = "share/qe_database.json";
+        /// Either way, the constructor loads eagerly and captures any parse
+        /// failure in qe_load_error_, which the first execute() with non-empty
+        /// light_paths re-emits (ok=false). qe_override_path is layered on top.
+        std::string           qe_database_path; // empty => compiled-in DB
 
         std::string           qe_override_path; // optional; empty = none
         GPUExecutorConfig     gpu_config;
@@ -113,6 +102,15 @@ public:
         int                    n_frames_processed        = 0;
         int                    n_frames_failed_alignment = 0;  // real alignment misses only
         int                    n_frames_rejected_filter  = 0;  // unknown FILTER on Bayer
+
+        /// Diagnostic: number of voxel-channels where Phase B's distribution
+        /// fit did not converge (sparse coverage, <3 contributing frames —
+        /// e.g. KDEFitter's hard n<3 floor) and were recombined via the
+        /// median of the raw per-frame samples instead of the (otherwise
+        /// zeroed/default) fitted true_signal_estimate. A high count means
+        /// most of the batch is under-covered for robust mode-finding;
+        /// surface it in the user-facing summary or Process Console log.
+        std::int64_t           low_n_fallback_count      = 0;
 
         ExecuteResult();
         ~ExecuteResult();

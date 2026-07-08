@@ -21,6 +21,15 @@ void ShadowBuffers::allocate(int bs, int nc, int mf) {
     pixel_values.resize(C * N * B, 0.0f);
     n_frames.resize(B, 0);
 
+    // Per-channel real-sample accounting. Defaults reproduce the pre-fix
+    // per-voxel behaviour for direct-buffer callers (tests): every channel
+    // has N real frames, position k maps to global frame index k.
+    channel_n_frames.assign(C, static_cast<uint16_t>(N));
+    channel_frame_remap.resize(static_cast<size_t>(C) * N);
+    for (int ch = 0; ch < C; ch++)
+        for (int k = 0; k < N; k++)
+            channel_frame_remap[static_cast<size_t>(ch) * N + k] = k;
+
     // Intermediate
     pixel_weights.resize(C * N * B, 0.0f);
 
@@ -41,11 +50,14 @@ void ShadowBuffers::allocate(int bs, int nc, int mf) {
     dist_true_signal.resize(C * B, 0.0f);
     dist_uncertainty.resize(C * B, 0.0f);
     dist_confidence.resize(C * B, 0.0f);
+    dist_converged.assign(C * B, 1);  // default: trust dist_true_signal as-is
 
     // Selection output
     output_value.resize(C * B, 0.0f);
     noise_sigma.resize(C * B, 0.0f);
     snr_out.resize(C * B, 0.0f);
+
+    low_n_fallback_count = 0;
 }
 
 void ShadowBuffers::extract_from_cube(
@@ -58,12 +70,40 @@ void ShadowBuffers::extract_from_cube(
     int N = max_frames;
     int w = cube.width;
 
+    // ── Per-channel frame accounting (uniform across voxels) ──
+    //
+    // The set of real frames feeding a channel is a property of that slot's
+    // FrameCache (write_frame writes the whole aligned image, so every pixel
+    // of a cache shares the same written-frame set), NOT of the voxel. So
+    // channel_n_frames[ch] and the (ch, position)→global-frame remap are the
+    // same for every voxel in the batch — compute them once here from the
+    // slot refs, then fill the dense per-voxel pixel_values below.
+    for (int ch = 0; ch < C; ch++) {
+        // Defaults: no per-frame source ⇒ 0 real samples for this channel.
+        channel_n_frames[ch] = 0;
+        for (int k = 0; k < N; k++)
+            channel_frame_remap[static_cast<size_t>(ch) * N + k] = 0;
+
+        if (ch >= static_cast<int>(slot_refs.size())) continue;
+        const ChannelCacheRef& ref = slot_refs[ch];
+        if (ref.cache == nullptr) continue;
+
+        const std::vector<int>& wf = ref.cache->written_frames();
+        int cn = std::min(static_cast<int>(wf.size()), N);
+        channel_n_frames[ch] = static_cast<uint16_t>(cn);
+        for (int k = 0; k < cn; k++)
+            channel_frame_remap[static_cast<size_t>(ch) * N + k] = wf[k];
+    }
+
     for (int vi = 0; vi < B; vi++) {
         int voxel_idx = start_voxel + vi;
         int px = voxel_idx % w;
         int py = voxel_idx / w;
         const auto& voxel = cube.at(px, py);
 
+        // Per-voxel UNION frame count — kept only as the kernel voxel-liveness
+        // gate (`if n_frames[vi]==0`). Per-channel loop bounds now come from
+        // channel_n_frames[ch].
         n_frames[vi] = voxel.n_frames;
 
         for (int ch = 0; ch < C; ch++) {
@@ -84,15 +124,19 @@ void ShadowBuffers::extract_from_cube(
             int nf_read = 0;
 
             if (ref.kind == SlotSynthesis::DIRECT) {
-                nf_read = ref.cache->read_pixel(px, py, ref.cache_ch, frame_vals);
+                // Dense read: only the frames actually written to this cache,
+                // packed [0..channel_n_frames-1], skipping phantom gaps.
+                nf_read = ref.cache->read_pixel_dense(px, py, ref.cache_ch, frame_vals);
 
             } else if (ref.kind == SlotSynthesis::REC709_LUMA) {
                 // Synthesise L per-frame from cached R, G, B channels.
                 // Matches Phase A's per-pixel: l = 0.299R + 0.587G + 0.114B.
+                // Dense reads from the SAME cache ⇒ identical written-frame
+                // set for all three channels.
                 float r_vals[GPU_MAX_FRAMES], g_vals[GPU_MAX_FRAMES], b_vals[GPU_MAX_FRAMES];
-                int n_r = ref.cache->read_pixel(px, py, 0, r_vals);
-                int n_g = ref.cache->read_pixel(px, py, 1, g_vals);
-                int n_b = ref.cache->read_pixel(px, py, 2, b_vals);
+                int n_r = ref.cache->read_pixel_dense(px, py, 0, r_vals);
+                int n_g = ref.cache->read_pixel_dense(px, py, 1, g_vals);
+                int n_b = ref.cache->read_pixel_dense(px, py, 2, b_vals);
                 nf_read = std::min({n_r, n_g, n_b});
                 for (int fi = 0; fi < nf_read; ++fi) {
                     frame_vals[fi] = 0.299f * r_vals[fi]
@@ -101,7 +145,9 @@ void ShadowBuffers::extract_from_cube(
                 }
             }
 
-            int n_copy = std::min(nf_read, std::min(static_cast<int>(voxel.n_frames), N));
+            // nf_read == channel_n_frames[ch] (both derive from the cache's
+            // written-frame set); cap at N for safety.
+            int n_copy = std::min(nf_read, N);
             for (int fi = 0; fi < n_copy; fi++) {
                 pixel_values[ch * N * B + fi * B + vi] = frame_vals[fi];
             }
@@ -154,6 +200,15 @@ void ShadowBuffers::extract_distributions(
             dist_true_signal[ch * B + vi] = voxel.distribution[ch].true_signal_estimate;
             dist_uncertainty[ch * B + vi] = voxel.distribution[ch].signal_uncertainty;
             dist_confidence[ch * B + vi]  = voxel.distribution[ch].confidence;
+
+            // Every fitter (StudentT/GMM/Contamination/KDE) only assigns a
+            // real DistributionShape after setting converged = true; the
+            // default-constructed FitResult returned on failure (e.g.
+            // KDEFitter::fit's n<3 floor) leaves shape == UNKNOWN. That
+            // makes shape a reliable per-channel proxy for FitResult::converged,
+            // which itself isn't carried on ZDistribution.
+            dist_converged[ch * B + vi] =
+                (voxel.distribution[ch].shape != DistributionShape::UNKNOWN) ? 1 : 0;
         }
     }
 }

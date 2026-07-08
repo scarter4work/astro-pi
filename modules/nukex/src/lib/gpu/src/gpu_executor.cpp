@@ -57,7 +57,8 @@ static cl_mem create_buf(cl_context ctx, cl_mem_flags flags, size_t size, void* 
 
 void GPUExecutor::execute_batch_gpu(
     ShadowBuffers& buf, const FrameStats* fs,
-    const WeightConfig& wc, int batch_size, int n_channels, int n_frames) {
+    const WeightConfig& wc, int batch_size, int n_channels, int n_frames,
+    int n_frames_total) {
 
     if (!kernels_.is_compiled()) {
         execute_batch_cpu(buf, fs, wc, batch_size, n_channels, n_frames);
@@ -67,6 +68,11 @@ void GPUExecutor::execute_batch_gpu(
     cl_context ctx = context_.context();
     cl_command_queue queue = context_.queue();
     int B = batch_size, C = n_channels, N = n_frames;
+    // GLOBAL frame count: the per-frame constant arrays below are shared
+    // across channels and random-accessed by the global frame index gf
+    // (= channel_frame_remap[ch*N+fi]), which for a heterogeneous-geometry
+    // batch can exceed N. Size them by NG, never by N.
+    int NG = n_frames_total;
 
     // ── Create GPU buffers ──
     // Input buffers
@@ -80,28 +86,28 @@ void GPUExecutor::execute_batch_gpu(
         C * N * B * sizeof(float), buf.pixel_values.data());
     cl_mem d_n_frames = create_buf(ctx, CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR,
         B * sizeof(uint16_t), buf.n_frames.data());
+    // Per-channel real-sample accounting (heterogeneous-geometry fix).
+    cl_mem d_channel_n_frames = create_buf(ctx, CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR,
+        C * sizeof(uint16_t), buf.channel_n_frames.data());
+    cl_mem d_channel_remap = create_buf(ctx, CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR,
+        C * N * sizeof(int32_t), buf.channel_frame_remap.data());
 
-    // Frame-level constants
-    std::vector<float> frame_weight(N), psf_weight(N), cloud_score(N), frame_exposure(N);
-    std::vector<float> frame_read_noise(N), frame_gain(N);
-    std::vector<uint8_t> frame_has_noise(N);
-    for (int i = 0; i < N; i++) {
+    // Frame-level constants — GLOBAL-length (NG), indexed by gf, not fi.
+    std::vector<float> frame_weight(NG), psf_weight(NG), cloud_score(NG), frame_exposure(NG);
+    for (int i = 0; i < NG; i++) {
         frame_weight[i] = fs[i].frame_weight;
         psf_weight[i] = fs[i].psf_weight;
         cloud_score[i] = fs[i].cloud_score;
         frame_exposure[i] = fs[i].exposure;
-        frame_read_noise[i] = fs[i].read_noise;
-        frame_gain[i] = fs[i].gain;
-        frame_has_noise[i] = fs[i].has_noise_keywords ? 1 : 0;
     }
     cl_mem d_frame_weight = create_buf(ctx, CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR,
-        N * sizeof(float), frame_weight.data());
+        NG * sizeof(float), frame_weight.data());
     cl_mem d_psf_weight = create_buf(ctx, CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR,
-        N * sizeof(float), psf_weight.data());
+        NG * sizeof(float), psf_weight.data());
     cl_mem d_cloud_score = create_buf(ctx, CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR,
-        N * sizeof(float), cloud_score.data());
+        NG * sizeof(float), cloud_score.data());
     cl_mem d_frame_exposure = create_buf(ctx, CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR,
-        N * sizeof(float), frame_exposure.data());
+        NG * sizeof(float), frame_exposure.data());
 
     // Output/intermediate buffers
     cl_mem d_pixel_weights = create_buf(ctx, CL_MEM_READ_WRITE,
@@ -126,6 +132,8 @@ void GPUExecutor::execute_batch_gpu(
         clSetKernelArg(k, arg++, sizeof(cl_mem), &d_welford_n);
         clSetKernelArg(k, arg++, sizeof(cl_mem), &d_pixel_values);
         clSetKernelArg(k, arg++, sizeof(cl_mem), &d_n_frames);
+        clSetKernelArg(k, arg++, sizeof(cl_mem), &d_channel_n_frames);
+        clSetKernelArg(k, arg++, sizeof(cl_mem), &d_channel_remap);
         clSetKernelArg(k, arg++, sizeof(cl_mem), &d_frame_weight);
         clSetKernelArg(k, arg++, sizeof(cl_mem), &d_psf_weight);
         clSetKernelArg(k, arg++, sizeof(cl_mem), &d_cloud_score);
@@ -154,6 +162,7 @@ void GPUExecutor::execute_batch_gpu(
         int arg = 0;
         clSetKernelArg(k, arg++, sizeof(cl_mem), &d_pixel_values);
         clSetKernelArg(k, arg++, sizeof(cl_mem), &d_n_frames);
+        clSetKernelArg(k, arg++, sizeof(cl_mem), &d_channel_n_frames);
         clSetKernelArg(k, arg++, sizeof(int), &C);
         clSetKernelArg(k, arg++, sizeof(int), &N);
         clSetKernelArg(k, arg++, sizeof(int), &B);
@@ -195,6 +204,8 @@ void GPUExecutor::execute_batch_gpu(
     clReleaseMemObject(d_welford_n);
     clReleaseMemObject(d_pixel_values);
     clReleaseMemObject(d_n_frames);
+    clReleaseMemObject(d_channel_n_frames);
+    clReleaseMemObject(d_channel_remap);
     clReleaseMemObject(d_frame_weight);
     clReleaseMemObject(d_psf_weight);
     clReleaseMemObject(d_cloud_score);
@@ -215,7 +226,7 @@ void GPUExecutor::execute_batch_gpu(
 
 void GPUExecutor::execute_select_gpu(
     ShadowBuffers& buf, const FrameStats* fs,
-    int batch_size, int n_channels, int n_frames) {
+    int batch_size, int n_channels, int n_frames, int n_frames_total) {
 
     if (!kernels_.is_compiled()) {
         GPUCPUFallback::select_pixels(buf, fs, batch_size, n_channels, n_frames);
@@ -225,11 +236,14 @@ void GPUExecutor::execute_select_gpu(
     cl_context ctx = context_.context();
     cl_command_queue queue = context_.queue();
     int B = batch_size, C = n_channels, N = n_frames;
+    // GLOBAL frame count — the noise-model arrays are shared across channels
+    // and random-accessed by the global frame index gf (see execute_batch_gpu).
+    int NG = n_frames_total;
 
-    // Prepare frame-level noise model arrays
-    std::vector<float> frame_read_noise(N), frame_gain(N);
-    std::vector<uint8_t> frame_has_noise(N);
-    for (int i = 0; i < N; i++) {
+    // Prepare frame-level noise model arrays — GLOBAL-length (NG), gf-indexed.
+    std::vector<float> frame_read_noise(NG), frame_gain(NG);
+    std::vector<uint8_t> frame_has_noise(NG);
+    for (int i = 0; i < NG; i++) {
         frame_read_noise[i] = fs[i].read_noise;
         frame_gain[i] = fs[i].gain;
         frame_has_noise[i] = fs[i].has_noise_keywords ? 1 : 0;
@@ -238,18 +252,24 @@ void GPUExecutor::execute_select_gpu(
     // Create GPU buffers
     cl_mem d_dist_signal = create_buf(ctx, CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR,
         C * B * sizeof(float), buf.dist_true_signal.data());
+    cl_mem d_dist_converged = create_buf(ctx, CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR,
+        C * B * sizeof(uint8_t), buf.dist_converged.data());
     cl_mem d_pixel_values = create_buf(ctx, CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR,
         C * N * B * sizeof(float), buf.pixel_values.data());
     cl_mem d_pixel_weights = create_buf(ctx, CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR,
         C * N * B * sizeof(float), buf.pixel_weights.data());
     cl_mem d_n_frames = create_buf(ctx, CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR,
         B * sizeof(uint16_t), buf.n_frames.data());
+    cl_mem d_channel_n_frames = create_buf(ctx, CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR,
+        C * sizeof(uint16_t), buf.channel_n_frames.data());
+    cl_mem d_channel_remap = create_buf(ctx, CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR,
+        C * N * sizeof(int32_t), buf.channel_frame_remap.data());
     cl_mem d_read_noise = create_buf(ctx, CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR,
-        N * sizeof(float), frame_read_noise.data());
+        NG * sizeof(float), frame_read_noise.data());
     cl_mem d_gain = create_buf(ctx, CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR,
-        N * sizeof(float), frame_gain.data());
+        NG * sizeof(float), frame_gain.data());
     cl_mem d_has_noise = create_buf(ctx, CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR,
-        N * sizeof(uint8_t), frame_has_noise.data());
+        NG * sizeof(uint8_t), frame_has_noise.data());
     cl_mem d_welford_M2 = create_buf(ctx, CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR,
         C * B * sizeof(float), buf.welford_M2.data());
     cl_mem d_welford_n = create_buf(ctx, CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR,
@@ -258,13 +278,17 @@ void GPUExecutor::execute_select_gpu(
     cl_mem d_output = create_buf(ctx, CL_MEM_WRITE_ONLY, C * B * sizeof(float), nullptr);
     cl_mem d_noise = create_buf(ctx, CL_MEM_WRITE_ONLY, C * B * sizeof(float), nullptr);
     cl_mem d_snr = create_buf(ctx, CL_MEM_WRITE_ONLY, C * B * sizeof(float), nullptr);
+    cl_mem d_fallback_flag = create_buf(ctx, CL_MEM_WRITE_ONLY, C * B * sizeof(uint8_t), nullptr);
 
     cl_kernel k = kernels_.select_pixels_kernel();
     int arg = 0;
     clSetKernelArg(k, arg++, sizeof(cl_mem), &d_dist_signal);
+    clSetKernelArg(k, arg++, sizeof(cl_mem), &d_dist_converged);
     clSetKernelArg(k, arg++, sizeof(cl_mem), &d_pixel_values);
     clSetKernelArg(k, arg++, sizeof(cl_mem), &d_pixel_weights);
     clSetKernelArg(k, arg++, sizeof(cl_mem), &d_n_frames);
+    clSetKernelArg(k, arg++, sizeof(cl_mem), &d_channel_n_frames);
+    clSetKernelArg(k, arg++, sizeof(cl_mem), &d_channel_remap);
     clSetKernelArg(k, arg++, sizeof(cl_mem), &d_read_noise);
     clSetKernelArg(k, arg++, sizeof(cl_mem), &d_gain);
     clSetKernelArg(k, arg++, sizeof(cl_mem), &d_has_noise);
@@ -276,6 +300,7 @@ void GPUExecutor::execute_select_gpu(
     clSetKernelArg(k, arg++, sizeof(cl_mem), &d_output);
     clSetKernelArg(k, arg++, sizeof(cl_mem), &d_noise);
     clSetKernelArg(k, arg++, sizeof(cl_mem), &d_snr);
+    clSetKernelArg(k, arg++, sizeof(cl_mem), &d_fallback_flag);
 
     size_t global_size = static_cast<size_t>(B) * C;
     clEnqueueNDRangeKernel(queue, k, 1, nullptr, &global_size, nullptr, 0, nullptr, nullptr);
@@ -285,10 +310,22 @@ void GPUExecutor::execute_select_gpu(
     clEnqueueReadBuffer(queue, d_noise, CL_TRUE, 0, C * B * sizeof(float), buf.noise_sigma.data(), 0, nullptr, nullptr);
     clEnqueueReadBuffer(queue, d_snr, CL_TRUE, 0, C * B * sizeof(float), buf.snr_out.data(), 0, nullptr, nullptr);
 
+    // Sum the per-voxel-channel fallback flags into the running counter
+    // (mirrors the CPU fallback's ++buf.low_n_fallback_count) so GPU-path
+    // callers get the same observability as the CPU path.
+    std::vector<uint8_t> fallback_flags(static_cast<size_t>(C) * B);
+    clEnqueueReadBuffer(queue, d_fallback_flag, CL_TRUE, 0, C * B * sizeof(uint8_t), fallback_flags.data(), 0, nullptr, nullptr);
+    for (uint8_t f : fallback_flags) {
+        if (f) ++buf.low_n_fallback_count;
+    }
+
     clReleaseMemObject(d_dist_signal);
+    clReleaseMemObject(d_dist_converged);
     clReleaseMemObject(d_pixel_values);
     clReleaseMemObject(d_pixel_weights);
     clReleaseMemObject(d_n_frames);
+    clReleaseMemObject(d_channel_n_frames);
+    clReleaseMemObject(d_channel_remap);
     clReleaseMemObject(d_read_noise);
     clReleaseMemObject(d_gain);
     clReleaseMemObject(d_has_noise);
@@ -297,6 +334,7 @@ void GPUExecutor::execute_select_gpu(
     clReleaseMemObject(d_output);
     clReleaseMemObject(d_noise);
     clReleaseMemObject(d_snr);
+    clReleaseMemObject(d_fallback_flag);
 }
 
 // ── Kernel 4: spatial_context GPU dispatch ──
@@ -351,13 +389,14 @@ void GPUExecutor::execute_spatial_gpu(
 
 void GPUExecutor::execute_batch_gpu(
     ShadowBuffers& buf, const FrameStats* fs,
-    const WeightConfig& wc, int batch_size, int n_channels, int n_frames) {
+    const WeightConfig& wc, int batch_size, int n_channels, int n_frames,
+    int /*n_frames_total*/) {
     execute_batch_cpu(buf, fs, wc, batch_size, n_channels, n_frames);
 }
 
 void GPUExecutor::execute_select_gpu(
     ShadowBuffers& buf, const FrameStats* fs,
-    int batch_size, int n_channels, int n_frames) {
+    int batch_size, int n_channels, int n_frames, int /*n_frames_total*/) {
     GPUCPUFallback::select_pixels(buf, fs, batch_size, n_channels, n_frames);
 }
 
@@ -375,7 +414,7 @@ void GPUExecutor::execute_spatial_gpu(
 // Phase B orchestration
 // ══════════════════════════════════════════════════════════════════════
 
-void GPUExecutor::execute_phase_b(
+std::int64_t GPUExecutor::execute_phase_b(
     Cube& cube,
     const std::vector<ChannelCacheRef>& slot_refs,
     int n_frames_written,
@@ -389,7 +428,15 @@ void GPUExecutor::execute_phase_b(
     ProgressObserver& obs = progress ? *progress : null_progress_observer();
 
     int total_voxels = cube.total_pixels();
-    int n_channels = cube.at(0, 0).n_channels;
+    // Use the cube's channel_config as the authoritative slot count, NOT the
+    // per-voxel n_channels field. The latter is frozen at cube-construction
+    // time (from the first frame's geometry); a heterogeneous batch where
+    // ChannelConfig::merge() grows the slot table mid-Phase-A (e.g. a mono-L
+    // frame first, then a debayered OSC/dual-NB frame) leaves voxel.n_channels
+    // stale at the initial count. Reading it here would silently drop every
+    // slot the merge added — processing only the first frame's channels and
+    // emitting all-zero output for the rest.
+    int n_channels = cube.channel_config.n_channels;
     int n_frames = n_frames_written;
     int N = std::min(n_frames, static_cast<int>(GPU_MAX_FRAMES));
 
@@ -426,7 +473,8 @@ void GPUExecutor::execute_phase_b(
         obs.advance(0, "  kernel 2: robust statistics" + backend_tag);
         if (use_gpu) {
             execute_batch_gpu(buf, frame_stats.data(), weight_config,
-                              count, n_channels, N);
+                              count, n_channels, N,
+                              static_cast<int>(frame_stats.size()));
         } else {
             execute_batch_cpu(buf, frame_stats.data(), weight_config,
                               count, n_channels, N);
@@ -473,7 +521,8 @@ void GPUExecutor::execute_phase_b(
             }
 
             fitting_fn(voxel, vals.data(), wts.data(), N,
-                        n_channels, frame_stats.data());
+                        n_channels, buf.channel_n_frames.data(),
+                        frame_stats.data());
 
             hb.tick(omp_get_thread_num(), obs);
         }
@@ -484,7 +533,8 @@ void GPUExecutor::execute_phase_b(
         // Step 7: Pixel selection (GPU or CPU)
         obs.advance(0, "  kernel 3: pixel selection" + backend_tag);
         if (use_gpu) {
-            execute_select_gpu(buf, frame_stats.data(), count, n_channels, N);
+            execute_select_gpu(buf, frame_stats.data(), count, n_channels, N,
+                               static_cast<int>(frame_stats.size()));
         } else {
             GPUCPUFallback::select_pixels(buf, frame_stats.data(),
                                            count, n_channels, N);
@@ -506,6 +556,14 @@ void GPUExecutor::execute_phase_b(
     }
 
     obs.end_phase();
+
+    if (buf.low_n_fallback_count > 0) {
+        obs.message("Phase B: " + std::to_string(buf.low_n_fallback_count)
+                    + " voxel-channel(s) used median fallback (sparse "
+                      "coverage, <3 contributing frames)");
+    }
+
+    return buf.low_n_fallback_count;
 }
 
 // ══════════════════════════════════════════════════════════════════════

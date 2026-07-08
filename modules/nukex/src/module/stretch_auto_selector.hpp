@@ -1,7 +1,7 @@
 #ifndef __NukeX_stretch_auto_selector_h
 #define __NukeX_stretch_auto_selector_h
 
-#include "filter_classifier.hpp"
+#include "nukex/io/filter_classifier.hpp"
 #include "fits_metadata.hpp"
 #include "nukex/stretch/stretch_op.hpp"
 #include <memory>

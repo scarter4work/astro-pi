@@ -9,6 +9,10 @@ target_include_directories(catch2_main PUBLIC
 # Path to test/fixtures/, used by tests that load JSON/FITS fixtures from disk.
 add_compile_definitions(NUKEX_TEST_FIXTURES_DIR="${CMAKE_SOURCE_DIR}/test/fixtures")
 
+# Path to share/, used by tests that load the real shipping data files
+# (as opposed to synthetic test/fixtures/ data) through their real loaders.
+add_compile_definitions(NUKEX_SHARE_DIR="${CMAKE_SOURCE_DIR}/share")
+
 # Helper function to add a test executable.
 #
 # `--allow-running-no-tests` is passed so that test binaries whose
@@ -38,7 +42,6 @@ nukex_add_test(test_welford       unit/core/test_welford.cpp       nukex4_core)
 nukex_add_test(test_histogram     unit/core/test_histogram.cpp     nukex4_core)
 nukex_add_test(test_reservoir     unit/core/test_reservoir.cpp     nukex4_core)
 nukex_add_test(test_distribution  unit/core/test_distribution.cpp  nukex4_core)
-nukex_add_test(test_channel       unit/core/test_channel_config.cpp nukex4_core)
 nukex_add_test(test_channel_config_from_filter unit/core/test_channel_config_from_filter.cpp nukex4_core nukex4_io)
 nukex_add_test(test_voxel         unit/core/test_voxel.cpp          nukex4_core)
 nukex_add_test(test_cube          unit/core/test_cube.cpp           nukex4_core)
@@ -48,6 +51,7 @@ nukex_add_test(test_homography     unit/alignment/test_homography.cpp     nukex4
 nukex_add_test(test_frame_aligner unit/alignment/test_frame_aligner.cpp nukex4_alignment)
 nukex_add_test(test_alignment_diag unit/alignment/test_alignment_diag.cpp nukex4_alignment)
 nukex_add_test(test_qe_database   unit/calibration/test_qe_database.cpp nukex4_calibration nukex4_io nukex4_core)
+nukex_add_test(test_qe_database_shipping unit/calibration/test_qe_database_shipping.cpp nukex4_calibration nukex4_io nukex4_core)
 nukex_add_test(test_channel_decomposer unit/calibration/test_channel_decomposer.cpp nukex4_calibration nukex4_io nukex4_core)
 nukex_add_test(test_robust_stats  unit/fitting/test_robust_stats.cpp   nukex4_fitting)
 nukex_add_test(test_student_t  unit/fitting/test_student_t_fitter.cpp  nukex4_fitting)
@@ -66,17 +70,24 @@ nukex_add_test(test_stacking_engine unit/stacker/test_stacking_engine.cpp nukex4
 nukex_add_test(test_engine_config unit/stacker/test_engine_config.cpp nukex4_stacker nukex4_calibration nukex4_io nukex4_core)
 nukex_add_test(test_cache_sig_dispatch unit/stacker/test_cache_sig_dispatch.cpp nukex4_stacker nukex4_core nukex4_io)
 
-# Test utilities (PNG writer + test data loader)
+# Test utilities (PNG writer + test data loader + synthetic-FITS writer)
 add_library(test_util STATIC
     util/png_writer.cpp
     util/test_data_loader.cpp
+    util/mini_fits_writer.cpp
 )
 target_include_directories(test_util PUBLIC
     "${CMAKE_SOURCE_DIR}/test/util"
     "${CMAKE_SOURCE_DIR}/third_party/stb"
     "${CMAKE_SOURCE_DIR}/third_party/catch2"
 )
-target_link_libraries(test_util PUBLIC nukex4_io nukex4_stretch)
+target_link_libraries(test_util
+    PUBLIC nukex4_io nukex4_stretch nukex4_calibration
+    PRIVATE cfitsio
+)
+
+nukex_add_test(test_mini_fits_writer util/test_mini_fits_writer.cpp nukex4_io test_util)
+nukex_add_test(test_png_writer util/test_png_writer.cpp nukex4_io test_util)
 
 nukex_add_test(test_stretch_pipeline unit/stretch/test_stretch_pipeline.cpp nukex4_stretch)
 nukex_add_test(test_mtf unit/stretch/test_mtf.cpp nukex4_stretch test_util)
@@ -96,6 +107,7 @@ nukex_add_test(test_layer_loader unit/stretch/test_layer_loader.cpp nukex4_stret
 # Learning library tests (Phase 8 stats-driven tuning)
 nukex_add_test(test_ridge_regression unit/learning/test_ridge_regression.cpp nukex4_learning)
 nukex_add_test(test_rating_db unit/learning/test_rating_db.cpp nukex4_learning sqlite3_vendored)
+nukex_add_test(test_rating_db_migration unit/learning/test_rating_db_migration.cpp nukex4_learning sqlite3_vendored)
 nukex_add_test(test_train_model unit/learning/test_train_model.cpp nukex4_learning sqlite3_vendored)
 nukex_add_test(test_atomic_write unit/learning/test_atomic_write.cpp nukex4_learning)
 
@@ -109,7 +121,6 @@ nukex_add_test(test_fit_heartbeat unit/gpu/test_fit_heartbeat.cpp nukex4_gpu)
 # Module-layer tests (fits_metadata and future module code)
 add_library(nukex4_module_testlib OBJECT
     "${CMAKE_SOURCE_DIR}/src/module/fits_metadata.cpp"
-    "${CMAKE_SOURCE_DIR}/src/module/filter_classifier.cpp"
     "${CMAKE_SOURCE_DIR}/src/module/stretch_auto_selector.cpp"
     "${CMAKE_SOURCE_DIR}/src/module/stretch_factory.cpp"
 )
@@ -121,7 +132,6 @@ target_include_directories(nukex4_module_testlib PUBLIC
 target_link_libraries(nukex4_module_testlib PUBLIC cfitsio nukex4_stretch)
 
 nukex_add_test(test_fits_metadata unit/module/test_fits_metadata.cpp nukex4_module_testlib)
-nukex_add_test(test_filter_classifier unit/module/test_filter_classifier.cpp nukex4_module_testlib)
 nukex_add_test(test_stretch_auto_selector unit/module/test_stretch_auto_selector.cpp nukex4_module_testlib)
 nukex_add_test(test_stretch_factory unit/module/test_stretch_factory.cpp nukex4_module_testlib)
 nukex_add_test(test_phase8_fallback unit/module/test_phase8_fallback.cpp nukex4_stretch nukex4_learning sqlite3_vendored)

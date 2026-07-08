@@ -5,13 +5,33 @@
 #include <vector>
 #include <cmath>
 #include <algorithm>
+#include <filesystem>
+#include <system_error>
 
 namespace nukex { namespace test_util {
+
+// Ensure the parent directory of `filepath` exists before stb tries to
+// open it for writing. stb_image_write silently fails (returns 0, no
+// error message) if the directory doesn't exist -- callers used to rely
+// on an external `mkdir -p test/output` before running tests, which broke
+// on a clean checkout / clean build. Root-caused here instead: creating
+// the directory is idempotent and safe to call unconditionally.
+static void ensure_parent_dir(const std::string& filepath) {
+    std::filesystem::path p(filepath);
+    auto parent = p.parent_path();
+    if (parent.empty()) return;
+    std::error_code ec;
+    std::filesystem::create_directories(parent, ec);
+    // Best-effort: if create_directories fails (e.g. permissions), the
+    // subsequent stb_image_write call will fail loudly via its own
+    // return value -- no need to duplicate that signal here.
+}
 
 // Convert [0,1] float image to big-endian 16-bit and write via stb
 static bool write_16bit_png(const std::string& filepath,
                             const std::vector<float>& buf,
                             int w, int h, int ch) {
+    ensure_parent_dir(filepath);
     std::vector<uint16_t> pixels(w * h * ch);
     for (size_t i = 0; i < buf.size(); i++) {
         float val = std::clamp(buf[i], 0.0f, 1.0f);
@@ -74,6 +94,7 @@ bool write_png_8bit(const std::string& filepath, const nukex::Image& img,
     }
 
     int stride = w * ch;
+    ensure_parent_dir(filepath);
     return stbi_write_png(filepath.c_str(), w, h, ch, pixels.data(), stride) != 0;
 }
 

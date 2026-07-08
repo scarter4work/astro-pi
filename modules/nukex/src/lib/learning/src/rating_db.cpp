@@ -13,7 +13,7 @@ namespace nukex::learning {
 
 namespace {
 
-constexpr const char* kSchemaV1 = R"SQL(
+constexpr const char* kSchema = R"SQL(
 CREATE TABLE IF NOT EXISTS runs (
     run_id           BLOB PRIMARY KEY,
     created_at       INTEGER NOT NULL,
@@ -45,7 +45,7 @@ CREATE TABLE IF NOT EXISTS runs (
 );
 CREATE INDEX IF NOT EXISTS idx_runs_stretch ON runs(stretch_name);
 CREATE INDEX IF NOT EXISTS idx_runs_target  ON runs(target_class);
-PRAGMA user_version = 1;
+PRAGMA user_version = 2;
 )SQL";
 
 bool apply_pragmas_and_schema(sqlite3* db) {
@@ -54,11 +54,88 @@ bool apply_pragmas_and_schema(sqlite3* db) {
         sqlite3_free(err);
         return false;
     }
-    if (sqlite3_exec(db, kSchemaV1, nullptr, nullptr, &err) != SQLITE_OK) {
+    if (sqlite3_exec(db, kSchema, nullptr, nullptr, &err) != SQLITE_OK) {
         sqlite3_free(err);
         return false;
     }
     return true;
+}
+
+bool table_exists(sqlite3* db, const char* name) {
+    sqlite3_stmt* stmt = nullptr;
+    const char* sql = "SELECT count(*) FROM sqlite_master WHERE type='table' AND name=?;";
+    if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) != SQLITE_OK) return false;
+    sqlite3_bind_text(stmt, 1, name, -1, SQLITE_TRANSIENT);
+    bool exists = false;
+    if (sqlite3_step(stmt) == SQLITE_ROW) {
+        exists = sqlite3_column_int(stmt, 0) > 0;
+    }
+    sqlite3_finalize(stmt);
+    return exists;
+}
+
+int read_user_version(sqlite3* db) {
+    sqlite3_stmt* stmt = nullptr;
+    if (sqlite3_prepare_v2(db, "PRAGMA user_version;", -1, &stmt, nullptr) != SQLITE_OK) {
+        return -1;
+    }
+    int version = -1;
+    if (sqlite3_step(stmt) == SQLITE_ROW) {
+        version = sqlite3_column_int(stmt, 0);
+    }
+    sqlite3_finalize(stmt);
+    return version;
+}
+
+// Schema v1 -> v2: `runs.filter_class` moves from the OLD UI color-axis
+// space {0,1,2} (LRGB_MONO/LRGB_COLOR collapsed to 0, BAYER_RGB=1,
+// NARROWBAND=2) to the NEW nukex::FilterClass identity codes (see
+// nukex/core/filter.hpp). This is LOSSY on purpose:
+//   old 0 (mono / LRGB-colour) -> new 1 (BROADBAND_L)
+//   old 1 (Bayer RGB)          -> new 3 (BROADBAND_OSC)
+//   old 2 (narrowband)         -> new 4 (NARROWBAND_SINGLE)
+// Old code 0 conflated mono and separate-RGB LRGB, and the old classifier
+// could not distinguish dual-narrowband (e.g. HaO3) from single-narrowband;
+// pre-v5 dual-NB ratings were tuned against the broken M27-green output
+// anyway, so collapsing every old-narrowband row onto NARROWBAND_SINGLE is
+// correct rather than a loss of useful signal.
+bool migrate_v1_to_v2(sqlite3* db) {
+    char* err = nullptr;
+    if (sqlite3_exec(db, "BEGIN TRANSACTION;", nullptr, nullptr, &err) != SQLITE_OK) {
+        sqlite3_free(err);
+        return false;
+    }
+    const char* update_sql =
+        "UPDATE runs SET filter_class = CASE filter_class "
+        "WHEN 0 THEN 1 WHEN 1 THEN 3 WHEN 2 THEN 4 ELSE filter_class END;";
+    if (sqlite3_exec(db, update_sql, nullptr, nullptr, &err) != SQLITE_OK) {
+        sqlite3_free(err);
+        sqlite3_exec(db, "ROLLBACK;", nullptr, nullptr, nullptr);
+        return false;
+    }
+    if (sqlite3_exec(db, "PRAGMA user_version = 2;", nullptr, nullptr, &err) != SQLITE_OK) {
+        sqlite3_free(err);
+        sqlite3_exec(db, "ROLLBACK;", nullptr, nullptr, nullptr);
+        return false;
+    }
+    if (sqlite3_exec(db, "COMMIT;", nullptr, nullptr, &err) != SQLITE_OK) {
+        sqlite3_free(err);
+        return false;
+    }
+    return true;
+}
+
+// Runs the v1->v2 migration when `db` is an existing DB (has a `runs`
+// table already) whose user_version is behind the current schema. Must be
+// called BEFORE apply_pragmas_and_schema(), which unconditionally stamps
+// PRAGMA user_version to the current schema version via kSchema's trailer
+// -- that would erase the pre-migration version signal we need to read.
+// No-op (returns true) for a brand-new file (no runs table yet) or a DB
+// that is already current.
+bool migrate_if_needed(sqlite3* db) {
+    if (!table_exists(db, "runs")) return true;
+    if (read_user_version(db) >= 2) return true;
+    return migrate_v1_to_v2(db);
 }
 
 bool integrity_ok(sqlite3* db) {
@@ -94,11 +171,14 @@ sqlite3* open_rating_db(const std::string& path) {
             if (db) sqlite3_close(db);
             return nullptr;
         }
+        // Migrate an existing v1 DB (old UI color-axis filter_class space)
+        // to v2 (new FilterClass identity codes) before the schema-apply
+        // below stamps user_version to the current schema unconditionally.
         // A garbage-bytes file opens without error but fails on the first
-        // real statement (SQLITE_NOTADB). Treat schema-apply failure as
-        // corruption on attempt 0 so we rename-and-retry the same way as a
-        // post-integrity-check failure.
-        const bool schema_ok   = apply_pragmas_and_schema(db);
+        // real statement (SQLITE_NOTADB); treat a migration failure as
+        // corruption too, same rename-and-retry path.
+        const bool migration_ok = migrate_if_needed(db);
+        const bool schema_ok    = migration_ok && apply_pragmas_and_schema(db);
         const bool integrity   = schema_ok && integrity_ok(db);
         if (schema_ok && integrity) {
             return db;

@@ -36,10 +36,19 @@ struct LoadResult {
     std::string error;
 };
 
+// Returns the QE database JSON compiled into the module binary (embedded at
+// build time from share/qe_database.json). Defined in the generated TU
+// qe_database_embedded.cpp — see embed_qe_database.cmake.
+std::string embedded_qe_database_json();
+
 class QEDatabase {
 public:
     QEDatabase() = default;
 
+    // Parse the compiled-in database. This is the production path: no file,
+    // no path lookup, no working-directory assumption — it cannot be "not found".
+    LoadResult load_embedded();
+    // Parse a database from a file on disk (tests / advanced overrides).
     LoadResult load_shipped(const std::string& path);
     LoadResult load_override(const std::string& path);
 
