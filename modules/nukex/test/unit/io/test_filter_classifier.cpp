@@ -40,6 +40,23 @@ TEST_CASE("FilterClassifier: H-alpha single-line narrowband on mono", "[filter_c
     REQUIRE(c.classify(make_meta("S2"))      .cls == FilterClass::NARROWBAND_SINGLE);
 }
 
+TEST_CASE("FilterClassifier: clear/broadband slot labels route as broadband, never UNKNOWN",
+          "[filter_classifier]") {
+    FilterClassifier c;
+    // "Full" is the user's Optolong L-Pro / L-QEF broadband slot label. On a
+    // Bayer frame it MUST classify as BROADBAND_OSC — not UNKNOWN, which would
+    // hard-abort the whole stack (regression from v5.1.0).
+    Filter full = c.classify(make_meta("Full", "RGGB"));
+    REQUIRE(full.cls == FilterClass::BROADBAND_OSC);
+    REQUIRE(full.name == "Full"); // original label preserved for logging
+
+    for (const char* name : {"Full", "Clear", "None", "Open", "L-Pro",
+                             "L-QEF", "L-Quad Enhance", "UV/IR", "UV-IR-Cut"}) {
+        REQUIRE(c.classify(make_meta(name, "RGGB")).cls == FilterClass::BROADBAND_OSC);
+        REQUIRE(c.classify(make_meta(name)).cls == FilterClass::BROADBAND_L); // mono variant
+    }
+}
+
 TEST_CASE("FilterClassifier: L / R / G / B broadband on mono", "[filter_classifier]") {
     FilterClassifier c;
     REQUIRE(c.classify(make_meta("L"))         .cls == FilterClass::BROADBAND_L);

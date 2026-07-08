@@ -1,4 +1,4 @@
-// ── NukeX v4 OpenCL Common Definitions ──────────────────────────
+// ── NukeX v5 OpenCL Common Definitions ──────────────────────────
 // Shared constants and helper functions for all GPU kernels.
 // All kernels use float (IEEE 754 single precision).
 

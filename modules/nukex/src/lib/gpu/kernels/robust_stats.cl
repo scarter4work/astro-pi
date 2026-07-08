@@ -1,4 +1,4 @@
-// ── NukeX v4: Kernel 2 — Robust Statistics ──────────────────────
+// ── NukeX v5: Kernel 2 — Robust Statistics ──────────────────────
 // One work-item per (voxel, channel) pair.
 // Global size = batch_size * n_channels.
 //

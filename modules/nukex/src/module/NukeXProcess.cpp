@@ -3,6 +3,7 @@
 
 #include "NukeXProcess.h"
 #include "NukeXParameters.h"
+#include "NukeXVersion.h"
 #include <pcl/ErrorHandler.h>
 #include <pcl/Settings.h>
 #include "NukeXInstance.h"
@@ -65,7 +66,7 @@ String NukeXProcess::Description() const
 {
    return
       "<html>"
-      "<p><b>NukeX v4</b> &mdash; Distribution-Fitted Stacking</p>"
+      "<p><b>NukeX v" NUKEX_STR(NUKEX_MODULE_VERSION_MAJOR) "</b> &mdash; Distribution-Fitted Stacking</p>"
       "<p>NukeX integrates subframes using per-pixel distribution fitting "
       "(Student-t, Gaussian Mixture, Contamination, KDE) to determine the "
       "optimal output value for each pixel. Unlike averaging or sigma-clipping, "
