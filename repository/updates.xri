@@ -6,19 +6,20 @@
       <p>Repository: https://raw.githubusercontent.com/scarter4work/astro-pi/main/repository/</p>
    </description>
    <platform os="linux" arch="x64" version="1.8.0:2.0.0">
-      <package fileName="20260708-linux-x64-NukeX.tar.gz" sha1="774122d3267981127354c112f9d3a3faa8d4258b" type="module" releaseDate="20260708">
+      <package fileName="20260709-linux-x64-NukeX.tar.gz" sha1="e7b88ba26fc0a9b9b4eeb19d1c05ec4d93baeec1" type="module" releaseDate="20260709">
          <title>NukeX</title>
          <description>
             <p>
-               <b>NukeX 5.1.0.1</b>
+               <b>NukeX 5.1.0.2</b>
             </p>
+            <p>v5.1.0.2: Phase B batch sizing is now bounded by available system RAM (not just GPU VRAM), fixing an out-of-memory kill on hosts where RAM is smaller than VRAM headroom (e.g. a 16 GB GPU on a 30 GB machine). Per-batch host footprint is now shown in the Phase B log.</p>
             <p>Astrophotography integration and stretching module. v5.1.0 is a color-science overhaul: physically-grounded, QE-database-driven channel decomposition for OSC/mono and dual-narrowband workflows (fixes the v4 green cast), with per-channel frame accounting for heterogeneous-geometry batches. The QE database is compiled into the module, so it installs with no extra files.</p>
             <p>v5.1.0.1: broadband / clear filter-wheel slot labels (Full, Clear, None, Open, L-Pro, L-QEF, UV/IR-cut) on Bayer frames now route as plain OSC instead of hard-aborting the stack; corrected stale &quot;v4&quot; labels in the UI to v5.</p>
          </description>
       </package>
    </platform>
    <platform os="all" arch="noarch" version="1.8.0:2.0.0">
-      <package fileName="EZStretch_v1.0.10.zip" sha1="5a642c0409b3200ccc6b0a36e1e8b6a9ee048b61" type="script" releaseDate="20260708">
+      <package fileName="EZStretch_v1.0.10.zip" sha1="2714c4063e74284c94b7acdd6d5c84d3ea0e8a71" type="script" releaseDate="20260709">
          <title>EZ Stretch</title>
          <description>
             <p>
@@ -27,7 +28,7 @@
             <p>Unified stretch suite combining three algorithms in a single interface.</p>
          </description>
       </package>
-      <package fileName="EZDonutRepair_v1.0.3.zip" sha1="e6524f982ccc99b0906eec95c90858a24d5b0d38" type="script" releaseDate="20260708">
+      <package fileName="EZDonutRepair_v1.0.3.zip" sha1="5995dfccb88861eb6e32f80137bb535b0f61e1a6" type="script" releaseDate="20260709">
          <title>EZ Donut Repair</title>
          <description>
             <p>
@@ -36,7 +37,7 @@
             <p>Removes donut/dust artifacts from astrophotography frames.</p>
          </description>
       </package>
-      <package fileName="EZHazeKill_v1.0.1.zip" sha1="7ebdfe8e46c73aab32eeba7aab169a296886b1f2" type="script" releaseDate="20260708">
+      <package fileName="EZHazeKill_v1.0.1.zip" sha1="6c3033477f590f2bbc6c43df91207570ea0ac016" type="script" releaseDate="20260709">
          <title>EZ Haze Kill</title>
          <description>
             <p>
@@ -45,7 +46,7 @@
             <p>Gradient and haze reduction.</p>
          </description>
       </package>
-      <package fileName="gaia-depth-grade_v1.0.12.zip" sha1="e03d4da037796af1630e77bb67f8727ab1f4202c" type="script" releaseDate="20260708">
+      <package fileName="gaia-depth-grade_v1.0.12.zip" sha1="b75a6ee5f13e46f201093bc0b1b60955d00b49b1" type="script" releaseDate="20260709">
          <title>Gaia Depth Grade</title>
          <description>
             <p>
@@ -58,4 +59,4 @@
       </package>
    </platform>
 </xri>
-<Signature developerId="scarter4work" timestamp="2026-07-08T22:18:22.525Z" encoding="Base64">UJsE+cmeCgAMXcFv1SXBxfi99dWXr9nTaJrC9z3Gd0//UH/+ox2i6DiwoF9XM46GY1lAUWvfqX851/CO36fRAg==</Signature>
+<Signature developerId="scarter4work" timestamp="2026-07-09T04:29:42.281Z" encoding="Base64">1gCfQ3uQ5xdURij13oBdJ0v37sfdvVsFml28AOg9Pha+ivGxzunDJeqEpqyq1Oz3Dzml0bVxsHI/Alpmqbi+AA==</Signature>

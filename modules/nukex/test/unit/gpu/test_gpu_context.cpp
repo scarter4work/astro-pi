@@ -46,3 +46,25 @@ TEST_CASE("GPU: batch size estimation is reasonable", "[gpu]") {
     // CPU fallback with 2 GB should still be substantial
     REQUIRE(batch > 1000);
 }
+
+TEST_CASE("GPU: batch size is bounded by host RAM, not just VRAM", "[gpu]") {
+    // Regression for the Phase-B OOM kill: the shadow buffers live in host RAM
+    // too, so a batch sized only to fit a large GPU's VRAM over-allocated system
+    // RAM and got OOM-killed. The 48-frame / 4-channel broadband-OSC case that
+    // blew up: ~1788 bytes/voxel.
+    const size_t GB = 1024ULL * 1024 * 1024;
+    const size_t vram = 13ULL * GB;   // ~85% of a 16 GB card
+
+    // A tight host budget MUST cap the batch below the VRAM-only figure.
+    int host_bound = GPUContext::batch_size_for_budgets(48, 4, vram, 4 * GB);
+    int vram_only  = GPUContext::batch_size_for_budgets(48, 4, vram, 1000 * GB);
+    REQUIRE(host_bound < vram_only);
+    REQUIRE(host_bound == static_cast<int>((4 * GB) / 1788));  // exact host bound
+
+    // Symmetric: a tiny VRAM budget caps it when the GPU is the scarce side.
+    REQUIRE(GPUContext::batch_size_for_budgets(48, 4, 1 * GB, 1000 * GB)
+            == static_cast<int>((1 * GB) / 1788));
+
+    // Always at least one voxel, even with an absurdly small budget.
+    REQUIRE(GPUContext::batch_size_for_budgets(48, 4, 0, 0) == 1);
+}
