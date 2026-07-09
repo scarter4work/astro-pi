@@ -30,8 +30,20 @@ public:
     GPUBackend backend() const { return backend_; }
     const GPUDeviceInfo& device_info() const { return device_info_; }
 
-    /// Estimate how many voxels fit in a single VRAM batch.
+    /// Estimate how many voxels fit in a single Phase-B batch, bounded by the
+    /// SMALLER of GPU VRAM and available system RAM. The shadow buffers are
+    /// allocated in host RAM as well as on the device, so host memory is often
+    /// the tighter constraint (e.g. a large-VRAM GPU on a modest-RAM host); a
+    /// VRAM-only estimate can drive the process into swap / OOM.
     int estimate_batch_size(int n_frames, int n_channels) const;
+
+    /// Pure batch-size calculation from explicit memory budgets (bytes).
+    /// Exposed so the sizing logic can be unit-tested without a GPU or a
+    /// particular host-memory state. Returns voxels that fit in
+    /// min(gpu_budget, host_budget), clamped to [1, INT_MAX].
+    static int batch_size_for_budgets(int n_frames, int n_channels,
+                                      size_t gpu_budget_bytes,
+                                      size_t host_budget_bytes);
 
 #if NUKEX_HAS_OPENCL
     cl_context       context() const { return context_; }

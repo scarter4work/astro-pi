@@ -449,9 +449,16 @@ std::int64_t GPUExecutor::execute_phase_b(
     bool use_gpu = context_.is_gpu_available() && kernels_.is_compiled();
 
     int total_batches = (total_voxels + batch_size - 1) / batch_size;
+    // Approximate host footprint of the shadow buffers per batch (the two
+    // dominant C*N*B float arrays: pixel_values + pixel_weights). Surfaced so a
+    // memory problem is visible in the log instead of an opaque OOM kill.
+    size_t approx_mb_per_batch =
+        (static_cast<size_t>(batch_size) * n_channels * N * 2 * sizeof(float))
+        / (1024 * 1024);
     obs.begin_phase("Phase B: Distribution fitting", total_batches);
     obs.advance(0, std::to_string(total_voxels) + " voxels, "
-                   + std::to_string(total_batches) + " batches");
+                   + std::to_string(total_batches) + " batches (~"
+                   + std::to_string(approx_mb_per_batch) + " MB/batch host)");
 
     std::string backend_tag = use_gpu ? " [GPU]" : " [CPU]";
 
