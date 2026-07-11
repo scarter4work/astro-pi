@@ -20,6 +20,7 @@
 
 **Environment facts established in Task 1 — all later tasks MUST follow these:**
 - Use the bare global **`processEvents()`**, NOT `CoreApplication.processEvents()` (the latter does not exist in this PI 1.9.4 build).
+- Use the bare global **`searchDirectory(pattern)`**, NOT `File.searchDirectory(...)` (documented but not callable in this build). It returns full paths.
 - **`console.*` output does NOT reach stdout under `PixInsight --automation-mode`.** Every headless test therefore writes its verdict to a result file and the runner greps *that file*, following the exact pattern established in `test/t_lib_roundtrip.js` (a `RESULT_LOG` path, a `W()` helper writing `log.outTextLn(...)` + `flush()`, and `try/catch` writing `PASS <name>` or `FAIL: <msg>`). Copy that pattern; do not grep stdout.
 - **`RCAstro.applyInPlace(resultWindow, targetView)` takes ownership of `resultWindow` and closes it.** Callers must NOT call `forceClose()` on it afterward (double-close).
 - `RCAstro.cleanup(paths)` removes the given files AND the per-run temp directories created by `RCAstro.tempDir()`.
@@ -649,7 +650,8 @@ function main() {
       assert(File.exists(outP), "no starless output");
 
       // Log EVERYTHING the CLI actually wrote, so Step 2 can read the real stars filename.
-      let found = File.searchDirectory(dir + "/*.xisf");
+      // NOTE: bare global searchDirectory() — File.searchDirectory() is NOT callable in this PI build.
+      let found = searchDirectory(dir + "/*.xisf");
       for (let i = 0; i < found.length; ++i) W("wrote: " + found[i]);
 
       assert(File.exists(starsP), "no stars output at assumed path " + starsP);
