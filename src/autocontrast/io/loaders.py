@@ -67,6 +67,36 @@ def load_fits(path: str | Path) -> LoadedImage:
 _FITS_SUFFIXES = {".fits", ".fit", ".fts"}
 
 
+def image_dimensions(path: str | Path) -> tuple[int, int]:
+    """Native ``(width, height)`` of an image on disk, without decoding its pixels.
+
+    Needed to compute how much :func:`load_image` downsampled a file, so a
+    WCS-derived pixel scale can be corrected to the scale of the array we actually
+    fingerprint (§2.2).
+    """
+    path = Path(path)
+    if path.suffix.lower() in _FITS_SUFFIXES:
+        with fits.open(path) as hdul:
+            header = hdul[0].header
+            return int(header["NAXIS1"]), int(header["NAXIS2"])
+    Image.MAX_IMAGE_PIXELS = None  # professional mosaics exceed the default guard
+    with Image.open(path) as im:
+        return im.size  # (width, height)
+
+
+def downsample_factor(path: str | Path, loaded: np.ndarray) -> float:
+    """How many native pixels each pixel of ``loaded`` represents (>= 1.0).
+
+    A WCS gives the pixel scale of the ORIGINAL file. If we fingerprint a
+    downsampled copy, the effective scale is coarser by exactly this factor —
+    multiply, or the energy spectrum's angular mapping (and therefore band-limiting,
+    §4.4) is wrong by that factor.
+    """
+    native_w, native_h = image_dimensions(path)
+    loaded_h, loaded_w = loaded.shape[:2]
+    return max(native_w, native_h) / max(loaded_w, loaded_h)
+
+
 def load_image(path: str | Path, max_dim: int | None = None) -> np.ndarray:
     """Load any supported image as an ``(H, W, 3)`` float64 array in [0, 1].
 

@@ -132,3 +132,39 @@ def test_auto_ingest_accepts_manual_annotation(tmp_path):
     assert outcome.ingested
     assert outcome.wcs.wcs_source == "manual"
     assert store.get("auto-3").provenance["wcs_source"] == "manual"
+
+
+def test_pixel_scale_is_corrected_for_downsampling(tmp_path):
+    """§2.2 regression: a WCS gives the ORIGINAL file's pixel scale. When we
+    fingerprint a downsampled copy, the stored scale must describe the array we
+    actually measured — otherwise band-limiting (§4.4) maps wavelet layers to
+    angular scales that are wrong by the downsample factor.
+
+    The Hubble Orion mosaic is 18000px at 0.1"/px; fingerprinted at 1200px its
+    effective scale is 15x coarser (~1.5"/px), NOT 0.1"/px.
+    """
+    from astropy.wcs import WCS
+    from pyavm import AVM
+    from PIL import Image as PILImage
+
+    nx = ny = 200
+    w = WCS(naxis=2)
+    w.wcs.ctype = ["RA---TAN", "DEC--TAN"]
+    w.wcs.crpix = [nx / 2, ny / 2]
+    w.wcs.crval = [83.822, -5.391]
+    w.wcs.cdelt = [-0.10 / 3600, 0.10 / 3600]   # 0.10 arcsec/px at native 200px
+    w.pixel_shape = (nx, ny)
+
+    plain = tmp_path / "_p.jpg"
+    rng = np.random.default_rng(0)
+    PILImage.fromarray((rng.uniform(0, 0.5, (ny, nx, 3)) * 255).astype(np.uint8)).save(plain)
+    tagged = tmp_path / "big.jpg"
+    AVM.from_wcs(w, shape=(ny, nx)).embed(str(plain), str(tagged))
+
+    store = FingerprintStore(tmp_path / "db.sqlite")
+    outcome = _auto(store, tagged, id="ds-1", n_scales=5, max_dim=100)  # 2x downsample
+
+    assert outcome.ingested
+    assert outcome.wcs.wcs_source == "avm"
+    # native 0.10"/px, fingerprinted at half size => effective 0.20"/px
+    assert outcome.record.fingerprint.pixel_scale_arcsec == pytest.approx(0.20, rel=1e-2)

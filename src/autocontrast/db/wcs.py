@@ -111,6 +111,10 @@ def _from_avm(path: Path, notes: list[str]) -> WcsResult | None:
         notes.append("AVM tag present but carries no celestial WCS")
         return None
 
+    # Professional mosaics legitimately exceed Pillow's decompression-bomb guard
+    # (the Hubble Orion mosaic is 18000x18000 = 324 Mpx). We are opening a file we
+    # fetched deliberately, only to read its dimensions.
+    Image.MAX_IMAGE_PIXELS = None
     with Image.open(path) as im:
         nx, ny = im.size
     ra, dec, radius, scale = _geometry(wcs.celestial, nx, ny)

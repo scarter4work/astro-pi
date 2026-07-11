@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from autocontrast.fingerprint.extract import extract
-from autocontrast.io.loaders import load_image
+from autocontrast.io.loaders import downsample_factor, load_image
 
 from .records import ReferenceRecord
 from .store import FingerprintStore
@@ -40,10 +40,16 @@ def ingest_reference(
 
     ``palette_class`` must be declared for references (§4.3 — it cannot be derived
     from a rendered raster). ``id`` is auto-generated if omitted.
+
+    ``pixel_scale_arcsec`` is the scale of the ORIGINAL file (that is what a WCS
+    describes). If ``max_dim`` downsamples the image, the stored scale is corrected
+    to the array we actually fingerprint — otherwise the energy spectrum's angular
+    mapping, and hence band-limiting (§4.4), is wrong by the downsample factor.
     """
     rgb = load_image(image_path, max_dim=max_dim)
+    effective_scale = pixel_scale_arcsec * downsample_factor(image_path, rgb)
     fingerprint = extract(
-        rgb, pixel_scale_arcsec=pixel_scale_arcsec, n_scales=n_scales,
+        rgb, pixel_scale_arcsec=effective_scale, n_scales=n_scales,
         psf_fwhm_arcsec=psf_fwhm_arcsec, palette_class=palette_class,
     )
     record = ReferenceRecord(

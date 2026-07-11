@@ -171,3 +171,20 @@ def test_unreadable_avm_tag_is_reported_not_buried(tmp_path, monkeypatch):
     assert result.solved is False
     assert "unreadable" in result.detail
     assert "corrupt XMP packet" in result.detail
+
+
+def test_large_mosaic_does_not_trip_pillow_decompression_guard(tmp_path, monkeypatch):
+    """Professional mosaics are huge (the Hubble Orion mosaic is 18000x18000 = 324 Mpx)
+    and must not be rejected by Pillow's decompression-bomb guard while we read their
+    AVM WCS."""
+    from PIL import Image as PILImage
+
+    path = tmp_path / "big.jpg"
+    _avm_tagged_jpg(path, tmp_path, nx=200, ny=200)
+    # Force the guard to trip for a 200x200 image; acquire_wcs must still solve.
+    monkeypatch.setattr(PILImage, "MAX_IMAGE_PIXELS", 100)
+
+    result = acquire_wcs(path)
+
+    assert result.solved
+    assert result.wcs_source == "avm"

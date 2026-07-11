@@ -1,0 +1,69 @@
+[
+  {
+    "id": "heic0601a",
+    "url": "https://cdn.esahubble.org/archives/images/large/heic0601a.jpg",
+    "filename": "heic0601a.jpg",
+    "target": "M42 / NGC 1976 (Orion Nebula) — HST ACS mosaic",
+    "palette_class": "RGB",
+    "source_type": "professional_render",
+    "attribution": "NASA, ESA, M. Robberto (STScI/ESA) & HST Orion Treasury Project Team",
+    "license": "CC BY 4.0",
+    "source_url": "https://esahubble.org/images/heic0601a/",
+    "wcs_note": "Carries a valid embedded AVM tag — parsed cleanly, and it wins over the declared fallback below.",
+    "ra_deg": 83.7905, "dec_deg": -5.4140, "fov_radius_arcmin": 21.23,
+    "pixel_scale_arcsec": 0.1001, "psf_fwhm_arcsec": 2.0
+  },
+  {
+    "id": "eso1103a",
+    "url": "https://cdn.eso.org/images/large/eso1103a.jpg",
+    "filename": "eso1103a.jpg",
+    "target": "M42 / NGC 1976 (Orion Nebula) — MPG/ESO 2.2m WFI",
+    "palette_class": "RGB",
+    "source_type": "professional_render",
+    "attribution": "ESO / Igor Chekalin",
+    "license": "CC BY 4.0",
+    "source_url": "https://www.eso.org/public/images/eso1103a/",
+    "wcs_note": "AVM tag is present but unparseable (pyavm rejects a multi-valued Spatial.Notes). Values below are from ESO's published metadata: RA 5 35 17.32, Dec -5 23 27.55, FoV 35.49 x 34.10 arcmin over 8948x8597 px => 0.238 arcsec/px, half-diagonal 24.61 arcmin. Do NOT force-parse the AVM: doing so yields corrupt coordinates (81.97, -3.74).",
+    "ra_deg": 83.82217, "dec_deg": -5.39099, "fov_radius_arcmin": 24.61,
+    "pixel_scale_arcsec": 0.238, "psf_fwhm_arcsec": 2.0
+  },
+  {
+    "id": "opo0205c",
+    "url": "https://cdn.esahubble.org/archives/images/large/opo0205c.jpg",
+    "filename": "opo0205c.jpg",
+    "target": "M42 / NGC 1976 (Orion Nebula) — ground-based (AAO)",
+    "palette_class": "RGB",
+    "source_type": "professional_render",
+    "attribution": "David Malin / Anglo-Australian Observatory",
+    "license": "CC BY 4.0",
+    "source_url": "https://esahubble.org/images/opo0205c/",
+    "wcs_note": "NO trustworthy WCS: AVM unparseable, and ESA/Hubble publishes no Field of View or coordinates for this release. Deliberately left unannotated so it is SKIPPED (§5.2) rather than seeded with a guessed scale — a wrong pixel scale corrupts band-limiting (§4.4). Resolve via tier 3: PixInsight ImageSolver.",
+    "psf_fwhm_arcsec": 2.0
+  },
+  {
+    "id": "opo0205d",
+    "url": "https://cdn.esahubble.org/archives/images/large/opo0205d.jpg",
+    "filename": "opo0205d.jpg",
+    "target": "M42 / NGC 1976 (Orion Nebula) — HST WFPC2",
+    "palette_class": "RGB",
+    "source_type": "professional_render",
+    "attribution": "NASA/ESA and C.R. O'Dell (Vanderbilt University)",
+    "license": "CC BY 4.0",
+    "source_url": "https://esahubble.org/images/opo0205d/",
+    "wcs_note": "NO trustworthy WCS: AVM unparseable; ESA/Hubble lists this as a 'Collage' with no Field of View or coordinates. Skipped pending ImageSolver (tier 3).",
+    "psf_fwhm_arcsec": 2.0
+  },
+  {
+    "id": "opo9545a",
+    "url": "https://cdn.esahubble.org/archives/images/large/opo9545a.jpg",
+    "filename": "opo9545a.jpg",
+    "target": "M42 / NGC 1976 (Orion Nebula) — HST",
+    "palette_class": "RGB",
+    "source_type": "professional_render",
+    "attribution": "NASA/ESA and C.R. O'Dell (Rice University)",
+    "license": "CC BY 4.0",
+    "source_url": "https://esahubble.org/images/opo9545a/",
+    "wcs_note": "NO trustworthy WCS: AVM unparseable, no published FoV/coordinates. Skipped pending ImageSolver (tier 3).",
+    "psf_fwhm_arcsec": 2.0
+  }
+]
