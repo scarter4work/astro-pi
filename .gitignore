@@ -1,0 +1,31 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+
+# Test / tooling
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
+# Project data — never commit reference/amateur test images
+data/references/*
+data/amateur/*
+!data/references/.gitkeep
+!data/amateur/.gitkeep
+!data/references/PROVENANCE.md
+
+# Local fingerprint cache (Phase 1)
+*.sqlite
+*.sqlite3
+
+# Editor
+.vscode/
+.idea/

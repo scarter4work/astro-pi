@@ -1,0 +1,39 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "autocontrast"
+version = "0.1.0"
+description = "Reference-guided post-processing optimizer for astrophotography (Phase 0: metrics & fingerprint library)"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "Proprietary" }
+authors = [{ name = "scarter4work" }]
+
+# Phase 0 is a standalone Python library with no PixInsight and no AI dependencies.
+# Keep this list minimal — every dependency here must run in the offline eval harness (§10).
+dependencies = [
+    "numpy>=1.26",
+    "astropy>=6.0",   # FITS I/O + WCS
+    "scipy>=1.13",    # wasserstein_distance_nd (chroma EMD), signal filters
+    "pillow>=10.0",   # PNG/JPEG/TIFF renders (references ship as raster, not FITS)
+]
+
+[project.optional-dependencies]
+xisf = ["xisf>=0.9"]   # XISF reader — optional; FITS is the Phase 0 baseline
+dev = [
+    "pytest>=8.0",
+    "ruff>=0.5",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"
+
+[tool.ruff]
+line-length = 100
+src = ["src", "tests"]
