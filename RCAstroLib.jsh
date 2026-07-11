@@ -149,11 +149,23 @@ var RCAstro = {
       let cmdLine = parts.join(" ");
       console.writeln("running: " + cmdLine);
 
-      let errorMsg = "";
-      let buffer   = "";
+      let errorMsg   = "";
+      let stderrText = "";
+      let strayText  = "";
+      let buffer     = "";
       let dispatch = function(line) {
          line = line.trim();
-         if (line.length == 0 || line.charAt(0) != "{") { if (line.length) console.writeln(line); return; }
+         if (line.length == 0 || line.charAt(0) != "{") {
+            if (line.length) {
+               console.writeln(line);
+               // Non-JSON stray text (e.g. a C++ runtime abort/terminate message)
+               // observed empirically to arrive via the stdout channel rather than
+               // stderr in this ExternalProcess/xvfb harness. Accumulate it as a
+               // fallback error source alongside stderrText.
+               strayText += (strayText.length ? "\n" : "") + line;
+            }
+            return;
+         }
          let obj = null;
          try { obj = JSON.parse(line); } catch (e) { return; }
          if (obj) {
@@ -171,7 +183,10 @@ var RCAstro = {
       };
       p.onStandardErrorDataAvailable = function() {
          let e = String(this.stderr).trim();
-         if (e.length) console.warningln("rc-astro[stderr]: " + e);
+         if (e.length) {
+            console.warningln("rc-astro[stderr]: " + e);
+            stderrText += (stderrText.length ? "\n" : "") + e;
+         }
       };
 
       try {
@@ -187,7 +202,19 @@ var RCAstro = {
 
       let exit = p.exitCode;
       let ok = (exit == 0) && (errorMsg.length == 0);
-      if (!ok && errorMsg.length == 0) errorMsg = "rc-astro exited with code " + exit;
+      // A JSON {"event":"error"} takes precedence (already captured above). If the
+      // run failed without ever emitting one (license failure, crash, bad argument
+      // caught before JSON init, etc.), fall back to the accumulated stderr text so
+      // the real reason isn't lost — only fall back to the generic exit-code message
+      // when stderr is also empty.
+      if (!ok && errorMsg.length == 0) {
+         let trimmedStderr = stderrText.trim();
+         let trimmedStray  = strayText.trim();
+         let fallback = trimmedStderr.length ? trimmedStderr
+                      : trimmedStray.length  ? trimmedStray
+                      : "";
+         errorMsg = fallback.length ? fallback : ("rc-astro exited with code " + exit);
+      }
       return { exit: exit, ok: ok, errorMsg: errorMsg };
    }
 };

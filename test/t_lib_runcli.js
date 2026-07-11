@@ -17,9 +17,16 @@ function main() {
       let srcStdDev = src.mainView.image.stdDev();
 
       let sawProgress = false;
+      let deviceInfo = null;
       let r = RCAstro.runCli("bxt",
          [inP, "--ss", "0.25", "--sn", "0.90", "--device", "gpu", "--output", outP],
-         function(ev){ if (ev && ev.event == "progress") sawProgress = true; });
+         function(ev){
+            if (ev && ev.event == "progress") sawProgress = true;
+            // Observed shape: {"event":"info","topic":"device","device":"gpu",
+            // "id":"gpu","name":"NVIDIA GeForce RTX 5070 Ti","provider":"CUDA",
+            // "runtime":"onnxruntime 1.23.2"}
+            if (ev && ev.event == "info" && ev.topic == "device") deviceInfo = ev;
+         });
 
       assert(r.ok, "runCli reported failure: " + r.errorMsg);
       assert(File.exists(outP), "no output file produced");
@@ -29,8 +36,41 @@ function main() {
       assert(Math.abs(out.mainView.image.stdDev() - srcStdDev) > 1e-9, "output identical to input");
       W("progress events seen: " + sawProgress);
 
+      // Finding 3: GPU selection must be asserted from a real device-info event,
+      // not just trusted because we passed --device gpu on the command line.
+      assert(deviceInfo != null, "no device info event observed from rc-astro");
+      assert(deviceInfo.device == "gpu", "rc-astro did not report using the gpu device (got: " + deviceInfo.device + ")");
+      W("device used: " + deviceInfo.device + " (" + (deviceInfo.name || "unknown name") + ")");
+
       src.forceClose(); out.forceClose();
       RCAstro.cleanup([inP, outP]);
+
+      // Finding 2/1: negative-path — a genuine rc-astro failure with no JSON
+      // error event at all (it aborts before ever getting there), so the only
+      // way to get an informative errorMsg is the stderr-fallback added for
+      // Finding 1. A corrupt/non-XISF input file reliably reproduces this
+      // (verified manually: rc-astro core-dumps with
+      // "terminate called after throwing an instance of 'rcastro::Error' ...
+      // is not a valid XISF file (bad signature)" on stderr and NO JSON error
+      // line on stdout).
+      let dir2 = RCAstro.tempDir();
+      let badInP = dir2 + "/not_really_xisf.xisf";
+      let badOutP = dir2 + "/out.xisf";
+      let junk = new File;
+      junk.createForWriting(badInP);
+      junk.outTextLn("not an image");
+      junk.close();
+
+      let r2 = RCAstro.runCli("bxt",
+         [badInP, "--device", "gpu", "--output", badOutP],
+         null);
+
+      assert(r2.ok === false, "expected runCli to report failure for a corrupt input file");
+      assert(typeof r2.errorMsg == "string" && r2.errorMsg.trim().length > 0, "errorMsg must be a non-empty string on failure");
+      W("negative-path errorMsg: " + r2.errorMsg);
+
+      RCAstro.cleanup([badInP, badOutP]);
+
       W("PASS t_lib_runcli");
    } catch (e) {
       W("FAIL: " + e.message);
