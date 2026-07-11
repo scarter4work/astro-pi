@@ -18,6 +18,12 @@
 - Platform is Linux only. Menu names end with " (CLI)". Scripts install to `~/PixInsightScripts/RC-Astro/` and register via Feature Scripts.
 - Reference idioms (verified working on this box): `/opt/PixInsight/src/scripts/Toolbox/GraXpertLib.jsh` (ExternalProcess, PixelMath assign, saveAs, ImageWindow.open) and `SetiAStroCosmicClarityDenoise.js` (Parameters save/load, dialog controls).
 
+**Environment facts established in Task 1 — all later tasks MUST follow these:**
+- Use the bare global **`processEvents()`**, NOT `CoreApplication.processEvents()` (the latter does not exist in this PI 1.9.4 build).
+- **`console.*` output does NOT reach stdout under `PixInsight --automation-mode`.** Every headless test therefore writes its verdict to a result file and the runner greps *that file*, following the exact pattern established in `test/t_lib_roundtrip.js` (a `RESULT_LOG` path, a `W()` helper writing `log.outTextLn(...)` + `flush()`, and `try/catch` writing `PASS <name>` or `FAIL: <msg>`). Copy that pattern; do not grep stdout.
+- **`RCAstro.applyInPlace(resultWindow, targetView)` takes ownership of `resultWindow` and closes it.** Callers must NOT call `forceClose()` on it afterward (double-close).
+- `RCAstro.cleanup(paths)` removes the given files AND the per-run temp directories created by `RCAstro.tempDir()`.
+
 ---
 
 ## File Structure
@@ -245,37 +251,50 @@ Create `test/t_lib_runcli.js`:
 
 ```javascript
 #include "../RCAstroLib.jsh"
-function assert(c, m){ if(!c){ console.criticalln("FAIL: "+m); throw new Error(m);} }
+// Result goes to a FILE — console.* does not reach stdout under --automation-mode.
+// Same pattern as test/t_lib_roundtrip.js (Task 1).
+var RESULT_LOG = "/tmp/rc_t2_result.log";
+function assert(c, m){ if(!c){ throw new Error(m); } }
 
 function main() {
-   let src = ImageWindow.open("/home/scarter4work/astro_work/cygnus/gxp/panel_1-1.xisf")[0];
-   let dir = RCAstro.tempDir();
-   let inP = RCAstro.saveView(src.mainView, dir);
-   let outP = dir + "/out.xisf";
+   let log = new File;
+   log.createForWriting(RESULT_LOG);
+   function W(s){ log.outTextLn(s); log.flush(); console.noteln(s); }
 
-   let sawProgress = false;
-   let r = RCAstro.runCli("bxt",
-      [inP, "--ss", "0.25", "--sn", "0.90", "--device", "gpu", "--output", outP],
-      function(ev){ if (ev && ev.event == "progress") sawProgress = true; });
+   try {
+      let src = ImageWindow.open("/home/scarter4work/astro_work/cygnus/gxp/panel_1-1.xisf")[0];
+      let dir = RCAstro.tempDir();
+      let inP = RCAstro.saveView(src.mainView, dir);
+      let outP = dir + "/out.xisf";
+      let srcStdDev = src.mainView.image.stdDev();
 
-   assert(r.ok, "runCli reported failure: " + r.errorMsg);
-   assert(File.exists(outP), "no output file produced");
+      let sawProgress = false;
+      let r = RCAstro.runCli("bxt",
+         [inP, "--ss", "0.25", "--sn", "0.90", "--device", "gpu", "--output", outP],
+         function(ev){ if (ev && ev.event == "progress") sawProgress = true; });
 
-   let out = RCAstro.importResult(outP, "cli_out");
-   // output must differ from input (deconvolution changed pixels)
-   let dm = Math.abs(out.mainView.image.mean() - src.mainView.image.mean());
-   assert(out.mainView.image.stdDev() != src.mainView.image.stdDev() || dm > 0, "output identical to input");
+      assert(r.ok, "runCli reported failure: " + r.errorMsg);
+      assert(File.exists(outP), "no output file produced");
 
-   src.forceClose(); out.forceClose();
-   RCAstro.cleanup([inP, outP]);
-   console.noteln("PASS t_lib_runcli");
+      let out = RCAstro.importResult(outP, "cli_out");
+      // output must differ from input (deconvolution changed pixels)
+      assert(Math.abs(out.mainView.image.stdDev() - srcStdDev) > 1e-9, "output identical to input");
+      W("progress events seen: " + sawProgress);
+
+      src.forceClose(); out.forceClose();
+      RCAstro.cleanup([inP, outP]);
+      W("PASS t_lib_runcli");
+   } catch (e) {
+      W("FAIL: " + e.message);
+   }
+   log.close();
 }
 main();
 ```
 
 - [ ] **Step 2: Run it, verify it fails**
 
-Run: `test/run-headless.sh "$PWD/test/t_lib_runcli.js" 2>&1 | tee /tmp/rc_t2.log; grep -q "PASS t_lib_runcli" /tmp/rc_t2.log && echo OK || echo FAILED`
+Run: `rm -f /tmp/rc_t2_result.log; test/run-headless.sh "$PWD/test/t_lib_runcli.js" >/dev/null 2>&1; grep -q "PASS t_lib_runcli" /tmp/rc_t2_result.log 2>/dev/null && echo OK || { echo FAILED; cat /tmp/rc_t2_result.log 2>/dev/null; }`
 Expected: `FAILED` (`runCli` undefined).
 
 - [ ] **Step 3: Implement `runCli`**
@@ -342,8 +361,8 @@ Add to the `RCAstro` object in `RCAstroLib.jsh` (before the closing `}` of the o
 
 - [ ] **Step 4: Run it, verify it passes**
 
-Run: `test/run-headless.sh "$PWD/test/t_lib_runcli.js" 2>&1 | tee /tmp/rc_t2.log; grep -q "PASS t_lib_runcli" /tmp/rc_t2.log && echo OK || echo FAILED`
-Expected: `OK` (and log shows `Using gpu: NVIDIA GeForce RTX 5070 Ti`).
+Run: `rm -f /tmp/rc_t2_result.log; test/run-headless.sh "$PWD/test/t_lib_runcli.js" 2>&1 | tee /tmp/rc_t2_console.log >/dev/null; grep -q "PASS t_lib_runcli" /tmp/rc_t2_result.log && echo OK || { echo FAILED; cat /tmp/rc_t2_result.log; }`
+Expected: `OK`. Also confirm GPU was used: `grep -i "Using gpu" /tmp/rc_t2_console.log` should show `NVIDIA GeForce RTX 5070 Ti` (rc-astro's own stdout is echoed through the PJSR console handler).
 
 - [ ] **Step 5: Commit**
 
@@ -371,34 +390,46 @@ Create `test/t_bxt.js`:
 
 ```javascript
 #include "../RCAstroLib.jsh"
-function assert(c, m){ if(!c){ console.criticalln("FAIL: "+m); throw new Error(m);} }
+// Result goes to a FILE — console.* does not reach stdout under --automation-mode.
+var RESULT_LOG = "/tmp/rc_t3_result.log";
+function assert(c, m){ if(!c){ throw new Error(m); } }
 
 function main() {
-   let src = ImageWindow.open("/home/scarter4work/astro_work/cygnus/gxp/panel_1-1.xisf")[0];
-   let v = src.mainView;
-   let before = v.image.stdDev();
+   let log = new File;
+   log.createForWriting(RESULT_LOG);
+   function W(s){ log.outTextLn(s); log.flush(); console.noteln(s); }
 
-   // headless path: engine round-trip with BXT args (mirrors BXTParams.buildArgs)
-   let dir = RCAstro.tempDir();
-   let inP = RCAstro.saveView(v, dir);
-   let outP = dir + "/o.xisf";
-   let r = RCAstro.runCli("bxt", [inP, "--ss","0.25","--sn","0.90","--ansr","--device","gpu","--output",outP], null);
-   assert(r.ok, "bxt failed: " + r.errorMsg);
-   let out = RCAstro.importResult(outP, "bxt_out");
-   RCAstro.applyInPlace(out, v);
-   assert(Math.abs(v.image.stdDev() - before) > 1e-8, "applyInPlace did not modify target");
+   try {
+      let src = ImageWindow.open("/home/scarter4work/astro_work/cygnus/gxp/panel_1-1.xisf")[0];
+      let v = src.mainView;
+      let before = v.image.stdDev();
 
-   out.forceClose(); src.forceClose();
-   RCAstro.cleanup([inP, outP]);
-   console.noteln("PASS t_bxt");
+      // headless path: engine round-trip with BXT args (mirrors BXTParams.buildArgs)
+      let dir = RCAstro.tempDir();
+      let inP = RCAstro.saveView(v, dir);
+      let outP = dir + "/o.xisf";
+      let r = RCAstro.runCli("bxt", [inP, "--ss","0.25","--sn","0.90","--ansr","--device","gpu","--output",outP], null);
+      assert(r.ok, "bxt failed: " + r.errorMsg);
+
+      let out = RCAstro.importResult(outP, "bxt_out");
+      RCAstro.applyInPlace(out, v);   // NOTE: applyInPlace closes `out` — do NOT forceClose it
+      assert(Math.abs(v.image.stdDev() - before) > 1e-8, "applyInPlace did not modify target");
+
+      src.forceClose();
+      RCAstro.cleanup([inP, outP]);
+      W("PASS t_bxt");
+   } catch (e) {
+      W("FAIL: " + e.message);
+   }
+   log.close();
 }
 main();
 ```
 
-- [ ] **Step 2: Run it, verify it fails**
+- [ ] **Step 2: Run it, verify the baseline**
 
-Run: `test/run-headless.sh "$PWD/test/t_bxt.js" 2>&1 | tee /tmp/rc_t3.log; grep -q "PASS t_bxt" /tmp/rc_t3.log && echo OK || echo FAILED`
-Expected: `FAILED` first run only if engine bug; if engine is correct this passes — that is acceptable (this test guards the BXT arg set + applyInPlace). Record the result.
+Run: `rm -f /tmp/rc_t3_result.log; test/run-headless.sh "$PWD/test/t_bxt.js" >/dev/null 2>&1; grep -q "PASS t_bxt" /tmp/rc_t3_result.log 2>/dev/null && echo OK || { echo FAILED; cat /tmp/rc_t3_result.log 2>/dev/null; }`
+Note: the engine already exists (Tasks 1–2), so this test may PASS on its first run. That is expected and acceptable — it is an integration guard for the BXT arg set + `applyInPlace`, not a red-green unit test. Record whichever result you get; if it FAILS, fix the arg set before writing `RCAstroBXT.js`.
 
 - [ ] **Step 3: Implement `RCAstroBXT.js`**
 
@@ -472,8 +503,7 @@ function runBXT(view) {
       let r = RCAstro.runCli("bxt", BXTParams.buildArgs(inP, outP), null);
       if (!r.ok) { RCAstro.fail("BlurXTerminator failed: " + r.errorMsg); return; }
       let out = RCAstro.importResult(outP, view.id + "_bxt_tmp");
-      RCAstro.applyInPlace(out, view);
-      out.forceClose();
+      RCAstro.applyInPlace(out, view);   // applyInPlace closes `out` — do NOT forceClose it
    } finally {
       RCAstro.cleanup([inP, outP]);
    }
@@ -563,7 +593,7 @@ main();
 
 - [ ] **Step 4: Run the smoke test, verify it passes**
 
-Run: `test/run-headless.sh "$PWD/test/t_bxt.js" 2>&1 | tee /tmp/rc_t3.log; grep -q "PASS t_bxt" /tmp/rc_t3.log && echo OK || echo FAILED`
+Run: `rm -f /tmp/rc_t3_result.log; test/run-headless.sh "$PWD/test/t_bxt.js" >/dev/null 2>&1; grep -q "PASS t_bxt" /tmp/rc_t3_result.log && echo OK || { echo FAILED; cat /tmp/rc_t3_result.log; }`
 Expected: `OK`
 
 - [ ] **Step 5: Interactive sanity (manual, once)**
@@ -596,31 +626,48 @@ Create `test/t_sxt.js`:
 
 ```javascript
 #include "../RCAstroLib.jsh"
-function assert(c, m){ if(!c){ console.criticalln("FAIL: "+m); throw new Error(m);} }
+// Result goes to a FILE — console.* does not reach stdout under --automation-mode.
+var RESULT_LOG = "/tmp/rc_t4_result.log";
+function assert(c, m){ if(!c){ throw new Error(m); } }
 
 function main() {
-   let src = ImageWindow.open("/home/scarter4work/astro_work/cygnus/gxp/panel_1-1.xisf")[0];
-   let v = src.mainView; let id = v.id;
-   let dir = RCAstro.tempDir();
-   let inP = RCAstro.saveView(v, dir);
-   let outP = dir + "/" + id + "_starless.xisf";
-   // SXT writes stars-only beside starless as <base>_stars.xisf when --output-stars
-   let starsP = dir + "/" + id + "_starless_stars.xisf";
-   let r = RCAstro.runCli("sxt", [inP, "--output-stars", "--device","gpu","--output",outP], null);
-   assert(r.ok, "sxt failed: " + r.errorMsg);
-   assert(File.exists(outP), "no starless output");
-   assert(File.exists(starsP), "no stars output (expected beside starless)");
-   src.forceClose();
-   RCAstro.cleanup([inP, outP, starsP]);
-   console.noteln("PASS t_sxt");
+   let log = new File;
+   log.createForWriting(RESULT_LOG);
+   function W(s){ log.outTextLn(s); log.flush(); console.noteln(s); }
+
+   try {
+      let src = ImageWindow.open("/home/scarter4work/astro_work/cygnus/gxp/panel_1-1.xisf")[0];
+      let v = src.mainView; let id = v.id;
+      let dir = RCAstro.tempDir();
+      let inP = RCAstro.saveView(v, dir);
+      let outP = dir + "/" + id + "_starless.xisf";
+      // ASSUMPTION to be verified from disk in Step 2 — do NOT trust this name.
+      let starsP = dir + "/" + id + "_starless_stars.xisf";
+
+      let r = RCAstro.runCli("sxt", [inP, "--output-stars", "--device","gpu","--output",outP], null);
+      assert(r.ok, "sxt failed: " + r.errorMsg);
+      assert(File.exists(outP), "no starless output");
+
+      // Log EVERYTHING the CLI actually wrote, so Step 2 can read the real stars filename.
+      let found = File.searchDirectory(dir + "/*.xisf");
+      for (let i = 0; i < found.length; ++i) W("wrote: " + found[i]);
+
+      assert(File.exists(starsP), "no stars output at assumed path " + starsP);
+      src.forceClose();
+      RCAstro.cleanup([inP, outP, starsP]);
+      W("PASS t_sxt");
+   } catch (e) {
+      W("FAIL: " + e.message);
+   }
+   log.close();
 }
 main();
 ```
 
-- [ ] **Step 2: Run it, verify it fails or reveals the real stars-file name**
+- [ ] **Step 2: Run it — DISCOVER the real stars-file name from disk**
 
-Run: `test/run-headless.sh "$PWD/test/t_sxt.js" 2>&1 | tee /tmp/rc_t4.log; grep -q "PASS t_sxt" /tmp/rc_t4.log && echo OK || echo FAILED`
-Expected: If `FAILED` on the stars-file assertion, inspect `ls "$TMPDIR"/rc-astro-*/` to find the exact stars filename the CLI emits, and correct `starsP` (and later `runSXT`) to match. This step *discovers* the CLI's stars-output naming — do not guess it; read it from disk.
+Run: `rm -f /tmp/rc_t4_result.log; test/run-headless.sh "$PWD/test/t_sxt.js" >/dev/null 2>&1; cat /tmp/rc_t4_result.log`
+The `wrote: ...` lines list every file the CLI actually produced. If the assumed `_starless_stars.xisf` name is wrong, the log's `wrote:` lines give you the true one. **Correct `starsP` in the test AND in `runSXT` (Step 3) to the real name — do not guess it.** Re-run until `PASS t_sxt`.
 
 - [ ] **Step 3: Implement `RCAstroSXT.js`**
 
@@ -747,7 +794,7 @@ main();
 
 - [ ] **Step 4: Run the smoke test, verify it passes**
 
-Run: `test/run-headless.sh "$PWD/test/t_sxt.js" 2>&1 | tee /tmp/rc_t4.log; grep -q "PASS t_sxt" /tmp/rc_t4.log && echo OK || echo FAILED`
+Run: `rm -f /tmp/rc_t4_result.log; test/run-headless.sh "$PWD/test/t_sxt.js" >/dev/null 2>&1; grep -q "PASS t_sxt" /tmp/rc_t4_result.log && echo OK || { echo FAILED; cat /tmp/rc_t4_result.log; }`
 Expected: `OK`
 
 - [ ] **Step 5: Commit**
@@ -776,27 +823,42 @@ Create `test/t_nxt.js`:
 
 ```javascript
 #include "../RCAstroLib.jsh"
-function assert(c, m){ if(!c){ console.criticalln("FAIL: "+m); throw new Error(m);} }
+// Result goes to a FILE — console.* does not reach stdout under --automation-mode.
+var RESULT_LOG = "/tmp/rc_t5_result.log";
+function assert(c, m){ if(!c){ throw new Error(m); } }
 
 function main() {
-   let src = ImageWindow.open("/home/scarter4work/astro_work/cygnus/gxp/panel_1-1.xisf")[0];
-   let v = src.mainView; let before = v.image.stdDev();
-   let dir = RCAstro.tempDir(); let inP = RCAstro.saveView(v, dir); let outP = dir + "/o.xisf";
-   let r = RCAstro.runCli("nxt", [inP, "--dn","0.90","--it","2","--fs","5.0","--device","gpu","--output",outP], null);
-   assert(r.ok, "nxt failed: " + r.errorMsg);
-   let out = RCAstro.importResult(outP, "nxt_out");
-   RCAstro.applyInPlace(out, v);
-   assert(Math.abs(v.image.stdDev() - before) > 1e-8, "applyInPlace did not modify target");
-   out.forceClose(); src.forceClose(); RCAstro.cleanup([inP, outP]);
-   console.noteln("PASS t_nxt");
+   let log = new File;
+   log.createForWriting(RESULT_LOG);
+   function W(s){ log.outTextLn(s); log.flush(); console.noteln(s); }
+
+   try {
+      let src = ImageWindow.open("/home/scarter4work/astro_work/cygnus/gxp/panel_1-1.xisf")[0];
+      let v = src.mainView; let before = v.image.stdDev();
+      let dir = RCAstro.tempDir(); let inP = RCAstro.saveView(v, dir); let outP = dir + "/o.xisf";
+
+      let r = RCAstro.runCli("nxt", [inP, "--dn","0.90","--it","2","--fs","5.0","--device","gpu","--output",outP], null);
+      assert(r.ok, "nxt failed: " + r.errorMsg);
+
+      let out = RCAstro.importResult(outP, "nxt_out");
+      RCAstro.applyInPlace(out, v);   // NOTE: applyInPlace closes `out` — do NOT forceClose it
+      assert(Math.abs(v.image.stdDev() - before) > 1e-8, "applyInPlace did not modify target");
+
+      src.forceClose();
+      RCAstro.cleanup([inP, outP]);
+      W("PASS t_nxt");
+   } catch (e) {
+      W("FAIL: " + e.message);
+   }
+   log.close();
 }
 main();
 ```
 
 - [ ] **Step 2: Run it, verify pass/fail baseline**
 
-Run: `test/run-headless.sh "$PWD/test/t_nxt.js" 2>&1 | tee /tmp/rc_t5.log; grep -q "PASS t_nxt" /tmp/rc_t5.log && echo OK || echo FAILED`
-Expected: passes once the arg set is correct (guards NXT flags + apply).
+Run: `rm -f /tmp/rc_t5_result.log; test/run-headless.sh "$PWD/test/t_nxt.js" >/dev/null 2>&1; grep -q "PASS t_nxt" /tmp/rc_t5_result.log 2>/dev/null && echo OK || { echo FAILED; cat /tmp/rc_t5_result.log 2>/dev/null; }`
+Note: the engine already exists, so this may PASS on first run — expected and acceptable (integration guard for the NXT arg set + apply). If it FAILS, fix the arg set before writing `RCAstroNXT.js`.
 
 - [ ] **Step 3: Implement `RCAstroNXT.js`**
 
@@ -873,7 +935,7 @@ function runNXT(view) {
       let r = RCAstro.runCli("nxt", NXTParams.buildArgs(inP, outP), null);
       if (!r.ok) { RCAstro.fail("NoiseXTerminator failed: " + r.errorMsg); return; }
       let out = RCAstro.importResult(outP, view.id + "_nxt_tmp");
-      RCAstro.applyInPlace(out, view); out.forceClose();
+      RCAstro.applyInPlace(out, view);   // applyInPlace closes `out` — do NOT forceClose it
    } finally { RCAstro.cleanup([inP, outP]); }
 }
 
@@ -953,7 +1015,7 @@ main();
 
 - [ ] **Step 4: Run the smoke test, verify it passes**
 
-Run: `test/run-headless.sh "$PWD/test/t_nxt.js" 2>&1 | tee /tmp/rc_t5.log; grep -q "PASS t_nxt" /tmp/rc_t5.log && echo OK || echo FAILED`
+Run: `rm -f /tmp/rc_t5_result.log; test/run-headless.sh "$PWD/test/t_nxt.js" >/dev/null 2>&1; grep -q "PASS t_nxt" /tmp/rc_t5_result.log && echo OK || { echo FAILED; cat /tmp/rc_t5_result.log; }`
 Expected: `OK`
 
 - [ ] **Step 5: Commit**
@@ -1000,13 +1062,20 @@ Create `README.md` with: purpose (CLI wrappers avoiding the plugin's Blackwell T
 
 - [ ] **Step 3: Run the full headless test suite**
 
-Run:
+Each test writes its verdict to its own result log (`console.*` does not reach stdout under `--automation-mode`). Map test → result log:
+
 ```bash
 cd ~/PixInsightScripts/RC-Astro
+declare -A LOG=( [t_lib_roundtrip]=/tmp/rc_t1_result.log [t_lib_runcli]=/tmp/rc_t2_result.log \
+                 [t_bxt]=/tmp/rc_t3_result.log [t_sxt]=/tmp/rc_t4_result.log [t_nxt]=/tmp/rc_t5_result.log )
+fail=0
 for t in t_lib_roundtrip t_lib_runcli t_bxt t_sxt t_nxt; do
-  test/run-headless.sh "$PWD/test/$t.js" 2>&1 | tee /tmp/rc_$t.log
-  grep -q "PASS $t" /tmp/rc_$t.log && echo "== $t OK ==" || { echo "== $t FAILED =="; }
+  rm -f "${LOG[$t]}"
+  test/run-headless.sh "$PWD/test/$t.js" >/dev/null 2>&1 || true
+  if grep -q "PASS $t" "${LOG[$t]}" 2>/dev/null; then echo "== $t OK =="
+  else echo "== $t FAILED =="; cat "${LOG[$t]}" 2>/dev/null; fail=1; fi
 done
+exit $fail
 ```
 Expected: all five print `OK`.
 
