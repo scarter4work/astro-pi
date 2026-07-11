@@ -7,20 +7,37 @@ var RCAstro = {
    TITLE: "RC-Astro CLI",
    binaryPath: null,
 
+   // When false (the default — correct for headless/automation use), fail()
+   // never pops a modal dialog: it logs via console.criticalln() and throws,
+   // which is safe under `--automation-mode` (no one is present to dismiss a
+   // MessageBox, so a modal there is an indefinite hang). Interactive callers
+   // (a tool's dialog-driven main()) should set RCAstro.interactive = true
+   // before calling into the engine so failures are also shown to the user.
+   interactive: false,
+
    findBinary: function() {
       if (this.binaryPath && File.exists(this.binaryPath)) return this.binaryPath;
       let candidates = ["/usr/local/bin/rc-astro"];
-      // resolve via PATH
-      let p = new ExternalProcess;
-      p.start("/usr/bin/which rc-astro");
-      // NOTE: CoreApplication.processEvents() is documented but is not a
-      // callable function in this PixInsight 1.9.4 "Lockhart" build
-      // (verified: typeof CoreApplication.processEvents === "undefined").
-      // The bare global processEvents() (Global.processEvents, deprecated
-      // in the docs but functional here) is used instead.
-      for (; p.isStarting;) processEvents();
-      for (; p.isRunning;)  processEvents();
-      let which = String(p.stdout).trim();
+      // resolve via PATH -- best-effort only. The File.exists candidate loop
+      // below is authoritative, so if `which` itself is missing (p.start()
+      // throwing) we simply fall through with no extra candidate rather than
+      // letting a raw exception escape findBinary().
+      let which = "";
+      try {
+         let p = new ExternalProcess;
+         p.start("/usr/bin/which rc-astro");
+         // NOTE: CoreApplication.processEvents() is documented but is not a
+         // callable function in this PixInsight 1.9.4 "Lockhart" build
+         // (verified: typeof CoreApplication.processEvents === "undefined").
+         // The bare global processEvents() (Global.processEvents, deprecated
+         // in the docs but functional here) is used instead.
+         for (; p.isStarting;) processEvents();
+         for (; p.isRunning;)  processEvents();
+         which = String(p.stdout).trim();
+      } catch (e) {
+         console.warningln("RC-Astro: `which rc-astro` could not be run (" + e.message + "); " +
+                            "falling back to the fixed candidate path list.");
+      }
       if (which.length > 0) candidates.push(which);
       for (let i = 0; i < candidates.length; ++i)
          if (candidates[i] && File.exists(candidates[i])) { this.binaryPath = candidates[i]; return candidates[i]; }
@@ -40,10 +57,56 @@ var RCAstro = {
    },
 
    saveView: function(view, dir) {
-      let win = view.isMainView ? view.window : view.mainView.window;
+      // View has no `mainView` property (verified against the PJSR docs:
+      // /opt/PixInsight/doc/pjsr/objects/View/View.html lists isMainView,
+      // isPreview, window, etc. -- no mainView). Dropping this on a preview
+      // used to hit `undefined.window` and throw a raw, unhelpful TypeError.
+      // Fail loudly and specifically instead; preview support is out of scope.
+      if (!view.isMainView)
+         this.fail("RC-Astro: only main views are supported (previews are not). Target: " + view.id);
+      let win = view.window;
       let path = dir + "/" + view.id + ".xisf";
-      // saveAs(path, queryOptions=false, allowMessages=false, strict=true, verifyOverwrite=false)
-      if (!win.saveAs(path, false, false, true, false))
+
+      // ImageWindow.saveAs() has Save-As semantics: it re-binds THIS window's
+      // filePath to the new path (verified empirically -- see
+      // test/probe_fix5_saveas.js / fix-wave-b-report.md). Since `win` here is
+      // the user's real, on-screen window, saving straight to a throwaway temp
+      // path would leave the user's window pointing at a file that
+      // RCAstro.cleanup() later deletes -- their next Ctrl+S would silently
+      // stop overwriting the original image file.
+      //
+      // Fix: never call saveAs() on the source window itself. Build an
+      // independent, off-screen ImageWindow with matching geometry/sample
+      // format, copy the pixel data into it with Image.assign() (the
+      // canonical PJSR pattern used by bundled scripts, e.g.
+      // AstroMarkSignatureAdder.js, Halo-B-Gon.js), save AND close *that*
+      // temporary window, and leave the caller's real window/view completely
+      // untouched. Also verified empirically (test/probe_fix5_newwin.js) that
+      // this leaves the original window's filePath and pixel data intact.
+      //
+      // NOTE: `new ImageWindow(existingWindow)` is NOT a safe alternative --
+      // verified empirically (test/probe_fix5_dup.js) that in this PJSR build
+      // it does not create an independent copy: it aliases the SAME
+      // underlying window, so saveAs()/forceClose() on the "duplicate"
+      // mutated and then destroyed the original.
+      let srcImg = win.mainView.image;
+      let tmpWin = new ImageWindow(srcImg.width, srcImg.height, srcImg.numberOfChannels,
+                                    srcImg.bitsPerSample, srcImg.isReal, srcImg.isColor);
+      let ok = false;
+      try {
+         tmpWin.mainView.beginProcess();
+         tmpWin.mainView.image.assign(srcImg);
+         tmpWin.mainView.endProcess();
+         // Carry FITS keywords along so the temp file handed to the rc-astro
+         // CLI (and anything it echoes back) isn't silently stripped of
+         // metadata relative to the pre-fix behavior of saving the real window.
+         tmpWin.keywords = win.keywords;
+         // saveAs(path, queryOptions=false, allowMessages=false, strict=true, verifyOverwrite=false)
+         ok = tmpWin.saveAs(path, false, false, true, false);
+      } finally {
+         tmpWin.forceClose();
+      }
+      if (!ok)
          this.fail("Could not write temp image: " + path);
       return path;
    },
@@ -77,8 +140,24 @@ var RCAstro = {
       // DonutRepair.js, BlemishBlaster.js, AdvStarmask.js, ...).
       P.newImageColorSpace = PixelMath.prototype.SameAsTarget;
       P.newImageSampleFormat = PixelMath.prototype.SameAsTarget;
-      P.executeOn(targetView);
+      // executeOn() returns Boolean and MUST be checked. PixelMath silently
+      // declines (locked view, geometry/colorspace mismatch, ...) rather than
+      // throwing, so ignoring the return value here used to mean: a failed
+      // apply looked identical to a successful one from every caller's point
+      // of view -- targetView is left completely unmodified, but runBXT/
+      // runNXT/etc. return normally as if the rc-astro result had been
+      // applied. In a headless batch (e.g. a 12-panel mosaic), that is
+      // exactly the silent-fallback failure mode this project forbids.
+      //
+      // Ownership contract (unchanged, still documented above): applyInPlace
+      // owns resultWindow and must close it on EVERY path -- success or
+      // failure -- so callers' `finally` blocks (which only clean up temp
+      // FILES) never strand the hidden result ImageWindow (a full-resolution
+      // float image) in memory/swap after a failed apply.
+      let ok = P.executeOn(targetView);
       resultWindow.forceClose();
+      if (!ok)
+         this.fail("PixelMath failed to apply the rc-astro result to " + targetView.id);
    },
 
    newWindow: function(resultWindow, id) {
@@ -137,8 +216,16 @@ var RCAstro = {
    },
 
    fail: function(message) {
+      // Always loud, always throws. The MessageBox is gated on
+      // RCAstro.interactive (default false) because it is MODAL: under
+      // `PixInsight --automation-mode -r=pipeline.js` there is nobody to
+      // click it, so the first CLI failure in a headless run would hang
+      // forever with --force-exit never reached. Interactive callers (a
+      // tool's dialog-driven main()) opt in by setting RCAstro.interactive =
+      // true before invoking the engine.
       console.criticalln("*** " + this.TITLE + ": " + message);
-      (new MessageBox("<p>" + message + "</p>", this.TITLE, StdIcon.Error, StdButton.Ok)).execute();
+      if (this.interactive)
+         (new MessageBox("<p>" + message + "</p>", this.TITLE, StdIcon.Error, StdButton.Ok)).execute();
       throw new Error(message);
    },
 
@@ -202,16 +289,33 @@ var RCAstro = {
          }
       };
 
+      let aborted = false;
       try {
          // NOTE: bare global processEvents(), not CoreApplication.processEvents()
          // (verified not callable in this PI 1.9.4 build — see findBinary() above).
          p.start(cmdLine);
          for (; p.isStarting;) processEvents();
-         for (; p.isRunning;)  processEvents();
+         for (; p.isRunning;) {
+            processEvents();
+            // A wedged rc-astro process used to busy-spin here forever: nothing
+            // checked console.abortRequested, so the PixInsight Abort button did
+            // nothing and the only recourse was killing PixInsight itself.
+            if (console.abortRequested) {
+               aborted = true;
+               try { p.kill(); } catch (e) { /* best-effort */ }
+               // Let a few more event pumps flush so isRunning can settle after
+               // kill() rather than spinning indefinitely if it doesn't.
+               for (let guard = 0; p.isRunning && guard < 100; ++guard) processEvents();
+               break;
+            }
+         }
       } catch (e) {
          this.fail("Failed to launch rc-astro: " + e.message);
       }
       if (buffer.length) dispatch(buffer);
+
+      if (aborted)
+         return { exit: p.exitCode, ok: false, errorMsg: "rc-astro run aborted by user." };
 
       let exit = p.exitCode;
       let ok = (exit == 0) && (errorMsg.length == 0);
