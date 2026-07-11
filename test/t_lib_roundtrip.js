@@ -13,6 +13,7 @@ function main() {
    log.createForWriting(RESULT_LOG);
    function W(s){ log.outTextLn(s); log.flush(); console.noteln(s); }
 
+   let p = null;
    try {
       // findBinary resolves
       let bin = RCAstro.findBinary();
@@ -22,7 +23,7 @@ function main() {
       // load a known image, save via engine, re-import, compare geometry
       let src = ImageWindow.open("/home/scarter4work/astro_work/cygnus/gxp/panel_1-1.xisf")[0];
       let dir = RCAstro.tempDir();
-      let p   = RCAstro.saveView(src.mainView, dir);
+      p = RCAstro.saveView(src.mainView, dir);
       assert(File.exists(p), "saveView did not write file");
 
       let rt  = RCAstro.importResult(p, "rt_check");
@@ -31,9 +32,15 @@ function main() {
 
       src.forceClose(); rt.forceClose();
       RCAstro.cleanup([p]);
+      assert(!File.exists(p), "cleanup did not remove temp file");
+      p = null;
       W("PASS t_lib_roundtrip");
    } catch (e) {
       W("FAIL: " + e.message);
+   } finally {
+      // Ensure the temp file (and its temp dir) never leak, even if an
+      // assertion above failed before RCAstro.cleanup() ran.
+      if (p != null) try { RCAstro.cleanup([p]); } catch (e2) {}
    }
    log.close();
 }

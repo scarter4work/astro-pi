@@ -27,11 +27,15 @@ var RCAstro = {
       return null;
    },
 
+   // Directories created here are recorded so cleanup() can remove them later.
+   _tempDirs: [],
+
    tempDir: function() {
       let base = (typeof(getEnvironmentVariable) != 'undefined' && getEnvironmentVariable("TMPDIR"))
                  ? getEnvironmentVariable("TMPDIR") : File.systemTempDirectory;
       let dir = base + "/rc-astro-" + Math.trunc(Date.now()) + "-" + Math.trunc(Math.random()*1e6);
       if (!File.directoryExists(dir)) File.createDirectory(dir, true);
+      this._tempDirs.push(dir);
       return dir;
    },
 
@@ -53,6 +57,10 @@ var RCAstro = {
    },
 
    // Replace targetView's pixels with resultWindow's image, single undoable step.
+   //
+   // OWNERSHIP: applyInPlace takes ownership of resultWindow and closes it
+   // (forceClose()) once its pixels have been copied into targetView.
+   // Callers must NOT forceClose resultWindow themselves afterward.
    applyInPlace: function(resultWindow, targetView) {
       let P = new PixelMath;
       P.expression = resultWindow.mainView.id;
@@ -64,6 +72,7 @@ var RCAstro = {
       P.newImageColorSpace = PixelMath.SameAsTarget;
       P.newImageSampleFormat = PixelMath.SameAsTarget;
       P.executeOn(targetView);
+      resultWindow.forceClose();
    },
 
    newWindow: function(resultWindow, id) {
@@ -73,9 +82,15 @@ var RCAstro = {
       return resultWindow;
    },
 
+   // Removes the given files, then removes any per-run temp directories
+   // created by tempDir() so far. Signature is intentionally unchanged
+   // (cleanup(paths)) — later tasks call this as RCAstro.cleanup([inP, outP]).
    cleanup: function(paths) {
       for (let i = 0; i < paths.length; ++i)
          try { if (paths[i] && File.exists(paths[i])) File.remove(paths[i]); } catch (e) {}
+      for (let i = 0; i < this._tempDirs.length; ++i)
+         try { if (File.directoryExists(this._tempDirs[i])) File.removeDirectory(this._tempDirs[i]); } catch (e) {}
+      this._tempDirs = [];
    },
 
    fail: function(message) {
