@@ -172,8 +172,11 @@ function main() {
    // load() the saved params, then fall through to show the dialog
    // pre-populated -- never auto-run.
    if (Parameters.isGlobalTarget) NXTParams.load();
-   if (NXTParams.targetView === undefined)
-      NXTParams.targetView = ImageWindow.activeWindow.isNull ? undefined : ImageWindow.activeWindow.mainView;
+   // Fix 6: load() never restores targetView (there is no
+   // Parameters.has("targetView") handling above), so
+   // `NXTParams.targetView === undefined` was always true here -- a dead,
+   // misleading guard. Just set it unconditionally from the active window.
+   NXTParams.targetView = ImageWindow.activeWindow.isNull ? undefined : ImageWindow.activeWindow.mainView;
    // Dialog-driven branch: the user is present, so let fail() show its modal
    // MessageBox in addition to the console log.
    RCAstro.interactive = true;

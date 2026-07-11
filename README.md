@@ -108,6 +108,22 @@ console log.
    register a Feature Scripts directory, so this one manual step can't be
    automated away.
 
+## Headless / pipeline use
+
+**Drive these tools via a VIEW target (`Parameters.isViewTarget` / a saved
+instance dropped onto a view / `executeOn(view)`), not `executeGlobal()` on a
+saved process icon.** The view-target path is the supported headless entry
+point and never shows a dialog.
+
+`executeGlobal()` on a saved icon runs the `isGlobalTarget` branch of `main()`,
+which always opens the tool's interactive dialog pre-populated from the
+icon's saved parameters (see "Fix C" in the design doc) so the user can review
+settings before a destructive run. Under `PixInsight --automation-mode`
+there is nobody present to dismiss that dialog, and PJSR has no API to detect
+automation mode from inside a script — so `executeGlobal()` in a headless
+pipeline would open a modal dialog and hang forever. Always target a view in
+headless/pipeline code.
+
 ## Running the headless tests
 
 Each test launches PixInsight under Xvfb via `test/run-headless.sh` and writes

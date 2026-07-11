@@ -72,17 +72,51 @@ function runTest() {
       assert(a2.indexOf("--nsr") >= 0 && a2[a2.indexOf("--nsr")+1] == "1.50", "expected --nsr 1.50 when autoPSF=false");
       assert(a2.indexOf("--ansr") < 0, "expected plain --ansr NOT present when autoPSF=false");
 
+      // BXTParams still has autoPSF=false, psfRadius=1.5 from the previous
+      // block at this point — deliberately NOT reset before flipping
+      // correctOnly, so this proves buildArgs() suppresses --ansr/--no-ansr/
+      // --nsr purely because of correctOnly, not because those fields happen
+      // to be at defaults.
       BXTParams.correctOnly = true;
       let a3 = BXTParams.buildArgs("IN.xisf", "OUT.xisf");
       W("argv[correctOnly=true]: " + JSON.stringify(a3));
       assert(a3.indexOf("--correct-only") >= 0, "expected --correct-only when correctOnly=true");
       assert(a3.indexOf("--ss") < 0 && a3.indexOf("--sn") < 0, "expected --correct-only to suppress --ss/--sn");
-      // Fix G: --ash is invalid together with --correct-only (verified against
-      // a real `rc-astro bxt --correct-only --ash 0.100` invocation --
-      // {"event":"error","message":"--correct-only forces --ash to 0, which
-      // conflicts with the value you gave; omit --ash"}). Must never be
-      // emitted in this mode, even when adjustHalos is non-zero.
+      // Fix 1: --correct-only forces THREE params on the real CLI (rc-astro
+      // 0.9.10) and rejects any conflicting value for ANY of them (verified
+      // against the real binary):
+      //   --correct-only --ash <x>           -> {"event":"error","message":
+      //     "--correct-only forces --ash to 0, which conflicts with the value
+      //     you gave; omit --ash"}
+      //   --correct-only --no-ansr --nsr 1.5 -> forces --ansr to true
+      //   --correct-only --nsr 1.5           -> forces --nsr to 0
+      // None of --ash/--ansr/--no-ansr/--nsr may ever be emitted in this mode.
       assert(a3.indexOf("--ash") < 0, "expected no --ash when correctOnly=true (CLI rejects --ash with --correct-only)");
+      assert(a3.indexOf("--ansr") < 0, "expected no --ansr when correctOnly=true (CLI rejects it with --correct-only)");
+      assert(a3.indexOf("--no-ansr") < 0, "expected no --no-ansr when correctOnly=true (CLI rejects it with --correct-only)");
+      assert(a3.indexOf("--nsr") < 0, "expected no --nsr when correctOnly=true (CLI rejects it with --correct-only)");
+
+      // --- Fix 1: real end-to-end run of runBXT() with correctOnly=true ---
+      // Correct-only has never been exercised against the real CLI before —
+      // prove it actually succeeds and modifies the view, not just that its
+      // argv looks right.
+      let srcCO = ImageWindow.open("/home/scarter4work/astro_work/cygnus/gxp/panel_1-1.xisf")[0];
+      let vCO = srcCO.mainView;
+      let beforeCO = vCO.image.stdDev();
+
+      BXTParams.targetView = vCO;
+      BXTParams.correctOnly = true;
+      BXTParams.autoPSF = true;
+      BXTParams.psfRadius = 0.0;
+      BXTParams.mlVersion = 0;
+      BXTParams.device = "gpu";
+
+      runBXT(vCO);
+      assert(Math.abs(vCO.image.stdDev() - beforeCO) > 1e-8,
+             "correct-only runBXT() did not modify the target view in place");
+      W("correct-only end-to-end run: PASS (stdDev before=" + beforeCO +
+        " after=" + vCO.image.stdDev() + ")");
+      srcCO.forceClose();
 
       BXTParams.correctOnly = false;
       BXTParams.autoPSF = true;

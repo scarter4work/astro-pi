@@ -44,9 +44,27 @@ var SXTParams = {
 // `newWindow()` id= re-assignment onto the SAME still-taken id could throw
 // after the multi-second CLI run has already completed (worst case). Close
 // any prior same-named window first so a re-run deliberately replaces it.
+//
+// Fix 3: this used to unconditionally forceClose() whatever window already
+// held the id. Scenario this silently destroyed: user runs SXT on M31, gets
+// M31_starless, edits/stretches it WITHOUT saving, then re-runs SXT on M31 --
+// their modified window used to vanish with no prompt and no undo (a fresh
+// forceClose() is not undoable). Never silently discard unsaved user work: if
+// the existing window has unsaved modifications (ImageWindow.isModified,
+// verified against /opt/PixInsight/doc/pjsr/objects/ImageWindow/ImageWindow.html),
+// skip the close and let PixInsight uniquify the new result's id instead (the
+// user keeps both their edited window and the new run, rather than losing
+// the former silently).
 function closeWindowById(id) {
    let w = ImageWindow.windowById(id);
-   if (!w.isNull) w.forceClose();
+   if (w.isNull) return;
+   if (w.isModified) {
+      console.warningln("RC-Astro: \"" + id + "\" has unsaved changes -- leaving it open " +
+                         "and letting the new result take a uniquified id instead of " +
+                         "silently discarding your edits.");
+      return;
+   }
+   w.forceClose();
 }
 
 function runSXT(view) {
@@ -167,8 +185,11 @@ function main() {
    // load() the saved params, then fall through to show the dialog
    // pre-populated -- never auto-run.
    if (Parameters.isGlobalTarget) SXTParams.load();
-   if (SXTParams.targetView === undefined)
-      SXTParams.targetView = ImageWindow.activeWindow.isNull ? undefined : ImageWindow.activeWindow.mainView;
+   // Fix 6: load() never restores targetView (there is no
+   // Parameters.has("targetView") handling above), so
+   // `SXTParams.targetView === undefined` was always true here -- a dead,
+   // misleading guard. Just set it unconditionally from the active window.
+   SXTParams.targetView = ImageWindow.activeWindow.isNull ? undefined : ImageWindow.activeWindow.mainView;
    // Dialog-driven branch: the user is present, so let fail() show its modal
    // MessageBox in addition to the console log.
    RCAstro.interactive = true;

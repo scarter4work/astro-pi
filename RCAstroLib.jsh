@@ -15,6 +15,17 @@ var RCAstro = {
    // before calling into the engine so failures are also shown to the user.
    interactive: false,
 
+   // Fix 7: wall-clock ceiling for a single runCli() invocation, in seconds.
+   // console.abortRequested (the mechanism the poll loop below already uses
+   // for a user-initiated Abort) never fires under `--automation-mode` --
+   // there is no console/user to click Abort -- so a wedged rc-astro process
+   // in a headless pipeline used to spin in the `for (; p.isRunning;)` loop
+   // forever with no way out. Large mosaic panels are genuinely slow, so this
+   // default is intentionally generous, not aggressive; tune per-call via
+   // `RCAstro.timeoutSeconds = <n>;` before invoking a tool if a given
+   // pipeline needs something different.
+   timeoutSeconds: 3600,
+
    findBinary: function() {
       if (this.binaryPath && File.exists(this.binaryPath)) return this.binaryPath;
       let candidates = ["/usr/local/bin/rc-astro"];
@@ -94,13 +105,29 @@ var RCAstro = {
                                     srcImg.bitsPerSample, srcImg.isReal, srcImg.isColor);
       let ok = false;
       try {
-         tmpWin.mainView.beginProcess();
+         // beginProcess(UndoFlag_NoSwapFile): tmpWin is a throwaway window that
+         // gets forceClose()'d a few lines below in every case -- writing a
+         // full-res swap-file undo snapshot for it is pure wasted disk I/O,
+         // doubled per mosaic panel run through BXT/SXT/NXT. UndoFlag_NoSwapFile
+         // is defined in <pjsr/UndoFlag.jsh> (already #include-d above) as the
+         // PJSR-private value 0xFFFFFFFF -- verified against
+         // /opt/PixInsight/include/pjsr/UndoFlag.jsh.
+         tmpWin.mainView.beginProcess(UndoFlag_NoSwapFile);
          tmpWin.mainView.image.assign(srcImg);
          tmpWin.mainView.endProcess();
          // Carry FITS keywords along so the temp file handed to the rc-astro
          // CLI (and anything it echoes back) isn't silently stripped of
          // metadata relative to the pre-fix behavior of saving the real window.
          tmpWin.keywords = win.keywords;
+         // Fix 2 (root cause): the astrometric solution lives in a separate
+         // XISF metadata property, not in the FITS keyword list, so the
+         // `tmpWin.keywords = ...` line above never carried it over -- the temp
+         // INPUT file handed to the rc-astro CLI silently lost the solution
+         // even when the source view had one. Wave C patched only SXT's output
+         // side; copy it here too so every tool's temp INPUT file keeps it
+         // (verified API against /opt/PixInsight/doc/pjsr/objects/ImageWindow/
+         // ImageWindow.html: hasAstrometricSolution / copyAstrometricSolution).
+         if (win.hasAstrometricSolution) tmpWin.copyAstrometricSolution(win);
          // saveAs(path, queryOptions=false, allowMessages=false, strict=true, verifyOverwrite=false)
          ok = tmpWin.saveAs(path, false, false, true, false);
       } finally {
@@ -154,8 +181,19 @@ var RCAstro = {
       // failure -- so callers' `finally` blocks (which only clean up temp
       // FILES) never strand the hidden result ImageWindow (a full-resolution
       // float image) in memory/swap after a failed apply.
-      let ok = P.executeOn(targetView);
-      resultWindow.forceClose();
+      //
+      // Fix 4: the close must genuinely happen on every path, including
+      // P.executeOn() THROWING rather than returning false. The previous
+      // sequential `let ok = executeOn(); resultWindow.forceClose();` skipped
+      // the close entirely if executeOn() threw -- wrap in try/finally so the
+      // close is unconditional, and closed exactly once (not also on a second
+      // pass through some other cleanup path).
+      let ok = false;
+      try {
+         ok = P.executeOn(targetView);
+      } finally {
+         resultWindow.forceClose();
+      }
       if (!ok)
          this.fail("PixelMath failed to apply the rc-astro result to " + targetView.id);
    },
@@ -290,6 +328,9 @@ var RCAstro = {
       };
 
       let aborted = false;
+      let timedOut = false;
+      let startTime = Date.now();
+      let timeoutMs = this.timeoutSeconds * 1000;
       try {
          // NOTE: bare global processEvents(), not CoreApplication.processEvents()
          // (verified not callable in this PI 1.9.4 build — see findBinary() above).
@@ -308,6 +349,16 @@ var RCAstro = {
                for (let guard = 0; p.isRunning && guard < 100; ++guard) processEvents();
                break;
             }
+            // Fix 7: console.abortRequested is a no-op under --automation-mode
+            // (nobody is present to press Abort), so a headless pipeline needs
+            // its own ceiling. Date.now() is a real working elapsed-time
+            // mechanism in this PJSR build (already used by tempDir() above).
+            if (Date.now() - startTime > timeoutMs) {
+               timedOut = true;
+               try { p.kill(); } catch (e) { /* best-effort */ }
+               for (let guard = 0; p.isRunning && guard < 100; ++guard) processEvents();
+               break;
+            }
          }
       } catch (e) {
          this.fail("Failed to launch rc-astro: " + e.message);
@@ -316,6 +367,10 @@ var RCAstro = {
 
       if (aborted)
          return { exit: p.exitCode, ok: false, errorMsg: "rc-astro run aborted by user." };
+
+      if (timedOut)
+         return { exit: p.exitCode, ok: false,
+                  errorMsg: "rc-astro timed out after " + this.timeoutSeconds + "s" };
 
       let exit = p.exitCode;
       let ok = (exit == 0) && (errorMsg.length == 0);

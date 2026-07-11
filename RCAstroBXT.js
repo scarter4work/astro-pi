@@ -44,18 +44,24 @@ var BXTParams = {
    buildArgs: function(inPath, outPath) {
       let a = [inPath];
       if (this.correctOnly) {
+         // --correct-only forces THREE params on the real CLI (rc-astro
+         // 0.9.10) and rejects any conflicting value for any of them —
+         // verified empirically against the real binary:
+         //   --correct-only --ash <x>          -> forces --ash to 0
+         //   --correct-only --no-ansr --nsr 1.5 -> forces --ansr to true
+         //   --correct-only --nsr 1.5           -> forces --nsr to 0
+         // "--correct-only" alone (and "--correct-only --ansr") are the only
+         // accepted forms, so emit ONLY --correct-only (plus --ml-version /
+         // --device / --output below) — never --ss/--sn/--ash/--ansr/
+         // --no-ansr/--nsr in this mode.
          a.push("--correct-only");
-         // --ash is invalid together with --correct-only: verified empirically
-         // (`rc-astro bxt --correct-only --ash 0.100` --> {"event":"error",
-         // "message":"--correct-only forces --ash to 0, which conflicts with
-         // the value you gave; omit --ash"}). Never emit it in this mode.
       } else {
          a.push("--ss", format("%.3f", this.sharpenStars),
                 "--sn", format("%.3f", this.sharpenNonstellar));
          a.push("--ash", format("%.3f", this.adjustHalos));
+         if (this.autoPSF) a.push("--ansr");
+         else a.push("--no-ansr", "--nsr", format("%.2f", this.psfRadius));
       }
-      if (this.autoPSF) a.push("--ansr");
-      else a.push("--no-ansr", "--nsr", format("%.2f", this.psfRadius));
       if (this.mlVersion != 0) a.push("--ml-version", String(this.mlVersion));
       a.push("--device", this.device, "--output", outPath);
       return a;
@@ -111,17 +117,30 @@ function BXTDialog() {
    this.autoPSF.onCheck = function(c){ BXTParams.autoPSF = c; self.nsr.enabled = !c; };
 
    this.correctOnly = new CheckBox(this); this.correctOnly.text = "Correct only (no sharpening)"; this.correctOnly.checked = BXTParams.correctOnly;
-   this.correctOnly.onCheck = function(c){ BXTParams.correctOnly = c; self.ss.enabled = !c; self.sn.enabled = !c; self.ash.enabled = !c; };
+   // --correct-only forces --ash/--ansr/--nsr on the real CLI (see buildArgs())
+   // and rejects any conflicting value, so autoPSF and the nsr slider must be
+   // disabled right alongside ss/sn/ash whenever correct-only is checked --
+   // otherwise the user can reach a state (e.g. autoPSF unchecked, a manual
+   // nsr value set) that the CLI hard-rejects.
+   this.correctOnly.onCheck = function(c){
+      BXTParams.correctOnly = c;
+      self.ss.enabled = !c; self.sn.enabled = !c; self.ash.enabled = !c;
+      self.autoPSF.enabled = !c;
+      self.nsr.enabled = !c && !BXTParams.autoPSF;
+   };
    // Initialize ALL dependent enabled-states from the loaded param values at
    // construction, not just when the user toggles a checkbox interactively --
    // required now that Fix C opens this dialog pre-populated from a saved
    // process icon's parameters (previously only reachable via the Scripts
    // menu, where params were always defaults and this never mattered).
-   // --ash is invalid together with --correct-only (see buildArgs()), so the
-   // slider must start disabled whenever a loaded/default correctOnly is true.
+   // --ash/--ansr/--nsr are all invalid together with --correct-only (see
+   // buildArgs()), so ss/sn/ash/autoPSF/nsr must all start disabled whenever
+   // a loaded/default correctOnly is true.
    this.ss.enabled = !BXTParams.correctOnly;
    this.sn.enabled = !BXTParams.correctOnly;
    this.ash.enabled = !BXTParams.correctOnly;
+   this.autoPSF.enabled = !BXTParams.correctOnly;
+   this.nsr.enabled = !BXTParams.correctOnly && !BXTParams.autoPSF;
 
    this.mlv = new ComboBox(this); this.mlv.addItem("Latest"); this.mlv.addItem("AI 4"); this.mlv.addItem("AI 2");
    this.mlv.currentItem = (BXTParams.mlVersion==4)?1:(BXTParams.mlVersion==2)?2:0;
@@ -179,8 +198,11 @@ function main() {
    // convention (e.g. MaskMerge.js): load() the saved params, then fall
    // through to show the dialog pre-populated -- never auto-run.
    if (Parameters.isGlobalTarget) BXTParams.load();
-   if (BXTParams.targetView === undefined)
-      BXTParams.targetView = ImageWindow.activeWindow.isNull ? undefined : ImageWindow.activeWindow.mainView;
+   // Fix 6: load() never restores targetView (there is no
+   // Parameters.has("targetView") handling above), so
+   // `BXTParams.targetView === undefined` was always true here -- a dead,
+   // misleading guard. Just set it unconditionally from the active window.
+   BXTParams.targetView = ImageWindow.activeWindow.isNull ? undefined : ImageWindow.activeWindow.mainView;
    // Dialog-driven branch: the user is present, so let fail() show its modal
    // MessageBox in addition to the console log.
    RCAstro.interactive = true;
