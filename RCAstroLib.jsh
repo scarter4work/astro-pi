@@ -134,5 +134,60 @@ var RCAstro = {
       console.criticalln("*** " + this.TITLE + ": " + message);
       (new MessageBox("<p>" + message + "</p>", this.TITLE, StdIcon.Error, StdButton.Ok)).execute();
       throw new Error(message);
+   },
+
+   // Run rc-astro <tool> with args; parse --json NDJSON stream via onEvent.
+   runCli: function(tool, argsArray, onEvent) {
+      let bin = this.findBinary();
+      if (!bin) this.fail("rc-astro CLI not found at /usr/local/bin/rc-astro or on PATH.");
+
+      // Build a quoted command line: quote tokens that are paths / contain spaces.
+      let quote = function(s){ return /[^A-Za-z0-9_.\-\/]/.test(s) ? '"' + s + '"' : s; };
+      let parts = [quote(bin), "--no-banner", tool];
+      for (let i = 0; i < argsArray.length; ++i) parts.push(quote(String(argsArray[i])));
+      parts.push("--json", "--overwrite");
+      let cmdLine = parts.join(" ");
+      console.writeln("running: " + cmdLine);
+
+      let errorMsg = "";
+      let buffer   = "";
+      let dispatch = function(line) {
+         line = line.trim();
+         if (line.length == 0 || line.charAt(0) != "{") { if (line.length) console.writeln(line); return; }
+         let obj = null;
+         try { obj = JSON.parse(line); } catch (e) { return; }
+         if (obj) {
+            if (obj.event == "error")   { errorMsg = obj.message || obj.text || JSON.stringify(obj); console.criticalln("rc-astro: " + errorMsg); }
+            else if (obj.event == "warning") console.warningln("rc-astro: " + (obj.message || obj.text || ""));
+            if (onEvent) onEvent(obj);
+         }
+      };
+
+      let p = new ExternalProcess;
+      p.onStandardOutputDataAvailable = function() {
+         buffer += String(this.stdout);
+         let nl;
+         while ((nl = buffer.indexOf("\n")) >= 0) { dispatch(buffer.substring(0, nl)); buffer = buffer.substring(nl + 1); }
+      };
+      p.onStandardErrorDataAvailable = function() {
+         let e = String(this.stderr).trim();
+         if (e.length) console.warningln("rc-astro[stderr]: " + e);
+      };
+
+      try {
+         // NOTE: bare global processEvents(), not CoreApplication.processEvents()
+         // (verified not callable in this PI 1.9.4 build — see findBinary() above).
+         p.start(cmdLine);
+         for (; p.isStarting;) processEvents();
+         for (; p.isRunning;)  processEvents();
+      } catch (e) {
+         this.fail("Failed to launch rc-astro: " + e.message);
+      }
+      if (buffer.length) dispatch(buffer);
+
+      let exit = p.exitCode;
+      let ok = (exit == 0) && (errorMsg.length == 0);
+      if (!ok && errorMsg.length == 0) errorMsg = "rc-astro exited with code " + exit;
+      return { exit: exit, ok: ok, errorMsg: errorMsg };
    }
 };
