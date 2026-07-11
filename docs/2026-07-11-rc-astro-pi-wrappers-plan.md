@@ -21,6 +21,9 @@
 **Environment facts established in Task 1 — all later tasks MUST follow these:**
 - Use the bare global **`processEvents()`**, NOT `CoreApplication.processEvents()` (the latter does not exist in this PI 1.9.4 build).
 - Use the bare global **`searchDirectory(pattern)`**, NOT `File.searchDirectory(...)` (documented but not callable in this build). It returns full paths.
+- **`Label` is a native global — do NOT `#include <pjsr/Label.jsh>`** (that header does not exist in this build; the include breaks the script). Same for any other control already global.
+- PixelMath enum constants are on the prototype: use **`PixelMath.prototype.SameAsTarget`**, NOT `PixelMath.SameAsTarget` (the latter is `undefined` and silently breaks `applyInPlace`).
+- A quoted **`#include "file"` of the SAME file twice silently kills the whole script** — include `RCAstroLib.jsh` exactly once per script.
 - **`console.*` output does NOT reach stdout under `PixInsight --automation-mode`.** Every headless test therefore writes its verdict to a result file and the runner greps *that file*, following the exact pattern established in `test/t_lib_roundtrip.js` (a `RESULT_LOG` path, a `W()` helper writing `log.outTextLn(...)` + `flush()`, and `try/catch` writing `PASS <name>` or `FAIL: <msg>`). Copy that pattern; do not grep stdout.
 - **`RCAstro.applyInPlace(resultWindow, targetView)` takes ownership of `resultWindow` and closes it.** Callers must NOT call `forceClose()` on it afterward (double-close).
 - `RCAstro.cleanup(paths)` removes the given files AND the per-run temp directories created by `RCAstro.tempDir()`.
@@ -682,7 +685,7 @@ Create `RCAstroSXT.js`:
 #include <pjsr/Sizer.jsh>
 #include <pjsr/StdButton.jsh>
 #include <pjsr/StdIcon.jsh>
-#include <pjsr/Label.jsh>
+// NOTE: no <pjsr/Label.jsh> — Label is a native global; that header does not exist in this build.
 #include "RCAstroLib.jsh"
 
 #define SXT_TITLE "StarXTerminator (CLI)"
@@ -874,7 +877,7 @@ Create `RCAstroNXT.js`:
 #include <pjsr/NumericControl.jsh>
 #include <pjsr/StdButton.jsh>
 #include <pjsr/StdIcon.jsh>
-#include <pjsr/Label.jsh>
+// NOTE: no <pjsr/Label.jsh> — Label is a native global; that header does not exist in this build.
 #include <pjsr/SectionBar.jsh>
 #include "RCAstroLib.jsh"
 
