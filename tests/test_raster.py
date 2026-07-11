@@ -4,7 +4,7 @@ import numpy as np
 import pytest
 from PIL import Image
 
-from autocontrast.io.loaders import load_raster
+from autocontrast.io.loaders import load_image, load_raster
 
 
 def _save(path, array):
@@ -79,3 +79,46 @@ def test_sixteen_bit_is_normalized_by_full_range(tmp_path):
     assert img.shape == (4, 4, 3)
     assert img[0, 0, 0] == pytest.approx(1.0)
     assert img.max() <= 1.0
+
+
+# ---- load_image dispatcher: FITS must go through astropy, not Pillow ------
+
+
+def test_load_image_dispatches_raster_to_pillow(tmp_path):
+    path = tmp_path / "r.png"
+    arr = np.zeros((6, 8, 3), dtype=np.uint8); arr[0, 0] = [255, 0, 0]
+    _save(path, arr)
+
+    img = load_image(path)
+
+    assert img.shape == (6, 8, 3)
+    np.testing.assert_allclose(img[0, 0], [1.0, 0.0, 0.0])
+
+
+def test_load_image_reads_fits_via_astropy_without_nans(tmp_path):
+    """A float FITS must not be routed through Pillow — that yields NaNs and a
+    garbage fingerprint. It loads via astropy, promoted to 3 channels in [0,1]."""
+    from astropy.io import fits
+
+    data = np.linspace(-5.0, 500.0, 32 * 32, dtype=np.float32).reshape(32, 32)
+    path = tmp_path / "lin.fits"
+    fits.PrimaryHDU(data=data).writeto(path)
+
+    img = load_image(path)
+
+    assert img.shape == (32, 32, 3)
+    assert np.isfinite(img).all()
+    assert img.min() >= 0.0 and img.max() <= 1.0
+
+
+def test_load_image_fits_is_nan_safe(tmp_path):
+    from astropy.io import fits
+
+    data = np.ones((16, 16), dtype=np.float32)
+    data[0, 0] = np.nan
+    path = tmp_path / "nan.fits"
+    fits.PrimaryHDU(data=data).writeto(path)
+
+    img = load_image(path)
+
+    assert np.isfinite(img).all()

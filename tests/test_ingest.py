@@ -68,3 +68,67 @@ def test_ingest_rejects_tool_output(tmp_path):
     store = FingerprintStore(tmp_path / "db.sqlite")
     with pytest.raises(ValueError, match="tool_output"):
         _ingest(store, png, source_type="tool_output")
+
+
+# ---- auto-WCS ingest (§5.2 three-tier) ------------------------------------
+
+
+def _auto(store, path, **overrides):
+    from autocontrast.db.ingest import ingest_reference_auto
+    kwargs = dict(psf_fwhm_arcsec=2.0, palette_class="RGB",
+                  source_type="professional_render", provenance=dict(_PROV))
+    kwargs.update(overrides)
+    return ingest_reference_auto(store, path, **kwargs)
+
+
+def test_auto_ingest_uses_fits_wcs_and_derived_pixel_scale(tmp_path):
+    """A solved WCS supplies position AND pixel scale (§2.2)."""
+    from astropy.io import fits
+    from astropy.wcs import WCS
+
+    nx, ny = 64, 64
+    w = WCS(naxis=2)
+    w.wcs.ctype = ["RA---TAN", "DEC--TAN"]
+    w.wcs.crpix = [nx / 2, ny / 2]
+    w.wcs.crval = [83.822, -5.391]
+    w.wcs.cdelt = [-1.22 / 3600, 1.22 / 3600]
+    path = tmp_path / "ref.fits"
+    hdu = fits.PrimaryHDU(data=np.random.default_rng(0).random((ny, nx)).astype(np.float32))
+    hdu.header.update(w.to_header())
+    hdu.writeto(path)
+
+    store = FingerprintStore(tmp_path / "db.sqlite")
+    outcome = _auto(store, path, id="auto-1", n_scales=5)
+
+    assert outcome.ingested
+    assert outcome.wcs.wcs_source == "header"
+    assert outcome.record.fingerprint.pixel_scale_arcsec == pytest.approx(1.22, rel=1e-3)
+    assert outcome.record.provenance["wcs_source"] == "header"
+
+
+def test_auto_ingest_skips_unsolved_reference_without_raising(tmp_path):
+    """§5.2: an unsolvable render is skipped with a reason — not an exception, and
+    never stored with a bogus position."""
+    png = tmp_path / "plain.png"; _write_png(png)
+    store = FingerprintStore(tmp_path / "db.sqlite")
+
+    outcome = _auto(store, png, id="auto-2")
+
+    assert outcome.ingested is False
+    assert outcome.record is None
+    assert outcome.wcs.wcs_source == "unsolved"
+    assert outcome.detail
+    assert store.get("auto-2") is None  # nothing persisted
+
+
+def test_auto_ingest_accepts_manual_annotation(tmp_path):
+    png = tmp_path / "plain.png"; _write_png(png)
+    store = FingerprintStore(tmp_path / "db.sqlite")
+
+    outcome = _auto(store, png, id="auto-3",
+                    manual={"ra_deg": 83.822, "dec_deg": -5.391,
+                            "fov_radius_arcmin": 21.0, "pixel_scale_arcsec": 1.22})
+
+    assert outcome.ingested
+    assert outcome.wcs.wcs_source == "manual"
+    assert store.get("auto-3").provenance["wcs_source"] == "manual"

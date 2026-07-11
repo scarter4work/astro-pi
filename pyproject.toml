@@ -18,6 +18,7 @@ dependencies = [
     "astropy>=6.0",   # FITS I/O + WCS
     "scipy>=1.13",    # wasserstein_distance_nd (chroma EMD), signal filters
     "pillow>=10.0",   # PNG/JPEG/TIFF renders (references ship as raster, not FITS)
+    "pyavm>=0.9",     # embedded AVM tags — tier 2 of WCS acquisition (§5.2)
 ]
 
 [project.optional-dependencies]

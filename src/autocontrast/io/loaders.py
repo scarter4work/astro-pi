@@ -64,6 +64,46 @@ def load_fits(path: str | Path) -> LoadedImage:
     return LoadedImage(data=data, pixel_scale_arcsec=pixel_scale, filters=filters)
 
 
+_FITS_SUFFIXES = {".fits", ".fit", ".fts"}
+
+
+def load_image(path: str | Path, max_dim: int | None = None) -> np.ndarray:
+    """Load any supported image as an ``(H, W, 3)`` float64 array in [0, 1].
+
+    Dispatches on file type: FITS goes through **astropy**, everything else through
+    Pillow. This matters — Pillow has a FITS plugin that will happily open a float
+    FITS and hand back NaNs, silently poisoning the fingerprint. FITS data is
+    normalized by its own finite min/max and NaNs are zeroed.
+
+    Note a linear FITS master will (correctly) fingerprint as *flat*: the
+    fingerprint measures the nonlinear presentation layer (§2.1), and a linear
+    master has none. References are expected to be rendered images.
+    """
+    path = Path(path)
+    if path.suffix.lower() not in _FITS_SUFFIXES:
+        return load_raster(path, max_dim=max_dim)
+
+    data = np.asarray(load_fits(path).data, dtype=np.float64)
+    if data.ndim == 3 and data.shape[0] in (1, 3):  # channel-first FITS cube
+        data = np.moveaxis(data, 0, -1)
+    if data.ndim == 2:
+        data = np.stack([data] * 3, axis=-1)
+    if data.shape[-1] == 1:
+        data = np.repeat(data, 3, axis=-1)
+
+    finite = np.isfinite(data)
+    if not finite.any():
+        raise ValueError(f"{path.name}: FITS contains no finite pixels")
+    lo = float(data[finite].min())
+    hi = float(data[finite].max())
+    data = np.where(finite, data, lo)  # NaN/inf -> floor, never propagated
+    if hi > lo:
+        data = (data - lo) / (hi - lo)
+    else:
+        data = np.zeros_like(data)
+    return np.clip(data, 0.0, 1.0)
+
+
 def load_raster(path: str | Path, max_dim: int | None = None) -> np.ndarray:
     """Load a display-referred raster (PNG/JPEG/TIFF) as an ``(H, W, 3)`` float64
     sRGB image in [0, 1].
