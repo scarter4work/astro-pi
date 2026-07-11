@@ -69,8 +69,14 @@ var RCAstro = {
       P.createNewImage = false;
       P.rescale = false;
       P.truncate = false;
-      P.newImageColorSpace = PixelMath.SameAsTarget;
-      P.newImageSampleFormat = PixelMath.SameAsTarget;
+      // NOTE: PixelMath.SameAsTarget is undefined in this PJSR build (verified
+      // empirically: typeof PixelMath.SameAsTarget === "undefined", causes
+      // "invalid argument type: unsigned integer value expected."). The
+      // correct constant lives on the prototype, matching every bundled PI
+      // reference script (AstroMarkSignatureAdder.js, MaskMerge.js,
+      // DonutRepair.js, BlemishBlaster.js, AdvStarmask.js, ...).
+      P.newImageColorSpace = PixelMath.prototype.SameAsTarget;
+      P.newImageSampleFormat = PixelMath.prototype.SameAsTarget;
       P.executeOn(targetView);
       resultWindow.forceClose();
    },
