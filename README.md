@@ -16,22 +16,25 @@ The stand-alone `rc-astro` CLI uses **ONNX Runtime** instead of TensorFlow, has
 no such gap, and runs all three tools on the RTX 5070 Ti at roughly **2.7
 seconds per 22 MP panel** on GPU, with no crash.
 
-These scripts wrap that CLI so it can be launched from PixInsight's `Scripts`
+These scripts wrap that CLI so it can be launched from PixInsight's `Script`
 menu with a normal parameter dialog, process icons, and headless automation
 support — instead of dropping to a terminal for every run.
 
 ## GPU requirement
 
-**System cuDNN must be >= 9.13.** Blackwell (sm_120) GPUs hit a convolution
-heuristic bug in older cuDNN builds; below 9.13, `rc-astro` silently falls back
-to CPU (slow, but not obviously wrong) instead of erroring. This machine is
-currently on cuDNN 9.24, which is known good. If runs suddenly get much slower,
-check `ldconfig -p | grep cudnn` / the cuDNN version before assuming a code
+**System cuDNN must be >= 9.13.** NVIDIA's cuDNN release notes document an
+issue present in all cuDNN 9.x releases prior to 9.13.0 where the heuristics
+engine can recommend convolution engine configs that fail on Blackwell
+(sm_120) GPUs. On this machine, cuDNN 9.8.0 hit exactly that: `rc-astro`
+silently fell back to CPU (slow, but not obviously wrong) while logging
+`CUDNN_FE ... HEURISTIC_QUERY_FAILED` for `smVersion:1200`. Upgrading to
+cuDNN 9.24.0 (known good) fixed it. If runs suddenly get much slower, check
+`ldconfig -p | grep cudnn` / the cuDNN version before assuming a code
 regression.
 
 ## The three tools
 
-All three appear under `Scripts > RC-Astro > <Name> (CLI)` after installation.
+All three appear under `Script > RC-Astro > <Name> (CLI)` after installation.
 
 ### BlurXTerminator (CLI) — `RCAstroBXT.js`
 
@@ -60,7 +63,7 @@ creates `<id>_stars`.
 | Also create stars-only image | `--output-stars` | off |
 | Unscreen stars | `--unscreen` | off; only enabled when stars output is on |
 | AI model | `--ml-version` | Latest (default) / 11 |
-| Device | `--device` | gpu |
+| Device | `--device` | gpu (default) / cpu |
 
 ### NoiseXTerminator (CLI) — `RCAstroNXT.js`
 
@@ -98,9 +101,9 @@ console log.
 
 1. `./install.sh` — prints the folder path, the one-time registration steps
    below, and whether `rc-astro` is on `PATH`.
-2. In PixInsight: `SCRIPT` menu > `Feature Scripts...` > `Add` > select this
+2. In PixInsight: `Script` menu > `Feature Scripts...` > `Add` > select this
    folder (`~/PixInsightScripts/RC-Astro`) > `Done`.
-3. The three tools now appear under `Scripts > RC-Astro > *(CLI)`. This
+3. The three tools now appear under `Script > RC-Astro > *(CLI)`. This
    survives PixInsight updates and needs no `sudo`; PJSR itself has no API to
    register a Feature Scripts directory, so this one manual step can't be
    automated away.

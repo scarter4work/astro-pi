@@ -53,7 +53,12 @@ function runSXT(view) {
       if (!r.ok) { RCAstro.fail("StarXTerminator failed: " + r.errorMsg); return; }
       let starless = RCAstro.importResult(outP, id + "_starless");
       RCAstro.newWindow(starless, id + "_starless");
-      if (SXTParams.outputStars && File.exists(starsP)) {
+      if (SXTParams.outputStars) {
+         if (!File.exists(starsP)) {
+            RCAstro.fail("Stars image was requested but rc-astro did not produce the " +
+                         "expected output: " + starsP);
+            return;
+         }
          let stars = RCAstro.importResult(starsP, id + "_stars");
          RCAstro.newWindow(stars, id + "_stars");
       }

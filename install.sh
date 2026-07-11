@@ -6,8 +6,8 @@ DIR="$(cd "$(dirname "$0")" && pwd)"
 echo "Scripts live in: $DIR"
 echo
 echo "One-time registration in PixInsight:"
-echo "  1. SCRIPT menu > Feature Scripts..."
+echo "  1. Script menu > Feature Scripts..."
 echo "  2. Add  ->  select: $DIR"
-echo "  3. Done. Then find them under:  Scripts > RC-Astro > *(CLI)"
+echo "  3. Done. Then find them under:  Script > RC-Astro > *(CLI)"
 echo
 echo "rc-astro binary: $(command -v rc-astro || echo 'NOT FOUND on PATH')"

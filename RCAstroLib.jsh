@@ -173,7 +173,14 @@ var RCAstro = {
             return;
          }
          let obj = null;
-         try { obj = JSON.parse(line); } catch (e) { return; }
+         try { obj = JSON.parse(line); } catch (e) {
+            // Looked like JSON (started with "{") but failed to parse — do not
+            // vanish it. Log it and fold it into strayText so it can still
+            // surface via the stderr/stray fallback in errorMsg on failure.
+            console.warningln("rc-astro: could not parse JSON line: " + e.message + " -- " + line);
+            strayText += (strayText.length ? "\n" : "") + line;
+            return;
+         }
          if (obj) {
             if (obj.event == "error")   { errorMsg = obj.message || obj.text || JSON.stringify(obj); console.criticalln("rc-astro: " + errorMsg); }
             else if (obj.event == "warning") console.warningln("rc-astro: " + (obj.message || obj.text || ""));
