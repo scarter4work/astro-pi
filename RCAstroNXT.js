@@ -61,15 +61,22 @@ var NXTParams = {
 
 function runNXT(view) {
    if (view == null || view.isNull) { RCAstro.fail("No target view."); return; }
-   let dir = RCAstro.tempDir();
-   let inP = RCAstro.saveView(view, dir);
-   let outP = dir + "/" + view.id + "_nxt.xisf";
+   // Vars declared before the try, but tempDir()/saveView() are CALLED inside
+   // it: if saveView() throws (disk full, read-only TMPDIR, non-main-view
+   // guard, ...) the temp directory tempDir() just created must still be
+   // swept up by the `finally` below, not stranded.
+   let dir = null, inP = null, outP = null;
    try {
+      dir = RCAstro.tempDir();
+      inP = RCAstro.saveView(view, dir);
+      outP = dir + "/" + view.id + "_nxt.xisf";
       let r = RCAstro.runCli("nxt", NXTParams.buildArgs(inP, outP), null);
       if (!r.ok) { RCAstro.fail("NoiseXTerminator failed: " + r.errorMsg); return; }
       let out = RCAstro.importResult(outP, view.id + "_nxt_tmp");
       RCAstro.applyInPlace(out, view);   // applyInPlace closes `out` — do NOT forceClose it
    } finally {
+      // cleanup() null-guards each path entry, and always sweeps the temp
+      // dir(s) recorded by tempDir() regardless of what's passed here.
       RCAstro.cleanup([inP, outP]);
    }
 }
@@ -150,9 +157,26 @@ function NXTDialog() {
 NXTDialog.prototype = new Dialog;
 
 function main() {
+   // isViewTarget: a saved-instance drop targeting a specific view (the
+   // headless/automation path, e.g. a scripted mosaic pipeline). Run
+   // immediately, no dialog -- RCAstro.interactive stays at its default
+   // (false), so a failure never pops a modal MessageBox that nothing is
+   // present to dismiss.
    if (Parameters.isViewTarget) { NXTParams.load(); runNXT(Parameters.targetView); return; }
-   if (Parameters.isGlobalTarget) { NXTParams.load(); runNXT(ImageWindow.activeWindow.mainView); return; }
-   NXTParams.targetView = ImageWindow.activeWindow.isNull ? undefined : ImageWindow.activeWindow.mainView;
+   // isGlobalTarget: double-clicking a saved process icon. Previously this
+   // ran immediately against ImageWindow.activeWindow -- silently and
+   // destructively rewriting whatever window happened to be active, with
+   // settings that could never be reviewed or edited because the dialog was
+   // only reachable from the Scripts menu (where params are always
+   // defaults). Matches the bundled-script convention (e.g. MaskMerge.js):
+   // load() the saved params, then fall through to show the dialog
+   // pre-populated -- never auto-run.
+   if (Parameters.isGlobalTarget) NXTParams.load();
+   if (NXTParams.targetView === undefined)
+      NXTParams.targetView = ImageWindow.activeWindow.isNull ? undefined : ImageWindow.activeWindow.mainView;
+   // Dialog-driven branch: the user is present, so let fail() show its modal
+   // MessageBox in addition to the console log.
+   RCAstro.interactive = true;
    let d = new NXTDialog(); d.doRun=false;
    if (d.execute() && d.doRun) runNXT(NXTParams.targetView);
 }

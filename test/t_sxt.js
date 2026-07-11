@@ -63,9 +63,55 @@ function main() {
       let starsWin = ImageWindow.windowById(id + "_stars");
       assert(!starsWin.isNull, "no " + id + "_stars window created");
 
-      starlessWin.forceClose();
-      starsWin.forceClose();
+      // --- Part 2b: Fix H — re-run on the SAME view must not collide with
+      // the windows the first run just created (deterministic "<id>_starless"
+      // / "<id>_stars" ids). Before the fix, PI's own id-uniquify-on-open
+      // (best case "_starless1" pile-up) or the newWindow() id= re-assignment
+      // onto the still-taken id (worst case: throws after the ~2.7s CLI run)
+      // would have broken this.
+      runSXT(v);
+      let starlessWin2 = ImageWindow.windowById(id + "_starless");
+      let starsWin2 = ImageWindow.windowById(id + "_stars");
+      assert(!starlessWin2.isNull, "re-run did not (re)create " + id + "_starless");
+      assert(!starsWin2.isNull, "re-run did not (re)create " + id + "_stars");
+      assert(ImageWindow.windowById(id + "_starless1").isNull,
+             "found a stray uniquified '" + id + "_starless1' window — Fix H collision not handled");
+      assert(ImageWindow.windowById(id + "_stars1").isNull,
+             "found a stray uniquified '" + id + "_stars1' window — Fix H collision not handled");
+
+      starlessWin2.forceClose();
+      starsWin2.forceClose();
       src.forceClose();
+
+      // --- Part 2c: Fix D — SXT's new windows must preserve the source's
+      // astrometric solution. The gxp panel used above has none to begin
+      // with (verified: hasAstrometricSolution=false, 0 FITS keywords), so
+      // it can't exercise this. Use a real plate-solved/registered frame
+      // instead (confirmed via probe: hasAstrometricSolution=true).
+      let srcSolved = ImageWindow.open(
+         "/home/scarter4work/astro_work/ic4604/registered/Light_IC 4604_2-4_60.0s_Bin1_Lqef_20260616-001157_181deg_0001_d_r.xisf")[0];
+      let vSolved = srcSolved.mainView; let idSolved = vSolved.id;
+      assert(srcSolved.hasAstrometricSolution, "test fixture unexpectedly has no astrometric solution");
+
+      SXTParams.targetView = vSolved;
+      SXTParams.outputStars = true;
+      SXTParams.unscreen = false;
+      SXTParams.mlVersion = 0;
+      SXTParams.device = "gpu";
+      runSXT(vSolved);
+
+      let starlessSolved = ImageWindow.windowById(idSolved + "_starless");
+      let starsSolved = ImageWindow.windowById(idSolved + "_stars");
+      assert(!starlessSolved.isNull, "no " + idSolved + "_starless window created");
+      assert(!starsSolved.isNull, "no " + idSolved + "_stars window created");
+      assert(starlessSolved.hasAstrometricSolution,
+             "Fix D regressed: " + idSolved + "_starless has no astrometric solution");
+      assert(starsSolved.hasAstrometricSolution,
+             "Fix D regressed: " + idSolved + "_stars has no astrometric solution");
+
+      starlessSolved.forceClose();
+      starsSolved.forceClose();
+      srcSolved.forceClose();
 
       // --- Part 3: buildArgs() argv checks ---
       SXTParams.outputStars = false;

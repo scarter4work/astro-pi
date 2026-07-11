@@ -1,6 +1,6 @@
 // RCAstroBXT_TESTING suppresses RCAstroBXT.js's auto-invoked main() (which
 // would otherwise launch the interactive BXTDialog — dialogs don't run under
-// --automation-mode) so this test can call the real BXTParams.buildArgs()
+// --automation-mode) so this test can call the real runBXT()/BXTParams
 // directly. See the comment at the bottom of RCAstroBXT.js.
 // NOTE: RCAstroBXT.js already #include "RCAstroLib.jsh" itself — do not also
 // include it here. PJSR's quoted #include silently aborts the whole script
@@ -23,19 +23,25 @@ function runTest() {
       let v = src.mainView;
       let before = v.image.stdDev();
 
-      // headless path: engine round-trip with BXT args (mirrors BXTParams.buildArgs)
-      let dir = RCAstro.tempDir();
-      let inP = RCAstro.saveView(v, dir);
-      let outP = dir + "/o.xisf";
-      let r = RCAstro.runCli("bxt", [inP, "--ss","0.25","--sn","0.90","--ansr","--device","gpu","--output",outP], null);
-      assert(r.ok, "bxt failed: " + r.errorMsg);
+      // headless path: call the REAL production entry point runBXT(), not a
+      // reimplementation, so the actual shipped glue (BXTParams -> buildArgs
+      // -> runCli -> the !r.ok fail branch -> the finally cleanup) is
+      // genuinely exercised. This is what would have caught Fix B (temp dir
+      // stranded when saveView() throws before the try).
+      BXTParams.targetView = v;
+      BXTParams.sharpenStars = 0.25;
+      BXTParams.sharpenNonstellar = 0.90;
+      BXTParams.adjustHalos = 0.0;
+      BXTParams.autoPSF = true;
+      BXTParams.psfRadius = 0.0;
+      BXTParams.correctOnly = false;
+      BXTParams.mlVersion = 0;
+      BXTParams.device = "gpu";
 
-      let out = RCAstro.importResult(outP, "bxt_out");
-      RCAstro.applyInPlace(out, v);   // NOTE: applyInPlace closes `out` — do NOT forceClose it
-      assert(Math.abs(v.image.stdDev() - before) > 1e-8, "applyInPlace did not modify target");
+      runBXT(v);
+      assert(Math.abs(v.image.stdDev() - before) > 1e-8, "runBXT did not modify target view in place");
 
       src.forceClose();
-      RCAstro.cleanup([inP, outP]);
 
       // --- BXTParams.buildArgs() argv verification (per task-3-brief table) ---
       // Call the real function (defined in RCAstroBXT.js, included above with
@@ -71,6 +77,12 @@ function runTest() {
       W("argv[correctOnly=true]: " + JSON.stringify(a3));
       assert(a3.indexOf("--correct-only") >= 0, "expected --correct-only when correctOnly=true");
       assert(a3.indexOf("--ss") < 0 && a3.indexOf("--sn") < 0, "expected --correct-only to suppress --ss/--sn");
+      // Fix G: --ash is invalid together with --correct-only (verified against
+      // a real `rc-astro bxt --correct-only --ash 0.100` invocation --
+      // {"event":"error","message":"--correct-only forces --ash to 0, which
+      // conflicts with the value you gave; omit --ash"}). Must never be
+      // emitted in this mode, even when adjustHalos is non-zero.
+      assert(a3.indexOf("--ash") < 0, "expected no --ash when correctOnly=true (CLI rejects --ash with --correct-only)");
 
       BXTParams.correctOnly = false;
       BXTParams.autoPSF = true;

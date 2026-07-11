@@ -37,33 +37,71 @@ var SXTParams = {
    }
 };
 
+// Fix H: runSXT() always targets the deterministic "<id>_starless"/"<id>_stars"
+// ids. Re-running on the same view (typical while tuning sliders) would find
+// those ids already taken by the previous run's windows: ImageWindow.open()
+// uniquifies on open (best case "_starless1" pile-up), and the subsequent
+// `newWindow()` id= re-assignment onto the SAME still-taken id could throw
+// after the multi-second CLI run has already completed (worst case). Close
+// any prior same-named window first so a re-run deliberately replaces it.
+function closeWindowById(id) {
+   let w = ImageWindow.windowById(id);
+   if (!w.isNull) w.forceClose();
+}
+
 function runSXT(view) {
    if (view == null || view.isNull) { RCAstro.fail("No target view."); return; }
    let id = view.id;
-   let dir = RCAstro.tempDir();
-   let inP = RCAstro.saveView(view, dir);
-   let outP = dir + "/" + id + "_starless.xisf";
-   // CONFIRMED via Task 4 Step 2 empirical run (see task-4 report): the CLI
-   // derives the stars filename from the starless OUTPUT basename using a
-   // HYPHEN, not an underscore: "<outP-without-.xisf>-stars.xisf".
-   let starsP = dir + "/" + id + "_starless-stars.xisf";
-   let temps = [inP, outP, starsP];
+   // Vars declared before the try, but tempDir()/saveView() are CALLED inside
+   // it: if saveView() throws (disk full, read-only TMPDIR, non-main-view
+   // guard, ...) the temp directory tempDir() just created must still be
+   // swept up by the `finally` below, not stranded.
+   let dir = null, inP = null, outP = null, starsP = null;
    try {
+      dir = RCAstro.tempDir();
+      inP = RCAstro.saveView(view, dir);
+      outP = dir + "/" + id + "_starless.xisf";
+      // CONFIRMED via Task 4 Step 2 empirical run (see task-4 report): the CLI
+      // derives the stars filename from the starless OUTPUT basename using a
+      // HYPHEN, not an underscore: "<outP-without-.xisf>-stars.xisf".
+      starsP = dir + "/" + id + "_starless-stars.xisf";
+
       let r = RCAstro.runCli("sxt", SXTParams.buildArgs(inP, outP), null);
       if (!r.ok) { RCAstro.fail("StarXTerminator failed: " + r.errorMsg); return; }
+
+      closeWindowById(id + "_starless");
       let starless = RCAstro.importResult(outP, id + "_starless");
       RCAstro.newWindow(starless, id + "_starless");
+      // Fix D: neither the temp file saveView() hands to the CLI nor the
+      // CLI's own output carries the astrometric solution (verified
+      // empirically with a throwaway probe -- see fix-wave-c-report.md:
+      // FITS keywords round-trip fine already, but
+      // ImageWindow.hasAstrometricSolution is false on the freshly-imported
+      // result even when the source has a real solution -- it lives in a
+      // separate XISF metadata property, not in the FITS keyword list, so
+      // saveView()'s `tmpWin.keywords = ...` never touched it). SXT is the
+      // only one of the three tools that hands back brand-new windows the
+      // user relies on for plate-solved mosaic/registration work, so
+      // restore it explicitly from the real source window (pattern per
+      // AutoDBE.js: guard on hasAstrometricSolution, then
+      // copyAstrometricSolution(src)).
+      if (view.window.hasAstrometricSolution) starless.copyAstrometricSolution(view.window);
+
       if (SXTParams.outputStars) {
          if (!File.exists(starsP)) {
             RCAstro.fail("Stars image was requested but rc-astro did not produce the " +
                          "expected output: " + starsP);
             return;
          }
+         closeWindowById(id + "_stars");
          let stars = RCAstro.importResult(starsP, id + "_stars");
          RCAstro.newWindow(stars, id + "_stars");
+         if (view.window.hasAstrometricSolution) stars.copyAstrometricSolution(view.window);
       }
    } finally {
-      RCAstro.cleanup(temps);
+      // cleanup() null-guards each path entry, and always sweeps the temp
+      // dir(s) recorded by tempDir() regardless of what's passed here.
+      RCAstro.cleanup([inP, outP, starsP]);
    }
 }
 
@@ -114,9 +152,26 @@ function SXTDialog() {
 SXTDialog.prototype = new Dialog;
 
 function main() {
+   // isViewTarget: a saved-instance drop targeting a specific view (the
+   // headless/automation path, e.g. a scripted mosaic pipeline). Run
+   // immediately, no dialog -- RCAstro.interactive stays at its default
+   // (false), so a failure never pops a modal MessageBox that nothing is
+   // present to dismiss.
    if (Parameters.isViewTarget) { SXTParams.load(); runSXT(Parameters.targetView); return; }
-   if (Parameters.isGlobalTarget) { SXTParams.load(); runSXT(ImageWindow.activeWindow.mainView); return; }
-   SXTParams.targetView = ImageWindow.activeWindow.isNull ? undefined : ImageWindow.activeWindow.mainView;
+   // isGlobalTarget: double-clicking a saved process icon. Previously this
+   // ran immediately against ImageWindow.activeWindow -- silently and
+   // destructively rewriting whatever window happened to be active, with
+   // settings that could never be reviewed or edited because the dialog was
+   // only reachable from the Scripts menu (where params are always
+   // defaults). Matches the bundled-script convention (e.g. MaskMerge.js):
+   // load() the saved params, then fall through to show the dialog
+   // pre-populated -- never auto-run.
+   if (Parameters.isGlobalTarget) SXTParams.load();
+   if (SXTParams.targetView === undefined)
+      SXTParams.targetView = ImageWindow.activeWindow.isNull ? undefined : ImageWindow.activeWindow.mainView;
+   // Dialog-driven branch: the user is present, so let fail() show its modal
+   // MessageBox in addition to the console log.
+   RCAstro.interactive = true;
    let d = new SXTDialog(); d.doRun = false;
    if (d.execute() && d.doRun) runSXT(SXTParams.targetView);
 }

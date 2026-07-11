@@ -1,6 +1,6 @@
 // RCAstroNXT_TESTING suppresses RCAstroNXT.js's auto-invoked main() (which
 // would otherwise launch the interactive NXTDialog — dialogs don't run under
-// --automation-mode) so this test can call the real NXTParams.buildArgs()
+// --automation-mode) so this test can call the real runNXT()/NXTParams
 // directly. See the comment at the bottom of RCAstroNXT.js.
 // NOTE: RCAstroNXT.js already #include "RCAstroLib.jsh" itself — do not also
 // include it here. PJSR's quoted #include silently aborts the whole script
@@ -23,19 +23,23 @@ function runTest() {
       let v = src.mainView;
       let before = v.image.stdDev();
 
-      // headless path: engine round-trip with NXT args (mirrors NXTParams.buildArgs, useAdvanced=false)
-      let dir = RCAstro.tempDir();
-      let inP = RCAstro.saveView(v, dir);
-      let outP = dir + "/o.xisf";
-      let r = RCAstro.runCli("nxt", [inP, "--dn","0.90","--it","2","--fs","5.0","--device","gpu","--output",outP], null);
-      assert(r.ok, "nxt failed: " + r.errorMsg);
+      // headless path: call the REAL production entry point runNXT(), not a
+      // reimplementation, so the actual shipped glue (NXTParams -> buildArgs
+      // -> runCli -> the !r.ok fail branch -> the finally cleanup) is
+      // genuinely exercised. This is what would have caught Fix B (temp dir
+      // stranded when saveView() throws before the try).
+      NXTParams.targetView = v;
+      NXTParams.denoise = 0.90;
+      NXTParams.iterations = 2;
+      NXTParams.freqScale = 5.0;
+      NXTParams.useAdvanced = false;
+      NXTParams.mlVersion = 0;
+      NXTParams.device = "gpu";
 
-      let out = RCAstro.importResult(outP, "nxt_out");
-      RCAstro.applyInPlace(out, v);   // NOTE: applyInPlace closes `out` — do NOT forceClose it
-      assert(Math.abs(v.image.stdDev() - before) > 1e-8, "applyInPlace did not modify target");
+      runNXT(v);
+      assert(Math.abs(v.image.stdDev() - before) > 1e-8, "runNXT did not modify target view in place");
 
       src.forceClose();
-      RCAstro.cleanup([inP, outP]);
 
       // --- NXTParams.buildArgs() argv verification: advanced off vs on ---
       // Call the real function (defined in RCAstroNXT.js, included above with

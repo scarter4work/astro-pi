@@ -43,10 +43,17 @@ var BXTParams = {
    },
    buildArgs: function(inPath, outPath) {
       let a = [inPath];
-      if (this.correctOnly) a.push("--correct-only");
-      else { a.push("--ss", format("%.3f", this.sharpenStars),
-                    "--sn", format("%.3f", this.sharpenNonstellar)); }
-      a.push("--ash", format("%.3f", this.adjustHalos));
+      if (this.correctOnly) {
+         a.push("--correct-only");
+         // --ash is invalid together with --correct-only: verified empirically
+         // (`rc-astro bxt --correct-only --ash 0.100` --> {"event":"error",
+         // "message":"--correct-only forces --ash to 0, which conflicts with
+         // the value you gave; omit --ash"}). Never emit it in this mode.
+      } else {
+         a.push("--ss", format("%.3f", this.sharpenStars),
+                "--sn", format("%.3f", this.sharpenNonstellar));
+         a.push("--ash", format("%.3f", this.adjustHalos));
+      }
       if (this.autoPSF) a.push("--ansr");
       else a.push("--no-ansr", "--nsr", format("%.2f", this.psfRadius));
       if (this.mlVersion != 0) a.push("--ml-version", String(this.mlVersion));
@@ -57,15 +64,22 @@ var BXTParams = {
 
 function runBXT(view) {
    if (view == null || view.isNull) { RCAstro.fail("No target view."); return; }
-   let dir = RCAstro.tempDir();
-   let inP = RCAstro.saveView(view, dir);
-   let outP = dir + "/" + view.id + "_bxt.xisf";
+   // Vars declared before the try, but tempDir()/saveView() are CALLED inside
+   // it: if saveView() throws (disk full, read-only TMPDIR, non-main-view
+   // guard, ...) the temp directory tempDir() just created must still be
+   // swept up by the `finally` below, not stranded.
+   let dir = null, inP = null, outP = null;
    try {
+      dir = RCAstro.tempDir();
+      inP = RCAstro.saveView(view, dir);
+      outP = dir + "/" + view.id + "_bxt.xisf";
       let r = RCAstro.runCli("bxt", BXTParams.buildArgs(inP, outP), null);
       if (!r.ok) { RCAstro.fail("BlurXTerminator failed: " + r.errorMsg); return; }
       let out = RCAstro.importResult(outP, view.id + "_bxt_tmp");
       RCAstro.applyInPlace(out, view);   // applyInPlace closes `out` — do NOT forceClose it
    } finally {
+      // cleanup() null-guards each path entry, and always sweeps the temp
+      // dir(s) recorded by tempDir() regardless of what's passed here.
       RCAstro.cleanup([inP, outP]);
    }
 }
@@ -97,7 +111,17 @@ function BXTDialog() {
    this.autoPSF.onCheck = function(c){ BXTParams.autoPSF = c; self.nsr.enabled = !c; };
 
    this.correctOnly = new CheckBox(this); this.correctOnly.text = "Correct only (no sharpening)"; this.correctOnly.checked = BXTParams.correctOnly;
-   this.correctOnly.onCheck = function(c){ BXTParams.correctOnly = c; self.ss.enabled = !c; self.sn.enabled = !c; };
+   this.correctOnly.onCheck = function(c){ BXTParams.correctOnly = c; self.ss.enabled = !c; self.sn.enabled = !c; self.ash.enabled = !c; };
+   // Initialize ALL dependent enabled-states from the loaded param values at
+   // construction, not just when the user toggles a checkbox interactively --
+   // required now that Fix C opens this dialog pre-populated from a saved
+   // process icon's parameters (previously only reachable via the Scripts
+   // menu, where params were always defaults and this never mattered).
+   // --ash is invalid together with --correct-only (see buildArgs()), so the
+   // slider must start disabled whenever a loaded/default correctOnly is true.
+   this.ss.enabled = !BXTParams.correctOnly;
+   this.sn.enabled = !BXTParams.correctOnly;
+   this.ash.enabled = !BXTParams.correctOnly;
 
    this.mlv = new ComboBox(this); this.mlv.addItem("Latest"); this.mlv.addItem("AI 4"); this.mlv.addItem("AI 2");
    this.mlv.currentItem = (BXTParams.mlVersion==4)?1:(BXTParams.mlVersion==2)?2:0;
@@ -140,9 +164,26 @@ function BXTDialog() {
 BXTDialog.prototype = new Dialog;
 
 function main() {
+   // isViewTarget: a saved-instance drop targeting a specific view (the
+   // headless/automation path, e.g. a scripted mosaic pipeline). Run
+   // immediately, no dialog -- RCAstro.interactive stays at its default
+   // (false), so a failure never pops a modal MessageBox that nothing is
+   // present to dismiss.
    if (Parameters.isViewTarget) { BXTParams.load(); runBXT(Parameters.targetView); return; }
-   if (Parameters.isGlobalTarget) { BXTParams.load(); runBXT(ImageWindow.activeWindow.mainView); return; }
-   BXTParams.targetView = ImageWindow.activeWindow.isNull ? undefined : ImageWindow.activeWindow.mainView;
+   // isGlobalTarget: double-clicking a saved process icon. Previously this
+   // ran immediately against ImageWindow.activeWindow -- silently and
+   // destructively rewriting whatever window happened to be active (e.g. the
+   // user's master flat), with settings that could never be reviewed or
+   // edited because the dialog was only reachable from the Scripts menu
+   // (where params are always defaults). Matches the bundled-script
+   // convention (e.g. MaskMerge.js): load() the saved params, then fall
+   // through to show the dialog pre-populated -- never auto-run.
+   if (Parameters.isGlobalTarget) BXTParams.load();
+   if (BXTParams.targetView === undefined)
+      BXTParams.targetView = ImageWindow.activeWindow.isNull ? undefined : ImageWindow.activeWindow.mainView;
+   // Dialog-driven branch: the user is present, so let fail() show its modal
+   // MessageBox in addition to the console log.
+   RCAstro.interactive = true;
    let d = new BXTDialog();
    d.doRun = false;
    if (d.execute() && d.doRun) runBXT(BXTParams.targetView);
