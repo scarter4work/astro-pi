@@ -85,11 +85,48 @@ var RCAstro = {
    // Removes the given files, then removes any per-run temp directories
    // created by tempDir() so far. Signature is intentionally unchanged
    // (cleanup(paths)) — later tasks call this as RCAstro.cleanup([inP, outP]).
+   //
+   // This must never throw (it runs from `finally` blocks), but it must
+   // never fail silently either: any file or directory that cannot be
+   // removed produces a visible console.warningln(), never a swallowed
+   // exception. File.removeDirectory() throws if the directory is not
+   // empty, so before calling it we sweep up any files a caller forgot
+   // to pass in explicitly.
    cleanup: function(paths) {
-      for (let i = 0; i < paths.length; ++i)
-         try { if (paths[i] && File.exists(paths[i])) File.remove(paths[i]); } catch (e) {}
-      for (let i = 0; i < this._tempDirs.length; ++i)
-         try { if (File.directoryExists(this._tempDirs[i])) File.removeDirectory(this._tempDirs[i]); } catch (e) {}
+      for (let i = 0; i < paths.length; ++i) {
+         try {
+            if (paths[i] && File.exists(paths[i])) File.remove(paths[i]);
+         } catch (e) {
+            console.warningln("RC-Astro: could not remove temp file " + paths[i] + ": " + e.message);
+         }
+      }
+      for (let i = 0; i < this._tempDirs.length; ++i) {
+         let dir = this._tempDirs[i];
+         try {
+            if (!File.directoryExists(dir)) continue;
+            // Sweep up any leftover files so a caller forgetting to pass
+            // one into cleanup(paths) doesn't strand the whole directory.
+            // NOTE: File.searchDirectory() is documented but is NOT a
+            // callable function in this PixInsight 1.9.4 "Lockhart" build
+            // (verified: typeof File.searchDirectory === "undefined", same
+            // gotcha as CoreApplication.processEvents above). The bare
+            // global searchDirectory() works and returns full paths
+            // already (verified empirically) — do not re-prepend dir.
+            let leftovers = searchDirectory(dir + "/*");
+            for (let j = 0; j < leftovers.length; ++j) {
+               let leftover = leftovers[j];
+               try {
+                  if (File.directoryExists(leftover)) File.removeDirectory(leftover);
+                  else if (File.exists(leftover)) File.remove(leftover);
+               } catch (e) {
+                  console.warningln("RC-Astro: could not remove leftover temp item " + leftover + ": " + e.message);
+               }
+            }
+            File.removeDirectory(dir);
+         } catch (e) {
+            console.warningln("RC-Astro: could not remove temp dir " + dir + ": " + e.message);
+         }
+      }
       this._tempDirs = [];
    },
 

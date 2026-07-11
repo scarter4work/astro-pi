@@ -14,6 +14,9 @@ function main() {
    function W(s){ log.outTextLn(s); log.flush(); console.noteln(s); }
 
    let p = null;
+   let dir = null;
+   let src = null;
+   let rt = null;
    try {
       // findBinary resolves
       let bin = RCAstro.findBinary();
@@ -21,23 +24,29 @@ function main() {
       W("binary: " + bin);
 
       // load a known image, save via engine, re-import, compare geometry
-      let src = ImageWindow.open("/home/scarter4work/astro_work/cygnus/gxp/panel_1-1.xisf")[0];
-      let dir = RCAstro.tempDir();
+      src = ImageWindow.open("/home/scarter4work/astro_work/cygnus/gxp/panel_1-1.xisf")[0];
+      dir = RCAstro.tempDir();
       p = RCAstro.saveView(src.mainView, dir);
       assert(File.exists(p), "saveView did not write file");
 
-      let rt  = RCAstro.importResult(p, "rt_check");
+      rt = RCAstro.importResult(p, "rt_check");
       assert(rt.mainView.image.width  == src.mainView.image.width,  "width mismatch");
       assert(rt.mainView.image.height == src.mainView.image.height, "height mismatch");
 
-      src.forceClose(); rt.forceClose();
+      src.forceClose(); src = null;
+      rt.forceClose(); rt = null;
       RCAstro.cleanup([p]);
       assert(!File.exists(p), "cleanup did not remove temp file");
+      assert(!File.directoryExists(dir), "cleanup did not remove temp directory");
       p = null;
       W("PASS t_lib_roundtrip");
    } catch (e) {
       W("FAIL: " + e.message);
    } finally {
+      // Ensure any still-open windows are closed even if an assertion
+      // above failed before the normal close/cleanup path ran.
+      if (src != null) try { src.forceClose(); } catch (e2) {}
+      if (rt  != null) try { rt.forceClose();  } catch (e2) {}
       // Ensure the temp file (and its temp dir) never leak, even if an
       // assertion above failed before RCAstro.cleanup() ran.
       if (p != null) try { RCAstro.cleanup([p]); } catch (e2) {}
