@@ -6,7 +6,7 @@
       <p>Repository: https://raw.githubusercontent.com/scarter4work/astro-pi/main/repository/</p>
    </description>
    <platform os="linux" arch="x64" version="1.8.0:2.0.0">
-      <package fileName="20260709-linux-x64-NukeX.tar.gz" sha1="e7b88ba26fc0a9b9b4eeb19d1c05ec4d93baeec1" type="module" releaseDate="20260709">
+      <package fileName="20260711-linux-x64-NukeX.tar.gz" sha1="66b0ea7c3f7aaf15faab7a579092730e63e502e9" type="module" releaseDate="20260711">
          <title>NukeX</title>
          <description>
             <p>
@@ -19,7 +19,7 @@
       </package>
    </platform>
    <platform os="all" arch="noarch" version="1.8.0:2.0.0">
-      <package fileName="EZStretch_v1.0.10.zip" sha1="2714c4063e74284c94b7acdd6d5c84d3ea0e8a71" type="script" releaseDate="20260709">
+      <package fileName="EZStretch_v1.0.10.zip" sha1="bec27cc7a3999babdce0650eb514ad5a0f4585d3" type="script" releaseDate="20260711">
          <title>EZ Stretch</title>
          <description>
             <p>
@@ -28,7 +28,7 @@
             <p>Unified stretch suite combining three algorithms in a single interface.</p>
          </description>
       </package>
-      <package fileName="EZDonutRepair_v1.0.3.zip" sha1="5995dfccb88861eb6e32f80137bb535b0f61e1a6" type="script" releaseDate="20260709">
+      <package fileName="EZDonutRepair_v1.0.3.zip" sha1="7f6b1e99a321ea18b0648eada77a1e51599dc63c" type="script" releaseDate="20260711">
          <title>EZ Donut Repair</title>
          <description>
             <p>
@@ -37,7 +37,7 @@
             <p>Removes donut/dust artifacts from astrophotography frames.</p>
          </description>
       </package>
-      <package fileName="EZHazeKill_v1.0.1.zip" sha1="6c3033477f590f2bbc6c43df91207570ea0ac016" type="script" releaseDate="20260709">
+      <package fileName="EZHazeKill_v1.0.1.zip" sha1="5f3e7a9ab20801541288220ba11f5dfd83e42a1c" type="script" releaseDate="20260711">
          <title>EZ Haze Kill</title>
          <description>
             <p>
@@ -46,7 +46,19 @@
             <p>Gradient and haze reduction.</p>
          </description>
       </package>
-      <package fileName="gaia-depth-grade_v1.0.12.zip" sha1="b75a6ee5f13e46f201093bc0b1b60955d00b49b1" type="script" releaseDate="20260709">
+      <package fileName="rc-astro-cli_v1.0.0.zip" sha1="936a1ba6cf3878565a0b452ebe439618bda5f07d" type="script" releaseDate="20260711">
+         <title>RC-Astro CLI Wrappers</title>
+         <description>
+            <p>
+               <b>RC-Astro CLI Wrappers v1.0.0</b>
+            </p>
+            <p>Runs BlurXTerminator, StarXTerminator and NoiseXTerminator through the stand-alone RC-Astro command-line tool instead of the compiled PixInsight plug-ins. Adds Script &gt; RC-Astro &gt; BlurXTerminator / StarXTerminator / NoiseXTerminator (CLI).</p>
+            <p>Why: on Blackwell GPUs (RTX 50-series, compute capability 12.0) the plug-ins&apos; bundled TensorFlow has no sm_120 kernels — it JIT-compiles every kernel from PTX, exhausts system RAM into swap, and aborts. The RC-Astro CLI uses ONNX Runtime instead and runs roughly 2.7 s per 22 MP panel on GPU.</p>
+            <p>BlurX and NoiseX modify the target view in place (undoable). StarX writes &lt;id&gt;_starless, plus &lt;id&gt;_stars when enabled, to new windows and leaves the original untouched; the astrometric solution is carried over. Full dialogs, saveable process icons, and view-target automation for headless pipelines.</p>
+            <p>REQUIRES the separately-purchased RC-Astro CLI (rc-astro) on your PATH, with BlurXTerminator / StarXTerminator / NoiseXTerminator licensed and their models downloaded. These scripts bundle no RC-Astro code — they shell out to it, and report a clear error if it is not installed. GPU acceleration additionally needs system cuDNN 9.13 or newer; older cuDNN silently falls back to CPU on Blackwell.</p>
+         </description>
+      </package>
+      <package fileName="gaia-depth-grade_v1.0.12.zip" sha1="e0055e6e2d637c356dae57f8418f5ef350f2abdf" type="script" releaseDate="20260711">
          <title>Gaia Depth Grade</title>
          <description>
             <p>
@@ -59,4 +71,4 @@
       </package>
    </platform>
 </xri>
-<Signature developerId="scarter4work" timestamp="2026-07-09T04:29:42.281Z" encoding="Base64">1gCfQ3uQ5xdURij13oBdJ0v37sfdvVsFml28AOg9Pha+ivGxzunDJeqEpqyq1Oz3Dzml0bVxsHI/Alpmqbi+AA==</Signature>
+<Signature developerId="scarter4work" timestamp="2026-07-12T02:48:36.517Z" encoding="Base64">IvgTOWVa5U4dz8F0iy35IsWeRQ0gQJWxTy6lvIMKogrUHUJQ+CMwScsnzZMzh5x5N0OrA4aZC2IQ/1aXb2XGDg==</Signature>

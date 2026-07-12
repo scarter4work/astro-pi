@@ -1,3 +1,5 @@
+#script-id     RCAstroLib
+
 // RC-Astro CLI engine — shared by RCAstro{BXT,SXT,NXT}.js
 #include <pjsr/UndoFlag.jsh>
 #include <pjsr/StdIcon.jsh>

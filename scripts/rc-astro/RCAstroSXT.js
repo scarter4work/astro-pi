@@ -1,5 +1,8 @@
 #feature-id    RC-Astro > StarXTerminator (CLI)
+#script-id     RCAstroSXT
 #feature-info  Runs the GPU-accelerated rc-astro StarXTerminator; starless (+ optional stars) to new windows.
+
+#define VERSION "1.0.0"
 
 #include <pjsr/Sizer.jsh>
 #include <pjsr/StdButton.jsh>

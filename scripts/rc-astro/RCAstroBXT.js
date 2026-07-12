@@ -1,5 +1,8 @@
 #feature-id    RC-Astro > BlurXTerminator (CLI)
+#script-id     RCAstroBXT
 #feature-info  Runs the GPU-accelerated rc-astro BlurXTerminator on the target view.
+
+#define VERSION "1.0.0"
 
 #include <pjsr/Sizer.jsh>
 #include <pjsr/FrameStyle.jsh>
