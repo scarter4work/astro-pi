@@ -73,14 +73,30 @@ def _geometry(wcs: WCS, nx: int, ny: int) -> tuple[float, float, float, float]:
 def _from_fits_header(path: Path, notes: list[str]) -> WcsResult | None:
     with fits.open(path) as hdul:
         header = hdul[0].header
-        data = hdul[0].data
+
+    # naxis=2 selects the celestial axes. A debayered stack is a 3-axis cube
+    # (channel, y, x), and astropy raises outright if such a header also carries SIP
+    # distortion ("SIP distortions only work in 2 dimensions") — which is exactly what
+    # PixInsight writes (CTYPE1 = 'RA---TAN-SIP').
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
-        wcs = WCS(header)
-    if not wcs.has_celestial or data is None:
+        try:
+            wcs = WCS(header, naxis=2)
+        except Exception as exc:
+            notes.append(f"FITS WCS unreadable: {type(exc).__name__}: {exc}")
+            return None
+
+    if not wcs.has_celestial:
         notes.append("FITS header carries no celestial WCS")
         return None
-    ny, nx = np.asarray(data).shape[:2]
+
+    # Take dimensions from NAXIS1/NAXIS2, never from data.shape[:2] — on a
+    # channel-first cube the latter reads the channel count as an image dimension.
+    if "NAXIS1" not in header or "NAXIS2" not in header:
+        notes.append("FITS header has no NAXIS1/NAXIS2")
+        return None
+    nx, ny = int(header["NAXIS1"]), int(header["NAXIS2"])
+
     ra, dec, radius, scale = _geometry(wcs.celestial, nx, ny)
     return WcsResult(ra, dec, radius, "header", True, "WCS from FITS header",
                      pixel_scale_arcsec=scale)

@@ -40,7 +40,12 @@ def _pixel_scale_from_header(header: fits.Header) -> float | None:
     """
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")  # a header with no WCS warns; we handle it below
-        wcs = WCS(header)
+        try:
+            # naxis=2: a debayered stack is a 3-axis cube, and astropy raises on a
+            # 3-axis header carrying SIP distortion (what PixInsight writes).
+            wcs = WCS(header, naxis=2)
+        except Exception:
+            return None
     if not wcs.has_celestial:
         return None
     scales_deg = wcs.proj_plane_pixel_scales()  # list of Quantity, one per axis

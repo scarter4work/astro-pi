@@ -188,3 +188,46 @@ def test_large_mosaic_does_not_trip_pillow_decompression_guard(tmp_path, monkeyp
 
     assert result.solved
     assert result.wcs_source == "avm"
+
+
+def _fits_cube_with_wcs(path, nx=64, ny=48, nchan=3, scale_arcsec=1.01):
+    """A 3-channel, channel-first FITS cube with a celestial WCS — the shape a
+    debayered PixInsight stack actually has (e.g. (3, 4042, 6072))."""
+    data = np.zeros((nchan, ny, nx), dtype=np.uint16)
+    hdu = fits.PrimaryHDU(data=data)
+    hdu.header.update(_wcs(nx, ny, scale_arcsec).to_header())
+    hdu.writeto(path)
+
+
+def test_three_channel_fits_cube_with_wcs(tmp_path):
+    """Regression (real data): a 3-axis cube must not (a) blow up WCS construction,
+    nor (b) have its channel count mistaken for an image dimension."""
+    path = tmp_path / "cube.fits"
+    _fits_cube_with_wcs(path, nx=64, ny=48, nchan=3, scale_arcsec=1.01)
+
+    result = acquire_wcs(path)
+
+    assert result.solved
+    assert result.wcs_source == "header"
+    assert result.ra_deg == pytest.approx(RA, abs=1e-3)
+    assert result.dec_deg == pytest.approx(DEC, abs=1e-3)
+    assert result.pixel_scale_arcsec == pytest.approx(1.01, rel=1e-3)
+
+
+def test_fits_cube_with_sip_distortion_does_not_raise(tmp_path):
+    """A 3-axis header carrying SIP (as PixInsight writes) makes astropy's WCS()
+    raise unless the celestial axes are selected explicitly."""
+    path = tmp_path / "sip.fits"
+    data = np.zeros((3, 48, 64), dtype=np.uint16)
+    hdu = fits.PrimaryHDU(data=data)
+    hdu.header.update(_wcs(64, 48).to_header())
+    hdu.header["CTYPE1"] = "RA---TAN-SIP"
+    hdu.header["CTYPE2"] = "DEC--TAN-SIP"
+    hdu.header["A_ORDER"] = 2
+    hdu.header["B_ORDER"] = 2
+    hdu.writeto(path)
+
+    result = acquire_wcs(path)  # must not raise
+
+    assert result.solved
+    assert result.wcs_source == "header"
