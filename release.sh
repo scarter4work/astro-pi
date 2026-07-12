@@ -62,6 +62,22 @@ assert r.get("ok"), r
 print("  signed+verified:", ", ".join(r["verified"]))
 PY
 
+echo "== 2d/6 native-sign rc-astro CLI wrapper scripts =="
+# Signs RCAstro{BXT,SXT,NXT}.js + the shared RCAstroLib.jsh -> *.xsgn and verifies each.
+# PI verifies #included files by their OWN signature, so the .jsh is signed too.
+# Writes /tmp/.rcastro_sign_result.json (automation-mode console never reaches stdout).
+rm -f /tmp/.rcastro_sign_result.json
+LD_LIBRARY_PATH="${ASTROPI_PI_DIR:-/opt/PixInsight}/bin/lib:${ASTROPI_PI_DIR:-/opt/PixInsight}/bin" \
+  "$PI" -n --automation-mode --no-startup-scripts --no-startup-check-updates \
+        --no-startup-gui-messages -r="$ROOT/scripts/rc-astro/tools/SignRCAstroScriptsNative.js" \
+        --force-exit >/dev/null 2>&1 || true
+python3 - /tmp/.rcastro_sign_result.json <<'PY' || die "rc-astro script signing/verification failed"
+import json,sys
+r=json.load(open(sys.argv[1]))
+assert r.get("ok"), r
+print("  signed+verified:", ", ".join(r["verified"]))
+PY
+
 echo "== 3/6 package module tarball =="
 mkdir -p "$REPO/bin"
 cp "$SO" "$XSGN" "$REPO/bin/"
@@ -111,12 +127,32 @@ rm -rf "$GAIA_STAGE"
 # After bumping the sidecar, rebuild+upload it (gaia-depth-grade/tools/build-sidecar.sh)
 # and update those pins; this script only ships the thin signed scripts.
 
+echo "== 3d/6 package rc-astro CLI wrapper script zip =="
+# Mirror PI's install layout (src/scripts/RCAstro/) so the package extracts into
+# PixInsight's scripts tree. The 3 feature scripts + the shared engine, each with its .xsgn.
+# NOTE: these WRAP the separately-licensed rc-astro CLI binary — they ship as thin scripts
+# only, and fail loudly (MessageBox) if the CLI is not installed. No RC-Astro IP is bundled.
+RCASTRO_VER=1.0.0
+RCASTRO_ZIP="rc-astro-cli_v${RCASTRO_VER}.zip"
+RCASTRO_STAGE="$(mktemp -d)"
+mkdir -p "$RCASTRO_STAGE/src/scripts/RCAstro"
+cp "$ROOT/scripts/rc-astro/RCAstroBXT.js"  "$ROOT/scripts/rc-astro/RCAstroBXT.xsgn" \
+   "$ROOT/scripts/rc-astro/RCAstroSXT.js"  "$ROOT/scripts/rc-astro/RCAstroSXT.xsgn" \
+   "$ROOT/scripts/rc-astro/RCAstroNXT.js"  "$ROOT/scripts/rc-astro/RCAstroNXT.xsgn" \
+   "$ROOT/scripts/rc-astro/RCAstroLib.jsh" "$ROOT/scripts/rc-astro/RCAstroLib.xsgn" \
+   "$RCASTRO_STAGE/src/scripts/RCAstro/"
+rm -f "$REPO/$RCASTRO_ZIP"
+( cd "$RCASTRO_STAGE" && zip -qr "$REPO/$RCASTRO_ZIP" src )
+rm -rf "$RCASTRO_STAGE"
+[ -f "$REPO/$RCASTRO_ZIP" ] || die "zip $RCASTRO_ZIP not produced"
+
 echo "== 4/6 write fileName/sha1/releaseDate into ONE manifest =="
 write_pkg "$REPO/updates.xri" "$MOD_TGZ"                  "$(sha1 "$REPO/$MOD_TGZ")"
 write_pkg "$REPO/updates.xri" "EZStretch_v1.0.10.zip"     "$(sha1 "$REPO/EZStretch_v1.0.10.zip")"
 write_pkg "$REPO/updates.xri" "EZDonutRepair_v1.0.3.zip"  "$(sha1 "$REPO/EZDonutRepair_v1.0.3.zip")"
 write_pkg "$REPO/updates.xri" "EZHazeKill_v1.0.1.zip"     "$(sha1 "$REPO/EZHazeKill_v1.0.1.zip")"
 write_pkg "$REPO/updates.xri" "$GAIA_ZIP"                 "$(sha1 "$REPO/$GAIA_ZIP")"
+write_pkg "$REPO/updates.xri" "$RCASTRO_ZIP"              "$(sha1 "$REPO/$RCASTRO_ZIP")"
 
 echo "== 5/6 sign manifest LAST =="
 sed -i '/<Signature developerId=/d' "$REPO/updates.xri"
