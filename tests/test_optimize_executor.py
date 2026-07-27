@@ -50,3 +50,21 @@ def test_unknown_action_kind_is_a_loud_error():
     with pytest.raises(ValueError, match="unknown action"):
         NumpyExecutor().apply(_img(), Action("teleport", "strong", None, {}),
                               pixel_scale_arcsec=1.0)
+
+
+def test_local_contrast_rejects_a_layer_beyond_what_the_image_supports():
+    # A 96x96 image supports up to layer floor(log2(96)) == 6; 7 is one past the edge.
+    ex, src = NumpyExecutor(), _img(h=96, w=96)
+    with pytest.raises(ValueError, match="exceeds what a 96x96 image supports"):
+        ex.apply(src, Action("local_contrast", "moderate", 8.0, {"layer": 7}),
+                 pixel_scale_arcsec=1.0)
+
+
+def test_local_contrast_accepts_a_layer_at_the_supported_boundary():
+    # layer == max_layer is the last legitimate value; it must still execute normally.
+    ex, src = NumpyExecutor(), _img(h=96, w=96)
+    out = ex.apply(src, Action("local_contrast", "moderate", 8.0, {"layer": 6}),
+                   pixel_scale_arcsec=1.0)
+    assert out.shape == src.shape
+    assert np.all(np.isfinite(out))
+    assert not np.array_equal(out, src)
