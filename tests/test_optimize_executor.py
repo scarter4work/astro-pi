@@ -11,16 +11,19 @@ def _img(h=96, w=96):
     return np.clip(np.stack([base, base * 0.9, base * 1.1], axis=-1), 0.0, 1.0)
 
 
-@pytest.mark.parametrize("kind,level,scale", [
-    ("local_contrast", "moderate", 8.0),
-    ("local_equalize", "gentle", 8.0),
-    ("core_hdr", "moderate", None),
-    ("tonal_reshape", "strong", None),
-    ("black_point", "gentle", None),
-    ("chroma", "moderate", None),
-    ("background_neutralize", "", None),
+@pytest.mark.parametrize("kind,level,scale,expect_change", [
+    ("local_contrast", "moderate", 8.0, True),
+    ("local_equalize", "gentle", 8.0, True),
+    ("core_hdr", "moderate", None, True),
+    ("tonal_reshape", "strong", None, True),
+    ("black_point", "gentle", None, True),
+    ("chroma", "moderate", None, True),
+    ("background_neutralize", "", None, True),
+    # star_split is a MODE change (SS6.2), not a pixel operation: the numpy
+    # executor is a deliberate no-op here, and that's the behaviour under test.
+    ("star_split", "", None, False),
 ])
-def test_every_action_kind_is_executable_and_stays_in_range(kind, level, scale):
+def test_every_action_kind_is_executable_and_stays_in_range(kind, level, scale, expect_change):
     ex = NumpyExecutor()
     src = _img()
     out = ex.apply(src, Action(kind, level, scale, {"layer": 3, "radius_arcsec": 8.0}),
@@ -28,6 +31,14 @@ def test_every_action_kind_is_executable_and_stays_in_range(kind, level, scale):
     assert out.shape == src.shape
     assert np.all(np.isfinite(out))
     assert out.min() >= 0.0 and out.max() <= 1.0
+
+    diff = float(np.abs(out - src).mean())
+    if expect_change:
+        # A branch that silently degraded to a passthrough would satisfy every
+        # assertion above; this is the one that actually catches it.
+        assert diff > 1e-6, f"{kind} did not visibly change the image (mean abs diff {diff:.3e})"
+    else:
+        assert np.array_equal(out, src), f"{kind} is a mode change and must be a pixel no-op"
 
 
 def test_executor_does_not_mutate_its_input():
