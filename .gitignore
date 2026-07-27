@@ -32,3 +32,7 @@ data/amateur/*
 
 # Downloaded gallery renders (regenerable cache, can be hundreds of MB)
 data/discovery_cache/
+
+# Subagent-driven-development scratch: ledgers, briefs, review packages.
+# Regenerable coordination state — the git history is the real record.
+.superpowers/
