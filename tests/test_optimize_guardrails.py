@@ -1,6 +1,7 @@
 import numpy as np
 import pytest
 
+from autocontrast.fingerprint.color import rgb_to_lab
 from autocontrast.optimize.guardrails import (
     GuardrailLimits, check_channel_ratio_drift, check_highlight_clipping,
     check_hue_invention, check_noise_floor, check_shadow_clipping,
@@ -146,70 +147,17 @@ def test_star_integrity_passes_but_says_so_when_baseline_is_starless():
     assert "no" in verdict.reason.lower() and "star" in verdict.reason.lower()
 
 
-# --- hue-angle acceptance fixtures (design SS5.1) ---
+# --- hue-angle acceptance fixtures (design SS5.1, twice revised) ---
 #
-# rgb_to_lab has no inverse in the production code (nothing needed one before
-# this). Isolating "saturation boost" from "genuine hue shift" requires one:
-# these boost the fixture directly in a*/b* -- an EXACT, angle-preserving
-# radial scale -- then round-trip back through sRGB, where a strong enough
-# boost pushes a channel out of gamut and forces a clip that genuinely moves
-# the hue. _lab_to_rgb is the algebraic inverse of rgb_to_lab (same D65
-# matrices, same gamma), verified below by round-trip.
-#
-# _lab_to_linear is exposed separately from the final sRGB conversion because
-# the gamma step floors negative LINEAR light to 0 before encoding (raising a
-# negative number to a fractional power is undefined) -- so the final sRGB
-# array can never report a negative minimum even when the pre-floor value
-# genuinely went out of gamut. Checking "did this clip" against the final sRGB
-# array is a silent false negative; it has to be checked in linear space.
-
-from autocontrast.fingerprint.color import _DELTA, _RGB_TO_XYZ, _WHITE, rgb_to_lab
-
-_XYZ_TO_RGB = np.linalg.inv(_RGB_TO_XYZ)
-
-
-def _lab_finv(f):
-    return np.where(f > _DELTA, f**3, 3 * _DELTA**2 * (f - 4.0 / 29.0))
-
-
-def _lab_to_linear(lab):
-    L, a, b = lab[..., 0], lab[..., 1], lab[..., 2]
-    fy = (L + 16.0) / 116.0
-    fx, fz = fy + a / 500.0, fy - b / 200.0
-    xyz = np.stack([_lab_finv(fx), _lab_finv(fy), _lab_finv(fz)], axis=-1) * _WHITE
-    return xyz @ _XYZ_TO_RGB.T
-
-
-def _linear_to_srgb(linear):
-    linear = np.clip(linear, 0, None)
-    return np.where(linear <= 0.0031308, linear * 12.92, 1.055 * linear ** (1 / 2.4) - 0.055)
-
-
-def _lab_to_rgb(lab):
-    return _linear_to_srgb(_lab_to_linear(lab))
-
-
-def test_lab_to_rgb_round_trips_rgb_to_lab():
-    # Not exercising the guardrail -- confirming the inverse used to build the
-    # fixtures below is actually correct, so a wrong inverse can't silently
-    # fabricate the "boost preserves hue exactly" premise those tests rely on.
-    rng = np.random.default_rng(20260727)
-    rgb = rng.uniform(0.05, 0.95, (8, 8, 3))
-    assert np.abs(_lab_to_rgb(rgb_to_lab(rgb)) - rgb).max() < 1e-9
-
-
-def _boost_lab_chroma(rgb, boost):
-    """Scale a*/b* by ``boost`` about the same L* -- pure radial motion, EXACT
-    hue-angle preservation by construction. Returns (true_linear, candidate_rgb):
-    true_linear is the UNFLOORED linear-light result, needed to tell whether this
-    boost genuinely left the sRGB gamut; candidate_rgb is the clipped [0, 1]
-    image a real pipeline would actually produce."""
-    lab = rgb_to_lab(rgb).copy()
-    lab[..., 1] *= boost
-    lab[..., 2] *= boost
-    linear = _lab_to_linear(lab)
-    return linear, np.clip(_linear_to_srgb(linear), 0.0, 1.0)
-
+# Saturation is applied in RGB, as any real ColorSaturation implementation
+# would, NOT by scaling Lab a*/b* directly. CIELAB hue angle is a nonlinear
+# function of RGB, so a legitimate boost drifts the angle by a few degrees
+# even with zero clipping -- an angle-exact Lab-radial boost hides that drift
+# and is not a faithful fixture (an earlier round of this guardrail used one
+# and got a false "clean separation"; see task-4-report.md fix round 2 for
+# how that went wrong). Gamut clipping is deliberately NOT tested here -- that
+# is check_shadow_clipping's and check_highlight_clipping's job, not this
+# guardrail's (SS5.1's second correction).
 
 def _hue_deg(rgb):
     lab = rgb_to_lab(rgb)
@@ -217,47 +165,62 @@ def _hue_deg(rgb):
     return np.degrees(np.arctan2(b, a)) % 360.0, np.hypot(a, b)
 
 
-def _blue_deficient_source(h=64, w=64):
-    # A real, existing color bias (warm/orange cast from a blue deficiency),
-    # uniform so the hue-vs-clip measurement below is exact and unambiguous,
-    # not averaged over a spatially varying fixture. 0.64 is not arbitrary: it
-    # is the largest deficiency (in 0.02 steps) for which boost=2.2 is still
-    # measurably inside the sRGB gamut -- see task-4-report.md for the sweep.
-    rgb = np.full((h, w, 3), 0.5)
-    rgb[..., 2] *= 0.64
-    return rgb
+def _circular_distance_deg(h1, h2):
+    diff = np.abs(h1 - h2) % 360.0
+    return np.minimum(diff, 360.0 - diff)
 
 
-@pytest.mark.parametrize("boost", [1.3, 1.8, 2.2])
+def _saturation_boost(rgb, boost):
+    """gray + (rgb - gray) * boost -- a real, RGB-space saturation stretch, not
+    an angle-exact Lab operation. Not clipped: callers confirm gamut themselves,
+    since the acceptance set requires some cases to be genuinely unclipped."""
+    gray = rgb.mean(axis=-1, keepdims=True)
+    return gray + (rgb - gray) * boost
+
+
+def _red_biased_source(h=128, w=128):
+    # A real, existing color bias (red cast), spatially varying via
+    # _smooth_image -- NOT a single flat hue, which hid the RGB-space drift
+    # in an earlier round of this guardrail (see task-4-report.md).
+    source = _smooth_image(h, w)
+    source[..., 0] *= 1.18
+    return np.clip(source, 0.0, 1.0)
+
+
+@pytest.mark.parametrize("boost", [1.3, 1.8, 2.2, 3.0])
 def test_hue_invention_passes_on_legitimate_saturation_boosts(boost):
-    source = _blue_deficient_source()
-    linear, candidate = _boost_lab_chroma(source, boost)
-    # Confirm this boost genuinely stays in gamut -- the premise this fixture
-    # relies on -- rather than asserting on a candidate quietly clipped anyway.
-    assert linear.min() >= 0.0 and linear.max() <= 1.0
+    source = _red_biased_source()
+    candidate = _saturation_boost(source, boost)
+    # The acceptance set requires "3.0x boost, UNCLIPPED -> PASS" specifically
+    # -- confirm this boost genuinely stays in gamut, not that a clip silently
+    # rescued an out-of-range value into looking legitimate.
+    assert candidate.min() >= 0.0 and candidate.max() <= 1.0
 
-    hue_s, _ = _hue_deg(source)
+    hue_s, chroma_s = _hue_deg(source)
     hue_c, _ = _hue_deg(candidate)
-    assert np.abs(hue_c - hue_s).max() == pytest.approx(0.0, abs=1e-9)
+    mask = chroma_s > 1.0
+    displacement = float(_circular_distance_deg(hue_c, hue_s)[mask].max())
+    assert displacement < 20.0  # measured values recorded in task-4-report.md
 
     verdict = check_hue_invention(candidate, source, GuardrailLimits())
-    assert verdict.ok, verdict.reason
+    assert verdict.ok, (verdict.reason, displacement)
 
 
-def test_hue_invention_trips_on_a_boost_that_clips_and_shifts_hue():
-    source = _blue_deficient_source()
-    linear, candidate = _boost_lab_chroma(source, 3.0)
-    # Confirm this boost genuinely clips (the blue channel is driven negative
-    # in true linear light, before the gamma floor hides it) -- the premise
-    # that this is a real hue shift, not an arbitrary threshold pick.
-    assert linear.min() < 0.0
+def test_hue_invention_trips_on_green_injected_into_a_red_image():
+    source = _red_biased_source()
+    invented = source.copy()
+    invented[..., 1] = np.clip(invented[..., 1] * 1.3, 0, 1)  # a green cast layered on top
 
-    hue_s, _ = _hue_deg(source)
-    hue_c, _ = _hue_deg(candidate)
-    delta = float(np.abs(hue_c - hue_s).max())
-    assert delta > 3.0  # measured 3.58 degrees -- see task-4-report.md
+    hue_s, chroma_s = _hue_deg(source)
+    hue_i, chroma_i = _hue_deg(invented)
+    mask_s, mask_i = chroma_s > 1.0, chroma_i > 1.0
+    # Confirm this genuinely lands far from anything the source supports --
+    # not a marginal case riding the tolerance boundary (measured ~104 degrees,
+    # see task-4-report.md).
+    displacement = float(_circular_distance_deg(hue_i[mask_i].mean(), hue_s[mask_s].mean()))
+    assert displacement > 90.0
 
-    verdict = check_hue_invention(candidate, source, GuardrailLimits())
+    verdict = check_hue_invention(invented, source, GuardrailLimits())
     assert not verdict.ok
     assert "hue" in verdict.reason.lower()
 
@@ -269,6 +232,26 @@ def test_hue_invention_trips_on_color_with_no_source_support():
     verdict = check_hue_invention(invented, source, GuardrailLimits())
     assert not verdict.ok
     assert "hue" in verdict.reason.lower()
+
+
+def test_hue_invention_handles_wraparound_at_zero_degrees():
+    # Two nearly-identical colors whose hues sit on opposite sides of the
+    # 0/360 seam: a naive |h1 - h2| reads ~352 degrees apart (looking like
+    # fabrication); the TRUE circular distance is ~7.9 degrees (comfortably
+    # legitimate). A wraparound bug in the guardrail would fail this test by
+    # tripping on a candidate that is actually well within tolerance.
+    source = np.full((64, 64, 3), (0.40, 0.31, 0.33))     # hue ~3.76 degrees
+    candidate = np.full((64, 64, 3), (0.39, 0.30, 0.33))  # hue ~355.90 degrees
+
+    hue_s, _ = _hue_deg(source)
+    hue_c, _ = _hue_deg(candidate)
+    naive = float(np.abs(hue_c[0, 0] - hue_s[0, 0]))
+    circular = float(_circular_distance_deg(hue_c[0, 0], hue_s[0, 0]))
+    assert naive > 340.0     # confirms this fixture genuinely straddles the seam
+    assert circular < 10.0   # the TRUE distance is small -- within tolerance
+
+    verdict = check_hue_invention(candidate, source, GuardrailLimits())
+    assert verdict.ok, verdict.reason
 
 
 def test_channel_ratio_drift_trips_when_ratios_move():
