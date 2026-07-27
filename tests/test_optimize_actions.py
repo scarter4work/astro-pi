@@ -54,6 +54,31 @@ def test_once_only_actions_are_not_reoffered():
     assert not any(a.kind in ("star_split", "background_neutralize") for a in once)
 
 
+def test_once_only_actions_are_offered_when_unspent():
+    # Positive assertion: star_split and background_neutralize appear exactly once each
+    # when they have not yet been applied.
+    actions = available_actions(
+        pixel_scale_arcsec=1.0, psf_fwhm_arcsec=2.0, n_scales=7,
+        palette_compatible=True, applied_kinds=frozenset(),
+    )
+    assert sum(1 for a in actions if a.kind == "star_split") == 1
+    assert sum(1 for a in actions if a.kind == "background_neutralize") == 1
+
+
 def test_scale_below_pixel_scale_is_rejected_outright():
     with pytest.raises(ValueError):
         layer_for_scale(0.1, 1.0)
+
+
+def test_empty_level_is_valid_for_mode_changes():
+    # Mode-change actions (star_split, background_neutralize) have level=""
+    # and strength should return 1.0 without raising.
+    a = Action(kind="star_split", level="", scale_arcsec=None, params={})
+    assert a.strength == 1.0
+
+
+def test_invalid_level_raises_value_error():
+    # Any level not in LEVELS and not "" must raise ValueError naming the valid levels.
+    a = Action(kind="local_contrast", level="bad_level", scale_arcsec=8.0, params={})
+    with pytest.raises(ValueError, match="bad_level"):
+        _ = a.strength

@@ -39,7 +39,15 @@ class Action:
 
     @property
     def strength(self) -> float:
-        return _STRENGTH.get(self.level, 1.0)
+        # Empty level is legitimate for mode-change actions (star_split, background_neutralize).
+        if self.level == "":
+            return 1.0
+        if self.level not in _STRENGTH:
+            valid = ", ".join(sorted(_STRENGTH.keys()))
+            raise ValueError(
+                f"level {self.level!r} is not recognized; valid levels are: {valid}"
+            )
+        return _STRENGTH[self.level]
 
 
 def scale_for_layer(layer: int, pixel_scale_arcsec: float) -> float:
