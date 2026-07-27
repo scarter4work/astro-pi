@@ -174,7 +174,21 @@ def check_star_integrity(
     cand = detect_stars(_gray(candidate))
 
     if base.count == 0:
-        return GuardrailVerdict("star_integrity", True, "", 0.0, 0.0)
+        # A pass, but not a silent one (design SS12): a starless baseline is a
+        # legitimate input (e.g. a nebula-only crop -- the design's §4 keeps
+        # the starless layer itself out of this guardrail entirely, measuring
+        # only the recombined image, so this guardrail never sees a frame
+        # that is starless purely because star_split hasn't recombined yet).
+        # That means a zero count here must not fail closed the way
+        # check_noise_floor's degenerate-sigma case does. But the caller must
+        # be able to tell, from the verdict alone, that star integrity was
+        # never actually evaluated on this candidate -- not that it was
+        # checked and found clean.
+        return GuardrailVerdict(
+            "star_integrity", True,
+            "star integrity not assessed: baseline had no detectable stars",
+            0.0, 0.0,
+        )
 
     lost = (base.count - cand.count) / base.count
     if lost > limits.star_count_drop:
