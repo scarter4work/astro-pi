@@ -444,7 +444,20 @@ def check_noise_floor(
 ) -> GuardrailVerdict:
     base = mrs_noise_sigma(_gray(baseline))
     cand = mrs_noise_sigma(_gray(candidate))
-    growth = 0.0 if base <= 0 else (cand - base) / base
+    if base <= 0:
+        # A non-positive baseline sigma means growth is undefined, not zero.
+        # Fail closed: a guardrail that can't assess growth must not report a
+        # clean pass, or it silently disables itself on a degenerate baseline
+        # while still claiming to have checked noise.
+        return GuardrailVerdict(
+            name="noise_floor", ok=False,
+            reason=(
+                f"baseline noise sigma was non-positive ({base!r}); "
+                "noise growth could not be assessed"
+            ),
+            value=float("inf"), limit=limits.noise_growth,
+        )
+    growth = (cand - base) / base
     ok = growth <= limits.noise_growth
     return GuardrailVerdict(
         name="noise_floor", ok=ok,
