@@ -15,16 +15,8 @@ import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
 
-import numpy as np
-
 from .records import SOURCE_TYPES, ReferenceRecord
-
-
-def _separation_arcmin(ra1: float, dec1: float, ra2: float, dec2: float) -> float:
-    """Great-circle separation in arcminutes (haversine)."""
-    r1, d1, r2, d2 = np.radians([ra1, dec1, ra2, dec2])
-    a = np.sin((d2 - d1) / 2) ** 2 + np.cos(d1) * np.cos(d2) * np.sin((r2 - r1) / 2) ** 2
-    return float(np.degrees(2 * np.arcsin(np.sqrt(a))) * 60.0)
+from .skymath import separation_arcmin
 
 
 @dataclass
@@ -122,7 +114,7 @@ class FingerprintStore:
 
         matches: list[ConeMatch] = []
         for row in self._conn.execute(sql, params):
-            sep = _separation_arcmin(ra_deg, dec_deg, row["ra_deg"], row["dec_deg"])
+            sep = separation_arcmin(ra_deg, dec_deg, row["ra_deg"], row["dec_deg"])
             if sep > radius_arcmin + row["fov_radius_arcmin"]:
                 continue  # precise reject after the dec-band prefilter
             record = ReferenceRecord.from_dict(json.loads(row["record_json"]))
