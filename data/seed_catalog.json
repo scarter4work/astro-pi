@@ -34,8 +34,9 @@
     "target": "M42 / NGC 1976 (Orion Nebula) — ground-based (AAO)",
     "palette_class": "RGB",
     "source_type": "professional_render",
-    "attribution": "David Malin / Anglo-Australian Observatory",
-    "license": "CC BY 4.0",
+    "attribution": "Copyright © Anglo-Australian Observatory. Photograph by David Malin",
+    "license": null,
+    "license_note": "NOT CC BY 4.0 — corrected 2026-07-27. The published credit asserts AAO copyright, and ESA/Hubble hosts third-party copyrighted images alongside its own CC BY 4.0 output, so the per-gallery default does not apply here. The earlier 'CC BY 4.0' claim was wrong: this entry's attribution had been PARAPHRASED to 'David Malin / Anglo-Australian Observatory', which silently dropped the 'Copyright ©' prefix carrying the legal signal. Attribution is now the verbatim credit line, which is also what the §5.2.1 discovery parser captures. license=null means unestablished, so gate G5 refuses to ingest this render — the correct outcome (§5.5).",
     "source_url": "https://esahubble.org/images/opo0205c/",
     "wcs_note": "NO trustworthy WCS: AVM unparseable, and ESA/Hubble publishes no Field of View or coordinates for this release. Deliberately left unannotated so it is SKIPPED (§5.2) rather than seeded with a guessed scale — a wrong pixel scale corrupts band-limiting (§4.4). Resolve via tier 3: PixInsight ImageSolver.",
     "psf_fwhm_arcsec": 2.0

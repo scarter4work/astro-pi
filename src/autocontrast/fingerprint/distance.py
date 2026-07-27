@@ -21,6 +21,7 @@ import numpy as np
 from scipy.stats import wasserstein_distance_nd
 
 from .bandlimit import band_limit
+from .palette import palette_chroma_compatible
 
 
 @dataclass(frozen=True)
@@ -154,7 +155,7 @@ def fingerprint_distance(ref, target, weights: DistanceWeights = DistanceWeights
     instruments share no resolvable band, the spectrum component is dropped by
     zeroing its weight — :func:`combine_distance`'s redistribution then rescales
     the survivors (the §4.4 fall-back to tonal/chroma/background)."""
-    palette_match = ref.palette_class == target.palette_class
+    palette_match = palette_chroma_compatible(ref.palette_class, target.palette_class)
 
     d_spectrum, spectrum_usable = _spectrum_distance(ref, target)
     effective_weights = weights if spectrum_usable else replace(weights, spectrum=0.0)

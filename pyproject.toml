@@ -34,6 +34,11 @@ where = ["src"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-ra"
+markers = [
+    "live: hits the real ESA/Hubble and ESO sites. RUNS BY DEFAULT — a suite that reports",
+    "green while tests sat out is not green. Skip deliberately with -m 'not live' when",
+    "genuinely offline; that is an explicit choice, not the default posture.",
+]
 
 [tool.ruff]
 line-length = 100

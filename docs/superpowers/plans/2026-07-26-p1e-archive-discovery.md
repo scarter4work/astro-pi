@@ -12,6 +12,10 @@
 
 - **No new third-party dependencies.** `pyproject.toml` states: *"Keep this list minimal — every dependency here must run in the offline eval harness (§10)."* Use `urllib.request` and `re`/`html`, never `requests`, `httpx`, `beautifulsoup4`, or `lxml`.
 - **Line length 100** (`[tool.ruff] line-length = 100`).
+- **Lint only what you touch.** The repo carries **25 pre-existing ruff findings** (24 E702,
+  1 F541) in files this plan does not modify. Scope every ruff gate to the files your task
+  created or changed; do not fix the pre-existing ones and do not treat a repo-wide run as
+  a pass/fail gate.
 - **`from __future__ import annotations`** at the top of every new module, matching existing files.
 - **Never ingest a linear science FITS as `professional_render`** (§2.1). Only gallery renders.
 - **Never guess a palette class.** Unrecognized or absent filter data yields `'unknown'` (§4.3).
@@ -200,8 +204,10 @@ refactor is wrong — revert and redo, do not adjust the old tests.
 
 - [ ] **Step 6: Lint**
 
-Run: `.venv/bin/python -m ruff check src tests`
-Expected: no findings.
+Run: `.venv/bin/python -m ruff check <the files this task created or modified>`
+Expected: no findings **in your files**. Note: the repo carries 25 pre-existing ruff
+findings (24 E702, 1 F541) in files this plan does not touch. Do NOT fix them and do
+NOT run ruff repo-wide as a gate — scope it to the files you changed.
 
 - [ ] **Step 7: Commit**
 
@@ -553,8 +559,9 @@ Expected: PASS, 20 tests.
 
 - [ ] **Step 5: Lint and full suite**
 
-Run: `.venv/bin/python -m ruff check src tests && .venv/bin/python -m pytest -q`
-Expected: no lint findings; **164 passed**.
+Run: `.venv/bin/python -m ruff check <the files this task created or modified> && .venv/bin/python -m pytest -q`
+Expected: no findings in your files; **164 passed**. (The repo has 25 pre-existing ruff
+findings in untouched files — ignore them.)
 
 - [ ] **Step 6: Commit**
 
@@ -1503,9 +1510,16 @@ def test_entries_without_a_position_are_never_returned(index):
 
 def test_cone_search_handles_ra_wrap(index):
     """The dec-band SQL prefilter cannot express RA wrap, so the precise haversine
-    check must catch it: 359.9 and 0.1 are 12 arcmin apart, not 359 degrees."""
-    index.upsert(entry(ra=359.9, dec=0.0, radius=5.0))
-    assert len(index.cone_search(0.1, 0.0, radius_arcmin=5.0)) == 1
+    check must catch it: 359.9 and 0.1 are 12 arcmin apart, not 359 degrees.
+
+    The separation assertion is the load-bearing one — a wrap-broken implementation
+    computes |359.9 - 0.1| * 60 = 21588 arcmin, so asserting ~12 discriminates a
+    correct implementation from a wrong one in a way a bare match count cannot.
+    """
+    index.upsert(entry(ra=359.9, dec=0.0, radius=20.0))
+    matches = index.cone_search(0.1, 0.0, radius_arcmin=5.0)
+    assert len(matches) == 1
+    assert matches[0].separation_arcmin == pytest.approx(12.0, abs=0.1)
 
 
 def test_cone_search_orders_nearest_first(index):
@@ -3215,8 +3229,9 @@ Expected: PASS, 9 tests.
 
 - [ ] **Step 5: Run the full suite**
 
-Run: `.venv/bin/python -m ruff check src tests && .venv/bin/python -m pytest -q`
-Expected: no lint findings; all tests pass.
+Run: `.venv/bin/python -m ruff check <the files this task created or modified> && .venv/bin/python -m pytest -q`
+Expected: no findings in your files; all tests pass. (The repo has 25 pre-existing
+ruff findings in untouched files — ignore them.)
 
 - [ ] **Step 6: Commit**
 
@@ -3395,8 +3410,9 @@ data/gallery_index.sqlite
 
 - [ ] **Step 7: Final full-suite check and lint**
 
-Run: `.venv/bin/python -m ruff check src tests && .venv/bin/python -m pytest -q`
-Expected: no lint findings; all tests pass, live tests deselected.
+Run: `.venv/bin/python -m ruff check <the files this task created or modified> && .venv/bin/python -m pytest -q`
+Expected: no findings in your files; all tests pass, live tests deselected. (The repo has
+25 pre-existing ruff findings in untouched files — ignore them.)
 
 - [ ] **Step 8: Commit**
 
@@ -3468,3 +3484,225 @@ Task 1. `wcs_acquirer` appears with the same signature in Tasks 9 and 10.
 **5. Task ordering caveat.** Task 3's `parse_detail` imports
 `palette_class_from_gallery_bands` from Task 4. **Execute Task 4 before Task 3's Step 5**,
 or add a temporary stub as noted in Task 3 Step 4.
+
+---
+
+### Task 12: Chroma compatibility as a family relation, not equality
+
+**Added 2026-07-27, after Task 4.** Task 4's implementer flagged, and the project owner
+confirmed, that §2.3's strict palette **equality** gate is too narrow. Professional
+broadband composites routinely blend a narrowband layer — `heic0601a` is B, V, **Hα**, I, Z
+and is correctly classified `RGB` — so an `HaRGB` acquisition is denied chroma from what is
+arguably its closest possible reference. Classification stays as Task 4 built it; what
+changes is the *compatibility relation*.
+
+**Files:**
+- Modify: `src/autocontrast/fingerprint/palette.py` (add the relation)
+- Modify: `src/autocontrast/db/store.py:121` (cone_search's `palette_compatible`)
+- Modify: `src/autocontrast/fingerprint/distance.py:157` (`palette_match`)
+- Test: `tests/test_palette_compat.py`
+
+**Interfaces:**
+- Consumes: `PALETTE_CLASSES` (existing).
+- Produces: `palette_chroma_compatible(a: str, b: str) -> bool`.
+
+**Two deliberate semantic changes** that were previously "compatible" by equality and are now
+incompatible. Both are correct, and no existing test covers either pair:
+- `L-only` vs `L-only` → **False**. A monochrome image has no chroma to share, so chroma
+  guidance between two of them is meaningless.
+- `unknown` vs `unknown` → **False**. `unknown` means undetermined, and §2.1 forbids letting
+  an unverified palette push channel ratios. Two undetermined palettes are not a match.
+
+- [ ] **Step 1: Write the failing test**
+
+```python
+# tests/test_palette_compat.py
+"""§2.3 chroma compatibility as a family relation (added after Task 4).
+
+Palette equality was too strict: professional broadband composites blend narrowband
+layers, so heic0601a (B, V, H-alpha, I, Z -> 'RGB') would deny chroma to an HaRGB
+acquisition. Compatibility now groups palettes whose colour presentation is mutually
+informative.
+"""
+
+from __future__ import annotations
+
+import pytest
+
+from autocontrast.fingerprint.palette import PALETTE_CLASSES, palette_chroma_compatible
+
+
+@pytest.mark.parametrize("palette", ["RGB", "LRGB", "HaRGB", "HaOIII-RGB", "SHO", "HOO"])
+def test_a_chroma_bearing_palette_is_compatible_with_itself(palette):
+    assert palette_chroma_compatible(palette, palette) is True
+
+
+@pytest.mark.parametrize(
+    "a, b",
+    [
+        ("RGB", "HaRGB"),        # the motivating case: heic0601a vs an Ha+RGB acquisition
+        ("HaRGB", "RGB"),        # symmetric
+        ("RGB", "LRGB"),
+        ("LRGB", "HaRGB"),
+        ("RGB", "HaOIII-RGB"),
+    ],
+)
+def test_broadband_palettes_share_chroma(a, b):
+    """A blended narrowband layer does not change a broadband colour presentation."""
+    assert palette_chroma_compatible(a, b) is True
+
+
+@pytest.mark.parametrize(
+    "a, b",
+    [
+        ("SHO", "HOO"),          # both narrowband, but gold/teal vs red/teal
+        ("HOO", "SHO"),
+        ("RGB", "SHO"),
+        ("RGB", "HOO"),
+        ("HOO", "LRGB"),
+    ],
+)
+def test_narrowband_and_broadband_do_not_share_chroma(a, b):
+    """§2.3's whole point: a mismatched palette must never push channel ratios (§2.1)."""
+    assert palette_chroma_compatible(a, b) is False
+
+
+def test_monochrome_is_never_chroma_compatible_even_with_itself():
+    """An L-only image has no chroma, so chroma guidance is meaningless."""
+    assert palette_chroma_compatible("L-only", "L-only") is False
+    assert palette_chroma_compatible("L-only", "RGB") is False
+
+
+def test_unknown_is_never_chroma_compatible_even_with_itself():
+    """'unknown' means undetermined, not 'a palette that happens to match'."""
+    assert palette_chroma_compatible("unknown", "unknown") is False
+    assert palette_chroma_compatible("unknown", "RGB") is False
+    assert palette_chroma_compatible("RGB", "unknown") is False
+
+
+def test_relation_is_symmetric_across_every_declared_palette_pair():
+    for a in PALETTE_CLASSES:
+        for b in PALETTE_CLASSES:
+            assert palette_chroma_compatible(a, b) is palette_chroma_compatible(b, a)
+
+
+def test_unrecognised_palette_names_are_not_compatible():
+    assert palette_chroma_compatible("nonsense", "nonsense") is False
+    assert palette_chroma_compatible("", "RGB") is False
+```
+
+- [ ] **Step 2: Run test to verify it fails**
+
+Run: `.venv/bin/python -m pytest tests/test_palette_compat.py -v`
+Expected: FAIL — `ImportError: cannot import name 'palette_chroma_compatible'`
+
+- [ ] **Step 3: Add the relation to `palette.py`**
+
+```python
+# §2.3 chroma compatibility. Palette EQUALITY is too strict a gate: professional
+# broadband composites routinely blend a narrowband layer — heic0601a is B, V, H-alpha,
+# I, Z and is classified RGB — so an HaRGB acquisition would be denied chroma from its
+# closest possible reference. Compatibility is therefore a FAMILY relation.
+#
+#   broadband — true-ish colour built on R/G/B-like bands; a blended narrowband layer
+#               does not change the colour presentation
+#   sho       — the Hubble palette (SII->R, Ha->G, OIII->B): gold/teal
+#   hoo       — Ha/OIII bi-colour: red/teal
+#
+# SHO and HOO are deliberately in separate families: both are narrowband, but their
+# colour presentations are not interchangeable.
+#
+# 'L-only' and 'unknown' belong to NO family and are therefore never chroma-compatible,
+# not even with themselves: a monochrome image has no chroma to share, and 'unknown'
+# means undetermined — §2.1 forbids letting an unverified palette push channel ratios.
+_CHROMA_FAMILIES = {
+    "RGB": "broadband",
+    "LRGB": "broadband",
+    "HaRGB": "broadband",
+    "HaOIII-RGB": "broadband",
+    "SHO": "sho",
+    "HOO": "hoo",
+}
+
+
+def palette_chroma_compatible(a: str, b: str) -> bool:
+    """Whether two palette classes may share chroma guidance (§2.3).
+
+    Replaces bare equality at the two gate sites (``FingerprintStore.cone_search`` and
+    ``fingerprint_distance``). Reflexive only for chroma-bearing palettes, and symmetric
+    by construction.
+    """
+    family = _CHROMA_FAMILIES.get(a)
+    return family is not None and family == _CHROMA_FAMILIES.get(b)
+```
+
+- [ ] **Step 4: Rewire `store.py`**
+
+Add to the imports in `src/autocontrast/db/store.py`:
+
+```python
+from autocontrast.fingerprint.palette import palette_chroma_compatible
+```
+
+Replace the equality check (currently `store.py:121`):
+
+```python
+            compatible = palette_class is None or palette_chroma_compatible(
+                record.palette_class, palette_class
+            )
+```
+
+- [ ] **Step 5: Rewire `distance.py`**
+
+Add to the imports in `src/autocontrast/fingerprint/distance.py`:
+
+```python
+from .palette import palette_chroma_compatible
+```
+
+Replace the equality check (currently `distance.py:157`):
+
+```python
+    palette_match = palette_chroma_compatible(ref.palette_class, target.palette_class)
+```
+
+Watch for a circular import: `palette.py` must not import from `distance.py`. It does not
+today — keep it that way.
+
+- [ ] **Step 6: Run the full suite**
+
+Run: `.venv/bin/python -m pytest -q`
+Expected: PASS. No pre-existing test should need changing — the one existing
+incompatibility assertion (`tests/test_cone_search.py::test_palette_compatibility_is_flagged_not_filtered`)
+pairs `SHO` against `RGB`, which remains incompatible under the family relation. **If any
+pre-existing test fails, stop and report it rather than editing that test** — it would mean
+the relation changed a behavior this task did not intend to change.
+
+- [ ] **Step 7: Lint the touched files**
+
+Run: `.venv/bin/python -m ruff check src/autocontrast/fingerprint/palette.py src/autocontrast/fingerprint/distance.py src/autocontrast/db/store.py tests/test_palette_compat.py`
+Expected: no findings.
+
+- [ ] **Step 8: Commit**
+
+```bash
+git add src/autocontrast/fingerprint/palette.py src/autocontrast/fingerprint/distance.py \
+        src/autocontrast/db/store.py tests/test_palette_compat.py
+git commit -m "§2.3: chroma compatibility is a family relation, not palette equality
+
+Task 4's implementer flagged that strict equality denies chroma to the closest
+available reference. Professional broadband composites blend narrowband layers —
+heic0601a is B, V, Ha, I, Z and is correctly classified RGB — so an HaRGB acquisition
+matched nothing under equality despite being a near-ideal pairing.
+
+Compatibility now groups palettes by colour presentation: broadband (RGB, LRGB,
+HaRGB, HaOIII-RGB), sho, and hoo. SHO and HOO stay separate — both narrowband, but
+gold/teal and red/teal are not interchangeable.
+
+Two deliberate changes from the old equality behavior: L-only and unknown are now
+incompatible even with themselves. A monochrome image has no chroma to share, and
+'unknown' means undetermined — §2.1 forbids letting an unverified palette push
+channel ratios, and two undetermined palettes are not evidence of a match.
+
+Applied at both gate sites: store.cone_search and fingerprint_distance."
+```
