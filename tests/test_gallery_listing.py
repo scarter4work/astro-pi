@@ -52,9 +52,71 @@ def test_listing_contains_the_curated_seed_ids():
     assert {"heic0601a", "opo0205c", "opo0205d", "opo9545a"} <= ids
 
 
-def test_navigation_links_are_not_mistaken_for_results():
+def test_navigation_links_never_enter_the_results_block():
+    """Nav links (feed/potm/potw/search/viewall/archive) live outside ``var images``
+    entirely, so they are excluded by construction — the regex only ever looks inside the
+    block. This does NOT exercise the ``if not entry_id or not path`` guard clause; see
+    the synthetic-fixture tests below for that."""
     ids = {i.id for i in parse_listing(load("hubble_listing_orion.html"))}
     assert not ids & {"feed", "potm", "potw", "search", "viewall", "archive"}
+
+
+# The real fixtures never contain a malformed record (missing id/url) or a record
+# missing width/height — every result on both live sites carries all five fields. So the
+# guard clause and the None-vs-0 behaviour can only be exercised with a synthetic
+# ``var images`` literal, built to match the real JS-literal format exactly: unquoted
+# keys, single-quoted string values, and the trailing ``potw: ''`` field.
+_SYNTHETIC_LISTING_TEMPLATE = """
+<script>
+var images = [
+
+    {records}
+
+];
+</script>
+"""
+
+
+def _record(**fields: str) -> str:
+    lines = ",\n        ".join(f"{key}: {value}" for key, value in fields.items())
+    return "{\n        " + lines + "\n    }"
+
+
+def test_record_missing_id_is_skipped_but_siblings_still_parse():
+    doc = _SYNTHETIC_LISTING_TEMPLATE.format(records=",\n    ".join([
+        _record(title="'No id here'", width="100", height="200",
+                url="'/images/noid/'", potw="''"),
+        _record(id="'test0002a'", title="'Sibling'", width="300", height="400",
+                url="'/images/test0002a/'", potw="''"),
+    ]))
+    items = {i.id: i for i in parse_listing(doc)}
+    assert "test0002a" in items
+    assert len(items) == 1
+
+
+def test_record_missing_url_is_skipped_but_siblings_still_parse():
+    doc = _SYNTHETIC_LISTING_TEMPLATE.format(records=",\n    ".join([
+        _record(id="'test0001a'", title="'No url here'", width="100", height="200",
+                potw="''"),
+        _record(id="'test0002a'", title="'Sibling'", width="300", height="400",
+                url="'/images/test0002a/'", potw="''"),
+    ]))
+    items = {i.id: i for i in parse_listing(doc)}
+    assert "test0002a" in items
+    assert len(items) == 1
+
+
+def test_record_missing_dimensions_yields_none_not_zero():
+    """A width/height of 0 would silently corrupt a later pixel-scale computation
+    (fov_arcmin * 60 / width_px) — a divide-by-zero or a bogus scale — so a missing
+    dimension must surface as ``None``, never as ``0``."""
+    doc = _SYNTHETIC_LISTING_TEMPLATE.format(records=_record(
+        id="'test0003a'", title="'No dimensions'",
+        url="'/images/test0003a/'", potw="''",
+    ))
+    items = {i.id: i for i in parse_listing(doc)}
+    assert items["test0003a"].width_px is None
+    assert items["test0003a"].height_px is None
 
 
 def test_result_total_is_read_from_the_page():
