@@ -65,6 +65,11 @@ class Recipe:
         """Render to stock PI process invocations -- the SS12 audit artifact."""
         steps = []
         for a in self.actions:
+            if a.kind not in PROCESS_FOR_KIND:
+                raise ValueError(
+                    f"unmapped action kind '{a.kind}'; known kinds: "
+                    f"{', '.join(sorted(PROCESS_FOR_KIND.keys()))}"
+                )
             params = dict(a.params)
             params["strength"] = a.strength
             if a.scale_arcsec is not None:
