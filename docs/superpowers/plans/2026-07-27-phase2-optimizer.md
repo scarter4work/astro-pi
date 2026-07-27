@@ -754,35 +754,36 @@ from autocontrast.fingerprint.extract import CHROMA_BINS, CHROMA_EXTENT
 from autocontrast.fingerprint.metrics import chroma_histogram
 
 
-def _chroma_hist(rgb: np.ndarray) -> np.ndarray:
-    lab = rgb_to_lab(rgb)
-    return chroma_histogram(lab[..., 1], lab[..., 2], bins=CHROMA_BINS, extent=CHROMA_EXTENT)
-
-
-def check_hue_invention(
-    candidate: np.ndarray, source: np.ndarray, limits: GuardrailLimits
-) -> GuardrailVerdict:
-    """No chroma mass may appear in an a*/b* cell with no support in the source (SS7).
-
-    This is SS2.1 enforced mechanically. Intensifying a color that is already
-    present is presentation; creating one that was never in the data is
-    fabrication, and it is the difference between a tool that enhances and a tool
-    that invents.
-    """
-    src = _chroma_hist(source)
-    cand = _chroma_hist(candidate)
-
-    unsupported = cand[src <= 0.0]
-    mass = float(unsupported.sum())
-    ok = mass <= limits.hue_invention_mass
-    return GuardrailVerdict(
-        name="hue_invention", ok=ok,
-        reason="" if ok else (
-            f"{mass:.4f} chroma mass appeared in a*/b* cells with no support "
-            f"in the source (limit {limits.hue_invention_mass:.4f})"
-        ),
-        value=mass, limit=limits.hue_invention_mass,
-    )
+# ---------------------------------------------------------------------------
+# SUPERSEDED — do not implement the a*/b* cell version that stood here.
+#
+# The original formulation flagged chroma mass in a*/b* histogram CELLS with no
+# source support. Measurement during implementation showed it rejects ordinary
+# saturation increases: a 1.3x boost tripped, and 1.8x put 0.952 of the image's
+# chroma mass into "unsupported" cells. Boosting saturation moves a pixel
+# RADIALLY into a new cell, so the check could not tell "the same colour, more
+# of it" from "a colour that was never there". Since ColorSaturation is one of
+# the eight SS6.2 actions, it would have vetoed nearly every colour move while
+# reporting itself as working.
+#
+# IMPLEMENT WHAT THE SPEC SAYS, NOT THIS BLOCK. The authority is:
+#   docs/superpowers/specs/2026-07-27-phase2-optimizer-design.md
+#   section "5.1 Hue invention is measured on angle, not a*/b* position"
+#
+# In short: chroma mass counts as invented only if it sits more than
+# `limits.hue_tolerance_deg` (default 20) from ANY hue the source supports.
+# Legitimate saturation drift is BOUNDED (~6 deg, because CIELAB hue angle is a
+# nonlinear function of RGB); genuine invention is ~116 deg or has no support at
+# all. That bound is why angle is safe where cells were not — radial movement is
+# unbounded, so any fixed cell dilation is escapable by boosting harder.
+#
+# Requires: a minimum-chroma floor (near-neutral pixels have meaningless angles);
+# circular wraparound (359 deg is 2 deg from 1 deg, not 358); and a neutral
+# source blocking all colourisation. Clipping is NOT this guardrail's job —
+# check_shadow_clipping and check_highlight_clipping own it.
+#
+# Shipped implementation: commit 24730d8. Spec corrections: 72d52a7, 0bbef50.
+# ---------------------------------------------------------------------------
 
 
 def _channel_ratios(rgb: np.ndarray) -> np.ndarray:
