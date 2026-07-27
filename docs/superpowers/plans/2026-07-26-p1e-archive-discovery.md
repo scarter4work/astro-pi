@@ -2916,21 +2916,27 @@ def test_no_candidate_in_the_index_reports_cleanly(wiring):
 
 
 def test_rejected_candidates_are_reported_with_reasons(wiring):
-    """§12: every degraded path surfaces."""
+    """§12: every degraded path surfaces.
+
+    The unlicensed entry is given an id that sorts first AND identical framing to the
+    good one, so ranking's id tie-break puts it first and it is guaranteed to be
+    considered — the assertion can never pass vacuously.
+    """
     store, index, fetcher, cache = wiring
-    index.upsert(indexed_entry(entry_id="unlicensed", license_text=None))
+    index.upsert(indexed_entry(entry_id="aaa_unlicensed", license_text=None))
     outcome = discover_reference(
         store, index, ra_deg=83.82, dec_deg=-5.39, search_radius_arcmin=30.0,
         palette_class="RGB", fetcher=fetcher, cache_dir=cache, wcs_acquirer=manual_wcs,
         top_k=1,
     )
     reports = {r.id: r for r in outcome.considered}
-    if "unlicensed" in reports:
-        assert reports["unlicensed"].accepted is False
-        assert "license" in reports["unlicensed"].reason.lower()
+    assert "aaa_unlicensed" in reports, f"expected it to be considered; got {list(reports)}"
+    assert reports["aaa_unlicensed"].accepted is False
+    assert "license" in reports["aaa_unlicensed"].reason.lower()
 
 
 def test_discovery_falls_through_to_the_next_candidate_after_a_rejection(wiring):
+    """A rejected candidate must not abort discovery — the next one gets its turn."""
     store, index, fetcher, cache = wiring
     index.upsert(indexed_entry(entry_id="aaa_broken", license_text=None))
     outcome = discover_reference(
@@ -2938,7 +2944,9 @@ def test_discovery_falls_through_to_the_next_candidate_after_a_rejection(wiring)
         palette_class="RGB", fetcher=fetcher, cache_dir=cache, wcs_acquirer=manual_wcs,
     )
     assert outcome.ingested is True
-    assert outcome.record.id.endswith("eso1103a") or "eso1103a" in outcome.record.id
+    assert outcome.record.id == "eso:eso1103a"
+    rejected = {r.id: r for r in outcome.considered if not r.accepted}
+    assert "aaa_broken" in rejected      # it was tried first, and rejected
 
 
 def test_acquire_reference_returns_existing_matches_without_discovering(wiring):
