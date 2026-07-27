@@ -36,6 +36,7 @@ class GuardrailLimits:
     star_fwhm_growth: float = 0.20
     star_ecc_growth: float = 0.20
     hue_invention_mass: float = 1e-3    # chroma mass with no support in source
+    hue_tolerance_deg: float = 20.0     # SS5.1: bounded legitimate-boost drift margin
     channel_ratio_drift: float = 0.10
 
 
@@ -222,17 +223,12 @@ def check_star_integrity(
     return GuardrailVerdict("star_integrity", True, "", 0.0, limits.star_count_drop)
 
 
-# Hue-angle histogram resolution (design SS5.1). 120 bins of 3 degrees each.
-# A legitimate radial (saturation-only) move is EXACTLY hue-preserving under
-# a*/b* scaling -- 0.0 degrees of drift, measured -- so it can never leave the
-# bin it started in, at ANY resolution. A genuine hue shift (measured 3.58
-# degrees for a boost strong enough to clip a channel on gamut return, see
-# task-4-report.md) is what has to escape the source's bin reliably: with a
-# 3-degree bin, any shift strictly greater than the bin width is mathematically
-# guaranteed to land in a different bin than its start, regardless of exactly
-# where in that bin the source's hue happened to sit -- no alignment luck
-# required, unlike the a*/b* position grid this replaced (SS5.1).
-NUM_HUE_BINS = 120
+# Hue-angle histogram resolution (design SS5.1). This is a measurement grid,
+# not a tolerance -- 1-degree bins, far finer than limits.hue_tolerance_deg
+# (default 20 degrees), so discretization error against the tolerance is
+# negligible. Bin width is no longer load-bearing the way it was in the first
+# iteration: the tolerance below is what decides support, not bin membership.
+NUM_HUE_BINS = 360
 
 # Chroma floor (a*/b* units) below which a pixel's hue angle is dropped rather
 # than measured. A pixel this close to neutral has an atan2(b, a) of two small,
@@ -244,13 +240,12 @@ NUM_HUE_BINS = 120
 HUE_CHROMA_FLOOR = 1.0
 
 
-def _hue_hist(rgb: np.ndarray) -> np.ndarray:
-    """Chroma-weighted histogram over hue angle (0-360 degrees), normalized to sum 1.
+def _hue_mass_by_bin(rgb: np.ndarray) -> np.ndarray:
+    """Chroma-weighted mass in each 1-degree hue bin (0-360 degrees), unnormalized.
 
     Pixels at or below ``HUE_CHROMA_FLOOR`` are excluded entirely, not binned as
     zero-chroma -- see the floor's docstring above. A source with no pixel above
-    the floor (a perfectly neutral source) yields an all-zero histogram, exactly
-    as ``chroma_histogram`` does for the all-zero a*/b* case it replaces.
+    the floor (a perfectly neutral source) yields an all-zero histogram.
     """
     lab = rgb_to_lab(rgb)
     a, b = lab[..., 1], lab[..., 2]
@@ -260,26 +255,47 @@ def _hue_hist(rgb: np.ndarray) -> np.ndarray:
     supported = chroma > HUE_CHROMA_FLOOR
     edges = np.linspace(0.0, 360.0, NUM_HUE_BINS + 1)
     hist, _ = np.histogram(hue[supported], bins=edges, weights=chroma[supported])
-    total = hist.sum()
-    return hist / total if total > 0 else hist
+    return hist
+
+
+def _dilate_circular(occupied: np.ndarray, radius_bins: int) -> np.ndarray:
+    """OR ``occupied`` with itself shifted by up to ``radius_bins`` bins either
+    way, wrapping at the array ends -- hue angle is circular, so a bin just
+    above 359 degrees is adjacent to one just above 0, not far from it."""
+    supported = occupied.copy()
+    for shift in range(1, radius_bins + 1):
+        supported |= np.roll(occupied, shift)
+        supported |= np.roll(occupied, -shift)
+    return supported
 
 
 def check_hue_invention(
     candidate: np.ndarray, source: np.ndarray, limits: GuardrailLimits
 ) -> GuardrailVerdict:
-    """No chroma mass may appear at a hue angle with no support in the source (SS7).
+    """No chroma mass may sit more than ``limits.hue_tolerance_deg`` from any hue
+    the source supports (SS7).
 
     This is SS2.1 enforced mechanically, on hue ANGLE rather than a*/b* position
-    (design SS5.1, revised on measurement). The a*/b* plane cannot tell "the same
-    color, more of it" from "a color that was never there": a saturation boost
-    moves a pixel radially outward, and radial motion crosses a*/b* grid cells
-    even though the color itself hasn't changed. Hue angle can make the
-    distinction, because saturation moves along a radius at constant angle, while
-    fabrication -- or a boost so strong it clips a channel and genuinely distorts
-    the color -- introduces a new angle. Intensifying a color that is already
-    present is presentation; creating one that was never in the data is
-    fabrication, and it is the difference between a tool that enhances and a tool
-    that invents.
+    (design SS5.1, twice revised on measurement). The a*/b* plane cannot tell
+    "the same color, more of it" from "a color that was never there": a
+    saturation boost moves a pixel radially outward, and radial motion crosses
+    a*/b* grid cells even though the color itself hasn't changed. Hue angle can
+    make the distinction, because saturation moves along a radius at
+    (approximately) constant angle, while fabrication introduces a genuinely new
+    one. "Approximately" is why this is a TOLERANCE, not exact-bin membership:
+    saturation is applied in RGB, and CIELAB hue angle is a nonlinear function
+    of RGB, so a legitimate boost drifts the angle by a few degrees even with no
+    clipping at all. Measured legitimate drift is bounded around 6 degrees;
+    measured invention is ~116 degrees or has no supporting hue whatsoever. The
+    default tolerance (20 degrees) sits in that gap -- about 3x above real drift
+    and 6x below real invention -- and, unlike a fixed a*/b* cell dilation, this
+    bound cannot be escaped by boosting harder: radial movement in the a*/b*
+    plane is unbounded, but angular drift from a legitimate operation is not.
+
+    Detecting a channel clipped out of gamut is deliberately NOT this
+    guardrail's job -- that's what ``check_shadow_clipping`` and
+    ``check_highlight_clipping`` are for. Folding gamut-driven hue shift into
+    this check is what produced the first iteration's over-strict result.
 
     A perfectly neutral source (an all-zero hue histogram, every pixel at or
     below ``HUE_CHROMA_FLOOR``) supports no hue at all, so ANY candidate chroma
@@ -289,17 +305,24 @@ def check_hue_invention(
     introducing color from a neutral source is fabrication by definition, not a
     boundary case this check happens to also catch.
     """
-    src = _hue_hist(source)
-    cand = _hue_hist(candidate)
+    src_hist = _hue_mass_by_bin(source)
+    cand_hist = _hue_mass_by_bin(candidate)
 
-    unsupported = cand[src <= 0.0]
-    mass = float(unsupported.sum())
+    bin_width_deg = 360.0 / NUM_HUE_BINS
+    radius_bins = int(np.ceil(limits.hue_tolerance_deg / bin_width_deg))
+    supported = _dilate_circular(src_hist > 0.0, radius_bins)
+
+    cand_total = cand_hist.sum()
+    cand_norm = cand_hist / cand_total if cand_total > 0 else cand_hist
+
+    mass = float(cand_norm[~supported].sum())
     ok = mass <= limits.hue_invention_mass
     return GuardrailVerdict(
         name="hue_invention", ok=ok,
         reason="" if ok else (
-            f"hue invention: {mass:.4f} chroma mass appeared at hue angles with "
-            f"no support in the source (limit {limits.hue_invention_mass:.4f})"
+            f"hue invention: {mass:.4f} chroma mass appeared more than "
+            f"{limits.hue_tolerance_deg:.0f} degrees from any hue the source "
+            f"supports (limit {limits.hue_invention_mass:.4f})"
         ),
         value=mass, limit=limits.hue_invention_mass,
     )
