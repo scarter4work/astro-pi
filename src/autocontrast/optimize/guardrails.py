@@ -17,6 +17,9 @@ from dataclasses import dataclass
 import numpy as np
 from scipy import ndimage
 
+from autocontrast.fingerprint.color import rgb_to_lab
+from autocontrast.fingerprint.extract import CHROMA_BINS, CHROMA_EXTENT
+from autocontrast.fingerprint.metrics import chroma_histogram
 from autocontrast.fingerprint.starlet import starlet_transform
 
 # Median absolute deviation -> Gaussian sigma, for the finest wavelet plane.
@@ -221,11 +224,6 @@ def check_star_integrity(
     return GuardrailVerdict("star_integrity", True, "", 0.0, limits.star_count_drop)
 
 
-from autocontrast.fingerprint.color import rgb_to_lab
-from autocontrast.fingerprint.extract import CHROMA_BINS, CHROMA_EXTENT
-from autocontrast.fingerprint.metrics import chroma_histogram
-
-
 def _chroma_hist(rgb: np.ndarray) -> np.ndarray:
     lab = rgb_to_lab(rgb)
     return chroma_histogram(lab[..., 1], lab[..., 2], bins=CHROMA_BINS, extent=CHROMA_EXTENT)
@@ -240,6 +238,13 @@ def check_hue_invention(
     present is presentation; creating one that was never in the data is
     fabrication, and it is the difference between a tool that enhances and a tool
     that invents.
+
+    A perfectly neutral source (an all-zero chroma histogram) makes every cell
+    unsupported, so ANY candidate chroma trips this check -- intentionally, not
+    incidentally. Per §2.1, no color in the data means no color to legitimately
+    intensify: a genuinely gray source has nothing here for a saturation move to
+    amplify, so introducing color from a neutral source is fabrication by
+    definition, not a boundary case this check happens to also catch.
     """
     src = _chroma_hist(source)
     cand = _chroma_hist(candidate)

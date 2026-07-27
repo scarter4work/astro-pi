@@ -2,8 +2,9 @@ import numpy as np
 import pytest
 
 from autocontrast.optimize.guardrails import (
-    GuardrailLimits, check_highlight_clipping, check_noise_floor,
-    check_shadow_clipping, clipped_fraction, mrs_noise_sigma,
+    GuardrailLimits, check_channel_ratio_drift, check_highlight_clipping,
+    check_hue_invention, check_noise_floor, check_shadow_clipping,
+    clipped_fraction, evaluate_guardrails, mrs_noise_sigma,
 )
 
 RNG = np.random.default_rng(20260727)
@@ -143,11 +144,6 @@ def test_star_integrity_passes_but_says_so_when_baseline_is_starless():
     # actually evaluated, not merely that it checked out clean.
     assert verdict.reason != ""
     assert "no" in verdict.reason.lower() and "star" in verdict.reason.lower()
-
-
-from autocontrast.optimize.guardrails import (
-    check_channel_ratio_drift, check_hue_invention, evaluate_guardrails,
-)
 
 
 def test_hue_invention_passes_when_color_only_intensifies():
