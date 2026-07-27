@@ -1510,9 +1510,16 @@ def test_entries_without_a_position_are_never_returned(index):
 
 def test_cone_search_handles_ra_wrap(index):
     """The dec-band SQL prefilter cannot express RA wrap, so the precise haversine
-    check must catch it: 359.9 and 0.1 are 12 arcmin apart, not 359 degrees."""
-    index.upsert(entry(ra=359.9, dec=0.0, radius=5.0))
-    assert len(index.cone_search(0.1, 0.0, radius_arcmin=5.0)) == 1
+    check must catch it: 359.9 and 0.1 are 12 arcmin apart, not 359 degrees.
+
+    The separation assertion is the load-bearing one — a wrap-broken implementation
+    computes |359.9 - 0.1| * 60 = 21588 arcmin, so asserting ~12 discriminates a
+    correct implementation from a wrong one in a way a bare match count cannot.
+    """
+    index.upsert(entry(ra=359.9, dec=0.0, radius=20.0))
+    matches = index.cone_search(0.1, 0.0, radius_arcmin=5.0)
+    assert len(matches) == 1
+    assert matches[0].separation_arcmin == pytest.approx(12.0, abs=0.1)
 
 
 def test_cone_search_orders_nearest_first(index):
