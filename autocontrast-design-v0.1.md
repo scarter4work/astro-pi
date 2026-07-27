@@ -237,7 +237,8 @@ the query cone and its palette class is compatible (§2.3).
 
 When no fingerprint exists for a solved position:
 
-1. Query archives (MAST, ESASky, ESO) for a public release image covering the position.
+1. Cone-search a **local positional index** of professional gallery renders for one covering the
+   position. See §5.2.1.
 2. Attempt to obtain WCS: FITS header → embedded AVM → blind plate solve.
 3. **Expect a meaningful fraction of the best renders to fail all three.** Star-suppressed or
    starless treatments have nothing to match; heavy composites and mosaics have no coherent
@@ -246,6 +247,35 @@ When no fingerprint exists for a solved position:
 
 Do not treat a failed solve as an error state. It is the expected outcome for a nontrivial share of
 the prettiest targets. Handle it as a first-class branch.
+
+#### 5.2.1 There is no cone-search API over renders — hence the local index
+
+**Step 1 originally read "query archives (MAST, ESASky, ESO) for a public release image covering
+the position." That was wrong, and the correction matters enough to record here.** Verified
+2026-07-11 and again 2026-07-26:
+
+- MAST and ESASky cone-search return **science observations** (linear FITS), not press-release
+  renders.
+- The ESA/Hubble and ESO public galleries — where the professional renders actually live — expose
+  no JSON API (`?format=json` serves `text/html`; `/api/v1/` 404s), and their advanced-search
+  forms carry **no RA/Dec fields at all**.
+
+Ingesting a linear science FITS as `professional_render` would violate §2.1: a linear master has
+no presentation layer, fingerprints as maximally flat, and poisons the reference set with an
+**anti-target** that drives user images toward flatness. Never do this, however convenient the
+cone-search API.
+
+Discovery therefore works by **crawling the galleries once into a local position index** (id,
+position, field of view, palette, license, attribution, image URL), then cone-searching that index
+locally. Positions come from the galleries' own published, AVM-derived metadata, so candidates are
+filtered against the cone *before* any multi-hundred-megapixel download.
+
+Searching by object name is **not** an acceptable substitute: §5.1 already rules it out, and the
+galleries demonstrate exactly why — for one object ESA/Hubble publishes `Messier 42` while ESO
+publishes `M 42`, and the query that actually returns results is `Orion Nebula`.
+
+Full design, including the fail-closed position-verification gate: `docs/superpowers/specs/
+2026-07-26-p1e-archive-discovery-design.md`.
 
 ### 5.3 Provenance is a first-class field, not metadata
 
