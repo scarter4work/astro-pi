@@ -12,6 +12,10 @@
 
 - **No new third-party dependencies.** `pyproject.toml` states: *"Keep this list minimal — every dependency here must run in the offline eval harness (§10)."* Use `urllib.request` and `re`/`html`, never `requests`, `httpx`, `beautifulsoup4`, or `lxml`.
 - **Line length 100** (`[tool.ruff] line-length = 100`).
+- **Lint only what you touch.** The repo carries **25 pre-existing ruff findings** (24 E702,
+  1 F541) in files this plan does not modify. Scope every ruff gate to the files your task
+  created or changed; do not fix the pre-existing ones and do not treat a repo-wide run as
+  a pass/fail gate.
 - **`from __future__ import annotations`** at the top of every new module, matching existing files.
 - **Never ingest a linear science FITS as `professional_render`** (§2.1). Only gallery renders.
 - **Never guess a palette class.** Unrecognized or absent filter data yields `'unknown'` (§4.3).
@@ -200,8 +204,10 @@ refactor is wrong — revert and redo, do not adjust the old tests.
 
 - [ ] **Step 6: Lint**
 
-Run: `.venv/bin/python -m ruff check src tests`
-Expected: no findings.
+Run: `.venv/bin/python -m ruff check <the files this task created or modified>`
+Expected: no findings **in your files**. Note: the repo carries 25 pre-existing ruff
+findings (24 E702, 1 F541) in files this plan does not touch. Do NOT fix them and do
+NOT run ruff repo-wide as a gate — scope it to the files you changed.
 
 - [ ] **Step 7: Commit**
 
@@ -553,8 +559,9 @@ Expected: PASS, 20 tests.
 
 - [ ] **Step 5: Lint and full suite**
 
-Run: `.venv/bin/python -m ruff check src tests && .venv/bin/python -m pytest -q`
-Expected: no lint findings; **164 passed**.
+Run: `.venv/bin/python -m ruff check <the files this task created or modified> && .venv/bin/python -m pytest -q`
+Expected: no findings in your files; **164 passed**. (The repo has 25 pre-existing ruff
+findings in untouched files — ignore them.)
 
 - [ ] **Step 6: Commit**
 
@@ -3215,8 +3222,9 @@ Expected: PASS, 9 tests.
 
 - [ ] **Step 5: Run the full suite**
 
-Run: `.venv/bin/python -m ruff check src tests && .venv/bin/python -m pytest -q`
-Expected: no lint findings; all tests pass.
+Run: `.venv/bin/python -m ruff check <the files this task created or modified> && .venv/bin/python -m pytest -q`
+Expected: no findings in your files; all tests pass. (The repo has 25 pre-existing
+ruff findings in untouched files — ignore them.)
 
 - [ ] **Step 6: Commit**
 
@@ -3395,8 +3403,9 @@ data/gallery_index.sqlite
 
 - [ ] **Step 7: Final full-suite check and lint**
 
-Run: `.venv/bin/python -m ruff check src tests && .venv/bin/python -m pytest -q`
-Expected: no lint findings; all tests pass, live tests deselected.
+Run: `.venv/bin/python -m ruff check <the files this task created or modified> && .venv/bin/python -m pytest -q`
+Expected: no findings in your files; all tests pass, live tests deselected. (The repo has
+25 pre-existing ruff findings in untouched files — ignore them.)
 
 - [ ] **Step 8: Commit**
 
