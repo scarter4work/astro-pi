@@ -15,6 +15,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 import numpy as np
+from scipy import ndimage
 
 from autocontrast.fingerprint.starlet import starlet_transform
 
@@ -119,3 +120,88 @@ def check_highlight_clipping(candidate: np.ndarray, limits: GuardrailLimits) -> 
         ),
         value=worst, limit=limits.highlight_clip_fraction,
     )
+
+
+
+@dataclass(frozen=True)
+class StarStats:
+    count: int
+    median_fwhm: float
+    median_ecc: float
+
+
+def detect_stars(gray: np.ndarray, *, k_sigma: float = 5.0) -> StarStats:
+    """Deterministic star detection: threshold, label, second moments.
+
+    Not a replacement for PI's StarDetector in absolute terms -- it does not need
+    to be. The guardrail compares candidate against checkpoint using the SAME
+    detector, so systematic bias cancels and only the CHANGE matters.
+    """
+    sigma = mrs_noise_sigma(gray)
+    background = float(np.median(gray))
+    mask = gray > background + k_sigma * max(sigma, 1e-9)
+
+    labels, n = ndimage.label(mask)
+    if n == 0:
+        return StarStats(count=0, median_fwhm=0.0, median_ecc=0.0)
+
+    fwhms: list[float] = []
+    eccs: list[float] = []
+    for sl in ndimage.find_objects(labels):
+        h = sl[0].stop - sl[0].start
+        w = sl[1].stop - sl[1].start
+        if h < 2 or w < 2:
+            continue  # single-pixel hits are cosmic rays / hot pixels, not stars
+        # Equivalent-area FWHM and axis-ratio eccentricity from the bounding box.
+        fwhms.append(float(np.sqrt(h * w)))
+        major, minor = max(h, w), min(h, w)
+        eccs.append(float(np.sqrt(1.0 - (minor / major) ** 2)))
+
+    if not fwhms:
+        return StarStats(count=0, median_fwhm=0.0, median_ecc=0.0)
+    return StarStats(
+        count=len(fwhms),
+        median_fwhm=float(np.median(fwhms)),
+        median_ecc=float(np.median(eccs)),
+    )
+
+
+def check_star_integrity(
+    candidate: np.ndarray, baseline: np.ndarray, limits: GuardrailLimits
+) -> GuardrailVerdict:
+    """Stars must not vanish, bloat, or smear (SS7)."""
+    base = detect_stars(_gray(baseline))
+    cand = detect_stars(_gray(candidate))
+
+    if base.count == 0:
+        return GuardrailVerdict("star_integrity", True, "", 0.0, 0.0)
+
+    lost = (base.count - cand.count) / base.count
+    if lost > limits.star_count_drop:
+        return GuardrailVerdict(
+            "star_integrity", False,
+            f"star count fell {lost:.1%} ({base.count} -> {cand.count}), "
+            f"limit {limits.star_count_drop:.1%}",
+            lost, limits.star_count_drop,
+        )
+
+    if base.median_fwhm > 0:
+        growth = (cand.median_fwhm - base.median_fwhm) / base.median_fwhm
+        if growth > limits.star_fwhm_growth:
+            return GuardrailVerdict(
+                "star_integrity", False,
+                f"star FWHM ballooned {growth:.1%} "
+                f"({base.median_fwhm:.2f} -> {cand.median_fwhm:.2f} px), "
+                f"limit {limits.star_fwhm_growth:.1%}",
+                growth, limits.star_fwhm_growth,
+            )
+
+    ecc_growth = cand.median_ecc - base.median_ecc
+    if ecc_growth > limits.star_ecc_growth:
+        return GuardrailVerdict(
+            "star_integrity", False,
+            f"star eccentricity grew {ecc_growth:.2f}, limit {limits.star_ecc_growth:.2f}",
+            ecc_growth, limits.star_ecc_growth,
+        )
+
+    return GuardrailVerdict("star_integrity", True, "", 0.0, limits.star_count_drop)
