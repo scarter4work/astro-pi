@@ -351,3 +351,55 @@ def parse_detail(
         published_utc=parse_release_date(release) if release else None,
         parsed_ok=parsed_ok,
     )
+
+
+@dataclass
+class ListingItem:
+    """One search result. ``width_px``/``height_px`` come free from the listing, which is
+    what lets pixel scale be computed without downloading the image."""
+
+    id: str
+    title: str | None
+    width_px: int | None
+    height_px: int | None
+    detail_path: str
+
+
+def parse_listing(doc: str) -> list[ListingItem]:
+    """Parse the inline ``var images = [ {...}, ... ];`` block.
+
+    This is a JavaScript literal, not JSON — unquoted keys and single-quoted strings — so
+    fields are extracted individually rather than via ``json.loads``. Preferred over
+    scraping rendered markup: it is machine-oriented and survives visual redesigns.
+    """
+    block = re.search(r"var\s+images\s*=\s*\[(.*?)\n\s*\]\s*;", doc, re.S)
+    if block is None:
+        return []
+
+    items: list[ListingItem] = []
+    for record in re.findall(r"\{(.*?)\}", block.group(1), re.S):
+
+        def field(key: str) -> str | None:
+            match = re.search(rf"\b{key}\s*:\s*'([^']*)'", record)
+            return _html.unescape(match.group(1)) if match else None
+
+        def number(key: str) -> int | None:
+            match = re.search(rf"\b{key}\s*:\s*(\d+)", record)
+            return int(match.group(1)) if match else None
+
+        entry_id, path = field("id"), field("url")
+        if not entry_id or not path:
+            continue  # nav entries and malformed records carry neither
+        items.append(ListingItem(
+            id=entry_id, title=field("title"),
+            width_px=number("width"), height_px=number("height"),
+            detail_path=path,
+        ))
+    return items
+
+
+def parse_result_total(doc: str) -> int | None:
+    """The ``Showing 1 to 35 of 35`` total, used to drive pagination."""
+    text = re.sub(r"\s+", " ", _html.unescape(re.sub(r"(?s)<[^>]+>", " ", doc)))
+    match = re.search(r"Showing\s+[\d,]+\s+to\s+[\d,]+\s+of\s+([\d,]+)", text)
+    return int(match.group(1).replace(",", "")) if match else None
