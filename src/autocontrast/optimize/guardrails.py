@@ -18,8 +18,6 @@ import numpy as np
 from scipy import ndimage
 
 from autocontrast.fingerprint.color import rgb_to_lab
-from autocontrast.fingerprint.extract import CHROMA_BINS, CHROMA_EXTENT
-from autocontrast.fingerprint.metrics import chroma_histogram
 from autocontrast.fingerprint.starlet import starlet_transform
 
 # Median absolute deviation -> Gaussian sigma, for the finest wavelet plane.
@@ -224,30 +222,75 @@ def check_star_integrity(
     return GuardrailVerdict("star_integrity", True, "", 0.0, limits.star_count_drop)
 
 
-def _chroma_hist(rgb: np.ndarray) -> np.ndarray:
+# Hue-angle histogram resolution (design SS5.1). 120 bins of 3 degrees each.
+# A legitimate radial (saturation-only) move is EXACTLY hue-preserving under
+# a*/b* scaling -- 0.0 degrees of drift, measured -- so it can never leave the
+# bin it started in, at ANY resolution. A genuine hue shift (measured 3.58
+# degrees for a boost strong enough to clip a channel on gamut return, see
+# task-4-report.md) is what has to escape the source's bin reliably: with a
+# 3-degree bin, any shift strictly greater than the bin width is mathematically
+# guaranteed to land in a different bin than its start, regardless of exactly
+# where in that bin the source's hue happened to sit -- no alignment luck
+# required, unlike the a*/b* position grid this replaced (SS5.1).
+NUM_HUE_BINS = 120
+
+# Chroma floor (a*/b* units) below which a pixel's hue angle is dropped rather
+# than measured. A pixel this close to neutral has an atan2(b, a) of two small,
+# noisy numbers -- the angle is not meaningfully defined, and letting it vote
+# would make "unsupported" a measure of noise, not of color. 1.0 sits comfortably
+# below the ~2.3 CIELAB delta-E commonly cited as the smallest color difference a
+# human observer reliably notices, so it excludes only pixels with no perceptible
+# color at all.
+HUE_CHROMA_FLOOR = 1.0
+
+
+def _hue_hist(rgb: np.ndarray) -> np.ndarray:
+    """Chroma-weighted histogram over hue angle (0-360 degrees), normalized to sum 1.
+
+    Pixels at or below ``HUE_CHROMA_FLOOR`` are excluded entirely, not binned as
+    zero-chroma -- see the floor's docstring above. A source with no pixel above
+    the floor (a perfectly neutral source) yields an all-zero histogram, exactly
+    as ``chroma_histogram`` does for the all-zero a*/b* case it replaces.
+    """
     lab = rgb_to_lab(rgb)
-    return chroma_histogram(lab[..., 1], lab[..., 2], bins=CHROMA_BINS, extent=CHROMA_EXTENT)
+    a, b = lab[..., 1], lab[..., 2]
+    chroma = np.hypot(a, b)
+    hue = np.degrees(np.arctan2(b, a)) % 360.0
+
+    supported = chroma > HUE_CHROMA_FLOOR
+    edges = np.linspace(0.0, 360.0, NUM_HUE_BINS + 1)
+    hist, _ = np.histogram(hue[supported], bins=edges, weights=chroma[supported])
+    total = hist.sum()
+    return hist / total if total > 0 else hist
 
 
 def check_hue_invention(
     candidate: np.ndarray, source: np.ndarray, limits: GuardrailLimits
 ) -> GuardrailVerdict:
-    """No chroma mass may appear in an a*/b* cell with no support in the source (SS7).
+    """No chroma mass may appear at a hue angle with no support in the source (SS7).
 
-    This is SS2.1 enforced mechanically. Intensifying a color that is already
+    This is SS2.1 enforced mechanically, on hue ANGLE rather than a*/b* position
+    (design SS5.1, revised on measurement). The a*/b* plane cannot tell "the same
+    color, more of it" from "a color that was never there": a saturation boost
+    moves a pixel radially outward, and radial motion crosses a*/b* grid cells
+    even though the color itself hasn't changed. Hue angle can make the
+    distinction, because saturation moves along a radius at constant angle, while
+    fabrication -- or a boost so strong it clips a channel and genuinely distorts
+    the color -- introduces a new angle. Intensifying a color that is already
     present is presentation; creating one that was never in the data is
     fabrication, and it is the difference between a tool that enhances and a tool
     that invents.
 
-    A perfectly neutral source (an all-zero chroma histogram) makes every cell
-    unsupported, so ANY candidate chroma trips this check -- intentionally, not
-    incidentally. Per §2.1, no color in the data means no color to legitimately
-    intensify: a genuinely gray source has nothing here for a saturation move to
-    amplify, so introducing color from a neutral source is fabrication by
-    definition, not a boundary case this check happens to also catch.
+    A perfectly neutral source (an all-zero hue histogram, every pixel at or
+    below ``HUE_CHROMA_FLOOR``) supports no hue at all, so ANY candidate chroma
+    above the floor trips this check -- intentionally, not incidentally. Per
+    §2.1, no color in the data means no color to legitimately intensify: a
+    genuinely gray source has nothing here for a saturation move to amplify, so
+    introducing color from a neutral source is fabrication by definition, not a
+    boundary case this check happens to also catch.
     """
-    src = _chroma_hist(source)
-    cand = _chroma_hist(candidate)
+    src = _hue_hist(source)
+    cand = _hue_hist(candidate)
 
     unsupported = cand[src <= 0.0]
     mass = float(unsupported.sum())
@@ -255,7 +298,7 @@ def check_hue_invention(
     return GuardrailVerdict(
         name="hue_invention", ok=ok,
         reason="" if ok else (
-            f"hue invention: {mass:.4f} chroma mass appeared in a*/b* cells with "
+            f"hue invention: {mass:.4f} chroma mass appeared at hue angles with "
             f"no support in the source (limit {limits.hue_invention_mass:.4f})"
         ),
         value=mass, limit=limits.hue_invention_mass,
