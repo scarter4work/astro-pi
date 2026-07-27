@@ -308,21 +308,47 @@ radius at constant angle; fabrication introduces a *new angle*. This is also wha
 in words: the fingerprint may influence *"saturation structure"* — saturation change is permitted,
 invented colour is not.
 
-Therefore hue invention is measured as chroma-weighted mass at hue angles unsupported in the source:
+Therefore hue invention is measured as chroma-weighted mass sitting **more than a tolerance angle away
+from any hue the source supports**.
 
-| Case | Verdict |
-|---|---|
-| 1.3× / 1.8× / 2.2× saturation boost | passes |
-| 3.0× boost (clips channels, genuinely shifting hue) | trips |
-| Green cast on a neutral source | trips |
+**Corrected 2026-07-27, second iteration.** A first attempt required an unclipped 3.0× boost to trip.
+That requirement was wrong and is withdrawn. Saturation is applied in RGB while CIELAB hue angle is a
+nonlinear function of RGB, so legitimate boosts genuinely drift the hue angle by a few degrees. Asking
+this guardrail to catch that was asking it to do the clipping guardrails' job.
 
-Two properties this must keep:
+Measured separation, which is what the tolerance rests on:
+
+| Case | Hue displacement | Verdict |
+|---|---|---|
+| 1.3× saturation boost | 0.84° | passes |
+| 1.8× saturation boost | 2.35° | passes |
+| 2.2× saturation boost | 3.63° | passes |
+| 3.0× saturation boost (unclipped) | 6.39° | passes |
+| Green injected into a red image | **116.28°** | trips |
+| Green cast on a neutral source | no supported hue at all | trips |
+
+Legitimate drift is **bounded** at roughly 6°; genuine invention is roughly 116° or has no support
+whatsoever. The tolerance sits in that gap — default **20°**, about 3× above real drift and 6× below
+real invention.
+
+The bounded-drift property is what makes this safe where the a\*/b\* cell approach was not. Radial
+movement in the a\*/b\* plane is unbounded, so any fixed cell dilation is escapable by boosting harder.
+Angular drift from legitimate operations cannot grow that way.
+
+Three properties this must keep:
 - A **minimum-chroma floor**, so near-neutral pixels do not contribute numerically noisy angles.
 - A **neutral source blocks all colourisation** — an all-neutral source supports no hue, so any colour
   is invented. Intentional per §2.1: no colour in the data means no colour to legitimately intensify.
+- **Clipping is not this guardrail's job.** `check_shadow_clipping` and `check_highlight_clipping`
+  own it. Each guardrail catches its own failure mode; overlapping them caused the first iteration's
+  error.
 
-Raising ε instead was rejected: 1.8× requires ε above 0.95, at which point the guardrail can no longer
-detect any realistic fabrication. That is precisely the "tune around a finding" failure §3.7 forbids.
+Two routes were explicitly rejected:
+- **Raising ε** on the cell-based check: 1.8× requires ε above 0.95, at which point the guardrail
+  detects no realistic fabrication at all — the "tune around a finding" failure §3.7 forbids.
+- **Dilating the source cell mask** by a fixed radius: refuted by measurement. At 2.2× the candidate
+  spans three cells while the source occupies one, so a radius-1 dilation still trips, and any fixed
+  radius is escapable by a larger boost.
 
 ---
 
