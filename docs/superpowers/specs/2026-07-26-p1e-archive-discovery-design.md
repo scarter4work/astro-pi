@@ -135,17 +135,38 @@ CREATE TABLE gallery_index (
   fov_w_arcmin      REAL,
   fov_h_arcmin      REAL,
   fov_radius_arcmin REAL,               -- half-diagonal, derived
+  width_px          INTEGER,            -- published in the listing (see amendment)
+  height_px         INTEGER,
+  pixel_scale_arcsec REAL,              -- fov_w_arcmin * 60 / width_px
   object_name       TEXT,
   category          TEXT,
-  palette_class     TEXT,               -- derived from filters, else 'unknown'
-  license           TEXT NOT NULL,
-  attribution       TEXT NOT NULL,
+  entry_type        TEXT,               -- 'Observation' | 'Photographic' | 'Artwork'
+  palette_class     TEXT NOT NULL,      -- derived from filters, else 'unknown'
+  license           TEXT,               -- NULL when not establishable (§7 G5)
+  attribution       TEXT,
   published_utc     TEXT,
-  indexed_utc       TEXT NOT NULL,
+  parsed_ok         INTEGER NOT NULL,   -- absent data vs. broken parsing
   PRIMARY KEY (gallery, id)
 );
 CREATE INDEX ix_gallery_dec ON gallery_index(dec_deg);
 ```
+
+**Amendment (2026-07-26, during implementation planning).** Live verification showed the
+listing pages are not rendered markup but an inline
+`var images = [ {id, title, width, height, url}, … ];` JavaScript data literal. Two
+consequences, both improvements on this spec as first written:
+
+1. Parsing that literal is more drift-resistant than scraping markup — it is
+   machine-oriented and survives visual redesigns.
+2. **Pixel dimensions are published**, so `pixel_scale_arcsec` is derivable from metadata
+   alone: verified 0.1001″/px for `heic0601a` (30.03′ × 60 / 18000 px) and 0.238″/px for
+   `eso1103a` (35.49′ × 60 / 8948 px), both matching the curated catalog. Gate G4 is
+   therefore satisfiable **without downloading the image**; this spec originally assumed
+   dimensions came from the downloaded file.
+
+A third amendment: sync is driven by a `sync_state (gallery, last_synced_utc)` table rather
+than by the maximum indexed `published_utc`. That avoids depending on release-date parsing,
+and the current time is injected so the window is testable. `published_utc` is still captured.
 
 Entries whose position is unpublished are stored with `ra_deg IS NULL` — so the crawler
 remembers not to re-fetch them — but are never returned by cone search. `opo0205c` (ESA/Hubble
@@ -235,7 +256,7 @@ Fail-closed. Any check failing rejects the candidate and advances to the next.
 | G2 | Independent WCS cross-check (below) | reject |
 | G3 | *Solved* position still within the query cone — the solve is authoritative | reject |
 | G4 | Pixel scale available (§2.2 forbids pixel-space comparison) | reject |
-| G5 | License **and** attribution non-empty (§5.5) | reject |
+| G5 | License establishable **and** attribution non-empty (§5.5) | reject |
 | G6 | Palette derived from published filters, else `'unknown'` — never guessed | — |
 
 **G2.** Run `acquire_wcs(path, manual=published_position)`:
@@ -253,10 +274,27 @@ G2 has a concrete regression target: force-parsing `eso1103a`'s AVM yields (81.9
 against its published (83.82, −5.39) — 2.3° apart, roughly 5× tolerance. The gate must reject
 exactly the corruption already documented for that file.
 
-**G4 on the manual path.** Derive scale as `fov_w_arcmin × 60 / actual_image_width_px` from
-the downloaded file and pass it as the annotation's `pixel_scale_arcsec` — the same quantity
-computed by hand for `eso1103a` (0.238″/px). `ingest_reference_auto` already refuses to
-proceed without a scale.
+**G4 on the manual path.** Derive scale as `fov_w_arcmin × 60 / width_px` — the same quantity
+computed by hand for `eso1103a` (0.238″/px). Per the amendment in §5, `width_px` comes from
+the listing's published dimensions, so no download is required. `ingest_reference_auto`
+already refuses to proceed without a scale.
+
+**G5 amendment (2026-07-26) — the per-gallery license default is not universal.** ESA/Hubble
+hosts third-party **copyrighted** renders: `opo0205c`'s credit reads *"Copyright © Anglo-
+Australian Observatory. Photograph by David Malin"*. And neither site publishes a per-image
+machine-readable license — the page's `copyright` container is site boilerplate, and no CC BY
+string appears anywhere in the markup. The only signal is the credit text itself.
+
+So §5.5's table ("ESA/Hubble → CC BY 4.0") describes the *gallery's own* output, not
+everything it hosts. The rule is therefore:
+
+- Credit does **not** assert copyright → apply the gallery default license.
+- Credit **does** assert copyright (matches `copyright`, `©`, `(c)`, `all rights reserved`)
+  → leave the license **unestablished** (`NULL`) and **reject** the candidate at G5.
+
+Attaching a false CC BY 4.0 to a record would be a §5.5 violation that travels with the
+fingerprint permanently and surfaces in any UI displaying the reference. Erring toward
+under-ingesting is the correct direction for a licensing question.
 
 `source_type=tool_output` cannot arise on this path, since only fetched gallery renders are
 ingested; `store.py`'s §5.3 enforcement remains the backstop regardless.
@@ -283,8 +321,8 @@ parser tests run with zero network:
 | `hubble_detail_heic0601a.html` | position, FoV, and filters all present — happy path |
 | `eso_detail_eso1103a.html` | published position with **unparseable AVM** |
 | `hubble_detail_opo0205c.html` | **no** published position or FoV → NULL row, must be skipped |
-| `eso_search_orion.html` | ESO's non-paginated results path |
-| `hubble_detail_illustration.html` | artist's impression — no sky position at all |
+| `eso_listing_orion.html` | ESO's non-paginated results path |
+| `hubble_detail_heic0211i.html` | `Type: Artwork` — artist's impression, no sky position at all |
 
 Beyond parsing:
 
