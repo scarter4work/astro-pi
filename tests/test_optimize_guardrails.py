@@ -143,3 +143,48 @@ def test_star_integrity_passes_but_says_so_when_baseline_is_starless():
     # actually evaluated, not merely that it checked out clean.
     assert verdict.reason != ""
     assert "no" in verdict.reason.lower() and "star" in verdict.reason.lower()
+
+
+from autocontrast.optimize.guardrails import (
+    check_channel_ratio_drift, check_hue_invention, evaluate_guardrails,
+)
+
+
+def test_hue_invention_passes_when_color_only_intensifies():
+    source = _smooth_image()
+    source[..., 0] *= 1.2                       # a real red bias in the source
+    source = np.clip(source, 0, 1)
+    # Saturating existing color moves mass outward along hues that ALREADY exist.
+    lab_ish = np.clip((source - 0.5) * 1.3 + 0.5, 0, 1)
+    assert check_hue_invention(lab_ish, source, GuardrailLimits()).ok
+
+
+def test_hue_invention_trips_on_color_with_no_source_support():
+    source = np.stack([np.full((64, 64), 0.5)] * 3, axis=-1)  # perfectly neutral
+    invented = source.copy()
+    invented[..., 1] = 0.9                                     # a green cast from nowhere
+    verdict = check_hue_invention(invented, source, GuardrailLimits())
+    assert not verdict.ok
+    assert "hue" in verdict.reason.lower()
+
+
+def test_channel_ratio_drift_trips_when_ratios_move():
+    source = _smooth_image()
+    drifted = source.copy()
+    drifted[..., 2] *= 1.5                       # push blue hard
+    drifted = np.clip(drifted, 0, 1)
+    assert check_channel_ratio_drift(source, source, GuardrailLimits()).ok
+    assert not check_channel_ratio_drift(drifted, source, GuardrailLimits()).ok
+
+
+def test_evaluate_guardrails_returns_every_verdict_not_just_the_first():
+    source = _smooth_image()
+    bad = source.copy()
+    bad[:30, :, :] = 0.0
+    bad[30:60, :, :] = 1.0
+    verdicts = evaluate_guardrails(bad, source, source, GuardrailLimits())
+    names = {v.name for v in verdicts}
+    assert {"noise_floor", "star_integrity", "shadow_clipping",
+            "highlight_clipping", "hue_invention", "channel_ratio_drift"} <= names
+    failed = {v.name for v in verdicts if not v.ok}
+    assert "shadow_clipping" in failed and "highlight_clipping" in failed

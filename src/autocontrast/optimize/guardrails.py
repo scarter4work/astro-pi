@@ -219,3 +219,85 @@ def check_star_integrity(
         )
 
     return GuardrailVerdict("star_integrity", True, "", 0.0, limits.star_count_drop)
+
+
+from autocontrast.fingerprint.color import rgb_to_lab
+from autocontrast.fingerprint.extract import CHROMA_BINS, CHROMA_EXTENT
+from autocontrast.fingerprint.metrics import chroma_histogram
+
+
+def _chroma_hist(rgb: np.ndarray) -> np.ndarray:
+    lab = rgb_to_lab(rgb)
+    return chroma_histogram(lab[..., 1], lab[..., 2], bins=CHROMA_BINS, extent=CHROMA_EXTENT)
+
+
+def check_hue_invention(
+    candidate: np.ndarray, source: np.ndarray, limits: GuardrailLimits
+) -> GuardrailVerdict:
+    """No chroma mass may appear in an a*/b* cell with no support in the source (SS7).
+
+    This is SS2.1 enforced mechanically. Intensifying a color that is already
+    present is presentation; creating one that was never in the data is
+    fabrication, and it is the difference between a tool that enhances and a tool
+    that invents.
+    """
+    src = _chroma_hist(source)
+    cand = _chroma_hist(candidate)
+
+    unsupported = cand[src <= 0.0]
+    mass = float(unsupported.sum())
+    ok = mass <= limits.hue_invention_mass
+    return GuardrailVerdict(
+        name="hue_invention", ok=ok,
+        reason="" if ok else (
+            f"hue invention: {mass:.4f} chroma mass appeared in a*/b* cells with "
+            f"no support in the source (limit {limits.hue_invention_mass:.4f})"
+        ),
+        value=mass, limit=limits.hue_invention_mass,
+    )
+
+
+def _channel_ratios(rgb: np.ndarray) -> np.ndarray:
+    """Mean per-channel level, normalized to sum 1 -- the presentation-space stand-in
+    for the linear channel ratios SS2.1 protects."""
+    means = np.array([float(rgb[..., c].mean()) for c in range(rgb.shape[-1])])
+    total = means.sum()
+    return means / total if total > 0 else means
+
+
+def check_channel_ratio_drift(
+    candidate: np.ndarray, source: np.ndarray, limits: GuardrailLimits
+) -> GuardrailVerdict:
+    """Post-stretch channel ratios must stay near the source's (SS7, SS2.1)."""
+    drift = float(np.linalg.norm(_channel_ratios(candidate) - _channel_ratios(source)))
+    ok = drift <= limits.channel_ratio_drift
+    return GuardrailVerdict(
+        name="channel_ratio_drift", ok=ok,
+        reason="" if ok else (
+            f"channel ratios drifted {drift:.3f} from the source "
+            f"(limit {limits.channel_ratio_drift:.3f})"
+        ),
+        value=drift, limit=limits.channel_ratio_drift,
+    )
+
+
+def evaluate_guardrails(
+    candidate: np.ndarray,
+    baseline: np.ndarray,
+    source: np.ndarray,
+    limits: GuardrailLimits = GuardrailLimits(),
+) -> list[GuardrailVerdict]:
+    """Every SS7 guardrail, all of them evaluated.
+
+    We do not short-circuit on the first failure: a declined run should be able to
+    report everything that was wrong, not just whichever check happened to run
+    first (SS12 -- degraded paths surface).
+    """
+    return [
+        check_noise_floor(candidate, baseline, limits),
+        check_star_integrity(candidate, baseline, limits),
+        check_shadow_clipping(candidate, limits),
+        check_highlight_clipping(candidate, limits),
+        check_hue_invention(candidate, source, limits),
+        check_channel_ratio_drift(candidate, source, limits),
+    ]
