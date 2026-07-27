@@ -29,3 +29,6 @@ data/amateur/*
 # Editor
 .vscode/
 .idea/
+
+# Downloaded gallery renders (regenerable cache, can be hundreds of MB)
+data/discovery_cache/

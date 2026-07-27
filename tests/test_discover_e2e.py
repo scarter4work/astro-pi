@@ -1,5 +1,11 @@
-"""The Phase 1 exit criterion as an automated test:
-solve -> look up -> miss -> fetch -> fingerprint -> store, unattended."""
+"""Miss-path WIRING, against a fake fetcher and a synthetic raster.
+
+These are fast branch-coverage tests: they prove the orchestration calls its pieces in
+the right order and handles rejection, caching and reporting. They do NOT establish the
+Phase 1 exit criterion, because nothing here touches a real archive or a real render —
+see tests/test_exit_criterion_live.py, which runs the same path against the user's own
+M42 stack and a real press-release download.
+"""
 
 from __future__ import annotations
 
@@ -212,8 +218,12 @@ def test_acquire_reference_returns_existing_matches_without_discovering(wiring):
     assert fetcher.requested == []
 
 
-def test_the_full_exit_criterion_runs_unattended(wiring):
-    """solve -> look up -> miss -> fetch -> fingerprint -> store, with no prompts."""
+def test_the_miss_path_is_wired_end_to_end_with_no_prompts(wiring):
+    """look up -> miss -> fetch -> fingerprint -> store, with no prompts.
+
+    Wiring only — the fetcher is fake and the raster is synthetic. The exit criterion
+    itself is proven in tests/test_exit_criterion_live.py against real data.
+    """
     store, index, fetcher, cache = wiring
     outcome = acquire_reference(
         store, index, ra_deg=83.82, dec_deg=-5.39, search_radius_arcmin=30.0,
