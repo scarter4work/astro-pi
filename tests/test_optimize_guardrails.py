@@ -127,3 +127,19 @@ def test_star_integrity_trips_when_stars_are_destroyed():
     verdict = check_star_integrity(bloated, baseline, GuardrailLimits())
     assert not verdict.ok
     assert "star" in verdict.reason.lower()
+
+
+def test_star_integrity_passes_but_says_so_when_baseline_is_starless():
+    # A genuinely starless baseline (e.g. a nebula-only crop) -- not a fixture
+    # bug: measured directly below that detect_stars really returns count==0
+    # for a flat frame, so this exercises the base.count == 0 branch and not
+    # some other path.
+    blank = np.zeros((192, 192, 3))
+    assert detect_stars(blank[..., 0]).count == 0
+
+    verdict = check_star_integrity(blank, blank, GuardrailLimits())
+    assert verdict.ok
+    # Must not be a silent pass: the reason has to say integrity wasn't
+    # actually evaluated, not merely that it checked out clean.
+    assert verdict.reason != ""
+    assert "no" in verdict.reason.lower() and "star" in verdict.reason.lower()
