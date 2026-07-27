@@ -23,6 +23,8 @@ import re
 from dataclasses import dataclass
 from urllib.parse import urlencode
 
+from autocontrast.fingerprint.palette import palette_class_from_gallery_bands
+
 
 @dataclass(frozen=True)
 class GalleryConfig:
@@ -166,3 +168,186 @@ def parse_release_date(text: str) -> str | None:
     hour = int(match.group(4)) if match.group(4) else 0
     minute = int(match.group(5)) if match.group(5) else 0
     return f"{year:04d}-{month:02d}-{day:02d}T{hour:02d}:{minute:02d}:00Z"
+
+
+@dataclass
+class GalleryEntry:
+    """One gallery render's published metadata. Position fields are ``None`` when the
+    gallery does not publish them — an expected, first-class outcome (§5.2)."""
+
+    id: str
+    gallery: str
+    detail_url: str
+    image_url: str | None
+    ra_deg: float | None
+    dec_deg: float | None
+    fov_w_arcmin: float | None
+    fov_h_arcmin: float | None
+    fov_radius_arcmin: float | None
+    width_px: int | None
+    height_px: int | None
+    pixel_scale_arcsec: float | None
+    object_name: str | None
+    category: str | None
+    entry_type: str | None
+    palette_class: str
+    license: str | None
+    attribution: str | None
+    published_utc: str | None
+    parsed_ok: bool
+
+    @property
+    def has_position(self) -> bool:
+        return (self.ra_deg is not None and self.dec_deg is not None
+                and self.fov_radius_arcmin is not None)
+
+
+def parse_credit(doc: str) -> str | None:
+    """The full credit line from ``class="credit"``.
+
+    The block contains nested anchors, so tags are stripped and whitespace collapsed —
+    taking only the first text node would truncate "NASA, ESA, M. Robberto ..." to "NASA".
+    The site states that crediting with the full line is mandatory.
+    """
+    match = re.search(r'class="credit"[^>]*>(.*?)</div>', doc, re.S)
+    if match is None:
+        return None
+    text = _html.unescape(re.sub(r"(?s)<[^>]+>", " ", match.group(1)))
+    text = re.sub(r"\s+", " ", text).strip()
+    # Tag stripping leaves gaps around punctuation: "NASA , ESA , M. Robberto ( STScI / ESA )".
+    text = re.sub(r"\s+([,.;:])", r"\1", text)
+    text = re.sub(r"\(\s+", "(", text)
+    text = re.sub(r"\s+\)", ")", text)
+    text = re.sub(r"\s*/\s*", "/", text)
+    return text or None
+
+
+# No per-image machine-readable license exists on either site: the copyright block is
+# site boilerplate and no CC BY string appears. The only signal is the credit itself,
+# and ESA/Hubble does host third-party copyrighted images (opo0205c is AAO's).
+_COPYRIGHT_MARKERS = re.compile(r"(?i)copyright|©|\(c\)\s|all rights reserved")
+
+
+def asserts_copyright(credit: str | None) -> bool:
+    """True when a credit line claims copyright, so the gallery default must not apply."""
+    return bool(credit) and _COPYRIGHT_MARKERS.search(credit) is not None
+
+
+def parse_filter_bands(doc: str) -> list[str]:
+    """Filter names from the published 'Colours & filters' table, in table order.
+
+    The Band cell nests "Optical" (or similar) above the filter name in a
+    ``class="band_instrument"`` span, e.g. ``Optical<br/>B`` -> "Optical B"; the filter
+    name is the trailing token ("Optical H-alpha" -> "H-alpha"). The live table also
+    emits a trailing malformed ``<tr>`` with an empty Band cell (a template artifact, not
+    a filter row) — skipped by requiring the Band cell itself be non-empty, not just the
+    row as a whole, since its Telescope cell is populated and would otherwise slip through.
+    """
+    section = re.search(r"(?is)Colours?\s*&(?:amp;)?\s*[Ff]ilters?(.*?)</table>", doc)
+    if section is None:
+        return []
+    bands: list[str] = []
+    for row in re.findall(r"(?is)<tr[^>]*>(.*?)</tr>", section.group(1)):
+        cells = [
+            re.sub(r"\s+", " ", _html.unescape(re.sub(r"(?s)<[^>]+>", " ", cell))).strip()
+            for cell in re.findall(r"(?is)<t[dh][^>]*>(.*?)</t[dh]>", row)
+        ]
+        if not cells or not cells[0] or cells[0].lower().startswith("band"):
+            continue
+        bands.append(cells[0].split()[-1])
+    return bands
+
+
+def parse_size_px(lines: list[str]) -> tuple[int, int] | None:
+    """``'18000 x 18000 px'`` -> ``(18000, 18000)``. Cross-checks the listing dimensions."""
+    value = labelled_value(lines, "Size")
+    if value is None:
+        return None
+    match = re.match(r"\s*(\d+)\s*[x×]\s*(\d+)", value)
+    return (int(match.group(1)), int(match.group(2))) if match else None
+
+
+def _image_url(doc: str) -> str | None:
+    """The CDN 'large' JPEG, read from the page rather than constructed, so a CDN or path
+    change surfaces as a missing URL instead of a 404 at download time."""
+    urls = re.findall(
+        r"https?://cdn\.[^\"' ]*?/images/large/[^\"' ]+\.(?:jpg|jpeg|png)", doc
+    )
+    return urls[0] if urls else None
+
+
+def parse_detail(
+    doc: str,
+    *,
+    entry_id: str,
+    gallery: str,
+    detail_url: str,
+    width_px: int | None = None,
+    height_px: int | None = None,
+) -> GalleryEntry:
+    """Parse a gallery detail page into a :class:`GalleryEntry`.
+
+    Never raises. ``parsed_ok`` distinguishes "the page parsed but publishes no position"
+    (normal — starless treatments, artwork, older releases) from "parsing broke" (a site
+    redesign or an error page), which is what lets the crawler abort loudly rather than
+    quietly index nothing.
+    """
+    lines = text_lines(doc)
+    cfg = GALLERIES.get(gallery)
+
+    # A real detail page always carries at least an Id or a Name label. Neither means
+    # this is not a detail page at all.
+    parsed_ok = labelled_value(lines, "Id") is not None or labelled_value(lines, "Name") is not None
+
+    ra_text = labelled_value(lines, "Position (RA)")
+    dec_text = labelled_value(lines, "Position (Dec)")
+    fov_text = labelled_value(lines, "Field of view")
+
+    ra_deg = parse_ra_sexagesimal(ra_text) if ra_text else None
+    dec_deg = parse_dec_sexagesimal(dec_text) if dec_text else None
+    fov = parse_fov_arcmin(fov_text) if fov_text else None
+    fov_w, fov_h = fov if fov else (None, None)
+    radius = fov_radius_arcmin(fov_w, fov_h) if fov else None
+
+    if width_px is None or height_px is None:
+        size = parse_size_px(lines)
+        if size is not None:
+            width_px, height_px = size
+
+    # §2.2: scale must be angular. Derived from published metadata so the cone can be
+    # filtered before any download.
+    pixel_scale = None
+    if fov_w is not None and width_px:
+        pixel_scale = fov_w * 60.0 / float(width_px)
+
+    credit = parse_credit(doc)
+    # A copyright-asserting credit means the gallery default does NOT apply. Leave the
+    # license unestablished rather than attaching a false one (§5.5).
+    license_text = None
+    if cfg is not None and not asserts_copyright(credit):
+        license_text = cfg.default_license
+
+    release = labelled_value(lines, "Release date")
+
+    return GalleryEntry(
+        id=entry_id,
+        gallery=gallery,
+        detail_url=detail_url,
+        image_url=_image_url(doc),
+        ra_deg=ra_deg,
+        dec_deg=dec_deg,
+        fov_w_arcmin=fov_w,
+        fov_h_arcmin=fov_h,
+        fov_radius_arcmin=radius,
+        width_px=width_px,
+        height_px=height_px,
+        pixel_scale_arcsec=pixel_scale,
+        object_name=labelled_value(lines, "Name"),
+        category=labelled_value(lines, "Category"),
+        entry_type=labelled_value(lines, "Type"),
+        palette_class=palette_class_from_gallery_bands(parse_filter_bands(doc)),
+        license=license_text,
+        attribution=credit,
+        published_utc=parse_release_date(release) if release else None,
+        parsed_ok=parsed_ok,
+    )
