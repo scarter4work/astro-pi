@@ -82,3 +82,91 @@ def palette_class_from_filters(filters: list[str]) -> str:
         return "L-only"
 
     return "unknown"
+
+
+# Professional galleries publish photometric band letters and emission-line names rather
+# than amateur filter-wheel labels, so they need their own mapping. Broadband letters
+# span UV through near-IR; all of them contribute to a broadband colour composite.
+_GALLERY_BROADBAND = {
+    "U", "B", "V", "R", "I", "Z", "Y", "G", "J", "H", "K", "W", "L", "M",
+}
+
+_GALLERY_NARROWBAND = {
+    "HA": "Ha", "H-ALPHA": "Ha", "HALPHA": "Ha", "H_ALPHA": "Ha",
+    "OIII": "OIII", "O-III": "OIII", "O3": "OIII", "[O III]": "OIII", "[OIII]": "OIII",
+    "SII": "SII", "S-II": "SII", "S2": "SII", "[S II]": "SII", "[SII]": "SII",
+}
+
+
+def palette_class_from_gallery_bands(bands: list[str]) -> str:
+    """Derive a §4.3 palette class from a gallery's published filter bands.
+
+    Note the asymmetry against :func:`palette_class_from_filters`: an *empty* FITS FILTER
+    keyword is positive evidence of a one-shot-colour camera and yields ``RGB``, whereas
+    an empty gallery filter table is simply absent metadata and must yield ``unknown``.
+    Guessing here would let a mismatched reference push channel ratios (§2.1).
+
+    A broadband-dominated composite is classified ``RGB`` even when a narrowband layer is
+    blended in, matching how the curated catalog labels heic0601a (B, V, H-alpha, I, Z).
+    """
+    if not bands:
+        return "unknown"
+
+    broad: set[str] = set()
+    narrow: set[str] = set()
+    for raw in bands:
+        key = str(raw).strip().upper()
+        if not key:
+            continue
+        if key in _GALLERY_NARROWBAND:
+            narrow.add(_GALLERY_NARROWBAND[key])
+        elif key in _GALLERY_BROADBAND:
+            broad.add(key)
+
+    # Two or more broadband filters make a colour composite; incidental narrowband
+    # blending does not change the presentation palette.
+    if len(broad) >= 2:
+        return "RGB"
+    if not broad:
+        if narrow == {"SII", "Ha", "OIII"}:
+            return "SHO"
+        if narrow == {"Ha", "OIII"}:
+            return "HOO"
+    return "unknown"
+
+
+# §2.3 chroma compatibility. Palette EQUALITY is too strict a gate: professional
+# broadband composites routinely blend a narrowband layer — heic0601a is B, V, H-alpha,
+# I, Z and is classified RGB — so an HaRGB acquisition would be denied chroma from its
+# closest possible reference. Compatibility is therefore a FAMILY relation.
+#
+#   broadband — true-ish colour built on R/G/B-like bands; a blended narrowband layer
+#               does not change the colour presentation
+#   sho       — the Hubble palette (SII->R, Ha->G, OIII->B): gold/teal
+#   hoo       — Ha/OIII bi-colour: red/teal
+#
+# SHO and HOO are deliberately in separate families: both are narrowband, but their
+# colour presentations are not interchangeable.
+#
+# 'L-only' and 'unknown' belong to NO family and are therefore never chroma-compatible,
+# not even with themselves: a monochrome image has no chroma to share, and 'unknown'
+# means undetermined — §2.1 forbids letting an unverified palette push channel ratios.
+_CHROMA_FAMILIES = {
+    "RGB": "broadband",
+    "LRGB": "broadband",
+    "HaRGB": "broadband",
+    "HaOIII-RGB": "broadband",
+    "SHO": "sho",
+    "HOO": "hoo",
+}
+
+
+def palette_chroma_compatible(a: str, b: str) -> bool:
+    """Whether two palette classes may share chroma guidance (§2.3).
+
+    Replaces bare equality at the two gate sites (``FingerprintStore.cone_search`` and
+    ``fingerprint_distance``). Reflexive only for chroma-bearing palettes, and symmetric
+    by construction.
+    """
+    family = _CHROMA_FAMILIES.get(a)
+    return family is not None and family == _CHROMA_FAMILIES.get(b)

@@ -63,6 +63,29 @@ def test_missing_image_surfaces_error_not_silent(tmp_path):
     assert resp["error"]  # loud, per §12
 
 
+def test_solve_surfaces_an_unsolvable_image_loudly(tmp_path):
+    """§12: a raster with no WCS is an expected branch, reported not raised."""
+    png = tmp_path / "img.png"
+    _write_png(png)
+    resp = handle_request({"op": "solve", "image": str(png)})
+    assert resp["ok"] is True             # the op ran fine...
+    assert resp["result"]["solved"] is False   # ...the image simply has no WCS
+    assert resp["result"]["detail"]
+
+
+def test_analyze_declines_rather_than_guessing_when_the_image_will_not_solve(tmp_path):
+    """No position means no cone search, so there is nothing honest to return."""
+    png = tmp_path / "img.png"
+    _write_png(png)
+    resp = handle_request({
+        "op": "analyze", "image": str(png),
+        "index": str(tmp_path / "idx.sqlite"), "store": str(tmp_path / "fp.sqlite"),
+        "cache_dir": str(tmp_path / "cache"), "allow_discovery": False,
+    })
+    assert resp["ok"] is False
+    assert "solve" in resp["error"].lower() or "wcs" in resp["error"].lower()
+
+
 def test_main_does_file_round_trip(tmp_path):
     req_path = tmp_path / "req.json"
     resp_path = tmp_path / "resp.json"
