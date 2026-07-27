@@ -169,6 +169,31 @@ def test_discovery_falls_through_to_the_next_candidate_after_a_rejection(wiring)
     assert "aaa_broken" in rejected      # it was tried first, and rejected
 
 
+def test_unusable_metadata_is_rejected_before_the_image_is_downloaded(wiring):
+    """Gallery renders run to hundreds of megabytes (the cap is 256 MB).
+
+    License, attribution and the indexed footprint are all decidable from the index
+    alone, so a candidate failing them must cost ZERO bytes. These are free public
+    archives; downloading a quarter-gigabyte and then rejecting it for a missing
+    credit line spends their bandwidth on a verdict we already had.
+    """
+    store, index, fetcher, cache = wiring
+    index.upsert(indexed_entry(entry_id="aaa_unlicensed", license_text=None))
+
+    outcome = discover_reference(
+        store, index, ra_deg=83.82, dec_deg=-5.39, search_radius_arcmin=30.0,
+        palette_class="RGB", fetcher=fetcher, cache_dir=cache, wcs_acquirer=manual_wcs,
+    )
+
+    # aaa_unlicensed sorts first, so it is considered first — and must not be fetched.
+    reports = {r.id: r for r in outcome.considered}
+    assert reports["aaa_unlicensed"].accepted is False
+    assert "license" in reports["aaa_unlicensed"].reason.lower()
+    assert not (cache / "aaa_unlicensed.jpg").exists()
+    downloads = [u for u in fetcher.requested if u.endswith(".jpg")]
+    assert len(downloads) == 1          # only the usable candidate cost bandwidth
+
+
 def test_acquire_reference_returns_existing_matches_without_discovering(wiring):
     store, index, fetcher, cache = wiring
     first = acquire_reference(

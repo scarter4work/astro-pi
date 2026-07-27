@@ -101,24 +101,22 @@ class VerifyResult:
     pixel_scale_arcsec: float | None
 
 
-def verify_candidate(
-    candidate: RankedCandidate,
-    image_path: str | Path,
+def verify_metadata(
+    entry: GalleryEntry,
     *,
     query_ra_deg: float,
     query_dec_deg: float,
     query_radius_arcmin: float,
-    blind_solver: BlindSolver | None = None,
-    wcs_acquirer: WcsAcquirer | None = None,
-) -> VerifyResult:
-    """Run gates G1-G6 against a fetched candidate. Fails closed; never raises.
+) -> VerifyResult | None:
+    """Gates G5 and G1 — everything decidable from indexed metadata alone.
 
-    ``wcs_acquirer`` is injectable so the gate is testable without real image files; it
-    defaults to :func:`acquire_wcs` with the published position as the manual annotation.
+    Returns the rejection, or ``None`` when the entry clears both.
+
+    Split out from :func:`verify_candidate` so the orchestrator can run these BEFORE
+    downloading. A gallery render can be a quarter-gigabyte; fetching one and only then
+    rejecting it for a missing credit line spends a free public archive's bandwidth on
+    a verdict already available from the index.
     """
-    entry = candidate.entry
-    path = Path(image_path)
-
     # ---- G5: license and attribution (§5.5). Checked first: it needs no I/O, and a
     # reference we cannot attribute is unusable however good its position.
     if not entry.license:
@@ -148,6 +146,34 @@ def verify_candidate(
             f"({indexed_sep:.1f}' apart).",
             None, None,
         )
+    return None
+
+
+def verify_candidate(
+    candidate: RankedCandidate,
+    image_path: str | Path,
+    *,
+    query_ra_deg: float,
+    query_dec_deg: float,
+    query_radius_arcmin: float,
+    blind_solver: BlindSolver | None = None,
+    wcs_acquirer: WcsAcquirer | None = None,
+) -> VerifyResult:
+    """Run gates G1-G6 against a fetched candidate. Fails closed; never raises.
+
+    ``wcs_acquirer`` is injectable so the gate is testable without real image files; it
+    defaults to :func:`acquire_wcs` with the published position as the manual annotation.
+    """
+    entry = candidate.entry
+    path = Path(image_path)
+
+    rejection = verify_metadata(
+        entry,
+        query_ra_deg=query_ra_deg, query_dec_deg=query_dec_deg,
+        query_radius_arcmin=query_radius_arcmin,
+    )
+    if rejection is not None:
+        return rejection
 
     # ---- G2: independent WCS cross-check.
     if wcs_acquirer is None:
@@ -291,6 +317,17 @@ def discover_reference(
         if not entry.image_url:
             reports.append(CandidateReport(entry.id, False, "no CDN image URL published"))
             continue
+
+        # Decide everything the index can decide before spending the archive's
+        # bandwidth: an unlicensed or out-of-cone candidate costs zero bytes.
+        rejection = verify_metadata(
+            entry, query_ra_deg=ra_deg, query_dec_deg=dec_deg,
+            query_radius_arcmin=search_radius_arcmin,
+        )
+        if rejection is not None:
+            reports.append(CandidateReport(entry.id, False, rejection.reason))
+            continue
+
         try:
             image_path = _cached_image(fetcher, entry.image_url, cache, entry.id)
         except Exception as exc:  # network/size failure for THIS candidate only
