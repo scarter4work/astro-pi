@@ -32,6 +32,21 @@ def test_noise_floor_trips_when_noise_balloons():
     assert "noise" in verdict.reason.lower()
 
 
+def test_noise_floor_fails_closed_on_degenerate_baseline():
+    # A perfectly flat baseline has an all-zero finest starlet plane, so its
+    # MAD-based sigma is exactly 0 -- measured directly below to confirm this
+    # fixture genuinely exercises the base <= 0 branch, not just asserts on it.
+    flat = np.full((128, 128, 3), 0.5)
+    assert mrs_noise_sigma(flat[..., 0]) == 0.0
+
+    noisy = np.clip(flat + RNG.normal(0, 0.05, flat.shape), 0, 1)
+    limits = GuardrailLimits()
+
+    verdict = check_noise_floor(noisy, flat, limits)
+    assert not verdict.ok
+    assert "baseline" in verdict.reason.lower()
+
+
 def test_clipped_fraction_counts_per_channel():
     img = np.full((10, 10, 3), 0.5)
     img[0, :, 0] = 0.0          # 10 of 100 pixels in channel 0
