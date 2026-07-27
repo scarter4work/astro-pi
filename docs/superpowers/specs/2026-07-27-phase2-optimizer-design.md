@@ -283,11 +283,46 @@ candidate and rolls back. Each records a **reason**, so a declined run can expla
 | Star integrity | count, median FWHM, eccentricity | count drops, or FWHM/ecc balloons |
 | Shadow clipping | % pixels at 0 per channel | exceeds threshold (default ~0.01%) |
 | Highlight clipping | % pixels at 1.0 per channel | exceeds threshold |
-| Hue invention | chroma mass in a\*/b\* cells with no support in the source | any mass above ε |
+| Hue invention | chroma mass at a hue **angle** with no support in the source | any mass above ε |
 | Channel ratio drift | post-stretch ratios vs. source-derived constraints | exceeds tolerance |
 
 The last two enforce §2.1 and §2.3 mechanically and are the difference between a tool that enhances
 and one that fabricates.
+
+### 5.1 Hue invention is measured on angle, not on a\*/b\* position
+
+**Revised 2026-07-27, on measurement.** This guardrail was originally specified as "chroma mass in
+a\*/b\* cells with no support in the source." Implementing it revealed that formulation rejects
+ordinary saturation increases: with a 16×16 histogram over ±100, each bin is 12.5 wide, and boosting
+saturation moves a pixel *radially outward* into a neighbouring cell. Measured against a source whose
+chroma sat near a bin edge, a **1.3× boost** already exceeded the ε limit and an **1.8× boost** put
+0.952 of the image's chroma mass into "unsupported" cells.
+
+Since `chroma` (ColorSaturation) is one of the eight §6.2 actions and runs at 0.85 strength on
+`strong`, the cell-based check would have vetoed essentially every colour move on real data — while
+reporting itself as functioning.
+
+The a\*/b\* plane cannot distinguish "the same colour, more of it" from "a colour that was never
+there", because both show up as mass in a new cell. **Hue angle can.** Saturation moves along a
+radius at constant angle; fabrication introduces a *new angle*. This is also what §2.1 already says
+in words: the fingerprint may influence *"saturation structure"* — saturation change is permitted,
+invented colour is not.
+
+Therefore hue invention is measured as chroma-weighted mass at hue angles unsupported in the source:
+
+| Case | Verdict |
+|---|---|
+| 1.3× / 1.8× / 2.2× saturation boost | passes |
+| 3.0× boost (clips channels, genuinely shifting hue) | trips |
+| Green cast on a neutral source | trips |
+
+Two properties this must keep:
+- A **minimum-chroma floor**, so near-neutral pixels do not contribute numerically noisy angles.
+- A **neutral source blocks all colourisation** — an all-neutral source supports no hue, so any colour
+  is invented. Intentional per §2.1: no colour in the data means no colour to legitimately intensify.
+
+Raising ε instead was rejected: 1.8× requires ε above 0.95, at which point the guardrail can no longer
+detect any realistic fabrication. That is precisely the "tune around a finding" failure §3.7 forbids.
 
 ---
 
