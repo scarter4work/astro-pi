@@ -148,6 +148,7 @@ def crawl_gallery(
     listed = indexed = skipped = failed = 0
     page = 1
     total: int | None = None
+    seen_this_run: set[str] = set()
 
     while True:
         listing_doc = fetcher.get_text(search_url(cfg, criteria, page=page))
@@ -156,11 +157,25 @@ def crawl_gallery(
         items = parse_listing(listing_doc)
         if not items:
             break
-        listed += len(items)
+
+        # Progress guard. Without a parsed result total the only other exits are an
+        # empty listing and max_pages, so a gallery that echoes results for
+        # out-of-range pages would be crawled until the request budget trips. A page
+        # contributing no id unseen *this run* means no progress, so stop.
+        #
+        # Keyed on run-local ids, deliberately NOT on index membership: on a re-crawl
+        # every id is already indexed, and stopping on that would abort at page 1 and
+        # silently destroy resumability. It also dedupes ids that legitimately appear
+        # on two pages when something is published mid-crawl.
+        fresh = [item for item in items if item.id not in seen_this_run]
+        if not fresh:
+            break
+        seen_this_run.update(item.id for item in fresh)
+        listed += len(fresh)
 
         unparseable = 0
         considered = 0
-        for item in items:
+        for item in fresh:
             if not refresh and index.has(cfg.key, item.id):
                 skipped += 1
                 continue

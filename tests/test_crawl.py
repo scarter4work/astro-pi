@@ -14,7 +14,7 @@ from autocontrast.db.discover.crawl import (
     crawl_gallery,
     sync_gallery,
 )
-from autocontrast.db.discover.gallery import GALLERIES
+from autocontrast.db.discover.gallery import GALLERIES, parse_result_total
 from autocontrast.db.discover.index import GalleryIndex
 
 FIXTURES = Path(__file__).parent / "fixtures" / "gallery"
@@ -163,6 +163,51 @@ def test_sync_records_new_state_so_the_next_run_is_incremental(index):
     fetcher = FakeFetcher(hubble_routes(), default=load("hubble_detail_heic0211i.html"))
     sync_gallery(index, GALLERIES["esa_hubble"], fetcher, now_utc="2026-07-26T00:00:00Z")
     assert index.get_sync_state("esa_hubble") == "2026-07-26T00:00:00Z"
+
+
+def test_pagination_stops_when_a_page_repeats_instead_of_crawling_forever(index):
+    """Termination must not depend solely on parsing the result total.
+
+    If 'Showing 1 to 35 of 35' ever drifts, `parse_result_total` returns None and the
+    only remaining exits are an empty listing or `max_pages`. A gallery that echoes
+    results for out-of-range page numbers would then be requested until PoliteFetcher's
+    8000-request budget trips — over two hours of pointless load on a free public
+    archive. A page that contributes no ids unseen this run means no progress, so stop.
+    """
+    listing_without_total = load("hubble_listing_orion.html").replace(
+        "Showing 1 to 35 of 35", "Results"
+    )
+    fetcher = FakeFetcher({"archive/search": listing_without_total},
+                          default=load("hubble_detail_heic0211i.html"))
+
+    report = crawl_gallery(index, GALLERIES["esa_hubble"], fetcher,
+                           {"subject_name": "Orion Nebula"})
+
+    assert parse_result_total(listing_without_total) is None   # the drift is real
+    listing_requests = [u for u in fetcher.requested if "archive/search" in u]
+    assert listing_requests == [
+        "https://esahubble.org/images/archive/search/page/1/?subject_name=Orion+Nebula",
+        "https://esahubble.org/images/archive/search/page/2/?subject_name=Orion+Nebula",
+    ]
+    assert report.listed == 35        # page 2 repeated page 1; it is not counted twice
+    assert report.indexed == 35
+
+
+def test_repeated_ids_are_not_re_fetched_within_a_single_run(index):
+    """Djangoplicity can shift results between pages when something is published
+    mid-crawl, so the same id can legitimately appear twice. Each must cost one
+    detail request, not two."""
+    listing_without_total = load("hubble_listing_orion.html").replace(
+        "Showing 1 to 35 of 35", "Results"
+    )
+    fetcher = FakeFetcher({"archive/search": listing_without_total},
+                          default=load("hubble_detail_heic0211i.html"))
+
+    crawl_gallery(index, GALLERIES["esa_hubble"], fetcher,
+                  {"subject_name": "Orion Nebula"})
+
+    detail_requests = [u for u in fetcher.requested if "archive/search" not in u]
+    assert len(detail_requests) == len(set(detail_requests)) == 35
 
 
 def test_download_cap_is_a_quarter_gigabyte():
