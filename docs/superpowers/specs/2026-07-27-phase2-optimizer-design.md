@@ -192,6 +192,36 @@ gap**:
 
 Ranking is by gap magnitude and is fully reproducible for a given input and reference.
 
+**Scale-denominated actions are ranked PER BAND, not by the aggregate spectrum gap.**
+Clarified 2026-07-27 after the first implementation collapsed the spectrum to a single scalar. That
+collapse made every structural remedy tie, so an alphabetical tiebreak decided the order and
+`top_k=3` returned three `core_hdr` magnitudes on every iteration of every branch. Because `core_hdr`
+is not once-only it was re-proposed indefinitely, and `local_contrast` and `local_equalize` were
+never proposed at any band. Beam width 3 explored exactly one option, and the band structure of the
+§6.2 action menu went entirely unused.
+
+The fingerprint already carries what is needed: `EnergySpectrum` stores energy per angular scale.
+The band-limited, L2-normalized shapes of reference and target give a **per-band deficit**, and each
+scale-denominated action is ranked by the deficit at *its own* band. Measured on a target blurred at
+fine scales, the deficit localises correctly:
+
+| Band | Deficit (ref − target) |
+|---|---|
+| 1″ | **+0.465** — target is short here |
+| 2″ | −0.488 |
+| 4″ | −0.355 |
+| 8″ | −0.109 |
+
+Non-scale actions (`core_hdr`, `tonal_reshape`, `black_point`, `chroma`,
+`background_neutralize`) continue to rank on their component's aggregate gap.
+
+Two properties this must keep:
+- **Numeric, not lexicographic, ordering of bands.** The first implementation's tiebreak sorted on
+  the formatted action key, giving `16.000` < `2.000` < `32.000`. Any residual tiebreak must be
+  numerically sensible.
+- **No single kind may monopolise `top_k`.** A ranking that returns only one action kind for every
+  branch on every iteration defeats the beam. This is a testable property, not a stylistic wish.
+
 ### 3.6 Hybrid proxy validation
 
 Search runs on a ~1600px proxy — the resolution the fingerprint already reduces to, so the
