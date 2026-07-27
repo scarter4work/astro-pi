@@ -15,6 +15,8 @@ import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
 
+from autocontrast.fingerprint.palette import palette_chroma_compatible
+
 from .records import SOURCE_TYPES, ReferenceRecord
 from .skymath import separation_arcmin
 
@@ -118,7 +120,9 @@ class FingerprintStore:
             if sep > radius_arcmin + row["fov_radius_arcmin"]:
                 continue  # precise reject after the dec-band prefilter
             record = ReferenceRecord.from_dict(json.loads(row["record_json"]))
-            compatible = palette_class is None or record.palette_class == palette_class
+            compatible = palette_class is None or palette_chroma_compatible(
+                record.palette_class, palette_class
+            )
             matches.append(ConeMatch(record=record, separation_arcmin=sep,
                                      palette_compatible=compatible))
 

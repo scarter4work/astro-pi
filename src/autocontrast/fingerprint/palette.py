@@ -133,3 +133,40 @@ def palette_class_from_gallery_bands(bands: list[str]) -> str:
         if narrow == {"Ha", "OIII"}:
             return "HOO"
     return "unknown"
+
+
+# §2.3 chroma compatibility. Palette EQUALITY is too strict a gate: professional
+# broadband composites routinely blend a narrowband layer — heic0601a is B, V, H-alpha,
+# I, Z and is classified RGB — so an HaRGB acquisition would be denied chroma from its
+# closest possible reference. Compatibility is therefore a FAMILY relation.
+#
+#   broadband — true-ish colour built on R/G/B-like bands; a blended narrowband layer
+#               does not change the colour presentation
+#   sho       — the Hubble palette (SII->R, Ha->G, OIII->B): gold/teal
+#   hoo       — Ha/OIII bi-colour: red/teal
+#
+# SHO and HOO are deliberately in separate families: both are narrowband, but their
+# colour presentations are not interchangeable.
+#
+# 'L-only' and 'unknown' belong to NO family and are therefore never chroma-compatible,
+# not even with themselves: a monochrome image has no chroma to share, and 'unknown'
+# means undetermined — §2.1 forbids letting an unverified palette push channel ratios.
+_CHROMA_FAMILIES = {
+    "RGB": "broadband",
+    "LRGB": "broadband",
+    "HaRGB": "broadband",
+    "HaOIII-RGB": "broadband",
+    "SHO": "sho",
+    "HOO": "hoo",
+}
+
+
+def palette_chroma_compatible(a: str, b: str) -> bool:
+    """Whether two palette classes may share chroma guidance (§2.3).
+
+    Replaces bare equality at the two gate sites (``FingerprintStore.cone_search`` and
+    ``fingerprint_distance``). Reflexive only for chroma-bearing palettes, and symmetric
+    by construction.
+    """
+    family = _CHROMA_FAMILIES.get(a)
+    return family is not None and family == _CHROMA_FAMILIES.get(b)
