@@ -9,6 +9,8 @@ nothing about whether the output is beautiful. Only the live tests can say that
 
 from __future__ import annotations
 
+import math
+
 import numpy as np
 from scipy.ndimage import gaussian_filter
 
@@ -19,6 +21,20 @@ from ..actions import Action
 
 def _sigma_for_scale(scale_arcsec: float, pixel_scale_arcsec: float) -> float:
     return max(scale_arcsec / max(pixel_scale_arcsec, 1e-9) / 2.355, 0.5)
+
+
+def _max_supportable_layer(height: int, width: int) -> int:
+    """The highest starlet layer worth asking for from an image this size.
+
+    The a trous kernel at layer L is ``4*2**L + 1`` px wide (see starlet.py's
+    ``_dilate``); scipy's ``convolve1d`` is a direct, non-FFT convolution, so its
+    cost is linear in kernel width -- exponential in L. Past ``L ~ log2(min(H,W))``
+    the kernel already dwarfs the image, ``planes[L]`` decays to float noise (its
+    "detail" is indistinguishable from the mirror-padding boundary effect), and the
+    cost keeps doubling for no signal in return. Bounding L here turns a silent
+    exponential hang into an immediate, loud error.
+    """
+    return int(math.floor(math.log2(min(height, width))))
 
 
 class NumpyExecutor:
@@ -32,6 +48,14 @@ class NumpyExecutor:
 
         if action.kind == "local_contrast":
             layer = int(action.params.get("layer", 3))
+            max_layer = _max_supportable_layer(out.shape[0], out.shape[1])
+            if layer > max_layer:
+                raise ValueError(
+                    f"local_contrast layer {layer} exceeds what a "
+                    f"{out.shape[0]}x{out.shape[1]} image supports (max layer "
+                    f"{max_layer}); rejecting rather than hanging on an a trous "
+                    f"kernel far larger than the image"
+                )
             for c in range(out.shape[-1]):
                 planes, residual = starlet_transform(out[..., c], n_scales=layer + 1)
                 planes[layer] *= 1.0 + s
