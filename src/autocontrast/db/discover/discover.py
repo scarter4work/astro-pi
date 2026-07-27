@@ -13,10 +13,14 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
+from ..ingest import ingest_reference_auto
+from ..records import ReferenceRecord
 from ..skymath import cones_overlap, separation_arcmin
+from ..store import ConeMatch, FingerprintStore
 from ..wcs import BlindSolver, WcsResult, acquire_wcs
+from .crawl import MAX_IMAGE_BYTES, Fetcher
 from .gallery import GalleryEntry
-from .index import IndexMatch
+from .index import GalleryIndex, IndexMatch
 
 
 @dataclass
@@ -201,3 +205,188 @@ def verify_candidate(
     verified = "cross-checked against published position" if wcs.wcs_source == "avm" \
         else f"accepted via {wcs.wcs_source} (no independent cross-check)"
     return VerifyResult(True, f"{entry.id}: {verified}.", wcs, float(scale))
+
+
+@dataclass
+class CandidateReport:
+    """Why one candidate was accepted or rejected — §12's surfacing requirement."""
+
+    id: str
+    accepted: bool
+    reason: str
+
+
+@dataclass
+class DiscoveryOutcome:
+    ingested: bool
+    record: ReferenceRecord | None
+    considered: list[CandidateReport]
+    detail: str
+
+
+@dataclass
+class AcquisitionOutcome:
+    """``discovered`` is ``None`` when the store already held a match, so no discovery
+    was attempted."""
+
+    matches: list[ConeMatch]
+    discovered: DiscoveryOutcome | None
+    detail: str
+
+
+def _cached_image(fetcher: Fetcher, url: str, cache_dir: Path, entry_id: str) -> Path:
+    """Download ``url`` into ``cache_dir`` unless already present."""
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    suffix = Path(url).suffix or ".jpg"
+    path = cache_dir / f"{entry_id}{suffix}"
+    if not path.exists():
+        path.write_bytes(fetcher.get_bytes(url, max_bytes=MAX_IMAGE_BYTES))
+    return path
+
+
+def discover_reference(
+    store: FingerprintStore,
+    index: GalleryIndex,
+    *,
+    ra_deg: float,
+    dec_deg: float,
+    search_radius_arcmin: float,
+    palette_class: str,
+    fetcher: Fetcher,
+    cache_dir: str | Path,
+    blind_solver: BlindSolver | None = None,
+    wcs_acquirer: WcsAcquirer | None = None,
+    top_k: int = 1,
+    psf_fwhm_arcsec: float = 2.0,
+    n_scales: int = 7,
+    max_dim: int | None = 1600,
+) -> DiscoveryOutcome:
+    """Cone-search the index, then fetch, verify, and ingest the best candidate(s).
+
+    ``palette_class`` is the *user image's* palette, used only for §2.3 ranking. A
+    discovered record always stores the render's own derived palette.
+
+    ``top_k`` defaults to 1, matching §5.4: seed a position with one best professional
+    reference, and let consensus arrive as more accumulate.
+    """
+    cache = Path(cache_dir)
+    matches = index.cone_search(ra_deg, dec_deg, search_radius_arcmin)
+    if not matches:
+        return DiscoveryOutcome(
+            False, None, [],
+            f"No candidate in the gallery index covers ({ra_deg:.4f}, {dec_deg:.4f}) "
+            f"within {search_radius_arcmin:.1f}'. Sync the index, or add a curated "
+            "catalog entry.",
+        )
+
+    ranked = rank_candidates(
+        matches, query_radius_arcmin=search_radius_arcmin, user_palette_class=palette_class
+    )
+
+    reports: list[CandidateReport] = []
+    ingested: ReferenceRecord | None = None
+
+    for candidate in ranked:
+        entry = candidate.entry
+        if not entry.image_url:
+            reports.append(CandidateReport(entry.id, False, "no CDN image URL published"))
+            continue
+        try:
+            image_path = _cached_image(fetcher, entry.image_url, cache, entry.id)
+        except Exception as exc:  # network/size failure for THIS candidate only
+            reports.append(CandidateReport(entry.id, False, f"download failed: {exc}"))
+            continue
+
+        verdict = verify_candidate(
+            candidate, image_path,
+            query_ra_deg=ra_deg, query_dec_deg=dec_deg,
+            query_radius_arcmin=search_radius_arcmin,
+            blind_solver=blind_solver, wcs_acquirer=wcs_acquirer,
+        )
+        reports.append(CandidateReport(entry.id, verdict.accepted, verdict.reason))
+        if not verdict.accepted:
+            continue
+
+        outcome = ingest_reference_auto(
+            store, image_path,
+            psf_fwhm_arcsec=psf_fwhm_arcsec,
+            palette_class=entry.palette_class,
+            source_type="professional_render",
+            provenance={
+                "source_url": entry.detail_url,
+                "license": entry.license,
+                "attribution": entry.attribution,
+                "gallery": entry.gallery,
+                "discovered": True,
+            },
+            manual={
+                "ra_deg": entry.ra_deg,
+                "dec_deg": entry.dec_deg,
+                "fov_radius_arcmin": entry.fov_radius_arcmin,
+                "pixel_scale_arcsec": verdict.pixel_scale_arcsec,
+            },
+            pixel_scale_arcsec=verdict.pixel_scale_arcsec,
+            id=f"{entry.gallery}:{entry.id}",
+            n_scales=n_scales, max_dim=max_dim,
+        )
+        if not outcome.ingested:
+            reports[-1] = CandidateReport(entry.id, False, f"ingest declined: {outcome.detail}")
+            continue
+
+        ingested = outcome.record
+        if sum(1 for r in reports if r.accepted) >= top_k:
+            break
+
+    if ingested is None:
+        return DiscoveryOutcome(
+            False, None, reports,
+            f"{len(ranked)} candidate(s) considered, none usable: "
+            + "; ".join(f"{r.id} ({r.reason})" for r in reports),
+        )
+    return DiscoveryOutcome(
+        True, ingested, reports,
+        f"Ingested {ingested.id} from the {ingested.provenance['gallery']} gallery.",
+    )
+
+
+def acquire_reference(
+    store: FingerprintStore,
+    index: GalleryIndex,
+    *,
+    ra_deg: float,
+    dec_deg: float,
+    search_radius_arcmin: float,
+    palette_class: str,
+    fetcher: Fetcher,
+    cache_dir: str | Path,
+    blind_solver: BlindSolver | None = None,
+    wcs_acquirer: WcsAcquirer | None = None,
+    top_k: int = 1,
+    psf_fwhm_arcsec: float = 2.0,
+    n_scales: int = 7,
+    max_dim: int | None = 1600,
+) -> AcquisitionOutcome:
+    """The Phase 1 exit criterion in one call: look up, and on a miss discover.
+
+    Returns existing matches untouched when the store already covers the position — no
+    network, no discovery.
+    """
+    matches = store.cone_search(ra_deg, dec_deg, search_radius_arcmin, palette_class)
+    if matches:
+        return AcquisitionOutcome(
+            matches, None,
+            f"{len(matches)} reference(s) already stored for this position.",
+        )
+
+    discovered = discover_reference(
+        store, index, ra_deg=ra_deg, dec_deg=dec_deg,
+        search_radius_arcmin=search_radius_arcmin, palette_class=palette_class,
+        fetcher=fetcher, cache_dir=cache_dir, blind_solver=blind_solver,
+        wcs_acquirer=wcs_acquirer, top_k=top_k, psf_fwhm_arcsec=psf_fwhm_arcsec,
+        n_scales=n_scales, max_dim=max_dim,
+    )
+    return AcquisitionOutcome(
+        store.cone_search(ra_deg, dec_deg, search_radius_arcmin, palette_class),
+        discovered,
+        discovered.detail,
+    )
