@@ -71,21 +71,75 @@ def load_fits(path: str | Path) -> LoadedImage:
 
 _FITS_SUFFIXES = {".fits", ".fit", ".fts"}
 
+# TIFF is decoded by `tifffile`, NOT by Pillow, and the reason is measured:
+# Pillow opens a 48-bit RGB TIFF without complaint and hands back uint8. A
+# source pixel of (65535, 40000, 257) comes back as (255, 156, 1) — the low
+# byte is gone and nothing says so. That is the one failure mode §12 forbids
+# outright, and it is exactly what the optimizer's candidate round trip would
+# have hit: `.tif` is already in `supported_suffixes()` (Pillow registers it),
+# so it passes `optimize_begin`'s validation and then silently quantizes every
+# candidate to 8 bits. Production must not optimize against an approximation
+# (§2.2), and an 8-bit intermediate is one.
+_TIFF_SUFFIXES = {".tif", ".tiff"}
+
 
 def supported_suffixes() -> frozenset[str]:
     """Every file suffix :func:`load_image` can actually read back.
 
-    ``load_image`` dispatches on suffix: FITS goes through astropy, everything
-    else through Pillow's ``Image.open``. The FITS half is ``_FITS_SUFFIXES``,
-    the one place that dispatch condition lives; the raster half is read off
-    Pillow's own registered plugins rather than hand-copied, so this can never
-    drift from what Pillow can actually open. Callers that hand a path to
-    something outside this set (a PixInsight-native ``.xisf``, say) need to
-    fail immediately and loudly, not discover it as a read error deep inside a
-    run (§12).
+    ``load_image`` dispatches on suffix: FITS goes through astropy, TIFF through
+    ``tifffile``, everything else through Pillow's ``Image.open``. Each of those
+    three dispatch conditions contributes its own suffixes here, and each is the
+    single place that condition lives — the Pillow half is read off its own
+    registered plugins rather than hand-copied, so this can never drift from what
+    Pillow can actually open. Callers that hand a path to something outside this
+    set (a PixInsight-native ``.xisf``, say) need to fail immediately and loudly,
+    not discover it as a read error deep inside a run (§12).
     """
     Image.init()  # populate Image.registered_extensions(); idempotent
-    return frozenset(_FITS_SUFFIXES) | frozenset(Image.registered_extensions())
+    return (frozenset(_FITS_SUFFIXES) | frozenset(_TIFF_SUFFIXES)
+            | frozenset(Image.registered_extensions()))
+
+
+def _resize_native(arr: np.ndarray, max_dim: int | None) -> np.ndarray:
+    """Downsize ``arr``'s longest side to ``max_dim`` WITHOUT quantizing it.
+
+    The Pillow path resizes the decoded image object, which for 8-bit data is
+    lossless in the sense that matters. Here the array may be uint16 or float32
+    and Pillow has no RGB mode that holds either, so each channel is resized on
+    its own as a 32-bit float image ("F" mode) and restacked. Same resampling
+    kernel as the Pillow path (``Image.resize`` defaults to bicubic), so the two
+    paths do not disagree about what "downsized to 1600" means.
+    """
+    height, width = arr.shape[:2]
+    if max_dim is None or max(width, height) <= max_dim:
+        return arr
+    scale = max_dim / max(width, height)
+    new_size = (max(1, round(width * scale)), max(1, round(height * scale)))
+    planes = arr if arr.ndim == 3 else arr[..., None]
+    resized = [
+        np.asarray(Image.fromarray(planes[..., c].astype(np.float32), mode="F")
+                   .resize(new_size))
+        for c in range(planes.shape[-1])
+    ]
+    stacked = np.stack(resized, axis=-1)
+    return stacked if arr.ndim == 3 else stacked[..., 0]
+
+
+def _decode_tiff(path: Path, max_dim: int | None) -> np.ndarray:
+    """Decode a TIFF at its NATIVE bit depth (see ``_TIFF_SUFFIXES``)."""
+    import tifffile
+
+    arr = np.asarray(tifffile.imread(path))
+    if arr.ndim > 3:
+        # A multi-page or multi-sample TIFF: the optimizer's candidates are
+        # single-page RGB, so anything else means we are reading a file we did
+        # not write and cannot interpret. Refusing beats fingerprinting page 0
+        # of something and calling it the candidate (§12).
+        raise ValueError(
+            f"{path.name}: expected a single 2-D or 3-D TIFF page, got shape "
+            f"{arr.shape}; the sidecar has no rule for choosing among planes"
+        )
+    return _resize_native(arr, max_dim)
 
 
 def image_dimensions(path: str | Path) -> tuple[int, int]:
@@ -100,6 +154,15 @@ def image_dimensions(path: str | Path) -> tuple[int, int]:
         with fits.open(path) as hdul:
             header = hdul[0].header
             return int(header["NAXIS1"]), int(header["NAXIS2"])
+    if path.suffix.lower() in _TIFF_SUFFIXES:
+        # Read through the same decoder `load_raster` uses, so the factor this
+        # feeds `downsample_factor` is measured against the file the loader will
+        # actually open. Only the page header is touched; no pixels are decoded.
+        import tifffile
+
+        with tifffile.TiffFile(path) as tif:
+            page = tif.pages[0]
+            return int(page.imagewidth), int(page.imagelength)
     Image.MAX_IMAGE_PIXELS = None  # professional mosaics exceed the default guard
     with Image.open(path) as im:
         return im.size  # (width, height)
@@ -169,14 +232,24 @@ def load_raster(path: str | Path, max_dim: int | None = None) -> np.ndarray:
     across the whole set, or the energy spectrum (§4.2) confuses pixel count with
     presentation depth — a 18000px mosaic carries octaves of fine structure a
     1600px render simply cannot.
+
+    TIFF is decoded by ``tifffile`` rather than Pillow so 16-bit data survives
+    (see ``_TIFF_SUFFIXES``); everything downstream of the decode — channel
+    promotion, alpha, normalization, clipping — is shared, deliberately, so the
+    two decoders cannot come to disagree about what a loaded image is.
     """
-    Image.MAX_IMAGE_PIXELS = None  # professional mosaics exceed Pillow's default guard
-    with Image.open(path) as im:
-        if max_dim is not None and max(im.size) > max_dim:
-            scale = max_dim / max(im.size)
-            new_size = (max(1, round(im.size[0] * scale)), max(1, round(im.size[1] * scale)))
-            im = im.resize(new_size)
-        arr = np.asarray(im)
+    path = Path(path)
+    if path.suffix.lower() in _TIFF_SUFFIXES:
+        arr = _decode_tiff(path, max_dim)
+    else:
+        Image.MAX_IMAGE_PIXELS = None  # professional mosaics exceed Pillow's default guard
+        with Image.open(path) as im:
+            if max_dim is not None and max(im.size) > max_dim:
+                scale = max_dim / max(im.size)
+                new_size = (max(1, round(im.size[0] * scale)),
+                            max(1, round(im.size[1] * scale)))
+                im = im.resize(new_size)
+            arr = np.asarray(im)
 
     if arr.ndim == 2:
         arr = np.stack([arr] * 3, axis=-1)

@@ -81,6 +81,103 @@ def test_sixteen_bit_is_normalized_by_full_range(tmp_path):
     assert img.max() <= 1.0
 
 
+# ---- 16-bit TIFF: the optimizer's candidate format (§2.2) -----------------
+#
+# PixInsight writes each candidate to disk and the sidecar reads it back to
+# score it. If that round trip quantizes, the whole production search runs
+# against an approximation. These tests are the proof that it does not — and
+# the second one is the proof that the FIRST one is actually testing something,
+# because Pillow reads the very same file without raising and hands back 8 bits.
+
+
+def _write_16bit_rgb_tiff(path, arr):
+    import tifffile
+
+    tifffile.imwrite(path, arr)
+
+
+def test_sixteen_bit_rgb_tiff_round_trips_without_losing_the_low_byte(tmp_path):
+    path = tmp_path / "cand.tif"
+    arr = np.zeros((4, 6, 3), dtype=np.uint16)
+    # Values chosen so 8-bit truncation is unmistakable: 40000 >> 8 == 156, and
+    # 257 >> 8 == 1, so a truncating reader lands nowhere near these ratios.
+    arr[1, 1] = (65535, 40000, 257)
+    _write_16bit_rgb_tiff(path, arr)
+
+    img = load_raster(path)
+
+    assert img.shape == (4, 6, 3)
+    np.testing.assert_allclose(img[1, 1], [65535 / 65535, 40000 / 65535, 257 / 65535],
+                               rtol=0, atol=1e-12)
+    # 16 bits of resolution actually present: the smallest step is 1/65535, and
+    # an 8-bit intermediate could not represent 257/65535 at all.
+    assert img[1, 1, 2] * 65535 == pytest.approx(257.0)
+
+
+def test_pillow_would_have_truncated_that_file(tmp_path):
+    """Guards the test above against becoming vacuous.
+
+    If Pillow ever grew real 48-bit RGB support this would fail, and the
+    dedicated `tifffile` decode could be reconsidered. Until then this records
+    WHY `_TIFF_SUFFIXES` bypasses Pillow: not that Pillow refuses the file, but
+    that it accepts it and quietly drops the low byte.
+    """
+    path = tmp_path / "cand.tif"
+    arr = np.zeros((4, 6, 3), dtype=np.uint16)
+    arr[1, 1] = (65535, 40000, 257)
+    _write_16bit_rgb_tiff(path, arr)
+
+    with Image.open(path) as im:
+        pillow_arr = np.asarray(im)
+
+    assert pillow_arr.dtype == np.uint8
+    np.testing.assert_array_equal(pillow_arr[1, 1], [255, 156, 1])
+
+
+def test_load_image_reads_a_sixteen_bit_tiff_at_full_depth(tmp_path):
+    """`load_image` is what the optimizer session actually calls."""
+    path = tmp_path / "cand.tiff"
+    arr = np.full((4, 4, 3), 513, dtype=np.uint16)  # 513 >> 8 == 2
+    _write_16bit_rgb_tiff(path, arr)
+
+    img = load_image(path)
+
+    assert img[0, 0, 0] * 65535 == pytest.approx(513.0)
+
+
+def test_sixteen_bit_tiff_survives_max_dim_downsizing(tmp_path):
+    """The optimizer reads every candidate at `max_dim`, so the resize is on the
+    round trip too — and Pillow has no RGB mode that holds uint16 to resize in."""
+    path = tmp_path / "big.tif"
+    arr = np.full((100, 200, 3), 40000, dtype=np.uint16)
+    _write_16bit_rgb_tiff(path, arr)
+
+    img = load_raster(path, max_dim=50)
+
+    assert img.shape == (25, 50, 3)  # aspect preserved
+    # A flat field must resample to itself; 40000/65535 is not representable at
+    # 8 bits (it would land on 156/255 = 0.6118).
+    np.testing.assert_allclose(img, 40000 / 65535, rtol=0, atol=1e-6)
+
+
+def test_supported_suffixes_includes_tiff(tmp_path):
+    """`optimize_begin` validates `candidate_suffix` against this set."""
+    from autocontrast.io.loaders import supported_suffixes
+
+    assert {".tif", ".tiff"} <= supported_suffixes()
+
+
+def test_tiff_image_dimensions_are_native(tmp_path):
+    """`downsample_factor` divides by these, so they must be the file's own."""
+    from autocontrast.io.loaders import downsample_factor, image_dimensions
+
+    path = tmp_path / "dims.tif"
+    _write_16bit_rgb_tiff(path, np.zeros((100, 200, 3), dtype=np.uint16))
+
+    assert image_dimensions(path) == (200, 100)
+    assert downsample_factor(path, load_raster(path, max_dim=50)) == pytest.approx(4.0)
+
+
 # ---- load_image dispatcher: FITS must go through astropy, not Pillow ------
 
 

@@ -17,7 +17,9 @@ dependencies = [
     "numpy>=1.26",
     "astropy>=6.0",   # FITS I/O + WCS
     "scipy>=1.13",    # wasserstein_distance_nd (chroma EMD), signal filters
-    "pillow>=10.0",   # PNG/JPEG/TIFF renders (references ship as raster, not FITS)
+    "pillow>=10.0",   # PNG/JPEG renders (references ship as raster, not FITS)
+    "tifffile>=2023.7",  # 16-bit TIFF — Pillow SILENTLY truncates 48-bit RGB to 8 bits,
+                         # which would quantize every optimizer candidate (§2.2)
     "pyavm>=0.9",     # embedded AVM tags — tier 2 of WCS acquisition (§5.2)
 ]
 
