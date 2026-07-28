@@ -222,6 +222,34 @@ Two properties this must keep:
 - **No single kind may monopolise `top_k`.** A ranking that returns only one action kind for every
   branch on every iteration defeats the beam. This is a testable property, not a stylistic wish.
 
+**Magnitude is chosen by gap size, one level per (kind, band) group.**
+Added 2026-07-27, after fixing the kind-monopoly exposed a second monopoly of the same shape. The
+first fix grouped actions and filled `top_k` round-robin, gentlest level first. But `LEVELS` has
+exactly three entries and `top_k` defaults to 3, and there are always more groups than slots, so a
+second pass never happens: `moderate` and `strong` became structurally unreachable at every `top_k`
+the beam uses (measured gentle-only at `top_k` 3, 6 and 9). That left §6.2's magnitude axis as
+decorative as the band axis had been.
+
+Therefore each (kind, band) group contributes **one** action, whose magnitude is selected from the
+size of that group's gap:
+
+| Gap | Level |
+|---|---|
+| large | `strong` |
+| medium | `moderate` |
+| small | `gentle` |
+
+A large deficit warrants a large step; that is what the magnitude axis is for. Kind diversity in
+`top_k` is preserved because each group still contributes exactly one entry.
+
+The bucket boundaries are tunables and fall under §3.7's calibration discipline — in particular they
+must not be adjusted to rescue a single exit-criterion test without re-running all of them.
+
+Rejected alternatives: keeping gentle-only and relying on compounding across iterations (risks
+hitting the iteration cap before converging, which would fail §10's "measurably improves" half); and
+raising `top_k` until round-robin wraps (needs `top_k` around 15-20, multiplying per-iteration cost
+by ~5 and blowing the runtime budget, while still choosing the level arbitrarily).
+
 ### 3.6 Hybrid proxy validation
 
 Search runs on a ~1600px proxy — the resolution the fingerprint already reduces to, so the
