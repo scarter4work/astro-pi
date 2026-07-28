@@ -39,6 +39,30 @@ def _measure(rgb, session: Session) -> FingerprintData:
     )
 
 
+def _branch_fingerprint(branch: Branch, session: Session, *, load) -> FingerprintData:
+    """A branch's own fingerprint, measured only if it isn't already known.
+
+    Both entry points need this and neither should pay for it twice. Every
+    branch in the beam got there by being scored as a candidate, and scoring
+    means fingerprinting -- so `ingest_candidate` already holds the answer and
+    now hands it to the `Branch` it builds. The root branch likewise carries the
+    baseline measurement `begin` took.
+
+    A `None` fingerprint is a cache miss, not a degraded measurement: it happens
+    only on a session file written before `Branch` carried the field, and
+    measuring produces the identical value because `extract` is a deterministic
+    function of the pixels at `image_path`. Nothing about the result differs, so
+    there is nothing for §12 to surface -- only the cost differs, and the loop
+    goes on to pay it.
+
+    ``load`` is called ONLY on that miss. That is the point: on the hot path the
+    branch's image is never read.
+    """
+    if branch.fingerprint is not None:
+        return branch.fingerprint
+    return _measure(load(branch.image_path), session)
+
+
 class _Stub:
     """Carries just the measurement metadata `_measure` needs before a Session exists."""
 
@@ -62,7 +86,8 @@ def begin(
                                         palette_class, n_scales))
     baseline = fingerprint_distance(reference_fp, baseline_fp)
 
-    root = Branch(recipe=Recipe.empty(), image_path=proxy_path, distance=baseline)
+    root = Branch(recipe=Recipe.empty(), image_path=proxy_path, distance=baseline,
+                  fingerprint=baseline_fp)
     return Session(
         session_id=session_id, work_dir=work_dir, source_path=source_path,
         proxy_path=proxy_path, reference_id=reference_id,
@@ -251,9 +276,14 @@ def ingest_candidate(
 
     if save is not None:
         save(candidate_path, produced)
-    distance = fingerprint_distance(reference_fp, _measure(produced, session))
+    # Kept on the Branch, not discarded. Scoring already had to fingerprint
+    # these exact pixels; if this candidate survives into the beam, the next
+    # iteration needs that same fingerprint to build its ranked menu, and used
+    # to re-extract it from a re-read file.
+    fingerprint = _measure(produced, session)
+    distance = fingerprint_distance(reference_fp, fingerprint)
     return Branch(recipe=parent_recipe.extend(action), image_path=candidate_path,
-                  distance=distance)
+                  distance=distance, fingerprint=fingerprint)
 
 
 def _close_iteration(session: Session, candidates: list[Branch]) -> Session:
@@ -300,9 +330,10 @@ def advance(session: Session, executor: Executor, *, load, save,
     plainly have fixed.
 
     Nor is it "retry until top_k survive, however long that takes": at the 1600px
-    proxy that is ~150 candidates and ~10 minutes per iteration, and a cost that
-    varies with how often guardrails happen to trip is a cost nobody can budget
-    for. When the cap binds the branch simply contributes fewer than ``top_k``
+    proxy that is up to 66 attempts and ~86s per iteration against ~38s for the
+    bounded retry (§3.3, re-measured 2026-07-28), and a cost that varies with how
+    often guardrails happen to trip is a cost nobody can budget for. When the cap
+    binds the branch simply contributes fewer than ``top_k``
     candidates -- legitimate, since the beam already tolerates shrinking and an
     empty beam is itself a convergence condition -- and the event is LOGGED. A
     branch that spent every attempt without filling its slots means the
@@ -327,7 +358,7 @@ def advance(session: Session, executor: Executor, *, load, save,
     for branch in session.branches:
         parent = load(branch.image_path)
         actions = _ranked_menu(
-            reference_fp, _measure(parent, session),
+            reference_fp, _branch_fingerprint(branch, session, load=load),
             applied_kinds=branch.recipe.applied_kinds, n_scales=session.n_scales,
         )
 
@@ -475,12 +506,19 @@ def _plan_batch(session: Session, *, load) -> list[dict]:
 
     Each branch issues ``min(top_k - kept, max_attempts - attempts)`` actions --
     exactly what ``advance`` would issue before it next needed to know whether
-    anything survived. The ranked menu is recomputed rather than persisted: it
-    is deterministic given (parent pixels, reference fingerprint,
-    ``applied_kinds``), so only the branch's POSITION in it has to survive the
-    round trip. Storing the menu instead would put a second copy of
-    ``propose.py``'s output on disk, free to go stale the moment the proposer
-    changed.
+    anything survived. The ranked menu is recomputed rather than persisted:
+    ``propose_actions`` is deterministic given (parent fingerprint, reference
+    fingerprint, ``applied_kinds``), so what has to survive the round trip is
+    those inputs and the branch's POSITION in the result -- never the menu
+    itself, which would put a second copy of ``propose.py``'s output on disk,
+    free to go stale the moment the proposer changed.
+
+    The parent fingerprint is one of those inputs, and it is now carried on the
+    ``Branch`` (see ``beam.Branch.fingerprint``) rather than re-extracted from
+    the parent image on every batch. That matters most HERE: an iteration whose
+    guardrails trip needs supplementary batches, each planned by a fresh sidecar
+    process, and each one used to re-read and re-fingerprint the same unchanged
+    parent.
     """
     reference_fp = FingerprintData.from_dict(session.reference_fp)
     iteration = session.iteration + 1
@@ -493,7 +531,7 @@ def _plan_batch(session: Session, *, load) -> list[dict]:
             continue
 
         actions = _ranked_menu(
-            reference_fp, _measure(load(branch.image_path), session),
+            reference_fp, _branch_fingerprint(branch, session, load=load),
             applied_kinds=branch.recipe.applied_kinds, n_scales=session.n_scales,
         )
         # `kept` cannot advance during planning -- nothing has been produced yet
