@@ -6,7 +6,10 @@ from scipy.ndimage import gaussian_filter
 
 from autocontrast.fingerprint.extract import extract
 from autocontrast.optimize.actions import ONCE_ONLY
-from autocontrast.optimize.propose import _band_deficits, component_gaps, propose_actions
+from autocontrast.optimize.propose import (
+    GAP_GENTLE_MAX, GAP_MODERATE_MAX, _band_deficits, _level_for_gap,
+    component_gaps, propose_actions,
+)
 
 
 def _fp(rgb, palette="HOO", psf=2.0, scale=1.0):
@@ -216,3 +219,74 @@ def test_magnitude_follows_gap_size():
     levels_seen = {a.level for a in leveled}
     print(f"distinct levels among leveled actions: {levels_seen}")
     assert len(levels_seen) > 1
+
+
+def test_level_for_gap_covers_all_three_buckets_at_their_boundaries():
+    # The mapping is the whole point of the magnitude axis, so pin its buckets
+    # directly rather than only through propose_actions. Boundaries are
+    # inclusive-below ("gap >= X" promotes), so test exactly at each one: an
+    # off-by-one in the comparison would silently shift a third of real gaps
+    # into the neighbouring level.
+    assert _level_for_gap(GAP_MODERATE_MAX) == "strong"
+    assert _level_for_gap(GAP_MODERATE_MAX - 1e-9) == "moderate"
+    assert _level_for_gap(GAP_GENTLE_MAX) == "moderate"
+    assert _level_for_gap(GAP_GENTLE_MAX - 1e-9) == "gentle"
+    assert _level_for_gap(0.0) == "gentle"
+    # A band the target already matches or exceeds yields a non-positive
+    # deficit; it must fall through to the gentlest step, never crash or
+    # promote.
+    assert _level_for_gap(-0.5) == "gentle"
+
+
+def test_all_three_magnitudes_are_reachable_in_one_slate():
+    # test_magnitude_follows_gap_size above pins the two ENDS (strong/gentle).
+    # That pair would still pass against an implementation whose middle bucket
+    # is unreachable -- which is precisely the class of bug this whole fix
+    # exists to close (moderate/strong were structurally dead before it). So
+    # assert the MIDDLE bucket lands too, from a group whose measured gap sits
+    # inside it.
+    ref, target = _fp(_textured()), _fp(_flat())
+    deficits = _band_deficits(ref, target)
+    centers = list(target.energy.centers_arcsec)
+    gaps = component_gaps(ref, target)
+    print(f"per-band deficits: {deficits}")
+
+    # Confirm the fixture really straddles all three buckets before relying on
+    # it, rather than assuming: 2" is large, 8" is mid-range, tonal is small.
+    d2 = deficits[centers.index(2.0)]
+    d8 = deficits[centers.index(8.0)]
+    assert d2 >= GAP_MODERATE_MAX, f"2\" deficit {d2} should be in the strong bucket"
+    assert GAP_GENTLE_MAX <= d8 < GAP_MODERATE_MAX, \
+        f"8\" deficit {d8} should be in the moderate bucket"
+    assert gaps["tonal"] < GAP_GENTLE_MAX, \
+        f"tonal gap {gaps['tonal']} should be in the gentle bucket"
+
+    proposed = propose_actions(ref, target, applied_kinds=frozenset(),
+                               n_scales=7, top_k=12)
+    by_key = {a.key: a for a in proposed}
+    print(f"top-12: {list(by_key)}")
+
+    assert by_key["local_contrast@2.000/strong"].level == "strong"
+    assert by_key["local_contrast@8.000/moderate"].level == "moderate"
+    assert by_key["tonal_reshape@-/gentle"].level == "gentle"
+
+    leveled = {a.level for a in proposed if a.level != ""}
+    print(f"distinct levels among leveled actions: {leveled}")
+    assert leveled == {"gentle", "moderate", "strong"}
+
+
+def test_mode_change_actions_are_never_given_a_magnitude():
+    # background_neutralize/star_split change mode, not degree: they carry
+    # level "" and must pass through the gap-to-level mapping untouched.
+    # Action.strength returns 1.0 for "" but RAISES ValueError for any other
+    # unrecognized level, so a mode-change action that got handed a magnitude
+    # -- or an empty level that stopped being legitimate -- surfaces here.
+    ref, target = _fp(_textured()), _fp(_flat())
+    proposed = propose_actions(ref, target, applied_kinds=frozenset(),
+                               n_scales=7, top_k=1000)
+    mode_changes = [a for a in proposed if a.kind in ONCE_ONLY]
+    print(f"mode-change proposals: {[a.key for a in mode_changes]}")
+    assert mode_changes, "expected background_neutralize/star_split to be reachable"
+    for a in mode_changes:
+        assert a.level == "", f"{a.kind} was given magnitude {a.level!r}"
+        assert a.strength == 1.0
