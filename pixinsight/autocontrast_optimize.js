@@ -258,6 +258,17 @@ function buildProxy(sourcePath, nativePixelScaleArcsec) {
    var targetW = Math.max(1, Math.round(nativeW * factor));
    var targetH = Math.max(1, Math.round(nativeH * factor));
 
+   /* Promote BEFORE the resample, not after. Measured: an 8-bit master
+    * resampled in an 8-bit buffer rounds every output pixel to 8 bits, and
+    * promoting afterwards only multiplies by 257 — the first `proxy.tif` this
+    * script wrote carried 250 distinct values, all exact multiples of 257. A
+    * 3.3x bicubic downsize averages ~11 source pixels, so the precision that
+    * rounding threw away was real information, and the proxy is both the
+    * baseline D and the root parent of every branch. Production must not
+    * optimize against an approximation (§2.2), and the array everything
+    * descends from is the one place that matters most. */
+   w.setSampleFormat(CANDIDATE_BITS, false);
+
    if (factor < 1.0) {
       var R = new Resample;
       R.xSize = targetW;
@@ -276,7 +287,6 @@ function buildProxy(sourcePath, nativePixelScaleArcsec) {
       }
    }
 
-   w.setSampleFormat(CANDIDATE_BITS, false);
    var proxyPath = WORK + "/proxy" + CANDIDATE_SUFFIX;
    var saved = w.saveAs(proxyPath, false, false, false, false);
    var actualW = w.mainView.image.width;
@@ -402,9 +412,19 @@ function buildHistogramTransformation(params, view) {
    /* black_point: raise the black point, CLIP-LIMITED (§6.2's `clip_limited`).
     * The limit is the image's own 1st percentile, measured here rather than
     * assumed, and the move is a FRACTION of it (strength <= 0.85 < 1), so the
-    * black point provably never reaches the 1st percentile and no more than 1%
-    * of pixels can be clipped by construction. §7's shadow-clipping guardrail
-    * is the independent check; this is the action refusing to need it. */
+    * black point never reaches that percentile.
+    *
+    * That bounds the black point. It does NOT bound the clipped fraction to 1%,
+    * and an earlier version of this comment wrongly claimed it did. Measured on
+    * the test print: every `black_point@-/strong` was discarded by §7's
+    * shadow-clipping guardrail at 2.44%, 2.54%, 3.97% and 2.81% — two to four
+    * times that supposed bound. The percentile is taken once over the whole
+    * image while the transform is applied per channel, so a pixel needs only
+    * ONE channel under the new black point to count as clipped, and three
+    * channels' worth of sub-threshold pixels can land in the tally. §7's
+    * guardrail is the real bound on what gets clipped; this action only bounds
+    * how far the black point moves. Do not build on a stronger claim than that.
+    */
    if (params.clip_limited !== true)
       throw new Error("black_point instruction is not clip-limited; refusing to " +
                       "raise a black point with no bound on what it clips");

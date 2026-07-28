@@ -160,6 +160,37 @@ def test_sixteen_bit_tiff_survives_max_dim_downsizing(tmp_path):
     np.testing.assert_allclose(img, 40000 / 65535, rtol=0, atol=1e-6)
 
 
+def test_a_dark_sixteen_bit_tiff_is_not_rescaled_as_if_it_were_eight_bit(tmp_path):
+    """The bit depth comes from the DECODER, never from the pixel values.
+
+    A candidate whose brightest pixel is 200 is a legitimate 16-bit image of a
+    dark field. Inferring the range from the data sees `max <= 255`, divides by
+    255, and returns 0.784 for a pixel whose true value is 0.00305 — 257x too
+    bright, with nothing logged and nothing raised (§12). Rare on astro data,
+    where the max is normally near full scale, but silent when it happens, and
+    16-bit TIFF is now the format every candidate round-trips through.
+    """
+    path = tmp_path / "dark.tif"
+    _write_16bit_rgb_tiff(path, np.full((4, 4, 3), 200, dtype=np.uint16))
+
+    img = load_raster(path)
+
+    np.testing.assert_allclose(img, 200 / 65535, rtol=0, atol=1e-12)
+    assert img.max() < 0.01  # not 0.784: the file is dark and must load dark
+
+
+def test_a_dark_sixteen_bit_tiff_survives_the_downsizing_path_too(tmp_path):
+    """`_resize_native` returns float32, so the dtype is gone by the time the
+    normalization runs — the full-scale value has to be carried, not re-derived."""
+    path = tmp_path / "dark-big.tif"
+    _write_16bit_rgb_tiff(path, np.full((100, 200, 3), 200, dtype=np.uint16))
+
+    img = load_raster(path, max_dim=50)
+
+    assert img.shape == (25, 50, 3)
+    np.testing.assert_allclose(img, 200 / 65535, rtol=0, atol=1e-6)
+
+
 def test_supported_suffixes_includes_tiff(tmp_path):
     """`optimize_begin` validates `candidate_suffix` against this set."""
     from autocontrast.io.loaders import supported_suffixes
