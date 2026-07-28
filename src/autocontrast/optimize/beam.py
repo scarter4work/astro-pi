@@ -21,6 +21,32 @@ class BeamConfig:
     epsilon: float = 1e-3
     epsilon_improve: float = 1e-3
 
+    # How many actions a branch may ATTEMPT while reaching for ``top_k`` live
+    # candidates (§3.3, added 2026-07-27 on measurement). `top_k` counts
+    # candidates that SURVIVED, not candidates tried: a guardrail trip discards
+    # the candidate and must not also cost the branch a slot, or the loop
+    # searches least thoroughly exactly where the image is most fragile, and the
+    # §7 filter becomes a score effect wearing a different hat. Measured on a
+    # real degraded render, 4 of 10 proposed actions tripped a guardrail, so
+    # trips are the common case.
+    #
+    # But the retry has to be bounded. At the 1600px search proxy the menu holds
+    # 50 actions at ~2.5s each (fingerprint extraction 1.5s dominates; the image
+    # operation itself is 0.2s), so retrying until top_k survive costs ~150
+    # candidates/iteration and ~127 min over 20 iterations against a 15-minute
+    # budget -- and an unpredictable cost makes a budget meaningless. At 3x it is
+    # <=27 candidates/iteration, ~23 min worst case, and the cap binds only when
+    # trips are frequent.
+    #
+    # ``None`` means "derive 3 x top_k", so the relationship survives a change to
+    # top_k instead of silently decoupling from it. A tunable under §3.7's
+    # calibration discipline. Always an int after construction.
+    max_attempts: int | None = None
+
+    def __post_init__(self) -> None:
+        if self.max_attempts is None:
+            object.__setattr__(self, "max_attempts", 3 * self.top_k)
+
 
 @dataclass(frozen=True)
 class Branch:
