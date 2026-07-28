@@ -12,6 +12,8 @@ import json
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
+from autocontrast.fingerprint.extract import FingerprintData
+
 from .beam import BeamConfig, Branch
 from .recipe import Recipe
 
@@ -21,13 +23,27 @@ def session_path(work_dir: str | Path, session_id: str) -> Path:
 
 
 def _branch_to_dict(b: Branch) -> dict:
+    # `fingerprint` is the measurement `loop` would otherwise redo on this
+    # branch's image every batch. It widens the record by roughly 300 numbers
+    # per branch -- the same §4.1 stats block `reference_fp` already stores
+    # whole -- which buys back a full extraction per branch per batch. The
+    # sidecar is spawned fresh per call, so there is nowhere else for it to
+    # live: an in-memory cache would be discarded before the next process could
+    # use it.
     return {"recipe": b.recipe.to_dict(), "image_path": b.image_path,
-            "distance": b.distance, "alive": b.alive}
+            "distance": b.distance, "alive": b.alive,
+            "fingerprint": None if b.fingerprint is None else b.fingerprint.to_dict()}
 
 
 def _branch_from_dict(d: dict) -> Branch:
+    # Absent on sessions written before the field existed; `None` means "not
+    # measured yet", and the loop measures. `.get` rather than `[...]` so an old
+    # session file still resumes instead of failing to load.
+    fingerprint = d.get("fingerprint")
     return Branch(recipe=Recipe.from_dict(d["recipe"]), image_path=d["image_path"],
-                  distance=d["distance"], alive=d["alive"])
+                  distance=d["distance"], alive=d["alive"],
+                  fingerprint=None if fingerprint is None
+                  else FingerprintData.from_dict(fingerprint))
 
 
 @dataclass
@@ -65,9 +81,10 @@ class Session:
     pending: list[dict] = field(default_factory=list)
 
     # Parallel to `branches`: {branch_key, cursor, kept, attempts}. The ranked
-    # menu itself is NOT stored -- it is deterministic given (parent pixels,
-    # reference fingerprint, applied_kinds) and is recomputed per batch, so only
-    # the branch's POSITION in it has to survive.
+    # menu itself is NOT stored -- it is deterministic given (parent
+    # fingerprint, reference fingerprint, applied_kinds) and is recomputed per
+    # batch, so what has to survive is those inputs and the branch's POSITION in
+    # the result. The parent fingerprint survives on the `Branch` itself.
     cursors: list[dict] = field(default_factory=list)
 
     # Candidates scored so far in the OPEN iteration. They accumulate across

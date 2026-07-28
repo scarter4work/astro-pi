@@ -57,6 +57,24 @@ def floor_to_peak_ratio(luminance: np.ndarray) -> float:
     return float(floor / peak)
 
 
+def structure_to_gradient_ratio_from_transform(
+    planes: np.ndarray, residual: np.ndarray
+) -> float:
+    """The ratio from an ALREADY-COMPUTED starlet decomposition.
+
+    Split out from :func:`structure_to_gradient_ratio` for the same reason as
+    :func:`~.energy.energy_spectrum_from_planes`: ``extract`` needs this
+    decomposition and the energy spectrum's, and they are the same one. The
+    arithmetic below is byte-for-byte what :func:`structure_to_gradient_ratio`
+    ran, on the array it would have produced itself.
+    """
+    structure = float(np.sum(planes**2))
+    gradient = float(np.sum((residual - residual.mean()) ** 2))
+    if gradient == 0:
+        return float("inf") if structure > 0 else 0.0
+    return structure / gradient
+
+
 def structure_to_gradient_ratio(luminance: np.ndarray, n_scales: int = 5) -> float:
     """Ratio of multiscale structure energy to residual gradient energy.
 
@@ -66,11 +84,7 @@ def structure_to_gradient_ratio(luminance: np.ndarray, n_scales: int = 5) -> flo
     ratio = detail dominates; low ratio = a gradient/muddy floor dominates.
     """
     planes, residual = starlet_transform(luminance, n_scales=n_scales)
-    structure = float(np.sum(planes**2))
-    gradient = float(np.sum((residual - residual.mean()) ** 2))
-    if gradient == 0:
-        return float("inf") if structure > 0 else 0.0
-    return structure / gradient
+    return structure_to_gradient_ratio_from_transform(planes, residual)
 
 
 def background_channel_balance(rgb: np.ndarray, percentile: float = 25.0) -> np.ndarray:

@@ -13,15 +13,16 @@ from dataclasses import dataclass
 import numpy as np
 
 from .color import rgb_to_lab
-from .energy import EnergySpectrum, energy_spectrum
+from .energy import EnergySpectrum, energy_spectrum_from_planes
 from .metrics import (
     background_channel_balance,
     chroma_histogram,
     floor_to_peak_ratio,
     saturation_quantiles,
-    structure_to_gradient_ratio,
+    structure_to_gradient_ratio_from_transform,
     tonal_quantiles,
 )
+from .starlet import starlet_transform
 
 CHROMA_BINS = 16
 CHROMA_EXTENT = 100.0
@@ -105,14 +106,36 @@ def extract(
     L, a, b = lab[..., 0], lab[..., 1], lab[..., 2]
     chroma = np.hypot(a, b)
 
+    # ONE starlet decomposition, used twice. The energy spectrum (§4.2) and the
+    # structure/gradient ratio are both functions of the starlet transform of L*
+    # at `n_scales` -- the same array, the same depth, the same deterministic
+    # transform. Computing it once per component cost 0.574s of a 1.505s
+    # extraction at the 1600px search proxy, purely to rebuild an array we had
+    # just thrown away, and `extract` is called once per candidate in a loop that
+    # runs up to 27 of them per iteration.
+    #
+    # This is a pure sharing of an intermediate: the two components consume the
+    # planes exactly as before and nothing about the metric, the scale
+    # convention (plane i -> 2**i * pixel_scale_arcsec) or the arithmetic
+    # changes. Bit-exactness is PROVEN, not assumed --
+    # `tests/test_fingerprint_cost.py` recomputes the pre-optimization
+    # composition from the still-public single-image entry points and asserts
+    # exact equality on real cached renders. It has to be exact: every threshold
+    # in this project (the 0.075/0.15 magnitude buckets, epsilon_improve,
+    # epsilon, the §10 exit criterion) is calibrated against fingerprint values,
+    # and a drift here would invalidate all of them without failing anything.
+    planes, residual = starlet_transform(L, n_scales=n_scales)
+
     return FingerprintData(
-        energy=energy_spectrum(L, pixel_scale_arcsec=pixel_scale_arcsec, n_scales=n_scales),
+        energy=energy_spectrum_from_planes(planes, pixel_scale_arcsec),
         tonal_quantiles=tonal_quantiles(L),
         saturation_quantiles=saturation_quantiles(chroma),
         chroma_hist=chroma_histogram(a, b, bins=CHROMA_BINS, extent=CHROMA_EXTENT),
         background={
             "floor_to_peak_ratio": floor_to_peak_ratio(L),
-            "structure_to_gradient_ratio": structure_to_gradient_ratio(L, n_scales=n_scales),
+            "structure_to_gradient_ratio": structure_to_gradient_ratio_from_transform(
+                planes, residual
+            ),
             "channel_balance": background_channel_balance(rgb),
         },
         pixel_scale_arcsec=pixel_scale_arcsec,

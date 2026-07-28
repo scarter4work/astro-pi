@@ -178,22 +178,75 @@ is a score effect wearing a different hat.
 Measured on a real degraded render, 4 of 10 proposed actions tripped a guardrail, so this is the
 common case rather than an edge case.
 
-The unbounded fix — keep proposing until `top_k` survive — is unaffordable. At the 1600px search
-proxy the action menu holds 50 entries and each candidate costs ~2.5s (fingerprint extraction 1.5s
-dominates, the image operation itself is 0.2s), giving a worst case of 150 candidates per iteration
-and ~127 minutes for 20 iterations against a 15-minute budget.
-
 Therefore: **propose until `top_k` live candidates OR `max_attempts` attempts, whichever comes
 first.** Default `max_attempts = 3 × top_k`.
 
-| Policy | Candidates/iteration | 20 iterations |
+#### The cost of that, measured
+
+Revised 2026-07-28 (Task 16). The first version of this section rejected the unbounded retry
+because it exceeded a 15-minute budget and then adopted a cap whose own worst case, four lines
+later, also exceeded it. The argument did not reach its conclusion. Both arms were re-measured
+rather than re-argued, and three of the four inputs were wrong:
+
+- **The menu does not hold 50 actions.** Measured across the configurations the loop actually
+  runs (`pixel_scale` 0.25–1.5″/px × `n_scales` 5–9), the band-limited ranked menu holds
+  **14–22** entries. Actions are constructed band-limited (§2.2, §4.4), so the menu is bounded
+  by the number of resolvable wavelet planes, not by the catalog of action kinds.
+- **A discarded candidate does not cost a full candidate.** `ingest_candidate` runs the §7
+  guardrails *before* it fingerprints, so a candidate the guardrails reject never pays for an
+  extraction. The old arithmetic charged every attempt the full price; a trip costs ~57% of a
+  survivor, and the cap binds precisely when trips are frequent — i.e. when candidates are
+  cheapest.
+- **A candidate no longer costs 2.5s.** Fingerprint extraction was computing the *same* starlet
+  decomposition of L\* twice — once for the energy spectrum (§4.2), once for the
+  structure/gradient ratio — and `advance` re-extracted every branch's parent each iteration
+  although it had already been fingerprinted as a candidate. Both removed in Task 16, proven
+  bit-identical on real cached renders (`tests/test_fingerprint_cost.py`).
+
+Measured at the real 1600px search proxy (`data/discovery_cache/eso0104a.jpg` flattened,
+1600×1575, `n_scales=7`), before → after Task 16:
+
+| | before | after |
 |---|---|---|
-| `top_k` attempts (original) | 9 | ~7.6 min |
-| **bounded retry (adopted)** | **≤27** | **~23 min worst case** |
-| unbounded until `top_k` live | ≤150 | ~127 min |
+| fingerprint extraction | 1.497s | **0.919s** |
+| §7 guardrails | 0.855s | 0.857s (untouched) |
+| executor (mean over the ranked menu) | 0.367s | 0.360s (untouched) |
+| **candidate that is SCORED** | **2.719s** | **2.136s** |
+| **candidate DISCARDED by a guardrail** | **1.222s** | **1.217s** |
+| parent re-measure, per branch per iteration | 1.497s | **0s** (carried on the `Branch`) |
+
+Worst case is a branch that burns every attempt: it can only do that by keeping fewer than
+`top_k` (it stops at `top_k` kept), so the most expensive branch is `top_k - 1` scored plus the
+rest discarded. With `width=3`, `top_k=3`, `max_attempts=9`, `iteration_cap=20`:
+
+| Policy | Attempts/iteration | 20 iterations (before) | 20 iterations (after) |
+|---|---|---|---|
+| `top_k` attempts (original) | 9 | ~9.7 min | ~6.4 min |
+| **bounded retry (adopted)** | **≤27** | ~15.5 min | **~12.8 min worst case** |
+| unbounded until `top_k` live | ≤66 | ~31.4 min | ~28.6 min |
+
+**The 15-minute budget is met, and it is met by attacking the cost, not by narrowing the cap.**
+Before Task 16 the adopted policy cost ~15.5 min worst case and genuinely did not fit; it now
+costs ~12.8 min, and the nominal run — no guardrail trips, `3 × 3` candidates per iteration —
+costs ~6.4 min. The unbounded retry remains rejected on its own merits at ~28.6 min, more than
+twice the bounded cost and still over budget, so the conclusion this section reached is
+unchanged. What changed is that the numbers now support it.
+
+Two honest qualifications on that budget:
+
+1. It covers the **sidecar's** work — executor, guardrails, extraction, scoring. In production
+   the executor is PixInsight over a file round trip (§2.5), not the in-process NumPy executor
+   measured here; that round trip is additive and has not been measured. The figures above are a
+   floor for the real pipeline, not a ceiling.
+2. It is a *worst* case in two independent senses at once — every branch burning every attempt
+   *and* the run going the full 20 iterations. A cost model built from these unit prices
+   over-predicts three consecutively measured real iterations by 9–12%, so it errs toward
+   pessimism, which is the right direction for a budget.
 
 The cap binds only when trips are frequent; typical runs cost far less than the worst case.
-`max_attempts` is a tunable under §3.7's calibration discipline.
+`max_attempts` is a tunable under §3.7's calibration discipline and was **not** adjusted here —
+narrowing it would stop a branch before `local_contrast@2″`, which ranks fifth on the measured
+flattened fixture and is the action that actually closes the gap.
 
 ### 3.4 Convergence
 
