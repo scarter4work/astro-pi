@@ -173,6 +173,13 @@ def _op_analyze(req: dict) -> dict:
             "source_url": provenance.get("source_url"),
             "gallery": provenance.get("gallery"),
         }
+        # The reference's own fingerprint, verbatim. `optimize_begin` requires it
+        # and PJSR has no other way to get it: the store is the sidecar's, and a
+        # second `analyze` call to re-derive it would re-run discovery. Returned
+        # from the call that already chose the reference, so the fingerprint the
+        # optimizer descends toward is provably the one belonging to the
+        # reference this response names.
+        result["reference_fingerprint"] = best.record.fingerprint.to_dict()
 
         rgb = load_image(image, max_dim=max_dim)
         effective_scale = wcs.pixel_scale_arcsec * downsample_factor(image, rgb)
