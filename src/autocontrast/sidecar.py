@@ -22,6 +22,7 @@ from __future__ import annotations
 import json
 import sys
 import traceback
+import uuid
 from pathlib import Path
 
 from autocontrast import __version__
@@ -34,6 +35,8 @@ from autocontrast.fingerprint.distance import fingerprint_distance
 from autocontrast.fingerprint.extract import FingerprintData, extract
 from autocontrast.fingerprint.palette import palette_class_from_filters
 from autocontrast.io.loaders import downsample_factor, load_image, load_raster
+from autocontrast.optimize import loop
+from autocontrast.optimize.session import session_path
 
 
 def _op_ping(_req: dict) -> dict:
@@ -179,12 +182,115 @@ def _op_analyze(req: dict) -> dict:
         index.close()
 
 
+# ---------------------------------------------------------------------------
+# §2.5: the batched optimizer protocol.
+#
+# The sidecar NEVER applies pixels in production -- PixInsight does. These two
+# ops measure, guardrail, score and prune candidates PJSR produced and saved,
+# and hand back the next batch of instructions. A "PixInsightExecutor" behind
+# `executor.py`'s one-candidate-at-a-time `apply` was rejected on cost: it would
+# launch a headless PixInsight per candidate, ~540 launches for a 20-iteration
+# run at the measured ~27 candidates/iteration.
+# ---------------------------------------------------------------------------
+
+
+def _optimize_loader(max_dim: int | None):
+    """The single way an optimizer session reads pixels.
+
+    Every spawned sidecar must read the proxy, the parents and the candidates
+    the same way the baseline was measured, which is why ``max_dim`` lives on
+    the session rather than in each request. ``load_image`` rather than
+    ``load_raster`` so a FITS proxy goes through astropy: Pillow's FITS plugin
+    hands back NaNs and would silently poison the fingerprint.
+    """
+    def load(path):
+        return load_image(path, max_dim=max_dim)
+
+    return load
+
+
+def _batch_result(session, instructions: list[dict]) -> dict:
+    """Fields common to both ops.
+
+    ``iteration`` is the iteration the returned ``instructions`` belong to; with
+    no instructions there is no further work, so it is the last one completed.
+    (``outcome``'s ``iterations`` is the count of COMPLETED iterations, which is
+    a different number while a batch is in flight.)
+    """
+    return {
+        "session_id": session.session_id,
+        "converged": session.converged,
+        "instructions": instructions,
+        "iteration": session.iteration + 1 if instructions else session.iteration,
+    }
+
+
+def _op_optimize_begin(req: dict) -> dict:
+    """Open a session, measure the baseline, return instruction batch 1."""
+    work_dir = req["work_dir"]
+    Path(work_dir).mkdir(parents=True, exist_ok=True)
+    session_id = req.get("session_id") or uuid.uuid4().hex[:12]
+    max_dim = req.get("max_dim", 1600)
+    image = req["image"]
+    load = _optimize_loader(max_dim)
+
+    # The request carries the image's NATIVE on-sky scale; the fingerprint is
+    # taken on a downsampled array, whose effective scale is coarser by exactly
+    # that factor (§2.2). Same correction `_op_analyze` applies.
+    effective_scale = req["pixel_scale_arcsec"] * downsample_factor(image, load(image))
+
+    session = loop.begin(
+        source_path=req.get("source_path", image), proxy_path=image,
+        reference_id=req["reference_id"],
+        reference_fp=FingerprintData.from_dict(req["reference_fingerprint"]),
+        work_dir=work_dir, pixel_scale_arcsec=effective_scale,
+        psf_fwhm_arcsec=req["psf_fwhm_arcsec"], palette_class=req["palette_class"],
+        n_scales=req.get("n_scales", 7), session_id=session_id, load=load,
+    )
+    session.max_dim = max_dim
+    session.candidate_suffix = req.get("candidate_suffix", ".png")
+
+    instructions = loop.begin_batch(session, load=load)
+    session.save(session_path(work_dir, session_id))
+    return {
+        "baseline_distance": session.baseline_distance,
+        "reference_id": session.reference_id,
+        **_batch_result(session, instructions),
+    }
+
+
+def _op_optimize_step(req: dict) -> dict:
+    """Score the candidates PixInsight saved; return the next batch."""
+    work_dir, session_id = req["work_dir"], req["session_id"]
+    path = session_path(work_dir, session_id)
+    if not path.exists():
+        # Never a silent fresh start: that would discard a run's progress while
+        # PixInsight believed it was stepping the session it began (§12).
+        raise FileNotFoundError(
+            f"no session {session_id!r} under {work_dir!r} (expected {path}). "
+            "Refusing to start a fresh run -- that would silently discard the "
+            "progress of the session PixInsight thinks it is stepping."
+        )
+
+    # `resume`, never `Session.load`: the exact-path guard against resuming
+    # against a different image lives there, and this is the one seam it exists
+    # for. Bypassing it would make it dead code.
+    session = loop.resume(path, proxy_path=req["image"])
+    load = _optimize_loader(session.max_dim)
+
+    instructions = loop.step_batch(session, req.get("produced", []), load=load)
+    session.save(path)
+    return {**loop.outcome(session), **_batch_result(session, instructions)}
+
+
 _OPS = {
     "ping": _op_ping,
     "fingerprint": _op_fingerprint,
     "distance": _op_distance,
     "solve": _op_solve,
     "analyze": _op_analyze,
+    "optimize_begin": _op_optimize_begin,
+    "optimize_step": _op_optimize_step,
 }
 
 
