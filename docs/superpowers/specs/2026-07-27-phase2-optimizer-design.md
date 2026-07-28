@@ -161,11 +161,39 @@ could not produce this behavior at any amount of guardrailing.
 
 ### 3.3 Beam
 
-Width 3. Each iteration expands every live branch by the top-k proposed actions (k=3), yielding at
-most 9 candidates, pruned back to the 3 best **distinct** ones. Distinctness is by recipe, so two
-branches cannot converge onto the same action sequence and waste a beam slot.
+Width 3. Each iteration expands every live branch toward `top_k` (=3) **surviving** candidates,
+pruned back to the 3 best **distinct** ones. Distinctness is by recipe, so two branches cannot
+converge onto the same action sequence and waste a beam slot.
 
 Checkpoint on every improvement to best-so-far (§6.1).
+
+**A guardrail trip must not also cost search breadth — but the retry is bounded.**
+Added 2026-07-27, on measurement. §6.1's pseudocode reads `for a in top_k(actions)` and discards
+violators, i.e. `top_k` *attempts*. That makes a guardrail trip consume one of the branch's three
+slots, so a branch tripping two of three explores a single candidate that iteration. The loop would
+then search *least* thoroughly exactly where the image is most fragile — and §7 is explicit that a
+violation discards the candidate and is **never** a score term. A discard that also costs exploration
+is a score effect wearing a different hat.
+
+Measured on a real degraded render, 4 of 10 proposed actions tripped a guardrail, so this is the
+common case rather than an edge case.
+
+The unbounded fix — keep proposing until `top_k` survive — is unaffordable. At the 1600px search
+proxy the action menu holds 50 entries and each candidate costs ~2.5s (fingerprint extraction 1.5s
+dominates, the image operation itself is 0.2s), giving a worst case of 150 candidates per iteration
+and ~127 minutes for 20 iterations against a 15-minute budget.
+
+Therefore: **propose until `top_k` live candidates OR `max_attempts` attempts, whichever comes
+first.** Default `max_attempts = 3 × top_k`.
+
+| Policy | Candidates/iteration | 20 iterations |
+|---|---|---|
+| `top_k` attempts (original) | 9 | ~7.6 min |
+| **bounded retry (adopted)** | **≤27** | **~23 min worst case** |
+| unbounded until `top_k` live | ≤150 | ~127 min |
+
+The cap binds only when trips are frequent; typical runs cost far less than the worst case.
+`max_attempts` is a tunable under §3.7's calibration discipline.
 
 ### 3.4 Convergence
 
