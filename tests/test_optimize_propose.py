@@ -5,6 +5,7 @@ import numpy as np
 from scipy.ndimage import gaussian_filter
 
 from autocontrast.fingerprint.extract import extract
+from autocontrast.optimize.actions import ONCE_ONLY
 from autocontrast.optimize.propose import _band_deficits, component_gaps, propose_actions
 
 
@@ -167,16 +168,51 @@ def test_scale_denominated_actions_target_the_band_with_the_real_deficit():
 
 
 def test_no_single_action_kind_monopolises_top_k():
-    # Direct regression test for the bug the lead found: the first
+    # Direct regression test for the first bug the lead found: the initial
     # implementation scored every scale-denominated action off one aggregate
     # spectrum scalar, so local_contrast/local_equalize/core_hdr tied on every
     # band and an alphabetical tiebreak handed core_hdr all of top_k, forever.
     # This must fail against that implementation (it did: measured top-3 was
-    # ['core_hdr', 'core_hdr', 'core_hdr']) and pass against the per-band,
-    # round-robin-grouped ranking.
+    # ['core_hdr', 'core_hdr', 'core_hdr']) and pass against the current
+    # per-band, one-action-per-(kind,band)-group ranking.
     ref, target = _fp(_textured()), _fp(_flat())
     proposed = propose_actions(ref, target, applied_kinds=frozenset(),
                                n_scales=7, top_k=3)
     kinds = [a.kind for a in proposed]
     print(f"top-3 kinds: {kinds}")
     assert len(set(kinds)) > 1
+
+
+def test_magnitude_follows_gap_size():
+    # Direct regression test for the second bug the lead found: fixing the
+    # kind-monopoly by round-robin (gentlest level first) exposed a same-shaped
+    # monopoly on MAGNITUDE -- LEVELS has exactly 3 entries and top_k defaults
+    # to 3, so round-robin never reaches a second pass and every proposal comes
+    # back "gentle" (measured against the round-1 implementation: distinct
+    # levels seen across top_k=12 was {'', 'gentle'} -- confirmed this test
+    # fails against it). Each (kind, band) group's OWN gap size must now pick
+    # its magnitude.
+    ref, target = _fp(_textured()), _fp(_flat())
+    proposed = propose_actions(ref, target, applied_kinds=frozenset(),
+                               n_scales=7, top_k=12)
+    print(f"top-12: {[a.key for a in proposed]}")
+
+    # band 2" carries the largest measured gap in this fixture (deficit 0.918,
+    # see test_scale_denominated_..." pattern / test_component_gaps_...); it
+    # must come back strong. tonal_reshape carries a small gap (0.064, well
+    # under GAP_GENTLE_MAX); it must come back gentle. Checking only one
+    # direction would pass against an implementation that always returns a
+    # fixed level (e.g. always "strong").
+    band2_action = next(a for a in proposed if a.kind == "local_contrast" and a.scale_arcsec == 2.0)
+    tonal_action = next(a for a in proposed if a.kind == "tonal_reshape")
+    print(f"large-gap action: {band2_action.key}; small-gap action: {tonal_action.key}")
+    assert band2_action.level == "strong"
+    assert tonal_action.level == "gentle"
+
+    # General property mirroring the kind-monopoly test: more than one
+    # magnitude level must appear among the leveled proposals (once-only
+    # actions have no magnitude axis and are excluded).
+    leveled = [a for a in proposed if a.kind not in ONCE_ONLY]
+    levels_seen = {a.level for a in leveled}
+    print(f"distinct levels among leveled actions: {levels_seen}")
+    assert len(levels_seen) > 1
