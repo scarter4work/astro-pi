@@ -298,12 +298,14 @@ def test_a_passing_guardrail_that_assessed_nothing_is_logged():
 
     session = advance(session, NumpyExecutor(), load=load, save=save)
 
-    noted = [e for e in session.guardrail_log if e.get("noted")]
+    # Filtered by name, not merely "has a noted field": `noted` also carries the
+    # attempt-cap event, and a test that accepted any noted entry would pass on
+    # the wrong one.
+    noted = [e for e in session.guardrail_log if "star_integrity" in e.get("noted", [])]
     assert noted, (
         "star_integrity passed while reporting it could not assess anything, "
         "and that reason never reached the log"
     )
-    assert all("star_integrity" in e["noted"] for e in noted)
     assert all("not assessed" in e["reason"] for e in noted)
     # Distinguishable from a discard: a noted entry is not a failure.
     assert all("failed" not in e for e in noted)
@@ -327,7 +329,115 @@ def test_nothing_is_noted_when_the_guardrail_really_did_its_job():
     # Candidates really were guardrailed -- otherwise "no noted entries" is
     # vacuous, since nothing was evaluated.
     assert session.branches, "no candidate reached the guardrails"
-    assert not [e for e in session.guardrail_log if e.get("noted")]
+    assert not [e for e in session.guardrail_log if "star_integrity" in e.get("noted", [])]
+
+
+# --------------------------------------------------------------------------
+# The bounded retry (§3.3): top_k live candidates OR max_attempts, whichever
+# comes first.
+# --------------------------------------------------------------------------
+
+def _attempt_cap_events(session):
+    return [e for e in session.guardrail_log if "attempt_cap" in e.get("noted", [])]
+
+
+def test_max_attempts_defaults_to_three_times_top_k():
+    """The bound is a named, visible tunable that tracks top_k rather than an
+    inline literal that silently decouples from it."""
+    assert BeamConfig().max_attempts == 9
+    assert BeamConfig(top_k=5).max_attempts == 15
+    # ...and it stays overridable.
+    assert BeamConfig(top_k=3, max_attempts=4).max_attempts == 4
+
+
+def test_max_attempts_survives_a_session_round_trip(tmp_path):
+    ref = _reference_image(h=64, w=64)
+    store, load, save = _memory_io()
+    session = _session_for(ref, ref, store, load, save)
+    session.config = BeamConfig(top_k=4, max_attempts=7)
+    path = session_path(tmp_path, session.session_id)
+    session.save(path)
+
+    restored = resume(path, proxy_path="/mem/proxy.png")
+    assert restored.config.max_attempts == 7
+    assert restored.config.top_k == 4
+
+
+def test_the_attempt_cap_binds_and_says_so():
+    """When nearly everything is rejected the branch contributes fewer than
+    top_k candidates -- without error -- and the truncation is surfaced."""
+    ref = _reference_image()
+    flat = flatten(ref, strength=0.6)
+    store, load, save = _memory_io()
+    session = _session_for(flat, ref, store, load, save)
+
+    class _OnlyChromaWorks:
+        """Everything but chroma is unavailable, so the branch spends its whole
+        attempt budget to find a single live candidate."""
+
+        inner = NumpyExecutor()
+
+        def apply(self, rgb, action, *, pixel_scale_arcsec):
+            if action.kind != "chroma":
+                raise RuntimeError(f"{action.kind} unavailable")
+            return self.inner.apply(rgb, action, pixel_scale_arcsec=pixel_scale_arcsec)
+
+    session = advance(session, _OnlyChromaWorks(), load=load, save=save)
+
+    # Fewer than top_k, and no exception: a bound branch is legitimate.
+    assert 0 < len(session.branches) < session.config.top_k
+
+    events = _attempt_cap_events(session)
+    assert len(events) == 1, "the branch truncated silently"
+    event = events[0]
+    assert event["branch"] == "(root)"
+    assert "failed" not in event, "stopping early is not a discard"
+    assert str(session.config.max_attempts) in event["reason"]
+    # The count of attempts actually spent must be the cap, not a guess.
+    assert f"stopped after {session.config.max_attempts} attempts" in event["reason"]
+
+    # The cap bounded the work: no more actions were tried than the cap allows.
+    attempted = {e["action"] for e in session.guardrail_log if "action" in e}
+    assert len(attempted) <= session.config.max_attempts
+
+
+def test_the_attempt_cap_does_not_bind_on_an_ordinary_branch():
+    """The other direction: a branch whose actions survive still gets its full
+    top_k. A cap that always bound would satisfy the test above on its own."""
+    ref = _reference_image()
+    store, load, save = _memory_io()
+    session = _session_for(ref, ref, store, load, save)
+
+    session = advance(session, NumpyExecutor(), load=load, save=save)
+
+    assert len(session.branches) == session.config.top_k
+    assert not _attempt_cap_events(session)
+
+
+def test_a_tight_cap_binds_where_a_loose_one_does_not():
+    """Same image, same executor, same guardrails -- only the bound differs.
+
+    This isolates the cap as the cause: if the flattened branch still fills its
+    slots under max_attempts=2, the test above proves nothing about the bound.
+    """
+    ref = _reference_image()
+    flat = flatten(ref, strength=0.6)
+
+    store, load, save = _memory_io()
+    loose = _session_for(flat, ref, store, load, save)
+    loose = advance(loose, NumpyExecutor(), load=load, save=save)
+    assert len(loose.branches) == loose.config.top_k
+    assert not _attempt_cap_events(loose)
+
+    store2, load2, save2 = _memory_io()
+    tight = _session_for(flat, ref, store2, load2, save2)
+    tight.config = BeamConfig(max_attempts=2)
+    tight = advance(tight, NumpyExecutor(), load=load2, save=save2)
+
+    # The first two ranked actions on this image are one climb and one guardrail
+    # trip, so two attempts cannot yield three live candidates.
+    assert len(tight.branches) < tight.config.top_k
+    assert _attempt_cap_events(tight)
 
 
 # --------------------------------------------------------------------------

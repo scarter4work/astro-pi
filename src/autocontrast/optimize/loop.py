@@ -140,15 +140,28 @@ def advance(session: Session, executor: Executor, *, load, save,
             limits: GuardrailLimits = GuardrailLimits()) -> Session:
     """One iteration: expand every live branch, guardrail, score, prune.
 
-    A branch contributes ``config.top_k`` LIVE candidates, walking the ranked
-    menu until it has them. It is deliberately not "attempt the first top_k
-    actions and keep whatever survives": a discarded candidate would then cost
-    search breadth as well as itself, and a guardrail that narrows the search is
-    a score term wearing a different hat (§7 forbids exactly that). Measured on
-    the flattened fixture: the first three ranked actions are two guardrail trips
-    and one move that climbs, while the action that actually closes the gap --
-    ``local_contrast@2"`` -- ranks fifth. Stopping at three proposals means never
-    reaching it, and the loop declines on an image it could plainly have fixed.
+    A branch reaches for ``config.top_k`` LIVE candidates, walking the ranked
+    menu until it has them or until ``config.max_attempts`` actions have been
+    tried -- whichever comes first (§3.3). It is deliberately not "attempt the
+    first top_k actions and keep whatever survives": a discarded candidate would
+    then cost search breadth as well as itself, and a guardrail that narrows the
+    search is a score term wearing a different hat (§7 forbids exactly that).
+    Measured on the flattened fixture: the first three ranked actions are two
+    guardrail trips and one move that climbs, while the action that actually
+    closes the gap -- ``local_contrast@2"`` -- ranks fifth. Stopping at three
+    proposals means never reaching it, and the loop declines on an image it could
+    plainly have fixed.
+
+    Nor is it "retry until top_k survive, however long that takes": at the 1600px
+    proxy that is ~150 candidates and ~10 minutes per iteration, and a cost that
+    varies with how often guardrails happen to trip is a cost nobody can budget
+    for. When the cap binds the branch simply contributes fewer than ``top_k``
+    candidates -- legitimate, since the beam already tolerates shrinking and an
+    empty beam is itself a convergence condition -- and the event is LOGGED. A
+    branch that spent every attempt without filling its slots means the
+    guardrails are rejecting nearly everything on that image, which is worth
+    reporting; truncating silently would read as "explored fully" when it was
+    not (§12).
     """
     if session.converged:
         return session
@@ -167,9 +180,14 @@ def advance(session: Session, executor: Executor, *, load, save,
         )
 
         kept = 0
+        attempts = 0
         for action in actions:
-            if kept >= session.config.top_k:
+            if kept >= session.config.top_k or attempts >= session.config.max_attempts:
                 break
+            # Counted here, before the executor runs: an attempt is an action
+            # this branch spent, whatever became of it. Every path below costs
+            # at least an executor call, and the bound exists to cap work.
+            attempts += 1
 
             try:
                 produced = executor.apply(
@@ -241,6 +259,26 @@ def advance(session: Session, executor: Executor, *, load, save,
             distance = fingerprint_distance(reference_fp, _measure(produced, session))
             candidates.append(Branch(recipe=recipe, image_path=path, distance=distance))
             kept += 1
+
+        if kept < session.config.top_k and attempts >= session.config.max_attempts:
+            # The attempt cap bound before the branch filled its slots. Surfaced,
+            # not silent: this says the guardrails rejected nearly everything
+            # tried on this image, which is a different statement from "the menu
+            # was explored and this is all there was" (§12). `noted`, not
+            # `failed` -- nothing was discarded here, the branch just stopped
+            # looking. Keyed by `branch` rather than `action` because it is a
+            # property of the branch's whole expansion, not of one candidate.
+            session.guardrail_log.append({
+                "iteration": iteration,
+                "branch": branch.recipe.key or "(root)",
+                "noted": ["attempt_cap"],
+                "reason": (
+                    f"branch stopped after {attempts} attempts (cap "
+                    f"{session.config.max_attempts}) holding only {kept} of "
+                    f"{session.config.top_k} live candidates; guardrails or the "
+                    "executor rejected nearly everything tried on this image"
+                ),
+            })
 
     session.iteration = iteration
     survivors = prune(candidates, session.config.width)
