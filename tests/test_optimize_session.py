@@ -1,3 +1,5 @@
+import json
+
 from autocontrast.optimize.actions import Action
 from autocontrast.optimize.beam import BeamConfig, Branch
 from autocontrast.optimize.recipe import Recipe
@@ -15,6 +17,61 @@ def _session(tmp_path):
         branches=[base], best=base, baseline_distance=0.5, distance_history=[0.5],
         converged=False, convergence_reason="", guardrail_log=[],
     )
+
+
+def test_in_flight_batch_state_round_trips_through_disk(tmp_path):
+    """The §2.5 batched protocol carries an iteration ACROSS sidecar processes:
+    a batch is in flight in PixInsight while the sidecar that planned it has
+    already exited. Everything that iteration knows has to be on disk, or the
+    next sidecar restarts the branch from menu position zero and the attempt cap
+    never binds."""
+    s = _session(tmp_path)
+    s.max_dim = 1600
+    s.candidate_suffix = ".tif"
+    s.cursors = [{"branch_key": "", "cursor": 4, "kept": 1, "attempts": 4}]
+    s.pending = [{
+        "instruction_id": "it1-br0-ac4", "branch_key": "",
+        "action_key": "chroma@-/gentle",
+        "action": {"kind": "chroma", "level": "gentle", "scale_arcsec": None,
+                   "params": {"layer": 3}},
+        "process": "ColorSaturation", "params": {"layer": 3, "strength": 0.25},
+        "parent_path": str(tmp_path / "proxy.xisf"),
+        "candidate_path": str(tmp_path / "cand-1-0-4.tif"),
+    }]
+    s.candidates = [Branch(
+        recipe=Recipe.empty().extend(Action("core_hdr", "strong", 30.0, {"layers": 4})),
+        image_path=str(tmp_path / "cand-1-0-1.tif"), distance=0.31)]
+    p = session_path(tmp_path, "s1")
+    s.save(p)
+
+    loaded = Session.load(p)
+    assert loaded.max_dim == 1600
+    assert loaded.candidate_suffix == ".tif"
+    assert loaded.cursors == s.cursors
+    assert loaded.pending == s.pending
+    assert [b.image_path for b in loaded.candidates] == [str(tmp_path / "cand-1-0-1.tif")]
+    assert [b.distance for b in loaded.candidates] == [0.31]
+    # Recipes of in-flight candidates survive with their params intact -- the
+    # same standard the beam's branches are held to below.
+    assert (loaded.candidates[0].recipe.to_pixinsight_steps()
+            == s.candidates[0].recipe.to_pixinsight_steps())
+
+
+def test_a_session_written_before_the_batched_protocol_still_loads(tmp_path):
+    """The new fields default rather than KeyError, so a session file written by
+    an earlier build reopens as an idle one with no batch in flight."""
+    s = _session(tmp_path)
+    p = session_path(tmp_path, "s1")
+    s.save(p)
+    payload = json.loads(p.read_text())
+    for key in ("pending", "cursors", "candidates", "max_dim", "candidate_suffix"):
+        payload.pop(key, None)
+    p.write_text(json.dumps(payload))
+
+    loaded = Session.load(p)
+    assert loaded.pending == []
+    assert loaded.cursors == []
+    assert loaded.candidates == []
 
 
 def test_session_round_trips_through_disk(tmp_path):
