@@ -105,6 +105,25 @@ def test_top_k_is_respected():
                                n_scales=7, top_k=3)) == 3
 
 
+def test_top_k_none_returns_the_whole_ranking_untruncated():
+    """``top_k=None`` is the explicit "no truncation" contract this function
+    exposes for a caller that needs the ENTIRE ranking -- `loop.py`'s
+    `_ranked_menu`, in service of SS3.3's bounded retry -- rather than a fixed
+    slice of it. It must be the SAME ranking a bounded call sees a prefix of,
+    not a second computation that only happens to agree with it.
+    """
+    ref, target = _fp(_textured()), _fp(_flat())
+    full = propose_actions(ref, target, applied_kinds=frozenset(), n_scales=7, top_k=None)
+    generous = propose_actions(ref, target, applied_kinds=frozenset(), n_scales=7, top_k=1000)
+    small = propose_actions(ref, target, applied_kinds=frozenset(), n_scales=7, top_k=3)
+
+    # top_k=1000 already exceeds the group count, so it too is "everything" --
+    # confirming top_k=None isn't a distinct code path that merely matches by luck.
+    assert full == generous
+    assert full[:3] == small  # a bounded call is a strict PREFIX of the full ranking
+    assert len(full) > 3  # otherwise the prefix check above is vacuous
+
+
 def test_chroma_is_never_proposed_on_a_palette_mismatch():
     # L-only matches nothing, not even itself -- the hardest gate case.
     ref = _fp(_textured(), palette="L-only")

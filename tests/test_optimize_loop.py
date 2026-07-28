@@ -11,12 +11,16 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
+import autocontrast.optimize.loop as loop_mod
 from autocontrast.eval.degrade import flatten
 from autocontrast.fingerprint.extract import extract
 from autocontrast.optimize.beam import BeamConfig
 from autocontrast.optimize.guardrails import GuardrailLimits, detect_stars
 from autocontrast.optimize.executors.numpy_exec import NumpyExecutor
-from autocontrast.optimize.loop import advance, begin, outcome, resume, run_to_convergence
+from autocontrast.optimize.loop import (
+    _ranked_menu, advance, begin, outcome, resume, run_to_convergence,
+)
+from autocontrast.optimize.propose import propose_actions
 from autocontrast.optimize.session import Session, session_path
 
 SCALE, PSF, NSCALES = 1.0, 2.0, 7
@@ -573,3 +577,58 @@ def test_resume_compares_exactly_not_by_resolution(tmp_path):
 
     with pytest.raises(ValueError):
         resume(path, proxy_path="/mem/./proxy.png")
+
+
+def test_ranked_menu_has_no_menu_construction_of_its_own(monkeypatch):
+    """`_ranked_menu` must be nothing more than "the whole ranking" -- it must
+    not know how the menu is built. It used to: a verbatim copy of
+    `propose.py`'s ``palette_chroma_compatible`` + ``available_actions(...)``
+    call, kept only to learn ``len(menu)``. That copy is dangerous because
+    nothing enforces that it stays byte-identical to the real one -- if
+    `propose.py` ever changes what it considers the menu, this module's own
+    (unchanged) copy would compute a bound too small, and ``propose_actions``
+    would silently truncate the tail of the ranking. On the measured fixture
+    that tail is exactly where ``local_contrast@2"`` sits, ranked fifth, and it
+    is the action that actually closes the gap.
+
+    Simulated here by patching THIS module's own ``available_actions`` binding
+    -- exactly the shape a reintroduced duplicate would take -- while leaving
+    ``propose.py``'s binding (the real menu construction) untouched. If
+    `_ranked_menu` delegates entirely to ``propose_actions(..., top_k=None)``,
+    the patch is inert. If it reconstructs the menu itself, the patch starves
+    it and the ranking it returns diverges from the real one.
+    """
+    ref = _reference_image()
+    flat = flatten(ref, strength=0.6)
+    ref_fp = extract(ref, pixel_scale_arcsec=SCALE, n_scales=NSCALES,
+                      psf_fwhm_arcsec=PSF, palette_class="HOO")
+    target_fp = extract(flat, pixel_scale_arcsec=SCALE, n_scales=NSCALES,
+                         psf_fwhm_arcsec=PSF, palette_class="HOO")
+
+    # `raising=False`: after the fix, loop.py has no `available_actions` name
+    # of its own to patch at all -- that absence is part of what this proves.
+    monkeypatch.setattr(loop_mod, "available_actions", lambda *a, **k: [], raising=False)
+
+    via_wrapper = _ranked_menu(ref_fp, target_fp, applied_kinds=frozenset(), n_scales=NSCALES)
+    via_direct = propose_actions(ref_fp, target_fp, applied_kinds=frozenset(),
+                                  n_scales=NSCALES, top_k=None)
+
+    assert len(via_wrapper) > 0
+    assert via_wrapper == via_direct
+
+
+def test_ranked_menu_matches_an_explicit_top_k_none_call():
+    """`_ranked_menu` and ``propose_actions(..., top_k=None)`` are the same
+    call under two names -- not two implementations that happen to agree."""
+    ref = _reference_image()
+    flat = flatten(ref, strength=0.6)
+    ref_fp = extract(ref, pixel_scale_arcsec=SCALE, n_scales=NSCALES,
+                      psf_fwhm_arcsec=PSF, palette_class="HOO")
+    target_fp = extract(flat, pixel_scale_arcsec=SCALE, n_scales=NSCALES,
+                         psf_fwhm_arcsec=PSF, palette_class="HOO")
+
+    assert _ranked_menu(
+        ref_fp, target_fp, applied_kinds=frozenset(), n_scales=NSCALES,
+    ) == propose_actions(
+        ref_fp, target_fp, applied_kinds=frozenset(), n_scales=NSCALES, top_k=None,
+    )

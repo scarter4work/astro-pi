@@ -107,9 +107,18 @@ def _band_deficits(ref, target) -> np.ndarray:
 
 
 def propose_actions(
-    ref, target, *, applied_kinds: frozenset[str], n_scales: int, top_k: int
+    ref, target, *, applied_kinds: frozenset[str], n_scales: int, top_k: int | None
 ) -> list[Action]:
     """The top_k actions most likely to close the largest gap.
+
+    ``top_k=None`` means the WHOLE ranking, with no truncation: every group the
+    menu produces, in priority order. This is the single source of truth for
+    "how many groups can the menu possibly produce" -- a caller that needs the
+    entire ranking (rather than a truncated one) should pass ``None`` here
+    rather than reconstruct the menu itself to compute a bound, which would
+    silently drift out of sync with this function's own grouping if that ever
+    changes (the failure this closes: `loop.py` used to rebuild the menu just to
+    learn its length).
 
     local_contrast/local_equalize are ranked by the structural deficit at their
     own band (SS3.5); every other action kind is ranked by the aggregate
@@ -172,7 +181,7 @@ def propose_actions(
 
     proposed: list[Action] = []
     for gk in ordered_groups:
-        if len(proposed) >= top_k:
+        if top_k is not None and len(proposed) >= top_k:
             break
         members = groups[gk]
         kind = members[0].kind
