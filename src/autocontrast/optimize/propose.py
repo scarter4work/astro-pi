@@ -28,7 +28,7 @@ from autocontrast.fingerprint.distance import (
 )
 from autocontrast.fingerprint.palette import palette_chroma_compatible
 
-from .actions import Action, ONCE_ONLY, available_actions, layer_for_scale
+from .actions import Action, available_actions, layer_for_scale
 
 # Which action kinds address which fingerprint component (aggregate score).
 # local_contrast/local_equalize are NOT here -- they are scale-denominated and
@@ -43,16 +43,22 @@ _REMEDIES = {
 _SCALE_KINDS = frozenset({"local_contrast", "local_equalize"})
 
 # Magnitude bucket boundaries for "gap size -> level" (SS3.5, "Magnitude is chosen
-# by gap size", spec commit e4d2611). Tunables under SS3.7's calibration
-# discipline -- calibrated against the measured per-band deficits and aggregate
-# component gaps across this project's own fixtures (task-7 report, fix round 2),
-# not picked by feel. That survey found single-component mismatches between
-# visually similar images clustering below ~0.10, and a wide, empirically empty
-# range between ~0.17 and ~0.36 separating "a real but non-dominant issue" from
-# "the dominant defect in the image" -- the boundaries sit inside those two
-# observed breaks.
-GAP_GENTLE_MAX = 0.12
-GAP_MODERATE_MAX = 0.25
+# by gap size"). Tunables under SS3.7's calibration discipline.
+#
+# Calibrated against the real fixtures, not chosen by feel: every aggregate
+# component gap and every per-band deficit over the 5 references in
+# data/references x the 5 amateur renders in data/amateur, plus all 10
+# reference-vs-reference pairs (35 pairs, 227 positive values; see task-7 report
+# round 2 for the survey). The measured distribution has NO natural break to
+# anchor on -- it decays smoothly from zero, and the largest consecutive gap
+# anywhere in the 0.02-0.35 region is only ~0.012, i.e. noise. So there is no
+# "obviously large" threshold to discover, and these are set instead at the
+# TERTILES of that measured population (p33.3 = 0.0754, p66.7 = 0.1526): the
+# split that exercises all three magnitudes about equally on real data, so no
+# level is structurally dead the way `moderate`/`strong` were before this fix.
+# Measured shares at these values: gentle 32.6%, moderate 32.6%, strong 34.8%.
+GAP_GENTLE_MAX = 0.075
+GAP_MODERATE_MAX = 0.15
 
 
 def _level_for_gap(gap: float) -> str:
@@ -170,9 +176,17 @@ def propose_actions(
             break
         members = groups[gk]
         kind = members[0].kind
-        if kind in ONCE_ONLY:
-            # No magnitude axis -- a single, level-less member.
-            proposed.append(members[0])
+        # Mode-change actions (background_neutralize, star_split) change mode
+        # rather than degree and carry level "" -- they have no magnitude axis to
+        # pick from, so they pass through untouched. Tested on the level itself
+        # rather than on ONCE_ONLY membership: "may be applied at most once" and
+        # "has no magnitude" are two different properties that merely happen to
+        # coincide today, and it is the latter that decides this branch.
+        # (Action.strength returns 1.0 for "" but RAISES for any other
+        # unrecognized level, so assigning one here would surface downstream.)
+        levelless = [a for a in members if a.level == ""]
+        if levelless:
+            proposed.append(levelless[0])
             continue
         gap = -gk[0]  # gk[0] is -gap_for(action); recover the group's own gap.
         level = _level_for_gap(gap)
