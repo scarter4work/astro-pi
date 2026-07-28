@@ -72,6 +72,22 @@ def load_fits(path: str | Path) -> LoadedImage:
 _FITS_SUFFIXES = {".fits", ".fit", ".fts"}
 
 
+def supported_suffixes() -> frozenset[str]:
+    """Every file suffix :func:`load_image` can actually read back.
+
+    ``load_image`` dispatches on suffix: FITS goes through astropy, everything
+    else through Pillow's ``Image.open``. The FITS half is ``_FITS_SUFFIXES``,
+    the one place that dispatch condition lives; the raster half is read off
+    Pillow's own registered plugins rather than hand-copied, so this can never
+    drift from what Pillow can actually open. Callers that hand a path to
+    something outside this set (a PixInsight-native ``.xisf``, say) need to
+    fail immediately and loudly, not discover it as a read error deep inside a
+    run (§12).
+    """
+    Image.init()  # populate Image.registered_extensions(); idempotent
+    return frozenset(_FITS_SUFFIXES) | frozenset(Image.registered_extensions())
+
+
 def image_dimensions(path: str | Path) -> tuple[int, int]:
     """Native ``(width, height)`` of an image on disk, without decoding its pixels.
 

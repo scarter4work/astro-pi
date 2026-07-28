@@ -178,6 +178,32 @@ def test_the_first_batch_never_exceeds_the_beam_width_of_the_root(tmp_path):
     assert len(resp["result"]["instructions"]) == session.config.top_k
 
 
+def test_an_unreadable_candidate_suffix_is_refused_at_begin_not_misdiagnosed_later(tmp_path):
+    """`.xisf` is PixInsight's native format and the obvious choice for a PJSR
+    caller to pick -- but the sidecar reads every candidate back through
+    `load_image`, which cannot open it. Left unvalidated, every candidate would
+    raise inside `_ingest_batch`, every branch would be discarded, and the run
+    would report "guardrails or executor failure" for what is really one bad
+    config field. This must fail immediately, at `optimize_begin`, naming the
+    offending suffix."""
+    png, ref_fp = _fixture(tmp_path)
+    resp = _begin(tmp_path, png, ref_fp, candidate_suffix=".xisf")
+    assert resp["ok"] is False
+    assert ".xisf" in resp["error"]
+    assert "candidate_suffix" in resp["error"]
+    # No session should be left behind implying a run is in flight.
+    assert not any(tmp_path.glob("*.json"))
+
+
+def test_the_default_candidate_suffix_still_works(tmp_path):
+    """The `.png` default must not regress: PixInsight can save it and the
+    sidecar can read it back."""
+    png, ref_fp = _fixture(tmp_path)
+    resp = _begin(tmp_path, png, ref_fp)
+    assert resp["ok"] is True, resp.get("error")
+    assert resp["result"]["instructions"][0]["candidate_path"].endswith(".png")
+
+
 # --------------------------------------------------------------------------
 # 3. The key structural proof: the sidecar scores what it did not produce.
 # --------------------------------------------------------------------------

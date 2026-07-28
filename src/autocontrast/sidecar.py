@@ -34,7 +34,12 @@ from autocontrast.db.wcs import acquire_wcs
 from autocontrast.fingerprint.distance import fingerprint_distance
 from autocontrast.fingerprint.extract import FingerprintData, extract
 from autocontrast.fingerprint.palette import palette_class_from_filters
-from autocontrast.io.loaders import downsample_factor, load_image, load_raster
+from autocontrast.io.loaders import (
+    downsample_factor,
+    load_image,
+    load_raster,
+    supported_suffixes,
+)
 from autocontrast.optimize import loop
 from autocontrast.optimize.session import session_path
 
@@ -247,8 +252,22 @@ def _op_optimize_begin(req: dict) -> dict:
         psf_fwhm_arcsec=req["psf_fwhm_arcsec"], palette_class=req["palette_class"],
         n_scales=req.get("n_scales", 7), session_id=session_id, load=load,
     )
+    candidate_suffix = req.get("candidate_suffix", ".png")
+    supported = supported_suffixes()
+    if candidate_suffix.lower() not in supported:
+        # Caught here, this is one bad config field. Left to the loader, it
+        # becomes every candidate raising inside `_ingest_batch`, every branch
+        # discarded, and a run that reports "guardrails or executor failure"
+        # for what was actually a suffix PixInsight can save but the sidecar
+        # can never read back (§12) -- e.g. its own native `.xisf`.
+        raise ValueError(
+            f"candidate_suffix {candidate_suffix!r} is not a format the sidecar "
+            "can load back (it reads every candidate through the same loader as "
+            f"everything else); supported suffixes are {sorted(supported)}"
+        )
+
     session.max_dim = max_dim
-    session.candidate_suffix = req.get("candidate_suffix", ".png")
+    session.candidate_suffix = candidate_suffix
 
     instructions = loop.begin_batch(session, load=load)
     session.save(session_path(work_dir, session_id))
