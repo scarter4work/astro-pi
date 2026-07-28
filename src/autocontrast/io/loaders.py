@@ -82,6 +82,22 @@ _FITS_SUFFIXES = {".fits", ".fit", ".fts"}
 # (§2.2), and an 8-bit intermediate is one.
 _TIFF_SUFFIXES = {".tif", ".tiff"}
 
+# What "full scale" means for the integer dtypes a raster can carry, used in
+# place of INFERRING the range from the pixel values. Inference is wrong the
+# moment an image is genuinely dark: a uint16 candidate whose brightest pixel
+# is 200 has a true value of 200/65535 = 0.00305, but a data-derived rule sees
+# `max <= 255`, divides by 255, and returns 0.78431 — 257x too bright, with no
+# log and no error (§12). That was harmless while every raster came back from
+# Pillow as uint8 by construction; making 16-bit TIFF the optimizer's candidate
+# format turned it into a live path.
+#
+# uint8 and uint16 only, deliberately. For wider integer types the container
+# width is not the data range — Pillow stores 16-bit grayscale TIFF as mode
+# "I" (int32), where full scale is 65535 and not 2**31-1 — so there is no
+# defensible constant, and those fall back to the range inference in
+# `load_raster`. The formats this project writes and reads back are covered.
+_INTEGER_FULL_SCALE = {np.dtype(np.uint8): 255.0, np.dtype(np.uint16): 65535.0}
+
 
 def supported_suffixes() -> frozenset[str]:
     """Every file suffix :func:`load_image` can actually read back.
@@ -125,8 +141,16 @@ def _resize_native(arr: np.ndarray, max_dim: int | None) -> np.ndarray:
     return stacked if arr.ndim == 3 else stacked[..., 0]
 
 
-def _decode_tiff(path: Path, max_dim: int | None) -> np.ndarray:
-    """Decode a TIFF at its NATIVE bit depth (see ``_TIFF_SUFFIXES``)."""
+def _decode_tiff(path: Path, max_dim: int | None) -> tuple[np.ndarray, float | None]:
+    """Decode a TIFF at its NATIVE bit depth (see ``_TIFF_SUFFIXES``).
+
+    Returns the array and its full-scale value — the number that means 1.0 for
+    the dtype the file was written at, or ``None`` when that dtype has no
+    defensible one (see ``_INTEGER_FULL_SCALE``). The decode is the only place
+    that knows the true depth: ``_resize_native`` hands back float32, so by the
+    time ``load_raster`` sees the array the dtype is gone and all that is left
+    is a guess from the data.
+    """
     import tifffile
 
     arr = np.asarray(tifffile.imread(path))
@@ -139,7 +163,7 @@ def _decode_tiff(path: Path, max_dim: int | None) -> np.ndarray:
             f"{path.name}: expected a single 2-D or 3-D TIFF page, got shape "
             f"{arr.shape}; the sidecar has no rule for choosing among planes"
         )
-    return _resize_native(arr, max_dim)
+    return _resize_native(arr, max_dim), _INTEGER_FULL_SCALE.get(arr.dtype)
 
 
 def image_dimensions(path: str | Path) -> tuple[int, int]:
@@ -240,8 +264,9 @@ def load_raster(path: str | Path, max_dim: int | None = None) -> np.ndarray:
     """
     path = Path(path)
     if path.suffix.lower() in _TIFF_SUFFIXES:
-        arr = _decode_tiff(path, max_dim)
+        arr, full_scale = _decode_tiff(path, max_dim)
     else:
+        full_scale = None
         Image.MAX_IMAGE_PIXELS = None  # professional mosaics exceed Pillow's default guard
         with Image.open(path) as im:
             if max_dim is not None and max(im.size) > max_dim:
@@ -250,6 +275,7 @@ def load_raster(path: str | Path, max_dim: int | None = None) -> np.ndarray:
                             max(1, round(im.size[1] * scale)))
                 im = im.resize(new_size)
             arr = np.asarray(im)
+            full_scale = _INTEGER_FULL_SCALE.get(arr.dtype)
 
     if arr.ndim == 2:
         arr = np.stack([arr] * 3, axis=-1)
@@ -258,10 +284,16 @@ def load_raster(path: str | Path, max_dim: int | None = None) -> np.ndarray:
 
     arr = arr.astype(np.float64)
     # Normalize integer ranges to [0, 1]; float rasters are assumed display-scaled.
-    max_value = float(arr.max()) if arr.size else 1.0
-    if max_value > 1.0:
-        # 8-bit -> 255, 16-bit -> 65535; infer the smallest standard range that fits.
-        divisor = 65535.0 if max_value > 255.0 else 255.0
-        arr = arr / divisor
+    if full_scale is not None:
+        # The decoder knew the true depth, so use it. A dark 16-bit candidate
+        # must not be rescaled as if it were 8-bit data (see _INTEGER_FULL_SCALE).
+        arr = arr / full_scale
+    else:
+        max_value = float(arr.max()) if arr.size else 1.0
+        if max_value > 1.0:
+            # No known full scale (float data, or an integer width with no
+            # standard range): infer the smallest standard range that fits.
+            divisor = 65535.0 if max_value > 255.0 else 255.0
+            arr = arr / divisor
 
     return np.clip(arr, 0.0, 1.0)
