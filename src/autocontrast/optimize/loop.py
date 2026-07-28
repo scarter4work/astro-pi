@@ -20,9 +20,8 @@ import numpy as np
 
 from autocontrast.fingerprint.distance import fingerprint_distance
 from autocontrast.fingerprint.extract import FingerprintData, extract
-from autocontrast.fingerprint.palette import palette_chroma_compatible
 
-from .actions import Action, available_actions
+from .actions import Action
 from .beam import BeamConfig, Branch, prune
 from .executor import Executor
 from .guardrails import GuardrailLimits, evaluate_guardrails
@@ -113,26 +112,17 @@ def _ranked_menu(
 ) -> list[Action]:
     """Every legal action for this state, in the proposer's own priority order.
 
-    ``propose_actions`` returns at most ``top_k`` entries, so obtaining the WHOLE
-    ranking means handing it a bound that cannot truncate the list. The menu is
-    that bound: ``available_actions`` is precisely what the proposer groups and
-    ranks, and a set of groups can never outnumber its members. Rebuilding the
-    menu here duplicates no ranking logic -- it only counts what is on offer --
-    and it tracks ``actions.py`` automatically if a kind is ever added.
+    ``top_k=None`` is ``propose_actions``'s own contract for "the whole
+    ranking, no truncation" -- this is not a second implementation of that
+    idea, it delegates outright. ``propose.py`` alone knows how the menu is
+    built and grouped; a second copy of that construction here could drift
+    from it (a new keyword argument, a changed ``psf_fwhm_arcsec`` expression)
+    and would then silently under-count the ranking, truncating exactly the
+    tail the bounded retry (SS3.3) exists to reach.
     """
-    compatible = palette_chroma_compatible(
-        reference_fp.palette_class, parent_fp.palette_class
-    )
-    menu = available_actions(
-        pixel_scale_arcsec=parent_fp.pixel_scale_arcsec,
-        psf_fwhm_arcsec=max(reference_fp.psf_fwhm_arcsec, parent_fp.psf_fwhm_arcsec),
-        n_scales=n_scales,
-        palette_compatible=compatible,
-        applied_kinds=applied_kinds,
-    )
     return propose_actions(
         reference_fp, parent_fp, applied_kinds=applied_kinds,
-        n_scales=n_scales, top_k=len(menu),
+        n_scales=n_scales, top_k=None,
     )
 
 
@@ -297,7 +287,8 @@ def advance(session: Session, executor: Executor, *, load, save,
     session.branches = survivors
     best_candidate = survivors[0]
     if best_candidate.distance < session.best.distance - session.config.epsilon_improve:
-        session.best = best_candidate  # checkpoint (§6.1)
+        session.best = best_candidate  # in-memory only; durability is Session.save (§2.1),
+        # called by the sidecar (Task 11) between loop calls, not by the loop itself
 
     session.distance_history.append(session.best.distance)
     _check_convergence(session)
