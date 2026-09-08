@@ -16,3 +16,6 @@ node_modules/
 
 # Ephemeral signing secrets (never commit)
 .pi_codesign_pass
+
+__pycache__/
+*.pyc
