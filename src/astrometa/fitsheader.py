@@ -9,7 +9,7 @@ class FitsHeaderError(Exception):
     pass
 
 
-def _parse_value(raw: str):
+def _parse_value(raw: str) -> str | int | float | bool:
     raw = raw.strip()
     if raw.startswith("'"):
         end = raw.find("'", 1)
@@ -29,8 +29,8 @@ def _parse_value(raw: str):
         return raw
 
 
-def read_header(path: Path) -> dict:
-    cards: dict = {}
+def read_header(path: Path) -> dict[str, str | int | float | bool]:
+    cards: dict[str, str | int | float | bool] = {}
     with open(path, "rb") as f:
         for _ in range(MAX_BLOCKS):
             block = f.read(BLOCK)
