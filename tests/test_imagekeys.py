@@ -1,4 +1,5 @@
 import numpy as np
+import pytest
 from astrometa import imagekeys
 
 
@@ -57,3 +58,23 @@ def test_pixel_stats_reports_background_and_saturation():
     bg, sat = imagekeys.pixel_stats(img)
     assert bg == 200.0
     assert abs(sat - 0.10) < 0.001
+
+
+def test_hamming_raises_on_mismatched_width():
+    # A width mismatch (e.g. one fingerprint from a different `size`, or a
+    # corrupt/truncated value) must not silently XOR as raw integers and
+    # produce a numerically plausible but meaningless distance — Task 6
+    # clusters frames by this distance, so a bad comparison here would
+    # silently misfile frames into the wrong sky-field group.
+    with pytest.raises(ValueError):
+        imagekeys.hamming("ab", "abcd")
+
+
+def test_pixel_stats_raises_on_nan_pixels():
+    # NaN pixels must not silently propagate into bg_median/saturated_frac:
+    # a NaN there would make every later threshold comparison silently
+    # false (e.g. session culling in Task 11) instead of raising loudly.
+    img = np.full((10, 10), 200.0)
+    img[0, 0] = np.nan
+    with pytest.raises(ValueError):
+        imagekeys.pixel_stats(img)

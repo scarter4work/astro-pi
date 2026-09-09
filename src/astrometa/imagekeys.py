@@ -46,9 +46,28 @@ def fingerprint(pixels: np.ndarray, size: int = 16) -> str:
 
 
 def hamming(a: str, b: str) -> int:
+    if len(a) != len(b):
+        raise ValueError(
+            f"cannot compare fingerprints of different width: "
+            f"{len(a)} hex chars vs {len(b)} hex chars"
+        )
     return bin(int(a, 16) ^ int(b, 16)).count("1")
 
 
 def pixel_stats(pixels: np.ndarray) -> tuple[float, float]:
+    """
+    Returns (background_median, saturated_fraction) for a raw pixel array.
+
+    Unlike fingerprint()'s degenerate-image handling, non-finite pixel
+    data here is a hard error rather than a sentinel result: bg_median
+    feeds directly into downstream quality thresholds (e.g. session
+    culling), and np.median/.mean() would otherwise propagate NaN into
+    that value silently — a NaN there makes every later `<` / `>`
+    comparison against it silently false instead of raising, which is
+    exactly the quiet-wrong-answer failure mode this project's
+    no-silent-fallbacks rule exists to prevent.
+    """
     a = np.asarray(pixels, dtype=np.float64)
+    if not np.isfinite(a).all():
+        raise ValueError("pixel_stats: input contains NaN or infinite pixels")
     return float(np.median(a)), float((a >= SATURATION_LEVEL).mean())
