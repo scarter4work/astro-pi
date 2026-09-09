@@ -28,7 +28,14 @@ namespace nukex {
 // percentiles.  Costs one getenv at Phase B entry when unset.
 //
 // Layout: int32 width, height, n_channels, then
-//         float32 race[ch][y][x] followed by float32 huber[ch][y][x].
+//         float32 race[ch][y][x], float32 huber[ch][y][x],
+//         float32 shape[ch][y][x]  (DistributionShape of the winning model).
+//
+// The third plane exists so a HYBRID can be scored offline -- "the race,
+// except fall back to Huber wherever the GMM won" -- without re-running the
+// stack.  Without it, the benefit of gating one model could only be inferred
+// from an unrelated statistic, and the driver of this ratio has already been
+// guessed wrong twice.
 // ══════════════════════════════════════════════════════════════════════
 namespace mudump {
 
@@ -512,10 +519,12 @@ void GPUExecutor::execute_phase_b(
 
     // ── research instrumentation (NUKEX_DUMP_MU), see mudump above ──
     const char* mu_dump_path = std::getenv("NUKEX_DUMP_MU");
-    std::vector<float> mu_race, mu_huber;
+    std::vector<float> mu_race, mu_huber, mu_shape;
     if (mu_dump_path && *mu_dump_path) {
         mu_race.assign(static_cast<size_t>(total_voxels) * n_channels, 0.0f);
         mu_huber.assign(static_cast<size_t>(total_voxels) * n_channels, 0.0f);
+        // 255 = "never fitted", distinct from every real DistributionShape.
+        mu_shape.assign(static_cast<size_t>(total_voxels) * n_channels, 255.0f);
     }
     const bool mu_dump = !mu_race.empty();
 
@@ -606,6 +615,8 @@ void GPUExecutor::execute_phase_b(
                     mu_huber[o] = mudump::huber_irls(vals.data() + ch * N,
                                                      wts.data() + ch * N,
                                                      nf_ch[ch], 6, scratch.data());
+                    mu_shape[o] = static_cast<float>(
+                        static_cast<int>(voxel.channel(ch).distribution.shape));
                 }
             }
 
@@ -645,6 +656,7 @@ void GPUExecutor::execute_phase_b(
             std::fwrite(hdr, sizeof(int), 3, f);
             std::fwrite(mu_race.data(),  sizeof(float), mu_race.size(),  f);
             std::fwrite(mu_huber.data(), sizeof(float), mu_huber.size(), f);
+            std::fwrite(mu_shape.data(), sizeof(float), mu_shape.size(), f);
             std::fclose(f);
             obs.message("NUKEX_DUMP_MU: wrote " + std::string(mu_dump_path));
         }
