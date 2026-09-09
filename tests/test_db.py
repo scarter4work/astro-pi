@@ -1,4 +1,7 @@
 import sqlite3
+
+import pytest
+
 from astrometa import db
 
 def test_init_schema_creates_expected_tables(tmp_path):
@@ -33,3 +36,25 @@ def test_frames_primary_key_is_content_hash(tmp_path):
         raise AssertionError("duplicate content_hash must be rejected")
     except sqlite3.IntegrityError:
         pass
+
+
+def test_disposition_is_constrained_to_the_three_contract_values(tmp_path):
+    # 'present' / 'missing' / 'quarantined' are a contract across four
+    # modules, and inventory's rescan guard compares a bare literal
+    # (CASE WHEN disposition='quarantined'). A typo anywhere would
+    # silently defeat that guard instead of failing.
+    conn = db.connect(tmp_path / "t.sqlite"); db.init_schema(conn)
+    with pytest.raises(sqlite3.IntegrityError):
+        conn.execute("""INSERT INTO frames (content_hash, path, filename,
+            size, mtime, frame_type, disposition)
+            VALUES ('h1','/x/a.fit','a.fit',1,1.0,'light','quarantine')""")
+
+
+@pytest.mark.parametrize("value", ["present", "missing", "quarantined"])
+def test_the_three_contract_dispositions_are_accepted(tmp_path, value):
+    conn = db.connect(tmp_path / "t.sqlite"); db.init_schema(conn)
+    conn.execute("""INSERT INTO frames (content_hash, path, filename,
+        size, mtime, frame_type, disposition)
+        VALUES ('h1','/x/a.fit','a.fit',1,1.0,'light',?)""", (value,))
+    assert conn.execute(
+        "SELECT disposition FROM frames").fetchone()[0] == value

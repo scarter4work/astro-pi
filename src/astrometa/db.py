@@ -21,7 +21,12 @@ CREATE TABLE IF NOT EXISTS frames (
   naxis1 INTEGER, naxis2 INTEGER,
   fingerprint TEXT, bg_median REAL, saturated_frac REAL,
   field_id INTEGER REFERENCES fields(id),
-  disposition TEXT NOT NULL,
+  -- These three values are a contract across inventory, disposition,
+  -- manifest and quality, and inventory's rescan guard compares a
+  -- bare literal (CASE WHEN disposition='quarantined'). A typo
+  -- anywhere would silently defeat that guard rather than fail.
+  disposition TEXT NOT NULL
+    CHECK (disposition IN ('present', 'missing', 'quarantined')),
   disposition_reason TEXT, disposition_at TEXT, disposition_source TEXT,
   read_error TEXT
 );
