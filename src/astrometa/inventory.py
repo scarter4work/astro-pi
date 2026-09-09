@@ -250,15 +250,37 @@ def scan(conn, roots, read_pixels: bool = True) -> InventoryResult:
                 size=excluded.size,
                 mtime=excluded.mtime,
                 last_seen=excluded.last_seen,
-                frame_type=excluded.frame_type,
+                -- frame_type is header-derived and gated like its
+                -- siblings, NOT unconditional. classify() falls back to
+                -- the filename when the header is empty, so a frame with
+                -- IMAGETYP='Light Frame' but an Autosave* name scans as
+                -- 'light' and an unconditional update would REWRITE it to
+                -- 'derived' on any rescan whose header read failed --
+                -- dropping it out of cluster.assign_fields and
+                -- build_projects, both of which filter frame_type='light'.
+                frame_type=CASE WHEN :header_ok THEN excluded.frame_type
+                                ELSE frame_type END,
                 camera=CASE WHEN :header_ok THEN excluded.camera
                             ELSE camera END,
                 filter=CASE WHEN :header_ok THEN excluded.filter
                             ELSE filter END,
                 exptime=CASE WHEN :header_ok THEN excluded.exptime
                              ELSE exptime END,
+                -- captured_at is the one header-derived column with a
+                -- source that needs no header: _captured_at falls back to
+                -- the filename capture instant (spec 7), and with a failed
+                -- header read `excluded.captured_at` IS that fallback. A
+                -- plain :header_ok gate therefore made the fallback apply
+                -- on first insert but never on a rescan whose header
+                -- failed -- the one case it was added for, e.g. a
+                -- manifest-restored row that carried no capture instant.
+                -- COALESCE order matters: when the header IS readable it
+                -- stays authoritative, and when it is not, an already
+                -- recorded DATE-OBS (UTC, sub-second) is never downgraded
+                -- to the filename's local wall-clock token.
                 captured_at=CASE WHEN :header_ok THEN excluded.captured_at
-                                 ELSE captured_at END,
+                                 ELSE COALESCE(captured_at,
+                                               excluded.captured_at) END,
                 object_card=CASE WHEN :header_ok THEN excluded.object_card
                                  ELSE object_card END,
                 leaf_dir=excluded.leaf_dir,

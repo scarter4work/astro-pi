@@ -485,3 +485,114 @@ def test_captured_at_is_null_when_neither_source_has_one(tmp_path):
     conn = db.connect(tmp_path / "t.sqlite"); db.init_schema(conn)
     inventory.scan(conn, [tmp_path / "astro_data"])
     assert conn.execute("SELECT captured_at FROM frames").fetchone()[0] is None
+
+
+# --- Corrections to FIX 1/8: two regressions in the same update clause
+
+
+def _failing_header_read(monkeypatch):
+    """Make the next scan's header read fail while the pixel read still
+    succeeds -- a transient header failure on bytes that parsed fine
+    before."""
+    def _boom(path):
+        raise inventory.fitsheader.FitsHeaderError("transient header failure")
+    monkeypatch.setattr(inventory.fitsheader, "read_header", _boom)
+
+
+def test_transient_header_failure_does_not_reclassify_a_light_frame(tmp_path):
+    # frame_type was the one header-derived column left updating
+    # unconditionally. classify() falls back to the filename when the
+    # header is empty, so a frame with IMAGETYP='Light Frame' but an
+    # Autosave* name scans as 'light' and then gets REWRITTEN to
+    # 'derived' by a rescan whose header read failed -- dropping it out
+    # of cluster.assign_fields and build_projects, both of which filter
+    # frame_type='light'. That is the silent-drop class FIX 1 exists to
+    # close, reintroduced by a column FIX 1 newly added to the clause.
+    import pytest as _pytest
+    from astrometa import cluster
+
+    root = tmp_path / "astro_data" / "d"; root.mkdir(parents=True)
+    _write_with_cards(root / "Autosave001.fit",
+                      {"IMAGETYP": "Light Frame", "RA": 83.8, "DEC": -5.4,
+                       "FOCALLEN": 491.0, "XPIXSZ": 2.9})
+    conn = db.connect(tmp_path / "t.sqlite"); db.init_schema(conn)
+    inventory.scan(conn, [tmp_path / "astro_data"])
+    assert conn.execute("SELECT frame_type FROM frames").fetchone()[0] == "light"
+
+    mp = _pytest.MonkeyPatch()
+    try:
+        _failing_header_read(mp)
+        res = inventory.scan(conn, [tmp_path / "astro_data"])
+    finally:
+        mp.undo()
+    assert res.failed == 1
+
+    assert conn.execute("SELECT frame_type FROM frames").fetchone()[0] == "light"
+    # The concrete consequence: the frame is still clusterable.
+    assert cluster.assign_fields(conn) == 1
+
+
+def test_a_readable_header_still_reclassifies_a_renamed_frame(tmp_path):
+    # The gate must not freeze frame_type forever: when the header IS
+    # readable it remains authoritative, so a corrected IMAGETYP still
+    # takes effect on rescan.
+    root = tmp_path / "astro_data" / "d"; root.mkdir(parents=True)
+    _write_with_cards(root / "Light_x_0001.fit", {"IMAGETYP": "Light Frame"})
+    conn = db.connect(tmp_path / "t.sqlite"); db.init_schema(conn)
+    inventory.scan(conn, [tmp_path / "astro_data"])
+    conn.execute("UPDATE frames SET frame_type='unknown'")
+    conn.commit()
+    inventory.scan(conn, [tmp_path / "astro_data"])
+    assert conn.execute("SELECT frame_type FROM frames").fetchone()[0] == "light"
+
+
+def test_filename_fallback_fills_captured_at_when_the_header_read_fails(tmp_path):
+    # captured_at was gated on :header_ok, so FIX 8's filename fallback
+    # applied on first insert but never on a rescan whose header read
+    # failed -- the one case it was added for. A row restored from a
+    # manifest that carried no captured_at could therefore never acquire
+    # one from its own filename.
+    import pytest as _pytest
+
+    root = tmp_path / "astro_data" / "d"; root.mkdir(parents=True)
+    _write_with_cards(
+        root / "Light_M 42_120.0s_Bin1_HaO3_20260908-220000_0deg_0001.fit", {})
+    conn = db.connect(tmp_path / "t.sqlite"); db.init_schema(conn)
+    inventory.scan(conn, [tmp_path / "astro_data"])
+    # A manifest-restored row that carried no capture instant.
+    conn.execute("UPDATE frames SET captured_at=NULL")
+    conn.commit()
+
+    mp = _pytest.MonkeyPatch()
+    try:
+        _failing_header_read(mp)
+        inventory.scan(conn, [tmp_path / "astro_data"])
+    finally:
+        mp.undo()
+
+    assert conn.execute("SELECT captured_at FROM frames").fetchone()[0] \
+        == "2026-09-08T22:00:00"
+
+
+def test_a_recorded_date_obs_is_not_clobbered_by_the_filename_fallback(tmp_path):
+    # DATE-OBS is the better source (UTC, sub-second); the filename token
+    # is local wall-clock. A later header failure must not downgrade a
+    # captured_at that was read from DATE-OBS.
+    import pytest as _pytest
+
+    root = tmp_path / "astro_data" / "d"; root.mkdir(parents=True)
+    _write_with_cards(
+        root / "Light_M 42_120.0s_Bin1_HaO3_20260908-220000_0deg_0001.fit",
+        {"DATE-OBS": "2026-09-09T03:00:00.500"})
+    conn = db.connect(tmp_path / "t.sqlite"); db.init_schema(conn)
+    inventory.scan(conn, [tmp_path / "astro_data"])
+
+    mp = _pytest.MonkeyPatch()
+    try:
+        _failing_header_read(mp)
+        inventory.scan(conn, [tmp_path / "astro_data"])
+    finally:
+        mp.undo()
+
+    assert conn.execute("SELECT captured_at FROM frames").fetchone()[0] \
+        == "2026-09-09T03:00:00.500"
