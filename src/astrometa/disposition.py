@@ -168,13 +168,41 @@ def quarantine(conn: sqlite3.Connection, content_hash: str, reason: str,
     real. In a real (dry_run=False) run this check is redundant with
     what shutil.move would raise anyway, but making it explicit keeps
     dry_run and real runs honest about the same failure the same way.
+
+    Idempotent: a frame already recorded as `quarantined`, or whose
+    recorded path already sits under a `rejected/` directory (checked
+    independently, as a structural fallback in case disposition
+    somehow disagrees), is not moved again -- this returns its current
+    location unchanged. Without this, a second call on the same
+    content_hash (a quality-gate re-run, an operator re-applying
+    mark_culled then quarantine) would recompute `dest` from the
+    already-relocated path and nest into `rejected/rejected/...`
+    without bound. A repeat call makes no database write either: the
+    reason recorded by the original quarantine is left as-is rather
+    than silently overwritten by a differently-worded repeat call.
+
+    Refuses to move onto an existing destination: if `dest` already
+    exists, this raises FileExistsError -- in both dry_run and real
+    mode, naming both paths, and leaves the source untouched -- rather
+    than moving. `shutil.move` silently overwrites an existing
+    destination on the same filesystem (it falls back to `os.rename`,
+    which does not error), and that would itself be a deletion on the
+    one function in this system that promises never to delete. This
+    isn't hypothetical: the operator's own manual culling method is to
+    move a bad sub into `rejected/` by hand, so that directory routinely
+    already holds files he put there himself, and filenames in this
+    archive are not unique. A name collision in `rejected/` is for the
+    operator to see and resolve -- this deliberately does not invent a
+    uniquifying suffix to paper over it.
     """
-    row = conn.execute("SELECT path FROM frames WHERE content_hash=?",
-                       (content_hash,)).fetchone()
+    row = conn.execute("SELECT path, disposition FROM frames WHERE "
+                       "content_hash=?", (content_hash,)).fetchone()
     if row is None:
         return None
 
     src = Path(row[0])
+    already_quarantined = row[1] == "quarantined" or src.parent.name == "rejected"
+
     if not src.exists():
         raise FileNotFoundError(
             f"quarantine: frame {content_hash} is recorded at {src} but "
@@ -183,7 +211,18 @@ def quarantine(conn: sqlite3.Connection, content_hash: str, reason: str,
             f"frame was already moved/quarantined or the archive path "
             f"has drifted.")
 
+    if already_quarantined:
+        return src
+
     dest = src.parent / "rejected" / src.name
+    if dest.exists():
+        raise FileExistsError(
+            f"quarantine: refusing to move {src} to {dest} -- a file "
+            f"already exists at the destination (the operator's own "
+            f"manual culling routinely leaves files in rejected/, and "
+            f"filenames in this archive are not unique). Resolve the "
+            f"collision by hand; this will not overwrite or rename "
+            f"around it.")
     if dry_run:
         return dest
 

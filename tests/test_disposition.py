@@ -102,6 +102,87 @@ def test_quarantine_raises_loudly_when_source_file_already_gone(tmp_path):
         disposition.quarantine(conn, "h1", "hfd", dry_run=False)
 
 
+def test_quarantine_is_idempotent_on_repeat_calls(tmp_path):
+    # A quality-gate re-run or an operator re-applying mark_culled then
+    # quarantine must not nest rejected/rejected/ on the second call --
+    # once a frame is quarantined, quarantine() is a no-op that reports
+    # where the frame already lives.
+    src = tmp_path / "M 42" / "Light_M 42_0001.fit"
+    src.parent.mkdir(parents=True); src.write_bytes(b"x")
+    conn = db.connect(tmp_path / "t.sqlite"); db.init_schema(conn)
+    _frame(conn, "h1", str(src))
+
+    dest1 = disposition.quarantine(conn, "h1", "hfd 6.2 > 5.1", dry_run=False)
+    dest2 = disposition.quarantine(conn, "h1", "hfd re-check", dry_run=False)
+
+    assert dest2 == dest1
+    assert dest2.parent.name == "rejected"
+    assert not (dest1.parent / "rejected").exists()   # no nested rejected/rejected
+    assert dest2.exists() and dest2.read_bytes() == b"x"
+    # The repeat call is a true no-op: it doesn't touch the database, so
+    # the originally recorded reason survives rather than being silently
+    # overwritten by the second call's (different) reason.
+    row = conn.execute("SELECT disposition_reason FROM frames WHERE "
+                       "content_hash='h1'").fetchone()
+    assert row[0] == "hfd 6.2 > 5.1"
+
+
+def test_quarantine_treats_a_path_already_under_rejected_as_idempotent(tmp_path):
+    # Defense in depth beyond the disposition check: even if disposition
+    # somehow isn't (yet) 'quarantined', a recorded path that already
+    # lives under a rejected/ directory must never be nested into
+    # rejected/rejected/ -- the structural signal is checked independently.
+    rejected_dir = tmp_path / "M 42" / "rejected"
+    rejected_dir.mkdir(parents=True)
+    f = rejected_dir / "Light_M 42_0001.fit"
+    f.write_bytes(b"x")
+    conn = db.connect(tmp_path / "t.sqlite"); db.init_schema(conn)
+    _frame(conn, "h1", str(f))   # disposition column is still 'present'
+    dest = disposition.quarantine(conn, "h1", "hfd", dry_run=False)
+    assert dest == f
+    assert f.exists()
+    assert not (rejected_dir / "rejected").exists()
+
+
+def test_quarantine_refuses_to_overwrite_an_existing_destination(tmp_path):
+    # The operator's own manual culling method is "move the bad sub into
+    # rejected/ by hand" -- that directory routinely already holds files
+    # he put there himself, and filenames in this archive are not
+    # unique. A machine silently overwriting a hand-culled frame via
+    # shutil.move's os.rename fallback would itself be a deletion, on
+    # the one function in this system that promises never to delete.
+    src = tmp_path / "M 42" / "Light_M 42_0001.fit"
+    src.parent.mkdir(parents=True); src.write_bytes(b"new frame")
+    existing = src.parent / "rejected" / src.name
+    existing.parent.mkdir(parents=True)
+    existing.write_bytes(b"operator's hand-culled frame")
+    conn = db.connect(tmp_path / "t.sqlite"); db.init_schema(conn)
+    _frame(conn, "h1", str(src))
+
+    with pytest.raises(FileExistsError):
+        disposition.quarantine(conn, "h1", "hfd", dry_run=False)
+    assert src.exists() and src.read_bytes() == b"new frame"
+    assert existing.read_bytes() == b"operator's hand-culled frame"
+
+
+def test_quarantine_dry_run_also_refuses_a_destination_collision(tmp_path):
+    # Consistent with the FileNotFoundError check: a dry run that reports
+    # a move as feasible when it would actually clobber something is
+    # itself a silent-fallback bug.
+    src = tmp_path / "M 42" / "Light_M 42_0001.fit"
+    src.parent.mkdir(parents=True); src.write_bytes(b"new frame")
+    existing = src.parent / "rejected" / src.name
+    existing.parent.mkdir(parents=True)
+    existing.write_bytes(b"operator's hand-culled frame")
+    conn = db.connect(tmp_path / "t.sqlite"); db.init_schema(conn)
+    _frame(conn, "h1", str(src))
+
+    with pytest.raises(FileExistsError):
+        disposition.quarantine(conn, "h1", "hfd", dry_run=True)
+    assert src.exists()
+    assert existing.read_bytes() == b"operator's hand-culled frame"
+
+
 def test_session_thresholds_scale_with_the_night():
     good = [2.0, 2.1, 2.2, 2.0, 2.3]
     poor = [5.0, 5.2, 5.1, 5.3, 5.1]
