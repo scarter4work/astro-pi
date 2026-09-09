@@ -182,3 +182,151 @@ def test_missing_root_raises_even_when_another_root_is_valid(tmp_path):
     conn = db.connect(tmp_path / "t.sqlite"); db.init_schema(conn)
     with pytest.raises(FileNotFoundError):
         inventory.scan(conn, [ok, missing])
+
+
+# --- FIX 1: the upsert must refresh every column a scan derives -------
+#
+# The original ON CONFLICT clause set only path/last_seen/disposition/
+# read_error, so any row that reached the table by a route other than a
+# successful scan -- a manifest restore, or a scan whose pixel read
+# failed -- could never acquire its derived columns, no matter how many
+# times the archive was rescanned.
+
+
+def test_rescan_after_manifest_restore_repopulates_derived_columns(tmp_path):
+    # Manifest restore is a first-class durability guarantee (spec 3, 10),
+    # but a manifest carries no header_ra/focallen/naxis/bg_median and only
+    # the fingerprint. Restoring into a fresh database and then rescanning
+    # the real files must yield a store that can actually be clustered --
+    # cluster.assign_fields requires header_ra, header_dec, focallen,
+    # xpixsz, naxis1 and naxis2, none of which the old upsert would fill.
+    from astrometa import cluster, manifest
+
+    def _write_indexed(path, index):
+        # Identical pixels (so both frames share a fingerprint and cluster
+        # into one field) but distinct bytes, so they are two distinct
+        # content_hash identities rather than one.
+        rng = np.random.default_rng(1)
+        hdu = fits.PrimaryHDU(rng.normal(100, 5, (64, 64)).astype(np.float32))
+        hdu.header["OBJECT"] = "M 42"
+        hdu.header["RA"] = 83.8
+        hdu.header["DEC"] = -5.4
+        hdu.header["INSTRUME"] = "ZWO ASI585MC Air"
+        hdu.header["FILTER"] = "HaO3"
+        hdu.header["EXPTIME"] = 120.0
+        hdu.header["FOCALLEN"] = 491.0
+        hdu.header["XPIXSZ"] = 2.9
+        hdu.header["IMAGETYP"] = "Light Frame"
+        hdu.header["FRAMENUM"] = index
+        hdu.writeto(path, overwrite=True)
+
+    leaf = tmp_path / "astro_data" / "2026-09-08" / "M 42"
+    leaf.mkdir(parents=True)
+    _write_indexed(leaf / "Light_M 42_a_0001.fit", 1)
+    _write_indexed(leaf / "Light_M 42_a_0002.fit", 2)
+
+    original = db.connect(tmp_path / "a.sqlite"); db.init_schema(original)
+    inventory.scan(original, [tmp_path / "astro_data"])
+    manifest_path = manifest.export_dir(original, leaf, out_dir=tmp_path / "m")
+
+    # DB lost; rebuild from the sidecar, then rescan the real files.
+    restored = db.connect(tmp_path / "b.sqlite"); db.init_schema(restored)
+    assert manifest.import_file(restored, manifest_path) == 2
+    assert restored.execute(
+        "SELECT COUNT(*) FROM frames WHERE header_ra IS NOT NULL"
+    ).fetchone()[0] == 0
+
+    res = inventory.scan(restored, [tmp_path / "astro_data"])
+    assert res.added == 0 and res.updated == 2
+
+    row = restored.execute(
+        "SELECT header_ra, header_dec, focallen, xpixsz, naxis1, naxis2, "
+        "bg_median, saturated_frac, fingerprint FROM frames "
+        "ORDER BY filename").fetchone()
+    assert row[0] is not None and row[1] is not None
+    assert row[2] == 491.0 and row[3] == 2.9
+    assert row[4] == 64 and row[5] == 64
+    assert row[6] is not None and row[7] is not None and row[8] is not None
+
+    # The whole point: a restored store must be clusterable.
+    assert cluster.assign_fields(restored) == 1
+    assert restored.execute(
+        "SELECT COUNT(*) FROM frames WHERE field_id IS NOT NULL"
+    ).fetchone()[0] == 2
+
+
+def test_successful_rescan_fills_columns_a_failed_pixel_read_left_null(tmp_path):
+    # A transient pixel-read failure (a NAS hiccup) records read_error and
+    # leaves fingerprint/bg_median/saturated_frac NULL. The next SUCCESSFUL
+    # scan of the same bytes cleared read_error but never filled those
+    # columns, so the frame dropped out of clustering (which requires
+    # fingerprint IS NOT NULL) with nothing left on record to say why.
+    root = tmp_path / "astro_data" / "d"; root.mkdir(parents=True)
+    _write_light(root / "Light_M 42_a_0001.fit")
+    conn = db.connect(tmp_path / "t.sqlite"); db.init_schema(conn)
+
+    real_getdata = inventory.fits.getdata
+
+    def _transient(*a, **kw):
+        raise OSError("transient read failure")
+
+    inventory.fits.getdata = _transient
+    try:
+        first = inventory.scan(conn, [tmp_path / "astro_data"])
+    finally:
+        inventory.fits.getdata = real_getdata
+    assert first.added == 1 and first.failed == 1
+    assert conn.execute(
+        "SELECT fingerprint FROM frames").fetchone()[0] is None
+
+    second = inventory.scan(conn, [tmp_path / "astro_data"])
+    assert second.updated == 1 and second.failed == 0
+    fp, bg, sat, err = conn.execute(
+        "SELECT fingerprint, bg_median, saturated_frac, read_error "
+        "FROM frames").fetchone()
+    assert err is None
+    assert fp is not None and bg is not None and sat is not None
+
+
+def test_pixel_read_failure_does_not_wipe_a_previously_good_fingerprint(tmp_path):
+    # The converse of the above, and the reason the refreshed columns are
+    # gated on which read actually succeeded rather than written blindly
+    # from `excluded`: a later transient failure must not overwrite good
+    # derived values with NULL. cluster._seed_reps only considers frames
+    # with a non-null fingerprint as field representatives, so nulling one
+    # would silently drop a field's representative and spawn duplicate
+    # fields on the next clustering run.
+    root = tmp_path / "astro_data" / "d"; root.mkdir(parents=True)
+    _write_light(root / "Light_M 42_a_0001.fit")
+    conn = db.connect(tmp_path / "t.sqlite"); db.init_schema(conn)
+    inventory.scan(conn, [tmp_path / "astro_data"])
+    good_fp = conn.execute("SELECT fingerprint FROM frames").fetchone()[0]
+    assert good_fp is not None
+
+    real_getdata = inventory.fits.getdata
+
+    def _transient(*a, **kw):
+        raise OSError("transient read failure")
+
+    inventory.fits.getdata = _transient
+    try:
+        inventory.scan(conn, [tmp_path / "astro_data"])
+    finally:
+        inventory.fits.getdata = real_getdata
+
+    fp, err = conn.execute(
+        "SELECT fingerprint, read_error FROM frames").fetchone()
+    assert fp == good_fp
+    assert err is not None and err.startswith("pixels:")
+
+
+def test_first_seen_is_preserved_across_rescans(tmp_path):
+    root = tmp_path / "astro_data" / "d"; root.mkdir(parents=True)
+    _write_light(root / "Light_M 42_a_0001.fit")
+    conn = db.connect(tmp_path / "t.sqlite"); db.init_schema(conn)
+    inventory.scan(conn, [tmp_path / "astro_data"])
+    first_seen = conn.execute("SELECT first_seen FROM frames").fetchone()[0]
+    inventory.scan(conn, [tmp_path / "astro_data"])
+    row = conn.execute("SELECT first_seen, last_seen FROM frames").fetchone()
+    assert row[0] == first_seen
+    assert row[1] >= first_seen
