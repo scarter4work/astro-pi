@@ -9,16 +9,26 @@ from astrometa.config import Config
 FIXTURE = Path(__file__).parent / "fixtures" / "solved.ini"
 
 # A stub "astap_cli" used in place of the real binary. It never touches
-# star catalogs -- it only mimics the one behaviour these tests care about:
+# star catalogs -- it only mimics the behaviours these tests care about:
 # astap_cli writes its .ini sidecar NEXT TO whatever file it was given via
-# -f. Controlled entirely through env vars (inherited from the test
-# process, since solve_frame's subprocess.run call passes no explicit env)
-# so one stub script covers every scenario below:
-#   STUB_MODE=solved (default)  -> writes STUB_INI_TEXT (or a canned
-#                                   PLTSOLVD=T block) next to the -f path
-#   STUB_MODE=no_ini             -> writes nothing (simulates an
-#                                   unsolvable frame -- no star field to
-#                                   match, e.g. Moon/planet frames)
+# -f, and (measured 2026-09-09 against the real binary) returns exit code
+# 1 for BOTH a genuinely unsolvable frame and an environment problem
+# (missing star database, unreadable input) while still writing an .ini
+# with an ERROR field for the latter. Controlled entirely through env
+# vars (inherited from the test process, since solve_frame's
+# subprocess.run call passes no explicit env) so one stub script covers
+# every scenario below:
+#   STUB_MODE=solved (default)  -> prints a line to stdout, writes
+#                                   STUB_INI_TEXT (or a canned PLTSOLVD=T
+#                                   block) next to the -f path, exits
+#                                   STUB_EXIT_CODE (default 0)
+#   STUB_MODE=no_ini             -> writes nothing, exits 0 (simulates a
+#                                   crash-free run that still produced no
+#                                   sidecar)
+#   STUB_MODE=crash              -> prints to stdout/stderr, writes no
+#                                   .ini, exits 139 (simulates a hard
+#                                   crash -- the case _diagnostics exists
+#                                   for)
 #   STUB_MODE=sleep              -> sleeps STUB_SLEEP seconds, writes
 #                                   nothing (used to exercise the timeout
 #                                   path without waiting on the real 120s)
@@ -43,13 +53,19 @@ def main():
         return
     if mode == "no_ini":
         return
+    if mode == "crash":
+        print("simulated astap_cli crash: assertion failed at foo.pas:123")
+        print("segmentation fault detected", file=sys.stderr)
+        sys.exit(139)
 
     f_path = Path(argv[argv.index("-f") + 1])
+    print(f"stub astap_cli solving {f_path.name}")
     ini_text = os.environ.get(
         "STUB_INI_TEXT",
         "PLTSOLVD=T\\nCRVAL1=10.0\\nCRVAL2=20.0\\nCDELT1=0.0003\\nCROTA1=1.5\\n",
     )
     f_path.with_suffix(".ini").write_text(ini_text)
+    sys.exit(int(os.environ.get("STUB_EXIT_CODE", "0")))
 
 if __name__ == "__main__":
     main()
@@ -65,9 +81,11 @@ def _make_stub(tmp_path: Path) -> Path:
 
 
 def _cfg(tmp_path: Path, astap_bin: Path) -> Config:
+    db_dir = tmp_path / "astap_db"
+    db_dir.mkdir(exist_ok=True)
     return Config(scratch_dir=tmp_path / "scratch",
                   astap_bin=astap_bin,
-                  astap_db_dir=tmp_path / "astap_db")
+                  astap_db_dir=db_dir)
 
 
 def test_parse_ini_extracts_solution():
@@ -89,6 +107,21 @@ def test_parse_ini_reports_failure():
 
 def test_parse_ini_on_empty_input_is_unsolved():
     assert solve.parse_ini("")["solved"] is False
+
+
+def test_parse_ini_surfaces_error_field_on_failure():
+    # Measured 2026-09-09 against the real binary: `-d /nonexistent-dir`
+    # produces exactly this shape -- PLTSOLVD=F plus an ERROR field, no
+    # WARNING. ERROR is astap_cli's own diagnosis of an environment
+    # problem and must not be dropped.
+    r = solve.parse_ini("PLTSOLVD=F\nCMDLINE=x\nERROR=No star database found.\n")
+    assert r["solved"] is False
+    assert r["warning"] == "No star database found."
+
+
+def test_parse_ini_prefers_error_over_warning():
+    r = solve.parse_ini("PLTSOLVD=F\nERROR=db missing\nWARNING=some other text\n")
+    assert r["warning"] == "db missing"
 
 
 def test_solve_frame_stub_solver_leaves_source_directory_clean(tmp_path, monkeypatch):
@@ -157,9 +190,13 @@ def test_solve_frame_blind_search_uses_wide_radius_when_no_hint(tmp_path, monkey
 
 
 def test_solve_frame_no_ini_produced_is_recorded_as_unsolved(tmp_path, monkeypatch):
-    # Simulates a genuinely unsolvable frame (Moon/planet/bright star --
-    # no star field to match): astap_cli exits without ever writing an
-    # .ini, so this must be reported as a normal (not exceptional) failure.
+    # Defensive fallback path: astap_cli exits cleanly without ever
+    # writing an .ini at all. The real binary was measured (2026-09-09)
+    # to still write an .ini even for a genuinely unsolvable Moon frame
+    # (see test_solve_frame_genuine_no_solution_carries_only_diagnostics
+    # below), so this covers the code path's handling of the case where
+    # even that doesn't happen -- this must still be reported as a
+    # normal (not exceptional) failure, with its exit code recorded.
     source_dir = tmp_path / "source"
     source_dir.mkdir()
     frame = source_dir / "frame.fit"
@@ -172,7 +209,78 @@ def test_solve_frame_no_ini_produced_is_recorded_as_unsolved(tmp_path, monkeypat
     result = solve.solve_frame(cfg, frame, hint=None)
 
     assert result["solved"] is False
-    assert result["warning"] == "no .ini produced"
+    assert result["warning"] == "no .ini produced (exit 0)"
+
+
+def test_solve_frame_no_ini_produced_includes_exit_code_and_output(tmp_path, monkeypatch):
+    # A hard crash (missing shared library, segfault, ...): no .ini, but
+    # astap_cli's stdout/stderr before it died is exactly the diagnostic
+    # an operator needs, and it must not be discarded.
+    source_dir = tmp_path / "source"
+    source_dir.mkdir()
+    frame = source_dir / "frame.fit"
+    frame.write_bytes(b"x")
+
+    stub = _make_stub(tmp_path)
+    monkeypatch.setenv("STUB_MODE", "crash")
+
+    cfg = _cfg(tmp_path, stub)
+    result = solve.solve_frame(cfg, frame, hint=None)
+
+    assert result["solved"] is False
+    assert "no .ini produced" in result["warning"]
+    assert "exit 139" in result["warning"]
+    assert "simulated astap_cli crash" in result["warning"]
+
+
+def test_solve_frame_environment_failure_carries_ini_error_and_diagnostics(tmp_path, monkeypatch):
+    # Reproduces the exact shape measured against the real binary for a
+    # bad database directory: an .ini IS produced, PLTSOLVD=F, with an
+    # ERROR field and exit code 1 -- the same exit code a genuinely
+    # unsolvable frame produces, so the ERROR text plus diagnostics is
+    # what must make it into solve_error, not a bare "solve failed".
+    source_dir = tmp_path / "source"
+    source_dir.mkdir()
+    frame = source_dir / "frame.fit"
+    frame.write_bytes(b"x")
+
+    stub = _make_stub(tmp_path)
+    monkeypatch.setenv("STUB_MODE", "solved")
+    monkeypatch.setenv("STUB_EXIT_CODE", "1")
+    monkeypatch.setenv("STUB_INI_TEXT",
+                        "PLTSOLVD=F\nERROR=No star database found.\n")
+
+    cfg = _cfg(tmp_path, stub)
+    result = solve.solve_frame(cfg, frame, hint=None)
+
+    assert result["solved"] is False
+    assert "No star database found." in result["warning"]
+    assert "exit 1" in result["warning"]
+
+
+def test_solve_frame_genuine_no_solution_carries_only_diagnostics(tmp_path, monkeypatch):
+    # Reproduces the exact .ini shape measured against the real binary
+    # for a genuinely unsolvable Moon frame: PLTSOLVD=F, exit 1, but NO
+    # ERROR or WARNING field -- astap_cli has nothing more specific to
+    # say. This must still carry the exit code/output diagnostics (never
+    # a bare, unhelpful "solve failed"), which is also what makes it
+    # distinguishable from the ERROR case above: no structured reason
+    # here, just the raw diagnostic tail.
+    source_dir = tmp_path / "source"
+    source_dir.mkdir()
+    frame = source_dir / "frame.fit"
+    frame.write_bytes(b"x")
+
+    stub = _make_stub(tmp_path)
+    monkeypatch.setenv("STUB_MODE", "solved")
+    monkeypatch.setenv("STUB_EXIT_CODE", "1")
+    monkeypatch.setenv("STUB_INI_TEXT", "PLTSOLVD=F\n")
+
+    cfg = _cfg(tmp_path, stub)
+    result = solve.solve_frame(cfg, frame, hint=None)
+
+    assert result["solved"] is False
+    assert result["warning"].startswith("exit 1")
 
 
 def test_solve_frame_records_timeout_loudly(tmp_path, monkeypatch):
@@ -298,7 +406,7 @@ def test_solve_fields_records_failure_without_marking_solved(tmp_path, monkeypat
         "FROM fields WHERE id=?", (fid,)).fetchone()
     assert row[0] == "none"
     assert row[1] == 1
-    assert row[2] == "no .ini produced"
+    assert row[2] == "no .ini produced (exit 0)"
 
 
 def test_solve_fields_stops_retrying_after_max_attempts(tmp_path, monkeypatch):
@@ -344,3 +452,45 @@ def test_solve_fields_respects_limit(tmp_path, monkeypatch):
     solved_count = conn.execute(
         "SELECT COUNT(*) FROM fields WHERE solve_source='astap'").fetchone()[0]
     assert solved_count == 1
+
+
+def test_solve_fields_raises_on_missing_astap_binary(tmp_path):
+    # The poisoning scenario this guards against: a misconfigured
+    # install would otherwise fail every field identically to a genuine
+    # unsolvable frame, burning the whole attempt cap across the archive
+    # on the very first run. Preflighting must catch this BEFORE
+    # touching a single field.
+    conn = db.connect(tmp_path / "t.sqlite"); db.init_schema(conn)
+    source_dir = tmp_path / "source"; source_dir.mkdir()
+    frame = source_dir / "frame.fit"; frame.write_bytes(b"x")
+    _insert_field_with_rep(conn, frame)
+
+    missing_bin = tmp_path / "does_not_exist_astap_cli"
+    cfg = _cfg(tmp_path, missing_bin)
+
+    with pytest.raises(RuntimeError, match="astap_bin"):
+        solve.solve_fields(conn, cfg)
+
+    row = conn.execute(
+        "SELECT solve_attempts, solve_source FROM fields").fetchone()
+    assert row[0] == 0
+    assert row[1] == "none"
+
+
+def test_solve_fields_raises_on_missing_astap_db_dir(tmp_path):
+    conn = db.connect(tmp_path / "t.sqlite"); db.init_schema(conn)
+    source_dir = tmp_path / "source"; source_dir.mkdir()
+    frame = source_dir / "frame.fit"; frame.write_bytes(b"x")
+    _insert_field_with_rep(conn, frame)
+
+    stub = _make_stub(tmp_path)
+    cfg = Config(scratch_dir=tmp_path / "scratch", astap_bin=stub,
+                 astap_db_dir=tmp_path / "does_not_exist_db_dir")
+
+    with pytest.raises(RuntimeError, match="astap_db_dir"):
+        solve.solve_fields(conn, cfg)
+
+    row = conn.execute(
+        "SELECT solve_attempts, solve_source FROM fields").fetchone()
+    assert row[0] == 0
+    assert row[1] == "none"
