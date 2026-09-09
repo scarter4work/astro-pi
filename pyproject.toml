@@ -4,6 +4,9 @@ version = "0.1.0"
 requires-python = ">=3.13"
 dependencies = ["numpy>=2.0", "astropy>=7.0", "astroquery>=0.4.7"]
 
+[project.scripts]
+astrometa = "astrometa.cli:main"
+
 [build-system]
 requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
