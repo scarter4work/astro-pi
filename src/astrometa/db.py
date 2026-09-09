@@ -64,6 +64,24 @@ CREATE TABLE IF NOT EXISTS identity_assertions (
   source TEXT NOT NULL, confidence TEXT NOT NULL, asserted_at TEXT NOT NULL
 );
 
+-- Historical culls recorded independently of any frame row.
+--
+-- The 39 IC 59 frames culled on 2026-09-07 exist on neither the live
+-- NAS nor the ZFS backup (verified 2026-09-09: both hold 91 frames,
+-- HaO3 indices stopping at 0018 while the culled range is 0019-0040).
+-- They survive only on the camera, which is not one of the store's
+-- roots, so there is no frames row to carry their disposition and there
+-- may never be one. Fabricating a frames row with an invented
+-- content_hash would corrupt the store's central identity claim -- the
+-- primary key means "the bytes of this file" -- so the knowledge lives
+-- here instead, keyed on the cull pattern.
+CREATE TABLE IF NOT EXISTS known_culls (
+  pattern TEXT PRIMARY KEY,
+  reason TEXT NOT NULL,
+  recorded_at TEXT NOT NULL,
+  matched INTEGER NOT NULL DEFAULT 0
+);
+
 CREATE TABLE IF NOT EXISTS quality (
   content_hash TEXT PRIMARY KEY REFERENCES frames(content_hash),
   star_count INTEGER, hfd_median REAL, sky_background REAL, measured_at TEXT

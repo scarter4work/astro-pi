@@ -198,10 +198,10 @@ def test_session_thresholds_falls_back_to_absolute_floor_with_too_few_samples():
 def test_backfill_known_culls(tmp_path):
     conn = db.connect(tmp_path / "t.sqlite"); db.init_schema(conn)
     _frame(conn, "h1", "/a/Light_IC 59_HaO3_0019.fit")
-    n = disposition.backfill_known_culls(conn, [
+    res = disposition.backfill_known_culls(conn, [
         {"filename_like": "%IC 59%HaO3%0019%",
          "reason": "operator cull, night of 2026-09-07"}])
-    assert n == 1
+    assert res.applied == 1
     assert conn.execute("SELECT disposition FROM frames").fetchone()[0] \
         == "quarantined"
 
@@ -215,9 +215,9 @@ def test_backfill_known_culls_pattern_discriminates_by_filter(tmp_path):
     conn = db.connect(tmp_path / "t.sqlite"); db.init_schema(conn)
     _frame(conn, "h1", "/a/Light_IC 59_Lqef_0038.fit")
     _frame(conn, "h2", "/a/Light_IC 59_HaO3_0038.fit")
-    n = disposition.backfill_known_culls(conn, [
+    res = disposition.backfill_known_culls(conn, [
         {"filename_like": "%IC 59%HaO3%0038%", "reason": "HaO3 cull 0038"}])
-    assert n == 1
+    assert res.applied == 1
     rows = dict(conn.execute("SELECT content_hash, disposition FROM frames"))
     assert rows["h1"] == "present"
     assert rows["h2"] == "quarantined"
@@ -228,11 +228,11 @@ def test_backfill_known_culls_multiple_patterns_sum(tmp_path):
     _frame(conn, "h1", "/a/Light_IC 59_Lqef_0006.fit")
     _frame(conn, "h2", "/a/Light_IC 59_HaO3_0019.fit")
     _frame(conn, "h3", "/a/Light_IC 59_HaO3_0041.fit")  # outside the cull range
-    n = disposition.backfill_known_culls(conn, [
+    res = disposition.backfill_known_culls(conn, [
         {"filename_like": "%IC 59%Lqef%0006%", "reason": "Lqef cull 0006"},
         {"filename_like": "%IC 59%HaO3%0019%", "reason": "HaO3 cull 0019"},
     ])
-    assert n == 2
+    assert res.applied == 2
     rows = dict(conn.execute("SELECT content_hash, disposition FROM frames"))
     assert rows["h1"] == "quarantined"
     assert rows["h2"] == "quarantined"
@@ -296,3 +296,86 @@ def test_quarantine_survives_a_rescan(tmp_path):
     assert row[0] == "quarantined"
     assert row[1] == "hfd 6.2 > 5.1"
     assert row[2] == str(dest)
+
+
+# --- FIX 7: a cull matching nothing is the case this project exists for
+
+
+def test_backfill_reports_unmatched_culls_instead_of_a_silent_zero(tmp_path):
+    # The motivating case. The 39 real IC 59 culls are absent from BOTH
+    # the live NAS and the ZFS backup (verified 2026-09-09: both hold 91
+    # frames, HaO3 indices stop at 0018 while the culled range is
+    # 0019-0040). They survive only on the camera, which is not one of
+    # the store's roots -- so there is no frames row to UPDATE, and the
+    # old implementation returned 0 having silently done nothing, on
+    # exactly the case this project was built for.
+    conn = db.connect(tmp_path / "t.sqlite"); db.init_schema(conn)
+    _frame(conn, "h1", "/a/Light_IC 59_HaO3_0018.fit")   # not culled
+
+    res = disposition.backfill_known_culls(conn, [
+        {"filename_like": "%IC 59%HaO3%0019%",
+         "reason": "operator cull, night of 2026-09-07"}])
+
+    assert res.applied == 0
+    assert res.matched == 0
+    assert res.unmatched == 1
+    assert res.unmatched_patterns == ["%IC 59%HaO3%0019%"]
+
+
+def test_an_unmatched_cull_is_persisted_independently_of_any_frame_row(tmp_path):
+    # There may never be a frames row for these culls -- the bytes exist
+    # nowhere the store can reach. Fabricating a row with an invented
+    # content_hash would corrupt the store's central identity claim
+    # ("the bytes of this file"), so the knowledge is kept in its own
+    # table instead.
+    conn = db.connect(tmp_path / "t.sqlite"); db.init_schema(conn)
+    disposition.backfill_known_culls(conn, [
+        {"filename_like": "%IC 59%HaO3%0019%",
+         "reason": "operator cull, night of 2026-09-07"}])
+
+    row = conn.execute(
+        "SELECT pattern, reason, recorded_at, matched "
+        "FROM known_culls").fetchone()
+    assert row[0] == "%IC 59%HaO3%0019%"
+    assert row[1] == "operator cull, night of 2026-09-07"
+    assert row[2] is not None and row[2] != ""
+    assert row[3] == 0
+    # No frames row was invented for a file that exists nowhere.
+    assert conn.execute("SELECT COUNT(*) FROM frames").fetchone()[0] == 0
+
+
+def test_matched_culls_are_recorded_too(tmp_path):
+    conn = db.connect(tmp_path / "t.sqlite"); db.init_schema(conn)
+    _frame(conn, "h1", "/a/Light_IC 59_HaO3_0019.fit")
+    res = disposition.backfill_known_culls(conn, [
+        {"filename_like": "%IC 59%HaO3%0019%", "reason": "HaO3 cull 0019"}])
+    assert res.matched == 1 and res.unmatched == 0
+    assert conn.execute(
+        "SELECT matched FROM known_culls").fetchone()[0] == 1
+
+
+def test_backfill_is_idempotent_and_self_corrects_when_a_frame_appears(tmp_path):
+    # Re-running must not duplicate the cull record, and if the frame
+    # later turns up (restored from the camera), the recorded match count
+    # must catch up rather than stay stale at 0.
+    conn = db.connect(tmp_path / "t.sqlite"); db.init_schema(conn)
+    culls = [{"filename_like": "%IC 59%HaO3%0019%", "reason": "HaO3 cull 0019"}]
+
+    first = disposition.backfill_known_culls(conn, culls)
+    assert first.unmatched == 1
+    recorded_at = conn.execute(
+        "SELECT recorded_at FROM known_culls").fetchone()[0]
+
+    disposition.backfill_known_culls(conn, culls)
+    assert conn.execute("SELECT COUNT(*) FROM known_culls").fetchone()[0] == 1
+
+    _frame(conn, "h1", "/a/Light_IC 59_HaO3_0019.fit")
+    third = disposition.backfill_known_culls(conn, culls)
+    assert third.matched == 1 and third.unmatched == 0
+    row = conn.execute(
+        "SELECT matched, recorded_at FROM known_culls").fetchone()
+    assert row[0] == 1
+    # recorded_at is when this knowledge was FIRST written down.
+    assert row[1] == recorded_at
+    assert conn.execute(
+        "SELECT disposition FROM frames").fetchone()[0] == "quarantined"

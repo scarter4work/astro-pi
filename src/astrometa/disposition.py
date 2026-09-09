@@ -67,6 +67,7 @@ different-filter frames are told apart.
 """
 import shutil
 import sqlite3
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from statistics import median, pstdev
@@ -74,6 +75,20 @@ from statistics import median, pstdev
 # session_thresholds constants, per the task brief.
 HFD_SIGMA = 2.0
 ABSOLUTE_HFD_FLOOR = 10.0
+
+
+@dataclass
+class BackfillResult:
+    """The outcome of one backfill_known_culls run.
+
+    A bare pair count could not distinguish "nothing to do" from "the
+    cull list matched nothing at all", which is precisely the case this
+    project exists for -- see backfill_known_culls.
+    """
+    applied: int = 0             # (pattern, frame) pairs actually recorded
+    matched: int = 0             # patterns matching at least one frame
+    unmatched: int = 0           # patterns matching no frame at all
+    unmatched_patterns: list[str] = field(default_factory=list)
 
 
 def _now() -> str:
@@ -258,28 +273,60 @@ def session_thresholds(hfds: list[float]) -> tuple[float, float]:
     return med + HFD_SIGMA * sd, ABSOLUTE_HFD_FLOOR
 
 
-def backfill_known_culls(conn: sqlite3.Connection, culls: list[dict]) -> int:
+def backfill_known_culls(conn: sqlite3.Connection,
+                          culls: list[dict]) -> BackfillResult:
     """
     Apply a list of {"filename_like": ..., "reason": ...} historical cull
-    records to matching frames via mark_culled(source="manual").
+    records to matching frames via mark_culled(source="manual"), and
+    record every cull entry in `known_culls` whether or not it matched.
 
     Generic and data-free by design -- see module docstring for why the
     real cull list stays out of this source file, and why each pattern
     must include the filter token (not just the frame index) to avoid
     over-matching across filters that happen to share an index.
 
-    Returns the number of (pattern, matching frame) pairs applied. A
-    frame already quarantined that matches again (e.g. this is run
-    twice) is counted and re-recorded, not skipped -- mark_culled is
-    idempotent (it just rewrites the same reason/source), so re-running
-    this is safe, but the count reports matches made, not "newly
-    culled".
+    A pattern matching ZERO frames is the case this whole project exists
+    for, and it must never look like "nothing to do". The 39 IC 59
+    frames culled on 2026-09-07 are absent from both the live NAS and
+    the ZFS backup (verified 2026-09-09: both hold 91 frames, HaO3
+    indices stopping at 0018 while the culled range is 0019-0040) --
+    they survive only on the camera, which is not one of the store's
+    roots. There is therefore no frames row to UPDATE, and an
+    UPDATE-only implementation returned 0 having silently done nothing.
+    The returned BackfillResult reports matched AND unmatched counts and
+    names every unmatched pattern, and the cull itself is persisted in
+    `known_culls` so the knowledge exists independently of any frame
+    row -- since there may never be one.
+
+    No frames row is ever synthesised for a file that exists nowhere:
+    content_hash means "the bytes of this file", and inventing one would
+    corrupt the store's central identity claim.
+
+    Idempotent. Re-running rewrites the same disposition (mark_culled
+    just rewrites the same reason/source) and upserts one `known_culls`
+    row per pattern, refreshing `matched` so the record self-corrects if
+    a frame later turns up. `recorded_at` is preserved across re-runs --
+    it records when this knowledge was first written down, not when it
+    was last re-applied.
     """
-    n = 0
+    res = BackfillResult()
     for c in culls:
-        for (h,) in conn.execute(
-                "SELECT content_hash FROM frames WHERE filename LIKE ?",
-                (c["filename_like"],)).fetchall():
+        pattern = c["filename_like"]
+        hashes = [h for (h,) in conn.execute(
+            "SELECT content_hash FROM frames WHERE filename LIKE ?",
+            (pattern,)).fetchall()]
+        for h in hashes:
             mark_culled(conn, h, c["reason"], "manual")
-            n += 1
-    return n
+        res.applied += len(hashes)
+        if hashes:
+            res.matched += 1
+        else:
+            res.unmatched += 1
+            res.unmatched_patterns.append(pattern)
+        conn.execute("""INSERT INTO known_culls
+            (pattern, reason, recorded_at, matched) VALUES (?,?,?,?)
+            ON CONFLICT(pattern) DO UPDATE SET
+              reason=excluded.reason, matched=excluded.matched""",
+            (pattern, c["reason"], _now(), len(hashes)))
+    conn.commit()
+    return res
