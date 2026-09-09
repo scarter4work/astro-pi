@@ -1,4 +1,5 @@
 import numpy as np
+import pytest
 from astropy.io import fits
 from astrometa import db, inventory
 
@@ -137,3 +138,47 @@ def test_nan_pixels_dont_lose_header_metadata(tmp_path):
     assert sat_frac is None
     assert err is not None and err.startswith("pixels:")
     assert "header:" not in err
+
+
+@pytest.mark.parametrize("suffix", [".fit", ".fits", ".FIT", ".FITS", ".Fits"])
+def test_fit_and_fits_extensions_are_scanned_case_insensitively(tmp_path, suffix):
+    # 6,290 real files in the archive carry .fits (a different rig's naming
+    # convention) rather than .fit -- rglob("*.fit") alone silently drops
+    # ~22% of the science data. Both extensions, any casing, must be seen.
+    root = tmp_path / "astro_data" / "d"; root.mkdir(parents=True)
+    name = f"Light_M57_20250811_030222_0001_300.0s_Bin1{suffix}"
+    _write_light(root / name)
+    conn = db.connect(tmp_path / "t.sqlite"); db.init_schema(conn)
+    res = inventory.scan(conn, [tmp_path / "astro_data"])
+    assert res.added == 1
+
+
+def test_xisf_extension_is_not_scanned(tmp_path):
+    # .xisf is PixInsight's own format (processed intermediates, not subs)
+    # and needs a different parser entirely -- explicitly out of scope.
+    root = tmp_path / "astro_data" / "d"; root.mkdir(parents=True)
+    (root / "master_stack.xisf").write_bytes(b"not a real xisf but irrelevant")
+    conn = db.connect(tmp_path / "t.sqlite"); db.init_schema(conn)
+    res = inventory.scan(conn, [tmp_path / "astro_data"])
+    assert res.added == 0
+    assert res.failed == 0
+
+
+def test_missing_root_raises_loudly_instead_of_scanning_empty(tmp_path):
+    # A root that doesn't exist (e.g. an unmounted NAS bind mount) must not
+    # be silently skipped: scan() returning cleanly with an empty
+    # seen_hashes would make mark_missing() flip every known frame to
+    # "missing", indistinguishable from the operator deleting the archive.
+    missing = tmp_path / "does_not_exist"
+    conn = db.connect(tmp_path / "t.sqlite"); db.init_schema(conn)
+    with pytest.raises(FileNotFoundError, match=str(missing)):
+        inventory.scan(conn, [missing])
+
+
+def test_missing_root_raises_even_when_another_root_is_valid(tmp_path):
+    ok = tmp_path / "astro_data" / "d"; ok.mkdir(parents=True)
+    _write_light(ok / "Light_M 42_a_0001.fit")
+    missing = tmp_path / "astro_data" / "does_not_exist"
+    conn = db.connect(tmp_path / "t.sqlite"); db.init_schema(conn)
+    with pytest.raises(FileNotFoundError):
+        inventory.scan(conn, [ok, missing])

@@ -26,12 +26,21 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+_FITS_SUFFIXES = (".fit", ".fits")
+
+
 def _iter_fits(roots):
     for root in roots:
         if not root.exists():
-            continue
-        for p in root.rglob("*.fit"):
-            if p.is_file() and "_thn" not in p.name and not _excluded(p):
+            # A missing root (e.g. an unmounted NAS bind mount) must not be
+            # mistaken for an empty archive: scan() returning cleanly with
+            # zero results would make a caller's mark_missing() pass flip
+            # every known frame to "missing", indistinguishable from the
+            # operator having deleted the archive. Fail loudly instead.
+            raise FileNotFoundError(f"inventory root does not exist: {root}")
+        for p in root.rglob("*"):
+            if (p.is_file() and p.suffix.lower() in _FITS_SUFFIXES
+                    and "_thn" not in p.name and not _excluded(p)):
                 yield p
 
 
