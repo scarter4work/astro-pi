@@ -30,15 +30,16 @@ def classify(filename: str, header: dict) -> str:
         if mapped:
             return mapped
 
-    # Filename conventions are fallback
+    # Filename conventions are fallback (case-insensitive)
+    filename_lower = filename.lower()
     if _DERIVED.match(filename):
         return "derived"
-    if filename.startswith("Light_"):
+    if filename_lower.startswith("light_"):
         return "light"
-    if filename.startswith("Dark"):
+    if filename_lower.startswith("dark"):
         return "dark"
-    if filename.startswith("Bias"):
+    if filename_lower.startswith("bias"):
         return "bias"
-    if _FLAT.match(filename) or "master_flat" in filename.lower():
+    if _FLAT.match(filename) or "master_flat" in filename_lower:
         return "flat"
     return "unknown"

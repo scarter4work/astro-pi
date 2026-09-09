@@ -14,6 +14,8 @@ from astrometa.classify import classify
     ("AS_P20_moon.fit", "derived"),
     ("Autosave001.fit", "derived"),
     ("something_unrecognised.fit", "unknown"),
+    ("light_0001.fit", "light"),
+    ("dark_0001.fit", "dark"),
 ])
 def test_classify_from_filename(name, expected):
     assert classify(name, {}) == expected
