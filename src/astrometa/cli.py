@@ -94,12 +94,41 @@ def main(argv: list[str] | None = None) -> int:
     db.init_schema(conn)
 
     if args.command == "scan":
-        roots = ([Path(r) for r in args.root] if args.root
-                 else [cfg.archive_root, cfg.live_root])
+        configured = [cfg.archive_root, cfg.live_root]
+        roots = ([Path(r) for r in args.root] if args.root else configured)
         res = inventory.scan(conn, roots)
-        missing = disposition.mark_missing(conn, res.seen_hashes)
+
+        # The whole-database missing sweep runs ONLY when this scan
+        # covered the full configured root set. `mark_missing` flips
+        # every 'present' frame absent from seen_hashes, so running it
+        # after `scan --root /archive/astro_data/2026-09-08` would flip
+        # the other ~34,000 frames to 'missing' purely because the walk
+        # never reached them. mark_missing's own guard cannot catch
+        # that: it only refuses a COMPLETELY empty seen_hashes, and a
+        # one-night scan returns a perfectly healthy non-empty set.
+        #
+        # `missing` is how a deliberate cull gets recorded -- the single
+        # signal this project exists to make trustworthy -- so
+        # fabricating it from a partial walk corrupts the store's whole
+        # purpose. Coverage is a set comparison on resolved paths, and
+        # deliberately conservative: a --root that happens to be a
+        # PARENT of the configured roots is not recognised as covering
+        # them and skips the sweep too. Skipping is always the safe
+        # direction, and it is never silent -- the skip and its reason
+        # are printed where the count would otherwise be.
+        covers_configured = ({r.resolve() for r in roots}
+                             >= {r.resolve() for r in configured})
+        if covers_configured:
+            missing_txt = f"missing={disposition.mark_missing(conn, res.seen_hashes)}"
+        else:
+            missing_txt = (
+                f"missing=skipped (--root narrowed this scan to "
+                f"{len(roots)} root(s); the whole-database missing "
+                f"sweep runs only when the scan covers the configured "
+                f"archive and live roots, so frames outside the "
+                f"scanned roots are NOT marked missing)")
         print(f"added={res.added} updated={res.updated} "
-              f"failed={res.failed} missing={missing} "
+              f"failed={res.failed} {missing_txt} "
               f"(failed overlaps added/updated: a frame that fails a "
               f"read is still inventoried, with its failure recorded)")
     elif args.command == "cluster":

@@ -1,3 +1,4 @@
+import sqlite3
 import stat
 from pathlib import Path
 
@@ -26,6 +27,18 @@ def _stub(tmp_path, source, name):
     p.chmod(mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
     return p
 
+
+def _use_roots(monkeypatch, tmp_path, archive, live):
+    """Point cli.Config's archive/live roots at test directories.
+
+    A scan that passes no --root walks exactly these two, which is the
+    condition under which the whole-database missing sweep is allowed to
+    run (see cli.main).
+    """
+    fake = Config(archive_root=archive, live_root=live,
+                  scratch_dir=tmp_path / "scratch")
+    monkeypatch.setattr(cli, "Config", lambda: fake)
+    return fake
 
 # Stub astap_cli for -wcs solving: writes a solved .ini next to whatever
 # path it was given via -f, ignoring every other argument. Good enough to
@@ -79,21 +92,34 @@ def test_scan_missing_root_raises_loudly(tmp_path):
                   "--root", str(tmp_path / "does_not_exist")])
 
 
-def test_rescan_against_empty_root_raises_loudly(tmp_path):
+def test_rescan_against_empty_configured_roots_raises_loudly(tmp_path,
+                                                              monkeypatch):
     # A rescan whose walk finds nothing, while the db still holds
     # 'present' frames, must not silently mark everything missing --
     # disposition.mark_missing refuses with ValueError, and the CLI must
     # surface that, not catch it.
-    root = tmp_path / "astro_data"
-    root.mkdir()
-    _write_light(root / "Light_M 42_120.0s_Bin1_HaO3_20260908-220000_0deg_0001.fit")
+    #
+    # This is driven through the CONFIGURED roots rather than --root: a
+    # --root scan is a deliberately narrowed one and no longer runs the
+    # whole-database missing sweep at all (see
+    # test_narrowed_root_scan_does_not_mark_unscanned_frames_missing),
+    # so the guard now lives on the path that still performs the sweep.
+    archive = tmp_path / "astro_data"
+    archive.mkdir()
+    live = tmp_path / "live"
+    live.mkdir()
+    _write_light(archive / "Light_M 42_120.0s_Bin1_HaO3_20260908-220000_0deg_0001.fit")
     dbp = tmp_path / "store.sqlite"
-    assert cli.main(["scan", "--db", str(dbp), "--root", str(root)]) == 0
+    _use_roots(monkeypatch, tmp_path, archive, live)
+    assert cli.main(["scan", "--db", str(dbp)]) == 0
 
-    empty_root = tmp_path / "empty_root"
-    empty_root.mkdir()
+    empty_a = tmp_path / "empty_a"
+    empty_a.mkdir()
+    empty_b = tmp_path / "empty_b"
+    empty_b.mkdir()
+    _use_roots(monkeypatch, tmp_path, empty_a, empty_b)
     with pytest.raises(ValueError):
-        cli.main(["scan", "--db", str(dbp), "--root", str(empty_root)])
+        cli.main(["scan", "--db", str(dbp)])
 
 
 def test_scan_reports_failed_overlapping_added_not_disjoint(tmp_path, capsys):
@@ -219,3 +245,72 @@ def test_measure_missing_astap_raises_loudly(tmp_path, monkeypatch):
     monkeypatch.setattr(cli, "Config", lambda: fake_cfg)
     with pytest.raises(RuntimeError):
         cli.main(["measure", "--db", str(dbp)])
+
+
+# --- FIX 2: a narrowed scan must not run the whole-DB missing sweep ---
+
+
+def test_narrowed_root_scan_does_not_mark_unscanned_frames_missing(tmp_path):
+    # `astrometa scan --root /archive/astro_data/2026-09-08` walked one
+    # night but then ran mark_missing across the WHOLE database, flipping
+    # every frame outside that night to 'missing'. mark_missing's own
+    # guard only trips on a completely empty seen_hashes, so it cannot
+    # catch this. `missing` is how a deliberate cull is recorded -- the
+    # single signal this project exists to make trustworthy.
+    archive = tmp_path / "astro_data"
+    night_a = archive / "2026-09-07" / "IC 59"; night_a.mkdir(parents=True)
+    night_b = archive / "2026-09-08" / "M 42"; night_b.mkdir(parents=True)
+    _write_light(night_a / "Light_IC 59_120.0s_HaO3_20260907-220000_0deg_0001.fit",
+                 object_name="IC 59", seed=1)
+    _write_light(night_b / "Light_M 42_120.0s_HaO3_20260908-220000_0deg_0001.fit",
+                 object_name="M 42", seed=2)
+    dbp = tmp_path / "store.sqlite"
+
+    assert cli.main(["scan", "--db", str(dbp), "--root", str(archive)]) == 0
+
+    # Rescan only the second night.
+    assert cli.main(["scan", "--db", str(dbp), "--root", str(night_b)]) == 0
+
+    conn = sqlite3.connect(dbp)
+    dispositions = {r[0] for r in conn.execute(
+        "SELECT disposition FROM frames")}
+    assert dispositions == {"present"}
+
+
+def test_narrowed_root_scan_says_the_missing_sweep_was_skipped(tmp_path, capsys):
+    # Skipping the sweep must be visible in the output, never silent --
+    # an operator has to be able to tell that `missing` was not refreshed.
+    root = tmp_path / "astro_data"; root.mkdir()
+    _write_light(root / "Light_M 42_120.0s_Bin1_HaO3_20260908-220000_0deg_0001.fit")
+    dbp = tmp_path / "store.sqlite"
+
+    assert cli.main(["scan", "--db", str(dbp), "--root", str(root)]) == 0
+    out = capsys.readouterr().out
+    assert "missing=skipped" in out
+    assert "--root" in out
+
+
+def test_full_configured_root_scan_still_runs_the_missing_sweep(
+        tmp_path, capsys, monkeypatch):
+    # The sweep is not disabled -- a scan covering the configured roots
+    # still marks a vanished frame missing, which is the whole point of
+    # the disposition column.
+    archive = tmp_path / "archive"; archive.mkdir()
+    live = tmp_path / "live"; live.mkdir()
+    kept = archive / "Light_M 42_120.0s_HaO3_20260908-220000_0deg_0001.fit"
+    gone = archive / "Light_M 42_120.0s_HaO3_20260908-220100_0deg_0002.fit"
+    _write_light(kept, seed=1)
+    _write_light(gone, seed=2)
+    dbp = tmp_path / "store.sqlite"
+    _use_roots(monkeypatch, tmp_path, archive, live)
+
+    assert cli.main(["scan", "--db", str(dbp)]) == 0
+    gone.unlink()
+    assert cli.main(["scan", "--db", str(dbp)]) == 0
+    out = capsys.readouterr().out
+    assert "missing=1" in out
+
+    conn = sqlite3.connect(dbp)
+    rows = dict(conn.execute("SELECT filename, disposition FROM frames"))
+    assert rows[kept.name] == "present"
+    assert rows[gone.name] == "missing"
