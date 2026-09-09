@@ -88,10 +88,23 @@ them as **read-only bind mounts** (`pct set <id> -mp0 /data/backups/qnap,mp=/arc
 and likewise for `/mnt/qnap-source`). Read-only is enforced at the mount, not by
 convention in the scanner.
 
-**Deployment prerequisite:** ASTAP is not currently installed on scott-server. It needs
-`astap_cli` plus the D50 star database (both already present on the workstation at
-`/opt/astap`). `/opt/astap/astap` is the GTK GUI build and hangs headless — the CLI binary
-is the only one to install.
+**Solver scratch space (implementation constraint).** `astap_cli` writes its `.wcs`/`.ini`
+sidecars next to the input file, so it **cannot** be pointed at either source mount — the
+CIFS mount is read-only by design and the ZFS backup must not be polluted. Every solve
+copies its frame to local scratch first and cleans up afterwards. Verified 2026-09-09.
+
+**ASTAP deployment: DONE (2026-09-09).** `astap_cli` (CLI-2026.06.29) plus all 1,476 D50
+`.1476` files, 926 MB, installed to `/opt/astap` on scott-server and symlinked to
+`/usr/local/bin/astap_cli`. The GTK GUI build was deliberately **not** copied — it hangs a
+headless shell, so its absence is the safeguard. Functionally verified: a blind whole-sky
+solve of a known IC 1848 frame reproduced the workstation's result exactly
+(RA 02:51:27.0 +60°04′11″, 11/11 quads, identical solution matrix) in 11.7 s against the
+workstation's 5.9 s — slower per frame on the older Xeon cores, but 48 of them are
+available for parallel solving.
+
+Note the 106 GB PixInsight Gaia DR3 in `/opt/gia3` is **not** usable here — PixInsight
+`.xpsd`, ASTAP `.1476` and AstroIndexer `aixqdb` are three incompatible formats. D50 is
+the correct and sufficient database for solving.
 
 ## 5. The three keys
 
