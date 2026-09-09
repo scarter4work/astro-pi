@@ -38,3 +38,24 @@ def test_missing_END_raises(tmp_path):
     p.write_bytes(b" " * 2880)
     with pytest.raises(fitsheader.FitsHeaderError):
         fitsheader.read_header(p)
+
+
+def test_escaped_quotes_in_string_value(make_fits):
+    """FITS standard: '' inside a quoted string means one literal '"""
+    p = make_fits("e.fit", {"OBJECT": "'Barnard''s Loop'"})
+    assert fitsheader.read_header(p)["OBJECT"] == "Barnard's Loop"
+
+
+def test_non_ascii_byte_raises(tmp_path):
+    """Non-ASCII bytes in header cards must raise loudly, not be silently replaced"""
+    from tests.conftest import build_fits_header
+    p = tmp_path / "bad_ascii.fit"
+    # Create a valid header with one card having a non-ASCII byte
+    cards = {"OBJECT": "'Test'"}
+    header = build_fits_header(cards)
+    # Replace a byte in the first card with non-ASCII (0xff)
+    header_bytes = bytearray(header)
+    header_bytes[50] = 0xff
+    p.write_bytes(bytes(header_bytes))
+    with pytest.raises(fitsheader.FitsHeaderError, match="non-ASCII"):
+        fitsheader.read_header(p)
