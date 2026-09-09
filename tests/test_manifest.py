@@ -71,6 +71,13 @@ def test_exporting_twice_produces_the_same_manifest(tmp_path):
     doc1 = json.loads((leaf / manifest.MANIFEST_NAME).read_text())
     manifest.export_dir(conn, leaf)
     doc2 = json.loads((leaf / manifest.MANIFEST_NAME).read_text())
+    # Compare only "frames", not the whole doc: generated_at is a
+    # wall-clock timestamp that legitimately differs between the two
+    # calls even though nothing about the underlying data changed --
+    # asserting doc1 == doc2 would make this test flaky (or, worse,
+    # tempt a future reader to "fix" the flake by freezing time rather
+    # than by narrowing the comparison to what idempotency actually
+    # promises: the same frames, not the same generated_at).
     assert doc1["frames"] == doc2["frames"]
 
 
@@ -170,6 +177,45 @@ def test_export_all_out_dir_avoids_basename_collision(tmp_path):
     assert len(found) == 2  # both survive -- no basename collision
     leaf_dirs = {json.loads(p.read_text())["leaf_dir"] for p in found}
     assert leaf_dirs == {str(leaf1), str(leaf2)}
+
+
+def test_export_all_rejects_relative_leaf_dir_that_escapes_out_dir(tmp_path):
+    """
+    A frame path is normally an absolute DB-sourced path, but export_dir
+    and export_all are public, unvalidated entry points -- a relative
+    leaf directory containing '..' segments is not collapsed by
+    joinpath alone, so out_dir.joinpath(*parts) could otherwise walk the
+    manifest target back out of out_dir entirely before export_dir
+    mkdirs it.
+    """
+    out_dir = tmp_path / "manifests"; out_dir.mkdir()
+    conn = db.connect(tmp_path / "t.sqlite"); db.init_schema(conn)
+    _frame(conn, "h1", "somedir/../../escape/Light_Sh2-106_0001.fit")
+
+    with pytest.raises(ValueError, match="out_dir"):
+        manifest.export_all(conn, out_dir=out_dir)
+
+    # Refused before any filesystem call -- nothing created anywhere.
+    assert list(out_dir.rglob(manifest.MANIFEST_NAME)) == []
+    assert not (out_dir / "somedir").exists()
+    assert not (tmp_path / "escape").exists()
+
+
+def test_export_all_rejects_leaf_dir_that_resolves_outside_out_dir(tmp_path):
+    """
+    Even a well-formed absolute leaf_dir (as every real DB row is) can
+    carry more '..' segments than the anchor-strip accounts for, and
+    still resolve outside out_dir after being rejoined beneath it.
+    """
+    out_dir = tmp_path / "manifests"; out_dir.mkdir()
+    conn = db.connect(tmp_path / "t.sqlite"); db.init_schema(conn)
+    evil_path = "/" + "../" * 6 + "escape/Light_Sh2-106_0001.fit"
+    _frame(conn, "h1", evil_path)
+
+    with pytest.raises(ValueError, match="out_dir"):
+        manifest.export_all(conn, out_dir=out_dir)
+
+    assert list(out_dir.rglob(manifest.MANIFEST_NAME)) == []
 
 
 def test_export_dir_raises_loudly_on_write_failure(tmp_path):

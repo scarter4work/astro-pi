@@ -77,11 +77,38 @@ def _mirror_leaf_dir(leaf_dir: Path, out_dir: Path) -> Path:
     directories that happen to share a basename -- a target or panel
     name reused under a different night or object -- land at distinct
     destinations instead of colliding on the same manifest filename.
+
+    Stripping the anchor handles a well-formed absolute leaf_dir, but
+    does nothing about a literal '..' segment: a relative leaf_dir that
+    contains one, or an absolute one carrying more '..' than the
+    anchor-strip accounts for, is not collapsed by joinpath alone, and
+    could otherwise walk the target back out of out_dir entirely --
+    `export_dir` then mkdirs whatever path this function returns, so
+    that is not cosmetic, it can create real directories outside
+    out_dir (verified: an unguarded version of this function resolved a
+    crafted path all the way to filesystem root). Both sides are
+    resolved (symlinks and '..' collapsed) and checked with
+    `is_relative_to` -- not string-prefix matching, which a sibling
+    directory like "out_dir_evil" would defeat -- before anything is
+    returned. Raises ValueError, naming both the original leaf_dir and
+    where it actually resolved to, rather than silently handing back an
+    unsafe path.
     """
     parts = leaf_dir.parts
     if leaf_dir.anchor:
         parts = parts[len(Path(leaf_dir.anchor).parts):]
-    return out_dir.joinpath(*parts) if parts else out_dir
+    target = out_dir.joinpath(*parts) if parts else out_dir
+
+    resolved_out_dir = out_dir.resolve()
+    resolved_target = target.resolve()
+    if (resolved_target != resolved_out_dir
+            and not resolved_target.is_relative_to(resolved_out_dir)):
+        raise ValueError(
+            f"refusing to mirror leaf directory {leaf_dir} to {target} -- "
+            f"it resolves to {resolved_target}, which is outside out_dir "
+            f"({resolved_out_dir}). This would create directories outside "
+            f"out_dir.")
+    return resolved_target
 
 
 def export_dir(conn, leaf_dir: Path, out_dir: Path | None = None) -> Path:
@@ -142,6 +169,16 @@ def export_all(conn, out_dir: Path | None = None, dry_run: bool = False) -> int:
     raises immediately, naming the offending leaf directory (via
     export_dir); no directory is silently skipped, so a partial run
     never looks like a complete one.
+
+    Not atomic: this aborts on the FIRST failure rather than attempting
+    every leaf and reporting failures at the end, so on a partial run
+    the manifests already written for leaves processed earlier in the
+    same call remain on disk exactly as written -- each one is
+    independently complete and valid for its own leaf. That's the
+    intended, safe behaviour (a leaf's manifest is never half-written),
+    not a bug; an operator reading a raised export_all should read it as
+    "some real manifests exist, some leaves are not yet done", not as
+    "nothing happened".
     """
     leaves = {Path(r[0]).parent for r in
               conn.execute("SELECT path FROM frames").fetchall()}
