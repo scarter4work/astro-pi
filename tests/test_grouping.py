@@ -53,6 +53,28 @@ def test_no_panel_returns_none():
         "Light_Sh2-106_120.0s_Bin1_HaO3_20260908-225448_182deg_0001.fit") is None
 
 
+def test_panel_with_double_digit_column():
+    # Regression: M42's real archive panels run into double digits
+    # (1-10 through 8-12). A `\d-\d` pattern requires the char right
+    # after the second digit to be "_", so "_1-10_" (second digit "1",
+    # next char "0") silently fails to match and returns None.
+    assert grouping.panel_of(
+        "Light_M42_1-10_120.0s_Bin1_L_20230204-220000_0deg_0001.fit") == "1-10"
+
+
+def test_panel_with_double_digit_row():
+    assert grouping.panel_of(
+        "Light_M42_10-2_120.0s_Bin1_L_20230204-220000_0deg_0001.fit") == "10-2"
+
+
+def test_datestamp_is_not_mistaken_for_a_panel():
+    # The widened \d+-\d+ pattern must still not match a bare datestamp
+    # token -- it requires the trailing \d+(.\d+)?s_ exposure suffix,
+    # which "182deg_" never satisfies.
+    assert grouping.panel_of(
+        "Light_M 20_120.0s_Bin1_L_20260713-225546_182deg_0001.fit") is None
+
+
 def test_build_projects_groups_same_night_frames_into_one_session(tmp_path):
     conn = db.connect(tmp_path / "t.sqlite"); db.init_schema(conn)
     oid = _object(conn, "SH2-106")

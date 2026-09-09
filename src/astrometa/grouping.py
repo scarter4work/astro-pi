@@ -1,4 +1,4 @@
-"""
+r"""
 Session and project grouping: bucket light frames by (object, filter,
 night) into `projects`, distinguishing a single-pointing session from a
 multi-panel mosaic campaign.
@@ -15,11 +15,19 @@ must land in one project rather than two.
 
 Panels matter too: `Light_IC 1848_1-1_...` is mosaic panel row 1, column
 1 -- a single target can have dozens (M42 alone has 77 panel directories
-in this archive). A bucket containing any panel-tagged frame is a
-"mosaic" project; one with none is a plain "session". The panel regex
-anchors on the `_<digit>-<digit>_<exptime>s_` shape so it doesn't
-mis-fire on a target whose own name contains digits and a hyphen, e.g.
-`Light_Sh2-106_120.0s_..._` has no panel component.
+in this archive, including double-digit rows/columns like `1-10` and
+`7-12`). A bucket containing any panel-tagged frame is a "mosaic"
+project; one with none is a plain "session". The panel regex anchors on
+the `_<digits>-<digits>_<exptime>s_` shape so it doesn't mis-fire on a
+target whose own name contains digits and a hyphen, e.g.
+`Light_Sh2-106_120.0s_..._` has no panel component, nor on a datestamp
+token (`_20260713-225546_182deg_` fails the required `\d+(\.\d+)?s_`
+suffix). Row/col groups are `\d+`, not `\d`: measured against the real
+archive (2026-09-09), M42 alone has 120 frames across 24 distinct
+double-digit panel tokens (`1-10` through `8-12`) that a single-digit
+pattern silently drops to `None`, which would flatten those panels into
+one undifferentiated "session" bucket -- precisely the failure the panel
+level exists to prevent.
 
 build_projects is idempotent by full rebuild, not by dedup-on-insert:
 `projects` and `frame_projects` are wholly derived from `frames`, so
@@ -35,7 +43,7 @@ import sqlite3
 from datetime import date, datetime, timedelta
 
 _INSTANT = re.compile(r"_(\d{8})-(\d{6})_")
-_PANEL = re.compile(r"_(\d-\d)_\d+(?:\.\d+)?s_")
+_PANEL = re.compile(r"_(\d+-\d+)_\d+(?:\.\d+)?s_")
 
 
 def capture_instant(filename: str) -> datetime | None:
@@ -67,12 +75,15 @@ def session_date(instant: datetime, dusk_hour: int = 17) -> date:
 
 
 def panel_of(filename: str) -> str | None:
-    """Extract a `ROW-COL` mosaic panel tag (e.g. "1-1") from a filename.
+    """Extract a `ROW-COL` mosaic panel tag (e.g. "1-1", "1-10") from a
+    filename.
 
-    Anchored on `_<d>-<d>_<exptime>s_` so a target name that itself
-    contains a digit-hyphen-digit run (e.g. `Sh2-106`) is never
+    Anchored on `_<digits>-<digits>_<exptime>s_` so a target name that
+    itself contains a digit-hyphen-digit run (e.g. `Sh2-106`) is never
     mistaken for a panel tag -- the exposure-time suffix immediately
-    after the candidate is required.
+    after the candidate is required. Row/col each match one or more
+    digits, not exactly one: real panels in this archive run into double
+    digits (M42 has panels up to `8-12`).
     """
     m = _PANEL.search(filename)
     return m.group(1) if m else None
