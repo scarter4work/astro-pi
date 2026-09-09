@@ -330,3 +330,52 @@ def test_first_seen_is_preserved_across_rescans(tmp_path):
     row = conn.execute("SELECT first_seen, last_seen FROM frames").fetchone()
     assert row[0] == first_seen
     assert row[1] >= first_seen
+
+
+# --- FIX 3: persist the OBJECT card and the leaf directory name -------
+
+
+def test_scan_persists_object_card_and_leaf_dir(tmp_path):
+    # inventory parsed OBJECT and threw it away, and `frames` had nowhere
+    # to put it. Spec 6.7 needs both the OBJECT card and the directory
+    # name later to cross-check a solved identity; recovering them after
+    # the fact costs a fresh 34,000-file header re-read.
+    leaf = tmp_path / "astro_data" / "2026-09-08" / "IC 1848"
+    leaf.mkdir(parents=True)
+    _write_light(leaf / "Light_IC 1848_1-1_120.0s_HaO3_20260908-220000_0deg_0001.fit",
+                 obj="IC 1848")
+    conn = db.connect(tmp_path / "t.sqlite"); db.init_schema(conn)
+    inventory.scan(conn, [tmp_path / "astro_data"])
+    row = conn.execute("SELECT object_card, leaf_dir FROM frames").fetchone()
+    assert row == ("IC 1848", "IC 1848")
+
+
+def test_object_card_absent_is_null_but_leaf_dir_still_recorded(tmp_path):
+    # 30 real directories are named only `Lights`, and many frames carry
+    # no OBJECT card at all. The directory name is still worth having.
+    import numpy as np
+    from astropy.io import fits as _fits
+
+    leaf = tmp_path / "astro_data" / "2026-09-08" / "Lights"
+    leaf.mkdir(parents=True)
+    rng = np.random.default_rng(4)
+    hdu = _fits.PrimaryHDU(rng.normal(100, 5, (32, 32)).astype(np.float32))
+    hdu.header["IMAGETYP"] = "Light Frame"
+    hdu.writeto(leaf / "Light_x_0001.fit")
+    conn = db.connect(tmp_path / "t.sqlite"); db.init_schema(conn)
+    inventory.scan(conn, [tmp_path / "astro_data"])
+    row = conn.execute("SELECT object_card, leaf_dir FROM frames").fetchone()
+    assert row == (None, "Lights")
+
+
+def test_object_card_and_leaf_dir_refresh_on_rescan(tmp_path):
+    leaf = tmp_path / "astro_data" / "2026-09-08" / "M 42"
+    leaf.mkdir(parents=True)
+    _write_light(leaf / "Light_M 42_a_0001.fit", obj="M 42")
+    conn = db.connect(tmp_path / "t.sqlite"); db.init_schema(conn)
+    inventory.scan(conn, [tmp_path / "astro_data"])
+    conn.execute("UPDATE frames SET object_card=NULL, leaf_dir=NULL")
+    conn.commit()
+    inventory.scan(conn, [tmp_path / "astro_data"])
+    row = conn.execute("SELECT object_card, leaf_dir FROM frames").fetchone()
+    assert row == ("M 42", "M 42")

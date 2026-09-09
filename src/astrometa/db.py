@@ -10,6 +10,13 @@ CREATE TABLE IF NOT EXISTS frames (
   frame_type TEXT NOT NULL,
   camera TEXT, filter TEXT, exptime REAL, binning INTEGER,
   gain REAL, ccd_temp REAL, captured_at TEXT,
+  -- The OBJECT card as written in the header, and the name of the
+  -- directory the frame sits in. Neither is an identity claim: both
+  -- are the operator's own labelling, kept verbatim so spec 6.7 can
+  -- cross-check a solved identity against them without a second
+  -- 34,000-file header read, and so grouping has a per-frame target
+  -- name to fall back on while object_id is still unresolved.
+  object_card TEXT, leaf_dir TEXT,
   header_ra REAL, header_dec REAL, focallen REAL, xpixsz REAL,
   naxis1 INTEGER, naxis2 INTEGER,
   fingerprint TEXT, bg_median REAL, saturated_frac REAL,

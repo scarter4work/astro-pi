@@ -71,6 +71,23 @@ def _read_pixels(path: Path) -> tuple[str | None, float | None, float | None, st
         return None, None, None, f"pixels: {type(exc).__name__}: {exc}"
 
 
+def _object_card(header: dict) -> str | None:
+    """
+    The OBJECT card as a string, or None when absent or blank.
+
+    Coerced rather than passed through: fitsheader._parse_value returns
+    whatever a card parses to, and an unquoted numeric OBJECT (a target
+    written as a bare catalogue number) would otherwise land in a TEXT
+    column as an int. This is the operator's own label, never an
+    identity claim -- it is stored verbatim, not canonicalised.
+    """
+    v = header.get("OBJECT")
+    if v is None:
+        return None
+    s = v.strip() if isinstance(v, str) else str(v)
+    return s or None
+
+
 def scan(conn, roots, read_pixels: bool = True) -> InventoryResult:
     res = InventoryResult()
     for path in _iter_fits(roots):
@@ -138,12 +155,14 @@ def scan(conn, roots, read_pixels: bool = True) -> InventoryResult:
         conn.execute("""
             INSERT INTO frames (content_hash, path, filename, size, mtime,
                 first_seen, last_seen, frame_type, camera, filter, exptime,
-                captured_at, header_ra, header_dec, focallen, xpixsz,
+                captured_at, object_card, leaf_dir,
+                header_ra, header_dec, focallen, xpixsz,
                 naxis1, naxis2, fingerprint, bg_median, saturated_frac,
                 disposition, read_error)
             VALUES (:chash, :path, :filename, :size, :mtime,
                 :now, :now, :frame_type, :camera, :filter, :exptime,
-                :captured_at, :header_ra, :header_dec, :focallen, :xpixsz,
+                :captured_at, :object_card, :leaf_dir,
+                :header_ra, :header_dec, :focallen, :xpixsz,
                 :naxis1, :naxis2, :fingerprint, :bg_median, :saturated_frac,
                 'present', :read_error)
             ON CONFLICT(content_hash) DO UPDATE SET
@@ -161,6 +180,9 @@ def scan(conn, roots, read_pixels: bool = True) -> InventoryResult:
                              ELSE exptime END,
                 captured_at=CASE WHEN :header_ok THEN excluded.captured_at
                                  ELSE captured_at END,
+                object_card=CASE WHEN :header_ok THEN excluded.object_card
+                                 ELSE object_card END,
+                leaf_dir=excluded.leaf_dir,
                 header_ra=CASE WHEN :header_ok THEN excluded.header_ra
                                ELSE header_ra END,
                 header_dec=CASE WHEN :header_ok THEN excluded.header_dec
@@ -190,6 +212,7 @@ def scan(conn, roots, read_pixels: bool = True) -> InventoryResult:
             "camera": header.get("INSTRUME"), "filter": header.get("FILTER"),
             "exptime": header.get("EXPTIME"),
             "captured_at": header.get("DATE-OBS"),
+            "object_card": _object_card(header), "leaf_dir": path.parent.name,
             "header_ra": header.get("RA"), "header_dec": header.get("DEC"),
             "focallen": header.get("FOCALLEN"),
             "xpixsz": header.get("XPIXSZ"),
