@@ -13,11 +13,14 @@ def _field(conn, object_id):
         (object_id,)).lastrowid
 
 
-def _frame(conn, content_hash, filename, field_id=None, filt="Ha"):
+def _frame(conn, content_hash, filename, field_id=None, filt="Ha",
+           object_card=None, leaf_dir=None):
     conn.execute("""INSERT INTO frames (content_hash, path, filename, size,
-        mtime, frame_type, disposition, filter, field_id)
-        VALUES (?,?,?,1,1.0,'light','present',?,?)""",
-        (content_hash, f"/x/{filename}", filename, filt, field_id))
+        mtime, frame_type, disposition, filter, field_id, object_card,
+        leaf_dir)
+        VALUES (?,?,?,1,1.0,'light','present',?,?,?,?)""",
+        (content_hash, f"/x/{leaf_dir or 'd'}/{filename}", filename, filt,
+         field_id, object_card, leaf_dir))
 
 
 def test_capture_instant_parsed():
@@ -84,7 +87,7 @@ def test_build_projects_groups_same_night_frames_into_one_session(tmp_path):
     _frame(conn, "h2",
            "Light_Sh2-106_120.0s_Bin1_HaO3_20260908-230112_182deg_0002.fit", fid)
 
-    assert grouping.build_projects(conn) == 1
+    assert grouping.build_projects(conn).projects == 1
     row = conn.execute("SELECT kind, object_id, filter FROM projects").fetchone()
     assert row == ("session", oid, "Ha")
     members = {r[0] for r in conn.execute(
@@ -104,7 +107,7 @@ def test_build_projects_crossing_midnight_stays_one_session(tmp_path):
     _frame(conn, "h2",
            "Light_Sh2-129_120.0s_Bin1_HaO3_20260909-013900_182deg_0100.fit", fid)
 
-    assert grouping.build_projects(conn) == 1
+    assert grouping.build_projects(conn).projects == 1
     members = {r[0] for r in conn.execute(
         "SELECT content_hash FROM frame_projects")}
     assert members == {"h1", "h2"}
@@ -119,7 +122,7 @@ def test_build_projects_detects_mosaic_when_panels_present(tmp_path):
     _frame(conn, "h2",
            "Light_IC 1848_1-2_120.0s_Bin1_HaO3_20260909-015200_182deg_0019.fit", fid)
 
-    assert grouping.build_projects(conn) == 1
+    assert grouping.build_projects(conn).projects == 1
     assert conn.execute("SELECT kind FROM projects").fetchone()[0] == "mosaic"
     panels = dict(conn.execute(
         "SELECT content_hash, panel FROM frame_projects"))
@@ -132,7 +135,7 @@ def test_build_projects_skips_frames_with_no_capture_instant(tmp_path):
     fid = _field(conn, oid)
     _frame(conn, "h1", "Autosave001.fit", fid)
 
-    assert grouping.build_projects(conn) == 0
+    assert grouping.build_projects(conn).projects == 0
     assert conn.execute("SELECT COUNT(*) FROM projects").fetchone()[0] == 0
     assert conn.execute(
         "SELECT COUNT(*) FROM frame_projects").fetchone()[0] == 0
@@ -149,7 +152,7 @@ def test_build_projects_is_idempotent(tmp_path):
 
     first = grouping.build_projects(conn)
     second = grouping.build_projects(conn)
-    assert first == second == 1
+    assert first.projects == second.projects == 1
     assert conn.execute("SELECT COUNT(*) FROM projects").fetchone()[0] == 1
     assert conn.execute(
         "SELECT COUNT(*) FROM frame_projects").fetchone()[0] == 2
@@ -168,7 +171,94 @@ def test_build_projects_rerun_after_new_frame_added_still_one_project_per_night(
 
     _frame(conn, "h2",
            "Light_Sh2-106_120.0s_Bin1_HaO3_20260908-230112_182deg_0002.fit", fid)
-    assert grouping.build_projects(conn) == 1
+    assert grouping.build_projects(conn).projects == 1
     assert conn.execute("SELECT COUNT(*) FROM projects").fetchone()[0] == 1
     assert conn.execute(
         "SELECT COUNT(*) FROM frame_projects").fetchone()[0] == 2
+
+
+# --- FIX 4: an unresolved object_id must not lump every target together
+
+
+def test_different_targets_same_night_same_filter_are_separate_projects(tmp_path):
+    # Nothing populates fields.object_id yet (live SIMBAD resolution is
+    # deliberately deferred), so object_id is NULL for every frame in the
+    # archive. Bucketing on (object_id, filter, session_date) alone
+    # therefore collapsed EVERY target shot on one night with one filter
+    # into a single "project".
+    conn = db.connect(tmp_path / "t.sqlite"); db.init_schema(conn)
+    _frame(conn, "h1",
+           "Light_IC 59_120.0s_Bin1_HaO3_20260908-225448_182deg_0001.fit",
+           object_card="IC 59", leaf_dir="IC 59")
+    _frame(conn, "h2",
+           "Light_M 42_120.0s_Bin1_HaO3_20260908-230112_182deg_0001.fit",
+           object_card="M 42", leaf_dir="M 42")
+
+    assert grouping.build_projects(conn).projects == 2
+    names = {r[0] for r in conn.execute(
+        "SELECT identity_name FROM projects")}
+    assert names == {"IC 59", "M 42"}
+
+
+def test_identity_falls_back_to_leaf_dir_when_no_object_card(tmp_path):
+    # 85% of leaf directories hold frames with no OBJECT card at all; the
+    # directory name is the target name in practice.
+    conn = db.connect(tmp_path / "t.sqlite"); db.init_schema(conn)
+    _frame(conn, "h1",
+           "Light_a_120.0s_Bin1_HaO3_20260908-225448_182deg_0001.fit",
+           leaf_dir="Veil2")
+    _frame(conn, "h2",
+           "Light_b_120.0s_Bin1_HaO3_20260908-230112_182deg_0001.fit",
+           leaf_dir="NGC6960")
+
+    assert grouping.build_projects(conn).projects == 2
+    rows = {r[0]: r[1] for r in conn.execute(
+        "SELECT identity_name, identity_source FROM projects")}
+    assert rows == {"Veil2": "dirname", "NGC6960": "dirname"}
+
+
+def test_identity_source_records_how_the_bucket_was_named(tmp_path):
+    # A fallback identity must never be mistaken for a solved one: the
+    # confidence model (spec 7) rates `object_card` medium and `dirname`
+    # low, and neither may drive a Phase 2 move.
+    conn = db.connect(tmp_path / "t.sqlite"); db.init_schema(conn)
+    _frame(conn, "h1",
+           "Light_IC 59_120.0s_Bin1_HaO3_20260908-225448_182deg_0001.fit",
+           object_card="IC 59", leaf_dir="whatever")
+    assert grouping.build_projects(conn).projects == 1
+    row = conn.execute(
+        "SELECT identity_name, identity_source FROM projects").fetchone()
+    assert row == ("IC 59", "object_card")
+
+
+def test_resolved_object_id_takes_precedence_over_the_fallback(tmp_path):
+    # Once object_id IS resolved it is authoritative -- two frames of the
+    # same object filed under differently-spelled directories (M31 vs
+    # M 31, both real sibling directories in this archive) must still
+    # land in ONE project, which is the whole reason object_id is the
+    # primary key of the bucket.
+    conn = db.connect(tmp_path / "t.sqlite"); db.init_schema(conn)
+    oid = _object(conn, "M31")
+    fid = _field(conn, oid)
+    _frame(conn, "h1",
+           "Light_M31_120.0s_Bin1_HaO3_20260908-225448_182deg_0001.fit",
+           fid, object_card="M31", leaf_dir="M31")
+    _frame(conn, "h2",
+           "Light_M 31_120.0s_Bin1_HaO3_20260908-230112_182deg_0001.fit",
+           fid, object_card="M 31", leaf_dir="M 31")
+
+    assert grouping.build_projects(conn).projects == 1
+    row = conn.execute(
+        "SELECT object_id, identity_name, identity_source "
+        "FROM projects").fetchone()
+    assert row == (oid, None, "object")
+
+
+def test_frames_with_no_identity_at_all_still_group_by_night(tmp_path):
+    conn = db.connect(tmp_path / "t.sqlite"); db.init_schema(conn)
+    _frame(conn, "h1",
+           "Light_x_120.0s_Bin1_HaO3_20260908-225448_182deg_0001.fit")
+    assert grouping.build_projects(conn).projects == 1
+    row = conn.execute(
+        "SELECT identity_name, identity_source FROM projects").fetchone()
+    assert row == (None, "unknown")

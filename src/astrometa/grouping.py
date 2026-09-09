@@ -3,6 +3,15 @@ Session and project grouping: bucket light frames by (object, filter,
 night) into `projects`, distinguishing a single-pointing session from a
 multi-panel mosaic campaign.
 
+"Object" here is fields.object_id when it is resolved and a recorded
+per-frame fallback while it is not -- see `frame_identity`. That
+fallback is load-bearing rather than defensive: nothing populates
+object_id yet (live SIMBAD resolution is deferred), so bucketing on it
+alone put every target shot on one night with one filter into a single
+"project". Each project records which identity named it, so a
+directory- or OBJECT-card-derived label is never mistaken for a solved
+one.
+
 The dusk rule (session_date) fixes a repeated real-world failure:
 imaging sessions cross midnight, so a run starting at 01:39 carries only
 the NEXT day's datestamp in its filename. A naive date filter then
@@ -40,7 +49,19 @@ a later incremental run, so it isn't a stable key across runs.
 """
 import re
 import sqlite3
+from dataclasses import dataclass
 from datetime import date, datetime, timedelta
+
+@dataclass
+class GroupingResult:
+    """What one build_projects rebuild produced.
+
+    A bare project count hid two things worth seeing: how each bucket's
+    target was identified, and how many frames were dropped for having
+    no parseable capture instant.
+    """
+    projects: int = 0
+
 
 _INSTANT = re.compile(r"_(\d{8})-(\d{6})_")
 _PANEL = re.compile(r"_(\d+-\d+)_\d+(?:\.\d+)?s_")
@@ -89,11 +110,40 @@ def panel_of(filename: str) -> str | None:
     return m.group(1) if m else None
 
 
-def build_projects(conn) -> int:
+def frame_identity(object_id, object_card, leaf_dir) -> tuple[str | None, str]:
+    """
+    The target identity to bucket one frame on, and where it came from.
+
+    `object_id` is authoritative when set, and the returned name is then
+    None -- the FK carries the identity, and two differently-spelled
+    directories for one resolved object (M31 and M 31 are real sibling
+    directories here) must still land in one project.
+
+    Nothing populates fields.object_id yet: live SIMBAD resolution is
+    deliberately deferred, so in practice object_id is NULL for every
+    frame in the archive today. Bucketing on it alone therefore put
+    EVERY target shot on one night with one filter into a single
+    "project". The fallbacks are the OBJECT card and then the leaf
+    directory name -- both are the target name in practice -- and the
+    source is recorded alongside so a fallback label is never mistaken
+    for a solved one. Per spec 7 neither may ever drive a Phase 2 move.
+    """
+    if object_id is not None:
+        return None, "object"
+    if object_card:
+        return object_card, "object_card"
+    if leaf_dir:
+        return leaf_dir, "dirname"
+    return None, "unknown"
+
+
+def build_projects(conn) -> GroupingResult:
     """
     Rebuild `projects` and `frame_projects` from `frames`, grouping light
     frames into per-night sessions (or multi-panel mosaics) keyed on
-    (object_id, filter, session_date(capture_instant)).
+    (object identity, filter, session_date(capture_instant)) -- where the
+    object identity is fields.object_id when resolved and a recorded
+    per-frame fallback (see `frame_identity`) while it is not.
 
     Idempotent: this is a full rebuild of both tables (see module
     docstring), so calling it repeatedly with unchanged frame data
@@ -101,23 +151,28 @@ def build_projects(conn) -> int:
     it after new frames were added folds them into the correct existing
     night rather than creating a duplicate project for it.
 
-    Returns the number of projects in the rebuilt table (not just those
-    newly created -- a full rebuild has no such distinction).
+    Returns a GroupingResult, not a bare count -- see its docstring.
     """
     prev_factory = conn.row_factory
     conn.row_factory = sqlite3.Row
     try:
         rows = conn.execute(
-            "SELECT f.content_hash, f.filename, f.filter, fl.object_id "
+            "SELECT f.content_hash, f.filename, f.filter, f.object_card, "
+            "f.leaf_dir, fl.object_id "
             "FROM frames f LEFT JOIN fields fl ON fl.id = f.field_id "
             "WHERE f.frame_type = 'light'").fetchall()
 
         buckets: dict[tuple, list] = {}
+        identity_sources: dict[tuple, str] = {}
         for r in rows:
             inst = capture_instant(r["filename"])
             if inst is None:
                 continue  # no parseable capture instant -- skip, not an error
-            key = (r["object_id"], r["filter"], session_date(inst))
+            identity_name, identity_source = frame_identity(
+                r["object_id"], r["object_card"], r["leaf_dir"])
+            key = (r["object_id"], identity_name, r["filter"],
+                   session_date(inst))
+            identity_sources[key] = identity_source
             buckets.setdefault(key, []).append(
                 (r["content_hash"], panel_of(r["filename"]), inst))
 
@@ -127,14 +182,17 @@ def build_projects(conn) -> int:
         conn.execute("DELETE FROM frame_projects")
         conn.execute("DELETE FROM projects")
 
-        for (object_id, filt, _session_date), members in buckets.items():
+        for key, members in buckets.items():
+            object_id, identity_name, filt, _session_date = key
+            identity_source = identity_sources[key]
             kind = "mosaic" if any(p for _, p, _ in members) else "session"
             instants = [i for _, _, i in members]
             cur = conn.execute(
                 "INSERT INTO projects (object_id, filter, kind, started_at, "
-                "ended_at) VALUES (?,?,?,?,?)",
+                "ended_at, identity_name, identity_source) "
+                "VALUES (?,?,?,?,?,?,?)",
                 (object_id, filt, kind, min(instants).isoformat(),
-                 max(instants).isoformat()))
+                 max(instants).isoformat(), identity_name, identity_source))
             pid = cur.lastrowid
             for chash, panel, _inst in members:
                 conn.execute(
@@ -142,6 +200,6 @@ def build_projects(conn) -> int:
                     "project_id, panel) VALUES (?,?,?)",
                     (chash, pid, panel))
         conn.commit()
-        return len(buckets)
+        return GroupingResult(projects=len(buckets))
     finally:
         conn.row_factory = prev_factory

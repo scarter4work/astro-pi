@@ -141,8 +141,8 @@ def main(argv: list[str] | None = None) -> int:
         res = quality.measure_frames(conn, cfg, args.limit)
         print(f"measured={res.measured} failed={res.failed}")
     elif args.command == "group":
-        projects = grouping.build_projects(conn)
-        print(f"projects={projects}")
+        res = grouping.build_projects(conn)
+        print(f"projects={res.projects}")
     elif args.command == "manifest":
         out_dir = Path(args.out_dir) if args.out_dir else None
         manifests = manifest.export_all(conn, out_dir=out_dir)

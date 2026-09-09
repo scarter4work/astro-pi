@@ -68,7 +68,15 @@ CREATE TABLE IF NOT EXISTS projects (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   object_id INTEGER REFERENCES objects(id),
   filter TEXT, kind TEXT NOT NULL,
-  started_at TEXT, ended_at TEXT
+  started_at TEXT, ended_at TEXT,
+  -- How this project's target was identified, and under what name.
+  -- object_id is authoritative when set; until it is, grouping falls
+  -- back to a per-frame identity and records which one it used, so a
+  -- fallback label is never mistaken for a solved one. Mirrors the
+  -- confidence model in spec 7: 'object' (authoritative), 'object_card'
+  -- (medium), 'dirname' (low), 'unknown'. identity_name is NULL when
+  -- object_id carries the identity, and when there was none to find.
+  identity_name TEXT, identity_source TEXT
 );
 
 CREATE TABLE IF NOT EXISTS frame_projects (
