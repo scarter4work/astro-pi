@@ -5,6 +5,30 @@ from .imagekeys import hamming
 
 DEFAULT_FOV_DEG = 1.0
 
+# Fingerprint (dHash) match tolerance for clustering frames into a field.
+#
+# Measured 2026-09-09 against real archive frames (ASI585MC Air, 3 targets,
+# 6 frames each, 2026-09-08 session):
+#   same-field pairs:      min 20, med 26-50, max 143 (the 143 outlier is a
+#                           meridian-flipped frame -- 182 deg vs 1 deg
+#                           rotation -- which is expected to NOT cluster;
+#                           excluding it, the same-field max is 45)
+#   different-field pairs:  min 113, med 126-129, max 138
+# 12 (the value used while this pass was first drafted, before it was
+# checked against real data) is far too strict: dithering, seeing, and
+# noise make even genuinely identical pointings hash 20+ bits apart, so at
+# 12 no two real frames would ever cluster and every frame would become
+# its own field. 80 sits well above the observed same-field maximum (45)
+# and well below the observed between-field minimum (113), erring toward
+# the cheaper mistake: a threshold set too low only costs an extra plate
+# solve (Task 7), while one set too high risks merging frames of different
+# objects into the same field. Fingerprint is also ANDed with pointing
+# proximity (see assign_fields), which is the stronger discriminator, so
+# 80 is a safe margin rather than an aggressive one. A meridian-flipped
+# frame splitting into its own field is accepted, not fixed here --
+# rotation-invariant hashing is out of scope.
+FP_THRESHOLD_DEFAULT = 80
+
 
 def angular_separation(ra1, dec1, ra2, dec2) -> float:
     p1, p2 = math.radians(dec1), math.radians(dec2)
@@ -55,7 +79,7 @@ def _seed_reps(conn) -> list[dict]:
              "ra": r["ra"], "dec": r["dec"]} for r in rows]
 
 
-def assign_fields(conn, fp_threshold: int = 12) -> int:
+def assign_fields(conn, fp_threshold: int = FP_THRESHOLD_DEFAULT) -> int:
     """
     Cluster light frames into fields by fingerprint + pointing proximity
     and write the assignment to frames.field_id.
