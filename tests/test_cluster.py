@@ -80,6 +80,47 @@ def test_assign_fields_is_idempotent(tmp_path):
     cluster.assign_fields(conn)
     assert conn.execute("SELECT COUNT(*) FROM fields").fetchone()[0] == 1
 
+def test_incremental_rerun_does_not_reassign_when_new_hash_sorts_first(tmp_path):
+    # Regression test for representative drift (found in review 2026-09-09):
+    # content_hash is a content digest, unrelated to insertion order, so
+    # picking a field's representative by MIN(content_hash) let a later
+    # incremental run silently hand representative status to a newly
+    # inserted frame -- and because matching is greedy single-link, a
+    # member that only matched the ORIGINAL representative could then fall
+    # outside tolerance of the NEW one and get moved to a different field.
+    #
+    # z_orig uses a long focal length -> a tight FOV tolerance (~0.13 deg).
+    # a_drift uses the default (short) focal length -> a generous FOV
+    # tolerance (~1.3 deg), and its content_hash ("a_drift") sorts BEFORE
+    # z_orig's alphabetically. The asymmetric tolerance is what makes this
+    # a real regression check rather than a tautology: with same-width FOV
+    # on both frames, angular distance is symmetric and reseeding to
+    # either frame gives the same match/no-match answer either way, so the
+    # bug wouldn't be observable. With asymmetric FOV, z_orig and a_drift
+    # are 0.5 deg apart -- within a_drift's own generous tolerance (so
+    # a_drift validly joins z_orig's field) but beyond z_orig's own tight
+    # tolerance, so if reseeding ever put a_drift forward as the field's
+    # representative, re-evaluating z_orig against it would wrongly fail.
+    conn = db.connect(tmp_path / "t.sqlite"); db.init_schema(conn)
+    _insert(conn, "z_orig", "ffff0000", 100.0, 40.0, focallen=4910.0)
+    assert cluster.assign_fields(conn) == 1
+    original_field_id = conn.execute(
+        "SELECT field_id FROM frames WHERE content_hash='z_orig'").fetchone()[0]
+    assert original_field_id is not None
+
+    _insert(conn, "a_drift", "ffff0001", 100.5, 40.0)
+    assert cluster.assign_fields(conn) == 0  # joins the existing field
+
+    # A third call with nothing new to cluster -- pure idempotency check,
+    # and the exact point at which the old MIN(content_hash) seeding would
+    # reseed the field's representative to a_drift (its hash sorts first)
+    # and wrongly re-evaluate z_orig against it.
+    assert cluster.assign_fields(conn) == 0
+    rows = dict(conn.execute("SELECT content_hash, field_id FROM frames"))
+    assert rows["z_orig"] == original_field_id
+    assert rows["a_drift"] == original_field_id
+    assert conn.execute("SELECT COUNT(*) FROM fields").fetchone()[0] == 1
+
 def test_frames_without_pointing_are_left_unassigned(tmp_path):
     conn = db.connect(tmp_path / "t.sqlite"); db.init_schema(conn)
     _insert(conn, "h1", "ffff0000", None, None)

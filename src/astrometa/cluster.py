@@ -54,25 +54,38 @@ def _seed_reps(conn) -> list[dict]:
     duplicate field for every frame (the clustering loop below only ever
     searches this in-memory list, never the database).
 
-    The representative for a field is the frame carrying that field_id
-    with the smallest content_hash. That is always the frame that
-    originally created the field: assign_fields processes candidate frames
-    in ascending content_hash order, and a field is only ever created when
-    the frame being processed fails to match any rep already in `reps` --
-    so the first (smallest-hash) frame of a field is necessarily the one
-    that created it, and every later member matched against it (or against
-    a rep chained from it) rather than creating a field of its own.
+    The representative for a field is its EARLIEST-INSERTED member, found
+    via SQLite's implicit `rowid` (MIN(rowid) per field_id) rather than
+    content_hash: content_hash is a BLAKE2b digest, so its sort order is
+    unrelated to insertion order, and a frame added on a later incremental
+    run has roughly even odds of sorting before the frame that originally
+    created the field. Picking by content_hash let representative status
+    drift to a newly-inserted frame across runs -- and because matching is
+    greedy single-link (a field's members are only guaranteed to be within
+    tolerance of whichever single frame was rep AT THE TIME they matched,
+    not of every other member), a member that matched the ORIGINAL
+    representative could fall outside tolerance of a DIFFERENT one picked
+    on a later run and silently move to a new field. rowid always
+    increases with insertion, so the original representative keeps the
+    role for as long as the row exists -- this relies on rowid stability,
+    which holds unless the store is VACUUMed (VACUUM may renumber rowids).
+
+    Filters on fingerprint IS NOT NULL as well as field_id IS NOT NULL:
+    field_id is only ever set (below, by this module) on rows that already
+    passed a fingerprint-not-null check, so this is currently unreachable,
+    but it documents that invariant so a future change to how field_id
+    gets set can't silently violate it here.
     """
     rows = conn.execute("""
         SELECT f.field_id AS id, f.fingerprint AS fingerprint,
                f.header_ra AS ra, f.header_dec AS dec
         FROM frames f
         INNER JOIN (
-            SELECT field_id, MIN(content_hash) AS rep_hash
+            SELECT field_id, MIN(rowid) AS rep_rowid
             FROM frames
-            WHERE field_id IS NOT NULL
+            WHERE field_id IS NOT NULL AND fingerprint IS NOT NULL
             GROUP BY field_id
-        ) rep ON f.field_id = rep.field_id AND f.content_hash = rep.rep_hash
+        ) rep ON f.field_id = rep.field_id AND f.rowid = rep.rep_rowid
         ORDER BY f.field_id
     """).fetchall()
     return [{"id": r["id"], "fingerprint": r["fingerprint"],
@@ -84,11 +97,17 @@ def assign_fields(conn, fp_threshold: int = FP_THRESHOLD_DEFAULT) -> int:
     Cluster light frames into fields by fingerprint + pointing proximity
     and write the assignment to frames.field_id.
 
-    Idempotent: `reps` is seeded from fields already in the database (see
-    `_seed_reps`) before the clustering loop runs, so a frame that already
-    belongs to a field matches its existing field again rather than
-    spawning a duplicate. Returns the number of NEW fields created by this
-    call (0 on a re-run that finds nothing new to cluster).
+    Idempotent in two parts:
+      - Structural guarantee: the candidate query below only ever selects
+        frames with field_id IS NULL, so a frame is never re-evaluated,
+        and never reassigned, once it has been assigned a field_id. This
+        holds regardless of representative selection.
+      - Convergence: `reps` is seeded from fields already in the database
+        (see `_seed_reps`) before the clustering loop runs, so a NEW frame
+        still matches the same field a single full run would have put it
+        in, rather than spawning a duplicate.
+    Returns the number of NEW fields created by this call (0 on a re-run
+    that finds nothing new to cluster).
     """
     prev_factory = conn.row_factory
     conn.row_factory = sqlite3.Row
@@ -99,7 +118,8 @@ def assign_fields(conn, fp_threshold: int = FP_THRESHOLD_DEFAULT) -> int:
         rows = conn.execute(
             "SELECT * FROM frames WHERE frame_type='light' "
             "AND fingerprint IS NOT NULL AND header_ra IS NOT NULL "
-            "AND header_dec IS NOT NULL ORDER BY content_hash").fetchall()
+            "AND header_dec IS NOT NULL AND field_id IS NULL "
+            "ORDER BY content_hash").fetchall()
 
         for row in rows:
             fov_w, fov_h = frame_fov_deg(row)
