@@ -112,7 +112,7 @@ Frames are identified by three different keys because they answer three differen
 
 | Key | Derived from | Answers |
 |---|---|---|
-| **Content hash** (blake3) | raw bytes | Is this the same file? Resolves the 1,989 filename collisions, exact duplicates, integrity |
+| **Content hash** (BLAKE2b, `hashlib`) | raw bytes | Is this the same file? Resolves the 1,989 filename collisions, exact duplicates, integrity |
 | **WCS solution** | pixel *geometry*, via ASTAP | Where was this pointed? Exact deep-sky identity |
 | **Perceptual fingerprint** | downsampled pixel *appearance* | Which frames are the same field? Identifies the unsolvable frames |
 
