@@ -314,3 +314,18 @@ def test_full_configured_root_scan_still_runs_the_missing_sweep(
     rows = dict(conn.execute("SELECT filename, disposition FROM frames"))
     assert rows[kept.name] == "present"
     assert rows[gone.name] == "missing"
+
+
+def test_group_reports_frames_skipped_for_lack_of_a_capture_instant(
+        tmp_path, capsys):
+    root = tmp_path / "astro_data" / "M 42"
+    root.mkdir(parents=True)
+    _write_light(root / "Light_M 42_120.0s_Bin1_HaO3_20260908-220000_0deg_0001.fit")
+    _write_light(root / "Autosave001.fit", seed=9)
+    dbp = tmp_path / "store.sqlite"
+    assert cli.main(["scan", "--db", str(dbp), "--root", str(root)]) == 0
+
+    assert cli.main(["group", "--db", str(dbp)]) == 0
+    out = capsys.readouterr().out
+    assert "projects=1" in out
+    assert "skipped_no_capture_instant=1" in out

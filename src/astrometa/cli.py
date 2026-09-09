@@ -142,7 +142,9 @@ def main(argv: list[str] | None = None) -> int:
         print(f"measured={res.measured} failed={res.failed}")
     elif args.command == "group":
         res = grouping.build_projects(conn)
-        print(f"projects={res.projects}")
+        print(f"projects={res.projects} "
+              f"skipped_no_capture_instant="
+              f"{res.skipped_no_capture_instant}")
     elif args.command == "manifest":
         out_dir = Path(args.out_dir) if args.out_dir else None
         manifests = manifest.export_all(conn, out_dir=out_dir)

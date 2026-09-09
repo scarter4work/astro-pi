@@ -448,3 +448,40 @@ def test_numeric_headers_are_stored_with_the_right_sqlite_type(tmp_path):
         "SELECT typeof(header_ra), typeof(exptime), typeof(focallen), "
         "typeof(naxis1) FROM frames").fetchone()
     assert types == ("real", "real", "real", "integer")
+
+
+# --- FIX 8: captured_at falls back to the filename capture instant ----
+
+
+def test_captured_at_falls_back_to_the_filename_capture_instant(tmp_path):
+    # Spec 7: captured_at is "DATE-OBS, falling back to the filename
+    # capture instant". Without the fallback a frame whose header lacks
+    # DATE-OBS has no capture instant on record at all.
+    root = tmp_path / "astro_data" / "d"; root.mkdir(parents=True)
+    _write_with_cards(
+        root / "Light_M 42_120.0s_Bin1_HaO3_20260908-220000_0deg_0001.fit", {})
+    conn = db.connect(tmp_path / "t.sqlite"); db.init_schema(conn)
+    inventory.scan(conn, [tmp_path / "astro_data"])
+    assert conn.execute("SELECT captured_at FROM frames").fetchone()[0] \
+        == "2026-09-08T22:00:00"
+
+
+def test_date_obs_wins_over_the_filename_fallback(tmp_path):
+    root = tmp_path / "astro_data" / "d"; root.mkdir(parents=True)
+    _write_with_cards(
+        root / "Light_M 42_120.0s_Bin1_HaO3_20260908-220000_0deg_0001.fit",
+        {"DATE-OBS": "2026-09-09T03:00:00.500"})
+    conn = db.connect(tmp_path / "t.sqlite"); db.init_schema(conn)
+    inventory.scan(conn, [tmp_path / "astro_data"])
+    assert conn.execute("SELECT captured_at FROM frames").fetchone()[0] \
+        == "2026-09-09T03:00:00.500"
+
+
+def test_captured_at_is_null_when_neither_source_has_one(tmp_path):
+    # ASIAIR autosave files carry no capture stamp in either place.
+    # NULL is the honest answer; nothing is invented.
+    root = tmp_path / "astro_data" / "d"; root.mkdir(parents=True)
+    _write_with_cards(root / "Autosave001.fit", {})
+    conn = db.connect(tmp_path / "t.sqlite"); db.init_schema(conn)
+    inventory.scan(conn, [tmp_path / "astro_data"])
+    assert conn.execute("SELECT captured_at FROM frames").fetchone()[0] is None

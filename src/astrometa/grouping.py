@@ -61,6 +61,12 @@ class GroupingResult:
     no parseable capture instant.
     """
     projects: int = 0
+    # Light frames dropped from every project because their filename
+    # carries no `_YYYYMMDD-HHMMSS_` token. Legitimately unplaceable
+    # (ASIAIR autosaves have no capture stamp anywhere), but silence
+    # made a frame vanishing from the grouping indistinguishable from
+    # there being nothing to place.
+    skipped_no_capture_instant: int = 0
 
 
 _INSTANT = re.compile(r"_(\d{8})-(\d{6})_")
@@ -73,7 +79,9 @@ def capture_instant(filename: str) -> datetime | None:
     Returns None when the pattern is absent -- a frame with no parseable
     capture instant is legitimately skipped by build_projects, not an
     error, since not every file in the archive carries this stamp (e.g.
-    ASIAIR autosave files).
+    ASIAIR autosave files). build_projects counts those skips and
+    reports them (GroupingResult.skipped_no_capture_instant) so
+    "legitimately skipped" never means "silently gone".
     """
     m = _INSTANT.search(filename)
     if not m:
@@ -152,6 +160,8 @@ def build_projects(conn) -> GroupingResult:
     night rather than creating a duplicate project for it.
 
     Returns a GroupingResult, not a bare count -- see its docstring.
+    A frame with no parseable capture instant is skipped, as before, but
+    now counted and reported rather than dropped in silence.
     """
     prev_factory = conn.row_factory
     conn.row_factory = sqlite3.Row
@@ -164,10 +174,13 @@ def build_projects(conn) -> GroupingResult:
 
         buckets: dict[tuple, list] = {}
         identity_sources: dict[tuple, str] = {}
+        skipped = 0
         for r in rows:
             inst = capture_instant(r["filename"])
             if inst is None:
-                continue  # no parseable capture instant -- skip, not an error
+                # Not an error -- but counted, never silent.
+                skipped += 1
+                continue
             identity_name, identity_source = frame_identity(
                 r["object_id"], r["object_card"], r["leaf_dir"])
             key = (r["object_id"], identity_name, r["filter"],
@@ -200,6 +213,7 @@ def build_projects(conn) -> GroupingResult:
                     "project_id, panel) VALUES (?,?,?)",
                     (chash, pid, panel))
         conn.commit()
-        return GroupingResult(projects=len(buckets))
+        return GroupingResult(projects=len(buckets),
+                              skipped_no_capture_instant=skipped)
     finally:
         conn.row_factory = prev_factory

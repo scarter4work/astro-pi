@@ -6,6 +6,7 @@ from astropy.io import fits
 
 from . import fitsheader, imagekeys
 from .classify import classify
+from .grouping import capture_instant
 from .config import EXCLUDED_PATH_MARKERS
 
 
@@ -123,6 +124,29 @@ def _coerce_numeric(header: dict) -> tuple[dict, str | None]:
     if not bad:
         return values, None
     return values, "numeric: uncoercible header value(s): " + "; ".join(bad)
+
+
+def _captured_at(header: dict, filename: str) -> str | None:
+    """
+    The frame's capture instant: DATE-OBS, falling back to the
+    `_YYYYMMDD-HHMMSS_` token in the filename (spec 7).
+
+    The fallback is not cosmetic. Without it a frame whose header
+    carries no DATE-OBS has no capture instant on record anywhere, so it
+    can never be placed in a session or project. Nothing is invented:
+    when neither source has one, this is None.
+
+    The filename parser is grouping.capture_instant -- the same one
+    grouping itself buckets on -- rather than a second copy of the
+    regex, so the two can never disagree about what a capture instant is.
+    """
+    v = header.get("DATE-OBS")
+    if isinstance(v, str) and v.strip():
+        return v.strip()
+    if v is not None and not isinstance(v, str):
+        return str(v)
+    inst = capture_instant(filename)
+    return inst.isoformat() if inst else None
 
 
 def _object_card(header: dict) -> str | None:
@@ -266,7 +290,7 @@ def scan(conn, roots, read_pixels: bool = True) -> InventoryResult:
             "frame_type": classify(path.name, header),
             "camera": header.get("INSTRUME"), "filter": header.get("FILTER"),
             "exptime": nums["EXPTIME"],
-            "captured_at": header.get("DATE-OBS"),
+            "captured_at": _captured_at(header, path.name),
             "object_card": _object_card(header), "leaf_dir": path.parent.name,
             "header_ra": nums["RA"], "header_dec": nums["DEC"],
             "focallen": nums["FOCALLEN"], "xpixsz": nums["XPIXSZ"],

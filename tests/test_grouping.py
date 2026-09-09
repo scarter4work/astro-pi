@@ -262,3 +262,32 @@ def test_frames_with_no_identity_at_all_still_group_by_night(tmp_path):
     row = conn.execute(
         "SELECT identity_name, identity_source FROM projects").fetchone()
     assert row == (None, "unknown")
+
+
+# --- FIX 8: dropped frames must be a reported number, not silence -----
+
+
+def test_frames_without_a_capture_instant_are_counted_not_silently_dropped(tmp_path):
+    # build_projects skipped any frame lacking the _YYYYMMDD-HHMMSS_
+    # token from every project, and said nothing about it. An operator
+    # had no way to tell a frame was left out of the grouping at all.
+    conn = db.connect(tmp_path / "t.sqlite"); db.init_schema(conn)
+    _frame(conn, "h1",
+           "Light_M 42_120.0s_Bin1_HaO3_20260908-225448_182deg_0001.fit",
+           leaf_dir="M 42")
+    _frame(conn, "h2", "Autosave001.fit", leaf_dir="M 42")
+    _frame(conn, "h3", "Autosave002.fit", leaf_dir="M 42")
+
+    res = grouping.build_projects(conn)
+    assert res.projects == 1
+    assert res.skipped_no_capture_instant == 2
+    assert conn.execute(
+        "SELECT COUNT(*) FROM frame_projects").fetchone()[0] == 1
+
+
+def test_nothing_skipped_reports_zero(tmp_path):
+    conn = db.connect(tmp_path / "t.sqlite"); db.init_schema(conn)
+    _frame(conn, "h1",
+           "Light_M 42_120.0s_Bin1_HaO3_20260908-225448_182deg_0001.fit",
+           leaf_dir="M 42")
+    assert grouping.build_projects(conn).skipped_no_capture_instant == 0
