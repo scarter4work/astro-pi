@@ -93,6 +93,21 @@ def scan(conn, roots, read_pixels: bool = True) -> InventoryResult:
         if errors:
             res.failed += 1
 
+        # Ownership split enforced here: scan() owns the present/missing
+        # transition (a rescan may legitimately move a frame back to
+        # 'present', e.g. one disposition.mark_missing() previously
+        # flagged), but it must never overwrite 'quarantined' -- that
+        # disposition is the operator's/quality gate's, recorded via
+        # disposition.mark_culled()/quarantine(). Without the CASE guard,
+        # quarantine() moving a file into its sibling rejected/ dir (still
+        # under the scanned root) would get walked right back into by the
+        # next scan and silently flipped back to 'present', erasing the
+        # cull -- unqualified `disposition` on the right of the CASE reads
+        # the pre-existing row's value (SQLite UPSERT semantics), not the
+        # value this INSERT would have written. path/last_seen/read_error
+        # still update unconditionally: relocating a quarantined frame's
+        # recorded path to where it now actually lives is useful, not
+        # a disposition change.
         conn.execute("""
             INSERT INTO frames (content_hash, path, filename, size, mtime,
                 first_seen, last_seen, frame_type, camera, filter, exptime,
@@ -102,7 +117,9 @@ def scan(conn, roots, read_pixels: bool = True) -> InventoryResult:
             VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'present',?)
             ON CONFLICT(content_hash) DO UPDATE SET
                 path=excluded.path, last_seen=excluded.last_seen,
-                disposition='present', read_error=excluded.read_error
+                disposition=CASE WHEN disposition='quarantined'
+                                  THEN disposition ELSE 'present' END,
+                read_error=excluded.read_error
         """, (chash, str(path), path.name, stat.st_size, stat.st_mtime,
               _now(), _now(), classify(path.name, header),
               header.get("INSTRUME"), header.get("FILTER"),

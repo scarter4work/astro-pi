@@ -1,8 +1,10 @@
 from pathlib import Path
 
+import numpy as np
 import pytest
+from astropy.io import fits
 
-from astrometa import db, disposition
+from astrometa import db, disposition, inventory
 
 
 def _frame(conn, h, path="/a/b.fit"):
@@ -154,3 +156,62 @@ def test_backfill_known_culls_multiple_patterns_sum(tmp_path):
     assert rows["h1"] == "quarantined"
     assert rows["h2"] == "quarantined"
     assert rows["h3"] == "present"
+
+
+def test_mark_missing_never_touches_a_quarantined_frame(tmp_path):
+    # The store's ownership split: inventory (mark_missing) owns the
+    # present/missing transition; the operator (mark_culled/quarantine)
+    # owns quarantined. A quarantined frame legitimately absent from a
+    # scan's seen_hashes is not lost, it's filed -- it must stay
+    # 'quarantined', never regress to 'missing'.
+    conn = db.connect(tmp_path / "t.sqlite"); db.init_schema(conn)
+    _frame(conn, "h1")
+    disposition.mark_culled(conn, "h1", "operator cull", "manual")
+    assert disposition.mark_missing(conn, set()) == 0
+    assert conn.execute("SELECT disposition FROM frames WHERE "
+                        "content_hash='h1'").fetchone()[0] == "quarantined"
+
+
+def _write_light(path, obj="IC 59"):
+    rng = np.random.default_rng(1)
+    data = rng.normal(100, 5, (64, 64)).astype(np.float32)
+    hdu = fits.PrimaryHDU(data)
+    hdu.header["OBJECT"] = obj
+    hdu.header["INSTRUME"] = "ZWO ASI585MC Air"
+    hdu.header["FILTER"] = "HaO3"
+    hdu.header["EXPTIME"] = 120.0
+    hdu.header["IMAGETYP"] = "Light Frame"
+    hdu.writeto(path, overwrite=True)
+
+
+def test_quarantine_survives_a_rescan(tmp_path):
+    # Integration regression guard for the real bug: quarantine() moves a
+    # frame's file into a sibling rejected/ dir, still inside the scanned
+    # archive root. A naive inventory.scan() re-walking that root finds
+    # the same content_hash again and, left unguarded, its ON CONFLICT
+    # upsert would silently reset disposition back to 'present' --
+    # erasing the operator's (or the quality gate's) recorded intent one
+    # layer below where this task's mark_missing guard operates. Only
+    # inventory.py's ON CONFLICT clause was touched to fix this (directed
+    # by team-lead, not unilateral scope creep by task 11) -- see task-11
+    # report for detail.
+    root = tmp_path / "astro_data" / "IC 59"
+    root.mkdir(parents=True)
+    src = root / "Light_IC 59_120.0s_Bin1_HaO3_20260907-220000_0deg_0038.fit"
+    _write_light(src)
+    conn = db.connect(tmp_path / "t.sqlite"); db.init_schema(conn)
+
+    inventory.scan(conn, [tmp_path / "astro_data"])
+    chash = conn.execute("SELECT content_hash FROM frames").fetchone()[0]
+
+    dest = disposition.quarantine(conn, chash, "hfd 6.2 > 5.1", dry_run=False)
+    assert dest is not None and dest.exists()
+    assert dest.is_relative_to(tmp_path / "astro_data")  # still under the scan root
+
+    inventory.scan(conn, [tmp_path / "astro_data"])
+
+    row = conn.execute("SELECT disposition, disposition_reason, path "
+                       "FROM frames WHERE content_hash=?", (chash,)).fetchone()
+    assert row[0] == "quarantined"
+    assert row[1] == "hfd 6.2 > 5.1"
+    assert row[2] == str(dest)
