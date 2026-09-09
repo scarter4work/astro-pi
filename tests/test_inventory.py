@@ -379,3 +379,72 @@ def test_object_card_and_leaf_dir_refresh_on_rescan(tmp_path):
     inventory.scan(conn, [tmp_path / "astro_data"])
     row = conn.execute("SELECT object_card, leaf_dir FROM frames").fetchone()
     assert row == ("M 42", "M 42")
+
+
+# --- FIX 5: numeric header values must be coerced at inventory time ---
+
+
+def _write_with_cards(path, extra: dict, seed=7):
+    rng = np.random.default_rng(seed)
+    hdu = fits.PrimaryHDU(rng.normal(100, 5, (64, 64)).astype(np.float32))
+    hdu.header["INSTRUME"] = "ZWO ASI585MC Air"
+    hdu.header["FILTER"] = "HaO3"
+    hdu.header["IMAGETYP"] = "Light Frame"
+    for k, v in extra.items():
+        hdu.header[k] = v
+    hdu.writeto(path, overwrite=True)
+
+
+def test_sexagesimal_ra_is_not_stored_as_text_in_a_real_column(tmp_path):
+    # fitsheader returns whatever a card parses to, and SQLite's REAL
+    # affinity stores an unparseable string as TEXT rather than
+    # rejecting it. That text only surfaces much later, as a TypeError
+    # inside cluster.assign_fields. It must be caught and recorded here.
+    root = tmp_path / "astro_data" / "d"; root.mkdir(parents=True)
+    _write_with_cards(root / "Light_x_0001.fit",
+                      {"RA": "02 51 27.0", "DEC": 60.07})
+    conn = db.connect(tmp_path / "t.sqlite"); db.init_schema(conn)
+    res = inventory.scan(conn, [tmp_path / "astro_data"])
+    assert res.added == 1
+    assert res.failed == 1
+    ra, kind, err = conn.execute(
+        "SELECT header_ra, typeof(header_ra), read_error FROM frames"
+    ).fetchone()
+    assert ra is None
+    assert kind == "null"
+    assert err is not None and "RA" in err
+
+
+def test_uncoercible_value_is_loud_but_the_rest_of_the_header_survives(tmp_path):
+    # An unusable RA must not cost the frame its camera, filter or
+    # fingerprint -- the header and pixel reads both succeeded.
+    root = tmp_path / "astro_data" / "d"; root.mkdir(parents=True)
+    _write_with_cards(root / "Light_x_0001.fit",
+                      {"RA": "02 51 27.0", "DEC": 60.07, "EXPTIME": 120.0})
+    conn = db.connect(tmp_path / "t.sqlite"); db.init_schema(conn)
+    inventory.scan(conn, [tmp_path / "astro_data"])
+    camera, filt, exptime, dec, fp = conn.execute(
+        "SELECT camera, filter, exptime, header_dec, fingerprint "
+        "FROM frames").fetchone()
+    assert camera == "ZWO ASI585MC Air"
+    assert filt == "HaO3"
+    assert exptime == 120.0
+    assert dec == 60.07
+    assert fp is not None
+
+
+def test_numeric_headers_are_stored_with_the_right_sqlite_type(tmp_path):
+    # This archive spans seven cameras and three naming eras; an integer
+    # EXPTIME or a float-formatted NAXIS must land as REAL/INTEGER, not
+    # as whatever the card happened to parse to.
+    root = tmp_path / "astro_data" / "d"; root.mkdir(parents=True)
+    _write_with_cards(root / "Light_x_0001.fit",
+                      {"RA": 42.86, "DEC": 60.07, "EXPTIME": 120,
+                       "FOCALLEN": 491, "XPIXSZ": 2.9})
+    conn = db.connect(tmp_path / "t.sqlite"); db.init_schema(conn)
+    res = inventory.scan(conn, [tmp_path / "astro_data"])
+    assert res.failed == 0
+    types = conn.execute(
+        "SELECT typeof(header_ra), typeof(exptime), typeof(focallen), "
+        "typeof(naxis1) FROM frames").fetchone()
+    assert types == ("real", "real", "real", "integer")

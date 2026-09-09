@@ -1,4 +1,8 @@
 import math
+import sqlite3
+
+import pytest
+
 from astrometa import db, cluster
 
 def _insert(conn, h, fp, ra, dec, focallen=491.0, xpixsz=2.9,
@@ -126,3 +130,85 @@ def test_frames_without_pointing_are_left_unassigned(tmp_path):
     _insert(conn, "h1", "ffff0000", None, None)
     cluster.assign_fields(conn)
     assert conn.execute("SELECT field_id FROM frames").fetchone()[0] is None
+
+
+# --- FIX 5: one unusable row must not discard the entire run ----------
+
+def _insert_raw(conn, h, fp, ra, dec):
+    """Insert a frame with whatever ra/dec value is given, bypassing any
+    coercion -- this is how a store populated before inventory coerced
+    numeric headers, or restored from an older manifest, actually looks."""
+    conn.execute("""INSERT INTO frames (content_hash, path, filename, size,
+        mtime, frame_type, disposition, fingerprint, header_ra, header_dec,
+        focallen, xpixsz, naxis1, naxis2)
+        VALUES (?,?,?,1,1.0,'light','present',?,?,?,491.0,2.9,3840,2160)""",
+        (h, f"/x/{h}.fit", f"{h}.fit", fp, ra, dec))
+
+
+def test_one_unusable_row_does_not_discard_the_whole_clustering_run(tmp_path):
+    # assign_fields commits once at the end, so a TypeError raised on a
+    # single bad row rolled back every assignment the run had made.
+    # Verified against the unfixed code with 3 frames (1 bad): the run
+    # raised TypeError and persisted 0 fields and 0 assignments. Across
+    # 34,000 frames that is the entire clustering run thrown away.
+    conn = db.connect(tmp_path / "t.sqlite"); db.init_schema(conn)
+    _insert_raw(conn, "aaa_good1", "ffff0000", 42.86, 60.07)
+    _insert_raw(conn, "bbb_bad", "ffff0001", "02 51 27.0", 60.07)
+    _insert_raw(conn, "ccc_good2", "ffff0002", 10.00, -20.00)
+    conn.commit()
+
+    with pytest.raises(cluster.ClusteringError, match="bbb_bad"):
+        cluster.assign_fields(conn)
+
+    # The good frames' work survived -- and it is COMMITTED, not merely
+    # visible to this connection's open transaction.
+    fresh = sqlite3.connect(tmp_path / "t.sqlite")
+    assert fresh.execute("SELECT COUNT(*) FROM fields").fetchone()[0] == 2
+    assigned = dict(fresh.execute(
+        "SELECT content_hash, field_id FROM frames"))
+    assert assigned["aaa_good1"] is not None
+    assert assigned["ccc_good2"] is not None
+    assert assigned["bbb_bad"] is None
+
+
+def test_unusable_row_is_never_made_a_field_representative(tmp_path):
+    # The bad row must be rejected BEFORE any field is created for it --
+    # otherwise it becomes a representative with a text ra, and every
+    # subsequent frame compared against it fails too, cascading one bad
+    # value into a whole-run failure by another route.
+    conn = db.connect(tmp_path / "t.sqlite"); db.init_schema(conn)
+    _insert_raw(conn, "aaa_bad", "ffff0000", "02 51 27.0", 60.07)
+    _insert_raw(conn, "bbb_good", "ffff0001", 42.86, 60.07)
+    _insert_raw(conn, "ccc_good", "ffff0002", 42.87, 60.08)
+    conn.commit()
+
+    with pytest.raises(cluster.ClusteringError):
+        cluster.assign_fields(conn)
+
+    fresh = sqlite3.connect(tmp_path / "t.sqlite")
+    assert fresh.execute("SELECT COUNT(*) FROM fields").fetchone()[0] == 1
+    assert fresh.execute(
+        "SELECT COUNT(*) FROM frames WHERE field_id IS NOT NULL"
+    ).fetchone()[0] == 2
+
+
+def test_clustering_error_names_every_failure_and_the_work_it_kept(tmp_path):
+    conn = db.connect(tmp_path / "t.sqlite"); db.init_schema(conn)
+    _insert_raw(conn, "bad1", "ffff0000", "02 51 27.0", 60.07)
+    _insert_raw(conn, "bad2", "ffff0001", 42.86, "+60 04 11")
+    _insert_raw(conn, "good", "ffff0002", 42.86, 60.07)
+    conn.commit()
+
+    with pytest.raises(cluster.ClusteringError) as exc:
+        cluster.assign_fields(conn)
+    msg = str(exc.value)
+    assert "bad1" in msg and "bad2" in msg
+    assert "1" in msg          # the run's kept work is reported, not lost
+
+
+def test_a_clean_run_still_returns_the_new_field_count(tmp_path):
+    conn = db.connect(tmp_path / "t.sqlite"); db.init_schema(conn)
+    _insert_raw(conn, "h1", "ffff0000", 42.86, 60.07)
+    _insert_raw(conn, "h2", "ffff0001", 10.00, -20.00)
+    conn.commit()
+    assert cluster.assign_fields(conn) == 2

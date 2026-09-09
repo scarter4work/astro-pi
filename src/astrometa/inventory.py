@@ -71,6 +71,60 @@ def _read_pixels(path: Path) -> tuple[str | None, float | None, float | None, st
         return None, None, None, f"pixels: {type(exc).__name__}: {exc}"
 
 
+# Header cards that must land in a numeric column, and what they must
+# become. fitsheader._parse_value returns whatever a card happens to
+# parse to, and SQLite's REAL/INTEGER affinity does NOT reject a value
+# it cannot convert -- it stores the string as TEXT. That text survives
+# the whole inventory pass silently and only surfaces much later, as a
+# TypeError inside cluster.assign_fields, which is exactly the place it
+# does the most damage. Coerce here, at the point of reading, and record
+# a failure loudly when a value will not coerce.
+#
+# Measured 2026-09-09 across a 200-frame archive-wide sample: every `RA`
+# card is already a bare decimal, so today's trigger is not present --
+# the sexagesimal form appears only under `OBJCTRA`, which nothing here
+# reads. This archive spans seven cameras and three naming eras, so the
+# guard is kept regardless; sexagesimal is deliberately NOT parsed into
+# a decimal, because inventing a value for a card this code does not
+# claim to understand is precisely the silent fallback the project
+# rules forbid.
+_NUMERIC_HEADER_FIELDS: dict[str, type] = {
+    "EXPTIME": float, "RA": float, "DEC": float,
+    "FOCALLEN": float, "XPIXSZ": float,
+    "NAXIS1": int, "NAXIS2": int,
+}
+
+
+def _coerce_numeric(header: dict) -> tuple[dict, str | None]:
+    """
+    Coerce the numeric header cards, returning (values, error).
+
+    A card that is absent is None and is not an error. A card that will
+    not coerce is recorded in the error string and stored as None --
+    never as text in a numeric column. Booleans are rejected outright:
+    Python would happily coerce a FITS `T` card to 1.0, inventing a
+    pointing out of a flag.
+    """
+    values: dict[str, float | int | None] = {}
+    bad: list[str] = []
+    for card, caster in _NUMERIC_HEADER_FIELDS.items():
+        v = header.get(card)
+        if v is None:
+            values[card] = None
+        elif isinstance(v, bool):
+            values[card] = None
+            bad.append(f"{card}={v!r} (boolean, not a number)")
+        else:
+            try:
+                values[card] = caster(v)
+            except (TypeError, ValueError) as exc:
+                values[card] = None
+                bad.append(f"{card}={v!r} ({type(exc).__name__})")
+    if not bad:
+        return values, None
+    return values, "numeric: uncoercible header value(s): " + "; ".join(bad)
+
+
 def _object_card(header: dict) -> str | None:
     """
     The OBJECT card as a string, or None when absent or blank.
@@ -100,12 +154,13 @@ def scan(conn, roots, read_pixels: bool = True) -> InventoryResult:
         # Header and pixel reads are independent: one failing must not
         # discard data the other successfully recovered.
         header, header_err = _read_header(path)
+        nums, numeric_err = _coerce_numeric(header)
 
         fp, bg, sat, pixel_err = None, None, None, None
         if read_pixels:
             fp, bg, sat, pixel_err = _read_pixels(path)
 
-        errors = [e for e in (header_err, pixel_err) if e]
+        errors = [e for e in (header_err, numeric_err, pixel_err) if e]
         err = "; ".join(errors) if errors else None
         if errors:
             res.failed += 1
@@ -210,13 +265,12 @@ def scan(conn, roots, read_pixels: bool = True) -> InventoryResult:
             "size": stat.st_size, "mtime": stat.st_mtime, "now": _now(),
             "frame_type": classify(path.name, header),
             "camera": header.get("INSTRUME"), "filter": header.get("FILTER"),
-            "exptime": header.get("EXPTIME"),
+            "exptime": nums["EXPTIME"],
             "captured_at": header.get("DATE-OBS"),
             "object_card": _object_card(header), "leaf_dir": path.parent.name,
-            "header_ra": header.get("RA"), "header_dec": header.get("DEC"),
-            "focallen": header.get("FOCALLEN"),
-            "xpixsz": header.get("XPIXSZ"),
-            "naxis1": header.get("NAXIS1"), "naxis2": header.get("NAXIS2"),
+            "header_ra": nums["RA"], "header_dec": nums["DEC"],
+            "focallen": nums["FOCALLEN"], "xpixsz": nums["XPIXSZ"],
+            "naxis1": nums["NAXIS1"], "naxis2": nums["NAXIS2"],
             "fingerprint": fp, "bg_median": bg, "saturated_frac": sat,
             "read_error": err,
             "header_ok": 1 if header_err is None else 0,

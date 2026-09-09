@@ -29,6 +29,37 @@ DEFAULT_FOV_DEG = 1.0
 # rotation-invariant hashing is out of scope.
 FP_THRESHOLD_DEFAULT = 80
 
+# How many failing frames an error message names before it truncates.
+MAX_REPORTED_FAILURES = 10
+
+
+class ClusteringError(Exception):
+    """One or more frames could not be clustered.
+
+    Raised AFTER the run's successful work has been committed, so a
+    single unusable row costs only that row -- see assign_fields.
+    """
+
+
+def _pointing(row) -> tuple[float, float]:
+    """
+    The frame's header pointing as two floats, or ValueError naming the
+    offending column.
+
+    Validated up front rather than left to fail inside the matching
+    loop, so an unusable frame can never become a field representative:
+    if it did, every later frame compared against it would fail too,
+    cascading one bad value into a whole-run failure by a second route.
+    """
+    for name in ("header_ra", "header_dec"):
+        v = row[name]
+        if isinstance(v, bool) or not isinstance(v, (int, float)):
+            raise ValueError(
+                f"{name} is {v!r} ({type(v).__name__}), not a number -- "
+                f"a value SQLite stored in a numeric column without "
+                f"converting it (see inventory._coerce_numeric)")
+    return float(row["header_ra"]), float(row["header_dec"])
+
 
 def angular_separation(ra1, dec1, ra2, dec2) -> float:
     p1, p2 = math.radians(dec1), math.radians(dec2)
@@ -108,12 +139,22 @@ def assign_fields(conn, fp_threshold: int = FP_THRESHOLD_DEFAULT) -> int:
         in, rather than spawning a duplicate.
     Returns the number of NEW fields created by this call (0 on a re-run
     that finds nothing new to cluster).
+
+    Resilient to an unusable row: a frame whose pointing or fingerprint
+    cannot be used is skipped, recorded, and reported by raising
+    ClusteringError AFTER the rest of the run has been committed.
+    Previously the single commit at the end meant one bad value among
+    34,000 frames aborted the pass and discarded the ENTIRE run's work
+    (verified: 3 frames, 1 bad -> TypeError, 0 fields and 0 assignments
+    persisted). The failure is still loud -- it just no longer costs
+    every other frame its clustering.
     """
     prev_factory = conn.row_factory
     conn.row_factory = sqlite3.Row
     try:
         reps = _seed_reps(conn)
         created = 0
+        failures: list[tuple[str, str]] = []
 
         rows = conn.execute(
             "SELECT * FROM frames WHERE frame_type='light' "
@@ -122,27 +163,48 @@ def assign_fields(conn, fp_threshold: int = FP_THRESHOLD_DEFAULT) -> int:
             "ORDER BY content_hash").fetchall()
 
         for row in rows:
-            fov_w, fov_h = frame_fov_deg(row)
-            tol = max(fov_w, fov_h)
-            match = None
-            for rep in reps:
-                if hamming(row["fingerprint"], rep["fingerprint"]) > fp_threshold:
-                    continue
-                if angular_separation(row["header_ra"], row["header_dec"],
-                                      rep["ra"], rep["dec"]) > tol:
-                    continue
-                match = rep
-                break
+            # Everything that can fail on this row happens before
+            # anything is written for it, so a failure leaves neither an
+            # orphan field nor a half-assigned frame.
+            try:
+                ra, dec = _pointing(row)
+                fov_w, fov_h = frame_fov_deg(row)
+                tol = max(fov_w, fov_h)
+                match = None
+                for rep in reps:
+                    if hamming(row["fingerprint"],
+                               rep["fingerprint"]) > fp_threshold:
+                        continue
+                    if angular_separation(ra, dec,
+                                          rep["ra"], rep["dec"]) > tol:
+                        continue
+                    match = rep
+                    break
+            except Exception as exc:
+                failures.append((row["content_hash"],
+                                 f"{type(exc).__name__}: {exc}"))
+                continue
+
             if match is None:
                 cur = conn.execute(
                     "INSERT INTO fields (solve_source) VALUES ('none')")
                 match = {"id": cur.lastrowid, "fingerprint": row["fingerprint"],
-                         "ra": row["header_ra"], "dec": row["header_dec"]}
+                         "ra": ra, "dec": dec}
                 reps.append(match)
                 created += 1
             conn.execute("UPDATE frames SET field_id=? WHERE content_hash=?",
                          (match["id"], row["content_hash"]))
         conn.commit()
+        if failures:
+            shown = failures[:MAX_REPORTED_FAILURES]
+            more = len(failures) - len(shown)
+            detail = "; ".join(f"{h}: {why}" for h, why in shown)
+            if more:
+                detail += f"; ... and {more} more"
+            raise ClusteringError(
+                f"{len(failures)} frame(s) could not be clustered and were "
+                f"left unassigned. This call's other work was committed "
+                f"first: {created} new field(s) created. Failures: {detail}")
         return created
     finally:
         conn.row_factory = prev_factory
