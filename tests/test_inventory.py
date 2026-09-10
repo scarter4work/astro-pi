@@ -1,3 +1,6 @@
+import os
+import shutil
+
 import numpy as np
 import pytest
 from astropy.io import fits
@@ -596,3 +599,326 @@ def test_a_recorded_date_obs_is_not_clobbered_by_the_filename_fallback(tmp_path)
 
     assert conn.execute("SELECT captured_at FROM frames").fetchone()[0] \
         == "2026-09-09T03:00:00.500"
+
+
+# ---------------------------------------------------------------------------
+# Parallel inventory
+#
+# The per-frame work (content_hash over the whole file, the header read,
+# the pixel decode, fingerprint, pixel stats) is farmed out to worker
+# processes while every database write stays in the parent. These tests
+# pin the two properties that make that safe: the result must not depend
+# on how many workers ran, and a worker must never be able to make a
+# frame quietly disappear.
+# ---------------------------------------------------------------------------
+
+_VOLATILE_COLUMNS = {"first_seen", "last_seen"}
+
+
+def _all_rows(conn):
+    """Every frames column except the two wall-clock stamps."""
+    cols = [r[1] for r in conn.execute("PRAGMA table_info(frames)")]
+    keep = [c for c in cols if c not in _VOLATILE_COLUMNS]
+    return keep, conn.execute(
+        f"SELECT {', '.join(keep)} FROM frames ORDER BY content_hash"
+    ).fetchall()
+
+
+def _mixed_archive(tmp_path):
+    """
+    A tree big enough to occupy several workers, holding every per-frame
+    outcome the scan has to survive: clean frames, a header-read failure,
+    a zero-byte file, a NaN-pixel frame whose header is fine, and a
+    duplicate pair (same bytes, two paths) that collide on one row.
+    """
+    root = tmp_path / "astro_data"
+    for night in ("2026-09-07", "2026-09-08"):
+        d = root / night / "M 42"
+        d.mkdir(parents=True)
+        for i in range(16):
+            _write_light(
+                d / f"Light_M 42_120.0s_Bin1_HaO3_2026090{night[-1]}-22{i:02d}00"
+                    f"_0deg_{i:04d}.fit",
+                seed=hash(night) % 1000 + i)
+    bad = root / "2026-09-08" / "M 42"
+    (bad / "Light_broken_0001.fit").write_bytes(b"not a fits file at all")
+    (bad / "Light_empty_0001.fit").write_bytes(b"")
+    _write_light_with_nan_pixel(bad / "Light_nan_0001.fit", seed=99)
+
+    # Genuine duplicate: identical bytes under two paths. Both hash to
+    # one row, so which path lands in it is decided by which is
+    # processed LAST -- the single place worker scheduling could leak
+    # into the result if results were consumed out of walk order.
+    src = root / "2026-09-07" / "M 42" / "Light_dup_0001.fit"
+    _write_light(src, seed=4242)
+    shutil.copy2(src, root / "2026-09-08" / "M 42" / "Light_dup_0001.fit")
+    return root
+
+
+def test_parallel_scan_matches_single_worker_scan_exactly(tmp_path):
+    # Requirement: a scan is deterministic in its worker count. Anything
+    # else would mean the archive's recorded state depends on how busy
+    # the machine was, which is not a property you can build a
+    # cull-tracking store on.
+    root = _mixed_archive(tmp_path)
+
+    serial_conn = db.connect(tmp_path / "serial.sqlite")
+    db.init_schema(serial_conn)
+    serial = inventory.scan(serial_conn, [root], workers=1)
+
+    parallel_conn = db.connect(tmp_path / "parallel.sqlite")
+    db.init_schema(parallel_conn)
+    parallel = inventory.scan(parallel_conn, [root], workers=16)
+
+    assert (serial.added, serial.updated, serial.failed) == \
+           (parallel.added, parallel.updated, parallel.failed)
+    assert serial.seen_hashes == parallel.seen_hashes
+    assert serial.failed >= 3            # broken + empty + NaN pixels
+    assert serial.added >= 30            # the pool really was exercised
+
+    serial_cols, serial_rows = _all_rows(serial_conn)
+    parallel_cols, parallel_rows = _all_rows(parallel_conn)
+    assert serial_cols == parallel_cols
+    assert serial_rows == parallel_rows
+
+
+def test_parallel_rescan_is_idempotent(tmp_path):
+    # Two parallel scans must land on the same state as one, including
+    # the added/updated split -- a frame seen again is an update, never a
+    # second row, no matter which worker read it.
+    root = _mixed_archive(tmp_path)
+    conn = db.connect(tmp_path / "t.sqlite"); db.init_schema(conn)
+    first = inventory.scan(conn, [root], workers=8)
+    _, after_first = _all_rows(conn)
+    first_stamps = dict(conn.execute(
+        "SELECT content_hash, first_seen FROM frames").fetchall())
+    second = inventory.scan(conn, [root], workers=8)
+    _, after_second = _all_rows(conn)
+
+    # Every walked file is an update the second time round. That is more
+    # than first.added: the duplicate pair walks twice but adds one row,
+    # so the first scan already counted one of the two as an update.
+    assert second.added == 0
+    assert second.updated == first.added + first.updated
+    assert second.failed == first.failed
+    assert after_first == after_second
+
+    # first_seen records when a content_hash was FIRST inventoried and
+    # is deliberately absent from the update clause. It is excluded from
+    # the row comparison above (it is a wall-clock stamp), so pin it
+    # here on the parallel path explicitly.
+    stamps = conn.execute(
+        "SELECT content_hash, first_seen, last_seen FROM frames").fetchall()
+    assert stamps
+    for chash, first_seen, last_seen in stamps:
+        assert first_seen == first_stamps[chash]
+        assert last_seen >= first_seen
+
+
+def test_parallel_pixel_failure_still_records_header_fields(tmp_path):
+    # The two independent try blocks have to survive the process
+    # boundary: a pixel read that raises in a WORKER must still come back
+    # carrying the header fields, with only the `pixels:` half of the
+    # error recorded. Deliberately run through the pool, not serially.
+    root = tmp_path / "astro_data" / "d"
+    root.mkdir(parents=True)
+    for i in range(24):
+        _write_light(root / f"Light_M 42_ok_{i:04d}.fit", seed=i)
+    _write_light_with_nan_pixel(root / "Light_M 42_nan_0001.fit", seed=7)
+
+    conn = db.connect(tmp_path / "t.sqlite"); db.init_schema(conn)
+    res = inventory.scan(conn, [tmp_path / "astro_data"], workers=8)
+
+    assert res.added == 25
+    assert res.failed == 1
+    row = conn.execute(
+        "SELECT camera, filter, exptime, object_card, frame_type, "
+        "fingerprint, bg_median, read_error FROM frames "
+        "WHERE filename='Light_M 42_nan_0001.fit'").fetchone()
+    assert row[0] == "ZWO ASI585MC Air"      # header survived the failure
+    assert row[1] == "HaO3"
+    assert row[2] == 120.0
+    assert row[3] == "M 42"
+    assert row[4] == "light"
+    assert row[5] is None and row[6] is None  # pixel-derived, correctly absent
+    assert row[7] is not None and row[7].startswith("pixels: ")
+    assert "header: " not in row[7]
+
+
+def test_parallel_header_failure_still_records_pixel_fields(tmp_path):
+    # The mirror image, also through the pool: an unreadable header must
+    # not discard the fingerprint and pixel stats the same file's pixel
+    # read recovered.
+    root = tmp_path / "astro_data" / "d"
+    root.mkdir(parents=True)
+    for i in range(24):
+        _write_light(root / f"Light_M 42_ok_{i:04d}.fit", seed=i)
+    (root / "Light_broken_0001.fit").write_bytes(b"not a fits file at all")
+
+    conn = db.connect(tmp_path / "t.sqlite"); db.init_schema(conn)
+    res = inventory.scan(conn, [tmp_path / "astro_data"], workers=8)
+
+    assert res.added == 25 and res.failed == 1
+    err = conn.execute(
+        "SELECT read_error FROM frames "
+        "WHERE filename='Light_broken_0001.fit'").fetchone()[0]
+    assert err.startswith("header: ")
+    assert "pixels: " in err          # both halves recorded, both prefixed
+
+
+@pytest.mark.skipif(os.geteuid() == 0,
+                    reason="root ignores the mode bits this test relies on")
+def test_worker_failure_aborts_loudly_instead_of_dropping_the_frame(tmp_path):
+    # A failure OUTSIDE the two read-error try blocks -- here an
+    # unreadable file, so content_hash's open() raises -- aborted the
+    # serial scan and must still abort the parallel one. The one outcome
+    # that would be unacceptable is the frame silently vanishing from
+    # the inventory, because "absent" is the signal this whole store
+    # exists to make trustworthy.
+    root = tmp_path / "astro_data" / "d"
+    root.mkdir(parents=True)
+    for i in range(24):
+        _write_light(root / f"Light_M 42_ok_{i:04d}.fit", seed=i)
+    locked = root / "Light_M 42_locked_0001.fit"
+    _write_light(locked, seed=500)
+    locked.chmod(0o000)
+
+    conn = db.connect(tmp_path / "t.sqlite"); db.init_schema(conn)
+    try:
+        with pytest.raises(inventory.InventoryWorkerError) as exc:
+            inventory.scan(conn, [tmp_path / "astro_data"], workers=8)
+    finally:
+        locked.chmod(0o644)
+    assert "Light_M 42_locked_0001.fit" in str(exc.value)
+    assert isinstance(exc.value.__cause__, PermissionError)
+    # Nothing committed: the abort happens before scan()'s commit.
+    assert conn.execute("SELECT COUNT(*) FROM frames").fetchone()[0] == 0
+
+
+def test_default_workers_is_derived_from_the_cpu_count(tmp_path):
+    n = inventory.default_workers()
+    assert 1 <= n <= (os.process_cpu_count() or 1)
+
+
+def test_zero_workers_is_rejected_rather_than_silently_corrected(tmp_path):
+    root = tmp_path / "astro_data" / "d"; root.mkdir(parents=True)
+    _write_light(root / "Light_M 42_x_0001.fit")
+    conn = db.connect(tmp_path / "t.sqlite"); db.init_schema(conn)
+    with pytest.raises(ValueError, match="at least 1"):
+        inventory.scan(conn, [tmp_path / "astro_data"], workers=0)
+
+
+def test_a_handful_of_frames_never_starts_a_pool(tmp_path):
+    # Worker count is damped by how much work there is: standing up a
+    # spawn pool costs far more than reading three frames. Proven by
+    # sabotaging the parallel path -- if it were taken, the scan would
+    # raise rather than quietly succeeding.
+    root = tmp_path / "astro_data" / "d"; root.mkdir(parents=True)
+    for i in range(3):
+        _write_light(root / f"Light_M 42_x_{i:04d}.fit", seed=i)
+    conn = db.connect(tmp_path / "t.sqlite"); db.init_schema(conn)
+
+    mp = pytest.MonkeyPatch()
+    try:
+        mp.setattr(inventory, "_scan_parallel", _never_called)
+        res = inventory.scan(conn, [tmp_path / "astro_data"], workers=32)
+    finally:
+        mp.undo()
+    assert res.added == 3
+
+
+def _never_called(*args, **kwargs):
+    raise AssertionError("a pool was started for a handful of frames")
+
+
+def test_missing_root_still_raises_on_the_parallel_path(tmp_path):
+    # The loud missing-root failure is not allowed to soften just
+    # because the walk is now consumed lazily by a pool.
+    good = tmp_path / "astro_data"
+    d = good / "d"; d.mkdir(parents=True)
+    for i in range(24):
+        _write_light(d / f"Light_M 42_x_{i:04d}.fit", seed=i)
+    conn = db.connect(tmp_path / "t.sqlite"); db.init_schema(conn)
+    with pytest.raises(FileNotFoundError):
+        inventory.scan(conn, [good, tmp_path / "not_mounted"], workers=8)
+
+
+def test_the_pool_is_actually_used_and_runs_out_of_process(tmp_path):
+    # The determinism tests above would still pass if the parallel path
+    # quietly degraded to a serial loop, so prove both halves directly:
+    # that _scan_parallel is entered with more than one worker, and that
+    # the per-frame work genuinely leaves this process.
+    #
+    # The out-of-process proof is the monkeypatch: it sabotages
+    # _read_pixels in the PARENT only. A spawn-based worker re-imports
+    # astrometa.inventory clean, so it never sees the patch -- if the
+    # frames come back with fingerprints and no read_error, the reads
+    # cannot have happened here.
+    root = tmp_path / "astro_data" / "d"; root.mkdir(parents=True)
+    for i in range(24):
+        _write_light(root / f"Light_M 42_x_{i:04d}.fit", seed=i)
+    conn = db.connect(tmp_path / "t.sqlite"); db.init_schema(conn)
+
+    real_parallel = inventory._scan_parallel
+    worker_counts = []
+
+    def spy(conn_, res, frames, read_pixels, workers):
+        worker_counts.append(workers)
+        return real_parallel(conn_, res, frames, read_pixels, workers)
+
+    mp = pytest.MonkeyPatch()
+    try:
+        mp.setattr(inventory, "_scan_parallel", spy)
+        mp.setattr(inventory, "_read_pixels", _parent_must_not_read_pixels)
+        res = inventory.scan(conn, [tmp_path / "astro_data"], workers=8)
+    finally:
+        mp.undo()
+
+    assert worker_counts and worker_counts[0] > 1
+    assert res.added == 24 and res.failed == 0
+    n_fingerprinted = conn.execute(
+        "SELECT COUNT(*) FROM frames "
+        "WHERE fingerprint IS NOT NULL AND read_error IS NULL").fetchone()[0]
+    assert n_fingerprinted == 24
+
+
+def _parent_must_not_read_pixels(path):
+    raise AssertionError(
+        f"per-frame pixel read ran in the parent process for {path}")
+
+
+def test_quarantine_survives_a_parallel_rescan(tmp_path):
+    # The ON CONFLICT clause's `CASE WHEN disposition='quarantined'`
+    # guard runs in the parent and is untouched by this change -- but it
+    # is the guard that keeps a cull from being erased by the next walk,
+    # so pin it on the parallel path too rather than only on the serial
+    # one (test_disposition.test_quarantine_survives_a_rescan).
+    from astrometa import disposition
+
+    root = tmp_path / "astro_data" / "IC 59"
+    root.mkdir(parents=True)
+    for i in range(24):
+        _write_light(root / f"Light_IC 59_x_{i:04d}.fit", seed=i)
+    culled = root / "Light_IC 59_culled_0001.fit"
+    _write_light(culled, seed=777)
+
+    conn = db.connect(tmp_path / "t.sqlite"); db.init_schema(conn)
+    inventory.scan(conn, [tmp_path / "astro_data"], workers=8)
+    chash = conn.execute(
+        "SELECT content_hash FROM frames WHERE filename=?",
+        (culled.name,)).fetchone()[0]
+
+    dest = disposition.quarantine(conn, chash, "hfd 6.2 > 5.1", dry_run=False)
+    assert dest is not None and dest.is_relative_to(tmp_path / "astro_data")
+
+    inventory.scan(conn, [tmp_path / "astro_data"], workers=8)
+
+    row = conn.execute("SELECT disposition, disposition_reason, path "
+                       "FROM frames WHERE content_hash=?", (chash,)).fetchone()
+    assert row[0] == "quarantined"
+    assert row[1] == "hfd 6.2 > 5.1"
+    assert row[2] == str(dest)
+    # Every other frame is still plainly present.
+    assert conn.execute(
+        "SELECT COUNT(*) FROM frames WHERE disposition='present'"
+    ).fetchone()[0] == 24
