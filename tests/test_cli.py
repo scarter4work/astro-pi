@@ -6,7 +6,7 @@ import numpy as np
 import pytest
 from astropy.io import fits
 
-from astrometa import cli, manifest
+from astrometa import cli, inventory, manifest
 from astrometa.config import Config
 
 
@@ -329,3 +329,53 @@ def test_group_reports_frames_skipped_for_lack_of_a_capture_instant(
     out = capsys.readouterr().out
     assert "projects=1" in out
     assert "skipped_no_capture_instant=1" in out
+
+
+def test_scan_workers_override_reaches_inventory(tmp_path, monkeypatch):
+    # --workers is the operator's only handle on how hard a scan hits the
+    # box; it has to arrive at inventory.scan rather than being parsed
+    # and dropped.
+    root = tmp_path / "astro_data"
+    root.mkdir()
+    _write_light(root / "Light_M 42_120.0s_Bin1_HaO3_20260908-220000_0deg_0001.fit")
+    seen = {}
+
+    real_scan = inventory.scan
+
+    def spy(conn, roots, read_pixels=True, workers=None):
+        seen["workers"] = workers
+        return real_scan(conn, roots, read_pixels, workers)
+
+    monkeypatch.setattr(cli.inventory, "scan", spy)
+    assert cli.main(["scan", "--db", str(tmp_path / "s.sqlite"),
+                     "--root", str(root), "--workers", "3"]) == 0
+    assert seen["workers"] == 3
+
+
+def test_scan_without_workers_flag_lets_inventory_choose(tmp_path, monkeypatch):
+    root = tmp_path / "astro_data"
+    root.mkdir()
+    _write_light(root / "Light_M 42_120.0s_Bin1_HaO3_20260908-220000_0deg_0001.fit")
+    seen = {}
+
+    real_scan = inventory.scan
+
+    def spy(conn, roots, read_pixels=True, workers=None):
+        seen["workers"] = workers
+        return real_scan(conn, roots, read_pixels, workers)
+
+    monkeypatch.setattr(cli.inventory, "scan", spy)
+    assert cli.main(["scan", "--db", str(tmp_path / "s.sqlite"),
+                     "--root", str(root)]) == 0
+    # None, not a number baked in by the CLI -- the default belongs to
+    # inventory.default_workers() so there is exactly one of it.
+    assert seen["workers"] is None
+
+
+def test_scan_rejects_a_zero_worker_count_loudly(tmp_path):
+    root = tmp_path / "astro_data"
+    root.mkdir()
+    _write_light(root / "Light_M 42_120.0s_Bin1_HaO3_20260908-220000_0deg_0001.fit")
+    with pytest.raises(ValueError):
+        cli.main(["scan", "--db", str(tmp_path / "s.sqlite"),
+                  "--root", str(root), "--workers", "0"])

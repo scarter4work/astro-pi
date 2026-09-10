@@ -43,6 +43,12 @@ def _build_parser() -> argparse.ArgumentParser:
         "--root", action="append", default=[],
         help="root directory to walk (repeatable); defaults to the "
              "configured archive and live roots")
+    scan_p.add_argument(
+        "--workers", type=int, default=None,
+        help=f"worker processes for the per-frame reads (default: "
+             f"one per CPU less one, {inventory.default_workers()} here). "
+             f"1 runs everything in this process. Database writes are "
+             f"always single-writer in the parent regardless.")
 
     sub.add_parser(
         "cluster", parents=[common],
@@ -96,7 +102,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "scan":
         configured = [cfg.archive_root, cfg.live_root]
         roots = ([Path(r) for r in args.root] if args.root else configured)
-        res = inventory.scan(conn, roots)
+        res = inventory.scan(conn, roots, workers=args.workers)
 
         # The whole-database missing sweep runs ONLY when this scan
         # covered the full configured root set. `mark_missing` flips
