@@ -27,6 +27,26 @@ from . import cluster, db, disposition, grouping, inventory, manifest, quality, 
 from .config import Config
 
 
+def _worker_count(raw: str) -> int:
+    """
+    argparse type for --workers: a positive integer, or a usage error.
+
+    A bad --workers is user input, not archive state, so it belongs with
+    argparse's own errors (usage message, exit 2) rather than escaping
+    main() as a raw ValueError traceback. The upper bound is not
+    enforced here -- inventory.resolve_workers clamps it to the CPU
+    count, and the scan output reports the effective number.
+    """
+    try:
+        n = int(raw)
+    except ValueError:
+        raise argparse.ArgumentTypeError(
+            f"must be an integer, got {raw!r}") from None
+    if n < 1:
+        raise argparse.ArgumentTypeError(f"must be at least 1, got {n}")
+    return n
+
+
 def _build_parser() -> argparse.ArgumentParser:
     common = argparse.ArgumentParser(add_help=False)
     common.add_argument("--db", required=True,
@@ -44,9 +64,10 @@ def _build_parser() -> argparse.ArgumentParser:
         help="root directory to walk (repeatable); defaults to the "
              "configured archive and live roots")
     scan_p.add_argument(
-        "--workers", type=int, default=None,
+        "--workers", type=_worker_count, default=None,
         help=f"worker processes for the per-frame reads (default: "
-             f"one per CPU less one, {inventory.default_workers()} here). "
+             f"one per CPU less one, {inventory.default_workers()} here; "
+             f"capped at {inventory.max_workers()}, one per CPU). "
              f"1 runs everything in this process. Database writes are "
              f"always single-writer in the parent regardless.")
 
@@ -102,6 +123,10 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "scan":
         configured = [cfg.archive_root, cfg.live_root]
         roots = ([Path(r) for r in args.root] if args.root else configured)
+        # Resolved before the scan so a clamped --workers is reported
+        # rather than silently applied. Same function scan() uses, so
+        # the number printed is the number used.
+        effective_workers = inventory.resolve_workers(args.workers)
         res = inventory.scan(conn, roots, workers=args.workers)
 
         # The whole-database missing sweep runs ONLY when this scan
@@ -133,8 +158,11 @@ def main(argv: list[str] | None = None) -> int:
                 f"sweep runs only when the scan covers the configured "
                 f"archive and live roots, so frames outside the "
                 f"scanned roots are NOT marked missing)")
+        clamped = ("" if args.workers in (None, effective_workers)
+                   else f" (--workers {args.workers} clamped to one per CPU)")
         print(f"added={res.added} updated={res.updated} "
               f"failed={res.failed} {missing_txt} "
+              f"workers={effective_workers}{clamped} "
               f"(failed overlaps added/updated: a frame that fails a "
               f"read is still inventoried, with its failure recorded)")
     elif args.command == "cluster":

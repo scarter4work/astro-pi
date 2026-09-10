@@ -922,3 +922,188 @@ def test_quarantine_survives_a_parallel_rescan(tmp_path):
     assert conn.execute(
         "SELECT COUNT(*) FROM frames WHERE disposition='present'"
     ).fetchone()[0] == 24
+
+
+# ---------------------------------------------------------------------------
+# Worker ceiling
+# ---------------------------------------------------------------------------
+
+def test_worker_count_is_capped_at_one_per_cpu(tmp_path):
+    # Without a ceiling the damping in resolve_workers only limits
+    # workers by how much work there is, so `--workers 100000` against
+    # the 34,400-frame archive asks for 4,300 processes. The cap is the
+    # CPU count because more processes than cores cannot help (measured:
+    # flat from 8 workers on a 16-core box) and because it bounds memory
+    # at roughly cpu_count x 0.5 GB.
+    cap = inventory.max_workers()
+    assert cap == max(1, os.process_cpu_count() or 1)
+    assert inventory.resolve_workers(100000) == cap
+    assert inventory.resolve_workers(cap + 1) == cap
+    # Below the cap the request is honoured untouched.
+    assert inventory.resolve_workers(2) == 2
+    assert inventory.resolve_workers(None) == inventory.default_workers()
+    assert inventory.default_workers() <= cap
+
+
+@pytest.mark.parametrize("bad", [0, -1, -100])
+def test_non_positive_worker_counts_raise_rather_than_clamp(bad):
+    # A too-large value is clamped because "use everything" is a
+    # satisfiable intent. Zero and negative are not, so guessing at one
+    # would be a silent correction.
+    with pytest.raises(ValueError, match="at least 1"):
+        inventory.resolve_workers(bad)
+
+
+def test_an_absurd_worker_count_does_not_spawn_a_process_per_frame(tmp_path):
+    # End to end through scan(), not just the resolver: the pool that
+    # actually gets built must respect the ceiling.
+    root = tmp_path / "astro_data" / "d"; root.mkdir(parents=True)
+    for i in range(24):
+        _write_light(root / f"Light_M 42_x_{i:04d}.fit", seed=i)
+    conn = db.connect(tmp_path / "t.sqlite"); db.init_schema(conn)
+
+    real_parallel = inventory._scan_parallel
+    seen = []
+
+    def spy(conn_, res, frames, read_pixels, workers):
+        seen.append(workers)
+        return real_parallel(conn_, res, frames, read_pixels, workers)
+
+    mp = pytest.MonkeyPatch()
+    try:
+        mp.setattr(inventory, "_scan_parallel", spy)
+        res = inventory.scan(conn, [tmp_path / "astro_data"], workers=100000)
+    finally:
+        mp.undo()
+    assert res.added == 24
+    assert seen and seen[0] <= inventory.max_workers()
+
+
+# ---------------------------------------------------------------------------
+# Resumability
+#
+# The pass is deliberately NOT one transaction. Over 2.6 TB, half of it
+# across SMB, a transient EIO in stat() or content_hash is ordinary, and
+# with abort-on-any-worker-failure a single one at frame 34,000 used to
+# discard the entire walk. These pin the trade: an abort keeps what it
+# already did, still raises, and a re-run converges on the same state an
+# uninterrupted run would have produced.
+# ---------------------------------------------------------------------------
+
+def _ordered_frames(root):
+    """The walk order scan() will consume, so a test can place a failure
+    at a known index instead of hoping rglob cooperates."""
+    return list(inventory._iter_fits([root]))
+
+
+@pytest.mark.skipif(os.geteuid() == 0,
+                    reason="root ignores the mode bits this test relies on")
+def test_a_mid_pass_failure_keeps_the_frames_already_committed(tmp_path):
+    root = tmp_path / "astro_data"
+    d = root / "d"; d.mkdir(parents=True)
+    for i in range(25):
+        _write_light(d / f"Light_M 42_x_{i:04d}.fit", seed=i)
+
+    # Fail at a KNOWN position in the walk, not wherever rglob happens
+    # to put it -- otherwise "some frames were committed" is a coin toss.
+    victim = _ordered_frames(root)[17]
+    conn = db.connect(tmp_path / "t.sqlite"); db.init_schema(conn)
+
+    mp = pytest.MonkeyPatch()
+    try:
+        mp.setattr(inventory, "COMMIT_EVERY_FRAMES", 4)
+        victim.chmod(0o000)
+        with pytest.raises(inventory.InventoryWorkerError):
+            inventory.scan(conn, [root], workers=8)
+    finally:
+        mp.undo()
+        victim.chmod(0o644)
+
+    # 17 frames were recorded before the abort; the last checkpoint at a
+    # multiple of 4 committed 16 of them. The uncommitted remainder is
+    # the rework budget, and it is bounded by COMMIT_EVERY_FRAMES.
+    committed = db.connect(tmp_path / "t.sqlite").execute(
+        "SELECT COUNT(*) FROM frames").fetchone()[0]
+    assert committed == (17 // 4) * 4 == 16
+
+
+@pytest.mark.skipif(os.geteuid() == 0,
+                    reason="root ignores the mode bits this test relies on")
+def test_a_rerun_after_a_mid_pass_failure_matches_an_uninterrupted_scan(tmp_path):
+    root = tmp_path / "astro_data"
+    d = root / "d"; d.mkdir(parents=True)
+    for i in range(25):
+        _write_light(d / f"Light_M 42_x_{i:04d}.fit", seed=i)
+    victim = _ordered_frames(root)[17]
+
+    # The reference: one clean uninterrupted scan.
+    clean_conn = db.connect(tmp_path / "clean.sqlite")
+    db.init_schema(clean_conn)
+    clean = inventory.scan(clean_conn, [root], workers=8)
+
+    # The interrupted one, then a plain re-run with nothing special done
+    # to recover -- resumability has to be a property of the pass, not
+    # of an operator remembering a flag.
+    conn = db.connect(tmp_path / "t.sqlite"); db.init_schema(conn)
+    mp = pytest.MonkeyPatch()
+    try:
+        mp.setattr(inventory, "COMMIT_EVERY_FRAMES", 4)
+        victim.chmod(0o000)
+        with pytest.raises(inventory.InventoryWorkerError):
+            inventory.scan(conn, [root], workers=8)
+    finally:
+        mp.undo()
+        victim.chmod(0o644)
+
+    # Close and reopen rather than reusing the connection. A real abort
+    # kills the process, so the transaction open at that moment is rolled
+    # back and its frames are lost -- reusing the connection here would
+    # quietly carry those uncommitted rows into the re-run and test a
+    # kinder failure than the one that actually happens.
+    conn.close()
+    conn = db.connect(tmp_path / "t.sqlite")
+    committed_before = db.connect(tmp_path / "t.sqlite").execute(
+        "SELECT COUNT(*) FROM frames").fetchone()[0]
+    resumed = inventory.scan(conn, [root], workers=8)
+
+    # The re-run RESUMES rather than restarts, and the added/updated
+    # split is what proves it: the frames the aborted pass committed come
+    # back as updates, only the rest are new. Under the old
+    # single-transaction behaviour this would read added=25, updated=0,
+    # because the abort had discarded everything.
+    assert committed_before == 16
+    assert resumed.updated == committed_before
+    assert resumed.added == clean.added - committed_before
+    assert resumed.added + resumed.updated == clean.added
+    assert resumed.failed == clean.failed == 0
+    clean_cols, clean_rows = _all_rows(clean_conn)
+    resumed_cols, resumed_rows = _all_rows(conn)
+    assert clean_cols == resumed_cols
+    assert resumed_rows == clean_rows
+
+
+def test_the_commit_interval_is_a_named_constant_not_a_magic_number(tmp_path):
+    # Sized off measured throughput (~10 frames/s parallel on warm local
+    # frames): 500 frames is a rework budget under two minutes, against
+    # 69 commits across the whole 34,400-frame archive.
+    assert inventory.COMMIT_EVERY_FRAMES == 500
+
+
+def test_a_successful_scan_still_commits_the_tail(tmp_path):
+    # 25 frames is not a multiple of the interval, so the last 24 exist
+    # only because scan() commits once more on the way out.
+    root = tmp_path / "astro_data" / "d"; root.mkdir(parents=True)
+    for i in range(25):
+        _write_light(root / f"Light_M 42_x_{i:04d}.fit", seed=i)
+    conn = db.connect(tmp_path / "t.sqlite"); db.init_schema(conn)
+
+    mp = pytest.MonkeyPatch()
+    try:
+        mp.setattr(inventory, "COMMIT_EVERY_FRAMES", 4)
+        res = inventory.scan(conn, [tmp_path / "astro_data"], workers=8)
+    finally:
+        mp.undo()
+
+    assert res.added == 25
+    assert db.connect(tmp_path / "t.sqlite").execute(
+        "SELECT COUNT(*) FROM frames").fetchone()[0] == 25

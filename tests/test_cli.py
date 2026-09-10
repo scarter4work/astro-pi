@@ -1,3 +1,4 @@
+import os
 import sqlite3
 import stat
 from pathlib import Path
@@ -372,10 +373,96 @@ def test_scan_without_workers_flag_lets_inventory_choose(tmp_path, monkeypatch):
     assert seen["workers"] is None
 
 
-def test_scan_rejects_a_zero_worker_count_loudly(tmp_path):
+@pytest.mark.parametrize("bad", ["0", "-5", "eight"])
+def test_scan_rejects_a_bad_worker_count_as_a_usage_error(
+        tmp_path, capsys, bad):
+    # A bad --workers is user input, not archive state. Unlike a missing
+    # root or a refused missing-sweep -- which are deliberate loud
+    # failures and must propagate -- this belongs with argparse's own
+    # errors: usage on stderr, exit 2, no traceback.
     root = tmp_path / "astro_data"
     root.mkdir()
     _write_light(root / "Light_M 42_120.0s_Bin1_HaO3_20260908-220000_0deg_0001.fit")
-    with pytest.raises(ValueError):
-        cli.main(["scan", "--db", str(tmp_path / "s.sqlite"),
-                  "--root", str(root), "--workers", "0"])
+    dbp = tmp_path / "s.sqlite"
+
+    assert cli.main(["scan", "--db", str(dbp),
+                     "--root", str(root), "--workers", bad]) == 2
+    err = capsys.readouterr().err
+    assert "usage:" in err
+    assert "--workers" in err
+    # Rejected before any work: the scan never ran.
+    assert not dbp.exists()
+
+
+def test_scan_clamps_an_absurd_worker_count_and_says_so(tmp_path, capsys):
+    # An override has to be bounded by something. Without a ceiling,
+    # `--workers 100000` against the real archive asks for one process
+    # per eight frames -- 4,300 of them on a host that also runs a
+    # Minecraft server. Clamping is right for a too-LARGE value (the
+    # intent is unambiguously "use everything"), but it must not be
+    # invisible, so the effective count is printed.
+    root = tmp_path / "astro_data"
+    root.mkdir()
+    _write_light(root / "Light_M 42_120.0s_Bin1_HaO3_20260908-220000_0deg_0001.fit")
+
+    assert cli.main(["scan", "--db", str(tmp_path / "s.sqlite"),
+                     "--root", str(root), "--workers", "100000"]) == 0
+    out = capsys.readouterr().out
+    assert f"workers={inventory.max_workers()}" in out
+    assert "clamped" in out
+
+
+def test_scan_does_not_claim_a_clamp_when_there_was_none(tmp_path, capsys):
+    root = tmp_path / "astro_data"
+    root.mkdir()
+    _write_light(root / "Light_M 42_120.0s_Bin1_HaO3_20260908-220000_0deg_0001.fit")
+
+    assert cli.main(["scan", "--db", str(tmp_path / "s.sqlite"),
+                     "--root", str(root), "--workers", "2"]) == 0
+    out = capsys.readouterr().out
+    assert "workers=2" in out
+    assert "clamped" not in out
+
+
+@pytest.mark.skipif(os.geteuid() == 0,
+                    reason="root ignores the mode bits this test relies on")
+def test_an_aborted_scan_never_runs_the_missing_sweep(tmp_path, monkeypatch):
+    # THE safety property behind periodic commits. inventory.scan is no
+    # longer atomic, so a partial walk now leaves rows on record. If an
+    # aborted scan could still reach disposition.mark_missing, that
+    # sweep would flip every frame the walk never reached to 'missing'
+    # -- fabricating thousands of culls, which is the worst outcome this
+    # store has. The ordering that prevents it is that scan() propagates
+    # its exception and main() does not catch it.
+    archive = tmp_path / "astro_data"
+    live = tmp_path / "live"
+    archive.mkdir()
+    live.mkdir()
+    for i in range(25):
+        _write_light(archive / f"Light_M 42_x_{i:04d}.fit", seed=i)
+    dbp = tmp_path / "store.sqlite"
+    _use_roots(monkeypatch, tmp_path, archive, live)
+
+    # A clean pass first, so every frame is on record as 'present'.
+    assert cli.main(["scan", "--db", str(dbp)]) == 0
+    conn = sqlite3.connect(dbp)
+    assert conn.execute("SELECT COUNT(*) FROM frames "
+                        "WHERE disposition='present'").fetchone()[0] == 25
+    conn.close()
+
+    victim = sorted(archive.glob("*.fit"))[3]
+    monkeypatch.setattr(inventory, "COMMIT_EVERY_FRAMES", 4)
+    victim.chmod(0o000)
+    try:
+        with pytest.raises(inventory.InventoryWorkerError):
+            cli.main(["scan", "--db", str(dbp)])
+    finally:
+        victim.chmod(0o644)
+
+    conn = sqlite3.connect(dbp)
+    missing = conn.execute("SELECT COUNT(*) FROM frames "
+                           "WHERE disposition='missing'").fetchone()[0]
+    conn.close()
+    assert missing == 0, (
+        "an aborted scan reached the missing sweep -- frames the walk "
+        "never got to were marked missing")

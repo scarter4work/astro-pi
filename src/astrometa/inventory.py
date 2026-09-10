@@ -203,6 +203,34 @@ def _object_card(header: dict) -> str | None:
 _MIN_FRAMES_PER_WORKER = 8
 
 
+# How many frames a mid-pass abort is allowed to cost.
+#
+# The pass used to run as a single transaction, which made a scan
+# all-or-nothing: one transient error at frame 34,000 threw away the
+# whole walk. Over 2.6 TB, roughly half of it across SMB, a transient
+# EIO inside stat() or content_hash is an ordinary event rather than an
+# exotic one, and this abort-on-any-worker-failure design turns each one
+# into a lost multi-hour run. Committing periodically trades whole-run
+# atomicity for resumability, which is the right trade here ONLY because
+# every pass in this project is idempotent: a partial commit followed by
+# a re-run converges on exactly the state an uninterrupted run would
+# have produced.
+#
+# 500 is sized off measured throughput, not taste. A parallel scan
+# manages roughly 10 frames/s on warm local frames and less over SMB, so
+# 500 frames is a rework budget of well under two minutes on a failure,
+# against 69 commits across the whole 34,400-frame archive -- an
+# unmeasurable cost on a multi-hour pass.
+#
+# What this does NOT weaken: a partial scan still raises, and
+# disposition.mark_missing() therefore still never runs against a
+# partial walk (cli.main lets the exception propagate). That ordering is
+# the thing that must not break -- a missing sweep over a half-finished
+# walk would flip thousands of present frames to 'missing', which is the
+# worst outcome this store has.
+COMMIT_EVERY_FRAMES = 500
+
+
 def default_workers() -> int:
     """
     Default parallelism: every available CPU but one.
@@ -218,6 +246,51 @@ def default_workers() -> int:
     does not silently oversubscribe.
     """
     return max(1, (os.process_cpu_count() or 1) - 1)
+
+
+def max_workers() -> int:
+    """
+    The hard ceiling on worker processes: one per available CPU.
+
+    An override has to be bounded by SOMETHING, because the damping in
+    resolve_workers() only limits workers by how much work there is --
+    against a 34,400-frame archive `--workers 100000` would ask for
+    4,300 processes, and this host also runs a Minecraft server and two
+    other containers. One fat-fingered digit is not an acceptable
+    distance from a fork bomb.
+
+    The CPU count is the right ceiling rather than an arbitrary number
+    because more processes than cores cannot help: the per-frame work is
+    CPU- and memory-bound, and measured throughput on a 16-core box is
+    already flat from 8 workers on (2.43x at 8, 2.86x at 31). It also
+    bounds memory, which is the sharper risk -- a worker holds ~0.5 GB
+    while decoding a 31 MB frame, so the ceiling is roughly
+    cpu_count x 0.5 GB rather than unbounded.
+
+    Deliberately computed per call, not at import: CPU affinity can be
+    changed after the module is loaded.
+    """
+    return max(1, os.process_cpu_count() or 1)
+
+
+def resolve_workers(workers: int | None) -> int:
+    """
+    The effective worker cap for a scan: the default when unset, the
+    request clamped to max_workers() otherwise.
+
+    Zero and negative are an error rather than a clamp -- they express
+    an intent this cannot satisfy, so guessing at one would be the
+    silent correction this project forbids. Above the ceiling IS
+    clamped: the intent there is unambiguously "use everything", which
+    is exactly what the ceiling delivers. The CLI reports the effective
+    number so a clamp is never invisible.
+    """
+    if workers is None:
+        return default_workers()
+    workers = int(workers)
+    if workers < 1:
+        raise ValueError(f"workers must be at least 1, got {workers!r}")
+    return min(workers, max_workers())
 
 
 def _frame_payload(path_str: str, read_pixels: bool) -> dict:
@@ -538,6 +611,13 @@ def _record(conn, res, p: dict) -> None:
     else:
         res.added += 1
 
+    # Checkpoint. added+updated rises by exactly one per call, so this
+    # is a frame counter without a second piece of state to keep in
+    # step. Both the serial and the parallel path reach it, so they
+    # cannot diverge in durability either.
+    if (res.added + res.updated) % COMMIT_EVERY_FRAMES == 0:
+        conn.commit()
+
 
 def scan(conn, roots, read_pixels: bool = True,
          workers: int | None = None) -> InventoryResult:
@@ -547,25 +627,27 @@ def scan(conn, roots, read_pixels: bool = True,
     The expensive per-frame work runs across a process pool; every
     database write happens here, in the parent, because SQLite is
     single-writer. `workers` caps the pool and defaults to
-    default_workers(); 1 runs everything in-process.
+    default_workers(), clamped to max_workers(); 1 runs everything
+    in-process.
 
     The walk stays lazy. Only enough of it is drawn up front to size the
     pool -- there is no point starting 47 workers for 30 frames -- and
     the rest is pulled through as results are consumed, so a missing
     root still raises the moment the walk reaches it, exactly as it did
     when this was a plain loop.
+
+    This is NOT atomic across the whole pass; it commits every
+    COMMIT_EVERY_FRAMES frames. An abort therefore leaves the frames
+    already processed on record and still propagates its exception, so a
+    re-run resumes rather than restarting. See COMMIT_EVERY_FRAMES.
     """
-    max_workers = default_workers() if workers is None else int(workers)
-    if max_workers < 1:
-        raise ValueError(
-            f"workers must be at least 1, got {workers!r}")
+    cap = resolve_workers(workers)
 
     res = InventoryResult()
     frames = _iter_fits(roots)
-    head = list(itertools.islice(frames, _MIN_FRAMES_PER_WORKER * max_workers))
+    head = list(itertools.islice(frames, _MIN_FRAMES_PER_WORKER * cap))
     frames = itertools.chain(head, frames)
-    n_workers = min(max_workers,
-                    max(1, len(head) // _MIN_FRAMES_PER_WORKER))
+    n_workers = min(cap, max(1, len(head) // _MIN_FRAMES_PER_WORKER))
 
     if n_workers == 1:
         for path in frames:
