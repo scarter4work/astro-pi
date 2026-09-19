@@ -12,6 +12,7 @@ const __dirname = dirname(__filename);
 // Load the PJSR schemas
 const coreSchemaPath = join(__dirname, '..', 'schemas', 'pjsr-core.json');
 const extendedSchemaPath = join(__dirname, '..', 'schemas', 'pjsr-extended.json');
+const generatedSchemaPath = join(__dirname, '..', 'schemas', 'pjsr-generated.json');
 
 let pjsrSchema = {};
 let pjsrExtended = {};
@@ -46,6 +47,19 @@ try {
   }
 } catch (e) {
   console.error('Failed to load PJSR extended schema:', e.message);
+}
+
+// Load auto-generated object coverage (backfilled from the installed PixInsight
+// 1.9.5 PJSR reference). These fill the gap between the ~66 curated objects and
+// the 229 documented ones. Curated coreClasses WIN on any name collision, so
+// hand-authored entries are never shadowed. This file is optional.
+try {
+  const generated = JSON.parse(readFileSync(generatedSchemaPath, 'utf8'));
+  if (generated.classes) {
+    pjsrSchema.coreClasses = { ...generated.classes, ...(pjsrSchema.coreClasses || {}) };
+  }
+} catch (e) {
+  // Absent/invalid generated schema is non-fatal — the parser runs on curated data alone.
 }
 
 /**

@@ -26,6 +26,19 @@ try {
   // Schemas will be loaded when available
 }
 
+// Load auto-generated class coverage (backfilled from the installed PixInsight
+// 1.9.5 headers). Fills the gap between the curated classes and the full SDK.
+// Merged into the extended schema so all consumption sites pick it up, with
+// CURATED core/extended entries winning on any name collision. Optional file.
+try {
+  const pclGenerated = JSON.parse(readFileSync(join(__dirname, '../schemas/pcl-generated.json'), 'utf8'));
+  if (pclGenerated.classes) {
+    pclExtendedSchema.classes = { ...pclGenerated.classes, ...(pclExtendedSchema.classes || {}) };
+  }
+} catch (e) {
+  // Absent/invalid generated schema is non-fatal — the parser runs on curated data alone.
+}
+
 /**
  * Token types for C++ lexing
  */
@@ -1027,30 +1040,101 @@ class PCLAnalyzer {
    * Get PCL headers
    */
   getPCLHeaders() {
+    // Full pcl/*.h inventory of the installed PixInsight SDK (regenerated 2026-09-19
+    // from /opt/PixInsight/include/pcl for PixInsight 1.9.5). 274 headers.
     return [
-      'pcl/AbstractImage.h', 'pcl/Action.h', 'pcl/Array.h',
-      'pcl/AstrometricMetadata.h', 'pcl/Bitmap.h', 'pcl/Button.h',
-      'pcl/CheckBox.h', 'pcl/CodeEditor.h', 'pcl/Color.h',
-      'pcl/ComboBox.h', 'pcl/Console.h', 'pcl/Control.h',
-      'pcl/Convolution.h', 'pcl/Dialog.h', 'pcl/Edit.h',
-      'pcl/ErrorHandler.h', 'pcl/Exception.h', 'pcl/FFTConvolution.h',
-      'pcl/File.h', 'pcl/FileDialog.h', 'pcl/FileFormat.h',
-      'pcl/Font.h', 'pcl/Frame.h', 'pcl/Graphics.h',
-      'pcl/GroupBox.h', 'pcl/Histogram.h', 'pcl/Image.h',
-      'pcl/ImageWindow.h', 'pcl/Label.h', 'pcl/Math.h',
-      'pcl/Matrix.h', 'pcl/MetaModule.h', 'pcl/MetaParameter.h',
-      'pcl/MetaProcess.h', 'pcl/MorphologicalTransformation.h',
-      'pcl/NumericControl.h', 'pcl/Pen.h', 'pcl/PixelInterpolation.h',
-      'pcl/Point.h', 'pcl/ProcessImplementation.h', 'pcl/ProcessInterface.h',
-      'pcl/ProcessInstance.h', 'pcl/PushButton.h', 'pcl/RadioButton.h',
-      'pcl/Rectangle.h', 'pcl/Resample.h', 'pcl/ScrollBox.h',
-      'pcl/SectionBar.h', 'pcl/Settings.h', 'pcl/Sizer.h',
-      'pcl/Slider.h', 'pcl/SpinBox.h', 'pcl/StarDetector.h',
-      'pcl/StatusMonitor.h', 'pcl/String.h', 'pcl/StringList.h',
-      'pcl/TabBox.h', 'pcl/TextBox.h', 'pcl/Thread.h',
-      'pcl/Timer.h', 'pcl/ToolButton.h', 'pcl/TreeBox.h',
-      'pcl/Vector.h', 'pcl/View.h', 'pcl/ViewList.h',
-      'pcl/XISF.h', 'pcl/XML.h'
+      'pcl/APASSDatabaseFile.h', 'pcl/ATrousWaveletTransform.h', 'pcl/AbstractImage.h',
+      'pcl/Action.h', 'pcl/AdaptiveLocalFilter.h', 'pcl/AkimaInterpolation.h',
+      'pcl/Algebra.h', 'pcl/AlignedAllocator.h', 'pcl/Allocator.h',
+      'pcl/Arguments.h', 'pcl/Array.h', 'pcl/Association.h',
+      'pcl/AstrometricMetadata.h', 'pcl/AstrometricReprojection.h', 'pcl/Atomic.h',
+      'pcl/AutoLock.h', 'pcl/AutoPointer.h', 'pcl/AutoStatusCallbackRestorer.h',
+      'pcl/AutoViewLock.h', 'pcl/BicubicFilterInterpolation.h', 'pcl/BicubicInterpolation.h',
+      'pcl/BidimensionalInterpolation.h', 'pcl/BilinearInterpolation.h', 'pcl/Bitmap.h',
+      'pcl/BitmapBox.h', 'pcl/Brush.h', 'pcl/Button.h',
+      'pcl/ButtonCodes.h', 'pcl/ByteArray.h', 'pcl/CUDADevice.h',
+      'pcl/CanvasColor.h', 'pcl/CharTraits.h', 'pcl/ChebyshevFit.h',
+      'pcl/CheckBox.h', 'pcl/Checksum.h', 'pcl/CodeEditor.h',
+      'pcl/Color.h', 'pcl/ColorComboBox.h', 'pcl/ColorDialog.h',
+      'pcl/ColorFilterArray.h', 'pcl/ColorSpace.h', 'pcl/ComboBox.h',
+      'pcl/Complex.h', 'pcl/Compression.h', 'pcl/Console.h',
+      'pcl/Constants.h', 'pcl/Container.h', 'pcl/Control.h',
+      'pcl/Convolution.h', 'pcl/Crop.h', 'pcl/Cryptography.h',
+      'pcl/CubicSplineInterpolation.h', 'pcl/Cursor.h', 'pcl/Curve2DInterpolation.h',
+      'pcl/Defs.h', 'pcl/Diagnostics.h', 'pcl/Dialog.h',
+      'pcl/DisplayFunction.h', 'pcl/DrizzleData.h', 'pcl/Edit.h',
+      'pcl/ElapsedTime.h', 'pcl/EndianConversions.h', 'pcl/EphemerisFile.h',
+      'pcl/ErrorHandler.h', 'pcl/Exception.h', 'pcl/ExternalProcess.h',
+      'pcl/FFT1D.h', 'pcl/FFT2D.h', 'pcl/FFTConvolution.h',
+      'pcl/FFTRegistration.h', 'pcl/FITSHeaderKeyword.h', 'pcl/FastRotation.h',
+      'pcl/File.h', 'pcl/FileDataCache.h', 'pcl/FileDataCachePreferencesDialog.h',
+      'pcl/FileDialog.h', 'pcl/FileFormat.h', 'pcl/FileFormatBase.h',
+      'pcl/FileFormatImplementation.h', 'pcl/FileFormatInstance.h', 'pcl/FileInfo.h',
+      'pcl/FilterManager.h', 'pcl/Flags.h', 'pcl/FluxCalibrationData.h',
+      'pcl/Font.h', 'pcl/FontComboBox.h', 'pcl/FourierTransform.h',
+      'pcl/Frame.h', 'pcl/GaiaDatabaseFile.h', 'pcl/GaussianFilter.h',
+      'pcl/GeneralizedESDRejection.h', 'pcl/GeometricTransformation.h', 'pcl/GlobalSettings.h',
+      'pcl/GnomonicProjection.h', 'pcl/Graphics.h', 'pcl/GridInterpolation.h',
+      'pcl/GroupBox.h', 'pcl/HammerAitoffProjection.h', 'pcl/Histogram.h',
+      'pcl/HistogramTransformation.h', 'pcl/Homography.h', 'pcl/ICCProfile.h',
+      'pcl/ICCProfileTransformation.h', 'pcl/Image.h', 'pcl/ImageColor.h',
+      'pcl/ImageDescription.h', 'pcl/ImageGeometry.h', 'pcl/ImageInfo.h',
+      'pcl/ImageOptions.h', 'pcl/ImageRenderingModes.h', 'pcl/ImageResolution.h',
+      'pcl/ImageSelections.h', 'pcl/ImageStatistics.h', 'pcl/ImageTransformation.h',
+      'pcl/ImageVariant.h', 'pcl/ImageView.h', 'pcl/ImageWindow.h',
+      'pcl/Indirect.h', 'pcl/IndirectArray.h', 'pcl/IndirectSortedArray.h',
+      'pcl/IntegerResample.h', 'pcl/IntegrationMetadata.h', 'pcl/InterlacedTransformation.h',
+      'pcl/Interpolation.h', 'pcl/Iterator.h', 'pcl/JPLEphemeris.h',
+      'pcl/KDTree.h', 'pcl/KernelFilter.h', 'pcl/KeyCodes.h',
+      'pcl/KeyValue.h', 'pcl/Label.h', 'pcl/LanczosInterpolation.h',
+      'pcl/LinearFilter.h', 'pcl/LinearFit.h', 'pcl/LinearInterpolation.h',
+      'pcl/LinearTransformation.h', 'pcl/LocalNormalizationData.h', 'pcl/Math.h',
+      'pcl/Matrix.h', 'pcl/MeanFilter.h', 'pcl/Memory.h',
+      'pcl/MercatorProjection.h', 'pcl/MessageBox.h', 'pcl/MetaFileFormat.h',
+      'pcl/MetaModule.h', 'pcl/MetaObject.h', 'pcl/MetaParameter.h',
+      'pcl/MetaProcess.h', 'pcl/MoffatFilter.h', 'pcl/MorphologicalOperator.h',
+      'pcl/MorphologicalTransformation.h', 'pcl/MultiVector.h', 'pcl/MultiViewSelectionDialog.h',
+      'pcl/MultiscaleLinearTransform.h', 'pcl/MultiscaleMedianTransform.h', 'pcl/MuteStatus.h',
+      'pcl/Mutex.h', 'pcl/NearestNeighborInterpolation.h', 'pcl/NetworkTransfer.h',
+      'pcl/NumericControl.h', 'pcl/OnlineObjectSearchDialog.h', 'pcl/Optional.h',
+      'pcl/OrthographicProjection.h', 'pcl/OsculatingElements.h', 'pcl/PSFEstimator.h',
+      'pcl/PSFFit.h', 'pcl/PSFScaleEstimator.h', 'pcl/PSFSignalEstimator.h',
+      'pcl/ParallelProcess.h', 'pcl/Pen.h', 'pcl/PhaseMatrices.h',
+      'pcl/PixelAllocator.h', 'pcl/PixelInterpolation.h', 'pcl/PixelTraits.h',
+      'pcl/PlateCarreeProjection.h', 'pcl/PlotManager.h', 'pcl/Point.h',
+      'pcl/PolarTransform.h', 'pcl/Position.h', 'pcl/PreviewSelectionDialog.h',
+      'pcl/Process.h', 'pcl/ProcessBase.h', 'pcl/ProcessImplementation.h',
+      'pcl/ProcessInstance.h', 'pcl/ProcessInterface.h', 'pcl/ProcessParameter.h',
+      'pcl/ProgressBarStatus.h', 'pcl/ProgressDialog.h', 'pcl/ProjectionBase.h',
+      'pcl/ProjectionFactory.h', 'pcl/Property.h', 'pcl/PropertyDescription.h',
+      'pcl/PushButton.h', 'pcl/PyramidalWaveletTransform.h', 'pcl/QuadTree.h',
+      'pcl/RGBColorSystem.h', 'pcl/RadioButton.h', 'pcl/Random.h',
+      'pcl/ReadWriteMutex.h', 'pcl/ReadoutOptions.h', 'pcl/RealTimePreview.h',
+      'pcl/RealTimeProgressStatus.h', 'pcl/Rectangle.h', 'pcl/RedundantMultiscaleTransform.h',
+      'pcl/ReferenceArray.h', 'pcl/ReferenceCounter.h', 'pcl/ReferenceSortedArray.h',
+      'pcl/Relational.h', 'pcl/Resample.h', 'pcl/RigidTransformation.h',
+      'pcl/RobustChauvenetRejection.h', 'pcl/Rotate.h', 'pcl/Rotation.h',
+      'pcl/SVG.h', 'pcl/ScrollBox.h', 'pcl/Search.h',
+      'pcl/SectionBar.h', 'pcl/Selection.h', 'pcl/SeparableConvolution.h',
+      'pcl/SeparableFilter.h', 'pcl/SeparableMedianFilter.h', 'pcl/Settings.h',
+      'pcl/SettingsData.h', 'pcl/SharedPixelData.h', 'pcl/ShepardInterpolation.h',
+      'pcl/Sizer.h', 'pcl/Slider.h', 'pcl/Sort.h',
+      'pcl/SortedArray.h', 'pcl/SphericalRotation.h', 'pcl/SpinBox.h',
+      'pcl/SpinStatus.h', 'pcl/StandardAllocator.h', 'pcl/StandardStatus.h',
+      'pcl/StarDatabaseFile.h', 'pcl/StarDetector.h', 'pcl/StatusMonitor.h',
+      'pcl/String.h', 'pcl/StringList.h', 'pcl/StructuringElement.h',
+      'pcl/SurfacePolynomial.h', 'pcl/SurfaceSimplifier.h', 'pcl/SurfaceSpline.h',
+      'pcl/TabBox.h', 'pcl/TextAlign.h', 'pcl/TextBox.h',
+      'pcl/Thread.h', 'pcl/ThresholdedTransformation.h', 'pcl/TimePoint.h',
+      'pcl/Timer.h', 'pcl/ToolButton.h', 'pcl/Translation.h',
+      'pcl/TreeBox.h', 'pcl/UIObject.h', 'pcl/UIScaling.h',
+      'pcl/UnidimensionalInterpolation.h', 'pcl/UnixSignalException.h', 'pcl/Utility.h',
+      'pcl/VariableShapeFilter.h', 'pcl/Variant.h', 'pcl/Vector.h',
+      'pcl/Version.h', 'pcl/View.h', 'pcl/ViewList.h',
+      'pcl/ViewSelectionDialog.h', 'pcl/WCSKeywords.h', 'pcl/WebView.h',
+      'pcl/Win32Exception.h', 'pcl/WinsorizedSigmaClippingRejection.h', 'pcl/WordArray.h',
+      'pcl/WorldTransformation.h', 'pcl/XISF.h', 'pcl/XML.h',
+      'pcl/ZenithalProjections.h'
     ];
   }
 

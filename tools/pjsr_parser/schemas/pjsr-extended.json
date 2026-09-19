@@ -4,7 +4,7 @@
   "version": "2.1.0",
   "description": "Extended API definitions from PixInsight GitLab repositories - supplements pjsr-core.json",
   "source": "https://gitlab.com/pixinsight/PJSR",
-  "lastUpdated": "2026-05-14",
+  "lastUpdated": "2026-09-19",
   "v8Caveat": "All classes defined in this schema come from .jsh include files written in SpiderMonkey-era JavaScript (this.__base__ pattern). They continue to load under V8 but inheritance silently fails. Use the core C++ equivalents (e.g. StarDetector core, BRQuadTree, ImageIterator) under V8 where available.",
 
   "uiControlClasses": {
@@ -1446,7 +1446,8 @@
     "utilities": [
       { "file": "pjsr/StarDetector.jsh", "description": "Star detection engine" },
       { "file": "pjsr/Color.jsh", "description": "Color manipulation utilities" },
-      { "file": "pjsr/Cipher.jsh", "description": "Encryption utilities (AES-256)" }
+      { "file": "pjsr/Cipher.jsh", "description": "Encryption utilities (AES-256)" },
+      { "file": "pjsr/utility/Parallel.js", "description": "Parallel-execution library (PixInsight 1.9.5+): Parallel.run/forRange/map/invoke/forImageRows/forBitmapRows, layered on the Thread and Mutex objects" }
     ],
     "astrometry": [
       { "file": "AdP/WCSmetadata.jsh", "description": "WCS metadata and coordinate transformations" },

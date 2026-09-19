@@ -11,6 +11,12 @@
       "buildMin": 1690,
       "smEngineRemoved": true,
       "notes": "First release shipping V8 as the only available JavaScript runtime. Legacy 'sm' engine fully removed (forum thread 27198). Some process property definitions changed non-backward-compatibly (ABE, SubframeSelector; see forum thread 27213)."
+    },
+    "1.9.5": {
+      "codename": "Lockhart",
+      "released": "2026-09-17",
+      "smEngineRemoved": true,
+      "notes": "Feature release. Adds multithreading to PJSR: the new Thread and Mutex objects and the Parallel library (#include <pjsr/utility/Parallel.js>) let scripts run JavaScript in parallel on multiple processor threads with structured-clone / SharedArrayBuffer data passing. All 229 V8 runtime objects are now fully documented. New scriptable processes: MLDenoise (new MachineLearning module, ML-based noise reduction) and the EphemerisGenerator gaining the IAS15 numerical integrator. PCL gained AVX2/FMA3/AVX-512/NEON vectorization and recursive-surface-spline distortion modeling (internal; no new public PJSR/PCL class names disclosed in the announcement)."
     }
   },
 
@@ -998,6 +1004,165 @@
       "description": "Image statistics object. Removed in V8: equivalent functionality is now on Image directly.",
       "removedIn": "v8",
       "replacedBy": "Image.median(), Image.MAD(), Image.stdDev(), Image.rangeClippingEnabled, etc."
+    },
+
+    "Thread": {
+      "description": "Runs a JavaScript function or source-code string in its own runtime instance, on its own processor thread. Added in PixInsight 1.9.5. Input data is passed by structured cloning; SharedArrayBuffers can be shared for zero-copy access between threads. The value returned by the body is available in `result` once the thread finishes.",
+      "since": "1.9.5",
+      "constructors": [
+        {
+          "signature": "Thread(body: Function|String, data?: any, options?: Object)",
+          "description": "Creates a thread that will run `body`. `data` is structured-cloned and passed to the body; `options` configures the runtime."
+        }
+      ],
+      "properties": {
+        "result": {
+          "type": "any",
+          "readonly": true,
+          "description": "The value returned by the thread body, available after wait() reports completion."
+        }
+      },
+      "methods": {
+        "start": {
+          "signature": "start(priority?: Number, processor?: Number)",
+          "description": "Starts execution on a new thread. priority defaults to ThreadPriority.DefaultMax; processor defaults to -1 (any available processor)."
+        },
+        "wait": {
+          "signature": "wait(ms?: Number)",
+          "description": "Blocks until the thread finishes, or until the optional timeout (ms) elapses. Returns true if the thread finished."
+        },
+        "abort": {
+          "signature": "abort()",
+          "description": "Requests that the thread abort as soon as possible (cooperative)."
+        },
+        "terminate": {
+          "signature": "terminate()",
+          "description": "Forcibly terminates the thread. Use with care."
+        },
+        "msleep": {
+          "signature": "Thread.msleep(ms: Number)",
+          "description": "Static. Suspends the calling thread for the given number of milliseconds.",
+          "static": true
+        },
+        "sleep": {
+          "signature": "Thread.sleep(seconds: Number)",
+          "description": "Static. Suspends the calling thread for the given number of seconds.",
+          "static": true
+        },
+        "releasePool": {
+          "signature": "Thread.releasePool()",
+          "description": "Static. Releases the internal thread pool.",
+          "static": true
+        },
+        "shareBuffer": {
+          "signature": "Thread.shareBuffer(buffer: SharedArrayBuffer)",
+          "description": "Static. Registers a SharedArrayBuffer for sharing across threads and returns a descriptor to pass as thread data.",
+          "static": true
+        },
+        "sharedBuffer": {
+          "signature": "Thread.sharedBuffer(descriptor: Object)",
+          "description": "Static. Returns the SharedArrayBuffer for a descriptor created by shareBuffer(), for use inside a thread body.",
+          "static": true
+        },
+        "releaseBuffer": {
+          "signature": "Thread.releaseBuffer(descriptor: Object)",
+          "description": "Static. Releases a shared buffer previously registered with shareBuffer().",
+          "static": true
+        }
+      }
+    },
+
+    "Mutex": {
+      "description": "Synchronizes access to shared state between threads. Added in PixInsight 1.9.5. Construct from a descriptor to share the same lock across threads.",
+      "since": "1.9.5",
+      "constructors": [
+        {
+          "signature": "Mutex(descriptor?: Object)",
+          "description": "Creates a mutex, optionally bound to an existing descriptor shared with other threads."
+        }
+      ],
+      "methods": {
+        "lock": {
+          "signature": "lock()",
+          "description": "Acquires the lock, blocking until it is available."
+        },
+        "unlock": {
+          "signature": "unlock()",
+          "description": "Releases the lock."
+        },
+        "tryLock": {
+          "signature": "tryLock()",
+          "description": "Attempts to acquire the lock without blocking. Returns true on success."
+        },
+        "locked": {
+          "signature": "locked(fn: Function)",
+          "description": "Runs `fn` while holding the lock, releasing it automatically afterward (even if `fn` throws)."
+        },
+        "release": {
+          "signature": "release()",
+          "description": "Releases the lock."
+        },
+        "isMutexDescriptor": {
+          "signature": "Mutex.isMutexDescriptor(x: any)",
+          "description": "Static. Returns true if `x` is a valid mutex descriptor.",
+          "static": true
+        }
+      }
+    },
+
+    "Parallel": {
+      "description": "High-level parallel-execution library layered on Thread/Mutex. Added in PixInsight 1.9.5. Requires `#include <pjsr/utility/Parallel.js>`. Provides parallel loops and function invocation that spread work across processor threads. All methods are static (namespace object).",
+      "since": "1.9.5",
+      "requiresInclude": "pjsr/utility/Parallel.js",
+      "properties": {
+        "maxThreads": {
+          "type": "Number",
+          "readonly": true,
+          "description": "Maximum number of worker threads Parallel will use."
+        }
+      },
+      "methods": {
+        "run": {
+          "signature": "Parallel.run(count: Number, fn: Function, options?: Object)",
+          "description": "Static. Runs `fn(index, count, data)` for indices 0..count-1, distributed across threads.",
+          "static": true
+        },
+        "forRange": {
+          "signature": "Parallel.forRange(n: Number, fn: Function, options?: Object)",
+          "description": "Static. Splits the range 0..n-1 into per-thread sub-ranges and calls `fn(begin, end, data)` on each.",
+          "static": true
+        },
+        "map": {
+          "signature": "Parallel.map(items: Array, fn: Function, options?: Object)",
+          "description": "Static. Applies `fn(item, index, data)` to every element of `items` in parallel and returns the results array.",
+          "static": true
+        },
+        "invoke": {
+          "signature": "Parallel.invoke(functions: Array, options?: Object)",
+          "description": "Static. Runs an array of independent no-arg functions in parallel and returns their results.",
+          "static": true
+        },
+        "forImageRows": {
+          "signature": "Parallel.forImageRows(image: Image, fn: Function, options?: Object)",
+          "description": "Static. Distributes an Image's rows across threads, calling `fn(firstRow, lastRow, data)` on each band.",
+          "static": true
+        },
+        "forBitmapRows": {
+          "signature": "Parallel.forBitmapRows(bitmap: Bitmap, fn: Function, options?: Object)",
+          "description": "Static. Distributes a Bitmap's rows across threads, calling `fn(firstRow, lastRow, data)` on each band.",
+          "static": true
+        },
+        "numberOfThreads": {
+          "signature": "Parallel.numberOfThreads(count: Number, overheadLimit?: Number)",
+          "description": "Static. Returns the recommended number of threads for a workload of `count` items given a per-thread overhead limit (default 1).",
+          "static": true
+        },
+        "threadLoads": {
+          "signature": "Parallel.threadLoads(count: Number, threads: Number)",
+          "description": "Static. Returns an array describing how `count` items are split across `threads` worker threads.",
+          "static": true
+        }
+      }
     }
   },
 
@@ -1553,7 +1718,8 @@
         "UndoFlag": { "members": ["NoSwapFile", "Keywords", "PixelData", "RGBWS", "ICCProfile", "Metadata", "Properties", "DefaultMode", "All"], "replaces": "UndoFlag_*" },
         "PSFunction": { "members": ["Auto", "Gaussian", "Moffat", "MoffatA", "Moffat8", "Moffat6", "Moffat4", "Moffat25", "Moffat15", "Lorentzian"], "replaces": "new in V8" },
         "FrameStyle": { "members": ["Flat", "Box", "Panel", "StyledPanel", "Raised", "Sunken", "Plain"], "replaces": "FrameStyle_*" },
-        "FocusStyle": { "members": ["NoFocus", "TabFocus", "ClickFocus", "StrongFocus", "WheelFocus"], "replaces": "FocusStyle_*" }
+        "FocusStyle": { "members": ["NoFocus", "TabFocus", "ClickFocus", "StrongFocus", "WheelFocus"], "replaces": "FocusStyle_*" },
+        "ThreadPriority": { "members": ["Idle", "Lowest", "Low", "Normal", "High", "Highest", "TimeCritical", "Inherit", "DefaultMax"], "since": "1.9.5", "replaces": "new in 1.9.5 (Thread.start priority argument)" }
       }
   },
 
@@ -1765,6 +1931,15 @@
       "match": { "type": "code-pattern", "regex": "#(?:define|undef|if|ifdef|ifndef|ifeq|ifneq|ifgt|ifge|iflt|ifle|ifoneof|ifnoneof|else|endif|engine|error|warning|include|feature-id|feature-info|feature-icon|script-id)\\s*[=;,)\\s]" },
       "message": "If this `#name` appears as a private class field inside a class body (e.g. `class X { #engine = ... }`), it collides with a reserved PixInsight preprocessor directive. Rename the private field (e.g. `#_engine`).",
       "docUrl": "https://pixinsight.net/dev/index.php?ams/the-new-v8-javascript-runtime-in-pixinsight-1-9-4-script-porting-guide.13/page/limitations.8/"
+    },
+    {
+      "id": "v1.9.5-threading-requires-1-9-5",
+      "appliesToEngines": ["v8"],
+      "requiresVersionRange": "<1.9.5",
+      "severity": "warning",
+      "match": { "type": "code-pattern", "regex": "new\\s+(?:Thread|Mutex)\\s*\\(|\\bParallel\\.(?:run|forRange|map|invoke|forImageRows|forBitmapRows)\\s*\\(" },
+      "message": "The Thread and Mutex objects and the Parallel library (multithreading) were added in PixInsight 1.9.5. This script targets an older version (or declares none). Call CoreApplication.ensureMinimumVersion(1, 9, 5) and require 1.9.5+ before using them.",
+      "docUrl": "https://pixinsight.com/developer/pjsr/"
     }
   ],
 
