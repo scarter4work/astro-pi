@@ -12,6 +12,9 @@ message(STATUS "PCL found at ${PCLDIR} -- building PICopilot module")
 
 set(MODULE_SOURCES
     PICopilotModule.cpp
+    PICopilotProcess.cpp
+    PICopilotInstance.cpp
+    PICopilotInterface.cpp
 )
 
 add_library(PICopilot SHARED ${MODULE_SOURCES})

@@ -12,6 +12,8 @@
 #define MODULE_VERSION_LANGUAGE  eng
 
 #include "PICopilotModule.h"
+#include "PICopilotProcess.h"
+#include "PICopilotInterface.h"
 
 namespace pcl
 {
@@ -38,7 +40,7 @@ IsoString PICopilotModule::Name() const
 String PICopilotModule::Description() const
 {
    return "PI Copilot v" PICOPILOT_STR(PICOPILOT_MODULE_VERSION_MAJOR) " — In-app AI assistant for PixInsight. "
-          "Native PCL module skeleton (no Process/Interface yet).";
+          "Native PCL module skeleton (empty dockable panel; chat UI lands in a later increment).";
 }
 
 String PICopilotModule::Company() const
@@ -90,6 +92,10 @@ PICopilotModule* ThePICopilotModule = nullptr;
 PCL_MODULE_EXPORT int InstallPixInsightModule( int mode )
 {
    new pcl::PICopilotModule;
-   // No Process/Interface yet — added in Task 2.
+   if ( mode == pcl::InstallMode::FullInstall )
+   {
+      new pcl::PICopilotProcess;
+      new pcl::PICopilotInterface;
+   }
    return 0;
 }
