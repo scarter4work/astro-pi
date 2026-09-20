@@ -14,9 +14,14 @@ SO="$ROOT/build/src/module/PICopilot-pxm.so"
 # Load the module headlessly and run a trivial probe script that proves PI got
 # past module load. --force-exit only exits AFTER running -r= scripts, so a
 # bare -m= with no -r= sits idle forever; the probe + timeout close that hole.
-rm -f /tmp/.picopilot_load.txt
-if ! timeout 180 "$PI" -n --automation-mode --no-startup-scripts -m="$SO" -r="$HERE/load-probe.js" --force-exit; then
+#
+# Private, unpredictable result path (mktemp) passed via env var — same
+# defense-in-depth as run-selftest.sh, rather than a fixed /tmp name.
+OUT2="$(mktemp -u "${TMPDIR:-/tmp}/picopilot-load.XXXXXX.txt")"
+rm -f "$OUT2"
+trap 'rm -f "$OUT2"' EXIT
+if ! PICOPILOT_LOAD_OUT="$OUT2" timeout 180 "$PI" -n --automation-mode --no-startup-scripts -m="$SO" -r="$HERE/load-probe.js" --force-exit; then
    echo "FAIL: PI load timed out (180s) or exited non-zero"; exit 1
 fi
-[ -f /tmp/.picopilot_load.txt ] || { echo "FAIL: module loaded but PI never reached the probe script (load error)"; exit 1; }
+[ -f "$OUT2" ] || { echo "FAIL: module loaded but PI never reached the probe script (load error)"; exit 1; }
 echo "PASS: module built, signed, and loaded"

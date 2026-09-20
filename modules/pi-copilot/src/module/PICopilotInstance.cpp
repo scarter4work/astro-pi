@@ -4,7 +4,9 @@
 #include "PICopilotInstance.h"
 #include "PICopilotSelfTest.h"
 
-#include <pcl/File.h>
+#include <cstdlib>
+#include <fcntl.h>
+#include <unistd.h>
 
 namespace pcl
 {
@@ -51,10 +53,26 @@ bool PICopilotInstance::ExecuteGlobal()
 {
    String json;
    bool ok = RunSelfTest( json );
-   File f;
-   f.CreateForWriting( "/tmp/.picopilot_selftest.json" );
-   f.OutTextLn( IsoString( json ) );
-   f.Close();
+
+   // Self-test result reporting is test-only. In a shipped install there is
+   // no PICOPILOT_SELFTEST_OUT in the environment, so ExecuteGlobal() writes
+   // nothing at all — no predictable /tmp path for a symlink attack to
+   // target (CWE-59). When the harness does set it, write with O_EXCL|
+   // O_NOFOLLOW so a pre-existing file or a planted symlink at that path
+   // makes open() fail closed rather than following/truncating it.
+   const char* outPath = std::getenv( "PICOPILOT_SELFTEST_OUT" );
+   if ( outPath != nullptr && *outPath != '\0' )
+   {
+      int fd = ::open( outPath, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW, 0600 );
+      if ( fd >= 0 )
+      {
+         IsoString u( json );
+         ssize_t w = ::write( fd, u.c_str(), u.Length() );
+         (void)w;
+         ::close( fd );
+      }
+   }
+
    return ok;
 }
 
