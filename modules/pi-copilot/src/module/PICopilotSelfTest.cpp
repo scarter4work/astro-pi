@@ -21,7 +21,7 @@ bool RunSelfTest( String& jsonOut )
    try
    {
       Variant v = ThePICopilotModule->EvaluateScript( "1+2", "JavaScript" );
-      evalResult = int( v.ToInt() );
+      evalResult = v.ToInt();
       evalOk = (evalResult == 3);
    }
    catch ( ... )

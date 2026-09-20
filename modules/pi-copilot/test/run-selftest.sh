@@ -14,11 +14,17 @@ SO="$ROOT/build/src/module/PICopilot-pxm.so"
 # Load the module headlessly and run the self-test harness. --force-exit only
 # exits AFTER running -r= scripts, so a bare -m= with no -r= sits idle
 # forever; the harness + timeout close that hole.
-rm -f /tmp/.picopilot_selftest.json
-if ! timeout 180 "$PI" -n --automation-mode --no-startup-scripts -m="$SO" -r="$HERE/selftest.js" --force-exit; then
+#
+# The result path is a private, unpredictable name (mktemp) passed via env
+# var, not a fixed /tmp path — ExecuteGlobal() in the shipped module never
+# writes to a guessable location (CWE-59 symlink attack); see
+# PICopilotInstance.cpp.
+R="$(mktemp -u "${TMPDIR:-/tmp}/picopilot-selftest.XXXXXX.json")"
+rm -f "$R"
+trap 'rm -f "$R"' EXIT
+if ! PICOPILOT_SELFTEST_OUT="$R" timeout 180 "$PI" -n --automation-mode --no-startup-scripts -m="$SO" -r="$HERE/selftest.js" --force-exit; then
    echo "FAIL: PI load timed out (180s) or exited non-zero"; exit 1
 fi
-R=/tmp/.picopilot_selftest.json
 [ -f "$R" ] || { echo "FAIL: no result file"; exit 1; }
 cat "$R"
 python3 -c "import json,sys; d=json.load(open('$R')); sys.exit(0 if (d.get('evalOk') and d.get('evalResult')==3 and d.get('processInstanceValid')) else 1)" \
