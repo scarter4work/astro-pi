@@ -21,6 +21,6 @@ fi
 R=/tmp/.picopilot_selftest.json
 [ -f "$R" ] || { echo "FAIL: no result file"; exit 1; }
 cat "$R"
-python3 -c "import json,sys; d=json.load(open('$R')); sys.exit(0 if d.get('processConstructed') else 1)" \
-   || { echo "FAIL: PICopilot process not constructible"; exit 1; }
-echo "PASS: process registered and constructible"
+python3 -c "import json,sys; d=json.load(open('$R')); sys.exit(0 if (d.get('evalOk') and d.get('evalResult')==3 and d.get('processInstanceValid')) else 1)" \
+   || { echo "FAIL: self-test did not prove both execution paths"; exit 1; }
+echo "PASS: EvaluateScript==3 and ProcessInstance valid"
