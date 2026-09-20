@@ -15,6 +15,7 @@ set(MODULE_SOURCES
     PICopilotProcess.cpp
     PICopilotInstance.cpp
     PICopilotInterface.cpp
+    PICopilotSelfTest.cpp
 )
 
 add_library(PICopilot SHARED ${MODULE_SOURCES})

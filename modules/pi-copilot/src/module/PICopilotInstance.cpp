@@ -2,6 +2,9 @@
 // Copyright (c) 2026 Scott Carter. MIT License.
 
 #include "PICopilotInstance.h"
+#include "PICopilotSelfTest.h"
+
+#include <pcl/File.h>
 
 namespace pcl
 {
@@ -46,8 +49,13 @@ bool PICopilotInstance::CanExecuteGlobal( String& /*whyNot*/ ) const
 
 bool PICopilotInstance::ExecuteGlobal()
 {
-   // Task 3 replaces this body with RunSelfTest().
-   return true;
+   String json;
+   bool ok = RunSelfTest( json );
+   File f;
+   f.CreateForWriting( "/tmp/.picopilot_selftest.json" );
+   f.OutTextLn( IsoString( json ) );
+   f.Close();
+   return ok;
 }
 
 } // namespace pcl
