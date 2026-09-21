@@ -116,28 +116,46 @@ AnthropicResult AnthropicClient::Send( const String& systemPrompt, const Array<A
    }
 
    // --- Parse the response ----------------------------------------------
+   //
+   // json::parse() failing means the body isn't JSON at all -- that's the
+   // only case that gets the "unparseable response" error. A 2xx body
+   // that parses fine but doesn't have the expected content/text shape is
+   // a different failure (Anthropic changed the response shape, or this
+   // isn't really a Messages API response) and gets its own message,
+   // extracted separately so the two aren't conflated.
+   nlohmann::json j;
    try
    {
-      nlohmann::json j = nlohmann::json::parse( sink.buffer.c_str() );
-      if ( result.httpStatus >= 200 && result.httpStatus < 300 )
-      {
-         result.text = String::UTF8ToUTF16( j["content"][0]["text"].get<std::string>().c_str() );
-         result.ok = true;
-      }
-      else
-      {
-         std::string msg = ( j.contains( "error" ) && j["error"].contains( "message" ) )
-            ? j["error"]["message"].get<std::string>()
-            : std::string( transfer.ErrorInformation().ToUTF8().c_str() );
-         result.error = String::UTF8ToUTF16( msg.c_str() );
-         result.ok = false;
-      }
+      j = nlohmann::json::parse( sink.buffer.c_str() );
    }
    catch ( ... )
    {
       result.ok = false;
       IsoString snippet = sink.buffer.Left( 200 );
       result.error = String( "unparseable response: " ) + String::UTF8ToUTF16( snippet.c_str() );
+      return result;
+   }
+
+   if ( result.httpStatus >= 200 && result.httpStatus < 300 )
+   {
+      try
+      {
+         result.text = String::UTF8ToUTF16( j["content"][0]["text"].get<std::string>().c_str() );
+         result.ok = true;
+      }
+      catch ( ... )
+      {
+         result.ok = false;
+         result.error = "response missing expected content/text field";
+      }
+   }
+   else
+   {
+      std::string msg = ( j.contains( "error" ) && j["error"].contains( "message" ) )
+         ? j["error"]["message"].get<std::string>()
+         : std::string( transfer.ErrorInformation().ToUTF8().c_str() );
+      result.error = String::UTF8ToUTF16( msg.c_str() );
+      result.ok = false;
    }
 
    return result;
