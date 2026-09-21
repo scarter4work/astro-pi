@@ -9,10 +9,12 @@
 namespace pcl
 {
 
-// Proves the two hybrid execution paths from C++:
+// Proves the hybrid execution paths from C++:
 //   1. PJSR via MetaModule::EvaluateScript
 //   2. native ProcessInstance construction against the process registry
-// Populates jsonOut with {evalResult, evalOk, processInstanceValid, ok}
+//   3. pcl::Settings round-trip (local space) on a throwaway key
+// Populates jsonOut with
+// {evalResult, evalOk, processInstanceValid, keyStoreOk, ok}
 // and returns ok. Root-thread only (EvaluateScript requirement).
 bool RunSelfTest( String& jsonOut );
 

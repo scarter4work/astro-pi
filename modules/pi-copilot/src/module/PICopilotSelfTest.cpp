@@ -6,6 +6,7 @@
 
 #include <pcl/Process.h>
 #include <pcl/ProcessInstance.h>
+#include <pcl/Settings.h>
 #include <pcl/Variant.h>
 
 namespace pcl
@@ -50,10 +51,29 @@ bool RunSelfTest( String& jsonOut )
       piValid = false;
    }
 
-   bool ok = evalOk && piValid;
+   // Path 3: Settings round-trip on a throwaway key (proves the local
+   // Settings store works before KeyStore relies on it for the real
+   // Anthropic API key in later tasks). Never touches
+   // "PICopilot/AnthropicApiKey".
+   bool keyStoreOk = false;
+   try
+   {
+      Settings::Write( "PICopilot/SelfTestKey", String( "rt-probe-42" ) );
+      String back;
+      Settings::Read( "PICopilot/SelfTestKey", back );
+      keyStoreOk = (back == "rt-probe-42");
+      Settings::Remove( "PICopilot/SelfTestKey" );
+   }
+   catch ( ... )
+   {
+      keyStoreOk = false;
+   }
+
+   bool ok = evalOk && piValid && keyStoreOk;
    jsonOut = String().Format(
-      "{\"evalResult\":%d,\"evalOk\":%s,\"processInstanceValid\":%s,\"ok\":%s}",
-      evalResult, evalOk ? "true" : "false", piValid ? "true" : "false", ok ? "true" : "false" );
+      "{\"evalResult\":%d,\"evalOk\":%s,\"processInstanceValid\":%s,\"keyStoreOk\":%s,\"ok\":%s}",
+      evalResult, evalOk ? "true" : "false", piValid ? "true" : "false",
+      keyStoreOk ? "true" : "false", ok ? "true" : "false" );
    return ok;
 }
 

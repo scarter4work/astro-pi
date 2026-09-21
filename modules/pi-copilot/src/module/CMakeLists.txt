@@ -16,6 +16,7 @@ set(MODULE_SOURCES
     PICopilotInstance.cpp
     PICopilotInterface.cpp
     PICopilotSelfTest.cpp
+    KeyStore.cpp
 )
 
 add_library(PICopilot SHARED ${MODULE_SOURCES})
@@ -56,6 +57,7 @@ target_link_libraries(PICopilot PRIVATE
     RFC6234-pxi
     lcms-pxi
     cminpack-pxi
+    nlohmann_json::nlohmann_json
 )
 
 # Shared library flags

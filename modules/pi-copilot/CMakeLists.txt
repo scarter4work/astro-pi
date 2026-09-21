@@ -56,4 +56,18 @@ if(PICOPILOT_BUILD_MODULE)
     include(PCLConfig)
 endif()
 
+# nlohmann/json — header-only, vendored via FetchContent (verbatim shape
+# from modules/nukex/CMakeLists.txt). Used for Anthropic API request/
+# response bodies in later increment-2 tasks.
+include(FetchContent)
+FetchContent_Declare(
+    nlohmann_json
+    GIT_REPOSITORY https://github.com/nlohmann/json.git
+    GIT_TAG        v3.11.3
+    GIT_SHALLOW    TRUE
+)
+set(JSON_BuildTests OFF CACHE INTERNAL "")
+set(JSON_Install    OFF CACHE INTERNAL "")
+FetchContent_MakeAvailable(nlohmann_json)
+
 add_subdirectory(src/module)
