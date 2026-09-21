@@ -37,8 +37,13 @@ struct AnthropicResult
  * Blocking, non-streamed client for the Anthropic Messages API
  * (https://api.anthropic.com/v1/messages), built on pcl::NetworkTransfer.
  *
- * Send() does not touch the GUI or console, so it is safe to call from a
- * worker Thread.
+ * Send() touches no GUI or console state by design. NOTE: it constructs
+ * an internal Control-based response sink (NetworkTransfer's download
+ * callback requires a Control-derived receiver — see AnthropicClient.cpp).
+ * Constructing a Control from a non-root Thread is NOT yet verified —
+ * to date Send() has only run on the root thread (PICopilotSelfTest).
+ * Smoke-test worker-thread use before relying on this (increment-2
+ * Task 4) instead of assuming it's already proven.
  */
 class AnthropicClient
 {
