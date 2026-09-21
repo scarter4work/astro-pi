@@ -3,11 +3,14 @@
 
 #include "PICopilotSelfTest.h"
 #include "PICopilotModule.h"     // ThePICopilotModule
+#include "AnthropicClient.h"
 
 #include <pcl/Process.h>
 #include <pcl/ProcessInstance.h>
 #include <pcl/Settings.h>
 #include <pcl/Variant.h>
+
+#include <cstdlib>
 
 namespace pcl
 {
@@ -69,11 +72,41 @@ bool RunSelfTest( String& jsonOut )
       keyStoreOk = false;
    }
 
-   bool ok = evalOk && piValid && keyStoreOk;
+   // Path 4: gated real-API check against AnthropicClient. Only runs when
+   // PICOPILOT_TEST_API_KEY is set in the environment (the controller
+   // exports it from a local, gitignored key file before this self-test
+   // runs); otherwise this path is skipped so CI without a key still
+   // passes. Never touches KeyStore/Settings -- the env var is separate
+   // from the user's persisted key.
+   bool anthropicOk = false;
+   bool anthropicSkipped = true;
+   try
+   {
+      if ( const char* envKey = std::getenv( "PICOPILOT_TEST_API_KEY" ) )
+      {
+         anthropicSkipped = false;
+         AnthropicClient client{ String( envKey ) };
+         AnthropicResult r = client.Send( "You are a test.",
+            { AnthropicMessage{ IsoString( "user" ), String( "Reply with exactly: WORKING" ) } } );
+         anthropicOk = r.ok && r.text.Contains( "WORKING" );
+      }
+      else
+      {
+         anthropicOk = true; // nothing to prove without a key
+      }
+   }
+   catch ( ... )
+   {
+      anthropicOk = false;
+   }
+
+   bool ok = evalOk && piValid && keyStoreOk && anthropicOk;
    jsonOut = String().Format(
-      "{\"evalResult\":%d,\"evalOk\":%s,\"processInstanceValid\":%s,\"keyStoreOk\":%s,\"ok\":%s}",
+      "{\"evalResult\":%d,\"evalOk\":%s,\"processInstanceValid\":%s,\"keyStoreOk\":%s,"
+      "\"anthropicOk\":%s,\"anthropicSkipped\":%s,\"ok\":%s}",
       evalResult, evalOk ? "true" : "false", piValid ? "true" : "false",
-      keyStoreOk ? "true" : "false", ok ? "true" : "false" );
+      keyStoreOk ? "true" : "false", anthropicOk ? "true" : "false",
+      anthropicSkipped ? "true" : "false", ok ? "true" : "false" );
    return ok;
 }
 
