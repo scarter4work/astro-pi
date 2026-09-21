@@ -27,6 +27,6 @@ if ! PICOPILOT_SELFTEST_OUT="$R" timeout 180 "$PI" -n --automation-mode --no-sta
 fi
 [ -f "$R" ] || { echo "FAIL: no result file"; exit 1; }
 cat "$R"
-python3 -c "import json,sys; d=json.load(open('$R')); sys.exit(0 if (d.get('evalOk') and d.get('evalResult')==3 and d.get('processInstanceValid')) else 1)" \
-   || { echo "FAIL: self-test did not prove both execution paths"; exit 1; }
-echo "PASS: EvaluateScript==3 and ProcessInstance valid"
+python3 -c "import json,sys; d=json.load(open('$R')); sys.exit(0 if (d.get('evalOk') and d.get('evalResult')==3 and d.get('processInstanceValid') and d.get('keyStoreOk')) else 1)" \
+   || { echo "FAIL: self-test did not prove all execution paths"; exit 1; }
+echo "PASS: EvaluateScript==3, ProcessInstance valid, KeyStore round-trip OK"
