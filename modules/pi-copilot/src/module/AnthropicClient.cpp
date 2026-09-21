@@ -151,9 +151,22 @@ AnthropicResult AnthropicClient::Send( const String& systemPrompt, const Array<A
    }
    else
    {
-      std::string msg = ( j.contains( "error" ) && j["error"].contains( "message" ) )
-         ? j["error"]["message"].get<std::string>()
-         : std::string( transfer.ErrorInformation().ToUTF8().c_str() );
+      // Guarded the same way as the 2xx content/text extraction above:
+      // "error"/"message" being present but not string-convertible (a
+      // number, object, or null in some malformed or intermediary error
+      // body) must not throw out of Send() -- fall back to
+      // ErrorInformation() instead of propagating.
+      std::string msg;
+      try
+      {
+         msg = ( j.contains( "error" ) && j["error"].contains( "message" ) )
+            ? j["error"]["message"].get<std::string>()
+            : std::string( transfer.ErrorInformation().ToUTF8().c_str() );
+      }
+      catch ( ... )
+      {
+         msg = std::string( transfer.ErrorInformation().ToUTF8().c_str() );
+      }
       result.error = String::UTF8ToUTF16( msg.c_str() );
       result.ok = false;
    }
