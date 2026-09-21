@@ -161,8 +161,9 @@ the sidecar, minus the HTTP shuttling of `previewJpegBase64`.
 3. Streaming UX: chunk marshalling cadence from worker thread to UI without
    flicker; fall back to non-streamed if needed for v1.
 4. Process parameter catalog for `describe_process` / `apply_process` — source
-   and PI-version sync strategy (reuse `pi-copilot/pi/process-summaries.json` /
-   `dump-process-catalog.js` as the seed).
+   and PI-version sync strategy (reuse `modules/pi-copilot/data/process-summaries.json` /
+   `modules/pi-copilot/data/dump-process-catalog.js` as the seed — preserved from the
+   retired sidecar tree, which was deleted 2026-09-20).
 
 ## 12. Build decomposition (increments)
 
