@@ -22,11 +22,29 @@ SO="$ROOT/build/src/module/PICopilot-pxm.so"
 R="$(mktemp -u "${TMPDIR:-/tmp}/picopilot-selftest.XXXXXX.json")"
 rm -f "$R"
 trap 'rm -f "$R"' EXIT
+
+# Gated real-API check: if a local, gitignored key file is present, export it
+# so RunSelfTest() makes one real (tiny) Anthropic call instead of skipping.
+KEYFILE="$ROOT/test/.test_api_key"
+if [ -f "$KEYFILE" ]; then
+   export PICOPILOT_TEST_API_KEY="$(cat "$KEYFILE")"
+   echo "using local test API key: $KEYFILE (anthropic check will run for real)"
+else
+   echo "no local test API key at $KEYFILE (anthropic check will be skipped)"
+fi
+
 if ! PICOPILOT_SELFTEST_OUT="$R" timeout 180 "$PI" -n --automation-mode --no-startup-scripts -m="$SO" -r="$HERE/selftest.js" --force-exit; then
    echo "FAIL: PI load timed out (180s) or exited non-zero"; exit 1
 fi
 [ -f "$R" ] || { echo "FAIL: no result file"; exit 1; }
 cat "$R"
-python3 -c "import json,sys; d=json.load(open('$R')); sys.exit(0 if (d.get('evalOk') and d.get('evalResult')==3 and d.get('processInstanceValid') and d.get('keyStoreOk')) else 1)" \
-   || { echo "FAIL: self-test did not prove all execution paths"; exit 1; }
-echo "PASS: EvaluateScript==3, ProcessInstance valid, KeyStore round-trip OK"
+python3 -c "
+import json, sys
+d = json.load(open('$R'))
+ok = (d.get('evalOk') and d.get('evalResult') == 3 and d.get('processInstanceValid')
+      and d.get('keyStoreOk') and d.get('anthropicOk'))
+skipped = d.get('anthropicSkipped')
+print('anthropic check: %s' % ('SKIPPED (no key)' if skipped else 'RAN against real API'))
+sys.exit(0 if ok else 1)
+" || { echo "FAIL: self-test did not prove all execution paths"; exit 1; }
+echo "PASS: EvaluateScript==3, ProcessInstance valid, KeyStore round-trip OK, Anthropic check OK"
