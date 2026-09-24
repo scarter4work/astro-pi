@@ -21,4 +21,9 @@ void Save( const String& key )
    Settings::Write( kAnthropicApiKeyKey, key );
 }
 
+void Clear()
+{
+   Settings::Remove( kAnthropicApiKeyKey );
+}
+
 } } // namespace pcl::KeyStore

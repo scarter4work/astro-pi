@@ -37,6 +37,13 @@ public:
    // contract it must declare itself a non-generator.
    bool IsInstanceGenerator() const override;
 
+   // Wraps arbitrary text for TextBox rich text as literal (<raw>) text.
+   // Unlike TextBox::PlainText(), text containing its own "</raw>" (any
+   // case/spacing) cannot end the raw block early: each such '<' is emitted
+   // as a &lt; entity OUTSIDE the raw block, which TextBox renders as '<'.
+   // Use it at EVERY site that inserts non-literal text into the chat log.
+   static String PlainText( const String& text );
+
 private:
 
    // ── Chat state (UI thread only) ───────────────────────────────
@@ -52,9 +59,14 @@ private:
    // while still active.
    AutoPointer<ChatThread> m_thread;
 
+   // The prompt of the in-flight turn, restored into the (empty) input line
+   // if the turn fails so the user can resend without retyping.
+   String m_pendingPrompt;
+
    void SendCurrentInput();
    void AppendToLog( const String& richText );
    void StopWorker();
+   void SetBusy( bool busy );
 
    // ── GUI Controls ──────────────────────────────────────────────
 

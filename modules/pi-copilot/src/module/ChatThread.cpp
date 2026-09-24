@@ -10,9 +10,14 @@ namespace pcl
 {
 
 ChatThread::ChatThread( const String& apiKey, const String& systemPrompt, const Array<AnthropicMessage>& history,
-                        const IsoString& model )
-   : m_request( apiKey, model, systemPrompt, history )
+                        const IsoString& model, const String& url, int timeoutSeconds )
+   : m_request( apiKey, model, systemPrompt, history, url, timeoutSeconds )
 {
+}
+
+void ChatThread::RequestCancel()
+{
+   m_request.Cancel();
 }
 
 void ChatThread::Run()

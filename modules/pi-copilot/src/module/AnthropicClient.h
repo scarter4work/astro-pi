@@ -17,6 +17,16 @@ namespace pcl
 // the AnthropicClient constructor declaration below.
 #define PICOPILOT_DEFAULT_MODEL "claude-opus-4-8"
 
+// Messages API endpoint. Overridable per request only so the self-test can
+// point a request at a local stalling server (deadline proof).
+#define PICOPILOT_MESSAGES_URL "https://api.anthropic.com/v1/messages"
+
+// Overall wall-clock limit for one request, measured from the start of
+// AnthropicRequest::Perform(). SetConnectionTimeout() only bounds the
+// connect phase; this bounds the whole transfer, including a connection that
+// stalls after connecting. Enforced from NetworkTransfer's progress callback.
+constexpr int PICopilotRequestTimeoutSeconds = 300;
+
 // One turn of chat history sent to the Anthropic Messages API.
 struct AnthropicMessage
 {
@@ -30,9 +40,10 @@ struct AnthropicMessage
 struct AnthropicResult
 {
    bool   ok = false;
-   String text;
+   String text;       // all "text" content blocks, concatenated in order
    String error;
    int    httpStatus = 0;
+   bool   truncated = false; // stop_reason == "max_tokens"
 };
 
 /*!
@@ -49,6 +60,13 @@ struct AnthropicResult
  *    already-configured POST and parses the reply. The self-test runs it
  *    inside ChatThread with an invalid key and requires the API's 401 back.
  *  - Perform() never throws and must be called at most once.
+ *  - Cancel() is thread-safe and may be called from any thread, before or
+ *    during Perform(). The in-flight transfer is aborted from its progress
+ *    callback (NetworkTransfer::OnTransferProgress -- returning false aborts
+ *    the operation), which also enforces the overall deadline
+ *    (timeoutSeconds, default PICopilotRequestTimeoutSeconds). A cancelled
+ *    or timed-out request returns ok=false with error "request cancelled" /
+ *    "request timed out after N s".
  *
  * All inputs are copied/serialized at construction; the request holds no
  * references to caller state.
@@ -58,13 +76,18 @@ class AnthropicRequest
 public:
 
    AnthropicRequest( const String& apiKey, const IsoString& model,
-                     const String& systemPrompt, const Array<AnthropicMessage>& history );
+                     const String& systemPrompt, const Array<AnthropicMessage>& history,
+                     const String& url = PICOPILOT_MESSAGES_URL,
+                     int timeoutSeconds = PICopilotRequestTimeoutSeconds );
    ~AnthropicRequest();
 
    AnthropicRequest( const AnthropicRequest& ) = delete;
    AnthropicRequest& operator =( const AnthropicRequest& ) = delete;
 
    AnthropicResult Perform();
+
+   // Thread-safe; idempotent. See THREADING above.
+   void Cancel();
 
 private:
 

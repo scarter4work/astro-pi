@@ -4,6 +4,8 @@
 #include "PICopilotInstance.h"
 #include "PICopilotSelfTest.h"
 
+#include <pcl/Console.h>
+
 #include <cstdlib>
 #include <fcntl.h>
 #include <unistd.h>
@@ -51,22 +53,29 @@ bool PICopilotInstance::CanExecuteGlobal( String& /*whyNot*/ ) const
 
 bool PICopilotInstance::ExecuteGlobal()
 {
+   // The self-test is test-only. In a shipped install there is no
+   // PICOPILOT_SELFTEST_OUT in the environment, so executing the process
+   // does nothing but point the user at the panel: no Settings writes, no
+   // network request, no file written -- and so no predictable /tmp path for
+   // a symlink attack to target (CWE-59). test/run-selftest.sh sets it.
+   const char* outPath = std::getenv( "PICOPILOT_SELFTEST_OUT" );
+   if ( outPath == nullptr || *outPath == '\0' )
+   {
+      Console().WriteLn( "PI Copilot: open the chat panel via Process > &lt;Etc&gt; > PICopilot" );
+      return true;
+   }
+
    String json;
    bool ok = RunSelfTest( json );
 
-   // Self-test result reporting is test-only. In a shipped install there is
-   // no PICOPILOT_SELFTEST_OUT in the environment, so ExecuteGlobal() writes
-   // nothing at all — no predictable /tmp path for a symlink attack to
-   // target (CWE-59). When the harness does set it, write with O_EXCL|
-   // O_NOFOLLOW so a pre-existing file or a planted symlink at that path
-   // makes open() fail closed rather than following/truncating it.
-   const char* outPath = std::getenv( "PICOPILOT_SELFTEST_OUT" );
-   if ( outPath != nullptr && *outPath != '\0' )
+   // Write with O_EXCL|O_NOFOLLOW so a pre-existing file or a planted
+   // symlink at that path makes open() fail closed rather than
+   // following/truncating it.
    {
       int fd = ::open( outPath, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW, 0600 );
       if ( fd >= 0 )
       {
-         IsoString u( json );
+         IsoString u = json.ToUTF8();
          ssize_t w = ::write( fd, u.c_str(), u.Length() );
          (void)w;
          ::close( fd );

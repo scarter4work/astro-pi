@@ -10,8 +10,11 @@ namespace pcl { namespace KeyStore {
 
 // Persists the user's Anthropic API key in PixInsight's local Settings
 // store (per-user, not global — see pcl::Settings local-space Read/Write).
+// The key is stored in PLAINTEXT in the user's PixInsight settings; it is
+// never written anywhere else.
 String Load();               // "" if unset
-void   Save( const String& );
+void   Save( const String& ); // caller validates (see ConfigDialog)
+void   Clear();              // removes the stored key (Settings::Remove)
 
 } } // namespace pcl::KeyStore
 

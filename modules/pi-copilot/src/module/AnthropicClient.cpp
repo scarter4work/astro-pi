@@ -9,6 +9,10 @@
 
 #include <nlohmann/json.hpp>
 
+#include <atomic>
+#include <chrono>
+#include <stdexcept>
+
 namespace pcl
 {
 
@@ -28,12 +32,53 @@ class ResponseSink : public Control
 {
 public:
 
+   using clock = std::chrono::steady_clock;
+
    IsoString buffer;
+
+   // Set from any thread by AnthropicRequest::Cancel().
+   std::atomic<bool> cancelRequested{ false };
+
+   // Written on the performing thread only (inside the callbacks below),
+   // read back on that same thread after POST() returns.
+   bool             cancelled = false;
+   bool             timedOut = false;
+   clock::time_point deadline = clock::time_point::max();
+
+   // Returns false (abort) when the request was cancelled or its overall
+   // deadline has passed; records which one it was.
+   bool ShouldContinue()
+   {
+      if ( cancelRequested.load() )
+      {
+         cancelled = true;
+         return false;
+      }
+      if ( clock::now() >= deadline )
+      {
+         timedOut = true;
+         return false;
+      }
+      return true;
+   }
 
    bool OnData( NetworkTransfer& /*sender*/, const void* data, fsize_type size )
    {
+      if ( !ShouldContinue() )
+         return false;
       buffer.Append( reinterpret_cast<const char*>( data ), size_type( size ) );
       return true;
+   }
+
+   // NetworkTransfer.h: progress events are generated "at regular intervals
+   // during an active data transfer operation", and returning false aborts
+   // it. This is what bounds a connection that stalls after connecting --
+   // SetConnectionTimeout() only covers the connect phase. The self-test's
+   // stall path proves it fires while no bytes are moving.
+   bool OnProgress( NetworkTransfer& /*sender*/, fsize_type /*downloadTotal*/, fsize_type /*downloadCurrent*/,
+                    fsize_type /*uploadTotal*/, fsize_type /*uploadCurrent*/ )
+   {
+      return ShouldContinue();
    }
 };
 
@@ -45,12 +90,16 @@ struct AnthropicRequest::Impl
    NetworkTransfer transfer;
    String          body;      // UTF-16 request body, ready to POST
    String          buildError;
+   int             timeoutSeconds = PICopilotRequestTimeoutSeconds;
 };
 
 AnthropicRequest::AnthropicRequest( const String& apiKey, const IsoString& model,
-                                    const String& systemPrompt, const Array<AnthropicMessage>& history )
+                                    const String& systemPrompt, const Array<AnthropicMessage>& history,
+                                    const String& url, int timeoutSeconds )
    : m( new Impl )
 {
+   m->timeoutSeconds = timeoutSeconds;
+
    // --- Build the request body -----------------------------------------
    //
    // nlohmann::json stores/emits text as UTF-8. pcl::String is UTF-16
@@ -82,12 +131,13 @@ AnthropicRequest::AnthropicRequest( const String& apiKey, const IsoString& model
    // --- Configure the transfer (root thread) ------------------------------
    try
    {
-      m->transfer.SetURL( "https://api.anthropic.com/v1/messages" );
+      m->transfer.SetURL( url );
       m->transfer.SetSSL( true/*useSSL*/, false/*forceSSL*/, true/*verifyPeer*/, true/*verifyHost*/ );
       m->transfer.SetConnectionTimeout( 120 );
       m->transfer.SetCustomHTTPHeaders( String( "x-api-key: " ) + apiKey
          + "\nanthropic-version: 2023-06-01\ncontent-type: application/json" );
       m->transfer.OnDownloadDataAvailable( (NetworkTransfer::download_event_handler)&ResponseSink::OnData, m->sink );
+      m->transfer.OnTransferProgress( (NetworkTransfer::progress_event_handler)&ResponseSink::OnProgress, m->sink );
    }
    catch ( const pcl::Exception& x )
    {
@@ -100,6 +150,11 @@ AnthropicRequest::AnthropicRequest( const String& apiKey, const IsoString& model
 }
 
 AnthropicRequest::~AnthropicRequest() = default;
+
+void AnthropicRequest::Cancel()
+{
+   m->sink.cancelRequested.store( true );
+}
 
 AnthropicResult AnthropicRequest::Perform()
 {
@@ -114,10 +169,35 @@ AnthropicResult AnthropicRequest::Perform()
    // --- Perform the request ---------------------------------------------
    NetworkTransfer& transfer = m->transfer;
    ResponseSink& sink = m->sink;
+   const String timedOutError = String().Format( "request timed out after %d s", m->timeoutSeconds );
+
+   // A Cancel() that lands before we start never touches the network.
+   if ( sink.cancelRequested.load() )
+   {
+      result.error = "request cancelled";
+      return result;
+   }
+
+   sink.deadline = ResponseSink::clock::now() + std::chrono::seconds( m->timeoutSeconds );
    try
    {
       bool okHttp = transfer.POST( m->body );
       result.httpStatus = transfer.ResponseCode();
+
+      // Aborted from our own callbacks: report why, never a generic
+      // network error (and never try to parse a partial body).
+      if ( transfer.WasAborted() || sink.cancelled || sink.timedOut )
+      {
+         result.ok = false;
+         result.httpStatus = 0;
+         if ( sink.cancelled )
+            result.error = "request cancelled";
+         else if ( sink.timedOut )
+            result.error = timedOutError;
+         else
+            result.error = "request aborted: " + transfer.ErrorInformation();
+         return result;
+      }
 
       if ( !okHttp && result.httpStatus == 0 )
       {
@@ -170,14 +250,31 @@ AnthropicResult AnthropicRequest::Perform()
 
    if ( result.httpStatus >= 200 && result.httpStatus < 300 )
    {
+      // Join every "text" content block in order (a reply is not
+      // guaranteed to be a single block), and flag a max_tokens cut-off so
+      // the UI can say the reply is incomplete instead of presenting it as
+      // whole.
       try
       {
-         result.text = String::UTF8ToUTF16( j["content"][0]["text"].get<std::string>().c_str() );
+         std::string joined;
+         bool anyText = false;
+         for ( const nlohmann::json& block : j.at( "content" ) )
+            if ( block.value( "type", std::string() ) == "text" )
+            {
+               joined += block.at( "text" ).get<std::string>();
+               anyText = true;
+            }
+         if ( !anyText )
+            throw std::runtime_error( "no text block" );
+         result.text = String::UTF8ToUTF16( joined.c_str() );
+         result.truncated = j.contains( "stop_reason" ) && j["stop_reason"].is_string()
+                         && j["stop_reason"].get<std::string>() == "max_tokens";
          result.ok = true;
       }
       catch ( ... )
       {
          result.ok = false;
+         result.text.Clear();
          result.error = "response missing expected content/text field";
       }
    }
