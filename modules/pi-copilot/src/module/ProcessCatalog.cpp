@@ -2,6 +2,7 @@
 // Copyright (c) 2026 Scott Carter. MIT License.
 
 #include "ProcessCatalog.h"
+#include "PICopilotModule.h"
 #include "ProcessSummaries.h"   // generated: kProcessSummariesJson
 #include "Utf8.h"
 
@@ -9,9 +10,11 @@
 #include <pcl/Process.h>
 #include <pcl/ProcessParameter.h>
 #include <pcl/Variant.h>
+#include <pcl/api/APIInterface.h>
 
 #include <algorithm>
 #include <cfloat>
+#include <map>
 #include <memory>
 #include <string>
 #include <utility>
@@ -54,6 +57,149 @@ const char* TypeName( ProcessParameter::data_type t )
    }
 }
 
+// PJSR route of EnumerationInfoOf(). Only the element IDENTIFIER query is
+// broken; the element count and values still come from the core natively.
+// Each value is assigned to a fresh instance in PJSR and the element id the
+// core's own toSource() writes for it is recorded -- the core's real ids, not
+// a hand-written table. Only native element values are ever assigned: an
+// arbitrary number can crash the core inside toSource() (seen live: SIGSEGV in
+// pi::MetaEnumeration::ValueToSource after assigning SCNR.colorToRemove = 4,
+// a protectionMethod constant). Throws Error with the reason.
+EnumerationInfo ScriptEnumerationInfo( const IsoString& processId, const IsoString& paramId )
+{
+   // Both ids are interpolated into source code: accept identifiers only.
+   if ( !processId.IsValidIdentifier() || !paramId.IsValidIdentifier() )
+      throw Error( "not a plain identifier" );
+
+   // ProcessParameter::Handle() is private; look the same handle up through
+   // the public API table (exactly what Process(id)/ProcessParameter(P, id) do).
+   const meta_process_handle hp = (*API->Process->GetProcessByName)( ModuleHandle(), processId.c_str() );
+   const meta_parameter_handle h = (hp == nullptr) ? nullptr : (*API->Process->GetParameterByName)( hp, paramId.c_str() );
+   if ( h == nullptr )
+      throw Error( "the core did not resolve the parameter handle" );
+   const size_type count = (*API->Process->GetParameterElementCount)( h );
+   if ( count == 0 )
+      throw Error( "the core reports no enumeration elements" );
+   IsoString values = "[";
+   for ( size_type i = 0; i < count; ++i )
+   {
+      if ( i > 0 )
+         values << ',';
+      values << IsoString( int( (*API->Process->GetParameterElementValue)( h, i ) ) );
+   }
+   values << ']';
+
+   IsoString script =
+      "(function()\n"
+      "{\n"
+      "   try\n"
+      "   {\n"
+      "      var re = /^P\\.@PARAM@ = @PROC@\\.([A-Za-z_][A-Za-z0-9_]*);$/m;\n"
+      "      var values = @VALUES@;\n"
+      "      var elements = [];\n"
+      "      for ( var i = 0; i < values.length; ++i )\n"
+      "      {\n"
+      "         var Q = new @PROC@;\n"
+      "         Q.@PARAM@ = values[i];\n"
+      "         var src = Q.toSource( \"JavaScript\", \"P\", 0, 0 );\n"
+      "         var m = re.exec( src );\n"
+      "         if ( !m )\n"
+      "            throw new Error( \"toSource() wrote no element id for value \" + values[i] );\n"
+      "         elements.push( { id: m[1], value: values[i] } );\n"
+      "      }\n"
+      "      var d = re.exec( (new @PROC@).toSource( \"JavaScript\", \"P\", 0, 0 ) );\n"
+      "      return JSON.stringify( { elements: elements, defaultId: d ? d[1] : \"\" } );\n"
+      "   }\n"
+      "   catch ( e )\n"
+      "   {\n"
+      "      return JSON.stringify( { error: String( e ) } );\n"
+      "   }\n"
+      "})();\n";
+   script.ReplaceString( IsoString( "@PROC@" ), processId );
+   script.ReplaceString( IsoString( "@PARAM@" ), paramId );
+   script.ReplaceString( IsoString( "@VALUES@" ), values );
+
+   const Variant result = ThePICopilotModule->EvaluateScript( String( script ), "JavaScript" );
+   const nlohmann::json j = nlohmann::json::parse( U8( result.ToString() ) );
+   if ( j.contains( "error" ) )
+      throw Error( String::UTF8ToUTF16( j.at( "error" ).get<std::string>().c_str() ) );
+
+   EnumerationInfo info;
+   info.viaScript = true;
+   for ( const nlohmann::json& e : j.at( "elements" ) )
+   {
+      ProcessParameter::EnumerationElement el;
+      el.id = IsoString( e.at( "id" ).get<std::string>().c_str() );
+      el.value = e.at( "value" ).get<int>();
+      info.elements << el;
+   }
+   info.defaultId = IsoString( j.at( "defaultId" ).get<std::string>().c_str() );
+   if ( info.elements.IsEmpty() )
+      throw Error( "the script runtime reported no elements" );
+   return info;
+}
+
+} // namespace
+
+const EnumerationInfo& EnumerationInfoOf( const ProcessParameter& p )
+{
+   // Root thread only (catalog introspection + EvaluateScript), so a plain
+   // map needs no lock.
+   static std::map<std::string, EnumerationInfo> cache;
+
+   const ProcessParameter table = p.ParentTable();
+   const IsoString processId = p.ParentProcess().Id();
+   const IsoString paramId = table.IsNull() ? p.Id() : table.Id() + '.' + p.Id();
+   const std::string key = std::string( processId.c_str() ) + '.' + paramId.c_str();
+   auto it = cache.find( key );
+   if ( it != cache.end() )
+      return it->second;
+
+   const String name = String( processId ) + '.' + String( paramId );
+   if ( !p.IsEnumeration() )
+      throw Error( name + " is not an enumeration parameter" );
+
+   EnumerationInfo info;
+   String nativeError;
+   try
+   {
+      info.elements = p.EnumerationElements();
+      const int index = p.DefaultValue().ToInt();   // an INDEX (ProcessParameter.cpp:333-338)
+      if ( index >= 0 && size_type( index ) < info.elements.Length() )
+         info.defaultId = info.elements[index].id;
+   }
+   catch ( const pcl::Exception& x )
+   {
+      nativeError = x.Message();
+   }
+
+   if ( !nativeError.IsEmpty() )
+   {
+      if ( !table.IsNull() )
+         throw Error( name + ": the element identifiers of this enumeration cannot be read ("
+                      + nativeError + "; table columns have no script fallback)" );
+      try
+      {
+         info = ScriptEnumerationInfo( processId, paramId );
+      }
+      catch ( const pcl::Exception& x )
+      {
+         throw Error( name + ": the element identifiers of this enumeration cannot be read (native: "
+                      + nativeError + "; script: " + x.Message() + ")" );
+      }
+      catch ( const std::exception& x )
+      {
+         throw Error( name + ": the element identifiers of this enumeration cannot be read (native: "
+                      + nativeError + "; script: " + String( x.what() ) + ")" );
+      }
+   }
+
+   return cache.emplace( key, std::move( info ) ).first->second;
+}
+
+namespace
+{
+
 // ProcessParameter::DefaultValue() throws pcl::Error for table parameters
 // (ProcessParameter.h:490: "For table parameters this function throws an
 // Error exception") -- so a table parameter must never reach that call.
@@ -70,11 +216,14 @@ nlohmann::json DefaultValueJson( const ProcessParameter& p )
       return v.ToBoolean();
    case ProcessParameterType::Enumeration:
       {
-         const int value = v.ToInt();
-         for ( const ProcessParameter::EnumerationElement& e : p.EnumerationElements() )
-            if ( e.value == value )
-               return std::string( e.id.c_str() );
-         return value;
+         // DefaultValue() is the default element's INDEX
+         // (GetParameterDefaultElementIndex, ProcessParameter.cpp:333-338),
+         // not its value; EnumerationInfoOf() resolves it to the element id
+         // (or reads it from PJSR when native element ids are unreadable).
+         const EnumerationInfo& info = EnumerationInfoOf( p );
+         if ( !info.defaultId.IsEmpty() )
+            return std::string( info.defaultId.c_str() );
+         return v.ToInt();
       }
    case ProcessParameterType::String:
       return U8( v.ToString() );
@@ -94,15 +243,12 @@ nlohmann::json ParameterJson( const ProcessParameter& p )
       { "required", p.IsRequired() }
    };
 
-   // Some enumeration parameters throw a low-level core API error when their
-   // element identifiers are queried through cross-module introspection
-   // (observed live for PixelMath's newImageColorSpace/newImageSampleFormat:
-   // "GetParameterElementIdentifier(): API function error" from both
-   // DefaultValue() -- which resolves the default element's id -- and
-   // EnumerationElements() itself). That must not poison the whole
-   // DescribeProcess() response for an otherwise well-behaved process with
-   // 20+ good parameters: surface it loudly on the one parameter instead of
-   // silently omitting it or throwing the whole description away.
+   // Enumeration element ids come from EnumerationInfoOf() (native, else
+   // PJSR introspection). If BOTH routes fail for one parameter, that must
+   // not poison the whole DescribeProcess() response for an otherwise
+   // well-behaved process with 20+ good parameters: surface it loudly on the
+   // one parameter instead of silently omitting it or throwing the whole
+   // description away.
    try
    {
       const nlohmann::json def = DefaultValueJson( p );
@@ -111,7 +257,7 @@ nlohmann::json ParameterJson( const ProcessParameter& p )
       if ( p.IsEnumeration() )
       {
          nlohmann::json e = nlohmann::json::array();
-         for ( const ProcessParameter::EnumerationElement& el : p.EnumerationElements() )
+         for ( const ProcessParameter::EnumerationElement& el : EnumerationInfoOf( p ).elements )
             e.push_back( { { "id", std::string( el.id.c_str() ) }, { "value", el.value } } );
          j["enumeration"] = e;
       }

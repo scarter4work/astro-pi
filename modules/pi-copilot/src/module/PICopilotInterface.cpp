@@ -3,15 +3,20 @@
 
 #include "PICopilotInterface.h"
 #include "PICopilotProcess.h"
+#include "AgentSession.h"
+#include "AgentTools.h"
 #include "ConfigDialog.h"
 #include "KeyStore.h"
 #include "PanelPlacement.h"
+#include "SystemPrompt.h"
+#include "TurnEndNotes.h"
 #include "ViewCapture.h"
 #include "VisionTurn.h"
 
 #include <pcl/Console.h>
 #include <pcl/GlobalSettings.h>
 #include <pcl/ImageWindow.h>
+#include <pcl/MessageBox.h>
 #include <pcl/Settings.h>
 
 namespace pcl
@@ -21,21 +26,6 @@ PICopilotInterface* ThePICopilotInterface = nullptr;
 
 namespace
 {
-
-// The single system prompt for every chat turn.
-const char* const kSystemPrompt =
-   "You are PI Copilot, an assistant embedded in PixInsight, the astronomical "
-   "image processing application. Help the user plan and understand their "
-   "PixInsight workflow: processes, scripts, parameters and processing order "
-   "for their astrophotography data. Be concise and concrete.\n\n"
-   "A user message may begin with a [PixInsight view context] block (JSON: view "
-   "identity, geometry, per-channel statistics, FITS keywords) and may include an "
-   "image. The image is an automatically stretched (auto-STF) JPEG preview, "
-   "downscaled to at most 1024 px, for DISPLAY ONLY: the underlying data is usually "
-   "still LINEAR (unstretched). Base any statement about the data's levels, noise or "
-   "clipping on the statistics in the context block, which describe the real data "
-   "(mad is the raw median absolute deviation; multiply by 1.4826 for sigma). Only "
-   "the latest message carries an image; earlier images are omitted from history.";
 
 // Gear glyph (U+2699), written as UTF-8 bytes. pcl::String( const char* )
 // decodes ISO-8859-1, so any non-ASCII literal must go through UTF8ToUTF16.
@@ -53,6 +43,45 @@ constexpr int kDefaultPanelWidth   = 420;
 constexpr int kDefaultTopMargin    = 40;   // below the main menu/title bar
 constexpr int kDefaultBottomMargin = 60;   // above a desktop taskbar
 constexpr int kDefaultRightMargin  = 8;
+
+// Resizable panel: explicit minimum (logical px); the maximum is left
+// unbounded via Control::SetVariableSize() (int_max, Control.h:415-419).
+constexpr int kMinPanelWidth  = 300;
+constexpr int kMinPanelHeight = 260;
+
+// Persisted assistant mode: Mode_ComboBox index == AgentMode value.
+const char* const kModeKey = "PICopilot/Mode";
+
+// One-time chat-log notice for the agent modes (0.1.0.x installs had a mode
+// selector that did nothing). A marker setting, written once shown.
+const char* const kModesNoticeMarkerKey = "PICopilot/AgentModesNoticeShown";
+const char* const kModesNoticeUtf8 =
+   "New in this version: PI Copilot can now work on your images. The mode selector at the top left sets how: "
+   "Copilot applies processes directly when you ask (every change is recorded in the view's History, so you can "
+   "undo it as usual); Guided shows each change and asks you first; Advisor is read-only and only gives advice. "
+   "A mode change applies from your next message.";
+
+// For MessageBox rich text (the Guided dialog): the model-chosen ids and the
+// parameter text are shown literally.
+String EscapeHtml( const String& s )
+{
+   String out;
+   for ( size_type i = 0; i < s.Length(); ++i )
+   {
+      const char16_type c = s[i];
+      if ( c == '&' )
+         out += "&amp;";
+      else if ( c == '<' )
+         out += "&lt;";
+      else if ( c == '>' )
+         out += "&gt;";
+      else if ( c == '\n' )
+         out += "<br/>";
+      else
+         out += c;
+   }
+   return out;
+}
 
 } // namespace
 
@@ -85,7 +114,12 @@ MetaProcess* PICopilotInterface::Process() const
 
 InterfaceFeatures PICopilotInterface::Features() const
 {
-   return InterfaceFeature::None;
+   // Not None: InterfaceFeature::None "effectively suppresses the interface's
+   // control bar" (ProcessInterface.h:144), and PixInsight's interface frame
+   // puts the mouse size grip in that bar. InfoArea is the most inert flag: a
+   // single-line text area, no Apply/Execute/Reset/drag object that would act
+   // on this degenerate (global-only, no-parameter) process.
+   return InterfaceFeature::InfoArea;
 }
 
 bool PICopilotInterface::IsInstanceGenerator() const
@@ -103,6 +137,14 @@ bool PICopilotInterface::Launch( const MetaProcess&, const ProcessImplementation
       // AFTER this function returns (first launch only); the window is shown
       // after that, so OnShow is the first point where our placement wins.
       OnShow( (Control::event_handler)&PICopilotInterface::e_Show, *this );
+
+      bool noticeShown = false;
+      Settings::Read( kModesNoticeMarkerKey, noticeShown );
+      if ( !noticeShown )
+      {
+         AppendToLog( PlainText( String::UTF8ToUTF16( kModesNoticeUtf8 ) ) + "\n\n" );
+         Settings::Write( kModesNoticeMarkerKey, true );
+      }
    }
 
    dynamic = false;
@@ -161,14 +203,23 @@ void PICopilotInterface::StopWorker()
 
 void PICopilotInterface::SetBusy( bool busy )
 {
-   // Non-streamed replies can take tens of seconds: show that a turn is in
-   // flight on the (disabled) Send button itself.
+   // Non-streamed replies can take tens of seconds and tools run between
+   // them: show that a message is being worked on, on the Send button itself.
    GUI->Send_Button.SetText( busy ? String::UTF8ToUTF16( kBusyTextUtf8 ) : String( kSendText ) );
    GUI->Send_Button.SetToolTip( busy
-      ? String( "<p>Waiting for the reply (non-streamed; gives up after " )
-            + String( PICopilotRequestTimeoutSeconds ) + " s).</p>"
+      ? String( "<p>Working (each request gives up after " ) + String( PICopilotRequestTimeoutSeconds ) + " s).</p>"
       : String( "<p>Send the message (or press Return).</p>" ) );
    GUI->Send_Button.Enable( !busy );
+   // The mode is fixed per message; the combo is locked while one runs.
+   GUI->Mode_ComboBox.Enable( !busy );
+   GUI->Clear_Button.Enable( !busy );
+   if ( busy )
+   {
+      GUI->Stop_Button.Enable();
+      GUI->Stop_Button.Show();
+   }
+   else
+      GUI->Stop_Button.Hide();
 }
 
 void PICopilotInterface::AppendToLog( const String& richText )
@@ -180,9 +231,9 @@ void PICopilotInterface::AppendToLog( const String& richText )
 
 void PICopilotInterface::SendCurrentInput()
 {
-   // Busy guard shared by the Send button AND the Return-key path: one
-   // turn in flight at a time.
-   if ( m_thread )
+   // One user message in flight at a time -- including while tools run
+   // (processes pump events, so this can be reached re-entrantly).
+   if ( m_thread || m_handlingResult )
       return;
 
    String prompt = GUI->ChatInput.Text().Trimmed();
@@ -200,24 +251,120 @@ void PICopilotInterface::SendCurrentInput()
    }
 
    AppendToLog( "<b>You:</b> " + PlainText( prompt ) + "\n\n" );
-   // Root thread, BEFORE the worker starts: ImageWindow/View/Bitmap are
-   // UIObjects. StripOlderImages() spares the LAST message, so it runs right
-   // after the new turn -- the only one carrying pixels -- is appended.
-   m_history.Add( ComposeTurnWithActiveView( prompt ) );
-   StripOlderImages( m_history );
+   // The view this message is about is fixed NOW; the tools re-resolve it by
+   // id, so a click on another image while the request runs changes nothing.
+   BeginTurnTarget();
+   // Root thread, before any request: capture that view (increment 3).
    // The BARE prompt (never the context-prefixed content) is what a failed
-   // turn gives back for a resend.
+   // message gives back for a resend.
+   m_session.BeginUserTurn( ComposeTurnWithActiveView( prompt ) );
    m_pendingPrompt = prompt;
+   m_apiKey = key;
+   m_turnMode = AgentModeFromIndex( GUI->Mode_ComboBox.CurrentItem() );
+   m_stopRequested = false;
    GUI->ChatInput.Clear();
-
-   // ChatThread copies/serializes key, system prompt and this history
-   // snapshot on THIS (UI) thread; the worker holds no reference to us.
-   m_thread = new ChatThread( key, String( kSystemPrompt ), m_history );
    SetBusy( true );
-   m_thread->Start();
+   StartRequest();
+}
 
+void PICopilotInterface::StartRequest()
+{
+   String why;
+   if ( !HistoryIsApiValid( m_session.History(), why ) )
+   {
+      // Never send a body the API would reject with an opaque 400. AbortTurn
+      // rolls the session back to before this message; it is a Failed step.
+      EndTurn( m_session.AbortTurn( "history invalid: " + why + " (nothing was sent)" ), 0 );
+      return;
+   }
+   try
+   {
+      // ChatThread serializes key, prompt, history snapshot and tools HERE (UI thread).
+      m_thread = new ChatThread( m_apiKey, BuildSystemPrompt( m_turnMode ), m_session.History(),
+                                 PICOPILOT_DEFAULT_MODEL, PICOPILOT_MESSAGES_URL,
+                                 PICopilotRequestTimeoutSeconds, ToolDefinitions( m_turnMode ) );
+      m_thread->Start();
+   }
+   catch ( ... )
+   {
+      String what = "unknown error";
+      try
+      {
+         throw;
+      }
+      catch ( const pcl::Exception& x ) { what = x.Message(); }
+      catch ( const std::exception& x ) { what = String( x.what() ); }
+      catch ( ... ) {}
+      if ( m_thread )
+      {
+         if ( m_thread->IsActive() )
+         {
+            m_thread->RequestCancel();
+            m_thread->Wait();
+         }
+         m_thread.Destroy();
+      }
+      EndTurn( m_session.AbortTurn( "internal error: could not start the request: " + what ), 0 );
+      return;
+   }
    if ( !GUI->Poll_Timer.IsRunning() )
       GUI->Poll_Timer.Start();
+}
+
+void PICopilotInterface::EndTurn( const AgentStep& step, int httpStatus )
+{
+   const TurnEndView v = DescribeTurnEnd( step, httpStatus );
+   for ( const String& note : v.notes )
+      AppendToLog( PlainText( note ) + "\n\n" );
+   // Give the failed prompt back -- unless the user has already started
+   // typing something new.
+   if ( v.restoreInput && GUI->ChatInput.Text().IsEmpty() )
+      GUI->ChatInput.SetText( m_pendingPrompt );
+   FinishTurn();
+}
+
+void PICopilotInterface::FinishTurn()
+{
+   m_turnViewId.Clear();
+   m_inspectedViews.clear();
+   m_pendingPrompt.Clear();
+   m_apiKey.Clear();
+   m_stopRequested = false;
+   GUI->Poll_Timer.Stop();
+   SetBusy( false );
+}
+
+void PICopilotInterface::BeginTurnTarget()
+{
+   m_turnViewId.Clear();
+   m_inspectedViews.clear();
+   ImageWindow w = ImageWindow::ActiveWindow();
+   if ( !w.IsNull() )
+   {
+      const View v = w.CurrentView();   // may be a preview
+      if ( !v.IsNull() )
+         m_turnViewId = v.FullId();
+   }
+}
+
+ToolContext PICopilotInterface::MakeToolContext()
+{
+   ToolContext ctx;
+   ctx.mode = m_turnMode;
+   ctx.turnViewId = m_turnViewId;
+   ctx.inspectedViews = &m_inspectedViews;
+   ctx.confirm = &PICopilotInterface::ConfirmApply;
+   return ctx;
+}
+
+bool PICopilotInterface::ConfirmApply( const String& processId, const String& viewId, const String& changes )
+{
+   const String text = "<p>Apply <b>" + EscapeHtml( processId ) + "</b> to <b>" + EscapeHtml( viewId ) + "</b>?</p>"
+                     + "<p>" + EscapeHtml( changes ) + "</p>"
+                     + "<p>You can undo it afterwards from the view's History.</p>";
+   return MessageBox( text, String::UTF8ToUTF16( "PI Copilot \xE2\x80\x94 Guided mode" ), StdIcon::Question,
+                      StdButton::Yes, StdButton::No, StdButton::NoButton, 1/*default: No*/, 1/*Esc: No*/ ).Execute()
+          == StdButton::Yes;
 }
 
 AnthropicMessage PICopilotInterface::ComposeTurnWithActiveView( const String& prompt )
@@ -227,14 +374,11 @@ AnthropicMessage PICopilotInterface::ComposeTurnWithActiveView( const String& pr
 
    StringList notes;
    AnthropicMessage turn;
-   ImageWindow window = ImageWindow::ActiveWindow();
-   if ( window.IsNull() )
+   const View view = m_turnViewId.IsEmpty() ? View::Null() : View::ViewById( m_turnViewId );
+   if ( view.IsNull() )
       turn = CaptureViewTurn( prompt, nullptr, notes );
    else
-   {
-      const View view = window.CurrentView();   // may be a preview
       turn = CaptureViewTurn( prompt, &view, notes );
-   }
    for ( const String& note : notes )
       AppendToLog( PlainText( note ) + "\n\n" );
    return turn;
@@ -308,7 +452,6 @@ void PICopilotInterface::e_Poll_Timer( Timer& )
       GUI->Poll_Timer.Stop();
       return;
    }
-
    // Wait until the worker has fully returned from Run(), so destroying
    // it below can never race its exit.
    if ( m_thread->IsActive() )
@@ -322,34 +465,121 @@ void PICopilotInterface::e_Poll_Timer( Timer& )
       r = AnthropicResult();
       r.error = "worker thread ended without a result";
    }
-
-   if ( r.ok )
-   {
-      // The truncation note is display-only; history keeps the model's own
-      // text so it isn't fed back to the API as if the model had said it.
-      String shown = r.text;
-      if ( r.truncated )
-         shown += " [truncated: max_tokens]";
-      AppendToLog( "<b>Copilot:</b> " + PlainText( shown ) + "\n\n" );
-      m_history.Add( AnthropicMessage{ IsoString( "assistant" ), r.text, IsoString() } );
-   }
-   else
-   {
-      AppendToLog( PlainText( "Error " + String( r.httpStatus ) + ": " + r.error ) + "\n\n" );
-      // Drop the unanswered user turn so history keeps alternating
-      // user/assistant (the API rejects two consecutive user messages).
-      if ( !m_history.IsEmpty() && m_history[m_history.Length()-1].role == "user" )
-         m_history.RemoveLast();
-      // Give the failed prompt back for a resend -- unless the user has
-      // already started typing something new.
-      if ( GUI->ChatInput.Text().IsEmpty() )
-         GUI->ChatInput.SetText( m_pendingPrompt );
-   }
-
-   m_pendingPrompt.Clear();
    m_thread.Destroy();
+   // Tools may run for seconds and pump events: never re-enter this handler.
    GUI->Poll_Timer.Stop();
-   SetBusy( false );
+
+   // The truncation note is display-only; history keeps the model's own text.
+   if ( r.ok && !r.text.IsEmpty() )
+      AppendToLog( "<b>Copilot:</b> " + PlainText( r.truncated ? r.text + " [truncated: max_tokens]" : r.text ) + "\n\n" );
+
+   m_handlingResult = true;
+   AgentStep s;
+   {
+      const ToolContext ctx = MakeToolContext();
+      s = m_session.OnResponse( r,
+         [&ctx]( const ToolCall& call ) { return ExecuteTool( call, ctx ); },
+         [this]() { return m_stopRequested; },
+         [this]( const String& line ) { AppendToLog( PlainText( line ) + "\n" ); } );
+   }
+   m_handlingResult = false;
+
+   if ( s.kind == AgentStep::SendAgain )
+   {
+      if ( !s.toolLog.IsEmpty() )
+         AppendToLog( "\n" );
+      StartRequest();
+      return;
+   }
+   if ( !s.toolLog.IsEmpty() )
+      AppendToLog( "\n" );
+   EndTurn( s, r.httpStatus );
+}
+
+void PICopilotInterface::e_Stop_Click( Button&, bool )
+{
+   if ( !m_thread && !m_handlingResult )
+      return;
+   // A running process is never interrupted: the loop checks this flag
+   // between tools; the HTTP request in flight (if any) is cancelled.
+   m_stopRequested = true;
+   if ( m_thread )
+      m_thread->RequestCancel();
+   GUI->Stop_Button.Disable();
+}
+
+void PICopilotInterface::e_Clear_Click( Button&, bool )
+{
+   // Never while a message is being worked on (the button is disabled then;
+   // this also covers a re-entrant click while a process pumps events).
+   if ( m_thread || m_handlingResult )
+      return;
+   m_session.Clear();
+   GUI->ChatLog.Clear();
+   AppendToLog( PlainText( "(new chat: the conversation history was cleared; your images are unchanged)" ) + "\n\n" );
+}
+
+void PICopilotInterface::e_Mode_ItemSelected( ComboBox&, int itemIndex )
+{
+   // Read per message in SendCurrentInput(): takes effect on the next one.
+   Settings::Write( kModeKey, itemIndex );
+}
+
+// ── Self-test probe ──────────────────────────────────────────────
+
+nlohmann::json PICopilotInterface::ProbeResizeForSelfTest()
+{
+   nlohmann::json j;
+   if ( GUI == nullptr )
+   {
+      bool dynamic = false;
+      unsigned flags = 0;
+      Launch( *ThePICopilotProcess, nullptr, dynamic, flags );
+   }
+   EnsureLayoutUpdated();
+   const int w0 = Width(), h0 = Height(), log0 = GUI->ChatLog.Height();
+   j["fixedWidth"] = IsFixedWidth();
+   j["fixedHeight"] = IsFixedHeight();
+   j["min"] = { MinWidth(), MinHeight() };
+   j["max"] = { MaxWidth(), MaxHeight() };
+   j["before"] = { w0, h0, log0 };
+
+   Resize( w0 + 300, h0 + 300 );
+   EnsureLayoutUpdated();
+   const int w1 = Width(), h1 = Height(), log1 = GUI->ChatLog.Height();
+   j["grown"] = { w1, h1, log1 };
+
+   Resize( MinWidth(), MinHeight() );
+   EnsureLayoutUpdated();
+   const int w2 = Width(), h2 = Height();
+   j["shrunk"] = { w2, h2, GUI->ChatLog.Height() };
+
+   Resize( w0, h0 );
+   EnsureLayoutUpdated();
+   j["restored"] = { Width(), Height() };
+
+   // The shrunk window must still hold the chat log's own minimum plus the
+   // global sizer's margins (a window that shrinks past its content, e.g. to
+   // 0x0 with min 0,0, is a defect), and the minimum must be exactly ours.
+   const int margins = 2*GUI->Global_Sizer.Margin();
+   const int minW = LogicalPixelsToPhysical( kMinPanelWidth );
+   const int minH = LogicalPixelsToPhysical( kMinPanelHeight );
+   j["expectedMin"] = { minW, minH };
+   j["chatLogMin"] = { GUI->ChatLog.MinWidth(), GUI->ChatLog.MinHeight() };
+   j["margins"] = margins;
+   // Non-empty feature set: InterfaceFeature::None suppresses the interface
+   // control bar (ProcessInterface.h:144), which carries the frame's size grip.
+   j["features"] = unsigned( Features() );
+
+   j["resizableOk"] = !IsFixedWidth() && !IsFixedHeight()
+                   && w1 == w0 + 300 && h1 == h0 + 300 && log1 > log0          // grows, chat log follows
+                   && w2 < w0 && h2 < h0                                        // shrinks
+                   && MinWidth() == minW && MinHeight() == minH                 // exactly our minimum
+                   && w2 == minW && h2 == minH                                  // stops there
+                   && w2 >= GUI->ChatLog.MinWidth() + margins                   // never below its content
+                   && h2 >= GUI->ChatLog.MinHeight() + margins
+                   && unsigned( Features() ) != unsigned( InterfaceFeature::None );
+   return j;
 }
 
 // ── GUI Construction ─────────────────────────────────────────────
@@ -359,12 +589,27 @@ PICopilotInterface::GUIData::GUIData( PICopilotInterface& w )
    Mode_ComboBox.AddItem( "Copilot" );
    Mode_ComboBox.AddItem( "Advisor" );
    Mode_ComboBox.AddItem( "Guided" );
-   Mode_ComboBox.SetToolTip( "<p>Assistant mode.</p>" );
+   Mode_ComboBox.SetToolTip( "<p><b>Copilot</b>: applies processes to the active image directly "
+                             "(every change is in the view's History; undo as usual).</p>"
+                             "<p><b>Advisor</b>: read-only; looks and advises, never changes the image.</p>"
+                             "<p><b>Guided</b>: proposes each process and asks you before it runs.</p>"
+                             "<p>A change applies from your next message.</p>" );
+   {
+      int mode = 0;
+      Settings::Read( kModeKey, mode );
+      Mode_ComboBox.SetCurrentItem( int( AgentModeFromIndex( mode ) ) );
+   }
+   Mode_ComboBox.OnItemSelected( (ComboBox::item_event_handler)&PICopilotInterface::e_Mode_ItemSelected, w );
 
    IncludeView_CheckBox.SetText( "Include view" );
    IncludeView_CheckBox.SetChecked( true );
    IncludeView_CheckBox.SetToolTip( "<p>Send the active view with each message: an auto-stretched "
                                     "preview (display only) plus its geometry, statistics and FITS keywords.</p>" );
+
+   Clear_Button.SetText( "Clear" );
+   Clear_Button.SetToolTip( "<p>Start a new chat: clears the conversation history and this log. "
+                            "Your images and their History are not touched.</p>" );
+   Clear_Button.OnClick( (Button::click_event_handler)&PICopilotInterface::e_Clear_Click, w );
 
    Config_ToolButton.SetText( String::UTF8ToUTF16( kGearUtf8 ) );
    Config_ToolButton.SetToolTip( "<p>Set your Anthropic API key.</p>" );
@@ -374,10 +619,14 @@ PICopilotInterface::GUIData::GUIData( PICopilotInterface& w )
    Top_Sizer.Add( Mode_ComboBox );
    Top_Sizer.Add( IncludeView_CheckBox );
    Top_Sizer.AddStretch();
+   Top_Sizer.Add( Clear_Button );
    Top_Sizer.Add( Config_ToolButton );
 
    ChatLog.SetReadOnly();
-   ChatLog.SetScaledMinSize( 360, 200 );
+   // Small minimum so the panel can shrink; the log takes all spare space
+   // (stretch 100 in Global_Sizer) and expands on both axes.
+   ChatLog.SetScaledMinSize( 240, 120 );
+   ChatLog.EnableExpansion( true/*horz*/, true/*vert*/ );
 
    ChatInput.OnReturnPressed( (Edit::edit_event_handler)&PICopilotInterface::e_Input_ReturnPressed, w );
 
@@ -385,9 +634,16 @@ PICopilotInterface::GUIData::GUIData( PICopilotInterface& w )
    Send_Button.SetToolTip( "<p>Send the message (or press Return).</p>" );
    Send_Button.OnClick( (Button::click_event_handler)&PICopilotInterface::e_Send_Click, w );
 
+   Stop_Button.SetText( "Stop" );
+   Stop_Button.SetToolTip( "<p>Stop after the current step. A process that is already running always "
+                           "finishes; the request in flight is cancelled.</p>" );
+   Stop_Button.OnClick( (Button::click_event_handler)&PICopilotInterface::e_Stop_Click, w );
+   Stop_Button.Hide();
+
    Input_Sizer.SetSpacing( 4 );
    Input_Sizer.Add( ChatInput, 100 );
    Input_Sizer.Add( Send_Button );
+   Input_Sizer.Add( Stop_Button );
 
    Global_Sizer.SetMargin( 8 );
    Global_Sizer.SetSpacing( 6 );
@@ -402,6 +658,16 @@ PICopilotInterface::GUIData::GUIData( PICopilotInterface& w )
    w.SetSizer( Global_Sizer );
    w.EnsureLayoutUpdated();
    w.AdjustToContents();
+   // Freely resizable: no min == max pin can survive (IsFixedWidth() is
+   // MinWidth()==MaxWidth(), Control.h:401-410). SetVariableSize() is PCL's
+   // own idiom (min 0, max int_max; Control.h:415-419); then an explicit
+   // minimum, as PCL's resizable dialogs do after AdjustToContents()
+   // (MultiViewSelectionDialog.cpp:184-185). SaveGeometry() always writes
+   // Width/Height; RestoreGeometry() applies them only on an axis that is not
+   // fixed (ProcessInterface.cpp:149-186), so with the window resizable the
+   // user's size is restored.
+   w.SetVariableSize();
+   w.SetScaledMinSize( kMinPanelWidth, kMinPanelHeight );
 }
 
 } // namespace pcl

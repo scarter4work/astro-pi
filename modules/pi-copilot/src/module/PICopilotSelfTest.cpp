@@ -7,6 +7,7 @@
 #include "ChatThread.h"
 #include "PICopilotInterface.h"   // PICopilotInterface::PlainText
 #include "PICopilotVisionSelfTest.h"
+#include "PICopilotAgentSelfTest.h"
 #include "Utf8.h"
 
 #include <pcl/Process.h>
@@ -189,7 +190,7 @@ bool RunSelfTest( String& jsonOut )
             AnthropicResult r;
             if ( t.TryTakeResult( r ) )
                cancelError = r.error;
-            cancelOk = !finishedEarly && !r.ok && r.error == "request cancelled" && cancelSeconds < 15;
+            cancelOk = !finishedEarly && !r.ok && r.cancelled && r.error == "request cancelled" && cancelSeconds < 15;
          }
       }
       catch ( ... )
@@ -218,7 +219,7 @@ bool RunSelfTest( String& jsonOut )
             AnthropicResult r;
             if ( t.TryTakeResult( r ) )
                deadlineError = r.error;
-            deadlineOk = !r.ok && r.error == "request timed out after 3 s"
+            deadlineOk = !r.ok && !r.cancelled && r.error == "request timed out after 3 s"
                       && deadlineSeconds >= 2.5 && deadlineSeconds < 15;
          }
       }
@@ -288,7 +289,24 @@ bool RunSelfTest( String& jsonOut )
       j["visionException"] = "unknown exception";
    }
 
-   ok = ok && visionOk;
+   // Increment 4: agent/tool sections. Same isolation as increment 3.
+   bool agentOk = false;
+   try
+   {
+      nlohmann::json agent;
+      agentOk = RunAgentSelfTest( agent );
+      j.update( agent );
+   }
+   catch ( const std::exception& x )
+   {
+      j["agentException"] = x.what();
+   }
+   catch ( ... )
+   {
+      j["agentException"] = "unknown exception";
+   }
+
+   ok = ok && visionOk && agentOk;
    j["ok"] = ok;
    jsonOut = String::UTF8ToUTF16( j.dump().c_str() );
    return ok;

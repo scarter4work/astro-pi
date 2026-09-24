@@ -56,7 +56,16 @@ trap 'rm -f "$SLOT_SETTINGS"' EXIT
 OUT2="$(mktemp -u "${TMPDIR:-/tmp}/picopilot-load.XXXXXX.txt")"
 rm -f "$OUT2"
 trap 'rm -f "$OUT2" "$SLOT_SETTINGS"' EXIT
-if ! PICOPILOT_LOAD_OUT="$OUT2" timeout 180 "$PI" -n="$PICOPILOT_TEST_SLOT" --automation-mode --no-startup-scripts -m="$SO" -r="$HERE/load-probe.js" --force-exit; then
+# Private virtual display (Xvfb). A core-side rejection can raise a MODAL
+# dialog that no module API can suppress or catch (Task 1: "PixelMath: Invalid
+# table row index"); on the user's real DISPLAY that dialog would block his
+# desktop. Under Xvfb it is invisible, and it just blocks this run until the
+# timeout fails it loudly. timeout sits INSIDE xvfb-run so that, on expiry,
+# xvfb-run still tears down the Xvfb server (which also takes down any
+# PixInsight process the PixInsight.sh wrapper left behind).
+command -v xvfb-run >/dev/null 2>&1 || { echo "FAIL: xvfb-run not found (needed to keep dialogs off the real display)"; exit 1; }
+if ! PICOPILOT_LOAD_OUT="$OUT2" xvfb-run -a -s "-screen 0 1920x1080x24" \
+        timeout 180 "$PI" -n="$PICOPILOT_TEST_SLOT" --automation-mode --no-startup-scripts -m="$SO" -r="$HERE/load-probe.js" --force-exit; then
    echo "FAIL: PI load timed out (180s) or exited non-zero"; exit 1
 fi
 [ -f "$OUT2" ] || { echo "FAIL: module loaded but PI never reached the probe script (load error)"; exit 1; }
