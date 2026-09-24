@@ -51,6 +51,17 @@ Increment 1 deliverables:
 - **Error handling**: a missing key shows a notice pointing to ⚙; a non-2xx shows `Error <status>: <API error message>` verbatim. A failed turn is dropped from the conversation history so user/assistant turns keep alternating, and its prompt is put back in the input line (if empty) for a resend.
 - **GUI scope**: the panel and dialog cannot be tested headlessly (`--automation-mode` can't run GUI); they are verified by hand in PixInsight.
 
+## Increment 3 — Vision (the panel sees the active view)
+
+- **Include view** (checkbox, on by default): each message carries the active view — an auto-stretched JPEG preview (long edge ≤ 1024 px, quality 85; display only) plus a JSON context: view id, **file name only** (never the full path), geometry, per-channel median / raw MAD / mean / min / max of the **real (usually linear) data**, and the first 60 FITS keywords (values cut at 80 characters). **Location/identity keywords are never sent** (SITELAT, SITELONG, SITEELEV, OBSGEO-B/L/H, LAT-OBS, LONG-OBS, ALT-OBS, OBSERVER). There is no process-history field: PCL has no API for it.
+- **Your image is never modified.** The preview reads the view read-only and block-averages it into a small copy (≈32 MiB for a 24 MP frame, never a full-resolution duplicate) → resample → auto-STF → JPEG via a temp file that is always deleted. The self-test proves the image byte-identical before/after for 32-bit float, 16-bit RGB and 16-bit mono.
+- **Busy view** (locked by a running process or script) → the message is sent as text with a visible note, instead of waiting on the lock (which would freeze PixInsight).
+- **No active image** → text only, with a visible note. A context or preview failure is shown in the chat log and the text still sends.
+- **Token cost:** only the latest message carries an image; older turns keep a one-line note instead of the picture and a collapsed context (view id + geometry).
+- **Placement:** PCL has no docking API. On first open after this update the panel is placed at the right edge, full height, of the primary screen (estimated from its centre — PCL exposes nothing else); after that, PixInsight remembers wherever you move it.
+- **Process catalog** (`list_processes` / `describe_process` JSON from native introspection + compiled-in summaries) is built and self-tested; it becomes a model tool in increment 4.
+- **Self-test** additions: vision smoke (ImageWindow/Bitmap/JPEG headless), ViewContext values + redaction, ViewPreview (JPEG, size, unchanged image, temp removed, red square decodes red; float, uint16, mono, >2048 px), busy-view capture, ProcessCatalog, request content-block shape, history stripping/collapse, placement maths, and a gated **real vision call** (synthetic red square, image only → model must answer exactly "red"). Key source: system keyring (`secret-tool lookup service anthropic account default`), then `test/.test_api_key`, else skipped. Tests run in an isolated PixInsight instance slot (`PICOPILOT_TEST_SLOT`, default 90, must be ≥ 50) so they never touch your own PixInsight settings.
+
 ## Verified
 
 **2026-09-20** — self-test PASS on built module:
@@ -62,3 +73,5 @@ Increment 1 deliverables:
 Full harness: signs module, loads headlessly under `PixInsight --automation-mode`, executes self-test, and exits with no interactive UI required.
 
 **2026-09-23** — headless self-test PASS (Settings round-trip, worker-thread 401, cancel + deadline on a stalled connection, `</raw>` escaping). GUI chat: verified 2026-09-24 by the user on the released 0.1.0.2 installed from the repository URL (⚙ key entry → "say hello" → reply rendered in the panel).
+
+**2026-09-24** — headless self-test PASS incl. real text chat and real vision round-trip (synthetic red square sent as the image only, no context → model answered "Red"). GUI: pending user verification (0.1.0.3 via repository pull).

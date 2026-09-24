@@ -28,11 +28,14 @@ namespace pcl
 //      "request timed out after 3 s" -- both well inside their bounds.
 //   7. PICopilotInterface::PlainText() keeps a literal "</raw>" literal in
 //      a real TextBox.
+//   8. Increment-3 vision/grounding sections (PICopilotVisionSelfTest.cpp).
 // Populates jsonOut with
 // {evalResult, evalOk, processInstanceValid, keyStoreOk, anthropicOk,
 //  anthropicSkipped, workerThreadOk, workerHttpStatus, workerError,
 //  stallSkipped, cancelOk, cancelError, cancelSeconds, deadlineOk,
-//  deadlineError, deadlineSeconds, plainTextOk, plainTextBack, ok}
+//  deadlineError, deadlineSeconds, plainTextOk, plainTextBack,
+//  visionSmokeOk, smokeWindowOk, smokeReadOk, smokeRenderOk, smokeJpegOk,
+//  smokeTempRemoved, smokeError, ok}
 // and returns ok. Root-thread only (EvaluateScript and Control
 // construction requirement).
 bool RunSelfTest( String& jsonOut );
