@@ -18,11 +18,8 @@
 
 #include <chrono>
 #include <cmath>
-#include <cstdlib>
 #include <string>
 #include <thread>
-#include <utility>
-#include <vector>
 
 namespace pcl
 {
@@ -112,8 +109,25 @@ private:
    }
 };
 
+// Non-blocking busy probe (global constraint: never block on a busy view).
+// Mirrors ViewCapture.cpp's CanRead()/CanWrite() check before
+// AutoViewWriteLock/ExecuteOn: LockForWrite() on a view already locked by a
+// running process HANGS PixInsight rather than failing fast, so the check
+// must happen first, every time, not just be "usually fine because the test
+// window is fresh." ChannelMedian/SampleAt are shared helpers Tasks 2-7 use
+// against instances of this same test window across several process runs,
+// and Task 2's production apply_process will copy this exact idiom onto
+// real (possibly busy) user views -- fail loudly with a clear, catchable
+// error instead of blocking.
+bool ViewBusy( View view )
+{
+   return !view.CanRead() || !view.CanWrite();
+}
+
 double ChannelMedian( View view, int c )
 {
+   if ( ViewBusy( view ) )
+      throw Error( "ChannelMedian: view is busy (locked by a running process)" );
    AutoViewWriteLock lock( view );
    ImageVariant v = view.Image();
    return v.Median( v.Bounds(), c, c );
@@ -123,6 +137,8 @@ double ChannelMedian( View view, int c )
 // verify per-pixel results of PixelMath/SCNR/HistogramTransformation runs.
 [[maybe_unused]] float SampleAt( View view, int x, int y, int c )
 {
+   if ( ViewBusy( view ) )
+      throw Error( "SampleAt: view is busy (locked by a running process)" );
    AutoViewWriteLock lock( view );
    ImageVariant v = view.Image();
    if ( !v.IsFloatSample() || v.BitsPerSample() != 32 )
@@ -196,11 +212,27 @@ bool RunAgentSelfTest( nlohmann::json& out )
          ProcessInstance pm( P );
          const bool setOk = pm.SetParameterValue( Variant( String( "$T*0.5" ) ), IsoString( "expression" ), kScalarRow );
          String whyNot;
-         const bool valid = pm.Validate( whyNot );
+         // Skip Validate()/CanExecuteOn() entirely when the set already
+         // failed -- nothing downstream can be meaningfully validated against
+         // an instance whose expression was never written.
+         const bool valid = setOk && pm.Validate( whyNot );
          info["pmValidateWhyNot"] = U8( whyNot );
-         const bool can = pm.CanExecuteOn( view, whyNot );
+         // Non-blocking busy probe (global constraint; see ViewBusy() above)
+         // immediately before CanExecuteOn()/ExecuteOn() -- placed here, at
+         // the call site, not just inside ChannelMedian()/SampleAt(), because
+         // Task 2's apply_process must probe at EVERY point it is about to
+         // read or execute on a real user view, not rely on a shared helper
+         // happening to do it upstream.
+         bool can = false;
+         if ( valid )
+         {
+            if ( ViewBusy( view ) )
+               whyNot = "view is busy (locked by a running process)";
+            else
+               can = pm.CanExecuteOn( view, whyNot );
+         }
          info["pmCanExecuteWhyNot"] = U8( whyNot );
-         const bool ran = setOk && valid && can && pm.ExecuteOn( view );
+         const bool ran = can && pm.ExecuteOn( view );
          const double after = ChannelMedian( view, 0 );
          info["pmSet"] = setOk; info["pmValid"] = valid; info["pmCan"] = can; info["pmRan"] = ran;
          info["pmMedianBefore"] = before; info["pmMedianAfter"] = after;
