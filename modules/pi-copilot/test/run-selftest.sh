@@ -172,6 +172,8 @@ required_true = [
     'panelCaptureOk',
     # multi-turn body is strict UTF-8 on the wire (turn-2 400 regression)
     'utf8BodyOk', 'twoTurnOk',
+    # increment 4
+    'agentSmokeOk',
     'ok',
 ]
 missing = [k for k in required_true if d.get(k) is not True]
