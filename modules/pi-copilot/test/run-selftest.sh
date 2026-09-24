@@ -196,8 +196,8 @@ export PICOPILOT_SELFTEST_AGENT_URL="http://127.0.0.1:$(cat "$ECHO_PORT_FILE")/v
 # PixInsight process the PixInsight.sh wrapper left behind).
 command -v xvfb-run >/dev/null 2>&1 || { echo "FAIL: xvfb-run not found (needed to keep dialogs off the real display)"; exit 1; }
 if ! PICOPILOT_SELFTEST_OUT="$R" xvfb-run -a -s "-screen 0 1920x1080x24" \
-        timeout 300 "$PI" -n="$PICOPILOT_TEST_SLOT" --automation-mode --no-startup-scripts -m="$SO" -r="$HERE/selftest.js" --force-exit; then
-   echo "FAIL: PI load timed out (300s) or exited non-zero"; exit 1
+        timeout 600 "$PI" -n="$PICOPILOT_TEST_SLOT" --automation-mode --no-startup-scripts -m="$SO" -r="$HERE/selftest.js" --force-exit; then
+   echo "FAIL: PI load timed out (600s) or exited non-zero"; exit 1
 fi
 [ -f "$R" ] || { echo "FAIL: no result file"; exit 1; }
 cat "$R"
@@ -226,6 +226,7 @@ required_true = [
     'agentToolsOk',
     'agentLoopOk', 'agentWireOk',
     'panelResizableOk', 'turnEndNotesOk',
+    'liveAgentOk',
     'ok',
 ]
 missing = [k for k in required_true if d.get(k) is not True]
@@ -236,6 +237,7 @@ if d.get('agentWireSkipped') is not False: missing.append('agentWireSkipped==fal
 print('anthropic check: %s' % ('SKIPPED (no key)' if d.get('anthropicSkipped') else 'RAN against real API'))
 print('two-turn check: %s' % ('SKIPPED (no key)' if d.get('twoTurnSkipped') else 'RAN against real API'))
 print('vision check: %s' % ('SKIPPED (no key)' if d.get('visionSkipped') else 'RAN against real API, answer=%r' % d.get('visionAnswer')))
+print('live agent check: %s' % ('SKIPPED (no key)' if d.get('liveAgentSkipped') else 'RAN against real API, ratio=%r log=%r' % (d.get('liveAgentRatio'), d.get('liveAgentLog'))))
 if missing:
     print('FAILED keys: ' + ', '.join(missing))
     sys.exit(1)

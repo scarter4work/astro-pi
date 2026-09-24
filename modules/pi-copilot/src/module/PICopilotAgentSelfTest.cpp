@@ -1520,6 +1520,68 @@ bool RunAgentSelfTest( nlohmann::json& out )
       allOk = allOk && ok;
    }
 
+   // ---- Section A6: gated LIVE agent run (Task 7) --------------------------
+   // Real model, Copilot tools, the panel's own turn composition: the model
+   // must call apply_process(PixelMath) and the synthetic image's median must
+   // be ~halved (0.45..0.55 -- also catches a double application).
+   {
+      bool liveSkipped = true, liveOk = true;
+      String error, finalText;
+      double ratio = -1;
+      int requests = 0;
+      nlohmann::json log = nlohmann::json::array();
+      if ( const char* key = std::getenv( "PICOPILOT_TEST_API_KEY" ) )
+      {
+         liveSkipped = false;
+         liveOk = false;
+         try
+         {
+            AgentTestWindow tw( "PICopilotAgentLive" );
+            View v = tw.MainView();
+            const double before = ChannelMedian( v, 0 );
+            ToolContext ctx;
+            ctx.mode = AgentMode::Copilot;
+            ctx.activeView = [v]() -> View { return v; };
+            AgentSession session;
+            StringList notes;
+            session.BeginUserTurn( CaptureViewTurn( "Halve the brightness of this image using PixelMath.", &v, notes ) );
+            AgentStep s;
+            do
+            {
+               AnthropicRequest req( String( key ), PICOPILOT_DEFAULT_MODEL, BuildSystemPrompt( AgentMode::Copilot ),
+                                     session.History(), PICOPILOT_MESSAGES_URL, PICopilotRequestTimeoutSeconds,
+                                     ToolDefinitions( AgentMode::Copilot ) );
+               const AnthropicResult r = req.Perform();
+               ++requests;
+               if ( !r.text.IsEmpty() )
+                  finalText = r.text;
+               s = session.OnResponse( r, [&ctx]( const ToolCall& c ) { return ExecuteTool( c, ctx ); },
+                                       []() { return false; },
+                                       [&log]( const String& line ) { log.push_back( U8( line ) ); } );
+               if ( s.kind == AgentStep::Failed )
+                  error = s.error;
+            }
+            while ( s.kind == AgentStep::SendAgain && requests <= PICopilotMaxToolRounds );
+            ratio = ChannelMedian( v, 0 )/before;
+            bool appliedPM = false;
+            for ( const nlohmann::json& line : log )
+               appliedPM = appliedPM || line.get<std::string>().rfind( "\xE2\x96\xB6 apply_process PixelMath", 0 ) == 0;
+            liveOk = s.kind == AgentStep::Done && appliedPM && ratio > 0.45 && ratio < 0.55;
+         }
+         catch ( const pcl::Exception& x ) { error = x.Message(); }
+         catch ( const std::exception& x ) { error = String( x.what() ); }
+         catch ( ... )                     { error = "unknown exception"; }
+      }
+      out["liveAgentSkipped"] = liveSkipped;
+      out["liveAgentRequests"] = requests;
+      out["liveAgentLog"] = log;
+      out["liveAgentText"] = U8( finalText );
+      out["liveAgentRatio"] = ratio;
+      out["liveAgentError"] = U8( error );
+      out["liveAgentOk"] = liveOk;
+      allOk = allOk && liveOk;
+   }
+
    // ---- inc4 sections end ----
 
    // Let the core finish the deferred teardown of the windows force-closed
