@@ -70,6 +70,7 @@ required_true = [
     'cancelOk', 'deadlineOk', 'plainTextOk',
     # increment 3
     'visionSmokeOk',
+    'viewContextOk',
     'ok',
 ]
 missing = [k for k in required_true if d.get(k) is not True]
