@@ -86,24 +86,27 @@ public:
 
 } // namespace
 
+nlohmann::json JpegImageBlock( const IsoString& base64 )
+{
+   return { { "type", "image" },
+            { "source", { { "type", "base64" },
+                          { "media_type", "image/jpeg" },
+                          { "data", std::string( base64.c_str() ) } } } };
+}
+
 namespace
 {
 
 nlohmann::json MessageContent( const AnthropicMessage& msg )
 {
+   if ( !msg.blocks.is_null() )
+      return msg.blocks;
    const std::string text = U8( msg.content );
    if ( msg.imageJpegBase64.IsEmpty() )
       return text;
-   nlohmann::json image = {
-      { "type", "image" },
-      { "source", { { "type", "base64" },
-                    { "media_type", "image/jpeg" },
-                    { "data", std::string( msg.imageJpegBase64.c_str() ) } } }
-   };
-   nlohmann::json textBlock = { { "type", "text" }, { "text", text } };
    nlohmann::json blocks = nlohmann::json::array();
-   blocks.push_back( std::move( image ) );      // image first, then the question
-   blocks.push_back( std::move( textBlock ) );
+   blocks.push_back( JpegImageBlock( msg.imageJpegBase64 ) );   // image first, then the question
+   blocks.push_back( { { "type", "text" }, { "text", text } } );
    return blocks;
 }
 
@@ -136,7 +139,8 @@ String PostBytes( const std::string& bytes )
 } // namespace
 
 std::string BuildMessagesRequestBody( const IsoString& model, const String& systemPrompt,
-                                      const Array<AnthropicMessage>& history )
+                                      const Array<AnthropicMessage>& history,
+                                      const nlohmann::json& tools )
 {
    nlohmann::json messages = nlohmann::json::array();
    for ( const AnthropicMessage& msg : history )
@@ -147,6 +151,8 @@ std::string BuildMessagesRequestBody( const IsoString& model, const String& syst
       { "system", U8( systemPrompt ) },
       { "messages", messages }
    };
+   if ( !tools.is_null() )
+      req["tools"] = tools;
    return req.dump();
 }
 
@@ -161,7 +167,8 @@ struct AnthropicRequest::Impl
 
 AnthropicRequest::AnthropicRequest( const String& apiKey, const IsoString& model,
                                     const String& systemPrompt, const Array<AnthropicMessage>& history,
-                                    const String& url, int timeoutSeconds )
+                                    const String& url, int timeoutSeconds,
+                                    const nlohmann::json& tools )
    : m( new Impl )
 {
    m->timeoutSeconds = timeoutSeconds;
@@ -172,7 +179,7 @@ AnthropicRequest::AnthropicRequest( const String& apiKey, const IsoString& model
    // U8()); PostBytes() then carries those exact bytes through POST().
    try
    {
-      m->body = PostBytes( BuildMessagesRequestBody( model, systemPrompt, history ) );
+      m->body = PostBytes( BuildMessagesRequestBody( model, systemPrompt, history, tools ) );
    }
    catch ( const std::exception& x )
    {
@@ -279,79 +286,84 @@ AnthropicResult AnthropicRequest::Perform()
       return result;
    }
 
-   // --- Parse the response ----------------------------------------------
-   //
-   // json::parse() failing means the body isn't JSON at all -- that's the
-   // only case that gets the "unparseable response" error. A 2xx body
-   // that parses fine but doesn't have the expected content/text shape is
-   // a different failure (Anthropic changed the response shape, or this
-   // isn't really a Messages API response) and gets its own message,
-   // extracted separately so the two aren't conflated.
+   return ParseMessagesResponse( result.httpStatus, sink.buffer, transfer.ErrorInformation() );
+}
+
+AnthropicResult ParseMessagesResponse( int httpStatus, const IsoString& body, const String& transportError )
+{
+   AnthropicResult result;
+   result.httpStatus = httpStatus;
+
+   // json::parse() failing means the body isn't JSON at all -- the only case
+   // that gets "unparseable response". A 2xx body that parses but lacks the
+   // expected content shape gets its own message below, so the two are not
+   // conflated.
    nlohmann::json j;
    try
    {
-      j = nlohmann::json::parse( sink.buffer.c_str() );
+      j = nlohmann::json::parse( body.c_str() );
    }
    catch ( ... )
    {
-      result.ok = false;
-      IsoString snippet = sink.buffer.Left( 200 );
-      result.error = String( "unparseable response: " ) + String::UTF8ToUTF16( snippet.c_str() );
+      result.error = String( "unparseable response: " ) + String::UTF8ToUTF16( body.Left( 200 ).c_str() );
       return result;
    }
 
-   if ( result.httpStatus >= 200 && result.httpStatus < 300 )
+   if ( httpStatus >= 200 && httpStatus < 300 )
    {
-      // Join every "text" content block in order (a reply is not
-      // guaranteed to be a single block), and flag a max_tokens cut-off so
-      // the UI can say the reply is incomplete instead of presenting it as
-      // whole.
+      // Join every "text" content block in order (a reply is not guaranteed
+      // to be a single block), keep the whole content array verbatim (an
+      // assistant tool_use turn must be re-sent exactly), and flag a
+      // max_tokens cut-off so the UI can say the reply is incomplete.
       try
       {
+         const nlohmann::json& content = j.at( "content" );
          std::string joined;
          bool anyText = false;
-         for ( const nlohmann::json& block : j.at( "content" ) )
+         for ( const nlohmann::json& block : content )
             if ( block.value( "type", std::string() ) == "text" )
             {
                joined += block.at( "text" ).get<std::string>();
                anyText = true;
             }
-         if ( !anyText )
+         result.stopReason = ( j.contains( "stop_reason" ) && j["stop_reason"].is_string() )
+                           ? j["stop_reason"].get<std::string>() : std::string();
+         // A tool_use reply may carry no text at all; any other reply must.
+         if ( !anyText && result.stopReason != "tool_use" )
             throw std::runtime_error( "no text block" );
          result.text = String::UTF8ToUTF16( joined.c_str() );
-         result.truncated = j.contains( "stop_reason" ) && j["stop_reason"].is_string()
-                         && j["stop_reason"].get<std::string>() == "max_tokens";
+         result.truncated = result.stopReason == "max_tokens";
+         result.contentBlocks = content;
          result.ok = true;
       }
       catch ( ... )
       {
          result.ok = false;
          result.text.Clear();
+         result.stopReason.clear();
+         result.contentBlocks = nlohmann::json();
          result.error = "response missing expected content/text field";
       }
    }
    else
    {
-      // Guarded the same way as the 2xx content/text extraction above:
-      // "error"/"message" being present but not string-convertible (a
-      // number, object, or null in some malformed or intermediary error
-      // body) must not throw out of Send() -- fall back to
-      // ErrorInformation() instead of propagating.
+      // "error"/"message" present but not a string (a malformed or
+      // intermediary error body) must not throw: fall back to the
+      // transport's error information.
       std::string msg;
       try
       {
          msg = ( j.contains( "error" ) && j["error"].contains( "message" ) )
             ? j["error"]["message"].get<std::string>()
-            : U8( transfer.ErrorInformation() );
+            : U8( transportError );
       }
       catch ( ... )
       {
-         msg = U8( transfer.ErrorInformation() );
+         msg = U8( transportError );
       }
       result.error = String::UTF8ToUTF16( msg.c_str() );
       result.ok = false;
    }
-
    return result;
 }
 
