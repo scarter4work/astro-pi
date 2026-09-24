@@ -19,6 +19,7 @@ set(MODULE_SOURCES
     KeyStore.cpp
     AnthropicClient.cpp
     ConfigDialog.cpp
+    ChatThread.cpp
 )
 
 add_library(PICopilot SHARED ${MODULE_SOURCES})

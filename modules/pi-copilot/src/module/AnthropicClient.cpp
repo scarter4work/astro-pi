@@ -4,6 +4,7 @@
 #include "AnthropicClient.h"
 
 #include <pcl/Control.h>
+#include <pcl/Exception.h>
 #include <pcl/NetworkTransfer.h>
 
 #include <nlohmann/json.hpp>
@@ -16,10 +17,10 @@ namespace
 
 // NetworkTransfer::OnDownloadDataAvailable() only accepts a receiver
 // derived from Control (its download_event_handler is declared as
-// bool (Control::*)(...) in NetworkTransfer.h). AnthropicClient itself
-// must stay GUI-free since it runs on a worker Thread, so this tiny,
-// never-shown, unparented Control exists purely to own the response
-// buffer and receive that one callback. Casting &ResponseSink::OnData to
+// bool (Control::*)(...) in NetworkTransfer.h). This tiny, never-shown,
+// unparented Control exists purely to own the response buffer and receive
+// that one callback. Because it is a Control, it can only be constructed
+// (and destroyed) on the root thread -- see AnthropicRequest in the header. Casting &ResponseSink::OnData to
 // NetworkTransfer::download_event_handler below is the same
 // derived-member-to-Control-member cast used throughout PCL's own event
 // handler registration (e.g. Button::OnClick with a Dialog subclass).
@@ -38,16 +39,18 @@ public:
 
 } // namespace
 
-AnthropicClient::AnthropicClient( String apiKey, IsoString model )
-   : m_apiKey( std::move( apiKey ) )
-   , m_model( std::move( model ) )
+struct AnthropicRequest::Impl
 {
-}
+   ResponseSink    sink;      // root-thread construction only (Control)
+   NetworkTransfer transfer;
+   String          body;      // UTF-16 request body, ready to POST
+   String          buildError;
+};
 
-AnthropicResult AnthropicClient::Send( const String& systemPrompt, const Array<AnthropicMessage>& history )
+AnthropicRequest::AnthropicRequest( const String& apiKey, const IsoString& model,
+                                    const String& systemPrompt, const Array<AnthropicMessage>& history )
+   : m( new Impl )
 {
-   AnthropicResult result;
-
    // --- Build the request body -----------------------------------------
    //
    // nlohmann::json stores/emits text as UTF-8. pcl::String is UTF-16
@@ -56,41 +59,64 @@ AnthropicResult AnthropicClient::Send( const String& systemPrompt, const Array<A
    // back into a pcl::String via String::UTF8ToUTF16() (NOT the
    // String(const char*) ISO-8859-1 constructor, which would mangle any
    // non-ASCII byte in the JSON as a Latin-1 code point).
-   std::string requestBody;
    try
    {
       nlohmann::json messages = nlohmann::json::array();
-      for ( const AnthropicMessage& m : history )
-         messages.push_back( { { "role", m.role.c_str() }, { "content", m.content.ToUTF8().c_str() } } );
+      for ( const AnthropicMessage& msg : history )
+         messages.push_back( { { "role", msg.role.c_str() }, { "content", msg.content.ToUTF8().c_str() } } );
 
       nlohmann::json req = {
-         { "model", m_model.c_str() },
+         { "model", model.c_str() },
          { "max_tokens", 4096 },
          { "system", systemPrompt.ToUTF8().c_str() },
          { "messages", messages }
       };
-      requestBody = req.dump();
+      m->body = String::UTF8ToUTF16( req.dump().c_str() );
    }
    catch ( const std::exception& x )
    {
-      result.ok = false;
-      result.error = String( "failed to build request: " ) + String( x.what() );
+      m->buildError = String( "failed to build request: " ) + String( x.what() );
+      return;
+   }
+
+   // --- Configure the transfer (root thread) ------------------------------
+   try
+   {
+      m->transfer.SetURL( "https://api.anthropic.com/v1/messages" );
+      m->transfer.SetSSL( true/*useSSL*/, false/*forceSSL*/, true/*verifyPeer*/, true/*verifyHost*/ );
+      m->transfer.SetConnectionTimeout( 120 );
+      m->transfer.SetCustomHTTPHeaders( String( "x-api-key: " ) + apiKey
+         + "\nanthropic-version: 2023-06-01\ncontent-type: application/json" );
+      m->transfer.OnDownloadDataAvailable( (NetworkTransfer::download_event_handler)&ResponseSink::OnData, m->sink );
+   }
+   catch ( const pcl::Exception& x )
+   {
+      m->buildError = "failed to configure request: " + x.Message();
+   }
+   catch ( ... )
+   {
+      m->buildError = "failed to configure request: unknown error";
+   }
+}
+
+AnthropicRequest::~AnthropicRequest() = default;
+
+AnthropicResult AnthropicRequest::Perform()
+{
+   AnthropicResult result;
+
+   if ( !m->buildError.IsEmpty() )
+   {
+      result.error = m->buildError;
       return result;
    }
 
    // --- Perform the request ---------------------------------------------
-   ResponseSink sink;
-   NetworkTransfer transfer;
+   NetworkTransfer& transfer = m->transfer;
+   ResponseSink& sink = m->sink;
    try
    {
-      transfer.SetURL( "https://api.anthropic.com/v1/messages" );
-      transfer.SetSSL( true/*useSSL*/, false/*forceSSL*/, true/*verifyPeer*/, true/*verifyHost*/ );
-      transfer.SetConnectionTimeout( 120 );
-      transfer.SetCustomHTTPHeaders( String( "x-api-key: " ) + m_apiKey
-         + "\nanthropic-version: 2023-06-01\ncontent-type: application/json" );
-      transfer.OnDownloadDataAvailable( (NetworkTransfer::download_event_handler)&ResponseSink::OnData, sink );
-
-      bool okHttp = transfer.POST( String::UTF8ToUTF16( requestBody.c_str() ) );
+      bool okHttp = transfer.POST( m->body );
       result.httpStatus = transfer.ResponseCode();
 
       if ( !okHttp && result.httpStatus == 0 )
@@ -101,6 +127,12 @@ AnthropicResult AnthropicClient::Send( const String& systemPrompt, const Array<A
          result.error = String( "network request failed: " ) + transfer.ErrorInformation();
          return result;
       }
+   }
+   catch ( const pcl::Exception& x )
+   {
+      result.ok = false;
+      result.error = "network request failed: " + x.Message();
+      return result;
    }
    catch ( const std::exception& x )
    {
@@ -172,6 +204,37 @@ AnthropicResult AnthropicClient::Send( const String& systemPrompt, const Array<A
    }
 
    return result;
+}
+
+// ----------------------------------------------------------------------------
+
+AnthropicClient::AnthropicClient( String apiKey, IsoString model )
+   : m_apiKey( std::move( apiKey ) )
+   , m_model( std::move( model ) )
+{
+}
+
+AnthropicResult AnthropicClient::Send( const String& systemPrompt, const Array<AnthropicMessage>& history )
+{
+   // Never throws across this boundary (the request ctor and Perform()
+   // both trap internally; this guards the Impl allocation too).
+   try
+   {
+      AnthropicRequest request( m_apiKey, m_model, systemPrompt, history );
+      return request.Perform();
+   }
+   catch ( const pcl::Exception& x )
+   {
+      AnthropicResult r;
+      r.error = "request failed: " + x.Message();
+      return r;
+   }
+   catch ( ... )
+   {
+      AnthropicResult r;
+      r.error = "request failed: unknown error";
+      return r;
+   }
 }
 
 } // namespace pcl

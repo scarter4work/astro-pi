@@ -7,6 +7,8 @@
 #include <pcl/Array.h>
 #include <pcl/String.h>
 
+#include <memory>
+
 namespace pcl
 {
 
@@ -34,16 +36,47 @@ struct AnthropicResult
 };
 
 /*!
- * Blocking, non-streamed client for the Anthropic Messages API
+ * One prepared, blocking, non-streamed Anthropic Messages API request
  * (https://api.anthropic.com/v1/messages), built on pcl::NetworkTransfer.
  *
- * Send() touches no GUI or console state by design. NOTE: it constructs
- * an internal Control-based response sink (NetworkTransfer's download
- * callback requires a Control-derived receiver — see AnthropicClient.cpp).
- * Constructing a Control from a non-root Thread is NOT yet verified —
- * to date Send() has only run on the root thread (PICopilotSelfTest).
- * Smoke-test worker-thread use before relying on this (increment-2
- * Task 4) instead of assuming it's already proven.
+ * THREADING (proven by PICopilotSelfTest path 5, "workerThreadOk"):
+ *  - The constructor and destructor MUST run on the root (UI) thread. They
+ *    create/destroy a Control-derived response sink (NetworkTransfer's
+ *    download callback requires a Control receiver) and the NetworkTransfer
+ *    itself. Constructing a Control off the root thread FAILS -- the core
+ *    throws "CreateControl(): API function error" (observed 2026-09-23).
+ *  - Perform() MAY run on a worker pcl::Thread: it only issues the
+ *    already-configured POST and parses the reply. The self-test runs it
+ *    inside ChatThread with an invalid key and requires the API's 401 back.
+ *  - Perform() never throws and must be called at most once.
+ *
+ * All inputs are copied/serialized at construction; the request holds no
+ * references to caller state.
+ */
+class AnthropicRequest
+{
+public:
+
+   AnthropicRequest( const String& apiKey, const IsoString& model,
+                     const String& systemPrompt, const Array<AnthropicMessage>& history );
+   ~AnthropicRequest();
+
+   AnthropicRequest( const AnthropicRequest& ) = delete;
+   AnthropicRequest& operator =( const AnthropicRequest& ) = delete;
+
+   AnthropicResult Perform();
+
+private:
+
+   struct Impl;
+   std::unique_ptr<Impl> m;
+};
+
+/*!
+ * Convenience wrapper: Send() builds an AnthropicRequest and performs it on
+ * the CALLING thread, so Send() itself is root-thread only (see
+ * AnthropicRequest). For an off-UI-thread turn use ChatThread, which builds
+ * the request on the root thread and only Perform()s it on the worker.
  */
 class AnthropicClient
 {
