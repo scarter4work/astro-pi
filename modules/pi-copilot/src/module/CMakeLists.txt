@@ -21,6 +21,7 @@ set(MODULE_SOURCES
     ConfigDialog.cpp
     ChatThread.cpp
     PICopilotVisionSelfTest.cpp
+    ViewContext.cpp
 )
 
 add_library(PICopilot SHARED ${MODULE_SOURCES})

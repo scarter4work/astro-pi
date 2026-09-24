@@ -3,12 +3,14 @@
 
 #include "PICopilotVisionSelfTest.h"
 #include "Utf8.h"
+#include "ViewContext.h"
 
 #include <pcl/AutoViewLock.h>
 #include <pcl/Bitmap.h>
 #include <pcl/ByteArray.h>
 #include <pcl/Exception.h>
 #include <pcl/File.h>
+#include <pcl/FITSHeaderKeyword.h>
 #include <pcl/Image.h>
 #include <pcl/ImageVariant.h>
 #include <pcl/ImageWindow.h>
@@ -130,6 +132,19 @@ WindowCloser CreateSyntheticWindow()
    return wc;
 }
 
+// 70 keywords: OBJECT, FILTER, then KW001..KW068 with 100-char values, so
+// the 60-keyword cap and the 80-char value cap both engage.
+void AddSyntheticKeywords( ImageWindow& window )
+{
+   FITSKeywordArray k;
+   k.Add( FITSHeaderKeyword( "OBJECT", "'M42'", "synthetic" ) );
+   k.Add( FITSHeaderKeyword( "FILTER", "'Full'", "synthetic" ) );
+   const IsoString longValue = "'" + IsoString( 'x', 100 ) + "'";
+   for ( int i = 1; i <= 68; ++i )
+      k.Add( FITSHeaderKeyword( IsoString().Format( "KW%03d", i ), longValue, "" ) );
+   window.SetKeywords( k );
+}
+
 struct SmokeTempGuard
 {
    String path;
@@ -193,6 +208,64 @@ bool RunVisionSelfTest( nlohmann::json& out )
       out["smokeError"] = U8( error );
       out["visionSmokeOk"] = smokeOk;
       allOk = allOk && smokeOk;
+   }
+
+   // ---- Section 2: ViewContext (Task 2) -----------------------------------
+   {
+      bool ctxOk = false;
+      String error;
+      nlohmann::json ctx;
+      try
+      {
+         WindowCloser wc{ CreateSyntheticWindow() };
+         AddSyntheticKeywords( wc.window );
+         ctx = BuildViewContext( wc.window.MainView() );
+
+         const nlohmann::json& g = ctx.at( "geometry" );
+         const nlohmann::json& s = ctx.at( "channelStats" );
+         const nlohmann::json& k = ctx.at( "fitsKeywords" );
+         auto near = []( double a, double b, double tol ) { return a >= b - tol && a <= b + tol; };
+         bool medians = s.size() == 3;
+         for ( const nlohmann::json& c : s )
+            medians = medians && c.at( "median" ).get<double>() > 0.03 && c.at( "median" ).get<double>() < 0.04
+                              && c.at( "mad" ).get<double>() > 0;
+         ctxOk = ctx.at( "viewId" ).get<std::string>().rfind( "PICopilotSelfTest", 0 ) == 0
+              && ctx.at( "isPreview" ) == false
+              && ctx.at( "filePath" ) == ""
+              && !ctx.contains( "history" )
+              && g.at( "width" ) == kSynthW && g.at( "height" ) == kSynthH
+              && g.at( "channels" ) == 3 && g.at( "nominalChannels" ) == 3
+              && g.at( "bitsPerSample" ) == 32 && g.at( "floatSample" ) == true && g.at( "color" ) == true
+              && medians
+              && near( s[0].at( "max" ).get<double>(), 1.0, 1e-6 )                  // red square
+              && near( s[0].at( "min" ).get<double>(), SynthBackground( 0 ), 1e-6 )
+              && near( s[1].at( "min" ).get<double>(), 0.0, 1e-9 )                  // square is 0 in G
+              && near( s[1].at( "max" ).get<double>(), SynthBackground( kSynthW - 1 ), 1e-6 )
+              && s[0].at( "mean" ).get<double>() > s[1].at( "mean" ).get<double>()
+              && ctx.at( "fitsKeywordsTotal" ) == 70
+              && ctx.at( "fitsKeywordsOmitted" ) == 10
+              && k.size() == size_t( PICopilotMaxFitsKeywords )
+              && k[0].at( "name" ) == "OBJECT" && k[0].at( "value" ) == "M42"
+              && k[2].at( "name" ) == "KW001"
+              && k[2].at( "value" ).get<std::string>().size() == size_t( PICopilotMaxFitsValueChars )
+              && k[2].at( "valueTruncated" ) == true
+              && !k[0].contains( "valueTruncated" );
+      }
+      catch ( const pcl::Exception& x ) { error = x.Message(); }
+      catch ( const std::exception& x ) { error = String( x.what() ); }
+      catch ( ... )                     { error = "unknown exception"; }
+
+      // A null view must be rejected loudly, not produce an empty context.
+      bool nullRejected = false;
+      try { BuildViewContext( View() ); }
+      catch ( const pcl::Exception& ) { nullRejected = true; }
+
+      ctx.erase( "fitsKeywords" );   // keep the verdict readable; counts stay
+      out["viewContext"] = ctx;
+      out["viewContextError"] = U8( error );
+      out["viewContextNullRejected"] = nullRejected;
+      out["viewContextOk"] = ctxOk && nullRejected;
+      allOk = allOk && ctxOk && nullRejected;
    }
 
    // ---- inc3 sections end ----
