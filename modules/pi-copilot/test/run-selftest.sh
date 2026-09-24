@@ -149,7 +149,16 @@ for _ in $(seq 50); do [ -s "$ECHO_PORT_FILE" ] && break; sleep 0.1; done
 [ -s "$ECHO_PORT_FILE" ] || { echo "FAIL: echo server did not start"; exit 1; }
 export PICOPILOT_SELFTEST_ECHO_URL="http://127.0.0.1:$(cat "$ECHO_PORT_FILE")/v1/messages"
 
-if ! PICOPILOT_SELFTEST_OUT="$R" timeout 300 "$PI" -n="$PICOPILOT_TEST_SLOT" --automation-mode --no-startup-scripts -m="$SO" -r="$HERE/selftest.js" --force-exit; then
+# Private virtual display (Xvfb). A core-side rejection can raise a MODAL
+# dialog that no module API can suppress or catch (Task 1: "PixelMath: Invalid
+# table row index"); on the user's real DISPLAY that dialog would block his
+# desktop. Under Xvfb it is invisible, and it just blocks this run until the
+# timeout fails it loudly. timeout sits INSIDE xvfb-run so that, on expiry,
+# xvfb-run still tears down the Xvfb server (which also takes down any
+# PixInsight process the PixInsight.sh wrapper left behind).
+command -v xvfb-run >/dev/null 2>&1 || { echo "FAIL: xvfb-run not found (needed to keep dialogs off the real display)"; exit 1; }
+if ! PICOPILOT_SELFTEST_OUT="$R" xvfb-run -a -s "-screen 0 1920x1080x24" \
+        timeout 300 "$PI" -n="$PICOPILOT_TEST_SLOT" --automation-mode --no-startup-scripts -m="$SO" -r="$HERE/selftest.js" --force-exit; then
    echo "FAIL: PI load timed out (300s) or exited non-zero"; exit 1
 fi
 [ -f "$R" ] || { echo "FAIL: no result file"; exit 1; }
@@ -174,6 +183,7 @@ required_true = [
     'utf8BodyOk', 'twoTurnOk',
     # increment 4
     'agentSmokeOk',
+    'applyProcessOk',
     'ok',
 ]
 missing = [k for k in required_true if d.get(k) is not True]

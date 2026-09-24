@@ -27,6 +27,7 @@ set(MODULE_SOURCES
     VisionTurn.cpp
     ViewCapture.cpp
     PICopilotAgentSelfTest.cpp
+    ProcessApply.cpp
 )
 
 add_library(PICopilot SHARED ${MODULE_SOURCES})
