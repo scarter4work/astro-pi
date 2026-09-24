@@ -1067,11 +1067,11 @@ bool RunVisionSelfTest( nlohmann::json& out )
                vo["wireError"] = U8( r.error );
                if ( r.ok )
                {
-                  // The echo server replies with the messages array it
-                  // parsed from our bytes.
+                  // The echo server replies with {"messages":...,"tools":...}
+                  // as it parsed them from our bytes.
                   try
                   {
-                     const nlohmann::json m = nlohmann::json::parse( U8( r.text ) );
+                     const nlohmann::json m = nlohmann::json::parse( U8( r.text ) ).at( "messages" );
                      const std::string gotReply = m.at( 1 ).at( "content" ).get<std::string>();
                      const std::string gotLast = m.at( 2 ).at( "content" ).at( 1 ).at( "text" ).get<std::string>();
                      const bool replyExact = gotReply == v.reply;

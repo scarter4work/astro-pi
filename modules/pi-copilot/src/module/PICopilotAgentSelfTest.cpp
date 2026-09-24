@@ -566,9 +566,10 @@ bool RunAgentSelfTest( nlohmann::json& out )
    // (The wire leg below is loopback only: the harness's echo server.)
    {
       bool bodyOk = false, noToolsOk = false, parseToolUseOk = false, parseToolOnlyOk = false,
-           parseNoTextOk = false, stripOk = false, wireOk = false;
+           parseNoTextOk = false, parseCasesOk = true, stripOk = false, wireOk = false;
       String error;
       nlohmann::json wire = nlohmann::json::object();
+      nlohmann::json parseDetail = nlohmann::json::array();
       try
       {
          nlohmann::json tool = nlohmann::json::object();
@@ -585,7 +586,7 @@ bool RunAgentSelfTest( nlohmann::json& out )
          a.blocks = nlohmann::json::array();
          a.blocks.push_back( { { "type", "text" }, { "text", "Looking \xE2\x80\x94 one sec" } } );
          a.blocks.push_back( { { "type", "tool_use" }, { "id", "toolu_x1" }, { "name", "t1" },
-                               { "input", { { "id", "PixelMath" } } } } );
+                               { "input", { { "id", "PixelMath" }, { "note", "a \xE2\x80\x94 b" } } } } );
          h.Add( a );
          nlohmann::json content = nlohmann::json::array();
          content.push_back( { { "type", "text" }, { "text", "{\"result\":\"ok\"}" } } );
@@ -612,17 +613,92 @@ bool RunAgentSelfTest( nlohmann::json& out )
                && !j.contains( "stream" ) && j.at( "max_tokens" ) == 4096;
          noToolsOk = !nlohmann::json::parse( BuildMessagesRequestBody( PICOPILOT_DEFAULT_MODEL, "sys", h ) ).contains( "tools" );
 
-         const AnthropicResult p1 = ParseMessagesResponse( 200, IsoString(
+         const char* const p1Body =
             "{\"content\":[{\"type\":\"text\",\"text\":\"Let me look.\"},{\"type\":\"tool_use\",\"id\":\"toolu_1\","
-            "\"name\":\"describe_process\",\"input\":{\"id\":\"PixelMath\"}}],\"stop_reason\":\"tool_use\"}" ), String() );
-         parseToolUseOk = p1.ok && p1.text == "Let me look." && p1.stopReason == "tool_use"
-                       && p1.contentBlocks.size() == 2 && p1.contentBlocks[1].at( "input" ).at( "id" ) == "PixelMath";
-         const AnthropicResult p2 = ParseMessagesResponse( 200, IsoString(
+            "\"name\":\"describe_process\",\"input\":{\"id\":\"PixelMath\"}}],\"stop_reason\":\"tool_use\"}";
+         const AnthropicResult p1 = ParseMessagesResponse( 200, IsoString( p1Body ), String() );
+         parseToolUseOk = p1.ok && p1.text == "Let me look." && p1.stopReason == "tool_use" && !p1.truncated
+                       && p1.error.IsEmpty() && p1.httpStatus == 200
+                       && p1.contentBlocks == nlohmann::json::parse( p1Body ).at( "content" );
+         const char* const p2Body =
             "{\"content\":[{\"type\":\"tool_use\",\"id\":\"toolu_2\",\"name\":\"list_processes\",\"input\":{}}],"
-            "\"stop_reason\":\"tool_use\"}" ), String() );
-         parseToolOnlyOk = p2.ok && p2.text.IsEmpty() && p2.contentBlocks.size() == 1;
+            "\"stop_reason\":\"tool_use\"}";
+         const AnthropicResult p2 = ParseMessagesResponse( 200, IsoString( p2Body ), String() );
+         parseToolOnlyOk = p2.ok && p2.text.IsEmpty() && p2.stopReason == "tool_use"
+                        && p2.contentBlocks == nlohmann::json::parse( p2Body ).at( "content" );
          const AnthropicResult p3 = ParseMessagesResponse( 200, IsoString( "{\"content\":[],\"stop_reason\":\"end_turn\"}" ), String() );
-         parseNoTextOk = !p3.ok && p3.error == "response missing expected content/text field";
+         parseNoTextOk = !p3.ok && p3.error == "no text in reply (stop_reason=end_turn)";
+
+         // Table: every other shape, with the EXACT outcome. A failure must
+         // clear every reply field (nothing un-echoable leaks into history).
+         struct ParseCase
+         {
+            const char* name;
+            int         status;
+            const char* body;
+            const char* transportError;
+            bool        ok;
+            const char* error;        // UTF-8; exact (failures)
+            const char* text;         // UTF-8; exact (successes)
+            const char* stopReason;   // exact (successes)
+            bool        truncated;
+         };
+         const ParseCase cases[] =
+         {
+            { "toolUseEmptyContent", 200, "{\"content\":[],\"stop_reason\":\"tool_use\"}", "",
+              false, "stop_reason tool_use but no tool_use block", "", "", false },
+            { "toolUseNullContent", 200, "{\"content\":null,\"stop_reason\":\"tool_use\"}", "",
+              false, "response missing expected content/text field: content is not an array", "", "", false },
+            { "toolUseTextOnly", 200, "{\"content\":[{\"type\":\"text\",\"text\":\"hm\"}],\"stop_reason\":\"tool_use\"}", "",
+              false, "stop_reason tool_use but no tool_use block", "", "", false },
+            { "toolUseNoInput", 200, "{\"content\":[{\"type\":\"tool_use\",\"id\":\"t\",\"name\":\"n\"}],\"stop_reason\":\"tool_use\"}", "",
+              false, "stop_reason tool_use but a tool_use block lacks a string id, a string name or an object input (content[0])", "", "", false },
+            { "toolUseNumericId", 200, "{\"content\":[{\"type\":\"text\",\"text\":\"x\"},{\"type\":\"tool_use\",\"id\":7,\"name\":\"n\",\"input\":{}}],\"stop_reason\":\"tool_use\"}", "",
+              false, "stop_reason tool_use but a tool_use block lacks a string id, a string name or an object input (content[1])", "", "", false },
+            { "blockNotObject", 200, "{\"content\":[\"x\"],\"stop_reason\":\"end_turn\"}", "",
+              false, "response missing expected content/text field: content block is not an object with a string type (content[0])", "", "", false },
+            { "textNotString", 200, "{\"content\":[{\"type\":\"text\",\"text\":3}],\"stop_reason\":\"end_turn\"}", "",
+              false, "response missing expected content/text field: text block has no string text (content[0])", "", "", false },
+            { "noContentKey", 200, "{\"stop_reason\":\"end_turn\"}", "",
+              false, "response missing expected content/text field: content is not an array", "", "", false },
+            { "refusal", 200, "{\"content\":[],\"stop_reason\":\"refusal\"}", "",
+              false, "no text in reply (stop_reason=refusal)", "", "", false },
+            { "maxTokensInToolCall", 200, "{\"content\":[{\"type\":\"tool_use\",\"id\":\"t\",\"name\":\"n\",\"input\":{}}],\"stop_reason\":\"max_tokens\"}", "",
+              false, "no text in reply (stop_reason=max_tokens)", "", "", false },
+            { "pauseTurn", 200, "{\"content\":[],\"stop_reason\":\"pause_turn\"}", "",
+              false, "no text in reply (stop_reason=pause_turn)", "", "", false },
+            { "noStopReason", 200, "{\"content\":[]}", "",
+              false, "no text in reply (stop_reason=missing)", "", "", false },
+            { "maxTokensText", 200, "{\"content\":[{\"type\":\"text\",\"text\":\"cut \\u2014 off\"}],\"stop_reason\":\"max_tokens\"}", "",
+              true, "", "cut \xE2\x80\x94 off", "max_tokens", true },
+            { "maxTokensTextAndTool", 200, "{\"content\":[{\"type\":\"text\",\"text\":\"a\"},{\"type\":\"text\",\"text\":\"b\"},"
+              "{\"type\":\"tool_use\",\"id\":\"t\",\"name\":\"n\",\"input\":{}}],\"stop_reason\":\"max_tokens\"}", "",
+              true, "", "ab", "max_tokens", true },
+            { "apiError", 400, "{\"type\":\"error\",\"error\":{\"type\":\"invalid_request_error\",\"message\":\"bad \\u2014 input\"}}", "HTTP 400",
+              false, "bad \xE2\x80\x94 input", "", "", false },
+            { "apiErrorNumericMessage", 500, "{\"error\":{\"message\":5}}", "transport says 500",
+              false, "transport says 500", "", "", false },
+            { "transportFallback", 502, "{}", "transport says 502",
+              false, "transport says 502", "", "", false },
+            { "unparseable", 502, "<html>oops</html>", "transport says 502",
+              false, "unparseable response: <html>oops</html>", "", "", false },
+         };
+         for ( const ParseCase& c : cases )
+         {
+            const AnthropicResult r = ParseMessagesResponse( c.status, IsoString( c.body ),
+                                                             String::UTF8ToUTF16( c.transportError ) );
+            bool pass = r.ok == c.ok && r.httpStatus == c.status;
+            if ( c.ok )
+               pass = pass && r.error.IsEmpty() && r.text == String::UTF8ToUTF16( c.text )
+                   && r.stopReason == c.stopReason && r.truncated == c.truncated
+                   && r.contentBlocks == nlohmann::json::parse( c.body ).at( "content" );
+            else
+               pass = pass && r.error == String::UTF8ToUTF16( c.error ) && r.text.IsEmpty()
+                   && r.stopReason.empty() && !r.truncated && r.contentBlocks.is_null();
+            parseDetail.push_back( { { "case", c.name }, { "pass", pass }, { "ok", r.ok },
+                                     { "error", U8( r.error ) }, { "stopReason", r.stopReason } } );
+            parseCasesOk = parseCasesOk && pass;
+         }
 
          // On the wire: the core POSTs the tool-bearing body as strict UTF-8
          // and the echo server's parsed "messages" equal ours exactly.
@@ -637,8 +713,17 @@ bool RunAgentSelfTest( nlohmann::json& out )
             wire["httpStatus"] = r.httpStatus;
             wire["error"] = U8( r.error );
             if ( r.ok )
+            {
+               // The echo server replies with {"messages":...,"tools":...}
+               // as it strictly decoded them from our bytes.
+               const nlohmann::json echoed = nlohmann::json::parse( U8( r.text ) );
+               wire["messagesExact"] = echoed.at( "messages" ) == m;
+               wire["toolsExact"] = echoed.at( "tools" ) == tools;
+               wire["toolInputExact"] = echoed.at( "messages" ).at( 1 ).at( "content" ).at( 1 ).at( "input" ).at( "note" )
+                                        == "a \xE2\x80\x94 b";
                wireOk = r.httpStatus == 200 && r.stopReason == "end_turn"
-                     && nlohmann::json::parse( U8( r.text ) ) == m;
+                     && wire["messagesExact"] == true && wire["toolsExact"] == true && wire["toolInputExact"] == true;
+            }
          }
 
          // Older tool_result images are replaced by the note; the last message keeps its image.
@@ -661,17 +746,43 @@ bool RunAgentSelfTest( nlohmann::json& out )
          stripOk = stripOk && h3[2].blocks.size() == 1 && h3[2].blocks[0].at( "type" ) == "tool_result"
                 && h3[2].blocks[0].at( "tool_use_id" ) == "toolu_x1" && oldC.size() == 2
                 && oldC.at( 0 ).at( "text" ) == "{\"result\":\"ok\"}" && h3[1].blocks == a.blocks;
+
+         // Malformed block arrays: StripOlderImages must not throw and must
+         // leave untyped / non-object blocks as they are.
+         Array<AnthropicMessage> hm;
+         AnthropicMessage bad;
+         bad.role = "user";
+         bad.blocks = nlohmann::json::parse(
+            "[\"str\",{\"type\":5,\"text\":\"x\"},{\"no\":\"type\"},"
+            "{\"type\":\"tool_result\",\"tool_use_id\":\"t\",\"content\":[{\"type\":null},{\"type\":\"image\"}]}]" );
+         const nlohmann::json badBefore = bad.blocks;
+         hm.Add( bad );
+         hm.Add( AnthropicMessage{ IsoString( "assistant" ), String( "ok" ), IsoString() } );
+         hm.Add( AnthropicMessage{ IsoString( "user" ), String( "next" ), IsoString() } );
+         bool malformedNoThrow = false;
+         try
+         {
+            StripOlderImages( hm );
+            malformedNoThrow = true;
+         }
+         catch ( ... ) {}
+         nlohmann::json badExpected = badBefore;
+         badExpected[3]["content"][1] = { { "type", "text" }, { "text", kPICopilotToolImageOmittedNote } };
+         stripOk = stripOk && malformedNoThrow && hm[0].blocks == badExpected;
       }
       catch ( const pcl::Exception& x ) { error = x.Message(); }
       catch ( const std::exception& x ) { error = String( x.what() ); }
       catch ( ... )                     { error = "unknown exception"; }
 
-      const bool ok = bodyOk && noToolsOk && parseToolUseOk && parseToolOnlyOk && parseNoTextOk && stripOk && wireOk;
+      const bool ok = bodyOk && noToolsOk && parseToolUseOk && parseToolOnlyOk && parseNoTextOk && parseCasesOk
+                   && stripOk && wireOk;
       out["transportBodyOk"] = bodyOk;
       out["transportNoToolsOk"] = noToolsOk;
       out["transportParseToolUseOk"] = parseToolUseOk;
       out["transportParseToolOnlyOk"] = parseToolOnlyOk;
       out["transportParseNoTextOk"] = parseNoTextOk;
+      out["transportParseCasesOk"] = parseCasesOk;
+      out["transportParseDetail"] = parseDetail;
       out["transportStripOk"] = stripOk;
       out["transportWire"] = wire;
       out["transportWireOk"] = wireOk;

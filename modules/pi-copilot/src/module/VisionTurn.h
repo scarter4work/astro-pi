@@ -35,7 +35,8 @@ AnthropicMessage ComposeUserTurn( const String& userText, const nlohmann::json* 
 //  - a message with content blocks: every image block (top level or inside a
 //    tool_result's content) becomes a text block kPICopilotToolImageOmittedNote,
 //    and a top-level text block's leading view-context is collapsed.
-// Idempotent: a second call changes nothing.
+// Idempotent: a second call changes nothing. Does not throw on a malformed
+// block array (non-object or untyped blocks are left as they are).
 void StripOlderImages( Array<AnthropicMessage>& history );
 
 } // namespace pcl

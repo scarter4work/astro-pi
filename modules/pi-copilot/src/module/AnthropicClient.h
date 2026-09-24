@@ -64,13 +64,25 @@ struct AnthropicResult
    String         text;          // all "text" content blocks, concatenated in order (may be empty for tool_use)
    String         error;
    int            httpStatus = 0;
-   bool           truncated = false; // stop_reason == "max_tokens"
+   bool           truncated = false; // stop_reason == "max_tokens"; contentBlocks may then still
+                                     // hold (cut-off) tool_use blocks -- the caller must drop
+                                     // them before storing the turn (no unanswered tool_use)
    std::string    stopReason;        // "end_turn" | "tool_use" | "max_tokens" | ...
    nlohmann::json contentBlocks;     // the reply's "content" array, verbatim (echoed back in history)
 };
 
-// Parses one Messages API HTTP response. ok=true for a 2xx body with a
-// content array that has text, or no text but stop_reason "tool_use".
+// Parses one Messages API HTTP response. ok=true only for a 2xx body whose
+// "content" is an array of block objects (string "type"; text blocks with a
+// string "text") that either has text, or has stop_reason "tool_use" and at
+// least one tool_use block with a string id, string name and object input.
+// Failures (ok=false, all reply fields cleared), exact messages:
+//  - not JSON: "unparseable response: <first 200 bytes>"
+//  - bad shape: "response missing expected content/text field: <detail>"
+//  - "stop_reason tool_use but no tool_use block"
+//  - "stop_reason tool_use but a tool_use block lacks a string id, a string
+//    name or an object input (content[i])"
+//  - no text otherwise: "no text in reply (stop_reason=<reason>|missing)"
+//    (refusal, pause_turn, max_tokens cut inside a tool call, ...)
 // Non-2xx: error = the API's error.message, else transportError. Any thread.
 AnthropicResult ParseMessagesResponse( int httpStatus, const IsoString& body, const String& transportError );
 

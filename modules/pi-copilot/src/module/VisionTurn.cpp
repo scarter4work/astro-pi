@@ -61,9 +61,9 @@ void StripBlockImages( nlohmann::json& blocks )
 {
    for ( nlohmann::json& b : blocks )
    {
-      if ( !b.is_object() )
+      if ( !b.is_object() || !b.contains( "type" ) || !b["type"].is_string() )
          continue;
-      const std::string type = b.value( "type", std::string() );
+      const std::string type = b["type"].get<std::string>();
       if ( type == "image" )
          b = { { "type", "text" }, { "text", kPICopilotToolImageOmittedNote } };
       else if ( type == "tool_result" && b.contains( "content" ) && b["content"].is_array() )
@@ -103,7 +103,8 @@ void StripOlderImages( Array<AnthropicMessage>& history )
       {
          StripBlockImages( m.blocks );
          for ( nlohmann::json& b : m.blocks )
-            if ( b.is_object() && b.value( "type", std::string() ) == "text" && b.contains( "text" ) && b["text"].is_string() )
+            if ( b.is_object() && b.contains( "type" ) && b["type"].is_string() && b["type"].get<std::string>() == "text"
+              && b.contains( "text" ) && b["text"].is_string() )
                b["text"] = U8( CollapseViewContext(
                   String::UTF8ToUTF16( b["text"].get<std::string>().c_str() ), String() ) );
          continue;

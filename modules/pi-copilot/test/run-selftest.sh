@@ -101,8 +101,8 @@ export PICOPILOT_SELFTEST_STALL_URL="http://127.0.0.1:$(cat "$STALL_PORT_FILE")/
 # Local "echo" server for the wire-encoding proof (self-test Section 8): it
 # strict-decodes the POSTed bytes as UTF-8 (Python's codec rejects encoded
 # surrogates, like the real API) and JSON, then answers in Messages API shape
-# with the parsed "messages" array as the reply text -- or a 400 naming the
-# first bad byte, with a hex dump. Every raw body is kept in ECHO_DIR as
+# with {"messages": <parsed messages>, "tools": <parsed tools or null>} as the
+# reply text -- or a 400 naming the first bad byte, with a hex dump. Every raw body is kept in ECHO_DIR as
 # evidence. Loopback only; killed on exit.
 ECHO_DIR="$(mktemp -d)"
 ECHO_PORT_FILE="$ECHO_DIR/port"
@@ -136,7 +136,8 @@ class H(BaseHTTPRequestHandler):
         except ValueError as e:
             return self.reply(400, {"type": "error", "error": {"type": "invalid_request_error",
                 "message": "body #%d not JSON: %s" % (n, e)}})
-        self.reply(200, {"content": [{"type": "text", "text": json.dumps(req.get("messages"))}],
+        self.reply(200, {"content": [{"type": "text", "text": json.dumps({"messages": req.get("messages"),
+                                                                          "tools": req.get("tools")})}],
                          "stop_reason": "end_turn"})
 srv = ThreadingHTTPServer(("127.0.0.1", 0), H)
 open(os.path.join(out, "port"), "w").write(str(srv.server_address[1]))
