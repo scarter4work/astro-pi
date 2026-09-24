@@ -72,6 +72,8 @@ required_true = [
     'visionSmokeOk',
     'viewContextOk',
     'previewOk',
+    'previewU16Ok',
+    'previewMonoOk',
     'ok',
 ]
 missing = [k for k in required_true if d.get(k) is not True]

@@ -91,46 +91,57 @@ private:
    }
 };
 
-// Fills an already-created window with the synthetic test image (dim grey
-// gradient + pure-red square). Takes the window by reference so its caller
-// keeps whatever ownership guard (WindowCloser) it already established --
-// this function must never be the first thing done with a freshly
-// constructed window.
-void FillSyntheticWindow( ImageWindow& window )
+// Writes the synthetic scene into an image of any real sample type: a dim
+// grey gradient with a square that is pure red (RGB) or full white (mono).
+// P::ToSample converts the normalized [0,1] value to the native sample range.
+template <class P>
+void FillSynthetic( GenericImage<P>& img )
 {
-   View view = window.MainView();
-   AutoViewLock lock( view );
-   ImageVariant v = view.Image();
-   if ( !v || !v.IsFloatSample() || v.BitsPerSample() != 32 )
-      throw Error( "synthetic window is not a 32-bit float image" );
-   Image& img = static_cast<Image&>( *v );
+   const int n = img.NumberOfChannels();
    for ( int y = 0; y < kSynthH; ++y )
       for ( int x = 0; x < kSynthW; ++x )
       {
          const bool sq = x >= kSquareX0 && x < kSquareX0 + kSquareSize
                       && y >= kSquareY0 && y < kSquareY0 + kSquareSize;
-         const float bg = float( SynthBackground( x ) );
-         img.Pixel( x, y, 0 ) = sq ? 1.0f : bg;
-         img.Pixel( x, y, 1 ) = sq ? 0.0f : bg;
-         img.Pixel( x, y, 2 ) = sq ? 0.0f : bg;
+         const double bg = SynthBackground( x );
+         for ( int c = 0; c < n; ++c )
+            img.Pixel( x, y, c ) = P::ToSample( sq ? (c == 0 ? 1.0 : 0.0) : bg );
       }
 }
 
-// Constructs the hidden 2000x1500 synthetic RGB test window and returns it
-// already wrapped in a WindowCloser, so a caller can never observe a
-// constructed-but-unguarded window: if FillSyntheticWindow() throws (or
-// anything else does, in a later task that extends this function), the
-// WindowCloser already owns the window and force-closes it on unwind.
-WindowCloser CreateSyntheticWindow()
+// Fills an already-created window with the synthetic test image. Takes the
+// window by reference so its caller keeps whatever ownership guard
+// (WindowCloser) it already established -- this function must never be the
+// first thing done with a freshly constructed window.
+void FillSyntheticWindow( ImageWindow& window, int channels, int bitsPerSample, bool floatSample )
+{
+   View view = window.MainView();
+   AutoViewLock lock( view );
+   ImageVariant v = view.Image();
+   if ( !v || v.IsComplexSample() || v.IsFloatSample() != floatSample
+        || v.BitsPerSample() != bitsPerSample || v.NumberOfChannels() != channels )
+      throw Error( "synthetic window does not have the requested sample format" );
+#define FILL_SYNTHETIC( I ) FillSynthetic( static_cast<I&>( *v ) )
+   SOLVE_TEMPLATE_REAL_2( v, FILL_SYNTHETIC )
+#undef FILL_SYNTHETIC
+}
+
+// Constructs a hidden 2000x1500 synthetic test window (default: 32-bit float
+// RGB; channels=1 gives a mono image) and returns it already wrapped in a
+// WindowCloser, so a caller can never observe a constructed-but-unguarded
+// window: if FillSyntheticWindow() throws (or anything else does, in a later
+// task that extends this function), the WindowCloser already owns the window
+// and force-closes it on unwind.
+WindowCloser CreateSyntheticWindow( int channels = 3, int bitsPerSample = 32, bool floatSample = true )
 {
    // Hidden window (ImageWindow.h:348 -- "The new image window will be hidden").
-   ImageWindow window( kSynthW, kSynthH, 3, 32, true/*floatSample*/, true/*color*/,
+   ImageWindow window( kSynthW, kSynthH, channels, bitsPerSample, floatSample, channels >= 3/*color*/,
                        false/*initialProcessing*/, IsoString( "PICopilotSelfTest" ) );
    if ( window.IsNull() )
       throw Error( "ImageWindow construction returned a null window" );
    // Ownership transfers to the guard HERE, before anything else can throw.
    WindowCloser wc{ std::move( window ) };
-   FillSyntheticWindow( wc.window );
+   FillSyntheticWindow( wc.window, channels, bitsPerSample, floatSample );
    return wc;
 }
 
@@ -147,16 +158,28 @@ void AddSyntheticKeywords( ImageWindow& window )
    window.SetKeywords( k );
 }
 
-// Order-dependent 64-bit hash of every channel's pixel buffer (Image::Hash64,
-// Image.h:13786). Synthetic windows are 32-bit float, so Image is exact.
+// Order-dependent 64-bit hash of every channel's native pixel buffer
+// (GenericImage::Hash64, Image.h:13786), dispatched on the real sample type
+// so it is exact for float and integer images alike.
+template <class P>
+uint64 HashImage( const GenericImage<P>& img )
+{
+   uint64 h = 0;
+   for ( int c = 0; c < img.NumberOfChannels(); ++c )
+      h = img.Hash64( c, h );
+   return h;
+}
+
 uint64 ViewImageHash( View view )
 {
    AutoViewWriteLock lock( view );
    ImageVariant v = view.Image();
-   const Image& img = static_cast<const Image&>( *v );
+   if ( !v || v.IsComplexSample() )
+      throw Error( "ViewImageHash: view has no real-sample image" );
    uint64 h = 0;
-   for ( int c = 0; c < img.NumberOfChannels(); ++c )
-      h = img.Hash64( c, h );
+#define HASH_IMAGE( I ) h = HashImage( static_cast<const I&>( *v ) )
+   SOLVE_TEMPLATE_REAL_2( v, HASH_IMAGE )
+#undef HASH_IMAGE
    return h;
 }
 
@@ -186,6 +209,66 @@ WindowCloser CreateLargeSyntheticWindow()
             *f++ = float( 0.02 + 0.01*c + 0.03*(double( x )/kLargeW + double( y )/kLargeH)/2 );
    }
    return wc;
+}
+
+// Renders a preview of the small synthetic scene in the given sample format
+// and samples the decoded JPEG at the square's centre and the background.
+struct ScenePreviewCheck
+{
+   ViewPreviewResult p;
+   bool   formatOk = false;      // JPEG, sizes, base64 consistency
+   bool   unchanged = false;     // user image hash identical before/after
+   bool   tempRemoved = false;
+   int    sq[3] = { -1, -1, -1 };
+   int    bg[3] = { -1, -1, -1 };
+   String error;
+};
+
+ScenePreviewCheck CheckScenePreview( int channels, int bitsPerSample, bool floatSample )
+{
+   ScenePreviewCheck r;
+   try
+   {
+      WindowCloser wc{ CreateSyntheticWindow( channels, bitsPerSample, floatSample ) };
+      const View view = wc.window.MainView();
+      const uint64 before = ViewImageHash( view );
+      r.p = RenderViewPreview( view );
+      r.unchanged = ViewImageHash( view ) == before;
+      r.tempRemoved = !r.p.tempPath.IsEmpty() && !File::Exists( r.p.tempPath );
+      if ( r.p.ok )
+      {
+         const ByteArray jpeg = r.p.base64.FromBase64();
+         Bitmap decoded( jpeg.Begin(), jpeg.Length(), "JPG" );
+         const double s = double( r.p.width )/kSynthW;
+         const RGBA q = decoded.Pixel( int( (kSquareX0 + kSquareSize/2)*s ), int( (kSquareY0 + kSquareSize/2)*s ) );
+         const RGBA b = decoded.Pixel( int( 200*s ), int( 200*s ) );
+         r.sq[0] = Red( q ); r.sq[1] = Green( q ); r.sq[2] = Blue( q );
+         r.bg[0] = Red( b ); r.bg[1] = Green( b ); r.bg[2] = Blue( b );
+         r.formatOk = IsJpeg( jpeg )
+                   && jpeg.Length() == r.p.jpegBytes
+                   && Max( r.p.width, r.p.height ) <= PICopilotPreviewMaxEdge
+                   && Max( r.p.width, r.p.height ) >= PICopilotPreviewMaxEdge - 8
+                   && r.p.base64.Length() == 4*((r.p.jpegBytes + 2)/3)
+                   && r.p.base64.Length() > 1000
+                   && r.p.base64.Length() <= PICopilotMaxImageBase64Bytes;
+      }
+      else
+         r.error = r.p.error;
+   }
+   catch ( const pcl::Exception& x ) { r.error = x.Message(); }
+   catch ( const std::exception& x ) { r.error = String( x.what() ); }
+   catch ( ... )                     { r.error = "unknown exception"; }
+   return r;
+}
+
+// Stretched background: neutral grey, neither black nor saturated. The
+// upper bound catches integer samples that were not normalized to [0,1]
+// (the whole frame then clips to white).
+bool BackgroundNeutralGrey( const int bg[3] )
+{
+   const int lo = Min( bg[0], Min( bg[1], bg[2] ) );
+   const int hi = Max( bg[0], Max( bg[1], bg[2] ) );
+   return lo > 4 && hi < 200 && hi - lo < 24;
 }
 
 struct SmokeTempGuard
@@ -405,6 +488,39 @@ bool RunVisionSelfTest( nlohmann::json& out )
       out["previewLargeOk"] = largeOk;
       out["previewOk"] = ok;
       allOk = allOk && ok;
+   }
+
+   // ---- Section 3b: ViewPreview on 16-bit integer images (Task 3 fix) -----
+   // Raw subs are uint16 and the user shoots a mono camera: prove the typed
+   // block-average normalizes integer samples and handles 1 channel.
+   {
+      const ScenePreviewCheck rgb = CheckScenePreview( 3, 16, false );
+      const bool rgbOk = rgb.p.ok && rgb.formatOk && rgb.unchanged && rgb.tempRemoved
+                      && rgb.sq[0] > 180 && rgb.sq[1] < 80 && rgb.sq[2] < 80
+                      && BackgroundNeutralGrey( rgb.bg );
+      out["previewU16Width"] = rgb.p.width;
+      out["previewU16Height"] = rgb.p.height;
+      out["previewU16SquareRGB"] = { rgb.sq[0], rgb.sq[1], rgb.sq[2] };
+      out["previewU16BackgroundRGB"] = { rgb.bg[0], rgb.bg[1], rgb.bg[2] };
+      out["previewU16UserImageUnchanged"] = rgb.unchanged;
+      out["previewU16TempRemoved"] = rgb.tempRemoved;
+      out["previewU16Error"] = U8( rgb.error );
+      out["previewU16Ok"] = rgbOk;
+
+      const ScenePreviewCheck mono = CheckScenePreview( 1, 16, false );
+      const bool monoOk = mono.p.ok && mono.formatOk && mono.unchanged && mono.tempRemoved
+                       && mono.sq[0] > mono.bg[0] + 32
+                       && BackgroundNeutralGrey( mono.bg );
+      out["previewMonoWidth"] = mono.p.width;
+      out["previewMonoHeight"] = mono.p.height;
+      out["previewMonoSquareRGB"] = { mono.sq[0], mono.sq[1], mono.sq[2] };
+      out["previewMonoBackgroundRGB"] = { mono.bg[0], mono.bg[1], mono.bg[2] };
+      out["previewMonoUserImageUnchanged"] = mono.unchanged;
+      out["previewMonoTempRemoved"] = mono.tempRemoved;
+      out["previewMonoError"] = U8( mono.error );
+      out["previewMonoOk"] = monoOk;
+
+      allOk = allOk && rgbOk && monoOk;
    }
 
    // ---- inc3 sections end ----
