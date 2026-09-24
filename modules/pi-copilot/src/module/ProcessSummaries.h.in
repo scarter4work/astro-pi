@@ -1,0 +1,11 @@
+// GENERATED at CMake configure time from modules/pi-copilot/data/process-summaries.json.
+// Do not edit the generated copy; edit the JSON and re-run CMake.
+#ifndef PICopilot_ProcessSummaries_h
+#define PICopilot_ProcessSummaries_h
+
+namespace pcl
+{
+static const char kProcessSummariesJson[] = R"PCSUMMARY(@PICOPILOT_PROCESS_SUMMARIES_JSON@)PCSUMMARY";
+} // namespace pcl
+
+#endif

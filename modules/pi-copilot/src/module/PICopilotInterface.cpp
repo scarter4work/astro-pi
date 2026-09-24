@@ -5,6 +5,14 @@
 #include "PICopilotProcess.h"
 #include "ConfigDialog.h"
 #include "KeyStore.h"
+#include "PanelPlacement.h"
+#include "ViewCapture.h"
+#include "VisionTurn.h"
+
+#include <pcl/Console.h>
+#include <pcl/GlobalSettings.h>
+#include <pcl/ImageWindow.h>
+#include <pcl/Settings.h>
 
 namespace pcl
 {
@@ -19,7 +27,15 @@ const char* const kSystemPrompt =
    "You are PI Copilot, an assistant embedded in PixInsight, the astronomical "
    "image processing application. Help the user plan and understand their "
    "PixInsight workflow: processes, scripts, parameters and processing order "
-   "for their astrophotography data. Be concise and concrete.";
+   "for their astrophotography data. Be concise and concrete.\n\n"
+   "A user message may begin with a [PixInsight view context] block (JSON: view "
+   "identity, geometry, per-channel statistics, FITS keywords) and may include an "
+   "image. The image is an automatically stretched (auto-STF) JPEG preview, "
+   "downscaled to at most 1024 px, for DISPLAY ONLY: the underlying data is usually "
+   "still LINEAR (unstretched). Base any statement about the data's levels, noise or "
+   "clipping on the statistics in the context block, which describe the real data "
+   "(mad is the raw median absolute deviation; multiply by 1.4826 for sigma). Only "
+   "the latest message carries an image; earlier images are omitted from history.";
 
 // Gear glyph (U+2699), written as UTF-8 bytes. pcl::String( const char* )
 // decodes ISO-8859-1, so any non-ASCII literal must go through UTF8ToUTF16.
@@ -28,6 +44,15 @@ const char* const kGearUtf8 = "\xE2\x9A\x99";
 // Send button captions: idle, and while a turn is in flight (U+2026 "...").
 const char* const kSendText = "Send";
 const char* const kBusyTextUtf8 = "Thinking\xE2\x80\xA6";
+
+// One-time default placement (flush right, full height). Logical px.
+// A marker setting, not "no saved geometry": installs from 0.1.0.x already
+// have a saved floating geometry, so a first-launch test would never fire.
+const char* const kPlacementMarkerKey = "PICopilot/DefaultPlacementApplied";
+constexpr int kDefaultPanelWidth   = 420;
+constexpr int kDefaultTopMargin    = 40;   // below the main menu/title bar
+constexpr int kDefaultBottomMargin = 60;   // above a desktop taskbar
+constexpr int kDefaultRightMargin  = 8;
 
 } // namespace
 
@@ -74,6 +99,10 @@ bool PICopilotInterface::Launch( const MetaProcess&, const ProcessImplementation
    {
       GUI = new GUIData( *this );
       SetWindowTitle( "PI Copilot" );
+      // PCL's InterfaceDispatcher::Launch restores the saved geometry right
+      // AFTER this function returns (first launch only); the window is shown
+      // after that, so OnShow is the first point where our placement wins.
+      OnShow( (Control::event_handler)&PICopilotInterface::e_Show, *this );
    }
 
    dynamic = false;
@@ -171,7 +200,13 @@ void PICopilotInterface::SendCurrentInput()
    }
 
    AppendToLog( "<b>You:</b> " + PlainText( prompt ) + "\n\n" );
-   m_history.Add( AnthropicMessage{ IsoString( "user" ), prompt } );
+   // Root thread, BEFORE the worker starts: ImageWindow/View/Bitmap are
+   // UIObjects. StripOlderImages() spares the LAST message, so it runs right
+   // after the new turn -- the only one carrying pixels -- is appended.
+   m_history.Add( ComposeTurnWithActiveView( prompt ) );
+   StripOlderImages( m_history );
+   // The BARE prompt (never the context-prefixed content) is what a failed
+   // turn gives back for a resend.
    m_pendingPrompt = prompt;
    GUI->ChatInput.Clear();
 
@@ -185,7 +220,69 @@ void PICopilotInterface::SendCurrentInput()
       GUI->Poll_Timer.Start();
 }
 
+AnthropicMessage PICopilotInterface::ComposeTurnWithActiveView( const String& prompt )
+{
+   if ( !GUI->IncludeView_CheckBox.IsChecked() )
+      return ComposeUserTurn( prompt, nullptr, IsoString() );
+
+   StringList notes;
+   AnthropicMessage turn;
+   ImageWindow window = ImageWindow::ActiveWindow();
+   if ( window.IsNull() )
+      turn = CaptureViewTurn( prompt, nullptr, notes );
+   else
+   {
+      const View view = window.CurrentView();   // may be a preview
+      turn = CaptureViewTurn( prompt, &view, notes );
+   }
+   for ( const String& note : notes )
+      AppendToLog( PlainText( note ) + "\n\n" );
+   return turn;
+}
+
+bool PICopilotInterface::ApplyDefaultPlacement()
+{
+   if ( !PixInsightSettings::IsGlobalVariableDefined( "Workspace/PrimaryScreenCenterX" )
+     || !PixInsightSettings::IsGlobalVariableDefined( "Workspace/PrimaryScreenCenterY" ) )
+   {
+      Console().WarningLn( "PI Copilot: primary-screen geometry unavailable; default right-side placement skipped." );
+      return false;
+   }
+   const PanelPlacement p = ComputeDefaultPanelPlacement(
+      PixInsightSettings::GlobalInteger( "Workspace/PrimaryScreenCenterX" ),
+      PixInsightSettings::GlobalInteger( "Workspace/PrimaryScreenCenterY" ),
+      LogicalPixelsToPhysical( kDefaultPanelWidth ),
+      LogicalPixelsToPhysical( kDefaultTopMargin ),
+      LogicalPixelsToPhysical( kDefaultBottomMargin ),
+      LogicalPixelsToPhysical( kDefaultRightMargin ) );
+   if ( !p.ok )
+   {
+      Console().WarningLn( "PI Copilot: primary-screen geometry too small; default right-side placement skipped." );
+      return false;
+   }
+   Resize( p.width, p.height );
+   Move( p.x, p.y );
+   // Persist immediately (not only at PI exit) so the placement survives a
+   // crash and any later RestoreGeometry() reproduces it.
+   SaveGeometry();
+   return true;
+}
+
 // ── Event handlers ───────────────────────────────────────────────
+
+void PICopilotInterface::e_Show( Control& )
+{
+   // One time only; afterwards the user's own moves/resizes are remembered
+   // by PI's auto-save geometry (on by default, ProcessInterface.h:2549).
+   bool applied = false;
+   Settings::Read( kPlacementMarkerKey, applied );
+   if ( applied )
+      return;
+   // Mark as applied only after a successful Move(): if the screen geometry
+   // was unavailable or unusable, the next show tries again.
+   if ( ApplyDefaultPlacement() )
+      Settings::Write( kPlacementMarkerKey, true );
+}
 
 void PICopilotInterface::e_Send_Click( Button&, bool )
 {
@@ -234,7 +331,7 @@ void PICopilotInterface::e_Poll_Timer( Timer& )
       if ( r.truncated )
          shown += " [truncated: max_tokens]";
       AppendToLog( "<b>Copilot:</b> " + PlainText( shown ) + "\n\n" );
-      m_history.Add( AnthropicMessage{ IsoString( "assistant" ), r.text } );
+      m_history.Add( AnthropicMessage{ IsoString( "assistant" ), r.text, IsoString() } );
    }
    else
    {
@@ -264,17 +361,23 @@ PICopilotInterface::GUIData::GUIData( PICopilotInterface& w )
    Mode_ComboBox.AddItem( "Guided" );
    Mode_ComboBox.SetToolTip( "<p>Assistant mode.</p>" );
 
+   IncludeView_CheckBox.SetText( "Include view" );
+   IncludeView_CheckBox.SetChecked( true );
+   IncludeView_CheckBox.SetToolTip( "<p>Send the active view with each message: an auto-stretched "
+                                    "preview (display only) plus its geometry, statistics and FITS keywords.</p>" );
+
    Config_ToolButton.SetText( String::UTF8ToUTF16( kGearUtf8 ) );
    Config_ToolButton.SetToolTip( "<p>Set your Anthropic API key.</p>" );
    Config_ToolButton.OnClick( (Button::click_event_handler)&PICopilotInterface::e_Config_Click, w );
 
    Top_Sizer.SetSpacing( 4 );
    Top_Sizer.Add( Mode_ComboBox );
+   Top_Sizer.Add( IncludeView_CheckBox );
    Top_Sizer.AddStretch();
    Top_Sizer.Add( Config_ToolButton );
 
    ChatLog.SetReadOnly();
-   ChatLog.SetScaledMinSize( 500, 300 );
+   ChatLog.SetScaledMinSize( 360, 200 );
 
    ChatInput.OnReturnPressed( (Edit::edit_event_handler)&PICopilotInterface::e_Input_ReturnPressed, w );
 

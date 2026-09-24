@@ -6,6 +6,7 @@
 #include "AnthropicClient.h"
 #include "ChatThread.h"
 #include "PICopilotInterface.h"   // PICopilotInterface::PlainText
+#include "PICopilotVisionSelfTest.h"
 
 #include <pcl/Process.h>
 #include <pcl/ProcessInstance.h>
@@ -93,7 +94,7 @@ bool RunSelfTest( String& jsonOut )
          anthropicSkipped = false;
          AnthropicClient client{ String( envKey ) };
          AnthropicResult r = client.Send( "You are a test.",
-            { AnthropicMessage{ IsoString( "user" ), String( "Reply with exactly: WORKING" ) } } );
+            { AnthropicMessage{ IsoString( "user" ), String( "Reply with exactly: WORKING" ), IsoString() } } );
          anthropicOk = r.ok && r.text.Contains( "WORKING" );
       }
       else
@@ -119,7 +120,7 @@ bool RunSelfTest( String& jsonOut )
    try
    {
       ChatThread t( String( "sk-ant-invalid-selftest" ), String( "You are a test." ),
-         { AnthropicMessage{ IsoString( "user" ), String( "ping" ) } } );
+         { AnthropicMessage{ IsoString( "user" ), String( "ping" ), IsoString() } } );
       t.Start();
       if ( t.Wait( 150000 ) )
       {
@@ -162,7 +163,7 @@ bool RunSelfTest( String& jsonOut )
    if ( stallUrl != nullptr && *stallUrl != '\0' )
    {
       stallSkipped = false;
-      const Array<AnthropicMessage> ping = { AnthropicMessage{ IsoString( "user" ), String( "ping" ) } };
+      const Array<AnthropicMessage> ping = { AnthropicMessage{ IsoString( "user" ), String( "ping" ), IsoString() } };
 
       // 6a: cancel mid-stall. Default (300 s) deadline, so only the cancel
       // can end it quickly. Wait(2000) lets the request connect and stall.
@@ -265,9 +266,29 @@ bool RunSelfTest( String& jsonOut )
       { "deadlineError", deadlineError.ToUTF8().c_str() },
       { "deadlineSeconds", deadlineSeconds },
       { "plainTextOk", plainTextOk },
-      { "plainTextBack", plainTextBack.ToUTF8().c_str() },
-      { "ok", ok }
+      { "plainTextBack", plainTextBack.ToUTF8().c_str() }
    };
+
+   // Increment 3: vision/grounding sections. Never let an escape here lose
+   // the increment-1/2 verdict -- record it as a failure instead.
+   bool visionOk = false;
+   try
+   {
+      nlohmann::json vision;
+      visionOk = RunVisionSelfTest( vision );
+      j.update( vision );
+   }
+   catch ( const std::exception& x )
+   {
+      j["visionException"] = x.what();
+   }
+   catch ( ... )
+   {
+      j["visionException"] = "unknown exception";
+   }
+
+   ok = ok && visionOk;
+   j["ok"] = ok;
    jsonOut = String::UTF8ToUTF16( j.dump().c_str() );
    return ok;
 }

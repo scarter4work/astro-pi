@@ -40,7 +40,7 @@ IsoString PICopilotModule::Name() const
 String PICopilotModule::Description() const
 {
    return "PI Copilot v" PICOPILOT_STR(PICOPILOT_MODULE_VERSION_MAJOR) " — In-app AI assistant for PixInsight. "
-          "Native PCL module skeleton (empty dockable panel; chat UI lands in a later increment).";
+          "Chat that sees the active view (auto-stretched preview + view statistics and FITS keywords).";
 }
 
 String PICopilotModule::Company() const
@@ -80,7 +80,7 @@ void PICopilotModule::GetReleaseDate( int& year, int& month, int& day ) const
 {
    year  = 2026;
    month = 9;
-   day   = 23;
+   day   = 24;
 }
 
 } // namespace pcl

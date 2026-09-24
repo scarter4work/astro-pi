@@ -8,6 +8,7 @@
 #include <pcl/String.h>
 
 #include <memory>
+#include <string>
 
 namespace pcl
 {
@@ -27,12 +28,20 @@ namespace pcl
 // stalls after connecting. Enforced from NetworkTransfer's progress callback.
 constexpr int PICopilotRequestTimeoutSeconds = 300;
 
-// One turn of chat history sent to the Anthropic Messages API.
+// One turn of chat history sent to the Anthropic Messages API. A message
+// with a non-empty imageJpegBase64 is sent as a content-block array
+// [image(base64 JPEG), text]; every other message stays a plain string.
 struct AnthropicMessage
 {
-   IsoString role;    // "user" | "assistant"
+   IsoString role;               // "user" | "assistant"
    String    content;
+   IsoString imageJpegBase64;    // optional, standard Base64, no data: prefix
 };
+
+// The Messages API request body (UTF-8 JSON, non-streamed: no "stream" key).
+// Pure function, any thread. Throws std::exception if JSON building fails.
+std::string BuildMessagesRequestBody( const IsoString& model, const String& systemPrompt,
+                                      const Array<AnthropicMessage>& history );
 
 // Outcome of an AnthropicClient::Send() call. Send() never throws across
 // its caller — success or failure both ride back in here, since the
