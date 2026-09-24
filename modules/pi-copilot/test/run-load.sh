@@ -17,8 +17,31 @@ SO="$ROOT/build/src/module/PICopilot-pxm.so"
 # slot instead, and wipe that slot's settings before AND after each run so
 # every run starts hermetic and never accumulates dev-only Modules state.
 PICOPILOT_TEST_SLOT="${PICOPILOT_TEST_SLOT:-90}"
+
+# Guard: PICOPILOT_TEST_SLOT is env-controlled (typo/override risk), and this
+# script deletes whatever settings file its value resolves to. Slots 1-49 are
+# where a normal PI instance (or another tool) lives -- slot 1 in particular
+# IS the user's real ~/.PixInsight/core-001-pxi.settings -- so a bad value
+# must never resolve there. Reject anything that isn't a plain unsigned
+# decimal integer BEFORE any arithmetic touches it: bash's own $(( )) and
+# printf %d both reinterpret a leading "0x" as hex and a leading "0" as
+# octal, so "1", "01", and "0x1" would all otherwise collide with slot 1.
+case "$PICOPILOT_TEST_SLOT" in
+   ''|*[!0-9]*)
+      echo "FAIL: PICOPILOT_TEST_SLOT must be a plain decimal integer, got '$PICOPILOT_TEST_SLOT'"; exit 1
+      ;;
+esac
+# Force base-10 interpretation (10#...) so a leading zero can't be read as
+# octal, then require the reserved test range: PI's own -n slot range is
+# [1,256] (PixInsight.sh --help), and 1-49 are left for real/other instances.
+if (( 10#$PICOPILOT_TEST_SLOT < 50 || 10#$PICOPILOT_TEST_SLOT > 256 )); then
+   echo "FAIL: PICOPILOT_TEST_SLOT must be in [50,256] (reserved for tests), got '$PICOPILOT_TEST_SLOT'"; exit 1
+fi
+PICOPILOT_TEST_SLOT=$(( 10#$PICOPILOT_TEST_SLOT ))
+
 SLOT_SETTINGS="$(printf '%s/core-%03d-pxi.settings' "$HOME/.PixInsight" "$PICOPILOT_TEST_SLOT")"
 rm -f "$SLOT_SETTINGS"
+trap 'rm -f "$SLOT_SETTINGS"' EXIT
 
 [ -f "$SO" ] || { echo "FAIL: module not built at $SO"; exit 1; }
 "$PI" --sign-module-file="$SO" --xssk-file="$KEYS" --xssk-password="$PASS"
