@@ -3,6 +3,8 @@
 
 #include "PICopilotAgentSelfTest.h"
 #include "PICopilotModule.h"
+#include "ProcessApply.h"
+#include "ProcessCatalog.h"
 #include "Utf8.h"
 
 #include <pcl/AutoViewLock.h>
@@ -356,6 +358,179 @@ bool RunAgentSelfTest( nlohmann::json& out )
       out["agentSmokeGlobalOnlyOk"] = globalOnlyOk;
       out["agentSmokeError"] = U8( error );
       out["agentSmokeOk"] = ok;
+      allOk = allOk && ok;
+   }
+
+   // ---- Section A1: ApplyProcess (Task 2) ----------------------------------
+   {
+      bool pmOk = false, htOk = false, scnrOk = false, errorsOk = true, busyOk = false,
+           changesOk = false, enumDefaultOk = false;
+      nlohmann::json detail = nlohmann::json::object();
+      String error;
+      try
+      {
+         {  // PixelMath: String parameter -> pixel values halved.
+            AgentTestWindow tw( "PICopilotApplyPM" );
+            View v = tw.MainView();
+            const double before = ChannelMedian( v, 0 );
+            const ApplyProcessResult r = ApplyProcess( "PixelMath", { { "expression", "$T*0.5" } }, nlohmann::json(), v );
+            const double after = ChannelMedian( v, 0 );
+            detail["pm"] = { { "ok", r.ok }, { "error", U8( r.error ) }, { "before", before }, { "after", after },
+                             { "elapsedMs", r.elapsedMs } };
+            pmOk = r.ok && r.processId == "PixelMath" && std::fabs( after - 0.5*before ) < 1e-5
+                && r.parametersSet.value( "expression", std::string() ) == "$T*0.5" && r.error.IsEmpty();
+         }
+         {  // HistogramTransformation: table parameter H (row 3 = combined RGB/K, m = 0.25 brightens).
+            AgentTestWindow tw( "PICopilotApplyHT" );
+            View v = tw.MainView();
+            const double before = ChannelMedian( v, 1 );
+            nlohmann::json rows = nlohmann::json::array();
+            for ( int i = 0; i < 5; ++i )
+               rows.push_back( nlohmann::json::array( { 0, i == 3 ? 0.25 : 0.5, 1, 0, 1 } ) );
+            nlohmann::json tables = nlohmann::json::object();
+            tables["H"] = rows;
+            const ApplyProcessResult r = ApplyProcess( "HistogramTransformation", nlohmann::json::object(), tables, v );
+            const double after = ChannelMedian( v, 1 );
+            detail["ht"] = { { "ok", r.ok }, { "error", U8( r.error ) }, { "before", before }, { "after", after } };
+            htOk = r.ok && after > 2*before;
+         }
+         {  // SCNR: enumeration parameters by element id -> red square loses red, grey background untouched.
+            AgentTestWindow tw( "PICopilotApplySCNR" );
+            View v = tw.MainView();
+            const float bgBefore = SampleAt( v, 10, 10, 0 );
+            const nlohmann::json p = { { "colorToRemove", "Red" }, { "protectionMethod", "AverageNeutral" },
+                                       { "amount", 1.0 }, { "preserveLightness", false } };
+            const ApplyProcessResult r = ApplyProcess( "SCNR", p, nlohmann::json(), v );
+            const float sq = SampleAt( v, kAgSqX0 + kAgSq/2, kAgSqY0 + kAgSq/2, 0 );
+            const float bgAfter = SampleAt( v, 10, 10, 0 );
+            detail["scnr"] = { { "ok", r.ok }, { "error", U8( r.error ) }, { "square", sq }, { "bgBefore", bgBefore }, { "bgAfter", bgAfter } };
+            scnrOk = r.ok && sq < 1e-6f && std::fabs( bgAfter - bgBefore ) < 1e-6f;
+         }
+
+         // Every error path: !ok, a precise message, and the image untouched.
+         struct Case { const char* name; const char* process; nlohmann::json params; nlohmann::json tables; const char* expect; };
+         const Case cases[] = {
+            { "unknownProcess", "NoSuchProcessXYZ", nlohmann::json::object(), nlohmann::json(),
+              "unknown process id 'NoSuchProcessXYZ'" },
+            { "unknownParam", "PixelMath", { { "noSuchParam", 1 } }, nlohmann::json(),
+              "unknown parameter PixelMath.noSuchParam" },
+            { "badEnum", "SCNR", { { "colorToRemove", "Purple" } }, nlohmann::json(),
+              "SCNR.colorToRemove: 'Purple' is not a valid value; use one of: Red, Green, Blue" },
+            { "wrongType", "SCNR", { { "amount", "lots" } }, nlohmann::json(),
+              "SCNR.amount: expected a number" },
+            { "outOfRange", "SCNR", { { "amount", 5 } }, nlohmann::json(),
+              "SCNR.amount: 5 is out of range [0, 1]" },
+            { "tableAsScalar", "HistogramTransformation", { { "H", 1 } }, nlohmann::json(),
+              "HistogramTransformation.H is a table parameter" },
+            { "badRow", "HistogramTransformation", nlohmann::json::object(),
+              { { "H", nlohmann::json::array( { nlohmann::json::array( { 0, 0.5, 1 } ) } ) } },
+              "HistogramTransformation.H: row 0 has 3 values; expected 5" },
+            // Not ImageIntegration: it CAN process views in PI 1.9.5 (Task 1
+            // finding). Our own PICopilot process is global-only by contract.
+            { "globalOnly", "PICopilot", nlohmann::json::object(), nlohmann::json(),
+              "PICopilot can only run in the global context" },
+            // A syntax error is only found by the core at execution time:
+            // ExecuteOn() returns false (no exception, no modal -- verified
+            // under Xvfb), and the view is left untouched.
+            { "badExpression", "PixelMath", { { "expression", "$T*" } }, nlohmann::json(),
+              "PixelMath did not complete on PICopilotApplyErr" },
+            // Enumeration whose native element ids are unreadable (resolved
+            // via PJSR introspection): an unknown id still gets the real list.
+            { "badEnumPJSR", "PixelMath", { { "newImageColorSpace", "CMYK" } }, nlohmann::json(),
+              "PixelMath.newImageColorSpace: 'CMYK' is not a valid value; use one of: SameAsTarget, RGB, Gray" },
+            // Row count is checked BEFORE AllocateTableRows(): the core
+            // answers a bad length with a modal dialog (seen live). H takes
+            // 4 or 5 rows (core length limits).
+            { "wrongRowCount", "HistogramTransformation", nlohmann::json::object(),
+              { { "H", nlohmann::json::array( { nlohmann::json::array( { 0, 0.5, 1, 0, 1 } ) } ) } },
+              "HistogramTransformation.H: 1 rows given; this table needs between 4 and 5 rows (columns: c0, m, c1, r0, r1)" },
+            { "cellType", "HistogramTransformation", nlohmann::json::object(),
+              { { "H", nlohmann::json::array( {
+                  nlohmann::json::array( { 0, "x", 1, 0, 1 } ), nlohmann::json::array( { 0, 0.5, 1, 0, 1 } ),
+                  nlohmann::json::array( { 0, 0.5, 1, 0, 1 } ), nlohmann::json::array( { 0, 0.5, 1, 0, 1 } ),
+                  nlohmann::json::array( { 0, 0.5, 1, 0, 1 } ) } ) } },
+              "HistogramTransformation.H[0].m: expected a number" },
+            { "intOutOfType", "PixelMath", { { "newImageWidth", -5 } }, nlohmann::json(),
+              "PixelMath.newImageWidth: -5 is below the minimum 0" },
+            { "notAnInteger", "PixelMath", { { "newImageWidth", 2.5 } }, nlohmann::json(),
+              "PixelMath.newImageWidth: expected an integer, got 2.5" },
+         };
+         AgentTestWindow tw( "PICopilotApplyErr" );
+         View v = tw.MainView();
+         const double before = ChannelMedian( v, 0 );
+         nlohmann::json caseOut = nlohmann::json::array();
+         for ( const Case& c : cases )
+         {
+            const ApplyProcessResult r = ApplyProcess( c.process, c.params, c.tables, v );
+            const bool pass = !r.ok && r.error.Contains( String::UTF8ToUTF16( c.expect ) );
+            caseOut.push_back( { { "case", c.name }, { "pass", pass }, { "error", U8( r.error ) } } );
+            errorsOk = errorsOk && pass;
+         }
+         detail["errorCases"] = caseOut;
+         errorsOk = errorsOk && std::fabs( ChannelMedian( v, 0 ) - before ) < 1e-12;
+
+         {  // Busy view: locked by "someone else" -> immediate error, never a wait.
+            const auto t0 = std::chrono::steady_clock::now();
+            ApplyProcessResult r;
+            {
+               View locked = v;
+               AutoViewLock lock( locked );
+               r = ApplyProcess( "PixelMath", { { "expression", "$T*0.5" } }, nlohmann::json(), v );
+            }
+            const double ms = std::chrono::duration<double, std::milli>( std::chrono::steady_clock::now() - t0 ).count();
+            detail["busy"] = { { "error", U8( r.error ) }, { "ms", ms } };
+            busyOk = !r.ok && r.error.Contains( "is busy" ) && ms < 2000
+                  && std::fabs( ChannelMedian( v, 0 ) - before ) < 1e-12;
+         }
+
+         {  // Human-readable change list (Guided dialog / log).
+            nlohmann::json tables = nlohmann::json::object();
+            tables["H"] = nlohmann::json::array( { nlohmann::json::array( { 0, 0.5, 1, 0, 1 } ) } );
+            const String s = DescribeParameterChanges( { { "expression", "$T*0.5" } }, tables, 1000 );
+            const String none = DescribeParameterChanges( nlohmann::json::object(), nlohmann::json(), 1000 );
+            changesOk = s.Contains( "expression = $T*0.5" ) && s.Contains( "H = [[0,0.5,1,0,1]]" )
+                     && none == "(all parameters at their defaults)";
+         }
+
+         {  // describe_process default for an enum is the element at the default INDEX.
+            // Native element-id introspection is broken for this parameter
+            // (Task 1), so this also proves the PJSR fallback feeds describe.
+            const nlohmann::json d = DescribeProcess( "SCNR" );
+            for ( const nlohmann::json& p : d.at( "parameters" ) )
+               if ( p.at( "id" ) == "colorToRemove" )
+               {
+                  detail["scnrColorDescribe"] = p;
+                  const nlohmann::json want = nlohmann::json::array( {
+                     { { "id", "Red" }, { "value", 0 } }, { { "id", "Green" }, { "value", 1 } },
+                     { { "id", "Blue" }, { "value", 2 } } } );
+                  enumDefaultOk = p.value( "default", std::string() ) == "Green"
+                               && p.value( "enumeration", nlohmann::json() ) == want && !p.contains( "error" );
+               }
+         }
+         {  // Apply agrees with describe: a PJSR-resolved enum id on another process.
+            AgentTestWindow tw( "PICopilotApplyPMEnum" );
+            View v = tw.MainView();
+            const ApplyProcessResult r = ApplyProcess( "PixelMath",
+               { { "expression", "$T" }, { "newImageSampleFormat", "f32" } }, nlohmann::json(), v );
+            detail["pmEnum"] = { { "ok", r.ok }, { "error", U8( r.error ) } };
+            enumDefaultOk = enumDefaultOk && r.ok && r.parametersSet.value( "newImageSampleFormat", std::string() ) == "f32";
+         }
+      }
+      catch ( const pcl::Exception& x ) { error = x.Message(); }
+      catch ( const std::exception& x ) { error = String( x.what() ); }
+      catch ( ... )                     { error = "unknown exception"; }
+
+      const bool ok = pmOk && htOk && scnrOk && errorsOk && busyOk && changesOk && enumDefaultOk;
+      out["applyDetail"] = detail;
+      out["applyPixelMathOk"] = pmOk;
+      out["applyTableOk"] = htOk;
+      out["applyEnumOk"] = scnrOk;
+      out["applyErrorsOk"] = errorsOk;
+      out["applyBusyOk"] = busyOk;
+      out["applyChangesOk"] = changesOk;
+      out["catalogEnumDefaultOk"] = enumDefaultOk;
+      out["applyError"] = U8( error );
+      out["applyProcessOk"] = ok;
       allOk = allOk && ok;
    }
 
