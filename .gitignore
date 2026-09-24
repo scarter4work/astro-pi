@@ -22,3 +22,6 @@ __pycache__/
 
 # PI Copilot: ephemeral local test key (never commit)
 modules/pi-copilot/test/.test_api_key
+
+# Claude Code per-user local settings
+.claude/settings.local.json
