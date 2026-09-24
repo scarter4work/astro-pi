@@ -3,6 +3,7 @@
 
 #include "PICopilotInstance.h"
 #include "PICopilotSelfTest.h"
+#include "Utf8.h"
 
 #include <pcl/Console.h>
 
@@ -75,8 +76,8 @@ bool PICopilotInstance::ExecuteGlobal()
       int fd = ::open( outPath, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW, 0600 );
       if ( fd >= 0 )
       {
-         IsoString u = json.ToUTF8();
-         ssize_t w = ::write( fd, u.c_str(), u.Length() );
+         std::string u = U8( json );
+         ssize_t w = ::write( fd, u.data(), u.size() );
          (void)w;
          ::close( fd );
       }

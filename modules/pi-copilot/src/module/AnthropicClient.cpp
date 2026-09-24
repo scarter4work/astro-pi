@@ -2,6 +2,7 @@
 // Copyright (c) 2026 Scott Carter. MIT License.
 
 #include "AnthropicClient.h"
+#include "Utf8.h"
 
 #include <pcl/Control.h>
 #include <pcl/Exception.h>
@@ -90,7 +91,7 @@ namespace
 
 nlohmann::json MessageContent( const AnthropicMessage& msg )
 {
-   const std::string text( msg.content.ToUTF8().c_str() );
+   const std::string text = U8( msg.content );
    if ( msg.imageJpegBase64.IsEmpty() )
       return text;
    nlohmann::json image = {
@@ -108,6 +109,32 @@ nlohmann::json MessageContent( const AnthropicMessage& msg )
 
 } // namespace
 
+namespace
+{
+
+String PostBytes( const std::string& bytes )
+{
+   // NetworkTransfer::POST( const String& ) hands the UTF-16 string to the
+   // core, which sends each 16-bit code unit as ONE byte (its low 8 bits) --
+   // it does not UTF-8-encode. Proven by the self-test's loopback echo server
+   // (Section 8): U+2014 went out as 0x14, U+2192 as 0x92, U+00B5 as 0xB5.
+   // Handing it the UTF-16 decoding of the body (0.1.0.3 and earlier) thus
+   // sent invalid UTF-8 for any non-ASCII character, and the API rejected
+   // the whole body ("str is not valid UTF-8: surrogates not allowed") --
+   // e.g. every turn after a reply containing an em dash or arrow.
+   //
+   // So widen each body BYTE to one code unit (0x00..0xFF): the core's
+   // narrowing then reproduces the UTF-8 bytes exactly.
+   String s;
+   s.SetLength( bytes.size() );
+   char16_type* out = s.Begin();
+   for ( const char c : bytes )
+      *out++ = char16_type( static_cast<unsigned char>( c ) );
+   return s;
+}
+
+} // namespace
+
 std::string BuildMessagesRequestBody( const IsoString& model, const String& systemPrompt,
                                       const Array<AnthropicMessage>& history )
 {
@@ -117,7 +144,7 @@ std::string BuildMessagesRequestBody( const IsoString& model, const String& syst
    nlohmann::json req = {
       { "model", model.c_str() },
       { "max_tokens", 4096 },
-      { "system", systemPrompt.ToUTF8().c_str() },
+      { "system", U8( systemPrompt ) },
       { "messages", messages }
    };
    return req.dump();
@@ -127,7 +154,7 @@ struct AnthropicRequest::Impl
 {
    ResponseSink    sink;      // root-thread construction only (Control)
    NetworkTransfer transfer;
-   String          body;      // UTF-16 request body, ready to POST
+   String          body;      // request body as POST() wants it -- see PostBytes()
    String          buildError;
    int             timeoutSeconds = PICopilotRequestTimeoutSeconds;
 };
@@ -141,15 +168,11 @@ AnthropicRequest::AnthropicRequest( const String& apiKey, const IsoString& model
 
    // --- Build the request body -----------------------------------------
    //
-   // nlohmann::json stores/emits text as UTF-8. pcl::String is UTF-16
-   // internally, so every String -> json::string conversion below goes
-   // through ToUTF8(), and the resulting UTF-8 std::string is decoded
-   // back into a pcl::String via String::UTF8ToUTF16() (NOT the
-   // String(const char*) ISO-8859-1 constructor, which would mangle any
-   // non-ASCII byte in the JSON as a Latin-1 code point).
+   // nlohmann::json stores/emits text as UTF-8 (every String goes in via
+   // U8()); PostBytes() then carries those exact bytes through POST().
    try
    {
-      m->body = String::UTF8ToUTF16( BuildMessagesRequestBody( model, systemPrompt, history ).c_str() );
+      m->body = PostBytes( BuildMessagesRequestBody( model, systemPrompt, history ) );
    }
    catch ( const std::exception& x )
    {
@@ -319,11 +342,11 @@ AnthropicResult AnthropicRequest::Perform()
       {
          msg = ( j.contains( "error" ) && j["error"].contains( "message" ) )
             ? j["error"]["message"].get<std::string>()
-            : std::string( transfer.ErrorInformation().ToUTF8().c_str() );
+            : U8( transfer.ErrorInformation() );
       }
       catch ( ... )
       {
-         msg = std::string( transfer.ErrorInformation().ToUTF8().c_str() );
+         msg = U8( transfer.ErrorInformation() );
       }
       result.error = String::UTF8ToUTF16( msg.c_str() );
       result.ok = false;
