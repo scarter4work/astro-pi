@@ -6,6 +6,7 @@
 
 #include <pcl/AutoViewLock.h>
 #include <pcl/Exception.h>
+#include <pcl/File.h>
 #include <pcl/FITSHeaderKeyword.h>
 #include <pcl/ImageVariant.h>
 #include <pcl/ImageWindow.h>
@@ -27,6 +28,20 @@ std::string FitsU8( const IsoString& s )
 
 } // namespace
 
+bool IsRedactedFitsKeyword( const IsoString& name )
+{
+   const IsoString n = name.Trimmed().Uppercase();
+   for ( const char* r : PICopilotRedactedFitsKeywords )
+      if ( n == r )
+         return true;
+   return false;
+}
+
+String ViewContextFileName( const String& filePath )
+{
+   return filePath.IsEmpty() ? String() : File::ExtractNameAndExtension( filePath );
+}
+
 nlohmann::json BuildViewContext( const View& view )
 {
    if ( view.IsNull() )
@@ -39,7 +54,7 @@ nlohmann::json BuildViewContext( const View& view )
    ctx["viewId"] = std::string( v.Id().c_str() );
    ctx["fullId"] = std::string( v.FullId().c_str() );
    ctx["isPreview"] = v.IsPreview();
-   ctx["filePath"] = window.IsNull() ? std::string() : U8( window.FilePath() );
+   ctx["fileName"] = window.IsNull() ? std::string() : U8( ViewContextFileName( window.FilePath() ) );
 
    {
       AutoViewWriteLock lock( v );
@@ -82,10 +97,17 @@ nlohmann::json BuildViewContext( const View& view )
 
    const FITSKeywordArray keywords = window.IsNull() ? FITSKeywordArray() : window.Keywords();
    nlohmann::json fits = nlohmann::json::array();
-   const size_type kept = Min( keywords.Length(), size_type( PICopilotMaxFitsKeywords ) );
-   for ( size_type i = 0; i < kept; ++i )
+   size_type kept = 0, redacted = 0;
+   for ( const FITSHeaderKeyword& kw : keywords )
    {
-      const FITSHeaderKeyword& kw = keywords[i];
+      if ( IsRedactedFitsKeyword( kw.name ) )
+      {
+         ++redacted;
+         continue;
+      }
+      if ( kept == size_type( PICopilotMaxFitsKeywords ) )
+         continue;   // counted below as omitted
+      ++kept;
       IsoString value = kw.StripValueDelimiters();
       nlohmann::json entry = { { "name", FitsU8( kw.name ) } };
       if ( value.Length() > size_type( PICopilotMaxFitsValueChars ) )
@@ -99,7 +121,8 @@ nlohmann::json BuildViewContext( const View& view )
    }
    ctx["fitsKeywords"] = fits;
    ctx["fitsKeywordsTotal"] = keywords.Length();
-   ctx["fitsKeywordsOmitted"] = keywords.Length() - kept;
+   ctx["fitsKeywordsRedacted"] = redacted;
+   ctx["fitsKeywordsOmitted"] = keywords.Length() - redacted - kept;
    return ctx;
 }
 

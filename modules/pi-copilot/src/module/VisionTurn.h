@@ -21,9 +21,14 @@ extern const char* const kPICopilotImageOmittedNote;
 AnthropicMessage ComposeUserTurn( const String& userText, const nlohmann::json* viewContext,
                                   const IsoString& jpegBase64 );
 
-// In place: every message except the LAST loses its image, and each message
-// that loses one gets kPICopilotImageOmittedNote prepended to its text.
-// Idempotent (a message without an image is never touched).
+// In place, for every USER message except the LAST (token cost of re-sent
+// history):
+//  - an image is dropped and kPICopilotImageOmittedNote is prepended;
+//  - a leading view-context block is collapsed to
+//    {"collapsed":true,"fullId":...,"geometry":...} (per-channel stats and
+//    FITS keywords are not re-sent) -- also for a turn that never had an
+//    image (preview failed). The user's own text is kept intact.
+// Idempotent: a second call changes nothing.
 void StripOlderImages( Array<AnthropicMessage>& history );
 
 } // namespace pcl
