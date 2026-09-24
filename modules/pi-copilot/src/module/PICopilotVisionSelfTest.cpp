@@ -3,8 +3,10 @@
 
 #include "PICopilotVisionSelfTest.h"
 #include "AnthropicClient.h"
+#include "PanelPlacement.h"
 #include "ProcessCatalog.h"
 #include "Utf8.h"
+#include "ViewCapture.h"
 #include "ViewContext.h"
 #include "ViewPreview.h"
 #include "VisionTurn.h"
@@ -711,6 +713,74 @@ bool RunVisionSelfTest( nlohmann::json& out )
       out["visionError"] = U8( error );
       out["visionOk"] = visionOk;
       allOk = allOk && visionOk;
+   }
+
+   // ---- Section 7: panel capture + default placement (Task 6, no network) --
+   // The pure halves of the panel's Send capture and right-edge placement.
+   // The panel wiring itself (checkbox, OnShow, log) is GUI-only.
+   {
+      bool captureOk = false, noViewOk = false, failedViewOk = false, placementOk = false;
+      String error;
+      try
+      {
+         {
+            WindowCloser wc{ CreateSyntheticWindow() };
+            const View view = wc.window.MainView();
+            StringList notes;
+            const AnthropicMessage t = CaptureViewTurn( "what now?", &view, notes );
+            captureOk = t.role == "user" && !t.imageJpegBase64.IsEmpty()
+                     && t.content.StartsWith( String( "[PixInsight view context]" ) )
+                     && t.content.EndsWith( String( "what now?" ) )
+                     && notes.Length() == 1 && notes[0].StartsWith( String( "(attached " ) );
+            if ( !captureOk )
+               for ( const String& n : notes )
+                  error += n + " | ";
+         }
+         {
+            StringList notes;
+            const AnthropicMessage t = CaptureViewTurn( "hello", nullptr, notes );
+            noViewOk = t.content == "hello" && t.imageJpegBase64.IsEmpty()
+                    && notes.Length() == 1
+                    && notes[0] == String::UTF8ToUTF16( kPICopilotNoActiveImageNote );
+         }
+         {
+            // A null View: both the context and the preview fail; each failure
+            // is reported and the bare text still goes out.
+            const View nullView = View::Null();
+            StringList notes;
+            const AnthropicMessage t = CaptureViewTurn( "still send", &nullView, notes );
+            failedViewOk = t.content == "still send" && t.imageJpegBase64.IsEmpty()
+                        && notes.Length() == 2
+                        && notes[0].StartsWith( String( "View context failed: " ) )
+                        && notes[1].StartsWith( String( "Preview failed: " ) );
+            if ( !failedViewOk )
+               for ( const String& n : notes )
+                  error += n + " | ";
+         }
+         {
+            // 2560x1440 primary screen, 420 wide, 40/60/8 margins.
+            const PanelPlacement a = ComputeDefaultPanelPlacement( 1280, 720, 420, 40, 60, 8 );
+            // Width clamped to what fits beside the right margin.
+            const PanelPlacement b = ComputeDefaultPanelPlacement( 200, 400, 420, 40, 60, 8 );
+            // Unusable geometry: never move/resize.
+            const PanelPlacement z = ComputeDefaultPanelPlacement( 0, 0, 420, 40, 60, 8 );
+            const PanelPlacement s = ComputeDefaultPanelPlacement( 1280, 40, 420, 40, 60, 8 );
+            placementOk = a.ok && a.x == 2560 - 420 - 8 && a.y == 40 && a.width == 420 && a.height == 1440 - 100
+                       && b.ok && b.width == 392 && b.x == 0
+                       && !z.ok && !s.ok;
+         }
+      }
+      catch ( const pcl::Exception& x ) { error += x.Message(); }
+      catch ( const std::exception& x ) { error += String( x.what() ); }
+      catch ( ... )                     { error += "unknown exception"; }
+      const bool ok = captureOk && noViewOk && failedViewOk && placementOk;
+      out["captureTurnOk"] = captureOk;
+      out["captureNoViewOk"] = noViewOk;
+      out["captureFailedViewOk"] = failedViewOk;
+      out["placementOk"] = placementOk;
+      out["captureError"] = U8( error );
+      out["panelCaptureOk"] = ok;
+      allOk = allOk && ok;
    }
 
    // ---- inc3 sections end ----
