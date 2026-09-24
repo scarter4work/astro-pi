@@ -2,6 +2,7 @@
 // Copyright (c) 2026 Scott Carter. MIT License.
 
 #include "PICopilotVisionSelfTest.h"
+#include "Utf8.h"
 
 #include <pcl/AutoViewLock.h>
 #include <pcl/Bitmap.h>
@@ -13,7 +14,7 @@
 #include <pcl/ImageWindow.h>
 #include <pcl/View.h>
 
-#include <string>
+#include <utility>
 
 namespace pcl
 {
@@ -31,24 +32,68 @@ double SynthBackground( int x )
    return 0.02 + 0.03*x/(kSynthW - 1);
 }
 
-std::string U8( const String& s )
-{
-   return std::string( s.ToUTF8().c_str() );
-}
-
 bool IsJpeg( const ByteArray& b )
 {
    const size_type n = b.Length();
    return n >= 4 && b[0] == 0xFF && b[1] == 0xD8 && b[n-2] == 0xFF && b[n-1] == 0xD9;
 }
 
-ImageWindow CreateSyntheticWindow()
+// Owns a (possibly null) ImageWindow and force-closes the core-side window on
+// destruction. Move-only: ImageWindow is an alias handle (its own destructor
+// does NOT close the core-side window -- see ImageWindow.h:388-393), so
+// exactly one WindowCloser must be responsible for a given window at a time.
+// A window must be handed to a WindowCloser IMMEDIATELY after construction,
+// before any code that could throw runs -- see CreateSyntheticWindow().
+struct WindowCloser
 {
-   // Hidden window (ImageWindow.h:348 -- "The new image window will be hidden").
-   ImageWindow window( kSynthW, kSynthH, 3, 32, true/*floatSample*/, true/*color*/,
-                       false/*initialProcessing*/, IsoString( "PICopilotSelfTest" ) );
-   if ( window.IsNull() )
-      throw Error( "ImageWindow construction returned a null window" );
+   ImageWindow window;
+
+   WindowCloser() = default;
+   explicit WindowCloser( ImageWindow w ) : window( std::move( w ) )
+   {
+   }
+
+   WindowCloser( const WindowCloser& ) = delete;
+   WindowCloser& operator=( const WindowCloser& ) = delete;
+
+   WindowCloser( WindowCloser&& ) = default;
+   WindowCloser& operator=( WindowCloser&& other )
+   {
+      if ( this != &other )
+      {
+         Close();
+         window = std::move( other.window );
+      }
+      return *this;
+   }
+
+   ~WindowCloser()
+   {
+      Close();
+   }
+
+private:
+
+   void Close()
+   {
+      try
+      {
+         if ( !window.IsNull() )
+            window.ForceClose();
+      }
+      catch ( ... )
+      {
+      }
+   }
+};
+
+// Fills an already-created window with the synthetic test image (dim grey
+// gradient + pure-red square). Takes the window by reference so its caller
+// keeps whatever ownership guard (WindowCloser) it already established --
+// this function must never be the first thing done with a freshly
+// constructed window.
+void FillSyntheticWindow( ImageWindow& window )
+{
    View view = window.MainView();
    AutoViewLock lock( view );
    ImageVariant v = view.Image();
@@ -65,24 +110,25 @@ ImageWindow CreateSyntheticWindow()
          img.Pixel( x, y, 1 ) = sq ? 0.0f : bg;
          img.Pixel( x, y, 2 ) = sq ? 0.0f : bg;
       }
-   return window;
 }
 
-struct WindowCloser
+// Constructs the hidden 2000x1500 synthetic RGB test window and returns it
+// already wrapped in a WindowCloser, so a caller can never observe a
+// constructed-but-unguarded window: if FillSyntheticWindow() throws (or
+// anything else does, in a later task that extends this function), the
+// WindowCloser already owns the window and force-closes it on unwind.
+WindowCloser CreateSyntheticWindow()
 {
-   ImageWindow window;
-   ~WindowCloser()
-   {
-      try
-      {
-         if ( !window.IsNull() )
-            window.ForceClose();
-      }
-      catch ( ... )
-      {
-      }
-   }
-};
+   // Hidden window (ImageWindow.h:348 -- "The new image window will be hidden").
+   ImageWindow window( kSynthW, kSynthH, 3, 32, true/*floatSample*/, true/*color*/,
+                       false/*initialProcessing*/, IsoString( "PICopilotSelfTest" ) );
+   if ( window.IsNull() )
+      throw Error( "ImageWindow construction returned a null window" );
+   // Ownership transfers to the guard HERE, before anything else can throw.
+   WindowCloser wc{ std::move( window ) };
+   FillSyntheticWindow( wc.window );
+   return wc;
+}
 
 struct SmokeTempGuard
 {
@@ -115,7 +161,7 @@ bool RunVisionSelfTest( nlohmann::json& out )
       String error, path;
       try
       {
-         WindowCloser wc{ CreateSyntheticWindow() };
+         WindowCloser wc = CreateSyntheticWindow();
          windowOk = true;
          View view = wc.window.MainView();
          ImageVariant copy;
