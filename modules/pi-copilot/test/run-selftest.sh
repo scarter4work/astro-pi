@@ -67,6 +67,7 @@ if ! PICOPILOT_SELFTEST_OUT="$R" timeout 300 "$PI" -n --automation-mode --no-sta
 fi
 [ -f "$R" ] || { echo "FAIL: no result file"; exit 1; }
 cat "$R"
+echo
 python3 - "$R" <<'PY' || { echo "FAIL: self-test verdict not all green"; exit 1; }
 import json, sys
 d = json.load(open(sys.argv[1]))
