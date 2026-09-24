@@ -31,10 +31,13 @@ nlohmann::json DescribeProcess( const IsoString& id );
 // the core cannot report the element identifiers to a foreign module
 // ("GetParameterElementIdentifier(): API function error"; observed for SCNR
 // colorToRemove and PixelMath newImageColorSpace/newImageSampleFormat), so
-// the fallback asks the core JavaScript runtime (PJSR) instead: every integer
-// constant of the process prototype is assigned to the parameter of a fresh
-// instance, and the element id the core itself writes for it in toSource()
-// is recorded; the default id is read from a default instance's toSource().
+// the fallback splits the work: the element COUNT and VALUES still come from
+// the core natively (raw API table; only the identifier call is broken), and
+// the core JavaScript runtime (PJSR) maps each of those values to its id --
+// the value is assigned to the parameter of a fresh instance and the element
+// id the core itself writes for it in toSource() is recorded. The default id
+// is read from a default instance's toSource(). Only native element values
+// are ever assigned: an arbitrary number can crash the core in toSource().
 // Resolved per (process, parameter) once and cached. Root thread only.
 // Throws pcl::Error naming the parameter when neither route works.
 struct EnumerationInfo
