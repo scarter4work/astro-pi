@@ -918,16 +918,22 @@ bool RunVisionSelfTest( nlohmann::json& out )
    // the core's deferred-delete queue -- so with 9 windows torn down in quick
    // succession, that queued teardown can still be in flight when the caller
    // (PICopilotInstance::ExecuteGlobal) returns and the harness's
-   // --force-exit tears down the process. That race prints
-   // "pthread_mutex_lock() failed" on core's teardown path in test runs
-   // (proven: gating off window creation -> 0/10 occurrences; this section
-   // present -> ~6/10). Draining the event queue here, on this root thread
-   // (required -- see the header comment), gives that deferred teardown a
-   // chance to finish before we hand control back. ProcessEvents() docs ask
-   // for >=250 ms between calls from the root thread, hence the sleep.
+   // --force-exit tears down the process. That race was observed printing
+   // "pthread_mutex_lock() failed" on core's teardown path when the harness
+   // ran in a NON-isolated instance slot; it was NOT reproduced (0 hits
+   // across 25+ runs) once the harness moved to an isolated test slot
+   // (test/run-selftest.sh / test/run-load.sh), so this drain is a
+   // defensive measure against a real, understood race rather than a fix
+   // proven necessary against a reproduced local failure. Draining the event
+   // queue here, on this root thread (required -- see the header comment),
+   // gives that deferred teardown a chance to finish before we hand control
+   // back; excludeUserInputEvents=true because this is a headless
+   // automation-mode run with no user input to preserve. ProcessEvents()
+   // docs ask for >=250 ms between calls from the root thread, hence the
+   // sleep.
    for ( int i = 0; i < 4; ++i )
    {
-      ThePICopilotModule->ProcessEvents();
+      ThePICopilotModule->ProcessEvents( true/*excludeUserInputEvents*/ );
       std::this_thread::sleep_for( std::chrono::milliseconds( 250 ) );
    }
 
