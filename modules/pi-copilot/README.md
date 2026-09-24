@@ -69,7 +69,7 @@ Increment 1 deliverables:
   - **Copilot** — applies processes directly when you ask. Every run is recorded in the view's History, so Undo / the History Explorer work as usual.
   - **Guided** — shows each process and its parameters in a dialog and runs it only if you press **Yes** (the default button is **No**; Esc also declines).
   - **Advisor** — read-only: looks and advises, never changes the image.
-- **Which image:** the target is the view that was active when you pressed Send (the one whose preview went with the message) — clicking another image while a request runs does not redirect it. The model can work on another view only after inspecting it with `get_view_context` in the same message. Each applied process is logged in the chat as `… on <view id>`.
+- **Which image:** the target is the view that was active when you pressed Send (with Include view on, the one whose preview went with the message; with it off, still the view active at Send) — clicking another image while a request runs does not redirect it. The model can work on another view only after inspecting it with `get_view_context` in the same message. Each applied process is logged in the chat as `… on <view id>`.
 - **Stop** ends the message: no further tool runs (a process that is already running always finishes) and the request in flight is cancelled. **Clear** starts a new chat; your images and their History are untouched.
 - **Limits:** at most **12** tool steps (model responses that call tools) per message, and at most **8** tool calls per step; extra calls are answered "not executed" and the model is asked to summarize.
 - **Failures:** if a process started but did not complete (an error found while running, or you aborted it), the reason is in PixInsight's **Process Console** — the module cannot read it back, so the chat only says it failed.
@@ -93,3 +93,5 @@ Full harness: signs module, loads headlessly under `PixInsight --automation-mode
 **2026-09-23** — headless self-test PASS (Settings round-trip, worker-thread 401, cancel + deadline on a stalled connection, `</raw>` escaping). GUI chat: verified 2026-09-24 by the user on the released 0.1.0.2 installed from the repository URL (⚙ key entry → "say hello" → reply rendered in the panel).
 
 **2026-09-24** — headless self-test PASS incl. real text chat and real vision round-trip (synthetic red square sent as the image only, no context → model answered "Red"). GUI: pending user verification (0.1.0.3 via repository pull).
+
+**2026-09-24** — 0.1.1.0 headless self-test PASS incl. live agent run (real model called `apply_process PixelMath {"expression":"$T*0.5"}` → median ratio 0.5), text, two-turn and vision ('Red') checks. GUI: pending user verification (0.1.1.0 via repository pull).

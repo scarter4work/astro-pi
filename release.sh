@@ -108,7 +108,26 @@ PICOPILOT_VER="$(modver "$ROOT/modules/pi-copilot/src/module/PICopilotVersion.h"
 [[ "$NUKEX_VER" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]] || die "could not read NukeX version (got '$NUKEX_VER')"
 [[ "$PICOPILOT_VER" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]] || die "could not read PICopilot version (got '$PICOPILOT_VER')"
 MOD_TGZ="$DATE-linux-x64-NukeX-$NUKEX_VER.tar.gz"
-tar -C "$REPO" -czf "$REPO/$MOD_TGZ" bin/NukeX-pxm.so bin/NukeX-pxm.xsgn
+# A versioned module tarball that is already committed is PUBLISHED: never
+# rebuild it (a re-sign changes its bytes under the same name, and the raw CDN
+# would serve the old bytes against the new manifest sha1). Bump the module
+# version to ship new bytes.
+reuse_if_published(){ # <file in repository/>: restore the committed bytes of an already-published package
+  if git -C "$ROOT" ls-files --error-unmatch "repository/$1" >/dev/null 2>&1; then
+    git -C "$ROOT" checkout -- "repository/$1"
+    echo "   $1 already published -- reusing the committed bytes"
+  fi
+}
+package_module(){ # <tarball> <files...>
+  local tgz="$1"; shift
+  if git -C "$ROOT" ls-files --error-unmatch "repository/$tgz" >/dev/null 2>&1; then
+    git -C "$ROOT" checkout -- "repository/$tgz"
+    echo "   $tgz already published -- reusing the committed bytes"
+  else
+    tar -C "$REPO" -czf "$REPO/$tgz" "$@"
+  fi
+}
+package_module "$MOD_TGZ" bin/NukeX-pxm.so bin/NukeX-pxm.xsgn
 python3 - "$REPO/updates.xri" "$MOD_TGZ" <<'PY'
 import re,sys
 mf,fn=sys.argv[1:3]
@@ -120,7 +139,7 @@ PY
 echo "== 3a/6 package PICopilot module tarball =="
 cp "$PICOPILOT_SO" "$PICOPILOT_XSGN" "$REPO/bin/"
 PICOPILOT_TGZ="$DATE-linux-x64-PICopilot-$PICOPILOT_VER.tar.gz"
-tar -C "$REPO" -czf "$REPO/$PICOPILOT_TGZ" bin/PICopilot-pxm.so bin/PICopilot-pxm.xsgn
+package_module "$PICOPILOT_TGZ" bin/PICopilot-pxm.so bin/PICopilot-pxm.xsgn
 # Stale dated PICopilot tarballs (like stale dated NukeX tarballs) are not
 # auto-deleted here -- they're pruned manually at commit time (see repository/
 # git history, e.g. "Dropped stale repository/ artifacts ... 20260627 NukeX tarball").
@@ -174,6 +193,7 @@ for name in EZStretch EZDonutRepair EZHazeKill; do
   ( cd "$stage" && zip -qr "$REPO/$zipname" src )
   rm -rf "$stage"
   [ -f "$REPO/$zipname" ] || die "zip $zipname not produced"
+  reuse_if_published "$zipname"
 done
 
 echo "== 3c/6 package gaia-depth-grade script zip =="
@@ -191,6 +211,7 @@ rm -f "$REPO/$GAIA_ZIP"
 ( cd "$GAIA_STAGE" && zip -qr "$REPO/$GAIA_ZIP" src )
 rm -rf "$GAIA_STAGE"
 [ -f "$REPO/$GAIA_ZIP" ] || die "zip $GAIA_ZIP not produced"
+reuse_if_published "$GAIA_ZIP"
 # NOTE: the frozen sidecar binary is NOT packaged here — it lives on GitHub Releases
 # (>100MB), pinned by SIDECAR_URL/SIDECAR_SHA256 in pi/gaia_depth_grade_lib.jsh.
 # After bumping the sidecar, rebuild+upload it (gaia-depth-grade/tools/build-sidecar.sh)
@@ -214,6 +235,7 @@ rm -f "$REPO/$RCASTRO_ZIP"
 ( cd "$RCASTRO_STAGE" && zip -qr "$REPO/$RCASTRO_ZIP" src )
 rm -rf "$RCASTRO_STAGE"
 [ -f "$REPO/$RCASTRO_ZIP" ] || die "zip $RCASTRO_ZIP not produced"
+reuse_if_published "$RCASTRO_ZIP"
 
 echo "== 4/6 write fileName/sha1/releaseDate into ONE manifest =="
 write_pkg "$REPO/updates.xri" "$MOD_TGZ"                  "$(sha1 "$REPO/$MOD_TGZ")"
