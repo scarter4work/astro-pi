@@ -105,7 +105,12 @@ MetaProcess* PICopilotInterface::Process() const
 
 InterfaceFeatures PICopilotInterface::Features() const
 {
-   return InterfaceFeature::None;
+   // Not None: InterfaceFeature::None "effectively suppresses the interface's
+   // control bar" (ProcessInterface.h:144), and PixInsight's interface frame
+   // puts the mouse size grip in that bar. InfoArea is the most inert flag: a
+   // single-line text area, no Apply/Execute/Reset/drag object that would act
+   // on this degenerate (global-only, no-parameter) process.
+   return InterfaceFeature::InfoArea;
 }
 
 bool PICopilotInterface::IsInstanceGenerator() const
@@ -524,11 +529,27 @@ nlohmann::json PICopilotInterface::ProbeResizeForSelfTest()
    EnsureLayoutUpdated();
    j["restored"] = { Width(), Height() };
 
+   // The shrunk window must still hold the chat log's own minimum plus the
+   // global sizer's margins (a window that shrinks past its content, e.g. to
+   // 0x0 with min 0,0, is a defect), and the minimum must be exactly ours.
+   const int margins = 2*GUI->Global_Sizer.Margin();
+   const int minW = LogicalPixelsToPhysical( kMinPanelWidth );
+   const int minH = LogicalPixelsToPhysical( kMinPanelHeight );
+   j["expectedMin"] = { minW, minH };
+   j["chatLogMin"] = { GUI->ChatLog.MinWidth(), GUI->ChatLog.MinHeight() };
+   j["margins"] = margins;
+   // Non-empty feature set: InterfaceFeature::None suppresses the interface
+   // control bar (ProcessInterface.h:144), which carries the frame's size grip.
+   j["features"] = unsigned( Features() );
+
    j["resizableOk"] = !IsFixedWidth() && !IsFixedHeight()
                    && w1 == w0 + 300 && h1 == h0 + 300 && log1 > log0          // grows, chat log follows
                    && w2 < w0 && h2 < h0                                        // shrinks
-                   && MinWidth() <= LogicalPixelsToPhysical( kMinPanelWidth )  // sensible minimum
-                   && MinHeight() <= LogicalPixelsToPhysical( kMinPanelHeight );
+                   && MinWidth() == minW && MinHeight() == minH                 // exactly our minimum
+                   && w2 == minW && h2 == minH                                  // stops there
+                   && w2 >= GUI->ChatLog.MinWidth() + margins                   // never below its content
+                   && h2 >= GUI->ChatLog.MinHeight() + margins
+                   && unsigned( Features() ) != unsigned( InterfaceFeature::None );
    return j;
 }
 
@@ -612,9 +633,10 @@ PICopilotInterface::GUIData::GUIData( PICopilotInterface& w )
    // MinWidth()==MaxWidth(), Control.h:401-410). SetVariableSize() is PCL's
    // own idiom (min 0, max int_max; Control.h:415-419); then an explicit
    // minimum, as PCL's resizable dialogs do after AdjustToContents()
-   // (MultiViewSelectionDialog.cpp:184-185). With the window resizable,
-   // SaveGeometry()/auto-save also persist Width/Height
-   // (ProcessInterface.h:2487-2490), so the user's size is remembered.
+   // (MultiViewSelectionDialog.cpp:184-185). SaveGeometry() always writes
+   // Width/Height; RestoreGeometry() applies them only on an axis that is not
+   // fixed (ProcessInterface.cpp:149-186), so with the window resizable the
+   // user's size is restored.
    w.SetVariableSize();
    w.SetScaledMinSize( kMinPanelWidth, kMinPanelHeight );
 }
