@@ -62,6 +62,11 @@ Increment 1 deliverables:
 - **Process catalog** (`list_processes` / `describe_process` JSON from native introspection + compiled-in summaries) is built and self-tested; it becomes a model tool in increment 4.
 - **Self-test** additions: vision smoke (ImageWindow/Bitmap/JPEG headless), ViewContext values + redaction, ViewPreview (JPEG, size, unchanged image, temp removed, red square decodes red; float, uint16, mono, >2048 px), busy-view capture, ProcessCatalog, request content-block shape, history stripping/collapse, placement maths, and a gated **real vision call** (synthetic red square, image only → model must answer exactly "red"). Key source: system keyring (`secret-tool lookup service anthropic account default`), then `test/.test_api_key`, else skipped. Tests run in an isolated PixInsight instance slot (`PICOPILOT_TEST_SLOT`, default 90, must be ≥ 50) so they never touch your own PixInsight settings.
 
+## 0.1.0.4 — UTF-8 wire fix
+
+- Any chat turn containing non-ASCII text (e.g. a model reply with "—" or "→" re-sent as history) failed with `Error 400: ... not valid UTF-8: surrogates not allowed`. Cause: `NetworkTransfer::POST(const String&)` is transmitted by the PI core one byte per UTF-16 code unit (low 8 bits). The body is now widened byte-for-byte from UTF-8 (`PostBytes`), and all outbound text uses our own surrogate-aware `U8()` because PCL's `String::ToUTF8` mis-encodes astral characters (📷 → 📽).
+- This relies on undocumented PI-core transmit behaviour, proven by a loopback echo server that captures the wire bytes (self-test Section 8) plus a live two-turn check. **Re-run `bash test/run-selftest.sh` on every PixInsight upgrade** — if the core ever starts UTF-8-encoding POST bodies itself, Section 8 fails instead of users silently getting double-encoded text.
+
 ## Verified
 
 **2026-09-20** — self-test PASS on built module:
