@@ -4,10 +4,12 @@
 #include "PICopilotVisionSelfTest.h"
 #include "Utf8.h"
 #include "ViewContext.h"
+#include "ViewPreview.h"
 
 #include <pcl/AutoViewLock.h>
 #include <pcl/Bitmap.h>
 #include <pcl/ByteArray.h>
+#include <pcl/Color.h>
 #include <pcl/Exception.h>
 #include <pcl/File.h>
 #include <pcl/FITSHeaderKeyword.h>
@@ -145,6 +147,47 @@ void AddSyntheticKeywords( ImageWindow& window )
    window.SetKeywords( k );
 }
 
+// Order-dependent 64-bit hash of every channel's pixel buffer (Image::Hash64,
+// Image.h:13786). Synthetic windows are 32-bit float, so Image is exact.
+uint64 ViewImageHash( View view )
+{
+   AutoViewWriteLock lock( view );
+   ImageVariant v = view.Image();
+   const Image& img = static_cast<const Image&>( *v );
+   uint64 h = 0;
+   for ( int c = 0; c < img.NumberOfChannels(); ++c )
+      h = img.Hash64( c, h );
+   return h;
+}
+
+// Large synthetic RGB window (long edge > PICopilotPreviewBlockEdge) so
+// ViewPreview must take its k >= 2 block-average path. Dim diagonal gradient,
+// slightly different per channel so the stretch has real dispersion.
+constexpr int kLargeW = 4200, kLargeH = 2800;
+
+WindowCloser CreateLargeSyntheticWindow()
+{
+   ImageWindow window( kLargeW, kLargeH, 3, 32, true/*floatSample*/, true/*color*/,
+                       false/*initialProcessing*/, IsoString( "PICopilotSelfTestLarge" ) );
+   if ( window.IsNull() )
+      throw Error( "ImageWindow construction returned a null window (large)" );
+   WindowCloser wc{ std::move( window ) };
+   View view = wc.window.MainView();
+   AutoViewLock lock( view );
+   ImageVariant v = view.Image();
+   if ( !v || !v.IsFloatSample() || v.BitsPerSample() != 32 )
+      throw Error( "large synthetic window is not a 32-bit float image" );
+   Image& img = static_cast<Image&>( *v );
+   for ( int c = 0; c < 3; ++c )
+   {
+      float* f = img.PixelData( c );
+      for ( int y = 0; y < kLargeH; ++y )
+         for ( int x = 0; x < kLargeW; ++x )
+            *f++ = float( 0.02 + 0.01*c + 0.03*(double( x )/kLargeW + double( y )/kLargeH)/2 );
+   }
+   return wc;
+}
+
 struct SmokeTempGuard
 {
    String path;
@@ -266,6 +309,102 @@ bool RunVisionSelfTest( nlohmann::json& out )
       out["viewContextNullRejected"] = nullRejected;
       out["viewContextOk"] = ctxOk && nullRejected;
       allOk = allOk && ctxOk && nullRejected;
+   }
+
+   // ---- Section 3: ViewPreview (Task 3) -----------------------------------
+   {
+      bool previewOk = false, unchanged = false, tempRemoved = false, pixelsOk = false;
+      String error;
+      ViewPreviewResult p;
+      int sqR = -1, sqG = -1, sqB = -1, bgR = -1, bgG = -1, bgB = -1;
+      try
+      {
+         WindowCloser wc{ CreateSyntheticWindow() };
+         const View view = wc.window.MainView();
+         const uint64 before = ViewImageHash( view );
+         p = RenderViewPreview( view );
+         unchanged = ViewImageHash( view ) == before;
+         tempRemoved = !p.tempPath.IsEmpty() && !File::Exists( p.tempPath );
+         if ( p.ok )
+         {
+            const ByteArray jpeg = p.base64.FromBase64();
+            // Decode the JPEG and sample it: the red square must read red and
+            // the stretched background must be neutral grey, not black.
+            Bitmap decoded( jpeg.Begin(), jpeg.Length(), "JPG" );
+            const double s = double( p.width )/kSynthW;
+            const RGBA sq = decoded.Pixel( int( (kSquareX0 + kSquareSize/2)*s ), int( (kSquareY0 + kSquareSize/2)*s ) );
+            const RGBA bg = decoded.Pixel( int( 200*s ), int( 200*s ) );
+            sqR = Red( sq ); sqG = Green( sq ); sqB = Blue( sq );
+            bgR = Red( bg ); bgG = Green( bg ); bgB = Blue( bg );
+            pixelsOk = sqR > 180 && sqG < 80 && sqB < 80
+                    && Min( bgR, Min( bgG, bgB ) ) > 4
+                    && Max( bgR, Max( bgG, bgB ) ) - Min( bgR, Min( bgG, bgB ) ) < 24;
+            previewOk = IsJpeg( jpeg )
+                     && jpeg.Length() == p.jpegBytes
+                     && Max( p.width, p.height ) <= PICopilotPreviewMaxEdge
+                     && Max( p.width, p.height ) >= PICopilotPreviewMaxEdge - 8
+                     && p.base64.Length() == 4*((p.jpegBytes + 2)/3)
+                     && p.base64.Length() > 1000
+                     && p.base64.Length() <= PICopilotMaxImageBase64Bytes;
+         }
+         else
+            error = p.error;
+      }
+      catch ( const pcl::Exception& x ) { error = x.Message(); }
+      catch ( const std::exception& x ) { error = String( x.what() ); }
+      catch ( ... )                     { error = "unknown exception"; }
+
+      const ViewPreviewResult nullResult = RenderViewPreview( View() );
+      const bool nullRejected = !nullResult.ok && !nullResult.error.IsEmpty() && nullResult.base64.IsEmpty();
+
+      // Large source (long edge > 2048): must take the k >= 2 block-average
+      // path, still land at <= 1024 px, and leave the user image untouched.
+      bool largeOk = false, largeUnchanged = false, largeTempRemoved = false;
+      String largeError;
+      ViewPreviewResult lp;
+      try
+      {
+         WindowCloser wc{ CreateLargeSyntheticWindow() };
+         const View view = wc.window.MainView();
+         const uint64 before = ViewImageHash( view );
+         lp = RenderViewPreview( view );
+         largeUnchanged = ViewImageHash( view ) == before;
+         largeTempRemoved = !lp.tempPath.IsEmpty() && !File::Exists( lp.tempPath );
+         if ( lp.ok )
+            largeOk = lp.blockFactor >= 2
+                   && IsJpeg( lp.base64.FromBase64() )
+                   && Max( lp.width, lp.height ) <= PICopilotPreviewMaxEdge
+                   && Max( lp.width, lp.height ) >= PICopilotPreviewMaxEdge - 8
+                   && lp.base64.Length() <= PICopilotMaxImageBase64Bytes;
+         else
+            largeError = lp.error;
+      }
+      catch ( const pcl::Exception& x ) { largeError = x.Message(); }
+      catch ( const std::exception& x ) { largeError = String( x.what() ); }
+      catch ( ... )                     { largeError = "unknown exception"; }
+      largeOk = largeOk && largeUnchanged && largeTempRemoved;
+
+      const bool ok = previewOk && unchanged && tempRemoved && pixelsOk && nullRejected && largeOk;
+      out["previewWidth"] = p.width;
+      out["previewHeight"] = p.height;
+      out["previewBlockFactor"] = p.blockFactor;
+      out["previewJpegBytes"] = p.jpegBytes;
+      out["previewBase64Len"] = p.base64.Length();
+      out["previewTempRemoved"] = tempRemoved;
+      out["previewUserImageUnchanged"] = unchanged;
+      out["previewSquareRGB"] = { sqR, sqG, sqB };
+      out["previewBackgroundRGB"] = { bgR, bgG, bgB };
+      out["previewNullRejected"] = nullRejected;
+      out["previewError"] = U8( error );
+      out["previewLargeWidth"] = lp.width;
+      out["previewLargeHeight"] = lp.height;
+      out["previewLargeBlockFactor"] = lp.blockFactor;
+      out["previewLargeUserImageUnchanged"] = largeUnchanged;
+      out["previewLargeTempRemoved"] = largeTempRemoved;
+      out["previewLargeError"] = U8( largeError );
+      out["previewLargeOk"] = largeOk;
+      out["previewOk"] = ok;
+      allOk = allOk && ok;
    }
 
    // ---- inc3 sections end ----
