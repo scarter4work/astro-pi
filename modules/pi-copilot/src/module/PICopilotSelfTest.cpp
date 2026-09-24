@@ -4,11 +4,14 @@
 #include "PICopilotSelfTest.h"
 #include "PICopilotModule.h"     // ThePICopilotModule
 #include "AnthropicClient.h"
+#include "ChatThread.h"
 
 #include <pcl/Process.h>
 #include <pcl/ProcessInstance.h>
 #include <pcl/Settings.h>
 #include <pcl/Variant.h>
+
+#include <nlohmann/json.hpp>
 
 #include <cstdlib>
 
@@ -100,13 +103,55 @@ bool RunSelfTest( String& jsonOut )
       anthropicOk = false;
    }
 
-   bool ok = evalOk && piValid && keyStoreOk && anthropicOk;
+   // Path 5: off-root-thread Anthropic request. Runs a ChatThread (and so
+   // AnthropicClient::Send -- including its Control-derived response sink
+   // and the NetworkTransfer POST) on a real pcl::Thread with a
+   // deliberately INVALID key, and requires the API's 401 to come back
+   // through TryTakeResult(). No real key needed: a 401 proves the worker
+   // thread built the Control, performed the HTTPS POST and parsed the
+   // error body. Bounded wait so a hung request can't wedge the harness.
+   bool workerThreadOk = false;
+   int  workerHttpStatus = 0;
+   String workerError = "no result (thread did not complete)";
+   try
+   {
+      ChatThread t( String( "sk-ant-invalid-selftest" ), String( "You are a test." ),
+         { AnthropicMessage{ IsoString( "user" ), String( "ping" ) } } );
+      t.Start();
+      if ( t.Wait( 150000 ) )
+      {
+         AnthropicResult r;
+         if ( t.TryTakeResult( r ) )
+         {
+            workerHttpStatus = r.httpStatus;
+            workerError = r.error;
+            workerThreadOk = !r.ok && r.httpStatus == 401;
+         }
+      }
+      else
+      {
+         workerError = "timed out after 150 s";
+         t.Abort();
+         t.Wait();
+      }
+   }
+   catch ( ... )
+   {
+      workerThreadOk = false;
+      workerError = "exception constructing/starting ChatThread";
+   }
+
+   bool ok = evalOk && piValid && keyStoreOk && anthropicOk && workerThreadOk;
    jsonOut = String().Format(
       "{\"evalResult\":%d,\"evalOk\":%s,\"processInstanceValid\":%s,\"keyStoreOk\":%s,"
-      "\"anthropicOk\":%s,\"anthropicSkipped\":%s,\"ok\":%s}",
+      "\"anthropicOk\":%s,\"anthropicSkipped\":%s,\"workerThreadOk\":%s,\"workerHttpStatus\":%d,\"workerError\":%s,"
+      "\"ok\":%s}",
       evalResult, evalOk ? "true" : "false", piValid ? "true" : "false",
       keyStoreOk ? "true" : "false", anthropicOk ? "true" : "false",
-      anthropicSkipped ? "true" : "false", ok ? "true" : "false" );
+      anthropicSkipped ? "true" : "false", workerThreadOk ? "true" : "false", workerHttpStatus,
+      // nlohmann escapes the API's error text into a valid JSON string.
+      nlohmann::json( workerError.ToUTF8().c_str() ).dump().c_str(),
+      ok ? "true" : "false" );
    return ok;
 }
 

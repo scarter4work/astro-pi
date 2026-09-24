@@ -16,9 +16,12 @@ namespace pcl
 //   4. AnthropicClient against the real API -- gated on the
 //      PICOPILOT_TEST_API_KEY env var; skipped (and counted as passing)
 //      when it's unset, so CI without a key still passes.
+//   5. ChatThread / AnthropicClient::Send on a worker pcl::Thread with an
+//      invalid key -- must come back ok=false, httpStatus=401 (proves the
+//      off-root-thread Control sink + NetworkTransfer POST work).
 // Populates jsonOut with
 // {evalResult, evalOk, processInstanceValid, keyStoreOk, anthropicOk,
-//  anthropicSkipped, ok}
+//  anthropicSkipped, workerThreadOk, workerHttpStatus, workerError, ok}
 // and returns ok. Root-thread only (EvaluateScript requirement).
 bool RunSelfTest( String& jsonOut );
 

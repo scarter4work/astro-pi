@@ -42,9 +42,9 @@ python3 -c "
 import json, sys
 d = json.load(open('$R'))
 ok = (d.get('evalOk') and d.get('evalResult') == 3 and d.get('processInstanceValid')
-      and d.get('keyStoreOk') and d.get('anthropicOk'))
+      and d.get('keyStoreOk') and d.get('anthropicOk') and d.get('workerThreadOk'))
 skipped = d.get('anthropicSkipped')
 print('anthropic check: %s' % ('SKIPPED (no key)' if skipped else 'RAN against real API'))
 sys.exit(0 if ok else 1)
 " || { echo "FAIL: self-test did not prove all execution paths"; exit 1; }
-echo "PASS: EvaluateScript==3, ProcessInstance valid, KeyStore round-trip OK, Anthropic check OK"
+echo "PASS: EvaluateScript==3, ProcessInstance valid, KeyStore round-trip OK, Anthropic check OK, worker-thread 401 OK"
