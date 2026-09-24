@@ -7,6 +7,20 @@ KEYS=/home/scarter4work/projects/keys/scarter4work_keys.xssk
 PASS="$(cat /tmp/.pi_codesign_pass)"
 SO="$ROOT/build/src/module/PICopilot-pxm.so"
 
+# -n (no slot number) claims the first free instance slot -- slot 1 when the
+# GUI isn't running -- whose settings file IS the user's real
+# ~/.PixInsight/core-001-pxi.settings. Loading a dev-build .so there rewrites
+# that file's persisted Modules list (dev path inserted, the repo-installed
+# @pxi_bin_dir/PICopilot-pxm.so entry dropped), which then breaks the user's
+# real install next time he launches PI normally ("Duplicate MetaProcess
+# identifier"). Pin every headless test run to one fixed, otherwise-unused
+# slot instead, and wipe that slot's settings before AND after each run so
+# every run starts hermetic and never accumulates dev-only Modules state.
+PICOPILOT_TEST_SLOT="${PICOPILOT_TEST_SLOT:-90}"
+SLOT_SETTINGS="$(printf '%s/core-%03d-pxi.settings' "$HOME/.PixInsight" "$PICOPILOT_TEST_SLOT")"
+rm -f "$SLOT_SETTINGS"
+trap 'rm -f "$SLOT_SETTINGS"' EXIT
+
 [ -f "$SO" ] || { echo "FAIL: module not built at $SO"; exit 1; }
 "$PI" --sign-module-file="$SO" --xssk-file="$KEYS" --xssk-password="$PASS"
 [ -f "${SO%.so}.xsgn" ] || { echo "FAIL: signing produced no .xsgn"; exit 1; }
@@ -57,12 +71,12 @@ while True:
     threading.Thread(target=hold, args=(c,), daemon=True).start()
 PY
 STALL_PID=$!
-trap 'rm -f "$R" "$STALL_PORT_FILE"; kill "$STALL_PID" 2>/dev/null || true' EXIT
+trap 'rm -f "$R" "$STALL_PORT_FILE" "$SLOT_SETTINGS"; kill "$STALL_PID" 2>/dev/null || true' EXIT
 for _ in $(seq 50); do [ -s "$STALL_PORT_FILE" ] && break; sleep 0.1; done
 [ -s "$STALL_PORT_FILE" ] || { echo "FAIL: stall server did not start"; exit 1; }
 export PICOPILOT_SELFTEST_STALL_URL="http://127.0.0.1:$(cat "$STALL_PORT_FILE")/v1/messages"
 
-if ! PICOPILOT_SELFTEST_OUT="$R" timeout 300 "$PI" -n --automation-mode --no-startup-scripts -m="$SO" -r="$HERE/selftest.js" --force-exit; then
+if ! PICOPILOT_SELFTEST_OUT="$R" timeout 300 "$PI" -n="$PICOPILOT_TEST_SLOT" --automation-mode --no-startup-scripts -m="$SO" -r="$HERE/selftest.js" --force-exit; then
    echo "FAIL: PI load timed out (300s) or exited non-zero"; exit 1
 fi
 [ -f "$R" ] || { echo "FAIL: no result file"; exit 1; }

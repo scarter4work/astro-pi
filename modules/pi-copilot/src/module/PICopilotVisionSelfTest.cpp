@@ -3,6 +3,7 @@
 
 #include "PICopilotVisionSelfTest.h"
 #include "AnthropicClient.h"
+#include "PICopilotModule.h"
 #include "PanelPlacement.h"
 #include "ProcessCatalog.h"
 #include "Utf8.h"
@@ -24,7 +25,9 @@
 #include <pcl/ImageWindow.h>
 #include <pcl/View.h>
 
+#include <chrono>
 #include <cstdlib>
+#include <thread>
 #include <utility>
 
 namespace pcl
@@ -908,6 +911,26 @@ bool RunVisionSelfTest( nlohmann::json& out )
    }
 
    // ---- inc3 sections end ----
+
+   // Every WindowCloser above has now force-closed its ImageWindow (the last
+   // one just above, in Section 7). ImageWindow::ForceClose() only POSTS the
+   // core-side teardown -- the actual window/view destruction runs later, off
+   // the core's deferred-delete queue -- so with 9 windows torn down in quick
+   // succession, that queued teardown can still be in flight when the caller
+   // (PICopilotInstance::ExecuteGlobal) returns and the harness's
+   // --force-exit tears down the process. That race prints
+   // "pthread_mutex_lock() failed" on core's teardown path in test runs
+   // (proven: gating off window creation -> 0/10 occurrences; this section
+   // present -> ~6/10). Draining the event queue here, on this root thread
+   // (required -- see the header comment), gives that deferred teardown a
+   // chance to finish before we hand control back. ProcessEvents() docs ask
+   // for >=250 ms between calls from the root thread, hence the sleep.
+   for ( int i = 0; i < 4; ++i )
+   {
+      ThePICopilotModule->ProcessEvents();
+      std::this_thread::sleep_for( std::chrono::milliseconds( 250 ) );
+   }
+
    return allOk;
 }
 
