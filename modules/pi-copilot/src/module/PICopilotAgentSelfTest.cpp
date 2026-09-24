@@ -5,10 +5,12 @@
 #include "AgentSession.h"
 #include "AgentTools.h"
 #include "AnthropicClient.h"
+#include "PICopilotInterface.h"
 #include "PICopilotModule.h"
 #include "ProcessApply.h"
 #include "ProcessCatalog.h"
 #include "SystemPrompt.h"
+#include "TurnEndNotes.h"
 #include "Utf8.h"
 #include "ViewCapture.h"
 #include "VisionTurn.h"
@@ -1409,6 +1411,99 @@ bool RunAgentSelfTest( nlohmann::json& out )
       out["agentWireError"] = U8( error );
       out["agentWireOk"] = wireOk;
       allOk = allOk && wireOk;
+   }
+
+   // ---- Section A7: panel resizability probe (Task 6) ----------------------
+   {
+      bool ok = false;
+      nlohmann::json probe;
+      String error;
+      try
+      {
+         if ( ThePICopilotInterface == nullptr )
+            throw Error( "ThePICopilotInterface is null" );
+         probe = ThePICopilotInterface->ProbeResizeForSelfTest();
+         ok = probe.value( "resizableOk", false );
+      }
+      catch ( const pcl::Exception& x ) { error = x.Message(); }
+      catch ( const std::exception& x ) { error = String( x.what() ); }
+      catch ( ... )                     { error = "unknown exception"; }
+      out["panelResizeProbe"] = probe;
+      out["panelResizeError"] = U8( error );
+      out["panelResizableOk"] = ok;
+      allOk = allOk && ok;
+   }
+
+   // ---- Section A7b: end-of-turn notes shown by the panel (Task 6) ----------
+   {
+      bool ok = true;
+      nlohmann::json detail = nlohmann::json::array();
+      String error;
+      try
+      {
+         auto joined = []( const TurnEndView& v )
+         {
+            String all;
+            for ( const String& n : v.notes )
+               all += n + "\n";
+            return all;
+         };
+         auto check = [&]( const char* name, bool pass, const TurnEndView& v )
+         {
+            detail.push_back( { { "case", name }, { "pass", pass }, { "notes", U8( joined( v ) ) },
+                                { "restoreInput", v.restoreInput }, { "offerClear", v.offerClear } } );
+            ok = ok && pass;
+         };
+
+         // HTTP failure, nothing ran: error verbatim with status, input restored.
+         {
+            AgentStep s; s.kind = AgentStep::Failed; s.error = "API key is invalid."; s.restoreInput = true;
+            const TurnEndView v = DescribeTurnEnd( s, 401 );
+            check( "failedHttp", v.notes.Length() == 1 && joined( v ).StartsWith( "Error 401: API key is invalid." )
+                                 && v.restoreInput && !v.offerClear, v );
+         }
+         // Aborted before sending (history invalid): no status, input restored
+         // even if the step did not ask, processes-applied note, Clear offered.
+         {
+            AgentStep s; s.kind = AgentStep::Failed; s.error = "history invalid: message 3: duplicate tool_use id x";
+            s.toolsRan = true; s.needsClear = true;
+            const TurnEndView v = DescribeTurnEnd( s, 0 );
+            const String all = joined( v );
+            check( "abortInvalid", v.notes.Length() == 3 && all.StartsWith( "Error: history invalid: message 3" )
+                                   && all.Contains( "stay applied" ) && all.Contains( "History" )
+                                   && all.Contains( "Clear" ) && v.restoreInput && v.offerClear, v );
+         }
+         // Stopped after a process ran: stopped + applied note, no restore.
+         {
+            AgentStep s; s.kind = AgentStep::Stopped; s.toolsRan = true;
+            const TurnEndView v = DescribeTurnEnd( s, 0 );
+            const String all = joined( v );
+            check( "stoppedApplied", v.notes.Length() == 2 && all.StartsWith( "(stopped)" )
+                                     && all.Contains( "stay applied" ) && !v.restoreInput && !v.offerClear, v );
+         }
+         // Cap: names the limit and says the next message continues/summarizes.
+         {
+            AgentStep s; s.kind = AgentStep::CapReached; s.toolsRan = true;
+            const TurnEndView v = DescribeTurnEnd( s, 200 );
+            const String all = joined( v );
+            check( "capReached", v.notes.Length() == 1 && all.Contains( String( PICopilotMaxToolRounds ) )
+                                 && all.Contains( "next message" ) && all.Contains( "summar" )
+                                 && !v.restoreInput, v );
+         }
+         // Done: nothing to add.
+         {
+            AgentStep s; s.kind = AgentStep::Done; s.toolsRan = true;
+            const TurnEndView v = DescribeTurnEnd( s, 200 );
+            check( "done", v.notes.IsEmpty() && !v.restoreInput && !v.offerClear, v );
+         }
+      }
+      catch ( const pcl::Exception& x ) { error = x.Message(); ok = false; }
+      catch ( const std::exception& x ) { error = String( x.what() ); ok = false; }
+      catch ( ... )                     { error = "unknown exception"; ok = false; }
+      out["turnEndNotesDetail"] = detail;
+      out["turnEndNotesError"] = U8( error );
+      out["turnEndNotesOk"] = ok;
+      allOk = allOk && ok;
    }
 
    // ---- inc4 sections end ----
