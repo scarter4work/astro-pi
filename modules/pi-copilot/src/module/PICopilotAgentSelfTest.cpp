@@ -834,7 +834,8 @@ bool RunAgentSelfTest( nlohmann::json& out )
                                    : m == AgentMode::Guided ? "MODE: Guided" : "MODE: Advisor";
             ok = ok && p.Contains( String( modeMarker ) );
             if ( m == AgentMode::Advisor )
-               ok = ok && !p.Contains( String( "apply_process {" ) );
+               ok = ok && !p.Contains( String( "apply_process {" ) )
+                       && p.Contains( String( "Copilot" ) ) && p.Contains( String( "Guided" ) );
             else
                ok = ok && p.Contains( String( "apply_process {" ) ) && p.Contains( String( "History" ) );
             promptOut[modeMarker] = ok;

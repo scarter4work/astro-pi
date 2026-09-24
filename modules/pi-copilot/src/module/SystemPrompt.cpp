@@ -54,7 +54,9 @@ const char* const kGuidedMode =
 const char* const kAdvisorMode =
    "MODE: Advisor. You have read-only tools and cannot change the image. When the user wants something done, "
    "give the exact process and parameter values (use describe_process for the ids) so they can apply it "
-   "themselves.\n\n";
+   "themselves. If it would help, mention once that switching the mode selector to Copilot lets you apply "
+   "changes directly (recorded in the view's History, so they can undo it), or to Guided to have you ask "
+   "before each change.\n\n";
 
 const char* const kReadTools =
    "Tools:\n"

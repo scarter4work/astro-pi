@@ -10,6 +10,7 @@
 #include "ViewPreview.h"
 
 #include <pcl/Exception.h>
+#include <pcl/Thread.h>
 
 #include <chrono>
 #include <cmath>
@@ -246,6 +247,8 @@ ToolOutcome ExecuteTool( const ToolCall& call, const ToolContext& ctx )
 {
    const clock::time_point t0 = clock::now();
    const String name = S16( call.name );
+   if ( !Thread::IsRootThread() )
+      return Fail( name, "internal: tools must run on the UI thread" );
    const nlohmann::json in = call.input.is_object() ? call.input : nlohmann::json::object();
    try
    {
