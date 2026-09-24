@@ -81,9 +81,45 @@ bool IsBusy( const View& v )
    return busy;
 }
 
-View DefaultView( const ToolContext& ctx )
+// View::ViewById() on a full id ("Image01", "Image01->Preview01"); null when
+// no such view is open. Never throws.
+View ViewByFullId( const IsoString& fullId )
 {
-   return ctx.activeView ? ctx.activeView() : View::Null();
+   if ( fullId.IsEmpty() )
+      return View::Null();
+   try
+   {
+      return View::ViewById( fullId );
+   }
+   catch ( ... )
+   {
+      return View::Null();
+   }
+}
+
+String TurnViewGone( const IsoString& turnViewId )
+{
+   return "the image this message is about (" + String( turnViewId ) + ") is no longer open; "
+          "ask the user which image to use";
+}
+
+// The turn's own view, re-resolved by id now. error is set when there is none.
+View TurnView( const ToolContext& ctx, String& error )
+{
+   if ( ctx.turnViewId.IsEmpty() )
+   {
+      error = "no active image when the user sent this message: ask the user to select an image and send again";
+      return View::Null();
+   }
+   View v = ViewByFullId( ctx.turnViewId );
+   if ( v.IsNull() )
+      error = TurnViewGone( ctx.turnViewId );
+   return v;
+}
+
+bool WasInspected( const ToolContext& ctx, const IsoString& fullId )
+{
+   return ctx.inspectedViews != nullptr && ctx.inspectedViews->count( std::string( fullId.c_str() ) ) > 0;
 }
 
 ToolOutcome ApplyProcessTool( const nlohmann::json& in, const ToolContext& ctx, clock::time_point t0 )
@@ -95,7 +131,7 @@ ToolOutcome ApplyProcessTool( const nlohmann::json& in, const ToolContext& ctx, 
    if ( tables.is_object() )
       for ( auto it = tables.begin(); it != tables.end(); ++it )
          shown[it.key()] = it.value();
-   const String what = "apply_process " + S16( pid ) + " " + Shorten( S16( shown.dump() ), PICopilotToolLogParamChars );
+   String what = "apply_process " + S16( pid ) + " " + Shorten( S16( shown.dump() ), PICopilotToolLogParamChars );
 
    if ( ctx.mode == AgentMode::Advisor )
       return Fail( what, "apply_process is not available in Advisor mode (read-only); give the user the settings instead" );
@@ -106,32 +142,48 @@ ToolOutcome ApplyProcessTool( const nlohmann::json& in, const ToolContext& ctx, 
    const std::string viewId = StringField( in, "view_id" );
    if ( !viewId.empty() )
    {
-      target = View::ViewById( IsoString( viewId.c_str() ) );
+      target = ViewByFullId( IsoString( viewId.c_str() ) );
       if ( target.IsNull() )
          return Fail( what, "no view with id '" + S16( viewId ) + "'" );
+      const IsoString fullId = target.FullId();
+      if ( fullId != ctx.turnViewId && !WasInspected( ctx, fullId ) )
+         return Fail( what + " on " + String( fullId ),
+                      "view '" + String( fullId ) + "' is not the view this message is about ("
+                      + (ctx.turnViewId.IsEmpty() ? String( "none was active" ) : String( ctx.turnViewId ))
+                      + ") and has not been inspected in this turn: call get_view_context with view_id '"
+                      + String( fullId ) + "' first, then apply_process again" );
    }
    else
    {
-      target = DefaultView( ctx );
+      String error;
+      target = TurnView( ctx, error );
       if ( target.IsNull() )
-         return Fail( what, "no active image: ask the user to open or select an image, or pass view_id" );
+         return Fail( what, error + (ctx.turnViewId.IsEmpty() ? String( ", or pass view_id" ) : String()) );
    }
+   const IsoString targetId = target.FullId();
+   what += " on " + String( targetId );
 
    if ( ctx.mode == AgentMode::Guided )
    {
       if ( !ctx.confirm )
          return Fail( what, "internal error: Guided mode has no confirmation callback" );
       const String changes = DescribeParameterChanges( params, tables, PICopilotConfirmChangesChars );
-      if ( !ctx.confirm( S16( pid ), String( target.FullId() ), changes ) )
+      if ( !ctx.confirm( S16( pid ), String( targetId ), changes ) )
       {
          ToolOutcome o;
          o.isError = true;
          o.content.push_back( TextBlock( "The user declined this apply_process call (" + pid + " on "
-                                         + std::string( target.FullId().c_str() )
+                                         + std::string( targetId.c_str() )
                                          + "). Nothing was changed. Do not repeat it; ask what they would like instead." ) );
          o.logLine = S16( kErrMarkUtf8 ) + what + S16( kArrowUtf8 ) + "declined by user";
          return o;
       }
+      // The dialog pumps events: the user may have closed (or replaced) the
+      // image meanwhile. Never run on a stale handle.
+      target = ViewByFullId( targetId );
+      if ( target.IsNull() )
+         return Fail( what, "view " + String( targetId ) + " is no longer open (closed while the confirmation "
+                            "dialog was up); nothing was changed" );
    }
 
    const ApplyProcessResult ar = ApplyProcess( IsoString( pid.c_str() ), params, tables, target );
@@ -196,11 +248,15 @@ nlohmann::json ToolDefinitions( AgentMode mode )
 
    nlohmann::json context = nlohmann::json::object();
    context["name"] = "get_view_context";
-   context["description"] = "Fresh facts about the active view: geometry, per-channel median/MAD/mean/min/max of the "
-                            "real data, FITS keywords; with include_preview, also a new auto-stretched preview image.";
+   context["description"] = "Fresh facts about a view (default: the view this message is about, i.e. the one active "
+                            "when the user sent it): geometry, per-channel median/MAD/mean/min/max of the real data, "
+                            "FITS keywords; with include_preview, also a new auto-stretched preview image. Inspect "
+                            "another view with view_id before apply_process can target it.";
    context["input_schema"] = { { "type", "object" },
                                { "properties", { { "include_preview", { { "type", "boolean" },
-                                                                        { "description", "Attach a fresh preview image (default false)." } } } } } };
+                                                                        { "description", "Attach a fresh preview image (default false)." } } },
+                                                 { "view_id", { { "type", "string" },
+                                                                { "description", "View id to inspect; default: the view this message is about." } } } } } };
    tools.push_back( context );
 
    if ( mode != AgentMode::Advisor )
@@ -211,7 +267,8 @@ nlohmann::json ToolDefinitions( AgentMode mode )
                               { "description", "{parameterId: value} for non-table parameters. Enumerations take the element id as a string." } };
       props["table_parameters"] = { { "type", "object" },
                                     { "description", "{tableParameterId: [[row values in column order], ...]}; replaces the whole table." } };
-      props["view_id"] = { { "type", "string" }, { "description", "Target view id; default: the active view." } };
+      props["view_id"] = { { "type", "string" }, { "description", "Target view id; default: the view this message is about. Any other view must first be "
+                                                                 "inspected with get_view_context in the same turn." } };
       nlohmann::json apply = nlohmann::json::object();
       apply["name"] = "apply_process";
       apply["description"] = "Run a PixInsight process on the user's real image (recorded in the view's History, so "
@@ -276,12 +333,25 @@ ToolOutcome ExecuteTool( const ToolCall& call, const ToolContext& ctx )
       }
       if ( call.name == "get_view_context" )
       {
-         const View view = DefaultView( ctx );
-         if ( view.IsNull() )
-            return Fail( name, "no active image: ask the user to open or select an image" );
-         const String what = name + " " + String( view.FullId() );
+         View view;
+         const std::string viewId = StringField( in, "view_id" );
+         if ( !viewId.empty() )
+         {
+            view = ViewByFullId( IsoString( viewId.c_str() ) );
+            if ( view.IsNull() )
+               return Fail( name + " " + S16( viewId ), "no view with id '" + S16( viewId ) + "'" );
+         }
+         else
+         {
+            String error;
+            view = TurnView( ctx, error );
+            if ( view.IsNull() )
+               return Fail( name, error + (ctx.turnViewId.IsEmpty() ? String( ", or pass view_id" ) : String()) );
+         }
+         const IsoString fullId = view.FullId();
+         const String what = name + " " + String( fullId );
          if ( IsBusy( view ) )
-            return Fail( what, "view " + String( view.FullId() ) + " is busy (locked by a running process); try again when it finishes" );
+            return Fail( what, "view " + String( fullId ) + " is busy (locked by a running process); try again when it finishes" );
          ToolOutcome o;
          o.content.push_back( TextBlock( BuildViewContext( view ).dump() ) );
          if ( BoolField( in, "include_preview" ) )
@@ -292,6 +362,8 @@ ToolOutcome ExecuteTool( const ToolCall& call, const ToolContext& ctx )
             else
                o.content.push_back( TextBlock( "preview failed: " + U8( p.error ) ) );
          }
+         if ( ctx.inspectedViews != nullptr )
+            ctx.inspectedViews->insert( std::string( fullId.c_str() ) );
          o.logLine = OkLine( what, t0 );
          return o;
       }

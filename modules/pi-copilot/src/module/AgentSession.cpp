@@ -223,6 +223,7 @@ AgentStep AgentSession::OnResponse( const AnthropicResult& r, const ToolRunner& 
 
       const bool capped = m_rounds >= PICopilotMaxToolRounds;
       bool stopped = false;
+      int executed = 0;   // calls of this response run (or attempted) so far
       nlohmann::json results = nlohmann::json::array();
       for ( const ToolCall& call : calls )
       {
@@ -234,6 +235,13 @@ AgentStep AgentSession::OnResponse( const AnthropicResult& r, const ToolRunner& 
             log( CallLine( call, "skipped (tool-round limit reached)" ) );
             continue;
          }
+         if ( executed >= PICopilotMaxToolCallsPerStep )
+         {
+            results.push_back( ToolResultBlock( call.id, NotExecuted(
+               "not executed: at most " + std::to_string( PICopilotMaxToolCallsPerStep ) + " tool calls per step" ) ) );
+            log( CallLine( call, "skipped (at most " + String( PICopilotMaxToolCallsPerStep ) + " tool calls per step)" ) );
+            continue;
+         }
          if ( stopped || stopNow() )
          {
             stopped = true;
@@ -241,6 +249,7 @@ AgentStep AgentSession::OnResponse( const AnthropicResult& r, const ToolRunner& 
             log( CallLine( call, "skipped (stopped)" ) );
             continue;
          }
+         ++executed;
          ToolOutcome o;
          try
          {

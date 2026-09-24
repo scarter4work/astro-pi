@@ -9,6 +9,7 @@
 #include <pcl/Process.h>
 #include <pcl/ProcessInstance.h>
 #include <pcl/ProcessParameter.h>
+#include <pcl/StringList.h>
 #include <pcl/Variant.h>
 
 #include <algorithm>
@@ -424,8 +425,9 @@ ApplyProcessResult ApplyProcess( const IsoString& processId, const nlohmann::jso
          String changes = DescribeParameterChanges( parameters, tableParameters, 400 );
          changes.ReplaceString( "\n", "; " );
          throw ApplyError{ r.processId + " did not complete on " + r.viewId
-                           + ": the process stopped with an error while running (its reason is in the Process Console). "
-                             "Check the values you set: " + changes };
+                           + ": the process stopped with an error while running, or the user aborted it in PixInsight "
+                             "(the reason is in the Process Console). Do not simply retry: if the user may have "
+                             "aborted it, ask them first; otherwise check the values you set: " + changes };
       }
       r.ok = true;
    }
@@ -459,25 +461,50 @@ ApplyProcessResult ApplyProcess( const IsoString& processId, const nlohmann::jso
 String DescribeParameterChanges( const nlohmann::json& parameters, const nlohmann::json& tableParameters,
                                  size_type maxChars )
 {
-   String s;
-   auto add = [&s]( const String& line )
-   {
-      if ( !s.IsEmpty() )
-         s += "\n";
-      s += line;
-   };
+   StringList lines;
    if ( parameters.is_object() )
       for ( auto it = parameters.begin(); it != parameters.end(); ++it )
-         add( S16( it.key() ) + " = "
-              + S16( it.value().is_string() ? it.value().get<std::string>() : it.value().dump() ) );
+         lines.Add( S16( it.key() ) + " = "
+                    + S16( it.value().is_string() ? it.value().get<std::string>() : it.value().dump() ) );
    if ( tableParameters.is_object() )
       for ( auto it = tableParameters.begin(); it != tableParameters.end(); ++it )
-         add( S16( it.key() ) + " = " + S16( it.value().dump() ) );
-   if ( s.IsEmpty() )
-      s = "(all parameters at their defaults)";
-   if ( maxChars > 3 && s.Length() > maxChars )
-      s = s.Left( maxChars - 3 ) + "...";
-   return s;
+         lines.Add( S16( it.key() ) + " = " + S16( it.value().dump() ) );
+   if ( lines.IsEmpty() )
+      return "(all parameters at their defaults)";
+
+   auto join = [&lines]( size_type k )
+   {
+      String s;
+      for ( size_type i = 0; i < k; ++i )
+      {
+         if ( i > 0 )
+            s += "\n";
+         s += lines[i];
+      }
+      return s;
+   };
+   // "… and N more parameter(s) not shown" (U+2026), N exact.
+   auto more = []( size_type n )
+   {
+      return String::UTF8ToUTF16( "\xE2\x80\xA6 and " ) + String( unsigned( n ) ) + " more parameter(s) not shown";
+   };
+
+   const size_type n = lines.Length();
+   const String all = join( n );
+   if ( maxChars <= 3 || all.Length() <= maxChars )
+      return all;
+
+   // Whole lines while they fit together with the "N more" note.
+   for ( size_type k = n - 1; k > 0; --k )
+   {
+      const String s = join( k ) + "\n" + more( n - k );
+      if ( s.Length() <= maxChars )
+         return s;
+   }
+   // Not even the first line fits whole: show its start, then the note.
+   const String tail = n > 1 ? "\n" + more( n - 1 ) : String();
+   const size_type room = maxChars > tail.Length() + 3 ? maxChars - tail.Length() - 3 : 0;
+   return lines[0].Left( room ) + "..." + tail;
 }
 
 } // namespace pcl

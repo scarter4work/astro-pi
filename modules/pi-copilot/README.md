@@ -44,7 +44,7 @@ Increment 1 deliverables:
 
 - **Config button** (⚙) opens a password-masked dialog; you paste your own Anthropic API key (BYO-key). The field is trimmed; a key containing spaces, line breaks or other non-printable-ASCII characters is rejected with an error and the dialog stays open (nothing saved).
 - **Key storage**: the key is stored **in plaintext** in your PixInsight user settings (`PICopilot/AnthropicApiKey`). It is never shipped in the repo or package. **To clear it**, open ⚙, empty the field and press OK — the setting is removed.
-- **Dockable panel** provides a chat log, input line (Return or Send button), and mode selector (Copilot / Advisor / Guided — selector only in this increment).
+- **Dockable panel** provides a chat log, input line (Return or Send button), and mode selector (Copilot / Advisor / Guided — the selector took effect in increment 4; see below).
 - **Requests** are non-streamed Messages API calls (default model `claude-opus-4-8`); the reply appears when complete, and the Send button reads "Thinking…" while a turn is in flight. Every text block of the reply is shown; a reply cut off by `max_tokens` ends with `[truncated: max_tokens]`. Streaming is a later increment.
 - **Timeout / cancel**: each request has an overall **300 s** limit (not just a connect timeout), enforced from the transfer's progress callback; a stalled request ends with `request timed out after 300 s`. Closing PixInsight with a request in flight cancels it instead of waiting.
 - **Threading**: the NetworkTransfer + response sink are constructed on the UI thread (PCL refuses to create a Control off the root thread — `CreateControl(): API function error`); a worker `pcl::Thread` performs only the blocking POST + parse; a 0.2 s UI `Timer` drains the result into the chat log.
@@ -54,13 +54,26 @@ Increment 1 deliverables:
 ## Increment 3 — Vision (the panel sees the active view)
 
 - **Include view** (checkbox, on by default): each message carries the active view — an auto-stretched JPEG preview (long edge ≤ 1024 px, quality 85; display only) plus a JSON context: view id, **file name only** (never the full path), geometry, per-channel median / raw MAD / mean / min / max of the **real (usually linear) data**, and the first 60 FITS keywords (values cut at 80 characters). **Location/identity keywords are never sent** (SITELAT, SITELONG, SITEELEV, OBSGEO-B/L/H, LAT-OBS, LONG-OBS, ALT-OBS, OBSERVER). There is no process-history field: PCL has no API for it.
-- **Your image is never modified.** The preview reads the view read-only and block-averages it into a small copy (≈32 MiB for a 24 MP frame, never a full-resolution duplicate) → resample → auto-STF → JPEG via a temp file that is always deleted. The self-test proves the image byte-identical before/after for 32-bit float, 16-bit RGB and 16-bit mono.
+- **The preview path never modifies your image.** (Processes change it only through the increment-4 agent tools, and only in Copilot or Guided mode — see below.) The preview reads the view read-only and block-averages it into a small copy (≈32 MiB for a 24 MP frame, never a full-resolution duplicate) → resample → auto-STF → JPEG via a temp file that is always deleted. The self-test proves the image byte-identical before/after for 32-bit float, 16-bit RGB and 16-bit mono.
 - **Busy view** (locked by a running process or script) → the message is sent as text with a visible note, instead of waiting on the lock (which would freeze PixInsight).
 - **No active image** → text only, with a visible note. A context or preview failure is shown in the chat log and the text still sends.
 - **Token cost:** only the latest message carries an image; older turns keep a one-line note instead of the picture and a collapsed context (view id + geometry).
 - **Placement:** PCL has no docking API. On first open after this update the panel is placed at the right edge, full height, of the primary screen (estimated from its centre — PCL exposes nothing else); after that, PixInsight remembers wherever you move it.
 - **Process catalog** (`list_processes` / `describe_process` JSON from native introspection + compiled-in summaries) is built and self-tested; it becomes a model tool in increment 4.
 - **Self-test** additions: vision smoke (ImageWindow/Bitmap/JPEG headless), ViewContext values + redaction, ViewPreview (JPEG, size, unchanged image, temp removed, red square decodes red; float, uint16, mono, >2048 px), busy-view capture, ProcessCatalog, request content-block shape, history stripping/collapse, placement maths, and a gated **real vision call** (synthetic red square, image only → model must answer exactly "red"). Key source: system keyring (`secret-tool lookup service anthropic account default`), then `test/.test_api_key`, else skipped. Tests run in an isolated PixInsight instance slot (`PICOPILOT_TEST_SLOT`, default 90, must be ≥ 50) so they never touch your own PixInsight settings.
+
+## Increment 4 — Agent (the model can work on your image)
+
+- **Tools** the model can call: `list_processes` (installed processes), `describe_process {id}` (parameter ids, types, ranges, enumeration ids, table columns, defaults), `get_view_context {include_preview, view_id}` (fresh statistics / FITS keywords / optional new preview of a view), and — except in Advisor — `apply_process {process_id, parameters, table_parameters, view_id}`, which runs a process on the **real image**, starting from the process's defaults and setting only the given parameters. Every value is validated before PixInsight sees it; every failure goes back to the model as a precise error.
+- **Modes** (selector at the top left; persisted; a change applies from your next message):
+  - **Copilot** — applies processes directly when you ask. Every run is recorded in the view's History, so Undo / the History Explorer work as usual.
+  - **Guided** — shows each process and its parameters in a dialog and runs it only if you press **Yes** (the default button is **No**; Esc also declines).
+  - **Advisor** — read-only: looks and advises, never changes the image.
+- **Which image:** the target is the view that was active when you pressed Send (the one whose preview went with the message) — clicking another image while a request runs does not redirect it. The model can work on another view only after inspecting it with `get_view_context` in the same message. Each applied process is logged in the chat as `… on <view id>`.
+- **Stop** ends the message: no further tool runs (a process that is already running always finishes) and the request in flight is cancelled. **Clear** starts a new chat; your images and their History are untouched.
+- **Limits:** at most **12** tool steps (model responses that call tools) per message, and at most **8** tool calls per step; extra calls are answered "not executed" and the model is asked to summarize.
+- **Failures:** if a process started but did not complete (an error found while running, or you aborted it), the reason is in PixInsight's **Process Console** — the module cannot read it back, so the chat only says it failed.
+- Text in image metadata (FITS keywords, file names) and in tool results is treated as data, never as instructions.
 
 ## 0.1.0.4 — UTF-8 wire fix
 

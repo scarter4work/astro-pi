@@ -18,6 +18,11 @@ namespace pcl
 // user message. The next tool_use response runs nothing and ends the loop.
 constexpr int PICopilotMaxToolRounds = 12;
 
+// Tool calls run per assistant response ("step"). Extra tool_use blocks are
+// answered with is_error "not executed: at most 8 tool calls per step", so
+// every tool_use still gets its tool_result and the history stays valid.
+constexpr int PICopilotMaxToolCallsPerStep = 8;
+
 struct AgentStep
 {
    enum Kind { SendAgain, Done, Failed, CapReached, Stopped };
@@ -62,8 +67,9 @@ public:
    void BeginUserTurn( const AnthropicMessage& userTurn );
 
    // Feeds the result of the request built from History(). For stop_reason
-   // tool_use, runs every tool_use in order through `run` (polling
-   // stopRequested before each), then appends the assistant turn and the
+   // tool_use, runs the tool_use blocks in order through `run` (polling
+   // stopRequested before each; at most PICopilotMaxToolCallsPerStep, the
+   // rest answered as not executed), then appends the assistant turn and the
    // tool_result turn together. onLog (optional) gets each tool line as
    // soon as it exists. Never throws.
    AgentStep OnResponse( const AnthropicResult& r, const ToolRunner& run,

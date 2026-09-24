@@ -52,6 +52,15 @@ constexpr int kMinPanelHeight = 260;
 // Persisted assistant mode: Mode_ComboBox index == AgentMode value.
 const char* const kModeKey = "PICopilot/Mode";
 
+// One-time chat-log notice for the agent modes (0.1.0.x installs had a mode
+// selector that did nothing). A marker setting, written once shown.
+const char* const kModesNoticeMarkerKey = "PICopilot/AgentModesNoticeShown";
+const char* const kModesNoticeUtf8 =
+   "New in this version: PI Copilot can now work on your images. The mode selector at the top left sets how: "
+   "Copilot applies processes directly when you ask (every change is recorded in the view's History, so you can "
+   "undo it as usual); Guided shows each change and asks you first; Advisor is read-only and only gives advice. "
+   "A mode change applies from your next message.";
+
 // For MessageBox rich text (the Guided dialog): the model-chosen ids and the
 // parameter text are shown literally.
 String EscapeHtml( const String& s )
@@ -128,6 +137,14 @@ bool PICopilotInterface::Launch( const MetaProcess&, const ProcessImplementation
       // AFTER this function returns (first launch only); the window is shown
       // after that, so OnShow is the first point where our placement wins.
       OnShow( (Control::event_handler)&PICopilotInterface::e_Show, *this );
+
+      bool noticeShown = false;
+      Settings::Read( kModesNoticeMarkerKey, noticeShown );
+      if ( !noticeShown )
+      {
+         AppendToLog( PlainText( String::UTF8ToUTF16( kModesNoticeUtf8 ) ) + "\n\n" );
+         Settings::Write( kModesNoticeMarkerKey, true );
+      }
    }
 
    dynamic = false;
@@ -234,7 +251,10 @@ void PICopilotInterface::SendCurrentInput()
    }
 
    AppendToLog( "<b>You:</b> " + PlainText( prompt ) + "\n\n" );
-   // Root thread, before any request: capture the active view (increment 3).
+   // The view this message is about is fixed NOW; the tools re-resolve it by
+   // id, so a click on another image while the request runs changes nothing.
+   BeginTurnTarget();
+   // Root thread, before any request: capture that view (increment 3).
    // The BARE prompt (never the context-prefixed content) is what a failed
    // message gives back for a resend.
    m_session.BeginUserTurn( ComposeTurnWithActiveView( prompt ) );
@@ -305,6 +325,8 @@ void PICopilotInterface::EndTurn( const AgentStep& step, int httpStatus )
 
 void PICopilotInterface::FinishTurn()
 {
+   m_turnViewId.Clear();
+   m_inspectedViews.clear();
    m_pendingPrompt.Clear();
    m_apiKey.Clear();
    m_stopRequested = false;
@@ -312,15 +334,25 @@ void PICopilotInterface::FinishTurn()
    SetBusy( false );
 }
 
-ToolContext PICopilotInterface::MakeToolContext() const
+void PICopilotInterface::BeginTurnTarget()
+{
+   m_turnViewId.Clear();
+   m_inspectedViews.clear();
+   ImageWindow w = ImageWindow::ActiveWindow();
+   if ( !w.IsNull() )
+   {
+      const View v = w.CurrentView();   // may be a preview
+      if ( !v.IsNull() )
+         m_turnViewId = v.FullId();
+   }
+}
+
+ToolContext PICopilotInterface::MakeToolContext()
 {
    ToolContext ctx;
    ctx.mode = m_turnMode;
-   ctx.activeView = []() -> View
-   {
-      ImageWindow w = ImageWindow::ActiveWindow();
-      return w.IsNull() ? View::Null() : w.CurrentView();
-   };
+   ctx.turnViewId = m_turnViewId;
+   ctx.inspectedViews = &m_inspectedViews;
    ctx.confirm = &PICopilotInterface::ConfirmApply;
    return ctx;
 }
@@ -331,7 +363,7 @@ bool PICopilotInterface::ConfirmApply( const String& processId, const String& vi
                      + "<p>" + EscapeHtml( changes ) + "</p>"
                      + "<p>You can undo it afterwards from the view's History.</p>";
    return MessageBox( text, String::UTF8ToUTF16( "PI Copilot \xE2\x80\x94 Guided mode" ), StdIcon::Question,
-                      StdButton::Yes, StdButton::No, StdButton::NoButton, 0/*default: Yes*/, 1/*Esc: No*/ ).Execute()
+                      StdButton::Yes, StdButton::No, StdButton::NoButton, 1/*default: No*/, 1/*Esc: No*/ ).Execute()
           == StdButton::Yes;
 }
 
@@ -342,14 +374,11 @@ AnthropicMessage PICopilotInterface::ComposeTurnWithActiveView( const String& pr
 
    StringList notes;
    AnthropicMessage turn;
-   ImageWindow window = ImageWindow::ActiveWindow();
-   if ( window.IsNull() )
+   const View view = m_turnViewId.IsEmpty() ? View::Null() : View::ViewById( m_turnViewId );
+   if ( view.IsNull() )
       turn = CaptureViewTurn( prompt, nullptr, notes );
    else
-   {
-      const View view = window.CurrentView();   // may be a preview
       turn = CaptureViewTurn( prompt, &view, notes );
-   }
    for ( const String& note : notes )
       AppendToLog( PlainText( note ) + "\n\n" );
    return turn;
