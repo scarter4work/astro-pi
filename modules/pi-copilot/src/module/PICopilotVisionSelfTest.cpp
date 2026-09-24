@@ -40,6 +40,20 @@ double SynthBackground( int x )
    return 0.02 + 0.03*x/(kSynthW - 1);
 }
 
+// True iff the reply is exactly the one word "red" (any case), ignoring
+// surrounding whitespace and punctuation. "Red." passes; "not red", "reddish"
+// and "red square" fail.
+bool IsSingleWordRed( const String& reply )
+{
+   auto isLetter = []( char16_type c ) { return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z'); };
+   size_type b = 0, e = reply.Length();
+   while ( b < e && !isLetter( reply[b] ) )
+      ++b;
+   while ( e > b && !isLetter( reply[e-1] ) )
+      --e;
+   return reply.Substring( b, e - b ).Lowercase() == "red";
+}
+
 bool IsJpeg( const ByteArray& b )
 {
    const size_type n = b.Length();
@@ -672,7 +686,8 @@ bool RunVisionSelfTest( nlohmann::json& out )
          {
             WindowCloser wc{ CreateSyntheticWindow() };
             const View view = wc.window.MainView();
-            const nlohmann::json ctx = BuildViewContext( view );
+            // No view context: its per-channel stats (R > G,B) could answer
+            // "red" from text alone. Only the pixels may answer here.
             const ViewPreviewResult p = RenderViewPreview( view );
             if ( !p.ok )
                error = "preview failed: " + p.error;
@@ -681,10 +696,10 @@ bool RunVisionSelfTest( nlohmann::json& out )
                AnthropicClient client{ String( key ) };
                const AnthropicResult r = client.Send( "You are a test. Answer with exactly one word.",
                   { ComposeUserTurn( "What colour is the square in this image? Answer with exactly one word.",
-                                     &ctx, p.base64 ) } );
+                                     nullptr, p.base64 ) } );
                answer = r.text;
                error = r.error;
-               visionOk = r.ok && r.text.ContainsIC( String( "red" ) );
+               visionOk = r.ok && IsSingleWordRed( r.text );
             }
          }
          catch ( const pcl::Exception& x ) { error = x.Message(); }
