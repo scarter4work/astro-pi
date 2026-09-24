@@ -1481,6 +1481,20 @@ bool RunAgentSelfTest( nlohmann::json& out )
             check( "stoppedApplied", v.notes.Length() == 2 && all.StartsWith( "(stopped)" )
                                      && all.Contains( "stay applied" ) && !v.restoreInput && !v.offerClear, v );
          }
+         // Stopped before any round (cancel of the first request): prompt back.
+         {
+            AgentStep s; s.kind = AgentStep::Stopped; s.error = "request cancelled"; s.restoreInput = true;
+            const TurnEndView v = DescribeTurnEnd( s, 0 );
+            check( "stoppedBeforeRound", v.notes.Length() == 1 && joined( v ).StartsWith( "(stopped)" )
+                                         && v.restoreInput && !v.offerClear, v );
+         }
+         // Failed after completed rounds (step does not ask to restore): still restored.
+         {
+            AgentStep s; s.kind = AgentStep::Failed; s.error = "overloaded"; s.restoreInput = false;
+            const TurnEndView v = DescribeTurnEnd( s, 529 );
+            check( "failedNoRestoreFlag", v.notes.Length() == 1 && joined( v ).StartsWith( "Error 529: overloaded" )
+                                          && v.restoreInput && !v.offerClear, v );
+         }
          // Cap: names the limit and says the next message continues/summarizes.
          {
             AgentStep s; s.kind = AgentStep::CapReached; s.toolsRan = true;
