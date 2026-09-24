@@ -6,12 +6,15 @@
 #include <pcl/AutoLock.h>
 #include <pcl/Exception.h>
 
+#include <nlohmann/json.hpp>
+
 namespace pcl
 {
 
 ChatThread::ChatThread( const String& apiKey, const String& systemPrompt, const Array<AnthropicMessage>& history,
-                        const IsoString& model, const String& url, int timeoutSeconds )
-   : m_request( apiKey, model, systemPrompt, history, url, timeoutSeconds )
+                        const IsoString& model, const String& url, int timeoutSeconds,
+                        const nlohmann::json& tools )
+   : m_request( apiKey, model, systemPrompt, history, url, timeoutSeconds, tools )
 {
 }
 

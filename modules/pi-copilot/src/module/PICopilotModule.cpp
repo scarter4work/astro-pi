@@ -40,7 +40,7 @@ IsoString PICopilotModule::Name() const
 String PICopilotModule::Description() const
 {
    return "PI Copilot v" PICOPILOT_STR(PICOPILOT_MODULE_VERSION_MAJOR) " — In-app AI assistant for PixInsight. "
-          "Chat that sees the active view (auto-stretched preview + view statistics and FITS keywords).";
+          "Chat that sees the active view and applies processes to it: Copilot (acts, undoable), Guided (asks first), Advisor (read-only).";
 }
 
 String PICopilotModule::Company() const

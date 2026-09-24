@@ -9,6 +9,8 @@
 #include <pcl/Mutex.h>
 #include <pcl/Thread.h>
 
+#include <nlohmann/json.hpp>
+
 namespace pcl
 {
 
@@ -36,11 +38,13 @@ class ChatThread : public Thread
 public:
 
    // url/timeoutSeconds exist for the self-test (local stall server, short
-   // deadline); production callers use the defaults.
+   // deadline); production callers use the defaults. tools non-null -> sent
+   // as the request's "tools" array.
    ChatThread( const String& apiKey, const String& systemPrompt, const Array<AnthropicMessage>& history,
                const IsoString& model = PICOPILOT_DEFAULT_MODEL,
                const String& url = PICOPILOT_MESSAGES_URL,
-               int timeoutSeconds = PICopilotRequestTimeoutSeconds );
+               int timeoutSeconds = PICopilotRequestTimeoutSeconds,
+               const nlohmann::json& tools = nlohmann::json() );
 
    void Run() override;
 

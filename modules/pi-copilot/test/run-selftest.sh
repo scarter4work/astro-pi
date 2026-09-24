@@ -101,9 +101,14 @@ export PICOPILOT_SELFTEST_STALL_URL="http://127.0.0.1:$(cat "$STALL_PORT_FILE")/
 # Local "echo" server for the wire-encoding proof (self-test Section 8): it
 # strict-decodes the POSTed bytes as UTF-8 (Python's codec rejects encoded
 # surrogates, like the real API) and JSON, then answers in Messages API shape
-# with the parsed "messages" array as the reply text -- or a 400 naming the
-# first bad byte, with a hex dump. Every raw body is kept in ECHO_DIR as
+# with {"messages": <parsed messages>, "tools": <parsed tools or null>} as the
+# reply text -- or a 400 naming the first bad byte, with a hex dump. Every raw body is kept in ECHO_DIR as
 # evidence. Loopback only; killed on exit.
+# A path ending in "/agent" is a scripted tool loop (self-test Section A5): it
+# checks role alternation and tool_use/tool_result pairing (400 on a mismatch),
+# answers a plain user turn with a non-BMP text block + one describe_process
+# tool_use, and answers a tool_result turn with end_turn text summarizing the
+# tool names it received and the tool_results it got.
 ECHO_DIR="$(mktemp -d)"
 ECHO_PORT_FILE="$ECHO_DIR/port"
 python3 - "$ECHO_DIR" <<'PY' &
@@ -120,6 +125,35 @@ class H(BaseHTTPRequestHandler):
         self.send_header("content-type", "application/json")
         self.send_header("content-length", str(len(b)))
         self.end_headers(); self.wfile.write(b)
+    def agent_reply(self, req, n):
+        def err(msg):
+            return 400, {"type": "error", "error": {"type": "invalid_request_error", "message": "body #%d: %s" % (n, msg)}}
+        msgs = req.get("messages") or []
+        names = [t.get("name") for t in (req.get("tools") or [])]
+        for i, m in enumerate(msgs):
+            if m.get("role") != ("user" if i % 2 == 0 else "assistant"):
+                return err("message %d has role %r" % (i, m.get("role")))
+        if not msgs or msgs[-1].get("role") != "user":
+            return err("last message is not a user message")
+        last = msgs[-1].get("content")
+        results = [b for b in last if b.get("type") == "tool_result"] if isinstance(last, list) else []
+        if results:
+            prev = msgs[-2].get("content") if len(msgs) >= 2 else []
+            uses = {b.get("id") for b in prev if isinstance(prev, list) and b.get("type") == "tool_use"}
+            got = {b.get("tool_use_id") for b in results}
+            if uses != got:
+                return err("tool_result ids %s != tool_use ids %s" % (sorted(got), sorted(uses)))
+            summary = []
+            for b in results:
+                c = b.get("content")
+                text = c if isinstance(c, str) else "".join(x.get("text", "") for x in c if x.get("type") == "text")
+                summary.append({"id": b.get("tool_use_id"), "is_error": b.get("is_error", False), "text": text[:4000]})
+            return 200, {"content": [{"type": "text", "text": json.dumps({"tools": names, "tool_results": summary})}],
+                         "stop_reason": "end_turn"}
+        return 200, {"content": [{"type": "text", "text": "Checking PixelMath \u2014 one moment \U0001F4F7"},
+                                 {"type": "tool_use", "id": "toolu_wire_%02d" % n, "name": "describe_process",
+                                  "input": {"id": "PixelMath"}}],
+                     "stop_reason": "tool_use"}
     def do_POST(self):
         body = self.rfile.read(int(self.headers.get("content-length", "0")))
         with lock:
@@ -136,7 +170,10 @@ class H(BaseHTTPRequestHandler):
         except ValueError as e:
             return self.reply(400, {"type": "error", "error": {"type": "invalid_request_error",
                 "message": "body #%d not JSON: %s" % (n, e)}})
-        self.reply(200, {"content": [{"type": "text", "text": json.dumps(req.get("messages"))}],
+        if self.path.endswith("/agent"):
+            return self.reply(*self.agent_reply(req, n))
+        self.reply(200, {"content": [{"type": "text", "text": json.dumps({"messages": req.get("messages"),
+                                                                          "tools": req.get("tools")})}],
                          "stop_reason": "end_turn"})
 srv = ThreadingHTTPServer(("127.0.0.1", 0), H)
 open(os.path.join(out, "port"), "w").write(str(srv.server_address[1]))
@@ -148,9 +185,19 @@ trap 'if [ -n "${PICOPILOT_ECHO_KEEP:-}" ]; then cp "$ECHO_DIR"/body-* "$PICOPIL
 for _ in $(seq 50); do [ -s "$ECHO_PORT_FILE" ] && break; sleep 0.1; done
 [ -s "$ECHO_PORT_FILE" ] || { echo "FAIL: echo server did not start"; exit 1; }
 export PICOPILOT_SELFTEST_ECHO_URL="http://127.0.0.1:$(cat "$ECHO_PORT_FILE")/v1/messages"
+export PICOPILOT_SELFTEST_AGENT_URL="http://127.0.0.1:$(cat "$ECHO_PORT_FILE")/v1/agent"
 
-if ! PICOPILOT_SELFTEST_OUT="$R" timeout 300 "$PI" -n="$PICOPILOT_TEST_SLOT" --automation-mode --no-startup-scripts -m="$SO" -r="$HERE/selftest.js" --force-exit; then
-   echo "FAIL: PI load timed out (300s) or exited non-zero"; exit 1
+# Private virtual display (Xvfb). A core-side rejection can raise a MODAL
+# dialog that no module API can suppress or catch (Task 1: "PixelMath: Invalid
+# table row index"); on the user's real DISPLAY that dialog would block his
+# desktop. Under Xvfb it is invisible, and it just blocks this run until the
+# timeout fails it loudly. timeout sits INSIDE xvfb-run so that, on expiry,
+# xvfb-run still tears down the Xvfb server (which also takes down any
+# PixInsight process the PixInsight.sh wrapper left behind).
+command -v xvfb-run >/dev/null 2>&1 || { echo "FAIL: xvfb-run not found (needed to keep dialogs off the real display)"; exit 1; }
+if ! PICOPILOT_SELFTEST_OUT="$R" xvfb-run -a -s "-screen 0 1920x1080x24" \
+        timeout 600 "$PI" -n="$PICOPILOT_TEST_SLOT" --automation-mode --no-startup-scripts -m="$SO" -r="$HERE/selftest.js" --force-exit; then
+   echo "FAIL: PI load timed out (600s) or exited non-zero"; exit 1
 fi
 [ -f "$R" ] || { echo "FAIL: no result file"; exit 1; }
 cat "$R"
@@ -172,15 +219,26 @@ required_true = [
     'panelCaptureOk',
     # multi-turn body is strict UTF-8 on the wire (turn-2 400 regression)
     'utf8BodyOk', 'twoTurnOk',
+    # increment 4
+    'agentSmokeOk',
+    'applyProcessOk',
+    'toolTransportOk',
+    'agentToolsOk',
+    'agentLoopOk', 'agentWireOk',
+    'panelResizableOk', 'turnEndNotesOk',
+    'turnTargetOk',
+    'liveAgentOk',
     'ok',
 ]
 missing = [k for k in required_true if d.get(k) is not True]
 if d.get('evalResult') != 3: missing.append('evalResult==3')
 if d.get('stallSkipped') is not False: missing.append('stallSkipped==false')
 if d.get('utf8EchoSkipped') is not False: missing.append('utf8EchoSkipped==false')
+if d.get('agentWireSkipped') is not False: missing.append('agentWireSkipped==false')
 print('anthropic check: %s' % ('SKIPPED (no key)' if d.get('anthropicSkipped') else 'RAN against real API'))
 print('two-turn check: %s' % ('SKIPPED (no key)' if d.get('twoTurnSkipped') else 'RAN against real API'))
 print('vision check: %s' % ('SKIPPED (no key)' if d.get('visionSkipped') else 'RAN against real API, answer=%r' % d.get('visionAnswer')))
+print('live agent check: %s' % ('SKIPPED (no key)' if d.get('liveAgentSkipped') else 'RAN against real API, ratio=%r log=%r' % (d.get('liveAgentRatio'), d.get('liveAgentLog'))))
 if missing:
     print('FAILED keys: ' + ', '.join(missing))
     sys.exit(1)
