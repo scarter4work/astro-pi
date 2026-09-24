@@ -2,10 +2,12 @@
 // Copyright (c) 2026 Scott Carter. MIT License.
 
 #include "PICopilotAgentSelfTest.h"
+#include "AnthropicClient.h"
 #include "PICopilotModule.h"
 #include "ProcessApply.h"
 #include "ProcessCatalog.h"
 #include "Utf8.h"
+#include "VisionTurn.h"
 
 #include <pcl/AutoViewLock.h>
 #include <pcl/Exception.h>
@@ -20,6 +22,7 @@
 
 #include <chrono>
 #include <cmath>
+#include <cstdlib>
 #include <string>
 #include <thread>
 
@@ -556,6 +559,124 @@ bool RunAgentSelfTest( nlohmann::json& out )
       out["catalogEnumDefaultOk"] = enumDefaultOk;
       out["applyError"] = U8( error );
       out["applyProcessOk"] = ok;
+      allOk = allOk && ok;
+   }
+
+   // ---- Section A2: tool transport (Task 3, no network) --------------------
+   // (The wire leg below is loopback only: the harness's echo server.)
+   {
+      bool bodyOk = false, noToolsOk = false, parseToolUseOk = false, parseToolOnlyOk = false,
+           parseNoTextOk = false, stripOk = false, wireOk = false;
+      String error;
+      nlohmann::json wire = nlohmann::json::object();
+      try
+      {
+         nlohmann::json tool = nlohmann::json::object();
+         tool["name"] = "t1";
+         tool["description"] = "test tool \xE2\x80\x94 d";
+         tool["input_schema"] = { { "type", "object" } };
+         nlohmann::json tools = nlohmann::json::array();
+         tools.push_back( tool );
+
+         Array<AnthropicMessage> h;
+         h.Add( AnthropicMessage{ IsoString( "user" ), String( "hi" ), IsoString() } );
+         AnthropicMessage a;
+         a.role = "assistant";
+         a.blocks = nlohmann::json::array();
+         a.blocks.push_back( { { "type", "text" }, { "text", "Looking \xE2\x80\x94 one sec" } } );
+         a.blocks.push_back( { { "type", "tool_use" }, { "id", "toolu_x1" }, { "name", "t1" },
+                               { "input", { { "id", "PixelMath" } } } } );
+         h.Add( a );
+         nlohmann::json content = nlohmann::json::array();
+         content.push_back( { { "type", "text" }, { "text", "{\"result\":\"ok\"}" } } );
+         content.push_back( JpegImageBlock( "/9j/4AAQSkZJRgABAQ==" ) );
+         AnthropicMessage u;
+         u.role = "user";
+         u.blocks = nlohmann::json::array();
+         u.blocks.push_back( { { "type", "tool_result" }, { "tool_use_id", "toolu_x1" },
+                               { "content", content }, { "is_error", false } } );
+         h.Add( u );
+
+         const nlohmann::json j = nlohmann::json::parse( BuildMessagesRequestBody( PICOPILOT_DEFAULT_MODEL, "sys", h, tools ) );
+         const nlohmann::json& m = j.at( "messages" );
+         bodyOk = j.at( "tools" ).size() == 1 && j["tools"][0].at( "name" ) == "t1"
+               && m.at( 0 ).at( "content" ) == "hi"
+               && m.at( 1 ).at( "content" ).at( 0 ).at( "text" ) == "Looking \xE2\x80\x94 one sec"
+               && m.at( 1 ).at( "content" ).at( 1 ).at( "type" ) == "tool_use"
+               && m.at( 2 ).at( "content" ).at( 0 ).at( "tool_use_id" ) == "toolu_x1"
+               && m.at( 2 ).at( "content" ).at( 0 ).at( "content" ).at( 1 ).at( "type" ) == "image";
+         // Exact shape: the tools array and every block array go out verbatim.
+         bodyOk = bodyOk && j.at( "tools" ) == tools
+               && m.at( 1 ).at( "role" ) == "assistant" && m.at( 1 ).at( "content" ) == a.blocks
+               && m.at( 2 ).at( "role" ) == "user" && m.at( 2 ).at( "content" ) == u.blocks
+               && !j.contains( "stream" ) && j.at( "max_tokens" ) == 4096;
+         noToolsOk = !nlohmann::json::parse( BuildMessagesRequestBody( PICOPILOT_DEFAULT_MODEL, "sys", h ) ).contains( "tools" );
+
+         const AnthropicResult p1 = ParseMessagesResponse( 200, IsoString(
+            "{\"content\":[{\"type\":\"text\",\"text\":\"Let me look.\"},{\"type\":\"tool_use\",\"id\":\"toolu_1\","
+            "\"name\":\"describe_process\",\"input\":{\"id\":\"PixelMath\"}}],\"stop_reason\":\"tool_use\"}" ), String() );
+         parseToolUseOk = p1.ok && p1.text == "Let me look." && p1.stopReason == "tool_use"
+                       && p1.contentBlocks.size() == 2 && p1.contentBlocks[1].at( "input" ).at( "id" ) == "PixelMath";
+         const AnthropicResult p2 = ParseMessagesResponse( 200, IsoString(
+            "{\"content\":[{\"type\":\"tool_use\",\"id\":\"toolu_2\",\"name\":\"list_processes\",\"input\":{}}],"
+            "\"stop_reason\":\"tool_use\"}" ), String() );
+         parseToolOnlyOk = p2.ok && p2.text.IsEmpty() && p2.contentBlocks.size() == 1;
+         const AnthropicResult p3 = ParseMessagesResponse( 200, IsoString( "{\"content\":[],\"stop_reason\":\"end_turn\"}" ), String() );
+         parseNoTextOk = !p3.ok && p3.error == "response missing expected content/text field";
+
+         // On the wire: the core POSTs the tool-bearing body as strict UTF-8
+         // and the echo server's parsed "messages" equal ours exactly.
+         const char* echoUrl = std::getenv( "PICOPILOT_SELFTEST_ECHO_URL" );
+         if ( echoUrl == nullptr || *echoUrl == '\0' )
+            wire["error"] = "PICOPILOT_SELFTEST_ECHO_URL not set";
+         else
+         {
+            AnthropicRequest req( String( "sk-ant-invalid-selftest" ), PICOPILOT_DEFAULT_MODEL,
+                                  String( "sys" ), h, String( echoUrl ), 30, tools );
+            const AnthropicResult r = req.Perform();
+            wire["httpStatus"] = r.httpStatus;
+            wire["error"] = U8( r.error );
+            if ( r.ok )
+               wireOk = r.httpStatus == 200 && r.stopReason == "end_turn"
+                     && nlohmann::json::parse( U8( r.text ) ) == m;
+         }
+
+         // Older tool_result images are replaced by the note; the last message keeps its image.
+         Array<AnthropicMessage> h3 = h;
+         AnthropicMessage a2 = a;
+         a2.blocks[1]["id"] = "toolu_x2";
+         h3.Add( a2 );
+         AnthropicMessage u2 = u;
+         u2.blocks[0]["tool_use_id"] = "toolu_x2";
+         h3.Add( u2 );
+         StripOlderImages( h3 );
+         const std::string once = BuildMessagesRequestBody( PICOPILOT_DEFAULT_MODEL, "sys", h3 );
+         StripOlderImages( h3 );
+         const std::string twice = BuildMessagesRequestBody( PICOPILOT_DEFAULT_MODEL, "sys", h3 );
+         const nlohmann::json& oldC = h3[2].blocks.at( 0 ).at( "content" );
+         const nlohmann::json& newC = h3[4].blocks.at( 0 ).at( "content" );
+         stripOk = oldC.at( 1 ).at( "type" ) == "text" && oldC.at( 1 ).at( "text" ) == kPICopilotToolImageOmittedNote
+                && newC.at( 1 ).at( "type" ) == "image" && once == twice;
+         // The tool_result block itself (and its id pairing) survives stripping.
+         stripOk = stripOk && h3[2].blocks.size() == 1 && h3[2].blocks[0].at( "type" ) == "tool_result"
+                && h3[2].blocks[0].at( "tool_use_id" ) == "toolu_x1" && oldC.size() == 2
+                && oldC.at( 0 ).at( "text" ) == "{\"result\":\"ok\"}" && h3[1].blocks == a.blocks;
+      }
+      catch ( const pcl::Exception& x ) { error = x.Message(); }
+      catch ( const std::exception& x ) { error = String( x.what() ); }
+      catch ( ... )                     { error = "unknown exception"; }
+
+      const bool ok = bodyOk && noToolsOk && parseToolUseOk && parseToolOnlyOk && parseNoTextOk && stripOk && wireOk;
+      out["transportBodyOk"] = bodyOk;
+      out["transportNoToolsOk"] = noToolsOk;
+      out["transportParseToolUseOk"] = parseToolUseOk;
+      out["transportParseToolOnlyOk"] = parseToolOnlyOk;
+      out["transportParseNoTextOk"] = parseNoTextOk;
+      out["transportStripOk"] = stripOk;
+      out["transportWire"] = wire;
+      out["transportWireOk"] = wireOk;
+      out["transportError"] = U8( error );
+      out["toolTransportOk"] = ok;
       allOk = allOk && ok;
    }
 

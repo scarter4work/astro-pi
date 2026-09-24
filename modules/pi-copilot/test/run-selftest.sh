@@ -184,6 +184,7 @@ required_true = [
     # increment 4
     'agentSmokeOk',
     'applyProcessOk',
+    'toolTransportOk',
     'ok',
 ]
 missing = [k for k in required_true if d.get(k) is not True]

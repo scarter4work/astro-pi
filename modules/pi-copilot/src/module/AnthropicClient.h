@@ -7,6 +7,8 @@
 #include <pcl/Array.h>
 #include <pcl/String.h>
 
+#include <nlohmann/json.hpp>
+
 #include <memory>
 #include <string>
 
@@ -28,32 +30,49 @@ namespace pcl
 // stalls after connecting. Enforced from NetworkTransfer's progress callback.
 constexpr int PICopilotRequestTimeoutSeconds = 300;
 
-// One turn of chat history sent to the Anthropic Messages API. A message
-// with a non-empty imageJpegBase64 is sent as a content-block array
-// [image(base64 JPEG), text]; every other message stays a plain string.
+// One turn of chat history sent to the Anthropic Messages API.
+//  - blocks non-null: the message's EXACT content-block array, sent as is
+//    (an assistant tool_use turn echoed back verbatim; a user tool_result
+//    turn; a user turn merged into a trailing tool_result turn). content and
+//    imageJpegBase64 are then ignored. Strings inside are UTF-8.
+//  - otherwise, non-empty imageJpegBase64 -> [image(base64 JPEG), text];
+//    else a plain string.
 struct AnthropicMessage
 {
-   IsoString role;               // "user" | "assistant"
-   String    content;
-   IsoString imageJpegBase64;    // optional, standard Base64, no data: prefix
+   IsoString      role;               // "user" | "assistant"
+   String         content;
+   IsoString      imageJpegBase64;    // optional, standard Base64, no data: prefix
+   nlohmann::json blocks = nlohmann::json();   // optional, see above (null = absent)
 };
 
+// {"type":"image","source":{"type":"base64","media_type":"image/jpeg","data":...}}
+nlohmann::json JpegImageBlock( const IsoString& base64 );
+
 // The Messages API request body (UTF-8 JSON, non-streamed: no "stream" key).
-// Pure function, any thread. Throws std::exception if JSON building fails.
+// tools non-null -> a "tools" array. Pure function, any thread. Throws
+// std::exception if JSON building fails.
 std::string BuildMessagesRequestBody( const IsoString& model, const String& systemPrompt,
-                                      const Array<AnthropicMessage>& history );
+                                      const Array<AnthropicMessage>& history,
+                                      const nlohmann::json& tools = nlohmann::json() );
 
 // Outcome of an AnthropicClient::Send() call. Send() never throws across
-// its caller — success or failure both ride back in here, since the
+// its caller -- success or failure both ride back in here, since the
 // caller may be a worker Thread that must not let an exception escape.
 struct AnthropicResult
 {
-   bool   ok = false;
-   String text;       // all "text" content blocks, concatenated in order
-   String error;
-   int    httpStatus = 0;
-   bool   truncated = false; // stop_reason == "max_tokens"
+   bool           ok = false;
+   String         text;          // all "text" content blocks, concatenated in order (may be empty for tool_use)
+   String         error;
+   int            httpStatus = 0;
+   bool           truncated = false; // stop_reason == "max_tokens"
+   std::string    stopReason;        // "end_turn" | "tool_use" | "max_tokens" | ...
+   nlohmann::json contentBlocks;     // the reply's "content" array, verbatim (echoed back in history)
 };
+
+// Parses one Messages API HTTP response. ok=true for a 2xx body with a
+// content array that has text, or no text but stop_reason "tool_use".
+// Non-2xx: error = the API's error.message, else transportError. Any thread.
+AnthropicResult ParseMessagesResponse( int httpStatus, const IsoString& body, const String& transportError );
 
 /*!
  * One prepared, blocking, non-streamed Anthropic Messages API request
@@ -87,7 +106,8 @@ public:
    AnthropicRequest( const String& apiKey, const IsoString& model,
                      const String& systemPrompt, const Array<AnthropicMessage>& history,
                      const String& url = PICOPILOT_MESSAGES_URL,
-                     int timeoutSeconds = PICopilotRequestTimeoutSeconds );
+                     int timeoutSeconds = PICopilotRequestTimeoutSeconds,
+                     const nlohmann::json& tools = nlohmann::json() );
    ~AnthropicRequest();
 
    AnthropicRequest( const AnthropicRequest& ) = delete;
