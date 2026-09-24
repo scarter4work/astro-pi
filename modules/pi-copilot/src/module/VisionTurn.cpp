@@ -2,6 +2,7 @@
 // Copyright (c) 2026 Scott Carter. MIT License.
 
 #include "VisionTurn.h"
+#include "Utf8.h"
 
 namespace pcl
 {
@@ -36,7 +37,7 @@ String CollapseViewContext( const String& content, const String& imageNote )
       return content;
 
    const nlohmann::json full = nlohmann::json::parse(
-      content.Substring( jsonAt, closeAt - jsonAt ).ToUTF8().c_str(), nullptr, false/*allow_exceptions*/ );
+      U8( content.Substring( jsonAt, closeAt - jsonAt ) ), nullptr, false/*allow_exceptions*/ );
    if ( full.is_discarded() || !full.is_object() )
       return content;
    nlohmann::json minimal = { { "collapsed", true } };

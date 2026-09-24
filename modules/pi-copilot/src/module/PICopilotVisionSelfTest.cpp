@@ -60,6 +60,51 @@ bool IsSingleWordRed( const String& reply )
    return reply.Substring( b, e - b ).Lowercase() == "red";
 }
 
+// Index of the first byte that breaks STRICT UTF-8 (RFC 3629: no overlongs,
+// no UTF-16 surrogates U+D800..U+DFFF, nothing above U+10FFFF), or -1.
+long FirstInvalidUtf8( const std::string& s )
+{
+   const auto* p = reinterpret_cast<const unsigned char*>( s.data() );
+   const size_t n = s.size();
+   for ( size_t i = 0; i < n; )
+   {
+      const unsigned char c = p[i];
+      size_t len;
+      unsigned lo = 0x80, hi = 0xBF;   // allowed range of the 2nd byte
+      if ( c < 0x80 ) { ++i; continue; }
+      else if ( c >= 0xC2 && c <= 0xDF ) len = 2;
+      else if ( c == 0xE0 ) { len = 3; lo = 0xA0; }
+      else if ( c == 0xED ) { len = 3; hi = 0x9F; }   // would be a surrogate
+      else if ( c >= 0xE1 && c <= 0xEF ) len = 3;
+      else if ( c == 0xF0 ) { len = 4; lo = 0x90; }
+      else if ( c >= 0xF1 && c <= 0xF3 ) len = 4;
+      else if ( c == 0xF4 ) { len = 4; hi = 0x8F; }
+      else return long( i );
+      if ( i + len > n || p[i+1] < lo || p[i+1] > hi )
+         return long( i );
+      for ( size_t k = 2; k < len; ++k )
+         if ( (p[i+k] & 0xC0) != 0x80 )
+            return long( i );
+      i += len;
+   }
+   return -1;
+}
+
+// Hex dump of up to `count` bytes of s starting at `at` (evidence only).
+std::string HexAround( const std::string& s, size_t at, size_t count = 24 )
+{
+   static const char* const d = "0123456789ABCDEF";
+   std::string r;
+   for ( size_t i = at; i < s.size() && i < at + count; ++i )
+   {
+      const unsigned char c = static_cast<unsigned char>( s[i] );
+      r += d[c >> 4];
+      r += d[c & 15];
+      r += ' ';
+   }
+   return r;
+}
+
 bool IsJpeg( const ByteArray& b )
 {
    const size_type n = b.Length();
@@ -908,6 +953,214 @@ bool RunVisionSelfTest( nlohmann::json& out )
       out["captureError"] = U8( error );
       out["panelCaptureOk"] = ok;
       allOk = allOk && ok;
+   }
+
+   // ---- Section 8: multi-turn request body is strict UTF-8 on the wire ---
+   // Regression for the turn-2 "400: str is not valid UTF-8: surrogates not
+   // allowed". Builds the exact turn-2 history the panel builds (turn 1 with
+   // view context + image, a long markdown assistant reply, turn 2 with
+   // context + image; StripOlderImages after each user turn, as the panel
+   // does), then checks both the in-process body and the BYTES the core
+   // actually POSTs (captured by the harness's loopback echo server, which
+   // strict-decodes them exactly like the API does). Several variants
+   // isolate which input carries the offending characters.
+   {
+      bool   echoSkipped = true, utf8Ok = true;
+      String error;
+      nlohmann::json variantsOut = nlohmann::json::array();
+      try
+      {
+         // Realistic markdown reply. BMP-only punctuation vs non-BMP
+         // (U+1F4F7 camera, U+1D6FC mathematical italic alpha).
+         const char* const replyBmp =
+            "## SPCC for an HaO3 dual-band OSC frame\n\n"
+            "**Short answer** \xE2\x80\x94 yes, but set the filters first \xE2\x86\x92 `HaO3`.\n"
+            "- White reference ~ average spiral galaxy; QE \xE2\x89\x88 0.8 at 656 nm\n"
+            "- Pixel size 2.9 \xC2\xB5m, sensor at \xE2\x88\x92" "10 \xC2\xB0" "C\n";
+         const std::string replyNonBmp = std::string( replyBmp )
+            + "- Tip \xF0\x9F\x93\xB7: the \xF0\x9D\x9B\xBC channel ratio drives the Ha/OIII balance.\n";
+         const char* const prompt1 = "what should I do next with this image?";
+         const char* const prompt2 = "sho, feel free to set the params on spcc";
+         const std::string promptNonBmp = std::string( prompt2 ) + " \xF0\x9F\x93\xB7";
+
+         auto ctxWith = []( const std::string& filterValue )
+         {
+            return nlohmann::json{
+               { "viewId", "Image01" }, { "fullId", "Image01" },
+               { "geometry", { { "width", 3840 }, { "height", 2160 } } },
+               { "fitsKeywords", nlohmann::json::array( {
+                  { { "name", "FILTER" },   { "value", filterValue } },
+                  { { "name", "BAYERPAT" }, { "value", "RGGB" } },
+                  // Latin-1 FITS byte decoded the way ViewContext does it.
+                  { { "name", "INSTRUME" }, { "value", U8( String( "ZWO ASI585MC \xB5" ) ) } } } ) }
+            };
+         };
+         const nlohmann::json ctxPlain = ctxWith( "HaO3" );
+         const nlohmann::json ctxNonBmp = ctxWith( "HaO3 \xF0\x9D\x9B\xBC" );
+         const IsoString jpeg = "/9j/4AAQSkZJRgABAQ==";
+
+         struct Variant { const char* name; std::string reply, prompt; const nlohmann::json* ctx; };
+         const Variant variants[] = {
+            { "replyBmpOnly",  replyBmp,    prompt2,      &ctxPlain  },
+            { "replyNonBmp",   replyNonBmp, prompt2,      &ctxPlain  },
+            { "promptNonBmp",  replyBmp,    promptNonBmp, &ctxPlain  },
+            { "fitsNonBmp",    replyBmp,    prompt2,      &ctxNonBmp },
+         };
+
+         const char* echoUrl = std::getenv( "PICOPILOT_SELFTEST_ECHO_URL" );
+         echoSkipped = echoUrl == nullptr || *echoUrl == '\0';
+         if ( echoSkipped )
+         {
+            utf8Ok = false;
+            error = "PICOPILOT_SELFTEST_ECHO_URL not set";
+         }
+
+         for ( const Variant& v : variants )
+         {
+            nlohmann::json vo = { { "variant", v.name } };
+            // "value":"<FILTER>" exactly as nlohmann dumps it in the context block.
+            const std::string wantFilter = "\"value\":\"" + (*v.ctx)["fitsKeywords"][0]["value"].get<std::string>() + "\"";
+            // Exactly the panel's sequence (PICopilotInterface::SendCurrentInput
+            // + e_Poll_Timer).
+            Array<AnthropicMessage> h;
+            h.Add( ComposeUserTurn( String::UTF8ToUTF16( prompt1 ), v.ctx, jpeg ) );
+            StripOlderImages( h );
+            h.Add( AnthropicMessage{ IsoString( "assistant" ), String::UTF8ToUTF16( v.reply.c_str() ), IsoString() } );
+            h.Add( ComposeUserTurn( String::UTF8ToUTF16( v.prompt.c_str() ), v.ctx, jpeg ) );
+            StripOlderImages( h );
+
+            // (a) In-process: the serialized body must be strict UTF-8 and
+            // must carry the reply/prompt text unaltered.
+            bool inProcOk = false;
+            try
+            {
+               const std::string body = BuildMessagesRequestBody( PICOPILOT_DEFAULT_MODEL, "sys", h );
+               const long bad = FirstInvalidUtf8( body );
+               vo["inProcFirstBadByte"] = bad;
+               if ( bad >= 0 )
+                  vo["inProcBadHex"] = HexAround( body, size_t( bad ) );
+               const nlohmann::json j = nlohmann::json::parse( body );
+               const nlohmann::json& m = j.at( "messages" );
+               const std::string gotReply = m.at( 1 ).at( "content" ).get<std::string>();
+               const std::string gotLast = m.at( 2 ).at( "content" ).at( 1 ).at( "text" ).get<std::string>();
+               const bool replyExact = gotReply == v.reply;
+               const bool promptExact = gotLast.size() >= v.prompt.size()
+                  && gotLast.compare( gotLast.size() - v.prompt.size(), v.prompt.size(), v.prompt ) == 0
+                  && gotLast.find( wantFilter ) != std::string::npos;   // FITS value intact
+               vo["inProcReplyExact"] = replyExact;
+               vo["inProcPromptExact"] = promptExact;
+               if ( !replyExact )
+                  vo["inProcReplyTailHex"] = HexAround( gotReply, gotReply.size() > 40 ? gotReply.size() - 40 : 0, 80 );
+               inProcOk = bad < 0 && replyExact && promptExact;
+            }
+            catch ( const std::exception& x ) { vo["inProcError"] = x.what(); }
+            vo["inProcOk"] = inProcOk;
+
+            // (b) On the wire: what the core actually POSTs.
+            bool wireOk = false;
+            if ( !echoSkipped )
+            {
+               AnthropicRequest req( String( "sk-ant-invalid-selftest" ), PICOPILOT_DEFAULT_MODEL,
+                                     String( "sys" ), h, String( echoUrl ), 30 );
+               const AnthropicResult r = req.Perform();
+               vo["wireHttpStatus"] = r.httpStatus;
+               vo["wireError"] = U8( r.error );
+               if ( r.ok )
+               {
+                  // The echo server replies with the messages array it
+                  // parsed from our bytes.
+                  try
+                  {
+                     const nlohmann::json m = nlohmann::json::parse( U8( r.text ) );
+                     const std::string gotReply = m.at( 1 ).at( "content" ).get<std::string>();
+                     const std::string gotLast = m.at( 2 ).at( "content" ).at( 1 ).at( "text" ).get<std::string>();
+                     const bool replyExact = gotReply == v.reply;
+                     const bool promptExact = gotLast.size() >= v.prompt.size()
+                        && gotLast.compare( gotLast.size() - v.prompt.size(), v.prompt.size(), v.prompt ) == 0
+                        && gotLast.find( wantFilter ) != std::string::npos;
+                     vo["wireReplyExact"] = replyExact;
+                     vo["wirePromptExact"] = promptExact;
+                     wireOk = replyExact && promptExact;
+                  }
+                  catch ( const std::exception& x ) { vo["wireParseError"] = x.what(); }
+               }
+            }
+            vo["wireOk"] = wireOk;
+            utf8Ok = utf8Ok && inProcOk && wireOk;
+            variantsOut.push_back( vo );
+         }
+      }
+      catch ( const pcl::Exception& x ) { error = x.Message(); utf8Ok = false; }
+      catch ( const std::exception& x ) { error = String( x.what() ); utf8Ok = false; }
+      catch ( ... )                     { error = "unknown exception"; utf8Ok = false; }
+      out["utf8EchoSkipped"] = echoSkipped;
+      out["utf8Variants"] = variantsOut;
+      out["utf8Error"] = U8( error );
+      out["utf8BodyOk"] = utf8Ok;
+      allOk = allOk && utf8Ok;
+   }
+
+   // ---- Section 8b: gated REAL two-turn conversation ----------------------
+   // Turn 1 (context + real preview) -> the model's reply is forced to carry
+   // non-BMP text -> turn 2 (context + preview) must be accepted by the API.
+   {
+      bool twoTurnSkipped = true, twoTurnOk = true;
+      String error;
+      int status1 = 0, status2 = 0;
+      if ( const char* key = std::getenv( "PICOPILOT_TEST_API_KEY" ) )
+      {
+         twoTurnSkipped = false;
+         twoTurnOk = false;
+         try
+         {
+            WindowCloser wc{ CreateSyntheticWindow() };
+            const View view = wc.window.MainView();
+            const nlohmann::json ctx = BuildViewContext( view );
+            const ViewPreviewResult p = RenderViewPreview( view );
+            if ( !p.ok )
+               error = "preview failed: " + p.error;
+            else
+            {
+               AnthropicClient client{ String( key ) };
+               const String sys = "You are a test. Follow the user's formatting instructions exactly.";
+               Array<AnthropicMessage> h;
+               h.Add( ComposeUserTurn( String::UTF8ToUTF16(
+                  "Describe this image in one short markdown line. Begin the line with the characters "
+                  "\"\xF0\x9F\x93\xB7 \xF0\x9D\x9B\xBC \xE2\x80\x94 \xE2\x86\x92 \xE2\x89\x88\" exactly." ),
+                  &ctx, p.base64 ) );
+               StripOlderImages( h );
+               const AnthropicResult r1 = client.Send( sys, h );
+               status1 = r1.httpStatus;
+               if ( !r1.ok )
+                  error = "turn 1: " + r1.error;
+               else
+               {
+                  // Keep the model's own text, but guarantee the non-BMP
+                  // characters are present even if the model dropped them.
+                  String reply = r1.text;
+                  if ( !reply.Contains( String::UTF8ToUTF16( "\xF0\x9F\x93\xB7" ) ) )
+                     reply += String::UTF8ToUTF16( " \xF0\x9F\x93\xB7 \xF0\x9D\x9B\xBC" );
+                  h.Add( AnthropicMessage{ IsoString( "assistant" ), reply, IsoString() } );
+                  h.Add( ComposeUserTurn( "Reply with exactly: WORKING", &ctx, p.base64 ) );
+                  StripOlderImages( h );
+                  const AnthropicResult r2 = client.Send( sys, h );
+                  status2 = r2.httpStatus;
+                  if ( !r2.ok )
+                     error = "turn 2: " + r2.error;
+                  twoTurnOk = r2.ok && r2.text.Trimmed().Contains( String( "WORKING" ) );
+               }
+            }
+         }
+         catch ( const pcl::Exception& x ) { error = x.Message(); }
+         catch ( const std::exception& x ) { error = String( x.what() ); }
+         catch ( ... )                     { error = "unknown exception"; }
+      }
+      out["twoTurnSkipped"] = twoTurnSkipped;
+      out["twoTurnStatus1"] = status1;
+      out["twoTurnStatus2"] = status2;
+      out["twoTurnError"] = U8( error );
+      out["twoTurnOk"] = twoTurnOk;
+      allOk = allOk && twoTurnOk;
    }
 
    // ---- inc3 sections end ----

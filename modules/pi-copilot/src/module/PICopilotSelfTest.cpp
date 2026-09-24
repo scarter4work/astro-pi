@@ -7,6 +7,7 @@
 #include "ChatThread.h"
 #include "PICopilotInterface.h"   // PICopilotInterface::PlainText
 #include "PICopilotVisionSelfTest.h"
+#include "Utf8.h"
 
 #include <pcl/Process.h>
 #include <pcl/ProcessInstance.h>
@@ -257,16 +258,16 @@ bool RunSelfTest( String& jsonOut )
       { "anthropicSkipped", anthropicSkipped },
       { "workerThreadOk", workerThreadOk },
       { "workerHttpStatus", workerHttpStatus },
-      { "workerError", workerError.ToUTF8().c_str() },
+      { "workerError", U8( workerError ) },
       { "stallSkipped", stallSkipped },
       { "cancelOk", cancelOk },
-      { "cancelError", cancelError.ToUTF8().c_str() },
+      { "cancelError", U8( cancelError ) },
       { "cancelSeconds", cancelSeconds },
       { "deadlineOk", deadlineOk },
-      { "deadlineError", deadlineError.ToUTF8().c_str() },
+      { "deadlineError", U8( deadlineError ) },
       { "deadlineSeconds", deadlineSeconds },
       { "plainTextOk", plainTextOk },
-      { "plainTextBack", plainTextBack.ToUTF8().c_str() }
+      { "plainTextBack", U8( plainTextBack ) }
    };
 
    // Increment 3: vision/grounding sections. Never let an escape here lose

@@ -98,6 +98,57 @@ for _ in $(seq 50); do [ -s "$STALL_PORT_FILE" ] && break; sleep 0.1; done
 [ -s "$STALL_PORT_FILE" ] || { echo "FAIL: stall server did not start"; exit 1; }
 export PICOPILOT_SELFTEST_STALL_URL="http://127.0.0.1:$(cat "$STALL_PORT_FILE")/v1/messages"
 
+# Local "echo" server for the wire-encoding proof (self-test Section 8): it
+# strict-decodes the POSTed bytes as UTF-8 (Python's codec rejects encoded
+# surrogates, like the real API) and JSON, then answers in Messages API shape
+# with the parsed "messages" array as the reply text -- or a 400 naming the
+# first bad byte, with a hex dump. Every raw body is kept in ECHO_DIR as
+# evidence. Loopback only; killed on exit.
+ECHO_DIR="$(mktemp -d)"
+ECHO_PORT_FILE="$ECHO_DIR/port"
+python3 - "$ECHO_DIR" <<'PY' &
+import json, os, sys, threading
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+out = sys.argv[1]
+count = [0]; lock = threading.Lock()
+class H(BaseHTTPRequestHandler):
+    protocol_version = "HTTP/1.1"
+    def log_message(self, *a): pass
+    def reply(self, code, obj):
+        b = json.dumps(obj).encode("ascii")
+        self.send_response(code)
+        self.send_header("content-type", "application/json")
+        self.send_header("content-length", str(len(b)))
+        self.end_headers(); self.wfile.write(b)
+    def do_POST(self):
+        body = self.rfile.read(int(self.headers.get("content-length", "0")))
+        with lock:
+            count[0] += 1; n = count[0]
+        open(os.path.join(out, "body-%02d.bin" % n), "wb").write(body)
+        try:
+            text = body.decode("utf-8")          # strict: surrogates rejected
+        except UnicodeDecodeError as e:
+            ctx = body[max(0, e.start - 8):e.start + 16].hex(" ")
+            return self.reply(400, {"type": "error", "error": {"type": "invalid_request_error",
+                "message": "body #%d not valid UTF-8 at byte %d (%s): %s" % (n, e.start, e.reason, ctx)}})
+        try:
+            req = json.loads(text)
+        except ValueError as e:
+            return self.reply(400, {"type": "error", "error": {"type": "invalid_request_error",
+                "message": "body #%d not JSON: %s" % (n, e)}})
+        self.reply(200, {"content": [{"type": "text", "text": json.dumps(req.get("messages"))}],
+                         "stop_reason": "end_turn"})
+srv = ThreadingHTTPServer(("127.0.0.1", 0), H)
+open(os.path.join(out, "port"), "w").write(str(srv.server_address[1]))
+srv.serve_forever()
+PY
+ECHO_PID=$!
+# PICOPILOT_ECHO_KEEP=<dir> keeps the captured request bodies for inspection.
+trap 'if [ -n "${PICOPILOT_ECHO_KEEP:-}" ]; then cp "$ECHO_DIR"/body-* "$PICOPILOT_ECHO_KEEP"/ 2>/dev/null || true; fi; rm -f "$R" "$STALL_PORT_FILE" "$SLOT_SETTINGS"; rm -rf "$ECHO_DIR"; kill "$STALL_PID" "$ECHO_PID" 2>/dev/null || true' EXIT
+for _ in $(seq 50); do [ -s "$ECHO_PORT_FILE" ] && break; sleep 0.1; done
+[ -s "$ECHO_PORT_FILE" ] || { echo "FAIL: echo server did not start"; exit 1; }
+export PICOPILOT_SELFTEST_ECHO_URL="http://127.0.0.1:$(cat "$ECHO_PORT_FILE")/v1/messages"
+
 if ! PICOPILOT_SELFTEST_OUT="$R" timeout 300 "$PI" -n="$PICOPILOT_TEST_SLOT" --automation-mode --no-startup-scripts -m="$SO" -r="$HERE/selftest.js" --force-exit; then
    echo "FAIL: PI load timed out (300s) or exited non-zero"; exit 1
 fi
@@ -119,12 +170,16 @@ required_true = [
     'catalogOk',
     'visionTurnOk', 'visionOk',
     'panelCaptureOk',
+    # multi-turn body is strict UTF-8 on the wire (turn-2 400 regression)
+    'utf8BodyOk', 'twoTurnOk',
     'ok',
 ]
 missing = [k for k in required_true if d.get(k) is not True]
 if d.get('evalResult') != 3: missing.append('evalResult==3')
 if d.get('stallSkipped') is not False: missing.append('stallSkipped==false')
+if d.get('utf8EchoSkipped') is not False: missing.append('utf8EchoSkipped==false')
 print('anthropic check: %s' % ('SKIPPED (no key)' if d.get('anthropicSkipped') else 'RAN against real API'))
+print('two-turn check: %s' % ('SKIPPED (no key)' if d.get('twoTurnSkipped') else 'RAN against real API'))
 print('vision check: %s' % ('SKIPPED (no key)' if d.get('visionSkipped') else 'RAN against real API, answer=%r' % d.get('visionAnswer')))
 if missing:
     print('FAILED keys: ' + ', '.join(missing))
