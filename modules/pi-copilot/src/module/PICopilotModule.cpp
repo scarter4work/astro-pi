@@ -80,7 +80,7 @@ void PICopilotModule::GetReleaseDate( int& year, int& month, int& day ) const
 {
    year  = 2026;
    month = 9;
-   day   = 20;
+   day   = 23;
 }
 
 } // namespace pcl

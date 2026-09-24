@@ -6,7 +6,7 @@
       <p>Repository: https://raw.githubusercontent.com/scarter4work/astro-pi/main/repository/</p>
    </description>
    <platform os="linux" arch="x64" version="1.8.0:2.0.0">
-      <package fileName="20260711-linux-x64-NukeX.tar.gz" sha1="66b0ea7c3f7aaf15faab7a579092730e63e502e9" type="module" releaseDate="20260711">
+      <package fileName="20260923-linux-x64-NukeX.tar.gz" sha1="b457872fdfe20f24653a27235c8c00c9ed3ade97" type="module" releaseDate="20260923">
          <title>NukeX</title>
          <description>
             <p>
@@ -17,9 +17,18 @@
             <p>v5.1.0.1: broadband / clear filter-wheel slot labels (Full, Clear, None, Open, L-Pro, L-QEF, UV/IR-cut) on Bayer frames now route as plain OSC instead of hard-aborting the stack; corrected stale &quot;v4&quot; labels in the UI to v5.</p>
          </description>
       </package>
+      <package fileName="20260923-linux-x64-PICopilot.tar.gz" sha1="dd07c707024d92d9358853a107d59f462fc0fb50" type="module" releaseDate="20260923">
+         <title>PI Copilot</title>
+         <description>
+            <p>
+               <b>PI Copilot</b>
+            </p>
+            <p>PI Copilot — AI assistant panel for PixInsight (bring your own Anthropic API key).</p>
+         </description>
+      </package>
    </platform>
    <platform os="all" arch="noarch" version="1.8.0:2.0.0">
-      <package fileName="EZStretch_v1.0.10.zip" sha1="bec27cc7a3999babdce0650eb514ad5a0f4585d3" type="script" releaseDate="20260711">
+      <package fileName="EZStretch_v1.0.10.zip" sha1="5de587e83ed4aab9108ab0c22115a4d5343470a9" type="script" releaseDate="20260923">
          <title>EZ Stretch</title>
          <description>
             <p>
@@ -28,7 +37,7 @@
             <p>Unified stretch suite combining three algorithms in a single interface.</p>
          </description>
       </package>
-      <package fileName="EZDonutRepair_v1.0.3.zip" sha1="7f6b1e99a321ea18b0648eada77a1e51599dc63c" type="script" releaseDate="20260711">
+      <package fileName="EZDonutRepair_v1.0.3.zip" sha1="8c1efabd614b71022c6995d9e213591f4e24a797" type="script" releaseDate="20260923">
          <title>EZ Donut Repair</title>
          <description>
             <p>
@@ -37,7 +46,7 @@
             <p>Removes donut/dust artifacts from astrophotography frames.</p>
          </description>
       </package>
-      <package fileName="EZHazeKill_v1.0.1.zip" sha1="5f3e7a9ab20801541288220ba11f5dfd83e42a1c" type="script" releaseDate="20260711">
+      <package fileName="EZHazeKill_v1.0.1.zip" sha1="0790837330f7db4c18f4a6a1c66004aff05938f9" type="script" releaseDate="20260923">
          <title>EZ Haze Kill</title>
          <description>
             <p>
@@ -46,7 +55,7 @@
             <p>Gradient and haze reduction.</p>
          </description>
       </package>
-      <package fileName="rc-astro-cli_v1.0.0.zip" sha1="936a1ba6cf3878565a0b452ebe439618bda5f07d" type="script" releaseDate="20260711">
+      <package fileName="rc-astro-cli_v1.0.0.zip" sha1="7cce2a345fffbb8db43b4227eef958fd7fcb8b24" type="script" releaseDate="20260923">
          <title>RC-Astro CLI Wrappers</title>
          <description>
             <p>
@@ -58,7 +67,7 @@
             <p>REQUIRES the separately-purchased RC-Astro CLI (rc-astro) on your PATH, with BlurXTerminator / StarXTerminator / NoiseXTerminator licensed and their models downloaded. These scripts bundle no RC-Astro code — they shell out to it, and report a clear error if it is not installed. GPU acceleration additionally needs system cuDNN 9.13 or newer; older cuDNN silently falls back to CPU on Blackwell.</p>
          </description>
       </package>
-      <package fileName="gaia-depth-grade_v1.0.12.zip" sha1="e0055e6e2d637c356dae57f8418f5ef350f2abdf" type="script" releaseDate="20260711">
+      <package fileName="gaia-depth-grade_v1.0.12.zip" sha1="e14e618f0bada942f308af77c4f71c66fce0a738" type="script" releaseDate="20260923">
          <title>Gaia Depth Grade</title>
          <description>
             <p>
@@ -71,4 +80,4 @@
       </package>
    </platform>
 </xri>
-<Signature developerId="scarter4work" timestamp="2026-07-12T02:48:36.517Z" encoding="Base64">IvgTOWVa5U4dz8F0iy35IsWeRQ0gQJWxTy6lvIMKogrUHUJQ+CMwScsnzZMzh5x5N0OrA4aZC2IQ/1aXb2XGDg==</Signature>
+<Signature developerId="scarter4work" timestamp="2026-09-24T02:12:10.823Z" encoding="Base64">S7YC9oRxAI0sMCw2+Cihmh/u8LxWOO9XriaPlg5Ek3VomM7JqYRM+6Q70uMBAVpwXdvt88BLK/OPU3tA7XhzBA==</Signature>

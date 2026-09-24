@@ -47,13 +47,15 @@ PICOPILOT_SO="$(find "$ROOT/modules/pi-copilot/build" -name 'PICopilot-pxm.so' -
 [ -n "$PICOPILOT_SO" ] || die "PICopilot-pxm.so not found after build"
 
 echo "== 2/6 sign NukeX module =="
-"$PI" --sign-module-file="$SO" --xssk-file="$KEYS" --xssk-password="$PASS"
 XSGN="${SO%-pxm.so}-pxm.xsgn"
+rm -f "$XSGN"   # a stale .xsgn from a prior build/self-test must not survive a failed sign
+"$PI" --sign-module-file="$SO" --xssk-file="$KEYS" --xssk-password="$PASS"
 [ -f "$XSGN" ] || die "module signature $XSGN not produced"
 
 echo "== 2a/6 sign PICopilot module =="
-"$PI" --sign-module-file="$PICOPILOT_SO" --xssk-file="$KEYS" --xssk-password="$PASS"
 PICOPILOT_XSGN="${PICOPILOT_SO%-pxm.so}-pxm.xsgn"
+rm -f "$PICOPILOT_XSGN"   # same guard as NukeX above
+"$PI" --sign-module-file="$PICOPILOT_SO" --xssk-file="$KEYS" --xssk-password="$PASS"
 [ -f "$PICOPILOT_XSGN" ] || die "module signature $PICOPILOT_XSGN not produced"
 
 echo "== 2b/6 native-sign EZ scripts =="
@@ -131,7 +133,7 @@ else:
              '            <p>\n'
              '               <b>PI Copilot</b>\n'
              '            </p>\n'
-             '            <p>PI Copilot &#8212; AI assistant panel for PixInsight '
+             '            <p>PI Copilot — AI assistant panel for PixInsight '
              '(bring your own Anthropic API key).</p>\n'
              '         </description>\n'
              '      </package>\n')
