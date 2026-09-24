@@ -30,6 +30,7 @@ set(MODULE_SOURCES
     ProcessApply.cpp
     AgentTools.cpp
     SystemPrompt.cpp
+    AgentSession.cpp
 )
 
 add_library(PICopilot SHARED ${MODULE_SOURCES})

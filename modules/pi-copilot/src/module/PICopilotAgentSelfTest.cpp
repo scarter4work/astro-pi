@@ -2,6 +2,7 @@
 // Copyright (c) 2026 Scott Carter. MIT License.
 
 #include "PICopilotAgentSelfTest.h"
+#include "AgentSession.h"
 #include "AgentTools.h"
 #include "AnthropicClient.h"
 #include "PICopilotModule.h"
@@ -9,6 +10,7 @@
 #include "ProcessCatalog.h"
 #include "SystemPrompt.h"
 #include "Utf8.h"
+#include "ViewCapture.h"
 #include "VisionTurn.h"
 
 #include <pcl/AutoViewLock.h>
@@ -28,6 +30,8 @@
 #include <functional>
 #include <string>
 #include <thread>
+#include <utility>
+#include <vector>
 
 namespace pcl
 {
@@ -152,6 +156,71 @@ double ChannelMedian( View view, int c )
    if ( !v.IsFloatSample() || v.BitsPerSample() != 32 )
       throw Error( "SampleAt: not a 32-bit float image" );
    return static_cast<const Image&>( *v ).Pixel( x, y, c );
+}
+
+AnthropicResult ToolUseResult( const std::vector<std::pair<std::string, nlohmann::json>>& calls,
+                               const std::string& idPrefix, const std::string& text = std::string() )
+{
+   AnthropicResult r;
+   r.ok = true;
+   r.httpStatus = 200;
+   r.stopReason = "tool_use";
+   r.contentBlocks = nlohmann::json::array();
+   if ( !text.empty() )
+   {
+      r.contentBlocks.push_back( { { "type", "text" }, { "text", text } } );
+      r.text = String::UTF8ToUTF16( text.c_str() );
+   }
+   int i = 0;
+   for ( const auto& c : calls )
+      r.contentBlocks.push_back( { { "type", "tool_use" }, { "id", idPrefix + std::to_string( ++i ) },
+                                   { "name", c.first }, { "input", c.second } } );
+   return r;
+}
+
+AnthropicResult EndTurnResult( const std::string& text )
+{
+   AnthropicResult r;
+   r.ok = true;
+   r.httpStatus = 200;
+   r.stopReason = "end_turn";
+   r.contentBlocks = nlohmann::json::array();
+   r.contentBlocks.push_back( { { "type", "text" }, { "text", text } } );
+   r.text = String::UTF8ToUTF16( text.c_str() );
+   return r;
+}
+
+AnthropicResult ErrorResult( const String& error, int status )
+{
+   AnthropicResult r;
+   r.ok = false;
+   r.error = error;
+   r.httpStatus = status;
+   return r;
+}
+
+int CountImages( const nlohmann::json& v )
+{
+   int n = 0;
+   if ( v.is_object() )
+   {
+      if ( v.value( "type", std::string() ) == "image" )
+         ++n;
+      for ( auto it = v.begin(); it != v.end(); ++it )
+         n += CountImages( it.value() );
+   }
+   else if ( v.is_array() )
+      for ( const nlohmann::json& e : v )
+         n += CountImages( e );
+   return n;
+}
+
+int CountImagesInHistory( const Array<AnthropicMessage>& h )
+{
+   int n = 0;
+   for ( const AnthropicMessage& m : h )
+      n += m.blocks.is_null() ? (m.imageJpegBase64.IsEmpty() ? 0 : 1) : CountImages( m.blocks );
+   return n;
 }
 
 } // namespace
@@ -952,6 +1021,311 @@ bool RunAgentSelfTest( nlohmann::json& out )
       out["toolsError"] = U8( error );
       out["agentToolsOk"] = ok;
       allOk = allOk && ok;
+   }
+
+   // ---- Section A4: AgentSession loop (Task 5, no network) -----------------
+   {
+      bool loopOk = false, multiOk = false, capOk = false, stopOk = false, failFirstOk = false,
+           cancelFirstOk = false, failMidOk = false, stripOk = false, invalidOk = false,
+           truncOk = false, validatorMoreOk = false, abortOk = false;
+      nlohmann::json detail = nlohmann::json::object();
+      String error;
+      try
+      {
+         AgentTestWindow tw( "PICopilotLoop" );
+         const View v = tw.MainView();
+         ToolContext ctx;
+         ctx.mode = AgentMode::Copilot;
+         ctx.activeView = [v]() -> View { return v; };
+         const AgentSession::ToolRunner run = [&ctx]( const ToolCall& c ) { return ExecuteTool( c, ctx ); };
+         const std::function<bool()> never = []() { return false; };
+         const nlohmann::json halve = { { "process_id", "PixelMath" }, { "parameters", { { "expression", "$T*0.5" } } } };
+         const nlohmann::json describePM = { { "id", "PixelMath" } };
+         auto userTurn = []( const char* t ) { return ComposeUserTurn( String( t ), nullptr, IsoString() ); };
+         String why;
+
+         {  // one apply round, then a final answer
+            AgentSession s;
+            const double before = ChannelMedian( v, 0 );
+            s.BeginUserTurn( userTurn( "Halve it." ) );
+            const bool valid0 = HistoryIsApiValid( s.History(), why );
+            const AgentStep a = s.OnResponse( ToolUseResult( { { "apply_process", halve } }, "toolu_l", "On it." ), run, never );
+            const bool valid1 = HistoryIsApiValid( s.History(), why );
+            const AgentStep b = s.OnResponse( EndTurnResult( "Done \xE2\x80\x94 halved." ), run, never );
+            const double after = ChannelMedian( v, 0 );
+            s.BeginUserTurn( userTurn( "Thanks" ) );
+            const bool valid2 = HistoryIsApiValid( s.History(), why );
+            loopOk = valid0 && valid1 && valid2 && a.kind == AgentStep::SendAgain && a.toolLog.Length() == 1
+                  && a.toolLog[0].StartsWith( String::UTF8ToUTF16( "\xE2\x96\xB6 apply_process PixelMath" ) )
+                  && b.kind == AgentStep::Done && s.History().Length() == 5
+                  && s.History()[2].blocks.at( 0 ).at( "tool_use_id" ) == "toolu_l1"
+                  && s.History()[2].blocks.at( 0 ).at( "is_error" ) == false
+                  && std::fabs( after - 0.5*before ) < 1e-5;
+         }
+         {  // two tool_use blocks in one response -> one user turn, results in order
+            AgentSession s;
+            s.BeginUserTurn( userTurn( "Look first." ) );
+            const AgentStep a = s.OnResponse( ToolUseResult( { { "describe_process", describePM },
+                                                               { "get_view_context", nlohmann::json::object() } }, "toolu_m" ), run, never );
+            const nlohmann::json& results = s.History()[2].blocks;
+            multiOk = a.kind == AgentStep::SendAgain && a.toolLog.Length() == 2 && results.size() == 2
+                   && results.at( 0 ).at( "tool_use_id" ) == "toolu_m1" && results.at( 1 ).at( "tool_use_id" ) == "toolu_m2";
+         }
+         {  // cap: 12 rounds run, the 13th runs nothing; the next message merges and stays API-valid
+            AgentSession s;
+            s.BeginUserTurn( userTurn( "Keep describing." ) );
+            int sendAgain = 0;
+            AgentStep last;
+            for ( int i = 1; i <= PICopilotMaxToolRounds + 1; ++i )
+            {
+               last = s.OnResponse( ToolUseResult( { { "describe_process", describePM } },
+                                                   "toolu_c" + std::to_string( i ) + "_" ), run, never );
+               if ( last.kind != AgentStep::SendAgain )
+                  break;
+               ++sendAgain;
+            }
+            s.BeginUserTurn( userTurn( "ok, continue" ) );
+            const bool valid = HistoryIsApiValid( s.History(), why );
+            detail["capWhy"] = U8( why );
+            const AnthropicMessage& merged = s.History()[s.History().Length()-1];
+            capOk = sendAgain == PICopilotMaxToolRounds && last.kind == AgentStep::CapReached
+                 && last.toolLog.Length() == 1 && last.toolLog[0].Contains( "skipped (tool-round limit" )
+                 && valid && merged.blocks.at( 0 ).at( "type" ) == "tool_result"
+                 && merged.blocks.at( 0 ).at( "is_error" ) == true && merged.blocks.back().at( "type" ) == "text";
+         }
+         {  // Stop after the first tool: the second is skipped, the loop ends, history stays valid
+            AgentSession s;
+            s.BeginUserTurn( userTurn( "Two things." ) );
+            int calls = 0;
+            const AgentSession::ToolRunner counting = [&]( const ToolCall& c ) { ++calls; return ExecuteTool( c, ctx ); };
+            const std::function<bool()> stopAfterFirst = [&calls]() { return calls >= 1; };
+            const AgentStep a = s.OnResponse( ToolUseResult( { { "describe_process", describePM },
+                                                               { "list_processes", nlohmann::json::object() } }, "toolu_s" ),
+                                              counting, stopAfterFirst );
+            s.BeginUserTurn( userTurn( "go on" ) );
+            stopOk = a.kind == AgentStep::Stopped && calls == 1 && a.toolLog.Length() == 2
+                  && a.toolLog[1].Contains( "skipped (stopped)" ) && HistoryIsApiValid( s.History(), why );
+         }
+         {  // failure / cancel before any round: roll back + restore input
+            AgentSession s;
+            s.BeginUserTurn( userTurn( "one" ) );
+            s.OnResponse( EndTurnResult( "reply one" ), run, never );
+            const size_type n0 = s.History().Length();
+            s.BeginUserTurn( userTurn( "two" ) );
+            const AgentStep f = s.OnResponse( ErrorResult( "boom", 500 ), run, never );
+            failFirstOk = f.kind == AgentStep::Failed && f.restoreInput && !f.toolsRan && f.error == "boom"
+                       && s.History().Length() == n0;
+            s.BeginUserTurn( userTurn( "three" ) );
+            const AgentStep c = s.OnResponse( ErrorResult( "request cancelled", 0 ), run, never );
+            cancelFirstOk = c.kind == AgentStep::Stopped && c.restoreInput && s.History().Length() == n0;
+         }
+         {  // failure after a round: the round stays, next message merges, still valid
+            AgentSession s;
+            s.BeginUserTurn( userTurn( "describe then fail" ) );
+            s.OnResponse( ToolUseResult( { { "describe_process", describePM } }, "toolu_f" ), run, never );
+            const size_type n1 = s.History().Length();
+            const AgentStep f = s.OnResponse( ErrorResult( "overloaded", 529 ), run, never );
+            s.BeginUserTurn( userTurn( "retry" ) );
+            failMidOk = f.kind == AgentStep::Failed && f.restoreInput && f.toolsRan && n1 == 3
+                     && s.History().Length() == 3 && HistoryIsApiValid( s.History(), why );
+         }
+         {  // images: only the LAST message keeps pixels, including tool_result previews
+            AgentSession s;
+            s.BeginUserTurn( ComposeUserTurn( "look", nullptr, IsoString( "/9j/4AAQSkZJRgABAQ==" ) ) );
+            s.OnResponse( ToolUseResult( { { "get_view_context", { { "include_preview", true } } } }, "toolu_p" ), run, never );
+            const int afterRound1 = CountImagesInHistory( s.History() );
+            s.OnResponse( ToolUseResult( { { "describe_process", describePM } }, "toolu_q" ), run, never );
+            const int afterRound2 = CountImagesInHistory( s.History() );
+            s.BeginUserTurn( ComposeUserTurn( "again", nullptr, IsoString( "/9j/4AAQSkZJRgABAQ==" ) ) );
+            const int afterMerge = CountImagesInHistory( s.History() );
+            detail["images"] = { afterRound1, afterRound2, afterMerge };
+            stripOk = afterRound1 == 1 && afterRound2 == 0 && afterMerge == 1 && s.History()[0].imageJpegBase64.IsEmpty();
+         }
+         {  // the validator catches both kinds of broken pairing
+            Array<AnthropicMessage> bad;
+            bad.Add( AnthropicMessage{ IsoString( "user" ), String( "hi" ), IsoString() } );
+            AnthropicMessage a;
+            a.role = "assistant";
+            a.blocks = nlohmann::json::array();
+            a.blocks.push_back( { { "type", "tool_use" }, { "id", "toolu_z" }, { "name", "list_processes" },
+                                  { "input", nlohmann::json::object() } } );
+            bad.Add( a );
+            bad.Add( AnthropicMessage{ IsoString( "user" ), String( "no result" ), IsoString() } );
+            String why1, why2;
+            const bool r1 = HistoryIsApiValid( bad, why1 );
+            Array<AnthropicMessage> bad2;
+            AnthropicMessage u;
+            u.role = "user";
+            u.blocks = nlohmann::json::array();
+            u.blocks.push_back( { { "type", "tool_result" }, { "tool_use_id", "toolu_nope" },
+                                  { "content", "x" }, { "is_error", false } } );
+            bad2.Add( u );
+            const bool r2 = HistoryIsApiValid( bad2, why2 );
+            invalidOk = !r1 && why1.Contains( "toolu_z" ) && !r2 && why2.Contains( "toolu_nope" );
+         }
+         {  // max_tokens cut a tool call: the tool_use is dropped (never run, never stored)
+            AgentSession s;
+            s.BeginUserTurn( userTurn( "Halve it, briefly." ) );
+            AnthropicResult t = ToolUseResult( { { "apply_process", halve } }, "toolu_t", "Halving now" );
+            t.stopReason = "max_tokens";
+            t.truncated = true;
+            int calls = 0;
+            const AgentSession::ToolRunner counting = [&]( const ToolCall& c ) { ++calls; return ExecuteTool( c, ctx ); };
+            const double before = ChannelMedian( v, 0 );
+            const AgentStep a = s.OnResponse( t, counting, never );
+            const nlohmann::json& stored = s.History()[1].blocks;
+            s.BeginUserTurn( userTurn( "continue" ) );
+            truncOk = a.kind == AgentStep::Done && a.truncated && calls == 0 && a.toolLog.IsEmpty()
+                   && s.History().Length() == 3 && stored.is_array() && stored.size() == 1
+                   && stored.at( 0 ).at( "type" ) == "text" && HistoryIsApiValid( s.History(), why )
+                   && std::fabs( ChannelMedian( v, 0 ) - before ) < 1e-12;
+         }
+         {  // the validator also catches duplicates, empty content, a trailing assistant turn
+            auto userText = []( const char* t ) { return AnthropicMessage{ IsoString( "user" ), String( t ), IsoString() }; };
+            AnthropicMessage dupUse;
+            dupUse.role = "assistant";
+            dupUse.blocks = nlohmann::json::array();
+            for ( int i = 0; i < 2; ++i )
+               dupUse.blocks.push_back( { { "type", "tool_use" }, { "id", "toolu_dup" }, { "name", "list_processes" },
+                                          { "input", nlohmann::json::object() } } );
+            AnthropicMessage dupResult;
+            dupResult.role = "user";
+            dupResult.blocks = nlohmann::json::array();
+            for ( int i = 0; i < 2; ++i )
+               dupResult.blocks.push_back( { { "type", "tool_result" }, { "tool_use_id", "toolu_dup" },
+                                             { "content", "x" }, { "is_error", false } } );
+            Array<AnthropicMessage> d1;
+            d1.Add( userText( "hi" ) ); d1.Add( dupUse ); d1.Add( dupResult );
+            AnthropicMessage oneUse = dupUse;
+            oneUse.blocks.erase( oneUse.blocks.begin() );
+            Array<AnthropicMessage> d2;
+            d2.Add( userText( "hi" ) ); d2.Add( oneUse ); d2.Add( dupResult );
+            Array<AnthropicMessage> e1;
+            e1.Add( userText( "" ) );
+            AnthropicMessage emptyBlocks;
+            emptyBlocks.role = "user";
+            emptyBlocks.blocks = nlohmann::json::array();
+            Array<AnthropicMessage> e2;
+            e2.Add( emptyBlocks );
+            Array<AnthropicMessage> t1;
+            t1.Add( userText( "hi" ) ); t1.Add( AnthropicMessage{ IsoString( "assistant" ), String( "hello" ), IsoString() } );
+            String w1, w2, w3, w4, w5;
+            const bool r1 = HistoryIsApiValid( d1, w1 ), r2 = HistoryIsApiValid( d2, w2 ), r3 = HistoryIsApiValid( e1, w3 ),
+                       r4 = HistoryIsApiValid( e2, w4 ), r5 = HistoryIsApiValid( t1, w5 );
+            detail["validatorWhy"] = { U8( w1 ), U8( w2 ), U8( w3 ), U8( w4 ), U8( w5 ) };
+            validatorMoreOk = !r1 && w1.Contains( "duplicate tool_use id toolu_dup" )
+                           && !r2 && w2.Contains( "duplicate tool_result for toolu_dup" )
+                           && !r3 && w3.Contains( "empty" ) && !r4 && w4.Contains( "empty" )
+                           && !r5 && w5.Contains( "last message" );
+         }
+         {  // AbortTurn (history found invalid before a send): same rollback as a failed request
+            AgentSession s;
+            s.BeginUserTurn( userTurn( "one" ) );
+            s.OnResponse( EndTurnResult( "reply one" ), run, never );
+            const size_type n0 = s.History().Length();
+            s.BeginUserTurn( userTurn( "two" ) );
+            const AgentStep a = s.AbortTurn( "history invalid" );
+            s.BeginUserTurn( userTurn( "describe" ) );
+            s.OnResponse( ToolUseResult( { { "describe_process", describePM } }, "toolu_ab" ), run, never );
+            const AgentStep b = s.AbortTurn( "history invalid" );
+            abortOk = a.kind == AgentStep::Failed && a.restoreInput && !a.toolsRan && a.error == "history invalid"
+                   && b.kind == AgentStep::Failed && b.restoreInput && b.toolsRan
+                   && s.History().Length() == n0 + 3 && HistoryIsApiValid( s.History(), why )
+                   && s.History()[s.History().Length()-1].blocks.at( 0 ).at( "type" ) == "tool_result";
+         }
+      }
+      catch ( const pcl::Exception& x ) { error = x.Message(); }
+      catch ( const std::exception& x ) { error = String( x.what() ); }
+      catch ( ... )                     { error = "unknown exception"; }
+
+      const bool ok = loopOk && multiOk && capOk && stopOk && failFirstOk && cancelFirstOk && failMidOk && stripOk && invalidOk
+                   && truncOk && validatorMoreOk && abortOk;
+      out["loopDetail"] = detail;
+      out["loopApplyOk"] = loopOk;
+      out["loopMultiToolOk"] = multiOk;
+      out["loopCapOk"] = capOk;
+      out["loopStopOk"] = stopOk;
+      out["loopFailFirstOk"] = failFirstOk;
+      out["loopCancelFirstOk"] = cancelFirstOk;
+      out["loopFailMidOk"] = failMidOk;
+      out["loopStripOk"] = stripOk;
+      out["loopInvalidOk"] = invalidOk;
+      out["loopTruncatedToolUseOk"] = truncOk;
+      out["loopValidatorMoreOk"] = validatorMoreOk;
+      out["loopAbortTurnOk"] = abortOk;
+      out["loopError"] = U8( error );
+      out["agentLoopOk"] = ok;
+      allOk = allOk && ok;
+   }
+
+   // ---- Section A5: tool loop on the wire (Task 5; loopback scripted server) --
+   // Real AnthropicRequest bytes: tools + tool_use/tool_result history, with
+   // non-BMP text both in the prompt and in the echoed-back assistant blocks,
+   // strict-UTF-8-decoded and pairing-checked by the harness's "/agent" server.
+   {
+      bool wireSkipped = true, wireOk = false;
+      String error;
+      int requests = 0;
+      nlohmann::json statuses = nlohmann::json::array();
+      const char* agentUrl = std::getenv( "PICOPILOT_SELFTEST_AGENT_URL" );
+      if ( agentUrl != nullptr && *agentUrl != '\0' )
+      {
+         wireSkipped = false;
+         try
+         {
+            AgentTestWindow tw( "PICopilotAgentWire" );
+            const View v = tw.MainView();
+            ToolContext ctx;
+            ctx.mode = AgentMode::Copilot;
+            ctx.activeView = [v]() -> View { return v; };
+            AgentSession session;
+            session.BeginUserTurn( ComposeUserTurn(
+               String::UTF8ToUTF16( "Tell me about PixelMath \xE2\x80\x94 please \xF0\x9F\x93\xB7" ), nullptr, IsoString() ) );
+            AgentStep s;
+            do
+            {
+               String why;
+               if ( !HistoryIsApiValid( session.History(), why ) )
+               {
+                  error = "history invalid before request: " + why;
+                  break;
+               }
+               AnthropicRequest req( String( "sk-ant-invalid-selftest" ), PICOPILOT_DEFAULT_MODEL,
+                                     BuildSystemPrompt( AgentMode::Copilot ), session.History(),
+                                     String( agentUrl ), 30, ToolDefinitions( AgentMode::Copilot ) );
+               const AnthropicResult r = req.Perform();
+               ++requests;
+               statuses.push_back( r.httpStatus );
+               s = session.OnResponse( r, [&ctx]( const ToolCall& c ) { return ExecuteTool( c, ctx ); },
+                                       []() { return false; } );
+               if ( s.kind == AgentStep::Failed )
+                  error = s.error;
+            }
+            while ( s.kind == AgentStep::SendAgain && requests < 4 );
+
+            if ( s.kind == AgentStep::Done )
+            {
+               const nlohmann::json final = nlohmann::json::parse( U8( s.assistantText ) );
+               bool sawApply = false;
+               for ( const nlohmann::json& n : final.at( "tools" ) )
+                  sawApply = sawApply || n == "apply_process";
+               const nlohmann::json& tr = final.at( "tool_results" );
+               wireOk = requests == 2 && sawApply && tr.size() == 1 && tr.at( 0 ).at( "is_error" ) == false
+                     && tr.at( 0 ).at( "text" ).get<std::string>().find( "\"expression\"" ) != std::string::npos;
+            }
+         }
+         catch ( const pcl::Exception& x ) { error = x.Message(); }
+         catch ( const std::exception& x ) { error = String( x.what() ); }
+         catch ( ... )                     { error = "unknown exception"; }
+      }
+      else
+         error = "PICOPILOT_SELFTEST_AGENT_URL not set";
+      out["agentWireSkipped"] = wireSkipped;
+      out["agentWireRequests"] = requests;
+      out["agentWireStatuses"] = statuses;
+      out["agentWireError"] = U8( error );
+      out["agentWireOk"] = wireOk;
+      allOk = allOk && wireOk;
    }
 
    // ---- inc4 sections end ----
