@@ -179,6 +179,8 @@ class PJSRMCPServer {
         return this.handleResourcesList(id);
       case 'resources/read':
         return this.handleResourceRead(id, params);
+      case 'ping':
+        return { jsonrpc: '2.0', id, result: {} };
       default:
         return this.errorResponse(id, -32601, `Method not found: ${method}`);
     }
@@ -584,6 +586,8 @@ Execute PixInsight processes programmatically.
       try {
         const request = JSON.parse(buffer);
         buffer = '';
+        // JSON-RPC notifications (no id, e.g. notifications/initialized) must never get a reply.
+        if (request.id === undefined || request.id === null) return;
         const response = this.handleRequest(request);
         console.log(JSON.stringify(response));
       } catch (e) {

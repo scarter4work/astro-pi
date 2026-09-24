@@ -95,19 +95,31 @@ PY
 echo "== 3/6 package NukeX module tarball =="
 mkdir -p "$REPO/bin"
 cp "$SO" "$XSGN" "$REPO/bin/"
-MOD_TGZ="$DATE-linux-x64-NukeX.tar.gz"
+# The version goes in the tarball name (ported from nukex5 3868a85). Several
+# releases on one day otherwise share "<date>-linux-x64-<Name>.tar.gz":
+# raw.githubusercontent.com keeps serving the previous bytes for that path for
+# minutes after a push while the signed manifest already names the new sha1,
+# and PixInsight's updater records installed packages by fileName
+# (/opt/PixInsight/etc/update/installed.xri). A name that changes with every
+# release can be neither stale nor mistaken for the installed one.
+modver(){ sed -nE "s/^#define $2_MODULE_VERSION_(MAJOR|MINOR|REVISION|BUILD) +([0-9]+).*/\\2/p" "$1" | paste -sd. -; }
+NUKEX_VER="$(modver "$ROOT/modules/nukex/src/module/NukeXVersion.h" NUKEX)"
+PICOPILOT_VER="$(modver "$ROOT/modules/pi-copilot/src/module/PICopilotVersion.h" PICOPILOT)"
+[[ "$NUKEX_VER" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]] || die "could not read NukeX version (got '$NUKEX_VER')"
+[[ "$PICOPILOT_VER" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]] || die "could not read PICopilot version (got '$PICOPILOT_VER')"
+MOD_TGZ="$DATE-linux-x64-NukeX-$NUKEX_VER.tar.gz"
 tar -C "$REPO" -czf "$REPO/$MOD_TGZ" bin/NukeX-pxm.so bin/NukeX-pxm.xsgn
 python3 - "$REPO/updates.xri" "$MOD_TGZ" <<'PY'
 import re,sys
 mf,fn=sys.argv[1:3]
 s=open(mf).read()
-s=re.sub(r'fileName="[^"]*NukeX\.tar\.gz"', 'fileName="'+fn+'"', s)
+s=re.sub(r'fileName="[^"]*-linux-x64-NukeX(-[0-9.]+)?\.tar\.gz"', 'fileName="'+fn+'"', s)
 open(mf,'w').write(s)
 PY
 
 echo "== 3a/6 package PICopilot module tarball =="
 cp "$PICOPILOT_SO" "$PICOPILOT_XSGN" "$REPO/bin/"
-PICOPILOT_TGZ="$DATE-linux-x64-PICopilot.tar.gz"
+PICOPILOT_TGZ="$DATE-linux-x64-PICopilot-$PICOPILOT_VER.tar.gz"
 tar -C "$REPO" -czf "$REPO/$PICOPILOT_TGZ" bin/PICopilot-pxm.so bin/PICopilot-pxm.xsgn
 # Stale dated PICopilot tarballs (like stale dated NukeX tarballs) are not
 # auto-deleted here -- they're pruned manually at commit time (see repository/
@@ -116,11 +128,11 @@ python3 - "$REPO/updates.xri" "$PICOPILOT_TGZ" <<'PY'
 import re,sys
 mf,fn=sys.argv[1:3]
 s=open(mf).read()
-if re.search(r'fileName="[^"]*-linux-x64-PICopilot\.tar\.gz"', s):
+if re.search(r'fileName="[^"]*-linux-x64-PICopilot(-[0-9.]+)?\.tar\.gz"', s):
     # Entry already exists from a prior release -- just rename the dated
     # fileName, mirroring the NukeX rename above. Idempotent: re-running
     # with the same date is a no-op substitution.
-    s=re.sub(r'fileName="[^"]*-linux-x64-PICopilot\.tar\.gz"', 'fileName="'+fn+'"', s)
+    s=re.sub(r'fileName="[^"]*-linux-x64-PICopilot(-[0-9.]+)?\.tar\.gz"', 'fileName="'+fn+'"', s)
 else:
     # First release: insert a new <package> entry into the linux/x64
     # platform block (the same block NukeX lives in). sha1/releaseDate
