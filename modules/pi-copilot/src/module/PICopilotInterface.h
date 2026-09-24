@@ -8,6 +8,7 @@
 #include "ChatThread.h"
 
 #include <pcl/AutoPointer.h>
+#include <pcl/CheckBox.h>
 #include <pcl/ComboBox.h>
 #include <pcl/Edit.h>
 #include <pcl/ProcessInterface.h>
@@ -68,6 +69,14 @@ private:
    void StopWorker();
    void SetBusy( bool busy );
 
+   // UI thread only: captures the active view's context + preview (when
+   // "Include view" is checked) and returns the composed user turn. Every
+   // capture problem is written to the chat log; the text always sends.
+   AnthropicMessage ComposeTurnWithActiveView( const String& prompt );
+
+   // One-time default placement: flush right, full height (see e_Show).
+   void ApplyDefaultPlacement();
+
    // ── GUI Controls ──────────────────────────────────────────────
 
    struct GUIData
@@ -77,6 +86,7 @@ private:
       VerticalSizer   Global_Sizer;
       HorizontalSizer Top_Sizer;
       ComboBox        Mode_ComboBox;
+      CheckBox        IncludeView_CheckBox;
       ToolButton      Config_ToolButton;
       TextBox         ChatLog;
       HorizontalSizer Input_Sizer;
@@ -94,6 +104,7 @@ private:
    void e_Input_ReturnPressed( Edit& sender );
    void e_Config_Click( Button& sender, bool checked );
    void e_Poll_Timer( Timer& sender );
+   void e_Show( Control& sender );
 
    friend struct GUIData;
 };
