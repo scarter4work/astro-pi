@@ -18,6 +18,7 @@ set(MODULE_SOURCES
     PICopilotSelfTest.cpp
     KeyStore.cpp
     AnthropicClient.cpp
+    ConfigDialog.cpp
 )
 
 add_library(PICopilot SHARED ${MODULE_SOURCES})
