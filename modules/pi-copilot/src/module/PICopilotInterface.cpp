@@ -240,13 +240,13 @@ AnthropicMessage PICopilotInterface::ComposeTurnWithActiveView( const String& pr
    return turn;
 }
 
-void PICopilotInterface::ApplyDefaultPlacement()
+bool PICopilotInterface::ApplyDefaultPlacement()
 {
    if ( !PixInsightSettings::IsGlobalVariableDefined( "Workspace/PrimaryScreenCenterX" )
      || !PixInsightSettings::IsGlobalVariableDefined( "Workspace/PrimaryScreenCenterY" ) )
    {
       Console().WarningLn( "PI Copilot: primary-screen geometry unavailable; default right-side placement skipped." );
-      return;
+      return false;
    }
    const PanelPlacement p = ComputeDefaultPanelPlacement(
       PixInsightSettings::GlobalInteger( "Workspace/PrimaryScreenCenterX" ),
@@ -258,13 +258,14 @@ void PICopilotInterface::ApplyDefaultPlacement()
    if ( !p.ok )
    {
       Console().WarningLn( "PI Copilot: primary-screen geometry too small; default right-side placement skipped." );
-      return;
+      return false;
    }
    Resize( p.width, p.height );
    Move( p.x, p.y );
    // Persist immediately (not only at PI exit) so the placement survives a
    // crash and any later RestoreGeometry() reproduces it.
    SaveGeometry();
+   return true;
 }
 
 // ── Event handlers ───────────────────────────────────────────────
@@ -277,8 +278,10 @@ void PICopilotInterface::e_Show( Control& )
    Settings::Read( kPlacementMarkerKey, applied );
    if ( applied )
       return;
-   Settings::Write( kPlacementMarkerKey, true );
-   ApplyDefaultPlacement();
+   // Mark as applied only after a successful Move(): if the screen geometry
+   // was unavailable or unusable, the next show tries again.
+   if ( ApplyDefaultPlacement() )
+      Settings::Write( kPlacementMarkerKey, true );
 }
 
 void PICopilotInterface::e_Send_Click( Button&, bool )

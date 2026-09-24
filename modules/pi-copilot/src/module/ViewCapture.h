@@ -15,12 +15,18 @@ namespace pcl
 // Chat-log note when "Include view" is on but no image window is active. UTF-8.
 extern const char* const kPICopilotNoActiveImageNote;
 
+// Chat-log note when the view is locked by a running process/script. UTF-8.
+extern const char* const kPICopilotViewBusyNote;
+
 /*
  * Captures a view for one user turn: BuildViewContext() + RenderViewPreview(),
  * then ComposeUserTurn( prompt, context?, preview? ).
  *
  * view == nullptr means "no active image": the turn is text only and
- * kPICopilotNoActiveImageNote is added to notes. A context or preview failure
+ * kPICopilotNoActiveImageNote is added to notes. A view that is locked (read
+ * or write) by a running process is never touched -- locking it from the GUI
+ * thread would hang PixInsight -- so the turn is text only and
+ * kPICopilotViewBusyNote is added to notes. A context or preview failure
  * is added to notes (plain text, one entry per event) and the turn is composed
  * without that part -- the text always sends. A successful preview also adds
  * an "(attached ...)" note, so the user sees what was sent.

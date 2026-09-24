@@ -15,10 +15,33 @@ namespace pcl
 constexpr int PICopilotMaxFitsKeywords   = 60;
 constexpr int PICopilotMaxFitsValueChars = 80;
 
+// FITS keywords never sent to the model (privacy): observing-site location
+// and observer identity. Matched on the trimmed, upper-cased keyword name.
+// Redacted keywords do not consume a PICopilotMaxFitsKeywords slot; they are
+// counted in the context's "fitsKeywordsRedacted" (NOT in
+// "fitsKeywordsOmitted", which counts only cap overflow).
+constexpr const char* PICopilotRedactedFitsKeywords[] =
+{
+   "SITELAT", "SITELONG", "SITEELEV",
+   "OBSGEO-B", "OBSGEO-L", "OBSGEO-H",
+   "LAT-OBS", "LONG-OBS", "ALT-OBS",
+   "OBSERVER"
+};
+
+// True iff name (trimmed, any case) is in PICopilotRedactedFitsKeywords.
+bool IsRedactedFitsKeyword( const IsoString& name );
+
+// What the context carries for the image's file: the file name only
+// (File::ExtractNameAndExtension), never the directory -- a local path
+// usually contains the user's account name. Empty for an empty path.
+String ViewContextFileName( const String& filePath );
+
 /*
- * JSON description of a view for the model: identity, geometry, robust
- * per-channel statistics of the REAL (usually linear) data, and the first
- * PICopilotMaxFitsKeywords FITS keywords. There is deliberately no process
+ * JSON description of a view for the model: identity (view ids and the
+ * file NAME, see ViewContextFileName), geometry, robust per-channel
+ * statistics of the REAL (usually linear) data, and the first
+ * PICopilotMaxFitsKeywords FITS keywords that are not redacted
+ * (PICopilotRedactedFitsKeywords). There is deliberately no process
  * history: PCL exposes no API for it.
  *
  * Root thread only. Reads the image under AutoViewWriteLock (blocks writers,

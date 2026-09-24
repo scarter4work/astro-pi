@@ -15,6 +15,7 @@
 #include <pcl/Bitmap.h>
 #include <pcl/ByteArray.h>
 #include <pcl/Color.h>
+#include <pcl/ElapsedTime.h>
 #include <pcl/Exception.h>
 #include <pcl/File.h>
 #include <pcl/FITSHeaderKeyword.h>
@@ -165,13 +166,19 @@ WindowCloser CreateSyntheticWindow( int channels = 3, int bitsPerSample = 32, bo
    return wc;
 }
 
-// 70 keywords: OBJECT, FILTER, then KW001..KW068 with 100-char values, so
+// 72 keywords: OBJECT, FILTER, two location/identity keywords that must be
+// redacted (SITELAT, OBSERVER), then KW001..KW068 with 100-char values, so
 // the 60-keyword cap and the 80-char value cap both engage.
+constexpr const char* kSyntheticSiteLat  = "+39:55:12.3456";
+constexpr const char* kSyntheticObserver = "Jane Q. Stargazer";
+
 void AddSyntheticKeywords( ImageWindow& window )
 {
    FITSKeywordArray k;
    k.Add( FITSHeaderKeyword( "OBJECT", "'M42'", "synthetic" ) );
    k.Add( FITSHeaderKeyword( "FILTER", "'Full'", "synthetic" ) );
+   k.Add( FITSHeaderKeyword( "SITELAT", "'" + IsoString( kSyntheticSiteLat ) + "'", "synthetic" ) );
+   k.Add( FITSHeaderKeyword( "OBSERVER", "'" + IsoString( kSyntheticObserver ) + "'", "synthetic" ) );
    const IsoString longValue = "'" + IsoString( 'x', 100 ) + "'";
    for ( int i = 1; i <= 68; ++i )
       k.Add( FITSHeaderKeyword( IsoString().Format( "KW%03d", i ), longValue, "" ) );
@@ -370,6 +377,12 @@ bool RunVisionSelfTest( nlohmann::json& out )
          const nlohmann::json& g = ctx.at( "geometry" );
          const nlohmann::json& s = ctx.at( "channelStats" );
          const nlohmann::json& k = ctx.at( "fitsKeywords" );
+         // Location/identity keywords: neither name nor value may reach the model.
+         const std::string dumped = ctx.dump();
+         const bool redactedAbsent = dumped.find( "SITELAT" ) == std::string::npos
+                                  && dumped.find( "OBSERVER" ) == std::string::npos
+                                  && dumped.find( kSyntheticSiteLat ) == std::string::npos
+                                  && dumped.find( kSyntheticObserver ) == std::string::npos;
          auto near = []( double a, double b, double tol ) { return a >= b - tol && a <= b + tol; };
          bool medians = s.size() == 3;
          for ( const nlohmann::json& c : s )
@@ -377,7 +390,8 @@ bool RunVisionSelfTest( nlohmann::json& out )
                               && c.at( "mad" ).get<double>() > 0;
          ctxOk = ctx.at( "viewId" ).get<std::string>().rfind( "PICopilotSelfTest", 0 ) == 0
               && ctx.at( "isPreview" ) == false
-              && ctx.at( "filePath" ) == ""
+              && !ctx.contains( "filePath" )                  // never the full local path
+              && ctx.at( "fileName" ) == ""
               && !ctx.contains( "history" )
               && g.at( "width" ) == kSynthW && g.at( "height" ) == kSynthH
               && g.at( "channels" ) == 3 && g.at( "nominalChannels" ) == 3
@@ -388,8 +402,10 @@ bool RunVisionSelfTest( nlohmann::json& out )
               && near( s[1].at( "min" ).get<double>(), 0.0, 1e-9 )                  // square is 0 in G
               && near( s[1].at( "max" ).get<double>(), SynthBackground( kSynthW - 1 ), 1e-6 )
               && s[0].at( "mean" ).get<double>() > s[1].at( "mean" ).get<double>()
-              && ctx.at( "fitsKeywordsTotal" ) == 70
+              && ctx.at( "fitsKeywordsTotal" ) == 72
+              && ctx.at( "fitsKeywordsRedacted" ) == 2
               && ctx.at( "fitsKeywordsOmitted" ) == 10
+              && redactedAbsent
               && k.size() == size_t( PICopilotMaxFitsKeywords )
               && k[0].at( "name" ) == "OBJECT" && k[0].at( "value" ) == "M42"
               && k[2].at( "name" ) == "KW001"
@@ -400,6 +416,23 @@ bool RunVisionSelfTest( nlohmann::json& out )
       catch ( const pcl::Exception& x ) { error = x.Message(); }
       catch ( const std::exception& x ) { error = String( x.what() ); }
       catch ( ... )                     { error = "unknown exception"; }
+
+      // Privacy helpers: file NAME only (no directory / account name), and
+      // every listed location/identity keyword is redacted, any case.
+      bool privacyOk = ViewContextFileName( "/home/jdoe/astro/2026-09-20/M42_stack.xisf" ) == "M42_stack.xisf"
+                    && ViewContextFileName( String() ).IsEmpty()
+                    && IsRedactedFitsKeyword( " sitelat " )
+                    && !IsRedactedFitsKeyword( "OBJECT" )
+                    && !IsRedactedFitsKeyword( "SITE" );
+      int listed = 0;
+      for ( const char* r : PICopilotRedactedFitsKeywords )
+      {
+         privacyOk = privacyOk && IsRedactedFitsKeyword( r );
+         ++listed;
+      }
+      privacyOk = privacyOk && listed == 10;
+      ctxOk = ctxOk && privacyOk;
+      out["viewContextPrivacyOk"] = privacyOk;
 
       // A null view must be rejected loudly, not produce an empty context.
       bool nullRejected = false;
@@ -640,7 +673,13 @@ bool RunVisionSelfTest( nlohmann::json& out )
                 && m[2]["content"][1].at( "type" ) == "text"
                 && m[2]["content"][1].at( "text" ) == "look";
 
-         const nlohmann::json ctx = { { "viewId", "V" } };
+         const nlohmann::json ctx = {
+            { "viewId", "V" },
+            { "fullId", "V" },
+            { "geometry", { { "width", 10 }, { "height", 8 } } },
+            { "channelStats", nlohmann::json::array( { { { "channel", 0 }, { "median", 0.5 } } } ) },
+            { "fitsKeywords", nlohmann::json::array( { { { "name", "OBJECT" }, { "value", "M42" } } } ) }
+         };
          const AnthropicMessage t = ComposeUserTurn( "what is this?", &ctx, "QUJD" );
          const AnthropicMessage plain = ComposeUserTurn( "hi", nullptr, IsoString() );
          composeOk = t.role == "user" && t.imageJpegBase64 == "QUJD"
@@ -649,19 +688,51 @@ bool RunVisionSelfTest( nlohmann::json& out )
                   && t.content.Contains( String( "\"viewId\":\"V\"" ) )
                   && plain.content == "hi" && plain.imageJpegBase64.IsEmpty();
 
+         // Older turns: image stripped AND context collapsed to fullId +
+         // geometry (no stats/keywords re-sent); a context-only older turn
+         // (preview failed) is collapsed too; the latest turn is untouched.
+         const AnthropicMessage ctxOnly = ComposeUserTurn( "and now?", &ctx, IsoString() );
          Array<AnthropicMessage> hist;
          hist.Add( t );
          hist.Add( AnthropicMessage{ IsoString( "assistant" ), String( "an image" ), IsoString() } );
+         hist.Add( ctxOnly );
+         hist.Add( AnthropicMessage{ IsoString( "assistant" ), String( "same" ), IsoString() } );
          hist.Add( t );
          StripOlderImages( hist );
+         const Array<AnthropicMessage> once = hist;
          StripOlderImages( hist );   // idempotent
          const String note = String::UTF8ToUTF16( kPICopilotImageOmittedNote );
+         const String block = String( "[PixInsight view context]" );
+         auto collapsed = [&]( const String& c )
+         {
+            return c.Contains( block )
+                && c.Contains( String( "\"collapsed\":true" ) )
+                && c.Contains( String( "\"fullId\":\"V\"" ) )
+                && c.Contains( String( "\"geometry\":{\"height\":8,\"width\":10}" ) )
+                && !c.Contains( String( "channelStats" ) )
+                && !c.Contains( String( "fitsKeywords" ) )
+                && !c.Contains( String( "\"viewId\"" ) );
+         };
+         bool unchangedByRerun = once.Length() == hist.Length();
+         for ( size_type i = 0; unchangedByRerun && i < hist.Length(); ++i )
+            unchangedByRerun = once[i].content == hist[i].content
+                            && once[i].imageJpegBase64 == hist[i].imageJpegBase64;
          stripOk = hist[0].imageJpegBase64.IsEmpty()
-                && hist[0].content.StartsWith( note )
+                && hist[0].content.StartsWith( note + block )
                 && hist[0].content.Find( note, note.Length() ) == String::notFound   // not doubled
-                && hist[0].content.EndsWith( String( "what is this?" ) )
+                && collapsed( hist[0].content )
+                && hist[0].content.EndsWith( String( "[/PixInsight view context]\n\nwhat is this?" ) )
                 && hist[1].content == "an image"
-                && hist[2].imageJpegBase64 == "QUJD";
+                && hist[2].imageJpegBase64.IsEmpty()
+                && hist[2].content.StartsWith( block )                               // no image note
+                && collapsed( hist[2].content )
+                && hist[2].content.EndsWith( String( "[/PixInsight view context]\n\nand now?" ) )
+                && hist[3].content == "same"
+                && hist[4].imageJpegBase64 == "QUJD"
+                && hist[4].content == t.content                                     // latest: full context
+                && unchangedByRerun;
+         if ( !stripOk )
+            error = hist[0].content + " || " + hist[2].content;
       }
       catch ( const pcl::Exception& x ) { error = x.Message(); }
       catch ( const std::exception& x ) { error = String( x.what() ); }
@@ -719,7 +790,8 @@ bool RunVisionSelfTest( nlohmann::json& out )
    // The pure halves of the panel's Send capture and right-edge placement.
    // The panel wiring itself (checkbox, OnShow, log) is GUI-only.
    {
-      bool captureOk = false, noViewOk = false, failedViewOk = false, placementOk = false;
+      bool captureOk = false, noViewOk = false, failedViewOk = false, busyViewOk = false, placementOk = false;
+      double busyMs = -1;
       String error;
       try
       {
@@ -758,23 +830,75 @@ bool RunVisionSelfTest( nlohmann::json& out )
                   error += n + " | ";
          }
          {
-            // 2560x1440 primary screen, 420 wide, 40/60/8 margins.
+            // A view locked by a running process (View::Lock(), as processes
+            // lock their targets): Send must not touch it. Expect exactly the
+            // busy note, text only, and a prompt return.
+            WindowCloser wc{ CreateSyntheticWindow() };
+            const View view = wc.window.MainView();
+            StringList notes;
+            AnthropicMessage t;
+            {
+               View locked = view;
+               AutoViewLock lock( locked );   // RAII: Lock() now, Unlock() on scope exit
+               ElapsedTime et;
+               t = CaptureViewTurn( "busy?", &view, notes );
+               busyMs = et()*1000;
+            }
+            busyViewOk = t.content == "busy?" && t.imageJpegBase64.IsEmpty()
+                      && notes.Length() == 1
+                      && notes[0] == String::UTF8ToUTF16( kPICopilotViewBusyNote )
+                      && busyMs >= 0 && busyMs < 2000
+                      && view.CanRead() && view.CanWrite();   // unlocked again
+            if ( !busyViewOk )
+               for ( const String& n : notes )
+                  error += n + " | ";
+         }
+         {
+            // Placement is anchored to the primary screen's CENTER (Cx,Cy),
+            // with conservative half-extents halfW = min(Cx, Cy*16/9) and
+            // halfH = min(Cy, Cx*9/16): the primary screen's origin is not
+            // known, so 2*Cx is NOT its right edge on multi-monitor desktops.
+            auto halfW = []( int cx, int cy ) { return Min( cx, cy*16/9 ); };
+            auto halfH = []( int cx, int cy ) { return Min( cy, cx*9/16 ); };
+            // Inside [Cx-halfW, Cx+halfW] x [Cy-halfH, Cy+halfH], margins honoured.
+            auto inside = [&]( const PanelPlacement& p, int cx, int cy )
+            {
+               return p.ok && p.x >= 0 && p.y >= 0
+                   && p.x >= cx - halfW( cx, cy ) && p.x + p.width + 8 <= cx + halfW( cx, cy )
+                   && p.y >= cy - halfH( cx, cy ) + 40 && p.y + p.height + 60 <= cy + halfH( cx, cy );
+            };
+            // Single 2560x1440 primary at the origin: exactly flush right, full height.
             const PanelPlacement a = ComputeDefaultPanelPlacement( 1280, 720, 420, 40, 60, 8 );
+            // 2560x1440 primary to the RIGHT of a 1920 px monitor (origin 1920,0):
+            // Cx = 3200. Must stay on the primary, i.e. right edge <= 4480.
+            const PanelPlacement m = ComputeDefaultPanelPlacement( 3200, 720, 420, 40, 60, 8 );
+            // 2560x1440 primary BELOW a 1440 px monitor (origin 0,1440): Cy = 2160.
+            const PanelPlacement v = ComputeDefaultPanelPlacement( 1280, 2160, 420, 40, 60, 8 );
             // Width clamped to what fits beside the right margin.
             const PanelPlacement b = ComputeDefaultPanelPlacement( 200, 400, 420, 40, 60, 8 );
             // Unusable geometry: never move/resize.
             const PanelPlacement z = ComputeDefaultPanelPlacement( 0, 0, 420, 40, 60, 8 );
             const PanelPlacement s = ComputeDefaultPanelPlacement( 1280, 40, 420, 40, 60, 8 );
             placementOk = a.ok && a.x == 2560 - 420 - 8 && a.y == 40 && a.width == 420 && a.height == 1440 - 100
-                       && b.ok && b.width == 392 && b.x == 0
+                       && inside( a, 1280, 720 )
+                       && m.ok && m.x + m.width <= 3200 + halfW( 3200, 720 )
+                       && m.x == 1920 + 2560 - 420 - 8 && m.y == 40 && m.height == 1440 - 100
+                       && inside( m, 3200, 720 )
+                       && v.ok && v.x == 2560 - 420 - 8 && v.y == 1440 + 40 && v.height == 1440 - 100
+                       && inside( v, 1280, 2160 )
+                       && b.ok && b.width == 392 && b.x == 0 && inside( b, 200, 400 )
                        && !z.ok && !s.ok;
+            out["placementMulti"] = { m.x, m.y, m.width, m.height };
+            out["placementStacked"] = { v.x, v.y, v.width, v.height };
          }
       }
       catch ( const pcl::Exception& x ) { error += x.Message(); }
       catch ( const std::exception& x ) { error += String( x.what() ); }
       catch ( ... )                     { error += "unknown exception"; }
-      const bool ok = captureOk && noViewOk && failedViewOk && placementOk;
+      const bool ok = captureOk && noViewOk && failedViewOk && busyViewOk && placementOk;
       out["captureTurnOk"] = captureOk;
+      out["captureBusyViewOk"] = busyViewOk;
+      out["captureBusyMs"] = busyMs;
       out["captureNoViewOk"] = noViewOk;
       out["captureFailedViewOk"] = failedViewOk;
       out["placementOk"] = placementOk;

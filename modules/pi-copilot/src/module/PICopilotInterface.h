@@ -75,7 +75,8 @@ private:
    AnthropicMessage ComposeTurnWithActiveView( const String& prompt );
 
    // One-time default placement: flush right, full height (see e_Show).
-   void ApplyDefaultPlacement();
+   // Returns true only if the panel was actually resized and moved.
+   bool ApplyDefaultPlacement();
 
    // ── GUI Controls ──────────────────────────────────────────────
 
