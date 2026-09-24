@@ -39,10 +39,22 @@ cmake --build "$ROOT/modules/nukex/build" -j"$(nproc)" >/dev/null
 SO="$(find "$ROOT/modules/nukex/build" -name 'NukeX-pxm.so' -print -quit)"
 [ -n "$SO" ] || die "NukeX-pxm.so not found after build"
 
-echo "== 2/6 sign module =="
+echo "== 1b/6 build PICopilot module =="
+cmake -B "$ROOT/modules/pi-copilot/build" -S "$ROOT/modules/pi-copilot" \
+  -DPCLDIR="$HOME/PCL" -DPICOPILOT_BUILD_MODULE=ON >/dev/null
+cmake --build "$ROOT/modules/pi-copilot/build" -j"$(nproc)" >/dev/null
+PICOPILOT_SO="$(find "$ROOT/modules/pi-copilot/build" -name 'PICopilot-pxm.so' -print -quit)"
+[ -n "$PICOPILOT_SO" ] || die "PICopilot-pxm.so not found after build"
+
+echo "== 2/6 sign NukeX module =="
 "$PI" --sign-module-file="$SO" --xssk-file="$KEYS" --xssk-password="$PASS"
 XSGN="${SO%-pxm.so}-pxm.xsgn"
 [ -f "$XSGN" ] || die "module signature $XSGN not produced"
+
+echo "== 2a/6 sign PICopilot module =="
+"$PI" --sign-module-file="$PICOPILOT_SO" --xssk-file="$KEYS" --xssk-password="$PASS"
+PICOPILOT_XSGN="${PICOPILOT_SO%-pxm.so}-pxm.xsgn"
+[ -f "$PICOPILOT_XSGN" ] || die "module signature $PICOPILOT_XSGN not produced"
 
 echo "== 2b/6 native-sign EZ scripts =="
 ( cd "$ROOT/scripts/ez-stretch" && bash tools/sign.sh scripts )
@@ -78,7 +90,7 @@ assert r.get("ok"), r
 print("  signed+verified:", ", ".join(r["verified"]))
 PY
 
-echo "== 3/6 package module tarball =="
+echo "== 3/6 package NukeX module tarball =="
 mkdir -p "$REPO/bin"
 cp "$SO" "$XSGN" "$REPO/bin/"
 MOD_TGZ="$DATE-linux-x64-NukeX.tar.gz"
@@ -90,6 +102,49 @@ s=open(mf).read()
 s=re.sub(r'fileName="[^"]*NukeX\.tar\.gz"', 'fileName="'+fn+'"', s)
 open(mf,'w').write(s)
 PY
+
+echo "== 3a/6 package PICopilot module tarball =="
+cp "$PICOPILOT_SO" "$PICOPILOT_XSGN" "$REPO/bin/"
+PICOPILOT_TGZ="$DATE-linux-x64-PICopilot.tar.gz"
+tar -C "$REPO" -czf "$REPO/$PICOPILOT_TGZ" bin/PICopilot-pxm.so bin/PICopilot-pxm.xsgn
+# Stale dated PICopilot tarballs (like stale dated NukeX tarballs) are not
+# auto-deleted here -- they're pruned manually at commit time (see repository/
+# git history, e.g. "Dropped stale repository/ artifacts ... 20260627 NukeX tarball").
+python3 - "$REPO/updates.xri" "$PICOPILOT_TGZ" <<'PY'
+import re,sys
+mf,fn=sys.argv[1:3]
+s=open(mf).read()
+if re.search(r'fileName="[^"]*-linux-x64-PICopilot\.tar\.gz"', s):
+    # Entry already exists from a prior release -- just rename the dated
+    # fileName, mirroring the NukeX rename above. Idempotent: re-running
+    # with the same date is a no-op substitution.
+    s=re.sub(r'fileName="[^"]*-linux-x64-PICopilot\.tar\.gz"', 'fileName="'+fn+'"', s)
+else:
+    # First release: insert a new <package> entry into the linux/x64
+    # platform block (the same block NukeX lives in). sha1/releaseDate
+    # are placeholders -- step 4 (write_pkg) fills in the real values.
+    entry = ('\n      <package fileName="' + fn + '" '
+             'sha1="0000000000000000000000000000000000000000" '
+             'type="module" releaseDate="00000000">\n'
+             '         <title>PI Copilot</title>\n'
+             '         <description>\n'
+             '            <p>\n'
+             '               <b>PI Copilot</b>\n'
+             '            </p>\n'
+             '            <p>PI Copilot &#8212; AI assistant panel for PixInsight '
+             '(bring your own Anthropic API key).</p>\n'
+             '         </description>\n'
+             '      </package>\n')
+    new_s,n=re.subn(
+        r'(<platform os="linux" arch="x64"[^>]*>.*?)(\s*</platform>)',
+        lambda m: m.group(1)+entry+m.group(2),
+        s, count=1, flags=re.DOTALL)
+    if n!=1:
+        sys.exit("could not locate linux/x64 <platform> block to insert PICopilot package entry")
+    s=new_s
+open(mf,'w').write(s)
+PY
+[ -f "$REPO/$PICOPILOT_TGZ" ] || die "tarball $PICOPILOT_TGZ not produced"
 
 echo "== 3b/6 package EZ script zips (install under src/scripts/scarter4work) =="
 declare -A EZVER=( [EZStretch]=1.0.10 [EZDonutRepair]=1.0.3 [EZHazeKill]=1.0.1 )
@@ -148,6 +203,7 @@ rm -rf "$RCASTRO_STAGE"
 
 echo "== 4/6 write fileName/sha1/releaseDate into ONE manifest =="
 write_pkg "$REPO/updates.xri" "$MOD_TGZ"                  "$(sha1 "$REPO/$MOD_TGZ")"
+write_pkg "$REPO/updates.xri" "$PICOPILOT_TGZ"            "$(sha1 "$REPO/$PICOPILOT_TGZ")"
 write_pkg "$REPO/updates.xri" "EZStretch_v1.0.10.zip"     "$(sha1 "$REPO/EZStretch_v1.0.10.zip")"
 write_pkg "$REPO/updates.xri" "EZDonutRepair_v1.0.3.zip"  "$(sha1 "$REPO/EZDonutRepair_v1.0.3.zip")"
 write_pkg "$REPO/updates.xri" "EZHazeKill_v1.0.1.zip"     "$(sha1 "$REPO/EZHazeKill_v1.0.1.zip")"
