@@ -62,15 +62,22 @@ if ! PICOPILOT_SELFTEST_OUT="$R" timeout 180 "$PI" -n --automation-mode --no-sta
 fi
 [ -f "$R" ] || { echo "FAIL: no result file"; exit 1; }
 cat "$R"
-python3 -c "
+python3 - "$R" <<'PY' || { echo "FAIL: self-test verdict not all green"; exit 1; }
 import json, sys
-d = json.load(open('$R'))
-ok = (d.get('evalOk') and d.get('evalResult') == 3 and d.get('processInstanceValid')
-      and d.get('keyStoreOk') and d.get('anthropicOk') and d.get('workerThreadOk')
-      and d.get('stallSkipped') is False and d.get('cancelOk') and d.get('deadlineOk')
-      and d.get('plainTextOk') and d.get('ok'))
-skipped = d.get('anthropicSkipped')
-print('anthropic check: %s' % ('SKIPPED (no key)' if skipped else 'RAN against real API'))
-sys.exit(0 if ok else 1)
-" || { echo "FAIL: self-test did not prove all execution paths"; exit 1; }
-echo "PASS: EvaluateScript==3, ProcessInstance valid, Settings round-trip OK, Anthropic check OK, worker-thread 401 OK, cancel+deadline on stalled connection OK, PlainText </raw> OK"
+d = json.load(open(sys.argv[1]))
+required_true = [
+    'evalOk', 'processInstanceValid', 'keyStoreOk', 'anthropicOk', 'workerThreadOk',
+    'cancelOk', 'deadlineOk', 'plainTextOk',
+    # increment 3
+    'visionSmokeOk',
+    'ok',
+]
+missing = [k for k in required_true if d.get(k) is not True]
+if d.get('evalResult') != 3: missing.append('evalResult==3')
+if d.get('stallSkipped') is not False: missing.append('stallSkipped==false')
+print('anthropic check: %s' % ('SKIPPED (no key)' if d.get('anthropicSkipped') else 'RAN against real API'))
+if missing:
+    print('FAILED keys: ' + ', '.join(missing))
+    sys.exit(1)
+PY
+echo "PASS: self-test verdict all green"

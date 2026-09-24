@@ -6,6 +6,7 @@
 #include "AnthropicClient.h"
 #include "ChatThread.h"
 #include "PICopilotInterface.h"   // PICopilotInterface::PlainText
+#include "PICopilotVisionSelfTest.h"
 
 #include <pcl/Process.h>
 #include <pcl/ProcessInstance.h>
@@ -265,9 +266,29 @@ bool RunSelfTest( String& jsonOut )
       { "deadlineError", deadlineError.ToUTF8().c_str() },
       { "deadlineSeconds", deadlineSeconds },
       { "plainTextOk", plainTextOk },
-      { "plainTextBack", plainTextBack.ToUTF8().c_str() },
-      { "ok", ok }
+      { "plainTextBack", plainTextBack.ToUTF8().c_str() }
    };
+
+   // Increment 3: vision/grounding sections. Never let an escape here lose
+   // the increment-1/2 verdict -- record it as a failure instead.
+   bool visionOk = false;
+   try
+   {
+      nlohmann::json vision;
+      visionOk = RunVisionSelfTest( vision );
+      j.update( vision );
+   }
+   catch ( const std::exception& x )
+   {
+      j["visionException"] = x.what();
+   }
+   catch ( ... )
+   {
+      j["visionException"] = "unknown exception";
+   }
+
+   ok = ok && visionOk;
+   j["ok"] = ok;
    jsonOut = String::UTF8ToUTF16( j.dump().c_str() );
    return ok;
 }
