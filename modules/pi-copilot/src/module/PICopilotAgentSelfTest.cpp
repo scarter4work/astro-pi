@@ -199,6 +199,14 @@ AnthropicResult ErrorResult( const String& error, int status )
    return r;
 }
 
+// What AnthropicRequest::Perform() returns after Cancel().
+AnthropicResult CancelledResult()
+{
+   AnthropicResult r = ErrorResult( "request cancelled", 0 );
+   r.cancelled = true;
+   return r;
+}
+
 int CountImages( const nlohmann::json& v )
 {
    int n = 0;
@@ -1116,18 +1124,30 @@ bool RunAgentSelfTest( nlohmann::json& out )
             failFirstOk = f.kind == AgentStep::Failed && f.restoreInput && !f.toolsRan && f.error == "boom"
                        && s.History().Length() == n0;
             s.BeginUserTurn( userTurn( "three" ) );
-            const AgentStep c = s.OnResponse( ErrorResult( "request cancelled", 0 ), run, never );
-            cancelFirstOk = c.kind == AgentStep::Stopped && c.restoreInput && s.History().Length() == n0;
+            const AgentStep c = s.OnResponse( CancelledResult(), run, never );
+            const bool cancelRolledBack = s.History().Length() == n0;
+            // Cancellation is the flag, not the error text.
+            s.BeginUserTurn( userTurn( "four" ) );
+            const AgentStep lookalike = s.OnResponse( ErrorResult( "request cancelled", 0 ), run, never );
+            cancelFirstOk = c.kind == AgentStep::Stopped && c.restoreInput && cancelRolledBack
+                         && lookalike.kind == AgentStep::Failed && s.History().Length() == n0;
          }
-         {  // failure after a round: the round stays, next message merges, still valid
+         {  // failure after a round: the round stays, next message merges, still valid.
+            // toolsRan = an image was changed: not for a read-only round, yes after an apply.
             AgentSession s;
             s.BeginUserTurn( userTurn( "describe then fail" ) );
             s.OnResponse( ToolUseResult( { { "describe_process", describePM } }, "toolu_f" ), run, never );
             const size_type n1 = s.History().Length();
             const AgentStep f = s.OnResponse( ErrorResult( "overloaded", 529 ), run, never );
             s.BeginUserTurn( userTurn( "retry" ) );
-            failMidOk = f.kind == AgentStep::Failed && f.restoreInput && f.toolsRan && n1 == 3
-                     && s.History().Length() == 3 && HistoryIsApiValid( s.History(), why );
+            const bool readOnlyOk = f.kind == AgentStep::Failed && f.restoreInput && !f.toolsRan && n1 == 3
+                                 && s.History().Length() == 3 && HistoryIsApiValid( s.History(), why );
+            AgentSession s2;
+            s2.BeginUserTurn( userTurn( "halve then fail" ) );
+            s2.OnResponse( ToolUseResult( { { "apply_process", halve } }, "toolu_g" ), run, never );
+            const AgentStep f2 = s2.OnResponse( ErrorResult( "overloaded", 529 ), run, never );
+            failMidOk = readOnlyOk && f2.kind == AgentStep::Failed && f2.restoreInput && f2.toolsRan
+                     && s2.History().Length() == 3;
          }
          {  // images: only the LAST message keeps pixels, including tool_result previews
             AgentSession s;
@@ -1173,12 +1193,29 @@ bool RunAgentSelfTest( nlohmann::json& out )
             const AgentSession::ToolRunner counting = [&]( const ToolCall& c ) { ++calls; return ExecuteTool( c, ctx ); };
             const double before = ChannelMedian( v, 0 );
             const AgentStep a = s.OnResponse( t, counting, never );
-            const nlohmann::json& stored = s.History()[1].blocks;
+            const nlohmann::json stored = s.History()[1].blocks;   // a copy: BeginUserTurn may reallocate
             s.BeginUserTurn( userTurn( "continue" ) );
-            truncOk = a.kind == AgentStep::Done && a.truncated && calls == 0 && a.toolLog.IsEmpty()
+            const bool cutOk = a.kind == AgentStep::Done && a.truncated && calls == 0 && a.toolLog.IsEmpty()
                    && s.History().Length() == 3 && stored.is_array() && stored.size() == 1
                    && stored.at( 0 ).at( "type" ) == "text" && HistoryIsApiValid( s.History(), why )
                    && std::fabs( ChannelMedian( v, 0 ) - before ) < 1e-12;
+            // placeholders follow the stop reason: a cut-off tool call vs an empty reply
+            AgentSession s2;
+            s2.BeginUserTurn( userTurn( "cut, no text" ) );
+            AnthropicResult t2 = ToolUseResult( { { "apply_process", halve } }, "toolu_t2" );
+            t2.stopReason = "max_tokens";
+            t2.truncated = true;
+            s2.OnResponse( t2, counting, never );
+            const std::string cutText = s2.History()[1].blocks.at( 0 ).at( "text" ).get<std::string>();
+            AgentSession s3;
+            s3.BeginUserTurn( userTurn( "empty" ) );
+            AnthropicResult e = EndTurnResult( "" );
+            e.text.Clear();
+            s3.OnResponse( e, run, never );
+            const std::string emptyText = s3.History()[1].blocks.at( 0 ).at( "text" ).get<std::string>();
+            detail["placeholders"] = { cutText, emptyText };
+            truncOk = cutOk && calls == 0 && cutText.find( "cut off" ) != std::string::npos
+                   && emptyText.find( "cut off" ) == std::string::npos && emptyText.find( "end_turn" ) != std::string::npos;
          }
          {  // the validator also catches duplicates, empty content, a trailing assistant turn
             auto userText = []( const char* t ) { return AnthropicMessage{ IsoString( "user" ), String( t ), IsoString() }; };
@@ -1209,29 +1246,75 @@ bool RunAgentSelfTest( nlohmann::json& out )
             e2.Add( emptyBlocks );
             Array<AnthropicMessage> t1;
             t1.Add( userText( "hi" ) ); t1.Add( AnthropicMessage{ IsoString( "assistant" ), String( "hello" ), IsoString() } );
-            String w1, w2, w3, w4, w5;
+            // tool_result after a text block (the API wants tool_results first)
+            AnthropicMessage late;
+            late.role = "user";
+            late.blocks = nlohmann::json::array();
+            late.blocks.push_back( { { "type", "text" }, { "text", "first" } } );
+            late.blocks.push_back( dupResult.blocks.at( 0 ) );
+            Array<AnthropicMessage> o1;
+            o1.Add( userText( "hi" ) ); o1.Add( oneUse ); o1.Add( late );
+            // empty tool_use id / empty tool_use_id
+            AnthropicMessage noId = oneUse;
+            noId.blocks[0]["id"] = "";
+            Array<AnthropicMessage> i1;
+            i1.Add( userText( "hi" ) ); i1.Add( noId ); i1.Add( userText( "x" ) );
+            AnthropicMessage noRef;
+            noRef.role = "user";
+            noRef.blocks = nlohmann::json::array();
+            noRef.blocks.push_back( { { "type", "tool_result" }, { "tool_use_id", "" }, { "content", "x" }, { "is_error", false } } );
+            Array<AnthropicMessage> i2;
+            i2.Add( noRef );
+            String w1, w2, w3, w4, w5, w6, w7, w8;
             const bool r1 = HistoryIsApiValid( d1, w1 ), r2 = HistoryIsApiValid( d2, w2 ), r3 = HistoryIsApiValid( e1, w3 ),
-                       r4 = HistoryIsApiValid( e2, w4 ), r5 = HistoryIsApiValid( t1, w5 );
-            detail["validatorWhy"] = { U8( w1 ), U8( w2 ), U8( w3 ), U8( w4 ), U8( w5 ) };
+                       r4 = HistoryIsApiValid( e2, w4 ), r5 = HistoryIsApiValid( t1, w5 ), r6 = HistoryIsApiValid( o1, w6 ),
+                       r7 = HistoryIsApiValid( i1, w7 ), r8 = HistoryIsApiValid( i2, w8 );
+            detail["validatorWhy"] = { U8( w1 ), U8( w2 ), U8( w3 ), U8( w4 ), U8( w5 ), U8( w6 ), U8( w7 ), U8( w8 ) };
             validatorMoreOk = !r1 && w1.Contains( "duplicate tool_use id toolu_dup" )
                            && !r2 && w2.Contains( "duplicate tool_result for toolu_dup" )
                            && !r3 && w3.Contains( "empty" ) && !r4 && w4.Contains( "empty" )
-                           && !r5 && w5.Contains( "last message" );
+                           && !r5 && w5.Contains( "last message" )
+                           && !r6 && w6.Contains( "after a non-tool_result block" )
+                           && !r7 && w7.Contains( "tool_use without an id" )
+                           && !r8 && w8.Contains( "tool_result without a tool_use_id" );
          }
-         {  // AbortTurn (history found invalid before a send): same rollback as a failed request
+         {  // AbortTurn (history found invalid before a send): ALWAYS back to the snapshot
             AgentSession s;
             s.BeginUserTurn( userTurn( "one" ) );
             s.OnResponse( EndTurnResult( "reply one" ), run, never );
             const size_type n0 = s.History().Length();
             s.BeginUserTurn( userTurn( "two" ) );
             const AgentStep a = s.AbortTurn( "history invalid" );
-            s.BeginUserTurn( userTurn( "describe" ) );
-            s.OnResponse( ToolUseResult( { { "describe_process", describePM } }, "toolu_ab" ), run, never );
-            const AgentStep b = s.AbortTurn( "history invalid" );
-            abortOk = a.kind == AgentStep::Failed && a.restoreInput && !a.toolsRan && a.error == "history invalid"
-                   && b.kind == AgentStep::Failed && b.restoreInput && b.toolsRan
-                   && s.History().Length() == n0 + 3 && HistoryIsApiValid( s.History(), why )
-                   && s.History()[s.History().Length()-1].blocks.at( 0 ).at( "type" ) == "tool_result";
+            const bool aOk = a.kind == AgentStep::Failed && a.restoreInput && !a.toolsRan && !a.needsClear
+                          && a.error == "history invalid" && s.History().Length() == n0;
+            // a round whose reply repeats a tool_use id (really run: an apply) makes the history invalid
+            s.BeginUserTurn( userTurn( "halve twice" ) );
+            AnthropicResult dup = ToolUseResult( { { "apply_process", halve }, { "describe_process", describePM } }, "toolu_ab" );
+            dup.contentBlocks[1]["id"] = dup.contentBlocks[0]["id"];
+            s.OnResponse( dup, run, never );
+            String badWhy;
+            const bool invalidAfterRound = !HistoryIsApiValid( s.History(), badWhy );
+            const AgentStep b = s.AbortTurn( "history invalid: " + badWhy );
+            const bool restored = s.History().Length() == n0;
+            s.BeginUserTurn( userTurn( "next" ) );
+            const bool nextValid = HistoryIsApiValid( s.History(), why );
+            const bool bOk = invalidAfterRound && badWhy.Contains( "duplicate tool_use id toolu_ab1" )
+                          && b.kind == AgentStep::Failed && b.restoreInput && b.toolsRan && !b.needsClear
+                          && restored && nextValid;
+            // the snapshot itself invalid (invalid round, then a new message began): flag it for Clear
+            AgentSession s2;
+            s2.BeginUserTurn( userTurn( "look" ) );
+            AnthropicResult dup2 = ToolUseResult( { { "describe_process", describePM }, { "list_processes", nlohmann::json::object() } }, "toolu_ac" );
+            dup2.contentBlocks[1]["id"] = dup2.contentBlocks[0]["id"];
+            s2.OnResponse( dup2, run, never );
+            s2.BeginUserTurn( userTurn( "and?" ) );
+            const AgentStep c = s2.AbortTurn( "history invalid" );
+            s2.Clear();
+            s2.BeginUserTurn( userTurn( "fresh" ) );
+            const bool cOk = c.kind == AgentStep::Failed && c.needsClear && !c.toolsRan
+                          && HistoryIsApiValid( s2.History(), why );
+            detail["abort"] = { aOk, bOk, cOk, U8( badWhy ) };
+            abortOk = aOk && bOk && cOk;
          }
       }
       catch ( const pcl::Exception& x ) { error = x.Message(); }

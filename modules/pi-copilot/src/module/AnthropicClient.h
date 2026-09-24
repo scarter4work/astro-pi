@@ -64,6 +64,8 @@ struct AnthropicResult
    String         text;          // all "text" content blocks, concatenated in order (may be empty for tool_use)
    String         error;
    int            httpStatus = 0;
+   bool           cancelled = false; // Cancel() ended the request (error "request cancelled");
+                                     // callers test this flag, never the error text
    bool           truncated = false; // stop_reason == "max_tokens"; contentBlocks may then still
                                      // hold (cut-off) tool_use blocks -- the caller must drop
                                      // them before storing the turn (no unanswered tool_use)

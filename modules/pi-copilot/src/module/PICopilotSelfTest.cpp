@@ -190,7 +190,7 @@ bool RunSelfTest( String& jsonOut )
             AnthropicResult r;
             if ( t.TryTakeResult( r ) )
                cancelError = r.error;
-            cancelOk = !finishedEarly && !r.ok && r.error == "request cancelled" && cancelSeconds < 15;
+            cancelOk = !finishedEarly && !r.ok && r.cancelled && r.error == "request cancelled" && cancelSeconds < 15;
          }
       }
       catch ( ... )
@@ -219,7 +219,7 @@ bool RunSelfTest( String& jsonOut )
             AnthropicResult r;
             if ( t.TryTakeResult( r ) )
                deadlineError = r.error;
-            deadlineOk = !r.ok && r.error == "request timed out after 3 s"
+            deadlineOk = !r.ok && !r.cancelled && r.error == "request timed out after 3 s"
                       && deadlineSeconds >= 2.5 && deadlineSeconds < 15;
          }
       }
