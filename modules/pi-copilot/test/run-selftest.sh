@@ -226,6 +226,7 @@ required_true = [
     'agentToolsOk',
     'agentLoopOk', 'agentWireOk',
     'panelResizableOk', 'turnEndNotesOk',
+    'turnTargetOk',
     'liveAgentOk',
     'ok',
 ]

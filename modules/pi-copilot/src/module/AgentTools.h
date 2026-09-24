@@ -10,6 +10,7 @@
 #include <nlohmann/json.hpp>
 
 #include <functional>
+#include <set>
 #include <string>
 
 namespace pcl
@@ -48,9 +49,22 @@ using ConfirmApplyFn = std::function<bool( const String& processId, const String
 
 struct ToolContext
 {
-   AgentMode             mode = AgentMode::Copilot;
-   std::function<View()> activeView;   // default target, resolved at call time (may return View::Null())
-   ConfirmApplyFn        confirm;      // required in Guided mode
+   AgentMode mode = AgentMode::Copilot;
+
+   // FullId of the view captured when the user sent this message (the one
+   // whose context/preview went with it); empty when no image was active.
+   // The default target of get_view_context and apply_process, re-resolved
+   // by id at every call -- NEVER "whatever window is active now": requests
+   // take tens of seconds and the panel is non-modal.
+   IsoString turnViewId;
+
+   // FullIds that get_view_context inspected during this user message
+   // (owned by the caller, emptied at each new user message). apply_process
+   // accepts a view_id other than turnViewId only if it is in here. May be
+   // null: then only the turn's own view can be targeted.
+   std::set<std::string>* inspectedViews = nullptr;
+
+   ConfirmApplyFn confirm;   // required in Guided mode
 };
 
 // Executes one tool call. Root thread only (views, processes, previews,

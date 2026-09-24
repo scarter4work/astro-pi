@@ -51,7 +51,9 @@ ApplyProcessResult ApplyProcess( const IsoString& processId, const nlohmann::jso
                                  const nlohmann::json& tableParameters, View view );
 
 // "id = value" lines (tables as compact JSON), for the Guided confirm dialog.
-// "(all parameters at their defaults)" when nothing is set. Cut to maxChars.
+// "(all parameters at their defaults)" when nothing is set. When the text
+// would exceed maxChars, whole lines are dropped from the end and replaced by
+// "… and N more parameter(s) not shown" (N exact).
 String DescribeParameterChanges( const nlohmann::json& parameters, const nlohmann::json& tableParameters,
                                  size_type maxChars );
 

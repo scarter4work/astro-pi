@@ -22,6 +22,9 @@
 
 #include <nlohmann/json.hpp>
 
+#include <set>
+#include <string>
+
 namespace pcl
 {
 
@@ -49,12 +52,19 @@ public:
    // Use it at EVERY site that inserts non-literal text into the chat log.
    static String PlainText( const String& text );
 
+private:
+
+   friend bool RunAgentSelfTest( nlohmann::json& out );
+
    // Test-only (self-test Section A7): builds the GUI if it does not exist
    // yet, then measures whether the panel resizes both ways and the chat log
    // follows; restores the original size. Root thread only.
    nlohmann::json ProbeResizeForSelfTest();
 
-private:
+   // Starts a user message's target: records the FullId of the active
+   // window's current view (the view whose context/preview this message
+   // carries) and forgets the previous message's inspected views.
+   void BeginTurnTarget();
 
    // ── Chat state (UI thread only) ───────────────────────────────
 
@@ -72,6 +82,11 @@ private:
    String    m_apiKey;
    AgentMode m_turnMode = AgentMode::Copilot;
 
+   // Per user message: the target view (see ToolContext::turnViewId) and the
+   // views get_view_context inspected (see ToolContext::inspectedViews).
+   IsoString             m_turnViewId;
+   std::set<std::string> m_inspectedViews;
+
    // Stop pressed: cancel the request in flight, run no further tool.
    bool m_stopRequested = false;
 
@@ -88,14 +103,15 @@ private:
    void AppendToLog( const String& richText );
    void StopWorker();
    void SetBusy( bool busy );
-   ToolContext MakeToolContext() const;
+   ToolContext MakeToolContext();
 
    // Guided-mode confirmation (modal MessageBox, root thread).
    static bool ConfirmApply( const String& processId, const String& viewId, const String& changes );
 
-   // UI thread only: captures the active view's context + preview (when
-   // "Include view" is checked) and returns the composed user turn. Every
-   // capture problem is written to the chat log; the text always sends.
+   // UI thread only: captures the turn view's (m_turnViewId) context +
+   // preview (when "Include view" is checked) and returns the composed user
+   // turn. Every capture problem is written to the chat log; the text always
+   // sends.
    AnthropicMessage ComposeTurnWithActiveView( const String& prompt );
 
    // One-time default placement: flush right, full height (see e_Show).
