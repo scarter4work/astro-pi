@@ -74,6 +74,11 @@ String ColumnIds( const ProcessParameter::parameter_list& columns )
    return s;
 }
 
+String RowCount( size_type n )
+{
+   return String().Format( "%u row", unsigned( n ) ) + (n == 1 ? "" : "s");
+}
+
 String VariantText( const Variant& v )
 {
    try
@@ -334,10 +339,18 @@ ApplyProcessResult ApplyProcess( const IsoString& processId, const nlohmann::jso
             const ProcessParameter p = FindParameter( *P, it.key(), name );
             if ( !p.IsTable() )
                throw ApplyError{ name + " is not a table parameter; pass it in parameters" };
+            // Output tables (e.g. PixelMath.outputData) are written by the
+            // process, never by us: refuse before AllocateTableRows().
+            if ( p.IsReadOnly() )
+               throw ApplyError{ name + " is read-only (an output of the process); it cannot be set" };
+            const ProcessParameter::parameter_list columns = p.TableColumns();
+            for ( const ProcessParameter& c : columns )
+               if ( c.IsReadOnly() )
+                  throw ApplyError{ name + "." + String( c.Id() )
+                                    + " is a read-only column (an output of the process); this table cannot be set" };
             const nlohmann::json& rows = it.value();
             if ( !rows.is_array() )
                throw ApplyError{ name + ": expected an array of rows [[...], ...]" };
-            const ProcessParameter::parameter_list columns = p.TableColumns();
             for ( size_type i = 0; i < rows.size(); ++i )
                if ( !rows[i].is_array() || rows[i].size() != columns.Length() )
                   throw ApplyError{ name + String().Format( ": row %u has %u values; expected %u (columns: ",
@@ -347,19 +360,25 @@ ApplyProcessResult ApplyProcess( const IsoString& processId, const nlohmann::jso
             // Row count BEFORE AllocateTableRows(): the core answers a length
             // outside the table's limits with a MODAL "Invalid parameter
             // allocation length" dialog (seen live for HistogramTransformation.H,
-            // which is exactly 5 rows), not with a catchable failure.
+            // which takes 4-5 rows), not with a catchable failure.
+            //
+            // A max length of 0 means UNLIMITED (MetaParameter::MaxLength(),
+            // the default; the core reports 0 for e.g. CurvesTransformation.K
+            // and min 1 / max 0 for MorphologicalTransformation.structureWayTable).
+            // ~0 is also treated as unlimited (ProcessParameter.h documents it).
             size_type minRows = 0, maxRows = 0;
             p.GetLengthLimits( minRows, maxRows );
-            if ( rows.size() < minRows || rows.size() > maxRows )
+            const bool unlimited = maxRows == 0 || maxRows == ~size_type( 0 );
+            if ( rows.size() < minRows || (!unlimited && rows.size() > maxRows) )
             {
                String need;
-               if ( minRows == maxRows )
-                  need.Format( "exactly %u rows", unsigned( minRows ) );
-               else if ( maxRows == ~size_type( 0 ) )
-                  need.Format( "at least %u rows", unsigned( minRows ) );
+               if ( unlimited )
+                  need = "at least " + RowCount( minRows );
+               else if ( minRows == maxRows )
+                  need = "exactly " + RowCount( minRows );
                else
-                  need.Format( "between %u and %u rows", unsigned( minRows ), unsigned( maxRows ) );
-               throw ApplyError{ name + String().Format( ": %u rows given; this table needs ", unsigned( rows.size() ) )
+                  need = String().Format( "between %u and %u rows", unsigned( minRows ), unsigned( maxRows ) );
+               throw ApplyError{ name + ": " + RowCount( rows.size() ) + " given; this table needs "
                                  + need + " (columns: " + ColumnIds( columns ) + ")" };
             }
             if ( !instance.AllocateTableRows( p, rows.size() ) )
@@ -420,16 +439,19 @@ ApplyProcessResult ApplyProcess( const IsoString& processId, const nlohmann::jso
    {
       r.ok = false;
       r.error = "apply_process internal error: " + x.Message();
+      r.parametersSet = nlohmann::json::object();
    }
    catch ( const std::exception& x )
    {
       r.ok = false;
       r.error = String( "apply_process internal error: " ) + String( x.what() );
+      r.parametersSet = nlohmann::json::object();
    }
    catch ( ... )
    {
       r.ok = false;
       r.error = "apply_process internal error: unknown exception";
+      r.parametersSet = nlohmann::json::object();
    }
    return r;
 }

@@ -394,6 +394,19 @@ bool RunAgentSelfTest( nlohmann::json& out )
             detail["ht"] = { { "ok", r.ok }, { "error", U8( r.error ) }, { "before", before }, { "after", after } };
             htOk = r.ok && after > 2*before;
          }
+         {  // CurvesTransformation K: an UNLIMITED-length table (max length 0)
+            // with 3 points (0,0) (0.5,0.75) (1,1) brightens the dark background.
+            AgentTestWindow tw( "PICopilotApplyCurves" );
+            View v = tw.MainView();
+            const double before = ChannelMedian( v, 1 );
+            nlohmann::json tables = nlohmann::json::object();
+            tables["K"] = nlohmann::json::array( { nlohmann::json::array( { 0, 0 } ), nlohmann::json::array( { 0.5, 0.75 } ),
+                                                   nlohmann::json::array( { 1, 1 } ) } );
+            const ApplyProcessResult r = ApplyProcess( "CurvesTransformation", nlohmann::json::object(), tables, v );
+            const double after = ChannelMedian( v, 1 );
+            detail["curves"] = { { "ok", r.ok }, { "error", U8( r.error ) }, { "before", before }, { "after", after } };
+            htOk = htOk && r.ok && after > 1.2*before;
+         }
          {  // SCNR: enumeration parameters by element id -> red square loses red, grey background untouched.
             AgentTestWindow tw( "PICopilotApplySCNR" );
             View v = tw.MainView();
@@ -443,7 +456,19 @@ bool RunAgentSelfTest( nlohmann::json& out )
             // 4 or 5 rows (core length limits).
             { "wrongRowCount", "HistogramTransformation", nlohmann::json::object(),
               { { "H", nlohmann::json::array( { nlohmann::json::array( { 0, 0.5, 1, 0, 1 } ) } ) } },
-              "HistogramTransformation.H: 1 rows given; this table needs between 4 and 5 rows (columns: c0, m, c1, r0, r1)" },
+              "HistogramTransformation.H: 1 row given; this table needs between 4 and 5 rows (columns: c0, m, c1, r0, r1)" },
+            // Table shape/limits (fix round 1). Core length limits, from a scan
+            // of every table parameter: max 0 = UNLIMITED (MetaParameter.h).
+            { "emptyAtLeast", "MorphologicalTransformation", nlohmann::json::object(),
+              { { "structureWayTable", nlohmann::json::array() } },
+              "MorphologicalTransformation.structureWayTable: 0 rows given; this table needs at least 1 row (columns: " },
+            { "exactRows", "ChannelCombination", nlohmann::json::object(),
+              { { "channels", nlohmann::json::array( { nlohmann::json::array( { true, "" } ) } ) } },
+              "ChannelCombination.channels: 1 row given; this table needs exactly 3 rows (columns: enabled, id)" },
+            // Output tables are read-only: refused before AllocateTableRows().
+            { "readOnlyTable", "PixelMath", nlohmann::json::object(),
+              { { "outputData", nlohmann::json::array() } },
+              "PixelMath.outputData is read-only (an output of the process); it cannot be set" },
             { "cellType", "HistogramTransformation", nlohmann::json::object(),
               { { "H", nlohmann::json::array( {
                   nlohmann::json::array( { 0, "x", 1, 0, 1 } ), nlohmann::json::array( { 0, 0.5, 1, 0, 1 } ),
