@@ -73,20 +73,34 @@ nlohmann::json ToBlocks( const AnthropicMessage& m )
 // The reply's blocks as they may be stored in history: empty text blocks
 // removed (the API rejects them when re-sent), and -- for a reply that did
 // not stop for tool use (e.g. max_tokens cut a call) -- every tool_use block
-// removed, so no unanswered tool_use ever enters the history.
-nlohmann::json StorableAssistantBlocks( const nlohmann::json& blocks, bool keepToolUse )
+// removed, so no unanswered tool_use ever enters the history. An emptied
+// turn gets a placeholder that says what actually happened.
+nlohmann::json StorableAssistantBlocks( const AnthropicResult& r )
 {
+   const bool keepToolUse = r.stopReason == "tool_use";
+   bool droppedToolUse = false;
    nlohmann::json kept = nlohmann::json::array();
-   for ( const nlohmann::json& b : blocks )
+   for ( const nlohmann::json& b : r.contentBlocks )
    {
       if ( IsEmptyTextBlock( b ) )
          continue;
       if ( !keepToolUse && BlockType( b ) == "tool_use" )
+      {
+         droppedToolUse = true;
          continue;
+      }
       kept.push_back( b );
    }
    if ( kept.empty() )
-      kept.push_back( { { "type", "text" }, { "text", "[reply cut off before a tool call completed]" } } );
+   {
+      const std::string note = (droppedToolUse && r.truncated)
+         ? std::string( "[reply cut off (max_tokens) before a tool call completed]" )
+         : droppedToolUse
+         ? "[reply ended (stop_reason " + (r.stopReason.empty() ? std::string( "missing" ) : r.stopReason)
+           + ") with an incomplete tool call]"
+         : "[empty reply (stop_reason " + (r.stopReason.empty() ? std::string( "missing" ) : r.stopReason) + ")]";
+      kept.push_back( { { "type", "text" }, { "text", note } } );
+   }
    return kept;
 }
 
@@ -97,14 +111,14 @@ void AgentSession::Clear()
    m_history.Clear();
    m_snapshot.Clear();
    m_rounds = 0;
-   m_anyToolRan = false;
+   m_imageChanged = false;
 }
 
 void AgentSession::BeginUserTurn( const AnthropicMessage& userTurn )
 {
    m_snapshot = m_history;
    m_rounds = 0;
-   m_anyToolRan = false;
+   m_imageChanged = false;
    if ( !m_history.IsEmpty() && m_history[m_history.Length()-1].role == "user" )
    {
       AnthropicMessage& last = m_history[m_history.Length()-1];
@@ -125,7 +139,7 @@ AgentStep AgentSession::Fail( AgentStep::Kind kind, const String& error )
    AgentStep s;
    s.kind = kind;
    s.error = error;
-   s.toolsRan = m_anyToolRan;
+   s.toolsRan = m_imageChanged;
    if ( m_rounds == 0 )
    {
       m_history = m_snapshot;        // nothing ran: as if never sent
@@ -142,7 +156,20 @@ AgentStep AgentSession::Fail( AgentStep::Kind kind, const String& error )
 
 AgentStep AgentSession::AbortTurn( const String& error )
 {
-   return Fail( AgentStep::Failed, error );
+   // The history was found invalid, and the invalid part is usually in this
+   // message's own rounds (e.g. a repeated tool_use id from the model), so
+   // keeping them would leave the session unsendable: always go back to the
+   // snapshot. toolsRan still reports an image change those rounds made.
+   AgentStep s;
+   s.kind = AgentStep::Failed;
+   s.error = error;
+   s.toolsRan = m_imageChanged;
+   s.restoreInput = true;
+   m_history = m_snapshot;
+   m_rounds = 0;
+   String why;
+   s.needsClear = !HistoryPrefixIsApiValid( m_history, why );
+   return s;
 }
 
 AgentStep AgentSession::OnResponse( const AnthropicResult& r, const ToolRunner& run,
@@ -152,7 +179,7 @@ AgentStep AgentSession::OnResponse( const AnthropicResult& r, const ToolRunner& 
    try
    {
       if ( !r.ok )
-         return Fail( (r.error == "request cancelled") ? AgentStep::Stopped : AgentStep::Failed, r.error );
+         return Fail( r.cancelled ? AgentStep::Stopped : AgentStep::Failed, r.error );
 
       std::vector<ToolCall> calls;
       if ( r.contentBlocks.is_array() )
@@ -165,7 +192,7 @@ AgentStep AgentSession::OnResponse( const AnthropicResult& r, const ToolRunner& 
       assistant.role = "assistant";
       assistant.content = r.text;
       if ( r.contentBlocks.is_array() )
-         assistant.blocks = StorableAssistantBlocks( r.contentBlocks, r.stopReason == "tool_use" );
+         assistant.blocks = StorableAssistantBlocks( r );
 
       if ( r.stopReason != "tool_use" )
       {
@@ -174,7 +201,7 @@ AgentStep AgentSession::OnResponse( const AnthropicResult& r, const ToolRunner& 
          AgentStep s;
          s.assistantText = r.text;
          s.truncated = r.truncated;
-         s.toolsRan = m_anyToolRan;
+         s.toolsRan = m_imageChanged;
          m_history.Add( assistant );
          s.kind = AgentStep::Done;
          return s;
@@ -234,21 +261,34 @@ AgentStep AgentSession::OnResponse( const AnthropicResult& r, const ToolRunner& 
             o = NotExecuted( "tool failed: unknown error" );
             o.logLine = CallLine( call, "error: tool threw an exception" );
          }
-         m_anyToolRan = true;
+         if ( o.mutated )
+            m_imageChanged = true;
          results.push_back( ToolResultBlock( call.id, o ) );
          log( o.logLine );
       }
 
-      // The round is appended as a unit: never half a tool_use/tool_result pair.
-      m_history.Add( assistant );
+      // The round is appended as a unit: never half a tool_use/tool_result
+      // pair. Both messages are built first; if appending or stripping
+      // throws, the history is cut back to its pre-round length.
       AnthropicMessage user;
       user.role = "user";
       user.blocks = std::move( results );
-      m_history.Add( user );
+      const size_type preRound = m_history.Length();
+      try
+      {
+         m_history.Add( assistant );
+         m_history.Add( user );
+         StripOlderImages( m_history );
+      }
+      catch ( ... )
+      {
+         if ( m_history.Length() > preRound )
+            m_history.Truncate( m_history.At( preRound ) );
+         throw;
+      }
       ++m_rounds;
-      StripOlderImages( m_history );
 
-      s.toolsRan = m_anyToolRan;
+      s.toolsRan = m_imageChanged;
       s.kind = capped ? AgentStep::CapReached
              : (stopped || stopNow()) ? AgentStep::Stopped
              : AgentStep::SendAgain;
@@ -268,11 +308,19 @@ AgentStep AgentSession::OnResponse( const AnthropicResult& r, const ToolRunner& 
    }
 }
 
-bool HistoryIsApiValid( const Array<AnthropicMessage>& h, String& why )
+namespace
+{
+
+// requireSendable: the whole history is about to be sent (non-empty, ends
+// with a user message). Otherwise h is a prefix a user turn will complete
+// (AbortTurn()'s snapshot): empty is fine, a trailing assistant turn is fine.
+bool ValidateHistory( const Array<AnthropicMessage>& h, String& why, bool requireSendable )
 {
    why.Clear();
    if ( h.IsEmpty() )
    {
+      if ( !requireSendable )
+         return true;
       why = "empty history";
       return false;
    }
@@ -307,6 +355,8 @@ bool HistoryIsApiValid( const Array<AnthropicMessage>& h, String& why )
          return false;
       }
       else
+      {
+         bool sawOther = false;   // a non-tool_result block: tool_results must come first
          for ( size_t j = 0; j < m.blocks.size(); ++j )
          {
             const nlohmann::json& b = m.blocks[j];
@@ -319,6 +369,11 @@ bool HistoryIsApiValid( const Array<AnthropicMessage>& h, String& why )
             if ( type == "tool_use" )
             {
                const std::string id = b.value( "id", std::string() );
+               if ( id.empty() )
+               {
+                  why = at + String().Format( ": content[%u] is a tool_use without an id", unsigned( j ) );
+                  return false;
+               }
                if ( m.role != "assistant" )
                {
                   why = at + ": tool_use " + S16( id ) + " in a user message";
@@ -333,6 +388,18 @@ bool HistoryIsApiValid( const Array<AnthropicMessage>& h, String& why )
             else if ( type == "tool_result" )
             {
                const std::string id = b.value( "tool_use_id", std::string() );
+               if ( id.empty() )
+               {
+                  why = at + String().Format( ": content[%u] is a tool_result without a tool_use_id", unsigned( j ) );
+                  return false;
+               }
+               if ( sawOther )
+               {
+                  why = at + String().Format( ": tool_result " ) + S16( id )
+                      + String().Format( " at content[%u] comes after a non-tool_result block; tool_results must come first",
+                                         unsigned( j ) );
+                  return false;
+               }
                if ( m.role != "user" || pending.count( id ) == 0 )
                {
                   why = "tool_result " + S16( id ) + " (" + at + ") has no matching tool_use in the previous message";
@@ -344,7 +411,10 @@ bool HistoryIsApiValid( const Array<AnthropicMessage>& h, String& why )
                   return false;
                }
             }
+            if ( type != "tool_result" )
+               sawOther = true;
          }
+      }
       if ( m.role == "user" )
       {
          for ( const std::string& id : pending )
@@ -358,12 +428,29 @@ bool HistoryIsApiValid( const Array<AnthropicMessage>& h, String& why )
       else
          pending = uses;
    }
-   if ( h[h.Length()-1].role != "user" )
+   if ( requireSendable && h[h.Length()-1].role != "user" )
    {
       why = "the last message must be a user message";
       return false;
    }
+   if ( !pending.empty() )   // prefix ending with an assistant tool_use: a plain user turn can't answer it
+   {
+      why = "tool_use " + S16( *pending.begin() ) + " in the last message is never answered";
+      return false;
+   }
    return true;
+}
+
+} // namespace
+
+bool HistoryIsApiValid( const Array<AnthropicMessage>& h, String& why )
+{
+   return ValidateHistory( h, why, true/*requireSendable*/ );
+}
+
+bool HistoryPrefixIsApiValid( const Array<AnthropicMessage>& h, String& why )
+{
+   return ValidateHistory( h, why, false/*requireSendable*/ );
 }
 
 } // namespace pcl

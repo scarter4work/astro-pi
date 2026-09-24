@@ -159,6 +159,7 @@ ToolOutcome ApplyProcessTool( const nlohmann::json& in, const ToolContext& ctx, 
       summary["previewError"] = U8( p.error );
 
    ToolOutcome o;
+   o.mutated = true;
    o.content.push_back( TextBlock( summary.dump() ) );
    if ( p.ok )
       o.content.push_back( JpegImageBlock( p.base64 ) );

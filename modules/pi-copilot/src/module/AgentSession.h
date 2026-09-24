@@ -28,7 +28,8 @@ struct AgentStep
    StringList toolLog;               // one compact line per tool call (run, declined, failed or skipped)
    String     error;                 // Failed/Stopped-by-cancel: the request error
    bool       restoreInput = false;  // give the prompt back to the input line
-   bool       toolsRan = false;      // some tool of this user message already ran (processes may have changed the image)
+   bool       toolsRan = false;      // a tool of this user message changed an image (apply_process completed)
+   bool       needsClear = false;    // AbortTurn(): even the restored history is not API-valid -- offer Clear
 };
 
 /*
@@ -38,7 +39,10 @@ struct AgentStep
  *
  * History invariants (checked by HistoryIsApiValid()): roles alternate
  * starting with user; every assistant tool_use is answered, in the NEXT
- * message, by a tool_result with its id; only the last message carries images.
+ * message, by a tool_result with its id.
+ * Cost rule (maintained by StripOlderImages() on every append, NOT an API
+ * validity condition, so not checked by the validator): only the last
+ * message carries images.
  */
 class AgentSession
 {
@@ -66,11 +70,13 @@ public:
                          const std::function<bool()>& stopRequested,
                          const std::function<void( const String& )>& onLog = nullptr );
 
-   // Ends the current user message WITHOUT a response -- e.g. History() failed
-   // HistoryIsApiValid() so nothing may be sent. Same rollback as a failed
-   // request: before any round, the history returns to what it was before
-   // BeginUserTurn(); completed rounds stay. Returns a Failed step with
-   // restoreInput (and toolsRan when a tool of this message already ran).
+   // Ends the current user message WITHOUT sending -- History() failed
+   // HistoryIsApiValid(). The invalid part is usually inside this message's
+   // own rounds, so the history ALWAYS returns to what it was before
+   // BeginUserTurn(), rounds included. Returns a Failed step with
+   // restoreInput; toolsRan when those rounds changed an image (the history
+   // no longer mentions it -- warn the user); needsClear when even the
+   // restored history is invalid (offer Clear).
    AgentStep AbortTurn( const String& error );
 
    void Clear();
@@ -80,17 +86,22 @@ private:
    Array<AnthropicMessage> m_history;
    Array<AnthropicMessage> m_snapshot;   // history before the current BeginUserTurn()
    int                     m_rounds = 0;
-   bool                    m_anyToolRan = false;
+   bool                    m_imageChanged = false;   // a tool of this user message changed an image
 
    AgentStep Fail( AgentStep::Kind kind, const String& error );
 };
 
 // Structural Messages-API validity of a history about to be sent (see the
 // invariants above, plus: no duplicate tool_use ids in a message, no duplicate
-// tool_result for one id, no empty message or empty text block, and the last
+// tool_result for one id, no empty tool_use id / tool_use_id, tool_results
+// first in a user message, no empty message or empty text block, and the last
 // message must be a user message). why = the first violation, naming the
 // message index / tool_use id.
 bool HistoryIsApiValid( const Array<AnthropicMessage>& history, String& why );
+
+// The same checks for a history a user turn will still be appended to: it may
+// be empty or end with an assistant turn (but not one with a tool_use).
+bool HistoryPrefixIsApiValid( const Array<AnthropicMessage>& history, String& why );
 
 } // namespace pcl
 

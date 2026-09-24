@@ -40,6 +40,7 @@ struct ToolOutcome
    bool           isError = false;
    nlohmann::json content = nlohmann::json::array();  // tool_result content blocks (text / image), never empty
    String         logLine;                            // compact plain-text chat-log line
+   bool           mutated = false;                    // an image was changed (apply_process ran to completion)
 };
 
 // Guided mode: asked before each apply_process; true = the user approved.

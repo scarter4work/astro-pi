@@ -233,6 +233,7 @@ AnthropicResult AnthropicRequest::Perform()
    // A Cancel() that lands before we start never touches the network.
    if ( sink.cancelRequested.load() )
    {
+      result.cancelled = true;
       result.error = "request cancelled";
       return result;
    }
@@ -250,7 +251,10 @@ AnthropicResult AnthropicRequest::Perform()
          result.ok = false;
          result.httpStatus = 0;
          if ( sink.cancelled )
+         {
+            result.cancelled = true;
             result.error = "request cancelled";
+         }
          else if ( sink.timedOut )
             result.error = timedOutError;
          else
