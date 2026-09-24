@@ -315,34 +315,99 @@ AnthropicResult ParseMessagesResponse( int httpStatus, const IsoString& body, co
       // to be a single block), keep the whole content array verbatim (an
       // assistant tool_use turn must be re-sent exactly), and flag a
       // max_tokens cut-off so the UI can say the reply is incomplete.
+      //
+      // A reply is only ok if it can be echoed back as an assistant turn the
+      // API will accept: an array of block objects, and for stop_reason
+      // "tool_use" at least one well-formed tool_use block (string id,
+      // string name, object input). Anything else fails HERE, precisely,
+      // instead of 400-ing the next request.
+      String error;
       try
       {
-         const nlohmann::json& content = j.at( "content" );
+         const std::string kMissing = "response missing expected content/text field";
+         result.stopReason = ( j.is_object() && j.contains( "stop_reason" ) && j["stop_reason"].is_string() )
+                           ? j["stop_reason"].get<std::string>() : std::string();
+         const std::string stopShown = result.stopReason.empty() ? std::string( "missing" ) : result.stopReason;
          std::string joined;
          bool anyText = false;
-         for ( const nlohmann::json& block : content )
-            if ( block.value( "type", std::string() ) == "text" )
+         size_type toolUses = 0;
+         if ( !j.is_object() || !j.contains( "content" ) || !j["content"].is_array() )
+            error = String::UTF8ToUTF16( ( kMissing + ": content is not an array" ).c_str() );
+         else
+         {
+            const nlohmann::json& content = j["content"];
+            for ( size_type i = 0; i < content.size() && error.IsEmpty(); ++i )
             {
-               joined += block.at( "text" ).get<std::string>();
-               anyText = true;
+               const nlohmann::json& block = content[i];
+               const std::string at = " (content[" + std::to_string( i ) + "])";
+               if ( !block.is_object() || !block.contains( "type" ) || !block["type"].is_string() )
+               {
+                  error = String::UTF8ToUTF16( ( kMissing + ": content block is not an object with a string type" + at ).c_str() );
+                  break;
+               }
+               const std::string type = block["type"].get<std::string>();
+               if ( type == "text" )
+               {
+                  if ( !block.contains( "text" ) || !block["text"].is_string() )
+                  {
+                     error = String::UTF8ToUTF16( ( kMissing + ": text block has no string text" + at ).c_str() );
+                     break;
+                  }
+                  joined += block["text"].get<std::string>();
+                  anyText = true;
+               }
+               else if ( type == "tool_use" && result.stopReason == "tool_use" )
+               {
+                  if ( !block.contains( "id" ) || !block["id"].is_string()
+                    || !block.contains( "name" ) || !block["name"].is_string()
+                    || !block.contains( "input" ) || !block["input"].is_object() )
+                  {
+                     error = String::UTF8ToUTF16( ( "stop_reason tool_use but a tool_use block lacks a string id, "
+                                                    "a string name or an object input" + at ).c_str() );
+                     break;
+                  }
+                  ++toolUses;
+               }
             }
-         result.stopReason = ( j.contains( "stop_reason" ) && j["stop_reason"].is_string() )
-                           ? j["stop_reason"].get<std::string>() : std::string();
-         // A tool_use reply may carry no text at all; any other reply must.
-         if ( !anyText && result.stopReason != "tool_use" )
-            throw std::runtime_error( "no text block" );
-         result.text = String::UTF8ToUTF16( joined.c_str() );
-         result.truncated = result.stopReason == "max_tokens";
-         result.contentBlocks = content;
-         result.ok = true;
+            if ( error.IsEmpty() )
+            {
+               if ( result.stopReason == "tool_use" )
+               {
+                  // A tool_use reply may carry no text at all, but it must
+                  // carry a tool call to answer.
+                  if ( toolUses == 0 )
+                     error = "stop_reason tool_use but no tool_use block";
+               }
+               else if ( !anyText )
+                  // refusal, a max_tokens cut inside a tool call, pause_turn,
+                  // model_context_window_exceeded, ... -- say which.
+                  error = String::UTF8ToUTF16( ( "no text in reply (stop_reason=" + stopShown + ")" ).c_str() );
+            }
+            if ( error.IsEmpty() )
+            {
+               result.text = String::UTF8ToUTF16( joined.c_str() );
+               result.truncated = result.stopReason == "max_tokens";
+               result.contentBlocks = content;
+               result.ok = true;
+            }
+         }
+      }
+      catch ( const std::exception& x )
+      {
+         error = String( "response missing expected content/text field: " ) + String( x.what() );
       }
       catch ( ... )
       {
+         error = "response missing expected content/text field";
+      }
+      if ( !error.IsEmpty() )
+      {
          result.ok = false;
          result.text.Clear();
+         result.truncated = false;
          result.stopReason.clear();
          result.contentBlocks = nlohmann::json();
-         result.error = "response missing expected content/text field";
+         result.error = error;
       }
    }
    else
