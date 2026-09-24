@@ -2,10 +2,12 @@
 // Copyright (c) 2026 Scott Carter. MIT License.
 
 #include "PICopilotVisionSelfTest.h"
+#include "AnthropicClient.h"
 #include "ProcessCatalog.h"
 #include "Utf8.h"
 #include "ViewContext.h"
 #include "ViewPreview.h"
+#include "VisionTurn.h"
 
 #include <pcl/AutoViewLock.h>
 #include <pcl/Bitmap.h>
@@ -19,6 +21,7 @@
 #include <pcl/ImageWindow.h>
 #include <pcl/View.h>
 
+#include <cstdlib>
 #include <utility>
 
 namespace pcl
@@ -592,6 +595,107 @@ bool RunVisionSelfTest( nlohmann::json& out )
       out["catalogError"] = U8( error );
       out["catalogOk"] = ok;
       allOk = allOk && ok;
+   }
+
+   // ---- Section 5: request shape + history stripping (Task 5, no network) --
+   {
+      bool shapeOk = false, stripOk = false, composeOk = false;
+      String error;
+      try
+      {
+         AnthropicMessage img;
+         img.role = "user";
+         img.content = "look";
+         img.imageJpegBase64 = "QUJD";
+         Array<AnthropicMessage> h;
+         h.Add( AnthropicMessage{ IsoString( "user" ), String( "plain" ), IsoString() } );
+         h.Add( AnthropicMessage{ IsoString( "assistant" ), String( "ok" ), IsoString() } );
+         h.Add( img );
+         const nlohmann::json j = nlohmann::json::parse( BuildMessagesRequestBody( PICOPILOT_DEFAULT_MODEL, "sys", h ) );
+         const nlohmann::json& m = j.at( "messages" );
+         shapeOk = !j.contains( "stream" )
+                && m[0].at( "content" ).is_string() && m[0].at( "content" ) == "plain"
+                && m[1].at( "content" ) == "ok"
+                && m[2].at( "content" ).is_array() && m[2].at( "content" ).size() == 2
+                && m[2]["content"][0].at( "type" ) == "image"
+                && m[2]["content"][0].at( "source" ).at( "type" ) == "base64"
+                && m[2]["content"][0].at( "source" ).at( "media_type" ) == "image/jpeg"
+                && m[2]["content"][0].at( "source" ).at( "data" ) == "QUJD"
+                && m[2]["content"][1].at( "type" ) == "text"
+                && m[2]["content"][1].at( "text" ) == "look";
+
+         const nlohmann::json ctx = { { "viewId", "V" } };
+         const AnthropicMessage t = ComposeUserTurn( "what is this?", &ctx, "QUJD" );
+         const AnthropicMessage plain = ComposeUserTurn( "hi", nullptr, IsoString() );
+         composeOk = t.role == "user" && t.imageJpegBase64 == "QUJD"
+                  && t.content.StartsWith( String( "[PixInsight view context]" ) )
+                  && t.content.EndsWith( String( "what is this?" ) )
+                  && t.content.Contains( String( "\"viewId\":\"V\"" ) )
+                  && plain.content == "hi" && plain.imageJpegBase64.IsEmpty();
+
+         Array<AnthropicMessage> hist;
+         hist.Add( t );
+         hist.Add( AnthropicMessage{ IsoString( "assistant" ), String( "an image" ), IsoString() } );
+         hist.Add( t );
+         StripOlderImages( hist );
+         StripOlderImages( hist );   // idempotent
+         const String note = String::UTF8ToUTF16( kPICopilotImageOmittedNote );
+         stripOk = hist[0].imageJpegBase64.IsEmpty()
+                && hist[0].content.StartsWith( note )
+                && hist[0].content.Find( note, note.Length() ) == String::notFound   // not doubled
+                && hist[0].content.EndsWith( String( "what is this?" ) )
+                && hist[1].content == "an image"
+                && hist[2].imageJpegBase64 == "QUJD";
+      }
+      catch ( const pcl::Exception& x ) { error = x.Message(); }
+      catch ( const std::exception& x ) { error = String( x.what() ); }
+      catch ( ... )                     { error = "unknown exception"; }
+      const bool ok = shapeOk && composeOk && stripOk;
+      out["requestShapeOk"] = shapeOk;
+      out["composeTurnOk"] = composeOk;
+      out["historyStripOk"] = stripOk;
+      out["turnError"] = U8( error );
+      out["visionTurnOk"] = ok;
+      allOk = allOk && ok;
+   }
+
+   // ---- Section 6: gated REAL vision round-trip (Task 5) -------------------
+   // Runs only when PICOPILOT_TEST_API_KEY is set (harness: keyring -> file).
+   {
+      bool visionSkipped = true, visionOk = true;
+      String answer, error;
+      if ( const char* key = std::getenv( "PICOPILOT_TEST_API_KEY" ) )
+      {
+         visionSkipped = false;
+         visionOk = false;
+         try
+         {
+            WindowCloser wc{ CreateSyntheticWindow() };
+            const View view = wc.window.MainView();
+            const nlohmann::json ctx = BuildViewContext( view );
+            const ViewPreviewResult p = RenderViewPreview( view );
+            if ( !p.ok )
+               error = "preview failed: " + p.error;
+            else
+            {
+               AnthropicClient client{ String( key ) };
+               const AnthropicResult r = client.Send( "You are a test. Answer with exactly one word.",
+                  { ComposeUserTurn( "What colour is the square in this image? Answer with exactly one word.",
+                                     &ctx, p.base64 ) } );
+               answer = r.text;
+               error = r.error;
+               visionOk = r.ok && r.text.ContainsIC( String( "red" ) );
+            }
+         }
+         catch ( const pcl::Exception& x ) { error = x.Message(); }
+         catch ( const std::exception& x ) { error = String( x.what() ); }
+         catch ( ... )                     { error = "unknown exception"; }
+      }
+      out["visionSkipped"] = visionSkipped;
+      out["visionAnswer"] = U8( answer );
+      out["visionError"] = U8( error );
+      out["visionOk"] = visionOk;
+      allOk = allOk && visionOk;
    }
 
    // ---- inc3 sections end ----

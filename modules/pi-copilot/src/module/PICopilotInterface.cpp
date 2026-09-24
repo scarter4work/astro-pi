@@ -171,7 +171,7 @@ void PICopilotInterface::SendCurrentInput()
    }
 
    AppendToLog( "<b>You:</b> " + PlainText( prompt ) + "\n\n" );
-   m_history.Add( AnthropicMessage{ IsoString( "user" ), prompt } );
+   m_history.Add( AnthropicMessage{ IsoString( "user" ), prompt, IsoString() } );
    m_pendingPrompt = prompt;
    GUI->ChatInput.Clear();
 
@@ -234,7 +234,7 @@ void PICopilotInterface::e_Poll_Timer( Timer& )
       if ( r.truncated )
          shown += " [truncated: max_tokens]";
       AppendToLog( "<b>Copilot:</b> " + PlainText( shown ) + "\n\n" );
-      m_history.Add( AnthropicMessage{ IsoString( "assistant" ), r.text } );
+      m_history.Add( AnthropicMessage{ IsoString( "assistant" ), r.text, IsoString() } );
    }
    else
    {

@@ -23,15 +23,20 @@ R="$(mktemp -u "${TMPDIR:-/tmp}/picopilot-selftest.XXXXXX.json")"
 rm -f "$R"
 trap 'rm -f "$R"' EXIT
 
-# Gated real-API check: if a local, gitignored key file is present, export it
-# so RunSelfTest() makes one real (tiny) Anthropic call instead of skipping.
+# Gated real-API checks (text + vision). Key source order: system keyring,
+# then the gitignored local file, else skip. The key is never printed.
 KEYFILE="$ROOT/test/.test_api_key"
-if [ -f "$KEYFILE" ]; then
+if command -v secret-tool >/dev/null 2>&1 \
+   && KR_KEY="$(secret-tool lookup service anthropic account default 2>/dev/null)" && [ -n "$KR_KEY" ]; then
+   export PICOPILOT_TEST_API_KEY="$KR_KEY"
+   echo "using API key from the system keyring (secret-tool); real-API checks will run"
+elif [ -f "$KEYFILE" ]; then
    export PICOPILOT_TEST_API_KEY="$(cat "$KEYFILE")"
-   echo "using local test API key: $KEYFILE (anthropic check will run for real)"
+   echo "using local test API key file: $KEYFILE; real-API checks will run"
 else
-   echo "no local test API key at $KEYFILE (anthropic check will be skipped)"
+   echo "no API key (keyring or $KEYFILE); real-API checks will be skipped"
 fi
+unset KR_KEY
 
 # Local "stalled server" for the cancel/deadline proof: accepts connections,
 # reads the request, and never answers -- the case SetConnectionTimeout()
@@ -57,8 +62,8 @@ for _ in $(seq 50); do [ -s "$STALL_PORT_FILE" ] && break; sleep 0.1; done
 [ -s "$STALL_PORT_FILE" ] || { echo "FAIL: stall server did not start"; exit 1; }
 export PICOPILOT_SELFTEST_STALL_URL="http://127.0.0.1:$(cat "$STALL_PORT_FILE")/v1/messages"
 
-if ! PICOPILOT_SELFTEST_OUT="$R" timeout 180 "$PI" -n --automation-mode --no-startup-scripts -m="$SO" -r="$HERE/selftest.js" --force-exit; then
-   echo "FAIL: PI load timed out (180s) or exited non-zero"; exit 1
+if ! PICOPILOT_SELFTEST_OUT="$R" timeout 300 "$PI" -n --automation-mode --no-startup-scripts -m="$SO" -r="$HERE/selftest.js" --force-exit; then
+   echo "FAIL: PI load timed out (300s) or exited non-zero"; exit 1
 fi
 [ -f "$R" ] || { echo "FAIL: no result file"; exit 1; }
 cat "$R"
@@ -75,12 +80,14 @@ required_true = [
     'previewU16Ok',
     'previewMonoOk',
     'catalogOk',
+    'visionTurnOk', 'visionOk',
     'ok',
 ]
 missing = [k for k in required_true if d.get(k) is not True]
 if d.get('evalResult') != 3: missing.append('evalResult==3')
 if d.get('stallSkipped') is not False: missing.append('stallSkipped==false')
 print('anthropic check: %s' % ('SKIPPED (no key)' if d.get('anthropicSkipped') else 'RAN against real API'))
+print('vision check: %s' % ('SKIPPED (no key)' if d.get('visionSkipped') else 'RAN against real API, answer=%r' % d.get('visionAnswer')))
 if missing:
     print('FAILED keys: ' + ', '.join(missing))
     sys.exit(1)
