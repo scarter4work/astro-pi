@@ -17,7 +17,7 @@
             <p>v5.1.0.1: broadband / clear filter-wheel slot labels (Full, Clear, None, Open, L-Pro, L-QEF, UV/IR-cut) on Bayer frames now route as plain OSC instead of hard-aborting the stack; corrected stale &quot;v4&quot; labels in the UI to v5.</p>
          </description>
       </package>
-      <package fileName="20260924-linux-x64-PICopilot-0.1.0.4.tar.gz" sha1="99b462a5b1c597bd8051c98dd24c9898b07aff2f" type="module" releaseDate="20260924">
+      <package fileName="20260924-linux-x64-PICopilot-0.1.1.0.tar.gz" sha1="1d7c694b01d15560e3b668376d2940d185a37f9b" type="module" releaseDate="20260924">
          <title>PI Copilot</title>
          <description>
             <p>
@@ -80,4 +80,4 @@
       </package>
    </platform>
 </xri>
-<Signature developerId="scarter4work" timestamp="2026-09-24T20:04:06.689Z" encoding="Base64">pACMCtWTWcxwV9hO5jzOyyRX4OmcQRxZ+S0x7uqXRxQMQj2MAwQc9m7RjxFAMDwbgWU/yg5x05uXnn0a5dy/CA==</Signature>
+<Signature developerId="scarter4work" timestamp="2026-09-24T23:20:32.548Z" encoding="Base64">lkPIfkreGRXsuxxumXWx18lcPQx6lMMGT6M9c4gECaKzYAvI9Zvn/MfgZ7AUJqVH30mbwG053BwnotbcLuGdBw==</Signature>
