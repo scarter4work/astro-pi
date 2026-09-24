@@ -2,6 +2,7 @@
 // Copyright (c) 2026 Scott Carter. MIT License.
 
 #include "PICopilotVisionSelfTest.h"
+#include "ProcessCatalog.h"
 #include "Utf8.h"
 #include "ViewContext.h"
 #include "ViewPreview.h"
@@ -521,6 +522,76 @@ bool RunVisionSelfTest( nlohmann::json& out )
       out["previewMonoOk"] = monoOk;
 
       allOk = allOk && rgbOk && monoOk;
+   }
+
+   // ---- Section 4: ProcessCatalog (Task 4) --------------------------------
+   {
+      bool listOk = false, pmOk = false, htOk = false, unknownOk = false;
+      String error;
+      size_t count = 0, summaries = 0;
+      nlohmann::json unknownSummaryIds = nlohmann::json::array();
+      try
+      {
+         const nlohmann::json& sums = CompiledProcessSummaries();
+         summaries = sums.size();
+
+         const nlohmann::json list = ListProcesses();
+         count = list.at( "count" ).get<size_t>();
+         bool sawPM = false, sawHT = false;
+         std::string prev;
+         bool sorted = true;
+         for ( const nlohmann::json& row : list.at( "processes" ) )
+         {
+            const std::string id = row.at( "id" ).get<std::string>();
+            sorted = sorted && prev <= id;
+            prev = id;
+            if ( id == "PixelMath" )
+               sawPM = row.value( "summary", std::string() ) == sums.at( "PixelMath" ).get<std::string>();
+            if ( id == "HistogramTransformation" )
+               sawHT = row.contains( "summary" );
+         }
+         // Informational: summary keys that name no installed process.
+         for ( auto it = sums.begin(); it != sums.end(); ++it )
+         {
+            bool found = false;
+            for ( const nlohmann::json& row : list.at( "processes" ) )
+               if ( row.at( "id" ) == it.key() ) { found = true; break; }
+            if ( !found )
+               unknownSummaryIds.push_back( it.key() );
+         }
+         listOk = summaries == 25 && count > 50 && count == list.at( "processes" ).size()
+               && sorted && sawPM && sawHT;
+
+         const nlohmann::json pm = DescribeProcess( "PixelMath" );
+         for ( const nlohmann::json& prm : pm.at( "parameters" ) )
+            if ( prm.at( "id" ) == "expression" && prm.at( "type" ) == "String" )
+               pmOk = true;
+         pmOk = pmOk && pm.value( "summary", std::string() ) == "Arbitrary per-pixel expression evaluation.";
+
+         const nlohmann::json ht = DescribeProcess( "HistogramTransformation" );
+         for ( const nlohmann::json& prm : ht.at( "parameters" ) )
+            if ( prm.at( "id" ) == "H" && prm.at( "type" ) == "Table" && !prm.value( "columns", nlohmann::json::array() ).empty() )
+               htOk = true;
+
+         const nlohmann::json bad = DescribeProcess( "NoSuchProcessXYZ" );
+         unknownOk = bad.contains( "error" )
+                  && bad.at( "error" ).get<std::string>().rfind( "unknown process id: NoSuchProcessXYZ", 0 ) == 0;
+      }
+      catch ( const pcl::Exception& x ) { error = x.Message(); }
+      catch ( const std::exception& x ) { error = String( x.what() ); }
+      catch ( ... )                     { error = "unknown exception"; }
+
+      const bool ok = listOk && pmOk && htOk && unknownOk;
+      out["catalogCount"] = count;
+      out["catalogSummaries"] = summaries;
+      out["catalogUnknownSummaryIds"] = unknownSummaryIds;
+      out["catalogListOk"] = listOk;
+      out["catalogPixelMathOk"] = pmOk;
+      out["catalogHistogramTransformationOk"] = htOk;
+      out["catalogUnknownIdOk"] = unknownOk;
+      out["catalogError"] = U8( error );
+      out["catalogOk"] = ok;
+      allOk = allOk && ok;
    }
 
    // ---- inc3 sections end ----

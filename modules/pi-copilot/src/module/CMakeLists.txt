@@ -23,9 +23,19 @@ set(MODULE_SOURCES
     PICopilotVisionSelfTest.cpp
     ViewContext.cpp
     ViewPreview.cpp
+    ProcessCatalog.cpp
 )
 
 add_library(PICopilot SHARED ${MODULE_SOURCES})
+
+# Process summaries are COMPILED IN (no runtime file dependency). configure_file
+# re-runs whenever the JSON changes because CMake tracks file(READ) inputs via
+# CMAKE_CONFIGURE_DEPENDS below.
+set(PICOPILOT_SUMMARIES_SRC "${CMAKE_CURRENT_SOURCE_DIR}/../../data/process-summaries.json")
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${PICOPILOT_SUMMARIES_SRC}")
+file(READ "${PICOPILOT_SUMMARIES_SRC}" PICOPILOT_PROCESS_SUMMARIES_JSON)
+configure_file(ProcessSummaries.h.in "${CMAKE_CURRENT_BINARY_DIR}/generated/ProcessSummaries.h" @ONLY)
+target_include_directories(PICopilot PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/generated")
 
 # PCL include directories.
 #
