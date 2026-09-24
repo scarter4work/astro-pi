@@ -12,6 +12,7 @@
 #include <atomic>
 #include <chrono>
 #include <stdexcept>
+#include <utility>
 
 namespace pcl
 {
@@ -84,6 +85,44 @@ public:
 
 } // namespace
 
+namespace
+{
+
+nlohmann::json MessageContent( const AnthropicMessage& msg )
+{
+   const std::string text( msg.content.ToUTF8().c_str() );
+   if ( msg.imageJpegBase64.IsEmpty() )
+      return text;
+   nlohmann::json image = {
+      { "type", "image" },
+      { "source", { { "type", "base64" },
+                    { "media_type", "image/jpeg" },
+                    { "data", std::string( msg.imageJpegBase64.c_str() ) } } }
+   };
+   nlohmann::json textBlock = { { "type", "text" }, { "text", text } };
+   nlohmann::json blocks = nlohmann::json::array();
+   blocks.push_back( std::move( image ) );      // image first, then the question
+   blocks.push_back( std::move( textBlock ) );
+   return blocks;
+}
+
+} // namespace
+
+std::string BuildMessagesRequestBody( const IsoString& model, const String& systemPrompt,
+                                      const Array<AnthropicMessage>& history )
+{
+   nlohmann::json messages = nlohmann::json::array();
+   for ( const AnthropicMessage& msg : history )
+      messages.push_back( { { "role", msg.role.c_str() }, { "content", MessageContent( msg ) } } );
+   nlohmann::json req = {
+      { "model", model.c_str() },
+      { "max_tokens", 4096 },
+      { "system", systemPrompt.ToUTF8().c_str() },
+      { "messages", messages }
+   };
+   return req.dump();
+}
+
 struct AnthropicRequest::Impl
 {
    ResponseSink    sink;      // root-thread construction only (Control)
@@ -110,17 +149,7 @@ AnthropicRequest::AnthropicRequest( const String& apiKey, const IsoString& model
    // non-ASCII byte in the JSON as a Latin-1 code point).
    try
    {
-      nlohmann::json messages = nlohmann::json::array();
-      for ( const AnthropicMessage& msg : history )
-         messages.push_back( { { "role", msg.role.c_str() }, { "content", msg.content.ToUTF8().c_str() } } );
-
-      nlohmann::json req = {
-         { "model", model.c_str() },
-         { "max_tokens", 4096 },
-         { "system", systemPrompt.ToUTF8().c_str() },
-         { "messages", messages }
-      };
-      m->body = String::UTF8ToUTF16( req.dump().c_str() );
+      m->body = String::UTF8ToUTF16( BuildMessagesRequestBody( model, systemPrompt, history ).c_str() );
    }
    catch ( const std::exception& x )
    {

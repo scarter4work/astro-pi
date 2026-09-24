@@ -24,6 +24,7 @@ set(MODULE_SOURCES
     ViewContext.cpp
     ViewPreview.cpp
     ProcessCatalog.cpp
+    VisionTurn.cpp
 )
 
 add_library(PICopilot SHARED ${MODULE_SOURCES})
