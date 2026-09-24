@@ -24,6 +24,9 @@ namespace pcl
  * (worker thread) only calls AnthropicRequest::Perform(): the HTTPS POST and
  * reply parsing. Proven headlessly by PICopilotSelfTest path 5.
  *
+ * Every request is bounded by an overall deadline (default
+ * PICopilotRequestTimeoutSeconds) and can be cancelled with RequestCancel().
+ *
  * Run() touches no GUI and no console. The UI thread polls TryTakeResult()
  * (from a Timer) to marshal the outcome back. Never destroy a ChatThread
  * while IsActive() -- Wait() for it first.
@@ -32,10 +35,20 @@ class ChatThread : public Thread
 {
 public:
 
+   // url/timeoutSeconds exist for the self-test (local stall server, short
+   // deadline); production callers use the defaults.
    ChatThread( const String& apiKey, const String& systemPrompt, const Array<AnthropicMessage>& history,
-               const IsoString& model = PICOPILOT_DEFAULT_MODEL );
+               const IsoString& model = PICOPILOT_DEFAULT_MODEL,
+               const String& url = PICOPILOT_MESSAGES_URL,
+               int timeoutSeconds = PICopilotRequestTimeoutSeconds );
 
    void Run() override;
+
+   // Thread-safe. Asks the in-flight (or not-yet-started) request to abort;
+   // Run() then finishes promptly with error "request cancelled". Use this
+   // -- not Thread::Abort(), which only raises a flag the blocking POST
+   // never checks -- before Wait()ing on a thread that must stop.
+   void RequestCancel();
 
    // Thread-safe. Returns true exactly once, after Run() has stored its
    // result, moving that result into `out`. Returns false while the request

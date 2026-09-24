@@ -16,7 +16,16 @@ namespace pcl
 // Modal dialog for entering/editing the user's own ("BYO") Anthropic API
 // key. The key is masked in the edit field (Edit::EnablePasswordMode).
 //
-// On OK: the entered key is persisted via KeyStore::Save() and returned.
+// On OK the field is trimmed, then:
+//  - empty      -> the stored key is REMOVED (KeyStore::Clear()); Run()
+//                  returns String(). This is how a user clears their key.
+//  - invalid    -> any remaining character outside printable ASCII
+//                  (0x21-0x7E: whitespace, CR/LF, other control or
+//                  non-ASCII characters) is rejected with an error box and
+//                  the dialog STAYS OPEN; nothing is saved. CR/LF in
+//                  particular would inject extra HTTP header lines through
+//                  NetworkTransfer::SetCustomHTTPHeaders().
+//  - valid      -> persisted via KeyStore::Save() and returned.
 // On Cancel: nothing is saved, and Run() returns String() -- the caller
 // keeps whatever key it already had.
 class ConfigDialog : public Dialog

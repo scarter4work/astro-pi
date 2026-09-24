@@ -5,14 +5,17 @@
 #include "PICopilotModule.h"     // ThePICopilotModule
 #include "AnthropicClient.h"
 #include "ChatThread.h"
+#include "PICopilotInterface.h"   // PICopilotInterface::PlainText
 
 #include <pcl/Process.h>
 #include <pcl/ProcessInstance.h>
 #include <pcl/Settings.h>
+#include <pcl/TextBox.h>
 #include <pcl/Variant.h>
 
 #include <nlohmann/json.hpp>
 
+#include <chrono>
 #include <cstdlib>
 
 namespace pcl
@@ -103,12 +106,12 @@ bool RunSelfTest( String& jsonOut )
       anthropicOk = false;
    }
 
-   // Path 5: off-root-thread Anthropic request. Runs a ChatThread (and so
-   // AnthropicClient::Send -- including its Control-derived response sink
-   // and the NetworkTransfer POST) on a real pcl::Thread with a
-   // deliberately INVALID key, and requires the API's 401 to come back
-   // through TryTakeResult(). No real key needed: a 401 proves the worker
-   // thread built the Control, performed the HTTPS POST and parsed the
+   // Path 5: off-root-thread Anthropic request. The ChatThread constructor
+   // builds the AnthropicRequest (Control-derived response sink +
+   // NetworkTransfer) HERE on the root thread; the worker pcl::Thread only
+   // Perform()s the HTTPS POST + parse, with a deliberately INVALID key, and
+   // the API's 401 must come back through TryTakeResult(). No real key
+   // needed: a 401 proves the worker performed the POST and parsed the
    // error body. Bounded wait so a hung request can't wedge the harness.
    bool workerThreadOk = false;
    int  workerHttpStatus = 0;
@@ -131,7 +134,9 @@ bool RunSelfTest( String& jsonOut )
       else
       {
          workerError = "timed out after 150 s";
-         t.Abort();
+         // Thread::Abort() only raises a flag the blocking POST never
+         // checks; RequestCancel() aborts the transfer itself.
+         t.RequestCancel();
          t.Wait();
       }
    }
@@ -141,17 +146,129 @@ bool RunSelfTest( String& jsonOut )
       workerError = "exception constructing/starting ChatThread";
    }
 
-   bool ok = evalOk && piValid && keyStoreOk && anthropicOk && workerThreadOk;
-   jsonOut = String().Format(
-      "{\"evalResult\":%d,\"evalOk\":%s,\"processInstanceValid\":%s,\"keyStoreOk\":%s,"
-      "\"anthropicOk\":%s,\"anthropicSkipped\":%s,\"workerThreadOk\":%s,\"workerHttpStatus\":%d,\"workerError\":%s,"
-      "\"ok\":%s}",
-      evalResult, evalOk ? "true" : "false", piValid ? "true" : "false",
-      keyStoreOk ? "true" : "false", anthropicOk ? "true" : "false",
-      anthropicSkipped ? "true" : "false", workerThreadOk ? "true" : "false", workerHttpStatus,
-      // nlohmann escapes the API's error text into a valid JSON string.
-      nlohmann::json( workerError.ToUTF8().c_str() ).dump().c_str(),
-      ok ? "true" : "false" );
+   // Path 6: cancel + overall deadline against a stalled connection. The
+   // harness runs a local TCP server that accepts, reads the request and
+   // never answers -- exactly the case SetConnectionTimeout() cannot bound.
+   bool   stallSkipped = true;
+   bool   cancelOk = false, deadlineOk = false;
+   String cancelError = "not run", deadlineError = "not run";
+   double cancelSeconds = -1, deadlineSeconds = -1;
+   using clock = std::chrono::steady_clock;
+   auto secondsSince = []( clock::time_point t0 )
+   {
+      return std::chrono::duration<double>( clock::now() - t0 ).count();
+   };
+   const char* stallUrl = std::getenv( "PICOPILOT_SELFTEST_STALL_URL" );
+   if ( stallUrl != nullptr && *stallUrl != '\0' )
+   {
+      stallSkipped = false;
+      const Array<AnthropicMessage> ping = { AnthropicMessage{ IsoString( "user" ), String( "ping" ) } };
+
+      // 6a: cancel mid-stall. Default (300 s) deadline, so only the cancel
+      // can end it quickly. Wait(2000) lets the request connect and stall.
+      try
+      {
+         ChatThread t( String( "sk-ant-invalid-selftest" ), String( "You are a test." ), ping,
+                       PICOPILOT_DEFAULT_MODEL, String( stallUrl ) );
+         clock::time_point t0 = clock::now();
+         t.Start();
+         bool finishedEarly = t.Wait( 2000 );
+         t.RequestCancel();
+         bool finished = finishedEarly || t.Wait( 30000 );
+         cancelSeconds = secondsSince( t0 );
+         if ( !finished )
+         {
+            cancelError = "still running 30 s after RequestCancel()";
+            // Last resort so the harness can exit: the deadline ends it.
+            t.Wait();
+         }
+         else
+         {
+            AnthropicResult r;
+            if ( t.TryTakeResult( r ) )
+               cancelError = r.error;
+            cancelOk = !finishedEarly && !r.ok && r.error == "request cancelled" && cancelSeconds < 15;
+         }
+      }
+      catch ( ... )
+      {
+         cancelError = "exception in cancel path";
+      }
+
+      // 6b: deadline. A 3 s overall limit must end the stalled request by
+      // itself, well before the harness bound.
+      try
+      {
+         ChatThread t( String( "sk-ant-invalid-selftest" ), String( "You are a test." ), ping,
+                       PICOPILOT_DEFAULT_MODEL, String( stallUrl ), 3/*timeoutSeconds*/ );
+         clock::time_point t0 = clock::now();
+         t.Start();
+         bool finished = t.Wait( 30000 );
+         deadlineSeconds = secondsSince( t0 );
+         if ( !finished )
+         {
+            deadlineError = "still running after 30 s with a 3 s deadline";
+            t.RequestCancel();
+            t.Wait();
+         }
+         else
+         {
+            AnthropicResult r;
+            if ( t.TryTakeResult( r ) )
+               deadlineError = r.error;
+            deadlineOk = !r.ok && r.error == "request timed out after 3 s"
+                      && deadlineSeconds >= 2.5 && deadlineSeconds < 15;
+         }
+      }
+      catch ( ... )
+      {
+         deadlineError = "exception in deadline path";
+      }
+   }
+
+   // Path 7: a literal "</raw>" inside chat text must stay literal in a
+   // real TextBox (root-thread Control, like the response sink above).
+   bool   plainTextOk = false;
+   String plainTextBack;
+   try
+   {
+      const String probe = "a</raw><b>x</b>< / RAW>z";
+      TextBox box;
+      box.SetText( PICopilotInterface::PlainText( probe ) );
+      plainTextBack = box.Text();
+      plainTextOk = plainTextBack.Trimmed() == probe;
+   }
+   catch ( ... )
+   {
+      plainTextBack = "exception constructing TextBox";
+   }
+
+   bool ok = evalOk && piValid && keyStoreOk && anthropicOk && workerThreadOk
+          && (stallSkipped || (cancelOk && deadlineOk)) && plainTextOk;
+   // nlohmann builds the JSON so every free-text field (API error text,
+   // TextBox read-back) is escaped into a valid JSON string.
+   nlohmann::json j = {
+      { "evalResult", evalResult },
+      { "evalOk", evalOk },
+      { "processInstanceValid", piValid },
+      { "keyStoreOk", keyStoreOk },
+      { "anthropicOk", anthropicOk },
+      { "anthropicSkipped", anthropicSkipped },
+      { "workerThreadOk", workerThreadOk },
+      { "workerHttpStatus", workerHttpStatus },
+      { "workerError", workerError.ToUTF8().c_str() },
+      { "stallSkipped", stallSkipped },
+      { "cancelOk", cancelOk },
+      { "cancelError", cancelError.ToUTF8().c_str() },
+      { "cancelSeconds", cancelSeconds },
+      { "deadlineOk", deadlineOk },
+      { "deadlineError", deadlineError.ToUTF8().c_str() },
+      { "deadlineSeconds", deadlineSeconds },
+      { "plainTextOk", plainTextOk },
+      { "plainTextBack", plainTextBack.ToUTF8().c_str() },
+      { "ok", ok }
+   };
+   jsonOut = String::UTF8ToUTF16( j.dump().c_str() );
    return ok;
 }
 

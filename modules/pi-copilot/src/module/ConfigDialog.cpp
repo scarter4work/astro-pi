@@ -4,6 +4,8 @@
 #include "ConfigDialog.h"
 #include "KeyStore.h"
 
+#include <pcl/MessageBox.h>
+
 namespace pcl
 {
 
@@ -39,9 +41,44 @@ ConfigDialog::ConfigDialog()
    SetFixedSize();
 }
 
+namespace
+{
+
+// Anthropic keys are printable ASCII. Anything else -- in particular CR/LF,
+// which would split the x-api-key header line -- is rejected.
+bool IsValidApiKey( const String& key )
+{
+   for ( String::const_iterator i = key.Begin(); i != key.End(); ++i )
+      if ( *i < 0x21 || *i > 0x7E )
+         return false;
+   return true;
+}
+
+} // namespace
+
 void ConfigDialog::OK_Button_Click( Button& /*sender*/, bool /*checked*/ )
 {
-   result_ = ApiKey_Edit.Text();
+   String key = ApiKey_Edit.Text().Trimmed();
+
+   if ( key.IsEmpty() )
+   {
+      // Explicit clear: an emptied field + OK removes the stored key.
+      KeyStore::Clear();
+      result_ = String();
+      Ok();
+      return;
+   }
+
+   if ( !IsValidApiKey( key ) )
+   {
+      // Keep the dialog open so the user can correct the paste.
+      MessageBox( "<p>The API key contains spaces, line breaks or other invalid characters.</p>"
+                  "<p>Paste the key exactly as shown in the Anthropic Console. Nothing was saved.</p>",
+                  "PI Copilot", StdIcon::Error, StdButton::Ok ).Execute();
+      return;
+   }
+
+   result_ = key;
    KeyStore::Save( result_ );
    Ok();
 }

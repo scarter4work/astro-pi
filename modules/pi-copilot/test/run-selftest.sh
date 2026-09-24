@@ -33,6 +33,30 @@ else
    echo "no local test API key at $KEYFILE (anthropic check will be skipped)"
 fi
 
+# Local "stalled server" for the cancel/deadline proof: accepts connections,
+# reads the request, and never answers -- the case SetConnectionTimeout()
+# cannot bound. Loopback only; killed on exit.
+STALL_PORT_FILE="$(mktemp)"
+python3 - "$STALL_PORT_FILE" <<'PY' &
+import socket, sys, threading, time
+s = socket.socket(); s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+s.bind(("127.0.0.1", 0)); s.listen(8)
+open(sys.argv[1], "w").write(str(s.getsockname()[1]))
+held = []
+def hold(c):
+    try:
+        while c.recv(65536): pass
+    except OSError: pass
+while True:
+    c, _ = s.accept(); held.append(c)
+    threading.Thread(target=hold, args=(c,), daemon=True).start()
+PY
+STALL_PID=$!
+trap 'rm -f "$R" "$STALL_PORT_FILE"; kill "$STALL_PID" 2>/dev/null || true' EXIT
+for _ in $(seq 50); do [ -s "$STALL_PORT_FILE" ] && break; sleep 0.1; done
+[ -s "$STALL_PORT_FILE" ] || { echo "FAIL: stall server did not start"; exit 1; }
+export PICOPILOT_SELFTEST_STALL_URL="http://127.0.0.1:$(cat "$STALL_PORT_FILE")/v1/messages"
+
 if ! PICOPILOT_SELFTEST_OUT="$R" timeout 180 "$PI" -n --automation-mode --no-startup-scripts -m="$SO" -r="$HERE/selftest.js" --force-exit; then
    echo "FAIL: PI load timed out (180s) or exited non-zero"; exit 1
 fi
@@ -42,9 +66,11 @@ python3 -c "
 import json, sys
 d = json.load(open('$R'))
 ok = (d.get('evalOk') and d.get('evalResult') == 3 and d.get('processInstanceValid')
-      and d.get('keyStoreOk') and d.get('anthropicOk') and d.get('workerThreadOk'))
+      and d.get('keyStoreOk') and d.get('anthropicOk') and d.get('workerThreadOk')
+      and d.get('stallSkipped') is False and d.get('cancelOk') and d.get('deadlineOk')
+      and d.get('plainTextOk') and d.get('ok'))
 skipped = d.get('anthropicSkipped')
 print('anthropic check: %s' % ('SKIPPED (no key)' if skipped else 'RAN against real API'))
 sys.exit(0 if ok else 1)
 " || { echo "FAIL: self-test did not prove all execution paths"; exit 1; }
-echo "PASS: EvaluateScript==3, ProcessInstance valid, KeyStore round-trip OK, Anthropic check OK, worker-thread 401 OK"
+echo "PASS: EvaluateScript==3, ProcessInstance valid, Settings round-trip OK, Anthropic check OK, worker-thread 401 OK, cancel+deadline on stalled connection OK, PlainText </raw> OK"
