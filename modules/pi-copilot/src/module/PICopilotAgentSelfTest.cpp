@@ -2,10 +2,12 @@
 // Copyright (c) 2026 Scott Carter. MIT License.
 
 #include "PICopilotAgentSelfTest.h"
+#include "AgentTools.h"
 #include "AnthropicClient.h"
 #include "PICopilotModule.h"
 #include "ProcessApply.h"
 #include "ProcessCatalog.h"
+#include "SystemPrompt.h"
 #include "Utf8.h"
 #include "VisionTurn.h"
 
@@ -23,6 +25,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstdlib>
+#include <functional>
 #include <string>
 #include <thread>
 
@@ -788,6 +791,165 @@ bool RunAgentSelfTest( nlohmann::json& out )
       out["transportWireOk"] = wireOk;
       out["transportError"] = U8( error );
       out["toolTransportOk"] = ok;
+      allOk = allOk && ok;
+   }
+
+   // ---- Section A3: tools + system prompt (Task 4) --------------------------
+   {
+      bool schemaOk = false, promptOk = true, htColumnsOk = false, dispatchOk = false, applyToolOk = false,
+           declineOk = false, approveOk = false, advisorOk = false, noViewOk = false;
+      nlohmann::json promptOut = nlohmann::json::object();
+      String error;
+      try
+      {
+         auto names = []( const nlohmann::json& tools )
+         {
+            std::vector<std::string> n;
+            for ( const nlohmann::json& t : tools )
+               n.push_back( t.at( "name" ).get<std::string>() );
+            return n;
+         };
+         const std::vector<std::string> all = { "list_processes", "describe_process", "get_view_context", "apply_process" };
+         const std::vector<std::string> readOnly = { "list_processes", "describe_process", "get_view_context" };
+         const nlohmann::json tc = ToolDefinitions( AgentMode::Copilot );
+         const nlohmann::json tg = ToolDefinitions( AgentMode::Guided );
+         const nlohmann::json ta = ToolDefinitions( AgentMode::Advisor );
+         bool shapes = true;
+         for ( const nlohmann::json* set : { &tc, &tg, &ta } )
+            for ( const nlohmann::json& t : *set )
+               shapes = shapes && t.at( "input_schema" ).at( "type" ) == "object"
+                     && t.at( "description" ).is_string() && !t.at( "description" ).get<std::string>().empty();
+         schemaOk = shapes && names( tc ) == all && names( tg ) == all && names( ta ) == readOnly
+                 && tc.at( 3 ).at( "input_schema" ).at( "required" ) == nlohmann::json::array( { "process_id" } )
+                 && tc.at( 3 ).at( "input_schema" ).at( "properties" ).contains( "table_parameters" )
+                 && tc.at( 1 ).at( "input_schema" ).at( "required" ) == nlohmann::json::array( { "id" } );
+
+         for ( AgentMode m : { AgentMode::Copilot, AgentMode::Guided, AgentMode::Advisor } )
+         {
+            const String p = BuildSystemPrompt( m );
+            bool ok = p.Contains( String::UTF8ToUTF16( kPICopilotToneGuidance ) );
+            for ( const char* marker : kPICopilotToneMarkers )
+               ok = ok && p.Contains( String::UTF8ToUTF16( marker ) );
+            const char* modeMarker = m == AgentMode::Copilot ? "MODE: Copilot"
+                                   : m == AgentMode::Guided ? "MODE: Guided" : "MODE: Advisor";
+            ok = ok && p.Contains( String( modeMarker ) );
+            if ( m == AgentMode::Advisor )
+               ok = ok && !p.Contains( String( "apply_process {" ) );
+            else
+               ok = ok && p.Contains( String( "apply_process {" ) ) && p.Contains( String( "History" ) );
+            promptOut[modeMarker] = ok;
+            promptOk = promptOk && ok;
+         }
+
+         {  // The HT example in the prompt must name the real column ids, in order.
+            Process H( IsoString( "HistogramTransformation" ) );
+            ProcessParameter t( H, IsoString( "H" ) );
+            String ids;
+            for ( const ProcessParameter& c : t.TableColumns() )
+            {
+               if ( !ids.IsEmpty() )
+                  ids += ", ";
+               ids += String( c.Id() );
+            }
+            htColumnsOk = BuildSystemPrompt( AgentMode::Copilot ).Contains( "of columns " + ids + "; to set" );
+         }
+
+         AgentTestWindow tw( "PICopilotTools" );
+         const View v = tw.MainView();
+         ToolContext ctx;
+         ctx.mode = AgentMode::Copilot;
+         ctx.activeView = [v]() -> View { return v; };
+         const ToolOutcome d1 = ExecuteTool( ToolCall{ "t1", "describe_process", { { "id", "PixelMath" } } }, ctx );
+         const ToolOutcome d2 = ExecuteTool( ToolCall{ "t2", "describe_process", { { "id", "NoSuchProcessXYZ" } } }, ctx );
+         const ToolOutcome g  = ExecuteTool( ToolCall{ "t3", "get_view_context", { { "include_preview", true } } }, ctx );
+         const ToolOutcome u  = ExecuteTool( ToolCall{ "t4", "no_such_tool", nlohmann::json::object() }, ctx );
+         const ToolOutcome l  = ExecuteTool( ToolCall{ "t5", "list_processes", nlohmann::json::object() }, ctx );
+         dispatchOk = !d1.isError && d1.content.at( 0 ).at( "text" ).get<std::string>().find( "\"expression\"" ) != std::string::npos
+                   && d2.isError
+                   && !g.isError && g.content.size() == 2
+                   && g.content.at( 0 ).at( "text" ).get<std::string>().find( "channelStats" ) != std::string::npos
+                   && g.content.at( 1 ).at( "type" ) == "image"
+                   && u.isError && u.content.at( 0 ).at( "text" ).get<std::string>().find( "unknown tool 'no_such_tool'" ) != std::string::npos
+                   && !l.isError && l.logLine.StartsWith( String::UTF8ToUTF16( "\xE2\x96\xB6 list_processes" ) );
+
+         const ToolCall halve{ "t6", "apply_process",
+                               { { "process_id", "PixelMath" }, { "parameters", { { "expression", "$T*0.5" } } } } };
+         {  // Copilot: applies; summary + collapsed context + fresh preview.
+            AgentTestWindow tw2( "PICopilotToolApply" );
+            const View v2 = tw2.MainView();
+            ToolContext c2 = ctx;
+            c2.activeView = [v2]() -> View { return v2; };
+            const double before = ChannelMedian( v2, 0 );
+            const ToolOutcome o = ExecuteTool( halve, c2 );
+            const double after = ChannelMedian( v2, 0 );
+            const nlohmann::json summary = o.isError ? nlohmann::json::object()
+                                         : nlohmann::json::parse( o.content.at( 0 ).at( "text" ).get<std::string>() );
+            applyToolOk = !o.isError && summary.value( "result", std::string() ) == "ok"
+                       && summary.at( "newContext" ).contains( "channelStats" ) && !summary.at( "newContext" ).contains( "fitsKeywords" )
+                       && o.content.size() == 2 && o.content.at( 1 ).at( "type" ) == "image"
+                       && o.logLine.StartsWith( String::UTF8ToUTF16( "\xE2\x96\xB6 apply_process PixelMath" ) )
+                       && std::fabs( after - 0.5*before ) < 1e-5;
+         }
+         {  // Guided: decline -> nothing changes; approve -> applied. Advisor: refused.
+            AgentTestWindow tw3( "PICopilotToolGuided" );
+            const View v3 = tw3.MainView();
+            String gotPid, gotView, gotChanges;
+            int asked = 0;
+            ToolContext c3;
+            c3.mode = AgentMode::Guided;
+            c3.activeView = [v3]() -> View { return v3; };
+            c3.confirm = [&]( const String& pid, const String& view, const String& changes )
+            {
+               ++asked; gotPid = pid; gotView = view; gotChanges = changes;
+               return false;
+            };
+            const double before = ChannelMedian( v3, 0 );
+            const ToolOutcome no = ExecuteTool( halve, c3 );
+            declineOk = no.isError && asked == 1 && gotPid == "PixelMath" && gotView == String( v3.FullId() )
+                     && gotChanges.Contains( "expression = $T*0.5" )
+                     && no.content.at( 0 ).at( "text" ).get<std::string>().find( "declined" ) != std::string::npos
+                     && no.logLine.EndsWith( "declined by user" )
+                     && std::fabs( ChannelMedian( v3, 0 ) - before ) < 1e-12;
+            c3.confirm = [&]( const String&, const String&, const String& ) { ++asked; return true; };
+            const ToolOutcome yes = ExecuteTool( halve, c3 );
+            approveOk = !yes.isError && asked == 2 && std::fabs( ChannelMedian( v3, 0 ) - 0.5*before ) < 1e-5;
+
+            ToolContext c4 = c3;
+            c4.mode = AgentMode::Advisor;
+            const double mid = ChannelMedian( v3, 0 );
+            const ToolOutcome adv = ExecuteTool( halve, c4 );
+            advisorOk = adv.isError && asked == 2
+                     && adv.content.at( 0 ).at( "text" ).get<std::string>().find( "not available in Advisor mode" ) != std::string::npos
+                     && std::fabs( ChannelMedian( v3, 0 ) - mid ) < 1e-12;
+         }
+         {  // No active image: precise error from both view tools.
+            ToolContext c5;
+            c5.mode = AgentMode::Copilot;
+            c5.activeView = []() -> View { return View::Null(); };
+            const ToolOutcome nv = ExecuteTool( halve, c5 );
+            const ToolOutcome ng = ExecuteTool( ToolCall{ "t8", "get_view_context", nlohmann::json::object() }, c5 );
+            noViewOk = nv.isError && ng.isError
+                    && ng.content.at( 0 ).at( "text" ).get<std::string>().find( "no active image" ) != std::string::npos;
+         }
+      }
+      catch ( const pcl::Exception& x ) { error = x.Message(); }
+      catch ( const std::exception& x ) { error = String( x.what() ); }
+      catch ( ... )                     { error = "unknown exception"; }
+
+      const bool ok = schemaOk && promptOk && htColumnsOk && dispatchOk && applyToolOk
+                   && declineOk && approveOk && advisorOk && noViewOk;
+      out["toolsSchemaOk"] = schemaOk;
+      out["toolsPromptToneOk"] = promptOk;
+      out["toolsPromptModes"] = promptOut;
+      out["toolsHtColumnsOk"] = htColumnsOk;
+      out["toolsDispatchOk"] = dispatchOk;
+      out["toolsApplyOk"] = applyToolOk;
+      out["toolsGuidedDeclineOk"] = declineOk;
+      out["toolsGuidedApproveOk"] = approveOk;
+      out["toolsAdvisorRefusesOk"] = advisorOk;
+      out["toolsNoViewOk"] = noViewOk;
+      out["toolsError"] = U8( error );
+      out["agentToolsOk"] = ok;
       allOk = allOk && ok;
    }
 

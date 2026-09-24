@@ -186,6 +186,7 @@ required_true = [
     'agentSmokeOk',
     'applyProcessOk',
     'toolTransportOk',
+    'agentToolsOk',
     'ok',
 ]
 missing = [k for k in required_true if d.get(k) is not True]

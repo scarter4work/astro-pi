@@ -28,6 +28,8 @@ set(MODULE_SOURCES
     ViewCapture.cpp
     PICopilotAgentSelfTest.cpp
     ProcessApply.cpp
+    AgentTools.cpp
+    SystemPrompt.cpp
 )
 
 add_library(PICopilot SHARED ${MODULE_SOURCES})
