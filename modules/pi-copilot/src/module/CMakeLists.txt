@@ -20,6 +20,7 @@ set(MODULE_SOURCES
     AnthropicClient.cpp
     ConfigDialog.cpp
     ChatThread.cpp
+    PICopilotVisionSelfTest.cpp
 )
 
 add_library(PICopilot SHARED ${MODULE_SOURCES})
