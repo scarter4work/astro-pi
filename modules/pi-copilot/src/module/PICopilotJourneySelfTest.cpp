@@ -262,6 +262,26 @@ nlohmann::json PhaseRecordPayload( const nlohmann::json& payload )
    return payload;
 }
 
+// probe.nestedEval: {on} -- pauses/resumes the spike probe's nested EvaluateScript.
+nlohmann::json PhaseProbeNestedEval( const nlohmann::json& payload )
+{
+   JourneySpikeProbeSetNestedEval( payload.at( "on" ).get<bool>() );
+   return payload;
+}
+
+// j0.timerApply.arm: {id} -- the probe's next timer tick applies PixelMath to id.
+nlohmann::json PhaseTimerApplyArm( const nlohmann::json& payload )
+{
+   JourneySpikeProbeRequestTimerApply( payload.at( "id" ).get<std::string>() );
+   return payload;
+}
+
+// j0.timerApply.check: the top-level history read (payload) + the tick's result.
+nlohmann::json PhaseTimerApplyCheck( const nlohmann::json& payload )
+{
+   return { { "history", payload }, { "tick", JourneySpikeProbeTimerApplyResult() } };
+}
+
 using SelfTestPhaseHandler = nlohmann::json (*)( const nlohmann::json& payload );
 
 // Adding a phase: one entry here + one checkPhase( id, payload ) call in
@@ -270,6 +290,9 @@ using SelfTestPhaseHandler = nlohmann::json (*)( const nlohmann::json& payload )
 const std::map<std::string, SelfTestPhaseHandler>& SelfTestPhaseHandlers()
 {
    static const std::map<std::string, SelfTestPhaseHandler> handlers = {
+      { "probe.nestedEval",    PhaseProbeNestedEval },
+      { "j0.timerApply.arm",   PhaseTimerApplyArm },
+      { "j0.timerApply.check", PhaseTimerApplyCheck },
       { "j0.mc",       PhaseModifyCounts },
       { "j0.identity", PhaseRecordPayload },
       { "j0.reopen",   PhaseRecordPayload },
@@ -317,7 +340,7 @@ bool RunJourneySelfTest( nlohmann::json& out )
       nlohmann::json info = nlohmann::json::object();
       String error;
       bool preOk = false, notifyDecided = false, timerOk = false, nestedOk = false, mcOk = false,
-           identityOk = false, xpsmOk = false, historyCostOk = false, reopenOk = false, statsCostOk = false, iiOk = false;
+           identityOk = false, timerApplyOk = false, xpsmOk = false, historyCostOk = false, reopenOk = false, statsCostOk = false, iiOk = false;
       std::vector<std::string> made;
       try
       {
@@ -371,13 +394,15 @@ bool RunJourneySelfTest( nlohmann::json& out )
          //      historyIndex) clobber the result of an OUTER EvaluateScript that
          //      pumps events? The outer returns a sentinel string after ~1.5 s.
          {
+            // Paused since the end of the pre-phase (phase probe.nestedEval);
+            // live only for this measurement.
+            JourneySpikeProbeSetNestedEval( true );
             const int ticks0 = JourneySpikeProbeReport().at( "ticks" ).get<int>();
             const String r = JEvalJs( "(function(){ var t0 = Date.now(); while ( Date.now() - t0 < 1500 ) { processEvents(); msleep( 20 ); }"
                                       " return \"outer-sentinel\"; })()" );
             const int ticks = JourneySpikeProbeReport().at( "ticks" ).get<int>() - ticks0;
             info["nestedEvalOuter"] = { { "returned", U8( r ) }, { "ticksDuring", ticks },
                                         { "clobbered", r != "outer-sentinel" } };
-            // The rest of J0 needs its own EvaluateScript results intact.
             JourneySpikeProbeSetNestedEval( false );
          }
 
@@ -431,6 +456,27 @@ bool RunJourneySelfTest( nlohmann::json& out )
                                     { "tracksUndoHidden", tracks( seq ) }, { "tracksUndoShown", tracks( seqShown ) },
                                     { "tracksUndo", tracks( seq ) && tracks( seqShown ) } };
             mcOk = labels == nlohmann::json{ "start", "step", "undo", "redo" };   // the constant follows the value
+         }
+
+         // (4b) Production ApplyProcess from a module Timer tick (the panel's
+         //      execution context) on a top-level window: recorded in History?
+         //      Phases j0.timerApply.arm / .check (review fix #1).
+         made.push_back( "pcSpikeTimerApply" );
+         if ( phases.contains( "j0.timerApply.check" ) && phases.at( "j0.timerApply.check" ).size() == 1 )
+         {
+            const nlohmann::json& ta = phases.at( "j0.timerApply.check" ).at( 0 );
+            info["timerApply"] = ta;
+            const nlohmann::json& h = ta.at( "history" );
+            const nlohmann::json& t = ta.at( "tick" );
+            const bool ran = t.is_object() && t.value( "ok", false );
+            const bool recorded = ran && h.at( "lengthAfter" ).get<int>() == h.at( "lengthBefore" ).get<int>() + 1
+                               && h.at( "lastProcessId" ) == "PixelMath" && h.at( "lastHasExpression" ).get<bool>();
+            const bool mcAdvanced = ran && t.at( "modifyCountAfter" ) != t.at( "modifyCountBefore" );
+            info["timerApplyRecordsHistory"] = recorded;
+            info["timerApplyModifyCountAdvanced"] = mcAdvanced;
+            // A product fact the journey depends on (Copilot steps are undoable
+            // and trackable): the gate requires it.
+            timerApplyOk = recorded && mcAdvanced;
          }
 
          // (5) Created-window identity (PixelMath createNewImage, ChannelExtraction)
@@ -626,7 +672,7 @@ bool RunJourneySelfTest( nlohmann::json& out )
       // pcJourneyPre / pcJourneyPreNew stay open for section J6 (Task 7).
       const nlohmann::json phaseErrors = SelfTestPhaseStore().value( "errors", nlohmann::json::array() );
       info["phaseErrors"] = phaseErrors;
-      const bool ok = phaseErrors.empty() && preOk && notifyDecided && nestedOk && mcOk && identityOk && xpsmOk && historyCostOk
+      const bool ok = phaseErrors.empty() && preOk && notifyDecided && nestedOk && mcOk && timerApplyOk && identityOk && xpsmOk && historyCostOk
                    && reopenOk && statsCostOk && iiOk;
       out["journeySpikeInfo"] = info;
       out["journeySpikeError"] = U8( error );

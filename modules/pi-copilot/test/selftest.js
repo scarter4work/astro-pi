@@ -96,6 +96,46 @@ function normXpsm( s )
 
 // ---- J0 fixture phases (plan Task 1) ----
 
+// The spike probe's nested EvaluateScript has done its pre-phase job; keep it
+// off for everything after (J0 (2b) re-enables it only for its measurement).
+try
+{
+   checkPhase( "probe.nestedEval", { on: false } );
+}
+catch ( e )
+{
+   harnessError( "probe.nestedEval", e );
+}
+
+// (4b) The production ApplyProcess run from a module Timer tick -- the panel's
+// execution context -- on a top-level window: is the step recorded in History?
+// This script only pumps events while the tick runs (under --force-exit PI
+// exits when the script returns, so an idle event loop cannot be reached).
+try
+{
+   ( function ()
+   {
+      var w = new ImageWindow( 32, 32, 1, 32, true, false, "pcSpikeTimerApply" );
+      w.show();
+      var v = w.mainView;
+      var p0 = new PixelMath; p0.expression = "0.4"; p0.executeOn( v );   // a prior top-level step
+      var lengthBefore = v.processing.length;
+      checkPhase( "j0.timerApply.arm", { id: "pcSpikeTimerApply" } );
+      pumpEvents( 1500 );                                                  // >= several 0.2 s ticks
+      var pr = v.processing, last = pr.length > 0 ? pr.at( pr.length - 1 ) : null;
+      var src = last ? last.toSource( "XPSM 1.0" ) : "";
+      checkPhase( "j0.timerApply.check", {
+         lengthBefore: lengthBefore, lengthAfter: pr.length, historyIndex: v.historyIndex,
+         lastProcessId: last ? last.processId() : "",
+         lastHasExpression: src.indexOf( "<parameter id=\"expression\">$T*0.5</parameter>" ) >= 0,
+         lastHead: src.substring( 0, 200 ) } );
+   } )();
+}
+catch ( e )
+{
+   harnessError( "j0.timerApply", e );
+}
+
 // (4) ModifyCount across step / undo / redo: phase j0.mc reads it between steps.
 try
 {
@@ -195,8 +235,10 @@ try
 {
    ( function ()
    {
-      var dir = File.systemTempDirectory + "/picopilot-reopen-" + Date.now() + "-" + Math.floor( Math.random()*1e9 );
-      File.createDirectory( dir );
+      // A private directory the harness created (and removes in cleanup()).
+      var dir = getEnvironmentVariable( "PICOPILOT_SELFTEST_SCRATCH" );
+      if ( dir.length == 0 || !File.directoryExists( dir ) )
+         throw new Error( "PICOPILOT_SELFTEST_SCRATCH is not an existing directory" );
       var path = dir + "/reopen.xisf";
       var r;
       try
@@ -244,7 +286,6 @@ try
       finally
       {
          if ( File.exists( path ) ) File.remove( path );
-         if ( File.directoryExists( dir ) ) File.removeDirectory( dir );
       }
       checkPhase( "j0.reopen", r );
    } )();

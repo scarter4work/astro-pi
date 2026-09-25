@@ -44,6 +44,13 @@ constexpr int    PICopilotJourneyStatsRowStride = 1;
 // max( 250, 50*ceil( 1.5*( readTailMs + blockMs(stride) + 60 )/50 ) ).
 constexpr int    PICopilotJourneyStepBudgetMs = 250;
 
+// true iff the production ApplyProcess run from a module Timer tick (the
+// panel's execution context) on a top-level view was recorded in History and
+// advanced ModifyCount (journeySpikeInfo.timerApplyRecordsHistory &&
+// .timerApplyModifyCountAdvanced; J0 gates on it). Measured: length 1 -> 2,
+// last step PixelMath "$T*0.5", ModifyCount 1 -> 2.
+constexpr bool   PICopilotJourneyTimerApplyRecordsHistory = true;
+
 // Timing-evidence slack after a step's end (Ruling 19).
 constexpr double PICopilotJourneyTimingSlackSeconds = PICopilotJourneyScanSeconds + 1.0;
 
