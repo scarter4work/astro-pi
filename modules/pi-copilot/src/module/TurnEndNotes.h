@@ -22,13 +22,19 @@ struct TurnEndView
 
 // httpStatus: the last request's HTTP status (0 = no HTTP reply, e.g. a
 // transport error, a cancel, or a turn aborted before sending).
-// - Failed: "Error <status>: <error>" (or "Error: <error>"); always restores the input.
+// - Failed: one sentence per step.errorKind (cause + next step; the HTTP
+//   status only when there was one -- never "Error 0"); errorKind None (not
+//   from a request) keeps "Error <status>: <error>" / "Error: <error>".
+//   Always restores the input.
 // - Stopped: "(stopped)".
+// - partialReplyCut: a streamed reply was already shown when the request
+//   ended without success; the note says it is not kept (Stopped: in the
+//   stop note; Failed: a note before the cause).
 // - CapReached: explains the PICopilotMaxToolRounds limit and that the next
 //   message lets it continue or summarize.
 // - toolsRan on Failed/Stopped: processes already applied stay applied (undo via History).
-// - needsClear: the history cannot be sent any more; press Clear.
-TurnEndView DescribeTurnEnd( const AgentStep& step, int httpStatus );
+// - needsClear: the history cannot be sent any more; press New chat.
+TurnEndView DescribeTurnEnd( const AgentStep& step, int httpStatus, bool partialReplyCut = false );
 
 } // namespace pcl
 

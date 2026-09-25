@@ -6,6 +6,7 @@
 
 #include "AgentTools.h"
 #include "AnthropicClient.h"
+#include "HistoryBudget.h"
 
 #include <pcl/StringList.h>
 
@@ -32,6 +33,7 @@ struct AgentStep
    bool       truncated = false;     // stop_reason == max_tokens
    StringList toolLog;               // one compact line per tool call (run, declined, failed or skipped)
    String     error;                 // Failed/Stopped-by-cancel: the request error
+   RequestErrorKind errorKind = RequestErrorKind::None;   // Failed/Stopped from a request: why (TurnEndNotes words it)
    bool       restoreInput = false;  // give the prompt back to the input line
    bool       toolsRan = false;      // a tool of this user message changed an image (apply_process completed)
    bool       needsClear = false;    // AbortTurn(): even the restored history is not API-valid -- offer Clear
@@ -83,9 +85,27 @@ public:
    // restoreInput; toolsRan when those rounds changed an image (the history
    // no longer mentions it -- warn the user); needsClear when even the
    // restored history is invalid (offer Clear).
-   AgentStep AbortTurn( const String& error );
+   // errorKind: why nothing was sent (Build: the history is invalid;
+   // Internal: the request could not be started); TurnEndNotes words it.
+   AgentStep AbortTurn( const String& error, RequestErrorKind errorKind = RequestErrorKind::None );
+
+   // The model the NEXT request runs on (call before BeginUserTurn()).
+   // Assistant turns appended from now on are tagged with it; switching to
+   // another model strips the earlier turns' thinking blocks, which are bound
+   // to the model that produced them (StripForeignThinking).
+   void SetModel( const IsoString& model );
 
    void Clear();
+
+   // Messages TrimHistoryToBudget() removed since the last call (the panel
+   // tells the user after OnResponse()). Reset when a failure restores the
+   // pre-BeginUserTurn() snapshot, which is untrimmed.
+   size_type TakeTrimmedMessages()
+   {
+      const size_type n = m_trimmed;
+      m_trimmed = 0;
+      return n;
+   }
 
 private:
 
@@ -93,8 +113,10 @@ private:
    Array<AnthropicMessage> m_snapshot;   // history before the current BeginUserTurn()
    int                     m_rounds = 0;
    bool                    m_imageChanged = false;   // a tool of this user message changed an image
+   size_type               m_trimmed = 0;            // messages trimmed since TakeTrimmedMessages()
+   IsoString               m_model;                  // tags appended assistant turns (SetModel)
 
-   AgentStep Fail( AgentStep::Kind kind, const String& error );
+   AgentStep Fail( AgentStep::Kind kind, const String& error, RequestErrorKind errorKind = RequestErrorKind::None );
 };
 
 // Structural Messages-API validity of a history about to be sent (see the
@@ -104,6 +126,15 @@ private:
 // message must be a user message). why = the first violation, naming the
 // message index / tool_use id.
 bool HistoryIsApiValid( const Array<AnthropicMessage>& history, String& why );
+
+// Removes thinking / redacted_thinking blocks from every assistant turn whose
+// producing model (AnthropicMessage::model) is not `model` -- an unknown
+// (empty) producer counts as foreign. Their signatures bind them to the model
+// that produced them; another model must not be handed them. A turn left
+// without blocks (defensive: StorableAssistantBlocks never stores thinking
+// alone) gets a "[earlier reply: thinking only]" text block, so no assistant
+// turn is ever empty. Returns the number of blocks removed.
+size_type StripForeignThinking( Array<AnthropicMessage>& history, const IsoString& model );
 
 // The same checks for a history a user turn will still be appended to: it may
 // be empty or end with an assistant turn (but not one with a tool_use).

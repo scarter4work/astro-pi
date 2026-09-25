@@ -47,9 +47,9 @@ const char* const kCopilotMode =
    "your first change.\n\n";
 
 const char* const kGuidedMode =
-   "MODE: Guided. Each apply_process call first shows the user a confirmation dialog listing the process and its "
-   "parameters. If a tool_result says the user declined, do not repeat that call; ask what they would like "
-   "instead. Approved runs are recorded in the view's History and can be undone.\n\n";
+   "MODE: Guided. Each apply_process or run_global_process call first shows the user a confirmation dialog listing "
+   "the process and its parameters. If a tool_result says the user declined, do not repeat that call; ask what "
+   "they would like instead. Approved apply_process runs are recorded in the view's History and can be undone.\n\n";
 
 const char* const kAdvisorMode =
    "MODE: Advisor. You have read-only tools and cannot change the image. When the user wants something done, "
@@ -70,7 +70,22 @@ const char* const kReadTools =
 const char* const kApplyTool =
    "- apply_process {process_id, parameters, table_parameters, view_id}: runs a process on the user's REAL image "
    "(the view this message is about unless view_id is given). To work on any other view, inspect it first with "
-   "get_view_context {view_id} in the same turn.\n";
+   "get_view_context {view_id} in the same turn.\n"
+   "- run_global_process {process_id, parameters, table_parameters}: runs a process in the global context, e.g. "
+   "ImageIntegration over files on disk. It opens NEW image windows and never changes an open image.\n";
+
+const char* const kScriptTool =
+   "- run_pjsr {code, purpose}: runs a PixInsight JavaScript (PJSR) script, but only after the user has read and "
+   "approved the whole script in a dialog, every time. Use it only when no process can do the job (inspection-driven "
+   "decisions, window or preview management, custom measurements). The code is a function body: `return` a value to "
+   "get it back (as JSON); console.writeln output is captured; targetViewId is the id of the view this message is "
+   "about. To change pixels directly, wrap the change in view.beginProcess(UndoFlag.PixelData) ... view.endProcess() "
+   "so the user can undo it; prefer running process instances (P.executeOn(view)), which are undoable anyway. In "
+   "this PixInsight the constants are namespaced objects: UndoFlag.PixelData, ImageOp.Mul (the old "
+   "UndoFlag_PixelData / ImageOp_Mul names are undefined). A "
+   "script cannot be interrupted: never write loops that might not end. If the user declines, do not send the same "
+   "script again. Never use run_pjsr to run a process that apply_process or run_global_process refused as not "
+   "allowed, or to get around any other refusal: tell the user instead.\n";
 
 const char* const kApplyIdioms =
    "\nUsing apply_process:\n"
@@ -89,8 +104,17 @@ const char* const kApplyIdioms =
    "say a change was made unless its tool_result says \"ok\".\n"
    "- After a successful call the tool_result has the view's new statistics and a fresh preview: check the result "
    "against the goal before you report.\n"
-   "- Processes that only run globally (e.g. ImageIntegration, or anything that builds new images from files) are "
-   "not supported by apply_process yet: say so and give the settings instead.\n";
+   "- Processes that work on files rather than an open image (e.g. ImageIntegration) go through run_global_process. "
+   "For ImageIntegration pass the frames as table_parameters {\"images\": [[true, \"/abs/path/light_001.xisf\", \"\", "
+   "\"\"], ...]} (columns enabled, path, drizzlePath, localNormalizationDataPath), using absolute paths the user gave "
+   "you; at least 3 enabled frames. Never invent file paths: ask the user for the folder or the files.\n"
+   "- A large integration keeps PixInsight busy for minutes: tell the user before you start one. They can abort it "
+   "from the Process Console, so a run reported as not completed may have been aborted by them.\n"
+   "- Some runs ask the user first even in Copilot mode, because they write files, close windows or change "
+   "PixInsight settings; if the user declines, do not repeat the call.\n"
+   "- A few parameters are set by PI Copilot itself from the user's own settings, never by you (e.g. GraXpert.appPath, "
+   "the GraXpert program to launch): omit them. If the tool_result says the setting is missing, tell the user what "
+   "it says to do.\n";
 
 const char* const kVision =
    "\nA user message may begin with a [PixInsight view context] block (JSON: view identity, geometry, per-channel "
@@ -104,7 +128,7 @@ const char* const kVision =
 
 } // namespace
 
-String BuildSystemPrompt( AgentMode mode )
+String BuildSystemPrompt( AgentMode mode, const ToolOptions& options )
 {
    std::string p = kIntro;
    p += mode == AgentMode::Copilot ? kCopilotMode : mode == AgentMode::Guided ? kGuidedMode : kAdvisorMode;
@@ -112,6 +136,8 @@ String BuildSystemPrompt( AgentMode mode )
    if ( mode != AgentMode::Advisor )
    {
       p += kApplyTool;
+      if ( options.runPjsr )
+         p += kScriptTool;
       p += kApplyIdioms;
    }
    p += kVision;

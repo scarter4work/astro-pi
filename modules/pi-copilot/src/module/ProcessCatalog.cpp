@@ -220,10 +220,7 @@ nlohmann::json DefaultValueJson( const ProcessParameter& p )
          // (GetParameterDefaultElementIndex, ProcessParameter.cpp:333-338),
          // not its value; EnumerationInfoOf() resolves it to the element id
          // (or reads it from PJSR when native element ids are unreadable).
-         const EnumerationInfo& info = EnumerationInfoOf( p );
-         if ( !info.defaultId.IsEmpty() )
-            return std::string( info.defaultId.c_str() );
-         return v.ToInt();
+         return EnumerationDefaultJson( EnumerationInfoOf( p ), v.ToInt() );
       }
    case ProcessParameterType::String:
       return U8( v.ToString() );
@@ -234,14 +231,20 @@ nlohmann::json DefaultValueJson( const ProcessParameter& p )
    }
 }
 
+// Compact on purpose (a describe_process result must fit one tool_result,
+// PICopilotMaxToolResultChars, for every installed process -- self-tested):
+// "readOnly"/"required" only when true, enumerations as their element ids
+// (the form apply_process documents; the integer values are not needed).
 nlohmann::json ParameterJson( const ProcessParameter& p )
 {
    nlohmann::json j = {
       { "id", std::string( p.Id().c_str() ) },
-      { "type", TypeName( p.Type() ) },
-      { "readOnly", p.IsReadOnly() },
-      { "required", p.IsRequired() }
+      { "type", TypeName( p.Type() ) }
    };
+   if ( p.IsReadOnly() )
+      j["readOnly"] = true;
+   if ( p.IsRequired() )
+      j["required"] = true;
 
    // Enumeration element ids come from EnumerationInfoOf() (native, else
    // PJSR introspection). If BOTH routes fail for one parameter, that must
@@ -254,11 +257,13 @@ nlohmann::json ParameterJson( const ProcessParameter& p )
       const nlohmann::json def = DefaultValueJson( p );
       if ( !def.is_null() )
          j["default"] = def;
+      else if ( p.IsEnumeration() )
+         j["defaultNote"] = "the default element could not be identified; omit this parameter to keep it";
       if ( p.IsEnumeration() )
       {
          nlohmann::json e = nlohmann::json::array();
          for ( const ProcessParameter::EnumerationElement& el : EnumerationInfoOf( p ).elements )
-            e.push_back( { { "id", std::string( el.id.c_str() ) }, { "value", el.value } } );
+            e.push_back( std::string( el.id.c_str() ) );
          j["enumeration"] = e;
       }
    }
@@ -288,6 +293,17 @@ nlohmann::json ParameterJson( const ProcessParameter& p )
 }
 
 } // namespace
+
+nlohmann::json EnumerationDefaultJson( const EnumerationInfo& info, int defaultIndex )
+{
+   if ( !info.defaultId.IsEmpty() )
+      return std::string( info.defaultId.c_str() );
+   // Never the bare index: apply_process reads an integer as an element
+   // VALUE, so a model echoing it back could pick the wrong element.
+   if ( defaultIndex >= 0 && size_type( defaultIndex ) < info.elements.Length() )
+      return std::string( info.elements[defaultIndex].id.c_str() );
+   return nullptr;
+}
 
 const nlohmann::json& CompiledProcessSummaries()
 {

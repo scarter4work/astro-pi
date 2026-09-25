@@ -39,12 +39,14 @@ public:
 
    // url/timeoutSeconds exist for the self-test (local stall server, short
    // deadline); production callers use the defaults. tools non-null -> sent
-   // as the request's "tools" array.
+   // as the request's "tools" array. shape: see RequestShape (the panel
+   // passes ProductionRequestShape(): streamed).
    ChatThread( const String& apiKey, const String& systemPrompt, const Array<AnthropicMessage>& history,
                const IsoString& model = PICOPILOT_DEFAULT_MODEL,
                const String& url = PICOPILOT_MESSAGES_URL,
                int timeoutSeconds = PICopilotRequestTimeoutSeconds,
-               const nlohmann::json& tools = nlohmann::json() );
+               const nlohmann::json& tools = nlohmann::json(),
+               const RequestShape& shape = RequestShape() );
 
    void Run() override;
 
@@ -58,6 +60,12 @@ public:
    // result, moving that result into `out`. Returns false while the request
    // is still in flight (or after the result has already been taken).
    bool TryTakeResult( AnthropicResult& out );
+
+   // Thread-safe: streamed text received since the last call (see AnthropicRequest).
+   String TakeStreamedText()
+   {
+      return m_request.TakeStreamedText();
+   }
 
 private:
 

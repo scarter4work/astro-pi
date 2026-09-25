@@ -20,7 +20,7 @@ namespace
 
 String S16( const std::string& s )
 {
-   return String::UTF8ToUTF16( s.c_str() );
+   return FromU8( s );   // length-aware: never a silent cut at an embedded NUL
 }
 
 // "✖ <tool> → <suffix>"
@@ -79,6 +79,7 @@ nlohmann::json StorableAssistantBlocks( const AnthropicResult& r )
 {
    const bool keepToolUse = r.stopReason == "tool_use";
    bool droppedToolUse = false;
+   bool hasContent = false;   // a kept block other than thinking / redacted_thinking
    nlohmann::json kept = nlohmann::json::array();
    for ( const nlohmann::json& b : r.contentBlocks )
    {
@@ -89,9 +90,14 @@ nlohmann::json StorableAssistantBlocks( const AnthropicResult& r )
          droppedToolUse = true;
          continue;
       }
+      const std::string type = BlockType( b );
+      hasContent = hasContent || (type != "thinking" && type != "redacted_thinking");
       kept.push_back( b );
    }
-   if ( kept.empty() )
+   // Thinking blocks alone never make a turn: the API may drop them
+   // (drop_block binding), which would leave an empty assistant turn. The
+   // placeholder goes after them (thinking stays first, verbatim).
+   if ( !hasContent )
    {
       const std::string note = (droppedToolUse && r.truncated)
          ? std::string( "[reply cut off (max_tokens) before a tool call completed]" )
@@ -112,6 +118,38 @@ void AgentSession::Clear()
    m_snapshot.Clear();
    m_rounds = 0;
    m_imageChanged = false;
+   m_trimmed = 0;
+}
+
+void AgentSession::SetModel( const IsoString& model )
+{
+   m_model = model;
+   StripForeignThinking( m_history, model );
+}
+
+size_type StripForeignThinking( Array<AnthropicMessage>& history, const IsoString& model )
+{
+   size_type removed = 0;
+   for ( AnthropicMessage& m : history )
+   {
+      if ( m.role != "assistant" || m.model == model || !m.blocks.is_array() )
+         continue;
+      nlohmann::json kept = nlohmann::json::array();
+      for ( const nlohmann::json& b : m.blocks )
+      {
+         const std::string type = BlockType( b );
+         if ( type == "thinking" || type == "redacted_thinking" )
+            ++removed;
+         else
+            kept.push_back( b );
+      }
+      if ( kept.size() == m.blocks.size() )
+         continue;
+      if ( kept.empty() )
+         kept.push_back( { { "type", "text" }, { "text", "[earlier reply: thinking only]" } } );
+      m.blocks = std::move( kept );
+   }
+   return removed;
 }
 
 void AgentSession::BeginUserTurn( const AnthropicMessage& userTurn )
@@ -132,17 +170,20 @@ void AgentSession::BeginUserTurn( const AnthropicMessage& userTurn )
    else
       m_history.Add( userTurn );
    StripOlderImages( m_history );
+   m_trimmed += TrimHistoryToBudget( m_history, PICopilotHistoryTokenBudget, PICopilotHistoryTrimTarget );
 }
 
-AgentStep AgentSession::Fail( AgentStep::Kind kind, const String& error )
+AgentStep AgentSession::Fail( AgentStep::Kind kind, const String& error, RequestErrorKind errorKind )
 {
    AgentStep s;
    s.kind = kind;
    s.error = error;
+   s.errorKind = errorKind;
    s.toolsRan = m_imageChanged;
    if ( m_rounds == 0 )
    {
       m_history = m_snapshot;        // nothing ran: as if never sent
+      m_trimmed = 0;                 // the snapshot is untrimmed: nothing to report
       s.restoreInput = true;
    }
    else
@@ -154,7 +195,7 @@ AgentStep AgentSession::Fail( AgentStep::Kind kind, const String& error )
    return s;
 }
 
-AgentStep AgentSession::AbortTurn( const String& error )
+AgentStep AgentSession::AbortTurn( const String& error, RequestErrorKind errorKind )
 {
    // The history was found invalid, and the invalid part is usually in this
    // message's own rounds (e.g. a repeated tool_use id from the model), so
@@ -163,10 +204,12 @@ AgentStep AgentSession::AbortTurn( const String& error )
    AgentStep s;
    s.kind = AgentStep::Failed;
    s.error = error;
+   s.errorKind = errorKind;
    s.toolsRan = m_imageChanged;
    s.restoreInput = true;
    m_history = m_snapshot;
    m_rounds = 0;
+   m_trimmed = 0;   // the snapshot is untrimmed: nothing to report
    String why;
    s.needsClear = !HistoryPrefixIsApiValid( m_history, why );
    return s;
@@ -179,7 +222,7 @@ AgentStep AgentSession::OnResponse( const AnthropicResult& r, const ToolRunner& 
    try
    {
       if ( !r.ok )
-         return Fail( r.cancelled ? AgentStep::Stopped : AgentStep::Failed, r.error );
+         return Fail( r.cancelled ? AgentStep::Stopped : AgentStep::Failed, r.error, r.errorKind );
 
       std::vector<ToolCall> calls;
       if ( r.contentBlocks.is_array() )
@@ -190,6 +233,7 @@ AgentStep AgentSession::OnResponse( const AnthropicResult& r, const ToolRunner& 
 
       AnthropicMessage assistant;
       assistant.role = "assistant";
+      assistant.model = m_model;
       assistant.content = r.text;
       if ( r.contentBlocks.is_array() )
          assistant.blocks = StorableAssistantBlocks( r );
@@ -203,6 +247,8 @@ AgentStep AgentSession::OnResponse( const AnthropicResult& r, const ToolRunner& 
          s.truncated = r.truncated;
          s.toolsRan = m_imageChanged;
          m_history.Add( assistant );
+         // A long reply can push the history over the budget.
+         m_trimmed += TrimHistoryToBudget( m_history, PICopilotHistoryTokenBudget, PICopilotHistoryTrimTarget );
          s.kind = AgentStep::Done;
          return s;
       }
@@ -295,6 +341,9 @@ AgentStep AgentSession::OnResponse( const AnthropicResult& r, const ToolRunner& 
             m_history.Truncate( m_history.At( preRound ) );
          throw;
       }
+      // After the round is committed (the rollback above counts on the
+      // history's front being unchanged). The current exchange is never cut.
+      m_trimmed += TrimHistoryToBudget( m_history, PICopilotHistoryTokenBudget, PICopilotHistoryTrimTarget );
       ++m_rounds;
 
       s.toolsRan = m_imageChanged;
