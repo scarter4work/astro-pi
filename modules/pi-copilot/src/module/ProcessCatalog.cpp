@@ -2,6 +2,7 @@
 // Copyright (c) 2026 Scott Carter. MIT License.
 
 #include "ProcessCatalog.h"
+#include "EvalGuard.h"
 #include "PICopilotModule.h"
 #include "ProcessSummaries.h"   // generated: kProcessSummariesJson
 #include "Utf8.h"
@@ -119,8 +120,12 @@ EnumerationInfo ScriptEnumerationInfo( const IsoString& processId, const IsoStri
    script.ReplaceString( IsoString( "@PARAM@" ), paramId );
    script.ReplaceString( IsoString( "@VALUES@" ), values );
 
-   const Variant result = ThePICopilotModule->EvaluateScript( String( script ), "JavaScript" );
-   const nlohmann::json j = nlohmann::json::parse( U8( result.ToString() ) );
+   String result;
+   {
+      EvalDepthGuard guard;   // no timer-driven EvaluateScript nests inside this one
+      result = ThePICopilotModule->EvaluateScript( String( script ), "JavaScript" ).ToString();
+   }
+   const nlohmann::json j = nlohmann::json::parse( U8( result ) );
    if ( j.contains( "error" ) )
       throw Error( String::UTF8ToUTF16( j.at( "error" ).get<std::string>().c_str() ) );
 

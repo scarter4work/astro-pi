@@ -44,6 +44,7 @@ set(MODULE_SOURCES
     ScriptConfirmDialog.cpp
     JourneySpikeProbe.cpp
     PICopilotJourneySelfTest.cpp
+    HistoryReader.cpp
 )
 
 add_library(PICopilot SHARED ${MODULE_SOURCES})
