@@ -30,6 +30,7 @@ set(MODULE_SOURCES
     ProcessApply.cpp
     AgentTools.cpp
     SystemPrompt.cpp
+    GlobalRunFiles.cpp
     AgentSession.cpp
     TurnEndNotes.cpp
     PICopilotInc5SelfTest.cpp
