@@ -8,6 +8,10 @@
 
 #include <nlohmann/json.hpp>
 
+#include <functional>
+#include <string>
+#include <vector>
+
 namespace pcl
 {
 
@@ -73,8 +77,53 @@ nlohmann::json UnclassifiedSideEffectCandidates();
 // Policy ids that are not installed processes under their canonical id,
 // confirmWhen parameters the process does not have, globalSafe entries that
 // are also in another section, fileTables tables/columns that do not exist
-// (canonical ids) (catches typos).
+// (canonical ids), and pinnedParameters entries that are not canonical string
+// parameters with a supported source/kind (catches typos).
 nlohmann::json UnknownPolicyProcessIds();
+
+// ---- Pinned parameters (policy "pinnedParameters") --------------------------
+//
+//   { "<Process>": { "<parameterId>": { "source": "globalSetting",
+//                                       "key": "/<Module>/<settings key>",
+//                                       "kind": "executable",
+//                                       "from": "<where the value comes from, for messages>",
+//                                       "setupHint": "<what the user does to set it>" } } }
+//
+// A pinned parameter's value is NEVER chosen by the model: PI Copilot fills it
+// from a trusted source (the user's own setting for that module). Example:
+// GraXpert.appPath names the program GraXpert launches, so it is pinned to
+// the path the user set in GraXpert itself.
+struct PinnedParameter
+{
+   std::string parameter;   // canonical parameter id
+   String      value;       // the value to set (kind executable: the canonical realpath)
+   String      from;        // e.g. "your GraXpert settings"
+};
+
+// Refuses (returns the message) when parameters or tableParameters contain ANY
+// key that resolves (id or alias) to a pinned parameter, whatever its value:
+// "<P>.<param> is set by PI Copilot from <from>; omit it". Else reads each
+// pinned value (globalSetting: Settings::ReadGlobal(key), or the self-test
+// reader) and checks it (kind executable: absolute, exists, a regular file
+// after following links, executable; the value becomes its realpath). A
+// missing/empty or invalid value is an error naming the value and telling the
+// user what to do (setupHint) -- never a fallback to a default or PATH
+// lookup. "" + out filled (possibly empty) when fine; an unknown process id
+// is "" (the executor reports it). Root thread. Never throws.
+String ResolvePinnedParameters( const IsoString& processId, const nlohmann::json& parameters,
+                                const nlohmann::json& tableParameters, std::vector<PinnedParameter>& out );
+
+// "appPath = /opt/x/GraXpert (set by PI Copilot from your GraXpert settings)"
+// lines, for the confirm dialog and the tool log.
+String DescribePinnedParameters( const std::vector<PinnedParameter>& pinned );
+
+// Settings::ReadGlobal( key, value ), or the self-test reader when one is set.
+bool ReadGlobalSetting( const IsoString& key, String& value );
+
+// Self-test only: read "globalSetting" pinned values through `reader`
+// (an empty function restores Settings::ReadGlobal).
+using GlobalSettingReader = std::function<bool( const IsoString& key, String& value )>;
+void SetGlobalSettingReaderForSelfTest( GlobalSettingReader reader );
 
 // Self-test only: evaluate against `policy` instead (nullptr restores).
 void SetProcessSafetyPolicyForSelfTest( const nlohmann::json* policy );

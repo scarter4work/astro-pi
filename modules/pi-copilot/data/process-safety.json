@@ -1,7 +1,6 @@
 {
-  "_doc": "PI Copilot process safety policy. deny: never run from PI Copilot. confirmAlways: ask the user before every run, in every mode. confirmWhen: ask when the effective value of `parameter` (as given, else the process default) equals `equals` (or, with `notEquals`, is anything other than that value). reviewedSafe: flagged by the file/disk/window heuristic but reviewed: no effect beyond the target image or new windows. globalSafe: can-process-global (PCL default) but reviewed: a global run is refused by the core, or only creates new images; runs without asking in Copilot. globalConfirm: a global run is possible and not fully understood: ask before every global run (runs on a view are unaffected). A global run of a process in none of these sections asks. fileTables: path rules for global runs.",
+  "_doc": "PI Copilot process safety policy. deny: never run from PI Copilot. confirmAlways: ask the user before every run, in every mode. confirmWhen: ask when the effective value of `parameter` (as given, else the process default) equals `equals` (or, with `notEquals`, is anything other than that value). reviewedSafe: flagged by the file/disk/window heuristic but reviewed: no effect beyond the target image or new windows. globalSafe: can-process-global (PCL default) but reviewed: a global run is refused by the core, or only creates new images; runs without asking in Copilot. globalConfirm: a global run is possible and not fully understood: ask before every global run (runs on a view are unaffected). A global run of a process in none of these sections asks. fileTables: path rules for global runs. pinnedParameters: parameters the model may never set; PI Copilot fills them from a trusted source (e.g. the user's own setting of that module).",
   "deny": {
-    "GraXpert": "it launches an external program whose path is a parameter (appPath), which PI Copilot cannot check",
     "IndigoCCDFrame": "it controls a camera through an INDIGO server (exposures, uploads, file saving)",
     "IndigoDeviceController": "it sends commands to observatory devices through an INDIGO server",
     "IndigoMount": "it moves the telescope mount through an INDIGO server",
@@ -110,6 +109,7 @@
     "ColorCalibration": "its 'output...Mask' options open new mask windows",
     "DynamicAlignment": "'removedLayers' is a wavelet-layer option",
     "ExtractAlphaChannels": "'delete' removes the alpha channels from the target image itself",
+    "GraXpert": "its only side-effect parameter, appPath (the program it launches), is pinned by PI Copilot to the path set in the user's own GraXpert settings (see pinnedParameters); otherwise it replaces the image in place (History, undoable) or opens new background/result windows",
     "GradientHDRComposition": "it reads its input frames and opens a new image; 'dLogBias'/'bKeepLog' are logarithm options",
     "GradientHDRCompression": "'logMaxGradient'/'logMinGradient' are logarithm options",
     "GradientMergeMosaic": "it reads its input frames and opens a new image",
@@ -211,6 +211,17 @@
         "columns": {
           "path": "image"
         }
+      }
+    }
+  },
+  "pinnedParameters": {
+    "GraXpert": {
+      "appPath": {
+        "source": "globalSetting",
+        "key": "/GraXpert/Interfaces/GraXpert/appPath",
+        "kind": "executable",
+        "from": "your GraXpert settings",
+        "setupHint": "open the GraXpert process window in PixInsight once and set its path to the GraXpert application"
       }
     }
   }

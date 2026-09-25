@@ -162,9 +162,10 @@ bool WasInspected( const ToolContext& ctx, const IsoString& fullId )
 // `target` is the dialog's target text; `callText` names the call in the
 // declined message (e.g. "PixelMath on Image01"); `nothingDone` ends it.
 // Advisor never reaches this: its callers refuse Advisor first.
-// `target` is empty for a global run.
+// `target` is empty for a global run. `pinned` (ProcessSafety.h) is shown in
+// the dialog so the user sees e.g. which program will be launched.
 bool PassSafetyGate( const char* tool, const std::string& pid, const nlohmann::json& params,
-                     const nlohmann::json& tables, SafetyRunKind run,
+                     const nlohmann::json& tables, SafetyRunKind run, const std::vector<PinnedParameter>& pinned,
                      const ToolContext& ctx, const String& what,
                      const String& target, const std::string& callText, const char* nothingDone,
                      ToolOutcome& out )
@@ -184,6 +185,8 @@ bool PassSafetyGate( const char* tool, const std::string& pid, const nlohmann::j
       return false;
    }
    String changes = DescribeParameterChanges( params, tables, PICopilotConfirmChangesChars );
+   if ( !pinned.empty() )
+      changes += "\n" + DescribePinnedParameters( pinned );
    if ( safety.kind == SafetyVerdict::Confirm )
       changes = "Why you are asked: " + safety.reason + ".\n\n" + changes;
    if ( ctx.confirm( S16( pid ), target, changes ) )
@@ -194,6 +197,25 @@ bool PassSafetyGate( const char* tool, const std::string& pid, const nlohmann::j
                                      + nothingDone + " Do not repeat it; ask what they would like instead." ) );
    out.logLine = S16( kErrMarkUtf8 ) + what + S16( kArrowUtf8 ) + "declined by user";
    return false;
+}
+
+// Before any dialog: NUL in any string, then the pinned parameters (refused
+// from the model; their trusted values resolved and shown). "" when fine.
+String PreGateChecks( const std::string& pid, const nlohmann::json& params, const nlohmann::json& tables,
+                      std::vector<PinnedParameter>& pinned )
+{
+   const String nul = NulTextProblem( IsoString( pid.c_str() ), params, tables );
+   if ( !nul.IsEmpty() )
+      return nul;
+   return ResolvePinnedParameters( IsoString( pid.c_str() ), params, tables, pinned );
+}
+
+String PinnedLogText( const std::vector<PinnedParameter>& pinned )
+{
+   String s;
+   for ( const PinnedParameter& p : pinned )
+      s += " [" + S16( p.parameter ) + " = " + p.value + ", set by PI Copilot]";
+   return s;
 }
 
 ToolOutcome ApplyProcessTool( const nlohmann::json& in, const ToolContext& ctx, clock::time_point t0 )
@@ -240,16 +262,17 @@ ToolOutcome ApplyProcessTool( const nlohmann::json& in, const ToolContext& ctx, 
    const IsoString targetId = target.FullId();
    what += " on " + String( targetId );
 
-   // Before any dialog: NUL in any string (the core would cut the text there).
+   std::vector<PinnedParameter> pinned;
    {
-      const String e = NulTextProblem( IsoString( pid.c_str() ), params, tables );
+      const String e = PreGateChecks( pid, params, tables, pinned );
       if ( !e.IsEmpty() )
          return Fail( what, e );
    }
+   what += PinnedLogText( pinned );
 
    {
       ToolOutcome refused;
-      if ( !PassSafetyGate( "apply_process", pid, params, tables, SafetyRunKind::OnView, ctx, what,
+      if ( !PassSafetyGate( "apply_process", pid, params, tables, SafetyRunKind::OnView, pinned, ctx, what,
                             String( targetId ),
                             pid + " on " + std::string( targetId.c_str() ), "Nothing was changed.", refused ) )
          return refused;
@@ -273,6 +296,8 @@ ToolOutcome ApplyProcessTool( const nlohmann::json& in, const ToolContext& ctx, 
       { "elapsedMs", std::lround( ar.elapsedMs ) },
       { "undo", "Recorded in the view's History; the user can undo it." }
    };
+   if ( !ar.pinnedSet.empty() )
+      summary["pinnedParameters"] = ar.pinnedSet;   // set by PI Copilot, not by you: never pass them
    try
    {
       summary["newContext"] = CollapsedViewContext( BuildViewContext( target ) );
@@ -305,7 +330,7 @@ ToolOutcome RunGlobalTool( const nlohmann::json& in, const ToolContext& ctx, clo
    if ( tables.is_object() )
       for ( auto it = tables.begin(); it != tables.end(); ++it )
          shown[it.key()] = it.value();
-   const String what = "run_global_process " + S16( pid ) + " " + Shorten( S16( shown.dump() ), PICopilotToolLogParamChars );
+   String what = "run_global_process " + S16( pid ) + " " + Shorten( S16( shown.dump() ), PICopilotToolLogParamChars );
 
    if ( ctx.mode == AgentMode::Advisor )
       return Fail( what, "run_global_process is not available in Advisor mode (read-only); give the user the settings instead" );
@@ -315,10 +340,17 @@ ToolOutcome RunGlobalTool( const nlohmann::json& in, const ToolContext& ctx, clo
    const String pre = PrecheckGlobalRun( IsoString( pid.c_str() ), params, tables );
    if ( !pre.IsEmpty() )
       return Fail( what, pre );
+   std::vector<PinnedParameter> pinned;
+   {
+      const String e = PreGateChecks( pid, params, tables, pinned );
+      if ( !e.IsEmpty() )
+         return Fail( what, e );
+   }
+   what += PinnedLogText( pinned );
 
    {
       ToolOutcome refused;
-      if ( !PassSafetyGate( "run_global_process", pid, params, tables, SafetyRunKind::Global, ctx, what,
+      if ( !PassSafetyGate( "run_global_process", pid, params, tables, SafetyRunKind::Global, pinned, ctx, what,
                             String()/*global run*/, pid, "Nothing was run.", refused ) )
          return refused;
    }
@@ -376,6 +408,7 @@ ToolOutcome RunGlobalTool( const nlohmann::json& in, const ToolContext& ctx, clo
       { "parametersSet", g.parametersSet },
       { "elapsedMs", std::lround( g.elapsedMs ) },
       { "outputIds", g.outputIds },
+      { "pinnedParameters", g.pinnedSet },
       { "createdWindows", windows },
       { "createdWindowCount", g.createdWindows.size() },
       { "note", primary.empty()

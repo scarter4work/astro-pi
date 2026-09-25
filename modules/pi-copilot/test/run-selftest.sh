@@ -74,6 +74,22 @@ else
 fi
 unset KR_KEY
 
+# GraXpert live check (self-test B10): the app path is the user's OWN GraXpert
+# setting, read (read-only) from the real PixInsight settings file -- the
+# slot-90 settings are empty. An explicit PICOPILOT_TEST_GRAXPERT_APP wins.
+if [ -z "${PICOPILOT_TEST_GRAXPERT_APP:-}" ] && [ -f "$HOME/.PixInsight/core-001-pxi.settings" ]; then
+   PICOPILOT_TEST_GRAXPERT_APP="$(python3 - "$HOME/.PixInsight/core-001-pxi.settings" <<'PY' 2>/dev/null || true
+import sys, xml.etree.ElementTree as ET
+node = ET.parse(sys.argv[1]).getroot()
+for k in ("ModuleData", "GraXpert", "Interfaces", "GraXpert", "appPath"):
+    node = next((c for c in node if c.get("k") == k), None)
+    if node is None: sys.exit(0)
+print(node.text or "")
+PY
+)"
+fi
+export PICOPILOT_TEST_GRAXPERT_APP="${PICOPILOT_TEST_GRAXPERT_APP:-}"
+echo "GraXpert app for the live check: ${PICOPILOT_TEST_GRAXPERT_APP:-(none; the live GraXpert check will be SKIPPED)}"
 
 # Local "stalled server" for the cancel/deadline proof: accepts connections,
 # reads the request, and never answers -- the case SetConnectionTimeout()
@@ -313,6 +329,7 @@ required_true = [
     'globalProcessOk',
     'runPjsrOk', 'runPjsrBreakoutOk',
     'finalFixOk',
+    'pinnedOk',
     'ok',
 ]
 missing = [k for k in required_true if d.get(k) is not True]
@@ -323,13 +340,16 @@ if d.get('agentWireSkipped') is not False: missing.append('agentWireSkipped==fal
 if d.get('streamLoopbackSkipped') is not False: missing.append('streamLoopbackSkipped==false')
 import os
 if os.environ.get('PICOPILOT_REQUIRE_LIVE') == '1':
-    for k in ('anthropicSkipped', 'twoTurnSkipped', 'visionSkipped', 'liveAgentSkipped', 'liveConversationSkipped'):
+    for k in ('anthropicSkipped', 'twoTurnSkipped', 'visionSkipped', 'liveAgentSkipped', 'liveConversationSkipped',
+              'graxpertLiveSkipped'):
         if d.get(k) is not False: missing.append(k + '==false (PICOPILOT_REQUIRE_LIVE=1)')
 print('anthropic check: %s' % ('SKIPPED (no key)' if d.get('anthropicSkipped') else 'RAN against real API'))
 print('two-turn check: %s' % ('SKIPPED (no key)' if d.get('twoTurnSkipped') else 'RAN against real API'))
 print('vision check: %s' % ('SKIPPED (no key)' if d.get('visionSkipped') else 'RAN against real API, answer=%r' % d.get('visionAnswer')))
 print('live agent check: %s' % ('SKIPPED (no key)' if d.get('liveAgentSkipped') else 'RAN against real API, ratio=%r log=%r' % (d.get('liveAgentRatio'), d.get('liveAgentLog'))))
 print('live conversation check: %s' % ('SKIPPED (no key)' if d.get('liveConversationSkipped') else 'RAN against real API, cacheRead=%r trimThought=%r trimTransformations=%r%s' % (d.get('liveCacheRead'), d.get('liveTrimThought'), d.get('liveTrimTransformations'), ('' if d.get('liveConversationOk') else ' FAILED: %r' % d.get('liveConversationDetail', {}).get('trimLiveReason')))))
+pd = d.get('pinnedDetail', {})
+print('GraXpert live check: %s' % (('SKIPPED: %s' % pd.get('liveSkipReason')) if d.get('graxpertLiveSkipped') is not False else 'RAN, %r' % {k: pd.get('live', {}).get(k) for k in ('seconds', 'gradientBefore', 'gradientAfter', 'log')}))
 if d.get('liveModelSwitch') is not None:
     print('live model switch: %r' % d.get('liveModelSwitch'))
 if missing:

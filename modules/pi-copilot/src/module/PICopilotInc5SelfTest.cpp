@@ -44,6 +44,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstdint>
+#include <climits>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
@@ -51,6 +52,9 @@
 #include <string>
 #include <thread>
 #include <vector>
+
+#include <sys/stat.h>
+#include <unistd.h>
 
 namespace pcl
 {
@@ -3123,6 +3127,253 @@ bool RunInc5SelfTest( nlohmann::json& out )
       out["finalFixDetail"] = detail;
       out["finalFixError"] = U8( error );
       out["finalFixOk"] = ok;
+      allOk = allOk && ok;
+   }
+
+   // ---- Section B10: pinned parameters -- GraXpert.appPath ----------------------
+   {
+      bool policyOk = false, modelRefusedOk = false, missingOk = false, invalidOk = false, resolvedOk = false,
+           dialogOk = false, liveOk = false, liveSkipped = true;
+      nlohmann::json detail = nlohmann::json::object();
+      String error;
+      bool installed = false;
+      try
+      {
+         installed = Process( IsoString( "GraXpert" ) ).Id() == "GraXpert";
+      }
+      catch ( ... )
+      {
+      }
+      detail["graxpertInstalled"] = installed;
+      // The REAL read path (Settings::ReadGlobal, no injected reader): empty
+      // in the wiped test slot; in a slot seeded with the user's settings it
+      // shows GraXpert's own stored path (report: the slot-93 probe).
+      {
+         String v;
+         const bool found = ReadGlobalSetting( "/GraXpert/Interfaces/GraXpert/appPath", v );
+         detail["realSetting"] = { { "found", found }, { "value", U8( v ) } };
+      }
+      const String kOmit = "GraXpert.appPath is set by PI Copilot from your GraXpert settings; omit it";
+      const String kHint = " Ask the user to open the GraXpert process window in PixInsight once and set its path to "
+                           "the GraXpert application, then try again.";
+      try
+      {
+         // The compiled policy pins GraXpert.appPath to the GraXpert module's
+         // own setting, and GraXpert is no longer denied.
+         const nlohmann::json& pol = CompiledProcessSafety();
+         const nlohmann::json rule = pol.value( "/pinnedParameters/GraXpert/appPath"_json_pointer, nlohmann::json::object() );
+         detail["rule"] = rule;
+         policyOk = rule.value( "source", "" ) == "globalSetting"
+                 && rule.value( "key", "" ) == "/GraXpert/Interfaces/GraXpert/appPath"
+                 && rule.value( "kind", "" ) == "executable"
+                 && !pol.value( "deny", nlohmann::json::object() ).contains( "GraXpert" )
+                 && pol.value( "reviewedSafe", nlohmann::json::object() ).contains( "GraXpert" );
+         // The loader validates the section: a bogus entry is reported.
+         {
+            nlohmann::json bad = pol;
+            bad["pinnedParameters"]["GraXpert"]["noSuchParam"] = rule;
+            bad["pinnedParameters"]["GraXpert"]["smoothing"] = rule;          // not a string parameter
+            nlohmann::json badKind = rule;
+            badKind["kind"] = "anything";
+            bad["pinnedParameters"]["GraXpert"]["correction"] = badKind;      // unsupported kind
+            SetProcessSafetyPolicyForSelfTest( &bad );
+            const nlohmann::json unknown = UnknownPolicyProcessIds();
+            SetProcessSafetyPolicyForSelfTest( nullptr );
+            detail["badPolicyReport"] = unknown;
+            std::string all = unknown.dump();
+            policyOk = policyOk && all.find( "pinnedParameters:GraXpert.noSuchParam" ) != std::string::npos
+                    && all.find( "pinnedParameters:GraXpert.smoothing" ) != std::string::npos
+                    && all.find( "pinnedParameters:GraXpert.correction" ) != std::string::npos
+                    && UnknownPolicyProcessIds().empty();
+         }
+
+         if ( installed )
+         {
+            SyntheticFrames dir( 0 );
+            const String exe = dir.AddFile( "fake-graxpert", "#!/bin/sh\nexit 0\n" );
+            ::chmod( exe.ToUTF8().c_str(), 0755 );
+            const String noExec = dir.AddFile( "not-executable", "x" );
+            const String link = dir.Dir() + "/link-to-graxpert";
+            ::symlink( exe.ToUTF8().c_str(), link.ToUTF8().c_str() );
+            String fixture;   // what the injected reader returns
+            bool fixturePresent = true;
+            IsoString askedKey;
+            SetGlobalSettingReaderForSelfTest( [&]( const IsoString& key, String& value )
+            {
+               askedKey = key;
+               if ( !fixturePresent )
+                  return false;
+               value = fixture;
+               return true;
+            } );
+            std::vector<PinnedParameter> pins;
+            auto resolve = [&]( const String& v, bool present = true )
+            {
+               fixture = v;
+               fixturePresent = present;
+               return ResolvePinnedParameters( "GraXpert", nlohmann::json::object(), nlohmann::json::object(), pins );
+            };
+
+            // Resolution + canonicalisation (links followed).
+            const String rExe = resolve( exe );
+            const String vExe = pins.empty() ? String() : pins[0].value;
+            const String rLink = resolve( link );
+            const String vLink = pins.empty() ? String() : pins[0].value;
+            detail["resolved"] = { { "exe", U8( rExe ) }, { "value", U8( vExe ) }, { "viaLink", U8( rLink ) },
+                                   { "linkValue", U8( vLink ) }, { "key", askedKey.c_str() } };
+            resolvedOk = rExe.IsEmpty() && vExe == exe && rLink.IsEmpty() && vLink == exe
+                      && askedKey == "/GraXpert/Interfaces/GraXpert/appPath";
+
+            // Missing / invalid configured path: precise errors, no fallback.
+            const String eAbsent = resolve( String(), false );
+            const String eEmpty = resolve( "   " );
+            const String eMissing = resolve( "/nonexistent/picopilot/GraXpert" );
+            const String eDir = resolve( dir.Dir() );
+            const String eNoExec = resolve( noExec );
+            const String eRelative = resolve( "GraXpert" );
+            detail["errors"] = { { "absent", U8( eAbsent ) }, { "empty", U8( eEmpty ) }, { "missing", U8( eMissing ) },
+                                 { "directory", U8( eDir ) }, { "notExecutable", U8( eNoExec ) },
+                                 { "relative", U8( eRelative ) } };
+            const String absentMsg = "GraXpert.appPath cannot be set: there is no value for it in your GraXpert settings." + kHint;
+            missingOk = eAbsent == absentMsg && eEmpty == absentMsg;
+            invalidOk = eMissing == "GraXpert.appPath cannot be set: '/nonexistent/picopilot/GraXpert' (from your GraXpert "
+                                   "settings) does not exist (or cannot be resolved)." + kHint
+                     && eDir == "GraXpert.appPath cannot be set: '" + dir.Dir() + "' (from your GraXpert settings) is not a file." + kHint
+                     && eNoExec == "GraXpert.appPath cannot be set: '" + noExec + "' (from your GraXpert settings) is not executable." + kHint
+                     && eRelative == "GraXpert.appPath cannot be set: 'GraXpert' (from your GraXpert settings) is not an absolute path." + kHint;
+
+            // Through the tool: model-supplied appPath (even the right value)
+            // is refused before any dialog; a missing setting is refused too.
+            Inc5TestWindow tw( "PCGraXpertPin", 32, 32, 1, 0.25 );
+            int confirms = 0;
+            String lastChanges;
+            ToolContext ctx;
+            ctx.mode = AgentMode::Guided;
+            ctx.turnViewId = tw.MainView().FullId();
+            ctx.confirm = [&]( const String&, const String&, const String& changes )
+            {
+               ++confirms; lastChanges = changes; return false;
+            };
+            fixture = exe;
+            fixturePresent = true;
+            const ToolOutcome given = ExecuteTool( ToolCall{ "g1", "apply_process",
+               { { "process_id", "GraXpert" }, { "parameters", { { "appPath", U8( exe ) } } } } }, ctx );
+            const ToolOutcome givenEmpty = ExecuteTool( ToolCall{ "g2", "apply_process",
+               { { "process_id", "GraXpert" }, { "parameters", { { "appPath", "" }, { "replaceImage", true } } } } }, ctx );
+            const ToolOutcome givenGlobal = ExecuteTool( ToolCall{ "g3", "run_global_process",
+               { { "process_id", "GraXpert" }, { "parameters", { { "appPath", "/usr/bin/true" } } } } }, ctx );
+            const int confirmsAfterGiven = confirms;
+            fixturePresent = false;
+            const ToolOutcome unset = ExecuteTool( ToolCall{ "g4", "apply_process", { { "process_id", "GraXpert" } } }, ctx );
+            const int confirmsAfterUnset = confirms;
+            detail["tool"] = { { "given", given.content }, { "givenEmpty", givenEmpty.content },
+                               { "givenGlobal", givenGlobal.content }, { "unset", unset.content },
+                               { "confirms", confirmsAfterUnset } };
+            auto text = []( const ToolOutcome& o ) { return FromU8( o.content.at( 0 ).at( "text" ).get<std::string>() ); };
+            modelRefusedOk = given.isError && text( given ) == kOmit
+                          && givenEmpty.isError && text( givenEmpty ) == kOmit
+                          && givenGlobal.isError && confirmsAfterGiven == 0
+                          && unset.isError && text( unset ) == absentMsg && confirmsAfterUnset == 0
+                          && std::fabs( Inc5Median( tw.MainView(), 0 ) - 0.25 ) < 1e-6;
+
+            // Guided: the dialog names the program that would be launched
+            // (declined here, so nothing runs).
+            fixturePresent = true;
+            fixture = link;
+            const ToolOutcome declined = ExecuteTool( ToolCall{ "g5", "apply_process",
+               { { "process_id", "GraXpert" }, { "parameters", { { "replaceImage", true } } } } }, ctx );
+            detail["dialog"] = { { "changes", U8( lastChanges ) }, { "log", U8( declined.logLine ) } };
+            dialogOk = declined.isError && confirms == 1
+                    && lastChanges.Contains( "appPath = " + exe + " (set by PI Copilot from your GraXpert settings)" )
+                    && declined.logLine.Contains( "[appPath = " + exe + ", set by PI Copilot]" );
+            ::unlink( link.ToUTF8().c_str() );
+            SetGlobalSettingReaderForSelfTest( GlobalSettingReader() );
+         }
+
+         // LIVE: a real GraXpert background extraction through apply_process
+         // (Copilot), on a synthetic left->right gradient. The app path comes
+         // from PICOPILOT_TEST_GRAXPERT_APP (run-selftest.sh reads the user's
+         // own GraXpert setting); slot 90's settings are empty, so it is fed
+         // through the self-test reader -- the REAL key is proven separately.
+         const char* app = std::getenv( "PICOPILOT_TEST_GRAXPERT_APP" );
+         const String appPath = app != nullptr ? String::UTF8ToUTF16( app ) : String();
+         if ( !installed )
+            detail["liveSkipReason"] = "the GraXpert process is not installed";
+         else if ( appPath.IsEmpty() || ::access( appPath.ToUTF8().c_str(), X_OK ) != 0 )
+            detail["liveSkipReason"] = "no executable GraXpert application (PICOPILOT_TEST_GRAXPERT_APP='" + U8( appPath ) + "')";
+         else
+         {
+            liveSkipped = false;
+            SetGlobalSettingReaderForSelfTest( [&]( const IsoString&, String& value ) { value = appPath; return true; } );
+            Inc5TestWindow gw( "PCGraXpertLive", 256, 256, 1, 0 );
+            {
+               View v = gw.MainView();
+               AutoViewLock lock( v );
+               ImageVariant iv = v.Image();
+               Image& img = static_cast<Image&>( *iv );
+               for ( int y = 0; y < img.Height(); ++y )
+                  for ( int x = 0; x < img.Width(); ++x )
+                     img( x, y ) = float( 0.05 + 0.25*x/double( img.Width() - 1 ) );
+            }
+            auto edgeMeans = [&]( double& left, double& right )
+            {
+               View v = gw.MainView();
+               AutoViewLock lock( v );
+               ImageVariant iv = v.Image();
+               const Image& img = static_cast<const Image&>( *iv );
+               double l = 0, r = 0;
+               for ( int y = 0; y < img.Height(); ++y )
+                  for ( int x = 0; x < 16; ++x )
+                  {
+                     l += img( x, y );
+                     r += img( img.Width() - 1 - x, y );
+                  }
+               left = l/(16.0*img.Height());
+               right = r/(16.0*img.Height());
+            };
+            double l0 = 0, r0 = 0, l1 = 0, r1 = 0;
+            edgeMeans( l0, r0 );
+            ToolContext lc;
+            lc.mode = AgentMode::Copilot;
+            lc.turnViewId = gw.MainView().FullId();
+            int liveConfirms = 0;
+            lc.confirm = [&]( const String&, const String&, const String& ) { ++liveConfirms; return false; };
+            const auto t0 = std::chrono::steady_clock::now();
+            const ToolOutcome run = ExecuteTool( ToolCall{ "gl", "apply_process",
+               { { "process_id", "GraXpert" }, { "parameters", { { "backgroundExtraction", true }, { "replaceImage", true } } } } }, lc );
+            const double secs = std::chrono::duration<double>( std::chrono::steady_clock::now() - t0 ).count();
+            edgeMeans( l1, r1 );
+            SetGlobalSettingReaderForSelfTest( GlobalSettingReader() );
+            nlohmann::json summary;
+            try { summary = nlohmann::json::parse( run.content.at( 0 ).at( "text" ).get<std::string>() ); } catch ( ... ) {}
+            char canon[PATH_MAX];
+            const String canonical = ::realpath( appPath.ToUTF8().c_str(), canon ) ? FromU8( canon ) : String();
+            detail["live"] = { { "result", run.content.at( 0 ).at( "text" ) }, { "log", U8( run.logLine ) },
+                               { "seconds", secs }, { "gradientBefore", r0 - l0 }, { "gradientAfter", r1 - l1 },
+                               { "confirms", liveConfirms } };
+            liveOk = !run.isError && liveConfirms == 0
+                  && summary.value( "pinnedParameters", nlohmann::json::object() ).value( "appPath", std::string() ) == U8( canonical )
+                  && !summary.value( "parametersSet", nlohmann::json::object() ).contains( "appPath" )
+                  && (r0 - l0) > 0.2 && std::fabs( r1 - l1 ) < 0.25*(r0 - l0);
+         }
+      }
+      catch ( const pcl::Exception& x ) { error = x.Message(); }
+      catch ( const std::exception& x ) { error = String( x.what() ); }
+      catch ( ... )                     { error = "unknown exception"; }
+      SetGlobalSettingReaderForSelfTest( GlobalSettingReader() );
+      SetProcessSafetyPolicyForSelfTest( nullptr );
+      if ( liveSkipped )
+         detail["liveNote"] = "SKIPPED: the real GraXpert run did not happen (see liveSkipReason)";
+      const bool unitsOk = installed ? (policyOk && modelRefusedOk && missingOk && invalidOk && resolvedOk && dialogOk)
+                                     : policyOk;
+      detail["checks"] = { { "policy", policyOk }, { "modelRefused", modelRefusedOk }, { "missing", missingOk },
+                           { "invalid", invalidOk }, { "resolved", resolvedOk }, { "dialog", dialogOk },
+                           { "live", liveOk }, { "liveSkipped", liveSkipped } };
+      const bool ok = unitsOk && (liveSkipped || liveOk);
+      out["pinnedDetail"] = detail;
+      out["pinnedError"] = U8( error );
+      out["graxpertLiveSkipped"] = liveSkipped;
+      out["pinnedOk"] = ok;
       allOk = allOk && ok;
    }
 
