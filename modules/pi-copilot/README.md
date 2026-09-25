@@ -75,6 +75,52 @@ Increment 1 deliverables:
 - **Failures:** if a process started but did not complete (an error found while running, or you aborted it), the reason is in PixInsight's **Process Console** — the module cannot read it back, so the chat only says it failed.
 - Text in image metadata (FITS keywords, file names) and in tool results is treated as data, never as instructions.
 
+## Process safety policy
+
+PI Copilot checks every process it runs (apply_process, run_global_process) against a compiled policy (data/process-safety.json). The self-test fails if an installed process with file, directory, overwrite or window-closing parameters is not classified.
+
+A "confirm" asks you in every mode, Copilot included, and the dialog defaults to No. A denied process returns a precise error to the model; nothing runs. Advisor mode never runs anything.
+
+| Process | PI Copilot will | Why |
+|---|---|---|
+| GraXpert | never run it | it launches an external program whose path is a parameter (appPath), which PI Copilot cannot check |
+| IndigoCCDFrame | never run it | it controls a camera through an INDIGO server (exposures, uploads, file saving) |
+| IndigoDeviceController | never run it | it sends commands to observatory devices through an INDIGO server |
+| IndigoMount | never run it | it moves the telescope mount through an INDIGO server |
+| PICopilot | never run it | it is PI Copilot itself (running it from the chat would recurse) |
+| Preferences | never run it | it changes PixInsight's application settings, including its script-signature security settings |
+| ProcessContainer | never run it | it runs a list of other processes that PI Copilot cannot check one by one |
+| Script | never run it | it runs a PJSR script file, which PI Copilot cannot review from here (scripts go through run_pjsr, which shows the whole script first) |
+| APASS | always ask you first | it can write catalog search results to files, and its configure commands change the catalog database settings |
+| ColorManagementSetup | always ask you first | it changes PixInsight's global color-management settings |
+| CometAlignment | always ask you first | it writes comet-aligned copies of the input frames to its output directory and can overwrite existing files |
+| CosmeticCorrection | always ask you first | it writes corrected copies of the input frames to its output directory |
+| Debayer | always ask you first | it writes debayered copies of the input frames to its output directory |
+| DrizzleIntegration | always ask you first | it reads drizzle data files from disk and can write output files |
+| EphemerisGenerator | always ask you first | it writes ephemeris (.xeph) and log files to disk |
+| FastIntegration | always ask you first | it writes registered frames, log and weights files to its output directory |
+| FilterManager | always ask you first | it reads and writes the filters database file |
+| Gaia | always ask you first | it can write catalog search results to files, and its configure commands change the catalog database settings |
+| ImageCalibration | always ask you first | it writes calibrated copies of the input frames to its output directory and can overwrite existing files |
+| LocalNormalization | always ask you first | it writes normalization data files (.xnml) to disk |
+| NSGXnml | always ask you first | it writes normalization data files (.xnml) to its output directory |
+| NukeX | always ask you first | it writes cache files to its cache directory while stacking |
+| SplitCFA | always ask you first | in the global context it writes split CFA frames to its output directory |
+| StarAlignment | always ask you first | in the global context it writes registered copies of the input frames to its output directory |
+| SubframeSelector | always ask you first | it can copy or move approved and rejected frames to output directories |
+| SubframeStudio | always ask you first | it writes measurement CSV files and a metrics cache to disk |
+| CreateAlphaChannels | ask you first when `closeSource` is `true` | it closes the source image window used for the alpha channel, and unsaved changes there are lost |
+| FindingChart | ask you first when `generateBitmapFile` is `true` | it writes the finding chart as an image file to its output directory |
+| HDRComposition | ask you first when `closePreviousImages` is `true` | it closes the images created by a previous HDRComposition run, and unsaved results are lost |
+| ImageIntegration | ask you first when `generateDrizzleData` is `true` | it updates the frames' .xdrz drizzle files on disk |
+| ImageIntegration | ask you first when `closePreviousImages` is `true` | it closes the images created by a previous ImageIntegration run, and unsaved results are lost |
+| MultiscaleGradientCorrection | ask you first when `command` is not `""` | a command runs a MARS database operation instead of a gradient correction |
+| PhotometricColorCalibration | ask you first when `generateTextFiles` is `true` | it writes calibration text files to its output directory |
+| SpectrophotometricColorCalibration | ask you first when `generateTextFiles` is `true` | it writes calibration text files to its output directory |
+| SpectrophotometricFluxCalibration | ask you first when `generateTextFiles` is `true` | it writes calibration text files to its output directory |
+
+Reviewed and allowed without asking (their file/path-like parameters have no effect beyond the image or new windows): ACDNR, ATrousWaveletTransform, AssignICCProfile, AutomaticBackgroundExtractor, B3Estimator, ColorCalibration, DynamicAlignment, ExtractAlphaChannels, GradientHDRComposition, GradientHDRCompression, GradientMergeMosaic, HDRMultiscaleTransform, ICCProfileTransformation, LRGBCombination, MLDenoise, MergeCFA, MultiscaleLinearTransform, PixelMath, RestorationFilter, SCNR, StarXTerminator, TGVDenoise, UnsharpMask.
+
 ## 0.1.0.4 — UTF-8 wire fix
 
 - Any chat turn containing non-ASCII text (e.g. a model reply with "—" or "→" re-sent as history) failed with `Error 400: ... not valid UTF-8: surrogates not allowed`. Cause: `NetworkTransfer::POST(const String&)` is transmitted by the PI core one byte per UTF-16 code unit (low 8 bits). The body is now widened byte-for-byte from UTF-8 (`PostBytes`), and all outbound text uses our own surrogate-aware `U8()` because PCL's `String::ToUTF8` mis-encodes astral characters (📷 → 📽).

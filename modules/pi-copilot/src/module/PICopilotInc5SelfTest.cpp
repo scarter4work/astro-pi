@@ -13,6 +13,7 @@
 #include "PanelPlacement.h"
 #include "PICopilotInc5SelfTest.h"
 #include "PICopilotModule.h"
+#include "ProcessSafety.h"
 #include "ProcessCatalog.h"
 #include "SseStream.h"
 #include "SystemPrompt.h"
@@ -215,8 +216,7 @@ private:
    ImageWindow m_window;
 };
 
-// [[maybe_unused]]: first used by Section B6 (Task 7).
-[[maybe_unused]] double Inc5Median( View v, int channel )
+double Inc5Median( View v, int channel )
 {
    if ( !v.CanRead() || !v.CanWrite() )
       throw Error( "Inc5Median: view is busy" );
@@ -1929,6 +1929,85 @@ bool RunInc5SelfTest( nlohmann::json& out )
       out["configDetail"] = detail;
       out["configError"] = U8( error );
       out["configPolishOk"] = ok;
+      allOk = allOk && ok;
+   }
+
+   // ---- Section B6: process safety policy (Task 7) -----------------------------
+   {
+      bool coverageOk = false, idsOk = false, verdictOk = false, denyToolOk = false, confirmToolOk = false;
+      nlohmann::json detail = nlohmann::json::object();
+      String error;
+      try
+      {
+         const nlohmann::json unclassified = UnclassifiedSideEffectCandidates();
+         const nlohmann::json unknown = UnknownPolicyProcessIds();
+         detail["unclassified"] = unclassified;   // the review worklist (Step 5)
+         detail["unknownPolicyIds"] = unknown;
+         coverageOk = unclassified.is_array() && unclassified.empty();
+         idsOk = unknown.is_array() && unknown.empty();
+
+         const SafetyVerdict pc = CheckProcessSafety( "ProcessContainer", nlohmann::json::object(), nlohmann::json() );
+         const SafetyVerdict iiPlain = CheckProcessSafety( "ImageIntegration",
+            { { "generateDrizzleData", false }, { "closePreviousImages", false } }, nlohmann::json() );
+         const SafetyVerdict iiDrz = CheckProcessSafety( "ImageIntegration", { { "generateDrizzleData", true } }, nlohmann::json() );
+         const SafetyVerdict pm = CheckProcessSafety( "PixelMath", { { "expression", "$T" } }, nlohmann::json() );
+         verdictOk = pc.kind == SafetyVerdict::Deny && pc.reason.Contains( "cannot check" )
+                  && CheckProcessSafety( "PICopilot", nlohmann::json::object(), nlohmann::json() ).kind == SafetyVerdict::Deny
+                  && iiPlain.kind == SafetyVerdict::Allow
+                  && iiDrz.kind == SafetyVerdict::Confirm && iiDrz.reason.Contains( ".xdrz" )
+                  && pm.kind == SafetyVerdict::Allow
+                  // a notEquals rule: the default (empty command) runs; any command asks
+                  && CheckProcessSafety( "MultiscaleGradientCorrection", nlohmann::json::object(), nlohmann::json() ).kind == SafetyVerdict::Allow
+                  && CheckProcessSafety( "MultiscaleGradientCorrection", { { "command", "configure" } }, nlohmann::json() ).kind == SafetyVerdict::Confirm;
+
+         Inc5TestWindow tw( "PCSafetyT", 64, 48, 1, 0.4 );
+         View v = tw.MainView();
+         int confirmCalls = 0;
+         bool answer = false;
+         String lastChanges;
+         ToolContext ctx;
+         ctx.mode = AgentMode::Copilot;
+         ctx.turnViewId = v.FullId();
+         ctx.confirm = [&]( const String&, const String&, const String& changes ) { ++confirmCalls; lastChanges = changes; return answer; };
+
+         const ToolOutcome denied = ExecuteTool( ToolCall{ "s1", "apply_process", { { "process_id", "ProcessContainer" } } }, ctx );
+         detail["deny"] = denied.content;
+         denyToolOk = denied.isError && confirmCalls == 0
+                   && denied.content.at( 0 ).at( "text" ).get<std::string>().find( "is not allowed from PI Copilot" ) != std::string::npos;
+
+         // A confirm rule, in Copilot: asked once; No -> unchanged; Yes -> applied.
+         const nlohmann::json testPolicy = nlohmann::json::parse(
+            "{\"deny\":{},\"confirmAlways\":{},\"reviewedSafe\":{},\"fileTables\":{},\"confirmWhen\":{\"PixelMath\":"
+            "[{\"parameter\":\"expression\",\"equals\":\"$T*0.5\",\"reason\":\"self-test confirm rule\"}]}}" );
+         SetProcessSafetyPolicyForSelfTest( &testPolicy );
+         const double before = Inc5Median( v, 0 );
+         const ToolCall halve{ "s2", "apply_process", { { "process_id", "PixelMath" }, { "parameters", { { "expression", "$T*0.5" } } } } };
+         answer = false;
+         const ToolOutcome no = ExecuteTool( halve, ctx );
+         const double afterNo = Inc5Median( v, 0 );
+         const int callsNo = confirmCalls;
+         const String changesNo = lastChanges;
+         answer = true;
+         const ToolOutcome yes = ExecuteTool( halve, ctx );
+         const double afterYes = Inc5Median( v, 0 );
+         ctx.mode = AgentMode::Guided;   // Guided + a confirm rule: still ONE dialog
+         const ToolOutcome guided = ExecuteTool( halve, ctx );
+         SetProcessSafetyPolicyForSelfTest( nullptr );
+         detail["confirm"] = { { "callsNo", callsNo }, { "calls", confirmCalls }, { "changes", U8( changesNo ) },
+                               { "before", before }, { "afterNo", afterNo }, { "afterYes", afterYes } };
+         confirmToolOk = no.isError && callsNo == 1 && changesNo.Contains( "self-test confirm rule" )
+                      && std::fabs( afterNo - before ) < 1e-6
+                      && !yes.isError && std::fabs( afterYes - 0.5*before ) < 1e-5
+                      && !guided.isError && confirmCalls == 3;
+      }
+      catch ( const pcl::Exception& x ) { error = x.Message(); }
+      catch ( const std::exception& x ) { error = String( x.what() ); }
+      SetProcessSafetyPolicyForSelfTest( nullptr );
+
+      const bool ok = coverageOk && idsOk && verdictOk && denyToolOk && confirmToolOk;
+      out["processSafetyDetail"] = detail;
+      out["processSafetyError"] = U8( error );
+      out["processSafetyOk"] = ok;
       allOk = allOk && ok;
    }
 

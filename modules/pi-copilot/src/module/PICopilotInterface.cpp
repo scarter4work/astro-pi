@@ -408,8 +408,11 @@ bool PICopilotInterface::ConfirmApply( const String& processId, const String& vi
 {
    const String text = "<p>Apply <b>" + EscapeHtml( processId ) + "</b> to <b>" + EscapeHtml( viewId ) + "</b>?</p>"
                      + "<p>" + EscapeHtml( changes ) + "</p>"
-                     + "<p>You can undo it afterwards from the view's History.</p>";
-   return MessageBox( text, String::UTF8ToUTF16( "PI Copilot \xE2\x80\x94 Guided mode" ), StdIcon::Question,
+                     + "<p>Changes to an image can be undone from the view's History. Effects outside the "
+                       "image (files written, windows closed) cannot.</p>";
+   // Asked in Guided mode, and in EVERY mode when the process safety policy
+   // says confirm, so the title names neither mode.
+   return MessageBox( text, String::UTF8ToUTF16( "PI Copilot \xE2\x80\x94 confirm" ), StdIcon::Question,
                       StdButton::Yes, StdButton::No, StdButton::NoButton, 1/*default: No*/, 1/*Esc: No*/ ).Execute()
           == StdButton::Yes;
 }
