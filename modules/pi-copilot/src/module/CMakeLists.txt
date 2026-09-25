@@ -37,6 +37,7 @@ set(MODULE_SOURCES
     ModelCatalog.cpp
     HistoryBudget.cpp
     Keyring.cpp
+    CopilotSettings.cpp
 )
 
 add_library(PICopilot SHARED ${MODULE_SOURCES})

@@ -769,7 +769,8 @@ bool RunAgentSelfTest( nlohmann::json& out )
             { "noContentKey", 200, "{\"stop_reason\":\"end_turn\"}", "",
               false, "response missing expected content/text field: content is not an array", "", "", false },
             { "refusal", 200, "{\"content\":[],\"stop_reason\":\"refusal\"}", "",
-              false, "no text in reply (stop_reason=refusal)", "", "", false },
+              false, "the model declined this request (stop_reason refusal); rephrase it, or choose "
+                     "another model in PI Copilot's settings", "", "", false },
             { "maxTokensInToolCall", 200, "{\"content\":[{\"type\":\"tool_use\",\"id\":\"t\",\"name\":\"n\",\"input\":{}}],\"stop_reason\":\"max_tokens\"}", "",
               false, "no text in reply (stop_reason=max_tokens)", "", "", false },
             { "pauseTurn", 200, "{\"content\":[],\"stop_reason\":\"pause_turn\"}", "",

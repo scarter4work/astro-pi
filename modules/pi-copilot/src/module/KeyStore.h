@@ -23,8 +23,9 @@ struct State
 };
 
 // Keyring first. A key found in PixInsight Settings (0.1.1.x and earlier, or a
-// fallback) is written to the keyring, READ BACK and compared, and only then
-// removed from Settings. Cached once a key is known (the next Save()/Clear()
+// fallback) is trimmed and must be printable ASCII (else: no key, a note, and
+// nothing is migrated); a valid one is written to the keyring, READ BACK and
+// compared, and only then removed from Settings. Cached once a key is known (the next Save()/Clear()
 // or SetKeyringForSelfTest() refreshes it). Root thread only.
 State Load();
 
@@ -32,9 +33,20 @@ State Load();
 // used, Settings + a note saying why. The caller validates the key.
 State Save( const String& key );
 
-// Removes the key from both places. Returns "" or why the keyring entry could
-// not be removed (the Settings copy is always removed).
-String Clear();
+// Removes the key from both places (the Settings copy always). note: "" when
+// done, else a plain sentence; warning: the keyring entry may still be there
+// (show it as a warning). With secret-tool not installed there can be no
+// keyring copy made by PI Copilot, so that note is informational only.
+struct Cleared
+{
+   String note;
+   bool   warning = false;
+};
+Cleared Clear();
+
+// The panel's notice when Load() found no key. A dismissed keyring unlock
+// prompt looks exactly like "no key" (see KeyringResult), so it says so.
+String NoKeyNote();
 
 // "stored in the system keyring" / "stored in PixInsight's settings (plain
 // text)" / "not set".

@@ -24,7 +24,34 @@ struct ToolRun
    bool      crashed = false;
    IsoString out;
    IsoString err;
-   String    error;   // set when it did not finish
+   String    error;              // set when it did not finish
+   bool      inputError = false; // stdin could not be written/closed (child already gone)
+};
+
+std::function<void( bool )> g_waitNotifier;
+
+// Announces a slow call (after PICopilotKeyringWaitNoticeMs) and its end.
+class WaitNotice
+{
+public:
+   WaitNotice() : m_start( std::chrono::steady_clock::now() ) {}
+   ~WaitNotice()
+   {
+      if ( m_shown && g_waitNotifier )
+         try { g_waitNotifier( false ); } catch ( ... ) {}
+   }
+   void Poll()
+   {
+      if ( !m_shown && g_waitNotifier
+        && std::chrono::steady_clock::now() - m_start >= std::chrono::milliseconds( PICopilotKeyringWaitNoticeMs ) )
+      {
+         m_shown = true;
+         g_waitNotifier( true );
+      }
+   }
+private:
+   std::chrono::steady_clock::time_point m_start;
+   bool m_shown = false;
 };
 
 IsoString Bytes( const ByteArray& b )
@@ -38,6 +65,7 @@ IsoString Bytes( const ByteArray& b )
 ToolRun RunSecretTool( const KeyringId& id, const StringList& args, const IsoString* input )
 {
    ToolRun r;
+   WaitNotice notice;
    try
    {
       ExternalProcess p;
@@ -52,8 +80,21 @@ ToolRun RunSecretTool( const KeyringId& id, const StringList& args, const IsoStr
          return r;
       }
       if ( input != nullptr )
-         p.Write( *input );
-      p.CloseStandardInput();
+      {
+         // Only when there is input: CloseStandardInput() throws once the
+         // child has exited (ExternalProcess.h:316-319), and a child that
+         // exits early (bad arguments, keyring error) must still yield its
+         // finished result -- exit code and stderr -- below.
+         try
+         {
+            p.Write( *input );
+            p.CloseStandardInput();
+         }
+         catch ( ... )
+         {
+            r.inputError = true;
+         }
+      }
       // Not WaitForFinished(): it can return before a slow child exits
       // (repo memory pi-externalprocess-gotchas). Spin, pumping events.
       const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds( PICopilotKeyringTimeoutMs );
@@ -66,6 +107,7 @@ ToolRun RunSecretTool( const KeyringId& id, const StringList& args, const IsoStr
                                                     "unlock prompt hidden?)", PICopilotKeyringTimeoutMs/1000 );
             return r;
          }
+         notice.Poll();
          ThePICopilotModule->ProcessEvents( true/*excludeUserInputEvents*/ );
          std::this_thread::sleep_for( std::chrono::milliseconds( 20 ) );
       }
@@ -89,7 +131,10 @@ ToolRun RunSecretTool( const KeyringId& id, const StringList& args, const IsoStr
 String Detail( const ToolRun& r )
 {
    const IsoString e = r.err.Trimmed();
-   return e.IsEmpty() ? String( "(no message)" ) : String( e.Left( 200 ) );
+   String d = e.IsEmpty() ? String( "(no message)" ) : String( e.Left( 200 ) );
+   if ( r.inputError )
+      d += " (it exited before reading its input)";
+   return d;
 }
 
 // env exits 127 when the program cannot be found.
@@ -108,6 +153,16 @@ StringList Attributes( const KeyringId& id )
 
 } // namespace
 
+KeyringWaitScope::KeyringWaitScope( std::function<void( bool )> notify ) : m_previous( g_waitNotifier )
+{
+   g_waitNotifier = std::move( notify );
+}
+
+KeyringWaitScope::~KeyringWaitScope()
+{
+   g_waitNotifier = std::move( m_previous );
+}
+
 KeyringResult KeyringLookup( const KeyringId& id )
 {
    KeyringResult k;
@@ -118,7 +173,10 @@ KeyringResult KeyringLookup( const KeyringId& id )
    if ( !r.finished )
       k.error = r.error;
    else if ( r.exitCode == 127 )
+   {
+      k.notInstalled = true;
       k.error = NotInstalled( id );
+   }
    else if ( r.exitCode == 0 && !r.crashed )
    {
       k.ok = true;
@@ -142,8 +200,11 @@ KeyringResult KeyringStore( const KeyringId& id, const String& label, const IsoS
    if ( !r.finished )
       k.error = r.error;
    else if ( r.exitCode == 127 )
+   {
+      k.notInstalled = true;
       k.error = NotInstalled( id );
-   else if ( r.exitCode == 0 && !r.crashed )
+   }
+   else if ( r.exitCode == 0 && !r.crashed && !r.inputError )
       k.ok = true;
    else
       k.error = String().Format( "secret-tool store failed (exit %d): ", r.exitCode ) + Detail( r );
@@ -160,7 +221,10 @@ KeyringResult KeyringClear( const KeyringId& id )
    if ( !r.finished )
       k.error = r.error;
    else if ( r.exitCode == 127 )
+   {
+      k.notInstalled = true;
       k.error = NotInstalled( id );
+   }
    else if ( (r.exitCode == 0 || r.exitCode == 1) && !r.crashed && r.err.Trimmed().IsEmpty() )
       k.ok = true;   // exit 1 without a message: nothing to clear
    else

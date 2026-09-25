@@ -5,15 +5,18 @@
 #include "AgentTools.h"
 #include "AnthropicClient.h"
 #include "ChatThread.h"
+#include "CopilotSettings.h"
 #include "HistoryBudget.h"
 #include "KeyStore.h"
 #include "Keyring.h"
 #include "ModelCatalog.h"
+#include "PanelPlacement.h"
 #include "PICopilotInc5SelfTest.h"
 #include "PICopilotModule.h"
 #include "ProcessCatalog.h"
 #include "SseStream.h"
 #include "SystemPrompt.h"
+#include "TurnEndNotes.h"
 #include "Utf8.h"
 #include "ViewCapture.h"
 
@@ -38,6 +41,8 @@
 #include <cmath>
 #include <cstdint>
 #include <cstdlib>
+#include <filesystem>
+#include <fstream>
 #include <set>
 #include <string>
 #include <thread>
@@ -1496,7 +1501,7 @@ bool RunInc5SelfTest( nlohmann::json& out )
          loadOk = loaded.where == KeyStore::Where::Keyring && loaded.key == "sk-ant-selftest-AAAA" && loaded.note.IsEmpty();
 
          // Migration: a plaintext Settings key moves into the keyring, verified, and the plaintext is removed.
-         clearOk = KeyStore::Clear().IsEmpty() && !KeyringLookup( id ).found;
+         clearOk = KeyStore::Clear().note.IsEmpty() && !KeyringLookup( id ).found;
          Settings::Write( sk, String( "sk-ant-selftest-BBBB" ) );
          KeyStore::SetKeyringForSelfTest( id, sk );
          const KeyStore::State migrated = KeyStore::Load();
@@ -1519,19 +1524,19 @@ bool RunInc5SelfTest( nlohmann::json& out )
          KeyStore::SetKeyringForSelfTest( bad, sk );
          const KeyStore::State fbLoad = KeyStore::Load();
          noLeak( fbLoad.note );
-         const String badClear = KeyStore::Clear();
-         noLeak( badClear );
+         const KeyStore::Cleared badClear = KeyStore::Clear();
+         noLeak( badClear.note );
          String afterClear;
          Settings::Read( sk, afterClear );
-         detail["fallback"] = { { "note", U8( fb.note ) }, { "loadNote", U8( fbLoad.note ) }, { "clear", U8( badClear ) } };
+         detail["fallback"] = { { "note", U8( fb.note ) }, { "loadNote", U8( fbLoad.note ) }, { "clear", U8( badClear.note ) }, { "clearWarning", badClear.warning } };
          fallbackOk = fb.where == KeyStore::Where::Settings && plain == "sk-ant-selftest-CCCC"
                    && fb.note.Contains( "keyring could not be used" ) && fb.note.Contains( "not installed" )
                    && KeyStore::DescribeWhere( fb ) == "stored in PixInsight's settings (plain text)"
                    && fbLoad.where == KeyStore::Where::Settings && fbLoad.key == "sk-ant-selftest-CCCC"
-                   && !badClear.IsEmpty() && afterClear.IsEmpty();
+                   && badClear.note.Contains( "not installed" ) && !badClear.warning && afterClear.IsEmpty();
 
          KeyStore::SetKeyringForSelfTest( id, sk );
-         clearOk = clearOk && KeyStore::Clear().IsEmpty() && !KeyringLookup( id ).found
+         clearOk = clearOk && KeyStore::Clear().note.IsEmpty() && !KeyringLookup( id ).found
                 && KeyStore::Load().where == KeyStore::Where::None;
       }
       catch ( const pcl::Exception& x ) { error = x.Message(); }
@@ -1543,6 +1548,234 @@ bool RunInc5SelfTest( nlohmann::json& out )
       out["keyStoreDetail"] = detail;
       out["keyStoreError"] = U8( error );
       out["keyStoreKeyringOk"] = ok;
+      allOk = allOk && ok;
+   }
+
+   // ---- Section B5: settings, placement side, failure wording (Task 6) ---------
+   {
+      bool settingsOk = false, placementOk = false, wordingOk = true, kindOk = false, refusalOk = false;
+      nlohmann::json detail = nlohmann::json::object();
+      String error;
+      try
+      {
+         for ( const char* k : { "PICopilot/Model", "PICopilot/RunPjsrEnabled", "PICopilot/PanelSide" } )
+            Settings::Remove( IsoString( k ) );
+         const bool defaults = CopilotSettings::LoadModel() == PICOPILOT_DEFAULT_MODEL
+                            && !CopilotSettings::LoadRunPjsrEnabled()
+                            && CopilotSettings::LoadPanelSide() == PanelSide::Right;
+         CopilotSettings::SaveModel( "claude-opus-5-5" );
+         CopilotSettings::SaveRunPjsrEnabled( true );
+         CopilotSettings::SavePanelSide( PanelSide::Left );
+         const bool stored = CopilotSettings::LoadModel() == "claude-opus-5-5" && CopilotSettings::LoadRunPjsrEnabled()
+                          && CopilotSettings::LoadPanelSide() == PanelSide::Left;
+         Settings::Write( "PICopilot/Model", String( "claude-bogus-9" ) );
+         const bool unknownFallsBack = CopilotSettings::LoadModel() == PICOPILOT_DEFAULT_MODEL;
+         for ( const char* k : { "PICopilot/Model", "PICopilot/RunPjsrEnabled", "PICopilot/PanelSide" } )
+            Settings::Remove( IsoString( k ) );
+         settingsOk = defaults && stored && unknownFallsBack;
+
+         const PanelPlacement r = ComputeDefaultPanelPlacement( 1280, 720, 420, 40, 60, 8 );
+         const PanelPlacement l = ComputeDefaultPanelPlacement( 1280, 720, 420, 40, 60, 8, PanelSide::Left );
+         const PanelPlacement ml = ComputeDefaultPanelPlacement( 3200, 720, 420, 40, 60, 8, PanelSide::Left );
+         placementOk = r.ok && r.x == 2560 - 420 - 8 && l.ok && l.x == 8 && l.y == 40 && l.width == 420
+                    && l.height == 1440 - 100 && ml.ok && ml.x == 1920 + 8;
+
+         auto note = []( RequestErrorKind k, const char* err, int status ) {
+            AgentStep s;
+            s.kind = AgentStep::Failed;
+            s.error = err;
+            s.errorKind = k;
+            const TurnEndView v = DescribeTurnEnd( s, status );
+            return v.notes.IsEmpty() ? String() : v.notes[0];
+         };
+         struct Case { RequestErrorKind kind; const char* err; int status; const char* expect; };
+         const Case cases[] = {
+            { RequestErrorKind::TimedOut, "request timed out after 600 s", 0,
+              "The request took too long and was stopped (request timed out after 600 s). Send the message again, or ask for something smaller." },
+            { RequestErrorKind::Stalled, "the reply stalled: no data from the API for 120 s", 0,
+              "The reply stalled and was stopped (the reply stalled: no data from the API for 120 s). Send the message again." },
+            { RequestErrorKind::Network, "network request failed: Could not resolve host", 0,
+              "Could not reach the Anthropic API (network request failed: Could not resolve host). Check the internet connection, then send the message again." },
+            { RequestErrorKind::Stream, "the reply stream failed: overloaded_error: Overloaded", 200,
+              "The reply was cut off by the Anthropic API (the reply stream failed: overloaded_error: Overloaded). Send the message again." },
+            { RequestErrorKind::Http, "invalid x-api-key", 401,
+              "Anthropic API error 401: invalid x-api-key (check your API key in PI Copilot's settings)" },
+            { RequestErrorKind::Http, "Overloaded", 529,
+              "Anthropic API error 529: Overloaded (the service is busy; wait a moment, then send again)" },
+            { RequestErrorKind::BadReply, "no text in reply (stop_reason=pause_turn)", 200,
+              "Unexpected reply from the Anthropic API: no text in reply (stop_reason=pause_turn)" },
+            // Carried from the Task 3/4 reviews: every kind worded, never "Error 0".
+            { RequestErrorKind::Http, "network error", 0,
+              "Anthropic API error: network error" },
+            { RequestErrorKind::Build, "image too large", 0,
+              "PI Copilot could not build the request (image too large). Nothing was sent." },
+            { RequestErrorKind::Internal, "worker thread ended without a result", 0,
+              "Internal error in PI Copilot (worker thread ended without a result). Send the message again." },
+            { RequestErrorKind::Cancelled, "request cancelled", 0,
+              "The request was cancelled (request cancelled). Send the message again." },
+         };
+         nlohmann::json w = nlohmann::json::array();
+         for ( const Case& c : cases )
+         {
+            const String n = note( c.kind, c.err, c.status );
+            const bool pass = n == c.expect && !n.Contains( "Error 0" );
+            w.push_back( { { "note", U8( n ) }, { "pass", pass } } );
+            wordingOk = wordingOk && pass;
+         }
+         // A streamed reply cut off: Stop says the partial text is not kept;
+         // a failure says it was interrupted, before the cause.
+         {
+            AgentStep st;
+            st.kind = AgentStep::Stopped;
+            st.errorKind = RequestErrorKind::Cancelled;
+            st.error = "request cancelled";
+            const TurnEndView sv = DescribeTurnEnd( st, 0, true/*partialReplyCut*/ );
+            const TurnEndView sn = DescribeTurnEnd( st, 0 );
+            AgentStep fl;
+            fl.kind = AgentStep::Failed;
+            fl.errorKind = RequestErrorKind::Stalled;
+            fl.error = "the reply stalled: no data from the API for 120 s";
+            const TurnEndView fv = DescribeTurnEnd( fl, 200, true );
+            const bool pass = sv.notes.Length() == 1
+                           && sv.notes[0] == "(stopped -- the partial reply above is not kept in the conversation)"
+                           && sn.notes.Length() == 1 && sn.notes[0] == "(stopped)"
+                           && fv.notes.Length() == 2
+                           && fv.notes[0] == "(the partial reply above was interrupted; it is not kept in the conversation)"
+                           && fv.notes[1].StartsWith( "The reply stalled and was stopped" );
+            w.push_back( { { "note", U8( sv.notes.IsEmpty() ? String() : sv.notes[0] ) }, { "pass", pass } } );
+            wordingOk = wordingOk && pass;
+         }
+         detail["wording"] = w;
+
+         AgentSession s;
+         AnthropicMessage u;
+         u.role = "user";
+         u.content = "x";
+         s.BeginUserTurn( u );
+         AnthropicResult stalled;
+         stalled.errorKind = RequestErrorKind::Stalled;
+         stalled.error = "the reply stalled: no data from the API for 120 s";
+         const AgentStep st = s.OnResponse( stalled, []( const ToolCall& ) { return ToolOutcome(); }, []() { return false; } );
+         kindOk = st.kind == AgentStep::Failed && st.errorKind == RequestErrorKind::Stalled;
+
+         const AnthropicResult ref = ParseMessagesResponse( 200, IsoString( "{\"content\":[],\"stop_reason\":\"refusal\"}" ), String() );
+         detail["refusal"] = U8( ref.error );
+         refusalOk = !ref.ok && ref.errorKind == RequestErrorKind::BadReply
+                  && ref.error == "the model declined this request (stop_reason refusal); rephrase it, or choose "
+                                  "another model in PI Copilot's settings";
+      }
+      catch ( const pcl::Exception& x ) { error = x.Message(); }
+      catch ( const std::exception& x ) { error = String( x.what() ); }
+
+      // Carried from the Task 4/5 reviews: a visible note for an unknown saved
+      // model; legacy Settings key validated before migration; Clear without
+      // secret-tool is informational; the no-key note mentions a locked
+      // keyring; "Waiting for the system keyring..." fires only for a slow
+      // call; a helper that exits without reading stdin still yields its
+      // finished result.
+      bool modelNoteOk = false, legacyOk = false, clearInfoOk = false, noKeyOk = false, waitOk = false,
+           earlyExitOk = false;
+      const IsoString sk = "PICopilot/SelfTestApiKey";
+      KeyringId id;
+      id.service = "picopilot-selftest";
+      id.account = String().Format( "b5-%u", unsigned( std::chrono::steady_clock::now().time_since_epoch().count() & 0xFFFFFF ) );
+      std::string scriptDir;
+      try
+      {
+         Settings::Write( "PICopilot/Model", String( "claude-bogus-9" ) );
+         String mnote;
+         const IsoString mid = CopilotSettings::LoadModel( &mnote );
+         Settings::Remove( IsoString( "PICopilot/Model" ) );
+         String unsetNote = "x";
+         const IsoString mdef = CopilotSettings::LoadModel( &unsetNote );
+         detail["modelNote"] = U8( mnote );
+         modelNoteOk = mid == PICOPILOT_DEFAULT_MODEL && mnote.Contains( "claude-bogus-9" )
+                    && mnote.Contains( "settings" ) && mdef == PICOPILOT_DEFAULT_MODEL && unsetNote.IsEmpty();
+
+         KeyStore::SetKeyringForSelfTest( id, sk );
+         Settings::Write( sk, String( "  sk-ant-selftest-DDDD \n" ) );
+         KeyStore::SetKeyringForSelfTest( id, sk );
+         const KeyStore::State trimmed = KeyStore::Load();
+         const KeyringResult tback = KeyringLookup( id );
+         KeyStore::Clear();
+         Settings::Write( sk, String( "sk-ant-sel ftest-EEEE" ) );
+         KeyStore::SetKeyringForSelfTest( id, sk );
+         const KeyStore::State invalid = KeyStore::Load();
+         const KeyringResult iback = KeyringLookup( id );
+         detail["legacy"] = { { "trimmedWhere", int( trimmed.where ) }, { "invalidNote", U8( invalid.note ) } };
+         legacyOk = trimmed.where == KeyStore::Where::Keyring && trimmed.key == "sk-ant-selftest-DDDD"
+                 && tback.found && tback.secret == "sk-ant-selftest-DDDD"
+                 && invalid.key.IsEmpty() && invalid.where == KeyStore::Where::None
+                 && invalid.note.Contains( "not a valid" ) && !invalid.note.Contains( "sk-ant-selftest" )
+                 && iback.ok && !iback.found;
+         KeyStore::Clear();
+
+         KeyringId absent = id;
+         absent.program = "/nonexistent/secret-tool";
+         KeyStore::SetKeyringForSelfTest( absent, sk );
+         const KeyStore::Cleared ci = KeyStore::Clear();
+         detail["clearAbsent"] = { { "note", U8( ci.note ) }, { "warning", ci.warning } };
+         clearInfoOk = !ci.warning && ci.note.Contains( "not installed" ) && !ci.note.Contains( "Could not remove" );
+
+         const String nk = KeyStore::NoKeyNote();
+         detail["noKey"] = U8( nk );
+         noKeyOk = nk.Contains( "locked" ) && nk.Contains( "settings" );
+
+         // Helper scripts standing in for secret-tool (never the real keyring).
+         scriptDir = std::string( File::SystemTempDirectory().ToUTF8().c_str() )
+                   + "/picopilot-b5-" + std::to_string( std::chrono::steady_clock::now().time_since_epoch().count() );
+         std::filesystem::create_directories( scriptDir );
+         auto script = [&]( const char* name, const char* body ) {
+            const std::string path = scriptDir + "/" + name;
+            std::ofstream( path ) << "#!/bin/sh\n" << body << "\n";
+            std::filesystem::permissions( path, std::filesystem::perms::owner_all );
+            return String( path.c_str() );
+         };
+         KeyringId slow = id;
+         slow.program = script( "slow", "sleep 1\nexit 1" );
+         KeyringId fast = id;
+         fast.program = script( "fast", "exit 1" );
+         std::vector<int> events;
+         {
+            KeyringWaitScope scope( [&events]( bool waiting ) { events.push_back( waiting ? 1 : 0 ); } );
+            const KeyringResult sr = KeyringLookup( slow );
+            const size_type slowEvents = events.size();
+            const KeyringResult fr = KeyringLookup( fast );
+            waitOk = sr.ok && !sr.found && fr.ok && slowEvents == 2 && events.size() == 2
+                  && events[0] == 1 && events[1] == 0;
+         }
+         detail["waitEvents"] = events;
+
+         KeyringId early = id;
+         early.program = script( "early", "exit 3" );
+         earlyExitOk = true;
+         nlohmann::json ee = nlohmann::json::array();
+         for ( int i = 0; i < 5; ++i )
+         {
+            const KeyringResult er = KeyringStore( early, "PI Copilot self-test", IsoString( "sk-ant-selftest-FFFF" ) );
+            ee.push_back( U8( er.error ) );
+            earlyExitOk = earlyExitOk && !er.ok && er.error.Contains( "exit 3" ) && !er.error.Contains( "sk-ant-selftest" );
+         }
+         detail["earlyExit"] = ee;
+      }
+      catch ( const pcl::Exception& x ) { error = x.Message(); }
+      catch ( const std::exception& x ) { error = String( x.what() ); }
+      KeyringClear( id );
+      Settings::Remove( sk );
+      Settings::Remove( IsoString( "PICopilot/Model" ) );
+      if ( !scriptDir.empty() )
+      {
+         std::error_code ec;
+         std::filesystem::remove_all( scriptDir, ec );
+      }
+      detail["carried"] = { { "modelNote", modelNoteOk }, { "legacy", legacyOk }, { "clearInfo", clearInfoOk },
+                            { "noKey", noKeyOk }, { "wait", waitOk }, { "earlyExit", earlyExitOk } };
+
+      const bool ok = settingsOk && placementOk && wordingOk && kindOk && refusalOk
+                   && modelNoteOk && legacyOk && clearInfoOk && noKeyOk && waitOk && earlyExitOk;
+      out["configDetail"] = detail;
+      out["configError"] = U8( error );
+      out["configPolishOk"] = ok;
       allOk = allOk && ok;
    }
 
