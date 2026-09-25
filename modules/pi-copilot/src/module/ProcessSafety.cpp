@@ -212,6 +212,57 @@ bool Matches( const nlohmann::json& got, const nlohmann::json& equals )
    return got.is_number() && equals.is_number() && got.get<double>() == equals.get<double>();
 }
 
+// A "version" value: empty, or 2-4 dot-separated groups of ASCII digits
+// (e.g. 3.0.2). Hand-written on purpose: no regex engine (std::regex inside
+// PixInsight aborts the process on a malformed pattern instead of throwing).
+bool IsVersionText( const std::string& v )
+{
+   if ( v.empty() )
+      return true;
+   int groups = 0;
+   size_t i = 0;
+   while ( true )
+   {
+      const size_t start = i;
+      while ( i < v.size() && v[i] >= '0' && v[i] <= '9' )
+         ++i;
+      if ( i == start )
+         return false;
+      ++groups;
+      if ( i == v.size() )
+         break;
+      if ( v[i] != '.' )
+         return false;
+      ++i;
+   }
+   return groups >= 2 && groups <= 4;
+}
+
+// 1 = allowed, 0 = not allowed, -1 = malformed rule. A rule is
+// {"values": [<string>...], "reason"} or {"format": "version", "reason"}.
+int ValueAllowed( const nlohmann::json& rule, const std::string& value )
+{
+   if ( !rule.is_object() || rule.value( "reason", std::string() ).empty()
+        || rule.contains( "values" ) == rule.contains( "format" ) )
+      return -1;
+   if ( rule.contains( "values" ) )
+   {
+      if ( !rule["values"].is_array() || rule["values"].empty() )
+         return -1;
+      for ( const nlohmann::json& v : rule["values"] )
+      {
+         if ( !v.is_string() )
+            return -1;
+         if ( v.get_ref<const std::string&>() == value )   // exact, length-aware
+            return 1;
+      }
+      return 0;
+   }
+   if ( rule["format"] != "version" )
+      return -1;
+   return IsVersionText( value ) ? 1 : 0;
+}
+
 } // namespace
 
 const nlohmann::json& CompiledProcessSafety()
@@ -256,19 +307,15 @@ SafetyVerdict CheckProcessSafety( const IsoString& processId, const nlohmann::js
          v.reason = S16( always[id].get<std::string>() );
          return v;
       }
+      StringList reasons;
       // globalConfirm: reviewed, and a GLOBAL run always asks (a run on a view
-      // is judged like any unlisted process, below).
+      // is judged by the other sections, below).
       const nlohmann::json& globalConfirm = Section( policy, "globalConfirm" );
       if ( run == SafetyRunKind::Global && globalConfirm.contains( id ) )
-      {
-         v.kind = SafetyVerdict::Confirm;
-         v.reason = "a global run: " + S16( globalConfirm[id].get<std::string>() );
-         return v;
-      }
+         reasons << "a global run: " + S16( globalConfirm[id].get<std::string>() );
       const nlohmann::json& when = Section( policy, "confirmWhen" );
       if ( when.contains( id ) && when[id].is_array() )
       {
-         StringList reasons;
          for ( const nlohmann::json& rule : when[id] )
          {
             const std::string param = rule.value( "parameter", std::string() );
@@ -297,31 +344,25 @@ SafetyVerdict CheckProcessSafety( const IsoString& processId, const nlohmann::js
                   break;
                }
          }
-         if ( !reasons.IsEmpty() )
-         {
-            v.kind = SafetyVerdict::Confirm;
-            for ( size_type i = 0; i < reasons.Length(); ++i )
-               v.reason += (i > 0 ? String( "; " ) : String()) + reasons[i];
-         }
-         return v;
       }
-      if ( Section( policy, "reviewedSafe" ).contains( id ) )
-         return v;
-
-      // Not in the policy (a newer PixInsight, a third-party module): the
-      // coverage self-tests only protect the machine they ran on, so the same
-      // rules decide at runtime.
-      StringList reasons;
-      const nlohmann::json hits = SideEffectParameterIds( *P );
-      if ( !hits.empty() )
+      else if ( !Section( policy, "reviewedSafe" ).contains( id ) )
       {
-         String ids;
-         for ( size_t i = 0; i < hits.size(); ++i )
-            ids += (i > 0 ? String( ", " ) : String()) + S16( hits[i].get<std::string>() );
-         reasons << "it has not been reviewed and has file/output-like parameters: " + ids;
+         // Not in the policy (a newer PixInsight, a third-party module): the
+         // coverage self-tests only protect the machine they ran on, so the
+         // same rules decide at runtime.
+         const nlohmann::json hits = SideEffectParameterIds( *P );
+         if ( !hits.empty() )
+         {
+            String ids;
+            for ( size_t i = 0; i < hits.size(); ++i )
+               ids += (i > 0 ? String( ", " ) : String()) + S16( hits[i].get<std::string>() );
+            reasons << "it has not been reviewed and has file/output-like parameters: " + ids;
+         }
       }
       // A global run can change application-wide state (e.g. the default RGB
-      // working space) that no parameter name reveals.
+      // working space) that no parameter name reveals, and reviewedSafe /
+      // confirmWhen reviewed runs on views: EVERY global-capable process
+      // outside deny/confirmAlways needs its own global review.
       if ( run == SafetyRunKind::Global && P->CanProcessGlobal() && !Section( policy, "globalSafe" ).contains( id )
            && !globalConfirm.contains( id ) )
          reasons << String( "it has not been reviewed for global runs, which can change PixInsight-wide settings "
@@ -370,9 +411,14 @@ nlohmann::json UnreviewedGlobalProcesses()
       if ( !P.CanProcessGlobal() )
          continue;
       const std::string id( P.Id().c_str() );
-      if ( Classified( policy, id ) || globalSafe.contains( id ) || globalConfirm.contains( id ) )
+      if ( Section( policy, "deny" ).contains( id ) || Section( policy, "confirmAlways" ).contains( id )
+           || globalSafe.contains( id ) || globalConfirm.contains( id ) )
          continue;
-      out.push_back( { { "process", id }, { "canProcessViews", P.CanProcessViews() } } );
+      nlohmann::json row = { { "process", id }, { "canProcessViews", P.CanProcessViews() } };
+      for ( const char* s : { "confirmWhen", "reviewedSafe" } )
+         if ( Section( policy, s ).contains( id ) )
+            row["alsoIn"] = s;   // reviewed for runs on views, not yet for global runs
+      out.push_back( row );
    }
    return out;
 }
@@ -394,7 +440,7 @@ nlohmann::json UnknownPolicyProcessIds()
    nlohmann::json out = nlohmann::json::array();
    const nlohmann::json& policy = CompiledProcessSafety();
    for ( const char* s : { "deny", "confirmAlways", "confirmWhen", "reviewedSafe", "globalSafe", "globalConfirm",
-                           "fileTables", "pinnedParameters" } )
+                           "fileTables", "pinnedParameters", "parameterValues" } )
    {
       const nlohmann::json& section = Section( policy, s );
       for ( auto it = section.begin(); it != section.end(); ++it )
@@ -429,13 +475,15 @@ nlohmann::json UnknownPolicyProcessIds()
                out.push_back( "confirmWhen:" + it.key() + "." + param );
             }
          }
-   // globalSafe is for processes in no other section (else it is dead weight
-   // that hides which rule applies).
+   // globalSafe/globalConfirm review GLOBAL runs; they sit beside
+   // reviewedSafe/confirmWhen (which review runs on views), but beside
+   // deny/confirmAlways (which already decide every run) or each other they
+   // are dead weight that hides which rule applies.
    for ( const char* g : { "globalSafe", "globalConfirm" } )
    {
       const nlohmann::json& section = Section( policy, g );
       for ( auto it = section.begin(); it != section.end(); ++it )
-         if ( Classified( policy, it.key() )
+         if ( Section( policy, "deny" ).contains( it.key() ) || Section( policy, "confirmAlways" ).contains( it.key() )
               || Section( policy, std::string( g ) == "globalSafe" ? "globalConfirm" : "globalSafe" ).contains( it.key() ) )
             out.push_back( std::string( g ) + ":" + it.key() + " (also in another section)" );
    }
@@ -500,6 +548,49 @@ nlohmann::json UnknownPolicyProcessIds()
          }
       else
          out.push_back( "pinnedParameters:" + it.key() + " (not an object)" );
+   // parameterValues: writable scalar string parameters under their
+   // canonical id, a well-formed rule, and a process default the rule
+   // accepts (else every default run would be refused).
+   const nlohmann::json& valueRules = Section( policy, "parameterValues" );
+   for ( auto it = valueRules.begin(); it != valueRules.end(); ++it )
+      if ( it.value().is_object() )
+         for ( auto q = it.value().begin(); q != it.value().end(); ++q )
+         {
+            const std::string where = "parameterValues:" + it.key() + "." + q.key();
+            try
+            {
+               const Process P( IsoString( it.key().c_str() ) );
+               const ProcessParameter p( P, IsoString( q.key().c_str() ) );
+               if ( !p.IsString() || p.IsReadOnly() || std::string( p.Id().c_str() ) != q.key() )
+                  out.push_back( where + " (not a writable string parameter under its canonical id)" );
+               else
+               {
+                  // The default INSTANCE's value (row 0): some modules cannot
+                  // report a metadata default (GraXpert.correction:
+                  // "GetParameterDefaultValue(): API function error").
+                  const ProcessInstance d( P );
+                  const int a = ValueAllowed( q.value(), U8( d.ParameterValue( p, 0 ).ToString() ) );
+                  if ( a < 0 )
+                     out.push_back( where + " (needs a reason and either values [strings] or format \"version\")" );
+                  else if ( a == 0 )
+                     out.push_back( where + " (the process default is not allowed by the rule)" );
+               }
+            }
+            catch ( const pcl::Exception& x )
+            {
+               out.push_back( where + " (" + U8( x.Message() ) + ")" );
+            }
+            catch ( const std::exception& x )
+            {
+               out.push_back( where + " (" + x.what() + ")" );
+            }
+            catch ( ... )
+            {
+               out.push_back( where );
+            }
+         }
+      else
+         out.push_back( "parameterValues:" + it.key() + " (not an object)" );
    return out;
 }
 
@@ -548,6 +639,59 @@ String ExecutableProblem( const String& path, String& canonical )
 
 } // namespace
 
+namespace
+{
+
+// The policy's pinned entry for canonical process id `id`: "" and entry =
+// nullptr when the process pins nothing; "" and the entry when it is an
+// object; else an "internal: ..." refusal (fail CLOSED: a malformed entry
+// never means "nothing is pinned").
+String PinnedEntry( const std::string& id, const nlohmann::json*& entry )
+{
+   entry = nullptr;
+   const nlohmann::json& pinned = Section( CompiledProcessSafety(), "pinnedParameters" );
+   const auto it = pinned.find( id );
+   if ( it == pinned.end() )
+      return String();
+   if ( !it->is_object() )
+      return "internal: the safety policy's pinnedParameters entry for " + S16( id ) + " is not an object, so "
+             + S16( id ) + " cannot be run safely";
+   for ( auto q = it->begin(); q != it->end(); ++q )
+      if ( !q.value().is_object() )
+         return "internal: the safety policy's pinned parameter " + S16( id + "." + q.key() ) + " is not an object, so "
+                + S16( id ) + " cannot be run safely";
+   entry = &*it;
+   return String();
+}
+
+// The model never chooses a pinned value: ANY key that resolves to one (its
+// id or an alias -- the lookup cuts at an embedded NUL exactly as the
+// executor's does), in either object, whatever the value, is refused.
+String PinnedKeyProblem( const Process& P, const nlohmann::json& entry, const nlohmann::json& parameters,
+                         const nlohmann::json& tableParameters )
+{
+   for ( const nlohmann::json* given : { &parameters, &tableParameters } )
+      if ( given->is_object() )
+         for ( auto it = given->begin(); it != given->end(); ++it )
+         {
+            std::string canonical;
+            try
+            {
+               canonical = ProcessParameter( P, IsoString( it.key().c_str() ) ).Id().c_str();
+            }
+            catch ( ... )
+            {
+               continue;   // unknown key: SetParameters() reports it
+            }
+            if ( entry.contains( canonical ) )
+               return String( P.Id() ) + "." + S16( canonical ) + " is set by PI Copilot from "
+                      + S16( entry[canonical].value( "from", std::string( "a trusted setting" ) ) ) + "; omit it";
+         }
+   return String();
+}
+
+} // namespace
+
 String ResolvePinnedParameters( const IsoString& processId, const nlohmann::json& parameters,
                                 const nlohmann::json& tableParameters, std::vector<PinnedParameter>& out )
 {
@@ -565,31 +709,17 @@ String ResolvePinnedParameters( const IsoString& processId, const nlohmann::json
    {
       const std::string id( P->Id().c_str() );
       const String pname( P->Id() );
-      const nlohmann::json& pinned = Section( CompiledProcessSafety(), "pinnedParameters" );
-      const auto entry = pinned.find( id );
-      if ( entry == pinned.end() || !entry->is_object() )
-         return String();
-
-      // The model never chooses a pinned value: ANY key that resolves to it
-      // (its id or an alias, in either object), whatever the value, is refused.
-      for ( const nlohmann::json* given : { &parameters, &tableParameters } )
-         if ( given->is_object() )
-            for ( auto it = given->begin(); it != given->end(); ++it )
-            {
-               std::string canonical;
-               try
-               {
-                  canonical = ProcessParameter( *P, IsoString( it.key().c_str() ) ).Id().c_str();
-               }
-               catch ( ... )
-               {
-                  continue;   // unknown key: SetParameters() reports it
-               }
-               if ( entry->contains( canonical ) )
-                  return pname + "." + S16( canonical ) + " is set by PI Copilot from "
-                         + S16( (*entry)[canonical].value( "from", std::string( "a trusted setting" ) ) ) + "; omit it";
-            }
-
+      const nlohmann::json* entry = nullptr;
+      {
+         const String e = PinnedEntry( id, entry );
+         if ( !e.IsEmpty() || entry == nullptr )
+            return e;
+      }
+      {
+         const String e = PinnedKeyProblem( *P, *entry, parameters, tableParameters );
+         if ( !e.IsEmpty() )
+            return e;
+      }
       for ( auto q = entry->begin(); q != entry->end(); ++q )
       {
          const nlohmann::json& rule = q.value();
@@ -619,7 +749,131 @@ String ResolvePinnedParameters( const IsoString& processId, const nlohmann::json
       out.clear();
       return "internal: pinned parameters could not be resolved: " + String( x.what() );
    }
+   catch ( ... )
+   {
+      out.clear();
+      return "internal: pinned parameters could not be resolved";
+   }
    return String();
+}
+
+String CheckResolvedPinnedParameters( const IsoString& processId, const nlohmann::json& parameters,
+                                      const nlohmann::json& tableParameters, const std::vector<PinnedParameter>& resolved )
+{
+   std::unique_ptr<Process> P;
+   try
+   {
+      P.reset( new Process( processId ) );
+   }
+   catch ( ... )
+   {
+      return String();   // unknown process: the executor reports it precisely
+   }
+   try
+   {
+      const std::string id( P->Id().c_str() );
+      const nlohmann::json* entry = nullptr;
+      {
+         const String e = PinnedEntry( id, entry );
+         if ( !e.IsEmpty() )
+            return e;
+      }
+      if ( entry != nullptr )
+      {
+         const String e = PinnedKeyProblem( *P, *entry, parameters, tableParameters );
+         if ( !e.IsEmpty() )
+            return e;
+      }
+      // Exactly the policy's pinned parameters, each once.
+      std::set<std::string> want, got;
+      if ( entry != nullptr )
+         for ( auto q = entry->begin(); q != entry->end(); ++q )
+            want.insert( q.key() );
+      for ( const PinnedParameter& q : resolved )
+         if ( !got.insert( q.parameter ).second )
+            return "internal: pinned parameter " + S16( id + "." + q.parameter ) + " was resolved twice";
+      if ( want != got )
+         return "internal: the pinned parameters of " + S16( id ) + " were not resolved before this run";
+   }
+   catch ( const pcl::Exception& x )
+   {
+      return "internal: pinned parameters could not be checked: " + x.Message();
+   }
+   catch ( const std::exception& x )
+   {
+      return "internal: pinned parameters could not be checked: " + String( x.what() );
+   }
+   catch ( ... )
+   {
+      return "internal: pinned parameters could not be checked";
+   }
+   return String();
+}
+
+String ParameterValueProblem( const IsoString& processId, const IsoString& parameterId, const String& value )
+{
+   try
+   {
+      const nlohmann::json& rules = Section( CompiledProcessSafety(), "parameterValues" );
+      const std::string pid( processId.c_str() ), param( parameterId.c_str() );
+      const auto entry = rules.find( pid );
+      if ( entry == rules.end() )
+         return String();
+      const String name = S16( pid + "." + param );
+      if ( !entry->is_object() )
+         return "internal: the safety policy's parameterValues entry for " + S16( pid ) + " is not an object";
+      const auto rule = entry->find( param );
+      if ( rule == entry->end() )
+         return String();
+      const int a = ValueAllowed( *rule, U8( value ) );
+      if ( a < 0 )
+         return "internal: the safety policy's value rule for " + name + " is malformed";
+      if ( a > 0 )
+         return String();
+      return name + ": '" + value + "' is not allowed: use " + S16( rule->value( "reason", std::string() ) );
+   }
+   catch ( const std::exception& x )
+   {
+      return "internal: the safety policy's value rule for " + String( processId ) + "." + String( parameterId )
+             + " could not be checked: " + String( x.what() );
+   }
+   catch ( ... )
+   {
+      return "internal: the safety policy's value rule for " + String( processId ) + "." + String( parameterId )
+             + " could not be checked";
+   }
+}
+
+void AnnotatePolicyParameters( nlohmann::json& description )
+{
+   if ( !description.is_object() || !description.contains( "id" ) || !description["id"].is_string()
+        || !description.contains( "parameters" ) || !description["parameters"].is_array() )
+      return;
+   const std::string id = description["id"].get<std::string>();
+   const nlohmann::json& policy = CompiledProcessSafety();
+   const nlohmann::json& pinned = Section( policy, "pinnedParameters" );
+   const nlohmann::json& patterns = Section( policy, "parameterValues" );
+   const nlohmann::json empty = nlohmann::json::object();
+   const nlohmann::json& pin = (pinned.contains( id ) && pinned[id].is_object()) ? pinned[id] : empty;
+   const nlohmann::json& pat = (patterns.contains( id ) && patterns[id].is_object()) ? patterns[id] : empty;
+   for ( nlohmann::json& p : description["parameters"] )
+   {
+      if ( !p.is_object() || !p.contains( "id" ) || !p["id"].is_string() )
+         continue;
+      const std::string pid = p["id"].get<std::string>();
+      if ( pin.contains( pid ) && pin[pid].is_object() )
+         p["setBy"] = "PI Copilot, from " + pin[pid].value( "from", std::string( "a trusted setting" ) )
+                      + ": do not pass it";
+      if ( pat.contains( pid ) && pat[pid].is_object() )
+      {
+         const nlohmann::json& rule = pat[pid];
+         if ( rule.contains( "values" ) )
+            p["allowedValues"] = rule["values"];
+         else
+            p["format"] = rule.value( "format", std::string() );
+         p["allowedNote"] = "use " + rule.value( "reason", std::string() );
+      }
+   }
 }
 
 String DescribePinnedParameters( const std::vector<PinnedParameter>& pinned )

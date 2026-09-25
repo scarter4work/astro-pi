@@ -93,8 +93,9 @@ struct ToolContext
 ToolOutcome ExecuteTool( const ToolCall& call, const ToolContext& ctx );
 
 // The confirm dialog's text (HTML): "Apply <process> to <view>?" for a run on
-// a view, "Run <process> globally? (creates new images; changes no open
-// image)" when viewId is empty; then the (escaped) changes and what can be undone.
+// a view, "Run <process> globally?" when viewId is empty (no claim about what
+// a global run does: some change PixInsight-wide settings); then the
+// (escaped) changes and a footer on what can and cannot be undone.
 String ConfirmDialogHtml( const String& processId, const String& viewId, const String& changes );
 
 // Cuts every text block of `o.content` longer than maxChars characters (code

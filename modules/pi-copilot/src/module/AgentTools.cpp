@@ -152,6 +152,25 @@ bool WasInspected( const ToolContext& ctx, const IsoString& fullId )
    return ctx.inspectedViews != nullptr && ctx.inspectedViews->count( std::string( fullId.c_str() ) ) > 0;
 }
 
+ToolOutcome DeniedFail( const String& what, const std::string& pid, const SafetyVerdict& safety )
+{
+   return Fail( what, S16( pid ) + " is not allowed from PI Copilot: " + safety.reason
+                      + ". Give the user the settings so they can run it themselves." );
+}
+
+// A denied process is refused BEFORE the parameter dry run: the dry run
+// builds a process instance, and a denied process is never touched at all
+// (a default ProcessContainer instance can block the core -- measured).
+bool RefuseDenied( const std::string& pid, const nlohmann::json& params, const nlohmann::json& tables,
+                   SafetyRunKind run, const String& what, ToolOutcome& out )
+{
+   const SafetyVerdict safety = CheckProcessSafety( IsoString( pid.c_str() ), params, tables, run );
+   if ( safety.kind != SafetyVerdict::Deny )
+      return false;
+   out = DeniedFail( what, pid, safety );
+   return true;
+}
+
 // THE deny/confirm gate, shared by every tool that runs a process
 // (apply_process, run_global_process): one policy, one wording, one dialog.
 //   deny                        -> false, `out` = a precise error (never a modal)
@@ -173,8 +192,7 @@ bool PassSafetyGate( const char* tool, const std::string& pid, const nlohmann::j
    const SafetyVerdict safety = CheckProcessSafety( IsoString( pid.c_str() ), params, tables, run );
    if ( safety.kind == SafetyVerdict::Deny )
    {
-      out = Fail( what, S16( pid ) + " is not allowed from PI Copilot: " + safety.reason
-                        + ". Give the user the settings so they can run it themselves." );
+      out = DeniedFail( what, pid, safety );
       return false;
    }
    if ( ctx.mode != AgentMode::Guided && safety.kind != SafetyVerdict::Confirm )
@@ -200,7 +218,8 @@ bool PassSafetyGate( const char* tool, const std::string& pid, const nlohmann::j
 }
 
 // Before any dialog: NUL in any string, then the pinned parameters (refused
-// from the model; their trusted values resolved and shown). "" when fine.
+// from the model; their trusted values resolved ONCE, shown in the dialog and
+// passed on to the run -- never re-read after it). "" when fine.
 String PreGateChecks( const std::string& pid, const nlohmann::json& params, const nlohmann::json& tables,
                       std::vector<PinnedParameter>& pinned )
 {
@@ -264,7 +283,15 @@ ToolOutcome ApplyProcessTool( const nlohmann::json& in, const ToolContext& ctx, 
 
    std::vector<PinnedParameter> pinned;
    {
-      const String e = PreGateChecks( pid, params, tables, pinned );
+      String e = PreGateChecks( pid, params, tables, pinned );
+      if ( !e.IsEmpty() )
+         return Fail( what, e );
+      ToolOutcome denied;
+      if ( RefuseDenied( pid, params, tables, SafetyRunKind::OnView, what, denied ) )
+         return denied;
+      // Every parameter check ApplyProcess makes, as a dry run: an error comes
+      // back before the user is asked, never after they approved.
+      e = PrecheckApplyRun( IsoString( pid.c_str() ), params, tables, &pinned );
       if ( !e.IsEmpty() )
          return Fail( what, e );
    }
@@ -284,7 +311,7 @@ ToolOutcome ApplyProcessTool( const nlohmann::json& in, const ToolContext& ctx, 
       return Fail( what, "view " + String( targetId ) + " is no longer open (closed while the confirmation "
                          "dialog was up); nothing was changed" );
 
-   const ApplyProcessResult ar = ApplyProcess( IsoString( pid.c_str() ), params, tables, target );
+   const ApplyProcessResult ar = ApplyProcess( IsoString( pid.c_str() ), params, tables, target, &pinned );
    if ( !ar.ok )
       return Fail( what, ar.error );
 
@@ -337,12 +364,15 @@ ToolOutcome RunGlobalTool( const nlohmann::json& in, const ToolContext& ctx, clo
    if ( pid.empty() )
       return Fail( "run_global_process", "run_global_process needs process_id; call list_processes for valid ids" );
 
-   const String pre = PrecheckGlobalRun( IsoString( pid.c_str() ), params, tables );
-   if ( !pre.IsEmpty() )
-      return Fail( what, pre );
    std::vector<PinnedParameter> pinned;
    {
-      const String e = PreGateChecks( pid, params, tables, pinned );
+      String e = PreGateChecks( pid, params, tables, pinned );
+      if ( !e.IsEmpty() )
+         return Fail( what, e );
+      ToolOutcome denied;
+      if ( RefuseDenied( pid, params, tables, SafetyRunKind::Global, what, denied ) )
+         return denied;
+      e = PrecheckGlobalRun( IsoString( pid.c_str() ), params, tables, &pinned );
       if ( !e.IsEmpty() )
          return Fail( what, e );
    }
@@ -355,7 +385,7 @@ ToolOutcome RunGlobalTool( const nlohmann::json& in, const ToolContext& ctx, clo
          return refused;
    }
 
-   const GlobalRunResult g = RunGlobalProcess( IsoString( pid.c_str() ), params, tables );
+   const GlobalRunResult g = RunGlobalProcess( IsoString( pid.c_str() ), params, tables, &pinned );
    if ( !g.ok )
    {
       String e = g.error;
@@ -555,7 +585,8 @@ nlohmann::json ToolDefinitions( AgentMode mode, const ToolOptions& options )
    describe["name"] = "describe_process";
    describe["description"] = "Describe one process's parameters: id, type, default, numeric range, enumeration "
                              "element ids, and table columns in row order. Call it before setting parameters "
-                             "you have not used yet in this conversation.";
+                             "you have not used yet in this conversation. A parameter with \"setBy\" is filled by "
+                             "PI Copilot: never pass it. A parameter with \"allowedValues\" or \"format\" accepts only such values.";
    describe["input_schema"] = { { "type", "object" },
                                 { "properties", { { "id", { { "type", "string" }, { "description", "Process id, e.g. PixelMath" } } } } },
                                 { "required", nlohmann::json::array( { "id" } ) } };
@@ -727,9 +758,10 @@ ToolOutcome ExecuteToolUncapped( const ToolCall& call, const ToolContext& ctx )
          if ( id.empty() )
             return Fail( name, "describe_process needs {\"id\": \"<process id>\"}; call list_processes for ids" );
          const String what = name + " " + S16( id );
-         const nlohmann::json d = DescribeProcess( IsoString( id.c_str() ) );
+         nlohmann::json d = DescribeProcess( IsoString( id.c_str() ) );
          if ( d.contains( "error" ) && !d.contains( "parameters" ) )
             return Fail( what, S16( d["error"].get<std::string>() ) );
+         AnnotatePolicyParameters( d );   // "setBy" (pinned: never pass it), "allowedValues"/"format"
          ToolOutcome o;
          o.content.push_back( TextBlock( d.dump() ) );
          o.logLine = OkLine( what, t0 );

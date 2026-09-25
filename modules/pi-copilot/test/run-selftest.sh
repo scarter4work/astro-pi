@@ -330,6 +330,7 @@ required_true = [
     'runPjsrOk', 'runPjsrBreakoutOk',
     'finalFixOk',
     'pinnedOk',
+    'rereviewFixOk',
     'ok',
 ]
 missing = [k for k in required_true if d.get(k) is not True]
@@ -350,6 +351,8 @@ print('live agent check: %s' % ('SKIPPED (no key)' if d.get('liveAgentSkipped') 
 print('live conversation check: %s' % ('SKIPPED (no key)' if d.get('liveConversationSkipped') else 'RAN against real API, cacheRead=%r trimThought=%r trimTransformations=%r%s' % (d.get('liveCacheRead'), d.get('liveTrimThought'), d.get('liveTrimTransformations'), ('' if d.get('liveConversationOk') else ' FAILED: %r' % d.get('liveConversationDetail', {}).get('trimLiveReason')))))
 pd = d.get('pinnedDetail', {})
 print('GraXpert live check: %s' % (('SKIPPED: %s' % pd.get('liveSkipReason')) if d.get('graxpertLiveSkipped') is not False else 'RAN, %r' % {k: pd.get('live', {}).get(k) for k in ('seconds', 'gradientBefore', 'gradientAfter', 'log')}))
+rd = d.get('rereviewFixDetail', {})
+print('describe_process sizes (chars, cap %r): %r; list_processes chars=%r' % (rd.get('describeSizes', {}).get('cap'), rd.get('describeSizes', {}).get('top10'), rd.get('listProcesses', {}).get('chars')))
 if d.get('liveModelSwitch') is not None:
     print('live model switch: %r' % d.get('liveModelSwitch'))
 if missing:

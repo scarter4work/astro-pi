@@ -27,9 +27,11 @@ struct SafetyVerdict
 const nlohmann::json& CompiledProcessSafety();
 
 // How the process is about to run: on a view (apply_process) or in the global
-// context (run_global_process). A global run of a process in NO section and
-// not in "globalSafe" asks: a global run can change application-wide state
-// (e.g. the default RGB working space), which no parameter name reveals.
+// context (run_global_process). A global run of a global-capable process that
+// is not denied/always-confirmed and not in "globalSafe"/"globalConfirm" asks
+// -- reviewedSafe and confirmWhen included, since those sections review runs
+// on views: a global run can change application-wide state (e.g. the default
+// RGB working space), which no parameter name reveals.
 enum class SafetyRunKind { OnView, Global };
 
 // deny -> Deny; confirmAlways -> Confirm; confirmWhen -> Confirm when a
@@ -45,10 +47,11 @@ enum class SafetyRunKind { OnView, Global };
 // reviewedSafe -> Allow. A process in NO section (a newer PixInsight, a
 // third-party module) whose parameter/column ids match the side-effect
 // heuristic -> Confirm ("it has not been reviewed and has file/output-like
-// parameters: ..."); for run == Global, "globalConfirm" -> Confirm ("a global
-// run: <reason>"), and a global-capable process in NO section that is not in
-// "globalSafe"/"globalConfirm" -> Confirm ("it has not been reviewed for
-// global runs, ..."); both unlisted reasons are joined with "; ". An unknown process id is Allow
+// parameters: ..."). For run == Global, additionally: "globalConfirm" ->
+// Confirm ("a global run: <reason>"), and a global-capable process in neither
+// "globalSafe" nor "globalConfirm" -> Confirm ("it has not been reviewed for
+// global runs, ..."), whatever its other section (deny/confirmAlways
+// excepted: they already decided). All reasons are joined with "; ". An unknown process id is Allow
 // here (ApplyProcess / RunGlobalProcess then fail with their precise "unknown
 // process" error); any other failure while checking fails CLOSED (Confirm,
 // "this run could not be checked"). Root thread only. Never throws.
@@ -57,9 +60,10 @@ SafetyVerdict CheckProcessSafety( const IsoString& processId, const nlohmann::js
                                   SafetyRunKind run = SafetyRunKind::OnView );
 
 // The GLOBAL coverage gate: installed processes that can run in the global
-// context (Process::CanProcessGlobal()) and are in none of deny /
-// confirmAlways / confirmWhen / reviewedSafe / globalSafe / globalConfirm.
-// [{process, canProcessViews}]. Deliberately does NOT probe
+// context (Process::CanProcessGlobal()), are not denied/always-confirmed, and
+// are in neither globalSafe nor globalConfirm -- a reviewedSafe/confirmWhen
+// entry does NOT count (it reviewed runs on views).
+// [{process, canProcessViews, alsoIn?}]. Deliberately does NOT probe
 // CanExecuteGlobal(): a default ProcessContainer blocks there (measured).
 // Root thread.
 nlohmann::json UnreviewedGlobalProcesses();
@@ -75,10 +79,12 @@ nlohmann::json UnreviewedGlobalProcesses();
 nlohmann::json UnclassifiedSideEffectCandidates();
 
 // Policy ids that are not installed processes under their canonical id,
-// confirmWhen parameters the process does not have, globalSafe entries that
-// are also in another section, fileTables tables/columns that do not exist
-// (canonical ids), and pinnedParameters entries that are not canonical string
-// parameters with a supported source/kind (catches typos).
+// confirmWhen parameters the process does not have, globalSafe/globalConfirm
+// entries that are also in deny/confirmAlways or in each other, fileTables
+// tables/columns that do not exist (canonical ids), pinnedParameters entries
+// that are not canonical string parameters with a supported source/kind, and
+// parameterValues entries that are not writable canonical string parameters
+// with a well-formed rule and a default the rule accepts.
 nlohmann::json UnknownPolicyProcessIds();
 
 // ---- Pinned parameters (policy "pinnedParameters") --------------------------
@@ -92,7 +98,8 @@ nlohmann::json UnknownPolicyProcessIds();
 // A pinned parameter's value is NEVER chosen by the model: PI Copilot fills it
 // from a trusted source (the user's own setting for that module). Example:
 // GraXpert.appPath names the program GraXpert launches, so it is pinned to
-// the path the user set in GraXpert itself.
+// the path the user set in GraXpert itself. A malformed entry (not an object)
+// fails CLOSED: the process is refused, never run unpinned.
 struct PinnedParameter
 {
    std::string parameter;   // canonical parameter id
@@ -112,6 +119,32 @@ struct PinnedParameter
 // is "" (the executor reports it). Root thread. Never throws.
 String ResolvePinnedParameters( const IsoString& processId, const nlohmann::json& parameters,
                                 const nlohmann::json& tableParameters, std::vector<PinnedParameter>& out );
+
+// The same key refusal as ResolvePinnedParameters, then: `resolved` must hold
+// exactly the process's pinned parameters, each once (the values the user was
+// shown, resolved ONCE before any dialog, are the values that run -- nothing
+// is re-read afterwards). "" when fine. Root thread. Never throws.
+String CheckResolvedPinnedParameters( const IsoString& processId, const nlohmann::json& parameters,
+                                      const nlohmann::json& tableParameters, const std::vector<PinnedParameter>& resolved );
+
+// ---- Parameter values (policy "parameterValues") ---------------------------
+//
+//   { "<Process>": { "<parameterId>": { "values": ["A", "B"], "reason": "A or B" } } }
+//   { "<Process>": { "<parameterId>": { "format": "version", "reason": "a version such as 3.0.2, or empty" } } }
+//
+// A model-chosen value of such a (string) parameter must be one of `values`
+// (exact) or have the format ("version": empty, or 2-4 dot-separated digit
+// groups), e.g. GraXpert's AI model versions, which reach its command line.
+// No regex engine: std::regex inside PixInsight aborts on a malformed pattern
+// (measured), so the rules are declarative. "" when allowed or not
+// constrained, else "<P>.<param>: '<value>' is not allowed: use <reason>"; a
+// malformed rule is an "internal: ..." refusal. Ids are canonical. Never throws.
+String ParameterValueProblem( const IsoString& processId, const IsoString& parameterId, const String& value );
+
+// Marks, in a DescribeProcess() result, the parameters the policy constrains:
+// pinned ones get "setBy": "PI Copilot, from <from>: do not pass it";
+// value-restricted ones get "allowedValues" or "format", and "allowedNote".
+void AnnotatePolicyParameters( nlohmann::json& description );
 
 // "appPath = /opt/x/GraXpert (set by PI Copilot from your GraXpert settings)"
 // lines, for the confirm dialog and the tool log.

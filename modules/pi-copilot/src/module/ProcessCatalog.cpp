@@ -234,14 +234,20 @@ nlohmann::json DefaultValueJson( const ProcessParameter& p )
    }
 }
 
+// Compact on purpose (a describe_process result must fit one tool_result,
+// PICopilotMaxToolResultChars, for every installed process -- self-tested):
+// "readOnly"/"required" only when true, enumerations as their element ids
+// (the form apply_process documents; the integer values are not needed).
 nlohmann::json ParameterJson( const ProcessParameter& p )
 {
    nlohmann::json j = {
       { "id", std::string( p.Id().c_str() ) },
-      { "type", TypeName( p.Type() ) },
-      { "readOnly", p.IsReadOnly() },
-      { "required", p.IsRequired() }
+      { "type", TypeName( p.Type() ) }
    };
+   if ( p.IsReadOnly() )
+      j["readOnly"] = true;
+   if ( p.IsRequired() )
+      j["required"] = true;
 
    // Enumeration element ids come from EnumerationInfoOf() (native, else
    // PJSR introspection). If BOTH routes fail for one parameter, that must
@@ -258,7 +264,7 @@ nlohmann::json ParameterJson( const ProcessParameter& p )
       {
          nlohmann::json e = nlohmann::json::array();
          for ( const ProcessParameter::EnumerationElement& el : EnumerationInfoOf( p ).elements )
-            e.push_back( { { "id", std::string( el.id.c_str() ) }, { "value", el.value } } );
+            e.push_back( std::string( el.id.c_str() ) );
          j["enumeration"] = e;
       }
    }
