@@ -24,7 +24,19 @@ namespace pcl
  * input_json_delta (tool input rebuilt and parsed at content_block_stop),
  * thinking_delta, signature_delta, citations_delta. An unknown DELTA type is a
  * failure (the block could not be echoed back faithfully); unknown EVENT types
- * are ignored (the API may add events). Pure: no PCL, no GUI; any thread.
+ * are ignored (the API may add events). A redacted_thinking (or any other)
+ * block with no deltas is carried through content_block_start verbatim.
+ *
+ * Protocol violations are failures, not silent recoveries: a second
+ * message_start, a message_stop while a content block is still open (no
+ * content_block_stop), and a single line or event data payload past
+ * kMaxSseBufferBytes with no terminator/boundary. Tool input JSON that fails
+ * to parse is never silently replaced by a fabricated {} -- the raw
+ * (possibly truncated) partial text is kept in "input" instead, so it is
+ * visibly not an object; under stop_reason "tool_use" that condition also
+ * fails the stream (the API's own contract guarantees valid JSON there).
+ *
+ * Pure: no PCL, no GUI; any thread.
  */
 class SseMessageAssembler
 {
@@ -45,6 +57,11 @@ public:
 
 private:
 
+   // Guards a malformed or hostile stream from unbounded memory growth: no
+   // single SSE line, and no single event's joined `data:` payload, may
+   // exceed this many bytes without a line terminator / event boundary.
+   static constexpr size_t kMaxSseBufferBytes = 4u*1024u*1024u;   // 4 MiB
+
    std::string              m_line;
    bool                     m_lastWasCR = false;
    std::string              m_event;
@@ -52,6 +69,7 @@ private:
    bool                     m_hasData = false;
    nlohmann::json           m_message;
    bool                     m_started = false;
+   bool                     m_blockOpen = false;   // content_block_start seen, matching stop not yet seen
    std::vector<std::string> m_partialJson;    // per content index (tool_use input)
    std::vector<size_t>      m_badToolInput;   // content indices whose input JSON did not parse
    bool                     m_finished = false;

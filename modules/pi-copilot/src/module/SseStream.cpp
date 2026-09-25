@@ -9,6 +9,23 @@
 namespace pcl
 {
 
+namespace
+{
+
+// In-place append to a JSON string field (amortized O(1) growth), instead of
+// `block[field] = block.value(field, std::string()) + t`, which copies the
+// whole accumulated string on every delta and makes a long streamed text or
+// thinking block O(n^2) in its own length.
+void AppendToStringField( nlohmann::json& block, const char* field, const std::string& t )
+{
+   nlohmann::json& v = block[field];
+   if ( !v.is_string() )
+      v = std::string();
+   v.get_ref<std::string&>() += t;
+}
+
+} // namespace
+
 void SseMessageAssembler::Fail( const std::string& why )
 {
    if ( !m_failed )
@@ -38,6 +55,11 @@ std::string SseMessageAssembler::Feed( const char* data, size_t size )
       else
       {
          m_lastWasCR = false;
+         if ( m_line.size() >= kMaxSseBufferBytes )
+         {
+            Fail( "SSE line exceeded " + std::to_string( kMaxSseBufferBytes ) + " bytes without a line terminator" );
+            break;
+         }
          m_line.push_back( c );
       }
    }
@@ -62,6 +84,11 @@ void SseMessageAssembler::OnLine( std::string& text )
       m_event = value;
    else if ( field == "data" )
    {
+      if ( m_data.size() + value.size() + 1 > kMaxSseBufferBytes )
+      {
+         Fail( "SSE event data exceeded " + std::to_string( kMaxSseBufferBytes ) + " bytes" );
+         return;
+      }
       if ( m_hasData )
          m_data += '\n';
       m_data += value;
@@ -117,6 +144,11 @@ void SseMessageAssembler::OnEvent( const nlohmann::json& ev, const std::string& 
    }
    if ( type == "message_start" )
    {
+      if ( m_started )
+      {
+         Fail( "duplicate message_start (message_stop was not seen for the previous message)" );
+         return;
+      }
       m_message = ev.at( "message" );
       if ( !m_message.is_object() )
       {
@@ -126,6 +158,7 @@ void SseMessageAssembler::OnEvent( const nlohmann::json& ev, const std::string& 
       m_message["content"] = nlohmann::json::array();
       m_partialJson.clear();
       m_badToolInput.clear();
+      m_blockOpen = false;
       m_started = true;
       return;
    }
@@ -150,6 +183,7 @@ void SseMessageAssembler::OnEvent( const nlohmann::json& ev, const std::string& 
       }
       content.push_back( ev.at( "content_block" ) );
       m_partialJson.push_back( std::string() );
+      m_blockOpen = true;
       return;
    }
    if ( type == "content_block_delta" || type == "content_block_stop" )
@@ -175,13 +209,24 @@ void SseMessageAssembler::OnEvent( const nlohmann::json& ev, const std::string& 
                }
                catch ( const std::exception& )
                {
-                  block["input"] = nlohmann::json::object();
+                  // Never fabricate a well-formed-looking {} for input that
+                  // did not actually parse: a caller checking "is input an
+                  // object" would see a plausible empty call and might
+                  // re-send it as if the model asked for it. Keep the raw
+                  // (possibly truncated) partial text instead -- visibly not
+                  // an object -- and record the index. Under stop_reason
+                  // "tool_use" the API guarantees complete, valid JSON here,
+                  // so that combination fails the whole stream below; under
+                  // any other stop_reason (e.g. max_tokens cut mid tool call)
+                  // the caller's own truncation handling is what must drop it.
+                  block["input"] = m_partialJson[index];
                   m_badToolInput.push_back( index );
                }
             }
             else if ( !block.contains( "input" ) || !block["input"].is_object() )
                block["input"] = nlohmann::json::object();
          }
+         m_blockOpen = false;
          return;
       }
       const nlohmann::json& delta = ev.at( "delta" );
@@ -189,13 +234,13 @@ void SseMessageAssembler::OnEvent( const nlohmann::json& ev, const std::string& 
       if ( dtype == "text_delta" )
       {
          const std::string t = delta.at( "text" ).get<std::string>();
-         block["text"] = block.value( "text", std::string() ) + t;
+         AppendToStringField( block, "text", t );
          text += t;
       }
       else if ( dtype == "input_json_delta" )
          m_partialJson[index] += delta.at( "partial_json" ).get<std::string>();
       else if ( dtype == "thinking_delta" )
-         block["thinking"] = block.value( "thinking", std::string() ) + delta.at( "thinking" ).get<std::string>();
+         AppendToStringField( block, "thinking", delta.at( "thinking" ).get<std::string>() );
       else if ( dtype == "signature_delta" )
          block["signature"] = delta.at( "signature" ).get<std::string>();
       else if ( dtype == "citations_delta" )
@@ -226,6 +271,11 @@ void SseMessageAssembler::OnEvent( const nlohmann::json& ev, const std::string& 
       return;
    }
    // message_stop
+   if ( m_blockOpen )
+   {
+      Fail( "message_stop while a content block is still open (no content_block_stop)" );
+      return;
+   }
    const bool toolStop = m_message.contains( "stop_reason" ) && m_message["stop_reason"].is_string()
                       && m_message["stop_reason"].get<std::string>() == "tool_use";
    if ( toolStop && !m_badToolInput.empty() )
