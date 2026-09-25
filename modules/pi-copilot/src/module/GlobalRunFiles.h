@@ -4,6 +4,7 @@
 #ifndef PICopilot_GlobalRunFiles_h
 #define PICopilot_GlobalRunFiles_h
 
+#include <pcl/Process.h>
 #include <pcl/String.h>
 
 #include <nlohmann/json.hpp>
@@ -18,6 +19,12 @@ namespace pcl
  *   { "<ProcessId>": { "<tableId>": { "enabledColumn": "<columnId>",
  *                                     "minEnabledRows": N,
  *                                     "columns": { "<columnId>": "image" | "optionalFile", ... } } } }
+ *
+ * First, EVERY string (scalar parameters, every cell of every table, enabled
+ * row or not) is refused if it contains NUL (NulTextProblem). Table keys
+ * resolve through the core (ProcessParameter), so an ALIAS key of a declared
+ * table is that table; canonical + alias together are refused
+ * (DuplicateKeyProblem). A policy table must be named by its canonical id.
  *
  * Declared table columns: "image" = absolute, existing, readable file that an
  * installed format can read; "optionalFile" = empty (or null), or an absolute
@@ -40,6 +47,19 @@ namespace pcl
  */
 String ValidateGlobalRunFilePaths( const IsoString& processId, const nlohmann::json& fileTables,
                                    const nlohmann::json& parameters, const nlohmann::json& tableParameters );
+
+// "<Process>.<key>: the text contains a NUL character (U+0000) at position N;
+// remove it" for the first string value with a NUL -- scalar parameters, then
+// table cells (named <table>[row].<column> when the table resolves, else
+// <table>[row][col]) -- or "". JSON allows U+0000; the core's C strings would
+// silently cut the text there. Root thread. Never throws.
+String NulTextProblem( const IsoString& processId, const nlohmann::json& parameters,
+                       const nlohmann::json& tableParameters );
+
+// "<P>.<a> and <P>.<b> name the same <what> (<canonical>); pass it once, as
+// <canonical>" when two keys of `object` resolve (ProcessParameter id or
+// alias) to the same parameter, else "". Unknown keys are skipped.
+String DuplicateKeyProblem( const Process& P, const nlohmann::json& object, const char* what );
 
 // True when fileTables declares at least one file table for the process
 // (resolved to its canonical id). Never throws.

@@ -2,6 +2,7 @@
 // Copyright (c) 2026 Scott Carter. MIT License.
 
 #include "GlobalRunFiles.h"
+#include "Utf8.h"
 
 #include <pcl/Exception.h>
 #include <pcl/File.h>
@@ -25,9 +26,28 @@ namespace pcl
 namespace
 {
 
+// Length-aware (Utf8.h): an embedded NUL is kept, never a silent end of the
+// text -- NulTextProblem() refuses it with its position.
 String S16( const std::string& utf8 )
 {
-   return String::UTF8ToUTF16( utf8.c_str() );
+   return FromU8( utf8 );
+}
+
+// "<where>: the text contains a NUL character (U+0000) at position N; remove
+// it", or "" when `v` is not a string or has no NUL. N counts UTF-16 units.
+String NulIn( const String& where, const nlohmann::json& v )
+{
+   if ( !v.is_string() )
+      return String();
+   const std::string& s = v.get_ref<const std::string&>();
+   if ( s.find( '\0' ) == std::string::npos )
+      return String();
+   const String t = FromU8( s );
+   size_type pos = 0;
+   while ( pos < t.Length() && t[pos] != 0 )
+      ++pos;
+   return where + String().Format( ": the text contains a NUL character (U+0000) at position %u; remove it",
+                                   unsigned( pos ) );
 }
 
 const nlohmann::json& EmptyObject()
@@ -147,7 +167,107 @@ const nlohmann::json& TablesFor( const nlohmann::json& fileTables, const std::st
    return EmptyObject();
 }
 
+// The canonical id (ProcessParameter::Id()) a model key resolves to, through
+// the core's own lookup (so an ALIAS id resolves to its parameter); "" when
+// the key names no parameter of P.
+std::string CanonicalParameterId( const Process& P, const std::string& key )
+{
+   try
+   {
+      return std::string( ProcessParameter( P, IsoString( key.c_str() ) ).Id().c_str() );
+   }
+   catch ( ... )
+   {
+      return std::string();
+   }
+}
+
 } // namespace
+
+String DuplicateKeyProblem( const Process& P, const nlohmann::json& object, const char* what )
+{
+   if ( !object.is_object() )
+      return String();
+   std::map<std::string, std::string> seen;   // canonical -> the first key given for it
+   for ( auto it = object.begin(); it != object.end(); ++it )
+   {
+      const std::string canonical = CanonicalParameterId( P, it.key() );
+      if ( canonical.empty() )
+         continue;   // unknown key: SetParameters() reports it precisely
+      auto hit = seen.find( canonical );
+      if ( hit != seen.end() )
+      {
+         const String pname( P.Id() );
+         return pname + "." + S16( hit->second ) + " and " + pname + "." + S16( it.key() ) + " name the same "
+                + what + " (" + S16( canonical ) + "); pass it once, as " + S16( canonical );
+      }
+      seen[canonical] = it.key();
+   }
+   return String();
+}
+
+String NulTextProblem( const IsoString& processId, const nlohmann::json& parameters,
+                       const nlohmann::json& tableParameters )
+{
+   std::unique_ptr<Process> P;
+   try
+   {
+      P.reset( new Process( processId ) );
+   }
+   catch ( ... )
+   {
+   }
+   const String pname = P ? String( P->Id() ) : String( processId );
+   try
+   {
+      if ( parameters.is_object() )
+         for ( auto it = parameters.begin(); it != parameters.end(); ++it )
+         {
+            const String e = NulIn( pname + "." + S16( it.key() ), it.value() );
+            if ( !e.IsEmpty() )
+               return e;
+         }
+      if ( tableParameters.is_object() )
+         for ( auto it = tableParameters.begin(); it != tableParameters.end(); ++it )
+         {
+            if ( !it.value().is_array() )
+               continue;
+            // Cells are named <table>[row].<column> when the table resolves.
+            ProcessParameter::parameter_list cols;
+            if ( P )
+               try
+               {
+                  const ProcessParameter tp( *P, IsoString( it.key().c_str() ) );
+                  if ( tp.IsTable() )
+                     cols = tp.TableColumns();
+               }
+               catch ( ... )
+               {
+               }
+            const nlohmann::json& rows = it.value();
+            for ( size_type r = 0; r < rows.size(); ++r )
+               if ( rows[r].is_array() )
+                  for ( size_type k = 0; k < rows[r].size(); ++k )
+                  {
+                     const String where = pname + "." + S16( it.key() )
+                                        + (k < cols.Length() ? String().Format( "[%u].", unsigned( r ) ) + String( cols[k].Id() )
+                                                             : String().Format( "[%u][%u]", unsigned( r ), unsigned( k ) ));
+                     const String e = NulIn( where, rows[r][k] );
+                     if ( !e.IsEmpty() )
+                        return e;
+                  }
+         }
+   }
+   catch ( const pcl::Exception& x )
+   {
+      return "internal: text validation failed: " + x.Message();
+   }
+   catch ( const std::exception& x )
+   {
+      return "internal: text validation failed: " + String( x.what() );
+   }
+   return String();
+}
 
 bool DeclaresFileTables( const IsoString& processId, const nlohmann::json& fileTables )
 {
@@ -177,15 +297,36 @@ String ValidateGlobalRunFilePaths( const IsoString& processId, const nlohmann::j
    const Process& P = *resolved;
    try
    {
+      // NUL first, in EVERY string (declared or not, enabled row or not): the
+      // core's C strings would silently cut the text there.
+      {
+         const String e = NulTextProblem( processId, parameters, tableParameters );
+         if ( !e.IsEmpty() )
+            return e;
+      }
+      // Table keys resolve through the core (an ALIAS key is its table);
+      // canonical + alias together are refused, never "last one wins".
+      {
+         const String e = DuplicateKeyProblem( P, tableParameters, "table" );
+         if ( !e.IsEmpty() )
+            return e;
+      }
+      std::map<std::string, std::string> givenKey;   // canonical table id -> the key the model used
+      if ( tableParameters.is_object() )
+         for ( auto it = tableParameters.begin(); it != tableParameters.end(); ++it )
+         {
+            const std::string canonical = CanonicalParameterId( P, it.key() );
+            if ( !canonical.empty() )
+               givenKey[canonical] = it.key();
+         }
+
       const std::string id( P.Id().c_str() );
       const String pname( P.Id() );
-      std::set<std::string> declared;
       const nlohmann::json& tables = TablesFor( fileTables, id );
       for ( auto t = tables.begin(); t != tables.end(); ++t )
       {
          const std::string table = t.key();
          const nlohmann::json& rule = t.value();
-         declared.insert( table );
          const String tname = pname + "." + S16( table );
          std::unique_ptr<ProcessParameter> tpp;
          try
@@ -197,6 +338,9 @@ String ValidateGlobalRunFilePaths( const IsoString& processId, const nlohmann::j
          }
          if ( !tpp || !tpp->IsTable() )
             return "internal: the file-table policy names " + tname + ", which is not a table parameter of " + pname;
+         if ( std::string( tpp->Id().c_str() ) != table )
+            return "internal: the file-table policy names " + tname + " by an alias; use its canonical id "
+                   + pname + "." + String( tpp->Id() );
          const ProcessParameter& tp = *tpp;
          const ProcessParameter::parameter_list cols = tp.TableColumns();
          std::map<std::string, size_type> index;
@@ -206,9 +350,10 @@ String ValidateGlobalRunFilePaths( const IsoString& processId, const nlohmann::j
             index[std::string( cols[k].Id().c_str() )] = k;
             columnList += (k > 0 ? String( ", " ) : String()) + String( cols[k].Id() );
          }
-         if ( !tableParameters.is_object() || !tableParameters.contains( table ) )
+         auto given = givenKey.find( table );
+         if ( given == givenKey.end() )
             return tname + " is required: pass table_parameters." + S16( table ) + " as rows [" + columnList + "]";
-         const nlohmann::json& rows = tableParameters[table];
+         const nlohmann::json& rows = tableParameters[given->second];
          if ( !rows.is_array() )
             return String();   // SetParameters() reports the shape
          const std::string enabledCol = rule.value( "enabledColumn", std::string() );
@@ -267,7 +412,11 @@ String ValidateGlobalRunFilePaths( const IsoString& processId, const nlohmann::j
          }
       if ( tableParameters.is_object() )
          for ( auto it = tableParameters.begin(); it != tableParameters.end(); ++it )
-            if ( !declared.count( it.key() ) && it.value().is_array() )
+         {
+            const std::string canonical = CanonicalParameterId( P, it.key() );
+            if ( !canonical.empty() && tables.contains( canonical ) )
+               continue;   // a declared table: checked above
+            if ( it.value().is_array() )
                for ( size_type r = 0; r < it.value().size(); ++r )
                   if ( it.value()[r].is_array() )
                      for ( size_type k = 0; k < it.value()[r].size(); ++k )
@@ -278,6 +427,7 @@ String ValidateGlobalRunFilePaths( const IsoString& processId, const nlohmann::j
                         if ( !e.IsEmpty() )
                            return e;
                      }
+         }
    }
    catch ( const pcl::Exception& x )
    {

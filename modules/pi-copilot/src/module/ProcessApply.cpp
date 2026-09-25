@@ -2,6 +2,7 @@
 // Copyright (c) 2026 Scott Carter. MIT License.
 
 #include "ProcessApply.h"
+#include "GlobalRunFiles.h"   // NulTextProblem, DuplicateKeyProblem
 #include "ProcessCatalog.h"
 #include "ProcessSafety.h"
 #include "Utf8.h"
@@ -42,9 +43,11 @@ struct ApplyError
    String message;
 };
 
+// Length-aware (Utf8.h): an embedded NUL is kept (and then refused by
+// ToVariant), never a silent end of the text.
 String S16( const std::string& utf8 )
 {
-   return String::UTF8ToUTF16( utf8.c_str() );
+   return FromU8( utf8 );
 }
 
 String JsonShort( const nlohmann::json& v )
@@ -111,13 +114,13 @@ Variant EnumVariant( const ProcessParameter& p, const nlohmann::json& v, const S
 
    if ( v.is_string() )
    {
-      const IsoString want( v.get<std::string>().c_str() );
+      const std::string& want = v.get_ref<const std::string&>();
       for ( const ProcessParameter::EnumerationElement& e : *elements )
       {
-         if ( e.id == want )
+         if ( want == e.id.c_str() )
             return Variant( e.value );
          for ( const IsoString& a : e.aliases )
-            if ( a.Trimmed() == want )
+            if ( want == a.Trimmed().c_str() )
                return Variant( e.value );
       }
       throw ApplyError{ name + ": '" + S16( v.get<std::string>() ) + "' is not a valid value; use one of: "
@@ -155,6 +158,15 @@ void TypeRange( const ProcessParameter& p, double& lo, double& hi )
 
 Variant ToVariant( const ProcessParameter& p, const nlohmann::json& v, const String& name )
 {
+   // JSON allows U+0000; the core's C strings would cut the text there.
+   if ( v.is_string() )
+   {
+      const String t = S16( v.get<std::string>() );
+      for ( size_type i = 0; i < t.Length(); ++i )
+         if ( t[i] == 0 )
+            throw ApplyError{ name + String().Format( ": the text contains a NUL character (U+0000) at position %u; "
+                                                      "remove it", unsigned( i ) ) };
+   }
    if ( p.IsBlock() )
       throw ApplyError{ name + ": block (binary) parameters cannot be set by apply_process" };
    if ( p.IsBoolean() )
@@ -296,6 +308,17 @@ void SetParameters( const Process& P, ProcessInstance& instance, const String& p
 {
    if ( !parameters.is_null() && !parameters.is_object() )
       throw ApplyError{ String( "parameters must be an object {parameterId: value}" ) };
+   if ( !tableParameters.is_null() && !tableParameters.is_object() )
+      throw ApplyError{ String( "table_parameters must be an object {tableId: [[row values]...]}" ) };
+   // Keys resolve through the core (an alias is its parameter): canonical +
+   // alias together would be "last one wins", so they are refused.
+   {
+      String dup = DuplicateKeyProblem( P, parameters, "parameter" );
+      if ( dup.IsEmpty() )
+         dup = DuplicateKeyProblem( P, tableParameters, "table" );
+      if ( !dup.IsEmpty() )
+         throw ApplyError{ dup };
+   }
    if ( parameters.is_object() )
       for ( auto it = parameters.begin(); it != parameters.end(); ++it )
       {
@@ -309,8 +332,6 @@ void SetParameters( const Process& P, ProcessInstance& instance, const String& p
          parametersSet[it.key()] = it.value();
       }
 
-   if ( !tableParameters.is_null() && !tableParameters.is_object() )
-      throw ApplyError{ String( "table_parameters must be an object {tableId: [[row values]...]}" ) };
    if ( tableParameters.is_object() )
       for ( auto it = tableParameters.begin(); it != tableParameters.end(); ++it )
       {
@@ -370,6 +391,7 @@ void SetParameters( const Process& P, ProcessInstance& instance, const String& p
             }
          parametersSet[it.key()] = rows;
       }
+
 }
 
 std::set<std::string> OpenMainViewIds()

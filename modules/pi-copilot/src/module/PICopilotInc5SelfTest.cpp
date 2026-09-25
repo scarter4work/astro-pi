@@ -55,6 +55,7 @@
 namespace pcl
 {
 
+
 namespace
 {
 
@@ -2822,6 +2823,307 @@ bool RunInc5SelfTest( nlohmann::json& out )
       out["runPjsrBreakoutError"] = U8( error );
       out["runPjsrBreakoutOk"] = allCasesOk;
       allOk = allOk && allCasesOk;
+   }
+
+   // ---- Section B9: final-review fixes (inc 5) ---------------------------------
+   {
+      bool globalGateOk = false, globalRuntimeOk = false, globalToolOk = false, nulOk = false, gmmOk = false,
+           tableAliasOk = false, wordingOk = false, unknownToolOk = false, capOk = false, promptOk = false;
+      nlohmann::json detail = nlohmann::json::object();
+      String error;
+      try
+      {
+         // 1. GLOBAL coverage gate: every global-capable process is reviewed.
+         const nlohmann::json unreviewed = UnreviewedGlobalProcesses();
+         detail["unreviewedGlobal"] = unreviewed;   // the review worklist
+         globalGateOk = unreviewed.is_array() && unreviewed.empty();
+
+         // Runtime: a global-capable process in NO section asks for a global
+         // run (not for a run on a view); globalSafe lets it through.
+         nlohmann::json empty = nlohmann::json::parse(
+            "{\"deny\":{},\"confirmAlways\":{},\"confirmWhen\":{},\"reviewedSafe\":{},\"globalSafe\":{},\"fileTables\":{}}" );
+         nlohmann::json listed = empty;
+         listed["globalSafe"]["ReadoutOptions"] = "self-test";
+         SetProcessSafetyPolicyForSelfTest( &empty );
+         const SafetyVerdict roGlobal = CheckProcessSafety( "ReadoutOptions", nlohmann::json::object(), nlohmann::json(),
+                                                            SafetyRunKind::Global );
+         const SafetyVerdict roView = CheckProcessSafety( "ReadoutOptions", nlohmann::json::object(), nlohmann::json() );
+         SetProcessSafetyPolicyForSelfTest( &listed );
+         const SafetyVerdict roListed = CheckProcessSafety( "ReadoutOptions", nlohmann::json::object(), nlohmann::json(),
+                                                            SafetyRunKind::Global );
+         SetProcessSafetyPolicyForSelfTest( nullptr );
+         const SafetyVerdict rgbGlobal = CheckProcessSafety( "RGBWorkingSpace", nlohmann::json::object(), nlohmann::json(),
+                                                             SafetyRunKind::Global );
+         const SafetyVerdict rgbView = CheckProcessSafety( "RGBWorkingSpace", nlohmann::json::object(), nlohmann::json() );
+         const SafetyVerdict roReal = CheckProcessSafety( "ReadoutOptions", nlohmann::json::object(), nlohmann::json(),
+                                                          SafetyRunKind::Global );
+         detail["globalRuntime"] = { { "unlistedGlobal", U8( roGlobal.reason ) }, { "unlistedOnViewKind", int( roView.kind ) },
+                                     { "globalSafeKind", int( roListed.kind ) }, { "globalSafeReason", U8( roListed.reason ) },
+                                     { "rgbGlobal", U8( rgbGlobal.reason ) }, { "rgbView", U8( rgbView.reason ) },
+                                     { "readout", U8( roReal.reason ) } };
+         globalRuntimeOk = roGlobal.kind == SafetyVerdict::Confirm && roGlobal.reason.Contains( "it has not been reviewed for global runs" )
+                        && !roView.reason.Contains( "global runs" )
+                        && !roListed.reason.Contains( "global runs" )
+                        && rgbGlobal.kind == SafetyVerdict::Confirm && rgbGlobal.reason.Contains( "working space" )
+                        && rgbView.kind == SafetyVerdict::Confirm
+                        && roReal.kind == SafetyVerdict::Confirm && roReal.reason.Contains( "readout" );
+
+         // Through the tool, in Copilot: the SAME gate asks; declined -> nothing runs.
+         int confirmCalls = 0;
+         String lastView = "unset", lastChanges;
+         ToolContext ctx;
+         ctx.mode = AgentMode::Copilot;
+         ctx.confirm = [&]( const String&, const String& viewId, const String& changes )
+         {
+            ++confirmCalls; lastView = viewId; lastChanges = changes; return false;
+         };
+         const ToolOutcome rgbRun = ExecuteTool( ToolCall{ "f1", "run_global_process", { { "process_id", "RGBWorkingSpace" } } }, ctx );
+         const int callsRgb = confirmCalls;
+         const String viewRgb = lastView, changesRgb = lastChanges;
+         SetProcessSafetyPolicyForSelfTest( &empty );
+         const ToolOutcome roRun = ExecuteTool( ToolCall{ "f2", "run_global_process", { { "process_id", "ReadoutOptions" } } }, ctx );
+         SetProcessSafetyPolicyForSelfTest( nullptr );
+         detail["globalTool"] = { { "rgbCalls", callsRgb }, { "rgbView", U8( viewRgb ) }, { "rgbChanges", U8( changesRgb ) },
+                                  { "rgbResult", rgbRun.content }, { "calls", confirmCalls }, { "roChanges", U8( lastChanges ) } };
+         globalToolOk = rgbRun.isError && callsRgb == 1 && viewRgb.IsEmpty()
+                     && changesRgb.StartsWith( "Why you are asked: " ) && changesRgb.Contains( "working space" )
+                     && roRun.isError && confirmCalls == 2 && lastChanges.Contains( "it has not been reviewed for global runs" );
+
+         // 3. NUL (U+0000) is refused in every string: scalar parameters, every
+         // table cell (declared, undeclared, disabled rows), and ToVariant.
+         SyntheticFrames frames( 3 );
+         auto rows = [&]() {
+            nlohmann::json r = nlohmann::json::array();
+            for ( size_type i = 0; i < frames.Paths().Length(); ++i )
+               r.push_back( nlohmann::json::array( { true, U8( frames.Paths()[i] ), "", "" } ) );
+            return r;
+         };
+         const std::string nulTail( "\0.txt", 5 );
+         const std::string frame0 = U8( frames.Paths()[0] );
+         nlohmann::json declared = rows();
+         declared[0][1] = frame0 + nulTail;
+         nlohmann::json disabled = rows();
+         disabled.push_back( nlohmann::json::array( { false, frame0 + nulTail, "", "" } ) );
+         nlohmann::json optional = rows();
+         optional[1][3] = std::string( "\0", 1 );
+         const String eScalar = PrecheckGlobalRun( "ImageIntegration", { { "csvWeights", std::string( "/tmp\0/w.csv", 11 ) } },
+                                                   { { "images", rows() } } );
+         const String eDeclared = PrecheckGlobalRun( "ImageIntegration", nlohmann::json::object(), { { "images", declared } } );
+         const String eDisabled = PrecheckGlobalRun( "ImageIntegration", nlohmann::json::object(), { { "images", disabled } } );
+         const String eOptional = PrecheckGlobalRun( "ImageIntegration", nlohmann::json::object(), { { "images", optional } } );
+         const String eUndeclared = ValidateGlobalRunFilePaths( "ImageIntegration", nlohmann::json::object(),
+                                                                nlohmann::json::object(), { { "images", declared } } );
+         const std::string nulPos = String().Format( "%u", unsigned( frames.Paths()[0].Length() ) ).ToUTF8().c_str();
+         Inc5TestWindow tw( "PCFinalNul", 16, 16, 1, 0.5 );
+         ctx.turnViewId = tw.MainView().FullId();
+         const ToolOutcome pmNul = ExecuteTool( ToolCall{ "f3", "apply_process",
+            { { "process_id", "PixelMath" }, { "parameters", { { "expression", std::string( "$T\0*0", 5 ) } } } } }, ctx );
+         const double afterNul = Inc5Median( tw.MainView(), 0 );
+         detail["nul"] = { { "scalar", U8( eScalar ) }, { "declared", U8( eDeclared ) }, { "disabledRow", U8( eDisabled ) },
+                           { "optionalCell", U8( eOptional ) }, { "undeclared", U8( eUndeclared ) },
+                           { "toVariant", pmNul.content.at( 0 ).at( "text" ) }, { "medianAfter", afterNul } };
+         const String nulMsg = ": the text contains a NUL character (U+0000) at position ";
+         nulOk = eScalar == "ImageIntegration.csvWeights" + nulMsg + "4; remove it"
+              && eDeclared == "ImageIntegration.images[0].path" + nulMsg + String( nulPos.c_str() ) + "; remove it"
+              && eDisabled == "ImageIntegration.images[3].path" + nulMsg + String( nulPos.c_str() ) + "; remove it"
+              && eOptional == "ImageIntegration.images[1].localNormalizationDataPath" + nulMsg + "0; remove it"
+              && eUndeclared == "ImageIntegration.images[0].path" + nulMsg + String( nulPos.c_str() ) + "; remove it"
+              && pmNul.isError && std::fabs( afterNul - 0.5 ) < 1e-6
+              && pmNul.content.at( 0 ).at( "text" ).get<std::string>()
+                 == "PixelMath.expression: the text contains a NUL character (U+0000) at position 2; remove it";
+
+         // GradientMergeMosaic.targetFrames is a declared file table now.
+         {
+            const Process gmm( IsoString( "GradientMergeMosaic" ) );
+            const ProcessParameter tf( gmm, IsoString( "targetFrames" ) );
+            nlohmann::json row = nlohmann::json::array();
+            std::string cols;
+            for ( const ProcessParameter& c : tf.TableColumns() )
+            {
+               const std::string cid( c.Id().c_str() );
+               cols += (cols.empty() ? "" : ", ") + cid;
+               row.push_back( c.IsBoolean() ? nlohmann::json( true ) : nlohmann::json( "relative_frame.fits" ) );
+            }
+            const String eMissing = PrecheckGlobalRun( "GradientMergeMosaic", nlohmann::json::object(), nlohmann::json::object() );
+            const String eRelative = PrecheckGlobalRun( "GradientMergeMosaic", nlohmann::json::object(),
+                                                        { { "targetFrames", { row } } } );
+            detail["gmm"] = { { "columns", cols }, { "missing", U8( eMissing ) }, { "relative", U8( eRelative ) } };
+            gmmOk = eMissing == String( "GradientMergeMosaic.targetFrames is required: pass table_parameters.targetFrames as rows [" )
+                                + String( cols.c_str() ) + "]"
+                 && eRelative.EndsWith( ": 'relative_frame.fits' is not an absolute path" )
+                 && eRelative.StartsWith( "GradientMergeMosaic.targetFrames[0]." );
+         }
+
+         // 4. Table keys resolve through ProcessParameter: an ALIAS key of a
+         // declared table is that table, and canonical + alias together are refused.
+         std::string tProc, tTable, tAlias;
+         for ( const Process& P : Process::AllProcesses() )
+         {
+            for ( const ProcessParameter& p : P.Parameters() )
+               if ( p.IsTable() )
+               {
+                  const IsoStringList aliases = p.Aliases();
+                  if ( !aliases.IsEmpty() && !aliases[0].Trimmed().IsEmpty() )
+                  {
+                     tProc = P.Id().c_str();
+                     tTable = p.Id().c_str();
+                     tAlias = aliases[0].Trimmed().c_str();
+                     break;
+                  }
+               }
+            if ( !tProc.empty() )
+               break;
+         }
+         detail["tableAliasFound"] = { { "process", tProc }, { "table", tTable }, { "alias", tAlias } };
+         if ( !tProc.empty() )
+         {
+            // A synthetic policy declaring the canonical table with a required
+            // "image" first string column: the alias key must reach that rule.
+            const Process P( IsoString( tProc.c_str() ) );
+            const ProcessParameter tp( P, IsoString( tTable.c_str() ) );
+            std::string strCol;
+            nlohmann::json row = nlohmann::json::array();
+            for ( const ProcessParameter& c : tp.TableColumns() )
+            {
+               if ( strCol.empty() && c.IsString() )
+                  strCol = c.Id().c_str();
+               row.push_back( c.IsBoolean() ? nlohmann::json( true ) : c.IsString() ? nlohmann::json( "rel.fits" )
+                                                                                     : nlohmann::json( 0 ) );
+            }
+            nlohmann::json ft = nlohmann::json::object();
+            if ( !strCol.empty() )
+               ft[tProc][tTable] = { { "columns", { { strCol, "image" } } } };
+            const String viaAlias = ValidateGlobalRunFilePaths( IsoString( tProc.c_str() ), ft, nlohmann::json::object(),
+                                                                { { tAlias, { row } } } );
+            const String both = ValidateGlobalRunFilePaths( IsoString( tProc.c_str() ), ft, nlohmann::json::object(),
+                                                            { { tAlias, { row } }, { tTable, { row } } } );
+            detail["tableAlias"] = { { "stringColumn", strCol }, { "viaAlias", U8( viaAlias ) }, { "both", U8( both ) } };
+            tableAliasOk = !strCol.empty()
+                        && viaAlias.EndsWith( "'rel.fits' is not an absolute path" )
+                        && both.Contains( "name the same table" );
+         }
+         else
+         {
+            // No installed table declares an alias on this PixInsight: then no
+            // alias key can slip past a file table. The canonical-key path and
+            // an unknown key are still checked.
+            const String unknownKey = ValidateGlobalRunFilePaths( "ImageIntegration", CompiledProcessSafety()["fileTables"],
+                                                                   nlohmann::json::object(),
+                                                                   { { "images", rows() }, { "noSuchTable", nlohmann::json::array() } } );
+            detail["tableAlias"] = { { "unknownKey", U8( unknownKey ) } };
+            tableAliasOk = unknownKey.IsEmpty();   // SetParameters() reports an unknown key precisely
+         }
+
+         // 4b. SCALAR aliases (installed on this PixInsight): canonical + alias
+         // together are refused before any value is set, on apply_process too.
+         {
+            std::string sProc, sParam, sAlias;
+            for ( const Process& P : Process::AllProcesses() )
+            {
+               if ( !P.CanProcessViews() )
+                  continue;
+               for ( const ProcessParameter& q : P.Parameters() )
+                  if ( !q.IsTable() && !q.IsReadOnly() )
+                  {
+                     const IsoStringList aliases = q.Aliases();
+                     if ( !aliases.IsEmpty() && !aliases[0].Trimmed().IsEmpty() )
+                     {
+                        sProc = P.Id().c_str(); sParam = q.Id().c_str(); sAlias = aliases[0].Trimmed().c_str();
+                        break;
+                     }
+                  }
+               if ( !sProc.empty() )
+                  break;
+            }
+            nlohmann::json sd = { { "process", sProc }, { "parameter", sParam }, { "alias", sAlias } };
+            bool scalarOk = false;
+            if ( !sProc.empty() )
+            {
+               Inc5TestWindow aw( "PCFinalAlias", 16, 16, 1, 0.5 );
+               const ApplyProcessResult both = ApplyProcess( IsoString( sProc.c_str() ),
+                                                             { { sAlias, 0 }, { sParam, 0 } }, nlohmann::json::object(),
+                                                             aw.MainView() );
+               sd["both"] = U8( both.error );
+               scalarOk = !both.ok && both.error.Contains( "name the same parameter" )
+                       && std::fabs( Inc5Median( aw.MainView(), 0 ) - 0.5 ) < 1e-6;
+            }
+            detail["scalarAlias"] = sd;
+            tableAliasOk = tableAliasOk && scalarOk;
+         }
+
+         // 5. Confirm wording.
+         const String gHtml = ConfirmDialogHtml( "ImageIntegration", String(), "a = 1" );
+         const String vHtml = ConfirmDialogHtml( "PixelMath", "Image01", "expression = $T" );
+         detail["wording"] = { { "global", U8( gHtml ) }, { "view", U8( vHtml ) } };
+         wordingOk = gHtml.StartsWith( "<p>Run <b>ImageIntegration</b> globally?</p><p>a = 1</p>" )
+                  && !gHtml.Contains( "Apply" )
+                  && vHtml.StartsWith( "<p>Apply <b>PixelMath</b> to <b>Image01</b>?</p>" );
+
+         // 6. Unknown tool: only the tools offered this turn.
+         ToolContext tc;
+         tc.mode = AgentMode::Copilot;
+         const std::string uCopilot = ExecuteTool( ToolCall{ "u1", "nope", nlohmann::json::object() }, tc ).content.at( 0 ).at( "text" );
+         tc.runPjsr = true;
+         const std::string uScripts = ExecuteTool( ToolCall{ "u2", "nope", nlohmann::json::object() }, tc ).content.at( 0 ).at( "text" );
+         tc.mode = AgentMode::Advisor;
+         const std::string uAdvisor = ExecuteTool( ToolCall{ "u3", "nope", nlohmann::json::object() }, tc ).content.at( 0 ).at( "text" );
+         detail["unknownTool"] = { uCopilot, uScripts, uAdvisor };
+         unknownToolOk = uCopilot == "unknown tool 'nope'; available: list_processes, describe_process, get_view_context, "
+                                     "apply_process, run_global_process"
+                      && uScripts == "unknown tool 'nope'; available: list_processes, describe_process, get_view_context, "
+                                     "apply_process, run_global_process, run_pjsr"
+                      && uAdvisor == "unknown tool 'nope'; available: list_processes, describe_process, get_view_context";
+
+         // 7. Tool-result cap.
+         {
+            ToolOutcome big;
+            std::string e3;   // 'é' (2 bytes) x 25000: the cut must land on a character boundary
+            for ( int i = 0; i < 25000; ++i )
+               e3 += "\xC3\xA9";
+            big.content.push_back( { { "type", "text" }, { "text", e3 } } );
+            big.content.push_back( { { "type", "image" }, { "source", { { "type", "base64" }, { "data", "AAAA" } } } } );
+            big.content.push_back( { { "type", "text" }, { "text", "short" } } );
+            big.logLine = "x";
+            const bool cut = CapToolResultText( big, 20000 );
+            const std::string t0 = big.content.at( 0 ).at( "text" );
+            const String t0s = FromU8( t0 );
+            ToolOutcome small;
+            small.content.push_back( { { "type", "text" }, { "text", "tiny" } } );
+            const bool cutSmall = CapToolResultText( small, 20000 );
+            const std::string listed = ExecuteTool( ToolCall{ "c1", "list_processes", nlohmann::json::object() }, tc )
+                                          .content.at( 0 ).at( "text" );
+            const size_t listRaw = ListProcesses().dump().size();
+            const size_t describeRaw = DescribeProcess( "ImageIntegration" ).dump().size();
+            detail["cap"] = { { "cut", cut }, { "cutTail", U8( t0s.Right( 160 ) ) }, { "log", U8( big.logLine ) },
+                              { "listProcessesBytes", listRaw }, { "describeImageIntegrationBytes", describeRaw },
+                              { "listResultChars", FromU8( listed ).Length() } };
+            capOk = cut && !cutSmall && t0s.StartsWith( FromU8( e3.substr( 0, 40000 ) ) )
+                 && t0s.Contains( "[tool result cut: 20000 of 25000 characters shown" )
+                 && t0s.Length() < 20000 + 300
+                 && big.content.at( 1 ).at( "type" ) == "image" && big.content.at( 2 ).at( "text" ) == "short"
+                 && big.logLine.Contains( "cut" )
+                 && small.content.at( 0 ).at( "text" ) == "tiny"
+                 && FromU8( listed ).Length() <= 20000 + 300;
+         }
+
+         // 8. System prompt: no run_pjsr detour around a denied process.
+         const String withScripts = BuildSystemPrompt( AgentMode::Copilot, ToolOptions{ true } );
+         promptOk = withScripts.Contains( "Never use run_pjsr to run a process that apply_process or run_global_process "
+                                          "refused as not allowed" );
+      }
+      catch ( const pcl::Exception& x ) { error = x.Message(); }
+      catch ( const std::exception& x ) { error = String( x.what() ); }
+      catch ( ... )                     { error = "unknown exception"; }
+      SetProcessSafetyPolicyForSelfTest( nullptr );
+      detail["checks"] = { { "globalGate", globalGateOk }, { "globalRuntime", globalRuntimeOk }, { "globalTool", globalToolOk },
+                           { "nul", nulOk }, { "gmm", gmmOk }, { "tableAlias", tableAliasOk }, { "wording", wordingOk },
+                           { "unknownTool", unknownToolOk }, { "cap", capOk }, { "prompt", promptOk } };
+      const bool ok = globalGateOk && globalRuntimeOk && globalToolOk && nulOk && gmmOk && tableAliasOk && wordingOk
+                   && unknownToolOk && capOk && promptOk;
+      out["finalFixDetail"] = detail;
+      out["finalFixError"] = U8( error );
+      out["finalFixOk"] = ok;
+      allOk = allOk && ok;
    }
 
    // ---- inc5 sections end ----

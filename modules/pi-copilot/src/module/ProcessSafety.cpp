@@ -16,9 +16,11 @@
 
 #include <cctype>
 #include <memory>
+#include <set>
 #include <regex>
 #include <string>
 #include <vector>
+
 
 namespace pcl
 {
@@ -30,9 +32,10 @@ const nlohmann::json* g_override = nullptr;
 
 const char* const kSections[] = { "deny", "confirmAlways", "confirmWhen", "reviewedSafe" };
 
+// Length-aware (Utf8.h): never a silent cut at an embedded NUL.
 String S16( const std::string& s )
 {
-   return String::UTF8ToUTF16( s.c_str() );
+   return FromU8( s );
 }
 
 const nlohmann::json& Section( const nlohmann::json& policy, const char* name )
@@ -131,13 +134,14 @@ nlohmann::json CanonicalEnum( const ProcessParameter& p, const nlohmann::json& v
    const ProcessParameter::enumeration_element_list& elements = EnumerationInfoOf( p ).elements;
    if ( v.is_string() )
    {
-      const IsoString want( v.get<std::string>().c_str() );
+      // std::string compare: a value with an embedded NUL matches nothing.
+      const std::string& want = v.get_ref<const std::string&>();
       for ( const ProcessParameter::EnumerationElement& e : elements )
       {
-         if ( e.id == want )
+         if ( want == e.id.c_str() )
             return std::string( e.id.c_str() );
          for ( const IsoString& a : e.aliases )
-            if ( a.Trimmed() == want )
+            if ( want == a.Trimmed().c_str() )
                return std::string( e.id.c_str() );
       }
    }
@@ -214,7 +218,7 @@ void SetProcessSafetyPolicyForSelfTest( const nlohmann::json* policy )
 }
 
 SafetyVerdict CheckProcessSafety( const IsoString& processId, const nlohmann::json& parameters,
-                                  const nlohmann::json& /*tableParameters*/ )
+                                  const nlohmann::json& /*tableParameters*/, SafetyRunKind run )
 {
    SafetyVerdict v;
    std::unique_ptr<Process> P;
@@ -242,6 +246,15 @@ SafetyVerdict CheckProcessSafety( const IsoString& processId, const nlohmann::js
       {
          v.kind = SafetyVerdict::Confirm;
          v.reason = S16( always[id].get<std::string>() );
+         return v;
+      }
+      // globalConfirm: reviewed, and a GLOBAL run always asks (a run on a view
+      // is judged like any unlisted process, below).
+      const nlohmann::json& globalConfirm = Section( policy, "globalConfirm" );
+      if ( run == SafetyRunKind::Global && globalConfirm.contains( id ) )
+      {
+         v.kind = SafetyVerdict::Confirm;
+         v.reason = "a global run: " + S16( globalConfirm[id].get<std::string>() );
          return v;
       }
       const nlohmann::json& when = Section( policy, "confirmWhen" );
@@ -288,16 +301,28 @@ SafetyVerdict CheckProcessSafety( const IsoString& processId, const nlohmann::js
          return v;
 
       // Not in the policy (a newer PixInsight, a third-party module): the
-      // coverage self-test only protects the machine it ran on, so the same
-      // heuristic decides at runtime.
+      // coverage self-tests only protect the machine they ran on, so the same
+      // rules decide at runtime.
+      StringList reasons;
       const nlohmann::json hits = SideEffectParameterIds( *P );
       if ( !hits.empty() )
       {
          String ids;
          for ( size_t i = 0; i < hits.size(); ++i )
             ids += (i > 0 ? String( ", " ) : String()) + S16( hits[i].get<std::string>() );
+         reasons << "it has not been reviewed and has file/output-like parameters: " + ids;
+      }
+      // A global run can change application-wide state (e.g. the default RGB
+      // working space) that no parameter name reveals.
+      if ( run == SafetyRunKind::Global && P->CanProcessGlobal() && !Section( policy, "globalSafe" ).contains( id )
+           && !globalConfirm.contains( id ) )
+         reasons << String( "it has not been reviewed for global runs, which can change PixInsight-wide settings "
+                            "rather than create new images" );
+      if ( !reasons.IsEmpty() )
+      {
          v.kind = SafetyVerdict::Confirm;
-         v.reason = "it has not been reviewed and has file/output-like parameters: " + ids;
+         for ( size_type i = 0; i < reasons.Length(); ++i )
+            v.reason += (i > 0 ? String( "; " ) : String()) + reasons[i];
       }
    }
    catch ( ... )
@@ -326,6 +351,24 @@ nlohmann::json UnclassifiedSideEffectCandidates()
    return out;
 }
 
+nlohmann::json UnreviewedGlobalProcesses()
+{
+   const nlohmann::json& policy = CompiledProcessSafety();
+   const nlohmann::json& globalSafe = Section( policy, "globalSafe" );
+   const nlohmann::json& globalConfirm = Section( policy, "globalConfirm" );
+   nlohmann::json out = nlohmann::json::array();
+   for ( const Process& P : Process::AllProcesses() )
+   {
+      if ( !P.CanProcessGlobal() )
+         continue;
+      const std::string id( P.Id().c_str() );
+      if ( Classified( policy, id ) || globalSafe.contains( id ) || globalConfirm.contains( id ) )
+         continue;
+      out.push_back( { { "process", id }, { "canProcessViews", P.CanProcessViews() } } );
+   }
+   return out;
+}
+
 String ValidateProcessFilePaths( const IsoString& processId, const nlohmann::json& parameters,
                                  const nlohmann::json& tableParameters )
 {
@@ -342,7 +385,8 @@ nlohmann::json UnknownPolicyProcessIds()
 {
    nlohmann::json out = nlohmann::json::array();
    const nlohmann::json& policy = CompiledProcessSafety();
-   for ( const char* s : { "deny", "confirmAlways", "confirmWhen", "reviewedSafe", "fileTables" } )
+   for ( const char* s : { "deny", "confirmAlways", "confirmWhen", "reviewedSafe", "globalSafe", "globalConfirm",
+                           "fileTables" } )
    {
       const nlohmann::json& section = Section( policy, s );
       for ( auto it = section.begin(); it != section.end(); ++it )
@@ -375,6 +419,48 @@ nlohmann::json UnknownPolicyProcessIds()
             catch ( ... )
             {
                out.push_back( "confirmWhen:" + it.key() + "." + param );
+            }
+         }
+   // globalSafe is for processes in no other section (else it is dead weight
+   // that hides which rule applies).
+   for ( const char* g : { "globalSafe", "globalConfirm" } )
+   {
+      const nlohmann::json& section = Section( policy, g );
+      for ( auto it = section.begin(); it != section.end(); ++it )
+         if ( Classified( policy, it.key() )
+              || Section( policy, std::string( g ) == "globalSafe" ? "globalConfirm" : "globalSafe" ).contains( it.key() ) )
+            out.push_back( std::string( g ) + ":" + it.key() + " (also in another section)" );
+   }
+   // fileTables: canonical table ids that are tables, with real columns.
+   const nlohmann::json& tables = Section( policy, "fileTables" );
+   for ( auto it = tables.begin(); it != tables.end(); ++it )
+      if ( it.value().is_object() )
+         for ( auto t = it.value().begin(); t != it.value().end(); ++t )
+         {
+            const std::string where = "fileTables:" + it.key() + "." + t.key();
+            try
+            {
+               const Process P( IsoString( it.key().c_str() ) );
+               const ProcessParameter tp( P, IsoString( t.key().c_str() ) );
+               if ( !tp.IsTable() || std::string( tp.Id().c_str() ) != t.key() )
+               {
+                  out.push_back( where + " (not a table under its canonical id)" );
+                  continue;
+               }
+               std::set<std::string> cols;
+               for ( const ProcessParameter& c : tp.TableColumns() )
+                  cols.insert( std::string( c.Id().c_str() ) );
+               const std::string enabled = t.value().value( "enabledColumn", std::string() );
+               if ( !enabled.empty() && !cols.count( enabled ) )
+                  out.push_back( where + ".enabledColumn " + enabled );
+               if ( t.value().contains( "columns" ) && t.value()["columns"].is_object() )
+                  for ( auto c = t.value()["columns"].begin(); c != t.value()["columns"].end(); ++c )
+                     if ( !cols.count( c.key() ) || !(c.value() == "image" || c.value() == "optionalFile") )
+                        out.push_back( where + ".columns." + c.key() );
+            }
+            catch ( ... )
+            {
+               out.push_back( where );
             }
          }
    return out;
