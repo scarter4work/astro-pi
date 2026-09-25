@@ -6,6 +6,7 @@
 #include "AgentSession.h"
 #include "AgentTools.h"
 #include "ConfigDialog.h"
+#include "JourneySpikeProbe.h"
 #include "KeyStore.h"
 #include "ModelCatalog.h"
 #include "PICopilotModule.h"
@@ -108,6 +109,41 @@ InterfaceFeatures PICopilotInterface::Features() const
 bool PICopilotInterface::IsInstanceGenerator() const
 {
    return false;
+}
+
+bool PICopilotInterface::WantsImageNotifications() const
+{
+   return true;
+}
+
+void PICopilotInterface::ImageCreated( const View& view )
+{
+   JourneySpikeNote( "created", view );
+}
+
+void PICopilotInterface::ImageUpdated( const View& view )
+{
+   JourneySpikeNote( "updated", view );
+}
+
+void PICopilotInterface::ImageRenamed( const View& view )
+{
+   JourneySpikeNote( "renamed", view );
+}
+
+void PICopilotInterface::ImageDeleted( const View& view )
+{
+   JourneySpikeNote( "deleted", view );
+}
+
+void PICopilotInterface::ImageSaved( const View& view )
+{
+   JourneySpikeNote( "saved", view );
+}
+
+void PICopilotInterface::ImageFocused( const View& view )
+{
+   JourneySpikeNote( "focused", view );
 }
 
 bool PICopilotInterface::Launch( const MetaProcess&, const ProcessImplementation*, bool& dynamic, unsigned& )

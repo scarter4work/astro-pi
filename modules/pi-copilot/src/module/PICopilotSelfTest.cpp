@@ -9,6 +9,7 @@
 #include "PICopilotVisionSelfTest.h"
 #include "PICopilotAgentSelfTest.h"
 #include "PICopilotInc5SelfTest.h"
+#include "PICopilotJourneySelfTest.h"
 #include "Utf8.h"
 #include "KeyStore.h"
 #include "Keyring.h"
@@ -337,7 +338,24 @@ bool RunSelfTest( String& jsonOut )
       j["inc5Exception"] = "unknown exception";
    }
 
-   ok = ok && visionOk && agentOk && inc5Ok;
+   // Image journey (0.2.0.0). Same isolation as increments 3-5.
+   bool journeyOk = false;
+   try
+   {
+      nlohmann::json journey;
+      journeyOk = RunJourneySelfTest( journey );
+      j.update( journey );
+   }
+   catch ( const std::exception& x )
+   {
+      j["journeyException"] = x.what();
+   }
+   catch ( ... )
+   {
+      j["journeyException"] = "unknown exception";
+   }
+
+   ok = ok && visionOk && agentOk && inc5Ok && journeyOk;
    j["ok"] = ok;
    jsonOut = String::UTF8ToUTF16( j.dump().c_str() );
    return ok;
