@@ -12,11 +12,14 @@ namespace pcl
 // Header value of the thinking-binding controls beta (preserved thinking).
 #define PICOPILOT_THINKING_BINDING_BETA "thinking-binding-controls-2026-08-01"
 
-// The models offered in the ⚙ dialog. Ids exactly as the Anthropic API names
-// them (no date suffixes). thinkingBinding: the model always thinks and binds
-// thinking blocks to the conversation prefix (Opus 5.5, Fable 5.1): requests
-// carry the drop_block binding control so the harness's history edits (image
-// stripping, trimming, a mode switch) drop stale blocks instead of a 400.
+// The models offered in the ⚙ dialog: exactly Opus 5.5 (the default) and
+// Sonnet 5 (ruling 2026-09-25; a saved model no longer offered migrates to the
+// default with a note, see CopilotSettings::LoadModel). Ids exactly as the
+// Anthropic API names them (no date suffixes). thinkingBinding: the model
+// always thinks and binds thinking blocks to the conversation prefix
+// (Opus 5.5): requests carry the drop_block binding control so the harness's
+// history edits (image stripping, trimming, a mode switch) drop stale blocks
+// instead of a 400.
 struct ModelInfo
 {
    const char* id;
@@ -24,7 +27,7 @@ struct ModelInfo
    bool        thinkingBinding;
 };
 
-constexpr size_type PICopilotModelCount = 5;
+constexpr size_type PICopilotModelCount = 2;
 
 // [0] is PICOPILOT_DEFAULT_MODEL.
 extern const ModelInfo kPICopilotModels[PICopilotModelCount];

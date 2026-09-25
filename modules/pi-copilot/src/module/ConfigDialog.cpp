@@ -85,8 +85,8 @@ ConfigDialog::ConfigDialog()
    KeyWhere_Label.EnableWordWrapping();
 
    Model_Label.SetText( "Model:" );
-   for ( const ModelInfo& m : kPICopilotModels )
-      Model_ComboBox.AddItem( m.label );
+   for ( size_type i = 0; i < PICopilotModelCount; ++i )   // [0] is the default
+      Model_ComboBox.AddItem( String( kPICopilotModels[i].label ) + (i == 0 ? " (default)" : "") );
    Model_ComboBox.SetToolTip( "<p>The Claude model PI Copilot uses from your next message on.</p>" );
    Model_Sizer.SetSpacing( 6 );
    Model_Sizer.Add( Model_Label );
@@ -149,8 +149,11 @@ ConfigOutcome ConfigDialog::Run()
    if ( !ks.note.IsEmpty() )
       where += ". " + ks.note;
    KeyWhere_Label.SetText( where );
+   // No note here: a saved model that is no longer offered shows as the
+   // default, and its one-time note stays for the next message (see OK).
    const int mi = ModelIndex( CopilotSettings::LoadModel() );
-   Model_ComboBox.SetCurrentItem( mi < 0 ? 0 : mi );
+   m_initialModel = mi < 0 ? 0 : mi;
+   Model_ComboBox.SetCurrentItem( m_initialModel );
    RunPjsr_CheckBox.SetChecked( CopilotSettings::LoadRunPjsrEnabled() );
    m_initialSide = CopilotSettings::LoadPanelSide();
    Side_ComboBox.SetCurrentItem( int( m_initialSide ) );
@@ -209,8 +212,10 @@ void ConfigDialog::OK_Button_Click( Button&, bool )
             Tell( st.note, StdIcon::Warning );
       }
    }
+   // Saved only when the user changed it: OK on an untouched combo must not
+   // overwrite a no-longer-offered saved model before its note is shown.
    const int mi = Model_ComboBox.CurrentItem();
-   if ( mi >= 0 && size_type( mi ) < PICopilotModelCount )
+   if ( mi != m_initialModel && mi >= 0 && size_type( mi ) < PICopilotModelCount )
       CopilotSettings::SaveModel( kPICopilotModels[mi].id );
    CopilotSettings::SaveRunPjsrEnabled( RunPjsr_CheckBox.IsChecked() );
    const PanelSide side = Side_ComboBox.CurrentItem() == 1 ? PanelSide::Left : PanelSide::Right;
