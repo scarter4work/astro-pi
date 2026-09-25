@@ -77,7 +77,7 @@ void SplitNewWindows( const std::vector<std::string>& newWindows, const nlohmann
                       std::vector<std::string>& results, std::vector<std::string>& others );
 
 // Checks before anything is asked or run: known id, global-capable, file paths
-// (ValidateGlobalRunFilePaths with the fileTables policy), then a dry run of
+// (ValidateProcessFilePaths: the policy's fileTables), then a dry run of
 // the parameter setting on a throwaway DEFAULT instance (shape, enumeration,
 // range, read-back). "" when fine. Root thread.
 String PrecheckGlobalRun( const IsoString& processId, const nlohmann::json& parameters,

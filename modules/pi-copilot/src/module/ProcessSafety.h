@@ -59,6 +59,17 @@ nlohmann::json UnknownPolicyProcessIds();
 // Self-test only: evaluate against `policy` instead (nullptr restores).
 void SetProcessSafetyPolicyForSelfTest( const nlohmann::json* policy );
 
+// File-path rules for global runs: the policy's "fileTables" section applied
+// by ValidateGlobalRunFilePaths() (GlobalRunFiles.h documents the rules).
+// Returns "" or the first problem, naming <Process>.<table>[row].<column>.
+// Root thread.
+String ValidateProcessFilePaths( const IsoString& processId, const nlohmann::json& parameters,
+                                 const nlohmann::json& tableParameters );
+
+// True when the policy declares file tables for the process (it integrates
+// files from disk; apply_process refers the model to run_global_process).
+bool HasFileTables( const IsoString& processId );
+
 } // namespace pcl
 
 #endif // PICopilot_ProcessSafety_h

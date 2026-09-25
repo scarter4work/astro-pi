@@ -2,8 +2,8 @@
 // Copyright (c) 2026 Scott Carter. MIT License.
 
 #include "ProcessApply.h"
-#include "GlobalRunFiles.h"
 #include "ProcessCatalog.h"
+#include "ProcessSafety.h"
 #include "Utf8.h"
 
 #include <pcl/Exception.h>
@@ -507,9 +507,7 @@ String PrecheckGlobalRun( const IsoString& processId, const nlohmann::json& para
    {
       return "unknown process id '" + String( processId ) + "'; call list_processes for valid ids";
    }
-   // PHASE-B: call ValidateProcessFilePaths() (ProcessSafety), which
-   // passes Section( CompiledProcessSafety(), "fileTables" ) here instead.
-   const String files = ValidateGlobalRunFilePaths( processId, PhaseAFileTables(), parameters, tableParameters );
+   const String files = ValidateProcessFilePaths( processId, parameters, tableParameters );
    if ( !files.IsEmpty() )
       return files;
 

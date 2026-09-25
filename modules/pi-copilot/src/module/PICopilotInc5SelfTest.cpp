@@ -2134,11 +2134,8 @@ bool RunInc5SelfTest( nlohmann::json& out )
    }
 
    // ---- Section B7: global processes / run_global_process (Task 8) --------------
-   // Phase A: everything except the shared safety gate (Task 7). The
-   // Copilot + policy-rule case (generateDrizzleData asks even in Copilot) is
-   // added with the gate in phase B.
    {
-      bool precheckOk = true, runOk = false, guidedOk = false, advisorOk = false,
+      bool precheckOk = true, runOk = false, guidedOk = false, advisorOk = false, safetyOk = false, denyOk = false,
            schemaOk = false, redirectOk = false, cleanupOk = false;
       nlohmann::json detail = nlohmann::json::object();
       std::vector<std::string> created;
@@ -2334,7 +2331,8 @@ bool RunInc5SelfTest( nlohmann::json& out )
          bool answer = false;
          ToolContext ctx;
          ctx.mode = AgentMode::Copilot;
-         ctx.confirm = [&]( const String&, const String&, const String& ) { ++confirmCalls; return answer; };
+         String lastChanges;
+         ctx.confirm = [&]( const String&, const String&, const String& changes ) { ++confirmCalls; lastChanges = changes; return answer; };
          const nlohmann::json input = { { "process_id", "ImageIntegration" },
                                         { "parameters", { { "weightMode", "DontCare" } } },
                                         { "table_parameters", { { "images", rows( 3 ) } } } };
@@ -2399,11 +2397,33 @@ bool RunInc5SelfTest( nlohmann::json& out )
          guidedOk = guidedOk && enumOut.isError && confirmCalls == 1
                  && enumOut.content.at( 0 ).at( "text" ).get<std::string>().rfind( "ImageIntegration.weightMode: 'NoSuchMode'", 0 ) == 0;
 
+         // Copilot + a policy rule (generateDrizzleData would update .xdrz files
+         // next to the frames): the shared gate asks even in Copilot; No -> nothing runs.
+         ctx.mode = AgentMode::Copilot;
+         nlohmann::json drz = input;
+         drz["parameters"]["generateDrizzleData"] = true;
+         const ToolOutcome drzOut = ExecuteTool( ToolCall{ "g6", "run_global_process", drz }, ctx );
+         detail["safetyConfirm"] = { { "changes", U8( lastChanges ) }, { "result", drzOut.content.at( 0 ).at( "text" ) } };
+         safetyOk = drzOut.isError && confirmCalls == 2 && OpenMainViewIds() == b2
+                 && lastChanges.StartsWith( "Why you are asked: " )
+                 && lastChanges.Contains( "(generateDrizzleData = true)" )
+                 && drzOut.content.at( 0 ).at( "text" ).get<std::string>()
+                    == "The user declined this run_global_process call (ImageIntegration). Nothing was run. "
+                       "Do not repeat it; ask what they would like instead.";
+
+         // Deny: a precise error, no dialog, nothing runs (PICopilot is global-capable and denied).
+         const ToolOutcome denied = ExecuteTool( ToolCall{ "g7", "run_global_process", { { "process_id", "PICopilot" } } }, ctx );
+         detail["deny"] = denied.content.at( 0 ).at( "text" );
+         denyOk = denied.isError && confirmCalls == 2 && OpenMainViewIds() == b2
+               && denied.content.at( 0 ).at( "text" ).get<std::string>().rfind( "PICopilot is not allowed from PI Copilot: ", 0 ) == 0
+               && denied.content.at( 0 ).at( "text" ).get<std::string>().find( "Give the user the settings so they can run it themselves." )
+                  != std::string::npos;
+
          // Advisor: not offered, refused if called anyway.
          ctx.mode = AgentMode::Advisor;
          const ToolOutcome adv = ExecuteTool( ToolCall{ "g4", "run_global_process", input }, ctx );
          advisorOk = adv.isError && adv.content.at( 0 ).at( "text" ).get<std::string>().find( "not available in Advisor" ) != std::string::npos
-                  && confirmCalls == 1 && OpenMainViewIds() == b2;
+                  && confirmCalls == 2 && OpenMainViewIds() == b2;
 
          bool inCopilot = false, inGuided = false, inAdvisor = false;
          for ( const nlohmann::json& t : ToolDefinitions( AgentMode::Copilot ) )
@@ -2442,10 +2462,12 @@ bool RunInc5SelfTest( nlohmann::json& out )
       detail["cleanup"] = { { "tempDirGone", !tempDir.IsEmpty() && !File::DirectoryExists( tempDir ) },
                             { "windowsGone", windowsGone } };
       detail["checks"] = { { "precheck", precheckOk }, { "run", runOk }, { "guided", guidedOk },
+                           { "safety", safetyOk }, { "deny", denyOk },
                            { "advisor", advisorOk }, { "schema", schemaOk }, { "redirect", redirectOk },
                            { "cleanup", cleanupOk } };
 
-      const bool ok = precheckOk && runOk && guidedOk && advisorOk && schemaOk && redirectOk && cleanupOk;
+      const bool ok = precheckOk && runOk && guidedOk && safetyOk && denyOk && advisorOk && schemaOk && redirectOk
+                   && cleanupOk;
       out["globalDetail"] = detail;
       out["globalError"] = U8( error );
       out["globalProcessOk"] = ok;

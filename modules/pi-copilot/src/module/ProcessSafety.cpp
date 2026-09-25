@@ -2,6 +2,7 @@
 // Copyright (c) 2026 Scott Carter. MIT License.
 
 #include "ProcessSafety.h"
+#include "GlobalRunFiles.h"
 #include "ProcessCatalog.h"
 #include "ProcessSafetyData.h"
 #include "Utf8.h"
@@ -323,6 +324,18 @@ nlohmann::json UnclassifiedSideEffectCandidates()
                           { "canProcessViews", P.CanProcessViews() }, { "canProcessGlobal", P.CanProcessGlobal() } } );
    }
    return out;
+}
+
+String ValidateProcessFilePaths( const IsoString& processId, const nlohmann::json& parameters,
+                                 const nlohmann::json& tableParameters )
+{
+   return ValidateGlobalRunFilePaths( processId, Section( CompiledProcessSafety(), "fileTables" ),
+                                      parameters, tableParameters );
+}
+
+bool HasFileTables( const IsoString& processId )
+{
+   return DeclaresFileTables( processId, Section( CompiledProcessSafety(), "fileTables" ) );
 }
 
 nlohmann::json UnknownPolicyProcessIds()
