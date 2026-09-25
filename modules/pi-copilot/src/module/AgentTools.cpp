@@ -3,7 +3,6 @@
 
 #include "AgentTools.h"
 #include "AnthropicClient.h"   // JpegImageBlock
-#include "GlobalRunFiles.h"
 #include "ProcessApply.h"
 #include "ProcessCatalog.h"
 #include "ProcessSafety.h"
@@ -184,8 +183,7 @@ ToolOutcome ApplyProcessTool( const nlohmann::json& in, const ToolContext& ctx, 
       return Fail( what, "apply_process is not available in Advisor mode (read-only); give the user the settings instead" );
    if ( pid.empty() )
       return Fail( "apply_process", "apply_process needs process_id; call list_processes for valid ids" );
-   // PHASE-B: HasFileTables() (ProcessSafety) instead of the phase-A policy copy.
-   if ( DeclaresFileTables( IsoString( pid.c_str() ), PhaseAFileTables() ) )
+   if ( HasFileTables( IsoString( pid.c_str() ) ) )
       return Fail( what, S16( pid ) + " integrates files from disk, not an open image: use run_global_process with "
                          "the file list in table_parameters" );
 
@@ -282,24 +280,11 @@ ToolOutcome RunGlobalTool( const nlohmann::json& in, const ToolContext& ctx, clo
    if ( !pre.IsEmpty() )
       return Fail( what, pre );
 
-   // T7-GATE: apply shared ProcessSafety verdict here
-   //   (phase B: CheckProcessSafety(); Deny -> Fail without asking; Confirm
-   //   -> ask in EVERY mode with "Why you are asked: <reason>." prepended to
-   //   the changes; Guided keeps asking on Allow.)
-   if ( ctx.mode == AgentMode::Guided )
    {
-      if ( !ctx.confirm )
-         return Fail( what, "internal error: Guided mode has no confirmation callback" );
-      const String changes = DescribeParameterChanges( params, tables, PICopilotConfirmChangesChars );
-      if ( !ctx.confirm( S16( pid ), "(global run: creates new images, changes no open image)", changes ) )
-      {
-         ToolOutcome o;
-         o.isError = true;
-         o.content.push_back( TextBlock( "The user declined this run_global_process call (" + pid
-                                         + "). Nothing was run. Do not repeat it; ask what they would like instead." ) );
-         o.logLine = S16( kErrMarkUtf8 ) + what + S16( kArrowUtf8 ) + "declined by user";
-         return o;
-      }
+      ToolOutcome refused;
+      if ( !PassSafetyGate( "run_global_process", pid, params, tables, ctx, what,
+                            "(global run: creates new images, changes no open image)", pid, "Nothing was run.", refused ) )
+         return refused;
    }
 
    const GlobalRunResult g = RunGlobalProcess( IsoString( pid.c_str() ), params, tables );

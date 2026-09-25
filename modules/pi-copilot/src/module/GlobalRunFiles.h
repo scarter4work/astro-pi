@@ -45,11 +45,6 @@ String ValidateGlobalRunFilePaths( const IsoString& processId, const nlohmann::j
 // (resolved to its canonical id). Never throws.
 bool DeclaresFileTables( const IsoString& processId, const nlohmann::json& fileTables );
 
-// PHASE A ONLY (Task 8 before Task 7 lands): the "fileTables" policy section,
-// byte-for-byte the block that goes into data/process-safety.json. Phase B
-// deletes this and passes Section( CompiledProcessSafety(), "fileTables" ).
-const nlohmann::json& PhaseAFileTables();
-
 } // namespace pcl
 
 #endif // PICopilot_GlobalRunFiles_h

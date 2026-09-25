@@ -122,5 +122,13 @@
     "TGVDenoise": "'supportRemovedWaveletLayers' is a support-mask option",
     "UnsharpMask": "'outputDeringingMaps' opens new image windows"
   },
-  "fileTables": {}
+  "fileTables": {
+    "ImageIntegration": {
+      "images": {
+        "enabledColumn": "enabled",
+        "minEnabledRows": 3,
+        "columns": { "path": "image", "drizzlePath": "optionalFile", "localNormalizationDataPath": "optionalFile" }
+      }
+    }
+  }
 }

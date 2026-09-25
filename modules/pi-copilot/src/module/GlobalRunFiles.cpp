@@ -290,20 +290,4 @@ String ValidateGlobalRunFilePaths( const IsoString& processId, const nlohmann::j
    return String();
 }
 
-const nlohmann::json& PhaseAFileTables()
-{
-   static const nlohmann::json tables = nlohmann::json::parse( R"JSON(
-    {
-      "ImageIntegration": {
-        "images": {
-          "enabledColumn": "enabled",
-          "minEnabledRows": 3,
-          "columns": { "path": "image", "drizzlePath": "optionalFile", "localNormalizationDataPath": "optionalFile" }
-        }
-      }
-    }
-   )JSON" );
-   return tables;
-}
-
 } // namespace pcl
