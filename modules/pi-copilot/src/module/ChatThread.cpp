@@ -37,16 +37,19 @@ void ChatThread::Run()
    catch ( const pcl::Exception& x )
    {
       r = AnthropicResult();
+      r.errorKind = RequestErrorKind::Internal;
       r.error = "worker thread exception: " + x.Message();
    }
    catch ( const std::exception& x )
    {
       r = AnthropicResult();
+      r.errorKind = RequestErrorKind::Internal;
       r.error = String( "worker thread exception: " ) + String( x.what() );
    }
    catch ( ... )
    {
       r = AnthropicResult();
+      r.errorKind = RequestErrorKind::Internal;
       r.error = "worker thread exception: unknown error";
    }
 

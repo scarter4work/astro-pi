@@ -51,6 +51,7 @@ public:
    bool              cancelled = false;
    bool              timedOut = false;
    bool              stalled = false;
+   bool              streamFailed = false;   // the assembler failed: nothing more is worth receiving
    clock::time_point deadline = clock::time_point::max();
 
    // Streamed requests: the SSE assembler (fed on the performing thread) and
@@ -67,6 +68,8 @@ public:
    // deadline has passed, or a stream went silent; records which one.
    bool ShouldContinue()
    {
+      if ( streamFailed )
+         return false;
       if ( cancelRequested.load() )
       {
          cancelled = true;
@@ -92,6 +95,11 @@ public:
          return false;
       buffer.Append( reinterpret_cast<const char*>( data ), size_type( size ) );
       lastData = clock::now();
+      // Every body is fed, including a non-2xx JSON error body (whose lines
+      // are no SSE fields, so it yields no events). The status is NOT known
+      // here: NetworkTransfer::ResponseCode() does not report the 2xx status
+      // from inside this callback (observed: gating the feed on it starved a
+      // 200 stream of every delta), and it reads 0 after an abort.
       if ( sse )
       {
          const std::string d = sse->Feed( reinterpret_cast<const char*>( data ), size_t( size ) );
@@ -99,6 +107,15 @@ public:
          {
             volatile AutoLock lock( deltaMutex );
             pendingDelta += d;
+         }
+         if ( sse->Failed() && sse->SawAnyEvent() )
+         {
+            // A real event stream that broke: abort now, waiting out the rest
+            // only delays the (already certain) Stream error. A body with no
+            // events yet may be a non-2xx error body: it is received in full
+            // so Perform() can classify it by its (then valid) status.
+            streamFailed = true;
+            return false;
          }
       }
       return true;
@@ -307,7 +324,17 @@ AnthropicResult AnthropicRequest::Perform()
       result.httpStatus = transfer.ResponseCode();
 
       // Aborted from our own callbacks: report why, never a generic
-      // network error (and never try to parse a partial body).
+      // network error. First, an event stream we aborted because the
+      // assembler failed: the Stream error (httpStatus 0 -- an aborted
+      // transfer reports no status).
+      if ( sink.streamFailed && !sink.cancelled && !sink.timedOut && !sink.stalled )
+      {
+         result.httpStatus = 0;
+         result.errorKind = RequestErrorKind::Stream;
+         result.error = "the reply stream failed: " + String::UTF8ToUTF16( sink.sse->Error().c_str() );
+         return result;
+      }
+
       if ( transfer.WasAborted() || sink.cancelled || sink.timedOut || sink.stalled )
       {
          result.ok = false;
@@ -563,12 +590,14 @@ AnthropicResult AnthropicClient::Send( const String& systemPrompt, const Array<A
    catch ( const pcl::Exception& x )
    {
       AnthropicResult r;
+      r.errorKind = RequestErrorKind::Internal;
       r.error = "request failed: " + x.Message();
       return r;
    }
    catch ( ... )
    {
       AnthropicResult r;
+      r.errorKind = RequestErrorKind::Internal;
       r.error = "request failed: unknown error";
       return r;
    }

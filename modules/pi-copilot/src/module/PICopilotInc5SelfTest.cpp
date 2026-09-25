@@ -803,7 +803,7 @@ bool RunInc5SelfTest( nlohmann::json& out )
       using clock = std::chrono::steady_clock;
       auto secondsSince = []( clock::time_point t0 ) { return std::chrono::duration<double>( clock::now() - t0 ).count(); };
       bool bodyOk = false, liveDeltasOk = false, loopOk = false, errorOk = false, stallOk = false, cancelOk = false;
-      bool truncatedOk = false;
+      bool truncatedOk = false, httpErrorOk = false, http401Ok = false, failFastOk = false;
       bool skipped = true;
       nlohmann::json detail = nlohmann::json::object();
       String error;
@@ -964,12 +964,57 @@ bool RunInc5SelfTest( nlohmann::json& out )
                           && e.error == "the reply stream ended before it was complete (no message_stop)"
                           && partial == "Cut ";
             }
+
+            // (7)/(8) A non-2xx reply to a streamed request is a plain JSON
+            // error body: Http kind, the API's message verbatim, no live text.
+            auto httpError = [&]( const char* path, int code, const char* message, const char* key ) -> bool
+            {
+               AnthropicResult e;
+               std::string partial;
+               {
+                  ChatThread t( "sk-ant-invalid-selftest", "sys", hist, PICOPILOT_DEFAULT_MODEL,
+                                String( base ) + path, 30, nlohmann::json(), shape );
+                  t.Start();
+                  t.Wait();
+                  partial = U8( t.TakeStreamedText() );
+                  t.TryTakeResult( e );
+               }
+               detail[key] = { { "error", U8( e.error ) }, { "partial", partial }, { "http", e.httpStatus },
+                               { "kind", int( e.errorKind ) } };
+               return !e.ok && e.errorKind == RequestErrorKind::Http && !e.cancelled && e.httpStatus == code
+                   && U8( e.error ) == message && partial.empty() && e.contentBlocks.is_null();
+            };
+            httpErrorOk = httpError( "/stream-http-error", 529, "Overloaded", "httpError" );
+            http401Ok = httpError( "/stream-401", 401, "invalid x-api-key", "http401" );
+
+            // (9) An assembler failure aborts the transfer at once: the server
+            // keeps sending ~9 s of pings the client must not wait for.
+            {
+               AnthropicResult e;
+               std::string partial;
+               const clock::time_point t0 = clock::now();
+               {
+                  ChatThread t( "sk-ant-invalid-selftest", "sys", hist, PICOPILOT_DEFAULT_MODEL,
+                                String( base ) + "/stream-fail-then-more", 30, nlohmann::json(), shape );
+                  t.Start();
+                  t.Wait();
+                  partial = U8( t.TakeStreamedText() );
+                  t.TryTakeResult( e );
+               }
+               const double took = secondsSince( t0 );
+               detail["failFast"] = { { "error", U8( e.error ) }, { "partial", partial }, { "http", e.httpStatus },
+                                      { "seconds", took } };
+               failFastOk = !e.ok && e.errorKind == RequestErrorKind::Stream && !e.cancelled && e.httpStatus == 0
+                         && e.error == "the reply stream failed: unsupported stream delta type 'mystery_delta' (content[0])"
+                         && partial == "Early " && took < 3;
+            }
          }
       }
       catch ( const pcl::Exception& x ) { error = x.Message(); }
       catch ( const std::exception& x ) { error = String( x.what() ); }
 
-      const bool ok = bodyOk && (skipped || (liveDeltasOk && loopOk && errorOk && stallOk && cancelOk && truncatedOk));
+      const bool ok = bodyOk && (skipped || (liveDeltasOk && loopOk && errorOk && stallOk && cancelOk && truncatedOk
+                                     && httpErrorOk && http401Ok && failFastOk));
       out["streamDetail"] = detail;
       out["streamError"] = U8( error );
       out["streamLoopbackSkipped"] = skipped;

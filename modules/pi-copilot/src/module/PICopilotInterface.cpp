@@ -483,6 +483,7 @@ void PICopilotInterface::e_Poll_Timer( Timer& )
       // Unreachable by construction (Run() always stores a result), but
       // never swallow it silently.
       r = AnthropicResult();
+      r.errorKind = RequestErrorKind::Internal;
       r.error = "worker thread ended without a result";
    }
    DrainStreamedText();   // whatever arrived after the last tick
