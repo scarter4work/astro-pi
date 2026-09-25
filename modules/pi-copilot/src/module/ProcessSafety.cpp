@@ -8,6 +8,7 @@
 #include "Utf8.h"
 
 #include <pcl/Exception.h>
+#include <pcl/Settings.h>
 #include <pcl/Process.h>
 #include <pcl/ProcessInstance.h>
 #include <pcl/ProcessParameter.h>
@@ -15,12 +16,17 @@
 #include <pcl/Variant.h>
 
 #include <cctype>
+#include <climits>
+#include <cstdlib>
+#include <functional>
 #include <memory>
 #include <set>
 #include <regex>
 #include <string>
 #include <vector>
 
+#include <sys/stat.h>
+#include <unistd.h>
 
 namespace pcl
 {
@@ -29,6 +35,8 @@ namespace
 {
 
 const nlohmann::json* g_override = nullptr;
+
+GlobalSettingReader g_settingReader;   // empty: Settings::ReadGlobal
 
 const char* const kSections[] = { "deny", "confirmAlways", "confirmWhen", "reviewedSafe" };
 
@@ -386,7 +394,7 @@ nlohmann::json UnknownPolicyProcessIds()
    nlohmann::json out = nlohmann::json::array();
    const nlohmann::json& policy = CompiledProcessSafety();
    for ( const char* s : { "deny", "confirmAlways", "confirmWhen", "reviewedSafe", "globalSafe", "globalConfirm",
-                           "fileTables" } )
+                           "fileTables", "pinnedParameters" } )
    {
       const nlohmann::json& section = Section( policy, s );
       for ( auto it = section.begin(); it != section.end(); ++it )
@@ -463,7 +471,164 @@ nlohmann::json UnknownPolicyProcessIds()
                out.push_back( where );
             }
          }
+   // pinnedParameters: real string parameters under their canonical id, with
+   // a source and a kind this build implements.
+   const nlohmann::json& pinned = Section( policy, "pinnedParameters" );
+   for ( auto it = pinned.begin(); it != pinned.end(); ++it )
+      if ( it.value().is_object() )
+         for ( auto q = it.value().begin(); q != it.value().end(); ++q )
+         {
+            const std::string where = "pinnedParameters:" + it.key() + "." + q.key();
+            try
+            {
+               const Process P( IsoString( it.key().c_str() ) );
+               const ProcessParameter p( P, IsoString( q.key().c_str() ) );
+               const nlohmann::json& rule = q.value();
+               if ( !p.IsString() || std::string( p.Id().c_str() ) != q.key() )
+                  out.push_back( where + " (not a string parameter under its canonical id)" );
+               else if ( !rule.is_object() || rule.value( "source", std::string() ) != "globalSetting"
+                         || rule.value( "key", std::string() ).rfind( "/", 0 ) != 0
+                         || rule.value( "kind", std::string() ) != "executable"
+                         || rule.value( "from", std::string() ).empty() || rule.value( "setupHint", std::string() ).empty() )
+                  out.push_back( where + " (needs source \"globalSetting\", key \"/Module/...\", kind \"executable\", "
+                                         "from, setupHint)" );
+            }
+            catch ( ... )
+            {
+               out.push_back( where );
+            }
+         }
+      else
+         out.push_back( "pinnedParameters:" + it.key() + " (not an object)" );
    return out;
+}
+
+void SetGlobalSettingReaderForSelfTest( GlobalSettingReader reader )
+{
+   g_settingReader = std::move( reader );
+}
+
+bool ReadGlobalSetting( const IsoString& key, String& value )
+{
+   if ( g_settingReader )
+      return g_settingReader( key, value );
+   try
+   {
+      return Settings::ReadGlobal( key, value );
+   }
+   catch ( ... )
+   {
+      return false;
+   }
+}
+
+namespace
+{
+
+// "" when `path` is an absolute path to an existing, regular, executable file
+// (symbolic links followed); then `canonical` is its realpath(). Else why not.
+String ExecutableProblem( const String& path, String& canonical )
+{
+   if ( !path.StartsWith( '/' ) )
+      return "is not an absolute path";
+   const IsoString p = path.ToUTF8();
+   char buf[PATH_MAX];
+   if ( ::realpath( p.c_str(), buf ) == nullptr )
+      return "does not exist (or cannot be resolved)";
+   struct stat st;
+   if ( ::stat( buf, &st ) != 0 )
+      return "cannot be examined";
+   if ( !S_ISREG( st.st_mode ) )
+      return "is not a file";
+   if ( ::access( buf, X_OK ) != 0 )
+      return "is not executable";
+   canonical = FromU8( std::string( buf ) );
+   return String();
+}
+
+} // namespace
+
+String ResolvePinnedParameters( const IsoString& processId, const nlohmann::json& parameters,
+                                const nlohmann::json& tableParameters, std::vector<PinnedParameter>& out )
+{
+   out.clear();
+   std::unique_ptr<Process> P;
+   try
+   {
+      P.reset( new Process( processId ) );
+   }
+   catch ( ... )
+   {
+      return String();   // unknown process: the executor reports it precisely
+   }
+   try
+   {
+      const std::string id( P->Id().c_str() );
+      const String pname( P->Id() );
+      const nlohmann::json& pinned = Section( CompiledProcessSafety(), "pinnedParameters" );
+      const auto entry = pinned.find( id );
+      if ( entry == pinned.end() || !entry->is_object() )
+         return String();
+
+      // The model never chooses a pinned value: ANY key that resolves to it
+      // (its id or an alias, in either object), whatever the value, is refused.
+      for ( const nlohmann::json* given : { &parameters, &tableParameters } )
+         if ( given->is_object() )
+            for ( auto it = given->begin(); it != given->end(); ++it )
+            {
+               std::string canonical;
+               try
+               {
+                  canonical = ProcessParameter( *P, IsoString( it.key().c_str() ) ).Id().c_str();
+               }
+               catch ( ... )
+               {
+                  continue;   // unknown key: SetParameters() reports it
+               }
+               if ( entry->contains( canonical ) )
+                  return pname + "." + S16( canonical ) + " is set by PI Copilot from "
+                         + S16( (*entry)[canonical].value( "from", std::string( "a trusted setting" ) ) ) + "; omit it";
+            }
+
+      for ( auto q = entry->begin(); q != entry->end(); ++q )
+      {
+         const nlohmann::json& rule = q.value();
+         const String name = pname + "." + S16( q.key() );
+         const String from = S16( rule.value( "from", std::string() ) );
+         const String hint = " Ask the user to " + S16( rule.value( "setupHint", std::string() ) ) + ", then try again.";
+         if ( rule.value( "source", std::string() ) != "globalSetting" || rule.value( "kind", std::string() ) != "executable" )
+            return "internal: the safety policy's pinned parameter " + name + " has an unknown source or kind";
+         const IsoString key( rule.value( "key", std::string() ).c_str() );
+         String value;
+         if ( !ReadGlobalSetting( key, value ) || value.Trimmed().IsEmpty() )
+            return name + " cannot be set: there is no value for it in " + from + "." + hint;
+         String canonical;
+         const String problem = ExecutableProblem( value, canonical );
+         if ( !problem.IsEmpty() )
+            return name + " cannot be set: '" + value + "' (from " + from + ") " + problem + "." + hint;
+         out.push_back( PinnedParameter{ q.key(), canonical, from } );
+      }
+   }
+   catch ( const pcl::Exception& x )
+   {
+      out.clear();
+      return "internal: pinned parameters could not be resolved: " + x.Message();
+   }
+   catch ( const std::exception& x )
+   {
+      out.clear();
+      return "internal: pinned parameters could not be resolved: " + String( x.what() );
+   }
+   return String();
+}
+
+String DescribePinnedParameters( const std::vector<PinnedParameter>& pinned )
+{
+   String s;
+   for ( const PinnedParameter& p : pinned )
+      s += (s.IsEmpty() ? String() : String( "\n" )) + S16( p.parameter ) + " = " + p.value
+         + " (set by PI Copilot from " + p.from + ")";
+   return s;
 }
 
 } // namespace pcl

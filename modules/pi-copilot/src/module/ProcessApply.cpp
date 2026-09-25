@@ -304,7 +304,7 @@ String BusyMessage( const String& viewId )
 // Shared by ApplyProcess and RunGlobalProcess.
 void SetParameters( const Process& P, ProcessInstance& instance, const String& processId,
                     const nlohmann::json& parameters, const nlohmann::json& tableParameters,
-                    nlohmann::json& parametersSet )
+                    nlohmann::json& parametersSet, nlohmann::json& pinnedSet )
 {
    if ( !parameters.is_null() && !parameters.is_object() )
       throw ApplyError{ String( "parameters must be an object {parameterId: value}" ) };
@@ -318,6 +318,14 @@ void SetParameters( const Process& P, ProcessInstance& instance, const String& p
          dup = DuplicateKeyProblem( P, tableParameters, "table" );
       if ( !dup.IsEmpty() )
          throw ApplyError{ dup };
+   }
+   // Pinned parameters (ProcessSafety.h): refused from the model, resolved
+   // from their trusted source BEFORE anything is set.
+   std::vector<PinnedParameter> pinned;
+   {
+      const String e = ResolvePinnedParameters( P.Id(), parameters, tableParameters, pinned );
+      if ( !e.IsEmpty() )
+         throw ApplyError{ e };
    }
    if ( parameters.is_object() )
       for ( auto it = parameters.begin(); it != parameters.end(); ++it )
@@ -392,6 +400,15 @@ void SetParameters( const Process& P, ProcessInstance& instance, const String& p
          parametersSet[it.key()] = rows;
       }
 
+   // Last, so nothing the model passed can overwrite them; read back like
+   // every other value (a value that does not stick is an error).
+   for ( const PinnedParameter& q : pinned )
+   {
+      const String name = processId + "." + S16( q.parameter );
+      const ProcessParameter p = FindParameter( P, q.parameter, name );
+      SetChecked( instance, p, Variant( q.value ), kScalarRow, name );
+      pinnedSet[q.parameter] = U8( q.value );
+   }
 }
 
 std::set<std::string> OpenMainViewIds()
@@ -435,7 +452,7 @@ ApplyProcessResult ApplyProcess( const IsoString& processId, const nlohmann::jso
 
       ProcessInstance instance( *P );   // DEFAULT parameters
 
-      SetParameters( *P, instance, r.processId, parameters, tableParameters, r.parametersSet );
+      SetParameters( *P, instance, r.processId, parameters, tableParameters, r.parametersSet, r.pinnedSet );
 
       String whyNot;
       if ( !instance.Validate( whyNot ) )
@@ -480,24 +497,28 @@ ApplyProcessResult ApplyProcess( const IsoString& processId, const nlohmann::jso
       r.ok = false;
       r.error = e.message;
       r.parametersSet = nlohmann::json::object();
+      r.pinnedSet = nlohmann::json::object();
    }
    catch ( const pcl::Exception& x )
    {
       r.ok = false;
       r.error = "apply_process internal error: " + x.Message();
       r.parametersSet = nlohmann::json::object();
+      r.pinnedSet = nlohmann::json::object();
    }
    catch ( const std::exception& x )
    {
       r.ok = false;
       r.error = String( "apply_process internal error: " ) + String( x.what() );
       r.parametersSet = nlohmann::json::object();
+      r.pinnedSet = nlohmann::json::object();
    }
    catch ( ... )
    {
       r.ok = false;
       r.error = "apply_process internal error: unknown exception";
       r.parametersSet = nlohmann::json::object();
+      r.pinnedSet = nlohmann::json::object();
    }
    return r;
 }
@@ -539,8 +560,8 @@ String PrecheckGlobalRun( const IsoString& processId, const nlohmann::json& para
    {
       const Process P( processId );
       ProcessInstance probe( P );
-      nlohmann::json ignored = nlohmann::json::object();
-      SetParameters( P, probe, String( P.Id() ), parameters, tableParameters, ignored );
+      nlohmann::json ignored = nlohmann::json::object(), ignoredPinned = nlohmann::json::object();
+      SetParameters( P, probe, String( P.Id() ), parameters, tableParameters, ignored, ignoredPinned );
    }
    catch ( const ApplyError& e )
    {
@@ -571,7 +592,7 @@ GlobalRunResult RunGlobalProcess( const IsoString& processId, const nlohmann::js
       const Process P( processId );
       r.processId = String( P.Id() );
       ProcessInstance instance( P );   // DEFAULT parameters
-      SetParameters( P, instance, r.processId, parameters, tableParameters, r.parametersSet );
+      SetParameters( P, instance, r.processId, parameters, tableParameters, r.parametersSet, r.pinnedSet );
 
       String whyNot;
       if ( !instance.Validate( whyNot ) )
@@ -646,7 +667,10 @@ GlobalRunResult RunGlobalProcess( const IsoString& processId, const nlohmann::js
       {
       }
    if ( !r.ok )
+   {
       r.parametersSet = nlohmann::json::object();
+      r.pinnedSet = nlohmann::json::object();
+   }
    return r;
 }
 

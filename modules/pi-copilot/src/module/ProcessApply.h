@@ -20,6 +20,7 @@ struct ApplyProcessResult
    bool           ok = false;
    String         error;                                     // precise, model-facing; empty when ok
    nlohmann::json parametersSet = nlohmann::json::object();  // id -> value exactly as applied (tables: the rows)
+   nlohmann::json pinnedSet = nlohmann::json::object();      // pinned parameters PI Copilot set (ProcessSafety.h)
    double         elapsedMs = 0;                             // ExecuteOn() wall time
    String         processId;                                 // canonical id (Process::Id()), once resolved
    String         viewId;                                    // target FullId, once resolved
@@ -42,7 +43,9 @@ struct ApplyProcessResult
  *      the same source describe_process uses); table row shape and row count
  *      against the table's length limits; no string may contain NUL; two keys
  *      naming the same parameter (id + alias) are refused. Scalars are set at
- *      row 0. Every value is READ BACK and must match,
+ *      row 0. Pinned parameters (ProcessSafety.h) are refused from the model
+ *      and set LAST from their trusted source. Every value is READ BACK and
+ *      must match,
  *   5. Validate(whyNot), then CanExecuteOn(view, whyNot),
  *   6. ExecuteOn(view) with swap data (undoable, recorded in History); the
  *      busy probe is repeated right before it. A failure found only while
@@ -62,6 +65,7 @@ struct GlobalRunResult
    bool                     ok = false;
    String                   error;                                     // precise, model-facing
    nlohmann::json           parametersSet = nlohmann::json::object();
+   nlohmann::json           pinnedSet = nlohmann::json::object();      // pinned parameters PI Copilot set
    double                   elapsedMs = 0;                             // ExecuteGlobal() wall time
    String                   processId;                                 // canonical id, once resolved
    std::vector<std::string> createdWindows;                            // result windows (see SplitNewWindows)

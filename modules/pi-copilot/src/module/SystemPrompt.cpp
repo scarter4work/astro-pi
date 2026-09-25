@@ -111,7 +111,10 @@ const char* const kApplyIdioms =
    "- A large integration keeps PixInsight busy for minutes: tell the user before you start one. They can abort it "
    "from the Process Console, so a run reported as not completed may have been aborted by them.\n"
    "- Some runs ask the user first even in Copilot mode, because they write files, close windows or change "
-   "PixInsight settings; if the user declines, do not repeat the call.\n";
+   "PixInsight settings; if the user declines, do not repeat the call.\n"
+   "- A few parameters are set by PI Copilot itself from the user's own settings, never by you (e.g. GraXpert.appPath, "
+   "the GraXpert program to launch): omit them. If the tool_result says the setting is missing, tell the user what "
+   "it says to do.\n";
 
 const char* const kVision =
    "\nA user message may begin with a [PixInsight view context] block (JSON: view identity, geometry, per-channel "
