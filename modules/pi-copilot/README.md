@@ -92,6 +92,7 @@ A "confirm" asks you in every mode, Copilot included, and the dialog defaults to
 | ProcessContainer | never run it | it runs a list of other processes that PI Copilot cannot check one by one |
 | Script | never run it | it runs a PJSR script file, which PI Copilot cannot review from here (scripts go through run_pjsr, which shows the whole script first) |
 | APASS | always ask you first | it can write catalog search results to files, and its configure commands change the catalog database settings |
+| BlurXTerminator | always ask you first | its compiled plug-in can crash PixInsight (SIGABRT) on NVIDIA Blackwell GPUs such as the RTX 50 series, losing unsaved work; Script > RC-Astro runs the same tool through its command-line version instead |
 | ColorManagementSetup | always ask you first | it changes PixInsight's global color-management settings |
 | CometAlignment | always ask you first | it writes comet-aligned copies of the input frames to its output directory and can overwrite existing files |
 | CosmeticCorrection | always ask you first | it writes corrected copies of the input frames to its output directory |
@@ -104,9 +105,11 @@ A "confirm" asks you in every mode, Copilot included, and the dialog defaults to
 | ImageCalibration | always ask you first | it writes calibrated copies of the input frames to its output directory and can overwrite existing files |
 | LocalNormalization | always ask you first | it writes normalization data files (.xnml) to disk |
 | NSGXnml | always ask you first | it writes normalization data files (.xnml) to its output directory |
+| NoiseXTerminator | always ask you first | its compiled plug-in can crash PixInsight (SIGABRT) on NVIDIA Blackwell GPUs such as the RTX 50 series, losing unsaved work; Script > RC-Astro runs the same tool through its command-line version instead |
 | NukeX | always ask you first | it writes cache files to its cache directory while stacking |
 | SplitCFA | always ask you first | in the global context it writes split CFA frames to its output directory |
 | StarAlignment | always ask you first | in the global context it writes registered copies of the input frames to its output directory |
+| StarXTerminator | always ask you first | its compiled plug-in can crash PixInsight (SIGABRT) on NVIDIA Blackwell GPUs such as the RTX 50 series, losing unsaved work; Script > RC-Astro runs the same tool through its command-line version instead |
 | SubframeSelector | always ask you first | it can copy or move approved and rejected frames to output directories |
 | SubframeStudio | always ask you first | it writes measurement CSV files and a metrics cache to disk |
 | CreateAlphaChannels | ask you first when `closeSource` is `true` | it closes the source image window used for the alpha channel, and unsaved changes there are lost |
@@ -119,7 +122,9 @@ A "confirm" asks you in every mode, Copilot included, and the dialog defaults to
 | SpectrophotometricColorCalibration | ask you first when `generateTextFiles` is `true` | it writes calibration text files to its output directory |
 | SpectrophotometricFluxCalibration | ask you first when `generateTextFiles` is `true` | it writes calibration text files to its output directory |
 
-Reviewed and allowed without asking (their file/path-like parameters have no effect beyond the image or new windows): ACDNR, ATrousWaveletTransform, AssignICCProfile, AutomaticBackgroundExtractor, B3Estimator, ColorCalibration, DynamicAlignment, ExtractAlphaChannels, GradientHDRComposition, GradientHDRCompression, GradientMergeMosaic, HDRMultiscaleTransform, ICCProfileTransformation, LRGBCombination, MLDenoise, MergeCFA, MultiscaleLinearTransform, PixelMath, RestorationFilter, SCNR, StarXTerminator, TGVDenoise, UnsharpMask.
+Reviewed and allowed without asking (their file/path-like parameters have no effect beyond the image or new windows): ACDNR, ATrousWaveletTransform, AssignICCProfile, AstroResolver, AutomaticBackgroundExtractor, B3Estimator, ColorCalibration, DynamicAlignment, ExtractAlphaChannels, GradientHDRComposition, GradientHDRCompression, GradientMergeMosaic, HDRMultiscaleTransform, ICCProfileTransformation, LRGBCombination, MLDenoise, MergeCFA, MorphologicalTransformation, MultiscaleLinearTransform, PixelMath, RestorationFilter, SCNR, TGVDenoise, UnsharpMask.
+
+A process in none of these lists (a newer PixInsight, a third-party module) whose parameter ids look like files, folders, output, overwrite, closing windows, servers or commands is asked about at runtime ("it has not been reviewed and has file/output-like parameters: ..."). The dialog names the parameter and value that triggered a rule. If a run cannot be checked, PI Copilot asks rather than running it.
 
 ## 0.1.0.4 — UTF-8 wire fix
 

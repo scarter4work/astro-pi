@@ -13,8 +13,11 @@
 #include <pcl/StringList.h>
 #include <pcl/Variant.h>
 
+#include <cctype>
+#include <memory>
 #include <regex>
 #include <string>
+#include <vector>
 
 namespace pcl
 {
@@ -36,6 +39,87 @@ const nlohmann::json& Section( const nlohmann::json& policy, const char* name )
    static const nlohmann::json empty = nlohmann::json::object();
    const auto it = policy.find( name );
    return (it != policy.end() && it->is_object()) ? *it : empty;
+}
+
+// Words of a camelCase / snake_case / digit-separated id, lower-cased:
+// "outputXEPHFilePath" -> output, xeph, file, path.
+std::vector<std::string> IdWords( const std::string& id )
+{
+   std::vector<std::string> words;
+   std::string w;
+   auto flush = [&]() { if ( !w.empty() ) { words.push_back( w ); w.clear(); } };
+   for ( size_t i = 0; i < id.size(); ++i )
+   {
+      const char c = id[i];
+      if ( !std::isalpha( static_cast<unsigned char>( c ) ) )
+      {
+         flush();
+         continue;
+      }
+      if ( std::isupper( static_cast<unsigned char>( c ) ) && !w.empty() )
+      {
+         const bool prevLower = std::islower( static_cast<unsigned char>( id[i-1] ) ) != 0;
+         const bool nextLower = i+1 < id.size() && std::islower( static_cast<unsigned char>( id[i+1] ) ) != 0;
+         if ( prevLower || nextLower )   // "fileP|ath", "XEP|H|File"
+            flush();
+      }
+      w += char( std::tolower( static_cast<unsigned char>( c ) ) );
+   }
+   flush();
+   return words;
+}
+
+// THE side-effect heuristic (one definition: the coverage self-test and the
+// runtime check for unreviewed processes both use it). Substrings are
+// unambiguous anywhere in an id; the short words only match as whole words
+// ("app" must not match "mapping", "move" is covered by "remove" only as a word).
+bool LooksLikeSideEffect( const std::string& id )
+{
+   static const std::regex re( "output|directory|dir$|file|path|overwrite|write|save|log|cache|delete|remove|close|"
+                               "script|command|url|exec|folder|destination|export|rename|database|server|program|launch",
+                               std::regex::icase );
+   if ( std::regex_search( id, re ) )
+      return true;
+   static const char* const kWords[] = { "dir", "dest", "move", "copy", "db", "host", "app", "application" };
+   for ( const std::string& w : IdWords( id ) )
+      for ( const char* k : kWords )
+         if ( w == k )
+            return true;
+   return false;
+}
+
+// Parameter and table-column ids ("table.column") of P that match the heuristic.
+nlohmann::json SideEffectParameterIds( const Process& P )
+{
+   nlohmann::json hits = nlohmann::json::array();
+   for ( const ProcessParameter& p : P.Parameters() )
+   {
+      const std::string pid( p.Id().c_str() );
+      if ( LooksLikeSideEffect( pid ) )
+         hits.push_back( pid );
+      if ( p.IsTable() )
+         for ( const ProcessParameter& c : p.TableColumns() )
+         {
+            const std::string cid( c.Id().c_str() );
+            if ( LooksLikeSideEffect( cid ) )
+               hits.push_back( pid + "." + cid );
+         }
+   }
+   return hits;
+}
+
+bool Classified( const nlohmann::json& policy, const std::string& id )
+{
+   for ( const char* s : kSections )
+      if ( Section( policy, s ).contains( id ) )
+         return true;
+   return false;
+}
+
+// " (id = value)" / " (id = value, the process default)" for a confirm reason.
+String Trigger( const std::string& param, const nlohmann::json& value, bool fromDefault )
+{
+   return S16( " (" + param + " = " + value.dump() + (fromDefault ? ", the process default)" : ")") );
 }
 
 // An enumeration value (element id string, element alias string, or element
@@ -68,8 +152,10 @@ nlohmann::json CanonicalEnum( const ProcessParameter& p, const nlohmann::json& v
 // The values a run will use for the parameter `rule` names: every given value
 // whose key the core resolves to that parameter (its id or an alias), else the
 // process default. Throws when `rule` is not a parameter of P.
-nlohmann::json EffectiveValues( const Process& P, const std::string& rule, const nlohmann::json& parameters )
+nlohmann::json EffectiveValues( const Process& P, const std::string& rule, const nlohmann::json& parameters,
+                                bool& fromDefault )
 {
+   fromDefault = false;
    const ProcessParameter p( P, IsoString( rule.c_str() ) );
    const IsoString canonical = p.Id();
    nlohmann::json values = nlohmann::json::array();
@@ -89,6 +175,7 @@ nlohmann::json EffectiveValues( const Process& P, const std::string& rule, const
       }
    if ( !values.empty() )
       return values;
+   fromDefault = true;
 
    ProcessInstance d( P );
    const Variant v = d.ParameterValue( p, 0 );   // row 0, never ~0 (inc-4 Task 1 modal)
@@ -129,10 +216,18 @@ SafetyVerdict CheckProcessSafety( const IsoString& processId, const nlohmann::js
                                   const nlohmann::json& /*tableParameters*/ )
 {
    SafetyVerdict v;
+   std::unique_ptr<Process> P;
    try
    {
-      const Process P( processId );
-      const std::string id( P.Id().c_str() );
+      P.reset( new Process( processId ) );
+   }
+   catch ( ... )
+   {
+      return v;   // unknown process id: Allow here; the executor's own error names it precisely
+   }
+   try
+   {
+      const std::string id( P->Id().c_str() );
       const nlohmann::json& policy = CompiledProcessSafety();
       const nlohmann::json& deny = Section( policy, "deny" );
       if ( deny.contains( id ) )
@@ -159,9 +254,10 @@ SafetyVerdict CheckProcessSafety( const IsoString& processId, const nlohmann::js
             const bool negated = rule.contains( "notEquals" );
             const nlohmann::json equals = negated ? rule["notEquals"] : rule.value( "equals", nlohmann::json() );
             nlohmann::json values;
+            bool fromDefault = false;
             try
             {
-               values = EffectiveValues( P, param, parameters );
+               values = EffectiveValues( *P, param, parameters, fromDefault );
             }
             catch ( ... )
             {
@@ -174,7 +270,8 @@ SafetyVerdict CheckProcessSafety( const IsoString& processId, const nlohmann::js
             for ( const nlohmann::json& got : values )
                if ( Matches( got, equals ) != negated )
                {
-                  reasons << S16( rule.value( "reason", std::string( "a parameter with side effects is set" ) ) );
+                  reasons << S16( rule.value( "reason", std::string( "a parameter with side effects is set" ) ) )
+                             + Trigger( param, got, fromDefault );
                   break;
                }
          }
@@ -184,40 +281,43 @@ SafetyVerdict CheckProcessSafety( const IsoString& processId, const nlohmann::js
             for ( size_type i = 0; i < reasons.Length(); ++i )
                v.reason += (i > 0 ? String( "; " ) : String()) + reasons[i];
          }
+         return v;
+      }
+      if ( Section( policy, "reviewedSafe" ).contains( id ) )
+         return v;
+
+      // Not in the policy (a newer PixInsight, a third-party module): the
+      // coverage self-test only protects the machine it ran on, so the same
+      // heuristic decides at runtime.
+      const nlohmann::json hits = SideEffectParameterIds( *P );
+      if ( !hits.empty() )
+      {
+         String ids;
+         for ( size_t i = 0; i < hits.size(); ++i )
+            ids += (i > 0 ? String( ", " ) : String()) + S16( hits[i].get<std::string>() );
+         v.kind = SafetyVerdict::Confirm;
+         v.reason = "it has not been reviewed and has file/output-like parameters: " + ids;
       }
    }
    catch ( ... )
    {
-      // Unknown process id: Allow here; the executor's own error names it.
+      // Fail CLOSED: a run that could not be checked is asked about.
+      v.kind = SafetyVerdict::Confirm;
+      v.reason = "this run could not be checked";
    }
    return v;
 }
 
 nlohmann::json UnclassifiedSideEffectCandidates()
 {
-   const std::regex re( "output|directory|dir$|file|path|overwrite|write|save|log|cache|delete|remove|close|script|command|url|exec",
-                        std::regex::icase );
    const nlohmann::json& policy = CompiledProcessSafety();
    nlohmann::json out = nlohmann::json::array();
    for ( const Process& P : Process::AllProcesses() )
    {
       const std::string id( P.Id().c_str() );
-      bool classified = false;
-      for ( const char* s : kSections )
-         classified = classified || Section( policy, s ).contains( id );
-      if ( classified )
+      if ( Classified( policy, id ) )
          continue;
-      nlohmann::json hits = nlohmann::json::array();
-      for ( const ProcessParameter& p : P.Parameters() )
-      {
-         const std::string pid( p.Id().c_str() );
-         if ( std::regex_search( pid, re ) )
-            hits.push_back( pid );
-         if ( p.IsTable() )
-            for ( const ProcessParameter& c : p.TableColumns() )
-               if ( std::regex_search( std::string( c.Id().c_str() ), re ) )
-                  hits.push_back( pid + "." + c.Id().c_str() );
-      }
+      const nlohmann::json hits = SideEffectParameterIds( P );
       if ( !hits.empty() )
          out.push_back( { { "process", id }, { "parameters", hits },
                           { "canProcessViews", P.CanProcessViews() }, { "canProcessGlobal", P.CanProcessGlobal() } } );
