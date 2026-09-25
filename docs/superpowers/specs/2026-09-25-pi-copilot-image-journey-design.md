@@ -150,3 +150,16 @@ Calibration/stacking replay (WBPP); multi-machine sync of the library; sharing j
 3. History reads on views with very long histories (hundreds of steps): cost and size, measured in the plan.
 4. Masters not produced by ImageIntegration/WBPP (e.g. third-party stackers): detected by keywords where possible; otherwise the user can start a journey from chat (`start_journey` on the active view).
 5. Vendoring SQLite: amalgamation + licence (public domain) under `third_party/`, following the vendoring rules (source + licence only).
+
+## 13. Amendments from plan-time probes (2026-09-25)
+
+Probes on PI 1.9.5 while writing the plan corrected parts of this spec. The plan (`docs/superpowers/plans/2026-09-25-pi-copilot-image-journey.md`) implements these; where they conflict with §§1-12, this section wins.
+
+1. **WBPP masters have no processing history** (`initialProcessing.length == 0`, verified on a real M16 master). Membership (§5) therefore also detects masters from keywords: `IMAGETYP` naming a master, `ImageIntegration.*` HISTORY lines, `NCOMBINE`/`STACKCNT` > 1, or an integration Copilot ran. Target falls back to the WBPP folder path when `OBJECT` is absent.
+2. **`stats` gains `image_id`** (approved under the user's delegation): a master's starting stats are `step_id NULL` **plus** its `image_id`, so each of several masters (SHO) keeps its own baseline.
+3. **Advisor** never gets `replay_journey`; it presents a replay plan from `get_journey` / `compare_to_journey` (resolves §4/§6/§10 wording).
+4. **ABE is replayable** (it has no sample points); DBE sample points, drawn masks and previews remain manual steps.
+5. **A kept journey is frozen.** Further work on its end image continues as a new journey named "<name> (continued)".
+6. **Creating a window adds no step to its source view** (PixelMath `createNewImage`, ChannelExtraction verified). Timing links compare the new window's first history step start time with the view active at that moment; explicit references are checked before timing.
+7. **A replay is recorded as a new journey named "<keeper> (replay of #<id>)".**
+8. **PJSR cannot load an `.xpsm`.** The headless test replays the exported container in C++; loading the file in PixInsight is a user-checklist item.
