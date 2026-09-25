@@ -34,6 +34,8 @@ set(MODULE_SOURCES
     TurnEndNotes.cpp
     PICopilotInc5SelfTest.cpp
     SseStream.cpp
+    ModelCatalog.cpp
+    HistoryBudget.cpp
 )
 
 add_library(PICopilot SHARED ${MODULE_SOURCES})

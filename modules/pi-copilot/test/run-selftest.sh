@@ -241,8 +241,9 @@ class H(BaseHTTPRequestHandler):
                 return self.sse(self.stream_events(req, n, kind), stall=(kind == "stall"))
         if self.path.endswith("/agent"):
             return self.reply(*self.agent_reply(req, n))
-        self.reply(200, {"content": [{"type": "text", "text": json.dumps({"messages": req.get("messages"),
-                                                                          "tools": req.get("tools")})}],
+        self.reply(200, {"content": [{"type": "text", "text": json.dumps({"messages": req.get("messages"), "tools": req.get("tools"), "system": req.get("system"),
+            "cache_control": req.get("cache_control"), "thinking": req.get("thinking"),
+            "anthropic_beta": self.headers.get("anthropic-beta")})}],
                          "stop_reason": "end_turn"})
 srv = ThreadingHTTPServer(("127.0.0.1", 0), H)
 open(os.path.join(out, "port"), "w").write(str(srv.server_address[1]))
@@ -304,6 +305,7 @@ required_true = [
     'inc5SmokeOk',
     'sseParserOk',
     'streamTransportOk',
+    'conversationOk', 'liveConversationOk',
     'ok',
 ]
 missing = [k for k in required_true if d.get(k) is not True]
@@ -314,12 +316,13 @@ if d.get('agentWireSkipped') is not False: missing.append('agentWireSkipped==fal
 if d.get('streamLoopbackSkipped') is not False: missing.append('streamLoopbackSkipped==false')
 import os
 if os.environ.get('PICOPILOT_REQUIRE_LIVE') == '1':
-    for k in ('anthropicSkipped', 'twoTurnSkipped', 'visionSkipped', 'liveAgentSkipped'):
+    for k in ('anthropicSkipped', 'twoTurnSkipped', 'visionSkipped', 'liveAgentSkipped', 'liveConversationSkipped'):
         if d.get(k) is not False: missing.append(k + '==false (PICOPILOT_REQUIRE_LIVE=1)')
 print('anthropic check: %s' % ('SKIPPED (no key)' if d.get('anthropicSkipped') else 'RAN against real API'))
 print('two-turn check: %s' % ('SKIPPED (no key)' if d.get('twoTurnSkipped') else 'RAN against real API'))
 print('vision check: %s' % ('SKIPPED (no key)' if d.get('visionSkipped') else 'RAN against real API, answer=%r' % d.get('visionAnswer')))
 print('live agent check: %s' % ('SKIPPED (no key)' if d.get('liveAgentSkipped') else 'RAN against real API, ratio=%r log=%r' % (d.get('liveAgentRatio'), d.get('liveAgentLog'))))
+print('live conversation check: %s' % ('SKIPPED (no key)' if d.get('liveConversationSkipped') else 'RAN against real API, cacheRead=%r binding=%r' % (d.get('liveCacheRead'), d.get('liveBindingTransformations'))))
 if missing:
     print('FAILED keys: ' + ', '.join(missing))
     sys.exit(1)

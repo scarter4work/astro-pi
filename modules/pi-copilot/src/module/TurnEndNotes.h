@@ -27,7 +27,7 @@ struct TurnEndView
 // - CapReached: explains the PICopilotMaxToolRounds limit and that the next
 //   message lets it continue or summarize.
 // - toolsRan on Failed/Stopped: processes already applied stay applied (undo via History).
-// - needsClear: the history cannot be sent any more; press Clear.
+// - needsClear: the history cannot be sent any more; press New chat.
 TurnEndView DescribeTurnEnd( const AgentStep& step, int httpStatus );
 
 } // namespace pcl

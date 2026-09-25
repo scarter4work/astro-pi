@@ -40,7 +40,7 @@ TurnEndView DescribeTurnEnd( const AgentStep& step, int httpStatus )
    if ( step.needsClear )
    {
       v.offerClear = true;
-      v.notes.Add( "(this conversation can't be sent to the API any more -- press Clear to start a new chat)" );
+      v.notes.Add( "(this conversation can't be sent to the API any more -- press New chat to start fresh)" );
    }
    return v;
 }

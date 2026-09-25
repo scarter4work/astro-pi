@@ -112,6 +112,7 @@ void AgentSession::Clear()
    m_snapshot.Clear();
    m_rounds = 0;
    m_imageChanged = false;
+   m_trimmed = 0;
 }
 
 void AgentSession::BeginUserTurn( const AnthropicMessage& userTurn )
@@ -132,6 +133,7 @@ void AgentSession::BeginUserTurn( const AnthropicMessage& userTurn )
    else
       m_history.Add( userTurn );
    StripOlderImages( m_history );
+   m_trimmed += TrimHistoryToBudget( m_history, PICopilotHistoryTokenBudget, PICopilotHistoryTrimTarget );
 }
 
 AgentStep AgentSession::Fail( AgentStep::Kind kind, const String& error )
@@ -203,6 +205,8 @@ AgentStep AgentSession::OnResponse( const AnthropicResult& r, const ToolRunner& 
          s.truncated = r.truncated;
          s.toolsRan = m_imageChanged;
          m_history.Add( assistant );
+         // A long reply can push the history over the budget.
+         m_trimmed += TrimHistoryToBudget( m_history, PICopilotHistoryTokenBudget, PICopilotHistoryTrimTarget );
          s.kind = AgentStep::Done;
          return s;
       }
@@ -295,6 +299,9 @@ AgentStep AgentSession::OnResponse( const AnthropicResult& r, const ToolRunner& 
             m_history.Truncate( m_history.At( preRound ) );
          throw;
       }
+      // After the round is committed (the rollback above counts on the
+      // history's front being unchanged). The current exchange is never cut.
+      m_trimmed += TrimHistoryToBudget( m_history, PICopilotHistoryTokenBudget, PICopilotHistoryTrimTarget );
       ++m_rounds;
 
       s.toolsRan = m_imageChanged;

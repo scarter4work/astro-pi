@@ -1504,7 +1504,7 @@ bool RunAgentSelfTest( nlohmann::json& out )
             const String all = joined( v );
             check( "abortInvalid", v.notes.Length() == 3 && all.StartsWith( "Error: history invalid: message 3" )
                                    && all.Contains( "stay applied" ) && all.Contains( "History" )
-                                   && all.Contains( "Clear" ) && v.restoreInput && v.offerClear, v );
+                                   && all.Contains( "New chat" ) && v.restoreInput && v.offerClear, v );
          }
          // Stopped after a process ran: stopped + applied note, no restore.
          {
