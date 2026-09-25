@@ -107,7 +107,18 @@ NUKEX_VER="$(modver "$ROOT/modules/nukex/src/module/NukeXVersion.h" NUKEX)"
 PICOPILOT_VER="$(modver "$ROOT/modules/pi-copilot/src/module/PICopilotVersion.h" PICOPILOT)"
 [[ "$NUKEX_VER" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]] || die "could not read NukeX version (got '$NUKEX_VER')"
 [[ "$PICOPILOT_VER" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]] || die "could not read PICopilot version (got '$PICOPILOT_VER')"
-MOD_TGZ="$DATE-linux-x64-NukeX-$NUKEX_VER.tar.gz"
+# The published tarball of a module VERSION, whatever date it was cut on
+# (the name is <YYYYMMDD>-linux-x64-<Module>-<ver>.tar.gz), else a new dated
+# name. Matching the dated name alone re-packaged an unchanged version under
+# a new name on any later day, and the updater (which tracks installed
+# packages by fileName) then offered the same version as an update.
+module_tgz(){ # <Module> <ver>
+  local hit
+  hit="$(git -C "$ROOT" ls-files "repository/*-linux-x64-$1-$2.tar.gz" | sed 's#^repository/##')"
+  [ "$(printf '%s\n' "$hit" | grep -c .)" -le 1 ] || die "several published tarballs for $1 $2: $hit"
+  if [ -n "$hit" ]; then echo "$hit"; else echo "$DATE-linux-x64-$1-$2.tar.gz"; fi
+}
+MOD_TGZ="$(module_tgz NukeX "$NUKEX_VER")"
 # A versioned module tarball that is already committed is PUBLISHED: never
 # rebuild it (a re-sign changes its bytes under the same name, and the raw CDN
 # would serve the old bytes against the new manifest sha1). Bump the module
@@ -138,7 +149,7 @@ PY
 
 echo "== 3a/6 package PICopilot module tarball =="
 cp "$PICOPILOT_SO" "$PICOPILOT_XSGN" "$REPO/bin/"
-PICOPILOT_TGZ="$DATE-linux-x64-PICopilot-$PICOPILOT_VER.tar.gz"
+PICOPILOT_TGZ="$(module_tgz PICopilot "$PICOPILOT_VER")"
 package_module "$PICOPILOT_TGZ" bin/PICopilot-pxm.so bin/PICopilot-pxm.xsgn
 # Stale dated PICopilot tarballs (like stale dated NukeX tarballs) are not
 # auto-deleted here -- they're pruned manually at commit time (see repository/
