@@ -24,7 +24,7 @@ namespace
 
 String S16( const std::string& s )
 {
-   return String::UTF8ToUTF16( s.c_str(), 0, s.length() );
+   return FromU8( s );
 }
 
 // JavaScript helpers prepended to every wrapper (all ASCII, all fixed text):
@@ -36,7 +36,15 @@ String S16( const std::string& s )
 //              narrow-string re-encoding (inc-5 Task 1, finding 1).
 //  pcLine(e):  the <anonymous>:LINE of the innermost frame in the compiled
 //              function's source, or 0 (a SyntaxError has none: Task 1, 2).
+//              Limitation: code the script itself compiles (eval, its own
+//              new Function) also appears as "<anonymous>" frames, so an
+//              error raised inside such code reports that code's line, not
+//              the model's -- inexact in that case, never fabricated.
+//  pcCut(s,n): String( s ) cut to n characters, so a huge thrown value or
+//              message never crosses the boundary whole.
 const char* const kHelpersJs =
+   "function pcCut( s, n ) { s = String( s ); return s.length > n ? s.slice( 0, n ) : s; }"
+   " "
    "function pcWell( s ) { s = String( s ); var r = \"\";"
    " for ( var i = 0; i < s.length; ++i ) { var c = s.charCodeAt( i );"
    "  if ( c >= 0xD800 && c <= 0xDBFF && i+1 < s.length && s.charCodeAt( i+1 ) >= 0xDC00 && s.charCodeAt( i+1 ) <= 0xDFFF )"
@@ -121,7 +129,84 @@ String ScriptConsoleText( const String& log )
    return out;
 }
 
+// Unicode general category Cf (format characters), Unicode 15.1.
+struct CpRange { uint32 first, last; };
+const CpRange kFormatChars[] =
+{
+   { 0x00AD, 0x00AD }, { 0x0600, 0x0605 }, { 0x061C, 0x061C }, { 0x06DD, 0x06DD }, { 0x070F, 0x070F },
+   { 0x0890, 0x0891 }, { 0x08E2, 0x08E2 }, { 0x180E, 0x180E }, { 0x200B, 0x200F }, { 0x202A, 0x202E },
+   { 0x2060, 0x2064 }, { 0x2066, 0x206F }, { 0xFEFF, 0xFEFF }, { 0xFFF9, 0xFFFB }, { 0x110BD, 0x110BD },
+   { 0x110CD, 0x110CD }, { 0x13430, 0x1343F }, { 0x1BCA0, 0x1BCA3 }, { 0x1D173, 0x1D17A }, { 0xE0001, 0xE0001 },
+   { 0xE0020, 0xE007F }
+};
+
+bool IsFormatChar( uint32 c )
+{
+   for ( const CpRange& r : kFormatChars )
+      if ( c >= r.first && c <= r.last )
+         return true;
+   return false;
+}
+
+// What kind of refused character c is; nullptr when it is allowed.
+const char* RefusedKind( uint32 c )
+{
+   if ( c == 0x09 || c == 0x0A )
+      return nullptr;
+   if ( c == 0x0D )
+      return "CARRIAGE RETURN not followed by a line feed";
+   if ( c < 0x20 || c == 0x7F || (c >= 0x80 && c <= 0x9F) )
+      return "a control character";
+   if ( c == 0x2028 )
+      return "LINE SEPARATOR, which JavaScript treats as a line break";
+   if ( c == 0x2029 )
+      return "PARAGRAPH SEPARATOR, which JavaScript treats as a line break";
+   if ( (c >= 0x202A && c <= 0x202E) || (c >= 0x2066 && c <= 0x2069) || c == 0x200E || c == 0x200F || c == 0x061C )
+      return "a bidirectional text control, which can reorder how the code is displayed";
+   if ( c >= 0xD800 && c <= 0xDFFF )
+      return "an unpaired surrogate, which is not valid text";
+   if ( IsFormatChar( c ) )
+      return "an invisible format character";
+   return nullptr;
+}
+
 } // namespace
+
+String NormalizeScriptNewlines( const String& code )
+{
+   String out;
+   out.Reserve( code.Length() );
+   for ( size_type i = 0; i < code.Length(); ++i )
+      if ( !(code[i] == '\r' && i+1 < code.Length() && code[i+1] == '\n') )
+         out += code[i];
+   return out;
+}
+
+String ScriptCharProblem( const String& code )
+{
+   int line = 1, column = 1;
+   const size_type n = code.Length();
+   for ( size_type i = 0; i < n; ++i, ++column )
+   {
+      uint32 c = code[i];
+      if ( c >= 0xD800 && c <= 0xDBFF && i+1 < n && code[i+1] >= 0xDC00 && code[i+1] <= 0xDFFF )
+         c = 0x10000 + ((c - 0xD800) << 10) + (uint32( code[++i] ) - 0xDC00);
+      if ( c == '\n' )
+      {
+         ++line;
+         column = 0;
+         continue;
+      }
+      if ( const char* kind = RefusedKind( c ) )
+         return String().Format( "the script contains U+%04X (", unsigned( c ) ) + String( kind )
+              + String().Format( ") at line %d, column %d. Characters that are invisible, reorder text, or that "
+                                 "JavaScript treats as line breaks are refused, so that the user reads exactly the code "
+                                 "that runs. Remove it, or write such characters as \\uXXXX escapes inside string "
+                                 "literals (e.g. \"\\u200B\"), then call run_pjsr again. Nothing was shown to the user "
+                                 "and nothing ran.", line, column );
+   }
+   return String();
+}
 
 std::string ScriptLiteral( const String& code )
 {
@@ -163,8 +248,8 @@ PjsrCheck CheckPjsrSyntax( const String& code )
       const nlohmann::json j = EvalJson(
          "try { new Function( \"targetViewId\", " + ScriptLiteral( code ) + " );"
          " return JSON.stringify( { ok: true } ); }"
-         " catch ( e ) { return pcAscii( JSON.stringify( { ok: false, name: pcWell( e && e.name ),"
-         " message: pcWell( e && e.message ) } ) ); }" );
+         " catch ( e ) { return pcAscii( JSON.stringify( { ok: false, name: pcWell( pcCut( e && e.name, 200 ) ),"
+         " message: pcWell( pcCut( e && e.message, " + std::to_string( PICopilotMaxScriptErrorChars + 16 ) + " ) ) } ) ); }" );
       if ( j.value( "ok", false ) )
       {
          c.ok = true;
@@ -180,6 +265,8 @@ PjsrCheck CheckPjsrSyntax( const String& code )
    {
       c.error = String( "the script text could not be prepared: " ) + String( x.what() );
    }
+   if ( c.error.Length() > PICopilotMaxScriptErrorChars )
+      c.error = c.error.Left( PICopilotMaxScriptErrorChars ) + "...";
    return c;
 }
 
@@ -192,6 +279,7 @@ PjsrRun RunPjsr( const String& code, const IsoString& targetViewId )
       // beginLog() before the try, endLog() in its finally: balanced whatever
       // the script does. A value is cut in JS a little past the limit (so a
       // huge return does not cross the boundary), then exactly in C++.
+      const std::string kErrCut = std::to_string( PICopilotMaxScriptErrorChars + 16 );
       const std::string body =
          "var out = { ok: true }; console.beginLog();"
          " try { var f = new Function( \"targetViewId\", " + ScriptLiteral( code ) + " ); var v = f( " + target + " );"
@@ -199,9 +287,12 @@ PjsrRun RunPjsr( const String& code, const IsoString& targetViewId )
          "   if ( s === undefined ) s = String( v );"
          "   out.valueLength = s.length; out.value = pcWell( s.length > " + std::to_string( PICopilotMaxScriptValueChars + 16 )
          + " ? s.slice( 0, " + std::to_string( PICopilotMaxScriptValueChars + 16 ) + " ) : s ); } }"
-         " catch ( e ) { out.ok = false; out.error = pcWell( e ); out.line = pcLine( e ); }"
+         " catch ( e ) { out.ok = false; var es;"
+         "  try { es = String( e ); } catch ( x ) { es = \"(the thrown value cannot be converted to text)\"; }"
+         "  out.errorLength = es.length; out.error = pcWell( pcCut( es, " + kErrCut + " ) ); out.line = pcLine( e ); }"
          " finally { try { out.consoleB64 = console.endLog().toBase64(); }"
-         "  catch ( x ) { out.consoleB64 = \"\"; out.consoleError = pcWell( x ); } }"
+         "  catch ( x ) { out.consoleB64 = \"\"; var xs; try { xs = String( x ); } catch ( y ) { xs = \"(no text)\"; }"
+         "   out.consoleError = pcWell( pcCut( xs, " + kErrCut + " ) ); } }"
          " return pcAscii( JSON.stringify( out ) );";
       const auto t0 = std::chrono::steady_clock::now();
       const nlohmann::json j = EvalJson( body );
@@ -213,11 +304,18 @@ PjsrRun RunPjsr( const String& code, const IsoString& targetViewId )
       const ByteArray raw = IsoString( j.value( "consoleB64", std::string() ).c_str() ).FromBase64();
       r.console = ScriptConsoleText( S16( std::string( reinterpret_cast<const char*>( raw.Begin() ), raw.Length() ) ) );
       if ( j.contains( "consoleError" ) )
-         r.console += "\n[the console output could not be read: " + S16( j.value( "consoleError", std::string() ) ) + "]";
+      {
+         String ce = S16( j.value( "consoleError", std::string() ) );
+         if ( ce.Length() > PICopilotMaxScriptErrorChars )
+            ce = ce.Left( PICopilotMaxScriptErrorChars ) + "...";
+         r.console += "\n[the console output could not be read: " + ce + "]";
+      }
       if ( !r.ok )
       {
          r.error = S16( j.value( "error", std::string( "(no error text)" ) ) );
          r.line = BodyLine( j.value( "line", 0 ) );
+         if ( j.value( "errorLength", 0.0 ) > double( PICopilotMaxScriptErrorChars ) )
+            r.errorTruncated = true;
       }
    }
    catch ( const pcl::Exception& x )
@@ -229,6 +327,11 @@ PjsrRun RunPjsr( const String& code, const IsoString& targetViewId )
    {
       r.ok = false;
       r.error = String( "the script result could not be read: " ) + String( x.what() );
+   }
+   if ( r.error.Length() > PICopilotMaxScriptErrorChars )
+   {
+      r.error = r.error.Left( PICopilotMaxScriptErrorChars );
+      r.errorTruncated = true;
    }
    if ( r.value.Length() > PICopilotMaxScriptValueChars )
    {

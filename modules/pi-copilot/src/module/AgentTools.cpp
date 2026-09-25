@@ -33,9 +33,11 @@ const char* const kOkMarkUtf8  = "\xE2\x96\xB6 ";   // "▶ "
 const char* const kErrMarkUtf8 = "\xE2\x9C\x96 ";   // "✖ "
 const char* const kArrowUtf8   = " \xE2\x86\x92 ";  // " → "
 
+// Length-aware: an embedded NUL (legal in a JSON string) is kept, never a
+// silent end of the text.
 String S16( const std::string& s )
 {
-   return String::UTF8ToUTF16( s.c_str() );
+   return FromU8( s );
 }
 
 String Shorten( const String& s, size_type n )
@@ -384,7 +386,8 @@ ToolOutcome RunGlobalTool( const nlohmann::json& in, const ToolContext& ctx, clo
 ToolOutcome RunPjsrTool( const nlohmann::json& in, const ToolContext& ctx, clock::time_point t0 )
 {
    const std::string purpose = StringField( in, "purpose" );
-   const String code = S16( StringField( in, "code" ) );
+   // CR LF -> LF first: what the dialog shows and what runs have the same lines.
+   const String code = NormalizeScriptNewlines( S16( StringField( in, "code" ) ) );
    const String what = "run_pjsr \"" + Shorten( S16( purpose ), 80 ) + "\"";
    if ( ctx.mode == AgentMode::Advisor )
       return Fail( what, "run_pjsr is not available in Advisor mode (read-only); give the user the script instead" );
@@ -398,6 +401,16 @@ ToolOutcome RunPjsrTool( const nlohmann::json& in, const ToolContext& ctx, clock
                                           "processes", unsigned( code.Length() ), unsigned( PICopilotMaxScriptChars ) ) );
    if ( String( S16( purpose ) ).Trimmed().IsEmpty() )
       return Fail( what, "run_pjsr needs a one-sentence purpose; it is shown to the user in the approval dialog" );
+   if ( S16( purpose ).Length() > PICopilotMaxScriptPurposeChars )
+      return Fail( what, String().Format( "the purpose has %u characters; the limit is %u. Give one short sentence "
+                                          "(details belong in the script's comments)",
+                                          unsigned( S16( purpose ).Length() ), unsigned( PICopilotMaxScriptPurposeChars ) ) );
+
+   // Trojan-Source guard: the dialog is the only human gate, so the text the
+   // user reads must be the code that runs. Before the parse and the dialog.
+   const String hidden = ScriptCharProblem( code );
+   if ( !hidden.IsEmpty() )
+      return Fail( what, hidden );
 
    // Parse first: a syntax error never reaches the user's dialog. The engine
    // gives a SyntaxError no position (inc-5 Task 1), so none is invented.
@@ -426,7 +439,7 @@ ToolOutcome RunPjsrTool( const nlohmann::json& in, const ToolContext& ctx, clock
    if ( !run.ok )
    {
       const nlohmann::json e = {
-         { "result", "error" }, { "error", U8( run.error ) },
+         { "result", "error" }, { "error", U8( run.error ) }, { "errorTruncated", run.errorTruncated },
          { "line", run.line > 0 ? nlohmann::json( run.line ) : nlohmann::json( "unknown" ) },
          { "console", U8( run.console ) }, { "consoleTruncated", run.consoleTruncated },
          { "note", "The script ran until the error: anything it changed before that point stays changed." }

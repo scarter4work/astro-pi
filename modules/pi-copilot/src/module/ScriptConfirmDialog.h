@@ -38,6 +38,7 @@ private:
    bool m_run = false;
 
    void e_Click( Button& sender, bool checked );
+   void e_Show( Control& sender );
 };
 
 } // namespace pcl

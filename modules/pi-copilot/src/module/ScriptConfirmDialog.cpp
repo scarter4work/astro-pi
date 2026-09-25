@@ -64,6 +64,17 @@ ScriptConfirmDialog::ScriptConfirmDialog( const String& purpose, const String& c
    SetSizer( Global_Sizer );
    EnsureLayoutUpdated();
    AdjustToContents();
+
+   // Keyboard focus starts on "Don't run" (Space activates the focused
+   // button, Return the default one: both decline). Set again on show, in
+   // case the window system moves focus while the dialog opens.
+   DontRun_PushButton.Focus();
+   OnShow( (Control::event_handler)&ScriptConfirmDialog::e_Show, *this );
+}
+
+void ScriptConfirmDialog::e_Show( Control& )
+{
+   DontRun_PushButton.Focus();
 }
 
 void ScriptConfirmDialog::e_Click( Button& sender, bool )
