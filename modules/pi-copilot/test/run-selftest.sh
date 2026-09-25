@@ -186,6 +186,7 @@ for _ in $(seq 50); do [ -s "$ECHO_PORT_FILE" ] && break; sleep 0.1; done
 [ -s "$ECHO_PORT_FILE" ] || { echo "FAIL: echo server did not start"; exit 1; }
 export PICOPILOT_SELFTEST_ECHO_URL="http://127.0.0.1:$(cat "$ECHO_PORT_FILE")/v1/messages"
 export PICOPILOT_SELFTEST_AGENT_URL="http://127.0.0.1:$(cat "$ECHO_PORT_FILE")/v1/agent"
+export PICOPILOT_SELFTEST_FIXTURES="$HERE/fixtures"
 
 # Private virtual display (Xvfb). A core-side rejection can raise a MODAL
 # dialog that no module API can suppress or catch (Task 1: "PixelMath: Invalid
@@ -230,6 +231,7 @@ required_true = [
     'liveAgentOk',
     # increment 5
     'inc5SmokeOk',
+    'sseParserOk',
     'ok',
 ]
 missing = [k for k in required_true if d.get(k) is not True]
