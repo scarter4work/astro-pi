@@ -331,6 +331,7 @@ required_true = [
     'finalFixOk',
     'pinnedOk',
     'rereviewFixOk',
+    'reviewE4422c9Ok',
     'ok',
 ]
 missing = [k for k in required_true if d.get(k) is not True]

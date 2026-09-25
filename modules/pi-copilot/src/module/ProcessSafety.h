@@ -59,6 +59,14 @@ SafetyVerdict CheckProcessSafety( const IsoString& processId, const nlohmann::js
                                   const nlohmann::json& tableParameters,
                                   SafetyRunKind run = SafetyRunKind::OnView );
 
+// True when no instance of the process may be built before the user has
+// approved the run: it is denied (never run at all) or confirmAlways (e.g.
+// the RC-Astro XTerminator plug-ins, which can crash PixInsight on Blackwell
+// GPUs). The tools' pre-dialog dry run is then metadata-only (see
+// PrecheckApplyRun). An unknown id is false (the executor reports it); a
+// failure while checking is true (fail closed). Root thread. Never throws.
+bool NoInstanceBeforeApproval( const IsoString& processId );
+
 // The GLOBAL coverage gate: installed processes that can run in the global
 // context (Process::CanProcessGlobal()), are not denied/always-confirmed, and
 // are in neither globalSafe nor globalConfirm -- a reviewedSafe/confirmWhen

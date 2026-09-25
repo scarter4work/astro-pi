@@ -36,6 +36,14 @@ namespace
 // (Task 1). Scalars are row 0.
 constexpr size_type kScalarRow = 0;
 
+InstanceBuildObserver g_instanceObserver;   // self-test only
+
+void NoteInstanceBuild( const IsoString& processId, const char* stage )
+{
+   if ( g_instanceObserver )
+      g_instanceObserver( processId, stage );
+}
+
 // A model-correctable failure. Thrown only inside ApplyProcess() / RunGlobalProcess()
 // (and the helpers they call) and caught there.
 struct ApplyError
@@ -302,7 +310,15 @@ String BusyMessage( const String& viewId )
 // DEFAULT instance, checking everything the core would reject with a modal
 // and reading every value back. Throws ApplyError with a precise message.
 // Shared by ApplyProcess and RunGlobalProcess.
-void SetParameters( const Process& P, ProcessInstance& instance, const String& processId,
+//
+// instance == nullptr: METADATA ONLY, for a process no instance of which may
+// be built before the user approved (NoInstanceBeforeApproval): keys, types,
+// ranges, text limits, parameterValues, pinned keys and table shapes are
+// checked from Process/ProcessParameter metadata alone. Enumeration values
+// are NOT converted (the PJSR route of EnumerationInfoOf() builds an
+// instance in script), and nothing is set or read back: those checks run
+// after approval, on the real instance.
+void SetParameters( const Process& P, ProcessInstance* instance, const String& processId,
                     const nlohmann::json& parameters, const nlohmann::json& tableParameters,
                     nlohmann::json& parametersSet, nlohmann::json& pinnedSet,
                     const std::vector<PinnedParameter>* resolvedPinned )
@@ -347,6 +363,8 @@ void SetParameters( const Process& P, ProcessInstance& instance, const String& p
             throw ApplyError{ name + " is a table parameter; pass it in table_parameters as [[row values]...]" };
          if ( p.IsReadOnly() )
             throw ApplyError{ name + " is read-only" };
+         if ( instance == nullptr && p.IsEnumeration() )
+            continue;   // checked after approval (see above)
          const Variant value = ToVariant( p, it.value(), name );
          // Policy parameterValues (e.g. values that reach a command line).
          if ( p.IsString() )
@@ -355,7 +373,9 @@ void SetParameters( const Process& P, ProcessInstance& instance, const String& p
             if ( !e.IsEmpty() )
                throw ApplyError{ e };
          }
-         SetChecked( instance, p, value, kScalarRow, name );
+         if ( instance == nullptr )
+            continue;
+         SetChecked( *instance, p, value, kScalarRow, name );
          parametersSet[it.key()] = it.value();
       }
 
@@ -408,24 +428,35 @@ void SetParameters( const Process& P, ProcessInstance& instance, const String& p
             throw ApplyError{ name + ": " + RowCount( rows.size() ) + " given; this table needs "
                               + need + " (columns: " + ColumnIds( columns ) + ")" };
          }
-         if ( !instance.AllocateTableRows( p, rows.size() ) )
+         if ( instance == nullptr )
+         {
+            for ( size_type i = 0; i < rows.size(); ++i )
+               for ( size_type k = 0; k < columns.Length(); ++k )
+                  if ( !columns[k].IsEnumeration() )
+                     ToVariant( columns[k], rows[i][k],
+                                name + String().Format( "[%u].", unsigned( i ) ) + String( columns[k].Id() ) );
+            continue;
+         }
+         if ( !instance->AllocateTableRows( p, rows.size() ) )
             throw ApplyError{ name + String().Format( ": PixInsight refused a table of %u rows", unsigned( rows.size() ) ) };
          for ( size_type i = 0; i < rows.size(); ++i )
             for ( size_type k = 0; k < columns.Length(); ++k )
             {
                const String cell = name + String().Format( "[%u].", unsigned( i ) ) + String( columns[k].Id() );
-               SetChecked( instance, columns[k], ToVariant( columns[k], rows[i][k], cell ), i, cell );
+               SetChecked( *instance, columns[k], ToVariant( columns[k], rows[i][k], cell ), i, cell );
             }
          parametersSet[it.key()] = rows;
       }
 
    // Last, so nothing the model passed can overwrite them; read back like
    // every other value (a value that does not stick is an error).
+   if ( instance == nullptr )
+      return;
    for ( const PinnedParameter& q : pinned )
    {
       const String name = processId + "." + S16( q.parameter );
       const ProcessParameter p = FindParameter( P, q.parameter, name );
-      SetChecked( instance, p, Variant( q.value ), kScalarRow, name );
+      SetChecked( *instance, p, Variant( q.value ), kScalarRow, name );
       pinnedSet[q.parameter] = U8( q.value );
    }
 }
@@ -470,9 +501,10 @@ ApplyProcessResult ApplyProcess( const IsoString& processId, const nlohmann::jso
       if ( ViewBusy( view ) )
          throw ApplyError{ BusyMessage( r.viewId ) };
 
+      NoteInstanceBuild( P->Id(), "apply" );
       ProcessInstance instance( *P );   // DEFAULT parameters
 
-      SetParameters( *P, instance, r.processId, parameters, tableParameters, r.parametersSet, r.pinnedSet, pinned );
+      SetParameters( *P, &instance, r.processId, parameters, tableParameters, r.parametersSet, r.pinnedSet, pinned );
 
       String whyNot;
       if ( !instance.Validate( whyNot ) )
@@ -574,11 +606,20 @@ String PrecheckApplyRun( const IsoString& processId, const nlohmann::json& param
       if ( !P->CanProcessViews() )
          return String( P->Id() ) + " can only run in the global context (not on a view); use run_global_process";
       // Dry run of SetParameters() on a throwaway DEFAULT instance: every
-      // shape, type, range, enumeration, pattern and duplicate-key error
-      // comes back BEFORE any confirmation dialog.
-      ProcessInstance probe( *P );
+      // shape, type, range, enumeration, value-rule and duplicate-key error
+      // comes back BEFORE any confirmation dialog. A denied/confirmAlways
+      // process is never instantiated before the user approved (the RC-Astro
+      // plug-ins can crash PixInsight): metadata-only checks; the rest runs
+      // in ApplyProcess, after approval, with the same messages.
       nlohmann::json ignored = nlohmann::json::object(), ignoredPinned = nlohmann::json::object();
-      SetParameters( *P, probe, String( P->Id() ), parameters, tableParameters, ignored, ignoredPinned, pinned );
+      if ( NoInstanceBeforeApproval( P->Id() ) )
+         SetParameters( *P, nullptr, String( P->Id() ), parameters, tableParameters, ignored, ignoredPinned, pinned );
+      else
+      {
+         NoteInstanceBuild( P->Id(), "precheckApply" );
+         ProcessInstance probe( *P );
+         SetParameters( *P, &probe, String( P->Id() ), parameters, tableParameters, ignored, ignoredPinned, pinned );
+      }
    }
    catch ( const ApplyError& e )
    {
@@ -618,12 +659,19 @@ String PrecheckGlobalRun( const IsoString& processId, const nlohmann::json& para
 
    // Dry run of SetParameters() on a throwaway DEFAULT instance, so a shape,
    // enumeration or range error comes back BEFORE any confirmation dialog.
+   // Denied/confirmAlways: metadata only, as in PrecheckApplyRun.
    try
    {
       const Process P( processId );
-      ProcessInstance probe( P );
       nlohmann::json ignored = nlohmann::json::object(), ignoredPinned = nlohmann::json::object();
-      SetParameters( P, probe, String( P.Id() ), parameters, tableParameters, ignored, ignoredPinned, pinned );
+      if ( NoInstanceBeforeApproval( P.Id() ) )
+         SetParameters( P, nullptr, String( P.Id() ), parameters, tableParameters, ignored, ignoredPinned, pinned );
+      else
+      {
+         NoteInstanceBuild( P.Id(), "precheckGlobal" );
+         ProcessInstance probe( P );
+         SetParameters( P, &probe, String( P.Id() ), parameters, tableParameters, ignored, ignoredPinned, pinned );
+      }
    }
    catch ( const ApplyError& e )
    {
@@ -657,8 +705,9 @@ GlobalRunResult RunGlobalProcess( const IsoString& processId, const nlohmann::js
          throw ApplyError{ pre };
       const Process P( processId );
       r.processId = String( P.Id() );
+      NoteInstanceBuild( P.Id(), "global" );
       ProcessInstance instance( P );   // DEFAULT parameters
-      SetParameters( P, instance, r.processId, parameters, tableParameters, r.parametersSet, r.pinnedSet, pinned );
+      SetParameters( P, &instance, r.processId, parameters, tableParameters, r.parametersSet, r.pinnedSet, pinned );
 
       String whyNot;
       if ( !instance.Validate( whyNot ) )
@@ -738,6 +787,11 @@ GlobalRunResult RunGlobalProcess( const IsoString& processId, const nlohmann::js
       r.pinnedSet = nlohmann::json::object();
    }
    return r;
+}
+
+void SetInstanceBuildObserverForSelfTest( InstanceBuildObserver observer )
+{
+   g_instanceObserver = std::move( observer );
 }
 
 String DescribeParameterChanges( const nlohmann::json& parameters, const nlohmann::json& tableParameters,

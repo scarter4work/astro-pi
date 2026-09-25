@@ -11,6 +11,7 @@
 
 #include <nlohmann/json.hpp>
 
+#include <functional>
 #include <string>
 #include <vector>
 
@@ -66,9 +67,12 @@ ApplyProcessResult ApplyProcess( const IsoString& processId, const nlohmann::jso
 // apply_process's checks before anything is asked or run: known id, can run
 // on views, then a dry run of the parameter setting on a throwaway DEFAULT
 // instance (duplicate keys, unknown ids, types, ranges, enumerations, table
-// shapes, patterns, pinned keys, read-back) -- exactly the checks ApplyProcess
-// makes, with the same messages. Validate()/CanExecuteOn() are NOT part of it
-// (they need the real target). "" when fine. Root thread. Never throws.
+// shapes, parameterValues rules, pinned keys, read-back) -- exactly the checks
+// ApplyProcess makes, with the same messages. Validate()/CanExecuteOn() are
+// NOT part of it (they need the real target). For a denied/confirmAlways
+// process (NoInstanceBeforeApproval) NO instance is built: only the metadata
+// checks run (not enumeration values, not read-back); ApplyProcess makes the
+// rest after the user approved. "" when fine. Root thread. Never throws.
 String PrecheckApplyRun( const IsoString& processId, const nlohmann::json& parameters,
                          const nlohmann::json& tableParameters, const std::vector<PinnedParameter>* pinned = nullptr );
 
@@ -99,7 +103,8 @@ void SplitNewWindows( const std::vector<std::string>& newWindows, const nlohmann
 // Checks before anything is asked or run: known id, global-capable, file paths
 // (ValidateProcessFilePaths: the policy's fileTables), then a dry run of
 // the parameter setting on a throwaway DEFAULT instance (shape, enumeration,
-// range, read-back). "" when fine. Root thread.
+// range, read-back) -- metadata-only, with no instance, for a
+// denied/confirmAlways process (as PrecheckApplyRun). "" when fine. Root thread.
 String PrecheckGlobalRun( const IsoString& processId, const nlohmann::json& parameters,
                           const nlohmann::json& tableParameters, const std::vector<PinnedParameter>* pinned = nullptr );
 
@@ -119,6 +124,14 @@ GlobalRunResult RunGlobalProcess( const IsoString& processId, const nlohmann::js
 // "… and N more parameter(s) not shown" (N exact).
 String DescribeParameterChanges( const nlohmann::json& parameters, const nlohmann::json& tableParameters,
                                  size_type maxChars );
+
+// Self-test only: called with the process id and a stage name ("precheckApply",
+// "precheckGlobal", "apply", "global") right BEFORE the tool path builds a
+// ProcessInstance -- the instrumentation that proves no instance of a
+// confirmAlways/denied process is built before the user approved. An empty
+// function removes the observer. Root thread.
+using InstanceBuildObserver = std::function<void( const IsoString& processId, const char* stage )>;
+void SetInstanceBuildObserverForSelfTest( InstanceBuildObserver observer );
 
 } // namespace pcl
 
