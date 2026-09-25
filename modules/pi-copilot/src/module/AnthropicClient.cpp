@@ -2,17 +2,23 @@
 // Copyright (c) 2026 Scott Carter. MIT License.
 
 #include "AnthropicClient.h"
+#include "ModelCatalog.h"
+#include "SseStream.h"
 #include "Utf8.h"
 
+#include <pcl/AutoLock.h>
 #include <pcl/Control.h>
 #include <pcl/Exception.h>
+#include <pcl/Mutex.h>
 #include <pcl/NetworkTransfer.h>
 
 #include <nlohmann/json.hpp>
 
 #include <atomic>
 #include <chrono>
+#include <memory>
 #include <stdexcept>
+#include <string>
 #include <utility>
 
 namespace pcl
@@ -43,22 +49,42 @@ public:
 
    // Written on the performing thread only (inside the callbacks below),
    // read back on that same thread after POST() returns.
-   bool             cancelled = false;
-   bool             timedOut = false;
+   bool              cancelled = false;
+   bool              timedOut = false;
+   bool              stalled = false;
+   bool              streamFailed = false;   // the assembler failed: nothing more is worth receiving
    clock::time_point deadline = clock::time_point::max();
 
-   // Returns false (abort) when the request was cancelled or its overall
-   // deadline has passed; records which one it was.
+   // Streamed requests: the SSE assembler (fed on the performing thread) and
+   // the idle limit, measured from the last received byte.
+   std::unique_ptr<SseMessageAssembler> sse;
+   clock::duration   idleLimit = clock::duration::max();
+   clock::time_point lastData;
+
+   // Text deltas not yet taken by the UI thread (UTF-8). Guarded by deltaMutex.
+   Mutex             deltaMutex;
+   std::string       pendingDelta;
+
+   // Returns false (abort) when the request was cancelled, its overall
+   // deadline has passed, or a stream went silent; records which one.
    bool ShouldContinue()
    {
+      if ( streamFailed )
+         return false;
       if ( cancelRequested.load() )
       {
          cancelled = true;
          return false;
       }
-      if ( clock::now() >= deadline )
+      const clock::time_point now = clock::now();
+      if ( now >= deadline )
       {
          timedOut = true;
+         return false;
+      }
+      if ( sse && now - lastData >= idleLimit )
+      {
+         stalled = true;
          return false;
       }
       return true;
@@ -69,6 +95,30 @@ public:
       if ( !ShouldContinue() )
          return false;
       buffer.Append( reinterpret_cast<const char*>( data ), size_type( size ) );
+      lastData = clock::now();
+      // Every body is fed, including a non-2xx JSON error body (whose lines
+      // are no SSE fields, so it yields no events). The status is NOT known
+      // here: NetworkTransfer::ResponseCode() does not report the 2xx status
+      // from inside this callback (observed: gating the feed on it starved a
+      // 200 stream of every delta), and it reads 0 after an abort.
+      if ( sse )
+      {
+         const std::string d = sse->Feed( reinterpret_cast<const char*>( data ), size_t( size ) );
+         if ( !d.empty() )
+         {
+            volatile AutoLock lock( deltaMutex );
+            pendingDelta += d;
+         }
+         if ( sse->Failed() && sse->SawAnyEvent() )
+         {
+            // A real event stream that broke: abort now, waiting out the rest
+            // only delays the (already certain) Stream error. A body with no
+            // events yet may be a non-2xx error body: it is received in full
+            // so Perform() can classify it by its (then valid) status.
+            streamFailed = true;
+            return false;
+         }
+      }
       return true;
    }
 
@@ -140,20 +190,55 @@ String PostBytes( const std::string& bytes )
 
 std::string BuildMessagesRequestBody( const IsoString& model, const String& systemPrompt,
                                       const Array<AnthropicMessage>& history,
-                                      const nlohmann::json& tools )
+                                      const nlohmann::json& tools, const RequestShape& shape )
 {
    nlohmann::json messages = nlohmann::json::array();
    for ( const AnthropicMessage& msg : history )
       messages.push_back( { { "role", msg.role.c_str() }, { "content", MessageContent( msg ) } } );
    nlohmann::json req = {
       { "model", model.c_str() },
-      { "max_tokens", 4096 },
-      { "system", U8( systemPrompt ) },
+      { "max_tokens", shape.maxTokens },
       { "messages", messages }
    };
+   if ( shape.promptCaching )
+   {
+      // Breakpoint 1 (system; it covers the tools too, render order tools ->
+      // system), and a top-level automatic breakpoint that rolls forward over
+      // the conversation tail.
+      nlohmann::json sys = nlohmann::json::object();
+      sys["type"] = "text";
+      sys["text"] = U8( systemPrompt );
+      sys["cache_control"] = { { "type", "ephemeral" } };
+      req["system"] = nlohmann::json::array();
+      req["system"].push_back( sys );
+      req["cache_control"] = { { "type", "ephemeral" } };
+   }
+   else
+      req["system"] = U8( systemPrompt );
    if ( !tools.is_null() )
+   {
       req["tools"] = tools;
+      // Breakpoint 2: the tool list alone (it outlives a system-prompt change).
+      if ( shape.promptCaching && tools.is_array() && !tools.empty() )
+         req["tools"].back()["cache_control"] = { { "type", "ephemeral" } };
+   }
+   if ( shape.thinkingBinding )
+      req["thinking"] = { { "type", "adaptive" },
+                          { "block_binding", { { "prefix_mismatch_behavior", "drop_block" } } } };
+   if ( shape.stream )
+      req["stream"] = true;
    return req.dump();
+}
+
+RequestShape ProductionRequestShape( const IsoString& model )
+{
+   RequestShape s;
+   s.stream = true;
+   s.maxTokens = PICopilotStreamMaxTokens;
+   s.promptCaching = true;
+   const ModelInfo* info = FindModel( model );
+   s.thinkingBinding = info != nullptr && info->thinkingBinding;
+   return s;
 }
 
 struct AnthropicRequest::Impl
@@ -163,15 +248,22 @@ struct AnthropicRequest::Impl
    String          body;      // request body as POST() wants it -- see PostBytes()
    String          buildError;
    int             timeoutSeconds = PICopilotRequestTimeoutSeconds;
+   RequestShape    shape;
 };
 
 AnthropicRequest::AnthropicRequest( const String& apiKey, const IsoString& model,
                                     const String& systemPrompt, const Array<AnthropicMessage>& history,
                                     const String& url, int timeoutSeconds,
-                                    const nlohmann::json& tools )
+                                    const nlohmann::json& tools, const RequestShape& shape )
    : m( new Impl )
 {
    m->timeoutSeconds = timeoutSeconds;
+   m->shape = shape;
+   if ( shape.stream )
+   {
+      m->sink.sse.reset( new SseMessageAssembler );
+      m->sink.idleLimit = std::chrono::seconds( shape.streamIdleSeconds );
+   }
 
    // --- Build the request body -----------------------------------------
    //
@@ -179,7 +271,7 @@ AnthropicRequest::AnthropicRequest( const String& apiKey, const IsoString& model
    // U8()); PostBytes() then carries those exact bytes through POST().
    try
    {
-      m->body = PostBytes( BuildMessagesRequestBody( model, systemPrompt, history, tools ) );
+      m->body = PostBytes( BuildMessagesRequestBody( model, systemPrompt, history, tools, shape ) );
    }
    catch ( const std::exception& x )
    {
@@ -193,8 +285,11 @@ AnthropicRequest::AnthropicRequest( const String& apiKey, const IsoString& model
       m->transfer.SetURL( url );
       m->transfer.SetSSL( true/*useSSL*/, false/*forceSSL*/, true/*verifyPeer*/, true/*verifyHost*/ );
       m->transfer.SetConnectionTimeout( 120 );
-      m->transfer.SetCustomHTTPHeaders( String( "x-api-key: " ) + apiKey
-         + "\nanthropic-version: 2023-06-01\ncontent-type: application/json" );
+      String headers = String( "x-api-key: " ) + apiKey
+                     + "\nanthropic-version: 2023-06-01\ncontent-type: application/json";
+      if ( shape.thinkingBinding )
+         headers += "\nanthropic-beta: " PICOPILOT_THINKING_BINDING_BETA;
+      m->transfer.SetCustomHTTPHeaders( headers );
       m->transfer.OnDownloadDataAvailable( (NetworkTransfer::download_event_handler)&ResponseSink::OnData, m->sink );
       m->transfer.OnTransferProgress( (NetworkTransfer::progress_event_handler)&ResponseSink::OnProgress, m->sink );
    }
@@ -215,12 +310,23 @@ void AnthropicRequest::Cancel()
    m->sink.cancelRequested.store( true );
 }
 
+String AnthropicRequest::TakeStreamedText()
+{
+   std::string d;
+   {
+      volatile AutoLock lock( m->sink.deltaMutex );
+      d.swap( m->sink.pendingDelta );
+   }
+   return d.empty() ? String() : String::UTF8ToUTF16( d.c_str() );
+}
+
 AnthropicResult AnthropicRequest::Perform()
 {
    AnthropicResult result;
 
    if ( !m->buildError.IsEmpty() )
    {
+      result.errorKind = RequestErrorKind::Build;
       result.error = m->buildError;
       return result;
    }
@@ -234,31 +340,55 @@ AnthropicResult AnthropicRequest::Perform()
    if ( sink.cancelRequested.load() )
    {
       result.cancelled = true;
+      result.errorKind = RequestErrorKind::Cancelled;
       result.error = "request cancelled";
       return result;
    }
 
    sink.deadline = ResponseSink::clock::now() + std::chrono::seconds( m->timeoutSeconds );
+   sink.lastData = ResponseSink::clock::now();
    try
    {
       bool okHttp = transfer.POST( m->body );
       result.httpStatus = transfer.ResponseCode();
 
       // Aborted from our own callbacks: report why, never a generic
-      // network error (and never try to parse a partial body).
-      if ( transfer.WasAborted() || sink.cancelled || sink.timedOut )
+      // network error. First, an event stream we aborted because the
+      // assembler failed: the Stream error (httpStatus 0 -- an aborted
+      // transfer reports no status).
+      if ( sink.streamFailed && !sink.cancelled && !sink.timedOut && !sink.stalled )
+      {
+         result.httpStatus = 0;
+         result.errorKind = RequestErrorKind::Stream;
+         result.error = "the reply stream failed: " + String::UTF8ToUTF16( sink.sse->Error().c_str() );
+         return result;
+      }
+
+      if ( transfer.WasAborted() || sink.cancelled || sink.timedOut || sink.stalled )
       {
          result.ok = false;
          result.httpStatus = 0;
          if ( sink.cancelled )
          {
             result.cancelled = true;
+            result.errorKind = RequestErrorKind::Cancelled;
             result.error = "request cancelled";
          }
          else if ( sink.timedOut )
+         {
+            result.errorKind = RequestErrorKind::TimedOut;
             result.error = timedOutError;
+         }
+         else if ( sink.stalled )
+         {
+            result.errorKind = RequestErrorKind::Stalled;
+            result.error = String().Format( "the reply stalled: no data from the API for %d s", m->shape.streamIdleSeconds );
+         }
          else
+         {
+            result.errorKind = RequestErrorKind::Network;
             result.error = "request aborted: " + transfer.ErrorInformation();
+         }
          return result;
       }
 
@@ -267,6 +397,7 @@ AnthropicResult AnthropicRequest::Perform()
          // No HTTP response at all (DNS/connect/TLS failure, or the
          // transfer was aborted) -- nothing to parse as JSON.
          result.ok = false;
+         result.errorKind = RequestErrorKind::Network;
          result.error = String( "network request failed: " ) + transfer.ErrorInformation();
          return result;
       }
@@ -274,22 +405,47 @@ AnthropicResult AnthropicRequest::Perform()
    catch ( const pcl::Exception& x )
    {
       result.ok = false;
+      result.errorKind = RequestErrorKind::Network;
       result.error = "network request failed: " + x.Message();
       return result;
    }
    catch ( const std::exception& x )
    {
       result.ok = false;
+      result.errorKind = RequestErrorKind::Network;
       result.error = String( "network request failed: " ) + String( x.what() );
       return result;
    }
    catch ( ... )
    {
       result.ok = false;
+      result.errorKind = RequestErrorKind::Network;
       result.error = "network request failed: unknown error";
       return result;
    }
 
+   // Streamed 2xx: the assembled message (or why there is none). A non-2xx
+   // reply is a plain JSON error body even for a streamed request.
+   if ( sink.sse && result.httpStatus >= 200 && result.httpStatus < 300 )
+   {
+      AnthropicResult s;
+      s.httpStatus = result.httpStatus;
+      s.errorKind = RequestErrorKind::Stream;
+      if ( sink.sse->Failed() )
+      {
+         s.error = "the reply stream failed: " + String::UTF8ToUTF16( sink.sse->Error().c_str() );
+         return s;
+      }
+      if ( !sink.sse->Finished() )
+      {
+         s.error = sink.sse->SawAnyEvent()
+            ? String( "the reply stream ended before it was complete (no message_stop)" )
+            : "the API sent no stream events: " + String::UTF8ToUTF16( sink.buffer.Left( 200 ).c_str() );
+         return s;
+      }
+      const std::string body = sink.sse->FinalMessage().dump();
+      return ParseMessagesResponse( result.httpStatus, IsoString( body.c_str() ), String() );
+   }
    return ParseMessagesResponse( result.httpStatus, sink.buffer, transfer.ErrorInformation() );
 }
 
@@ -309,6 +465,7 @@ AnthropicResult ParseMessagesResponse( int httpStatus, const IsoString& body, co
    }
    catch ( ... )
    {
+      result.errorKind = (httpStatus >= 200 && httpStatus < 300) ? RequestErrorKind::BadReply : RequestErrorKind::Http;
       result.error = String( "unparseable response: " ) + String::UTF8ToUTF16( body.Left( 200 ).c_str() );
       return result;
    }
@@ -383,15 +540,21 @@ AnthropicResult ParseMessagesResponse( int httpStatus, const IsoString& body, co
                      error = "stop_reason tool_use but no tool_use block";
                }
                else if ( !anyText )
-                  // refusal, a max_tokens cut inside a tool call, pause_turn,
-                  // model_context_window_exceeded, ... -- say which.
-                  error = String::UTF8ToUTF16( ( "no text in reply (stop_reason=" + stopShown + ")" ).c_str() );
+                  error = result.stopReason == "refusal"
+                     ? String( "the model declined this request (stop_reason refusal); rephrase it, or choose "
+                               "another model in PI Copilot's settings" )
+                     // pause_turn, model_context_window_exceeded, a max_tokens cut inside a tool call, ...
+                     : String::UTF8ToUTF16( ( "no text in reply (stop_reason=" + stopShown + ")" ).c_str() );
             }
             if ( error.IsEmpty() )
             {
                result.text = String::UTF8ToUTF16( joined.c_str() );
                result.truncated = result.stopReason == "max_tokens";
                result.contentBlocks = content;
+               if ( j.contains( "usage" ) && j["usage"].is_object() )
+                  result.usage = j["usage"];
+               if ( j.contains( "input_transformations" ) )
+                  result.inputTransformations = j["input_transformations"];
                result.ok = true;
             }
          }
@@ -411,6 +574,7 @@ AnthropicResult ParseMessagesResponse( int httpStatus, const IsoString& body, co
          result.truncated = false;
          result.stopReason.clear();
          result.contentBlocks = nlohmann::json();
+         result.errorKind = RequestErrorKind::BadReply;
          result.error = error;
       }
    }
@@ -430,6 +594,7 @@ AnthropicResult ParseMessagesResponse( int httpStatus, const IsoString& body, co
       {
          msg = U8( transportError );
       }
+      result.errorKind = RequestErrorKind::Http;
       result.error = String::UTF8ToUTF16( msg.c_str() );
       result.ok = false;
    }
@@ -456,12 +621,14 @@ AnthropicResult AnthropicClient::Send( const String& systemPrompt, const Array<A
    catch ( const pcl::Exception& x )
    {
       AnthropicResult r;
+      r.errorKind = RequestErrorKind::Internal;
       r.error = "request failed: " + x.Message();
       return r;
    }
    catch ( ... )
    {
       AnthropicResult r;
+      r.errorKind = RequestErrorKind::Internal;
       r.error = "request failed: unknown error";
       return r;
    }

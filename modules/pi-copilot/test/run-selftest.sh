@@ -74,6 +74,23 @@ else
 fi
 unset KR_KEY
 
+# GraXpert live check (self-test B10): the app path is the user's OWN GraXpert
+# setting, read (read-only) from the real PixInsight settings file -- the
+# slot-90 settings are empty. An explicit PICOPILOT_TEST_GRAXPERT_APP wins.
+if [ -z "${PICOPILOT_TEST_GRAXPERT_APP:-}" ] && [ -f "$HOME/.PixInsight/core-001-pxi.settings" ]; then
+   PICOPILOT_TEST_GRAXPERT_APP="$(python3 - "$HOME/.PixInsight/core-001-pxi.settings" <<'PY' 2>/dev/null || true
+import sys, xml.etree.ElementTree as ET
+node = ET.parse(sys.argv[1]).getroot()
+for k in ("ModuleData", "GraXpert", "Interfaces", "GraXpert", "appPath"):
+    node = next((c for c in node if c.get("k") == k), None)
+    if node is None: sys.exit(0)
+print(node.text or "")
+PY
+)"
+fi
+export PICOPILOT_TEST_GRAXPERT_APP="${PICOPILOT_TEST_GRAXPERT_APP:-}"
+echo "GraXpert app for the live check: ${PICOPILOT_TEST_GRAXPERT_APP:-(none; the live GraXpert check will be SKIPPED)}"
+
 # Local "stalled server" for the cancel/deadline proof: accepts connections,
 # reads the request, and never answers -- the case SetConnectionTimeout()
 # cannot bound. Loopback only; killed on exit.
@@ -112,7 +129,7 @@ export PICOPILOT_SELFTEST_STALL_URL="http://127.0.0.1:$(cat "$STALL_PORT_FILE")/
 ECHO_DIR="$(mktemp -d)"
 ECHO_PORT_FILE="$ECHO_DIR/port"
 python3 - "$ECHO_DIR" <<'PY' &
-import json, os, sys, threading
+import json, os, sys, threading, time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 out = sys.argv[1]
 count = [0]; lock = threading.Lock()
@@ -154,6 +171,62 @@ class H(BaseHTTPRequestHandler):
                                  {"type": "tool_use", "id": "toolu_wire_%02d" % n, "name": "describe_process",
                                   "input": {"id": "PixelMath"}}],
                      "stop_reason": "tool_use"}
+    def sse(self, events, delay=0.3, stall=False):
+        self.send_response(200)
+        self.send_header("content-type", "text/event-stream")
+        self.send_header("connection", "close")
+        self.end_headers()
+        self.close_connection = True
+        try:
+            for name, data in events:
+                self.wfile.write(("event: %s\ndata: %s\n\n" % (name, json.dumps(data, ensure_ascii=False))).encode("utf-8"))
+                self.wfile.flush()
+                time.sleep(delay)
+            while stall:          # say nothing more: the client's idle deadline must end it
+                time.sleep(0.5)
+        except (BrokenPipeError, ConnectionResetError):
+            pass
+    def stream_events(self, req, n, kind):
+        msgs = req.get("messages") or []
+        last = msgs[-1].get("content") if msgs else None
+        results = [b for b in last if b.get("type") == "tool_result"] if isinstance(last, list) else []
+        ev = [("message_start", {"type": "message_start", "message": {"id": "msg_s%02d" % n, "type": "message",
+               "role": "assistant", "model": req.get("model"), "content": [], "stop_reason": None,
+               "stop_sequence": None, "usage": {"input_tokens": 10, "output_tokens": 1}}}),
+              ("ping", {"type": "ping"})]
+        def text_block(index, parts):
+            out = [("content_block_start", {"type": "content_block_start", "index": index,
+                                            "content_block": {"type": "text", "text": ""}})]
+            out += [("content_block_delta", {"type": "content_block_delta", "index": index,
+                                             "delta": {"type": "text_delta", "text": p}}) for p in parts]
+            return out + [("content_block_stop", {"type": "content_block_stop", "index": index})]
+        def end(stop, tokens):
+            return [("message_delta", {"type": "message_delta", "delta": {"stop_reason": stop, "stop_sequence": None},
+                                       "usage": {"output_tokens": tokens}}),
+                    ("message_stop", {"type": "message_stop"})]
+        if kind == "stall":
+            return ev
+        if kind == "truncated":   # the connection closes mid-reply: no message_stop
+            return ev + text_block(0, ["Cut "])[:2]
+        if kind == "failmore":    # an assembler failure, then ~9 s more bytes the client must not wait for
+            return (ev + text_block(0, ["Early "])[:2]
+                    + [("content_block_delta", {"type": "content_block_delta", "index": 0,
+                                                "delta": {"type": "mystery_delta"}})]
+                    + [("ping", {"type": "ping"})] * 30)
+        if kind == "error":
+            return ev + text_block(0, ["Partial"])[:2] + [("error", {"type": "error",
+                    "error": {"type": "overloaded_error", "message": "Overloaded"}})]
+        if results:
+            return ev + text_block(0, ["Got %d tool_" % len(results), "result(s) — done."]) + end("end_turn", 12)
+        return (ev + text_block(0, ["Hello, ", "streamed ", "world é"])
+                + [("content_block_start", {"type": "content_block_start", "index": 1, "content_block":
+                        {"type": "tool_use", "id": "toolu_s%02d" % n, "name": "describe_process", "input": {}}}),
+                   ("content_block_delta", {"type": "content_block_delta", "index": 1,
+                        "delta": {"type": "input_json_delta", "partial_json": "{\"id\": \"Pixel"}}),
+                   ("content_block_delta", {"type": "content_block_delta", "index": 1,
+                        "delta": {"type": "input_json_delta", "partial_json": "Math\"}"}}),
+                   ("content_block_stop", {"type": "content_block_stop", "index": 1})]
+                + end("tool_use", 30))
     def do_POST(self):
         body = self.rfile.read(int(self.headers.get("content-length", "0")))
         with lock:
@@ -170,13 +243,28 @@ class H(BaseHTTPRequestHandler):
         except ValueError as e:
             return self.reply(400, {"type": "error", "error": {"type": "invalid_request_error",
                 "message": "body #%d not JSON: %s" % (n, e)}})
+        for suffix, code, etype, msg in (("/stream-http-error", 529, "overloaded_error", "Overloaded"),
+                                         ("/stream-401", 401, "authentication_error", "invalid x-api-key")):
+            if self.path.endswith(suffix):
+                if req.get("stream") is not True:
+                    return self.reply(400, {"type": "error", "error": {"type": "invalid_request_error",
+                                            "message": "body #%d: \"stream\" is not true" % n}})
+                return self.reply(code, {"type": "error", "error": {"type": etype, "message": msg}})
+        for suffix, kind in (("/stream-error", "error"), ("/stream-fail-then-more", "failmore"), ("/stream-stall", "stall"), ("/stream-truncated", "truncated"), ("/stream", "ok")):
+            if self.path.endswith(suffix):
+                if req.get("stream") is not True:
+                    return self.reply(400, {"type": "error", "error": {"type": "invalid_request_error",
+                                            "message": "body #%d: \"stream\" is not true" % n}})
+                return self.sse(self.stream_events(req, n, kind), stall=(kind == "stall"))
         if self.path.endswith("/agent"):
             return self.reply(*self.agent_reply(req, n))
-        self.reply(200, {"content": [{"type": "text", "text": json.dumps({"messages": req.get("messages"),
-                                                                          "tools": req.get("tools")})}],
+        self.reply(200, {"content": [{"type": "text", "text": json.dumps({"messages": req.get("messages"), "tools": req.get("tools"), "system": req.get("system"),
+            "cache_control": req.get("cache_control"), "thinking": req.get("thinking"),
+            "anthropic_beta": self.headers.get("anthropic-beta")})}],
                          "stop_reason": "end_turn"})
 srv = ThreadingHTTPServer(("127.0.0.1", 0), H)
 open(os.path.join(out, "port"), "w").write(str(srv.server_address[1]))
+srv.daemon_threads = True
 srv.serve_forever()
 PY
 ECHO_PID=$!
@@ -186,6 +274,8 @@ for _ in $(seq 50); do [ -s "$ECHO_PORT_FILE" ] && break; sleep 0.1; done
 [ -s "$ECHO_PORT_FILE" ] || { echo "FAIL: echo server did not start"; exit 1; }
 export PICOPILOT_SELFTEST_ECHO_URL="http://127.0.0.1:$(cat "$ECHO_PORT_FILE")/v1/messages"
 export PICOPILOT_SELFTEST_AGENT_URL="http://127.0.0.1:$(cat "$ECHO_PORT_FILE")/v1/agent"
+export PICOPILOT_SELFTEST_STREAM_BASE="http://127.0.0.1:$(cat "$ECHO_PORT_FILE")/v1"
+export PICOPILOT_SELFTEST_FIXTURES="$HERE/fixtures"
 
 # Private virtual display (Xvfb). A core-side rejection can raise a MODAL
 # dialog that no module API can suppress or catch (Task 1: "PixelMath: Invalid
@@ -228,6 +318,20 @@ required_true = [
     'panelResizableOk', 'turnEndNotesOk',
     'turnTargetOk',
     'liveAgentOk',
+    # increment 5
+    'inc5SmokeOk',
+    'sseParserOk',
+    'streamTransportOk',
+    'conversationOk', 'liveConversationOk',
+    'keyStoreKeyringOk',
+    'configPolishOk',
+    'processSafetyOk',
+    'globalProcessOk',
+    'runPjsrOk', 'runPjsrBreakoutOk',
+    'finalFixOk',
+    'pinnedOk',
+    'rereviewFixOk',
+    'reviewE4422c9Ok',
     'ok',
 ]
 missing = [k for k in required_true if d.get(k) is not True]
@@ -235,10 +339,23 @@ if d.get('evalResult') != 3: missing.append('evalResult==3')
 if d.get('stallSkipped') is not False: missing.append('stallSkipped==false')
 if d.get('utf8EchoSkipped') is not False: missing.append('utf8EchoSkipped==false')
 if d.get('agentWireSkipped') is not False: missing.append('agentWireSkipped==false')
+if d.get('streamLoopbackSkipped') is not False: missing.append('streamLoopbackSkipped==false')
+import os
+if os.environ.get('PICOPILOT_REQUIRE_LIVE') == '1':
+    for k in ('anthropicSkipped', 'twoTurnSkipped', 'visionSkipped', 'liveAgentSkipped', 'liveConversationSkipped',
+              'graxpertLiveSkipped'):
+        if d.get(k) is not False: missing.append(k + '==false (PICOPILOT_REQUIRE_LIVE=1)')
 print('anthropic check: %s' % ('SKIPPED (no key)' if d.get('anthropicSkipped') else 'RAN against real API'))
 print('two-turn check: %s' % ('SKIPPED (no key)' if d.get('twoTurnSkipped') else 'RAN against real API'))
 print('vision check: %s' % ('SKIPPED (no key)' if d.get('visionSkipped') else 'RAN against real API, answer=%r' % d.get('visionAnswer')))
 print('live agent check: %s' % ('SKIPPED (no key)' if d.get('liveAgentSkipped') else 'RAN against real API, ratio=%r log=%r' % (d.get('liveAgentRatio'), d.get('liveAgentLog'))))
+print('live conversation check: %s' % ('SKIPPED (no key)' if d.get('liveConversationSkipped') else 'RAN against real API, cacheRead=%r trimThought=%r trimTransformations=%r%s' % (d.get('liveCacheRead'), d.get('liveTrimThought'), d.get('liveTrimTransformations'), ('' if d.get('liveConversationOk') else ' FAILED: %r' % d.get('liveConversationDetail', {}).get('trimLiveReason')))))
+pd = d.get('pinnedDetail', {})
+print('GraXpert live check: %s' % (('SKIPPED: %s' % pd.get('liveSkipReason')) if d.get('graxpertLiveSkipped') is not False else 'RAN, %r' % {k: pd.get('live', {}).get(k) for k in ('seconds', 'gradientBefore', 'gradientAfter', 'log')}))
+rd = d.get('rereviewFixDetail', {})
+print('describe_process sizes (chars, cap %r): %r; list_processes chars=%r' % (rd.get('describeSizes', {}).get('cap'), rd.get('describeSizes', {}).get('top10'), rd.get('listProcesses', {}).get('chars')))
+if d.get('liveModelSwitch') is not None:
+    print('live model switch: %r' % d.get('liveModelSwitch'))
 if missing:
     print('FAILED keys: ' + ', '.join(missing))
     sys.exit(1)

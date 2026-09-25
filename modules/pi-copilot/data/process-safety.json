@@ -1,0 +1,313 @@
+{
+  "_doc": "PI Copilot process safety policy. deny: never run from PI Copilot. confirmAlways: ask the user before every run, in every mode. confirmWhen: ask when the effective value of `parameter` (as given, else the process default) equals `equals` (or, with `notEquals`, is anything other than that value). reviewedSafe: flagged by the file/disk/window heuristic but reviewed: no effect beyond the target image or new windows. reviewedSafe and confirmWhen review runs ON VIEWS only: every process that can run in the global context and is not in deny/confirmAlways must ALSO be in exactly one of globalSafe/globalConfirm (self-tested). globalSafe: a global run is refused by the core, or only creates new images (plus any confirmWhen rule); runs without asking in Copilot. globalConfirm: a global run is possible and not fully understood: ask before every global run (runs on a view are unaffected). A global run of a process in neither globalSafe nor globalConfirm asks. fileTables: path rules for global runs. pinnedParameters: parameters the model may never set; PI Copilot fills them from a trusted source (e.g. the user's own setting of that module); a malformed entry refuses the process. parameterValues: string parameters whose model-chosen value must be one of `values` (exact) or have `format` (\"version\": empty, or 2-4 dot-separated digit groups), e.g. values that reach a command line.",
+  "deny": {
+    "IndigoCCDFrame": "it controls a camera through an INDIGO server (exposures, uploads, file saving)",
+    "IndigoDeviceController": "it sends commands to observatory devices through an INDIGO server",
+    "IndigoMount": "it moves the telescope mount through an INDIGO server",
+    "NetworkService": "it runs PixInsight as a network processing service that fetches tasks from a remote server and executes them",
+    "PICopilot": "it is PI Copilot itself (running it from the chat would recurse)",
+    "Preferences": "it changes PixInsight's application settings, including its script-signature security settings",
+    "ProcessContainer": "it runs a list of other processes that PI Copilot cannot check one by one",
+    "Script": "it runs a PJSR script file, which PI Copilot cannot review from here (scripts go through run_pjsr, which shows the whole script first)"
+  },
+  "confirmAlways": {
+    "APASS": "it can write catalog search results to files, and its configure commands change the catalog database settings",
+    "BlurXTerminator": "its compiled plug-in can crash PixInsight (SIGABRT) on NVIDIA Blackwell GPUs such as the RTX 50 series, losing unsaved work; Script > RC-Astro runs the same tool through its command-line version instead",
+    "ColorManagementSetup": "it changes PixInsight's global color-management settings",
+    "CometAlignment": "it writes comet-aligned copies of the input frames to its output directory and can overwrite existing files",
+    "CosmeticCorrection": "it writes corrected copies of the input frames to its output directory",
+    "Debayer": "it writes debayered copies of the input frames to its output directory",
+    "DrizzleIntegration": "it reads drizzle data files from disk and can write output files",
+    "EphemerisGenerator": "it writes ephemeris (.xeph) and log files to disk",
+    "FastIntegration": "it writes registered frames, log and weights files to its output directory",
+    "FilterManager": "it reads and writes the filters database file",
+    "Gaia": "it can write catalog search results to files, and its configure commands change the catalog database settings",
+    "ImageCalibration": "it writes calibrated copies of the input frames to its output directory and can overwrite existing files",
+    "LocalNormalization": "it writes normalization data files (.xnml) to disk",
+    "MARSGen": "it generates MARS gradient-model database files on disk",
+    "NSGXnml": "it writes normalization data files (.xnml) to its output directory",
+    "NoiseXTerminator": "its compiled plug-in can crash PixInsight (SIGABRT) on NVIDIA Blackwell GPUs such as the RTX 50 series, losing unsaved work; Script > RC-Astro runs the same tool through its command-line version instead",
+    "NukeX": "it writes cache files to its cache directory while stacking",
+    "RGBWorkingSpace": "in the global context it changes PixInsight's default RGB working space for every image; on a view it assigns a new working space to that image",
+    "ReadoutOptions": "it changes PixInsight's global pixel readout options (what the cursor readouts show and how they are computed)",
+    "SplitCFA": "in the global context it writes split CFA frames to its output directory",
+    "StarAlignment": "in the global context it writes registered copies of the input frames to its output directory",
+    "StarXTerminator": "its compiled plug-in can crash PixInsight (SIGABRT) on NVIDIA Blackwell GPUs such as the RTX 50 series, losing unsaved work; Script > RC-Astro runs the same tool through its command-line version instead",
+    "SubframeSelector": "it can copy or move approved and rejected frames to output directories",
+    "SubframeStudio": "it writes measurement CSV files and a metrics cache to disk"
+  },
+  "confirmWhen": {
+    "CreateAlphaChannels": [
+      {
+        "parameter": "closeSource",
+        "equals": true,
+        "reason": "it closes the source image window used for the alpha channel, and unsaved changes there are lost"
+      }
+    ],
+    "FindingChart": [
+      {
+        "parameter": "generateBitmapFile",
+        "equals": true,
+        "reason": "it writes the finding chart as an image file to its output directory"
+      }
+    ],
+    "HDRComposition": [
+      {
+        "parameter": "closePreviousImages",
+        "equals": true,
+        "reason": "it closes the images created by a previous HDRComposition run, and unsaved results are lost"
+      }
+    ],
+    "ImageIntegration": [
+      {
+        "parameter": "generateDrizzleData",
+        "equals": true,
+        "reason": "it updates the frames' .xdrz drizzle files on disk"
+      },
+      {
+        "parameter": "closePreviousImages",
+        "equals": true,
+        "reason": "it closes the images created by a previous ImageIntegration run, and unsaved results are lost"
+      }
+    ],
+    "MultiscaleGradientCorrection": [
+      {
+        "parameter": "command",
+        "notEquals": "",
+        "reason": "a command runs a MARS database operation instead of a gradient correction"
+      }
+    ],
+    "PhotometricColorCalibration": [
+      {
+        "parameter": "generateTextFiles",
+        "equals": true,
+        "reason": "it writes calibration text files to its output directory"
+      }
+    ],
+    "SpectrophotometricColorCalibration": [
+      {
+        "parameter": "generateTextFiles",
+        "equals": true,
+        "reason": "it writes calibration text files to its output directory"
+      }
+    ],
+    "SpectrophotometricFluxCalibration": [
+      {
+        "parameter": "generateTextFiles",
+        "equals": true,
+        "reason": "it writes calibration text files to its output directory"
+      }
+    ]
+  },
+  "reviewedSafe": {
+    "ACDNR": "'maskRemovedWaveletLayers' is a mask option inside the image",
+    "ATrousWaveletTransform": "'outputDeringingMaps' opens new image windows",
+    "AssignICCProfile": "'targetProfile' names the ICC profile assigned to the image",
+    "AstroResolver": "'simbadServer' is the online name-lookup service it queries; it writes no files",
+    "AutomaticBackgroundExtractor": "'writeSampleBoxes' draws the sample boxes into the model image",
+    "B3Estimator": "its 'output...' options choose which new images it opens",
+    "ColorCalibration": "its 'output...Mask' options open new mask windows",
+    "DynamicAlignment": "'removedLayers' is a wavelet-layer option",
+    "ExtractAlphaChannels": "'delete' removes the alpha channels from the target image itself",
+    "GraXpert": "its only side-effect parameter, appPath (the program it launches), is pinned by PI Copilot to the path set in the user's own GraXpert settings (see pinnedParameters); otherwise it replaces the image in place (History, undoable) or opens new background/result windows",
+    "GradientHDRComposition": "it reads its input frames and opens a new image; 'dLogBias'/'bKeepLog' are logarithm options",
+    "GradientHDRCompression": "'logMaxGradient'/'logMinGradient' are logarithm options",
+    "GradientMergeMosaic": "it reads its input frames and opens a new image",
+    "HDRMultiscaleTransform": "'outputDeringingMaps' opens new image windows",
+    "ICCProfileTransformation": "'targetProfile' names the ICC profile the image is converted to",
+    "LRGBCombination": "'layersRemoved' is a wavelet-layer option",
+    "MLDenoise": "'modelPath' is a model file it reads; 'useCache' keeps loaded models in memory",
+    "MergeCFA": "'outputViewId' names the new image window",
+    "MorphologicalTransformation": "'structureName' is the name of its structuring element (matched only by the 'rename' pattern)",
+    "MultiscaleLinearTransform": "'outputDeringingMaps' opens new image windows",
+    "PixelMath": "its caches are in memory, 'generateOutput' concerns the result image, 'outputData' is an in-memory result table",
+    "RestorationFilter": "'outputDeringingMaps' opens new image windows",
+    "SCNR": "'colorToRemove' chooses the color channel it neutralizes",
+    "TGVDenoise": "'supportRemovedWaveletLayers' is a support-mask option",
+    "UnsharpMask": "'outputDeringingMaps' opens new image windows"
+  },
+  "globalSafe": {
+    "ACDNR": "the core refuses a global run (\"ACDNR instances cannot be executed in the global context\")",
+    "ATrousWaveletTransform": "the core refuses a global run (\"ATrousWaveletTransform instances cannot be executed in the global context\")",
+    "ATrousWaveletTransformV1": "the core refuses a global run (\"ATrousWaveletTransformV1 instances cannot be executed in the global context\")",
+    "AdaptiveStretch": "the core refuses a global run (\"AdaptiveStretch instances cannot be executed in the global context\")",
+    "Annotation": "the core refuses a global run (\"Annotation instances cannot be executed in the global context\")",
+    "ArcsinhStretch": "the core refuses a global run (\"ArcsinhStretch instances cannot be executed in the global context\")",
+    "AssignICCProfile": "the core refuses a global run (\"AssignICCProfile instances cannot be executed in the global context\")",
+    "AssistedColorCalibration": "the core refuses a global run (\"AssistedColorCalibration instances cannot be executed in the global context\")",
+    "AutoHistogram": "the core refuses a global run (\"AutoHistogram instances cannot be executed in the global context\")",
+    "AutomaticBackgroundExtractor": "the core refuses a global run (\"AutomaticBackgroundExtractor instances cannot be executed in the global context\")",
+    "BackgroundNeutralization": "the core refuses a global run (\"BackgroundNeutralization instances cannot be executed in the global context\")",
+    "Binarize": "the core refuses a global run (\"Binarize instances cannot be executed in the global context\")",
+    "ChannelCombination": "a global run combines the named channel images into a NEW image window",
+    "ChannelExtraction": "the core refuses a global run (\"ChannelExtraction instances cannot be executed in the global context\")",
+    "ChannelMatch": "the core refuses a global run (\"ChannelMatch instances cannot be executed in the global context\")",
+    "CloneStamp": "the core refuses a global run (\"CloneStamp instances cannot be executed in the global context\")",
+    "ColorCalibration": "the core refuses a global run (\"ColorCalibration instances cannot be executed in the global context\")",
+    "ColorSaturation": "the core refuses a global run (\"ColorSaturation instances cannot be executed in the global context\")",
+    "Colourise": "the core refuses a global run (\"Colourise instances cannot be executed in the global context\")",
+    "ConvertToGrayscale": "the core refuses a global run (\"ConvertToGrayscale instances cannot be executed in the global context\")",
+    "ConvertToRGBColor": "the core refuses a global run (\"ConvertToRGBColor instances cannot be executed in the global context\")",
+    "Convolution": "the core refuses a global run (\"Convolution instances cannot be executed in the global context\")",
+    "CreateAlphaChannels": "the core refuses a global run (\"CreateAlphaChannels instances cannot be executed in the global context\")",
+    "Crop": "the core refuses a global run (\"Crop instances cannot be executed in the global context\")",
+    "CurvesTransformation": "the core refuses a global run (\"CurvesTransformation instances cannot be executed in the global context\")",
+    "Deconvolution": "the core refuses a global run (\"Deconvolution instances cannot be executed in the global context\")",
+    "DeepMorphology": "the core refuses a global run (\"DeepMorphology instances cannot be executed in the global context\")",
+    "DefectMap": "the core refuses a global run (\"DefectMap instances cannot be executed in the global context\")",
+    "DigitalDevelopment": "the core refuses a global run (\"DigitalDevelopment instances cannot be executed in the global context\")",
+    "Divide": "the core refuses a global run (\"Divide instances cannot be executed in the global context\")",
+    "DynamicAlignment": "the core refuses a global run (\"DynamicAlignment instances cannot be executed in the global context\")",
+    "DynamicCrop": "the core refuses a global run (\"DynamicCrop instances cannot be executed in the global context\")",
+    "ExponentialTransformation": "the core refuses a global run (\"ExponentialTransformation instances cannot be executed in the global context\")",
+    "ExtractAlphaChannels": "the core refuses a global run (\"ExtractAlphaChannels instances cannot be executed in the global context\")",
+    "FITSHeader": "the core refuses a global run (\"FITSHeader instances cannot be executed in the global context\")",
+    "FastRotation": "the core refuses a global run (\"FastRotation instances cannot be executed in the global context\")",
+    "FindingChart": "the core refuses a global run (\"FindingChart instances cannot be executed in the global context\")",
+    "FluxCalibration": "the core refuses a global run (\"FluxCalibration instances cannot be executed in the global context\")",
+    "FourierTransform": "the core refuses a global run (\"FourierTransform instances cannot be executed in the global context\")",
+    "GREYCstoration": "the core refuses a global run (\"GREYCstoration instances cannot be executed in the global context\")",
+    "GeneralizedHyperbolicStretch": "the core refuses a global run (\"GeneralizedHyperbolicStretch instances cannot be executed in the global context\")",
+    "GraXpert": "the core refuses a global run (\"GraXpert instances cannot be executed in the global context\")",
+    "GradientCorrection": "the core refuses a global run (\"GradientCorrection instances cannot be executed in the global context\")",
+    "GradientHDRComposition": "a global run reads its target frames (file paths checked by fileTables) and creates a NEW image window",
+    "GradientHDRCompression": "the core refuses a global run (\"GradientHDRCompression instances cannot be executed in the global context\")",
+    "GradientMergeMosaic": "a global run reads its target frames (file paths checked by fileTables) and creates a NEW mosaic image window",
+    "HDRComposition": "a global run reads its input frames (file paths checked by fileTables) and creates a NEW image window; closing previous results asks (confirmWhen)",
+    "HDRMultiscaleTransform": "the core refuses a global run (\"HDRMultiscaleTransform instances cannot be executed in the global context\")",
+    "HistogramTransformation": "the core refuses a global run (\"HistogramTransformation instances cannot be executed in the global context\")",
+    "ICCProfileTransformation": "the core refuses a global run (\"ICCProfileTransformation instances cannot be executed in the global context\")",
+    "ImageIdentifier": "the core refuses a global run (\"ImageIdentifier instances cannot be executed in the global context\")",
+    "ImageIntegration": "a global run integrates frames from disk into NEW image windows; drizzle-file updates and closing previous results ask (confirmWhen)",
+    "IntegerResample": "the core refuses a global run (\"IntegerResample instances cannot be executed in the global context\")",
+    "InverseFourierTransform": "a global run builds a NEW image window from the named Fourier components",
+    "Invert": "the core refuses a global run (\"Invert instances cannot be executed in the global context\")",
+    "LRGBCombination": "a global run combines the named channel images into a NEW image window, like ChannelCombination",
+    "LarsonSekanina": "the core refuses a global run (\"LarsonSekanina instances cannot be executed in the global context\")",
+    "LinearFit": "the core refuses a global run (\"LinearFit instances cannot be executed in the global context\")",
+    "LocalHistogramEqualization": "the core refuses a global run (\"LocalHistogramEqualization instances cannot be executed in the global context\")",
+    "MLDenoise": "the core refuses a global run (\"MLDenoise instances cannot be executed in the global context\")",
+    "MaskedStretch": "the core refuses a global run (\"MaskedStretch instances cannot be executed in the global context\")",
+    "MergeCFA": "a global run merges the four named CFA component images into a NEW image window",
+    "MorphologicalTransformation": "the core refuses a global run (\"MorphologicalTransformation instances cannot be executed in the global context\")",
+    "MultiscaleAdaptiveStretch": "the core refuses a global run (\"MultiscaleAdaptiveStretch instances cannot be executed in the global context\")",
+    "MultiscaleLinearTransform": "the core refuses a global run (\"MultiscaleLinearTransform instances cannot be executed in the global context\")",
+    "MultiscaleMedianTransform": "the core refuses a global run (\"MultiscaleMedianTransform instances cannot be executed in the global context\")",
+    "NarrowbandNormalization": "the core refuses a global run (\"NarrowbandNormalization instances cannot be executed in the global context\")",
+    "NewImage": "a global run creates a NEW image window",
+    "NoOperation": "it does nothing",
+    "NoiseGenerator": "the core refuses a global run (\"NoiseGenerator instances cannot be executed in the global context\")",
+    "PhotometricColorCalibration": "the core refuses a global run (\"PhotometricColorCalibration instances cannot be executed in the global context\")",
+    "PixelMath": "a global run (only with createNewImage; the core refuses otherwise) creates a NEW image window; open images are only read",
+    "RangeSelection": "the core refuses a global run (\"RangeSelection instances cannot be executed in the global context\")",
+    "Resample": "the core refuses a global run (\"Resample instances cannot be executed in the global context\")",
+    "Rescale": "the core refuses a global run (\"Rescale instances cannot be executed in the global context\")",
+    "RestorationFilter": "the core refuses a global run (\"RestorationFilter instances cannot be executed in the global context\")",
+    "Rotation": "the core refuses a global run (\"Rotation instances cannot be executed in the global context\")",
+    "SCNR": "the core refuses a global run (\"SCNR instances cannot be executed in the global context\")",
+    "SampleFormatConversion": "the core refuses a global run (\"SampleFormatConversion instances cannot be executed in the global context\")",
+    "Sandbox": "the core refuses a global run (\"Sandbox instances cannot be executed in the global context\")",
+    "ScreenTransferFunction": "the core refuses a global run (\"ScreenTransferFunction instances cannot be executed in the global context\")",
+    "SimplexNoise": "the core refuses a global run (\"SimplexNoise instances cannot be executed in the global context\")",
+    "SolarToolbox": "the core refuses a global run (\"SolarToolbox instances cannot be executed in the global context\")",
+    "SpectrophotometricColorCalibration": "the core refuses a global run (\"SpectrophotometricColorCalibration instances cannot be executed in the global context\")",
+    "SpectrophotometricFluxCalibration": "the core refuses a global run (\"SpectrophotometricFluxCalibration instances cannot be executed in the global context\")",
+    "StarMask": "the core refuses a global run (\"StarMask instances cannot be executed in the global context\")",
+    "Superbias": "the core refuses a global run (\"Superbias instances cannot be executed in the global context\")",
+    "TGVDenoise": "the core refuses a global run (\"TGVDenoise instances cannot be executed in the global context\")",
+    "UnsharpMask": "the core refuses a global run (\"UnsharpMask instances cannot be executed in the global context\")"
+  },
+  "globalConfirm": {
+    "AstroResolver": "its global run (it needs an active image window) is not documented as only creating images",
+    "B3Estimator": "the core accepts a global run of it even with default settings, and what that run does is not documented",
+    "Blink": "its global run opens the Blink tool on files; its parameters cannot be inspected from a module",
+    "DynamicBackgroundExtraction": "with explicit sample and model settings the core allows a global run whose effects are not documented",
+    "DynamicPSF": "an interactive tool whose global run is not documented as only creating images",
+    "MultiscaleGradientCorrection": "the core accepts a global run of it even with default settings (MARS database operations run globally), and what that run does is not fully documented",
+    "Statistics": "its global run cannot be inspected from a module (the process instance cannot be created here)"
+  },
+  "fileTables": {
+    "ImageIntegration": {
+      "images": {
+        "enabledColumn": "enabled",
+        "minEnabledRows": 3,
+        "columns": {
+          "path": "image",
+          "drizzlePath": "optionalFile",
+          "localNormalizationDataPath": "optionalFile"
+        }
+      }
+    },
+    "GradientMergeMosaic": {
+      "targetFrames": {
+        "enabledColumn": "enabled",
+        "columns": {
+          "path": "image"
+        }
+      }
+    },
+    "HDRComposition": {
+      "images": {
+        "enabledColumn": "enabled",
+        "minEnabledRows": 2,
+        "columns": {
+          "path": "image"
+        }
+      }
+    },
+    "GradientHDRComposition": {
+      "targetFrames": {
+        "enabledColumn": "enabled",
+        "minEnabledRows": 1,
+        "columns": {
+          "path": "image"
+        }
+      }
+    }
+  },
+  "pinnedParameters": {
+    "GraXpert": {
+      "appPath": {
+        "source": "globalSetting",
+        "key": "/GraXpert/Interfaces/GraXpert/appPath",
+        "kind": "executable",
+        "from": "your GraXpert settings",
+        "setupHint": "open the GraXpert process window in PixInsight once and set its path to the GraXpert application"
+      }
+    }
+  },
+  "parameterValues": {
+    "GraXpert": {
+      "backgroundExtractionAIModel": {
+        "format": "version",
+        "reason": "an AI model version such as 3.0.2, or empty for GraXpert's default (the value is passed to GraXpert's command line)"
+      },
+      "correction": {
+        "values": [
+          "Subtraction",
+          "Division"
+        ],
+        "reason": "Subtraction or Division (the value is passed to GraXpert's command line)"
+      },
+      "deconvolutionMode": {
+        "values": [
+          "Object-only",
+          "Stars-only"
+        ],
+        "reason": "Object-only or Stars-only (the value is passed to GraXpert's command line)"
+      },
+      "deconvolutionObjectAIModel": {
+        "format": "version",
+        "reason": "an AI model version such as 3.0.2, or empty for GraXpert's default (the value is passed to GraXpert's command line)"
+      },
+      "deconvolutionStarsAIModel": {
+        "format": "version",
+        "reason": "an AI model version such as 3.0.2, or empty for GraXpert's default (the value is passed to GraXpert's command line)"
+      },
+      "denoiseAIModel": {
+        "format": "version",
+        "reason": "an AI model version such as 3.0.2, or empty for GraXpert's default (the value is passed to GraXpert's command line)"
+      }
+    }
+  }
+}

@@ -40,7 +40,7 @@ IsoString PICopilotModule::Name() const
 String PICopilotModule::Description() const
 {
    return "PI Copilot v" PICOPILOT_STR(PICOPILOT_MODULE_VERSION_MAJOR) " — In-app AI assistant for PixInsight. "
-          "Chat that sees the active view and applies processes to it: Copilot (acts, undoable), Guided (asks first), Advisor (read-only).";
+          "Chat that sees the active view, streams its replies and works on your images: Copilot (acts, undoable), Guided (asks first), Advisor (read-only); integrates files with ImageIntegration; optional scripts you approve one by one.";
 }
 
 String PICopilotModule::Company() const
@@ -80,7 +80,7 @@ void PICopilotModule::GetReleaseDate( int& year, int& month, int& day ) const
 {
    year  = 2026;
    month = 9;
-   day   = 24;
+   day   = 25;
 }
 
 } // namespace pcl

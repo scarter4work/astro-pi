@@ -7,7 +7,10 @@
 #include "AgentTools.h"
 #include "ConfigDialog.h"
 #include "KeyStore.h"
+#include "ModelCatalog.h"
+#include "PICopilotModule.h"
 #include "PanelPlacement.h"
+#include "ScriptConfirmDialog.h"
 #include "SystemPrompt.h"
 #include "TurnEndNotes.h"
 #include "ViewCapture.h"
@@ -34,15 +37,17 @@ const char* const kGearUtf8 = "\xE2\x9A\x99";
 // Send button captions: idle, and while a turn is in flight (U+2026 "...").
 const char* const kSendText = "Send";
 const char* const kBusyTextUtf8 = "Thinking\xE2\x80\xA6";
+const char* const kCapturingTextUtf8 = "Capturing view\xE2\x80\xA6";
+const char* const kKeyringWaitTextUtf8 = "Waiting for the system keyring\xE2\x80\xA6";
 
-// One-time default placement (flush right, full height). Logical px.
+// One-time default placement (flush to the chosen side, full height). Logical px.
 // A marker setting, not "no saved geometry": installs from 0.1.0.x already
 // have a saved floating geometry, so a first-launch test would never fire.
 const char* const kPlacementMarkerKey = "PICopilot/DefaultPlacementApplied";
 constexpr int kDefaultPanelWidth   = 420;
 constexpr int kDefaultTopMargin    = 40;   // below the main menu/title bar
 constexpr int kDefaultBottomMargin = 60;   // above a desktop taskbar
-constexpr int kDefaultRightMargin  = 8;
+constexpr int kDefaultSideMargin   = 8;
 
 // Resizable panel: explicit minimum (logical px); the maximum is left
 // unbounded via Control::SetVariableSize() (int_max, Control.h:415-419).
@@ -60,28 +65,6 @@ const char* const kModesNoticeUtf8 =
    "Copilot applies processes directly when you ask (every change is recorded in the view's History, so you can "
    "undo it as usual); Guided shows each change and asks you first; Advisor is read-only and only gives advice. "
    "A mode change applies from your next message.";
-
-// For MessageBox rich text (the Guided dialog): the model-chosen ids and the
-// parameter text are shown literally.
-String EscapeHtml( const String& s )
-{
-   String out;
-   for ( size_type i = 0; i < s.Length(); ++i )
-   {
-      const char16_type c = s[i];
-      if ( c == '&' )
-         out += "&amp;";
-      else if ( c == '<' )
-         out += "&lt;";
-      else if ( c == '>' )
-         out += "&gt;";
-      else if ( c == '\n' )
-         out += "<br/>";
-      else
-         out += c;
-   }
-   return out;
-}
 
 } // namespace
 
@@ -201,11 +184,13 @@ void PICopilotInterface::StopWorker()
    }
 }
 
-void PICopilotInterface::SetBusy( bool busy )
+void PICopilotInterface::SetBusy( bool busy, const String& caption )
 {
-   // Non-streamed replies can take tens of seconds and tools run between
-   // them: show that a message is being worked on, on the Send button itself.
-   GUI->Send_Button.SetText( busy ? String::UTF8ToUTF16( kBusyTextUtf8 ) : String( kSendText ) );
+   // Replies can take tens of seconds (thinking before the first streamed
+   // text) and tools run between them: show that a message is being worked
+   // on, on the Send button itself.
+   GUI->Send_Button.SetText( busy ? (caption.IsEmpty() ? String::UTF8ToUTF16( kBusyTextUtf8 ) : caption)
+                                  : String( kSendText ) );
    GUI->Send_Button.SetToolTip( busy
       ? String( "<p>Working (each request gives up after " ) + String( PICopilotRequestTimeoutSeconds ) + " s).</p>"
       : String( "<p>Send the message (or press Return).</p>" ) );
@@ -240,13 +225,27 @@ void PICopilotInterface::SendCurrentInput()
    if ( prompt.IsEmpty() )
       return;
 
-   String key = KeyStore::Load();
+   KeyStore::State ks;
+   {
+      // A keyring read can block on the desktop's unlock prompt: say so on
+      // the Send button (painted by the call's event pump), then restore it.
+      KeyringWaitScope wait( [this]( bool waiting )
+      {
+         GUI->Send_Button.SetText( waiting ? String::UTF8ToUTF16( kKeyringWaitTextUtf8 ) : String( kSendText ) );
+      } );
+      ks = KeyStore::Load();
+   }
+   if ( !ks.note.IsEmpty() && ks.note != m_lastKeyNote )
+   {
+      AppendToLog( PlainText( "(" + ks.note + ")" ) + "\n\n" );   // once per distinct note
+      m_lastKeyNote = ks.note;
+   }
+   const String key = ks.key;
    if ( key.IsEmpty() )
    {
       // Visible notice, never a silent no-op. The input is kept so the
       // user can resend after setting the key.
-      AppendToLog( PlainText(
-         String::UTF8ToUTF16( "Set your Anthropic API key via the \xE2\x9A\x99 button." ) ) + "\n\n" );
+      AppendToLog( PlainText( KeyStore::NoKeyNote() ) + "\n\n" );
       return;
    }
 
@@ -254,10 +253,36 @@ void PICopilotInterface::SendCurrentInput()
    // The view this message is about is fixed NOW; the tools re-resolve it by
    // id, so a click on another image while the request runs changes nothing.
    BeginTurnTarget();
+   if ( GUI->IncludeView_CheckBox.IsChecked() && !m_turnViewId.IsEmpty() )
+   {
+      // Capturing a large view takes a moment: say so, and paint it before
+      // the capture blocks the UI thread (user input stays excluded).
+      SetBusy( true, String::UTF8ToUTF16( kCapturingTextUtf8 ) );
+      ThePICopilotModule->ProcessEvents( true/*excludeUserInputEvents*/ );
+   }
+   // The model is read per message. Set it on the session BEFORE the turn
+   // begins: a switch strips the earlier turns' thinking blocks, which are
+   // bound to the model that produced them.
+   String modelNote;
+   m_turnModel = CopilotSettings::LoadModel( &modelNote );
+   m_turnTools.runPjsr = CopilotSettings::LoadRunPjsrEnabled();
+   if ( !modelNote.IsEmpty() && modelNote != m_lastModelNote )
+   {
+      AppendToLog( PlainText( "(" + modelNote + ")" ) + "\n\n" );   // once per distinct note
+      m_lastModelNote = modelNote;
+   }
+   if ( m_turnModel != m_lastModel )
+   {
+      const ModelInfo* info = FindModel( m_turnModel );
+      AppendToLog( PlainText( "(model: " + String( info != nullptr ? info->label : m_turnModel.c_str() ) + ")" ) + "\n\n" );
+      m_lastModel = m_turnModel;
+   }
+   m_session.SetModel( m_turnModel );
    // Root thread, before any request: capture that view (increment 3).
    // The BARE prompt (never the context-prefixed content) is what a failed
    // message gives back for a resend.
    m_session.BeginUserTurn( ComposeTurnWithActiveView( prompt ) );
+   NoteTrimmed();
    m_pendingPrompt = prompt;
    m_apiKey = key;
    m_turnMode = AgentModeFromIndex( GUI->Mode_ComboBox.CurrentItem() );
@@ -274,15 +299,17 @@ void PICopilotInterface::StartRequest()
    {
       // Never send a body the API would reject with an opaque 400. AbortTurn
       // rolls the session back to before this message; it is a Failed step.
-      EndTurn( m_session.AbortTurn( "history invalid: " + why + " (nothing was sent)" ), 0 );
+      EndTurn( m_session.AbortTurn( "the conversation history is invalid: " + why, RequestErrorKind::Build ), 0 );
       return;
    }
+   m_replyShown = false;
    try
    {
       // ChatThread serializes key, prompt, history snapshot and tools HERE (UI thread).
-      m_thread = new ChatThread( m_apiKey, BuildSystemPrompt( m_turnMode ), m_session.History(),
-                                 PICOPILOT_DEFAULT_MODEL, PICOPILOT_MESSAGES_URL,
-                                 PICopilotRequestTimeoutSeconds, ToolDefinitions( m_turnMode ) );
+      m_thread = new ChatThread( m_apiKey, BuildSystemPrompt( m_turnMode, m_turnTools ), m_session.History(),
+                                 m_turnModel, PICOPILOT_MESSAGES_URL,
+                                 PICopilotRequestTimeoutSeconds, ToolDefinitions( m_turnMode, m_turnTools ),
+                                 ProductionRequestShape( m_turnModel ) );
       m_thread->Start();
    }
    catch ( ... )
@@ -304,16 +331,16 @@ void PICopilotInterface::StartRequest()
          }
          m_thread.Destroy();
       }
-      EndTurn( m_session.AbortTurn( "internal error: could not start the request: " + what ), 0 );
+      EndTurn( m_session.AbortTurn( "could not start the request: " + what, RequestErrorKind::Internal ), 0 );
       return;
    }
    if ( !GUI->Poll_Timer.IsRunning() )
       GUI->Poll_Timer.Start();
 }
 
-void PICopilotInterface::EndTurn( const AgentStep& step, int httpStatus )
+void PICopilotInterface::EndTurn( const AgentStep& step, int httpStatus, bool partialReplyCut )
 {
-   const TurnEndView v = DescribeTurnEnd( step, httpStatus );
+   const TurnEndView v = DescribeTurnEnd( step, httpStatus, partialReplyCut );
    for ( const String& note : v.notes )
       AppendToLog( PlainText( note ) + "\n\n" );
    // Give the failed prompt back -- unless the user has already started
@@ -354,15 +381,17 @@ ToolContext PICopilotInterface::MakeToolContext()
    ctx.turnViewId = m_turnViewId;
    ctx.inspectedViews = &m_inspectedViews;
    ctx.confirm = &PICopilotInterface::ConfirmApply;
+   ctx.runPjsr = m_turnTools.runPjsr;
+   ctx.confirmScript = &ScriptConfirmDialog::Ask;   // every script, every mode
    return ctx;
 }
 
 bool PICopilotInterface::ConfirmApply( const String& processId, const String& viewId, const String& changes )
 {
-   const String text = "<p>Apply <b>" + EscapeHtml( processId ) + "</b> to <b>" + EscapeHtml( viewId ) + "</b>?</p>"
-                     + "<p>" + EscapeHtml( changes ) + "</p>"
-                     + "<p>You can undo it afterwards from the view's History.</p>";
-   return MessageBox( text, String::UTF8ToUTF16( "PI Copilot \xE2\x80\x94 Guided mode" ), StdIcon::Question,
+   const String text = ConfirmDialogHtml( processId, viewId, changes );   // viewId empty: a global run
+   // Asked in Guided mode, and in EVERY mode when the process safety policy
+   // says confirm, so the title names neither mode.
+   return MessageBox( text, String::UTF8ToUTF16( "PI Copilot \xE2\x80\x94 confirm" ), StdIcon::Question,
                       StdButton::Yes, StdButton::No, StdButton::NoButton, 1/*default: No*/, 1/*Esc: No*/ ).Execute()
           == StdButton::Yes;
 }
@@ -389,7 +418,7 @@ bool PICopilotInterface::ApplyDefaultPlacement()
    if ( !PixInsightSettings::IsGlobalVariableDefined( "Workspace/PrimaryScreenCenterX" )
      || !PixInsightSettings::IsGlobalVariableDefined( "Workspace/PrimaryScreenCenterY" ) )
    {
-      Console().WarningLn( "PI Copilot: primary-screen geometry unavailable; default right-side placement skipped." );
+      Console().WarningLn( "PI Copilot: primary-screen geometry unavailable; default side placement skipped." );
       return false;
    }
    const PanelPlacement p = ComputeDefaultPanelPlacement(
@@ -398,10 +427,11 @@ bool PICopilotInterface::ApplyDefaultPlacement()
       LogicalPixelsToPhysical( kDefaultPanelWidth ),
       LogicalPixelsToPhysical( kDefaultTopMargin ),
       LogicalPixelsToPhysical( kDefaultBottomMargin ),
-      LogicalPixelsToPhysical( kDefaultRightMargin ) );
+      LogicalPixelsToPhysical( kDefaultSideMargin ),
+      CopilotSettings::LoadPanelSide() );
    if ( !p.ok )
    {
-      Console().WarningLn( "PI Copilot: primary-screen geometry too small; default right-side placement skipped." );
+      Console().WarningLn( "PI Copilot: primary-screen geometry too small; default side placement skipped." );
       return false;
    }
    Resize( p.width, p.height );
@@ -440,9 +470,37 @@ void PICopilotInterface::e_Input_ReturnPressed( Edit& )
 
 void PICopilotInterface::e_Config_Click( Button&, bool )
 {
-   // ConfigDialog::Run() persists the key itself on OK; nothing to do here.
-   ConfigDialog d;
-   d.Run( KeyStore::Load() );
+   // ConfigDialog persists everything itself on OK. Its first keyring read
+   // happens before it is shown: announce a blocking one on the Send button.
+   // (Never while a message runs: the Send button is its busy caption then.)
+   ConfigOutcome o;
+   {
+      const bool idle = !m_thread && !m_handlingResult;
+      KeyringWaitScope wait( [this, idle]( bool waiting )
+      {
+         if ( idle )
+            GUI->Send_Button.SetText( waiting ? String::UTF8ToUTF16( kKeyringWaitTextUtf8 ) : String( kSendText ) );
+      } );
+      ConfigDialog d;
+      o = d.Run();
+   }
+   if ( o.accepted && o.sideChanged )
+      ApplyDefaultPlacement();   // move to the newly chosen edge now; PI's geometry auto-save keeps it
+}
+
+void PICopilotInterface::DrainStreamedText()
+{
+   if ( !m_thread )
+      return;
+   const String d = m_thread->TakeStreamedText();
+   if ( d.IsEmpty() )
+      return;
+   if ( !m_replyShown )
+   {
+      AppendToLog( "<b>Copilot:</b> " );
+      m_replyShown = true;
+   }
+   AppendToLog( PlainText( d ) );
 }
 
 void PICopilotInterface::e_Poll_Timer( Timer& )
@@ -452,6 +510,8 @@ void PICopilotInterface::e_Poll_Timer( Timer& )
       GUI->Poll_Timer.Stop();
       return;
    }
+   // Streamed text arrives while the request runs: show it as it comes.
+   DrainStreamedText();
    // Wait until the worker has fully returned from Run(), so destroying
    // it below can never race its exit.
    if ( m_thread->IsActive() )
@@ -463,14 +523,25 @@ void PICopilotInterface::e_Poll_Timer( Timer& )
       // Unreachable by construction (Run() always stores a result), but
       // never swallow it silently.
       r = AnthropicResult();
+      r.errorKind = RequestErrorKind::Internal;
       r.error = "worker thread ended without a result";
    }
+   DrainStreamedText();   // whatever arrived after the last tick
    m_thread.Destroy();
    // Tools may run for seconds and pump events: never re-enter this handler.
    GUI->Poll_Timer.Stop();
 
    // The truncation note is display-only; history keeps the model's own text.
-   if ( r.ok && !r.text.IsEmpty() )
+   // A live reply that broke off (failure or Stop) is said so at turn end
+   // (DescribeTurnEnd, partialReplyCut).
+   const bool partialReplyCut = m_replyShown && !r.ok;
+   if ( m_replyShown )
+   {
+      // The reply was rendered live; close it.
+      AppendToLog( (r.ok && r.truncated ? PlainText( " [truncated: max_tokens]" ) : String()) + "\n\n" );
+      m_replyShown = false;
+   }
+   else if ( r.ok && !r.text.IsEmpty() )   // not streamed, or no delta arrived before the end
       AppendToLog( "<b>Copilot:</b> " + PlainText( r.truncated ? r.text + " [truncated: max_tokens]" : r.text ) + "\n\n" );
 
    m_handlingResult = true;
@@ -483,6 +554,7 @@ void PICopilotInterface::e_Poll_Timer( Timer& )
          [this]( const String& line ) { AppendToLog( PlainText( line ) + "\n" ); } );
    }
    m_handlingResult = false;
+   NoteTrimmed();
 
    if ( s.kind == AgentStep::SendAgain )
    {
@@ -493,7 +565,7 @@ void PICopilotInterface::e_Poll_Timer( Timer& )
    }
    if ( !s.toolLog.IsEmpty() )
       AppendToLog( "\n" );
-   EndTurn( s, r.httpStatus );
+   EndTurn( s, r.httpStatus, partialReplyCut );
 }
 
 void PICopilotInterface::e_Stop_Click( Button&, bool )
@@ -515,8 +587,18 @@ void PICopilotInterface::e_Clear_Click( Button&, bool )
    if ( m_thread || m_handlingResult )
       return;
    m_session.Clear();
+   m_lastModel.Clear();   // name the model again in the new chat
    GUI->ChatLog.Clear();
-   AppendToLog( PlainText( "(new chat: the conversation history was cleared; your images are unchanged)" ) + "\n\n" );
+   AppendToLog( PlainText( "(new chat started: the model no longer sees the earlier conversation; your images are unchanged)" ) + "\n\n" );
+}
+
+void PICopilotInterface::NoteTrimmed()
+{
+   const size_type n = m_session.TakeTrimmedMessages();
+   if ( n > 0 )
+      AppendToLog( PlainText( String().Format( "(%u older messages are no longer sent to the model, to keep this "
+                                               "conversation within its history budget. Your images are unchanged; "
+                                               "press New chat to start fresh.)", unsigned( n ) ) ) + "\n\n" );
 }
 
 void PICopilotInterface::e_Mode_ItemSelected( ComboBox&, int itemIndex )
@@ -606,13 +688,13 @@ PICopilotInterface::GUIData::GUIData( PICopilotInterface& w )
    IncludeView_CheckBox.SetToolTip( "<p>Send the active view with each message: an auto-stretched "
                                     "preview (display only) plus its geometry, statistics and FITS keywords.</p>" );
 
-   Clear_Button.SetText( "Clear" );
-   Clear_Button.SetToolTip( "<p>Start a new chat: clears the conversation history and this log. "
+   Clear_Button.SetText( "New chat" );
+   Clear_Button.SetToolTip( "<p>Start a new chat: the model forgets this conversation and the log is cleared. "
                             "Your images and their History are not touched.</p>" );
    Clear_Button.OnClick( (Button::click_event_handler)&PICopilotInterface::e_Clear_Click, w );
 
    Config_ToolButton.SetText( String::UTF8ToUTF16( kGearUtf8 ) );
-   Config_ToolButton.SetToolTip( "<p>Set your Anthropic API key.</p>" );
+   Config_ToolButton.SetToolTip( "<p>Settings: API key, model, scripts (run_pjsr), default panel side.</p>" );
    Config_ToolButton.OnClick( (Button::click_event_handler)&PICopilotInterface::e_Config_Click, w );
 
    Top_Sizer.SetSpacing( 4 );
@@ -651,7 +733,7 @@ PICopilotInterface::GUIData::GUIData( PICopilotInterface& w )
    Global_Sizer.Add( ChatLog, 100 );
    Global_Sizer.Add( Input_Sizer );
 
-   Poll_Timer.SetInterval( 0.2 );
+   Poll_Timer.SetInterval( 0.1 );
    Poll_Timer.SetPeriodic( true );
    Poll_Timer.OnTimer( (Timer::timer_event_handler)&PICopilotInterface::e_Poll_Timer, w );
 

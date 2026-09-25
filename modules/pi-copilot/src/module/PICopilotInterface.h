@@ -8,6 +8,7 @@
 #include "AgentSession.h"
 #include "AgentTools.h"
 #include "ChatThread.h"
+#include "CopilotSettings.h"
 
 #include <pcl/AutoPointer.h>
 #include <pcl/CheckBox.h>
@@ -82,6 +83,22 @@ private:
    String    m_apiKey;
    AgentMode m_turnMode = AgentMode::Copilot;
 
+   // Per user message: the optional tools offered (run_pjsr = ⚙ Allow
+   // scripts, read at Send like the model).
+   ToolOptions m_turnTools;
+
+   // The model this user message runs on (read from the ⚙ settings at Send)
+   // and the one last named in the log (named again when it changes).
+   IsoString m_turnModel;
+   IsoString m_lastModel;
+
+   // The last unknown-saved-model note shown (once per distinct note).
+   String m_lastModelNote;
+
+   // The last KeyStore note shown in the log (a migration or fallback
+   // notice), so it is appended only once per distinct note.
+   String m_lastKeyNote;
+
    // Per user message: the target view (see ToolContext::turnViewId) and the
    // views get_view_context inspected (see ToolContext::inspectedViews).
    IsoString             m_turnViewId;
@@ -94,15 +111,24 @@ private:
    // Send/Stop/Clear/Timer can fire re-entrantly; this blocks a second turn.
    bool m_handlingResult = false;
 
+   // The current request's reply has started rendering live (streamed text).
+   bool m_replyShown = false;
+
+   // Appends streamed text received since the last call (UI thread).
+   void DrainStreamedText();
+
    void SendCurrentInput();
    void StartRequest();
    void FinishTurn();
    // Ends the user message with a non-continuing step: its notes
    // (DescribeTurnEnd), the prompt restored when asked, then FinishTurn().
-   void EndTurn( const AgentStep& step, int httpStatus );
+   // partialReplyCut: a streamed reply was shown and then broke off.
+   void EndTurn( const AgentStep& step, int httpStatus, bool partialReplyCut = false );
    void AppendToLog( const String& richText );
+   // Tells the user when the history budget dropped older messages.
+   void NoteTrimmed();
    void StopWorker();
-   void SetBusy( bool busy );
+   void SetBusy( bool busy, const String& caption = String() );
    ToolContext MakeToolContext();
 
    // Guided-mode confirmation (modal MessageBox, root thread).
@@ -114,7 +140,8 @@ private:
    // sends.
    AnthropicMessage ComposeTurnWithActiveView( const String& prompt );
 
-   // One-time default placement: flush right, full height (see e_Show).
+   // Default placement: flush to the ⚙ side (right by default), full height.
+   // Applied once (see e_Show), and again when the ⚙ side changes.
    // Returns true only if the panel was actually resized and moved.
    bool ApplyDefaultPlacement();
 

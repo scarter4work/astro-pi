@@ -49,6 +49,13 @@ struct EnumerationInfo
 
 const EnumerationInfo& EnumerationInfoOf( const ProcessParameter& p );
 
+// describe_process's "default" for an enumeration. ProcessParameter::
+// DefaultValue() is the default element's INDEX, never a value the model can
+// pass back: info.defaultId when known, else the id of element number
+// `defaultIndex`, else null (unresolvable: no default is emitted, and the
+// parameter says so in "defaultNote").
+nlohmann::json EnumerationDefaultJson( const EnumerationInfo& info, int defaultIndex );
+
 } // namespace pcl
 
 #endif // PICopilot_ProcessCatalog_h

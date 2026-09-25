@@ -635,9 +635,7 @@ bool RunAgentSelfTest( nlohmann::json& out )
                if ( p.at( "id" ) == "colorToRemove" )
                {
                   detail["scnrColorDescribe"] = p;
-                  const nlohmann::json want = nlohmann::json::array( {
-                     { { "id", "Red" }, { "value", 0 } }, { { "id", "Green" }, { "value", 1 } },
-                     { { "id", "Blue" }, { "value", 2 } } } );
+                  const nlohmann::json want = nlohmann::json::array( { "Red", "Green", "Blue" } );
                   enumDefaultOk = p.value( "default", std::string() ) == "Green"
                                && p.value( "enumeration", nlohmann::json() ) == want && !p.contains( "error" );
                }
@@ -769,7 +767,8 @@ bool RunAgentSelfTest( nlohmann::json& out )
             { "noContentKey", 200, "{\"stop_reason\":\"end_turn\"}", "",
               false, "response missing expected content/text field: content is not an array", "", "", false },
             { "refusal", 200, "{\"content\":[],\"stop_reason\":\"refusal\"}", "",
-              false, "no text in reply (stop_reason=refusal)", "", "", false },
+              false, "the model declined this request (stop_reason refusal); rephrase it, or choose "
+                     "another model in PI Copilot's settings", "", "", false },
             { "maxTokensInToolCall", 200, "{\"content\":[{\"type\":\"tool_use\",\"id\":\"t\",\"name\":\"n\",\"input\":{}}],\"stop_reason\":\"max_tokens\"}", "",
               false, "no text in reply (stop_reason=max_tokens)", "", "", false },
             { "pauseTurn", 200, "{\"content\":[],\"stop_reason\":\"pause_turn\"}", "",
@@ -913,7 +912,8 @@ bool RunAgentSelfTest( nlohmann::json& out )
                n.push_back( t.at( "name" ).get<std::string>() );
             return n;
          };
-         const std::vector<std::string> all = { "list_processes", "describe_process", "get_view_context", "apply_process" };
+         const std::vector<std::string> all = { "list_processes", "describe_process", "get_view_context", "apply_process",
+                                                 "run_global_process" };
          const std::vector<std::string> readOnly = { "list_processes", "describe_process", "get_view_context" };
          const nlohmann::json tc = ToolDefinitions( AgentMode::Copilot );
          const nlohmann::json tg = ToolDefinitions( AgentMode::Guided );
@@ -923,7 +923,15 @@ bool RunAgentSelfTest( nlohmann::json& out )
             for ( const nlohmann::json& t : *set )
                shapes = shapes && t.at( "input_schema" ).at( "type" ) == "object"
                      && t.at( "description" ).is_string() && !t.at( "description" ).get<std::string>().empty();
+         // With scripts allowed (inc 5), run_pjsr comes last; never in Advisor.
+         ToolOptions scripts;
+         scripts.runPjsr = true;
+         std::vector<std::string> allWithScript = all;
+         allWithScript.push_back( "run_pjsr" );
          schemaOk = shapes && names( tc ) == all && names( tg ) == all && names( ta ) == readOnly
+                 && names( ToolDefinitions( AgentMode::Copilot, scripts ) ) == allWithScript
+                 && names( ToolDefinitions( AgentMode::Guided, scripts ) ) == allWithScript
+                 && names( ToolDefinitions( AgentMode::Advisor, scripts ) ) == readOnly
                  && tc.at( 3 ).at( "input_schema" ).at( "required" ) == nlohmann::json::array( { "process_id" } )
                  && tc.at( 3 ).at( "input_schema" ).at( "properties" ).contains( "table_parameters" )
                  && tc.at( 1 ).at( "input_schema" ).at( "required" ) == nlohmann::json::array( { "id" } );
@@ -1504,7 +1512,7 @@ bool RunAgentSelfTest( nlohmann::json& out )
             const String all = joined( v );
             check( "abortInvalid", v.notes.Length() == 3 && all.StartsWith( "Error: history invalid: message 3" )
                                    && all.Contains( "stay applied" ) && all.Contains( "History" )
-                                   && all.Contains( "Clear" ) && v.restoreInput && v.offerClear, v );
+                                   && all.Contains( "New chat" ) && v.restoreInput && v.offerClear, v );
          }
          // Stopped after a process ran: stopped + applied note, no restore.
          {
@@ -1717,6 +1725,7 @@ bool RunAgentSelfTest( nlohmann::json& out )
       double ratio = -1;
       int requests = 0;
       nlohmann::json log = nlohmann::json::array();
+      nlohmann::json requestSeconds = nlohmann::json::array();   // per streamed request (stall-risk evidence)
       if ( const char* key = std::getenv( "PICOPILOT_TEST_API_KEY" ) )
       {
          liveSkipped = false;
@@ -1737,8 +1746,11 @@ bool RunAgentSelfTest( nlohmann::json& out )
             {
                AnthropicRequest req( String( key ), PICOPILOT_DEFAULT_MODEL, BuildSystemPrompt( AgentMode::Copilot ),
                                      session.History(), PICOPILOT_MESSAGES_URL, PICopilotRequestTimeoutSeconds,
-                                     ToolDefinitions( AgentMode::Copilot ) );
+                                     ToolDefinitions( AgentMode::Copilot ),
+                                     ProductionRequestShape( PICOPILOT_DEFAULT_MODEL ) );
+               const auto t0 = std::chrono::steady_clock::now();
                const AnthropicResult r = req.Perform();
+               requestSeconds.push_back( std::chrono::duration<double>( std::chrono::steady_clock::now() - t0 ).count() );
                ++requests;
                if ( !r.text.IsEmpty() )
                   finalText = r.text;
@@ -1760,6 +1772,8 @@ bool RunAgentSelfTest( nlohmann::json& out )
          catch ( ... )                     { error = "unknown exception"; }
       }
       out["liveAgentSkipped"] = liveSkipped;
+      out["liveAgentStreamed"] = !liveSkipped;   // the live run, when it ran, used the streamed production shape
+      out["liveAgentRequestSeconds"] = requestSeconds;
       out["liveAgentRequests"] = requests;
       out["liveAgentLog"] = log;
       out["liveAgentText"] = U8( finalText );

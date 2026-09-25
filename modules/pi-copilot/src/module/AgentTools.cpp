@@ -3,18 +3,24 @@
 
 #include "AgentTools.h"
 #include "AnthropicClient.h"   // JpegImageBlock
+#include "GlobalRunFiles.h"    // NulTextProblem
+#include "PjsrRunner.h"
 #include "ProcessApply.h"
 #include "ProcessCatalog.h"
+#include "ProcessSafety.h"
 #include "Utf8.h"
 #include "ViewContext.h"
 #include "ViewPreview.h"
 
 #include <pcl/Exception.h>
+#include <pcl/ImageWindow.h>
 #include <pcl/Thread.h>
 
+#include <algorithm>
 #include <chrono>
 #include <cmath>
 #include <exception>
+#include <vector>
 
 namespace pcl
 {
@@ -28,14 +34,38 @@ const char* const kOkMarkUtf8  = "\xE2\x96\xB6 ";   // "▶ "
 const char* const kErrMarkUtf8 = "\xE2\x9C\x96 ";   // "✖ "
 const char* const kArrowUtf8   = " \xE2\x86\x92 ";  // " → "
 
+// Length-aware: an embedded NUL (legal in a JSON string) is kept, never a
+// silent end of the text.
 String S16( const std::string& s )
 {
-   return String::UTF8ToUTF16( s.c_str() );
+   return FromU8( s );
 }
 
 String Shorten( const String& s, size_type n )
 {
    return (s.Length() <= n || n < 4) ? s : s.Left( n - 3 ) + "...";
+}
+
+// For MessageBox rich text (the confirm dialog): model-chosen ids and the
+// parameter text are shown literally.
+String EscapeHtmlText( const String& s )
+{
+   String out;
+   for ( size_type i = 0; i < s.Length(); ++i )
+   {
+      const char16_type c = s[i];
+      if ( c == '&' )
+         out += "&amp;";
+      else if ( c == '<' )
+         out += "&lt;";
+      else if ( c == '>' )
+         out += "&gt;";
+      else if ( c == '\n' )
+         out += "<br/>";
+      else
+         out += c;
+   }
+   return out;
 }
 
 nlohmann::json TextBlock( const std::string& utf8 )
@@ -122,6 +152,91 @@ bool WasInspected( const ToolContext& ctx, const IsoString& fullId )
    return ctx.inspectedViews != nullptr && ctx.inspectedViews->count( std::string( fullId.c_str() ) ) > 0;
 }
 
+ToolOutcome DeniedFail( const String& what, const std::string& pid, const SafetyVerdict& safety )
+{
+   return Fail( what, S16( pid ) + " is not allowed from PI Copilot: " + safety.reason
+                      + ". Give the user the settings so they can run it themselves." );
+}
+
+// A denied process is refused BEFORE the parameter dry run: the dry run
+// builds a process instance, and a denied process is never touched at all
+// (a default ProcessContainer instance can block the core -- measured).
+bool RefuseDenied( const std::string& pid, const nlohmann::json& params, const nlohmann::json& tables,
+                   SafetyRunKind run, const String& what, ToolOutcome& out )
+{
+   const SafetyVerdict safety = CheckProcessSafety( IsoString( pid.c_str() ), params, tables, run );
+   if ( safety.kind != SafetyVerdict::Deny )
+      return false;
+   out = DeniedFail( what, pid, safety );
+   return true;
+}
+
+// THE deny/confirm gate, shared by every tool that runs a process
+// (apply_process, run_global_process): one policy, one wording, one dialog.
+//   deny                        -> false, `out` = a precise error (never a modal)
+//   Guided, or a confirm rule   -> ONE confirm dialog (a confirm rule asks in
+//                                  EVERY mode, Copilot included); declined or
+//                                  no callback -> false, `out` set
+//   otherwise                   -> true (run it)
+// `target` is the dialog's target text; `callText` names the call in the
+// declined message (e.g. "PixelMath on Image01"); `nothingDone` ends it.
+// Advisor never reaches this: its callers refuse Advisor first.
+// `target` is empty for a global run. `pinned` (ProcessSafety.h) is shown in
+// the dialog so the user sees e.g. which program will be launched.
+bool PassSafetyGate( const char* tool, const std::string& pid, const nlohmann::json& params,
+                     const nlohmann::json& tables, SafetyRunKind run, const std::vector<PinnedParameter>& pinned,
+                     const ToolContext& ctx, const String& what,
+                     const String& target, const std::string& callText, const char* nothingDone,
+                     ToolOutcome& out )
+{
+   const SafetyVerdict safety = CheckProcessSafety( IsoString( pid.c_str() ), params, tables, run );
+   if ( safety.kind == SafetyVerdict::Deny )
+   {
+      out = DeniedFail( what, pid, safety );
+      return false;
+   }
+   if ( ctx.mode != AgentMode::Guided && safety.kind != SafetyVerdict::Confirm )
+      return true;
+   if ( !ctx.confirm )
+   {
+      out = Fail( what, "internal error: no confirmation callback" );
+      return false;
+   }
+   String changes = DescribeParameterChanges( params, tables, PICopilotConfirmChangesChars );
+   if ( !pinned.empty() )
+      changes += "\n" + DescribePinnedParameters( pinned );
+   if ( safety.kind == SafetyVerdict::Confirm )
+      changes = "Why you are asked: " + safety.reason + ".\n\n" + changes;
+   if ( ctx.confirm( S16( pid ), target, changes ) )
+      return true;
+   out = ToolOutcome();
+   out.isError = true;
+   out.content.push_back( TextBlock( std::string( "The user declined this " ) + tool + " call (" + callText + "). "
+                                     + nothingDone + " Do not repeat it; ask what they would like instead." ) );
+   out.logLine = S16( kErrMarkUtf8 ) + what + S16( kArrowUtf8 ) + "declined by user";
+   return false;
+}
+
+// Before any dialog: NUL in any string, then the pinned parameters (refused
+// from the model; their trusted values resolved ONCE, shown in the dialog and
+// passed on to the run -- never re-read after it). "" when fine.
+String PreGateChecks( const std::string& pid, const nlohmann::json& params, const nlohmann::json& tables,
+                      std::vector<PinnedParameter>& pinned )
+{
+   const String nul = NulTextProblem( IsoString( pid.c_str() ), params, tables );
+   if ( !nul.IsEmpty() )
+      return nul;
+   return ResolvePinnedParameters( IsoString( pid.c_str() ), params, tables, pinned );
+}
+
+String PinnedLogText( const std::vector<PinnedParameter>& pinned )
+{
+   String s;
+   for ( const PinnedParameter& p : pinned )
+      s += " [" + S16( p.parameter ) + " = " + p.value + ", set by PI Copilot]";
+   return s;
+}
+
 ToolOutcome ApplyProcessTool( const nlohmann::json& in, const ToolContext& ctx, clock::time_point t0 )
 {
    const std::string pid = StringField( in, "process_id" );
@@ -137,6 +252,9 @@ ToolOutcome ApplyProcessTool( const nlohmann::json& in, const ToolContext& ctx, 
       return Fail( what, "apply_process is not available in Advisor mode (read-only); give the user the settings instead" );
    if ( pid.empty() )
       return Fail( "apply_process", "apply_process needs process_id; call list_processes for valid ids" );
+   if ( HasFileTables( IsoString( pid.c_str() ) ) )
+      return Fail( what, S16( pid ) + " integrates files from disk, not an open image: use run_global_process with "
+                         "the file list in table_parameters" );
 
    View target;
    const std::string viewId = StringField( in, "view_id" );
@@ -163,30 +281,37 @@ ToolOutcome ApplyProcessTool( const nlohmann::json& in, const ToolContext& ctx, 
    const IsoString targetId = target.FullId();
    what += " on " + String( targetId );
 
-   if ( ctx.mode == AgentMode::Guided )
+   std::vector<PinnedParameter> pinned;
    {
-      if ( !ctx.confirm )
-         return Fail( what, "internal error: Guided mode has no confirmation callback" );
-      const String changes = DescribeParameterChanges( params, tables, PICopilotConfirmChangesChars );
-      if ( !ctx.confirm( S16( pid ), String( targetId ), changes ) )
-      {
-         ToolOutcome o;
-         o.isError = true;
-         o.content.push_back( TextBlock( "The user declined this apply_process call (" + pid + " on "
-                                         + std::string( targetId.c_str() )
-                                         + "). Nothing was changed. Do not repeat it; ask what they would like instead." ) );
-         o.logLine = S16( kErrMarkUtf8 ) + what + S16( kArrowUtf8 ) + "declined by user";
-         return o;
-      }
-      // The dialog pumps events: the user may have closed (or replaced) the
-      // image meanwhile. Never run on a stale handle.
-      target = ViewByFullId( targetId );
-      if ( target.IsNull() )
-         return Fail( what, "view " + String( targetId ) + " is no longer open (closed while the confirmation "
-                            "dialog was up); nothing was changed" );
+      String e = PreGateChecks( pid, params, tables, pinned );
+      if ( !e.IsEmpty() )
+         return Fail( what, e );
+      ToolOutcome denied;
+      if ( RefuseDenied( pid, params, tables, SafetyRunKind::OnView, what, denied ) )
+         return denied;
+      // Every parameter check ApplyProcess makes, as a dry run: an error comes
+      // back before the user is asked, never after they approved.
+      e = PrecheckApplyRun( IsoString( pid.c_str() ), params, tables, &pinned );
+      if ( !e.IsEmpty() )
+         return Fail( what, e );
    }
+   what += PinnedLogText( pinned );
 
-   const ApplyProcessResult ar = ApplyProcess( IsoString( pid.c_str() ), params, tables, target );
+   {
+      ToolOutcome refused;
+      if ( !PassSafetyGate( "apply_process", pid, params, tables, SafetyRunKind::OnView, pinned, ctx, what,
+                            String( targetId ),
+                            pid + " on " + std::string( targetId.c_str() ), "Nothing was changed.", refused ) )
+         return refused;
+   }
+   // A dialog pumps events: the user may have closed (or replaced) the image
+   // meanwhile. Never run on a stale handle (a no-op when nothing was asked).
+   target = ViewByFullId( targetId );
+   if ( target.IsNull() )
+      return Fail( what, "view " + String( targetId ) + " is no longer open (closed while the confirmation "
+                         "dialog was up); nothing was changed" );
+
+   const ApplyProcessResult ar = ApplyProcess( IsoString( pid.c_str() ), params, tables, target, &pinned );
    if ( !ar.ok )
       return Fail( what, ar.error );
 
@@ -198,6 +323,8 @@ ToolOutcome ApplyProcessTool( const nlohmann::json& in, const ToolContext& ctx, 
       { "elapsedMs", std::lround( ar.elapsedMs ) },
       { "undo", "Recorded in the view's History; the user can undo it." }
    };
+   if ( !ar.pinnedSet.empty() )
+      summary["pinnedParameters"] = ar.pinnedSet;   // set by PI Copilot, not by you: never pass them
    try
    {
       summary["newContext"] = CollapsedViewContext( BuildViewContext( target ) );
@@ -219,6 +346,224 @@ ToolOutcome ApplyProcessTool( const nlohmann::json& in, const ToolContext& ctx, 
    return o;
 }
 
+// run_global_process: a process in the global context (e.g. ImageIntegration
+// over files on disk). It opens NEW windows and never changes an open image.
+ToolOutcome RunGlobalTool( const nlohmann::json& in, const ToolContext& ctx, clock::time_point t0 )
+{
+   const std::string pid = StringField( in, "process_id" );
+   const nlohmann::json params = in.contains( "parameters" ) ? in["parameters"] : nlohmann::json::object();
+   const nlohmann::json tables = in.contains( "table_parameters" ) ? in["table_parameters"] : nlohmann::json::object();
+   nlohmann::json shown = params.is_object() ? params : nlohmann::json::object();
+   if ( tables.is_object() )
+      for ( auto it = tables.begin(); it != tables.end(); ++it )
+         shown[it.key()] = it.value();
+   String what = "run_global_process " + S16( pid ) + " " + Shorten( S16( shown.dump() ), PICopilotToolLogParamChars );
+
+   if ( ctx.mode == AgentMode::Advisor )
+      return Fail( what, "run_global_process is not available in Advisor mode (read-only); give the user the settings instead" );
+   if ( pid.empty() )
+      return Fail( "run_global_process", "run_global_process needs process_id; call list_processes for valid ids" );
+
+   std::vector<PinnedParameter> pinned;
+   {
+      String e = PreGateChecks( pid, params, tables, pinned );
+      if ( !e.IsEmpty() )
+         return Fail( what, e );
+      ToolOutcome denied;
+      if ( RefuseDenied( pid, params, tables, SafetyRunKind::Global, what, denied ) )
+         return denied;
+      e = PrecheckGlobalRun( IsoString( pid.c_str() ), params, tables, &pinned );
+      if ( !e.IsEmpty() )
+         return Fail( what, e );
+   }
+   what += PinnedLogText( pinned );
+
+   {
+      ToolOutcome refused;
+      if ( !PassSafetyGate( "run_global_process", pid, params, tables, SafetyRunKind::Global, pinned, ctx, what,
+                            String()/*global run*/, pid, "Nothing was run.", refused ) )
+         return refused;
+   }
+
+   const GlobalRunResult g = RunGlobalProcess( IsoString( pid.c_str() ), params, tables, &pinned );
+   if ( !g.ok )
+   {
+      String e = g.error;
+      std::vector<std::string> opened = g.createdWindows;
+      opened.insert( opened.end(), g.otherNewWindows.begin(), g.otherNewWindows.end() );
+      if ( !opened.empty() )
+      {
+         e += " (windows that opened before it stopped: ";
+         for ( size_t i = 0; i < opened.size(); ++i )
+            e += (i > 0 ? String( ", " ) : String()) + S16( opened[i] );
+         e += ")";
+      }
+      return Fail( what, e );
+   }
+
+   // The main result: the integration image if the process names one it
+   // opened, else the first new window. It is described (and listed) first.
+   std::vector<std::string> order = g.createdWindows;
+   const std::string named = g.outputIds.value( "integrationImageId", std::string() );
+   auto hit = std::find( order.begin(), order.end(), named );
+   if ( hit != order.end() )
+      std::rotate( order.begin(), hit, hit + 1 );
+   const std::string primary = order.empty() ? std::string() : order.front();
+
+   nlohmann::json windows = nlohmann::json::array();
+   for ( const std::string& id : order )
+   {
+      if ( windows.size() >= PICopilotMaxDescribedWindows )
+         break;
+      nlohmann::json w = { { "id", id } };
+      try
+      {
+         const ImageWindow iw = ImageWindow::WindowById( IsoString( id.c_str() ) );
+         if ( iw.IsNull() )
+            w["contextError"] = "the window was closed before it could be described";
+         else if ( IsBusy( iw.MainView() ) )
+            w["contextError"] = "the view is busy (locked by a running process)";
+         else
+            w["context"] = CollapsedViewContext( BuildViewContext( iw.MainView() ) );
+      }
+      catch ( const pcl::Exception& x )
+      {
+         w["contextError"] = U8( x.Message() );
+      }
+      windows.push_back( w );
+   }
+   nlohmann::json summary = {
+      { "result", "ok" },
+      { "process", U8( g.processId ) },
+      { "parametersSet", g.parametersSet },
+      { "elapsedMs", std::lround( g.elapsedMs ) },
+      { "outputIds", g.outputIds },
+      { "pinnedParameters", g.pinnedSet },
+      { "createdWindows", windows },
+      { "createdWindowCount", g.createdWindows.size() },
+      { "note", primary.empty()
+                   ? std::string( "The process completed but opened no new image window; no open image was modified." )
+                   : "New image windows were created; no open image was modified. The preview shows " + primary + "." }
+   };
+   if ( g.createdWindows.size() > PICopilotMaxDescribedWindows )
+      summary["windowsNotDescribed"] = g.createdWindows.size() - PICopilotMaxDescribedWindows;
+   if ( !g.otherNewWindows.empty() )
+   {
+      summary["otherNewWindows"] = g.otherNewWindows;
+      summary["otherNewWindowsNote"] = "opened during the run; may not be results";
+   }
+
+   ToolOutcome o;
+   if ( !primary.empty() )
+   {
+      const ImageWindow iw = ImageWindow::WindowById( IsoString( primary.c_str() ) );
+      if ( iw.IsNull() )
+         summary["previewError"] = "the window " + primary + " was closed before the preview";
+      else if ( IsBusy( iw.MainView() ) )
+         summary["previewError"] = "the view " + primary + " is busy (locked by a running process)";
+      else
+      {
+         const ViewPreviewResult p = RenderViewPreview( iw.MainView() );
+         if ( p.ok )
+         {
+            o.content.push_back( TextBlock( summary.dump() ) );
+            o.content.push_back( JpegImageBlock( p.base64 ) );
+            o.logLine = OkLine( what, t0 );
+            return o;
+         }
+         summary["previewError"] = U8( p.error );
+      }
+   }
+   o.content.push_back( TextBlock( summary.dump() ) );
+   o.logLine = OkLine( what, t0 );
+   return o;
+}
+
+ToolOutcome RunPjsrTool( const nlohmann::json& in, const ToolContext& ctx, clock::time_point t0 )
+{
+   const std::string purpose = StringField( in, "purpose" );
+   // CR LF -> LF first: what the dialog shows and what runs have the same lines.
+   const String code = NormalizeScriptNewlines( S16( StringField( in, "code" ) ) );
+   const String what = "run_pjsr \"" + Shorten( S16( purpose ), 80 ) + "\"";
+   if ( ctx.mode == AgentMode::Advisor )
+      return Fail( what, "run_pjsr is not available in Advisor mode (read-only); give the user the script instead" );
+   if ( !ctx.runPjsr )
+      return Fail( what, "run_pjsr is turned off. The user can allow scripts in PI Copilot's settings (the gear "
+                         "button); until then use the processes, or give the user the script to run themselves." );
+   if ( code.Trimmed().IsEmpty() )
+      return Fail( what, "run_pjsr needs {\"code\": \"<JavaScript function body>\", \"purpose\": \"<one sentence>\"}" );
+   if ( code.Length() > PICopilotMaxScriptChars )
+      return Fail( what, String().Format( "the script has %u characters; the limit is %u. Split the work, or use "
+                                          "processes", unsigned( code.Length() ), unsigned( PICopilotMaxScriptChars ) ) );
+   if ( String( S16( purpose ) ).Trimmed().IsEmpty() )
+      return Fail( what, "run_pjsr needs a one-sentence purpose; it is shown to the user in the approval dialog" );
+   if ( S16( purpose ).Length() > PICopilotMaxScriptPurposeChars )
+      return Fail( what, String().Format( "the purpose has %u characters; the limit is %u. Give one short sentence "
+                                          "(details belong in the script's comments)",
+                                          unsigned( S16( purpose ).Length() ), unsigned( PICopilotMaxScriptPurposeChars ) ) );
+
+   // Trojan-Source guard: the dialog is the only human gate, so the text the
+   // user reads must be the code that runs. Before the parse and the dialog.
+   const String hidden = ScriptCharProblem( code );
+   if ( !hidden.IsEmpty() )
+      return Fail( what, hidden );
+
+   // Parse first: a syntax error never reaches the user's dialog. The engine
+   // gives a SyntaxError no position (inc-5 Task 1), so none is invented.
+   const PjsrCheck check = CheckPjsrSyntax( code );
+   if ( !check.ok )
+      return Fail( what, (check.line > 0 ? String().Format( "syntax error at line %d: ", check.line )
+                                         : String( "syntax error (line unknown): " ))
+                         + check.error
+                         + (check.errorTruncated ? String().Format( " [error text cut at %u characters]",
+                                                                    unsigned( PICopilotMaxScriptErrorChars ) ) : String())
+                         + " (the script was not shown to the user and did not run; fix it and call "
+                         "run_pjsr again)" );
+
+   if ( !ctx.confirmScript )
+      return Fail( what, "internal error: no script confirmation callback" );
+   if ( !ctx.confirmScript( S16( purpose ), code, ctx.turnViewId ) )
+   {
+      ToolOutcome o;
+      o.isError = true;
+      o.content.push_back( TextBlock( "The user declined to run this script. Nothing was run. Do not send the same "
+                                      "script again; ask what they would like instead." ) );
+      o.logLine = S16( kErrMarkUtf8 ) + what + S16( kArrowUtf8 ) + "declined by user";
+      return o;
+   }
+
+   const PjsrRun run = RunPjsr( code, ctx.turnViewId );
+   ToolOutcome o;
+   o.mutated = true;   // a script may have changed images (conservative: the turn-end note mentions History)
+   if ( !run.ok )
+   {
+      const nlohmann::json e = {
+         { "result", "error" }, { "error", U8( run.error ) }, { "errorTruncated", run.errorTruncated },
+         { "line", run.line > 0 ? nlohmann::json( run.line ) : nlohmann::json( "unknown" ) },
+         { "console", U8( run.console ) }, { "consoleTruncated", run.consoleTruncated },
+         { "note", "The script ran until the error: anything it changed before that point stays changed." }
+      };
+      o.isError = true;
+      o.content.push_back( TextBlock( e.dump() ) );
+      o.logLine = S16( kErrMarkUtf8 ) + what + S16( kArrowUtf8 )
+                + (run.line > 0 ? String().Format( "error at line %d: ", run.line ) : String( "error (line unknown): " ))
+                + Shorten( run.error, 160 );
+      return o;
+   }
+   const nlohmann::json summary = {
+      { "result", "ok" },
+      { "value", run.value.IsEmpty() ? nlohmann::json() : nlohmann::json( U8( run.value ) ) },
+      { "valueTruncated", run.valueTruncated },
+      { "console", U8( run.console ) },
+      { "consoleTruncated", run.consoleTruncated },
+      { "elapsedMs", std::lround( run.elapsedMs ) },
+      { "note", "A script's changes are undoable only if it used view.beginProcess()/endProcess() or ran process instances." }
+   };
+   o.content.push_back( TextBlock( summary.dump() ) );
+   o.logLine = OkLine( what, t0 );
+   return o;
+}
+
 } // namespace
 
 AgentMode AgentModeFromIndex( int index )
@@ -226,7 +571,7 @@ AgentMode AgentModeFromIndex( int index )
    return index == 1 ? AgentMode::Advisor : index == 2 ? AgentMode::Guided : AgentMode::Copilot;
 }
 
-nlohmann::json ToolDefinitions( AgentMode mode )
+nlohmann::json ToolDefinitions( AgentMode mode, const ToolOptions& options )
 {
    nlohmann::json tools = nlohmann::json::array();
 
@@ -240,7 +585,8 @@ nlohmann::json ToolDefinitions( AgentMode mode )
    describe["name"] = "describe_process";
    describe["description"] = "Describe one process's parameters: id, type, default, numeric range, enumeration "
                              "element ids, and table columns in row order. Call it before setting parameters "
-                             "you have not used yet in this conversation.";
+                             "you have not used yet in this conversation. A parameter with \"setBy\" is filled by "
+                             "PI Copilot: never pass it. A parameter with \"allowedValues\" or \"format\" accepts only such values.";
    describe["input_schema"] = { { "type", "object" },
                                 { "properties", { { "id", { { "type", "string" }, { "description", "Process id, e.g. PixelMath" } } } } },
                                 { "required", nlohmann::json::array( { "id" } ) } };
@@ -277,8 +623,94 @@ nlohmann::json ToolDefinitions( AgentMode mode )
       apply["input_schema"] = { { "type", "object" }, { "properties", props },
                                 { "required", nlohmann::json::array( { "process_id" } ) } };
       tools.push_back( apply );
+
+      nlohmann::json gprops = nlohmann::json::object();
+      gprops["process_id"] = { { "type", "string" }, { "description", "Process id, e.g. ImageIntegration" } };
+      gprops["parameters"] = props["parameters"];
+      gprops["table_parameters"] = { { "type", "object" },
+                                     { "description", "{tableParameterId: [[row values in column order], ...]}. "
+                                                      "ImageIntegration: {\"images\": [[enabled, path, drizzlePath, "
+                                                      "localNormalizationDataPath], ...]} with absolute paths." } };
+      nlohmann::json global = nlohmann::json::object();
+      global["name"] = "run_global_process";
+      global["description"] = "Run a PixInsight process in the global context (not on a view), e.g. ImageIntegration "
+                              "over image files on disk. It creates NEW image windows and never modifies an open "
+                              "image. Starts from the process's DEFAULT settings and sets only the parameters given. "
+                              "File paths must be absolute and must exist. Returns the created windows (ids and "
+                              "statistics) and a preview of the main result, or a precise error.";
+      global["input_schema"] = { { "type", "object" }, { "properties", gprops },
+                                 { "required", nlohmann::json::array( { "process_id" } ) } };
+      tools.push_back( global );
+   }
+   if ( mode != AgentMode::Advisor && options.runPjsr )
+   {
+      nlohmann::json sprops = nlohmann::json::object();
+      sprops["code"] = { { "type", "string" },
+                         { "description", "JavaScript (PJSR) function body. `return` a value to get it back (JSON); "
+                                          "console.writeln output is captured; targetViewId holds the id of the view "
+                                          "this message is about (may be empty)." } };
+      sprops["purpose"] = { { "type", "string" }, { "description", "One sentence for the user saying what the script does." } };
+      nlohmann::json script = nlohmann::json::object();
+      script["name"] = "run_pjsr";
+      script["description"] = "Run a short PixInsight JavaScript (PJSR) script, for jobs no process can do "
+                              "(inspection-driven decisions, window/preview management, custom measurements). The "
+                              "user sees the whole script and must approve it every time. Prefer apply_process. "
+                              "To change pixels directly, wrap the change in "
+                              "view.beginProcess(UndoFlag.PixelData) ... view.endProcess() so it can be undone "
+                              "(constants are namespaced here: UndoFlag.PixelData, ImageOp.Mul). A "
+                              "script cannot be interrupted: never write loops that might not end.";
+      script["input_schema"] = { { "type", "object" }, { "properties", sprops },
+                                 { "required", nlohmann::json::array( { "code", "purpose" } ) } };
+      tools.push_back( script );
    }
    return tools;
+}
+
+String ConfirmDialogHtml( const String& processId, const String& viewId, const String& changes )
+{
+   if ( viewId.IsEmpty() )
+      return "<p>Run <b>" + EscapeHtmlText( processId ) + "</b> globally?</p>"
+             + "<p>" + EscapeHtmlText( changes ) + "</p>"
+             + "<p>A global run changes no open image; it usually creates new images. Effects outside them "
+               "(files written, windows closed, PixInsight settings changed) cannot be undone from History.</p>";
+   return "<p>Apply <b>" + EscapeHtmlText( processId ) + "</b> to <b>" + EscapeHtmlText( viewId ) + "</b>?</p>"
+          + "<p>" + EscapeHtmlText( changes ) + "</p>"
+          + "<p>Changes to an image can be undone from the view's History. Effects outside the "
+            "image (files written, windows closed) cannot.</p>";
+}
+
+bool CapToolResultText( ToolOutcome& o, size_type maxChars )
+{
+   if ( !o.content.is_array() )
+      return false;
+   bool cut = false;
+   size_t longest = 0;
+   for ( nlohmann::json& b : o.content )
+   {
+      if ( !b.is_object() || b.value( "type", std::string() ) != "text" || !b.contains( "text" ) || !b["text"].is_string() )
+         continue;
+      const std::string& t = b["text"].get_ref<const std::string&>();
+      // Characters = code points: count UTF-8 lead bytes; cut on a boundary.
+      size_t chars = 0, cutAt = std::string::npos;
+      for ( size_t i = 0; i < t.size(); ++i )
+         if ( (uint8( t[i] ) & 0xC0) != 0x80 )
+         {
+            if ( chars == maxChars )
+               cutAt = i;
+            ++chars;
+         }
+      if ( chars <= maxChars )
+         continue;
+      std::string kept = t.substr( 0, cutAt );
+      kept += "\n\n[tool result cut: " + std::to_string( maxChars ) + " of " + std::to_string( chars )
+            + " characters shown. The rest was not sent; ask for less (e.g. describe one process or view at a time).]";
+      b["text"] = kept;
+      cut = true;
+      longest = std::max( longest, chars );
+   }
+   if ( cut )
+      o.logLine += String().Format( " (result cut to %u of %u characters)", unsigned( maxChars ), unsigned( longest ) );
+   return cut;
 }
 
 nlohmann::json CollapsedViewContext( const nlohmann::json& full )
@@ -301,7 +733,10 @@ nlohmann::json ToolResultBlock( const std::string& toolUseId, const ToolOutcome&
    return { { "type", "tool_result" }, { "tool_use_id", toolUseId }, { "content", content }, { "is_error", o.isError } };
 }
 
-ToolOutcome ExecuteTool( const ToolCall& call, const ToolContext& ctx )
+namespace
+{
+
+ToolOutcome ExecuteToolUncapped( const ToolCall& call, const ToolContext& ctx )
 {
    const clock::time_point t0 = clock::now();
    const String name = S16( call.name );
@@ -323,9 +758,10 @@ ToolOutcome ExecuteTool( const ToolCall& call, const ToolContext& ctx )
          if ( id.empty() )
             return Fail( name, "describe_process needs {\"id\": \"<process id>\"}; call list_processes for ids" );
          const String what = name + " " + S16( id );
-         const nlohmann::json d = DescribeProcess( IsoString( id.c_str() ) );
+         nlohmann::json d = DescribeProcess( IsoString( id.c_str() ) );
          if ( d.contains( "error" ) && !d.contains( "parameters" ) )
             return Fail( what, S16( d["error"].get<std::string>() ) );
+         AnnotatePolicyParameters( d );   // "setBy" (pinned: never pass it), "allowedValues"/"format"
          ToolOutcome o;
          o.content.push_back( TextBlock( d.dump() ) );
          o.logLine = OkLine( what, t0 );
@@ -369,8 +805,16 @@ ToolOutcome ExecuteTool( const ToolCall& call, const ToolContext& ctx )
       }
       if ( call.name == "apply_process" )
          return ApplyProcessTool( in, ctx, t0 );
-      return Fail( name, "unknown tool '" + name + "'; available: list_processes, describe_process, get_view_context"
-                         + (ctx.mode == AgentMode::Advisor ? String() : String( ", apply_process" )) );
+      if ( call.name == "run_global_process" )
+         return RunGlobalTool( in, ctx, t0 );
+      if ( call.name == "run_pjsr" )
+         return RunPjsrTool( in, ctx, t0 );
+      // Only what this turn actually offers (the same function builds the
+      // request's tools array).
+      String offered;
+      for ( const nlohmann::json& t : ToolDefinitions( ctx.mode, ToolOptions{ ctx.runPjsr } ) )
+         offered += (offered.IsEmpty() ? String() : String( ", " )) + S16( t["name"].get<std::string>() );
+      return Fail( name, "unknown tool '" + name + "'; available: " + offered );
    }
    catch ( const pcl::Exception& x )
    {
@@ -384,6 +828,15 @@ ToolOutcome ExecuteTool( const ToolCall& call, const ToolContext& ctx )
    {
       return Fail( name, name + " failed: unknown error" );
    }
+}
+
+} // namespace
+
+ToolOutcome ExecuteTool( const ToolCall& call, const ToolContext& ctx )
+{
+   ToolOutcome o = ExecuteToolUncapped( call, ctx );
+   CapToolResultText( o );
+   return o;
 }
 
 } // namespace pcl

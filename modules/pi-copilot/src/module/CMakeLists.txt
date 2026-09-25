@@ -30,8 +30,18 @@ set(MODULE_SOURCES
     ProcessApply.cpp
     AgentTools.cpp
     SystemPrompt.cpp
+    GlobalRunFiles.cpp
     AgentSession.cpp
     TurnEndNotes.cpp
+    PICopilotInc5SelfTest.cpp
+    SseStream.cpp
+    ModelCatalog.cpp
+    HistoryBudget.cpp
+    Keyring.cpp
+    CopilotSettings.cpp
+    ProcessSafety.cpp
+    PjsrRunner.cpp
+    ScriptConfirmDialog.cpp
 )
 
 add_library(PICopilot SHARED ${MODULE_SOURCES})
@@ -43,6 +53,10 @@ set(PICOPILOT_SUMMARIES_SRC "${CMAKE_CURRENT_SOURCE_DIR}/../../data/process-summ
 set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${PICOPILOT_SUMMARIES_SRC}")
 file(READ "${PICOPILOT_SUMMARIES_SRC}" PICOPILOT_PROCESS_SUMMARIES_JSON)
 configure_file(ProcessSummaries.h.in "${CMAKE_CURRENT_BINARY_DIR}/generated/ProcessSummaries.h" @ONLY)
+set(PICOPILOT_SAFETY_SRC "${CMAKE_CURRENT_SOURCE_DIR}/../../data/process-safety.json")
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${PICOPILOT_SAFETY_SRC}")
+file(READ "${PICOPILOT_SAFETY_SRC}" PICOPILOT_PROCESS_SAFETY_JSON)
+configure_file(ProcessSafetyData.h.in "${CMAKE_CURRENT_BINARY_DIR}/generated/ProcessSafetyData.h" @ONLY)
 target_include_directories(PICopilot PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/generated")
 
 # PCL include directories.

@@ -7,6 +7,9 @@
 namespace pcl
 {
 
+// Which edge of the primary screen the panel's default placement hugs.
+enum class PanelSide { Right = 0, Left = 1 };
+
 struct PanelPlacement
 {
    bool ok = false;   // false: screen geometry unusable, do not move/resize
@@ -17,7 +20,7 @@ struct PanelPlacement
 };
 
 /*
- * Flush-right, full-height default placement of the panel on the PRIMARY
+ * Flush-right (or flush-left), full-height default placement of the panel on the PRIMARY
  * screen, all values in physical device pixels.
  *
  * PCL exposes only the primary screen's CENTER (Cx,Cy) in GLOBAL desktop
@@ -54,33 +57,38 @@ struct PanelPlacement
  *    Without an origin query this cannot be told apart from an ultrawide.
  *
  * The result always satisfies, for the estimated extents:
- *   Cx - halfW <= x,  x + width + rightMargin <= Cx + halfW,
+ *   Cx - halfW <= x,  x + width + sideMargin <= Cx + halfW  (Right),
+ *   Cx - halfW + sideMargin <= x,  x + width <= Cx + halfW  (Left),
  *   Cy - halfH + topMargin == y,  y + height + bottomMargin == Cy + halfH,
- * and x >= 0, y >= 0 (as halfW <= Cx and halfH <= Cy). The width is clamped
- * to what fits beside the right margin; there is no available-area
- * (taskbar/panel) query, hence the fixed margins.
+ * and x >= 0, y >= 0 (as halfW <= Cx and halfH <= Cy).
+ * Right: x == Cx + halfW - width - sideMargin. Left: x == Cx - halfW + sideMargin.
+ * (For Left, the 16:10-offset overestimate above makes the panel overhang
+ * the primary's LEFT edge instead.) The width is clamped to what fits beside
+ * the side margin (maxW = 2*halfW - sideMargin holds for both sides); there is
+ * no available-area (taskbar/panel) query, hence the fixed margins.
  */
 inline PanelPlacement ComputeDefaultPanelPlacement( int screenCenterX, int screenCenterY,
                                                     int width, int topMargin, int bottomMargin,
-                                                    int rightMargin )
+                                                    int sideMargin, PanelSide side = PanelSide::Right )
 {
    PanelPlacement p;
    if ( screenCenterX <= 0 || screenCenterY <= 0 || width <= 0
-     || topMargin < 0 || bottomMargin < 0 || rightMargin < 0 )
+     || topMargin < 0 || bottomMargin < 0 || sideMargin < 0 )
       return p;
    // 64-bit intermediates: Cy*16 and Cx*9 must not overflow int.
    const long long cx = screenCenterX;
    const long long cy = screenCenterY;
    const long long halfW = (cx < cy*16/9) ? cx : cy*16/9;
    const long long halfH = (cy < cx*9/16) ? cy : cx*9/16;
-   const long long maxW = 2*halfW - rightMargin;
+   const long long maxW = 2*halfW - sideMargin;
    const long long h = 2*halfH - topMargin - bottomMargin;
    if ( maxW <= 0 || h <= 0 )
       return p;
    const long long w = (width < maxW) ? width : maxW;
    p.width = int( w );
    p.height = int( h );
-   p.x = int( cx + halfW - w - rightMargin );
+   p.x = (side == PanelSide::Left) ? int( cx - halfW + sideMargin )
+                                   : int( cx + halfW - w - sideMargin );
    p.y = int( cy - halfH + topMargin );
    p.ok = true;
    return p;

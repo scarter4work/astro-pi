@@ -60,6 +60,59 @@ inline std::string U8( const String& s )
    return r;
 }
 
+// UTF-8 std::string -> UTF-16 pcl::String, the inverse of U8(), LENGTH-aware:
+// an embedded NUL (legal in JSON text) is kept. PCL's String::UTF8ToUTF16()
+// stops at the first NUL even when given an explicit length (measured: a
+// run_pjsr script "…\0…" reached the approval dialog cut at the NUL). An
+// invalid, overlong or surrogate-encoding sequence becomes U+FFFD.
+inline String FromU8( const std::string& s )
+{
+   String r;
+   r.Reserve( s.size() );
+   const size_t n = s.size();
+   size_t i = 0;
+   while ( i < n )
+   {
+      const uint32 b = uint8( s[i] );
+      uint32 c;
+      size_t len;
+      if ( b < 0x80 )      { c = b;        len = 1; }
+      else if ( b >= 0xC2 && b <= 0xDF ) { c = b & 0x1F; len = 2; }
+      else if ( b >= 0xE0 && b <= 0xEF ) { c = b & 0x0F; len = 3; }
+      else if ( b >= 0xF0 && b <= 0xF4 ) { c = b & 0x07; len = 4; }
+      else
+      {
+         r += char16_type( 0xFFFD );
+         ++i;
+         continue;
+      }
+      bool ok = i + len <= n;
+      for ( size_t k = 1; ok && k < len; ++k )
+      {
+         const uint32 cb = uint8( s[i+k] );
+         ok = (cb & 0xC0) == 0x80;
+         c = (c << 6) | (cb & 0x3F);
+      }
+      if ( ok && ((len == 3 && (c < 0x800 || (c >= 0xD800 && c <= 0xDFFF))) || (len == 4 && (c < 0x10000 || c > 0x10FFFF))) )
+         ok = false;
+      if ( !ok )
+      {
+         r += char16_type( 0xFFFD );
+         ++i;   // resynchronise on the next byte
+         continue;
+      }
+      if ( c >= 0x10000 )
+      {
+         r += char16_type( 0xD800 + ((c - 0x10000) >> 10) );
+         r += char16_type( 0xDC00 + ((c - 0x10000) & 0x3FF) );
+      }
+      else
+         r += char16_type( c );
+      i += len;
+   }
+   return r;
+}
+
 } // namespace pcl
 
 #endif // PICopilot_Utf8_h
