@@ -41,7 +41,51 @@ PICOPILOT_TEST_SLOT=$(( 10#$PICOPILOT_TEST_SLOT ))
 
 SLOT_SETTINGS="$(printf '%s/core-%03d-pxi.settings' "$HOME/.PixInsight" "$PICOPILOT_TEST_SLOT")"
 rm -f "$SLOT_SETTINGS"
-trap 'rm -f "$SLOT_SETTINGS"' EXIT
+# One cleanup for every EXIT path (0.2.0.0). Every variable is empty until the
+# line that sets it has run (set -u: always ${VAR:-}), so an early exit cleans
+# exactly what exists. JOURNEY_XDG is our own temp dir; never rm the caller's
+# XDG_DATA_HOME.
+cleanup()
+{
+   if [ -n "${PICOPILOT_ECHO_KEEP:-}" ] && [ -n "${ECHO_DIR:-}" ]; then
+      cp "$ECHO_DIR"/body-* "$PICOPILOT_ECHO_KEEP"/ 2>/dev/null || true
+   fi
+   rm -f "${R:-}" "${STALL_PORT_FILE:-}" "${SLOT_SETTINGS:-}" "${PICOPILOT_SELFTEST_PRE:-}" "${PICOPILOT_SELFTEST_PHASE:-}" "${LIB_STAMP:-}"
+   if [ -n "${ECHO_DIR:-}" ]; then rm -rf "$ECHO_DIR"; fi
+   if [ -n "${JOURNEY_XDG:-}" ]; then rm -rf "$JOURNEY_XDG"; fi
+   if [ -n "${STALL_PID:-}" ]; then kill "$STALL_PID" 2>/dev/null || true; fi
+   if [ -n "${ECHO_PID:-}" ]; then kill "$ECHO_PID" 2>/dev/null || true; fi
+   return 0
+}
+trap cleanup EXIT
+
+# Image journey (0.2.0.0): the production JourneyService records into
+# $XDG_DATA_HOME/PICopilot/journeys. Point it at a private temp dir so a test run
+# never touches the user's real library, and prove afterwards that it did not.
+REAL_LIB="$HOME/.local/share/PICopilot"
+LIB_STAMP="$(mktemp)"
+REAL_LIB_BEFORE="$( [ -e "$REAL_LIB" ] && echo present || echo absent )"
+JOURNEY_XDG="$(mktemp -d)"
+# Isolate ONLY the PICopilot subtree. An empty XDG_DATA_HOME breaks unrelated
+# PI checks (measured in Task 1: the live GraXpert run fails and the process
+# catalog scan loses most enumerations), so every other top-level entry of the
+# real data home is mirrored in as a symlink. cleanup()'s rm -rf removes the
+# links, never their targets.
+REAL_XDG="${XDG_DATA_HOME:-$HOME/.local/share}"
+if [ -d "$REAL_XDG" ]; then
+   for entry in "$REAL_XDG"/* "$REAL_XDG"/.[!.]*; do
+      [ -e "$entry" ] || [ -L "$entry" ] || continue
+      [ "$(basename "$entry")" = "PICopilot" ] && continue
+      ln -s "$entry" "$JOURNEY_XDG/$(basename "$entry")"
+   done
+fi
+export XDG_DATA_HOME="$JOURNEY_XDG"
+# The selftest.js pre-phase ("user actions, panel never opened") writes its result here.
+export PICOPILOT_SELFTEST_PRE="$(mktemp -u "${TMPDIR:-/tmp}/picopilot-pre.XXXXXX.json")"
+# Multi-phase harness: selftest.js writes {"phase", "payload"} here before each
+# top-level check phase (PICopilot.executeGlobal() then runs that phase's
+# handler instead of the self-test). See the header of test/selftest.js.
+export PICOPILOT_SELFTEST_PHASE="$(mktemp -u "${TMPDIR:-/tmp}/picopilot-phase.XXXXXX.json")"
 
 [ -f "$SO" ] || { echo "FAIL: module not built at $SO"; exit 1; }
 "$PI" --sign-module-file="$SO" --xssk-file="$KEYS" --xssk-password="$PASS"
@@ -57,7 +101,6 @@ trap 'rm -f "$SLOT_SETTINGS"' EXIT
 # PICopilotInstance.cpp.
 R="$(mktemp -u "${TMPDIR:-/tmp}/picopilot-selftest.XXXXXX.json")"
 rm -f "$R"
-trap 'rm -f "$R" "$SLOT_SETTINGS"' EXIT
 
 # Gated real-API checks (text + vision). Key source order: system keyring,
 # then the gitignored local file, else skip. The key is never printed.
@@ -110,7 +153,6 @@ while True:
     threading.Thread(target=hold, args=(c,), daemon=True).start()
 PY
 STALL_PID=$!
-trap 'rm -f "$R" "$STALL_PORT_FILE" "$SLOT_SETTINGS"; kill "$STALL_PID" 2>/dev/null || true' EXIT
 for _ in $(seq 50); do [ -s "$STALL_PORT_FILE" ] && break; sleep 0.1; done
 [ -s "$STALL_PORT_FILE" ] || { echo "FAIL: stall server did not start"; exit 1; }
 export PICOPILOT_SELFTEST_STALL_URL="http://127.0.0.1:$(cat "$STALL_PORT_FILE")/v1/messages"
@@ -269,7 +311,6 @@ srv.serve_forever()
 PY
 ECHO_PID=$!
 # PICOPILOT_ECHO_KEEP=<dir> keeps the captured request bodies for inspection.
-trap 'if [ -n "${PICOPILOT_ECHO_KEEP:-}" ]; then cp "$ECHO_DIR"/body-* "$PICOPILOT_ECHO_KEEP"/ 2>/dev/null || true; fi; rm -f "$R" "$STALL_PORT_FILE" "$SLOT_SETTINGS"; rm -rf "$ECHO_DIR"; kill "$STALL_PID" "$ECHO_PID" 2>/dev/null || true' EXIT
 for _ in $(seq 50); do [ -s "$ECHO_PORT_FILE" ] && break; sleep 0.1; done
 [ -s "$ECHO_PORT_FILE" ] || { echo "FAIL: echo server did not start"; exit 1; }
 export PICOPILOT_SELFTEST_ECHO_URL="http://127.0.0.1:$(cat "$ECHO_PORT_FILE")/v1/messages"
@@ -286,10 +327,14 @@ export PICOPILOT_SELFTEST_FIXTURES="$HERE/fixtures"
 # PixInsight process the PixInsight.sh wrapper left behind).
 command -v xvfb-run >/dev/null 2>&1 || { echo "FAIL: xvfb-run not found (needed to keep dialogs off the real display)"; exit 1; }
 if ! PICOPILOT_SELFTEST_OUT="$R" xvfb-run -a -s "-screen 0 1920x1080x24" \
-        timeout 600 "$PI" -n="$PICOPILOT_TEST_SLOT" --automation-mode --no-startup-scripts -m="$SO" -r="$HERE/selftest.js" --force-exit; then
-   echo "FAIL: PI load timed out (600s) or exited non-zero"; exit 1
+        timeout 900 "$PI" -n="$PICOPILOT_TEST_SLOT" --automation-mode --no-startup-scripts -m="$SO" -r="$HERE/selftest.js" --force-exit; then
+   echo "FAIL: PI load timed out (900s) or exited non-zero"; exit 1
 fi
 [ -f "$R" ] || { echo "FAIL: no result file"; exit 1; }
+REAL_LIB_AFTER="$( [ -e "$REAL_LIB" ] && echo present || echo absent )"
+if [ "$REAL_LIB_BEFORE" != "$REAL_LIB_AFTER" ] || { [ -e "$REAL_LIB" ] && [ -n "$(find "$REAL_LIB" -newer "$LIB_STAMP" -print -quit)" ]; }; then
+   echo "FAIL: the self-test touched the real journey library $REAL_LIB"; exit 1
+fi
 cat "$R"
 echo
 python3 - "$R" <<'PY' || { echo "FAIL: self-test verdict not all green"; exit 1; }
@@ -332,6 +377,8 @@ required_true = [
     'pinnedOk',
     'rereviewFixOk',
     'reviewE4422c9Ok',
+    # 0.2.0.0 image journey
+    'journeySpikeOk',
     'ok',
 ]
 missing = [k for k in required_true if d.get(k) is not True]

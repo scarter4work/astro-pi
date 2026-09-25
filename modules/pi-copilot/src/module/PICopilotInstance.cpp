@@ -2,6 +2,7 @@
 // Copyright (c) 2026 Scott Carter. MIT License.
 
 #include "PICopilotInstance.h"
+#include "PICopilotJourneySelfTest.h"
 #include "PICopilotSelfTest.h"
 #include "Utf8.h"
 
@@ -65,6 +66,10 @@ bool PICopilotInstance::ExecuteGlobal()
       Console().WriteLn( "PI Copilot: open the chat panel via Process > &lt;Etc&gt; > PICopilot" );
       return true;
    }
+
+   // Multi-phase harness: a top-level check phase, not the final run.
+   if ( RunPendingSelfTestPhase() )
+      return true;
 
    String json;
    bool ok = RunSelfTest( json );

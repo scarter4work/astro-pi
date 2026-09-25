@@ -46,6 +46,16 @@ public:
    // contract it must declare itself a non-generator.
    bool IsInstanceGenerator() const override;
 
+   // Image notifications (plan Task 1: the spike probe; Task 7: JourneyService).
+   // Handlers only queue; nothing is read here (global constraint).
+   bool WantsImageNotifications() const override;
+   void ImageCreated( const View& view ) override;
+   void ImageUpdated( const View& view ) override;
+   void ImageRenamed( const View& view ) override;
+   void ImageDeleted( const View& view ) override;
+   void ImageSaved( const View& view ) override;
+   void ImageFocused( const View& view ) override;
+
    // Wraps arbitrary text for TextBox rich text as literal (<raw>) text.
    // Unlike TextBox::PlainText(), text containing its own "</raw>" (any
    // case/spacing) cannot end the raw block early: each such '<' is emitted

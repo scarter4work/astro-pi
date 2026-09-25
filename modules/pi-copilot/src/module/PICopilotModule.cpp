@@ -14,6 +14,7 @@
 #include "PICopilotModule.h"
 #include "PICopilotProcess.h"
 #include "PICopilotInterface.h"
+#include "JourneySpikeProbe.h"
 
 namespace pcl
 {
@@ -81,6 +82,19 @@ void PICopilotModule::GetReleaseDate( int& year, int& month, int& day ) const
    year  = 2026;
    month = 9;
    day   = 25;
+}
+
+void PICopilotModule::OnLoad()
+{
+   // Test-only (no-op unless run by test/run-selftest.sh): the plan's Task 1
+   // spike records which image notifications and timer ticks reach the module
+   // while the PI Copilot panel has never been opened.
+   ArmJourneySpikeProbeIfSelfTest();
+}
+
+void PICopilotModule::OnUnload()
+{
+   DisarmJourneySpikeProbe();
 }
 
 } // namespace pcl

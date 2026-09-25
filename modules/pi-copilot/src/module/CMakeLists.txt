@@ -42,6 +42,8 @@ set(MODULE_SOURCES
     ProcessSafety.cpp
     PjsrRunner.cpp
     ScriptConfirmDialog.cpp
+    JourneySpikeProbe.cpp
+    PICopilotJourneySelfTest.cpp
 )
 
 add_library(PICopilot SHARED ${MODULE_SOURCES})

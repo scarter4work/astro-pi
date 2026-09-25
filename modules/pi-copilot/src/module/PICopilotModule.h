@@ -23,6 +23,8 @@ public:
    String      TradeMarks() const override;
    String      OriginalFileName() const override;
    void        GetReleaseDate( int& year, int& month, int& day ) const override;
+   void        OnLoad() override;
+   void        OnUnload() override;
 };
 
 extern PICopilotModule* ThePICopilotModule;
