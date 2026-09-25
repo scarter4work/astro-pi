@@ -126,6 +126,17 @@ Reviewed and allowed without asking (their file/path-like parameters have no eff
 
 A process in none of these lists (a newer PixInsight, a third-party module) whose parameter ids look like files, folders, output, overwrite, closing windows, servers or commands is asked about at runtime ("it has not been reviewed and has file/output-like parameters: ..."). The dialog names the parameter and value that triggered a rule. If a run cannot be checked, PI Copilot asks rather than running it.
 
+## Increment 5 — Scripts (`run_pjsr`, off by default)
+
+- **Off unless you turn it on:** ⚙ → **Allow scripts** (saved as `PICopilot/RunPjsrEnabled`, default off). When off, and always in **Advisor**, the model is not offered the tool at all.
+- **You see every script, every time, in every mode.** Before anything runs, a dialog shows the purpose, the image it is about, and the **whole** script. The default button is **Don't run** (Return and Esc both decline). Nothing skips this dialog.
+- **Syntax is checked first, without running anything.** A script that doesn't parse goes back to the model with the error and you are never asked. PixInsight's script engine reports no line number for syntax errors, so none is given; runtime errors are reported at the line in the model's own script.
+- **What it can do: anything a PixInsight script can.** A script runs with full access to PixInsight and your files. **Once it starts it cannot be stopped** — if a script never finishes (an endless loop), PixInsight hangs and must be closed. That is why the dialog shows the whole script: read it before you press **Run script**.
+- **Undo:** pixel changes are undoable only when the script wraps them in `view.beginProcess(UndoFlag.PixelData)` … `view.endProcess()` or runs process instances; the model is told to do so, but check the script. If a script fails part-way, whatever it changed before the error stays changed.
+- **Limits:** scripts up to 20,000 characters; the model gets back the returned value (JSON, up to 4,000 characters) and the last 8,000 characters of console output.
+- The script text reaches PixInsight only as a quoted data string, never spliced into code, so text inside it cannot escape the syntax check and run early (self-tested against quote, backslash, comment, `</script>`, NUL/control, U+2028/2029, surrogate and string-escape breakout attempts).
+- The approval dialog itself cannot be exercised by the headless self-test (a modal cannot run there); everything behind it is. It is verified by hand on the released build.
+
 ## 0.1.0.4 — UTF-8 wire fix
 
 - Any chat turn containing non-ASCII text (e.g. a model reply with "—" or "→" re-sent as history) failed with `Error 400: ... not valid UTF-8: surrogates not allowed`. Cause: `NetworkTransfer::POST(const String&)` is transmitted by the PI core one byte per UTF-16 code unit (low 8 bits). The body is now widened byte-for-byte from UTF-8 (`PostBytes`), and all outbound text uses our own surrogate-aware `U8()` because PCL's `String::ToUTF8` mis-encodes astral characters (📷 → 📽).

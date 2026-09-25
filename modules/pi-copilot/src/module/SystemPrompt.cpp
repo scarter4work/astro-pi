@@ -74,6 +74,18 @@ const char* const kApplyTool =
    "- run_global_process {process_id, parameters, table_parameters}: runs a process in the global context, e.g. "
    "ImageIntegration over files on disk. It opens NEW image windows and never changes an open image.\n";
 
+const char* const kScriptTool =
+   "- run_pjsr {code, purpose}: runs a PixInsight JavaScript (PJSR) script, but only after the user has read and "
+   "approved the whole script in a dialog, every time. Use it only when no process can do the job (inspection-driven "
+   "decisions, window or preview management, custom measurements). The code is a function body: `return` a value to "
+   "get it back (as JSON); console.writeln output is captured; targetViewId is the id of the view this message is "
+   "about. To change pixels directly, wrap the change in view.beginProcess(UndoFlag.PixelData) ... view.endProcess() "
+   "so the user can undo it; prefer running process instances (P.executeOn(view)), which are undoable anyway. In "
+   "this PixInsight the constants are namespaced objects: UndoFlag.PixelData, ImageOp.Mul (the old "
+   "UndoFlag_PixelData / ImageOp_Mul names are undefined). A "
+   "script cannot be interrupted: never write loops that might not end. If the user declines, do not send the same "
+   "script again.\n";
+
 const char* const kApplyIdioms =
    "\nUsing apply_process:\n"
    "- It starts from the process's DEFAULT settings and changes only the parameters you pass, so pass every "
@@ -112,7 +124,7 @@ const char* const kVision =
 
 } // namespace
 
-String BuildSystemPrompt( AgentMode mode )
+String BuildSystemPrompt( AgentMode mode, const ToolOptions& options )
 {
    std::string p = kIntro;
    p += mode == AgentMode::Copilot ? kCopilotMode : mode == AgentMode::Guided ? kGuidedMode : kAdvisorMode;
@@ -120,6 +132,8 @@ String BuildSystemPrompt( AgentMode mode )
    if ( mode != AgentMode::Advisor )
    {
       p += kApplyTool;
+      if ( options.runPjsr )
+         p += kScriptTool;
       p += kApplyIdioms;
    }
    p += kVision;

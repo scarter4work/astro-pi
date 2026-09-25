@@ -3,6 +3,7 @@
 
 #include "AgentTools.h"
 #include "AnthropicClient.h"   // JpegImageBlock
+#include "PjsrRunner.h"
 #include "ProcessApply.h"
 #include "ProcessCatalog.h"
 #include "ProcessSafety.h"
@@ -380,6 +381,77 @@ ToolOutcome RunGlobalTool( const nlohmann::json& in, const ToolContext& ctx, clo
    return o;
 }
 
+ToolOutcome RunPjsrTool( const nlohmann::json& in, const ToolContext& ctx, clock::time_point t0 )
+{
+   const std::string purpose = StringField( in, "purpose" );
+   const String code = S16( StringField( in, "code" ) );
+   const String what = "run_pjsr \"" + Shorten( S16( purpose ), 80 ) + "\"";
+   if ( ctx.mode == AgentMode::Advisor )
+      return Fail( what, "run_pjsr is not available in Advisor mode (read-only); give the user the script instead" );
+   if ( !ctx.runPjsr )
+      return Fail( what, "run_pjsr is turned off. The user can allow scripts in PI Copilot's settings (the gear "
+                         "button); until then use the processes, or give the user the script to run themselves." );
+   if ( code.Trimmed().IsEmpty() )
+      return Fail( what, "run_pjsr needs {\"code\": \"<JavaScript function body>\", \"purpose\": \"<one sentence>\"}" );
+   if ( code.Length() > PICopilotMaxScriptChars )
+      return Fail( what, String().Format( "the script has %u characters; the limit is %u. Split the work, or use "
+                                          "processes", unsigned( code.Length() ), unsigned( PICopilotMaxScriptChars ) ) );
+   if ( String( S16( purpose ) ).Trimmed().IsEmpty() )
+      return Fail( what, "run_pjsr needs a one-sentence purpose; it is shown to the user in the approval dialog" );
+
+   // Parse first: a syntax error never reaches the user's dialog. The engine
+   // gives a SyntaxError no position (inc-5 Task 1), so none is invented.
+   const PjsrCheck check = CheckPjsrSyntax( code );
+   if ( !check.ok )
+      return Fail( what, (check.line > 0 ? String().Format( "syntax error at line %d: ", check.line )
+                                         : String( "syntax error (line unknown): " ))
+                         + check.error + " (the script was not shown to the user and did not run; fix it and call "
+                         "run_pjsr again)" );
+
+   if ( !ctx.confirmScript )
+      return Fail( what, "internal error: no script confirmation callback" );
+   if ( !ctx.confirmScript( S16( purpose ), code, ctx.turnViewId ) )
+   {
+      ToolOutcome o;
+      o.isError = true;
+      o.content.push_back( TextBlock( "The user declined to run this script. Nothing was run. Do not send the same "
+                                      "script again; ask what they would like instead." ) );
+      o.logLine = S16( kErrMarkUtf8 ) + what + S16( kArrowUtf8 ) + "declined by user";
+      return o;
+   }
+
+   const PjsrRun run = RunPjsr( code, ctx.turnViewId );
+   ToolOutcome o;
+   o.mutated = true;   // a script may have changed images (conservative: the turn-end note mentions History)
+   if ( !run.ok )
+   {
+      const nlohmann::json e = {
+         { "result", "error" }, { "error", U8( run.error ) },
+         { "line", run.line > 0 ? nlohmann::json( run.line ) : nlohmann::json( "unknown" ) },
+         { "console", U8( run.console ) }, { "consoleTruncated", run.consoleTruncated },
+         { "note", "The script ran until the error: anything it changed before that point stays changed." }
+      };
+      o.isError = true;
+      o.content.push_back( TextBlock( e.dump() ) );
+      o.logLine = S16( kErrMarkUtf8 ) + what + S16( kArrowUtf8 )
+                + (run.line > 0 ? String().Format( "error at line %d: ", run.line ) : String( "error (line unknown): " ))
+                + Shorten( run.error, 160 );
+      return o;
+   }
+   const nlohmann::json summary = {
+      { "result", "ok" },
+      { "value", run.value.IsEmpty() ? nlohmann::json() : nlohmann::json( U8( run.value ) ) },
+      { "valueTruncated", run.valueTruncated },
+      { "console", U8( run.console ) },
+      { "consoleTruncated", run.consoleTruncated },
+      { "elapsedMs", std::lround( run.elapsedMs ) },
+      { "note", "A script's changes are undoable only if it used view.beginProcess()/endProcess() or ran process instances." }
+   };
+   o.content.push_back( TextBlock( summary.dump() ) );
+   o.logLine = OkLine( what, t0 );
+   return o;
+}
+
 } // namespace
 
 AgentMode AgentModeFromIndex( int index )
@@ -387,7 +459,7 @@ AgentMode AgentModeFromIndex( int index )
    return index == 1 ? AgentMode::Advisor : index == 2 ? AgentMode::Guided : AgentMode::Copilot;
 }
 
-nlohmann::json ToolDefinitions( AgentMode mode )
+nlohmann::json ToolDefinitions( AgentMode mode, const ToolOptions& options )
 {
    nlohmann::json tools = nlohmann::json::array();
 
@@ -456,6 +528,27 @@ nlohmann::json ToolDefinitions( AgentMode mode )
       global["input_schema"] = { { "type", "object" }, { "properties", gprops },
                                  { "required", nlohmann::json::array( { "process_id" } ) } };
       tools.push_back( global );
+   }
+   if ( mode != AgentMode::Advisor && options.runPjsr )
+   {
+      nlohmann::json sprops = nlohmann::json::object();
+      sprops["code"] = { { "type", "string" },
+                         { "description", "JavaScript (PJSR) function body. `return` a value to get it back (JSON); "
+                                          "console.writeln output is captured; targetViewId holds the id of the view "
+                                          "this message is about (may be empty)." } };
+      sprops["purpose"] = { { "type", "string" }, { "description", "One sentence for the user saying what the script does." } };
+      nlohmann::json script = nlohmann::json::object();
+      script["name"] = "run_pjsr";
+      script["description"] = "Run a short PixInsight JavaScript (PJSR) script, for jobs no process can do "
+                              "(inspection-driven decisions, window/preview management, custom measurements). The "
+                              "user sees the whole script and must approve it every time. Prefer apply_process. "
+                              "To change pixels directly, wrap the change in "
+                              "view.beginProcess(UndoFlag.PixelData) ... view.endProcess() so it can be undone "
+                              "(constants are namespaced here: UndoFlag.PixelData, ImageOp.Mul). A "
+                              "script cannot be interrupted: never write loops that might not end.";
+      script["input_schema"] = { { "type", "object" }, { "properties", sprops },
+                                 { "required", nlohmann::json::array( { "code", "purpose" } ) } };
+      tools.push_back( script );
    }
    return tools;
 }
@@ -550,8 +643,11 @@ ToolOutcome ExecuteTool( const ToolCall& call, const ToolContext& ctx )
          return ApplyProcessTool( in, ctx, t0 );
       if ( call.name == "run_global_process" )
          return RunGlobalTool( in, ctx, t0 );
+      if ( call.name == "run_pjsr" )
+         return RunPjsrTool( in, ctx, t0 );
       return Fail( name, "unknown tool '" + name + "'; available: list_processes, describe_process, get_view_context"
-                         + (ctx.mode == AgentMode::Advisor ? String() : String( ", apply_process, run_global_process" )) );
+                         + (ctx.mode == AgentMode::Advisor ? String()
+                                                           : String( ", apply_process, run_global_process, run_pjsr (when the user allows scripts)" )) );
    }
    catch ( const pcl::Exception& x )
    {

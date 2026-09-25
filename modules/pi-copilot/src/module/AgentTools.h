@@ -25,9 +25,17 @@ AgentMode AgentModeFromIndex( int index );
 constexpr size_type PICopilotToolLogParamChars   = 120;   // parameters shown in a chat-log tool line
 constexpr size_type PICopilotConfirmChangesChars = 1500;  // parameter text in the Guided dialog
 
+// Which optional tools a message offers. run_pjsr: the user allowed scripts
+// in ⚙ (never offered in Advisor, whatever this says).
+struct ToolOptions
+{
+   bool runPjsr = false;
+};
+
 // The Anthropic "tools" array for a mode: list_processes, describe_process,
-// get_view_context, and -- except in Advisor -- apply_process.
-nlohmann::json ToolDefinitions( AgentMode mode );
+// get_view_context, and -- except in Advisor -- apply_process, plus run_pjsr
+// (last) when options.runPjsr.
+nlohmann::json ToolDefinitions( AgentMode mode, const ToolOptions& options = ToolOptions() );
 
 struct ToolCall
 {
@@ -48,6 +56,9 @@ struct ToolOutcome
 // process safety policy says confirm (ProcessSafety.h); true = the user approved.
 using ConfirmApplyFn = std::function<bool( const String& processId, const String& viewId, const String& changes )>;
 
+// run_pjsr: asked for EVERY script, in every mode; true = the user clicked Run script.
+using ConfirmScriptFn = std::function<bool( const String& purpose, const String& code, const IsoString& targetViewId )>;
+
 struct ToolContext
 {
    AgentMode mode = AgentMode::Copilot;
@@ -66,6 +77,12 @@ struct ToolContext
    std::set<std::string>* inspectedViews = nullptr;
 
    ConfirmApplyFn confirm;   // required in Guided mode and for safety-policy confirmations
+
+   // The user allowed scripts (⚙ Allow scripts) for this message.
+   bool runPjsr = false;
+
+   // Required for run_pjsr: shows the whole script; nothing runs without a yes.
+   ConfirmScriptFn confirmScript;
 };
 
 // Executes one tool call. Root thread only (views, processes, previews,
