@@ -635,9 +635,7 @@ bool RunAgentSelfTest( nlohmann::json& out )
                if ( p.at( "id" ) == "colorToRemove" )
                {
                   detail["scnrColorDescribe"] = p;
-                  const nlohmann::json want = nlohmann::json::array( {
-                     { { "id", "Red" }, { "value", 0 } }, { { "id", "Green" }, { "value", 1 } },
-                     { { "id", "Blue" }, { "value", 2 } } } );
+                  const nlohmann::json want = nlohmann::json::array( { "Red", "Green", "Blue" } );
                   enumDefaultOk = p.value( "default", std::string() ) == "Green"
                                && p.value( "enumeration", nlohmann::json() ) == want && !p.contains( "error" );
                }

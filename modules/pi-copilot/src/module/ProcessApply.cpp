@@ -304,7 +304,8 @@ String BusyMessage( const String& viewId )
 // Shared by ApplyProcess and RunGlobalProcess.
 void SetParameters( const Process& P, ProcessInstance& instance, const String& processId,
                     const nlohmann::json& parameters, const nlohmann::json& tableParameters,
-                    nlohmann::json& parametersSet, nlohmann::json& pinnedSet )
+                    nlohmann::json& parametersSet, nlohmann::json& pinnedSet,
+                    const std::vector<PinnedParameter>* resolvedPinned )
 {
    if ( !parameters.is_null() && !parameters.is_object() )
       throw ApplyError{ String( "parameters must be an object {parameterId: value}" ) };
@@ -319,9 +320,19 @@ void SetParameters( const Process& P, ProcessInstance& instance, const String& p
       if ( !dup.IsEmpty() )
          throw ApplyError{ dup };
    }
-   // Pinned parameters (ProcessSafety.h): refused from the model, resolved
-   // from their trusted source BEFORE anything is set.
+   // Pinned parameters (ProcessSafety.h): refused from the model. Their
+   // values were resolved ONCE by the caller (the tools, before any dialog:
+   // what the user was shown is what runs) and are only checked for
+   // completeness here; a direct caller without them resolves now.
    std::vector<PinnedParameter> pinned;
+   if ( resolvedPinned != nullptr )
+   {
+      const String e = CheckResolvedPinnedParameters( P.Id(), parameters, tableParameters, *resolvedPinned );
+      if ( !e.IsEmpty() )
+         throw ApplyError{ e };
+      pinned = *resolvedPinned;
+   }
+   else
    {
       const String e = ResolvePinnedParameters( P.Id(), parameters, tableParameters, pinned );
       if ( !e.IsEmpty() )
@@ -336,7 +347,15 @@ void SetParameters( const Process& P, ProcessInstance& instance, const String& p
             throw ApplyError{ name + " is a table parameter; pass it in table_parameters as [[row values]...]" };
          if ( p.IsReadOnly() )
             throw ApplyError{ name + " is read-only" };
-         SetChecked( instance, p, ToVariant( p, it.value(), name ), kScalarRow, name );
+         const Variant value = ToVariant( p, it.value(), name );
+         // Policy parameterValues (e.g. values that reach a command line).
+         if ( p.IsString() )
+         {
+            const String e = ParameterValueProblem( P.Id(), p.Id(), value.ToString() );
+            if ( !e.IsEmpty() )
+               throw ApplyError{ e };
+         }
+         SetChecked( instance, p, value, kScalarRow, name );
          parametersSet[it.key()] = it.value();
       }
 
@@ -422,7 +441,8 @@ std::set<std::string> OpenMainViewIds()
 } // namespace
 
 ApplyProcessResult ApplyProcess( const IsoString& processId, const nlohmann::json& parameters,
-                                 const nlohmann::json& tableParameters, View view )
+                                 const nlohmann::json& tableParameters, View view,
+                                 const std::vector<PinnedParameter>* pinned )
 {
    ApplyProcessResult r;
    try
@@ -452,7 +472,7 @@ ApplyProcessResult ApplyProcess( const IsoString& processId, const nlohmann::jso
 
       ProcessInstance instance( *P );   // DEFAULT parameters
 
-      SetParameters( *P, instance, r.processId, parameters, tableParameters, r.parametersSet, r.pinnedSet );
+      SetParameters( *P, instance, r.processId, parameters, tableParameters, r.parametersSet, r.pinnedSet, pinned );
 
       String whyNot;
       if ( !instance.Validate( whyNot ) )
@@ -537,8 +557,50 @@ void SplitNewWindows( const std::vector<std::string>& newWindows, const nlohmann
       (named.empty() || named.count( id ) ? results : others).push_back( id );
 }
 
+String PrecheckApplyRun( const IsoString& processId, const nlohmann::json& parameters,
+                         const nlohmann::json& tableParameters, const std::vector<PinnedParameter>* pinned )
+{
+   try
+   {
+      std::unique_ptr<Process> P;
+      try
+      {
+         P.reset( new Process( processId ) );
+      }
+      catch ( ... )
+      {
+         return "unknown process id '" + String( processId ) + "'; call list_processes for valid ids";
+      }
+      if ( !P->CanProcessViews() )
+         return String( P->Id() ) + " can only run in the global context (not on a view); use run_global_process";
+      // Dry run of SetParameters() on a throwaway DEFAULT instance: every
+      // shape, type, range, enumeration, pattern and duplicate-key error
+      // comes back BEFORE any confirmation dialog.
+      ProcessInstance probe( *P );
+      nlohmann::json ignored = nlohmann::json::object(), ignoredPinned = nlohmann::json::object();
+      SetParameters( *P, probe, String( P->Id() ), parameters, tableParameters, ignored, ignoredPinned, pinned );
+   }
+   catch ( const ApplyError& e )
+   {
+      return e.message;
+   }
+   catch ( const pcl::Exception& x )
+   {
+      return "apply_process internal error: " + x.Message();
+   }
+   catch ( const std::exception& x )
+   {
+      return String( "apply_process internal error: " ) + String( x.what() );
+   }
+   catch ( ... )
+   {
+      return "apply_process internal error: unknown exception";
+   }
+   return String();
+}
+
 String PrecheckGlobalRun( const IsoString& processId, const nlohmann::json& parameters,
-                          const nlohmann::json& tableParameters )
+                          const nlohmann::json& tableParameters, const std::vector<PinnedParameter>* pinned )
 {
    try
    {
@@ -561,7 +623,7 @@ String PrecheckGlobalRun( const IsoString& processId, const nlohmann::json& para
       const Process P( processId );
       ProcessInstance probe( P );
       nlohmann::json ignored = nlohmann::json::object(), ignoredPinned = nlohmann::json::object();
-      SetParameters( P, probe, String( P.Id() ), parameters, tableParameters, ignored, ignoredPinned );
+      SetParameters( P, probe, String( P.Id() ), parameters, tableParameters, ignored, ignoredPinned, pinned );
    }
    catch ( const ApplyError& e )
    {
@@ -575,24 +637,28 @@ String PrecheckGlobalRun( const IsoString& processId, const nlohmann::json& para
    {
       return String( "run_global_process internal error: " ) + String( x.what() );
    }
+   catch ( ... )
+   {
+      return "run_global_process internal error: unknown exception";
+   }
    return String();
 }
 
 GlobalRunResult RunGlobalProcess( const IsoString& processId, const nlohmann::json& parameters,
-                                  const nlohmann::json& tableParameters )
+                                  const nlohmann::json& tableParameters, const std::vector<PinnedParameter>* pinned )
 {
    GlobalRunResult r;
    std::set<std::string> before;
    bool started = false;
    try
    {
-      const String pre = PrecheckGlobalRun( processId, parameters, tableParameters );
+      const String pre = PrecheckGlobalRun( processId, parameters, tableParameters, pinned );
       if ( !pre.IsEmpty() )
          throw ApplyError{ pre };
       const Process P( processId );
       r.processId = String( P.Id() );
       ProcessInstance instance( P );   // DEFAULT parameters
-      SetParameters( P, instance, r.processId, parameters, tableParameters, r.parametersSet, r.pinnedSet );
+      SetParameters( P, instance, r.processId, parameters, tableParameters, r.parametersSet, r.pinnedSet, pinned );
 
       String whyNot;
       if ( !instance.Validate( whyNot ) )

@@ -3436,6 +3436,423 @@ bool RunInc5SelfTest( nlohmann::json& out )
       allOk = allOk && ok;
    }
 
+   // ---- Section B11: re-review fixes (5ba3632..12a97ee) --------------------------
+   {
+      bool describeCapOk = false, listCapOk = false, globalReviewOk = false, preDialogOk = false,
+           pinnedObjectOk = false, pinnedKeysOk = false, patternsOk = false, describeMarkOk = false,
+           resolveOnceOk = false;
+      nlohmann::json detail = nlohmann::json::object();
+      String error;
+      // Characters as CapToolResultText counts them: code points (UTF-8 lead bytes).
+      auto codePoints = []( const std::string& s )
+      {
+         size_t n = 0;
+         for ( char c : s )
+            if ( (uint8( c ) & 0xC0) != 0x80 )
+               ++n;
+         return n;
+      };
+      auto text0 = []( const ToolOutcome& o ) -> std::string
+      {
+         try { return o.content.at( 0 ).at( "text" ).get<std::string>(); } catch ( ... ) { return std::string(); }
+      };
+      try
+      {
+         // I1. No installed process's describe_process result, and not the
+         // list_processes result, is cut by the tool-result cap. Measured on
+         // the tool output itself (what the model receives).
+         {
+            ToolContext tc;
+            tc.mode = AgentMode::Copilot;
+            std::vector<std::pair<size_t, std::string>> sizes;
+            nlohmann::json cutOrBad = nlohmann::json::array();
+            size_t count = 0;
+            for ( const Process& P : Process::AllProcesses() )
+            {
+               const std::string id( P.Id().c_str() );
+               const ToolOutcome d = ExecuteTool( ToolCall{ "d", "describe_process", { { "id", id } } }, tc );
+               const std::string t = text0( d );
+               const size_t cp = codePoints( t );
+               sizes.emplace_back( cp, id );
+               ++count;
+               bool parsed = false;
+               try { parsed = nlohmann::json::parse( t ).contains( "parameters" ); } catch ( ... ) {}
+               if ( d.isError || !parsed || t.find( "[tool result cut:" ) != std::string::npos
+                    || cp > PICopilotMaxToolResultChars )
+                  cutOrBad.push_back( { { "process", id }, { "chars", cp }, { "isError", d.isError }, { "parsed", parsed } } );
+            }
+            std::sort( sizes.begin(), sizes.end(), []( const auto& a, const auto& b ) { return a.first > b.first; } );
+            nlohmann::json top = nlohmann::json::array();
+            for ( size_t i = 0; i < sizes.size() && i < 10; ++i )
+               top.push_back( { { "process", sizes[i].second }, { "chars", sizes[i].first } } );
+            const std::string listed = text0( ExecuteTool( ToolCall{ "l", "list_processes", nlohmann::json::object() }, tc ) );
+            const size_t listChars = codePoints( listed );
+            bool listParsed = false;
+            try { listParsed = nlohmann::json::parse( listed ).at( "count" ).get<size_t>() == count; } catch ( ... ) {}
+            detail["describeSizes"] = { { "processes", count }, { "top10", top }, { "cutOrBad", cutOrBad },
+                                        { "cap", PICopilotMaxToolResultChars } };
+            detail["listProcesses"] = { { "chars", listChars }, { "parsedFullCount", listParsed } };
+            describeCapOk = count > 100 && cutOrBad.empty();
+            listCapOk = listParsed && listed.find( "[tool result cut:" ) == std::string::npos
+                     && listChars <= PICopilotMaxToolResultChars;
+         }
+
+         // M2. Global review covers EVERY global-capable process that is not
+         // denied/always-confirmed -- reviewedSafe and confirmWhen included.
+         {
+            nlohmann::json pol = nlohmann::json::parse(
+               "{\"deny\":{},\"confirmAlways\":{},\"confirmWhen\":{\"ImageIntegration\":[{\"parameter\":"
+               "\"generateDrizzleData\",\"equals\":true,\"reason\":\"t\"}]},\"reviewedSafe\":{\"PixelMath\":\"t\"},"
+               "\"globalSafe\":{},\"globalConfirm\":{},\"fileTables\":{}}" );
+            SetProcessSafetyPolicyForSelfTest( &pol );
+            const SafetyVerdict pmG = CheckProcessSafety( "PixelMath", nlohmann::json::object(), nlohmann::json(), SafetyRunKind::Global );
+            const SafetyVerdict pmV = CheckProcessSafety( "PixelMath", nlohmann::json::object(), nlohmann::json() );
+            const SafetyVerdict iiG = CheckProcessSafety( "ImageIntegration", nlohmann::json::object(), nlohmann::json(), SafetyRunKind::Global );
+            pol["globalSafe"]["PixelMath"] = "t";
+            pol["globalSafe"]["ImageIntegration"] = "t";
+            const SafetyVerdict pmG2 = CheckProcessSafety( "PixelMath", nlohmann::json::object(), nlohmann::json(), SafetyRunKind::Global );
+            const SafetyVerdict iiG2 = CheckProcessSafety( "ImageIntegration", nlohmann::json::object(), nlohmann::json(), SafetyRunKind::Global );
+            const SafetyVerdict iiG3 = CheckProcessSafety( "ImageIntegration", { { "generateDrizzleData", true } }, nlohmann::json(),
+                                                           SafetyRunKind::Global );
+            // A globalSafe entry beside reviewedSafe/confirmWhen is legal now;
+            // beside deny/confirmAlways it is dead weight and reported.
+            const nlohmann::json overlapOk = UnknownPolicyProcessIds();
+            pol["confirmAlways"]["RGBWorkingSpace"] = "t";
+            pol["globalSafe"]["RGBWorkingSpace"] = "t";
+            const nlohmann::json overlapBad = UnknownPolicyProcessIds();
+            SetProcessSafetyPolicyForSelfTest( nullptr );
+            // The real policy: every global-capable reviewedSafe/confirmWhen
+            // process is reviewed for global runs (the gate), plus a probe of
+            // what the core says about a default global run (review evidence).
+            const nlohmann::json& real = CompiledProcessSafety();
+            nlohmann::json probe = nlohmann::json::object();
+            for ( const char* s : { "reviewedSafe", "confirmWhen" } )
+               for ( auto it = real.at( s ).begin(); it != real.at( s ).end(); ++it )
+                  try
+                  {
+                     const Process P( IsoString( it.key().c_str() ) );
+                     if ( !P.CanProcessGlobal() )
+                        continue;
+                     String why;
+                     bool can = false;
+                     try { ProcessInstance d( P ); can = d.CanExecuteGlobal( why ); } catch ( const pcl::Exception& x ) { why = "exception: " + x.Message(); }
+                     probe[it.key()] = { { "section", s }, { "defaultCanExecuteGlobal", can }, { "whyNot", U8( why ) },
+                                         { "globalSafe", real.value( "globalSafe", nlohmann::json::object() ).contains( it.key() ) },
+                                         { "globalConfirm", real.value( "globalConfirm", nlohmann::json::object() ).contains( it.key() ) } };
+                  }
+                  catch ( ... ) {}
+            const nlohmann::json gate = UnreviewedGlobalProcesses();
+            // globalConfirm joins, never hides, a confirmWhen rule.
+            const SafetyVerdict mgcG = CheckProcessSafety( "MultiscaleGradientCorrection", { { "command", "x" } }, nlohmann::json(),
+                                                           SafetyRunKind::Global );
+            const SafetyVerdict arG = CheckProcessSafety( "AstroResolver", nlohmann::json::object(), nlohmann::json(), SafetyRunKind::Global );
+            const SafetyVerdict arV = CheckProcessSafety( "AstroResolver", nlohmann::json::object(), nlohmann::json() );
+            detail["globalReviewReal"] = { { "mgcGlobal", U8( mgcG.reason ) }, { "astroResolverGlobal", U8( arG.reason ) },
+                                           { "astroResolverViewKind", int( arV.kind ) } };
+            const bool realOk = mgcG.kind == SafetyVerdict::Confirm && mgcG.reason.StartsWith( "a global run: " )
+                             && mgcG.reason.Contains( "; a command runs a MARS database operation" )
+                             && arG.kind == SafetyVerdict::Confirm && arG.reason.StartsWith( "a global run: " )
+                             && arV.kind == SafetyVerdict::Allow;
+            detail["globalReview"] = { { "pmGlobal", U8( pmG.reason ) }, { "pmViewKind", int( pmV.kind ) },
+                                       { "iiGlobal", U8( iiG.reason ) }, { "pmGlobalListedKind", int( pmG2.kind ) },
+                                       { "iiGlobalListedKind", int( iiG2.kind ) }, { "iiDrizzle", U8( iiG3.reason ) },
+                                       { "overlapOk", overlapOk }, { "overlapBad", overlapBad },
+                                       { "gate", gate }, { "probe", probe } };
+            bool allReviewed = true;
+            for ( auto it = probe.begin(); it != probe.end(); ++it )
+               allReviewed = allReviewed && (it.value()["globalSafe"].get<bool>() != it.value()["globalConfirm"].get<bool>());
+            globalReviewOk = pmG.kind == SafetyVerdict::Confirm && pmG.reason.Contains( "not been reviewed for global runs" )
+                          && pmV.kind == SafetyVerdict::Allow
+                          && iiG.kind == SafetyVerdict::Confirm && iiG.reason.Contains( "not been reviewed for global runs" )
+                          && pmG2.kind == SafetyVerdict::Allow && iiG2.kind == SafetyVerdict::Allow
+                          && iiG3.kind == SafetyVerdict::Confirm && iiG3.reason.Contains( "t (generateDrizzleData = true)" )
+                          && !iiG3.reason.Contains( "global runs" )
+                          && overlapOk.dump().find( "also in another section" ) == std::string::npos
+                          && overlapBad.dump().find( "globalSafe:RGBWorkingSpace" ) != std::string::npos
+                          && gate.is_array() && gate.empty() && !probe.empty() && allReviewed
+                          && real.value( "globalSafe", nlohmann::json::object() ).contains( "PixelMath" ) && realOk;
+         }
+
+         // M3. apply_process: every parameter check (duplicate id/alias,
+         // unknown id, type, range) runs BEFORE the Guided dialog.
+         {
+            std::string sProc, sParam, sAlias;
+            for ( const Process& P : Process::AllProcesses() )
+            {
+               if ( !P.CanProcessViews() )
+                  continue;
+               for ( const ProcessParameter& q : P.Parameters() )
+                  if ( !q.IsTable() && !q.IsReadOnly() && q.IsBoolean() )
+                  {
+                     const IsoStringList aliases = q.Aliases();
+                     if ( !aliases.IsEmpty() && !aliases[0].Trimmed().IsEmpty() )
+                     {
+                        sProc = P.Id().c_str(); sParam = q.Id().c_str(); sAlias = aliases[0].Trimmed().c_str();
+                        break;
+                     }
+                  }
+               if ( !sProc.empty() )
+                  break;
+            }
+            Inc5TestWindow tw( "PCPreDialog", 16, 16, 1, 0.5 );
+            int confirms = 0;
+            ToolContext ctx;
+            ctx.mode = AgentMode::Guided;
+            ctx.turnViewId = tw.MainView().FullId();
+            ctx.confirm = [&]( const String&, const String&, const String& ) { ++confirms; return false; };
+            nlohmann::json results = nlohmann::json::array();
+            bool each = !sProc.empty();
+            auto expect = [&]( const nlohmann::json& call, const char* needle )
+            {
+               const int before = confirms;
+               const ToolOutcome o = ExecuteTool( ToolCall{ "p", "apply_process", call }, ctx );
+               const std::string t = text0( o );
+               const bool good = o.isError && confirms == before && t.find( needle ) != std::string::npos;
+               results.push_back( { { "call", call }, { "text", t }, { "dialog", confirms != before }, { "ok", good } } );
+               each = each && good;
+            };
+            if ( !sProc.empty() )
+               expect( { { "process_id", sProc }, { "parameters", { { sParam, true }, { sAlias, true } } } }, "name the same parameter" );
+            expect( { { "process_id", "PixelMath" }, { "parameters", { { "noSuchParam", 1 } } } }, "unknown parameter PixelMath.noSuchParam" );
+            expect( { { "process_id", "PixelMath" }, { "parameters", { { "rescale", "yes" } } } }, "expected true or false" );
+            expect( { { "process_id", "PixelMath" }, { "table_parameters", { { "outputData", nlohmann::json::array() } } } }, "read-only" );
+            // A good call still reaches the dialog (declined: nothing runs).
+            const int beforeGood = confirms;
+            const ToolOutcome good = ExecuteTool( ToolCall{ "p", "apply_process",
+               { { "process_id", "PixelMath" }, { "parameters", { { "expression", "$T*0" } } } } }, ctx );
+            detail["preDialog"] = { { "aliasPair", { sProc, sParam, sAlias } }, { "cases", results },
+                                    { "goodDialog", confirms - beforeGood }, { "good", text0( good ) } };
+            preDialogOk = each && confirms - beforeGood == 1 && good.isError
+                       && std::fabs( Inc5Median( tw.MainView(), 0 ) - 0.5 ) < 1e-6;
+         }
+
+         bool installed = false;
+         try { installed = Process( IsoString( "GraXpert" ) ).Id() == "GraXpert"; } catch ( ... ) {}
+         detail["graxpertInstalled"] = installed;
+         if ( installed )
+         {
+            SyntheticFrames dir( 0 );
+            const String marker = dir.AddFile( "marker.txt", "" );
+            const char* realApp = std::getenv( "PICOPILOT_TEST_GRAXPERT_APP" );
+            const bool haveReal = realApp != nullptr && *realApp != '\0' && ::access( realApp, X_OK ) == 0;
+            const IsoString m8 = marker.ToUTF8();
+            const String exeA = dir.AddFile( "graxpert-A", "#!/bin/sh\necho A >> '" + m8 + "'\n"
+                                             + (haveReal ? "exec '" + IsoString( realApp ) + "' \"$@\"\n" : IsoString( "exit 1\n" )) );
+            const String exeB = dir.AddFile( "graxpert-B", "#!/bin/sh\necho B >> '" + m8 + "'\nexit 1\n" );
+            ::chmod( exeA.ToUTF8().c_str(), 0755 );
+            ::chmod( exeB.ToUTF8().c_str(), 0755 );
+            String current = exeA;
+            int reads = 0;
+            SetGlobalSettingReaderForSelfTest( [&]( const IsoString&, String& value ) { ++reads; value = current; return true; } );
+            auto markerText = [&]() { try { return IsoString( File::ReadTextFile( marker ) ); } catch ( ... ) { return IsoString( "?" ); } };
+
+            // M1. The pinned value is resolved ONCE, before the dialog; what
+            // the user approved is what runs, even if the setting changes
+            // while the dialog is up.
+            {
+               Inc5TestWindow gw( "PCResolveOnce", 256, 256, 1, 0.3 );
+               ToolContext ctx;
+               ctx.mode = AgentMode::Guided;
+               ctx.turnViewId = gw.MainView().FullId();
+               String shown;
+               ctx.confirm = [&]( const String&, const String&, const String& changes )
+               {
+                  shown = changes;
+                  current = exeB;     // the setting changes while the dialog is up
+                  return true;
+               };
+               reads = 0;
+               current = exeA;
+               const ToolOutcome run = ExecuteTool( ToolCall{ "r1", "apply_process",
+                  { { "process_id", "GraXpert" }, { "parameters", { { "backgroundExtraction", true }, { "replaceImage", true } } } } }, ctx );
+               const IsoString ran = markerText();
+               nlohmann::json summary;
+               try { summary = nlohmann::json::parse( text0( run ) ); } catch ( ... ) {}
+               detail["resolveOnce"] = { { "reads", reads }, { "shown", U8( shown ) }, { "marker", ran.c_str() },
+                                         { "haveRealApp", haveReal }, { "result", text0( run ) }, { "log", U8( run.logLine ) } };
+               resolveOnceOk = reads == 1 && shown.Contains( "appPath = " + exeA + " (set by PI Copilot" )
+                            && ran.Contains( "A" ) && !ran.Contains( "B" )
+                            && (!haveReal || (!run.isError
+                                              && summary.value( "pinnedParameters", nlohmann::json::object() )
+                                                        .value( "appPath", std::string() ) == U8( exeA )));
+               current = exeA;
+            }
+
+            // M4. A malformed pinned entry fails CLOSED.
+            {
+               nlohmann::json bad = CompiledProcessSafety();
+               bad["pinnedParameters"]["GraXpert"] = "not an object";
+               std::vector<PinnedParameter> pins;
+               SetProcessSafetyPolicyForSelfTest( &bad );
+               const String eEntry = ResolvePinnedParameters( "GraXpert", nlohmann::json::object(), nlohmann::json::object(), pins );
+               Inc5TestWindow gw( "PCPinnedBad", 16, 16, 1, 0.5 );
+               ToolContext ctx;
+               ctx.mode = AgentMode::Guided;   // a fail-open would reach the dialog (declined: nothing runs)
+               ctx.turnViewId = gw.MainView().FullId();
+               int confirms = 0;
+               ctx.confirm = [&]( const String&, const String&, const String& ) { ++confirms; return false; };
+               const IsoString markerBefore = markerText();
+               const ToolOutcome o = ExecuteTool( ToolCall{ "m4", "apply_process",
+                  { { "process_id", "GraXpert" }, { "parameters", { { "appPath", "/usr/bin/true" } } } } }, ctx );
+               bad["pinnedParameters"]["GraXpert"] = { { "appPath", "not an object" } };
+               const String eRule = ResolvePinnedParameters( "GraXpert", nlohmann::json::object(), nlohmann::json::object(), pins );
+               SetProcessSafetyPolicyForSelfTest( nullptr );
+               detail["pinnedMalformed"] = { { "entry", U8( eEntry ) }, { "rule", U8( eRule ) }, { "tool", text0( o ) },
+                                             { "confirms", confirms } };
+               pinnedObjectOk = eEntry.StartsWith( "internal: " ) && eEntry.Contains( "GraXpert" )
+                             && eRule.StartsWith( "internal: " )
+                             && o.isError && text0( o ).rfind( "internal: ", 0 ) == 0 && confirms == 0
+                             && markerText() == markerBefore && std::fabs( Inc5Median( gw.MainView(), 0 ) - 0.5 ) < 1e-6;
+            }
+
+            // M5. The pinned refusal holds for every spelling of the key.
+            {
+               Inc5TestWindow gw( "PCPinnedKeys", 16, 16, 1, 0.5 );
+               ToolContext ctx;
+               ctx.mode = AgentMode::Guided;
+               ctx.turnViewId = gw.MainView().FullId();
+               int confirms = 0;
+               ctx.confirm = [&]( const String&, const String&, const String& ) { ++confirms; return false; };
+               const std::string kOmit = "GraXpert.appPath is set by PI Copilot from your GraXpert settings; omit it";
+               nlohmann::json cases = nlohmann::json::array();
+               bool each = true;
+               const IsoString markerBefore = markerText();
+               auto refuse = [&]( const nlohmann::json& call, const std::string& want, const char* tool = "apply_process" )
+               {
+                  const int before = confirms;
+                  const ToolOutcome o = ExecuteTool( ToolCall{ "m5", tool, call }, ctx );
+                  const std::string t = text0( o );
+                  const bool good = o.isError && confirms == before && t.find( want ) != std::string::npos;
+                  cases.push_back( { { "call", call }, { "text", t }, { "ok", good } } );
+                  each = each && good;
+               };
+               refuse( { { "process_id", "GraXpert" }, { "table_parameters", { { "appPath", "/usr/bin/true" } } } }, kOmit );
+               refuse( { { "process_id", "GraXpert" }, { "parameters", { { "AppPath", "/usr/bin/true" } } } },
+                       "unknown parameter GraXpert.AppPath" );
+               refuse( { { "process_id", "GraXpert" }, { "parameters", { { std::string( "appPath\0x", 9 ), "/usr/bin/true" } } } }, kOmit );
+               refuse( { { "process_id", "GraXpert" }, { "table_parameters", { { "appPath", "" } } } }, kOmit,
+                       "run_global_process" );
+               nlohmann::json aliases = nlohmann::json::array();
+               try
+               {
+                  for ( const IsoString& a : ProcessParameter( Process( IsoString( "GraXpert" ) ), IsoString( "appPath" ) ).Aliases() )
+                     if ( !a.Trimmed().IsEmpty() )
+                     {
+                        aliases.push_back( a.Trimmed().c_str() );
+                        refuse( { { "process_id", "GraXpert" }, { "parameters", { { a.Trimmed().c_str(), "/usr/bin/true" } } } }, kOmit );
+                     }
+               }
+               catch ( ... ) {}
+               detail["pinnedKeys"] = { { "cases", cases }, { "appPathAliases", aliases } };
+               pinnedKeysOk = each && markerText() == markerBefore && std::fabs( Inc5Median( gw.MainView(), 0 ) - 0.5 ) < 1e-6;
+            }
+
+            // M6. Model-chosen GraXpert AI model names reach its command line:
+            // only a version string (or empty) passes (policy parameterValues).
+            {
+               Inc5TestWindow gw( "PCPatterns", 16, 16, 1, 0.5 );
+               ToolContext ctx;
+               ctx.mode = AgentMode::Guided;
+               ctx.turnViewId = gw.MainView().FullId();
+               int confirms = 0;
+               ctx.confirm = [&]( const String&, const String&, const String& ) { ++confirms; return false; };
+               nlohmann::json cases = nlohmann::json::array();
+               bool each = true;
+               auto tryModel = [&]( const std::string& param, const std::string& value, bool accepted )
+               {
+                  const int before = confirms;
+                  const ToolOutcome o = ExecuteTool( ToolCall{ "m6", "apply_process",
+                     { { "process_id", "GraXpert" }, { "parameters", { { param, value } } } } }, ctx );
+                  const std::string t = text0( o );
+                  const bool good = accepted ? (confirms == before + 1)
+                                             : (o.isError && confirms == before
+                                                && t.find( "GraXpert." + param + ": '" ) != std::string::npos
+                                                && t.find( "is not allowed: use " ) != std::string::npos);
+                  cases.push_back( { { "param", param }, { "value", value }, { "text", t }, { "ok", good } } );
+                  each = each && good;
+               };
+               // Every GraXpert string parameter is pinned or pattern-checked.
+               nlohmann::json strings = nlohmann::json::array(), unguarded = nlohmann::json::array();
+               const nlohmann::json& pol = CompiledProcessSafety();
+               for ( const ProcessParameter& p : Process( IsoString( "GraXpert" ) ).Parameters() )
+                  if ( p.IsString() && !p.IsReadOnly() )
+                  {
+                     const std::string id( p.Id().c_str() );
+                     strings.push_back( id );
+                     if ( !pol.value( "/pinnedParameters/GraXpert"_json_pointer, nlohmann::json::object() ).contains( id )
+                          && !pol.value( "/parameterValues/GraXpert"_json_pointer, nlohmann::json::object() ).contains( id ) )
+                        unguarded.push_back( id );
+                  }
+               for ( const char* bad : { "--flag", "../../x", "1.0\n-x", "1.0 --x", "latest", "1", "/tmp/model" } )
+                  tryModel( "denoiseAIModel", bad, false );
+               tryModel( "backgroundExtractionAIModel", "-cli", false );
+               tryModel( "denoiseAIModel", "3.0.2", true );
+               tryModel( "backgroundExtractionAIModel", "", true );
+               tryModel( "correction", "--x", false );
+               tryModel( "correction", "Division", true );
+               tryModel( "deconvolutionMode", "Object-only; rm", false );
+               // The loader rejects a rule on a missing/non-string parameter, a
+               // malformed rule, and one the process default fails.
+               nlohmann::json badPol = pol;
+               badPol["parameterValues"]["GraXpert"]["noSuchParam"] = { { "values", { "x" } }, { "reason", "r" } };
+               badPol["parameterValues"]["GraXpert"]["smoothing"] = { { "values", { "x" } }, { "reason", "r" } };
+               badPol["parameterValues"]["GraXpert"]["denoiseAIModel"] = { { "format", "regex" }, { "reason", "r" } };
+               badPol["parameterValues"]["GraXpert"]["backgroundExtractionAIModel"] = { { "values", { "x" } }, { "reason", "r" } };
+               SetProcessSafetyPolicyForSelfTest( &badPol );
+               const std::string report = UnknownPolicyProcessIds().dump();
+               SetProcessSafetyPolicyForSelfTest( nullptr );
+               detail["patterns"] = { { "cases", cases }, { "graxpertStringParams", strings }, { "unguarded", unguarded },
+                                      { "badPolicyReport", report } };
+               patternsOk = each && unguarded.empty() && strings.size() >= 2
+                         && report.find( "parameterValues:GraXpert.noSuchParam" ) != std::string::npos
+                         && report.find( "parameterValues:GraXpert.smoothing" ) != std::string::npos
+                         && report.find( "parameterValues:GraXpert.denoiseAIModel" ) != std::string::npos
+                         && report.find( "parameterValues:GraXpert.backgroundExtractionAIModel" ) != std::string::npos
+                         && UnknownPolicyProcessIds().empty()
+                         && std::fabs( Inc5Median( gw.MainView(), 0 ) - 0.5 ) < 1e-6;
+            }
+
+            // M7. describe_process marks what PI Copilot sets / constrains.
+            {
+               ToolContext tc;
+               tc.mode = AgentMode::Copilot;
+               nlohmann::json d;
+               try { d = nlohmann::json::parse( text0( ExecuteTool( ToolCall{ "m7", "describe_process", { { "id", "GraXpert" } } }, tc ) ) ); } catch ( ... ) {}
+               nlohmann::json app, model;
+               for ( const nlohmann::json& p : d.value( "parameters", nlohmann::json::array() ) )
+               {
+                  if ( p.value( "id", "" ) == "appPath" ) app = p;
+                  if ( p.value( "id", "" ) == "denoiseAIModel" ) model = p;
+               }
+               detail["describeMark"] = { { "appPath", app }, { "denoiseAIModel", model }, { "all", d.value( "parameters", nlohmann::json() ) } };
+               describeMarkOk = app.value( "setBy", "" ).find( "PI Copilot" ) != std::string::npos
+                             && app.value( "setBy", "" ).find( "do not pass" ) != std::string::npos
+                             && model.value( "format", "" ) == "version";
+            }
+            SetGlobalSettingReaderForSelfTest( GlobalSettingReader() );
+         }
+         else
+         {
+            detail["graxpertNote"] = "GraXpert not installed: M1/M4/M5/M6/M7 GraXpert checks not applicable";
+            resolveOnceOk = pinnedObjectOk = pinnedKeysOk = patternsOk = describeMarkOk = true;
+         }
+      }
+      catch ( const pcl::Exception& x ) { error = x.Message(); }
+      catch ( const std::exception& x ) { error = String( x.what() ); }
+      catch ( ... )                     { error = "unknown exception"; }
+      SetGlobalSettingReaderForSelfTest( GlobalSettingReader() );
+      SetProcessSafetyPolicyForSelfTest( nullptr );
+      detail["checks"] = { { "describeCap", describeCapOk }, { "listCap", listCapOk }, { "globalReview", globalReviewOk },
+                           { "preDialog", preDialogOk }, { "resolveOnce", resolveOnceOk }, { "pinnedObject", pinnedObjectOk },
+                           { "pinnedKeys", pinnedKeysOk }, { "patterns", patternsOk }, { "describeMark", describeMarkOk } };
+      const bool ok = describeCapOk && listCapOk && globalReviewOk && preDialogOk && resolveOnceOk && pinnedObjectOk
+                   && pinnedKeysOk && patternsOk && describeMarkOk;
+      out["rereviewFixDetail"] = detail;
+      out["rereviewFixError"] = U8( error );
+      out["rereviewFixOk"] = ok;
+      allOk = allOk && ok;
+   }
+
    // ---- inc5 sections end ----
 
    // Let the core finish deferred window teardown before --force-exit (same
