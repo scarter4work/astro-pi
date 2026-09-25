@@ -26,7 +26,8 @@ String FailureNote( const AgentStep& s, int httpStatus )
    case RequestErrorKind::BadReply:
       return "Unexpected reply from the Anthropic API: " + s.error;
    case RequestErrorKind::Build:
-      return "PI Copilot could not build the request (" + s.error + "). Nothing was sent.";
+      return "PI Copilot could not build the request (" + s.error + "). Nothing was sent; send the message again, "
+             "or press New chat if this keeps happening.";
    case RequestErrorKind::Internal:
       return "Internal error in PI Copilot (" + s.error + "). Send the message again.";
    case RequestErrorKind::Cancelled:   // a cancel is normally a Stopped step; worded anyway
@@ -40,9 +41,11 @@ String FailureNote( const AgentStep& s, int httpStatus )
             n += " (the service is busy; wait a moment, then send again)";
          return n;
       }
-   default:   // None: not from a request (history invalid, internal): the increment-4 form
-      return (httpStatus > 0 ? "Error " + String( httpStatus ) + ": " : String( "Error: " )) + s.error;
+   case RequestErrorKind::None:   // no cause recorded: the increment-4 form
+      break;
    }
+   // No default: -Wswitch flags a new RequestErrorKind until it is worded here.
+   return (httpStatus > 0 ? "Error " + String( httpStatus ) + ": " : String( "Error: " )) + s.error;
 }
 
 } // namespace

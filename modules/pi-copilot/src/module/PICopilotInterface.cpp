@@ -281,14 +281,9 @@ void PICopilotInterface::SendCurrentInput()
       SetBusy( true, String::UTF8ToUTF16( kCapturingTextUtf8 ) );
       ThePICopilotModule->ProcessEvents( true/*excludeUserInputEvents*/ );
    }
-   // Root thread, before any request: capture that view (increment 3).
-   // The BARE prompt (never the context-prefixed content) is what a failed
-   // message gives back for a resend.
-   m_session.BeginUserTurn( ComposeTurnWithActiveView( prompt ) );
-   NoteTrimmed();
-   m_pendingPrompt = prompt;
-   m_apiKey = key;
-   m_turnMode = AgentModeFromIndex( GUI->Mode_ComboBox.CurrentItem() );
+   // The model is read per message. Set it on the session BEFORE the turn
+   // begins: a switch strips the earlier turns' thinking blocks, which are
+   // bound to the model that produced them.
    String modelNote;
    m_turnModel = CopilotSettings::LoadModel( &modelNote );
    if ( !modelNote.IsEmpty() && modelNote != m_lastModelNote )
@@ -302,6 +297,15 @@ void PICopilotInterface::SendCurrentInput()
       AppendToLog( PlainText( "(model: " + String( info != nullptr ? info->label : m_turnModel.c_str() ) + ")" ) + "\n\n" );
       m_lastModel = m_turnModel;
    }
+   m_session.SetModel( m_turnModel );
+   // Root thread, before any request: capture that view (increment 3).
+   // The BARE prompt (never the context-prefixed content) is what a failed
+   // message gives back for a resend.
+   m_session.BeginUserTurn( ComposeTurnWithActiveView( prompt ) );
+   NoteTrimmed();
+   m_pendingPrompt = prompt;
+   m_apiKey = key;
+   m_turnMode = AgentModeFromIndex( GUI->Mode_ComboBox.CurrentItem() );
    m_stopRequested = false;
    GUI->ChatInput.Clear();
    SetBusy( true );
@@ -315,7 +319,7 @@ void PICopilotInterface::StartRequest()
    {
       // Never send a body the API would reject with an opaque 400. AbortTurn
       // rolls the session back to before this message; it is a Failed step.
-      EndTurn( m_session.AbortTurn( "history invalid: " + why + " (nothing was sent)" ), 0 );
+      EndTurn( m_session.AbortTurn( "the conversation history is invalid: " + why, RequestErrorKind::Build ), 0 );
       return;
    }
    m_replyShown = false;
@@ -347,7 +351,7 @@ void PICopilotInterface::StartRequest()
          }
          m_thread.Destroy();
       }
-      EndTurn( m_session.AbortTurn( "internal error: could not start the request: " + what ), 0 );
+      EndTurn( m_session.AbortTurn( "could not start the request: " + what, RequestErrorKind::Internal ), 0 );
       return;
    }
    if ( !GUI->Poll_Timer.IsRunning() )

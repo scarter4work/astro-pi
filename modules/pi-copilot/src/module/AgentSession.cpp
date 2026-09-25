@@ -121,6 +121,37 @@ void AgentSession::Clear()
    m_trimmed = 0;
 }
 
+void AgentSession::SetModel( const IsoString& model )
+{
+   m_model = model;
+   StripForeignThinking( m_history, model );
+}
+
+size_type StripForeignThinking( Array<AnthropicMessage>& history, const IsoString& model )
+{
+   size_type removed = 0;
+   for ( AnthropicMessage& m : history )
+   {
+      if ( m.role != "assistant" || m.model == model || !m.blocks.is_array() )
+         continue;
+      nlohmann::json kept = nlohmann::json::array();
+      for ( const nlohmann::json& b : m.blocks )
+      {
+         const std::string type = BlockType( b );
+         if ( type == "thinking" || type == "redacted_thinking" )
+            ++removed;
+         else
+            kept.push_back( b );
+      }
+      if ( kept.size() == m.blocks.size() )
+         continue;
+      if ( kept.empty() )
+         kept.push_back( { { "type", "text" }, { "text", "[earlier reply: thinking only]" } } );
+      m.blocks = std::move( kept );
+   }
+   return removed;
+}
+
 void AgentSession::BeginUserTurn( const AnthropicMessage& userTurn )
 {
    m_snapshot = m_history;
@@ -164,7 +195,7 @@ AgentStep AgentSession::Fail( AgentStep::Kind kind, const String& error, Request
    return s;
 }
 
-AgentStep AgentSession::AbortTurn( const String& error )
+AgentStep AgentSession::AbortTurn( const String& error, RequestErrorKind errorKind )
 {
    // The history was found invalid, and the invalid part is usually in this
    // message's own rounds (e.g. a repeated tool_use id from the model), so
@@ -173,6 +204,7 @@ AgentStep AgentSession::AbortTurn( const String& error )
    AgentStep s;
    s.kind = AgentStep::Failed;
    s.error = error;
+   s.errorKind = errorKind;
    s.toolsRan = m_imageChanged;
    s.restoreInput = true;
    m_history = m_snapshot;
@@ -201,6 +233,7 @@ AgentStep AgentSession::OnResponse( const AnthropicResult& r, const ToolRunner& 
 
       AnthropicMessage assistant;
       assistant.role = "assistant";
+      assistant.model = m_model;
       assistant.content = r.text;
       if ( r.contentBlocks.is_array() )
          assistant.blocks = StorableAssistantBlocks( r );
