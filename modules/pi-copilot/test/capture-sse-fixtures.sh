@@ -25,10 +25,10 @@ post() {   # $1 = output file, $2 = JSON body
    fi
 }
 TOOL='{"name":"describe_process","description":"Describe a PixInsight process by id.","input_schema":{"type":"object","properties":{"id":{"type":"string"}},"required":["id"]}}'
-post "$OUT/text-opus-4-8.sse" \
-   '{"model":"claude-opus-4-8","max_tokens":200,"stream":true,"messages":[{"role":"user","content":"Reply with exactly: café ok — done"}]}'
-post "$OUT/tool-opus-4-8.sse" \
-   '{"model":"claude-opus-4-8","max_tokens":400,"stream":true,"tools":['"$TOOL"'],"messages":[{"role":"user","content":"Call describe_process for PixelMath."}]}'
+post "$OUT/text-sonnet-5.sse" \
+   '{"model":"claude-sonnet-5","max_tokens":200,"stream":true,"messages":[{"role":"user","content":"Reply with exactly: café ok — done"}]}'
+post "$OUT/tool-sonnet-5.sse" \
+   '{"model":"claude-sonnet-5","max_tokens":400,"stream":true,"tools":['"$TOOL"'],"messages":[{"role":"user","content":"Call describe_process for PixelMath."}]}'
 post "$OUT/thinking-tool-opus-5-5.sse" \
    '{"model":"claude-opus-5-5","max_tokens":4000,"stream":true,"tools":['"$TOOL"'],"messages":[{"role":"user","content":"Think about which PixInsight process removes a green colour cast, then call describe_process on it."}]}'
 for f in "${FILES[@]}"; do

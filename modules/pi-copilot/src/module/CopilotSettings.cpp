@@ -15,6 +15,16 @@ namespace
 const char* const kModelKey   = "PICopilot/Model";
 const char* const kRunPjsrKey = "PICopilot/RunPjsrEnabled";
 const char* const kSideKey    = "PICopilot/PanelSide";
+
+// Models an earlier version offered (ruling 2026-09-25 removed them): named
+// by their label in the migration note. Any other unknown id is quoted as is.
+struct RemovedModel { const char* id; const char* label; };
+const RemovedModel kRemovedModels[] =
+{
+   { "claude-opus-4-8",  "Claude Opus 4.8"  },
+   { "claude-fable-5-1", "Claude Fable 5.1" },
+   { "claude-haiku-4-5", "Claude Haiku 4.5" }
+};
 }
 
 IsoString LoadModel( String* note )
@@ -28,10 +38,16 @@ IsoString LoadModel( String* note )
       return id;
    if ( !s.IsEmpty() && note != nullptr )
    {
+      String old = s;
+      for ( const RemovedModel& r : kRemovedModels )
+         if ( id == r.id )
+            old = r.label;
       const ModelInfo* def = FindModel( PICOPILOT_DEFAULT_MODEL );
-      *note = "The saved model \"" + s + "\" is not offered by this version of PI Copilot; using "
-            + String( def != nullptr ? def->label : PICOPILOT_DEFAULT_MODEL )
-            + " instead. Choose a model in PI Copilot's settings to keep this choice.";
+      *note = old + " is no longer offered; using "
+            + String( def != nullptr ? def->label : PICOPILOT_DEFAULT_MODEL );
+      // Handed out once: the caller shows it, so the setting now names the
+      // model actually in use.
+      SaveModel( PICOPILOT_DEFAULT_MODEL );
    }
    return IsoString( PICOPILOT_DEFAULT_MODEL );
 }

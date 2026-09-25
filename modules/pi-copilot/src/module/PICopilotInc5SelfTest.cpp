@@ -820,12 +820,12 @@ bool RunInc5SelfTest( nlohmann::json& out )
          }
 
          // Recorded real streams: chunking-invariant, complete, and parse like non-streamed replies.
-         // text-opus-4-8.sse's prompt asked for an exact echo ("café ok — done"),
+         // text-sonnet-5.sse's prompt asked for an exact echo ("café ok — done"),
          // so its assembled text is checked byte-for-byte (incl. the two
          // multibyte characters), not just "non-empty".
          struct Fixture { const char* file; const char* stop; const char* text; };
-         const Fixture fixtures[] = { { "text-opus-4-8.sse", "end_turn", "caf\xC3\xA9 ok \xE2\x80\x94 done" },
-                                      { "tool-opus-4-8.sse", "tool_use", nullptr },
+         const Fixture fixtures[] = { { "text-sonnet-5.sse", "end_turn", "caf\xC3\xA9 ok \xE2\x80\x94 done" },
+                                      { "tool-sonnet-5.sse", "tool_use", nullptr },
                                       { "thinking-tool-opus-5-5.sse", "tool_use", nullptr } };
          for ( const Fixture& f : fixtures )
          {
@@ -1106,21 +1106,26 @@ bool RunInc5SelfTest( nlohmann::json& out )
          std::set<std::string> ids;
          for ( const ModelInfo& m : kPICopilotModels )
             ids.insert( m.id );
-         modelsOk = ids.size() == PICopilotModelCount && std::string( kPICopilotModels[0].id ) == PICOPILOT_DEFAULT_MODEL
-                 && FindModel( "claude-opus-5-5" ) && FindModel( "claude-opus-5-5" )->thinkingBinding
-                 && FindModel( "claude-fable-5-1" ) && FindModel( "claude-fable-5-1" )->thinkingBinding
-                 && FindModel( "claude-sonnet-5" ) && !FindModel( "claude-sonnet-5" )->thinkingBinding
-                 && FindModel( "claude-haiku-4-5" ) && !FindModel( "claude-haiku-4-5" )->thinkingBinding
-                 && FindModel( "claude-opus-4-8" ) && !FindModel( "claude-opus-4-8" )->thinkingBinding
-                 && FindModel( "claude-nope" ) == nullptr && ModelIndex( "claude-fable-5-1" ) == 2 && ModelIndex( "x" ) == -1;
+         // Ruling 2026-09-25: exactly two models, Opus 5.5 (the default) and
+         // Sonnet 5. The removed ones are unknown to the catalog (a saved one
+         // migrates to the default with a note: Section B5, "modelMigration").
+         modelsOk = PICopilotModelCount == 2 && ids.size() == 2
+                 && std::string( PICOPILOT_DEFAULT_MODEL ) == "claude-opus-5-5"
+                 && std::string( kPICopilotModels[0].id ) == "claude-opus-5-5"
+                 && std::string( kPICopilotModels[0].label ) == "Claude Opus 5.5" && kPICopilotModels[0].thinkingBinding
+                 && std::string( kPICopilotModels[1].id ) == "claude-sonnet-5"
+                 && std::string( kPICopilotModels[1].label ) == "Claude Sonnet 5" && !kPICopilotModels[1].thinkingBinding
+                 && ModelIndex( "claude-sonnet-5" ) == 1 && ModelIndex( "x" ) == -1
+                 && FindModel( "claude-opus-4-8" ) == nullptr && FindModel( "claude-fable-5-1" ) == nullptr
+                 && FindModel( "claude-haiku-4-5" ) == nullptr && FindModel( "claude-nope" ) == nullptr;
 
          Array<AnthropicMessage> hist;
          hist.Add( TextMsg( "user", "hi" ) );
          const nlohmann::json tools = ToolDefinitions( AgentMode::Copilot );
          const nlohmann::json b55 = nlohmann::json::parse(
             BuildMessagesRequestBody( "claude-opus-5-5", "sys", hist, tools, ProductionRequestShape( "claude-opus-5-5" ) ) );
-         const nlohmann::json b48 = nlohmann::json::parse(
-            BuildMessagesRequestBody( "claude-opus-4-8", "sys", hist, tools, ProductionRequestShape( "claude-opus-4-8" ) ) );
+         const nlohmann::json bS5 = nlohmann::json::parse(
+            BuildMessagesRequestBody( "claude-sonnet-5", "sys", hist, tools, ProductionRequestShape( "claude-sonnet-5" ) ) );
          const nlohmann::json plain = nlohmann::json::parse( BuildMessagesRequestBody( "m", "sys", hist, tools ) );
          const nlohmann::json eph = { { "type", "ephemeral" } };
          shapeOk = b55.at( "system" ).is_array() && b55["system"].size() == 1
@@ -1129,7 +1134,7 @@ bool RunInc5SelfTest( nlohmann::json& out )
                 && CountKey( b55, "cache_control" ) == 3
                 && b55.at( "thinking" ) == nlohmann::json::parse(
                       "{\"type\":\"adaptive\",\"block_binding\":{\"prefix_mismatch_behavior\":\"drop_block\"}}" )
-                && !b48.contains( "thinking" ) && CountKey( b48, "cache_control" ) == 3
+                && !bS5.contains( "thinking" ) && CountKey( bS5, "cache_control" ) == 3
                 && plain.at( "system" ).is_string() && CountKey( plain, "cache_control" ) == 0 && !plain.contains( "thinking" );
          detail["b55"] = b55;
 
@@ -1143,12 +1148,12 @@ bool RunInc5SelfTest( nlohmann::json& out )
                const AnthropicResult r = req.Perform();
                return r.ok ? nlohmann::json::parse( U8( r.text ) ) : nlohmann::json( { { "error", U8( r.error ) } } );
             };
-            const nlohmann::json e55 = echo( "claude-opus-5-5" ), e48 = echo( "claude-opus-4-8" );
+            const nlohmann::json e55 = echo( "claude-opus-5-5" ), eS5 = echo( "claude-sonnet-5" );
             detail["echo55"] = { { "anthropic_beta", e55.value( "anthropic_beta", nlohmann::json() ) }, { "thinking", e55.value( "thinking", nlohmann::json() ) } };
             wireOk = e55.value( "anthropic_beta", nlohmann::json() ) == PICOPILOT_THINKING_BINDING_BETA
                   && e55.at( "thinking" ).at( "block_binding" ).at( "prefix_mismatch_behavior" ) == "drop_block"
                   && e55.at( "system" ).at( 0 ).at( "cache_control" ) == eph
-                  && e48.value( "anthropic_beta", nlohmann::json() ).is_null() && e48.value( "thinking", nlohmann::json() ).is_null();
+                  && eS5.value( "anthropic_beta", nlohmann::json() ).is_null() && eS5.value( "thinking", nlohmann::json() ).is_null();
          }
 
          {  // Direct trim: 30 long exchanges with tool rounds -> within the target, API-valid, current turn kept.
@@ -1311,9 +1316,9 @@ bool RunInc5SelfTest( nlohmann::json& out )
             out["liveCacheRead"] = cacheRead;
             const bool cacheOk = bothOk && cacheRead > 0;
 
-            // (2) Opus 5.5 and Fable 5.1, an EDITED history (the first turn's
-            //     image is stripped when the tool round is appended) with the
-            //     binding on: a 200 through a full tool round. ((3) is the case
+            // (2) Opus 5.5 (binding on) and Sonnet 5 (no thinking key), an
+            //     EDITED history (the first turn's image is stripped when the
+            //     tool round is appended): a 200 through a full tool round. ((3) is the case
             //     that actually makes the API drop a block.) Every thinking block a
             //     reply carried must be in the history verbatim (signature
             //     included), and each request's duration is recorded against
@@ -1330,6 +1335,10 @@ bool RunInc5SelfTest( nlohmann::json& out )
                session.BeginUserTurn( CaptureViewTurn( "Call describe_process for PixelMath, then answer in one short sentence.", &v, notes ) );
                AgentStep s;
                int requests = 0;
+               // A binding model's replies report input_transformations (an
+               // array); a model without the binding control (Sonnet 5) is sent
+               // none and reports none (observed 2026-09-25: null).
+               const bool binding = FindModel( model ) != nullptr && FindModel( model )->thinkingBinding;
                bool allArrays = true;
                nlohmann::json seconds = nlohmann::json::array();
                nlohmann::json thinking = nlohmann::json::array();   // every thinking / redacted_thinking block received
@@ -1345,7 +1354,7 @@ bool RunInc5SelfTest( nlohmann::json& out )
                   ++requests;
                   if ( !r.ok )
                      d["bindingError"] = { { "status", r.httpStatus }, { "error", U8( r.error ) } };
-                  allArrays = allArrays && r.inputTransformations.is_array();
+                  allArrays = allArrays && (binding ? r.inputTransformations.is_array() : r.inputTransformations.is_null());
                   transformations.push_back( r.inputTransformations );
                   if ( r.contentBlocks.is_array() )
                      for ( const nlohmann::json& blk : r.contentBlocks )
@@ -1492,7 +1501,9 @@ bool RunInc5SelfTest( nlohmann::json& out )
                   sw["firstStep"] = int( st0.kind );
                   const AnthropicMessage next = TextMsg( "user", "Thanks. Reply with the single word: ok." );
                   bool strippedAll200 = st0.kind == AgentStep::Done;
-                  for ( const char* target : { "claude-opus-4-8", "claude-sonnet-5", "claude-fable-5-1" } )
+                  // Opus 5.5 -> Sonnet 5 (the only other offered model).
+                  AgentSession onSonnet;
+                  for ( const char* target : { "claude-sonnet-5" } )
                   {
                      AgentSession raw = base;           // foreign thinking re-sent verbatim
                      raw.BeginUserTurn( next );
@@ -1507,8 +1518,28 @@ bool RunInc5SelfTest( nlohmann::json& out )
                                     { "strippedStatus", rs.httpStatus }, { "strippedError", U8( rs.error ) },
                                     { "strippedValid", valid } };
                      strippedAll200 = strippedAll200 && valid && rs.ok && rs.httpStatus == 200;
+                     if ( rs.ok )
+                     {
+                        onSonnet = fixed;
+                        sw["sonnetStep"] = int( onSonnet.OnResponse( rs, []( const ToolCall& ) { return ToolOutcome(); },
+                                                                     []() { return false; } ).kind );
+                     }
                   }
-                  switchOk = strippedAll200;
+                  // ...and back: Sonnet 5 -> Opus 5.5 (binding on again) over a
+                  // history holding the stripped Opus turn and a Sonnet turn.
+                  bool backOk = false;
+                  if ( strippedAll200 )
+                  {
+                     onSonnet.SetModel( "claude-opus-5-5" );
+                     onSonnet.BeginUserTurn( TextMsg( "user", "Reply with the single word: back." ) );
+                     String whyBack;
+                     const bool validBack = HistoryIsApiValid( onSonnet.History(), whyBack );
+                     const AnthropicResult rb = sendOn( "claude-opus-5-5", onSonnet.History() );
+                     sw["backToOpus55"] = { { "status", rb.httpStatus }, { "error", U8( rb.error ) }, { "valid", validBack },
+                                            { "why", U8( whyBack ) } };
+                     backOk = validBack && rb.ok && rb.httpStatus == 200;
+                  }
+                  switchOk = strippedAll200 && backOk;
                }
                else
                   sw["reason"] = r0.ok ? "switch not exercised: Opus 5.5 did not think (3 attempts)" : "first request failed";
@@ -1516,14 +1547,14 @@ bool RunInc5SelfTest( nlohmann::json& out )
                out["liveModelSwitch"] = sw;
             }
 
-            nlohmann::json t55, tFable, d55 = nlohmann::json::object(), dFable = nlohmann::json::object();
+            nlohmann::json t55, tS5, d55 = nlohmann::json::object(), dS5 = nlohmann::json::object();
             const bool ok55 = runBinding( "claude-opus-5-5", t55, d55 );
-            const bool okFable = runBinding( "claude-fable-5-1", tFable, dFable );
+            const bool okS5 = runBinding( "claude-sonnet-5", tS5, dS5 );
             out["liveBindingTransformations"] = t55;
-            out["liveBindingTransformationsFable"] = tFable;
+            out["liveBindingTransformationsSonnet5"] = tS5;
             detail["binding55"] = d55;
-            detail["bindingFable"] = dFable;
-            const bool bindingOk = ok55 && okFable && trimLiveOk && switchOk;
+            detail["bindingSonnet5"] = dS5;
+            const bool bindingOk = ok55 && okS5 && trimLiveOk && switchOk;
             ok = cacheOk && bindingOk;
          }
          catch ( const pcl::Exception& x ) { error = x.Message(); }
@@ -1633,10 +1664,10 @@ bool RunInc5SelfTest( nlohmann::json& out )
          const bool defaults = CopilotSettings::LoadModel() == PICOPILOT_DEFAULT_MODEL
                             && !CopilotSettings::LoadRunPjsrEnabled()
                             && CopilotSettings::LoadPanelSide() == PanelSide::Right;
-         CopilotSettings::SaveModel( "claude-opus-5-5" );
+         CopilotSettings::SaveModel( "claude-sonnet-5" );   // not the default: proves the round trip
          CopilotSettings::SaveRunPjsrEnabled( true );
          CopilotSettings::SavePanelSide( PanelSide::Left );
-         const bool stored = CopilotSettings::LoadModel() == "claude-opus-5-5" && CopilotSettings::LoadRunPjsrEnabled()
+         const bool stored = CopilotSettings::LoadModel() == "claude-sonnet-5" && CopilotSettings::LoadRunPjsrEnabled()
                           && CopilotSettings::LoadPanelSide() == PanelSide::Left;
          Settings::Write( "PICopilot/Model", String( "claude-bogus-9" ) );
          const bool unknownFallsBack = CopilotSettings::LoadModel() == PICOPILOT_DEFAULT_MODEL;
@@ -1803,7 +1834,7 @@ bool RunInc5SelfTest( nlohmann::json& out )
             const int before = countThinking( ss.History() );
             ss.SetModel( "claude-opus-5-5" );   // same model: kept verbatim
             const int same = countThinking( ss.History() );
-            ss.SetModel( "claude-opus-4-8" );   // different model: stripped
+            ss.SetModel( "claude-sonnet-5" );   // different model: stripped
             const int after = countThinking( ss.History() );
             bool noneEmpty = true, toolUseKept = false;
             for ( const AnthropicMessage& m : ss.History() )
@@ -1825,7 +1856,7 @@ bool RunInc5SelfTest( nlohmann::json& out )
             h.Add( TextMsg( "user", "x" ) );
             AnthropicMessage onlyThinking;
             onlyThinking.role = "assistant";
-            onlyThinking.model = "claude-fable-5-1";
+            onlyThinking.model = "claude-opus-5-5";
             onlyThinking.blocks = blocksOf( "[{\"type\":\"thinking\",\"thinking\":\"t\",\"signature\":\"s\"}]" );
             h.Add( onlyThinking );
             h.Add( TextMsg( "user", "y" ) );
@@ -1842,15 +1873,43 @@ bool RunInc5SelfTest( nlohmann::json& out )
                    && h[1].blocks[0].value( "type", std::string() ) == "text";
          }
 
-         Settings::Write( "PICopilot/Model", String( "claude-bogus-9" ) );
-         String mnote;
-         const IsoString mid = CopilotSettings::LoadModel( &mnote );
+         // A saved model that is no longer offered (ruling 2026-09-25) or was
+         // never known: Opus 5.5 is used, the note says so ONCE (the setting
+         // is rewritten when the note is handed out), and nothing is silent: a
+         // note-less read (the ⚙ dialog) leaves the setting for the next send.
+         auto savedModel = []() { String v; return Settings::Read( "PICopilot/Model", v ) ? v : String( "<absent>" ); };
+         nlohmann::json mig = nlohmann::json::object();
+         bool migOk = true;
+         const struct { const char* saved; const char* expect; } removedCases[] = {
+            { "claude-opus-4-8",  "Claude Opus 4.8 is no longer offered; using Claude Opus 5.5" },
+            { "claude-fable-5-1", "Claude Fable 5.1 is no longer offered; using Claude Opus 5.5" },
+            { "claude-haiku-4-5", "Claude Haiku 4.5 is no longer offered; using Claude Opus 5.5" },
+            { "claude-bogus-9",   "claude-bogus-9 is no longer offered; using Claude Opus 5.5" } };
+         for ( const auto& c : removedCases )
+         {
+            Settings::Write( "PICopilot/Model", String( c.saved ) );
+            const IsoString quiet = CopilotSettings::LoadModel();      // no note requested
+            const String keptForNote = savedModel();
+            String n1, n2 = "x";
+            const IsoString id1 = CopilotSettings::LoadModel( &n1 );
+            const String rewritten = savedModel();
+            const IsoString id2 = CopilotSettings::LoadModel( &n2 );
+            const bool caseOk = quiet == "claude-opus-5-5" && keptForNote == c.saved
+                             && id1 == "claude-opus-5-5" && n1 == c.expect && rewritten == "claude-opus-5-5"
+                             && id2 == "claude-opus-5-5" && n2.IsEmpty();
+            mig[c.saved] = { { "ok", caseOk }, { "note", U8( n1 ) }, { "rewritten", U8( rewritten ) }, { "second", U8( n2 ) } };
+            migOk = migOk && caseOk;
+         }
+         Settings::Write( "PICopilot/Model", String( "claude-sonnet-5" ) );
+         String sonNote = "x";
+         const bool sonnetKept = CopilotSettings::LoadModel( &sonNote ) == "claude-sonnet-5" && sonNote.IsEmpty()
+                              && savedModel() == "claude-sonnet-5";
          Settings::Remove( IsoString( "PICopilot/Model" ) );
          String unsetNote = "x";
          const IsoString mdef = CopilotSettings::LoadModel( &unsetNote );
-         detail["modelNote"] = U8( mnote );
-         modelNoteOk = mid == PICOPILOT_DEFAULT_MODEL && mnote.Contains( "claude-bogus-9" )
-                    && mnote.Contains( "settings" ) && mdef == PICOPILOT_DEFAULT_MODEL && unsetNote.IsEmpty();
+         const bool unsetUntouched = savedModel() == "<absent>";
+         detail["modelMigration"] = mig;
+         modelNoteOk = migOk && sonnetKept && mdef == "claude-opus-5-5" && unsetNote.IsEmpty() && unsetUntouched;
 
          KeyStore::SetKeyringForSelfTest( id, sk );
          Settings::Write( sk, String( "  sk-ant-selftest-DDDD \n" ) );

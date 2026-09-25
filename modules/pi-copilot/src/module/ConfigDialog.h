@@ -60,6 +60,7 @@ private:
 
    String        m_initialKey;
    PanelSide     m_initialSide = PanelSide::Right;
+   int           m_initialModel = 0;   // combo index shown when the dialog opened
    ConfigOutcome m_outcome;
 
    void OK_Button_Click( Button& sender, bool checked );
