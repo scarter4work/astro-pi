@@ -1717,6 +1717,7 @@ bool RunAgentSelfTest( nlohmann::json& out )
       double ratio = -1;
       int requests = 0;
       nlohmann::json log = nlohmann::json::array();
+      nlohmann::json requestSeconds = nlohmann::json::array();   // per streamed request (stall-risk evidence)
       if ( const char* key = std::getenv( "PICOPILOT_TEST_API_KEY" ) )
       {
          liveSkipped = false;
@@ -1737,8 +1738,11 @@ bool RunAgentSelfTest( nlohmann::json& out )
             {
                AnthropicRequest req( String( key ), PICOPILOT_DEFAULT_MODEL, BuildSystemPrompt( AgentMode::Copilot ),
                                      session.History(), PICOPILOT_MESSAGES_URL, PICopilotRequestTimeoutSeconds,
-                                     ToolDefinitions( AgentMode::Copilot ) );
+                                     ToolDefinitions( AgentMode::Copilot ),
+                                     ProductionRequestShape( PICOPILOT_DEFAULT_MODEL ) );
+               const auto t0 = std::chrono::steady_clock::now();
                const AnthropicResult r = req.Perform();
+               requestSeconds.push_back( std::chrono::duration<double>( std::chrono::steady_clock::now() - t0 ).count() );
                ++requests;
                if ( !r.text.IsEmpty() )
                   finalText = r.text;
@@ -1760,6 +1764,8 @@ bool RunAgentSelfTest( nlohmann::json& out )
          catch ( ... )                     { error = "unknown exception"; }
       }
       out["liveAgentSkipped"] = liveSkipped;
+      out["liveAgentStreamed"] = true;
+      out["liveAgentRequestSeconds"] = requestSeconds;
       out["liveAgentRequests"] = requests;
       out["liveAgentLog"] = log;
       out["liveAgentText"] = U8( finalText );
