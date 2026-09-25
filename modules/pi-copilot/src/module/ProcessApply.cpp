@@ -480,6 +480,20 @@ ApplyProcessResult ApplyProcess( const IsoString& processId, const nlohmann::jso
    return r;
 }
 
+void SplitNewWindows( const std::vector<std::string>& newWindows, const nlohmann::json& outputIds,
+                      std::vector<std::string>& results, std::vector<std::string>& others )
+{
+   results.clear();
+   others.clear();
+   std::set<std::string> named;
+   if ( outputIds.is_object() )
+      for ( auto it = outputIds.begin(); it != outputIds.end(); ++it )
+         if ( it.value().is_string() && !it.value().get<std::string>().empty() )
+            named.insert( it.value().get<std::string>() );
+   for ( const std::string& id : newWindows )
+      (named.empty() || named.count( id ) ? results : others).push_back( id );
+}
+
 String PrecheckGlobalRun( const IsoString& processId, const nlohmann::json& parameters,
                           const nlohmann::json& tableParameters )
 {
@@ -495,7 +509,32 @@ String PrecheckGlobalRun( const IsoString& processId, const nlohmann::json& para
    }
    // PHASE-B: call ValidateProcessFilePaths() (ProcessSafety), which
    // passes Section( CompiledProcessSafety(), "fileTables" ) here instead.
-   return ValidateGlobalRunFilePaths( processId, PhaseAFileTables(), parameters, tableParameters );
+   const String files = ValidateGlobalRunFilePaths( processId, PhaseAFileTables(), parameters, tableParameters );
+   if ( !files.IsEmpty() )
+      return files;
+
+   // Dry run of SetParameters() on a throwaway DEFAULT instance, so a shape,
+   // enumeration or range error comes back BEFORE any confirmation dialog.
+   try
+   {
+      const Process P( processId );
+      ProcessInstance probe( P );
+      nlohmann::json ignored = nlohmann::json::object();
+      SetParameters( P, probe, String( P.Id() ), parameters, tableParameters, ignored );
+   }
+   catch ( const ApplyError& e )
+   {
+      return e.message;
+   }
+   catch ( const pcl::Exception& x )
+   {
+      return "run_global_process internal error: " + x.Message();
+   }
+   catch ( const std::exception& x )
+   {
+      return String( "run_global_process internal error: " ) + String( x.what() );
+   }
+   return String();
 }
 
 GlobalRunResult RunGlobalProcess( const IsoString& processId, const nlohmann::json& parameters,
@@ -577,9 +616,11 @@ GlobalRunResult RunGlobalProcess( const IsoString& processId, const nlohmann::js
    if ( started )
       try
       {
+         std::vector<std::string> opened;
          for ( const std::string& id : OpenMainViewIds() )
             if ( before.count( id ) == 0 )
-               r.createdWindows.push_back( id );
+               opened.push_back( id );
+         SplitNewWindows( opened, r.outputIds, r.createdWindows, r.otherNewWindows );
       }
       catch ( ... )
       {
