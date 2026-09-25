@@ -25,6 +25,8 @@
 #include <pcl/View.h>
 #include <pcl/XML.h>
 
+#include <sqlite3.h>
+
 #include <algorithm>
 #include <chrono>
 #include <cmath>
@@ -677,6 +679,49 @@ bool RunJourneySelfTest( nlohmann::json& out )
       out["journeySpikeInfo"] = info;
       out["journeySpikeError"] = U8( error );
       out["journeySpikeOk"] = ok;
+      allOk = allOk && ok;
+   }
+
+   // ---- Section J1: vendored SQLite (Task 2) -------------------------------
+   {
+      bool ok = false;
+      nlohmann::json info = nlohmann::json::object();
+      sqlite3* db = nullptr;
+      try
+      {
+         info["version"] = sqlite3_libversion();
+         info["sourceId"] = std::string( sqlite3_sourceid() ).substr( 0, 19 );
+         info["threadsafe"] = sqlite3_threadsafe();
+         const int rc = sqlite3_open_v2( ":memory:", &db, SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE, nullptr );
+         char* err = nullptr;
+         int fk = -1;
+         if ( rc == SQLITE_OK
+           && sqlite3_exec( db, "CREATE TABLE t(a TEXT); INSERT INTO t VALUES ('caf\xC3\xA9 \xF0\x9F\x93\xB7');", nullptr, nullptr, &err ) == SQLITE_OK )
+         {
+            sqlite3_stmt* st = nullptr;
+            sqlite3_prepare_v2( db, "SELECT a FROM t", -1, &st, nullptr );
+            if ( sqlite3_step( st ) == SQLITE_ROW )
+               info["roundTrip"] = reinterpret_cast<const char*>( sqlite3_column_text( st, 0 ) );
+            sqlite3_finalize( st );
+            sqlite3_prepare_v2( db, "PRAGMA foreign_keys", -1, &st, nullptr );
+            if ( sqlite3_step( st ) == SQLITE_ROW )
+               fk = sqlite3_column_int( st, 0 );
+            sqlite3_finalize( st );
+         }
+         if ( err != nullptr )
+         {
+            info["error"] = err;
+            sqlite3_free( err );
+         }
+         info["foreignKeysDefault"] = fk;
+         ok = std::string( sqlite3_libversion() ) == "3.53.4" && sqlite3_threadsafe() == 1
+           && info.value( "roundTrip", std::string() ) == "caf\xC3\xA9 \xF0\x9F\x93\xB7" && fk == 1;
+      }
+      catch ( const std::exception& x ) { info["exception"] = x.what(); }
+      if ( db != nullptr )
+         sqlite3_close( db );
+      out["sqliteVendorInfo"] = info;
+      out["sqliteVendorOk"] = ok;
       allOk = allOk && ok;
    }
 
