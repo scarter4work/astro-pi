@@ -2526,7 +2526,14 @@ bool RunInc5SelfTest( nlohmann::json& out )
 
          const PjsrRun r6 = RunPjsr( "throw \"e\".repeat( 10000000 );", IsoString() );
          detail["r6"] = { { "errorLength", r6.error.Length() }, { "errorTruncated", r6.errorTruncated } };
-         errorBoundOk = !r6.ok && r6.errorTruncated && r6.error.Length() == PICopilotMaxScriptErrorChars;
+         // The syntax check's error is capped exactly too (an engine message
+         // quoting a 19000-character identifier).
+         const PjsrCheck bigSyntax = CheckPjsrSyntax( "var a = 1 " + String( 'x', 19000 ) + ";" );
+         detail["r6"]["syntaxErrorLength"] = bigSyntax.error.Length();
+         detail["r6"]["syntaxErrorTruncated"] = bigSyntax.errorTruncated;
+         errorBoundOk = !r6.ok && r6.errorTruncated && r6.error.Length() == PICopilotMaxScriptErrorChars
+                     && !bigSyntax.ok && bigSyntax.errorTruncated && bigSyntax.error.Length() == PICopilotMaxScriptErrorChars
+                     && bigSyntax.error.StartsWith( "SyntaxError" );
 
          Inc5TestWindow tw( "PCPjsrPix", 32, 32, 1, 0.4 );
          View v = tw.MainView();
@@ -2610,7 +2617,11 @@ bool RunInc5SelfTest( nlohmann::json& out )
                { "NUL", 0x00 }, { "loneCR", 0x0D }, { "VT", 0x0B }, { "ESC", 0x1B }, { "DEL", 0x7F }, { "C1-NEL", 0x85 },
                { "LS", 0x2028 }, { "PS", 0x2029 }, { "RLO", 0x202E }, { "LRE", 0x202A }, { "RLI", 0x2067 }, { "PDI", 0x2069 },
                { "ZWSP", 0x200B }, { "ZWJ", 0x200D }, { "RLM", 0x200F }, { "BOM", 0xFEFF }, { "SHY", 0x00AD },
-               { "WJ", 0x2060 }, { "ALM", 0x061C }, { "MVS", 0x180E }, { "TAG-A", 0xE0041 }, { "ILA", 0xFFF9 }
+               { "WJ", 0x2060 }, { "ALM", 0x061C }, { "MVS", 0x180E }, { "TAG-A", 0xE0041 }, { "ILA", 0xFFF9 },
+               // Not Cf, but invisible and legal inside JavaScript identifiers
+               // ("safe" + VS1 and "safe" are different variables that look the same).
+               { "HCF", 0x115F }, { "HJF", 0x1160 }, { "HF", 0x3164 }, { "HWHF", 0xFFA0 },
+               { "VS1", 0xFE00 }, { "VS16", 0xFE0F }, { "VS17", 0xE0100 }, { "VS256", 0xE01EF }, { "CGJ", 0x034F }
             };
             bool allRefused = true;
             nlohmann::json rj = nlohmann::json::object();

@@ -167,6 +167,14 @@ const char* RefusedKind( uint32 c )
       return "an unpaired surrogate, which is not valid text";
    if ( IsFormatChar( c ) )
       return "an invisible format character";
+   // Not Cf, but invisible AND legal inside JavaScript identifiers, so two
+   // names that look identical can be different variables.
+   if ( c == 0x115F || c == 0x1160 || c == 0x3164 || c == 0xFFA0 )
+      return "a Hangul filler, an invisible character JavaScript accepts inside names";
+   if ( (c >= 0xFE00 && c <= 0xFE0F) || (c >= 0xE0100 && c <= 0xE01EF) )
+      return "a variation selector, an invisible character JavaScript accepts inside names";
+   if ( c == 0x034F || c == 0x17B4 || c == 0x17B5 )
+      return "an invisible combining character JavaScript accepts inside names";
    return nullptr;
 }
 
@@ -266,7 +274,10 @@ PjsrCheck CheckPjsrSyntax( const String& code )
       c.error = String( "the script text could not be prepared: " ) + String( x.what() );
    }
    if ( c.error.Length() > PICopilotMaxScriptErrorChars )
-      c.error = c.error.Left( PICopilotMaxScriptErrorChars ) + "...";
+   {
+      c.error = c.error.Left( PICopilotMaxScriptErrorChars );
+      c.errorTruncated = true;
+   }
    return c;
 }
 

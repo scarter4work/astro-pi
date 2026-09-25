@@ -418,7 +418,10 @@ ToolOutcome RunPjsrTool( const nlohmann::json& in, const ToolContext& ctx, clock
    if ( !check.ok )
       return Fail( what, (check.line > 0 ? String().Format( "syntax error at line %d: ", check.line )
                                          : String( "syntax error (line unknown): " ))
-                         + check.error + " (the script was not shown to the user and did not run; fix it and call "
+                         + check.error
+                         + (check.errorTruncated ? String().Format( " [error text cut at %u characters]",
+                                                                    unsigned( PICopilotMaxScriptErrorChars ) ) : String())
+                         + " (the script was not shown to the user and did not run; fix it and call "
                          "run_pjsr again)" );
 
    if ( !ctx.confirmScript )
