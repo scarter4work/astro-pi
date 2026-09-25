@@ -10,6 +10,7 @@
 #include "ModelCatalog.h"
 #include "PICopilotModule.h"
 #include "PanelPlacement.h"
+#include "ScriptConfirmDialog.h"
 #include "SystemPrompt.h"
 #include "TurnEndNotes.h"
 #include "ViewCapture.h"
@@ -286,6 +287,7 @@ void PICopilotInterface::SendCurrentInput()
    // bound to the model that produced them.
    String modelNote;
    m_turnModel = CopilotSettings::LoadModel( &modelNote );
+   m_turnTools.runPjsr = CopilotSettings::LoadRunPjsrEnabled();
    if ( !modelNote.IsEmpty() && modelNote != m_lastModelNote )
    {
       AppendToLog( PlainText( "(" + modelNote + ")" ) + "\n\n" );   // once per distinct note
@@ -326,9 +328,9 @@ void PICopilotInterface::StartRequest()
    try
    {
       // ChatThread serializes key, prompt, history snapshot and tools HERE (UI thread).
-      m_thread = new ChatThread( m_apiKey, BuildSystemPrompt( m_turnMode ), m_session.History(),
+      m_thread = new ChatThread( m_apiKey, BuildSystemPrompt( m_turnMode, m_turnTools ), m_session.History(),
                                  m_turnModel, PICOPILOT_MESSAGES_URL,
-                                 PICopilotRequestTimeoutSeconds, ToolDefinitions( m_turnMode ),
+                                 PICopilotRequestTimeoutSeconds, ToolDefinitions( m_turnMode, m_turnTools ),
                                  ProductionRequestShape( m_turnModel ) );
       m_thread->Start();
    }
@@ -401,6 +403,8 @@ ToolContext PICopilotInterface::MakeToolContext()
    ctx.turnViewId = m_turnViewId;
    ctx.inspectedViews = &m_inspectedViews;
    ctx.confirm = &PICopilotInterface::ConfirmApply;
+   ctx.runPjsr = m_turnTools.runPjsr;
+   ctx.confirmScript = &ScriptConfirmDialog::Ask;   // every script, every mode
    return ctx;
 }
 

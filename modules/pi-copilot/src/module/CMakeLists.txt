@@ -40,6 +40,8 @@ set(MODULE_SOURCES
     Keyring.cpp
     CopilotSettings.cpp
     ProcessSafety.cpp
+    PjsrRunner.cpp
+    ScriptConfirmDialog.cpp
 )
 
 add_library(PICopilot SHARED ${MODULE_SOURCES})

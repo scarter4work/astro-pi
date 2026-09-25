@@ -310,6 +310,7 @@ required_true = [
     'configPolishOk',
     'processSafetyOk',
     'globalProcessOk',
+    'runPjsrOk', 'runPjsrBreakoutOk',
     'ok',
 ]
 missing = [k for k in required_true if d.get(k) is not True]

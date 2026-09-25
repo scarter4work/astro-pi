@@ -83,6 +83,10 @@ private:
    String    m_apiKey;
    AgentMode m_turnMode = AgentMode::Copilot;
 
+   // Per user message: the optional tools offered (run_pjsr = ⚙ Allow
+   // scripts, read at Send like the model).
+   ToolOptions m_turnTools;
+
    // The model this user message runs on (read from the ⚙ settings at Send)
    // and the one last named in the log (named again when it changes).
    IsoString m_turnModel;
