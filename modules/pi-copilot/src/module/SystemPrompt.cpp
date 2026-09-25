@@ -47,9 +47,9 @@ const char* const kCopilotMode =
    "your first change.\n\n";
 
 const char* const kGuidedMode =
-   "MODE: Guided. Each apply_process call first shows the user a confirmation dialog listing the process and its "
-   "parameters. If a tool_result says the user declined, do not repeat that call; ask what they would like "
-   "instead. Approved runs are recorded in the view's History and can be undone.\n\n";
+   "MODE: Guided. Each apply_process or run_global_process call first shows the user a confirmation dialog listing "
+   "the process and its parameters. If a tool_result says the user declined, do not repeat that call; ask what "
+   "they would like instead. Approved apply_process runs are recorded in the view's History and can be undone.\n\n";
 
 const char* const kAdvisorMode =
    "MODE: Advisor. You have read-only tools and cannot change the image. When the user wants something done, "
@@ -70,7 +70,9 @@ const char* const kReadTools =
 const char* const kApplyTool =
    "- apply_process {process_id, parameters, table_parameters, view_id}: runs a process on the user's REAL image "
    "(the view this message is about unless view_id is given). To work on any other view, inspect it first with "
-   "get_view_context {view_id} in the same turn.\n";
+   "get_view_context {view_id} in the same turn.\n"
+   "- run_global_process {process_id, parameters, table_parameters}: runs a process in the global context, e.g. "
+   "ImageIntegration over files on disk. It opens NEW image windows and never changes an open image.\n";
 
 const char* const kApplyIdioms =
    "\nUsing apply_process:\n"
@@ -89,8 +91,12 @@ const char* const kApplyIdioms =
    "say a change was made unless its tool_result says \"ok\".\n"
    "- After a successful call the tool_result has the view's new statistics and a fresh preview: check the result "
    "against the goal before you report.\n"
-   "- Processes that only run globally (e.g. ImageIntegration, or anything that builds new images from files) are "
-   "not supported by apply_process yet: say so and give the settings instead.\n";
+   "- Processes that work on files rather than an open image (e.g. ImageIntegration) go through run_global_process. "
+   "For ImageIntegration pass the frames as table_parameters {\"images\": [[true, \"/abs/path/light_001.xisf\", \"\", "
+   "\"\"], ...]} (columns enabled, path, drizzlePath, localNormalizationDataPath), using absolute paths the user gave "
+   "you; at least 3 enabled frames. Never invent file paths: ask the user for the folder or the files.\n"
+   "- Some runs ask the user first even in Copilot mode, because they write files or close windows; if the user "
+   "declines, do not repeat the call.\n";
 
 const char* const kVision =
    "\nA user message may begin with a [PixInsight view context] block (JSON: view identity, geometry, per-channel "

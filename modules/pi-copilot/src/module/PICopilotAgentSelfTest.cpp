@@ -914,7 +914,8 @@ bool RunAgentSelfTest( nlohmann::json& out )
                n.push_back( t.at( "name" ).get<std::string>() );
             return n;
          };
-         const std::vector<std::string> all = { "list_processes", "describe_process", "get_view_context", "apply_process" };
+         const std::vector<std::string> all = { "list_processes", "describe_process", "get_view_context", "apply_process",
+                                                 "run_global_process" };
          const std::vector<std::string> readOnly = { "list_processes", "describe_process", "get_view_context" };
          const nlohmann::json tc = ToolDefinitions( AgentMode::Copilot );
          const nlohmann::json tg = ToolDefinitions( AgentMode::Guided );

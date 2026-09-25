@@ -13,6 +13,7 @@
 #include "PanelPlacement.h"
 #include "PICopilotInc5SelfTest.h"
 #include "PICopilotModule.h"
+#include "ProcessApply.h"
 #include "ProcessSafety.h"
 #include "ProcessCatalog.h"
 #include "SseStream.h"
@@ -2128,6 +2129,202 @@ bool RunInc5SelfTest( nlohmann::json& out )
       out["processSafetyDetail"] = detail;
       out["processSafetyError"] = U8( error );
       out["processSafetyOk"] = ok;
+      allOk = allOk && ok;
+   }
+
+   // ---- Section B7: global processes / run_global_process (Task 8) --------------
+   // Phase A: everything except the shared safety gate (Task 7). The
+   // Copilot + policy-rule case (generateDrizzleData asks even in Copilot) is
+   // added with the gate in phase B.
+   {
+      bool precheckOk = true, runOk = false, guidedOk = false, advisorOk = false,
+           schemaOk = false, redirectOk = false, cleanupOk = false;
+      nlohmann::json detail = nlohmann::json::object();
+      std::vector<std::string> created;
+      String error, tempDir;
+      try
+      {
+         SyntheticFrames frames( 3 );
+         tempDir = frames.Dir();
+         auto rows = [&]( int enabled ) {
+            nlohmann::json r = nlohmann::json::array();
+            for ( size_type i = 0; i < frames.Paths().Length(); ++i )
+               r.push_back( nlohmann::json::array( { int( i ) < enabled, U8( frames.Paths()[i] ), "", "" } ) );
+            return r;
+         };
+         const String notImage = frames.AddFile( "notes.txt", "hello" );
+         const std::string frame0 = U8( frames.Paths()[0] );
+         struct Case { const char* name; IsoString process; nlohmann::json params; nlohmann::json tables; std::string expect; };
+         const std::vector<Case> cases = {
+            { "noTable", "ImageIntegration", nlohmann::json::object(), nlohmann::json::object(),
+              "ImageIntegration.images is required: pass table_parameters.images as rows [enabled, path, drizzlePath, "
+              "localNormalizationDataPath]" },
+            { "relative", "ImageIntegration", nlohmann::json::object(),
+              { { "images", { { true, "light_01.fits", "", "" }, { true, "b.fits", "", "" }, { true, "c.fits", "", "" } } } },
+              "ImageIntegration.images[0].path: 'light_01.fits' is not an absolute path" },
+            { "tilde", "ImageIntegration", nlohmann::json::object(),
+              { { "images", { { true, "~/a.fits", "", "" } } } },
+              "ImageIntegration.images[0].path: '~/a.fits': use an absolute path (PixInsight does not expand ~)" },
+            { "missing", "ImageIntegration", nlohmann::json::object(),
+              { { "images", { { true, "/nonexistent/picopilot/a.fits", "", "" } } } },
+              "ImageIntegration.images[0].path: '/nonexistent/picopilot/a.fits' does not exist" },
+            { "directory", "ImageIntegration", nlohmann::json::object(),
+              { { "images", { { true, U8( frames.Dir() ), "", "" } } } },
+              "' is not a file" },
+            { "notImage", "ImageIntegration", nlohmann::json::object(),
+              { { "images", { { true, U8( notImage ), "", "" } } } },
+              "is not an image file PixInsight can read (.txt)" },
+            { "optionalMissing", "ImageIntegration", nlohmann::json::object(),
+              { { "images", { { true, frame0, "/nonexistent/picopilot/a.xdrz", "" } } } },
+              "ImageIntegration.images[0].drizzlePath: '/nonexistent/picopilot/a.xdrz' does not exist" },
+            { "tooFew", "ImageIntegration", nlohmann::json::object(), { { "images", rows( 2 ) } },
+              "ImageIntegration.images: 2 enabled rows; at least 3 are required" },
+            { "looseMissing", "ImageIntegration", { { "csvWeights", "/nonexistent/picopilot/w.csv" } },
+              { { "images", rows( 3 ) } },
+              "ImageIntegration.csvWeights: '/nonexistent/picopilot/w.csv' does not exist" },
+            { "looseTilde", "ImageIntegration", { { "csvWeights", "~/w.csv" } }, { { "images", rows( 3 ) } },
+              "ImageIntegration.csvWeights: '~/w.csv': use an absolute path (PixInsight does not expand ~)" },
+            { "unknown", "NoSuchProcessXYZ", nlohmann::json::object(), nlohmann::json::object(),
+              "unknown process id 'NoSuchProcessXYZ'" },
+         };
+         nlohmann::json pc = nlohmann::json::array();
+         for ( const Case& c : cases )
+         {
+            const String e = PrecheckGlobalRun( c.process, c.params, c.tables );
+            const bool pass = e.Contains( String::UTF8ToUTF16( c.expect.c_str() ) );
+            pc.push_back( { { "case", c.name }, { "pass", pass }, { "error", U8( e ) } } );
+            precheckOk = precheckOk && pass;
+         }
+         // Disabled rows are not checked (a missing file in a disabled row is fine)...
+         nlohmann::json mixed = rows( 3 );
+         mixed.push_back( nlohmann::json::array( { false, "/nonexistent/picopilot/off.fits", "", "" } ) );
+         const String okMixed = PrecheckGlobalRun( "ImageIntegration", nlohmann::json::object(), { { "images", mixed } } );
+         const String okThree = PrecheckGlobalRun( "ImageIntegration", nlohmann::json::object(), { { "images", rows( 3 ) } } );
+         pc.push_back( { { "case", "valid3" }, { "error", U8( okThree ) } } );
+         pc.push_back( { { "case", "disabledRowIgnored" }, { "error", U8( okMixed ) } } );
+         precheckOk = precheckOk && okThree.IsEmpty() && okMixed.IsEmpty();
+         // A view-only process, if this PI has one (most processes default to global-capable).
+         for ( const Process& P : Process::AllProcesses() )
+            if ( !P.CanProcessGlobal() )
+            {
+               const String e = PrecheckGlobalRun( P.Id(), nlohmann::json::object(), nlohmann::json::object() );
+               detail["viewOnly"] = { { "process", std::string( P.Id().c_str() ) }, { "error", U8( e ) } };
+               precheckOk = precheckOk && e.Contains( "cannot run in the global context" );
+               break;
+            }
+         detail["precheck"] = pc;
+
+         int confirmCalls = 0;
+         bool answer = false;
+         ToolContext ctx;
+         ctx.mode = AgentMode::Copilot;
+         ctx.confirm = [&]( const String&, const String&, const String& ) { ++confirmCalls; return answer; };
+         const nlohmann::json input = { { "process_id", "ImageIntegration" },
+                                        { "parameters", { { "weightMode", "DontCare" } } },
+                                        { "table_parameters", { { "images", rows( 3 ) } } } };
+
+         // A precheck failure through the tool: precise message, nothing asked, nothing opened.
+         const std::set<std::string> b0 = OpenMainViewIds();
+         nlohmann::json bad = input;
+         bad["table_parameters"]["images"] = rows( 2 );
+         const ToolOutcome badOut = ExecuteTool( ToolCall{ "g0", "run_global_process", bad }, ctx );
+         const bool badOk = badOut.isError && confirmCalls == 0 && OpenMainViewIds() == b0
+                         && badOut.content.at( 0 ).at( "text" ).get<std::string>()
+                            == "ImageIntegration.images: 2 enabled rows; at least 3 are required";
+         detail["toolPrecheck"] = { { "ok", badOk }, { "error", badOut.content.at( 0 ).at( "text" ) } };
+
+         // Copilot: runs without asking; the result windows come back.
+         const std::set<std::string> before = OpenMainViewIds();
+         const ToolOutcome o = ExecuteTool( ToolCall{ "g1", "run_global_process", input }, ctx );
+         for ( const std::string& id : OpenMainViewIds() )
+            if ( before.count( id ) == 0 )
+               created.push_back( id );
+         nlohmann::json summary;
+         if ( !o.isError )
+            summary = nlohmann::json::parse( o.content.at( 0 ).at( "text" ).get<std::string>() );
+         int images = 0;
+         for ( const nlohmann::json& b : o.content )
+            images += b.value( "type", std::string() ) == "image" ? 1 : 0;
+         detail["run"] = { { "isError", o.isError }, { "log", U8( o.logLine ) }, { "summary", summary },
+                           { "created", created }, { "images", images },
+                           { "error", o.isError ? o.content.at( 0 ).at( "text" ) : nlohmann::json() } };
+         const std::string integ = summary.value( "outputIds", nlohmann::json::object() ).value( "integrationImageId", std::string() );
+         bool statsOk = false;
+         if ( !o.isError )
+         {
+            // The primary result is described first; its statistics are those of the real integration.
+            const nlohmann::json& w0 = summary.at( "createdWindows" ).at( 0 );
+            const nlohmann::json& ch0 = w0.at( "context" ).at( "channelStats" ).at( 0 );
+            const double mean = ch0.at( "mean" ).get<double>();
+            detail["run"]["resultMean"] = mean;
+            detail["run"]["inputMeanOfMeans"] = frames.MeanOfMeans();
+            statsOk = w0.at( "id" ) == integ
+                   && w0.at( "context" ).at( "geometry" ).at( "width" ) == kIiW
+                   && w0.at( "context" ).at( "geometry" ).at( "height" ) == kIiH
+                   && std::fabs( mean - frames.MeanOfMeans() ) < 0.01*frames.MeanOfMeans()
+                   && summary.at( "createdWindowCount" ).get<size_t>() == created.size();
+         }
+         runOk = badOk && !o.isError && confirmCalls == 0 && !o.mutated && images == 1 && !integ.empty()
+              && std::find( created.begin(), created.end(), integ ) != created.end() && statsOk
+              && U8( o.logLine ).rfind( "\xE2\x96\xB6 run_global_process ImageIntegration", 0 ) == 0;
+
+         // Guided: asks; No -> nothing opens.
+         ctx.mode = AgentMode::Guided;
+         const std::set<std::string> b2 = OpenMainViewIds();
+         const ToolOutcome declined = ExecuteTool( ToolCall{ "g2", "run_global_process", input }, ctx );
+         guidedOk = declined.isError && confirmCalls == 1 && OpenMainViewIds() == b2
+                 && declined.content.at( 0 ).at( "text" ).get<std::string>().find( "declined" ) != std::string::npos;
+
+         // Advisor: not offered, refused if called anyway.
+         ctx.mode = AgentMode::Advisor;
+         const ToolOutcome adv = ExecuteTool( ToolCall{ "g4", "run_global_process", input }, ctx );
+         advisorOk = adv.isError && adv.content.at( 0 ).at( "text" ).get<std::string>().find( "not available in Advisor" ) != std::string::npos
+                  && confirmCalls == 1 && OpenMainViewIds() == b2;
+
+         bool inCopilot = false, inGuided = false, inAdvisor = false;
+         for ( const nlohmann::json& t : ToolDefinitions( AgentMode::Copilot ) )
+            inCopilot = inCopilot || t.at( "name" ) == "run_global_process";
+         for ( const nlohmann::json& t : ToolDefinitions( AgentMode::Guided ) )
+            inGuided = inGuided || t.at( "name" ) == "run_global_process";
+         for ( const nlohmann::json& t : ToolDefinitions( AgentMode::Advisor ) )
+            inAdvisor = inAdvisor || t.at( "name" ) == "run_global_process";
+         schemaOk = inCopilot && inGuided && !inAdvisor
+                 && BuildSystemPrompt( AgentMode::Copilot ).Contains( "run_global_process" )
+                 && BuildSystemPrompt( AgentMode::Guided ).Contains( "run_global_process" )
+                 && !BuildSystemPrompt( AgentMode::Advisor ).Contains( "run_global_process" );
+
+         // apply_process on a file-list process points to run_global_process.
+         Inc5TestWindow tw( "PCRedirectT", 32, 32, 1, 0.3 );
+         ctx.mode = AgentMode::Copilot;
+         ctx.turnViewId = tw.MainView().FullId();
+         const ToolOutcome red = ExecuteTool( ToolCall{ "g5", "apply_process", { { "process_id", "ImageIntegration" } } }, ctx );
+         detail["redirect"] = red.content.at( 0 ).at( "text" );
+         redirectOk = red.isError && !red.mutated
+                   && red.content.at( 0 ).at( "text" ).get<std::string>()
+                      == "ImageIntegration integrates files from disk, not an open image: use run_global_process with "
+                         "the file list in table_parameters";
+      }
+      catch ( const pcl::Exception& x ) { error = x.Message(); }
+      catch ( const std::exception& x ) { error = String( x.what() ); }
+      catch ( ... )                     { error = "unknown exception"; }
+      ForceCloseWindows( created );
+
+      // Cleanup: temp files gone, created windows closed.
+      const std::set<std::string> after = OpenMainViewIds();
+      bool windowsGone = true;
+      for ( const std::string& id : created )
+         windowsGone = windowsGone && after.count( id ) == 0;
+      cleanupOk = !tempDir.IsEmpty() && !File::DirectoryExists( tempDir ) && windowsGone;
+      detail["cleanup"] = { { "tempDirGone", !tempDir.IsEmpty() && !File::DirectoryExists( tempDir ) },
+                            { "windowsGone", windowsGone } };
+      detail["checks"] = { { "precheck", precheckOk }, { "run", runOk }, { "guided", guidedOk },
+                           { "advisor", advisorOk }, { "schema", schemaOk }, { "redirect", redirectOk },
+                           { "cleanup", cleanupOk } };
+
+      const bool ok = precheckOk && runOk && guidedOk && advisorOk && schemaOk && redirectOk && cleanupOk;
+      out["globalDetail"] = detail;
+      out["globalError"] = U8( error );
+      out["globalProcessOk"] = ok;
       allOk = allOk && ok;
    }
 

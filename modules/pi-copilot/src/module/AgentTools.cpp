@@ -3,6 +3,7 @@
 
 #include "AgentTools.h"
 #include "AnthropicClient.h"   // JpegImageBlock
+#include "GlobalRunFiles.h"
 #include "ProcessApply.h"
 #include "ProcessCatalog.h"
 #include "ProcessSafety.h"
@@ -11,11 +12,14 @@
 #include "ViewPreview.h"
 
 #include <pcl/Exception.h>
+#include <pcl/ImageWindow.h>
 #include <pcl/Thread.h>
 
+#include <algorithm>
 #include <chrono>
 #include <cmath>
 #include <exception>
+#include <vector>
 
 namespace pcl
 {
@@ -180,6 +184,10 @@ ToolOutcome ApplyProcessTool( const nlohmann::json& in, const ToolContext& ctx, 
       return Fail( what, "apply_process is not available in Advisor mode (read-only); give the user the settings instead" );
    if ( pid.empty() )
       return Fail( "apply_process", "apply_process needs process_id; call list_processes for valid ids" );
+   // PHASE-B: HasFileTables() (ProcessSafety) instead of the phase-A policy copy.
+   if ( DeclaresFileTables( IsoString( pid.c_str() ), PhaseAFileTables() ) )
+      return Fail( what, S16( pid ) + " integrates files from disk, not an open image: use run_global_process with "
+                         "the file list in table_parameters" );
 
    View target;
    const std::string viewId = StringField( in, "view_id" );
@@ -252,6 +260,134 @@ ToolOutcome ApplyProcessTool( const nlohmann::json& in, const ToolContext& ctx, 
    return o;
 }
 
+// run_global_process: a process in the global context (e.g. ImageIntegration
+// over files on disk). It opens NEW windows and never changes an open image.
+ToolOutcome RunGlobalTool( const nlohmann::json& in, const ToolContext& ctx, clock::time_point t0 )
+{
+   const std::string pid = StringField( in, "process_id" );
+   const nlohmann::json params = in.contains( "parameters" ) ? in["parameters"] : nlohmann::json::object();
+   const nlohmann::json tables = in.contains( "table_parameters" ) ? in["table_parameters"] : nlohmann::json::object();
+   nlohmann::json shown = params.is_object() ? params : nlohmann::json::object();
+   if ( tables.is_object() )
+      for ( auto it = tables.begin(); it != tables.end(); ++it )
+         shown[it.key()] = it.value();
+   const String what = "run_global_process " + S16( pid ) + " " + Shorten( S16( shown.dump() ), PICopilotToolLogParamChars );
+
+   if ( ctx.mode == AgentMode::Advisor )
+      return Fail( what, "run_global_process is not available in Advisor mode (read-only); give the user the settings instead" );
+   if ( pid.empty() )
+      return Fail( "run_global_process", "run_global_process needs process_id; call list_processes for valid ids" );
+
+   const String pre = PrecheckGlobalRun( IsoString( pid.c_str() ), params, tables );
+   if ( !pre.IsEmpty() )
+      return Fail( what, pre );
+
+   // T7-GATE: apply shared ProcessSafety verdict here
+   //   (phase B: CheckProcessSafety(); Deny -> Fail without asking; Confirm
+   //   -> ask in EVERY mode with "Why you are asked: <reason>." prepended to
+   //   the changes; Guided keeps asking on Allow.)
+   if ( ctx.mode == AgentMode::Guided )
+   {
+      if ( !ctx.confirm )
+         return Fail( what, "internal error: Guided mode has no confirmation callback" );
+      const String changes = DescribeParameterChanges( params, tables, PICopilotConfirmChangesChars );
+      if ( !ctx.confirm( S16( pid ), "(global run: creates new images, changes no open image)", changes ) )
+      {
+         ToolOutcome o;
+         o.isError = true;
+         o.content.push_back( TextBlock( "The user declined this run_global_process call (" + pid
+                                         + "). Nothing was run. Do not repeat it; ask what they would like instead." ) );
+         o.logLine = S16( kErrMarkUtf8 ) + what + S16( kArrowUtf8 ) + "declined by user";
+         return o;
+      }
+   }
+
+   const GlobalRunResult g = RunGlobalProcess( IsoString( pid.c_str() ), params, tables );
+   if ( !g.ok )
+   {
+      String e = g.error;
+      if ( !g.createdWindows.empty() )
+      {
+         e += " (windows it opened before stopping: ";
+         for ( size_t i = 0; i < g.createdWindows.size(); ++i )
+            e += (i > 0 ? String( ", " ) : String()) + S16( g.createdWindows[i] );
+         e += ")";
+      }
+      return Fail( what, e );
+   }
+
+   // The main result: the integration image if the process names one it
+   // opened, else the first new window. It is described (and listed) first.
+   std::vector<std::string> order = g.createdWindows;
+   const std::string named = g.outputIds.value( "integrationImageId", std::string() );
+   auto hit = std::find( order.begin(), order.end(), named );
+   if ( hit != order.end() )
+      std::rotate( order.begin(), hit, hit + 1 );
+   const std::string primary = order.empty() ? std::string() : order.front();
+
+   nlohmann::json windows = nlohmann::json::array();
+   for ( const std::string& id : order )
+   {
+      if ( windows.size() >= PICopilotMaxDescribedWindows )
+         break;
+      nlohmann::json w = { { "id", id } };
+      try
+      {
+         const ImageWindow iw = ImageWindow::WindowById( IsoString( id.c_str() ) );
+         if ( iw.IsNull() )
+            w["contextError"] = "the window was closed before it could be described";
+         else if ( IsBusy( iw.MainView() ) )
+            w["contextError"] = "the view is busy (locked by a running process)";
+         else
+            w["context"] = CollapsedViewContext( BuildViewContext( iw.MainView() ) );
+      }
+      catch ( const pcl::Exception& x )
+      {
+         w["contextError"] = U8( x.Message() );
+      }
+      windows.push_back( w );
+   }
+   nlohmann::json summary = {
+      { "result", "ok" },
+      { "process", U8( g.processId ) },
+      { "parametersSet", g.parametersSet },
+      { "elapsedMs", std::lround( g.elapsedMs ) },
+      { "outputIds", g.outputIds },
+      { "createdWindows", windows },
+      { "createdWindowCount", g.createdWindows.size() },
+      { "note", primary.empty()
+                   ? std::string( "The process completed but opened no new image window; no open image was modified." )
+                   : "New image windows were created; no open image was modified. The preview shows " + primary + "." }
+   };
+   if ( g.createdWindows.size() > PICopilotMaxDescribedWindows )
+      summary["windowsNotDescribed"] = g.createdWindows.size() - PICopilotMaxDescribedWindows;
+
+   ToolOutcome o;
+   if ( !primary.empty() )
+   {
+      const ImageWindow iw = ImageWindow::WindowById( IsoString( primary.c_str() ) );
+      if ( iw.IsNull() )
+         summary["previewError"] = "the window " + primary + " was closed before the preview";
+      else if ( IsBusy( iw.MainView() ) )
+         summary["previewError"] = "the view " + primary + " is busy (locked by a running process)";
+      else
+      {
+         const ViewPreviewResult p = RenderViewPreview( iw.MainView() );
+         if ( p.ok )
+         {
+            o.content.push_back( TextBlock( summary.dump() ) );
+            o.content.push_back( JpegImageBlock( p.base64 ) );
+            o.logLine = OkLine( what, t0 );
+            return o;
+         }
+         summary["previewError"] = U8( p.error );
+      }
+   }
+   o.content.push_back( TextBlock( summary.dump() ) );
+   o.logLine = OkLine( what, t0 );
+   return o;
+}
+
 } // namespace
 
 AgentMode AgentModeFromIndex( int index )
@@ -310,6 +446,24 @@ nlohmann::json ToolDefinitions( AgentMode mode )
       apply["input_schema"] = { { "type", "object" }, { "properties", props },
                                 { "required", nlohmann::json::array( { "process_id" } ) } };
       tools.push_back( apply );
+
+      nlohmann::json gprops = nlohmann::json::object();
+      gprops["process_id"] = { { "type", "string" }, { "description", "Process id, e.g. ImageIntegration" } };
+      gprops["parameters"] = props["parameters"];
+      gprops["table_parameters"] = { { "type", "object" },
+                                     { "description", "{tableParameterId: [[row values in column order], ...]}. "
+                                                      "ImageIntegration: {\"images\": [[enabled, path, drizzlePath, "
+                                                      "localNormalizationDataPath], ...]} with absolute paths." } };
+      nlohmann::json global = nlohmann::json::object();
+      global["name"] = "run_global_process";
+      global["description"] = "Run a PixInsight process in the global context (not on a view), e.g. ImageIntegration "
+                              "over image files on disk. It creates NEW image windows and never modifies an open "
+                              "image. Starts from the process's DEFAULT settings and sets only the parameters given. "
+                              "File paths must be absolute and must exist. Returns the created windows (ids and "
+                              "statistics) and a preview of the main result, or a precise error.";
+      global["input_schema"] = { { "type", "object" }, { "properties", gprops },
+                                 { "required", nlohmann::json::array( { "process_id" } ) } };
+      tools.push_back( global );
    }
    return tools;
 }
@@ -402,8 +556,10 @@ ToolOutcome ExecuteTool( const ToolCall& call, const ToolContext& ctx )
       }
       if ( call.name == "apply_process" )
          return ApplyProcessTool( in, ctx, t0 );
+      if ( call.name == "run_global_process" )
+         return RunGlobalTool( in, ctx, t0 );
       return Fail( name, "unknown tool '" + name + "'; available: list_processes, describe_process, get_view_context"
-                         + (ctx.mode == AgentMode::Advisor ? String() : String( ", apply_process" )) );
+                         + (ctx.mode == AgentMode::Advisor ? String() : String( ", apply_process, run_global_process" )) );
    }
    catch ( const pcl::Exception& x )
    {

@@ -9,6 +9,9 @@
 
 #include <nlohmann/json.hpp>
 
+#include <string>
+#include <vector>
+
 namespace pcl
 {
 
@@ -25,7 +28,7 @@ struct ApplyProcessResult
 /*
  * Runs one process on one view, the apply_process tool's engine:
  *   1. resolve the process (unknown id -> error),
- *   2. refuse global-only processes (!CanProcessViews(); no ExecuteGlobal yet),
+ *   2. refuse processes that cannot run on views (use RunGlobalProcess),
  *   3. refuse a null or BUSY view (non-blocking CanRead()/CanWrite() probe),
  *   4. start from the process's DEFAULT instance and set only the given
  *      parameters: parameters {id: value} for scalars, tableParameters
@@ -49,6 +52,34 @@ struct ApplyProcessResult
  */
 ApplyProcessResult ApplyProcess( const IsoString& processId, const nlohmann::json& parameters,
                                  const nlohmann::json& tableParameters, View view );
+
+constexpr size_type PICopilotMaxDescribedWindows = 4;    // windows described in detail in one tool_result
+constexpr size_type PICopilotMinIntegrationFrames = 3;   // documentation only: the fileTables policy is authoritative
+
+struct GlobalRunResult
+{
+   bool                     ok = false;
+   String                   error;                                     // precise, model-facing
+   nlohmann::json           parametersSet = nlohmann::json::object();
+   double                   elapsedMs = 0;                             // ExecuteGlobal() wall time
+   String                   processId;                                 // canonical id, once resolved
+   std::vector<std::string> createdWindows;                            // main-view ids of windows the run opened
+   nlohmann::json           outputIds = nlohmann::json::object();      // read-only "...ImageId" outputs, non-empty only
+};
+
+// Cheap checks before anything is asked or run: known id, global-capable,
+// file paths (ValidateGlobalRunFilePaths with the fileTables policy). "" when
+// fine. Root thread.
+String PrecheckGlobalRun( const IsoString& processId, const nlohmann::json& parameters,
+                          const nlohmann::json& tableParameters );
+
+// PrecheckGlobalRun, then a DEFAULT instance with the checked parameters
+// (SetParameters, exactly as ApplyProcess), Validate, CanExecuteGlobal,
+// ExecuteGlobal. The windows it opened are found by diffing the open main
+// views before and after (even on failure, so the model can mention them).
+// Never modifies an open image; never throws. Root thread only.
+GlobalRunResult RunGlobalProcess( const IsoString& processId, const nlohmann::json& parameters,
+                                  const nlohmann::json& tableParameters );
 
 // "id = value" lines (tables as compact JSON), for the Guided confirm dialog.
 // "(all parameters at their defaults)" when nothing is set. When the text
