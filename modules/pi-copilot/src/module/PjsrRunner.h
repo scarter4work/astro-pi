@@ -14,6 +14,8 @@ namespace pcl
 constexpr size_type PICopilotMaxScriptChars        = 20000;
 constexpr size_type PICopilotMaxScriptConsoleChars = 8000;   // the TAIL is kept
 constexpr size_type PICopilotMaxScriptValueChars   = 4000;
+constexpr size_type PICopilotMaxScriptErrorChars   = 2000;   // thrown value / console failure text
+constexpr size_type PICopilotMaxScriptPurposeChars = 300;    // the one sentence shown in the dialog
 
 // The code as an ASCII-only JSON string literal: ", \ and every control
 // character escaped, and every non-ASCII character (U+2028/2029 included)
@@ -21,9 +23,26 @@ constexpr size_type PICopilotMaxScriptValueChars   = 4000;
 // surrogate, which is not text, as U+FFFD). The wrapper scripts below embed
 // the model's code ONLY as this literal -- as DATA passed to new Function --
 // so no text in it can close the wrapper and run (the breakout an inline
-// "(function(){ <code> })" wrapper would allow). Throws std::exception if the
-// text cannot be encoded.
+// "(function(){ <code> })" wrapper would allow). Every String encodes (U8()
+// always yields strict UTF-8), so the only possible exception is an
+// allocation failure (std::bad_alloc).
 std::string ScriptLiteral( const String& code );
+
+// The code with every CR LF pair turned into LF (what the dialog shows and
+// what runs are then the same line structure).
+String NormalizeScriptNewlines( const String& code );
+
+// Trojan-Source guard, applied to the NORMALISED code before the syntax check
+// and the dialog. Empty when the code is acceptable; otherwise a precise,
+// model-correctable refusal naming the first offending character (U+XXXX,
+// line, column). Refused: every C0 control except TAB and LF (so NUL and a
+// lone CR), DEL, the C1 controls, U+2028/U+2029 (JavaScript line
+// terminators), unpaired surrogates, and every Unicode format character
+// (category Cf: zero-width characters, bidi embeddings/overrides/isolates,
+// U+FEFF, soft hyphen, tag characters, ...) -- characters that are invisible
+// or reorder text, so the script the user reads could differ from the one
+// that runs.
+String ScriptCharProblem( const String& code );
 
 // How many lines the engine's synthesized `new Function` source puts before
 // the body ("function anonymous(targetViewId\n) {\n": 2 on the proven
@@ -47,7 +66,8 @@ PjsrCheck CheckPjsrSyntax( const String& code );
 struct PjsrRun
 {
    bool   ok = false;
-   String error;               // the thrown value, e.g. "Error: ..." / "TypeError: ..."
+   String error;               // the thrown value, e.g. "Error: ..." / "TypeError: ..." (at most PICopilotMaxScriptErrorChars)
+   bool   errorTruncated = false;
    int    line = 0;            // 1-based line in the model's code (0 = unknown)
    String value;               // JSON.stringify( returned value ) (else String( value )); empty if undefined
    bool   valueTruncated = false;

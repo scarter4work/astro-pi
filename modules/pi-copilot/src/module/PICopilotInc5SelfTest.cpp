@@ -2479,7 +2479,8 @@ bool RunInc5SelfTest( nlohmann::json& out )
    {
       bool checkOk = false, runOk = false, errorOk = false, boundOk = false, valueBoundOk = false, pixelOk = false,
            offOk = false, declineOk = false, approveOk = false, guidedOk = false, syntaxNoDialogOk = false,
-           advisorOk = false, tooLongOk = false, schemaOk = false, promptOk = false;
+           advisorOk = false, tooLongOk = false, schemaOk = false, promptOk = false,
+           errorBoundOk = false, charRefusalOk = false, purposeBoundOk = false, errorToolBoundOk = false;
       nlohmann::json detail = nlohmann::json::object();
       String error;
       try
@@ -2522,6 +2523,10 @@ bool RunInc5SelfTest( nlohmann::json& out )
          const PjsrRun r5 = RunPjsr( "var s = \"\";\nfor ( var i = 0; i < 5000; ++i ) s += \"a\";\nreturn s;", IsoString() );
          detail["r5"] = { { "valueLength", r5.value.Length() }, { "valueTruncated", r5.valueTruncated }, { "error", U8( r5.error ) } };
          valueBoundOk = r5.ok && r5.valueTruncated && r5.value.Length() == PICopilotMaxScriptValueChars;
+
+         const PjsrRun r6 = RunPjsr( "throw \"e\".repeat( 10000000 );", IsoString() );
+         detail["r6"] = { { "errorLength", r6.error.Length() }, { "errorTruncated", r6.errorTruncated } };
+         errorBoundOk = !r6.ok && r6.errorTruncated && r6.error.Length() == PICopilotMaxScriptErrorChars;
 
          Inc5TestWindow tw( "PCPjsrPix", 32, 32, 1, 0.4 );
          View v = tw.MainView();
@@ -2585,6 +2590,63 @@ bool RunInc5SelfTest( nlohmann::json& out )
          const ToolOutcome adv = ExecuteTool( mark, ctx );
          advisorOk = adv.isError && asks == 3 && text0( adv ).find( "not available in Advisor" ) != std::string::npos;
 
+         // Fix round 1: what the dialog shows must be what runs. Invisible,
+         // reordering and line-terminator characters are refused BEFORE the
+         // parse check and the dialog (asks unchanged); CRLF is normalised.
+         ctx.mode = AgentMode::Copilot;
+         answer = false;
+         {
+            auto withUnits = []( const char* head, std::initializer_list<uint32_t> cps, const char* tail )
+            {
+               std::string s = head;
+               for ( uint32_t c : cps )   // UTF-8 encode
+                  if ( c < 0x80 ) s += char( c );
+                  else if ( c < 0x800 ) { s += char( 0xC0 | (c >> 6) ); s += char( 0x80 | (c & 0x3F) ); }
+                  else if ( c < 0x10000 ) { s += char( 0xE0 | (c >> 12) ); s += char( 0x80 | ((c >> 6) & 0x3F) ); s += char( 0x80 | (c & 0x3F) ); }
+                  else { s += char( 0xF0 | (c >> 18) ); s += char( 0x80 | ((c >> 12) & 0x3F) ); s += char( 0x80 | ((c >> 6) & 0x3F) ); s += char( 0x80 | (c & 0x3F) ); }
+               return s + tail;
+            };
+            const std::vector<std::pair<const char*, uint32_t>> refused = {
+               { "NUL", 0x00 }, { "loneCR", 0x0D }, { "VT", 0x0B }, { "ESC", 0x1B }, { "DEL", 0x7F }, { "C1-NEL", 0x85 },
+               { "LS", 0x2028 }, { "PS", 0x2029 }, { "RLO", 0x202E }, { "LRE", 0x202A }, { "RLI", 0x2067 }, { "PDI", 0x2069 },
+               { "ZWSP", 0x200B }, { "ZWJ", 0x200D }, { "RLM", 0x200F }, { "BOM", 0xFEFF }, { "SHY", 0x00AD },
+               { "WJ", 0x2060 }, { "ALM", 0x061C }, { "MVS", 0x180E }, { "TAG-A", 0xE0041 }, { "ILA", 0xFFF9 }
+            };
+            bool allRefused = true;
+            nlohmann::json rj = nlohmann::json::object();
+            for ( const auto& rc : refused )
+            {
+               const std::string code = withUnits( "var s = 1; // c", { rc.second }, " new ImageWindow( 8, 8, 1, 32, true, false, \"PCPjsrMark\" );\nreturn s;" );
+               const ToolOutcome o = ExecuteTool( ToolCall{ "p4", "run_pjsr", { { "purpose", "hidden text" }, { "code", code } } }, ctx );
+               const bool r = o.isError && asks == 3 && !markExists()
+                           && text0( o ).find( "\\uXXXX escapes" ) != std::string::npos;
+               if ( !r )
+                  rj[rc.first] = text0( o );
+               allRefused = allRefused && r;
+            }
+            // Tabs and CRLF line ends are fine: CRLF reaches the dialog (and the engine) as LF.
+            const ToolOutcome crlf = ExecuteTool( ToolCall{ "p5", "run_pjsr", { { "purpose", "crlf" },
+                                                  { "code", "var a = 1;\r\n\tvar b = 2;\r\nreturn a + b;" } } }, ctx );
+            detail["charRefusalFailures"] = rj;
+            charRefusalOk = allRefused && crlf.isError && asks == 4
+                         && askedCode == "var a = 1;\n\tvar b = 2;\nreturn a + b;";
+         }
+
+         // Fix round 1: purpose is bounded (it is shown in the dialog).
+         const ToolOutcome longPurpose = ExecuteTool( ToolCall{ "p6", "run_pjsr", { { "purpose", std::string( PICopilotMaxScriptPurposeChars + 1, 'p' ) },
+                                                      { "code", "return 1;" } } }, ctx );
+         detail["longPurpose"] = text0( longPurpose );
+         purposeBoundOk = longPurpose.isError && asks == 4 && text0( longPurpose ).find( "the limit is 300" ) != std::string::npos;
+
+         // Fix round 1: a huge thrown value never becomes a huge tool_result.
+         answer = true;
+         const ToolOutcome bigThrow = ExecuteTool( ToolCall{ "p7", "run_pjsr", { { "purpose", "big throw" },
+                                                   { "code", "throw \"x\".repeat( 10000000 );" } } }, ctx );
+         detail["bigThrowResultChars"] = text0( bigThrow ).size();
+         errorToolBoundOk = bigThrow.isError && asks == 5 && text0( bigThrow ).size() < PICopilotMaxScriptErrorChars + 1000
+                         && text0( bigThrow ).find( "\"errorTruncated\":true" ) != std::string::npos;
+         answer = false;
+
          ToolOptions on;
          on.runPjsr = true;
          const nlohmann::json tOn = ToolDefinitions( AgentMode::Copilot, on );
@@ -2611,9 +2673,12 @@ bool RunInc5SelfTest( nlohmann::json& out )
       detail["flags"] = { { "check", checkOk }, { "run", runOk }, { "error", errorOk }, { "bound", boundOk },
                           { "valueBound", valueBoundOk }, { "pixel", pixelOk }, { "off", offOk }, { "decline", declineOk },
                           { "approve", approveOk }, { "guided", guidedOk }, { "syntaxNoDialog", syntaxNoDialogOk },
-                          { "tooLong", tooLongOk }, { "advisor", advisorOk }, { "schema", schemaOk }, { "prompt", promptOk } };
+                          { "tooLong", tooLongOk }, { "advisor", advisorOk }, { "schema", schemaOk }, { "prompt", promptOk },
+                          { "errorBound", errorBoundOk }, { "charRefusal", charRefusalOk }, { "purposeBound", purposeBoundOk },
+                          { "errorToolBound", errorToolBoundOk } };
       const bool ok = checkOk && runOk && errorOk && boundOk && valueBoundOk && pixelOk && offOk && declineOk
-                   && approveOk && guidedOk && syntaxNoDialogOk && tooLongOk && advisorOk && schemaOk && promptOk;
+                   && approveOk && guidedOk && syntaxNoDialogOk && tooLongOk && advisorOk && schemaOk && promptOk
+                   && errorBoundOk && charRefusalOk && purposeBoundOk && errorToolBoundOk;
       out["runPjsrDetail"] = detail;
       out["runPjsrError"] = U8( error );
       out["runPjsrOk"] = ok;
@@ -2721,10 +2786,21 @@ bool RunInc5SelfTest( nlohmann::json& out )
          const PjsrRun e2 = RunPjsr( "\"); new ImageWindow( 8, 8, 1, 32, true, false, 'PCBreakout' ); (\"\nreturn 7;", IsoString() );
          const bool e2Sentinel = sentinelExists();
          ForceCloseWindows( { "PCBreakout" } );
+         // Wrapper-closing texts, RUN (not just parsed): still only a SyntaxError.
+         const PjsrRun e3 = RunPjsr( "}); " + sentinel + " (function(){", IsoString() );
+         const bool e3Sentinel = sentinelExists();
+         ForceCloseWindows( { "PCBreakout" } );
+         const PjsrRun e4 = RunPjsr( "*/ " + sentinel + " /*", IsoString() );
+         const bool e4Sentinel = sentinelExists();
+         ForceCloseWindows( { "PCBreakout" } );
          const bool endToEndOk = e1.ok && e1.value == "\"" + u16( { 0xD83D, 0xDE00 } ) + "3\""
-                              && e2.ok && e2.value == "7" && !e2Sentinel;
+                              && e2.ok && e2.value == "7" && !e2Sentinel
+                              && !e3.ok && e3.error.StartsWith( "SyntaxError" ) && !e3Sentinel
+                              && !e4.ok && e4.error.StartsWith( "SyntaxError" ) && !e4Sentinel;
          cases.push_back( { { "name", "endToEnd" }, { "e1Value", U8( e1.value ) }, { "e1Error", U8( e1.error ) },
                             { "e2Value", U8( e2.value ) }, { "e2Error", U8( e2.error ) }, { "e2Sentinel", e2Sentinel },
+                            { "fnCloseRunError", U8( e3.error ) }, { "fnCloseRunSentinel", e3Sentinel },
+                            { "commentCloseRunError", U8( e4.error ) }, { "commentCloseRunSentinel", e4Sentinel },
                             { "ok", endToEndOk } } );
          allCasesOk = allCasesOk && endToEndOk;
       }
