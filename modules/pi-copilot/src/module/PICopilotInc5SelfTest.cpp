@@ -564,7 +564,9 @@ bool RunInc5SelfTest( nlohmann::json& out )
    // ---- Section B1: SSE parser + assembler (Task 2) --------------------------
    {
       bool s1Ok = true, crlfOk = false, errorOk = false, unknownDeltaOk = false, truncOk = false,
-           thinkingOk = false, badJsonOk = false, orderOk = false, fixturesOk = true;
+           thinkingOk = false, badJsonOk = false, orderOk = false, fixturesOk = true,
+           bareCrOk = false, redactedOk = false, truncatedBadJsonOk = false,
+           dupStartOk = false, openBlockOk = false, lineBoundOk = false, dataBoundOk = false;
       nlohmann::json detail = nlohmann::json::object();
       String error;
       try
@@ -590,12 +592,55 @@ bool RunInc5SelfTest( nlohmann::json& out )
             s1Ok = s1Ok && r.ok && r.stopReason == "tool_use" && r.contentBlocks.size() == 2
                 && r.contentBlocks[1].at( "input" ) == nlohmann::json( { { "id", "PixelMath" } } );
          }
-         {  // CRLF line endings, split anywhere.
+         {  // CRLF line endings, split anywhere -- including one byte at a time,
+            // so a "\r\n" pair split exactly between Feed() calls is covered.
             std::string crlf;
             for ( char c : s1 )
                crlf += (c == '\n') ? std::string( "\r\n" ) : std::string( 1, c );
-            const Assembled a = AssembleInChunks( crlf, 3 );
-            crlfOk = a.finished && a.message == expected;
+            crlfOk = true;
+            for ( size_t chunk : { size_t( 1 ), size_t( 3 ), crlf.size() } )
+            {
+               const Assembled a = AssembleInChunks( crlf, chunk );
+               const bool pass = a.finished && !a.failed && a.message == expected;
+               if ( !pass )
+                  detail["crlfFail_" + std::to_string( chunk )] = { { "message", a.message }, { "error", a.error } };
+               crlfOk = crlfOk && pass;
+            }
+         }
+         {  // Bare CR (no LF) line endings -- classic Mac style -- split anywhere.
+            // Two consecutive bare CRs (from an original "\n\n" blank line) must
+            // still be read as two line terminators (an empty line dispatches).
+            std::string cr;
+            for ( char c : s1 )
+               cr += (c == '\n') ? '\r' : c;
+            bareCrOk = true;
+            for ( size_t chunk : { size_t( 1 ), size_t( 5 ), cr.size() } )
+            {
+               const Assembled a = AssembleInChunks( cr, chunk );
+               const bool pass = a.finished && !a.failed && a.message == expected;
+               if ( !pass )
+                  detail["bareCrFail_" + std::to_string( chunk )] = { { "message", a.message }, { "error", a.error } };
+               bareCrOk = bareCrOk && pass;
+            }
+         }
+         {  // A redacted_thinking block (opaque, no deltas -- delivered whole in
+            // content_block_start) is carried through verbatim, at any chunk size.
+            const nlohmann::json redacted = nlohmann::json::parse(
+               "{\"type\":\"redacted_thinking\",\"data\":\"EmVhbXBsZS1vcGFxdWUtZW5jcnlwdGVkLWRhdGE=\"}" );
+            const std::string s = MessageStart( "msg_r" ) + BlockStart( 0, redacted.dump() ) + BlockStop( 0 )
+               + BlockStart( 1, "{\"type\":\"text\",\"text\":\"\"}" )
+               + Delta( 1, "{\"type\":\"text_delta\",\"text\":\"ok\"}" ) + BlockStop( 1 )
+               + MessageEnd( "end_turn", 4 );
+            redactedOk = true;
+            for ( size_t chunk : { size_t( 1 ), size_t( 6 ), s.size() } )
+            {
+               const Assembled a = AssembleInChunks( s, chunk );
+               const bool pass = a.finished && !a.failed && a.message["content"].at( 0 ) == redacted
+                              && a.text == "ok";
+               if ( !pass )
+                  detail["redactedFail_" + std::to_string( chunk )] = { { "message", a.message }, { "error", a.error } };
+               redactedOk = redactedOk && pass;
+            }
          }
          {  // API "error" event mid-stream.
             const std::string s = MessageStart( "msg_e" ) + BlockStart( 0, "{\"type\":\"text\",\"text\":\"\"}" )
@@ -648,11 +693,65 @@ bool RunInc5SelfTest( nlohmann::json& out )
             const Assembled a = AssembleInChunks( BlockStart( 0, "{\"type\":\"text\",\"text\":\"\"}" ), 100 );
             orderOk = a.failed && a.error == "content_block_start before message_start";
          }
+         {  // Bad tool-input JSON under a NON-tool_use stop_reason (e.g. a
+            // max_tokens cut mid tool call): the stream still finishes -- the
+            // caller's own truncation handling is what must drop the block --
+            // but "input" is left as the raw partial text, never a fabricated
+            // {} that would read back as a legitimate empty call.
+            const std::string s = MessageStart( "msg_mt" )
+               + BlockStart( 0, "{\"type\":\"tool_use\",\"id\":\"toolu_mt\",\"name\":\"describe_process\",\"input\":{}}" )
+               + Delta( 0, "{\"type\":\"input_json_delta\",\"partial_json\":\"{\\\"id\\\": \\\"Pix\"}" ) + BlockStop( 0 )
+               + MessageEnd( "max_tokens", 200 );
+            const Assembled a = AssembleInChunks( s, 7 );
+            detail["truncatedBadJson"] = { { "finished", a.finished }, { "failed", a.failed }, { "message", a.message } };
+            truncatedBadJsonOk = a.finished && !a.failed
+               && a.message["content"].at( 0 ).at( "input" ).is_string()
+               && a.message["content"].at( 0 ).at( "input" ).get<std::string>() == "{\"id\": \"Pix";
+         }
+         {  // A second message_start before message_stop is a protocol violation.
+            const std::string s = MessageStart( "msg_d1" ) + MessageStart( "msg_d2" );
+            const Assembled a = AssembleInChunks( s, 5 );
+            detail["dupMessageStart"] = a.error;
+            dupStartOk = a.failed && !a.finished
+               && a.error == "duplicate message_start (message_stop was not seen for the previous message)";
+         }
+         {  // message_stop while a content block is still open (no
+            // content_block_stop) is a protocol violation, not a silent finish.
+            const std::string s = MessageStart( "msg_o" ) + BlockStart( 0, "{\"type\":\"text\",\"text\":\"\"}" )
+               + Delta( 0, "{\"type\":\"text_delta\",\"text\":\"hi\"}" ) + MessageEnd( "end_turn", 3 );
+            const Assembled a = AssembleInChunks( s, 5 );
+            detail["openBlockAtStop"] = a.error;
+            openBlockOk = a.failed && !a.finished
+               && a.error == "message_stop while a content block is still open (no content_block_stop)";
+         }
+         {  // An SSE line with no terminator past the buffer bound (4 MiB) is a
+            // bounded, precise failure -- not unbounded growth from a hostile
+            // or broken stream.
+            const std::string huge( 4u*1024u*1024u + 16u, 'x' );   // no '\n' anywhere: one giant "line"
+            SseMessageAssembler a;
+            a.Feed( huge.data(), huge.size() );
+            detail["lineBound"] = { { "failed", a.Failed() }, { "error", a.Error() } };
+            lineBoundOk = a.Failed() && !a.Finished()
+               && a.Error() == "SSE line exceeded 4194304 bytes without a line terminator";
+         }
+         {  // Two separate "data:" lines in one event, each individually under
+            // the per-line bound, whose CUMULATIVE payload exceeds it.
+            const std::string big1( 4u*1024u*1024u - 32u, 'y' );
+            const std::string s = "event: message_start\ndata: " + big1 + "\ndata: " + std::string( 64, 'z' ) + "\n\n";
+            SseMessageAssembler a;
+            a.Feed( s.data(), s.size() );
+            detail["dataBound"] = { { "failed", a.Failed() }, { "error", a.Error() } };
+            dataBoundOk = a.Failed() && !a.Finished() && a.Error() == "SSE event data exceeded 4194304 bytes";
+         }
 
          // Recorded real streams: chunking-invariant, complete, and parse like non-streamed replies.
-         struct Fixture { const char* file; const char* stop; };
-         const Fixture fixtures[] = { { "text-opus-4-8.sse", "end_turn" }, { "tool-opus-4-8.sse", "tool_use" },
-                                      { "thinking-tool-opus-5-5.sse", "tool_use" } };
+         // text-opus-4-8.sse's prompt asked for an exact echo ("café ok — done"),
+         // so its assembled text is checked byte-for-byte (incl. the two
+         // multibyte characters), not just "non-empty".
+         struct Fixture { const char* file; const char* stop; const char* text; };
+         const Fixture fixtures[] = { { "text-opus-4-8.sse", "end_turn", "caf\xC3\xA9 ok \xE2\x80\x94 done" },
+                                      { "tool-opus-4-8.sse", "tool_use", nullptr },
+                                      { "thinking-tool-opus-5-5.sse", "tool_use", nullptr } };
          for ( const Fixture& f : fixtures )
          {
             const std::string bytes = ReadFixture( f.file );
@@ -673,20 +772,23 @@ bool RunInc5SelfTest( nlohmann::json& out )
                   signaturesOk = signaturesOk && !b.value( "signature", std::string() ).empty();
                }
             }
+            const bool textExactOk = f.text == nullptr || (one.text == f.text && big.text == f.text);
             const bool pass = one.finished && big.finished && !one.failed && one.message == big.message
                            && one.text == big.text && r.ok && r.stopReason == f.stop
                            && (std::string( f.stop ) != "tool_use" || toolUses == 1)
                            && (std::string( f.stop ) != "end_turn" || !r.text.IsEmpty())
-                           && signaturesOk;
+                           && signaturesOk && textExactOk;
             detail[f.file] = { { "pass", pass }, { "stop", r.stopReason }, { "toolUses", toolUses },
-                               { "thinkingBlocks", thinking }, { "error", big.error } };
+                               { "thinkingBlocks", thinking }, { "error", big.error }, { "text", big.text } };
             fixturesOk = fixturesOk && pass;
          }
       }
       catch ( const pcl::Exception& x ) { error = x.Message(); fixturesOk = false; }
       catch ( const std::exception& x ) { error = String( x.what() ); fixturesOk = false; }
 
-      const bool ok = s1Ok && crlfOk && errorOk && unknownDeltaOk && truncOk && thinkingOk && badJsonOk && orderOk && fixturesOk;
+      const bool ok = s1Ok && crlfOk && errorOk && unknownDeltaOk && truncOk && thinkingOk && badJsonOk && orderOk
+                   && fixturesOk && bareCrOk && redactedOk && truncatedBadJsonOk && dupStartOk && openBlockOk
+                   && lineBoundOk && dataBoundOk;
       out["sseDetail"] = detail;
       out["sseError"] = U8( error );
       out["sseParserOk"] = ok;
