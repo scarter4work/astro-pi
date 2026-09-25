@@ -1,9 +1,11 @@
 // PI Copilot — Native PCL Module for PixInsight
 // Copyright (c) 2026 Scott Carter. MIT License.
 
+#include "AnthropicClient.h"
 #include "PICopilotInc5SelfTest.h"
 #include "PICopilotModule.h"
 #include "ProcessCatalog.h"
+#include "SseStream.h"
 #include "Utf8.h"
 
 #include <pcl/AutoViewLock.h>
@@ -25,6 +27,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstdint>
+#include <cstdlib>
 #include <set>
 #include <string>
 #include <thread>
@@ -218,6 +221,94 @@ bool SetEnumById( ProcessInstance& instance, const Process& P, const char* param
          return instance.SetParameterValue( Variant( e.value ), p, 0 ) && instance.ParameterValue( p, 0 ).ToInt() == e.value;
    info[std::string( "missingEnum_" ) + param] = id;
    return false;
+}
+
+std::string SseEv( const char* name, const std::string& data )
+{
+   return std::string( "event: " ) + name + "\ndata: " + data + "\n\n";
+}
+
+struct Assembled
+{
+   nlohmann::json message;
+   std::string    text;
+   bool           finished = false;
+   bool           failed = false;
+   std::string    error;
+   std::string    errorType;
+};
+
+Assembled AssembleInChunks( const std::string& s, size_t chunk )
+{
+   SseMessageAssembler a;
+   Assembled r;
+   for ( size_t i = 0; i < s.size(); i += chunk )
+      r.text += a.Feed( s.data() + i, std::min( chunk, s.size() - i ) );
+   r.finished = a.Finished();
+   r.failed = a.Failed();
+   r.error = a.Error();
+   r.errorType = a.ErrorType();
+   if ( r.finished )
+      r.message = a.FinalMessage();
+   return r;
+}
+
+std::string MessageStart( const char* id )
+{
+   return SseEv( "message_start", std::string( "{\"type\":\"message_start\",\"message\":{\"id\":\"" ) + id
+      + "\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"m\",\"content\":[],\"stop_reason\":null,"
+        "\"stop_sequence\":null,\"usage\":{\"input_tokens\":12,\"cache_read_input_tokens\":0,\"output_tokens\":1}}}" );
+}
+
+std::string BlockStart( int index, const std::string& block )
+{
+   return SseEv( "content_block_start", "{\"type\":\"content_block_start\",\"index\":" + std::to_string( index )
+                                        + ",\"content_block\":" + block + "}" );
+}
+
+std::string Delta( int index, const std::string& delta )
+{
+   return SseEv( "content_block_delta", "{\"type\":\"content_block_delta\",\"index\":" + std::to_string( index )
+                                        + ",\"delta\":" + delta + "}" );
+}
+
+std::string BlockStop( int index )
+{
+   return SseEv( "content_block_stop", "{\"type\":\"content_block_stop\",\"index\":" + std::to_string( index ) + "}" );
+}
+
+std::string MessageEnd( const char* stopReason, int outputTokens )
+{
+   return SseEv( "message_delta", std::string( "{\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"" ) + stopReason
+                 + "\",\"stop_sequence\":null},\"usage\":{\"output_tokens\":" + std::to_string( outputTokens ) + "}}" )
+        + SseEv( "message_stop", "{\"type\":\"message_stop\"}" );
+}
+
+// The synthetic tool_use stream (S1) without its final message_stop tail.
+std::string SyntheticToolStreamBody()
+{
+   return std::string( ": keep-alive comment\n\n" )
+        + MessageStart( "msg_t1" )
+        + "event: ping\ndata: {\"type\":\n" + "data: \"ping\"}\n\n"            // one event, two data lines
+        + BlockStart( 0, "{\"type\":\"text\",\"text\":\"\"}" )
+        + Delta( 0, "{\"type\":\"text_delta\",\"text\":\"Caf\"}" )
+        + Delta( 0, "{\"type\":\"text_delta\",\"text\":\"\xC3\xA9 \xF0\x9F\x93\xB7\"}" )   // raw UTF-8, split by small chunks
+        + BlockStop( 0 )
+        + SseEv( "some_future_event", "{\"type\":\"some_future_event\",\"x\":1}" )
+        + BlockStart( 1, "{\"type\":\"tool_use\",\"id\":\"toolu_t1\",\"name\":\"describe_process\",\"input\":{}}" )
+        + Delta( 1, "{\"type\":\"input_json_delta\",\"partial_json\":\"\"}" )
+        + Delta( 1, "{\"type\":\"input_json_delta\",\"partial_json\":\"{\\\"id\\\": \\\"Pix\"}" )
+        + Delta( 1, "{\"type\":\"input_json_delta\",\"partial_json\":\"elMath\\\"}\"}" )
+        + BlockStop( 1 );
+}
+
+std::string ReadFixture( const char* name )
+{
+   const char* dir = std::getenv( "PICOPILOT_SELFTEST_FIXTURES" );
+   if ( dir == nullptr )
+      throw Error( "PICOPILOT_SELFTEST_FIXTURES is not set" );
+   const ByteArray b = File::ReadFile( String( dir ) + "/sse/" + name );
+   return std::string( reinterpret_cast<const char*>( b.Begin() ), b.Length() );
 }
 
 } // namespace
@@ -467,6 +558,138 @@ bool RunInc5SelfTest( nlohmann::json& out )
       out["inc5SmokeEvalThrowNamesMessage"] = throwOk;   // informational (RunPjsr catches inside JS anyway)
       out["inc5SmokeError"] = U8( error );
       out["inc5SmokeOk"] = ok;
+      allOk = allOk && ok;
+   }
+
+   // ---- Section B1: SSE parser + assembler (Task 2) --------------------------
+   {
+      bool s1Ok = true, crlfOk = false, errorOk = false, unknownDeltaOk = false, truncOk = false,
+           thinkingOk = false, badJsonOk = false, orderOk = false, fixturesOk = true;
+      nlohmann::json detail = nlohmann::json::object();
+      String error;
+      try
+      {
+         const std::string s1 = SyntheticToolStreamBody() + MessageEnd( "tool_use", 40 );
+         const nlohmann::json expected = nlohmann::json::parse(
+            "{\"id\":\"msg_t1\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"m\","
+            "\"content\":[{\"type\":\"text\",\"text\":\"Caf\xC3\xA9 \xF0\x9F\x93\xB7\"},"
+            "{\"type\":\"tool_use\",\"id\":\"toolu_t1\",\"name\":\"describe_process\",\"input\":{\"id\":\"PixelMath\"}}],"
+            "\"stop_reason\":\"tool_use\",\"stop_sequence\":null,"
+            "\"usage\":{\"input_tokens\":12,\"cache_read_input_tokens\":0,\"output_tokens\":40}}" );
+         for ( size_t chunk : { size_t( 1 ), size_t( 2 ), size_t( 7 ), size_t( 64 ), s1.size() } )
+         {
+            const Assembled a = AssembleInChunks( s1, chunk );
+            const bool pass = a.finished && !a.failed && a.message == expected && a.text == "Caf\xC3\xA9 \xF0\x9F\x93\xB7";
+            if ( !pass )
+               detail["s1Fail_" + std::to_string( chunk )] = { { "message", a.message }, { "text", a.text }, { "error", a.error } };
+            s1Ok = s1Ok && pass;
+         }
+         {  // The rebuilt body parses exactly like a non-streamed reply.
+            const Assembled a = AssembleInChunks( s1, 5 );
+            const AnthropicResult r = ParseMessagesResponse( 200, IsoString( a.message.dump().c_str() ), String() );
+            s1Ok = s1Ok && r.ok && r.stopReason == "tool_use" && r.contentBlocks.size() == 2
+                && r.contentBlocks[1].at( "input" ) == nlohmann::json( { { "id", "PixelMath" } } );
+         }
+         {  // CRLF line endings, split anywhere.
+            std::string crlf;
+            for ( char c : s1 )
+               crlf += (c == '\n') ? std::string( "\r\n" ) : std::string( 1, c );
+            const Assembled a = AssembleInChunks( crlf, 3 );
+            crlfOk = a.finished && a.message == expected;
+         }
+         {  // API "error" event mid-stream.
+            const std::string s = MessageStart( "msg_e" ) + BlockStart( 0, "{\"type\":\"text\",\"text\":\"\"}" )
+               + Delta( 0, "{\"type\":\"text_delta\",\"text\":\"Partial\"}" )
+               + SseEv( "error", "{\"type\":\"error\",\"error\":{\"type\":\"overloaded_error\",\"message\":\"Overloaded\"}}" );
+            const Assembled a = AssembleInChunks( s, 4 );
+            detail["errorCase"] = { { "error", a.error }, { "text", a.text } };
+            errorOk = a.failed && !a.finished && a.error == "overloaded_error: Overloaded"
+                   && a.errorType == "overloaded_error" && a.text == "Partial";
+         }
+         {  // An unknown DELTA type fails loudly (the block could not be echoed back correctly).
+            const std::string s = MessageStart( "msg_u" ) + BlockStart( 0, "{\"type\":\"text\",\"text\":\"\"}" )
+               + Delta( 0, "{\"type\":\"mystery_delta\",\"x\":1}" ) + BlockStop( 0 ) + MessageEnd( "end_turn", 3 );
+            const Assembled a = AssembleInChunks( s, 9 );
+            detail["unknownDelta"] = a.error;
+            unknownDeltaOk = a.failed && a.error == "unsupported stream delta type 'mystery_delta' (content[0])";
+         }
+         {  // Cut before message_stop: neither finished nor failed (the transport reports it).
+            const std::string s = SyntheticToolStreamBody();
+            const Assembled a = AssembleInChunks( s, 11 );
+            truncOk = !a.finished && !a.failed;
+         }
+         {  // Thinking block: thinking_delta + signature_delta rebuilt verbatim.
+            const std::string s = MessageStart( "msg_th" )
+               + BlockStart( 0, "{\"type\":\"thinking\",\"thinking\":\"\",\"signature\":\"\"}" )
+               + Delta( 0, "{\"type\":\"thinking_delta\",\"thinking\":\"Let me\"}" )
+               + Delta( 0, "{\"type\":\"thinking_delta\",\"thinking\":\" think\"}" )
+               + Delta( 0, "{\"type\":\"signature_delta\",\"signature\":\"c2ln\"}" )
+               + BlockStop( 0 )
+               + BlockStart( 1, "{\"type\":\"text\",\"text\":\"\"}" )
+               + Delta( 1, "{\"type\":\"text_delta\",\"text\":\"Done.\"}" ) + BlockStop( 1 )
+               + MessageEnd( "end_turn", 9 );
+            const Assembled a = AssembleInChunks( s, 6 );
+            const AnthropicResult r = a.finished
+               ? ParseMessagesResponse( 200, IsoString( a.message.dump().c_str() ), String() ) : AnthropicResult();
+            thinkingOk = a.finished && r.ok && r.text == "Done." && a.text == "Done."
+                      && r.contentBlocks.at( 0 ) == nlohmann::json::parse(
+                            "{\"type\":\"thinking\",\"thinking\":\"Let me think\",\"signature\":\"c2ln\"}" );
+         }
+         {  // Invalid tool input JSON under stop_reason tool_use.
+            const std::string s = MessageStart( "msg_b" )
+               + BlockStart( 0, "{\"type\":\"tool_use\",\"id\":\"toolu_b\",\"name\":\"describe_process\",\"input\":{}}" )
+               + Delta( 0, "{\"type\":\"input_json_delta\",\"partial_json\":\"{\\\"id\\\": \"}" ) + BlockStop( 0 )
+               + MessageEnd( "tool_use", 5 );
+            const Assembled a = AssembleInChunks( s, 8 );
+            detail["badJson"] = a.error;
+            badJsonOk = a.failed && a.error == "tool_use input (content[0]) was not valid JSON";
+         }
+         {  // Protocol order.
+            const Assembled a = AssembleInChunks( BlockStart( 0, "{\"type\":\"text\",\"text\":\"\"}" ), 100 );
+            orderOk = a.failed && a.error == "content_block_start before message_start";
+         }
+
+         // Recorded real streams: chunking-invariant, complete, and parse like non-streamed replies.
+         struct Fixture { const char* file; const char* stop; };
+         const Fixture fixtures[] = { { "text-opus-4-8.sse", "end_turn" }, { "tool-opus-4-8.sse", "tool_use" },
+                                      { "thinking-tool-opus-5-5.sse", "tool_use" } };
+         for ( const Fixture& f : fixtures )
+         {
+            const std::string bytes = ReadFixture( f.file );
+            const Assembled one = AssembleInChunks( bytes, 1 ), big = AssembleInChunks( bytes, 4096 );
+            const AnthropicResult r = big.finished
+               ? ParseMessagesResponse( 200, IsoString( big.message.dump().c_str() ), String() ) : AnthropicResult();
+            int toolUses = 0, thinking = 0;
+            bool signaturesOk = true;
+            for ( const nlohmann::json& b : r.contentBlocks )
+            {
+               const std::string t = b.value( "type", std::string() );
+               if ( t == "tool_use" && b.value( "name", std::string() ) == "describe_process"
+                    && b.at( "input" ).is_object() && b.at( "input" ).value( "id", nlohmann::json() ).is_string() )
+                  ++toolUses;
+               if ( t == "thinking" )
+               {
+                  ++thinking;
+                  signaturesOk = signaturesOk && !b.value( "signature", std::string() ).empty();
+               }
+            }
+            const bool pass = one.finished && big.finished && !one.failed && one.message == big.message
+                           && one.text == big.text && r.ok && r.stopReason == f.stop
+                           && (std::string( f.stop ) != "tool_use" || toolUses == 1)
+                           && (std::string( f.stop ) != "end_turn" || !r.text.IsEmpty())
+                           && signaturesOk;
+            detail[f.file] = { { "pass", pass }, { "stop", r.stopReason }, { "toolUses", toolUses },
+                               { "thinkingBlocks", thinking }, { "error", big.error } };
+            fixturesOk = fixturesOk && pass;
+         }
+      }
+      catch ( const pcl::Exception& x ) { error = x.Message(); fixturesOk = false; }
+      catch ( const std::exception& x ) { error = String( x.what() ); fixturesOk = false; }
+
+      const bool ok = s1Ok && crlfOk && errorOk && unknownDeltaOk && truncOk && thinkingOk && badJsonOk && orderOk && fixturesOk;
+      out["sseDetail"] = detail;
+      out["sseError"] = U8( error );
+      out["sseParserOk"] = ok;
       allOk = allOk && ok;
    }
 
