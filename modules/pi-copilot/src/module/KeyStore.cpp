@@ -59,6 +59,16 @@ State Load()
    State st;
    String plain;
    Settings::Read( g_settingsKey, plain );
+   plain.Trim();
+   if ( !plain.IsEmpty() && !IsPrintableAscii( IsoString( U8( plain ).c_str() ) ) )
+   {
+      // Never migrate (or send) a mangled paste: CR/LF would split the
+      // x-api-key header line. The Settings copy stays until the user saves
+      // a new key, which replaces it.
+      st.note = "The API key saved in PixInsight's settings is not a valid key (it contains spaces, line breaks or "
+                "other invalid characters); enter it again in PI Copilot's settings.";
+      return Remember( st );
+   }
    if ( !plain.IsEmpty() )
    {
       st.key = plain;
@@ -113,13 +123,29 @@ State Save( const String& key )
    return Remember( st );
 }
 
-String Clear()
+String NoKeyNote()
+{
+   return String::UTF8ToUTF16( "No Anthropic API key is set: enter it via the \xE2\x9A\x99 button (PI Copilot's settings). "
+                               "If you saved one before, the system keyring may be locked (for example, its unlock "
+                               "prompt was dismissed): unlock it, then send again." );
+}
+
+Cleared Clear()
 {
    Settings::Remove( g_settingsKey );
    g_cache = State();
    g_cached = false;
    const KeyringResult r = KeyringClear( g_id );
-   return r.ok ? String() : "Could not remove the key from the system keyring (" + r.error + ").";
+   Cleared c;
+   if ( r.notInstalled )
+      c.note = "Your API key was removed from PixInsight's settings. The system keyring was not used: "
+               + r.error + ".";
+   else if ( !r.ok )
+   {
+      c.note = "Could not remove the key from the system keyring (" + r.error + ").";
+      c.warning = true;
+   }
+   return c;
 }
 
 String DescribeWhere( const State& s )

@@ -33,6 +33,7 @@ struct AgentStep
    bool       truncated = false;     // stop_reason == max_tokens
    StringList toolLog;               // one compact line per tool call (run, declined, failed or skipped)
    String     error;                 // Failed/Stopped-by-cancel: the request error
+   RequestErrorKind errorKind = RequestErrorKind::None;   // Failed/Stopped from a request: why (TurnEndNotes words it)
    bool       restoreInput = false;  // give the prompt back to the input line
    bool       toolsRan = false;      // a tool of this user message changed an image (apply_process completed)
    bool       needsClear = false;    // AbortTurn(): even the restored history is not API-valid -- offer Clear
@@ -106,7 +107,7 @@ private:
    bool                    m_imageChanged = false;   // a tool of this user message changed an image
    size_type               m_trimmed = 0;            // messages trimmed since TakeTrimmedMessages()
 
-   AgentStep Fail( AgentStep::Kind kind, const String& error );
+   AgentStep Fail( AgentStep::Kind kind, const String& error, RequestErrorKind errorKind = RequestErrorKind::None );
 };
 
 // Structural Messages-API validity of a history about to be sent (see the

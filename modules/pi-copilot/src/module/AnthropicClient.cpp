@@ -540,9 +540,11 @@ AnthropicResult ParseMessagesResponse( int httpStatus, const IsoString& body, co
                      error = "stop_reason tool_use but no tool_use block";
                }
                else if ( !anyText )
-                  // refusal, a max_tokens cut inside a tool call, pause_turn,
-                  // model_context_window_exceeded, ... -- say which.
-                  error = String::UTF8ToUTF16( ( "no text in reply (stop_reason=" + stopShown + ")" ).c_str() );
+                  error = result.stopReason == "refusal"
+                     ? String( "the model declined this request (stop_reason refusal); rephrase it, or choose "
+                               "another model in PI Copilot's settings" )
+                     // pause_turn, model_context_window_exceeded, a max_tokens cut inside a tool call, ...
+                     : String::UTF8ToUTF16( ( "no text in reply (stop_reason=" + stopShown + ")" ).c_str() );
             }
             if ( error.IsEmpty() )
             {

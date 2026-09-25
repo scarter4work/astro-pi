@@ -142,11 +142,12 @@ void AgentSession::BeginUserTurn( const AnthropicMessage& userTurn )
    m_trimmed += TrimHistoryToBudget( m_history, PICopilotHistoryTokenBudget, PICopilotHistoryTrimTarget );
 }
 
-AgentStep AgentSession::Fail( AgentStep::Kind kind, const String& error )
+AgentStep AgentSession::Fail( AgentStep::Kind kind, const String& error, RequestErrorKind errorKind )
 {
    AgentStep s;
    s.kind = kind;
    s.error = error;
+   s.errorKind = errorKind;
    s.toolsRan = m_imageChanged;
    if ( m_rounds == 0 )
    {
@@ -189,7 +190,7 @@ AgentStep AgentSession::OnResponse( const AnthropicResult& r, const ToolRunner& 
    try
    {
       if ( !r.ok )
-         return Fail( r.cancelled ? AgentStep::Stopped : AgentStep::Failed, r.error );
+         return Fail( r.cancelled ? AgentStep::Stopped : AgentStep::Failed, r.error, r.errorKind );
 
       std::vector<ToolCall> calls;
       if ( r.contentBlocks.is_array() )

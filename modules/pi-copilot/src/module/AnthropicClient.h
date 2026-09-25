@@ -119,8 +119,11 @@ struct AnthropicResult
 //  - "stop_reason tool_use but no tool_use block"
 //  - "stop_reason tool_use but a tool_use block lacks a string id, a string
 //    name or an object input (content[i])"
+//  - no text, stop_reason refusal: "the model declined this request
+//    (stop_reason refusal); rephrase it, or choose another model in PI
+//    Copilot's settings"
 //  - no text otherwise: "no text in reply (stop_reason=<reason>|missing)"
-//    (refusal, pause_turn, max_tokens cut inside a tool call, ...)
+//    (pause_turn, max_tokens cut inside a tool call, ...)
 // Non-2xx: error = the API's error.message, else transportError. Any thread.
 AnthropicResult ParseMessagesResponse( int httpStatus, const IsoString& body, const String& transportError );
 
