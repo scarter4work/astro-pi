@@ -89,7 +89,8 @@ public:
    void Clear();
 
    // Messages TrimHistoryToBudget() removed since the last call (the panel
-   // tells the user).
+   // tells the user after OnResponse()). Reset when a failure restores the
+   // pre-BeginUserTurn() snapshot, which is untrimmed.
    size_type TakeTrimmedMessages()
    {
       const size_type n = m_trimmed;

@@ -259,7 +259,6 @@ void PICopilotInterface::SendCurrentInput()
    // The BARE prompt (never the context-prefixed content) is what a failed
    // message gives back for a resend.
    m_session.BeginUserTurn( ComposeTurnWithActiveView( prompt ) );
-   NoteTrimmed();
    m_pendingPrompt = prompt;
    m_apiKey = key;
    m_turnMode = AgentModeFromIndex( GUI->Mode_ComboBox.CurrentItem() );
