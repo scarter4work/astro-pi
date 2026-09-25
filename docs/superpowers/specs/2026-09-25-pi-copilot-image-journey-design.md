@@ -159,7 +159,7 @@ Probes on PI 1.9.5 while writing the plan corrected parts of this spec. The plan
 2. **`stats` gains `image_id`** (approved under the user's delegation): a master's starting stats are `step_id NULL` **plus** its `image_id`, so each of several masters (SHO) keeps its own baseline.
 3. **Advisor** never gets `replay_journey`; it presents a replay plan from `get_journey` / `compare_to_journey` (resolves §4/§6/§10 wording).
 4. **ABE is replayable** (it has no sample points); DBE sample points, drawn masks and previews remain manual steps.
-5. **A kept journey is frozen.** Further work on its end image continues as a new journey named "<name> (continued)".
+5. **A kept journey is frozen.** Further work on any of its still-open images continues as a new journey named "<name> (continued)" (all of them, not only the end image).
 6. **Creating a window adds no step to its source view** (PixelMath `createNewImage`, ChannelExtraction verified). Timing links compare the new window's first history step start time with the view active at that moment; explicit references are checked before timing.
 7. **A replay is recorded as a new journey named "<keeper> (replay of #<id>)".**
 8. **PJSR cannot load an `.xpsm`.** The headless test replays the exported container in C++; loading the file in PixInsight is a user-checklist item.
