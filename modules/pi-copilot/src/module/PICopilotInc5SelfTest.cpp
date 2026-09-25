@@ -6,6 +6,8 @@
 #include "AnthropicClient.h"
 #include "ChatThread.h"
 #include "HistoryBudget.h"
+#include "KeyStore.h"
+#include "Keyring.h"
 #include "ModelCatalog.h"
 #include "PICopilotInc5SelfTest.h"
 #include "PICopilotModule.h"
@@ -27,6 +29,7 @@
 #include <pcl/Process.h>
 #include <pcl/ProcessInstance.h>
 #include <pcl/ProcessParameter.h>
+#include <pcl/Settings.h>
 #include <pcl/Variant.h>
 #include <pcl/View.h>
 
@@ -1455,6 +1458,91 @@ bool RunInc5SelfTest( nlohmann::json& out )
       out["liveConversationError"] = U8( error );
       out["liveConversationSkipped"] = skipped;
       out["liveConversationOk"] = ok;
+      allOk = allOk && ok;
+   }
+
+   // ---- Section B4: keyring-first key storage (Task 5) ------------------------
+   {
+      bool missOk = false, saveOk = false, loadOk = false, migrateOk = false, fallbackOk = false,
+           clearOk = false, noLeakOk = true;
+      nlohmann::json detail = nlohmann::json::object();
+      String error;
+      const IsoString sk = "PICopilot/SelfTestApiKey";
+      KeyringId id;
+      id.service = "picopilot-selftest";
+      id.account = String().Format( "b4-%u", unsigned( std::chrono::steady_clock::now().time_since_epoch().count() & 0xFFFFFF ) );
+      auto noLeak = [&]( const String& s ) { noLeakOk = noLeakOk && !s.Contains( "sk-ant-selftest" ); };
+      try
+      {
+         KeyStore::SetKeyringForSelfTest( id, sk );
+         Settings::Remove( sk );
+
+         const KeyringResult miss = KeyringLookup( id );
+         noLeak( miss.error );
+         detail["miss"] = { { "ok", miss.ok }, { "found", miss.found }, { "error", U8( miss.error ) } };
+         missOk = miss.ok && !miss.found;
+
+         const KeyStore::State saved = KeyStore::Save( "sk-ant-selftest-AAAA" );
+         noLeak( saved.note );
+         const KeyringResult back = KeyringLookup( id );
+         String settingsCopy;
+         Settings::Read( sk, settingsCopy );
+         detail["save"] = { { "where", int( saved.where ) }, { "note", U8( saved.note ) } };
+         saveOk = saved.where == KeyStore::Where::Keyring && back.found && back.secret == "sk-ant-selftest-AAAA"
+               && settingsCopy.IsEmpty() && KeyStore::DescribeWhere( saved ) == "stored in the system keyring";
+
+         KeyStore::SetKeyringForSelfTest( id, sk );   // drop the cache: a fresh Load() reads the keyring
+         const KeyStore::State loaded = KeyStore::Load();
+         loadOk = loaded.where == KeyStore::Where::Keyring && loaded.key == "sk-ant-selftest-AAAA" && loaded.note.IsEmpty();
+
+         // Migration: a plaintext Settings key moves into the keyring, verified, and the plaintext is removed.
+         clearOk = KeyStore::Clear().IsEmpty() && !KeyringLookup( id ).found;
+         Settings::Write( sk, String( "sk-ant-selftest-BBBB" ) );
+         KeyStore::SetKeyringForSelfTest( id, sk );
+         const KeyStore::State migrated = KeyStore::Load();
+         noLeak( migrated.note );
+         String left;
+         Settings::Read( sk, left );
+         const KeyringResult mback = KeyringLookup( id );
+         detail["migrate"] = { { "where", int( migrated.where ) }, { "note", U8( migrated.note ) } };
+         migrateOk = migrated.where == KeyStore::Where::Keyring && migrated.key == "sk-ant-selftest-BBBB"
+                  && migrated.note.Contains( "moved" ) && left.IsEmpty() && mback.found && mback.secret == "sk-ant-selftest-BBBB";
+
+         // Keyring unusable -> Settings, with a visible note; the plaintext copy is kept.
+         KeyringId bad = id;
+         bad.program = "/nonexistent/secret-tool";
+         KeyStore::SetKeyringForSelfTest( bad, sk );
+         const KeyStore::State fb = KeyStore::Save( "sk-ant-selftest-CCCC" );
+         noLeak( fb.note );
+         String plain;
+         Settings::Read( sk, plain );
+         KeyStore::SetKeyringForSelfTest( bad, sk );
+         const KeyStore::State fbLoad = KeyStore::Load();
+         noLeak( fbLoad.note );
+         const String badClear = KeyStore::Clear();
+         noLeak( badClear );
+         String afterClear;
+         Settings::Read( sk, afterClear );
+         detail["fallback"] = { { "note", U8( fb.note ) }, { "loadNote", U8( fbLoad.note ) }, { "clear", U8( badClear ) } };
+         fallbackOk = fb.where == KeyStore::Where::Settings && plain == "sk-ant-selftest-CCCC"
+                   && fb.note.Contains( "keyring could not be used" ) && fb.note.Contains( "not installed" )
+                   && KeyStore::DescribeWhere( fb ) == "stored in PixInsight's settings (plain text)"
+                   && fbLoad.where == KeyStore::Where::Settings && fbLoad.key == "sk-ant-selftest-CCCC"
+                   && !badClear.IsEmpty() && afterClear.IsEmpty();
+
+         KeyStore::SetKeyringForSelfTest( id, sk );
+         clearOk = clearOk && KeyStore::Clear().IsEmpty() && !KeyringLookup( id ).found
+                && KeyStore::Load().where == KeyStore::Where::None;
+      }
+      catch ( const pcl::Exception& x ) { error = x.Message(); }
+      catch ( const std::exception& x ) { error = String( x.what() ); }
+      KeyringClear( id );
+      Settings::Remove( sk );
+
+      const bool ok = missOk && saveOk && loadOk && migrateOk && fallbackOk && clearOk && noLeakOk;
+      out["keyStoreDetail"] = detail;
+      out["keyStoreError"] = U8( error );
+      out["keyStoreKeyringOk"] = ok;
       allOk = allOk && ok;
    }
 

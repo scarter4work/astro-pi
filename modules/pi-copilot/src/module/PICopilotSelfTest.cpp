@@ -10,6 +10,8 @@
 #include "PICopilotAgentSelfTest.h"
 #include "PICopilotInc5SelfTest.h"
 #include "Utf8.h"
+#include "KeyStore.h"
+#include "Keyring.h"
 
 #include <pcl/Process.h>
 #include <pcl/ProcessInstance.h>
@@ -27,6 +29,17 @@ namespace pcl
 
 bool RunSelfTest( String& jsonOut )
 {
+   // Before ANY KeyStore use: the self-test must never read, write or delete
+   // the user's real key (keyring service "picopilot", Settings key
+   // "PICopilot/AnthropicApiKey").
+   {
+      KeyringId testId;
+      testId.service = "picopilot-selftest";
+      testId.account = String().Format( "selftest-%u",
+         unsigned( std::chrono::steady_clock::now().time_since_epoch().count() & 0xFFFFFF ) );
+      KeyStore::SetKeyringForSelfTest( testId, "PICopilot/SelfTestApiKey" );
+   }
+
    int  evalResult = -1;
    bool evalOk = false;
    bool piValid = false;

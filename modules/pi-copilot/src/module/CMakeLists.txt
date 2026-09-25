@@ -36,6 +36,7 @@ set(MODULE_SOURCES
     SseStream.cpp
     ModelCatalog.cpp
     HistoryBudget.cpp
+    Keyring.cpp
 )
 
 add_library(PICopilot SHARED ${MODULE_SOURCES})

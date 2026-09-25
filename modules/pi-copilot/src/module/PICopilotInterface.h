@@ -82,6 +82,10 @@ private:
    String    m_apiKey;
    AgentMode m_turnMode = AgentMode::Copilot;
 
+   // The last KeyStore note shown in the log (a migration or fallback
+   // notice), so it is appended only once per distinct note.
+   String m_lastKeyNote;
+
    // Per user message: the target view (see ToolContext::turnViewId) and the
    // views get_view_context inspected (see ToolContext::inspectedViews).
    IsoString             m_turnViewId;
