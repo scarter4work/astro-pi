@@ -18,7 +18,7 @@ namespace pcl
 // Default model used when the caller doesn't override it. A plain macro
 // (not a constexpr) because it has to work as a default argument value in
 // the AnthropicClient constructor declaration below.
-#define PICOPILOT_DEFAULT_MODEL "claude-opus-4-8"
+#define PICOPILOT_DEFAULT_MODEL "claude-opus-5-5"
 
 // Messages API endpoint. Overridable per request only so the self-test can
 // point a request at a local stalling server (deadline proof).
@@ -37,7 +37,7 @@ constexpr int PICopilotStreamIdleSeconds = 120;
 
 // max_tokens of a production (streamed) request. Streaming removes the HTTP
 // timeout concern that kept non-streamed requests at 4096; thinking models
-// (Opus 5.5, Fable 5.1) spend part of it thinking.
+// (Opus 5.5) spend part of it thinking.
 constexpr int PICopilotStreamMaxTokens = 16000;
 
 // Why a request failed; the panel words its note by this (Task 6).
