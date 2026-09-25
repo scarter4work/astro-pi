@@ -191,6 +191,11 @@ class H(BaseHTTPRequestHandler):
             return ev
         if kind == "truncated":   # the connection closes mid-reply: no message_stop
             return ev + text_block(0, ["Cut "])[:2]
+        if kind == "failmore":    # an assembler failure, then ~9 s more bytes the client must not wait for
+            return (ev + text_block(0, ["Early "])[:2]
+                    + [("content_block_delta", {"type": "content_block_delta", "index": 0,
+                                                "delta": {"type": "mystery_delta"}})]
+                    + [("ping", {"type": "ping"})] * 30)
         if kind == "error":
             return ev + text_block(0, ["Partial"])[:2] + [("error", {"type": "error",
                     "error": {"type": "overloaded_error", "message": "Overloaded"}})]
@@ -221,7 +226,14 @@ class H(BaseHTTPRequestHandler):
         except ValueError as e:
             return self.reply(400, {"type": "error", "error": {"type": "invalid_request_error",
                 "message": "body #%d not JSON: %s" % (n, e)}})
-        for suffix, kind in (("/stream-error", "error"), ("/stream-stall", "stall"), ("/stream-truncated", "truncated"), ("/stream", "ok")):
+        for suffix, code, etype, msg in (("/stream-http-error", 529, "overloaded_error", "Overloaded"),
+                                         ("/stream-401", 401, "authentication_error", "invalid x-api-key")):
+            if self.path.endswith(suffix):
+                if req.get("stream") is not True:
+                    return self.reply(400, {"type": "error", "error": {"type": "invalid_request_error",
+                                            "message": "body #%d: \"stream\" is not true" % n}})
+                return self.reply(code, {"type": "error", "error": {"type": etype, "message": msg}})
+        for suffix, kind in (("/stream-error", "error"), ("/stream-fail-then-more", "failmore"), ("/stream-stall", "stall"), ("/stream-truncated", "truncated"), ("/stream", "ok")):
             if self.path.endswith(suffix):
                 if req.get("stream") is not True:
                     return self.reply(400, {"type": "error", "error": {"type": "invalid_request_error",

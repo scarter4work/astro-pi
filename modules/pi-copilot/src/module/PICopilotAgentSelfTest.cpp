@@ -1764,7 +1764,7 @@ bool RunAgentSelfTest( nlohmann::json& out )
          catch ( ... )                     { error = "unknown exception"; }
       }
       out["liveAgentSkipped"] = liveSkipped;
-      out["liveAgentStreamed"] = true;
+      out["liveAgentStreamed"] = !liveSkipped;   // the live run, when it ran, used the streamed production shape
       out["liveAgentRequestSeconds"] = requestSeconds;
       out["liveAgentRequests"] = requests;
       out["liveAgentLog"] = log;

@@ -41,7 +41,9 @@ constexpr int PICopilotStreamIdleSeconds = 120;
 constexpr int PICopilotStreamMaxTokens = 16000;
 
 // Why a request failed; the panel words its note by this (Task 6).
-enum class RequestErrorKind { None, Build, Cancelled, TimedOut, Stalled, Network, Http, Stream, BadReply };
+// Internal: an exception escaped the request machinery itself (a worker
+// thread exception, a failed request construction) -- a defect, not the API.
+enum class RequestErrorKind { None, Build, Cancelled, TimedOut, Stalled, Network, Http, Stream, BadReply, Internal };
 
 // How a request is shaped on the wire. The default is the non-streamed
 // increment-4 shape the older self-tests pin; production uses
