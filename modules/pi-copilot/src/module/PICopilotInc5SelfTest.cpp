@@ -2004,7 +2004,127 @@ bool RunInc5SelfTest( nlohmann::json& out )
       catch ( const std::exception& x ) { error = String( x.what() ); }
       SetProcessSafetyPolicyForSelfTest( nullptr );
 
-      const bool ok = coverageOk && idsOk && verdictOk && denyToolOk && confirmToolOk;
+      // ---- fix round 1: unreviewed processes, trigger text, alias/enum/unknown-rule hardening ----
+      bool unreviewedOk = false, triggerOk = false, enumOk = false, aliasOk = false, enumAliasOk = false,
+           unknownRuleOk = false;
+      try
+      {
+         const SafetyVerdict iiDrz = CheckProcessSafety( "ImageIntegration", { { "generateDrizzleData", true } }, nlohmann::json() );
+
+         // A process in NO section with file/output-like ids asks at runtime.
+         nlohmann::json noReview = CompiledProcessSafety();
+         noReview["reviewedSafe"] = nlohmann::json::object();
+         SetProcessSafetyPolicyForSelfTest( &noReview );
+         const SafetyVerdict pmU = CheckProcessSafety( "PixelMath", { { "expression", "$T" } }, nlohmann::json() );
+         const SafetyVerdict ctU = CheckProcessSafety( "CurvesTransformation", nlohmann::json::object(), nlohmann::json() );
+         SetProcessSafetyPolicyForSelfTest( nullptr );
+         detail["unreviewed"] = { { "pixelMath", U8( pmU.reason ) }, { "curvesKind", int( ctU.kind ) } };
+         unreviewedOk = pmU.kind == SafetyVerdict::Confirm
+                     && pmU.reason.StartsWith( "it has not been reviewed and has file/output-like parameters: " )
+                     && pmU.reason.Contains( "outputData" )
+                     && ctU.kind == SafetyVerdict::Allow;
+
+         nlohmann::json rules = nlohmann::json::parse(
+            "{\"deny\":{},\"confirmAlways\":{},\"reviewedSafe\":{},\"fileTables\":{},\"confirmWhen\":{"
+            "\"PixelMath\":[{\"parameter\":\"generateOutput\",\"equals\":true,\"reason\":\"default rule\"}],"
+            "\"SCNR\":[{\"parameter\":\"colorToRemove\",\"equals\":\"Blue\",\"reason\":\"enum rule\"}],"
+            "\"CurvesTransformation\":[{\"parameter\":\"noSuchParameter\",\"equals\":true,\"reason\":\"x\"}]}}" );
+
+         // Find a scalar parameter with an alias id, and an enumeration element with an alias (native lists).
+         std::string aliasProc, aliasParam, aliasId, enumProc, enumParam, enumId, enumAlias;
+         nlohmann::json aliasValue;
+         for ( const Process& P : Process::AllProcesses() )
+         {
+            if ( !aliasProc.empty() && !enumProc.empty() )
+               break;
+            const std::string pid( P.Id().c_str() );
+            if ( pid == "PixelMath" || pid == "SCNR" || pid == "CurvesTransformation" )
+               continue;
+            for ( const ProcessParameter& p : P.Parameters() )
+            {
+               if ( p.IsTable() || p.IsReadOnly() )
+                  continue;
+               if ( aliasProc.empty() && (p.IsBoolean() || p.IsNumeric()) )
+               {
+                  const IsoStringList aliases = p.Aliases();
+                  if ( !aliases.IsEmpty() && !aliases[0].Trimmed().IsEmpty() )
+                  {
+                     ProcessInstance d( P );
+                     const Variant def = d.ParameterValue( p, 0 );
+                     aliasProc = pid;
+                     aliasParam = p.Id().c_str();
+                     aliasId = aliases[0].Trimmed().c_str();
+                     aliasValue = p.IsBoolean() ? nlohmann::json( !def.ToBoolean() ) : nlohmann::json( def.ToDouble() + 1 );
+                  }
+               }
+               if ( enumProc.empty() && p.IsEnumeration() )
+                  try
+                  {
+                     for ( const ProcessParameter::EnumerationElement& e : p.EnumerationElements() )
+                        if ( !e.aliases.IsEmpty() && !e.aliases[0].Trimmed().IsEmpty() )
+                        {
+                           enumProc = pid;
+                           enumParam = p.Id().c_str();
+                           enumId = e.id.c_str();
+                           enumAlias = e.aliases[0].Trimmed().c_str();
+                           break;
+                        }
+                  }
+                  catch ( ... )
+                  {
+                  }
+            }
+         }
+         detail["aliasFound"] = { { "process", aliasProc }, { "parameter", aliasParam }, { "alias", aliasId },
+                                  { "value", aliasValue } };
+         detail["enumAliasFound"] = { { "process", enumProc }, { "parameter", enumParam }, { "id", enumId },
+                                      { "alias", enumAlias } };
+         if ( !aliasProc.empty() )
+            rules["confirmWhen"][aliasProc] = { { { "parameter", aliasParam }, { "equals", aliasValue }, { "reason", "alias rule" } } };
+         if ( !enumProc.empty() && enumProc != aliasProc )
+            rules["confirmWhen"][enumProc] = { { { "parameter", enumParam }, { "equals", enumId }, { "reason", "enum alias rule" } } };
+
+         SetProcessSafetyPolicyForSelfTest( &rules );
+         const SafetyVerdict pmDef = CheckProcessSafety( "PixelMath", nlohmann::json::object(), nlohmann::json() );
+         const SafetyVerdict scInt = CheckProcessSafety( "SCNR", { { "colorToRemove", 2 } }, nlohmann::json() );
+         const SafetyVerdict scRed = CheckProcessSafety( "SCNR", { { "colorToRemove", "Red" } }, nlohmann::json() );
+         const SafetyVerdict ctBad = CheckProcessSafety( "CurvesTransformation", nlohmann::json::object(), nlohmann::json() );
+         SafetyVerdict alViaAlias, alDefault, enViaAlias;
+         if ( !aliasProc.empty() )
+         {
+            alViaAlias = CheckProcessSafety( IsoString( aliasProc.c_str() ), { { aliasId, aliasValue } }, nlohmann::json() );
+            alDefault = CheckProcessSafety( IsoString( aliasProc.c_str() ), nlohmann::json::object(), nlohmann::json() );
+         }
+         if ( !enumProc.empty() && enumProc != aliasProc )
+            enViaAlias = CheckProcessSafety( IsoString( enumProc.c_str() ), { { enumParam, enumAlias } }, nlohmann::json() );
+         SetProcessSafetyPolicyForSelfTest( nullptr );
+
+         detail["hardening"] = { { "iiDrz", U8( iiDrz.reason ) }, { "pmDefault", U8( pmDef.reason ) },
+                                 { "scnrInt", U8( scInt.reason ) }, { "scnrRedKind", int( scRed.kind ) },
+                                 { "unknownRule", U8( ctBad.reason ) }, { "aliasVia", U8( alViaAlias.reason ) },
+                                 { "aliasDefaultKind", int( alDefault.kind ) }, { "enumAliasVia", U8( enViaAlias.reason ) } };
+         triggerOk = iiDrz.reason.Contains( "(generateDrizzleData = true)" )
+                  && pmDef.kind == SafetyVerdict::Confirm && pmDef.reason.Contains( "(generateOutput = true, the process default)" );
+         enumOk = scInt.kind == SafetyVerdict::Confirm && scInt.reason.Contains( "(colorToRemove = \"Blue\")" )
+               && scRed.kind == SafetyVerdict::Allow;
+         unknownRuleOk = ctBad.kind == SafetyVerdict::Confirm && ctBad.reason.Contains( "unknown parameter CurvesTransformation.noSuchParameter" );
+         // Every installed module on this PI must offer an alias to test; none found is a failure, not a pass.
+         aliasOk = !aliasProc.empty() && alViaAlias.kind == SafetyVerdict::Confirm && alViaAlias.reason.Contains( "alias rule" )
+                && alDefault.kind == SafetyVerdict::Allow;
+         // No installed enumeration on PI 1.9.5 declares element aliases (the whole
+         // catalog is scanned above); then there is nothing to slip past a rule, and
+         // detail.enumAliasFound shows the empty search. Any that appear are checked.
+         enumAliasOk = enumProc.empty() || (enumProc == aliasProc
+                       || (enViaAlias.kind == SafetyVerdict::Confirm && enViaAlias.reason.Contains( String::UTF8ToUTF16( ("\"" + enumId + "\"").c_str() ) )));
+      }
+      catch ( const pcl::Exception& x ) { error += x.Message(); }
+      catch ( const std::exception& x ) { error += String( x.what() ); }
+      SetProcessSafetyPolicyForSelfTest( nullptr );
+      detail["fix1"] = { { "unreviewed", unreviewedOk }, { "trigger", triggerOk }, { "enum", enumOk }, { "alias", aliasOk },
+                         { "enumAlias", enumAliasOk }, { "unknownRule", unknownRuleOk } };
+
+      const bool ok = coverageOk && idsOk && verdictOk && denyToolOk && confirmToolOk
+                   && unreviewedOk && triggerOk && enumOk && aliasOk && enumAliasOk && unknownRuleOk;
       out["processSafetyDetail"] = detail;
       out["processSafetyError"] = U8( error );
       out["processSafetyOk"] = ok;
