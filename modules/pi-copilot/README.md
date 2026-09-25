@@ -171,3 +171,5 @@ Full harness: signs module, loads headlessly under `PixInsight --automation-mode
 **2026-09-24** — headless self-test PASS incl. real text chat and real vision round-trip (synthetic red square sent as the image only, no context → model answered "Red"). GUI: pending user verification (0.1.0.3 via repository pull).
 
 **2026-09-24** — 0.1.1.0 headless self-test PASS incl. live agent run (real model called `apply_process PixelMath {"expression":"$T*0.5"}` → median ratio 0.5), text, two-turn and vision ('Red') checks. GUI: pending user verification (0.1.1.0 via repository pull).
+
+**2026-09-25** — 0.1.2.0 headless self-test PASS with every live check required (`PICOPILOT_REQUIRE_LIVE=1`): text, two-turn, vision ('Red'), streamed agent run (ratio 0.5), cache read 3259 tokens, Opus 5.5 edited history accepted (thinking_dropped), live model switch Opus 5.5 ↔ Sonnet 5, and a real GraXpert background extraction with `appPath` pinned by PI Copilot (gradient 0.235 → 0.003, 4.0 s). GUI: pending user verification (0.1.2.0 via repository pull).
