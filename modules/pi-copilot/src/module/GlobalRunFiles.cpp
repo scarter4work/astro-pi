@@ -6,14 +6,18 @@
 #include <pcl/Exception.h>
 #include <pcl/File.h>
 #include <pcl/FileFormat.h>
-#include <pcl/FileInfo.h>
 #include <pcl/Process.h>
 #include <pcl/ProcessParameter.h>
 
+#include <cerrno>
+#include <cstring>
 #include <map>
 #include <memory>
 #include <set>
 #include <string>
+
+#include <sys/stat.h>
+#include <unistd.h>
 
 namespace pcl
 {
@@ -32,19 +36,70 @@ const nlohmann::json& EmptyObject()
    return empty;
 }
 
+// What a path resolves to, FOLLOWING symbolic links (as the core does when it
+// opens the file): frames in linked folders (e.g. on a NAS) are real frames.
+// pcl::FileInfo uses lstat() -- a link to a file is not IsFile() there -- and
+// throws on EACCES, so plain POSIX stat() is used instead. Never throws.
+struct PathStatus
+{
+   enum Kind { Ok, Missing, BrokenLink, NoAccess } kind = Missing;
+   bool   isFile = false;
+   bool   isDirectory = false;
+   String reason;   // strerror text for NoAccess
+};
+
+PathStatus StatFollowingLinks( const String& path )
+{
+   PathStatus r;
+   const IsoString p = path.ToUTF8();
+   struct stat st;
+   if ( ::stat( p.c_str(), &st ) == 0 )
+   {
+      r.kind = PathStatus::Ok;
+      r.isFile = S_ISREG( st.st_mode );
+      r.isDirectory = S_ISDIR( st.st_mode );
+      return r;
+   }
+   const int e = errno;
+   if ( e == ENOENT || e == ENOTDIR )
+   {
+      struct stat ls;
+      r.kind = (::lstat( p.c_str(), &ls ) == 0 && S_ISLNK( ls.st_mode )) ? PathStatus::BrokenLink : PathStatus::Missing;
+      return r;
+   }
+   r.kind = PathStatus::NoAccess;   // EACCES (e.g. an unreadable NAS directory), ELOOP, EIO, ...
+   r.reason = String( std::strerror( e ) );
+   return r;
+}
+
+// The message for a path that does not resolve, or "" when it does.
+String ResolveProblem( const String& path, const PathStatus& s )
+{
+   switch ( s.kind )
+   {
+   case PathStatus::Missing:    return "'" + path + "' does not exist";
+   case PathStatus::BrokenLink: return "'" + path + "' is a broken symbolic link";
+   case PathStatus::NoAccess:   return "'" + path + "' cannot be accessed (" + s.reason + ")";
+   default:                     return String();
+   }
+}
+
 String CheckInputFile( const String& path, bool image )
 {
    if ( path.StartsWith( '~' ) )
       return "'" + path + "': use an absolute path (PixInsight does not expand ~)";
    if ( !path.StartsWith( '/' ) )
       return "'" + path + "' is not an absolute path";
-   const FileInfo fi( path );
-   if ( !fi.Exists() )
-      return "'" + path + "' does not exist";
-   if ( !fi.IsFile() )
+   const PathStatus st = StatFollowingLinks( path );
+   const String problem = ResolveProblem( path, st );
+   if ( !problem.IsEmpty() )
+      return problem;
+   if ( !st.isFile )
       return "'" + path + "' is not a file";
-   if ( !fi.IsReadable() )
+   if ( ::access( path.ToUTF8().c_str(), R_OK ) != 0 )
       return "'" + path + "' is not readable";
+   // The format lookup by extension is case-insensitive in PI 1.9.5 (".FITS",
+   // ".FIT" resolve; checked by self-test B7).
    if ( image )
    {
       const String ext = File::ExtractExtension( path );
@@ -65,7 +120,8 @@ String CheckInputFile( const String& path, bool image )
    return String();
 }
 
-// '/'-rooted strings must exist; '~' is refused; anything else is not a path.
+// '/'-rooted strings must resolve (file or directory, links followed); '~' is
+// refused; anything else is not a path.
 String CheckLoosePath( const String& where, const nlohmann::json& v )
 {
    if ( !v.is_string() )
@@ -73,9 +129,10 @@ String CheckLoosePath( const String& where, const nlohmann::json& v )
    const String s = S16( v.get<std::string>() );
    if ( s.StartsWith( '~' ) )
       return where + ": '" + s + "': use an absolute path (PixInsight does not expand ~)";
-   if ( s.StartsWith( '/' ) && !File::Exists( s ) && !File::DirectoryExists( s ) )
-      return where + ": '" + s + "' does not exist";
-   return String();
+   if ( !s.StartsWith( '/' ) )
+      return String();
+   const String problem = ResolveProblem( s, StatFollowingLinks( s ) );
+   return problem.IsEmpty() ? String() : where + ": " + problem;
 }
 
 // The fileTables entry for a canonical process id, or an empty object.
@@ -155,7 +212,10 @@ String ValidateGlobalRunFilePaths( const IsoString& processId, const nlohmann::j
          if ( !rows.is_array() )
             return String();   // SetParameters() reports the shape
          const std::string enabledCol = rule.value( "enabledColumn", std::string() );
-         const bool hasEnabled = index.count( enabledCol ) > 0;
+         if ( !enabledCol.empty() && !index.count( enabledCol ) )
+            return "internal: the file-table policy names " + S16( enabledCol ) + " as the enabled column of " + tname
+                   + ", which has no such column";
+         const bool hasEnabled = !enabledCol.empty();
          const nlohmann::json& columns = rule.contains( "columns" ) ? rule["columns"] : EmptyObject();
          size_type enabled = 0;
          for ( size_type r = 0; r < rows.size(); ++r )

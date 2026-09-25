@@ -6,6 +6,7 @@
 #include "AnthropicClient.h"
 #include "ChatThread.h"
 #include "CopilotSettings.h"
+#include "GlobalRunFiles.h"
 #include "HistoryBudget.h"
 #include "KeyStore.h"
 #include "Keyring.h"
@@ -2154,6 +2155,47 @@ bool RunInc5SelfTest( nlohmann::json& out )
          };
          const String notImage = frames.AddFile( "notes.txt", "hello" );
          const std::string frame0 = U8( frames.Paths()[0] );
+         const std::string dir8 = U8( frames.Dir() );
+         // Links, an unreadable directory and upper-case copies. Declared after
+         // `frames`, so it is torn down first (the links are not followed; the
+         // locked directory gets its permissions back before removal).
+         struct FsExtras
+         {
+            std::vector<std::string> paths;
+            std::string              locked;
+            ~FsExtras()
+            {
+               std::error_code ec;
+               if ( !locked.empty() )
+               {
+                  std::filesystem::permissions( locked, std::filesystem::perms::owner_all, ec );
+                  std::filesystem::remove_all( locked, ec );
+               }
+               for ( const std::string& p : paths )
+                  std::filesystem::remove( p, ec );
+            }
+         } fsx;
+         const std::string linked = dir8 + "/linked_frame.fits";
+         std::filesystem::create_symlink( frame0, linked );
+         fsx.paths.push_back( linked );
+         const std::string dangling = dir8 + "/dangling.fits";
+         std::filesystem::create_symlink( "/nonexistent/picopilot/gone.fits", dangling );
+         fsx.paths.push_back( dangling );
+         fsx.locked = dir8 + "/locked";
+         std::filesystem::create_directory( fsx.locked );
+         const std::string lockedFrame = fsx.locked + "/inside.fits";
+         std::filesystem::copy_file( frame0, lockedFrame );
+         std::filesystem::permissions( fsx.locked, std::filesystem::perms::none );
+         const std::string upperFits = dir8 + "/UPPER_01.FITS", upperFit = dir8 + "/UPPER_02.FIT";
+         std::filesystem::copy_file( frame0, upperFits );
+         std::filesystem::copy_file( frame0, upperFit );
+         fsx.paths.push_back( upperFits );
+         fsx.paths.push_back( upperFit );
+         auto three = [&]( const std::string& first ) {
+            nlohmann::json r = rows( 3 );
+            r[0][1] = first;
+            return r;
+         };
          struct Case { const char* name; IsoString process; nlohmann::json params; nlohmann::json tables; std::string expect; };
          const std::vector<Case> cases = {
             { "noTable", "ImageIntegration", nlohmann::json::object(), nlohmann::json::object(),
@@ -2169,11 +2211,31 @@ bool RunInc5SelfTest( nlohmann::json& out )
               { { "images", { { true, "/nonexistent/picopilot/a.fits", "", "" } } } },
               "ImageIntegration.images[0].path: '/nonexistent/picopilot/a.fits' does not exist" },
             { "directory", "ImageIntegration", nlohmann::json::object(),
-              { { "images", { { true, U8( frames.Dir() ), "", "" } } } },
-              "' is not a file" },
+              { { "images", { { true, dir8, "", "" } } } },
+              "ImageIntegration.images[0].path: '" + dir8 + "' is not a file" },
             { "notImage", "ImageIntegration", nlohmann::json::object(),
               { { "images", { { true, U8( notImage ), "", "" } } } },
-              "is not an image file PixInsight can read (.txt)" },
+              "ImageIntegration.images[0].path: '" + U8( notImage ) + "' is not an image file PixInsight can read (.txt)" },
+            { "dangling", "ImageIntegration", nlohmann::json::object(), { { "images", three( dangling ) } },
+              "ImageIntegration.images[0].path: '" + dangling + "' is a broken symbolic link" },
+            { "danglingOptional", "ImageIntegration", nlohmann::json::object(),
+              { { "images", { { true, frame0, dangling, "" } } } },
+              "ImageIntegration.images[0].drizzlePath: '" + dangling + "' is a broken symbolic link" },
+            { "danglingLoose", "ImageIntegration", { { "csvWeights", dangling } }, { { "images", rows( 3 ) } },
+              "ImageIntegration.csvWeights: '" + dangling + "' is a broken symbolic link" },
+            { "noAccess", "ImageIntegration", nlohmann::json::object(), { { "images", three( lockedFrame ) } },
+              "ImageIntegration.images[0].path: '" + lockedFrame + "' cannot be accessed (Permission denied)" },
+            { "noAccessLoose", "ImageIntegration", { { "csvWeights", lockedFrame } }, { { "images", rows( 3 ) } },
+              "ImageIntegration.csvWeights: '" + lockedFrame + "' cannot be accessed (Permission denied)" },
+            // Dry-run SetParameters: shape / enum errors come back before any confirm dialog.
+            { "dryRunEnum", "ImageIntegration", { { "weightMode", "NoSuchMode" } }, { { "images", rows( 3 ) } },
+              "ImageIntegration.weightMode: 'NoSuchMode' is not a valid value; use one of: " },
+            { "dryRunShape", "ImageIntegration", nlohmann::json::object(),
+              { { "images", { { true, frame0, "" }, { true, frame0, "", "" }, { true, frame0, "", "" } } } },
+              "ImageIntegration.images: row 0 has 3 values; expected 4 (columns: enabled, path, drizzlePath, "
+              "localNormalizationDataPath)" },
+            { "dryRunUnknownParam", "ImageIntegration", { { "noSuchParam", 1 } }, { { "images", rows( 3 ) } },
+              "unknown parameter ImageIntegration.noSuchParam; call describe_process for the valid parameter ids" },
             { "optionalMissing", "ImageIntegration", nlohmann::json::object(),
               { { "images", { { true, frame0, "/nonexistent/picopilot/a.xdrz", "" } } } },
               "ImageIntegration.images[0].drizzlePath: '/nonexistent/picopilot/a.xdrz' does not exist" },
@@ -2185,13 +2247,15 @@ bool RunInc5SelfTest( nlohmann::json& out )
             { "looseTilde", "ImageIntegration", { { "csvWeights", "~/w.csv" } }, { { "images", rows( 3 ) } },
               "ImageIntegration.csvWeights: '~/w.csv': use an absolute path (PixInsight does not expand ~)" },
             { "unknown", "NoSuchProcessXYZ", nlohmann::json::object(), nlohmann::json::object(),
-              "unknown process id 'NoSuchProcessXYZ'" },
+              "unknown process id 'NoSuchProcessXYZ'; call list_processes for valid ids" },
          };
          nlohmann::json pc = nlohmann::json::array();
          for ( const Case& c : cases )
          {
             const String e = PrecheckGlobalRun( c.process, c.params, c.tables );
-            const bool pass = e.Contains( String::UTF8ToUTF16( c.expect.c_str() ) );
+            // Full-string match, except the enum case (its element list is the core's).
+            const String want = String::UTF8ToUTF16( c.expect.c_str() );
+            const bool pass = std::string( c.name ) == "dryRunEnum" ? e.StartsWith( want ) : e == want;
             pc.push_back( { { "case", c.name }, { "pass", pass }, { "error", U8( e ) } } );
             precheckOk = precheckOk && pass;
          }
@@ -2203,6 +2267,58 @@ bool RunInc5SelfTest( nlohmann::json& out )
          pc.push_back( { { "case", "valid3" }, { "error", U8( okThree ) } } );
          pc.push_back( { { "case", "disabledRowIgnored" }, { "error", U8( okMixed ) } } );
          precheckOk = precheckOk && okThree.IsEmpty() && okMixed.IsEmpty();
+         // A symlink to a real frame is a frame (NAS-linked folders).
+         const String okLink = PrecheckGlobalRun( "ImageIntegration", nlohmann::json::object(), { { "images", three( linked ) } } );
+         pc.push_back( { { "case", "symlinkFollowed" }, { "error", U8( okLink ) } } );
+         // Upper-case extensions (.FITS / .FIT) are image files.
+         nlohmann::json upper = rows( 3 );
+         upper[0][1] = upperFits;
+         upper[1][1] = upperFit;
+         const String okUpper = PrecheckGlobalRun( "ImageIntegration", nlohmann::json::object(), { { "images", upper } } );
+         pc.push_back( { { "case", "upperCaseExtensions" }, { "error", U8( okUpper ) } } );
+         nlohmann::json lookup = nlohmann::json::object();
+         for ( const char* ext : { ".FITS", ".FIT", ".fits", ".XISF" } )
+            try
+            {
+               const FileFormat f( ext, true/*toRead*/, false/*toWrite*/ );
+               lookup[ext] = f.CanRead() ? "found, can read" : "found, cannot read";
+            }
+            catch ( ... )
+            {
+               lookup[ext] = "not found";
+            }
+         detail["formatLookupByExtension"] = lookup;
+         precheckOk = precheckOk && okLink.IsEmpty() && okUpper.IsEmpty();
+         // Policy integrity: never a silent pass on a bad policy entry.
+         const nlohmann::json badEnabled = nlohmann::json::parse(
+            R"({"ImageIntegration":{"images":{"enabledColumn":"nope","minEnabledRows":3,"columns":{"path":"image"}}}})" );
+         const nlohmann::json badTable = nlohmann::json::parse(
+            R"({"ImageIntegration":{"nope":{"enabledColumn":"enabled","columns":{"path":"image"}}}})" );
+         const String eEnabled = ValidateGlobalRunFilePaths( "ImageIntegration", badEnabled, nlohmann::json::object(),
+                                                             { { "images", rows( 3 ) } } );
+         const String eTable = ValidateGlobalRunFilePaths( "ImageIntegration", badTable, nlohmann::json::object(),
+                                                           { { "images", rows( 3 ) } } );
+         pc.push_back( { { "case", "policyBadEnabledColumn" }, { "error", U8( eEnabled ) } } );
+         pc.push_back( { { "case", "policyBadTable" }, { "error", U8( eTable ) } } );
+         precheckOk = precheckOk
+            && eEnabled == "internal: the file-table policy names nope as the enabled column of ImageIntegration.images, "
+                           "which has no such column"
+            && eTable == "internal: the file-table policy names ImageIntegration.nope, which is not a table parameter "
+                         "of ImageIntegration";
+         // Result-window attribution: named outputs are results; other new windows are listed apart.
+         {
+            std::vector<std::string> res, other;
+            SplitNewWindows( { "integration", "rejection_low", "stray" },
+                             { { "integrationImageId", "integration" }, { "lowRejectionMapImageId", "rejection_low" } },
+                             res, other );
+            std::vector<std::string> res2, other2;
+            SplitNewWindows( { "a", "b" }, nlohmann::json::object(), res2, other2 );
+            const bool splitOk = res == std::vector<std::string>{ "integration", "rejection_low" }
+                              && other == std::vector<std::string>{ "stray" }
+                              && res2 == std::vector<std::string>{ "a", "b" } && other2.empty();
+            pc.push_back( { { "case", "splitNewWindows" }, { "pass", splitOk } } );
+            precheckOk = precheckOk && splitOk;
+         }
          // A view-only process, if this PI has one (most processes default to global-capable).
          for ( const Process& P : Process::AllProcesses() )
             if ( !P.CanProcessGlobal() )
@@ -2262,7 +2378,8 @@ bool RunInc5SelfTest( nlohmann::json& out )
                    && w0.at( "context" ).at( "geometry" ).at( "width" ) == kIiW
                    && w0.at( "context" ).at( "geometry" ).at( "height" ) == kIiH
                    && std::fabs( mean - frames.MeanOfMeans() ) < 0.01*frames.MeanOfMeans()
-                   && summary.at( "createdWindowCount" ).get<size_t>() == created.size();
+                   && summary.at( "createdWindowCount" ).get<size_t>()
+                      + summary.value( "otherNewWindows", nlohmann::json::array() ).size() == created.size();
          }
          runOk = badOk && !o.isError && confirmCalls == 0 && !o.mutated && images == 1 && !integ.empty()
               && std::find( created.begin(), created.end(), integ ) != created.end() && statsOk
@@ -2274,6 +2391,13 @@ bool RunInc5SelfTest( nlohmann::json& out )
          const ToolOutcome declined = ExecuteTool( ToolCall{ "g2", "run_global_process", input }, ctx );
          guidedOk = declined.isError && confirmCalls == 1 && OpenMainViewIds() == b2
                  && declined.content.at( 0 ).at( "text" ).get<std::string>().find( "declined" ) != std::string::npos;
+
+         // Guided: a parameter error comes back BEFORE the confirm dialog (dry run).
+         nlohmann::json badEnum = input;
+         badEnum["parameters"]["weightMode"] = "NoSuchMode";
+         const ToolOutcome enumOut = ExecuteTool( ToolCall{ "g3", "run_global_process", badEnum }, ctx );
+         guidedOk = guidedOk && enumOut.isError && confirmCalls == 1
+                 && enumOut.content.at( 0 ).at( "text" ).get<std::string>().rfind( "ImageIntegration.weightMode: 'NoSuchMode'", 0 ) == 0;
 
          // Advisor: not offered, refused if called anyway.
          ctx.mode = AgentMode::Advisor;

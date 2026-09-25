@@ -306,11 +306,13 @@ ToolOutcome RunGlobalTool( const nlohmann::json& in, const ToolContext& ctx, clo
    if ( !g.ok )
    {
       String e = g.error;
-      if ( !g.createdWindows.empty() )
+      std::vector<std::string> opened = g.createdWindows;
+      opened.insert( opened.end(), g.otherNewWindows.begin(), g.otherNewWindows.end() );
+      if ( !opened.empty() )
       {
-         e += " (windows it opened before stopping: ";
-         for ( size_t i = 0; i < g.createdWindows.size(); ++i )
-            e += (i > 0 ? String( ", " ) : String()) + S16( g.createdWindows[i] );
+         e += " (windows that opened before it stopped: ";
+         for ( size_t i = 0; i < opened.size(); ++i )
+            e += (i > 0 ? String( ", " ) : String()) + S16( opened[i] );
          e += ")";
       }
       return Fail( what, e );
@@ -361,6 +363,11 @@ ToolOutcome RunGlobalTool( const nlohmann::json& in, const ToolContext& ctx, clo
    };
    if ( g.createdWindows.size() > PICopilotMaxDescribedWindows )
       summary["windowsNotDescribed"] = g.createdWindows.size() - PICopilotMaxDescribedWindows;
+   if ( !g.otherNewWindows.empty() )
+   {
+      summary["otherNewWindows"] = g.otherNewWindows;
+      summary["otherNewWindowsNote"] = "opened during the run; may not be results";
+   }
 
    ToolOutcome o;
    if ( !primary.empty() )

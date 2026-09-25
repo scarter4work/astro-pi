@@ -95,6 +95,8 @@ const char* const kApplyIdioms =
    "For ImageIntegration pass the frames as table_parameters {\"images\": [[true, \"/abs/path/light_001.xisf\", \"\", "
    "\"\"], ...]} (columns enabled, path, drizzlePath, localNormalizationDataPath), using absolute paths the user gave "
    "you; at least 3 enabled frames. Never invent file paths: ask the user for the folder or the files.\n"
+   "- A large integration keeps PixInsight busy for minutes: tell the user before you start one. They can abort it "
+   "from the Process Console, so a run reported as not completed may have been aborted by them.\n"
    "- Some runs ask the user first even in Copilot mode, because they write files or close windows; if the user "
    "declines, do not repeat the call.\n";
 

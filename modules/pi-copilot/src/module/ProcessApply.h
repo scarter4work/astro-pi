@@ -63,13 +63,23 @@ struct GlobalRunResult
    nlohmann::json           parametersSet = nlohmann::json::object();
    double                   elapsedMs = 0;                             // ExecuteGlobal() wall time
    String                   processId;                                 // canonical id, once resolved
-   std::vector<std::string> createdWindows;                            // main-view ids of windows the run opened
+   std::vector<std::string> createdWindows;                            // result windows (see SplitNewWindows)
+   std::vector<std::string> otherNewWindows;                           // other windows that opened during the run
    nlohmann::json           outputIds = nlohmann::json::object();      // read-only "...ImageId" outputs, non-empty only
 };
 
-// Cheap checks before anything is asked or run: known id, global-capable,
-// file paths (ValidateGlobalRunFilePaths with the fileTables policy). "" when
-// fine. Root thread.
+// Attribution of the windows that opened during a global run. When the
+// process names its outputs (non-empty outputIds values), only the new windows
+// it names are results; any other new window (e.g. one a user or script
+// opened meanwhile) goes to `others`. With no named outputs, every new window
+// is a result. Order of newWindows is kept.
+void SplitNewWindows( const std::vector<std::string>& newWindows, const nlohmann::json& outputIds,
+                      std::vector<std::string>& results, std::vector<std::string>& others );
+
+// Checks before anything is asked or run: known id, global-capable, file paths
+// (ValidateGlobalRunFilePaths with the fileTables policy), then a dry run of
+// the parameter setting on a throwaway DEFAULT instance (shape, enumeration,
+// range, read-back). "" when fine. Root thread.
 String PrecheckGlobalRun( const IsoString& processId, const nlohmann::json& parameters,
                           const nlohmann::json& tableParameters );
 
