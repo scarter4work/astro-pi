@@ -94,6 +94,12 @@ private:
    // Send/Stop/Clear/Timer can fire re-entrantly; this blocks a second turn.
    bool m_handlingResult = false;
 
+   // The current request's reply has started rendering live (streamed text).
+   bool m_replyShown = false;
+
+   // Appends streamed text received since the last call (UI thread).
+   void DrainStreamedText();
+
    void SendCurrentInput();
    void StartRequest();
    void FinishTurn();

@@ -112,7 +112,7 @@ export PICOPILOT_SELFTEST_STALL_URL="http://127.0.0.1:$(cat "$STALL_PORT_FILE")/
 ECHO_DIR="$(mktemp -d)"
 ECHO_PORT_FILE="$ECHO_DIR/port"
 python3 - "$ECHO_DIR" <<'PY' &
-import json, os, sys, threading
+import json, os, sys, threading, time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 out = sys.argv[1]
 count = [0]; lock = threading.Lock()
@@ -154,6 +154,57 @@ class H(BaseHTTPRequestHandler):
                                  {"type": "tool_use", "id": "toolu_wire_%02d" % n, "name": "describe_process",
                                   "input": {"id": "PixelMath"}}],
                      "stop_reason": "tool_use"}
+    def sse(self, events, delay=0.3, stall=False):
+        self.send_response(200)
+        self.send_header("content-type", "text/event-stream")
+        self.send_header("connection", "close")
+        self.end_headers()
+        self.close_connection = True
+        try:
+            for name, data in events:
+                self.wfile.write(("event: %s\ndata: %s\n\n" % (name, json.dumps(data, ensure_ascii=False))).encode("utf-8"))
+                self.wfile.flush()
+                time.sleep(delay)
+            while stall:          # say nothing more: the client's idle deadline must end it
+                time.sleep(0.5)
+        except (BrokenPipeError, ConnectionResetError):
+            pass
+    def stream_events(self, req, n, kind):
+        msgs = req.get("messages") or []
+        last = msgs[-1].get("content") if msgs else None
+        results = [b for b in last if b.get("type") == "tool_result"] if isinstance(last, list) else []
+        ev = [("message_start", {"type": "message_start", "message": {"id": "msg_s%02d" % n, "type": "message",
+               "role": "assistant", "model": req.get("model"), "content": [], "stop_reason": None,
+               "stop_sequence": None, "usage": {"input_tokens": 10, "output_tokens": 1}}}),
+              ("ping", {"type": "ping"})]
+        def text_block(index, parts):
+            out = [("content_block_start", {"type": "content_block_start", "index": index,
+                                            "content_block": {"type": "text", "text": ""}})]
+            out += [("content_block_delta", {"type": "content_block_delta", "index": index,
+                                             "delta": {"type": "text_delta", "text": p}}) for p in parts]
+            return out + [("content_block_stop", {"type": "content_block_stop", "index": index})]
+        def end(stop, tokens):
+            return [("message_delta", {"type": "message_delta", "delta": {"stop_reason": stop, "stop_sequence": None},
+                                       "usage": {"output_tokens": tokens}}),
+                    ("message_stop", {"type": "message_stop"})]
+        if kind == "stall":
+            return ev
+        if kind == "truncated":   # the connection closes mid-reply: no message_stop
+            return ev + text_block(0, ["Cut "])[:2]
+        if kind == "error":
+            return ev + text_block(0, ["Partial"])[:2] + [("error", {"type": "error",
+                    "error": {"type": "overloaded_error", "message": "Overloaded"}})]
+        if results:
+            return ev + text_block(0, ["Got %d tool_" % len(results), "result(s) — done."]) + end("end_turn", 12)
+        return (ev + text_block(0, ["Hello, ", "streamed ", "world é"])
+                + [("content_block_start", {"type": "content_block_start", "index": 1, "content_block":
+                        {"type": "tool_use", "id": "toolu_s%02d" % n, "name": "describe_process", "input": {}}}),
+                   ("content_block_delta", {"type": "content_block_delta", "index": 1,
+                        "delta": {"type": "input_json_delta", "partial_json": "{\"id\": \"Pixel"}}),
+                   ("content_block_delta", {"type": "content_block_delta", "index": 1,
+                        "delta": {"type": "input_json_delta", "partial_json": "Math\"}"}}),
+                   ("content_block_stop", {"type": "content_block_stop", "index": 1})]
+                + end("tool_use", 30))
     def do_POST(self):
         body = self.rfile.read(int(self.headers.get("content-length", "0")))
         with lock:
@@ -170,6 +221,12 @@ class H(BaseHTTPRequestHandler):
         except ValueError as e:
             return self.reply(400, {"type": "error", "error": {"type": "invalid_request_error",
                 "message": "body #%d not JSON: %s" % (n, e)}})
+        for suffix, kind in (("/stream-error", "error"), ("/stream-stall", "stall"), ("/stream-truncated", "truncated"), ("/stream", "ok")):
+            if self.path.endswith(suffix):
+                if req.get("stream") is not True:
+                    return self.reply(400, {"type": "error", "error": {"type": "invalid_request_error",
+                                            "message": "body #%d: \"stream\" is not true" % n}})
+                return self.sse(self.stream_events(req, n, kind), stall=(kind == "stall"))
         if self.path.endswith("/agent"):
             return self.reply(*self.agent_reply(req, n))
         self.reply(200, {"content": [{"type": "text", "text": json.dumps({"messages": req.get("messages"),
@@ -177,6 +234,7 @@ class H(BaseHTTPRequestHandler):
                          "stop_reason": "end_turn"})
 srv = ThreadingHTTPServer(("127.0.0.1", 0), H)
 open(os.path.join(out, "port"), "w").write(str(srv.server_address[1]))
+srv.daemon_threads = True
 srv.serve_forever()
 PY
 ECHO_PID=$!
@@ -186,6 +244,7 @@ for _ in $(seq 50); do [ -s "$ECHO_PORT_FILE" ] && break; sleep 0.1; done
 [ -s "$ECHO_PORT_FILE" ] || { echo "FAIL: echo server did not start"; exit 1; }
 export PICOPILOT_SELFTEST_ECHO_URL="http://127.0.0.1:$(cat "$ECHO_PORT_FILE")/v1/messages"
 export PICOPILOT_SELFTEST_AGENT_URL="http://127.0.0.1:$(cat "$ECHO_PORT_FILE")/v1/agent"
+export PICOPILOT_SELFTEST_STREAM_BASE="http://127.0.0.1:$(cat "$ECHO_PORT_FILE")/v1"
 export PICOPILOT_SELFTEST_FIXTURES="$HERE/fixtures"
 
 # Private virtual display (Xvfb). A core-side rejection can raise a MODAL
@@ -232,6 +291,7 @@ required_true = [
     # increment 5
     'inc5SmokeOk',
     'sseParserOk',
+    'streamTransportOk',
     'ok',
 ]
 missing = [k for k in required_true if d.get(k) is not True]
@@ -239,6 +299,11 @@ if d.get('evalResult') != 3: missing.append('evalResult==3')
 if d.get('stallSkipped') is not False: missing.append('stallSkipped==false')
 if d.get('utf8EchoSkipped') is not False: missing.append('utf8EchoSkipped==false')
 if d.get('agentWireSkipped') is not False: missing.append('agentWireSkipped==false')
+if d.get('streamLoopbackSkipped') is not False: missing.append('streamLoopbackSkipped==false')
+import os
+if os.environ.get('PICOPILOT_REQUIRE_LIVE') == '1':
+    for k in ('anthropicSkipped', 'twoTurnSkipped', 'visionSkipped', 'liveAgentSkipped'):
+        if d.get(k) is not False: missing.append(k + '==false (PICOPILOT_REQUIRE_LIVE=1)')
 print('anthropic check: %s' % ('SKIPPED (no key)' if d.get('anthropicSkipped') else 'RAN against real API'))
 print('two-turn check: %s' % ('SKIPPED (no key)' if d.get('twoTurnSkipped') else 'RAN against real API'))
 print('vision check: %s' % ('SKIPPED (no key)' if d.get('visionSkipped') else 'RAN against real API, answer=%r' % d.get('visionAnswer')))

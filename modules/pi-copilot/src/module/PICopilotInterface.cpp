@@ -203,8 +203,9 @@ void PICopilotInterface::StopWorker()
 
 void PICopilotInterface::SetBusy( bool busy )
 {
-   // Non-streamed replies can take tens of seconds and tools run between
-   // them: show that a message is being worked on, on the Send button itself.
+   // Replies can take tens of seconds (thinking before the first streamed
+   // text) and tools run between them: show that a message is being worked
+   // on, on the Send button itself.
    GUI->Send_Button.SetText( busy ? String::UTF8ToUTF16( kBusyTextUtf8 ) : String( kSendText ) );
    GUI->Send_Button.SetToolTip( busy
       ? String( "<p>Working (each request gives up after " ) + String( PICopilotRequestTimeoutSeconds ) + " s).</p>"
@@ -277,12 +278,14 @@ void PICopilotInterface::StartRequest()
       EndTurn( m_session.AbortTurn( "history invalid: " + why + " (nothing was sent)" ), 0 );
       return;
    }
+   m_replyShown = false;
    try
    {
       // ChatThread serializes key, prompt, history snapshot and tools HERE (UI thread).
       m_thread = new ChatThread( m_apiKey, BuildSystemPrompt( m_turnMode ), m_session.History(),
                                  PICOPILOT_DEFAULT_MODEL, PICOPILOT_MESSAGES_URL,
-                                 PICopilotRequestTimeoutSeconds, ToolDefinitions( m_turnMode ) );
+                                 PICopilotRequestTimeoutSeconds, ToolDefinitions( m_turnMode ),
+                                 ProductionRequestShape( PICOPILOT_DEFAULT_MODEL ) );
       m_thread->Start();
    }
    catch ( ... )
@@ -445,6 +448,21 @@ void PICopilotInterface::e_Config_Click( Button&, bool )
    d.Run( KeyStore::Load() );
 }
 
+void PICopilotInterface::DrainStreamedText()
+{
+   if ( !m_thread )
+      return;
+   const String d = m_thread->TakeStreamedText();
+   if ( d.IsEmpty() )
+      return;
+   if ( !m_replyShown )
+   {
+      AppendToLog( "<b>Copilot:</b> " );
+      m_replyShown = true;
+   }
+   AppendToLog( PlainText( d ) );
+}
+
 void PICopilotInterface::e_Poll_Timer( Timer& )
 {
    if ( !m_thread )
@@ -452,6 +470,8 @@ void PICopilotInterface::e_Poll_Timer( Timer& )
       GUI->Poll_Timer.Stop();
       return;
    }
+   // Streamed text arrives while the request runs: show it as it comes.
+   DrainStreamedText();
    // Wait until the worker has fully returned from Run(), so destroying
    // it below can never race its exit.
    if ( m_thread->IsActive() )
@@ -465,12 +485,21 @@ void PICopilotInterface::e_Poll_Timer( Timer& )
       r = AnthropicResult();
       r.error = "worker thread ended without a result";
    }
+   DrainStreamedText();   // whatever arrived after the last tick
    m_thread.Destroy();
    // Tools may run for seconds and pump events: never re-enter this handler.
    GUI->Poll_Timer.Stop();
 
    // The truncation note is display-only; history keeps the model's own text.
-   if ( r.ok && !r.text.IsEmpty() )
+   if ( m_replyShown )
+   {
+      // The reply was rendered live; close it (and say so when it broke off).
+      AppendToLog( (r.ok && r.truncated ? PlainText( " [truncated: max_tokens]" ) : String()) + "\n\n" );
+      if ( !r.ok && !r.cancelled )
+         AppendToLog( PlainText( "(the partial reply above was interrupted; it is not kept in the conversation)" ) + "\n\n" );
+      m_replyShown = false;
+   }
+   else if ( r.ok && !r.text.IsEmpty() )   // not streamed, or no delta arrived before the end
       AppendToLog( "<b>Copilot:</b> " + PlainText( r.truncated ? r.text + " [truncated: max_tokens]" : r.text ) + "\n\n" );
 
    m_handlingResult = true;
@@ -651,7 +680,7 @@ PICopilotInterface::GUIData::GUIData( PICopilotInterface& w )
    Global_Sizer.Add( ChatLog, 100 );
    Global_Sizer.Add( Input_Sizer );
 
-   Poll_Timer.SetInterval( 0.2 );
+   Poll_Timer.SetInterval( 0.1 );
    Poll_Timer.SetPeriodic( true );
    Poll_Timer.OnTimer( (Timer::timer_event_handler)&PICopilotInterface::e_Poll_Timer, w );
 

@@ -1,7 +1,10 @@
 // PI Copilot — Native PCL Module for PixInsight
 // Copyright (c) 2026 Scott Carter. MIT License.
 
+#include "AgentSession.h"
+#include "AgentTools.h"
 #include "AnthropicClient.h"
+#include "ChatThread.h"
 #include "PICopilotInc5SelfTest.h"
 #include "PICopilotModule.h"
 #include "ProcessCatalog.h"
@@ -792,6 +795,185 @@ bool RunInc5SelfTest( nlohmann::json& out )
       out["sseDetail"] = detail;
       out["sseError"] = U8( error );
       out["sseParserOk"] = ok;
+      allOk = allOk && ok;
+   }
+
+   // ---- Section B2: streaming transport (Task 3) ------------------------------
+   {
+      using clock = std::chrono::steady_clock;
+      auto secondsSince = []( clock::time_point t0 ) { return std::chrono::duration<double>( clock::now() - t0 ).count(); };
+      bool bodyOk = false, liveDeltasOk = false, loopOk = false, errorOk = false, stallOk = false, cancelOk = false;
+      bool truncatedOk = false;
+      bool skipped = true;
+      nlohmann::json detail = nlohmann::json::object();
+      String error;
+      try
+      {
+         Array<AnthropicMessage> hist;
+         AnthropicMessage hi;
+         hi.role = "user";
+         hi.content = "hi";
+         hist.Add( hi );
+         const nlohmann::json streamed = nlohmann::json::parse(
+            BuildMessagesRequestBody( "m", "sys", hist, nlohmann::json(), ProductionRequestShape( PICOPILOT_DEFAULT_MODEL ) ) );
+         const nlohmann::json plain = nlohmann::json::parse( BuildMessagesRequestBody( "m", "sys", hist ) );
+         bodyOk = streamed.value( "stream", false ) && streamed.at( "max_tokens" ) == PICopilotStreamMaxTokens
+               && !plain.contains( "stream" ) && plain.at( "max_tokens" ) == 4096;
+
+         if ( const char* base = std::getenv( "PICOPILOT_SELFTEST_STREAM_BASE" ) )
+         {
+            skipped = false;
+            RequestShape shape;
+            shape.stream = true;
+            shape.maxTokens = 1000;
+            shape.streamIdleSeconds = 5;
+
+            // (1) Deltas reach this (UI) thread while the request is still running.
+            AgentSession session;
+            AnthropicMessage u;
+            u.role = "user";
+            u.content = "stream please";
+            session.BeginUserTurn( u );
+            AnthropicResult r;
+            std::string shown;
+            int takesWhileActive = 0;
+            double firstDelta = -1, total = 0;
+            {
+               ChatThread t( "sk-ant-invalid-selftest", "sys", session.History(), PICOPILOT_DEFAULT_MODEL,
+                             String( base ) + "/stream", 30, ToolDefinitions( AgentMode::Advisor ), shape );
+               const clock::time_point t0 = clock::now();
+               t.Start();
+               while ( t.IsActive() )
+               {
+                  const String d = t.TakeStreamedText();
+                  if ( !d.IsEmpty() )
+                  {
+                     ++takesWhileActive;
+                     shown += U8( d );
+                     if ( firstDelta < 0 )
+                        firstDelta = secondsSince( t0 );
+                  }
+                  ThePICopilotModule->ProcessEvents( true );
+                  std::this_thread::sleep_for( std::chrono::milliseconds( 50 ) );
+               }
+               t.Wait();
+               total = secondsSince( t0 );
+               shown += U8( t.TakeStreamedText() );
+               t.TryTakeResult( r );
+            }
+            detail["stream1"] = { { "ok", r.ok }, { "error", U8( r.error ) }, { "stop", r.stopReason }, { "shown", shown },
+                                  { "takesWhileActive", takesWhileActive }, { "firstDelta", firstDelta }, { "total", total },
+                                  { "usage", r.usage } };
+            liveDeltasOk = r.ok && r.stopReason == "tool_use" && takesWhileActive >= 2 && firstDelta >= 0
+                        && firstDelta < total - 0.5 && shown == "Hello, streamed world \xC3\xA9" && U8( r.text ) == shown
+                        && r.usage.value( "output_tokens", 0 ) == 30;
+
+            // (2) The unchanged AgentSession loop over two streamed requests.
+            ToolContext ctx;
+            ctx.mode = AgentMode::Advisor;
+            const AgentStep s = session.OnResponse( r, [&ctx]( const ToolCall& c ) { return ExecuteTool( c, ctx ); },
+                                                    []() { return false; } );
+            if ( s.kind == AgentStep::SendAgain )
+            {
+               AnthropicResult r2;
+               {
+                  ChatThread t2( "sk-ant-invalid-selftest", "sys", session.History(), PICOPILOT_DEFAULT_MODEL,
+                                 String( base ) + "/stream", 30, ToolDefinitions( AgentMode::Advisor ), shape );
+                  t2.Start();
+                  t2.Wait();
+                  t2.TryTakeResult( r2 );
+               }
+               const AgentStep s2 = session.OnResponse( r2, [&ctx]( const ToolCall& c ) { return ExecuteTool( c, ctx ); },
+                                                        []() { return false; } );
+               String why;
+               detail["loop"] = { { "text", U8( r2.text ) }, { "error", U8( r2.error ) } };
+               loopOk = s2.kind == AgentStep::Done && U8( r2.text ) == "Got 1 tool_result(s) \xE2\x80\x94 done."
+                     && HistoryPrefixIsApiValid( session.History(), why ) && session.History().Length() == 4;
+            }
+
+            // (3) API error event mid-stream.
+            {
+               AnthropicResult e;
+               std::string partial;
+               {
+                  ChatThread t( "sk-ant-invalid-selftest", "sys", hist, PICOPILOT_DEFAULT_MODEL,
+                                String( base ) + "/stream-error", 30, nlohmann::json(), shape );
+                  t.Start();
+                  t.Wait();
+                  partial = U8( t.TakeStreamedText() );
+                  t.TryTakeResult( e );
+               }
+               detail["streamError"] = { { "error", U8( e.error ) }, { "partial", partial } };
+               errorOk = !e.ok && e.errorKind == RequestErrorKind::Stream && !e.cancelled
+                      && e.error == "the reply stream failed: overloaded_error: Overloaded" && partial == "Partial";
+            }
+
+            // (4) Stall: message_start, then silence -> the idle deadline ends it.
+            {
+               RequestShape idle = shape;
+               idle.streamIdleSeconds = 3;
+               AnthropicResult e;
+               const clock::time_point t0 = clock::now();
+               {
+                  ChatThread t( "sk-ant-invalid-selftest", "sys", hist, PICOPILOT_DEFAULT_MODEL,
+                                String( base ) + "/stream-stall", 30, nlohmann::json(), idle );
+                  t.Start();
+                  t.Wait();
+                  t.TryTakeResult( e );
+               }
+               const double took = secondsSince( t0 );
+               detail["stall"] = { { "error", U8( e.error ) }, { "seconds", took } };
+               stallOk = !e.ok && e.errorKind == RequestErrorKind::Stalled
+                      && e.error == "the reply stalled: no data from the API for 3 s" && took < 10;
+            }
+
+            // (5) Cancel mid-stream.
+            {
+               AnthropicResult e;
+               const clock::time_point t0 = clock::now();
+               {
+                  ChatThread t( "sk-ant-invalid-selftest", "sys", hist, PICOPILOT_DEFAULT_MODEL,
+                                String( base ) + "/stream-stall", 30, nlohmann::json(), shape );
+                  t.Start();
+                  std::this_thread::sleep_for( std::chrono::milliseconds( 1500 ) );
+                  t.RequestCancel();
+                  t.Wait();
+                  t.TryTakeResult( e );
+               }
+               const double took = secondsSince( t0 );
+               detail["cancel"] = { { "error", U8( e.error ) }, { "seconds", took } };
+               cancelOk = !e.ok && e.cancelled && e.errorKind == RequestErrorKind::Cancelled
+                       && e.error == "request cancelled" && took < 5;
+            }
+
+            // (6) The connection closes mid-reply (no message_stop): a precise
+            // Stream error, never a partial success.
+            {
+               AnthropicResult e;
+               std::string partial;
+               {
+                  ChatThread t( "sk-ant-invalid-selftest", "sys", hist, PICOPILOT_DEFAULT_MODEL,
+                                String( base ) + "/stream-truncated", 30, nlohmann::json(), shape );
+                  t.Start();
+                  t.Wait();
+                  partial = U8( t.TakeStreamedText() );
+                  t.TryTakeResult( e );
+               }
+               detail["truncated"] = { { "error", U8( e.error ) }, { "partial", partial }, { "http", e.httpStatus } };
+               truncatedOk = !e.ok && e.errorKind == RequestErrorKind::Stream && !e.cancelled && e.contentBlocks.is_null()
+                          && e.error == "the reply stream ended before it was complete (no message_stop)"
+                          && partial == "Cut ";
+            }
+         }
+      }
+      catch ( const pcl::Exception& x ) { error = x.Message(); }
+      catch ( const std::exception& x ) { error = String( x.what() ); }
+
+      const bool ok = bodyOk && (skipped || (liveDeltasOk && loopOk && errorOk && stallOk && cancelOk && truncatedOk));
+      out["streamDetail"] = detail;
+      out["streamError"] = U8( error );
+      out["streamLoopbackSkipped"] = skipped;
+      out["streamTransportOk"] = ok;
       allOk = allOk && ok;
    }
 

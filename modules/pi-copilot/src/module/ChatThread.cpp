@@ -13,8 +13,8 @@ namespace pcl
 
 ChatThread::ChatThread( const String& apiKey, const String& systemPrompt, const Array<AnthropicMessage>& history,
                         const IsoString& model, const String& url, int timeoutSeconds,
-                        const nlohmann::json& tools )
-   : m_request( apiKey, model, systemPrompt, history, url, timeoutSeconds, tools )
+                        const nlohmann::json& tools, const RequestShape& shape )
+   : m_request( apiKey, model, systemPrompt, history, url, timeoutSeconds, tools, shape )
 {
 }
 

@@ -28,7 +28,33 @@ namespace pcl
 // AnthropicRequest::Perform(). SetConnectionTimeout() only bounds the
 // connect phase; this bounds the whole transfer, including a connection that
 // stalls after connecting. Enforced from NetworkTransfer's progress callback.
-constexpr int PICopilotRequestTimeoutSeconds = 300;
+constexpr int PICopilotRequestTimeoutSeconds = 600;
+
+// Streamed requests only: no byte from the API for this long ends the request
+// ("stalled"). The API sends ping events while it works, so a live stream is
+// never silent this long.
+constexpr int PICopilotStreamIdleSeconds = 120;
+
+// max_tokens of a production (streamed) request. Streaming removes the HTTP
+// timeout concern that kept non-streamed requests at 4096; thinking models
+// (Opus 5.5, Fable 5.1) spend part of it thinking.
+constexpr int PICopilotStreamMaxTokens = 16000;
+
+// Why a request failed; the panel words its note by this (Task 6).
+enum class RequestErrorKind { None, Build, Cancelled, TimedOut, Stalled, Network, Http, Stream, BadReply };
+
+// How a request is shaped on the wire. The default is the non-streamed
+// increment-4 shape the older self-tests pin; production uses
+// ProductionRequestShape().
+struct RequestShape
+{
+   bool stream = false;                                 // "stream": true (Server-Sent Events)
+   int  maxTokens = 4096;
+   int  streamIdleSeconds = PICopilotStreamIdleSeconds; // streamed requests only
+};
+
+// The shape the panel sends for `model`: streamed, PICopilotStreamMaxTokens.
+RequestShape ProductionRequestShape( const IsoString& model );
 
 // One turn of chat history sent to the Anthropic Messages API.
 //  - blocks non-null: the message's EXACT content-block array, sent as is
@@ -48,12 +74,14 @@ struct AnthropicMessage
 // {"type":"image","source":{"type":"base64","media_type":"image/jpeg","data":...}}
 nlohmann::json JpegImageBlock( const IsoString& base64 );
 
-// The Messages API request body (UTF-8 JSON, non-streamed: no "stream" key).
+// The Messages API request body (UTF-8 JSON). max_tokens = shape.maxTokens;
+// shape.stream adds "stream": true (otherwise there is no "stream" key).
 // tools non-null -> a "tools" array. Pure function, any thread. Throws
 // std::exception if JSON building fails.
 std::string BuildMessagesRequestBody( const IsoString& model, const String& systemPrompt,
                                       const Array<AnthropicMessage>& history,
-                                      const nlohmann::json& tools = nlohmann::json() );
+                                      const nlohmann::json& tools = nlohmann::json(),
+                                      const RequestShape& shape = RequestShape() );
 
 // Outcome of an AnthropicClient::Send() call. Send() never throws across
 // its caller -- success or failure both ride back in here, since the
@@ -71,6 +99,9 @@ struct AnthropicResult
                                      // them before storing the turn (no unanswered tool_use)
    std::string    stopReason;        // "end_turn" | "tool_use" | "max_tokens" | ...
    nlohmann::json contentBlocks;     // the reply's "content" array, verbatim (echoed back in history)
+   RequestErrorKind errorKind = RequestErrorKind::None;   // set whenever ok == false
+   nlohmann::json   usage;                 // the reply's "usage" object (incl. cache_read_input_tokens), when present
+   nlohmann::json   inputTransformations;  // the reply's "input_transformations" array, when present
 };
 
 // Parses one Messages API HTTP response. ok=true only for a 2xx body whose
@@ -89,7 +120,7 @@ struct AnthropicResult
 AnthropicResult ParseMessagesResponse( int httpStatus, const IsoString& body, const String& transportError );
 
 /*!
- * One prepared, blocking, non-streamed Anthropic Messages API request
+ * One prepared, blocking Anthropic Messages API request
  * (https://api.anthropic.com/v1/messages), built on pcl::NetworkTransfer.
  *
  * THREADING (proven by PICopilotSelfTest path 5, "workerThreadOk"):
@@ -110,6 +141,13 @@ AnthropicResult ParseMessagesResponse( int httpStatus, const IsoString& body, co
  *    or timed-out request returns ok=false with error "request cancelled" /
  *    "request timed out after N s".
  *
+ * STREAMING (shape.stream): Perform() feeds every received chunk to an
+ * SseMessageAssembler on the performing thread; completed text deltas are
+ * queued under a mutex for TakeStreamedText() (the UI thread's Timer). The
+ * result is the rebuilt message through ParseMessagesResponse(); an error
+ * event, a stream that ends without message_stop, and no bytes for
+ * shape.streamIdleSeconds each fail with their own RequestErrorKind.
+ *
  * All inputs are copied/serialized at construction; the request holds no
  * references to caller state.
  */
@@ -121,7 +159,8 @@ public:
                      const String& systemPrompt, const Array<AnthropicMessage>& history,
                      const String& url = PICOPILOT_MESSAGES_URL,
                      int timeoutSeconds = PICopilotRequestTimeoutSeconds,
-                     const nlohmann::json& tools = nlohmann::json() );
+                     const nlohmann::json& tools = nlohmann::json(),
+                     const RequestShape& shape = RequestShape() );
    ~AnthropicRequest();
 
    AnthropicRequest( const AnthropicRequest& ) = delete;
@@ -131,6 +170,10 @@ public:
 
    // Thread-safe; idempotent. See THREADING above.
    void Cancel();
+
+   // Thread-safe. The text of the text deltas received since the last call
+   // (streamed requests; empty otherwise). The UI thread polls it.
+   String TakeStreamedText();
 
 private:
 
