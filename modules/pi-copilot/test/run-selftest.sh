@@ -228,6 +228,8 @@ required_true = [
     'panelResizableOk', 'turnEndNotesOk',
     'turnTargetOk',
     'liveAgentOk',
+    # increment 5
+    'inc5SmokeOk',
     'ok',
 ]
 missing = [k for k in required_true if d.get(k) is not True]
