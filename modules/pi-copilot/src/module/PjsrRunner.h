@@ -39,9 +39,11 @@ String NormalizeScriptNewlines( const String& code );
 // lone CR), DEL, the C1 controls, U+2028/U+2029 (JavaScript line
 // terminators), unpaired surrogates, and every Unicode format character
 // (category Cf: zero-width characters, bidi embeddings/overrides/isolates,
-// U+FEFF, soft hyphen, tag characters, ...) -- characters that are invisible
-// or reorder text, so the script the user reads could differ from the one
-// that runs.
+// U+FEFF, soft hyphen, tag characters, ...), plus the non-Cf invisible
+// characters JavaScript accepts inside identifiers (Hangul fillers U+115F,
+// U+1160, U+3164, U+FFA0; variation selectors U+FE00-FE0F, U+E0100-E01EF;
+// U+034F, U+17B4, U+17B5) -- characters that are invisible or reorder text,
+// so the script the user reads could differ from the one that runs.
 String ScriptCharProblem( const String& code );
 
 // How many lines the engine's synthesized `new Function` source puts before
@@ -54,7 +56,8 @@ int PjsrLineOffset();
 struct PjsrCheck
 {
    bool   ok = false;
-   String error;      // "SyntaxError: <message>"
+   String error;      // "SyntaxError: <message>" (at most PICopilotMaxScriptErrorChars)
+   bool   errorTruncated = false;
    int    line = 0;   // always 0 (unknown): under EvaluateScript a new Function()
                       // SyntaxError carries no position at all (inc-5 Task 1)
 };
