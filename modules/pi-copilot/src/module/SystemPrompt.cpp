@@ -84,7 +84,8 @@ const char* const kScriptTool =
    "this PixInsight the constants are namespaced objects: UndoFlag.PixelData, ImageOp.Mul (the old "
    "UndoFlag_PixelData / ImageOp_Mul names are undefined). A "
    "script cannot be interrupted: never write loops that might not end. If the user declines, do not send the same "
-   "script again.\n";
+   "script again. Never use run_pjsr to run a process that apply_process or run_global_process refused as not "
+   "allowed, or to get around any other refusal: tell the user instead.\n";
 
 const char* const kApplyIdioms =
    "\nUsing apply_process:\n"
@@ -109,8 +110,8 @@ const char* const kApplyIdioms =
    "you; at least 3 enabled frames. Never invent file paths: ask the user for the folder or the files.\n"
    "- A large integration keeps PixInsight busy for minutes: tell the user before you start one. They can abort it "
    "from the Process Console, so a run reported as not completed may have been aborted by them.\n"
-   "- Some runs ask the user first even in Copilot mode, because they write files or close windows; if the user "
-   "declines, do not repeat the call.\n";
+   "- Some runs ask the user first even in Copilot mode, because they write files, close windows or change "
+   "PixInsight settings; if the user declines, do not repeat the call.\n";
 
 const char* const kVision =
    "\nA user message may begin with a [PixInsight view context] block (JSON: view identity, geometry, per-channel "

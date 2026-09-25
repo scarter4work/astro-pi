@@ -24,6 +24,7 @@ AgentMode AgentModeFromIndex( int index );
 
 constexpr size_type PICopilotToolLogParamChars   = 120;   // parameters shown in a chat-log tool line
 constexpr size_type PICopilotConfirmChangesChars = 1500;  // parameter text in the Guided dialog
+constexpr size_type PICopilotMaxToolResultChars  = 20000; // one tool_result text block (characters), then a cut note
 
 // Which optional tools a message offers. run_pjsr: the user allowed scripts
 // in ⚙ (never offered in Advisor, whatever this says).
@@ -54,6 +55,7 @@ struct ToolOutcome
 
 // Asked before a process run in Guided mode, and in EVERY mode when the
 // process safety policy says confirm (ProcessSafety.h); true = the user approved.
+// viewId is EMPTY for a global run (run_global_process).
 using ConfirmApplyFn = std::function<bool( const String& processId, const String& viewId, const String& changes )>;
 
 // run_pjsr: asked for EVERY script, in every mode; true = the user clicked Run script.
@@ -89,6 +91,17 @@ struct ToolContext
 // and the Guided dialog). Never throws: every failure is isError=true with a
 // precise, model-correctable message in content[0].
 ToolOutcome ExecuteTool( const ToolCall& call, const ToolContext& ctx );
+
+// The confirm dialog's text (HTML): "Apply <process> to <view>?" for a run on
+// a view, "Run <process> globally? (creates new images; changes no open
+// image)" when viewId is empty; then the (escaped) changes and what can be undone.
+String ConfirmDialogHtml( const String& processId, const String& viewId, const String& changes );
+
+// Cuts every text block of `o.content` longer than maxChars characters (code
+// points) to maxChars and appends a visible note naming the original length;
+// the log line says so too. Image blocks are untouched. Returns true when
+// something was cut. ExecuteTool() applies it to every result.
+bool CapToolResultText( ToolOutcome& o, size_type maxChars = PICopilotMaxToolResultChars );
 
 // {"type":"tool_result","tool_use_id":..,"content":[..],"is_error":..}
 nlohmann::json ToolResultBlock( const std::string& toolUseId, const ToolOutcome& outcome );

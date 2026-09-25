@@ -66,28 +66,6 @@ const char* const kModesNoticeUtf8 =
    "undo it as usual); Guided shows each change and asks you first; Advisor is read-only and only gives advice. "
    "A mode change applies from your next message.";
 
-// For MessageBox rich text (the Guided dialog): the model-chosen ids and the
-// parameter text are shown literally.
-String EscapeHtml( const String& s )
-{
-   String out;
-   for ( size_type i = 0; i < s.Length(); ++i )
-   {
-      const char16_type c = s[i];
-      if ( c == '&' )
-         out += "&amp;";
-      else if ( c == '<' )
-         out += "&lt;";
-      else if ( c == '>' )
-         out += "&gt;";
-      else if ( c == '\n' )
-         out += "<br/>";
-      else
-         out += c;
-   }
-   return out;
-}
-
 } // namespace
 
 PICopilotInterface::PICopilotInterface()
@@ -410,10 +388,7 @@ ToolContext PICopilotInterface::MakeToolContext()
 
 bool PICopilotInterface::ConfirmApply( const String& processId, const String& viewId, const String& changes )
 {
-   const String text = "<p>Apply <b>" + EscapeHtml( processId ) + "</b> to <b>" + EscapeHtml( viewId ) + "</b>?</p>"
-                     + "<p>" + EscapeHtml( changes ) + "</p>"
-                     + "<p>Changes to an image can be undone from the view's History. Effects outside the "
-                       "image (files written, windows closed) cannot.</p>";
+   const String text = ConfirmDialogHtml( processId, viewId, changes );   // viewId empty: a global run
    // Asked in Guided mode, and in EVERY mode when the process safety policy
    // says confirm, so the title names neither mode.
    return MessageBox( text, String::UTF8ToUTF16( "PI Copilot \xE2\x80\x94 confirm" ), StdIcon::Question,

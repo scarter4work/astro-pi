@@ -3,6 +3,7 @@
 
 #include "AgentTools.h"
 #include "AnthropicClient.h"   // JpegImageBlock
+#include "GlobalRunFiles.h"    // NulTextProblem
 #include "PjsrRunner.h"
 #include "ProcessApply.h"
 #include "ProcessCatalog.h"
@@ -43,6 +44,28 @@ String S16( const std::string& s )
 String Shorten( const String& s, size_type n )
 {
    return (s.Length() <= n || n < 4) ? s : s.Left( n - 3 ) + "...";
+}
+
+// For MessageBox rich text (the confirm dialog): model-chosen ids and the
+// parameter text are shown literally.
+String EscapeHtmlText( const String& s )
+{
+   String out;
+   for ( size_type i = 0; i < s.Length(); ++i )
+   {
+      const char16_type c = s[i];
+      if ( c == '&' )
+         out += "&amp;";
+      else if ( c == '<' )
+         out += "&lt;";
+      else if ( c == '>' )
+         out += "&gt;";
+      else if ( c == '\n' )
+         out += "<br/>";
+      else
+         out += c;
+   }
+   return out;
 }
 
 nlohmann::json TextBlock( const std::string& utf8 )
@@ -139,12 +162,14 @@ bool WasInspected( const ToolContext& ctx, const IsoString& fullId )
 // `target` is the dialog's target text; `callText` names the call in the
 // declined message (e.g. "PixelMath on Image01"); `nothingDone` ends it.
 // Advisor never reaches this: its callers refuse Advisor first.
+// `target` is empty for a global run.
 bool PassSafetyGate( const char* tool, const std::string& pid, const nlohmann::json& params,
-                     const nlohmann::json& tables, const ToolContext& ctx, const String& what,
+                     const nlohmann::json& tables, SafetyRunKind run,
+                     const ToolContext& ctx, const String& what,
                      const String& target, const std::string& callText, const char* nothingDone,
                      ToolOutcome& out )
 {
-   const SafetyVerdict safety = CheckProcessSafety( IsoString( pid.c_str() ), params, tables );
+   const SafetyVerdict safety = CheckProcessSafety( IsoString( pid.c_str() ), params, tables, run );
    if ( safety.kind == SafetyVerdict::Deny )
    {
       out = Fail( what, S16( pid ) + " is not allowed from PI Copilot: " + safety.reason
@@ -215,9 +240,17 @@ ToolOutcome ApplyProcessTool( const nlohmann::json& in, const ToolContext& ctx, 
    const IsoString targetId = target.FullId();
    what += " on " + String( targetId );
 
+   // Before any dialog: NUL in any string (the core would cut the text there).
+   {
+      const String e = NulTextProblem( IsoString( pid.c_str() ), params, tables );
+      if ( !e.IsEmpty() )
+         return Fail( what, e );
+   }
+
    {
       ToolOutcome refused;
-      if ( !PassSafetyGate( "apply_process", pid, params, tables, ctx, what, String( targetId ),
+      if ( !PassSafetyGate( "apply_process", pid, params, tables, SafetyRunKind::OnView, ctx, what,
+                            String( targetId ),
                             pid + " on " + std::string( targetId.c_str() ), "Nothing was changed.", refused ) )
          return refused;
    }
@@ -285,8 +318,8 @@ ToolOutcome RunGlobalTool( const nlohmann::json& in, const ToolContext& ctx, clo
 
    {
       ToolOutcome refused;
-      if ( !PassSafetyGate( "run_global_process", pid, params, tables, ctx, what,
-                            "(global run: creates new images, changes no open image)", pid, "Nothing was run.", refused ) )
+      if ( !PassSafetyGate( "run_global_process", pid, params, tables, SafetyRunKind::Global, ctx, what,
+                            String()/*global run*/, pid, "Nothing was run.", refused ) )
          return refused;
    }
 
@@ -569,6 +602,53 @@ nlohmann::json ToolDefinitions( AgentMode mode, const ToolOptions& options )
    return tools;
 }
 
+String ConfirmDialogHtml( const String& processId, const String& viewId, const String& changes )
+{
+   if ( viewId.IsEmpty() )
+      return "<p>Run <b>" + EscapeHtmlText( processId ) + "</b> globally?</p>"
+             + "<p>" + EscapeHtmlText( changes ) + "</p>"
+             + "<p>A global run changes no open image; it usually creates new images. Effects outside them "
+               "(files written, windows closed, PixInsight settings changed) cannot be undone from History.</p>";
+   return "<p>Apply <b>" + EscapeHtmlText( processId ) + "</b> to <b>" + EscapeHtmlText( viewId ) + "</b>?</p>"
+          + "<p>" + EscapeHtmlText( changes ) + "</p>"
+          + "<p>Changes to an image can be undone from the view's History. Effects outside the "
+            "image (files written, windows closed) cannot.</p>";
+}
+
+bool CapToolResultText( ToolOutcome& o, size_type maxChars )
+{
+   if ( !o.content.is_array() )
+      return false;
+   bool cut = false;
+   size_t longest = 0;
+   for ( nlohmann::json& b : o.content )
+   {
+      if ( !b.is_object() || b.value( "type", std::string() ) != "text" || !b.contains( "text" ) || !b["text"].is_string() )
+         continue;
+      const std::string& t = b["text"].get_ref<const std::string&>();
+      // Characters = code points: count UTF-8 lead bytes; cut on a boundary.
+      size_t chars = 0, cutAt = std::string::npos;
+      for ( size_t i = 0; i < t.size(); ++i )
+         if ( (uint8( t[i] ) & 0xC0) != 0x80 )
+         {
+            if ( chars == maxChars )
+               cutAt = i;
+            ++chars;
+         }
+      if ( chars <= maxChars )
+         continue;
+      std::string kept = t.substr( 0, cutAt );
+      kept += "\n\n[tool result cut: " + std::to_string( maxChars ) + " of " + std::to_string( chars )
+            + " characters shown. The rest was not sent; ask for less (e.g. describe one process or view at a time).]";
+      b["text"] = kept;
+      cut = true;
+      longest = std::max( longest, chars );
+   }
+   if ( cut )
+      o.logLine += String().Format( " (result cut to %u of %u characters)", unsigned( maxChars ), unsigned( longest ) );
+   return cut;
+}
+
 nlohmann::json CollapsedViewContext( const nlohmann::json& full )
 {
    nlohmann::json c = nlohmann::json::object();
@@ -589,7 +669,10 @@ nlohmann::json ToolResultBlock( const std::string& toolUseId, const ToolOutcome&
    return { { "type", "tool_result" }, { "tool_use_id", toolUseId }, { "content", content }, { "is_error", o.isError } };
 }
 
-ToolOutcome ExecuteTool( const ToolCall& call, const ToolContext& ctx )
+namespace
+{
+
+ToolOutcome ExecuteToolUncapped( const ToolCall& call, const ToolContext& ctx )
 {
    const clock::time_point t0 = clock::now();
    const String name = S16( call.name );
@@ -661,9 +744,12 @@ ToolOutcome ExecuteTool( const ToolCall& call, const ToolContext& ctx )
          return RunGlobalTool( in, ctx, t0 );
       if ( call.name == "run_pjsr" )
          return RunPjsrTool( in, ctx, t0 );
-      return Fail( name, "unknown tool '" + name + "'; available: list_processes, describe_process, get_view_context"
-                         + (ctx.mode == AgentMode::Advisor ? String()
-                                                           : String( ", apply_process, run_global_process, run_pjsr (when the user allows scripts)" )) );
+      // Only what this turn actually offers (the same function builds the
+      // request's tools array).
+      String offered;
+      for ( const nlohmann::json& t : ToolDefinitions( ctx.mode, ToolOptions{ ctx.runPjsr } ) )
+         offered += (offered.IsEmpty() ? String() : String( ", " )) + S16( t["name"].get<std::string>() );
+      return Fail( name, "unknown tool '" + name + "'; available: " + offered );
    }
    catch ( const pcl::Exception& x )
    {
@@ -677,6 +763,15 @@ ToolOutcome ExecuteTool( const ToolCall& call, const ToolContext& ctx )
    {
       return Fail( name, name + " failed: unknown error" );
    }
+}
+
+} // namespace
+
+ToolOutcome ExecuteTool( const ToolCall& call, const ToolContext& ctx )
+{
+   ToolOutcome o = ExecuteToolUncapped( call, ctx );
+   CapToolResultText( o );
+   return o;
 }
 
 } // namespace pcl

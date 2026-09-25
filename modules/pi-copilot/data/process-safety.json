@@ -1,10 +1,11 @@
 {
-  "_doc": "PI Copilot process safety policy. deny: never run from PI Copilot. confirmAlways: ask the user before every run, in every mode. confirmWhen: ask when the effective value of `parameter` (as given, else the process default) equals `equals` (or, with `notEquals`, is anything other than that value). reviewedSafe: flagged by the file/disk/window heuristic but reviewed: no effect beyond the target image or new windows. fileTables: path rules for global runs (Task 8).",
+  "_doc": "PI Copilot process safety policy. deny: never run from PI Copilot. confirmAlways: ask the user before every run, in every mode. confirmWhen: ask when the effective value of `parameter` (as given, else the process default) equals `equals` (or, with `notEquals`, is anything other than that value). reviewedSafe: flagged by the file/disk/window heuristic but reviewed: no effect beyond the target image or new windows. globalSafe: can-process-global (PCL default) but reviewed: a global run is refused by the core, or only creates new images; runs without asking in Copilot. globalConfirm: a global run is possible and not fully understood: ask before every global run (runs on a view are unaffected). A global run of a process in none of these sections asks. fileTables: path rules for global runs.",
   "deny": {
     "GraXpert": "it launches an external program whose path is a parameter (appPath), which PI Copilot cannot check",
     "IndigoCCDFrame": "it controls a camera through an INDIGO server (exposures, uploads, file saving)",
     "IndigoDeviceController": "it sends commands to observatory devices through an INDIGO server",
     "IndigoMount": "it moves the telescope mount through an INDIGO server",
+    "NetworkService": "it runs PixInsight as a network processing service that fetches tasks from a remote server and executes them",
     "PICopilot": "it is PI Copilot itself (running it from the chat would recurse)",
     "Preferences": "it changes PixInsight's application settings, including its script-signature security settings",
     "ProcessContainer": "it runs a list of other processes that PI Copilot cannot check one by one",
@@ -24,9 +25,12 @@
     "Gaia": "it can write catalog search results to files, and its configure commands change the catalog database settings",
     "ImageCalibration": "it writes calibrated copies of the input frames to its output directory and can overwrite existing files",
     "LocalNormalization": "it writes normalization data files (.xnml) to disk",
+    "MARSGen": "it generates MARS gradient-model database files on disk",
     "NSGXnml": "it writes normalization data files (.xnml) to its output directory",
     "NoiseXTerminator": "its compiled plug-in can crash PixInsight (SIGABRT) on NVIDIA Blackwell GPUs such as the RTX 50 series, losing unsaved work; Script > RC-Astro runs the same tool through its command-line version instead",
     "NukeX": "it writes cache files to its cache directory while stacking",
+    "RGBWorkingSpace": "in the global context it changes PixInsight's default RGB working space for every image; on a view it assigns a new working space to that image",
+    "ReadoutOptions": "it changes PixInsight's global pixel readout options (what the cursor readouts show and how they are computed)",
     "SplitCFA": "in the global context it writes split CFA frames to its output directory",
     "StarAlignment": "in the global context it writes registered copies of the input frames to its output directory",
     "StarXTerminator": "its compiled plug-in can crash PixInsight (SIGABRT) on NVIDIA Blackwell GPUs such as the RTX 50 series, losing unsaved work; Script > RC-Astro runs the same tool through its command-line version instead",
@@ -122,12 +126,91 @@
     "TGVDenoise": "'supportRemovedWaveletLayers' is a support-mask option",
     "UnsharpMask": "'outputDeringingMaps' opens new image windows"
   },
+  "globalSafe": {
+    "ATrousWaveletTransformV1": "the core refuses a global run (\"ATrousWaveletTransformV1 instances cannot be executed in the global context\")",
+    "AdaptiveStretch": "the core refuses a global run (\"AdaptiveStretch instances cannot be executed in the global context\")",
+    "Annotation": "the core refuses a global run (\"Annotation instances cannot be executed in the global context\")",
+    "ArcsinhStretch": "the core refuses a global run (\"ArcsinhStretch instances cannot be executed in the global context\")",
+    "AssistedColorCalibration": "the core refuses a global run (\"AssistedColorCalibration instances cannot be executed in the global context\")",
+    "AutoHistogram": "the core refuses a global run (\"AutoHistogram instances cannot be executed in the global context\")",
+    "BackgroundNeutralization": "the core refuses a global run (\"BackgroundNeutralization instances cannot be executed in the global context\")",
+    "Binarize": "the core refuses a global run (\"Binarize instances cannot be executed in the global context\")",
+    "ChannelCombination": "a global run combines the named channel images into a NEW image window",
+    "ChannelExtraction": "the core refuses a global run (\"ChannelExtraction instances cannot be executed in the global context\")",
+    "ChannelMatch": "the core refuses a global run (\"ChannelMatch instances cannot be executed in the global context\")",
+    "CloneStamp": "the core refuses a global run (\"CloneStamp instances cannot be executed in the global context\")",
+    "ColorSaturation": "the core refuses a global run (\"ColorSaturation instances cannot be executed in the global context\")",
+    "Colourise": "the core refuses a global run (\"Colourise instances cannot be executed in the global context\")",
+    "ConvertToGrayscale": "the core refuses a global run (\"ConvertToGrayscale instances cannot be executed in the global context\")",
+    "ConvertToRGBColor": "the core refuses a global run (\"ConvertToRGBColor instances cannot be executed in the global context\")",
+    "Convolution": "the core refuses a global run (\"Convolution instances cannot be executed in the global context\")",
+    "Crop": "the core refuses a global run (\"Crop instances cannot be executed in the global context\")",
+    "CurvesTransformation": "the core refuses a global run (\"CurvesTransformation instances cannot be executed in the global context\")",
+    "Deconvolution": "the core refuses a global run (\"Deconvolution instances cannot be executed in the global context\")",
+    "DeepMorphology": "the core refuses a global run (\"DeepMorphology instances cannot be executed in the global context\")",
+    "DefectMap": "the core refuses a global run (\"DefectMap instances cannot be executed in the global context\")",
+    "DigitalDevelopment": "the core refuses a global run (\"DigitalDevelopment instances cannot be executed in the global context\")",
+    "Divide": "the core refuses a global run (\"Divide instances cannot be executed in the global context\")",
+    "DynamicCrop": "the core refuses a global run (\"DynamicCrop instances cannot be executed in the global context\")",
+    "ExponentialTransformation": "the core refuses a global run (\"ExponentialTransformation instances cannot be executed in the global context\")",
+    "FITSHeader": "the core refuses a global run (\"FITSHeader instances cannot be executed in the global context\")",
+    "FastRotation": "the core refuses a global run (\"FastRotation instances cannot be executed in the global context\")",
+    "FluxCalibration": "the core refuses a global run (\"FluxCalibration instances cannot be executed in the global context\")",
+    "FourierTransform": "the core refuses a global run (\"FourierTransform instances cannot be executed in the global context\")",
+    "GREYCstoration": "the core refuses a global run (\"GREYCstoration instances cannot be executed in the global context\")",
+    "GeneralizedHyperbolicStretch": "the core refuses a global run (\"GeneralizedHyperbolicStretch instances cannot be executed in the global context\")",
+    "GradientCorrection": "the core refuses a global run (\"GradientCorrection instances cannot be executed in the global context\")",
+    "HistogramTransformation": "the core refuses a global run (\"HistogramTransformation instances cannot be executed in the global context\")",
+    "ImageIdentifier": "the core refuses a global run (\"ImageIdentifier instances cannot be executed in the global context\")",
+    "IntegerResample": "the core refuses a global run (\"IntegerResample instances cannot be executed in the global context\")",
+    "InverseFourierTransform": "a global run builds a NEW image window from the named Fourier components",
+    "Invert": "the core refuses a global run (\"Invert instances cannot be executed in the global context\")",
+    "LarsonSekanina": "the core refuses a global run (\"LarsonSekanina instances cannot be executed in the global context\")",
+    "LinearFit": "the core refuses a global run (\"LinearFit instances cannot be executed in the global context\")",
+    "LocalHistogramEqualization": "the core refuses a global run (\"LocalHistogramEqualization instances cannot be executed in the global context\")",
+    "MaskedStretch": "the core refuses a global run (\"MaskedStretch instances cannot be executed in the global context\")",
+    "MultiscaleAdaptiveStretch": "the core refuses a global run (\"MultiscaleAdaptiveStretch instances cannot be executed in the global context\")",
+    "MultiscaleMedianTransform": "the core refuses a global run (\"MultiscaleMedianTransform instances cannot be executed in the global context\")",
+    "NarrowbandNormalization": "the core refuses a global run (\"NarrowbandNormalization instances cannot be executed in the global context\")",
+    "NewImage": "a global run creates a NEW image window",
+    "NoOperation": "it does nothing",
+    "NoiseGenerator": "the core refuses a global run (\"NoiseGenerator instances cannot be executed in the global context\")",
+    "RangeSelection": "the core refuses a global run (\"RangeSelection instances cannot be executed in the global context\")",
+    "Resample": "the core refuses a global run (\"Resample instances cannot be executed in the global context\")",
+    "Rescale": "the core refuses a global run (\"Rescale instances cannot be executed in the global context\")",
+    "Rotation": "the core refuses a global run (\"Rotation instances cannot be executed in the global context\")",
+    "SampleFormatConversion": "the core refuses a global run (\"SampleFormatConversion instances cannot be executed in the global context\")",
+    "Sandbox": "the core refuses a global run (\"Sandbox instances cannot be executed in the global context\")",
+    "ScreenTransferFunction": "the core refuses a global run (\"ScreenTransferFunction instances cannot be executed in the global context\")",
+    "SimplexNoise": "the core refuses a global run (\"SimplexNoise instances cannot be executed in the global context\")",
+    "SolarToolbox": "the core refuses a global run (\"SolarToolbox instances cannot be executed in the global context\")",
+    "StarMask": "the core refuses a global run (\"StarMask instances cannot be executed in the global context\")",
+    "Superbias": "the core refuses a global run (\"Superbias instances cannot be executed in the global context\")"
+  },
+  "globalConfirm": {
+    "Blink": "its global run opens the Blink tool on files; its parameters cannot be inspected from a module",
+    "DynamicBackgroundExtraction": "with explicit sample and model settings the core allows a global run whose effects are not documented",
+    "DynamicPSF": "an interactive tool whose global run is not documented as only creating images",
+    "Statistics": "its global run cannot be inspected from a module (the process instance cannot be created here)"
+  },
   "fileTables": {
     "ImageIntegration": {
       "images": {
         "enabledColumn": "enabled",
         "minEnabledRows": 3,
-        "columns": { "path": "image", "drizzlePath": "optionalFile", "localNormalizationDataPath": "optionalFile" }
+        "columns": {
+          "path": "image",
+          "drizzlePath": "optionalFile",
+          "localNormalizationDataPath": "optionalFile"
+        }
+      }
+    },
+    "GradientMergeMosaic": {
+      "targetFrames": {
+        "enabledColumn": "enabled",
+        "columns": {
+          "path": "image"
+        }
       }
     }
   }

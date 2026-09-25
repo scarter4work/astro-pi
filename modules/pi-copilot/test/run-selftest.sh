@@ -74,6 +74,7 @@ else
 fi
 unset KR_KEY
 
+
 # Local "stalled server" for the cancel/deadline proof: accepts connections,
 # reads the request, and never answers -- the case SetConnectionTimeout()
 # cannot bound. Loopback only; killed on exit.
@@ -311,6 +312,7 @@ required_true = [
     'processSafetyOk',
     'globalProcessOk',
     'runPjsrOk', 'runPjsrBreakoutOk',
+    'finalFixOk',
     'ok',
 ]
 missing = [k for k in required_true if d.get(k) is not True]

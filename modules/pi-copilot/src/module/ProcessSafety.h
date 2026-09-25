@@ -22,6 +22,12 @@ struct SafetyVerdict
 // The compiled policy (or the self-test override).
 const nlohmann::json& CompiledProcessSafety();
 
+// How the process is about to run: on a view (apply_process) or in the global
+// context (run_global_process). A global run of a process in NO section and
+// not in "globalSafe" asks: a global run can change application-wide state
+// (e.g. the default RGB working space), which no parameter name reveals.
+enum class SafetyRunKind { OnView, Global };
+
 // deny -> Deny; confirmAlways -> Confirm; confirmWhen -> Confirm when a
 // rule's parameter has the rule's `equals` value (or, for a `notEquals` rule,
 // any other value) -- the value given in `parameters`,
@@ -35,12 +41,24 @@ const nlohmann::json& CompiledProcessSafety();
 // reviewedSafe -> Allow. A process in NO section (a newer PixInsight, a
 // third-party module) whose parameter/column ids match the side-effect
 // heuristic -> Confirm ("it has not been reviewed and has file/output-like
-// parameters: ..."). An unknown process id is Allow here (ApplyProcess /
-// RunGlobalProcess then fail with their precise "unknown process" error); any
-// other failure while checking fails CLOSED (Confirm, "this run could not be
-// checked"). Root thread only. Never throws.
+// parameters: ..."); for run == Global, "globalConfirm" -> Confirm ("a global
+// run: <reason>"), and a global-capable process in NO section that is not in
+// "globalSafe"/"globalConfirm" -> Confirm ("it has not been reviewed for
+// global runs, ..."); both unlisted reasons are joined with "; ". An unknown process id is Allow
+// here (ApplyProcess / RunGlobalProcess then fail with their precise "unknown
+// process" error); any other failure while checking fails CLOSED (Confirm,
+// "this run could not be checked"). Root thread only. Never throws.
 SafetyVerdict CheckProcessSafety( const IsoString& processId, const nlohmann::json& parameters,
-                                  const nlohmann::json& tableParameters );
+                                  const nlohmann::json& tableParameters,
+                                  SafetyRunKind run = SafetyRunKind::OnView );
+
+// The GLOBAL coverage gate: installed processes that can run in the global
+// context (Process::CanProcessGlobal()) and are in none of deny /
+// confirmAlways / confirmWhen / reviewedSafe / globalSafe / globalConfirm.
+// [{process, canProcessViews}]. Deliberately does NOT probe
+// CanExecuteGlobal(): a default ProcessContainer blocks there (measured).
+// Root thread.
+nlohmann::json UnreviewedGlobalProcesses();
 
 // Installed processes with a parameter (or table column) id matching the
 // side-effect heuristic -- case-insensitive substrings output|directory|dir$|
@@ -52,8 +70,10 @@ SafetyVerdict CheckProcessSafety( const IsoString& processId, const nlohmann::js
 // [{process, parameters, canProcessViews, canProcessGlobal}]. Root thread.
 nlohmann::json UnclassifiedSideEffectCandidates();
 
-// Policy ids that are not installed processes under their canonical id, and
-// confirmWhen parameters the process does not have (catches typos).
+// Policy ids that are not installed processes under their canonical id,
+// confirmWhen parameters the process does not have, globalSafe entries that
+// are also in another section, fileTables tables/columns that do not exist
+// (canonical ids) (catches typos).
 nlohmann::json UnknownPolicyProcessIds();
 
 // Self-test only: evaluate against `policy` instead (nullptr restores).

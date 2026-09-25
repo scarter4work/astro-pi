@@ -40,16 +40,15 @@ Increment 1 deliverables:
 - Self-contained self-test shipped in-module. It runs on `ExecuteGlobal` **only** when the harness sets `PICOPILOT_SELFTEST_OUT`; in a normal install, executing the process just prints a console hint to open the panel — no Settings writes, no network, no files (harmless in production)
 - Signing and headless loading verified
 
-## Increment 2 — Text Chat
+## Chat, key and settings (as of 0.1.2.0)
 
-- **Config button** (⚙) opens a password-masked dialog; you paste your own Anthropic API key (BYO-key). The field is trimmed; a key containing spaces, line breaks or other non-printable-ASCII characters is rejected with an error and the dialog stays open (nothing saved).
-- **Key storage**: the key is stored **in plaintext** in your PixInsight user settings (`PICopilot/AnthropicApiKey`). It is never shipped in the repo or package. **To clear it**, open ⚙, empty the field and press OK — the setting is removed.
-- **Dockable panel** provides a chat log, input line (Return or Send button), and mode selector (Copilot / Advisor / Guided — the selector took effect in increment 4; see below).
-- **Requests** are non-streamed Messages API calls (default model `claude-opus-4-8`); the reply appears when complete, and the Send button reads "Thinking…" while a turn is in flight. Every text block of the reply is shown; a reply cut off by `max_tokens` ends with `[truncated: max_tokens]`. Streaming is a later increment.
-- **Timeout / cancel**: each request has an overall **300 s** limit (not just a connect timeout), enforced from the transfer's progress callback; a stalled request ends with `request timed out after 300 s`. Closing PixInsight with a request in flight cancels it instead of waiting.
-- **Threading**: the NetworkTransfer + response sink are constructed on the UI thread (PCL refuses to create a Control off the root thread — `CreateControl(): API function error`); a worker `pcl::Thread` performs only the blocking POST + parse; a 0.2 s UI `Timer` drains the result into the chat log.
-- **Error handling**: a missing key shows a notice pointing to ⚙; a non-2xx shows `Error <status>: <API error message>` verbatim. A failed turn is dropped from the conversation history so user/assistant turns keep alternating, and its prompt is put back in the input line (if empty) for a resend.
-- **GUI scope**: the panel and dialog cannot be tested headlessly (`--automation-mode` can't run GUI); they are verified by hand in PixInsight.
+- **⚙ settings** (the gear button): your own Anthropic API key (BYO-key; trimmed; a key with spaces, line breaks or other non-printable-ASCII characters is rejected and nothing is saved), the **model** (Claude Opus 4.8 by default; also Opus 5.5, Fable 5.1, Sonnet 5, Haiku 4.5 — takes effect from your next message), **Allow scripts** (see *Scripts* below; off by default) and the panel's **default side** (right or left).
+- **Key storage: the system keyring.** The key is stored with `secret-tool` (the freedesktop Secret Service, e.g. GNOME Keyring) under `service picopilot account anthropic-api-key`; the dialog says where it is. A key from 0.1.1.x or earlier, kept in plaintext in PixInsight's settings, is moved into the keyring on first use — the plaintext copy is removed only after the keyring copy has been read back equal. If no keyring is available (`secret-tool` missing, or the keyring refuses), the key falls back to PixInsight's settings **in plain text**, and the dialog says so. To remove the key, empty the field in ⚙ and press OK (both copies are removed). The key is never shipped, logged or shown.
+- **Replies stream**: text appears as it is written. Each request has an overall **600 s** limit, and a stream that sends nothing for **120 s** ends as stalled. **Stop** cancels the request in flight; a reply that broke off (Stop or a failure) is marked as such in the chat log. A reply cut off by the output limit ends with `[truncated: max_tokens]`.
+- **New chat** starts a fresh conversation; your images and their History are untouched.
+- **Long conversations**: when the history grows past its budget (about 100,000 tokens, estimated), the oldest messages stop being sent to the model and the chat log says how many; New chat starts fresh. Prompt caching keeps repeated context cheap. On models that think (Opus 5.5, Fable 5.1), their reasoning is kept and re-sent so the model stays consistent across tool steps.
+- **Errors** from the API (e.g. an invalid key, rate limits, overload) are shown verbatim in the chat log; a failed turn is dropped from the history and its prompt is put back in the input line.
+- **GUI scope**: the panel and dialogs cannot be tested headlessly (`--automation-mode` can't run GUI); they are verified by hand on the released build.
 
 ## Increment 3 — Vision (the panel sees the active view)
 
@@ -70,14 +69,17 @@ Increment 1 deliverables:
   - **Guided** — shows each process and its parameters in a dialog and runs it only if you press **Yes** (the default button is **No**; Esc also declines).
   - **Advisor** — read-only: looks and advises, never changes the image.
 - **Which image:** the target is the view that was active when you pressed Send (with Include view on, the one whose preview went with the message; with it off, still the view active at Send) — clicking another image while a request runs does not redirect it. The model can work on another view only after inspecting it with `get_view_context` in the same message. Each applied process is logged in the chat as `… on <view id>`.
-- **Stop** ends the message: no further tool runs (a process that is already running always finishes) and the request in flight is cancelled. **Clear** starts a new chat; your images and their History are untouched.
+- **Stop** ends the message: no further tool runs (a process that is already running always finishes) and the request in flight is cancelled. **New chat** starts a new conversation; your images and their History are untouched.
 - **Limits:** at most **12** tool steps (model responses that call tools) per message, and at most **8** tool calls per step; extra calls are answered "not executed" and the model is asked to summarize.
 - **Failures:** if a process started but did not complete (an error found while running, or you aborted it), the reason is in PixInsight's **Process Console** — the module cannot read it back, so the chat only says it failed.
-- Text in image metadata (FITS keywords, file names) and in tool results is treated as data, never as instructions.
+- **Tool results** longer than 20,000 characters are cut, with a visible note to the model saying how much was left out (the chat log says so too).
+- **Metadata is not a security boundary.** The model is *told* that text in image metadata (FITS keywords, file names) and in tool results is data, not instructions — but that is guidance to the model, not something PI Copilot can enforce. What limits what can happen is the mode you choose, the tools offered in it, the process safety policy and the confirmation dialogs below.
 
 ## Process safety policy
 
-PI Copilot checks every process it runs (apply_process, run_global_process) against a compiled policy (data/process-safety.json). The self-test fails if an installed process with file, directory, overwrite or window-closing parameters is not classified.
+PI Copilot checks every process it runs (apply_process, run_global_process) against a compiled policy (data/process-safety.json). The self-test fails if an installed process with file, directory, overwrite or window-closing parameters is not classified, or if an installed process that can run in the global context has not been reviewed for global runs.
+
+Before any dialog, every parameter is checked: text containing a NUL character (U+0000) is refused anywhere (the core would silently cut it there), file paths in file tables must be absolute, existing, readable files, and two keys that name the same parameter (its id and an alias) are refused.
 
 A "confirm" asks you in every mode, Copilot included, and the dialog defaults to No. A denied process returns a precise error to the model; nothing runs. Advisor mode never runs anything.
 
@@ -87,6 +89,7 @@ A "confirm" asks you in every mode, Copilot included, and the dialog defaults to
 | IndigoCCDFrame | never run it | it controls a camera through an INDIGO server (exposures, uploads, file saving) |
 | IndigoDeviceController | never run it | it sends commands to observatory devices through an INDIGO server |
 | IndigoMount | never run it | it moves the telescope mount through an INDIGO server |
+| NetworkService | never run it | it runs PixInsight as a network processing service that fetches tasks from a remote server and executes them |
 | PICopilot | never run it | it is PI Copilot itself (running it from the chat would recurse) |
 | Preferences | never run it | it changes PixInsight's application settings, including its script-signature security settings |
 | ProcessContainer | never run it | it runs a list of other processes that PI Copilot cannot check one by one |
@@ -103,10 +106,13 @@ A "confirm" asks you in every mode, Copilot included, and the dialog defaults to
 | FilterManager | always ask you first | it reads and writes the filters database file |
 | Gaia | always ask you first | it can write catalog search results to files, and its configure commands change the catalog database settings |
 | ImageCalibration | always ask you first | it writes calibrated copies of the input frames to its output directory and can overwrite existing files |
+| MARSGen | always ask you first | it generates MARS gradient-model database files on disk |
 | LocalNormalization | always ask you first | it writes normalization data files (.xnml) to disk |
 | NSGXnml | always ask you first | it writes normalization data files (.xnml) to its output directory |
 | NoiseXTerminator | always ask you first | its compiled plug-in can crash PixInsight (SIGABRT) on NVIDIA Blackwell GPUs such as the RTX 50 series, losing unsaved work; Script > RC-Astro runs the same tool through its command-line version instead |
 | NukeX | always ask you first | it writes cache files to its cache directory while stacking |
+| RGBWorkingSpace | always ask you first | in the global context it changes PixInsight's default RGB working space for every image; on a view it assigns a new working space to that image |
+| ReadoutOptions | always ask you first | it changes PixInsight's global pixel readout options (what the cursor readouts show and how they are computed) |
 | SplitCFA | always ask you first | in the global context it writes split CFA frames to its output directory |
 | StarAlignment | always ask you first | in the global context it writes registered copies of the input frames to its output directory |
 | StarXTerminator | always ask you first | its compiled plug-in can crash PixInsight (SIGABRT) on NVIDIA Blackwell GPUs such as the RTX 50 series, losing unsaved work; Script > RC-Astro runs the same tool through its command-line version instead |
@@ -124,6 +130,8 @@ A "confirm" asks you in every mode, Copilot included, and the dialog defaults to
 
 Reviewed and allowed without asking (their file/path-like parameters have no effect beyond the image or new windows): ACDNR, ATrousWaveletTransform, AssignICCProfile, AstroResolver, AutomaticBackgroundExtractor, B3Estimator, ColorCalibration, DynamicAlignment, ExtractAlphaChannels, GradientHDRComposition, GradientHDRCompression, GradientMergeMosaic, HDRMultiscaleTransform, ICCProfileTransformation, LRGBCombination, MLDenoise, MergeCFA, MorphologicalTransformation, MultiscaleLinearTransform, PixelMath, RestorationFilter, SCNR, TGVDenoise, UnsharpMask.
 
+**Global runs** (run_global_process): most processes only inherit a "can run globally" flag and the core then refuses the run; those are listed as reviewed (`globalSafe`), as are NewImage, ChannelCombination and InverseFourierTransform (they create new images) and NoOperation. Blink, DynamicBackgroundExtraction, DynamicPSF and Statistics can run globally in ways PI Copilot cannot inspect, so a global run of them always asks (`globalConfirm`). A global run of any process not reviewed this way (a newer PixInsight, a third-party module) asks too ("it has not been reviewed for global runs"), because a global run can change PixInsight-wide settings rather than create images. In Guided, and whenever it asks, the dialog reads "Run <process> globally?".
+
 A process in none of these lists (a newer PixInsight, a third-party module) whose parameter ids look like files, folders, output, overwrite, closing windows, servers or commands is asked about at runtime ("it has not been reviewed and has file/output-like parameters: ..."). The dialog names the parameter and value that triggered a rule. If a run cannot be checked, PI Copilot asks rather than running it.
 
 ## Increment 5 — Scripts (`run_pjsr`, off by default)
@@ -137,6 +145,7 @@ A process in none of these lists (a newer PixInsight, a third-party module) whos
 - **Undo:** pixel changes are undoable only when the script wraps them in `view.beginProcess(UndoFlag.PixelData)` … `view.endProcess()` or runs process instances; the model is told to do so, but check the script. If a script fails part-way, whatever it changed before the error stays changed.
 - **Limits:** scripts up to 20,000 characters; the model gets back the returned value (JSON, up to 4,000 characters), error text up to 2,000 characters, and the last 8,000 characters of console output.
 - The script text reaches PixInsight only as a quoted data string, never spliced into code, so text inside it cannot escape the syntax check and run early (self-tested against quote, backslash, comment, `</script>`, NUL/control, U+2028/2029, surrogate and string-escape breakout attempts).
+- The model is told never to use a script to run a process the policy refused. That is an instruction, not a guarantee — which is why every script is shown to you in full before it runs.
 - The approval dialog itself cannot be exercised by the headless self-test (a modal cannot run there); everything behind it is. It is verified by hand on the released build.
 
 ## 0.1.0.4 — UTF-8 wire fix

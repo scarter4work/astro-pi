@@ -20,7 +20,7 @@ namespace
 
 String S16( const std::string& s )
 {
-   return String::UTF8ToUTF16( s.c_str() );
+   return FromU8( s );   // length-aware: never a silent cut at an embedded NUL
 }
 
 // "✖ <tool> → <suffix>"
