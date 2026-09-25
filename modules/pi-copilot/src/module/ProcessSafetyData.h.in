@@ -1,0 +1,11 @@
+// GENERATED at CMake configure time from modules/pi-copilot/data/process-safety.json.
+// Do not edit the generated copy; edit the JSON and re-run CMake.
+#ifndef PICopilot_ProcessSafetyData_h
+#define PICopilot_ProcessSafetyData_h
+
+namespace pcl
+{
+static const char kProcessSafetyJson[] = R"PCSAFETY(@PICOPILOT_PROCESS_SAFETY_JSON@)PCSAFETY";
+} // namespace pcl
+
+#endif

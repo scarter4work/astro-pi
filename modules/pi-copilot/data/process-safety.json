@@ -1,0 +1,122 @@
+{
+  "_doc": "PI Copilot process safety policy. deny: never run from PI Copilot. confirmAlways: ask the user before every run, in every mode. confirmWhen: ask when the effective value of `parameter` (as given, else the process default) equals `equals` (or, with `notEquals`, is anything other than that value). reviewedSafe: flagged by the file/disk/window heuristic but reviewed: no effect beyond the target image or new windows. fileTables: path rules for global runs (Task 8).",
+  "deny": {
+    "GraXpert": "it launches an external program whose path is a parameter (appPath), which PI Copilot cannot check",
+    "IndigoCCDFrame": "it controls a camera through an INDIGO server (exposures, uploads, file saving)",
+    "IndigoDeviceController": "it sends commands to observatory devices through an INDIGO server",
+    "IndigoMount": "it moves the telescope mount through an INDIGO server",
+    "PICopilot": "it is PI Copilot itself (running it from the chat would recurse)",
+    "Preferences": "it changes PixInsight's application settings, including its script-signature security settings",
+    "ProcessContainer": "it runs a list of other processes that PI Copilot cannot check one by one",
+    "Script": "it runs a PJSR script file, which PI Copilot cannot review from here (scripts go through run_pjsr, which shows the whole script first)"
+  },
+  "confirmAlways": {
+    "APASS": "it can write catalog search results to files, and its configure commands change the catalog database settings",
+    "ColorManagementSetup": "it changes PixInsight's global color-management settings",
+    "CometAlignment": "it writes comet-aligned copies of the input frames to its output directory and can overwrite existing files",
+    "CosmeticCorrection": "it writes corrected copies of the input frames to its output directory",
+    "Debayer": "it writes debayered copies of the input frames to its output directory",
+    "DrizzleIntegration": "it reads drizzle data files from disk and can write output files",
+    "EphemerisGenerator": "it writes ephemeris (.xeph) and log files to disk",
+    "FastIntegration": "it writes registered frames, log and weights files to its output directory",
+    "FilterManager": "it reads and writes the filters database file",
+    "Gaia": "it can write catalog search results to files, and its configure commands change the catalog database settings",
+    "ImageCalibration": "it writes calibrated copies of the input frames to its output directory and can overwrite existing files",
+    "LocalNormalization": "it writes normalization data files (.xnml) to disk",
+    "NSGXnml": "it writes normalization data files (.xnml) to its output directory",
+    "NukeX": "it writes cache files to its cache directory while stacking",
+    "SplitCFA": "in the global context it writes split CFA frames to its output directory",
+    "StarAlignment": "in the global context it writes registered copies of the input frames to its output directory",
+    "SubframeSelector": "it can copy or move approved and rejected frames to output directories",
+    "SubframeStudio": "it writes measurement CSV files and a metrics cache to disk"
+  },
+  "confirmWhen": {
+    "CreateAlphaChannels": [
+      {
+        "parameter": "closeSource",
+        "equals": true,
+        "reason": "it closes the source image window used for the alpha channel, and unsaved changes there are lost"
+      }
+    ],
+    "FindingChart": [
+      {
+        "parameter": "generateBitmapFile",
+        "equals": true,
+        "reason": "it writes the finding chart as an image file to its output directory"
+      }
+    ],
+    "HDRComposition": [
+      {
+        "parameter": "closePreviousImages",
+        "equals": true,
+        "reason": "it closes the images created by a previous HDRComposition run, and unsaved results are lost"
+      }
+    ],
+    "ImageIntegration": [
+      {
+        "parameter": "generateDrizzleData",
+        "equals": true,
+        "reason": "it updates the frames' .xdrz drizzle files on disk"
+      },
+      {
+        "parameter": "closePreviousImages",
+        "equals": true,
+        "reason": "it closes the images created by a previous ImageIntegration run, and unsaved results are lost"
+      }
+    ],
+    "MultiscaleGradientCorrection": [
+      {
+        "parameter": "command",
+        "notEquals": "",
+        "reason": "a command runs a MARS database operation instead of a gradient correction"
+      }
+    ],
+    "PhotometricColorCalibration": [
+      {
+        "parameter": "generateTextFiles",
+        "equals": true,
+        "reason": "it writes calibration text files to its output directory"
+      }
+    ],
+    "SpectrophotometricColorCalibration": [
+      {
+        "parameter": "generateTextFiles",
+        "equals": true,
+        "reason": "it writes calibration text files to its output directory"
+      }
+    ],
+    "SpectrophotometricFluxCalibration": [
+      {
+        "parameter": "generateTextFiles",
+        "equals": true,
+        "reason": "it writes calibration text files to its output directory"
+      }
+    ]
+  },
+  "reviewedSafe": {
+    "ACDNR": "'maskRemovedWaveletLayers' is a mask option inside the image",
+    "ATrousWaveletTransform": "'outputDeringingMaps' opens new image windows",
+    "AssignICCProfile": "'targetProfile' names the ICC profile assigned to the image",
+    "AutomaticBackgroundExtractor": "'writeSampleBoxes' draws the sample boxes into the model image",
+    "B3Estimator": "its 'output...' options choose which new images it opens",
+    "ColorCalibration": "its 'output...Mask' options open new mask windows",
+    "DynamicAlignment": "'removedLayers' is a wavelet-layer option",
+    "ExtractAlphaChannels": "'delete' removes the alpha channels from the target image itself",
+    "GradientHDRComposition": "it reads its input frames and opens a new image; 'dLogBias'/'bKeepLog' are logarithm options",
+    "GradientHDRCompression": "'logMaxGradient'/'logMinGradient' are logarithm options",
+    "GradientMergeMosaic": "it reads its input frames and opens a new image",
+    "HDRMultiscaleTransform": "'outputDeringingMaps' opens new image windows",
+    "ICCProfileTransformation": "'targetProfile' names the ICC profile the image is converted to",
+    "LRGBCombination": "'layersRemoved' is a wavelet-layer option",
+    "MLDenoise": "'modelPath' is a model file it reads; 'useCache' keeps loaded models in memory",
+    "MergeCFA": "'outputViewId' names the new image window",
+    "MultiscaleLinearTransform": "'outputDeringingMaps' opens new image windows",
+    "PixelMath": "its caches are in memory, 'generateOutput' concerns the result image, 'outputData' is an in-memory result table",
+    "RestorationFilter": "'outputDeringingMaps' opens new image windows",
+    "SCNR": "'colorToRemove' chooses the color channel it neutralizes",
+    "StarXTerminator": "its 'remove_...'/'output_stars' options act on the image and open a stars image",
+    "TGVDenoise": "'supportRemovedWaveletLayers' is a support-mask option",
+    "UnsharpMask": "'outputDeringingMaps' opens new image windows"
+  },
+  "fileTables": {}
+}

@@ -44,7 +44,8 @@ struct ToolOutcome
    bool           mutated = false;                    // an image was changed (apply_process ran to completion)
 };
 
-// Guided mode: asked before each apply_process; true = the user approved.
+// Asked before a process run in Guided mode, and in EVERY mode when the
+// process safety policy says confirm (ProcessSafety.h); true = the user approved.
 using ConfirmApplyFn = std::function<bool( const String& processId, const String& viewId, const String& changes )>;
 
 struct ToolContext
@@ -64,7 +65,7 @@ struct ToolContext
    // null: then only the turn's own view can be targeted.
    std::set<std::string>* inspectedViews = nullptr;
 
-   ConfirmApplyFn confirm;   // required in Guided mode
+   ConfirmApplyFn confirm;   // required in Guided mode and for safety-policy confirmations
 };
 
 // Executes one tool call. Root thread only (views, processes, previews,

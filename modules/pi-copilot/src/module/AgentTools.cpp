@@ -5,6 +5,7 @@
 #include "AnthropicClient.h"   // JpegImageBlock
 #include "ProcessApply.h"
 #include "ProcessCatalog.h"
+#include "ProcessSafety.h"
 #include "Utf8.h"
 #include "ViewContext.h"
 #include "ViewPreview.h"
@@ -122,6 +123,48 @@ bool WasInspected( const ToolContext& ctx, const IsoString& fullId )
    return ctx.inspectedViews != nullptr && ctx.inspectedViews->count( std::string( fullId.c_str() ) ) > 0;
 }
 
+// THE deny/confirm gate, shared by every tool that runs a process
+// (apply_process, run_global_process): one policy, one wording, one dialog.
+//   deny                        -> false, `out` = a precise error (never a modal)
+//   Guided, or a confirm rule   -> ONE confirm dialog (a confirm rule asks in
+//                                  EVERY mode, Copilot included); declined or
+//                                  no callback -> false, `out` set
+//   otherwise                   -> true (run it)
+// `target` is the dialog's target text; `callText` names the call in the
+// declined message (e.g. "PixelMath on Image01"); `nothingDone` ends it.
+// Advisor never reaches this: its callers refuse Advisor first.
+bool PassSafetyGate( const char* tool, const std::string& pid, const nlohmann::json& params,
+                     const nlohmann::json& tables, const ToolContext& ctx, const String& what,
+                     const String& target, const std::string& callText, const char* nothingDone,
+                     ToolOutcome& out )
+{
+   const SafetyVerdict safety = CheckProcessSafety( IsoString( pid.c_str() ), params, tables );
+   if ( safety.kind == SafetyVerdict::Deny )
+   {
+      out = Fail( what, S16( pid ) + " is not allowed from PI Copilot: " + safety.reason
+                        + ". Give the user the settings so they can run it themselves." );
+      return false;
+   }
+   if ( ctx.mode != AgentMode::Guided && safety.kind != SafetyVerdict::Confirm )
+      return true;
+   if ( !ctx.confirm )
+   {
+      out = Fail( what, "internal error: no confirmation callback" );
+      return false;
+   }
+   String changes = DescribeParameterChanges( params, tables, PICopilotConfirmChangesChars );
+   if ( safety.kind == SafetyVerdict::Confirm )
+      changes = "Why you are asked: " + safety.reason + ".\n\n" + changes;
+   if ( ctx.confirm( S16( pid ), target, changes ) )
+      return true;
+   out = ToolOutcome();
+   out.isError = true;
+   out.content.push_back( TextBlock( std::string( "The user declined this " ) + tool + " call (" + callText + "). "
+                                     + nothingDone + " Do not repeat it; ask what they would like instead." ) );
+   out.logLine = S16( kErrMarkUtf8 ) + what + S16( kArrowUtf8 ) + "declined by user";
+   return false;
+}
+
 ToolOutcome ApplyProcessTool( const nlohmann::json& in, const ToolContext& ctx, clock::time_point t0 )
 {
    const std::string pid = StringField( in, "process_id" );
@@ -163,28 +206,18 @@ ToolOutcome ApplyProcessTool( const nlohmann::json& in, const ToolContext& ctx, 
    const IsoString targetId = target.FullId();
    what += " on " + String( targetId );
 
-   if ( ctx.mode == AgentMode::Guided )
    {
-      if ( !ctx.confirm )
-         return Fail( what, "internal error: Guided mode has no confirmation callback" );
-      const String changes = DescribeParameterChanges( params, tables, PICopilotConfirmChangesChars );
-      if ( !ctx.confirm( S16( pid ), String( targetId ), changes ) )
-      {
-         ToolOutcome o;
-         o.isError = true;
-         o.content.push_back( TextBlock( "The user declined this apply_process call (" + pid + " on "
-                                         + std::string( targetId.c_str() )
-                                         + "). Nothing was changed. Do not repeat it; ask what they would like instead." ) );
-         o.logLine = S16( kErrMarkUtf8 ) + what + S16( kArrowUtf8 ) + "declined by user";
-         return o;
-      }
-      // The dialog pumps events: the user may have closed (or replaced) the
-      // image meanwhile. Never run on a stale handle.
-      target = ViewByFullId( targetId );
-      if ( target.IsNull() )
-         return Fail( what, "view " + String( targetId ) + " is no longer open (closed while the confirmation "
-                            "dialog was up); nothing was changed" );
+      ToolOutcome refused;
+      if ( !PassSafetyGate( "apply_process", pid, params, tables, ctx, what, String( targetId ),
+                            pid + " on " + std::string( targetId.c_str() ), "Nothing was changed.", refused ) )
+         return refused;
    }
+   // A dialog pumps events: the user may have closed (or replaced) the image
+   // meanwhile. Never run on a stale handle (a no-op when nothing was asked).
+   target = ViewByFullId( targetId );
+   if ( target.IsNull() )
+      return Fail( what, "view " + String( targetId ) + " is no longer open (closed while the confirmation "
+                         "dialog was up); nothing was changed" );
 
    const ApplyProcessResult ar = ApplyProcess( IsoString( pid.c_str() ), params, tables, target );
    if ( !ar.ok )
