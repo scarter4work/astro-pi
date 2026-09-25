@@ -98,6 +98,7 @@ target_link_libraries(PICopilot PRIVATE
     lcms-pxi
     cminpack-pxi
     nlohmann_json::nlohmann_json
+    picopilot_sqlite3
 )
 
 # Shared library flags

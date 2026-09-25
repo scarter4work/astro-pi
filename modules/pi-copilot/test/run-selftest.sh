@@ -100,6 +100,12 @@ mkdir -m 700 "$PICOPILOT_SELFTEST_SCRATCH"
 "$PI" --sign-module-file="$SO" --xssk-file="$KEYS" --xssk-password="$PASS"
 [ -f "${SO%.so}.xsgn" ] || { echo "FAIL: signing produced no .xsgn"; exit 1; }
 
+# Vendored SQLite must stay private to the module (a clash with any other
+# libsqlite3 in the PixInsight process would be undefined behaviour).
+if nm -D --defined-only "$SO" | grep -q ' sqlite3_'; then
+   echo "FAIL: PICopilot-pxm.so exports sqlite3_* symbols"; exit 1
+fi
+
 # Load the module headlessly and run the self-test harness. --force-exit only
 # exits AFTER running -r= scripts, so a bare -m= with no -r= sits idle
 # forever; the harness + timeout close that hole.
@@ -388,6 +394,7 @@ required_true = [
     'reviewE4422c9Ok',
     # 0.2.0.0 image journey
     'journeySpikeOk',
+    'sqliteVendorOk',
     'ok',
 ]
 missing = [k for k in required_true if d.get(k) is not True]
