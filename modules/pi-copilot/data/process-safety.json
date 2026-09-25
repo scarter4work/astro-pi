@@ -170,10 +170,10 @@
     "GeneralizedHyperbolicStretch": "the core refuses a global run (\"GeneralizedHyperbolicStretch instances cannot be executed in the global context\")",
     "GraXpert": "the core refuses a global run (\"GraXpert instances cannot be executed in the global context\")",
     "GradientCorrection": "the core refuses a global run (\"GradientCorrection instances cannot be executed in the global context\")",
-    "GradientHDRComposition": "a global run reads its target frames and creates a NEW image window",
+    "GradientHDRComposition": "a global run reads its target frames (file paths checked by fileTables) and creates a NEW image window",
     "GradientHDRCompression": "the core refuses a global run (\"GradientHDRCompression instances cannot be executed in the global context\")",
     "GradientMergeMosaic": "a global run reads its target frames (file paths checked by fileTables) and creates a NEW mosaic image window",
-    "HDRComposition": "a global run reads its input frames and creates a NEW image window; closing previous results asks (confirmWhen)",
+    "HDRComposition": "a global run reads its input frames (file paths checked by fileTables) and creates a NEW image window; closing previous results asks (confirmWhen)",
     "HDRMultiscaleTransform": "the core refuses a global run (\"HDRMultiscaleTransform instances cannot be executed in the global context\")",
     "HistogramTransformation": "the core refuses a global run (\"HistogramTransformation instances cannot be executed in the global context\")",
     "ICCProfileTransformation": "the core refuses a global run (\"ICCProfileTransformation instances cannot be executed in the global context\")",
@@ -241,6 +241,24 @@
     "GradientMergeMosaic": {
       "targetFrames": {
         "enabledColumn": "enabled",
+        "columns": {
+          "path": "image"
+        }
+      }
+    },
+    "HDRComposition": {
+      "images": {
+        "enabledColumn": "enabled",
+        "minEnabledRows": 2,
+        "columns": {
+          "path": "image"
+        }
+      }
+    },
+    "GradientHDRComposition": {
+      "targetFrames": {
+        "enabledColumn": "enabled",
+        "minEnabledRows": 1,
         "columns": {
           "path": "image"
         }

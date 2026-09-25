@@ -383,6 +383,29 @@ SafetyVerdict CheckProcessSafety( const IsoString& processId, const nlohmann::js
    return v;
 }
 
+bool NoInstanceBeforeApproval( const IsoString& processId )
+{
+   std::unique_ptr<Process> P;
+   try
+   {
+      P.reset( new Process( processId ) );
+   }
+   catch ( ... )
+   {
+      return false;   // unknown process id: nothing can be built; the executor names it
+   }
+   try
+   {
+      const std::string id( P->Id().c_str() );
+      const nlohmann::json& policy = CompiledProcessSafety();
+      return Section( policy, "deny" ).contains( id ) || Section( policy, "confirmAlways" ).contains( id );
+   }
+   catch ( ... )
+   {
+      return true;
+   }
+}
+
 nlohmann::json UnclassifiedSideEffectCandidates()
 {
    const nlohmann::json& policy = CompiledProcessSafety();

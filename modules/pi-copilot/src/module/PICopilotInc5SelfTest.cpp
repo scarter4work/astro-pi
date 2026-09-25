@@ -48,6 +48,7 @@
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <functional>
 #include <set>
 #include <string>
 #include <thread>
@@ -3850,6 +3851,307 @@ bool RunInc5SelfTest( nlohmann::json& out )
       out["rereviewFixDetail"] = detail;
       out["rereviewFixError"] = U8( error );
       out["rereviewFixOk"] = ok;
+      allOk = allOk && ok;
+   }
+
+   // ---- Section B12: review-e4422c9 fixes (M-b, M-c, M-d) -----------------------
+   {
+      bool applyDeclinedOk = false, metadataPreDialogOk = false, afterApprovalOk = false, globalDeclinedOk = false,
+           scopedOk = false, rcAstroOk = false, hdrFilesOk = false, enumDefaultOk = false;
+      nlohmann::json detail = nlohmann::json::object();
+      String error;
+      auto text0 = []( const ToolOutcome& o ) -> std::string
+      {
+         try { return o.content.at( 0 ).at( "text" ).get<std::string>(); } catch ( ... ) { return std::string(); }
+      };
+      // Instrumentation: every ProcessInstance the tool path builds, in order.
+      std::vector<std::pair<std::string, std::string>> builds;
+      auto buildsJson = [&]()
+      {
+         nlohmann::json j = nlohmann::json::array();
+         for ( const auto& b : builds )
+            j.push_back( b.first + ":" + b.second );
+         return j;
+      };
+      try
+      {
+         SetInstanceBuildObserverForSelfTest( [&]( const IsoString& id, const char* stage )
+                                              { builds.emplace_back( std::string( id.c_str() ), std::string( stage ) ); } );
+         const nlohmann::json& pol = CompiledProcessSafety();
+         auto always = [&]( const char* id ) { return pol.at( "confirmAlways" ).contains( id ); };
+         auto installedProcess = []( const char* id )
+         {
+            try { return Process( IsoString( id ) ).Id() == id; } catch ( ... ) { return false; }
+         };
+
+         // M-b. A confirmAlways process (RGBWorkingSpace: installed, runs on
+         // views) is asked about with NO instance built; declined, none is
+         // ever built. Copilot mode: only the policy asks.
+         {
+            Inc5TestWindow tw( "PCNoPreInstance", 16, 16, 3, 0.5 );
+            ToolContext ctx;
+            ctx.mode = AgentMode::Copilot;
+            ctx.turnViewId = tw.MainView().FullId();
+            int confirms = 0;
+            size_t atConfirm = size_t( -1 );
+            ctx.confirm = [&]( const String&, const String&, const String& ) { ++confirms; atConfirm = builds.size(); return false; };
+            builds.clear();
+            const ToolOutcome o = ExecuteTool( ToolCall{ "b12a", "apply_process", { { "process_id", "RGBWorkingSpace" } } }, ctx );
+            detail["applyDeclined"] = { { "confirms", confirms }, { "buildsAtConfirm", atConfirm == size_t( -1 ) ? -1 : int( atConfirm ) },
+                                        { "builds", buildsJson() }, { "text", text0( o ) } };
+            applyDeclinedOk = always( "RGBWorkingSpace" ) && confirms == 1 && atConfirm == 0 && builds.empty()
+                           && o.isError && text0( o ).find( "declined" ) != std::string::npos;
+
+            // The checks that need no instance still refuse BEFORE the dialog.
+            std::string boolParam;
+            for ( const ProcessParameter& q : Process( IsoString( "RGBWorkingSpace" ) ).Parameters() )
+               if ( !q.IsTable() && !q.IsReadOnly() && q.IsBoolean() )
+               {
+                  boolParam = q.Id().c_str();
+                  break;
+               }
+            nlohmann::json cases = nlohmann::json::array();
+            bool each = !boolParam.empty();
+            auto refuse = [&]( const nlohmann::json& params, const std::string& want )
+            {
+               const int before = confirms;
+               builds.clear();
+               const ToolOutcome r = ExecuteTool( ToolCall{ "b12b", "apply_process",
+                  { { "process_id", "RGBWorkingSpace" }, { "parameters", params } } }, ctx );
+               const bool good = r.isError && confirms == before && builds.empty() && text0( r ).find( want ) != std::string::npos;
+               cases.push_back( { { "parameters", params }, { "text", text0( r ) }, { "builds", buildsJson() }, { "ok", good } } );
+               each = each && good;
+            };
+            refuse( { { "noSuchParam", 1 } }, "unknown parameter RGBWorkingSpace.noSuchParam" );
+            if ( !boolParam.empty() )
+               refuse( { { boolParam, "yes" } }, "expected true or false" );
+            detail["metadataPreDialog"] = { { "boolParam", boolParam }, { "cases", cases } };
+            metadataPreDialogOk = each;
+
+            // Approved: the instance is built only AFTER the user said yes,
+            // and the instance-based checks run there (the real ApplyProcess).
+            ctx.confirm = [&]( const String&, const String&, const String& ) { ++confirms; atConfirm = builds.size(); return true; };
+            builds.clear();
+            atConfirm = size_t( -1 );
+            const int before = confirms;
+            const ToolOutcome ok = ExecuteTool( ToolCall{ "b12c", "apply_process", { { "process_id", "RGBWorkingSpace" } } }, ctx );
+            detail["afterApproval"] = { { "buildsAtConfirm", atConfirm == size_t( -1 ) ? -1 : int( atConfirm ) },
+                                        { "builds", buildsJson() }, { "isError", ok.isError }, { "text", text0( ok ) } };
+            afterApprovalOk = confirms == before + 1 && atConfirm == 0 && builds.size() == 1
+                           && builds[0].first == "RGBWorkingSpace" && builds[0].second == "apply" && !ok.isError;
+         }
+
+         // M-b, global: a confirmAlways global-capable process (Debayer).
+         {
+            ToolContext ctx;
+            ctx.mode = AgentMode::Copilot;
+            int confirms = 0;
+            size_t atConfirm = size_t( -1 );
+            ctx.confirm = [&]( const String&, const String&, const String& ) { ++confirms; atConfirm = builds.size(); return false; };
+            builds.clear();
+            const ToolOutcome o = ExecuteTool( ToolCall{ "b12d", "run_global_process", { { "process_id", "Debayer" } } }, ctx );
+            detail["globalDeclined"] = { { "confirms", confirms }, { "buildsAtConfirm", atConfirm == size_t( -1 ) ? -1 : int( atConfirm ) },
+                                         { "builds", buildsJson() }, { "text", text0( o ) } };
+            globalDeclinedOk = always( "Debayer" ) && confirms == 1 && atConfirm == 0 && builds.empty()
+                            && o.isError && text0( o ).find( "declined" ) != std::string::npos;
+         }
+
+         // Scope: a process that is NOT confirmAlways still gets the full
+         // instance dry run before the (Guided) dialog.
+         {
+            Inc5TestWindow tw( "PCScopedDryRun", 16, 16, 1, 0.5 );
+            ToolContext ctx;
+            ctx.mode = AgentMode::Guided;
+            ctx.turnViewId = tw.MainView().FullId();
+            size_t atConfirm = size_t( -1 );
+            ctx.confirm = [&]( const String&, const String&, const String& ) { atConfirm = builds.size(); return false; };
+            builds.clear();
+            ExecuteTool( ToolCall{ "b12e", "apply_process",
+               { { "process_id", "PixelMath" }, { "parameters", { { "expression", "$T*0" } } } } }, ctx );
+            detail["scoped"] = { { "buildsAtConfirm", atConfirm == size_t( -1 ) ? -1 : int( atConfirm ) }, { "builds", buildsJson() } };
+            scopedOk = !always( "PixelMath" ) && atConfirm == 1 && builds.size() == 1 && builds[0].second == "precheckApply";
+         }
+
+         // The RC-Astro plug-ins the finding is about, where installed -- only
+         // once the two proofs above hold, so no test ever builds one of them
+         // before a dialog.
+         {
+            nlohmann::json rc = nlohmann::json::object();
+            bool each = true;
+            for ( const char* id : { "BlurXTerminator", "StarXTerminator", "NoiseXTerminator" } )
+            {
+               const bool inst = installedProcess( id );
+               if ( !inst || !(applyDeclinedOk && globalDeclinedOk) )
+               {
+                  rc[id] = { { "installed", inst }, { "ran", false } };
+                  each = each && always( id ) && !inst;
+                  continue;
+               }
+               Inc5TestWindow tw( "PCRCAstro", 16, 16, 3, 0.5 );
+               ToolContext ctx;
+               ctx.mode = AgentMode::Copilot;
+               ctx.turnViewId = tw.MainView().FullId();
+               int confirms = 0;
+               size_t atConfirm = size_t( -1 );
+               ctx.confirm = [&]( const String&, const String&, const String& ) { ++confirms; atConfirm = builds.size(); return false; };
+               builds.clear();
+               const ToolOutcome o = ExecuteTool( ToolCall{ "b12f", "apply_process", { { "process_id", id } } }, ctx );
+               const bool good = always( id ) && confirms == 1 && atConfirm == 0 && builds.empty() && o.isError;
+               rc[id] = { { "installed", true }, { "ran", true }, { "confirms", confirms }, { "builds", buildsJson() },
+                          { "text", text0( o ) }, { "ok", good } };
+               each = each && good;
+            }
+            detail["rcAstro"] = rc;
+            rcAstroOk = each;
+         }
+
+         // M-c. HDRComposition / GradientHDRComposition global runs get the
+         // fileTables path checks (absolute, existing, readable image).
+         {
+            SyntheticFrames frames( 2 );
+            nlohmann::json info = nlohmann::json::object(), cases = nlohmann::json::array();
+            bool each = true;
+            for ( const char* pid : { "HDRComposition", "GradientHDRComposition" } )
+            {
+               const Process P{ IsoString( pid ) };
+               std::string table;
+               ProcessParameter::parameter_list columns;
+               nlohmann::json tables = nlohmann::json::object();
+               for ( const ProcessParameter& t : P.Parameters() )
+                  if ( t.IsTable() )
+                  {
+                     nlohmann::json cols = nlohmann::json::array();
+                     for ( const ProcessParameter& c : t.TableColumns() )
+                     {
+                        cols.push_back( std::string( c.Id().c_str() ) );
+                        if ( c.Id() == "path" && table.empty() )
+                        {
+                           table = t.Id().c_str();
+                           columns = t.TableColumns();
+                        }
+                     }
+                     tables[std::string( t.Id().c_str() )] = cols;
+                  }
+               auto rows = [&]( const std::vector<String>& paths )
+               {
+                  nlohmann::json r = nlohmann::json::array();
+                  for ( const String& path : paths )
+                  {
+                     nlohmann::json row = nlohmann::json::array();
+                     for ( const ProcessParameter& c : columns )
+                        if ( c.Id() == "path" )
+                           row.push_back( U8( path ) );
+                        else if ( c.IsBoolean() )
+                           row.push_back( true );
+                        else if ( c.IsString() )
+                           row.push_back( "" );
+                        else
+                           row.push_back( 0 );
+                     r.push_back( row );
+                  }
+                  return nlohmann::json( { { table, r } } );
+               };
+               const String a = frames.Paths()[0], b = frames.Paths()[1];
+               const std::string prefix = std::string( pid ) + "." + table;
+               const String rel = ValidateProcessFilePaths( pid, nlohmann::json::object(), rows( { "light_01.fits", b } ) );
+               const String missing = ValidateProcessFilePaths( pid, nlohmann::json::object(),
+                                                                rows( { a, frames.Dir() + "/missing.fits" } ) );
+               const String good = ValidateProcessFilePaths( pid, nlohmann::json::object(), rows( { a, b } ) );
+               bool caseOk = !table.empty() && rel.Contains( String( prefix.c_str() ) + "[0].path" )
+                          && missing.Contains( String( prefix.c_str() ) + "[1].path" ) && good.IsEmpty();
+               nlohmann::json toolCase;
+               // Through the tool (Copilot: globalSafe, no dialog) -- only once
+               // the path check refuses, so an unchecked path never reaches the core.
+               if ( !rel.IsEmpty() )
+               {
+                  ToolContext ctx;
+                  ctx.mode = AgentMode::Copilot;
+                  int confirms = 0;
+                  ctx.confirm = [&]( const String&, const String&, const String& ) { ++confirms; return false; };
+                  const std::set<std::string> before = OpenMainViewIds();
+                  builds.clear();
+                  const ToolOutcome o = ExecuteTool( ToolCall{ "b12g", "run_global_process",
+                     { { "process_id", pid }, { "table_parameters", rows( { "light_01.fits", b } ) } } }, ctx );
+                  const bool toolOk = o.isError && confirms == 0 && builds.empty() && OpenMainViewIds() == before
+                                   && text0( o ).find( prefix + "[0].path" ) != std::string::npos;
+                  toolCase = { { "text", text0( o ) }, { "confirms", confirms }, { "builds", buildsJson() }, { "ok", toolOk } };
+                  caseOk = caseOk && toolOk;
+               }
+               else
+                  caseOk = false;
+               if ( std::string( pid ) == "HDRComposition" )
+               {
+                  // The core needs at least two input images.
+                  const String one = ValidateProcessFilePaths( pid, nlohmann::json::object(), rows( { a } ) );
+                  toolCase["oneRow"] = U8( one );
+                  caseOk = caseOk && !one.IsEmpty();
+               }
+               info[pid] = { { "tables", tables }, { "fileTable", table },
+                             { "policy", pol.value( "fileTables", nlohmann::json::object() ).value( pid, nlohmann::json() ) } };
+               cases.push_back( { { "process", pid }, { "relative", U8( rel ) }, { "missing", U8( missing ) },
+                                  { "valid", U8( good ) }, { "tool", toolCase }, { "ok", caseOk } } );
+               each = each && caseOk;
+            }
+            const nlohmann::json unknown = UnknownPolicyProcessIds();
+            detail["hdrFiles"] = { { "tables", info }, { "cases", cases }, { "policyReport", unknown } };
+            hdrFilesOk = each && unknown.empty();
+         }
+
+         // M-d. An enumeration default is an element id, never a bare index.
+         {
+            EnumerationInfo e;
+            ProcessParameter::EnumerationElement x, y;
+            x.id = "Alpha"; x.value = 10;
+            y.id = "Beta";  y.value = 20;
+            e.elements << x << y;
+            const nlohmann::json byIndex = EnumerationDefaultJson( e, 1 );
+            const nlohmann::json outOfRange = EnumerationDefaultJson( e, 2 );
+            const nlohmann::json negative = EnumerationDefaultJson( e, -1 );
+            e.defaultId = "Alpha";
+            const nlohmann::json withId = EnumerationDefaultJson( e, 1 );
+            // And across the real catalog: no enumeration default is a number.
+            nlohmann::json numeric = nlohmann::json::array();
+            size_t enums = 0;
+            std::function<void( const std::string&, const nlohmann::json& )> scan =
+               [&]( const std::string& pid, const nlohmann::json& params )
+               {
+                  for ( const nlohmann::json& p : params )
+                  {
+                     if ( p.contains( "enumeration" ) )
+                     {
+                        ++enums;
+                        if ( p.contains( "default" ) && !p["default"].is_string() )
+                           numeric.push_back( pid + "." + p.value( "id", std::string() ) );
+                     }
+                     if ( p.contains( "columns" ) )
+                        scan( pid, p["columns"] );
+                  }
+               };
+            for ( const Process& P : Process::AllProcesses() )
+               try
+               {
+                  scan( P.Id().c_str(), DescribeProcess( P.Id() ).value( "parameters", nlohmann::json::array() ) );
+               }
+               catch ( ... ) {}
+            detail["enumDefault"] = { { "byIndex", byIndex }, { "outOfRange", outOfRange }, { "negative", negative },
+                                      { "withId", withId }, { "catalogEnums", enums }, { "numericDefaults", numeric } };
+            enumDefaultOk = byIndex == "Beta" && outOfRange.is_null() && negative.is_null() && withId == "Alpha"
+                         && enums > 50 && numeric.empty();
+         }
+      }
+      catch ( const pcl::Exception& x ) { error = x.Message(); }
+      catch ( const std::exception& x ) { error = String( x.what() ); }
+      catch ( ... )                     { error = "unknown exception"; }
+      SetInstanceBuildObserverForSelfTest( InstanceBuildObserver() );
+      detail["checks"] = { { "applyDeclined", applyDeclinedOk }, { "metadataPreDialog", metadataPreDialogOk },
+                           { "afterApproval", afterApprovalOk }, { "globalDeclined", globalDeclinedOk },
+                           { "scoped", scopedOk }, { "rcAstro", rcAstroOk }, { "hdrFiles", hdrFilesOk },
+                           { "enumDefault", enumDefaultOk } };
+      const bool ok = applyDeclinedOk && metadataPreDialogOk && afterApprovalOk && globalDeclinedOk && scopedOk
+                   && rcAstroOk && hdrFilesOk && enumDefaultOk;
+      out["reviewE4422c9Detail"] = detail;
+      out["reviewE4422c9Error"] = U8( error );
+      out["reviewE4422c9Ok"] = ok;
       allOk = allOk && ok;
    }
 
