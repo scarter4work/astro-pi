@@ -925,7 +925,15 @@ bool RunAgentSelfTest( nlohmann::json& out )
             for ( const nlohmann::json& t : *set )
                shapes = shapes && t.at( "input_schema" ).at( "type" ) == "object"
                      && t.at( "description" ).is_string() && !t.at( "description" ).get<std::string>().empty();
+         // With scripts allowed (inc 5), run_pjsr comes last; never in Advisor.
+         ToolOptions scripts;
+         scripts.runPjsr = true;
+         std::vector<std::string> allWithScript = all;
+         allWithScript.push_back( "run_pjsr" );
          schemaOk = shapes && names( tc ) == all && names( tg ) == all && names( ta ) == readOnly
+                 && names( ToolDefinitions( AgentMode::Copilot, scripts ) ) == allWithScript
+                 && names( ToolDefinitions( AgentMode::Guided, scripts ) ) == allWithScript
+                 && names( ToolDefinitions( AgentMode::Advisor, scripts ) ) == readOnly
                  && tc.at( 3 ).at( "input_schema" ).at( "required" ) == nlohmann::json::array( { "process_id" } )
                  && tc.at( 3 ).at( "input_schema" ).at( "properties" ).contains( "table_parameters" )
                  && tc.at( 1 ).at( "input_schema" ).at( "required" ) == nlohmann::json::array( { "id" } );
