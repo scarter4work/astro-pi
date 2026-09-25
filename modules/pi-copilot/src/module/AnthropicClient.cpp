@@ -2,6 +2,7 @@
 // Copyright (c) 2026 Scott Carter. MIT License.
 
 #include "AnthropicClient.h"
+#include "ModelCatalog.h"
 #include "SseStream.h"
 #include "Utf8.h"
 
@@ -197,21 +198,46 @@ std::string BuildMessagesRequestBody( const IsoString& model, const String& syst
    nlohmann::json req = {
       { "model", model.c_str() },
       { "max_tokens", shape.maxTokens },
-      { "system", U8( systemPrompt ) },
       { "messages", messages }
    };
+   if ( shape.promptCaching )
+   {
+      // Breakpoint 1 (system; it covers the tools too, render order tools ->
+      // system), and a top-level automatic breakpoint that rolls forward over
+      // the conversation tail.
+      nlohmann::json sys = nlohmann::json::object();
+      sys["type"] = "text";
+      sys["text"] = U8( systemPrompt );
+      sys["cache_control"] = { { "type", "ephemeral" } };
+      req["system"] = nlohmann::json::array();
+      req["system"].push_back( sys );
+      req["cache_control"] = { { "type", "ephemeral" } };
+   }
+   else
+      req["system"] = U8( systemPrompt );
    if ( !tools.is_null() )
+   {
       req["tools"] = tools;
+      // Breakpoint 2: the tool list alone (it outlives a system-prompt change).
+      if ( shape.promptCaching && tools.is_array() && !tools.empty() )
+         req["tools"].back()["cache_control"] = { { "type", "ephemeral" } };
+   }
+   if ( shape.thinkingBinding )
+      req["thinking"] = { { "type", "adaptive" },
+                          { "block_binding", { { "prefix_mismatch_behavior", "drop_block" } } } };
    if ( shape.stream )
       req["stream"] = true;
    return req.dump();
 }
 
-RequestShape ProductionRequestShape( const IsoString& /*model*/ )
+RequestShape ProductionRequestShape( const IsoString& model )
 {
    RequestShape s;
    s.stream = true;
    s.maxTokens = PICopilotStreamMaxTokens;
+   s.promptCaching = true;
+   const ModelInfo* info = FindModel( model );
+   s.thinkingBinding = info != nullptr && info->thinkingBinding;
    return s;
 }
 
@@ -259,8 +285,11 @@ AnthropicRequest::AnthropicRequest( const String& apiKey, const IsoString& model
       m->transfer.SetURL( url );
       m->transfer.SetSSL( true/*useSSL*/, false/*forceSSL*/, true/*verifyPeer*/, true/*verifyHost*/ );
       m->transfer.SetConnectionTimeout( 120 );
-      m->transfer.SetCustomHTTPHeaders( String( "x-api-key: " ) + apiKey
-         + "\nanthropic-version: 2023-06-01\ncontent-type: application/json" );
+      String headers = String( "x-api-key: " ) + apiKey
+                     + "\nanthropic-version: 2023-06-01\ncontent-type: application/json";
+      if ( shape.thinkingBinding )
+         headers += "\nanthropic-beta: " PICOPILOT_THINKING_BINDING_BETA;
+      m->transfer.SetCustomHTTPHeaders( headers );
       m->transfer.OnDownloadDataAvailable( (NetworkTransfer::download_event_handler)&ResponseSink::OnData, m->sink );
       m->transfer.OnTransferProgress( (NetworkTransfer::progress_event_handler)&ResponseSink::OnProgress, m->sink );
    }

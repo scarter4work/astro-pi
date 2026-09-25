@@ -5,11 +5,15 @@
 #include "AgentTools.h"
 #include "AnthropicClient.h"
 #include "ChatThread.h"
+#include "HistoryBudget.h"
+#include "ModelCatalog.h"
 #include "PICopilotInc5SelfTest.h"
 #include "PICopilotModule.h"
 #include "ProcessCatalog.h"
 #include "SseStream.h"
+#include "SystemPrompt.h"
 #include "Utf8.h"
+#include "ViewCapture.h"
 
 #include <pcl/AutoViewLock.h>
 #include <pcl/ByteArray.h>
@@ -312,6 +316,58 @@ std::string ReadFixture( const char* name )
       throw Error( "PICOPILOT_SELFTEST_FIXTURES is not set" );
    const ByteArray b = File::ReadFile( String( dir ) + "/sse/" + name );
    return std::string( reinterpret_cast<const char*>( b.Begin() ), b.Length() );
+}
+
+int CountKey( const nlohmann::json& v, const char* key )
+{
+   int n = 0;
+   if ( v.is_object() )
+      for ( auto it = v.begin(); it != v.end(); ++it )
+         n += (it.key() == key ? 1 : 0) + CountKey( it.value(), key );
+   else if ( v.is_array() )
+      for ( const nlohmann::json& e : v )
+         n += CountKey( e, key );
+   return n;
+}
+
+AnthropicMessage TextMsg( const char* role, const std::string& text )
+{
+   AnthropicMessage m;
+   m.role = role;
+   m.content = String::UTF8ToUTF16( text.c_str() );
+   return m;
+}
+
+AnthropicMessage BlocksMsg( const char* role, const nlohmann::json& blocks )
+{
+   AnthropicMessage m;
+   m.role = role;
+   m.blocks = blocks;
+   return m;
+}
+
+// k exchanges of: fresh user text, assistant text+tool_use, user tool_result+merged text, assistant text.
+Array<AnthropicMessage> LongHistory( int k, size_t chars )
+{
+   Array<AnthropicMessage> h;
+   const std::string big( chars, 'a' );
+   for ( int i = 0; i < k; ++i )
+   {
+      const std::string id = "toolu_h" + std::to_string( i );
+      h.Add( TextMsg( "user", "question " + std::to_string( i ) + " " + big ) );
+      nlohmann::json a = nlohmann::json::array();
+      a.push_back( { { "type", "text" }, { "text", "checking" } } );
+      a.push_back( { { "type", "tool_use" }, { "id", id }, { "name", "describe_process" }, { "input", { { "id", "PixelMath" } } } } );
+      h.Add( BlocksMsg( "assistant", a ) );
+      nlohmann::json u = nlohmann::json::array();
+      u.push_back( { { "type", "tool_result" }, { "tool_use_id", id },
+                     { "content", nlohmann::json::array( { { { "type", "text" }, { "text", big } } } ) }, { "is_error", false } } );
+      u.push_back( { { "type", "text" }, { "text", "and also this" } } );
+      h.Add( BlocksMsg( "user", u ) );
+      h.Add( TextMsg( "assistant", "answer " + std::to_string( i ) + " " + big ) );
+   }
+   h.Add( TextMsg( "user", "the current question" ) );
+   return h;
 }
 
 } // namespace
@@ -1019,6 +1075,304 @@ bool RunInc5SelfTest( nlohmann::json& out )
       out["streamError"] = U8( error );
       out["streamLoopbackSkipped"] = skipped;
       out["streamTransportOk"] = ok;
+      allOk = allOk && ok;
+   }
+
+   // ---- Section B3: models, caching/binding shape, history budget (Task 4) ----
+   {
+      bool modelsOk = false, shapeOk = false, wireOk = false, trimOk = false, sessionTrimOk = true, noTrimOk = false;
+      bool wireSkipped = true;
+      nlohmann::json detail = nlohmann::json::object();
+      String error;
+      try
+      {
+         std::set<std::string> ids;
+         for ( const ModelInfo& m : kPICopilotModels )
+            ids.insert( m.id );
+         modelsOk = ids.size() == PICopilotModelCount && std::string( kPICopilotModels[0].id ) == PICOPILOT_DEFAULT_MODEL
+                 && FindModel( "claude-opus-5-5" ) && FindModel( "claude-opus-5-5" )->thinkingBinding
+                 && FindModel( "claude-fable-5-1" ) && FindModel( "claude-fable-5-1" )->thinkingBinding
+                 && FindModel( "claude-sonnet-5" ) && !FindModel( "claude-sonnet-5" )->thinkingBinding
+                 && FindModel( "claude-haiku-4-5" ) && !FindModel( "claude-haiku-4-5" )->thinkingBinding
+                 && FindModel( "claude-opus-4-8" ) && !FindModel( "claude-opus-4-8" )->thinkingBinding
+                 && FindModel( "claude-nope" ) == nullptr && ModelIndex( "claude-fable-5-1" ) == 2 && ModelIndex( "x" ) == -1;
+
+         Array<AnthropicMessage> hist;
+         hist.Add( TextMsg( "user", "hi" ) );
+         const nlohmann::json tools = ToolDefinitions( AgentMode::Copilot );
+         const nlohmann::json b55 = nlohmann::json::parse(
+            BuildMessagesRequestBody( "claude-opus-5-5", "sys", hist, tools, ProductionRequestShape( "claude-opus-5-5" ) ) );
+         const nlohmann::json b48 = nlohmann::json::parse(
+            BuildMessagesRequestBody( "claude-opus-4-8", "sys", hist, tools, ProductionRequestShape( "claude-opus-4-8" ) ) );
+         const nlohmann::json plain = nlohmann::json::parse( BuildMessagesRequestBody( "m", "sys", hist, tools ) );
+         const nlohmann::json eph = { { "type", "ephemeral" } };
+         shapeOk = b55.at( "system" ).is_array() && b55["system"].size() == 1
+                && b55["system"][0].at( "text" ) == "sys" && b55["system"][0].at( "cache_control" ) == eph
+                && b55.at( "tools" ).back().at( "cache_control" ) == eph && b55.at( "cache_control" ) == eph
+                && CountKey( b55, "cache_control" ) == 3
+                && b55.at( "thinking" ) == nlohmann::json::parse(
+                      "{\"type\":\"adaptive\",\"block_binding\":{\"prefix_mismatch_behavior\":\"drop_block\"}}" )
+                && !b48.contains( "thinking" ) && CountKey( b48, "cache_control" ) == 3
+                && plain.at( "system" ).is_string() && CountKey( plain, "cache_control" ) == 0 && !plain.contains( "thinking" );
+         detail["b55"] = b55;
+
+         if ( const char* echoUrl = std::getenv( "PICOPILOT_SELFTEST_ECHO_URL" ) )
+         {
+            wireSkipped = false;
+            auto echo = [&]( const char* model ) {
+               RequestShape s = ProductionRequestShape( model );
+               s.stream = false;   // the echo path answers non-streamed
+               AnthropicRequest req( "sk-ant-invalid-selftest", model, "sys", hist, String( echoUrl ), 30, tools, s );
+               const AnthropicResult r = req.Perform();
+               return r.ok ? nlohmann::json::parse( U8( r.text ) ) : nlohmann::json( { { "error", U8( r.error ) } } );
+            };
+            const nlohmann::json e55 = echo( "claude-opus-5-5" ), e48 = echo( "claude-opus-4-8" );
+            detail["echo55"] = { { "anthropic_beta", e55.value( "anthropic_beta", nlohmann::json() ) }, { "thinking", e55.value( "thinking", nlohmann::json() ) } };
+            wireOk = e55.value( "anthropic_beta", nlohmann::json() ) == PICOPILOT_THINKING_BINDING_BETA
+                  && e55.at( "thinking" ).at( "block_binding" ).at( "prefix_mismatch_behavior" ) == "drop_block"
+                  && e55.at( "system" ).at( 0 ).at( "cache_control" ) == eph
+                  && e48.value( "anthropic_beta", nlohmann::json() ).is_null() && e48.value( "thinking", nlohmann::json() ).is_null();
+         }
+
+         {  // Direct trim: 30 long exchanges with tool rounds -> within the target, API-valid, current turn kept.
+            Array<AnthropicMessage> h = LongHistory( 30, 6000 );
+            const size_type before = EstimateHistoryTokens( h );
+            const AnthropicMessage lastBefore = h[h.Length()-1];
+            const size_type removed = TrimHistoryToBudget( h, PICopilotHistoryTokenBudget, PICopilotHistoryTrimTarget );
+            String why;
+            const bool valid = HistoryIsApiValid( h, why );
+            const size_type after = EstimateHistoryTokens( h );
+            detail["trim"] = { { "before", before }, { "after", after }, { "removed", removed }, { "why", U8( why ) },
+                               { "first", h.IsEmpty() ? nlohmann::json() : h[0].blocks } };
+            trimOk = before > PICopilotHistoryTokenBudget && removed > 0 && valid
+                  && after <= PICopilotHistoryTrimTarget + 100   // + the trim note itself
+                  && IsFreshUserTurn( h[0] ) && h[0].blocks.is_array()
+                  && h[0].blocks.at( 0 ).at( "text" ) == kPICopilotTrimNote
+                  && h[h.Length()-1].content == lastBefore.content;
+         }
+         {  // Under budget: untouched. Only the current turn over budget: nothing to cut.
+            Array<AnthropicMessage> small = LongHistory( 2, 100 );
+            const size_type n0 = small.Length();
+            Array<AnthropicMessage> huge;
+            huge.Add( TextMsg( "user", std::string( 400000, 'b' ) ) );
+            noTrimOk = TrimHistoryToBudget( small, PICopilotHistoryTokenBudget, PICopilotHistoryTrimTarget ) == 0
+                    && small.Length() == n0
+                    && TrimHistoryToBudget( huge, PICopilotHistoryTokenBudget, PICopilotHistoryTrimTarget ) == 0 && huge.Length() == 1;
+         }
+         {  // Through AgentSession: 40 long plain turns; the history never exceeds the budget and stays valid.
+            AgentSession s;
+            size_type trimmedTotal = 0;
+            const std::string big( 24000, 'c' );
+            for ( int i = 0; i < 40 && sessionTrimOk; ++i )
+            {
+               s.BeginUserTurn( TextMsg( "user", "turn " + std::to_string( i ) + " " + big ) );
+               trimmedTotal += s.TakeTrimmedMessages();
+               String why;
+               sessionTrimOk = HistoryIsApiValid( s.History(), why )
+                            && EstimateHistoryTokens( s.History() ) <= PICopilotHistoryTokenBudget;
+               AnthropicResult r;
+               r.ok = true;
+               r.httpStatus = 200;
+               r.stopReason = "end_turn";
+               r.text = String::UTF8ToUTF16( ("reply " + big).c_str() );
+               r.contentBlocks = nlohmann::json::array( { { { "type", "text" }, { "text", "reply " + big } } } );
+               s.OnResponse( r, []( const ToolCall& ) { return ToolOutcome(); }, []() { return false; } );
+               trimmedTotal += s.TakeTrimmedMessages();
+            }
+            detail["sessionTrimmed"] = trimmedTotal;
+            sessionTrimOk = sessionTrimOk && trimmedTotal > 0;
+         }
+      }
+      catch ( const pcl::Exception& x ) { error = x.Message(); }
+      catch ( const std::exception& x ) { error = String( x.what() ); }
+
+      const bool ok = modelsOk && shapeOk && (wireSkipped || wireOk) && trimOk && noTrimOk && sessionTrimOk;
+      out["conversationDetail"] = detail;
+      out["conversationError"] = U8( error );
+      out["conversationWireSkipped"] = wireSkipped;
+      out["conversationOk"] = ok;
+      allOk = allOk && ok;
+   }
+
+   // ---- Section B3L: gated LIVE caching + thinking binding (Task 4) ------------
+   {
+      bool skipped = true, ok = true;
+      nlohmann::json detail = nlohmann::json::object();
+      String error;
+      if ( const char* key = std::getenv( "PICOPILOT_TEST_API_KEY" ) )
+      {
+         skipped = false;
+         ok = false;
+         try
+         {
+            // (1) Prompt cache: the second identical-prefix request reads the cache.
+            Array<AnthropicMessage> h;
+            h.Add( TextMsg( "user", "Reply with the single word: ok." ) );
+            nlohmann::json usage[2];
+            bool bothOk = true;
+            for ( int i = 0; i < 2; ++i )
+            {
+               AnthropicRequest req( String( key ), PICOPILOT_DEFAULT_MODEL, BuildSystemPrompt( AgentMode::Copilot ), h,
+                                     PICOPILOT_MESSAGES_URL, PICopilotRequestTimeoutSeconds,
+                                     ToolDefinitions( AgentMode::Copilot ), ProductionRequestShape( PICOPILOT_DEFAULT_MODEL ) );
+               const auto t0 = std::chrono::steady_clock::now();
+               const AnthropicResult r = req.Perform();
+               detail["cacheSeconds"].push_back( std::chrono::duration<double>( std::chrono::steady_clock::now() - t0 ).count() );
+               bothOk = bothOk && r.ok;
+               usage[i] = r.usage;
+               if ( !r.ok )
+                  detail["cacheError"] = U8( r.error );
+            }
+            const int cacheRead = usage[1].value( "cache_read_input_tokens", 0 );
+            detail["cacheUsage"] = { usage[0], usage[1] };
+            out["liveCacheRead"] = cacheRead;
+            const bool cacheOk = bothOk && cacheRead > 0;
+
+            // (2) Opus 5.5 and Fable 5.1, an EDITED history (the first turn's
+            //     image is stripped when the tool round is appended) with the
+            //     binding on: a 200 through a full tool round. ((3) is the case
+            //     that actually makes the API drop a block.) Every thinking block a
+            //     reply carried must be in the history verbatim (signature
+            //     included), and each request's duration is recorded against
+            //     the 600 s deadline (thinking on).
+            Inc5TestWindow tw( "PCBindLive", 256, 192, 3, 0.2 );
+            View v = tw.MainView();
+            auto runBinding = [&]( const char* model, nlohmann::json& transformations, nlohmann::json& d ) -> bool
+            {
+               ToolContext ctx;
+               ctx.mode = AgentMode::Advisor;
+               ctx.turnViewId = v.FullId();
+               AgentSession session;
+               StringList notes;
+               session.BeginUserTurn( CaptureViewTurn( "Call describe_process for PixelMath, then answer in one short sentence.", &v, notes ) );
+               AgentStep s;
+               int requests = 0;
+               bool allArrays = true;
+               nlohmann::json seconds = nlohmann::json::array();
+               nlohmann::json thinking = nlohmann::json::array();   // every thinking / redacted_thinking block received
+               transformations = nlohmann::json::array();
+               do
+               {
+                  AnthropicRequest req( String( key ), model, BuildSystemPrompt( AgentMode::Advisor ), session.History(),
+                                        PICOPILOT_MESSAGES_URL, PICopilotRequestTimeoutSeconds,
+                                        ToolDefinitions( AgentMode::Advisor ), ProductionRequestShape( model ) );
+                  const auto t0 = std::chrono::steady_clock::now();
+                  const AnthropicResult r = req.Perform();
+                  seconds.push_back( std::chrono::duration<double>( std::chrono::steady_clock::now() - t0 ).count() );
+                  ++requests;
+                  if ( !r.ok )
+                     d["bindingError"] = { { "status", r.httpStatus }, { "error", U8( r.error ) } };
+                  allArrays = allArrays && r.inputTransformations.is_array();
+                  transformations.push_back( r.inputTransformations );
+                  if ( r.contentBlocks.is_array() )
+                     for ( const nlohmann::json& blk : r.contentBlocks )
+                        if ( blk.is_object() && (blk.value( "type", std::string() ) == "thinking"
+                                              || blk.value( "type", std::string() ) == "redacted_thinking") )
+                           thinking.push_back( blk );
+                  s = session.OnResponse( r, [&ctx]( const ToolCall& c ) { return ExecuteTool( c, ctx ); }, []() { return false; } );
+               }
+               while ( s.kind == AgentStep::SendAgain && requests < 5 );
+
+               int kept = 0, signed_ = 0;
+               for ( const nlohmann::json& t : thinking )
+               {
+                  bool found = false;
+                  for ( const AnthropicMessage& m : session.History() )
+                     if ( m.role == "assistant" && m.blocks.is_array() )
+                        for ( const nlohmann::json& blk : m.blocks )
+                           found = found || blk == t;
+                  kept += found ? 1 : 0;
+                  signed_ += (t.contains( "signature" ) || t.contains( "data" )) ? 1 : 0;
+               }
+               d["requests"] = requests;
+               d["seconds"] = seconds;
+               d["thinkingBlocks"] = int( thinking.size() );
+               d["thinkingKeptVerbatim"] = kept;
+               d["thinkingSigned"] = signed_;
+               d["final"] = int( s.kind );
+               d["answer"] = U8( s.assistantText );
+               bool inTime = true;
+               for ( const nlohmann::json& sec : seconds )
+                  inTime = inTime && sec.get<double>() < PICopilotRequestTimeoutSeconds;
+               return s.kind == AgentStep::Done && requests >= 2 && allArrays && inTime
+                   && kept == int( thinking.size() ) && signed_ == int( thinking.size() );
+            };
+            // (3) Opus 5.5, a TRIMMED history: TrimHistoryToBudget() removes the
+            //     first exchange in front of an exchange whose reply thought, so
+            //     that thinking block's bound prefix changed. The request must be
+            //     a 200, and when the reply did think, the API must report the
+            //     drop (input_transformations: thinking_dropped). The image-strip
+            //     edit in (2) turned out not to be a prefix mismatch (observed
+            //     2026-09-24: no transformation with or without the binding).
+            bool trimLiveOk = false;
+            {
+               nlohmann::json log = nlohmann::json::array();
+               Array<AnthropicMessage> h;
+               auto send = [&]() -> AnthropicResult
+               {
+                  AnthropicRequest req( String( key ), "claude-opus-5-5", BuildSystemPrompt( AgentMode::Advisor ), h,
+                                        PICOPILOT_MESSAGES_URL, PICopilotRequestTimeoutSeconds,
+                                        nlohmann::json()/*no tools: plain text replies*/,
+                                        ProductionRequestShape( "claude-opus-5-5" ) );
+                  const auto t0 = std::chrono::steady_clock::now();
+                  const AnthropicResult r = req.Perform();
+                  log.push_back( { { "status", r.httpStatus }, { "error", U8( r.error ) }, { "transformations", r.inputTransformations },
+                                   { "seconds", std::chrono::duration<double>( std::chrono::steady_clock::now() - t0 ).count() } } );
+                  return r;
+               };
+               auto reply = []( const AnthropicResult& r )
+               {
+                  AnthropicMessage m;
+                  m.role = "assistant";
+                  m.blocks = r.contentBlocks;
+                  return m;
+               };
+               h.Add( TextMsg( "user", "What is 17*23? Answer with just the number." ) );
+               const AnthropicResult r1 = send();
+               bool thought = false;
+               if ( r1.ok )
+               {
+                  h.Add( reply( r1 ) );
+                  h.Add( TextMsg( "user", "Think step by step: which is larger, 2^30 or 10^9? Answer in one word." ) );
+                  const AnthropicResult r2 = send();
+                  if ( r2.ok )
+                  {
+                     for ( const nlohmann::json& blk : r2.contentBlocks )
+                        thought = thought || (blk.is_object() && blk.value( "type", std::string() ) == "thinking");
+                     h.Add( reply( r2 ) );
+                     h.Add( TextMsg( "user", "Thanks. Reply with the single word: ok." ) );
+                     const size_type removed = TrimHistoryToBudget( h, EstimateHistoryTokens( h ) - 1, EstimateHistoryTokens( h, 2 ) );
+                     String why;
+                     const bool valid = HistoryIsApiValid( h, why );
+                     const AnthropicResult r3 = send();
+                     bool dropped = false;
+                     if ( r3.inputTransformations.is_array() )
+                        for ( const nlohmann::json& t : r3.inputTransformations )
+                           dropped = dropped || (t.is_object() && t.value( "type", std::string() ) == "thinking_dropped");
+                     detail["trimLiveRemoved"] = removed;
+                     trimLiveOk = removed == 2 && valid && r3.ok && r3.httpStatus == 200 && (!thought || dropped);
+                  }
+               }
+               detail["trimLive"] = log;
+               detail["trimLiveThought"] = thought;
+            }
+            nlohmann::json t55, tFable, d55 = nlohmann::json::object(), dFable = nlohmann::json::object();
+            const bool ok55 = runBinding( "claude-opus-5-5", t55, d55 );
+            const bool okFable = runBinding( "claude-fable-5-1", tFable, dFable );
+            out["liveBindingTransformations"] = t55;
+            out["liveBindingTransformationsFable"] = tFable;
+            detail["binding55"] = d55;
+            detail["bindingFable"] = dFable;
+            const bool bindingOk = ok55 && okFable && trimLiveOk;
+            ok = cacheOk && bindingOk;
+         }
+         catch ( const pcl::Exception& x ) { error = x.Message(); }
+         catch ( const std::exception& x ) { error = String( x.what() ); }
+      }
+      out["liveConversationDetail"] = detail;
+      out["liveConversationError"] = U8( error );
+      out["liveConversationSkipped"] = skipped;
+      out["liveConversationOk"] = ok;
       allOk = allOk && ok;
    }
 

@@ -259,6 +259,7 @@ void PICopilotInterface::SendCurrentInput()
    // The BARE prompt (never the context-prefixed content) is what a failed
    // message gives back for a resend.
    m_session.BeginUserTurn( ComposeTurnWithActiveView( prompt ) );
+   NoteTrimmed();
    m_pendingPrompt = prompt;
    m_apiKey = key;
    m_turnMode = AgentModeFromIndex( GUI->Mode_ComboBox.CurrentItem() );
@@ -513,6 +514,7 @@ void PICopilotInterface::e_Poll_Timer( Timer& )
          [this]( const String& line ) { AppendToLog( PlainText( line ) + "\n" ); } );
    }
    m_handlingResult = false;
+   NoteTrimmed();
 
    if ( s.kind == AgentStep::SendAgain )
    {
@@ -546,7 +548,16 @@ void PICopilotInterface::e_Clear_Click( Button&, bool )
       return;
    m_session.Clear();
    GUI->ChatLog.Clear();
-   AppendToLog( PlainText( "(new chat: the conversation history was cleared; your images are unchanged)" ) + "\n\n" );
+   AppendToLog( PlainText( "(new chat started: the model no longer sees the earlier conversation; your images are unchanged)" ) + "\n\n" );
+}
+
+void PICopilotInterface::NoteTrimmed()
+{
+   const size_type n = m_session.TakeTrimmedMessages();
+   if ( n > 0 )
+      AppendToLog( PlainText( String().Format( "(%u older messages are no longer sent to the model, to keep this "
+                                               "conversation within its history budget. Your images are unchanged; "
+                                               "press New chat to start fresh.)", unsigned( n ) ) ) + "\n\n" );
 }
 
 void PICopilotInterface::e_Mode_ItemSelected( ComboBox&, int itemIndex )
@@ -636,8 +647,8 @@ PICopilotInterface::GUIData::GUIData( PICopilotInterface& w )
    IncludeView_CheckBox.SetToolTip( "<p>Send the active view with each message: an auto-stretched "
                                     "preview (display only) plus its geometry, statistics and FITS keywords.</p>" );
 
-   Clear_Button.SetText( "Clear" );
-   Clear_Button.SetToolTip( "<p>Start a new chat: clears the conversation history and this log. "
+   Clear_Button.SetText( "New chat" );
+   Clear_Button.SetToolTip( "<p>Start a new chat: the model forgets this conversation and the log is cleared. "
                             "Your images and their History are not touched.</p>" );
    Clear_Button.OnClick( (Button::click_event_handler)&PICopilotInterface::e_Clear_Click, w );
 

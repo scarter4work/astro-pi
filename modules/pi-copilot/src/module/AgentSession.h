@@ -6,6 +6,7 @@
 
 #include "AgentTools.h"
 #include "AnthropicClient.h"
+#include "HistoryBudget.h"
 
 #include <pcl/StringList.h>
 
@@ -87,12 +88,22 @@ public:
 
    void Clear();
 
+   // Messages TrimHistoryToBudget() removed since the last call (the panel
+   // tells the user).
+   size_type TakeTrimmedMessages()
+   {
+      const size_type n = m_trimmed;
+      m_trimmed = 0;
+      return n;
+   }
+
 private:
 
    Array<AnthropicMessage> m_history;
    Array<AnthropicMessage> m_snapshot;   // history before the current BeginUserTurn()
    int                     m_rounds = 0;
    bool                    m_imageChanged = false;   // a tool of this user message changed an image
+   size_type               m_trimmed = 0;            // messages trimmed since TakeTrimmedMessages()
 
    AgentStep Fail( AgentStep::Kind kind, const String& error );
 };

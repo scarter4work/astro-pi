@@ -53,9 +53,12 @@ struct RequestShape
    bool stream = false;                                 // "stream": true (Server-Sent Events)
    int  maxTokens = 4096;
    int  streamIdleSeconds = PICopilotStreamIdleSeconds; // streamed requests only
+   bool promptCaching = false;    // three cache_control breakpoints: last tool, system, top-level automatic
+   bool thinkingBinding = false;  // "thinking" adaptive + block_binding drop_block + the anthropic-beta header
 };
 
-// The shape the panel sends for `model`: streamed, PICopilotStreamMaxTokens.
+// The shape the panel sends for `model`: streamed, PICopilotStreamMaxTokens,
+// prompt caching, and the thinking binding when the model's ModelInfo says so.
 RequestShape ProductionRequestShape( const IsoString& model );
 
 // One turn of chat history sent to the Anthropic Messages API.

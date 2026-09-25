@@ -107,6 +107,8 @@ private:
    // (DescribeTurnEnd), the prompt restored when asked, then FinishTurn().
    void EndTurn( const AgentStep& step, int httpStatus );
    void AppendToLog( const String& richText );
+   // Tells the user when the history budget dropped older messages.
+   void NoteTrimmed();
    void StopWorker();
    void SetBusy( bool busy );
    ToolContext MakeToolContext();
