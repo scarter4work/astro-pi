@@ -322,7 +322,7 @@ print('anthropic check: %s' % ('SKIPPED (no key)' if d.get('anthropicSkipped') e
 print('two-turn check: %s' % ('SKIPPED (no key)' if d.get('twoTurnSkipped') else 'RAN against real API'))
 print('vision check: %s' % ('SKIPPED (no key)' if d.get('visionSkipped') else 'RAN against real API, answer=%r' % d.get('visionAnswer')))
 print('live agent check: %s' % ('SKIPPED (no key)' if d.get('liveAgentSkipped') else 'RAN against real API, ratio=%r log=%r' % (d.get('liveAgentRatio'), d.get('liveAgentLog'))))
-print('live conversation check: %s' % ('SKIPPED (no key)' if d.get('liveConversationSkipped') else 'RAN against real API, cacheRead=%r binding=%r' % (d.get('liveCacheRead'), d.get('liveBindingTransformations'))))
+print('live conversation check: %s' % ('SKIPPED (no key)' if d.get('liveConversationSkipped') else 'RAN against real API, cacheRead=%r trimThought=%r trimTransformations=%r%s' % (d.get('liveCacheRead'), d.get('liveTrimThought'), d.get('liveTrimTransformations'), ('' if d.get('liveConversationOk') else ' FAILED: %r' % d.get('liveConversationDetail', {}).get('trimLiveReason')))))
 if missing:
     print('FAILED keys: ' + ', '.join(missing))
     sys.exit(1)

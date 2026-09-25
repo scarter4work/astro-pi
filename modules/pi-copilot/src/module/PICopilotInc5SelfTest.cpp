@@ -1081,6 +1081,7 @@ bool RunInc5SelfTest( nlohmann::json& out )
    // ---- Section B3: models, caching/binding shape, history budget (Task 4) ----
    {
       bool modelsOk = false, shapeOk = false, wireOk = false, trimOk = false, sessionTrimOk = true, noTrimOk = false;
+      bool thinkOnlyOk = false, trimResetOk = false;
       bool wireSkipped = true;
       nlohmann::json detail = nlohmann::json::object();
       String error;
@@ -1182,11 +1183,77 @@ bool RunInc5SelfTest( nlohmann::json& out )
             detail["sessionTrimmed"] = trimmedTotal;
             sessionTrimOk = sessionTrimOk && trimmedTotal > 0;
          }
+         {  // A reply whose only kept blocks are thinking (max_tokens while thinking; or
+            // thinking + a cut-off tool_use that is dropped) still stores a text block
+            // AFTER the verbatim thinking, so a drop_block can never empty the turn.
+            const nlohmann::json th = { { "type", "thinking" }, { "thinking", "let me see" }, { "signature", "sig-abc" } };
+            const nlohmann::json red = { { "type", "redacted_thinking" }, { "data", "opaque" } };
+            auto store = [&]( const nlohmann::json& blocks ) -> nlohmann::json
+            {
+               AgentSession s;
+               s.BeginUserTurn( TextMsg( "user", "q" ) );
+               AnthropicResult r;
+               r.ok = true;
+               r.httpStatus = 200;
+               r.stopReason = "max_tokens";
+               r.truncated = true;
+               r.contentBlocks = blocks;
+               const AgentStep st = s.OnResponse( r, []( const ToolCall& ) { return ToolOutcome(); }, []() { return false; } );
+               String why;
+               s.BeginUserTurn( TextMsg( "user", "next" ) );
+               if ( st.kind != AgentStep::Done || s.History().Length() != 3 || !HistoryIsApiValid( s.History(), why ) )
+                  return nlohmann::json();
+               return s.History()[1].blocks;
+            };
+            const nlohmann::json a = store( nlohmann::json::array( { th } ) );
+            const nlohmann::json b = store( nlohmann::json::array( { th, red,
+               { { "type", "tool_use" }, { "id", "toolu_x" }, { "name", "describe_process" }, { "input", nlohmann::json::object() } } } ) );
+            const nlohmann::json c = store( nlohmann::json::array( { th, { { "type", "text" }, { "text", "partial answer" } } } ) );
+            detail["thinkOnly"] = { a, b, c };
+            thinkOnlyOk = a.is_array() && a.size() == 2 && a[0] == th && a[1].at( "type" ) == "text"
+                       && a[1].at( "text" ) == "[empty reply (stop_reason max_tokens)]"
+                       && b.is_array() && b.size() == 3 && b[0] == th && b[1] == red && b[2].at( "type" ) == "text"
+                       && b[2].at( "text" ) == "[reply cut off (max_tokens) before a tool call completed]"
+                       && c.is_array() && c.size() == 2 && c[0] == th && c[1].at( "text" ) == "partial answer";
+         }
+         {  // A trim done by BeginUserTurn() is not reported when the request then fails
+            // with nothing run: the history is back to the untrimmed snapshot.
+            AgentSession s;
+            const std::string big( 24000, 'd' );
+            for ( int i = 0; i < 12; ++i )
+            {
+               s.BeginUserTurn( TextMsg( "user", "turn " + std::to_string( i ) + " " + big ) );
+               AnthropicResult r;
+               r.ok = true;
+               r.httpStatus = 200;
+               r.stopReason = "end_turn";
+               r.contentBlocks = nlohmann::json::array( { { { "type", "text" }, { "text", "reply " + big } } } );
+               s.OnResponse( r, []( const ToolCall& ) { return ToolOutcome(); }, []() { return false; } );
+            }
+            s.TakeTrimmedMessages();
+            const size_type before = s.History().Length();
+            s.BeginUserTurn( TextMsg( "user", "one more " + std::string( 150000, 'e' ) ) );   // ~50k: always over the budget
+            const size_type trimmedOnBegin = s.History().Length() < before + 1 ? 1 : 0;
+            AnthropicResult fail;
+            fail.ok = false;
+            fail.errorKind = RequestErrorKind::Http;
+            fail.httpStatus = 529;
+            fail.error = "Overloaded";
+            s.OnResponse( fail, []( const ToolCall& ) { return ToolOutcome(); }, []() { return false; } );
+            const size_type reported = s.TakeTrimmedMessages();
+            detail["trimReset"] = { { "before", before }, { "trimmedOnBegin", trimmedOnBegin }, { "reported", reported },
+                                    { "after", s.History().Length() } };
+            trimResetOk = trimmedOnBegin == 1 && reported == 0 && s.History().Length() == before;
+         }
       }
       catch ( const pcl::Exception& x ) { error = x.Message(); }
       catch ( const std::exception& x ) { error = String( x.what() ); }
 
-      const bool ok = modelsOk && shapeOk && (wireSkipped || wireOk) && trimOk && noTrimOk && sessionTrimOk;
+      const bool ok = modelsOk && shapeOk && (wireSkipped || wireOk) && trimOk && noTrimOk && sessionTrimOk
+                   && thinkOnlyOk && trimResetOk;
+      detail["flags"] = { { "models", modelsOk }, { "shape", shapeOk }, { "wire", wireOk }, { "trim", trimOk },
+                          { "noTrim", noTrimOk }, { "sessionTrim", sessionTrimOk }, { "thinkOnly", thinkOnlyOk },
+                          { "trimReset", trimResetOk } };
       out["conversationDetail"] = detail;
       out["conversationError"] = U8( error );
       out["conversationWireSkipped"] = wireSkipped;
@@ -1333,12 +1400,24 @@ bool RunInc5SelfTest( nlohmann::json& out )
                if ( r1.ok )
                {
                   h.Add( reply( r1 ) );
-                  h.Add( TextMsg( "user", "Think step by step: which is larger, 2^30 or 10^9? Answer in one word." ) );
-                  const AnthropicResult r2 = send();
-                  if ( r2.ok )
+                  // The binding is only exercised when r2 carries a thinking block
+                  // (adaptive thinking may skip an easy question): ask something
+                  // that invites thinking, up to 3 times.
+                  h.Add( TextMsg( "user", "Think carefully, step by step, before answering: how many prime numbers "
+                                          "lie strictly between 100 and 200? Answer with just the number." ) );
+                  AnthropicResult r2;
+                  for ( int attempt = 0; attempt < 3 && !thought; ++attempt )
                   {
+                     r2 = send();
+                     if ( !r2.ok )
+                        break;
                      for ( const nlohmann::json& blk : r2.contentBlocks )
                         thought = thought || (blk.is_object() && blk.value( "type", std::string() ) == "thinking");
+                  }
+                  if ( r2.ok && !thought )
+                     detail["trimLiveReason"] = "binding not exercised: model did not think (3 attempts)";
+                  if ( r2.ok && thought )
+                  {
                      h.Add( reply( r2 ) );
                      h.Add( TextMsg( "user", "Thanks. Reply with the single word: ok." ) );
                      const size_type removed = TrimHistoryToBudget( h, EstimateHistoryTokens( h ) - 1, EstimateHistoryTokens( h, 2 ) );
@@ -1350,11 +1429,14 @@ bool RunInc5SelfTest( nlohmann::json& out )
                         for ( const nlohmann::json& t : r3.inputTransformations )
                            dropped = dropped || (t.is_object() && t.value( "type", std::string() ) == "thinking_dropped");
                      detail["trimLiveRemoved"] = removed;
-                     trimLiveOk = removed == 2 && valid && r3.ok && r3.httpStatus == 200 && (!thought || dropped);
+                     out["liveTrimTransformations"] = r3.inputTransformations;
+                     trimLiveOk = removed == 2 && valid && r3.ok && r3.httpStatus == 200 && dropped;
+                     if ( !dropped )
+                        detail["trimLiveReason"] = "the model thought, but the trimmed request reported no thinking_dropped";
                   }
                }
                detail["trimLive"] = log;
-               detail["trimLiveThought"] = thought;
+               out["liveTrimThought"] = thought;
             }
             nlohmann::json t55, tFable, d55 = nlohmann::json::object(), dFable = nlohmann::json::object();
             const bool ok55 = runBinding( "claude-opus-5-5", t55, d55 );

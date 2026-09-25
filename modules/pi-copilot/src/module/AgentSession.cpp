@@ -79,6 +79,7 @@ nlohmann::json StorableAssistantBlocks( const AnthropicResult& r )
 {
    const bool keepToolUse = r.stopReason == "tool_use";
    bool droppedToolUse = false;
+   bool hasContent = false;   // a kept block other than thinking / redacted_thinking
    nlohmann::json kept = nlohmann::json::array();
    for ( const nlohmann::json& b : r.contentBlocks )
    {
@@ -89,9 +90,14 @@ nlohmann::json StorableAssistantBlocks( const AnthropicResult& r )
          droppedToolUse = true;
          continue;
       }
+      const std::string type = BlockType( b );
+      hasContent = hasContent || (type != "thinking" && type != "redacted_thinking");
       kept.push_back( b );
    }
-   if ( kept.empty() )
+   // Thinking blocks alone never make a turn: the API may drop them
+   // (drop_block binding), which would leave an empty assistant turn. The
+   // placeholder goes after them (thinking stays first, verbatim).
+   if ( !hasContent )
    {
       const std::string note = (droppedToolUse && r.truncated)
          ? std::string( "[reply cut off (max_tokens) before a tool call completed]" )
@@ -145,6 +151,7 @@ AgentStep AgentSession::Fail( AgentStep::Kind kind, const String& error )
    if ( m_rounds == 0 )
    {
       m_history = m_snapshot;        // nothing ran: as if never sent
+      m_trimmed = 0;                 // the snapshot is untrimmed: nothing to report
       s.restoreInput = true;
    }
    else
@@ -169,6 +176,7 @@ AgentStep AgentSession::AbortTurn( const String& error )
    s.restoreInput = true;
    m_history = m_snapshot;
    m_rounds = 0;
+   m_trimmed = 0;   // the snapshot is untrimmed: nothing to report
    String why;
    s.needsClear = !HistoryPrefixIsApiValid( m_history, why );
    return s;

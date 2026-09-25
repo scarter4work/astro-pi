@@ -84,7 +84,13 @@ bool IsFreshUserTurn( const AnthropicMessage& m )
 
 size_type TrimHistoryToBudget( Array<AnthropicMessage>& h, size_type budget, size_type target )
 {
-   if ( h.Length() < 3 || EstimateHistoryTokens( h ) <= budget )
+   if ( h.Length() < 3 )
+      return 0;
+   // suffix[i] = EstimateHistoryTokens( h, i ), computed once (linear).
+   Array<size_type> suffix( h.Length() + 1, size_type( 0 ) );
+   for ( size_type i = h.Length(); i-- > 0; )
+      suffix[i] = suffix[i+1] + EstimateMessageTokens( h[i] );
+   if ( suffix[0] <= budget )
       return 0;
    size_type lastFresh = 0;
    for ( size_type i = h.Length(); i-- > 0; )
@@ -97,7 +103,7 @@ size_type TrimHistoryToBudget( Array<AnthropicMessage>& h, size_type budget, siz
       return 0;   // the whole history is the current exchange: nothing may be cut
    size_type cut = lastFresh;
    for ( size_type i = 2; i < lastFresh; ++i )
-      if ( IsFreshUserTurn( h[i] ) && EstimateHistoryTokens( h, i ) <= target )
+      if ( IsFreshUserTurn( h[i] ) && suffix[i] <= target )
       {
          cut = i;
          break;
