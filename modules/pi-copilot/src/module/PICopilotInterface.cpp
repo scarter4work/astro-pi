@@ -241,7 +241,13 @@ void PICopilotInterface::SendCurrentInput()
    if ( prompt.IsEmpty() )
       return;
 
-   String key = KeyStore::Load();
+   const KeyStore::State ks = KeyStore::Load();
+   if ( !ks.note.IsEmpty() && ks.note != m_lastKeyNote )
+   {
+      AppendToLog( PlainText( "(" + ks.note + ")" ) + "\n\n" );   // once per distinct note
+      m_lastKeyNote = ks.note;
+   }
+   const String key = ks.key;
    if ( key.IsEmpty() )
    {
       // Visible notice, never a silent no-op. The input is kept so the
@@ -445,7 +451,7 @@ void PICopilotInterface::e_Config_Click( Button&, bool )
 {
    // ConfigDialog::Run() persists the key itself on OK; nothing to do here.
    ConfigDialog d;
-   d.Run( KeyStore::Load() );
+   d.Run( KeyStore::Load().key );
 }
 
 void PICopilotInterface::DrainStreamedText()

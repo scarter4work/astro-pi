@@ -63,7 +63,9 @@ void ConfigDialog::OK_Button_Click( Button& /*sender*/, bool /*checked*/ )
    if ( key.IsEmpty() )
    {
       // Explicit clear: an emptied field + OK removes the stored key.
-      KeyStore::Clear();
+      const String why = KeyStore::Clear();
+      if ( !why.IsEmpty() )
+         MessageBox( "<p>" + why + "</p>", "PI Copilot", StdIcon::Warning, StdButton::Ok ).Execute();
       result_ = String();
       Ok();
       return;
@@ -79,7 +81,9 @@ void ConfigDialog::OK_Button_Click( Button& /*sender*/, bool /*checked*/ )
    }
 
    result_ = key;
-   KeyStore::Save( result_ );
+   const KeyStore::State st = KeyStore::Save( result_ );
+   if ( st.where == KeyStore::Where::Settings )
+      MessageBox( "<p>" + st.note + "</p>", "PI Copilot", StdIcon::Warning, StdButton::Ok ).Execute();
    Ok();
 }
 
