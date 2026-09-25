@@ -8,6 +8,7 @@
 #include "PICopilotInterface.h"   // PICopilotInterface::PlainText
 #include "PICopilotVisionSelfTest.h"
 #include "PICopilotAgentSelfTest.h"
+#include "PICopilotInc5SelfTest.h"
 #include "Utf8.h"
 
 #include <pcl/Process.h>
@@ -306,7 +307,24 @@ bool RunSelfTest( String& jsonOut )
       j["agentException"] = "unknown exception";
    }
 
-   ok = ok && visionOk && agentOk;
+   // Increment 5. Same isolation as increments 3 and 4.
+   bool inc5Ok = false;
+   try
+   {
+      nlohmann::json inc5;
+      inc5Ok = RunInc5SelfTest( inc5 );
+      j.update( inc5 );
+   }
+   catch ( const std::exception& x )
+   {
+      j["inc5Exception"] = x.what();
+   }
+   catch ( ... )
+   {
+      j["inc5Exception"] = "unknown exception";
+   }
+
+   ok = ok && visionOk && agentOk && inc5Ok;
    j["ok"] = ok;
    jsonOut = String::UTF8ToUTF16( j.dump().c_str() );
    return ok;

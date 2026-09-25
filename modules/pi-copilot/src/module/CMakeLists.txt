@@ -32,6 +32,7 @@ set(MODULE_SOURCES
     SystemPrompt.cpp
     AgentSession.cpp
     TurnEndNotes.cpp
+    PICopilotInc5SelfTest.cpp
 )
 
 add_library(PICopilot SHARED ${MODULE_SOURCES})
