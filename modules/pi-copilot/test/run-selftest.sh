@@ -50,7 +50,8 @@ cleanup()
    if [ -n "${PICOPILOT_ECHO_KEEP:-}" ] && [ -n "${ECHO_DIR:-}" ]; then
       cp "$ECHO_DIR"/body-* "$PICOPILOT_ECHO_KEEP"/ 2>/dev/null || true
    fi
-   rm -f "${R:-}" "${STALL_PORT_FILE:-}" "${SLOT_SETTINGS:-}" "${PICOPILOT_SELFTEST_PRE:-}" "${PICOPILOT_SELFTEST_PHASE:-}" "${LIB_STAMP:-}"
+   rm -f "${R:-}" "${STALL_PORT_FILE:-}" "${SLOT_SETTINGS:-}" "${LIB_STAMP:-}"
+   if [ -n "${HANDOFF_DIR:-}" ]; then rm -rf "$HANDOFF_DIR"; fi
    if [ -n "${ECHO_DIR:-}" ]; then rm -rf "$ECHO_DIR"; fi
    if [ -n "${JOURNEY_XDG:-}" ]; then rm -rf "$JOURNEY_XDG"; fi
    if [ -n "${STALL_PID:-}" ]; then kill "$STALL_PID" 2>/dev/null || true; fi
@@ -80,12 +81,20 @@ if [ -d "$REAL_XDG" ]; then
    done
 fi
 export XDG_DATA_HOME="$JOURNEY_XDG"
+# Every file handed between selftest.js and the module lives in one private
+# (0700, mktemp -d) directory owned by this shell, so no writer ever opens a
+# guessable or pre-planted path (CWE-59); cleanup() removes it.
+HANDOFF_DIR="$(mktemp -d "${TMPDIR:-/tmp}/picopilot-handoff.XXXXXX")"
+chmod 700 "$HANDOFF_DIR"
 # The selftest.js pre-phase ("user actions, panel never opened") writes its result here.
-export PICOPILOT_SELFTEST_PRE="$(mktemp -u "${TMPDIR:-/tmp}/picopilot-pre.XXXXXX.json")"
+export PICOPILOT_SELFTEST_PRE="$HANDOFF_DIR/pre.json"
 # Multi-phase harness: selftest.js writes {"phase", "payload"} here before each
 # top-level check phase (PICopilot.executeGlobal() then runs that phase's
 # handler instead of the self-test). See the header of test/selftest.js.
-export PICOPILOT_SELFTEST_PHASE="$(mktemp -u "${TMPDIR:-/tmp}/picopilot-phase.XXXXXX.json")"
+export PICOPILOT_SELFTEST_PHASE="$HANDOFF_DIR/phase.json"
+# Scratch directory for top-level fixtures that write files (e.g. J0 save+reopen).
+export PICOPILOT_SELFTEST_SCRATCH="$HANDOFF_DIR/scratch"
+mkdir -m 700 "$PICOPILOT_SELFTEST_SCRATCH"
 
 [ -f "$SO" ] || { echo "FAIL: module not built at $SO"; exit 1; }
 "$PI" --sign-module-file="$SO" --xssk-file="$KEYS" --xssk-password="$PASS"

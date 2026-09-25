@@ -23,6 +23,12 @@ void JourneySpikeProbeClearEvents();
 // The timer's nested EvaluateScript can be paused (J0 pauses it after measuring
 // whether it clobbers an outer EvaluateScript's result). Ticks still count.
 void JourneySpikeProbeSetNestedEval( bool on );
+// Timer-driven production apply (review fix #1): the next timer tick runs the
+// real ApplyProcess( PixelMath $T*0.5 ) on `viewId` -- the panel's execution
+// context (a module Timer, no process executing) -- and records the result,
+// read back by JourneySpikeProbeTimerApplyResult(). Test-only like the rest.
+void JourneySpikeProbeRequestTimerApply( const std::string& viewId );
+nlohmann::json JourneySpikeProbeTimerApplyResult();       // null until the tick ran
 
 } // namespace pcl
 

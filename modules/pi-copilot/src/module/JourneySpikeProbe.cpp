@@ -3,6 +3,7 @@
 
 #include "JourneySpikeProbe.h"
 #include "PICopilotModule.h"
+#include "ProcessApply.h"
 #include "Utf8.h"
 
 #include <pcl/Control.h>
@@ -45,6 +46,8 @@ struct SpikeState
    int            ticks = 0;
    bool           timerCreated = false;
    bool           nestedEvalOn = true;
+   std::string    timerApplyViewId;                                // pending request, "" when none
+   nlohmann::json timerApplyResult;                                // null until run
    std::string    timerError;
    int            nestedEvalOk = 0;
    int            nestedEvalFail = 0;
@@ -69,6 +72,30 @@ void SpikeTimerHost::e_Tick( Timer& )
 {
    SpikeState& s = S();
    ++s.ticks;
+   if ( !s.timerApplyViewId.empty() )
+   {
+      const std::string id = s.timerApplyViewId;
+      s.timerApplyViewId.clear();
+      nlohmann::json r = { { "viewId", id }, { "t", Since() } };
+      try
+      {
+         ImageWindow w = ImageWindow::WindowById( IsoString( id.c_str() ) );
+         if ( w.IsNull() )
+            r["error"] = "no such window";
+         else
+         {
+            r["modifyCountBefore"] = uint64_t( w.ModifyCount() );
+            const ApplyProcessResult a = ApplyProcess( "PixelMath", { { "expression", "$T*0.5" } },
+                                                       nlohmann::json::object(), w.MainView() );
+            r["ok"] = a.ok;
+            r["error"] = U8( a.error );
+            r["modifyCountAfter"] = uint64_t( w.ModifyCount() );
+         }
+      }
+      catch ( const pcl::Exception& x ) { r["error"] = U8( x.Message() ); }
+      catch ( ... )                     { r["error"] = "unknown exception"; }
+      s.timerApplyResult = r;
+   }
    if ( !s.nestedEvalOn )
       return;
    // While the pre-phase script runs it pumps events, so this is an
@@ -185,6 +212,17 @@ void JourneySpikeProbeClearEvents()
 void JourneySpikeProbeSetNestedEval( bool on )
 {
    S().nestedEvalOn = on;
+}
+
+void JourneySpikeProbeRequestTimerApply( const std::string& viewId )
+{
+   S().timerApplyResult = nlohmann::json();
+   S().timerApplyViewId = viewId;
+}
+
+nlohmann::json JourneySpikeProbeTimerApplyResult()
+{
+   return S().timerApplyResult;
 }
 
 } // namespace pcl
