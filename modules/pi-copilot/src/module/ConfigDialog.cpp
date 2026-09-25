@@ -43,6 +43,28 @@ String EscapeHtml( const String& s )
    return out;
 }
 
+// Disables the dialog's buttons for its lifetime (re-enabled even when a
+// keyring call throws).
+class ButtonsDisabled
+{
+public:
+   ButtonsDisabled( PushButton& a, PushButton& b ) : m_a( a ), m_b( b )
+   {
+      m_a.Disable();
+      m_b.Disable();
+   }
+   ~ButtonsDisabled()
+   {
+      m_a.Enable();
+      m_b.Enable();
+   }
+   ButtonsDisabled( const ButtonsDisabled& ) = delete;
+   ButtonsDisabled& operator =( const ButtonsDisabled& ) = delete;
+private:
+   PushButton& m_a;
+   PushButton& m_b;
+};
+
 void Tell( const String& text, StdIcon::value_type icon )
 {
    MessageBox( "<p>" + EscapeHtml( text ) + "</p>", "PI Copilot", icon, StdButton::Ok ).Execute();
@@ -173,8 +195,7 @@ void ConfigDialog::OK_Button_Click( Button&, bool )
       {
          KeyWhere_Label.SetText( waiting ? String::UTF8ToUTF16( "Waiting for the system keyring\xE2\x80\xA6" ) : before );
       } );
-      OK_PushButton.Disable();
-      Cancel_PushButton.Disable();
+      const ButtonsDisabled busy( OK_PushButton, Cancel_PushButton );
       if ( key.IsEmpty() )
       {
          const KeyStore::Cleared c = KeyStore::Clear();
@@ -187,8 +208,6 @@ void ConfigDialog::OK_Button_Click( Button&, bool )
          if ( st.where == KeyStore::Where::Settings )
             Tell( st.note, StdIcon::Warning );
       }
-      OK_PushButton.Enable();
-      Cancel_PushButton.Enable();
    }
    const int mi = Model_ComboBox.CurrentItem();
    if ( mi >= 0 && size_type( mi ) < PICopilotModelCount )

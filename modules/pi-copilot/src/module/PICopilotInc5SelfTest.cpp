@@ -1446,6 +1446,68 @@ bool RunInc5SelfTest( nlohmann::json& out )
                detail["trimLive"] = log;
                out["liveTrimThought"] = thought;
             }
+            // (4) Model switch mid-conversation (fix round 1): an Opus 5.5 turn
+            //     that thought, then the next message on another model. Raw =
+            //     the Opus 5.5 thinking blocks re-sent verbatim (recorded only:
+            //     what the API does with foreign blocks); stripped = the
+            //     session's SetModel() path, which must be a 200 for each target.
+            bool switchOk = false;
+            {
+               nlohmann::json sw = nlohmann::json::object();
+               AgentSession base;
+               base.SetModel( "claude-opus-5-5" );
+               base.BeginUserTurn( TextMsg( "user", "Think carefully, step by step, before answering: how many prime numbers "
+                                                    "lie strictly between 100 and 200? Answer with just the number." ) );
+               auto sendOn = [&]( const char* model, const Array<AnthropicMessage>& hist ) -> AnthropicResult
+               {
+                  AnthropicRequest req( String( key ), model, BuildSystemPrompt( AgentMode::Advisor ), hist,
+                                        PICOPILOT_MESSAGES_URL, PICopilotRequestTimeoutSeconds,
+                                        nlohmann::json()/*no tools*/, ProductionRequestShape( model ) );
+                  return req.Perform();
+               };
+               bool thought = false;
+               AnthropicResult r0;
+               const Array<AnthropicMessage> start = base.History();
+               for ( int attempt = 0; attempt < 3 && !thought; ++attempt )
+               {
+                  r0 = sendOn( "claude-opus-5-5", start );
+                  if ( !r0.ok )
+                     break;
+                  for ( const nlohmann::json& blk : r0.contentBlocks )
+                     thought = thought || (blk.is_object() && blk.value( "type", std::string() ) == "thinking");
+               }
+               sw["firstStatus"] = r0.httpStatus;
+               sw["thought"] = thought;
+               if ( r0.ok && thought )
+               {
+                  const AgentStep st0 = base.OnResponse( r0, []( const ToolCall& ) { return ToolOutcome(); }, []() { return false; } );
+                  sw["firstStep"] = int( st0.kind );
+                  const AnthropicMessage next = TextMsg( "user", "Thanks. Reply with the single word: ok." );
+                  bool strippedAll200 = st0.kind == AgentStep::Done;
+                  for ( const char* target : { "claude-opus-4-8", "claude-sonnet-5", "claude-fable-5-1" } )
+                  {
+                     AgentSession raw = base;           // foreign thinking re-sent verbatim
+                     raw.BeginUserTurn( next );
+                     const AnthropicResult rr = sendOn( target, raw.History() );
+                     AgentSession fixed = base;         // the production path
+                     fixed.SetModel( target );
+                     fixed.BeginUserTurn( next );
+                     String why;
+                     const bool valid = HistoryIsApiValid( fixed.History(), why );
+                     const AnthropicResult rs = sendOn( target, fixed.History() );
+                     sw[target] = { { "rawStatus", rr.httpStatus }, { "rawError", U8( rr.error ) },
+                                    { "strippedStatus", rs.httpStatus }, { "strippedError", U8( rs.error ) },
+                                    { "strippedValid", valid } };
+                     strippedAll200 = strippedAll200 && valid && rs.ok && rs.httpStatus == 200;
+                  }
+                  switchOk = strippedAll200;
+               }
+               else
+                  sw["reason"] = r0.ok ? "switch not exercised: Opus 5.5 did not think (3 attempts)" : "first request failed";
+               detail["modelSwitch"] = sw;
+               out["liveModelSwitch"] = sw;
+            }
+
             nlohmann::json t55, tFable, d55 = nlohmann::json::object(), dFable = nlohmann::json::object();
             const bool ok55 = runBinding( "claude-opus-5-5", t55, d55 );
             const bool okFable = runBinding( "claude-fable-5-1", tFable, dFable );
@@ -1453,7 +1515,7 @@ bool RunInc5SelfTest( nlohmann::json& out )
             out["liveBindingTransformationsFable"] = tFable;
             detail["binding55"] = d55;
             detail["bindingFable"] = dFable;
-            const bool bindingOk = ok55 && okFable && trimLiveOk;
+            const bool bindingOk = ok55 && okFable && trimLiveOk && switchOk;
             ok = cacheOk && bindingOk;
          }
          catch ( const pcl::Exception& x ) { error = x.Message(); }
@@ -1608,7 +1670,8 @@ bool RunInc5SelfTest( nlohmann::json& out )
             { RequestErrorKind::Http, "network error", 0,
               "Anthropic API error: network error" },
             { RequestErrorKind::Build, "image too large", 0,
-              "PI Copilot could not build the request (image too large). Nothing was sent." },
+              "PI Copilot could not build the request (image too large). Nothing was sent; send the message again, "
+              "or press New chat if this keeps happening." },
             { RequestErrorKind::Internal, "worker thread ended without a result", 0,
               "Internal error in PI Copilot (worker thread ended without a result). Send the message again." },
             { RequestErrorKind::Cancelled, "request cancelled", 0,
@@ -1658,6 +1721,19 @@ bool RunInc5SelfTest( nlohmann::json& out )
          const AgentStep st = s.OnResponse( stalled, []( const ToolCall& ) { return ToolOutcome(); }, []() { return false; } );
          kindOk = st.kind == AgentStep::Failed && st.errorKind == RequestErrorKind::Stalled;
 
+         // AbortTurn carries its cause (fix round 1): "could not start" is
+         // Internal, an invalid history is Build -- both worded with a next step.
+         {
+            AgentSession a;
+            a.BeginUserTurn( u );
+            const AgentStep ab = a.AbortTurn( "history invalid: x (nothing was sent)", RequestErrorKind::Build );
+            const TurnEndView av = DescribeTurnEnd( ab, 0 );
+            const bool pass = ab.errorKind == RequestErrorKind::Build && !av.notes.IsEmpty()
+                           && av.notes[0].StartsWith( "PI Copilot could not build the request (history invalid" );
+            detail["abortKind"] = { { "note", U8( av.notes.IsEmpty() ? String() : av.notes[0] ) }, { "pass", pass } };
+            wordingOk = wordingOk && pass;
+         }
+
          const AnthropicResult ref = ParseMessagesResponse( 200, IsoString( "{\"content\":[],\"stop_reason\":\"refusal\"}" ), String() );
          detail["refusal"] = U8( ref.error );
          refusalOk = !ref.ok && ref.errorKind == RequestErrorKind::BadReply
@@ -1674,7 +1750,7 @@ bool RunInc5SelfTest( nlohmann::json& out )
       // call; a helper that exits without reading stdin still yields its
       // finished result.
       bool modelNoteOk = false, legacyOk = false, clearInfoOk = false, noKeyOk = false, waitOk = false,
-           earlyExitOk = false;
+           earlyExitOk = false, stripOk = false;
       const IsoString sk = "PICopilot/SelfTestApiKey";
       KeyringId id;
       id.service = "picopilot-selftest";
@@ -1682,6 +1758,82 @@ bool RunInc5SelfTest( nlohmann::json& out )
       std::string scriptDir;
       try
       {
+         // Model switch (fix round 1): thinking / redacted_thinking blocks are
+         // bound to the model that produced them. Switching strips them from
+         // every earlier assistant turn of another model; no turn gets empty;
+         // the history stays API-valid; the same model keeps them verbatim.
+         {
+            auto blocksOf = []( const char* j ) { return nlohmann::json::parse( j ); };
+            AgentSession ss;
+            ss.SetModel( "claude-opus-5-5" );
+            AnthropicMessage u1; u1.role = "user"; u1.content = "q1";
+            ss.BeginUserTurn( u1 );
+            AnthropicResult r1;
+            r1.ok = true; r1.stopReason = "tool_use"; r1.text = "";
+            r1.contentBlocks = blocksOf( "[{\"type\":\"thinking\",\"thinking\":\"t\",\"signature\":\"s1\"},"
+                                         "{\"type\":\"redacted_thinking\",\"data\":\"d1\"},"
+                                         "{\"type\":\"tool_use\",\"id\":\"tu1\",\"name\":\"list_processes\",\"input\":{}}]" );
+            ToolOutcome okOutcome;
+            okOutcome.content.push_back( { { "type", "text" }, { "text", "done" } } );
+            const AgentStep a1 = ss.OnResponse( r1, [&okOutcome]( const ToolCall& ) { return okOutcome; }, []() { return false; } );
+            AnthropicResult r2;
+            r2.ok = true; r2.stopReason = "end_turn"; r2.text = "answer";
+            r2.contentBlocks = blocksOf( "[{\"type\":\"thinking\",\"thinking\":\"t2\",\"signature\":\"s2\"},"
+                                         "{\"type\":\"text\",\"text\":\"answer\"}]" );
+            const AgentStep a2 = ss.OnResponse( r2, []( const ToolCall& ) { return ToolOutcome(); }, []() { return false; } );
+            auto countThinking = []( const Array<AnthropicMessage>& h )
+            {
+               int n = 0;
+               for ( const AnthropicMessage& m : h )
+                  if ( m.blocks.is_array() )
+                     for ( const nlohmann::json& b : m.blocks )
+                        if ( b.is_object() && (b.value( "type", std::string() ) == "thinking"
+                                            || b.value( "type", std::string() ) == "redacted_thinking") )
+                           ++n;
+               return n;
+            };
+            const int before = countThinking( ss.History() );
+            ss.SetModel( "claude-opus-5-5" );   // same model: kept verbatim
+            const int same = countThinking( ss.History() );
+            ss.SetModel( "claude-opus-4-8" );   // different model: stripped
+            const int after = countThinking( ss.History() );
+            bool noneEmpty = true, toolUseKept = false;
+            for ( const AnthropicMessage& m : ss.History() )
+               if ( m.role == "assistant" )
+               {
+                  noneEmpty = noneEmpty && m.blocks.is_array() && !m.blocks.empty();
+                  if ( m.blocks.is_array() )
+                     for ( const nlohmann::json& b : m.blocks )
+                        toolUseKept = toolUseKept || b.value( "type", std::string() ) == "tool_use";
+               }
+            AnthropicMessage u2; u2.role = "user"; u2.content = "q2";
+            ss.BeginUserTurn( u2 );
+            String why;
+            const bool valid = HistoryIsApiValid( ss.History(), why );
+
+            // A turn of thinking only (defensive: the placeholder rule keeps
+            // one from being stored, but a stripped turn must never be empty).
+            Array<AnthropicMessage> h;
+            h.Add( TextMsg( "user", "x" ) );
+            AnthropicMessage onlyThinking;
+            onlyThinking.role = "assistant";
+            onlyThinking.model = "claude-fable-5-1";
+            onlyThinking.blocks = blocksOf( "[{\"type\":\"thinking\",\"thinking\":\"t\",\"signature\":\"s\"}]" );
+            h.Add( onlyThinking );
+            h.Add( TextMsg( "user", "y" ) );
+            const size_type removed = StripForeignThinking( h, "claude-sonnet-5" );
+            String why2;
+            const bool valid2 = HistoryIsApiValid( h, why2 );
+            detail["strip"] = { { "before", before }, { "same", same }, { "after", after }, { "noneEmpty", noneEmpty },
+                                { "toolUseKept", toolUseKept }, { "valid", valid }, { "why", U8( why ) },
+                                { "removedOnly", int( removed ) }, { "valid2", valid2 },
+                                { "placeholder", h[1].blocks } };
+            stripOk = a1.kind == AgentStep::SendAgain && a2.kind == AgentStep::Done
+                   && before == 3 && same == 3 && after == 0 && noneEmpty && toolUseKept && valid
+                   && removed == 1 && valid2 && h[1].blocks.is_array() && h[1].blocks.size() == 1
+                   && h[1].blocks[0].value( "type", std::string() ) == "text";
+         }
+
          Settings::Write( "PICopilot/Model", String( "claude-bogus-9" ) );
          String mnote;
          const IsoString mid = CopilotSettings::LoadModel( &mnote );
@@ -1769,10 +1921,11 @@ bool RunInc5SelfTest( nlohmann::json& out )
          std::filesystem::remove_all( scriptDir, ec );
       }
       detail["carried"] = { { "modelNote", modelNoteOk }, { "legacy", legacyOk }, { "clearInfo", clearInfoOk },
-                            { "noKey", noKeyOk }, { "wait", waitOk }, { "earlyExit", earlyExitOk } };
+                            { "noKey", noKeyOk }, { "wait", waitOk }, { "earlyExit", earlyExitOk },
+                            { "strip", stripOk } };
 
       const bool ok = settingsOk && placementOk && wordingOk && kindOk && refusalOk
-                   && modelNoteOk && legacyOk && clearInfoOk && noKeyOk && waitOk && earlyExitOk;
+                   && modelNoteOk && legacyOk && clearInfoOk && noKeyOk && waitOk && earlyExitOk && stripOk;
       out["configDetail"] = detail;
       out["configError"] = U8( error );
       out["configPolishOk"] = ok;

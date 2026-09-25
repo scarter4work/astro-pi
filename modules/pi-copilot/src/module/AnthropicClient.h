@@ -74,6 +74,9 @@ struct AnthropicMessage
    String         content;
    IsoString      imageJpegBase64;    // optional, standard Base64, no data: prefix
    nlohmann::json blocks = nlohmann::json();   // optional, see above (null = absent)
+   // Assistant turns: the model that produced it (its thinking blocks are
+   // bound to that model; see StripForeignThinking). Never sent. Empty = unknown.
+   IsoString      model = IsoString();
 };
 
 // {"type":"image","source":{"type":"base64","media_type":"image/jpeg","data":...}}
