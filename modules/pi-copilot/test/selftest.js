@@ -295,6 +295,72 @@ catch ( e )
    harnessError( "j0.reopen", e );
 }
 
+// ---- J2 fixture phases (plan Task 3: HistoryReader) ----
+// pcHrA's history is made here, step by step; phase j2.hr reads it in between
+// (PhaseHistoryReader, J2State). Section J2 closes every window made here.
+try
+{
+   ( function ()
+   {
+      function pm( v, x ) { var p = new PixelMath; p.expression = x; p.executeOn( v ); }
+      var w = new ImageWindow( 32, 32, 1, 32, true, false, "pcHrA" );
+      var v = w.mainView;
+      [ "0.1", "$T+0.1", "$T*2" ].forEach( function( x ) { pm( v, x ); } );
+      checkPhase( "j2.hr", { step: "live0" } );
+      v.historyIndex = v.historyIndex - 2;                        // undo two
+      checkPhase( "j2.hr", { step: "undo" } );
+      v.historyIndex = v.historyIndex + 2;                        // redo them
+      checkPhase( "j2.hr", { step: "redo" } );
+      v.historyIndex = v.historyIndex - 2;                        // undo two, then branch with two new steps
+      pm( v, "$T-0.05" );
+      pm( v, "$T*0.9" );
+      checkPhase( "j2.hr", { step: "branch" } );
+      var m = new ImageWindow( 32, 32, 1, 32, true, false, "pcHrMask" );
+      w.mask = m; w.maskEnabled = true; w.maskInverted = true;
+      pm( v, "$T" );
+      w.removeMask();
+      checkPhase( "j2.hr", { step: "mask" } );
+      v.id = "pcHrRenamed";                                       // recorded as an ImageIdentifier step
+      checkPhase( "j2.hr", { step: "rename" } );
+      var dir = getEnvironmentVariable( "PICOPILOT_SELFTEST_SCRATCH" );
+      if ( dir.length == 0 || !File.directoryExists( dir ) )
+         throw new Error( "PICOPILOT_SELFTEST_SCRATCH is not an existing directory" );
+      var path = dir + "/pcHrA.xisf";
+      try
+      {
+         if ( !w.saveAs( path, false, false, false, false ) )
+            throw new Error( "saveAs failed" );
+         w.forceClose();
+         var ws = ImageWindow.open( path );
+         if ( ws.length < 1 )
+            throw new Error( "open failed" );
+         checkPhase( "j2.hr", { step: "reopen", id: ws[0].mainView.id } );
+      }
+      finally
+      {
+         if ( File.exists( path ) ) File.remove( path );
+      }
+   } )();
+}
+catch ( e )
+{
+   harnessError( "j2.hr", e );
+}
+
+// A 500-step history for Section J2's read-cost check.
+try
+{
+   var hrLong = new ImageWindow( 32, 32, 1, 32, true, false, "pcHrLong" );
+   for ( var i = 0; i < 500; ++i )
+   {
+      var hp = new PixelMath; hp.expression = "$T*1.0"; hp.executeOn( hrLong.mainView );
+   }
+}
+catch ( e )
+{
+   harnessError( "j2.long", e );
+}
+
 // ---- fixture phases end (add new phases above this line) ----
 
 var P = new PICopilot;          // fails here if the process id isn't registered

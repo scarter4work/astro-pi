@@ -1,6 +1,8 @@
 // PI Copilot — Native PCL Module for PixInsight
 // Copyright (c) 2026 Scott Carter. MIT License.
 
+#include "EvalGuard.h"
+#include "HistoryReader.h"
 #include "JourneyConstants.h"
 #include "JourneySpikeProbe.h"
 #include "PICopilotInterface.h"
@@ -284,6 +286,198 @@ nlohmann::json PhaseTimerApplyCheck( const nlohmann::json& payload )
    return { { "history", payload }, { "tick", JourneySpikeProbeTimerApplyResult() } };
 }
 
+// ---- Section J2 (HistoryReader, Task 3) fixtures and phases ----
+
+// Verbatim XPSM (PI 1.9.5, plan API facts) used by the pure parser tests.
+const char* const kXpsmPixelMath =
+   "<instance class=\"PixelMath\" version=\"256\" id=\"PixelMath_instance\">\n"
+   "<time start=\"2026-09-25T20:47:50.344Z\" span=\"0.006297325\"/>\n"
+   "<parameter id=\"expression\">$T*2</parameter>\n<parameter id=\"expression1\"></parameter>\n"
+   "<parameter id=\"expression2\"></parameter>\n<parameter id=\"expression3\"></parameter>\n"
+   "<parameter id=\"useSingleExpression\" value=\"true\"/>\n<parameter id=\"symbols\"></parameter>\n"
+   "<parameter id=\"clearImageCacheAndExit\" value=\"false\"/>\n<parameter id=\"cacheGeneratedImages\" value=\"false\"/>\n"
+   "<parameter id=\"generateOutput\" value=\"true\"/>\n<parameter id=\"singleThreaded\" value=\"false\"/>\n"
+   "<parameter id=\"optimization\" value=\"true\"/>\n<parameter id=\"use64BitWorkingImage\" value=\"false\"/>\n"
+   "<parameter id=\"rescale\" value=\"false\"/>\n<parameter id=\"rescaleLower\" value=\"0\"/>\n"
+   "<parameter id=\"rescaleUpper\" value=\"1\"/>\n<parameter id=\"truncate\" value=\"true\"/>\n"
+   "<parameter id=\"truncateLower\" value=\"0\"/>\n<parameter id=\"truncateUpper\" value=\"1\"/>\n"
+   "<parameter id=\"createNewImage\" value=\"false\"/>\n<parameter id=\"showNewImage\" value=\"true\"/>\n"
+   "<parameter id=\"newImageId\"></parameter>\n<parameter id=\"newImageWidth\" value=\"0\"/>\n"
+   "<parameter id=\"newImageHeight\" value=\"0\"/>\n<parameter id=\"newImageAlpha\" value=\"false\"/>\n"
+   "<parameter id=\"newImageColorSpace\" value=\"SameAsTarget\"/>\n<parameter id=\"newImageSampleFormat\" value=\"SameAsTarget\"/>\n"
+   "<table id=\"outputData\" rows=\"0\"/>\n</instance>";
+
+std::string HtXpsm( const char* rootAttr )
+{
+   std::string rows;
+   for ( int r = 0; r < 5; ++r )
+      rows += std::string( "<tr>\n<td id=\"c0\" value=\"0.00000000\"/>\n<td id=\"m\" value=\"" ) + (r == 3 ? "0.25000000" : "0.50000000")
+            + "\"/>\n<td id=\"c1\" value=\"1.00000000\"/>\n<td id=\"r0\" value=\"0.00000000\"/>\n<td id=\"r1\" value=\"1.00000000\"/>\n</tr>\n";
+   return std::string( "<instance class=\"HistogramTransformation\" version=\"256\" " ) + rootAttr + ">\n"
+        + "<time start=\"2026-09-25T20:47:50.353Z\" span=\"0.00254753\"/>\n<table id=\"H\" rows=\"5\">\n" + rows + "</table>\n</instance>";
+}
+
+std::vector<KnownStep> KnownFrom( const std::vector<HistoryStep>& steps, int64 firstId, int active )
+{
+   std::vector<KnownStep> k;
+   for ( size_t i = 0; i < steps.size(); ++i )
+      k.push_back( { firstId + int64( i ), steps[i].combinedIndex + 1, steps[i].identity,
+                     steps[i].combinedIndex + 1 <= active ? "active" : "undone" } );
+   return k;
+}
+
+nlohmann::json SnapJson( const HistorySnapshot& s )
+{
+   return { { "ok", s.ok }, { "busy", s.busy }, { "error", U8( s.error ) }, { "init", s.initialLength }, { "len", s.length },
+            { "hi", s.historyIndex }, { "from", s.from }, { "n", s.steps.size() } };
+}
+
+// State the j2.hr phases carry between top-level steps (the history they read
+// is made by test/selftest.js at top level; see the harness notes). Section J2
+// reads the verdicts.
+struct J2State
+{
+   std::vector<KnownStep> known;       // pcHrA after the three top-level steps (ids from 100)
+   int                    tot = 0;     // its TotalCount() then
+   HistorySnapshot        maskSnap;    // pcHrA after the masked step (before the rename)
+   HistorySnapshot        renamed;     // pcHrRenamed: the full read after the rename
+   bool liveReadOk = false, undoRedoOk = false, branchOk = false, maskOk = false, renameOk = false, reopenOk = false;
+   std::vector<std::string> steps;     // phase steps seen, in order
+   std::string            reopenedId;  // the reopened window (closed by Section J2)
+   nlohmann::json         detail = nlohmann::json::object();
+};
+
+J2State& J2()
+{
+   static J2State s;
+   return s;
+}
+
+// j2.hr: {step, id?} -- one read of the pcHrA fixture between top-level steps.
+nlohmann::json PhaseHistoryReader( const nlohmann::json& payload )
+{
+   J2State& st = J2();
+   const std::string step = payload.at( "step" ).get<std::string>();
+   st.steps.push_back( step );
+   nlohmann::json& d = st.detail;
+   if ( step == "live0" )
+   {
+      // (e) Three steps done by hand at top level, read in full. The window was
+      //     made by a script, so initialProcessing holds its Script creation entry.
+      const HistorySnapshot s0 = ReadViewHistory( "pcHrA", 0 );
+      d["live0"] = SnapJson( s0 );
+      st.liveReadOk = s0.ok && s0.length == 3 && s0.historyIndex == 3 && s0.steps.size() == size_t( s0.TotalCount() )
+                   && s0.steps.back().parameters.at( "expression" ) == "$T*2" && s0.steps.back().combinedIndex == s0.TotalCount() - 1;
+      const HistoryDiff d0 = DiffHistory( {}, s0 );
+      st.liveReadOk = st.liveReadOk && !d0.needFullRead && d0.appended.size() == s0.steps.size()
+                   && std::all_of( d0.appendedState.begin(), d0.appendedState.end(), []( const std::string& x ) { return x == "active"; } )
+                   && HistoryReadFrom( {} ) == 0;
+      st.known = KnownFrom( s0.steps, 100, s0.ActiveCount() );
+      st.tot = s0.TotalCount();
+   }
+   else if ( step == "undo" )
+   {
+      // (f1) Two steps undone at top level: states only, no new rows.
+      const HistorySnapshot s1 = ReadViewHistory( "pcHrA", HistoryReadFrom( st.known ) );
+      const HistoryDiff d1 = DiffHistory( st.known, s1 );
+      d["undo"] = { { "snap", SnapJson( s1 ) }, { "from", HistoryReadFrom( st.known ) }, { "undone", d1.toUndone } };
+      st.undoRedoOk = s1.ok && !d1.needFullRead && d1.appended.empty() && d1.toSuperseded.empty() && d1.toActive.empty()
+                   && d1.toUndone == std::vector<int64>( { 100 + st.tot - 2, 100 + st.tot - 1 } );
+   }
+   else if ( step == "redo" )
+   {
+      // (f2) Redone at top level.
+      std::vector<KnownStep> knownUndone = st.known;
+      for ( KnownStep& k : knownUndone )
+         if ( k.seq > st.tot - 2 )
+            k.state = "undone";
+      const HistorySnapshot s2 = ReadViewHistory( "pcHrA", HistoryReadFrom( knownUndone ) );
+      const HistoryDiff d2 = DiffHistory( knownUndone, s2 );
+      d["redo"] = { { "snap", SnapJson( s2 ) }, { "active", d2.toActive } };
+      st.undoRedoOk = st.undoRedoOk && s2.ok && !d2.needFullRead && d2.appended.empty() && d2.toSuperseded.empty()
+                   && d2.toActive == std::vector<int64>( { 100 + st.tot - 2, 100 + st.tot - 1 } ) && d2.toUndone.empty();
+   }
+   else if ( step == "branch" )
+   {
+      // (g) Undo two, then TWO new steps before the next read: the tail check
+      //     fails -> full read -> superseded + 2 appended.
+      const HistorySnapshot s3 = ReadViewHistory( "pcHrA", HistoryReadFrom( st.known ) );
+      const HistoryDiff d3 = DiffHistory( st.known, s3 );
+      const HistorySnapshot s4 = ReadViewHistory( "pcHrA", 0 );
+      const HistoryDiff d4 = DiffHistory( st.known, s4 );
+      d["branch"] = { { "tailNeedsFull", d3.needFullRead }, { "superseded", d4.toSuperseded }, { "appended", d4.appended.size() },
+                      { "snap", SnapJson( s4 ) } };
+      st.branchOk = s3.ok && s4.ok && d3.needFullRead && !d4.needFullRead
+                 && d4.toSuperseded == std::vector<int64>( { 100 + st.tot - 2, 100 + st.tot - 1 } )
+                 && d4.toActive.empty() && d4.toUndone.empty()
+                 && d4.appended.size() == 2 && d4.appended[0].combinedIndex == st.tot - 2
+                 && d4.appended[0].parameters.at( "expression" ) == "$T-0.05"
+                 && d4.appended[1].parameters.at( "expression" ) == "$T*0.9"
+                 && d4.appendedState == std::vector<std::string>( { "active", "active" } );
+   }
+   else if ( step == "mask" )
+   {
+      // (h) A step applied through an inverted mask carries the mask id.
+      st.maskSnap = ReadViewHistory( "pcHrA", 0 );
+      const HistorySnapshot& s5 = st.maskSnap;
+      d["mask"] = { { "snap", SnapJson( s5 ) }, { "id", s5.ok && !s5.steps.empty() ? s5.steps.back().maskId : std::string() },
+                    { "inverted", s5.ok && !s5.steps.empty() && s5.steps.back().maskInverted },
+                    { "processId", s5.ok && !s5.steps.empty() ? s5.steps.back().processId : std::string() } };
+      st.maskOk = s5.ok && !s5.steps.empty() && s5.steps.back().processId == "PixelMath"
+               && s5.steps.back().maskId == "pcHrMask" && s5.steps.back().maskInverted
+               && s5.steps.front().maskId.empty();
+   }
+   else if ( step == "rename" )
+   {
+      // (h2) A top-level `view.id = ...` rename is itself a history step
+      //      (ImageIdentifier, measured in Task 1): it is read and appended like
+      //      any other step, and no earlier identity depends on the view id.
+      const std::vector<KnownStep> k = KnownFrom( st.maskSnap.steps, 200, st.maskSnap.ActiveCount() );
+      const HistorySnapshot old = ReadViewHistory( "pcHrA", 0 );
+      const HistorySnapshot tail = ReadViewHistory( "pcHrRenamed", HistoryReadFrom( k ) );
+      const HistoryDiff dt = DiffHistory( k, tail );
+      st.renamed = ReadViewHistory( "pcHrRenamed", 0 );
+      const HistoryDiff df = DiffHistory( k, st.renamed );
+      const HistorySnapshot& r = st.renamed;
+      bool sameEarlier = r.ok && r.TotalCount() == st.maskSnap.TotalCount() + 1;
+      for ( int i = 0; sameEarlier && i < st.maskSnap.TotalCount(); ++i )
+         sameEarlier = r.steps[i].identity == st.maskSnap.steps[i].identity;
+      const HistoryStep* last = (r.ok && !r.steps.empty()) ? &r.steps.back() : nullptr;
+      d["rename"] = { { "oldIdGone", !old.ok ? U8( old.error ) : std::string( "still readable" ) },
+                      { "tail", SnapJson( tail ) }, { "tailAppended", dt.appended.size() }, { "tailNeedsFull", dt.needFullRead },
+                      { "full", SnapJson( r ) }, { "sameEarlier", sameEarlier },
+                      { "lastProcessId", last ? last->processId : std::string() },
+                      { "lastParameters", last ? last->parameters : nlohmann::json() },
+                      { "lastReplayable", last != nullptr && last->replayable }, { "lastNote", last ? last->parseNote : std::string() } };
+      st.renameOk = !old.ok && old.error.Contains( "no view" )
+                 && tail.ok && !dt.needFullRead && dt.toSuperseded.empty() && dt.toUndone.empty() && dt.toActive.empty()
+                 && dt.appended.size() == 1 && dt.appendedState == std::vector<std::string>( { "active" } )
+                 && df.appended.size() == 1 && df.toSuperseded.empty()
+                 && sameEarlier && last != nullptr && last->processId == "ImageIdentifier"
+                 && last->combinedIndex == st.maskSnap.TotalCount() && dt.appended[0].identity == last->identity;
+   }
+   else if ( step == "reopen" )
+   {
+      // (i) Save + reopen: the history moves into initialProcessing with the
+      //     SAME identities (the rename step included).
+      const std::string id = payload.at( "id" ).get<std::string>();
+      st.reopenedId = id;
+      const HistorySnapshot r = ReadViewHistory( IsoString( id.c_str() ), 0 );
+      const HistorySnapshot& before = st.renamed;
+      bool same = r.ok && before.ok && r.length == 0 && r.historyIndex == 0 && r.initialLength == before.ActiveCount()
+               && r.steps.size() == size_t( r.initialLength )
+               && r.droppedReopenExtra == (PICopilotJourneyReopenExtraSteps == 1);
+      for ( int i = 0; same && i < r.initialLength; ++i )
+         same = r.steps[i].identity == before.steps[i].identity;
+      d["reopen"] = { { "id", id }, { "snap", SnapJson( r ) }, { "expected", before.ActiveCount() },
+                      { "dropped", r.droppedReopenExtra }, { "same", same } };
+      st.reopenOk = same;
+   }
+   else
+      throw Error( String( "j2.hr: unknown step " ) + step.c_str() );
+   return { { "step", step } };
+}
+
 using SelfTestPhaseHandler = nlohmann::json (*)( const nlohmann::json& payload );
 
 // Adding a phase: one entry here + one checkPhase( id, payload ) call in
@@ -298,6 +492,7 @@ const std::map<std::string, SelfTestPhaseHandler>& SelfTestPhaseHandlers()
       { "j0.mc",       PhaseModifyCounts },
       { "j0.identity", PhaseRecordPayload },
       { "j0.reopen",   PhaseRecordPayload },
+      { "j2.hr",       PhaseHistoryReader },
    };
    return handlers;
 }
@@ -722,6 +917,138 @@ bool RunJourneySelfTest( nlohmann::json& out )
          sqlite3_close( db );
       out["sqliteVendorInfo"] = info;
       out["sqliteVendorOk"] = ok;
+      allOk = allOk && ok;
+   }
+
+   // ---- Section J2: HistoryReader (Task 3) ---------------------------------
+   // Pure parser/diff checks run here; every check of a LIVE history reads the
+   // pcHrA fixture that test/selftest.js built at top level, through the j2.hr
+   // phases (J2State), because a step executed in-process is never recorded.
+   {
+      nlohmann::json d = nlohmann::json::object();
+      bool parseOk = false, typesOk = false, identityOk = false, notReplayableOk = false, badXmlOk = false,
+           costOk = false, integrationIdOk = false, busyOk = false, phasesOk = false;
+      String error;
+      std::vector<std::string> made = { "pcHrA", "pcHrRenamed", "pcHrMask", "pcHrLong" };
+      const J2State& st = J2();
+      try
+      {
+         // (a) PixelMath: typed scalars, read-only table dropped, time parsed.
+         HistoryStep pm;
+         String e;
+         parseOk = ParseXpsmStep( kXpsmPixelMath, pm, e );
+         d["pm"] = { { "ok", parseOk }, { "error", U8( e ) }, { "parameters", pm.parameters }, { "tables", pm.tableParameters },
+                     { "started", pm.started }, { "durationS", pm.durationS }, { "identity", pm.identity } };
+         typesOk = parseOk && pm.processId == "PixelMath" && pm.parameters.at( "expression" ) == "$T*2"
+                && pm.parameters.at( "useSingleExpression" ) == true && pm.parameters.at( "rescaleLower" ).is_number()
+                && pm.parameters.at( "rescaleLower" ).get<double>() == 0.0
+                && pm.parameters.at( "newImageColorSpace" ) == "SameAsTarget"
+                && pm.parameters.at( "newImageWidth" ).is_number_integer()
+                && !pm.parameters.contains( "outputData" ) && !pm.tableParameters.contains( "outputData" )
+                && pm.started == "2026-09-25T20:47:50.344Z" && std::fabs( pm.durationS - 0.006297325 ) < 1e-12
+                && pm.replayable && pm.parseNote.empty() && pm.xpsm == kXpsmPixelMath;
+
+         // (b) HistogramTransformation table in column order; identity independent of id=/enabled=.
+         HistoryStep ht1, ht2;
+         const bool h1 = ParseXpsmStep( HtXpsm( "id=\"HistogramTransformation_instance\"" ), ht1, e );
+         const bool h2 = ParseXpsmStep( HtXpsm( "enabled=\"true\"" ), ht2, e );
+         d["ht"] = { { "tables", ht1.tableParameters }, { "identity1", ht1.identity }, { "identity2", ht2.identity } };
+         typesOk = typesOk && h1 && h2 && ht1.tableParameters.at( "H" ).size() == 5
+                && ht1.tableParameters.at( "H" ).at( 3 ) == nlohmann::json::array( { 0.0, 0.25, 1.0, 0.0, 1.0 } );
+         identityOk = h1 && h2 && ht1.identity == ht2.identity
+                   && ht1.identity.rfind( "HistogramTransformation@2026-09-25T20:47:50.353Z#", 0 ) == 0
+                   && ht1.identity.size() == std::string( "HistogramTransformation@2026-09-25T20:47:50.353Z#" ).size() + 16
+                   && ht1.identity != pm.identity
+                   // FNV-1a-64 reference vectors ("" and "a").
+                   && Fnv1a64Hex( "" ) == "cbf29ce484222325" && Fnv1a64Hex( "a" ) == "af63dc4c8601ec8c";
+
+         // (c) Not replayable: unknown process, Script step, unknown parameter.
+         HistoryStep unk, scr, extra;
+         const bool u = ParseXpsmStep( "<instance class=\"NoSuchProcessPc\" version=\"256\" id=\"x\"><parameter id=\"a\" value=\"1\"/></instance>", unk, e );
+         const bool s = ParseXpsmStep( "<instance class=\"Script\" version=\"256\" id=\"Script_instance\">"
+                                       "<parameter id=\"filePath\">/home/u/scripts/x.js</parameter>"
+                                       "<parameter id=\"md5sum\">9dbce6</parameter><table id=\"parameters\" rows=\"0\"/>"
+                                       "<parameter id=\"information\"></parameter></instance>", scr, e );
+         const bool x = ParseXpsmStep( std::string( kXpsmPixelMath ).replace( std::string( kXpsmPixelMath ).find( "</instance>" ), 11,
+                                       "<parameter id=\"noSuchParameterPc\" value=\"1\"/></instance>" ), extra, e );
+         d["notReplayable"] = { { "unknown", unk.parseNote }, { "script", scr.parseNote }, { "extra", extra.parseNote } };
+         notReplayableOk = u && s && x && !unk.replayable && !scr.replayable && !extra.replayable
+                        && unk.parseNote.find( "not installed" ) != std::string::npos
+                        && scr.parseNote.find( "script" ) != std::string::npos
+                        && extra.parseNote.find( "noSuchParameterPc" ) != std::string::npos
+                        && unk.parameters.at( "a" ) == "1";
+
+         // (d) Malformed XML and a non-instance root fail with a message, never throw.
+         HistoryStep bad;
+         String e1, e2;
+         badXmlOk = !ParseXpsmStep( "<instance class=\"PixelMath\"><parameter", bad, e1 ) && !e1.IsEmpty()
+                 && !ParseXpsmStep( "<icon id=\"x\"/>", bad, e2 ) && e2.Contains( "not an XPSM instance" );
+         d["badXml"] = { { "e1", U8( e1 ) }, { "e2", U8( e2 ) } };
+
+         // (d2) Ruling 29: the read-only integrationImageId is captured raw BEFORE
+         //      read-only parameters are dropped; other steps leave it empty.
+         HistoryStep ii;
+         const bool iiParsed = ParseXpsmStep( "<instance class=\"ImageIntegration\" version=\"256\" id=\"ImageIntegration_instance\">"
+                                              "<parameter id=\"integrationImageId\">integration</parameter>"
+                                              "<parameter id=\"lowRejectionMapImageId\">rejection_low</parameter></instance>", ii, e );
+         d["integrationImageId"] = { { "ii", ii.integrationImageId }, { "pm", pm.integrationImageId }, { "parameters", ii.parameters } };
+         integrationIdOk = iiParsed && ii.integrationImageId == "integration" && !ii.parameters.contains( "integrationImageId" )
+                        && pm.integrationImageId.empty();
+
+         // (e)-(i) Live history, read by the j2.hr phases between top-level steps.
+         const std::vector<std::string> wantSteps = { "live0", "undo", "redo", "branch", "mask", "rename", "reopen" };
+         d["phases"] = { { "steps", st.steps }, { "detail", st.detail } };
+         phasesOk = st.steps == wantSteps;
+         if ( !st.reopenedId.empty() )
+            made.push_back( st.reopenedId );
+
+         // (j) Cost on 500 steps (spec risk 3): full read + parse, and the tail
+         //     read the tracker normally does (pcHrLong, built at top level).
+         jclock::time_point t0 = jclock::now();
+         const HistorySnapshot full = ReadViewHistory( "pcHrLong", 0 );
+         const double fullMs = MsSince( t0 );
+         t0 = jclock::now();
+         const HistorySnapshot tail = ReadViewHistory( "pcHrLong", full.TotalCount() - 1 );
+         const double tailMs = MsSince( t0 );
+         d["cost"] = { { "fullMs", fullMs }, { "tailMs", tailMs }, { "steps", full.steps.size() }, { "full", SnapJson( full ) } };
+         costOk = full.ok && tail.ok && full.length == 500 && full.steps.size() >= 500 && tail.steps.size() == 1
+               && tailMs <= 150 && fullMs <= 3000;
+
+         // (k) Controller ruling: EvaluateScript is never entered re-entrantly.
+         //     While another EvaluateScript caller holds the guard, a read reports
+         //     busy (retry next tick) -- not an error, and without evaluating.
+         {
+            const int depth0 = EvaluateScriptDepth();
+            HistorySnapshot held;
+            int depthHeld = -1;
+            {
+               EvalDepthGuard outer;
+               depthHeld = EvaluateScriptDepth();
+               held = ReadViewHistory( "pcHrLong", 0 );
+            }
+            const HistorySnapshot after = ReadViewHistory( "pcHrLong", full.TotalCount() - 1 );
+            d["busy"] = { { "depth0", depth0 }, { "depthHeld", depthHeld }, { "held", SnapJson( held ) },
+                          { "after", SnapJson( after ) }, { "depthAfter", EvaluateScriptDepth() } };
+            busyOk = depth0 == 0 && depthHeld == 1 && held.busy && !held.ok && held.error.IsEmpty() && held.steps.empty()
+                  && after.ok && !after.busy && EvaluateScriptDepth() == 0;
+         }
+      }
+      catch ( const pcl::Exception& x ) { error = x.Message(); }
+      catch ( const std::exception& x ) { error = String( x.what() ); }
+      catch ( ... )                     { error = "unknown exception"; }
+      for ( const std::string& id : made )
+         JForceClose( id );
+      const bool ok = parseOk && typesOk && identityOk && notReplayableOk && badXmlOk && integrationIdOk
+                   && phasesOk && st.liveReadOk && st.undoRedoOk && st.branchOk && st.maskOk && st.renameOk && st.reopenOk
+                   && costOk && busyOk;
+      d["verdicts"] = { { "parse", parseOk }, { "types", typesOk }, { "identity", identityOk }, { "notReplayable", notReplayableOk },
+                        { "badXml", badXmlOk }, { "integrationId", integrationIdOk }, { "phases", phasesOk },
+                        { "liveRead", st.liveReadOk }, { "undoRedo", st.undoRedoOk }, { "branch", st.branchOk },
+                        { "mask", st.maskOk }, { "rename", st.renameOk }, { "reopen", st.reopenOk },
+                        { "cost", costOk }, { "busy", busyOk } };
+      out["historyReaderDetail"] = d;
+      out["historyReaderError"] = U8( error );
+      out["historyReaderOk"] = ok;
       allOk = allOk && ok;
    }
 

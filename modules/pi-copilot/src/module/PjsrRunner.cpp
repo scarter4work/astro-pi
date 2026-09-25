@@ -2,6 +2,7 @@
 // Copyright (c) 2026 Scott Carter. MIT License.
 
 #include "PjsrRunner.h"
+#include "EvalGuard.h"
 #include "PICopilotModule.h"
 #include "Utf8.h"
 
@@ -64,8 +65,14 @@ const char* const kHelpersJs =
 nlohmann::json EvalJson( const std::string& body )
 {
    const std::string src = std::string( "(function(){ " ) + kHelpersJs + " " + body + " })()";
-   const Variant v = ThePICopilotModule->EvaluateScript( String( src.c_str() ), "JavaScript" );
-   return nlohmann::json::parse( U8( v.ToString() ) );
+   String r;
+   {
+      // Held for the call so timer-driven readers (HistoryReader, the journey
+      // tracker) defer instead of nesting an EvaluateScript inside this one.
+      EvalDepthGuard guard;
+      r = ThePICopilotModule->EvaluateScript( String( src.c_str() ), "JavaScript" ).ToString();
+   }
+   return nlohmann::json::parse( U8( r ) );
 }
 
 // A line reported by pcLine() as a 1-based line of the model's code; 0 when unknown.

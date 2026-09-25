@@ -395,6 +395,7 @@ required_true = [
     # 0.2.0.0 image journey
     'journeySpikeOk',
     'sqliteVendorOk',
+    'historyReaderOk',
     'ok',
 ]
 missing = [k for k in required_true if d.get(k) is not True]
