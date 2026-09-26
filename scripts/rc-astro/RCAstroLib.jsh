@@ -269,6 +269,80 @@ var RCAstro = {
       throw new Error(message);
    },
 
+   // Parse one NDJSON line from rc-astro's --json stdout stream, updating
+   // `state` ({errorMsg, strayText}) in place and calling onEvent(obj) for
+   // every successfully-parsed event. Split out of runCli() so this is
+   // independently unit-testable (test/t_lib_dispatch_splice.js) without
+   // spawning a real rc-astro process.
+   //
+   // Why this exists / hardening rationale: PI's ExternalProcess merges a
+   // child process's stderr into the SAME stdout stream, interleaved in
+   // write order. This is UNIVERSAL to PI's ExternalProcess -- true in the
+   // normal GUI and under --automation-mode alike, not an artifact of
+   // headless/xvfb runs (verified: see the review at
+   // .superpowers/sdd/2026-09-25-pi-copilot-image-journey/task-keyring-review.md,
+   // "RCAstroLib" section). onStandardErrorDataAvailable below never fires
+   // and readStandardError()/this.stderr is always empty as a result --
+   // stderrText stays empty in practice; it is kept only as a defensive
+   // no-op in case a future PI build ever does deliver stderr separately.
+   //
+   // Empirically (2026-09-26, outside PI): rc-astro 0.9.10 writes each NDJSON
+   // event via a single atomic write() syscall including its trailing
+   // newline -- verified with `strace -f -tt -e trace=write` against a real,
+   // reliably-reproducing crash (`rc-astro bxt --benchmark N --device
+   // gpu|cpu` SIGABRTs in this environment during model init with a
+   // libstdc++ "terminate called ... rcastro::Error ... ml-onnx.cpp:877"
+   // message on stderr). Across 7 runs the two preceding stdout JSON lines
+   // were each one complete write(), and the stderr message -- itself split
+   // across 6 separate write() calls by libstdc++'s terminate handler --
+   // always landed strictly after both stdout writes, never mid-line: no
+   // splice was observed. But that repro dies during early model init,
+   // before rc-astro's real (likely multi-threaded, given ONNX Runtime)
+   // progress-emission code path ever runs, so a worker-thread stderr write
+   // landing between two stdout write() calls mid-line cannot be ruled out
+   // from this evidence. Handle it defensively rather than trust it can't
+   // happen: a line with leading non-JSON bytes ahead of its first '{' is
+   // parsed from that '{' onward, and the stray prefix is folded into
+   // strayText -- never dropped silently.
+   _dispatchLine: function(rawLine, state, onEvent) {
+      let line = rawLine.trim();
+      if (line.length == 0) return;
+
+      let brace = line.indexOf("{");
+      if (brace < 0) {
+         // No JSON object anywhere on this line -- pure stray text (e.g. a
+         // C++ runtime abort/terminate message, or a plain log line).
+         console.writeln(line);
+         state.strayText += (state.strayText.length ? "\n" : "") + line;
+         return;
+      }
+
+      let prefix   = line.substring(0, brace);
+      let jsonPart = line.substring(brace);
+      if (prefix.length) {
+         // Leading bytes ahead of the first '{' -- e.g. a spliced-in stderr
+         // fragment. Never drop it: fold into strayText so it still surfaces
+         // via the stderr/stray fallback in errorMsg on failure.
+         console.writeln(prefix);
+         state.strayText += (state.strayText.length ? "\n" : "") + prefix;
+      }
+
+      let obj = null;
+      try { obj = JSON.parse(jsonPart); } catch (e) {
+         // Looked like JSON (contained "{") but failed to parse — do not
+         // vanish it. Log it and fold it into strayText so it can still
+         // surface via the stderr/stray fallback in errorMsg on failure.
+         console.warningln("rc-astro: could not parse JSON line: " + e.message + " -- " + jsonPart);
+         state.strayText += (state.strayText.length ? "\n" : "") + jsonPart;
+         return;
+      }
+      if (obj) {
+         if (obj.event == "error")   { state.errorMsg = obj.message || obj.text || JSON.stringify(obj); console.criticalln("rc-astro: " + state.errorMsg); }
+         else if (obj.event == "warning") console.warningln("rc-astro: " + (obj.message || obj.text || ""));
+         if (onEvent) onEvent(obj);
+      }
+   },
+
    // Run rc-astro <tool> with args; parse --json NDJSON stream via onEvent.
    runCli: function(tool, argsArray, onEvent) {
       let bin = this.findBinary();
@@ -282,38 +356,11 @@ var RCAstro = {
       let cmdLine = parts.join(" ");
       console.writeln("running: " + cmdLine);
 
-      let errorMsg   = "";
+      let self       = this;
+      let state      = { errorMsg: "", strayText: "" };
       let stderrText = "";
-      let strayText  = "";
       let buffer     = "";
-      let dispatch = function(line) {
-         line = line.trim();
-         if (line.length == 0 || line.charAt(0) != "{") {
-            if (line.length) {
-               console.writeln(line);
-               // Non-JSON stray text (e.g. a C++ runtime abort/terminate message)
-               // observed empirically to arrive via the stdout channel rather than
-               // stderr in this ExternalProcess/xvfb harness. Accumulate it as a
-               // fallback error source alongside stderrText.
-               strayText += (strayText.length ? "\n" : "") + line;
-            }
-            return;
-         }
-         let obj = null;
-         try { obj = JSON.parse(line); } catch (e) {
-            // Looked like JSON (started with "{") but failed to parse — do not
-            // vanish it. Log it and fold it into strayText so it can still
-            // surface via the stderr/stray fallback in errorMsg on failure.
-            console.warningln("rc-astro: could not parse JSON line: " + e.message + " -- " + line);
-            strayText += (strayText.length ? "\n" : "") + line;
-            return;
-         }
-         if (obj) {
-            if (obj.event == "error")   { errorMsg = obj.message || obj.text || JSON.stringify(obj); console.criticalln("rc-astro: " + errorMsg); }
-            else if (obj.event == "warning") console.warningln("rc-astro: " + (obj.message || obj.text || ""));
-            if (onEvent) onEvent(obj);
-         }
-      };
+      let dispatch = function(line) { self._dispatchLine(line, state, onEvent); };
 
       let p = new ExternalProcess;
       p.onStandardOutputDataAvailable = function() {
@@ -321,6 +368,13 @@ var RCAstro = {
          let nl;
          while ((nl = buffer.indexOf("\n")) >= 0) { dispatch(buffer.substring(0, nl)); buffer = buffer.substring(nl + 1); }
       };
+      // DEAD CODE on this platform, kept as a harmless defensive no-op: PI's
+      // ExternalProcess merges the child's stderr into the stdout stream
+      // (see the full explanation above _dispatchLine()), so this callback
+      // never fires and `this.stderr` is always empty -- stderrText below
+      // stays "" for the life of the run. The real fallback error text on
+      // this platform comes from state.strayText (populated by
+      // _dispatchLine() from the merged stdout channel), not from here.
       p.onStandardErrorDataAvailable = function() {
          let e = String(this.stderr).trim();
          if (e.length) {
@@ -375,20 +429,20 @@ var RCAstro = {
                   errorMsg: "rc-astro timed out after " + this.timeoutSeconds + "s" };
 
       let exit = p.exitCode;
-      let ok = (exit == 0) && (errorMsg.length == 0);
+      let ok = (exit == 0) && (state.errorMsg.length == 0);
       // A JSON {"event":"error"} takes precedence (already captured above). If the
       // run failed without ever emitting one (license failure, crash, bad argument
       // caught before JSON init, etc.), fall back to the accumulated stderr text so
       // the real reason isn't lost — only fall back to the generic exit-code message
       // when stderr is also empty.
-      if (!ok && errorMsg.length == 0) {
+      if (!ok && state.errorMsg.length == 0) {
          let trimmedStderr = stderrText.trim();
-         let trimmedStray  = strayText.trim();
+         let trimmedStray  = state.strayText.trim();
          let fallback = trimmedStderr.length ? trimmedStderr
                       : trimmedStray.length  ? trimmedStray
                       : "";
-         errorMsg = fallback.length ? fallback : ("rc-astro exited with code " + exit);
+         state.errorMsg = fallback.length ? fallback : ("rc-astro exited with code " + exit);
       }
-      return { exit: exit, ok: ok, errorMsg: errorMsg };
+      return { exit: exit, ok: ok, errorMsg: state.errorMsg };
    }
 };

@@ -2,7 +2,7 @@
 #script-id     RCAstroNXT
 #feature-info  Runs the GPU-accelerated rc-astro NoiseXTerminator on the target view.
 
-#define VERSION "1.0.0"
+#define VERSION "1.0.1"
 
 #include <pjsr/Sizer.jsh>
 #include <pjsr/NumericControl.jsh>
