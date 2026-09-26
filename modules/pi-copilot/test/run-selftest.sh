@@ -422,6 +422,7 @@ required_true = [
     'stepStatsOk',
     'journeyStoreOk',
     'masterFactsOk',
+    'journeyExportOk',
     'histLandedOk',
     'ok',
 ]
