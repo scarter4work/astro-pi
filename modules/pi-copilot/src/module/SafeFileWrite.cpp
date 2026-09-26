@@ -205,6 +205,32 @@ String SafeCheckJpeg( const ByteArray& data )
    return String();
 }
 
+bool CreatePrivateScratchDir( String& dir, String& why )
+{
+   dir.Clear();
+   std::string tmpl = U8( File::SystemTempDirectory() ) + "/picopilot-scratch-XXXXXX";
+   std::vector<char> name( tmpl.begin(), tmpl.end() );
+   name.push_back( '\0' );
+   if ( ::mkdtemp( name.data() ) == nullptr )   // mode 0700, unguessable
+   {
+      why = Errno( errno );
+      return false;
+   }
+   dir = FromU8( std::string( name.data() ) );
+   return true;
+}
+
+void RemovePrivateScratchDir( const String& dir )
+{
+   if ( !dir.IsEmpty() )
+      RemovePrivateDir( Native( dir ) );
+}
+
+bool ReadFileNoFollow( const String& path, ByteArray& out, String& why )
+{
+   return ReadNoFollow( Native( path ), out, why );
+}
+
 String SafeWriteFile( const String& path, const ByteArray& data, SafeFileMode mode, const SafeFileCheck& check )
 {
    try

@@ -4203,7 +4203,11 @@ bool RunInc5SelfTest( nlohmann::json& out )
    SelfTestSectionMark( "B13 secret-tool session-mismatch retry (T-keyring)" );
    {
       bool storeRetryOk = false, storeOtherOk = false, lookupRetryOk = false, lookupGenuineMissOk = false,
-           storeBoundOk = false;
+           storeBoundOk = false,
+           leakSegvOk = false, leakExit3Ok = false,   // (f) C1
+           cleanLookupOk = false,                     // (g) M1
+           clearMessageOk = false, clearSilentOk = false,   // (h) I1
+           existsUnreadableOk = false;                // (i) M2
       nlohmann::json detail = nlohmann::json::object();
       String error;
       std::string scriptDir;
@@ -4295,6 +4299,7 @@ bool RunInc5SelfTest( nlohmann::json& out )
                         && fb.note.Contains( "keyring could not be used" )
                         && fb.note.Contains( expectFrag )
                         && !fb.note.Contains( char16_type( 0xFFFD ) )
+                        && !fb.note.Contains( "sk-ant-selftest" )   // I2: lock in the no-leak invariant
                         && storeCalls == 1;
             KeyStore::Clear();
             Settings::Remove( sk );
@@ -4324,13 +4329,20 @@ bool RunInc5SelfTest( nlohmann::json& out )
                "exit 1\n" ) );
             KeyStore::SetKeyringForSelfTest( id, sk );
             Settings::Remove( sk );
+            // M5 (review): exercise KeyringSearchExists directly too -- it is
+            // declared "exposed for tests" and nothing was calling it
+            // directly. Same fixture, so this adds one more `search` call
+            // (bumping the expected count below from 1 to 2).
+            const KeyringExistsResult direct = KeyringSearchExists( id );
             const KeyStore::State loaded = KeyStore::Load();
             const int lookupCalls = counter( "count_c_lookup" );
             const int searchCalls = counter( "count_c_search" );
             detail["c"] = { { "where", int( loaded.where ) }, { "note", U8( loaded.note ) },
-                            { "lookupCalls", lookupCalls }, { "searchCalls", searchCalls } };
+                            { "lookupCalls", lookupCalls }, { "searchCalls", searchCalls },
+                            { "directSearch", { { "ok", direct.ok }, { "exists", direct.exists } } } };
             lookupRetryOk = loaded.where == KeyStore::Where::Keyring && loaded.key == "sk-ant-selftest-KRC"
-                         && loaded.note.IsEmpty() && lookupCalls == 2 && searchCalls == 1;
+                         && loaded.note.IsEmpty() && lookupCalls == 2 && searchCalls == 2
+                         && direct.ok && direct.exists;
             KeyStore::Clear();
             Settings::Remove( sk );
          }
@@ -4373,9 +4385,13 @@ bool RunInc5SelfTest( nlohmann::json& out )
          // (never a raw byte cut that could split a multi-byte sequence).
          {
             KeyringId id = newId( "kr-e" );
-            std::string filler;
+            std::string filler, longRunUtf8, shortRunUtf8;
             for ( int i = 0; i < 220; ++i )
-               filler += "\xC3\xA9";   // 'e' + combining -> 'é' UTF-8, x220 (440 bytes)
+               filler += "\xC3\xA9";   // precomposed 'é' (U+00E9 UTF-8), x220 (440 bytes) -- not a combining sequence (review M4)
+            for ( int i = 0; i < 201; ++i )
+               longRunUtf8 += "\xC3\xA9";
+            for ( int i = 0; i < 100; ++i )
+               shortRunUtf8 += "\xC3\xA9";
             id.program = script( "e", std::string(
                "if [ \"$1\" = store ]; then\n"
                "  cat >/dev/null\n"
@@ -4393,10 +4409,160 @@ bool RunInc5SelfTest( nlohmann::json& out )
             const int storeCalls = counter( "count_e" );
             detail["e"] = { { "where", int( fb.where ) }, { "note", U8( fb.note ) }, { "noteLen", int( fb.note.Length() ) },
                             { "storeCalls", storeCalls } };
+            // M4 (review): assert the DIAGNOSTIC portion itself is bounded to
+            // <=200 characters (Detail()'s actual contract) via a run longer
+            // than that (must be absent) and a run within it (must survive),
+            // not just a loose bound on the whole note's length.
             storeBoundOk = fb.where == KeyStore::Where::Settings && plain == "sk-ant-selftest-KRE"
                         && fb.note.Contains( "Can't find session" ) && storeCalls == 3
                         && !fb.note.Contains( char16_type( 0xFFFD ) )
-                        && fb.note.Length() < 400;
+                        && !fb.note.Contains( "sk-ant-selftest" )   // I2: lock in the no-leak invariant
+                        && !fb.note.Contains( FromU8( longRunUtf8 ) ) && fb.note.Contains( FromU8( shortRunUtf8 ) );
+            KeyStore::Clear();
+            Settings::Remove( sk );
+         }
+
+         // (f) C1 (Critical, review): a lookup that already wrote the key to
+         // stdout, then dies abnormally instead of a clean exit 0, must never
+         // let that key reach a visible note or error. RunSecretTool's
+         // private-file stderr capture makes r.err the ONLY thing Detail()
+         // reads, so this holds no matter which stream secret-tool used or
+         // what it wrote there. Two variants: killed by a signal (crash), and
+         // a plain unexpected nonzero exit (no crash). Both must still be
+         // LOUD (non-empty, naming the exit/crash), never a silent drop.
+         // RED on d94a6f3c: before the root fix, FailureText() fell back to
+         // r.out, which on a lookup IS the secret.
+         {
+            KeyringId id = newId( "kr-f1" );
+            id.program = script( "f1", std::string(
+               "if [ \"$1\" = lookup ]; then\n"
+               "  printf '%s\\n' 'sk-ant-selftest-KRF1'\n"
+               "  kill -SEGV $$\n"
+               "fi\n"
+               "exit 1\n" ) );
+            KeyStore::SetKeyringForSelfTest( id, sk );
+            Settings::Remove( sk );
+            const KeyringResult direct = KeyringLookup( id );
+            const KeyStore::State loaded = KeyStore::Load();
+            detail["f1"] = { { "directError", U8( direct.error ) }, { "loadedNote", U8( loaded.note ) } };
+            leakSegvOk = !direct.error.IsEmpty() && !direct.error.Contains( "sk-ant-selftest" )
+                      && direct.error.Contains( "crash" )
+                      && !loaded.note.Contains( "sk-ant-selftest" ) && loaded.note.Contains( "crash" );
+            KeyStore::Clear();
+            Settings::Remove( sk );
+         }
+         {
+            KeyringId id = newId( "kr-f2" );
+            id.program = script( "f2", std::string(
+               "if [ \"$1\" = lookup ]; then\n"
+               "  printf '%s\\n' 'sk-ant-selftest-KRF2'\n"
+               "  exit 3\n"
+               "fi\n"
+               "exit 1\n" ) );
+            KeyStore::SetKeyringForSelfTest( id, sk );
+            Settings::Remove( sk );
+            const KeyringResult direct = KeyringLookup( id );
+            const KeyStore::State loaded = KeyStore::Load();
+            detail["f2"] = { { "directError", U8( direct.error ) }, { "loadedNote", U8( loaded.note ) } };
+            leakExit3Ok = !direct.error.IsEmpty() && !direct.error.Contains( "sk-ant-selftest" )
+                       && direct.error.Contains( "exit 3" )
+                       && !loaded.note.Contains( "sk-ant-selftest" ) && loaded.note.Contains( "exit 3" );
+            KeyStore::Clear();
+            Settings::Remove( sk );
+         }
+
+         // (g) M1: a SUCCESSFUL lookup whose secret-tool prints noise on its
+         // real stderr (e.g. a GLib-WARNING) alongside the key on stdout must
+         // return the clean key, not the key with the warning appended --
+         // proves the private stderr file keeps the two streams apart on the
+         // success path too, not only on failure. RED on d94a6f3c: the merge
+         // appended the warning to stdout, so the "secret" failed
+         // IsPrintableAscii and the key never came back clean.
+         {
+            KeyringId id = newId( "kr-g" );
+            id.program = script( "g", std::string(
+               "if [ \"$1\" = lookup ]; then\n"
+               "  printf '%s\\n' 'sk-ant-selftest-KRG'\n"
+               "  echo '(secret-tool:1): GLib-WARNING **: bogus warning' 1>&2\n"
+               "  exit 0\n"
+               "fi\n"
+               "exit 1\n" ) );
+            KeyStore::SetKeyringForSelfTest( id, sk );
+            Settings::Remove( sk );
+            const KeyringResult direct = KeyringLookup( id );
+            detail["g"] = { { "ok", direct.ok }, { "found", direct.found }, { "secret", U8( String( direct.secret ) ) } };
+            cleanLookupOk = direct.ok && direct.found && direct.secret == "sk-ant-selftest-KRG";
+            KeyStore::Clear();
+            Settings::Remove( sk );
+         }
+
+         // (h) I1 (Important, review): KeyringClear's success check reads
+         // FailureText()/r.err (now the real, separate stderr) instead of the
+         // always-empty-under-the-old-merge r.err.Trimmed().IsEmpty() -- a
+         // real clear failure with a message must be a visible error, not
+         // silently "nothing to clear". (h1) RED on the OLD (pre-root-fix)
+         // semantics: an exit-1 clear with a real stderr message used to be
+         // indistinguishable from "nothing to clear" whenever the merge put
+         // that message where r.err.Trimmed().IsEmpty() could never see it.
+         // (h2) stays "nothing to clear", unchanged.
+         {
+            KeyringId id = newId( "kr-h1" );
+            id.program = script( "h1", std::string(
+               "if [ \"$1\" = clear ]; then\n"
+               "  echo 'secret-tool: Cannot remove: org.freedesktop.DBus.Error.Failed' 1>&2\n"
+               "  exit 1\n"
+               "fi\n"
+               "exit 1\n" ) );
+            const KeyringResult r = KeyringClear( id );
+            detail["h1"] = { { "ok", r.ok }, { "error", U8( r.error ) } };
+            clearMessageOk = !r.ok && r.error.Contains( "clear failed (exit 1)" )
+                          && r.error.Contains( "Cannot remove" );
+         }
+         {
+            KeyringId id = newId( "kr-h2" );
+            id.program = script( "h2", std::string(
+               "if [ \"$1\" = clear ]; then\n"
+               "  exit 1\n"
+               "fi\n"
+               "exit 1\n" ) );
+            const KeyringResult r = KeyringClear( id );
+            detail["h2"] = { { "ok", r.ok }, { "error", U8( r.error ) } };
+            clearSilentOk = r.ok && r.error.IsEmpty();
+         }
+
+         // (i) M2 (Minor, review): every lookup attempt silently misses while
+         // `search` keeps finding the item -- bounded at exactly 3 lookups +
+         // 2 searches (the loop breaks on the attempt cap before a 3rd
+         // search), and KeyStore::Load() must say the key exists but could
+         // not be read, not the generic (and here false) "no key" note. RED
+         // on d94a6f3c: KeyringResult had no existsButUnreadable signal, so
+         // this always produced the plain "no key" miss.
+         {
+            KeyringId id = newId( "kr-i" );
+            id.program = script( "i", std::string(
+               "cmd=\"$1\"\n"
+               "if [ \"$cmd\" = lookup ]; then\n"
+               "  n=$(( $(cat '" + scriptDir + "/count_i_lookup' 2>/dev/null || echo 0) + 1 ))\n"
+               "  echo \"$n\" > '" + scriptDir + "/count_i_lookup'\n"
+               "  exit 1\n"
+               "elif [ \"$cmd\" = search ]; then\n"
+               "  m=$(( $(cat '" + scriptDir + "/count_i_search' 2>/dev/null || echo 0) + 1 ))\n"
+               "  echo \"$m\" > '" + scriptDir + "/count_i_search'\n"
+               "  echo 'label = fake'\n"
+               "  exit 0\n"
+               "fi\n"
+               "exit 1\n" ) );
+            KeyStore::SetKeyringForSelfTest( id, sk );
+            Settings::Remove( sk );
+            const KeyStore::State loaded = KeyStore::Load();
+            const int lookupCalls = counter( "count_i_lookup" );
+            const int searchCalls = counter( "count_i_search" );
+            detail["i"] = { { "where", int( loaded.where ) }, { "note", U8( loaded.note ) },
+                            { "lookupCalls", lookupCalls }, { "searchCalls", searchCalls } };
+            existsUnreadableOk = loaded.where == KeyStore::Where::None && loaded.key.IsEmpty()
+                              && loaded.note.Contains( "exists in the system keyring" )
+                              && loaded.note.Contains( "could not be read" )
+                              && lookupCalls == 3 && searchCalls == 2;
             KeyStore::Clear();
             Settings::Remove( sk );
          }
@@ -4411,8 +4577,14 @@ bool RunInc5SelfTest( nlohmann::json& out )
       }
       detail["verdicts"] = { { "storeRetry", storeRetryOk }, { "storeOther", storeOtherOk },
                             { "lookupRetry", lookupRetryOk }, { "lookupGenuineMiss", lookupGenuineMissOk },
-                            { "storeBound", storeBoundOk } };
-      const bool ok = storeRetryOk && storeOtherOk && lookupRetryOk && lookupGenuineMissOk && storeBoundOk;
+                            { "storeBound", storeBoundOk },
+                            { "leakSegv", leakSegvOk }, { "leakExit3", leakExit3Ok },
+                            { "cleanLookup", cleanLookupOk },
+                            { "clearMessage", clearMessageOk }, { "clearSilent", clearSilentOk },
+                            { "existsUnreadable", existsUnreadableOk } };
+      const bool ok = storeRetryOk && storeOtherOk && lookupRetryOk && lookupGenuineMissOk && storeBoundOk
+                   && leakSegvOk && leakExit3Ok && cleanLookupOk && clearMessageOk && clearSilentOk
+                   && existsUnreadableOk;
       out["keyringRetryDetail"] = detail;
       out["keyringRetryError"] = U8( error );
       out["keyringRetryOk"] = ok;

@@ -100,6 +100,9 @@ State Load()
    }
    else if ( !r.ok )
       st.note = "Could not read the system keyring (" + r.error + ").";
+   else if ( r.existsButUnreadable )
+      st.note = "The key exists in the system keyring but could not be read after 3 attempts "
+                "(a known libsecret/KWallet session-key mismatch); try again.";
    return Remember( st );
 }
 

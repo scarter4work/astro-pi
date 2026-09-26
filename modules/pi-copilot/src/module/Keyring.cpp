@@ -3,6 +3,7 @@
 
 #include "Keyring.h"
 #include "PICopilotModule.h"
+#include "SafeFileWrite.h"
 #include "Utf8.h"
 
 #include <pcl/Exception.h>
@@ -10,8 +11,12 @@
 #include <pcl/StringList.h>
 
 #include <chrono>
+#include <cstring>
 #include <string>
 #include <thread>
+
+#include <fcntl.h>
+#include <unistd.h>
 
 namespace pcl
 {
@@ -56,6 +61,21 @@ private:
    bool m_shown = false;
 };
 
+// Removes the private scratch directory a RunSecretTool() call made for the
+// child's stderr file, on every exit path (normal return, an early return, or
+// an exception unwinding through RunSecretTool) -- same discipline as
+// WaitNotice above.
+class ScratchDirGuard
+{
+public:
+   explicit ScratchDirGuard( String dir ) : m_dir( std::move( dir ) ) {}
+   ~ScratchDirGuard() { RemovePrivateScratchDir( m_dir ); }
+   ScratchDirGuard( const ScratchDirGuard& ) = delete;
+   ScratchDirGuard& operator=( const ScratchDirGuard& ) = delete;
+private:
+   String m_dir;
+};
+
 IsoString Bytes( const ByteArray& b )
 {
    IsoString s;
@@ -64,21 +84,80 @@ IsoString Bytes( const ByteArray& b )
    return s;
 }
 
+// Measured (review, confirmed independently: PI core 1.9.5 "Lockhart" build
+// 1702 / PCL headers 2.10.8, PCL source ExternalProcess.cpp:304-336): the
+// child's real stderr bytes come back through what pcl::ExternalProcess
+// reports as StandardOutput(); StandardError() is always empty. This holds
+// in BOTH --automation-mode and a normal interactive GUI session (the
+// original finding here understated it as automation-only). The core reads
+// the child's stderr on its own pipe and interleaves it into the stdout
+// buffer at write granularity -- confirmed from the child side: fd 1 and fd
+// 2 are different pipes, so it is not a spawn-time dup2 merge. Also:
+// ExternalProcess::RedirectStandardError() is a documented but silent no-op
+// (the file is never created, fd 2 stays a pipe) -- so PCL itself offers no
+// way to keep the two channels apart.
+//
+// The fix here does not read either of PCL's channels for diagnostic text:
+// it makes the CHILD redirect its own real fd 2 to a private file before it
+// execs secret-tool, via a `/bin/sh -c` wrapper. Nothing variable is ever
+// interpolated into the wrapper's script text -- it is one fixed literal,
+// and `id.program`, every element of `args`, and the private error-file path
+// travel as ordinary positional shell parameters ($0.."$@"), read back only
+// by the fixed names ERR/PROG the script itself assigns. After the child
+// exits, the file (which only this process's own, freshly mkdtemp()'d,
+// 0700 directory could ever contain) is read back and removed. r.out is then
+// always pure stdout, and r.err is always the real, separate stderr: no
+// caller needs to guess which channel a message landed in any more.
 ToolRun RunSecretTool( const KeyringId& id, const StringList& args, const IsoString* input )
 {
    ToolRun r;
    WaitNotice notice;
+
+   String scratchDir;
+   String scratchWhy;
+   if ( !CreatePrivateScratchDir( scratchDir, scratchWhy ) )
+   {
+      r.error = "could not create a private directory for secret-tool's stderr: " + scratchWhy;
+      return r;
+   }
+   ScratchDirGuard scratchGuard( scratchDir );   // removed on every path below, including an exception
+   const String errPath = scratchDir + "/stderr";
+
    try
    {
+      // Created here -- not left to the child's "2>" (a plain open() with
+      // O_CREAT|O_TRUNC, no O_EXCL/O_NOFOLLOW) -- so a pre-existing name or
+      // a symbolic link at this exact path is refused even though scratchDir
+      // is freshly made, unguessable (mkdtemp) and 0700. Defence in depth:
+      // the same posture SafeFileWrite.cpp uses for its own temp files.
+      const std::string errNative = U8( errPath );
+      const int errFd = ::open( errNative.c_str(), O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0600 );
+      if ( errFd < 0 )
+      {
+         r.error = "could not create a private stderr file for secret-tool: " + String( std::strerror( errno ) );
+         return r;
+      }
+      ::close( errFd );   // the child writes into it by path (via the shell's "2>"), not this fd
+
       ExternalProcess p;
       StringList a;
-      a << String( "-u" ) << String( "LD_LIBRARY_PATH" ) << id.program;
+      // sh -c SCRIPT sh <errPath> <program> <args...>
+      // $0 = "sh" (placeholder; exec never reads it), $1 = errPath, then
+      // (after two `shift`s) PROG = program and "$@" = args, exactly as
+      // received -- so nothing here is ever re-parsed as shell syntax.
+      // `exec PROG "$@" 2>"$ERR"` sets up the redirection on the exec'd
+      // command, before replacing the shell's own process image, so the
+      // final program (via /usr/bin/env, unchanged from before) inherits fd
+      // 2 already pointing at the private file.
+      a << String( "-c" )
+        << String( "ERR=$1; shift; PROG=$1; shift; exec /usr/bin/env -u LD_LIBRARY_PATH \"$PROG\" \"$@\" 2>\"$ERR\"" )
+        << String( "sh" ) << errPath << id.program;
       for ( const String& s : args )
          a << s;
-      p.Start( "/usr/bin/env", a );
+      p.Start( "/bin/sh", a );
       if ( !p.WaitForStarted( 10000 ) )
       {
-         r.error = "could not start /usr/bin/env for " + id.program;
+         r.error = "could not start /bin/sh to run " + id.program;
          return r;
       }
       if ( input != nullptr )
@@ -116,8 +195,13 @@ ToolRun RunSecretTool( const KeyringId& id, const StringList& args, const IsoStr
       r.finished = true;
       r.exitCode = p.ExitCode();
       r.crashed = p.HasCrashed();
-      r.out = Bytes( p.StandardOutput() );
-      r.err = Bytes( p.StandardError() );
+      r.out = Bytes( p.StandardOutput() );   // pure stdout: the child's real stderr never reaches this pipe
+      ByteArray errBytes;
+      String readWhy;
+      if ( ReadFileNoFollow( errPath, errBytes, readWhy ) )
+         r.err = Bytes( errBytes );
+      // else: nothing to read (the file was never written to, or the child
+      // was killed before opening it) -- r.err stays empty, which is correct.
    }
    catch ( const pcl::Exception& x )
    {
@@ -130,71 +214,46 @@ ToolRun RunSecretTool( const KeyringId& id, const StringList& args, const IsoStr
    return r;
 }
 
-// Measured (self-test diagnostic, this PixInsight 2.10.8 build under
-// --automation-mode): pcl::ExternalProcess reports the child's stderr bytes
-// through StandardOutput(), not StandardError() -- confirmed with distinct
-// markers on both real streams (a lookup script printing "REALSTDOUT" to fd 1
-// and "REALSTDERR" to fd 2 comes back as r.out == "REALSTDOUTREALSTDERR",
-// r.err empty). r.err is therefore not a reliable place to look for a failed
-// call's diagnostic text in this environment; r.out is, whenever the call
-// failed. On the SUCCESS path this never matters: secret-tool writes nothing
-// to stderr when it succeeds, so a successful lookup's secret is still
-// exactly r.out. FailureText() is used only on failure branches (never mixed
-// with a real secret), and still prefers r.err first in case some other
-// build/platform genuinely keeps the streams separate.
-IsoString FailureText( const ToolRun& r )
+// Bounded to 200 CHARACTERS (not bytes): decode stderr as UTF-8 first (it can
+// be locale-translated), then truncate the decoded text, so a truncation
+// point can never fall inside a multi-byte sequence and mangle it. Plain
+// String( IsoString ) (the previous implementation) widens bytes as
+// ISO-8859-1, which corrupts any non-ASCII UTF-8 byte regardless of length.
+// r.err is now always the real, separate stderr (see RunSecretTool's
+// comment) -- this never reads r.out, so it can never surface a secret that
+// a lookup or search wrote there before an abnormal exit.
+String Detail( const ToolRun& r )
 {
    const IsoString e = r.err.Trimmed();
-   return e.IsEmpty() ? r.out.Trimmed() : e;
-}
-
-// Bounded to 200 CHARACTERS (not bytes): decode the failure text as UTF-8
-// first (it can be locale-translated), then truncate the decoded text, so a
-// truncation point can never fall inside a multi-byte sequence and mangle
-// it. Plain String( IsoString ) (the previous implementation) widens bytes
-// as ISO-8859-1, which corrupts any non-ASCII UTF-8 byte regardless of
-// length.
-String FormatDiagnostic( const IsoString& e, bool inputError )
-{
    if ( e.IsEmpty() )
       return String( "(no message)" );
    String d = FromU8( std::string( e.c_str(), e.Length() ) );
    if ( d.Length() > 200 )
       d = d.Left( 200 );
-   if ( inputError )
+   if ( r.inputError )
       d += " (it exited before reading its input)";
    return d;
 }
 
-String Detail( const ToolRun& r )
+// Names the exit/crash even when there is no message text, so a failure is
+// never reported as bare, silent "(no message)" with nothing else to go on.
+String ExitDescription( const ToolRun& r )
 {
-   return FormatDiagnostic( FailureText( r ), r.inputError );
-}
-
-// `secret-tool search`'s success format embeds the secret itself ("secret =
-// <value>") in stdout, so unlike Detail() this NEVER falls back to r.out: a
-// partial write before a genuine failure must never surface the secret in a
-// visible error, warning, note or log line (hard rule -- see KeyringId.h /
-// KeyringExistsResult). A search failure may show "(no message)" more often
-// than Detail() would in the merged-channel environment (no r.out fallback)
-// -- privacy over verbosity, and search's own .error is not currently shown
-// to the user anyway (KeyringLookup only checks ok && exists).
-String SearchDetail( const ToolRun& r )
-{
-   return FormatDiagnostic( r.err.Trimmed(), r.inputError );
+   String d = String().Format( "exit %d", r.exitCode );
+   if ( r.crashed )
+      d += ", crashed";
+   return d;
 }
 
 // The proven signature (keyring-flake-investigation.md): ksecretd cannot
 // decrypt the secret because the DH shared-secret padding mismatched, and
 // reports the misleading D-Bus error below. Matched narrowly (both
-// fragments) so an unrelated "session" error is never retried. Reads
-// FailureText(), not r.err directly -- see its comment above.
+// fragments) so an unrelated "session" error is never retried.
 bool IsSessionMismatch( const ToolRun& r )
 {
-   if ( !r.finished || r.crashed || r.exitCode != 1 )
-      return false;
-   const IsoString t = FailureText( r );
-   return t.Contains( "Can't find session" ) && t.Contains( "/org/freedesktop/secrets/session/" );
+   return r.finished && !r.crashed && r.exitCode == 1
+       && r.err.Contains( "Can't find session" )
+       && r.err.Contains( "/org/freedesktop/secrets/session/" );
 }
 
 // The other half of the same proven signature: ksecretd returns the secret
@@ -244,6 +303,11 @@ KeyringResult KeyringLookup( const KeyringId& id )
    args << String( "lookup" );
    args.Add( Attributes( id ) );
    ToolRun r;
+   // True only when the LAST completed disambiguation (the search run before
+   // the most recent retry) found the item: if every lookup attempt then
+   // still silently misses and the bound is hit, that is not a genuine "no
+   // key" -- the item is there but could not be read this time (M2).
+   bool lastSearchFoundIt = false;
    for ( int attempt = 1; ; ++attempt )
    {
       r = RunSecretTool( id, args, nullptr );
@@ -256,7 +320,11 @@ KeyringResult KeyringLookup( const KeyringId& id )
       // here, same as today.
       const KeyringExistsResult ex = KeyringSearchExists( id );
       if ( !(ex.ok && ex.exists) )
+      {
+         lastSearchFoundIt = false;
          break;   // genuine miss, locked, or search itself failed -- no retry storm
+      }
+      lastSearchFoundIt = true;
    }
    if ( !r.finished )
       k.error = r.error;
@@ -272,9 +340,12 @@ KeyringResult KeyringLookup( const KeyringId& id )
       k.found = !k.secret.IsEmpty();
    }
    else if ( r.exitCode == 1 && r.out.IsEmpty() && r.err.Trimmed().IsEmpty() )
+   {
       k.ok = true;   // no such item (genuine, or a locked keyring -- same message either way)
+      k.existsButUnreadable = lastSearchFoundIt;
+   }
    else
-      k.error = String().Format( "secret-tool lookup failed (exit %d): ", r.exitCode ) + Detail( r );
+      k.error = "secret-tool lookup failed (" + ExitDescription( r ) + "): " + Detail( r );
    return k;
 }
 
@@ -305,7 +376,7 @@ KeyringResult KeyringStore( const KeyringId& id, const String& label, const IsoS
    else if ( r.exitCode == 0 && !r.crashed && !r.inputError )
       k.ok = true;
    else
-      k.error = String().Format( "secret-tool store failed (exit %d): ", r.exitCode ) + Detail( r );
+      k.error = "secret-tool store failed (" + ExitDescription( r ) + "): " + Detail( r );
    return k;
 }
 
@@ -318,9 +389,9 @@ KeyringExistsResult KeyringSearchExists( const KeyringId& id )
    const ToolRun r = RunSecretTool( id, args, nullptr );
    // secret-tool search prints "secret = <value>" in plaintext for a match --
    // r.out is therefore never logged, stored or returned, only whether it is
-   // empty. The error branch below uses SearchDetail(), not Detail(): it
-   // never falls back to r.out, so a partial stdout write before a genuine
-   // failure still can't leak the secret into k.error.
+   // empty. r.err is now always the real, separate stderr (RunSecretTool),
+   // so Detail() below can never pick up a secret that search wrote to
+   // stdout.
    if ( !r.finished )
       k.error = r.error;
    else if ( r.exitCode == 127 )
@@ -334,7 +405,7 @@ KeyringExistsResult KeyringSearchExists( const KeyringId& id )
       k.exists = !r.out.Trimmed().IsEmpty();
    }
    else
-      k.error = String().Format( "secret-tool search failed (exit %d): ", r.exitCode ) + SearchDetail( r );
+      k.error = "secret-tool search failed (" + ExitDescription( r ) + "): " + Detail( r );
    return k;
 }
 
@@ -352,10 +423,10 @@ KeyringResult KeyringClear( const KeyringId& id )
       k.notInstalled = true;
       k.error = NotInstalled( id );
    }
-   else if ( (r.exitCode == 0 || r.exitCode == 1) && !r.crashed && FailureText( r ).IsEmpty() )
+   else if ( (r.exitCode == 0 || r.exitCode == 1) && !r.crashed && r.err.Trimmed().IsEmpty() )
       k.ok = true;   // exit 1 without a message: nothing to clear
    else
-      k.error = String().Format( "secret-tool clear failed (exit %d): ", r.exitCode ) + Detail( r );
+      k.error = "secret-tool clear failed (" + ExitDescription( r ) + "): " + Detail( r );
    return k;
 }
 
