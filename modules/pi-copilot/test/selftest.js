@@ -197,6 +197,44 @@ try
          w.forceClose();
       } );
       big.forceClose();
+
+      // Process kinds (review round 1): DETECT must not cry wolf on a recorded
+      // step that does not advance ModifyCount (measured: ImageIdentifier and
+      // RGBWorkingSpace record a step with ModifyCount +0). Idle (gated)
+      // applies from the module Timer: each must be ok with History +1; the
+      // two ModifyCount-silent kinds also ungated in the tail window, where
+      // they must be the loud error. ScreenTransferFunction adds no step.
+      var kinds = [
+         { process: "PixelMath", parameters: { expression: "$T" } },
+         { process: "FITSHeader", tableParameters: { keywords: [ [ "PCHIST", "42", "T-hist" ] ] } },
+         { process: "ImageIdentifier", parameters: { id: "pcHistRenamedG" } },
+         { process: "Crop", parameters: { mode: "AbsolutePixels", leftMargin: -4, topMargin: -4, rightMargin: 0, bottomMargin: 0 } },
+         { process: "Resample", parameters: { mode: "RelativeDimensions", xSize: 0.5, ySize: 0.5 } },
+         { process: "RGBWorkingSpace", parameters: {} },
+         { process: "AssignICCProfile", parameters: {} },
+         { process: "Invert", parameters: {} },
+         { process: "ScreenTransferFunction", parameters: {} },
+         { process: "ImageIdentifier", parameters: { id: "pcHistRenamedU" }, ungated: true },
+         { process: "RGBWorkingSpace", parameters: {}, ungated: true } ];
+      kinds.forEach( function( k, i )
+      {
+         var id = "pcHistKind" + i;
+         var w = new ImageWindow( 32, 32, 3, 32, true, true, id );
+         w.show();
+         var p0 = new PixelMath; p0.expression = "0.8"; p0.executeOn( w.mainView );
+         pumpEvents( 150 );
+         var v = w.mainView, l0 = v.processing.length, h0 = v.historyIndex;
+         checkPhase( "hist.arm", { id: id, delayS: 0, gated: !k.ungated,
+                                   spec: { process: k.process, parameters: k.parameters || {},
+                                           tableParameters: k.tableParameters || {} } } );
+         pumpEvents( 900 );
+         v = w.mainView;
+         var pr = v.processing, last = pr.length > 0 ? pr.at( pr.length - 1 ) : null;
+         checkPhase( "hist.kind.check", { process: k.process, gated: !k.ungated, lengthBefore: l0, lengthAfter: pr.length,
+                                          historyIndexBefore: h0, historyIndexAfter: v.historyIndex,
+                                          lastProcessId: last ? last.processId() : "", idNow: v.id } );
+         w.forceClose();
+      } );
       checkPhase( "hist.timer", { intervalS: 0.2 } );
    } )();
 }

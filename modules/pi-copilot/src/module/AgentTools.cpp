@@ -327,7 +327,7 @@ ToolOutcome ApplyProcessTool( const nlohmann::json& in, const ToolContext& ctx, 
       { "view", U8( ar.viewId ) },
       { "parametersSet", ar.parametersSet },
       { "elapsedMs", std::lround( ar.elapsedMs ) },
-      { "undo", "Recorded in the view's History; the user can undo it." }
+      { "undo", U8( ar.undo ) }   // only what ApplyProcess verified (ProcessApply.h)
    };
    if ( !ar.pinnedSet.empty() )
       summary["pinnedParameters"] = ar.pinnedSet;   // set by PI Copilot, not by you: never pass them

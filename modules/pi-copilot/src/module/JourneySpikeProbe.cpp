@@ -67,6 +67,7 @@ struct SpikeState
    bool           hazardGated = false;
    int            hazardDeferredTicks = 0;
    std::string    hazardBusyReason;                                // first reason the gate deferred for
+   nlohmann::json hazardSpec;                                      // {process, parameters, tableParameters}
    nlohmann::json hazardResult;                                    // null until applied
 };
 
@@ -111,11 +112,15 @@ void HazardTick( SpikeState& s )
       {
          const ImageWindow w = v.Window();
          r["modifyCountBefore"] = uint64_t( w.ModifyCount() );
-         const ApplyProcessResult a = ApplyProcess( "PixelMath", { { "expression", "$T*0.5" } },
-                                                    nlohmann::json::object(), v );
+         const ApplyProcessResult a = ApplyProcess(
+            IsoString( s.hazardSpec.value( "process", std::string( "PixelMath" ) ).c_str() ),
+            s.hazardSpec.value( "parameters", s.hazardSpec.contains( "process" ) ? nlohmann::json::object()
+                                                                                : nlohmann::json{ { "expression", "$T*0.5" } } ),
+            s.hazardSpec.value( "tableParameters", nlohmann::json::object() ), v );
          r["ok"] = a.ok;
          r["error"] = U8( a.error );
          r["unrecordedChange"] = a.unrecordedChange;
+         r["undo"] = U8( a.undo );
          r["modifyCountAfter"] = uint64_t( w.ModifyCount() );
       }
    }
@@ -298,9 +303,11 @@ void JourneySpikeProbeSetTickInterval( double seconds )
    }
 }
 
-void JourneySpikeProbeRequestHazardApply( const std::string& viewId, double delayS, bool gated )
+void JourneySpikeProbeRequestHazardApply( const std::string& viewId, double delayS, bool gated,
+                                          const nlohmann::json& spec )
 {
    SpikeState& s = S();
+   s.hazardSpec = spec.is_object() ? spec : nlohmann::json::object();
    s.hazardResult = nlohmann::json();
    s.hazardDeferredTicks = 0;
    s.hazardBusyReason.clear();

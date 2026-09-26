@@ -39,7 +39,7 @@ ProcessActivityState CurrentProcessActivity()
       if ( Console().AbortEnabled() )
       {
          s.busy = true;
-         s.reason = "a process or script is running";
+         s.reason = "the Process Console is busy (a process or script is running)";
          return s;
       }
       for ( const ImageWindow& w : ImageWindow::AllWindows( true/*includeIconicWindows*/ ) )
@@ -50,7 +50,7 @@ ProcessActivityState CurrentProcessActivity()
             if ( !v.CanRead() || !v.CanWrite() )
             {
                s.busy = true;
-               s.reason = "image " + String( v.FullId() ) + " is locked by a running process";
+               s.reason = "image " + String( v.FullId() ) + " is locked (a process, script or tool such as Blink is using it)";
                return s;
             }
       }
@@ -61,7 +61,7 @@ ProcessActivityState CurrentProcessActivity()
          if ( idle < PICopilotApplyQuietSeconds )
          {
             s.busy = true;
-            s.reason = "an image was just being processed";
+            s.reason = "an image was changed or updated a moment ago";
             return s;
          }
       }
@@ -72,6 +72,18 @@ ProcessActivityState CurrentProcessActivity()
       s.reason = "PixInsight's state could not be read";
    }
    return s;
+}
+
+HeldReplyAction DecideHeldReply( bool stopRequested, bool replyOk, bool callsImageChangingTool, bool busy,
+                                 double waitedSeconds, bool noteShown )
+{
+   if ( stopRequested || !replyOk || !callsImageChangingTool )
+      return HeldReplyAction::Run;
+   if ( !busy )
+      return noteShown ? HeldReplyAction::RunAfterNote : HeldReplyAction::Run;
+   if ( !noteShown && waitedSeconds >= PICopilotBusyWaitNoteSeconds )
+      return HeldReplyAction::WaitAndNote;
+   return HeldReplyAction::Wait;
 }
 
 } // namespace pcl

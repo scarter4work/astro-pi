@@ -31,6 +31,11 @@ struct ApplyProcessResult
    // image, but PixInsight recorded no History step for it (ok == false,
    // error says so). The image IS modified; Undo cannot revert it.
    bool           unrecordedChange = false;
+   // When ok: what is known about undoing it, stated only as far as it was
+   // VERIFIED (model-facing): a checked History step on a main view, an
+   // unverifiable preview step, or no History step on the target at all
+   // (IsHistoryUpdater false: createNewImage, display-only processes, ...).
+   String         undo;
 };
 
 /*
@@ -62,15 +67,24 @@ struct ApplyProcessResult
  *      busy probe is repeated right before it. A failure found only while
  *      running (e.g. a PixelMath syntax error) is ExecuteOn() == false,
  *   7. DETECT (Task T-hist): on a MAIN view, when the instance says it
- *      updates history (IsHistoryUpdater), the window's ModifyCount must have
- *      advanced. It does not when PixInsight was still executing another
- *      process: the pixels changed but no History step exists (measured:
- *      ModifyCount +0 in all 35 unrecorded headless applies, +1 in every
- *      recorded one; task-hist-report.md).
- *      Then ok=false, unrecordedChange=true and the error says the image was
- *      changed outside History. Previews are not checked: neither ModifyCount
- *      nor View.processing reflects a preview step (measured), so there is
- *      nothing to verify against.
+ *      updates history (IsHistoryUpdater), the step must be verifiably in
+ *      History. A process run while PixInsight is still executing another
+ *      one changes the image but records nothing (measured: History +0 and
+ *      ModifyCount +0 in every such apply). Signals, in order:
+ *        a. ModifyCount advanced -> recorded (every pixel/keyword/geometry/
+ *           ICC step measured: PixelMath incl. a no-op $T, FITSHeader, Crop,
+ *           Resample, AssignICCProfile, Invert);
+ *        b. it did not -> the History list decides (ReadViewHistory before
+ *           and after): a NEW active step of this process -> recorded
+ *           (measured: ImageIdentifier and RGBWorkingSpace record a step with
+ *           ModifyCount +0); none -> NOT recorded;
+ *        c. a history read busy (EvalGuard) or failed -> ok, with an undo
+ *           text saying it could NOT be verified and why (never guessed).
+ *      Not recorded: ok=false, unrecordedChange=true and the error says the
+ *      image was changed outside History. `undo` states only what was
+ *      verified; previews are not checked (neither ModifyCount nor
+ *      View.processing reflects a preview step -- measured), and their undo
+ *      text says so.
  * Every failure is ok=false + a message naming the process/parameter and the
  * fix; nothing after the failing step runs, so a failure never touches the
  * image -- except step 7, which is reported as exactly that. Root thread only.

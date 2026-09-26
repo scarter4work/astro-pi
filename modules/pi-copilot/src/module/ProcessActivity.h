@@ -39,6 +39,12 @@ namespace pcl
  *   3. less than PICopilotApplyQuietSeconds have passed since the last
  *      process activity: an image notification (the interface forwards every
  *      one) or the end of a PICopilot process execution.
+ * Checked ONCE per model reply, before its first tool call -- not between the
+ * (up to 8) calls of one reply. Our own synchronous ExecuteOn() returns only
+ * after the core has finished it, so a following call starts idle: measured,
+ * two consecutive ApplyProcess calls from one idle tick were both recorded,
+ * 5/5 (History length 1 -> 3). A per-call gate would add nothing for our own
+ * calls; DETECT still checks every call.
  * Known gap (measured 10/10 unrecorded with this gate, before PICopilot's
  * own executions were stamped): a global process that enables no abort,
  * locks no view and sends no notification is invisible; its short tail
@@ -68,6 +74,16 @@ struct ProcessActivityState
 
 // Non-blocking; never throws (an exception while probing counts as busy).
 ProcessActivityState CurrentProcessActivity();
+
+// The panel's decision for a finished reply it holds (pure; e_Poll_Timer does
+// only the plumbing). Run: run its tools now. RunAfterNote: run them, after
+// telling the user PixInsight is idle again. Wait: keep holding, re-check on
+// the next tick. WaitAndNote: keep holding and say, once, what it waits for.
+// Only a successful reply that calls an image-changing tool ever waits; Stop
+// always ends the wait (its tools then report "not executed").
+enum class HeldReplyAction { Run, RunAfterNote, Wait, WaitAndNote };
+HeldReplyAction DecideHeldReply( bool stopRequested, bool replyOk, bool callsImageChangingTool, bool busy,
+                                 double waitedSeconds, bool noteShown );
 
 } // namespace pcl
 

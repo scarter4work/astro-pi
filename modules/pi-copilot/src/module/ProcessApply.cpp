@@ -3,6 +3,7 @@
 
 #include "ProcessApply.h"
 #include "GlobalRunFiles.h"   // NulTextProblem, DuplicateKeyProblem
+#include "HistoryReader.h"
 #include "ProcessCatalog.h"
 #include "ProcessSafety.h"
 #include "StringParameterRules.h"
@@ -21,6 +22,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstdint>
+#include <limits>
 #include <memory>
 #include <set>
 #include <string>
@@ -463,6 +465,41 @@ void SetParameters( const Process& P, ProcessInstance* instance, const String& p
    }
 }
 
+// DETECT's second signal (step 7), for a completed history-updating run on
+// a main view whose ModifyCount did not advance: is there a NEW active step of
+// this process right after the pre-run position? Recorded: the active count
+// grew by exactly one and that step is `processId`. NotRecorded: it did not
+// (the hazard: PixInsight was still inside another process execution).
+// Unknown: a read was busy (EvalGuard) or failed -- never guessed either way.
+struct StepCheck
+{
+   enum Verdict { Recorded, NotRecorded, Unknown } verdict = Unknown;
+   String reason;
+};
+
+StepCheck CheckNewHistoryStep( const View& view, const HistorySnapshot& before, const IsoString& processId )
+{
+   StepCheck c;
+   if ( !before.ok )
+   {
+      c.reason = before.busy ? String( "another script evaluation was running before the run" )
+                             : "reading the History before the run failed: " + before.error;
+      return c;
+   }
+   const HistorySnapshot after = ReadViewHistory( view.FullId(), before.ActiveCount() );
+   if ( !after.ok )
+   {
+      c.reason = after.busy ? String( "another script evaluation was running" )
+                            : "reading the History failed: " + after.error;
+      return c;
+   }
+   const bool grew = after.ActiveCount() == before.ActiveCount() + 1;
+   const bool ours = !after.steps.empty() && after.steps.front().combinedIndex == before.ActiveCount()
+                  && after.steps.front().processId == std::string( processId.c_str() );
+   c.verdict = grew && ours ? StepCheck::Recorded : StepCheck::NotRecorded;
+   return c;
+}
+
 std::set<std::string> OpenMainViewIds()
 {
    std::set<std::string> ids;
@@ -520,9 +557,15 @@ ApplyProcessResult ApplyProcess( const IsoString& processId, const nlohmann::jso
          throw ApplyError{ BusyMessage( r.viewId ) };
 
       // DETECT (step 7): what must change if the step is recorded.
-      const bool expectHistoryStep = view.IsMainView() && instance.IsHistoryUpdater( view );
+      const bool historyUpdater = instance.IsHistoryUpdater( view );
+      const bool expectHistoryStep = view.IsMainView() && historyUpdater;
       ImageWindow window = view.Window();
       const size_type modifyCountBefore = expectHistoryStep ? window.ModifyCount() : 0;
+      // The History position before the run, for steps that do not advance
+      // ModifyCount (measured: ImageIdentifier, RGBWorkingSpace). Counts only.
+      HistorySnapshot historyBefore;
+      if ( expectHistoryStep && !g_inProcessAppliesExpected )
+         historyBefore = ReadViewHistory( view.FullId(), std::numeric_limits<int>::max() );
 
       const auto t0 = std::chrono::steady_clock::now();
       bool ran = false;
@@ -549,10 +592,33 @@ ApplyProcessResult ApplyProcess( const IsoString& processId, const nlohmann::jso
                              "(the reason is in the Process Console). Do not simply retry: if the user may have "
                              "aborted it, ask them first; otherwise check the values you set: " + changes };
       }
-      if ( expectHistoryStep && window.ModifyCount() <= modifyCountBefore )
+      if ( !historyUpdater )
+         r.undo = r.processId + " adds no History step to " + r.viewId + ": it does not change that image's History "
+                  "(e.g. it creates a new image or changes only display settings), so there is nothing to undo there.";
+      else if ( !view.IsMainView() )
+         r.undo = "Applied to the preview " + r.viewId + ". PixInsight keeps a preview's history separately from "
+                  "the image and PI Copilot cannot verify it; the main image is unchanged.";
+      else if ( window.ModifyCount() > modifyCountBefore )
+         r.undo = "Recorded in " + r.viewId + "'s History (verified: the image's modification count advanced); "
+                  "the user can undo it with Edit > Undo.";
+      else if ( g_inProcessAppliesExpected )
       {
-         if ( g_inProcessAppliesExpected )
-            ++g_inProcessUnrecorded;   // self-test's own executeGlobal(): never recorded (see ProcessApply.h)
+         ++g_inProcessUnrecorded;   // self-test's own executeGlobal(): never recorded (see ProcessApply.h)
+         r.undo = "(self-test, in-process: not recorded in History)";
+      }
+      else
+      {
+         // ModifyCount did not advance: either a step that does not count as
+         // a modification (metadata-only, e.g. a rename), or no step at all.
+         // The History list decides (read from view: a rename changed the id).
+         const StepCheck c = CheckNewHistoryStep( view, historyBefore, P->Id() );
+         if ( c.verdict == StepCheck::Recorded )
+            r.undo = "Recorded in " + String( view.FullId() ) + "'s History (verified in the History list); the user "
+                     "can undo it with Edit > Undo.";
+         else if ( c.verdict == StepCheck::Unknown )
+            r.undo = "NOT VERIFIED: " + r.processId + " does not change the image's modification count and its "
+                     "History could not be checked (" + c.reason + "). Ask the user to confirm the step is in "
+                     "History Explorer before relying on Undo.";
          else
          {
             r.unrecordedChange = true;
@@ -572,6 +638,7 @@ ApplyProcessResult ApplyProcess( const IsoString& processId, const nlohmann::jso
    {
       r.ok = false;
       r.error = e.message;
+      r.undo.Clear();
       if ( !r.unrecordedChange )   // what DID change the image stays reported
       {
          r.parametersSet = nlohmann::json::object();
