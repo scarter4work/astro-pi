@@ -7,6 +7,7 @@
 #include <pcl/ByteArray.h>
 #include <pcl/String.h>
 
+#include <cstddef>
 #include <functional>
 #include <string>
 
@@ -74,9 +75,12 @@ String SafeCheckJpeg( const ByteArray& data );
 // A fresh, private (0700, mkdtemp -- unguessable) scratch directory under the
 // system temp directory, for a caller that needs a file written into by
 // something else (e.g. a child process it starts) rather than by bytes it
-// already holds (that case is SafeRenderFile). "dir" gets the path and true
-// is returned; on failure "" + false, and `why` says why. The caller removes
-// it with RemovePrivateScratchDir() on every path, including one that throws.
+// already holds (that case is SafeRenderFile, which uses this too). "dir"
+// gets the path and true is returned; on failure "" + false, and `why` says
+// why -- including a `File::SystemTempDirectory()`/`File::FullPath()`
+// exception (review m6: caught here, never propagated -- this never throws).
+// The caller removes it with RemovePrivateScratchDir() on every path,
+// including one that throws.
 bool CreatePrivateScratchDir( String& dir, String& why );
 
 // Removes a private scratch directory made by CreatePrivateScratchDir():
@@ -88,8 +92,11 @@ void RemovePrivateScratchDir( const String& dir );
 // component (O_NOFOLLOW); used to read back a file written inside a
 // CreatePrivateScratchDir() directory (by this process or a child it
 // started). false + why on failure (missing, not a regular file, a read
-// error); out is cleared first either way.
-bool ReadFileNoFollow( const String& path, ByteArray& out, String& why );
+// error); out is cleared first either way. maxBytes bounds the read (0 =
+// unbounded, the default, e.g. SafeRenderFile's own rendered files, which are
+// never attacker-sized): stops after that many bytes rather than reading an
+// arbitrarily large file into memory (review m3).
+bool ReadFileNoFollow( const String& path, ByteArray& out, String& why, size_t maxBytes = 0 );
 
 // Self-test only: make the next SafeWriteFile fail after its temp is fully
 // written, before the rename (proves the temp is cleaned up). One-shot.

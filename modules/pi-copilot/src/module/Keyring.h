@@ -47,11 +47,11 @@ struct KeyringResult
    String    error;
 
    // Only meaningful when ok && !found: every lookup attempt (bounded, see
-   // kMaxSecretToolAttempts in Keyring.cpp) silently missed, but the last
+   // PICopilotKeyringMaxAttempts below) silently missed, but the last
    // disambiguating `secret-tool search` before giving up still found the
    // item -- so this is not a genuine "no key", the item is there but could
    // not be read this time (KeyStore::Load() words it that way, distinct
-   // from NoKeyNote()).
+   // from NoKeyNote(), via its own Where::Unreadable).
    bool      existsButUnreadable = false;
 };
 
@@ -69,6 +69,15 @@ struct KeyringExistsResult
 
 // How long a keyring call may take, including the desktop's unlock prompt.
 constexpr int PICopilotKeyringTimeoutMs = 60000;
+
+// A fresh secret-tool process opens a fresh DH session (keyring-flake-
+// investigation.md: failure is per-session and independent across processes,
+// p ~= 1/256), so a bounded retry of the same call is a correct remedy for
+// that one signature. KeyringStore/KeyringLookup retry up to this many
+// attempts total (review m2: exposed here, not just in Keyring.cpp's
+// anonymous namespace, so KeyStore's user-facing note can never drift from
+// the actual bound).
+constexpr int PICopilotKeyringMaxAttempts = 3;
 
 // Root thread only (pcl::ExternalProcess). Each call runs
 // /bin/sh -c '...' sh <errfile> <program> <args...>, which sets `program`'s

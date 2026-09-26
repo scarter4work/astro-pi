@@ -84,6 +84,13 @@ IsoString Bytes( const ByteArray& b )
    return s;
 }
 
+// review m3: the whole stderr file would otherwise be read into memory
+// unbounded (ReadFileNoFollow's default), although Detail() only ever shows
+// 200 characters of it. secret-tool's own stderr is always tiny in practice;
+// this is a hard ceiling against a pathological program under KeyringId, not
+// something real secret-tool would ever approach.
+constexpr size_t kMaxStderrBytes = 64 * 1024;
+
 // Measured (review, confirmed independently: PI core 1.9.5 "Lockhart" build
 // 1702 / PCL headers 2.10.8, PCL source ExternalProcess.cpp:304-336): the
 // child's real stderr bytes come back through what pcl::ExternalProcess
@@ -198,7 +205,7 @@ ToolRun RunSecretTool( const KeyringId& id, const StringList& args, const IsoStr
       r.out = Bytes( p.StandardOutput() );   // pure stdout: the child's real stderr never reaches this pipe
       ByteArray errBytes;
       String readWhy;
-      if ( ReadFileNoFollow( errPath, errBytes, readWhy ) )
+      if ( ReadFileNoFollow( errPath, errBytes, readWhy, kMaxStderrBytes ) )
          r.err = Bytes( errBytes );
       // else: nothing to read (the file was never written to, or the child
       // was killed before opening it) -- r.err stays empty, which is correct.
@@ -265,11 +272,6 @@ bool IsSilentMiss( const ToolRun& r )
    return r.finished && !r.crashed && r.exitCode == 1 && r.out.IsEmpty() && r.err.Trimmed().IsEmpty();
 }
 
-// A fresh secret-tool process opens a fresh DH session (investigation:
-// failure is per-session and independent across processes, p ~= 1/256), so a
-// bounded retry of the same call is a correct remedy for this one signature.
-constexpr int kMaxSecretToolAttempts = 3;
-
 // env exits 127 when the program cannot be found.
 String NotInstalled( const KeyringId& id )
 {
@@ -311,7 +313,7 @@ KeyringResult KeyringLookup( const KeyringId& id )
    for ( int attempt = 1; ; ++attempt )
    {
       r = RunSecretTool( id, args, nullptr );
-      if ( attempt >= kMaxSecretToolAttempts || !IsSilentMiss( r ) )
+      if ( attempt >= PICopilotKeyringMaxAttempts || !IsSilentMiss( r ) )
          break;
       // Ambiguous: a silent miss is indistinguishable from a genuine "no
       // such item" (see KeyringResult). Disambiguate with a non-prompting
@@ -359,7 +361,7 @@ KeyringResult KeyringStore( const KeyringId& id, const String& label, const IsoS
    for ( int attempt = 1; ; ++attempt )
    {
       r = RunSecretTool( id, args, &secret );   // secret-tool reads the secret from stdin
-      if ( attempt >= kMaxSecretToolAttempts || !IsSessionMismatch( r ) )
+      if ( attempt >= PICopilotKeyringMaxAttempts || !IsSessionMismatch( r ) )
          break;
       // A retry re-runs secret-tool from scratch (fresh process, fresh DH
       // session) and `store` has replace semantics, so it is idempotent --
@@ -409,6 +411,19 @@ KeyringExistsResult KeyringSearchExists( const KeyringId& id )
    return k;
 }
 
+// review m5 (documented, unreachable in practice, not hardened): if the
+// wrapper's own "2>$ERR" redirect somehow failed (not the exec'd program --
+// the shell setting up the redirect before it), the shell's complaint goes to
+// its OWN stderr, which is still the merged PCL channel at that point (the
+// redirect hasn't happened yet) -- so it would land in r.out, not r.err, and
+// exit 1. For KeyringClear that reads as "nothing to clear" (a masked
+// failure); KeyringLookup/KeyringSearchExists/KeyringStore stay loud (none of
+// their success/no-such-item branches accept a bare exit 1 the way Clear's
+// does). This needs $ERR's own open() to fail after RunSecretTool has just
+// created that exact path 0600 inside a freshly made, private 0700
+// directory -- practically unreachable, so it is documented rather than
+// hardened (a probe like ": 2>\"$ERR\" || exit 125", mapped to a distinct
+// error, would close it if ever needed).
 KeyringResult KeyringClear( const KeyringId& id )
 {
    KeyringResult k;

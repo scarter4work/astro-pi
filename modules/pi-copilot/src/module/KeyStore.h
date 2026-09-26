@@ -10,7 +10,11 @@
 
 namespace pcl { namespace KeyStore {
 
-enum class Where { None, Keyring, Settings };
+// Unreadable (review m1): Load() found the key IS in the keyring
+// (KeyringResult::existsButUnreadable) but could not read it back this time
+// -- distinct from None ("no key set") so a caller never shows both "not
+// set" and "it exists" in the same breath.
+enum class Where { None, Keyring, Settings, Unreadable };
 
 // The key and where it lives. note: a plain-language sentence for the user
 // (a migration that happened, or why the keyring could not be used); never
