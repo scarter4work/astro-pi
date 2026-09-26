@@ -366,4 +366,9 @@ PjsrRun RunPjsr( const String& code, const IsoString& targetViewId )
    return r;
 }
 
+nlohmann::json EvaluateAsciiJson( const std::string& body )
+{
+   return EvalJson( body );
+}
+
 } // namespace pcl

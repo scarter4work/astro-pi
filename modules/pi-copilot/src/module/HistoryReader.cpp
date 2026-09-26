@@ -4,7 +4,6 @@
 #include "HistoryReader.h"
 #include "EvalGuard.h"
 #include "JourneyConstants.h"
-#include "PICopilotModule.h"
 #include "PjsrRunner.h"   // ScriptLiteral
 #include "Utf8.h"
 
@@ -14,6 +13,7 @@
 #include <pcl/Variant.h>
 
 #include <algorithm>
+#include <charconv>
 #include <cstdio>
 #include <cstdlib>
 #include <map>
@@ -30,6 +30,33 @@ String RawValue( const XMLElement& e )
    return e.HasAttribute( "value" ) ? e.AttributeValue( "value" ) : e.Text();
 }
 
+// Locale-independent numeric parsing (std::from_chars never consults
+// LC_NUMERIC; strtod would stop at the '.' under a comma-decimal locale). The
+// whole text must be consumed; one leading '+' is accepted.
+bool ParseInt64C( const std::string& s, long long& x )
+{
+   const char* b = s.data();
+   const char* e = s.data() + s.size();
+   if ( b != e && *b == '+' )
+      ++b;
+   if ( b == e )
+      return false;
+   const std::from_chars_result r = std::from_chars( b, e, x, 10 );
+   return r.ec == std::errc() && r.ptr == e;
+}
+
+bool ParseDoubleC( const std::string& s, double& x )
+{
+   const char* b = s.data();
+   const char* e = s.data() + s.size();
+   if ( b != e && *b == '+' )
+      ++b;
+   if ( b == e )
+      return false;
+   const std::from_chars_result r = std::from_chars( b, e, x, std::chars_format::general );
+   return r.ec == std::errc() && r.ptr == e;
+}
+
 // One XPSM value in the apply_process JSON form of parameter p.
 bool TypedValue( const ProcessParameter& p, const XMLElement& e, nlohmann::json& v, std::string& note )
 {
@@ -37,7 +64,13 @@ bool TypedValue( const ProcessParameter& p, const XMLElement& e, nlohmann::json&
    const std::string id = std::string( p.Id().c_str() );
    if ( p.IsBoolean() )
    {
-      v = raw.Trimmed() == "true";
+      const String b = raw.Trimmed();
+      if ( b != "true" && b != "false" )
+      {
+         note = "parameter " + id + " has a non-boolean value '" + U8( b ) + "'";
+         return false;
+      }
+      v = b == "true";
       return true;
    }
    if ( p.IsEnumeration() )
@@ -48,11 +81,10 @@ bool TypedValue( const ProcessParameter& p, const XMLElement& e, nlohmann::json&
    if ( p.IsNumeric() )
    {
       const std::string s = U8( raw.Trimmed() );
-      char* end = nullptr;
       if ( p.IsInteger() )
       {
-         const long long x = std::strtoll( s.c_str(), &end, 10 );
-         if ( end == s.c_str() || *end != '\0' )
+         long long x = 0;
+         if ( !ParseInt64C( s, x ) )
          {
             note = "parameter " + id + " has a non-integer value '" + s + "'";
             return false;
@@ -61,8 +93,8 @@ bool TypedValue( const ProcessParameter& p, const XMLElement& e, nlohmann::json&
       }
       else
       {
-         const double x = std::strtod( s.c_str(), &end );
-         if ( end == s.c_str() || *end != '\0' )
+         double x = 0;
+         if ( !ParseDoubleC( s, x ) )
          {
             note = "parameter " + id + " has a non-numeric value '" + s + "'";
             return false;
@@ -149,8 +181,14 @@ bool ParseXpsmElement( const XMLElement& root, HistoryStep& step, String& error 
          if ( e.Name() == "time" )
          {
             step.started = U8( e.AttributeValue( "start" ) );
-            const std::string span = U8( e.AttributeValue( "span" ) );
-            step.durationS = span.empty() ? -1 : std::strtod( span.c_str(), nullptr );
+            const std::string span = U8( e.AttributeValue( "span" ).Trimmed() );
+            step.durationS = -1;
+            if ( !span.empty() && !ParseDoubleC( span, step.durationS ) )
+            {
+               error = "XPSM step " + String( step.processId.c_str() ) + ": <time span=\"" + FromU8( span )
+                     + "\"> is not a number";
+               return false;
+            }
             continue;
          }
          const std::string id = U8( e.AttributeValue( "id" ) );
@@ -292,11 +330,12 @@ HistorySnapshot ReadViewHistory( const IsoString& viewFullId, int from )
    }
    try
    {
-      const String js = String(
+      // All ASCII: fixed text + ScriptLiteral()s + integers.
+      const std::string js = std::string(
          "(function( id, from, extraSteps, extraId, extraLeads ){"
          " var v = null;"
          " try { v = View.viewById( id ); } catch ( e ) { v = null; }"
-         " if ( v == null || v.isNull ) return JSON.stringify( { error: \"no view \" + id } );"
+         " if ( v == null || v.isNull ) return { error: \"no view \" + id };"
          " var ip = v.initialProcessing, p = v.processing;"
          // Ruling 27: skip the reopen's extra entry (measured in Task 1).
          " var dropAt = -1;"
@@ -309,18 +348,17 @@ HistorySnapshot ReadViewHistory( const IsoString& viewFullId, int from )
          "   var pc = c < il ? ip : p, i = c < il ? (dropAt == 0 ? c + 1 : c) : c - il;"
          "   var m = \"\"; try { m = String( pc.maskId( i ) ); } catch ( e ) { m = \"\"; }"
          "   var inv = false; try { inv = pc.maskInverted( i ) == true; } catch ( e ) { inv = false; }"
-         "   r.steps.push( { xpsm: pc.at( i ).toSource( \"XPSM 1.0\" ), maskId: m, maskInverted: inv } ); }"
-         " return JSON.stringify( r ); })( " )
-         + String( ScriptLiteral( String( viewFullId ) ).c_str() )
-         + String().Format( ", %d, %d, ", s.from, PICopilotJourneyReopenExtraSteps )
-         + String( ScriptLiteral( String( PICopilotJourneyReopenExtraProcessId ) ).c_str() )
+         "   r.steps.push( { xpsm: pcWell( pc.at( i ).toSource( \"XPSM 1.0\" ) ), maskId: pcWell( m ), maskInverted: inv } ); }"
+         " return r; })( " )
+         + ScriptLiteral( String( viewFullId ) )
+         + ", " + std::to_string( s.from ) + ", " + std::to_string( PICopilotJourneyReopenExtraSteps ) + ", "
+         + ScriptLiteral( String( PICopilotJourneyReopenExtraProcessId ) )
          + (PICopilotJourneyReopenExtraLeads ? ", true )" : ", false )");
-      String r;
-      {
-         EvalDepthGuard guard;
-         r = ThePICopilotModule->EvaluateScript( js, "JavaScript" ).ToString();
-      }
-      const nlohmann::json j = nlohmann::json::parse( U8( r ) );
+      // The shared ASCII-safe path (PjsrRunner): the result crosses
+      // EvaluateScript as pcAscii() text, so user data in a step (an
+      // expression, a path, a FITS value) is never re-encoded on the way, and
+      // it holds the EvalDepthGuard.
+      const nlohmann::json j = EvaluateAsciiJson( "return pcAscii( JSON.stringify( " + js + " ) );" );
       if ( j.contains( "error" ) )
       {
          s.error = FromU8( j.at( "error" ).get<std::string>() );
@@ -373,6 +411,10 @@ int HistoryReadFrom( const std::vector<KnownStep>& known )
 HistoryDiff DiffHistory( const std::vector<KnownStep>& known, const HistorySnapshot& snap )
 {
    HistoryDiff d;
+   // A busy or failed read says nothing about the history: no state change
+   // (never "supersede every row"). The caller retries on its next tick.
+   if ( !snap.ok )
+      return d;
    std::map<int, const KnownStep*> bySeq;
    for ( const KnownStep& k : known )
       if ( k.state != "superseded" )

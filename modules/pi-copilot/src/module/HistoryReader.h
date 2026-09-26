@@ -88,7 +88,10 @@ std::string StepIdentity( const std::string& processId, const std::string& start
 // module: StepIdentity uses it, and Task 6's MasterFingerprint reuses it.
 std::string Fnv1a64Hex( const std::string& s );
 
-// Parses one XPSM <instance> element. Root thread only (process catalog).
+// Parses one XPSM <instance> element. Numbers parse locale-independently
+// (std::from_chars); a <time span> that is not a number fails the step with a
+// precise error; a boolean other than "true"/"false" (or a malformed number)
+// makes the step not replayable with a precise parseNote. Root thread only (process catalog).
 // Never throws: false + error for an element that is not a process instance.
 // A step that parses but cannot be replayed faithfully is ok with
 // replayable=false and parseNote (uninstalled process, Script step, block
@@ -117,8 +120,9 @@ HistorySnapshot ReadViewHistory( const IsoString& viewFullId, int from );
 // max( 0, highest non-superseded seq - 1 ): re-read the last known step.
 int HistoryReadFrom( const std::vector<KnownStep>& known );
 
-// Pure (Ruling 5). known: this image's recorded rows (superseded ones are
-// ignored). If snap.from > 0 and the step read at snap.from does not match
+// Pure (Ruling 5). A snapshot that is not ok (busy or failed) yields an
+// EMPTY diff: no state change, needFullRead false -- retry the read later.
+// known: this image's recorded rows (superseded ones are ignored). If snap.from > 0 and the step read at snap.from does not match
 // the known step at that seq, needFullRead is set and nothing else. Otherwise:
 // the first mismatch m (combined index) is found; known rows with seq > m are
 // superseded; read steps with index >= m are appended; every surviving known

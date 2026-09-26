@@ -6,6 +6,8 @@
 
 #include <pcl/String.h>
 
+#include <nlohmann/json.hpp>
+
 #include <string>
 
 namespace pcl
@@ -87,6 +89,19 @@ struct PjsrRun
 // only. Cannot be interrupted: an endless loop hangs PixInsight (the approval
 // dialog says so). Never throws.
 PjsrRun RunPjsr( const String& code, const IsoString& targetViewId );
+
+// The module's one ASCII-safe EvaluateScript path for JSON results. `body` is
+// ASCII-only JavaScript statements (embed data only as ScriptLiteral()s) that
+// end in `return pcAscii( JSON.stringify( <value> ) );`. It runs inside a
+// function with the helpers pcWell/pcAscii/pcCut/pcLine in scope, while an
+// EvalDepthGuard is held (EvalGuard.h), and the returned text is parsed as
+// JSON. Everything crosses the boundary as ASCII, so no text is re-encoded by
+// the engine's narrow-string conversion (inc-5 Task 1, finding 1: core
+// strings in the Latin-1 range could come back double-UTF-8-encoded). Wrap
+// every user-data string in pcWell() so an unpaired surrogate cannot produce
+// an escape a strict JSON parser rejects. Root thread only. Throws (a
+// pcl::Error or a nlohmann::json exception) when the result is not JSON.
+nlohmann::json EvaluateAsciiJson( const std::string& body );
 
 } // namespace pcl
 
