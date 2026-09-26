@@ -751,11 +751,23 @@ bool RunAgentSelfTest( nlohmann::json& out )
          const ParseCase cases[] =
          {
             { "toolUseEmptyContent", 200, "{\"content\":[],\"stop_reason\":\"tool_use\"}", "",
-              false, "stop_reason tool_use but no tool_use block", "", "", false },
+              false, "stop_reason tool_use but no tool_use block (blocks: none) -- the reply said it wanted to use "
+                     "a tool but sent none; nothing ran and nothing changed. Send the message again.", "", "", false },
             { "toolUseNullContent", 200, "{\"content\":null,\"stop_reason\":\"tool_use\"}", "",
               false, "response missing expected content/text field: content is not an array", "", "", false },
             { "toolUseTextOnly", 200, "{\"content\":[{\"type\":\"text\",\"text\":\"hm\"}],\"stop_reason\":\"tool_use\"}", "",
-              false, "stop_reason tool_use but no tool_use block", "", "", false },
+              false, "stop_reason tool_use but no tool_use block (blocks: text) -- the reply said it wanted to use "
+                     "a tool but sent none; nothing ran and nothing changed. Send the message again.", "", "", false },
+            // RED-first case for Task T-diag (tooluse-flake-investigation.md): a
+            // reply that thought, then answered in text, but never called the
+            // tool it claimed stop_reason "tool_use" for -- the exact shape of
+            // the flake seen live. The message must list both block types.
+            { "toolUseThinkingTextOnly", 200,
+              "{\"content\":[{\"type\":\"thinking\",\"thinking\":\"hmm\"},{\"type\":\"text\",\"text\":\"cannot decide\"}],"
+              "\"stop_reason\":\"tool_use\"}", "",
+              false, "stop_reason tool_use but no tool_use block (blocks: thinking, text) -- the reply said it "
+                     "wanted to use a tool but sent none; nothing ran and nothing changed. Send the message again.",
+              "", "", false },
             { "toolUseNoInput", 200, "{\"content\":[{\"type\":\"tool_use\",\"id\":\"t\",\"name\":\"n\"}],\"stop_reason\":\"tool_use\"}", "",
               false, "stop_reason tool_use but a tool_use block lacks a string id, a string name or an object input (content[0])", "", "", false },
             { "toolUseNumericId", 200, "{\"content\":[{\"type\":\"text\",\"text\":\"x\"},{\"type\":\"tool_use\",\"id\":7,\"name\":\"n\",\"input\":{}}],\"stop_reason\":\"tool_use\"}", "",
@@ -804,6 +816,53 @@ bool RunAgentSelfTest( nlohmann::json& out )
             parseDetail.push_back( { { "case", c.name }, { "pass", pass }, { "ok", r.ok },
                                      { "error", U8( r.error ) }, { "stopReason", r.stopReason } } );
             parseCasesOk = parseCasesOk && pass;
+         }
+
+         // Task T-diag: emptyToolUseReply / emptyToolUseBlockTypes are the
+         // ONLY reply fields that survive the "everything cleared on
+         // failure" rule above (nothing here is ever echoed back to the
+         // API), so a live flake's detail JSON can log the raw block types
+         // even though stopReason/contentBlocks are gone. False/empty for a
+         // failure of any other kind.
+         {
+            const AnthropicResult empty = ParseMessagesResponse( 200, IsoString( "{\"content\":[],\"stop_reason\":\"tool_use\"}" ), String() );
+            const AnthropicResult textOnly = ParseMessagesResponse( 200, IsoString(
+               "{\"content\":[{\"type\":\"text\",\"text\":\"hm\"}],\"stop_reason\":\"tool_use\"}" ), String() );
+            const AnthropicResult thinkingText = ParseMessagesResponse( 200, IsoString(
+               "{\"content\":[{\"type\":\"thinking\",\"thinking\":\"hmm\"},{\"type\":\"text\",\"text\":\"cannot decide\"}],"
+               "\"stop_reason\":\"tool_use\"}" ), String() );
+            const AnthropicResult otherFailure = ParseMessagesResponse( 200, IsoString( "{\"content\":[],\"stop_reason\":\"refusal\"}" ), String() );
+            const bool fieldsPass = empty.emptyToolUseReply && empty.emptyToolUseBlockTypes.empty()
+                                 && textOnly.emptyToolUseReply && textOnly.emptyToolUseBlockTypes == std::vector<std::string>{ "text" }
+                                 && thinkingText.emptyToolUseReply
+                                 && thinkingText.emptyToolUseBlockTypes == std::vector<std::string>{ "thinking", "text" }
+                                 && !otherFailure.emptyToolUseReply && otherFailure.emptyToolUseBlockTypes.empty();
+            parseDetail.push_back( { { "case", "emptyToolUseDiagFields" }, { "pass", fieldsPass } } );
+            parseCasesOk = parseCasesOk && fieldsPass;
+         }
+
+         // Bounding: >20 block types -> the first 20, then ", +N more". The
+         // full (unbounded) list still lands in emptyToolUseBlockTypes.
+         {
+            nlohmann::json manyContent = nlohmann::json::array();
+            for ( int i = 0; i < 23; ++i )
+               manyContent.push_back( { { "type", "text" }, { "text", "x" } } );
+            const nlohmann::json manyBody = { { "content", manyContent }, { "stop_reason", "tool_use" } };
+            const AnthropicResult many = ParseMessagesResponse( 200, IsoString( manyBody.dump().c_str() ), String() );
+            std::string expectedList;
+            for ( int i = 0; i < 20; ++i )
+            {
+               if ( i > 0 )
+                  expectedList += ", ";
+               expectedList += "text";
+            }
+            expectedList += ", +3 more";
+            const String expectedError = String::UTF8ToUTF16( ( "stop_reason tool_use but no tool_use block (blocks: "
+               + expectedList + ") -- the reply said it wanted to use a tool but sent none; nothing ran and "
+                 "nothing changed. Send the message again." ).c_str() );
+            const bool boundPass = many.emptyToolUseReply && many.emptyToolUseBlockTypes.size() == 23 && many.error == expectedError;
+            parseDetail.push_back( { { "case", "emptyToolUseBound" }, { "pass", boundPass }, { "error", U8( many.error ) } } );
+            parseCasesOk = parseCasesOk && boundPass;
          }
 
          // On the wire: the core POSTs the tool-bearing body as strict UTF-8
@@ -1071,7 +1130,7 @@ bool RunAgentSelfTest( nlohmann::json& out )
    {
       bool loopOk = false, multiOk = false, capOk = false, stopOk = false, failFirstOk = false,
            cancelFirstOk = false, failMidOk = false, stripOk = false, invalidOk = false,
-           truncOk = false, validatorMoreOk = false, abortOk = false;
+           truncOk = false, validatorMoreOk = false, abortOk = false, toolUseNoBlockOk = false;
       nlohmann::json detail = nlohmann::json::object();
       String error;
       try
@@ -1167,6 +1226,34 @@ bool RunAgentSelfTest( nlohmann::json& out )
             const AgentStep lookalike = s.OnResponse( ErrorResult( "request cancelled", 0 ), run, never );
             cancelFirstOk = c.kind == AgentStep::Stopped && c.restoreInput && cancelRolledBack
                          && lookalike.kind == AgentStep::Failed && s.History().Length() == n0;
+         }
+         {  // Task T-diag, end to end through the session's response handler:
+            // a synthetic reply body ("stop_reason": "tool_use" with only
+            // thinking/text blocks -- the shape of the live flake) fed through
+            // ParseMessagesResponse and then OnResponse rolls back + restores
+            // input exactly like any other pre-round failure, and the panel
+            // note names the block types, explains nothing ran, and asks to
+            // resend -- never "Error 0" (httpStatus 0: no HTTP reply of its own,
+            // this is a 200 whose body failed to parse as a usable reply).
+            AgentSession s;
+            const size_type n0 = s.History().Length();   // BeginUserTurn snapshots THIS; Fail() rolls back to it
+            s.BeginUserTurn( userTurn( "call a tool" ) );
+            const AnthropicResult r = ParseMessagesResponse( 200, IsoString(
+               "{\"content\":[{\"type\":\"thinking\",\"thinking\":\"hmm\"},{\"type\":\"text\",\"text\":\"cannot decide\"}],"
+               "\"stop_reason\":\"tool_use\"}" ), String() );
+            const AgentStep f = s.OnResponse( r, run, never );
+            const TurnEndView v = DescribeTurnEnd( f, r.httpStatus );
+            String notes;
+            for ( const String& n : v.notes )
+               notes += n;
+            const String expected = "Unexpected reply from the Anthropic API: stop_reason tool_use but no tool_use "
+               "block (blocks: thinking, text) -- the reply said it wanted to use a tool but sent none; nothing ran "
+               "and nothing changed. Send the message again.";
+            toolUseNoBlockOk = !r.ok && r.errorKind == RequestErrorKind::BadReply
+                            && f.kind == AgentStep::Failed && f.restoreInput && !f.toolsRan
+                            && s.History().Length() == n0 && v.restoreInput && !v.offerClear
+                            && notes == expected && !notes.Contains( "Error 0" );
+            detail["toolUseNoBlockNote"] = U8( notes );
          }
          {  // failure after a round: the round stays, next message merges, still valid.
             // toolsRan = an image was changed: not for a read-only round, yes after an apply.
@@ -1358,7 +1445,7 @@ bool RunAgentSelfTest( nlohmann::json& out )
       catch ( ... )                     { error = "unknown exception"; }
 
       const bool ok = loopOk && multiOk && capOk && stopOk && failFirstOk && cancelFirstOk && failMidOk && stripOk && invalidOk
-                   && truncOk && validatorMoreOk && abortOk;
+                   && truncOk && validatorMoreOk && abortOk && toolUseNoBlockOk;
       out["loopDetail"] = detail;
       out["loopApplyOk"] = loopOk;
       out["loopMultiToolOk"] = multiOk;
@@ -1372,6 +1459,7 @@ bool RunAgentSelfTest( nlohmann::json& out )
       out["loopTruncatedToolUseOk"] = truncOk;
       out["loopValidatorMoreOk"] = validatorMoreOk;
       out["loopAbortTurnOk"] = abortOk;
+      out["loopToolUseNoBlockOk"] = toolUseNoBlockOk;
       out["loopError"] = U8( error );
       out["agentLoopOk"] = ok;
       allOk = allOk && ok;

@@ -14,12 +14,14 @@
 
 #include <nlohmann/json.hpp>
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <memory>
 #include <stdexcept>
 #include <string>
 #include <utility>
+#include <vector>
 
 namespace pcl
 {
@@ -449,6 +451,33 @@ AnthropicResult AnthropicRequest::Perform()
    return ParseMessagesResponse( result.httpStatus, sink.buffer, transfer.ErrorInformation() );
 }
 
+namespace
+{
+
+// The content block types a reply carried, in arrival order, joined for the
+// "stop_reason tool_use but no tool_use block" message (Task T-diag): bounded
+// to `cap` entries, then ", +N more", so one wildly long reply can't blow up
+// the note. Empty input -> "none" (never an empty string -- "(blocks: )"
+// would read as a parsing bug, not an empty reply).
+std::string JoinBlockTypes( const std::vector<std::string>& types, size_t cap = 20 )
+{
+   if ( types.empty() )
+      return "none";
+   std::string joined;
+   const size_t n = std::min( types.size(), cap );
+   for ( size_t i = 0; i < n; ++i )
+   {
+      if ( i > 0 )
+         joined += ", ";
+      joined += types[i];
+   }
+   if ( types.size() > cap )
+      joined += ", +" + std::to_string( types.size() - cap ) + " more";
+   return joined;
+}
+
+} // namespace
+
 AnthropicResult ParseMessagesResponse( int httpStatus, const IsoString& body, const String& transportError )
 {
    AnthropicResult result;
@@ -492,6 +521,7 @@ AnthropicResult ParseMessagesResponse( int httpStatus, const IsoString& body, co
          std::string joined;
          bool anyText = false;
          size_type toolUses = 0;
+         std::vector<std::string> blockTypes;   // every block's type, in order (diagnostics only)
          if ( !j.is_object() || !j.contains( "content" ) || !j["content"].is_array() )
             error = String::UTF8ToUTF16( ( kMissing + ": content is not an array" ).c_str() );
          else
@@ -507,6 +537,7 @@ AnthropicResult ParseMessagesResponse( int httpStatus, const IsoString& body, co
                   break;
                }
                const std::string type = block["type"].get<std::string>();
+               blockTypes.push_back( type );
                if ( type == "text" )
                {
                   if ( !block.contains( "text" ) || !block["text"].is_string() )
@@ -535,9 +566,19 @@ AnthropicResult ParseMessagesResponse( int httpStatus, const IsoString& body, co
                if ( result.stopReason == "tool_use" )
                {
                   // A tool_use reply may carry no text at all, but it must
-                  // carry a tool call to answer.
+                  // carry a tool call to answer. This has been observed live
+                  // (rarely, API-side -- our SSE assembler cannot drop a
+                  // tool_use block it received): record which block types DID
+                  // arrive, so it is diagnosable instead of a bare "no tool
+                  // call" the next investigation can't get any further with.
                   if ( toolUses == 0 )
-                     error = "stop_reason tool_use but no tool_use block";
+                  {
+                     result.emptyToolUseReply = true;
+                     result.emptyToolUseBlockTypes = blockTypes;
+                     error = String::UTF8ToUTF16( ( "stop_reason tool_use but no tool_use block (blocks: "
+                        + JoinBlockTypes( blockTypes ) + ") -- the reply said it wanted to use a tool but sent "
+                          "none; nothing ran and nothing changed. Send the message again." ).c_str() );
+                  }
                }
                else if ( !anyText )
                   error = result.stopReason == "refusal"
