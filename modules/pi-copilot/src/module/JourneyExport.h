@@ -36,10 +36,22 @@ KeeperSummary BuildKeeperSummary( JourneyStore& store, int64 journeyId );
 String KeeperSummaryHtml( const KeeperSummary& s );   // MessageBox rich text, every value HTML-escaped
 
 bool IsManualProcess( const std::string& processId );   // Ruling 16's process list
+
+// True when a parameter (or table column) id names a file or folder location.
+// PCL's parameter metadata has no file/path type, so it goes by the id --
+// case-insensitive "file", "path", "directory" or "folder", or an id that ends
+// in "dir" -- the convention PI's own processes follow (Script.filePath,
+// ImageCalibration.masterBiasPath/outputDirectory, ImageIntegration's images
+// table column "path"). PixelMath's parameters (expressions, symbols) and any
+// "*expression*" id are never file parameters. Table columns are resolved to
+// their ids through the INSTALLED process's metadata (root thread).
+bool IsFileParameter( const std::string& processId, const std::string& parameterId );
 // "" when Copilot can replay the step. Otherwise why not, naming files by
-// their FILE NAME only: a Script step, a Ruling 16 process, a parameter that
-// names a file (the recipe keeps only its name, so the step cannot be replayed
-// as recorded), a masked step, or a step that cannot be replayed (parseNote).
+// their FILE NAME only: a Script step, a Ruling 16 process, a parameter value
+// with a directory component (see PrivacyStripStepParameters: the recipe keeps
+// only its name, so the step cannot be replayed as recorded), a masked step,
+// or a step that cannot be replayed (parseNote). A bare file name in a file
+// parameter stays replayable.
 std::string ManualWhy( const StepRow& step );
 
 // Any string that is an absolute path ("/..." but not a "/*" or "//" comment,
@@ -47,6 +59,16 @@ std::string ManualWhy( const StepRow& step );
 // name (after the last '/' or '\'). Everything else -- e.g. the PixelMath
 // expressions "~$T/2" and "/* note */ $T" -- is returned unchanged.
 nlohmann::json PrivacyStripPaths( const nlohmann::json& v );
+
+// A step's parameters as exported: {"parameters": …, "tableParameters": …}
+// with PrivacyStripPaths applied to every value, and additionally every value
+// of a FILE parameter (IsFileParameter; table columns by the installed
+// process's column ids) that has any directory component -- relative
+// ("models/x.onnx") or a network share ("//server/x") -- reduced to its file
+// name. A bare file name is kept. Such a step is manual (ManualWhy). Use this,
+// not PrivacyStripPaths, for anything that came from a step. Root thread.
+nlohmann::json PrivacyStripStepParameters( const std::string& processId, const nlohmann::json& parameters,
+                                           const nlohmann::json& tableParameters );
 
 // recipe.json v1 (data/recipe-v1.schema.json): active, non-base steps only.
 nlohmann::json BuildRecipe( JourneyStore& store, int64 journeyId, const std::string& generator );
