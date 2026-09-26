@@ -121,7 +121,10 @@ private:
    [[noreturn]] void Fail( const char* what ) const;
    void CreateSchemaV1();
    // Throws pcl::Error (DB path + `what`) unless on the root thread. Called by
-   // the Stmt constructor and Exec, the two paths every DB access takes.
+   // the Stmt constructor and Exec, the two paths every DB read and write
+   // takes. The only other access is the destructor's close, which cannot
+   // throw: off the root thread it leaves the connection open instead of
+   // closing it (and owners destroy the store only on the root thread).
    void RequireRootThread( const char* what ) const;
 
    friend class Stmt;

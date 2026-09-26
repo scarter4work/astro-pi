@@ -338,7 +338,12 @@ JourneyStore::JourneyStore( sqlite3* db, const String& root, const String& dbPat
 
 JourneyStore::~JourneyStore()
 {
-   if ( m_db != nullptr )
+   // The one DB access outside Stmt/Exec. A destructor never throws, so the
+   // root-thread rule is enforced here by NOT closing off the root thread: the
+   // connection is deliberately left open (leaked) rather than closed while
+   // the root thread might be using it. Owners destroy the store only on the
+   // root thread (JourneyService::Stop / ~JourneyService check it).
+   if ( m_db != nullptr && Thread::IsRootThread() )
       sqlite3_close_v2( m_db );
 }
 

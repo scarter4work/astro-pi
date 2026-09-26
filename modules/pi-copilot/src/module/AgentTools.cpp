@@ -8,6 +8,7 @@
 #include "ProcessApply.h"
 #include "ProcessCatalog.h"
 #include "ProcessSafety.h"
+#include "ToolHelpers.h"   // IsBusy
 #include "Utf8.h"
 #include "ViewContext.h"
 #include "ViewPreview.h"
@@ -96,19 +97,6 @@ ToolOutcome Fail( const String& what, const String& error )
    o.content.push_back( TextBlock( U8( error ) ) );
    o.logLine = S16( kErrMarkUtf8 ) + what + S16( kArrowUtf8 ) + "error: " + Shorten( error, 200 );
    return o;
-}
-
-bool IsBusy( const View& v )
-{
-   bool busy = true;
-   try
-   {
-      busy = !v.CanRead() || !v.CanWrite();
-   }
-   catch ( ... )
-   {
-   }
-   return busy;
 }
 
 // View::ViewById() on a full id ("Image01", "Image01->Preview01"); null when
@@ -571,6 +559,21 @@ ToolOutcome RunPjsrTool( const nlohmann::json& in, const ToolContext& ctx, clock
 }
 
 } // namespace
+
+// Declared in ToolHelpers.h: the one non-waiting busy probe, shared with the
+// journey tracker (pre-flight P22).
+bool IsBusy( const View& v )
+{
+   bool busy = true;
+   try
+   {
+      busy = !v.CanRead() || !v.CanWrite();
+   }
+   catch ( ... )
+   {
+   }
+   return busy;
+}
 
 AgentMode AgentModeFromIndex( int index )
 {

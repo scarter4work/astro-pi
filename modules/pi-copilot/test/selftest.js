@@ -114,6 +114,19 @@ function normXpsm( s )
       File.writeTextFile( path, JSON.stringify( out ) );
 })();
 
+jsMark( "fixture j6.service" );
+// Section J6 (plan Task 7): the production JourneyService recorded the
+// pre-phase above. Flush it and pause it now, before any other fixture phase,
+// so its ticks never interleave with the timing-sensitive phases and sections.
+try
+{
+   checkPhase( "j6", { step: "service" } );
+}
+catch ( e )
+{
+   harnessError( "j6.service", e );
+}
+
 jsMark( "fixture probe.nestedEval" );
 // ---- J0 fixture phases (plan Task 1) ----
 
@@ -558,6 +571,113 @@ try
 catch ( e )
 {
    harnessError( "j2.long", e );
+}
+
+jsMark( "fixture j6 (JourneyTracker)" );
+// ---- J6 fixture phases (plan Task 7: JourneyTracker) ----
+// Every step the tracker must record is made HERE; phase j6 {step} ticks
+// Section J6's own tracker (temp library) in between and keeps the verdicts
+// (J6State). Section J6 closes every window made here.
+try
+{
+   ( function ()
+   {
+      function pm( id, x ) { var p = new PixelMath; p.expression = x; p.executeOn( View.viewById( id ) ); }
+      function newImage( src, id )
+      {
+         var p = new PixelMath; p.expression = "$T"; p.createNewImage = true; p.newImageId = id;
+         p.executeOn( View.viewById( src ) );
+      }
+      function j6( step, extra ) { var p = extra || {}; p.step = step; checkPhase( "j6", p ); }
+      var dir = getEnvironmentVariable( "PICOPILOT_SELFTEST_SCRATCH" );
+      if ( dir.length == 0 || !File.directoryExists( dir ) )
+         throw new Error( "PICOPILOT_SELFTEST_SCRATCH is not an existing directory" );
+
+      j6( "begin" );                                   // (b) ImageIntegration master -> pcTrkMaster
+      pm( "pcTrkMaster", "$T*1.2" ); pm( "pcTrkMaster", "$T+0.01" );
+      j6( "manual" );                                  // (c)
+      var mv = View.viewById( "pcTrkMaster" );
+      mv.historyIndex = mv.historyIndex - 1; j6( "undo" );   // (d)
+      mv.historyIndex = mv.historyIndex + 1; j6( "redo" );
+      mv.historyIndex = mv.historyIndex - 1;
+      pm( "pcTrkMaster", "$T*0.95" ); pm( "pcTrkMaster", "$T*1.05" );
+      j6( "branch" );
+      j6( "copilotNote" ); pm( "pcTrkMaster", "$T+0.02" ); j6( "copilot" );   // (e)
+      j6( "focus", { id: "pcTrkMaster" } ); newImage( "pcTrkMaster", "pcTrkClone" ); j6( "timing" );     // (f)
+      j6( "focus", { id: "pcTrkMaster" } ); newImage( "pcTrkMaster", "pcTrkInherit" ); j6( "inherit" );  // (f2)
+      j6( "focus", { id: "pcTrkMaster" } );                                  // (f3) seen before its history is attached
+      pm( "pcTrkMaster", "$T*1.0" ); pm( "pcTrkMaster", "$T*1.0" ); newImage( "pcTrkMaster", "pcTrkLate" );
+      j6( "late" );
+
+      var rgb = new ImageWindow( 48, 48, 3, 32, true, true, "pcTrkRgb" );     // (g)
+      rgb.keywords = [ new FITSKeyword( "IMAGETYP", "'Master Light'", "" ), new FITSKeyword( "OBJECT", "'TrkRGB'", "" ) ];
+      j6( "rgbJoin" );
+      var ce = new ChannelExtraction; ce.executeOn( rgb.mainView );
+      j6( "rgb" );
+
+      var cw = new ImageWindow( 48, 48, 3, 32, true, true, "pcTrkCC" );       // (h)
+      var cc = new ChannelCombination;
+      cc.channels = [ [ true, "pcTrkRgb_R" ], [ true, "pcTrkRgb_G" ], [ true, "pcTrkRgb_B" ] ];
+      cc.executeOn( cw.mainView );
+      var q = new ImageWindow( 64, 64, 1, 32, true, false, "pcTrkRef" );
+      pm( "pcTrkRef", "pcTrkMaster*0.5" );
+      j6( "reference" );
+
+      var before = {};                                                        // (h2)
+      ImageWindow.windows.forEach( function( w ) { before[w.mainView.id] = true; } );
+      var gcc = new ChannelCombination;
+      gcc.channels = [ [ true, "pcTrkRgb_R" ], [ true, "pcTrkRgb_G" ], [ true, "pcTrkRgb_B" ] ];
+      gcc.executeGlobal();
+      var gid = "";
+      ImageWindow.windows.forEach( function( w ) { if ( !before[w.mainView.id] ) gid = w.mainView.id; } );
+      j6( "ccGlobal", { id: gid } );
+
+      j6( "copilotLink" );                                                    // (i)
+      pm( "pcTrkMaster", "$T*1.01" ); j6( "defer" );                          // (j)
+      j6( "rename" );                                                         // (k) -> pcTrkRenamed
+
+      var path = dir + "/pcTrkRenamed.xisf";                                  // (l)
+      if ( !ImageWindow.windowById( "pcTrkRenamed" ).saveAs( path, false, false, false, false ) )
+         throw new Error( "saveAs " + path + " failed" );
+      j6( "reopenClose" );
+      var ws = ImageWindow.open( path );
+      if ( ws.length < 1 )
+         throw new Error( "open " + path + " failed" );
+      ws[0].show();
+      j6( "reopened" );
+      pm( "pcTrkRenamed", "$T*0.99" ); j6( "reopenStep" );
+
+      j6( "keywordOnly" );                                                    // (m)
+      pm( "pcTrkRenamed", "$T*1.02" ); j6( "locked" );                        // (n)
+      j6( "gapArm" );                                                         // (o)
+      for ( var i = 0; i < 3; ++i ) { pm( "pcTrkRenamed", "$T*1.0" ); j6( "gapTick" ); }
+      j6( "gapEnd" );
+      j6( "offBegin" ); pm( "pcTrkRenamed", "$T*1.0" ); j6( "off" );         // (p)
+
+      var pw = ImageWindow.windowById( "pcTrkRenamed" );                      // (q)
+      var pv = pw.createPreview( new Rect( 0, 0, 16, 16 ), "pcTrkPrev" );
+      var pp = new PixelMath; pp.expression = "0"; pp.executeOn( pv );
+      pw.deletePreview( pv );
+      j6( "preview" );
+
+      var bw = new ImageWindow( 9504, 6336, 3, 32, true, true, "pcTrkBig" );  // (r)
+      bw.keywords = [ new FITSKeyword( "IMAGETYP", "'Master Light'", "" ), new FITSKeyword( "OBJECT", "'TrkBig'", "" ) ];
+      pm( "pcTrkBig", "0.1" );
+      j6( "bigJoin" );
+      pm( "pcTrkBig", "$T*1.1" ); j6( "big" );
+
+      [ true, false ].forEach( function( mc )                                 // (s)
+      {
+         j6( "scanMode", { mc: mc } );
+         pm( "pcTrkRenamed", mc ? "$T*1.001" : "$T*1.002" );
+         j6( "scanCheck", { mc: mc } );
+      } );
+      j6( "end" );                                                            // (t) + redaction
+   } )();
+}
+catch ( e )
+{
+   harnessError( "j6", e );
 }
 
 // ---- fixture phases end (add new phases above this line, each block starting with jsMark( "fixture <id>" )) ----

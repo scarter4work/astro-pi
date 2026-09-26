@@ -272,8 +272,24 @@ PjsrCheck CheckPjsrSyntax( const String& code )
    return c;
 }
 
+namespace
+{
+int g_scriptsRunning = 0;
+struct ScriptRunningScope
+{
+   ScriptRunningScope()  { ++g_scriptsRunning; }
+   ~ScriptRunningScope() { --g_scriptsRunning; }
+};
+} // namespace
+
+bool IsPjsrScriptRunning()
+{
+   return g_scriptsRunning > 0;
+}
+
 PjsrRun RunPjsr( const String& code, const IsoString& targetViewId )
 {
+   const ScriptRunningScope running;
    PjsrRun r;
    try
    {
