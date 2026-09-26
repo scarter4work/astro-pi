@@ -21,7 +21,13 @@
 var KEYS_FILE   = "/home/scarter4work/projects/keys/scarter4work_keys.xssk";
 var PASS_FILE   = "/tmp/.pi_codesign_pass";
 var RESULT_FILE = "/tmp/.gaia_sign_result.json";
-var PI_DIR      = "/home/scarter4work/projects/astro-pi/gaia-depth-grade/pi";
+// Resolved from THIS file's own location (#__FILE__), never a hardcoded
+// checkout path: release.sh runs the signer from the tree being released, and a
+// hardcoded /home/.../astro-pi path made a release run from a git worktree sign
+// the MAIN checkout's files instead, packaging stale signatures.
+function parentDir(d) { return d.substring(0, d.lastIndexOf("/")); }
+var TOOLS_DIR   = File.extractDirectory(#__FILE__);
+var PI_DIR      = parentDir(TOOLS_DIR) + "/pi";   // gaia-depth-grade/pi
 
 // The feature scripts and the shared include they pull in — each signed to its
 // own .xsgn (PI verifies #included files by their own signature, not as a
@@ -48,7 +54,7 @@ function readPassword() {
 }
 
 function main() {
-   var result = { ok: false, developerId: null, signed: [], verified: [], failed: [], error: null };
+   var result = { ok: false, dir: PI_DIR, developerId: null, signed: [], verified: [], failed: [], error: null };
 
    if (File.exists(RESULT_FILE))
       try { File.remove(RESULT_FILE); } catch (e) {}
