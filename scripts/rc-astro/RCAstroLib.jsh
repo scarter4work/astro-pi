@@ -350,7 +350,17 @@ var RCAstro = {
 
       // Build a quoted command line: quote tokens that are paths / contain spaces.
       let quote = function(s){ return /[^A-Za-z0-9_.\-\/]/.test(s) ? '"' + s + '"' : s; };
-      let parts = [quote(bin), "--no-banner", tool];
+      // Run the child WITHOUT PixInsight's LD_LIBRARY_PATH. PixInsight.sh exports
+      // LD_LIBRARY_PATH=/opt/PixInsight/bin/lib:/opt/PixInsight/bin and every
+      // ExternalProcess inherits it. Since PI 1.9.x that directory ships PI's own
+      // libonnxruntime.so.1 (1.25.1, for the MachineLearning module). rc-astro
+      // finds its bundled onnxruntime through RUNPATH=$ORIGIN, which
+      // LD_LIBRARY_PATH overrides, so the inherited path made rc-astro load PI's
+      // copy and die before main(): "libonnxruntime.so.1: version `VERS_1.23.2'
+      // not found". PixInsight.sh replaces (does not extend) any user value, so
+      // unsetting it restores exactly what rc-astro gets from a normal shell.
+      // ExternalProcess runs no shell, hence env(1) rather than `VAR= cmd`.
+      let parts = ["/usr/bin/env", "-u", "LD_LIBRARY_PATH", quote(bin), "--no-banner", tool];
       for (let i = 0; i < argsArray.length; ++i) parts.push(quote(String(argsArray[i])));
       parts.push("--json", "--overwrite");
       let cmdLine = parts.join(" ");
