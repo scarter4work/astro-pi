@@ -120,8 +120,19 @@ try
       var v = w.mainView;
       var p0 = new PixelMath; p0.expression = "0.4"; p0.executeOn( v );   // a prior top-level step
       var lengthBefore = v.processing.length;
-      checkPhase( "j0.timerApply.arm", { id: "pcSpikeTimerApply" } );
-      pumpEvents( 1500 );                                                  // >= several 0.2 s ticks
+      // Handshake: the arm phase only STAGES the request. A tick can fire while
+      // PixInsight is still finishing executeGlobal() (after the module's own
+      // ExecuteGlobal returned), where History records nothing (measured,
+      // fix round 2: with 10 ms ticks, 20/20 such applies changed the pixels
+      // but recorded no step). The probe applies only once this go file
+      // exists, and it is written here, i.e. after executeGlobal() fully
+      // returned; then pump until the step appears (5 s cap; J0 fails loudly).
+      var go = getEnvironmentVariable( "PICOPILOT_SELFTEST_SCRATCH" ) + "/timer-apply.go";
+      checkPhase( "j0.timerApply.arm", { id: "pcSpikeTimerApply", goFile: go } );
+      File.writeTextFile( go, "go" );
+      var t0 = Date.now();
+      while ( v.processing.length == lengthBefore && Date.now() - t0 < 5000 ) { processEvents(); msleep( 20 ); }
+      File.remove( go );
       var pr = v.processing, last = pr.length > 0 ? pr.at( pr.length - 1 ) : null;
       var src = last ? last.toSource( "XPSM 1.0" ) : "";
       checkPhase( "j0.timerApply.check", {

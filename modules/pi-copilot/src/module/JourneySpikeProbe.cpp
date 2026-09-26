@@ -8,6 +8,7 @@
 
 #include <pcl/Control.h>
 #include <pcl/Exception.h>
+#include <pcl/File.h>
 #include <pcl/ImageWindow.h>
 #include <pcl/Timer.h>
 #include <pcl/Variant.h>
@@ -47,6 +48,8 @@ struct SpikeState
    bool           timerCreated = false;
    bool           nestedEvalOn = true;
    std::string    timerApplyViewId;                                // pending request, "" when none
+   std::string    timerApplyGoFile;                                // applied only once this file exists
+   int            timerApplyTicksWaited = 0;                       // ticks deferred for want of the go file
    nlohmann::json timerApplyResult;                                // null until run
    std::string    timerError;
    int            nestedEvalOk = 0;
@@ -72,11 +75,19 @@ void SpikeTimerHost::e_Tick( Timer& )
 {
    SpikeState& s = S();
    ++s.ticks;
-   if ( !s.timerApplyViewId.empty() )
+   // Apply only once the top-level script has written the go file, i.e. after
+   // its executeGlobal() call fully returned: a tick can fire while PixInsight
+   // is still finishing that process execution (after the module's own
+   // ExecuteGlobal returned), and a step applied there changes the pixels
+   // but is NOT recorded in History (measured, Task 1 fix round 2).
+   if ( !s.timerApplyViewId.empty() && !File::Exists( String( s.timerApplyGoFile.c_str() ) ) )
+      ++s.timerApplyTicksWaited;
+   else if ( !s.timerApplyViewId.empty() )
    {
       const std::string id = s.timerApplyViewId;
       s.timerApplyViewId.clear();
-      nlohmann::json r = { { "viewId", id }, { "t", Since() } };
+      nlohmann::json r = { { "viewId", id }, { "t", Since() },
+                           { "ticksWaited", s.timerApplyTicksWaited } };
       try
       {
          ImageWindow w = ImageWindow::WindowById( IsoString( id.c_str() ) );
@@ -214,9 +225,11 @@ void JourneySpikeProbeSetNestedEval( bool on )
    S().nestedEvalOn = on;
 }
 
-void JourneySpikeProbeRequestTimerApply( const std::string& viewId )
+void JourneySpikeProbeRequestTimerApply( const std::string& viewId, const std::string& goFile )
 {
    S().timerApplyResult = nlohmann::json();
+   S().timerApplyTicksWaited = 0;
+   S().timerApplyGoFile = goFile;
    S().timerApplyViewId = viewId;
 }
 
