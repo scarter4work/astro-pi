@@ -46,12 +46,21 @@ bool IsManualProcess( const std::string& processId );   // Ruling 16's process l
 // "*expression*" id are never file parameters. Table columns are resolved to
 // their ids through the INSTALLED process's metadata (root thread).
 bool IsFileParameter( const std::string& processId, const std::string& parameterId );
+
+// The file-holding parameters the id heuristic misses, as "Process/param" or
+// "Process/table.column" (verified against PI's own scripts; see the .cpp).
+const std::vector<std::string>& KnownFileParameterIds();
+
+// Self-test only: while on, resolving a table's column ids fails as if the
+// process catalog had thrown.
+void SetJourneyExportCatalogFailForSelfTest( bool on );
 // "" when Copilot can replay the step. Otherwise why not, naming files by
 // their FILE NAME only: a Script step, a Ruling 16 process, a parameter value
 // with a directory component (see PrivacyStripStepParameters: the recipe keeps
 // only its name, so the step cannot be replayed as recorded), a masked step,
 // or a step that cannot be replayed (parseNote). A bare file name in a file
-// parameter stays replayable.
+// parameter stays replayable. ROOT THREAD ONLY (throws pcl::Error elsewhere);
+// so are BuildRecipe and BuildJourneyXpsm, which use it.
 std::string ManualWhy( const StepRow& step );
 
 // Any string that is an absolute path ("/..." but not a "/*" or "//" comment,
@@ -66,7 +75,11 @@ nlohmann::json PrivacyStripPaths( const nlohmann::json& v );
 // process's column ids) that has any directory component -- relative
 // ("models/x.onnx") or a network share ("//server/x") -- reduced to its file
 // name. A bare file name is kept. Such a step is manual (ManualWhy). Use this,
-// not PrivacyStripPaths, for anything that came from a step. Root thread.
+// not PrivacyStripPaths, for anything that came from a step.
+// Fails CLOSED: a table whose column ids cannot be read from the catalog has
+// every value treated as a file value (and ManualWhy says so). A process that
+// is not installed is not a failure (its array rows get the generic check).
+// ROOT THREAD ONLY: elsewhere it throws pcl::Error ("... root thread only").
 nlohmann::json PrivacyStripStepParameters( const std::string& processId, const nlohmann::json& parameters,
                                            const nlohmann::json& tableParameters );
 

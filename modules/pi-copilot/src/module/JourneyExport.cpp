@@ -11,9 +11,11 @@
 #include <pcl/File.h>
 #include <pcl/Process.h>
 #include <pcl/ProcessParameter.h>
+#include <pcl/Thread.h>
 #include <pcl/XML.h>
 
 #include <algorithm>
+#include <atomic>
 #include <cctype>
 #include <cerrno>
 #include <cmath>
@@ -62,12 +64,23 @@ bool LooksLikeAbsolutePath( const std::string& s )
    return s.size() > 2 && std::isalpha( static_cast<unsigned char>( s[0] ) ) && s[1] == ':' && (s[2] == '\\' || s[2] == '/');
 }
 
-// Where the first location was found ("outputDirectory", "images[0].path") and its file name.
+// Self-test switch (SetJourneyExportCatalogFailForSelfTest).
+std::atomic<bool> s_catalogFailForSelfTest( false );
+
+// Where the first location was found ("outputDirectory", "images[0].path") and
+// its file name; catalogError = a table whose column ids could not be read.
 struct PathFound
 {
    std::string where, name;
-   bool Found() const { return !where.empty(); }
+   std::string catalogError, catalogTable;
+   bool Found() const { return !where.empty() || !catalogError.empty(); }
 };
+
+void RequireRootThread( const char* what )
+{
+   if ( !Thread::IsRootThread() )
+      throw Error( String( what ) + " is root thread only (it reads the process catalog); refused on another thread" );
+}
 
 // A location: any absolute-looking string (the generic, anchored sniff), or --
 // for a FILE parameter only -- any value with a directory component, however
@@ -80,7 +93,7 @@ nlohmann::json RedactValue( const nlohmann::json& v, bool fileParameter, const s
       const std::string& s = v.get_ref<const std::string&>();
       if ( !LooksLikeAbsolutePath( s ) && !(fileParameter && s.find_first_of( "/\\" ) != std::string::npos) )
          return v;
-      if ( !f.Found() )
+      if ( f.where.empty() )
       {
          f.where = at.empty() ? std::string( "value" ) : at;
          f.name = FileNameOf( s );
@@ -104,30 +117,50 @@ nlohmann::json RedactValue( const nlohmann::json& v, bool fileParameter, const s
    return v;
 }
 
-// The column ids of a table parameter of the INSTALLED process (PCL metadata);
-// empty when the process or the table is unknown. Root thread (catalog).
+bool ProcessInstalled( const std::string& processId )
+{
+   for ( const Process& P : Process::AllProcesses() )
+      if ( std::string( P.Id().c_str() ) == processId )
+         return true;
+   return false;
+}
+
+// The column ids of a table parameter of the INSTALLED process (PCL metadata).
+// Empty when the process is not installed, or has no parameter of that id --
+// both documented, not failures (such a step was already recorded as not
+// replayable by HistoryReader). Any other failure throws pcl::Error: the
+// caller fails CLOSED. Root thread (catalog).
 std::vector<std::string> TableColumnIds( const std::string& processId, const std::string& tableId )
 {
+   RequireRootThread( "reading a table's column ids" );
+   if ( s_catalogFailForSelfTest )
+      throw Error( "injected catalog failure (self-test)" );
    std::vector<std::string> ids;
-   try
-   {
-      const Process P( IsoString( processId.c_str() ) );
-      const ProcessParameter t( P, IsoString( tableId.c_str() ) );
-      if ( !t.IsNull() && t.IsTable() )
-         for ( const ProcessParameter& c : t.TableColumns() )
-            ids.push_back( std::string( c.Id().c_str() ) );
-   }
-   catch ( ... )
-   {
-   }
+   if ( !ProcessInstalled( processId ) )
+      return ids;
+   const Process P( IsoString( processId.c_str() ) );
+   bool exists = false;
+   for ( const ProcessParameter& q : P.Parameters() )
+      if ( std::string( q.Id().c_str() ) == tableId )
+         exists = true;
+   if ( !exists )
+      return ids;
+   const ProcessParameter t( P, IsoString( tableId.c_str() ) );
+   if ( t.IsNull() || !t.IsTable() )
+      throw Error( "parameter " + String( tableId.c_str() ) + " of " + String( processId.c_str() ) + " is not a table" );
+   for ( const ProcessParameter& c : t.TableColumns() )
+      ids.push_back( std::string( c.Id().c_str() ) );
    return ids;
 }
 
 // {parameters, tableParameters} of a step with every location reduced to its
-// file name; f = the first location found.
+// file name; f = the first location found. A table whose column ids cannot be
+// read fails CLOSED: every one of its values is treated as a file value and
+// f.catalogError is set (the step is manual).
 nlohmann::json RedactStep( const std::string& processId, const nlohmann::json& parameters, const nlohmann::json& tableParameters,
                            PathFound& f )
 {
+   RequireRootThread( "PI Copilot's export path check" );
    nlohmann::json p = nlohmann::json::object(), t = nlohmann::json::object();
    if ( parameters.is_object() )
       for ( auto it = parameters.begin(); it != parameters.end(); ++it )
@@ -138,13 +171,35 @@ nlohmann::json RedactStep( const std::string& processId, const nlohmann::json& p
       for ( auto it = tableParameters.begin(); it != tableParameters.end(); ++it )
       {
          const std::string& tid = it.key();
-         const bool tableIsFile = IsFileParameter( processId, tid );
+         bool tableIsFile = IsFileParameter( processId, tid );
          if ( !it.value().is_array() )
          {
             t[tid] = RedactValue( it.value(), tableIsFile, tid, f );
             continue;
          }
-         const std::vector<std::string> cols = TableColumnIds( processId, tid );
+         std::vector<std::string> cols;
+         try
+         {
+            cols = TableColumnIds( processId, tid );
+         }
+         catch ( const pcl::Exception& x )
+         {
+            if ( f.catalogError.empty() )
+            {
+               f.catalogError = U8( x.Message() );
+               f.catalogTable = tid;
+            }
+            tableIsFile = true;   // fail closed
+         }
+         catch ( const std::exception& x )
+         {
+            if ( f.catalogError.empty() )
+            {
+               f.catalogError = x.what();
+               f.catalogTable = tid;
+            }
+            tableIsFile = true;   // fail closed
+         }
          nlohmann::json rows = nlohmann::json::array();
          for ( size_t r = 0; r < it.value().size(); ++r )
          {
@@ -156,7 +211,7 @@ nlohmann::json RedactStep( const std::string& processId, const nlohmann::json& p
                for ( size_t k = 0; k < row.size(); ++k )
                {
                   const bool known = k < cols.size();
-                  out.push_back( RedactValue( row[k], tableIsFile || (known && IsFileParameter( processId, cols[k] )),
+                  out.push_back( RedactValue( row[k], tableIsFile || (known && IsFileParameter( processId, tid + "." + cols[k] )),
                                               at + (known ? "." + cols[k] : "[" + std::to_string( k ) + "]"), f ) );
                }
                rows.push_back( out );
@@ -165,7 +220,8 @@ nlohmann::json RedactStep( const std::string& processId, const nlohmann::json& p
             {
                nlohmann::json out = nlohmann::json::object();
                for ( auto c = row.begin(); c != row.end(); ++c )
-                  out[c.key()] = RedactValue( c.value(), tableIsFile || IsFileParameter( processId, c.key() ), at + "." + c.key(), f );
+                  out[c.key()] = RedactValue( c.value(), tableIsFile || IsFileParameter( processId, tid + "." + c.key() ),
+                                              at + "." + c.key(), f );
                rows.push_back( out );
             }
             else
@@ -178,13 +234,11 @@ nlohmann::json RedactStep( const std::string& processId, const nlohmann::json& p
    return { { "parameters", p }, { "tableParameters", t } };
 }
 
-bool PathParameter( const StepRow& s, std::string& where, std::string& name )
+// Root thread only (throws pcl::Error elsewhere).
+bool PathParameter( const StepRow& s, PathFound& f )
 {
-   PathFound f;
    RedactStep( s.processId, s.params.value( "parameters", nlohmann::json::object() ),
                s.params.value( "tableParameters", nlohmann::json::object() ), f );
-   where = f.where;
-   name = f.name;
    return f.Found();
 }
 
@@ -515,11 +569,45 @@ bool IsManualProcess( const std::string& id )
    return manual.count( id ) > 0;
 }
 
+// Derived from a survey of every String parameter and String table column of
+// every installed process (PCL catalog, PI 1.9.5: 396 of them; their
+// Description() is empty, so each entry below is verified by how PixInsight's
+// OWN scripts set it -- /opt/PixInsight/src/scripts/BatchPreprocessing):
+//   StarAlignment.referenceImage   BPP-Operations.js:1940 (= the group's reference
+//                                  frame, checked with File.exists in BPP-FrameGroup.js:270)
+//   FastIntegration.referenceImage BPP-Processing.js:1287 (= referenceFramePath)
+//   StarAlignment.targets.image, FastIntegration.targets.image,
+//   Debayer.targetItems.image, LocalNormalization.targetItems.image
+//                                  BPP-Operations.js:2040/702/2478, BPP-Processing.js:1286:
+//                                  WBPPUtils.enableTargetFrames( filePaths, n ) puts the
+//                                  file path in the last column (BPP-Helper.js:192)
+// Candidates the survey found but PI's scripts do not show holding a path
+// (StarAlignment.distortionModel, *ViewId/*ImageId view ids, output
+// prefixes/postfixes/extensions) are NOT listed: unverified.
+const std::vector<std::string>& KnownFileParameterIds()
+{
+   static const std::vector<std::string> ids = {
+      "StarAlignment/referenceImage", "FastIntegration/referenceImage",
+      "StarAlignment/targets.image", "FastIntegration/targets.image",
+      "Debayer/targetItems.image", "LocalNormalization/targetItems.image" };
+   return ids;
+}
+
+void SetJourneyExportCatalogFailForSelfTest( bool on )
+{
+   s_catalogFailForSelfTest = on;
+}
+
 bool IsFileParameter( const std::string& processId, const std::string& id )
 {
    if ( processId == "PixelMath" )
       return false;
-   const std::string l = AsciiLower( id );
+   const std::vector<std::string>& known = KnownFileParameterIds();
+   if ( std::find( known.begin(), known.end(), processId + "/" + id ) != known.end() )
+      return true;
+   // "table.column": the heuristic judges the column's own id.
+   const size_t dot = id.rfind( '.' );
+   const std::string l = AsciiLower( dot == std::string::npos ? id : id.substr( dot + 1 ) );
    if ( l.find( "expression" ) != std::string::npos )
       return false;
    for ( const char* w : { "file", "path", "directory", "folder" } )
@@ -530,6 +618,7 @@ bool IsFileParameter( const std::string& processId, const std::string& id )
 
 std::string ManualWhy( const StepRow& s )
 {
+   RequireRootThread( "ManualWhy" );
    if ( s.processId == "Script" )
    {
       const nlohmann::json p = s.params.value( "parameters", nlohmann::json::object() );
@@ -540,10 +629,15 @@ std::string ManualWhy( const StepRow& s )
    }
    if ( IsManualProcess( s.processId ) )
       return s.processId + " needs your hand (sample points or interactive geometry): set it up yourself, then continue";
-   std::string where, name;
-   if ( PathParameter( s, where, name ) )
-      return "parameter " + where + " names a file (" + name + "); only its name is kept, so point it at your own copy "
+   PathFound f;
+   if ( PathParameter( s, f ) )
+   {
+      if ( !f.catalogError.empty() )
+         return "could not read the columns of table " + f.catalogTable + " from the process catalog (" + f.catalogError
+              + "), so its values are exported by file name only: check them and run this step yourself";
+      return "parameter " + f.where + " names a file (" + f.name + "); only its name is kept, so point it at your own copy "
              "and run this step yourself";
+   }
    if ( s.params.contains( "mask" ) && s.params["mask"].is_object() )
       return "applied through mask " + s.params["mask"].value( "id", std::string() )
            + (s.params["mask"].value( "inverted", false ) ? " (inverted)" : "")
@@ -559,6 +653,7 @@ std::string ManualWhy( const StepRow& s )
 nlohmann::json PrivacyStripStepParameters( const std::string& processId, const nlohmann::json& parameters,
                                            const nlohmann::json& tableParameters )
 {
+   RequireRootThread( "PrivacyStripStepParameters" );
    PathFound f;
    return RedactStep( processId, parameters, tableParameters, f );
 }
@@ -858,10 +953,11 @@ std::string BuildJourneyXpsm( JourneyStore& store, int64 journeyId )
          // A Script step (its XPSM carries the script's full path), a step whose parameter names a file (its
          // XPSM carries that path) and any step that cannot be replayed never enter the icon set: a comment
          // names them, files by FILE NAME only (ManualWhy; pre-flight P5).
-         std::string where, name;
-         if ( s.processId == "Script" || PathParameter( s, where, name ) || !s.params.value( "replayable", true ) )
+         PathFound f;
+         const bool hasPath = s.processId != "Script" && PathParameter( s, f );
+         if ( s.processId == "Script" || hasPath || !s.params.value( "replayable", true ) )
          {
-            const std::string why = s.processId == "Script" || PathParameter( s, where, name )
+            const std::string why = s.processId == "Script" || hasPath
                                   ? ManualWhy( s )
                                   : s.params.value( "parseNote", std::string( "cannot be replayed" ) );
             body += "<!-- step " + std::to_string( s.seq ) + " (" + CommentText( s.processId ) + ") is not in this icon set: "
