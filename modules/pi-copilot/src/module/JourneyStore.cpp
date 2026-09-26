@@ -8,6 +8,7 @@
 
 #include <pcl/Exception.h>
 #include <pcl/File.h>
+#include <pcl/Thread.h>
 
 #include <sqlite3.h>
 
@@ -91,6 +92,7 @@ public:
 
    Stmt( const JourneyStore& s, const char* sql ) : m_s( s )
    {
+      s.RequireRootThread( sql );   // every read and write passes here (or through Exec)
       if ( sqlite3_prepare_v2( s.m_db, sql, -1, &m_st, nullptr ) != SQLITE_OK )
          s.Fail( sql );
    }
@@ -346,8 +348,17 @@ void JourneyStore::Fail( const char* what ) const
                 + " (" + FromU8( std::string( what != nullptr ? what : "" ).substr( 0, 60 ) ) + ")" );
 }
 
+void JourneyStore::RequireRootThread( const char* what ) const
+{
+   if ( !Thread::IsRootThread() )
+      throw Error( "journey database " + m_dbPath + ": called off the root thread ("
+                   + FromU8( std::string( what != nullptr ? what : "" ).substr( 0, 60 ) )
+                   + "); JourneyStore is root thread only -- nothing was read or written" );
+}
+
 void JourneyStore::Exec( const char* sql )
 {
+   RequireRootThread( sql );
    char* err = nullptr;
    if ( sqlite3_exec( m_db, sql, nullptr, nullptr, &err ) != SQLITE_OK )
    {
@@ -388,6 +399,12 @@ std::unique_ptr<JourneyStore> JourneyStore::Open( const String& root, String& er
    const String path = root + "/journeys.sqlite3";
    const String keep = ". PI Copilot never replaces it: move the file aside to start a new library, or restore a backup. "
                        "Recording is paused.";
+   if ( !Thread::IsRootThread() )   // before ANY file-system or SQLite work
+   {
+      error = "journey database " + path + ": JourneyStore::Open called off the root thread; JourneyStore is root "
+              "thread only -- nothing was created, opened or changed. Recording is paused.";
+      return nullptr;
+   }
    try
    {
       // The LIBRARY root is ours (unlike the export folder): made 0700 without
