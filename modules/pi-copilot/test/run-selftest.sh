@@ -422,6 +422,7 @@ required_true = [
     'historyReaderOk',
     'stepStatsOk',
     'journeyStoreOk',
+    'masterFactsOk',
     'histLandedOk',
     'ok',
 ]
