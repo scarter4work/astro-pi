@@ -44,6 +44,7 @@ constexpr size_type kScalarRow = 0;
 InstanceBuildObserver g_instanceObserver;   // self-test only
 bool g_inProcessAppliesExpected = false;     // self-test only (SetInProcessAppliesExpectedForSelfTest)
 int  g_inProcessUnrecorded = 0;              // self-test only
+std::function<void()> g_beforeExecuteHook;  // self-test only (SetBeforeExecuteHookForSelfTest)
 
 void NoteInstanceBuild( const IsoString& processId, const char* stage )
 {
@@ -613,14 +614,17 @@ private:
    int    m_next = 0;
 };
 
+// Row by row over `r` (the whole image or a region), so an image and the same
+// pixels as a region of a larger image hash identically (a preview's baseline).
 template <class P>
-void HashChannels( const GenericImage<P>& img, ContentHasher& h )
+void HashChannels( const GenericImage<P>& img, const Rect& r, ContentHasher& h )
 {
-   const size_t bytes = size_t( img.NumberOfPixels() )*sizeof( typename P::sample );
+   const size_t rowBytes = size_t( r.Width() )*sizeof( typename P::sample );
    for ( int c = 0; c < img.NumberOfChannels(); ++c )   // nominal + alpha
    {
       h.Word( uint64( c ) );
-      h.Bytes( img.PixelData( c ), bytes );
+      for ( int y = r.y0; y < r.y1; ++y )
+         h.Bytes( img.PixelAddress( r.x0, y, c ), rowBytes );
    }
 }
 
@@ -630,6 +634,24 @@ uint64 ViewContentDigest( View& view )
 {
    AutoViewWriteLock lock( view );
    return ImageContentDigest( view.Image() );
+}
+
+// What a PREVIEW starts from when a process runs on it: the MAIN image's
+// pixels in the preview rectangle (measured, T-hist round 2 and T-graxpert
+// fix round 1: a no-op GraXpert run on a preview whose step was PixelMath
+// $T*0.5 leaves the preview showing the main image's pixels, mean
+// 0.0875 -> 0.175). Comparing against the preview's CURRENT pixels would call
+// that revert a change. `busy` when the main view is locked.
+uint64 PreviewBaselineDigest( View& preview, bool& busy )
+{
+   ImageWindow w = preview.Window();
+   View main = w.MainView();
+   busy = ViewBusy( main );
+   if ( busy )
+      return 0;
+   const Rect r = w.PreviewRect( preview.Id() );
+   AutoViewWriteLock lock( main );
+   return ImageContentDigest( main.Image(), r );
 }
 
 } // namespace
@@ -658,34 +680,42 @@ const ExternalProgramBridge* FindExternalProgramBridge( const IsoString& canonic
 
 uint64 ImageContentDigest( const ImageVariant& image )
 {
+   // Not a defaulted Rect() argument: PCL's default Rect is UNINITIALIZED
+   // (Rectangle.h), which fix round 1 measured as a wrong digest.
+   return image ? ImageContentDigest( image, image.Bounds() ) : ContentHasher().Final();
+}
+
+uint64 ImageContentDigest( const ImageVariant& image, const Rect& region )
+{
    ContentHasher h;
    if ( !image )
       return h.Final();
-   h.Word( uint64( image.Width() ) );
-   h.Word( uint64( image.Height() ) );
+   const Rect r = region.Ordered().Intersection( image.Bounds() );
+   h.Word( uint64( r.Width() ) );
+   h.Word( uint64( r.Height() ) );
    h.Word( uint64( image.NumberOfChannels() ) );
    h.Word( uint64( image.BitsPerSample() ) | (image.IsFloatSample() ? 0x100u : 0u)
            | (image.IsComplexSample() ? 0x200u : 0u) | (uint64( image.ColorSpace() ) << 16) );
    if ( image.IsComplexSample() )
    {
       if ( image.BitsPerSample() == 64 )
-         HashChannels( static_cast<const ComplexImage&>( *image ), h );
+         HashChannels( static_cast<const ComplexImage&>( *image ), r, h );
       else
-         HashChannels( static_cast<const DComplexImage&>( *image ), h );
+         HashChannels( static_cast<const DComplexImage&>( *image ), r, h );
    }
    else if ( image.IsFloatSample() )
    {
       if ( image.BitsPerSample() == 32 )
-         HashChannels( static_cast<const Image&>( *image ), h );
+         HashChannels( static_cast<const Image&>( *image ), r, h );
       else
-         HashChannels( static_cast<const DImage&>( *image ), h );
+         HashChannels( static_cast<const DImage&>( *image ), r, h );
    }
    else
       switch ( image.BitsPerSample() )
       {
-      case 8:  HashChannels( static_cast<const UInt8Image&>( *image ), h );  break;
-      case 16: HashChannels( static_cast<const UInt16Image&>( *image ), h ); break;
-      default: HashChannels( static_cast<const UInt32Image&>( *image ), h ); break;
+      case 8:  HashChannels( static_cast<const UInt8Image&>( *image ), r, h );  break;
+      case 16: HashChannels( static_cast<const UInt16Image&>( *image ), r, h ); break;
+      default: HashChannels( static_cast<const UInt32Image&>( *image ), r, h ); break;
       }
    return h.Final();
 }
@@ -753,17 +783,36 @@ ApplyProcessResult ApplyProcess( const IsoString& processId, const nlohmann::jso
       // target's pixel content (replace mode) or the set of open windows.
       const ExternalProgramBridge* bridge = FindExternalProgramBridge( P->Id() );
       bool bridgeReplaces = false;
-      uint64 digestBefore = 0;
+      uint64 digestBefore = 0;      // the target's own pixels before the run
+      uint64 previewBaseline = 0;   // a preview: the main image's pixels in its rectangle
       std::set<std::string> windowsBefore;
       if ( bridge != nullptr )
       {
          bridgeReplaces = instance.ParameterValue( ProcessParameter( *P, IsoString( bridge->replaceParameter ) ),
                                                    kScalarRow ).ToBoolean();
-         if ( bridgeReplaces )
-            digestBefore = ViewContentDigest( view );   // not busy: probed just above
-         else
+         if ( !bridgeReplaces )
             windowsBefore = OpenMainViewIds();
+         else
+         {
+            digestBefore = ViewContentDigest( view );   // not busy: probed just above
+            // A preview's no-op result is EITHER of two inputs (measured,
+            // fix round 1): when PixInsight records the step it is computed
+            // from the main image's pixels (a preview holding PixelMath
+            // $T*0.5 reverts to them); in the self-test's in-process context,
+            // where nothing is recorded, the preview keeps its own pixels. A
+            // real result equals neither.
+            if ( isPreview )
+            {
+               bool mainBusy = false;
+               previewBaseline = PreviewBaselineDigest( view, mainBusy );
+               if ( mainBusy )
+                  throw ApplyError{ BusyMessage( String( window.MainView().FullId() ) ) };
+            }
+         }
       }
+
+      if ( g_beforeExecuteHook )
+         g_beforeExecuteHook();   // self-test only (SetBeforeExecuteHookForSelfTest)
 
       const auto t0 = std::chrono::steady_clock::now();
       bool ran = false;
@@ -820,34 +869,106 @@ ApplyProcessResult ApplyProcess( const IsoString& processId, const nlohmann::jso
                                  + r.viewId + " (" + BusyMessage( r.viewId ) + "). Ask the user to look at the image "
                                  "before continuing. What ran: " + r.processId + " with " + changes };
             }
-            if ( ViewContentDigest( view ) == digestBefore )
+            const uint64 digestAfter = ViewContentDigest( view );
+            const bool sameAsOwn = digestAfter == digestBefore;
+            const bool sameAsMain = isPreview && digestAfter == previewBaseline;
+            if ( sameAsOwn || sameAsMain )
             {
                r.noEffect = true;
-               // What History holds is stated only as far as it is verified:
-               // measured, the core adds a step that changed nothing.
-               const bool stepAdded = !isPreview && window.ModifyCount() > modifyCountBefore;
+               // What History holds is stated only as far as it is verified.
+               String history;
+               if ( !isPreview )
+                  // Measured: the core adds a step that changed nothing; the
+                  // modification count says whether it did here.
+                  history = window.ModifyCount() > modifyCountBefore
+                          ? "PixInsight still added a " + r.processId + " step to " + r.viewId + "'s History that "
+                            "changed nothing, so there is nothing to undo (Edit > Undo would only remove that empty "
+                            "step). "
+                          : String( "The image was not changed, so there is nothing to undo. " );
+               else
+               {
+                  // A preview keeps ONE step, which each new step replaces
+                  // (T-hist); measured for a no-op GraXpert run (fix round 1):
+                  // a fresh preview gets one GraXpert step, a preview holding
+                  // a PixelMath step has it REPLACED by the GraXpert step and
+                  // shows the main image's pixels again. Read, never assumed.
+                  const String unchanged = " The main image " + String( window.MainView().FullId() )
+                                         + " was not changed.";
+                  if ( g_inProcessAppliesExpected )
+                     history = "(self-test, in-process: the preview's History is not recorded or read here.)"
+                             + unchanged + " ";
+                  else
+                  {
+                     const StepCheck c = CheckNewPreviewStep( view, historyBefore, P->Id() );
+                     const bool hadStep = historyBefore.ok && historyBefore.ActiveCount() >= 1;
+                     if ( c.verdict == StepCheck::Recorded )
+                        history = "PixInsight still recorded an empty " + r.processId + " step as the preview "
+                                + r.viewId + "'s History step (verified in its History list). A preview keeps ONE step, "
+                                  "so " + (hadStep ? String( "it REPLACED the preview's earlier step, whose effect is "
+                                                             "gone; " )
+                                                   : String( "the preview had none before; " ))
+                                + "Undo on the preview returns it to the main image's pixels there, so there is nothing "
+                                  "to undo." + unchanged + " ";
+                     else if ( c.verdict == StepCheck::NotRecorded )
+                        history = "PixInsight recorded no History step for it on the preview " + r.viewId
+                                + " (verified in its History list), so there is nothing to undo." + unchanged + " ";
+                     else
+                        history = "Whether PixInsight recorded an empty step as the preview " + r.viewId
+                                + "'s History step could NOT be checked (" + c.reason + ")." + unchanged + " ";
+                  }
+               }
                throw ApplyError{ r.processId + " reported success but the image did not change: every pixel of "
-                                 + r.viewId + " is identical to before the run (checked by PI Copilot). " + why
-                                 + (stepAdded ? "PixInsight still added a " + r.processId + " step to " + r.viewId
-                                                + "'s History that changed nothing, so there is nothing to undo "
-                                                  "(Edit > Undo would only remove that empty step). "
-                                              : String( "The image was not changed, so there is nothing to undo. " ))
-                                 + tell };
+                                 + r.viewId + " is identical to "
+                                 + (sameAsOwn ? String( "before the run" )
+                                              : String( "the main image's unprocessed pixels it started from (the "
+                                                        "preview's earlier step no longer shows)" ))
+                                 + " (checked by PI Copilot). " + why + history + tell };
             }
          }
          else
          {
-            bool opened = false;
+            // Attribution (fix round 1): only a new window whose History
+            // STARTS with a step of this process counts as its result --
+            // measured, every GraXpert result window (GraXpert_background_
+            // extraction[N], GraXpert_background[N]) has exactly one
+            // initialProcessing step, "GraXpert". A window that opened
+            // meanwhile for any other reason (the user, a script) does not.
+            StringList others;
             for ( const std::string& id : OpenMainViewIds() )
-               if ( windowsBefore.count( id ) == 0 )
-                  opened = true;
-            if ( !opened )
+            {
+               if ( windowsBefore.count( id ) != 0 )
+                  continue;
+               const HistorySnapshot h = ReadViewHistory( IsoString( id.c_str() ), 0 );
+               bool ours = false;
+               if ( h.ok )
+                  for ( const HistoryStep& st : h.steps )
+                     if ( st.combinedIndex >= 0 && st.combinedIndex < h.initialLength
+                       && st.processId == std::string( P->Id().c_str() ) )
+                        ours = true;
+               if ( ours )
+                  r.resultWindows.push_back( id );
+               else
+                  others.Add( S16( id ) + (h.ok ? String( " (its History does not start with a " ) + r.processId
+                                                  + " step)"
+                                                : " (its History could not be read: "
+                                                  + (h.busy ? String( "another script evaluation was running" ) : h.error)
+                                                  + ")") );
+            }
+            if ( r.resultWindows.empty() )
             {
                r.noEffect = true;
-               throw ApplyError{ r.processId + " reported success but produced no result window: no new image opened "
-                                 "(checked by PI Copilot; with " + String( bridge->replaceParameter ) + " = false the "
-                                 "result should open as a new image, and " + r.viewId + " is not changed in this "
-                                 "mode, so there is nothing to undo). " + why + tell };
+               String meanwhile;
+               if ( !others.IsEmpty() )
+               {
+                  meanwhile = "Window(s) that opened during the run but are NOT " + r.processId + " results: ";
+                  for ( size_type i = 0; i < others.Length(); ++i )
+                     meanwhile += (i > 0 ? "; " : "") + others[i];
+                  meanwhile += ". ";
+               }
+               throw ApplyError{ r.processId + " reported success but produced no result window: no new image from "
+                                 + r.processId + " opened (checked by PI Copilot; with " + String( bridge->replaceParameter )
+                                 + " = false the result should open as a new image, and " + r.viewId + " is not changed "
+                                 "in this mode, so there is nothing to undo). " + meanwhile + why + tell };
             }
          }
       }
@@ -1157,6 +1278,11 @@ GlobalRunResult RunGlobalProcess( const IsoString& processId, const nlohmann::js
 void SetInstanceBuildObserverForSelfTest( InstanceBuildObserver observer )
 {
    g_instanceObserver = std::move( observer );
+}
+
+void SetBeforeExecuteHookForSelfTest( std::function<void()> hook )
+{
+   g_beforeExecuteHook = std::move( hook );
 }
 
 void SetInProcessAppliesExpectedForSelfTest( bool on )
