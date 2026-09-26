@@ -560,6 +560,7 @@ const std::map<std::string, SelfTestPhaseHandler>& SelfTestPhaseHandlers()
       { "hist.arm",    PhaseHistArm },
       { "hist.check",  PhaseHistCheck },
       { "hist.kind.check", PhaseHistCheck },
+      { "hist.preview.check", PhaseHistCheck },
    };
    return handlers;
 }
@@ -947,7 +948,8 @@ bool RunJourneySelfTest( nlohmann::json& out )
    // ---- Section JH: an applied process lands in History, or fails loudly (Task T-hist) ----
    {
       bool detectInProcessOk = false, toolErrorOk = false, noFalseAlarmOk = false, countedOk = false,
-           classifierOk = false, cyclesOk = false, previewHonestOk = false, heldReplyOk = false, kindsOk = false;
+           classifierOk = false, cyclesOk = false, previewInProcessOk = false, heldReplyOk = false, kindsOk = false,
+           unverifiedOk = false, previewKindsOk = false;
       nlohmann::json info = nlohmann::json::object();
       String error;
       const bool seamWas = InProcessAppliesExpectedForSelfTest();
@@ -1012,8 +1014,10 @@ bool RunJourneySelfTest( nlohmann::json& out )
                   created.push_back( std::string( x.MainView().Id().c_str() ) );
             info["createNewImage"] = { { "ok", n.ok }, { "error", U8( n.error ) }, { "created", created } };
             noFalseAlarmOk = n.ok && !n.unrecordedChange && created.size() == 1;
-            // A preview: nothing to verify against, so the result must say so
-            // (and the main image is untouched).
+            // A preview in-process (seam off): nothing is recorded inside this
+            // executeGlobal(), so a preview apply must be the loud error too
+            // (or, should PixInsight record it, a verified preview step) --
+            // never an unverified ok. The main image is never touched.
             const View pv = w.CreatePreview( Rect( 0, 0, 16, 16 ), "pcHistPv" );
             const ApplyProcessResult pa = ApplyProcess( "PixelMath", { { "expression", "0.1" } }, nlohmann::json::object(), pv );
             double mainPx = -1;
@@ -1021,9 +1025,34 @@ bool RunJourneySelfTest( nlohmann::json& out )
                ImageVariant iv = v.Image();
                mainPx = double( static_cast<const Image&>( *iv ).Pixel( 0, 0 ) );
             }
-            info["preview"] = { { "ok", pa.ok }, { "error", U8( pa.error ) }, { "undo", U8( pa.undo ) }, { "mainPixel", mainPx } };
-            previewHonestOk = pa.ok && U8( pa.undo ).find( "cannot verify" ) != std::string::npos
-                           && U8( pa.undo ).find( "preview" ) != std::string::npos && std::fabs( mainPx - 0.2 ) < 1e-6;
+            info["previewInProcess"] = { { "ok", pa.ok }, { "error", U8( pa.error ) }, { "undo", U8( pa.undo ) },
+                                         { "unrecordedChange", pa.unrecordedChange }, { "mainPixel", mainPx } };
+            const bool pvVerified = pa.ok && U8( pa.undo ).find( "Recorded as the preview" ) != std::string::npos;
+            const bool pvLoud = !pa.ok && pa.unrecordedChange && U8( pa.error ).find( "did NOT record it" ) != std::string::npos;
+            previewInProcessOk = (pvVerified || pvLoud) && std::fabs( mainPx - 0.2 ) < 1e-6;   // 0.2: two $T*0.5 above
+
+            // Review round 2: a History read that is busy (EvalGuard held) or
+            // failed can decide nothing -- the result is a DISTINCT error,
+            // never ok, and the chat-log line shows it.
+            {
+               EvalDepthGuard busyScript;   // as if another EvaluateScript were running
+               const ApplyProcessResult u = ApplyProcess( "PixelMath", { { "expression", "$T" } }, nlohmann::json::object(), v );
+               const ToolOutcome uo = ExecuteTool( ToolCall{ "toolu_hist2", "apply_process",
+                                                             { { "process_id", "PixelMath" },
+                                                               { "parameters", { { "expression", "$T" } } } } }, ctx );
+               const nlohmann::json ub = ToolResultBlock( "toolu_hist2", uo );
+               const std::string ue = U8( u.error );
+               info["unverified"] = { { "ok", u.ok }, { "unverifiedChange", u.unverifiedChange },
+                                      { "unrecordedChange", u.unrecordedChange }, { "error", ue },
+                                      { "toolIsError", ub.value( "is_error", false ) }, { "toolMutated", uo.mutated },
+                                      { "logLine", U8( uo.logLine ) } };
+               unverifiedOk = !u.ok && u.unverifiedChange && !u.unrecordedChange
+                           && ue.find( "could NOT verify" ) != std::string::npos
+                           && ue.find( "another script evaluation was running" ) != std::string::npos
+                           && ue.find( "Tell the user" ) != std::string::npos
+                           && uo.isError && uo.mutated && ub.value( "is_error", false ) == true
+                           && U8( uo.logLine ).find( "could NOT verify" ) != std::string::npos;
+            }
             noFalseAlarmOk = noFalseAlarmOk && U8( n.undo ).find( "adds no History step" ) != std::string::npos;
             SetInProcessAppliesExpectedForSelfTest( seamWas );
             for ( const std::string& id : created )
@@ -1159,6 +1188,53 @@ bool RunJourneySelfTest( nlohmann::json& out )
             kindsOk = allGood && ungatedUnrecorded >= 1;
          }
 
+         // (e) Previews (review round 2), from the module Timer at top level:
+         //     measured truth -- a preview holds ONE History step (a new one
+         //     replaces it), and the main image (pixels inside AND outside the
+         //     preview rectangle, History) never changes.
+         {
+            const nlohmann::json pc = phases.value( "hist.preview.check", nlohmann::json::array() );
+            nlohmann::json prow = nlohmann::json::array();
+            bool allGood = pc.size() == 4;
+            int ungatedUnrecorded = 0;
+            for ( const nlohmann::json& c : pc )
+            {
+               const nlohmann::json& b = c.at( "top" ).at( "before" );
+               const nlohmann::json& a = c.at( "top" ).at( "after" );
+               const bool gated = c.at( "top" ).at( "gated" ).get<bool>();
+               const nlohmann::json& t = c.at( "tick" );
+               const bool applied = t.is_object() && t.contains( "ok" );
+               const bool tickOk = applied && t.at( "ok" ).get<bool>();
+               const std::string undo = applied ? t.value( "undo", std::string() ) : std::string();
+               const std::string err = applied ? t.value( "error", std::string() ) : std::string();
+               const bool mainUntouched = a.at( "mainIn" ) == b.at( "mainIn" ) && a.at( "mainOut" ) == b.at( "mainOut" )
+                                       && a.at( "mainLen" ) == b.at( "mainLen" ) && a.at( "mainHi" ) == b.at( "mainHi" )
+                                       && t.value( "modifyCountAfter", uint64_t( 1 ) ) == t.value( "modifyCountBefore", uint64_t( 0 ) );
+               // Measured: a preview step starts from the MAIN image's pixels,
+               // not from an earlier preview step (0.6 -> $T*0.5 gives 0.4).
+               const bool pvChanged = std::fabs( a.at( "pvPx" ).get<double>() - 0.5*b.at( "mainIn" ).get<double>() ) < 1e-6;
+               const bool recorded = a.at( "pvLen" ).get<int>() == 1 && a.at( "pvHi" ).get<int>() == 1
+                                  && a.at( "pvLast" ) != b.at( "pvLast" )
+                                  && a.at( "pvLast" ).get<std::string>().rfind( "PixelMath:$T*0.5@", 0 ) == 0;
+               bool good = applied && mainUntouched && pvChanged;
+               if ( gated )
+                  good = good && recorded && tickOk && undo.find( "Recorded as the preview" ) != std::string::npos;
+               else
+               {
+                  good = good && (recorded ? tickOk : !tickOk && t.value( "unrecordedChange", false )
+                                                     && err.find( "did NOT record it" ) != std::string::npos);
+                  if ( !recorded )
+                     ++ungatedUnrecorded;
+               }
+               allGood = allGood && good;
+               prow.push_back( { { "gated", gated }, { "priorStep", c.at( "top" ).at( "priorStep" ) }, { "recorded", recorded },
+                                 { "ok", tickOk }, { "mainUntouched", mainUntouched }, { "undo", undo },
+                                 { "error", err.substr( 0, 120 ) }, { "before", b }, { "after", a }, { "good", good } } );
+            }
+            info["previews"] = prow;
+            previewKindsOk = allGood && ungatedUnrecorded >= 1;
+         }
+
          cyclesOk = n["tail/ungated"] == 5 && n["tail/gated"] == 5 && n["during/ungated"] == 3 && n["during/gated"] == 3
                  && allConsistent && unrecorded["tail/ungated"] >= 1 && unrecorded["during/ungated"] >= 1
                  && gatedAllRecorded && gatedAllDeferred;
@@ -1174,10 +1250,12 @@ bool RunJourneySelfTest( nlohmann::json& out )
       info["countedOk"] = countedOk;
       info["classifierOk"] = classifierOk;
       info["cyclesOk"] = cyclesOk;
-      info["previewHonestOk"] = previewHonestOk;
+      info["previewInProcessOk"] = previewInProcessOk;
       info["kindsOk"] = kindsOk;
+      info["unverifiedOk"] = unverifiedOk;
+      info["previewKindsOk"] = previewKindsOk;
       const bool ok = error.IsEmpty() && detectInProcessOk && toolErrorOk && noFalseAlarmOk && countedOk && classifierOk
-                   && cyclesOk && previewHonestOk && heldReplyOk && kindsOk;
+                   && cyclesOk && previewInProcessOk && heldReplyOk && kindsOk && unverifiedOk && previewKindsOk;
       out["histLandedInfo"] = info;
       out["histLandedError"] = U8( error );
       out["histLandedOk"] = ok;

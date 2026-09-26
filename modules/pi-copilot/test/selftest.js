@@ -235,6 +235,38 @@ try
                                           lastProcessId: last ? last.processId() : "", idNow: v.id } );
          w.forceClose();
       } );
+
+      // Previews (review round 2): a fresh preview and one with a prior step,
+      // each gated (idle) and ungated (tail window). Main-image pixels are
+      // read inside (2,2) and outside (20,20) the preview rectangle.
+      [ [ true, false ], [ true, true ], [ false, false ], [ false, true ] ].forEach( function( k, i )
+      {
+         var id = "pcHistPvW" + i;
+         var w = new ImageWindow( 32, 32, 1, 32, true, false, id );
+         w.show();
+         var p0 = new PixelMath; p0.expression = "0.8"; p0.executeOn( w.mainView );
+         w.createPreview( new Rect( 0, 0, 16, 16 ), "pv" );
+         if ( k[1] ) { var pp = new PixelMath; pp.expression = "0.6"; pp.executeOn( w.previewById( "pv" ) ); }
+         pumpEvents( 150 );
+         var read = function()
+         {
+            var m = w.mainView, pv = w.previewById( "pv" ), pr = pv.processing, last = "";
+            if ( pr.length > 0 )
+            {
+               var src = pr.at( pr.length - 1 ).toSource( "XPSM 1.0" );
+               var e = src.match( /<parameter id="expression">([^<]*)</ ), t = src.match( /start="([^"]*)"/ );
+               last = pr.at( pr.length - 1 ).processId() + ":" + ( e ? e[1] : "" ) + "@" + ( t ? t[1] : "" );
+            }
+            return { mainIn: m.image.sample( 2, 2 ), mainOut: m.image.sample( 20, 20 ), mainLen: m.processing.length,
+                     mainHi: m.historyIndex, pvPx: pv.image.sample( 2, 2 ), pvLen: pr.length, pvHi: pv.historyIndex,
+                     pvLast: last };
+         };
+         var before = read();
+         checkPhase( "hist.arm", { id: id + "->pv", delayS: 0, gated: k[0] } );
+         pumpEvents( 900 );
+         checkPhase( "hist.preview.check", { gated: k[0], priorStep: k[1], before: before, after: read() } );
+         w.forceClose();
+      } );
       checkPhase( "hist.timer", { intervalS: 0.2 } );
    } )();
 }

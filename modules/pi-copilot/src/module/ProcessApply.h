@@ -31,6 +31,10 @@ struct ApplyProcessResult
    // image, but PixInsight recorded no History step for it (ok == false,
    // error says so). The image IS modified; Undo cannot revert it.
    bool           unrecordedChange = false;
+   // The process ran to completion and changed the image, but whether it was
+   // recorded could not be checked (a History read was busy or failed; step
+   // 7c). ok == false with a distinct error; never reported as ok.
+   bool           unverifiedChange = false;
    // When ok: what is known about undoing it, stated only as far as it was
    // VERIFIED (model-facing): a checked History step on a main view, an
    // unverifiable preview step, or no History step on the target at all
@@ -78,13 +82,15 @@ struct ApplyProcessResult
  *           and after): a NEW active step of this process -> recorded
  *           (measured: ImageIdentifier and RGBWorkingSpace record a step with
  *           ModifyCount +0); none -> NOT recorded;
- *        c. a history read busy (EvalGuard) or failed -> ok, with an undo
- *           text saying it could NOT be verified and why (never guessed).
+ *        c. a history read busy (EvalGuard) or failed -> ok=false,
+ *           unverifiedChange=true, a DISTINCT error saying it ran and changed
+ *           the image but could NOT be verified, and why (never guessed).
+ *      A PREVIEW never moves ModifyCount; its History list decides
+ *      (CheckNewPreviewStep: a preview holds ONE step that each new step
+ *      replaces -- measured, round 2; the main image is never changed).
  *      Not recorded: ok=false, unrecordedChange=true and the error says the
  *      image was changed outside History. `undo` states only what was
- *      verified; previews are not checked (neither ModifyCount nor
- *      View.processing reflects a preview step -- measured), and their undo
- *      text says so.
+ *      verified.
  * Every failure is ok=false + a message naming the process/parameter and the
  * fix; nothing after the failing step runs, so a failure never touches the
  * image -- except step 7, which is reported as exactly that. Root thread only.

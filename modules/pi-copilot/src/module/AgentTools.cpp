@@ -317,7 +317,7 @@ ToolOutcome ApplyProcessTool( const nlohmann::json& in, const ToolContext& ctx, 
       ToolOutcome o = Fail( what, ar.error );
       // Task T-hist DETECT: the image WAS changed, outside History. An error,
       // never "ok" -- but the turn-end notes must still know an image changed.
-      o.mutated = ar.unrecordedChange;
+      o.mutated = ar.unrecordedChange || ar.unverifiedChange;
       return o;
    }
 
