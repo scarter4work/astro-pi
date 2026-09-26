@@ -32,6 +32,9 @@
 #include <pcl/Image.h>
 #include <pcl/ImageVariant.h>
 #include <pcl/ImageWindow.h>
+#include <pcl/Process.h>
+#include <pcl/ProcessParameter.h>
+#include <pcl/Thread.h>
 #include <pcl/Variant.h>
 #include <pcl/View.h>
 #include <pcl/XML.h>
@@ -701,6 +704,30 @@ struct J7State
    int                           recorded = 0;   // steps recorded after the image joined
    std::string                   error;          // the first failure, verbatim
    nlohmann::json                detail = nlohmann::json::array();
+};
+
+// Runs one call on a PCL worker thread (Thread::IsRootThread() is false there;
+// a std::thread is invisible to PCL and counts as root) and captures what it threw.
+class J7CallThread : public Thread
+{
+public:
+
+   explicit J7CallThread( std::function<void()> fn ) : m_fn( std::move( fn ) ) {}
+
+   void Run() override
+   {
+      try { m_fn(); }
+      catch ( const pcl::Exception& x ) { threw = true; error = x.Message(); }
+      catch ( const std::exception& x ) { threw = true; error = String( x.what() ); }
+      catch ( ... )                     { threw = true; error = "unknown exception"; }
+   }
+
+   bool   threw = false;
+   String error;
+
+private:
+
+   std::function<void()> m_fn;
 };
 
 J7State& J7()
@@ -2528,7 +2555,8 @@ bool RunJourneySelfTest( nlohmann::json& out )
       bool fixtureOk = false, summaryOk = false, recipeOk = false, validatorOk = false, privacyOk = false, manualOk = false,
            xpsmOk = false, replayOk = false, copyOk = false, missingRootOk = false, readOnlyOk = false,
            relativeOk = false, retryOk = false, independentOk = false, exportThumbsOk = false, pathParamOk = false,
-           stripOk = false, modesOk = false, fileParamOk = false, enabledRewriteOk = false, rollbackOk = false;
+           stripOk = false, modesOk = false, fileParamOk = false, enabledRewriteOk = false, rollbackOk = false,
+           referenceOk = false, offRootOk = false, catalogFailOk = false;
       String error;
       std::vector<std::string> made = { "pcExpM" };
       // Owned here from now on: the store goes first, then its folder (reverse declaration order).
@@ -2911,6 +2939,102 @@ bool RunJourneySelfTest( nlohmann::json& out )
                             && gx.find( "id=\"PixelMath_instance\"" ) == std::string::npos;
             (void)ids;
          }
+         // (r) Fix round 2 (re-review round 1).
+         {
+            auto stepOf = []( const char* processId, const nlohmann::json& p, const nlohmann::json& t )
+            {
+               StepRow r;
+               r.processId = processId;
+               r.params = { { "parameters", p }, { "tableParameters", t }, { "xpsm", "" }, { "identity", "" },
+                            { "mask", nullptr }, { "replayable", true }, { "parseNote", "" } };
+               return r;
+            };
+            // (r1) The explicit list of file-holding ids the name heuristic misses is real: every entry is a
+            //      String parameter / String table column of the INSTALLED process, and IsFileParameter knows it.
+            nlohmann::json listed = nlohmann::json::array();
+            bool listReal = !KnownFileParameterIds().empty();
+            for ( const std::string& k : KnownFileParameterIds() )
+            {
+               const size_t slash = k.find( '/' ), dot = k.find( '.', slash );
+               const std::string proc = k.substr( 0, slash );
+               const std::string param = k.substr( slash + 1, dot == std::string::npos ? std::string::npos : dot - slash - 1 );
+               bool isString = false;
+               try
+               {
+                  const Process P( IsoString( proc.c_str() ) );
+                  const ProcessParameter p( P, IsoString( param.c_str() ) );
+                  if ( dot == std::string::npos )
+                     isString = !p.IsNull() && p.IsString();
+                  else if ( !p.IsNull() && p.IsTable() )
+                     for ( const ProcessParameter& c : p.TableColumns() )
+                        if ( std::string( c.Id().c_str() ) == k.substr( dot + 1 ) )
+                           isString = c.IsString();
+               }
+               catch ( ... )
+               {
+                  isString = false;   // not installed / unknown id: the entry is not real here
+               }
+               const bool known = IsFileParameter( proc, k.substr( slash + 1 ) );
+               listed.push_back( { k, isString, known } );
+               listReal = listReal && isString && known;
+            }
+            // (r2) StarAlignment.referenceImage and its targets table: a relative path is manual and reduced to its
+            //      name; a bare file name or a view id stays replayable.
+            const StepRow sa = stepOf( "StarAlignment", { { "referenceImage", "lights/ref.xisf" } },
+                                       { { "targets", nlohmann::json::array( { nlohmann::json::array( { true, true, "lights/a.xisf" } ) } ) } } );
+            const nlohmann::json saOut = PrivacyStripStepParameters( sa.processId, sa.params["parameters"], sa.params["tableParameters"] );
+            const std::string saWhy = ManualWhy( sa );
+            const std::string bareWhy = ManualWhy( stepOf( "StarAlignment", { { "referenceImage", "ref.xisf" } }, nlohmann::json::object() ) );
+            const std::string viewWhy = ManualWhy( stepOf( "StarAlignment", { { "referenceImage", "pcRef" } }, nlohmann::json::object() ) );
+            const std::string fiWhy = ManualWhy( stepOf( "FastIntegration", { { "referenceImage", "//nas/ref.xisf" } }, nlohmann::json::object() ) );
+            referenceOk = !saWhy.empty() && saWhy.find( "lights/" ) == std::string::npos
+                       && saOut.at( "parameters" ).at( "referenceImage" ) == "ref.xisf"
+                       && saOut.at( "tableParameters" ).at( "targets" ).at( 0 ).at( 2 ) == "a.xisf"
+                       && bareWhy.empty() && viewWhy.empty() && !fiWhy.empty() && fiWhy.find( "//nas" ) == std::string::npos;
+            // (r3) Off the root thread every catalog-reading entry point refuses, loudly (never an empty guess).
+            J7CallThread ts( [&sa]() { PrivacyStripStepParameters( sa.processId, sa.params["parameters"], sa.params["tableParameters"] ); } );
+            J7CallThread tw( [&sa]() { (void)ManualWhy( sa ); } );
+            bool finished = true;
+            for ( J7CallThread* t : { &ts, &tw } )
+            {
+               t->Start();
+               finished = t->Wait( 10000 ) && finished;
+            }
+            const std::string offStrip = U8( ts.error ), offWhy = U8( tw.error );
+            offRootOk = finished && ts.threw && tw.threw
+                     && offStrip.find( "root thread" ) != std::string::npos && offWhy.find( "root thread" ) != std::string::npos;
+            // (r4) A catalog failure while resolving table columns fails CLOSED: the step is manual and every
+            //      value with a directory component in that table is reduced to its name. An UNKNOWN process
+            //      (not installed) is not a failure: its array rows fall back to the generic check.
+            const StepRow ii = stepOf( "ImageIntegration", nlohmann::json::object(),
+                                       { { "images", nlohmann::json::array( { nlohmann::json::array( { true, "subs/b.xisf", "", "" } ) } ) } } );
+            const StepRow iiBare = stepOf( "ImageIntegration", nlohmann::json::object(),
+                                           { { "images", nlohmann::json::array( { nlohmann::json::array( { true, "b.xisf", "", "" } ) } ) } } );
+            SetJourneyExportCatalogFailForSelfTest( true );
+            std::string failWhy, failBareWhy;
+            nlohmann::json failOut;
+            try
+            {
+               failWhy = ManualWhy( ii );
+               failBareWhy = ManualWhy( iiBare );
+               failOut = PrivacyStripStepParameters( ii.processId, ii.params["parameters"], ii.params["tableParameters"] );
+            }
+            catch ( const pcl::Exception& x ) { failWhy = "threw: " + U8( x.Message() ); }
+            SetJourneyExportCatalogFailForSelfTest( false );
+            const std::string unknownWhy = ManualWhy( stepOf( "NoSuchPICopilotProcess", nlohmann::json::object(),
+                                                              { { "rows", nlohmann::json::array( { nlohmann::json::array( { "x", 1 } ) } ) } } ) );
+            catalogFailOk = failWhy.find( "images" ) != std::string::npos && failWhy.find( "injected" ) != std::string::npos
+                         && failWhy.find( "subs/" ) == std::string::npos && !failBareWhy.empty()
+                         && failOut.is_object() && failOut.at( "tableParameters" ).at( "images" ).at( 0 ).at( 1 ) == "b.xisf"
+                         && unknownWhy.empty() && ManualWhy( iiBare ).empty();
+            // The ICC false positive is accepted (privacy-safe: a profile path is manual, a profile NAME stays).
+            const bool iccKnown = IsFileParameter( "ICCProfileTransformation", "targetProfile" );
+            d["round2"] = { { "listed", listed }, { "saWhy", saWhy }, { "saOut", saOut }, { "bareWhy", bareWhy }, { "viewWhy", viewWhy },
+                            { "fiWhy", fiWhy }, { "offStrip", offStrip }, { "offWhy", offWhy }, { "failWhy", failWhy },
+                            { "failBareWhy", failBareWhy }, { "failOut", failOut }, { "unknownWhy", unknownWhy },
+                            { "iccTargetProfileIsFile", iccKnown } };
+            referenceOk = referenceOk && listReal;
+         }
          // (q) Review Minor 3: a copy that fails part-way removes exactly what THIS call created --
          //     never a file or folder that was already there -- and says so.
          {
@@ -2963,7 +3087,8 @@ bool RunJourneySelfTest( nlohmann::json& out )
       root.reset();
       const bool ok = fixtureOk && summaryOk && recipeOk && validatorOk && privacyOk && manualOk && xpsmOk && replayOk && copyOk
                    && missingRootOk && readOnlyOk && relativeOk && retryOk && independentOk && exportThumbsOk && pathParamOk
-                   && stripOk && modesOk && fileParamOk && enabledRewriteOk && rollbackOk;
+                   && stripOk && modesOk && fileParamOk && enabledRewriteOk && rollbackOk
+                   && referenceOk && offRootOk && catalogFailOk;
       out["journeyExportDetail"] = d;
       out["journeyExportChecks"] = { { "fixture", fixtureOk }, { "summary", summaryOk }, { "recipe", recipeOk },
                                      { "validator", validatorOk }, { "privacy", privacyOk }, { "manual", manualOk },
@@ -2971,7 +3096,8 @@ bool RunJourneySelfTest( nlohmann::json& out )
                                      { "readOnly", readOnlyOk }, { "relative", relativeOk }, { "retry", retryOk },
                                      { "independent", independentOk }, { "exportThumbs", exportThumbsOk },
                                      { "pathParam", pathParamOk }, { "strip", stripOk }, { "modes", modesOk },
-                                     { "fileParam", fileParamOk }, { "enabledRewrite", enabledRewriteOk }, { "rollback", rollbackOk } };
+                                     { "fileParam", fileParamOk }, { "enabledRewrite", enabledRewriteOk }, { "rollback", rollbackOk },
+                                     { "reference", referenceOk }, { "offRoot", offRootOk }, { "catalogFail", catalogFailOk } };
       out["journeyExportError"] = U8( error );
       out["journeyExportOk"] = ok;
       allOk = allOk && ok;
