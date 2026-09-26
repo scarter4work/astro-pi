@@ -233,7 +233,7 @@ echo "== 3d/6 package rc-astro CLI wrapper script zip =="
 # PixInsight's scripts tree. The 3 feature scripts + the shared engine, each with its .xsgn.
 # NOTE: these WRAP the separately-licensed rc-astro CLI binary — they ship as thin scripts
 # only, and fail loudly (MessageBox) if the CLI is not installed. No RC-Astro IP is bundled.
-RCASTRO_VER=1.0.1
+RCASTRO_VER=1.1.0
 RCASTRO_ZIP="rc-astro-cli_v${RCASTRO_VER}.zip"
 RCASTRO_STAGE="$(mktemp -d)"
 mkdir -p "$RCASTRO_STAGE/src/scripts/RCAstro"
