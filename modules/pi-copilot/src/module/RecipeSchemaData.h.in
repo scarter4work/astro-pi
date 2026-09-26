@@ -1,0 +1,11 @@
+// GENERATED at CMake configure time from modules/pi-copilot/data/recipe-v1.schema.json.
+// Do not edit the generated copy; edit the JSON and re-run CMake.
+#ifndef PICopilot_RecipeSchemaData_h
+#define PICopilot_RecipeSchemaData_h
+
+namespace pcl
+{
+static const char kRecipeSchemaV1Json[] = R"PCRECIPE(@PICOPILOT_RECIPE_SCHEMA_JSON@)PCRECIPE";
+} // namespace pcl
+
+#endif

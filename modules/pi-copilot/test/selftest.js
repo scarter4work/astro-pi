@@ -560,6 +560,36 @@ catch ( e )
    harnessError( "j2.long", e );
 }
 
+jsMark( "fixture j7.exp" );
+// ---- J7 fixture phases (plan Task 8: JourneyExport) ----
+// Phase j7.exp "make" creates the keyword master pcExpM and opens Section J7's
+// test library; the three steps below are made HERE, at top level, and each
+// "record" stores the new history step with its stats and thumbnail
+// (PhaseJourneyExport, J7State). Section J7 closes pcExpM.
+try
+{
+   ( function ()
+   {
+      checkPhase( "j7.exp", { step: "make" } );
+      var v = View.viewById( "pcExpM" );
+      if ( v.isNull )
+         throw new Error( "pcExpM was not made" );
+      checkPhase( "j7.exp", { step: "join" } );
+      var p = new PixelMath; p.expression = "$T*1.3"; p.executeOn( v );
+      checkPhase( "j7.exp", { step: "record" } );
+      var h = new HistogramTransformation;
+      h.H = [ [0,0.5,1,0,1], [0,0.5,1,0,1], [0,0.5,1,0,1], [0,0.3,1,0,1], [0,0.5,1,0,1] ];
+      h.executeOn( v );
+      checkPhase( "j7.exp", { step: "record" } );
+      var q = new PixelMath; q.expression = "$T+0.01"; q.executeOn( v );
+      checkPhase( "j7.exp", { step: "record" } );
+   } )();
+}
+catch ( e )
+{
+   harnessError( "j7.exp", e );
+}
+
 // ---- fixture phases end (add new phases above this line, each block starting with jsMark( "fixture <id>" )) ----
 
 jsMark( "final executeGlobal (the full self-test)" );
