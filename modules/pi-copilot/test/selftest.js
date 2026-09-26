@@ -589,6 +589,9 @@ try
          p.executeOn( View.viewById( src ) );
       }
       function j6( step, extra ) { var p = extra || {}; p.step = step; checkPhase( "j6", p ); }
+      function closeIds( ids ) { ids.forEach( function( id ) { var w = ImageWindow.windowById( id ); if ( !w.isNull ) w.forceClose(); } ); }
+      var existing = {};
+      ImageWindow.windows.forEach( function( w ) { existing[w.mainView.id] = true; } );
       var dir = getEnvironmentVariable( "PICOPILOT_SELFTEST_SCRATCH" );
       if ( dir.length == 0 || !File.directoryExists( dir ) )
          throw new Error( "PICOPILOT_SELFTEST_SCRATCH is not an existing directory" );
@@ -608,6 +611,7 @@ try
       j6( "focus", { id: "pcTrkMaster" } );                                  // (f3) seen before its history is attached
       pm( "pcTrkMaster", "$T*1.0" ); pm( "pcTrkMaster", "$T*1.0" ); newImage( "pcTrkMaster", "pcTrkLate" );
       j6( "late" );
+      closeIds( [ "pcTrkLate" ] );
 
       var rgb = new ImageWindow( 48, 48, 3, 32, true, true, "pcTrkRgb" );     // (g)
       rgb.keywords = [ new FITSKeyword( "IMAGETYP", "'Master Light'", "" ), new FITSKeyword( "OBJECT", "'TrkRGB'", "" ) ];
@@ -639,18 +643,29 @@ try
       var path = dir + "/pcTrkRenamed.xisf";                                  // (l)
       if ( !ImageWindow.windowById( "pcTrkRenamed" ).saveAs( path, false, false, false, false ) )
          throw new Error( "saveAs " + path + " failed" );
+      closeIds( [ "pcTrkClone", "pcTrkInherit", "pcTrkRef", "pcTrkCop", "pcTrkRenamed" ] );   // from JS, not C++
       j6( "reopenClose" );
       var ws = ImageWindow.open( path );
       if ( ws.length < 1 )
          throw new Error( "open " + path + " failed" );
       ws[0].show();
+      // Observed: ImageWindow.open() from this (still running) script leaves the Process Console's abort
+      // enabled, which the tracker's busy gate rightly reads as "a script is running". The fixture is the
+      // user here: it ends the open as the GUI does, so the next phase's ticks are idle.
+      console.abortEnabled = false;
       j6( "reopened" );
       pm( "pcTrkRenamed", "$T*0.99" ); j6( "reopenStep" );
 
       j6( "keywordOnly" );                                                    // (m)
       pm( "pcTrkRenamed", "$T*1.02" ); j6( "locked" );                        // (n)
       j6( "gapArm" );                                                         // (o)
-      for ( var i = 0; i < 3; ++i ) { pm( "pcTrkRenamed", "$T*1.0" ); j6( "gapTick" ); }
+      for ( var i = 0; i < 3; ++i )
+      {
+         pm( "pcTrkRenamed", "$T*1.0" );
+         if ( i == 0 ) pm( "pcTrkRgb", "$T*1.0" );
+         j6( "gapTick", { first: i == 0 } );
+      }
+      pm( "pcTrkRenamed", "$T*1.0" );   // the next change: the (real) reader now catches up
       j6( "gapEnd" );
       j6( "offBegin" ); pm( "pcTrkRenamed", "$T*1.0" ); j6( "off" );         // (p)
 
@@ -665,6 +680,28 @@ try
       pm( "pcTrkBig", "0.1" );
       j6( "bigJoin" );
       pm( "pcTrkBig", "$T*1.1" ); j6( "big" );
+      bw.forceClose(); bw = null;
+
+      pm( "pcTrkRenamed", "$T*1.0" ); j6( "gate" );                          // review I4
+
+      var uw = new ImageWindow( 32, 32, 1, 32, true, false, "pcTrkU" );      // review I3
+      var fw = new ImageWindow( 16, 16, 1, 32, true, false, "pcTrkFile" );
+      var fpath = dir + "/pcTrkFile.xisf";
+      if ( !fw.saveAs( fpath, false, false, false, false ) )
+         throw new Error( "saveAs " + fpath + " failed" );
+      fw.forceClose(); fw = null;
+      j6( "unrelatedMake" );
+      pm( "pcTrkRenamed", "$T*1.0" ); pm( "pcTrkU", "$T*0.9" );
+      var fo = ImageWindow.open( fpath );
+      if ( fo.length < 1 )
+         throw new Error( "open " + fpath + " failed" );
+      console.abortEnabled = false;   // see the reopen above
+      j6( "noFalseTiming", { fileId: fo[0].mainView.id } );
+      fo = null;
+
+      j6( "dupMaster" );                                                      // review I2
+      j6( "joinFault" );                                                      // review I5
+      j6( "startJourney" );                                                   // review I6
 
       [ true, false ].forEach( function( mc )                                 // (s)
       {
@@ -673,6 +710,10 @@ try
          j6( "scanCheck", { mc: mc } );
       } );
       j6( "end" );                                                            // (t) + redaction
+      // Every window this block made is closed here, from JS (not natively from C++ under JS wrappers).
+      var made = [];
+      ImageWindow.windows.forEach( function( w ) { if ( !existing[w.mainView.id] ) made.push( w.mainView.id ); } );
+      closeIds( made );
    } )();
 }
 catch ( e )

@@ -69,6 +69,13 @@ public:
    const String& DbPath() const { return m_dbPath; }
    String JourneyDir( int64 journeyId ) const;
 
+   // Mutators that UPDATE or DELETE one row by id -- RenameJourney,
+   // TouchJourney, SetJourneyStatus, MarkKept, SetImageView, SetStepState,
+   // SetStepReason (and PruneUnkept's delete) -- throw pcl::Error
+   // ("<Method>: <table> #<id>: no such row; nothing was changed") when that
+   // row does not exist; they never succeed silently. Inserts that name a
+   // parent row (AddImage, AddStep, AddStats, AddLink, AddGap, SetAcquisition)
+   // fail through the foreign keys when it does not exist.
    int64 CreateJourney( const std::string& name, const std::string& target, const std::string& nowIso );
    void  RenameJourney( int64 journeyId, const std::string& name );
    void  TouchJourney( int64 journeyId, const std::string& nowIso );
@@ -84,13 +91,22 @@ public:
    void  AddStats( int64 imageId, int64 stepId /*0 = the image's starting stats*/, const std::vector<ChannelStats>& channels );
    void  AddLink( const LinkRow& l );
    void  AddGap( const GapRow& g );
+   // Deletes the image's gaps at after_step_seq < recordedUpToSeq: the steps
+   // they stood for were read and recorded after all (Task 7 review M4).
+   // Returns how many were deleted.
+   int   ResolveGaps( int64 imageId, int recordedUpToSeq );
 
    std::vector<JourneyRow> ListJourneys( bool keptOnly, const std::string& target, int limit );
    bool  GetJourney( int64 id, JourneyRow& out );
    std::vector<ImageRow> Images( int64 journeyId );
    bool  GetImage( int64 imageId, ImageRow& out );
    bool  FindOpenImageByView( const std::string& viewId, ImageRow& out );        // newest, journey status 'recording'
-   bool  FindResumableByFingerprint( const std::string& fp, ImageRow& out );     // newest, journey NOT kept
+   // Newest image with this fingerprint whose journey is NOT kept, skipping
+   // excludeImageIds (the images open and recorded right now: a second window
+   // of the same history-less master must never continue the first one's row,
+   // Task 7 review I2).
+   bool  FindResumableByFingerprint( const std::string& fp, ImageRow& out,
+                                     const std::vector<int64>& excludeImageIds = std::vector<int64>() );
    std::vector<StepRow> Steps( int64 imageId, bool includeSuperseded );
    bool  GetStep( int64 stepId, StepRow& out );
    std::vector<ChannelStats> Stats( int64 imageId, int64 stepId /*0 = starting*/ );
@@ -107,11 +123,44 @@ public:
 
    void  Checkpoint();   // PRAGMA wal_checkpoint(TRUNCATE)
 
+   /*
+    * One atomic group of writes (Task 7 review I5; Tasks 9-10 use it for
+    * FreezeJourney / keep). RAII, root thread only:
+    *   JourneyStore::Transaction tx( store );   // BEGIN IMMEDIATE
+    *   store.CreateJourney( ... ); store.AddImage( ... ); ...
+    *   tx.Commit();                             // COMMIT
+    * - The constructor takes the write lock at once (BEGIN IMMEDIATE), so a
+    *   lock held by another program fails HERE, before any write, after at
+    *   most PICopilotJourneyDbBusyMs ("... database is locked").
+    * - Nesting is refused loudly: a second Transaction on the same store
+    *   throws pcl::Error ("a transaction is already open"); it is never
+    *   silently flattened into the outer one.
+    * - Without Commit() -- an exception between the two -- the destructor
+    *   rolls everything back (noexcept; skipped off the root thread, where the
+    *   connection is never touched). A failed Commit() throws and the
+    *   destructor then rolls back.
+    * Every read and write method works inside a transaction as outside it.
+    */
+   class Transaction
+   {
+   public:
+      explicit Transaction( JourneyStore& store );
+      ~Transaction();
+      void Commit();
+      Transaction( const Transaction& ) = delete;
+      Transaction& operator =( const Transaction& ) = delete;
+   private:
+      JourneyStore& m_store;
+      bool          m_open = false;
+   };
+   bool  InTransaction() const { return m_inTransaction; }
+
 private:
 
    JourneyStore( sqlite3* db, const String& root, const String& dbPath );
 
    sqlite3* m_db = nullptr;
+   bool     m_inTransaction = false;
    String   m_root;
    String   m_dbPath;
 
@@ -119,12 +168,15 @@ private:
    int  ScalarInt( const char* sql );
    std::string ScalarText( const char* sql );
    [[noreturn]] void Fail( const char* what ) const;
+   // Throws unless the last statement changed at least one row (see the mutators' contract).
+   void RequireChanged( const char* what, int64 id ) const;
    void CreateSchemaV1();
    // Throws pcl::Error (DB path + `what`) unless on the root thread. Called by
    // the Stmt constructor and Exec, the two paths every DB read and write
-   // takes. The only other access is the destructor's close, which cannot
-   // throw: off the root thread it leaves the connection open instead of
-   // closing it (and owners destroy the store only on the root thread).
+   // takes (Transaction goes through Exec). The only other accesses are the
+   // destructors -- ~JourneyStore's close and ~Transaction's rollback -- which
+   // cannot throw: off the root thread they leave the connection untouched
+   // (and owners destroy the store only on the root thread).
    void RequireRootThread( const char* what ) const;
 
    friend class Stmt;

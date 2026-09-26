@@ -25,6 +25,7 @@
 
 #include <pcl/AutoViewLock.h>
 #include <pcl/Bitmap.h>
+#include <pcl/Console.h>
 #include <pcl/Exception.h>
 #include <pcl/File.h>
 #include <pcl/FileFormat.h>
@@ -699,13 +700,65 @@ void JSetKeywords( const char* id, const FITSKeywordArray& kw )
    w.SetKeywords( kw );
 }
 
+// Pumps until the tracker's busy gate (CurrentProcessActivity: console abort,
+// a locked view, < 0.3 s since the last image notification) is idle, max 3 s;
+// throws naming the reason otherwise -- a J6 tick must never be silently skipped.
+void JWaitIdle()
+{
+   const jclock::time_point t0 = jclock::now();
+   for ( ;; )
+   {
+      const ProcessActivityState a = CurrentProcessActivity();
+      if ( !a.busy )
+         return;
+      if ( MsSince( t0 ) > 3000 )
+         throw Error( "PixInsight stayed busy for 3 s (" + a.reason + "); the tracker cannot tick" );
+      ThePICopilotModule->ProcessEvents( true/*excludeUserInputEvents*/ );
+      std::this_thread::sleep_for( std::chrono::milliseconds( 20 ) );
+   }
+}
+
 void JTick( JourneyTracker& t, int n = 1 )
 {
    for ( int i = 0; i < n; ++i )
    {
+      JWaitIdle();
       t.Tick( JourneyWallNow(), true/*forceScan*/ );
       JPump( 60 );
    }
+}
+
+int JourneyCount( JourneyStore& s )
+{
+   return int( s.ListJourneys( false, "", 100000 ).size() );
+}
+
+// Image rows (any journey) currently naming viewId.
+int ImageRowsOf( JourneyStore& s, const std::string& viewId )
+{
+   int n = 0;
+   for ( const JourneyRow& j : s.ListJourneys( false, "", 100000 ) )
+      for ( const ImageRow& i : s.Images( j.id ) )
+         if ( i.viewId == viewId )
+            ++n;
+   return n;
+}
+
+// True when f() throws a pcl::Error whose message contains `what`.
+template <class F>
+bool JThrowsWith( F f, const char* what, std::string& msg )
+{
+   try
+   {
+      f();
+   }
+   catch ( const pcl::Exception& x )
+   {
+      msg = U8( x.Message() );
+      return msg.find( what ) != std::string::npos;
+   }
+   msg = "(no exception)";
+   return false;
 }
 
 int ActiveSteps( JourneyStore& s, int64 image )
@@ -729,7 +782,9 @@ View J6MainView( const char* id )
 const char* const kJ6Checks[] = { "settings", "master", "manual", "undo", "copilot", "timing", "rgbTiming", "reference",
                                   "copilotLink", "defer", "rename", "reopen", "keywordOnly", "locked", "gap", "off",
                                   "preview", "budget", "redact", "retention", "scanModes", "aux", "inherit", "ccGlobal",
-                                  "offRootDtor", "late" };
+                                  "offRootDtor", "late", "notifyFree", "gate", "noFalseTiming", "dupMaster", "joinAtomic",
+                                  "startJourney", "perImagePause", "gapResolved", "retentionOnce", "resumeTouch",
+                                  "transaction", "mutatorsLoud" };
 
 struct J6State
 {
@@ -745,7 +800,7 @@ struct J6State
    nlohmann::json           d = nlohmann::json::object();
    std::map<std::string, bool> ok;
    int  afterUndo = -1, afterRedo = -1, reopenActiveBefore = -1, offBefore = -1, scanBefore = -1, gapCalls = 0;
-   std::string reopenClosedStatus;
+   std::string reopenClosedStatus, reopenClosedUpdated;
    int64 reopenAgain = 0;
    int  reopenResumed = -1;
    bool scanModes = true;
@@ -811,7 +866,9 @@ void J6Step( J6State& st, const std::string& step, const nlohmann::json& payload
             << FITSHeaderKeyword( "SITELAT", "'+40 11 12'", "" );
          mw.SetKeywords( kw );
       }
-      JTick( trk, 2 );
+      // The first scan finds every window earlier fixtures left open (some with 500-step histories); the
+      // per-tick cap (review M8) spreads their evaluation over several ticks.
+      JTick( trk, 8 );
       // Ruling 29: the auxiliary outputs (every created window but the first) stay untracked when Task 1
       // measured that their history names the result's id; otherwise they are masters of their own (the
       // documented limit), and this check only requires that they exist.
@@ -861,7 +918,14 @@ void J6Step( J6State& st, const std::string& step, const nlohmann::json& payload
    if ( step == "manual" )
    {
       // (c) Two manual steps (top level): rows, stats, thumbnails.
-      JTick( trk );
+      //     Review M2: recording them (history read, geometry, statistics locks) is no "process activity":
+      //     the busy gate is idle right after the tick, so neither the tool loop nor the tracker waits.
+      JWaitIdle();
+      trk.Tick( JourneyWallNow(), true );
+      const ProcessActivityState after = CurrentProcessActivity();
+      st.d["notifyFree"] = { { "busy", after.busy }, { "reason", U8( after.reason ) } };
+      st.ok["notifyFree"] = !after.busy;
+      JPump( 60 );
       const std::vector<StepRow> s = store.Steps( mimg, false );
       const int64 lastId = s.empty() ? 0 : s.back().id;
       st.d["manual"] = { { "active", ActiveSteps( store, mimg ) }, { "actor", s.empty() ? "" : s.back().actor },
@@ -977,7 +1041,6 @@ void J6Step( J6State& st, const std::string& step, const nlohmann::json& payload
                        { "firstLook", firstLook }, { "image", lateImg }, { "evidence", lateEvidence }, { "decisions", dec } };
       st.ok["late"] = ActiveSteps( store, mimg ) - before == 2 && lateReads >= 1 && firstLook == 0 && lateImg != 0
                    && trk.JourneyOfView( "pcTrkLate" ) == jid && lateEvidence == "timing";
-      JForceClose( "pcTrkLate" );
    }
    else if ( step == "rgbJoin" )
    {
@@ -1082,13 +1145,13 @@ void J6Step( J6State& st, const std::string& step, const nlohmann::json& payload
       // (l) Saved (top level), then closed: the journey only ends when NO image of it is open (Ruling 24),
       //     so its other open images are closed first (pre-flight P1).
       st.reopenActiveBefore = ActiveSteps( store, mimg );
-      for ( const char* other : { "pcTrkClone", "pcTrkInherit", "pcTrkRef", "pcTrkCop" } )
-         JForceClose( other );
-      JForceClose( "pcTrkRenamed" );
+      // (closed at top level, from JS, just before this phase)
       JTick( trk );
       JourneyRow closed;
       store.GetJourney( jid, closed );
       st.reopenClosedStatus = closed.status;
+      st.reopenClosedUpdated = closed.updated;
+      JPump( 20 );   // NowIso() has ms resolution: the resume's touch must be a later time
    }
    else if ( step == "reopened" )
    {
@@ -1097,6 +1160,11 @@ void J6Step( J6State& st, const std::string& step, const nlohmann::json& payload
       JTick( trk, 2 );
       st.reopenAgain = trk.ImageOfView( "pcTrkRenamed" );
       st.reopenResumed = ActiveSteps( store, mimg );
+      // Review I2: resuming touches the journey (retention must not prune it as stale while it is open).
+      JourneyRow resumed;
+      store.GetJourney( jid, resumed );
+      st.d["resumeTouch"] = { st.reopenClosedUpdated, resumed.updated };
+      st.ok["resumeTouch"] = st.reopenResumed == st.reopenActiveBefore && resumed.updated > st.reopenClosedUpdated;
    }
    else if ( step == "reopenStep" )
    {
@@ -1148,10 +1216,13 @@ void J6Step( J6State& st, const std::string& step, const nlohmann::json& payload
    }
    else if ( step == "gapArm" )
    {
-      // (o) History read keeps failing -> a gap after 3 tries, then recording goes on.
+      // (o) History read of pcTrkRenamed keeps failing -> a gap after 3 tries, then recording goes on.
+      //     Other images read normally (review M3: the pause is per image).
       st.gapCalls = 0;
-      trk.SetHistoryReaderForSelfTest( [&st]( const IsoString& id, int /*from*/ )
+      trk.SetHistoryReaderForSelfTest( [&st]( const IsoString& id, int from )
       {
+         if ( id != "pcTrkRenamed" )
+            return ReadViewHistory( id, from );
          HistorySnapshot s;
          ++st.gapCalls;
          s.error = "history read of " + String( id ) + " failed: injected";
@@ -1161,6 +1232,15 @@ void J6Step( J6State& st, const std::string& step, const nlohmann::json& payload
    else if ( step == "gapTick" )
    {
       JTick( trk );
+      if ( payload.value( "first", false ) )
+      {
+         // Review M3: pcTrkRgb recorded a step in the same tick; pcTrkRenamed's failure stays ITS pause.
+         const JourneyStatus a = trk.StatusFor( "pcTrkRenamed" ), b = trk.StatusFor( "pcTrkRgb" );
+         st.d["perImagePause"] = { { "failing", int( a.state ) }, { "failingReason", U8( a.reason ) },
+                                   { "other", int( b.state ) }, { "otherReason", U8( b.reason ) } };
+         st.ok["perImagePause"] = a.state == RecordingState::Paused && a.reason.Contains( "injected" )
+                               && b.state == RecordingState::Recording;
+      }
    }
    else if ( step == "gapEnd" )
    {
@@ -1168,7 +1248,14 @@ void J6Step( J6State& st, const std::string& step, const nlohmann::json& payload
       const std::vector<GapRow> gaps = store.Gaps( jid );
       st.d["gap"] = { { "calls", st.gapCalls }, { "gaps", gaps.size() }, { "reason", gaps.empty() ? "" : gaps[0].reason } };
       st.ok["gap"] = gaps.size() == 1 && gaps[0].reason.find( "injected" ) != std::string::npos && gaps[0].imageId == mimg;
-      JTick( trk );   // the real reader catches up (the missed steps are recorded now, after the gap)
+      const int before = ActiveSteps( store, mimg );
+      JTick( trk );   // the real reader catches up on the next change: the missed steps are recorded now ...
+      // ... and the gap that stood for them is resolved (review M4), not left in front of recorded steps.
+      st.d["gapResolved"] = { { "gapsAfter", store.Gaps( jid ).size() }, { "stepsBefore", before },
+                              { "stepsAfter", ActiveSteps( store, mimg ) },
+                              { "state", int( trk.StatusFor( "pcTrkRenamed" ).state ) } };
+      st.ok["gapResolved"] = store.Gaps( jid ).empty() && ActiveSteps( store, mimg ) == before + 4
+                          && trk.StatusFor( "pcTrkRenamed" ).state == RecordingState::Recording;
    }
    else if ( step == "offBegin" )
    {
@@ -1206,7 +1293,7 @@ void J6Step( J6State& st, const std::string& step, const nlohmann::json& payload
       st.d["budget"] = { { "lastStepMs", trk.LastStepMs() }, { "budgetMs", PICopilotJourneyStepBudgetMs },
                          { "image", trk.ImageOfView( "pcTrkBig" ) } };
       st.ok["budget"] = trk.ImageOfView( "pcTrkBig" ) != 0 && trk.LastStepMs() <= PICopilotJourneyStepBudgetMs;
-      JForceClose( "pcTrkBig" );
+      // (closed at top level, from JS, after this phase)
    }
    else if ( step == "scanMode" )
    {
@@ -1221,6 +1308,171 @@ void J6Step( J6State& st, const std::string& step, const nlohmann::json& payload
       st.d["scanModes"][payload.at( "mc" ).get<bool>() ? "modifyCount" : "batch"] = { st.scanBefore, ActiveSteps( store, mimg ) };
       st.scanModes = st.scanModes && one;
    }
+   else if ( step == "gate" )
+   {
+      // Review I4: while PixInsight executes a process or script (console abort enabled) or any view is
+      // locked, a tick reads and writes nothing (deferred, not waited on); the step made at top level is
+      // recorded by the first idle tick.
+      const int before = ActiveSteps( store, mimg );
+      int deferred = 0, afterAbort = -1, afterLock = -1;
+      JWaitIdle();
+      {
+         Console c;
+         c.EnableAbort();
+         const int d0 = trk.Deferrals();
+         trk.Tick( JourneyWallNow(), true );
+         deferred += trk.Deferrals() - d0;
+         c.DisableAbort();
+         afterAbort = ActiveSteps( store, mimg );
+      }
+      JWaitIdle();
+      {
+         View other = J6MainView( "pcTrkRgb" );   // ANOTHER view locked: a process runs elsewhere
+         AutoViewLock lock( other );
+         const int d0 = trk.Deferrals();
+         trk.Tick( JourneyWallNow(), true );
+         deferred += trk.Deferrals() - d0;
+         afterLock = ActiveSteps( store, mimg );
+      }
+      JTick( trk );
+      st.d["gate"] = { { "before", before }, { "afterAbort", afterAbort }, { "afterLock", afterLock },
+                       { "after", ActiveSteps( store, mimg ) }, { "deferred", deferred } };
+      st.ok["gate"] = afterAbort == before && afterLock == before && deferred >= 2 && ActiveSteps( store, mimg ) == before + 1;
+   }
+   else if ( step == "unrelatedMake" )
+   {
+      // Review I3 setup: pcTrkU (made at top level) is seen well away from any recorded step, with no
+      // link evidence, until it is ignored.
+      JPump( 3500 );   // > PICopilotJourneyTimingSlackSeconds after the last recorded step
+      st.made.push_back( "pcTrkU" );
+      JTick( trk, 6 );
+      st.d["noFalseTimingSetup"] = trk.ImageOfView( "pcTrkU" );
+   }
+   else if ( step == "noFalseTiming" )
+   {
+      // Review I3: right after a recorded step on the master, the ignored pcTrkU is changed and a saved
+      // file is opened. Neither APPEARED from that step: timing (c) must link neither.
+      const std::string fileId = payload.at( "fileId" ).get<std::string>();
+      st.made.push_back( fileId );
+      const int before = ActiveSteps( store, mimg );
+      JTick( trk, 5 );
+      std::vector<std::string> dec;
+      for ( const std::string& x : trk.RecentDecisionsForSelfTest() )
+         if ( x.find( "pcTrkU" ) != std::string::npos || x.find( fileId ) != std::string::npos )
+            dec.push_back( x );
+      st.d["noFalseTiming"] = { { "masterStep", ActiveSteps( store, mimg ) - before }, { "u", trk.ImageOfView( "pcTrkU" ) },
+                                { "file", trk.ImageOfView( IsoString( fileId.c_str() ) ) }, { "fileId", fileId },
+                                { "decisions", dec } };
+      st.ok["noFalseTiming"] = st.d["noFalseTimingSetup"] == 0 && ActiveSteps( store, mimg ) == before + 1
+                            && trk.ImageOfView( "pcTrkU" ) == 0 && trk.ImageOfView( IsoString( fileId.c_str() ) ) == 0;
+   }
+   else if ( step == "dupMaster" )
+   {
+      // Review I2: the same history-less (WBPP) master opened twice is two images, never one row shared
+      // by two windows. The reader returns an empty history for both, like a WBPP master file.
+      trk.SetHistoryReaderForSelfTest( []( const IsoString& id, int from )
+      {
+         if ( !id.StartsWith( "pcTrkDup" ) )
+            return ReadViewHistory( id, from );
+         HistorySnapshot s;
+         s.ok = true;
+         return s;
+      } );
+      JEvalJs( "(function(){ var w = new ImageWindow( 44, 44, 1, 32, true, false, \"pcTrkDup1\" ); })()" );
+      st.made.push_back( "pcTrkDup1" );
+      JSetKeywords( "pcTrkDup1", WbppMasterKeywords() );
+      JTick( trk, 2 );
+      JEvalJs( "(function(){ var w = new ImageWindow( 44, 44, 1, 32, true, false, \"pcTrkDup2\" ); })()" );
+      st.made.push_back( "pcTrkDup2" );
+      JSetKeywords( "pcTrkDup2", WbppMasterKeywords() );
+      JTick( trk, 2 );
+      trk.SetHistoryReaderForSelfTest( HistoryReadFn() );
+      const int64 a = trk.ImageOfView( "pcTrkDup1" ), b = trk.ImageOfView( "pcTrkDup2" );
+      ImageRow ra, rb;
+      const bool ga = a != 0 && store.GetImage( a, ra ), gb = b != 0 && store.GetImage( b, rb );
+      st.d["dupMaster"] = { { "a", a }, { "b", b }, { "aView", ra.viewId }, { "bView", rb.viewId } };
+      st.ok["dupMaster"] = a != 0 && b != 0 && a != b && ga && gb && ra.viewId == "pcTrkDup1" && rb.viewId == "pcTrkDup2";
+      JForceClose( "pcTrkDup1" );   // made here (in-process); no JS wrapper holds them
+      JForceClose( "pcTrkDup2" );
+      JTick( trk );
+   }
+   else if ( step == "joinFault" )
+   {
+      // Review I5: a failure in the middle of a join (the hook throws inside the transaction, like a lock
+      // or a full disk) leaves no journey, image or step rows; after it clears exactly one join lands.
+      int faults = 0;
+      std::string where = "master";
+      trk.SetJoinFaultForSelfTest( [&faults, &where]( const char* w )
+      {
+         if ( where == w )
+         {
+            ++faults;
+            throw Error( String( "injected mid-join failure (" ) + w + ")" );
+         }
+      } );
+      const int journeys0 = JourneyCount( store );
+      JEvalJs( "(function(){ var w = new ImageWindow( 36, 36, 1, 32, true, false, \"pcTrkTxM\" ); })()" );
+      JSetKeywords( "pcTrkTxM", Kw( { { "IMAGETYP", "'Master Light'" }, { "OBJECT", "'TrkTx'" } } ) );
+      JTick( trk, 3 );
+      const int journeysFailed = JourneyCount( store ), rowsFailedM = ImageRowsOf( store, "pcTrkTxM" );
+      const int faultsM = faults;
+      where = "linked";
+      JTick( trk );   // no fault on "master" now
+      const int journeysOk = JourneyCount( store ), rowsOkM = ImageRowsOf( store, "pcTrkTxM" );
+      // Linked: a Copilot-created window of the master's journey.
+      faults = 0;
+      trk.NoteCopilotStep( "pcTrkRenamed", "PixelMath", "tx test", { "pcTrkTxL" }, false, JourneyWallNow() );
+      JEvalJs( "(function(){ var w = new ImageWindow( 36, 36, 1, 32, true, false, \"pcTrkTxL\" ); })()" );
+      JTick( trk, 3 );
+      const int rowsFailedL = ImageRowsOf( store, "pcTrkTxL" ), faultsL = faults;
+      trk.SetJoinFaultForSelfTest( nullptr );
+      JTick( trk );
+      const int rowsOkL = ImageRowsOf( store, "pcTrkTxL" );
+      st.d["joinAtomic"] = { { "faultsMaster", faultsM }, { "journeys0", journeys0 }, { "journeysFailed", journeysFailed },
+                             { "rowsFailedM", rowsFailedM }, { "journeysOk", journeysOk }, { "rowsOkM", rowsOkM },
+                             { "faultsLinked", faultsL }, { "rowsFailedL", rowsFailedL }, { "rowsOkL", rowsOkL },
+                             { "linkedJourney", trk.JourneyOfView( "pcTrkTxL" ) } };
+      st.ok["joinAtomic"] = faultsM >= 2 && journeysFailed == journeys0 && rowsFailedM == 0
+                         && journeysOk == journeys0 + 1 && rowsOkM == 1 && trk.ImageOfView( "pcTrkTxM" ) != 0
+                         && faultsL >= 2 && rowsFailedL == 0 && rowsOkL == 1 && trk.JourneyOfView( "pcTrkTxL" ) == jid;
+      JForceClose( "pcTrkTxM" );
+      JForceClose( "pcTrkTxL" );
+      JTick( trk );
+   }
+   else if ( step == "startJourney" )
+   {
+      // Review I6: start_journey honours "recording off" (nothing read or stored), and survives a window
+      // closed since the last tick (its dead View is never shifted), leaving no orphan journey.
+      JEvalJs( "(function(){ new ImageWindow( 30, 30, 1, 32, true, false, \"pcTrkStart\" );"
+               " new ImageWindow( 30, 30, 1, 32, true, false, \"pcTrkGone1\" );"
+               " new ImageWindow( 30, 30, 1, 32, true, false, \"pcTrkGone2\" ); })()" );
+      st.made.push_back( "pcTrkStart" );
+      JTick( trk );   // all three become candidates
+      const int journeys0 = JourneyCount( store );
+      trk.SetEnabled( false );
+      String offError;
+      const int64 offJ = trk.StartJourneyFor( J6MainView( "pcTrkStart" ), offError, JourneyWallNow() );
+      const int journeysOff = JourneyCount( store );
+      trk.SetEnabled( true );
+      JForceClose( "pcTrkGone1" );   // closed since the last tick: dead Views in the tracker's lists
+      String onError;
+      int64 onJ = 0;
+      std::string threw;
+      try
+      {
+         onJ = trk.StartJourneyFor( J6MainView( "pcTrkStart" ), onError, JourneyWallNow() );
+      }
+      catch ( const pcl::Exception& x ) { threw = U8( x.Message() ); }
+      catch ( ... )                     { threw = "unknown exception"; }
+      JForceClose( "pcTrkGone2" );
+      st.d["startJourney"] = { { "offJourney", offJ }, { "offError", U8( offError ) }, { "journeysOff", journeysOff - journeys0 },
+                               { "onJourney", onJ }, { "onError", U8( onError ) }, { "threw", threw },
+                               { "journeysOn", JourneyCount( store ) - journeys0 } };
+      st.ok["startJourney"] = offJ == 0 && offError.Contains( "off" ) && journeysOff == journeys0
+                           && onJ != 0 && onError.IsEmpty() && threw.empty() && JourneyCount( store ) == journeys0 + 1
+                           && trk.JourneyOfView( "pcTrkStart" ) == onJ;
+      JTick( trk );
+   }
    else if ( step == "end" )
    {
       trk.SetScanUsesModifyCountForSelfTest( PICopilotJourneyScanUsesModifyCount && PICopilotJourneyNotificationsWork );
@@ -1233,6 +1485,87 @@ void J6Step( J6State& st, const std::string& step, const nlohmann::json& payload
       const int n2 = RunRetentionIfDue( store, 30, "2026-09-25", last, nullptr );
       st.d["retention"] = { n1, afterFirst, n2, LocalDateToday() };
       st.ok["retention"] = n1 >= 0 && afterFirst == "2026-09-25" && n2 == -1 && LocalDateToday().size() == 10;
+
+      // Review I1: a prune that fails (a journey folder cannot be removed) is recorded as run for that
+      // date BEFORE it throws, so it is retried on the next date -- never on every tick.
+      {
+         const int64 old = store.CreateJourney( "old unkept", "Old", "2000-01-01T00:00:00.000Z" );
+         {
+            RawDb raw( store.DbPath() );
+            if ( !raw.Exec( ( "UPDATE journey SET updated='2000-01-01T00:00:00.000Z' WHERE id=" + std::to_string( old ) ).c_str() ) )
+               throw Error( "retention: backdating failed" );
+         }
+         const String thumbs = store.JourneyDir( old ) + "/thumbs";
+         if ( !EnsurePrivateDirectory( store.JourneyDir( old ) ).IsEmpty() || !EnsurePrivateDirectory( thumbs ).IsEmpty() )
+            throw Error( "retention: cannot make " + thumbs );
+         File::WriteTextFile( thumbs + "/x.jpg", IsoString( "x" ) );
+         ::chmod( U8( thumbs ).c_str(), 0500 );   // x.jpg cannot be unlinked
+         std::string lastRun = "2026-09-26", msg;
+         const bool threw = JThrowsWith( [&]() { RunRetentionIfDue( store, 30, "2026-09-27", lastRun, nullptr ); }, U8( thumbs ).c_str(), msg );
+         const std::string afterFail = lastRun;
+         bool threwAgain = false;
+         int again = 0;
+         for ( int i = 0; i < 3; ++i )   // the following "ticks" of the same date
+            try { again += RunRetentionIfDue( store, 30, "2026-09-27", lastRun, nullptr ) == -1 ? 1 : 0; }
+            catch ( ... ) { threwAgain = true; }
+         ::chmod( U8( thumbs ).c_str(), 0700 );
+         StringList removed;
+         const int next = RunRetentionIfDue( store, 30, "2026-09-28", lastRun, &removed );
+         JourneyRow gone;
+         st.d["retentionOnce"] = { { "threw", threw }, { "msg", msg }, { "lastRunAfterFail", afterFail },
+                                   { "sameDateNotDue", again }, { "threwAgain", threwAgain }, { "nextDatePruned", next } };
+         st.ok["retentionOnce"] = threw && afterFail == "2026-09-27" && again == 3 && !threwAgain && next >= 1
+                               && !store.GetJourney( old, gone ) && !File::DirectoryExists( store.JourneyDir( old ) );
+      }
+
+      // Review I5: the transaction API -- commit persists, an exception rolls back, nesting is refused.
+      {
+         const int n0 = JourneyCount( store );
+         {
+            JourneyStore::Transaction tx( store );
+            store.CreateJourney( "tx commit", "Tx", NowIso() );
+            tx.Commit();
+         }
+         const int afterCommit = JourneyCount( store );
+         bool rolledBack = false;
+         try
+         {
+            JourneyStore::Transaction tx( store );
+            store.CreateJourney( "tx rollback", "Tx", NowIso() );
+            throw Error( "abandon" );
+         }
+         catch ( const pcl::Exception& ) { rolledBack = JourneyCount( store ) == afterCommit; }
+         std::string nestedMsg;
+         bool nestedRefused = false, outerIntact = false;
+         {
+            JourneyStore::Transaction outer( store );
+            nestedRefused = JThrowsWith( [&]() { JourneyStore::Transaction inner( store ); }, "already open", nestedMsg );
+            store.CreateJourney( "tx outer", "Tx", NowIso() );
+            outer.Commit();
+            outerIntact = !store.InTransaction();
+         }
+         st.d["transaction"] = { { "committed", afterCommit - n0 }, { "rolledBack", rolledBack }, { "nested", nestedMsg },
+                                 { "final", JourneyCount( store ) - n0 } };
+         st.ok["transaction"] = afterCommit == n0 + 1 && rolledBack && nestedRefused && outerIntact && JourneyCount( store ) == n0 + 2;
+      }
+
+      // Coordinator addition: every UPDATE/DELETE-by-id mutator fails loudly on a row that does not exist.
+      {
+         const int64 none = 987654321;
+         std::string m1, m2, m3, m4, m5, m6, m7;
+         const bool journey = JThrowsWith( [&]() { store.RenameJourney( none, "x" ); }, "no such row", m1 )
+                           && JThrowsWith( [&]() { store.TouchJourney( none, NowIso() ); }, "no such row", m2 )
+                           && JThrowsWith( [&]() { store.SetJourneyStatus( none, "ended" ); }, "no such row", m3 )
+                           && JThrowsWith( [&]() { store.MarkKept( none, 0, NowIso() ); }, "no such row", m4 );
+         const bool image = JThrowsWith( [&]() { store.SetImageView( none, "v", "" ); }, "no such row", m5 );
+         const bool stepF = JThrowsWith( [&]() { store.SetStepState( none, "active" ); }, "no such row", m6 )
+                         && JThrowsWith( [&]() { store.SetStepReason( none, "r", false ); }, "no such row", m7 );
+         // ... and still succeed on a row that exists.
+         bool existing = true;
+         try { store.TouchJourney( jid, NowIso() ); } catch ( ... ) { existing = false; }
+         st.d["mutatorsLoud"] = { m1, m2, m3, m4, m5, m6, m7, existing };
+         st.ok["mutatorsLoud"] = journey && image && stepF && existing;
+      }
 
       // Task 5 re-review: ~JourneyStore off the root thread neither throws nor closes (a destructor
       // cannot throw; the connection is left open). Destroyed on a std::thread, then the file is
@@ -3195,10 +3528,10 @@ bool RunJourneySelfTest( nlohmann::json& out )
 
       // Every fixture step ran (a harness error stops the block early; that is a J6 failure too).
       const bool complete = !st.steps.empty() && st.steps.front() == "service" && st.steps.back() == "end";
+      // The fixture closed its windows from JS; this only catches any left behind by an early harness
+      // error. pcJourneyPre/pcJourneyPreNew stay open until exit, as before Task 7.
       for ( const std::string& id : st.made )
          JForceClose( id );
-      JForceClose( "pcJourneyPreNew" );
-      JForceClose( "pcJourneyPre" );
       st.trk.reset();
       st.store.reset();
       st.frames.reset();
