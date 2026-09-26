@@ -247,6 +247,18 @@ rm -f "$REPO/$RCASTRO_ZIP"
 rm -rf "$RCASTRO_STAGE"
 [ -f "$REPO/$RCASTRO_ZIP" ] || die "zip $RCASTRO_ZIP not produced"
 reuse_if_published "$RCASTRO_ZIP"
+# Point the manifest's rc-astro entry at THIS version's zip. write_pkg (step 4)
+# matches by exact fileName, so without this rename a version bump built a new
+# zip while the manifest kept declaring (and integrity-checking) the old one:
+# the release "passed" and shipped nothing new.
+python3 - "$REPO/updates.xri" "$RCASTRO_ZIP" <<'PY2' || die "manifest has no rc-astro-cli package entry to update"
+import re,sys
+mf,fn=sys.argv[1:3]
+s=open(mf).read()
+s,n=re.subn(r'fileName="rc-astro-cli_v[0-9.]+\.zip"', 'fileName="'+fn+'"', s)
+if n!=1: sys.exit("expected exactly one rc-astro-cli package entry, found %d" % n)
+open(mf,'w').write(s)
+PY2
 
 echo "== 4/6 write fileName/sha1/releaseDate into ONE manifest =="
 write_pkg "$REPO/updates.xri" "$MOD_TGZ"                  "$(sha1 "$REPO/$MOD_TGZ")"
