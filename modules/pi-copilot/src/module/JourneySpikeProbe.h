@@ -38,10 +38,12 @@ nlohmann::json JourneySpikeProbeTimerApplyResult();       // null until the tick
 // restarting it delays the first tick past the window). 0.2 s otherwise.
 void JourneySpikeProbeSetTickInterval( double seconds );
 // On the first tick at least delayS after this call, run the production
-// ApplyProcess( PixelMath $T*0.5 ) on the view viewId (a full id) -- when
-// `gated`, only once CurrentProcessActivity() (ProcessActivity.h, the tool
-// loop's PREVENT gate) reports idle, counting the ticks it deferred.
-void JourneySpikeProbeRequestHazardApply( const std::string& viewId, double delayS, bool gated );
+// ApplyProcess on the view viewId (a full id) -- when `gated`, only once
+// CurrentProcessActivity() (ProcessActivity.h, the tool loop's PREVENT gate)
+// reports idle, counting the ticks it deferred. spec {process, parameters,
+// tableParameters}; missing members default to PixelMath $T*0.5.
+void JourneySpikeProbeRequestHazardApply( const std::string& viewId, double delayS, bool gated,
+                                          const nlohmann::json& spec = nlohmann::json::object() );
 nlohmann::json JourneySpikeProbeHazardApplyResult();      // null until applied
 
 } // namespace pcl

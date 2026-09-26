@@ -11,6 +11,7 @@
 #include "PICopilotModule.h"
 #include "PICopilotProcess.h"
 #include "PjsrRunner.h"
+#include "ProcessActivity.h"
 #include "ProcessApply.h"
 #include "Utf8.h"
 #include "ViewPreview.h"
@@ -308,7 +309,8 @@ nlohmann::json PhaseHistTimer( const nlohmann::json& payload )
 nlohmann::json PhaseHistArm( const nlohmann::json& payload )
 {
    JourneySpikeProbeRequestHazardApply( payload.at( "id" ).get<std::string>(), payload.at( "delayS" ).get<double>(),
-                                        payload.at( "gated" ).get<bool>() );
+                                        payload.at( "gated" ).get<bool>(),
+                                        payload.value( "spec", nlohmann::json::object() ) );
    return payload;
 }
 
@@ -557,6 +559,7 @@ const std::map<std::string, SelfTestPhaseHandler>& SelfTestPhaseHandlers()
       { "hist.timer",  PhaseHistTimer },
       { "hist.arm",    PhaseHistArm },
       { "hist.check",  PhaseHistCheck },
+      { "hist.kind.check", PhaseHistCheck },
    };
    return handlers;
 }
@@ -944,7 +947,7 @@ bool RunJourneySelfTest( nlohmann::json& out )
    // ---- Section JH: an applied process lands in History, or fails loudly (Task T-hist) ----
    {
       bool detectInProcessOk = false, toolErrorOk = false, noFalseAlarmOk = false, countedOk = false,
-           classifierOk = false, cyclesOk = false;
+           classifierOk = false, cyclesOk = false, previewHonestOk = false, heldReplyOk = false, kindsOk = false;
       nlohmann::json info = nlohmann::json::object();
       String error;
       const bool seamWas = InProcessAppliesExpectedForSelfTest();
@@ -1009,6 +1012,19 @@ bool RunJourneySelfTest( nlohmann::json& out )
                   created.push_back( std::string( x.MainView().Id().c_str() ) );
             info["createNewImage"] = { { "ok", n.ok }, { "error", U8( n.error ) }, { "created", created } };
             noFalseAlarmOk = n.ok && !n.unrecordedChange && created.size() == 1;
+            // A preview: nothing to verify against, so the result must say so
+            // (and the main image is untouched).
+            const View pv = w.CreatePreview( Rect( 0, 0, 16, 16 ), "pcHistPv" );
+            const ApplyProcessResult pa = ApplyProcess( "PixelMath", { { "expression", "0.1" } }, nlohmann::json::object(), pv );
+            double mainPx = -1;
+            {
+               ImageVariant iv = v.Image();
+               mainPx = double( static_cast<const Image&>( *iv ).Pixel( 0, 0 ) );
+            }
+            info["preview"] = { { "ok", pa.ok }, { "error", U8( pa.error ) }, { "undo", U8( pa.undo ) }, { "mainPixel", mainPx } };
+            previewHonestOk = pa.ok && U8( pa.undo ).find( "cannot verify" ) != std::string::npos
+                           && U8( pa.undo ).find( "preview" ) != std::string::npos && std::fabs( mainPx - 0.2 ) < 1e-6;
+            noFalseAlarmOk = noFalseAlarmOk && U8( n.undo ).find( "adds no History step" ) != std::string::npos;
             SetInProcessAppliesExpectedForSelfTest( seamWas );
             for ( const std::string& id : created )
                JForceClose( id );
@@ -1032,6 +1048,21 @@ bool RunJourneySelfTest( nlohmann::json& out )
                         && !ResponseCallsImageChangingTool( nlohmann::json::array() )
                         && !ResponseCallsImageChangingTool( nlohmann::json() )
                         && !ResponseCallsImageChangingTool( nlohmann::json::array( { { { "type", "tool_use" }, { "name", 7 } } } ) );
+         }
+
+         // (b2) The panel's held-reply decision (pure; e_Poll_Timer is plumbing).
+         {
+            using A = HeldReplyAction;
+            const double n = PICopilotBusyWaitNoteSeconds;
+            heldReplyOk = DecideHeldReply( false, true, true, true, 0.1, false ) == A::Wait
+                       && DecideHeldReply( false, true, true, true, n, false ) == A::WaitAndNote
+                       && DecideHeldReply( false, true, true, true, n + 5, true ) == A::Wait
+                       && DecideHeldReply( false, true, true, false, n + 5, true ) == A::RunAfterNote
+                       && DecideHeldReply( false, true, true, false, 0.1, false ) == A::Run
+                       && DecideHeldReply( true, true, true, true, n + 5, true ) == A::Run      // Stop ends the wait
+                       && DecideHeldReply( false, true, false, true, n + 5, false ) == A::Run   // text / read-only tools
+                       && DecideHeldReply( false, false, true, true, n + 5, false ) == A::Run;  // failed reply
+            info["heldReplyOk"] = heldReplyOk;
          }
 
          // (c) The forced-10 ms repro (phases hist.*, test/selftest.js): each
@@ -1081,6 +1112,53 @@ bool RunJourneySelfTest( nlohmann::json& out )
          // Non-vacuous: the ungated repro must actually hit the window (measured
          // 16/16 "tail" and 13/13 "during" before this fix), and every gated
          // apply must have waited at least one tick and landed.
+         // (d) Process kinds (review round 1).
+         {
+            const nlohmann::json kc = phases.value( "hist.kind.check", nlohmann::json::array() );
+            nlohmann::json krows = nlohmann::json::array();
+            bool allGood = kc.size() == 11;
+            int ungatedUnrecorded = 0;
+            for ( const nlohmann::json& c : kc )
+            {
+               const nlohmann::json& top = c.at( "top" );
+               const nlohmann::json& t = c.at( "tick" );
+               const std::string pid = top.at( "process" );
+               const bool gated = top.at( "gated" ).get<bool>();
+               const bool applied = t.is_object() && t.contains( "ok" );
+               const bool tickOk = applied && t.at( "ok" ).get<bool>();
+               const int dLen = top.at( "lengthAfter" ).get<int>() - top.at( "lengthBefore" ).get<int>();
+               const int dIdx = top.at( "historyIndexAfter" ).get<int>() - top.at( "historyIndexBefore" ).get<int>();
+               const std::string undo = applied ? t.value( "undo", std::string() ) : std::string();
+               const std::string err = applied ? t.value( "error", std::string() ) : std::string();
+               const long long dMc = applied ? (long long)t.value( "modifyCountAfter", uint64_t( 0 ) )
+                                             - (long long)t.value( "modifyCountBefore", uint64_t( 0 ) ) : -1;
+               const bool recorded = dLen == 1 && dIdx == 1 && top.at( "lastProcessId" ) == pid;
+               bool good;
+               if ( pid == "ScreenTransferFunction" )
+                  good = tickOk && dLen == 0 && undo.find( "adds no History step" ) != std::string::npos;
+               else if ( gated )
+                  good = tickOk && recorded && err.empty() && undo.rfind( "Recorded in ", 0 ) == 0
+                      && (dMc > 0 ? undo.find( "modification count advanced" ) != std::string::npos
+                                  : undo.find( "verified in the History list" ) != std::string::npos);
+               else
+               {
+                  // ok <=> recorded; unrecorded => the loud error.
+                  good = applied && (recorded ? tickOk
+                                              : !tickOk && t.value( "unrecordedChange", false ) && dLen == 0
+                                                && err.find( "did NOT record it" ) != std::string::npos);
+                  if ( !recorded )
+                     ++ungatedUnrecorded;
+               }
+               allGood = allGood && good;
+               krows.push_back( { { "process", pid }, { "gated", gated }, { "ok", tickOk }, { "historyDelta", dLen },
+                                  { "modifyCountDelta", dMc }, { "undo", undo }, { "error", err.substr( 0, 120 ) },
+                                  { "good", good } } );
+            }
+            info["kinds"] = krows;
+            info["kindsUngatedUnrecorded"] = ungatedUnrecorded;
+            kindsOk = allGood && ungatedUnrecorded >= 1;
+         }
+
          cyclesOk = n["tail/ungated"] == 5 && n["tail/gated"] == 5 && n["during/ungated"] == 3 && n["during/gated"] == 3
                  && allConsistent && unrecorded["tail/ungated"] >= 1 && unrecorded["during/ungated"] >= 1
                  && gatedAllRecorded && gatedAllDeferred;
@@ -1096,7 +1174,10 @@ bool RunJourneySelfTest( nlohmann::json& out )
       info["countedOk"] = countedOk;
       info["classifierOk"] = classifierOk;
       info["cyclesOk"] = cyclesOk;
-      const bool ok = error.IsEmpty() && detectInProcessOk && toolErrorOk && noFalseAlarmOk && countedOk && classifierOk && cyclesOk;
+      info["previewHonestOk"] = previewHonestOk;
+      info["kindsOk"] = kindsOk;
+      const bool ok = error.IsEmpty() && detectInProcessOk && toolErrorOk && noFalseAlarmOk && countedOk && classifierOk
+                   && cyclesOk && previewHonestOk && heldReplyOk && kindsOk;
       out["histLandedInfo"] = info;
       out["histLandedError"] = U8( error );
       out["histLandedOk"] = ok;

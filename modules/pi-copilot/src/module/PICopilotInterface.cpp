@@ -610,25 +610,25 @@ void PICopilotInterface::e_Poll_Timer( Timer& )
    // that can change images waits (this timer keeps ticking) until PixInsight
    // is idle; the model request is not held back, only the tools. Stop ends
    // the wait at once (the tools then report "not executed").
-   if ( !m_stopRequested && m_heldResult.ok && ResponseCallsImageChangingTool( m_heldResult.contentBlocks ) )
+   const bool imageTools = m_heldResult.ok && ResponseCallsImageChangingTool( m_heldResult.contentBlocks );
+   const ProcessActivityState activity = (!m_stopRequested && imageTools) ? CurrentProcessActivity()
+                                                                          : ProcessActivityState();
+   const double waited = std::chrono::duration<double>( std::chrono::steady_clock::now() - m_heldSince ).count();
+   switch ( DecideHeldReply( m_stopRequested, m_heldResult.ok, imageTools, activity.busy, waited, m_busyWaitNoted ) )
    {
-      const ProcessActivityState activity = CurrentProcessActivity();
-      if ( activity.busy )
-      {
-         const double waited = std::chrono::duration<double>( std::chrono::steady_clock::now() - m_heldSince ).count();
-         if ( !m_busyWaitNoted && waited >= PICopilotBusyWaitNoteSeconds )
-         {
-            AppendToLog( PlainText( String::UTF8ToUTF16( "(waiting for PixInsight to finish \xE2\x80\x94 " )
-                                    + activity.reason
-                                    + String::UTF8ToUTF16( " \xE2\x80\x94 before PI Copilot changes an image, so "
-                                                           "the change is recorded in History and can be undone. "
-                                                           "Press Stop to cancel.)" ) ) + "\n\n" );
-            m_busyWaitNoted = true;
-         }
-         return;
-      }
-      if ( m_busyWaitNoted )
-         AppendToLog( PlainText( "(PixInsight is idle again; continuing.)" ) + "\n\n" );
+   case HeldReplyAction::WaitAndNote:
+      AppendToLog( PlainText( "(waiting for PixInsight: " + activity.reason + ". PI Copilot changes an image only "
+                              "while PixInsight is idle, so the change is recorded in History and can be undone. "
+                              "Finish or stop that activity, or press Stop to cancel this step.)" ) + "\n\n" );
+      m_busyWaitNoted = true;
+      return;
+   case HeldReplyAction::Wait:
+      return;   // Poll_Timer keeps ticking: re-checked on the next tick
+   case HeldReplyAction::RunAfterNote:
+      AppendToLog( PlainText( "(PixInsight is idle again; continuing.)" ) + "\n\n" );
+      break;
+   case HeldReplyAction::Run:
+      break;
    }
 
    AnthropicResult r = std::move( m_heldResult );
