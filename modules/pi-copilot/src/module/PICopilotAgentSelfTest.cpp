@@ -673,7 +673,8 @@ bool RunAgentSelfTest( nlohmann::json& out )
    // "GetParameterAllowedCharacters(): API function error": the core's copy
    // of a declared character set always fails (StringParameterRules.h).
    {
-      bool namedOk = false, toolOk = false, refusedOk = false, digitOk = false, scanOk = false, setOk = false;
+      bool namedOk = false, toolOk = false, refusedOk = false, digitOk = false, scanOk = false, setOk = false,
+           unsafeOk = false, describeOk = false;
       nlohmann::json detail = nlohmann::json::object();
       String error;
       auto closeNew = []( const std::set<std::string>& before )
@@ -747,14 +748,14 @@ bool RunAgentSelfTest( nlohmann::json& out )
             const std::vector<std::string> created = closeNew( was );
             detail["refused"] = { { "space", U8( sp.error ) }, { "digit", U8( dg.error ) }, { "precheck", U8( pre ) },
                                   { "created", created } };
-            refusedOk = !sp.ok && sp.error == "PixelMath.newImageId: '1bad id' is not a valid PixInsight identifier "
+            refusedOk = !sp.ok && sp.error == "PixelMath.newImageId: \"1bad id\" is not a valid PixInsight identifier "
                                               "(character ' ' at position 4 is not allowed); use only letters A-Z/a-z, "
                                               "digits 0-9 and underscores, not starting with a digit"
-                     && pre == "PixelMath.newImageId: 'a-b' is not a valid PixInsight identifier "
+                     && pre == "PixelMath.newImageId: \"a-b\" is not a valid PixInsight identifier "
                                "(character '-' at position 1 is not allowed); use only letters A-Z/a-z, "
                                "digits 0-9 and underscores, not starting with a digit"
                      && created.empty() && std::fabs( ChannelMedian( v, 0 ) - before ) < 1e-12;
-            digitOk = !dg.ok && dg.error == "PixelMath.newImageId: '1bad' is not a valid PixInsight identifier "
+            digitOk = !dg.ok && dg.error == "PixelMath.newImageId: \"1bad\" is not a valid PixInsight identifier "
                                             "(it starts with the digit '1'); use only letters A-Z/a-z, "
                                             "digits 0-9 and underscores, not starting with a digit";
          }
@@ -770,12 +771,109 @@ bool RunAgentSelfTest( nlohmann::json& out )
             detail["sets"] = { { "okList", U8( okList ) }, { "badList", U8( badList ) }, { "okCol", U8( okCol ) },
                                { "badCol", U8( badCol ) }, { "free", U8( free ) } };
             setOk = okList.IsEmpty() && badList == "ExtractAlphaChannels.channelList: character ';' at position 1 is not allowed; "
-                                                   "allowed characters: 0123456789, "
+                                                   "allowed characters: space , 0-9"
                  && okCol.IsEmpty()
-                 && badCol == "ChannelCombination.channels[1].id: 'G.x' is not a valid PixInsight identifier "
+                 && badCol == "ChannelCombination.channels[1].id: \"G.x\" is not a valid PixInsight identifier "
                               "(character '.' at position 1 is not allowed); use only letters A-Z/a-z, "
                               "digits 0-9 and underscores, not starting with a digit"
                  && free.IsEmpty();
+         }
+         {  // Review round 1: an offending control / bidi / invisible character is never
+            // put raw into a message (TextSafety.h); an ordinary one stays readable.
+            auto pm = []( const std::string& id )
+            {
+               return PrecheckApplyRun( "PixelMath", { { "newImageId", id } }, nlohmann::json::object() );
+            };
+            const String bidi = pm( "ab\xE2\x80\xAE" "cd" );    // U+202E
+            const String zw   = pm( "ab\xE2\x80\x8B" "cd" );    // U+200B
+            const String ctl  = pm( std::string( "ab\x01" "cd" ) );
+            const String dash = pm( "ab-cd" );
+            const String astral = pm( "ab\xF0\x9F\x93\xB7" );    // U+1F4F7, a visible non-BMP character
+            const String setBidi = PrecheckApplyRun( "ExtractAlphaChannels",
+               { { "channelList", "0\xE2\x80\xAE" "1" } }, nlohmann::json::object() );
+            const char* tail = " is not allowed); use only letters A-Z/a-z, digits 0-9 and underscores, not starting with a digit";
+            auto noRaw = []( const String& m )
+            {
+               for ( size_type i = 0; i < m.Length(); ++i )
+                  if ( m[i] < 0x20 || m[i] == 0x202E || m[i] == 0x200B )
+                     return false;
+               return true;
+            };
+            detail["unsafe"] = { { "bidi", U8( bidi ) }, { "zw", U8( zw ) }, { "ctl", U8( ctl ) }, { "dash", U8( dash ) },
+                                 { "astral", U8( astral ) }, { "setBidi", U8( setBidi ) } };
+            unsafeOk = bidi == String( "PixelMath.newImageId: \"ab<U+202E>cd\" is not a valid PixInsight identifier "
+                                       "(character U+202E RIGHT-TO-LEFT OVERRIDE (a bidirectional text control) at position 2" ) + tail
+                    && zw == String( "PixelMath.newImageId: \"ab<U+200B>cd\" is not a valid PixInsight identifier "
+                                     "(character U+200B ZERO WIDTH SPACE (an invisible format character) at position 2" ) + tail
+                    && ctl == String( "PixelMath.newImageId: \"ab<U+0001>cd\" is not a valid PixInsight identifier "
+                                      "(character U+0001 (a control character) at position 2" ) + tail
+                    && dash == String( "PixelMath.newImageId: \"ab-cd\" is not a valid PixInsight identifier "
+                                       "(character '-' at position 2" ) + tail
+                    && astral == String::UTF8ToUTF16( "PixelMath.newImageId: \"ab\xF0\x9F\x93\xB7\" is not a valid PixInsight identifier "
+                                                      "(character '\xF0\x9F\x93\xB7' at position 2" ) + tail
+                    && setBidi == "ExtractAlphaChannels.channelList: character U+202E RIGHT-TO-LEFT OVERRIDE "
+                                  "(a bidirectional text control) at position 1 is not allowed; allowed characters: space , 0-9"
+                    && noRaw( bidi ) && noRaw( zw ) && noRaw( ctl ) && noRaw( setBidi );
+         }
+         {  // Review round 1: describe_process shows the SAME rule apply_process enforces.
+            nlohmann::json seen = nlohmann::json::object();
+            bool agree = true;
+            std::set<std::string> procs;
+            for ( size_type i = 0; i < CompiledStringCharacterRuleCount(); ++i )
+            {
+               const std::string path = U8( CompiledStringCharacterRulePath( i ) );
+               procs.insert( path.substr( 0, path.find( '.' ) ) );
+            }
+            procs.insert( "PixelMath" );
+            int restricted = 0;
+            for ( const std::string& proc : procs )
+            {
+               const nlohmann::json d = DescribeProcess( IsoString( proc.c_str() ) );
+               const Process P( IsoString( proc.c_str() ) );
+               auto check = [&]( const nlohmann::json& pj, const ProcessParameter& p )
+               {
+                  if ( !p.IsString() )
+                     return;
+                  const StringCharacterRule r = ResolveStringCharacterRule( p );
+                  const std::string want = r.ok && r.kind != StringCharacterRuleKind::None
+                                         ? U8( CompactCharacterSet( r.allowed ) ) : std::string();
+                  const std::string got = pj.value( "allowedCharacters", std::string() );
+                  const bool ident = pj.value( "identifier", false );
+                  const bool okHere = r.ok && got == want && ident == (r.kind == StringCharacterRuleKind::Identifier)
+                                   && !pj.contains( "allowedCharactersError" );
+                  if ( !want.empty() )
+                     ++restricted;
+                  if ( !okHere )
+                  {
+                     agree = false;
+                     seen[U8( StringParameterPath( p ) )] = pj;
+                  }
+               };
+               for ( const nlohmann::json& pj : d.at( "parameters" ) )
+               {
+                  const ProcessParameter p( P, IsoString( pj.at( "id" ).get<std::string>().c_str() ) );
+                  check( pj, p );
+                  if ( p.IsTable() && pj.contains( "columns" ) )
+                     for ( const nlohmann::json& cj : pj.at( "columns" ) )
+                        check( cj, ProcessParameter( p, IsoString( cj.at( "id" ).get<std::string>().c_str() ) ) );
+               }
+            }
+            nlohmann::json pmId, pmExpr, eaList;
+            const nlohmann::json pmDescribe = DescribeProcess( "PixelMath" );            // kept alive: at() returns a reference into it
+            const nlohmann::json eaDescribe = DescribeProcess( "ExtractAlphaChannels" );
+            for ( const nlohmann::json& pj : pmDescribe.at( "parameters" ) )
+            {
+               if ( pj.at( "id" ) == "newImageId" ) pmId = pj;
+               if ( pj.at( "id" ) == "expression" ) pmExpr = pj;
+            }
+            for ( const nlohmann::json& pj : eaDescribe.at( "parameters" ) )
+               if ( pj.at( "id" ) == "channelList" ) eaList = pj;
+            detail["describe"] = { { "disagree", seen }, { "restricted", restricted }, { "pmNewImageId", pmId },
+                                   { "pmExpression", pmExpr }, { "eaChannelList", eaList } };
+            describeOk = agree && size_type( restricted ) == CompiledStringCharacterRuleCount()
+                      && pmId.value( "allowedCharacters", std::string() ) == "0-9 A-Z _ a-z" && pmId.value( "identifier", false )
+                      && !pmExpr.contains( "allowedCharacters" ) && !pmExpr.contains( "identifier" )
+                      && eaList.value( "allowedCharacters", std::string() ) == "space , 0-9" && !eaList.contains( "identifier" );
          }
          {  // Every String parameter of every installed process resolves; every
             // compiled-in entry matches an installed parameter's declared length.
@@ -829,7 +927,8 @@ bool RunAgentSelfTest( nlohmann::json& out )
       catch ( const std::exception& x ) { error = String( x.what() ); }
       catch ( ... )                     { error = "unknown exception"; }
 
-      const bool ok = namedOk && toolOk && refusedOk && digitOk && setOk && scanOk && error.IsEmpty();
+      const bool ok = namedOk && toolOk && refusedOk && digitOk && setOk && scanOk && unsafeOk && describeOk
+                    && error.IsEmpty();
       out["stringRulesDetail"] = detail;
       out["stringRulesNamedImageOk"] = namedOk;
       out["stringRulesToolOk"] = toolOk;
@@ -837,6 +936,8 @@ bool RunAgentSelfTest( nlohmann::json& out )
       out["stringRulesDigitOk"] = digitOk;
       out["stringRulesSetsOk"] = setOk;
       out["stringRulesScanOk"] = scanOk;
+      out["stringRulesUnsafeCharsOk"] = unsafeOk;
+      out["stringRulesDescribeOk"] = describeOk;
       out["stringRulesError"] = U8( error );
       out["stringRulesOk"] = ok;
       allOk = allOk && ok;

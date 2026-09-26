@@ -64,6 +64,11 @@ StringCharacterRule ResolveStringCharacterRule( const ProcessParameter& p );
 // "ChannelCombination.channels[0].id"). An unresolved rule is always a problem.
 String StringCharacterProblem( const StringCharacterRule& rule, const String& s, const String& name );
 
+// A declared set in compact, readable form for describe_process and messages:
+// sorted by code point, runs of 3+ as "A-Z", the space as "space", an unsafe
+// character as U+XXXX (TextSafety.h). E.g. "0-9 A-Z _ a-z", "space , 0-9".
+String CompactCharacterSet( const String& allowed );
+
 // Number of compiled-in entries (self-test: every one must match an installed
 // parameter whose declared length it equals).
 size_type CompiledStringCharacterRuleCount();

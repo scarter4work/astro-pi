@@ -7,6 +7,10 @@
 #include <pcl/Process.h>
 #include <pcl/api/APIInterface.h>
 
+#include "TextSafety.h"
+
+#include <iterator>
+
 #include <set>
 
 namespace pcl
@@ -201,27 +205,79 @@ StringCharacterRule ResolveStringCharacterRule( const ProcessParameter& p )
    }
 }
 
+String CompactCharacterSet( const String& allowed )
+{
+   std::set<uint32> cps;
+   for ( size_type i = 0; i < allowed.Length(); )
+   {
+      size_type units = 1;
+      cps.insert( CodePointAt( allowed, i, units ) );
+      i += units;
+   }
+   auto token = []( uint32 c ) -> String
+   {
+      if ( c == ' ' )
+         return "space";
+      if ( UnsafeDisplayKind( c ) != nullptr )
+         return String().Format( "U+%04X", unsigned( c ) );
+      const String q = DisplayCharacter( c );   // 'x'
+      return q.Substring( 1, q.Length() - 2 );
+   };
+   String out;
+   for ( auto it = cps.begin(); it != cps.end(); )
+   {
+      auto last = it;
+      size_type run = 1;
+      for ( auto nx = std::next( it ); nx != cps.end() && *nx == *last + 1; ++nx, ++run )
+         last = nx;
+      if ( !out.IsEmpty() )
+         out += ' ';
+      if ( run >= 3 && UnsafeDisplayKind( *it ) == nullptr && UnsafeDisplayKind( *last ) == nullptr && *it != ' ' )
+      {
+         out += token( *it ) + '-' + token( *last );
+         it = std::next( last );
+      }
+      else
+      {
+         out += token( *it );
+         ++it;
+      }
+   }
+   return out;
+}
+
 String StringCharacterProblem( const StringCharacterRule& rule, const String& s, const String& name )
 {
    if ( !rule.ok )
       return rule.error;
    if ( rule.kind == StringCharacterRuleKind::None )
       return String();
+   // Never the raw offending character or text (TextSafety.h): a control,
+   // bidi or invisible character is spelled out as U+XXXX.
    String bad;
-   for ( size_type i = 0; i < s.Length() && bad.IsEmpty(); ++i )
-      if ( !rule.allowed.Contains( s[i] ) )
-         bad = "character '" + s.Substring( i, 1 ) + String().Format( "' at position %u is not allowed", unsigned( i ) );
+   size_type position = 0;   // in characters (code points)
+   for ( size_type i = 0; i < s.Length() && bad.IsEmpty(); ++position )
+   {
+      size_type units = 1;
+      const uint32 c = CodePointAt( s, i, units );
+      bool ok = units == 1 && rule.allowed.Contains( s[i] );
+      if ( units == 2 )
+         ok = rule.allowed.Contains( s.Substring( i, 2 ) );
+      if ( !ok )
+         bad = "character " + DisplayCharacter( c ) + String().Format( " at position %u is not allowed", unsigned( position ) );
+      i += units;
+   }
    if ( rule.kind == StringCharacterRuleKind::Identifier )
    {
       if ( bad.IsEmpty() && !s.IsEmpty() && !s.IsValidIdentifier() )
-         bad = "it starts with the digit '" + s.Substring( 0, 1 ) + "'";
+         bad = "it starts with the digit " + DisplayCharacter( s[0] );
       if ( !bad.IsEmpty() )
-         return name + ": '" + s + "' is not a valid PixInsight identifier (" + bad
+         return name + ": " + DisplayText( s ) + " is not a valid PixInsight identifier (" + bad
                 + "); use only letters A-Z/a-z, digits 0-9 and underscores, not starting with a digit";
       return String();
    }
    if ( !bad.IsEmpty() )
-      return name + ": " + bad + "; allowed characters: " + rule.allowed;
+      return name + ": " + bad + "; allowed characters: " + CompactCharacterSet( rule.allowed );
    return String();
 }
 
