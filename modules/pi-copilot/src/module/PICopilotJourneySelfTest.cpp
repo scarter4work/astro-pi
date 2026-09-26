@@ -13,6 +13,7 @@
 #include "PjsrRunner.h"
 #include "ProcessActivity.h"
 #include "ProcessApply.h"
+#include "SafeFileWrite.h"
 #include "StepStats.h"
 #include "Utf8.h"
 #include "ViewPreview.h"
@@ -45,6 +46,10 @@
 #include <string>
 #include <thread>
 #include <vector>
+
+#include <dirent.h>
+#include <sys/stat.h>
+#include <unistd.h>
 
 namespace pcl
 {
@@ -1508,7 +1513,7 @@ bool RunJourneySelfTest( nlohmann::json& out )
    {
       nlohmann::json d = nlohmann::json::object();
       bool noiseOk = false, rescaleOk = false, rgbOk = false, u16Ok = false, thumbOk = false, busyOk = false,
-           previewOk = false, budgetOk = false;
+           previewOk = false, budgetOk = false, safeWriteOk = false;
       String error;
       try
       {
@@ -1621,7 +1626,115 @@ bool RunJourneySelfTest( nlohmann::json& out )
       catch ( const pcl::Exception& x ) { error = x.Message(); }
       catch ( const std::exception& x ) { error = String( x.what() ); }
       catch ( ... )                     { error = "unknown exception"; }
-      const bool ok = noiseOk && rescaleOk && rgbOk && u16Ok && thumbOk && busyOk && previewOk && budgetOk;
+      // (i) Fix round 1 (CWE-59): the thumbnail and SafeFileWrite never write
+      // through a symlink, and a failure leaves no partial file and no temp.
+      try
+      {
+         nlohmann::json sw = nlohmann::json::object();
+         JTempDir dir( "picopilot-sw-" );
+         const std::string root = U8( dir.Path() );
+         auto entries = [&]( const std::string& d )
+         {
+            std::vector<std::string> names;
+            if ( DIR* h = ::opendir( d.c_str() ) )
+            {
+               while ( const dirent* e = ::readdir( h ) )
+                  if ( std::string( e->d_name ) != "." && std::string( e->d_name ) != ".." )
+                     names.push_back( e->d_name );
+               ::closedir( h );
+            }
+            std::sort( names.begin(), names.end() );
+            return names;
+         };
+         auto isLink = []( const std::string& p ) { struct stat st; return ::lstat( p.c_str(), &st ) == 0 && S_ISLNK( st.st_mode ); };
+         auto exists = []( const std::string& p ) { struct stat st; return ::lstat( p.c_str(), &st ) == 0; };
+         const ByteArray victimBytes( 6, uint8( 'V' ) );
+         const String victim = dir.Path() + "/victim.jpg";
+         File::WriteFile( victim, victimBytes );
+         File::CreateDirectory( dir.Path() + "/thumbs" );
+
+         // (i1) Thumbnail target pre-placed as a symlink -> refused, not followed.
+         bool linkThumbOk = false;
+         {
+            const std::string link = root + "/thumbs/5.jpg";
+            (void)::symlink( U8( victim ).c_str(), link.c_str() );
+            JWindow w( "pcSsLink", 300, 200, 1, 0.3 );
+            const StepStatsResult r = ComputeStepStats( w.MainView(), FromU8( link ) );
+            const bool victimSame = File::ReadFile( victim ) == victimBytes;
+            sw["linkThumb"] = { { "ok", r.ok }, { "error", U8( r.thumbnailError ) }, { "path", U8( r.thumbnailPath ) },
+                                { "victimUnchanged", victimSame }, { "stillLink", isLink( link ) } };
+            linkThumbOk = r.ok && r.thumbnailPath.IsEmpty() && r.thumbnailError.Contains( "symbolic link" )
+                       && victimSame && isLink( link ) && entries( root + "/thumbs" ) == std::vector<std::string>{ "5.jpg" };
+            ::unlink( link.c_str() );
+         }
+         // (i2) The byte API refuses a symlink target too.
+         bool linkBytesOk = false;
+         {
+            const std::string link = root + "/recipe.json";
+            (void)::symlink( U8( victim ).c_str(), link.c_str() );
+            const String why = SafeWriteTextFile( FromU8( link ), "{\"x\":1}" );
+            linkBytesOk = why.Contains( "symbolic link" ) && File::ReadFile( victim ) == victimBytes && isLink( link );
+            sw["linkBytes"] = U8( why );
+            ::unlink( link.c_str() );
+         }
+         // (i3) Forced failure after the temp is written: no target, no temp.
+         bool injectedOk = false;
+         {
+            SetSafeFileWriteFailBeforeRenameForSelfTest( true );
+            const String why = SafeWriteTextFile( dir.Path() + "/thumbs/f.md", "partial?" );
+            SetSafeFileWriteFailBeforeRenameForSelfTest( false );
+            injectedOk = why.Contains( "injected failure" ) && entries( root + "/thumbs" ).empty();
+            sw["injected"] = { { "error", U8( why ) }, { "left", entries( root + "/thumbs" ) } };
+         }
+         // (i4) Thumbnail with the same forced failure: stats still ok, no file, no temp.
+         bool thumbFailOk = false;
+         {
+            JWindow w( "pcSsFail", 300, 200, 1, 0.3 );
+            SetSafeFileWriteFailBeforeRenameForSelfTest( true );
+            const StepStatsResult r = ComputeStepStats( w.MainView(), dir.Path() + "/thumbs/6.jpg" );
+            SetSafeFileWriteFailBeforeRenameForSelfTest( false );
+            thumbFailOk = r.ok && !r.thumbnailError.IsEmpty() && r.thumbnailPath.IsEmpty() && entries( root + "/thumbs" ).empty();
+            sw["thumbFail"] = { { "ok", r.ok }, { "error", U8( r.thumbnailError ) }, { "left", entries( root + "/thumbs" ) } };
+         }
+         // (i5) A renderer that throws mid-write, and a failed content check: no target, private dir gone.
+         bool renderFailOk = false;
+         {
+            String given;
+            const String why = SafeRenderFile( dir.Path() + "/thumbs/7.jpg",
+               [&given]( const String& temp ) { given = temp; File::WriteFile( temp, ByteArray( 10, uint8( 0xFF ) ) ); throw Error( "render blew up" ); } );
+            const String whyCheck = SafeWriteFile( dir.Path() + "/thumbs/8.jpg", ByteArray( 10, uint8( 'x' ) ), SafeCheckJpeg );
+            const std::string privDir = U8( File::ExtractDirectory( given ) );
+            renderFailOk = why.Contains( "render blew up" ) && !given.IsEmpty() && !exists( privDir )
+                        && whyCheck.Contains( "not a JPEG" ) && entries( root + "/thumbs" ).empty();
+            sw["renderFail"] = { { "error", U8( why ) }, { "checkError", U8( whyCheck ) }, { "privDirGone", !exists( privDir ) } };
+         }
+         // (i6) Normal writes: a valid JPEG thumbnail, then an existing regular file replaced atomically.
+         bool normalOk = false;
+         {
+            JWindow w( "pcSsNorm", 300, 200, 3, 0.3 );
+            const String path = dir.Path() + "/thumbs/9.jpg";
+            const StepStatsResult r1 = ComputeStepStats( w.MainView(), path );
+            const StepStatsResult r2 = ComputeStepStats( w.MainView(), path );   // over an existing file
+            const ByteArray b = File::Exists( path ) ? File::ReadFile( path ) : ByteArray();
+            const String t1 = SafeWriteTextFile( dir.Path() + "/j.md", "one" );
+            const String t2 = SafeWriteTextFile( dir.Path() + "/j.md", "two" );
+            const ByteArray jb = File::ReadFile( dir.Path() + "/j.md" );
+            normalOk = r1.thumbnailError.IsEmpty() && r2.thumbnailError.IsEmpty() && r2.thumbnailPath == path
+                    && SafeCheckJpeg( b ).IsEmpty() && t1.IsEmpty() && t2.IsEmpty()
+                    && std::string( jb.Begin(), jb.End() ) == "two"
+                    && entries( root + "/thumbs" ) == std::vector<std::string>{ "9.jpg" };
+            sw["normal"] = { { "e1", U8( r1.thumbnailError ) }, { "e2", U8( r2.thumbnailError ) }, { "bytes", b.Length() },
+                             { "t1", U8( t1 ) }, { "t2", U8( t2 ) }, { "left", entries( root + "/thumbs" ) } };
+         }
+         sw["verdicts"] = { { "linkThumb", linkThumbOk }, { "linkBytes", linkBytesOk }, { "injected", injectedOk },
+                            { "thumbFail", thumbFailOk }, { "renderFail", renderFailOk }, { "normal", normalOk } };
+         d["safeWrite"] = sw;
+         safeWriteOk = linkThumbOk && linkBytesOk && injectedOk && thumbFailOk && renderFailOk && normalOk;
+      }
+      catch ( const pcl::Exception& x ) { error += " | safeWrite: " + x.Message(); }
+      catch ( const std::exception& x ) { error += " | safeWrite: " + String( x.what() ); }
+      SetSafeFileWriteFailBeforeRenameForSelfTest( false );
+      const bool ok = noiseOk && rescaleOk && rgbOk && u16Ok && thumbOk && busyOk && previewOk && budgetOk && safeWriteOk;
       out["stepStatsDetail"] = d;
       out["stepStatsError"] = U8( error );
       out["stepStatsOk"] = ok;

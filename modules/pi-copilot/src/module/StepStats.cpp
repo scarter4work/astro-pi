@@ -3,6 +3,7 @@
 
 #include "StepStats.h"
 #include "JourneyConstants.h"
+#include "SafeFileWrite.h"
 #include "ViewPreview.h"
 
 #include <pcl/Bitmap.h>
@@ -52,11 +53,12 @@ String WriteJourneyThumbnail( const Image& blockAveraged, const String& path )
       const String dir = File::ExtractDrive( path ) + File::ExtractDirectory( path );
       if ( !dir.IsEmpty() && !File::DirectoryExists( dir ) )
          File::CreateDirectory( dir );
-      bmp.Save( path, PICopilotJourneyThumbJpegQuality );
-      const ByteArray b = File::ReadFile( path );
-      if ( b.Length() < 4 || b[0] != 0xFF || b[1] != 0xD8 )
-         return "thumbnail " + path + " is not a JPEG";
-      return String();
+      // Never Save() at the predictable final path: render privately, check
+      // the JPEG magic, then atomic rename; a symlink target is refused (CWE-59).
+      const String why = SafeRenderFile( path,
+         [&bmp]( const String& temp ) { bmp.Save( temp, PICopilotJourneyThumbJpegQuality ); },
+         SafeCheckJpeg );
+      return why.IsEmpty() ? String() : "thumbnail " + why;
    }
    catch ( const pcl::Exception& x )
    {

@@ -52,8 +52,10 @@ StepStatsResult ComputeStepStats( const View& view, const String& thumbnailPath 
 double LaplacianNoiseSigma( const Image& img, int channel );
 
 // StretchAndRender( copy, PICopilotJourneyThumbEdge ) -- the preview's own
-// downscale + unlinked auto-STF + render -- then JPEG q85 at path. "" when
-// written, else why. Root thread only (Bitmap).
+// downscale + unlinked auto-STF + render -- then JPEG q85 at path through
+// SafeRenderFile (private render, JPEG check, atomic rename; a symlink or
+// non-regular target is refused, a failure leaves no file). "" when written,
+// else why. Root thread only (Bitmap).
 String WriteJourneyThumbnail( const Image& blockAveraged, const String& path );
 
 } // namespace pcl
