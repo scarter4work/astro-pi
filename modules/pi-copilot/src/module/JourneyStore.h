@@ -120,6 +120,9 @@ private:
    std::string ScalarText( const char* sql );
    [[noreturn]] void Fail( const char* what ) const;
    void CreateSchemaV1();
+   // Throws pcl::Error (DB path + `what`) unless on the root thread. Called by
+   // the Stmt constructor and Exec, the two paths every DB access takes.
+   void RequireRootThread( const char* what ) const;
 
    friend class Stmt;
 };
