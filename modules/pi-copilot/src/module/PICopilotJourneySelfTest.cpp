@@ -31,6 +31,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <clocale>
 #include <cmath>
 #include <cstdint>
 #include <cstdlib>
@@ -57,6 +58,9 @@ String JEvalJs( const String& src )
 {
    // A script that returns nothing (undefined) yields an invalid Variant, whose
    // ToString() throws; statement-only scripts are "".
+   // Guarded like every module caller: a timer-driven reader defers instead
+   // of nesting an EvaluateScript inside this one (controller ruling).
+   EvalDepthGuard guard;
    const Variant v = ThePICopilotModule->EvaluateScript( src, "JavaScript" );
    return v.IsValid() ? v.ToString() : String();
 }
@@ -342,7 +346,8 @@ struct J2State
    int                    tot = 0;     // its TotalCount() then
    HistorySnapshot        maskSnap;    // pcHrA after the masked step (before the rename)
    HistorySnapshot        renamed;     // pcHrRenamed: the full read after the rename
-   bool liveReadOk = false, undoRedoOk = false, branchOk = false, maskOk = false, renameOk = false, reopenOk = false;
+   bool liveReadOk = false, undoRedoOk = false, branchOk = false, maskOk = false, renameOk = false, reopenOk = false,
+        utf8Ok = false;
    std::vector<std::string> steps;     // phase steps seen, in order
    std::string            reopenedId;  // the reopened window (closed by Section J2)
    nlohmann::json         detail = nlohmann::json::object();
@@ -456,6 +461,34 @@ nlohmann::json PhaseHistoryReader( const nlohmann::json& payload )
                  && df.appended.size() == 1 && df.toSuperseded.empty()
                  && sameEarlier && last != nullptr && last->processId == "ImageIdentifier"
                  && last->combinedIndex == st.maskSnap.TotalCount() && dt.appended[0].identity == last->identity;
+   }
+   else if ( step == "utf8" )
+   {
+      // (i2) Review fix: a parameter holding non-ASCII text (Latin-1, BMP and
+      //      astral), XML specials and a newline, set at top level, comes back
+      //      from HistoryReader byte for byte as the core RECORDED it (the
+      //      top-level read of the step's own XPSM, sent as UTF-16 code units).
+      //      Measured: the core records the astral U+1F4F7 as U+1F4FD, so the
+      //      sent text is only compared up to that character (coreAstralIntact).
+      auto fromCodes = []( const nlohmann::json& a )
+      {
+         String t;
+         for ( const nlohmann::json& c : a )
+            t += String::char_type( c.get<int>() );
+         return U8( t );
+      };
+      const std::string sent = fromCodes( payload.at( "sentCodes" ) );
+      const std::string recorded = fromCodes( payload.at( "recordedCodes" ) );
+      const std::string want = "iif($T<0.5 && 1,\n$T,0) /* \xC3\xA9\xE2\x80\x94";   // up to the astral character
+      const HistorySnapshot u = ReadViewHistory( "pcHrUtf", 0 );
+      const std::string got = u.ok && !u.steps.empty() && u.steps.back().parameters.contains( "expression" )
+                            ? u.steps.back().parameters.at( "expression" ).get<std::string>() : std::string();
+      d["utf8"] = { { "snap", SnapJson( u ) }, { "got", got }, { "recorded", recorded }, { "sent", sent },
+                    { "coreAstralIntact", recorded == sent } };
+      st.utf8Ok = u.ok && !recorded.empty() && got == recorded
+               && sent.rfind( want, 0 ) == 0 && got.rfind( want, 0 ) == 0
+               && got.size() >= 3 && got.compare( got.size() - 3, 3, " */" ) == 0
+               && u.steps.back().processId == "PixelMath" && u.steps.back().replayable;
    }
    else if ( step == "reopen" )
    {
@@ -928,9 +961,9 @@ bool RunJourneySelfTest( nlohmann::json& out )
    {
       nlohmann::json d = nlohmann::json::object();
       bool parseOk = false, typesOk = false, identityOk = false, notReplayableOk = false, badXmlOk = false,
-           costOk = false, integrationIdOk = false, busyOk = false, phasesOk = false;
+           costOk = false, integrationIdOk = false, busyOk = false, phasesOk = false, strictParseOk = false;
       String error;
-      std::vector<std::string> made = { "pcHrA", "pcHrRenamed", "pcHrMask", "pcHrLong" };
+      std::vector<std::string> made = { "pcHrA", "pcHrRenamed", "pcHrMask", "pcHrLong", "pcHrUtf" };
       const J2State& st = J2();
       try
       {
@@ -996,8 +1029,50 @@ bool RunJourneySelfTest( nlohmann::json& out )
          integrationIdOk = iiParsed && ii.integrationImageId == "integration" && !ii.parameters.contains( "integrationImageId" )
                         && pm.integrationImageId.empty();
 
+         // (d3) Review fixes: a boolean that is not "true"/"false" is a precise
+         //      not-replayable note (never a silent false); an unreadable <time
+         //      span> fails the step with a precise error; numbers parse the
+         //      same under a comma-decimal LC_NUMERIC (the C library's strtod
+         //      would stop at the '.').
+         {
+            HistoryStep b, sp;
+            String eb, es;
+            std::string x1 = kXpsmPixelMath;
+            x1.replace( x1.find( "\"useSingleExpression\" value=\"true\"" ), 34, "\"useSingleExpression\" value=\"1\"   " );
+            const bool bParsed = ParseXpsmStep( x1, b, eb );
+            std::string x2 = kXpsmPixelMath;
+            x2.replace( x2.find( "span=\"0.006297325\"" ), 18, "span=\"0.0062x7325\"" );
+            const bool spParsed = ParseXpsmStep( x2, sp, es );
+            const std::string oldLocale = std::setlocale( LC_NUMERIC, nullptr ) ? std::setlocale( LC_NUMERIC, nullptr ) : "C";
+            const char* comma = nullptr;
+            for ( const char* name : { "de_DE.UTF-8", "de_DE.utf8", "de_DE" } )
+               if ( (comma = std::setlocale( LC_NUMERIC, name )) != nullptr )
+                  break;
+            const std::string commaName = comma != nullptr ? comma : "";
+            const std::string commaPoint = comma != nullptr ? std::localeconv()->decimal_point : "";
+            HistoryStep htc, pmc;
+            String ec;
+            const bool htcParsed = ParseXpsmStep( HtXpsm( "id=\"HistogramTransformation_instance\"" ), htc, ec );
+            const bool pmcParsed = ParseXpsmStep( kXpsmPixelMath, pmc, ec );
+            std::setlocale( LC_NUMERIC, oldLocale.c_str() );
+            HistoryStep htRef;
+            ParseXpsmStep( HtXpsm( "id=\"HistogramTransformation_instance\"" ), htRef, ec );
+            d["strictParse"] = { { "boolNote", b.parseNote }, { "boolReplayable", b.replayable }, { "spanParsed", spParsed },
+                                 { "spanError", U8( es ) }, { "locale", commaName }, { "localePoint", commaPoint },
+                                 { "localeRestored", std::string( std::setlocale( LC_NUMERIC, nullptr ) ) },
+                                 { "commaHtReplayable", htc.replayable }, { "commaHtNote", htc.parseNote },
+                                 { "commaPmDuration", pmc.durationS } };
+            strictParseOk = bParsed && !b.replayable && b.parseNote.find( "useSingleExpression" ) != std::string::npos
+                         && !b.parameters.contains( "useSingleExpression" )
+                         && !spParsed && es.Contains( "span" ) && es.Contains( "0.0062x7325" )
+                         && comma != nullptr && commaPoint == ","      // the check must really run under a comma locale
+                         && htcParsed && pmcParsed && htc.replayable && htc.identity == htRef.identity
+                         && std::fabs( pmc.durationS - 0.006297325 ) < 1e-12
+                         && std::string( std::setlocale( LC_NUMERIC, nullptr ) ) == oldLocale;
+         }
+
          // (e)-(i) Live history, read by the j2.hr phases between top-level steps.
-         const std::vector<std::string> wantSteps = { "live0", "undo", "redo", "branch", "mask", "rename", "reopen" };
+         const std::vector<std::string> wantSteps = { "live0", "undo", "redo", "branch", "mask", "rename", "reopen", "utf8" };
          d["phases"] = { { "steps", st.steps }, { "detail", st.detail } };
          phasesOk = st.steps == wantSteps;
          if ( !st.reopenedId.empty() )
@@ -1030,7 +1105,23 @@ bool RunJourneySelfTest( nlohmann::json& out )
             const HistorySnapshot after = ReadViewHistory( "pcHrLong", full.TotalCount() - 1 );
             d["busy"] = { { "depth0", depth0 }, { "depthHeld", depthHeld }, { "held", SnapJson( held ) },
                           { "after", SnapJson( after ) }, { "depthAfter", EvaluateScriptDepth() } };
-            busyOk = depth0 == 0 && depthHeld == 1 && held.busy && !held.ok && held.error.IsEmpty() && held.steps.empty()
+            // Review fix: a busy or failed snapshot diffs to NOTHING (no state
+            // change) -- never "supersede every row".
+            const std::vector<KnownStep> knownLong = KnownFrom( full.steps, 1000, full.ActiveCount() );
+            const HistoryDiff dBusy = DiffHistory( knownLong, held );
+            const HistorySnapshot failed = ReadViewHistory( "pcHrNoSuchViewPc", 0 );
+            const HistoryDiff dFailed = DiffHistory( knownLong, failed );
+            auto empty = []( const HistoryDiff& x )
+            {
+               return !x.needFullRead && x.toActive.empty() && x.toUndone.empty() && x.toSuperseded.empty()
+                   && x.appended.empty() && x.appendedState.empty();
+            };
+            d["busy"]["diffBusyEmpty"] = empty( dBusy );
+            d["busy"]["diffFailedEmpty"] = empty( dFailed );
+            d["busy"]["failed"] = SnapJson( failed );
+            busyOk = empty( dBusy ) && empty( dFailed ) && !failed.ok && !failed.busy && failed.error.Contains( "no view" )
+                  && knownLong.size() >= 500
+                  && depth0 == 0 && depthHeld == 1 && held.busy && !held.ok && held.error.IsEmpty() && held.steps.empty()
                   && after.ok && !after.busy && EvaluateScriptDepth() == 0;
          }
       }
@@ -1040,10 +1131,11 @@ bool RunJourneySelfTest( nlohmann::json& out )
       for ( const std::string& id : made )
          JForceClose( id );
       const bool ok = parseOk && typesOk && identityOk && notReplayableOk && badXmlOk && integrationIdOk
-                   && phasesOk && st.liveReadOk && st.undoRedoOk && st.branchOk && st.maskOk && st.renameOk && st.reopenOk
+                   && strictParseOk && phasesOk && st.utf8Ok && st.liveReadOk && st.undoRedoOk && st.branchOk && st.maskOk && st.renameOk && st.reopenOk
                    && costOk && busyOk;
       d["verdicts"] = { { "parse", parseOk }, { "types", typesOk }, { "identity", identityOk }, { "notReplayable", notReplayableOk },
-                        { "badXml", badXmlOk }, { "integrationId", integrationIdOk }, { "phases", phasesOk },
+                        { "badXml", badXmlOk }, { "integrationId", integrationIdOk }, { "strictParse", strictParseOk }, { "phases", phasesOk },
+                        { "utf8", st.utf8Ok },
                         { "liveRead", st.liveReadOk }, { "undoRedo", st.undoRedoOk }, { "branch", st.branchOk },
                         { "mask", st.maskOk }, { "rename", st.renameOk }, { "reopen", st.reopenOk },
                         { "cost", costOk }, { "busy", busyOk } };

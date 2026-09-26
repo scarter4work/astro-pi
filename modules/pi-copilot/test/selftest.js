@@ -358,6 +358,35 @@ catch ( e )
    harnessError( "j2.hr", e );
 }
 
+// Review fix: a step whose parameter holds non-ASCII text (U+00E9 Latin-1,
+// U+2014 BMP, the astral U+1F4F7), XML specials (< &&) and a newline, for the
+// byte-exact round trip through HistoryReader. This file stays ASCII (\u
+// escapes), and both texts travel to the module as hex UTF-16 code units:
+// measured, PI's File.writeTextFile AND the core's recorded history change an
+// astral character (U+1F4F7 comes back as U+1F4FD), so the payload carries
+// the core's own record (read here, independently of HistoryReader) as the
+// ground truth, plus what was sent.
+try
+{
+   ( function ()
+   {
+      function codes( s ) { var r = []; for ( var i = 0; i < s.length; ++i ) r.push( s.charCodeAt( i ) ); return r; }
+      var x = "iif($T<0.5 && 1,\n$T,0) /* \u00e9\u2014\ud83d\udcf7 */";
+      var w = new ImageWindow( 16, 16, 1, 32, true, false, "pcHrUtf" );
+      var p = new PixelMath; p.expression = x; p.executeOn( w.mainView );
+      var pr = w.mainView.processing;
+      var src = pr.at( pr.length - 1 ).toSource( "XPSM 1.0" );
+      var open = "<parameter id=\"expression\">", a = src.indexOf( open ), b = src.indexOf( "</parameter>", a );
+      var rec = a < 0 || b < 0 ? "" : src.substring( a + open.length, b ).replace( /&lt;/g, "<" ).replace( /&gt;/g, ">" )
+                   .replace( /&quot;/g, "\"" ).replace( /&apos;/g, "'" ).replace( /&amp;/g, "&" );
+      checkPhase( "j2.hr", { step: "utf8", sentCodes: codes( x ), recordedCodes: codes( rec ) } );
+   } )();
+}
+catch ( e )
+{
+   harnessError( "j2.utf8", e );
+}
+
 // A 500-step history for Section J2's read-cost check.
 try
 {
