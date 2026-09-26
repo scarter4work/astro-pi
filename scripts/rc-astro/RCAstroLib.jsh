@@ -28,6 +28,73 @@ var RCAstro = {
    // pipeline needs something different.
    timeoutSeconds: 3600,
 
+   // Minimum supported rc-astro CLI major version. CLI 2.x renamed flags these
+   // wrappers emit (BlurXTerminator --ansr/--nsr radius -> --ansp/--nsd
+   // diameter; 0.9.x flags are rejected with exit 109) and dropped models
+   // (NoiseXTerminator ML 3 -> 3.1), so an older CLI is refused up front
+   // rather than run with flags it would reject.
+   MIN_CLI_MAJOR: 2,
+   UPDATE_HINT: "Update it with `rc-astro update --install`, then run the install.sh it " +
+                "downloads with sudo (e.g. `sudo ~/Downloads/rc-astro-cli/install.sh`).",
+   // Binary path whose version already passed the gate this session. Only a
+   // PASS is cached, so a user who updates the CLI mid-session is re-checked.
+   _versionOkFor: null,
+   _versionOkText: null,
+
+   // "Version X.Y.Z (build ...)" -- printed by `--no-banner --help` in both
+   // 0.9.x and 2.x (neither has a --version flag; verified 2026-09-26).
+   _parseCliVersion: function(text) {
+      let m = /Version\s+(\d+)\.(\d+)\.(\d+)/.exec(String(text));
+      return m ? { major: Number(m[1]), text: m[1] + "." + m[2] + "." + m[3] } : null;
+   },
+
+   // Probe `bin --no-banner --help` (same scrubbed environment as runCli, see
+   // the LD_LIBRARY_PATH note there) and fail loudly unless it reports a
+   // version >= MIN_CLI_MAJOR. Returns the version string. The probe reads the
+   // merged stdout/stderr channel, which is fine here: the version line is
+   // plain text, parsed by pattern, not trusted as JSON.
+   requireCliVersion: function(bin) {
+      if (this._versionOkFor === bin && this._versionOkText) return this._versionOkText;
+      let quote = function(s){ return /[^A-Za-z0-9_.\-\/]/.test(s) ? '"' + s + '"' : s; };
+      let out = "";
+      let p = new ExternalProcess;
+      p.onStandardOutputDataAvailable = function() { out += String(this.stdout); };
+      p.onStandardErrorDataAvailable  = function() { out += String(this.stderr); };
+      let timedOut = false;
+      try {
+         p.start("/usr/bin/env -u LD_LIBRARY_PATH " + quote(bin) + " --no-banner --help");
+         let start = Date.now();
+         for (; p.isStarting;) processEvents();
+         for (; p.isRunning;) {
+            processEvents();
+            if (Date.now() - start > 60000) {
+               timedOut = true;
+               try { p.kill(); } catch (e) { /* best-effort */ }
+               for (let guard = 0; p.isRunning && guard < 100; ++guard) processEvents();
+               break;
+            }
+         }
+      } catch (e) {
+         this.fail("Could not run rc-astro at " + bin + " to check its version: " + e.message);
+      }
+      out += String(p.stdout);
+      let v = this._parseCliVersion(out);
+      if (!v) {
+         let shown = out.trim();
+         if (shown.length > 400) shown = shown.substring(0, 400) + "...";
+         this.fail("Could not determine the rc-astro CLI version at " + bin +
+                   (timedOut ? " (version probe timed out)" : " (exit " + p.exitCode + ")") +
+                   ". These scripts require rc-astro CLI " + this.MIN_CLI_MAJOR + ".0 or newer. " +
+                   this.UPDATE_HINT + (shown.length ? " Probe output: " + shown : " The probe printed nothing."));
+      }
+      if (v.major < this.MIN_CLI_MAJOR)
+         this.fail("rc-astro CLI " + v.text + " at " + bin + " is too old: these scripts require rc-astro CLI " +
+                   this.MIN_CLI_MAJOR + ".0 or newer. " + this.UPDATE_HINT);
+      this._versionOkFor = bin;
+      this._versionOkText = v.text;
+      return v.text;
+   },
+
    findBinary: function() {
       if (this.binaryPath && File.exists(this.binaryPath)) return this.binaryPath;
       let candidates = ["/usr/local/bin/rc-astro"];
@@ -269,51 +336,133 @@ var RCAstro = {
       throw new Error(message);
    },
 
+   // Parse one NDJSON line from rc-astro's --json stdout stream, updating
+   // `state` ({errorMsg, strayText}) in place and calling onEvent(obj) for
+   // every successfully-parsed event. Split out of runCli() so this is
+   // independently unit-testable (test/t_lib_dispatch_splice.js) without
+   // spawning a real rc-astro process.
+   //
+   // Why this exists / hardening rationale: PI's ExternalProcess merges a
+   // child process's stderr into the SAME stdout stream, interleaved in
+   // write order. This is UNIVERSAL to PI's ExternalProcess -- true in the
+   // normal GUI and under --automation-mode alike, not an artifact of
+   // headless/xvfb runs (verified: see the review at
+   // .superpowers/sdd/2026-09-25-pi-copilot-image-journey/task-keyring-review.md,
+   // "RCAstroLib" section). onStandardErrorDataAvailable below never fires
+   // and readStandardError()/this.stderr is always empty as a result --
+   // stderrText stays empty in practice; it is kept only as a defensive
+   // no-op in case a future PI build ever does deliver stderr separately.
+   //
+   // Empirically (2026-09-26, outside PI): rc-astro 0.9.10 writes each NDJSON
+   // event via a single atomic write() syscall including its trailing
+   // newline -- verified with `strace -f -tt -e trace=write` against a real,
+   // reliably-reproducing crash (`rc-astro bxt --benchmark N --device
+   // gpu|cpu` SIGABRTs in this environment during model init with a
+   // libstdc++ "terminate called ... rcastro::Error ... ml-onnx.cpp:877"
+   // message on stderr -- cause: CLI 0.9.10 cannot read the "RCA2"-format
+   // model files the newer RC-Astro PI plug-in wrote into ~/.config/RC-Astro;
+   // see rcastro-runtime-investigation.md). Across 7 runs the two preceding stdout JSON lines
+   // were each one complete write(), and the stderr message -- itself split
+   // across 6 separate write() calls by libstdc++'s terminate handler --
+   // always landed strictly after both stdout writes, never mid-line: no
+   // splice was observed. But that repro dies during early model init,
+   // before rc-astro's real (likely multi-threaded, given ONNX Runtime)
+   // progress-emission code path ever runs, so a worker-thread stderr write
+   // landing between two stdout write() calls mid-line cannot be ruled out
+   // from this evidence. Handle it defensively rather than trust it can't
+   // happen: a line with leading non-JSON bytes ahead of its first '{' is
+   // parsed from that '{' onward, and the stray prefix is folded into
+   // strayText -- never dropped silently.
+   _dispatchLine: function(rawLine, state, onEvent) {
+      let line = rawLine.trim();
+      if (line.length == 0) return;
+
+      // Find the JSON object: try each '{' left to right and take the first
+      // suffix that parses to an object carrying an "event" field. Taking only
+      // the FIRST '{' lost the real event whenever the stray prefix itself held
+      // a brace (e.g. 'offset {12}{"event":"error",...}'). Left to right means
+      // the longest parseable suffix wins, so a nested object inside a clean
+      // event is never split off from its parent.
+      let brace = line.indexOf("{");
+      if (brace < 0) {
+         // No JSON object anywhere on this line -- pure stray text (e.g. a
+         // C++ runtime abort/terminate message, or a plain log line).
+         console.writeln(line);
+         state.strayText += (state.strayText.length ? "\n" : "") + line;
+         return;
+      }
+
+      let obj = null;
+      let at = -1;
+      let firstError = "";
+      for (let b = brace; b >= 0; b = line.indexOf("{", b + 1)) {
+         let candidate = null;
+         try { candidate = JSON.parse(line.substring(b)); } catch (e) {
+            if (!firstError.length) firstError = e.message;
+            continue;
+         }
+         // A whole line that is one JSON object is accepted as before even
+         // without "event"; a suffix after stray bytes must carry "event".
+         if (candidate !== null && typeof candidate == "object" &&
+             (candidate.event !== undefined || b == 0)) {
+            obj = candidate; at = b; break;
+         }
+      }
+
+      if (obj === null) {
+         // Contained "{" but no suffix is an event object -- do not vanish it.
+         // Log it and fold the WHOLE line into strayText so it can still
+         // surface via the stray fallback in errorMsg on failure.
+         console.warningln("rc-astro: could not parse JSON line: " +
+                           (firstError.length ? firstError : "no event object") + " -- " + line);
+         state.strayText += (state.strayText.length ? "\n" : "") + line;
+         return;
+      }
+
+      let prefix = line.substring(0, at).trim();
+      if (prefix.length) {
+         // Leading bytes ahead of the event object -- e.g. a spliced-in stderr
+         // fragment. Never drop it: fold into strayText so it still surfaces
+         // via the stray fallback in errorMsg on failure.
+         console.writeln(prefix);
+         state.strayText += (state.strayText.length ? "\n" : "") + prefix;
+      }
+      if (obj) {
+         if (obj.event == "error")   { state.errorMsg = obj.message || obj.text || JSON.stringify(obj); console.criticalln("rc-astro: " + state.errorMsg); }
+         else if (obj.event == "warning") console.warningln("rc-astro: " + (obj.message || obj.text || ""));
+         if (onEvent) onEvent(obj);
+      }
+   },
+
    // Run rc-astro <tool> with args; parse --json NDJSON stream via onEvent.
    runCli: function(tool, argsArray, onEvent) {
       let bin = this.findBinary();
       if (!bin) this.fail("rc-astro CLI not found at /usr/local/bin/rc-astro or on PATH.");
+      this.requireCliVersion(bin);
 
       // Build a quoted command line: quote tokens that are paths / contain spaces.
       let quote = function(s){ return /[^A-Za-z0-9_.\-\/]/.test(s) ? '"' + s + '"' : s; };
-      let parts = [quote(bin), "--no-banner", tool];
+      // Run the child WITHOUT PixInsight's LD_LIBRARY_PATH. PixInsight.sh exports
+      // LD_LIBRARY_PATH=/opt/PixInsight/bin/lib:/opt/PixInsight/bin and every
+      // ExternalProcess inherits it. Since PI 1.9.x that directory ships PI's own
+      // libonnxruntime.so.1 (1.25.1, for the MachineLearning module). rc-astro
+      // finds its bundled onnxruntime through RUNPATH=$ORIGIN, which
+      // LD_LIBRARY_PATH overrides, so the inherited path made rc-astro load PI's
+      // copy and die before main(): "libonnxruntime.so.1: version `VERS_1.23.2'
+      // not found". PixInsight.sh replaces (does not extend) any user value, so
+      // unsetting it restores exactly what rc-astro gets from a normal shell.
+      // ExternalProcess runs no shell, hence env(1) rather than `VAR= cmd`.
+      let parts = ["/usr/bin/env", "-u", "LD_LIBRARY_PATH", quote(bin), "--no-banner", tool];
       for (let i = 0; i < argsArray.length; ++i) parts.push(quote(String(argsArray[i])));
       parts.push("--json", "--overwrite");
       let cmdLine = parts.join(" ");
       console.writeln("running: " + cmdLine);
 
-      let errorMsg   = "";
+      let self       = this;
+      let state      = { errorMsg: "", strayText: "" };
       let stderrText = "";
-      let strayText  = "";
       let buffer     = "";
-      let dispatch = function(line) {
-         line = line.trim();
-         if (line.length == 0 || line.charAt(0) != "{") {
-            if (line.length) {
-               console.writeln(line);
-               // Non-JSON stray text (e.g. a C++ runtime abort/terminate message)
-               // observed empirically to arrive via the stdout channel rather than
-               // stderr in this ExternalProcess/xvfb harness. Accumulate it as a
-               // fallback error source alongside stderrText.
-               strayText += (strayText.length ? "\n" : "") + line;
-            }
-            return;
-         }
-         let obj = null;
-         try { obj = JSON.parse(line); } catch (e) {
-            // Looked like JSON (started with "{") but failed to parse — do not
-            // vanish it. Log it and fold it into strayText so it can still
-            // surface via the stderr/stray fallback in errorMsg on failure.
-            console.warningln("rc-astro: could not parse JSON line: " + e.message + " -- " + line);
-            strayText += (strayText.length ? "\n" : "") + line;
-            return;
-         }
-         if (obj) {
-            if (obj.event == "error")   { errorMsg = obj.message || obj.text || JSON.stringify(obj); console.criticalln("rc-astro: " + errorMsg); }
-            else if (obj.event == "warning") console.warningln("rc-astro: " + (obj.message || obj.text || ""));
-            if (onEvent) onEvent(obj);
-         }
-      };
+      let dispatch = function(line) { self._dispatchLine(line, state, onEvent); };
 
       let p = new ExternalProcess;
       p.onStandardOutputDataAvailable = function() {
@@ -321,6 +470,13 @@ var RCAstro = {
          let nl;
          while ((nl = buffer.indexOf("\n")) >= 0) { dispatch(buffer.substring(0, nl)); buffer = buffer.substring(nl + 1); }
       };
+      // DEAD CODE on this platform, kept as a harmless defensive no-op: PI's
+      // ExternalProcess merges the child's stderr into the stdout stream
+      // (see the full explanation above _dispatchLine()), so this callback
+      // never fires and `this.stderr` is always empty -- stderrText below
+      // stays "" for the life of the run. The real fallback error text on
+      // this platform comes from state.strayText (populated by
+      // _dispatchLine() from the merged stdout channel), not from here.
       p.onStandardErrorDataAvailable = function() {
          let e = String(this.stderr).trim();
          if (e.length) {
@@ -375,20 +531,20 @@ var RCAstro = {
                   errorMsg: "rc-astro timed out after " + this.timeoutSeconds + "s" };
 
       let exit = p.exitCode;
-      let ok = (exit == 0) && (errorMsg.length == 0);
+      let ok = (exit == 0) && (state.errorMsg.length == 0);
       // A JSON {"event":"error"} takes precedence (already captured above). If the
       // run failed without ever emitting one (license failure, crash, bad argument
       // caught before JSON init, etc.), fall back to the accumulated stderr text so
       // the real reason isn't lost — only fall back to the generic exit-code message
       // when stderr is also empty.
-      if (!ok && errorMsg.length == 0) {
+      if (!ok && state.errorMsg.length == 0) {
          let trimmedStderr = stderrText.trim();
-         let trimmedStray  = strayText.trim();
+         let trimmedStray  = state.strayText.trim();
          let fallback = trimmedStderr.length ? trimmedStderr
                       : trimmedStray.length  ? trimmedStray
                       : "";
-         errorMsg = fallback.length ? fallback : ("rc-astro exited with code " + exit);
+         state.errorMsg = fallback.length ? fallback : ("rc-astro exited with code " + exit);
       }
-      return { exit: exit, ok: ok, errorMsg: errorMsg };
+      return { exit: exit, ok: ok, errorMsg: state.errorMsg };
    }
 };

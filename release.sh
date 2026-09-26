@@ -69,10 +69,11 @@ LD_LIBRARY_PATH="${ASTROPI_PI_DIR:-/opt/PixInsight}/bin/lib:${ASTROPI_PI_DIR:-/o
   "$PI" -n --automation-mode --no-startup-scripts --no-startup-check-updates \
         --no-startup-gui-messages -r="$ROOT/gaia-depth-grade/tools/SignGaiaScriptsNative.js" \
         --force-exit >/dev/null 2>&1 || true
-python3 - /tmp/.gaia_sign_result.json <<'PY' || die "gaia script signing/verification failed"
-import json,sys
+python3 - /tmp/.gaia_sign_result.json "$ROOT/gaia-depth-grade/pi" <<'PY' || die "gaia script signing/verification failed"
+import json,os,sys
 r=json.load(open(sys.argv[1]))
 assert r.get("ok"), r
+assert os.path.realpath(r.get("dir") or "") == os.path.realpath(sys.argv[2]), ("signed the wrong tree", r.get("dir"), sys.argv[2])
 print("  signed+verified:", ", ".join(r["verified"]))
 PY
 
@@ -85,10 +86,11 @@ LD_LIBRARY_PATH="${ASTROPI_PI_DIR:-/opt/PixInsight}/bin/lib:${ASTROPI_PI_DIR:-/o
   "$PI" -n --automation-mode --no-startup-scripts --no-startup-check-updates \
         --no-startup-gui-messages -r="$ROOT/scripts/rc-astro/tools/SignRCAstroScriptsNative.js" \
         --force-exit >/dev/null 2>&1 || true
-python3 - /tmp/.rcastro_sign_result.json <<'PY' || die "rc-astro script signing/verification failed"
-import json,sys
+python3 - /tmp/.rcastro_sign_result.json "$ROOT/scripts/rc-astro" <<'PY' || die "rc-astro script signing/verification failed"
+import json,os,sys
 r=json.load(open(sys.argv[1]))
 assert r.get("ok"), r
+assert os.path.realpath(r.get("dir") or "") == os.path.realpath(sys.argv[2]), ("signed the wrong tree", r.get("dir"), sys.argv[2])
 print("  signed+verified:", ", ".join(r["verified"]))
 PY
 
@@ -233,7 +235,7 @@ echo "== 3d/6 package rc-astro CLI wrapper script zip =="
 # PixInsight's scripts tree. The 3 feature scripts + the shared engine, each with its .xsgn.
 # NOTE: these WRAP the separately-licensed rc-astro CLI binary — they ship as thin scripts
 # only, and fail loudly (MessageBox) if the CLI is not installed. No RC-Astro IP is bundled.
-RCASTRO_VER=1.0.0
+RCASTRO_VER=1.1.0
 RCASTRO_ZIP="rc-astro-cli_v${RCASTRO_VER}.zip"
 RCASTRO_STAGE="$(mktemp -d)"
 mkdir -p "$RCASTRO_STAGE/src/scripts/RCAstro"
@@ -247,6 +249,18 @@ rm -f "$REPO/$RCASTRO_ZIP"
 rm -rf "$RCASTRO_STAGE"
 [ -f "$REPO/$RCASTRO_ZIP" ] || die "zip $RCASTRO_ZIP not produced"
 reuse_if_published "$RCASTRO_ZIP"
+# Point the manifest's rc-astro entry at THIS version's zip. write_pkg (step 4)
+# matches by exact fileName, so without this rename a version bump built a new
+# zip while the manifest kept declaring (and integrity-checking) the old one:
+# the release "passed" and shipped nothing new.
+python3 - "$REPO/updates.xri" "$RCASTRO_ZIP" <<'PY2' || die "manifest has no rc-astro-cli package entry to update"
+import re,sys
+mf,fn=sys.argv[1:3]
+s=open(mf).read()
+s,n=re.subn(r'fileName="rc-astro-cli_v[0-9.]+\.zip"', 'fileName="'+fn+'"', s)
+if n!=1: sys.exit("expected exactly one rc-astro-cli package entry, found %d" % n)
+open(mf,'w').write(s)
+PY2
 
 echo "== 4/6 write fileName/sha1/releaseDate into ONE manifest =="
 write_pkg "$REPO/updates.xri" "$MOD_TGZ"                  "$(sha1 "$REPO/$MOD_TGZ")"
