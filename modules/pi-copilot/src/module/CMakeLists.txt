@@ -25,6 +25,7 @@ set(MODULE_SOURCES
     ViewPreview.cpp
     StepStats.cpp
     SafeFileWrite.cpp
+    JourneyStore.cpp
     ProcessCatalog.cpp
     VisionTurn.cpp
     ViewCapture.cpp
