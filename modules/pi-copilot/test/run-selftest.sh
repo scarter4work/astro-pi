@@ -155,6 +155,13 @@ unset KR_KEY
 # GraXpert live check (self-test B10): the app path is the user's OWN GraXpert
 # setting, read (read-only) from the real PixInsight settings file -- the
 # slot-90 settings are empty. An explicit PICOPILOT_TEST_GRAXPERT_APP wins.
+# Concurrent slots: PixInsight's GraXpert core bridges to the program through
+# FIXED shared temp files (/tmp/PixInsight.xisf, /tmp/PixInsight_GraXpert.xisf),
+# so two instances running it at once clobber each other. The self-test
+# therefore runs every GraXpert-core call (B10 live, B10b stand-in) under an
+# exclusive flock on /tmp/picopilot-graxpert-selftest.lock
+# (GraXpertCoreSelfTestLock); only those sections are serialized, the rest of
+# the run stays parallel. The wait is printed below (lockWaitMs).
 if [ -z "${PICOPILOT_TEST_GRAXPERT_APP:-}" ] && [ -f "$HOME/.PixInsight/core-001-pxi.settings" ]; then
    PICOPILOT_TEST_GRAXPERT_APP="$(python3 - "$HOME/.PixInsight/core-001-pxi.settings" <<'PY' 2>/dev/null || true
 import sys, xml.etree.ElementTree as ET
@@ -413,6 +420,7 @@ required_true = [
     'runPjsrOk', 'runPjsrBreakoutOk',
     'finalFixOk',
     'pinnedOk',
+    'bridgeOk',
     'rereviewFixOk',
     'reviewE4422c9Ok',
     'keyringRetryOk',
@@ -435,7 +443,7 @@ if d.get('streamLoopbackSkipped') is not False: missing.append('streamLoopbackSk
 import os
 if os.environ.get('PICOPILOT_REQUIRE_LIVE') == '1':
     for k in ('anthropicSkipped', 'twoTurnSkipped', 'visionSkipped', 'liveAgentSkipped', 'liveConversationSkipped',
-              'graxpertLiveSkipped'):
+              'graxpertLiveSkipped', 'bridgeStandInSkipped'):
         if d.get(k) is not False: missing.append(k + '==false (PICOPILOT_REQUIRE_LIVE=1)')
 print('anthropic check: %s' % ('SKIPPED (no key)' if d.get('anthropicSkipped') else 'RAN against real API'))
 print('two-turn check: %s' % ('SKIPPED (no key)' if d.get('twoTurnSkipped') else 'RAN against real API'))
@@ -443,7 +451,9 @@ print('vision check: %s' % ('SKIPPED (no key)' if d.get('visionSkipped') else 'R
 print('live agent check: %s' % ('SKIPPED (no key)' if d.get('liveAgentSkipped') else 'RAN against real API, ratio=%r log=%r' % (d.get('liveAgentRatio'), d.get('liveAgentLog'))))
 print('live conversation check: %s' % ('SKIPPED (no key)' if d.get('liveConversationSkipped') else 'RAN against real API, cacheRead=%r trimThought=%r trimTransformations=%r%s' % (d.get('liveCacheRead'), d.get('liveTrimThought'), d.get('liveTrimTransformations'), ('' if d.get('liveConversationOk') else ' FAILED: %r' % d.get('liveConversationDetail', {}).get('trimLiveReason')))))
 pd = d.get('pinnedDetail', {})
-print('GraXpert live check: %s' % (('SKIPPED: %s' % pd.get('liveSkipReason')) if d.get('graxpertLiveSkipped') is not False else 'RAN, %r' % {k: pd.get('live', {}).get(k) for k in ('seconds', 'gradientBefore', 'gradientAfter', 'log')}))
+print('GraXpert live check: %s' % (('SKIPPED: %s' % pd.get('liveSkipReason')) if d.get('graxpertLiveSkipped') is not False else 'RAN, %r lockWaitMs=%r' % ({k: pd.get('live', {}).get(k) for k in ('seconds', 'gradientBefore', 'gradientAfter', 'log')}, pd.get('liveLock', {}).get('waitedMs'))))
+bd = d.get('bridgeDetail', {})
+print('GraXpert no-effect detection (stand-in): %s; digest 60 MP RGB float = %r ms; checks=%r' % (('SKIPPED: %s' % bd.get('standInSkipReason')) if d.get('bridgeStandInSkipped') is not False else 'RAN (lockWaitMs=%r)' % bd.get('lock', {}).get('waitedMs'), bd.get('digest60MP', {}).get('ms'), bd.get('checks')))
 rd = d.get('rereviewFixDetail', {})
 print('describe_process sizes (chars, cap %r): %r; list_processes chars=%r' % (rd.get('describeSizes', {}).get('cap'), rd.get('describeSizes', {}).get('top10'), rd.get('listProcesses', {}).get('chars')))
 if d.get('liveModelSwitch') is not None:

@@ -6,6 +6,7 @@
 
 #include "ProcessSafety.h"   // PinnedParameter
 
+#include <pcl/ImageVariant.h>
 #include <pcl/String.h>
 #include <pcl/View.h>
 
@@ -35,6 +36,12 @@ struct ApplyProcessResult
    // recorded could not be checked (a History read was busy or failed; step
    // 7c). ok == false with a distinct error; never reported as ok.
    bool           unverifiedChange = false;
+   // Task T-graxpert: a process that bridges to an EXTERNAL program through
+   // files (ExternalProgramBridges()) reported success, but had no effect: the
+   // target's pixel content is identical before and after (replace mode), or
+   // no result window opened (new-window mode). ok == false with a distinct
+   // error; the image content is unchanged.
+   bool           noEffect = false;
    // When ok: what is known about undoing it, stated only as far as it was
    // VERIFIED (model-facing): a checked History step on a main view, an
    // unverifiable preview step, or no History step on the target at all
@@ -91,6 +98,13 @@ struct ApplyProcessResult
  *      Not recorded: ok=false, unrecordedChange=true and the error says the
  *      image was changed outside History. `undo` states only what was
  *      verified.
+ *   8. NO-EFFECT (Task T-graxpert), only for a process in the explicit
+ *      ExternalProgramBridges() table: ExecuteOn() == true and a History step
+ *      do NOT prove that such a process did anything (see the table). In
+ *      replace mode an ImageContentDigest() of the target taken before the
+ *      run must differ after it; in new-window mode at least one new main
+ *      window must have opened. Otherwise ok=false, noEffect=true and a
+ *      DISTINCT error (checked before step 7, which would misread the case).
  * Every failure is ok=false + a message naming the process/parameter and the
  * fix; nothing after the failing step runs, so a failure never touches the
  * image -- except step 7, which is reported as exactly that. Root thread only.
@@ -99,6 +113,49 @@ struct ApplyProcessResult
 ApplyProcessResult ApplyProcess( const IsoString& processId, const nlohmann::json& parameters,
                                  const nlohmann::json& tableParameters, View view,
                                  const std::vector<PinnedParameter>* pinned = nullptr );
+
+// ---- External-program bridges (Task T-graxpert) ------------------------------
+//
+// Processes that hand the image to an EXTERNAL program through files and read
+// its result back. For these, ExecuteOn() == true plus a History step (the
+// generic swap/undo transaction every ExecuteOn() gets) is NOT evidence that
+// anything happened. Measured for GraXpert (PixInsight 1.9.5, 2026-09-26,
+// PJSR + strace, no disassembly):
+//   - the core writes /tmp/PixInsight.xisf and reads /tmp/PixInsight_GraXpert.xisf,
+//     FIXED names shared by every PixInsight instance on the machine: two
+//     instances running GraXpert at once clobber each other (ok, pixels
+//     unchanged, or ok with the OTHER instance's result blended in);
+//   - a program that exits 0 without writing a result, or exits 3: ok, one
+//     new History step, pixels bit-identical;
+//   - replaceImage=false and no result: ok, no History step, no new window;
+//   - a 64x64 image: the program is never launched; ok, pixels identical.
+// Membership is explicit (never inferred from ids): a process is listed only
+// when it is PROVEN to launch an external program. The installed catalog was
+// checked (self-test B10b "bridgeScan": every installed process with a
+// program/launch-like parameter is listed here or has a reviewed reason why
+// it is not a bridge). A process that may legitimately leave its target
+// unchanged is never listed -- it would be misreported.
+//
+// LIMITATION: a digest proves only "changed" vs "identical". A result that
+// changed but is WRONG (another instance's output blended in -- the race's
+// other outcome) cannot be detected here; only PixInsight can fix the shared
+// temp file (reported upstream).
+struct ExternalProgramBridge
+{
+   const char* processId;          // canonical Process::Id()
+   const char* replaceParameter;   // Boolean: true -> the target changes in place; false -> new windows only
+   const char* program;            // the external program's name, for messages
+   const char* evidence;           // why it is listed (documentation / self-test detail)
+};
+const std::vector<ExternalProgramBridge>& ExternalProgramBridges();
+const ExternalProgramBridge* FindExternalProgramBridge( const IsoString& canonicalProcessId );
+
+// A 64-bit content digest of an image: geometry, sample type and EVERY sample
+// of EVERY channel (alpha included). Equal digests = identical content (not
+// cryptographic: only an adversarial edit could collide). Cost: one read pass
+// over the pixel data (self-test B10 reports the ms for a 60 MP RGB float
+// image). Never throws for a valid image.
+uint64 ImageContentDigest( const ImageVariant& image );
 
 // apply_process's checks before anything is asked or run: known id, can run
 // on views, then a dry run of the parameter setting on a throwaway DEFAULT

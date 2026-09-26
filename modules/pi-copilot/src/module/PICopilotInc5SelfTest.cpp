@@ -42,6 +42,7 @@
 #include <pcl/View.h>
 
 #include <algorithm>
+#include <cctype>
 #include <chrono>
 #include <cmath>
 #include <cstdint>
@@ -50,11 +51,16 @@
 #include <filesystem>
 #include <fstream>
 #include <functional>
+#include <map>
 #include <set>
 #include <string>
 #include <thread>
 #include <vector>
 
+#include <cerrno>
+#include <cstring>
+#include <fcntl.h>
+#include <sys/file.h>
 #include <sys/stat.h>
 #include <unistd.h>
 
@@ -224,6 +230,76 @@ public:
 private:
 
    ImageWindow m_window;
+};
+
+// Serializes the self-test's runs of PixInsight's GraXpert core process (real
+// program or stand-in) across CONCURRENT PixInsight instances (Task
+// T-graxpert). The core bridges to the external program through FIXED shared
+// temp files (/tmp/PixInsight.xisf, /tmp/PixInsight_GraXpert.xisf), so two
+// test slots running it at once clobber each other (proven: ok with pixels
+// unchanged or blended). One fixed lock file, flock(2)ed exclusively; it is
+// opened read-only and O_NOFOLLOW (a planted symlink is refused, nothing is
+// ever written to it), so a fixed /tmp name is safe. Bounded wait, reported.
+class GraXpertCoreSelfTestLock
+{
+public:
+
+   static constexpr const char* kPath = "/tmp/picopilot-graxpert-selftest.lock";
+
+   explicit GraXpertCoreSelfTestLock( double timeoutS )
+   {
+      const auto t0 = std::chrono::steady_clock::now();
+      m_fd = ::open( kPath, O_RDONLY | O_CREAT | O_NOFOLLOW | O_CLOEXEC, 0644 );
+      if ( m_fd < 0 )
+      {
+         m_error = String( "cannot open " ) + kPath + ": " + String( ::strerror( errno ) );
+         return;
+      }
+      for ( ;; )
+      {
+         if ( ::flock( m_fd, LOCK_EX | LOCK_NB ) == 0 )
+         {
+            m_locked = true;
+            break;
+         }
+         if ( errno != EWOULDBLOCK && errno != EINTR )
+         {
+            m_error = String( "flock " ) + kPath + ": " + String( ::strerror( errno ) );
+            break;
+         }
+         if ( std::chrono::duration<double>( std::chrono::steady_clock::now() - t0 ).count() > timeoutS )
+         {
+            m_error = String().Format( "another PixInsight test instance held %s for more than %.0f s", kPath, timeoutS );
+            break;
+         }
+         ::usleep( 100000 );
+      }
+      m_waitedMs = std::chrono::duration<double, std::milli>( std::chrono::steady_clock::now() - t0 ).count();
+   }
+
+   ~GraXpertCoreSelfTestLock()
+   {
+      if ( m_fd >= 0 )
+      {
+         if ( m_locked )
+            ::flock( m_fd, LOCK_UN );
+         ::close( m_fd );
+      }
+   }
+
+   GraXpertCoreSelfTestLock( const GraXpertCoreSelfTestLock& ) = delete;
+   GraXpertCoreSelfTestLock& operator =( const GraXpertCoreSelfTestLock& ) = delete;
+
+   bool Locked() const { return m_locked; }
+   double WaitedMs() const { return m_waitedMs; }
+   const String& Error() const { return m_error; }
+
+private:
+
+   int    m_fd = -1;
+   bool   m_locked = false;
+   double m_waitedMs = 0;
+   String m_error;
 };
 
 double Inc5Median( View v, int channel )
@@ -3399,6 +3475,14 @@ bool RunInc5SelfTest( nlohmann::json& out )
          else
          {
             liveSkipped = false;
+            // Serialized across concurrent test instances (the core's shared
+            // temp files; see GraXpertCoreSelfTestLock). Held until the end of
+            // this block, i.e. across the whole real run.
+            GraXpertCoreSelfTestLock coreLock( 300 );
+            detail["liveLock"] = { { "path", GraXpertCoreSelfTestLock::kPath }, { "waitedMs", coreLock.WaitedMs() },
+                                   { "error", U8( coreLock.Error() ) } };
+            if ( !coreLock.Locked() )
+               throw Error( "GraXpert live check: " + coreLock.Error() );
             SetGlobalSettingReaderForSelfTest( [&]( const IsoString&, String& value ) { value = appPath; return true; } );
             Inc5TestWindow gw( "PCGraXpertLive", 256, 256, 1, 0 );
             {
@@ -3469,6 +3553,291 @@ bool RunInc5SelfTest( nlohmann::json& out )
       out["pinnedError"] = U8( error );
       out["graxpertLiveSkipped"] = liveSkipped;
       out["pinnedOk"] = ok;
+      allOk = allOk && ok;
+   }
+
+   // ---- Section B10b: external-program bridges -- "ok but no effect" (T-graxpert)
+   // PixInsight's GraXpert core process reports success (and records a History
+   // step) even when the external program did nothing. apply_process must say
+   // so, distinctly, for the processes in ExternalProgramBridges() -- and only
+   // for them. Deterministic: a stand-in "GraXpert" program that writes no
+   // result reproduces the race's "ok but unchanged" outcome without a race.
+   SelfTestSectionMark( "B10b external-program bridges (T-graxpert)" );
+   {
+      bool digestOk = false, tableOk = false, scanOk = false, replaceOk = false, failExitOk = false,
+           newWindowOk = false, controlOk = false, budgetOk = false;
+      bool standInSkipped = true;
+      nlohmann::json detail = nlohmann::json::object();
+      String error;
+      try
+      {
+         // -- 1. ImageContentDigest: every channel (alpha too), geometry, type.
+         {
+            auto make = []( int w, int h, int n, float v )
+            {
+               Image img( w, h, ColorSpace::Gray );
+               img.AllocateData( w, h, n, n >= 3 ? ColorSpace::RGB : ColorSpace::Gray );
+               img.Fill( v );
+               return img;
+            };
+            Image a = make( 64, 48, 4, 0.25f ), b = make( 64, 48, 4, 0.25f );   // RGB + alpha
+            const uint64 da = ImageContentDigest( ImageVariant( &a ) ), db = ImageContentDigest( ImageVariant( &b ) );
+            b( 63, 47, 3 ) = 0.2500001f;                                         // last sample of the ALPHA channel
+            const uint64 dAlpha = ImageContentDigest( ImageVariant( &b ) );
+            b( 63, 47, 3 ) = 0.25f;
+            b( 0, 0, 1 ) = 0.26f;                                                // first sample of channel 1
+            const uint64 dCh1 = ImageContentDigest( ImageVariant( &b ) );
+            b( 0, 0, 1 ) = 0.25f;
+            const uint64 dBack = ImageContentDigest( ImageVariant( &b ) );
+            Image c = make( 48, 64, 4, 0.25f );                                  // same samples, other geometry
+            UInt16Image u;
+            u.AllocateData( 64, 48, 4, ColorSpace::RGB );
+            u.Zero();
+            Image z = make( 64, 48, 4, 0.0f );                                   // zero bytes as float vs uint16
+            const uint64 dGeom = ImageContentDigest( ImageVariant( &c ) );
+            const uint64 dU16 = ImageContentDigest( ImageVariant( &u ) ), dZ = ImageContentDigest( ImageVariant( &z ) );
+            digestOk = da == db && dAlpha != da && dCh1 != da && dBack == da && dGeom != da && dU16 != dZ;
+            detail["digest"] = { { "equal", da == db }, { "alphaDiffers", dAlpha != da }, { "ch1Differs", dCh1 != da },
+                                 { "restored", dBack == da }, { "geometryDiffers", dGeom != da },
+                                 { "sampleTypeDiffers", dU16 != dZ } };
+
+            // Cost budget: a 60 MP RGB 32-bit float image (720 MB), the
+            // largest a user plausibly runs GraXpert on; the check pays this
+            // twice per bridged apply (before + after).
+            Image big;
+            big.AllocateData( 9504, 6336, 3, ColorSpace::RGB );   // 60.2 MP
+            big.Fill( 0.125f );
+            const auto t0 = std::chrono::steady_clock::now();
+            const uint64 dBig = ImageContentDigest( ImageVariant( &big ) );
+            const double ms = std::chrono::duration<double, std::milli>( std::chrono::steady_clock::now() - t0 ).count();
+            // Generous against machine load; a real regression (e.g. per-sample
+            // virtual calls) costs many seconds.
+            budgetOk = ms < 2500 && dBig != 0;
+            detail["digest60MP"] = { { "width", 9504 }, { "height", 6336 }, { "channels", 3 }, { "ms", ms },
+                                     { "budgetMs", 2500 } };
+         }
+
+         // -- 2. The table: explicit, installed, its switch parameter real.
+         bool installed = false;
+         try { installed = Process( IsoString( "GraXpert" ) ).Id() == "GraXpert"; } catch ( ... ) {}
+         {
+            const ExternalProgramBridge* gx = FindExternalProgramBridge( "GraXpert" );
+            nlohmann::json rows = nlohmann::json::array();
+            bool rowsOk = gx != nullptr && FindExternalProgramBridge( "PixelMath" ) == nullptr;
+            const nlohmann::json& pol = CompiledProcessSafety();
+            for ( const ExternalProgramBridge& b : ExternalProgramBridges() )
+            {
+               bool paramOk = false, pinnedProgram = false;
+               try
+               {
+                  const Process P( IsoString( b.processId ) );
+                  paramOk = P.Id() == b.processId && ProcessParameter( P, IsoString( b.replaceParameter ) ).IsBoolean();
+               }
+               catch ( ... ) {}
+               // The program it launches is pinned (never model-chosen).
+               const nlohmann::json pins = pol.value( "pinnedParameters", nlohmann::json::object() )
+                                              .value( b.processId, nlohmann::json::object() );
+               for ( const auto& kv : pins.items() )
+                  if ( kv.value().is_object() && kv.value().value( "kind", "" ) == "executable" )
+                     pinnedProgram = true;
+               rows.push_back( { { "process", b.processId }, { "replaceParameter", b.replaceParameter },
+                                 { "switchIsBoolean", paramOk }, { "programPinned", pinnedProgram } } );
+               // Not installed: only the policy half can be checked.
+               rowsOk = rowsOk && pinnedProgram && (paramOk || !installed);
+            }
+            tableOk = rowsOk;
+            detail["table"] = rows;
+         }
+
+         // -- 3. Catalog scan (membership evidence, metadata only -- no
+         // instance is built: some plug-ins crash when instantiated). Every
+         // installed process with a parameter that names an external
+         // program must be in the table, or reviewed here as not a bridge.
+         {
+            // Whole camelCase words of an id ("appPath" -> app, path).
+            auto words = []( const std::string& id )
+            {
+               std::vector<std::string> w;
+               std::string cur;
+               for ( size_t i = 0; i < id.size(); ++i )
+               {
+                  const unsigned char c = static_cast<unsigned char>( id[i] );
+                  if ( !std::isalnum( c ) )
+                  {
+                     if ( !cur.empty() )
+                        w.push_back( cur );
+                     cur.clear();
+                     continue;
+                  }
+                  if ( std::isupper( c ) && !cur.empty()
+                    && (std::islower( static_cast<unsigned char>( id[i - 1] ) ) || std::isdigit( static_cast<unsigned char>( id[i - 1] ) )
+                        || (i + 1 < id.size() && std::islower( static_cast<unsigned char>( id[i + 1] ) ))) )
+                  {
+                     w.push_back( cur );
+                     cur.clear();
+                  }
+                  cur += char( std::tolower( c ) );
+               }
+               if ( !cur.empty() )
+                  w.push_back( cur );
+               return w;
+            };
+            static const std::set<std::string> kProgramWords = { "app", "application", "program", "executable", "exec",
+                                                                 "exe", "launch", "launcher", "binary", "cli", "command",
+                                                                 "python", "tool" };
+            auto programLike = [&]( const std::string& id )
+            {
+               for ( const std::string& w : words( id ) )
+                  if ( kProgramWords.count( w ) )
+                     return true;
+               return false;
+            };
+            // Reviewed: hits that do NOT launch an external program.
+            // (First scan, PixInsight 1.9.5, 2026-09-26: exactly these + GraXpert.)
+            static const std::map<std::string, std::string> notBridges = {
+               { "APASS", "'command' runs a catalog-database operation inside PixInsight; 'generateBinaryOutput' "
+                          "is an output-file option (policy: confirmAlways)" },
+               { "Gaia", "'command' runs a catalog-database operation inside PixInsight; 'generateBinaryOutput' "
+                         "is an output-file option (policy: confirmAlways)" },
+               { "IndigoDeviceController", "'serverCommand'/'getCommand*' talk to an INDIGO server over the "
+                                           "network, not a program run through files (policy: deny)" },
+               { "IndigoMount", "'Command' is a mount command sent to an INDIGO server (policy: deny)" },
+               { "MultiscaleGradientCorrection", "'command' selects a MARS database operation run inside "
+                                                 "PixInsight (policy: confirmWhen command != \"\")" },
+               { "Preferences", "'Application_*' are PixInsight's own settings (policy: deny)" },
+            };
+            nlohmann::json hits = nlohmann::json::object();
+            std::vector<std::string> unreviewed;
+            for ( const Process& P : Process::AllProcesses() )
+            {
+               const std::string pid( P.Id().c_str() );
+               nlohmann::json ids = nlohmann::json::array();
+               for ( const ProcessParameter& p : P.Parameters() )
+               {
+                  if ( programLike( std::string( p.Id().c_str() ) ) )
+                     ids.push_back( std::string( p.Id().c_str() ) );
+                  if ( p.IsTable() )
+                     for ( const ProcessParameter& c : p.TableColumns() )
+                        if ( programLike( std::string( c.Id().c_str() ) ) )
+                           ids.push_back( std::string( p.Id().c_str() ) + "." + c.Id().c_str() );
+               }
+               if ( ids.empty() )
+                  continue;
+               hits[pid] = ids;
+               if ( FindExternalProgramBridge( P.Id() ) == nullptr && notBridges.count( pid ) == 0 )
+                  unreviewed.push_back( pid );
+            }
+            detail["bridgeScan"] = { { "hits", hits }, { "unreviewed", unreviewed } };
+            scanOk = unreviewed.empty() && (!installed || hits.contains( "GraXpert" ));
+         }
+
+         // -- 4. The stand-in: a "GraXpert" program that exits without
+         // writing a result (measured: the core then reports success, adds a
+         // History step, and leaves every pixel as it was).
+         if ( !installed )
+            detail["standInSkipReason"] = "the GraXpert process is not installed";
+         else
+         {
+            standInSkipped = false;
+            GraXpertCoreSelfTestLock coreLock( 300 );
+            detail["lock"] = { { "path", GraXpertCoreSelfTestLock::kPath }, { "waitedMs", coreLock.WaitedMs() },
+                               { "error", U8( coreLock.Error() ) } };
+            if ( !coreLock.Locked() )
+               throw Error( "stand-in GraXpert checks: " + coreLock.Error() );
+            SyntheticFrames dir( 0 );
+            const String noResult = dir.AddFile( "GraXpert", "#!/bin/sh\nexit 0\n" );
+            const String failing = dir.AddFile( "GraXpert-exit3", "#!/bin/sh\nexit 3\n" );
+            ::chmod( noResult.ToUTF8().c_str(), 0755 );
+            ::chmod( failing.ToUTF8().c_str(), 0755 );
+            String program = noResult;
+            SetGlobalSettingReaderForSelfTest( [&]( const IsoString&, String& value ) { value = program; return true; } );
+
+            // 256x256: GraXpert does not even launch its program for a 64x64
+            // image (measured), which would test nothing.
+            Inc5TestWindow gw( "PCGraXpertStandIn", 256, 256, 1, 0 );
+            {
+               View v = gw.MainView();
+               AutoViewLock lock( v );
+               ImageVariant iv = v.Image();
+               Image& img = static_cast<Image&>( *iv );
+               for ( int y = 0; y < img.Height(); ++y )
+                  for ( int x = 0; x < img.Width(); ++x )
+                     img( x, y ) = float( 0.05 + 0.25*x/double( img.Width() - 1 ) );
+            }
+            auto digest = [&]()
+            {
+               View v = gw.MainView();
+               AutoViewLock lock( v );
+               return ImageContentDigest( v.Image() );
+            };
+            ToolContext sc;
+            sc.mode = AgentMode::Copilot;
+            sc.turnViewId = gw.MainView().FullId();
+            sc.confirm = []( const String&, const String&, const String& ) { return false; };
+            auto text = []( const ToolOutcome& o )
+            {
+               return o.content.at( 0 ).at( "type" ) == "text" ? FromU8( o.content.at( 0 ).at( "text" ).get<std::string>() )
+                                                               : String();
+            };
+            auto windowCount = []() { return ImageWindow::AllWindows().Length(); };
+            const String kReplaceLead = "GraXpert reported success but the image did not change";
+            const String kWindowLead = "GraXpert reported success but produced no result window";
+
+            // a. replace mode, program writes nothing.
+            const uint64 d0 = digest();
+            const ToolOutcome r1 = ExecuteTool( ToolCall{ "sb1", "apply_process",
+               { { "process_id", "GraXpert" }, { "parameters", { { "backgroundExtraction", true }, { "replaceImage", true } } } } }, sc );
+            const uint64 d1 = digest();
+            replaceOk = r1.isError && !r1.mutated && d1 == d0
+                     && text( r1 ).StartsWith( kReplaceLead )
+                     && text( r1 ).Contains( "another PixInsight instance" )
+                     && text( r1 ).Contains( "PCGraXpertStandIn" )
+                     && r1.logLine.Contains( kReplaceLead );
+            detail["replace"] = { { "isError", r1.isError }, { "mutated", r1.mutated }, { "pixelsIdentical", d1 == d0 },
+                                  { "text", U8( text( r1 ) ) }, { "log", U8( r1.logLine ) } };
+
+            // b. the program FAILS (exit 3): the core still reports success.
+            program = failing;
+            const ToolOutcome r2 = ExecuteTool( ToolCall{ "sb2", "apply_process",
+               { { "process_id", "GraXpert" }, { "parameters", { { "backgroundExtraction", true }, { "replaceImage", true } } } } }, sc );
+            const uint64 d2 = digest();
+            failExitOk = r2.isError && !r2.mutated && d2 == d0 && text( r2 ).StartsWith( kReplaceLead );
+            detail["failingProgram"] = { { "isError", r2.isError }, { "pixelsIdentical", d2 == d0 },
+                                         { "text", U8( text( r2 ) ) } };
+
+            // c. new-window mode (replaceImage false): no result window opened.
+            program = noResult;
+            const size_type w0 = windowCount();
+            const ToolOutcome r3 = ExecuteTool( ToolCall{ "sb3", "apply_process",
+               { { "process_id", "GraXpert" }, { "parameters", { { "backgroundExtraction", true }, { "replaceImage", false } } } } }, sc );
+            const size_type w1 = windowCount();
+            newWindowOk = r3.isError && !r3.mutated && w1 == w0 && digest() == d0 && text( r3 ).StartsWith( kWindowLead );
+            detail["newWindow"] = { { "isError", r3.isError }, { "windowsBefore", int( w0 ) }, { "windowsAfter", int( w1 ) },
+                                    { "text", U8( text( r3 ) ) } };
+            SetGlobalSettingReaderForSelfTest( GlobalSettingReader() );
+
+            // d. Control: a process NOT in the table that legitimately leaves
+            // the pixels identical (PixelMath $T) is still ok.
+            const ToolOutcome r4 = ExecuteTool( ToolCall{ "sb4", "apply_process",
+               { { "process_id", "PixelMath" }, { "parameters", { { "expression", "$T" } } } } }, sc );
+            controlOk = !r4.isError && digest() == d0;
+            detail["control"] = { { "isError", r4.isError }, { "pixelsIdentical", digest() == d0 },
+                                  { "text", U8( text( r4 ).Left( 300 ) ) } };
+         }
+      }
+      catch ( const pcl::Exception& x ) { error = x.Message(); }
+      catch ( const std::exception& x ) { error = String( x.what() ); }
+      catch ( ... )                     { error = "unknown exception"; }
+      SetGlobalSettingReaderForSelfTest( GlobalSettingReader() );
+      detail["checks"] = { { "digest", digestOk }, { "budget", budgetOk }, { "table", tableOk }, { "scan", scanOk },
+                           { "replace", replaceOk }, { "failingProgram", failExitOk }, { "newWindow", newWindowOk },
+                           { "control", controlOk }, { "standInSkipped", standInSkipped } };
+      const bool ok = error.IsEmpty() && digestOk && budgetOk && tableOk && scanOk
+                   && (standInSkipped || (replaceOk && failExitOk && newWindowOk && controlOk));
+      out["bridgeDetail"] = detail;
+      out["bridgeError"] = U8( error );
+      out["bridgeStandInSkipped"] = standInSkipped;
+      out["bridgeOk"] = ok;
       allOk = allOk && ok;
    }
 
