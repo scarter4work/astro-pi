@@ -7,6 +7,7 @@
 #include "JourneyConstants.h"
 #include "JourneyStore.h"
 #include "JourneySpikeProbe.h"
+#include "MasterFacts.h"
 #include "PICopilotInterface.h"
 #include "PICopilotJourneySelfTest.h"
 #include "PICopilotModule.h"
@@ -44,10 +45,12 @@
 #include <cmath>
 #include <cstdint>
 #include <cstdlib>
+#include <initializer_list>
 #include <map>
 #include <set>
 #include <string>
 #include <thread>
+#include <utility>
 #include <vector>
 
 #include <dirent.h>
@@ -639,6 +642,35 @@ const std::map<std::string, SelfTestPhaseHandler>& SelfTestPhaseHandlers()
       { "hist.preview.check", PhaseHistCheck },
    };
    return handlers;
+}
+
+// ---- Section J5 (MasterFacts, Task 6) helpers ----
+
+FITSKeywordArray Kw( std::initializer_list<std::pair<const char*, const char*>> nv )
+{
+   FITSKeywordArray k;
+   for ( const auto& p : nv )
+      if ( std::string( p.first ) == "HISTORY" || std::string( p.first ) == "COMMENT" )
+         k << FITSHeaderKeyword( p.first, "", p.second );
+      else
+         k << FITSHeaderKeyword( p.first, p.second, "" );
+   return k;
+}
+
+// The real WBPP master keyword set (plan API facts: M16, 2022-10-09), abridged
+// to the keywords that matter plus the location keywords that must never leak.
+FITSKeywordArray WbppMasterKeywords()
+{
+   return Kw( { { "COMMENT", "PixInsight image preprocessing pipeline" },
+                { "COMMENT", "Master frame generated with Weighted Batch Preprocessing Script v2.5.3" },
+                { "IMAGETYP", "'Master Light'" }, { "XBINNING", "1" }, { "FILTER", "'NoFilter'" }, { "EXPTIME", "300.00" },
+                { "INSTRUME", "'ZWO ASI071MC Pro'" }, { "TELESCOP", "'EQMod Mount'" }, { "FOCALLEN", "853.61377" },
+                { "DATE-OBS", "'2022-10-09T00:48:08.260'" }, { "SITELAT", "'+40 11 12'" }, { "SITELONG", "'-86 01 02'" },
+                { "OBSERVER", "'Jane Observer'" },
+                { "HISTORY", "Integration with ImageIntegration module version 1.5.0" },
+                { "HISTORY", "ImageIntegration.pixelCombination: Average" },
+                { "HISTORY", "ImageIntegration.numberOfImages: 10" },
+                { "HISTORY", "ImageIntegration.noise: 1.1693e-03" } } );
 }
 
 } // namespace
@@ -2284,6 +2316,180 @@ bool RunJourneySelfTest( nlohmann::json& out )
       out["journeyStoreDetail"] = d;
       out["journeyStoreError"] = U8( error );
       out["journeyStoreOk"] = ok;
+      allOk = allOk && ok;
+   }
+
+   // ---- Section J5: MasterFacts (Task 6) -----------------------------------
+   SelfTestSectionMark( "J5 MasterFacts" );
+   {
+      nlohmann::json d = nlohmann::json::object();
+      bool detectOk = false, wbppOk = false, sirilOk = false, iiTableOk = false, redactOk = false, namesOk = false,
+           fingerprintOk = false, auxOk = false, hardenOk = false, round1Ok = false;
+      String error;
+      try
+      {
+         const FITSKeywordArray wbpp = WbppMasterKeywords();
+         const MasterEvidence e1 = DetectMaster( {}, wbpp );
+         const MasterEvidence e2 = DetectMaster( { "ImageIntegration", "PixelMath" }, FITSKeywordArray() );
+         const MasterEvidence e3 = DetectMaster( { "Script", "DrizzleIntegration" }, FITSKeywordArray() );
+         const MasterEvidence e4 = DetectMaster( {}, Kw( { { "HISTORY", "ImageIntegration.numberOfImages: 12" } } ) );
+         const MasterEvidence e5 = DetectMaster( {}, Kw( { { "STACKCNT", "24" } } ) );
+         const MasterEvidence n1 = DetectMaster( {}, Kw( { { "IMAGETYP", "'Light Frame'" }, { "EXPTIME", "120" } } ) );
+         const MasterEvidence n2 = DetectMaster( {}, Kw( { { "IMAGETYP", "'Master Dark'" } } ) );
+         const MasterEvidence n3 = DetectMaster( { "PixelMath", "ImageIntegration" }, FITSKeywordArray() );
+         const MasterEvidence n4 = DetectMaster( {}, Kw( { { "NCOMBINE", "1" } } ) );
+         d["detect"] = { e1.why, e2.why, e3.why, e4.why, e5.why, n1.isMaster, n2.isMaster, n3.isMaster, n4.isMaster };
+         detectOk = e1.isMaster && e1.why == "keyword IMAGETYP='Master Light'"
+                 && e2.isMaster && e2.why == "history begins with ImageIntegration"
+                 && e3.isMaster && e3.why == "history begins with DrizzleIntegration"
+                 && e4.isMaster && e4.why == "HISTORY ImageIntegration.numberOfImages"
+                 && e5.isMaster && e5.why == "keyword STACKCNT=24"
+                 && !n1.isMaster && !n2.isMaster && !n3.isMaster && !n4.isMaster;
+
+         // Ruling 29 (P35): an integration run's auxiliary outputs (rejection /
+         // slope maps) carry the same integration-first history as the result.
+         // With PICopilotJourneyIntegrationIdInHistory (measured in Task 1 J0 (9))
+         // the step's integrationImageId names the RESULT, so any other window
+         // is auxiliary. Expectations follow the measured constant, so the test
+         // is valid for either value.
+         {
+            HistoryStep res;
+            res.processId = "ImageIntegration";
+            res.integrationImageId = "integration";
+            HistoryStep script;
+            script.processId = "Script";
+            HistoryStep pm;
+            pm.processId = "PixelMath";
+            HistoryStep noId;
+            noId.processId = "ImageIntegration";   // integrationImageId not recorded
+            const bool m = PICopilotJourneyIntegrationIdInHistory;
+            const bool aResult  = IsIntegrationAuxiliary( "integration", { res } );
+            const bool aLow     = IsIntegrationAuxiliary( "rejection_low", { res } );
+            const bool aScript  = IsIntegrationAuxiliary( "slope", { script, res } );
+            const bool aNotInt  = IsIntegrationAuxiliary( "Image07", { pm, res } );
+            const bool aNoId    = IsIntegrationAuxiliary( "rejection_high", { noId } );
+            const bool aEmpty   = IsIntegrationAuxiliary( "masterLight", {} );
+            d["auxiliary"] = { { "measured", m }, { "result", aResult }, { "low", aLow }, { "script", aScript },
+                               { "notIntegration", aNotInt }, { "noId", aNoId }, { "empty", aEmpty } };
+            auxOk = !aResult && aLow == m && aScript == m && !aNotInt && !aNoId && !aEmpty;
+         }
+
+         // WBPP: facts from keywords, target from the WBPP path.
+         const String wbppPath = "/mnt/qnap/astro_data/10_9/Autorun/Light/M16/master/"
+                                 "masterLight_BIN-1_4944x3284_EXPOSURE-300.00s_FILTER-NoFilter_combined_RGB_drizzle_1x.xisf";
+         const AcquisitionFacts a = ExtractAcquisition( wbpp, {}, wbppPath, "masterLight" );
+         d["wbpp"] = { { "target", a.target }, { "filter", a.filter }, { "camera", a.camera }, { "sub", a.subExposureS.value_or( -1 ) },
+                       { "count", a.subCount.value_or( -1 ) }, { "total", a.totalIntegrationS.value_or( -1 ) }, { "date", a.sessionDate } };
+         wbppOk = a.target == "M16" && a.filter == "NoFilter" && a.camera == "ZWO ASI071MC Pro" && a.subExposureS == 300.0
+               && a.subCount == 10 && a.totalIntegrationS == 3000.0 && a.sessionDate == "2022-10-09" && !a.gain.has_value();
+
+         // Siril-style stack: STACKCNT + LIVETIME, OBJECT with a space.
+         const AcquisitionFacts s = ExtractAcquisition( Kw( { { "OBJECT", "'NGC 7000'" }, { "FILTER", "'Ha'" }, { "STACKCNT", "24" },
+                                                              { "LIVETIME", "7200" }, { "EXPTIME", "7200" }, { "GAIN", "100" },
+                                                              { "OFFSET", "50" }, { "CCD-TEMP", "-10.0" } } ),
+                                                        {}, "/data/ngc7000.fit", "ngc7000" );
+         sirilOk = s.target == "NGC 7000" && s.subCount == 24 && s.totalIntegrationS == 7200.0 && s.subExposureS == 300.0
+                && s.gain == 100.0 && s.offset == 50.0 && s.sensorTempC == -10.0;
+         d["siril"] = { { "target", s.target }, { "sub", s.subExposureS.value_or( -1 ) } };
+
+         // Sub count from an ImageIntegration step's images table (enabled rows only).
+         HistoryStep ii;
+         ii.processId = "ImageIntegration";
+         ii.tableParameters = { { "images", { { true, "/a.fits", "", "" }, { false, "/b.fits", "", "" }, { true, "/c.fits", "", "" } } } };
+         const AcquisitionFacts t = ExtractAcquisition( Kw( { { "EXPTIME", "60" } } ), { ii }, "", "integration" );
+         iiTableOk = t.subCount == 2 && t.totalIntegrationS == 120.0 && t.target == "integration";
+
+         // Location / observer values never reach any fact (D7).
+         {
+            const nlohmann::json all = { a.target, a.filter, a.camera, a.sessionDate };
+            const std::string dump = all.dump() + s.target + t.target;
+            redactOk = dump.find( "40 11 12" ) == std::string::npos && dump.find( "Jane" ) == std::string::npos
+                    && KeywordText( wbpp, "SITELAT" ).empty() && KeywordText( wbpp, "OBSERVER" ).empty()
+                    && KeywordText( wbpp, "FILTER" ) == "NoFilter";
+         }
+
+         namesOk = DeriveJourneyName( "M16", "NoFilter", 1, "2026-09-25T20:47:50.344Z" ) == "M16 NoFilter 2026-09-25"
+                && DeriveJourneyName( "M16", "", 1, "2026-09-25T20:47:50.344Z" ) == "M16 2026-09-25"
+                && DeriveJourneyName( "M16", "Ha", 3, "2026-09-25T20:47:50.344Z" ) == "M16 3 masters 2026-09-25"
+                && StripKind( "Ha", 1 ) == "Ha master" && StripKind( "", 1 ) == "master" && StripKind( "Ha", 3 ) == "3 masters"
+                && SafeFolderName( "C\xC3\xB4ne / M42:*" ) == "C_ne___M42__" && SafeFolderName( ".." ) == "journey"
+                && SafeFolderName( ".hidden" ) == "_hidden" && SafeFolderName( std::string( 100, 'a' ) ).size() == 60
+                && DeriveTarget( Kw( {} ), "/x/y/Pelican.xisf", "v" ) == "Pelican" && DeriveTarget( Kw( {} ), "", "Image07" ) == "Image07";
+
+         // Fingerprint: stable across added processing, sensitive to geometry/keywords/base history.
+         const std::string f0 = MasterFingerprint( 4944, 3284, 3, 32, true, {}, wbpp );
+         FITSKeywordArray wbpp2 = wbpp;
+         wbpp2 << FITSHeaderKeyword( "HISTORY", "", "PixelMath: something later" );   // not a stable keyword
+         const std::string f1 = MasterFingerprint( 4944, 3284, 3, 32, true, {}, wbpp2 );
+         const std::string f2 = MasterFingerprint( 4944, 3284, 1, 32, true, {}, wbpp );
+         const std::string f3 = MasterFingerprint( 4944, 3284, 3, 32, true, { "ImageIntegration@t#0123456789abcdef" }, wbpp );
+         d["fingerprint"] = { f0, f1, f2, f3 };
+         fingerprintOk = f0 == f1 && f0 != f2 && f0 != f3 && f0.rfind( "4944x3284x3:f32:", 0 ) == 0 && f0.size() == 16 + 16;
+
+         // Hardening (Task 6 addition): a keyword that is not a real number
+         // is not a fact. "inf" is no frame count and no exposure; a count an
+         // int cannot hold is unknown (not UB); an images table with no enabled
+         // row gives no count (unknown, not 0 frames / 0 s).
+         {
+            const MasterEvidence hInf = DetectMaster( {}, Kw( { { "STACKCNT", "inf" } } ) );
+            const AcquisitionFacts hExp = ExtractAcquisition( Kw( { { "EXPTIME", "inf" }, { "NCOMBINE", "4" } } ), {}, "", "v" );
+            const AcquisitionFacts hBig = ExtractAcquisition( Kw( { { "NCOMBINE", "1e12" }, { "EXPTIME", "60" } } ), {}, "", "v" );
+            HistoryStep off;
+            off.processId = "ImageIntegration";
+            off.tableParameters = { { "images", { { false, "/a.fits", "", "" }, { false, "/b.fits", "", "" } } } };
+            const AcquisitionFacts hOff = ExtractAcquisition( Kw( { { "EXPTIME", "60" } } ), { off }, "", "v" );
+            d["harden"] = { { "infMaster", hInf.isMaster }, { "infExposure", hExp.subExposureS.has_value() },
+                            { "infCount", hExp.subCount.value_or( -1 ) }, { "bigCount", hBig.subCount.has_value() },
+                            { "offCount", hOff.subCount.has_value() }, { "offTotal", hOff.totalIntegrationS.has_value() } };
+            hardenOk = !hInf.isMaster && !hExp.subExposureS && !hExp.totalIntegrationS && hExp.subCount == 4
+                    && !hBig.subCount && !hBig.totalIntegrationS && hBig.subExposureS == 60.0
+                    && !hOff.subCount && !hOff.totalIntegrationS && hOff.subExposureS == 60.0;
+         }
+
+         // Review round 1 (Task 6).
+         {
+            // Important 1: master evidence and the frame count share one
+            // definition of a count, so they can never disagree.
+            const FITSKeywordArray frac = Kw( { { "NCOMBINE", "2.5" } } );
+            const FITSKeywordArray whole = Kw( { { "NCOMBINE", "3" } } );
+            const MasterEvidence mFrac = DetectMaster( {}, frac );
+            const MasterEvidence mWhole = DetectMaster( {}, whole );
+            const AcquisitionFacts aFrac = ExtractAcquisition( frac, {}, "", "v" );
+            const AcquisitionFacts aWhole = ExtractAcquisition( whole, {}, "", "v" );
+            const bool countAgreeOk = !mFrac.isMaster && !aFrac.subCount
+                                   && mWhole.isMaster && mWhole.why == "keyword NCOMBINE=3" && aWhole.subCount == 3;
+
+            // Minor 3: a present but non-ISO DATE-OBS (a Julian date) falls back to DATE-LOC.
+            const AcquisitionFacts aJd = ExtractAcquisition( Kw( { { "DATE-OBS", "2459861.53343" },
+                                                                   { "DATE-LOC", "'2022-10-08T20:48:08'" } } ), {}, "", "v" );
+            const bool dateOk = aJd.sessionDate == "2022-10-08";
+
+            // Minor 4: an unpaired UTF-8 continuation byte becomes its own '_';
+            // a well-formed sequence is still one '_' per code point.
+            const std::string sUnpaired = SafeFolderName( "a\xB4" "b" );
+            const std::string sEuro = SafeFolderName( "x\xE2\x82\xAC" "y" );
+            const std::string sTrunc = SafeFolderName( "p\xC3" "q" );   // lead byte cut short by ASCII
+            const bool utf8Ok = sUnpaired == "a_b" && sEuro == "x_y" && sTrunc == "p_q"
+                             && SafeFolderName( "C\xC3\xB4ne" ) == "C_ne";
+
+            // Minor 6: OBJECT wins over the WBPP .../<target>/master/<file> path rule.
+            const std::string tObj = DeriveTarget( Kw( { { "OBJECT", "'M8'" } } ), "/d/M16/master/masterLight.xisf", "v" );
+            const bool objectWinsOk = tObj == "M8";
+
+            d["round1"] = { { "fracMaster", mFrac.isMaster }, { "fracCount", aFrac.subCount.value_or( -1 ) },
+                            { "wholeWhy", mWhole.why }, { "wholeCount", aWhole.subCount.value_or( -1 ) },
+                            { "jdDate", aJd.sessionDate }, { "unpaired", sUnpaired }, { "euro", sEuro },
+                            { "trunc", sTrunc }, { "objectTarget", tObj } };
+            round1Ok = countAgreeOk && dateOk && utf8Ok && objectWinsOk;
+         }
+      }
+      catch ( const pcl::Exception& x ) { error = x.Message(); }
+      catch ( const std::exception& x ) { error = String( x.what() ); }
+      catch ( ... )                     { error = "unknown exception"; }
+      const bool ok = detectOk && wbppOk && sirilOk && iiTableOk && redactOk && namesOk && fingerprintOk && auxOk && hardenOk && round1Ok;
+      out["masterFactsDetail"] = d;
+      out["masterFactsError"] = U8( error );
+      out["masterFactsOk"] = ok;
       allOk = allOk && ok;
    }
 
