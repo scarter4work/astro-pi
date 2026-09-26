@@ -1,6 +1,7 @@
 // PI Copilot — Native PCL Module for PixInsight
 // Copyright (c) 2026 Scott Carter. MIT License.
 
+#include "AgentTools.h"
 #include "EvalGuard.h"
 #include "HistoryReader.h"
 #include "JourneyConstants.h"
@@ -291,6 +292,32 @@ nlohmann::json PhaseTimerApplyCheck( const nlohmann::json& payload )
    return { { "history", payload }, { "tick", JourneySpikeProbeTimerApplyResult() } };
 }
 
+// ---- Section JH (Task T-hist): an applied process lands in History, or
+// fails loudly -- the forced-10 ms repro, phases hist.* ----
+
+// hist.timer: {intervalS} -- the spike probe timer's period (10 ms for the repro).
+nlohmann::json PhaseHistTimer( const nlohmann::json& payload )
+{
+   JourneySpikeProbeSetTickInterval( payload.at( "intervalS" ).get<double>() );
+   return payload;
+}
+
+// hist.arm: {id, delayS, gated} -- stages the hazard apply (JourneySpikeProbe.h).
+// Returning from here is the moment PixInsight is still finishing this
+// executeGlobal(): the first 10 ms tick lands inside it.
+nlohmann::json PhaseHistArm( const nlohmann::json& payload )
+{
+   JourneySpikeProbeRequestHazardApply( payload.at( "id" ).get<std::string>(), payload.at( "delayS" ).get<double>(),
+                                        payload.at( "gated" ).get<bool>() );
+   return payload;
+}
+
+// hist.check: the top-level measurements (payload) + the tick's result.
+nlohmann::json PhaseHistCheck( const nlohmann::json& payload )
+{
+   return { { "top", payload }, { "tick", JourneySpikeProbeHazardApplyResult() } };
+}
+
 // ---- Section J2 (HistoryReader, Task 3) fixtures and phases ----
 
 // Verbatim XPSM (PI 1.9.5, plan API facts) used by the pure parser tests.
@@ -527,6 +554,9 @@ const std::map<std::string, SelfTestPhaseHandler>& SelfTestPhaseHandlers()
       { "j0.identity", PhaseRecordPayload },
       { "j0.reopen",   PhaseRecordPayload },
       { "j2.hr",       PhaseHistoryReader },
+      { "hist.timer",  PhaseHistTimer },
+      { "hist.arm",    PhaseHistArm },
+      { "hist.check",  PhaseHistCheck },
    };
    return handlers;
 }
@@ -908,6 +938,170 @@ bool RunJourneySelfTest( nlohmann::json& out )
       out["journeySpikeInfo"] = info;
       out["journeySpikeError"] = U8( error );
       out["journeySpikeOk"] = ok;
+      allOk = allOk && ok;
+   }
+
+   // ---- Section JH: an applied process lands in History, or fails loudly (Task T-hist) ----
+   {
+      bool detectInProcessOk = false, toolErrorOk = false, noFalseAlarmOk = false, countedOk = false,
+           classifierOk = false, cyclesOk = false;
+      nlohmann::json info = nlohmann::json::object();
+      String error;
+      const bool seamWas = InProcessAppliesExpectedForSelfTest();
+      try
+      {
+         // (a) DETECT, deterministic: inside this executeGlobal() NO process is
+         //     recorded in History (harness fact), i.e. exactly the hazard. With
+         //     the self-test seam off, a completed apply must be a loud error
+         //     that says the image changed outside History -- never ok.
+         {
+            ImageWindow w( 32, 32, 1, 32, true, false, true, "pcHistInProc" );
+            const View v = w.MainView();
+            SetInProcessAppliesExpectedForSelfTest( true );
+            const ApplyProcessResult fill = ApplyProcess( "PixelMath", { { "expression", "0.8" } }, nlohmann::json::object(), v );
+            SetInProcessAppliesExpectedForSelfTest( false );
+            const uint64_t mc0 = w.ModifyCount();
+            const ApplyProcessResult a = ApplyProcess( "PixelMath", { { "expression", "$T*0.5" } }, nlohmann::json::object(), v );
+            double px = -1;
+            {
+               ImageVariant iv = v.Image();
+               px = iv.IsFloatSample() && iv.BitsPerSample() == 32 ? double( static_cast<const Image&>( *iv ).Pixel( 0, 0 ) ) : -1;
+            }
+            const std::string err = U8( a.error );
+            info["inProcess"] = { { "fillOk", fill.ok }, { "ok", a.ok }, { "unrecordedChange", a.unrecordedChange },
+                                  { "error", err }, { "pixel", px }, { "modifyCount", { mc0, uint64_t( w.ModifyCount() ) } },
+                                  { "parametersSet", a.parametersSet } };
+            detectInProcessOk = fill.ok && !a.ok && a.unrecordedChange
+                             && err.find( "did NOT record it in the image's History" ) != std::string::npos
+                             && err.find( "Edit > Undo cannot revert it" ) != std::string::npos
+                             && err.find( "Tell the user" ) != std::string::npos
+                             && std::fabs( px - 0.4 ) < 1e-6 && w.ModifyCount() == mc0
+                             && a.parametersSet.value( "expression", std::string() ) == "$T*0.5";
+
+            // The apply_process tool: is_error true, and the turn still knows
+            // an image changed (turn-end notes).
+            ToolContext ctx;
+            ctx.mode = AgentMode::Copilot;
+            ctx.turnViewId = v.FullId();
+            const ToolOutcome o = ExecuteTool( ToolCall{ "toolu_hist1", "apply_process",
+                                                         { { "process_id", "PixelMath" },
+                                                           { "parameters", { { "expression", "$T*0.5" } } } } }, ctx );
+            const nlohmann::json block = ToolResultBlock( "toolu_hist1", o );
+            const std::string text = o.content.empty() ? std::string() : o.content.at( 0 ).value( "text", std::string() );
+            info["tool"] = { { "isError", o.isError }, { "mutated", o.mutated }, { "blockIsError", block.value( "is_error", false ) },
+                             { "text", text }, { "logLine", U8( o.logLine ) } };
+            toolErrorOk = o.isError && o.mutated && block.value( "is_error", false ) == true
+                       && text.find( "did NOT record it" ) != std::string::npos
+                       && U8( o.logLine ).find( "did NOT record it" ) != std::string::npos;
+
+            // No false alarm: an instance that does not update the target's
+            // history (PixelMath createNewImage: IsHistoryUpdater false) is ok.
+            // (No newImageId: setting that parameter fails in ApplyProcess's
+            // string check -- "GetParameterAllowedCharacters(): API function
+            // error", a separate, pre-existing issue; the new window is found
+            // by diffing the open windows instead.)
+            std::set<std::string> before;
+            for ( const ImageWindow& x : ImageWindow::AllWindows() )
+               before.insert( std::string( x.MainView().Id().c_str() ) );
+            const ApplyProcessResult n = ApplyProcess( "PixelMath", { { "expression", "$T" }, { "createNewImage", true } },
+                                                       nlohmann::json::object(), v );
+            std::vector<std::string> created;
+            for ( const ImageWindow& x : ImageWindow::AllWindows() )
+               if ( before.count( std::string( x.MainView().Id().c_str() ) ) == 0 )
+                  created.push_back( std::string( x.MainView().Id().c_str() ) );
+            info["createNewImage"] = { { "ok", n.ok }, { "error", U8( n.error ) }, { "created", created } };
+            noFalseAlarmOk = n.ok && !n.unrecordedChange && created.size() == 1;
+            SetInProcessAppliesExpectedForSelfTest( seamWas );
+            for ( const std::string& id : created )
+               JForceClose( id );
+            JForceClose( "pcHistInProc" );
+         }
+         // The seam counted the earlier sections' in-process applies instead
+         // of failing them (proof the check ran there too).
+         info["inProcessUnrecordedCounted"] = InProcessUnrecordedAppliesForSelfTest();
+         countedOk = InProcessUnrecordedAppliesForSelfTest() > 0;
+
+         // (b) Which replies wait for idle (pure).
+         {
+            auto tu = []( const char* name ) { return nlohmann::json{ { "type", "tool_use" }, { "id", "x" }, { "name", name },
+                                                                      { "input", nlohmann::json::object() } }; };
+            const nlohmann::json text = { { "type", "text" }, { "text", "apply_process" } };
+            classifierOk = ResponseCallsImageChangingTool( nlohmann::json::array( { text, tu( "apply_process" ) } ) )
+                        && ResponseCallsImageChangingTool( nlohmann::json::array( { tu( "run_global_process" ) } ) )
+                        && ResponseCallsImageChangingTool( nlohmann::json::array( { tu( "describe_process" ), tu( "run_pjsr" ) } ) )
+                        && !ResponseCallsImageChangingTool( nlohmann::json::array( { tu( "get_view_context" ), tu( "list_processes" ),
+                                                                                     tu( "describe_process" ), text } ) )
+                        && !ResponseCallsImageChangingTool( nlohmann::json::array() )
+                        && !ResponseCallsImageChangingTool( nlohmann::json() )
+                        && !ResponseCallsImageChangingTool( nlohmann::json::array( { { { "type", "tool_use" }, { "name", 7 } } } ) );
+         }
+
+         // (c) The forced-10 ms repro (phases hist.*, test/selftest.js): each
+         //     cycle applied from a module Timer tick to a top-level window
+         //     (0.8 -> 0.4), either right after PixInsight returned from a
+         //     process execution ("tail") or while another process ran on a
+         //     4000x4000 view ("during"); ungated = straight away (DETECT),
+         //     gated = the tool loop's PREVENT gate first.
+         const nlohmann::json& phases = SelfTestPhaseStore();
+         const nlohmann::json cycles = phases.value( "hist.check", nlohmann::json::array() );
+         nlohmann::json rows = nlohmann::json::array();
+         std::map<std::string, int> n, unrecorded;
+         bool allConsistent = true, gatedAllRecorded = true, gatedAllDeferred = true;
+         for ( const nlohmann::json& c : cycles )
+         {
+            const nlohmann::json& top = c.at( "top" );
+            const nlohmann::json& t = c.at( "tick" );
+            const std::string key = top.at( "kind" ).get<std::string>() + (top.at( "gated" ).get<bool>() ? "/gated" : "/ungated");
+            ++n[key];
+            const bool applied = t.is_object() && t.contains( "ok" );
+            const bool pixelsChanged = std::fabs( top.at( "pxBefore" ).get<double>() - 0.8 ) < 1e-6
+                                    && std::fabs( top.at( "pxAfter" ).get<double>() - 0.4 ) < 1e-6;
+            const bool recorded = top.at( "lengthAfter" ).get<int>() == top.at( "lengthBefore" ).get<int>() + 1
+                               && top.at( "lastProcessId" ) == "PixelMath" && top.at( "lastHasExpression" ).get<bool>();
+            const bool tickOk = applied && t.at( "ok" ).get<bool>();
+            const bool mcAdvanced = applied && t.value( "modifyCountAfter", uint64_t( 0 ) ) > t.value( "modifyCountBefore", uint64_t( 0 ) );
+            const std::string err = applied ? t.value( "error", std::string() ) : std::string();
+            // The contract: ok <=> recorded; not recorded => the loud error.
+            const bool consistent = applied && pixelsChanged
+                && (recorded ? (tickOk && mcAdvanced && err.empty())
+                             : (!tickOk && t.value( "unrecordedChange", false ) && !mcAdvanced
+                                && err.find( "did NOT record it" ) != std::string::npos));
+            if ( !recorded )
+               ++unrecorded[key];
+            allConsistent = allConsistent && consistent;
+            if ( top.at( "gated" ).get<bool>() )
+            {
+               gatedAllRecorded = gatedAllRecorded && recorded && tickOk;
+               gatedAllDeferred = gatedAllDeferred && applied && t.value( "deferredTicks", 0 ) >= 1;
+            }
+            rows.push_back( { { "kind", key }, { "recorded", recorded }, { "consistent", consistent }, { "tick", t },
+                              { "top", top } } );
+         }
+         info["cycles"] = rows;
+         info["counts"] = n;
+         info["unrecorded"] = unrecorded;
+         // Non-vacuous: the ungated repro must actually hit the window (measured
+         // 16/16 "tail" and 13/13 "during" before this fix), and every gated
+         // apply must have waited at least one tick and landed.
+         cyclesOk = n["tail/ungated"] == 5 && n["tail/gated"] == 5 && n["during/ungated"] == 3 && n["during/gated"] == 3
+                 && allConsistent && unrecorded["tail/ungated"] >= 1 && unrecorded["during/ungated"] >= 1
+                 && gatedAllRecorded && gatedAllDeferred;
+      }
+      catch ( const pcl::Exception& x ) { error = x.Message(); }
+      catch ( const std::exception& x ) { error = String( x.what() ); }
+      catch ( ... )                     { error = "unknown exception"; }
+      SetInProcessAppliesExpectedForSelfTest( seamWas );
+      JForceClose( "pcHistInProc" );
+      info["detectInProcessOk"] = detectInProcessOk;
+      info["toolErrorOk"] = toolErrorOk;
+      info["noFalseAlarmOk"] = noFalseAlarmOk;
+      info["countedOk"] = countedOk;
+      info["classifierOk"] = classifierOk;
+      info["cyclesOk"] = cyclesOk;
+      const bool ok = error.IsEmpty() && detectInProcessOk && toolErrorOk && noFalseAlarmOk && countedOk && classifierOk && cyclesOk;
+      out["histLandedInfo"] = info;
+      out["histLandedError"] = U8( error );
+      out["histLandedOk"] = ok;
       allOk = allOk && ok;
    }
 

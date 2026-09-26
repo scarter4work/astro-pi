@@ -45,6 +45,7 @@ set(MODULE_SOURCES
     JourneySpikeProbe.cpp
     PICopilotJourneySelfTest.cpp
     HistoryReader.cpp
+    ProcessActivity.cpp
 )
 
 add_library(PICopilot SHARED ${MODULE_SOURCES})

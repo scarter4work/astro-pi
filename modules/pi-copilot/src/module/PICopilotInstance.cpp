@@ -4,6 +4,8 @@
 #include "PICopilotInstance.h"
 #include "PICopilotJourneySelfTest.h"
 #include "PICopilotSelfTest.h"
+#include "ProcessActivity.h"
+#include "ProcessApply.h"
 #include "Utf8.h"
 
 #include <pcl/Console.h>
@@ -55,6 +57,14 @@ bool PICopilotInstance::CanExecuteGlobal( String& /*whyNot*/ ) const
 
 bool PICopilotInstance::ExecuteGlobal()
 {
+   // PixInsight is still inside this process execution for a moment after we
+   // return (measured: a timer tick there applies without a History step), so
+   // its end is process activity for the tool loop's quiet period (ProcessActivity.h).
+   struct ActivityOnReturn
+   {
+      ~ActivityOnReturn() { NoteProcessActivity(); }
+   } activityOnReturn;
+
    // The self-test is test-only. In a shipped install there is no
    // PICOPILOT_SELFTEST_OUT in the environment, so executing the process
    // does nothing but point the user at the panel: no Settings writes, no
@@ -72,7 +82,20 @@ bool PICopilotInstance::ExecuteGlobal()
       return true;
 
    String json;
-   bool ok = RunSelfTest( json );
+   // Inside this call no process is ever recorded in History (harness fact):
+   // in-process ApplyProcess calls are counted, not failed (ProcessApply.h).
+   SetInProcessAppliesExpectedForSelfTest( true );
+   bool ok = false;
+   try
+   {
+      ok = RunSelfTest( json );
+   }
+   catch ( ... )
+   {
+      SetInProcessAppliesExpectedForSelfTest( false );
+      throw;
+   }
+   SetInProcessAppliesExpectedForSelfTest( false );
 
    // Write with O_EXCL|O_NOFOLLOW so a pre-existing file or a planted
    // symlink at that path makes open() fail closed rather than

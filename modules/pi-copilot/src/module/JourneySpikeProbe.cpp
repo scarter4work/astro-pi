@@ -3,6 +3,7 @@
 
 #include "JourneySpikeProbe.h"
 #include "PICopilotModule.h"
+#include "ProcessActivity.h"
 #include "ProcessApply.h"
 #include "Utf8.h"
 
@@ -58,6 +59,15 @@ struct SpikeState
    nlohmann::json nestedEvalSamples = nlohmann::json::array();   // [t, historyIndex, ModifyCount, active main view id]
    std::chrono::steady_clock::time_point t0 = std::chrono::steady_clock::now();
    std::unique_ptr<SpikeTimerHost> host;
+   // Task T-hist: the forced-tick "apply while PixInsight is still executing"
+   // repro (JourneySpikeProbeRequestHazardApply).
+   std::string    hazardViewId;                                    // pending request, "" when none
+   double         hazardArmT = 0;
+   double         hazardDelayS = 0;
+   bool           hazardGated = false;
+   int            hazardDeferredTicks = 0;
+   std::string    hazardBusyReason;                                // first reason the gate deferred for
+   nlohmann::json hazardResult;                                    // null until applied
 };
 
 SpikeState& S()
@@ -71,10 +81,54 @@ double Since()
    return std::chrono::duration<double>( std::chrono::steady_clock::now() - S().t0 ).count();
 }
 
+// The hazard apply (Task T-hist): the production ApplyProcess( PixelMath
+// $T*0.5 ) on the first tick at least delayS after arming -- when gated, only
+// once the production PREVENT gate (CurrentProcessActivity) says idle.
+void HazardTick( SpikeState& s )
+{
+   if ( s.hazardViewId.empty() || Since() - s.hazardArmT < s.hazardDelayS )
+      return;
+   if ( s.hazardGated )
+   {
+      const ProcessActivityState a = CurrentProcessActivity();
+      if ( a.busy )
+      {
+         if ( s.hazardDeferredTicks++ == 0 )
+            s.hazardBusyReason = U8( a.reason );
+         return;
+      }
+   }
+   const std::string id = s.hazardViewId;
+   s.hazardViewId.clear();
+   nlohmann::json r = { { "viewId", id }, { "t", Since() - s.hazardArmT }, { "gated", s.hazardGated },
+                        { "deferredTicks", s.hazardDeferredTicks }, { "busyReason", s.hazardBusyReason } };
+   try
+   {
+      const View v = View::ViewById( IsoString( id.c_str() ) );
+      if ( v.IsNull() )
+         r["error"] = "no such view";
+      else
+      {
+         const ImageWindow w = v.Window();
+         r["modifyCountBefore"] = uint64_t( w.ModifyCount() );
+         const ApplyProcessResult a = ApplyProcess( "PixelMath", { { "expression", "$T*0.5" } },
+                                                    nlohmann::json::object(), v );
+         r["ok"] = a.ok;
+         r["error"] = U8( a.error );
+         r["unrecordedChange"] = a.unrecordedChange;
+         r["modifyCountAfter"] = uint64_t( w.ModifyCount() );
+      }
+   }
+   catch ( const pcl::Exception& x ) { r["error"] = U8( x.Message() ); }
+   catch ( ... )                     { r["error"] = "unknown exception"; }
+   s.hazardResult = r;
+}
+
 void SpikeTimerHost::e_Tick( Timer& )
 {
    SpikeState& s = S();
    ++s.ticks;
+   HazardTick( s );
    // Apply only once the top-level script has written the go file, i.e. after
    // its executeGlobal() call fully returned: a tick can fire while PixInsight
    // is still finishing that process execution (after the module's own
@@ -231,6 +285,34 @@ void JourneySpikeProbeRequestTimerApply( const std::string& viewId, const std::s
    S().timerApplyTicksWaited = 0;
    S().timerApplyGoFile = goFile;
    S().timerApplyViewId = viewId;
+}
+
+void JourneySpikeProbeSetTickInterval( double seconds )
+{
+   SpikeState& s = S();
+   if ( s.host && s.host->T.Interval() != seconds )
+   {
+      s.host->T.Stop();
+      s.host->T.SetInterval( seconds );
+      s.host->T.Start();
+   }
+}
+
+void JourneySpikeProbeRequestHazardApply( const std::string& viewId, double delayS, bool gated )
+{
+   SpikeState& s = S();
+   s.hazardResult = nlohmann::json();
+   s.hazardDeferredTicks = 0;
+   s.hazardBusyReason.clear();
+   s.hazardArmT = Since();
+   s.hazardDelayS = delayS;
+   s.hazardGated = gated;
+   s.hazardViewId = viewId;
+}
+
+nlohmann::json JourneySpikeProbeHazardApplyResult()
+{
+   return S().hazardResult;
 }
 
 nlohmann::json JourneySpikeProbeTimerApplyResult()

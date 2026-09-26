@@ -87,6 +87,12 @@ struct ToolContext
    ConfirmScriptFn confirmScript;
 };
 
+// True when the reply's content blocks hold a tool_use of a tool that can
+// change or create images (apply_process, run_global_process, run_pjsr): the
+// panel runs such a step only while PixInsight is idle (ProcessActivity.h,
+// Task T-hist). Pure; any other shape is false.
+bool ResponseCallsImageChangingTool( const nlohmann::json& contentBlocks );
+
 // Executes one tool call. Root thread only (views, processes, previews,
 // and the Guided dialog). Never throws: every failure is isError=true with a
 // precise, model-correctable message in content[0].

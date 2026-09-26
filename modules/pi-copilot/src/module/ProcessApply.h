@@ -27,6 +27,10 @@ struct ApplyProcessResult
    double         elapsedMs = 0;                             // ExecuteOn() wall time
    String         processId;                                 // canonical id (Process::Id()), once resolved
    String         viewId;                                    // target FullId, once resolved
+   // DETECT (Task T-hist): the process ran to completion and changed the
+   // image, but PixInsight recorded no History step for it (ok == false,
+   // error says so). The image IS modified; Undo cannot revert it.
+   bool           unrecordedChange = false;
 };
 
 /*
@@ -55,10 +59,21 @@ struct ApplyProcessResult
  *   5. Validate(whyNot), then CanExecuteOn(view, whyNot),
  *   6. ExecuteOn(view) with swap data (undoable, recorded in History); the
  *      busy probe is repeated right before it. A failure found only while
- *      running (e.g. a PixelMath syntax error) is ExecuteOn() == false.
+ *      running (e.g. a PixelMath syntax error) is ExecuteOn() == false,
+ *   7. DETECT (Task T-hist): on a MAIN view, when the instance says it
+ *      updates history (IsHistoryUpdater), the window's ModifyCount must have
+ *      advanced. It does not when PixInsight was still executing another
+ *      process: the pixels changed but no History step exists (measured:
+ *      ModifyCount +0 in all 35 unrecorded headless applies, +1 in every
+ *      recorded one; task-hist-report.md).
+ *      Then ok=false, unrecordedChange=true and the error says the image was
+ *      changed outside History. Previews are not checked: neither ModifyCount
+ *      nor View.processing reflects a preview step (measured), so there is
+ *      nothing to verify against.
  * Every failure is ok=false + a message naming the process/parameter and the
  * fix; nothing after the failing step runs, so a failure never touches the
- * image. Root thread only. Never throws.
+ * image -- except step 7, which is reported as exactly that. Root thread only.
+ * Never throws.
  */
 ApplyProcessResult ApplyProcess( const IsoString& processId, const nlohmann::json& parameters,
                                  const nlohmann::json& tableParameters, View view,
@@ -132,6 +147,16 @@ String DescribeParameterChanges( const nlohmann::json& parameters, const nlohman
 // function removes the observer. Root thread.
 using InstanceBuildObserver = std::function<void( const IsoString& processId, const char* stage )>;
 void SetInstanceBuildObserverForSelfTest( InstanceBuildObserver observer );
+
+// Self-test only. Inside the self-test's own PICopilot.executeGlobal() NO
+// process is ever recorded in History (harness fact, plan Task 1), so every
+// in-process ApplyProcess would trip step 7. While `on`, step 7 counts such
+// an apply instead of failing it (InProcessUnrecordedAppliesForSelfTest).
+// Set ONLY by the self-test runner (PICOPILOT_SELFTEST_OUT), never in a
+// shipped install; the DETECT tests switch it off. Root thread.
+void SetInProcessAppliesExpectedForSelfTest( bool on );
+bool InProcessAppliesExpectedForSelfTest();
+int  InProcessUnrecordedAppliesForSelfTest();
 
 } // namespace pcl
 

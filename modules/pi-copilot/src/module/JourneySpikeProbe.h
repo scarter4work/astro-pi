@@ -32,6 +32,18 @@ void JourneySpikeProbeSetNestedEval( bool on );
 void JourneySpikeProbeRequestTimerApply( const std::string& viewId, const std::string& goFile );
 nlohmann::json JourneySpikeProbeTimerApplyResult();       // null until the tick ran
 
+// Task T-hist (test-only like the rest). The timer's period; the hazard repro
+// runs it at 10 ms so a tick lands at the first moment PixInsight pumps
+// events (it must ALREADY run at that period when a request is armed:
+// restarting it delays the first tick past the window). 0.2 s otherwise.
+void JourneySpikeProbeSetTickInterval( double seconds );
+// On the first tick at least delayS after this call, run the production
+// ApplyProcess( PixelMath $T*0.5 ) on the view viewId (a full id) -- when
+// `gated`, only once CurrentProcessActivity() (ProcessActivity.h, the tool
+// loop's PREVENT gate) reports idle, counting the ticks it deferred.
+void JourneySpikeProbeRequestHazardApply( const std::string& viewId, double delayS, bool gated );
+nlohmann::json JourneySpikeProbeHazardApplyResult();      // null until applied
+
 } // namespace pcl
 
 #endif // PICopilot_JourneySpikeProbe_h
