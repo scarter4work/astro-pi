@@ -95,6 +95,26 @@ export PICOPILOT_SELFTEST_PHASE="$HANDOFF_DIR/phase.json"
 # Scratch directory for top-level fixtures that write files (e.g. J0 save+reopen).
 export PICOPILOT_SELFTEST_SCRATCH="$HANDOFF_DIR/scratch"
 mkdir -m 700 "$PICOPILOT_SELFTEST_SCRATCH"
+# Per-section wall-clock timings, rewritten at every section mark by selftest.js
+# (fixture blocks) and by the module (self-test sections), so any run -- even
+# one that hangs until the timeout -- prints where its time went.
+export PICOPILOT_SELFTEST_JS_TIMINGS="$HANDOFF_DIR/js-timings.json"
+export PICOPILOT_SELFTEST_SECTION_TIMINGS="$HANDOFF_DIR/section-timings.json"
+print_timings()
+{
+   python3 - "$PICOPILOT_SELFTEST_JS_TIMINGS" "$PICOPILOT_SELFTEST_SECTION_TIMINGS" <<'PY' || true
+import json, sys
+for tag, path in (("js", sys.argv[1]), ("module", sys.argv[2])):
+    try:
+        d = json.load(open(path))
+    except (OSError, ValueError) as e:
+        print("timing %-6s (no timings: %s)" % (tag, e.__class__.__name__)); continue
+    for t in d.get("done", []):
+        print("timing %-6s %-52s +%7.1fs %9.0f ms" % (tag, t["section"], t["startS"], t["ms"]))
+    if d.get("open"):
+        print("timing %-6s %-52s +%7.1fs  STILL RUNNING at exit" % (tag, d["open"]["section"], d["open"]["startS"]))
+PY
+}
 
 [ -f "$SO" ] || { echo "FAIL: module not built at $SO"; exit 1; }
 "$PI" --sign-module-file="$SO" --xssk-file="$KEYS" --xssk-password="$PASS"
@@ -343,8 +363,10 @@ export PICOPILOT_SELFTEST_FIXTURES="$HERE/fixtures"
 command -v xvfb-run >/dev/null 2>&1 || { echo "FAIL: xvfb-run not found (needed to keep dialogs off the real display)"; exit 1; }
 if ! PICOPILOT_SELFTEST_OUT="$R" xvfb-run -a -s "-screen 0 1920x1080x24" \
         timeout 900 "$PI" -n="$PICOPILOT_TEST_SLOT" --automation-mode --no-startup-scripts -m="$SO" -r="$HERE/selftest.js" --force-exit; then
+   print_timings
    echo "FAIL: PI load timed out (900s) or exited non-zero"; exit 1
 fi
+print_timings
 [ -f "$R" ] || { echo "FAIL: no result file"; exit 1; }
 REAL_LIB_AFTER="$( [ -e "$REAL_LIB" ] && echo present || echo absent )"
 if [ "$REAL_LIB_BEFORE" != "$REAL_LIB_AFTER" ] || { [ -e "$REAL_LIB" ] && [ -n "$(find "$REAL_LIB" -newer "$LIB_STAMP" -print -quit)" ]; }; then
@@ -397,6 +419,7 @@ required_true = [
     'journeySpikeOk',
     'sqliteVendorOk',
     'historyReaderOk',
+    'stepStatsOk',
     'histLandedOk',
     'ok',
 ]

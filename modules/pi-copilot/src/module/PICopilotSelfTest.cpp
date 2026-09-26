@@ -13,6 +13,7 @@
 #include "Utf8.h"
 #include "KeyStore.h"
 #include "Keyring.h"
+#include "SelfTestTiming.h"
 
 #include <pcl/Process.h>
 #include <pcl/ProcessInstance.h>
@@ -30,6 +31,9 @@ namespace pcl
 
 bool RunSelfTest( String& jsonOut )
 {
+   SelfTestTimingReset();
+   SelfTestSectionMark( "P1-3 eval, ProcessInstance, Settings" );
+
    // Before ANY KeyStore use: the self-test must never read, write or delete
    // the user's real key (keyring service "picopilot", Settings key
    // "PICopilot/AnthropicApiKey").
@@ -102,6 +106,7 @@ bool RunSelfTest( String& jsonOut )
    // runs); otherwise this path is skipped so CI without a key still
    // passes. Never touches KeyStore/Settings -- the env var is separate
    // from the user's persisted key.
+   SelfTestSectionMark( "P4 gated REAL Anthropic send" );
    bool anthropicOk = false;
    bool anthropicSkipped = true;
    try
@@ -131,6 +136,7 @@ bool RunSelfTest( String& jsonOut )
    // the API's 401 must come back through TryTakeResult(). No real key
    // needed: a 401 proves the worker performed the POST and parsed the
    // error body. Bounded wait so a hung request can't wedge the harness.
+   SelfTestSectionMark( "P5 worker thread 401 (real API host)" );
    bool workerThreadOk = false;
    int  workerHttpStatus = 0;
    String workerError = "no result (thread did not complete)";
@@ -167,6 +173,7 @@ bool RunSelfTest( String& jsonOut )
    // Path 6: cancel + overall deadline against a stalled connection. The
    // harness runs a local TCP server that accepts, reads the request and
    // never answers -- exactly the case SetConnectionTimeout() cannot bound.
+   SelfTestSectionMark( "P6 stalled-server cancel + deadline" );
    bool   stallSkipped = true;
    bool   cancelOk = false, deadlineOk = false;
    String cancelError = "not run", deadlineError = "not run";
@@ -246,6 +253,7 @@ bool RunSelfTest( String& jsonOut )
 
    // Path 7: a literal "</raw>" inside chat text must stay literal in a
    // real TextBox (root-thread Control, like the response sink above).
+   SelfTestSectionMark( "P7 TextBox plain text" );
    bool   plainTextOk = false;
    String plainTextBack;
    try
@@ -354,6 +362,9 @@ bool RunSelfTest( String& jsonOut )
    {
       j["journeyException"] = "unknown exception";
    }
+
+   SelfTestSectionMark( nullptr );
+   j["sectionTimings"] = SelfTestTiming().done;
 
    ok = ok && visionOk && agentOk && inc5Ok && journeyOk;
    j["ok"] = ok;

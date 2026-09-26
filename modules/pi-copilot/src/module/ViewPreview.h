@@ -4,6 +4,8 @@
 #ifndef PICopilot_ViewPreview_h
 #define PICopilot_ViewPreview_h
 
+#include <pcl/Bitmap.h>
+#include <pcl/Image.h>
 #include <pcl/String.h>
 #include <pcl/View.h>
 
@@ -27,6 +29,31 @@ struct ViewPreviewResult
    int       blockFactor = 0; // k of the k x k block average applied to the source (1 = none)
    String    tempPath;     // staging path used (already deleted)
 };
+
+/*
+ * The read-only k x k block average that RenderViewPreview and StepStats use:
+ * k = max(1, ceil(longEdge/maxEdge)); output floor(W/k) x floor(H/k), nominal
+ * channels only, 32-bit float, integer samples normalized to [0,1] through
+ * the pixel traits. rowStride > 1 sums only every rowStride-th row of each
+ * block (fewer reads); *samplesPerBlock (optional) = k*ceil(k/rowStride), the
+ * samples averaged per output pixel. The view's image is only read (under
+ * AutoViewWriteLock) and never duplicated at full resolution. Root thread
+ * only; the caller has checked the view is not busy. Throws pcl::Error with
+ * exactly: "view has no image", "complex-sample images cannot be previewed",
+ * "image is too thin to preview (WxH)".
+ */
+Image BlockAveragedCopy( const View& view, int maxEdge, int& blockFactor, int rowStride = 1,
+                         int* samplesPerBlock = nullptr );
+
+/*
+ * RenderViewPreview's steps 2-4, shared with the journey thumbnail (one copy of
+ * the display pipeline): bicubic-spline Resample of `work` IN PLACE to a long
+ * edge <= maxEdge (no upscaling) -> unlinked auto-STF (center = per-channel
+ * median, sigma = MAD x 1.4826, both measured on the small copy; PCL defaults)
+ * applied to `work` -> Bitmap::Render (zoom 1, RGBK, no transparency). Root
+ * thread only (Bitmap). Throws what PCL throws.
+ */
+Bitmap StretchAndRender( Image& work, int maxEdge );
 
 /*
  * Display-only JPEG preview of a view for the model:
