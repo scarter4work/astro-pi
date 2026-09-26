@@ -996,10 +996,8 @@ bool RunJourneySelfTest( nlohmann::json& out )
 
             // No false alarm: an instance that does not update the target's
             // history (PixelMath createNewImage: IsHistoryUpdater false) is ok.
-            // (No newImageId: setting that parameter fails in ApplyProcess's
-            // string check -- "GetParameterAllowedCharacters(): API function
-            // error", a separate, pre-existing issue; the new window is found
-            // by diffing the open windows instead.)
+            // (The new window is found by diffing the open windows; a named
+            // newImageId is covered by the agent self-test, stringRulesOk.)
             std::set<std::string> before;
             for ( const ImageWindow& x : ImageWindow::AllWindows() )
                before.insert( std::string( x.MainView().Id().c_str() ) );

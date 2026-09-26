@@ -5,6 +5,7 @@
 #include "GlobalRunFiles.h"   // NulTextProblem, DuplicateKeyProblem
 #include "ProcessCatalog.h"
 #include "ProcessSafety.h"
+#include "StringParameterRules.h"
 #include "Utf8.h"
 
 #include <pcl/Exception.h>
@@ -200,13 +201,12 @@ Variant ToVariant( const ProcessParameter& p, const nlohmann::json& v, const Str
       if ( s.Length() < minLen )
          throw ApplyError{ name + String().Format( ": text is %u characters; the minimum is %u",
                                                    unsigned( s.Length() ), unsigned( minLen ) ) };
-      const String allowed = p.AllowedCharacters();
-      if ( !allowed.IsEmpty() )
-         for ( size_type i = 0; i < s.Length(); ++i )
-            if ( !allowed.Contains( s[i] ) )
-               throw ApplyError{ name + ": character '" + String( s[i] )
-                                 + String().Format( "' at position %u is not allowed; allowed characters: ", unsigned( i ) )
-                                 + allowed };
+      // Declared characters (the core does not enforce them on set). Not
+      // p.AllowedCharacters() directly: the core cannot copy a non-empty
+      // declared set and it throws (StringParameterRules.h).
+      const String problem = StringCharacterProblem( ResolveStringCharacterRule( p ), s, name );
+      if ( !problem.IsEmpty() )
+         throw ApplyError{ problem };
       return Variant( s );
    }
    if ( p.IsNumeric() )
