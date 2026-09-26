@@ -40,12 +40,17 @@ struct WriteupReply
 {
    bool                                       ok = false;
    std::string                                markdown;   // the reply without the trailing json fence
-   std::vector<std::pair<int64, std::string>> inferred;   // step id -> inferred reason
+   std::vector<std::pair<int64, std::string>> inferred;   // step id -> inferred reason (well-formed entries only)
+   std::vector<std::string>                   rejected;   // "entry N (why)": malformed entries, never stored
    std::string                                note;       // why no reasons were recorded ("" = the block parsed)
 };
 
-// The LAST ```json fence holds {"inferredReasons":[{step, reason}]}. A missing,
-// unclosed or unparseable block keeps the whole markdown and sets `note`.
+// The LAST ```json fence holds {"inferredReasons":[{step, reason}]}. A missing
+// or unparseable block keeps the markdown and sets `note`. A block that opens
+// but never closes (the reply was cut off inside it) is cut from the markdown
+// -- the document never ends in an open fence or raw JSON -- and `note` says
+// the reasons were cut off. An entry that is not {"step": <whole number>,
+// "reason": <non-empty string>} goes to `rejected`, named by its 1-based position.
 WriteupReply ParseWriteupReply( const std::string& text );
 
 struct KeepOutcome
@@ -55,7 +60,11 @@ struct KeepOutcome
    KeeperFilesResult files;
    bool              writeupStarted = false;
    String            writeupError;          // why no write-up was started (e.g. no API key)
-   bool              copyDone = false;      // the export copy ran now (a started write-up copies when it ends)
+   // copyDone: the export copy was made now (a started write-up copies when it ends).
+   // copyError: why not -- OR, with copyDone true, that the copy was made but its
+   // location could not be remembered (the .copied-to marker write failed, so a
+   // later Retry copies again). The two are NOT mutually exclusive.
+   bool              copyDone = false;
    String            copyError;
    String            copiedTo;
    StringList        redone;                // Retry: the outputs re-run ("<name>.xpsm", "recipe.json", "thumbs", "journey.md", "export copy")
@@ -98,6 +107,9 @@ public:
                       const String& url = PICOPILOT_MESSAGES_URL );
 
    // Finishes write-ups whose request completed; appends user-facing notes.
+   // The reply is untrusted: an inferred reason is stored only on a step that
+   // exists, belongs to the written journey, was made by the user and has no
+   // stated reason. Every other entry stores nothing and is named in the note.
    void Poll( StringList& notes );
    bool Busy() const;
 

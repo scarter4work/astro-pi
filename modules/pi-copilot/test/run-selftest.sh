@@ -333,7 +333,11 @@ class H(BaseHTTPRequestHandler):
                     return self.reply(400, {"type": "error", "error": {"type": "invalid_request_error",
                                             "message": "body #%d: \"stream\" is not true" % n}})
                 return self.sse(self.stream_events(req, n, kind), stall=(kind == "stall"))
-        if self.path.endswith("/writeup"):   # Haiku journey write-up (plan Task 9)
+        if self.path.split("?", 1)[0].endswith("/writeup"):   # Haiku journey write-up (plan Task 9)
+            # ?reasons=<JSON array>: the reply's inferredReasons entries, verbatim (guard tests);
+            # ?truncate=1: the reply stops inside an opened, never-closed json fence (stop_reason max_tokens).
+            from urllib.parse import parse_qs, urlsplit
+            q = parse_qs(urlsplit(self.path).query)
             msgs = req.get("messages") or []
             def blocks(m):
                 c = m.get("content")
@@ -347,7 +351,15 @@ class H(BaseHTTPRequestHandler):
             rec = json.loads(text.split("CONDENSED_RECIPE_JSON:\n", 1)[1])
             sid = next((s["id"] for s in rec["steps"] if s["actor"] == "user" and not s.get("reason")), None)
             fence = "`" * 3   # never three literal backticks in this file's markdown source
-            md = ("# %s\n\n## Equipment\nLoopback.\n\n## Acquisition\nLoopback.\n\n## Processing\nStep %s brightened the "
+            if "truncate" in q:
+                md = ("# %s\n\n## Processing\nStep %s brightened the faint signal (inferred).\n\n" + fence
+                      + "json\n{\"inferredReasons\": [{\"step\": %s, \"reas") % (rec["journey"]["name"], sid, sid)
+                return self.reply(200, {"content": [{"type": "text", "text": md}], "stop_reason": "max_tokens"})
+            if "reasons" in q:
+                md = ("# %s\n\n## Processing\nGuard test.\n\n" + fence + "json\n%s\n" + fence + "\n") % (
+                      rec["journey"]["name"], json.dumps({"inferredReasons": json.loads(q["reasons"][0])}))
+                return self.reply(200, {"content": [{"type": "text", "text": md}], "stop_reason": "end_turn"})
+            md =("# %s\n\n## Equipment\nLoopback.\n\n## Acquisition\nLoopback.\n\n## Processing\nStep %s brightened the "
                   "faint signal (inferred).\n\n" + fence + "json\n%s\n" + fence + "\n") % (rec["journey"]["name"], sid,
                   json.dumps({"inferredReasons": [{"step": sid, "reason": "brighten the faint signal"}]}))
             return self.reply(200, {"content": [{"type": "text", "text": md}], "stop_reason": "end_turn"})
