@@ -45,6 +45,14 @@ struct KeyringResult
    bool      notInstalled = false;
    IsoString secret;
    String    error;
+
+   // Only meaningful when ok && !found: every lookup attempt (bounded, see
+   // kMaxSecretToolAttempts in Keyring.cpp) silently missed, but the last
+   // disambiguating `secret-tool search` before giving up still found the
+   // item -- so this is not a genuine "no key", the item is there but could
+   // not be read this time (KeyStore::Load() words it that way, distinct
+   // from NoKeyNote()).
+   bool      existsButUnreadable = false;
 };
 
 // Existence-only answer from `secret-tool search` (no --unlock, so it never
@@ -63,9 +71,15 @@ struct KeyringExistsResult
 constexpr int PICopilotKeyringTimeoutMs = 60000;
 
 // Root thread only (pcl::ExternalProcess). Each call runs
+// /bin/sh -c '...' sh <errfile> <program> <args...>, which sets `program`'s
+// real stderr (fd 2) to a private, per-call file before exec'ing
 // /usr/bin/env -u LD_LIBRARY_PATH <program> ... (PixInsight's own library
-// path would otherwise be inherited and can break system binaries), pumps
-// events (user input excluded) while waiting, and never throws.
+// path would otherwise be inherited and can break system binaries) --
+// pcl::ExternalProcess reports the child's real stderr through
+// StandardOutput() in this PixInsight build/version (measured, GUI and
+// automation mode both; RedirectStandardError() is a silent no-op), so this
+// is the only way to keep stdout and stderr genuinely separate. Pumps events
+// (user input excluded) while waiting, and never throws.
 KeyringResult KeyringLookup( const KeyringId& id );
 KeyringResult KeyringStore( const KeyringId& id, const String& label, const IsoString& secret );
 KeyringResult KeyringClear( const KeyringId& id );

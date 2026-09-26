@@ -71,6 +71,26 @@ String EnsurePrivateDirectory( const String& dir );
 // Ready-made check: the bytes start with the JPEG SOI marker (FF D8).
 String SafeCheckJpeg( const ByteArray& data );
 
+// A fresh, private (0700, mkdtemp -- unguessable) scratch directory under the
+// system temp directory, for a caller that needs a file written into by
+// something else (e.g. a child process it starts) rather than by bytes it
+// already holds (that case is SafeRenderFile). "dir" gets the path and true
+// is returned; on failure "" + false, and `why` says why. The caller removes
+// it with RemovePrivateScratchDir() on every path, including one that throws.
+bool CreatePrivateScratchDir( String& dir, String& why );
+
+// Removes a private scratch directory made by CreatePrivateScratchDir():
+// unlinks every entry (one level; never follows a link) then rmdir()s it.
+// Safe to call on a directory that no longer exists.
+void RemovePrivateScratchDir( const String& dir );
+
+// Reads a regular file without following a symbolic link at its final path
+// component (O_NOFOLLOW); used to read back a file written inside a
+// CreatePrivateScratchDir() directory (by this process or a child it
+// started). false + why on failure (missing, not a regular file, a read
+// error); out is cleared first either way.
+bool ReadFileNoFollow( const String& path, ByteArray& out, String& why );
+
 // Self-test only: make the next SafeWriteFile fail after its temp is fully
 // written, before the rename (proves the temp is cleaned up). One-shot.
 void SetSafeFileWriteFailBeforeRenameForSelfTest( bool on );
