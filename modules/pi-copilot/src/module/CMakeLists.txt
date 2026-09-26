@@ -28,6 +28,7 @@ set(MODULE_SOURCES
     JourneyStore.cpp
     MasterFacts.cpp
     JourneyExport.cpp
+    JourneyWriteup.cpp
     ProcessCatalog.cpp
     VisionTurn.cpp
     ViewCapture.cpp
