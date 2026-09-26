@@ -10,6 +10,7 @@
 #include <pcl/File.h>
 
 #include <algorithm>
+#include <stdexcept>
 
 namespace pcl
 {
@@ -64,6 +65,30 @@ std::string FileText( const String& path )
 {
    const ByteArray b = File::ReadFile( path );
    return std::string( reinterpret_cast<const char*>( b.Begin() ), b.Length() );
+}
+
+// Why an inferred reason for `stepId` must NOT be stored for journey `jid`, or
+// nullptr when it may: the step exists, is on an image of this journey, was
+// made by the user and has no stated reason. Root thread (store reads).
+const char* InferredReasonRejection( JourneyStore& store, int64 jid, int64 stepId )
+{
+   StepRow s;
+   if ( !store.GetStep( stepId, s ) )
+      return "there is no such step";
+   ImageRow im;
+   if ( !store.GetImage( s.imageId, im ) || im.journeyId != jid )
+      return "it belongs to another journey";
+   if ( s.actor != "user" )
+      return "it was made by PI Copilot";
+   if ( !s.reason.empty() )
+      return "it already has a stated reason";
+   return nullptr;
+}
+
+String NoJourney( const JourneyStore* store, int64 journeyId )
+{
+   return store == nullptr ? String( "the journey library is not open" )
+                           : String().Format( "no journey #%lld", static_cast<long long>( journeyId ) );
 }
 
 String MarkerPath( JourneyStore& store, int64 journeyId )
@@ -201,30 +226,49 @@ WriteupReply ParseWriteupReply( const std::string& text )
       r.note = "the reply had no inferredReasons block; inferred reasons were not recorded";
       return r;
    }
+   std::string md = text.substr( 0, at );
+   while ( !md.empty() && (md.back() == '\n' || md.back() == ' ') )
+      md.pop_back();
    const size_t bodyStart = text.find( '\n', at );
    const size_t close = bodyStart == std::string::npos ? std::string::npos : text.find( fence, bodyStart );
    if ( close == std::string::npos )
    {
-      r.note = "the reply's inferredReasons block is not closed; inferred reasons were not recorded";
+      // Cut off inside the block: keep the prose, drop the open fence and the partial JSON.
+      r.markdown = md + "\n";
+      r.note = "the reply was cut off inside its inferredReasons block; inferred reasons were not recorded";
       return r;
    }
-   std::string md = text.substr( 0, at );
-   while ( !md.empty() && (md.back() == '\n' || md.back() == ' ') )
-      md.pop_back();
    r.markdown = md + "\n" + text.substr( std::min( text.size(), close + fence.size() ) );
    while ( r.markdown.size() > 1 && r.markdown.back() == '\n' && r.markdown[r.markdown.size() - 2] == '\n' )
       r.markdown.pop_back();
    try
    {
       const nlohmann::json j = nlohmann::json::parse( text.substr( bodyStart + 1, close - bodyStart - 1 ) );
-      for ( const nlohmann::json& e : j.at( "inferredReasons" ) )
-         if ( e.is_object() && e.contains( "step" ) && e.at( "step" ).is_number_integer()
-           && e.contains( "reason" ) && e.at( "reason" ).is_string() && !e.at( "reason" ).get<std::string>().empty() )
+      const nlohmann::json& list = j.at( "inferredReasons" );
+      if ( !list.is_array() )
+         throw std::runtime_error( "inferredReasons is not a list" );
+      for ( size_t i = 0; i < list.size(); ++i )
+      {
+         const nlohmann::json& e = list[i];
+         const char* why = nullptr;
+         if ( !e.is_object() )
+            why = "not an object";
+         else if ( !e.contains( "step" ) )
+            why = "no step";
+         else if ( !e.at( "step" ).is_number_integer() )
+            why = "the step is not a whole-number id";
+         else if ( !e.contains( "reason" ) || !e.at( "reason" ).is_string() || e.at( "reason" ).get<std::string>().empty() )
+            why = "no reason text";
+         if ( why != nullptr )
+            r.rejected.push_back( "entry " + std::to_string( i + 1 ) + " (" + why + ")" );
+         else
             r.inferred.push_back( { e.at( "step" ).get<int64>(), e.at( "reason" ).get<std::string>() } );
+      }
    }
    catch ( const std::exception& x )
    {
       r.inferred.clear();
+      r.rejected.clear();
       r.note = std::string( "the reply's inferredReasons block is not valid (" ) + x.what() + "); inferred reasons were not recorded";
    }
    return r;
@@ -297,7 +341,7 @@ KeepOutcome KeeperExporter::Keep( int64 journeyId, int64 endImageId, const Strin
    if ( m_store == nullptr || !m_store->GetJourney( journeyId, j ) )
    {
       o.files.xpsmError = o.files.recipeError = o.files.thumbsError =
-         String().Format( "no journey #%lld", static_cast<long long>( journeyId ) );
+         NoJourney( m_store, journeyId );
       return o;
    }
    o.alreadyKept = j.kept;
@@ -319,7 +363,7 @@ KeepOutcome KeeperExporter::Retry( int64 journeyId, const String& apiKey, const 
    if ( m_store == nullptr || !m_store->GetJourney( journeyId, j ) )
    {
       o.files.xpsmError = o.files.recipeError = o.files.thumbsError =
-         String().Format( "no journey #%lld", static_cast<long long>( journeyId ) );
+         NoJourney( m_store, journeyId );
       return o;
    }
    o.alreadyKept = j.kept;
@@ -382,22 +426,39 @@ void KeeperExporter::Finish( JourneyWriteupJob& job, StringList& notes )
          notes << "PI Copilot: journey.md could not be saved: " + e;
       else
       {
-         try
+         // The reply is untrusted: each entry is checked against the store, and every one that is
+         // not stored is named (the malformed ones by position, the rest by step id).
+         std::vector<std::string> notStored = w.rejected;
+         int stored = 0;
+         for ( const auto& in : w.inferred )
          {
-            // Only a user step of THIS journey with no stated reason takes an inferred one.
-            int stored = 0;
-            for ( const auto& in : w.inferred )
+            const std::string label = "step " + std::to_string( in.first );
+            try
             {
-               StepRow s;
-               ImageRow im;
-               if ( m_store->GetStep( in.first, s ) && m_store->GetImage( s.imageId, im ) && im.journeyId == jid
-                 && s.actor == "user" && s.reason.empty() )
+               const char* why = InferredReasonRejection( *m_store, jid, in.first );
+               if ( why != nullptr )
                {
-                  m_store->SetStepReason( in.first, in.second, true/*inferred*/ );
-                  ++stored;
+                  notStored.push_back( label + " (" + why + ")" );
+                  continue;
                }
+               m_store->SetStepReason( in.first, in.second, true/*inferred*/ );
+               ++stored;
             }
-            if ( stored > 0 )
+            catch ( const pcl::Exception& x )
+            {
+               notStored.push_back( label + " (" + U8( x.Message() ) + ")" );   // the others still go ahead
+            }
+         }
+         if ( !notStored.empty() )
+         {
+            std::string list;
+            for ( const std::string& n : notStored )
+               list += (list.empty() ? "" : "; ") + n;
+            extra += (extra.IsEmpty() ? "" : "; ") + FromU8( "inferred reasons not recorded: " + list );
+         }
+         if ( stored > 0 )   // recipe.json follows every reason that was stored, even after a failed entry
+         {
+            try
             {
                const nlohmann::json recipe = BuildRecipe( *m_store, jid, kGenerator );
                std::string why;
@@ -407,14 +468,14 @@ void KeeperExporter::Finish( JourneyWriteupJob& job, StringList& notes )
                if ( !re.IsEmpty() )
                   throw Error( re );
             }
-         }
-         catch ( const pcl::Exception& x )
-         {
-            extra += (extra.IsEmpty() ? "" : "; ") + ("recipe.json was not updated with the inferred reasons: " + x.Message());
-         }
-         catch ( const std::exception& x )
-         {
-            extra += (extra.IsEmpty() ? "" : "; ") + ("recipe.json was not updated with the inferred reasons: " + String( x.what() ));
+            catch ( const pcl::Exception& x )
+            {
+               extra += (extra.IsEmpty() ? "" : "; ") + ("recipe.json was not updated with the inferred reasons: " + x.Message());
+            }
+            catch ( const std::exception& x )
+            {
+               extra += (extra.IsEmpty() ? "" : "; ") + ("recipe.json was not updated with the inferred reasons: " + String( x.what() ));
+            }
          }
          notes << "PI Copilot: journey.md written to " + dir + (extra.IsEmpty() ? String() : " (" + extra + ")");
       }

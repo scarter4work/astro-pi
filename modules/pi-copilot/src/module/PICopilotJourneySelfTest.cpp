@@ -909,6 +909,23 @@ JBuilt JBuildJourney( JourneyStore& store, const char* id, const char* object, u
                           seed, { { "$T*1.3", "user", "" }, { "$T+0.01", "user", "" }, { "$T*1.1", "copilot", "stretch gently" } } );
 }
 
+// RFC 3986 percent-encoding of a query value (the loopback's ?reasons=).
+std::string JPctEncode( const std::string& s )
+{
+   static const char* hex = "0123456789ABCDEF";
+   std::string o;
+   for ( unsigned char c : s )
+      if ( std::isalnum( c ) || c == '-' || c == '_' || c == '.' || c == '~' )
+         o += char( c );
+      else
+      {
+         o += '%';
+         o += hex[c >> 4];
+         o += hex[c & 15];
+      }
+   return o;
+}
+
 // Polls a KeeperExporter until idle (root thread; the worker only POSTs).
 bool JWaitKeeper( KeeperExporter& k, StringList& notes, int seconds )
 {
@@ -3203,7 +3220,7 @@ bool RunJourneySelfTest( nlohmann::json& out )
    {
       nlohmann::json d = nlohmann::json::object();
       bool condensedOk = false, bodyOk = false, parseOk = false, loopbackOk = false, noKeyOk = false, retryOk = false,
-           httpErrorOk = false;
+           httpErrorOk = false, guardOk = false, truncatedOk = false, setStoreOk = false;
       bool liveSkipped = true, liveOk = true;
       String error;
       std::vector<std::string> made;
@@ -3270,7 +3287,12 @@ bool RunJourneySelfTest( nlohmann::json& out )
                                                        "More.\n" + F + "json\n{\"inferredReasons\":[{\"step\":7,\"reason\":\"lift it\"}]}\n" + F + "\n" );
             const WriteupReply r2 = ParseWriteupReply( "# T\n\nNo fence here." );
             const WriteupReply r3 = ParseWriteupReply( "# T\n" + F + "json\n{not json\n" + F + "\n" );
-            parseOk = r1.ok && r1.inferred.size() == 1 && r1.inferred[0].first == 7 && r1.inferred[0].second == "lift it"
+            // Cut off inside the fence (max_tokens): the document keeps the prose, never the open fence or raw JSON.
+            const WriteupReply r4 = ParseWriteupReply( "# T\n\nProse stays.\n\n" + F + "json\n{\"inferredReasons\": [{\"step\": 3, \"rea" );
+            d["parse"] = { { "r4markdown", r4.markdown }, { "r4note", r4.note } };
+            parseOk = r4.ok && r4.markdown == "# T\n\nProse stays.\n" && r4.inferred.empty()
+                   && r4.note.find( "cut off" ) != std::string::npos &&
+r1.ok && r1.inferred.size() == 1 && r1.inferred[0].first == 7 && r1.inferred[0].second == "lift it"
                    && r1.markdown.find( "\"inferredReasons\":[{\"step\":7" ) == std::string::npos && r1.markdown.find( "More." ) != std::string::npos
                    && r2.ok && r2.markdown == "# T\n\nNo fence here." && !r2.note.empty() && r2.inferred.empty()
                    && r3.ok && !r3.note.empty() && r3.inferred.empty();
@@ -3373,6 +3395,115 @@ bool RunJourneySelfTest( nlohmann::json& out )
                        && !copied.IsEmpty() && File::Exists( copied + "/recipe.json" ) && !File::Exists( copied + "/journey.md" )
                        && !allNotes.Contains( "sk-test-loopback" );
          }
+         // (i) The inferred-reason guard (fix round 1, C1): the reply is untrusted. A step of ANOTHER
+         //     journey, a PI Copilot step, a step with a stated reason, a step that does not exist and a
+         //     malformed id each store nothing and are named in the note; the one valid entry is stored.
+         int64 guardJid = 0;
+         {
+            made.push_back( "pcWuG" );
+            made.push_back( "pcWuF" );
+            const JBuilt g = JRecordJourney( *store, "pcWuG", Kw( { { "IMAGETYP", "'Master Light'" }, { "OBJECT", "'WuGuard'" } } ), 47,
+                                             { { "$T*1.2", "user", "" }, { "$T*1.1", "copilot", "stretch gently" },
+                                               { "$T+0.01", "user", "lift the floor" } } );
+            const JBuilt f = JRecordJourney( *store, "pcWuF", Kw( { { "IMAGETYP", "'Master Light'" }, { "OBJECT", "'WuForeign'" } } ), 49,
+                                             { { "$T*1.2", "user", "" } } );
+            guardJid = g.jid;
+            const std::vector<StepRow> gs = store->Steps( g.img, false ), fs = store->Steps( f.img, false );
+            if ( gs.size() != 3 || fs.size() != 1 )
+               throw Error( "guard fixture: unexpected step counts" );
+            const int64 sU = gs[0].id, sC = gs[1].id, sR = gs[2].id, sF = fs[0].id, sMissing = sF + 1000000;
+            const nlohmann::json entries = nlohmann::json::array( {
+               { { "step", sU }, { "reason", "accepted reason" } },          // 1: valid
+               { { "step", sF }, { "reason", "foreign" } },                  // 2: another journey
+               { { "step", sC }, { "reason", "copilot" } },                  // 3: a PI Copilot step
+               { { "step", sR }, { "reason", "overwrite" } },                // 4: already has a reason
+               { { "step", sMissing }, { "reason", "missing" } },            // 5: no such step
+               { { "step", std::to_string( sU ) }, { "reason", "string" } }, // 6: id as a string
+               { { "step", 1.5 }, { "reason", "fraction" } },                // 7: not a whole number
+               { { "reason", "no step" } },                                  // 8: no step
+               "not an object" } );                                          // 9
+            KeeperExporter k( store.get() );
+            const KeepOutcome o = k.Keep( g.jid, g.img, "sk-test-loopback", String(),
+                                          String( wurl ) + "?reasons=" + String( JPctEncode( entries.dump() ).c_str() ) );
+            StringList notes;
+            const bool idle = JWaitKeeper( k, notes, 30 );
+            String allNotes;
+            for ( const String& n : notes ) allNotes += n + "\n";
+            StepRow u, fr, c, r, m;
+            store->GetStep( sU, u );
+            store->GetStep( sF, fr );
+            store->GetStep( sC, c );
+            store->GetStep( sR, r );
+            const bool missingExists = store->GetStep( sMissing, m );
+            auto named = [&allNotes]( const std::string& s ) { return allNotes.Contains( String( s.c_str() ) ); };
+            auto stepNote = [&named]( int64 id, const char* why ) { return named( "step " + std::to_string( id ) + " (" + why + ")" ); };
+            const nlohmann::json after = nlohmann::json::parse( FileBytes( ExportDirOf( *store, g.jid ) + "/recipe.json" ) );
+            bool recipeHasAccepted = false;
+            for ( const nlohmann::json& s : after.at( "steps" ) )
+               if ( s.at( "id" ) == sU && s.at( "reason" ) == "accepted reason" && s.at( "reasonInferred" ) == true ) recipeHasAccepted = true;
+            const bool acceptOk = o.writeupStarted && idle && u.reason == "accepted reason" && u.reasonInferred && recipeHasAccepted;
+            const bool foreignOk = fr.reason.empty() && !fr.reasonInferred && stepNote( sF, "it belongs to another journey" );
+            const bool copilotOk = c.reason == "stretch gently" && !c.reasonInferred && stepNote( sC, "it was made by PI Copilot" );
+            const bool reasonOk = r.reason == "lift the floor" && !r.reasonInferred && stepNote( sR, "it already has a stated reason" );
+            const bool missingOk = !missingExists && stepNote( sMissing, "there is no such step" );
+            const bool malformedOk = named( "entry 6 (" ) && named( "entry 7 (" ) && named( "entry 8 (" ) && named( "entry 9 (" )
+                                  && !named( "entry 1 (" );
+            d["guard"] = { { "notes", U8( allNotes ) }, { "accept", acceptOk }, { "foreign", foreignOk }, { "copilot", copilotOk },
+                           { "reason", reasonOk }, { "missing", missingOk }, { "malformed", malformedOk } };
+            guardOk = acceptOk && foreignOk && copilotOk && reasonOk && missingOk && malformedOk;
+         }
+         // (j) A reply cut off inside its json fence (fix round 1, I1): journey.md keeps the prose only,
+         //     no reason is stored, and the note says the reasons were cut off at the token limit.
+         {
+            made.push_back( "pcWuT" );
+            const JBuilt t = JRecordJourney( *store, "pcWuT", Kw( { { "IMAGETYP", "'Master Light'" }, { "OBJECT", "'WuTrunc'" } } ), 51,
+                                             { { "$T*1.2", "user", "" } } );
+            KeeperExporter k( store.get() );
+            const KeepOutcome o = k.Keep( t.jid, t.img, "sk-test-loopback", String(), String( wurl ) + "?truncate=1" );
+            StringList notes;
+            const bool idle = JWaitKeeper( k, notes, 30 );
+            String allNotes;
+            for ( const String& n : notes ) allNotes += n + "\n";
+            const std::string md = FileBytes( ExportDirOf( *store, t.jid ) + "/journey.md" );
+            StepRow s;
+            store->GetStep( store->Steps( t.img, false ).at( 0 ).id, s );
+            d["truncated"] = { { "md", md }, { "notes", U8( allNotes ) } };
+            truncatedOk = o.writeupStarted && idle && md.find( "brightened the faint signal" ) != std::string::npos
+                       && md.find( std::string( 3, '`' ) ) == std::string::npos && md.find( "inferredReasons" ) == std::string::npos
+                       && s.reason.empty() && allNotes.Contains( "8000-token limit" ) && allNotes.Contains( "cut off" );
+         }
+         // (k) SetStore cancels and waits for a write-up in flight (fix round 1, I2): a stalled request, the
+         //     same store keeps it, another store (nullptr) cancels it at once; nothing is written afterwards.
+         //     An exporter with no store refuses Keep by name and polls to nothing.
+         {
+            const char* stall = std::getenv( "PICOPILOT_SELFTEST_STALL_URL" );
+            if ( stall == nullptr )
+               throw Error( "PICOPILOT_SELFTEST_STALL_URL not set by the harness" );
+            const String md = ExportDirOf( *store, guardJid ) + "/journey.md";
+            const std::string mdBefore = FileBytes( md );
+            KeeperExporter k( store.get() );
+            const KeepOutcome o = k.Keep( guardJid, 0, "sk-test-loopback", String(), String( stall ) );
+            JPump( 300 );
+            k.SetStore( store.get() );
+            const bool keptBusy = k.Busy();
+            const jclock::time_point t0 = jclock::now();
+            k.SetStore( nullptr );
+            const double cancelMs = MsSince( t0 );
+            const bool busyAfter = k.Busy();
+            StringList notes;
+            JPump( 300 );
+            k.Poll( notes );
+            KeeperExporter none( nullptr );
+            StringList noneNotes;
+            none.Poll( noneNotes );
+            const KeepOutcome no = none.Keep( guardJid, 0, "sk-test-loopback", String(), String( wurl ) );
+            d["setStore"] = { { "started", o.writeupStarted }, { "keptBusy", keptBusy }, { "cancelMs", cancelMs },
+                              { "busyAfter", busyAfter }, { "notes", notes.Length() }, { "noneError", U8( no.files.xpsmError ) } };
+            setStoreOk = o.writeupStarted && keptBusy && !busyAfter && cancelMs < 10000 && notes.IsEmpty()
+                      && FileBytes( md ) == mdBefore
+                      && noneNotes.IsEmpty() && !none.Busy() && !no.marked && !no.writeupStarted && !no.files.xpsmOk
+                      && no.files.xpsmError.Contains( "not open" );
+         }
          // (g) LIVE (gated): the real Haiku write-up.
          if ( const char* key = std::getenv( "PICOPILOT_TEST_API_KEY" ) )
          {
@@ -3401,11 +3532,13 @@ bool RunJourneySelfTest( nlohmann::json& out )
       catch ( ... )                     { error = "unknown exception"; }
       for ( const std::string& id : made )
          JForceClose( id );
-      const bool ok = condensedOk && bodyOk && parseOk && loopbackOk && noKeyOk && retryOk && httpErrorOk;
+      const bool ok = condensedOk && bodyOk && parseOk && loopbackOk && noKeyOk && retryOk && httpErrorOk
+                   && guardOk && truncatedOk && setStoreOk;
       out["journeyWriteupDetail"] = d;
       out["journeyWriteupChecks"] = { { "condensed", condensedOk }, { "body", bodyOk }, { "parse", parseOk },
                                       { "loopback", loopbackOk }, { "noKey", noKeyOk }, { "retry", retryOk },
-                                      { "httpError", httpErrorOk } };
+                                      { "httpError", httpErrorOk }, { "guard", guardOk }, { "truncated", truncatedOk },
+                                      { "setStore", setStoreOk } };
       out["journeyWriteupError"] = U8( error );
       out["journeyWriteupOk"] = ok;
       out["liveWriteupSkipped"] = liveSkipped;
