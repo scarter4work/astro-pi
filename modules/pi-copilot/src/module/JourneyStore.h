@@ -10,6 +10,7 @@
 #include <pcl/String.h>
 #include <pcl/StringList.h>
 
+#include <functional>
 #include <memory>
 #include <string>
 #include <vector>
@@ -20,6 +21,18 @@ namespace pcl
 {
 
 constexpr int PICopilotJourneyDbBusyMs = 250;   // never wait longer on another program's lock
+
+// Reason prefix of a gap written because an image's history could not be read.
+// Only these gaps are resolved when a later read succeeds (ResolveGaps).
+constexpr const char* PICopilotJourneyReadGapPrefix = "history read failed: ";
+
+// Thrown by the UPDATE/DELETE-by-id mutators when their row does not exist
+// (Task 7 re-review R2): callers can tell "gone" from "locked" / "failed".
+class JourneyRowMissing : public Error
+{
+public:
+   explicit JourneyRowMissing( const String& message ) : Error( message ) {}
+};
 
 std::string NowIso();                  // UTC, "YYYY-MM-DDThh:mm:ss.mmmZ"
 std::string IsoDaysAgo( int days );     // same format, now - days
@@ -69,10 +82,10 @@ public:
    const String& DbPath() const { return m_dbPath; }
    String JourneyDir( int64 journeyId ) const;
 
-   // Mutators that UPDATE or DELETE one row by id -- RenameJourney,
-   // TouchJourney, SetJourneyStatus, MarkKept, SetImageView, SetStepState,
-   // SetStepReason (and PruneUnkept's delete) -- throw pcl::Error
-   // ("<Method>: <table> #<id>: no such row; nothing was changed") when that
+   // Mutators that UPDATE one row by id -- RenameJourney, TouchJourney,
+   // SetJourneyStatus, MarkKept, SetImageView, SetImageOwner, SetStepState,
+   // SetStepReason -- throw JourneyRowMissing (a pcl::Error:
+   // "<Method>: <table> #<id>: no such row; nothing was changed") when that
    // row does not exist; they never succeed silently. Inserts that name a
    // parent row (AddImage, AddStep, AddStats, AddLink, AddGap, SetAcquisition)
    // fail through the foreign keys when it does not exist.
@@ -84,6 +97,7 @@ public:
    int64 AddImage( int64 journeyId, const std::string& viewId, const std::string& filePath,
                    const std::string& fingerprint, bool isMaster, const std::string& nowIso );
    void  SetImageView( int64 imageId, const std::string& viewId, const std::string& filePath );
+   void  SetImageOwner( int64 imageId, const std::string& owner );   // "" clears it
    void  SetAcquisition( int64 imageId, const AcquisitionFacts& a );
    int64 AddStep( const StepRow& s );
    void  SetStepState( int64 stepId, const std::string& state );
@@ -91,9 +105,10 @@ public:
    void  AddStats( int64 imageId, int64 stepId /*0 = the image's starting stats*/, const std::vector<ChannelStats>& channels );
    void  AddLink( const LinkRow& l );
    void  AddGap( const GapRow& g );
-   // Deletes the image's gaps at after_step_seq < recordedUpToSeq: the steps
-   // they stood for were read and recorded after all (Task 7 review M4).
-   // Returns how many were deleted.
+   // Deletes the image's READ-FAILURE gaps (reason starting with
+   // PICopilotJourneyReadGapPrefix) at after_step_seq < recordedUpToSeq: the
+   // steps they stood for were read and recorded after all (Task 7 review
+   // M4 / re-review m3). Other gaps are kept. Returns how many were deleted.
    int   ResolveGaps( int64 imageId, int recordedUpToSeq );
 
    std::vector<JourneyRow> ListJourneys( bool keptOnly, const std::string& target, int limit );
@@ -107,6 +122,10 @@ public:
    // Task 7 review I2).
    bool  FindResumableByFingerprint( const std::string& fp, ImageRow& out,
                                      const std::vector<int64>& excludeImageIds = std::vector<int64>() );
+   // Every such image, newest first (the caller skips rows owned by another
+   // live PixInsight instance, re-review m6).
+   std::vector<ImageRow> ResumableByFingerprint( const std::string& fp,
+                                                 const std::vector<int64>& excludeImageIds = std::vector<int64>() );
    std::vector<StepRow> Steps( int64 imageId, bool includeSuperseded );
    bool  GetStep( int64 stepId, StepRow& out );
    std::vector<ChannelStats> Stats( int64 imageId, int64 stepId /*0 = starting*/ );
@@ -116,10 +135,19 @@ public:
    int   StepCount( int64 journeyId, bool activeOnly );   // base steps (params_json.base) excluded
 
    // Deletes non-kept journeys with updated < cutoffIso (rows cascade) and their
-   // folders; returns how many. Keepers are never touched (Ruling 9). Each
-   // folder goes before its row, so a folder that cannot be removed (throws)
-   // keeps its row and is retried by the next pass.
-   int   PruneUnkept( const std::string& cutoffIso, StringList* removedDirs );
+   // folders; returns how many. Keepers are never touched (Ruling 9).
+   // Task 7 re-review R1: each journey is ONE transaction that re-checks
+   // "kept=0 AND updated < cutoff" under the write lock -- a journey kept or
+   // touched meanwhile (by another PixInsight instance too) is skipped
+   // silently -- then removes the folder; a folder that cannot be removed
+   // throws (naming the path) and rolls the row back, so the next pass retries
+   // both. excludeJourneyIds (the journeys this instance has open) are never
+   // pruned.
+   int   PruneUnkept( const std::string& cutoffIso, StringList* removedDirs,
+                      const std::vector<int64>& excludeJourneyIds = std::vector<int64>() );
+   // Test hook: called with each selected id before its transaction (a second
+   // connection can keep / touch the journey there, like another instance).
+   void  SetPruneHookForSelfTest( std::function<void( int64 )> fn ) { m_pruneHook = std::move( fn ); }
 
    void  Checkpoint();   // PRAGMA wal_checkpoint(TRUNCATE)
 
@@ -140,6 +168,15 @@ public:
     *   connection is never touched). A failed Commit() throws and the
     *   destructor then rolls back.
     * Every read and write method works inside a transaction as outside it.
+    * - The constructor also refuses when the CONNECTION is already inside a
+    *   transaction (sqlite3_get_autocommit() == 0, e.g. a failed rollback),
+    *   with a precise error, instead of SQLite's generic one (re-review m1).
+    * - NEVER pump events (ProcessEvents, a process, a script) inside a
+    *   Transaction: a tick would find the store busy and defer.
+    * - Contract for Tasks 9/10 (re-review m7): the library runs at
+    *   synchronous=NORMAL, so a power loss can drop the last commits. A keep
+    *   (MarkKept) is user intent that History cannot re-derive: run
+    *   Checkpoint() (or PRAGMA synchronous=FULL around it) after its commit.
     */
    class Transaction
    {
@@ -161,6 +198,7 @@ private:
 
    sqlite3* m_db = nullptr;
    bool     m_inTransaction = false;
+   std::function<void( int64 )> m_pruneHook;
    String   m_root;
    String   m_dbPath;
 
