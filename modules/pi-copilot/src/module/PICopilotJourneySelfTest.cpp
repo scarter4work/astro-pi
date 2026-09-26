@@ -33,6 +33,7 @@
 #include <pcl/ImageVariant.h>
 #include <pcl/ImageWindow.h>
 #include <pcl/Variant.h>
+#include <pcl/Thread.h>
 #include <pcl/View.h>
 #include <pcl/XML.h>
 
@@ -254,6 +255,30 @@ struct RawDb
       sqlite3_finalize( st );
       return r;
    }
+};
+
+// Runs one call on a PCL worker thread (never the root thread) and captures
+// what it threw. Only the store's own guard runs there: no GUI, no views.
+class JCallThread : public Thread
+{
+public:
+
+   explicit JCallThread( std::function<void()> fn ) : m_fn( std::move( fn ) ) {}
+
+   void Run() override
+   {
+      try { m_fn(); }
+      catch ( const pcl::Exception& x ) { threw = true; error = x.Message(); }
+      catch ( const std::exception& x ) { threw = true; error = String( x.what() ); }
+      catch ( ... )                     { threw = true; error = "unknown exception"; }
+   }
+
+   bool   threw = false;
+   String error;
+
+private:
+
+   std::function<void()> m_fn;
 };
 
 std::string FileBytes( const String& path )
@@ -2041,7 +2066,8 @@ bool RunJourneySelfTest( nlohmann::json& out )
       nlohmann::json d = nlohmann::json::object();
       bool schemaOk = false, roundTripOk = false, utf8Ok = false, stateOk = false, redactOk = false,
            retentionOk = false, damagedOk = false, newerOk = false, foreignOk = false, lockedOk = false, isoOk = false,
-           fileModesOk = false, rootLinkOk = false, dbLinkOk = false, openRootOk = false, treeOk = false, openLockedOk = false;
+           fileModesOk = false, rootLinkOk = false, dbLinkOk = false, openRootOk = false, treeOk = false, openLockedOk = false,
+           offRootOk = false, directRedactOk = false;
       String error;
       try
       {
@@ -2196,6 +2222,70 @@ bool RunJourneySelfTest( nlohmann::json& out )
             try { after = st->CreateJourney( "after unlock", "X", NowIso() ); } catch ( ... ) {}
             d["locked"] = { { "message", U8( lockMsg ) }, { "ms", ms }, { "after", after } };
             lockedOk = lockMsg.Contains( "locked" ) && lockMsg.Contains( st->DbPath() ) && ms < 1000 && after > 0;
+         }
+
+         // (r) Fix round 1, I1: every JourneyStore call is ROOT THREAD ONLY
+         // (global constraints). Off the root thread a write, a read, a raw
+         // Exec (Checkpoint) and Open all throw a named error, and nothing
+         // reaches the file; the root thread still works afterwards.
+         {
+            RawDb raw( st->DbPath() );
+            const char* const kCount = "SELECT count(*) FROM journey";
+            const std::vector<std::string> before = raw.Column( kCount );
+            JourneyStore* sp = st.get();
+            const String rootPath = root.Path();
+            JCallThread tw( [sp]() { sp->CreateJourney( "off-root write", "X", NowIso() ); } );
+            JCallThread tr( [sp]() { (void)sp->Steps( 1, true ); } );
+            JCallThread tx( [sp]() { sp->Checkpoint(); } );
+            String openErr;
+            bool offOpened = false;
+            JCallThread to( [rootPath, &openErr, &offOpened]()
+            {
+               String e;
+               offOpened = JourneyStore::Open( rootPath, e ) != nullptr;
+               openErr = e;
+            } );
+            bool finished = true;
+            for ( JCallThread* t : { &tw, &tr, &tx, &to } )
+            {
+               t->Start();
+               finished = t->Wait( 10000 ) && finished;
+            }
+            const std::vector<std::string> after = raw.Column( kCount );
+            int64 rootAfter = 0;
+            try { rootAfter = st->CreateJourney( "root after off-root", "X", NowIso() ); } catch ( ... ) {}
+            auto named = [&]( const String& m ) { return m.Contains( "root thread" ) && m.Contains( st->DbPath() ); };
+            d["offRoot"] = { { "finished", finished }, { "write", U8( tw.error ) }, { "read", U8( tr.error ) },
+                             { "exec", U8( tx.error ) }, { "open", U8( openErr ) }, { "openReturned", offOpened },
+                             { "journeysBefore", before }, { "journeysAfter", after }, { "rootAfter", rootAfter } };
+            offRootOk = finished && tw.threw && named( tw.error ) && tr.threw && named( tr.error )
+                     && tx.threw && named( tx.error ) && !offOpened && named( openErr )
+                     && before == after && rootAfter > 0;
+         }
+
+         // (s) Fix round 1, M2: AddStep redacts on its own -- a row that did
+         // NOT come through MakeStepRow still lands with no location data.
+         {
+            StepRow raw;
+            raw.imageId = img;
+            raw.seq = 7;
+            raw.processId = "FITSHeader";
+            raw.params = { { "parameters", { { "siteLongitude", 11.987654 }, { "note", "kept" } } },
+                           { "tableParameters", { { "keywords", { { "SITELONG", "'+11 59 15.5'", "c" } } } } },
+                           { "xpsm", "<instance class=\"FITSHeader\"><parameter id=\"x\">+11 59 15.5</parameter></instance>" },
+                           { "identity", "FITSHeader@#7" }, { "mask", nullptr }, { "replayable", true }, { "parseNote", "" } };
+            const int64 rid = st->AddStep( raw );
+            st->Checkpoint();
+            const std::string bytes = FileBytes( st->DbPath() ) + FileBytes( st->DbPath() + "-wal" );
+            StepRow back;
+            const bool got = st->GetStep( rid, back );
+            d["directRedacted"] = back.params;
+            directRedactOk = got && bytes.find( "59 15" ) == std::string::npos && bytes.find( "11.987654" ) == std::string::npos
+                          && back.params.at( "parameters" ).at( "siteLongitude" ) == "[redacted]"
+                          && back.params.at( "parameters" ).at( "note" ) == "kept"
+                          && back.params.at( "tableParameters" ).at( "keywords" ).at( 0 ).at( 1 ) == "[redacted]"
+                          && back.params.at( "xpsm" ) == "" && back.params.at( "replayable" ) == false
+                          && back.params.at( "parseNote" ) == "contained observing-site data; not stored";
          }
          st.reset();
 
@@ -2374,10 +2464,10 @@ bool RunJourneySelfTest( nlohmann::json& out )
                         { "redact", redactOk }, { "retention", retentionOk }, { "damaged", damagedOk }, { "newer", newerOk },
                         { "foreign", foreignOk }, { "locked", lockedOk }, { "iso", isoOk }, { "fileModes", fileModesOk },
                         { "rootLink", rootLinkOk }, { "dbLink", dbLinkOk }, { "openRoot", openRootOk }, { "tree", treeOk },
-                        { "openLocked", openLockedOk } };
+                        { "openLocked", openLockedOk }, { "offRoot", offRootOk }, { "directRedact", directRedactOk } };
       const bool ok = schemaOk && roundTripOk && utf8Ok && stateOk && redactOk && retentionOk && damagedOk && newerOk
                    && foreignOk && lockedOk && isoOk && fileModesOk && rootLinkOk && dbLinkOk && openRootOk && treeOk
-                   && openLockedOk;
+                   && openLockedOk && offRootOk && directRedactOk;
       out["journeyStoreDetail"] = d;
       out["journeyStoreError"] = U8( error );
       out["journeyStoreOk"] = ok;
@@ -2389,7 +2479,7 @@ bool RunJourneySelfTest( nlohmann::json& out )
    {
       nlohmann::json d = nlohmann::json::object();
       bool detectOk = false, wbppOk = false, sirilOk = false, iiTableOk = false, redactOk = false, namesOk = false,
-           fingerprintOk = false, auxOk = false, hardenOk = false;
+           fingerprintOk = false, auxOk = false, hardenOk = false, round1Ok = false;
       String error;
       try
       {
@@ -2510,11 +2600,48 @@ bool RunJourneySelfTest( nlohmann::json& out )
                     && !hBig.subCount && !hBig.totalIntegrationS && hBig.subExposureS == 60.0
                     && !hOff.subCount && !hOff.totalIntegrationS && hOff.subExposureS == 60.0;
          }
+
+         // Review round 1 (Task 6).
+         {
+            // Important 1: master evidence and the frame count share one
+            // definition of a count, so they can never disagree.
+            const FITSKeywordArray frac = Kw( { { "NCOMBINE", "2.5" } } );
+            const FITSKeywordArray whole = Kw( { { "NCOMBINE", "3" } } );
+            const MasterEvidence mFrac = DetectMaster( {}, frac );
+            const MasterEvidence mWhole = DetectMaster( {}, whole );
+            const AcquisitionFacts aFrac = ExtractAcquisition( frac, {}, "", "v" );
+            const AcquisitionFacts aWhole = ExtractAcquisition( whole, {}, "", "v" );
+            const bool countAgreeOk = !mFrac.isMaster && !aFrac.subCount
+                                   && mWhole.isMaster && mWhole.why == "keyword NCOMBINE=3" && aWhole.subCount == 3;
+
+            // Minor 3: a present but non-ISO DATE-OBS (a Julian date) falls back to DATE-LOC.
+            const AcquisitionFacts aJd = ExtractAcquisition( Kw( { { "DATE-OBS", "2459861.53343" },
+                                                                   { "DATE-LOC", "'2022-10-08T20:48:08'" } } ), {}, "", "v" );
+            const bool dateOk = aJd.sessionDate == "2022-10-08";
+
+            // Minor 4: an unpaired UTF-8 continuation byte becomes its own '_';
+            // a well-formed sequence is still one '_' per code point.
+            const std::string sUnpaired = SafeFolderName( "a\xB4" "b" );
+            const std::string sEuro = SafeFolderName( "x\xE2\x82\xAC" "y" );
+            const std::string sTrunc = SafeFolderName( "p\xC3" "q" );   // lead byte cut short by ASCII
+            const bool utf8Ok = sUnpaired == "a_b" && sEuro == "x_y" && sTrunc == "p_q"
+                             && SafeFolderName( "C\xC3\xB4ne" ) == "C_ne";
+
+            // Minor 6: OBJECT wins over the WBPP .../<target>/master/<file> path rule.
+            const std::string tObj = DeriveTarget( Kw( { { "OBJECT", "'M8'" } } ), "/d/M16/master/masterLight.xisf", "v" );
+            const bool objectWinsOk = tObj == "M8";
+
+            d["round1"] = { { "fracMaster", mFrac.isMaster }, { "fracCount", aFrac.subCount.value_or( -1 ) },
+                            { "wholeWhy", mWhole.why }, { "wholeCount", aWhole.subCount.value_or( -1 ) },
+                            { "jdDate", aJd.sessionDate }, { "unpaired", sUnpaired }, { "euro", sEuro },
+                            { "trunc", sTrunc }, { "objectTarget", tObj } };
+            round1Ok = countAgreeOk && dateOk && utf8Ok && objectWinsOk;
+         }
       }
       catch ( const pcl::Exception& x ) { error = x.Message(); }
       catch ( const std::exception& x ) { error = String( x.what() ); }
       catch ( ... )                     { error = "unknown exception"; }
-      const bool ok = detectOk && wbppOk && sirilOk && iiTableOk && redactOk && namesOk && fingerprintOk && auxOk && hardenOk;
+      const bool ok = detectOk && wbppOk && sirilOk && iiTableOk && redactOk && namesOk && fingerprintOk && auxOk && hardenOk && round1Ok;
       out["masterFactsDetail"] = d;
       out["masterFactsError"] = U8( error );
       out["masterFactsOk"] = ok;

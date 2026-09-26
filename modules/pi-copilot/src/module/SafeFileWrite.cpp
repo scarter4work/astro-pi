@@ -140,6 +140,18 @@ void SetSafeFileWriteFailBeforeRenameForSelfTest( bool on )
    s_failBeforeRename = on;
 }
 
+// Residual risk, accepted (review M1): this is check-then-use, not fd-pinned.
+// The directory is validated once here, and callers then reopen paths under it
+// by name (JourneyStore::Open lstat/open of <root>/journeys.sqlite3, SQLite's
+// -wal/-shm, SafeWriteFile's temp+rename, RemoveDirectoryTree's parent open).
+// O_NOFOLLOW guards only each final component, so if `dir` were swapped for a
+// symlink between this check and that use, the later access would follow it.
+// Only a process running as THIS SAME USER with write access to `dir`'s parent
+// (e.g. ~/.local/share/PICopilot) can make that swap -- and such a process
+// can already read and rewrite the user's library, key file and every other
+// file of theirs directly, so pinning the fd would add no protection. Other
+// users are shut out by the checks below (ours, not writable by others),
+// which is the boundary that matters.
 String EnsurePrivateDirectory( const String& dir )
 {
    try
