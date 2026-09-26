@@ -42,8 +42,8 @@ struct StepStatsResult
 
 // Statistics of a view's current image for the journey, from
 // BlockAveragedCopy( view, PICopilotPreviewBlockEdge, k, PICopilotJourneyStatsRowStride ).
-// thumbnailPath non-empty: also writes a 256 px JPEG there (directories
-// created). Root thread only. Never throws. A busy view is refused at once
+// thumbnailPath non-empty: also writes a 256 px JPEG there (mode 0644; its
+// directory made by EnsurePrivateDirectory, SafeFileWrite.h). Root thread only. Never throws. A busy view is refused at once
 // ("view <id> is busy (locked by a running process)").
 StepStatsResult ComputeStepStats( const View& view, const String& thumbnailPath );
 

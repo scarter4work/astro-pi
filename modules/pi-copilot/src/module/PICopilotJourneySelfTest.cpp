@@ -5,6 +5,7 @@
 #include "EvalGuard.h"
 #include "HistoryReader.h"
 #include "JourneyConstants.h"
+#include "JourneyStore.h"
 #include "JourneySpikeProbe.h"
 #include "PICopilotInterface.h"
 #include "PICopilotJourneySelfTest.h"
@@ -36,6 +37,7 @@
 #include <sqlite3.h>
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <clocale>
 #include <cmath>
@@ -48,6 +50,7 @@
 #include <vector>
 
 #include <dirent.h>
+#include <fcntl.h>
 #include <sys/stat.h>
 #include <unistd.h>
 
@@ -98,26 +101,6 @@ void JPump( int ms )
    }
 }
 
-void JRemoveTree( const String& dir )
-{
-   if ( dir.IsEmpty() || !File::DirectoryExists( dir ) )
-      return;
-   StringList subdirs;
-   FindFileInfo info;
-   for ( File::Find f( dir + "/*" ); f.NextItem( info ); )
-   {
-      if ( info.name == "." || info.name == ".." )
-         continue;
-      if ( info.IsDirectory() )
-         subdirs << dir + '/' + info.name;
-      else
-         File::Remove( dir + '/' + info.name );
-   }
-   for ( const String& s : subdirs )
-      JRemoveTree( s );
-   File::RemoveDirectory( dir );
-}
-
 // A fresh directory under the system temp dir, removed (recursively) on destruction.
 class JTempDir
 {
@@ -133,7 +116,7 @@ public:
 
    ~JTempDir()
    {
-      try { JRemoveTree( m_path ); } catch ( ... ) {}
+      try { RemoveDirectoryTree( m_path ); } catch ( ... ) {}
    }
 
    JTempDir( const JTempDir& ) = delete;
@@ -216,6 +199,66 @@ void JWriteFits( const String& path, const Image& img, const FITSKeywordArray& k
    AutoViewWriteLock lock( v );
    ImageVariant iv = v.Image();
    return iv.Median( iv.Bounds(), ch, ch );
+}
+
+// Raw second connection (the "other program" of the lock / damage tests).
+struct RawDb
+{
+   sqlite3* db = nullptr;
+   explicit RawDb( const String& path ) { sqlite3_open_v2( U8( path ).c_str(), &db, SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE, nullptr ); }
+   ~RawDb() { if ( db != nullptr ) sqlite3_close( db ); }
+   bool Exec( const char* sql ) { return sqlite3_exec( db, sql, nullptr, nullptr, nullptr ) == SQLITE_OK; }
+   std::vector<std::string> Column( const char* sql )
+   {
+      std::vector<std::string> r;
+      sqlite3_stmt* st = nullptr;
+      if ( sqlite3_prepare_v2( db, sql, -1, &st, nullptr ) == SQLITE_OK )
+         while ( sqlite3_step( st ) == SQLITE_ROW )
+            r.push_back( sqlite3_column_text( st, 0 ) != nullptr ? reinterpret_cast<const char*>( sqlite3_column_text( st, 0 ) ) : "" );
+      sqlite3_finalize( st );
+      return r;
+   }
+};
+
+std::string FileBytes( const String& path )
+{
+   if ( !File::Exists( path ) )
+      return std::string();
+   const ByteArray b = File::ReadFile( path );
+   return std::string( reinterpret_cast<const char*>( b.Begin() ), b.Length() );
+}
+
+// The process umask, read race-free from /proc (never umask(0)/umask(m),
+// which changes it for every thread for a moment). Test-only: the module
+// itself never reads the umask; the kernel applies it at open()/mkdir().
+mode_t JProcUmask()
+{
+   // /proc files report size 0, so File::ReadFile() reads nothing: read() to EOF.
+   std::string s;
+   const int fd = ::open( "/proc/self/status", O_RDONLY | O_CLOEXEC );
+   if ( fd < 0 )
+      throw Error( "JProcUmask: cannot open /proc/self/status" );
+   char buf[ 4096 ];
+   for ( ssize_t n; (n = ::read( fd, buf, sizeof( buf ) )) > 0; )
+      s.append( buf, size_t( n ) );
+   ::close( fd );
+   const size_t at = s.find( "\nUmask:" );
+   if ( at == std::string::npos )
+      throw Error( "JProcUmask: no Umask line in /proc/self/status" );
+   return mode_t( std::strtoul( s.c_str() + at + 7, nullptr, 8 ) );
+}
+
+// Permission bits of a path (lstat: a link's own mode, never its target's); -1 if absent.
+int JModeOf( const String& path )
+{
+   struct stat st;
+   return ::lstat( U8( path ).c_str(), &st ) == 0 ? int( st.st_mode & 07777 ) : -1;
+}
+
+bool JIsLink( const String& path )
+{
+   struct stat st;
+   return ::lstat( U8( path ).c_str(), &st ) == 0 && S_ISLNK( st.st_mode );
 }
 
 // Local, stride-aware copy of the preview's block average (Task 1 only: it
@@ -1672,7 +1715,7 @@ bool RunJourneySelfTest( nlohmann::json& out )
          {
             const std::string link = root + "/recipe.json";
             (void)::symlink( U8( victim ).c_str(), link.c_str() );
-            const String why = SafeWriteTextFile( FromU8( link ), "{\"x\":1}" );
+            const String why = SafeWriteTextFile( FromU8( link ), "{\"x\":1}", SafeFileMode::Shared );
             linkBytesOk = why.Contains( "symbolic link" ) && File::ReadFile( victim ) == victimBytes && isLink( link );
             sw["linkBytes"] = U8( why );
             ::unlink( link.c_str() );
@@ -1681,7 +1724,7 @@ bool RunJourneySelfTest( nlohmann::json& out )
          bool injectedOk = false;
          {
             SetSafeFileWriteFailBeforeRenameForSelfTest( true );
-            const String why = SafeWriteTextFile( dir.Path() + "/thumbs/f.md", "partial?" );
+            const String why = SafeWriteTextFile( dir.Path() + "/thumbs/f.md", "partial?", SafeFileMode::Shared );
             SetSafeFileWriteFailBeforeRenameForSelfTest( false );
             injectedOk = why.Contains( "injected failure" ) && entries( root + "/thumbs" ).empty();
             sw["injected"] = { { "error", U8( why ) }, { "left", entries( root + "/thumbs" ) } };
@@ -1700,9 +1743,9 @@ bool RunJourneySelfTest( nlohmann::json& out )
          bool renderFailOk = false;
          {
             String given;
-            const String why = SafeRenderFile( dir.Path() + "/thumbs/7.jpg",
+            const String why = SafeRenderFile( dir.Path() + "/thumbs/7.jpg", SafeFileMode::Shared,
                [&given]( const String& temp ) { given = temp; File::WriteFile( temp, ByteArray( 10, uint8( 0xFF ) ) ); throw Error( "render blew up" ); } );
-            const String whyCheck = SafeWriteFile( dir.Path() + "/thumbs/8.jpg", ByteArray( 10, uint8( 'x' ) ), SafeCheckJpeg );
+            const String whyCheck = SafeWriteFile( dir.Path() + "/thumbs/8.jpg", ByteArray( 10, uint8( 'x' ) ), SafeFileMode::Shared, SafeCheckJpeg );
             const std::string privDir = U8( File::ExtractDirectory( given ) );
             renderFailOk = why.Contains( "render blew up" ) && !given.IsEmpty() && !exists( privDir )
                         && whyCheck.Contains( "not a JPEG" ) && entries( root + "/thumbs" ).empty();
@@ -1716,8 +1759,8 @@ bool RunJourneySelfTest( nlohmann::json& out )
             const StepStatsResult r1 = ComputeStepStats( w.MainView(), path );
             const StepStatsResult r2 = ComputeStepStats( w.MainView(), path );   // over an existing file
             const ByteArray b = File::Exists( path ) ? File::ReadFile( path ) : ByteArray();
-            const String t1 = SafeWriteTextFile( dir.Path() + "/j.md", "one" );
-            const String t2 = SafeWriteTextFile( dir.Path() + "/j.md", "two" );
+            const String t1 = SafeWriteTextFile( dir.Path() + "/j.md", "one", SafeFileMode::Shared );
+            const String t2 = SafeWriteTextFile( dir.Path() + "/j.md", "two", SafeFileMode::Shared );
             const ByteArray jb = File::ReadFile( dir.Path() + "/j.md" );
             normalOk = r1.thumbnailError.IsEmpty() && r2.thumbnailError.IsEmpty() && r2.thumbnailPath == path
                     && SafeCheckJpeg( b ).IsEmpty() && t1.IsEmpty() && t2.IsEmpty()
@@ -1726,10 +1769,74 @@ bool RunJourneySelfTest( nlohmann::json& out )
             sw["normal"] = { { "e1", U8( r1.thumbnailError ) }, { "e2", U8( r2.thumbnailError ) }, { "bytes", b.Length() },
                              { "t1", U8( t1 ) }, { "t2", U8( t2 ) }, { "left", entries( root + "/thumbs" ) } };
          }
+         // (i7) Task 5 (controller fix of the umask read-back race): the final
+         // mode is fixed by file class -- Shared 0644, Private 0600, minus the
+         // umask, which the KERNEL applies at open(); nothing reads or changes
+         // the process umask -- and is never inherited from a replaced file.
+         // A detector thread creates files while 1500 writes run: with the old
+         // umask(0)/umask(m) read-back some of its files came out 0666.
+         bool modesOk = false;
+         {
+            const mode_t um = JProcUmask();
+            const int wantShared = int( 0644 & ~um ), wantPrivate = int( 0600 & ~um );
+            const String ps = dir.Path() + "/shared.json", pp = dir.Path() + "/private.json";
+            const String e1 = SafeWriteTextFile( ps, "{}", SafeFileMode::Shared );
+            const String e2 = SafeWriteTextFile( pp, "{}", SafeFileMode::Private );
+            const int m1 = JModeOf( ps ), m2 = JModeOf( pp );
+            // Cross-replace: the class of the NEW write decides, not the old file.
+            const String e3 = SafeWriteTextFile( pp, "{\"v\":2}", SafeFileMode::Shared );
+            const String e4 = SafeWriteTextFile( ps, "{\"v\":2}", SafeFileMode::Private );
+            const int m3 = JModeOf( pp ), m4 = JModeOf( ps );
+            JWindow w( "pcSsMode", 300, 200, 1, 0.3 );
+            const String tp = dir.Path() + "/thumbs/mode.jpg";
+            const StepStatsResult r = ComputeStepStats( w.MainView(), tp );
+            const int mt = JModeOf( tp );
+
+            const std::string raceDir = root + "/race";
+            ::mkdir( raceDir.c_str(), 0700 );
+            std::atomic<bool> stop( false );
+            std::atomic<int> made( 0 ), wrong( 0 );
+            const int wantObserved = int( 0666 & ~um );
+            std::thread observer( [&]()
+            {
+               for ( unsigned i = 0; !stop.load(); ++i )
+               {
+                  const std::string p = raceDir + "/o" + std::to_string( i%4 );
+                  const int fd = ::open( p.c_str(), O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0666 );
+                  if ( fd < 0 )
+                     continue;
+                  struct stat st;
+                  if ( ::fstat( fd, &st ) == 0 && int( st.st_mode & 0777 ) != wantObserved )
+                     ++wrong;
+                  ++made;
+                  ::close( fd );
+                  ::unlink( p.c_str() );
+               }
+            } );
+            int writeErrors = 0;
+            const jclock::time_point t0 = jclock::now();
+            for ( int i = 0; i < 1500; ++i )
+               if ( !SafeWriteTextFile( FromU8( raceDir + "/w.txt" ), "x", SafeFileMode::Shared ).IsEmpty() )
+                  ++writeErrors;
+            stop = true;
+            observer.join();
+            const double raceMs = MsSince( t0 );
+            const int umAfter = int( JProcUmask() );
+            sw["modes"] = { { "umask", int( um ) }, { "shared", m1 }, { "private", m2 }, { "privateToShared", m3 },
+                            { "sharedToPrivate", m4 }, { "thumb", mt }, { "thumbError", U8( r.thumbnailError ) },
+                            { "errors", { U8( e1 ), U8( e2 ), U8( e3 ), U8( e4 ) } },
+                            { "race", { { "writes", 1500 }, { "writeErrors", writeErrors }, { "observed", made.load() },
+                                        { "wrongMode", wrong.load() }, { "ms", raceMs }, { "umaskAfter", umAfter } } } };
+            modesOk = e1.IsEmpty() && e2.IsEmpty() && e3.IsEmpty() && e4.IsEmpty()
+                   && m1 == wantShared && m2 == wantPrivate && m3 == wantShared && m4 == wantPrivate
+                   && r.ok && r.thumbnailError.IsEmpty() && mt == wantShared
+                   && writeErrors == 0 && made.load() > 0 && wrong.load() == 0 && umAfter == int( um );
+         }
          sw["verdicts"] = { { "linkThumb", linkThumbOk }, { "linkBytes", linkBytesOk }, { "injected", injectedOk },
-                            { "thumbFail", thumbFailOk }, { "renderFail", renderFailOk }, { "normal", normalOk } };
+                            { "thumbFail", thumbFailOk }, { "renderFail", renderFailOk }, { "normal", normalOk },
+                            { "modes", modesOk } };
          d["safeWrite"] = sw;
-         safeWriteOk = linkThumbOk && linkBytesOk && injectedOk && thumbFailOk && renderFailOk && normalOk;
+         safeWriteOk = linkThumbOk && linkBytesOk && injectedOk && thumbFailOk && renderFailOk && normalOk && modesOk;
       }
       catch ( const pcl::Exception& x ) { error += " | safeWrite: " + x.Message(); }
       catch ( const std::exception& x ) { error += " | safeWrite: " + String( x.what() ); }
@@ -1738,6 +1845,355 @@ bool RunJourneySelfTest( nlohmann::json& out )
       out["stepStatsDetail"] = d;
       out["stepStatsError"] = U8( error );
       out["stepStatsOk"] = ok;
+      allOk = allOk && ok;
+   }
+
+   // ---- Section J4: JourneyStore (Task 5) ----------------------------------
+   SelfTestSectionMark( "J4 JourneyStore" );
+   {
+      nlohmann::json d = nlohmann::json::object();
+      bool schemaOk = false, roundTripOk = false, utf8Ok = false, stateOk = false, redactOk = false,
+           retentionOk = false, damagedOk = false, newerOk = false, foreignOk = false, lockedOk = false, isoOk = false,
+           fileModesOk = false, rootLinkOk = false, dbLinkOk = false, openRootOk = false, treeOk = false, openLockedOk = false;
+      String error;
+      try
+      {
+         JTempDir root( "picopilot-store-" );
+         String openError;
+         std::unique_ptr<JourneyStore> st = JourneyStore::Open( root.Path(), openError );
+         if ( !st )
+            throw Error( "Open failed: " + openError );
+
+         // (a) Schema v1: exactly the spec §5 tables/columns (+ stats.image_id, Ruling 2).
+         {
+            RawDb raw( st->DbPath() );
+            const std::map<std::string, std::vector<std::string>> want = {
+               { "journey", { "id", "created", "updated", "name", "target", "kept", "kept_at", "end_image_id", "status" } },
+               { "image", { "id", "journey_id", "view_id", "file_path", "fingerprint", "is_master", "created" } },
+               { "acquisition", { "image_id", "target", "filter", "camera", "gain", "offset", "sensor_temp", "sub_exposure",
+                                  "sub_count", "total_integration_s", "session_date" } },
+               { "step", { "id", "image_id", "seq", "process_id", "params_json", "started", "duration_s", "actor", "reason",
+                           "reason_inferred", "state", "history_index" } },
+               { "stats", { "step_id", "image_id", "channel", "median", "mad", "mean", "min", "max", "noise" } },
+               { "link", { "from_image_id", "to_image_id", "via_step_id", "evidence" } },
+               { "gap", { "journey_id", "image_id", "after_step_seq", "reason" } } };
+            bool all = raw.Column( "PRAGMA user_version" ) == std::vector<std::string>( { "1" } );
+            std::vector<std::string> tables = raw.Column( "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name" );
+            d["tables"] = tables;
+            all = all && tables == std::vector<std::string>( { "acquisition", "gap", "image", "journey", "link", "stats", "step" } );
+            for ( const auto& t : want )
+            {
+               const std::vector<std::string> cols = raw.Column( ( "SELECT name FROM pragma_table_info('" + t.first + "')" ).c_str() );
+               d["columns"][t.first] = cols;
+               all = all && cols == t.second;
+            }
+            schemaOk = all && raw.Column( "PRAGMA journal_mode" ) == std::vector<std::string>( { "wal" } );
+         }
+
+         // (b) Round trip of every row kind.
+         const std::string now = NowIso();
+         const int64 jid = st->CreateJourney( "M42 Ha 2026-09-25", "M42", now );
+         const int64 img = st->AddImage( jid, "M42_Ha", "/data/M42_Ha.xisf", "64x64x1:f32:abc", true, now );
+         AcquisitionFacts a;
+         a.target = "M42"; a.filter = "Ha"; a.camera = "ASI2400MC"; a.subExposureS = 300.0; a.subCount = 20;
+         a.totalIntegrationS = 6000.0; a.sessionDate = "2026-09-20";
+         st->SetAcquisition( img, a );
+         HistoryStep h;
+         String pe;
+         ParseXpsmStep( kXpsmPixelMath, h, pe );
+         h.combinedIndex = 0;
+         std::vector<int64> sids;
+         for ( int i = 0; i < 3; ++i )
+         {
+            h.combinedIndex = i;
+            sids.push_back( st->AddStep( MakeStepRow( h, img, "active", i == 1 ? "copilot" : "user", i == 1 ? "lift the background" : "", i + 1 ) ) );
+         }
+         st->AddStats( img, 0, { { 0, 0.1, 0.01, 0.11, 0.0, 1.0, 0.003 } } );
+         st->AddStats( img, sids[2], { { 0, 0.2, 0.02, 0.21, 0.0, 1.0, 0.004 } } );
+         const int64 img2 = st->AddImage( jid, "M42_Ha_stars", "", "64x64x1:f32:def", false, now );
+         st->AddLink( { img, img2, sids[2], "timing" } );
+         st->AddGap( { jid, img, 2, "history read failed: test" } );
+         const std::vector<StepRow> steps = st->Steps( img, false );
+         AcquisitionFacts back;
+         const bool hasAcq = st->Acquisition( img, back );
+         const std::vector<ChannelStats> s0 = st->Stats( img, 0 ), s2 = st->Stats( img, sids[2] );
+         const std::vector<LinkRow> links = st->Links( jid );
+         const std::vector<GapRow> gaps = st->Gaps( jid );
+         JourneyRow jr;
+         const bool gotJ = st->GetJourney( jid, jr );
+         d["roundTrip"] = { { "steps", steps.size() }, { "actor1", steps.size() > 1 ? steps[1].actor : "" },
+                            { "links", links.size() }, { "gaps", gaps.size() } };
+         roundTripOk = gotJ && jr.name == "M42 Ha 2026-09-25" && jr.status == "recording" && !jr.kept
+                    && steps.size() == 3 && steps[1].actor == "copilot" && steps[1].reason == "lift the background"
+                    && steps[0].params.at( "parameters" ).at( "expression" ) == "$T*2"
+                    && steps[0].params.at( "identity" ) == h.identity && steps[2].seq == 3
+                    && hasAcq && back.filter == "Ha" && back.subCount == 20 && !back.gain.has_value()
+                    && back.totalIntegrationS.value_or( -1 ) == 6000.0
+                    && s0.size() == 1 && std::fabs( s0[0].median - 0.1 ) < 1e-12 && s2.size() == 1 && s2[0].noise == 0.004
+                    && links.size() == 1 && links[0].evidence == "timing" && links[0].viaStepId == sids[2]
+                    && gaps.size() == 1 && gaps[0].afterSeq == 2 && st->Images( jid ).size() == 2
+                    && st->StepCount( jid, true ) == 3;
+
+         // (c) UTF-8 (non-BMP) round trip.
+         const std::string uname = "C\xC3\xB4ne \xF0\x9F\x94\xAD";
+         st->RenameJourney( jid, uname );
+         JourneyRow ju;
+         st->GetJourney( jid, ju );
+         utf8Ok = ju.name == uname;
+
+         // (d) States: superseded rows are hidden unless asked for.
+         st->SetStepState( sids[2], "superseded" );
+         stateOk = st->Steps( img, false ).size() == 2 && st->Steps( img, true ).size() == 3;
+
+         // (e) Location redaction (Ruling 20): nothing identifying reaches the file.
+         {
+            HistoryStep loc;
+            loc.processId = "FITSHeader";
+            loc.parameters = { { "obsLatitude", 47.123456 }, { "note", "keep me" } };
+            loc.tableParameters = { { "keywords", { { "SITELAT", "'+47 07 24.4'", "site" }, { "OBJECT", "'M42'", "" } } } };
+            loc.xpsm = "<instance class=\"FITSHeader\"><parameter id=\"x\">+47 07 24.4</parameter></instance>";
+            loc.identity = "FITSHeader@#0";
+            loc.combinedIndex = 5;
+            const int64 lid = st->AddStep( MakeStepRow( loc, img, "active", "user", "", 6 ) );
+            st->Checkpoint();
+            const std::string bytes = FileBytes( st->DbPath() ) + FileBytes( st->DbPath() + "-wal" );
+            StepRow r;
+            st->GetStep( lid, r );
+            d["redacted"] = r.params;
+            redactOk = bytes.find( "47 07 24" ) == std::string::npos && bytes.find( "47.123456" ) == std::string::npos
+                    && r.params.at( "parameters" ).at( "obsLatitude" ) == "[redacted]"
+                    && r.params.at( "parameters" ).at( "note" ) == "keep me"
+                    && r.params.at( "tableParameters" ).at( "keywords" ).at( 0 ).at( 1 ) == "[redacted]"
+                    && r.params.at( "tableParameters" ).at( "keywords" ).at( 1 ).at( 1 ) == "'M42'"
+                    && r.params.at( "replayable" ) == false && r.params.at( "xpsm" ) == ""
+                    && r.params.at( "parseNote" ) == "contained observing-site data; not stored";
+         }
+
+         // (f) Retention: only the old unkept journey goes (row, cascade, folder).
+         {
+            const int64 oldU = st->CreateJourney( "old", "X", IsoDaysAgo( 40 ) );
+            const int64 newU = st->CreateJourney( "new", "X", IsoDaysAgo( 5 ) );
+            const int64 oldK = st->CreateJourney( "keeper", "X", IsoDaysAgo( 400 ) );
+            const int64 oi = st->AddImage( oldU, "o", "", "fp-o", true, IsoDaysAgo( 40 ) );
+            st->AddStep( MakeStepRow( h, oi, "active", "user", "", 1 ) );
+            st->MarkKept( oldK, 0, IsoDaysAgo( 399 ) );
+            for ( int64 id : { oldU, newU, oldK } )
+            {
+               File::CreateDirectory( st->JourneyDir( id ) + "/thumbs" );
+               File::WriteTextFile( st->JourneyDir( id ) + "/thumbs/1.jpg", "x" );
+            }
+            // MarkKept touched 'updated'; age the keeper again so only 'kept' protects it.
+            RawDb( st->DbPath() ).Exec( ( "UPDATE journey SET updated='" + IsoDaysAgo( 400 ) + "' WHERE id=" + std::to_string( oldK ) ).c_str() );
+            StringList removed;
+            const int n = st->PruneUnkept( IsoDaysAgo( 30 ), &removed );
+            JourneyRow tmp;
+            RawDb raw( st->DbPath() );
+            d["retention"] = { { "pruned", n }, { "orphanSteps", raw.Column( ( "SELECT count(*) FROM step WHERE image_id=" + std::to_string( oi ) ).c_str() ) } };
+            retentionOk = n == 1 && !st->GetJourney( oldU, tmp ) && st->GetJourney( newU, tmp ) && st->GetJourney( oldK, tmp )
+                       && !File::DirectoryExists( st->JourneyDir( oldU ) ) && File::DirectoryExists( st->JourneyDir( oldK ) )
+                       && raw.Column( ( "SELECT count(*) FROM step WHERE image_id=" + std::to_string( oi ) ).c_str() )
+                          == std::vector<std::string>( { "0" } );
+         }
+
+         // (j) Locked by another connection: a quick, named failure; works after release.
+         {
+            RawDb other( st->DbPath() );
+            other.Exec( "BEGIN EXCLUSIVE" );
+            const jclock::time_point t0 = jclock::now();
+            String lockMsg;
+            try { st->CreateJourney( "while locked", "X", NowIso() ); }
+            catch ( const pcl::Exception& x ) { lockMsg = x.Message(); }
+            const double ms = MsSince( t0 );
+            other.Exec( "COMMIT" );
+            int64 after = 0;
+            try { after = st->CreateJourney( "after unlock", "X", NowIso() ); } catch ( ... ) {}
+            d["locked"] = { { "message", U8( lockMsg ) }, { "ms", ms }, { "after", after } };
+            lockedOk = lockMsg.Contains( "locked" ) && lockMsg.Contains( st->DbPath() ) && ms < 1000 && after > 0;
+         }
+         st.reset();
+
+         // (g) A damaged file is reported with its path and NEVER replaced.
+         {
+            JTempDir r2( "picopilot-store-bad-" );
+            const String p = r2.Path() + "/journeys.sqlite3";
+            File::WriteTextFile( p, IsoString( std::string( 4096, 'Z' ).c_str() ) );
+            const std::string before = FileBytes( p );
+            String e2;
+            const bool opened = JourneyStore::Open( r2.Path(), e2 ) != nullptr;
+            d["damaged"] = U8( e2 );
+            damagedOk = !opened && e2.Contains( p ) && e2.Contains( "never replaces" ) && FileBytes( p ) == before;
+         }
+         // (h) Written by a newer version.
+         {
+            JTempDir r3( "picopilot-store-new-" );
+            { RawDb raw( r3.Path() + "/journeys.sqlite3" ); raw.Exec( "CREATE TABLE journey(id INTEGER); PRAGMA user_version=2;" ); }
+            String e3;
+            newerOk = JourneyStore::Open( r3.Path(), e3 ) == nullptr && e3.Contains( "newer" );
+            d["newer"] = U8( e3 );
+         }
+         // (i) Some other program's database in our file name.
+         {
+            JTempDir r4( "picopilot-store-foreign-" );
+            { RawDb raw( r4.Path() + "/journeys.sqlite3" ); raw.Exec( "CREATE TABLE other(x TEXT);" ); }
+            String e4;
+            foreignOk = JourneyStore::Open( r4.Path(), e4 ) == nullptr && e4.Contains( "not a PI Copilot journey database" );
+            d["foreign"] = U8( e4 );
+         }
+         // (k) Timestamp format.
+         {
+            const std::string t = NowIso();
+            isoOk = t.size() == 24 && t[4] == '-' && t[10] == 'T' && t[19] == '.' && t[23] == 'Z' && IsoDaysAgo( 1 ) < t;
+            d["now"] = t;
+         }
+
+         // ---- Controller addition 2: file/dir discipline of everything the store creates ----
+         const mode_t um = JProcUmask();
+         // (l) A missing library root is created 0700 component by component
+         // (mkdir never follows a link); the DB file is created O_EXCL|O_NOFOLLOW
+         // 0600 and SQLite gives its WAL the DB file's mode.
+         {
+            JTempDir r5( "picopilot-store-mode-" );
+            const String lib = r5.Path() + "/PICopilot/journeys";
+            String e5;
+            std::unique_ptr<JourneyStore> s5 = JourneyStore::Open( lib, e5 );
+            int dbMode = -1, walMode = -1;
+            if ( s5 )
+            {
+               s5->CreateJourney( "m", "X", NowIso() );
+               dbMode = JModeOf( s5->DbPath() );
+               walMode = JModeOf( s5->DbPath() + "-wal" );
+            }
+            const bool opened = s5 != nullptr;
+            s5.reset();
+            const int rootMode = JModeOf( lib ), parentMode = JModeOf( r5.Path() + "/PICopilot" );
+            d["fileModes"] = { { "opened", opened }, { "error", U8( e5 ) }, { "umask", int( um ) }, { "root", rootMode },
+                               { "parent", parentMode }, { "db", dbMode }, { "wal", walMode } };
+            fileModesOk = opened && e5.IsEmpty() && rootMode == int( 0700 & ~um ) && parentMode == int( 0700 & ~um )
+                       && dbMode == int( 0600 & ~um ) && walMode == int( 0600 & ~um );
+         }
+         // (m) The library root is a symbolic link: refused, nothing created behind it.
+         {
+            JTempDir r6( "picopilot-store-rootlink-" );
+            const String real = r6.Path() + "/real";
+            File::CreateDirectory( real );
+            const String lib = r6.Path() + "/journeys";
+            (void)::symlink( U8( real ).c_str(), U8( lib ).c_str() );
+            String e6;
+            const bool opened = JourneyStore::Open( lib, e6 ) != nullptr;
+            d["rootLink"] = U8( e6 );
+            rootLinkOk = !opened && e6.Contains( "symbolic link" ) && e6.Contains( lib ) && JIsLink( lib )
+                      && JModeOf( real + "/journeys.sqlite3" ) == -1;
+         }
+         // (n) journeys.sqlite3 is a symbolic link: refused, the link and its target untouched.
+         {
+            JTempDir r7( "picopilot-store-dblink-" );
+            const String victim = r7.Path() + "/victim.bin";
+            File::WriteTextFile( victim, "victim bytes" );
+            const String p = r7.Path() + "/journeys.sqlite3";
+            (void)::symlink( U8( victim ).c_str(), U8( p ).c_str() );
+            String e7;
+            const bool opened = JourneyStore::Open( r7.Path(), e7 ) != nullptr;
+            d["dbLink"] = U8( e7 );
+            dbLinkOk = !opened && e7.Contains( "symbolic link" ) && e7.Contains( p ) && e7.Contains( "never replaces" )
+                    && JIsLink( p ) && FileBytes( victim ) == "victim bytes"
+                    && JModeOf( victim + "-wal" ) == -1 && JModeOf( p + "-wal" ) == -1;
+         }
+         // (o) A root other users can write into: refused (they could plant the
+         // DB, its WAL or a journey folder), nothing created.
+         {
+            JTempDir r8( "picopilot-store-open-" );
+            ::chmod( U8( r8.Path() ).c_str(), 0777 );
+            String e8;
+            const bool opened = JourneyStore::Open( r8.Path(), e8 ) != nullptr;
+            ::chmod( U8( r8.Path() ).c_str(), 0700 );
+            d["openRoot"] = U8( e8 );
+            openRootOk = !opened && e8.Contains( "writable by other users" ) && e8.Contains( r8.Path() )
+                      && JModeOf( r8.Path() + "/journeys.sqlite3" ) == -1;
+         }
+         // (p) RemoveDirectoryTree removes links, never what they point to, and
+         // a failure is loud (throws, naming the path).
+         {
+            JTempDir r9( "picopilot-store-tree-" );
+            const String keep = r9.Path() + "/keep";
+            File::CreateDirectory( keep );
+            File::WriteTextFile( keep + "/k.txt", "k" );
+            const String t = r9.Path() + "/tree";
+            File::CreateDirectory( t + "/sub/deeper" );
+            File::WriteTextFile( t + "/a.txt", "a" );
+            File::WriteTextFile( t + "/sub/deeper/c.txt", "c" );
+            (void)::symlink( U8( keep ).c_str(), U8( t + "/dirlink" ).c_str() );
+            (void)::symlink( U8( keep + "/k.txt" ).c_str(), U8( t + "/sub/filelink" ).c_str() );
+            const String top = r9.Path() + "/toplink";
+            (void)::symlink( U8( keep ).c_str(), U8( top ).c_str() );
+            String removeError;
+            try
+            {
+               RemoveDirectoryTree( t );
+               RemoveDirectoryTree( top );
+            }
+            catch ( const pcl::Exception& x ) { removeError = x.Message(); }
+            const bool removedOk = removeError.IsEmpty() && JModeOf( t ) == -1 && JModeOf( top ) == -1
+                                && FileBytes( keep + "/k.txt" ) == "k" && File::DirectoryExists( keep );
+            // Loud failure: a read-only subdirectory cannot be emptied.
+            const String ro = r9.Path() + "/ro";
+            File::CreateDirectory( ro + "/locked" );
+            File::WriteTextFile( ro + "/locked/f.txt", "f" );
+            ::chmod( U8( ro + "/locked" ).c_str(), 0500 );
+            String treeError;
+            try { RemoveDirectoryTree( ro ); }
+            catch ( const pcl::Exception& x ) { treeError = x.Message(); }
+            ::chmod( U8( ro + "/locked" ).c_str(), 0700 );
+            d["tree"] = { { "removed", removedOk }, { "removeError", U8( removeError ) },
+                          { "victimKept", FileBytes( keep + "/k.txt" ) == "k" }, { "error", U8( treeError ) } };
+            treeOk = removedOk && treeError.Contains( ro + "/locked" ) && File::Exists( ro + "/locked/f.txt" );
+         }
+         // (q) Locked by another program AT OPEN (a rollback-journal EXCLUSIVE
+         // lock blocks even the quick_check read): reported as locked -- never
+         // as "damaged" -- quickly, file untouched; opens normally once released.
+         {
+            JTempDir r10( "picopilot-store-openlock-" );
+            {
+               String e;
+               std::unique_ptr<JourneyStore> s = JourneyStore::Open( r10.Path(), e );
+               if ( !s )
+                  throw Error( "(q) first Open failed: " + e );
+               s->CreateJourney( "q", "X", NowIso() );
+            }
+            const String p = r10.Path() + "/journeys.sqlite3";
+            RawDb other( p );
+            const bool setup = other.Exec( "PRAGMA journal_mode=DELETE" ) && other.Exec( "BEGIN EXCLUSIVE" );
+            const std::string before = FileBytes( p );
+            String e10;
+            const jclock::time_point t0 = jclock::now();
+            const bool opened = JourneyStore::Open( r10.Path(), e10 ) != nullptr;
+            const double ms = MsSince( t0 );
+            const bool same = FileBytes( p ) == before;
+            other.Exec( "COMMIT" );
+            String e11;
+            std::unique_ptr<JourneyStore> again = JourneyStore::Open( r10.Path(), e11 );
+            JourneyRow jq;
+            const bool readable = again && again->GetJourney( 1, jq ) && jq.name == "q";
+            again.reset();
+            d["openLocked"] = { { "setup", setup }, { "message", U8( e10 ) }, { "ms", ms }, { "fileUnchanged", same },
+                                { "afterRelease", U8( e11 ) }, { "readable", readable } };
+            openLockedOk = setup && !opened && e10.Contains( "locked" ) && !e10.Contains( "damaged" ) && e10.Contains( p )
+                        && ms < 1000 && same && readable && e11.IsEmpty();
+         }
+      }
+      catch ( const pcl::Exception& x ) { error = x.Message(); }
+      catch ( const std::exception& x ) { error = String( x.what() ); }
+      catch ( ... )                     { error = "unknown exception"; }
+      d["verdicts"] = { { "schema", schemaOk }, { "roundTrip", roundTripOk }, { "utf8", utf8Ok }, { "state", stateOk },
+                        { "redact", redactOk }, { "retention", retentionOk }, { "damaged", damagedOk }, { "newer", newerOk },
+                        { "foreign", foreignOk }, { "locked", lockedOk }, { "iso", isoOk }, { "fileModes", fileModesOk },
+                        { "rootLink", rootLinkOk }, { "dbLink", dbLinkOk }, { "openRoot", openRootOk }, { "tree", treeOk },
+                        { "openLocked", openLockedOk } };
+      const bool ok = schemaOk && roundTripOk && utf8Ok && stateOk && redactOk && retentionOk && damagedOk && newerOk
+                   && foreignOk && lockedOk && isoOk && fileModesOk && rootLinkOk && dbLinkOk && openRootOk && treeOk
+                   && openLockedOk;
+      out["journeyStoreDetail"] = d;
+      out["journeyStoreError"] = U8( error );
+      out["journeyStoreOk"] = ok;
       allOk = allOk && ok;
    }
 
