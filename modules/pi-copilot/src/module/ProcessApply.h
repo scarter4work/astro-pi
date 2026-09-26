@@ -45,7 +45,8 @@ struct ApplyProcessResult
  *      rejections are uncatchable MODAL dialogs (bad row index, bad table
  *      length): Boolean <- bool; numbers range-checked against
  *      GetNumericRange and the storage type, integral for integer types;
- *      String length limits and allowed characters; Enumeration <- element id
+ *      String length limits and declared characters (StringParameterRules.h;
+ *      view identifiers must be valid PixInsight identifiers); Enumeration <- element id
  *      / alias string or element value integer (ids via EnumerationInfoOf(),
  *      the same source describe_process uses); table row shape and row count
  *      against the table's length limits; no string may contain NUL; two keys

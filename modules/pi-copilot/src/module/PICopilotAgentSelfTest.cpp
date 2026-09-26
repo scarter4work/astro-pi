@@ -9,6 +9,7 @@
 #include "PICopilotModule.h"
 #include "ProcessApply.h"
 #include "ProcessCatalog.h"
+#include "StringParameterRules.h"
 #include "SystemPrompt.h"
 #include "TurnEndNotes.h"
 #include "Utf8.h"
@@ -664,6 +665,180 @@ bool RunAgentSelfTest( nlohmann::json& out )
       out["catalogEnumDefaultOk"] = enumDefaultOk;
       out["applyError"] = U8( error );
       out["applyProcessOk"] = ok;
+      allOk = allOk && ok;
+   }
+
+   // ---- Section A1b: String parameter character rules (Task T-pmid) -------
+   // PixelMath createNewImage + newImageId failed with
+   // "GetParameterAllowedCharacters(): API function error": the core's copy
+   // of a declared character set always fails (StringParameterRules.h).
+   {
+      bool namedOk = false, toolOk = false, refusedOk = false, digitOk = false, scanOk = false, setOk = false;
+      nlohmann::json detail = nlohmann::json::object();
+      String error;
+      auto closeNew = []( const std::set<std::string>& before )
+      {
+         std::vector<std::string> created;
+         for ( const ImageWindow& x : ImageWindow::AllWindows() )
+            if ( before.count( std::string( x.MainView().Id().c_str() ) ) == 0 )
+               created.push_back( std::string( x.MainView().Id().c_str() ) );
+         for ( const std::string& id : created )
+         {
+            ImageWindow w = ImageWindow::WindowById( IsoString( id.c_str() ) );
+            if ( !w.IsNull() )
+               w.ForceClose();
+         }
+         return created;
+      };
+      auto openIds = []()
+      {
+         std::set<std::string> ids;
+         for ( const ImageWindow& x : ImageWindow::AllWindows() )
+            ids.insert( std::string( x.MainView().Id().c_str() ) );
+         return ids;
+      };
+      try
+      {
+         {  // ApplyProcess: the named window exists with the right pixels; the source is unchanged.
+            AgentTestWindow tw( "PICopilotPmidSrc" );
+            View v = tw.MainView();
+            const double before = ChannelMedian( v, 0 );
+            const std::set<std::string> was = openIds();
+            const ApplyProcessResult r = ApplyProcess( "PixelMath",
+               { { "expression", "$T*0.5" }, { "createNewImage", true }, { "newImageId", "pcPmidStars" } },
+               nlohmann::json::object(), v );
+            ImageWindow w = ImageWindow::WindowById( "pcPmidStars" );
+            const double named = w.IsNull() ? -1 : ChannelMedian( w.MainView(), 0 );
+            const double srcAfter = ChannelMedian( v, 0 );
+            const std::vector<std::string> created = closeNew( was );
+            detail["named"] = { { "ok", r.ok }, { "error", U8( r.error ) }, { "created", created },
+                                { "srcMedian", before }, { "namedMedian", named } };
+            namedOk = r.ok && created == std::vector<std::string>{ "pcPmidStars" }
+                   && std::fabs( named - 0.5*before ) < 1e-5 && std::fabs( srcAfter - before ) < 1e-12;
+         }
+         {  // The reported call, through the apply_process tool.
+            AgentTestWindow tw( "PICopilotPmidTool" );
+            View v = tw.MainView();
+            const double before = ChannelMedian( v, 0 );
+            ToolContext ctx;
+            ctx.mode = AgentMode::Copilot;
+            ctx.turnViewId = v.FullId();
+            const std::set<std::string> was = openIds();
+            const ToolOutcome o = ExecuteTool( ToolCall{ "toolu_pmid1", "apply_process",
+               { { "process_id", "PixelMath" },
+                 { "parameters", { { "expression", "$T*0.5" }, { "createNewImage", true }, { "newImageId", "stars_x" } } } } }, ctx );
+            ImageWindow w = ImageWindow::WindowById( "stars_x" );
+            const double named = w.IsNull() ? -1 : ChannelMedian( w.MainView(), 0 );
+            const std::vector<std::string> created = closeNew( was );
+            const std::string text = o.content.empty() ? std::string() : o.content.at( 0 ).value( "text", std::string() );
+            detail["tool"] = { { "isError", o.isError }, { "text", text.substr( 0, 400 ) }, { "created", created }, { "namedMedian", named } };
+            toolOk = !o.isError && created == std::vector<std::string>{ "stars_x" } && std::fabs( named - 0.5*before ) < 1e-5;
+         }
+         {  // Invalid identifiers: refused before the core sees them; nothing created, source untouched.
+            AgentTestWindow tw( "PICopilotPmidBad" );
+            View v = tw.MainView();
+            const double before = ChannelMedian( v, 0 );
+            const std::set<std::string> was = openIds();
+            const ApplyProcessResult sp = ApplyProcess( "PixelMath",
+               { { "expression", "$T*0.5" }, { "createNewImage", true }, { "newImageId", "1bad id" } }, nlohmann::json::object(), v );
+            const ApplyProcessResult dg = ApplyProcess( "PixelMath",
+               { { "expression", "$T*0.5" }, { "createNewImage", true }, { "newImageId", "1bad" } }, nlohmann::json::object(), v );
+            const String pre = PrecheckApplyRun( "PixelMath", { { "newImageId", "a-b" } }, nlohmann::json::object() );
+            const std::vector<std::string> created = closeNew( was );
+            detail["refused"] = { { "space", U8( sp.error ) }, { "digit", U8( dg.error ) }, { "precheck", U8( pre ) },
+                                  { "created", created } };
+            refusedOk = !sp.ok && sp.error == "PixelMath.newImageId: '1bad id' is not a valid PixInsight identifier "
+                                              "(character ' ' at position 4 is not allowed); use only letters A-Z/a-z, "
+                                              "digits 0-9 and underscores, not starting with a digit"
+                     && pre == "PixelMath.newImageId: 'a-b' is not a valid PixInsight identifier "
+                               "(character '-' at position 1 is not allowed); use only letters A-Z/a-z, "
+                               "digits 0-9 and underscores, not starting with a digit"
+                     && created.empty() && std::fabs( ChannelMedian( v, 0 ) - before ) < 1e-12;
+            digitOk = !dg.ok && dg.error == "PixelMath.newImageId: '1bad' is not a valid PixInsight identifier "
+                                            "(it starts with the digit '1'); use only letters A-Z/a-z, "
+                                            "digits 0-9 and underscores, not starting with a digit";
+         }
+         {  // A non-identifier set (table column + scalar) and an empty (unrestricted) one.
+            const String okList = PrecheckApplyRun( "ExtractAlphaChannels", { { "channelList", "0, 1" } }, nlohmann::json::object() );
+            const String badList = PrecheckApplyRun( "ExtractAlphaChannels", { { "channelList", "0;1" } }, nlohmann::json::object() );
+            const String okCol = PrecheckApplyRun( "ChannelCombination", nlohmann::json::object(),
+               { { "channels", { { true, "R_1" }, { true, "" }, { true, "B" } } } } );
+            const String badCol = PrecheckApplyRun( "ChannelCombination", nlohmann::json::object(),
+               { { "channels", { { true, "R" }, { true, "G.x" }, { true, "B" } } } } );
+            const String free = PrecheckApplyRun( "PixelMath", { { "expression", "iif($T > 0.5, 1, 0) // any text" } },
+                                                  nlohmann::json::object() );
+            detail["sets"] = { { "okList", U8( okList ) }, { "badList", U8( badList ) }, { "okCol", U8( okCol ) },
+                               { "badCol", U8( badCol ) }, { "free", U8( free ) } };
+            setOk = okList.IsEmpty() && badList == "ExtractAlphaChannels.channelList: character ';' at position 1 is not allowed; "
+                                                   "allowed characters: 0123456789, "
+                 && okCol.IsEmpty()
+                 && badCol == "ChannelCombination.channels[1].id: 'G.x' is not a valid PixInsight identifier "
+                              "(character '.' at position 1 is not allowed); use only letters A-Z/a-z, "
+                              "digits 0-9 and underscores, not starting with a digit"
+                 && free.IsEmpty();
+         }
+         {  // Every String parameter of every installed process resolves; every
+            // compiled-in entry matches an installed parameter's declared length.
+            int strings = 0, fromCore = 0, compiled = 0, unrestricted = 0;
+            nlohmann::json unresolved = nlohmann::json::array(), coreSets = nlohmann::json::array();
+            std::set<std::string> compiledSeen;
+            for ( const Process& P : Process::AllProcesses() )
+            {
+               std::vector<ProcessParameter> ps;
+               for ( const ProcessParameter& p : P.Parameters() )
+               {
+                  ps.push_back( p );
+                  if ( p.IsTable() )
+                     for ( const ProcessParameter& c : p.TableColumns() )
+                        ps.push_back( c );
+               }
+               for ( const ProcessParameter& p : ps )
+                  if ( p.IsString() )
+                  {
+                     ++strings;
+                     const StringCharacterRule r = ResolveStringCharacterRule( p );
+                     const std::string path = U8( StringParameterPath( p ) );
+                     if ( !r.ok )
+                        unresolved.push_back( { { "path", path }, { "error", U8( r.error ) } } );
+                     else if ( r.source == "compiled-in" )
+                     {
+                        ++compiled;
+                        compiledSeen.insert( path );
+                     }
+                     else if ( r.source == "core" )
+                     {
+                        ++fromCore;
+                        coreSets.push_back( { { "path", path }, { "allowed", U8( r.allowed ) } } );
+                     }
+                     else
+                        ++unrestricted;
+                  }
+            }
+            nlohmann::json unused = nlohmann::json::array();
+            for ( size_type i = 0; i < CompiledStringCharacterRuleCount(); ++i )
+               if ( compiledSeen.count( U8( CompiledStringCharacterRulePath( i ) ) ) == 0 )
+                  unused.push_back( U8( CompiledStringCharacterRulePath( i ) ) );
+            detail["scan"] = { { "strings", strings }, { "fromCore", fromCore }, { "compiled", compiled },
+                               { "unrestricted", unrestricted }, { "unresolved", unresolved },
+                               { "coreSets", coreSets }, { "compiledNotInstalled", unused } };
+            scanOk = strings > 100 && unresolved.empty() && unused.empty()
+                  && size_type( compiled ) == CompiledStringCharacterRuleCount();
+         }
+      }
+      catch ( const pcl::Exception& x ) { error = x.Message(); }
+      catch ( const std::exception& x ) { error = String( x.what() ); }
+      catch ( ... )                     { error = "unknown exception"; }
+
+      const bool ok = namedOk && toolOk && refusedOk && digitOk && setOk && scanOk && error.IsEmpty();
+      out["stringRulesDetail"] = detail;
+      out["stringRulesNamedImageOk"] = namedOk;
+      out["stringRulesToolOk"] = toolOk;
+      out["stringRulesRefusedOk"] = refusedOk;
+      out["stringRulesDigitOk"] = digitOk;
+      out["stringRulesSetsOk"] = setOk;
+      out["stringRulesScanOk"] = scanOk;
+      out["stringRulesError"] = U8( error );
+      out["stringRulesOk"] = ok;
       allOk = allOk && ok;
    }
 

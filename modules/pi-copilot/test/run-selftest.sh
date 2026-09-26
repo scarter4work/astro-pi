@@ -372,6 +372,7 @@ required_true = [
     # increment 4
     'agentSmokeOk',
     'applyProcessOk',
+    'stringRulesOk',
     'toolTransportOk',
     'agentToolsOk',
     'agentLoopOk', 'agentWireOk',
