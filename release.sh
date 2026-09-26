@@ -69,10 +69,11 @@ LD_LIBRARY_PATH="${ASTROPI_PI_DIR:-/opt/PixInsight}/bin/lib:${ASTROPI_PI_DIR:-/o
   "$PI" -n --automation-mode --no-startup-scripts --no-startup-check-updates \
         --no-startup-gui-messages -r="$ROOT/gaia-depth-grade/tools/SignGaiaScriptsNative.js" \
         --force-exit >/dev/null 2>&1 || true
-python3 - /tmp/.gaia_sign_result.json <<'PY' || die "gaia script signing/verification failed"
-import json,sys
+python3 - /tmp/.gaia_sign_result.json "$ROOT/gaia-depth-grade/pi" <<'PY' || die "gaia script signing/verification failed"
+import json,os,sys
 r=json.load(open(sys.argv[1]))
 assert r.get("ok"), r
+assert os.path.realpath(r.get("dir") or "") == os.path.realpath(sys.argv[2]), ("signed the wrong tree", r.get("dir"), sys.argv[2])
 print("  signed+verified:", ", ".join(r["verified"]))
 PY
 
@@ -85,10 +86,11 @@ LD_LIBRARY_PATH="${ASTROPI_PI_DIR:-/opt/PixInsight}/bin/lib:${ASTROPI_PI_DIR:-/o
   "$PI" -n --automation-mode --no-startup-scripts --no-startup-check-updates \
         --no-startup-gui-messages -r="$ROOT/scripts/rc-astro/tools/SignRCAstroScriptsNative.js" \
         --force-exit >/dev/null 2>&1 || true
-python3 - /tmp/.rcastro_sign_result.json <<'PY' || die "rc-astro script signing/verification failed"
-import json,sys
+python3 - /tmp/.rcastro_sign_result.json "$ROOT/scripts/rc-astro" <<'PY' || die "rc-astro script signing/verification failed"
+import json,os,sys
 r=json.load(open(sys.argv[1]))
 assert r.get("ok"), r
+assert os.path.realpath(r.get("dir") or "") == os.path.realpath(sys.argv[2]), ("signed the wrong tree", r.get("dir"), sys.argv[2])
 print("  signed+verified:", ", ".join(r["verified"]))
 PY
 
