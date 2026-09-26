@@ -26,6 +26,13 @@ namespace pcl
 double JourneyWallNow();   // Unix epoch seconds (the clock of PI's <time start>)
 std::string LocalDateToday();   // "YYYY-MM-DD", local time
 
+// The recording owner of an image row (re-review m6): "<pid>:<process start
+// ticks>" of a PixInsight process (this one when pid <= 0); "" when that
+// process does not exist. JourneyOwnerAlive: the owner names a running process
+// (pid and start ticks match, so a reused pid is not "alive").
+std::string JourneyOwnerOf( long pid = 0 );
+bool        JourneyOwnerAlive( const std::string& owner );
+
 enum class RecordingState { Off, NotTracked, Recording, Paused };
 
 struct JourneyStatus
@@ -53,15 +60,21 @@ using HistoryReadFn = std::function<HistorySnapshot( const IsoString&, int )>;
  *   1. DropClosed(): forgets windows that are no longer open (their journeys
  *      may end) -- reads nothing;
  *   2. DrainEvents(): applies the queued notifications -- reads nothing;
- *   3. the busy gate (Task 7 review I4): the rest of the tick is deferred
- *      while PixInsight is busy -- CurrentProcessActivity() (a process or
- *      script with the console abort enabled, any view locked, or less than
- *      0.3 s since the last image notification / process end), a run_pjsr
- *      script, or another module EvaluateScript. Known blind spot: a user
- *      script that enables no abort, locks no view and just pumps events is
+ *   3. the busy gate (review I4, re-review R4): the rest of the tick is
+ *      deferred while PixInsight is busy -- RecorderActivity() (the console
+ *      abort enabled, or less than 0.3 s since the last image notification /
+ *      process end), a run_pjsr script, another module EvaluateScript, or an
+ *      open JourneyStore::Transaction. A LOCKED view defers only itself
+ *      (per-view IsBusy), never the whole recorder. After 5 s of continuous
+ *      deferral StatusFor() reports "waiting: <reason>". A tracked window
+ *      closed with unrecorded changes (dirty) gets a gap row. Known blind
+ *      spot: a user script that enables no abort and just pumps events is
  *      invisible, so a tick can still run (and read history) inside it;
  *   4. samples ActiveWindow(), scans, and does all reading and writing, with
- *      a per-tick time cap (the rest continues on the next tick).
+ *      a soft per-tick time cap: after 100 ms no further image or candidate
+ *      is STARTED (one already started finishes, so a tick can reach about
+ *      200-250 ms with a 60 MP join; re-review m8); the rest continues on
+ *      the next tick.
  * It never waits on a busy view, never nests an EvaluateScript, and is
  * re-entrancy guarded. Entries are held by unique_ptr, so no container
  * operation ever copies a View (copying a closed window's View throws in
@@ -107,6 +120,9 @@ public:
    JourneyStatus StatusFor( const IsoString& viewFullId ) const;
    int64 ImageOfView( const IsoString& viewFullId ) const;
    int64 JourneyOfView( const IsoString& viewFullId ) const;
+   // The distinct journeys of the images this tracker records right now (valid
+   // after a Tick, which dropped closed windows). Retention never prunes them.
+   std::vector<int64> OpenJourneyIds() const;
 
    // Test hooks.
    void SetHistoryReaderForSelfTest( HistoryReadFn fn );      // empty fn -> ReadViewHistory
@@ -137,6 +153,7 @@ private:
       std::string why;
       String      pausedReason;      // this image's history read failure (review M3)
       String      statsReason;       // "statistics not recorded: ..."; cleared by this image's next success (P11)
+      bool        hasGaps = false;   // a read-failure gap was queued / written (re-review m2)
    };
    struct Candidate
    {
@@ -166,7 +183,12 @@ private:
    bool                     m_useModifyCount;
    bool                     m_forceScan = true;
    bool                     m_renameSinceScan = false;
-   bool                     m_scannedOnce = false;   // views found by the very first scan existed before: not fresh
+   bool                     m_scannedOnce = false;   // views found by the first scan (after start / re-enable) existed before: not fresh
+   double                   m_gateSince = 0;         // start of the current continuous deferral (0 = none, R4)
+   String                   m_gateReason;
+   bool                     m_gateNoted = false;     // the "waiting" note was given for the current stall
+   std::string              m_owner;                 // JourneyOwnerOf() of this process (m6)
+   std::vector<int64>       m_closedImages;          // images whose window closed: owner cleared in EndClosedJourneys
    std::deque<PendingEvent> m_events;          // queued notifications (handlers only append)
    double                   m_lastScan = -1e300;
    std::vector<std::unique_ptr<Tracked>>   m_tracked;
@@ -202,13 +224,18 @@ private:
    void           Scan( double now, const std::vector<View>& open, const std::vector<size_type>& counts );
    void           BatchCounts();
    void           ProcessDirty( double now );
+   void           ProcessOne( Tracked& t, double now );   // one dirty image; throws its DB failures
    void           ProcessCandidates( double now );
    int            EvaluateCandidate( Candidate& c, double now );   // 1 joined, 0 wait, -1 reject, 2 deferred (busy)
-   // appeared: the window appeared while recording (a fresh candidate): only its
-   // initialProcessing is base, its session steps are the user's steps even when
-   // the join was deferred (busy gate). Otherwise its whole history is base.
+   // firstSeen: when the tracker first saw the window (its Created notification,
+   // or the scan). Base = initialProcessing + the processing steps that started
+   // before it (re-review R3): steps made after the window appeared stay the
+   // user's steps even when the busy gate deferred this join past them.
    int64          JoinAsMaster( const View& v, const HistorySnapshot& snap, const FITSKeywordArray& kw,
-                                const std::string& why, bool appeared );
+                                const std::string& why, double firstSeen );
+   // Drops a tracked image whose journey row vanished (R2): one note, and the
+   // window is re-seen as a candidate (not fresh). Index into m_tracked.
+   void           DropMissing( size_t index, const String& why );
    int64          JoinLinked( const View& v, const HistorySnapshot& snap, int64 journeyId,
                               const std::vector<PlannedLink>& links, const std::string& evidence, const std::string& why );
    std::vector<int64> AddBaseAndSteps( int64 imageId, const HistorySnapshot& snap, int baseCount );
@@ -226,7 +253,15 @@ private:
 // BEFORE pruning (Task 7 review I1), so a failing prune (it throws, naming
 // the path) is retried on the next date, never on every tick. Returns the
 // number pruned, or -1 when it was not due.
-int RunRetentionIfDue( JourneyStore& store, int days, const std::string& today, std::string& lastRun, StringList* removed );
+int RunRetentionIfDue( JourneyStore& store, int days, const std::string& today, std::string& lastRun, StringList* removed,
+                       const std::vector<int64>& excludeJourneyIds = std::vector<int64>() );
+
+// Re-review R1: one retention pass of an instance. First (once per local date
+// per instance, openTouchedDate) touches every journey this tracker has open,
+// in one transaction, so no instance's cutoff (>= 1 day) ever reaches an open
+// journey; then RunRetentionIfDue excluding them. Throws what they throw.
+int RetentionPass( JourneyStore& store, const JourneyTracker& tracker, int days, const std::string& today,
+                   std::string& openTouchedDate, std::string& lastRun, StringList* removed );
 
 class JourneyTimerHost;
 
@@ -285,6 +320,7 @@ private:
    std::unique_ptr<JourneyTimerHost> m_host;
    StringList                        m_notes;
    std::string                       m_retentionLastRun;
+   std::string                       m_openTouchedDate;       // R1: in memory, per instance
    String                            m_lastRetentionError;   // one note per distinct failure (review I1)
 
    void OpenStore();

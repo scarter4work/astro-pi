@@ -649,10 +649,14 @@ try
       if ( ws.length < 1 )
          throw new Error( "open " + path + " failed" );
       ws[0].show();
-      // Observed: ImageWindow.open() from this (still running) script leaves the Process Console's abort
-      // enabled, which the tracker's busy gate rightly reads as "a script is running". The fixture is the
-      // user here: it ends the open as the GUI does, so the next phase's ticks are idle.
-      console.abortEnabled = false;
+      // Re-review R5: MEASURED, not assumed. Headless (--automation-mode), a top-level ImageWindow.open()
+      // leaves the console abort enabled while this script runs; the recorder's gate then (rightly) reads
+      // "a script is running". Measured in the GUI (not automation mode, File > Open and a console-run
+      // script that opens a file): the abort stays DISABLED (task-7-report, fix round 2). The values seen
+      // here are recorded (journeyTrackerDetail.abortMeasured); only then does the fixture end the open.
+      var abortAfterOpen = console.abortEnabled;
+      j6( "abortSeen", { where: "topLevelReopen", js: abortAfterOpen } );
+      if ( console.abortEnabled ) { console.abortEnabled = false; j6( "abortReset", { where: "topLevelReopen" } ); }
       j6( "reopened" );
       pm( "pcTrkRenamed", "$T*0.99" ); j6( "reopenStep" );
 
@@ -695,13 +699,36 @@ try
       var fo = ImageWindow.open( fpath );
       if ( fo.length < 1 )
          throw new Error( "open " + fpath + " failed" );
-      console.abortEnabled = false;   // see the reopen above
+      var abortAfterOpen2 = console.abortEnabled;   // see the reopen above (R5)
+      j6( "abortSeen", { where: "topLevelFileOpen", js: abortAfterOpen2 } );
+      if ( console.abortEnabled ) { console.abortEnabled = false; j6( "abortReset", { where: "topLevelFileOpen" } ); }
       j6( "noFalseTiming", { fileId: fo[0].mainView.id } );
       fo = null;
 
       j6( "dupMaster" );                                                      // review I2
       j6( "joinFault" );                                                      // review I5
       j6( "startJourney" );                                                   // review I6
+
+      j6( "pjsrOpen", { path: fpath } );                                      // re-review R5 (b)
+      var abortAfterPjsr = console.abortEnabled;
+      j6( "abortSeen", { where: "topLevelAfterRunPjsrPhase", js: abortAfterPjsr } );
+      if ( console.abortEnabled ) { console.abortEnabled = false; j6( "abortReset", { where: "topLevelAfterRunPjsrPhase" } ); }
+      j6( "pjsrOpenNext" );
+      j6( "retentionOpen" );                                                  // re-review R1
+      j6( "rowGoneSetup" );                                                   // re-review R2
+      pm( "pcTrkG3", "$T*1.0" ); pm( "pcTrkRenamed", "$T*1.0" );
+      j6( "rowGone" );
+      j6( "offOn1" );                                                         // re-review R3
+      var offw = new ImageWindow( 32, 32, 1, 32, true, false, "pcTrkOff" );
+      pm( "pcTrkOff", "0.3" ); pm( "pcTrkOff", "$T*1.1" );
+      j6( "offOn2" );
+      pm( "pcTrkOff", "$T*1.0" ); j6( "offOn3" );
+      offw = null;
+      pm( "pcTrkRenamed", "$T*1.0" ); j6( "gateStall1" );                     // re-review R4
+      j6( "gateStall2" );
+      pm( "pcTrkRgb_R", "$T*1.0" ); j6( "gateStall3" );
+      pm( "pcTrkRenamed", "$T*1.0" ); j6( "txDefer" );                        // re-review m1 / m2
+      j6( "owner" );                                                          // re-review m6
 
       [ true, false ].forEach( function( mc )                                 // (s)
       {

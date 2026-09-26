@@ -75,6 +75,13 @@ struct ProcessActivityState
 // Non-blocking; never throws (an exception while probing counts as busy).
 ProcessActivityState CurrentProcessActivity();
 
+// The journey recorder's gate (Task 7 re-review R4): conditions 1 and 3 only
+// -- the console abort enabled, or less than PICopilotApplyQuietSeconds since
+// the last process activity. A locked view does NOT make it busy: the recorder
+// defers only the view it would read (its own IsBusy probe), so a tool that
+// keeps views locked elsewhere (Blink) never stalls recording. Never throws.
+ProcessActivityState RecorderActivity();
+
 // The panel's decision for a finished reply it holds (pure; e_Poll_Timer does
 // only the plumbing). Run: run its tools now. RunAfterNote: run them, after
 // telling the user PixInsight is idle again. Wait: keep holding, re-check on

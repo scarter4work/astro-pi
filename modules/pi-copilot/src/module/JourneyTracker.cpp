@@ -29,8 +29,12 @@
 #include <cstdio>
 #include <cstdlib>
 #include <ctime>
+#include <fstream>
 #include <set>
+#include <sstream>
 #include <thread>
+
+#include <unistd.h>
 
 namespace pcl
 {
@@ -187,11 +191,41 @@ std::string LocalDateToday()
    return buf;
 }
 
+std::string JourneyOwnerOf( long pid )
+{
+   if ( pid <= 0 )
+      pid = long( ::getpid() );
+   std::ifstream f( "/proc/" + std::to_string( pid ) + "/stat" );
+   std::string line;
+   if ( !f || !std::getline( f, line ) )
+      return std::string();
+   // Field 22 (starttime) counted after the ")" that ends the command name.
+   const size_t close = line.rfind( ')' );
+   if ( close == std::string::npos )
+      return std::string();
+   std::istringstream rest( line.substr( close + 1 ) );
+   std::string field;
+   for ( int i = 3; i <= 22; ++i )
+      if ( !(rest >> field) )
+         return std::string();
+   return std::to_string( pid ) + ":" + field;
+}
+
+bool JourneyOwnerAlive( const std::string& owner )
+{
+   const size_t colon = owner.find( ':' );
+   if ( owner.empty() || colon == std::string::npos )
+      return false;
+   const long pid = std::strtol( owner.substr( 0, colon ).c_str(), nullptr, 10 );
+   return pid > 0 && JourneyOwnerOf( pid ) == owner;
+}
+
 // ---- JourneyTracker ----------------------------------------------------------
 
 JourneyTracker::JourneyTracker( JourneyStore* store, const String& storeError )
    : m_store( store ), m_storeError( storeError ),
      m_useModifyCount( PICopilotJourneyScanUsesModifyCount && PICopilotJourneyNotificationsWork ),
+     m_owner( JourneyOwnerOf() ),
      m_read( ReadViewHistory )
 {
    // ModifyCount resets on save; a save + step inside one scan interval is only
@@ -209,7 +243,10 @@ void JourneyTracker::SetStore( JourneyStore* store, const String& storeError )
 void JourneyTracker::SetEnabled( bool on )
 {
    if ( on && !m_enabled )
+   {
       m_forceScan = true;
+      m_scannedOnce = false;   // R3: windows first seen at the re-enable scan existed before: not fresh
+   }
    if ( !on )
       m_events.clear();   // recording off: queued notifications are not applied
    m_enabled = on;
@@ -421,7 +458,7 @@ void JourneyTracker::Tick( double now, bool forceScan )
    // Never nests an EvaluateScript (history reads, the batch scan) inside a
    // model-written run_pjsr script or another module EvaluateScript
    // (controller ruling after Task 1; EvalGuard.h).
-   if ( IsPjsrScriptRunning() || EvaluateScriptDepth() > 0 )
+   if ( IsPjsrScriptRunning() || EvaluateScriptDepth() > 0 || (m_store != nullptr && m_store->InTransaction()) )
    {
       ++m_deferrals;
       return;
@@ -439,13 +476,30 @@ void JourneyTracker::Tick( double now, bool forceScan )
       std::vector<size_type> counts;
       DropClosed( open, counts );   // first: reads nothing
       DrainEvents();                // reads nothing; its focus changes are older than the sample below
-      // The busy gate (spec §4/§9, review I4): no history read, lock or DB
-      // write while PixInsight executes a process or a script, or right after
-      // one (T-hist's measured composite). Deferred, never waited on.
-      if ( CurrentProcessActivity().busy )
+      // The busy gate (spec §4/§9, review I4, re-review R4): no history read,
+      // lock or DB write while a process or script runs (console abort) or
+      // right after one (the quiet period). Deferred, never waited on; a long
+      // stall becomes visible through StatusFor().
       {
-         ++m_deferrals;
-         return;
+         const ProcessActivityState a = RecorderActivity();
+         if ( a.busy )
+         {
+            ++m_deferrals;
+            if ( m_gateSince == 0 )
+               m_gateSince = now;
+            m_gateReason = a.reason;
+            if ( !m_gateNoted && now - m_gateSince >= 5 )
+            {
+               m_joinNotes << "PI Copilot: journey recording is waiting: " + a.reason;   // once per stall
+               m_gateNoted = true;
+            }
+            return;
+         }
+         if ( m_gateNoted )
+            m_joinNotes << String( "PI Copilot: journey recording continues." );
+         m_gateSince = 0;
+         m_gateNoted = false;
+         m_gateReason.Clear();
       }
       {
          const ImageWindow aw = ImageWindow::ActiveWindow();
@@ -454,9 +508,9 @@ void JourneyTracker::Tick( double now, bool forceScan )
       }
       if ( forceScan || m_forceScan || now - m_lastScan >= PICopilotJourneyScanSeconds )
       {
-         Scan( now, open, counts );
-         m_lastScan = now;
+         m_lastScan = now;       // before the scan: a failing scan can never make every tick rescan (R2)
          m_forceScan = false;
+         Scan( now, open, counts );
       }
       FlushPendingGaps();
       ProcessDirty( now );
@@ -494,7 +548,29 @@ void JourneyTracker::DropClosed( std::vector<View>& open, std::vector<size_type>
    };
    for ( const std::unique_ptr<Tracked>& t : m_tracked )
       if ( !isOpen( t->view ) )
+      {
          m_closed.push_back( t->journeyId );
+         m_closedImages.push_back( t->imageId );
+         // R4: closed with changes not recorded yet (dirty, or an Updated notification still queued) --
+         // e.g. during a busy stall: the lost steps become a gap, never silently nothing.
+         bool pending = t->dirty;
+         for ( const PendingEvent& e : m_events )
+            pending = pending || (e.kind == EventKind::Updated && e.view == t->view);
+         if ( pending )
+         {
+            int lastSeq = 0;
+            try
+            {
+               for ( const StepRow& r : m_store->Steps( t->imageId, false ) )
+                  lastSeq = std::max( lastSeq, r.seq );
+            }
+            catch ( ... )
+            {
+            }
+            m_pendingGaps.push_back( { t->journeyId, t->imageId, lastSeq,
+                                       "closed while PixInsight was busy; its last steps were not recorded" } );
+         }
+      }
    EraseIf( m_tracked, [&]( const Tracked& t ) { return !isOpen( t.view ); } );
    EraseIf( m_candidates, [&]( const Candidate& c ) { return !isOpen( c.view ); } );
    EraseIf( m_ignored, [&]( const Ignored& i ) { return !isOpen( i.view ); } );
@@ -509,6 +585,7 @@ void JourneyTracker::Scan( double now, const std::vector<View>& open, const std:
       {
          const std::string id = ViewIdOf( v );
          if ( id != t->id )
+         try
          {
             // Review M9: an id change with no rename notification since the last scan may be a
             // reused window handle rather than a rename; recorded for diagnosis.
@@ -520,6 +597,21 @@ void JourneyTracker::Scan( double now, const std::vector<View>& open, const std:
             }
             m_store->SetImageView( t->imageId, id, FilePathOf( v ) );
             t->id = id;
+         }
+         catch ( const JourneyRowMissing& x )
+         {
+            for ( size_t k = 0; k < m_tracked.size(); ++k )
+               if ( m_tracked[k].get() == t )
+               {
+                  DropMissing( k, x.Message() );
+                  break;
+               }
+            continue;
+         }
+         catch ( const pcl::Exception& x )
+         {
+            t->pausedReason = x.Message();   // this image only; the scan goes on
+            continue;
          }
          if ( m_useModifyCount && counts[i] != t->modifyCount )
          {
@@ -598,9 +690,10 @@ void JourneyTracker::Remember( const HistoryStep& h, int64 imageId, int64 journe
 void JourneyTracker::ProcessDirty( double now )
 {
    bool processed = false;
-   for ( const std::unique_ptr<Tracked>& tp : m_tracked )
+   std::vector<std::pair<size_t, String>> gone;   // R2: images whose journey rows vanished
+   for ( size_t k = 0; k < m_tracked.size(); ++k )
    {
-      Tracked& t = *tp;
+      Tracked& t = *m_tracked[k];
       if ( !t.dirty )
          continue;
       if ( processed && OverTickBudget() )
@@ -611,105 +704,154 @@ void JourneyTracker::ProcessDirty( double now )
          continue;
       }
       processed = true;
-      const auto t0 = std::chrono::steady_clock::now();
-      const std::vector<StepRow> rows = m_store->Steps( t.imageId, true );
-      std::vector<KnownStep> known;
-      int lastSeq = 0;
-      for ( const StepRow& r : rows )
+      // R2: each image's DB work is its own failure domain. A vanished row drops that image; any other
+      // failure pauses that image only; the loop goes on with the next image.
+      try
       {
-         known.push_back( { r.id, r.seq, r.params.value( "identity", std::string() ), r.state } );
-         if ( r.state != "superseded" )
-            lastSeq = std::max( lastSeq, r.seq );
+         ProcessOne( t, now );
       }
-      HistorySnapshot snap = m_read( IsoString( t.id.c_str() ), HistoryReadFrom( known ) );
-      HistoryDiff d;
-      if ( snap.ok )
+      catch ( const JourneyRowMissing& x )
       {
-         d = DiffHistory( known, snap );
-         if ( d.needFullRead )
-         {
-            snap = m_read( IsoString( t.id.c_str() ), 0 );
-            if ( snap.ok )
-               d = DiffHistory( known, snap );
-         }
+         gone.push_back( { k, x.Message() } );
       }
-      if ( snap.busy )
+      catch ( const pcl::Exception& x )
       {
-         ++m_deferrals;   // another EvaluateScript is running: nothing was read; retried on the next tick
-         continue;
+         if ( x.Message().Contains( "FOREIGN KEY constraint failed" ) )
+            gone.push_back( { k, x.Message() } );
+         else
+            t.pausedReason = x.Message();
       }
-      if ( !snap.ok )
+      catch ( const std::exception& x )
       {
-         t.pausedReason = snap.error;   // this image only (review M3)
-         if ( ++t.readFailures >= 3 )
-         {
-            m_pendingGaps.push_back( { t.journeyId, t.imageId, lastSeq, U8( snap.error ) } );
-            t.readFailures = 0;
-            t.dirty = false;   // retried on the next change
-            FlushPendingGaps();
-         }
-         continue;
+         t.pausedReason = String( x.what() );
       }
-      // One transaction per image and tick (review I5): all state changes and
-      // new steps land together or not at all.
-      std::vector<int> notes;          // m_copilot indices consumed, erased after the commit
-      std::vector<int64> appendedIds;
-      int64 lastActive = 0;
+   }
+   for ( auto it = gone.rbegin(); it != gone.rend(); ++it )
+      DropMissing( it->first, it->second );
+}
+
+void JourneyTracker::ProcessOne( Tracked& t, double now )
+{
+   const auto t0 = std::chrono::steady_clock::now();
+   const std::vector<StepRow> rows = m_store->Steps( t.imageId, true );
+   std::vector<KnownStep> known;
+   int lastSeq = 0;
+   for ( const StepRow& r : rows )
+   {
+      known.push_back( { r.id, r.seq, r.params.value( "identity", std::string() ), r.state } );
+      if ( r.state != "superseded" )
+         lastSeq = std::max( lastSeq, r.seq );
+   }
+   HistorySnapshot snap = m_read( IsoString( t.id.c_str() ), HistoryReadFrom( known ) );
+   HistoryDiff d;
+   if ( snap.ok )
+   {
+      d = DiffHistory( known, snap );
+      if ( d.needFullRead )
       {
-         JourneyStore::Transaction tx( *m_store );
-         bool changed = false;
-         for ( int64 id : d.toActive )     { m_store->SetStepState( id, "active" ); changed = true; }
-         for ( int64 id : d.toUndone )     { m_store->SetStepState( id, "undone" ); changed = true; }
-         for ( int64 id : d.toSuperseded ) { m_store->SetStepState( id, "superseded" ); changed = true; }
-         for ( size_t i = 0; i < d.appended.size(); ++i )
-         {
-            const HistoryStep& h = d.appended[i];
-            const int n = FindCopilotNote( t.id, h.processId, now, notes );
-            if ( n >= 0 )
-               notes.push_back( n );
-            const int64 sid = m_store->AddStep( MakeStepRow( h, t.imageId, d.appendedState[i], n >= 0 ? "copilot" : "user",
-                                                             n >= 0 ? m_copilot[n].reason : std::string(), snap.ActiveCount() ) );
-            appendedIds.push_back( sid );
-            if ( d.appendedState[i] == "active" )
-               lastActive = sid;
-            changed = true;
-         }
-         if ( changed )
-            m_store->TouchJourney( t.journeyId, NowIso() );
-         // Review M4: the read succeeded, so every step of this image is known again: its gaps are
-         // resolved (the steps they stood for are recorded now).
-         m_store->ResolveGaps( t.imageId, INT_MAX );
-         tx.Commit();
+         snap = m_read( IsoString( t.id.c_str() ), 0 );
+         if ( snap.ok )
+            d = DiffHistory( known, snap );
       }
-      m_pendingGaps.erase( std::remove_if( m_pendingGaps.begin(), m_pendingGaps.end(),
-                                           [&t]( const GapRow& g ) { return g.imageId == t.imageId; } ), m_pendingGaps.end() );
-      std::sort( notes.begin(), notes.end() );
-      for ( auto it = notes.rbegin(); it != notes.rend(); ++it )
-         m_copilot.erase( m_copilot.begin() + *it );
+   }
+   if ( snap.busy )
+   {
+      ++m_deferrals;   // another EvaluateScript is running: nothing was read; retried on the next tick
+      return;
+   }
+   if ( !snap.ok )
+   {
+      t.pausedReason = snap.error;   // this image only (review M3)
+      if ( ++t.readFailures >= 3 )
+      {
+         m_pendingGaps.push_back( { t.journeyId, t.imageId, lastSeq, PICopilotJourneyReadGapPrefix + U8( snap.error ) } );
+         t.hasGaps = true;
+         t.readFailures = 0;
+         t.dirty = false;   // retried on the next change
+         FlushPendingGaps();
+      }
+      return;
+   }
+   std::vector<int> notes;          // m_copilot indices consumed, erased after the commit
+   std::vector<int64> appendedIds;
+   int64 lastActive = 0;
+   const bool anything = !d.toActive.empty() || !d.toUndone.empty() || !d.toSuperseded.empty() || !d.appended.empty();
+   // One transaction per image and tick (review I5): all state changes and new steps land together or not
+   // at all. Nothing to write and no gap to resolve: no transaction, no write lock (re-review m2).
+   if ( anything || t.hasGaps )
+   {
+      JourneyStore::Transaction tx( *m_store );
+      int maxSeq = lastSeq;
+      for ( int64 id : d.toActive )     m_store->SetStepState( id, "active" );
+      for ( int64 id : d.toUndone )     m_store->SetStepState( id, "undone" );
+      for ( int64 id : d.toSuperseded ) m_store->SetStepState( id, "superseded" );
       for ( size_t i = 0; i < d.appended.size(); ++i )
-         Remember( d.appended[i], t.imageId, t.journeyId, appendedIds[i] );
-      t.pausedReason.Clear();   // the history read and the DB writes succeeded
-      if ( lastActive != 0 )
       {
-         // Ruling 7: only the last active step appended in this tick is measured. Steps made between two
-         // observations share this one measurement; the intermediate pixels no longer exist.
+         const HistoryStep& h = d.appended[i];
+         const int n = FindCopilotNote( t.id, h.processId, now, notes );
+         if ( n >= 0 )
+            notes.push_back( n );
+         const int64 sid = m_store->AddStep( MakeStepRow( h, t.imageId, d.appendedState[i], n >= 0 ? "copilot" : "user",
+                                                          n >= 0 ? m_copilot[n].reason : std::string(), snap.ActiveCount() ) );
+         appendedIds.push_back( sid );
+         maxSeq = std::max( maxSeq, h.combinedIndex + 1 );
+         if ( d.appendedState[i] == "active" )
+            lastActive = sid;
+      }
+      if ( anything )
+         m_store->TouchJourney( t.journeyId, NowIso() );
+      // Review M4 / re-review m3: the read succeeded, so the steps a read-failure gap stood for are known
+      // again and recorded up to maxSeq; those gaps are resolved. Other gaps stay.
+      if ( t.hasGaps )
+         m_store->ResolveGaps( t.imageId, maxSeq + 1 );
+      tx.Commit();
+   }
+   t.hasGaps = false;
+   m_pendingGaps.erase( std::remove_if( m_pendingGaps.begin(), m_pendingGaps.end(),
+                                        [&t]( const GapRow& g )
+                                        { return g.imageId == t.imageId && g.reason.rfind( PICopilotJourneyReadGapPrefix, 0 ) == 0; } ),
+                        m_pendingGaps.end() );
+   std::sort( notes.begin(), notes.end() );
+   for ( auto it = notes.rbegin(); it != notes.rend(); ++it )
+      m_copilot.erase( m_copilot.begin() + *it );
+   for ( size_t i = 0; i < d.appended.size(); ++i )
+      Remember( d.appended[i], t.imageId, t.journeyId, appendedIds[i] );
+   t.pausedReason.Clear();   // the history read and the DB writes succeeded
+   t.dirty = false;
+   t.readFailures = 0;
+   t.lastCounts = { snap.initialLength, snap.length, snap.historyIndex };
+   if ( lastActive != 0 )
+   {
+      // Ruling 7: only the last active step appended in this tick is measured. Steps made between two
+      // observations share this one measurement; the intermediate pixels no longer exist. A failure here
+      // is this image's statistics pause (P11, re-review m4), never a lost step.
+      try
+      {
          const StepStatsResult s = ComputeStepStats( t.view, m_store->JourneyDir( t.journeyId )
                                                      + String().Format( "/thumbs/%lld.jpg", static_cast<long long>( lastActive ) ) );
-         if ( s.ok )
-         {
-            m_store->AddStats( t.imageId, lastActive, s.channels );
-            t.statsReason.Clear();
-         }
-         else
-            // Spec §8 row 1 / pre-flight P11: the strip shows "recording paused: …" until a later step's
-            // statistics succeed. The steps themselves are recorded, so no gap row is written.
-            t.statsReason = "statistics not recorded: " + s.error;
+         if ( !s.ok )
+            throw Error( s.error );
+         m_store->AddStats( t.imageId, lastActive, s.channels );
+         t.statsReason.Clear();
       }
-      t.dirty = false;
-      t.readFailures = 0;
-      t.lastCounts = { snap.initialLength, snap.length, snap.historyIndex };
-      m_lastStepMs = std::chrono::duration<double, std::milli>( std::chrono::steady_clock::now() - t0 ).count();
+      catch ( const pcl::Exception& x )
+      {
+         t.statsReason = "statistics not recorded: " + x.Message();
+      }
    }
+   m_lastStepMs = std::chrono::duration<double, std::milli>( std::chrono::steady_clock::now() - t0 ).count();
+}
+
+void JourneyTracker::DropMissing( size_t index, const String& why )
+{
+   const std::unique_ptr<Tracked>& t = m_tracked[index];
+   const View view = t->view;   // an OPEN window (the scan / tick just saw it): safe to copy
+   const std::string id = t->id;
+   m_joinNotes << "PI Copilot: the journey of " + String( id.c_str() )
+                  + " was removed from the library; recording of " + String( id.c_str() ) + " stopped (" + why + ")";
+   Decision( "dropped " + id + ": " + U8( why ) );
+   m_tracked.erase( m_tracked.begin() + index );
+   AddCandidate( view, JourneyWallNow(), false/*not fresh: it existed; it may start a new journey by the rules*/ );
 }
 
 void JourneyTracker::ProcessCandidates( double now )
@@ -813,7 +955,7 @@ int JourneyTracker::EvaluateCandidate( Candidate& c, double now )
             if ( !n.first )
                return -1;   // Ruling 29: an auxiliary output of Copilot's integration run
             return JoinAsMaster( c.view, snap, c.view.Window().Keywords(),
-                                 "created by Copilot's run_global_process of an integration process", c.fresh ) != 0 ? 1 : -1;
+                                 "created by Copilot's run_global_process of an integration process", c.firstSeen ) != 0 ? 1 : -1;
          }
          if ( const Tracked* src = FindTrackedById( n.sourceViewId ) )
          {
@@ -837,7 +979,7 @@ int JourneyTracker::EvaluateCandidate( Candidate& c, double now )
    //     so a derived window that inherited IMAGETYP='Master Light' joins its source's journey.
    const bool derived = snap.initialLength > 0 && !HistoryBeginsWithIntegration( snap );
    if ( me.isMaster && !derived )
-      return JoinAsMaster( c.view, snap, kw, me.why, c.fresh ) != 0 ? 1 : -1;
+      return JoinAsMaster( c.view, snap, kw, me.why, c.firstSeen ) != 0 ? 1 : -1;
    // (3) reference (Ruling 19.2; spec §13.6: explicit references before timing): a step names tracked views.
    //     The creating step (initialProcessing[0], spec §5 evidence 3, pre-flight P13) and the view's own steps
    //     count; the rest of an opened file's initialProcessing does not.
@@ -885,7 +1027,7 @@ int JourneyTracker::EvaluateCandidate( Candidate& c, double now )
    }
    // (5) Ruling 28: a derived window with master keywords and no link evidence is a master of its own.
    if ( me.isMaster )
-      return JoinAsMaster( c.view, snap, kw, me.why, c.fresh ) != 0 ? 1 : -1;
+      return JoinAsMaster( c.view, snap, kw, me.why, c.firstSeen ) != 0 ? 1 : -1;
    // (6) timing (c), last: a window that APPEARED (review I3: a Created notification or the first sight of
    //     a view, never an ignored window that changed later) and is no opened file, first seen inside
    //     exactly one recorded step's time window. Never decided on the first look, and 2+ hits wait
@@ -936,19 +1078,23 @@ std::vector<int64> JourneyTracker::AddBaseAndSteps( int64 imageId, const History
 
 void JourneyTracker::StartingStats( Tracked& t )
 {
-   const StepStatsResult s = ComputeStepStats( t.view, m_store->JourneyDir( t.journeyId )
-                                               + String().Format( "/thumbs/start-%lld.jpg", static_cast<long long>( t.imageId ) ) );
-   if ( s.ok )
+   try
    {
+      const StepStatsResult s = ComputeStepStats( t.view, m_store->JourneyDir( t.journeyId )
+                                                  + String().Format( "/thumbs/start-%lld.jpg", static_cast<long long>( t.imageId ) ) );
+      if ( !s.ok )
+         throw Error( s.error );
       m_store->AddStats( t.imageId, 0, s.channels );
       t.statsReason.Clear();
    }
-   else
-      t.statsReason = "starting statistics not recorded: " + s.error;   // a pause (P11), cleared by the next success
+   catch ( const pcl::Exception& x )
+   {
+      t.statsReason = "starting statistics not recorded: " + x.Message();   // a pause (P11), cleared by the next success
+   }
 }
 
 int64 JourneyTracker::JoinAsMaster( const View& v, const HistorySnapshot& snap, const FITSKeywordArray& kw, const std::string& why,
-                                    bool appeared )
+                                    double firstSeen )
 {
    const std::string id = ViewIdOf( v );
    const std::string path = FilePathOf( v );
@@ -967,12 +1113,23 @@ int64 JourneyTracker::JoinAsMaster( const View& v, const HistorySnapshot& snap, 
    for ( size_t p = 0; p <= identities.size(); ++p )
    {
       ImageRow row;
+      bool found = false;
       const std::vector<std::string> prefix( identities.begin(), identities.begin() + p );
-      if ( m_store->FindResumableByFingerprint( MasterFingerprint( g.w, g.h, g.ch, g.bits, g.isFloat, prefix, kw ), row, exclude ) )
+      for ( const ImageRow& r : m_store->ResumableByFingerprint( MasterFingerprint( g.w, g.h, g.ch, g.bits, g.isFloat, prefix, kw ),
+                                                                 exclude ) )
+         // Re-review m6: a row another RUNNING PixInsight instance records is not ours to continue.
+         if ( r.owner.empty() || r.owner == m_owner || !JourneyOwnerAlive( r.owner ) )
+         {
+            row = r;
+            found = true;
+            break;
+         }
+      if ( found )
       {
          {
             JourneyStore::Transaction tx( *m_store );
             m_store->SetImageView( row.id, id, path );
+            m_store->SetImageOwner( row.id, m_owner );
             m_store->SetJourneyStatus( row.journeyId, "recording" );
             m_store->TouchJourney( row.journeyId, NowIso() );   // review I2: not pruned as stale while open again
             tx.Commit();
@@ -994,18 +1151,30 @@ int64 JourneyTracker::JoinAsMaster( const View& v, const HistorySnapshot& snap, 
          m_joinFault( "master" );
       t->imageId = m_store->AddImage( t->journeyId, id, path, MasterFingerprint( g.w, g.h, g.ch, g.bits, g.isFloat, identities, kw ),
                                       true, now );
+      m_store->SetImageOwner( t->imageId, m_owner );
       m_store->SetAcquisition( t->imageId, acq );
-      // Base: what the master brought with it. A window that appeared while recording brought only its
-      // initialProcessing (the file's / its creating history); its session steps were made since it appeared
-      // and are the user's steps, even when the busy gate deferred this join past them. A window already
-      // open before (start_journey, the startup scan): its whole history at join time.
-      AddBaseAndSteps( t->imageId, snap, appeared ? snap.initialLength : snap.TotalCount() );
+      // Base (re-review R3): what the master brought with it -- its initialProcessing (a file's or its
+      // creating history) plus the processing steps that STARTED before the tracker first saw the window.
+      // Steps made after it appeared are the user's steps, even when the busy gate deferred this join
+      // past them; a window restored with past processing (recording off meanwhile, a project) keeps that
+      // past as base. A step with no start time (Script) before them counts as past.
+      int base = snap.initialLength;
+      for ( const HistoryStep& h : snap.steps )
+         if ( h.combinedIndex == base )
+         {
+            const double st = IsoToEpoch( h.started );
+            if ( st >= 0 && st >= firstSeen - 0.5 )
+               break;
+            ++base;
+         }
+      AddBaseAndSteps( t->imageId, snap, base );
       tx.Commit();
    }
    t->dirty = false;
-   StartingStats( *t );
+   Tracked& tr = *t;
    const int64 jid = t->journeyId;
-   m_tracked.push_back( std::move( t ) );
+   m_tracked.push_back( std::move( t ) );   // tracked as soon as committed (re-review m4) ...
+   StartingStats( tr );                     // ... then the statistics, whose failure is only its pause
    m_joinNotes << "PI Copilot: recording the image journey of " + String( id.c_str() ) + " (" + FromU8( why ) + ")";
    return jid;
 }
@@ -1027,6 +1196,7 @@ int64 JourneyTracker::JoinLinked( const View& v, const HistorySnapshot& snap, in
       JourneyStore::Transaction tx( *m_store );   // review I5: image, steps and links together or not at all
       t->imageId = m_store->AddImage( journeyId, id, FilePathOf( v ),
                                       MasterFingerprint( g.w, g.h, g.ch, g.bits, g.isFloat, identities, kw ), false, NowIso() );
+      m_store->SetImageOwner( t->imageId, m_owner );
       if ( m_joinFault )
          m_joinFault( "linked" );
       // initialProcessing = the creating step, already on the source
@@ -1042,9 +1212,10 @@ int64 JourneyTracker::JoinLinked( const View& v, const HistorySnapshot& snap, in
       tx.Commit();
    }
    t->dirty = false;
-   StartingStats( *t );
+   Tracked& tr = *t;
    const int64 img = t->imageId;
-   m_tracked.push_back( std::move( t ) );
+   m_tracked.push_back( std::move( t ) );   // re-review m4: tracked right after the commit
+   StartingStats( tr );
    return img;
 }
 
@@ -1104,8 +1275,9 @@ int64 JourneyTracker::StartJourneyFor( const View& view, String& error, double /
          error = String().Format( "%s is already recorded in journey #%lld", id.c_str(), static_cast<long long>( t->journeyId ) );
          return 0;
       }
-      Forget( view );
-      return JoinAsMaster( view, snap, view.Window().Keywords(), "started from chat (start_journey)", false );
+      const int64 jid = JoinAsMaster( view, snap, view.Window().Keywords(), "started from chat (start_journey)", JourneyWallNow() );
+      Forget( view );   // re-review m5: only after the join succeeded
+      return jid;
    }
    catch ( const ViewBusy& )
    {
@@ -1146,12 +1318,32 @@ void JourneyTracker::EndClosedJourneys()
          {
             m_store->SetJourneyStatus( jid, "ended" );
          }
+         catch ( const JourneyRowMissing& )
+         {
+            // R2: the journey is gone (another instance, a restore): there is nothing left to end.
+         }
          catch ( ... )
          {
             m_closed.insert( m_closed.end(), closed.begin() + k, closed.end() );   // retried on the next tick
             throw;
          }
    }
+   // Re-review m6: closed images are no longer recorded by this instance.
+   std::vector<int64> images;
+   images.swap( m_closedImages );
+   for ( size_t k = 0; k < images.size(); ++k )
+      try
+      {
+         m_store->SetImageOwner( images[k], "" );
+      }
+      catch ( const JourneyRowMissing& )
+      {
+      }
+      catch ( ... )
+      {
+         m_closedImages.insert( m_closedImages.end(), images.begin() + k, images.end() );
+         throw;
+      }
 }
 
 JourneyStatus JourneyTracker::StatusFor( const IsoString& viewFullId ) const
@@ -1177,6 +1369,10 @@ JourneyStatus JourneyTracker::StatusFor( const IsoString& viewFullId ) const
    s.journeyId = t->journeyId;
    s.imageId = t->imageId;
    s.why = t->why;
+   // R4: a stall of the busy gate longer than 5 s is visible, not "recording".
+   String waiting;
+   if ( m_gateSince > 0 && JourneyWallNow() - m_gateSince >= 5 )
+      waiting = "waiting: " + m_gateReason;
    int gaps = 0;
    for ( const GapRow& g : m_pendingGaps )
       if ( g.imageId == t->imageId )
@@ -1203,7 +1399,8 @@ JourneyStatus JourneyTracker::StatusFor( const IsoString& viewFullId ) const
       s.kind = StripKind( filter, std::max( 1, masters ) );
       s.activeSteps = m_store->StepCount( t->journeyId, true );
       // Tick-wide failure first (it affects every image), then this image's own (review M3).
-      s.reason = !m_pausedReason.IsEmpty() ? m_pausedReason : !t->pausedReason.IsEmpty() ? t->pausedReason : t->statsReason;
+      s.reason = !m_pausedReason.IsEmpty() ? m_pausedReason : !t->pausedReason.IsEmpty() ? t->pausedReason
+               : !waiting.IsEmpty() ? waiting : t->statsReason;
       s.state = s.reason.IsEmpty() ? RecordingState::Recording : RecordingState::Paused;
    }
    catch ( const pcl::Exception& x )
@@ -1226,12 +1423,47 @@ int64 JourneyTracker::JourneyOfView( const IsoString& viewFullId ) const
    return t != nullptr ? t->journeyId : 0;
 }
 
-int RunRetentionIfDue( JourneyStore& store, int days, const std::string& today, std::string& lastRun, StringList* removed )
+std::vector<int64> JourneyTracker::OpenJourneyIds() const
+{
+   std::vector<int64> ids;
+   for ( const std::unique_ptr<Tracked>& t : m_tracked )
+      if ( std::find( ids.begin(), ids.end(), t->journeyId ) == ids.end() )
+         ids.push_back( t->journeyId );
+   return ids;
+}
+
+int RunRetentionIfDue( JourneyStore& store, int days, const std::string& today, std::string& lastRun, StringList* removed,
+                       const std::vector<int64>& excludeJourneyIds )
 {
    if ( today == lastRun )
       return -1;
    lastRun = today;   // before pruning (review I1): a failure retries on the next date, never on every tick
-   return store.PruneUnkept( IsoDaysAgo( std::min( 3650, std::max( 1, days ) ) ), removed );
+   return store.PruneUnkept( IsoDaysAgo( std::min( 3650, std::max( 1, days ) ) ), removed, excludeJourneyIds );
+}
+
+int RetentionPass( JourneyStore& store, const JourneyTracker& tracker, int days, const std::string& today,
+                   std::string& openTouchedDate, std::string& lastRun, StringList* removed )
+{
+   const std::vector<int64> open = tracker.OpenJourneyIds();
+   if ( today != openTouchedDate )
+   {
+      // R1: per instance, once per local date, independent of lastRun (another instance may already have
+      // pruned today): every open journey's `updated` stays within a day of now, so no instance's cutoff
+      // (>= 1 day) reaches it.
+      JourneyStore::Transaction tx( store );
+      for ( int64 id : open )
+         try
+         {
+            store.TouchJourney( id, NowIso() );
+         }
+         catch ( const JourneyRowMissing& )
+         {
+            // gone meanwhile: the tracker drops the image on its next write (R2)
+         }
+      tx.Commit();
+      openTouchedDate = today;
+   }
+   return RunRetentionIfDue( store, days, today, lastRun, removed, open );
 }
 
 // ---- JourneyService ----------------------------------------------------------
@@ -1348,7 +1580,8 @@ void JourneyService::RunRetention()
    try
    {
       StringList removed;
-      n = RunRetentionIfDue( *m_store, CopilotSettings::LoadJourneyRetentionDays(), LocalDateToday(), m_retentionLastRun, &removed );
+      n = RetentionPass( *m_store, *m_tracker, CopilotSettings::LoadJourneyRetentionDays(), LocalDateToday(),
+                         m_openTouchedDate, m_retentionLastRun, &removed );
    }
    catch ( const pcl::Exception& x )
    {
@@ -1392,7 +1625,7 @@ void JourneyService::OnTick()
       Console().NoteLn( n );
       AddNote( n );
    }
-   if ( m_store && m_tracker->Enabled() && !CurrentProcessActivity().busy )
+   if ( m_store && m_tracker->Enabled() && !RecorderActivity().busy && !m_store->InTransaction() )
       RunRetention();
 }
 
@@ -1425,7 +1658,7 @@ void JourneyService::FlushAndPauseForSelfTest()
       {
          // The busy gate defers a tick right after process activity; wait (pumping) until idle, max 3 s.
          const auto t0 = std::chrono::steady_clock::now();
-         while ( CurrentProcessActivity().busy
+         while ( RecorderActivity().busy
               && std::chrono::duration<double>( std::chrono::steady_clock::now() - t0 ).count() < 3 )
          {
             ThePICopilotModule->ProcessEvents( true/*excludeUserInputEvents*/ );

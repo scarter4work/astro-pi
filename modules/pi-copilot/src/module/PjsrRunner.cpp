@@ -7,6 +7,7 @@
 #include "TextSafety.h"
 #include "Utf8.h"
 
+#include <pcl/Console.h>
 #include <pcl/ByteArray.h>
 #include <pcl/Exception.h>
 #include <pcl/StringList.h>
@@ -290,6 +291,18 @@ bool IsPjsrScriptRunning()
 PjsrRun RunPjsr( const String& code, const IsoString& targetViewId )
 {
    const ScriptRunningScope running;
+   // Task 7 re-review R5, MEASURED headless: a model script that opens a file
+   // (ImageWindow.open) leaves the Process Console's abort ENABLED after
+   // EvaluateScript returns, and the journey recorder's (and the tool loop's)
+   // busy gate then reads "a script is running" until something resets it.
+   // (In the GUI, File > Open and a console-run script that opens a file left it
+   // disabled.) The script has ended here, so the state it found is restored.
+   struct AbortRestore
+   {
+      bool wasEnabled = true;
+      AbortRestore() { try { wasEnabled = Console().AbortEnabled(); } catch ( ... ) {} }
+      ~AbortRestore() { try { if ( !wasEnabled && Console().AbortEnabled() ) Console().DisableAbort(); } catch ( ... ) {} }
+   } abortRestore;
    PjsrRun r;
    try
    {

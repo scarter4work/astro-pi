@@ -74,6 +74,34 @@ ProcessActivityState CurrentProcessActivity()
    return s;
 }
 
+ProcessActivityState RecorderActivity()
+{
+   ProcessActivityState s;
+   try
+   {
+      if ( Console().AbortEnabled() )
+      {
+         s.busy = true;
+         s.reason = "the Process Console is busy (a process or script is running)";
+         return s;
+      }
+      const clock_type::time_point last = LastActivity();
+      if ( last != clock_type::time_point::min()
+        && std::chrono::duration<double>( clock_type::now() - last ).count() < PICopilotApplyQuietSeconds )
+      {
+         s.busy = true;
+         s.reason = "an image was changed or updated a moment ago";
+         return s;
+      }
+   }
+   catch ( ... )
+   {
+      s.busy = true;
+      s.reason = "PixInsight's state could not be read";
+   }
+   return s;
+}
+
 HeldReplyAction DecideHeldReply( bool stopRequested, bool replyOk, bool callsImageChangingTool, bool busy,
                                  double waitedSeconds, bool noteShown )
 {
