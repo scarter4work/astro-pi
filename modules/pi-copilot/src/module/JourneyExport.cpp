@@ -9,6 +9,8 @@
 
 #include <pcl/Exception.h>
 #include <pcl/File.h>
+#include <pcl/Process.h>
+#include <pcl/ProcessParameter.h>
 #include <pcl/XML.h>
 
 #include <algorithm>
@@ -24,6 +26,7 @@
 #include <dirent.h>
 #include <sys/stat.h>
 #include <sys/types.h>
+#include <unistd.h>
 
 namespace pcl
 {
@@ -59,36 +62,172 @@ bool LooksLikeAbsolutePath( const std::string& s )
    return s.size() > 2 && std::isalpha( static_cast<unsigned char>( s[0] ) ) && s[1] == ':' && (s[2] == '\\' || s[2] == '/');
 }
 
-// The first string in v that is an absolute path: its location ("filePath",
-// "H[3][1]", "images[0].path") and its file name. False when there is none.
-bool FindPath( const nlohmann::json& v, const std::string& at, std::string& where, std::string& name )
+// Where the first location was found ("outputDirectory", "images[0].path") and its file name.
+struct PathFound
+{
+   std::string where, name;
+   bool Found() const { return !where.empty(); }
+};
+
+// A location: any absolute-looking string (the generic, anchored sniff), or --
+// for a FILE parameter only -- any value with a directory component, however
+// written ("models/x.onnx", "//server/share/x"). A bare file name is not a
+// location. Returns the value with every location reduced to its file name.
+nlohmann::json RedactValue( const nlohmann::json& v, bool fileParameter, const std::string& at, PathFound& f )
 {
    if ( v.is_string() )
    {
-      if ( !LooksLikeAbsolutePath( v.get<std::string>() ) )
-         return false;
-      where = at;
-      name = FileNameOf( v.get<std::string>() );
-      return true;
+      const std::string& s = v.get_ref<const std::string&>();
+      if ( !LooksLikeAbsolutePath( s ) && !(fileParameter && s.find_first_of( "/\\" ) != std::string::npos) )
+         return v;
+      if ( !f.Found() )
+      {
+         f.where = at.empty() ? std::string( "value" ) : at;
+         f.name = FileNameOf( s );
+      }
+      return FileNameOf( s );
    }
    if ( v.is_array() )
    {
+      nlohmann::json a = nlohmann::json::array();
       for ( size_t i = 0; i < v.size(); ++i )
-         if ( FindPath( v[i], at + "[" + std::to_string( i ) + "]", where, name ) )
-            return true;
-      return false;
+         a.push_back( RedactValue( v[i], fileParameter, at + "[" + std::to_string( i ) + "]", f ) );
+      return a;
    }
    if ( v.is_object() )
+   {
+      nlohmann::json o = nlohmann::json::object();
       for ( auto it = v.begin(); it != v.end(); ++it )
-         if ( FindPath( it.value(), at.empty() ? it.key() : at + "." + it.key(), where, name ) )
-            return true;
-   return false;
+         o[it.key()] = RedactValue( it.value(), fileParameter, at.empty() ? it.key() : at + "." + it.key(), f );
+      return o;
+   }
+   return v;
+}
+
+// The column ids of a table parameter of the INSTALLED process (PCL metadata);
+// empty when the process or the table is unknown. Root thread (catalog).
+std::vector<std::string> TableColumnIds( const std::string& processId, const std::string& tableId )
+{
+   std::vector<std::string> ids;
+   try
+   {
+      const Process P( IsoString( processId.c_str() ) );
+      const ProcessParameter t( P, IsoString( tableId.c_str() ) );
+      if ( !t.IsNull() && t.IsTable() )
+         for ( const ProcessParameter& c : t.TableColumns() )
+            ids.push_back( std::string( c.Id().c_str() ) );
+   }
+   catch ( ... )
+   {
+   }
+   return ids;
+}
+
+// {parameters, tableParameters} of a step with every location reduced to its
+// file name; f = the first location found.
+nlohmann::json RedactStep( const std::string& processId, const nlohmann::json& parameters, const nlohmann::json& tableParameters,
+                           PathFound& f )
+{
+   nlohmann::json p = nlohmann::json::object(), t = nlohmann::json::object();
+   if ( parameters.is_object() )
+      for ( auto it = parameters.begin(); it != parameters.end(); ++it )
+         p[it.key()] = RedactValue( it.value(), IsFileParameter( processId, it.key() ), it.key(), f );
+   else
+      p = RedactValue( parameters, false, "parameters", f );
+   if ( tableParameters.is_object() )
+      for ( auto it = tableParameters.begin(); it != tableParameters.end(); ++it )
+      {
+         const std::string& tid = it.key();
+         const bool tableIsFile = IsFileParameter( processId, tid );
+         if ( !it.value().is_array() )
+         {
+            t[tid] = RedactValue( it.value(), tableIsFile, tid, f );
+            continue;
+         }
+         const std::vector<std::string> cols = TableColumnIds( processId, tid );
+         nlohmann::json rows = nlohmann::json::array();
+         for ( size_t r = 0; r < it.value().size(); ++r )
+         {
+            const nlohmann::json& row = it.value()[r];
+            const std::string at = tid + "[" + std::to_string( r ) + "]";
+            if ( row.is_array() )
+            {
+               nlohmann::json out = nlohmann::json::array();
+               for ( size_t k = 0; k < row.size(); ++k )
+               {
+                  const bool known = k < cols.size();
+                  out.push_back( RedactValue( row[k], tableIsFile || (known && IsFileParameter( processId, cols[k] )),
+                                              at + (known ? "." + cols[k] : "[" + std::to_string( k ) + "]"), f ) );
+               }
+               rows.push_back( out );
+            }
+            else if ( row.is_object() )   // raw rows of an uninstalled process: cells keyed by column id
+            {
+               nlohmann::json out = nlohmann::json::object();
+               for ( auto c = row.begin(); c != row.end(); ++c )
+                  out[c.key()] = RedactValue( c.value(), tableIsFile || IsFileParameter( processId, c.key() ), at + "." + c.key(), f );
+               rows.push_back( out );
+            }
+            else
+               rows.push_back( RedactValue( row, tableIsFile, at, f ) );
+         }
+         t[tid] = rows;
+      }
+   else
+      t = RedactValue( tableParameters, false, "tableParameters", f );
+   return { { "parameters", p }, { "tableParameters", t } };
 }
 
 bool PathParameter( const StepRow& s, std::string& where, std::string& name )
 {
-   return FindPath( s.params.value( "parameters", nlohmann::json::object() ), "", where, name )
-       || FindPath( s.params.value( "tableParameters", nlohmann::json::object() ), "", where, name );
+   PathFound f;
+   RedactStep( s.processId, s.params.value( "parameters", nlohmann::json::object() ),
+               s.params.value( "tableParameters", nlohmann::json::object() ), f );
+   where = f.where;
+   name = f.name;
+   return f.Found();
+}
+
+// Rewrites the opening tag's id="..." attribute to enabled="true", walking the
+// attributes quote-aware (a '>' inside an earlier attribute value is not the
+// tag's end). False when the opening tag has no id attribute.
+bool RewriteInstanceId( std::string& inst )
+{
+   size_t i = inst.find( '<' );
+   if ( i == std::string::npos )
+      return false;
+   ++i;
+   while ( i < inst.size() && !std::isspace( static_cast<unsigned char>( inst[i] ) ) && inst[i] != '>' && inst[i] != '/' )
+      ++i;
+   for ( ;; )
+   {
+      while ( i < inst.size() && std::isspace( static_cast<unsigned char>( inst[i] ) ) )
+         ++i;
+      if ( i >= inst.size() || inst[i] == '>' || inst[i] == '/' )
+         return false;
+      const size_t nameStart = i;
+      while ( i < inst.size() && inst[i] != '=' && !std::isspace( static_cast<unsigned char>( inst[i] ) ) && inst[i] != '>' )
+         ++i;
+      const std::string name = inst.substr( nameStart, i - nameStart );
+      while ( i < inst.size() && std::isspace( static_cast<unsigned char>( inst[i] ) ) )
+         ++i;
+      if ( i >= inst.size() || inst[i] != '=' )
+         return false;   // not well-formed: leave it for the XML check to refuse
+      ++i;
+      while ( i < inst.size() && std::isspace( static_cast<unsigned char>( inst[i] ) ) )
+         ++i;
+      if ( i >= inst.size() || (inst[i] != '"' && inst[i] != '\'') )
+         return false;
+      const size_t close = inst.find( inst[i], i + 1 );
+      if ( close == std::string::npos )
+         return false;
+      if ( name == "id" )
+      {
+         inst.replace( nameStart, close + 1 - nameStart, "enabled=\"true\"" );
+         return true;
+      }
+      i = close + 1;
+   }
 }
 
 nlohmann::json StatsJson( const std::vector<ChannelStats>& s )
@@ -270,12 +409,40 @@ std::string Errno( int e )
    return std::strerror( e );
 }
 
+// What one copy created (never what was already there), for removal after a
+// failure part-way through.
+struct CopyLog
+{
+   std::vector<std::string> files;   // created by this copy
+   std::vector<std::string> dirs;    // created by this copy, parents first
+
+   // Removes them (files, then folders deepest first); "" when everything went,
+   // else the paths that could not be removed and why.
+   String Undo() const
+   {
+      String failed;
+      for ( auto it = files.rbegin(); it != files.rend(); ++it )
+         if ( ::unlink( it->c_str() ) != 0 && errno != ENOENT )
+            failed += (failed.IsEmpty() ? "" : "; ") + FromU8( *it ) + ": " + FromU8( Errno( errno ) );
+      for ( auto it = dirs.rbegin(); it != dirs.rend(); ++it )
+         if ( ::rmdir( it->c_str() ) != 0 && errno != ENOENT )
+            failed += (failed.IsEmpty() ? "" : "; ") + FromU8( *it ) + ": " + FromU8( Errno( errno ) );
+      return failed;
+   }
+};
+
 // A folder below the user's export folder: made 0755 (umask applied) when
 // missing; an existing name must be a real directory, never a symbolic link.
-String MakeCopyDirectory( const String& dir )
+// A folder this call made is added to log (when given).
+String MakeCopyDirectory( const String& dir, CopyLog* log )
 {
    const std::string p = U8( dir );
-   if ( ::mkdir( p.c_str(), 0755 ) != 0 && errno != EEXIST )
+   if ( ::mkdir( p.c_str(), 0755 ) == 0 )
+   {
+      if ( log != nullptr )
+         log->dirs.push_back( p );
+   }
+   else if ( errno != EEXIST )
       return "cannot create folder " + dir + ": " + FromU8( Errno( errno ) );
    struct stat st;
    if ( ::lstat( p.c_str(), &st ) != 0 )
@@ -290,9 +457,10 @@ String MakeCopyDirectory( const String& dir )
 // Copies the regular files and folders of `from` (ours) into `to`. Links in
 // the source are skipped, never followed; each file goes through
 // SafeWriteFile (Shared: never through a link at the target, never a partial
-// file). makeDir makes each destination folder ("" = ready). Throws pcl::Error
-// naming the path that failed.
-void CopyTree( const String& from, const String& to, const std::function<String( const String& )>& makeDir )
+// file). makeDir makes each destination folder ("" = ready). Every file that
+// did not exist before is added to log (when given). Throws pcl::Error naming
+// the path that failed.
+void CopyTree( const String& from, const String& to, const std::function<String( const String& )>& makeDir, CopyLog* log )
 {
    const String made = makeDir( to );
    if ( !made.IsEmpty() )
@@ -321,12 +489,16 @@ void CopyTree( const String& from, const String& to, const std::function<String(
    {
       const String src = from + "/" + FromU8( n );
       const String dst = to + "/" + FromU8( n );
+      struct stat st;
+      const bool existed = ::lstat( U8( dst ).c_str(), &st ) == 0;
       const String e = SafeWriteFile( dst, File::ReadFile( src ), SafeFileMode::Shared );
       if ( !e.IsEmpty() )
          throw Error( "could not write " + dst + ": " + e );
+      if ( !existed && log != nullptr )
+         log->files.push_back( U8( dst ) );
    }
    for ( const std::string& n : dirs )
-      CopyTree( from + "/" + FromU8( n ), to + "/" + FromU8( n ), makeDir );
+      CopyTree( from + "/" + FromU8( n ), to + "/" + FromU8( n ), makeDir, log );
 }
 
 String WhatOf( const std::exception& x )
@@ -341,6 +513,19 @@ bool IsManualProcess( const std::string& id )
    static const std::set<std::string> manual = { "DynamicBackgroundExtraction", "DynamicCrop", "DynamicAlignment",
                                                  "CloneStamp", "GradientsMergeMosaic" };
    return manual.count( id ) > 0;
+}
+
+bool IsFileParameter( const std::string& processId, const std::string& id )
+{
+   if ( processId == "PixelMath" )
+      return false;
+   const std::string l = AsciiLower( id );
+   if ( l.find( "expression" ) != std::string::npos )
+      return false;
+   for ( const char* w : { "file", "path", "directory", "folder" } )
+      if ( l.find( w ) != std::string::npos )
+         return true;
+   return l.size() >= 3 && l.compare( l.size() - 3, 3, "dir" ) == 0;
 }
 
 std::string ManualWhy( const StepRow& s )
@@ -369,6 +554,13 @@ std::string ManualWhy( const StepRow& s )
       return note.empty() ? std::string( "cannot be replayed" ) : note;
    }
    return std::string();
+}
+
+nlohmann::json PrivacyStripStepParameters( const std::string& processId, const nlohmann::json& parameters,
+                                           const nlohmann::json& tableParameters )
+{
+   PathFound f;
+   return RedactStep( processId, parameters, tableParameters, f );
 }
 
 nlohmann::json PrivacyStripPaths( const nlohmann::json& v )
@@ -492,12 +684,13 @@ nlohmann::json BuildRecipe( JourneyStore& store, int64 journeyId, const std::str
             achieved = { { "median", { { "from", from }, { "to", to } } } };
          }
          const std::string why = ManualWhy( s );
+         const nlohmann::json redacted = PrivacyStripStepParameters( s.processId, s.params.value( "parameters", nlohmann::json::object() ),
+                                                                     s.params.value( "tableParameters", nlohmann::json::object() ) );
          const std::string thumb = ThumbRel( store, journeyId, String().Format( "%lld.jpg", static_cast<long long>( s.id ) ) );
          const nlohmann::json mask = s.params.contains( "mask" ) && s.params["mask"].is_object() ? s.params["mask"] : nlohmann::json();
          steps.push_back( {
             { "id", s.id }, { "image", Key( i.id ) }, { "seq", s.seq }, { "processId", s.processId },
-            { "parameters", PrivacyStripPaths( s.params.value( "parameters", nlohmann::json::object() ) ) },
-            { "tableParameters", PrivacyStripPaths( s.params.value( "tableParameters", nlohmann::json::object() ) ) },
+            { "parameters", redacted["parameters"] }, { "tableParameters", redacted["tableParameters"] },
             { "mask", mask },
             { "started", s.started.empty() ? nlohmann::json() : nlohmann::json( s.started ) },
             { "durationS", s.durationS < 0 || !std::isfinite( s.durationS ) ? nlohmann::json() : nlohmann::json( s.durationS ) },
@@ -687,14 +880,7 @@ std::string BuildJourneyXpsm( JourneyStore& store, int64 journeyId )
                   + CommentText( s.params["mask"].value( "id", std::string() ) )
                   + (s.params["mask"].value( "inverted", false ) ? " (inverted)" : "") + " -->\n";
          // Inside a container PI writes enabled="true" where a lone instance has id="…_instance".
-         const size_t tagEnd = inst.find( '>' );
-         const size_t idPos = inst.find( " id=\"" );
-         if ( idPos != std::string::npos && idPos < tagEnd )
-         {
-            const size_t close = inst.find( '"', idPos + 5 );
-            if ( close != std::string::npos && close < tagEnd )
-               inst.replace( idPos, close + 1 - idPos, " enabled=\"true\"" );
-         }
+         RewriteInstanceId( inst );   // quote-aware; no id (already enabled="…") leaves it as PI wrote it
          body += inst + "\n";
       }
       x += "<!-- " + CommentText( i.viewId ) + (i.isMaster ? " (master)" : "") + " -->\n"
@@ -787,7 +973,7 @@ KeeperFilesResult WriteKeeperFiles( JourneyStore& store, int64 journeyId, const 
    {
       const String thumbs = store.JourneyDir( journeyId ) + "/thumbs";
       if ( File::DirectoryExists( thumbs ) )
-         CopyTree( thumbs, r.dir + "/thumbs", []( const String& d ) { return EnsurePrivateDirectory( d ); } );
+         CopyTree( thumbs, r.dir + "/thumbs", []( const String& d ) { return EnsurePrivateDirectory( d ); }, nullptr );
       r.thumbsOk = true;
    }
    catch ( const pcl::Exception& x ) { r.thumbsError = "could not copy the thumbnails into " + r.dir + "/thumbs: " + x.Message(); }
@@ -803,6 +989,17 @@ String CopyKeeperToExportFolder( JourneyStore& store, int64 journeyId, const Str
       return "no export folder is set";
    if ( !root.StartsWith( '/' ) )
       return "the export folder must be an absolute folder: " + root;
+   CopyLog log;
+   // After a failure part-way: remove exactly what this call created, and say what happened.
+   auto undone = [&log]() -> String
+   {
+      if ( log.files.empty() && log.dirs.empty() )
+         return "; nothing had been written there";
+      const String failed = log.Undo();
+      const String what = String().Format( "%u file(s) and %u folder(s)", unsigned( log.files.size() ), unsigned( log.dirs.size() ) );
+      return failed.IsEmpty() ? "; removed the " + what + " this copy had written (files already there were left alone)"
+                              : "; tried to remove the " + what + " this copy had written, but could not remove: " + failed;
+   };
    try
    {
       if ( !File::DirectoryExists( root ) )
@@ -817,21 +1014,22 @@ String CopyKeeperToExportFolder( JourneyStore& store, int64 journeyId, const Str
       const std::string date = (j.keptAt.empty() ? j.updated : j.keptAt).substr( 0, 10 );
       const String targetDir = root + "/" + String( SafeFolderName( j.target.empty() ? std::string( "unknown-target" ) : j.target ).c_str() );
       const String to = targetDir + "/" + String( (date + "-" + SafeFolderName( j.name )).c_str() );
-      const String e = MakeCopyDirectory( targetDir );
+      const String e = MakeCopyDirectory( targetDir, &log );
       if ( !e.IsEmpty() )
          throw Error( e );
-      CopyTree( from, to, MakeCopyDirectory );   // export/ only: it already holds thumbs/ (WriteKeeperFiles)
+      // export/ only: it already holds thumbs/ (WriteKeeperFiles).
+      CopyTree( from, to, [&log]( const String& d ) { return MakeCopyDirectory( d, &log ); }, &log );
       copiedTo = to;
       return String();
    }
    catch ( const pcl::Exception& x )
    {
-      return "could not copy the keeper into " + root + ": " + x.Message()
+      return "could not copy the keeper into " + root + ": " + x.Message() + undone()
            + " (the keeper is saved locally in " + store.JourneyDir( journeyId ) + ")";
    }
    catch ( const std::exception& x )
    {
-      return "could not copy the keeper into " + root + ": " + WhatOf( x )
+      return "could not copy the keeper into " + root + ": " + WhatOf( x ) + undone()
            + " (the keeper is saved locally in " + store.JourneyDir( journeyId ) + ")";
    }
 }
