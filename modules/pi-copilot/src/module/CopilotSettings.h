@@ -24,6 +24,16 @@ void      SaveRunPjsrEnabled( bool enabled );
 PanelSide LoadPanelSide();             // default Right
 void      SavePanelSide( PanelSide side );
 
+// Image journey (0.2.0.0). Record: default on. Export folder: default "" (off);
+// PI Copilot only writes INTO it, never creates it (Ruling 18). Retention:
+// default 30 days, clamped to 1..3650.
+bool   LoadRecordJourneys();
+void   SaveRecordJourneys( bool on );
+String LoadJourneyExportFolder();
+void   SaveJourneyExportFolder( const String& dir );
+int    LoadJourneyRetentionDays();
+void   SaveJourneyRetentionDays( int days );
+
 } } // namespace pcl::CopilotSettings
 
 #endif // PICopilot_CopilotSettings_h

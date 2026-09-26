@@ -90,6 +90,10 @@ struct PjsrRun
 // dialog says so). Never throws.
 PjsrRun RunPjsr( const String& code, const IsoString& targetViewId );
 
+// True while RunPjsr() is executing a script (the journey tracker defers its
+// work so it never nests an EvaluateScript inside a model-written script).
+bool IsPjsrScriptRunning();
+
 // The module's one ASCII-safe EvaluateScript path for JSON results. `body` is
 // ASCII-only JavaScript statements (embed data only as ScriptLiteral()s) that
 // end in `return pcAscii( JSON.stringify( <value> ) );`. It runs inside a
