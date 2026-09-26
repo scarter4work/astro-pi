@@ -50,12 +50,18 @@ String WriteJourneyThumbnail( const Image& blockAveraged, const String& path )
    {
       Image work( blockAveraged );   // StretchAndRender resamples/stretches in place
       Bitmap bmp = StretchAndRender( work, PICopilotJourneyThumbEdge );
+      // The directory (normally <journey>/thumbs) is made without following
+      // links and must be ours, not writable by others (EnsurePrivateDirectory).
       const String dir = File::ExtractDrive( path ) + File::ExtractDirectory( path );
-      if ( !dir.IsEmpty() && !File::DirectoryExists( dir ) )
-         File::CreateDirectory( dir );
+      if ( !dir.IsEmpty() )
+      {
+         const String dirWhy = EnsurePrivateDirectory( dir );
+         if ( !dirWhy.IsEmpty() )
+            return "thumbnail " + path + " not written: " + dirWhy;
+      }
       // Never Save() at the predictable final path: render privately, check
       // the JPEG magic, then atomic rename; a symlink target is refused (CWE-59).
-      const String why = SafeRenderFile( path,
+      const String why = SafeRenderFile( path, SafeFileMode::Shared,
          [&bmp]( const String& temp ) { bmp.Save( temp, PICopilotJourneyThumbJpegQuality ); },
          SafeCheckJpeg );
       return why.IsEmpty() ? String() : "thumbnail " + why;

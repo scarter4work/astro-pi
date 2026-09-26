@@ -421,6 +421,7 @@ required_true = [
     'sqliteVendorOk',
     'historyReaderOk',
     'stepStatsOk',
+    'journeyStoreOk',
     'histLandedOk',
     'ok',
 ]
