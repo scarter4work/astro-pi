@@ -9,6 +9,7 @@
 #include "StringParameterRules.h"
 #include "Utf8.h"
 
+#include <pcl/AutoViewLock.h>
 #include <pcl/Exception.h>
 #include <pcl/ImageWindow.h>
 #include <pcl/Process.h>
@@ -22,6 +23,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstdint>
+#include <cstring>
 #include <limits>
 #include <memory>
 #include <set>
@@ -545,7 +547,148 @@ std::set<std::string> OpenMainViewIds()
    return ids;
 }
 
+// ImageContentDigest's mixer: four independent 64-bit lanes over 8-byte words
+// (one multiply each, so the read pass stays close to memory bandwidth), then
+// a final avalanche. Not cryptographic -- it only has to tell "identical" from
+// "changed".
+class ContentHasher
+{
+public:
+   void Word( uint64 w )
+   {
+      uint64& h = m_lane[m_next];
+      m_next = (m_next + 1) & 3;
+      h ^= w;
+      h *= 0x9E3779B97F4A7C15ull;
+      h ^= h >> 29;
+   }
+
+   void Bytes( const void* data, size_t n )
+   {
+      const uint8* p = static_cast<const uint8*>( data );
+      Word( uint64( n ) );
+      size_t i = 0;
+      // Four words per step, one per lane (the loop the compiler can keep in registers).
+      for ( ; i + 32 <= n; i += 32 )
+      {
+         uint64 w[4];
+         std::memcpy( w, p + i, 32 );
+         for ( int k = 0; k < 4; ++k )
+         {
+            uint64& h = m_lane[k];
+            h ^= w[k];
+            h *= 0x9E3779B97F4A7C15ull;
+            h ^= h >> 29;
+         }
+      }
+      for ( ; i + 8 <= n; i += 8 )
+      {
+         uint64 w;
+         std::memcpy( &w, p + i, 8 );
+         Word( w );
+      }
+      if ( i < n )
+      {
+         uint64 w = 0;
+         std::memcpy( &w, p + i, n - i );
+         Word( w ^ 0xA5ull );
+      }
+   }
+
+   uint64 Final() const
+   {
+      uint64 h = 0x243F6A8885A308D3ull;
+      for ( uint64 l : m_lane )
+      {
+         h ^= l + 0x9E3779B97F4A7C15ull + (h << 6) + (h >> 2);
+         h ^= h >> 33;
+         h *= 0xFF51AFD7ED558CCDull;
+         h ^= h >> 33;
+      }
+      return h;
+   }
+
+private:
+   uint64 m_lane[4] = { 0x6A09E667F3BCC908ull, 0xBB67AE8584CAA73Bull, 0x3C6EF372FE94F82Bull, 0xA54FF53A5F1D36F1ull };
+   int    m_next = 0;
+};
+
+template <class P>
+void HashChannels( const GenericImage<P>& img, ContentHasher& h )
+{
+   const size_t bytes = size_t( img.NumberOfPixels() )*sizeof( typename P::sample );
+   for ( int c = 0; c < img.NumberOfChannels(); ++c )   // nominal + alpha
+   {
+      h.Word( uint64( c ) );
+      h.Bytes( img.PixelData( c ), bytes );
+   }
+}
+
+// The target's content digest. Callers probe ViewBusy() first: a write lock
+// on a view a running process holds hangs PixInsight (ViewCapture.cpp).
+uint64 ViewContentDigest( View& view )
+{
+   AutoViewWriteLock lock( view );
+   return ImageContentDigest( view.Image() );
+}
+
 } // namespace
+
+// ---- External-program bridges (ProcessApply.h) -----------------------------------
+
+const std::vector<ExternalProgramBridge>& ExternalProgramBridges()
+{
+   static const std::vector<ExternalProgramBridge> table = {
+      { "GraXpert", "replaceImage", "GraXpert",
+        "launches the external GraXpert program (appPath, pinned in the policy) with the image in a fixed shared "
+        "temp file (/tmp/PixInsight.xisf -> /tmp/PixInsight_GraXpert.xisf) and reports success even when the "
+        "program failed, wrote nothing, or another PixInsight instance used the same files (measured "
+        "2026-09-26)" },
+   };
+   return table;
+}
+
+const ExternalProgramBridge* FindExternalProgramBridge( const IsoString& canonicalProcessId )
+{
+   for ( const ExternalProgramBridge& b : ExternalProgramBridges() )
+      if ( canonicalProcessId == b.processId )
+         return &b;
+   return nullptr;
+}
+
+uint64 ImageContentDigest( const ImageVariant& image )
+{
+   ContentHasher h;
+   if ( !image )
+      return h.Final();
+   h.Word( uint64( image.Width() ) );
+   h.Word( uint64( image.Height() ) );
+   h.Word( uint64( image.NumberOfChannels() ) );
+   h.Word( uint64( image.BitsPerSample() ) | (image.IsFloatSample() ? 0x100u : 0u)
+           | (image.IsComplexSample() ? 0x200u : 0u) | (uint64( image.ColorSpace() ) << 16) );
+   if ( image.IsComplexSample() )
+   {
+      if ( image.BitsPerSample() == 64 )
+         HashChannels( static_cast<const ComplexImage&>( *image ), h );
+      else
+         HashChannels( static_cast<const DComplexImage&>( *image ), h );
+   }
+   else if ( image.IsFloatSample() )
+   {
+      if ( image.BitsPerSample() == 32 )
+         HashChannels( static_cast<const Image&>( *image ), h );
+      else
+         HashChannels( static_cast<const DImage&>( *image ), h );
+   }
+   else
+      switch ( image.BitsPerSample() )
+      {
+      case 8:  HashChannels( static_cast<const UInt8Image&>( *image ), h );  break;
+      case 16: HashChannels( static_cast<const UInt16Image&>( *image ), h ); break;
+      default: HashChannels( static_cast<const UInt32Image&>( *image ), h ); break;
+      }
+   return h.Final();
+}
 
 ApplyProcessResult ApplyProcess( const IsoString& processId, const nlohmann::json& parameters,
                                  const nlohmann::json& tableParameters, View view,
@@ -605,6 +748,23 @@ ApplyProcessResult ApplyProcess( const IsoString& processId, const nlohmann::jso
       if ( historyUpdater && !g_inProcessAppliesExpected )
          historyBefore = ReadViewHistory( view.FullId(), isPreview ? 0 : std::numeric_limits<int>::max() );
 
+      // NO-EFFECT (step 8, Task T-graxpert): for a process that bridges to an
+      // external program, what must be different after a real run -- the
+      // target's pixel content (replace mode) or the set of open windows.
+      const ExternalProgramBridge* bridge = FindExternalProgramBridge( P->Id() );
+      bool bridgeReplaces = false;
+      uint64 digestBefore = 0;
+      std::set<std::string> windowsBefore;
+      if ( bridge != nullptr )
+      {
+         bridgeReplaces = instance.ParameterValue( ProcessParameter( *P, IsoString( bridge->replaceParameter ) ),
+                                                   kScalarRow ).ToBoolean();
+         if ( bridgeReplaces )
+            digestBefore = ViewContentDigest( view );   // not busy: probed just above
+         else
+            windowsBefore = OpenMainViewIds();
+      }
+
       const auto t0 = std::chrono::steady_clock::now();
       bool ran = false;
       try
@@ -629,6 +789,67 @@ ApplyProcessResult ApplyProcess( const IsoString& processId, const nlohmann::jso
                            + ": the process stopped with an error while running, or the user aborted it in PixInsight "
                              "(the reason is in the Process Console). Do not simply retry: if the user may have "
                              "aborted it, ask them first; otherwise check the values you set: " + changes };
+      }
+      // Step 8 BEFORE step 7: a bridged run that did nothing would otherwise
+      // pass as a recorded step (its generic History transaction still runs)
+      // or be misread as an unrecorded change.
+      //
+      // LIMITATION (stated in ProcessApply.h and the README): this proves
+      // only "changed" vs "identical". When two PixInsight instances race on
+      // the core's shared temp file, one outcome is a CHANGED but WRONG
+      // result (the other instance's output blended in); a digest cannot
+      // tell that from a correct result, and nothing module-side can.
+      if ( bridge != nullptr )
+      {
+         String changes = DescribeParameterChanges( parameters, tableParameters, 400 );
+         changes.ReplaceString( "\n", "; " );
+         const String program( bridge->program );
+         const String why = "PixInsight's " + r.processId + " process hands the image to the external " + program
+                          + " program through one temporary file shared by every PixInsight instance on this "
+                            "computer, and it reports success even when that program failed or wrote no result. "
+                            "The usual cause is another PixInsight instance running " + r.processId + " at the same "
+                            "time; otherwise the " + program + " program itself failed (see the Process Console). ";
+         const String tell = "Tell the user this plainly; retry only after they confirm no other PixInsight instance is "
+                             "running " + r.processId + ". What ran: " + r.processId + " with " + changes;
+         if ( bridgeReplaces )
+         {
+            if ( ViewBusy( view ) )
+            {
+               r.unverifiedChange = true;   // may have changed: never reported as ok
+               throw ApplyError{ r.processId + " reported success, but PI Copilot could NOT check whether it changed "
+                                 + r.viewId + " (" + BusyMessage( r.viewId ) + "). Ask the user to look at the image "
+                                 "before continuing. What ran: " + r.processId + " with " + changes };
+            }
+            if ( ViewContentDigest( view ) == digestBefore )
+            {
+               r.noEffect = true;
+               // What History holds is stated only as far as it is verified:
+               // measured, the core adds a step that changed nothing.
+               const bool stepAdded = !isPreview && window.ModifyCount() > modifyCountBefore;
+               throw ApplyError{ r.processId + " reported success but the image did not change: every pixel of "
+                                 + r.viewId + " is identical to before the run (checked by PI Copilot). " + why
+                                 + (stepAdded ? "PixInsight still added a " + r.processId + " step to " + r.viewId
+                                                + "'s History that changed nothing, so there is nothing to undo "
+                                                  "(Edit > Undo would only remove that empty step). "
+                                              : String( "The image was not changed, so there is nothing to undo. " ))
+                                 + tell };
+            }
+         }
+         else
+         {
+            bool opened = false;
+            for ( const std::string& id : OpenMainViewIds() )
+               if ( windowsBefore.count( id ) == 0 )
+                  opened = true;
+            if ( !opened )
+            {
+               r.noEffect = true;
+               throw ApplyError{ r.processId + " reported success but produced no result window: no new image opened "
+                                 "(checked by PI Copilot; with " + String( bridge->replaceParameter ) + " = false the "
+                                 "result should open as a new image, and " + r.viewId + " is not changed in this "
+                                 "mode, so there is nothing to undo). " + why + tell };
+            }
+         }
       }
       if ( !historyUpdater )
          r.undo = r.processId + " adds no History step to " + r.viewId + ": it does not change that image's History "
