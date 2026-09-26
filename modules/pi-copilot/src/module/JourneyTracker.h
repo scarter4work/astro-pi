@@ -13,6 +13,7 @@
 #include <pcl/Timer.h>
 #include <pcl/View.h>
 
+#include <chrono>
 #include <deque>
 #include <functional>
 #include <memory>
@@ -40,25 +41,40 @@ struct JourneyStatus
                                         // (memory only: shown in the strip tooltip and the join note, not persisted)
 };
 
+
 using HistoryReadFn = std::function<HistorySnapshot( const IsoString&, int )>;
 
 /*
  * Decides which images belong to a journey and records their steps. Root
- * thread only. Notification handlers only append to m_events (they never touch
- * m_tracked / m_candidates / m_ignored, which Tick() iterates). Tick() first
- * drops closed windows (DropClosed: a View of a closed window must never be
- * copied -- PCL's attach throws), then drains m_events, then samples
- * ActiveWindow(), scans and does all reading and writing. It never waits on a
- * busy view (deferred), never nests an EvaluateScript (it skips the whole tick
- * while a run_pjsr script runs or EvaluateScriptDepth() > 0), and is
- * re-entrancy guarded (processes pump events). Every JourneyStore call it
- * makes is on the root thread (Timer ticks and notifications are root-thread).
+ * thread only; every JourneyStore call it makes is on the root thread (Timer
+ * ticks, notifications and the tool loop all run there).
+ *
+ * Notification handlers only append to m_events. A tick:
+ *   1. DropClosed(): forgets windows that are no longer open (their journeys
+ *      may end) -- reads nothing;
+ *   2. DrainEvents(): applies the queued notifications -- reads nothing;
+ *   3. the busy gate (Task 7 review I4): the rest of the tick is deferred
+ *      while PixInsight is busy -- CurrentProcessActivity() (a process or
+ *      script with the console abort enabled, any view locked, or less than
+ *      0.3 s since the last image notification / process end), a run_pjsr
+ *      script, or another module EvaluateScript. Known blind spot: a user
+ *      script that enables no abort, locks no view and just pumps events is
+ *      invisible, so a tick can still run (and read history) inside it;
+ *   4. samples ActiveWindow(), scans, and does all reading and writing, with
+ *      a per-tick time cap (the rest continues on the next tick).
+ * It never waits on a busy view, never nests an EvaluateScript, and is
+ * re-entrancy guarded. Entries are held by unique_ptr, so no container
+ * operation ever copies a View (copying a closed window's View throws in
+ * PCL's attach). Every join and every recorded batch of steps is ONE
+ * JourneyStore::Transaction: a failure leaves no partial journey, image or
+ * step rows, and the next tick retries from the database's state.
  */
 class JourneyTracker
 {
 public:
 
    explicit JourneyTracker( JourneyStore* store, const String& storeError = String() );
+   ~JourneyTracker();
 
    void SetStore( JourneyStore* store, const String& storeError );
    void SetEnabled( bool on );
@@ -73,10 +89,17 @@ public:
 
    // A Copilot tool ran processId on viewFullId (empty for a global run) and
    // created these windows. integration: a global integration run (Ruling 1.5).
+   // Contract for Task 10 (review M5): today the note is matched only to a step
+   // recorded AFTER it is posted; a tick that records the step between the
+   // execution and this call attributes it to the user. Task 10 should post the
+   // note BEFORE executing and cancel it when the tool fails.
    void NoteCopilotStep( const IsoString& viewFullId, const std::string& processId, const std::string& reason,
                          const std::vector<std::string>& createdWindowIds, bool integration, double now );
 
-   // start_journey: tracks a main view as the master root of a NEW journey.
+   // start_journey: tracks a main view as the master root of a NEW journey
+   // (or continues its own saved journey). Refused, with a precise error, when
+   // recording is off, the library is unavailable, the view is busy or already
+   // recorded, or a tick is running. Never leaves a partial journey behind.
    int64 StartJourneyFor( const View& view, String& error, double now );
 
    void Tick( double now, bool forceScan = false );
@@ -88,12 +111,15 @@ public:
    // Test hooks.
    void SetHistoryReaderForSelfTest( HistoryReadFn fn );      // empty fn -> ReadViewHistory
    void SetScanUsesModifyCountForSelfTest( bool on ) { m_useModifyCount = on; }
+   // Called inside every join's transaction at its midpoint ("master" after
+   // CreateJourney, "linked" after AddImage); a throw there must leave no rows.
+   void SetJoinFaultForSelfTest( std::function<void( const char* where )> fn ) { m_joinFault = std::move( fn ); }
    size_type PendingCount() const;
    double LastStepMs() const { return m_lastStepMs; }
    int Deferrals() const { return m_deferrals; }
    StringList TakeJoinNotes();
-   // The last 100 candidate evaluations ("<t> r=<result> ticks=<n> <view> <evidence summary>"),
-   // for self-test diagnostics.
+   // The last 100 candidate evaluations and scan anomalies
+   // ("<t> r=<result> ticks=<n> <view> <evidence summary>"), for self-test diagnostics.
    std::vector<std::string> RecentDecisionsForSelfTest() const { return { m_decisions.begin(), m_decisions.end() }; }
 
 private:
@@ -109,8 +135,19 @@ private:
       bool        dirty = true;
       int         readFailures = 0;
       std::string why;
+      String      pausedReason;      // this image's history read failure (review M3)
+      String      statsReason;       // "statistics not recorded: ..."; cleared by this image's next success (P11)
    };
-   struct Candidate { View view; double firstSeen = 0; int ticks = 0; };
+   struct Candidate
+   {
+      View            view;
+      double          firstSeen = 0;
+      int             ticks = 0;
+      bool            fresh = false;     // a window that APPEARED (Created / first seen), not a re-queued one (review I3)
+      bool            hasSnap = false;   // the last read, reused while ModifyCount is unchanged (review M8)
+      size_type       modifyCount = 0;
+      HistorySnapshot snap;
+   };
    struct Ignored   { View view; size_type modifyCount = 0; };
    struct CopilotNote { std::string viewId, processId, reason; double t = 0; };
    struct CreatedNote { std::string id, sourceViewId; bool integration = false, first = false; double t = 0; };
@@ -118,6 +155,9 @@ private:
    enum class EventKind { Created, Updated, Renamed, Deleted, Saved, Focused };
    struct PendingEvent { EventKind kind; View view; double t = 0; };
    struct RecentStep  { std::string identity; int64 imageId = 0, journeyId = 0, stepId = 0; double start = -1, end = -1; };
+   // A link a join writes in its transaction; viaSeq > 0: the via step is the
+   // joining image's own step at that seq (reference evidence).
+   struct PlannedLink { int64 fromImageId = 0, viaStepId = 0; int viaSeq = 0; };
 
    JourneyStore*            m_store = nullptr;
    String                   m_storeError;
@@ -125,58 +165,67 @@ private:
    bool                     m_inTick = false;
    bool                     m_useModifyCount;
    bool                     m_forceScan = true;
+   bool                     m_renameSinceScan = false;
+   bool                     m_scannedOnce = false;   // views found by the very first scan existed before: not fresh
    std::deque<PendingEvent> m_events;          // queued notifications (handlers only append)
    double                   m_lastScan = -1e300;
-   std::vector<Tracked>     m_tracked;
-   std::vector<Candidate>   m_candidates;
-   std::vector<Ignored>     m_ignored;
+   std::vector<std::unique_ptr<Tracked>>   m_tracked;
+   std::vector<std::unique_ptr<Candidate>> m_candidates;
+   std::vector<std::unique_ptr<Ignored>>   m_ignored;
    std::vector<CopilotNote> m_copilot;
    std::vector<CreatedNote> m_created;
    std::deque<RecentStep>   m_recent;          // last 200 recorded steps (timing evidence)
    std::deque<std::pair<std::string, double>> m_active;   // active main view id changes (timing evidence (b))
    std::vector<GapRow>      m_pendingGaps;     // gaps the DB could not take yet
    std::vector<int64>       m_closed;          // journeys whose last open image may have closed
-   String                   m_pausedReason;       // history read / DB failure (spec §8 row 1)
-   String                   m_statsPausedReason;  // "statistics not recorded: …"; cleared by the next successful stats (P11)
+   String                   m_pausedReason;    // tick-wide failure (DB / exception); cleared by the next complete tick
    StringList               m_joinNotes;
    HistoryReadFn            m_read;
+   std::function<void( const char* )> m_joinFault;
    double                   m_lastStepMs = 0;
    int                      m_deferrals = 0;
+   std::chrono::steady_clock::time_point m_tickStart;
    std::string              m_evalNote;        // what the current EvaluateCandidate() saw (diagnostics)
    std::deque<std::string>  m_decisions;       // RecentDecisionsForSelfTest()
 
    Tracked*       FindTracked( const View& v );
    const Tracked* FindTrackedById( const std::string& id ) const;
    bool           IsCandidate( const View& v ) const;
-   void           AddCandidate( const View& v, double now );
+   void           AddCandidate( const View& v, double now, bool fresh );
+   void           Forget( const View& v );    // drops v's candidate / ignored entries
+   bool           OverTickBudget() const;
+   void           Decision( const std::string& line );
    void           QueueEvent( EventKind kind, const View& v, double now );
    void           DrainEvents();
    void           ApplyEvent( const PendingEvent& e, const View& view );
-   // Drops every tracked/candidate/ignored entry whose window is no longer
-   // open (their journeys go to m_closed); fills the open main views and their
-   // ModifyCount. Runs at every tick before anything copies a view.
    void           DropClosed( std::vector<View>& open, std::vector<size_type>& counts );
    void           Scan( double now, const std::vector<View>& open, const std::vector<size_type>& counts );
    void           BatchCounts();
    void           ProcessDirty( double now );
    void           ProcessCandidates( double now );
-   int            EvaluateCandidate( Candidate& c, double now );   // 1 joined, 0 wait, -1 reject, 2 deferred (busy read)
+   int            EvaluateCandidate( Candidate& c, double now );   // 1 joined, 0 wait, -1 reject, 2 deferred (busy)
+   // appeared: the window appeared while recording (a fresh candidate): only its
+   // initialProcessing is base, its session steps are the user's steps even when
+   // the join was deferred (busy gate). Otherwise its whole history is base.
    int64          JoinAsMaster( const View& v, const HistorySnapshot& snap, const FITSKeywordArray& kw,
-                                const std::string& why );
-   int64          JoinLinked( const View& v, const HistorySnapshot& snap, int64 fromImageId, int64 journeyId,
-                              int64 viaStepId, const std::string& evidence );
-   void           AddBaseAndSteps( int64 imageId, const HistorySnapshot& snap, int baseCount );
-   void           StartingStats( const View& v, int64 journeyId, int64 imageId );
+                                const std::string& why, bool appeared );
+   int64          JoinLinked( const View& v, const HistorySnapshot& snap, int64 journeyId,
+                              const std::vector<PlannedLink>& links, const std::string& evidence, const std::string& why );
+   std::vector<int64> AddBaseAndSteps( int64 imageId, const HistorySnapshot& snap, int baseCount );
+   void           StartingStats( Tracked& t );
    void           Remember( const HistoryStep& h, int64 imageId, int64 journeyId, int64 stepId );
    void           NoteActive( const std::string& id, double now );
-   bool           ConsumeCopilotNote( const std::string& viewId, const std::string& processId, double now, std::string& reason );
+   int            FindCopilotNote( const std::string& viewId, const std::string& processId, double now,
+                                   const std::vector<int>& taken ) const;
    std::vector<const Tracked*> ReferencedTracked( const HistoryStep& h ) const;
    void           FlushPendingGaps();
    void           EndClosedJourneys();
 };
 
-// Ruling 9: prunes when `today` differs from lastRun (then lastRun = today).
-// Returns the number pruned, or -1 when it was not due.
+// Ruling 9: prunes when `today` differs from lastRun. lastRun = today is set
+// BEFORE pruning (Task 7 review I1), so a failing prune (it throws, naming
+// the path) is retried on the next date, never on every tick. Returns the
+// number pruned, or -1 when it was not due.
 int RunRetentionIfDue( JourneyStore& store, int days, const std::string& today, std::string& lastRun, StringList* removed );
 
 class JourneyTimerHost;
@@ -185,7 +234,8 @@ class JourneyTimerHost;
  * Module-level owner (one per PixInsight process): the library, the tracker,
  * its Timer (created with a bare Control receiver, so recording never needs
  * the panel) and user-facing notes the panel drains into the chat log.
- * Root thread only.
+ * Root thread only. Stop() (OnUnload) destroys everything on the root thread;
+ * if it never ran, the static destructor leaks instead of touching PCL.
  */
 class JourneyService
 {
@@ -227,6 +277,7 @@ private:
 
    bool                              m_started = false;
    bool                              m_selfTestPaused = false;
+   bool                              m_inOnTick = false;
    std::unique_ptr<JourneyStore>     m_store;
    String                            m_storeError;
    double                            m_lastOpenAttempt = 0;
@@ -234,8 +285,10 @@ private:
    std::unique_ptr<JourneyTimerHost> m_host;
    StringList                        m_notes;
    std::string                       m_retentionLastRun;
+   String                            m_lastRetentionError;   // one note per distinct failure (review I1)
 
    void OpenStore();
+   void RunRetention();
 };
 
 } // namespace pcl

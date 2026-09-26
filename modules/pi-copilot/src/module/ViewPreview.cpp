@@ -79,7 +79,11 @@ void BlockAverage( const GenericImage<P>& src, Image& dst, int k, int n, int str
 Image BlockAveragedCopy( const View& view, int maxEdge, int& blockFactor, int rowStride, int* samplesPerBlock )
 {
    View v = view;                   // alias; locking needs a non-const View
-   AutoViewWriteLock lock( v );
+   // No lock notifications (Task 7 review M2): this read is no "process
+   // activity" for the busy gate (ProcessActivity.h), so the journey tracker's
+   // per-step statistics never make the tool loop or itself wait 0.3 s.
+   v.LockForWrite( false/*notify*/ );
+   struct Unlock { View& v; ~Unlock() { try { v.UnlockForWrite( false ); } catch ( ... ) {} } } unlock{ v };
    ImageVariant src = v.Image();
    if ( !src )
       throw Error( "view has no image" );

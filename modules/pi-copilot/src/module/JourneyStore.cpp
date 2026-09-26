@@ -517,6 +517,18 @@ std::unique_ptr<JourneyStore> JourneyStore::Open( const String& root, String& er
             return nullptr;
          }
          s->Exec( "PRAGMA foreign_keys=ON" );
+         // WAL + synchronous=NORMAL (Task 7 review I5): commits are atomic and
+         // survive a PixInsight crash; only a power loss can drop the last
+         // commits (never corrupt the file). The library records History that
+         // PixInsight itself holds, so the tracker re-derives such a loss from
+         // the open windows, while FULL would fsync on the root thread at every
+         // commit (every recorded step).
+         s->Exec( "PRAGMA synchronous=NORMAL" );
+         if ( s->ScalarInt( "PRAGMA synchronous" ) != 1 )
+         {
+            error = "journey database " + path + " could not be set to synchronous=NORMAL. Recording is paused.";
+            return nullptr;
+         }
          if ( version == 0 )
             s->CreateSchemaV1();
          return s;
@@ -555,25 +567,36 @@ int64 JourneyStore::CreateJourney( const std::string& name, const std::string& t
    return sqlite3_last_insert_rowid( m_db );
 }
 
+void JourneyStore::RequireChanged( const char* what, int64 id ) const
+{
+   if ( sqlite3_changes( m_db ) < 1 )
+      throw Error( "journey database " + m_dbPath + ": " + String( what )
+                   + String().Format( " #%lld: no such row; nothing was changed", static_cast<long long>( id ) ) );
+}
+
 void JourneyStore::RenameJourney( int64 id, const std::string& name )
 {
    Stmt( *this, "UPDATE journey SET name=? WHERE id=?" ).Text( 1, name ).Int( 2, id ).Run();
+   RequireChanged( "RenameJourney: journey", id );
 }
 
 void JourneyStore::TouchJourney( int64 id, const std::string& nowIso )
 {
    Stmt( *this, "UPDATE journey SET updated=? WHERE id=?" ).Text( 1, nowIso ).Int( 2, id ).Run();
+   RequireChanged( "TouchJourney: journey", id );
 }
 
 void JourneyStore::SetJourneyStatus( int64 id, const std::string& status )
 {
    Stmt( *this, "UPDATE journey SET status=? WHERE id=?" ).Text( 1, status ).Int( 2, id ).Run();
+   RequireChanged( "SetJourneyStatus: journey", id );
 }
 
 void JourneyStore::MarkKept( int64 id, int64 endImageId, const std::string& nowIso )
 {
    Stmt( *this, "UPDATE journey SET kept=1, kept_at=?, end_image_id=?, updated=? WHERE id=?" )
       .Text( 1, nowIso ).IntOrNull( 2, endImageId ).Text( 3, nowIso ).Int( 4, id ).Run();
+   RequireChanged( "MarkKept: journey", id );
 }
 
 int64 JourneyStore::AddImage( int64 journeyId, const std::string& viewId, const std::string& filePath,
@@ -589,6 +612,7 @@ void JourneyStore::SetImageView( int64 imageId, const std::string& viewId, const
 {
    Stmt( *this, "UPDATE image SET view_id=?, file_path=COALESCE(?, file_path) WHERE id=?" )
       .Text( 1, viewId ).TextOrNull( 2, filePath ).Int( 3, imageId ).Run();
+   RequireChanged( "SetImageView: image", imageId );
 }
 
 void JourneyStore::SetAcquisition( int64 imageId, const AcquisitionFacts& a )
@@ -625,12 +649,14 @@ int64 JourneyStore::AddStep( const StepRow& s )
 void JourneyStore::SetStepState( int64 stepId, const std::string& state )
 {
    Stmt( *this, "UPDATE step SET state=? WHERE id=?" ).Text( 1, state ).Int( 2, stepId ).Run();
+   RequireChanged( "SetStepState: step", stepId );
 }
 
 void JourneyStore::SetStepReason( int64 stepId, const std::string& reason, bool inferred )
 {
    Stmt( *this, "UPDATE step SET reason=?, reason_inferred=? WHERE id=?" )
       .TextOrNull( 1, reason ).Int( 2, inferred ? 1 : 0 ).Int( 3, stepId ).Run();
+   RequireChanged( "SetStepReason: step", stepId );
 }
 
 void JourneyStore::AddStats( int64 imageId, int64 stepId, const std::vector<ChannelStats>& channels )
@@ -655,6 +681,40 @@ void JourneyStore::AddGap( const GapRow& g )
 {
    Stmt( *this, "INSERT INTO gap(journey_id, image_id, after_step_seq, reason) VALUES(?,?,?,?)" )
       .Int( 1, g.journeyId ).IntOrNull( 2, g.imageId ).Int( 3, g.afterSeq ).Text( 4, g.reason ).Run();
+}
+
+int JourneyStore::ResolveGaps( int64 imageId, int recordedUpToSeq )
+{
+   Stmt( *this, "DELETE FROM gap WHERE image_id=? AND after_step_seq < ?" ).Int( 1, imageId ).Int( 2, recordedUpToSeq ).Run();
+   return sqlite3_changes( m_db );
+}
+
+JourneyStore::Transaction::Transaction( JourneyStore& store ) : m_store( store )
+{
+   if ( store.m_inTransaction )
+      throw Error( "journey database " + store.m_dbPath + ": a transaction is already open on this connection; "
+                   "nested transactions are refused (nothing was written)" );
+   store.Exec( "BEGIN IMMEDIATE" );   // root-thread check + the write lock, before any write
+   store.m_inTransaction = true;
+   m_open = true;
+}
+
+void JourneyStore::Transaction::Commit()
+{
+   if ( !m_open )
+      throw Error( "journey database " + m_store.m_dbPath + ": Commit() on a transaction that is not open" );
+   m_store.Exec( "COMMIT" );   // throws on failure; the destructor then rolls back
+   m_open = false;
+   m_store.m_inTransaction = false;
+}
+
+JourneyStore::Transaction::~Transaction()
+{
+   if ( !m_open )
+      return;
+   if ( Thread::IsRootThread() && m_store.m_db != nullptr )
+      sqlite3_exec( m_store.m_db, "ROLLBACK", nullptr, nullptr, nullptr );   // noexcept: the result is not needed
+   m_store.m_inTransaction = false;
 }
 
 namespace
@@ -742,11 +802,22 @@ bool JourneyStore::FindOpenImageByView( const std::string& viewId, ImageRow& out
    return true;
 }
 
-bool JourneyStore::FindResumableByFingerprint( const std::string& fp, ImageRow& out )
+bool JourneyStore::FindResumableByFingerprint( const std::string& fp, ImageRow& out, const std::vector<int64>& excludeImageIds )
 {
-   Stmt s( *this, "SELECT i.id, i.journey_id, i.view_id, i.file_path, i.fingerprint, i.is_master, i.created FROM image i"
-                  " JOIN journey j ON j.id = i.journey_id WHERE i.fingerprint=? AND j.kept=0 ORDER BY i.id DESC LIMIT 1" );
+   std::string sql = "SELECT i.id, i.journey_id, i.view_id, i.file_path, i.fingerprint, i.is_master, i.created FROM image i"
+                     " JOIN journey j ON j.id = i.journey_id WHERE i.fingerprint=? AND j.kept=0";
+   if ( !excludeImageIds.empty() )
+   {
+      sql += " AND i.id NOT IN (";
+      for ( size_t k = 0; k < excludeImageIds.size(); ++k )
+         sql += k == 0 ? "?" : ",?";
+      sql += ")";
+   }
+   sql += " ORDER BY i.id DESC LIMIT 1";
+   Stmt s( *this, sql.c_str() );
    s.Text( 1, fp );
+   for ( size_t k = 0; k < excludeImageIds.size(); ++k )
+      s.Int( int( k ) + 2, excludeImageIds[k] );
    if ( !s.Row() )
       return false;
    out = ReadImage( s );
@@ -857,6 +928,7 @@ int JourneyStore::PruneUnkept( const std::string& cutoffIso, StringList* removed
       const String dir = JourneyDir( id );
       RemoveDirectoryTree( dir );
       Stmt( *this, "DELETE FROM journey WHERE id=? AND kept=0" ).Int( 1, id ).Run();
+      RequireChanged( "PruneUnkept: unkept journey", id );
       ++n;
       if ( removedDirs != nullptr )
          *removedDirs << dir;
