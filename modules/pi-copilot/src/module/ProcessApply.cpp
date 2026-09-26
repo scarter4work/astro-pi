@@ -500,6 +500,43 @@ StepCheck CheckNewHistoryStep( const View& view, const HistorySnapshot& before, 
    return c;
 }
 
+// The same for a PREVIEW (measured, T-hist round 2): a preview's History
+// holds ONE step -- each new step REPLACES the previous one (length stays 1,
+// historyIndex 1) and is computed from the MAIN image's pixels, not from the
+// earlier preview step (0.6 then $T*0.5 gives 0.4); Undo returns the preview
+// to the main image's pixels; the main image (pixels inside and outside the
+// preview rectangle), its ModifyCount and its History never change. In the
+// hazard window nothing is recorded (fresh preview stays at 0 steps, a prior
+// step stays in place) though the preview pixels change. Recorded: the
+// preview's active step is `processId` and is not any step read before the
+// run (a step's identity includes its start time).
+StepCheck CheckNewPreviewStep( const View& view, const HistorySnapshot& before, const IsoString& processId )
+{
+   StepCheck c;
+   if ( !before.ok )
+   {
+      c.reason = before.busy ? String( "another script evaluation was running before the run" )
+                             : "reading the History before the run failed: " + before.error;
+      return c;
+   }
+   const HistorySnapshot after = ReadViewHistory( view.FullId(), 0 );
+   if ( !after.ok )
+   {
+      c.reason = after.busy ? String( "another script evaluation was running" )
+                            : "reading the History failed: " + after.error;
+      return c;
+   }
+   const int active = after.ActiveCount();
+   bool recorded = active >= 1 && size_t( active ) <= after.steps.size()
+                && after.steps[active - 1].processId == std::string( processId.c_str() );
+   if ( recorded )
+      for ( const HistoryStep& b : before.steps )
+         if ( b.identity == after.steps[active - 1].identity )
+            recorded = false;
+   c.verdict = recorded ? StepCheck::Recorded : StepCheck::NotRecorded;
+   return c;
+}
+
 std::set<std::string> OpenMainViewIds()
 {
    std::set<std::string> ids;
@@ -558,14 +595,15 @@ ApplyProcessResult ApplyProcess( const IsoString& processId, const nlohmann::jso
 
       // DETECT (step 7): what must change if the step is recorded.
       const bool historyUpdater = instance.IsHistoryUpdater( view );
-      const bool expectHistoryStep = view.IsMainView() && historyUpdater;
+      const bool isPreview = !view.IsMainView();
       ImageWindow window = view.Window();
-      const size_type modifyCountBefore = expectHistoryStep ? window.ModifyCount() : 0;
-      // The History position before the run, for steps that do not advance
-      // ModifyCount (measured: ImageIdentifier, RGBWorkingSpace). Counts only.
+      const size_type modifyCountBefore = window.ModifyCount();
+      // The History before the run: counts only for a main view (for steps
+      // that do not advance ModifyCount -- measured: ImageIdentifier,
+      // RGBWorkingSpace); the whole (one-step) list for a preview.
       HistorySnapshot historyBefore;
-      if ( expectHistoryStep && !g_inProcessAppliesExpected )
-         historyBefore = ReadViewHistory( view.FullId(), std::numeric_limits<int>::max() );
+      if ( historyUpdater && !g_inProcessAppliesExpected )
+         historyBefore = ReadViewHistory( view.FullId(), isPreview ? 0 : std::numeric_limits<int>::max() );
 
       const auto t0 = std::chrono::steady_clock::now();
       bool ran = false;
@@ -595,10 +633,7 @@ ApplyProcessResult ApplyProcess( const IsoString& processId, const nlohmann::jso
       if ( !historyUpdater )
          r.undo = r.processId + " adds no History step to " + r.viewId + ": it does not change that image's History "
                   "(e.g. it creates a new image or changes only display settings), so there is nothing to undo there.";
-      else if ( !view.IsMainView() )
-         r.undo = "Applied to the preview " + r.viewId + ". PixInsight keeps a preview's history separately from "
-                  "the image and PI Copilot cannot verify it; the main image is unchanged.";
-      else if ( window.ModifyCount() > modifyCountBefore )
+      else if ( !isPreview && window.ModifyCount() > modifyCountBefore )
          r.undo = "Recorded in " + r.viewId + "'s History (verified: the image's modification count advanced); "
                   "the user can undo it with Edit > Undo.";
       else if ( g_inProcessAppliesExpected )
@@ -608,17 +643,32 @@ ApplyProcessResult ApplyProcess( const IsoString& processId, const nlohmann::jso
       }
       else
       {
-         // ModifyCount did not advance: either a step that does not count as
-         // a modification (metadata-only, e.g. a rename), or no step at all.
-         // The History list decides (read from view: a rename changed the id).
-         const StepCheck c = CheckNewHistoryStep( view, historyBefore, P->Id() );
+         // Main view whose ModifyCount did not advance -- a step that does
+         // not count as a modification (e.g. a rename) or no step at all --
+         // or a preview (ModifyCount never moves for one): the History list
+         // decides (read from `view`: a rename changed the id).
+         const StepCheck c = isPreview ? CheckNewPreviewStep( view, historyBefore, P->Id() )
+                                       : CheckNewHistoryStep( view, historyBefore, P->Id() );
          if ( c.verdict == StepCheck::Recorded )
-            r.undo = "Recorded in " + String( view.FullId() ) + "'s History (verified in the History list); the user "
-                     "can undo it with Edit > Undo.";
+            r.undo = isPreview
+               ? "Recorded as the preview " + r.viewId + "'s History step (verified). A preview keeps ONE step: it "
+                 "was applied to the main image's pixels in that area and REPLACED any earlier preview step (whose "
+                 "effect is gone); Undo on the preview returns it to the main image's pixels. A preview step does not "
+                 "change the main image."
+               : "Recorded in " + String( view.FullId() ) + "'s History (verified in the History list); the user "
+                 "can undo it with Edit > Undo.";
          else if ( c.verdict == StepCheck::Unknown )
-            r.undo = "NOT VERIFIED: " + r.processId + " does not change the image's modification count and its "
-                     "History could not be checked (" + c.reason + "). Ask the user to confirm the step is in "
-                     "History Explorer before relying on Undo.";
+         {
+            // Review round 2: never "ok" for a change nobody could verify.
+            r.unverifiedChange = true;
+            String changes = DescribeParameterChanges( parameters, tableParameters, 400 );
+            changes.ReplaceString( "\n", "; " );
+            throw ApplyError{ r.processId + " ran and changed " + r.viewId + ", but PI Copilot could NOT verify that "
+                              "PixInsight recorded it in the image's History (" + c.reason + "). Tell the user this "
+                              "now and ask them to check Edit > Undo (or the History Explorer) before continuing; do "
+                              "not apply anything else to " + r.viewId + " until they have. What ran: " + r.processId
+                              + " with " + changes };
+         }
          else
          {
             r.unrecordedChange = true;
@@ -639,7 +689,7 @@ ApplyProcessResult ApplyProcess( const IsoString& processId, const nlohmann::jso
       r.ok = false;
       r.error = e.message;
       r.undo.Clear();
-      if ( !r.unrecordedChange )   // what DID change the image stays reported
+      if ( !r.unrecordedChange && !r.unverifiedChange )   // what DID change the image stays reported
       {
          r.parametersSet = nlohmann::json::object();
          r.pinnedSet = nlohmann::json::object();
