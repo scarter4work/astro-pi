@@ -23,6 +23,7 @@
 #include "TurnEndNotes.h"
 #include "Utf8.h"
 #include "ViewCapture.h"
+#include "SelfTestTiming.h"
 
 #include <pcl/AutoViewLock.h>
 #include <pcl/ByteArray.h>
@@ -394,6 +395,7 @@ bool RunInc5SelfTest( nlohmann::json& out )
    bool allOk = true;
 
    // ---- Section B0: platform smoke (Task 1) --------------------------------
+   SelfTestSectionMark( "B0 platform smoke" );
    {
       bool iiOk = false, parseNoExecOk = false, breakoutOk = false, syntaxLineOk = false,
            runtimeLineOk = false, consoleOk = false, throwOk = false;
@@ -638,6 +640,7 @@ bool RunInc5SelfTest( nlohmann::json& out )
    }
 
    // ---- Section B1: SSE parser + assembler (Task 2) --------------------------
+   SelfTestSectionMark( "B1 SSE parser + assembler" );
    {
       bool s1Ok = true, crlfOk = false, errorOk = false, unknownDeltaOk = false, truncOk = false,
            thinkingOk = false, badJsonOk = false, orderOk = false, fixturesOk = true,
@@ -872,6 +875,7 @@ bool RunInc5SelfTest( nlohmann::json& out )
    }
 
    // ---- Section B2: streaming transport (Task 3) ------------------------------
+   SelfTestSectionMark( "B2 streaming transport" );
    {
       using clock = std::chrono::steady_clock;
       auto secondsSince = []( clock::time_point t0 ) { return std::chrono::duration<double>( clock::now() - t0 ).count(); };
@@ -1096,6 +1100,7 @@ bool RunInc5SelfTest( nlohmann::json& out )
    }
 
    // ---- Section B3: models, caching/binding shape, history budget (Task 4) ----
+   SelfTestSectionMark( "B3 models, caching/binding shape, history budget" );
    {
       bool modelsOk = false, shapeOk = false, wireOk = false, trimOk = false, sessionTrimOk = true, noTrimOk = false;
       bool thinkOnlyOk = false, trimResetOk = false;
@@ -1284,6 +1289,7 @@ bool RunInc5SelfTest( nlohmann::json& out )
    }
 
    // ---- Section B3L: gated LIVE caching + thinking binding (Task 4) ------------
+   SelfTestSectionMark( "B3L gated LIVE caching + thinking binding" );
    {
       bool skipped = true, ok = true;
       nlohmann::json detail = nlohmann::json::object();
@@ -1582,6 +1588,7 @@ bool RunInc5SelfTest( nlohmann::json& out )
    }
 
    // ---- Section B4: keyring-first key storage (Task 5) ------------------------
+   SelfTestSectionMark( "B4 keyring-first key storage" );
    {
       bool missOk = false, saveOk = false, loadOk = false, migrateOk = false, fallbackOk = false,
            clearOk = false, noLeakOk = true;
@@ -1660,6 +1667,9 @@ bool RunInc5SelfTest( nlohmann::json& out )
       Settings::Remove( sk );
 
       const bool ok = missOk && saveOk && loadOk && migrateOk && fallbackOk && clearOk && noLeakOk;
+      // Which sub-check failed (a one-off red B4 was undiagnosable without this).
+      detail["verdicts"] = { { "miss", missOk }, { "save", saveOk }, { "load", loadOk }, { "migrate", migrateOk },
+                             { "fallback", fallbackOk }, { "clear", clearOk }, { "noLeak", noLeakOk } };
       out["keyStoreDetail"] = detail;
       out["keyStoreError"] = U8( error );
       out["keyStoreKeyringOk"] = ok;
@@ -1667,6 +1677,7 @@ bool RunInc5SelfTest( nlohmann::json& out )
    }
 
    // ---- Section B5: settings, placement side, failure wording (Task 6) ---------
+   SelfTestSectionMark( "B5 settings, placement side, failure wording" );
    {
       bool settingsOk = false, placementOk = false, wordingOk = true, kindOk = false, refusalOk = false;
       nlohmann::json detail = nlohmann::json::object();
@@ -2014,6 +2025,7 @@ bool RunInc5SelfTest( nlohmann::json& out )
    }
 
    // ---- Section B6: process safety policy (Task 7) -----------------------------
+   SelfTestSectionMark( "B6 process safety policy" );
    {
       bool coverageOk = false, idsOk = false, verdictOk = false, denyToolOk = false, confirmToolOk = false;
       nlohmann::json detail = nlohmann::json::object();
@@ -2213,6 +2225,7 @@ bool RunInc5SelfTest( nlohmann::json& out )
    }
 
    // ---- Section B7: global processes / run_global_process (Task 8) --------------
+   SelfTestSectionMark( "B7 global processes / run_global_process" );
    {
       bool precheckOk = true, runOk = false, guidedOk = false, advisorOk = false, safetyOk = false, denyOk = false,
            schemaOk = false, redirectOk = false, cleanupOk = false;
@@ -2554,6 +2567,7 @@ bool RunInc5SelfTest( nlohmann::json& out )
    }
 
    // ---- Section B8: run_pjsr (Task 9) ------------------------------------------
+   SelfTestSectionMark( "B8 run_pjsr" );
    {
       bool checkOk = false, runOk = false, errorOk = false, boundOk = false, valueBoundOk = false, pixelOk = false,
            offOk = false, declineOk = false, approveOk = false, guidedOk = false, syntaxNoDialogOk = false,
@@ -2775,6 +2789,7 @@ bool RunInc5SelfTest( nlohmann::json& out )
    }
 
    // ---- Section B8a: run_pjsr breakout suite (Task 9) ---------------------------
+   SelfTestSectionMark( "B8a run_pjsr breakout suite" );
    // The model's script reaches the engine ONLY as data (ScriptLiteral). Each
    // hostile text must either parse as exactly its own source, or fail as a
    // SyntaxError -- and the sentinel (a window named PCBreakout) must NEVER
@@ -2903,6 +2918,7 @@ bool RunInc5SelfTest( nlohmann::json& out )
    }
 
    // ---- Section B9: final-review fixes (inc 5) ---------------------------------
+   SelfTestSectionMark( "B9 final-review fixes" );
    {
       bool globalGateOk = false, globalRuntimeOk = false, globalToolOk = false, nulOk = false, gmmOk = false,
            tableAliasOk = false, wordingOk = false, unknownToolOk = false, capOk = false, promptOk = false;
@@ -3204,6 +3220,7 @@ bool RunInc5SelfTest( nlohmann::json& out )
    }
 
    // ---- Section B10: pinned parameters -- GraXpert.appPath ----------------------
+   SelfTestSectionMark( "B10 pinned parameters" );
    {
       bool policyOk = false, modelRefusedOk = false, missingOk = false, invalidOk = false, resolvedOk = false,
            dialogOk = false, liveOk = false, liveSkipped = true;
@@ -3451,6 +3468,7 @@ bool RunInc5SelfTest( nlohmann::json& out )
    }
 
    // ---- Section B11: re-review fixes (5ba3632..12a97ee) --------------------------
+   SelfTestSectionMark( "B11 re-review fixes" );
    {
       bool describeCapOk = false, listCapOk = false, globalReviewOk = false, preDialogOk = false,
            pinnedObjectOk = false, pinnedKeysOk = false, patternsOk = false, describeMarkOk = false,
@@ -3868,6 +3886,7 @@ bool RunInc5SelfTest( nlohmann::json& out )
    }
 
    // ---- Section B12: review-e4422c9 fixes (M-b, M-c, M-d) -----------------------
+   SelfTestSectionMark( "B12 review-e4422c9 fixes" );
    {
       bool applyDeclinedOk = false, metadataPreDialogOk = false, afterApprovalOk = false, globalDeclinedOk = false,
            scopedOk = false, rcAstroOk = false, hdrFilesOk = false, enumDefaultOk = false;
@@ -4169,6 +4188,7 @@ bool RunInc5SelfTest( nlohmann::json& out )
    }
 
    // ---- inc5 sections end ----
+   SelfTestSectionMark( nullptr );
 
    // Let the core finish deferred window teardown before --force-exit (same
    // reasoning as the drains in the vision and agent self-tests).

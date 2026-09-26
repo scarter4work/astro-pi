@@ -23,6 +23,26 @@
 
 var PHASE_FILE = getEnvironmentVariable( "PICOPILOT_SELFTEST_PHASE" );
 
+// Per-block wall-clock timings (so a slow run is self-diagnosing): jsMark( label )
+// closes the block still open and opens `label`; jsMark( null ) only closes.
+// Written to $PICOPILOT_SELFTEST_JS_TIMINGS at the end; run-selftest.sh prints
+// one line per block, next to the module's own per-section "sectionTimings".
+var JS_T0 = Date.now(), jsTimings = [], jsOpen = null;
+function jsMark( label )
+{
+   var now = Date.now();
+   if ( jsOpen )
+      jsTimings.push( { section: jsOpen.label, startS: ( jsOpen.t - JS_T0 )/1000, ms: now - jsOpen.t } );
+   jsOpen = label ? { label: label, t: now } : null;
+   // Rewritten at every mark, so a run that hangs or times out still shows the
+   // block it was in (jsOpen) and every block before it.
+   var path = getEnvironmentVariable( "PICOPILOT_SELFTEST_JS_TIMINGS" );
+   if ( path.length > 0 )
+      File.writeTextFile( path, JSON.stringify( { done: jsTimings,
+         open: jsOpen ? { section: jsOpen.label, startS: ( jsOpen.t - JS_T0 )/1000 } : null } ) );
+}
+jsMark( "pre-phase (panel never opened)" );
+
 function pumpEvents( ms )
 {
    var t0 = Date.now();
@@ -94,6 +114,7 @@ function normXpsm( s )
       File.writeTextFile( path, JSON.stringify( out ) );
 })();
 
+jsMark( "fixture probe.nestedEval" );
 // ---- J0 fixture phases (plan Task 1) ----
 
 // The spike probe's nested EvaluateScript has done its pre-phase job; keep it
@@ -107,6 +128,7 @@ catch ( e )
    harnessError( "probe.nestedEval", e );
 }
 
+jsMark( "fixture j0.timerApply" );
 // (4b) The production ApplyProcess run from a module Timer tick -- the panel's
 // execution context -- on a top-level window: is the step recorded in History?
 // This script only pumps events while the tick runs (under --force-exit PI
@@ -147,6 +169,7 @@ catch ( e )
    harnessError( "j0.timerApply", e );
 }
 
+jsMark( "fixture hist (T-hist)" );
 // ---- Section JH (Task T-hist): an applied process lands in History, or fails loudly ----
 // The forced-10 ms repro. A process applied while PixInsight is still inside
 // ANOTHER process execution changes the pixels but records no History step.
@@ -276,6 +299,7 @@ catch ( e )
    try { checkPhase( "hist.timer", { intervalS: 0.2 } ); } catch ( e2 ) {}
 }
 
+jsMark( "fixture j0.mc" );
 // (4) ModifyCount across step / undo / redo: phase j0.mc reads it between steps.
 try
 {
@@ -296,6 +320,7 @@ catch ( e )
    harnessError( "j0.mc", e );
 }
 
+jsMark( "fixture j0.identity" );
 // (5) Created-window identity + Ruling 28 keyword inheritance.
 try
 {
@@ -356,6 +381,7 @@ catch ( e )
    harnessError( "j0.identity", e );
 }
 
+jsMark( "fixture j0.long (500 steps)" );
 // (7) A 500-step history for the read/parse cost (read in-process by J0).
 try
 {
@@ -370,6 +396,7 @@ catch ( e )
    harnessError( "j0.long", e );
 }
 
+jsMark( "fixture j0.reopen" );
 // (7b) Save + reopen entry count (Ruling 27).
 try
 {
@@ -435,6 +462,7 @@ catch ( e )
    harnessError( "j0.reopen", e );
 }
 
+jsMark( "fixture j2.hr" );
 // ---- J2 fixture phases (plan Task 3: HistoryReader) ----
 // pcHrA's history is made here, step by step; phase j2.hr reads it in between
 // (PhaseHistoryReader, J2State). Section J2 closes every window made here.
@@ -487,6 +515,7 @@ catch ( e )
    harnessError( "j2.hr", e );
 }
 
+jsMark( "fixture j2.utf8" );
 // Review fix: a step whose parameter holds non-ASCII text (U+00E9 Latin-1,
 // U+2014 BMP, the astral U+1F4F7), XML specials (< &&) and a newline, for the
 // byte-exact round trip through HistoryReader. This file stays ASCII (\u
@@ -516,6 +545,7 @@ catch ( e )
    harnessError( "j2.utf8", e );
 }
 
+jsMark( "fixture j2.long (500 steps)" );
 // A 500-step history for Section J2's read-cost check.
 try
 {
@@ -530,7 +560,15 @@ catch ( e )
    harnessError( "j2.long", e );
 }
 
-// ---- fixture phases end (add new phases above this line) ----
+// ---- fixture phases end (add new phases above this line, each block starting with jsMark( "fixture <id>" )) ----
 
-var P = new PICopilot;          // fails here if the process id isn't registered
-P.executeGlobal();              // C++ writes $PICOPILOT_SELFTEST_OUT
+jsMark( "final executeGlobal (the full self-test)" );
+try
+{
+   var P = new PICopilot;       // fails here if the process id isn't registered
+   P.executeGlobal();           // C++ writes $PICOPILOT_SELFTEST_OUT
+}
+finally
+{
+   jsMark( null );
+}

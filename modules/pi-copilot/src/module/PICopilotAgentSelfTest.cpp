@@ -15,6 +15,7 @@
 #include "Utf8.h"
 #include "ViewCapture.h"
 #include "VisionTurn.h"
+#include "SelfTestTiming.h"
 
 #include <pcl/AutoViewLock.h>
 #include <pcl/Exception.h>
@@ -269,6 +270,7 @@ bool RunAgentSelfTest( nlohmann::json& out )
    bool allOk = true;
 
    // ---- Section A0: native process execution smoke (Task 1) ---------------
+   SelfTestSectionMark( "A0 native process execution smoke" );
    // Proves the primitives ApplyProcess() is built on, from INSIDE this
    // self-test's own ExecuteGlobal() (nested process execution), and records
    // the parameter facts later sections assert.
@@ -458,6 +460,7 @@ bool RunAgentSelfTest( nlohmann::json& out )
    }
 
    // ---- Section A1: ApplyProcess (Task 2) ----------------------------------
+   SelfTestSectionMark( "A1 ApplyProcess" );
    {
       bool pmOk = false, htOk = false, scnrOk = false, errorsOk = true, busyOk = false,
            changesOk = false, enumDefaultOk = false;
@@ -669,6 +672,7 @@ bool RunAgentSelfTest( nlohmann::json& out )
    }
 
    // ---- Section A1b: String parameter character rules (Task T-pmid) -------
+   SelfTestSectionMark( "A1b String parameter character rules" );
    // PixelMath createNewImage + newImageId failed with
    // "GetParameterAllowedCharacters(): API function error": the core's copy
    // of a declared character set always fails (StringParameterRules.h).
@@ -944,6 +948,7 @@ bool RunAgentSelfTest( nlohmann::json& out )
    }
 
    // ---- Section A2: tool transport (Task 3, no network) --------------------
+   SelfTestSectionMark( "A2 tool transport" );
    // (The wire leg below is loopback only: the harness's echo server.)
    {
       bool bodyOk = false, noToolsOk = false, parseToolUseOk = false, parseToolOnlyOk = false,
@@ -1233,6 +1238,7 @@ bool RunAgentSelfTest( nlohmann::json& out )
    }
 
    // ---- Section A3: tools + system prompt (Task 4) --------------------------
+   SelfTestSectionMark( "A3 tools + system prompt" );
    {
       bool schemaOk = false, promptOk = true, htColumnsOk = false, dispatchOk = false, applyToolOk = false,
            declineOk = false, approveOk = false, advisorOk = false, noViewOk = false;
@@ -1403,6 +1409,7 @@ bool RunAgentSelfTest( nlohmann::json& out )
    }
 
    // ---- Section A4: AgentSession loop (Task 5, no network) -----------------
+   SelfTestSectionMark( "A4 AgentSession loop" );
    {
       bool loopOk = false, multiOk = false, capOk = false, stopOk = false, failFirstOk = false,
            cancelFirstOk = false, failMidOk = false, stripOk = false, invalidOk = false,
@@ -1742,6 +1749,7 @@ bool RunAgentSelfTest( nlohmann::json& out )
    }
 
    // ---- Section A5: tool loop on the wire (Task 5; loopback scripted server) --
+   SelfTestSectionMark( "A5 tool loop on the wire" );
    // Real AnthropicRequest bytes: tools + tool_use/tool_result history, with
    // non-BMP text both in the prompt and in the echoed-back assistant blocks,
    // strict-UTF-8-decoded and pairing-checked by the harness's "/agent" server.
@@ -1812,6 +1820,7 @@ bool RunAgentSelfTest( nlohmann::json& out )
    }
 
    // ---- Section A7: panel resizability probe (Task 6) ----------------------
+   SelfTestSectionMark( "A7 panel resizability probe" );
    {
       bool ok = false;
       nlohmann::json probe;
@@ -1840,6 +1849,7 @@ bool RunAgentSelfTest( nlohmann::json& out )
    }
 
    // ---- Section A7b: end-of-turn notes shown by the panel (Task 6) ----------
+   SelfTestSectionMark( "A7b end-of-turn notes shown by the panel" );
    {
       bool ok = true;
       nlohmann::json detail = nlohmann::json::array();
@@ -1926,6 +1936,7 @@ bool RunAgentSelfTest( nlohmann::json& out )
    }
 
    // ---- Section A8: turn-bound target view + per-step tool cap (final review) --
+   SelfTestSectionMark( "A8 turn-bound target view + per-step tool cap" );
    // The turn's target is the view captured when the user pressed Send, NOT
    // whatever window is active when the tool runs; a view_id other than that
    // is honoured only after get_view_context inspected it in the same turn.
@@ -2080,6 +2091,7 @@ bool RunAgentSelfTest( nlohmann::json& out )
    }
 
    // ---- Section A6: gated LIVE agent run (Task 7) --------------------------
+   SelfTestSectionMark( "A6 gated LIVE agent run" );
    // Real model, Copilot tools, the panel's own turn composition: the model
    // must call apply_process(PixelMath) and the synthetic image's median must
    // be ~halved (0.45..0.55 -- also catches a double application).
@@ -2148,6 +2160,7 @@ bool RunAgentSelfTest( nlohmann::json& out )
    }
 
    // ---- inc4 sections end ----
+   SelfTestSectionMark( nullptr );
 
    // Let the core finish the deferred teardown of the windows force-closed
    // above before control returns to --force-exit (same reasoning as the

@@ -23,6 +23,7 @@ set(MODULE_SOURCES
     PICopilotVisionSelfTest.cpp
     ViewContext.cpp
     ViewPreview.cpp
+    StepStats.cpp
     ProcessCatalog.cpp
     VisionTurn.cpp
     ViewCapture.cpp

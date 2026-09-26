@@ -13,10 +13,13 @@
 #include "PjsrRunner.h"
 #include "ProcessActivity.h"
 #include "ProcessApply.h"
+#include "StepStats.h"
 #include "Utf8.h"
 #include "ViewPreview.h"
+#include "SelfTestTiming.h"
 
 #include <pcl/AutoViewLock.h>
+#include <pcl/Bitmap.h>
 #include <pcl/Exception.h>
 #include <pcl/File.h>
 #include <pcl/FileFormat.h>
@@ -601,6 +604,7 @@ bool RunJourneySelfTest( nlohmann::json& out )
    bool allOk = true;
 
    // ---- Section J0: notification spike + platform measurements (Task 1) ----
+   SelfTestSectionMark( "J0 notification spike + platform measurements" );
    {
       nlohmann::json info = nlohmann::json::object();
       String error;
@@ -946,6 +950,7 @@ bool RunJourneySelfTest( nlohmann::json& out )
    }
 
    // ---- Section JH: an applied process lands in History, or fails loudly (Task T-hist) ----
+   SelfTestSectionMark( "JH an applied process lands in History" );
    {
       bool detectInProcessOk = false, toolErrorOk = false, noFalseAlarmOk = false, countedOk = false,
            classifierOk = false, cyclesOk = false, previewInProcessOk = false, heldReplyOk = false, kindsOk = false,
@@ -1263,6 +1268,7 @@ bool RunJourneySelfTest( nlohmann::json& out )
    }
 
    // ---- Section J1: vendored SQLite (Task 2) -------------------------------
+   SelfTestSectionMark( "J1 vendored SQLite" );
    {
       bool ok = false;
       nlohmann::json info = nlohmann::json::object();
@@ -1306,6 +1312,7 @@ bool RunJourneySelfTest( nlohmann::json& out )
    }
 
    // ---- Section J2: HistoryReader (Task 3) ---------------------------------
+   SelfTestSectionMark( "J2 HistoryReader" );
    // Pure parser/diff checks run here; every check of a LIVE history reads the
    // pcHrA fixture that test/selftest.js built at top level, through the j2.hr
    // phases (J2State), because a step executed in-process is never recorded.
@@ -1496,7 +1503,133 @@ bool RunJourneySelfTest( nlohmann::json& out )
       allOk = allOk && ok;
    }
 
+   // ---- Section J3: StepStats (Task 4) -------------------------------------
+   SelfTestSectionMark( "J3 StepStats" );
+   {
+      nlohmann::json d = nlohmann::json::object();
+      bool noiseOk = false, rescaleOk = false, rgbOk = false, u16Ok = false, thumbOk = false, busyOk = false,
+           previewOk = false, budgetOk = false;
+      String error;
+      try
+      {
+         // (a) The estimator on white Gaussian noise of known sigma (pure).
+         {
+            Image img( 1024, 1024, ColorSpace::Gray );
+            JFillNoise( img, 0.2, 0.01, 7 );
+            const double s = LaplacianNoiseSigma( img, 0 );
+            d["noise1024"] = s;
+            noiseOk = std::fabs( s - 0.01 )/0.01 < 0.05;
+         }
+         // (b) 4096^2 -> k = 2: noise is rescaled to full resolution by sqrt(samples per block).
+         {
+            JWindow w( "pcSsBig", 4096, 4096, 1, 0 );
+            View v = w.MainView();
+            {
+               AutoViewLock lock( v );
+               ImageVariant iv = v.Image();
+               JFillNoise( static_cast<Image&>( *iv ), 0.2, 0.02, 11 );
+            }
+            const StepStatsResult r = ComputeStepStats( v, String() );
+            d["big"] = { { "ok", r.ok }, { "error", U8( r.error ) }, { "k", r.blockFactor }, { "n", r.samplesPerBlock },
+                         { "median", r.ok ? r.channels[0].median : -1 }, { "noise", r.ok ? r.channels[0].noise : -1 } };
+            rescaleOk = r.ok && r.blockFactor == 2 && r.channels.size() == 1
+                     && r.samplesPerBlock == 2*((2 + PICopilotJourneyStatsRowStride - 1)/PICopilotJourneyStatsRowStride)
+                     && std::fabs( r.channels[0].median - 0.2 ) < 0.001
+                     && std::fabs( r.channels[0].noise - 0.02 )/0.02 < 0.07 && r.thumbnailPath.IsEmpty();
+         }
+         // (c) RGB + alpha: three nominal channels, per-channel levels.
+         {
+            ImageWindow w( 256, 256, 4, 32, true, true, true, "pcSsRgb" );
+            View v = w.MainView();
+            {
+               AutoViewLock lock( v );
+               ImageVariant iv = v.Image();
+               Image& img = static_cast<Image&>( *iv );
+               for ( int c = 0; c < 4; ++c )
+                  img.Fill( float( c < 3 ? 0.1*(c + 1) : 1.0 ), Rect( 0 ), c, c );
+            }
+            const StepStatsResult r = ComputeStepStats( v, String() );
+            d["rgb"] = { { "ok", r.ok }, { "channels", r.channels.size() } };
+            rgbOk = r.ok && r.channels.size() == 3 && std::fabs( r.channels[2].median - 0.3 ) < 1e-6
+                 && std::fabs( r.channels[0].mean - 0.1 ) < 1e-6 && r.channels[1].max <= 0.2 + 1e-6;
+            w.ForceClose();
+         }
+         // (d) 16-bit integer data is normalized to [0,1].
+         {
+            ImageWindow w( 128, 128, 1, 16, false, false, true, "pcSsU16" );
+            View v = w.MainView();
+            {
+               AutoViewLock lock( v );
+               ImageVariant iv = v.Image();
+               static_cast<UInt16Image&>( *iv ).Fill( uint16( 32768 ) );
+            }
+            const StepStatsResult r = ComputeStepStats( v, String() );
+            u16Ok = r.ok && std::fabs( r.channels[0].median - 32768.0/65535 ) < 1e-4;
+            d["u16"] = r.ok ? r.channels[0].median : -1.0;
+            w.ForceClose();
+         }
+         // (e) Thumbnail: a real JPEG, long edge 256, in a directory that did not exist yet.
+         {
+            JTempDir dir( "picopilot-ss-" );
+            JWindow w( "pcSsThumb", 1200, 800, 3, 0.25 );
+            const String path = dir.Path() + "/thumbs/17.jpg";
+            const StepStatsResult r = ComputeStepStats( w.MainView(), path );
+            bool jpeg = false;
+            int bw = 0, bh = 0;
+            if ( File::Exists( path ) )
+            {
+               const ByteArray b = File::ReadFile( path );
+               jpeg = b.Length() > 4 && b[0] == 0xFF && b[1] == 0xD8;
+               Bitmap bmp( path );
+               bw = bmp.Width();
+               bh = bmp.Height();
+            }
+            d["thumb"] = { { "path", U8( r.thumbnailPath ) }, { "error", U8( r.thumbnailError ) }, { "w", bw }, { "h", bh } };
+            thumbOk = r.ok && r.thumbnailPath == path && r.thumbnailError.IsEmpty() && jpeg
+                   && std::max( bw, bh ) == PICopilotJourneyThumbEdge && bh > 0;
+         }
+         // (f) Busy view: refused at once, never waited on.
+         {
+            JWindow w( "pcSsBusy", 64, 64, 1, 0.5 );
+            View v = w.MainView();
+            const jclock::time_point t0 = jclock::now();
+            StepStatsResult r;
+            {
+               AutoViewLock lock( v );
+               r = ComputeStepStats( v, String() );
+            }
+            const double ms = MsSince( t0 );
+            d["busy"] = { { "error", U8( r.error ) }, { "ms", ms } };
+            busyOk = !r.ok && r.error.Contains( "busy" ) && ms < 100;
+         }
+         // (g) The preview still works on the extracted block average.
+         {
+            JWindow w( "pcSsPrev", 4096, 2000, 3, 0.2 );
+            const ViewPreviewResult p = RenderViewPreview( w.MainView() );
+            previewOk = p.ok && p.blockFactor == 2 && std::max( p.width, p.height ) <= PICopilotPreviewMaxEdge;
+            d["preview"] = { { "ok", p.ok }, { "k", p.blockFactor }, { "error", U8( p.error ) } };
+         }
+         // (h) 60 MP RGB float with a thumbnail within the step budget (spec §9).
+         {
+            JTempDir dir( "picopilot-ss60-" );
+            JWindow w( "pcSs60", 9504, 6336, 3, 0.1 );
+            const StepStatsResult r = ComputeStepStats( w.MainView(), dir.Path() + "/t.jpg" );
+            d["mp60"] = { { "ok", r.ok }, { "ms", r.elapsedMs }, { "budgetMs", PICopilotJourneyStepBudgetMs }, { "stride", r.rowStride } };
+            budgetOk = r.ok && r.thumbnailError.IsEmpty() && r.elapsedMs <= PICopilotJourneyStepBudgetMs;
+         }
+      }
+      catch ( const pcl::Exception& x ) { error = x.Message(); }
+      catch ( const std::exception& x ) { error = String( x.what() ); }
+      catch ( ... )                     { error = "unknown exception"; }
+      const bool ok = noiseOk && rescaleOk && rgbOk && u16Ok && thumbOk && busyOk && previewOk && budgetOk;
+      out["stepStatsDetail"] = d;
+      out["stepStatsError"] = U8( error );
+      out["stepStatsOk"] = ok;
+      allOk = allOk && ok;
+   }
+
    // ---- journey sections end ----
+   SelfTestSectionMark( nullptr );
 
    for ( int i = 0; i < 4; ++i )
    {
