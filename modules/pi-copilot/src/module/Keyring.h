@@ -30,6 +30,14 @@ struct KeyringId
 // not reproducible headlessly -- it needs a locked keyring on a live
 // desktop), so found == false may also mean a locked keyring: callers word
 // it that way (KeyStore::NoKeyNote()).
+//
+// A known transient (keyring-flake-investigation.md, T-keyring): ~1/256
+// secret-service sessions derive a mismatched key (gnutls strips a
+// leading-zero DH shared-secret byte; KDE ksecretd pads it). Each
+// secret-tool call opens its own session, so a fresh process is an
+// independent chance. KeyringStore/KeyringLookup retry this specific,
+// unambiguous signature internally (bounded); callers never see it unless
+// every attempt fails.
 struct KeyringResult
 {
    bool      ok = false;
@@ -37,6 +45,18 @@ struct KeyringResult
    bool      notInstalled = false;
    IsoString secret;
    String    error;
+};
+
+// Existence-only answer from `secret-tool search` (no --unlock, so it never
+// prompts and skips locked items). secret-tool search prints the secret in
+// plaintext when it finds an item, so this never carries it -- exists is
+// the only thing callers can learn.
+struct KeyringExistsResult
+{
+   bool   ok = false;
+   bool   exists = false;
+   bool   notInstalled = false;
+   String error;
 };
 
 // How long a keyring call may take, including the desktop's unlock prompt.
@@ -49,6 +69,11 @@ constexpr int PICopilotKeyringTimeoutMs = 60000;
 KeyringResult KeyringLookup( const KeyringId& id );
 KeyringResult KeyringStore( const KeyringId& id, const String& label, const IsoString& secret );
 KeyringResult KeyringClear( const KeyringId& id );
+
+// `secret-tool search` for the same attributes, without --unlock. Used
+// internally by KeyringLookup to disambiguate a silent miss from the
+// session-mismatch transient; exposed for tests.
+KeyringExistsResult KeyringSearchExists( const KeyringId& id );
 
 // A keyring call that is still running after this long (typically the
 // desktop's unlock prompt) is announced through the current wait notifier.
