@@ -19,6 +19,8 @@
 #include <pcl/Sizer.h>
 #include <pcl/TextBox.h>
 #include <pcl/Timer.h>
+
+#include <chrono>
 #include <pcl/ToolButton.h>
 
 #include <nlohmann/json.hpp>
@@ -46,8 +48,9 @@ public:
    // contract it must declare itself a non-generator.
    bool IsInstanceGenerator() const override;
 
-   // Image notifications (plan Task 1: the spike probe; Task 7: JourneyService).
-   // Handlers only queue; nothing is read here (global constraint).
+   // Image notifications (plan Task 1: the spike probe; Task 7: JourneyService;
+   // Task T-hist: every one is process activity, ProcessActivity.h).
+   // Handlers only queue / time-stamp; nothing is read here (global constraint).
    bool WantsImageNotifications() const override;
    void ImageCreated( const View& view ) override;
    void ImageUpdated( const View& view ) override;
@@ -55,6 +58,8 @@ public:
    void ImageDeleted( const View& view ) override;
    void ImageSaved( const View& view ) override;
    void ImageFocused( const View& view ) override;
+   void ImageLocked( const View& view ) override;
+   void ImageUnlocked( const View& view ) override;
 
    // Wraps arbitrary text for TextBox rich text as literal (<raw>) text.
    // Unlike TextBox::PlainText(), text containing its own "</raw>" (any
@@ -123,6 +128,22 @@ private:
 
    // The current request's reply has started rendering live (streamed text).
    bool m_replyShown = false;
+
+   // Task T-hist PREVENT: a finished reply whose image-changing tools wait
+   // for PixInsight to be idle (ProcessActivity.h). e_Poll_Timer keeps
+   // ticking while held; Stop releases it (the tools then do not run).
+   bool                                  m_resultHeld = false;
+   AnthropicResult                       m_heldResult;
+   bool                                  m_heldPartialReplyCut = false;
+   std::chrono::steady_clock::time_point m_heldSince;
+   bool                                  m_busyWaitNoted = false;
+
+   // A user message is being worked on: a request in flight, a reply held
+   // for idle, or tools running.
+   bool TurnInProgress() const
+   {
+      return m_thread || m_handlingResult || m_resultHeld;
+   }
 
    // Appends streamed text received since the last call (UI thread).
    void DrainStreamedText();

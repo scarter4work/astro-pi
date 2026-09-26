@@ -147,6 +147,65 @@ catch ( e )
    harnessError( "j0.timerApply", e );
 }
 
+// ---- Section JH (Task T-hist): an applied process lands in History, or fails loudly ----
+// The forced-10 ms repro. A process applied while PixInsight is still inside
+// ANOTHER process execution changes the pixels but records no History step.
+// Every cycle: a top-level window at 0.8 (one prior step), then the probe's
+// module Timer (at 10 ms) applies PixelMath $T*0.5 through the production
+// ApplyProcess:
+//   tail   -- armed by checkPhase(): the first tick lands while PixInsight is
+//             still finishing that executeGlobal() (measured 16/16 unrecorded);
+//   during -- 80 ms after arming, while a PixelMath runs on a 4000x4000 view
+//             (measured 13/13 unrecorded);
+// ungated applies at once (the DETECT path: must be a loud error, never ok);
+// gated waits for the tool loop's PREVENT gate (must land in History).
+try
+{
+   ( function ()
+   {
+      checkPhase( "hist.timer", { intervalS: 0.01 } );
+      var big = new ImageWindow( 4000, 4000, 3, 32, true, true, "pcHistBig" );
+      big.show();
+      var plan = [];
+      [ [ "tail", false, 5 ], [ "tail", true, 5 ], [ "during", false, 3 ], [ "during", true, 3 ] ].forEach(
+         function( k ) { for ( var i = 0; i < k[2]; ++i ) plan.push( { kind: k[0], gated: k[1], i: i } ); } );
+      plan.forEach( function( c )
+      {
+         var id = "pcHist_" + c.kind + ( c.gated ? "G" : "U" ) + c.i;
+         var w = new ImageWindow( 32, 32, 1, 32, true, false, id );
+         w.show();
+         var v = w.mainView;
+         var p0 = new PixelMath; p0.expression = "0.8"; p0.executeOn( v );
+         pumpEvents( 150 );
+         var lengthBefore = v.processing.length, pxBefore = v.image.sample( 0, 0 );
+         checkPhase( "hist.arm", { id: id, delayS: c.kind == "tail" ? 0 : 0.08, gated: c.gated } );
+         if ( c.kind == "during" )
+         {
+            var ph = new PixelMath;
+            ph.expression = "sin(cos(sin(cos(sin(cos($T+0.1))))))*exp(-$T)+ln(1+$T)*atan($T)";
+            ph.executeOn( big.mainView );
+         }
+         var t0 = Date.now();
+         while ( v.image.sample( 0, 0 ) == pxBefore && Date.now() - t0 < 5000 ) { processEvents(); msleep( 10 ); }
+         pumpEvents( 100 );
+         var pr = v.processing, last = pr.length > 0 ? pr.at( pr.length - 1 ) : null;
+         var src = last ? last.toSource( "XPSM 1.0" ) : "";
+         checkPhase( "hist.check", {
+            id: id, kind: c.kind, gated: c.gated, lengthBefore: lengthBefore, lengthAfter: pr.length,
+            pxBefore: pxBefore, pxAfter: v.image.sample( 0, 0 ), lastProcessId: last ? last.processId() : "",
+            lastHasExpression: src.indexOf( "<parameter id=\"expression\">$T*0.5</parameter>" ) >= 0 } );
+         w.forceClose();
+      } );
+      big.forceClose();
+      checkPhase( "hist.timer", { intervalS: 0.2 } );
+   } )();
+}
+catch ( e )
+{
+   harnessError( "hist", e );
+   try { checkPhase( "hist.timer", { intervalS: 0.2 } ); } catch ( e2 ) {}
+}
+
 // (4) ModifyCount across step / undo / redo: phase j0.mc reads it between steps.
 try
 {

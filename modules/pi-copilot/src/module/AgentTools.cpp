@@ -313,7 +313,13 @@ ToolOutcome ApplyProcessTool( const nlohmann::json& in, const ToolContext& ctx, 
 
    const ApplyProcessResult ar = ApplyProcess( IsoString( pid.c_str() ), params, tables, target, &pinned );
    if ( !ar.ok )
-      return Fail( what, ar.error );
+   {
+      ToolOutcome o = Fail( what, ar.error );
+      // Task T-hist DETECT: the image WAS changed, outside History. An error,
+      // never "ok" -- but the turn-end notes must still know an image changed.
+      o.mutated = ar.unrecordedChange;
+      return o;
+   }
 
    nlohmann::json summary = {
       { "result", "ok" },
@@ -831,6 +837,20 @@ ToolOutcome ExecuteToolUncapped( const ToolCall& call, const ToolContext& ctx )
 }
 
 } // namespace
+
+bool ResponseCallsImageChangingTool( const nlohmann::json& contentBlocks )
+{
+   if ( !contentBlocks.is_array() )
+      return false;
+   for ( const nlohmann::json& b : contentBlocks )
+      if ( b.is_object() && b.value( "type", std::string() ) == "tool_use" )
+      {
+         const nlohmann::json name = b.value( "name", nlohmann::json() );
+         if ( name.is_string() && (name == "apply_process" || name == "run_global_process" || name == "run_pjsr") )
+            return true;
+      }
+   return false;
+}
 
 ToolOutcome ExecuteTool( const ToolCall& call, const ToolContext& ctx )
 {

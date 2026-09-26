@@ -37,6 +37,8 @@ namespace
 constexpr size_type kScalarRow = 0;
 
 InstanceBuildObserver g_instanceObserver;   // self-test only
+bool g_inProcessAppliesExpected = false;     // self-test only (SetInProcessAppliesExpectedForSelfTest)
+int  g_inProcessUnrecorded = 0;              // self-test only
 
 void NoteInstanceBuild( const IsoString& processId, const char* stage )
 {
@@ -517,6 +519,11 @@ ApplyProcessResult ApplyProcess( const IsoString& processId, const nlohmann::jso
       if ( ViewBusy( view ) )
          throw ApplyError{ BusyMessage( r.viewId ) };
 
+      // DETECT (step 7): what must change if the step is recorded.
+      const bool expectHistoryStep = view.IsMainView() && instance.IsHistoryUpdater( view );
+      ImageWindow window = view.Window();
+      const size_type modifyCountBefore = expectHistoryStep ? window.ModifyCount() : 0;
+
       const auto t0 = std::chrono::steady_clock::now();
       bool ran = false;
       try
@@ -542,14 +549,34 @@ ApplyProcessResult ApplyProcess( const IsoString& processId, const nlohmann::jso
                              "(the reason is in the Process Console). Do not simply retry: if the user may have "
                              "aborted it, ask them first; otherwise check the values you set: " + changes };
       }
+      if ( expectHistoryStep && window.ModifyCount() <= modifyCountBefore )
+      {
+         if ( g_inProcessAppliesExpected )
+            ++g_inProcessUnrecorded;   // self-test's own executeGlobal(): never recorded (see ProcessApply.h)
+         else
+         {
+            r.unrecordedChange = true;
+            String changes = DescribeParameterChanges( parameters, tableParameters, 400 );
+            changes.ReplaceString( "\n", "; " );
+            throw ApplyError{ r.processId + " CHANGED " + r.viewId + " but PixInsight did NOT record it in the "
+                              "image's History (PixInsight was still busy executing another process), so Edit > Undo "
+                              "cannot revert it. Tell the user this plainly now: the image was modified outside "
+                              "History; the previous state can only be recovered from a saved copy or by redoing "
+                              "the earlier steps. Do not apply anything else to " + r.viewId + " until the user "
+                              "decides. What ran: " + r.processId + " with " + changes };
+         }
+      }
       r.ok = true;
    }
    catch ( const ApplyError& e )
    {
       r.ok = false;
       r.error = e.message;
-      r.parametersSet = nlohmann::json::object();
-      r.pinnedSet = nlohmann::json::object();
+      if ( !r.unrecordedChange )   // what DID change the image stays reported
+      {
+         r.parametersSet = nlohmann::json::object();
+         r.pinnedSet = nlohmann::json::object();
+      }
    }
    catch ( const pcl::Exception& x )
    {
@@ -792,6 +819,21 @@ GlobalRunResult RunGlobalProcess( const IsoString& processId, const nlohmann::js
 void SetInstanceBuildObserverForSelfTest( InstanceBuildObserver observer )
 {
    g_instanceObserver = std::move( observer );
+}
+
+void SetInProcessAppliesExpectedForSelfTest( bool on )
+{
+   g_inProcessAppliesExpected = on;
+}
+
+bool InProcessAppliesExpectedForSelfTest()
+{
+   return g_inProcessAppliesExpected;
+}
+
+int InProcessUnrecordedAppliesForSelfTest()
+{
+   return g_inProcessUnrecorded;
 }
 
 String DescribeParameterChanges( const nlohmann::json& parameters, const nlohmann::json& tableParameters,

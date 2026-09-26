@@ -11,6 +11,7 @@
 #include "ModelCatalog.h"
 #include "PICopilotModule.h"
 #include "PanelPlacement.h"
+#include "ProcessActivity.h"
 #include "ScriptConfirmDialog.h"
 #include "SystemPrompt.h"
 #include "TurnEndNotes.h"
@@ -118,32 +119,50 @@ bool PICopilotInterface::WantsImageNotifications() const
 
 void PICopilotInterface::ImageCreated( const View& view )
 {
+   NoteProcessActivity();
    JourneySpikeNote( "created", view );
 }
 
 void PICopilotInterface::ImageUpdated( const View& view )
 {
+   NoteProcessActivity();
    JourneySpikeNote( "updated", view );
 }
 
 void PICopilotInterface::ImageRenamed( const View& view )
 {
+   NoteProcessActivity();
    JourneySpikeNote( "renamed", view );
 }
 
 void PICopilotInterface::ImageDeleted( const View& view )
 {
+   NoteProcessActivity();
    JourneySpikeNote( "deleted", view );
 }
 
 void PICopilotInterface::ImageSaved( const View& view )
 {
+   NoteProcessActivity();
    JourneySpikeNote( "saved", view );
 }
 
 void PICopilotInterface::ImageFocused( const View& view )
 {
+   NoteProcessActivity();
    JourneySpikeNote( "focused", view );
+}
+
+void PICopilotInterface::ImageLocked( const View& view )
+{
+   NoteProcessActivity();
+   JourneySpikeNote( "locked", view );
+}
+
+void PICopilotInterface::ImageUnlocked( const View& view )
+{
+   NoteProcessActivity();
+   JourneySpikeNote( "unlocked", view );
 }
 
 bool PICopilotInterface::Launch( const MetaProcess&, const ProcessImplementation*, bool& dynamic, unsigned& )
@@ -254,7 +273,7 @@ void PICopilotInterface::SendCurrentInput()
 {
    // One user message in flight at a time -- including while tools run
    // (processes pump events, so this can be reached re-entrantly).
-   if ( m_thread || m_handlingResult )
+   if ( TurnInProgress() )
       return;
 
    String prompt = GUI->ChatInput.Text().Trimmed();
@@ -511,7 +530,7 @@ void PICopilotInterface::e_Config_Click( Button&, bool )
    // (Never while a message runs: the Send button is its busy caption then.)
    ConfigOutcome o;
    {
-      const bool idle = !m_thread && !m_handlingResult;
+      const bool idle = !TurnInProgress();
       KeyringWaitScope wait( [this, idle]( bool waiting )
       {
          if ( idle )
@@ -541,44 +560,83 @@ void PICopilotInterface::DrainStreamedText()
 
 void PICopilotInterface::e_Poll_Timer( Timer& )
 {
-   if ( !m_thread )
+   if ( !m_resultHeld )
    {
-      GUI->Poll_Timer.Stop();
-      return;
-   }
-   // Streamed text arrives while the request runs: show it as it comes.
-   DrainStreamedText();
-   // Wait until the worker has fully returned from Run(), so destroying
-   // it below can never race its exit.
-   if ( m_thread->IsActive() )
-      return;
+      if ( !m_thread )
+      {
+         GUI->Poll_Timer.Stop();
+         return;
+      }
+      // Streamed text arrives while the request runs: show it as it comes.
+      DrainStreamedText();
+      // Wait until the worker has fully returned from Run(), so destroying
+      // it below can never race its exit.
+      if ( m_thread->IsActive() )
+         return;
 
-   AnthropicResult r;
-   if ( !m_thread->TryTakeResult( r ) )
-   {
-      // Unreachable by construction (Run() always stores a result), but
-      // never swallow it silently.
-      r = AnthropicResult();
-      r.errorKind = RequestErrorKind::Internal;
-      r.error = "worker thread ended without a result";
+      AnthropicResult r;
+      if ( !m_thread->TryTakeResult( r ) )
+      {
+         // Unreachable by construction (Run() always stores a result), but
+         // never swallow it silently.
+         r = AnthropicResult();
+         r.errorKind = RequestErrorKind::Internal;
+         r.error = "worker thread ended without a result";
+      }
+      DrainStreamedText();   // whatever arrived after the last tick
+      m_thread.Destroy();
+
+      // The truncation note is display-only; history keeps the model's own text.
+      // A live reply that broke off (failure or Stop) is said so at turn end
+      // (DescribeTurnEnd, partialReplyCut).
+      m_heldPartialReplyCut = m_replyShown && !r.ok;
+      if ( m_replyShown )
+      {
+         // The reply was rendered live; close it.
+         AppendToLog( (r.ok && r.truncated ? PlainText( " [truncated: max_tokens]" ) : String()) + "\n\n" );
+         m_replyShown = false;
+      }
+      else if ( r.ok && !r.text.IsEmpty() )   // not streamed, or no delta arrived before the end
+         AppendToLog( "<b>Copilot:</b> " + PlainText( r.truncated ? r.text + " [truncated: max_tokens]" : r.text ) + "\n\n" );
+
+      m_heldResult = std::move( r );
+      m_resultHeld = true;
+      m_heldSince = std::chrono::steady_clock::now();
+      m_busyWaitNoted = false;
    }
-   DrainStreamedText();   // whatever arrived after the last tick
-   m_thread.Destroy();
+
+   // Task T-hist PREVENT: a process applied while PixInsight is still
+   // executing another one changes the image WITHOUT a History step. A step
+   // that can change images waits (this timer keeps ticking) until PixInsight
+   // is idle; the model request is not held back, only the tools. Stop ends
+   // the wait at once (the tools then report "not executed").
+   if ( !m_stopRequested && m_heldResult.ok && ResponseCallsImageChangingTool( m_heldResult.contentBlocks ) )
+   {
+      const ProcessActivityState activity = CurrentProcessActivity();
+      if ( activity.busy )
+      {
+         const double waited = std::chrono::duration<double>( std::chrono::steady_clock::now() - m_heldSince ).count();
+         if ( !m_busyWaitNoted && waited >= PICopilotBusyWaitNoteSeconds )
+         {
+            AppendToLog( PlainText( String::UTF8ToUTF16( "(waiting for PixInsight to finish \xE2\x80\x94 " )
+                                    + activity.reason
+                                    + String::UTF8ToUTF16( " \xE2\x80\x94 before PI Copilot changes an image, so "
+                                                           "the change is recorded in History and can be undone. "
+                                                           "Press Stop to cancel.)" ) ) + "\n\n" );
+            m_busyWaitNoted = true;
+         }
+         return;
+      }
+      if ( m_busyWaitNoted )
+         AppendToLog( PlainText( "(PixInsight is idle again; continuing.)" ) + "\n\n" );
+   }
+
+   AnthropicResult r = std::move( m_heldResult );
+   const bool partialReplyCut = m_heldPartialReplyCut;
+   m_heldResult = AnthropicResult();
+   m_resultHeld = false;
    // Tools may run for seconds and pump events: never re-enter this handler.
    GUI->Poll_Timer.Stop();
-
-   // The truncation note is display-only; history keeps the model's own text.
-   // A live reply that broke off (failure or Stop) is said so at turn end
-   // (DescribeTurnEnd, partialReplyCut).
-   const bool partialReplyCut = m_replyShown && !r.ok;
-   if ( m_replyShown )
-   {
-      // The reply was rendered live; close it.
-      AppendToLog( (r.ok && r.truncated ? PlainText( " [truncated: max_tokens]" ) : String()) + "\n\n" );
-      m_replyShown = false;
-   }
-   else if ( r.ok && !r.text.IsEmpty() )   // not streamed, or no delta arrived before the end
-      AppendToLog( "<b>Copilot:</b> " + PlainText( r.truncated ? r.text + " [truncated: max_tokens]" : r.text ) + "\n\n" );
 
    m_handlingResult = true;
    AgentStep s;
@@ -606,7 +664,7 @@ void PICopilotInterface::e_Poll_Timer( Timer& )
 
 void PICopilotInterface::e_Stop_Click( Button&, bool )
 {
-   if ( !m_thread && !m_handlingResult )
+   if ( !TurnInProgress() )
       return;
    // A running process is never interrupted: the loop checks this flag
    // between tools; the HTTP request in flight (if any) is cancelled.
@@ -620,7 +678,7 @@ void PICopilotInterface::e_Clear_Click( Button&, bool )
 {
    // Never while a message is being worked on (the button is disabled then;
    // this also covers a re-entrant click while a process pumps events).
-   if ( m_thread || m_handlingResult )
+   if ( TurnInProgress() )
       return;
    m_session.Clear();
    m_lastModel.Clear();   // name the model again in the new chat
