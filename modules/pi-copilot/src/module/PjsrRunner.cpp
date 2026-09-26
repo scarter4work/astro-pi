@@ -4,6 +4,7 @@
 #include "PjsrRunner.h"
 #include "EvalGuard.h"
 #include "PICopilotModule.h"
+#include "TextSafety.h"
 #include "Utf8.h"
 
 #include <pcl/ByteArray.h>
@@ -136,24 +137,7 @@ String ScriptConsoleText( const String& log )
    return out;
 }
 
-// Unicode general category Cf (format characters), Unicode 15.1.
-struct CpRange { uint32 first, last; };
-const CpRange kFormatChars[] =
-{
-   { 0x00AD, 0x00AD }, { 0x0600, 0x0605 }, { 0x061C, 0x061C }, { 0x06DD, 0x06DD }, { 0x070F, 0x070F },
-   { 0x0890, 0x0891 }, { 0x08E2, 0x08E2 }, { 0x180E, 0x180E }, { 0x200B, 0x200F }, { 0x202A, 0x202E },
-   { 0x2060, 0x2064 }, { 0x2066, 0x206F }, { 0xFEFF, 0xFEFF }, { 0xFFF9, 0xFFFB }, { 0x110BD, 0x110BD },
-   { 0x110CD, 0x110CD }, { 0x13430, 0x1343F }, { 0x1BCA0, 0x1BCA3 }, { 0x1D173, 0x1D17A }, { 0xE0001, 0xE0001 },
-   { 0xE0020, 0xE007F }
-};
-
-bool IsFormatChar( uint32 c )
-{
-   for ( const CpRange& r : kFormatChars )
-      if ( c >= r.first && c <= r.last )
-         return true;
-   return false;
-}
+// IsFormatChar(): TextSafety.h (shared with message display).
 
 // What kind of refused character c is; nullptr when it is allowed.
 const char* RefusedKind( uint32 c )

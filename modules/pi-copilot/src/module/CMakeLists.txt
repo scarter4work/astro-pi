@@ -47,6 +47,7 @@ set(MODULE_SOURCES
     HistoryReader.cpp
     ProcessActivity.cpp
     StringParameterRules.cpp
+    TextSafety.cpp
 )
 
 add_library(PICopilot SHARED ${MODULE_SOURCES})
