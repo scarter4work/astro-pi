@@ -1976,7 +1976,12 @@ bool RunInc5SelfTest( nlohmann::json& out )
             return String( path.c_str() );
          };
          KeyringId slow = id;
-         slow.program = script( "slow", "sleep 1\nexit 1" );
+         // Only the "lookup" call sleeps: a silent miss (exit 1, empty
+         // stdout+stderr, exactly what this produces) now makes KeyringLookup
+         // (T-keyring) issue one disambiguating `secret-tool search` call
+         // too, and that second call must stay fast so this test still
+         // measures exactly one slow call / one wait-notifier cycle.
+         slow.program = script( "slow", "if [ \"$1\" = lookup ]; then sleep 1; fi\nexit 1" );
          KeyringId fast = id;
          fast.program = script( "fast", "exit 1" );
          std::vector<int> events;
@@ -4184,6 +4189,233 @@ bool RunInc5SelfTest( nlohmann::json& out )
       out["reviewE4422c9Detail"] = detail;
       out["reviewE4422c9Error"] = U8( error );
       out["reviewE4422c9Ok"] = ok;
+      allOk = allOk && ok;
+   }
+
+   // ---- Section B13: T-keyring -- secret-tool session-mismatch retry -----------
+   // Root cause (keyring-flake-investigation.md): ~1/256 secret-service sessions
+   // derive mismatched keys (gnutls strips a leading-zero DH shared-secret byte;
+   // KDE ksecretd pads it). Each secret-tool call opens its own session, so a
+   // fresh process = a fresh, independent chance. store signature: exit 1,
+   // stderr "Can't find session /org/freedesktop/secrets/session/N". lookup
+   // signature: exit 1, empty stdout AND empty stderr (indistinguishable from a
+   // genuine "no such item" without a disambiguating search).
+   SelfTestSectionMark( "B13 secret-tool session-mismatch retry (T-keyring)" );
+   {
+      bool storeRetryOk = false, storeOtherOk = false, lookupRetryOk = false, lookupGenuineMissOk = false,
+           storeBoundOk = false;
+      nlohmann::json detail = nlohmann::json::object();
+      String error;
+      std::string scriptDir;
+      const IsoString sk = "PICopilot/SelfTestApiKeyKR";
+      try
+      {
+         scriptDir = std::string( File::SystemTempDirectory().ToUTF8().c_str() )
+                   + "/picopilot-kr-" + std::to_string( std::chrono::steady_clock::now().time_since_epoch().count() );
+         std::filesystem::create_directories( scriptDir );
+         auto script = [&]( const char* name, const std::string& body ) {
+            const std::string path = scriptDir + "/" + name;
+            std::ofstream( path ) << "#!/bin/sh\n" << body;
+            std::filesystem::permissions( path, std::filesystem::perms::owner_all );
+            return String( path.c_str() );
+         };
+         auto counter = [&]( const char* name ) -> int {
+            std::ifstream f( scriptDir + "/" + name );
+            int n = 0; f >> n; return n;
+         };
+         auto newId = [&]( const char* account ) {
+            KeyringId id;
+            id.service = "picopilot-selftest";
+            id.account = String( account ) + String().Format( "-%u",
+               unsigned( std::chrono::steady_clock::now().time_since_epoch().count() & 0xFFFFFF ) );
+            return id;
+         };
+
+         // (a) store fails once with the exact signature, then succeeds: the
+         // retry is transparent -- KeyStore::Save reports Keyring, no note, no
+         // Settings copy. (The fake also answers "lookup" for StoreVerified's
+         // read-back.) RED on current code: no retry, immediate fallback.
+         {
+            KeyringId id = newId( "kr-a" );
+            id.program = script( "a", std::string(
+               "cmd=\"$1\"\n"
+               "if [ \"$cmd\" = store ]; then\n"
+               "  cat >/dev/null\n"
+               "  n=$(( $(cat '" + scriptDir + "/count_a' 2>/dev/null || echo 0) + 1 ))\n"
+               "  echo \"$n\" > '" + scriptDir + "/count_a'\n"
+               "  if [ \"$n\" -eq 1 ]; then\n"
+               "    echo \"secret-tool: Can't find session /org/freedesktop/secrets/session/7\" 1>&2\n"
+               "    exit 1\n"
+               "  fi\n"
+               "  exit 0\n"
+               "elif [ \"$cmd\" = lookup ]; then\n"
+               "  printf '%s' 'sk-ant-selftest-KRA'\n"
+               "  exit 0\n"
+               "fi\n"
+               "exit 1\n" ) );
+            KeyStore::SetKeyringForSelfTest( id, sk );
+            Settings::Remove( sk );
+            const KeyStore::State saved = KeyStore::Save( "sk-ant-selftest-KRA" );
+            String settingsCopy;
+            Settings::Read( sk, settingsCopy );
+            const int storeCalls = counter( "count_a" );
+            detail["a"] = { { "where", int( saved.where ) }, { "note", U8( saved.note ) }, { "storeCalls", storeCalls } };
+            storeRetryOk = saved.where == KeyStore::Where::Keyring && saved.note.IsEmpty()
+                        && settingsCopy.IsEmpty() && storeCalls == 2;
+            KeyStore::Clear();
+            Settings::Remove( sk );
+         }
+
+         // (b) store fails with a different (non-signature) error: no retry,
+         // today's visible fallback -- and the note carries the real stderr
+         // text, including non-ASCII, decoded correctly (not Latin-1 mangled).
+         // RED on current code: Detail() widens stderr bytes as Latin-1, so
+         // "réinitialisée" comes back mojibake.
+         {
+            KeyringId id = newId( "kr-b" );
+            const std::string nonAscii = "connexion r\xC3\xA9initialis\xC3\xA9" "e"; // "connexion réinitialisée"
+            id.program = script( "b", std::string(
+               "if [ \"$1\" = store ]; then\n"
+               "  cat >/dev/null\n"
+               "  n=$(( $(cat '" + scriptDir + "/count_b' 2>/dev/null || echo 0) + 1 ))\n"
+               "  echo \"$n\" > '" + scriptDir + "/count_b'\n"
+               "  echo \"secret-tool: org.freedesktop.DBus.Error.NoReply: " + nonAscii + "\" 1>&2\n"
+               "  exit 1\n"
+               "fi\n"
+               "exit 1\n" ) );
+            KeyStore::SetKeyringForSelfTest( id, sk );
+            Settings::Remove( sk );
+            const KeyStore::State fb = KeyStore::Save( "sk-ant-selftest-KRB" );
+            String plain;
+            Settings::Read( sk, plain );
+            const int storeCalls = counter( "count_b" );
+            const String expectFrag = FromU8( nonAscii );
+            detail["b"] = { { "where", int( fb.where ) }, { "note", U8( fb.note ) }, { "storeCalls", storeCalls } };
+            storeOtherOk = fb.where == KeyStore::Where::Settings && plain == "sk-ant-selftest-KRB"
+                        && fb.note.Contains( "keyring could not be used" )
+                        && fb.note.Contains( expectFrag )
+                        && !fb.note.Contains( char16_type( 0xFFFD ) )
+                        && storeCalls == 1;
+            KeyStore::Clear();
+            Settings::Remove( sk );
+         }
+
+         // (c) lookup silent-miss once, then `secret-tool search` (no --unlock,
+         // never prompts) shows the item exists: the lookup is retried and the
+         // key comes back. RED on current code: silent miss -> "not found".
+         {
+            KeyringId id = newId( "kr-c" );
+            id.program = script( "c", std::string(
+               "cmd=\"$1\"\n"
+               "if [ \"$cmd\" = lookup ]; then\n"
+               "  n=$(( $(cat '" + scriptDir + "/count_c_lookup' 2>/dev/null || echo 0) + 1 ))\n"
+               "  echo \"$n\" > '" + scriptDir + "/count_c_lookup'\n"
+               "  if [ \"$n\" -eq 1 ]; then\n"
+               "    exit 1\n"
+               "  fi\n"
+               "  printf '%s' 'sk-ant-selftest-KRC'\n"
+               "  exit 0\n"
+               "elif [ \"$cmd\" = search ]; then\n"
+               "  m=$(( $(cat '" + scriptDir + "/count_c_search' 2>/dev/null || echo 0) + 1 ))\n"
+               "  echo \"$m\" > '" + scriptDir + "/count_c_search'\n"
+               "  echo 'label = fake'\n"
+               "  exit 0\n"
+               "fi\n"
+               "exit 1\n" ) );
+            KeyStore::SetKeyringForSelfTest( id, sk );
+            Settings::Remove( sk );
+            const KeyStore::State loaded = KeyStore::Load();
+            const int lookupCalls = counter( "count_c_lookup" );
+            const int searchCalls = counter( "count_c_search" );
+            detail["c"] = { { "where", int( loaded.where ) }, { "note", U8( loaded.note ) },
+                            { "lookupCalls", lookupCalls }, { "searchCalls", searchCalls } };
+            lookupRetryOk = loaded.where == KeyStore::Where::Keyring && loaded.key == "sk-ant-selftest-KRC"
+                         && loaded.note.IsEmpty() && lookupCalls == 2 && searchCalls == 1;
+            KeyStore::Clear();
+            Settings::Remove( sk );
+         }
+
+         // (d) lookup silent-miss, search shows nothing: genuine "no key", exactly
+         // one lookup + one search -- no retry storm, no re-prompt. This is also
+         // what a locked keyring looks like (search never unlocks). Today's
+         // behaviour, unchanged.
+         {
+            KeyringId id = newId( "kr-d" );
+            id.program = script( "d", std::string(
+               "cmd=\"$1\"\n"
+               "if [ \"$cmd\" = lookup ]; then\n"
+               "  n=$(( $(cat '" + scriptDir + "/count_d_lookup' 2>/dev/null || echo 0) + 1 ))\n"
+               "  echo \"$n\" > '" + scriptDir + "/count_d_lookup'\n"
+               "  exit 1\n"
+               "elif [ \"$cmd\" = search ]; then\n"
+               "  m=$(( $(cat '" + scriptDir + "/count_d_search' 2>/dev/null || echo 0) + 1 ))\n"
+               "  echo \"$m\" > '" + scriptDir + "/count_d_search'\n"
+               "  exit 0\n"
+               "fi\n"
+               "exit 1\n" ) );
+            KeyStore::SetKeyringForSelfTest( id, sk );
+            Settings::Remove( sk );
+            const KeyStore::State loaded = KeyStore::Load();
+            const int lookupCalls = counter( "count_d_lookup" );
+            const int searchCalls = counter( "count_d_search" );
+            detail["d"] = { { "where", int( loaded.where ) }, { "note", U8( loaded.note ) },
+                            { "lookupCalls", lookupCalls }, { "searchCalls", searchCalls } };
+            lookupGenuineMissOk = loaded.where == KeyStore::Where::None && loaded.key.IsEmpty() && loaded.note.IsEmpty()
+                               && lookupCalls == 1 && searchCalls == 1;
+            KeyStore::Clear();
+            Settings::Remove( sk );
+         }
+
+         // (e) 3 consecutive signature failures on store: bounded, never an
+         // unbounded loop -- exactly 3 calls, then today's visible error. The
+         // stderr is padded with a long run of a 2-byte UTF-8 character so the
+         // bounded detail text is truncated on a decoded-codepoint boundary
+         // (never a raw byte cut that could split a multi-byte sequence).
+         {
+            KeyringId id = newId( "kr-e" );
+            std::string filler;
+            for ( int i = 0; i < 220; ++i )
+               filler += "\xC3\xA9";   // 'e' + combining -> 'é' UTF-8, x220 (440 bytes)
+            id.program = script( "e", std::string(
+               "if [ \"$1\" = store ]; then\n"
+               "  cat >/dev/null\n"
+               "  n=$(( $(cat '" + scriptDir + "/count_e' 2>/dev/null || echo 0) + 1 ))\n"
+               "  echo \"$n\" > '" + scriptDir + "/count_e'\n"
+               "  echo \"secret-tool: Can't find session /org/freedesktop/secrets/session/9 " + filler + "\" 1>&2\n"
+               "  exit 1\n"
+               "fi\n"
+               "exit 1\n" ) );
+            KeyStore::SetKeyringForSelfTest( id, sk );
+            Settings::Remove( sk );
+            const KeyStore::State fb = KeyStore::Save( "sk-ant-selftest-KRE" );
+            String plain;
+            Settings::Read( sk, plain );
+            const int storeCalls = counter( "count_e" );
+            detail["e"] = { { "where", int( fb.where ) }, { "note", U8( fb.note ) }, { "noteLen", int( fb.note.Length() ) },
+                            { "storeCalls", storeCalls } };
+            storeBoundOk = fb.where == KeyStore::Where::Settings && plain == "sk-ant-selftest-KRE"
+                        && fb.note.Contains( "Can't find session" ) && storeCalls == 3
+                        && !fb.note.Contains( char16_type( 0xFFFD ) )
+                        && fb.note.Length() < 400;
+            KeyStore::Clear();
+            Settings::Remove( sk );
+         }
+      }
+      catch ( const pcl::Exception& x ) { error = x.Message(); }
+      catch ( const std::exception& x ) { error = String( x.what() ); }
+      Settings::Remove( sk );
+      if ( !scriptDir.empty() )
+      {
+         std::error_code ec;
+         std::filesystem::remove_all( scriptDir, ec );
+      }
+      detail["verdicts"] = { { "storeRetry", storeRetryOk }, { "storeOther", storeOtherOk },
+                            { "lookupRetry", lookupRetryOk }, { "lookupGenuineMiss", lookupGenuineMissOk },
+                            { "storeBound", storeBoundOk } };
+      const bool ok = storeRetryOk && storeOtherOk && lookupRetryOk && lookupGenuineMissOk && storeBoundOk;
+      out["keyringRetryDetail"] = detail;
+      out["keyringRetryError"] = U8( error );
+      out["keyringRetryOk"] = ok;
       allOk = allOk && ok;
    }
 

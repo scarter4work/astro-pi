@@ -415,6 +415,7 @@ required_true = [
     'pinnedOk',
     'rereviewFixOk',
     'reviewE4422c9Ok',
+    'keyringRetryOk',
     # 0.2.0.0 image journey
     'journeySpikeOk',
     'sqliteVendorOk',
