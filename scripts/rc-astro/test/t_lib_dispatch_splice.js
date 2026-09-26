@@ -78,6 +78,32 @@ function main() {
          W("PASS: malformed JSON after '{' folds into strayText without throwing");
       }
 
+      // --- Case 6: the stray prefix itself contains a '{' (review of 6b9b1d8e). ---
+      // Taking the FIRST '{' made JSON.parse fail on "{12}{...}" and the real
+      // error event was lost to strayText. The parser must try each '{' left to
+      // right and accept the first suffix that parses to an object with "event".
+      {
+         let state = { errorMsg: "", strayText: "" };
+         let events = [];
+         RCAstro._dispatchLine('offset {12}{"event":"error","message":"boom"}', state, function(ev){ events.push(ev); });
+         assert(state.errorMsg == "boom", "brace in prefix: expected errorMsg 'boom', got: '" + state.errorMsg + "'");
+         assert(events.length == 1 && events[0].event == "error", "brace in prefix: the error event must be dispatched exactly once, got " + events.length);
+         assert(state.strayText.indexOf("offset {12}") >= 0, "brace in prefix: prefix 'offset {12}' must be kept in strayText, got: " + state.strayText);
+         assert(state.strayText.indexOf("boom") < 0, "brace in prefix: the recovered event must not also be dumped into strayText, got: " + state.strayText);
+         W("PASS: brace inside the stray prefix does not hide the real event");
+      }
+
+      // --- Case 7: a nested object in a clean event must not be split off. ---
+      {
+         let state = { errorMsg: "", strayText: "" };
+         let events = [];
+         RCAstro._dispatchLine('{"event":"info","topic":"device","detail":{"event":"nested"}}', state, function(ev){ events.push(ev); });
+         assert(events.length == 1 && events[0].event == "info" && events[0].detail.event == "nested",
+                "nested object: expected the whole outer event, got " + JSON.stringify(events));
+         assert(state.strayText == "", "nested object: strayText must stay empty, got: " + state.strayText);
+         W("PASS: nested object inside a clean event is parsed as one event");
+      }
+
       W("PASS t_lib_dispatch_splice");
    } catch (e) {
       W("FAIL: " + e.message);

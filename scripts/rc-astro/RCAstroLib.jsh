@@ -292,7 +292,9 @@ var RCAstro = {
    // reliably-reproducing crash (`rc-astro bxt --benchmark N --device
    // gpu|cpu` SIGABRTs in this environment during model init with a
    // libstdc++ "terminate called ... rcastro::Error ... ml-onnx.cpp:877"
-   // message on stderr). Across 7 runs the two preceding stdout JSON lines
+   // message on stderr -- cause: CLI 0.9.10 cannot read the "RCA2"-format
+   // model files the newer RC-Astro PI plug-in wrote into ~/.config/RC-Astro;
+   // see rcastro-runtime-investigation.md). Across 7 runs the two preceding stdout JSON lines
    // were each one complete write(), and the stderr message -- itself split
    // across 6 separate write() calls by libstdc++'s terminate handler --
    // always landed strictly after both stdout writes, never mid-line: no
@@ -308,6 +310,12 @@ var RCAstro = {
       let line = rawLine.trim();
       if (line.length == 0) return;
 
+      // Find the JSON object: try each '{' left to right and take the first
+      // suffix that parses to an object carrying an "event" field. Taking only
+      // the FIRST '{' lost the real event whenever the stray prefix itself held
+      // a brace (e.g. 'offset {12}{"event":"error",...}'). Left to right means
+      // the longest parseable suffix wins, so a nested object inside a clean
+      // event is never split off from its parent.
       let brace = line.indexOf("{");
       if (brace < 0) {
          // No JSON object anywhere on this line -- pure stray text (e.g. a
@@ -317,24 +325,40 @@ var RCAstro = {
          return;
       }
 
-      let prefix   = line.substring(0, brace);
-      let jsonPart = line.substring(brace);
-      if (prefix.length) {
-         // Leading bytes ahead of the first '{' -- e.g. a spliced-in stderr
-         // fragment. Never drop it: fold into strayText so it still surfaces
-         // via the stderr/stray fallback in errorMsg on failure.
-         console.writeln(prefix);
-         state.strayText += (state.strayText.length ? "\n" : "") + prefix;
+      let obj = null;
+      let at = -1;
+      let firstError = "";
+      for (let b = brace; b >= 0; b = line.indexOf("{", b + 1)) {
+         let candidate = null;
+         try { candidate = JSON.parse(line.substring(b)); } catch (e) {
+            if (!firstError.length) firstError = e.message;
+            continue;
+         }
+         // A whole line that is one JSON object is accepted as before even
+         // without "event"; a suffix after stray bytes must carry "event".
+         if (candidate !== null && typeof candidate == "object" &&
+             (candidate.event !== undefined || b == 0)) {
+            obj = candidate; at = b; break;
+         }
       }
 
-      let obj = null;
-      try { obj = JSON.parse(jsonPart); } catch (e) {
-         // Looked like JSON (contained "{") but failed to parse — do not
-         // vanish it. Log it and fold it into strayText so it can still
-         // surface via the stderr/stray fallback in errorMsg on failure.
-         console.warningln("rc-astro: could not parse JSON line: " + e.message + " -- " + jsonPart);
-         state.strayText += (state.strayText.length ? "\n" : "") + jsonPart;
+      if (obj === null) {
+         // Contained "{" but no suffix is an event object -- do not vanish it.
+         // Log it and fold the WHOLE line into strayText so it can still
+         // surface via the stray fallback in errorMsg on failure.
+         console.warningln("rc-astro: could not parse JSON line: " +
+                           (firstError.length ? firstError : "no event object") + " -- " + line);
+         state.strayText += (state.strayText.length ? "\n" : "") + line;
          return;
+      }
+
+      let prefix = line.substring(0, at).trim();
+      if (prefix.length) {
+         // Leading bytes ahead of the event object -- e.g. a spliced-in stderr
+         // fragment. Never drop it: fold into strayText so it still surfaces
+         // via the stray fallback in errorMsg on failure.
+         console.writeln(prefix);
+         state.strayText += (state.strayText.length ? "\n" : "") + prefix;
       }
       if (obj) {
          if (obj.event == "error")   { state.errorMsg = obj.message || obj.text || JSON.stringify(obj); console.criticalln("rc-astro: " + state.errorMsg); }
