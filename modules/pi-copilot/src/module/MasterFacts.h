@@ -48,6 +48,10 @@ AcquisitionFacts ExtractAcquisition( const FITSKeywordArray& keywords, const std
 // identities and the STABLE keywords (IMAGETYP, OBJECT, FILTER, INSTRUME,
 // TELESCOP, EXPTIME, EXPOSURE, DATE-OBS, NCOMBINE, STACKCNT, XBINNING and
 // HISTORY lines starting "ImageIntegration."). Redacted keywords never enter.
+// Geometry and sample format live ONLY in the prefix: a 1-channel and a
+// 3-channel master with the same history/keywords share the same hash suffix.
+// A fingerprint is therefore always compared as the WHOLE string (as
+// JourneyStore::FindResumableByFingerprint does), never by its hash part.
 std::string MasterFingerprint( int width, int height, int channels, int bitsPerSample, bool floatSample,
                                const std::vector<std::string>& baseIdentities, const FITSKeywordArray& keywords );
 

@@ -2931,7 +2931,7 @@ bool RunJourneySelfTest( nlohmann::json& out )
    {
       nlohmann::json d = nlohmann::json::object();
       bool detectOk = false, wbppOk = false, sirilOk = false, iiTableOk = false, redactOk = false, namesOk = false,
-           fingerprintOk = false, auxOk = false, hardenOk = false;
+           fingerprintOk = false, auxOk = false, hardenOk = false, round1Ok = false;
       String error;
       try
       {
@@ -3052,11 +3052,48 @@ bool RunJourneySelfTest( nlohmann::json& out )
                     && !hBig.subCount && !hBig.totalIntegrationS && hBig.subExposureS == 60.0
                     && !hOff.subCount && !hOff.totalIntegrationS && hOff.subExposureS == 60.0;
          }
+
+         // Review round 1 (Task 6).
+         {
+            // Important 1: master evidence and the frame count share one
+            // definition of a count, so they can never disagree.
+            const FITSKeywordArray frac = Kw( { { "NCOMBINE", "2.5" } } );
+            const FITSKeywordArray whole = Kw( { { "NCOMBINE", "3" } } );
+            const MasterEvidence mFrac = DetectMaster( {}, frac );
+            const MasterEvidence mWhole = DetectMaster( {}, whole );
+            const AcquisitionFacts aFrac = ExtractAcquisition( frac, {}, "", "v" );
+            const AcquisitionFacts aWhole = ExtractAcquisition( whole, {}, "", "v" );
+            const bool countAgreeOk = !mFrac.isMaster && !aFrac.subCount
+                                   && mWhole.isMaster && mWhole.why == "keyword NCOMBINE=3" && aWhole.subCount == 3;
+
+            // Minor 3: a present but non-ISO DATE-OBS (a Julian date) falls back to DATE-LOC.
+            const AcquisitionFacts aJd = ExtractAcquisition( Kw( { { "DATE-OBS", "2459861.53343" },
+                                                                   { "DATE-LOC", "'2022-10-08T20:48:08'" } } ), {}, "", "v" );
+            const bool dateOk = aJd.sessionDate == "2022-10-08";
+
+            // Minor 4: an unpaired UTF-8 continuation byte becomes its own '_';
+            // a well-formed sequence is still one '_' per code point.
+            const std::string sUnpaired = SafeFolderName( "a\xB4" "b" );
+            const std::string sEuro = SafeFolderName( "x\xE2\x82\xAC" "y" );
+            const std::string sTrunc = SafeFolderName( "p\xC3" "q" );   // lead byte cut short by ASCII
+            const bool utf8Ok = sUnpaired == "a_b" && sEuro == "x_y" && sTrunc == "p_q"
+                             && SafeFolderName( "C\xC3\xB4ne" ) == "C_ne";
+
+            // Minor 6: OBJECT wins over the WBPP .../<target>/master/<file> path rule.
+            const std::string tObj = DeriveTarget( Kw( { { "OBJECT", "'M8'" } } ), "/d/M16/master/masterLight.xisf", "v" );
+            const bool objectWinsOk = tObj == "M8";
+
+            d["round1"] = { { "fracMaster", mFrac.isMaster }, { "fracCount", aFrac.subCount.value_or( -1 ) },
+                            { "wholeWhy", mWhole.why }, { "wholeCount", aWhole.subCount.value_or( -1 ) },
+                            { "jdDate", aJd.sessionDate }, { "unpaired", sUnpaired }, { "euro", sEuro },
+                            { "trunc", sTrunc }, { "objectTarget", tObj } };
+            round1Ok = countAgreeOk && dateOk && utf8Ok && objectWinsOk;
+         }
       }
       catch ( const pcl::Exception& x ) { error = x.Message(); }
       catch ( const std::exception& x ) { error = String( x.what() ); }
       catch ( ... )                     { error = "unknown exception"; }
-      const bool ok = detectOk && wbppOk && sirilOk && iiTableOk && redactOk && namesOk && fingerprintOk && auxOk && hardenOk;
+      const bool ok = detectOk && wbppOk && sirilOk && iiTableOk && redactOk && namesOk && fingerprintOk && auxOk && hardenOk && round1Ok;
       out["masterFactsDetail"] = d;
       out["masterFactsError"] = U8( error );
       out["masterFactsOk"] = ok;

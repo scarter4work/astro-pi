@@ -52,6 +52,17 @@ bool AsciiAlnum( unsigned char c )
    return (c >= '0' && c <= '9') || (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z');
 }
 
+// "YYYY-MM-DD..." with digits where digits belong.
+bool IsIsoDatePrefix( const std::string& s )
+{
+   if ( s.size() < 10 || s[4] != '-' || s[7] != '-' )
+      return false;
+   for ( int i : { 0, 1, 2, 3, 5, 6, 8, 9 } )
+      if ( s[i] < '0' || s[i] > '9' )
+         return false;
+   return true;
+}
+
 // First HISTORY comment "ImageIntegration.<key>: <value>" -> value.
 std::string IntegrationHistory( const FITSKeywordArray& keywords, const char* key )
 {
@@ -133,11 +144,14 @@ MasterEvidence DetectMaster( const std::vector<std::string>& ids, const FITSKeyw
    }
    for ( const char* k : { "NCOMBINE", "STACKCNT" } )
    {
-      const std::optional<double> n = Number( KeywordText( keywords, k ) );
+      // Same definition of a frame count as ExtractAcquisition (Count), so the
+      // master evidence and the recorded subCount can never disagree.
+      const std::string text = KeywordText( keywords, k );
+      const std::optional<int> n = Count( Number( text ) );
       if ( n && *n > 1 )
       {
          e.isMaster = true;
-         e.why = std::string( "keyword " ) + k + "=" + KeywordText( keywords, k );
+         e.why = std::string( "keyword " ) + k + "=" + text;
          return e;
       }
    }
@@ -216,11 +230,17 @@ AcquisitionFacts ExtractAcquisition( const FITSKeywordArray& kw, const std::vect
          a.totalIntegrationS = *exposure * *a.subCount;
    }
 
-   std::string date = KeywordText( kw, "DATE-OBS" );
-   if ( date.size() < 10 )
-      date = KeywordText( kw, "DATE-LOC" );
-   if ( date.size() >= 10 && date[4] == '-' && date[7] == '-' )
-      a.sessionDate = date.substr( 0, 10 );
+   // The first of DATE-OBS, DATE-LOC that starts with an ISO date: a present
+   // but non-ISO DATE-OBS (e.g. a Julian date) does not hide DATE-LOC.
+   for ( const char* k : { "DATE-OBS", "DATE-LOC" } )
+   {
+      const std::string date = KeywordText( kw, k );
+      if ( IsIsoDatePrefix( date ) )
+      {
+         a.sessionDate = date.substr( 0, 10 );
+         break;
+      }
+   }
    return a;
 }
 
@@ -264,11 +284,23 @@ std::string StripKind( const std::string& filter, int masterCount )
 std::string SafeFolderName( const std::string& name )
 {
    std::string r;
+   int pending = 0;   // continuation bytes still owed by the current UTF-8 lead byte
    for ( unsigned char c : name )
    {
       if ( (c & 0xC0) == 0x80 )
-         continue;   // UTF-8 continuation byte: the code point already became one '_'
-      r += AsciiAlnum( c ) || c == '.' || c == '_' || c == '-' ? char( c ) : '_';
+      {
+         if ( pending > 0 )
+         {
+            --pending;   // tail of a code point that already became one '_'
+            continue;
+         }
+         r += '_';       // unpaired continuation byte: its own '_'
+      }
+      else
+      {
+         pending = (c & 0xE0) == 0xC0 ? 1 : (c & 0xF0) == 0xE0 ? 2 : (c & 0xF8) == 0xF0 ? 3 : 0;
+         r += AsciiAlnum( c ) || c == '.' || c == '_' || c == '-' ? char( c ) : '_';
+      }
       if ( r.size() == 60 )
          break;
    }
