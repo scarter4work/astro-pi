@@ -299,8 +299,12 @@ void PICopilotInterface::SendCurrentInput()
    if ( key.IsEmpty() )
    {
       // Visible notice, never a silent no-op. The input is kept so the
-      // user can resend after setting the key.
-      AppendToLog( PlainText( KeyStore::NoKeyNote() ) + "\n\n" );
+      // user can resend after setting the key. review m1: Where::Unreadable
+      // already got its own coherent note just above (the key exists but
+      // could not be read this time); NoKeyNote() ("No Anthropic API key is
+      // set...") would contradict that, so it is shown only otherwise.
+      if ( ks.where != KeyStore::Where::Unreadable )
+         AppendToLog( PlainText( KeyStore::NoKeyNote() ) + "\n\n" );
       return;
    }
 

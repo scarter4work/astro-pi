@@ -80,7 +80,11 @@ int CreateExclusiveTemp( const std::string& dir, const std::string& base, mode_t
 }
 
 // Reads a regular file without following a link at its final component.
-bool ReadNoFollow( const std::string& path, ByteArray& out, String& why )
+// maxBytes bounds the read (0 = unbounded): stops once `out` reaches that
+// size rather than reading an arbitrarily large file into memory (review m3).
+// A capped read still returns true (what was read is valid; the caller asked
+// for a prefix, not "the whole file or nothing").
+bool ReadNoFollow( const std::string& path, ByteArray& out, String& why, size_t maxBytes = 0 )
 {
    const int fd = ::open( path.c_str(), O_RDONLY | O_NOFOLLOW | O_CLOEXEC );
    if ( fd < 0 )
@@ -99,7 +103,16 @@ bool ReadNoFollow( const std::string& path, ByteArray& out, String& why )
    char buf[ 65536 ];
    for ( ;; )
    {
-      const ssize_t n = ::read( fd, buf, sizeof( buf ) );
+      size_t want = sizeof( buf );
+      if ( maxBytes > 0 )
+      {
+         if ( size_t( out.Length() ) >= maxBytes )
+            break;
+         const size_t remaining = maxBytes - size_t( out.Length() );
+         if ( remaining < want )
+            want = remaining;
+      }
+      const ssize_t n = ::read( fd, buf, want );
       if ( n < 0 )
       {
          if ( errno == EINTR )
@@ -205,19 +218,36 @@ String SafeCheckJpeg( const ByteArray& data )
    return String();
 }
 
+// review m6: File::SystemTempDirectory() can throw pcl::Error (e.g. TMPDIR
+// relative and getcwd() fails) -- caught here, same posture as
+// EnsurePrivateDirectory's own try/catch above, so this genuinely never
+// throws regardless of where the caller puts its own try block.
 bool CreatePrivateScratchDir( String& dir, String& why )
 {
    dir.Clear();
-   std::string tmpl = U8( File::SystemTempDirectory() ) + "/picopilot-scratch-XXXXXX";
-   std::vector<char> name( tmpl.begin(), tmpl.end() );
-   name.push_back( '\0' );
-   if ( ::mkdtemp( name.data() ) == nullptr )   // mode 0700, unguessable
+   try
    {
-      why = Errno( errno );
+      std::string tmpl = U8( File::SystemTempDirectory() ) + "/picopilot-scratch-XXXXXX";
+      std::vector<char> name( tmpl.begin(), tmpl.end() );
+      name.push_back( '\0' );
+      if ( ::mkdtemp( name.data() ) == nullptr )   // mode 0700, unguessable
+      {
+         why = Errno( errno );
+         return false;
+      }
+      dir = FromU8( std::string( name.data() ) );
+      return true;
+   }
+   catch ( const pcl::Exception& x )
+   {
+      why = x.Message();
       return false;
    }
-   dir = FromU8( std::string( name.data() ) );
-   return true;
+   catch ( const std::exception& x )
+   {
+      why = String( x.what() );
+      return false;
+   }
 }
 
 void RemovePrivateScratchDir( const String& dir )
@@ -226,9 +256,9 @@ void RemovePrivateScratchDir( const String& dir )
       RemovePrivateDir( Native( dir ) );
 }
 
-bool ReadFileNoFollow( const String& path, ByteArray& out, String& why )
+bool ReadFileNoFollow( const String& path, ByteArray& out, String& why, size_t maxBytes )
 {
-   return ReadNoFollow( Native( path ), out, why );
+   return ReadNoFollow( Native( path ), out, why, maxBytes );
 }
 
 String SafeWriteFile( const String& path, const ByteArray& data, SafeFileMode mode, const SafeFileCheck& check )
@@ -332,21 +362,24 @@ String SafeWriteTextFile( const String& path, const std::string& utf8, SafeFileM
 
 String SafeRenderFile( const String& path, SafeFileMode mode, const SafeFileRenderer& render, const SafeFileCheck& check )
 {
-   std::string priv;
+   // review m7c: shares CreatePrivateScratchDir/RemovePrivateScratchDir with
+   // Keyring.cpp's RunSecretTool instead of its own copy of the same
+   // mkdtemp/cleanup logic (the two had been deliberately left duplicated in
+   // the previous round to avoid touching this already-tested function; this
+   // round confirms nothing here depends on the "picopilot-render-" prefix
+   // specifically, so the dedup is safe).
+   String priv;
    try
    {
       if ( path.IsEmpty() )
          return "no output path";
-      std::string tmpl = U8( File::SystemTempDirectory() ) + "/picopilot-render-XXXXXX";
-      std::vector<char> name( tmpl.begin(), tmpl.end() );
-      name.push_back( '\0' );
-      if ( ::mkdtemp( name.data() ) == nullptr )   // mode 0700, unguessable
-         return path + " not written: cannot create a private render directory: " + Errno( errno );
-      priv = name.data();
+      String scratchWhy;
+      if ( !CreatePrivateScratchDir( priv, scratchWhy ) )
+         return path + " not written: cannot create a private render directory: " + scratchWhy;
       const std::string target = Native( path );
       const size_t slash = target.find_last_of( '/' );
       const std::string base = slash == std::string::npos ? target : target.substr( slash + 1 );
-      const std::string rendered = priv + '/' + base;
+      const std::string rendered = Native( priv ) + '/' + base;
 
       render( FromU8( rendered ) );
 
@@ -354,26 +387,26 @@ String SafeRenderFile( const String& path, SafeFileMode mode, const SafeFileRend
       String why;
       if ( !ReadNoFollow( rendered, bytes, why ) )
       {
-         RemovePrivateDir( priv );
+         RemovePrivateScratchDir( priv );
          return path + " not written: the rendered file cannot be read (" + why + ")";
       }
-      RemovePrivateDir( priv );
-      priv.clear();
+      RemovePrivateScratchDir( priv );
+      priv.Clear();
       return SafeWriteFile( path, bytes, mode, check );
    }
    catch ( const pcl::Exception& x )
    {
-      if ( !priv.empty() ) RemovePrivateDir( priv );
+      if ( !priv.IsEmpty() ) RemovePrivateScratchDir( priv );
       return path + " not written: " + x.Message();
    }
    catch ( const std::exception& x )
    {
-      if ( !priv.empty() ) RemovePrivateDir( priv );
+      if ( !priv.IsEmpty() ) RemovePrivateScratchDir( priv );
       return path + " not written: " + String( x.what() );
    }
    catch ( ... )
    {
-      if ( !priv.empty() ) RemovePrivateDir( priv );
+      if ( !priv.IsEmpty() ) RemovePrivateScratchDir( priv );
       return path + " not written: unknown error";
    }
 }

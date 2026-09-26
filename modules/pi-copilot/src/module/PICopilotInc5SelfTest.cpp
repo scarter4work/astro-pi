@@ -4207,11 +4207,27 @@ bool RunInc5SelfTest( nlohmann::json& out )
            leakSegvOk = false, leakExit3Ok = false,   // (f) C1
            cleanLookupOk = false,                     // (g) M1
            clearMessageOk = false, clearSilentOk = false,   // (h) I1
-           existsUnreadableOk = false;                // (i) M2
+           existsUnreadableOk = false,                // (i) M2
+           storeVerifyExhaustedOk = false,             // (j) round 2 m4
+           searchNoLeakOk = false,                      // (k) round 2 m7b
+           scratchDirsCleanOk = false;                  // round 2 m7a
       nlohmann::json detail = nlohmann::json::object();
       String error;
       std::string scriptDir;
       const IsoString sk = "PICopilot/SelfTestApiKeyKR";
+      // round 2 m7a: every RunSecretTool call makes and removes its own
+      // private scratch dir (Keyring.cpp ScratchDirGuard); nothing from this
+      // whole section should still be there once it's done.
+      auto countScratchDirs = []() -> int {
+         int n = 0;
+         std::error_code ec;
+         const std::string tmp = std::string( File::SystemTempDirectory().ToUTF8().c_str() );
+         for ( const auto& entry : std::filesystem::directory_iterator( tmp, ec ) )
+            if ( entry.path().filename().string().rfind( "picopilot-scratch-", 0 ) == 0 )
+               ++n;
+         return n;
+      };
+      const int scratchBefore = countScratchDirs();
       try
       {
          scriptDir = std::string( File::SystemTempDirectory().ToUTF8().c_str() )
@@ -4534,9 +4550,13 @@ bool RunInc5SelfTest( nlohmann::json& out )
          // `search` keeps finding the item -- bounded at exactly 3 lookups +
          // 2 searches (the loop breaks on the attempt cap before a 3rd
          // search), and KeyStore::Load() must say the key exists but could
-         // not be read, not the generic (and here false) "no key" note. RED
-         // on d94a6f3c: KeyringResult had no existsButUnreadable signal, so
-         // this always produced the plain "no key" miss.
+         // not be read (Where::Unreadable, round 2 m1), not the generic (and
+         // here false) "no key" note. The fake `search` now prints
+         // `secret = <value>` like the real one (round 2 m7b), so the
+         // no-leak assertion below is non-vacuous, not just "label = fake"
+         // (which could never leak anything). RED on d94a6f3c: KeyringResult
+         // had no existsButUnreadable signal, so this always produced the
+         // plain "no key" miss.
          {
             KeyringId id = newId( "kr-i" );
             id.program = script( "i", std::string(
@@ -4548,7 +4568,7 @@ bool RunInc5SelfTest( nlohmann::json& out )
                "elif [ \"$cmd\" = search ]; then\n"
                "  m=$(( $(cat '" + scriptDir + "/count_i_search' 2>/dev/null || echo 0) + 1 ))\n"
                "  echo \"$m\" > '" + scriptDir + "/count_i_search'\n"
-               "  echo 'label = fake'\n"
+               "  echo 'secret = sk-ant-selftest-KRI'\n"
                "  exit 0\n"
                "fi\n"
                "exit 1\n" ) );
@@ -4559,12 +4579,73 @@ bool RunInc5SelfTest( nlohmann::json& out )
             const int searchCalls = counter( "count_i_search" );
             detail["i"] = { { "where", int( loaded.where ) }, { "note", U8( loaded.note ) },
                             { "lookupCalls", lookupCalls }, { "searchCalls", searchCalls } };
-            existsUnreadableOk = loaded.where == KeyStore::Where::None && loaded.key.IsEmpty()
+            existsUnreadableOk = loaded.where == KeyStore::Where::Unreadable && loaded.key.IsEmpty()
+                              && !loaded.note.Contains( "sk-ant-selftest" )   // I2/m7b: search's own output must not leak either
+                              && !KeyStore::DescribeWhere( loaded ).Contains( "not set" )   // m1: no contradiction
                               && loaded.note.Contains( "exists in the system keyring" )
                               && loaded.note.Contains( "could not be read" )
-                              && lookupCalls == 3 && searchCalls == 2;
+                              // m2: cause worded as a likelihood, not asserted as fact, and the
+                              // attempt count comes from the shared constant, not a hardcoded "3".
+                              && loaded.note.Contains( "most likely a libsecret/KWallet session glitch" )
+                              && loaded.note.Contains( String().Format( "%d attempts", PICopilotKeyringMaxAttempts ) )
+                              && lookupCalls == PICopilotKeyringMaxAttempts && searchCalls == PICopilotKeyringMaxAttempts - 1;
             KeyStore::Clear();
             Settings::Remove( sk );
+         }
+
+         // (j) round 2 m4: StoreVerified's read-back exhausts with
+         // existsButUnreadable (store succeeds, but every verify-lookup
+         // silently misses while search keeps confirming the item) --
+         // Save()'s fallback note must say "could not be read back", not
+         // "did not match what was written" (nothing was ever compared).
+         {
+            KeyringId id = newId( "kr-j" );
+            id.program = script( "j", std::string(
+               "cmd=\"$1\"\n"
+               "if [ \"$cmd\" = store ]; then\n"
+               "  cat >/dev/null\n"
+               "  exit 0\n"
+               "elif [ \"$cmd\" = lookup ]; then\n"
+               "  exit 1\n"
+               "elif [ \"$cmd\" = search ]; then\n"
+               "  echo 'secret = sk-ant-selftest-KRJ'\n"
+               "  exit 0\n"
+               "fi\n"
+               "exit 1\n" ) );
+            KeyStore::SetKeyringForSelfTest( id, sk );
+            Settings::Remove( sk );
+            const KeyStore::State saved = KeyStore::Save( "sk-ant-selftest-KRJ" );
+            String plain;
+            Settings::Read( sk, plain );
+            detail["j"] = { { "where", int( saved.where ) }, { "note", U8( saved.note ) } };
+            storeVerifyExhaustedOk = saved.where == KeyStore::Where::Settings && plain == "sk-ant-selftest-KRJ"
+                                  && saved.note.Contains( "could not be read back" )
+                                  && !saved.note.Contains( "did not match" )
+                                  && saved.note.Contains( "most likely a libsecret/KWallet session glitch" )
+                                  && !saved.note.Contains( "sk-ant-selftest" );
+            KeyStore::Clear();
+            Settings::Remove( sk );
+         }
+
+         // (k) round 2 m7b: KeyringSearchExists's OWN failure path must not
+         // leak either -- a search that prints the real secret-tool success
+         // format (`secret = <value>`) to stdout and THEN exits nonzero
+         // (a genuine failure after a partial/garbled reply) must still
+         // produce a sentinel-free .error, proving Detail()'s r.err-only
+         // read holds for search failures specifically, not only for
+         // lookup/store.
+         {
+            KeyringId id = newId( "kr-k" );
+            id.program = script( "k", std::string(
+               "if [ \"$1\" = search ]; then\n"
+               "  echo 'secret = sk-ant-selftest-KRK'\n"
+               "  exit 3\n"
+               "fi\n"
+               "exit 1\n" ) );
+            const KeyringExistsResult r = KeyringSearchExists( id );
+            detail["k"] = { { "ok", r.ok }, { "exists", r.exists }, { "error", U8( r.error ) } };
+            searchNoLeakOk = !r.ok && !r.error.IsEmpty() && !r.error.Contains( "sk-ant-selftest" )
+                          && r.error.Contains( "exit 3" );
          }
       }
       catch ( const pcl::Exception& x ) { error = x.Message(); }
@@ -4575,16 +4656,23 @@ bool RunInc5SelfTest( nlohmann::json& out )
          std::error_code ec;
          std::filesystem::remove_all( scriptDir, ec );
       }
+      // round 2 m7a: nothing this section's RunSecretTool calls created is
+      // still there.
+      scratchDirsCleanOk = countScratchDirs() == scratchBefore;
+      detail["scratchDirs"] = { { "before", scratchBefore }, { "after", countScratchDirs() } };
       detail["verdicts"] = { { "storeRetry", storeRetryOk }, { "storeOther", storeOtherOk },
                             { "lookupRetry", lookupRetryOk }, { "lookupGenuineMiss", lookupGenuineMissOk },
                             { "storeBound", storeBoundOk },
                             { "leakSegv", leakSegvOk }, { "leakExit3", leakExit3Ok },
                             { "cleanLookup", cleanLookupOk },
                             { "clearMessage", clearMessageOk }, { "clearSilent", clearSilentOk },
-                            { "existsUnreadable", existsUnreadableOk } };
+                            { "existsUnreadable", existsUnreadableOk },
+                            { "storeVerifyExhausted", storeVerifyExhaustedOk },
+                            { "searchNoLeak", searchNoLeakOk },
+                            { "scratchDirsClean", scratchDirsCleanOk } };
       const bool ok = storeRetryOk && storeOtherOk && lookupRetryOk && lookupGenuineMissOk && storeBoundOk
                    && leakSegvOk && leakExit3Ok && cleanLookupOk && clearMessageOk && clearSilentOk
-                   && existsUnreadableOk;
+                   && existsUnreadableOk && storeVerifyExhaustedOk && searchNoLeakOk && scratchDirsCleanOk;
       out["keyringRetryDetail"] = detail;
       out["keyringRetryError"] = U8( error );
       out["keyringRetryOk"] = ok;
