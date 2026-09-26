@@ -1354,7 +1354,20 @@ bool RunInc5SelfTest( nlohmann::json& out )
                   seconds.push_back( std::chrono::duration<double>( std::chrono::steady_clock::now() - t0 ).count() );
                   ++requests;
                   if ( !r.ok )
+                  {
                      d["bindingError"] = { { "status", r.httpStatus }, { "error", U8( r.error ) } };
+                     // Task T-diag (tooluse-flake-investigation.md): if this IS
+                     // that flake, record the stop_reason and the raw block
+                     // types so a future occurrence is classifiable without a
+                     // live repro -- these two are the only reply fields that
+                     // survive ParseMessagesResponse clearing everything else
+                     // on failure. No retry: the check stays strict.
+                     if ( r.emptyToolUseReply )
+                     {
+                        d["bindingError"]["stopReason"] = "tool_use";
+                        d["bindingError"]["blockTypes"] = r.emptyToolUseBlockTypes;
+                     }
+                  }
                   allArrays = allArrays && (binding ? r.inputTransformations.is_array() : r.inputTransformations.is_null());
                   transformations.push_back( r.inputTransformations );
                   if ( r.contentBlocks.is_array() )

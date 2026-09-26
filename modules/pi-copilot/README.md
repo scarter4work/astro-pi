@@ -48,6 +48,7 @@ Increment 1 deliverables:
 - **New chat** starts a fresh conversation; your images and their History are untouched.
 - **Long conversations**: when the history grows past its budget (about 100,000 tokens, estimated), the oldest messages stop being sent to the model and the chat log says how many; New chat starts fresh. Prompt caching keeps repeated context cheap. On Opus 5.5, their reasoning is kept and re-sent so the model stays consistent across tool steps.
 - **Errors** from the API (e.g. an invalid key, rate limits, overload) are shown verbatim in the chat log; a failed turn is dropped from the history and its prompt is put back in the input line.
+- **A reply that claimed a tool call but sent none** (rare, API-side) names the content block types it did carry (e.g. `blocks: thinking, text`) and asks you to send the message again; nothing ran and nothing is auto-retried.
 - **GUI scope**: the panel and dialogs cannot be tested headlessly (`--automation-mode` can't run GUI); they are verified by hand on the released build.
 
 ## Increment 3 — Vision (the panel sees the active view)
