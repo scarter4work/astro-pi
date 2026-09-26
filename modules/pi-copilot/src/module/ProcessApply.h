@@ -42,6 +42,9 @@ struct ApplyProcessResult
    // no result window opened (new-window mode). ok == false with a distinct
    // error; the image content is unchanged.
    bool           noEffect = false;
+   // New-window mode of a bridge: the new windows attributed to this run
+   // (their History starts with a step of this process).
+   std::vector<std::string> resultWindows;
    // When ok: what is known about undoing it, stated only as far as it was
    // VERIFIED (model-facing): a checked History step on a main view, an
    // unverifiable preview step, or no History step on the target at all
@@ -101,10 +104,14 @@ struct ApplyProcessResult
  *   8. NO-EFFECT (Task T-graxpert), only for a process in the explicit
  *      ExternalProgramBridges() table: ExecuteOn() == true and a History step
  *      do NOT prove that such a process did anything (see the table). In
- *      replace mode an ImageContentDigest() of the target taken before the
- *      run must differ after it; in new-window mode at least one new main
- *      window must have opened. Otherwise ok=false, noEffect=true and a
- *      DISTINCT error (checked before step 7, which would misread the case).
+ *      replace mode the target's ImageContentDigest() after the run must
+ *      differ from its digest before it (for a PREVIEW, also from the main
+ *      image's pixels in the preview rectangle: a recorded preview step is
+ *      computed from those, so a no-op run reverts the preview to them); in
+ *      new-window mode at least one new main window whose History STARTS
+ *      with a step of this process must have opened (resultWindows; an
+ *      unrelated window never counts). Otherwise ok=false, noEffect=true and
+ *      a DISTINCT error (checked before step 7, which would misread it).
  * Every failure is ok=false + a message naming the process/parameter and the
  * fix; nothing after the failing step runs, so a failure never touches the
  * image -- except step 7, which is reported as exactly that. Root thread only.
@@ -128,6 +135,11 @@ ApplyProcessResult ApplyProcess( const IsoString& processId, const nlohmann::jso
 //   - a program that exits 0 without writing a result, or exits 3: ok, one
 //     new History step, pixels bit-identical;
 //   - replaceImage=false and no result: ok, no History step, no new window;
+//     with a result: a new window GraXpert_background_extraction[N] (and
+//     GraXpert_background[N] with createBackground) whose History holds
+//     exactly one initialProcessing step, GraXpert;
+//   - on a preview: a fresh preview gets one GraXpert step; a preview holding
+//     a PixelMath step has it replaced and shows the main image's pixels;
 //   - a 64x64 image: the program is never launched; ok, pixels identical.
 // Membership is explicit (never inferred from ids): a process is listed only
 // when it is PROVEN to launch an external program. The installed catalog was
@@ -139,7 +151,10 @@ ApplyProcessResult ApplyProcess( const IsoString& processId, const nlohmann::jso
 // LIMITATION: a digest proves only "changed" vs "identical". A result that
 // changed but is WRONG (another instance's output blended in -- the race's
 // other outcome) cannot be detected here; only PixInsight can fix the shared
-// temp file (reported upstream).
+// temp file (reported upstream). In new-window mode the result window is
+// attributed by its History (a first step of this process), never by "some
+// window opened"; a window that another instance's result was blended into
+// is, likewise, undetectable.
 struct ExternalProgramBridge
 {
    const char* processId;          // canonical Process::Id()
@@ -150,12 +165,15 @@ struct ExternalProgramBridge
 const std::vector<ExternalProgramBridge>& ExternalProgramBridges();
 const ExternalProgramBridge* FindExternalProgramBridge( const IsoString& canonicalProcessId );
 
-// A 64-bit content digest of an image: geometry, sample type and EVERY sample
-// of EVERY channel (alpha included). Equal digests = identical content (not
-// cryptographic: only an adversarial edit could collide). Cost: one read pass
-// over the pixel data (self-test B10 reports the ms for a 60 MP RGB float
-// image). Never throws for a valid image.
+// A 64-bit content digest of an image, or of `region` of it (clipped to the
+// image; the one-argument form is the whole image): region size, channel count, sample type and EVERY sample
+// of EVERY channel (alpha included), row by row -- so a region of a larger
+// image and an image of the same pixels digest identically. Equal digests =
+// identical content (not cryptographic: only an adversarial edit could
+// collide). Cost: one read pass over the pixel data (self-test B10b reports
+// the ms for a 60 MP RGB float image). Never throws for a valid image.
 uint64 ImageContentDigest( const ImageVariant& image );
+uint64 ImageContentDigest( const ImageVariant& image, const Rect& region );
 
 // apply_process's checks before anything is asked or run: known id, can run
 // on views, then a dry run of the parameter setting on a throwaway DEFAULT
@@ -225,6 +243,12 @@ String DescribeParameterChanges( const nlohmann::json& parameters, const nlohman
 // function removes the observer. Root thread.
 using InstanceBuildObserver = std::function<void( const IsoString& processId, const char* stage )>;
 void SetInstanceBuildObserverForSelfTest( InstanceBuildObserver observer );
+
+// Self-test only: called in ApplyProcess() after every "before" measurement
+// (History, content digest, open windows) and right before ExecuteOn() -- so a
+// test can open an unrelated window exactly where a user or a script could.
+// An empty function removes it. Root thread.
+void SetBeforeExecuteHookForSelfTest( std::function<void()> hook );
 
 // Self-test only. Inside the self-test's own PICopilot.executeGlobal() NO
 // process is ever recorded in History (harness fact, plan Task 1), so every

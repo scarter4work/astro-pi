@@ -237,22 +237,46 @@ private:
 // T-graxpert). The core bridges to the external program through FIXED shared
 // temp files (/tmp/PixInsight.xisf, /tmp/PixInsight_GraXpert.xisf), so two
 // test slots running it at once clobber each other (proven: ok with pixels
-// unchanged or blended). One fixed lock file, flock(2)ed exclusively; it is
-// opened read-only and O_NOFOLLOW (a planted symlink is refused, nothing is
-// ever written to it), so a fixed /tmp name is safe. Bounded wait, reported.
+// unchanged or blended). One fixed per-user lock file,
+// /tmp/picopilot-<uid>/graxpert-selftest.lock, flock(2)ed exclusively. The
+// directory is created 0700 and must be a real directory owned by this user
+// with no group/other access (lstat: a planted symlink or foreign directory
+// is refused); the file is opened O_NOFOLLOW. Bounded wait, reported.
 class GraXpertCoreSelfTestLock
 {
 public:
 
-   static constexpr const char* kPath = "/tmp/picopilot-graxpert-selftest.lock";
+   static String Dir()
+   {
+      return String().Format( "/tmp/picopilot-%u", unsigned( ::getuid() ) );
+   }
+
+   static String Path()
+   {
+      return Dir() + "/graxpert-selftest.lock";
+   }
 
    explicit GraXpertCoreSelfTestLock( double timeoutS )
    {
       const auto t0 = std::chrono::steady_clock::now();
-      m_fd = ::open( kPath, O_RDONLY | O_CREAT | O_NOFOLLOW | O_CLOEXEC, 0644 );
+      const IsoString dir = Dir().ToUTF8(), path = Path().ToUTF8();
+      if ( ::mkdir( dir.c_str(), 0700 ) != 0 && errno != EEXIST )
+      {
+         m_error = "cannot create " + Dir() + ": " + String( ::strerror( errno ) );
+         return;
+      }
+      struct stat st;
+      if ( ::lstat( dir.c_str(), &st ) != 0 || !S_ISDIR( st.st_mode ) || st.st_uid != ::getuid()
+        || (st.st_mode & 077) != 0 )
+      {
+         m_error = Dir() + " is not a private directory of this user (not a real directory, a link, foreign-owned, "
+                           "or group/other-accessible); refusing to use it";
+         return;
+      }
+      m_fd = ::open( path.c_str(), O_RDWR | O_CREAT | O_NOFOLLOW | O_CLOEXEC, 0600 );
       if ( m_fd < 0 )
       {
-         m_error = String( "cannot open " ) + kPath + ": " + String( ::strerror( errno ) );
+         m_error = "cannot open " + Path() + ": " + String( ::strerror( errno ) );
          return;
       }
       for ( ;; )
@@ -264,12 +288,13 @@ public:
          }
          if ( errno != EWOULDBLOCK && errno != EINTR )
          {
-            m_error = String( "flock " ) + kPath + ": " + String( ::strerror( errno ) );
+            m_error = "flock " + Path() + ": " + String( ::strerror( errno ) );
             break;
          }
          if ( std::chrono::duration<double>( std::chrono::steady_clock::now() - t0 ).count() > timeoutS )
          {
-            m_error = String().Format( "another PixInsight test instance held %s for more than %.0f s", kPath, timeoutS );
+            m_error = "another PixInsight test instance held " + Path()
+                    + String().Format( " for more than %.0f s", timeoutS );
             break;
          }
          ::usleep( 100000 );
@@ -3478,8 +3503,10 @@ bool RunInc5SelfTest( nlohmann::json& out )
             // Serialized across concurrent test instances (the core's shared
             // temp files; see GraXpertCoreSelfTestLock). Held until the end of
             // this block, i.e. across the whole real run.
+            SelfTestSectionMark( "B10 live: waiting for the GraXpert lock" );
             GraXpertCoreSelfTestLock coreLock( 300 );
-            detail["liveLock"] = { { "path", GraXpertCoreSelfTestLock::kPath }, { "waitedMs", coreLock.WaitedMs() },
+            SelfTestSectionMark( "B10 live: replace mode" );
+            detail["liveLock"] = { { "path", U8( GraXpertCoreSelfTestLock::Path() ) }, { "waitedMs", coreLock.WaitedMs() },
                                    { "error", U8( coreLock.Error() ) } };
             if ( !coreLock.Locked() )
                throw Error( "GraXpert live check: " + coreLock.Error() );
@@ -3522,6 +3549,30 @@ bool RunInc5SelfTest( nlohmann::json& out )
                { { "process_id", "GraXpert" }, { "parameters", { { "backgroundExtraction", true }, { "replaceImage", true } } } } }, lc );
             const double secs = std::chrono::duration<double>( std::chrono::steady_clock::now() - t0 ).count();
             edgeMeans( l1, r1 );
+            SelfTestSectionMark( "B10 live: new-window mode" );
+            // Fix round 1 (T-graxpert): new-window mode with the REAL program
+            // -- its result window must be attributed to the run (History
+            // starts with a GraXpert step) and named in resultWindows.
+            const auto tw0 = std::chrono::steady_clock::now();
+            const ToolOutcome keep = ExecuteTool( ToolCall{ "glk", "apply_process",
+               { { "process_id", "GraXpert" }, { "parameters", { { "backgroundExtraction", true }, { "replaceImage", false } } } } }, lc );
+            const double keepSecs = std::chrono::duration<double>( std::chrono::steady_clock::now() - tw0 ).count();
+            nlohmann::json keepSummary;
+            try { keepSummary = nlohmann::json::parse( keep.content.at( 0 ).at( "text" ).get<std::string>() ); } catch ( ... ) {}
+            const nlohmann::json resultWindows = keepSummary.value( "resultWindows", nlohmann::json::array() );
+            bool keepNamed = resultWindows.size() == 1;
+            for ( const auto& id : resultWindows )
+            {
+               const std::string s = id.is_string() ? id.get<std::string>() : std::string();
+               keepNamed = keepNamed && s.rfind( "GraXpert_background_extraction", 0 ) == 0;
+               ImageWindow rw = ImageWindow::WindowById( IsoString( s.c_str() ) );
+               if ( !rw.IsNull() )
+                  rw.ForceClose();
+            }
+            detail["liveNewWindow"] = { { "result", keep.content.at( 0 ).at( "text" ) }, { "log", U8( keep.logLine ) },
+                                        { "seconds", keepSecs } };
+            const bool keepOk = !keep.isError && keepNamed;
+            SelfTestSectionMark( "B10 live: done" );
             SetGlobalSettingReaderForSelfTest( GlobalSettingReader() );
             nlohmann::json summary;
             try { summary = nlohmann::json::parse( run.content.at( 0 ).at( "text" ).get<std::string>() ); } catch ( ... ) {}
@@ -3530,7 +3581,7 @@ bool RunInc5SelfTest( nlohmann::json& out )
             detail["live"] = { { "result", run.content.at( 0 ).at( "text" ) }, { "log", U8( run.logLine ) },
                                { "seconds", secs }, { "gradientBefore", r0 - l0 }, { "gradientAfter", r1 - l1 },
                                { "confirms", liveConfirms } };
-            liveOk = !run.isError && liveConfirms == 0
+            liveOk = !run.isError && liveConfirms == 0 && keepOk
                   && summary.value( "pinnedParameters", nlohmann::json::object() ).value( "appPath", std::string() ) == U8( canonical )
                   && !summary.value( "parametersSet", nlohmann::json::object() ).contains( "appPath" )
                   && (r0 - l0) > 0.2 && std::fabs( r1 - l1 ) < 0.25*(r0 - l0);
@@ -3565,7 +3616,8 @@ bool RunInc5SelfTest( nlohmann::json& out )
    SelfTestSectionMark( "B10b external-program bridges (T-graxpert)" );
    {
       bool digestOk = false, tableOk = false, scanOk = false, replaceOk = false, failExitOk = false,
-           newWindowOk = false, controlOk = false, budgetOk = false;
+           newWindowOk = false, controlOk = false, budgetOk = false, unrelatedOk = false, previewFreshOk = false,
+           previewPriorOk = false;
       bool standInSkipped = true;
       nlohmann::json detail = nlohmann::json::object();
       String error;
@@ -3596,7 +3648,18 @@ bool RunInc5SelfTest( nlohmann::json& out )
             Image z = make( 64, 48, 4, 0.0f );                                   // zero bytes as float vs uint16
             const uint64 dGeom = ImageContentDigest( ImageVariant( &c ) );
             const uint64 dU16 = ImageContentDigest( ImageVariant( &u ) ), dZ = ImageContentDigest( ImageVariant( &z ) );
-            digestOk = da == db && dAlpha != da && dCh1 != da && dBack == da && dGeom != da && dU16 != dZ;
+            // A region of a larger image digests like an image of the same pixels
+            // (a preview's baseline is the main image's pixels in its rectangle).
+            Image host = make( 100, 90, 4, 0.5f );
+            for ( int c = 0; c < 4; ++c )
+               for ( int y = 0; y < 48; ++y )
+                  for ( int x = 0; x < 64; ++x )
+                     host( 20 + x, 30 + y, c ) = 0.25f;
+            const uint64 dRegion = ImageContentDigest( ImageVariant( &host ), Rect( 20, 30, 84, 78 ) );
+            const uint64 dRegionOff = ImageContentDigest( ImageVariant( &host ), Rect( 21, 30, 85, 78 ) );
+            digestOk = da == db && dAlpha != da && dCh1 != da && dBack == da && dGeom != da && dU16 != dZ
+                    && dRegion == da && dRegionOff != da;
+            detail["digestRegion"] = { { "regionEqualsImage", dRegion == da }, { "shiftedRegionDiffers", dRegionOff != da } };
             detail["digest"] = { { "equal", da == db }, { "alphaDiffers", dAlpha != da }, { "ch1Differs", dCh1 != da },
                                  { "restored", dBack == da }, { "geometryDiffers", dGeom != da },
                                  { "sampleTypeDiffers", dU16 != dZ } };
@@ -3739,8 +3802,10 @@ bool RunInc5SelfTest( nlohmann::json& out )
          else
          {
             standInSkipped = false;
+            SelfTestSectionMark( "B10b stand-in: waiting for the GraXpert lock" );
             GraXpertCoreSelfTestLock coreLock( 300 );
-            detail["lock"] = { { "path", GraXpertCoreSelfTestLock::kPath }, { "waitedMs", coreLock.WaitedMs() },
+            SelfTestSectionMark( "B10b stand-in: replace / failing / new-window" );
+            detail["lock"] = { { "path", U8( GraXpertCoreSelfTestLock::Path() ) }, { "waitedMs", coreLock.WaitedMs() },
                                { "error", U8( coreLock.Error() ) } };
             if ( !coreLock.Locked() )
                throw Error( "stand-in GraXpert checks: " + coreLock.Error() );
@@ -3814,6 +3879,71 @@ bool RunInc5SelfTest( nlohmann::json& out )
             newWindowOk = r3.isError && !r3.mutated && w1 == w0 && digest() == d0 && text( r3 ).StartsWith( kWindowLead );
             detail["newWindow"] = { { "isError", r3.isError }, { "windowsBefore", int( w0 ) }, { "windowsAfter", int( w1 ) },
                                     { "text", U8( text( r3 ) ) } };
+            SelfTestSectionMark( "B10b stand-in: unrelated window" );
+            // c2. new-window mode while an UNRELATED window opens during the
+            // run (as a user or a script could): it must not count as the
+            // result (fix round 1, I1). The hook runs after every "before"
+            // measurement, right before ExecuteOn().
+            {
+               std::unique_ptr<Inc5TestWindow> unrelated;
+               SetBeforeExecuteHookForSelfTest( [&]()
+               {
+                  if ( !unrelated )
+                     unrelated.reset( new Inc5TestWindow( "PCUnrelatedDuringRun", 32, 32, 1, 0.5 ) );
+               } );
+               const ToolOutcome r5 = ExecuteTool( ToolCall{ "sb5", "apply_process",
+                  { { "process_id", "GraXpert" }, { "parameters", { { "backgroundExtraction", true }, { "replaceImage", false } } } } }, sc );
+               SetBeforeExecuteHookForSelfTest( std::function<void()>() );
+               unrelatedOk = unrelated != nullptr && r5.isError && !r5.mutated && text( r5 ).StartsWith( kWindowLead )
+                          && text( r5 ).Contains( "PCUnrelatedDuringRun (its History does not start with a GraXpert step)" );
+               detail["unrelatedWindow"] = { { "opened", unrelated != nullptr }, { "isError", r5.isError },
+                                             { "text", U8( text( r5 ) ) } };
+            }
+
+            SelfTestSectionMark( "B10b stand-in: previews" );
+            // c3. PREVIEW targets (fix round 1, I2). The baseline is the main
+            // image's pixels in the preview rectangle: a no-op run on a preview
+            // whose step was PixelMath $T*0.5 reverts it to those pixels
+            // (measured), which is NOT a change GraXpert made.
+            {
+               ImageWindow win = gw.MainView().Window();
+               View pv = win.CreatePreview( Rect( 32, 32, 224, 224 ), "PCGxPV" );
+               ToolContext pc = sc;
+               pc.turnViewId = pv.FullId();
+               auto pvDigest = [&]() { AutoViewLock lock( pv ); return ImageContentDigest( pv.Image() ); };
+               auto mainRegion = [&]()
+               {
+                  View mv = win.MainView();
+                  AutoViewLock lock( mv );
+                  return ImageContentDigest( mv.Image(), win.PreviewRect( "PCGxPV" ) );
+               };
+               const String kPreviewLead = kReplaceLead + ": every pixel of " + String( pv.FullId() ) + " is identical to ";
+               const uint64 m0 = digest();
+               const ToolOutcome p1 = ExecuteTool( ToolCall{ "sp1", "apply_process",
+                  { { "process_id", "GraXpert" }, { "parameters", { { "backgroundExtraction", true }, { "replaceImage", true } } } } }, pc );
+               previewFreshOk = p1.isError && !p1.mutated && text( p1 ).StartsWith( kPreviewLead )
+                             && text( p1 ).Contains( "The main image PCGraXpertStandIn was not changed." )
+                             && pvDigest() == mainRegion() && digest() == m0;
+               detail["previewFresh"] = { { "isError", p1.isError }, { "text", U8( text( p1 ) ) } };
+
+               const ToolOutcome pm = ExecuteTool( ToolCall{ "sp2", "apply_process",
+                  { { "process_id", "PixelMath" }, { "parameters", { { "expression", "$T*0.5" } } } } }, pc );
+               const uint64 halved = pvDigest();
+               const ToolOutcome p2 = ExecuteTool( ToolCall{ "sp3", "apply_process",
+                  { { "process_id", "GraXpert" }, { "parameters", { { "backgroundExtraction", true }, { "replaceImage", true } } } } }, pc );
+               const uint64 afterNoOp = pvDigest();
+               // In-process (nothing recorded) the preview keeps its own
+               // pixels (measured, this run); recorded (PJSR probe) it reverts
+               // to the main image's -- both are "no effect", never "ok".
+               previewPriorOk = !pm.isError && halved != mainRegion() && p2.isError && !p2.mutated
+                             && text( p2 ).StartsWith( kPreviewLead )
+                             && (afterNoOp == halved || afterNoOp == mainRegion()) && digest() == m0;
+               detail["previewPriorStep"] = { { "pixelMathError", pm.isError }, { "halvedDiffersFromMain", halved != mainRegion() },
+                                              { "keptOwnPixels", afterNoOp == halved },
+                                              { "revertedToMain", afterNoOp == mainRegion() },
+                                              { "isError", p2.isError }, { "text", U8( text( p2 ) ) } };
+               win.DeletePreview( "PCGxPV" );
+            }
             SetGlobalSettingReaderForSelfTest( GlobalSettingReader() );
 
             // d. Control: a process NOT in the table that legitimately leaves
@@ -3831,9 +3961,13 @@ bool RunInc5SelfTest( nlohmann::json& out )
       SetGlobalSettingReaderForSelfTest( GlobalSettingReader() );
       detail["checks"] = { { "digest", digestOk }, { "budget", budgetOk }, { "table", tableOk }, { "scan", scanOk },
                            { "replace", replaceOk }, { "failingProgram", failExitOk }, { "newWindow", newWindowOk },
-                           { "control", controlOk }, { "standInSkipped", standInSkipped } };
+                           { "control", controlOk }, { "unrelatedWindow", unrelatedOk },
+                           { "previewFresh", previewFreshOk }, { "previewPriorStep", previewPriorOk },
+                           { "standInSkipped", standInSkipped } };
+      SetBeforeExecuteHookForSelfTest( std::function<void()>() );
       const bool ok = error.IsEmpty() && digestOk && budgetOk && tableOk && scanOk
-                   && (standInSkipped || (replaceOk && failExitOk && newWindowOk && controlOk));
+                   && (standInSkipped || (replaceOk && failExitOk && newWindowOk && controlOk && unrelatedOk
+                                          && previewFreshOk && previewPriorOk));
       out["bridgeDetail"] = detail;
       out["bridgeError"] = U8( error );
       out["bridgeStandInSkipped"] = standInSkipped;

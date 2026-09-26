@@ -159,7 +159,7 @@ unset KR_KEY
 # FIXED shared temp files (/tmp/PixInsight.xisf, /tmp/PixInsight_GraXpert.xisf),
 # so two instances running it at once clobber each other. The self-test
 # therefore runs every GraXpert-core call (B10 live, B10b stand-in) under an
-# exclusive flock on /tmp/picopilot-graxpert-selftest.lock
+# exclusive flock on /tmp/picopilot-<uid>/graxpert-selftest.lock (dir 0700)
 # (GraXpertCoreSelfTestLock); only those sections are serialized, the rest of
 # the run stays parallel. The wait is printed below (lockWaitMs).
 if [ -z "${PICOPILOT_TEST_GRAXPERT_APP:-}" ] && [ -f "$HOME/.PixInsight/core-001-pxi.settings" ]; then

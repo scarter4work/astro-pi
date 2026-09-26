@@ -331,6 +331,8 @@ ToolOutcome ApplyProcessTool( const nlohmann::json& in, const ToolContext& ctx, 
    };
    if ( !ar.pinnedSet.empty() )
       summary["pinnedParameters"] = ar.pinnedSet;   // set by PI Copilot, not by you: never pass them
+   if ( !ar.resultWindows.empty() )
+      summary["resultWindows"] = ar.resultWindows;  // new windows attributed to this run (ProcessApply.h)
    try
    {
       summary["newContext"] = CollapsedViewContext( BuildViewContext( target ) );
