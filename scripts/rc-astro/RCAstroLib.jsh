@@ -28,6 +28,73 @@ var RCAstro = {
    // pipeline needs something different.
    timeoutSeconds: 3600,
 
+   // Minimum supported rc-astro CLI major version. CLI 2.x renamed flags these
+   // wrappers emit (BlurXTerminator --ansr/--nsr radius -> --ansp/--nsd
+   // diameter; 0.9.x flags are rejected with exit 109) and dropped models
+   // (NoiseXTerminator ML 3 -> 3.1), so an older CLI is refused up front
+   // rather than run with flags it would reject.
+   MIN_CLI_MAJOR: 2,
+   UPDATE_HINT: "Update it with `rc-astro update --install`, then run the install.sh it " +
+                "downloads with sudo (e.g. `sudo ~/Downloads/rc-astro-cli/install.sh`).",
+   // Binary path whose version already passed the gate this session. Only a
+   // PASS is cached, so a user who updates the CLI mid-session is re-checked.
+   _versionOkFor: null,
+   _versionOkText: null,
+
+   // "Version X.Y.Z (build ...)" -- printed by `--no-banner --help` in both
+   // 0.9.x and 2.x (neither has a --version flag; verified 2026-09-26).
+   _parseCliVersion: function(text) {
+      let m = /Version\s+(\d+)\.(\d+)\.(\d+)/.exec(String(text));
+      return m ? { major: Number(m[1]), text: m[1] + "." + m[2] + "." + m[3] } : null;
+   },
+
+   // Probe `bin --no-banner --help` (same scrubbed environment as runCli, see
+   // the LD_LIBRARY_PATH note there) and fail loudly unless it reports a
+   // version >= MIN_CLI_MAJOR. Returns the version string. The probe reads the
+   // merged stdout/stderr channel, which is fine here: the version line is
+   // plain text, parsed by pattern, not trusted as JSON.
+   requireCliVersion: function(bin) {
+      if (this._versionOkFor === bin && this._versionOkText) return this._versionOkText;
+      let quote = function(s){ return /[^A-Za-z0-9_.\-\/]/.test(s) ? '"' + s + '"' : s; };
+      let out = "";
+      let p = new ExternalProcess;
+      p.onStandardOutputDataAvailable = function() { out += String(this.stdout); };
+      p.onStandardErrorDataAvailable  = function() { out += String(this.stderr); };
+      let timedOut = false;
+      try {
+         p.start("/usr/bin/env -u LD_LIBRARY_PATH " + quote(bin) + " --no-banner --help");
+         let start = Date.now();
+         for (; p.isStarting;) processEvents();
+         for (; p.isRunning;) {
+            processEvents();
+            if (Date.now() - start > 60000) {
+               timedOut = true;
+               try { p.kill(); } catch (e) { /* best-effort */ }
+               for (let guard = 0; p.isRunning && guard < 100; ++guard) processEvents();
+               break;
+            }
+         }
+      } catch (e) {
+         this.fail("Could not run rc-astro at " + bin + " to check its version: " + e.message);
+      }
+      out += String(p.stdout);
+      let v = this._parseCliVersion(out);
+      if (!v) {
+         let shown = out.trim();
+         if (shown.length > 400) shown = shown.substring(0, 400) + "...";
+         this.fail("Could not determine the rc-astro CLI version at " + bin +
+                   (timedOut ? " (version probe timed out)" : " (exit " + p.exitCode + ")") +
+                   ". These scripts require rc-astro CLI " + this.MIN_CLI_MAJOR + ".0 or newer. " +
+                   this.UPDATE_HINT + (shown.length ? " Probe output: " + shown : " The probe printed nothing."));
+      }
+      if (v.major < this.MIN_CLI_MAJOR)
+         this.fail("rc-astro CLI " + v.text + " at " + bin + " is too old: these scripts require rc-astro CLI " +
+                   this.MIN_CLI_MAJOR + ".0 or newer. " + this.UPDATE_HINT);
+      this._versionOkFor = bin;
+      this._versionOkText = v.text;
+      return v.text;
+   },
+
    findBinary: function() {
       if (this.binaryPath && File.exists(this.binaryPath)) return this.binaryPath;
       let candidates = ["/usr/local/bin/rc-astro"];
@@ -371,6 +438,7 @@ var RCAstro = {
    runCli: function(tool, argsArray, onEvent) {
       let bin = this.findBinary();
       if (!bin) this.fail("rc-astro CLI not found at /usr/local/bin/rc-astro or on PATH.");
+      this.requireCliVersion(bin);
 
       // Build a quoted command line: quote tokens that are paths / contain spaces.
       let quote = function(s){ return /[^A-Za-z0-9_.\-\/]/.test(s) ? '"' + s + '"' : s; };

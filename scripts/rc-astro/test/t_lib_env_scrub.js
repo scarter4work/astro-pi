@@ -28,6 +28,8 @@ function main() {
       let f = new File;
       f.createForWriting(fake);
       f.outTextLn("#!/bin/sh");
+      // Answer the CLI >= 2.0 version probe (`--no-banner --help`) like the real binary.
+      f.outTextLn("case \" $* \" in *\" --help \"*) echo 'Version 2.6.9 (build 727, ga2033f5b, 2026-09-08)'; exit 0 ;; esac");
       f.outTextLn("printf '{\"event\":\"info\",\"topic\":\"env\",\"ldpath\":\"%s\"}\\n' \"${LD_LIBRARY_PATH-<unset>}\"");
       f.close();
       let chmod = new ExternalProcess;

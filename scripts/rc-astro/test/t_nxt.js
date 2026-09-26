@@ -78,10 +78,30 @@ function runTest() {
       assert(a2.indexOf("--dchf") >= 0 && a2[a2.indexOf("--dchf")+1] == "0.300", "expected --dchf 0.300");
       assert(a2.indexOf("--dclf") >= 0 && a2[a2.indexOf("--dclf")+1] == "0.400", "expected --dclf 0.400");
 
-      NXTParams.mlVersion = 3;
+      // CLI 2.x ships NoiseXTerminator models 2 and 3.1; "--ml-version 3" is
+      // rejected ("no model (version 3) is available for product 'nxt'",
+      // verified against rc-astro 2.6.9 on 2026-09-26).
+      NXTParams.mlVersion = 3.1;
       let a3 = NXTParams.buildArgs("IN.xisf", "OUT.xisf");
-      W("argv[mlVersion=3]: " + JSON.stringify(a3));
-      assert(a3.indexOf("--ml-version") >= 0 && a3[a3.indexOf("--ml-version")+1] == "3", "expected --ml-version 3");
+      W("argv[mlVersion=3.1]: " + JSON.stringify(a3));
+      assert(a3.indexOf("--ml-version") >= 0 && a3[a3.indexOf("--ml-version")+1] == "3.1", "expected --ml-version 3.1");
+
+      // --- legacy instance migration: a saved mlVersion 3 (0.9.x) -> 3.1 ---
+      function loadMl(v) {
+         Parameters.clear();
+         Parameters.set("mlVersion", v);
+         NXTParams.mlVersion = -1;   // sentinel: load() must overwrite it
+         NXTParams.load();
+         return NXTParams.mlVersion;
+      }
+      let l3 = loadMl(3);
+      W("migrate mlVersion=3 -> " + l3);
+      assert(Math.abs(l3 - 3.1) < 1e-9, "legacy mlVersion 3 must migrate to 3.1, got " + l3);
+      assert(Math.abs(loadMl(3.1) - 3.1) < 1e-9, "mlVersion 3.1 must load unchanged");
+      assert(loadMl(2) == 2, "mlVersion 2 must load unchanged");
+      assert(loadMl(0) == 0, "mlVersion 0 (Latest) must load unchanged");
+      Parameters.clear();
+      W("legacy mlVersion migration: PASS");
 
       W("PASS t_nxt");
    } catch (e) {
