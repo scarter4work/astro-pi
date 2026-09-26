@@ -23,11 +23,13 @@ void JourneySpikeProbeClearEvents();
 // The timer's nested EvaluateScript can be paused (J0 pauses it after measuring
 // whether it clobbers an outer EvaluateScript's result). Ticks still count.
 void JourneySpikeProbeSetNestedEval( bool on );
-// Timer-driven production apply (review fix #1): the next timer tick runs the
-// real ApplyProcess( PixelMath $T*0.5 ) on `viewId` -- the panel's execution
-// context (a module Timer, no process executing) -- and records the result,
-// read back by JourneySpikeProbeTimerApplyResult(). Test-only like the rest.
-void JourneySpikeProbeRequestTimerApply( const std::string& viewId );
+// Timer-driven production apply (review fix #1): the first timer tick after
+// `goFile` exists runs the real ApplyProcess( PixelMath $T*0.5 ) on `viewId`
+// -- the panel's execution context (a module Timer, no process executing) --
+// and records the result, read back by JourneySpikeProbeTimerApplyResult().
+// The go file is written by the top-level script after the arming
+// executeGlobal() returned (fix round 2). Test-only like the rest.
+void JourneySpikeProbeRequestTimerApply( const std::string& viewId, const std::string& goFile );
 nlohmann::json JourneySpikeProbeTimerApplyResult();       // null until the tick ran
 
 } // namespace pcl

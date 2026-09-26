@@ -273,10 +273,11 @@ nlohmann::json PhaseProbeNestedEval( const nlohmann::json& payload )
    return payload;
 }
 
-// j0.timerApply.arm: {id} -- the probe's next timer tick applies PixelMath to id.
+// j0.timerApply.arm: {id, goFile} -- stages the request; the probe's first tick
+// after goFile exists applies PixelMath to id.
 nlohmann::json PhaseTimerApplyArm( const nlohmann::json& payload )
 {
-   JourneySpikeProbeRequestTimerApply( payload.at( "id" ).get<std::string>() );
+   JourneySpikeProbeRequestTimerApply( payload.at( "id" ).get<std::string>(), payload.at( "goFile" ).get<std::string>() );
    return payload;
 }
 
