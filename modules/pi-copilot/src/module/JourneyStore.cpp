@@ -1007,6 +1007,33 @@ void JourneyStore::Checkpoint()
    Exec( "PRAGMA wal_checkpoint(TRUNCATE)" );
 }
 
+bool JourneyStore::TransactionAborted() const
+{
+   return m_inTransaction && m_db != nullptr && sqlite3_get_autocommit( m_db ) != 0;
+}
+
+void JourneyStore::MarkKeptDurably( int64 id, int64 endImageId, const std::string& nowIso )
+{
+   if ( m_inTransaction )
+      throw Error( "journey database " + m_dbPath + ": MarkKeptDurably inside an open transaction is refused "
+                   "(its commit could not be made durable); nothing was written" );
+   Exec( "PRAGMA synchronous=FULL" );
+   // Back to NORMAL on every path (the library's setting, Task 7 I5). Noexcept:
+   // if it fails the connection stays at FULL, which is only slower.
+   struct Restore
+   {
+      JourneyStore& s;
+      ~Restore() { if ( Thread::IsRootThread() && s.m_db != nullptr ) sqlite3_exec( s.m_db, "PRAGMA synchronous=NORMAL", nullptr, nullptr, nullptr ); }
+   } restore{ *this };
+   if ( ScalarInt( "PRAGMA synchronous" ) != 2 )
+      throw Error( "journey database " + m_dbPath + ": could not switch to synchronous=FULL for the keep; nothing was written" );
+   Transaction tx( *this );
+   MarkKept( id, endImageId, nowIso );
+   if ( m_keepCommitHook )
+      m_keepCommitHook( ScalarInt( "PRAGMA synchronous" ) );
+   tx.Commit();
+}
+
 std::string JourneyOwnerOf( long pid )
 {
    if ( pid <= 0 )

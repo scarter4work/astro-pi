@@ -177,6 +177,17 @@ public:
 
    void  Checkpoint();   // PRAGMA wal_checkpoint(TRUNCATE)
 
+   // MarkKept as its own transaction committed at synchronous=FULL, so the
+   // commit is on disk (WAL fsync) before this returns: a keep is user intent
+   // History cannot re-derive (Task 7 re-review m7). synchronous goes back to
+   // NORMAL afterwards on every path. Refused loudly inside an open
+   // Transaction (it could not make the outer commit durable). Root thread.
+   void  MarkKeptDurably( int64 journeyId, int64 endImageId, const std::string& nowIso );
+   // Test hooks: the synchronous level in force just before the keep's COMMIT,
+   // and the connection's current level (1 = NORMAL, 2 = FULL).
+   void  SetKeepCommitHookForSelfTest( std::function<void( int )> fn ) { m_keepCommitHook = std::move( fn ); }
+   int   SynchronousLevelForSelfTest() { return ScalarInt( "PRAGMA synchronous" ); }
+
    /*
     * One atomic group of writes (Task 7 review I5; Tasks 9-10 use it for
     * FreezeJourney / keep). RAII, root thread only:
@@ -217,6 +228,11 @@ public:
       bool          m_open = false;
    };
    bool  InTransaction() const { return m_inTransaction; }
+   // True when a Transaction is open here but SQLite has already rolled the
+   // connection back on its own (an I/O, full-disk or corruption error aborts
+   // the whole transaction): later writes would autocommit one by one, so the
+   // caller must stop the group and report every write in it as not made.
+   bool  TransactionAborted() const;
 
 private:
 
@@ -225,6 +241,7 @@ private:
    sqlite3* m_db = nullptr;
    bool     m_inTransaction = false;
    std::function<void( int64 )> m_pruneHook;
+   std::function<void( int )>   m_keepCommitHook;
    String   m_root;
    String   m_dbPath;
 
