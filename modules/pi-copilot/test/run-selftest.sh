@@ -49,6 +49,19 @@ PICOPILOT_TEST_SLOT=$(( 10#$PICOPILOT_TEST_SLOT ))
 # mktemp -d call below (HANDOFF_DIR, JOURNEY_XDG, LIB_STAMP, STALL_PORT_FILE,
 # ECHO_DIR, R, ...) already honours $TMPDIR with no further changes, and
 # cleanup() removes the whole thing on every exit path.
+# /tmp/picopilot-<uid>: the per-user private directory shared by the watchdog
+# logs, the throwlog and the module's GraXpert self-test lock
+# (GraXpertCoreSelfTestLock refuses it unless it is a real 0700 directory of
+# this user). `mkdir -p -m 700 <dir>/sub` would create <dir> itself with the
+# umask mode (0755) and fail every later GraXpert check, so it is created on
+# its own, 0700, and verified here -- loudly, never chmod-ed behind the user.
+PICOPILOT_PRIVATE_TMP="/tmp/picopilot-$(id -u)"
+mkdir -m 700 "$PICOPILOT_PRIVATE_TMP" 2>/dev/null || true
+if [ -L "$PICOPILOT_PRIVATE_TMP" ] || [ ! -d "$PICOPILOT_PRIVATE_TMP" ] \
+   || [ "$(stat -c '%u %a' "$PICOPILOT_PRIVATE_TMP")" != "$(id -u) 700" ]; then
+   echo "FAIL: $PICOPILOT_PRIVATE_TMP must be a real directory owned by $(id -u) with mode 700 (got: $(stat -c '%U %a %F' "$PICOPILOT_PRIVATE_TMP" 2>&1))"
+   exit 1
+fi
 PICOPILOT_RUNTIME_BASE="${XDG_RUNTIME_DIR:-/tmp/picopilot-$(id -u)/runs}"
 mkdir -p -m 700 "$PICOPILOT_RUNTIME_BASE"
 TMPDIR="$(mktemp -d "$PICOPILOT_RUNTIME_BASE/run.XXXXXX")"
@@ -416,7 +429,7 @@ if [ "${PICOPILOT_THROWLOG:-0}" = "1" ]; then
    THROWLOG_SO="$TMPDIR/throwlog.so"
    gcc -shared -fPIC -O2 -o "$THROWLOG_SO" "$HERE/throwlog.c" -ldl
    [ -f "$THROWLOG_SO" ] || { echo "FAIL: throwlog.so build failed"; exit 1; }
-   mkdir -p -m 700 "/tmp/picopilot-$(id -u)/watchdog-logs"
+   mkdir -m 700 "$PICOPILOT_PRIVATE_TMP/watchdog-logs" 2>/dev/null || [ -d "$PICOPILOT_PRIVATE_TMP/watchdog-logs" ]
    THROWLOG_FILE="/tmp/picopilot-$(id -u)/watchdog-logs/throwlog-$(date +%Y%m%dT%H%M%S)-slot${PICOPILOT_TEST_SLOT}.txt"
    PICOPILOT_THROWLOG_PRELOAD=( "LD_PRELOAD=$THROWLOG_SO" "THROWLOG_FILE=$THROWLOG_FILE" )
    echo "PICOPILOT_THROWLOG=1: LD_PRELOAD=$THROWLOG_SO, log (created only if something throws) -> $THROWLOG_FILE"
@@ -441,8 +454,8 @@ command -v xvfb-run >/dev/null 2>&1 || { echo "FAIL: xvfb-run not found (needed 
 # $WATCHDOG_FAIL_MARKER for us to report below with the section name and
 # artefact paths -- instead of sitting out the full 900s `timeout` with
 # nothing to show for it.
-WATCHDOG_LOG_BASE="/tmp/picopilot-$(id -u)/watchdog-logs"
-mkdir -p -m 700 "$WATCHDOG_LOG_BASE"
+WATCHDOG_LOG_BASE="$PICOPILOT_PRIVATE_TMP/watchdog-logs"
+mkdir -m 700 "$WATCHDOG_LOG_BASE" 2>/dev/null || [ -d "$WATCHDOG_LOG_BASE" ] || { echo "FAIL: cannot create $WATCHDOG_LOG_BASE"; exit 1; }
 WATCHDOG_FAIL_MARKER="$HANDOFF_DIR/watchdog-fail.json"
 python3 "$HERE/watchdog.py" \
    --slot "$PICOPILOT_TEST_SLOT" \
