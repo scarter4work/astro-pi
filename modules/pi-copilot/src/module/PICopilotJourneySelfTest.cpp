@@ -6,6 +6,7 @@
 #include "AnthropicClient.h"
 #include "EvalGuard.h"
 #include "CopilotSettings.h"
+#include "GraXpertSelfTestLock.h"
 #include "HistoryReader.h"
 #include "JourneyConstants.h"
 #include "JourneyExport.h"
@@ -22,6 +23,7 @@
 #include "PjsrRunner.h"
 #include "ProcessActivity.h"
 #include "ProcessApply.h"
+#include "ProcessSafety.h"
 #include "SafeFileWrite.h"
 #include "StepStats.h"
 #include "SystemPrompt.h"
@@ -450,6 +452,41 @@ nlohmann::json PhaseHistCheck( const nlohmann::json& payload )
    return { { "top", payload }, { "tick", JourneySpikeProbeHazardApplyResult() } };
 }
 
+// ---- Section J10 (Task 10 fix round 2) GraXpert measurement phases ----
+// A GraXpert run from the module Timer on a TOP-LEVEL window (where History IS
+// recorded, unlike in-process), with a stand-in program that exits 0 and writes
+// nothing: measures whether the core adds a History step in replace and in
+// new-window mode, and what ApplyProcess reports (noEffect, historyStepAdded).
+// Serialized with every other slot's GraXpert runs (the core's shared temp files).
+std::unique_ptr<GraXpertCoreSelfTestLock>& J10GxLock()
+{
+   static std::unique_ptr<GraXpertCoreSelfTestLock> lock;
+   return lock;
+}
+
+nlohmann::json PhaseJ10GxBegin( const nlohmann::json& )
+{
+   J10GxLock().reset( new GraXpertCoreSelfTestLock( 300 ) );
+   nlohmann::json r = { { "locked", J10GxLock()->Locked() }, { "waitedMs", J10GxLock()->WaitedMs() },
+                        { "error", U8( J10GxLock()->Error() ) } };
+   const char* scratch = std::getenv( "PICOPILOT_SELFTEST_SCRATCH" );
+   if ( scratch == nullptr || *scratch == '\0' )
+      throw Error( "PICOPILOT_SELFTEST_SCRATCH not set" );
+   const String program = String( scratch ) + "/j10-graxpert-standin";
+   File::WriteTextFile( program, IsoString( "#!/bin/sh\nexit 0\n" ) );
+   ::chmod( U8( program ).c_str(), 0755 );
+   SetGlobalSettingReaderForSelfTest( [program]( const IsoString&, String& value ) { value = program; return true; } );
+   r["program"] = U8( program );
+   return r;
+}
+
+nlohmann::json PhaseJ10GxEnd( const nlohmann::json& )
+{
+   SetGlobalSettingReaderForSelfTest( GlobalSettingReader() );
+   J10GxLock().reset();
+   return nlohmann::json::object();
+}
+
 // ---- Section J2 (HistoryReader, Task 3) fixtures and phases ----
 
 // Verbatim XPSM (PI 1.9.5, plan API facts) used by the pure parser tests.
@@ -697,6 +734,9 @@ const std::map<std::string, SelfTestPhaseHandler>& SelfTestPhaseHandlers()
       { "hist.preview.check", PhaseHistCheck },
       { "j6",          PhaseJourneyTracker },
       { "j7.exp",      PhaseJourneyExport },
+      { "j10.gx.begin", PhaseJ10GxBegin },
+      { "j10.gx.check", PhaseHistCheck },
+      { "j10.gx.end",   PhaseJ10GxEnd },
    };
    return handlers;
 }
@@ -2939,10 +2979,13 @@ struct JFakeHistory
 {
    std::map<std::string, std::vector<HistoryStep>> steps;
    mutable int reads = 0;   // every read through this reader (fixture windows and real ones)
+   std::function<void( const std::string& )> onRead;   // called at every read (inside the tick that reads)
 
    HistorySnapshot Read( const IsoString& viewId, int from ) const
    {
       ++reads;
+      if ( onRead )
+         onRead( std::string( viewId.c_str() ) );
       const auto it = steps.find( std::string( viewId.c_str() ) );
       if ( it == steps.end() )
          return ReadViewHistory( viewId, from );
@@ -4299,7 +4342,8 @@ bool RunJourneySelfTest( nlohmann::json& out )
          {
             RawDb raw( st->DbPath() );
             const std::map<std::string, std::vector<std::string>> want = {
-               { "journey", { "id", "created", "updated", "name", "target", "kept", "kept_at", "end_image_id", "status" } },
+               { "journey", { "id", "created", "updated", "name", "target", "kept", "kept_at", "end_image_id", "status",
+                                 "continues_journey_id" } },
                { "image", { "id", "journey_id", "view_id", "file_path", "fingerprint", "is_master", "created", "owner" } },   // owner: Task 7 re-review m6
                { "acquisition", { "image_id", "target", "filter", "camera", "gain", "offset", "sensor_temp", "sub_exposure",
                                   "sub_count", "total_integration_s", "session_date" } },
@@ -6051,6 +6095,8 @@ r1.ok && r1.inferred.size() == 1 && r1.inferred[0].first == 7 && r1.inferred[0].
       // Fix round 1.
       bool offFreezeOk = false, inFlightOk = false, pagingOk = false, idTypeOk = false, markViewOk = false,
            orderOk = false, noteActionOk = false, scrubOk = false, replayLookupOk = false;
+      // Fix round 2.
+      bool scrubFuzzOk = false, gxOk = false, replayExpiryOk = false, inTickFreezeOk = false, lineageOk = false;
       String error;
       std::vector<std::string> made;
       try
@@ -6478,8 +6524,29 @@ r1.ok && r1.inferred.size() == 1 && r1.inferred[0].first == 7 && r1.inferred[0].
             const ToolOutcome g = ExecuteTool( ToolCall{ "t1", "get_journey", { { "journey_id", "1" } } }, ctxFor( AgentMode::Advisor, "pcJtA" ) );
             const ToolOutcome m = ExecuteTool( ToolCall{ "t2", "mark_journey_best", { { "journey_id", "1" } } }, ctxFor( AgentMode::Advisor, "pcJtA" ) );
             const ToolOutcome r = ExecuteTool( ToolCall{ "t3", "replay_journey", { { "journey_id", 1.5 } } }, ctxFor( AgentMode::Copilot, "pcJtNew" ) );
-            d["idType"] = { { "get", text0( g ) }, { "mark", text0( m ) }, { "replay", text0( r ) } };
-            idTypeOk = g.isError && m.isError && r.isError && confirms == before
+            // Re-review R1: numbers past 32 bits are validated in 64 bits before any narrowing (no out-of-bounds step).
+            nlohmann::json wide = nlohmann::json::array();
+            bool wideOk = true;
+            const std::vector<std::pair<const char*, nlohmann::json>> wideArgs = {
+               { "from_step", nlohmann::json( int64( 4294967296LL ) ) }, { "from_step", nlohmann::json( int64( 4294967295LL ) ) },
+               { "from_step", nlohmann::json( int64( 9223372036854775807LL ) ) }, { "from_step", nlohmann::json( -3 ) },
+               { "from_step", nlohmann::json( 1e30 ) }, { "journey_id", nlohmann::json( uint64( 18446744073709551615ULL ) ) },
+               { "max_steps", nlohmann::json( -1 ) } };
+            for ( const auto& a : wideArgs )
+            {
+               nlohmann::json args = { { "journey_id", jA } };
+               args[a.first] = a.second;
+               const ToolOutcome o = ExecuteTool( ToolCall{ "w", "replay_journey", args }, ctxFor( AgentMode::Copilot, "pcJtNew" ) );
+               wide.push_back( { { "arg", a.first }, { "value", a.second }, { "isError", o.isError }, { "text", text0( o ).substr( 0, 160 ) } } );
+               // The precise refusal -- never an exception from reading a step that is not there.
+               wideOk = wideOk && o.isError && (text0( o ).find( "past the last step" ) != std::string::npos
+                                               || text0( o ).find( "must be a positive whole number" ) != std::string::npos);
+            }
+            const ToolOutcome bigMax = ExecuteTool( ToolCall{ "w2", "replay_journey", { { "journey_id", jA }, { "max_steps", int64( 4294967296LL ) } } },
+                                                    ctxFor( AgentMode::Copilot, "pcJtNew" ) );
+            wideOk = wideOk && !bigMax.isError && nlohmann::json::parse( text0( bigMax ) ).at( "steps" ).size() == 3;
+            d["idType"] = { { "get", text0( g ) }, { "mark", text0( m ) }, { "replay", text0( r ) }, { "wide", wide } };
+            idTypeOk = wideOk && g.isError && m.isError && r.isError && confirms == before
                     && text0( g ).find( "journey_id must be" ) != std::string::npos
                     && text0( m ).find( "journey_id must be" ) != std::string::npos
                     && text0( r ).find( "journey_id must be" ) != std::string::npos;
@@ -6528,9 +6595,199 @@ r1.ok && r1.inferred.size() == 1 && r1.inferred[0].first == 7 && r1.inferred[0].
             const String b = ModelTextWithoutDirectories( "journey database /Users/s/Library/Application Support/PixInsight/journeys/journeys.sqlite3: database is locked" );
             const String c = ModelTextWithoutDirectories( "Kept. In the journey's export folder: the process icon set (.xpsm), recipe.json." );
             d["scrub"] = { { "a", U8( a ) }, { "b", U8( b ) }, { "c", U8( c ) } };
+            // Re-review round 1, minor 2: folder names with 2+ spaces, and paths after file:, =, [, ~/, ../, ./
+            const std::vector<std::pair<const char*, const char*>> more = {
+               { "cannot create /home/s/My Astro Data/exports/x.xisf: denied", "cannot create x.xisf: denied" },
+               { "copy to /run/media/scott/Astro Drive 2TB/out 2026/y.xisf failed", "copy to y.xisf failed" },
+               { "see file:/home/s/a b c/d.txt now", "see file:d.txt now" },
+               { "path=/home/s/e f/g.xisf", "path=g.xisf" },
+               { "[/home/s/h i j/k.xisf]", "[k.xisf]" },
+               { "opened ~/Pictures/Deep Sky/l.xisf", "opened l.xisf" },
+               { "read ../secret dir/m.xisf, and ./n o/p.xisf", "read m.xisf, and p.xisf" },
+               { "Sh2-240 / Simeis 147 and $T/2", "Sh2-240 / Simeis 147 and $T/2" } };
+            nlohmann::json bad = nlohmann::json::array();
+            for ( const auto& m : more )
+            {
+               const String got = ModelTextWithoutDirectories( m.first );
+               if ( got != m.second )
+                  bad.push_back( { { "in", m.first }, { "got", U8( got ) }, { "want", m.second } } );
+            }
+            d["scrub"]["more"] = bad;
             scrubOk = a == "copy failed: cannot create x.xisf: denied"
                    && b == "journey database journeys.sqlite3: database is locked"
-                   && c == "Kept. In the journey's export folder: the process icon set (.xpsm), recipe.json.";
+                   && c == "Kept. In the journey's export folder: the process icon set (.xpsm), recipe.json."
+                   && bad.empty();
+         }
+         // (o2) Scrubber: generated paths (directory names with any number of spaces) never leave a directory, and
+         //      random / adversarial text always terminates in linear time.
+         {
+            std::mt19937 rng( 4242 );
+            auto pick = [&rng]( const char* set ) { const size_t n = std::strlen( set ); return set[rng() % n]; };
+            nlohmann::json fails = nlohmann::json::array();
+            for ( int t = 0; t < 400; ++t )
+            {
+               std::string path;
+               const int depth = 1 + int( rng() % 5 );
+               for ( int k = 0; k < depth; ++k )
+               {
+                  path += "/";
+                  const int words = 1 + int( rng() % 4 );
+                  for ( int w = 0; w < words; ++w )
+                  {
+                     if ( w > 0 ) path += " ";
+                     for ( int c = 0, len = 1 + int( rng() % 6 ); c < len; ++c ) path += pick( "abcXYZ0129-_." );
+                  }
+               }
+               const std::string name = "f" + std::to_string( t ) + ".xisf";
+               const std::string in = "error: " + path + "/" + name + ": denied";
+               const String got = ModelTextWithoutDirectories( String( in.c_str() ) );
+               if ( got != String( ("error: " + name + ": denied").c_str() ) && fails.size() < 5 )
+                  fails.push_back( { { "in", in }, { "got", U8( got ) } } );
+            }
+            double worstMs = 0;
+            for ( int t = 0; t < 3000; ++t )
+            {
+               std::string in;
+               for ( int c = 0, len = int( rng() % 160 ); c < len; ++c ) in += pick( "/ a.:,;)'\"\n(~=[]" );
+               const jclock::time_point t0 = jclock::now();
+               ModelTextWithoutDirectories( String( in.c_str() ) );
+               worstMs = std::max( worstMs, MsSince( t0 ) );
+            }
+            nlohmann::json big = nlohmann::json::object();
+            bool linear = true;
+            for ( const char* unit : { "/", " /", "/a b/", "/x y/", "~/ ", "../a ", "a/ ", "/a: " } )
+            {
+               std::string in;
+               while ( in.size() < 100000 )
+                  in += unit;
+               const jclock::time_point t0 = jclock::now();
+               ModelTextWithoutDirectories( String( in.c_str() ) );
+               const double ms = MsSince( t0 );
+               big[unit] = ms;
+               linear = linear && ms < 500;
+            }
+            d["scrubFuzz"] = { { "pathFails", fails }, { "randomWorstMs", worstMs }, { "adversarialMs", big } };
+            scrubFuzzOk = fails.empty() && worstMs < 50 && linear;
+         }
+         // (p) GraXpert no-effect runs measured from the module Timer on top-level windows (fixture j10.graxpert):
+         //     ApplyProcess's historyStepAdded must equal what History shows, in both modes (m3 guard: deleting the
+         //     assignment fails the replace case, where the core adds its empty step).
+         {
+            const nlohmann::json& ph = SelfTestPhaseStore()["j10.gx.check"];
+            nlohmann::json modes = nlohmann::json::object();
+            bool ok = ph.is_array() && ph.size() == 2;
+            for ( size_t k = 0; ok && k < ph.size(); ++k )
+            {
+               const nlohmann::json& top = ph[k].at( "top" );
+               const nlohmann::json& tick = ph[k].at( "tick" );
+               if ( top.contains( "skipped" ) || tick.is_null() )
+               {
+                  ok = false;
+                  break;
+               }
+               const bool historyGrew = top.at( "lengthAfter" ).get<int>() > top.at( "lengthBefore" ).get<int>();
+               modes[top.at( "mode" ).get<std::string>()] = { { "historyGrew", historyGrew }, { "tick", tick }, { "top", top } };
+               ok = ok && tick.value( "ok", true ) == false && tick.value( "noEffect", false ) == true
+                  && tick.value( "historyStepAdded", !historyGrew ) == historyGrew;
+            }
+            d["graxpert"] = { { "phases", ph }, { "modes", modes } };
+            gxOk = ok && modes.contains( "replace" ) && modes.contains( "newWindow" )
+                && modes["replace"].at( "historyGrew" ) == true;   // measured: the core adds its empty step in replace mode
+         }
+         // (q) Re-review minor 4: a replay lookup expires -- an unrelated later run (another process) does not name the
+         //     journey, the replay's own next step does; ForgetPendingReplays (each new user message) drops it.
+         {
+            JourneyRow before, afterUnrelated, afterStep, forgot;
+            const int64 jo = trk.JourneyOfView( "pcJtOther" );
+            store->GetJourney( jo, before );
+            ExecuteTool( ToolCall{ "q1", "replay_journey", { { "journey_id", jA } } }, ctxFor( AgentMode::Copilot, "pcJtOther" ) );
+            const ToolOutcome inv = ExecuteTool( ToolCall{ "q2", "apply_process", { { "process_id", "Invert" } } }, ctxFor( AgentMode::Copilot, "pcJtOther" ) );
+            store->GetJourney( jo, afterUnrelated );
+            // The panel rebuilds its host every tool round (Task 11 0703cd5d): the pending name must survive that.
+            JourneyToolHost rebuilt;
+            rebuilt.store = host.store;
+            rebuilt.tracker = host.tracker;
+            rebuilt.keeper = host.keeper;
+            ToolContext rc = ctxFor( AgentMode::Copilot, "pcJtOther" );
+            rc.journeys = &rebuilt;
+            const ToolOutcome pm = ExecuteTool( ToolCall{ "q3", "apply_process", { { "process_id", "PixelMath" },
+                                                { "parameters", { { "expression", "$T" } } } } }, rc );
+            store->GetJourney( jo, afterStep );
+            const int64 jp = trk.JourneyOfView( "pcJtPlain" );
+            ExecuteTool( ToolCall{ "q4", "replay_journey", { { "journey_id", jA } } }, ctxFor( AgentMode::Copilot, "pcJtPlain" ) );
+            ForgetPendingReplays( host );
+            ExecuteTool( ToolCall{ "q5", "apply_process", { { "process_id", "PixelMath" }, { "parameters", { { "expression", "$T" } } } } },
+                         ctxFor( AgentMode::Copilot, "pcJtPlain" ) );
+            store->GetJourney( jp, forgot );
+            d["replayExpiry"] = { { "before", before.name }, { "afterUnrelated", afterUnrelated.name }, { "afterStep", afterStep.name },
+                                  { "forgot", forgot.name }, { "inv", text0( inv ).substr( 0, 200 ) }, { "pm", text0( pm ).substr( 0, 200 ) } };
+            replayExpiryOk = !inv.isError && !pm.isError && afterUnrelated.name == before.name
+                          && afterStep.name.find( "(replay of #" + std::to_string( jA ) + ")" ) != std::string::npos
+                          && forgot.name.find( "(replay of #" ) == std::string::npos;
+         }
+         // (r) Review test gap: FreezeJourney called INSIDE a tick (re-entered) is queued and done at the next tick.
+         {
+            const JBuilt Q = JBuildJourney( *store, "pcJtQ", "JtInTick", 63 );
+            made.push_back( "pcJtQ" );
+            fake.steps["pcJtQ"] = JHistoryOfImage( *store, Q.img );
+            JTick( trk, 2 );
+            if ( trk.JourneyOfView( "pcJtQ" ) != Q.jid )
+               throw Error( "fixture: the tracker did not resume pcJtQ" );
+            store->MarkKept( Q.jid, Q.img, NowIso() );
+            int64 inTick = -1;
+            String inTickError;
+            fake.onRead = [&]( const std::string& id )
+            {
+               if ( id == "pcJtQ" && inTick < 0 )
+                  inTick = trk.FreezeJourney( Q.jid, inTickError );
+            };
+            std::vector<HistoryStep>& hq = fake.steps["pcJtQ"];
+            hq.push_back( JPixelMathStep( "$T*0.97", int( hq.size() ), NowIso() ) );
+            trk.NoteCopilotStep( "pcJtQ", "NoSuchProcess", "", {}, false, JourneyWallNow() );   // marks it dirty
+            JTick( trk );
+            fake.onRead = nullptr;
+            const int64 afterFirst = trk.JourneyOfView( "pcJtQ" );
+            JTick( trk, 2 );
+            const int64 afterNext = trk.JourneyOfView( "pcJtQ" );
+            JourneyRow qr;
+            store->GetJourney( afterNext, qr );
+            d["inTickFreeze"] = { { "inTick", inTick }, { "error", U8( inTickError ) }, { "afterFirst", afterFirst },
+                                  { "afterNext", afterNext }, { "name", qr.name }, { "continues", qr.continuesJourneyId } };
+            inTickFreezeOk = inTick == 0 && inTickError.Contains( "next tick" ) && afterNext != 0 && afterNext != Q.jid
+                          && qr.name.find( "(continued)" ) != std::string::npos && qr.continuesJourneyId == Q.jid;
+         }
+         // (s) Re-review 4a: a keeper that is itself a "(continued)" journey is replayed and compared over its whole
+         //     lineage (the kept journey it continues first); a broken lineage is refused loudly.
+         {
+            const int64 contA = trk.JourneyOfView( "pcJtA" );
+            JourneyRow ca;
+            store->GetJourney( contA, ca );
+            answer = true;
+            const KeepFlowResult k = RunKeepFlow( host, contA, "pcJtA" );
+            const int ownSteps = store->StepCount( contA, true );
+            const nlohmann::json r = nlohmann::json::parse( text0( ExecuteTool( ToolCall{ "s1", "replay_journey", { { "journey_id", contA } } },
+                                                                                ctxFor( AgentMode::Copilot, "pcJtNew" ) ) ) );
+            const nlohmann::json c = nlohmann::json::parse( text0( ExecuteTool( ToolCall{ "s2", "compare_to_journey", { { "journey_id", contA } } },
+                                                                                ctxFor( AgentMode::Copilot, "pcJtNew" ) ) ) );
+            const std::vector<ChannelStats> rootStart = store->Stats( A.img, 0 );
+            // Broken: a journey whose recorded parent is not a kept journey.
+            const int64 orphanParent = store->CreateJourney( "JtOrphan Ha", "JtOrphan", NowIso() );
+            const int64 orphan = store->CreateJourney( "JtOrphan Ha (continued)", "JtOrphan", NowIso() );
+            store->SetJourneyContinues( orphan, orphanParent );
+            store->MarkKept( orphan, 0, NowIso() );
+            const ToolOutcome broken = ExecuteTool( ToolCall{ "s3", "replay_journey", { { "journey_id", orphan } } },
+                                                    ctxFor( AgentMode::Copilot, "pcJtNew" ) );
+            d["lineage"] = { { "contA", contA }, { "continues", ca.continuesJourneyId }, { "keep", U8( k.modelMessage ) },
+                             { "ownSteps", ownSteps }, { "replayTotal", r.value( "totalSteps", -1 ) },
+                             { "lineage", r.at( "keeper" ).value( "lineage", nlohmann::json() ) },
+                             { "compareSteps", c.at( "keeper" ).at( "steps" ) }, { "broken", text0( broken ) } };
+            lineageOk = ca.continuesJourneyId == jA && k.ok && ownSteps == 2
+                     && r.value( "totalSteps", -1 ) == 3 + ownSteps
+                     && r.at( "keeper" ).at( "lineage" ) == nlohmann::json::array( { jA, contA } )
+                     && r.at( "steps" ).at( 0 ).at( "processId" ) == "PixelMath"
+                     && !rootStart.empty() && r.at( "keeper" ).at( "startStats" ).at( 0 ).at( "median" ) == rootStart[0].median
+                     && c.at( "keeper" ).at( "steps" ).size() == size_t( 3 + ownSteps )
+                     && broken.isError && text0( broken ).find( "lineage" ) != std::string::npos;
          }
       }
       catch ( const pcl::Exception& x ) { error = x.Message(); }
@@ -6541,7 +6798,7 @@ r1.ok && r1.inferred.size() == 1 && r1.inferred[0].first == 7 && r1.inferred[0].
       const bool ok = schemaOk && promptOk && noHostOk && listOk && getOk && markOk && compareOk && freezeBusyOk
                    && keepErrorOk && startOk && noEffectOk && replayMatchOk && attributionOk && cancelOk
                    && offFreezeOk && inFlightOk && pagingOk && idTypeOk && markViewOk && orderOk && noteActionOk && scrubOk
-                   && replayLookupOk && error.IsEmpty();
+                   && replayLookupOk && scrubFuzzOk && gxOk && replayExpiryOk && inTickFreezeOk && lineageOk && error.IsEmpty();
       out["journeyToolsDetail"] = d;
       out["journeyToolsChecks"] = { { "schema", schemaOk }, { "prompt", promptOk }, { "noHost", noHostOk }, { "list", listOk },
                                     { "get", getOk }, { "mark", markOk }, { "compare", compareOk }, { "freezeBusy", freezeBusyOk },
@@ -6549,7 +6806,9 @@ r1.ok && r1.inferred.size() == 1 && r1.inferred[0].first == 7 && r1.inferred[0].
                                     { "replayMatch", replayMatchOk }, { "attribution", attributionOk }, { "cancel", cancelOk },
                                     { "offFreeze", offFreezeOk }, { "inFlight", inFlightOk }, { "paging", pagingOk },
                                     { "idType", idTypeOk }, { "markView", markViewOk }, { "order", orderOk },
-                                    { "noteAction", noteActionOk }, { "scrub", scrubOk }, { "replayLookup", replayLookupOk } };
+                                    { "noteAction", noteActionOk }, { "scrub", scrubOk }, { "replayLookup", replayLookupOk },
+                                    { "scrubFuzz", scrubFuzzOk }, { "graxpert", gxOk }, { "replayExpiry", replayExpiryOk },
+                                    { "inTickFreeze", inTickFreezeOk }, { "lineage", lineageOk } };
       out["journeyToolsError"] = U8( error );
       out["journeyToolsOk"] = ok;
       allOk = allOk && ok;

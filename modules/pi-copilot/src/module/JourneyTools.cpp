@@ -90,46 +90,77 @@ bool BoolField( const nlohmann::json& in, const char* key )
    return in.contains( key ) && in[key].is_boolean() && in[key].get<bool>();
 }
 
-// GC privacy (P6): text for the model names files, never directories. An
-// absolute path token starts with '/' at the start or after a space, '(' or a
-// quote. It ends at ',', ';', ')', a quote or a line break -- and at a space,
-// unless the next word still holds a '/' (a directory name with a space:
-// "/Users/s/Library/Application Support/PixInsight/x", review m7). The token
-// is replaced by its last component; sentence punctuation after it stays.
+// GC privacy (P6): text for the model names files, never directories.
+// A path token starts, right after the start of the text or a space, tab,
+// '(', '[', a quote, '=' or ':' (file:/x, path=/x), with '/' (not a lone
+// "/"), "~/", "./" or "../". It runs to the end of the LAST word, before the
+// next hard delimiter (',', ';', ')', ']', a quote, a line break, or ':'
+// followed by a space or the end), that holds a '/' -- so directory names with
+// any number of spaces stay inside it (re-review round 1, minor 2) -- unless a
+// word starting with '/' or "~/" (a new path) comes first. The token becomes its
+// last component; sentence punctuation after it stays. Over-absorbing prose
+// between two slash words only loses detail, never leaks a directory.
+// Linear: each character is scanned at most twice.
 String WithoutDirectories( const String& text )
 {
-   auto hard = []( char16_type c ) { return c == ',' || c == ';' || c == ')' || c == '\'' || c == '"' || c == '\n' || c == '\r'; };
-   String out;
    const size_type n = text.Length();
+   auto hardAt = [&]( size_type k )
+   {
+      const char16_type c = text[k];
+      return c == ',' || c == ';' || c == ')' || c == ']' || c == '\'' || c == '"' || c == '\n' || c == '\r'
+          || (c == ':' && (k + 1 == n || text[k+1] == ' '));
+   };
+   auto boundaryBefore = [&]( size_type k )
+   {
+      if ( k == 0 )
+         return true;
+      const char16_type c = text[k-1];
+      return c == ' ' || c == '\t' || c == '(' || c == '[' || c == '\'' || c == '"' || c == '=' || c == ':';
+   };
+   auto startsToken = [&]( size_type k )
+   {
+      if ( !boundaryBefore( k ) )
+         return false;
+      const char16_type c = text[k];
+      if ( c == '/' )
+         return k + 1 < n && text[k+1] != ' ' && text[k+1] != '\t' && !hardAt( k + 1 );
+      if ( c == '~' )
+         return k + 1 < n && text[k+1] == '/';
+      if ( c == '.' )
+         return (k + 1 < n && text[k+1] == '/') || (k + 2 < n && text[k+1] == '.' && text[k+2] == '/');
+      return false;
+   };
+   String out;
    for ( size_type i = 0; i < n; )
    {
-      const char16_type c = text[i];
-      const bool starts = c == '/' && (i == 0 || text[i-1] == ' ' || text[i-1] == '(' || text[i-1] == '\'' || text[i-1] == '"');
-      if ( !starts )
+      if ( !startsToken( i ) )
       {
-         out += c;
+         out += text[i];
          ++i;
          continue;
       }
-      size_type j = i;
-      for ( ;; )
+      size_type e = i;
+      while ( e < n && text[e] != ' ' && text[e] != '\t' && !hardAt( e ) )
+         ++e;   // the first word (holds the '/')
+      for ( size_type k = e; k < n && (text[k] == ' ' || text[k] == '\t'); )
       {
-         while ( j < n && text[j] != ' ' && !hard( text[j] ) )
-            ++j;
-         if ( j >= n || text[j] != ' ' )
-            break;
-         size_type k = j + 1;   // the next word: part of the path only if it still holds a '/'
+         size_type w = k;
+         while ( w < n && (text[w] == ' ' || text[w] == '\t') )
+            ++w;
+         if ( w >= n || hardAt( w ) || text[w] == '/' || (text[w] == '~' && w + 1 < n && text[w+1] == '/') )
+            break;   // the end of the segment, or a new path
          bool slash = false;
-         for ( ; k < n && text[k] != ' ' && !hard( text[k] ); ++k )
-            if ( text[k] == '/' )
+         size_type x = w;
+         for ( ; x < n && text[x] != ' ' && text[x] != '\t' && !hardAt( x ); ++x )
+            if ( text[x] == '/' )
                slash = true;
-         if ( !slash )
-            break;
-         j = k;
+         if ( slash )
+            e = x;
+         k = x;
       }
-      String path = text.Substring( i, j - i );
-      String tail;
-      while ( path.Length() > 1 && (path.EndsWith( ':' ) || path.EndsWith( '.' )) )
+      String path = text.Substring( i, e - i );
+      String tail;   // sentence punctuation after the path stays after the name
+      while ( path.Length() > 1 && (path.EndsWith( ':' ) || path.EndsWith( '.' )) && !path.EndsWith( "/." ) )
       {
          tail.Prepend( path[path.Length() - 1] );
          path.DeleteRight( path.Length() - 1 );
@@ -137,8 +168,8 @@ String WithoutDirectories( const String& text )
       while ( path.Length() > 1 && path.EndsWith( '/' ) )
          path.DeleteRight( path.Length() - 1 );
       const String name = ViewContextFileName( path );
-      out += (name.IsEmpty() || name == "/" ? String( "(a folder)" ) : name) + tail;
-      i = j;
+      out += (name.IsEmpty() || name.EndsWith( '/' ) ? String( "(a folder)" ) : name) + tail;
+      i = e;
    }
    return out;
 }
@@ -218,25 +249,91 @@ String JourneyIdFor( JourneyToolHost& host, const ToolContext& ctx, const nlohma
                                 "journeys, or start_journey records this image from now on";
 }
 
+constexpr double kReplayNameSeconds = 900;   // a replay lookup names its journey only if its step follows within this
+
+// Pending replay names (review m6, re-review m4), keyed by {library, main view id}. The library pointer is only
+// compared, never dereferenced. Root thread only (the tools run there).
+struct PendingReplay { int64 journeyId = 0; std::string name, processId; double t = 0; };
+using PendingKey = std::pair<const void*, std::string>;
+std::map<PendingKey, PendingReplay>& PendingReplays()
+{
+   static std::map<PendingKey, PendingReplay> pending;
+   return pending;
+}
+
+// Re-review 4a: a "(continued)" journey is only the tail of its processing (Ruling 26). Its lineage, root
+// first, ends with it: every parent must exist and be kept (a continuation is only ever made from a kept
+// journey). "" when fine, else why the lineage is broken.
+String LineageOf( JourneyStore& s, int64 journeyId, std::vector<int64>& chain )
+{
+   chain.clear();
+   std::vector<int64> up;
+   for ( int64 id = journeyId; id != 0; )
+   {
+      if ( std::find( up.begin(), up.end(), id ) != up.end() || up.size() > 1000 )
+         return String().Format( "the lineage of journey #%lld is broken: it loops at #%lld", static_cast<long long>( journeyId ),
+                                 static_cast<long long>( id ) );
+      JourneyRow j;
+      if ( !s.GetJourney( id, j ) )
+         return String().Format( "the lineage of journey #%lld is broken: journey #%lld is missing", static_cast<long long>( journeyId ),
+                                 static_cast<long long>( id ) );
+      if ( id != journeyId && !j.kept )
+         return String().Format( "the lineage of journey #%lld is broken: it continues journey #%lld, which is not kept, so "
+                                 "the processing before it cannot be trusted as a keeper's", static_cast<long long>( journeyId ),
+                                 static_cast<long long>( id ) );
+      up.push_back( id );
+      id = j.continuesJourneyId;
+   }
+   chain.assign( up.rbegin(), up.rend() );
+   return String();
+}
+
+std::vector<StepRow> LineageSteps( JourneyStore& s, const std::vector<int64>& chain )
+{
+   std::vector<StepRow> r;
+   for ( int64 id : chain )
+      for ( const StepRow& st : ActiveSteps( s, id ) )
+         r.push_back( st );
+   return r;
+}
+
 } // namespace
+
+void ForgetPendingReplays( JourneyToolHost& host )
+{
+   std::map<PendingKey, PendingReplay>& p = PendingReplays();
+   for ( auto it = p.begin(); it != p.end(); )
+      if ( it->first.first == static_cast<const void*>( host.store ) )
+         it = p.erase( it );
+      else
+         ++it;
+}
 
 String ModelTextWithoutDirectories( const String& text )
 {
    return WithoutDirectories( text );
 }
 
-String NoteReplayStepApplied( JourneyToolHost& host, const IsoString& viewFullId )
+String NoteReplayStepApplied( JourneyToolHost& host, const IsoString& viewFullId, const std::string& processId )
 {
-   const auto it = host.pendingReplayName.find( std::string( viewFullId.c_str() ) );
-   if ( it == host.pendingReplayName.end() )
+   std::map<PendingKey, PendingReplay>& pending = PendingReplays();
+   const auto it = pending.find( { static_cast<const void*>( host.store ), std::string( viewFullId.c_str() ) } );
+   if ( it == pending.end() )
       return String();
-   const std::pair<int64, std::string> want = it->second;
-   host.pendingReplayName.erase( it );
-   if ( host.store == nullptr || JourneyForView( host, viewFullId ) != want.first )
+   const PendingReplay want = it->second;
+   if ( JourneyWallNow() - want.t > kReplayNameSeconds )
+   {
+      pending.erase( it );   // expired: the replay was not followed
+      return String();
+   }
+   if ( processId != want.processId )
+      return String();   // an unrelated run: not the replay's step (the lookup stays pending)
+   pending.erase( it );
+   if ( host.store == nullptr || JourneyForView( host, viewFullId ) != want.journeyId )
       return String();   // the image left that journey meanwhile (e.g. kept): nothing to name
    try
    {
-      host.store->RenameJourney( want.first, want.second );   // spec §13.7: "<keeper> (replay of #<id>)"
+      host.store->RenameJourney( want.journeyId, want.name );   // spec §13.7: "<keeper> (replay of #<id>)"
       return String();
    }
    catch ( const pcl::Exception& x )
@@ -458,7 +555,8 @@ ToolOutcome ExecuteJourneyTool( const ToolCall& call, const ToolContext& ctx )
                   masters.push_back( AcqJson( store, i.id ) );
             rows.push_back( { { "id", j.id }, { "name", j.name }, { "target", j.target }, { "kept", j.kept },
                               { "keptAt", j.keptAt }, { "created", j.created }, { "updated", j.updated }, { "status", j.status },
-                              { "steps", store.StepCount( j.id, true ) }, { "masters", masters } } );
+                              { "steps", store.StepCount( j.id, true ) }, { "masters", masters },
+                              { "continues", j.continuesJourneyId == 0 ? nlohmann::json() : nlohmann::json( j.continuesJourneyId ) } } );
          }
          return Ok( name, { { "journeys", rows } } );
       }
@@ -469,6 +567,14 @@ ToolOutcome ExecuteJourneyTool( const ToolCall& call, const ToolContext& ctx )
          if ( !e.IsEmpty() )
             return Fail( name, e );
          nlohmann::json r = BuildRecipe( store, jid, "PI Copilot" );   // file names only; parameters privacy-stripped
+         {
+            JourneyRow gj;
+            store.GetJourney( jid, gj );
+            if ( gj.continuesJourneyId != 0 )   // Ruling 26: this journey is the tail of a kept one
+               r["continues"] = { { "journeyId", gj.continuesJourneyId },
+                                  { "note", "This journey continues a kept journey; its steps start from that result. "
+                                            "replay_journey and compare_to_journey use the whole lineage." } };
+         }
          if ( !BoolField( in, "include_parameters" ) )
             for ( nlohmann::json& s : r["steps"] )
             {
@@ -492,12 +598,19 @@ ToolOutcome ExecuteJourneyTool( const ToolCall& call, const ToolContext& ctx )
             return Fail( name, "the current image is not part of a recorded journey; start_journey records it" );
          JourneyRow cj;
          store.GetJourney( cur, cj );
-         const int64 om = FirstMaster( store, other ), cm = FirstMaster( store, cur );
+         // Re-review 4a: both sides over their whole lineage (a "(continued)" journey is only a tail).
+         std::vector<int64> oChain, cChain;
+         String broken = LineageOf( store, other, oChain );
+         if ( broken.IsEmpty() )
+            broken = LineageOf( store, cur, cChain );
+         if ( !broken.IsEmpty() )
+            return Fail( name, broken );
+         const int64 om = FirstMaster( store, oChain.front() ), cm = FirstMaster( store, cChain.front() );
          const std::vector<ChannelStats> os = om ? store.Stats( om, 0 ) : std::vector<ChannelStats>();
          const std::vector<ChannelStats> cs = cm ? store.Stats( cm, 0 ) : std::vector<ChannelStats>();
          nlohmann::json ratios = StartRatios( os, cs );
          ratios["note"] = "current divided by keeper, per channel";
-         const std::vector<StepRow> ost = ActiveSteps( store, other ), cst = ActiveSteps( store, cur );
+         const std::vector<StepRow> ost = LineageSteps( store, oChain ), cst = LineageSteps( store, cChain );
          nlohmann::json diverges = nullptr;
          for ( size_t i = 0; i < std::max( ost.size(), cst.size() ); ++i )
             if ( i >= ost.size() || i >= cst.size() || ost[i].processId != cst[i].processId )
@@ -509,9 +622,11 @@ ToolOutcome ExecuteJourneyTool( const ToolCall& call, const ToolContext& ctx )
          for ( size_t i = 0; i < ost.size() && i < 40; ++i ) ol.push_back( ost[i].processId );
          for ( size_t i = 0; i < cst.size() && i < 40; ++i ) cl.push_back( cst[i].processId );
          return Ok( name + String().Format( " #%lld vs #%lld", static_cast<long long>( cur ), static_cast<long long>( other ) ), {
-            { "keeper", { { "id", other }, { "name", oj.name }, { "kept", oj.kept }, { "acquisition", om ? AcqJson( store, om ) : nlohmann::json() },
+            { "keeper", { { "id", other }, { "name", oj.name }, { "kept", oj.kept }, { "lineage", oChain },
+                          { "acquisition", om ? AcqJson( store, om ) : nlohmann::json() },
                           { "startStats", StatsArray( os ) }, { "steps", ol } } },
-            { "current", { { "id", cur }, { "name", cj.name }, { "acquisition", cm ? AcqJson( store, cm ) : nlohmann::json() },
+            { "current", { { "id", cur }, { "name", cj.name }, { "lineage", cChain },
+                           { "acquisition", cm ? AcqJson( store, cm ) : nlohmann::json() },
                            { "startStats", StatsArray( cs ) }, { "steps", cl } } },
             { "startRatios", ratios },
             { "divergesAtStep", diverges } } );
@@ -611,25 +726,37 @@ ToolOutcome ExecuteJourneyTool( const ToolCall& call, const ToolContext& ctx )
          JourneyRow kj;
          if ( !store.GetJourney( keeperId, kj ) )
             return Fail( name, String().Format( "no journey #%lld", static_cast<long long>( keeperId ) ) );
-         const int64 km = FirstMaster( store, keeperId );
+         // Re-review 4a: the whole lineage, root first (a "(continued)" keeper alone is only the tail).
+         std::vector<int64> chain;
+         {
+            const String broken = LineageOf( store, keeperId, chain );
+            if ( !broken.IsEmpty() )
+               return Fail( name, broken + "; replay_journey cannot give the whole processing" );
+         }
+         const int64 km = FirstMaster( store, chain.front() );
          const std::vector<ChannelStats> ks = km ? store.Stats( km, 0 ) : std::vector<ChannelStats>();
          const std::vector<ChannelStats> cs = cm ? store.Stats( cm, 0 ) : std::vector<ChannelStats>();
          const nlohmann::json ratios = StartRatios( ks, cs );
          nlohmann::json links = nlohmann::json::array();
-         for ( const LinkRow& l : store.Links( keeperId ) )
-         {
-            ImageRow a, b;
-            store.GetImage( l.fromImageId, a );
-            store.GetImage( l.toImageId, b );
-            links.push_back( { { "from", a.viewId }, { "to", b.viewId }, { "evidence", l.evidence } } );
-         }
-         const std::vector<StepRow> all = ActiveSteps( store, keeperId );
-         const int total = int( all.size() );
-         const int first = fromStep == 0 ? 1 : int( fromStep );
-         if ( total > 0 && first > total )
-            return Fail( name, String().Format( "from_step %d is past the last step (the journey has %d)", first, total ) );
+         for ( int64 id : chain )
+            for ( const LinkRow& l : store.Links( id ) )
+            {
+               ImageRow a, b;
+               store.GetImage( l.fromImageId, a );
+               store.GetImage( l.toImageId, b );
+               links.push_back( { { "from", a.viewId }, { "to", b.viewId }, { "evidence", l.evidence } } );
+            }
+         const std::vector<StepRow> all = LineageSteps( store, chain );
+         const int64 total64 = int64( all.size() );
+         // Re-review R1: validated in int64 BEFORE any narrowing (from_step 2^32 would otherwise wrap to 0).
+         if ( fromStep > std::max<int64>( total64, 1 ) )
+            return Fail( name, String().Format( "from_step %lld is past the last step (the journey has %lld)",
+                                                static_cast<long long>( fromStep ), static_cast<long long>( total64 ) ) );
+         const int total = int( total64 );
+         const int first = fromStep == 0 ? 1 : int( fromStep );   // 1 <= first <= max( total, 1 )
          nlohmann::json r = {
-            { "keeper", { { "id", keeperId }, { "name", kj.name }, { "acquisition", km ? AcqJson( store, km ) : nlohmann::json() },
+            { "keeper", { { "id", keeperId }, { "name", kj.name }, { "lineage", chain },
+                          { "acquisition", km ? AcqJson( store, km ) : nlohmann::json() },
                           { "startStats", StatsArray( ks ) }, { "links", links } } },
             { "current", { { "view", std::string( vid.c_str() ) }, { "journeyId", cur },
                            { "acquisition", cm ? AcqJson( store, cm ) : nlohmann::json() }, { "startStats", StatsArray( cs ) } } },
@@ -703,7 +830,18 @@ ToolOutcome ExecuteJourneyTool( const ToolCall& call, const ToolContext& ctx )
          JourneyRow cj;
          store.GetJourney( cur, cj );
          if ( cj.name.find( "(replay of #" ) == std::string::npos )
-            host.pendingReplayName[std::string( vid.c_str() )] = { cur, kj.name + " (replay of #" + std::to_string( keeperId ) + ")" };
+         {
+            std::string next;   // the replay's next step (the first non-manual one from this page on)
+            for ( const nlohmann::json& st : steps )
+               if ( st.at( "manual" ) == false )
+               {
+                  next = st.at( "processId" ).get<std::string>();
+                  break;
+               }
+            if ( !next.empty() )
+               PendingReplays()[{ static_cast<const void*>( host.store ), std::string( vid.c_str() ) }] =
+                  { cur, kj.name + " (replay of #" + std::to_string( keeperId ) + ")", next, JourneyWallNow() };
+         }
          return Ok( name + String().Format( " #%lld", static_cast<long long>( keeperId ) ), r );
       }
       return Fail( name, "unknown journey tool '" + name + "'" );
