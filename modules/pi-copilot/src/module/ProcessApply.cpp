@@ -540,14 +540,6 @@ StepCheck CheckNewPreviewStep( const View& view, const HistorySnapshot& before, 
    return c;
 }
 
-std::set<std::string> OpenMainViewIds()
-{
-   std::set<std::string> ids;
-   for ( const ImageWindow& w : ImageWindow::AllWindows() )
-      ids.insert( std::string( w.MainView().Id().c_str() ) );
-   return ids;
-}
-
 // ImageContentDigest's mixer: four independent 64-bit lanes over 8-byte words
 // (one multiply each, so the read pass stays close to memory bandwidth), then
 // a final avalanche. Not cryptographic -- it only has to tell "identical" from
@@ -720,6 +712,15 @@ uint64 ImageContentDigest( const ImageVariant& image, const Rect& region )
    return h.Final();
 }
 
+// Declared in ProcessApply.h (shared with the journey tools, pre-flight P22).
+std::set<std::string> OpenMainViewIds()
+{
+   std::set<std::string> ids;
+   for ( const ImageWindow& w : ImageWindow::AllWindows() )
+      ids.insert( std::string( w.MainView().Id().c_str() ) );
+   return ids;
+}
+
 ApplyProcessResult ApplyProcess( const IsoString& processId, const nlohmann::json& parameters,
                                  const nlohmann::json& tableParameters, View view,
                                  const std::vector<PinnedParameter>* pinned )
@@ -768,6 +769,7 @@ ApplyProcessResult ApplyProcess( const IsoString& processId, const nlohmann::jso
 
       // DETECT (step 7): what must change if the step is recorded.
       const bool historyUpdater = instance.IsHistoryUpdater( view );
+      r.targetHistoryStep = historyUpdater;
       const bool isPreview = !view.IsMainView();
       ImageWindow window = view.Window();
       const size_type modifyCountBefore = window.ModifyCount();

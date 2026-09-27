@@ -27,6 +27,7 @@ set(MODULE_SOURCES
     SafeFileWrite.cpp
     JourneyStore.cpp
     MasterFacts.cpp
+    JourneyTools.cpp
     JourneyTracker.cpp
     JourneyExport.cpp
     JourneyWriteup.cpp

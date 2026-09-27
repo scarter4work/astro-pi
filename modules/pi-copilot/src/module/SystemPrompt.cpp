@@ -2,6 +2,7 @@
 // Copyright (c) 2026 Scott Carter. MIT License.
 
 #include "SystemPrompt.h"
+#include "JourneyTools.h"
 
 #include <string>
 
@@ -133,9 +134,11 @@ String BuildSystemPrompt( AgentMode mode, const ToolOptions& options )
    std::string p = kIntro;
    p += mode == AgentMode::Copilot ? kCopilotMode : mode == AgentMode::Guided ? kGuidedMode : kAdvisorMode;
    p += kReadTools;
+   p += kJourneyPromptRead;
    if ( mode != AgentMode::Advisor )
    {
       p += kApplyTool;
+      p += kJourneyPromptAct;
       if ( options.runPjsr )
          p += kScriptTool;
       p += kApplyIdioms;

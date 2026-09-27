@@ -150,7 +150,7 @@ public:
    bool  Acquisition( int64 imageId, AcquisitionFacts& out );
    std::vector<LinkRow> Links( int64 journeyId );
    std::vector<GapRow> Gaps( int64 journeyId );
-   int   StepCount( int64 journeyId, bool activeOnly );   // base steps (params_json.base) excluded
+   int   StepCount( int64 journeyId, bool activeOnly );   // base and noEffect steps (params_json) excluded
    bool  HasReadGaps( int64 imageId );   // any gap with PICopilotJourneyReadGapPrefix (re-review m-e)
 
    // Deletes non-kept journeys with updated < cutoffIso (rows cascade) and their

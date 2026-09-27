@@ -174,14 +174,6 @@ private:
    double     m_meanOfMeans = 0;
 };
 
-std::set<std::string> OpenMainViewIds()
-{
-   std::set<std::string> ids;
-   for ( const ImageWindow& w : ImageWindow::AllWindows() )
-      ids.insert( std::string( w.MainView().Id().c_str() ) );
-   return ids;
-}
-
 void ForceCloseWindows( const std::vector<std::string>& ids )
 {
    for ( const std::string& id : ids )
@@ -3288,10 +3280,13 @@ bool RunInc5SelfTest( nlohmann::json& out )
          const std::string uAdvisor = ExecuteTool( ToolCall{ "u3", "nope", nlohmann::json::object() }, tc ).content.at( 0 ).at( "text" );
          detail["unknownTool"] = { uCopilot, uScripts, uAdvisor };
          unknownToolOk = uCopilot == "unknown tool 'nope'; available: list_processes, describe_process, get_view_context, "
-                                     "apply_process, run_global_process"
+                                     "apply_process, run_global_process, list_journeys, get_journey, compare_to_journey, "
+                                     "mark_journey_best, start_journey, replay_journey"
                       && uScripts == "unknown tool 'nope'; available: list_processes, describe_process, get_view_context, "
-                                     "apply_process, run_global_process, run_pjsr"
-                      && uAdvisor == "unknown tool 'nope'; available: list_processes, describe_process, get_view_context";
+                                     "apply_process, run_global_process, list_journeys, get_journey, compare_to_journey, "
+                                     "mark_journey_best, start_journey, replay_journey, run_pjsr"
+                      && uAdvisor == "unknown tool 'nope'; available: list_processes, describe_process, get_view_context, "
+                                     "list_journeys, get_journey, compare_to_journey, mark_journey_best";
 
          // 7. Tool-result cap.
          {

@@ -939,9 +939,9 @@ int JourneyStore::StepCount( int64 journeyId, bool activeOnly )
 {
    Stmt s( *this, activeOnly
       ? "SELECT count(*) FROM step s JOIN image i ON i.id = s.image_id WHERE i.journey_id=? AND s.state='active'"
-        " AND coalesce(json_extract(s.params_json,'$.base'),0)=0"
+        " AND coalesce(json_extract(s.params_json,'$.base'),0)=0 AND coalesce(json_extract(s.params_json,'$.noEffect'),0)=0"
       : "SELECT count(*) FROM step s JOIN image i ON i.id = s.image_id WHERE i.journey_id=? AND s.state<>'superseded'"
-        " AND coalesce(json_extract(s.params_json,'$.base'),0)=0" );
+        " AND coalesce(json_extract(s.params_json,'$.base'),0)=0 AND coalesce(json_extract(s.params_json,'$.noEffect'),0)=0" );
    s.Int( 1, journeyId );
    return s.Row() ? int( s.ColInt( 0 ) ) : 0;
 }

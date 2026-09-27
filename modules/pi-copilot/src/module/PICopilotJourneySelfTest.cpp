@@ -1,6 +1,7 @@
 // PI Copilot — Native PCL Module for PixInsight
 // Copyright (c) 2026 Scott Carter. MIT License.
 
+#include "AgentSession.h"
 #include "AgentTools.h"
 #include "AnthropicClient.h"
 #include "EvalGuard.h"
@@ -10,6 +11,7 @@
 #include "JourneyExport.h"
 #include "JourneyStore.h"
 #include "JourneyTracker.h"
+#include "JourneyTools.h"
 #include "JourneySpikeProbe.h"
 #include "JourneyWriteup.h"
 #include "MasterFacts.h"
@@ -22,8 +24,11 @@
 #include "ProcessApply.h"
 #include "SafeFileWrite.h"
 #include "StepStats.h"
+#include "SystemPrompt.h"
 #include "Utf8.h"
+#include "ViewCapture.h"
 #include "ViewPreview.h"
+#include "VisionTurn.h"
 #include "SelfTestTiming.h"
 
 #include <pcl/AutoViewLock.h>
@@ -2921,6 +2926,74 @@ bool JWaitKeeper( KeeperExporter& k, StringList& notes, int seconds )
    }
    k.Poll( notes );
    return !k.Busy();
+}
+
+// ---- Section J10 (journey tools, Task 10) helpers ----
+//
+// A process run inside the self-test's executeGlobal() is never recorded in
+// History (harness fact, global constraints), so J10's tracker reads the
+// History of its fixture windows from here: the steps a real top-level run
+// would have left. Every other window's History is read for real.
+struct JFakeHistory
+{
+   std::map<std::string, std::vector<HistoryStep>> steps;
+
+   HistorySnapshot Read( const IsoString& viewId, int from ) const
+   {
+      const auto it = steps.find( std::string( viewId.c_str() ) );
+      if ( it == steps.end() )
+         return ReadViewHistory( viewId, from );
+      HistorySnapshot s;
+      s.ok = true;
+      s.initialLength = 0;
+      s.length = s.historyIndex = int( it->second.size() );
+      s.from = std::max( 0, std::min( from, s.length ) );
+      for ( const HistoryStep& h : it->second )
+         if ( h.combinedIndex >= s.from )
+            s.steps.push_back( h );
+      return s;
+   }
+};
+
+// A PixelMath History step with this expression, as PixInsight writes it
+// (kXpsmPixelMath with the expression and the start time replaced).
+HistoryStep JPixelMathStep( const std::string& expression, int combinedIndex, const std::string& started )
+{
+   std::string x = kXpsmPixelMath;
+   const std::string from = "<parameter id=\"expression\">$T*2</parameter>";
+   x.replace( x.find( from ), from.size(), "<parameter id=\"expression\">" + expression + "</parameter>" );
+   const std::string t0 = "2026-09-25T20:47:50.344Z";
+   x.replace( x.find( t0 ), t0.size(), started );
+   HistoryStep h;
+   String e;
+   if ( !ParseXpsmStep( x, h, e ) )
+      throw Error( "JPixelMathStep: " + e );
+   h.combinedIndex = combinedIndex;
+   return h;
+}
+
+// The History matching an image's recorded rows (JRecordJourney's steps).
+std::vector<HistoryStep> JHistoryOfImage( JourneyStore& store, int64 imageId )
+{
+   std::vector<HistoryStep> hs;
+   for ( const StepRow& r : store.Steps( imageId, false ) )
+   {
+      HistoryStep h;
+      String e;
+      if ( !ParseXpsmStep( r.params.value( "xpsm", std::string() ), h, e ) )
+         throw Error( "JHistoryOfImage: " + e );
+      h.identity = r.params.value( "identity", std::string() );
+      h.combinedIndex = r.seq - 1;
+      hs.push_back( h );
+   }
+   return hs;
+}
+
+// The real-tool-path successful apply_process results on `viewId`, in order: {median of channel 0 after it}.
+double JApplyMedian( const ToolOutcome& o )
+{
+   const nlohmann::json s = nlohmann::json::parse( o.content.at( 0 ).at( "text" ).get<std::string>() );
+   return s.at( "newContext" ).at( "channelStats" ).at( 0 ).at( "median" ).get<double>();
 }
 
 } // namespace
@@ -5914,6 +5987,482 @@ r1.ok && r1.inferred.size() == 1 && r1.inferred[0].first == 7 && r1.inferred[0].
       out["journeyWiringError"] = U8( error );
       out["journeyWiringOk"] = ok;
       allOk = allOk && ok;
+   }
+
+   // ---- Section J10: journey tools (Task 10) --------------------------------
+   // J10's own library + tracker. In-process steps never reach History (harness
+   // fact), so the tracker reads its fixture windows' History from JFakeHistory
+   // (the steps a top-level run would have left); every other window is real.
+   SelfTestSectionMark( "J10 journey tools" );
+   {
+      nlohmann::json d = nlohmann::json::object();
+      bool schemaOk = false, promptOk = false, noHostOk = false, listOk = false, getOk = false, markOk = false,
+           compareOk = false, freezeBusyOk = false, keepErrorOk = false, startOk = false, noEffectOk = false,
+           replayMatchOk = false, attributionOk = false, cancelOk = false;
+      String error;
+      std::vector<std::string> made;
+      try
+      {
+         auto names = []( const nlohmann::json& tools )
+         {
+            std::vector<std::string> n;
+            for ( const nlohmann::json& t : tools )
+               n.push_back( t.at( "name" ).get<std::string>() );
+            return n;
+         };
+         auto text0 = []( const ToolOutcome& o ) { return o.content.at( 0 ).at( "text" ).get<std::string>(); };
+         // GC privacy (P6): no "/"-rooted directory in text meant for the model.
+         auto noDirs = []( const std::string& s )
+         {
+            for ( size_t i = 0; i < s.size(); ++i )
+               if ( s[i] == '/' && (i == 0 || s[i-1] == ' ' || s[i-1] == '(' || s[i-1] == '\'' || s[i-1] == '"') )
+                  return false;
+            return true;
+         };
+
+         // (a) Schemas and mode gating (Ruling 14).
+         {
+            ToolOptions scripts;
+            scripts.runPjsr = true;
+            const std::vector<std::string> adv = names( ToolDefinitions( AgentMode::Advisor ) );
+            const std::vector<std::string> cop = names( ToolDefinitions( AgentMode::Copilot, scripts ) );
+            bool shapes = true;
+            for ( const nlohmann::json& t : JourneyToolDefinitions( AgentMode::Copilot ) )
+               shapes = shapes && t.at( "input_schema" ).at( "type" ) == "object" && !t.at( "description" ).get<std::string>().empty();
+            schemaOk = shapes && cop.back() == "run_pjsr"
+                    && std::find( adv.begin(), adv.end(), "mark_journey_best" ) != adv.end()
+                    && std::find( adv.begin(), adv.end(), "replay_journey" ) == adv.end()
+                    && std::find( adv.begin(), adv.end(), "start_journey" ) == adv.end()
+                    && IsJourneyTool( "replay_journey" ) && !IsJourneyTool( "apply_process" )
+                    && ToolDefinitions( AgentMode::Copilot ).at( 3 ).at( "input_schema" ).at( "properties" ).contains( "reason" )
+                    && ToolDefinitions( AgentMode::Copilot ).at( 4 ).at( "input_schema" ).at( "properties" ).contains( "reason" );
+            d["advisorTools"] = adv;
+         }
+         // (b) Prompt lines per mode.
+         {
+            const String pc = BuildSystemPrompt( AgentMode::Copilot ), pg = BuildSystemPrompt( AgentMode::Guided ),
+                         pa = BuildSystemPrompt( AgentMode::Advisor );
+            promptOk = pc.Contains( "replay_journey {" ) && pg.Contains( "replay_journey {" ) && pc.Contains( "Never invent a substitute" )
+                    && pa.Contains( "list_journeys {" ) && pa.Contains( "mark_journey_best {" ) && !pa.Contains( "replay_journey" )
+                    && !pa.Contains( "start_journey" ) && !pa.Contains( "apply_process {" ) && !pa.Contains( "run_global_process" )
+                    && !pc.Contains( "run_pjsr" )
+                    // P2: the retry route; P26: Advisor presents a replay plan it cannot run.
+                    && pa.Contains( "To redo a kept journey's outputs, pass its journey_id" )
+                    && pa.Contains( "present the plan from get_journey + compare_to_journey; you cannot run it" );
+         }
+         // (c) No library -> a precise error, never a crash.
+         {
+            ToolContext c;
+            c.mode = AgentMode::Copilot;
+            const ToolOutcome o = ExecuteTool( ToolCall{ "j0", "list_journeys", nlohmann::json::object() }, c );
+            noHostOk = o.isError && text0( o ).find( "journey library is not available" ) != std::string::npos;
+            d["noHost"] = text0( o );
+         }
+
+         JTempDir root( "picopilot-jt-" );
+         String oe;
+         std::unique_ptr<JourneyStore> store = JourneyStore::Open( root.Path(), oe );
+         if ( !store )
+            throw Error( "store: " + oe );
+         JFakeHistory fake;
+         JourneyTracker trk( store.get() );
+         trk.SetHistoryReaderForSelfTest( [&fake]( const IsoString& id, int from ) { return fake.Read( id, from ); } );
+         KeeperExporter keeper( store.get() );
+         int confirms = 0;
+         bool answer = false;
+         JourneyToolHost host;
+         host.store = store.get();
+         host.tracker = &trk;
+         host.keeper = &keeper;
+         host.apiKey = []() { return String(); };
+         host.confirmKeeper = [&]( const String& html ) { ++confirms; d["summaryHtml"] = U8( html ); return answer; };
+         auto ctxFor = [&]( AgentMode m, const char* view )
+         {
+            ToolContext c;
+            c.mode = m;
+            c.turnViewId = IsoString( view );
+            c.journeys = &host;
+            return c;
+         };
+
+         // Two recorded journeys of one target, each resumed by the tracker (Task 7's save + reopen path). Both
+         // masters share one fingerprint, so B is made only after A's window is tracked: a tracked image is
+         // never resumed twice (Task 7 review I2), so B then resumes its own row.
+         const JBuilt A = JBuildJourney( *store, "pcJtA", "JtM42", 51 );
+         made.push_back( "pcJtA" );
+         fake.steps["pcJtA"] = JHistoryOfImage( *store, A.img );
+         JTick( trk, 2 );
+         const JBuilt B = JBuildJourney( *store, "pcJtB", "JtM42", 52 );
+         made.push_back( "pcJtB" );
+         fake.steps["pcJtB"] = JHistoryOfImage( *store, B.img );
+         JTick( trk, 2 );
+         const int64 jA = A.jid, jB = B.jid;
+         d["resumed"] = { { "A", trk.JourneyOfView( "pcJtA" ) }, { "B", trk.JourneyOfView( "pcJtB" ) }, { "jA", jA }, { "jB", jB } };
+         if ( trk.JourneyOfView( "pcJtA" ) != jA || trk.JourneyOfView( "pcJtB" ) != jB || trk.ImageOfView( "pcJtA" ) != A.img )
+            throw Error( "fixture: the tracker did not resume pcJtA / pcJtB into their own journeys" );
+
+         // (d) list_journeys: all, kept only, by target.
+         {
+            store->MarkKept( jB, B.img, NowIso() );
+            const nlohmann::json all = nlohmann::json::parse( text0( ExecuteTool( ToolCall{ "l1", "list_journeys", nlohmann::json::object() }, ctxFor( AgentMode::Advisor, "pcJtA" ) ) ) );
+            const nlohmann::json tgt = nlohmann::json::parse( text0( ExecuteTool( ToolCall{ "l1b", "list_journeys", { { "target", "jtm42" } } }, ctxFor( AgentMode::Advisor, "pcJtA" ) ) ) );
+            const nlohmann::json kept = nlohmann::json::parse( text0( ExecuteTool( ToolCall{ "l2", "list_journeys", { { "kept_only", true }, { "target", "JtM42" } } }, ctxFor( AgentMode::Advisor, "pcJtA" ) ) ) );
+            const nlohmann::json none = nlohmann::json::parse( text0( ExecuteTool( ToolCall{ "l3", "list_journeys", { { "target", "Nope" } } }, ctxFor( AgentMode::Advisor, "pcJtA" ) ) ) );
+            bool both = false, shape = tgt.at( "journeys" ).size() == 2;
+            int seen = 0;
+            for ( const nlohmann::json& j : all.at( "journeys" ) )
+               seen += (j.at( "id" ) == jA || j.at( "id" ) == jB) ? 1 : 0;
+            both = seen == 2;
+            for ( const nlohmann::json& j : tgt.at( "journeys" ) )
+               shape = shape && j.at( "steps" ) == 3 && j.at( "masters" ).at( 0 ).at( "filter" ) == "Ha";
+            d["list"] = { { "tgt", tgt }, { "kept", kept } };
+            listOk = both && shape && kept.at( "journeys" ).size() == 1 && kept.at( "journeys" ).at( 0 ).at( "id" ) == jB
+                  && none.at( "journeys" ).empty();
+         }
+         // (e) get_journey: default = the turn view's journey; parameters only on request; no directories.
+         {
+            const ToolOutcome g1 = ExecuteTool( ToolCall{ "g1", "get_journey", nlohmann::json::object() }, ctxFor( AgentMode::Advisor, "pcJtA" ) );
+            const ToolOutcome g2 = ExecuteTool( ToolCall{ "g2", "get_journey", { { "journey_id", jA }, { "include_parameters", true } } }, ctxFor( AgentMode::Advisor, "" ) );
+            const ToolOutcome g3 = ExecuteTool( ToolCall{ "g3", "get_journey", nlohmann::json::object() }, ctxFor( AgentMode::Advisor, "" ) );
+            const nlohmann::json j1 = nlohmann::json::parse( text0( g1 ) ), j2 = nlohmann::json::parse( text0( g2 ) );
+            d["get"] = { { "g3", text0( g3 ) } };
+            getOk = !g1.isError && j1.at( "journey" ).at( "id" ) == jA && !j1.at( "steps" ).at( 0 ).contains( "parameters" )
+                 && j2.at( "steps" ).at( 0 ).contains( "parameters" ) && text0( g2 ).find( U8( root.Path() ) ) == std::string::npos
+                 && g3.isError && text0( g3 ).find( "journey_id" ) != std::string::npos;
+         }
+         // (g) compare_to_journey: from the database only; per-channel start ratios (current / keeper) are numbers.
+         //     Both masters come from JMakeNoiseMaster (0.1 +- 0.01), so only the shape is asserted, not a direction.
+         {
+            const ToolOutcome o = ExecuteTool( ToolCall{ "c1", "compare_to_journey", { { "journey_id", jB } } }, ctxFor( AgentMode::Advisor, "pcJtA" ) );
+            const nlohmann::json c = nlohmann::json::parse( text0( o ) );
+            d["compare"] = c;
+            compareOk = !o.isError && o.content.size() == 1 && c.at( "keeper" ).at( "id" ) == jB && c.at( "current" ).at( "id" ) == jA
+                     && c.at( "startRatios" ).at( "noise" ).at( 0 ).is_number() && c.contains( "divergesAtStep" )
+                     && c.at( "keeper" ).at( "acquisition" ).at( "filter" ) == "Ha";
+         }
+         // (f) mark_journey_best: summary + confirm (declined -> nothing), then kept; again -> no dialog, retry only.
+         //     After the keep, pcJtA belongs to "(continued)" (Ruling 26), so the retry names the kept journey by
+         //     journey_id (the prompt and the tool description say so; spec §6.4 retry from chat).
+         {
+            answer = false;
+            const ToolOutcome no = ExecuteTool( ToolCall{ "m1", "mark_journey_best", nlohmann::json::object() }, ctxFor( AgentMode::Advisor, "pcJtA" ) );
+            JourneyRow r1;
+            store->GetJourney( jA, r1 );
+            answer = true;
+            const ToolOutcome yes = ExecuteTool( ToolCall{ "m2", "mark_journey_best", nlohmann::json::object() }, ctxFor( AgentMode::Advisor, "pcJtA" ) );
+            JourneyRow r2;
+            store->GetJourney( jA, r2 );
+            const int confirmsAfterYes = confirms;
+            const ToolOutcome again = ExecuteTool( ToolCall{ "m3", "mark_journey_best", { { "journey_id", jA } } }, ctxFor( AgentMode::Advisor, "pcJtA" ) );
+            d["mark"] = { { "no", text0( no ) }, { "yes", text0( yes ) }, { "again", text0( again ) }, { "confirms", confirms },
+                          { "yesLog", U8( yes.logLine ) }, { "continued", trk.JourneyOfView( "pcJtA" ) },
+                          { "status", trk.StatusFor( "pcJtA" ).name } };
+            markOk = no.isError && text0( no ).find( "declined" ) != std::string::npos && !r1.kept
+                  && !yes.isError && r2.kept && r2.endImageId == A.img
+                  && text0( yes ).find( "recipe.json" ) != std::string::npos && text0( yes ).find( "API key" ) != std::string::npos
+                  && confirmsAfterYes == 2 && confirms == 2 && !again.isError
+                  && text0( again ).find( "already kept" ) != std::string::npos
+                  && noDirs( text0( no ) ) && noDirs( text0( yes ) ) && noDirs( text0( again ) )
+                  && text0( yes ).find( U8( root.Path() ) ) == std::string::npos
+                  && yes.logLine.Contains( root.Path() )   // the chat log names the folder
+                  && d["summaryHtml"].get<std::string>().find( "JtM42" ) != std::string::npos
+                  // Ruling 26: the kept journey is frozen; the image continues in a new journey.
+                  && trk.JourneyOfView( "pcJtA" ) != 0 && trk.JourneyOfView( "pcJtA" ) != jA
+                  && trk.StatusFor( "pcJtA" ).name.find( "(continued)" ) != std::string::npos
+                  && store->StepCount( jA, true ) == 3 && store->StepCount( trk.JourneyOfView( "pcJtA" ), true ) == 0;
+         }
+         // (f2) Freezing a journey whose image is busy never waits (P9): the image joins "(continued)" once free.
+         //      Own target, so the replay matching in (i) still sees exactly jA and jB.
+         {
+            const JBuilt F = JBuildJourney( *store, "pcJtF", "JtFreeze", 56 );
+            made.push_back( "pcJtF" );
+            fake.steps["pcJtF"] = JHistoryOfImage( *store, F.img );
+            JTick( trk, 2 );
+            if ( trk.JourneyOfView( "pcJtF" ) != F.jid )
+               throw Error( "fixture: the tracker did not resume pcJtF" );
+            KeepFlowResult kf;
+            double ms = 0;
+            int64 during = -1;
+            {
+               View fv = ImageWindow::WindowById( "pcJtF" ).MainView();
+               AutoViewLock lock( fv );
+               answer = true;
+               const jclock::time_point t0 = jclock::now();
+               kf = RunKeepFlow( host, F.jid, "pcJtF" );
+               ms = MsSince( t0 );
+               during = trk.JourneyOfView( "pcJtF" );
+            }
+            JTick( trk );
+            const int64 after = trk.JourneyOfView( "pcJtF" );
+            JourneyRow fr;
+            store->GetJourney( after, fr );
+            d["freezeBusy"] = { { "ms", ms }, { "during", during }, { "after", after }, { "name", fr.name },
+                                { "message", U8( kf.message ) }, { "modelMessage", U8( kf.modelMessage ) } };
+            freezeBusyOk = kf.ok && during == 0 && ms < 2000 && after != 0 && after != F.jid
+                        && fr.name.find( "(continued)" ) != std::string::npos && store->StepCount( F.jid, true ) == 3
+                        && noDirs( U8( kf.modelMessage ) );
+         }
+         // (f3) Integration concern #4: the keep's own failures (a keep inside an open transaction; the library
+         //      locked by another program) are visible errors, never a crash or a silent "kept".
+         {
+            const JBuilt E = JBuildJourney( *store, "pcJtE", "JtErr", 57 );
+            made.push_back( "pcJtE" );
+            answer = true;
+            const int before = confirms;
+            KeepFlowResult inTx;
+            {
+               JourneyStore::Transaction tx( *store );
+               inTx = RunKeepFlow( host, E.jid, "" );
+            }
+            KeepFlowResult locked;
+            {
+               RawDb other( store->DbPath() );
+               const bool held = other.Exec( "BEGIN IMMEDIATE" );
+               locked = RunKeepFlow( host, E.jid, "" );
+               other.Exec( "ROLLBACK" );
+               d["keepErrorHeld"] = held;
+            }
+            JourneyRow er;
+            store->GetJourney( E.jid, er );
+            d["keepError"] = { { "inTx", U8( inTx.message ) }, { "locked", U8( locked.message ) },
+                               { "lockedModel", U8( locked.modelMessage ) }, { "confirms", confirms - before } };
+            keepErrorOk = !inTx.ok && !inTx.declined && inTx.message.Contains( "transaction" )
+                       && !locked.ok && !locked.declined && locked.message.Contains( "locked" ) && !er.kept
+                       && noDirs( U8( locked.modelMessage ) );
+         }
+         // (h) start_journey: an unrecognized master; then "already recorded"; never in Advisor.
+         {
+            JMakeNoiseMaster( "pcJtPlain", 53 );
+            made.push_back( "pcJtPlain" );
+            JTick( trk, 2 );
+            const bool untrackedBefore = trk.JourneyOfView( "pcJtPlain" ) == 0;
+            const ToolOutcome s1 = ExecuteTool( ToolCall{ "s1", "start_journey", nlohmann::json::object() }, ctxFor( AgentMode::Copilot, "pcJtPlain" ) );
+            const ToolOutcome s2 = ExecuteTool( ToolCall{ "s2", "start_journey", nlohmann::json::object() }, ctxFor( AgentMode::Copilot, "pcJtPlain" ) );
+            const ToolOutcome s3 = ExecuteTool( ToolCall{ "s3", "start_journey", nlohmann::json::object() }, ctxFor( AgentMode::Advisor, "pcJtPlain" ) );
+            d["start"] = { { "s1", text0( s1 ) }, { "s2", text0( s2 ) }, { "s3", text0( s3 ) } };
+            startOk = untrackedBefore && !s1.isError && trk.JourneyOfView( "pcJtPlain" ) != 0
+                   && s2.isError && text0( s2 ).find( "already recorded" ) != std::string::npos
+                   && s3.isError && text0( s3 ).find( "not available in Advisor" ) != std::string::npos;
+         }
+         // (h2) T-graxpert concern: a Copilot run that reported success but changed nothing (noEffect) is not
+         //      recorded as a step of the journey: its History entry is kept for alignment but flagged and
+         //      excluded (counts, recipe), like a base step.
+         {
+            fake.steps["pcJtPlain"] = {};   // its real History: none
+            const int64 jp = trk.JourneyOfView( "pcJtPlain" );
+            const uint64 token = trk.NoteCopilotStep( "pcJtPlain", "PixelMath", "remove the gradient", {}, false, JourneyWallNow() );
+            trk.SetCopilotNoteNoEffect( token );
+            fake.steps["pcJtPlain"].push_back( JPixelMathStep( "$T", 0, NowIso() ) );
+            JTick( trk );
+            bool flagged = false;
+            for ( const StepRow& r : store->Steps( trk.ImageOfView( "pcJtPlain" ), false ) )
+               flagged = flagged || (r.actor == "copilot" && r.params.value( "noEffect", false ));
+            const nlohmann::json recipe = BuildRecipe( *store, jp, "PI Copilot" );
+            d["noEffect"] = { { "token", token }, { "flagged", flagged }, { "count", store->StepCount( jp, true ) },
+                              { "recipeSteps", recipe.at( "steps" ).size() } };
+            noEffectOk = token != 0 && flagged && store->StepCount( jp, true ) == 0 && recipe.at( "steps" ).empty();
+         }
+         // (i) replay_journey: none / several / chosen.
+         {
+            JMakeNoiseMaster( "pcJtNew", 54 );
+            made.push_back( "pcJtNew" );
+            JSetKeywords( "pcJtNew", Kw( { { "IMAGETYP", "'Master Light'" }, { "OBJECT", "'JtM42'" }, { "FILTER", "'Ha'" },
+                                           { "INSTRUME", "'ASI2400MC'" } } ) );
+            JMakeNoiseMaster( "pcJtOther", 55 );
+            made.push_back( "pcJtOther" );
+            JSetKeywords( "pcJtOther", Kw( { { "IMAGETYP", "'Master Light'" }, { "OBJECT", "'Nothing'" } } ) );
+            JTick( trk, 2 );
+            const ToolOutcome none = ExecuteTool( ToolCall{ "r0", "replay_journey", nlohmann::json::object() }, ctxFor( AgentMode::Copilot, "pcJtOther" ) );
+            const ToolOutcome two = ExecuteTool( ToolCall{ "r1", "replay_journey", nlohmann::json::object() }, ctxFor( AgentMode::Copilot, "pcJtNew" ) );
+            const ToolOutcome one = ExecuteTool( ToolCall{ "r2", "replay_journey", { { "journey_id", jA } } }, ctxFor( AgentMode::Guided, "pcJtNew" ) );
+            const ToolOutcome adv = ExecuteTool( ToolCall{ "r3", "replay_journey", { { "journey_id", jA } } }, ctxFor( AgentMode::Advisor, "pcJtNew" ) );
+            const nlohmann::json t = nlohmann::json::parse( text0( two ) ), m = nlohmann::json::parse( text0( one ) );
+            JourneyRow cur, keptA;
+            store->GetJourney( trk.JourneyOfView( "pcJtNew" ), cur );
+            store->GetJourney( jA, keptA );
+            d["replay"] = { { "none", text0( none ) }, { "two", t }, { "oneKeys", nlohmann::json::array() }, { "curName", cur.name } };
+            for ( auto it = m.begin(); it != m.end(); ++it ) d["replay"]["oneKeys"].push_back( it.key() );
+            replayMatchOk = none.isError && text0( none ).find( "no kept journey" ) != std::string::npos
+                         && !two.isError && t.at( "needsChoice" ) == true && t.at( "candidates" ).size() == 2
+                         && !one.isError && m.at( "keeper" ).at( "id" ) == jA && m.at( "steps" ).size() == 3
+                         && m.at( "steps" ).at( 0 ).contains( "recordedMedianAfter" ) && m.at( "steps" ).at( 0 ).at( "manual" ) == false
+                         && m.at( "differences" ).contains( "noiseRatio" )
+                         && cur.name == keptA.name + " (replay of #" + std::to_string( jA ) + ")"   // spec §13.7 (P19)
+                         && adv.isError && noDirs( text0( one ) );
+         }
+         // (j) Copilot attribution through the REAL tool path: the note is posted before the run and the History
+         //     step it made is the Copilot's, with the reason; a created window is linked by 'copilot'; a failed
+         //     run and a run that adds no History step to its target (createNewImage) leave no note behind, so the
+         //     user's next PixelMath on the same image stays the user's.
+         {
+            const ToolOutcome a = ExecuteTool( ToolCall{ "a1", "apply_process", { { "process_id", "PixelMath" },
+                                               { "parameters", { { "expression", "$T*1.05" } } }, { "reason", "a touch brighter" } } },
+                                               ctxFor( AgentMode::Copilot, "pcJtA" ) );
+            std::vector<HistoryStep>& ha = fake.steps["pcJtA"];
+            ha.push_back( JPixelMathStep( "$T*1.05", int( ha.size() ), NowIso() ) );   // what the run left in History
+            const ToolOutcome n = ExecuteTool( ToolCall{ "a2", "apply_process", { { "process_id", "PixelMath" },
+                                               { "parameters", { { "expression", "$T" }, { "createNewImage", true }, { "newImageId", "pcJtCopy" } } },
+                                               { "reason", "a working copy" } } }, ctxFor( AgentMode::Copilot, "pcJtA" ) );
+            made.push_back( "pcJtCopy" );
+            JTick( trk, 3 );
+            const int64 aImg = trk.ImageOfView( "pcJtA" );
+            bool reasonSeen = false;
+            for ( const StepRow& r : store->Steps( aImg, false ) )
+               reasonSeen = reasonSeen || (r.actor == "copilot" && r.reason == "a touch brighter");
+            std::string ev;
+            for ( const LinkRow& l : store->Links( trk.JourneyOfView( "pcJtA" ) ) )
+               if ( l.toImageId == trk.ImageOfView( "pcJtCopy" ) ) ev = l.evidence;
+            d["attribution"] = { { "a", text0( a ) }, { "n", text0( n ) }, { "evidence", ev } };
+            attributionOk = !a.isError && !n.isError && reasonSeen && ev == "copilot";
+
+            const ToolOutcome bad = ExecuteTool( ToolCall{ "a3", "apply_process", { { "process_id", "PixelMath" },
+                                                 { "parameters", { { "expression", "$T*(" } } }, { "reason", "broken" } } },
+                                                 ctxFor( AgentMode::Copilot, "pcJtA" ) );
+            ha.push_back( JPixelMathStep( "$T*0.99", int( ha.size() ), NowIso() ) );   // the user's own step
+            JTick( trk, 2 );
+            std::string actor = "?";
+            for ( const StepRow& r : store->Steps( aImg, false ) )
+               if ( r.params.value( "parameters", nlohmann::json::object() ).value( "expression", std::string() ) == "$T*0.99" )
+                  actor = r.actor;
+            d["cancel"] = { { "bad", text0( bad ) }, { "actor", actor } };
+            cancelOk = bad.isError && actor == "user";
+         }
+      }
+      catch ( const pcl::Exception& x ) { error = x.Message(); }
+      catch ( const std::exception& x ) { error = String( x.what() ); }
+      catch ( ... )                     { error = "unknown exception"; }
+      for ( const std::string& id : made )
+         JForceClose( id );
+      const bool ok = schemaOk && promptOk && noHostOk && listOk && getOk && markOk && compareOk && freezeBusyOk
+                   && keepErrorOk && startOk && noEffectOk && replayMatchOk && attributionOk && cancelOk && error.IsEmpty();
+      out["journeyToolsDetail"] = d;
+      out["journeyToolsChecks"] = { { "schema", schemaOk }, { "prompt", promptOk }, { "noHost", noHostOk }, { "list", listOk },
+                                    { "get", getOk }, { "mark", markOk }, { "compare", compareOk }, { "freezeBusy", freezeBusyOk },
+                                    { "keepError", keepErrorOk }, { "start", startOk }, { "noEffect", noEffectOk },
+                                    { "replayMatch", replayMatchOk }, { "attribution", attributionOk }, { "cancel", cancelOk } };
+      out["journeyToolsError"] = U8( error );
+      out["journeyToolsOk"] = ok;
+      allOk = allOk && ok;
+   }
+
+   // ---- Section J10 live: Opus replays a kept journey (gated) ----------------
+   // A keeper K (background down, then a midtones stretch) on one master, a
+   // brighter, noisier master N of the same target: through the real tools the
+   // model replays K on N step by step and lands near each recorded median. The
+   // medians come from the apply_process results (the image's real statistics
+   // after each run); in-process runs never reach History (harness fact).
+   SelfTestSectionMark( "J10 gated LIVE journey replay" );
+   {
+      nlohmann::json d = nlohmann::json::object();
+      bool liveSkipped = true, liveOk = true;
+      String error;
+      std::vector<std::string> made;
+      if ( const char* key = std::getenv( "PICOPILOT_TEST_API_KEY" ) )
+      {
+         liveSkipped = false;
+         liveOk = false;
+         try
+         {
+            JTempDir root( "picopilot-jtl-" );
+            String oe;
+            std::unique_ptr<JourneyStore> store = JourneyStore::Open( root.Path(), oe );
+            if ( !store )
+               throw Error( "store: " + oe );
+            JourneyTracker trk( store.get() );
+            KeeperExporter keeper( store.get() );
+            JourneyToolHost host;
+            host.store = store.get();
+            host.tracker = &trk;
+            host.keeper = &keeper;
+            host.apiKey = []() { return String(); };
+            host.confirmKeeper = []( const String& ) { return false; };
+            const JBuilt K = JRecordJourney( *store, "pcJtK",
+                                             Kw( { { "IMAGETYP", "'Master Light'" }, { "OBJECT", "'LiveCone'" }, { "FILTER", "'Ha'" },
+                                                   { "INSTRUME", "'ASI2400MC'" }, { "EXPTIME", "300" }, { "NCOMBINE", "20" } } ),
+                                             61, { { "$T-0.05", "user", "" }, { "mtf(0.2,$T)", "user", "" } } );
+            made.push_back( "pcJtK" );
+            store->MarkKept( K.jid, K.img, NowIso() );
+            std::vector<double> recorded;
+            for ( const StepRow& r : store->Steps( K.img, false ) )
+            {
+               const std::vector<ChannelStats> s = store->Stats( K.img, r.id );
+               recorded.push_back( s.empty() ? -1 : s[0].median );
+            }
+            {
+               ImageWindow w( 96, 64, 1, 32, true, false, true, "pcJtN" );
+               View v = w.MainView();
+               AutoViewLock lock( v );
+               ImageVariant iv = v.Image();
+               JFillNoise( static_cast<Image&>( *iv ), 0.15, 0.02, 62 );
+            }
+            made.push_back( "pcJtN" );
+            JSetKeywords( "pcJtN", Kw( { { "IMAGETYP", "'Master Light'" }, { "OBJECT", "'LiveCone'" }, { "FILTER", "'Ha'" },
+                                         { "INSTRUME", "'ASI2400MC'" } } ) );
+            JTick( trk, 2 );
+            if ( trk.JourneyOfView( "pcJtN" ) == 0 )
+               throw Error( "fixture: pcJtN is not recorded" );
+            ToolContext ctx;
+            ctx.mode = AgentMode::Copilot;
+            ctx.turnViewId = "pcJtN";
+            ctx.journeys = &host;
+            std::set<std::string> seen;
+            ctx.inspectedViews = &seen;
+            AgentSession session;
+            StringList notes;
+            {
+               View nv = ImageWindow::WindowById( "pcJtN" ).MainView();
+               session.BeginUserTurn( CaptureViewTurn( String().Format( "Process this image like my kept journey #%lld: replay it "
+                                                       "step by step, adapted to this image, without asking me first.",
+                                                       static_cast<long long>( K.jid ) ), &nv, notes ) );
+            }
+            nlohmann::json log = nlohmann::json::array();
+            std::vector<double> replayed;
+            AgentStep s;
+            int requests = 0;
+            do
+            {
+               AnthropicRequest req( String( key ), PICOPILOT_DEFAULT_MODEL, BuildSystemPrompt( AgentMode::Copilot ),
+                                     session.History(), PICOPILOT_MESSAGES_URL, PICopilotRequestTimeoutSeconds,
+                                     ToolDefinitions( AgentMode::Copilot ), ProductionRequestShape( PICOPILOT_DEFAULT_MODEL ) );
+               const AnthropicResult r = req.Perform();
+               ++requests;
+               s = session.OnResponse( r, [&ctx, &replayed]( const ToolCall& c )
+                                       {
+                                          const ToolOutcome o = ExecuteTool( c, ctx );
+                                          if ( c.name == "apply_process" && !o.isError )
+                                             replayed.push_back( JApplyMedian( o ) );
+                                          return o;
+                                       },
+                                       []() { return false; },
+                                       [&log]( const String& line ) { log.push_back( U8( line ) ); } );
+               if ( s.kind == AgentStep::Failed )
+                  error = s.error;
+               JTick( trk );
+            }
+            while ( s.kind == AgentStep::SendAgain && requests <= PICopilotMaxToolRounds );
+            bool perStep = replayed.size() >= recorded.size() && !recorded.empty();
+            for ( size_t i = 0; perStep && i < recorded.size(); ++i )
+               perStep = recorded[i] >= 0 && std::fabs( replayed[i] - recorded[i] ) <= 0.03;
+            const double finalMedian = JMedian( ImageWindow::WindowById( "pcJtN" ).MainView(), 0 );
+            bool calledReplay = false;
+            for ( const nlohmann::json& line : log )
+               calledReplay = calledReplay || line.get<std::string>().find( "replay_journey" ) != std::string::npos;
+            d = { { "requests", requests }, { "log", log }, { "recorded", recorded }, { "replayed", replayed },
+                  { "finalMedian", finalMedian }, { "kind", int( s.kind ) }, { "text", U8( s.assistantText ).substr( 0, 600 ) } };
+            liveOk = s.kind == AgentStep::Done && calledReplay && replayed.size() >= 2 && perStep
+                  && std::fabs( finalMedian - recorded.back() ) <= 0.03;
+         }
+         catch ( const pcl::Exception& x ) { error = x.Message(); }
+         catch ( const std::exception& x ) { error = String( x.what() ); }
+         catch ( ... )                     { error = "unknown exception"; }
+         for ( const std::string& id : made )
+            JForceClose( id );
+      }
+      out["liveReplaySkipped"] = liveSkipped;
+      out["liveReplayDetail"] = d;
+      out["liveReplayError"] = U8( error );
+      out["liveReplayOk"] = liveOk && (liveSkipped || error.IsEmpty());
+      allOk = allOk && liveOk && (liveSkipped || error.IsEmpty());
    }
 
    // ---- journey sections end ----
