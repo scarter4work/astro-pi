@@ -1767,9 +1767,10 @@ JourneyService::~JourneyService()
    // released everything on the root thread; if it did not, everything is
    // leaked -- never destroyed here, on any thread (a Control, a Timer and the
    // SQLite connection are root-thread objects of a host that is gone).
-   if ( !m_host && !m_tracker && !m_store )
+   if ( !m_host && !m_keeper && !m_tracker && !m_store )
       return;
    (void)m_host.release();
+   (void)m_keeper.release();   // its job threads are never joined here either
    (void)m_tracker.release();
    (void)m_store.release();
 }
@@ -1796,6 +1797,8 @@ void JourneyService::OpenStore()
    m_storeError = e;
    if ( m_tracker )
       m_tracker->SetStore( m_store.get(), e );
+   if ( m_keeper )
+      m_keeper->SetStore( m_store.get() );   // a store switch cancels + waits for pending write-ups first
    if ( !m_store )
    {
       Console().WarningLn( "PI Copilot: " + e );
@@ -1808,6 +1811,7 @@ void JourneyService::Start()
    if ( m_started )
       return;
    m_tracker.reset( new JourneyTracker( nullptr ) );
+   m_keeper.reset( new KeeperExporter( nullptr ) );
    OpenStore();
    {
       String last;
@@ -1833,6 +1837,9 @@ void JourneyService::Stop()
    catch ( ... )
    {
    }
+   // The keeper goes first: a pending write-up's destructor cancels and waits
+   // for its worker, and must never outlive the store it would write into.
+   m_keeper.reset();
    m_tracker.reset();
    m_store.reset();
    m_started = false;
@@ -1902,6 +1909,19 @@ void JourneyService::OnTick()
    {
       Console().NoteLn( n );
       AddNote( n );
+   }
+   if ( m_keeper && m_store && !m_store->InTransaction() )
+   {
+      // Finished keeper write-ups (Task 9): journey.md, inferred reasons, the export copy.
+      // Poll() turns every failure of a job into a named note; it never throws for one.
+      // Deferred while a transaction is open (its reasons are a transaction of their own).
+      StringList notes;
+      m_keeper->Poll( notes );
+      for ( const String& n : notes )
+      {
+         Console().NoteLn( n );
+         AddNote( n );
+      }
    }
    if ( m_store && m_tracker->Enabled() && !RecorderActivity().busy && !m_store->InTransaction() )
       RunRetention();

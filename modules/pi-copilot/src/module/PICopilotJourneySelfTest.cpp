@@ -5757,6 +5757,165 @@ r1.ok && r1.inferred.size() == 1 && r1.inferred[0].first == 7 && r1.inferred[0].
       allOk = allOk && ok && liveOk && error.IsEmpty();
    }
 
+   // ---- Section J9: JourneyService keeper wiring (integration of Tasks 7 + 9) ----
+   // The PRODUCTION service's own recording of the pre-phase (PreM42, made by
+   // the tracker from real top-level History, J6 (a)) is kept through the
+   // service's Keeper(); only the service's OnTick() -- no direct Poll() --
+   // finishes the write-up (loopback), stores the inferred reason, rewrites
+   // recipe.json and makes the export copy, and its notes reach TakeNotes().
+   SelfTestSectionMark( "J9 JourneyService keeper wiring" );
+   {
+      nlohmann::json d = nlohmann::json::object();
+      bool e2eOk = false, durableOk = false, nestedOk = false;
+      String error;
+      JourneyService& svc = JourneyService::Instance();
+      try
+      {
+         const char* wurl = std::getenv( "PICOPILOT_SELFTEST_WRITEUP_URL" );
+         if ( wurl == nullptr )
+            throw Error( "PICOPILOT_SELFTEST_WRITEUP_URL not set by the harness" );
+         JourneyStore* s = svc.Store();
+         if ( !svc.Started() || s == nullptr )
+            throw Error( "the production journey service has no store: " + svc.StoreError() );
+         int64 jid = 0, img = 0;
+         for ( const JourneyRow& j : s->ListJourneys( false, "PreM42", 5 ) )
+         {
+            jid = j.id;
+            for ( const ImageRow& i : s->Images( jid ) )
+               if ( i.isMaster )
+                  img = i.id;
+         }
+         if ( jid == 0 || img == 0 )
+            throw Error( "the production service recorded no PreM42 journey (see J6 service)" );
+         JourneyRow before;
+         s->GetJourney( jid, before );
+
+         // (a) + (b): keep through the service; the keep commits at synchronous=FULL.
+         JTempDir exportRoot( "picopilot-j9-out-" );
+         std::vector<int> syncAtCommit;
+         s->SetKeepCommitHookForSelfTest( [&syncAtCommit]( int level ) { syncAtCommit.push_back( level ); } );
+         (void)svc.TakeNotes();   // start from an empty note list
+         KeepOutcome o;
+         try
+         {
+            o = svc.Keeper().Keep( jid, img, "sk-test-loopback", exportRoot.Path(), String( wurl ) );
+         }
+         catch ( ... )
+         {
+            s->SetKeepCommitHookForSelfTest( nullptr );
+            throw;
+         }
+         s->SetKeepCommitHookForSelfTest( nullptr );
+         const int syncAfter = s->SynchronousLevelForSelfTest();
+         JourneyRow kept;
+         s->GetJourney( jid, kept );
+
+         // Only the service's tick may finish the job. The timer is not pumped (no events are
+         // processed here); OnTick() is called directly, as the timer would.
+         String allNotes;
+         const jclock::time_point t0 = jclock::now();
+         svc.SetEnabledForSelfTest( true );
+         try
+         {
+            while ( MsSince( t0 ) < 30000 )
+            {
+               svc.OnTick();
+               for ( const String& n : svc.TakeNotes() )
+                  allNotes += n + "\n";
+               if ( !svc.Keeper().Busy() && allNotes.Contains( "journey.md" ) )
+                  break;
+               std::this_thread::sleep_for( std::chrono::milliseconds( 100 ) );
+            }
+         }
+         catch ( ... )
+         {
+            svc.SetEnabledForSelfTest( false );
+            throw;
+         }
+         svc.SetEnabledForSelfTest( false );
+         const double waitMs = MsSince( t0 );
+         const String dir = ExportDirOf( *s, jid );
+         const std::string md = File::Exists( dir + "/journey.md" ) ? FileBytes( dir + "/journey.md" ) : std::string();
+         int inferred = 0;
+         bool recipeValid = false;
+         if ( File::Exists( dir + "/recipe.json" ) )
+         {
+            const nlohmann::json after = nlohmann::json::parse( FileBytes( dir + "/recipe.json" ) );
+            for ( const nlohmann::json& st : after.at( "steps" ) )
+               if ( st.at( "reasonInferred" ) == true && st.at( "reason" ) == "brighten the faint signal" ) ++inferred;
+            std::string why;
+            recipeValid = ValidateRecipe( after, why );
+         }
+         int storedInferred = 0;
+         for ( const StepRow& st : s->Steps( img, true ) )
+            if ( st.reasonInferred && st.reason == "brighten the faint signal" ) ++storedInferred;
+         String copied;
+         {
+            FindFileInfo info;
+            for ( File::Find f( exportRoot.Path() + "/PreM42/*" ); f.NextItem( info ); )
+               if ( info.IsDirectory() && info.name != "." && info.name != ".." )
+                  copied = exportRoot.Path() + "/PreM42/" + info.name;
+         }
+         d["e2e"] = { { "journey", jid }, { "wasKept", before.kept }, { "marked", o.marked }, { "kept", kept.kept },
+                      { "endImage", kept.endImageId }, { "files", { o.files.xpsmOk, o.files.recipeOk, o.files.thumbsOk } },
+                      { "started", U8( o.writeupStarted ? String( "yes" ) : o.writeupError ) },
+                      { "busy", svc.Keeper().Busy() }, { "waitMs", waitMs }, { "mdHead", md.substr( 0, 80 ) },
+                      { "inferredInRecipe", inferred }, { "inferredStored", storedInferred }, { "recipeValid", recipeValid },
+                      { "copied", U8( copied ) }, { "notes", U8( allNotes ) } };
+         e2eOk = !before.kept && o.marked && kept.kept && kept.endImageId == img
+              && o.files.xpsmOk && o.files.recipeOk && o.writeupStarted && !svc.Keeper().Busy()
+              && md.rfind( "# ", 0 ) == 0 && md.find( "inferredReasons" ) == std::string::npos
+              && inferred == 1 && storedInferred == 1 && recipeValid
+              && !copied.IsEmpty() && File::Exists( copied + "/journey.md" )
+              && FileBytes( copied + "/recipe.json" ) == FileBytes( dir + "/recipe.json" )
+              && allNotes.Contains( "journey.md written to" ) && allNotes.Contains( "keeper copied to" )
+              && !allNotes.Contains( "sk-test-loopback" );
+         d["durable"] = { { "syncAtCommit", syncAtCommit }, { "syncAfter", syncAfter } };
+         durableOk = syncAtCommit.size() == 1 && syncAtCommit[0] == 2 && syncAfter == 1;
+      }
+      catch ( const pcl::Exception& x ) { error = x.Message(); }
+      catch ( const std::exception& x ) { error = String( x.what() ); }
+      catch ( ... )                     { error = "unknown exception"; }
+
+      // (c) A durable keep inside an open transaction is refused loudly, writes nothing and
+      //     leaves the connection at NORMAL (own temp library).
+      try
+      {
+         JTempDir root( "picopilot-j9-" );
+         String oe;
+         std::unique_ptr<JourneyStore> t = JourneyStore::Open( root.Path(), oe );
+         if ( !t )
+            throw Error( "store: " + oe );
+         const std::string now = NowIso();
+         const int64 j = t->CreateJourney( "J9 nested", "J9", now );
+         String refused;
+         {
+            JourneyStore::Transaction tx( *t );
+            try { t->MarkKeptDurably( j, 0, now ); }
+            catch ( const pcl::Exception& x ) { refused = x.Message(); }
+         }   // rolled back
+         JourneyRow r;
+         t->GetJourney( j, r );
+         const int sync = t->SynchronousLevelForSelfTest();
+         t->MarkKeptDurably( j, 0, now );
+         JourneyRow r2;
+         t->GetJourney( j, r2 );
+         d["nested"] = { { "refused", U8( refused ) }, { "keptAfterRefusal", r.kept }, { "sync", sync },
+                         { "keptAfter", r2.kept }, { "syncAfter", t->SynchronousLevelForSelfTest() } };
+         nestedOk = refused.Contains( "transaction" ) && !r.kept && sync == 1 && r2.kept
+                 && t->SynchronousLevelForSelfTest() == 1;
+      }
+      catch ( const pcl::Exception& x ) { if ( error.IsEmpty() ) error = "nested: " + x.Message(); }
+      catch ( const std::exception& x ) { if ( error.IsEmpty() ) error = "nested: " + String( x.what() ); }
+
+      const bool ok = e2eOk && durableOk && nestedOk && error.IsEmpty();
+      out["journeyWiringDetail"] = d;
+      out["journeyWiringChecks"] = { { "e2e", e2eOk }, { "durable", durableOk }, { "nested", nestedOk } };
+      out["journeyWiringError"] = U8( error );
+      out["journeyWiringOk"] = ok;
+      allOk = allOk && ok;
+   }
+
    // ---- journey sections end ----
    SelfTestSectionMark( nullptr );
 

@@ -597,6 +597,7 @@ required_true = [
     'journeyTrackerOk',
     'journeyExportOk',
     'journeyWriteupOk', 'liveWriteupOk',
+    'journeyWiringOk',
     'histLandedOk',
     'ok',
 ]
