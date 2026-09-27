@@ -42,7 +42,8 @@ const char* const kJourneyPromptAct =
    "(e.g. a master from another stacking program).\n"
    "- replay_journey {journey_id, view_id}: processes a new master like a kept journey (\"process this like my best "
    "Cone\"). It returns the kept journey's steps with the statistics each one reached. If it returns candidates, ask "
-   "the user which one; if it finds none, say so.\n"
+   "the user which one; if it finds none, say so. A long journey comes in pages: while moreSteps is true, call it "
+   "again with from_step = nextFromStep before you plan the rest.\n"
    "Replaying a journey:\n"
    "- First write the plan in your reply: the steps in order, which ones you will adapt and why (compare the new "
    "master's statistics with the kept one's: e.g. a noisier master needs stronger noise reduction), and which steps "
@@ -69,16 +70,35 @@ int64 IntField( const nlohmann::json& in, const char* key )
    return in.contains( key ) && in[key].is_number_integer() ? in[key].get<int64>() : 0;
 }
 
+// Review m5: an id argument that is present must be a positive whole number -- never silently "absent".
+// "" when fine (v = 0 when absent or null), else the error for the model.
+String PositiveIdArg( const nlohmann::json& in, const char* key, int64& v )
+{
+   v = 0;
+   if ( !in.contains( key ) || in[key].is_null() )
+      return String();
+   if ( in[key].is_number_integer() && in[key].get<int64>() > 0 )
+   {
+      v = in[key].get<int64>();
+      return String();
+   }
+   return String( key ) + " must be a positive whole number (e.g. from list_journeys), got " + FromU8( in[key].dump() );
+}
+
 bool BoolField( const nlohmann::json& in, const char* key )
 {
    return in.contains( key ) && in[key].is_boolean() && in[key].get<bool>();
 }
 
-// GC privacy (P6): text for the model names files, never directories. Every
-// absolute path token (a '/' at the start or after a space, '(' or a quote, up
-// to the next space, ',', ';', ')' or quote) is replaced by its file name.
+// GC privacy (P6): text for the model names files, never directories. An
+// absolute path token starts with '/' at the start or after a space, '(' or a
+// quote. It ends at ',', ';', ')', a quote or a line break -- and at a space,
+// unless the next word still holds a '/' (a directory name with a space:
+// "/Users/s/Library/Application Support/PixInsight/x", review m7). The token
+// is replaced by its last component; sentence punctuation after it stays.
 String WithoutDirectories( const String& text )
 {
+   auto hard = []( char16_type c ) { return c == ',' || c == ';' || c == ')' || c == '\'' || c == '"' || c == '\n' || c == '\r'; };
    String out;
    const size_type n = text.Length();
    for ( size_type i = 0; i < n; )
@@ -92,11 +112,23 @@ String WithoutDirectories( const String& text )
          continue;
       }
       size_type j = i;
-      while ( j < n && text[j] != ' ' && text[j] != ',' && text[j] != ';' && text[j] != ')' && text[j] != '\''
-              && text[j] != '"' )
-         ++j;
+      for ( ;; )
+      {
+         while ( j < n && text[j] != ' ' && !hard( text[j] ) )
+            ++j;
+         if ( j >= n || text[j] != ' ' )
+            break;
+         size_type k = j + 1;   // the next word: part of the path only if it still holds a '/'
+         bool slash = false;
+         for ( ; k < n && text[k] != ' ' && !hard( text[k] ); ++k )
+            if ( text[k] == '/' )
+               slash = true;
+         if ( !slash )
+            break;
+         j = k;
+      }
       String path = text.Substring( i, j - i );
-      String tail;   // sentence punctuation after the path stays after the name
+      String tail;
       while ( path.Length() > 1 && (path.EndsWith( ':' ) || path.EndsWith( '.' )) )
       {
          tail.Prepend( path[path.Length() - 1] );
@@ -169,7 +201,9 @@ IsoString ViewArg( const ToolContext& ctx, const nlohmann::json& in )
 
 String JourneyIdFor( JourneyToolHost& host, const ToolContext& ctx, const nlohmann::json& in, int64& jid )
 {
-   jid = IntField( in, "journey_id" );
+   const String bad = PositiveIdArg( in, "journey_id", jid );
+   if ( !bad.IsEmpty() )
+      return bad;
    if ( jid != 0 )
    {
       JourneyRow j;
@@ -185,6 +219,31 @@ String JourneyIdFor( JourneyToolHost& host, const ToolContext& ctx, const nlohma
 }
 
 } // namespace
+
+String ModelTextWithoutDirectories( const String& text )
+{
+   return WithoutDirectories( text );
+}
+
+String NoteReplayStepApplied( JourneyToolHost& host, const IsoString& viewFullId )
+{
+   const auto it = host.pendingReplayName.find( std::string( viewFullId.c_str() ) );
+   if ( it == host.pendingReplayName.end() )
+      return String();
+   const std::pair<int64, std::string> want = it->second;
+   host.pendingReplayName.erase( it );
+   if ( host.store == nullptr || JourneyForView( host, viewFullId ) != want.first )
+      return String();   // the image left that journey meanwhile (e.g. kept): nothing to name
+   try
+   {
+      host.store->RenameJourney( want.first, want.second );   // spec §13.7: "<keeper> (replay of #<id>)"
+      return String();
+   }
+   catch ( const pcl::Exception& x )
+   {
+      return "the journey could not be named as a replay: " + x.Message();
+   }
+}
 
 int64 JourneyForView( JourneyToolHost& host, const IsoString& viewFullId )
 {
@@ -245,8 +304,11 @@ nlohmann::json JourneyToolDefinitions( AgentMode mode )
                          { { "view_id", viewProp } } ) );
       t.push_back( tool( "replay_journey", "Get the plan material to process a new master like a kept journey: the kept "
                          "steps with parameters and the statistics each reached, which steps are manual, and how the new "
-                         "master differs. Without journey_id it matches kept journeys by target, filter and camera.",
-                         { { "journey_id", jidProp }, { "view_id", viewProp } } ) );
+                         "master differs. Without journey_id it matches kept journeys by target, filter and camera. A long "
+                         "journey comes in pages: when moreSteps is true, call it again with from_step = nextFromStep.",
+                         { { "journey_id", jidProp }, { "view_id", viewProp },
+                           { "from_step", { { "type", "integer" }, { "description", "First step to return (1-based, default 1)." } } },
+                           { "max_steps", { { "type", "integer" }, { "description", "At most this many steps (default: as many as fit)." } } } } ) );
    }
    return t;
 }
@@ -369,9 +431,14 @@ ToolOutcome ExecuteJourneyTool( const ToolCall& call, const ToolContext& ctx )
    const String name = FromU8( call.name );
    const nlohmann::json in = call.input.is_object() ? call.input : nlohmann::json::object();
    if ( ctx.journeys == nullptr || ctx.journeys->store == nullptr )
-      return Fail( name, "the journey library is not available"
-                         + (ctx.journeys != nullptr && !ctx.journeys->storeError.IsEmpty() ? ": " + WithoutDirectories( ctx.journeys->storeError ) : String())
-                         + (ctx.journeys == nullptr ? String( " (recording is not running)" ) : String()) );
+      return Fail( name, ctx.journeys == nullptr
+                         // Review m1: the true state -- this conversation was given no journey host; nothing is said
+                         // about recording, which runs on its own.
+                         ? String( "the journey tools are not connected in this PI Copilot session: this conversation has "
+                                   "no access to the journey library, so journeys cannot be listed, compared, kept or "
+                                   "replayed from chat here" )
+                         : "the journey library is not available"
+                           + (ctx.journeys->storeError.IsEmpty() ? String() : ": " + WithoutDirectories( ctx.journeys->storeError )) );
    JourneyToolHost& host = *ctx.journeys;
    JourneyStore& store = *host.store;
    if ( (call.name == "start_journey" || call.name == "replay_journey") && ctx.mode == AgentMode::Advisor )
@@ -412,7 +479,10 @@ ToolOutcome ExecuteJourneyTool( const ToolCall& call, const ToolContext& ctx )
       }
       if ( call.name == "compare_to_journey" )
       {
-         const int64 other = IntField( in, "journey_id" );
+         int64 other = 0;
+         const String bad = PositiveIdArg( in, "journey_id", other );
+         if ( !bad.IsEmpty() )
+            return Fail( name, bad );
          JourneyRow oj;
          if ( other == 0 || !store.GetJourney( other, oj ) )
             return Fail( name, "compare_to_journey needs journey_id of the journey to compare with (list_journeys shows them)" );
@@ -452,7 +522,7 @@ ToolOutcome ExecuteJourneyTool( const ToolCall& call, const ToolContext& ctx )
          const String e = JourneyIdFor( host, ctx, in, jid );
          if ( !e.IsEmpty() )
             return Fail( name, e );
-         const KeepFlowResult k = RunKeepFlow( host, jid, ctx.turnViewId );
+         const KeepFlowResult k = RunKeepFlow( host, jid, ViewArg( ctx, in ) );   // view_id is the end image (m2)
          const String what = name + String().Format( " #%lld", static_cast<long long>( jid ) );
          // The model gets modelMessage (no directories, GC privacy); the full-path text goes only to the chat
          // log (logLine) and to the ★ button's note.
@@ -505,7 +575,18 @@ ToolOutcome ExecuteJourneyTool( const ToolCall& call, const ToolContext& ctx )
          AcquisitionFacts ca;
          if ( cm != 0 )
             store.Acquisition( cm, ca );
-         int64 keeperId = IntField( in, "journey_id" );
+         int64 keeperId = 0, fromStep = 0, maxSteps = 0;
+         const char* const argNames[] = { "journey_id", "from_step", "max_steps" };
+         int64* const argValues[] = { &keeperId, &fromStep, &maxSteps };
+         for ( int a = 0; a < 3; ++a )
+         {
+            const String bad = PositiveIdArg( in, argNames[a], *argValues[a] );
+            if ( !bad.IsEmpty() )
+               return Fail( name, bad );
+         }
+         if ( keeperId != 0 && keeperId == cur )
+            return Fail( name, String().Format( "journey #%lld is the current image's own journey; pass the kept journey "
+                                                "to follow (list_journeys kept_only)", static_cast<long long>( keeperId ) ) );
          if ( keeperId == 0 )
          {
             nlohmann::json candidates = nlohmann::json::array();
@@ -534,32 +615,6 @@ ToolOutcome ExecuteJourneyTool( const ToolCall& call, const ToolContext& ctx )
          const std::vector<ChannelStats> ks = km ? store.Stats( km, 0 ) : std::vector<ChannelStats>();
          const std::vector<ChannelStats> cs = cm ? store.Stats( cm, 0 ) : std::vector<ChannelStats>();
          const nlohmann::json ratios = StartRatios( ks, cs );
-         nlohmann::json steps = nlohmann::json::array();
-         int n = 0;
-         for ( const StepRow& s : ActiveSteps( store, keeperId ) )
-         {
-            const std::vector<ChannelStats> after = store.Stats( s.imageId, s.id );
-            nlohmann::json med = nlohmann::json::array(), noi = nlohmann::json::array();
-            for ( const ChannelStats& c : after ) { med.push_back( c.median ); noi.push_back( c.noise ); }
-            ImageRow ir;
-            store.GetImage( s.imageId, ir );
-            const std::string why = ManualWhy( s );
-            // Privacy (P6, controller contract): parameters from a step go through the step stripper.
-            const nlohmann::json stripped = PrivacyStripStepParameters( s.processId,
-                                                                        s.params.value( "parameters", nlohmann::json::object() ),
-                                                                        s.params.value( "tableParameters", nlohmann::json::object() ) );
-            steps.push_back( { { "n", ++n }, { "image", ir.viewId }, { "processId", s.processId },
-                               { "parameters", stripped.value( "parameters", nlohmann::json::object() ) },
-                               { "table_parameters", stripped.value( "tableParameters", nlohmann::json::object() ) },
-                               { "recordedMedianAfter", after.empty() ? nlohmann::json() : med },
-                               { "recordedNoiseAfter", after.empty() ? nlohmann::json() : noi },
-                               { "manual", !why.empty() }, { "manualWhy", why.empty() ? nlohmann::json() : nlohmann::json( why ) },
-                               { "reason", s.reason.empty() ? nlohmann::json() : nlohmann::json( s.reason ) } } );
-         }
-         JourneyRow cj;
-         store.GetJourney( cur, cj );
-         if ( cj.name.find( "(replay of #" ) == std::string::npos )   // spec §13.7: "<keeper> (replay of #<id>)"
-            store.RenameJourney( cur, kj.name + " (replay of #" + std::to_string( keeperId ) + ")" );
          nlohmann::json links = nlohmann::json::array();
          for ( const LinkRow& l : store.Links( keeperId ) )
          {
@@ -568,17 +623,88 @@ ToolOutcome ExecuteJourneyTool( const ToolCall& call, const ToolContext& ctx )
             store.GetImage( l.toImageId, b );
             links.push_back( { { "from", a.viewId }, { "to", b.viewId }, { "evidence", l.evidence } } );
          }
-         return Ok( name + String().Format( " #%lld", static_cast<long long>( keeperId ) ), {
+         const std::vector<StepRow> all = ActiveSteps( store, keeperId );
+         const int total = int( all.size() );
+         const int first = fromStep == 0 ? 1 : int( fromStep );
+         if ( total > 0 && first > total )
+            return Fail( name, String().Format( "from_step %d is past the last step (the journey has %d)", first, total ) );
+         nlohmann::json r = {
             { "keeper", { { "id", keeperId }, { "name", kj.name }, { "acquisition", km ? AcqJson( store, km ) : nlohmann::json() },
                           { "startStats", StatsArray( ks ) }, { "links", links } } },
             { "current", { { "view", std::string( vid.c_str() ) }, { "journeyId", cur },
                            { "acquisition", cm ? AcqJson( store, cm ) : nlohmann::json() }, { "startStats", StatsArray( cs ) } } },
             { "differences", { { "noiseRatio", ratios.at( "noise" ) }, { "medianRatio", ratios.at( "median" ) },
                                { "note", "new divided by kept, per channel" } } },
-            { "steps", steps },
+            { "totalSteps", total }, { "fromStep", first },
             { "rules", "Show the plan first. Replay the non-manual steps in order, adapting parameters so each step's "
                        "statistics approach recordedMedianAfter. Stop at every manual step and tell the user what to do. "
-                       "Steps on other images need the windows that earlier steps created (see keeper.links)." } } );
+                       "Steps on other images need the windows that earlier steps created (see keeper.links)." } };
+         // Review I2: one tool result carries at most PICopilotMaxToolResultChars; a real keeper (DBE samples,
+         // curves) is far more. Steps are added while the whole result stays under a budget below the cap (bytes
+         // >= characters, so the check is conservative); the rest is paged with from_step. A manual step carries
+         // no parameters (the user does it); a step too large for any page is manual for the replay.
+         constexpr size_t kBudget = PICopilotMaxToolResultChars - 2000;
+         nlohmann::json steps = nlohmann::json::array();
+         size_t used = r.dump().size() + 400;   // + the paging fields and the "steps" key
+         int n = first - 1;
+         for ( ; n < total && (maxSteps == 0 || int( steps.size() ) < maxSteps); ++n )
+         {
+            const StepRow& s = all[size_t( n )];
+            const std::vector<ChannelStats> after = store.Stats( s.imageId, s.id );
+            nlohmann::json med = nlohmann::json::array(), noi = nlohmann::json::array();
+            for ( const ChannelStats& c : after ) { med.push_back( c.median ); noi.push_back( c.noise ); }
+            ImageRow ir;
+            store.GetImage( s.imageId, ir );
+            std::string why = ManualWhy( s );
+            nlohmann::json st = { { "n", n + 1 }, { "image", ir.viewId }, { "processId", s.processId },
+                                  { "recordedMedianAfter", after.empty() ? nlohmann::json() : med },
+                                  { "recordedNoiseAfter", after.empty() ? nlohmann::json() : noi },
+                                  { "reason", s.reason.empty() ? nlohmann::json() : nlohmann::json( s.reason ) } };
+            if ( why.empty() )
+            {
+               // Privacy (P6, controller contract): parameters from a step go through the step stripper.
+               const nlohmann::json stripped = PrivacyStripStepParameters( s.processId,
+                                                                           s.params.value( "parameters", nlohmann::json::object() ),
+                                                                           s.params.value( "tableParameters", nlohmann::json::object() ) );
+               st["parameters"] = stripped.value( "parameters", nlohmann::json::object() );
+               st["table_parameters"] = stripped.value( "tableParameters", nlohmann::json::object() );
+               const size_t size = st.dump().size();
+               if ( size + 1500 > kBudget )
+               {
+                  st.erase( "parameters" );
+                  st.erase( "table_parameters" );
+                  why = "its parameters are " + std::to_string( size ) + " characters, more than one tool result can carry: "
+                        "the user loads this step from the keeper's process icons (.xpsm) and runs it";
+               }
+            }
+            else
+               st["parametersOmitted"] = "manual step: the user does it (see manualWhy)";
+            if ( !why.empty() && !st.contains( "parametersOmitted" ) )
+               st["parametersOmitted"] = "too large for a tool result (see manualWhy)";
+            st["manual"] = !why.empty();
+            st["manualWhy"] = why.empty() ? nlohmann::json() : nlohmann::json( why );
+            const size_t size = st.dump().size() + 1;
+            if ( !steps.empty() && used + size > kBudget )
+               break;   // the next page starts here
+            used += size;
+            steps.push_back( st );
+         }
+         r["steps"] = steps;
+         r["moreSteps"] = n < total;
+         if ( n < total )
+         {
+            r["nextFromStep"] = n + 1;
+            r["note"] = U8( String().Format( "Steps %d-%d of %d. More steps remain: call replay_journey with journey_id %lld and "
+                                         "from_step %d for the next ones.", first, n, total,
+                                         static_cast<long long>( keeperId ), n + 1 ) );
+         }
+         // Review m6: a lookup changes nothing. The current journey is named "<keeper> (replay of #<id>)" when the
+         // first replay step is applied to this view (NoteReplayStepApplied, from apply_process).
+         JourneyRow cj;
+         store.GetJourney( cur, cj );
+         if ( cj.name.find( "(replay of #" ) == std::string::npos )
+            host.pendingReplayName[std::string( vid.c_str() )] = { cur, kj.name + " (replay of #" + std::to_string( keeperId ) + ")" };
+         return Ok( name + String().Format( " #%lld", static_cast<long long>( keeperId ) ), r );
       }
       return Fail( name, "unknown journey tool '" + name + "'" );
    }
