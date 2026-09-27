@@ -831,7 +831,8 @@ const char* const kJ6Checks[] = { "settings", "master", "manual", "undo", "copil
                                   "gateStallWaiting", "gateStallGap", "txDefer", "noopNoLock", "owner", "gapKinds",
                                   "pjsrAbortRestored", "gapRowGone", "linkRowGone", "ignoredThenMaster", "chaos",
                                   "recentRowGone", "ownerPrune", "writeCap", "deathOverflow", "deathWhileOff",
-                                  "createdAfterDeath", "startAfterDeath" };
+                                  "createdAfterDeath", "startAfterDeath", "renameWhileOff", "renameUnnotified",
+                                  "realNotify" };
 
 struct J6State
 {
@@ -861,7 +862,20 @@ struct J6State
    int  writeCapBefore = 0, writeCapReads = 0;
    bool writeCapPaused = false;
    std::map<std::string, int> chaosCount;   // m-g coverage
+   // Re-review round 5 n-2: real notifications (no explicit feed).
+   int   fwdRenamed0 = 0, fwdDeleted0 = 0;
+   int64 realRImg = 0, realRJ = 0;
 };
+
+// Decisions containing `what` (and `id`, when given).
+int J6DecisionsWith( JourneyTracker& trk, const std::string& what, const std::string& id = std::string() )
+{
+   int n = 0;
+   for ( const std::string& x : trk.RecentDecisionsForSelfTest() )
+      if ( x.find( what ) != std::string::npos && (id.empty() || x.find( id ) != std::string::npos) )
+         ++n;
+   return n;
+}
 
 J6State& J6()
 {
@@ -2323,6 +2337,97 @@ void J6Step( J6State& st, const std::string& step, const nlohmann::json& payload
       for ( const char* id : { "pcTrkDW1", "pcTrkDW2", "pcTrkDW3", "pcTrkDX" } )
          J6Close( st, id );
       JTick( trk );
+   }
+   else if ( step == "renameSetup" )
+   {
+      // Re-review round 5 n-1 / n-2: the windows were made in JS (JS closes them); here they become masters.
+      for ( const char* id : { "pcTrkRWM", "pcTrkRNM", "pcTrkRealR", "pcTrkRealD" } )
+         JSetKeywords( id, Kw( { { "IMAGETYP", "'Master Light'" }, { "OBJECT", ( std::string( "'" ) + id + "'" ).c_str() } } ) );
+      JTick( trk, 3 );
+      st.realRImg = trk.ImageOfView( "pcTrkRealR" );
+      st.realRJ = trk.JourneyOfView( "pcTrkRealR" );
+      st.d["renameSetup"] = { { "RWM", trk.JourneyOfView( "pcTrkRWM" ) }, { "RNM", trk.JourneyOfView( "pcTrkRNM" ) },
+                              { "realR", st.realRJ }, { "realD", trk.JourneyOfView( "pcTrkRealD" ) } };
+   }
+   else if ( step == "renameWhileOff" )
+   {
+      // n-1: recording off -> rename a tracked master and its linked image -> recording on. The Renamed
+      // notifications are real (View::Rename) and are dropped while off; the journey must simply go on.
+      JTick( trk, 3 );
+      const int64 mImg = trk.ImageOfView( "pcTrkRWM" ), mJ = trk.JourneyOfView( "pcTrkRWM" );
+      const int64 lImg = trk.ImageOfView( "pcTrkRWL" ), lJ = trk.JourneyOfView( "pcTrkRWL" );
+      trk.SetEnabled( false );
+      ImageWindow::WindowById( "pcTrkRWL" ).MainView().Rename( "pcTrkRWL2" );
+      ImageWindow::WindowById( "pcTrkRWM" ).MainView().Rename( "pcTrkRWM2" );
+      trk.SetEnabled( true );
+      JTick( trk, 3 );
+      JourneyRow jr;
+      const bool got = mJ != 0 && store.GetJourney( mJ, jr );
+      st.d["renameWhileOff"] = { { "master", { mImg, trk.ImageOfView( "pcTrkRWM2" ) } },
+                                 { "linked", { lImg, trk.ImageOfView( "pcTrkRWL2" ) } },
+                                 { "journey", { mJ, lJ, trk.JourneyOfView( "pcTrkRWM2" ), trk.JourneyOfView( "pcTrkRWL2" ) } },
+                                 { "status", got ? jr.status : std::string() },
+                                 { "idChangeDecisions", J6DecisionsWith( trk, "id change without a rename notification", "pcTrkRW" ) } };
+      st.ok["renameWhileOff"] = mImg != 0 && lImg != 0 && mJ != 0 && lJ == mJ
+                             && trk.ImageOfView( "pcTrkRWM2" ) == mImg && trk.ImageOfView( "pcTrkRWL2" ) == lImg
+                             && trk.JourneyOfView( "pcTrkRWM2" ) == mJ && trk.JourneyOfView( "pcTrkRWL2" ) == mJ
+                             && got && jr.status == "recording";
+   }
+   else if ( step == "renameUnnotified" )
+   {
+      // n-2: the id-change branch itself -- recording on, and the Renamed notifications never reach the
+      // tracker (the forward is detached for the renames). A master and its linked image are followed as
+      // renames, each with the diagnostic decision.
+      JTick( trk, 3 );
+      const int64 mImg = trk.ImageOfView( "pcTrkRNM" ), j = trk.JourneyOfView( "pcTrkRNM" );
+      const int64 lImg = trk.ImageOfView( "pcTrkRNL" ), lJ = trk.JourneyOfView( "pcTrkRNL" );
+      JourneyService::Instance().SetNotificationForwardForSelfTest( nullptr );
+      try
+      {
+         ImageWindow::WindowById( "pcTrkRNL" ).MainView().Rename( "pcTrkRNL2" );
+         ImageWindow::WindowById( "pcTrkRNM" ).MainView().Rename( "pcTrkRNM2" );
+      }
+      catch ( ... )
+      {
+         JourneyService::Instance().SetNotificationForwardForSelfTest( st.trk.get() );
+         throw;
+      }
+      JourneyService::Instance().SetNotificationForwardForSelfTest( st.trk.get() );
+      JTick( trk, 2 );
+      JourneyRow jr;
+      const bool got = j != 0 && store.GetJourney( j, jr );
+      const int diag = J6DecisionsWith( trk, "id change without a rename notification", "pcTrkRNM -> pcTrkRNM2" )
+                     + J6DecisionsWith( trk, "id change without a rename notification", "pcTrkRNL -> pcTrkRNL2" );
+      ImageRow ir;
+      const bool gotImg = lImg != 0 && store.GetImage( lImg, ir );
+      st.d["renameUnnotified"] = { { "master", { mImg, trk.ImageOfView( "pcTrkRNM2" ) } }, { "linked", { lImg, trk.ImageOfView( "pcTrkRNL2" ) } },
+                                   { "journey", { j, lJ, trk.JourneyOfView( "pcTrkRNM2" ), trk.JourneyOfView( "pcTrkRNL2" ) } },
+                                   { "status", got ? jr.status : std::string() }, { "diagnostic", diag },
+                                   { "linkedRowView", gotImg ? ir.viewId : std::string() } };
+      st.ok["renameUnnotified"] = mImg != 0 && lImg != 0 && j != 0 && lJ == j
+                               && trk.ImageOfView( "pcTrkRNM2" ) == mImg && trk.ImageOfView( "pcTrkRNL2" ) == lImg
+                               && trk.JourneyOfView( "pcTrkRNM2" ) == j && trk.JourneyOfView( "pcTrkRNL2" ) == j
+                               && got && jr.status == "recording" && diag == 2 && gotImg && ir.viewId == "pcTrkRNL2";
+      st.fwdRenamed0 = JourneyService::Instance().ForwardedForSelfTest( 2 );
+      st.fwdDeleted0 = JourneyService::Instance().ForwardedForSelfTest( 3 );
+   }
+   else if ( step == "realNotify" )
+   {
+      // n-2: JS renamed pcTrkRealR and force-closed pcTrkRealD at top level, with NO explicit feed. Only the
+      // notifications PixInsight delivered (interface -> JourneyService -> forward) can have told the tracker.
+      JTick( trk, 2 );
+      const int fr = JourneyService::Instance().ForwardedForSelfTest( 2 ) - st.fwdRenamed0;
+      const int fd = JourneyService::Instance().ForwardedForSelfTest( 3 ) - st.fwdDeleted0;
+      const int death = J6DecisionsWith( trk, "closed (death): pcTrkRealD" );
+      const int diag = J6DecisionsWith( trk, "id change without a rename notification", "pcTrkRealR" );
+      JourneyRow jr;
+      const bool got = st.realRJ != 0 && store.GetJourney( st.realRJ, jr );
+      st.d["realNotify"] = { { "forwardedRenamed", fr }, { "forwardedDeleted", fd }, { "closedByDeath", death },
+                             { "idChangeWithoutRename", diag }, { "image", { st.realRImg, trk.ImageOfView( "pcTrkRealR2" ) } },
+                             { "status", got ? jr.status : std::string() } };
+      st.ok["realNotify"] = fr >= 1 && fd >= 1 && death == 1 && diag == 0 && st.realRImg != 0
+                         && trk.ImageOfView( "pcTrkRealR2" ) == st.realRImg && trk.JourneyOfView( "pcTrkRealR2" ) == st.realRJ
+                         && got && jr.status == "recording";
    }
    else if ( step == "gate" )
    {

@@ -360,6 +360,10 @@ public:
    void SetEnabledForSelfTest( bool on ) { m_selfTestPaused = !on; }
    // Self-test: every notification is also given to this tracker (J6's own; nullptr = none).
    void SetNotificationForwardForSelfTest( JourneyTracker* t ) { m_forward = t; }
+   // Self-test (re-review n-2): how many notifications of each kind reached the forward tracker, i.e. were
+   // delivered by PixInsight through the interface's handlers (index: 0 created, 1 updated, 2 renamed,
+   // 3 deleted, 4 saved, 5 focused).
+   int ForwardedForSelfTest( int kind ) const { return (kind >= 0 && kind < 6) ? m_forwarded[kind] : -1; }
 
 private:
 
@@ -370,6 +374,7 @@ private:
    bool                              m_selfTestPaused = false;
    bool                              m_inOnTick = false;
    JourneyTracker*                   m_forward = nullptr;
+   int                               m_forwarded[6] = {};
    std::unique_ptr<JourneyStore>     m_store;
    String                            m_storeError;
    double                            m_lastOpenAttempt = 0;
