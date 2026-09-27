@@ -511,6 +511,7 @@ struct J2State
    HistorySnapshot        renamed;     // pcHrRenamed: the full read after the rename
    // Task 11 fix round 2: every step text read equals the top-level at( i ).toSource() text.
    bool atTextOk = true;
+   bool trickyOk = false;   // round 3: markup-looking text + a nested ProcessContainer read and compared
    int  atCompared = 0;
    std::vector<std::string> atMismatch;
    bool liveReadOk = false, undoRedoOk = false, branchOk = false, maskOk = false, renameOk = false, reopenOk = false,
@@ -688,6 +689,22 @@ nlohmann::json PhaseHistoryReader( const nlohmann::json& payload )
                && sent.rfind( want, 0 ) == 0 && got.rfind( want, 0 ) == 0
                && got.size() >= 3 && got.compare( got.size() - 3, 3, " */" ) == 0
                && u.steps.back().processId == "PixelMath" && u.steps.back().replayable;
+   }
+   else if ( step == "tricky" )
+   {
+      const HistorySnapshot t = ReadViewHistory( "pcHrTricky", 0 );
+      const int before = st.atCompared;
+      J2CompareAtText( st, t, payload, "tricky" );
+      bool markup = false, nested = false;
+      for ( const HistoryStep& h : t.steps )
+      {
+         if ( h.processId == "PixelMath" && h.xpsm.find( "&lt;instance class=&quot;Evil&quot;" ) != std::string::npos )
+            markup = true;
+         if ( h.processId == "ProcessContainer" && h.xpsm.find( "<instance class=\"PixelMath\"" ) != std::string::npos )
+            nested = true;
+      }
+      d["tricky"] = { { "snap", SnapJson( t ) }, { "markup", markup }, { "nested", nested }, { "error", U8( t.error ) } };
+      st.trickyOk = t.ok && t.length == 2 && st.atCompared - before == int( t.steps.size() ) && markup && nested;
    }
    else if ( step == "reopen" )
    {
@@ -4010,15 +4027,15 @@ bool RunJourneySelfTest( nlohmann::json& out )
       bool parseOk = false, typesOk = false, identityOk = false, notReplayableOk = false, badXmlOk = false,
            costOk = false, integrationIdOk = false, busyOk = false, phasesOk = false, strictParseOk = false;
       String error;
-      std::vector<std::string> made = { "pcHrA", "pcHrRenamed", "pcHrMask", "pcHrLong", "pcHrUtf" };
+      std::vector<std::string> made = { "pcHrA", "pcHrRenamed", "pcHrMask", "pcHrLong", "pcHrUtf", "pcHrTricky" };
       const J2State& st = J2();
       // Task 11 fix round 2: the read script never calls the deprecated ProcessContainer.at() (PI prints a
       // console warning per call; the console log cannot capture it headlessly -- measured -- so the
       // script itself is checked), and each step text equals at( i ).toSource() (J2CompareAtText).
       const std::string readJs = HistoryReadScriptForSelfTest( "pcHrA", 0 );
-      const bool atTextOk = st.atTextOk && st.atCompared > 0 && readJs.find( ".at(" ) == std::string::npos
+      const bool atTextOk = st.atTextOk && st.trickyOk && st.atCompared > 0 && readJs.find( ".at(" ) == std::string::npos
                          && readJs.find( "toSource" ) != std::string::npos;
-      d["atText"] = { { "compared", st.atCompared }, { "mismatch", st.atMismatch },
+      d["atText"] = { { "compared", st.atCompared }, { "mismatch", st.atMismatch }, { "tricky", st.trickyOk },
                       { "scriptUsesAt", readJs.find( ".at(" ) != std::string::npos } };
       try
       {
@@ -4127,7 +4144,7 @@ bool RunJourneySelfTest( nlohmann::json& out )
          }
 
          // (e)-(i) Live history, read by the j2.hr phases between top-level steps.
-         const std::vector<std::string> wantSteps = { "live0", "undo", "redo", "branch", "mask", "rename", "reopen", "utf8" };
+         const std::vector<std::string> wantSteps = { "live0", "undo", "redo", "branch", "mask", "rename", "tricky", "reopen", "utf8" };
          d["phases"] = { { "steps", st.steps }, { "detail", st.detail } };
          phasesOk = st.steps == wantSteps;
          if ( !st.reopenedId.empty() )
@@ -7305,6 +7322,38 @@ r1.ok && r1.inferred.size() == 1 && r1.inferred[0].first == 7 && r1.inferred[0].
             d["emptyKeep"]["asks"] = int( asks );
             wordingOk = !kf.message.Contains( "journey_id" ) && asks == 1 && kf.message.Contains( "frozen" )
                      && kf.modelMessage.Contains( "journey_id" );
+            // Round 3: one "has keepable steps" rule for ★ and mark_journey_best -- a journey whose only
+            // active steps are no-effect (and base) steps is refused by RunKeepFlow, the summary counts 0,
+            // and the refusal comes BEFORE the keyring is read (a locked keyring never delays it).
+            {
+               const std::string now = NowIso();
+               const int64 nj = store->CreateJourney( "UiNoEffect", "UiNoEffect", now );
+               const int64 ni = store->AddImage( nj, "pcUiNoEffect", "", "fp-ui-noeffect", true, now );
+               StepRow b = MakeStepRow( JPixelMathStep( "$T", 0, "2026-09-25T20:50:00.000Z" ), ni, "active", "user", "", 1 );
+               b.params["base"] = true;
+               store->AddStep( b );
+               StepRow ne = MakeStepRow( JPixelMathStep( "$T*1", 1, "2026-09-25T20:51:00.000Z" ), ni, "active", "copilot", "", 2 );
+               ne.params["noEffect"] = true;
+               store->AddStep( ne );
+               int keyReads = 0;
+               JourneyToolHost h2 = host;
+               h2.apiKey = [&keyReads]() { ++keyReads; return String(); };
+               const int c0 = confirms;
+               const KeepFlowResult nr = RunKeepFlow( h2, nj, "" );
+               JourneyRow njr;
+               store->GetJourney( nj, njr );
+               d["noEffectKeep"] = { { "message", U8( nr.message ) }, { "keyReads", keyReads }, { "asked", confirms - c0 },
+                                     { "summarySteps", BuildKeeperSummary( *store, nj ).steps },
+                                     { "keepable", JourneyKeepableSteps( *store, nj ) }, { "kept", njr.kept } };
+               // ... and the refusal of (g)'s empty continuation also read no key.
+               int keyReads2 = 0;
+               h2.apiKey = [&keyReads2]() { ++keyReads2; return String(); };
+               (void)RunKeepFlow( h2, cont, "pcUiF" );
+               d["noEffectKeep"]["contKeyReads"] = keyReads2;
+               emptyKeepOk = emptyKeepOk && !nr.ok && nr.message.Contains( "nothing to keep" ) && keyReads == 0
+                          && keyReads2 == 0 && confirms == c0 && !njr.kept && BuildKeeperSummary( *store, nj ).steps == 0
+                          && JourneyKeepableSteps( *store, nj ) == 0;
+            }
          }
          // (h) ★ Yes on the panel (review m6: the Yes branch had no headless test): kept, one log line.
          {

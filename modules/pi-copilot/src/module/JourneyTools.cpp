@@ -335,6 +335,17 @@ KeepFlowResult RunKeepFlow( JourneyToolHost& host, int64 journeyId, const IsoStr
    try
    {
       const KeeperSummary s = BuildKeeperSummary( *host.store, journeyId );
+      if ( !s.alreadyKept && JourneyKeepableSteps( *host.store, journeyId ) == 0 )
+      {
+         // Task 11 review I1: nothing recorded yet (e.g. the "(continued)" journey a keep froze into). Keeping it
+         // would write an empty keeper and freeze into yet another empty continuation, on every request.
+         // Refused before the key is read (round 3: a locked keyring never delays a refusal) and by the same
+         // rule as ★ (JourneyKeepableSteps: no-effect and base steps do not count).
+         r.message = String().Format( "nothing to keep yet: journey #%lld has no recorded steps. Keep it after "
+                                      "processing the image.", static_cast<long long>( journeyId ) );
+         r.modelMessage = r.message;
+         return r;
+      }
       const String key = host.apiKey ? host.apiKey() : String();
       if ( s.alreadyKept )
       {
@@ -350,15 +361,6 @@ KeepFlowResult RunKeepFlow( JourneyToolHost& host, int64 journeyId, const IsoStr
             if ( !e->IsEmpty() )
                r.message += " " + *e + ".";
          r.modelMessage = WithoutDirectories( r.message );
-         return r;
-      }
-      if ( s.steps == 0 )
-      {
-         // Task 11 review I1: nothing recorded yet (e.g. the "(continued)" journey a keep froze into). Keeping it
-         // would write an empty keeper and freeze into yet another empty continuation, on every request.
-         r.message = String().Format( "nothing to keep yet: journey #%lld has no recorded steps. Keep it after "
-                                      "processing the image.", static_cast<long long>( journeyId ) );
-         r.modelMessage = r.message;
          return r;
       }
       if ( !host.confirmKeeper || !host.confirmKeeper( KeeperSummaryHtml( s ) ) )

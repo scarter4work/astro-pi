@@ -33,6 +33,11 @@ struct KeeperSummary
 
 // All JourneyStore-reading functions below are ROOT THREAD ONLY (the store's rule).
 KeeperSummary BuildKeeperSummary( JourneyStore& store, int64 journeyId );
+// THE "has keepable steps" rule (Task 11 round 3), shared by ★ (via
+// JourneyStatus::activeSteps, which the tracker fills from it), RunKeepFlow
+// (★ and mark_journey_best) and the keeper summary's step count: active steps
+// that are neither base nor noEffect (IsBase). Root thread.
+int JourneyKeepableSteps( JourneyStore& store, int64 journeyId );
 String KeeperSummaryHtml( const KeeperSummary& s );   // MessageBox rich text, every value HTML-escaped
 
 bool IsManualProcess( const std::string& processId );   // Ruling 16's process list

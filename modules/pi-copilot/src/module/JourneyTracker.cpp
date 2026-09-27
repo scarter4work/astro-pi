@@ -2,6 +2,7 @@
 // Copyright (c) 2026 Scott Carter. MIT License.
 
 #include "JourneyTracker.h"
+#include "JourneyExport.h"
 #include "CopilotSettings.h"
 #include "EvalGuard.h"
 #include "JourneyConstants.h"
@@ -1927,7 +1928,7 @@ JourneyStatus JourneyTracker::StatusFor( const IsoString& viewFullId ) const
                filter = a.filter;
          }
       s.kind = StripKind( filter, std::max( 1, masters ) );
-      s.activeSteps = m_store->StepCount( t->journeyId, true );
+      s.activeSteps = JourneyKeepableSteps( *m_store, t->journeyId );   // the ★ rule (Task 11 round 3)
       // Tick-wide failure first (it affects every image), then this image's own (review M3).
       s.reason = !m_pausedReason.IsEmpty() ? m_pausedReason : !t->pausedReason.IsEmpty() ? t->pausedReason
                : !waiting.IsEmpty() ? waiting : t->statsReason;
