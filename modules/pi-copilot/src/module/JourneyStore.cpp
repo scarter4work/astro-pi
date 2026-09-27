@@ -47,7 +47,7 @@ const char* const kSchemaV1 =
    " gain REAL, offset REAL, sensor_temp REAL, sub_exposure REAL, sub_count INTEGER, total_integration_s REAL,"
    " session_date TEXT);"
    "CREATE TABLE step("
-   " id INTEGER PRIMARY KEY, image_id INTEGER NOT NULL REFERENCES image(id) ON DELETE CASCADE, seq INTEGER NOT NULL,"
+   " id INTEGER PRIMARY KEY AUTOINCREMENT, image_id INTEGER NOT NULL REFERENCES image(id) ON DELETE CASCADE, seq INTEGER NOT NULL,"
    " process_id TEXT NOT NULL, params_json TEXT NOT NULL, started TEXT, duration_s REAL,"
    " actor TEXT NOT NULL CHECK(actor IN ('user','copilot')), reason TEXT, reason_inferred INTEGER NOT NULL DEFAULT 0,"
    " state TEXT NOT NULL CHECK(state IN ('active','undone','superseded')), history_index INTEGER NOT NULL);"
@@ -956,6 +956,7 @@ int JourneyStore::PruneUnkept( const std::string& cutoffIso, StringList* removed
          ids.push_back( s.ColInt( 0 ) );
    }
    int n = 0;
+   String firstFailure;
    for ( int64 id : ids )
    {
       if ( std::find( excludeJourneyIds.begin(), excludeJourneyIds.end(), id ) != excludeJourneyIds.end() )
@@ -963,28 +964,41 @@ int JourneyStore::PruneUnkept( const std::string& cutoffIso, StringList* removed
       if ( m_pruneHook )
          m_pruneHook( id );
       const String dir = JourneyDir( id );
-      Transaction tx( *this );
-      // Re-checked under the write lock: kept or touched meanwhile (another instance) -> skipped, no error.
-      Stmt( *this, "DELETE FROM journey WHERE id=? AND kept=0 AND updated < ?" ).Int( 1, id ).Text( 2, cutoffIso ).Run();
-      if ( sqlite3_changes( m_db ) == 0 )
-         continue;   // the transaction rolls back (nothing was changed)
+      // Each journey is its own unit (re-review m-j): a folder that cannot be removed rolls back THAT
+      // journey only; the pass goes on and reports the first failure at the end.
+      try
       {
-         // Re-review m-a: an image of it is being recorded by a live PixInsight process (another instance
-         // included): never pruned, whatever its `updated` says. The DELETE above is rolled back.
-         bool live = false;
-         Stmt o( *this, "SELECT owner FROM image WHERE journey_id=? AND owner IS NOT NULL" );
-         o.Int( 1, id );
-         while ( !live && o.Row() )
-            live = JourneyOwnerAlive( o.ColText( 0 ) );
-         if ( live )
-            continue;
+         Transaction tx( *this );
+         {
+            // Re-review m-a / I-B: an image of it is being recorded by a live PixInsight process (another
+            // instance included): never pruned, whatever its `updated` says. Read BEFORE the DELETE (its
+            // ON DELETE CASCADE removes the image rows inside the same statement).
+            bool live = false;
+            Stmt o( *this, "SELECT owner FROM image WHERE journey_id=? AND owner IS NOT NULL" );
+            o.Int( 1, id );
+            while ( !live && o.Row() )
+               live = JourneyOwnerAlive( o.ColText( 0 ) );
+            if ( live )
+               continue;   // the transaction rolls back (nothing was changed)
+         }
+         // Re-checked under the write lock: kept or touched meanwhile (another instance) -> skipped, no error.
+         Stmt( *this, "DELETE FROM journey WHERE id=? AND kept=0 AND updated < ?" ).Int( 1, id ).Text( 2, cutoffIso ).Run();
+         if ( sqlite3_changes( m_db ) == 0 )
+            continue;   // the transaction rolls back (nothing was changed)
+         RemoveDirectoryTree( dir );   // throws naming the path -> the row delete rolls back, the next pass retries
+         tx.Commit();
+         ++n;
+         if ( removedDirs != nullptr )
+            *removedDirs << dir;
       }
-      RemoveDirectoryTree( dir );   // throws naming the path -> the row delete rolls back, the next pass retries
-      tx.Commit();
-      ++n;
-      if ( removedDirs != nullptr )
-         *removedDirs << dir;
+      catch ( const pcl::Exception& x )
+      {
+         if ( firstFailure.IsEmpty() )
+            firstFailure = x.Message();
+      }
    }
+   if ( !firstFailure.IsEmpty() )
+      throw Error( firstFailure );   // after every other journey was pruned
    return n;
 }
 

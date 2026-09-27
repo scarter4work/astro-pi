@@ -731,7 +731,10 @@ try
       j6( "owner" );                                                          // re-review m6
 
       pm( "pcTrkRenamed", "$T*1.0" ); j6( "gapRowGone" );                    // fix round 3: N1
-      j6( "linkRowGone" );                                                    // N2
+      j6( "linkRowGone" );                                                    // N2 / I-C
+      j6( "recentSetup" ); pm( "pcTrkRX", "$T*1.1" ); j6( "recentRowGone" );  // I-A
+      pm( "pcTrkRenamed", "$T*1.0" ); j6( "writeCap" );                       // m-h
+      pm( "pcTrkRenamed", "$T*1.0" ); j6( "writeCapAfter" );
       [ "pcTrkIgA", "pcTrkIgB", "pcTrkIgC" ].forEach( function( id ) {        // N3
          new ImageWindow( 32, 32, 1, 32, true, false, id ); } );
       j6( "ignSetup" );
@@ -743,7 +746,21 @@ try
       } );
       j6( "ignCheck" );
       j6( "chaosSetup" );                                                     // fault injection
-      for ( var r = 0; r < 5; ++r ) { j6( "chaosRound", { round: r } ); pm( "pcTrkRenamed", "$T*1.0" ); }
+      for ( var r = 0; r < 5; ++r )
+      {
+         // m-g (iii): a real step on a chaos master, and a window derived from it within the timing slack.
+         var alive = [ "pcTrkC1", "pcTrkC2", "pcTrkC3", "pcTrkC4", "pcTrkC5" ].filter( function( id ) {
+            return !ImageWindow.windowById( id ).isNull; } );
+         var stepped = alive.length > 0;
+         if ( stepped )
+         {
+            var cm = alive[r % alive.length];
+            pm( cm, "$T*1.0" );
+            newImage( cm, "pcTrkCD" + r );
+         }
+         j6( "chaosRound", { round: r, masterStepped: stepped } );
+         pm( "pcTrkRenamed", "$T*1.0" );
+      }
       j6( "chaosEnd" );
 
       [ true, false ].forEach( function( mc )                                 // (s)

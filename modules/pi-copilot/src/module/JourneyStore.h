@@ -161,9 +161,10 @@ public:
    // "kept=0 AND updated < cutoff" under the write lock -- a journey kept or
    // touched meanwhile (by another PixInsight instance too) is skipped
    // silently -- then removes the folder; a folder that cannot be removed
-   // throws (naming the path) and rolls the row back, so the next pass retries
-   // both. excludeJourneyIds (the journeys this instance has open) are never
-   // pruned.
+   // rolls THAT journey's row back (the next pass retries both), the other
+   // journeys are still pruned, and the first such failure is thrown at the end
+   // (re-review m-j). Live owners are read before the DELETE (I-B).
+   // excludeJourneyIds (the journeys this instance has open) are never pruned.
    int   PruneUnkept( const std::string& cutoffIso, StringList* removedDirs,
                       const std::vector<int64>& excludeJourneyIds = std::vector<int64>() );
    // Test hook: called with each selected id before its transaction (a second
