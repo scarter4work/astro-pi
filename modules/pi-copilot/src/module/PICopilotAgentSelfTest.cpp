@@ -63,12 +63,17 @@ class AgentTestWindow
 {
 public:
 
+   // Holds only the window's id and re-resolves it for each use (Task 7 re-review m-4r): a held
+   // ImageWindow whose window a test closed by id would be a stale handle whose destructor detaches a
+   // reused address.
    explicit AgentTestWindow( const char* id )
-      : m_window( kAgW, kAgH, 3, 32, true/*floatSample*/, true/*color*/,
-                  false/*initialProcessing*/, IsoString( id ) )
    {
-      if ( m_window.IsNull() )
-         throw Error( "AgentTestWindow: ImageWindow construction returned a null window" );
+      {
+         ImageWindow w( kAgW, kAgH, 3, 32, true/*floatSample*/, true/*color*/, false/*initialProcessing*/, IsoString( id ) );
+         if ( w.IsNull() )
+            throw Error( "AgentTestWindow: ImageWindow construction returned a null window" );
+         m_id = w.MainView().Id();
+      }
       try
       {
          Fill();
@@ -90,24 +95,25 @@ public:
 
    View MainView() const
    {
-      return m_window.MainView();
+      return ImageWindow::WindowById( m_id ).MainView();
    }
 
    // Shows the window and makes it the active one (what a user click does).
    void Activate()
    {
-      m_window.Show( false/*fitWindow*/ );
-      m_window.BringToFront();
+      ImageWindow w = ImageWindow::WindowById( m_id );
+      w.Show( false/*fitWindow*/ );
+      w.BringToFront();
       ThePICopilotModule->ProcessEvents( true/*excludeUserInputEvents*/ );
    }
 
 private:
 
-   ImageWindow m_window;
+   IsoString m_id;
 
    void Fill()
    {
-      View view = m_window.MainView();
+      View view = ImageWindow::WindowById( m_id ).MainView();
       AutoViewLock lock( view );
       ImageVariant v = view.Image();
       if ( !v || !v.IsFloatSample() || v.BitsPerSample() != 32 || v.NumberOfChannels() != 3 )
@@ -126,8 +132,9 @@ private:
    {
       try
       {
-         if ( !m_window.IsNull() )
-            m_window.ForceClose();
+         ImageWindow w = ImageWindow::WindowById( m_id );
+         if ( !w.IsNull() )
+            w.ForceClose();
       }
       catch ( ... )
       {

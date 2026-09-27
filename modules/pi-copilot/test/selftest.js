@@ -130,6 +130,19 @@ function normXpsm( s )
       File.writeTextFile( path, JSON.stringify( out ) );
 })();
 
+jsMark( "fixture j6.service" );
+// Section J6 (plan Task 7): the production JourneyService recorded the
+// pre-phase above. Flush it and pause it now, before any other fixture phase,
+// so its ticks never interleave with the timing-sensitive phases and sections.
+try
+{
+   checkPhase( "j6", { step: "service" } );
+}
+catch ( e )
+{
+   harnessError( "j6.service", e );
+}
+
 jsMark( "fixture probe.nestedEval" );
 // ---- J0 fixture phases (plan Task 1) ----
 
@@ -574,6 +587,215 @@ try
 catch ( e )
 {
    harnessError( "j2.long", e );
+}
+
+jsMark( "fixture j6 (JourneyTracker)" );
+// ---- J6 fixture phases (plan Task 7: JourneyTracker) ----
+// Every step the tracker must record is made HERE; phase j6 {step} ticks
+// Section J6's own tracker (temp library) in between and keeps the verdicts
+// (J6State). Section J6 closes every window made here.
+try
+{
+   ( function ()
+   {
+      function pm( id, x ) { var p = new PixelMath; p.expression = x; p.executeOn( View.viewById( id ) ); }
+      function newImage( src, id )
+      {
+         var p = new PixelMath; p.expression = "$T"; p.createNewImage = true; p.newImageId = id;
+         p.executeOn( View.viewById( src ) );
+      }
+      function j6( step, extra ) { var p = extra || {}; p.step = step; checkPhase( "j6", p ); }
+      function closeIds( ids ) { ids.forEach( function( id ) { var w = ImageWindow.windowById( id ); if ( !w.isNull ) w.forceClose(); } ); }
+      var existing = {};
+      ImageWindow.windows.forEach( function( w ) { existing[w.mainView.id] = true; } );
+      var dir = getEnvironmentVariable( "PICOPILOT_SELFTEST_SCRATCH" );
+      if ( dir.length == 0 || !File.directoryExists( dir ) )
+         throw new Error( "PICOPILOT_SELFTEST_SCRATCH is not an existing directory" );
+
+      j6( "begin" );                                   // (b) ImageIntegration master -> pcTrkMaster
+      pm( "pcTrkMaster", "$T*1.2" ); pm( "pcTrkMaster", "$T+0.01" );
+      j6( "manual" );                                  // (c)
+      var mv = View.viewById( "pcTrkMaster" );
+      mv.historyIndex = mv.historyIndex - 1; j6( "undo" );   // (d)
+      mv.historyIndex = mv.historyIndex + 1; j6( "redo" );
+      mv.historyIndex = mv.historyIndex - 1;
+      pm( "pcTrkMaster", "$T*0.95" ); pm( "pcTrkMaster", "$T*1.05" );
+      j6( "branch" );
+      j6( "copilotNote" ); pm( "pcTrkMaster", "$T+0.02" ); j6( "copilot" );   // (e)
+      j6( "focus", { id: "pcTrkMaster" } ); newImage( "pcTrkMaster", "pcTrkClone" ); j6( "timing" );     // (f)
+      j6( "focus", { id: "pcTrkMaster" } ); newImage( "pcTrkMaster", "pcTrkInherit" ); j6( "inherit" );  // (f2)
+      j6( "focus", { id: "pcTrkMaster" } );                                  // (f3) seen before its history is attached
+      pm( "pcTrkMaster", "$T*1.0" ); pm( "pcTrkMaster", "$T*1.0" ); newImage( "pcTrkMaster", "pcTrkLate" );
+      j6( "late" );
+      closeIds( [ "pcTrkLate" ] );
+
+      var rgb = new ImageWindow( 48, 48, 3, 32, true, true, "pcTrkRgb" );     // (g)
+      rgb.keywords = [ new FITSKeyword( "IMAGETYP", "'Master Light'", "" ), new FITSKeyword( "OBJECT", "'TrkRGB'", "" ) ];
+      j6( "rgbJoin" );
+      var ce = new ChannelExtraction; ce.executeOn( rgb.mainView );
+      j6( "rgb" );
+
+      var cw = new ImageWindow( 48, 48, 3, 32, true, true, "pcTrkCC" );       // (h)
+      var cc = new ChannelCombination;
+      cc.channels = [ [ true, "pcTrkRgb_R" ], [ true, "pcTrkRgb_G" ], [ true, "pcTrkRgb_B" ] ];
+      cc.executeOn( cw.mainView );
+      var q = new ImageWindow( 64, 64, 1, 32, true, false, "pcTrkRef" );
+      pm( "pcTrkRef", "pcTrkMaster*0.5" );
+      j6( "reference" );
+
+      var before = {};                                                        // (h2)
+      ImageWindow.windows.forEach( function( w ) { before[w.mainView.id] = true; } );
+      var gcc = new ChannelCombination;
+      gcc.channels = [ [ true, "pcTrkRgb_R" ], [ true, "pcTrkRgb_G" ], [ true, "pcTrkRgb_B" ] ];
+      gcc.executeGlobal();
+      var gid = "";
+      ImageWindow.windows.forEach( function( w ) { if ( !before[w.mainView.id] ) gid = w.mainView.id; } );
+      j6( "ccGlobal", { id: gid } );
+
+      j6( "copilotLink" );                                                    // (i)
+      pm( "pcTrkMaster", "$T*1.01" ); j6( "defer" );                          // (j)
+      j6( "rename" );                                                         // (k) -> pcTrkRenamed
+
+      var path = dir + "/pcTrkRenamed.xisf";                                  // (l)
+      if ( !ImageWindow.windowById( "pcTrkRenamed" ).saveAs( path, false, false, false, false ) )
+         throw new Error( "saveAs " + path + " failed" );
+      closeIds( [ "pcTrkClone", "pcTrkInherit", "pcTrkRef", "pcTrkCop", "pcTrkRenamed" ] );   // from JS, not C++
+      j6( "reopenClose" );
+      var ws = ImageWindow.open( path );
+      if ( ws.length < 1 )
+         throw new Error( "open " + path + " failed" );
+      ws[0].show();
+      // Re-review R5: MEASURED, not assumed. Headless (--automation-mode), a top-level ImageWindow.open()
+      // leaves the console abort enabled while this script runs; the recorder's gate then (rightly) reads
+      // "a script is running". Measured in the GUI (not automation mode, File > Open and a console-run
+      // script that opens a file): the abort stays DISABLED (task-7-report, fix round 2). The values seen
+      // here are recorded (journeyTrackerDetail.abortMeasured); only then does the fixture end the open.
+      var abortAfterOpen = console.abortEnabled;
+      j6( "abortSeen", { where: "topLevelReopen", js: abortAfterOpen } );
+      if ( console.abortEnabled ) { console.abortEnabled = false; j6( "abortReset", { where: "topLevelReopen" } ); }
+      j6( "reopened" );
+      pm( "pcTrkRenamed", "$T*0.99" ); j6( "reopenStep" );
+
+      j6( "keywordOnly" );                                                    // (m)
+      pm( "pcTrkRenamed", "$T*1.02" ); j6( "locked" );                        // (n)
+      j6( "gapArm" );                                                         // (o)
+      for ( var i = 0; i < 3; ++i )
+      {
+         pm( "pcTrkRenamed", "$T*1.0" );
+         if ( i == 0 ) pm( "pcTrkRgb", "$T*1.0" );
+         j6( "gapTick", { first: i == 0 } );
+      }
+      pm( "pcTrkRenamed", "$T*1.0" );   // the next change: the (real) reader now catches up
+      j6( "gapEnd" );
+      j6( "offBegin" ); pm( "pcTrkRenamed", "$T*1.0" ); j6( "off" );         // (p)
+
+      var pw = ImageWindow.windowById( "pcTrkRenamed" );                      // (q)
+      var pv = pw.createPreview( new Rect( 0, 0, 16, 16 ), "pcTrkPrev" );
+      var pp = new PixelMath; pp.expression = "0"; pp.executeOn( pv );
+      pw.deletePreview( pv );
+      j6( "preview" );
+
+      var bw = new ImageWindow( 9504, 6336, 3, 32, true, true, "pcTrkBig" );  // (r)
+      bw.keywords = [ new FITSKeyword( "IMAGETYP", "'Master Light'", "" ), new FITSKeyword( "OBJECT", "'TrkBig'", "" ) ];
+      pm( "pcTrkBig", "0.1" );
+      j6( "bigJoin" );
+      pm( "pcTrkBig", "$T*1.1" ); j6( "big" );
+      bw.forceClose(); bw = null;
+
+      pm( "pcTrkRenamed", "$T*1.0" ); j6( "gate" );                          // review I4
+
+      var uw = new ImageWindow( 32, 32, 1, 32, true, false, "pcTrkU" );      // review I3
+      var fw = new ImageWindow( 16, 16, 1, 32, true, false, "pcTrkFile" );
+      var fpath = dir + "/pcTrkFile.xisf";
+      if ( !fw.saveAs( fpath, false, false, false, false ) )
+         throw new Error( "saveAs " + fpath + " failed" );
+      fw.forceClose(); fw = null;
+      j6( "unrelatedMake" );
+      pm( "pcTrkRenamed", "$T*1.0" ); pm( "pcTrkU", "$T*0.9" );
+      var fo = ImageWindow.open( fpath );
+      if ( fo.length < 1 )
+         throw new Error( "open " + fpath + " failed" );
+      var abortAfterOpen2 = console.abortEnabled;   // see the reopen above (R5)
+      j6( "abortSeen", { where: "topLevelFileOpen", js: abortAfterOpen2 } );
+      if ( console.abortEnabled ) { console.abortEnabled = false; j6( "abortReset", { where: "topLevelFileOpen" } ); }
+      j6( "noFalseTiming", { fileId: fo[0].mainView.id } );
+      fo = null;
+
+      j6( "dupMaster" );                                                      // review I2
+      j6( "joinFault" );                                                      // review I5
+      j6( "startJourney" );                                                   // review I6
+
+      j6( "pjsrOpen", { path: fpath } );                                      // re-review R5 (b)
+      var abortAfterPjsr = console.abortEnabled;
+      j6( "abortSeen", { where: "topLevelAfterRunPjsrPhase", js: abortAfterPjsr } );
+      if ( console.abortEnabled ) { console.abortEnabled = false; j6( "abortReset", { where: "topLevelAfterRunPjsrPhase" } ); }
+      j6( "pjsrOpenNext" );
+      j6( "retentionOpen" );                                                  // re-review R1
+      j6( "rowGoneSetup" );                                                   // re-review R2
+      pm( "pcTrkG3", "$T*1.0" ); pm( "pcTrkRenamed", "$T*1.0" );
+      j6( "rowGone" );
+      j6( "offOn1" );                                                         // re-review R3
+      var offw = new ImageWindow( 32, 32, 1, 32, true, false, "pcTrkOff" );
+      pm( "pcTrkOff", "0.3" ); pm( "pcTrkOff", "$T*1.1" );
+      j6( "offOn2" );
+      pm( "pcTrkOff", "$T*1.0" ); j6( "offOn3" );
+      offw = null;
+      pm( "pcTrkRenamed", "$T*1.0" ); j6( "gateStall1" );                     // re-review R4
+      j6( "gateStall2" );
+      pm( "pcTrkRgb_R", "$T*1.0" ); j6( "gateStall3" );
+      pm( "pcTrkRenamed", "$T*1.0" ); j6( "txDefer" );                        // re-review m1 / m2
+      j6( "owner" );                                                          // re-review m6
+      j6( "deaths" );                                                         // re-review round 4: I-1r
+
+      pm( "pcTrkRenamed", "$T*1.0" ); j6( "gapRowGone" );                    // fix round 3: N1
+      j6( "linkRowGone" );                                                    // N2 / I-C
+      j6( "recentSetup" ); pm( "pcTrkRX", "$T*1.1" ); j6( "recentRowGone" );  // I-A
+      pm( "pcTrkRenamed", "$T*1.0" ); j6( "writeCap" );                       // m-h
+      pm( "pcTrkRenamed", "$T*1.0" ); j6( "writeCapAfter" );
+      [ "pcTrkIgA", "pcTrkIgB", "pcTrkIgC" ].forEach( function( id ) {        // N3
+         new ImageWindow( 32, 32, 1, 32, true, false, id ); } );
+      j6( "ignSetup" );
+      [ "pcTrkIgA", "pcTrkIgB", "pcTrkIgC" ].forEach( function( id, k ) {
+         pm( id, "0.4" ); pm( id, "$T*1.1" );
+         var fh = new FITSHeader;
+         fh.keywords = [ [ "IMAGETYP", "'Master Light'", "" ], [ "OBJECT", "'Ig" + k + "'", "" ] ];
+         fh.executeOn( View.viewById( id ) );
+      } );
+      j6( "ignCheck" );
+      j6( "chaosSetup" );                                                     // fault injection
+      for ( var r = 0; r < 5; ++r )
+      {
+         // m-g (iii): a real step on a chaos master, and a window derived from it within the timing slack.
+         var alive = [ "pcTrkC1", "pcTrkC2", "pcTrkC3", "pcTrkC4", "pcTrkC5" ].filter( function( id ) {
+            return !ImageWindow.windowById( id ).isNull; } );
+         var stepped = alive.length > 0;
+         if ( stepped )
+         {
+            var cm = alive[r % alive.length];
+            pm( cm, "$T*1.0" );
+            newImage( cm, "pcTrkCD" + r );
+         }
+         j6( "chaosRound", stepped ? { round: r, master: cm } : { round: r } );
+         pm( "pcTrkRenamed", "$T*1.0" );
+      }
+      j6( "chaosEnd" );
+
+      [ true, false ].forEach( function( mc )                                 // (s)
+      {
+         j6( "scanMode", { mc: mc } );
+         pm( "pcTrkRenamed", mc ? "$T*1.001" : "$T*1.002" );
+         j6( "scanCheck", { mc: mc } );
+      } );
+      j6( "end" );                                                            // (t) + redaction
+      // Every window this block made is closed here, from JS (not natively from C++ under JS wrappers).
+      var made = [];
+      ImageWindow.windows.forEach( function( w ) { if ( !existing[w.mainView.id] ) made.push( w.mainView.id ); } );
+      closeIds( made );
+   } )();
+}
+catch ( e )
+{
+   harnessError( "j6", e );
 }
 
 // ---- fixture phases end (add new phases above this line, each block starting with jsMark( "fixture <id>" )) ----

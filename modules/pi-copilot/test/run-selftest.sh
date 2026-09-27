@@ -550,6 +550,7 @@ required_true = [
     'stepStatsOk',
     'journeyStoreOk',
     'masterFactsOk',
+    'journeyTrackerOk',
     'histLandedOk',
     'ok',
 ]
