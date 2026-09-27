@@ -2,6 +2,7 @@
 // Copyright (c) 2026 Scott Carter. MIT License.
 
 #include "AgentTools.h"
+#include "AnthropicClient.h"
 #include "EvalGuard.h"
 #include "CopilotSettings.h"
 #include "HistoryReader.h"
@@ -10,6 +11,7 @@
 #include "JourneyStore.h"
 #include "JourneyTracker.h"
 #include "JourneySpikeProbe.h"
+#include "JourneyWriteup.h"
 #include "MasterFacts.h"
 #include "PICopilotInterface.h"
 #include "PICopilotJourneySelfTest.h"
@@ -2812,6 +2814,115 @@ nlohmann::json PhaseJourneyExport( const nlohmann::json& payload )
    return { { "step", step } };
 }
 
+// ---- Section J8 (keeper write-up, Task 9) helpers ----
+
+struct JStepSpec
+{
+   const char* expression;   // a PixelMath expression, applied to the pixels
+   const char* actor;        // "user" | "copilot"
+   const char* reason;       // "" = none stated
+};
+
+struct JBuilt
+{
+   int64 jid = 0;
+   int64 img = 0;   // the master image (the journey's end image)
+};
+
+// Records the view's statistics (+ thumbnail) for `stepId` (0 = starting stats).
+void JRecordStats( JourneyStore& store, const JBuilt& b, const char* id, int64 stepId, const String& thumbName )
+{
+   const StepStatsResult r = ComputeStepStats( ImageWindow::WindowById( IsoString( id ) ).MainView(),
+                                               store.JourneyDir( b.jid ) + "/thumbs/" + thumbName );
+   if ( !r.ok )
+      throw Error( String( "JRecordStats " ) + id + ": " + r.error );
+   if ( r.thumbnailPath.IsEmpty() )
+      throw Error( String( "JRecordStats " ) + id + " thumbnail: " + r.thumbnailError );
+   store.AddStats( b.img, stepId, r.channels );
+}
+
+// A recorded journey on `store`: a 96x64 noise master `id` with keywords `kw`,
+// then each step applied to its pixels (ApplyProcess) and stored the way the
+// journey tracker stores it: a step row from the step's XPSM, stats and a
+// thumbnail. Task 7's JourneyTracker is not on this branch's base, so the rows
+// are made straight from the Task 3-6 units (as J7's fixture does); what the
+// write-up reads -- the store -- is the same either way.
+JBuilt JRecordJourney( JourneyStore& store, const char* id, const FITSKeywordArray& kw, unsigned seed,
+                       std::initializer_list<JStepSpec> steps )
+{
+   JMakeNoiseMaster( id, seed );
+   ImageWindow::WindowById( IsoString( id ) ).SetKeywords( kw );
+   const std::string now = NowIso();
+   const std::string target = DeriveTarget( kw, String(), id );
+   const AcquisitionFacts a = ExtractAcquisition( kw, {}, String(), id );
+   JBuilt b;
+   b.jid = store.CreateJourney( DeriveJourneyName( target, a.filter, 1, now ), target, now );
+   b.img = store.AddImage( b.jid, id, "", MasterFingerprint( 96, 64, 1, 32, true, {}, kw ), true, now );
+   store.SetAcquisition( b.img, a );
+   JRecordStats( store, b, id, 0, String().Format( "start-%lld.jpg", static_cast<long long>( b.img ) ) );
+   int seq = 0;
+   for ( const JStepSpec& s : steps )
+   {
+      std::string x = kXpsmPixelMath;
+      const std::string from = "<parameter id=\"expression\">$T*2</parameter>";
+      x.replace( x.find( from ), from.size(), std::string( "<parameter id=\"expression\">" ) + s.expression + "</parameter>" );
+      HistoryStep h;
+      String e;
+      if ( !ParseXpsmStep( x, h, e ) )
+         throw Error( "JRecordJourney: " + e );
+      const ApplyProcessResult ar = ApplyProcess( "PixelMath", h.parameters, h.tableParameters,
+                                                  ImageWindow::WindowById( IsoString( id ) ).MainView() );
+      if ( !ar.ok )
+         throw Error( "JRecordJourney apply: " + ar.error );
+      h.combinedIndex = seq;
+      const int64 sid = store.AddStep( MakeStepRow( h, b.img, "active", s.actor, s.reason, seq + 1 ) );
+      JRecordStats( store, b, id, sid, String().Format( "%lld.jpg", static_cast<long long>( sid ) ) );
+      ++seq;
+   }
+   return b;
+}
+
+// The plan's J8 journey: master + 2 user PixelMath steps (no reason) + 1 Copilot step.
+JBuilt JBuildJourney( JourneyStore& store, const char* id, const char* object, unsigned seed )
+{
+   const std::string obj = std::string( "'" ) + object + "'";
+   return JRecordJourney( store, id,
+                          Kw( { { "IMAGETYP", "'Master Light'" }, { "OBJECT", obj.c_str() }, { "FILTER", "'Ha'" },
+                                { "INSTRUME", "'ASI2400MC'" }, { "EXPTIME", "300" }, { "NCOMBINE", "20" },
+                                { "DATE-OBS", "'2026-09-20T03:04:05'" } } ),
+                          seed, { { "$T*1.3", "user", "" }, { "$T+0.01", "user", "" }, { "$T*1.1", "copilot", "stretch gently" } } );
+}
+
+// RFC 3986 percent-encoding of a query value (the loopback's ?reasons=).
+std::string JPctEncode( const std::string& s )
+{
+   static const char* hex = "0123456789ABCDEF";
+   std::string o;
+   for ( unsigned char c : s )
+      if ( std::isalnum( c ) || c == '-' || c == '_' || c == '.' || c == '~' )
+         o += char( c );
+      else
+      {
+         o += '%';
+         o += hex[c >> 4];
+         o += hex[c & 15];
+      }
+   return o;
+}
+
+// Polls a KeeperExporter until idle (root thread; the worker only POSTs).
+bool JWaitKeeper( KeeperExporter& k, StringList& notes, int seconds )
+{
+   const jclock::time_point t0 = jclock::now();
+   while ( k.Busy() && MsSince( t0 ) < seconds*1000.0 )
+   {
+      k.Poll( notes );
+      JPump( 100 );
+   }
+   k.Poll( notes );
+   return !k.Busy();
+}
+
 } // namespace
 
 bool RunPendingSelfTestPhase()
@@ -5312,6 +5423,338 @@ bool RunJourneySelfTest( nlohmann::json& out )
       out["journeyExportError"] = U8( error );
       out["journeyExportOk"] = ok;
       allOk = allOk && ok;
+   }
+
+   // ---- Section J8: write-up + keep/retry (Task 9) -------------------------
+   SelfTestSectionMark( "J8 keeper write-up" );
+   {
+      nlohmann::json d = nlohmann::json::object();
+      bool condensedOk = false, bodyOk = false, parseOk = false, loopbackOk = false, noKeyOk = false, retryOk = false,
+           httpErrorOk = false, guardOk = false, truncatedOk = false, setStoreOk = false;
+      bool liveSkipped = true, liveOk = true;
+      String error;
+      std::vector<std::string> made;
+      try
+      {
+         JTempDir root( "picopilot-wu-" );
+         String oe;
+         std::unique_ptr<JourneyStore> store = JourneyStore::Open( root.Path(), oe );
+         if ( !store )
+            throw Error( "store: " + oe );
+         made.push_back( "pcWuM" );
+         const JBuilt wu = JBuildJourney( *store, "pcWuM", "WuM42", 41 );
+         const int64 jid = wu.jid;
+         store->MarkKept( jid, wu.img, NowIso() );
+         const nlohmann::json recipe = BuildRecipe( *store, jid, "PI Copilot test" );
+
+         // (a) Condensed input: no XPSM, no directories, capped parameters, bounded size.
+         {
+            const std::string c = CondensedRecipeForWriteup( recipe );
+            const nlohmann::json cj = nlohmann::json::parse( c );
+            nlohmann::json big = recipe;
+            for ( int i = 0; i < 1500; ++i )
+            {
+               nlohmann::json s = recipe.at( "steps" ).at( 0 );
+               s["id"] = 100000 + i;
+               s["parameters"]["expression"] = std::string( 2000, 'x' );
+               big["steps"].push_back( s );
+            }
+            const std::string cb = CondensedRecipeForWriteup( big );
+            const nlohmann::json cbj = nlohmann::json::parse( cb );
+            d["condensed"] = { { "chars", c.size() }, { "bigChars", cb.size() }, { "omitted", cbj.value( "omittedSteps", 0 ) } };
+            condensedOk = cj.at( "steps" ).size() == 3 && c.find( "xpsm" ) == std::string::npos && c.find( "/home/" ) == std::string::npos
+                       && cj.at( "steps" ).at( 0 ).contains( "median" ) && cj.at( "journey" ).at( "name" ).is_string()
+                       && cb.size() <= PICopilotJourneyWriteupInputChars && cbj.value( "omittedSteps", 0 ) > 0
+                       && cbj.at( "steps" ).at( 0 ).at( "parameters" ).get<std::string>().size() <= PICopilotJourneyWriteupParamChars + 3;
+         }
+         // (b) The request: Haiku, non-streamed, 8000 tokens, no tools/thinking, NO image anywhere, no thumbnail bytes.
+         {
+            const std::string body = BuildMessagesRequestBody( PICopilotJourneyWriteupModel, JourneyWriteupSystemPrompt(),
+                                                               JourneyWriteupHistory( recipe ), nlohmann::json(), JourneyWriteupShape() );
+            const nlohmann::json b = nlohmann::json::parse( body );
+            std::string thumbB64;
+            FindFileInfo info;
+            for ( File::Find f( store->JourneyDir( jid ) + "/thumbs/*.jpg" ); f.NextItem( info ); )
+            {
+               const ByteArray bytes = File::ReadFile( store->JourneyDir( jid ) + "/thumbs/" + info.name );
+               // bytes [18, 66): a multiple of 3 from the start, so its Base64 is a substring of the whole file's Base64
+               if ( bytes.Length() >= 66 )
+                  thumbB64 = std::string( IsoString::ToBase64( bytes.Begin() + 18, 48 ).c_str() );
+               break;
+            }
+            d["body"] = { { "model", b.value( "model", "" ) }, { "max_tokens", b.value( "max_tokens", 0 ) }, { "thumbProbe", thumbB64 } };
+            bodyOk = b.at( "model" ) == "claude-haiku-4-5" && b.at( "max_tokens" ) == 8000 && !b.contains( "stream" )
+                  && !b.contains( "tools" ) && !b.contains( "thinking" ) && !b.contains( "cache_control" )
+                  && b.at( "messages" ).size() == 1
+                  && body.find( "\"image\"" ) == std::string::npos && body.find( "base64" ) == std::string::npos
+                  && !thumbB64.empty() && body.find( thumbB64 ) == std::string::npos
+                  && body.find( "CONDENSED_RECIPE_JSON:" ) != std::string::npos;
+         }
+         // (c) Reply parsing: the LAST json fence; missing or broken fence -> markdown kept, note set.
+         {
+            const std::string F( 3, '`' );   // a fence, spelled without three literal backticks
+            const WriteupReply r1 = ParseWriteupReply( "# T\n\nText.\n" + F + "json\n{\"inferredReasons\":[{\"step\":1,\"reason\":\"a\"}]}\n" + F + "\n"
+                                                       "More.\n" + F + "json\n{\"inferredReasons\":[{\"step\":7,\"reason\":\"lift it\"}]}\n" + F + "\n" );
+            const WriteupReply r2 = ParseWriteupReply( "# T\n\nNo fence here." );
+            const WriteupReply r3 = ParseWriteupReply( "# T\n" + F + "json\n{not json\n" + F + "\n" );
+            // Cut off inside the fence (max_tokens): the document keeps the prose, never the open fence or raw JSON.
+            const WriteupReply r4 = ParseWriteupReply( "# T\n\nProse stays.\n\n" + F + "json\n{\"inferredReasons\": [{\"step\": 3, \"rea" );
+            d["parse"] = { { "r4markdown", r4.markdown }, { "r4note", r4.note } };
+            parseOk = r4.ok && r4.markdown == "# T\n\nProse stays.\n" && r4.inferred.empty()
+                   && r4.note.find( "cut off" ) != std::string::npos &&
+r1.ok && r1.inferred.size() == 1 && r1.inferred[0].first == 7 && r1.inferred[0].second == "lift it"
+                   && r1.markdown.find( "\"inferredReasons\":[{\"step\":7" ) == std::string::npos && r1.markdown.find( "More." ) != std::string::npos
+                   && r2.ok && r2.markdown == "# T\n\nNo fence here." && !r2.note.empty() && r2.inferred.empty()
+                   && r3.ok && !r3.note.empty() && r3.inferred.empty();
+         }
+         // (d) Loopback end to end: journey.md, the inferred reason stored + in recipe.json, then the export copy.
+         const char* wurl = std::getenv( "PICOPILOT_SELFTEST_WRITEUP_URL" );
+         if ( wurl == nullptr )
+            throw Error( "PICOPILOT_SELFTEST_WRITEUP_URL not set by the harness" );
+         {
+            JTempDir exportRoot( "picopilot-wu-out-" );
+            KeeperExporter k( store.get() );
+            const KeepOutcome o = k.Keep( jid, wu.img, "sk-test-loopback", exportRoot.Path(), String( wurl ) );
+            StringList notes;
+            const bool idle = JWaitKeeper( k, notes, 30 );
+            const String dir = ExportDirOf( *store, jid );
+            const nlohmann::json after = nlohmann::json::parse( FileBytes( dir + "/recipe.json" ) );
+            int inferredSteps = 0;
+            for ( const nlohmann::json& s : after.at( "steps" ) )
+               if ( s.at( "reasonInferred" ) == true && s.at( "reason" ) == "brighten the faint signal" ) ++inferredSteps;
+            std::string why;
+            const bool afterValid = ValidateRecipe( after, why );
+            String copied;
+            FindFileInfo info;
+            for ( File::Find f( exportRoot.Path() + "/WuM42/*" ); f.NextItem( info ); )
+               if ( info.IsDirectory() && info.name != "." && info.name != ".." )
+                  copied = exportRoot.Path() + "/WuM42/" + info.name;
+            String allNotes;
+            for ( const String& n : notes ) allNotes += n + "\n";
+            const int mdMode = JModeOf( dir + "/journey.md" ), markerMode = JModeOf( store->JourneyDir( jid ) + "/.copied-to" );
+            d["loopback"] = { { "started", o.writeupStarted }, { "idle", idle }, { "inferred", inferredSteps },
+                              { "copied", U8( copied ) }, { "notes", U8( allNotes ) }, { "mdMode", mdMode },
+                              { "markerMode", markerMode }, { "recipeWhy", why } };
+            loopbackOk = o.alreadyKept && !o.marked && o.files.xpsmOk && o.files.recipeOk && o.writeupStarted && idle
+                      && FileBytes( dir + "/journey.md" ).rfind( "# ", 0 ) == 0 && inferredSteps == 1 && afterValid
+                      && FileBytes( dir + "/journey.md" ).find( "inferredReasons" ) == std::string::npos
+                      && !copied.IsEmpty() && File::Exists( copied + "/journey.md" ) && File::Exists( copied + "/recipe.json" )
+                      && FileBytes( copied + "/recipe.json" ) == FileBytes( dir + "/recipe.json" )
+                      && File::DirectoryExists( copied + "/thumbs" ) && !File::Exists( copied + "/.copied-to" )
+                      && allNotes.Contains( "journey.md" ) && !allNotes.Contains( "sk-test-loopback" )
+                      && mdMode == (0644 & ~int( JProcUmask() )) && markerMode == (0600 & ~int( JProcUmask() ));
+         }
+         // (e) No API key: files + copy now, the write-up named as not written.
+         // (f) Retry (re-mark): only the missing journey.md is produced, then the copy is refreshed.
+         {
+            made.push_back( "pcWuN" );
+            const JBuilt wn = JRecordJourney( *store, "pcWuN", Kw( { { "IMAGETYP", "'Master Light'" }, { "OBJECT", "'WuNoKey'" } } ),
+                                              43, { { "$T*1.2", "user", "" } } );
+            const int64 j2 = wn.jid;
+            JTempDir exportRoot( "picopilot-wu-nokey-" );
+            KeeperExporter k( store.get() );
+            const KeepOutcome o = k.Keep( j2, wn.img, String(), exportRoot.Path(), String( wurl ) );
+            const String dir = ExportDirOf( *store, j2 );
+            JourneyRow jr1;
+            store->GetJourney( j2, jr1 );
+            const std::string xpsmBefore = FileBytes( dir + "/" + ExportBaseName( jr1 ) + ".xpsm" );
+            d["noKey"] = { { "writeupError", U8( o.writeupError ) }, { "copyDone", o.copyDone }, { "copyError", U8( o.copyError ) } };
+            noKeyOk = o.marked && !o.alreadyKept && jr1.kept && jr1.endImageId == wn.img && o.files.xpsmOk && o.files.recipeOk
+                   && !o.writeupStarted && o.writeupError.Contains( "API key" ) && o.copyDone && !File::Exists( dir + "/journey.md" )
+                   && !xpsmBefore.empty() && !k.Busy();
+            const KeepOutcome r = k.Retry( j2, "sk-test-loopback", exportRoot.Path(), String( wurl ) );
+            StringList notes;
+            const bool idle = JWaitKeeper( k, notes, 30 );
+            JourneyRow jr2;
+            store->GetJourney( j2, jr2 );
+            const std::string xpsmAfter = FileBytes( dir + "/" + ExportBaseName( jr2 ) + ".xpsm" );
+            d["retry"] = { { "redone", nlohmann::json::array() } };
+            for ( const String& s : r.redone ) d["retry"]["redone"].push_back( U8( s ) );
+            // The write-up's copy is the SECOND copy into o.copiedTo: the .copied-to marker (an absolute path)
+            // sits in the journey folder, never in export/, so it is not carried out (pre-flight P7).
+            d["retry"]["markerInExport"] = File::Exists( dir + "/.copied-to" );
+            retryOk = r.alreadyKept && idle && r.redone.Length() == 1 && r.redone[0] == "journey.md" && File::Exists( dir + "/journey.md" )
+                   && xpsmAfter == xpsmBefore
+                   && File::Exists( store->JourneyDir( j2 ) + "/.copied-to" ) && !File::Exists( dir + "/.copied-to" )
+                   && !o.copiedTo.IsEmpty() && File::Exists( o.copiedTo + "/journey.md" ) && !File::Exists( o.copiedTo + "/.copied-to" );
+         }
+         // (h) An HTTP error from the API: named in the note (verbatim), no journey.md, the copy still runs.
+         {
+            const char* base = std::getenv( "PICOPILOT_SELFTEST_STREAM_BASE" );
+            if ( base == nullptr )
+               throw Error( "PICOPILOT_SELFTEST_STREAM_BASE not set by the harness" );
+            made.push_back( "pcWuE" );
+            const JBuilt we = JRecordJourney( *store, "pcWuE", Kw( { { "IMAGETYP", "'Master Light'" }, { "OBJECT", "'WuErr'" } } ),
+                                              45, { { "$T*1.2", "user", "" } } );
+            JTempDir exportRoot( "picopilot-wu-err-" );
+            KeeperExporter k( store.get() );
+            // A non-streamed POST to "/stream-401" is answered 400 ("\"stream\" is not true") by the loopback.
+            const KeepOutcome o = k.Keep( we.jid, we.img, "sk-test-loopback", exportRoot.Path(), String( base ) + "/stream-401" );
+            StringList notes;
+            const bool idle = JWaitKeeper( k, notes, 30 );
+            String allNotes;
+            for ( const String& n : notes ) allNotes += n + "\n";
+            String copied;
+            FindFileInfo info;
+            for ( File::Find f( exportRoot.Path() + "/WuErr/*" ); f.NextItem( info ); )
+               if ( info.IsDirectory() && info.name != "." && info.name != ".." )
+                  copied = exportRoot.Path() + "/WuErr/" + info.name;
+            d["httpError"] = { { "notes", U8( allNotes ) }, { "copied", U8( copied ) } };
+            httpErrorOk = o.writeupStarted && idle && allNotes.Contains( "journey.md was not written" )
+                       && allNotes.Contains( "is not true" ) && !File::Exists( ExportDirOf( *store, we.jid ) + "/journey.md" )
+                       && !copied.IsEmpty() && File::Exists( copied + "/recipe.json" ) && !File::Exists( copied + "/journey.md" )
+                       && !allNotes.Contains( "sk-test-loopback" );
+         }
+         // (i) The inferred-reason guard (fix round 1, C1): the reply is untrusted. A step of ANOTHER
+         //     journey, a PI Copilot step, a step with a stated reason, a step that does not exist and a
+         //     malformed id each store nothing and are named in the note; the one valid entry is stored.
+         int64 guardJid = 0;
+         {
+            made.push_back( "pcWuG" );
+            made.push_back( "pcWuF" );
+            const JBuilt g = JRecordJourney( *store, "pcWuG", Kw( { { "IMAGETYP", "'Master Light'" }, { "OBJECT", "'WuGuard'" } } ), 47,
+                                             { { "$T*1.2", "user", "" }, { "$T*1.1", "copilot", "stretch gently" },
+                                               { "$T+0.01", "user", "lift the floor" } } );
+            const JBuilt f = JRecordJourney( *store, "pcWuF", Kw( { { "IMAGETYP", "'Master Light'" }, { "OBJECT", "'WuForeign'" } } ), 49,
+                                             { { "$T*1.2", "user", "" } } );
+            guardJid = g.jid;
+            const std::vector<StepRow> gs = store->Steps( g.img, false ), fs = store->Steps( f.img, false );
+            if ( gs.size() != 3 || fs.size() != 1 )
+               throw Error( "guard fixture: unexpected step counts" );
+            const int64 sU = gs[0].id, sC = gs[1].id, sR = gs[2].id, sF = fs[0].id, sMissing = sF + 1000000;
+            const nlohmann::json entries = nlohmann::json::array( {
+               { { "step", sU }, { "reason", "accepted reason" } },          // 1: valid
+               { { "step", sF }, { "reason", "foreign" } },                  // 2: another journey
+               { { "step", sC }, { "reason", "copilot" } },                  // 3: a PI Copilot step
+               { { "step", sR }, { "reason", "overwrite" } },                // 4: already has a reason
+               { { "step", sMissing }, { "reason", "missing" } },            // 5: no such step
+               { { "step", std::to_string( sU ) }, { "reason", "string" } }, // 6: id as a string
+               { { "step", 1.5 }, { "reason", "fraction" } },                // 7: not a whole number
+               { { "reason", "no step" } },                                  // 8: no step
+               "not an object" } );                                          // 9
+            KeeperExporter k( store.get() );
+            const KeepOutcome o = k.Keep( g.jid, g.img, "sk-test-loopback", String(),
+                                          String( wurl ) + "?reasons=" + String( JPctEncode( entries.dump() ).c_str() ) );
+            StringList notes;
+            const bool idle = JWaitKeeper( k, notes, 30 );
+            String allNotes;
+            for ( const String& n : notes ) allNotes += n + "\n";
+            StepRow u, fr, c, r, m;
+            store->GetStep( sU, u );
+            store->GetStep( sF, fr );
+            store->GetStep( sC, c );
+            store->GetStep( sR, r );
+            const bool missingExists = store->GetStep( sMissing, m );
+            auto named = [&allNotes]( const std::string& s ) { return allNotes.Contains( String( s.c_str() ) ); };
+            auto stepNote = [&named]( int64 id, const char* why ) { return named( "step " + std::to_string( id ) + " (" + why + ")" ); };
+            const nlohmann::json after = nlohmann::json::parse( FileBytes( ExportDirOf( *store, g.jid ) + "/recipe.json" ) );
+            bool recipeHasAccepted = false;
+            for ( const nlohmann::json& s : after.at( "steps" ) )
+               if ( s.at( "id" ) == sU && s.at( "reason" ) == "accepted reason" && s.at( "reasonInferred" ) == true ) recipeHasAccepted = true;
+            const bool acceptOk = o.writeupStarted && idle && u.reason == "accepted reason" && u.reasonInferred && recipeHasAccepted;
+            const bool foreignOk = fr.reason.empty() && !fr.reasonInferred && stepNote( sF, "it belongs to another journey" );
+            const bool copilotOk = c.reason == "stretch gently" && !c.reasonInferred && stepNote( sC, "it was made by PI Copilot" );
+            const bool reasonOk = r.reason == "lift the floor" && !r.reasonInferred && stepNote( sR, "it already has a stated reason" );
+            const bool missingOk = !missingExists && stepNote( sMissing, "there is no such step" );
+            const bool malformedOk = named( "entry 6 (" ) && named( "entry 7 (" ) && named( "entry 8 (" ) && named( "entry 9 (" )
+                                  && !named( "entry 1 (" );
+            d["guard"] = { { "notes", U8( allNotes ) }, { "accept", acceptOk }, { "foreign", foreignOk }, { "copilot", copilotOk },
+                           { "reason", reasonOk }, { "missing", missingOk }, { "malformed", malformedOk } };
+            guardOk = acceptOk && foreignOk && copilotOk && reasonOk && missingOk && malformedOk;
+         }
+         // (j) A reply cut off inside its json fence (fix round 1, I1): journey.md keeps the prose only,
+         //     no reason is stored, and the note says the reasons were cut off at the token limit.
+         {
+            made.push_back( "pcWuT" );
+            const JBuilt t = JRecordJourney( *store, "pcWuT", Kw( { { "IMAGETYP", "'Master Light'" }, { "OBJECT", "'WuTrunc'" } } ), 51,
+                                             { { "$T*1.2", "user", "" } } );
+            KeeperExporter k( store.get() );
+            const KeepOutcome o = k.Keep( t.jid, t.img, "sk-test-loopback", String(), String( wurl ) + "?truncate=1" );
+            StringList notes;
+            const bool idle = JWaitKeeper( k, notes, 30 );
+            String allNotes;
+            for ( const String& n : notes ) allNotes += n + "\n";
+            const std::string md = FileBytes( ExportDirOf( *store, t.jid ) + "/journey.md" );
+            StepRow s;
+            store->GetStep( store->Steps( t.img, false ).at( 0 ).id, s );
+            d["truncated"] = { { "md", md }, { "notes", U8( allNotes ) } };
+            truncatedOk = o.writeupStarted && idle && md.find( "brightened the faint signal" ) != std::string::npos
+                       && md.find( std::string( 3, '`' ) ) == std::string::npos && md.find( "inferredReasons" ) == std::string::npos
+                       && s.reason.empty() && allNotes.Contains( "8000-token limit" ) && allNotes.Contains( "cut off" );
+         }
+         // (k) SetStore cancels and waits for a write-up in flight (fix round 1, I2): a stalled request, the
+         //     same store keeps it, another store (nullptr) cancels it at once; nothing is written afterwards.
+         //     An exporter with no store refuses Keep by name and polls to nothing.
+         {
+            const char* stall = std::getenv( "PICOPILOT_SELFTEST_STALL_URL" );
+            if ( stall == nullptr )
+               throw Error( "PICOPILOT_SELFTEST_STALL_URL not set by the harness" );
+            const String md = ExportDirOf( *store, guardJid ) + "/journey.md";
+            const std::string mdBefore = FileBytes( md );
+            KeeperExporter k( store.get() );
+            const KeepOutcome o = k.Keep( guardJid, 0, "sk-test-loopback", String(), String( stall ) );
+            JPump( 300 );
+            k.SetStore( store.get() );
+            const bool keptBusy = k.Busy();
+            const jclock::time_point t0 = jclock::now();
+            k.SetStore( nullptr );
+            const double cancelMs = MsSince( t0 );
+            const bool busyAfter = k.Busy();
+            StringList notes;
+            JPump( 300 );
+            k.Poll( notes );
+            KeeperExporter none( nullptr );
+            StringList noneNotes;
+            none.Poll( noneNotes );
+            const KeepOutcome no = none.Keep( guardJid, 0, "sk-test-loopback", String(), String( wurl ) );
+            d["setStore"] = { { "started", o.writeupStarted }, { "keptBusy", keptBusy }, { "cancelMs", cancelMs },
+                              { "busyAfter", busyAfter }, { "notes", notes.Length() }, { "noneError", U8( no.files.xpsmError ) } };
+            setStoreOk = o.writeupStarted && keptBusy && !busyAfter && cancelMs < 10000 && notes.IsEmpty()
+                      && FileBytes( md ) == mdBefore
+                      && noneNotes.IsEmpty() && !none.Busy() && !no.marked && !no.writeupStarted && !no.files.xpsmOk
+                      && no.files.xpsmError.Contains( "not open" );
+         }
+         // (g) LIVE (gated): the real Haiku write-up.
+         if ( const char* key = std::getenv( "PICOPILOT_TEST_API_KEY" ) )
+         {
+            liveSkipped = false;
+            liveOk = false;
+            JTempDir exportRoot( "picopilot-wu-live-" );
+            KeeperExporter k( store.get() );
+            const KeepOutcome o = k.Retry( jid, String( key ), exportRoot.Path() );   // default URL: the real API
+            // journey.md exists from (d): make the live run produce it again.
+            File::Remove( ExportDirOf( *store, jid ) + "/journey.md" );
+            const KeepOutcome o2 = k.Retry( jid, String( key ), exportRoot.Path() );
+            StringList notes;
+            const bool idle = JWaitKeeper( k, notes, 180 );
+            const std::string md = FileBytes( ExportDirOf( *store, jid ) + "/journey.md" );
+            String allNotes;
+            for ( const String& n : notes ) allNotes += n + "\n";
+            d["live"] = { { "started", o2.writeupStarted }, { "idle", idle }, { "chars", md.size() },
+                          { "head", md.substr( 0, 200 ) }, { "notes", U8( allNotes ) }, { "firstRedone", o.redone.Length() } };
+            liveOk = !o.writeupStarted && o2.writeupStarted && idle && md.rfind( "# ", 0 ) == 0 && md.size() > 200
+                  && md.find( "WuM42" ) != std::string::npos && md.find( "## Processing" ) != std::string::npos
+                  && md.find( "inferredReasons" ) == std::string::npos && !allNotes.Contains( String( key ) );
+         }
+      }
+      catch ( const pcl::Exception& x ) { error = x.Message(); }
+      catch ( const std::exception& x ) { error = String( x.what() ); }
+      catch ( ... )                     { error = "unknown exception"; }
+      for ( const std::string& id : made )
+         JForceClose( id );
+      const bool ok = condensedOk && bodyOk && parseOk && loopbackOk && noKeyOk && retryOk && httpErrorOk
+                   && guardOk && truncatedOk && setStoreOk;
+      out["journeyWriteupDetail"] = d;
+      out["journeyWriteupChecks"] = { { "condensed", condensedOk }, { "body", bodyOk }, { "parse", parseOk },
+                                      { "loopback", loopbackOk }, { "noKey", noKeyOk }, { "retry", retryOk },
+                                      { "httpError", httpErrorOk }, { "guard", guardOk }, { "truncated", truncatedOk },
+                                      { "setStore", setStoreOk } };
+      out["journeyWriteupError"] = U8( error );
+      out["journeyWriteupOk"] = ok;
+      out["liveWriteupSkipped"] = liveSkipped;
+      out["liveWriteupDetail"] = d.value( "live", nlohmann::json() );
+      out["liveWriteupOk"] = liveOk && error.IsEmpty();
+      allOk = allOk && ok && liveOk && error.IsEmpty();
    }
 
    // ---- journey sections end ----

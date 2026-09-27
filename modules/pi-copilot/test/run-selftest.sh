@@ -395,6 +395,36 @@ class H(BaseHTTPRequestHandler):
                     return self.reply(400, {"type": "error", "error": {"type": "invalid_request_error",
                                             "message": "body #%d: \"stream\" is not true" % n}})
                 return self.sse(self.stream_events(req, n, kind), stall=(kind == "stall"))
+        if self.path.split("?", 1)[0].endswith("/writeup"):   # Haiku journey write-up (plan Task 9)
+            # ?reasons=<JSON array>: the reply's inferredReasons entries, verbatim (guard tests);
+            # ?truncate=1: the reply stops inside an opened, never-closed json fence (stop_reason max_tokens).
+            from urllib.parse import parse_qs, urlsplit
+            q = parse_qs(urlsplit(self.path).query)
+            msgs = req.get("messages") or []
+            def blocks(m):
+                c = m.get("content")
+                return c if isinstance(c, list) else [{"type": "text", "text": c or ""}]
+            has_image = any(b.get("type") == "image" for m in msgs for b in blocks(m))
+            if (has_image or req.get("stream") or req.get("tools") or req.get("thinking")
+                    or req.get("model") != "claude-haiku-4-5" or req.get("max_tokens") != 8000 or len(msgs) != 1):
+                return self.reply(400, {"type": "error", "error": {"type": "invalid_request_error",
+                                        "message": "body #%d: write-up request shape is wrong" % n}})
+            text = "".join(b.get("text", "") for b in blocks(msgs[0]))
+            rec = json.loads(text.split("CONDENSED_RECIPE_JSON:\n", 1)[1])
+            sid = next((s["id"] for s in rec["steps"] if s["actor"] == "user" and not s.get("reason")), None)
+            fence = "`" * 3   # never three literal backticks in this file's markdown source
+            if "truncate" in q:
+                md = ("# %s\n\n## Processing\nStep %s brightened the faint signal (inferred).\n\n" + fence
+                      + "json\n{\"inferredReasons\": [{\"step\": %s, \"reas") % (rec["journey"]["name"], sid, sid)
+                return self.reply(200, {"content": [{"type": "text", "text": md}], "stop_reason": "max_tokens"})
+            if "reasons" in q:
+                md = ("# %s\n\n## Processing\nGuard test.\n\n" + fence + "json\n%s\n" + fence + "\n") % (
+                      rec["journey"]["name"], json.dumps({"inferredReasons": json.loads(q["reasons"][0])}))
+                return self.reply(200, {"content": [{"type": "text", "text": md}], "stop_reason": "end_turn"})
+            md =("# %s\n\n## Equipment\nLoopback.\n\n## Acquisition\nLoopback.\n\n## Processing\nStep %s brightened the "
+                  "faint signal (inferred).\n\n" + fence + "json\n%s\n" + fence + "\n") % (rec["journey"]["name"], sid,
+                  json.dumps({"inferredReasons": [{"step": sid, "reason": "brighten the faint signal"}]}))
+            return self.reply(200, {"content": [{"type": "text", "text": md}], "stop_reason": "end_turn"})
         if self.path.endswith("/agent"):
             return self.reply(*self.agent_reply(req, n))
         self.reply(200, {"content": [{"type": "text", "text": json.dumps({"messages": req.get("messages"), "tools": req.get("tools"), "system": req.get("system"),
@@ -413,6 +443,7 @@ for _ in $(seq 50); do [ -s "$ECHO_PORT_FILE" ] && break; sleep 0.1; done
 export PICOPILOT_SELFTEST_ECHO_URL="http://127.0.0.1:$(cat "$ECHO_PORT_FILE")/v1/messages"
 export PICOPILOT_SELFTEST_AGENT_URL="http://127.0.0.1:$(cat "$ECHO_PORT_FILE")/v1/agent"
 export PICOPILOT_SELFTEST_STREAM_BASE="http://127.0.0.1:$(cat "$ECHO_PORT_FILE")/v1"
+export PICOPILOT_SELFTEST_WRITEUP_URL="http://127.0.0.1:$(cat "$ECHO_PORT_FILE")/v1/writeup"
 export PICOPILOT_SELFTEST_FIXTURES="$HERE/fixtures"
 
 # Optional exception-logging shim (thist-hang-investigation.md item 4):
@@ -565,6 +596,7 @@ required_true = [
     'masterFactsOk',
     'journeyTrackerOk',
     'journeyExportOk',
+    'journeyWriteupOk', 'liveWriteupOk',
     'histLandedOk',
     'ok',
 ]
@@ -577,13 +609,14 @@ if d.get('streamLoopbackSkipped') is not False: missing.append('streamLoopbackSk
 import os
 if os.environ.get('PICOPILOT_REQUIRE_LIVE') == '1':
     for k in ('anthropicSkipped', 'twoTurnSkipped', 'visionSkipped', 'liveAgentSkipped', 'liveConversationSkipped',
-              'graxpertLiveSkipped', 'bridgeStandInSkipped'):
+              'graxpertLiveSkipped', 'bridgeStandInSkipped', 'liveWriteupSkipped'):
         if d.get(k) is not False: missing.append(k + '==false (PICOPILOT_REQUIRE_LIVE=1)')
 print('anthropic check: %s' % ('SKIPPED (no key)' if d.get('anthropicSkipped') else 'RAN against real API'))
 print('two-turn check: %s' % ('SKIPPED (no key)' if d.get('twoTurnSkipped') else 'RAN against real API'))
 print('vision check: %s' % ('SKIPPED (no key)' if d.get('visionSkipped') else 'RAN against real API, answer=%r' % d.get('visionAnswer')))
 print('live agent check: %s' % ('SKIPPED (no key)' if d.get('liveAgentSkipped') else 'RAN against real API, ratio=%r log=%r' % (d.get('liveAgentRatio'), d.get('liveAgentLog'))))
 print('live conversation check: %s' % ('SKIPPED (no key)' if d.get('liveConversationSkipped') else 'RAN against real API, cacheRead=%r trimThought=%r trimTransformations=%r%s' % (d.get('liveCacheRead'), d.get('liveTrimThought'), d.get('liveTrimTransformations'), ('' if d.get('liveConversationOk') else ' FAILED: %r' % d.get('liveConversationDetail', {}).get('trimLiveReason')))))
+print('live write-up check: %s' % ('SKIPPED (no key)' if d.get('liveWriteupSkipped') else 'RAN against real API (claude-haiku-4-5), %r' % d.get('liveWriteupDetail')))
 pd = d.get('pinnedDetail', {})
 print('GraXpert live check: %s' % (('SKIPPED: %s' % pd.get('liveSkipReason')) if d.get('graxpertLiveSkipped') is not False else 'RAN, %r lockWaitMs=%r' % ({k: pd.get('live', {}).get(k) for k in ('seconds', 'gradientBefore', 'gradientAfter', 'log')}, pd.get('liveLock', {}).get('waitedMs'))))
 bd = d.get('bridgeDetail', {})
