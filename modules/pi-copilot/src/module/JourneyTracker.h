@@ -115,20 +115,44 @@ public:
    void OnImageSaved( const View& view, double now );
    void OnImageFocused( const View& view, double now );   // also sampled from ActiveWindow() at every tick
 
-   // A Copilot tool ran processId on viewFullId (empty for a global run) and
+   // A Copilot tool runs processId on viewFullId (empty for a global run) and
    // created these windows. integration: a global integration run (Ruling 1.5).
-   // Contract for Task 10 (review M5): today the note is matched only to a step
-   // recorded AFTER it is posted; a tick that records the step between the
-   // execution and this call attributes it to the user. Task 10 should post the
-   // note BEFORE executing and cancel it when the tool fails.
-   void NoteCopilotStep( const IsoString& viewFullId, const std::string& processId, const std::string& reason,
-                         const std::vector<std::string>& createdWindowIds, bool integration, double now );
+   // Review M5: the step note is matched only to a step recorded AFTER it is
+   // posted, so the tools post it BEFORE executing (with no created windows:
+   // NoteCopilotCreated reports those after the run) and cancel it when the
+   // run failed or added no History step to the target. Returns the step
+   // note's token (0 when no step note was posted: empty view or process id).
+   uint64 NoteCopilotStep( const IsoString& viewFullId, const std::string& processId, const std::string& reason,
+                           const std::vector<std::string>& createdWindowIds, bool integration, double now );
+   // The windows a Copilot run created (known only after it): linked to
+   // sourceViewFullId's journey ('copilot' evidence), or, for a global
+   // integration run, the first one a master (Ruling 29).
+   void NoteCopilotCreated( const IsoString& sourceViewFullId, const std::vector<std::string>& createdWindowIds,
+                            bool integration, double now );
+   // Drops a step note (the run failed, or it adds no History step to its target).
+   void CancelCopilotNote( uint64 token );
+   // T-graxpert: the run reported success but changed nothing (ApplyProcess
+   // noEffect). The History step it left is recorded as the Copilot's with
+   // params_json "noEffect": true, which every count, recipe and replay skips
+   // like a base step (it keeps the history diff aligned).
+   void SetCopilotNoteNoEffect( uint64 token );
 
    // start_journey: tracks a main view as the master root of a NEW journey
    // (or continues its own saved journey). Refused, with a precise error, when
    // recording is off, the library is unavailable, the view is busy or already
    // recorded, or a tick is running. Never leaves a partial journey behind.
    int64 StartJourneyFor( const View& view, String& error, double now );
+
+   // Ruling 26: a kept journey records nothing more. Its open images continue
+   // in ONE new journey "<name> (continued)" whose starting point is the kept
+   // result (their whole current history is base). Returns its id; 0 when none
+   // of its images is open (error empty), or when it could not be made now
+   // (error says why; its images then join it at a later tick, and until
+   // then nothing of theirs is recorded into the kept journey). Never waits
+   // on a busy image (GC): a busy one joins the new journey at the first Tick
+   // where it is free. Called inside a tick (re-entered): the freeze is
+   // queued and done at the next tick (returns 0, error says so).
+   int64 FreezeJourney( int64 journeyId, String& error );
 
    void Tick( double now, bool forceScan = false );
 
@@ -198,7 +222,7 @@ private:
       int             rowMissing = 0;    // row-missing evaluations: the 1st only defers (Reconcile runs), repeats count as failures (I-A)
    };
    struct Ignored   { const void* handle = nullptr; std::string id; size_type modifyCount = 0; double firstSeen = 0; };   // N3
-   struct CopilotNote { std::string viewId, processId, reason; double t = 0; };
+   struct CopilotNote { std::string viewId, processId, reason; double t = 0; uint64 token = 0; bool noEffect = false; };
    struct CreatedNote { std::string id, sourceViewId; bool integration = false, first = false; double t = 0; };
    // A notification, queued by a handler and applied by DrainEvents() at the start of Tick() (pre-flight P10).
    enum class EventKind { Created, Updated, Renamed, Deleted, Saved, Focused };
@@ -251,6 +275,15 @@ private:
    StringList               m_joinNotes;
    HistoryReadFn            m_read;
    std::function<void( const char* )> m_joinFault;
+   uint64                   m_noteToken = 0;   // CopilotNote tokens
+   // Ruling 26 (FreezeJourney): the continued journey of a kept one, made
+   // lazily when the library refused it at the freeze; shared by its images.
+   struct Continuation { int64 keptJourneyId = 0, journeyId = 0; std::string name, target; AcquisitionFacts acq; };
+   // An image of a frozen journey that has not joined its continuation yet
+   // (busy, or the write failed). Ids + an opaque handle only (fix round 4).
+   struct PendingFreeze { const void* handle = nullptr; std::string id; std::shared_ptr<Continuation> to; String reason; };
+   std::vector<PendingFreeze> m_pendingFreeze;
+   std::vector<int64>       m_freezeRequests;   // FreezeJourney called inside a tick: done at the next tick
    double                   m_lastStepMs = 0;
    int                      m_deferrals = 0;
    std::chrono::steady_clock::time_point m_tickStart;
@@ -298,6 +331,14 @@ private:
    std::vector<const Tracked*> ReferencedTracked( const HistoryStep& h ) const;
    void           FlushPendingGaps();
    void           EndClosedJourneys();
+   int64          FreezeNow( int64 journeyId, String& error );
+   bool           IsPendingFreeze( const void* handle ) const;
+   // Joins every pending image that is free now; the others wait (busy) or
+   // keep their reason (a failed write) for the next tick.
+   void           ProcessPendingFreezes();
+   // One free image into its continuation (made first when needed), as ONE
+   // transaction. false: the history read was busy (retried next tick).
+   bool           JoinContinued( PendingFreeze& p );
 };
 
 // Ruling 9: prunes when `today` differs from lastRun. lastRun = today is set

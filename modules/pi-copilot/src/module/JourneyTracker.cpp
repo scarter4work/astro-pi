@@ -296,7 +296,9 @@ bool JourneyTracker::IsCandidate( const void* handle ) const
 
 void JourneyTracker::AddCandidate( const std::string& id, const void* handle, double now, bool fresh )
 {
-   if ( IsCandidate( handle ) )
+   // A frozen journey's image waiting for its continuation is never evaluated as a new candidate: timing
+   // evidence would link it back into the kept journey (Ruling 26).
+   if ( IsCandidate( handle ) || IsPendingFreeze( handle ) )
       return;
    std::unique_ptr<Candidate> c( new Candidate );
    c->handle = handle;
@@ -326,7 +328,7 @@ void JourneyTracker::Decision( const std::string& line )
 
 size_type JourneyTracker::PendingCount() const
 {
-   size_type n = m_events.size() + m_candidates.size() + m_pendingGaps.size();
+   size_type n = m_events.size() + m_candidates.size() + m_pendingGaps.size() + m_pendingFreeze.size() + m_freezeRequests.size();
    for ( const std::unique_ptr<Tracked>& t : m_tracked )
       if ( t->dirty )
          ++n;
@@ -507,19 +509,48 @@ void JourneyTracker::NoteActive( const std::string& id, double now )
       m_active.pop_front();
 }
 
-void JourneyTracker::NoteCopilotStep( const IsoString& viewFullId, const std::string& processId, const std::string& reason,
-                                      const std::vector<std::string>& createdWindowIds, bool integration, double now )
+uint64 JourneyTracker::NoteCopilotStep( const IsoString& viewFullId, const std::string& processId, const std::string& reason,
+                                        const std::vector<std::string>& createdWindowIds, bool integration, double now )
 {
    const std::string vid( viewFullId.c_str() );
-   if ( !vid.empty() )
-      m_copilot.push_back( { vid, processId, reason, now } );
-   // Ruling 29: of an integration run's windows only the first (the result) may become a master.
-   for ( size_t i = 0; i < createdWindowIds.size(); ++i )
-      m_created.push_back( { createdWindowIds[i], vid, integration, i == 0, now } );
+   uint64 token = 0;
+   if ( !vid.empty() && !processId.empty() )
+   {
+      token = ++m_noteToken;
+      m_copilot.push_back( { vid, processId, reason, now, token, false } );
+   }
+   NoteCopilotCreated( viewFullId, createdWindowIds, integration, now );
    for ( const std::unique_ptr<Tracked>& t : m_tracked )
       if ( t->id == vid )
          t->dirty = true;
    m_forceScan = true;
+   return token;
+}
+
+void JourneyTracker::NoteCopilotCreated( const IsoString& sourceViewFullId, const std::vector<std::string>& createdWindowIds,
+                                         bool integration, double now )
+{
+   const std::string vid( sourceViewFullId.c_str() );
+   // Ruling 29: of an integration run's windows only the first (the result) may become a master.
+   for ( size_t i = 0; i < createdWindowIds.size(); ++i )
+      m_created.push_back( { createdWindowIds[i], vid, integration, i == 0, now } );
+   if ( !createdWindowIds.empty() )
+      m_forceScan = true;
+}
+
+void JourneyTracker::CancelCopilotNote( uint64 token )
+{
+   if ( token == 0 )
+      return;
+   m_copilot.erase( std::remove_if( m_copilot.begin(), m_copilot.end(),
+                                    [token]( const CopilotNote& n ) { return n.token == token; } ), m_copilot.end() );
+}
+
+void JourneyTracker::SetCopilotNoteNoEffect( uint64 token )
+{
+   for ( CopilotNote& n : m_copilot )
+      if ( token != 0 && n.token == token )
+         n.noEffect = true;
 }
 
 int JourneyTracker::FindCopilotNote( const std::string& viewId, const std::string& processId, double now,
@@ -592,6 +623,19 @@ void JourneyTracker::Tick( double now, bool forceScan )
          m_forceScan = false;
          Scan( now, open );
       }
+      if ( !m_freezeRequests.empty() )
+      {
+         std::vector<int64> requests;
+         requests.swap( m_freezeRequests );
+         for ( int64 jid : requests )
+         {
+            String e;
+            FreezeNow( jid, e );
+            if ( !e.IsEmpty() )
+               m_joinNotes << "PI Copilot: " + e;
+         }
+      }
+      ProcessPendingFreezes();
       FlushPendingGaps();
       ProcessDirty( now );
       ProcessCandidates( now );
@@ -680,6 +724,9 @@ void JourneyTracker::DropClosed( std::vector<OpenWindow>& open )
          }
       }
    EraseIf( m_tracked, [&]( const Tracked& t ) { return !isOpen( t.handle ); } );
+   // A frozen journey's image closed before it could join its continuation: nothing more to record for it.
+   m_pendingFreeze.erase( std::remove_if( m_pendingFreeze.begin(), m_pendingFreeze.end(),
+                                          [&]( const PendingFreeze& p ) { return !isOpen( p.handle ); } ), m_pendingFreeze.end() );
    EraseIf( m_candidates, [&]( const Candidate& c ) { return !isOpen( c.handle ); } );
    EraseIf( m_ignored, [&]( const Ignored& i ) { return !isOpen( i.handle ); } );
    // Events of a dead window must not act on a new window at the reused address: only those queued BEFORE
@@ -746,6 +793,12 @@ void JourneyTracker::Scan( double now, const std::vector<OpenWindow>& open )
          continue;
       }
       bool known = false;
+      for ( PendingFreeze& p : m_pendingFreeze )
+         if ( p.handle == o.handle )
+         {
+            p.id = o.id;   // follows a rename; joins its continuation when free
+            known = true;
+         }
       for ( const std::unique_ptr<Candidate>& c : m_candidates )
          if ( c->handle == o.handle )
          {
@@ -943,8 +996,11 @@ void JourneyTracker::ProcessOne( Tracked& t, double now )
          const int n = FindCopilotNote( t.id, h.processId, now, notes );
          if ( n >= 0 )
             notes.push_back( n );
-         const int64 sid = m_store->AddStep( MakeStepRow( h, t.imageId, d.appendedState[i], n >= 0 ? "copilot" : "user",
-                                                          n >= 0 ? m_copilot[n].reason : std::string(), snap.ActiveCount() ) );
+         StepRow row = MakeStepRow( h, t.imageId, d.appendedState[i], n >= 0 ? "copilot" : "user",
+                                    n >= 0 ? m_copilot[n].reason : std::string(), snap.ActiveCount() );
+         if ( n >= 0 && m_copilot[n].noEffect )
+            row.params["noEffect"] = true;   // T-graxpert: success reported, nothing changed; skipped like a base step
+         const int64 sid = m_store->AddStep( row );
          appendedIds.push_back( sid );
          maxSeq = std::max( maxSeq, h.combinedIndex + 1 );
          if ( d.appendedState[i] == "active" )
@@ -1492,6 +1548,189 @@ int64 JourneyTracker::StartJourneyFor( const View& view, String& error, double /
    return 0;
 }
 
+bool JourneyTracker::IsPendingFreeze( const void* handle ) const
+{
+   for ( const PendingFreeze& p : m_pendingFreeze )
+      if ( p.handle == handle )
+         return true;
+   return false;
+}
+
+int64 JourneyTracker::FreezeJourney( int64 journeyId, String& error )
+{
+   error.Clear();
+   if ( m_inTick )
+   {
+      // Re-entered from inside a tick (something it called pumped events): m_tracked is being iterated.
+      m_freezeRequests.push_back( journeyId );
+      error = String().Format( "the journey recorder was busy; journey #%lld is frozen at its next tick",
+                               static_cast<long long>( journeyId ) );
+      return 0;
+   }
+   struct Guard { bool& b; explicit Guard( bool& x ) : b( x ) { b = true; } ~Guard() { b = false; } } guard( m_inTick );
+   return FreezeNow( journeyId, error );
+}
+
+int64 JourneyTracker::FreezeNow( int64 journeyId, String& error )
+{
+   if ( m_store == nullptr )
+   {
+      error = "the journey library is not available: " + m_storeError;
+      return 0;
+   }
+   std::shared_ptr<Continuation> to( new Continuation );
+   to->keptJourneyId = journeyId;
+   try
+   {
+      JourneyRow kept;
+      if ( !m_store->GetJourney( journeyId, kept ) )
+      {
+         error = String().Format( "no journey #%lld to freeze", static_cast<long long>( journeyId ) );
+         return 0;
+      }
+      to->name = kept.name + " (continued)";
+      to->target = kept.target;
+      for ( const ImageRow& i : m_store->Images( journeyId ) )
+         if ( i.isMaster && m_store->Acquisition( i.id, to->acq ) )
+            break;
+   }
+   catch ( const pcl::Exception& x )
+   {
+      // The kept journey's rows could not be read (locked): its images still stop recording into it now;
+      // the continuation is named after the id and made when the library answers.
+      to->name = "journey #" + std::to_string( journeyId ) + " (continued)";
+      error = "the kept journey could not be read (" + x.Message() + ")";
+   }
+   // Every image of the kept journey leaves it NOW, in memory: nothing more is recorded into it.
+   size_t moved = 0;
+   for ( size_t k = 0; k < m_tracked.size(); )
+   {
+      const Tracked& t = *m_tracked[k];
+      if ( t.journeyId != journeyId )
+      {
+         ++k;
+         continue;
+      }
+      m_pendingFreeze.push_back( { t.handle, t.id, to, String() } );
+      m_closedImages.push_back( t.imageId );   // its kept row is no longer recorded by this instance (owner cleared)
+      m_tracked.erase( m_tracked.begin() + k );
+      ++moved;
+   }
+   // Remembered steps of the kept journey can no longer be a link's source (a new window must not join it).
+   m_recent.erase( std::remove_if( m_recent.begin(), m_recent.end(),
+                                   [journeyId]( const RecentStep& r ) { return r.journeyId == journeyId; } ), m_recent.end() );
+   m_closed.push_back( journeyId );   // EndClosedJourneys: status "ended" (retried there on failure)
+   if ( moved == 0 )
+      return 0;
+   // The continuation now, so the caller can name it even when every image is busy.
+   try
+   {
+      JourneyStore::Transaction tx( *m_store );
+      const int64 jid = m_store->CreateJourney( to->name, to->target, NowIso() );
+      tx.Commit();
+      to->journeyId = jid;
+   }
+   catch ( const pcl::Exception& x )
+   {
+      error = "the continued journey could not be created yet (" + x.Message() + "); its images join it at a later tick";
+      for ( PendingFreeze& p : m_pendingFreeze )
+         if ( p.to == to )
+            p.reason = x.Message();
+   }
+   ProcessPendingFreezes();
+   return to->journeyId;
+}
+
+void JourneyTracker::ProcessPendingFreezes()
+{
+   for ( size_t k = 0; k < m_pendingFreeze.size(); )
+   {
+      PendingFreeze& p = m_pendingFreeze[k];
+      if ( LiveView( p.id ).IsNull() )
+      {
+         ++k;   // closed or renamed: DropClosed / Scan settle it on the next tick
+         continue;
+      }
+      if ( IsBusyId( p.id ) )
+      {
+         ++m_deferrals;   // never waited on (P9)
+         ++k;
+         continue;
+      }
+      bool joined = false;
+      try
+      {
+         joined = JoinContinued( p );
+      }
+      catch ( const ViewBusy& )
+      {
+         ++m_deferrals;
+      }
+      catch ( const JourneyRowMissing& x )
+      {
+         p.to->journeyId = 0;   // the continuation vanished: made again at the next attempt
+         p.reason = x.Message();
+      }
+      catch ( const pcl::Exception& x )
+      {
+         p.reason = x.Message();   // visible in StatusFor; retried next tick, never dropped silently
+      }
+      catch ( const std::exception& x )
+      {
+         p.reason = String( x.what() );
+      }
+      if ( joined )
+         m_pendingFreeze.erase( m_pendingFreeze.begin() + k );
+      else
+         ++k;
+   }
+}
+
+bool JourneyTracker::JoinContinued( PendingFreeze& p )
+{
+   const std::string id = p.id;
+   const HistorySnapshot snap = m_read( IsoString( id.c_str() ), 0 );
+   if ( snap.busy )
+   {
+      ++m_deferrals;
+      return false;
+   }
+   if ( !snap.ok )
+      throw Error( snap.error );
+   const ViewGeom g = ViewGeometry( id );
+   const FITSKeywordArray kw = KeywordsOf( id );
+   const std::string now = NowIso();
+   std::unique_ptr<Tracked> t( new Tracked );
+   t->handle = p.handle;
+   t->id = id;
+   t->modifyCount = ModifyCountOf( id );
+   t->why = "continues kept journey #" + std::to_string( p.to->keptJourneyId );
+   int64 jid = p.to->journeyId;
+   {
+      JourneyStore::Transaction tx( *m_store );   // the continuation's image exists whole or not at all
+      if ( jid == 0 )
+         jid = m_store->CreateJourney( p.to->name, p.to->target, now );
+      t->imageId = m_store->AddImage( jid, id, FilePathOf( id ),
+                                      MasterFingerprint( g.w, g.h, g.ch, g.bits, g.isFloat, StepIdentities( snap ), kw ), true, now );
+      m_store->SetImageOwner( t->imageId, m_owner );
+      m_store->SetAcquisition( t->imageId, p.to->acq );
+      AddBaseAndSteps( t->imageId, snap, snap.TotalCount() );   // the kept result is its starting point
+      m_store->SetJourneyStatus( jid, "recording" );
+      m_store->TouchJourney( jid, now );
+      tx.Commit();
+   }
+   p.to->journeyId = jid;
+   t->journeyId = jid;
+   t->dirty = false;
+   t->lastCounts = { snap.initialLength, snap.length, snap.historyIndex };
+   Tracked& tr = *t;
+   m_tracked.push_back( std::move( t ) );
+   StartingStats( tr );
+   m_joinNotes << String().Format( "PI Copilot: %s continues kept journey #%lld as journey #%lld",
+                                   id.c_str(), static_cast<long long>( p.to->keptJourneyId ), static_cast<long long>( jid ) );
+   return true;
+}
+
 void JourneyTracker::FlushPendingGaps()
 {
    // Fix round 3 (N1): one boundary per gap. A gap whose image / journey vanished is discarded (there is
@@ -1626,6 +1865,17 @@ JourneyStatus JourneyTracker::StatusFor( const IsoString& viewFullId ) const
    if ( t == nullptr )
    {
       s.state = RecordingState::NotTracked;
+      for ( const PendingFreeze& p : m_pendingFreeze )
+         if ( p.id == std::string( viewFullId.c_str() ) )
+         {
+            // Ruling 26: never shown as recording while it waits to continue a kept journey.
+            s.state = RecordingState::Paused;
+            s.journeyId = p.to->journeyId;
+            s.name = p.to->name;
+            s.target = p.to->target;
+            s.reason = String().Format( "waiting to continue kept journey #%lld: ", static_cast<long long>( p.to->keptJourneyId ) )
+                     + (p.reason.IsEmpty() ? String( "the image is busy" ) : p.reason);
+         }
       return s;
    }
    s.journeyId = t->journeyId;

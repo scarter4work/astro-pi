@@ -13,6 +13,7 @@
 #include <nlohmann/json.hpp>
 
 #include <functional>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -45,6 +46,11 @@ struct ApplyProcessResult
    // New-window mode of a bridge: the new windows attributed to this run
    // (their History starts with a step of this process).
    std::vector<std::string> resultWindows;
+   // The run adds a step to the TARGET's History (the instance said
+   // IsHistoryUpdater for it, known before the run). False e.g. for
+   // PixelMath createNewImage: the source gets no step. Set before the run,
+   // so it is valid for every outcome after the process was resolved.
+   bool           targetHistoryStep = false;
    // When ok: what is known about undoing it, stated only as far as it was
    // VERIFIED (model-facing): a checked History step on a main view, an
    // unverifiable preview step, or no History step on the target at all
@@ -259,6 +265,9 @@ void SetBeforeExecuteHookForSelfTest( std::function<void()> hook );
 void SetInProcessAppliesExpectedForSelfTest( bool on );
 bool InProcessAppliesExpectedForSelfTest();
 int  InProcessUnrecordedAppliesForSelfTest();
+
+// Ids of every open image window's main view (created-window diffs). Root thread.
+std::set<std::string> OpenMainViewIds();
 
 } // namespace pcl
 

@@ -326,9 +326,13 @@ std::string Seconds( double v )
    return b;
 }
 
+// Not a step of the journey's processing: a base step (the image's history
+// before it joined, Task 7) or a Copilot run that reported success but changed
+// nothing (params_json "noEffect", Task 10 / T-graxpert). Both stay in the
+// store only to keep the history diff aligned.
 bool IsBase( const StepRow& s )
 {
-   return s.params.value( "base", false );
+   return s.params.value( "base", false ) || s.params.value( "noEffect", false );
 }
 
 std::string ThumbRel( JourneyStore& store, int64 journeyId, const String& name )

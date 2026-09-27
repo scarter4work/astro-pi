@@ -597,6 +597,7 @@ required_true = [
     'journeyTrackerOk',
     'journeyExportOk',
     'journeyWriteupOk', 'liveWriteupOk',
+    'journeyToolsOk', 'liveReplayOk',
     'journeyWiringOk',
     'histLandedOk',
     'ok',
@@ -610,7 +611,7 @@ if d.get('streamLoopbackSkipped') is not False: missing.append('streamLoopbackSk
 import os
 if os.environ.get('PICOPILOT_REQUIRE_LIVE') == '1':
     for k in ('anthropicSkipped', 'twoTurnSkipped', 'visionSkipped', 'liveAgentSkipped', 'liveConversationSkipped',
-              'graxpertLiveSkipped', 'bridgeStandInSkipped', 'liveWriteupSkipped'):
+              'graxpertLiveSkipped', 'bridgeStandInSkipped', 'liveWriteupSkipped', 'liveReplaySkipped'):
         if d.get(k) is not False: missing.append(k + '==false (PICOPILOT_REQUIRE_LIVE=1)')
 print('anthropic check: %s' % ('SKIPPED (no key)' if d.get('anthropicSkipped') else 'RAN against real API'))
 print('two-turn check: %s' % ('SKIPPED (no key)' if d.get('twoTurnSkipped') else 'RAN against real API'))
@@ -618,6 +619,8 @@ print('vision check: %s' % ('SKIPPED (no key)' if d.get('visionSkipped') else 'R
 print('live agent check: %s' % ('SKIPPED (no key)' if d.get('liveAgentSkipped') else 'RAN against real API, ratio=%r log=%r' % (d.get('liveAgentRatio'), d.get('liveAgentLog'))))
 print('live conversation check: %s' % ('SKIPPED (no key)' if d.get('liveConversationSkipped') else 'RAN against real API, cacheRead=%r trimThought=%r trimTransformations=%r%s' % (d.get('liveCacheRead'), d.get('liveTrimThought'), d.get('liveTrimTransformations'), ('' if d.get('liveConversationOk') else ' FAILED: %r' % d.get('liveConversationDetail', {}).get('trimLiveReason')))))
 print('live write-up check: %s' % ('SKIPPED (no key)' if d.get('liveWriteupSkipped') else 'RAN against real API (claude-haiku-4-5), %r' % d.get('liveWriteupDetail')))
+lr = d.get('liveReplayDetail') or {}
+print('live replay check: %s' % ('SKIPPED (no key)' if d.get('liveReplaySkipped') else 'RAN against real API, recorded=%r replayed=%r final=%r requests=%r%s' % (lr.get('recorded'), lr.get('replayed'), lr.get('finalMedian'), lr.get('requests'), ('' if d.get('liveReplayOk') else ' FAILED: %r' % d.get('liveReplayError')))))
 pd = d.get('pinnedDetail', {})
 print('GraXpert live check: %s' % (('SKIPPED: %s' % pd.get('liveSkipReason')) if d.get('graxpertLiveSkipped') is not False else 'RAN, %r lockWaitMs=%r' % ({k: pd.get('live', {}).get(k) for k in ('seconds', 'gradientBefore', 'gradientAfter', 'log')}, pd.get('liveLock', {}).get('waitedMs'))))
 bd = d.get('bridgeDetail', {})
