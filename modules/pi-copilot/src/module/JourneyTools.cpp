@@ -261,31 +261,10 @@ std::map<PendingKey, PendingReplay>& PendingReplays()
    return pending;
 }
 
-// Re-review 4a: a "(continued)" journey is only the tail of its processing (Ruling 26). Its lineage, root
-// first, ends with it: every parent must exist and be kept (a continuation is only ever made from a kept
-// journey). "" when fine, else why the lineage is broken.
+// Re-review 4a / fix round 3: the lineage rule is JourneyLineage (JourneyExport.h), shared with the export.
 String LineageOf( JourneyStore& s, int64 journeyId, std::vector<int64>& chain )
 {
-   chain.clear();
-   std::vector<int64> up;
-   for ( int64 id = journeyId; id != 0; )
-   {
-      if ( std::find( up.begin(), up.end(), id ) != up.end() || up.size() > 1000 )
-         return String().Format( "the lineage of journey #%lld is broken: it loops at #%lld", static_cast<long long>( journeyId ),
-                                 static_cast<long long>( id ) );
-      JourneyRow j;
-      if ( !s.GetJourney( id, j ) )
-         return String().Format( "the lineage of journey #%lld is broken: journey #%lld is missing", static_cast<long long>( journeyId ),
-                                 static_cast<long long>( id ) );
-      if ( id != journeyId && !j.kept )
-         return String().Format( "the lineage of journey #%lld is broken: it continues journey #%lld, which is not kept, so "
-                                 "the processing before it cannot be trusted as a keeper's", static_cast<long long>( journeyId ),
-                                 static_cast<long long>( id ) );
-      up.push_back( id );
-      id = j.continuesJourneyId;
-   }
-   chain.assign( up.rbegin(), up.rend() );
-   return String();
+   return JourneyLineage( s, journeyId, chain );
 }
 
 std::vector<StepRow> LineageSteps( JourneyStore& s, const std::vector<int64>& chain )

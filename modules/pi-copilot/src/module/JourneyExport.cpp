@@ -566,6 +566,42 @@ String WhatOf( const std::exception& x )
 
 } // namespace
 
+String JourneyLineage( JourneyStore& s, int64 journeyId, std::vector<int64>& chain )
+{
+   chain.clear();
+   std::vector<int64> up;
+   for ( int64 id = journeyId; id != 0; )
+   {
+      if ( std::find( up.begin(), up.end(), id ) != up.end() || up.size() >= PICopilotMaxLineageLength )
+         return String().Format( "the lineage of journey #%lld is broken: it loops at #%lld (or is longer than %d journeys)",
+                                 static_cast<long long>( journeyId ), static_cast<long long>( id ), int( PICopilotMaxLineageLength ) );
+      JourneyRow j;
+      if ( !s.GetJourney( id, j ) )
+         return String().Format( "the lineage of journey #%lld is broken: journey #%lld is missing", static_cast<long long>( journeyId ),
+                                 static_cast<long long>( id ) );
+      if ( id != journeyId && !j.kept )
+         return String().Format( "the lineage of journey #%lld is broken: it continues journey #%lld, which is not kept, so "
+                                 "the processing before it cannot be trusted as a keeper's", static_cast<long long>( journeyId ),
+                                 static_cast<long long>( id ) );
+      up.push_back( id );
+      id = j.continuesJourneyId;
+   }
+   chain.assign( up.rbegin(), up.rend() );
+   return String();
+}
+
+namespace
+{
+std::vector<int64> RequireLineage( JourneyStore& s, int64 journeyId )
+{
+   std::vector<int64> chain;
+   const String broken = JourneyLineage( s, journeyId, chain );
+   if ( !broken.IsEmpty() )
+      throw Error( broken );
+   return chain;
+}
+} // namespace
+
 bool IsManualProcess( const std::string& id )
 {
    static const std::set<std::string> manual = { "DynamicBackgroundExtraction", "DynamicCrop", "DynamicAlignment",
@@ -693,8 +729,12 @@ KeeperSummary BuildKeeperSummary( JourneyStore& store, int64 journeyId )
    k.name = j.name;
    k.target = j.target;
    k.alreadyKept = j.kept;
+   const std::vector<int64> chain = RequireLineage( store, journeyId );   // loud on a broken lineage (fix round 3)
    std::map<int64, std::string> viewOf;
-   for ( const ImageRow& i : OrderedImages( store, journeyId ) )
+   for ( int64 cj : chain )
+   {
+   int chainSteps = 0;
+   for ( const ImageRow& i : OrderedImages( store, cj ) )
    {
       viewOf[i.id] = i.viewId;
       ++k.images;
@@ -716,16 +756,28 @@ KeeperSummary BuildKeeperSummary( JourneyStore& store, int64 journeyId )
          if ( s.state == "active" && !IsBase( s ) )
          {
             ++k.steps;
+            ++chainSteps;
             if ( s.actor == "copilot" )
                ++k.copilotSteps;
          }
    }
+   if ( chain.size() > 1 )
+   {
+      JourneyRow cr;
+      store.GetJourney( cj, cr );
+      k.lineageLines.push_back( "#" + std::to_string( cj ) + " " + cr.name + (cj == journeyId ? " (this journey)" : " (kept)")
+                              + ", " + std::to_string( chainSteps ) + (chainSteps == 1 ? " step" : " steps") );
+   }
+   }
    auto view = [&viewOf]( int64 id ) { auto it = viewOf.find( id ); return it == viewOf.end() ? std::string( "?" ) : it->second; };
-   for ( const LinkRow& l : store.Links( journeyId ) )
-      k.linkLines.push_back( view( l.fromImageId ) + " -> " + view( l.toImageId ) + " (linked by " + l.evidence + ")" );
-   for ( const GapRow& g : store.Gaps( journeyId ) )
-      k.gapLines.push_back( "after step " + std::to_string( g.afterSeq ) + " of "
-                          + (g.imageId == 0 ? std::string( "the journey" ) : view( g.imageId )) + ": " + g.reason );
+   for ( int64 cj : chain )
+   {
+      for ( const LinkRow& l : store.Links( cj ) )
+         k.linkLines.push_back( view( l.fromImageId ) + " -> " + view( l.toImageId ) + " (linked by " + l.evidence + ")" );
+      for ( const GapRow& g : store.Gaps( cj ) )
+         k.gapLines.push_back( "after step " + std::to_string( g.afterSeq ) + " of "
+                             + (g.imageId == 0 ? std::string( "the journey" ) : view( g.imageId )) + ": " + g.reason );
+   }
    return k;
 }
 
@@ -735,6 +787,12 @@ String KeeperSummaryHtml( const KeeperSummary& s )
    h += "<p>Masters: " + std::to_string( s.masters );
    for ( const std::string& m : s.masterLines )
       h += "<br/>&nbsp;&nbsp;" + EscapeHtml( m );
+   if ( !s.lineageLines.empty() )
+   {
+      h += "</p><p>This journey continues kept journeys; everything below covers the whole lineage:";
+      for ( const std::string& l : s.lineageLines )
+         h += "<br/>&nbsp;&nbsp;" + EscapeHtml( l );
+   }
    h += "</p><p>Steps: " + std::to_string( s.steps ) + " (" + std::to_string( s.steps - s.copilotSteps ) + " by you, "
       + std::to_string( s.copilotSteps ) + " by PI Copilot) across " + std::to_string( s.images ) + " images</p>";
    h += "<p>Links: " + (s.linkLines.empty() ? std::string( "none" ) : std::string());
@@ -753,9 +811,18 @@ nlohmann::json BuildRecipe( JourneyStore& store, int64 journeyId, const std::str
    JourneyRow j;
    if ( !store.GetJourney( journeyId, j ) )
       throw Error( String().Format( "no journey #%lld", static_cast<long long>( journeyId ) ) );
+   // Fix round 3 (schema v2): a "(continued)" journey's recipe covers its whole lineage, root first; a broken
+   // lineage is a loud error (never a partial recipe).
+   const std::vector<int64> chain = RequireLineage( store, journeyId );
    nlohmann::json images = nlohmann::json::array(), steps = nlohmann::json::array(), links = nlohmann::json::array(),
-                  gaps = nlohmann::json::array();
-   for ( const ImageRow& i : OrderedImages( store, journeyId ) )
+                  gaps = nlohmann::json::array(), lineage = nlohmann::json::array();
+   for ( int64 cj : chain )
+   {
+   JourneyRow cr;
+   store.GetJourney( cj, cr );
+   lineage.push_back( { { "journeyId", cj }, { "name", cr.name },
+                        { "keptAt", cr.keptAt.empty() ? nlohmann::json() : nlohmann::json( cr.keptAt ) } } );
+   for ( const ImageRow& i : OrderedImages( store, cj ) )
    {
       AcquisitionFacts a;
       nlohmann::json acq = nullptr;
@@ -764,8 +831,8 @@ nlohmann::json BuildRecipe( JourneyStore& store, int64 journeyId, const std::str
                  { "offset", Opt( a.offset ) }, { "sensorTempC", Opt( a.sensorTempC ) }, { "subExposureS", Opt( a.subExposureS ) },
                  { "subCount", Opt( a.subCount ) }, { "totalIntegrationS", Opt( a.totalIntegrationS ) }, { "sessionDate", a.sessionDate } };
       const std::vector<ChannelStats> start = store.Stats( i.id, 0 );
-      const std::string startThumb = ThumbRel( store, journeyId, String().Format( "start-%lld.jpg", static_cast<long long>( i.id ) ) );
-      images.push_back( { { "key", Key( i.id ) }, { "viewId", i.viewId }, { "fileName", FileNameOf( i.filePath ) },
+      const std::string startThumb = ThumbRel( store, cj, String().Format( "start-%lld.jpg", static_cast<long long>( i.id ) ) );
+      images.push_back( { { "key", Key( i.id ) }, { "journey", cj }, { "viewId", i.viewId }, { "fileName", FileNameOf( i.filePath ) },
                           { "isMaster", i.isMaster }, { "acquisition", acq }, { "startStats", StatsJson( start ) },
                           { "thumbnail", startThumb.empty() ? nlohmann::json() : nlohmann::json( startThumb ) } } );
       std::vector<ChannelStats> before = start;
@@ -785,10 +852,10 @@ nlohmann::json BuildRecipe( JourneyStore& store, int64 journeyId, const std::str
          const std::string why = ManualWhy( s );
          const nlohmann::json redacted = PrivacyStripStepParameters( s.processId, s.params.value( "parameters", nlohmann::json::object() ),
                                                                      s.params.value( "tableParameters", nlohmann::json::object() ) );
-         const std::string thumb = ThumbRel( store, journeyId, String().Format( "%lld.jpg", static_cast<long long>( s.id ) ) );
+         const std::string thumb = ThumbRel( store, cj, String().Format( "%lld.jpg", static_cast<long long>( s.id ) ) );
          const nlohmann::json mask = s.params.contains( "mask" ) && s.params["mask"].is_object() ? s.params["mask"] : nlohmann::json();
          steps.push_back( {
-            { "id", s.id }, { "image", Key( i.id ) }, { "seq", s.seq }, { "processId", s.processId },
+            { "id", s.id }, { "journey", cj }, { "image", Key( i.id ) }, { "seq", s.seq }, { "processId", s.processId },
             { "parameters", redacted["parameters"] }, { "tableParameters", redacted["tableParameters"] },
             { "mask", mask },
             { "started", s.started.empty() ? nlohmann::json() : nlohmann::json( s.started ) },
@@ -802,26 +869,27 @@ nlohmann::json BuildRecipe( JourneyStore& store, int64 journeyId, const std::str
             before = after;
       }
    }
-   for ( const LinkRow& l : store.Links( journeyId ) )
+   for ( const LinkRow& l : store.Links( cj ) )
       links.push_back( { { "from", Key( l.fromImageId ) }, { "to", Key( l.toImageId ) },
                          { "viaStep", l.viaStepId == 0 ? nlohmann::json() : nlohmann::json( l.viaStepId ) }, { "evidence", l.evidence } } );
-   for ( const GapRow& g : store.Gaps( journeyId ) )
-      gaps.push_back( { { "image", g.imageId == 0 ? nlohmann::json() : nlohmann::json( Key( g.imageId ) ) },
+   for ( const GapRow& g : store.Gaps( cj ) )
+      gaps.push_back( { { "journey", cj }, { "image", g.imageId == 0 ? nlohmann::json() : nlohmann::json( Key( g.imageId ) ) },
                         { "afterSeq", g.afterSeq }, { "reason", g.reason } } );
+   }
    return {
       { "schema", PICopilotRecipeSchemaId }, { "schemaVersion", PICopilotRecipeSchemaVersion }, { "generator", generator },
       { "journey", { { "id", j.id }, { "name", j.name }, { "target", j.target }, { "created", j.created },
                      { "keptAt", j.keptAt.empty() ? nlohmann::json() : nlohmann::json( j.keptAt ) },
                      { "endImage", j.endImageId == 0 ? nlohmann::json() : nlohmann::json( Key( j.endImageId ) ) } } },
-      { "statsBasis", kStatsBasis }, { "images", images }, { "links", links }, { "steps", steps }, { "gaps", gaps } };
+      { "lineage", lineage }, { "statsBasis", kStatsBasis }, { "images", images }, { "links", links }, { "steps", steps }, { "gaps", gaps } };
 }
 
 bool ValidateRecipe( const nlohmann::json& r, std::string& why )
 {
-   if ( !Need( r, "", { "schema", "schemaVersion", "generator", "journey", "statsBasis", "images", "links", "steps", "gaps" }, why ) )
+   if ( !Need( r, "", { "schema", "schemaVersion", "generator", "journey", "lineage", "statsBasis", "images", "links", "steps", "gaps" }, why ) )
       return false;
    if ( r["schema"] != PICopilotRecipeSchemaId ) { why = "schema: must be \"picopilot-recipe\""; return false; }
-   if ( !r["schemaVersion"].is_number_integer() || r["schemaVersion"] != PICopilotRecipeSchemaVersion ) { why = "schemaVersion: must be 1"; return false; }
+   if ( !r["schemaVersion"].is_number_integer() || r["schemaVersion"] != PICopilotRecipeSchemaVersion ) { why = "schemaVersion: must be 2"; return false; }
    if ( !r["generator"].is_string() || r["generator"].get<std::string>().empty() ) { why = "generator: must be a non-empty string"; return false; }
    const nlohmann::json& jn = r["journey"];
    if ( !Need( jn, "journey", { "id", "name", "target", "created", "keptAt", "endImage" }, why ) ) return false;
@@ -834,6 +902,27 @@ bool ValidateRecipe( const nlohmann::json& r, std::string& why )
       if ( !Typed( jn[k], std::string( "journey." ) + k, { "string" }, why ) ) return false;
    if ( !Typed( jn["keptAt"], "journey.keptAt", { "string", "null" }, why ) ) return false;
    if ( !Typed( jn["endImage"], "journey.endImage", { "string", "null" }, why ) ) return false;
+   // lineage (v2): non-empty, unique positive ids, root first, ending with journey.id; every journey but the last kept.
+   if ( !r["lineage"].is_array() || r["lineage"].empty() ) { why = "lineage: must be a non-empty array"; return false; }
+   std::set<int64> lineageIds;
+   for ( size_t i = 0; i < r["lineage"].size(); ++i )
+   {
+      const nlohmann::json& l = r["lineage"][i];
+      const std::string p = "lineage[" + std::to_string( i ) + "]";
+      if ( !Need( l, p, { "journeyId", "name", "keptAt" }, why ) ) return false;
+      const nlohmann::json& lid = l["journeyId"];
+      if ( !lid.is_number_integer() || lid.get<int64>() < 1 )
+      {
+         why = p + ".journeyId: not a positive integer";
+         return false;
+      }
+      if ( !lineageIds.insert( l["journeyId"].get<int64>() ).second ) { why = p + ".journeyId: repeated"; return false; }
+      if ( !Typed( l["name"], p + ".name", { "string" }, why ) ) return false;
+      if ( !Typed( l["keptAt"], p + ".keptAt", { "string", "null" }, why ) ) return false;
+      if ( i + 1 < r["lineage"].size() && !l["keptAt"].is_string() ) { why = p + ".keptAt: a continued journey must be kept"; return false; }
+   }
+   if ( r["lineage"].back()["journeyId"] != jn["id"] ) { why = "lineage: the last entry must be journey.id"; return false; }
+   auto inLineage = [&lineageIds]( const nlohmann::json& v ) { return v.is_number_integer() && lineageIds.count( v.get<int64>() ) > 0; };
    if ( !Typed( r["statsBasis"], "statsBasis", { "string" }, why ) ) return false;
    if ( !r["images"].is_array() || r["images"].empty() ) { why = "images: must be a non-empty array"; return false; }
    std::set<std::string> keys;
@@ -841,7 +930,8 @@ bool ValidateRecipe( const nlohmann::json& r, std::string& why )
    {
       const nlohmann::json& im = r["images"][i];
       const std::string p = "images[" + std::to_string( i ) + "]";
-      if ( !Need( im, p, { "key", "viewId", "fileName", "isMaster", "acquisition", "startStats", "thumbnail" }, why ) ) return false;
+      if ( !Need( im, p, { "key", "journey", "viewId", "fileName", "isMaster", "acquisition", "startStats", "thumbnail" }, why ) ) return false;
+      if ( !inLineage( im["journey"] ) ) { why = p + ".journey: not a journeyId of lineage"; return false; }
       const std::string key = im["key"].is_string() ? im["key"].get<std::string>() : std::string();
       if ( key.size() < 4 || key.compare( 0, 3, "img" ) != 0
         || !std::all_of( key.begin() + 3, key.end(), []( char c ) { return c >= '0' && c <= '9'; } ) )
@@ -878,12 +968,13 @@ bool ValidateRecipe( const nlohmann::json& r, std::string& why )
    {
       const nlohmann::json& s = r["steps"][i];
       const std::string p = "steps[" + std::to_string( i ) + "]";
-      if ( !Need( s, p, { "id", "image", "seq", "processId", "parameters", "tableParameters", "mask", "started", "durationS",
+      if ( !Need( s, p, { "id", "journey", "image", "seq", "processId", "parameters", "tableParameters", "mask", "started", "durationS",
                           "actor", "reason", "reasonInferred", "manual", "manualWhy", "statsBefore", "statsAfter", "achieved",
                           "thumbnail" }, why ) )
          return false;
       auto positive = []( const nlohmann::json& v ) { return v.is_number_integer() && (v.is_number_unsigned() || v.get<int64>() >= 1) && v != 0; };
       if ( !positive( s["id"] ) ) { why = p + ".id: not a positive integer"; return false; }
+      if ( !inLineage( s["journey"] ) ) { why = p + ".journey: not a journeyId of lineage"; return false; }
       if ( !KeyOk( s["image"], keys, p + ".image", why, false ) ) return false;
       if ( !positive( s["seq"] ) ) { why = p + ".seq: not a positive integer"; return false; }
       if ( !s["processId"].is_string() || s["processId"].get<std::string>().empty() ) { why = p + ".processId: must be a non-empty string"; return false; }
@@ -911,7 +1002,8 @@ bool ValidateRecipe( const nlohmann::json& r, std::string& why )
    for ( size_t i = 0; i < r["gaps"].size(); ++i )
    {
       const std::string p = "gaps[" + std::to_string( i ) + "]";
-      if ( !Need( r["gaps"][i], p, { "image", "afterSeq", "reason" }, why ) ) return false;
+      if ( !Need( r["gaps"][i], p, { "journey", "image", "afterSeq", "reason" }, why ) ) return false;
+      if ( !inLineage( r["gaps"][i]["journey"] ) ) { why = p + ".journey: not a journeyId of lineage"; return false; }
       if ( !KeyOk( r["gaps"][i]["image"], keys, p + ".image", why, true ) ) return false;
       if ( !Typed( r["gaps"][i]["afterSeq"], p + ".afterSeq", { "integer" }, why ) ) return false;
       if ( !Typed( r["gaps"][i]["reason"], p + ".reason", { "string" }, why ) ) return false;
@@ -922,7 +1014,7 @@ bool ValidateRecipe( const nlohmann::json& r, std::string& why )
 
 const char* RecipeSchemaText()
 {
-   return kRecipeSchemaV1Json;
+   return kRecipeSchemaJson;
 }
 
 std::string BuildJourneyXpsm( JourneyStore& store, int64 journeyId )
@@ -945,10 +1037,16 @@ std::string BuildJourneyXpsm( JourneyStore& store, int64 journeyId )
                    "xsi:schemaLocation=\"http://www.pixinsight.com/xpsm http://pixinsight.com/xpsm/xpsm-1.0.xsd\">\n";
    std::string icons;
    int n = 0;
-   for ( const ImageRow& i : OrderedImages( store, journeyId ) )
+   const std::vector<int64> chain = RequireLineage( store, journeyId );   // fix round 3: the whole lineage, root first
+   for ( int64 cj : chain )
+   {
+   if ( chain.size() > 1 )
+      x += "<!-- journey #" + std::to_string( cj ) + (cj == journeyId ? std::string( " (this journey)" ) : std::string( " (kept; continued below)" ))
+         + " -->\n";
+   for ( const ImageRow& i : OrderedImages( store, cj ) )
    {
       const std::vector<StepRow> steps = store.Steps( i.id, false );
-      const std::string cid = "PICopilot_J" + std::to_string( journeyId ) + "_I" + std::to_string( i.id ) + "_instance";
+      const std::string cid = "PICopilot_J" + std::to_string( cj ) + "_I" + std::to_string( i.id ) + "_instance";
       std::string body;
       for ( const StepRow& s : steps )
       {
@@ -985,9 +1083,10 @@ std::string BuildJourneyXpsm( JourneyStore& store, int64 journeyId )
       }
       x += "<!-- " + CommentText( i.viewId ) + (i.isMaster ? " (master)" : "") + " -->\n"
          + "<instance class=\"ProcessContainer\" id=\"" + cid + "\">\n" + body + "</instance>\n";
-      icons += "<icon id=\"J" + std::to_string( journeyId ) + "_" + iconId( i.viewId ) + "\" instance=\"" + cid
+      icons += "<icon id=\"J" + std::to_string( cj ) + "_" + iconId( i.viewId ) + "\" instance=\"" + cid
              + "\" xpos=\"8\" ypos=\"" + std::to_string( 8 + 48*n ) + "\" workspace=\"Workspace01\"/>\n";
       ++n;
+   }
    }
    return x + icons + "</xpsm>\n";
 }
@@ -1006,11 +1105,16 @@ KeeperFilesResult WriteKeeperFiles( JourneyStore& store, int64 journeyId, const 
 {
    KeeperFilesResult r;
    JourneyRow j;
+   std::vector<int64> chain;
    try
    {
       r.dir = ExportDirOf( store, journeyId );
       if ( !store.GetJourney( journeyId, j ) )
          throw Error( String().Format( "no journey #%lld", static_cast<long long>( journeyId ) ) );
+      // A broken lineage writes nothing (never a partial keeper): every output names it (fix round 3).
+      const String broken = JourneyLineage( store, journeyId, chain );
+      if ( !broken.IsEmpty() )
+         throw Error( broken );
       const String e = EnsurePrivateDirectory( r.dir );
       if ( !e.IsEmpty() )
          throw Error( "cannot prepare " + r.dir + ": " + e );
@@ -1071,9 +1175,13 @@ KeeperFilesResult WriteKeeperFiles( JourneyStore& store, int64 journeyId, const 
    // export/, and the export copy takes export/ alone (pre-flight P25).
    try
    {
-      const String thumbs = store.JourneyDir( journeyId ) + "/thumbs";
-      if ( File::DirectoryExists( thumbs ) )
-         CopyTree( thumbs, r.dir + "/thumbs", []( const String& d ) { return EnsurePrivateDirectory( d ); }, nullptr );
+      // Every journey of the lineage: the recipe references their thumbnails too (names are unique ids).
+      for ( int64 cj : chain )
+      {
+         const String thumbs = store.JourneyDir( cj ) + "/thumbs";
+         if ( File::DirectoryExists( thumbs ) )
+            CopyTree( thumbs, r.dir + "/thumbs", []( const String& d ) { return EnsurePrivateDirectory( d ); }, nullptr );
+      }
       r.thumbsOk = true;
    }
    catch ( const pcl::Exception& x ) { r.thumbsError = "could not copy the thumbnails into " + r.dir + "/thumbs: " + x.Message(); }
