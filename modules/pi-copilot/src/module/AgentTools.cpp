@@ -358,7 +358,7 @@ ToolOutcome ApplyProcessTool( const nlohmann::json& in, const ToolContext& ctx, 
    if ( !ar.resultWindows.empty() )
       summary["resultWindows"] = ar.resultWindows;  // new windows attributed to this run (ProcessApply.h)
    if ( !replayNameError.IsEmpty() )
-      summary["journeyNote"] = U8( ModelTextWithoutDirectories( replayNameError ) );
+      summary["journeyNote"] = U8( ModelTextWithoutDirectories( replayNameError, JourneyKnownDirs( *ctx.journeys ) ) );
    try
    {
       summary["newContext"] = CollapsedViewContext( BuildViewContext( target ) );
