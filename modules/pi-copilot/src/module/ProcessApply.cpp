@@ -877,6 +877,9 @@ ApplyProcessResult ApplyProcess( const IsoString& processId, const nlohmann::jso
             if ( sameAsOwn || sameAsMain )
             {
                r.noEffect = true;
+               // Whether the core nevertheless added a History step to the target (measured: it usually
+               // does; the modification count says). The journey records only a step that exists (m3).
+               r.historyStepAdded = !isPreview && window.ModifyCount() > modifyCountBefore;
                // What History holds is stated only as far as it is verified.
                String history;
                if ( !isPreview )
