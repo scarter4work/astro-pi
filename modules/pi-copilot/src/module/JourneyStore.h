@@ -187,6 +187,17 @@ public:
    // and the connection's current level (1 = NORMAL, 2 = FULL).
    void  SetKeepCommitHookForSelfTest( std::function<void( int )> fn ) { m_keepCommitHook = std::move( fn ); }
    int   SynchronousLevelForSelfTest() { return ScalarInt( "PRAGMA synchronous" ); }
+   // Fault seams for the reason-transaction tests (never set outside the harness):
+   // - called first thing in SetStepReason with the step id (may throw, or arm below);
+   void  SetStepReasonHookForSelfTest( std::function<void( int64 )> fn ) { m_stepReasonHook = std::move( fn ); }
+   // - the NEXT statement step on this connection is interrupted by SQLite's own
+   //   progress handler (a real SQLITE_INTERRUPT: inside an explicit transaction
+   //   SQLite rolls the whole transaction back). One shot.
+   void  ArmInterruptForSelfTest();
+   // - raw SQL on this connection (e.g. a deferred foreign-key violation that makes COMMIT fail);
+   void  ExecForSelfTest( const char* sql ) { Exec( sql ); }
+   // - sqlite3_get_autocommit() (1 = no transaction open on the connection).
+   int   AutocommitForSelfTest() const;
 
    /*
     * One atomic group of writes (Task 7 review I5; Tasks 9-10 use it for
@@ -232,6 +243,7 @@ public:
    // connection back on its own (an I/O, full-disk or corruption error aborts
    // the whole transaction): later writes would autocommit one by one, so the
    // caller must stop the group and report every write in it as not made.
+   // Root thread (throws off it, like every other store access).
    bool  TransactionAborted() const;
 
 private:
@@ -242,6 +254,8 @@ private:
    bool     m_inTransaction = false;
    std::function<void( int64 )> m_pruneHook;
    std::function<void( int )>   m_keepCommitHook;
+   std::function<void( int64 )> m_stepReasonHook;
+   bool                         m_interruptArmed = false;
    String   m_root;
    String   m_dbPath;
 

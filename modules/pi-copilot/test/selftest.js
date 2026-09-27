@@ -746,6 +746,16 @@ try
       pm( "pcTrkRenamed", "$T*1.0" ); j6( "txDefer" );                        // re-review m1 / m2
       j6( "owner" );                                                          // re-review m6
       j6( "deaths" );                                                         // re-review round 4: I-1r
+      // Re-review round 5 n-1 / n-2: renames without a delivered notification, then REAL notifications only.
+      [ "pcTrkRWM", "pcTrkRNM", "pcTrkRealR", "pcTrkRealD" ].forEach( function( id ) {
+         new ImageWindow( 24, 24, 1, 32, true, false, id ); } );
+      j6( "renameSetup" );
+      j6( "focus", { id: "pcTrkRWM" } ); newImage( "pcTrkRWM", "pcTrkRWL" ); j6( "renameWhileOff" );
+      j6( "focus", { id: "pcTrkRNM" } ); newImage( "pcTrkRNM", "pcTrkRNL" ); j6( "renameUnnotified" );
+      View.viewById( "pcTrkRealR" ).id = "pcTrkRealR2";                    // no explicit feed: PI's own
+      ImageWindow.windowById( "pcTrkRealD" ).forceClose();                  //   ImageRenamed / ImageDeleted
+      j6( "realNotify" );
+      closeIds( [ "pcTrkRWM2", "pcTrkRWL2", "pcTrkRNM2", "pcTrkRNL2", "pcTrkRealR2" ] );
 
       pm( "pcTrkRenamed", "$T*1.0" ); j6( "gapRowGone" );                    // fix round 3: N1
       j6( "linkRowGone" );                                                    // N2 / I-C
