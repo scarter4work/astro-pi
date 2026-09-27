@@ -17,6 +17,7 @@
 #include <deque>
 #include <functional>
 #include <memory>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -70,9 +71,10 @@ using HistoryReadFn = std::function<HistorySnapshot( const IsoString&, int )>;
  *      200-250 ms with a 60 MP join; re-review m8); the rest continues on
  *      the next tick.
  * It never waits on a busy view, never nests an EvaluateScript, and is
- * re-entrancy guarded. Entries are held by unique_ptr, so no container
- * operation ever copies a View (copying a closed window's View throws in
- * PCL's attach). Every join and every recorded batch of steps is ONE
+ * re-entrancy guarded. It holds NO pcl::View / ImageWindow beyond the
+ * notification or the tick that produced it (fix round 4, the proven SIGSEGV
+ * cause): windows are ids + opaque handles, events are data, and a View is
+ * re-resolved by id for each API call. Every join and every recorded batch of steps is ONE
  * JourneyStore::Transaction: a failure leaves no partial journey, image or
  * step rows, and the next tick retries from the database's state.
  *
@@ -83,10 +85,16 @@ using HistoryReadFn = std::function<HistorySnapshot( const IsoString&, int )>;
  * transaction or an unexpected escape pauses the whole tick. The boundaries:
  * DrainEvents (per event), DropClosed (per closing image's seq read), Scan
  * (per view), FlushPendingGaps (per gap), ProcessDirty (per image, incl. its
- * gap flush and statistics), ProcessCandidates (per candidate, incl. joins
- * and their statistics), EndClosedJourneys (per journey, per owner clear),
- * Reconcile (per row check), and the service's retention pass (with a 60 s
- * back-off after a failure).
+ * gap flush and statistics; 3 consecutive write failures park the image until
+ * its next change, like read failures), ProcessCandidates (per candidate, incl.
+ * joins and their statistics; every error kind, repeated missing rows
+ * included, is bounded by kCandidateTicks), EndClosedJourneys (per journey,
+ * per owner clear), Reconcile (per row check, incl. remembered steps whose
+ * image / step row vanished), Scan's batch counts (on failure every probed
+ * image is marked dirty), and the service's retention pass (per journey
+ * inside the prune; a 60 s back-off after a failed touch). Retried each tick
+ * without a count, by design (lock-shaped, cheap): a gap FlushPendingGaps
+ * keeps, and a closed journey / owner clear EndClosedJourneys re-queues.
  */
 class JourneyTracker
 {
@@ -146,12 +154,20 @@ public:
    // The tick-wide failure (m_pausedReason) the last tick ended with; "" = none. Only a failure no
    // per-item boundary could contain sets it (fix round 3).
    String TickFailureForSelfTest() const { return m_pausedReason; }
+   size_type PendingGapsForSelfTest() const { return m_pendingGaps.size(); }
 
 private:
 
+   // Window identity as DATA (SIGSEGV root cause, fix round 4): the tracker never keeps a pcl::View or
+   // ImageWindow past the callback or tick that produced it -- PCL does not null a held handle when the
+   // core frees the view, the core reuses the address, and destroying the stale copy detaches whatever
+   // object now lives there (proven: a running ProcessInstance freed -> SIGSEGV storm). A window is its
+   // main view's id + its handle as an OPAQUE integer, compared only against handles read from live
+   // windows in the same tick and never dereferenced; Views are re-resolved by id (View::ViewById) in
+   // narrow scopes when an API call is needed.
    struct Tracked
    {
-      View        view;
+      const void* handle = nullptr;
       std::string id;
       int64       imageId = 0;
       int64       journeyId = 0;
@@ -163,24 +179,31 @@ private:
       String      pausedReason;      // this image's history read failure (review M3)
       String      statsReason;       // "statistics not recorded: ..."; cleared by this image's next success (P11)
       bool        hasGaps = false;   // a read-failure gap was queued / written (re-review m2)
+      int         writeFailures = 0; // consecutive failed DB writes (not a missing row); 3 -> wait for the next change (m-h)
    };
    struct Candidate
    {
-      View            view;
+      const void*     handle = nullptr;
+      std::string     id;
       double          firstSeen = 0;
       int             ticks = 0;
       bool            fresh = false;     // a window that APPEARED (Created / first seen), not a re-queued one (review I3)
       bool            hasSnap = false;   // the last read, reused while ModifyCount is unchanged (review M8)
       size_type       modifyCount = 0;
       HistorySnapshot snap;
-      int             failures = 0;      // evaluations that threw (not a missing row): ignored after kCandidateTicks
+      int             failures = 0;      // evaluations that threw: ignored after kCandidateTicks
+      int             rowMissing = 0;    // row-missing evaluations: the 1st only defers (Reconcile runs), repeats count as failures (I-A)
    };
-   struct Ignored   { View view; size_type modifyCount = 0; double firstSeen = 0; };   // firstSeen carried over (N3)
+   struct Ignored   { const void* handle = nullptr; std::string id; size_type modifyCount = 0; double firstSeen = 0; };   // N3
    struct CopilotNote { std::string viewId, processId, reason; double t = 0; };
    struct CreatedNote { std::string id, sourceViewId; bool integration = false, first = false; double t = 0; };
    // A notification, queued by a handler and applied by DrainEvents() at the start of Tick() (pre-flight P10).
    enum class EventKind { Created, Updated, Renamed, Deleted, Saved, Focused };
-   struct PendingEvent { EventKind kind; View view; double t = 0; };
+   // Everything an event needs, read inside the callback while the view is alive (ids and an opaque
+   // handle only; no View is queued).
+   struct PendingEvent { EventKind kind; const void* handle = nullptr; std::string id, mainId; bool preview = false; double t = 0; };
+   // One open window, read at the start of a tick (data only).
+   struct OpenWindow { const void* handle = nullptr; std::string id; size_type modifyCount = 0; };
    struct RecentStep  { std::string identity; int64 imageId = 0, journeyId = 0, stepId = 0; double start = -1, end = -1; };
    // A link a join writes in its transaction; viaSeq > 0: the via step is the
    // joining image's own step at that seq (reference evidence).
@@ -193,6 +216,7 @@ private:
    bool                     m_useModifyCount;
    bool                     m_forceScan = true;
    bool                     m_renameSinceScan = false;
+   std::set<const void*>    m_renamedHandles;        // Renamed notifications since the last scan (opaque handles)
    bool                     m_scannedOnce = false;   // views found by the first scan (after start / re-enable) existed before: not fresh
    double                   m_gateSince = 0;         // start of the current continuous deferral (0 = none, R4)
    String                   m_gateReason;
@@ -221,18 +245,18 @@ private:
    std::string              m_evalNote;        // what the current EvaluateCandidate() saw (diagnostics)
    std::deque<std::string>  m_decisions;       // RecentDecisionsForSelfTest()
 
-   Tracked*       FindTracked( const View& v );
+   Tracked*       FindTracked( const void* handle );
    const Tracked* FindTrackedById( const std::string& id ) const;
-   bool           IsCandidate( const View& v ) const;
-   void           AddCandidate( const View& v, double now, bool fresh );
-   void           Forget( const View& v );    // drops v's candidate / ignored entries
+   bool           IsCandidate( const void* handle ) const;
+   void           AddCandidate( const std::string& id, const void* handle, double now, bool fresh );
+   void           Forget( const void* handle );    // drops the window's candidate / ignored entries
    bool           OverTickBudget() const;
    void           Decision( const std::string& line );
    void           QueueEvent( EventKind kind, const View& v, double now );
    void           DrainEvents();
-   void           ApplyEvent( const PendingEvent& e, const View& view );
-   void           DropClosed( std::vector<View>& open, std::vector<size_type>& counts );
-   void           Scan( double now, const std::vector<View>& open, const std::vector<size_type>& counts );
+   void           ApplyEvent( const PendingEvent& e );
+   void           DropClosed( std::vector<OpenWindow>& open );
+   void           Scan( double now, const std::vector<OpenWindow>& open );
    void           BatchCounts();
    void           ProcessDirty( double now );
    void           ProcessOne( Tracked& t, double now );   // one dirty image; throws its DB failures
@@ -242,7 +266,7 @@ private:
    // or the scan). Base = initialProcessing + the processing steps that started
    // before it (re-review R3): steps made after the window appeared stay the
    // user's steps even when the busy gate deferred this join past them.
-   int64          JoinAsMaster( const View& v, const HistorySnapshot& snap, const FITSKeywordArray& kw,
+   int64          JoinAsMaster( const std::string& id, const void* handle, const HistorySnapshot& snap, const FITSKeywordArray& kw,
                                 const std::string& why, double firstSeen );
    // Drops a tracked image whose journey row vanished (R2): one note, and the
    // window is re-seen as a candidate (not fresh). Index into m_tracked.
@@ -251,7 +275,7 @@ private:
    // exists; drops the vanished ones (DropMissing) and purges their remembered steps, Copilot notes,
    // queued gaps, closed-journey and owner work. Its own failure only defers it to the next tick.
    void           Reconcile();
-   int64          JoinLinked( const View& v, const HistorySnapshot& snap, int64 journeyId,
+   int64          JoinLinked( const std::string& id, const void* handle, const HistorySnapshot& snap, int64 journeyId,
                               const std::vector<PlannedLink>& links, const std::string& evidence, const std::string& why );
    std::vector<int64> AddBaseAndSteps( int64 imageId, const HistorySnapshot& snap, int baseCount );
    void           StartingStats( Tracked& t );

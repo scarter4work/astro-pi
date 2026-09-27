@@ -787,7 +787,8 @@ const char* const kJ6Checks[] = { "settings", "master", "manual", "undo", "copil
                                   "startJourney", "perImagePause", "gapResolved", "retentionOnce", "resumeTouch",
                                   "transaction", "mutatorsLoud", "retentionOpen", "rowGone", "offThenOn", "gateStallLock",
                                   "gateStallWaiting", "gateStallGap", "txDefer", "noopNoLock", "owner", "gapKinds",
-                                  "pjsrAbortRestored", "gapRowGone", "linkRowGone", "ignoredThenMaster", "chaos" };
+                                  "pjsrAbortRestored", "gapRowGone", "linkRowGone", "ignoredThenMaster", "chaos",
+                                  "recentRowGone", "ownerPrune", "writeCap" };
 
 struct J6State
 {
@@ -814,6 +815,9 @@ struct J6State
    int  chaosBefore = 0, chaosNew = 0, chaosTickFailures = 0;
    std::string chaosFirstFailure;
    std::set<std::string> gapLogSeen;
+   int  writeCapBefore = 0, writeCapReads = 0;
+   bool writeCapPaused = false;
+   std::map<std::string, int> chaosCount;   // m-g coverage
 };
 
 J6State& J6()
@@ -1696,28 +1700,30 @@ void J6Step( J6State& st, const std::string& step, const nlohmann::json& payload
    }
    else if ( step == "linkRowGone" )
    {
-      // Re-review N2: a linked join into a vanished journey must not escape the candidate loop every tick;
-      // another closed journey still ends.
+      // Re-review N2 / I-C (the reviewer's sequence): a Copilot-linked join into a vanished journey is reached
+      // (" rowMissing: " on the derived window), never escapes the candidate loop, and another closed
+      // journey still ends.
       for ( const char* id : { "pcTrkLM", "pcTrkLE" } )
       {
          JEvalJs( String( "(function(){ new ImageWindow( 27, 27, 1, 32, true, false, \"" ) + id + "\" ); })()" );
          JSetKeywords( id, Kw( { { "IMAGETYP", "'Master Light'" }, { "OBJECT", ( std::string( "'" ) + id + "'" ).c_str() } } ) );
          st.made.push_back( id );
       }
-      JTick( trk, 3 );
+      JTick( trk, 3 );   // 1. both tracked and clean
       const int64 lm = trk.JourneyOfView( "pcTrkLM" ), le = trk.JourneyOfView( "pcTrkLE" );
-      {
+      trk.NoteCopilotStep( "pcTrkLM", "PixelMath", "derived", { "pcTrkLD" }, false, JourneyWallNow() );   // 2.
+      JTick( trk );      // 3. LM is re-read, finds nothing new; the note stays
+      {                  // 4.
          RawDb raw( store.DbPath() );
          if ( !raw.Exec( "PRAGMA foreign_keys=ON" ) || !raw.Exec( ( "DELETE FROM journey WHERE id=" + std::to_string( lm ) ).c_str() ) )
             throw Error( "delete journey failed" );
       }
       trk.TakeJoinNotes();
-      trk.NoteCopilotStep( "pcTrkLM", "PixelMath", "derived", { "pcTrkLD" }, false, JourneyWallNow() );
-      JEvalJs( "(function(){ new ImageWindow( 27, 27, 1, 32, true, false, \"pcTrkLD\" ); })()" );
+      JEvalJs( "(function(){ new ImageWindow( 27, 27, 1, 32, true, false, \"pcTrkLD\" ); })()" );   // 5.
       st.made.push_back( "pcTrkLD" );
       JForceClose( "pcTrkLE" );   // its journey must still end
       nlohmann::json failures = nlohmann::json::array();
-      for ( int i = 0; i < 5; ++i )
+      for ( int i = 0; i < 5; ++i )   // 6.
       {
          JTick( trk );
          failures.push_back( U8( trk.TickFailureForSelfTest() ) );
@@ -1729,15 +1735,131 @@ void J6Step( J6State& st, const std::string& step, const nlohmann::json& payload
       for ( const String& n : trk.TakeJoinNotes() )
          if ( n.Contains( "was removed" ) )
             ++removedNotes;
+      int ldRowMissing = 0;   // 7. the N2 path was reached
+      for ( const std::string& x : trk.RecentDecisionsForSelfTest() )
+         if ( x.find( " pcTrkLD " ) != std::string::npos && x.find( " rowMissing: " ) != std::string::npos )
+            ++ldRowMissing;
       JourneyRow ler;
       store.GetJourney( le, ler );
       st.d["linkRowGone"] = { { "tickFailures", failures }, { "removedNotes", removedNotes }, { "leStatus", ler.status },
-                              { "ld", trk.JourneyOfView( "pcTrkLD" ) }, { "lm", trk.JourneyOfView( "pcTrkLM" ) }, { "deleted", lm } };
-      st.ok["linkRowGone"] = !anyFailure && removedNotes >= 1 && ler.status == "ended" && trk.JourneyOfView( "pcTrkLD" ) != lm
-                          && trk.JourneyOfView( "pcTrkLM" ) != lm;
+                              { "ld", trk.JourneyOfView( "pcTrkLD" ) }, { "lm", trk.JourneyOfView( "pcTrkLM" ) }, { "deleted", lm },
+                              { "ldRowMissingDecisions", ldRowMissing } };
+      st.ok["linkRowGone"] = !anyFailure && ldRowMissing >= 1 && removedNotes >= 1 && ler.status == "ended"
+                          && trk.JourneyOfView( "pcTrkLD" ) != lm && trk.JourneyOfView( "pcTrkLM" ) != lm;
       JForceClose( "pcTrkLD" );
       JForceClose( "pcTrkLM" );
       JTick( trk );
+   }
+   else if ( step == "recentSetup" )
+   {
+      // Re-review I-A: a tracked master whose recorded step will vanish.
+      JEvalJs( "(function(){ new ImageWindow( 29, 29, 1, 32, true, false, \"pcTrkRX\" ); })()" );
+      JSetKeywords( "pcTrkRX", Kw( { { "IMAGETYP", "'Master Light'" }, { "OBJECT", "'TrkRX'" } } ) );
+      st.made.push_back( "pcTrkRX" );
+      JTick( trk, 3 );
+   }
+   else if ( step == "recentRowGone" )
+   {
+      JTick( trk );   // 1. X's top-level step S is recorded (and remembered for timing)
+      const int64 ximg = trk.ImageOfView( "pcTrkRX" );
+      const std::vector<StepRow> xs = ximg != 0 ? store.Steps( ximg, false ) : std::vector<StepRow>();
+      if ( xs.empty() )
+         throw Error( "recentRowGone: pcTrkRX recorded no step" );
+      const int64 sId = xs.back().id;
+      // 2. within the timing slack: a fresh window with no file, first look defers (timing (c) never decides on it).
+      JEvalJs( "(function(){ new ImageWindow( 29, 29, 1, 32, true, false, \"pcTrkRT\" ); })()" );
+      st.made.push_back( "pcTrkRT" );
+      JTick( trk );   // idle tick: the first look (deferred)
+      {  // 3. S vanishes (a restore / another instance); journey and image stay
+         RawDb raw( store.DbPath() );
+         if ( !raw.Exec( "PRAGMA foreign_keys=ON" ) || !raw.Exec( ( "DELETE FROM step WHERE id=" + std::to_string( sId ) ).c_str() ) )
+            throw Error( "recentRowGone: delete failed" );
+         const std::vector<std::string> ch = raw.Column( "SELECT changes()" );
+         st.d["recentRowGone"]["deleteChanges"] = ch.empty() ? std::string( "?" ) : ch.front();
+      }
+      {
+         StepRow gone;
+         st.d["recentRowGone"]["stepGoneForStore"] = !store.GetStep( sId, gone );
+      }
+      nlohmann::json failures = nlohmann::json::array();
+      for ( int i = 0; i < 8; ++i )   // 4. kCandidateTicks + 3
+      {
+         JTick( trk );
+         failures.push_back( U8( trk.TickFailureForSelfTest() ) );
+      }
+      bool anyFailure = false;
+      for ( const nlohmann::json& f : failures )
+         anyFailure = anyFailure || !f.get<std::string>().empty();
+      int rtRowMissing = 0, rtLooks = 0;
+      nlohmann::json rtDecisions = nlohmann::json::array();
+      for ( const std::string& x : trk.RecentDecisionsForSelfTest() )
+         if ( x.find( " pcTrkRT " ) != std::string::npos )
+         {
+            rtDecisions.push_back( x );
+            ++rtLooks;
+            if ( x.find( " rowMissing: " ) != std::string::npos )
+               ++rtRowMissing;
+         }
+      // Settled: T is ignored (no more looks) or linked; the last looks are not row-missing repeats.
+      int looksBefore = rtLooks;
+      JTick( trk, 3 );
+      int looksAfter = 0;
+      for ( const std::string& x : trk.RecentDecisionsForSelfTest() )
+         if ( x.find( " pcTrkRT " ) != std::string::npos )
+            ++looksAfter;
+      const JourneyStatus xs2 = trk.StatusFor( "pcTrkRX" );
+      nlohmann::json rtLinks = nlohmann::json::array();
+      if ( trk.JourneyOfView( "pcTrkRT" ) != 0 )
+         for ( const LinkRow& l : store.Links( trk.JourneyOfView( "pcTrkRT" ) ) )
+            if ( l.toImageId == trk.ImageOfView( "pcTrkRT" ) )
+               rtLinks.push_back( { l.fromImageId, l.viaStepId, l.evidence } );
+      st.d["recentRowGone"].update( nlohmann::json( {
+                                { "deletedStep", sId }, { "rowMissingDecisions", rtRowMissing }, { "looks", looksBefore },
+                                { "decisions", rtDecisions }, { "links", rtLinks }, { "ximg", ximg },
+                                { "looksAfterSettling", looksAfter }, { "tickFailures", failures },
+                                { "rt", trk.ImageOfView( "pcTrkRT" ) }, { "xState", int( xs2.state ) }, { "xReason", U8( xs2.reason ) } } ) );
+      st.ok["recentRowGone"] = !anyFailure && rtRowMissing <= 2 && (looksAfter == looksBefore || trk.ImageOfView( "pcTrkRT" ) != 0)
+                            && xs2.state == RecordingState::Recording;
+      JForceClose( "pcTrkRT" );
+      JForceClose( "pcTrkRX" );
+      JTick( trk );
+   }
+   else if ( step == "writeCap" )
+   {
+      // Re-review m-h: a persistent (non-missing-row) write failure parks the image after 3 tries instead of
+      // re-reading its whole history on every tick; the next change retries and records everything.
+      int reads = 0;
+      trk.SetHistoryReaderForSelfTest( [&reads]( const IsoString& id, int from )
+      {
+         if ( id == "pcTrkRenamed" )
+            ++reads;
+         return ReadViewHistory( id, from );
+      } );
+      JourneyStatus during;
+      {
+         RawDb other( store.DbPath() );
+         if ( !other.Exec( "BEGIN EXCLUSIVE" ) )
+            throw Error( "writeCap: BEGIN EXCLUSIVE failed" );
+         for ( int i = 0; i < 8; ++i )
+         {
+            trk.Tick( JourneyWallNow(), true );
+            JPump( 60 );
+         }
+         during = trk.StatusFor( "pcTrkRenamed" );
+         other.Exec( "COMMIT" );
+      }
+      trk.SetHistoryReaderForSelfTest( HistoryReadFn() );
+      st.writeCapBefore = ActiveSteps( store, mimg );
+      st.d["writeCap"] = { { "historyReadsIn8LockedTicks", reads }, { "state", int( during.state ) }, { "reason", U8( during.reason ) } };
+      st.writeCapReads = reads;
+      st.writeCapPaused = during.state == RecordingState::Paused && during.reason.Contains( "locked" );
+   }
+   else if ( step == "writeCapAfter" )
+   {
+      JTick( trk );
+      st.d["writeCap"]["recordedAfterNextChange"] = ActiveSteps( store, mimg ) - st.writeCapBefore;
+      st.ok["writeCap"] = st.writeCapReads <= 6 && st.writeCapPaused && ActiveSteps( store, mimg ) == st.writeCapBefore + 2
+                       && trk.StatusFor( "pcTrkRenamed" ).state == RecordingState::Recording;
    }
    else if ( step == "ignSetup" )
    {
@@ -1810,8 +1932,18 @@ void J6Step( J6State& st, const std::string& step, const nlohmann::json& payload
       for ( int i = 0; i < 10; ++i )
       {
          std::string action;
-         const unsigned a0 = rng() % 8;
-         const unsigned a = a0 >= 6 ? 0 : a0;   // deletions: 3 in 8
+         const unsigned a0 = rng() % 9;
+         const unsigned a = a0 >= 7 ? 0 : a0;   // deletions: 3 in 9; 5 = rename; 6 = image row vanishes, then a dirty close
+         // Derived windows the top level made from a chaos master between rounds join the set.
+         for ( const ImageWindow& w : ImageWindow::AllWindows() )
+         {
+            const std::string wid( w.MainView().Id().c_str() );
+            if ( wid.rfind( "pcTrkCD", 0 ) == 0 && std::find( st.chaosViews.begin(), st.chaosViews.end(), wid ) == st.chaosViews.end() )
+            {
+               st.chaosViews.push_back( wid );
+               ++st.chaosCount["derivedWindows"];
+            }
+         }
          std::vector<std::string> openViews;
          for ( const std::string& v : st.chaosViews )
             if ( !ImageWindow::WindowById( IsoString( v.c_str() ) ).IsNull() )
@@ -1842,6 +1974,7 @@ void J6Step( J6State& st, const std::string& step, const nlohmann::json& payload
                if ( !raw.Exec( ( "DELETE FROM " + r.substr( 0, colon ) + " WHERE id=" + r.substr( colon + 1 ) ).c_str() ) )
                   throw Error( "chaos: delete failed" );
                action = "delete " + r;
+               ++st.chaosCount["deletes"];
             }
          }
          else if ( a == 1 && !openViews.empty() )
@@ -1861,6 +1994,7 @@ void J6Step( J6State& st, const std::string& step, const nlohmann::json& payload
             trk.OnImageUpdated( J6MainView( v.c_str() ), JourneyWallNow() );   // closed with unrecorded changes
             JForceClose( v );
             action = "close " + v;
+            ++st.chaosCount["closes"];
          }
          else if ( a == 4 )
          {
@@ -1875,8 +2009,60 @@ void J6Step( J6State& st, const std::string& step, const nlohmann::json& payload
             st.chaosViews.push_back( id );
             action = "new " + id;
          }
+         else if ( a == 5 && !openViews.empty() )
+         {
+            const std::string v = openViews[rng() % openViews.size()];
+            const std::string nv = v + "r";
+            J6MainView( v.c_str() ).Rename( IsoString( nv.c_str() ) );
+            std::replace( st.chaosViews.begin(), st.chaosViews.end(), v, nv );
+            st.made.push_back( nv );
+            action = "rename " + v + " -> " + nv;
+            ++st.chaosCount["renames"];
+         }
+         else if ( a == 6 )
+         {
+            // An image row vanishes (another instance / a restore) and its window is then closed with an
+            // unrecorded change: DropClosed queues a gap for an image that no longer exists.
+            for ( const std::string& v : openViews )
+            {
+               const int64 img = trk.ImageOfView( IsoString( v.c_str() ) );
+               if ( img == 0 )
+                  continue;
+               {
+                  RawDb raw( store.DbPath() );
+                  raw.Exec( "PRAGMA foreign_keys=ON" );
+                  raw.Exec( ( "DELETE FROM image WHERE id=" + std::to_string( img ) ).c_str() );
+               }
+               trk.OnImageUpdated( J6MainView( v.c_str() ), JourneyWallNow() );
+               JForceClose( v );
+               action = "vanish+close " + v;
+               ++st.chaosCount["deletes"];
+               ++st.chaosCount["closes"];
+               break;
+            }
+         }
+         if ( action.empty() )
+            action = "noop";
+         const std::vector<std::string> pre = trk.RecentDecisionsForSelfTest();
+         const std::string mark = pre.empty() ? std::string() : pre.back();
          trk.Tick( JourneyWallNow(), true );
          JPump( 60 );
+         {
+            // m-g: what this tick actually did (Decisions after the mark).
+            const std::vector<std::string> post = trk.RecentDecisionsForSelfTest();
+            bool after = mark.empty() || std::find( post.begin(), post.end(), mark ) == post.end();
+            for ( const std::string& x : post )
+            {
+               if ( after )
+               {
+                  if ( x.rfind( "dropped ", 0 ) == 0 ) ++st.chaosCount["dropped"];
+                  if ( x.rfind( "gap of vanished image", 0 ) == 0 ) ++st.chaosCount["gapOfVanishedImage"];
+                  if ( x.find( " rowMissing: " ) != std::string::npos ) ++st.chaosCount["candidateRowMissing"];
+               }
+               if ( x == mark )
+                  after = true;
+            }
+         }
          // A new chaos journey (a joined new window) joins the deletable set.
          for ( const std::string& v : st.chaosViews )
          {
@@ -1896,11 +2082,16 @@ void J6Step( J6State& st, const std::string& step, const nlohmann::json& payload
       }
       if ( c.AbortEnabled() )
          c.DisableAbort();
+      if ( payload.value( "masterStepped", false ) )
+         ++st.chaosCount["masterSteps"];
    }
    else if ( step == "chaosEnd" )
    {
       trk.SetHistoryReaderForSelfTest( HistoryReadFn() );
       Console().DisableAbort();
+      for ( const std::string& v : st.chaosViews )   // every still-open chaos image is re-read once
+         if ( !ImageWindow::WindowById( IsoString( v.c_str() ) ).IsNull() )
+            trk.OnImageUpdated( J6MainView( v.c_str() ), JourneyWallNow() );
       JTick( trk, 3 );
       // After the chaos: 10 idle ticks; nothing may fail as a whole, and no per-candidate failure repeats.
       int failuresAfter = 0;
@@ -1924,6 +2115,16 @@ void J6Step( J6State& st, const std::string& step, const nlohmann::json& payload
                after = true;
          }
       }
+      // m-g (ii): no per-image pause and no retried gap survives the idle ticks.
+      nlohmann::json pausedViews = nlohmann::json::array();
+      for ( const std::string& v : st.chaosViews )
+         if ( !ImageWindow::WindowById( IsoString( v.c_str() ) ).IsNull() )
+         {
+            const JourneyStatus s = trk.StatusFor( IsoString( v.c_str() ) );
+            if ( s.state == RecordingState::Paused )
+               pausedViews.push_back( v + ": " + U8( s.reason ) );
+         }
+      const size_type pendingGaps = trk.PendingGapsForSelfTest();
       JEvalJs( "(function(){ new ImageWindow( 24, 24, 1, 32, true, false, \"pcTrkChaosNew\" ); })()" );
       JSetKeywords( "pcTrkChaosNew", Kw( { { "IMAGETYP", "'Master Light'" }, { "OBJECT", "'ChaosNew'" } } ) );
       st.made.push_back( "pcTrkChaosNew" );
@@ -1933,8 +2134,20 @@ void J6Step( J6State& st, const std::string& step, const nlohmann::json& payload
                                { "failuresAfter", failuresAfter }, { "itemFailuresAfterChaos", repeated },
                                { "survivorSteps", ActiveSteps( store, mimg ) - st.chaosBefore },
                                { "renamedState", int( sr.state ) }, { "renamedReason", U8( sr.reason ) },
-                               { "rgbState", int( sg.state ) }, { "newJoined", trk.JourneyOfView( "pcTrkChaosNew" ) } };
-      st.ok["chaos"] = st.chaosTickFailures == 0 && failuresAfter == 0 && repeated == 0
+                               { "rgbState", int( sg.state ) }, { "newJoined", trk.JourneyOfView( "pcTrkChaosNew" ) },
+                               { "pausedChaosViews", pausedViews }, { "pendingGaps", pendingGaps } };
+      // m-g (i): the run did every kind of thing it claims to test.
+      bool coverage = true;
+      nlohmann::json cov = nlohmann::json::object();
+      for ( const char* k : { "deletes", "closes", "renames", "dropped", "gapOfVanishedImage", "candidateRowMissing", "masterSteps",
+                              "derivedWindows" } )
+      {
+         cov[k] = st.chaosCount[k];
+         coverage = coverage && st.chaosCount[k] >= 1;
+      }
+      st.d["chaos"]["coverage"] = cov;
+      st.ok["chaos"] = coverage && pausedViews.empty() && pendingGaps == 0
+                    && st.chaosTickFailures == 0 && failuresAfter == 0 && repeated == 0
                     && ActiveSteps( store, mimg ) == st.chaosBefore + 5 && sr.state == RecordingState::Recording
                     && sg.state == RecordingState::Recording && trk.JourneyOfView( "pcTrkChaosNew" ) != 0;
       for ( const std::string& v : st.chaosViews )
@@ -2175,6 +2388,30 @@ void J6Step( J6State& st, const std::string& step, const nlohmann::json& payload
          st.ok["transaction"] = afterCommit == n0 + 1 && rolledBack && nestedRefused && outerIntact && JourneyCount( store ) == n0 + 2;
       }
 
+      // Re-review I-B: a journey whose image is recorded by a LIVE process is never pruned (the owner is read
+      // before the cascading DELETE); a dead owner's journey is.
+      {
+         const int64 oj = store.CreateJourney( "owned old", "OwnedOld", NowIso() );
+         const int64 oi = store.AddImage( oj, "pcTrkOwnedOld", "", "fp-owned-old", true, NowIso() );
+         store.SetImageOwner( oi, JourneyOwnerOf() );
+         {
+            RawDb raw( store.DbPath() );
+            if ( !raw.Exec( ( "UPDATE journey SET updated='" + IsoDaysAgo( 40 ) + "' WHERE id=" + std::to_string( oj ) ).c_str() ) )
+               throw Error( "ownerPrune: backdating failed" );
+         }
+         StringList removed;
+         const int n1 = store.PruneUnkept( IsoDaysAgo( 30 ), &removed );
+         JourneyRow r1;
+         const bool present1 = store.GetJourney( oj, r1 );
+         store.SetImageOwner( oi, "999999999:1" );
+         const int n2 = store.PruneUnkept( IsoDaysAgo( 30 ), &removed );
+         JourneyRow r2;
+         const bool present2 = store.GetJourney( oj, r2 );
+         st.d["ownerPrune"] = { { "liveOwnerPruned", n1 }, { "presentWithLiveOwner", present1 }, { "deadOwnerPruned", n2 },
+                                { "presentWithDeadOwner", present2 } };
+         st.ok["ownerPrune"] = present1 && !present2 && n2 >= 1;
+      }
+
       // Re-review m3: ResolveGaps removes only read-failure gaps; any other gap stays.
       {
          store.AddGap( { jid, mimg, 1, "closed before its last steps were recorded" } );
@@ -2383,7 +2620,8 @@ bool RunJourneySelfTest( nlohmann::json& out )
                      " var p = new PixelMath; p.expression = \"0.3\"; p.executeOn( w.mainView ); })()" );
             JPump( 1000 );
             int hc = 0, hu = 0;
-            for ( const nlohmann::json& e : JourneySpikeProbeReport().at( "events" ) )
+            const nlohmann::json report = JourneySpikeProbeReport();   // bound first: a range-for over a member
+            for ( const nlohmann::json& e : report.at( "events" ) )   // of a temporary iterates a destroyed object
             {
                if ( e.at( 1 ) == "pcSpikeHidden" && e.at( 0 ) == "created" ) ++hc;
                if ( e.at( 1 ) == "pcSpikeHidden" && e.at( 0 ) == "updated" ) ++hu;

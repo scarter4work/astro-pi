@@ -47,7 +47,8 @@ constexpr double  kCopilotNoteSeconds = 30;
 constexpr int     kCandidateTicks = 5;
 constexpr size_t  kRecentSteps = 200;
 constexpr int     kCandidateDeferred = 2;   // EvaluateCandidate(): nothing read yet (busy); not a wait tick
-constexpr double  kTickBudgetMs = 100;      // per-tick work cap (review M8); the rest continues next tick
+constexpr double  kTickBudgetMs = 100;
+const char* const kTouchFailurePrefix = "keeping the open journeys current failed: ";      // per-tick work cap (review M8); the rest continues next tick
 
 // The view was locked between the tick's probe and the tracker's own lock:
 // the work is deferred (never waited on), not failed.
@@ -73,16 +74,56 @@ std::string ViewIdOf( const View& v )
    return std::string( v.Id().c_str() );
 }
 
-std::string FilePathOf( const View& v )
+// The opaque handle of a LIVE UIObject, for identity comparisons only (never dereferenced, never used to
+// build a View). Legal access: a pointer-to-member formed in a derived class names the protected member.
+struct HandleAccess : public View
 {
+   static const void* Of( const UIObject& o ) { return o.*(&HandleAccess::handle); }
+};
+
+// Re-resolves a main view by id for one narrow use; null when no such window is open. Never kept.
+View LiveView( const std::string& id )
+{
+   try
+   {
+      return View::ViewById( IsoString( id.c_str() ) );
+   }
+   catch ( ... )
+   {
+      return View::Null();
+   }
+}
+
+std::string FilePathOf( const std::string& id )
+{
+   const View v = LiveView( id );
+   if ( v.IsNull() )
+      return std::string();
    const ImageWindow w = v.Window();
    return w.IsNull() ? std::string() : U8( w.FilePath() );
 }
 
-size_type ModifyCountOf( const View& v )
+size_type ModifyCountOf( const std::string& id )
 {
+   const View v = LiveView( id );
+   if ( v.IsNull() )
+      return 0;
    const ImageWindow w = v.Window();
    return w.IsNull() ? 0 : w.ModifyCount();
+}
+
+FITSKeywordArray KeywordsOf( const std::string& id )
+{
+   const View v = LiveView( id );
+   if ( v.IsNull() )
+      throw Error( "view " + String( id.c_str() ) + " is no longer open" );
+   return v.Window().Keywords();
+}
+
+bool IsBusyId( const std::string& id )
+{
+   const View v = LiveView( id );
+   return v.IsNull() || IsBusy( v );
 }
 
 // Geometry and sample format for MasterFingerprint(). Probed non-waiting right
@@ -90,12 +131,14 @@ size_type ModifyCountOf( const View& v )
 // notify, so it is no "process activity" for the busy gate (review M2).
 struct ViewGeom { int w = 0, h = 0, ch = 0, bits = 32; bool isFloat = true; };
 
-ViewGeom ViewGeometry( const View& v )
+ViewGeom ViewGeometry( const std::string& id )
 {
-   if ( IsBusy( v ) )
+   View vv = LiveView( id );
+   if ( vv.IsNull() )
+      throw Error( "view " + String( id.c_str() ) + " is no longer open" );
+   if ( IsBusy( vv ) )
       throw ViewBusy();
    ViewGeom g;
-   View vv = v;
    vv.LockForWrite( false/*notify*/ );
    struct Unlock { View& v; ~Unlock() { try { v.UnlockForWrite( false ); } catch ( ... ) {} } } unlock{ vv };
    ImageVariant iv = vv.Image();
@@ -132,9 +175,9 @@ bool HistoryBeginsWithIntegration( const HistorySnapshot& snap )
 //  - an opened file: its view id comes from the file name, not from the run;
 //  - the result renamed before the first tick: the result id no longer names
 //    an open window, so nothing tells the outputs apart and none is dropped.
-bool IsAuxiliaryOutput( const View& v, const HistorySnapshot& snap )
+bool IsAuxiliaryOutput( const std::string& id, const HistorySnapshot& snap )
 {
-   if ( !FilePathOf( v ).empty() || !IsIntegrationAuxiliary( ViewIdOf( v ), snap.steps ) )
+   if ( !FilePathOf( id ).empty() || !IsIntegrationAuxiliary( id, snap.steps ) )
       return false;
    for ( const HistoryStep& h : snap.steps )
       if ( h.processId != "Script" )
@@ -165,9 +208,7 @@ void CollectStrings( const nlohmann::json& j, std::set<std::string>& out )
          CollectStrings( e, out );
 }
 
-// Removes the entries for which drop() is true. The containers hold
-// unique_ptrs, so nothing here copies a View (PCL's attach throws on a closed
-// window's handle, measured in the Task 7 RED run).
+// Removes the entries for which drop() is true.
 template <class T, class Drop>
 void EraseIf( std::vector<std::unique_ptr<T>>& v, Drop drop )
 {
@@ -228,10 +269,10 @@ void JourneyTracker::SetHistoryReaderForSelfTest( HistoryReadFn fn )
    m_read = fn ? fn : HistoryReadFn( ReadViewHistory );
 }
 
-JourneyTracker::Tracked* JourneyTracker::FindTracked( const View& v )
+JourneyTracker::Tracked* JourneyTracker::FindTracked( const void* handle )
 {
    for ( const std::unique_ptr<Tracked>& t : m_tracked )
-      if ( t->view == v )
+      if ( t->handle == handle )
          return t.get();
    return nullptr;
 }
@@ -244,29 +285,30 @@ const JourneyTracker::Tracked* JourneyTracker::FindTrackedById( const std::strin
    return nullptr;
 }
 
-bool JourneyTracker::IsCandidate( const View& v ) const
+bool JourneyTracker::IsCandidate( const void* handle ) const
 {
    for ( const std::unique_ptr<Candidate>& c : m_candidates )
-      if ( c->view == v )
+      if ( c->handle == handle )
          return true;
    return false;
 }
 
-void JourneyTracker::AddCandidate( const View& v, double now, bool fresh )
+void JourneyTracker::AddCandidate( const std::string& id, const void* handle, double now, bool fresh )
 {
-   if ( IsCandidate( v ) )
+   if ( IsCandidate( handle ) )
       return;
    std::unique_ptr<Candidate> c( new Candidate );
-   c->view = v;
+   c->handle = handle;
+   c->id = id;
    c->firstSeen = now;
    c->fresh = fresh;
    m_candidates.push_back( std::move( c ) );
 }
 
-void JourneyTracker::Forget( const View& v )
+void JourneyTracker::Forget( const void* handle )
 {
-   EraseIf( m_candidates, [&v]( const Candidate& c ) { return c.view == v; } );
-   EraseIf( m_ignored, [&v]( const Ignored& i ) { return i.view == v; } );
+   EraseIf( m_candidates, [handle]( const Candidate& c ) { return c.handle == handle; } );
+   EraseIf( m_ignored, [handle]( const Ignored& i ) { return i.handle == handle; } );
 }
 
 bool JourneyTracker::OverTickBudget() const
@@ -306,12 +348,37 @@ void JourneyTracker::QueueEvent( EventKind kind, const View& v, double now )
 {
    if ( !m_enabled || v.IsNull() )
       return;   // off: nothing is read or stored; SetEnabled( true ) forces a full scan
+   // Read NOW, while the view is alive (inside the notification): ids and an opaque handle. No View is kept.
+   PendingEvent e;
+   e.kind = kind;
+   e.t = now;
+   try
+   {
+      e.preview = v.IsPreview();
+      e.id = std::string( v.FullId().c_str() );
+      if ( e.preview )
+      {
+         const View main = v.Window().MainView();
+         e.mainId = ViewIdOf( main );
+         e.handle = HandleAccess::Of( main );
+      }
+      else
+      {
+         e.mainId = e.id;
+         e.handle = HandleAccess::Of( v );
+      }
+   }
+   catch ( ... )
+   {
+      m_forceScan = true;   // unreadable: the next scan re-derives the state
+      return;
+   }
    if ( m_events.size() >= 1000 )
    {
-      m_events.pop_front();   // bounded; the forced scan re-derives whatever was dropped
+      m_events.pop_front();   // bounded (data only); the forced scan re-derives whatever was dropped
       m_forceScan = true;
    }
-   m_events.push_back( { kind, v, now } );
+   m_events.push_back( std::move( e ) );
 }
 
 void JourneyTracker::OnImageCreated( const View& view, double now ) { QueueEvent( EventKind::Created, view, now ); }
@@ -321,70 +388,73 @@ void JourneyTracker::OnImageDeleted( const View& view, double now ) { QueueEvent
 void JourneyTracker::OnImageSaved( const View& view, double now )   { QueueEvent( EventKind::Saved, view, now ); }
 void JourneyTracker::OnImageFocused( const View& view, double now ) { QueueEvent( EventKind::Focused, view, now ); }
 
-// Called only at the start of Tick(), after DropClosed().
+// Called only at the start of Tick(), after DropClosed(). Events are data: nothing here touches a view.
 void JourneyTracker::DrainEvents()
 {
    while ( !m_events.empty() )
    {
-      // By reference, and always popped: an event whose window closed since
-      // it was queued throws on any API call, and must never wedge the queue.
-      const PendingEvent& e = m_events.front();
       try
       {
-         ApplyEvent( e, e.view );
+         ApplyEvent( m_events.front() );
       }
       catch ( ... )
       {
-         m_forceScan = true;   // nothing about a closed view needs recording; the scan re-derives the rest
+         m_forceScan = true;
       }
       m_events.pop_front();
    }
 }
 
-void JourneyTracker::ApplyEvent( const PendingEvent& e, const View& view )
+void JourneyTracker::ApplyEvent( const PendingEvent& e )
 {
+   if ( e.handle == nullptr )
+      return;   // its window was closed (DropClosed cleared it): nothing to apply
    switch ( e.kind )
    {
    case EventKind::Created:
-      if ( !view.IsPreview() && FindTracked( view ) == nullptr )
-         AddCandidate( view, e.t, true/*fresh: it appeared*/ );
+      if ( !e.preview && FindTracked( e.handle ) == nullptr )
+         AddCandidate( e.id, e.handle, e.t, true/*fresh: it appeared*/ );
       break;
    case EventKind::Updated:
-      if ( view.IsPreview() )
+      if ( e.preview )
          break;   // Ruling 25: previews are not part of the image's journey
-      if ( Tracked* t = FindTracked( view ) )
+      if ( Tracked* t = FindTracked( e.handle ) )
       {
          t->dirty = true;
          break;
       }
       {
          double seen = -1;
+         std::string id = e.id;
          for ( const std::unique_ptr<Ignored>& i : m_ignored )
-            if ( i->view == view )
+            if ( i->handle == e.handle )
                seen = i->firstSeen;
          if ( seen >= 0 )
          {
-            EraseIf( m_ignored, [&view]( const Ignored& x ) { return x.view == view; } );
+            const void* h = e.handle;
+            EraseIf( m_ignored, [h]( const Ignored& x ) { return x.handle == h; } );
             // Re-evaluated (a new step may now reference a tracked view), but it did not APPEAR now:
             // never linked by timing (c) (review I3), and its first sighting is kept (re-review N3).
-            AddCandidate( view, seen, false );
+            AddCandidate( id, e.handle, seen, false );
          }
       }
       break;
    case EventKind::Renamed:
-      m_forceScan = true;   // the scan compares ids of the SAME view objects
+      m_forceScan = true;   // the scan matches the handle and takes the new id
       m_renameSinceScan = true;
+      if ( !e.preview )
+         m_renamedHandles.insert( e.handle );
       break;
    case EventKind::Deleted:
       m_forceScan = true;   // DropClosed() (every tick) removes it and ends its journey if it was the last open image
       break;
    case EventKind::Saved:
-      if ( Tracked* t = FindTracked( view ) )
+      if ( Tracked* t = FindTracked( e.handle ) )
          t->dirty = true;   // ModifyCount was reset; the file path may have changed
       m_forceScan = true;
       break;
    case EventKind::Focused:
-      NoteActive( ViewIdOf( view.IsPreview() ? view.Window().MainView() : view ), e.t );   // the event's own time
+      NoteActive( e.mainId, e.t );   // the event's own time
       break;
    }
 }
@@ -444,9 +514,8 @@ void JourneyTracker::Tick( double now, bool forceScan )
    m_tickStart = std::chrono::steady_clock::now();
    try
    {
-      std::vector<View> open;
-      std::vector<size_type> counts;
-      DropClosed( open, counts );   // first: reads nothing
+      std::vector<OpenWindow> open;
+      DropClosed( open );           // first
       DrainEvents();                // reads nothing; its focus changes are older than the sample below
       // The busy gate (spec §4/§9, review I4, re-review R4): no history read,
       // lock or DB write while a process or script runs (console abort) or
@@ -482,7 +551,7 @@ void JourneyTracker::Tick( double now, bool forceScan )
       {
          m_lastScan = now;       // before the scan: a failing scan can never make every tick rescan (R2)
          m_forceScan = false;
-         Scan( now, open, counts );
+         Scan( now, open );
       }
       FlushPendingGaps();
       ProcessDirty( now );
@@ -506,22 +575,32 @@ void JourneyTracker::Tick( double now, bool forceScan )
    }
 }
 
-void JourneyTracker::DropClosed( std::vector<View>& open, std::vector<size_type>& counts )
+void JourneyTracker::DropClosed( std::vector<OpenWindow>& open )
 {
+   // The open windows as DATA; every ImageWindow / View temporary here dies before this function returns,
+   // while its window is certainly open.
    for ( const ImageWindow& w : ImageWindow::AllWindows() )
    {
-      open.push_back( w.MainView() );
-      counts.push_back( w.ModifyCount() );
+      const View mv = w.MainView();
+      open.push_back( { HandleAccess::Of( mv ), ViewIdOf( mv ), w.ModifyCount() } );
    }
-   auto isOpen = [&open]( const View& v )
+   // A queued Deleted notification names a window that is gone even if its handle was already reused by a
+   // new window (the core reuses freed addresses).
+   std::set<const void*> dead;
+   for ( const PendingEvent& e : m_events )
+      if ( e.kind == EventKind::Deleted && !e.preview )
+         dead.insert( e.handle );
+   auto isOpen = [&open, &dead]( const void* h )
    {
-      for ( const View& o : open )
-         if ( o == v )   // handle comparison: no API call, safe on a closed view
+      if ( dead.count( h ) > 0 )
+         return false;
+      for ( const OpenWindow& o : open )
+         if ( o.handle == h )   // integer comparison against live handles: nothing is dereferenced
             return true;
       return false;
    };
    for ( const std::unique_ptr<Tracked>& t : m_tracked )
-      if ( !isOpen( t->view ) )
+      if ( !isOpen( t->handle ) )
       {
          m_closed.push_back( t->journeyId );
          m_closedImages.push_back( t->imageId );
@@ -529,7 +608,7 @@ void JourneyTracker::DropClosed( std::vector<View>& open, std::vector<size_type>
          // e.g. during a busy stall: the lost steps become a gap, never silently nothing.
          bool pending = t->dirty;
          for ( const PendingEvent& e : m_events )
-            pending = pending || (e.kind == EventKind::Updated && e.view == t->view);
+            pending = pending || (e.kind == EventKind::Updated && e.handle == t->handle);
          if ( pending )
          {
             int lastSeq = 0;
@@ -549,31 +628,35 @@ void JourneyTracker::DropClosed( std::vector<View>& open, std::vector<size_type>
                       + (t->dirty ? ", dirty" : ", queued update") + ")" );
          }
       }
-   EraseIf( m_tracked, [&]( const Tracked& t ) { return !isOpen( t.view ); } );
-   EraseIf( m_candidates, [&]( const Candidate& c ) { return !isOpen( c.view ); } );
-   EraseIf( m_ignored, [&]( const Ignored& i ) { return !isOpen( i.view ); } );
+   EraseIf( m_tracked, [&]( const Tracked& t ) { return !isOpen( t.handle ); } );
+   EraseIf( m_candidates, [&]( const Candidate& c ) { return !isOpen( c.handle ); } );
+   EraseIf( m_ignored, [&]( const Ignored& i ) { return !isOpen( i.handle ); } );
+   // Events of a dead handle must not act on a new window that reuses it.
+   for ( auto& e : m_events )
+      if ( dead.count( e.handle ) > 0 && e.kind != EventKind::Deleted )
+         e.handle = nullptr;
 }
 
-void JourneyTracker::Scan( double now, const std::vector<View>& open, const std::vector<size_type>& counts )
+void JourneyTracker::Scan( double now, const std::vector<OpenWindow>& open )
 {
-   for ( size_t i = 0; i < open.size(); ++i )
+   for ( const OpenWindow& o : open )
    {
-      const View& v = open[i];
-      if ( Tracked* t = FindTracked( v ) )
+      if ( Tracked* t = FindTracked( o.handle ) )
       {
-         const std::string id = ViewIdOf( v );
+         const std::string& id = o.id;
          if ( id != t->id )
          try
          {
-            // Review M9: an id change with no rename notification since the last scan may be a
-            // reused window handle rather than a rename; recorded for diagnosis.
-            if ( !m_renameSinceScan && PICopilotJourneyNotificationsWork )
+            // The same live handle under a new id: a rename. Review M9: without a rename notification since
+            // the last scan it may be a reused handle; recorded for diagnosis (a queued Deleted notification
+            // already dropped a reused one in DropClosed).
+            if ( m_renamedHandles.count( o.handle ) == 0 && PICopilotJourneyNotificationsWork )
             {
                char head[48];
                std::snprintf( head, sizeof head, "%.3f ", now );
                Decision( head + std::string( "id change without a rename notification: " ) + t->id + " -> " + id );
             }
-            m_store->SetImageView( t->imageId, id, FilePathOf( v ) );
+            m_store->SetImageView( t->imageId, id, FilePathOf( id ) );
             t->id = id;
          }
          catch ( const JourneyRowMissing& x )
@@ -591,35 +674,54 @@ void JourneyTracker::Scan( double now, const std::vector<View>& open, const std:
             t->pausedReason = x.Message();   // this image only; the scan goes on
             continue;
          }
-         if ( m_useModifyCount && counts[i] != t->modifyCount )
+         if ( m_useModifyCount && o.modifyCount != t->modifyCount )
          {
             t->dirty = true;
-            t->modifyCount = counts[i];
+            t->modifyCount = o.modifyCount;
          }
          continue;
       }
-      if ( IsCandidate( v ) )
+      bool known = false;
+      for ( const std::unique_ptr<Candidate>& c : m_candidates )
+         if ( c->handle == o.handle )
+         {
+            c->id = o.id;   // follows a rename
+            known = true;
+         }
+      if ( known )
          continue;
       bool ignored = false;
       for ( const std::unique_ptr<Ignored>& ig : m_ignored )
-         if ( ig->view == v )
+         if ( ig->handle == o.handle )
          {
             ignored = true;
-            if ( ig->modifyCount != counts[i] )
+            ig->id = o.id;
+            if ( ig->modifyCount != o.modifyCount )
             {
                const double seen = ig->firstSeen;   // N3: the first sighting, not the time of this change
-               EraseIf( m_ignored, [&v]( const Ignored& x ) { return x.view == v; } );
-               AddCandidate( v, seen, false/*changed, not new: no timing (c)*/ );
+               const void* h = o.handle;
+               EraseIf( m_ignored, [h]( const Ignored& x ) { return x.handle == h; } );
+               AddCandidate( o.id, o.handle, seen, false/*changed, not new: no timing (c)*/ );
             }
             break;
          }
       if ( !ignored )
-         AddCandidate( v, now, m_scannedOnce/*never seen before; not fresh when it was open before recording began*/ );
+         AddCandidate( o.id, o.handle, now, m_scannedOnce/*never seen before; not fresh when it was open before recording began*/ );
    }
+   m_renamedHandles.clear();
    m_renameSinceScan = false;
    m_scannedOnce = true;
    if ( !m_useModifyCount )
-      BatchCounts();
+      try
+      {
+         BatchCounts();
+      }
+      catch ( ... )
+      {
+         // m-l: the batch read failed; every image it would have probed is read by ProcessDirty instead.
+         for ( const std::unique_ptr<Tracked>& t : m_tracked )
+            t->dirty = true;
+      }
 }
 
 void JourneyTracker::BatchCounts()
@@ -630,7 +732,7 @@ void JourneyTracker::BatchCounts()
    std::string ids = "[";
    for ( const std::unique_ptr<Tracked>& t : m_tracked )
    {
-      if ( IsBusy( t->view ) )
+      if ( IsBusyId( t->id ) )
       {
          t->dirty = true;
          continue;
@@ -677,9 +779,9 @@ void JourneyTracker::ProcessDirty( double now )
          continue;
       if ( processed && OverTickBudget() )
          break;   // review M8: the rest stays dirty for the next tick
-      if ( IsBusy( t.view ) )
+      if ( IsBusyId( t.id ) )
       {
-         ++m_deferrals;   // never waited on: the next tick tries again
+         ++m_deferrals;   // never waited on: the next tick tries again (a closed window: DropClosed next tick)
          continue;
       }
       processed = true;
@@ -696,10 +798,20 @@ void JourneyTracker::ProcessDirty( double now )
       catch ( const pcl::Exception& x )
       {
          t.pausedReason = x.Message();
+         if ( ++t.writeFailures >= 3 )
+         {
+            t.dirty = false;   // m-h: parked until the next change, like a read failure; the pause stays visible
+            t.writeFailures = 0;
+         }
       }
       catch ( const std::exception& x )
       {
          t.pausedReason = String( x.what() );
+         if ( ++t.writeFailures >= 3 )
+         {
+            t.dirty = false;
+            t.writeFailures = 0;
+         }
       }
    }
    for ( auto it = gone.rbegin(); it != gone.rend(); ++it )
@@ -795,6 +907,7 @@ void JourneyTracker::ProcessOne( Tracked& t, double now )
    t.pausedReason.Clear();   // the history read and the DB writes succeeded
    t.dirty = false;
    t.readFailures = 0;
+   t.writeFailures = 0;
    t.lastCounts = { snap.initialLength, snap.length, snap.historyIndex };
    if ( lastActive != 0 )
    {
@@ -803,7 +916,10 @@ void JourneyTracker::ProcessOne( Tracked& t, double now )
       // is this image's statistics pause (P11, re-review m4), never a lost step.
       try
       {
-         const StepStatsResult s = ComputeStepStats( t.view, m_store->JourneyDir( t.journeyId )
+         const View live = LiveView( t.id );   // resolved for this call only
+         if ( live.IsNull() )
+            throw Error( "view " + String( t.id.c_str() ) + " is no longer open" );
+         const StepStatsResult s = ComputeStepStats( live, m_store->JourneyDir( t.journeyId )
                                                      + String().Format( "/thumbs/%lld.jpg", static_cast<long long>( lastActive ) ) );
          if ( !s.ok )
             throw Error( s.error );
@@ -821,10 +937,10 @@ void JourneyTracker::ProcessOne( Tracked& t, double now )
 void JourneyTracker::DropMissing( size_t index, const String& why )
 {
    const std::unique_ptr<Tracked>& t = m_tracked[index];
-   const View view = t->view;   // an OPEN window (the scan / tick just saw it): safe to copy
+   const void* handle = t->handle;
    const std::string id = t->id;
-   m_joinNotes << "PI Copilot: the journey of " + String( id.c_str() )
-                  + " was removed from the library; recording of " + String( id.c_str() ) + " stopped (" + why + ")";
+   m_joinNotes << "PI Copilot: the recorded row of " + String( id.c_str() )
+                  + " was removed from the journey library; recording of " + String( id.c_str() ) + " stopped (" + why + ")";
    Decision( "dropped " + id + ": " + U8( why ) );
    const int64 img = t->imageId;
    // N1: nothing queued for the vanished image may be retried on every tick.
@@ -837,7 +953,7 @@ void JourneyTracker::DropMissing( size_t index, const String& why )
                                     [&id]( const CreatedNote& n ) { return n.sourceViewId == id; } ), m_created.end() );
    m_reconcile = true;
    m_tracked.erase( m_tracked.begin() + index );
-   AddCandidate( view, JourneyWallNow(), false/*not fresh: it existed; it may start a new journey by the rules*/ );
+   AddCandidate( id, handle, JourneyWallNow(), false/*not fresh: it existed; it may start a new journey by the rules*/ );
 }
 
 void JourneyTracker::ProcessCandidates( double now )
@@ -848,7 +964,7 @@ void JourneyTracker::ProcessCandidates( double now )
       Candidate& c = *m_candidates[i];
       if ( evaluated && OverTickBudget() )
          break;   // review M8: the rest waits for the next tick (not counted as a look)
-      if ( IsBusy( c.view ) )
+      if ( IsBusyId( c.id ) )
       {
          ++m_deferrals;
          ++i;
@@ -869,9 +985,11 @@ void JourneyTracker::ProcessCandidates( double now )
       {
          // Re-review N2: a join into a journey (or from an image) whose row vanished. The candidate is
          // re-evaluated next tick against a reconciled tracker (it may then be a master or ignored).
-         r = kCandidateDeferred;
          m_reconcile = true;
          m_evalNote += " rowMissing: " + U8( x.Message() );
+         // I-A: the first occurrence only defers (Reconcile gets its chance); a repeat counts as a failure,
+         // so every error kind is bounded by kCandidateTicks.
+         r = ++c.rowMissing <= 1 ? kCandidateDeferred : (++c.failures >= kCandidateTicks ? -1 : kCandidateDeferred);
       }
       catch ( const pcl::Exception& x )
       {
@@ -887,7 +1005,7 @@ void JourneyTracker::ProcessCandidates( double now )
       {
          char head[96];
          std::snprintf( head, sizeof head, "%.3f r=%d ticks=%d ", now, r, c.ticks );
-         Decision( head + ViewIdOf( c.view ) + " " + m_evalNote );
+         Decision( head + c.id + " " + m_evalNote );
       }
       if ( r == kCandidateDeferred )
       {
@@ -901,8 +1019,9 @@ void JourneyTracker::ProcessCandidates( double now )
       else
       {
          std::unique_ptr<Ignored> ig( new Ignored );
-         ig->view = c.view;
-         ig->modifyCount = ModifyCountOf( c.view );
+         ig->handle = c.handle;
+         ig->id = c.id;
+         ig->modifyCount = ModifyCountOf( c.id );
          ig->firstSeen = c.firstSeen;
          m_ignored.push_back( std::move( ig ) );
          m_candidates.erase( m_candidates.begin() + i );
@@ -928,13 +1047,13 @@ std::vector<const JourneyTracker::Tracked*> JourneyTracker::ReferencedTracked( c
 
 int JourneyTracker::EvaluateCandidate( Candidate& c, double now )
 {
-   if ( FindTracked( c.view ) != nullptr )
+   if ( FindTracked( c.handle ) != nullptr )
       return 1;   // review M1: already joined (never twice)
-   const std::string id = ViewIdOf( c.view );
+   const std::string id = c.id;
    // The history: re-read on the first two looks and whenever the window
    // changed; otherwise the last read is re-evaluated against the tracker's
    // current state (new tracked views, Copilot notes) at no cost (review M8).
-   const size_type mc = ModifyCountOf( c.view );
+   const size_type mc = ModifyCountOf( id );
    if ( !c.hasSnap || c.ticks < 2 || mc != c.modifyCount )
    {
       HistorySnapshot s = m_read( IsoString( id.c_str() ), 0 );
@@ -960,24 +1079,24 @@ int JourneyTracker::EvaluateCandidate( Candidate& c, double now )
          {
             if ( !n.first )
                return -1;   // Ruling 29: an auxiliary output of Copilot's integration run
-            return JoinAsMaster( c.view, snap, c.view.Window().Keywords(),
+            return JoinAsMaster( id, c.handle, snap, KeywordsOf( id ),
                                  "created by Copilot's run_global_process of an integration process", c.firstSeen ) != 0 ? 1 : -1;
          }
          if ( const Tracked* src = FindTrackedById( n.sourceViewId ) )
          {
             const int64 srcImage = src->imageId, srcJourney = src->journeyId;
             const std::vector<StepRow> steps = m_store->Steps( srcImage, false );
-            return JoinLinked( c.view, snap, srcJourney, { { srcImage, steps.empty() ? 0 : steps.back().id, 0 } },
+            return JoinLinked( id, c.handle, snap, srcJourney, { { srcImage, steps.empty() ? 0 : steps.back().id, 0 } },
                                "copilot", "linked by copilot" ) != 0 ? 1 : -1;
          }
       }
    // Ruling 29: an auxiliary output of a hand-run integration is never tracked.
-   if ( IsAuxiliaryOutput( c.view, snap ) )
+   if ( IsAuxiliaryOutput( id, snap ) )
       return -1;
    std::vector<std::string> ids;
    for ( const HistoryStep& h : snap.steps )
       ids.push_back( h.processId );
-   const FITSKeywordArray kw = c.view.Window().Keywords();
+   const FITSKeywordArray kw = KeywordsOf( id );
    const MasterEvidence me = DetectMaster( ids, kw );
    // (2) a master of its own. Ruling 28 (pre-flight P14): a window CREATED from another one (initialLength > 0)
    //     whose history does not begin with an integration is decided by link evidence first, and by the
@@ -985,7 +1104,7 @@ int JourneyTracker::EvaluateCandidate( Candidate& c, double now )
    //     so a derived window that inherited IMAGETYP='Master Light' joins its source's journey.
    const bool derived = snap.initialLength > 0 && !HistoryBeginsWithIntegration( snap );
    if ( me.isMaster && !derived )
-      return JoinAsMaster( c.view, snap, kw, me.why, c.firstSeen ) != 0 ? 1 : -1;
+      return JoinAsMaster( id, c.handle, snap, kw, me.why, c.firstSeen ) != 0 ? 1 : -1;
    // (3) reference (Ruling 19.2; spec §13.6: explicit references before timing): a step names tracked views.
    //     The creating step (initialProcessing[0], spec §5 evidence 3, pre-flight P13) and the view's own steps
    //     count; the rest of an opened file's initialProcessing does not.
@@ -1001,7 +1120,7 @@ int JourneyTracker::EvaluateCandidate( Candidate& c, double now )
       for ( const Tracked* t : refs )
          if ( t->journeyId == journeyId )
             links.push_back( { t->imageId, 0, h.combinedIndex + 1 } );
-      return JoinLinked( c.view, snap, journeyId, links, "reference", "linked by reference" ) != 0 ? 1 : -1;
+      return JoinLinked( id, c.handle, snap, journeyId, links, "reference", "linked by reference" ) != 0 ? 1 : -1;
    }
    // (4) timing (a)/(b) (Ruling 19.3).
    if ( snap.initialLength > 0 )
@@ -1009,7 +1128,7 @@ int JourneyTracker::EvaluateCandidate( Candidate& c, double now )
       // (a) the creating step is a recorded step (it also changed its source).
       for ( const RecentStep& r : m_recent )
          if ( r.identity == snap.steps.front().identity )
-            return JoinLinked( c.view, snap, r.journeyId, { { r.imageId, r.stepId, 0 } }, "timing", "linked by timing" ) != 0 ? 1 : -1;
+            return JoinLinked( id, c.handle, snap, r.journeyId, { { r.imageId, r.stepId, 0 } }, "timing", "linked by timing" ) != 0 ? 1 : -1;
       // (b) the creating step started while a tracked view was the active view.
       const double ts = IsoToEpoch( snap.steps.front().started );
       if ( ts > 0 )
@@ -1022,24 +1141,24 @@ int JourneyTracker::EvaluateCandidate( Candidate& c, double now )
                break;
          m_evalNote += " activeAtStart=" + activeId;
          const Tracked* src = FindTrackedById( activeId );
-         if ( src != nullptr && !(src->view == c.view) )
+         if ( src != nullptr && src->handle != c.handle )
          {
             const int64 srcImage = src->imageId, srcJourney = src->journeyId;
             const std::vector<StepRow> steps = m_store->Steps( srcImage, false );
-            return JoinLinked( c.view, snap, srcJourney, { { srcImage, steps.empty() ? 0 : steps.back().id, 0 } },
+            return JoinLinked( id, c.handle, snap, srcJourney, { { srcImage, steps.empty() ? 0 : steps.back().id, 0 } },
                                "timing", "linked by timing" ) != 0 ? 1 : -1;
          }
       }
    }
    // (5) Ruling 28: a derived window with master keywords and no link evidence is a master of its own.
    if ( me.isMaster )
-      return JoinAsMaster( c.view, snap, kw, me.why, c.firstSeen ) != 0 ? 1 : -1;
+      return JoinAsMaster( id, c.handle, snap, kw, me.why, c.firstSeen ) != 0 ? 1 : -1;
    // (6) timing (c), last: a window that APPEARED (review I3: a Created notification or the first sight of
    //     a view, never an ignored window that changed later) and is no opened file, first seen inside
    //     exactly one recorded step's time window. Never decided on the first look, and 2+ hits wait
    //     instead of rejecting: a window can be seen by a tick running while its creating process still
    //     executes, before its creating step is attached (J6 (f3)). Still ignored after kCandidateTicks.
-   if ( !c.fresh || !FilePathOf( c.view ).empty() )
+   if ( !c.fresh || !FilePathOf( id ).empty() )
    {
       m_evalNote += c.fresh ? " timingC.no(file)" : " timingC.no(not new)";
       return 0;
@@ -1059,7 +1178,7 @@ int JourneyTracker::EvaluateCandidate( Candidate& c, double now )
       }
    m_evalNote += " timingC.hits=" + std::to_string( hits );
    if ( hits == 1 )
-      return JoinLinked( c.view, snap, hit->journeyId, { { hit->imageId, hit->stepId, 0 } }, "timing", "linked by timing" ) != 0 ? 1 : -1;
+      return JoinLinked( id, c.handle, snap, hit->journeyId, { { hit->imageId, hit->stepId, 0 } }, "timing", "linked by timing" ) != 0 ? 1 : -1;
    return 0;
 }
 
@@ -1086,7 +1205,10 @@ void JourneyTracker::StartingStats( Tracked& t )
 {
    try
    {
-      const StepStatsResult s = ComputeStepStats( t.view, m_store->JourneyDir( t.journeyId )
+      const View live = LiveView( t.id );   // resolved for this call only
+      if ( live.IsNull() )
+         throw Error( "view " + String( t.id.c_str() ) + " is no longer open" );
+      const StepStatsResult s = ComputeStepStats( live, m_store->JourneyDir( t.journeyId )
                                                   + String().Format( "/thumbs/start-%lld.jpg", static_cast<long long>( t.imageId ) ) );
       if ( !s.ok )
          throw Error( s.error );
@@ -1099,17 +1221,16 @@ void JourneyTracker::StartingStats( Tracked& t )
    }
 }
 
-int64 JourneyTracker::JoinAsMaster( const View& v, const HistorySnapshot& snap, const FITSKeywordArray& kw, const std::string& why,
-                                    double firstSeen )
+int64 JourneyTracker::JoinAsMaster( const std::string& id, const void* handle, const HistorySnapshot& snap,
+                                    const FITSKeywordArray& kw, const std::string& why, double firstSeen )
 {
-   const std::string id = ViewIdOf( v );
-   const std::string path = FilePathOf( v );
-   const ViewGeom g = ViewGeometry( v );
+   const std::string path = FilePathOf( id );
+   const ViewGeom g = ViewGeometry( id );
    const std::vector<std::string> identities = StepIdentities( snap );
    std::unique_ptr<Tracked> t( new Tracked );
-   t->view = v;
+   t->handle = handle;
    t->id = id;
-   t->modifyCount = ModifyCountOf( v );
+   t->modifyCount = ModifyCountOf( id );
    t->why = why;
    // Resume (save + reopen): the journey's fingerprint over a prefix of today's history. Images open and
    // recorded right now are never resumed (review I2: a second window of the same history-less master).
@@ -1143,7 +1264,14 @@ int64 JourneyTracker::JoinAsMaster( const View& v, const HistorySnapshot& snap, 
          t->imageId = row.id;
          t->journeyId = row.journeyId;
          t->dirty = true;
-         t->hasGaps = m_store->HasReadGaps( row.id );   // re-review m-e: earlier sessions' read gaps resolve too
+         try
+         {
+            t->hasGaps = m_store->HasReadGaps( row.id );   // re-review m-e: earlier sessions' read gaps resolve too
+         }
+         catch ( ... )
+         {
+            t->hasGaps = true;   // m-i: unknown -> only adds a ResolveGaps to its next write; never leaves it untracked
+         }
          m_tracked.push_back( std::move( t ) );
          m_joinNotes << "PI Copilot: continuing the recorded journey of " + String( id.c_str() );
          return row.journeyId;
@@ -1186,22 +1314,21 @@ int64 JourneyTracker::JoinAsMaster( const View& v, const HistorySnapshot& snap, 
    return jid;
 }
 
-int64 JourneyTracker::JoinLinked( const View& v, const HistorySnapshot& snap, int64 journeyId,
+int64 JourneyTracker::JoinLinked( const std::string& id, const void* handle, const HistorySnapshot& snap, int64 journeyId,
                                   const std::vector<PlannedLink>& links, const std::string& evidence, const std::string& why )
 {
-   const std::string id = ViewIdOf( v );
-   const ViewGeom g = ViewGeometry( v );
+   const ViewGeom g = ViewGeometry( id );
    const std::vector<std::string> identities = StepIdentities( snap );
-   const FITSKeywordArray kw = v.Window().Keywords();
+   const FITSKeywordArray kw = KeywordsOf( id );
    std::unique_ptr<Tracked> t( new Tracked );
-   t->view = v;
+   t->handle = handle;
    t->id = id;
-   t->modifyCount = ModifyCountOf( v );
+   t->modifyCount = ModifyCountOf( id );
    t->why = why;
    t->journeyId = journeyId;
    {
       JourneyStore::Transaction tx( *m_store );   // review I5: image, steps and links together or not at all
-      t->imageId = m_store->AddImage( journeyId, id, FilePathOf( v ),
+      t->imageId = m_store->AddImage( journeyId, id, FilePathOf( id ),
                                       MasterFingerprint( g.w, g.h, g.ch, g.bits, g.isFloat, identities, kw ), false, NowIso() );
       m_store->SetImageOwner( t->imageId, m_owner );
       if ( m_joinFault )
@@ -1252,11 +1379,11 @@ int64 JourneyTracker::StartJourneyFor( const View& view, String& error, double /
          return 0;
       }
       struct Guard { bool& b; explicit Guard( bool& x ) : b( x ) { b = true; } ~Guard() { b = false; } } guard( m_inTick );
-      std::vector<View> open;
-      std::vector<size_type> counts;
-      DropClosed( open, counts );   // forget closed windows first (review I6)
+      std::vector<OpenWindow> open;
+      DropClosed( open );   // forget closed windows first (review I6)
       const std::string id = ViewIdOf( view );
-      if ( const Tracked* t = FindTracked( view ) )
+      const void* handle = HandleAccess::Of( view );   // the caller's view is alive during this call
+      if ( const Tracked* t = FindTracked( handle ) )
       {
          error = String().Format( "%s is already recorded in journey #%lld", id.c_str(), static_cast<long long>( t->journeyId ) );
          return 0;
@@ -1277,13 +1404,13 @@ int64 JourneyTracker::StartJourneyFor( const View& view, String& error, double /
          error = snap.error;
          return 0;
       }
-      if ( const Tracked* t = FindTracked( view ) )   // re-checked after the read (review I6)
+      if ( const Tracked* t = FindTracked( handle ) )   // re-checked after the read (review I6)
       {
          error = String().Format( "%s is already recorded in journey #%lld", id.c_str(), static_cast<long long>( t->journeyId ) );
          return 0;
       }
-      const int64 jid = JoinAsMaster( view, snap, view.Window().Keywords(), "started from chat (start_journey)", JourneyWallNow() );
-      Forget( view );   // re-review m5: only after the join succeeded
+      const int64 jid = JoinAsMaster( id, handle, snap, KeywordsOf( id ), "started from chat (start_journey)", JourneyWallNow() );
+      Forget( handle );   // re-review m5: only after the join succeeded
       return jid;
    }
    catch ( const ViewBusy& )
@@ -1397,8 +1524,21 @@ void JourneyTracker::Reconcile()
          return false;   // unknown: kept, checked again later
       }
    };
-   m_recent.erase( std::remove_if( m_recent.begin(), m_recent.end(),
-                                   [&]( const RecentStep& r ) { return journeyGone( r.journeyId ); } ), m_recent.end() );
+   auto recentGone = [this, &journeyGone]( const RecentStep& r )
+   {
+      // I-A: a remembered step whose journey, image or step row vanished can never be a link's source.
+      try
+      {
+         ImageRow ir;
+         StepRow sr;
+         return journeyGone( r.journeyId ) || !m_store->GetImage( r.imageId, ir ) || (r.stepId != 0 && !m_store->GetStep( r.stepId, sr ));
+      }
+      catch ( ... )
+      {
+         return false;
+      }
+   };
+   m_recent.erase( std::remove_if( m_recent.begin(), m_recent.end(), recentGone ), m_recent.end() );
    m_closed.erase( std::remove_if( m_closed.begin(), m_closed.end(), journeyGone ), m_closed.end() );
    m_pendingGaps.erase( std::remove_if( m_pendingGaps.begin(), m_pendingGaps.end(),
                                         [&]( const GapRow& g ) { return journeyGone( g.journeyId ); } ), m_pendingGaps.end() );
@@ -1510,17 +1650,24 @@ int RetentionPass( JourneyStore& store, const JourneyTracker& tracker, int days,
       // R1: per instance, once per local date, independent of lastRun (another instance may already have
       // pruned today): every open journey's `updated` stays within a day of now, so no instance's cutoff
       // (>= 1 day) reaches it.
-      JourneyStore::Transaction tx( store );
-      for ( int64 id : open )
-         try
-         {
-            store.TouchJourney( id, NowIso() );
-         }
-         catch ( const JourneyRowMissing& )
-         {
-            // gone meanwhile: the tracker drops the image on its next write (R2)
-         }
-      tx.Commit();
+      try
+      {
+         JourneyStore::Transaction tx( store );
+         for ( int64 id : open )
+            try
+            {
+               store.TouchJourney( id, NowIso() );
+            }
+            catch ( const JourneyRowMissing& )
+            {
+               // gone meanwhile: the tracker drops the image on its next write (R2)
+            }
+         tx.Commit();
+      }
+      catch ( const pcl::Exception& x )
+      {
+         throw Error( String( kTouchFailurePrefix ) + x.Message() );   // m-k: retried after the back-off
+      }
       openTouchedDate = today;
    }
    return RunRetentionIfDue( store, days, today, lastRun, removed, open );
@@ -1662,7 +1809,10 @@ void JourneyService::RunRetention()
       m_retentionRetryAfter = now + 60;
       if ( failure != m_lastRetentionError )   // one note per distinct failure, not per pass
       {
-         const String m = "PI Copilot: journey retention paused until tomorrow: " + failure;
+         // m-k: a failed touch is retried after the 60 s back-off; a failed prune waits for the next date.
+         const String m = failure.StartsWith( kTouchFailurePrefix )
+                        ? "PI Copilot: journey retention is waiting (retried in a minute): " + failure
+                        : "PI Copilot: journey retention paused until tomorrow: " + failure;
          Console().WarningLn( m );
          AddNote( m );
       }
