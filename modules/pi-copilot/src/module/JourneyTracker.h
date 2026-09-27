@@ -6,6 +6,7 @@
 
 #include "HistoryReader.h"
 #include "JourneyStore.h"
+#include "JourneyWriteup.h"
 
 #include <pcl/Control.h>
 #include <pcl/FITSHeaderKeyword.h>
@@ -336,6 +337,9 @@ public:
    JourneyStore* Store() { return m_store.get(); }
    const String& StoreError() const { return m_storeError; }
    JourneyTracker& Tracker() { return *m_tracker; }
+   // The keeper exporter (Task 9): Keep/Retry on the root thread; OnTick polls
+   // it, so its notes reach the Console and TakeNotes(). Valid while Started().
+   KeeperExporter& Keeper() { return *m_keeper; }
 
    void ApplySettings();
    void OnTick();
@@ -370,6 +374,7 @@ private:
    String                            m_storeError;
    double                            m_lastOpenAttempt = 0;
    std::unique_ptr<JourneyTracker>   m_tracker;
+   std::unique_ptr<KeeperExporter>   m_keeper;   // released BEFORE m_tracker / m_store (Stop)
    std::unique_ptr<JourneyTimerHost> m_host;
    StringList                        m_notes;
    std::string                       m_retentionLastRun;
