@@ -60,6 +60,7 @@ struct ImageRow
    std::string viewId, filePath, fingerprint;
    bool        isMaster = false;
    std::string created;
+   std::string owner;                   // "<pid>:<process start>" of the PixInsight instance recording it; "" = none (m6)
 };
 
 struct StepRow

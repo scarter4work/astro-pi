@@ -10,6 +10,7 @@
 #include "PICopilotAgentSelfTest.h"
 #include "PICopilotInc5SelfTest.h"
 #include "PICopilotJourneySelfTest.h"
+#include "JourneyTracker.h"
 #include "Utf8.h"
 #include "KeyStore.h"
 #include "Keyring.h"
@@ -44,6 +45,13 @@ bool RunSelfTest( String& jsonOut )
          unsigned( std::chrono::steady_clock::now().time_since_epoch().count() & 0xFFFFFF ) );
       KeyStore::SetKeyringForSelfTest( testId, "PICopilot/SelfTestApiKey" );
    }
+
+   // The production JourneyService recorded the selftest.js pre-phase (section
+   // J6 checks it). Flush it and stop it for the rest of the run, so it never
+   // interleaves with the earlier sections' timing-sensitive tests. (The j6
+   // "service" fixture phase already did this right after the pre-phase; a
+   // second call is a no-op.)
+   JourneyService::Instance().FlushAndPauseForSelfTest();
 
    int  evalResult = -1;
    bool evalOk = false;

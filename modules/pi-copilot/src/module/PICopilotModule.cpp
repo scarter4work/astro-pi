@@ -14,7 +14,9 @@
 #include "PICopilotModule.h"
 #include "PICopilotProcess.h"
 #include "PICopilotInterface.h"
+#include "JourneyConstants.h"
 #include "JourneySpikeProbe.h"
+#include "JourneyTracker.h"
 
 namespace pcl
 {
@@ -90,10 +92,14 @@ void PICopilotModule::OnLoad()
    // spike records which image notifications and timer ticks reach the module
    // while the PI Copilot panel has never been opened.
    ArmJourneySpikeProbeIfSelfTest();
+   // Image journey (0.2.0.0): always recording, panel open or not (Ruling 22).
+   if ( PICopilotJourneyServiceStartsOnLoad )
+      JourneyService::Instance().Start();
 }
 
 void PICopilotModule::OnUnload()
 {
+   JourneyService::Instance().Stop();
    DisarmJourneySpikeProbe();
 }
 

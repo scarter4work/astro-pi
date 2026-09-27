@@ -6,7 +6,9 @@
 #include "AgentSession.h"
 #include "AgentTools.h"
 #include "ConfigDialog.h"
+#include "JourneyConstants.h"
 #include "JourneySpikeProbe.h"
+#include "JourneyTracker.h"
 #include "KeyStore.h"
 #include "ModelCatalog.h"
 #include "PICopilotModule.h"
@@ -117,40 +119,58 @@ bool PICopilotInterface::WantsImageNotifications() const
    return true;
 }
 
+namespace
+{
+JourneyService* JourneyForNotifications()
+{
+   JourneyService& s = JourneyService::Instance();
+   if ( !s.Started() && !PICopilotJourneyServiceStartsOnLoad )
+      s.Start();   // Task 1 ruled OnLoad unusable: the first notification starts it (the one stated
+                   // exception to "handlers only queue", Global Constraints; Ruling 22)
+   return s.Started() ? &s : nullptr;
+}
+} // namespace
+
 void PICopilotInterface::ImageCreated( const View& view )
 {
    NoteProcessActivity();
    JourneySpikeNote( "created", view );
+   if ( JourneyService* s = JourneyForNotifications() ) s->OnImageCreated( view );
 }
 
 void PICopilotInterface::ImageUpdated( const View& view )
 {
    NoteProcessActivity();
    JourneySpikeNote( "updated", view );
+   if ( JourneyService* s = JourneyForNotifications() ) s->OnImageUpdated( view );
 }
 
 void PICopilotInterface::ImageRenamed( const View& view )
 {
    NoteProcessActivity();
    JourneySpikeNote( "renamed", view );
+   if ( JourneyService* s = JourneyForNotifications() ) s->OnImageRenamed( view );
 }
 
 void PICopilotInterface::ImageDeleted( const View& view )
 {
    NoteProcessActivity();
    JourneySpikeNote( "deleted", view );
+   if ( JourneyService* s = JourneyForNotifications() ) s->OnImageDeleted( view );
 }
 
 void PICopilotInterface::ImageSaved( const View& view )
 {
    NoteProcessActivity();
    JourneySpikeNote( "saved", view );
+   if ( JourneyService* s = JourneyForNotifications() ) s->OnImageSaved( view );
 }
 
 void PICopilotInterface::ImageFocused( const View& view )
 {
    NoteProcessActivity();
    JourneySpikeNote( "focused", view );
+   if ( JourneyService* s = JourneyForNotifications() ) s->OnImageFocused( view );
 }
 
 void PICopilotInterface::ImageLocked( const View& view )
