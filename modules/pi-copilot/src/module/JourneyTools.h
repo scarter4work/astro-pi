@@ -69,15 +69,18 @@ KeepFlowResult RunKeepFlow( JourneyToolHost& host, int64 journeyId, const IsoStr
 // journey that names it in the library.
 int64 JourneyForView( JourneyToolHost& host, const IsoString& viewFullId );
 
-// apply_process ran processId successfully on viewFullId (a main view): a
-// replay looked up for that view names its journey "<keeper> (replay of #<id>)"
-// now -- when processId is one of the non-manual steps of the page that lookup
-// returned (the model may adapt or substitute a step), within an hour of the
-// last replay activity on the view (a lookup or any apply there, which also
-// restarts that clock). "" or why the name could not
-// be set. Pending lookups are kept per library + view inside JourneyTools, so
-// they survive the panel rebuilding its JourneyToolHost. Root thread.
-String NoteReplayStepApplied( JourneyToolHost& host, const IsoString& viewFullId, const std::string& processId );
+// apply_process ran replay step n of journey keeperId successfully on
+// viewFullId (a main view; validated by CheckReplayStep before the run): the
+// view's journey is named "<keeper> (replay of #<id>)" now, if it is not yet,
+// and the replay's clock restarts. Nothing else ever names a journey as a
+// replay (no inference from process ids). "" or why the name could not be set.
+// Pending lookups are kept per library + view inside JourneyTools, so they
+// survive the panel rebuilding its JourneyToolHost. Root thread.
+String NoteReplayStepApplied( JourneyToolHost& host, const IsoString& viewFullId, int64 keeperId, int64 n );
+// Before an apply_process that carries replay_step {journey_id, n} (round 5, re-review 3 I1): "" when a
+// replay_journey lookup of that journey for this view (within an hour of the last replay activity) returned n
+// as a non-manual step; else the error for the model (nothing runs).
+String CheckReplayStep( JourneyToolHost& host, const IsoString& viewFullId, int64 keeperId, int64 n );
 // Forgets every pending replay lookup of host's library. Call it when the
 // conversation is cleared / a new chat starts, and on a library switch -- NOT
 // per user message: a replay that starts with a manual step (DBE) or waits for

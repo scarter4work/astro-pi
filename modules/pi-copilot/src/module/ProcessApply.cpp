@@ -347,7 +347,7 @@ void SetParameters( const Process& P, ProcessInstance* instance, const String& p
    // values were resolved ONCE by the caller (the tools, before any dialog:
    // what the user was shown is what runs) and are only checked for
    // completeness here; a direct caller without them resolves now.
-   std::vector<PinnedParameter> pinned;
+   std::vector<PinnedParameter> pinned;   // pcl-move-ok: filled by ResolvePinnedParameters (push_back/clear), read only
    if ( resolvedPinned != nullptr )
    {
       const String e = CheckResolvedPinnedParameters( P.Id(), parameters, tableParameters, *resolvedPinned );

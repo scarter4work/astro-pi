@@ -68,6 +68,14 @@ TMPDIR="$(mktemp -d "$PICOPILOT_RUNTIME_BASE/run.XXXXXX")"
 chmod 700 "$TMPDIR"
 export TMPDIR
 
+# Static guard (Task 10 fix round 5): no pcl::String / IsoString (or a type holding one) in a std sequence
+# container that is erased / inserted / sorted, and no move out of a data member -- a moved-from PCL value is not
+# a valid assignment target (proven SIGSEGVs). Checks itself against known-bad snippets first. Fails fast.
+if ! python3 "$HERE/check-pcl-moves.py" "$TMPDIR/pcl-move-guard"; then
+   echo "FAIL: the moved-from PCL value guard (test/check-pcl-moves.py) found a violation"
+   exit 1
+fi
+
 SLOT_SETTINGS="$(printf '%s/core-%03d-pxi.settings' "$HOME/.PixInsight" "$PICOPILOT_TEST_SLOT")"
 rm -f "$SLOT_SETTINGS"
 # One cleanup for every EXIT path (0.2.0.0). Every variable is empty until the

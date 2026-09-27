@@ -6133,6 +6133,8 @@ r1.ok && r1.inferred.size() == 1 && r1.inferred[0].first == 7 && r1.inferred[0].
       bool exportLineageOk = false;
       // Fix round 4.
       bool replayFlowOk = false, knownDirsOk = false, candidatesOk = false, loopOk = false;
+      // Fix round 5.
+      bool threeImagesOk = false;
       String error;
       std::vector<std::string> made;
       try
@@ -6451,7 +6453,8 @@ r1.ok && r1.inferred.size() == 1 && r1.inferred[0].first == 7 && r1.inferred[0].
             const ToolOutcome self = ExecuteTool( ToolCall{ "r4", "replay_journey", { { "journey_id", trk.JourneyOfView( "pcJtNew" ) } } },
                                                   ctxFor( AgentMode::Copilot, "pcJtNew" ) );
             const ToolOutcome step = ExecuteTool( ToolCall{ "r5", "apply_process", { { "process_id", "PixelMath" },
-                                                  { "parameters", { { "expression", "$T" } } }, { "reason", "replay step 1" } } },
+                                                  { "parameters", { { "expression", "$T" } } }, { "reason", "replay step 1" },
+                                                  { "replay_step", { { "journey_id", jA }, { "n", 1 } } } } },
                                                   ctxFor( AgentMode::Copilot, "pcJtNew" ) );
             store->GetJourney( trk.JourneyOfView( "pcJtNew" ), cur );
             store->GetJourney( jA, keptA );
@@ -6747,19 +6750,20 @@ r1.ok && r1.inferred.size() == 1 && r1.inferred[0].first == 7 && r1.inferred[0].
             ToolContext rc = ctxFor( AgentMode::Copilot, "pcJtOther" );
             rc.journeys = &rebuilt;
             const ToolOutcome pm = ExecuteTool( ToolCall{ "q3", "apply_process", { { "process_id", "PixelMath" },
-                                                { "parameters", { { "expression", "$T" } } } } }, rc );
+                                                { "parameters", { { "expression", "$T" } } },
+                                                { "replay_step", { { "journey_id", jA }, { "n", 1 } } } } }, rc );
             store->GetJourney( jo, afterStep );
             const int64 jp = trk.JourneyOfView( "pcJtPlain" );
             ExecuteTool( ToolCall{ "q4", "replay_journey", { { "journey_id", jA } } }, ctxFor( AgentMode::Copilot, "pcJtPlain" ) );
             ForgetPendingReplays( host );
-            ExecuteTool( ToolCall{ "q5", "apply_process", { { "process_id", "PixelMath" }, { "parameters", { { "expression", "$T" } } } } },
-                         ctxFor( AgentMode::Copilot, "pcJtPlain" ) );
+            const ToolOutcome q5 = ExecuteTool( ToolCall{ "q5", "apply_process", { { "process_id", "PixelMath" }, { "parameters", { { "expression", "$T" } } },
+                                                { "replay_step", { { "journey_id", jA }, { "n", 1 } } } } }, ctxFor( AgentMode::Copilot, "pcJtPlain" ) );
             store->GetJourney( jp, forgot );
             d["replayExpiry"] = { { "before", before.name }, { "afterUnrelated", afterUnrelated.name }, { "afterStep", afterStep.name },
                                   { "forgot", forgot.name }, { "inv", text0( inv ).substr( 0, 200 ) }, { "pm", text0( pm ).substr( 0, 200 ) } };
             replayExpiryOk = !inv.isError && !pm.isError && afterUnrelated.name == before.name
                           && afterStep.name.find( "(replay of #" + std::to_string( jA ) + ")" ) != std::string::npos
-                          && forgot.name.find( "(replay of #" ) == std::string::npos;
+                          && forgot.name.find( "(replay of #" ) == std::string::npos && q5.isError;
          }
          // (r) Review test gap: FreezeJourney called INSIDE a tick (re-entered) is queued and done at the next tick.
          {
@@ -6884,9 +6888,55 @@ r1.ok && r1.inferred.size() == 1 && r1.inferred[0].first == 7 && r1.inferred[0].
                            && !of.recipeOk && !of.xpsmOk && of.recipeError.Contains( "lineage" ) && of.xpsmError.Contains( "lineage" )
                            && orphanNoRecipe;
          }
-         // (v) Re-review round 2, I1 + minor 2: the replay name survives the user-message boundaries of a real replay
-         //     (a manual DBE first, a "go ahead"), its clock restarts on replay activity, it matches any non-manual
-         //     step of the page (the model may substitute step 1), and it still expires without activity.
+         // (z) Round 5 (re-review 3, C1): keeping a journey with THREE open images (master + two derived windows)
+         //     freezes three images at once (the pending list is erased in the middle), and so does closing the first
+         //     of three frozen-but-busy images. Both crashed PixInsight before (moved-from pcl::String in a std::vector).
+         {
+            auto threeImages = [&]( const char* id, const char* object, unsigned seed ) -> JBuilt
+            {
+               const JBuilt b = JBuildJourney( *store, id, object, seed );
+               made.push_back( id );
+               fake.steps[id] = JHistoryOfImage( *store, b.img );
+               JTick( trk, 2 );
+               for ( const char* suffix : { "_c1", "_c2" } )
+               {
+                  const std::string copy = std::string( id ) + suffix;
+                  ExecuteTool( ToolCall{ "z", "apply_process", { { "process_id", "PixelMath" },
+                               { "parameters", { { "expression", "$T" }, { "createNewImage", true }, { "newImageId", copy } } } } },
+                               ctxFor( AgentMode::Copilot, id ) );
+                  made.push_back( copy );
+               }
+               JTick( trk, 3 );
+               return b;
+            };
+            answer = true;
+            // Free images: all three join the continuation at once.
+            const JBuilt T = threeImages( "pcJtT", "JtThree", 65 );
+            const bool tLinked = trk.JourneyOfView( "pcJtT_c1" ) == T.jid && trk.JourneyOfView( "pcJtT_c2" ) == T.jid;
+            const KeepFlowResult kt = RunKeepFlow( host, T.jid, "pcJtT" );
+            const int64 tc = trk.JourneyOfView( "pcJtT" );
+            const bool tJoined = kt.ok && tc != 0 && tc != T.jid && trk.JourneyOfView( "pcJtT_c1" ) == tc && trk.JourneyOfView( "pcJtT_c2" ) == tc;
+            // Busy images: all three pending; the first closes; the other two join at the next tick.
+            const JBuilt U = threeImages( "pcJtU", "JtThreeBusy", 66 );
+            KeepFlowResult ku;
+            {
+               View a = ImageWindow::WindowById( "pcJtU" ).MainView(), b = ImageWindow::WindowById( "pcJtU_c1" ).MainView(),
+                    c = ImageWindow::WindowById( "pcJtU_c2" ).MainView();
+               AutoViewLock la( a ), lb( b ), lc( c );
+               ku = RunKeepFlow( host, U.jid, "pcJtU" );
+            }
+            JForceClose( "pcJtU" );
+            JTick( trk, 2 );
+            const int64 u1 = trk.JourneyOfView( "pcJtU_c1" ), u2 = trk.JourneyOfView( "pcJtU_c2" );
+            d["threeImages"] = { { "tLinked", tLinked }, { "tJoined", tJoined }, { "tContinued", tc }, { "keepT", U8( kt.modelMessage ) },
+                                 { "uKept", ku.ok }, { "u1", u1 }, { "u2", u2 }, { "uJid", U.jid } };
+            threeImagesOk = tLinked && tJoined && ku.ok && u1 != 0 && u1 != U.jid && u1 == u2;
+         }
+         // (v) Round 5 (re-review 3, I1): only an EXPLICIT replay step names the journey -- apply_process with
+         //     replay_step {journey_id, n} validated against the pending page. It survives the user-message boundaries
+         //     of a real replay (a manual DBE first, a "go ahead"), may be adapted (another process), restarts its clock
+         //     on replay activity (a lookup / a replay step), expires without it, and a declined replay followed by an
+         //     ordinary run of a process that IS on the page names nothing.
          {
             double now = JourneyWallNow();
             SetReplayNameClockForSelfTest( [&now]() { return now; } );
@@ -6896,46 +6946,65 @@ r1.ok && r1.inferred.size() == 1 && r1.inferred[0].first == 7 && r1.inferred[0].
                store->GetJourney( trk.JourneyOfView( view ), r );
                return r.name.find( "(replay of #" + std::to_string( keeper ) + ")" ) != std::string::npos;
             };
-            auto apply = [&]( const char* view, const char* pid )
+            auto step = [&]( const char* view, const char* pid, int64 keeper, int n )
             {
-               return ExecuteTool( ToolCall{ "v", "apply_process", { { "process_id", pid } } }, ctxFor( AgentMode::Copilot, view ) );
+               nlohmann::json in = { { "process_id", pid } };
+               if ( std::string( pid ) == "PixelMath" )
+                  in["parameters"] = { { "expression", "$T" } };
+               if ( keeper != 0 )
+                  in["replay_step"] = { { "journey_id", keeper }, { "n", n } };
+               return ExecuteTool( ToolCall{ "v", "apply_process", in }, ctxFor( AgentMode::Copilot, view ) );
+            };
+            auto lookup = [&]( const char* view, int64 keeper )
+            {
+               return ExecuteTool( ToolCall{ "vl", "replay_journey", { { "journey_id", keeper } } }, ctxFor( AgentMode::Copilot, view ) );
             };
             const int64 dbeFirst = JAddKeeperSteps( *store, "JtDbe", { "DynamicBackgroundExtraction", "Invert" } );
             const int64 mixed = JAddKeeperSteps( *store, "JtMix", { "Invert", "PixelMath" } );
-            for ( const char* id : { "pcJtR1", "pcJtR2", "pcJtR3", "pcJtR4" } )
+            for ( const char* id : { "pcJtR1", "pcJtR2", "pcJtR3", "pcJtR4", "pcJtR5" } )
             {
                JMakeNoiseMaster( id, 70 + unsigned( id[5] ) );
                made.push_back( id );
                ExecuteTool( ToolCall{ "vs", "start_journey", nlohmann::json::object() }, ctxFor( AgentMode::Copilot, id ) );
             }
-            // DBE first: the user places samples for 20 minutes; the next message leads to the first real step.
-            ExecuteTool( ToolCall{ "v1", "replay_journey", { { "journey_id", dbeFirst } } }, ctxFor( AgentMode::Copilot, "pcJtR1" ) );
+            // DBE first: the user places samples for 20 minutes; after their next message step 2 runs.
+            lookup( "pcJtR1", dbeFirst );
             now += 1200;
-            apply( "pcJtR1", "Invert" );
-            const bool dbeNamed = named( "pcJtR1", dbeFirst );
-            // "Go ahead" with activity: another run at +50 min restarts the clock; the replay step at +100 min names it.
-            ExecuteTool( ToolCall{ "v2", "replay_journey", { { "journey_id", jA } } }, ctxFor( AgentMode::Copilot, "pcJtR2" ) );
+            const ToolOutcome s1 = step( "pcJtR1", "Invert", dbeFirst, 2 );
+            const bool dbeNamed = !s1.isError && named( "pcJtR1", dbeFirst );
+            // "Go ahead" with a later page lookup (activity) in between: named at +100 min.
+            lookup( "pcJtR2", jA );
             now += 3000;
-            apply( "pcJtR2", "Invert" );
+            lookup( "pcJtR2", jA );
             now += 3000;
-            ExecuteTool( ToolCall{ "v2b", "apply_process", { { "process_id", "PixelMath" }, { "parameters", { { "expression", "$T" } } } } },
-                         ctxFor( AgentMode::Copilot, "pcJtR2" ) );
-            const bool restartNamed = named( "pcJtR2", jA );
-            // Substitution: the model runs step 2's process first.
-            ExecuteTool( ToolCall{ "v3", "replay_journey", { { "journey_id", mixed } } }, ctxFor( AgentMode::Copilot, "pcJtR3" ) );
-            ExecuteTool( ToolCall{ "v3b", "apply_process", { { "process_id", "PixelMath" }, { "parameters", { { "expression", "$T" } } } } },
-                         ctxFor( AgentMode::Copilot, "pcJtR3" ) );
-            const bool substitutedNamed = named( "pcJtR3", mixed );
-            // No activity for more than the window: expired.
-            ExecuteTool( ToolCall{ "v4", "replay_journey", { { "journey_id", jA } } }, ctxFor( AgentMode::Copilot, "pcJtR4" ) );
+            const ToolOutcome s2 = step( "pcJtR2", "PixelMath", jA, 1 );
+            const bool restartNamed = !s2.isError && named( "pcJtR2", jA );
+            // Adapted: step 1 (Invert) done with another process.
+            lookup( "pcJtR3", mixed );
+            const ToolOutcome s3 = step( "pcJtR3", "PixelMath", mixed, 1 );
+            const bool adaptedNamed = !s3.isError && named( "pcJtR3", mixed );
+            // No replay activity for two hours: the replay step is refused (look it up again), nothing named.
+            lookup( "pcJtR4", jA );
             now += 7300;
-            ExecuteTool( ToolCall{ "v4b", "apply_process", { { "process_id", "PixelMath" }, { "parameters", { { "expression", "$T" } } } } },
-                         ctxFor( AgentMode::Copilot, "pcJtR4" ) );
+            const ToolOutcome s4 = step( "pcJtR4", "PixelMath", jA, 1 );
             const bool expiredNamed = named( "pcJtR4", jA );
+            // Declined: the user says "no, just stretch it"; an ordinary PixelMath (on the page!) names nothing, and a
+            // replay_step for a journey never looked up / a step not on the page is refused before anything runs.
+            lookup( "pcJtR5", jA );
+            const ToolOutcome plain = step( "pcJtR5", "PixelMath", 0, 0 );
+            const ToolOutcome wrongJourney = step( "pcJtR5", "PixelMath", jB, 1 );
+            const ToolOutcome wrongStep = step( "pcJtR5", "PixelMath", jA, 99 );
+            const bool declinedNamed = named( "pcJtR5", jA );
             SetReplayNameClockForSelfTest( std::function<double()>() );
-            d["replayFlow"] = { { "dbeFirst", dbeNamed }, { "restart", restartNamed }, { "substituted", substitutedNamed },
-                                { "expired", expiredNamed } };
-            replayFlowOk = dbeNamed && restartNamed && substitutedNamed && !expiredNamed;
+            d["replayFlow"] = { { "dbeFirst", dbeNamed }, { "restart", restartNamed }, { "adapted", adaptedNamed },
+                                { "expired", { { "named", expiredNamed }, { "text", text0( s4 ).substr( 0, 200 ) } } },
+                                { "declined", declinedNamed }, { "plainError", plain.isError },
+                                { "wrongJourney", text0( wrongJourney ).substr( 0, 200 ) }, { "wrongStep", text0( wrongStep ).substr( 0, 200 ) } };
+            replayFlowOk = dbeNamed && restartNamed && adaptedNamed
+                        && !expiredNamed && s4.isError && text0( s4 ).find( "replay_journey" ) != std::string::npos
+                        && !declinedNamed && !plain.isError
+                        && wrongJourney.isError && text0( wrongJourney ).find( "replay_step" ) != std::string::npos
+                        && wrongStep.isError && text0( wrongStep ).find( "replay_step" ) != std::string::npos;
          }
          // (w) Re-review round 2, minor 1: paths under a directory PI Copilot knows lose it literally, whatever
          //     characters its folders hold; and a keep with such an export folder tells the model no folder.
@@ -6949,7 +7018,9 @@ r1.ok && r1.inferred.size() == 1 && r1.inferred[0].first == 7 && r1.inferred[0].
                { "in /home/s/a: b/x.xisf now", "in x.xisf now" },
                { "/tmp/pcx/j (1)/export: missing", "export: missing" },
                { "a/b and $T/2 stay", "a/b and $T/2 stay" },
-               { "copy to /home/s/M42 (Orion), 2026/out failed; saved in /tmp/pcx/j 1/26 instead", "copy to out failed; saved in 26 instead" } };
+               { "copy to /home/s/M42 (Orion), 2026/out failed; saved in /tmp/pcx/j 1/26 instead", "copy to out failed; saved in 26 instead" },
+               // Round 5 (re-review 3, M2): a folder name ending in a space ("a ") before the next '/'.
+               { "see /home/s/a /b/x.xisf now", "see x.xisf now" } };
             nlohmann::json bad = nlohmann::json::array();
             for ( const auto& c : cases )
             {
@@ -6957,13 +7028,37 @@ r1.ok && r1.inferred.size() == 1 && r1.inferred[0].first == 7 && r1.inferred[0].
                if ( got != c.second )
                   bad.push_back( { { "in", c.first }, { "got", U8( got ) }, { "want", c.second } } );
             }
-            // Linear with known directories too.
+            // Linear with known directories too (round 5, re-review 3 M1): doubling the input at most ~doubles the time.
             std::string big;
             while ( big.size() < 100000 )
                big += "/home/s/M42 (Orion)/";
             const jclock::time_point t0 = jclock::now();
             ModelTextWithoutDirectories( String( big.c_str() ), known );
             const double bigMs = MsSince( t0 );
+            auto timeOf = [&known]( const std::string& unit, size_t chars )
+            {
+               std::string in;
+               while ( in.size() < chars )
+                  in += unit;
+               const String t( in.c_str() );
+               double best = 1e30;
+               for ( int r = 0; r < 3; ++r )
+               {
+                  const jclock::time_point a = jclock::now();
+                  ModelTextWithoutDirectories( t, known );
+                  best = std::min( best, MsSince( a ) );
+               }
+               return best;
+            };
+            nlohmann::json scaling = nlohmann::json::object();
+            bool linearKnown = true;
+            for ( const char* unit : { "/home/s/a ", "/home/s/a/b ", "x /home/s/ " } )
+            {
+               const double t1 = timeOf( unit, 50000 ), t2 = timeOf( unit, 100000 );
+               scaling[unit] = { t1, t2 };
+               linearKnown = linearKnown && t2 < std::max( 3.0*t1, 5.0 );   // quadratic would be ~4x (and >> 5 ms here)
+            }
+            d["knownDirsScaling"] = scaling;
             // A keep whose export folder has such names (missing, so the copy error names it).
             const JBuilt X = JBuildJourney( *store, "pcJtX", "JtOrion", 64 );
             made.push_back( "pcJtX" );
@@ -6972,7 +7067,7 @@ r1.ok && r1.inferred.size() == 1 && r1.inferred[0].first == 7 && r1.inferred[0].
             const KeepFlowResult k = RunKeepFlow( host, X.jid, "" );
             host.exportFolder.Clear();
             d["knownDirs"] = { { "bad", bad }, { "bigMs", bigMs }, { "keep", U8( k.modelMessage ) }, { "keepLog", U8( k.message ) } };
-            knownDirsOk = bad.empty() && bigMs < 500 && k.ok && k.message.Contains( "Orion" )
+            knownDirsOk = bad.empty() && bigMs < 500 && linearKnown && k.ok && k.message.Contains( "Orion" )
                        && !k.modelMessage.Contains( "Orion" ) && !k.modelMessage.Contains( "2026/" )
                        && k.modelMessage.Contains( "does not exist" );   // the prose between two paths survives
          }
@@ -7023,7 +7118,7 @@ r1.ok && r1.inferred.size() == 1 && r1.inferred[0].first == 7 && r1.inferred[0].
                    && keepErrorOk && startOk && noEffectOk && replayMatchOk && attributionOk && cancelOk
                    && offFreezeOk && inFlightOk && pagingOk && idTypeOk && markViewOk && orderOk && noteActionOk && scrubOk
                    && replayLookupOk && scrubFuzzOk && gxOk && replayExpiryOk && inTickFreezeOk && lineageOk && exportLineageOk
-                   && replayFlowOk && knownDirsOk && candidatesOk && loopOk
+                   && replayFlowOk && knownDirsOk && candidatesOk && loopOk && threeImagesOk
                    && error.IsEmpty();
       out["journeyToolsDetail"] = d;
       out["journeyToolsChecks"] = { { "schema", schemaOk }, { "prompt", promptOk }, { "noHost", noHostOk }, { "list", listOk },
@@ -7036,7 +7131,7 @@ r1.ok && r1.inferred.size() == 1 && r1.inferred[0].first == 7 && r1.inferred[0].
                                     { "scrubFuzz", scrubFuzzOk }, { "graxpert", gxOk }, { "replayExpiry", replayExpiryOk },
                                     { "inTickFreeze", inTickFreezeOk }, { "lineage", lineageOk }, { "exportLineage", exportLineageOk },
                                     { "replayFlow", replayFlowOk }, { "knownDirs", knownDirsOk }, { "candidates", candidatesOk },
-                                    { "loop", loopOk } };
+                                    { "loop", loopOk }, { "threeImages", threeImagesOk } };
       out["journeyToolsError"] = U8( error );
       out["journeyToolsOk"] = ok;
       allOk = allOk && ok;
@@ -7146,8 +7241,13 @@ r1.ok && r1.inferred.size() == 1 && r1.inferred[0].first == 7 && r1.inferred[0].
                calledReplay = calledReplay || line.get<std::string>().find( "replay_journey" ) != std::string::npos;
             d = { { "requests", requests }, { "log", log }, { "recorded", recorded }, { "replayed", replayed },
                   { "finalMedian", finalMedian }, { "kind", int( s.kind ) }, { "text", U8( s.assistantText ).substr( 0, 600 ) } };
+            // Round 5: the model marks its replay runs (replay_step), so the new journey carries the replay name.
+            JourneyRow nr;
+            store->GetJourney( trk.JourneyOfView( "pcJtN" ), nr );
+            d["journeyName"] = nr.name;
             liveOk = s.kind == AgentStep::Done && calledReplay && replayed.size() >= 2 && perStep
-                  && std::fabs( finalMedian - recorded.back() ) <= 0.03;
+                  && std::fabs( finalMedian - recorded.back() ) <= 0.03
+                  && nr.name.find( "(replay of #" + std::to_string( K.jid ) + ")" ) != std::string::npos;
          }
          catch ( const pcl::Exception& x ) { error = x.Message(); }
          catch ( const std::exception& x ) { error = String( x.what() ); }

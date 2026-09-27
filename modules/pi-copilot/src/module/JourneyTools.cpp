@@ -55,7 +55,9 @@ const char* const kJourneyPromptAct =
    "statistics with the recorded ones for that step and adjust the parameters toward the recorded result.\n"
    "- Steps marked manual (sample points, masks, scripts, interactive geometry) are for the user: stop at each, say "
    "exactly what to do, and continue only after they say it is done. Never invent a substitute for a manual step.\n"
-   "- Give every process run a short reason (the reason field), so the new journey records why.\n";
+   "- Give every process run a short reason (the reason field), so the new journey records why.\n"
+   "- Every apply_process that carries out a replay step passes replay_step {journey_id, n} with that step's n from "
+   "replay_journey (also when you adapt it); no other run passes it. If the user declines the replay, never pass it.\n";
 
 namespace
 {
@@ -258,7 +260,10 @@ constexpr double kReplayNameSeconds = 3600;
 
 // Pending replay names (review m6, re-review m4), keyed by {library, main view id}. The library pointer is only
 // compared, never dereferenced. Root thread only (the tools run there).
-struct PendingReplay { int64 journeyId = 0; std::string name; std::set<std::string> processIds; double t = 0; };
+// Round 5 (re-review 3, I1): the steps are the explicit contract -- apply_process names the one it follows with
+// replay_step {journey_id, n}; no inference from process ids. steps: n -> processId of the non-manual steps the
+// lookups of this replay returned (pages accumulate). t: the last replay activity (a lookup, a replay step).
+struct PendingReplay { int64 journeyId = 0, keeperId = 0; std::string name; std::map<int, std::string> steps; double t = 0; };
 using PendingKey = std::pair<const void*, std::string>;
 std::function<double()>& ReplayClock()
 {
@@ -358,43 +363,44 @@ String ModelTextWithoutDirectories( const String& text, const StringList& knownD
    if ( order.empty() )
       return WithoutDirectories( text );
    const size_type n = text.Length();
+   auto boundaryAt = [&]( size_type k )   // a path may start at k ('/' right after one of these)
+   {
+      if ( k == 0 )
+         return true;
+      const char16_type b = text[k-1];
+      return b == ' ' || b == '\t' || b == '(' || b == '[' || b == '\'' || b == '"' || b == '=' || b == ':';
+   };
+   auto knownAt = [&]( size_type k )   // a known directory + '/' starts at k
+   {
+      for ( size_t o : order )
+      {
+         const size_type len = dirList[o].Length();
+         if ( k + len < n && text[k + len] == '/' && text.Substring( k, len ) == dirList[o] )
+            return true;
+      }
+      return false;
+   };
    String out;
-   size_type plain = 0;   // start of the text not yet emitted (goes through the heuristic)
+   size_type plain = 0;       // start of the text not yet emitted (goes through the heuristic)
+   size_type lineEnd = 0;     // cached end of the current line (round 5, re-review 3 M1: linear)
    for ( size_type i = 0; i < n; ++i )
    {
-      if ( text[i] != '/' )
+      if ( text[i] != '/' || !boundaryAt( i ) || !knownAt( i ) )
          continue;
-      if ( i > 0 )
+      if ( lineEnd <= i )
       {
-         const char16_type b = text[i-1];
-         if ( !(b == ' ' || b == '\t' || b == '(' || b == '[' || b == '\'' || b == '"' || b == '=' || b == ':') )
-            continue;
+         lineEnd = i;
+         while ( lineEnd < n && text[lineEnd] != '\n' && text[lineEnd] != '\r' )
+            ++lineEnd;
       }
-      bool hit = false;
-      for ( size_t k : order )
-         if ( i + dirList[k].Length() < n && text[i + dirList[k].Length()] == '/'
-              && text.Substring( i, dirList[k].Length() ) == dirList[k] )
-         {
-            hit = true;
-            break;
-         }
-      if ( !hit )
-         continue;
-      size_type lineEnd = i;
-      while ( lineEnd < n && text[lineEnd] != '\n' && text[lineEnd] != '\r' )
-         ++lineEnd;
-      // To the last '/' of the line that comes before the next path (a '/' right after a space, '(', '[', a quote,
-      // '=' or ':', followed by a non-space): "…/M42 (Orion), 2026/out does not exist; saved in /x/y" keeps the prose.
+      // To the last '/' before the next KNOWN path on the line (round 5, M2: an unknown " /" -- e.g. a folder
+      // name ending in a space -- stays inside this path; absorbing an unknown second path only loses detail).
       size_type slash = i;
       for ( size_type k = i; k < lineEnd; ++k )
          if ( text[k] == '/' )
          {
-            if ( k > i && k + 1 < n && text[k+1] != ' ' )
-            {
-               const char16_type b = text[k-1];
-               if ( b == ' ' || b == '\t' || b == '(' || b == '[' || b == '\'' || b == '"' || b == '=' || b == ':' )
-                  break;
-            }
+            if ( k > i && boundaryAt( k ) && knownAt( k ) )
+               break;
             slash = k;
          }
       size_type e = slash + 1;
@@ -420,29 +426,43 @@ void SetReplayNameClockForSelfTest( std::function<double()> clock )
    ReplayClock() = std::move( clock );
 }
 
-String NoteReplayStepApplied( JourneyToolHost& host, const IsoString& viewFullId, const std::string& processId )
+String CheckReplayStep( JourneyToolHost& host, const IsoString& viewFullId, int64 keeperId, int64 n )
 {
    std::map<PendingKey, PendingReplay>& pending = PendingReplays();
    const auto it = pending.find( { static_cast<const void*>( host.store ), std::string( viewFullId.c_str() ) } );
-   if ( it == pending.end() )
-      return String();
+   if ( it == pending.end() || it->second.keeperId != keeperId )
+      return String().Format( "replay_step names journey #%lld, but no replay of it was looked up for %s: call replay_journey "
+                              "with journey_id %lld first (or leave replay_step out for a step that is not part of a replay)",
+                              static_cast<long long>( keeperId ), IsoString( viewFullId ).c_str(), static_cast<long long>( keeperId ) );
+   if ( ReplayNow() - it->second.t > kReplayNameSeconds )
+   {
+      pending.erase( it );
+      return String().Format( "replay_step: the replay of journey #%lld on %s was looked up more than an hour ago with no "
+                              "replay step since; call replay_journey again before continuing it",
+                              static_cast<long long>( keeperId ), IsoString( viewFullId ).c_str() );
+   }
+   if ( n < 1 || it->second.steps.count( int( std::min<int64>( n, 1 << 30 ) ) ) == 0 )
+      return String().Format( "replay_step: step %lld is not a non-manual step of the replay_journey pages returned for journey "
+                              "#%lld (manual steps are the user's; fetch the page with from_step if it was not returned yet)",
+                              static_cast<long long>( n ), static_cast<long long>( keeperId ) );
+   return String();
+}
+
+String NoteReplayStepApplied( JourneyToolHost& host, const IsoString& viewFullId, int64 keeperId, int64 /*n*/ )
+{
+   std::map<PendingKey, PendingReplay>& pending = PendingReplays();
+   const auto it = pending.find( { static_cast<const void*>( host.store ), std::string( viewFullId.c_str() ) } );
+   if ( it == pending.end() || it->second.keeperId != keeperId )
+      return String();   // validated before the run (CheckReplayStep); gone only if forgotten meanwhile
+   it->second.t = ReplayNow();   // replay activity: the rest of the replay stays open
    const PendingReplay want = it->second;
-   if ( ReplayNow() - want.t > kReplayNameSeconds )
-   {
-      pending.erase( it );   // expired: the replay was not followed
-      return String();
-   }
-   if ( want.processIds.count( processId ) == 0 )
-   {
-      it->second.t = ReplayNow();   // replay activity (e.g. an adapted extra step): the lookup stays pending
-      return String();
-   }
-   pending.erase( it );
    if ( host.store == nullptr || JourneyForView( host, viewFullId ) != want.journeyId )
       return String();   // the image left that journey meanwhile (e.g. kept): nothing to name
    try
    {
-      host.store->RenameJourney( want.journeyId, want.name );   // spec §13.7: "<keeper> (replay of #<id>)"
+      JourneyRow cur;
+      if ( host.store->GetJourney( want.journeyId, cur ) && cur.name.find( "(replay of #" ) == std::string::npos )
+         host.store->RenameJourney( want.journeyId, want.name );   // spec §13.7: "<keeper> (replay of #<id>)"
       return String();
    }
    catch ( const pcl::Exception& x )
@@ -965,22 +985,24 @@ ToolOutcome ExecuteJourneyTool( const ToolCall& call, const ToolContext& ctx )
                                          "from_step %d for the next ones.", first, n, total,
                                          static_cast<long long>( keeperId ), n + 1 ) );
          }
-         // Review m6: a lookup changes nothing. The current journey is named "<keeper> (replay of #<id>)" when the
-         // first replay step is applied to this view (NoteReplayStepApplied, from apply_process).
-         JourneyRow cj;
-         store.GetJourney( cur, cj );
-         if ( cj.name.find( "(replay of #" ) == std::string::npos )
+         // Review m6 / round 5: a lookup changes nothing. It opens this replay for the view: apply_process runs that
+         // pass replay_step {journey_id, n} for one of these non-manual steps are the replay's, and the first names
+         // the current journey "<keeper> (replay of #<id>)" (NoteReplayStepApplied). Pages accumulate.
          {
-            // Any non-manual step of this page names it (re-review 2, minor 2: the model may adapt / substitute
-            // the first step); a page of manual steps only waits for a later lookup.
-            std::set<std::string> next;
+            PendingReplay& p = PendingReplays()[{ static_cast<const void*>( host.store ), std::string( vid.c_str() ) }];
+            if ( p.keeperId != keeperId || p.journeyId != cur )
+               p = PendingReplay();
+            p.journeyId = cur;
+            p.keeperId = keeperId;
+            p.name = kj.name + " (replay of #" + std::to_string( keeperId ) + ")";
+            p.t = ReplayNow();
             for ( const nlohmann::json& st : steps )
                if ( st.at( "manual" ) == false )
-                  next.insert( st.at( "processId" ).get<std::string>() );
-            if ( !next.empty() )
-               PendingReplays()[{ static_cast<const void*>( host.store ), std::string( vid.c_str() ) }] =
-                  { cur, kj.name + " (replay of #" + std::to_string( keeperId ) + ")", next, ReplayNow() };
+                  p.steps[st.at( "n" ).get<int>()] = st.at( "processId" ).get<std::string>();
          }
+         r["replayStep"] = "When you run one of these steps with apply_process, pass replay_step {\"journey_id\": "
+                           + std::to_string( keeperId ) + ", \"n\": <the step's n>} (also when you adapt it). Never pass "
+                           "replay_step for anything else.";
          return Ok( name + String().Format( " #%lld", static_cast<long long>( keeperId ) ), r );
       }
       return Fail( name, "unknown journey tool '" + name + "'" );

@@ -103,8 +103,8 @@ void SseMessageAssembler::Dispatch( std::string& text )
       m_event.clear();
       return;
    }
-   const std::string data = std::move( m_data );
-   const std::string name = std::move( m_event );
+   const std::string data = std::move( m_data );   // pcl-move-ok: std::string (valid when moved-from)
+   const std::string name = std::move( m_event );   // pcl-move-ok: std::string (valid when moved-from)
    m_data.clear();
    m_event.clear();
    m_hasData = false;
