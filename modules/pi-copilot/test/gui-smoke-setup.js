@@ -38,7 +38,8 @@ try
    pb.expression = "$T*1.2";
    pb.executeOn( b.mainView );
    pump( 1200 );
-   console.hide();
+   // The Process Console stays visible: 01-panel.png shows the recorded steps' console
+   // output (Task 11 fix round 2: no "ProcessContainer.at() is deprecated" warnings).
    // launchInterface() from a script builds the panel but leaves it hidden
    // (measured); gui.panel shows it and reports where it is.
    log.push( "launchInterface=" + ( new PICopilot ).launchInterface() );

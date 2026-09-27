@@ -425,7 +425,8 @@ KeepFlowResult RunKeepFlow( JourneyToolHost& host, int64 journeyId, const IsoStr
                                                  "journey #%lld.", static_cast<long long>( next ) );
             frozen = head + String().Format( " To redo this keeper's outputs later, pass journey_id %lld.",
                                              static_cast<long long>( journeyId ) );
-            frozenUser = head + " To redo this keeper's outputs later, " + redoAsk + ".";
+            // Once per message: the no-key write-up sentence already carries the same hint.
+            frozenUser = writeupUser.Contains( redoAsk ) ? head : head + " To redo this keeper's outputs later, " + redoAsk + ".";
          }
          else if ( !freezeError.IsEmpty() )
             frozen = frozenUser = " The kept journey is frozen (nothing more is recorded into it), but " + freezeError + ".";

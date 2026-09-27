@@ -500,10 +500,19 @@ try
    ( function ()
    {
       function pm( v, x ) { var p = new PixelMath; p.expression = x; p.executeOn( v ); }
+      // Task 11 fix round 2: HistoryReader no longer calls the deprecated ProcessContainer.at(); each
+      // step's text must still be exactly what at( i ).toSource() gives (read here, at top level).
+      function atXpsm( v )
+      {
+         var r = [], ip = v.initialProcessing, p = v.processing;
+         for ( var i = 0; i < ip.length; ++i ) r.push( ip.at( i ).toSource( "XPSM 1.0" ) );
+         for ( var i = 0; i < p.length; ++i ) r.push( p.at( i ).toSource( "XPSM 1.0" ) );
+         return r;
+      }
       var w = new ImageWindow( 32, 32, 1, 32, true, false, "pcHrA" );
       var v = w.mainView;
       [ "0.1", "$T+0.1", "$T*2" ].forEach( function( x ) { pm( v, x ); } );
-      checkPhase( "j2.hr", { step: "live0" } );
+      checkPhase( "j2.hr", { step: "live0", atXpsm: atXpsm( v ) } );
       v.historyIndex = v.historyIndex - 2;                        // undo two
       checkPhase( "j2.hr", { step: "undo" } );
       v.historyIndex = v.historyIndex + 2;                        // redo them
@@ -516,7 +525,7 @@ try
       w.mask = m; w.maskEnabled = true; w.maskInverted = true;
       pm( v, "$T" );
       w.removeMask();
-      checkPhase( "j2.hr", { step: "mask" } );
+      checkPhase( "j2.hr", { step: "mask", atXpsm: atXpsm( v ) } );
       v.id = "pcHrRenamed";                                       // recorded as an ImageIdentifier step
       checkPhase( "j2.hr", { step: "rename" } );
       var dir = getEnvironmentVariable( "PICOPILOT_SELFTEST_SCRATCH" );
@@ -531,7 +540,7 @@ try
          var ws = ImageWindow.open( path );
          if ( ws.length < 1 )
             throw new Error( "open failed" );
-         checkPhase( "j2.hr", { step: "reopen", id: ws[0].mainView.id } );
+         checkPhase( "j2.hr", { step: "reopen", id: ws[0].mainView.id } );   // at() texts read in-process (masks restore late)
       }
       finally
       {

@@ -319,6 +319,77 @@ bool ParseXpsmStep( const std::string& xpsm, HistoryStep& step, String& error )
    return false;
 }
 
+namespace
+{
+// The history read script (all ASCII: fixed text + ScriptLiteral()s + integers).
+std::string HistoryReadScript( const IsoString& viewFullId, int from )
+{
+   // Task 11 fix round 2: no ProcessContainer.at() -- deprecated, it prints a
+   // Process Console warning per call, and the subscript operator the warning
+   // recommends does not exist in PI 1.9.5 (measured: c[0] undefined, not
+   // iterable). Each container is serialized ONCE and split into its direct
+   // child instances; a child's text is at( i ).toSource()'s exactly once its
+   // opening tag's enabled="..." becomes id="<class>_instance" (measured
+   // byte-identical, 200/200 steps; J2 compares every step read). Cost: one
+   // toSource per container per read, ~8 ms at 200 steps (at(): 0.15 ms for a
+   // tail read); initialProcessing is serialized only when a step or the reopen
+   // check needs it. A child count that differs from the container's length is
+   // an error, never a guess.
+   return std::string(
+      "(function( id, from, extraSteps, extraId, extraLeads ){"
+      " function split( pc ) {"
+      "   var src = pc.toSource( \"XPSM 1.0\" ), out = [], depth = 0, pos = 0, start = -1;"
+      "   for ( ;; ) {"
+      "     var o = src.indexOf( \"<instance\", pos ), c = src.indexOf( \"</instance>\", pos );"
+      "     if ( o < 0 && c < 0 ) break;"
+      "     if ( o >= 0 && (c < 0 || o < c) ) {"
+      "       var gt = src.indexOf( \">\", o );"
+      "       if ( gt < 0 ) break;"
+      "       var selfClosing = src.charAt( gt - 1 ) == \"/\";"
+      "       if ( depth == 1 ) start = o;"
+      "       if ( !selfClosing ) ++depth; else if ( depth == 1 ) out.push( fix( src.substring( o, gt + 1 ) ) );"
+      "       pos = gt + 1;"
+      "     } else {"
+      "       --depth;"
+      "       if ( depth == 1 ) out.push( fix( src.substring( start, c + 11 ) ) );"
+      "       pos = c + 11; } }"
+      "   if ( out.length != pc.length ) throw new Error( \"history container split into \" + out.length + \" instances, expected \" + pc.length );"
+      "   return out; }"
+      " function fix( s ) {"
+      "   var gt = s.indexOf( \">\" ), head = s.substring( 0, gt ), m = head.match( / class=\"([^\"]*)\"/ );"
+      "   return head.replace( / enabled=\"[^\"]*\"/, \" id=\\\"\" + (m ? m[1] : \"\") + \"_instance\\\"\" ) + s.substring( gt ); }"
+      " function cls( s ) { var m = s.match( /^<instance class=\"([^\"]*)\"/ ); return m ? m[1] : \"\"; }"
+      " var v = null;"
+      " try { v = View.viewById( id ); } catch ( e ) { v = null; }"
+      " if ( v == null || v.isNull ) return { error: \"no view \" + id };"
+      " var ip = v.initialProcessing, p = v.processing, ipx = null, px = null;"
+      // Ruling 27: skip the reopen's extra entry (measured in Task 1).
+      " var dropAt = -1;"
+      " if ( extraSteps == 1 && ip.length > 0 && v.window.filePath.length > 0 ) {"
+      "   var k = extraLeads ? 0 : ip.length - 1;"
+      "   ipx = split( ip );"
+      "   if ( cls( ipx[k] ) == extraId ) dropAt = k; }"
+      " var il = ip.length - (dropAt >= 0 ? 1 : 0);"
+      " var r = { initialLength: il, length: p.length, historyIndex: v.historyIndex, dropped: dropAt >= 0, steps: [] };"
+      " for ( var c = from; c < il + p.length; ++c ) {"
+      "   var pc = c < il ? ip : p, i = c < il ? (dropAt == 0 ? c + 1 : c) : c - il;"
+      "   var x = c < il ? (ipx || (ipx = split( ip )))[i] : (px || (px = split( p )))[i];"
+      "   var m = \"\"; try { m = String( pc.maskId( i ) ); } catch ( e ) { m = \"\"; }"
+      "   var inv = false; try { inv = pc.maskInverted( i ) == true; } catch ( e ) { inv = false; }"
+      "   r.steps.push( { xpsm: pcWell( x ), maskId: pcWell( m ), maskInverted: inv } ); }"
+      " return r; })( " )
+      + ScriptLiteral( String( viewFullId ) )
+      + ", " + std::to_string( from ) + ", " + std::to_string( PICopilotJourneyReopenExtraSteps ) + ", "
+      + ScriptLiteral( String( PICopilotJourneyReopenExtraProcessId ) )
+      + (PICopilotJourneyReopenExtraLeads ? ", true )" : ", false )");
+}
+} // namespace
+
+std::string HistoryReadScriptForSelfTest( const IsoString& viewFullId, int from )
+{
+   return HistoryReadScript( viewFullId, std::max( 0, from ) );
+}
+
 HistorySnapshot ReadViewHistory( const IsoString& viewFullId, int from )
 {
    HistorySnapshot s;
@@ -330,30 +401,7 @@ HistorySnapshot ReadViewHistory( const IsoString& viewFullId, int from )
    }
    try
    {
-      // All ASCII: fixed text + ScriptLiteral()s + integers.
-      const std::string js = std::string(
-         "(function( id, from, extraSteps, extraId, extraLeads ){"
-         " var v = null;"
-         " try { v = View.viewById( id ); } catch ( e ) { v = null; }"
-         " if ( v == null || v.isNull ) return { error: \"no view \" + id };"
-         " var ip = v.initialProcessing, p = v.processing;"
-         // Ruling 27: skip the reopen's extra entry (measured in Task 1).
-         " var dropAt = -1;"
-         " if ( extraSteps == 1 && ip.length > 0 && v.window.filePath.length > 0 ) {"
-         "   var k = extraLeads ? 0 : ip.length - 1;"
-         "   if ( ip.at( k ).processId() == extraId ) dropAt = k; }"
-         " var il = ip.length - (dropAt >= 0 ? 1 : 0);"
-         " var r = { initialLength: il, length: p.length, historyIndex: v.historyIndex, dropped: dropAt >= 0, steps: [] };"
-         " for ( var c = from; c < il + p.length; ++c ) {"
-         "   var pc = c < il ? ip : p, i = c < il ? (dropAt == 0 ? c + 1 : c) : c - il;"
-         "   var m = \"\"; try { m = String( pc.maskId( i ) ); } catch ( e ) { m = \"\"; }"
-         "   var inv = false; try { inv = pc.maskInverted( i ) == true; } catch ( e ) { inv = false; }"
-         "   r.steps.push( { xpsm: pcWell( pc.at( i ).toSource( \"XPSM 1.0\" ) ), maskId: pcWell( m ), maskInverted: inv } ); }"
-         " return r; })( " )
-         + ScriptLiteral( String( viewFullId ) )
-         + ", " + std::to_string( s.from ) + ", " + std::to_string( PICopilotJourneyReopenExtraSteps ) + ", "
-         + ScriptLiteral( String( PICopilotJourneyReopenExtraProcessId ) )
-         + (PICopilotJourneyReopenExtraLeads ? ", true )" : ", false )");
+      const std::string js = HistoryReadScript( viewFullId, s.from );
       // The shared ASCII-safe path (PjsrRunner): the result crosses
       // EvaluateScript as pcAscii() text, so user data in a step (an
       // expression, a path, a FITS value) is never re-encoded on the way, and
