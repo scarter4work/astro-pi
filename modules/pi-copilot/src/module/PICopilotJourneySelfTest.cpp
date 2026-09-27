@@ -509,6 +509,10 @@ struct J2State
    int                    tot = 0;     // its TotalCount() then
    HistorySnapshot        maskSnap;    // pcHrA after the masked step (before the rename)
    HistorySnapshot        renamed;     // pcHrRenamed: the full read after the rename
+   // Task 11 fix round 2: every step text read equals the top-level at( i ).toSource() text.
+   bool atTextOk = true;
+   int  atCompared = 0;
+   std::vector<std::string> atMismatch;
    bool liveReadOk = false, undoRedoOk = false, branchOk = false, maskOk = false, renameOk = false, reopenOk = false,
         utf8Ok = false;
    std::vector<std::string> steps;     // phase steps seen, in order
@@ -523,6 +527,36 @@ J2State& J2()
 }
 
 // j2.hr: {step, id?} -- one read of the pcHrA fixture between top-level steps.
+// Compares a snapshot's step texts with the top-level at( i ).toSource() texts in payload.atXpsm.
+void J2CompareAtText( J2State& st, const HistorySnapshot& s, const nlohmann::json& payload, const char* where )
+{
+   if ( !payload.contains( "atXpsm" ) )
+      return;
+   const nlohmann::json& at = payload.at( "atXpsm" );
+   if ( !s.ok || at.size() != size_t( s.TotalCount() ) || s.droppedReopenExtra )
+   {
+      st.atTextOk = false;
+      st.atMismatch.push_back( std::string( where ) + ": counts " + std::to_string( at.size() ) + " vs "
+                               + std::to_string( s.TotalCount() ) );
+      return;
+   }
+   for ( const HistoryStep& h : s.steps )
+   {
+      ++st.atCompared;
+      if ( h.xpsm != at.at( size_t( h.combinedIndex ) ).get<std::string>() )
+      {
+         st.atTextOk = false;
+         const std::string& want = at.at( size_t( h.combinedIndex ) ).get_ref<const std::string&>();
+         size_t k = 0;
+         while ( k < want.size() && k < h.xpsm.size() && want[k] == h.xpsm[k] )
+            ++k;
+         st.atMismatch.push_back( std::string( where ) + ": step " + std::to_string( h.combinedIndex ) + " differs at "
+                                  + std::to_string( k ) + ": read [" + h.xpsm.substr( k > 40 ? k - 40 : 0, 120 ) + "] at() ["
+                                  + want.substr( k > 40 ? k - 40 : 0, 120 ) + "]" );
+      }
+   }
+}
+
 nlohmann::json PhaseHistoryReader( const nlohmann::json& payload )
 {
    J2State& st = J2();
@@ -535,6 +569,7 @@ nlohmann::json PhaseHistoryReader( const nlohmann::json& payload )
       //     made by a script, so initialProcessing holds its Script creation entry.
       const HistorySnapshot s0 = ReadViewHistory( "pcHrA", 0 );
       d["live0"] = SnapJson( s0 );
+      J2CompareAtText( st, s0, payload, "live0" );
       st.liveReadOk = s0.ok && s0.length == 3 && s0.historyIndex == 3 && s0.steps.size() == size_t( s0.TotalCount() )
                    && s0.steps.back().parameters.at( "expression" ) == "$T*2" && s0.steps.back().combinedIndex == s0.TotalCount() - 1;
       const HistoryDiff d0 = DiffHistory( {}, s0 );
@@ -589,6 +624,7 @@ nlohmann::json PhaseHistoryReader( const nlohmann::json& payload )
       // (h) A step applied through an inverted mask carries the mask id.
       st.maskSnap = ReadViewHistory( "pcHrA", 0 );
       const HistorySnapshot& s5 = st.maskSnap;
+      J2CompareAtText( st, s5, payload, "mask" );
       d["mask"] = { { "snap", SnapJson( s5 ) }, { "id", s5.ok && !s5.steps.empty() ? s5.steps.back().maskId : std::string() },
                     { "inverted", s5.ok && !s5.steps.empty() && s5.steps.back().maskInverted },
                     { "processId", s5.ok && !s5.steps.empty() ? s5.steps.back().processId : std::string() } };
@@ -660,6 +696,16 @@ nlohmann::json PhaseHistoryReader( const nlohmann::json& payload )
       const std::string id = payload.at( "id" ).get<std::string>();
       st.reopenedId = id;
       const HistorySnapshot r = ReadViewHistory( IsoString( id.c_str() ), 0 );
+      {
+         // The reference texts are read right after the reader's (a reopened image's mask link is restored
+         // after the top-level script continues: measured, a text read there lacked the <mask> element).
+         const String at = JEvalJs( String( "(function(){ var v = View.viewById( " ) + String( ScriptLiteral( String( id.c_str() ) ).c_str() ) + " ), r = [],"
+                                    " ip = v.initialProcessing, p = v.processing;"
+                                    " for ( var i = 0; i < ip.length; ++i ) r.push( ip.at( i ).toSource( \"XPSM 1.0\" ) );"
+                                    " for ( var i = 0; i < p.length; ++i ) r.push( p.at( i ).toSource( \"XPSM 1.0\" ) );"
+                                    " return JSON.stringify( { atXpsm: r } ); })()" );
+         J2CompareAtText( st, r, nlohmann::json::parse( U8( at ) ), "reopen" );
+      }
       const HistorySnapshot& before = st.renamed;
       bool same = r.ok && before.ok && r.length == 0 && r.historyIndex == 0 && r.initialLength == before.ActiveCount()
                && r.steps.size() == size_t( r.initialLength )
@@ -3966,6 +4012,14 @@ bool RunJourneySelfTest( nlohmann::json& out )
       String error;
       std::vector<std::string> made = { "pcHrA", "pcHrRenamed", "pcHrMask", "pcHrLong", "pcHrUtf" };
       const J2State& st = J2();
+      // Task 11 fix round 2: the read script never calls the deprecated ProcessContainer.at() (PI prints a
+      // console warning per call; the console log cannot capture it headlessly -- measured -- so the
+      // script itself is checked), and each step text equals at( i ).toSource() (J2CompareAtText).
+      const std::string readJs = HistoryReadScriptForSelfTest( "pcHrA", 0 );
+      const bool atTextOk = st.atTextOk && st.atCompared > 0 && readJs.find( ".at(" ) == std::string::npos
+                         && readJs.find( "toSource" ) != std::string::npos;
+      d["atText"] = { { "compared", st.atCompared }, { "mismatch", st.atMismatch },
+                      { "scriptUsesAt", readJs.find( ".at(" ) != std::string::npos } };
       try
       {
          // (a) PixelMath: typed scalars, read-only table dropped, time parsed.
@@ -4133,11 +4187,13 @@ bool RunJourneySelfTest( nlohmann::json& out )
          JForceClose( id );
       const bool ok = parseOk && typesOk && identityOk && notReplayableOk && badXmlOk && integrationIdOk
                    && strictParseOk && phasesOk && st.utf8Ok && st.liveReadOk && st.undoRedoOk && st.branchOk && st.maskOk && st.renameOk && st.reopenOk
+                   && atTextOk
                    && costOk && busyOk;
       d["verdicts"] = { { "parse", parseOk }, { "types", typesOk }, { "identity", identityOk }, { "notReplayable", notReplayableOk },
                         { "badXml", badXmlOk }, { "integrationId", integrationIdOk }, { "strictParse", strictParseOk }, { "phases", phasesOk },
                         { "utf8", st.utf8Ok },
                         { "liveRead", st.liveReadOk }, { "undoRedo", st.undoRedoOk }, { "branch", st.branchOk },
+                        { "atText", atTextOk },
                         { "mask", st.maskOk }, { "rename", st.renameOk }, { "reopen", st.reopenOk },
                         { "cost", costOk }, { "busy", busyOk } };
       out["historyReaderDetail"] = d;
@@ -7241,7 +7297,13 @@ r1.ok && r1.inferred.size() == 1 && r1.inferred[0].first == 7 && r1.inferred[0].
                        && !JourneyKeepAllowed( before, true )
                        && !empty.ok && !empty.declined && empty.message.Contains( "nothing to keep" )
                        && confirms == confirmsBefore && !cr.kept;
-            wordingOk = !kf.message.Contains( "journey_id" ) && kf.message.Contains( "ask PI Copilot" )
+            // Fix round 2: the redo hint appears once, even with no key AND a freeze (it was said twice).
+            size_type asks = 0;
+            for ( size_type at = kf.message.Find( "ask PI Copilot" ); at != String::notFound;
+                  at = kf.message.Find( "ask PI Copilot", at + 1 ) )
+               ++asks;
+            d["emptyKeep"]["asks"] = int( asks );
+            wordingOk = !kf.message.Contains( "journey_id" ) && asks == 1 && kf.message.Contains( "frozen" )
                      && kf.modelMessage.Contains( "journey_id" );
          }
          // (h) ★ Yes on the panel (review m6: the Yes branch had no headless test): kept, one log line.
