@@ -8,8 +8,10 @@
 #include "ConfigDialog.h"
 #include "JourneyConstants.h"
 #include "JourneySpikeProbe.h"
+#include "JourneyStepsDialog.h"
 #include "JourneyTracker.h"
 #include "KeyStore.h"
+#include "Utf8.h"
 #include "ModelCatalog.h"
 #include "PICopilotModule.h"
 #include "PanelPlacement.h"
@@ -21,6 +23,7 @@
 #include "VisionTurn.h"
 
 #include <pcl/Console.h>
+#include <pcl/Cursor.h>
 #include <pcl/GlobalSettings.h>
 #include <pcl/ImageWindow.h>
 #include <pcl/MessageBox.h>
@@ -30,6 +33,8 @@ namespace pcl
 {
 
 PICopilotInterface* ThePICopilotInterface = nullptr;
+
+std::function<bool( const String& )> PICopilotInterface::s_confirmKeeperForSelfTest;
 
 namespace
 {
@@ -64,6 +69,31 @@ const char* const kModeKey = "PICopilot/Mode";
 // One-time chat-log notice for the agent modes (0.1.0.x installs had a mode
 // selector that did nothing). A marker setting, written once shown.
 const char* const kModesNoticeMarkerKey = "PICopilot/AgentModesNoticeShown";
+// Journey strip: the panel's own refresh of the strip, ★ and the service's
+// notes (the recording itself runs on JourneyService's timer).
+constexpr double kJourneyStripSeconds = 1.0;
+constexpr int    kStripReasonChars    = 160;
+constexpr int    kStripMinWidth       = 60;   // logical px: a long strip never widens the panel's minimum
+
+// Tooltips are Qt rich text (no TextBox <raw>): escape everything shown.
+String EscapeHtml( const String& s )
+{
+   String out;
+   for ( size_type i = 0; i < s.Length(); ++i )
+   {
+      const char16_type c = s[i];
+      if ( c == '&' )
+         out += "&amp;";
+      else if ( c == '<' )
+         out += "&lt;";
+      else if ( c == '>' )
+         out += "&gt;";
+      else
+         out += c;
+   }
+   return out;
+}
+
 const char* const kModesNoticeUtf8 =
    "New in this version: PI Copilot can now work on your images. The mode selector at the top left sets how: "
    "Copilot applies processes directly when you ask (every change is recorded in the view's History, so you can "
@@ -84,6 +114,8 @@ PICopilotInterface::~PICopilotInterface()
    // (aborted from the transfer's progress callback) before Wait()ing, so
    // teardown is not held hostage by a stalled connection; this only
    // happens at module teardown with a request mid-flight.
+   if ( GUI != nullptr )
+      GUI->Journey_Timer.Stop();
    StopWorker();
    if ( GUI != nullptr )
       delete GUI, GUI = nullptr;
@@ -203,6 +235,8 @@ bool PICopilotInterface::Launch( const MetaProcess&, const ProcessImplementation
          AppendToLog( PlainText( String::UTF8ToUTF16( kModesNoticeUtf8 ) ) + "\n\n" );
          Settings::Write( kModesNoticeMarkerKey, true );
       }
+      GUI->Journey_Timer.Start();
+      UpdateJourneyStrip();
    }
 
    dynamic = false;
@@ -274,6 +308,10 @@ void PICopilotInterface::SetBusy( bool busy, const String& caption )
    GUI->Mode_ComboBox.Enable( !busy );
    GUI->Clear_Button.Enable( !busy );
    if ( busy )
+      GUI->Keep_ToolButton.Disable();   // ★ never while a message is being worked on
+   else
+      UpdateJourneyStrip();
+   if ( busy )
    {
       GUI->Stop_Button.Enable();
       GUI->Stop_Button.Show();
@@ -292,8 +330,9 @@ void PICopilotInterface::AppendToLog( const String& richText )
 void PICopilotInterface::SendCurrentInput()
 {
    // One user message in flight at a time -- including while tools run
-   // (processes pump events, so this can be reached re-entrantly).
-   if ( TurnInProgress() )
+   // (processes pump events, so this can be reached re-entrantly) and while
+   // ★'s keep flow waits on its confirm box.
+   if ( TurnInProgress() || m_keepRunning )
       return;
 
    String prompt = GUI->ChatInput.Text().Trimmed();
@@ -462,6 +501,11 @@ ToolContext PICopilotInterface::MakeToolContext()
    ctx.confirm = &PICopilotInterface::ConfirmApply;
    ctx.runPjsr = m_turnTools.runPjsr;
    ctx.confirmScript = &ScriptConfirmDialog::Ask;   // every script, every mode
+   // The journey tools use the production library (Task 10 concern 3: without
+   // this they answer "not available"). Rebuilt per turn: the ⚙ export folder
+   // and the store (reopened after a failure) are current.
+   RefreshJourneyHost();
+   ctx.journeys = &m_journeyHost;
    return ctx;
 }
 
@@ -525,6 +569,7 @@ bool PICopilotInterface::ApplyDefaultPlacement()
 
 void PICopilotInterface::e_Show( Control& )
 {
+   UpdateJourneyStrip();
    // One time only; afterwards the user's own moves/resizes are remembered
    // by PI's auto-save geometry (on by default, ProcessInterface.h:2549).
    bool applied = false;
@@ -725,6 +770,190 @@ void PICopilotInterface::e_Mode_ItemSelected( ComboBox&, int itemIndex )
    Settings::Write( kModeKey, itemIndex );
 }
 
+// ── Image journey: strip, ★, steps dialog, notes ────────────────
+
+String JourneyStripText( const JourneyStatus& s )
+{
+   switch ( s.state )
+   {
+   case RecordingState::Off:
+      return "Journey: recording off";
+   case RecordingState::NotTracked:
+      return "Journey: not tracked";
+   case RecordingState::Paused:
+      return "Journey: recording paused: "
+             + (s.reason.Length() > size_type( kStripReasonChars ) ? s.reason.Left( kStripReasonChars - 3 ) + "..." : s.reason);
+   case RecordingState::Recording:
+   default:
+      return FromU8( "Journey: " + s.target + " (" + s.kind + ") \xC2\xB7 " + std::to_string( s.activeSteps )
+                     + (s.activeSteps == 1 ? " step" : " steps") + " \xC2\xB7 recording" );
+   }
+}
+
+IsoString PICopilotInterface::ActiveMainViewId() const
+{
+   const ImageWindow w = ImageWindow::ActiveWindow();   // not retained past this call
+   return w.IsNull() ? IsoString() : w.MainView().Id();
+}
+
+bool PICopilotInterface::ConfirmKeeper( const String& summaryHtml )
+{
+   if ( s_confirmKeeperForSelfTest )
+      return s_confirmKeeperForSelfTest( summaryHtml );
+   // Ruling 17: default No; Esc = No.
+   return MessageBox( summaryHtml, String::UTF8ToUTF16( "PI Copilot \xE2\x80\x94 keep journey" ), StdIcon::Question,
+                      StdButton::Yes, StdButton::No, StdButton::NoButton, 1/*default: No*/, 1/*Esc: No*/ ).Execute()
+          == StdButton::Yes;
+}
+
+void PICopilotInterface::RefreshJourneyHost()
+{
+   m_journeyHost = MakeJourneyHost();
+}
+
+JourneyToolHost PICopilotInterface::MakeJourneyHost()
+{
+   JourneyService& s = JourneyService::Instance();
+   JourneyToolHost h;
+   if ( s.Started() )
+   {
+      h.store = s.Store();
+      h.storeError = s.StoreError();
+      h.tracker = &s.Tracker();
+      h.keeper = &s.Keeper();
+   }
+   else
+      h.storeError = "recording has not started";
+   h.exportFolder = CopilotSettings::LoadJourneyExportFolder();
+   // The write-up's key: this message's key during a turn (already read), else
+   // the stored one (read on the root thread when a keep asks for it).
+   h.apiKey = [this]() { return m_apiKey.IsEmpty() ? KeyStore::Load().key : m_apiKey; };
+   h.confirmKeeper = &PICopilotInterface::ConfirmKeeper;
+   return h;
+}
+
+void PICopilotInterface::UpdateJourneyStrip()
+{
+   UpdateJourneyStripFor( ActiveMainViewId() );
+}
+
+void PICopilotInterface::UpdateJourneyStripFor( const IsoString& mainViewId )
+{
+   if ( GUI == nullptr )
+      return;
+   JourneyService& s = JourneyService::Instance();
+   JourneyStatus st;
+   if ( !s.Started() )
+   {
+      st.state = RecordingState::Paused;
+      st.reason = "recording has not started";
+   }
+   else
+      st = s.Tracker().StatusFor( mainViewId );   // reads the library; never waits (busy DB: an error, shown)
+   GUI->JourneyStrip_Label.SetText( JourneyStripText( st ) );
+   String tip;
+   if ( st.journeyId == 0 )
+      tip = "<p>No recorded journey for the active image.</p>";
+   else
+      tip = "<p>" + EscapeHtml( FromU8( st.name ) ) + (st.why.empty() ? String() : "<br/>" + EscapeHtml( FromU8( st.why ) ))
+          + "</p>";
+   if ( !st.reason.IsEmpty() )
+      tip += "<p>" + EscapeHtml( st.reason ) + "</p>";
+   if ( !st.note.IsEmpty() )
+      tip += "<p>" + EscapeHtml( st.note ) + "</p>";
+   if ( st.journeyId != 0 )
+      tip += "<p>Click to see the steps.</p>";
+   GUI->JourneyStrip_Label.SetToolTip( tip );
+   m_keepAllowed = st.journeyId != 0 && !TurnInProgress() && !m_keepRunning;
+   GUI->Keep_ToolButton.Enable( m_keepAllowed );
+}
+
+void PICopilotInterface::DrainJourneyNotes()
+{
+   if ( GUI == nullptr || m_replyShown || m_handlingResult )
+      return;   // never inside a live-streamed reply or its tool log; the next tick shows them
+   for ( const String& n : JourneyService::Instance().TakeNotes() )
+      AppendToLog( PlainText( "(" + n + ")" ) + "\n\n" );
+}
+
+void PICopilotInterface::e_Journey_Timer( Timer& )
+{
+   if ( GUI == nullptr )
+      return;
+   DrainJourneyNotes();
+   if ( IsVisible() )
+      UpdateJourneyStrip();
+}
+
+String PICopilotInterface::KeepJourneyOfView( const IsoString& mainViewId )
+{
+   if ( GUI == nullptr || TurnInProgress() || m_keepRunning )
+      return String();   // ★ is disabled then; a re-entrant click does nothing
+   String msg;
+   if ( mainViewId.IsEmpty() )
+      msg = "There is no active image to keep the journey of.";
+   else
+   {
+      // A host of its own: m_journeyHost belongs to the turn's tools.
+      JourneyToolHost host = MakeJourneyHost();
+      const int64 jid = JourneyForView( host, mainViewId );
+      if ( jid == 0 )
+         msg = "The active image (" + String( mainViewId ) + ") is not part of a recorded journey. Ask PI Copilot to "
+               "start_journey on it.";
+      else
+      {
+         m_keepRunning = true;
+         GUI->Keep_ToolButton.Disable();
+         KeepFlowResult r;
+         try
+         {
+            r = RunKeepFlow( host, jid, mainViewId );   // never throws; its confirm box pumps events
+         }
+         catch ( ... )
+         {
+            m_keepRunning = false;
+            throw;
+         }
+         m_keepRunning = false;
+         msg = r.declined ? String( "Not kept (you chose No)." ) : r.message;
+      }
+   }
+   AppendToLog( PlainText( "(" + msg + ")" ) + "\n\n" );
+   UpdateJourneyStrip();
+   return msg;
+}
+
+void PICopilotInterface::e_Keep_Click( Button&, bool )
+{
+   (void)KeepJourneyOfView( ActiveMainViewId() );
+}
+
+void PICopilotInterface::e_Strip_MousePress( Control&, const pcl::Point&, int button, unsigned, unsigned )
+{
+   if ( button != MouseButton::Left || GUI == nullptr || m_handlingResult || m_keepRunning )
+      return;   // not while tools run (they pump events) or ★ waits on its confirm box
+   JourneyService& s = JourneyService::Instance();
+   if ( !s.Started() || s.Store() == nullptr )
+      return;   // the strip already says why (recording paused: <reason>)
+   JourneyToolHost host = MakeJourneyHost();
+   const int64 jid = JourneyForView( host, ActiveMainViewId() );
+   if ( jid == 0 )
+      return;
+   try
+   {
+      JourneyStepsDialog d( *s.Store(), jid );
+      d.Execute();
+   }
+   catch ( const pcl::Exception& x )
+   {
+      AppendToLog( PlainText( "(could not show the journey's steps: " + x.Message() + ")" ) + "\n\n" );
+   }
+   catch ( const std::exception& x )
+   {
+      AppendToLog( PlainText( "(could not show the journey's steps: " + String( x.what() ) + ")" ) + "\n\n" );
+   }
+}
+
 // ── Self-test probe ──────────────────────────────────────────────
 
 nlohmann::json PICopilotInterface::ProbeResizeForSelfTest()
@@ -812,7 +1041,7 @@ PICopilotInterface::GUIData::GUIData( PICopilotInterface& w )
    Clear_Button.OnClick( (Button::click_event_handler)&PICopilotInterface::e_Clear_Click, w );
 
    Config_ToolButton.SetText( String::UTF8ToUTF16( kGearUtf8 ) );
-   Config_ToolButton.SetToolTip( "<p>Settings: API key, model, scripts (run_pjsr), default panel side.</p>" );
+   Config_ToolButton.SetToolTip( "<p>Settings: API key, model, scripts (run_pjsr), default panel side, image journeys.</p>" );
    Config_ToolButton.OnClick( (Button::click_event_handler)&PICopilotInterface::e_Config_Click, w );
 
    Top_Sizer.SetSpacing( 4 );
@@ -821,6 +1050,22 @@ PICopilotInterface::GUIData::GUIData( PICopilotInterface& w )
    Top_Sizer.AddStretch();
    Top_Sizer.Add( Clear_Button );
    Top_Sizer.Add( Config_ToolButton );
+
+   JourneyStrip_Label.SetText( "Journey: not tracked" );
+   JourneyStrip_Label.SetScaledMinWidth( kStripMinWidth );
+   JourneyStrip_Label.SetCursor( pcl::Cursor( StdCursor::PointingHand ) );
+   JourneyStrip_Label.OnMousePress( (Control::mouse_button_event_handler)&PICopilotInterface::e_Strip_MousePress, w );
+   Keep_ToolButton.SetText( String::UTF8ToUTF16( "\xE2\x98\x85 Keep journey" ) );
+   Keep_ToolButton.SetToolTip( "<p>Keep this image's journey: shows a summary, then writes a process icon set (.xpsm), "
+                               "recipe.json and a write-up (journey.md).</p>" );
+   Keep_ToolButton.OnClick( (Button::click_event_handler)&PICopilotInterface::e_Keep_Click, w );
+   Keep_ToolButton.Disable();
+   Journey_Sizer.SetSpacing( 4 );
+   Journey_Sizer.Add( JourneyStrip_Label, 100 );
+   Journey_Sizer.Add( Keep_ToolButton );
+   Journey_Timer.SetInterval( kJourneyStripSeconds );
+   Journey_Timer.SetPeriodic( true );
+   Journey_Timer.OnTimer( (Timer::timer_event_handler)&PICopilotInterface::e_Journey_Timer, w );
 
    ChatLog.SetReadOnly();
    // Small minimum so the panel can shrink; the log takes all spare space
@@ -848,6 +1093,7 @@ PICopilotInterface::GUIData::GUIData( PICopilotInterface& w )
    Global_Sizer.SetMargin( 8 );
    Global_Sizer.SetSpacing( 6 );
    Global_Sizer.Add( Top_Sizer );
+   Global_Sizer.Add( Journey_Sizer );
    Global_Sizer.Add( ChatLog, 100 );
    Global_Sizer.Add( Input_Sizer );
 

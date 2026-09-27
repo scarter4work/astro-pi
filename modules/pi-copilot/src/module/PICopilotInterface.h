@@ -9,11 +9,13 @@
 #include "AgentTools.h"
 #include "ChatThread.h"
 #include "CopilotSettings.h"
+#include "JourneyTools.h"
 
 #include <pcl/AutoPointer.h>
 #include <pcl/CheckBox.h>
 #include <pcl/ComboBox.h>
 #include <pcl/Edit.h>
+#include <pcl/Label.h>
 #include <pcl/ProcessInterface.h>
 #include <pcl/PushButton.h>
 #include <pcl/Sizer.h>
@@ -25,11 +27,16 @@
 
 #include <nlohmann/json.hpp>
 
+#include <functional>
 #include <set>
 #include <string>
 
 namespace pcl
 {
+
+// The journey strip's text (spec §7). Pure. A paused reason is cut to 160
+// characters (the tooltip has the full status).
+String JourneyStripText( const JourneyStatus& s );
 
 class PICopilotInterface : public ProcessInterface
 {
@@ -71,6 +78,7 @@ public:
 private:
 
    friend bool RunAgentSelfTest( nlohmann::json& out );
+   friend bool RunJourneySelfTest( nlohmann::json& out );
 
    // Test-only (self-test Section A7): builds the GUI if it does not exist
    // yet, then measures whether the panel resizes both ways and the chat log
@@ -165,6 +173,35 @@ private:
    // Guided-mode confirmation (modal MessageBox, root thread).
    static bool ConfirmApply( const String& processId, const String& viewId, const String& changes );
 
+   // ── Image journey (0.2.0.0) ───────────────────────────────────
+   // What the journey tools and ★ use, rebuilt from JourneyService per turn /
+   // click (store, tracker, keeper, ⚙ export folder, key, confirm). Holds no
+   // View / ImageWindow: ids only.
+   JourneyToolHost m_journeyHost;
+   // ★ is running its keep flow (its confirm box pumps events): no second
+   // keep and no new message until it returns.
+   bool m_keepRunning = false;
+   // The last strip update's ★ decision (self-test: IsEnabled() also
+   // reflects the panel's own state, which PixInsight disables while a
+   // process such as the self-test runs).
+   bool m_keepAllowed = false;
+   JourneyToolHost MakeJourneyHost();
+   void RefreshJourneyHost();   // m_journeyHost = MakeJourneyHost()
+   // The strip + ★ for the active image; UpdateJourneyStripFor() for a given
+   // main view id (self-test). Read-only; root thread.
+   void UpdateJourneyStrip();
+   void UpdateJourneyStripFor( const IsoString& mainViewId );
+   // JourneyService notes -> the chat log; held back while a streamed reply or
+   // its tools are being written (the next timer tick shows them).
+   void DrainJourneyNotes();
+   IsoString ActiveMainViewId() const;
+   // ★ on a main view: keep flow (summary -> confirm -> keep -> freeze); every
+   // outcome, failures included, is one line in the chat log, also returned.
+   String KeepJourneyOfView( const IsoString& mainViewId );
+   static bool ConfirmKeeper( const String& summaryHtml );
+   // Self-test: replaces the ★ confirm box (a modal cannot run headlessly).
+   static std::function<bool( const String& )> s_confirmKeeperForSelfTest;
+
    // UI thread only: captures the turn view's (m_turnViewId) context +
    // preview (when "Include view" is checked) and returns the composed user
    // turn. Every capture problem is written to the chat log; the text always
@@ -188,6 +225,10 @@ private:
       CheckBox        IncludeView_CheckBox;
       PushButton      Clear_Button;
       ToolButton      Config_ToolButton;
+      HorizontalSizer Journey_Sizer;
+      Label           JourneyStrip_Label;
+      ToolButton      Keep_ToolButton;
+      Timer           Journey_Timer;
       TextBox         ChatLog;
       HorizontalSizer Input_Sizer;
       Edit            ChatInput;
@@ -209,6 +250,9 @@ private:
    void e_Stop_Click( Button& sender, bool checked );
    void e_Clear_Click( Button& sender, bool checked );
    void e_Mode_ItemSelected( ComboBox& sender, int itemIndex );
+   void e_Keep_Click( Button& sender, bool checked );
+   void e_Strip_MousePress( Control& sender, const pcl::Point& pos, int button, unsigned buttons, unsigned modifiers );
+   void e_Journey_Timer( Timer& sender );
 
    friend struct GUIData;
 };

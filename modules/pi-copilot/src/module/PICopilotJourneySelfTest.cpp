@@ -4,11 +4,13 @@
 #include "AgentSession.h"
 #include "AgentTools.h"
 #include "AnthropicClient.h"
+#include "ConfigDialog.h"
 #include "EvalGuard.h"
 #include "CopilotSettings.h"
 #include "HistoryReader.h"
 #include "JourneyConstants.h"
 #include "JourneyExport.h"
+#include "JourneyStepsDialog.h"
 #include "JourneyStore.h"
 #include "JourneyTracker.h"
 #include "JourneyTools.h"
@@ -676,6 +678,55 @@ nlohmann::json PhaseJourneyTracker( const nlohmann::json& payload );   // Sectio
 
 nlohmann::json PhaseJourneyExport( const nlohmann::json& payload );   // j7.exp (Section J7's fixture, below)
 
+// gui.panel -- test/gui-smoke.sh only: with payload.moveTo [x, y, w, h],
+// sizes, moves and SHOWS the panel (launchInterface() from a script leaves it
+// hidden); its first show then applies the default side placement, so the
+// geometry REPORTED (payload.out) is where the driver clicks.
+nlohmann::json PhaseGuiPanel( const nlohmann::json& payload )
+{
+   if ( ThePICopilotInterface == nullptr )
+      throw Error( "gui.panel: ThePICopilotInterface is null" );
+   PICopilotInterface& ui = *ThePICopilotInterface;
+   if ( payload.contains( "moveTo" ) )
+   {
+      const nlohmann::json& m = payload.at( "moveTo" );
+      ui.Resize( m.at( 2 ).get<int>(), m.at( 3 ).get<int>() );
+      ui.Move( m.at( 0 ).get<int>(), m.at( 1 ).get<int>() );
+      ui.Show();   // launchInterface() from a script builds the panel but PixInsight leaves it hidden (measured)
+      ui.BringToFront();
+   }
+   const pcl::Point p = ui.Position();
+   const nlohmann::json r = { { "x", p.x }, { "y", p.y }, { "w", ui.Width() }, { "h", ui.Height() },
+                              { "visible", ui.IsVisible() } };
+   if ( payload.contains( "out" ) )
+      File::WriteTextFile( String( payload.at( "out" ).get<std::string>().c_str() ), IsoString( r.dump().c_str() ) );
+   return r;
+}
+
+// gui.keepInFlight -- test/gui-smoke.sh only (a GUI run, not the headless
+// self-test): keeps the production service's journey of payload.viewId with
+// its write-up pointed at payload.url (a loopback that never answers), so the
+// PixInsight exit that follows happens with a keeper write-up in flight
+// (JourneyService::Stop() must cancel it: no crash, no hang).
+nlohmann::json PhaseGuiKeepInFlight( const nlohmann::json& payload )
+{
+   JourneyService& svc = JourneyService::Instance();
+   if ( !svc.Started() || svc.Store() == nullptr )
+      throw Error( "the production journey service has no store: " + svc.StoreError() );
+   const IsoString vid( payload.at( "viewId" ).get<std::string>().c_str() );
+   const int64 jid = svc.Tracker().JourneyOfView( vid );
+   const int64 img = svc.Tracker().ImageOfView( vid );
+   if ( jid == 0 || img == 0 )
+      throw Error( "gui.keepInFlight: the production tracker records no journey for " + String( vid ) );
+   const KeepOutcome o = svc.Keeper().Keep( jid, img, "sk-test-loopback", String(),
+                                            String( payload.at( "url" ).get<std::string>().c_str() ) );
+   const nlohmann::json r = { { "journeyId", jid }, { "marked", o.marked }, { "writeupStarted", o.writeupStarted },
+                              { "writeupError", U8( o.writeupError ) }, { "busy", svc.Keeper().Busy() } };
+   if ( payload.contains( "out" ) )   // the GUI run has no self-test verdict to carry it
+      File::WriteTextFile( String( payload.at( "out" ).get<std::string>().c_str() ), IsoString( r.dump().c_str() ) );
+   return r;
+}
+
 // Adding a phase: one entry here + one checkPhase( id, payload ) call in
 // test/selftest.js. Handlers run in-process: they may READ history, never
 // create it.
@@ -696,6 +747,8 @@ const std::map<std::string, SelfTestPhaseHandler>& SelfTestPhaseHandlers()
       { "hist.preview.check", PhaseHistCheck },
       { "j6",          PhaseJourneyTracker },
       { "j7.exp",      PhaseJourneyExport },
+      { "gui.keepInFlight", PhaseGuiKeepInFlight },
+      { "gui.panel", PhaseGuiPanel },
    };
    return handlers;
 }
@@ -6463,6 +6516,207 @@ r1.ok && r1.inferred.size() == 1 && r1.inferred[0].first == 7 && r1.inferred[0].
       out["liveReplayError"] = U8( error );
       out["liveReplayOk"] = liveOk && (liveSkipped || error.IsEmpty());
       allOk = allOk && liveOk && (liveSkipped || error.IsEmpty());
+   }
+
+   // ---- Section J11: UI units (Task 11) --------------------------------------
+   // The GUI itself cannot be driven headlessly (no modal dialog may open), so
+   // every decision behind the strip, the steps dialog, the ⚙ fields and ★ is a
+   // function tested here; the panel's own wiring is exercised on the real
+   // (hidden) panel with the production JourneyService.
+   SelfTestSectionMark( "J11 journey UI units" );
+   {
+      nlohmann::json d = nlohmann::json::object();
+      bool stripOk = false, folderOk = false, dialogOk = false, panelOk = false, keepOk = false, notesOk = false;
+      String error;
+      std::vector<std::string> made;
+      try
+      {
+         // (a) Strip wording, every state (spec §7).
+         {
+            JourneyStatus off;       off.state = RecordingState::Off;
+            JourneyStatus none;      none.state = RecordingState::NotTracked;
+            JourneyStatus paused;    paused.state = RecordingState::Paused;
+            paused.reason = "journey database /x/journeys.sqlite3: database is locked (INSERT INTO step)";
+            JourneyStatus longPause = paused;
+            longPause.reason = String( 'x', 300 );
+            JourneyStatus rec;       rec.state = RecordingState::Recording; rec.target = "M42"; rec.kind = "Ha master";
+            rec.activeSteps = 7; rec.journeyId = 3;
+            JourneyStatus one = rec; one.activeSteps = 1;
+            JourneyStatus utf = rec; utf.target = "\xC3\x89toile";   // UTF-8 from the store
+            d["strip"] = { U8( JourneyStripText( off ) ), U8( JourneyStripText( none ) ), U8( JourneyStripText( paused ) ),
+                           U8( JourneyStripText( rec ) ), U8( JourneyStripText( one ) ), U8( JourneyStripText( utf ) ),
+                           U8( JourneyStripText( longPause ) ).size() };
+            stripOk = JourneyStripText( off ) == "Journey: recording off"
+                   && JourneyStripText( none ) == "Journey: not tracked"
+                   && JourneyStripText( paused ) == "Journey: recording paused: journey database /x/journeys.sqlite3: database is locked (INSERT INTO step)"
+                   && JourneyStripText( rec ) == FromU8( "Journey: M42 (Ha master) \xC2\xB7 7 steps \xC2\xB7 recording" )
+                   && JourneyStripText( one ) == FromU8( "Journey: M42 (Ha master) \xC2\xB7 1 step \xC2\xB7 recording" )
+                   && JourneyStripText( utf ) == FromU8( "Journey: \xC3\x89toile (Ha master) \xC2\xB7 7 steps \xC2\xB7 recording" )
+                   && JourneyStripText( longPause ).Length() == String( "Journey: recording paused: " ).Length() + 160
+                   && JourneyStripText( longPause ).EndsWith( "..." );
+         }
+         // (b) ⚙ export folder: empty (off) or an absolute, existing folder; never created (Ruling 18).
+         {
+            JTempDir t( "picopilot-ui-" );
+            File::WriteTextFile( t.Path() + "/afile", "x" );
+            const String rel = ValidateExportFolderSetting( "keepers" );
+            const String missing = ValidateExportFolderSetting( "/nonexistent-picopilot-ui" );
+            const String file = ValidateExportFolderSetting( t.Path() + "/afile" );
+            d["folder"] = { U8( rel ), U8( missing ), U8( file ) };
+            folderOk = ValidateExportFolderSetting( "" ).IsEmpty() && ValidateExportFolderSetting( "   " ).IsEmpty()
+                    && ValidateExportFolderSetting( t.Path() ).IsEmpty()
+                    && ValidateExportFolderSetting( "  " + t.Path() + "  " ).IsEmpty()
+                    && rel.Contains( "absolute" ) && missing.Contains( "does not exist" ) && file.Contains( "not a folder" )
+                    && !File::DirectoryExists( "/nonexistent-picopilot-ui" );
+         }
+         // (c) The steps dialog lists every recorded step except base / noEffect ones, with the
+         //     thumbnail as the row icon where one was recorded, who did it, the state, the median
+         //     before -> after and the reason (inferred ones marked).
+         {
+            JTempDir root( "picopilot-ui-store-" );
+            String oe;
+            std::unique_ptr<JourneyStore> store = JourneyStore::Open( root.Path(), oe );
+            if ( !store )
+               throw Error( "store: " + oe );
+            const JBuilt b = JBuildJourney( *store, "pcUiM", "UiM42", 71 );   // 2 user steps + 1 Copilot step, thumbnails
+            made.push_back( "pcUiM" );
+            std::vector<StepRow> rows = store->Steps( b.img, true );
+            if ( rows.size() != 3 )
+               throw Error( String().Format( "fixture: %d steps", int( rows.size() ) ) );
+            store->SetStepState( rows[1].id, "undone" );
+            store->SetStepReason( rows[0].id, "lift the faint signal", true );
+            // A base step and a noEffect step (no thumbnails): never listed.
+            HistoryStep h = JPixelMathStep( "$T", 3, "2026-09-25T20:48:00.000Z" );
+            StepRow base = MakeStepRow( h, b.img, "active", "user", "", 4 );
+            base.params["base"] = true;
+            store->AddStep( base );
+            StepRow ne = MakeStepRow( JPixelMathStep( "$T", 4, "2026-09-25T20:49:00.000Z" ), b.img, "active", "copilot", "", 5 );
+            ne.params["noEffect"] = true;
+            store->AddStep( ne );
+            JourneyStepsDialog dlg( *store, b.jid );
+            nlohmann::json rowsJ = nlohmann::json::array();
+            for ( int r = 0; r < dlg.RowCount(); ++r )
+            {
+               nlohmann::json cells = nlohmann::json::array();
+               for ( int c = 0; c < 7; ++c )
+                  cells.push_back( U8( dlg.CellText( r, c ) ) );
+               rowsJ.push_back( cells );
+            }
+            d["dialog"] = { { "rows", dlg.RowCount() }, { "icons", dlg.IconCount() }, { "cells", rowsJ },
+                            { "preview", U8( dlg.PreviewText() ) },
+                            { "title", U8( dlg.TitleText() ) } };
+            dialogOk = dlg.RowCount() == 3 && dlg.IconCount() == 3
+                    && dlg.CellText( 0, 1 ) == "pcUiM" && dlg.CellText( 0, 2 ) == "PixelMath"
+                    && dlg.CellText( 0, 3 ) == "you" && dlg.CellText( 2, 3 ) == "PI Copilot"
+                    && dlg.CellText( 1, 4 ) == "undone" && dlg.CellText( 0, 4 ) == "active"
+                    && dlg.CellText( 0, 5 ).Contains( FromU8( "\xE2\x86\x92" ) )
+                    && dlg.CellText( 0, 6 ) == "lift the faint signal (inferred)"
+                    && dlg.CellText( 2, 6 ) == "stretch gently"
+                    && dlg.TitleText().Contains( "UiM42" )
+                    && dlg.ThumbnailOfRow( 0 ).EndsWith( ".jpg" ) && dlg.ThumbnailOfRow( 3 ).IsEmpty()
+                    && dlg.PreviewText() == "Step 3 (after)";   // opens on the newest step with a thumbnail
+         }
+         // (d) The panel wires the production service into the tool context and the strip.
+         JourneyService& svc = JourneyService::Instance();
+         if ( ThePICopilotInterface == nullptr )
+            throw Error( "ThePICopilotInterface is null" );
+         PICopilotInterface& ui = *ThePICopilotInterface;
+         if ( ui.GUI == nullptr )
+         {
+            bool dynamic = false;
+            unsigned flags = 0;
+            ui.Launch( *ThePICopilotProcess, nullptr, dynamic, flags );
+            ui.Hide();
+         }
+         if ( !svc.Started() || svc.Store() == nullptr )
+            throw Error( "the production journey service has no store: " + svc.StoreError() );
+         // A journey in the production library the (paused) tracker does not track: ★ finds it
+         // through the library (JourneyForView), the strip says "not tracked".
+         const JBuilt k = JBuildJourney( *svc.Store(), "pcUiKeep", "UiKeep", 72 );
+         made.push_back( "pcUiKeep" );
+         {
+            ui.m_turnViewId.Clear();
+            const ToolContext c = ui.MakeToolContext();
+            ui.UpdateJourneyStripFor( "pcUiKeep" );
+            const String keepStrip = ui.GUI->JourneyStrip_Label.Text();
+            const bool keepDisabled = !ui.m_keepAllowed && !ui.GUI->Keep_ToolButton.IsEnabled();
+            // A view the production tracker does record (the pre-phase's), when it is still open.
+            const IsoString pre = "pcJourneyPre";
+            ui.UpdateJourneyStripFor( pre );
+            const JourneyStatus preSt = svc.Tracker().StatusFor( pre );
+            const String preStrip = ui.GUI->JourneyStrip_Label.Text();
+            const bool preKeep = ui.m_keepAllowed;
+            const bool preButton = ui.GUI->Keep_ToolButton.IsEnabled() == (preKeep && ui.IsEnabled());
+            d["panel"] = { { "keepStrip", U8( keepStrip ) }, { "keepDisabled", keepDisabled },
+                           { "preStrip", U8( preStrip ) }, { "preJourney", preSt.journeyId }, { "preKeepAllowed", preKeep }, { "preButton", preButton },
+                           { "tooltip", U8( ui.GUI->JourneyStrip_Label.ToolTip() ) },
+                           { "turnInProgress", ui.TurnInProgress() }, { "thread", bool( ui.m_thread ) },
+                           { "handling", ui.m_handlingResult }, { "held", ui.m_resultHeld }, { "keepRunning", ui.m_keepRunning },
+                           { "panelEnabled", ui.IsEnabled() } };
+            panelOk = c.journeys != nullptr && c.journeys->tracker == &svc.Tracker()
+                   && c.journeys->store == svc.Store() && c.journeys->keeper == &svc.Keeper()
+                   && c.journeys->confirmKeeper && c.journeys->apiKey
+                   && keepStrip == "Journey: not tracked" && keepDisabled
+                   && preStrip == JourneyStripText( preSt ) && preKeep == (preSt.journeyId != 0) && preButton;
+         }
+         // (e) ★: every outcome is a visible line in the chat log -- no journey, the user's No,
+         //     and a refusal from the library (open transaction; Task 10 concern / integration #4).
+         {
+            int asked = 0;
+            PICopilotInterface::s_confirmKeeperForSelfTest = [&asked]( const String& ) { ++asked; return false; };
+            String noJourney, declined, refused;
+            try
+            {
+               noJourney = ui.KeepJourneyOfView( "pcUiNoSuchView" );
+               declined = ui.KeepJourneyOfView( "pcUiKeep" );
+               {
+                  JourneyStore::Transaction tx( *svc.Store() );
+                  refused = ui.KeepJourneyOfView( "pcUiKeep" );
+               }   // rolled back: nothing was written
+            }
+            catch ( ... )
+            {
+               PICopilotInterface::s_confirmKeeperForSelfTest = nullptr;
+               throw;
+            }
+            PICopilotInterface::s_confirmKeeperForSelfTest = nullptr;
+            JourneyRow jr;
+            svc.Store()->GetJourney( k.jid, jr );
+            const String log = ui.GUI->ChatLog.Text();
+            d["keep"] = { { "noJourney", U8( noJourney ) }, { "declined", U8( declined ) }, { "refused", U8( refused ) },
+                          { "asked", asked }, { "kept", jr.kept } };
+            keepOk = noJourney.Contains( "not part of a recorded journey" )
+                  && declined.Contains( "Not kept" ) && refused.Contains( "keeping journey failed" )
+                  && refused.Contains( "transaction" ) && asked == 1 && !jr.kept
+                  && log.Contains( noJourney ) && log.Contains( declined ) && log.Contains( refused );
+         }
+         // (f) Service notes reach the chat log, but never inside a live-streamed reply.
+         {
+            (void)svc.TakeNotes();
+            svc.AddNote( "pc-ui-note-held" );
+            ui.m_replyShown = true;
+            ui.DrainJourneyNotes();
+            ui.m_replyShown = false;
+            const bool heldBack = !ui.GUI->ChatLog.Text().Contains( "pc-ui-note-held" );
+            ui.DrainJourneyNotes();
+            const bool shown = ui.GUI->ChatLog.Text().Contains( "(pc-ui-note-held)" );
+            const bool drained = svc.TakeNotes().IsEmpty();
+            d["notes"] = { { "heldBack", heldBack }, { "shown", shown }, { "drained", drained } };
+            notesOk = heldBack && shown && drained;
+         }
+      }
+      catch ( const pcl::Exception& x ) { error = x.Message(); }
+      catch ( const std::exception& x ) { error = String( x.what() ); }
+      catch ( ... )                     { error = "unknown exception"; }
+      for ( const std::string& id : made )
+         JForceClose( id );
+      const bool ok = stripOk && folderOk && dialogOk && panelOk && keepOk && notesOk && error.IsEmpty();
+      out["journeyUiDetail"] = d;
+      out["journeyUiChecks"] = { { "strip", stripOk }, { "folder", folderOk }, { "dialog", dialogOk },
+                                 { "panel", panelOk }, { "keep", keepOk }, { "notes", notesOk } };
+      out["journeyUiError"] = U8( error );
+      out["journeyUiOk"] = ok;
+      allOk = allOk && ok;
    }
 
    // ---- journey sections end ----

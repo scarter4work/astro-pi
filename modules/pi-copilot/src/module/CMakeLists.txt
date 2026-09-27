@@ -28,6 +28,7 @@ set(MODULE_SOURCES
     JourneyStore.cpp
     MasterFacts.cpp
     JourneyTools.cpp
+    JourneyStepsDialog.cpp
     JourneyTracker.cpp
     JourneyExport.cpp
     JourneyWriteup.cpp
