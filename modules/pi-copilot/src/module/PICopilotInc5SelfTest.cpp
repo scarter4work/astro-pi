@@ -2311,7 +2311,7 @@ bool RunInc5SelfTest( nlohmann::json& out )
             return r;
          };
          struct Case { const char* name; IsoString process; nlohmann::json params; nlohmann::json tables; std::string expect; };
-         const std::vector<Case> cases = {
+         const std::vector<Case> cases = {   // pcl-move-ok: const, read only
             { "noTable", "ImageIntegration", nlohmann::json::object(), nlohmann::json::object(),
               "ImageIntegration.images is required: pass table_parameters.images as rows [enabled, path, drizzlePath, "
               "localNormalizationDataPath]" },
@@ -2855,7 +2855,7 @@ bool RunInc5SelfTest( nlohmann::json& out )
 
          const String sentinel = "new ImageWindow( 8, 8, 1, 32, true, false, \"PCBreakout\" );";
          struct BreakoutCase { const char* name; String code; };
-         const std::vector<BreakoutCase> list = {
+         const std::vector<BreakoutCase> list = {   // pcl-move-ok: const, read only
             { "quote",         "var s = \"a\\\"b\"; return s; \" " + sentinel },
             { "backslash",     "return \"\\\\\"; \\\" " + sentinel },
             { "commentClose",  "*/ " + sentinel + " /*" },
@@ -3324,7 +3324,7 @@ bool RunInc5SelfTest( nlohmann::json& out )
                value = fixture;
                return true;
             } );
-            std::vector<PinnedParameter> pins;
+            std::vector<PinnedParameter> pins;   // pcl-move-ok: push_back/clear + read only
             auto resolve = [&]( const String& v, bool present = true )
             {
                fixture = v;
@@ -4144,7 +4144,7 @@ bool RunInc5SelfTest( nlohmann::json& out )
             {
                nlohmann::json bad = CompiledProcessSafety();
                bad["pinnedParameters"]["GraXpert"] = "not an object";
-               std::vector<PinnedParameter> pins;
+               std::vector<PinnedParameter> pins;   // pcl-move-ok: push_back/clear + read only
                SetProcessSafetyPolicyForSelfTest( &bad );
                const String eEntry = ResolvePinnedParameters( "GraXpert", nlohmann::json::object(), nlohmann::json::object(), pins );
                Inc5TestWindow gw( "PCPinnedBad", 16, 16, 1, 0.5 );

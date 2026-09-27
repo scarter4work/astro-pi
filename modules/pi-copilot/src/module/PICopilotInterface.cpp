@@ -655,7 +655,9 @@ void PICopilotInterface::e_Poll_Timer( Timer& )
       break;
    }
 
-   AnthropicResult r = std::move( m_heldResult );
+   // A COPY, then the reset (round 5 audit): moving out of m_heldResult leaves its pcl::String members null, and
+   // the reset below would then assign into them -- SIGSEGV on every held reply (proven standalone).
+   AnthropicResult r = m_heldResult;
    const bool partialReplyCut = m_heldPartialReplyCut;
    m_heldResult = AnthropicResult();
    m_resultHeld = false;

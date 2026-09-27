@@ -295,7 +295,7 @@ KeyringWaitScope::KeyringWaitScope( std::function<void( bool )> notify ) : m_pre
 
 KeyringWaitScope::~KeyringWaitScope()
 {
-   g_waitNotifier = std::move( m_previous );
+   g_waitNotifier = std::move( m_previous );   // pcl-move-ok: std::function, the guard's last use
 }
 
 KeyringResult KeyringLookup( const KeyringId& id )
