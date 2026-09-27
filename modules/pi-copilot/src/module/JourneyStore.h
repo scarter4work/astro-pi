@@ -26,13 +26,27 @@ constexpr int PICopilotJourneyDbBusyMs = 250;   // never wait longer on another 
 // Only these gaps are resolved when a later read succeeds (ResolveGaps).
 constexpr const char* PICopilotJourneyReadGapPrefix = "history read failed: ";
 
-// Thrown by the UPDATE/DELETE-by-id mutators when their row does not exist
-// (Task 7 re-review R2): callers can tell "gone" from "locked" / "failed".
+// Thrown when a row a call needs does not exist (Task 7 re-reviews R2, m-f):
+// the UPDATE-by-id mutators on a missing row, and ANY statement that fails
+// with SQLITE_CONSTRAINT_FOREIGNKEY (an insert naming a vanished journey /
+// image / step) -- classified by SQLite's extended error code, never by its
+// English message. Callers can tell "gone" from "locked" / "failed".
 class JourneyRowMissing : public Error
 {
 public:
    explicit JourneyRowMissing( const String& message ) : Error( message ) {}
 };
+
+// The recording owner of an image row (re-review m6): "<pid>:<process start
+// ticks>" of a PixInsight process (this one when pid <= 0); "" when that
+// process does not exist. JourneyOwnerAlive: the owner names a running process
+// (pid and start ticks match, so a reused pid is not "alive").
+std::string JourneyOwnerOf( long pid = 0 );
+bool        JourneyOwnerAlive( const std::string& owner );
+// Limits (documented, re-review round 2): owners are read from /proc, so they
+// are set only on Linux (macOS / Windows: "", no protection); instances in
+// different PID namespaces (Flatpak, containers) sharing one library see each
+// other as dead.
 
 std::string NowIso();                  // UTC, "YYYY-MM-DDThh:mm:ss.mmmZ"
 std::string IsoDaysAgo( int days );     // same format, now - days
@@ -133,9 +147,16 @@ public:
    std::vector<LinkRow> Links( int64 journeyId );
    std::vector<GapRow> Gaps( int64 journeyId );
    int   StepCount( int64 journeyId, bool activeOnly );   // base steps (params_json.base) excluded
+   bool  HasReadGaps( int64 imageId );   // any gap with PICopilotJourneyReadGapPrefix (re-review m-e)
 
    // Deletes non-kept journeys with updated < cutoffIso (rows cascade) and their
-   // folders; returns how many. Keepers are never touched (Ruling 9).
+   // folders; returns how many. Keepers are never touched (Ruling 9). A journey
+   // with any image recorded by a LIVE PixInsight process (image.owner,
+   // JourneyOwnerAlive) is skipped too (re-review m-a). Residual: the folder is
+   // removed before COMMIT; if COMMIT then fails (I/O error, disk full) the row
+   // outlives its folder -- readers (Tasks 8-10) must treat a missing folder or
+   // thumbnail as absent, never as an error (a throw part-way through the
+   // removal leaves the same shape). The next due pass removes such a row.
    // Task 7 re-review R1: each journey is ONE transaction that re-checks
    // "kept=0 AND updated < cutoff" under the write lock -- a journey kept or
    // touched meanwhile (by another PixInsight instance too) is skipped

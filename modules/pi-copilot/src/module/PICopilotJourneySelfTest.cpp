@@ -52,6 +52,7 @@
 #include <initializer_list>
 #include <map>
 #include <memory>
+#include <random>
 #include <set>
 #include <string>
 #include <thread>
@@ -786,7 +787,7 @@ const char* const kJ6Checks[] = { "settings", "master", "manual", "undo", "copil
                                   "startJourney", "perImagePause", "gapResolved", "retentionOnce", "resumeTouch",
                                   "transaction", "mutatorsLoud", "retentionOpen", "rowGone", "offThenOn", "gateStallLock",
                                   "gateStallWaiting", "gateStallGap", "txDefer", "noopNoLock", "owner", "gapKinds",
-                                  "pjsrAbortRestored" };
+                                  "pjsrAbortRestored", "gapRowGone", "linkRowGone", "ignoredThenMaster", "chaos" };
 
 struct J6State
 {
@@ -807,6 +808,12 @@ struct J6State
    int  reopenResumed = -1;
    bool scanModes = true;
    bool serviceFlushed = false;
+   // Fix round 3 fault injection (chaos*).
+   std::vector<std::string> chaosViews;
+   std::vector<int64>       chaosJourneys;
+   int  chaosBefore = 0, chaosNew = 0, chaosTickFailures = 0;
+   std::string chaosFirstFailure;
+   std::set<std::string> gapLogSeen;
 };
 
 J6State& J6()
@@ -1536,7 +1543,7 @@ void J6Step( J6State& st, const std::string& step, const nlohmann::json& payload
       JTick( trk );   // the gap is written
       int closedGaps = 0;
       for ( const GapRow& g : store.Gaps( st.rgbJ ) )
-         if ( g.imageId == rImg && g.reason.find( "closed while PixInsight was busy" ) != std::string::npos )
+         if ( g.imageId == rImg && g.reason.find( "closed before its last steps were recorded" ) != std::string::npos )
             ++closedGaps;
       st.d["gateStall"]["closedDirty"] = { { "image", rImg }, { "gapsBefore", gaps0 }, { "closedGaps", closedGaps } };
       st.ok["gateStallGap"] = rImg != 0 && closedGaps == 1;
@@ -1625,6 +1632,315 @@ void J6Step( J6State& st, const std::string& step, const nlohmann::json& payload
       st.ok["owner"] = a != 0 && ownerWhileOpen == JourneyOwnerOf() && ownerAfterClose.empty() && !live.empty()
                     && JourneyOwnerAlive( live ) && !JourneyOwnerAlive( "999999999:1" )
                     && b != 0 && b != a && c == a;
+   }
+   else if ( step == "gapRowGone" )
+   {
+      // Re-review N1: a queued gap whose image vanished must not wedge every later tick.
+      auto master = [&]( const char* id )
+      {
+         JEvalJs( String( "(function(){ new ImageWindow( 28, 28, 1, 32, true, false, \"" ) + id + "\" ); })()" );
+         JSetKeywords( id, Kw( { { "IMAGETYP", "'Master Light'" }, { "OBJECT", ( std::string( "'" ) + id + "'" ).c_str() } } ) );
+         st.made.push_back( id );
+      };
+      auto deleteJourney = [&store]( int64 j )
+      {
+         RawDb raw( store.DbPath() );
+         if ( !raw.Exec( "PRAGMA foreign_keys=ON" ) || !raw.Exec( ( "DELETE FROM journey WHERE id=" + std::to_string( j ) ).c_str() ) )
+            throw Error( "delete journey failed" );
+      };
+      const int before = ActiveSteps( store, mimg );   // pcTrkRenamed was stepped at top level: recorded below
+      master( "pcTrkGG" );
+      master( "pcTrkGH" );
+      JTick( trk, 3 );
+      deleteJourney( trk.JourneyOfView( "pcTrkGG" ) );
+      deleteJourney( trk.JourneyOfView( "pcTrkGH" ) );
+      trk.SetHistoryReaderForSelfTest( []( const IsoString& id, int from )
+      {
+         if ( id != "pcTrkGG" )
+            return ReadViewHistory( id, from );
+         HistorySnapshot s;
+         s.error = "injected read failure";
+         return s;
+      } );
+      nlohmann::json failures = nlohmann::json::array();
+      for ( int i = 0; i < 4; ++i )   // (a) 3 failed reads -> a gap for a vanished image
+      {
+         trk.OnImageUpdated( J6MainView( "pcTrkGG" ), JourneyWallNow() );
+         JTick( trk );
+         failures.push_back( U8( trk.TickFailureForSelfTest() ) );
+      }
+      trk.SetHistoryReaderForSelfTest( HistoryReadFn() );
+      // (b) a dirty close under the gate after its row was deleted.
+      trk.OnImageUpdated( J6MainView( "pcTrkGH" ), JourneyWallNow() );
+      {
+         Console c;
+         c.EnableAbort();
+         JForceClose( "pcTrkGH" );
+         trk.Tick( JourneyWallNow(), true );
+         c.DisableAbort();
+      }
+      for ( int i = 0; i < 3; ++i )
+      {
+         JTick( trk );
+         failures.push_back( U8( trk.TickFailureForSelfTest() ) );
+      }
+      bool anyFailure = false;
+      for ( const nlohmann::json& f : failures )
+         anyFailure = anyFailure || !f.get<std::string>().empty();
+      const JourneyStatus s = trk.StatusFor( "pcTrkRenamed" );
+      st.d["gapRowGone"] = { { "tickFailures", failures }, { "renamedSteps", ActiveSteps( store, mimg ) - before },
+                             { "state", int( s.state ) }, { "pending", trk.PendingCount() } };
+      st.ok["gapRowGone"] = !anyFailure && ActiveSteps( store, mimg ) == before + 1 && s.state == RecordingState::Recording;
+      JForceClose( "pcTrkGG" );
+      JTick( trk );
+   }
+   else if ( step == "linkRowGone" )
+   {
+      // Re-review N2: a linked join into a vanished journey must not escape the candidate loop every tick;
+      // another closed journey still ends.
+      for ( const char* id : { "pcTrkLM", "pcTrkLE" } )
+      {
+         JEvalJs( String( "(function(){ new ImageWindow( 27, 27, 1, 32, true, false, \"" ) + id + "\" ); })()" );
+         JSetKeywords( id, Kw( { { "IMAGETYP", "'Master Light'" }, { "OBJECT", ( std::string( "'" ) + id + "'" ).c_str() } } ) );
+         st.made.push_back( id );
+      }
+      JTick( trk, 3 );
+      const int64 lm = trk.JourneyOfView( "pcTrkLM" ), le = trk.JourneyOfView( "pcTrkLE" );
+      {
+         RawDb raw( store.DbPath() );
+         if ( !raw.Exec( "PRAGMA foreign_keys=ON" ) || !raw.Exec( ( "DELETE FROM journey WHERE id=" + std::to_string( lm ) ).c_str() ) )
+            throw Error( "delete journey failed" );
+      }
+      trk.TakeJoinNotes();
+      trk.NoteCopilotStep( "pcTrkLM", "PixelMath", "derived", { "pcTrkLD" }, false, JourneyWallNow() );
+      JEvalJs( "(function(){ new ImageWindow( 27, 27, 1, 32, true, false, \"pcTrkLD\" ); })()" );
+      st.made.push_back( "pcTrkLD" );
+      JForceClose( "pcTrkLE" );   // its journey must still end
+      nlohmann::json failures = nlohmann::json::array();
+      for ( int i = 0; i < 5; ++i )
+      {
+         JTick( trk );
+         failures.push_back( U8( trk.TickFailureForSelfTest() ) );
+      }
+      bool anyFailure = false;
+      for ( const nlohmann::json& f : failures )
+         anyFailure = anyFailure || !f.get<std::string>().empty();
+      int removedNotes = 0;
+      for ( const String& n : trk.TakeJoinNotes() )
+         if ( n.Contains( "was removed" ) )
+            ++removedNotes;
+      JourneyRow ler;
+      store.GetJourney( le, ler );
+      st.d["linkRowGone"] = { { "tickFailures", failures }, { "removedNotes", removedNotes }, { "leStatus", ler.status },
+                              { "ld", trk.JourneyOfView( "pcTrkLD" ) }, { "lm", trk.JourneyOfView( "pcTrkLM" ) }, { "deleted", lm } };
+      st.ok["linkRowGone"] = !anyFailure && removedNotes >= 1 && ler.status == "ended" && trk.JourneyOfView( "pcTrkLD" ) != lm
+                          && trk.JourneyOfView( "pcTrkLM" ) != lm;
+      JForceClose( "pcTrkLD" );
+      JForceClose( "pcTrkLM" );
+      JTick( trk );
+   }
+   else if ( step == "ignSetup" )
+   {
+      // Re-review N3: windows seen, ignored, processed, and then given master keywords.
+      JPump( 3500 );   // no recorded step within the timing slack
+      for ( const char* id : { "pcTrkIgA", "pcTrkIgB", "pcTrkIgC" } )
+         st.made.push_back( id );
+      JTick( trk, 6 );
+      st.d["ignoredThenMaster"]["ignoredFirst"] = { trk.ImageOfView( "pcTrkIgA" ), trk.ImageOfView( "pcTrkIgB" ), trk.ImageOfView( "pcTrkIgC" ) };
+   }
+   else if ( step == "ignCheck" )
+   {
+      // B: the notification path right after the keyword step; A and C: the scan path 1 s later (C with
+      // the batch scan mode). With the first sighting carried over, all three agree.
+      trk.OnImageUpdated( J6MainView( "pcTrkIgB" ), JourneyWallNow() );
+      JPump( 1000 );
+      trk.SetScanUsesModifyCountForSelfTest( false );
+      JTick( trk, 3 );
+      trk.SetScanUsesModifyCountForSelfTest( PICopilotJourneyScanUsesModifyCount && PICopilotJourneyNotificationsWork );
+      nlohmann::json counts = nlohmann::json::array();
+      bool allThree = true;
+      for ( const char* id : { "pcTrkIgA", "pcTrkIgB", "pcTrkIgC" } )
+      {
+         const int64 img = trk.ImageOfView( id );
+         const int n = img != 0 ? ActiveSteps( store, img ) : -1;
+         counts.push_back( n );
+         allThree = allThree && n == 3;
+      }
+      st.d["ignoredThenMaster"]["activeUserSteps"] = counts;
+      st.ok["ignoredThenMaster"] = allThree && st.d["ignoredThenMaster"]["ignoredFirst"] == nlohmann::json( { 0, 0, 0 } );
+   }
+   else if ( step == "chaosSetup" )
+   {
+      // Fix round 3: fault injection. Images in every state under a live tracker; rows deleted in a
+      // seeded-random order between ticks.
+      for ( int i = 1; i <= 5; ++i )
+      {
+         const std::string id = "pcTrkC" + std::to_string( i );
+         JEvalJs( String( "(function(){ new ImageWindow( 26, 26, 1, 32, true, false, \"" ) + id.c_str() + "\" ); })()" );
+         JSetKeywords( id.c_str(), Kw( { { "IMAGETYP", "'Master Light'" }, { "OBJECT", ( "'" + id + "'" ).c_str() } } ) );
+         st.made.push_back( id );
+         st.chaosViews.push_back( id );
+      }
+      JTick( trk, 3 );
+      for ( const std::string& id : st.chaosViews )
+         st.chaosJourneys.push_back( trk.JourneyOfView( IsoString( id.c_str() ) ) );
+      // A candidate linked to a master (Copilot note), not joined yet.
+      trk.NoteCopilotStep( "pcTrkC1", "PixelMath", "chaos", { "pcTrkCL" }, false, JourneyWallNow() );
+      JEvalJs( "(function(){ new ImageWindow( 26, 26, 1, 32, true, false, \"pcTrkCL\" ); })()" );
+      st.made.push_back( "pcTrkCL" );
+      st.chaosViews.push_back( "pcTrkCL" );
+      // An image whose reads fail (-> queued gaps).
+      trk.SetHistoryReaderForSelfTest( []( const IsoString& id, int from )
+      {
+         if ( id != "pcTrkC2" )
+            return ReadViewHistory( id, from );
+         HistorySnapshot s;
+         s.error = "chaos: injected read failure";
+         return s;
+      } );
+      st.chaosBefore = ActiveSteps( store, mimg );
+      st.d["chaos"]["journeys"] = st.chaosJourneys;
+   }
+   else if ( step == "chaosRound" )
+   {
+      const int round = payload.at( "round" ).get<int>();
+      std::mt19937 rng( 7919u + unsigned( round ) );
+      Console c;
+      nlohmann::json& log = st.d["chaos"]["rounds"][round];
+      for ( int i = 0; i < 10; ++i )
+      {
+         std::string action;
+         const unsigned a0 = rng() % 8;
+         const unsigned a = a0 >= 6 ? 0 : a0;   // deletions: 3 in 8
+         std::vector<std::string> openViews;
+         for ( const std::string& v : st.chaosViews )
+            if ( !ImageWindow::WindowById( IsoString( v.c_str() ) ).IsNull() )
+               openViews.push_back( v );
+         if ( a == 0 )
+         {
+            // Delete a random journey / image / step row of the chaos set (another program, a restore).
+            std::vector<std::string> rows;
+            for ( int64 j : st.chaosJourneys )
+            {
+               JourneyRow jr;
+               if ( !store.GetJourney( j, jr ) )
+                  continue;
+               rows.push_back( "journey:" + std::to_string( j ) );
+               for ( const ImageRow& im : store.Images( j ) )
+               {
+                  rows.push_back( "image:" + std::to_string( im.id ) );
+                  for ( const StepRow& sr : store.Steps( im.id, true ) )
+                     rows.push_back( "step:" + std::to_string( sr.id ) );
+               }
+            }
+            if ( !rows.empty() )
+            {
+               const std::string r = rows[rng() % rows.size()];
+               const size_t colon = r.find( ':' );
+               RawDb raw( store.DbPath() );
+               raw.Exec( "PRAGMA foreign_keys=ON" );
+               if ( !raw.Exec( ( "DELETE FROM " + r.substr( 0, colon ) + " WHERE id=" + r.substr( colon + 1 ) ).c_str() ) )
+                  throw Error( "chaos: delete failed" );
+               action = "delete " + r;
+            }
+         }
+         else if ( a == 1 && !openViews.empty() )
+         {
+            const std::string v = openViews[rng() % openViews.size()];
+            trk.OnImageUpdated( J6MainView( v.c_str() ), JourneyWallNow() );
+            action = "dirty " + v;
+         }
+         else if ( a == 2 )
+         {
+            if ( c.AbortEnabled() ) c.DisableAbort(); else c.EnableAbort();
+            action = std::string( "abort " ) + (c.AbortEnabled() ? "on" : "off");
+         }
+         else if ( a == 3 && openViews.size() > 1 )
+         {
+            const std::string v = openViews[rng() % openViews.size()];
+            trk.OnImageUpdated( J6MainView( v.c_str() ), JourneyWallNow() );   // closed with unrecorded changes
+            JForceClose( v );
+            action = "close " + v;
+         }
+         else if ( a == 4 )
+         {
+            const std::string id = "pcTrkCN" + std::to_string( ++st.chaosNew );
+            if ( !openViews.empty() && rng() % 2 == 0 )
+               trk.NoteCopilotStep( IsoString( openViews[rng() % openViews.size()].c_str() ), "PixelMath", "chaos", { id }, false,
+                                    JourneyWallNow() );
+            JEvalJs( String( "(function(){ new ImageWindow( 25, 25, 1, 32, true, false, \"" ) + id.c_str() + "\" ); })()" );
+            if ( rng() % 2 == 0 )
+               JSetKeywords( id.c_str(), Kw( { { "IMAGETYP", "'Master Light'" }, { "OBJECT", ( "'" + id + "'" ).c_str() } } ) );
+            st.made.push_back( id );
+            st.chaosViews.push_back( id );
+            action = "new " + id;
+         }
+         trk.Tick( JourneyWallNow(), true );
+         JPump( 60 );
+         // A new chaos journey (a joined new window) joins the deletable set.
+         for ( const std::string& v : st.chaosViews )
+         {
+            const int64 j = trk.JourneyOfView( IsoString( v.c_str() ) );
+            if ( j != 0 && std::find( st.chaosJourneys.begin(), st.chaosJourneys.end(), j ) == st.chaosJourneys.end()
+              && j != jid && j != st.rgbJ )
+               st.chaosJourneys.push_back( j );
+         }
+         const String f = trk.TickFailureForSelfTest();
+         if ( !f.IsEmpty() )
+         {
+            ++st.chaosTickFailures;
+            if ( st.chaosFirstFailure.empty() )
+               st.chaosFirstFailure = U8( f );
+         }
+         log.push_back( action + (f.IsEmpty() ? "" : " -> TICK FAILED: " + U8( f )) );
+      }
+      if ( c.AbortEnabled() )
+         c.DisableAbort();
+   }
+   else if ( step == "chaosEnd" )
+   {
+      trk.SetHistoryReaderForSelfTest( HistoryReadFn() );
+      Console().DisableAbort();
+      JTick( trk, 3 );
+      // After the chaos: 10 idle ticks; nothing may fail as a whole, and no per-candidate failure repeats.
+      int failuresAfter = 0;
+      const std::vector<std::string> pre = trk.RecentDecisionsForSelfTest();
+      const std::string lastBefore = pre.empty() ? std::string() : pre.back();
+      for ( int i = 0; i < 10; ++i )
+      {
+         JTick( trk );
+         if ( !trk.TickFailureForSelfTest().IsEmpty() )
+            ++failuresAfter;
+      }
+      int repeated = 0;
+      {
+         const std::vector<std::string> post = trk.RecentDecisionsForSelfTest();
+         bool after = lastBefore.empty() || std::find( post.begin(), post.end(), lastBefore ) == post.end();
+         for ( const std::string& x : post )
+         {
+            if ( after && (x.find( " failed: " ) != std::string::npos || x.find( "rowMissing" ) != std::string::npos) )
+               ++repeated;   // an item failure still happening in the idle ticks after the chaos
+            if ( x == lastBefore )
+               after = true;
+         }
+      }
+      JEvalJs( "(function(){ new ImageWindow( 24, 24, 1, 32, true, false, \"pcTrkChaosNew\" ); })()" );
+      JSetKeywords( "pcTrkChaosNew", Kw( { { "IMAGETYP", "'Master Light'" }, { "OBJECT", "'ChaosNew'" } } ) );
+      st.made.push_back( "pcTrkChaosNew" );
+      JTick( trk, 3 );
+      const JourneyStatus sr = trk.StatusFor( "pcTrkRenamed" ), sg = trk.StatusFor( "pcTrkRgb" );
+      st.d["chaos"]["end"] = { { "tickFailures", st.chaosTickFailures }, { "firstFailure", st.chaosFirstFailure },
+                               { "failuresAfter", failuresAfter }, { "itemFailuresAfterChaos", repeated },
+                               { "survivorSteps", ActiveSteps( store, mimg ) - st.chaosBefore },
+                               { "renamedState", int( sr.state ) }, { "renamedReason", U8( sr.reason ) },
+                               { "rgbState", int( sg.state ) }, { "newJoined", trk.JourneyOfView( "pcTrkChaosNew" ) } };
+      st.ok["chaos"] = st.chaosTickFailures == 0 && failuresAfter == 0 && repeated == 0
+                    && ActiveSteps( store, mimg ) == st.chaosBefore + 5 && sr.state == RecordingState::Recording
+                    && sg.state == RecordingState::Recording && trk.JourneyOfView( "pcTrkChaosNew" ) != 0;
+      for ( const std::string& v : st.chaosViews )
+         JForceClose( v );   // made in-process: no JS wrapper holds them
+      JForceClose( "pcTrkChaosNew" );
+      JTick( trk );
    }
    else if ( step == "gate" )
    {
@@ -1861,14 +2177,21 @@ void J6Step( J6State& st, const std::string& step, const nlohmann::json& payload
 
       // Re-review m3: ResolveGaps removes only read-failure gaps; any other gap stays.
       {
-         store.AddGap( { jid, mimg, 1, "closed while PixInsight was busy; its last steps were not recorded" } );
+         store.AddGap( { jid, mimg, 1, "closed before its last steps were recorded" } );
          store.AddGap( { jid, mimg, 1, std::string( PICopilotJourneyReadGapPrefix ) + "test" } );
          const int resolved = store.ResolveGaps( mimg, 1000000 );
          int left = 0;
          for ( const GapRow& g : store.Gaps( jid ) )
-            if ( g.reason.find( "closed while" ) != std::string::npos )
+            if ( g.imageId == mimg && g.reason.find( "closed before" ) != std::string::npos )   // (the chaos may link others)
                ++left;
-         st.d["gapKinds"] = { { "resolved", resolved }, { "closedLeft", left } };
+         nlohmann::json all = nlohmann::json::array();
+         for ( const GapRow& g : store.Gaps( jid ) )
+         {
+            ImageRow ir;
+            store.GetImage( g.imageId, ir );
+            all.push_back( { g.imageId, ir.viewId, g.afterSeq, g.reason } );
+         }
+         st.d["gapKinds"] = { { "resolved", resolved }, { "closedLeft", left }, { "gaps", all } };
          st.ok["gapKinds"] = resolved == 1 && left == 1;
       }
 
@@ -1934,6 +2257,11 @@ nlohmann::json PhaseJourneyTracker( const nlohmann::json& payload )
    catch ( const pcl::Exception& x ) { st.errors << String( step.c_str() ) + ": " + x.Message(); }
    catch ( const std::exception& x ) { st.errors << String( step.c_str() ) + ": " + String( x.what() ); }
    catch ( ... )                     { st.errors << String( step.c_str() ) + ": unknown exception"; }
+   // Diagnostics: every "closed with unrecorded changes" gap the tracker queued, with the step it happened in.
+   if ( st.trk )
+      for ( const std::string& x : st.trk->RecentDecisionsForSelfTest() )
+         if ( x.rfind( "gap: ", 0 ) == 0 && st.gapLogSeen.insert( x ).second )
+            st.d["gapLog"].push_back( step + ": " + x );
    return { { "step", step } };
 }
 
