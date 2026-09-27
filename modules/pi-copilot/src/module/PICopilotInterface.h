@@ -38,6 +38,10 @@ namespace pcl
 // characters (the tooltip has the full status).
 String JourneyStripText( const JourneyStatus& s );
 
+// Whether ★ Keep journey is offered for this status. busy: a message is being
+// worked on or a keep is already running. Pure.
+bool JourneyKeepAllowed( const JourneyStatus& s, bool busy );
+
 class PICopilotInterface : public ProcessInterface
 {
 public:
@@ -201,6 +205,8 @@ private:
    static bool ConfirmKeeper( const String& summaryHtml );
    // Self-test: replaces the ★ confirm box (a modal cannot run headlessly).
    static std::function<bool( const String& )> s_confirmKeeperForSelfTest;
+   // Self-test: replaces the write-up key (no keyring read, no request).
+   static std::function<String()> s_apiKeyForSelfTest;
 
    // UI thread only: captures the turn view's (m_turnViewId) context +
    // preview (when "Include view" is checked) and returns the composed user

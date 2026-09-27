@@ -125,16 +125,35 @@ void JourneyStepsDialog::ShowPreview( int row )
       Preview_Label.SetText( row < 0 ? String( "No thumbnails recorded" ) : String( "No thumbnail for this step" ) );
       return;
    }
-   // A thumbnail removed meanwhile (retention) is absent, never an error.
-   const Bitmap bmp = File::Exists( thumb ) ? Bitmap( thumb ) : Bitmap::Null();
-   if ( bmp.IsEmpty() )
+   // A thumbnail removed meanwhile (retention) is absent, never an error. PCL
+   // documents Bitmap( path ) as throwing; today's core returns an empty bitmap
+   // for an unreadable file (Task 11 review), so both mean "not available" --
+   // an exception escaping here (the constructor, or the core's TreeBox event)
+   // would skip ~JourneyStepsDialog's guard.
+   bool shown = false;
+   try
+   {
+      if ( File::Exists( thumb ) )
+      {
+         const Bitmap bmp( thumb );
+         if ( !bmp.IsNull() && !bmp.IsEmpty() )
+         {
+            const int side = LogicalPixelsToPhysical( kPreviewW );
+            Preview_BitmapBox.SetBitmap( bmp.Width() >= bmp.Height() ? bmp.ScaledToWidth( side ) : bmp.ScaledToHeight( side ) );
+            shown = true;
+         }
+      }
+   }
+   catch ( ... )
+   {
+      shown = false;
+   }
+   if ( !shown )
    {
       Preview_BitmapBox.Clear();
       Preview_Label.SetText( "Thumbnail not available" );
       return;
    }
-   const int side = LogicalPixelsToPhysical( kPreviewW );
-   Preview_BitmapBox.SetBitmap( bmp.Width() >= bmp.Height() ? bmp.ScaledToWidth( side ) : bmp.ScaledToHeight( side ) );
    Preview_Label.SetText( "Step " + Steps_TreeBox.Child( row )->Text( 0 ) + " (after)" );
 }
 

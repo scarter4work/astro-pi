@@ -35,6 +35,7 @@ namespace pcl
 PICopilotInterface* ThePICopilotInterface = nullptr;
 
 std::function<bool( const String& )> PICopilotInterface::s_confirmKeeperForSelfTest;
+std::function<String()> PICopilotInterface::s_apiKeyForSelfTest;
 
 namespace
 {
@@ -790,6 +791,13 @@ String JourneyStripText( const JourneyStatus& s )
    }
 }
 
+bool JourneyKeepAllowed( const JourneyStatus& s, bool busy )
+{
+   // Review I1: a journey with no steps yet (e.g. the "(continued)" one a keep
+   // just froze into) has nothing to keep; each Yes wrote an empty keeper.
+   return s.journeyId != 0 && s.activeSteps > 0 && !busy;
+}
+
 IsoString PICopilotInterface::ActiveMainViewId() const
 {
    const ImageWindow w = ImageWindow::ActiveWindow();   // not retained past this call
@@ -832,7 +840,12 @@ JourneyToolHost PICopilotInterface::MakeJourneyHost()
    h.exportFolder = CopilotSettings::LoadJourneyExportFolder();
    // The write-up's key: this message's key during a turn (already read), else
    // the stored one (read on the root thread when a keep asks for it).
-   h.apiKey = [this]() { return m_apiKey.IsEmpty() ? KeyStore::Load().key : m_apiKey; };
+   h.apiKey = [this]()
+   {
+      if ( s_apiKeyForSelfTest )
+         return s_apiKeyForSelfTest();
+      return m_apiKey.IsEmpty() ? KeyStore::Load().key : m_apiKey;
+   };
    h.confirmKeeper = &PICopilotInterface::ConfirmKeeper;
    return h;
 }
@@ -869,7 +882,7 @@ void PICopilotInterface::UpdateJourneyStripFor( const IsoString& mainViewId )
    if ( st.journeyId != 0 )
       tip += "<p>Click to see the steps.</p>";
    GUI->JourneyStrip_Label.SetToolTip( tip );
-   m_keepAllowed = st.journeyId != 0 && !TurnInProgress() && !m_keepRunning;
+   m_keepAllowed = JourneyKeepAllowed( st, TurnInProgress() || m_keepRunning );
    GUI->Keep_ToolButton.Enable( m_keepAllowed );
 }
 
