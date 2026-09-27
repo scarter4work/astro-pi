@@ -667,6 +667,8 @@ void JourneyStore::SetStepState( int64 stepId, const std::string& state )
 
 void JourneyStore::SetStepReason( int64 stepId, const std::string& reason, bool inferred )
 {
+   if ( m_stepReasonHook )
+      m_stepReasonHook( stepId );   // self-test fault seam
    Stmt( *this, "UPDATE step SET reason=?, reason_inferred=? WHERE id=?" )
       .TextOrNull( 1, reason ).Int( 2, inferred ? 1 : 0 ).Int( 3, stepId ).Run();
    RequireChanged( "SetStepReason: step", stepId );
@@ -1009,7 +1011,28 @@ void JourneyStore::Checkpoint()
 
 bool JourneyStore::TransactionAborted() const
 {
+   RequireRootThread( "TransactionAborted" );
    return m_inTransaction && m_db != nullptr && sqlite3_get_autocommit( m_db ) != 0;
+}
+
+int JourneyStore::AutocommitForSelfTest() const
+{
+   RequireRootThread( "AutocommitForSelfTest" );
+   return sqlite3_get_autocommit( m_db );
+}
+
+void JourneyStore::ArmInterruptForSelfTest()
+{
+   RequireRootThread( "ArmInterruptForSelfTest" );
+   m_interruptArmed = true;
+   sqlite3_progress_handler( m_db, 1, []( void* p ) -> int
+   {
+      JourneyStore* s = static_cast<JourneyStore*>( p );
+      if ( !s->m_interruptArmed )
+         return 0;
+      s->m_interruptArmed = false;
+      return 1;   // SQLITE_INTERRUPT for the running statement
+   }, this );
 }
 
 void JourneyStore::MarkKeptDurably( int64 id, int64 endImageId, const std::string& nowIso )

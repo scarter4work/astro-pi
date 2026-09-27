@@ -60,6 +60,7 @@
 #include <memory>
 #include <random>
 #include <set>
+#include <stdexcept>
 #include <string>
 #include <thread>
 #include <utility>
@@ -6013,9 +6014,164 @@ r1.ok && r1.inferred.size() == 1 && r1.inferred[0].first == 7 && r1.inferred[0].
       catch ( const pcl::Exception& x ) { if ( error.IsEmpty() ) error = "nested: " + x.Message(); }
       catch ( const std::exception& x ) { if ( error.IsEmpty() ) error = "nested: " + String( x.what() ); }
 
-      const bool ok = e2eOk && durableOk && nestedOk && error.IsEmpty();
+      // (d)-(g) StoreInferredReasons under REAL failures (integration review, Important):
+      //   (d) one entry throws a std::exception (synthetic, not an SQLite error): the others commit;
+      //   (e) SQLite's progress handler interrupts the 2nd UPDATE (SQLITE_INTERRUPT inside an explicit
+      //       transaction: SQLite rolls the whole transaction back itself): nothing persists;
+      //   (f) a deferred foreign-key violation makes COMMIT itself fail (SQLITE_CONSTRAINT): nothing persists;
+      //   (g) a second connection holds the write lock (BEGIN IMMEDIATE): BEGIN fails SQLITE_BUSY.
+      // Each asserts: nothing partial persisted, every entry named, the connection and the store's
+      // transaction flag back to "none open", and the next write on the same store works.
+      bool faultEntryOk = false, faultAbortOk = false, faultCommitOk = false, faultBusyOk = false;
+      try
+      {
+         JTempDir root( "picopilot-j9f-" );
+         String oe;
+         std::unique_ptr<JourneyStore> t = JourneyStore::Open( root.Path(), oe );
+         if ( !t )
+            throw Error( "store: " + oe );
+         struct Made { int64 jid = 0; std::vector<int64> steps; };
+         auto make = [&t]( const char* name, int n )
+         {
+            const std::string now = NowIso();
+            Made m;
+            m.jid = t->CreateJourney( name, "J9F", now );
+            const int64 img = t->AddImage( m.jid, name, "", std::string( "fp-" ) + name, true, now );
+            for ( int i = 0; i < n; ++i )
+            {
+               StepRow r;
+               r.imageId = img; r.seq = i + 1; r.processId = "PixelMath"; r.started = now; r.actor = "user";
+               r.params = { { "expression", "$T*1.1" } };
+               m.steps.push_back( t->AddStep( r ) );
+            }
+            return m;
+         };
+         auto reasons = []( const Made& m )
+         {
+            std::vector<std::pair<int64, std::string>> v;
+            for ( int64 id : m.steps ) v.push_back( { id, "reason " + std::to_string( id ) } );
+            return v;
+         };
+         auto persisted = [&t]( const Made& m )   // how many of m's steps carry an inferred reason
+         {
+            int n = 0;
+            for ( int64 id : m.steps ) { StepRow r; if ( t->GetStep( id, r ) && r.reasonInferred && !r.reason.empty() ) ++n; }
+            return n;
+         };
+         auto clean = [&t]() { return !t->InTransaction() && t->AutocommitForSelfTest() == 1; };
+         auto named = []( const std::vector<std::string>& ns, int64 id, const char* what )
+         {
+            const std::string label = "step " + std::to_string( id ) + " (";
+            for ( const std::string& n : ns )
+               if ( n.rfind( label, 0 ) == 0 && (what == nullptr || n.find( what ) != std::string::npos) )
+                  return true;
+            return false;
+         };
+         auto list = []( const std::vector<std::string>& ns ) { nlohmann::json a = nlohmann::json::array(); for ( auto& n : ns ) a.push_back( n ); return a; };
+
+         // (d)
+         {
+            const Made m = make( "fEntry", 3 );
+            const int64 bad = m.steps[1];
+            t->SetStepReasonHookForSelfTest( [bad]( int64 id ) { if ( id == bad ) throw std::runtime_error( "synthetic entry failure" ); } );
+            std::vector<std::string> ns;
+            const int stored = StoreInferredReasons( *t, m.jid, reasons( m ), ns );
+            t->SetStepReasonHookForSelfTest( nullptr );
+            StepRow r1; t->GetStep( bad, r1 );
+            d["faultEntry"] = { { "stored", stored }, { "persisted", persisted( m ) }, { "notStored", list( ns ) }, { "clean", clean() } };
+            faultEntryOk = stored == 2 && persisted( m ) == 2 && r1.reason.empty() && ns.size() == 1
+                        && named( ns, bad, "synthetic entry failure" ) && clean();
+         }
+         // (e)
+         {
+            const Made m = make( "fAbort", 3 );
+            const int64 second = m.steps[1];
+            JourneyStore* ts = t.get();
+            t->SetStepReasonHookForSelfTest( [second, ts]( int64 id ) { if ( id == second ) ts->ArmInterruptForSelfTest(); } );
+            std::vector<std::string> ns;
+            const int stored = StoreInferredReasons( *t, m.jid, reasons( m ), ns );
+            t->SetStepReasonHookForSelfTest( nullptr );
+            const bool cleanAfter = clean();
+            const int p = persisted( m );
+            std::vector<std::string> ns2;
+            const int again = StoreInferredReasons( *t, m.jid, reasons( m ), ns2 );
+            d["faultAbort"] = { { "stored", stored }, { "persisted", p }, { "notStored", list( ns ) }, { "clean", cleanAfter },
+                                { "again", again }, { "againNotStored", list( ns2 ) } };
+            faultAbortOk = stored == 0 && p == 0 && ns.size() == 3 && named( ns, m.steps[0], "rolled back" )
+                        && named( ns, second, "interrupt" ) && named( ns, m.steps[2], "rolled back" ) && cleanAfter
+                        && again == 3 && ns2.empty() && persisted( m ) == 3 && clean();
+         }
+         // (f)
+         {
+            const Made m = make( "fCommit", 2 );
+            const int64 last = m.steps.back();
+            JourneyStore* ts = t.get();
+            t->SetStepReasonHookForSelfTest( [last, ts]( int64 id )
+            {
+               if ( id != last ) return;
+               ts->ExecForSelfTest( "PRAGMA defer_foreign_keys=ON" );
+               ts->ExecForSelfTest( "INSERT INTO gap(journey_id, reason) VALUES(987654321, 'j9 fault')" );
+            } );
+            std::vector<std::string> ns;
+            const int stored = StoreInferredReasons( *t, m.jid, reasons( m ), ns );
+            t->SetStepReasonHookForSelfTest( nullptr );
+            const bool cleanAfter = clean();
+            const int p = persisted( m );
+            int orphanGaps = -1;
+            {
+               sqlite3* raw = nullptr;
+               if ( sqlite3_open_v2( IsoString( t->DbPath().ToUTF8() ).c_str(), &raw, SQLITE_OPEN_READONLY, nullptr ) == SQLITE_OK )
+               {
+                  sqlite3_stmt* q = nullptr;
+                  if ( sqlite3_prepare_v2( raw, "SELECT count(*) FROM gap WHERE journey_id=987654321", -1, &q, nullptr ) == SQLITE_OK
+                    && sqlite3_step( q ) == SQLITE_ROW )
+                     orphanGaps = sqlite3_column_int( q, 0 );
+                  sqlite3_finalize( q );
+               }
+               sqlite3_close( raw );
+            }
+            std::vector<std::string> ns2;
+            const int again = StoreInferredReasons( *t, m.jid, reasons( m ), ns2 );
+            d["faultCommit"] = { { "stored", stored }, { "persisted", p }, { "notStored", list( ns ) }, { "clean", cleanAfter },
+                                 { "orphanGaps", orphanGaps }, { "again", again } };
+            faultCommitOk = stored == 0 && p == 0 && ns.size() == 2 && named( ns, m.steps[0], "could not be committed" )
+                         && named( ns, last, "could not be committed" ) && cleanAfter && orphanGaps == 0
+                         && again == 2 && ns2.empty() && persisted( m ) == 2 && clean();
+         }
+         // (g)
+         {
+            const Made m = make( "fBusy", 2 );
+            sqlite3* raw = nullptr;
+            if ( sqlite3_open_v2( IsoString( t->DbPath().ToUTF8() ).c_str(), &raw, SQLITE_OPEN_READWRITE, nullptr ) != SQLITE_OK )
+            {
+               sqlite3_close( raw );
+               throw Error( "second connection could not be opened" );
+            }
+            const int began = sqlite3_exec( raw, "BEGIN IMMEDIATE", nullptr, nullptr, nullptr );
+            std::vector<std::string> ns;
+            const int stored = StoreInferredReasons( *t, m.jid, reasons( m ), ns );
+            const bool cleanAfter = clean();
+            const int p = persisted( m );
+            sqlite3_exec( raw, "ROLLBACK", nullptr, nullptr, nullptr );
+            sqlite3_close( raw );
+            std::vector<std::string> ns2;
+            const int again = StoreInferredReasons( *t, m.jid, reasons( m ), ns2 );
+            d["faultBusy"] = { { "began", began }, { "stored", stored }, { "persisted", p }, { "notStored", list( ns ) },
+                               { "clean", cleanAfter }, { "again", again } };
+            faultBusyOk = began == SQLITE_OK && stored == 0 && p == 0 && ns.size() == 2
+                       && named( ns, m.steps[0], "locked" ) && named( ns, m.steps[1], "locked" ) && cleanAfter
+                       && again == 2 && ns2.empty() && persisted( m ) == 2 && clean();
+         }
+      }
+      catch ( const pcl::Exception& x ) { if ( error.IsEmpty() ) error = "fault: " + x.Message(); }
+      catch ( const std::exception& x ) { if ( error.IsEmpty() ) error = "fault: " + String( x.what() ); }
+
+      const bool ok = e2eOk && durableOk && nestedOk && faultEntryOk && faultAbortOk && faultCommitOk && faultBusyOk
+                   && error.IsEmpty();
       out["journeyWiringDetail"] = d;
-      out["journeyWiringChecks"] = { { "e2e", e2eOk }, { "durable", durableOk }, { "nested", nestedOk } };
+      out["journeyWiringChecks"] = { { "e2e", e2eOk }, { "durable", durableOk }, { "nested", nestedOk },
+                                     { "faultEntry", faultEntryOk }, { "faultAbort", faultAbortOk },
+                                     { "faultCommit", faultCommitOk }, { "faultBusy", faultBusyOk } };
       out["journeyWiringError"] = U8( error );
       out["journeyWiringOk"] = ok;
       allOk = allOk && ok;
