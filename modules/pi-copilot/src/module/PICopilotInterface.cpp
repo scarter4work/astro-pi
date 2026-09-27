@@ -808,7 +808,12 @@ bool PICopilotInterface::ConfirmKeeper( const String& summaryHtml )
 
 void PICopilotInterface::RefreshJourneyHost()
 {
+   // The replay renames a replay_journey lookup left pending belong to the
+   // tool calls, not to one request: a replay looked up in one round (or
+   // message) is applied in a later one, which rebuilds the host.
+   std::map<std::string, std::pair<int64, std::string>> pending = std::move( m_journeyHost.pendingReplayName );
    m_journeyHost = MakeJourneyHost();
+   m_journeyHost.pendingReplayName = std::move( pending );
 }
 
 JourneyToolHost PICopilotInterface::MakeJourneyHost()
