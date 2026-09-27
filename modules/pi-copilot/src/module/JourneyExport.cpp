@@ -683,6 +683,11 @@ nlohmann::json PrivacyStripPaths( const nlohmann::json& v )
    return v;
 }
 
+int JourneyKeepableSteps( JourneyStore& store, int64 journeyId )
+{
+   return store.StepCount( journeyId, true/*active; base + noEffect excluded, as IsBase*/ );
+}
+
 KeeperSummary BuildKeeperSummary( JourneyStore& store, int64 journeyId )
 {
    KeeperSummary k;

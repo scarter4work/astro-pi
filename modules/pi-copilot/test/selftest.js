@@ -528,6 +528,16 @@ try
       checkPhase( "j2.hr", { step: "mask", atXpsm: atXpsm( v ) } );
       v.id = "pcHrRenamed";                                       // recorded as an ImageIdentifier step
       checkPhase( "j2.hr", { step: "rename" } );
+      // Task 11 round 3: steps whose serialization could fool the container splitter -- markup-looking
+      // parameter text (escaped by PI) and a nested ProcessContainer (one step holding instances).
+      var t = new ImageWindow( 16, 16, 1, 32, true, false, "pcHrTricky" );
+      var tp = new PixelMath; tp.expression = "$T*0.5"; tp.useSingleExpression = true;
+      tp.expression1 = "<instance class=\"Evil\" enabled=\"true\"></instance> </instance> <x/> & \"q\"";
+      tp.executeOn( t.mainView );
+      var tc = new ProcessContainer, ta = new PixelMath, tb = new PixelMath;
+      ta.expression = "$T+0.1"; tb.expression = "$T*0.9"; tc.add( ta ); tc.add( tb );
+      tc.executeOn( t.mainView );
+      checkPhase( "j2.hr", { step: "tricky", atXpsm: atXpsm( t.mainView ) } );
       var dir = getEnvironmentVariable( "PICOPILOT_SELFTEST_SCRATCH" );
       if ( dir.length == 0 || !File.directoryExists( dir ) )
          throw new Error( "PICOPILOT_SELFTEST_SCRATCH is not an existing directory" );
