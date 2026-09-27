@@ -140,16 +140,19 @@ private:
 };
 
 // Hidden float window filled with one constant; force-closed on destruction.
+// Holds only the window's id and re-resolves it for each use (re-review m-4r): a held ImageWindow whose
+// window a test closed by id would be a stale handle whose destructor detaches a reused address.
 class JWindow
 {
 public:
 
    JWindow( const char* id, int w, int h, int channels, double value )
-      : m_window( w, h, channels, 32, true/*float*/, channels >= 3/*color*/, true/*initialProcessing*/, IsoString( id ) )
    {
-      if ( m_window.IsNull() )
+      ImageWindow win( w, h, channels, 32, true/*float*/, channels >= 3/*color*/, true/*initialProcessing*/, IsoString( id ) );
+      if ( win.IsNull() )
          throw Error( String( "JWindow: null window " ) + id );
-      View v = m_window.MainView();
+      View v = win.MainView();
+      m_id = v.Id();
       AutoViewLock lock( v );
       ImageVariant iv = v.Image();
       static_cast<Image&>( *iv ).Fill( float( value ) );
@@ -157,18 +160,18 @@ public:
 
    ~JWindow()
    {
-      try { if ( !m_window.IsNull() ) m_window.ForceClose(); } catch ( ... ) {}
+      try { ImageWindow w = ImageWindow::WindowById( m_id ); if ( !w.IsNull() ) w.ForceClose(); } catch ( ... ) {}
    }
 
    JWindow( const JWindow& ) = delete;
    JWindow& operator =( const JWindow& ) = delete;
 
-   View MainView() const { return m_window.MainView(); }
-   ImageWindow Window() const { return m_window; }
+   View MainView() const { return ImageWindow::WindowById( m_id ).MainView(); }
+   ImageWindow Window() const { return ImageWindow::WindowById( m_id ); }
 
 private:
 
-   ImageWindow m_window;
+   IsoString m_id;
 };
 
 // Deterministic Gaussian noise (xorshift + Box-Muller) around `level`, all channels.
@@ -788,7 +791,8 @@ const char* const kJ6Checks[] = { "settings", "master", "manual", "undo", "copil
                                   "transaction", "mutatorsLoud", "retentionOpen", "rowGone", "offThenOn", "gateStallLock",
                                   "gateStallWaiting", "gateStallGap", "txDefer", "noopNoLock", "owner", "gapKinds",
                                   "pjsrAbortRestored", "gapRowGone", "linkRowGone", "ignoredThenMaster", "chaos",
-                                  "recentRowGone", "ownerPrune", "writeCap" };
+                                  "recentRowGone", "ownerPrune", "writeCap", "deathOverflow", "deathWhileOff",
+                                  "createdAfterDeath", "startAfterDeath" };
 
 struct J6State
 {
@@ -833,6 +837,23 @@ JourneyTracker& J6Tracker( J6State& st )
    return *st.trk;
 }
 
+// Closes a J6 window and gives J6's tracker the ImageDeleted notification first (the in-process close may
+// send none): a still-open view, read before the close (re-review I-1r (5)).
+void J6Close( J6State& st, const std::string& id )
+{
+   if ( st.trk )
+      try
+      {
+         const ImageWindow w = ImageWindow::WindowById( IsoString( id.c_str() ) );
+         if ( !w.IsNull() )
+            st.trk->OnImageDeleted( w.MainView(), JourneyWallNow() );
+      }
+      catch ( ... )
+      {
+      }
+   JForceClose( id );
+}
+
 void J6Step( J6State& st, const std::string& step, const nlohmann::json& payload )
 {
    if ( step == "begin" )
@@ -844,6 +865,9 @@ void J6Step( J6State& st, const std::string& step, const nlohmann::json& payload
       if ( !st.store )
          throw Error( "store: " + oe );
       st.trk.reset( new JourneyTracker( st.store.get() ) );
+      // Re-review I-1r (5): J6's tracker gets the real notifications (the interface's handlers, through the
+      // paused production service); in-process closes / renames are also fed explicitly (J6Close, renames).
+      JourneyService::Instance().SetNotificationForwardForSelfTest( st.trk.get() );
       JourneyTracker& trk = *st.trk;
       JourneyStore& store = *st.store;
 
@@ -898,6 +922,7 @@ void J6Step( J6State& st, const std::string& step, const nlohmann::json& payload
                      && trk.ImageOfView( IsoString( mid.c_str() ) ) != 0;
       }
       ImageWindow::WindowById( IsoString( mid.c_str() ) ).MainView().Rename( "pcTrkMaster" );
+      trk.OnImageRenamed( J6MainView( "pcTrkMaster" ), JourneyWallNow() );   // the notification a rename sends
       st.made.push_back( "pcTrkMaster" );
       JTick( trk );
       st.jid = trk.JourneyOfView( "pcTrkMaster" );
@@ -1146,6 +1171,7 @@ void J6Step( J6State& st, const std::string& step, const nlohmann::json& payload
    {
       // (k) Rename: same image row, new id.
       J6MainView( "pcTrkMaster" ).Rename( "pcTrkRenamed" );
+      trk.OnImageRenamed( J6MainView( "pcTrkRenamed" ), JourneyWallNow() );
       st.made.push_back( "pcTrkRenamed" );
       JTick( trk );
       ImageRow ir;
@@ -1350,7 +1376,7 @@ void J6Step( J6State& st, const std::string& step, const nlohmann::json& payload
    else if ( step == "pjsrOpenNext" )
    {
       st.d["abortMeasured"]["runPjsrOpen"]["cppAtNextPhaseStart"] = Console().AbortEnabled();
-      JForceClose( "pcTrkPjsrOpen" );   // made in-process (run_pjsr): no JS wrapper holds it
+      J6Close( st, "pcTrkPjsrOpen" );   // made in-process (run_pjsr): no JS wrapper holds it
       JTick( trk );
    }
    else if ( step == "retentionOpen" )
@@ -1433,8 +1459,9 @@ void J6Step( J6State& st, const std::string& step, const nlohmann::json& payload
       }
       st.d["rowGone"]["deleted"] = js;
       trk.TakeJoinNotes();
-      JForceClose( "pcTrkG1" );                        // (a) closed
+      J6Close( st, "pcTrkG1" );                        // (a) closed
       J6MainView( "pcTrkG2" ).Rename( "pcTrkG2r" );   // (b) renamed; (c) pcTrkG3 is stepped at top level
+      trk.OnImageRenamed( J6MainView( "pcTrkG2r" ), JourneyWallNow() );
    }
    else if ( step == "rowGone" )
    {
@@ -1540,7 +1567,7 @@ void J6Step( J6State& st, const std::string& step, const nlohmann::json& payload
       {
          Console c;
          c.EnableAbort();
-         JForceClose( "pcTrkRgb_R" );
+         J6Close( st, "pcTrkRgb_R" );
          trk.Tick( JourneyWallNow(), true );   // gated: the close is seen, nothing is read
          c.DisableAbort();
       }
@@ -1614,7 +1641,7 @@ void J6Step( J6State& st, const std::string& step, const nlohmann::json& payload
       ImageRow ra;
       store.GetImage( a, ra );
       const std::string ownerWhileOpen = ra.owner;
-      JForceClose( "pcTrkOwn1" );
+      J6Close( st, "pcTrkOwn1" );
       JTick( trk );
       store.GetImage( a, ra );
       const std::string ownerAfterClose = ra.owner;
@@ -1622,13 +1649,13 @@ void J6Step( J6State& st, const std::string& step, const nlohmann::json& payload
       setOwner( a, live );
       make( "pcTrkOwn2" );
       const int64 b = trk.ImageOfView( "pcTrkOwn2" );
-      JForceClose( "pcTrkOwn2" );
+      J6Close( st, "pcTrkOwn2" );
       JTick( trk );
       setOwner( b, live );
       setOwner( a, "999999999:1" );   // a process that no longer exists
       make( "pcTrkOwn3" );
       const int64 c = trk.ImageOfView( "pcTrkOwn3" );
-      JForceClose( "pcTrkOwn3" );
+      J6Close( st, "pcTrkOwn3" );
       JTick( trk );
       trk.SetHistoryReaderForSelfTest( HistoryReadFn() );
       st.d["owner"] = { { "self", JourneyOwnerOf() }, { "whileOpen", ownerWhileOpen }, { "afterClose", ownerAfterClose },
@@ -1679,7 +1706,7 @@ void J6Step( J6State& st, const std::string& step, const nlohmann::json& payload
       {
          Console c;
          c.EnableAbort();
-         JForceClose( "pcTrkGH" );
+         J6Close( st, "pcTrkGH" );
          trk.Tick( JourneyWallNow(), true );
          c.DisableAbort();
       }
@@ -1695,7 +1722,7 @@ void J6Step( J6State& st, const std::string& step, const nlohmann::json& payload
       st.d["gapRowGone"] = { { "tickFailures", failures }, { "renamedSteps", ActiveSteps( store, mimg ) - before },
                              { "state", int( s.state ) }, { "pending", trk.PendingCount() } };
       st.ok["gapRowGone"] = !anyFailure && ActiveSteps( store, mimg ) == before + 1 && s.state == RecordingState::Recording;
-      JForceClose( "pcTrkGG" );
+      J6Close( st, "pcTrkGG" );
       JTick( trk );
    }
    else if ( step == "linkRowGone" )
@@ -1721,7 +1748,7 @@ void J6Step( J6State& st, const std::string& step, const nlohmann::json& payload
       trk.TakeJoinNotes();
       JEvalJs( "(function(){ new ImageWindow( 27, 27, 1, 32, true, false, \"pcTrkLD\" ); })()" );   // 5.
       st.made.push_back( "pcTrkLD" );
-      JForceClose( "pcTrkLE" );   // its journey must still end
+      J6Close( st, "pcTrkLE" );   // its journey must still end
       nlohmann::json failures = nlohmann::json::array();
       for ( int i = 0; i < 5; ++i )   // 6.
       {
@@ -1746,8 +1773,8 @@ void J6Step( J6State& st, const std::string& step, const nlohmann::json& payload
                               { "ldRowMissingDecisions", ldRowMissing } };
       st.ok["linkRowGone"] = !anyFailure && ldRowMissing >= 1 && removedNotes >= 1 && ler.status == "ended"
                           && trk.JourneyOfView( "pcTrkLD" ) != lm && trk.JourneyOfView( "pcTrkLM" ) != lm;
-      JForceClose( "pcTrkLD" );
-      JForceClose( "pcTrkLM" );
+      J6Close( st, "pcTrkLD" );
+      J6Close( st, "pcTrkLM" );
       JTick( trk );
    }
    else if ( step == "recentSetup" )
@@ -1820,8 +1847,8 @@ void J6Step( J6State& st, const std::string& step, const nlohmann::json& payload
                                 { "rt", trk.ImageOfView( "pcTrkRT" ) }, { "xState", int( xs2.state ) }, { "xReason", U8( xs2.reason ) } } ) );
       st.ok["recentRowGone"] = !anyFailure && rtRowMissing <= 2 && (looksAfter == looksBefore || trk.ImageOfView( "pcTrkRT" ) != 0)
                             && xs2.state == RecordingState::Recording;
-      JForceClose( "pcTrkRT" );
-      JForceClose( "pcTrkRX" );
+      J6Close( st, "pcTrkRT" );
+      J6Close( st, "pcTrkRX" );
       JTick( trk );
    }
    else if ( step == "writeCap" )
@@ -1929,6 +1956,9 @@ void J6Step( J6State& st, const std::string& step, const nlohmann::json& payload
       std::mt19937 rng( 7919u + unsigned( round ) );
       Console c;
       nlohmann::json& log = st.d["chaos"]["rounds"][round];
+      const int64 masterImage = payload.contains( "master" )
+                              ? trk.ImageOfView( IsoString( payload.at( "master" ).get<std::string>().c_str() ) ) : 0;
+      bool masterCounted = false;
       for ( int i = 0; i < 10; ++i )
       {
          std::string action;
@@ -1992,7 +2022,7 @@ void J6Step( J6State& st, const std::string& step, const nlohmann::json& payload
          {
             const std::string v = openViews[rng() % openViews.size()];
             trk.OnImageUpdated( J6MainView( v.c_str() ), JourneyWallNow() );   // closed with unrecorded changes
-            JForceClose( v );
+            J6Close( st, v );
             action = "close " + v;
             ++st.chaosCount["closes"];
          }
@@ -2014,6 +2044,7 @@ void J6Step( J6State& st, const std::string& step, const nlohmann::json& payload
             const std::string v = openViews[rng() % openViews.size()];
             const std::string nv = v + "r";
             J6MainView( v.c_str() ).Rename( IsoString( nv.c_str() ) );
+            trk.OnImageRenamed( J6MainView( nv.c_str() ), JourneyWallNow() );
             std::replace( st.chaosViews.begin(), st.chaosViews.end(), v, nv );
             st.made.push_back( nv );
             action = "rename " + v + " -> " + nv;
@@ -2034,7 +2065,7 @@ void J6Step( J6State& st, const std::string& step, const nlohmann::json& payload
                   raw.Exec( ( "DELETE FROM image WHERE id=" + std::to_string( img ) ).c_str() );
                }
                trk.OnImageUpdated( J6MainView( v.c_str() ), JourneyWallNow() );
-               JForceClose( v );
+               J6Close( st, v );
                action = "vanish+close " + v;
                ++st.chaosCount["deletes"];
                ++st.chaosCount["closes"];
@@ -2079,11 +2110,19 @@ void J6Step( J6State& st, const std::string& step, const nlohmann::json& payload
                st.chaosFirstFailure = U8( f );
          }
          log.push_back( action + (f.IsEmpty() ? "" : " -> TICK FAILED: " + U8( f )) );
+         // m-2r: the step the top level made on the chaos master, once the tracker RECORDED it (not the JS
+         // attempt): an active, non-base step row of the master's image.
+         if ( !masterCounted && masterImage != 0 )
+            for ( const StepRow& r : store.Steps( masterImage, false ) )
+               if ( r.state == "active" && !r.params.value( "base", false ) )
+               {
+                  ++st.chaosCount["masterSteps"];
+                  masterCounted = true;
+                  break;
+               }
       }
       if ( c.AbortEnabled() )
          c.DisableAbort();
-      if ( payload.value( "masterStepped", false ) )
-         ++st.chaosCount["masterSteps"];
    }
    else if ( step == "chaosEnd" )
    {
@@ -2151,8 +2190,99 @@ void J6Step( J6State& st, const std::string& step, const nlohmann::json& payload
                     && ActiveSteps( store, mimg ) == st.chaosBefore + 5 && sr.state == RecordingState::Recording
                     && sg.state == RecordingState::Recording && trk.JourneyOfView( "pcTrkChaosNew" ) != 0;
       for ( const std::string& v : st.chaosViews )
-         JForceClose( v );   // made in-process: no JS wrapper holds them
-      JForceClose( "pcTrkChaosNew" );
+         J6Close( st, v );   // made in-process: no JS wrapper holds them
+      J6Close( st, "pcTrkChaosNew" );
+      JTick( trk );
+   }
+   else if ( step == "deaths" )
+   {
+      // Re-review I-1r: a death is kept out of the droppable queue, recorded while recording is off, ordered
+      // against the queued events, and consumed exactly once (StartJourneyFor too). A fake OnImageDeleted on a
+      // still-open window is, for the tracker, a close followed by a new window at the same address.
+      auto master = [&]( const char* id )
+      {
+         JEvalJs( String( "(function(){ new ImageWindow( 23, 23, 1, 32, true, false, \"" ) + id + "\" ); })()" );
+         JSetKeywords( id, Kw( { { "IMAGETYP", "'Master Light'" }, { "OBJECT", ( std::string( "'" ) + id + "'" ).c_str() } } ) );
+         st.made.push_back( id );
+      };
+      auto closedByDeath = [&]( const char* id )
+      {
+         int n = 0;
+         for ( const std::string& x : trk.RecentDecisionsForSelfTest() )
+            if ( x == std::string( "closed (death): " ) + id )
+               ++n;
+         return n;
+      };
+      master( "pcTrkDW1" );
+      master( "pcTrkDW2" );
+      master( "pcTrkDW3" );
+      JTick( trk, 3 );
+      nlohmann::json d = nlohmann::json::object();
+      // (1) overflow: 1000 queued events after the death.
+      {
+         const int before = closedByDeath( "pcTrkDW1" );
+         trk.OnImageDeleted( J6MainView( "pcTrkDW1" ), JourneyWallNow() );
+         const View other = J6MainView( "pcTrkRenamed" );
+         for ( int i = 0; i < 1000; ++i )
+            trk.OnImageUpdated( other, JourneyWallNow() );
+         JTick( trk, 2 );
+         d["overflow"] = { { "closedByDeath", closedByDeath( "pcTrkDW1" ) - before }, { "reSeen", trk.ImageOfView( "pcTrkDW1" ) != 0 } };
+         st.ok["deathOverflow"] = closedByDeath( "pcTrkDW1" ) - before == 1 && trk.ImageOfView( "pcTrkDW1" ) != 0;
+      }
+      // (2) recording off, then on.
+      {
+         const int before = closedByDeath( "pcTrkDW2" );
+         trk.SetEnabled( false );
+         trk.OnImageDeleted( J6MainView( "pcTrkDW2" ), JourneyWallNow() );
+         trk.SetEnabled( true );
+         JTick( trk, 2 );
+         d["whileOff"] = { { "closedByDeath", closedByDeath( "pcTrkDW2" ) - before }, { "reSeen", trk.ImageOfView( "pcTrkDW2" ) != 0 } };
+         st.ok["deathWhileOff"] = closedByDeath( "pcTrkDW2" ) - before == 1 && trk.ImageOfView( "pcTrkDW2" ) != 0;
+      }
+      // (3) a Created (and an Updated) of the NEW window at the address, queued after the death: they belong
+      //     to the new window -- its first sighting is the Created time, and no gap lands on the old image.
+      {
+         const int64 oldImg = trk.ImageOfView( "pcTrkDW3" ), oldJ = trk.JourneyOfView( "pcTrkDW3" );
+         const size_t gaps0 = store.Gaps( oldJ ).size();
+         trk.OnImageDeleted( J6MainView( "pcTrkDW3" ), JourneyWallNow() );
+         const double t0 = JourneyWallNow() - 5;   // a distinctive time
+         trk.OnImageCreated( J6MainView( "pcTrkDW3" ), t0 );
+         trk.OnImageUpdated( J6MainView( "pcTrkDW3" ), JourneyWallNow() );
+         trk.SetHistoryReaderForSelfTest( []( const IsoString& id, int from )
+         {
+            if ( id == "pcTrkDW3" )
+            {
+               HistorySnapshot s;
+               s.busy = true;   // the candidate waits, undecided, so its first sighting can be read
+               return s;
+            }
+            return ReadViewHistory( id, from );
+         } );
+         JTick( trk );
+         const double seen = trk.FirstSeenForSelfTest( "pcTrkDW3" );
+         trk.SetHistoryReaderForSelfTest( HistoryReadFn() );
+         JTick( trk, 2 );
+         d["createdAfter"] = { { "firstSeen", seen }, { "t0", t0 }, { "gapsOnOld", store.Gaps( oldJ ).size() - gaps0 },
+                               { "oldImage", oldImg } };
+         st.ok["createdAfterDeath"] = std::fabs( seen - t0 ) < 1e-3 && store.Gaps( oldJ ).size() == gaps0;
+      }
+      // (4) start_journey right after a death: the death is consumed once, the new journey keeps recording.
+      {
+         JEvalJs( "(function(){ new ImageWindow( 22, 22, 1, 32, true, false, \"pcTrkDX\" ); })()" );
+         st.made.push_back( "pcTrkDX" );
+         trk.OnImageDeleted( J6MainView( "pcTrkDX" ), JourneyWallNow() );
+         String err;
+         const int64 jx = trk.StartJourneyFor( J6MainView( "pcTrkDX" ), err, JourneyWallNow() );
+         JTick( trk, 2 );
+         JourneyRow jr;
+         const bool got = jx != 0 && store.GetJourney( jx, jr );
+         d["startAfter"] = { { "journey", jx }, { "error", U8( err ) }, { "status", got ? jr.status : std::string() },
+                             { "tracked", trk.JourneyOfView( "pcTrkDX" ) } };
+         st.ok["startAfterDeath"] = got && jr.status == "recording" && trk.JourneyOfView( "pcTrkDX" ) == jx;
+      }
+      st.d["deaths"] = d;
+      for ( const char* id : { "pcTrkDW1", "pcTrkDW2", "pcTrkDW3", "pcTrkDX" } )
+         J6Close( st, id );
       JTick( trk );
    }
    else if ( step == "gate" )
@@ -2231,8 +2361,8 @@ void J6Step( J6State& st, const std::string& step, const nlohmann::json& payload
       const bool ga = a != 0 && store.GetImage( a, ra ), gb = b != 0 && store.GetImage( b, rb );
       st.d["dupMaster"] = { { "a", a }, { "b", b }, { "aView", ra.viewId }, { "bView", rb.viewId } };
       st.ok["dupMaster"] = a != 0 && b != 0 && a != b && ga && gb && ra.viewId == "pcTrkDup1" && rb.viewId == "pcTrkDup2";
-      JForceClose( "pcTrkDup1" );   // made here (in-process); no JS wrapper holds them
-      JForceClose( "pcTrkDup2" );
+      J6Close( st, "pcTrkDup1" );   // made here (in-process); no JS wrapper holds them
+      J6Close( st, "pcTrkDup2" );
       JTick( trk );
    }
    else if ( step == "joinFault" )
@@ -2274,8 +2404,8 @@ void J6Step( J6State& st, const std::string& step, const nlohmann::json& payload
       st.ok["joinAtomic"] = faultsM >= 2 && journeysFailed == journeys0 && rowsFailedM == 0
                          && journeysOk == journeys0 + 1 && rowsOkM == 1 && trk.ImageOfView( "pcTrkTxM" ) != 0
                          && faultsL >= 2 && rowsFailedL == 0 && rowsOkL == 1 && trk.JourneyOfView( "pcTrkTxL" ) == jid;
-      JForceClose( "pcTrkTxM" );
-      JForceClose( "pcTrkTxL" );
+      J6Close( st, "pcTrkTxM" );
+      J6Close( st, "pcTrkTxL" );
       JTick( trk );
    }
    else if ( step == "startJourney" )
@@ -2293,7 +2423,7 @@ void J6Step( J6State& st, const std::string& step, const nlohmann::json& payload
       const int64 offJ = trk.StartJourneyFor( J6MainView( "pcTrkStart" ), offError, JourneyWallNow() );
       const int journeysOff = JourneyCount( store );
       trk.SetEnabled( true );
-      JForceClose( "pcTrkGone1" );   // closed since the last tick: dead Views in the tracker's lists
+      J6Close( st, "pcTrkGone1" );   // closed since the last tick: a dead handle in the tracker's lists (m-3r)
       String onError;
       int64 onJ = 0;
       std::string threw;
@@ -2303,7 +2433,7 @@ void J6Step( J6State& st, const std::string& step, const nlohmann::json& payload
       }
       catch ( const pcl::Exception& x ) { threw = U8( x.Message() ); }
       catch ( ... )                     { threw = "unknown exception"; }
-      JForceClose( "pcTrkGone2" );
+      J6Close( st, "pcTrkGone2" );
       st.d["startJourney"] = { { "offJourney", offJ }, { "offError", U8( offError ) }, { "journeysOff", journeysOff - journeys0 },
                                { "onJourney", onJ }, { "onError", U8( onError ) }, { "threw", threw },
                                { "journeysOn", JourneyCount( store ) - journeys0 } };
@@ -4422,6 +4552,7 @@ bool RunJourneySelfTest( nlohmann::json& out )
       // error. pcJourneyPre/pcJourneyPreNew stay open until exit, as before Task 7.
       for ( const std::string& id : st.made )
          JForceClose( id );
+      JourneyService::Instance().SetNotificationForwardForSelfTest( nullptr );
       st.trk.reset();
       st.store.reset();
       st.frames.reset();

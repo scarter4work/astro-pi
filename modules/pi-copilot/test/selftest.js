@@ -729,6 +729,7 @@ try
       pm( "pcTrkRgb_R", "$T*1.0" ); j6( "gateStall3" );
       pm( "pcTrkRenamed", "$T*1.0" ); j6( "txDefer" );                        // re-review m1 / m2
       j6( "owner" );                                                          // re-review m6
+      j6( "deaths" );                                                         // re-review round 4: I-1r
 
       pm( "pcTrkRenamed", "$T*1.0" ); j6( "gapRowGone" );                    // fix round 3: N1
       j6( "linkRowGone" );                                                    // N2 / I-C
@@ -758,7 +759,7 @@ try
             pm( cm, "$T*1.0" );
             newImage( cm, "pcTrkCD" + r );
          }
-         j6( "chaosRound", { round: r, masterStepped: stepped } );
+         j6( "chaosRound", stepped ? { round: r, master: cm } : { round: r } );
          pm( "pcTrkRenamed", "$T*1.0" );
       }
       j6( "chaosEnd" );

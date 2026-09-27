@@ -151,6 +151,8 @@ public:
    // The last 100 candidate evaluations and scan anomalies
    // ("<t> r=<result> ticks=<n> <view> <evidence summary>"), for self-test diagnostics.
    std::vector<std::string> RecentDecisionsForSelfTest() const { return { m_decisions.begin(), m_decisions.end() }; }
+   // A candidate's / ignored window's first sighting (-1 when not a candidate or ignored).
+   double FirstSeenForSelfTest( const IsoString& viewId ) const;
    // The tick-wide failure (m_pausedReason) the last tick ended with; "" = none. Only a failure no
    // per-item boundary could contain sets it (fix round 3).
    String TickFailureForSelfTest() const { return m_pausedReason; }
@@ -201,7 +203,13 @@ private:
    enum class EventKind { Created, Updated, Renamed, Deleted, Saved, Focused };
    // Everything an event needs, read inside the callback while the view is alive (ids and an opaque
    // handle only; no View is queued).
-   struct PendingEvent { EventKind kind; const void* handle = nullptr; std::string id, mainId; bool preview = false; double t = 0; };
+   struct PendingEvent { EventKind kind; const void* handle = nullptr; std::string id, mainId; bool preview = false; double t = 0;
+                         uint64 seq = 0; };
+   // A window's death (ImageDeleted of a main view), kept OUT of the droppable event queue (re-review
+   // I-1r): recorded even while recording is off, never dropped on overflow, consumed exactly once by the
+   // next DropClosed (Tick or StartJourneyFor). seq orders it against the queued events: only events queued
+   // BEFORE the death belong to the dead window; later ones belong to a new window at the reused address.
+   struct Death { uint64 seq = 0; const void* handle = nullptr; };
    // One open window, read at the start of a tick (data only).
    struct OpenWindow { const void* handle = nullptr; std::string id; size_type modifyCount = 0; };
    struct RecentStep  { std::string identity; int64 imageId = 0, journeyId = 0, stepId = 0; double start = -1, end = -1; };
@@ -217,6 +225,9 @@ private:
    bool                     m_forceScan = true;
    bool                     m_renameSinceScan = false;
    std::set<const void*>    m_renamedHandles;        // Renamed notifications since the last scan (opaque handles)
+   std::vector<Death>       m_deaths;                // see Death
+   uint64                   m_seq = 0;               // one counter for events and deaths
+   bool                     m_identityLost = false;  // m_deaths overflowed: every entry is treated as closed once
    bool                     m_scannedOnce = false;   // views found by the first scan (after start / re-enable) existed before: not fresh
    double                   m_gateSince = 0;         // start of the current continuous deferral (0 = none, R4)
    String                   m_gateReason;
@@ -343,6 +354,8 @@ public:
    // no more ticks until re-enabled. Never used outside the harness.
    void FlushAndPauseForSelfTest();
    void SetEnabledForSelfTest( bool on ) { m_selfTestPaused = !on; }
+   // Self-test: every notification is also given to this tracker (J6's own; nullptr = none).
+   void SetNotificationForwardForSelfTest( JourneyTracker* t ) { m_forward = t; }
 
 private:
 
@@ -352,6 +365,7 @@ private:
    bool                              m_started = false;
    bool                              m_selfTestPaused = false;
    bool                              m_inOnTick = false;
+   JourneyTracker*                   m_forward = nullptr;
    std::unique_ptr<JourneyStore>     m_store;
    String                            m_storeError;
    double                            m_lastOpenAttempt = 0;

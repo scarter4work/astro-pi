@@ -30,6 +30,7 @@
 #include <cstdlib>
 #include <ctime>
 #include <fstream>
+#include <map>
 #include <set>
 #include <sstream>
 #include <thread>
@@ -373,9 +374,12 @@ void JourneyTracker::QueueEvent( EventKind kind, const View& v, double now )
       m_forceScan = true;   // unreadable: the next scan re-derives the state
       return;
    }
+   e.seq = ++m_seq;
    if ( m_events.size() >= 1000 )
    {
-      m_events.pop_front();   // bounded (data only); the forced scan re-derives whatever was dropped
+      // Bounded (data only). Updated / Renamed / Saved / Focused / Created are re-derived by the forced scan
+      // (ModifyCount and id comparisons); deaths are never in this queue (m_deaths).
+      m_events.pop_front();
       m_forceScan = true;
    }
    m_events.push_back( std::move( e ) );
@@ -384,7 +388,42 @@ void JourneyTracker::QueueEvent( EventKind kind, const View& v, double now )
 void JourneyTracker::OnImageCreated( const View& view, double now ) { QueueEvent( EventKind::Created, view, now ); }
 void JourneyTracker::OnImageUpdated( const View& view, double now ) { QueueEvent( EventKind::Updated, view, now ); }
 void JourneyTracker::OnImageRenamed( const View& view, double now ) { QueueEvent( EventKind::Renamed, view, now ); }
-void JourneyTracker::OnImageDeleted( const View& view, double now ) { QueueEvent( EventKind::Deleted, view, now ); }
+void JourneyTracker::OnImageDeleted( const View& view, double /*now*/ )
+{
+   // Re-review I-1r: a death is recorded even while recording is off (an opaque integer, no image data),
+   // never dropped, and consumed exactly once. Read now, while the view is alive.
+   try
+   {
+      if ( view.IsNull() || view.IsPreview() )
+         return;
+      Death d;
+      d.seq = ++m_seq;
+      d.handle = HandleAccess::Of( view );
+      if ( m_deaths.size() >= 100000 )
+      {
+         m_deaths.clear();
+         m_identityLost = true;   // backstop: every entry is treated as closed at the next DropClosed
+      }
+      m_deaths.push_back( d );
+      m_forceScan = true;
+   }
+   catch ( ... )
+   {
+      m_identityLost = true;
+   }
+}
+
+double JourneyTracker::FirstSeenForSelfTest( const IsoString& viewId ) const
+{
+   const std::string id( viewId.c_str() );
+   for ( const std::unique_ptr<Candidate>& c : m_candidates )
+      if ( c->id == id )
+         return c->firstSeen;
+   for ( const std::unique_ptr<Ignored>& i : m_ignored )
+      if ( i->id == id )
+         return i->firstSeen;
+   return -1;
+}
 void JourneyTracker::OnImageSaved( const View& view, double now )   { QueueEvent( EventKind::Saved, view, now ); }
 void JourneyTracker::OnImageFocused( const View& view, double now ) { QueueEvent( EventKind::Focused, view, now ); }
 
@@ -584,15 +623,24 @@ void JourneyTracker::DropClosed( std::vector<OpenWindow>& open )
       const View mv = w.MainView();
       open.push_back( { HandleAccess::Of( mv ), ViewIdOf( mv ), w.ModifyCount() } );
    }
-   // A queued Deleted notification names a window that is gone even if its handle was already reused by a
-   // new window (the core reuses freed addresses).
-   std::set<const void*> dead;
-   for ( const PendingEvent& e : m_events )
-      if ( e.kind == EventKind::Deleted && !e.preview )
-         dead.insert( e.handle );
-   auto isOpen = [&open, &dead]( const void* h )
+   // Deaths name windows that are gone even if the core already reused their addresses for new windows
+   // (re-review I-1r). The latest death per handle; every death is consumed here, exactly once.
+   std::map<const void*, uint64> dead;
+   for ( const Death& d : m_deaths )
+      dead[d.handle] = std::max( dead[d.handle], d.seq );
+   m_deaths.clear();
+   const bool identityLost = m_identityLost;
+   m_identityLost = false;
+   if ( !dead.empty() || identityLost )
+      m_forceScan = true;
+   auto deathOf = [&dead]( const void* h ) -> uint64
    {
-      if ( dead.count( h ) > 0 )
+      const auto it = dead.find( h );
+      return it == dead.end() ? 0 : it->second;
+   };
+   auto isOpen = [&open, &dead, identityLost]( const void* h )
+   {
+      if ( identityLost || dead.count( h ) > 0 )
          return false;
       for ( const OpenWindow& o : open )
          if ( o.handle == h )   // integer comparison against live handles: nothing is dereferenced
@@ -607,8 +655,11 @@ void JourneyTracker::DropClosed( std::vector<OpenWindow>& open )
          // R4: closed with changes not recorded yet (dirty, or an Updated notification still queued) --
          // e.g. during a busy stall: the lost steps become a gap, never silently nothing.
          bool pending = t->dirty;
-         for ( const PendingEvent& e : m_events )
-            pending = pending || (e.kind == EventKind::Updated && e.handle == t->handle);
+         const uint64 died = deathOf( t->handle );
+         for ( const PendingEvent& e : m_events )   // only updates queued before its death were its own
+            pending = pending || (e.kind == EventKind::Updated && e.handle == t->handle && (died == 0 || e.seq < died));
+         if ( died != 0 || identityLost )
+            Decision( "closed (" + std::string( died != 0 ? "death" : "identity lost" ) + "): " + t->id );
          if ( pending )
          {
             int lastSeq = 0;
@@ -631,10 +682,14 @@ void JourneyTracker::DropClosed( std::vector<OpenWindow>& open )
    EraseIf( m_tracked, [&]( const Tracked& t ) { return !isOpen( t.handle ); } );
    EraseIf( m_candidates, [&]( const Candidate& c ) { return !isOpen( c.handle ); } );
    EraseIf( m_ignored, [&]( const Ignored& i ) { return !isOpen( i.handle ); } );
-   // Events of a dead handle must not act on a new window that reuses it.
+   // Events of a dead window must not act on a new window at the reused address: only those queued BEFORE
+   // the death are discarded; later ones belong to the new window (re-review I-1r (c)).
    for ( auto& e : m_events )
-      if ( dead.count( e.handle ) > 0 && e.kind != EventKind::Deleted )
+   {
+      const uint64 died = deathOf( e.handle );
+      if ( died != 0 && e.seq < died )
          e.handle = nullptr;
+   }
 }
 
 void JourneyTracker::Scan( double now, const std::vector<OpenWindow>& open )
@@ -647,14 +702,23 @@ void JourneyTracker::Scan( double now, const std::vector<OpenWindow>& open )
          if ( id != t->id )
          try
          {
-            // The same live handle under a new id: a rename. Review M9: without a rename notification since
-            // the last scan it may be a reused handle; recorded for diagnosis (a queued Deleted notification
-            // already dropped a reused one in DropClosed).
+            // The same live handle under a new id. With a rename notification since the last scan, a rename.
+            // Without one (notifications working), it cannot be told from a new window at a reused address:
+            // re-review I-1r -- the old window is closed and this one is a new window (a master re-joins its
+            // own journey through the fingerprint resume).
             if ( m_renamedHandles.count( o.handle ) == 0 && PICopilotJourneyNotificationsWork )
             {
                char head[48];
                std::snprintf( head, sizeof head, "%.3f ", now );
-               Decision( head + std::string( "id change without a rename notification: " ) + t->id + " -> " + id );
+               Decision( head + std::string( "id change without a rename notification (closed + new): " ) + t->id + " -> " + id );
+               m_closed.push_back( t->journeyId );
+               m_closedImages.push_back( t->imageId );
+               if ( t->dirty )
+                  m_pendingGaps.push_back( { t->journeyId, t->imageId, 0, "closed before its last steps were recorded" } );
+               const void* h = o.handle;
+               EraseIf( m_tracked, [h]( const Tracked& x ) { return x.handle == h; } );
+               AddCandidate( id, h, now, m_scannedOnce );
+               continue;
             }
             m_store->SetImageView( t->imageId, id, FilePathOf( id ) );
             t->id = id;
@@ -1843,12 +1907,15 @@ void JourneyService::OnTick()
       RunRetention();
 }
 
-void JourneyService::OnImageCreated( const View& v ) { if ( m_tracker ) m_tracker->OnImageCreated( v, JourneyWallNow() ); }
-void JourneyService::OnImageUpdated( const View& v ) { if ( m_tracker ) m_tracker->OnImageUpdated( v, JourneyWallNow() ); }
-void JourneyService::OnImageRenamed( const View& v ) { if ( m_tracker ) m_tracker->OnImageRenamed( v, JourneyWallNow() ); }
-void JourneyService::OnImageDeleted( const View& v ) { if ( m_tracker ) m_tracker->OnImageDeleted( v, JourneyWallNow() ); }
-void JourneyService::OnImageSaved( const View& v )   { if ( m_tracker ) m_tracker->OnImageSaved( v, JourneyWallNow() ); }
-void JourneyService::OnImageFocused( const View& v ) { if ( m_tracker ) m_tracker->OnImageFocused( v, JourneyWallNow() ); }
+#define PICOPILOT_FORWARD( call ) \
+   do { if ( m_tracker ) m_tracker->call; if ( m_forward != nullptr ) m_forward->call; } while ( false )
+void JourneyService::OnImageCreated( const View& v ) { PICOPILOT_FORWARD( OnImageCreated( v, JourneyWallNow() ) ); }
+void JourneyService::OnImageUpdated( const View& v ) { PICOPILOT_FORWARD( OnImageUpdated( v, JourneyWallNow() ) ); }
+void JourneyService::OnImageRenamed( const View& v ) { PICOPILOT_FORWARD( OnImageRenamed( v, JourneyWallNow() ) ); }
+void JourneyService::OnImageDeleted( const View& v ) { PICOPILOT_FORWARD( OnImageDeleted( v, JourneyWallNow() ) ); }
+void JourneyService::OnImageSaved( const View& v )   { PICOPILOT_FORWARD( OnImageSaved( v, JourneyWallNow() ) ); }
+void JourneyService::OnImageFocused( const View& v ) { PICOPILOT_FORWARD( OnImageFocused( v, JourneyWallNow() ) ); }
+#undef PICOPILOT_FORWARD
 
 void JourneyService::AddNote( const String& note )
 {

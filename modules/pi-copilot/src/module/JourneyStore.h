@@ -76,6 +76,10 @@ class JourneyStore
 {
 public:
 
+   // Schema v1 was never released (re-review m-1r, verified: the shipped 0.1.2.0 has no journey code and
+   // no library exists on the development machine), so its late changes -- image.owner and AUTOINCREMENT
+   // ids for journey / image / step -- stay in v1 without a bump. Delete any development journey library
+   // made before them (it keeps rowid reuse).
    static constexpr int SchemaVersion = 1;
 
    // Opens (creating a NEW file only when none exists) and checks it:
