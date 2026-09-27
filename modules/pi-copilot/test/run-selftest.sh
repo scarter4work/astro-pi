@@ -39,6 +39,22 @@ if (( 10#$PICOPILOT_TEST_SLOT < 50 || 10#$PICOPILOT_TEST_SLOT > 256 )); then
 fi
 PICOPILOT_TEST_SLOT=$(( 10#$PICOPILOT_TEST_SLOT ))
 
+# Per-run private TMPDIR (thist-hang-investigation.md item 2). Measured: PI's
+# own ~PI~*.swp image swap files, its qipc instance lock files, and
+# xvfb-run's own auth/lock dir all follow $TMPDIR. Giving every run its own
+# private (0700), throwaway directory means a killed/timed-out run's leaked
+# files can never collide with another concurrent run's and never pile up in
+# bare /tmp (16,940 leaked swap files / 5.5 GB were found there from before
+# this existed -- see test/clean-stale-swap.sh). Every OTHER mktemp /
+# mktemp -d call below (HANDOFF_DIR, JOURNEY_XDG, LIB_STAMP, STALL_PORT_FILE,
+# ECHO_DIR, R, ...) already honours $TMPDIR with no further changes, and
+# cleanup() removes the whole thing on every exit path.
+PICOPILOT_RUNTIME_BASE="${XDG_RUNTIME_DIR:-/tmp/picopilot-$(id -u)/runs}"
+mkdir -p -m 700 "$PICOPILOT_RUNTIME_BASE"
+TMPDIR="$(mktemp -d "$PICOPILOT_RUNTIME_BASE/run.XXXXXX")"
+chmod 700 "$TMPDIR"
+export TMPDIR
+
 SLOT_SETTINGS="$(printf '%s/core-%03d-pxi.settings' "$HOME/.PixInsight" "$PICOPILOT_TEST_SLOT")"
 rm -f "$SLOT_SETTINGS"
 # One cleanup for every EXIT path (0.2.0.0). Every variable is empty until the
@@ -56,6 +72,13 @@ cleanup()
    if [ -n "${JOURNEY_XDG:-}" ]; then rm -rf "$JOURNEY_XDG"; fi
    if [ -n "${STALL_PID:-}" ]; then kill "$STALL_PID" 2>/dev/null || true; fi
    if [ -n "${ECHO_PID:-}" ]; then kill "$ECHO_PID" 2>/dev/null || true; fi
+   if [ -n "${WATCHDOG_PID:-}" ]; then kill "$WATCHDOG_PID" 2>/dev/null || true; fi
+   # Belt and suspenders on top of the individual removals above: everything
+   # this run created via a bare mktemp/mktemp -d lives under TMPDIR (see
+   # where it's set, above), so this catches anything new added here later
+   # without a matching explicit rm, and covers an abnormal exit (e.g. ^C)
+   # that never reaches the lines below it.
+   if [ -n "${TMPDIR:-}" ] && [ -d "${TMPDIR:-}" ]; then rm -rf "$TMPDIR"; fi
    return 0
 }
 trap cleanup EXIT
@@ -117,6 +140,17 @@ PY
 }
 
 [ -f "$SO" ] || { echo "FAIL: module not built at $SO"; exit 1; }
+# Resolve before use (thist-hang-investigation.md item 3): a -m= path reached
+# through a symlinked component (e.g. a harness copy living under a /tmp that
+# is itself a symlink) can make PI's own module search silently map a
+# DIFFERENT file than the one this argument names, while looking identical as
+# text. Measured live: a copy under /tmp ran the INSTALLED 0.1.2.0 module
+# instead of this dev build's -m= .so, and "T-hist takes minutes" turned out
+# to be the live self-test running there, not a hang. Always pass PI the
+# canonical, symlink-free path; watchdog.py's /proc/<pid>/maps check then
+# compares like for like instead of maybe comparing two spellings of the same
+# file, or missing a real substitution.
+SO="$(realpath -e "$SO")"
 "$PI" --sign-module-file="$SO" --xssk-file="$KEYS" --xssk-password="$PASS"
 [ -f "${SO%.so}.xsgn" ] || { echo "FAIL: signing produced no .xsgn"; exit 1; }
 
@@ -156,12 +190,20 @@ unset KR_KEY
 # setting, read (read-only) from the real PixInsight settings file -- the
 # slot-90 settings are empty. An explicit PICOPILOT_TEST_GRAXPERT_APP wins.
 # Concurrent slots: PixInsight's GraXpert core bridges to the program through
-# FIXED shared temp files (/tmp/PixInsight.xisf, /tmp/PixInsight_GraXpert.xisf),
-# so two instances running it at once clobber each other. The self-test
-# therefore runs every GraXpert-core call (B10 live, B10b stand-in) under an
-# exclusive flock on /tmp/picopilot-<uid>/graxpert-selftest.lock (dir 0700)
-# (GraXpertCoreSelfTestLock); only those sections are serialized, the rest of
-# the run stays parallel. The wait is printed below (lockWaitMs).
+# shared exchange files named /PixInsight.xisf and /PixInsight_GraXpert.xisf
+# UNDER $TMPDIR -- MEASURED 2026-09-26 (thist-hang-investigation.md item 2):
+# with this run's own private TMPDIR (set above) exported to PI, those two
+# files showed up under it, actively rewritten, exactly during this run's own
+# B10 live section -- not in bare /tmp. So two runs that BOTH use this
+# harness (each with its own private TMPDIR) no longer clobber each other
+# through these files. The flock below stays anyway: it still protects
+# against anything that ISN'T isolated this way -- an older harness copy that
+# predates the TMPDIR fix, or the user's own live, interactive PixInsight
+# session, both of which still fall back to plain /tmp/PixInsight*.xisf.
+# The self-test therefore still runs every GraXpert-core call (B10 live, B10b
+# stand-in) under an exclusive flock on /tmp/picopilot-<uid>/graxpert-selftest.lock
+# (dir 0700) (GraXpertCoreSelfTestLock); only those sections are serialized,
+# the rest of the run stays parallel. The wait is printed below (lockWaitMs).
 if [ -z "${PICOPILOT_TEST_GRAXPERT_APP:-}" ] && [ -f "$HOME/.PixInsight/core-001-pxi.settings" ]; then
    PICOPILOT_TEST_GRAXPERT_APP="$(python3 - "$HOME/.PixInsight/core-001-pxi.settings" <<'PY' 2>/dev/null || true
 import sys, xml.etree.ElementTree as ET
@@ -360,6 +402,26 @@ export PICOPILOT_SELFTEST_AGENT_URL="http://127.0.0.1:$(cat "$ECHO_PORT_FILE")/v
 export PICOPILOT_SELFTEST_STREAM_BASE="http://127.0.0.1:$(cat "$ECHO_PORT_FILE")/v1"
 export PICOPILOT_SELFTEST_FIXTURES="$HERE/fixtures"
 
+# Optional exception-logging shim (thist-hang-investigation.md item 4):
+# PICOPILOT_THROWLOG=1 builds test/throwlog.c fresh into this run's private
+# TMPDIR (never a committed binary -- see test/throwlog.c) and LD_PRELOADs it
+# into PI ONLY (a per-command env prefix below, not `export`, so nothing else
+# this script runs picks it up). Every std::bad_alloc-family throw anywhere in
+# the process then logs a backtrace. Kept available because the T-hist
+# "Out of memory" modal's actual throw site was never identified (investigation
+# doc, "Recommended fixes" #4); the next occurrence under this flag catches it.
+PICOPILOT_THROWLOG_PRELOAD=()
+if [ "${PICOPILOT_THROWLOG:-0}" = "1" ]; then
+   command -v gcc >/dev/null 2>&1 || { echo "FAIL: PICOPILOT_THROWLOG=1 needs gcc"; exit 1; }
+   THROWLOG_SO="$TMPDIR/throwlog.so"
+   gcc -shared -fPIC -O2 -o "$THROWLOG_SO" "$HERE/throwlog.c" -ldl
+   [ -f "$THROWLOG_SO" ] || { echo "FAIL: throwlog.so build failed"; exit 1; }
+   mkdir -p -m 700 "/tmp/picopilot-$(id -u)/watchdog-logs"
+   THROWLOG_FILE="/tmp/picopilot-$(id -u)/watchdog-logs/throwlog-$(date +%Y%m%dT%H%M%S)-slot${PICOPILOT_TEST_SLOT}.txt"
+   PICOPILOT_THROWLOG_PRELOAD=( "LD_PRELOAD=$THROWLOG_SO" "THROWLOG_FILE=$THROWLOG_FILE" )
+   echo "PICOPILOT_THROWLOG=1: LD_PRELOAD=$THROWLOG_SO, log (created only if something throws) -> $THROWLOG_FILE"
+fi
+
 # Private virtual display (Xvfb). A core-side rejection can raise a MODAL
 # dialog that no module API can suppress or catch (Task 1: "PixelMath: Invalid
 # table row index"); on the user's real DISPLAY that dialog would block his
@@ -368,10 +430,66 @@ export PICOPILOT_SELFTEST_FIXTURES="$HERE/fixtures"
 # xvfb-run still tears down the Xvfb server (which also takes down any
 # PixInsight process the PixInsight.sh wrapper left behind).
 command -v xvfb-run >/dev/null 2>&1 || { echo "FAIL: xvfb-run not found (needed to keep dialogs off the real display)"; exit 1; }
-if ! PICOPILOT_SELFTEST_OUT="$R" xvfb-run -a -s "-screen 0 1920x1080x24" \
-        timeout 900 "$PI" -n="$PICOPILOT_TEST_SLOT" --automation-mode --no-startup-scripts -m="$SO" -r="$HERE/selftest.js" --force-exit; then
+
+# Section watchdog (thist-hang-investigation.md item 1). Runs alongside PI and
+# reads the very JS + module section-timing files (selftest.js's jsMark() /
+# SelfTestTiming.h's SelfTestSectionMark()) this run is about to write, plus a
+# live /proc/<pid>/maps check against the -m= module we just resolved above
+# (item 3). On a section overrun -- or a module-load mismatch -- it captures
+# an all-thread gdb backtrace (symbol names only; NEVER disassemble PI, EULA)
+# and an Xvfb screenshot into $WATCHDOG_LOG_BASE/<run>/, kills PI, and writes
+# $WATCHDOG_FAIL_MARKER for us to report below with the section name and
+# artefact paths -- instead of sitting out the full 900s `timeout` with
+# nothing to show for it.
+WATCHDOG_LOG_BASE="/tmp/picopilot-$(id -u)/watchdog-logs"
+mkdir -p -m 700 "$WATCHDOG_LOG_BASE"
+WATCHDOG_FAIL_MARKER="$HANDOFF_DIR/watchdog-fail.json"
+python3 "$HERE/watchdog.py" \
+   --slot "$PICOPILOT_TEST_SLOT" \
+   --module-so "$SO" \
+   --js-timings "$PICOPILOT_SELFTEST_JS_TIMINGS" \
+   --section-timings "$PICOPILOT_SELFTEST_SECTION_TIMINGS" \
+   --budgets "$HERE/section-budgets.json" \
+   --fail-marker "$WATCHDOG_FAIL_MARKER" \
+   --log-dir-base "$WATCHDOG_LOG_BASE" \
+   ${PICOPILOT_WATCHDOG_OVERRIDE:+--override "$PICOPILOT_WATCHDOG_OVERRIDE"} \
+   ${PICOPILOT_WATCHDOG_DEFAULT_CAP_S:+--default-cap "$PICOPILOT_WATCHDOG_DEFAULT_CAP_S"} \
+   ${PICOPILOT_WATCHDOG_FLOOR_S:+--floor "$PICOPILOT_WATCHDOG_FLOOR_S"} \
+   ${PICOPILOT_WATCHDOG_MULTIPLIER:+--multiplier "$PICOPILOT_WATCHDOG_MULTIPLIER"} \
+   >>"$WATCHDOG_LOG_BASE/driver.log" 2>&1 &
+WATCHDOG_PID=$!
+
+PI_RC=0
+env "${PICOPILOT_THROWLOG_PRELOAD[@]}" PICOPILOT_SELFTEST_OUT="$R" xvfb-run -a -s "-screen 0 1920x1080x24" \
+      timeout 900 "$PI" -n="$PICOPILOT_TEST_SLOT" --automation-mode --no-startup-scripts -m="$SO" -r="$HERE/selftest.js" --force-exit \
+   || PI_RC=$?
+
+kill "$WATCHDOG_PID" 2>/dev/null || true
+wait "$WATCHDOG_PID" 2>/dev/null || true
+
+if [ -s "$WATCHDOG_FAIL_MARKER" ]; then
    print_timings
-   echo "FAIL: PI load timed out (900s) or exited non-zero"; exit 1
+   python3 - "$WATCHDOG_FAIL_MARKER" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1]))
+if d.get("reason") == "module-mismatch":
+    print("FAIL: watchdog caught a module-load mismatch")
+    print("  expected (-m=, resolved): %s" % d.get("expected"))
+    print("  actual (mapped, resolved): %s" % d.get("actual"))
+else:
+    print("FAIL: watchdog killed PI -- section %r (%s) ran %.1fs > cap %.1fs (baseline=%s)" %
+          (d.get("section"), d.get("source"), d.get("elapsed", 0.0), d.get("cap", 0.0), d.get("baseline")))
+print("  pid: %s" % d.get("pid"))
+print("  log dir: %s" % d.get("log_dir"))
+if d.get("stacks"): print("  stacks: %s" % d.get("stacks"))
+if d.get("screenshot"): print("  screenshot: %s" % d.get("screenshot"))
+PY
+   exit 1
+fi
+
+if [ "$PI_RC" -ne 0 ]; then
+   print_timings
+   echo "FAIL: PI load timed out (900s) or exited non-zero (rc=$PI_RC)"; exit 1
 fi
 print_timings
 [ -f "$R" ] || { echo "FAIL: no result file"; exit 1; }
