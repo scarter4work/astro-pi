@@ -107,6 +107,15 @@ fi
 
 cp "$PICOPILOT_GUI_DIR/ready" "$OUT/ready.txt"
 cp "$PICOPILOT_GUI_DIR/panel.json" "$OUT/panel.json" 2>/dev/null || true
+# The DEV module must be the one running (review m7): a fresh slot imports an old settings file, and an
+# installed PICopilot-pxm.so listed there makes -m= fail ("Duplicate MetaProcess identifier").
+LOADED="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("module",""))' "$OUT/panel.json" 2>/dev/null || true)"
+if [ "$(realpath -e "$LOADED" 2>/dev/null || true)" != "$SO" ]; then
+   echo "FAIL: the dev module did not load: running '${LOADED:-no PICopilot phase handler answered}', expected $SO."
+   echo "      An installed PICopilot-pxm.so in the slot's module list collides with -m= (see $OUT/pi.log)."
+   exit 1
+fi
+echo "dev module loaded: $LOADED"
 python3 "$HERE/gui_drive.py" ${PICOPILOT_GUI_DRIVE_ARGS:-} "$OUT" || { echo "FAIL: driver"; exit 1; }
 "$PI" -x="$SLOT:$HERE/gui-smoke-keep.js" >/dev/null 2>&1
 for _ in $(seq 240); do [ -f "$PICOPILOT_GUI_DIR/keep-end" ] && break; kill -0 "$PI_PID" 2>/dev/null || break; sleep 0.25; done

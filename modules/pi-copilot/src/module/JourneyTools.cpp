@@ -352,6 +352,15 @@ KeepFlowResult RunKeepFlow( JourneyToolHost& host, int64 journeyId, const IsoStr
          r.modelMessage = WithoutDirectories( r.message );
          return r;
       }
+      if ( s.steps == 0 )
+      {
+         // Task 11 review I1: nothing recorded yet (e.g. the "(continued)" journey a keep froze into). Keeping it
+         // would write an empty keeper and freeze into yet another empty continuation, on every request.
+         r.message = String().Format( "nothing to keep yet: journey #%lld has no recorded steps. Keep it after "
+                                      "processing the image.", static_cast<long long>( journeyId ) );
+         r.modelMessage = r.message;
+         return r;
+      }
       if ( !host.confirmKeeper || !host.confirmKeeper( KeeperSummaryHtml( s ) ) )
       {
          r.declined = true;
@@ -380,10 +389,21 @@ KeepFlowResult RunKeepFlow( JourneyToolHost& host, int64 journeyId, const IsoStr
       const String files = (r.outcome.files.xpsmOk ? String( "the process icon set (.xpsm)" ) : "NOT the .xpsm (" + r.outcome.files.xpsmError + ")")
                 + ", " + (r.outcome.files.recipeOk ? String( "recipe.json" ) : "NOT recipe.json (" + r.outcome.files.recipeError + ")")
                 + (r.outcome.files.thumbsOk ? String() : ", NOT the thumbnails (" + r.outcome.files.thumbsError + ")")
-                + ". " + (r.outcome.writeupStarted ? String( "journey.md is being written; a note will appear when it is done." )
-                                                   : r.outcome.writeupError + ".");
-      r.message = "Kept. In " + dir + ": " + files;
-      r.modelMessage = "Kept. In the journey's export folder: " + files;
+                + ". ";
+      // message is the chat log's (the user's); modelMessage the model's (Task 11 review m1): the user is
+      // told what to ask for, the model which argument to pass.
+      const String redoAsk = String().Format( "ask PI Copilot to redo the outputs of kept journey #%lld",
+                                              static_cast<long long>( journeyId ) );
+      const String writeupUser = r.outcome.writeupStarted
+                               ? String( "journey.md is being written; a note will appear when it is done." )
+                               : key.IsEmpty() ? "journey.md was not written: no Anthropic API key is set (PI Copilot "
+                                                 "settings). Once it is, " + redoAsk + "."
+                                               : r.outcome.writeupError + ".";
+      const String writeupModel = r.outcome.writeupStarted
+                                ? String( "journey.md is being written; a note will appear when it is done." )
+                                : r.outcome.writeupError + ".";
+      r.message = "Kept. In " + dir + ": " + files + writeupUser;
+      r.modelMessage = "Kept. In the journey's export folder: " + files + writeupModel;
       if ( r.outcome.copyDone )
       {
          r.message += " Copied to " + r.outcome.copiedTo + ".";
@@ -398,14 +418,18 @@ KeepFlowResult RunKeepFlow( JourneyToolHost& host, int64 journeyId, const IsoStr
       {
          String freezeError;
          const int64 next = host.tracker->FreezeJourney( journeyId, freezeError );   // Ruling 26
-         String frozen;
+         String frozen, frozenUser;
          if ( next != 0 )
-            frozen = String().Format( " The kept journey is frozen; further work on its images is recorded as journey "
-                                      "#%lld. To redo this keeper's outputs later, pass journey_id %lld.",
-                                      static_cast<long long>( next ), static_cast<long long>( journeyId ) );
+         {
+            const String head = String().Format( " The kept journey is frozen; further work on its images is recorded as "
+                                                 "journey #%lld.", static_cast<long long>( next ) );
+            frozen = head + String().Format( " To redo this keeper's outputs later, pass journey_id %lld.",
+                                             static_cast<long long>( journeyId ) );
+            frozenUser = head + " To redo this keeper's outputs later, " + redoAsk + ".";
+         }
          else if ( !freezeError.IsEmpty() )
-            frozen = " The kept journey is frozen (nothing more is recorded into it), but " + freezeError + ".";
-         r.message += frozen;
+            frozen = frozenUser = " The kept journey is frozen (nothing more is recorded into it), but " + freezeError + ".";
+         r.message += frozenUser;
          r.modelMessage += frozen;
       }
       r.modelMessage = WithoutDirectories( r.modelMessage );   // error texts from the exporter may still name paths

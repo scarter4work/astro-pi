@@ -75,6 +75,7 @@
 #include <vector>
 
 #include <dirent.h>
+#include <dlfcn.h>
 #include <fcntl.h>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -698,8 +699,13 @@ nlohmann::json PhaseGuiPanel( const nlohmann::json& payload )
       ui.BringToFront();
    }
    const pcl::Point p = ui.Position();
+   // Which PICopilot-pxm.so answered (review m7): an installed release listed in the slot's
+   // imported settings collides with -m=, and then this handler does not even exist.
+   Dl_info info = {};
+   const std::string module = dladdr( reinterpret_cast<void*>( &PhaseGuiPanel ), &info ) != 0 && info.dli_fname != nullptr
+                            ? std::string( info.dli_fname ) : std::string();
    const nlohmann::json r = { { "x", p.x }, { "y", p.y }, { "w", ui.Width() }, { "h", ui.Height() },
-                              { "visible", ui.IsVisible() } };
+                              { "visible", ui.IsVisible() }, { "module", module } };
    if ( payload.contains( "out" ) )
       File::WriteTextFile( String( payload.at( "out" ).get<std::string>().c_str() ), IsoString( r.dump().c_str() ) );
    return r;
@@ -6998,6 +7004,7 @@ r1.ok && r1.inferred.size() == 1 && r1.inferred[0].first == 7 && r1.inferred[0].
    {
       nlohmann::json d = nlohmann::json::object();
       bool stripOk = false, folderOk = false, dialogOk = false, panelOk = false, keepOk = false, notesOk = false;
+      bool emptyKeepOk = false, keepYesOk = false, wordingOk = false, thumbOk = false;
       String error;
       std::vector<std::string> made;
       try
@@ -7086,6 +7093,12 @@ r1.ok && r1.inferred.size() == 1 && r1.inferred[0].first == 7 && r1.inferred[0].
                     && dlg.TitleText().Contains( "UiM42" )
                     && dlg.ThumbnailOfRow( 0 ).EndsWith( ".jpg" ) && dlg.ThumbnailOfRow( 3 ).IsEmpty()
                     && dlg.PreviewText() == "Step 3 (after)";   // opens on the newest step with a thumbnail
+            // Fix round 1: a thumbnail that no longer decodes is "not available", never an error.
+            const String t2 = dlg.ThumbnailOfRow( 2 );
+            File::WriteTextFile( t2, "not a jpeg" );
+            JourneyStepsDialog dlg2( *store, b.jid );
+            d["thumbCorrupt"] = U8( dlg2.PreviewText() );
+            thumbOk = dlg2.PreviewText() == "Thumbnail not available";
          }
          // (d) The panel wires the production service into the tool context and the strip.
          JourneyService& svc = JourneyService::Instance();
@@ -7180,16 +7193,94 @@ r1.ok && r1.inferred.size() == 1 && r1.inferred[0].first == 7 && r1.inferred[0].
             d["notes"] = { { "heldBack", heldBack }, { "shown", shown }, { "drained", drained } };
             notesOk = heldBack && shown && drained;
          }
+         // (g) Fix round 1 (review I1 + m1): a keep freezes the journey into a "(continued)" one with no
+         //     steps; ★ must not offer to keep that (each Yes wrote an empty keeper + a new continuation),
+         //     and RunKeepFlow refuses it loudly (mark_journey_best too). The chat-log text is the user's
+         //     ("ask PI Copilot ..."), the model's keeps journey_id.
+         {
+            JTempDir root( "picopilot-ui-keep-" );
+            String oe;
+            std::unique_ptr<JourneyStore> store = JourneyStore::Open( root.Path(), oe );
+            if ( !store )
+               throw Error( "store: " + oe );
+            JFakeHistory fake;
+            JourneyTracker trk( store.get() );
+            trk.SetHistoryReaderForSelfTest( [&fake]( const IsoString& id, int from ) { return fake.Read( id, from ); } );
+            KeeperExporter keeper( store.get() );
+            int confirms = 0;
+            JourneyToolHost host;
+            host.store = store.get();
+            host.tracker = &trk;
+            host.keeper = &keeper;
+            host.apiKey = []() { return String(); };
+            host.confirmKeeper = [&confirms]( const String& ) { ++confirms; return true; };
+            const JBuilt F = JBuildJourney( *store, "pcUiF", "UiFreeze", 73 );
+            made.push_back( "pcUiF" );
+            fake.steps["pcUiF"] = JHistoryOfImage( *store, F.img );
+            JTick( trk, 2 );
+            if ( trk.JourneyOfView( "pcUiF" ) != F.jid )
+               throw Error( "fixture: the tracker did not resume pcUiF" );
+            const JourneyStatus before = trk.StatusFor( "pcUiF" );
+            const KeepFlowResult kf = RunKeepFlow( host, F.jid, "pcUiF" );
+            JTick( trk );
+            const int64 cont = trk.JourneyOfView( "pcUiF" );
+            const JourneyStatus after = trk.StatusFor( "pcUiF" );
+            const int confirmsBefore = confirms;
+            const KeepFlowResult empty = RunKeepFlow( host, cont, "pcUiF" );
+            JourneyRow cr;
+            store->GetJourney( cont, cr );
+            d["emptyKeep"] = { { "keptMessage", U8( kf.message ) }, { "keptModel", U8( kf.modelMessage ) },
+                               { "cont", cont }, { "contSteps", after.activeSteps }, { "message", U8( empty.message ) },
+                               { "model", U8( empty.modelMessage ) }, { "asked", confirms - confirmsBefore },
+                               { "contKept", cr.kept },
+                               { "allowedBefore", JourneyKeepAllowed( before, false ) },
+                               { "allowedAfter", JourneyKeepAllowed( after, false ) },
+                               { "allowedBusy", JourneyKeepAllowed( before, true ) } };
+            emptyKeepOk = kf.ok && cont != 0 && cont != F.jid && after.activeSteps == 0
+                       && JourneyKeepAllowed( before, false ) && !JourneyKeepAllowed( after, false )
+                       && !JourneyKeepAllowed( before, true )
+                       && !empty.ok && !empty.declined && empty.message.Contains( "nothing to keep" )
+                       && confirms == confirmsBefore && !cr.kept;
+            wordingOk = !kf.message.Contains( "journey_id" ) && kf.message.Contains( "ask PI Copilot" )
+                     && kf.modelMessage.Contains( "journey_id" );
+         }
+         // (h) ★ Yes on the panel (review m6: the Yes branch had no headless test): kept, one log line.
+         {
+            int asked = 0;
+            PICopilotInterface::s_confirmKeeperForSelfTest = [&asked]( const String& ) { ++asked; return true; };
+            PICopilotInterface::s_apiKeyForSelfTest = []() { return String(); };   // no write-up request
+            String yes;
+            try
+            {
+               yes = ui.KeepJourneyOfView( "pcUiKeep" );
+            }
+            catch ( ... )
+            {
+               PICopilotInterface::s_confirmKeeperForSelfTest = nullptr;
+               PICopilotInterface::s_apiKeyForSelfTest = nullptr;
+               throw;
+            }
+            PICopilotInterface::s_confirmKeeperForSelfTest = nullptr;
+            PICopilotInterface::s_apiKeyForSelfTest = nullptr;
+            JourneyRow jr;
+            svc.Store()->GetJourney( k.jid, jr );
+            d["keepYes"] = { { "message", U8( yes ) }, { "asked", asked }, { "kept", jr.kept } };
+            keepYesOk = asked == 1 && jr.kept && yes.StartsWith( "Kept." ) && !yes.Contains( "journey_id" )
+                     && ui.GUI->ChatLog.Text().Contains( yes );
+         }
       }
       catch ( const pcl::Exception& x ) { error = x.Message(); }
       catch ( const std::exception& x ) { error = String( x.what() ); }
       catch ( ... )                     { error = "unknown exception"; }
       for ( const std::string& id : made )
          JForceClose( id );
-      const bool ok = stripOk && folderOk && dialogOk && panelOk && keepOk && notesOk && error.IsEmpty();
+      const bool ok = stripOk && folderOk && dialogOk && panelOk && keepOk && notesOk && emptyKeepOk && keepYesOk
+                   && wordingOk && thumbOk && error.IsEmpty();
       out["journeyUiDetail"] = d;
       out["journeyUiChecks"] = { { "strip", stripOk }, { "folder", folderOk }, { "dialog", dialogOk },
-                                 { "panel", panelOk }, { "keep", keepOk }, { "notes", notesOk } };
+                                 { "panel", panelOk }, { "keep", keepOk }, { "notes", notesOk },
+                                 { "emptyKeep", emptyKeepOk }, { "keepYes", keepYesOk }, { "wording", wordingOk },
+                                 { "thumb", thumbOk } };
       out["journeyUiError"] = U8( error );
       out["journeyUiOk"] = ok;
       allOk = allOk && ok;
