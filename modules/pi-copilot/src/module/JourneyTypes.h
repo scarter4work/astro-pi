@@ -51,6 +51,7 @@ struct JourneyRow
    std::string keptAt;
    int64       endImageId = 0;
    std::string status;                  // "recording" | "ended" (Ruling 24)
+   int64       continuesJourneyId = 0;  // a "(continued)" journey: the kept journey it continues (Ruling 26); 0 = none
 };
 
 struct ImageRow

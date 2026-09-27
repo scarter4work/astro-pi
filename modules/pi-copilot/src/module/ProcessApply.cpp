@@ -962,6 +962,10 @@ ApplyProcessResult ApplyProcess( const IsoString& processId, const nlohmann::jso
             if ( r.resultWindows.empty() )
             {
                r.noEffect = true;
+               // Measured (fix round 2, Timer run on a top-level view, stand-in writing nothing): in new-window
+               // mode the core adds NO History step to the target (History 1 -> 1, ModifyCount 1 -> 1). Set
+               // from what happened, not from that measurement.
+               r.historyStepAdded = !isPreview && window.ModifyCount() > modifyCountBefore;
                String meanwhile;
                if ( !others.IsEmpty() )
                {

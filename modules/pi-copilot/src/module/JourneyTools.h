@@ -27,10 +27,10 @@ struct JourneyToolHost
    String          exportFolder;                                     // ⚙; empty = off
    std::function<String()> apiKey;                                   // the write-up's key
    std::function<bool( const String& summaryHtml )> confirmKeeper;   // Yes/No, default No (Ruling 17)
-   // replay_journey is a lookup: the current journey is named "<keeper> (replay
-   // of #<id>)" only when a replay step is applied (review m6). Main view id ->
-   // {current journey id, the new name}. Owned by the tool calls.
-   std::map<std::string, std::pair<int64, std::string>> pendingReplayName;
+   // (Fix round 2) The replay names a replay_journey lookup leaves pending are
+   // no longer held here: they live in JourneyTools itself (per library and
+   // view), so a host rebuilt for every tool round keeps them (subsumes Task 11
+   // 0703cd5d's RefreshJourneyHost carry-over, which must be dropped at merge).
 };
 
 extern const char* const kJourneyPromptRead;   // every mode (UTF-8)
@@ -68,9 +68,16 @@ KeepFlowResult RunKeepFlow( JourneyToolHost& host, int64 journeyId, const IsoStr
 // journey that names it in the library.
 int64 JourneyForView( JourneyToolHost& host, const IsoString& viewFullId );
 
-// apply_process ran successfully on viewFullId (a main view): a replay asked
-// for on that view names its journey now. "" or why the name could not be set.
-String NoteReplayStepApplied( JourneyToolHost& host, const IsoString& viewFullId );
+// apply_process ran processId successfully on viewFullId (a main view): a
+// replay looked up for that view names its journey "<keeper> (replay of #<id>)"
+// now -- only when processId is the replay's next step and the lookup is at
+// most 15 minutes old (review m6, re-review m4). "" or why the name could not
+// be set. Pending lookups are kept per library + view inside JourneyTools, so
+// they survive the panel rebuilding its JourneyToolHost. Root thread.
+String NoteReplayStepApplied( JourneyToolHost& host, const IsoString& viewFullId, const std::string& processId );
+// Forgets every pending replay lookup of host's library (call at each new user
+// message, so a declined replay never names a journey later). Root thread.
+void ForgetPendingReplays( JourneyToolHost& host );
 
 // GC privacy (P6): text for the model with every absolute path reduced to its
 // file name (a path may contain spaces). Pure; any thread.

@@ -37,7 +37,11 @@ const char* const kSchemaV1 =
    "CREATE TABLE journey("
    " id INTEGER PRIMARY KEY AUTOINCREMENT, created TEXT NOT NULL, updated TEXT NOT NULL, name TEXT NOT NULL, target TEXT,"
    " kept INTEGER NOT NULL DEFAULT 0, kept_at TEXT, end_image_id INTEGER,"
-   " status TEXT NOT NULL DEFAULT 'recording' CHECK(status IN ('recording','ended')));"
+   " status TEXT NOT NULL DEFAULT 'recording' CHECK(status IN ('recording','ended')),"
+   // Ruling 26 lineage (Task 10 fix round 2; v1 was never released, so no bump -- see SchemaVersion): a
+   // "(continued)" journey names the kept journey it continues. Kept journeys are never pruned, so the
+   // parent outlives its continuations; a delete of a parent with a continuation is refused (no action).
+   " continues_journey_id INTEGER REFERENCES journey(id));"
    "CREATE TABLE image("
    " id INTEGER PRIMARY KEY AUTOINCREMENT, journey_id INTEGER NOT NULL REFERENCES journey(id) ON DELETE CASCADE,"
    " view_id TEXT NOT NULL, file_path TEXT, fingerprint TEXT NOT NULL, is_master INTEGER NOT NULL, created TEXT NOT NULL,"
@@ -581,6 +585,12 @@ void JourneyStore::RequireChanged( const char* what, int64 id ) const
                    + String().Format( " #%lld: no such row; nothing was changed", static_cast<long long>( id ) ) );
 }
 
+void JourneyStore::SetJourneyContinues( int64 id, int64 keptJourneyId )
+{
+   Stmt( *this, "UPDATE journey SET continues_journey_id=? WHERE id=?" ).Int( 1, keptJourneyId ).Int( 2, id ).Run();
+   RequireChanged( "SetJourneyContinues: journey", id );
+}
+
 void JourneyStore::RenameJourney( int64 id, const std::string& name )
 {
    Stmt( *this, "UPDATE journey SET name=? WHERE id=?" ).Text( 1, name ).Int( 2, id ).Run();
@@ -751,7 +761,7 @@ JourneyRow ReadJourney( Stmt& s )
    JourneyRow j;
    j.id = s.ColInt( 0 ); j.created = s.ColText( 1 ); j.updated = s.ColText( 2 ); j.name = s.ColText( 3 );
    j.target = s.ColText( 4 ); j.kept = s.ColInt( 5 ) != 0; j.keptAt = s.ColText( 6 ); j.endImageId = s.ColInt( 7 );
-   j.status = s.ColText( 8 );
+   j.status = s.ColText( 8 ); j.continuesJourneyId = s.ColInt( 9 );
    return j;
 }
 ImageRow ReadImage( Stmt& s )
@@ -770,7 +780,8 @@ StepRow ReadStep( Stmt& s )
    r.reasonInferred = s.ColInt( 9 ) != 0; r.state = s.ColText( 10 ); r.historyIndex = int( s.ColInt( 11 ) );
    return r;
 }
-const char* const kJourneyCols = "id, created, updated, name, target, kept, kept_at, end_image_id, status";
+const char* const kJourneyCols = "id, created, updated, name, target, kept, kept_at, end_image_id, status, "
+                                 "coalesce(continues_journey_id,0)";
 const char* const kImageCols = "id, journey_id, view_id, file_path, fingerprint, is_master, created, owner";
 const char* const kStepCols = "id, image_id, seq, process_id, params_json, started, duration_s, actor, reason, "
                               "reason_inferred, state, history_index";

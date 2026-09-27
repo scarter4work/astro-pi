@@ -828,6 +828,56 @@ catch ( e )
    harnessError( "j7.exp", e );
 }
 
+jsMark( "fixture j10.graxpert" );
+// ---- Section J10 (Task 10 fix round 2): GraXpert no-effect runs from the module Timer ----
+// A top-level 256x256 window per mode; the probe's Timer runs the production
+// ApplyProcess( GraXpert ) with a stand-in program that writes nothing (the
+// begin phase takes the per-user GraXpert lock and points the pinned appPath at
+// it). History IS recorded here (a Timer run on a top-level view), so this
+// measures whether the core adds a History step in each mode.
+try
+{
+   ( function ()
+   {
+      var installed = true;
+      try { new GraXpert; } catch ( e ) { installed = false; }
+      if ( !installed )
+      {
+         checkPhase( "j10.gx.check", { skipped: "the GraXpert process is not installed" } );
+         return;
+      }
+      checkPhase( "j10.gx.begin", {} );
+      try
+      {
+         [ true, false ].forEach( function( replace )
+         {
+            var id = "pcJtGx" + ( replace ? "R" : "W" );
+            var w = new ImageWindow( 256, 256, 1, 32, true, false, id );
+            w.show();
+            var p0 = new PixelMath; p0.expression = "0.05+0.25*x()/(w()-1)"; p0.executeOn( w.mainView );
+            pumpEvents( 150 );
+            var v = w.mainView, l0 = v.processing.length, h0 = v.historyIndex, n0 = ImageWindow.windows.length;
+            checkPhase( "hist.arm", { id: id, delayS: 0, gated: true,
+                                      spec: { process: "GraXpert", parameters: { backgroundExtraction: true, replaceImage: replace } } } );
+            pumpEvents( 2500 );
+            v = w.mainView;
+            checkPhase( "j10.gx.check", { mode: replace ? "replace" : "newWindow", lengthBefore: l0, lengthAfter: v.processing.length,
+                                          historyIndexBefore: h0, historyIndexAfter: v.historyIndex,
+                                          windowsBefore: n0, windowsAfter: ImageWindow.windows.length } );
+            w.forceClose();
+         } );
+      }
+      finally
+      {
+         checkPhase( "j10.gx.end", {} );
+      }
+   } )();
+}
+catch ( e )
+{
+   harnessError( "j10.graxpert", e );
+}
+
 // ---- fixture phases end (add new phases above this line, each block starting with jsMark( "fixture <id>" )) ----
 
 jsMark( "final executeGlobal (the full self-test)" );

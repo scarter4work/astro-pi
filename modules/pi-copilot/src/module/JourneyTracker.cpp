@@ -1650,6 +1650,7 @@ int64 JourneyTracker::FreezeNow( int64 journeyId, String& error )
    {
       JourneyStore::Transaction tx( *m_store );
       const int64 jid = m_store->CreateJourney( to->name, to->target, NowIso() );
+      m_store->SetJourneyContinues( jid, journeyId );   // lineage: replay/compare follow it (fix round 2, 4a)
       tx.Commit();
       to->journeyId = jid;
    }
@@ -1732,7 +1733,10 @@ bool JourneyTracker::JoinContinued( PendingFreeze& p )
    {
       JourneyStore::Transaction tx( *m_store );   // the continuation's image exists whole or not at all
       if ( jid == 0 )
+      {
          jid = m_store->CreateJourney( p.to->name, p.to->target, now );
+         m_store->SetJourneyContinues( jid, p.to->keptJourneyId );
+      }
       t->imageId = m_store->AddImage( jid, id, FilePathOf( id ),
                                       MasterFingerprint( g.w, g.h, g.ch, g.bits, g.isFloat, StepIdentities( snap ), kw ), true, now );
       m_store->SetImageOwner( t->imageId, m_owner );

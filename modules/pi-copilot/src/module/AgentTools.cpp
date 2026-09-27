@@ -328,7 +328,7 @@ ToolOutcome ApplyProcessTool( const nlohmann::json& in, const ToolContext& ctx, 
       }
       if ( ar.ok )
       {
-         replayNameError = NoteReplayStepApplied( *ctx.journeys, journeyMain );   // a replay names its journey now (m6)
+         replayNameError = NoteReplayStepApplied( *ctx.journeys, journeyMain, U8( ar.processId ) );   // a replay names its journey now (m6)
          std::vector<std::string> created;
          for ( const std::string& id : OpenMainViewIds() )
             if ( windowsBefore.count( id ) == 0 )
