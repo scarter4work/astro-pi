@@ -18,6 +18,8 @@
 #include <set>
 #include <exception>
 
+#include <sys/stat.h>
+
 namespace pcl
 {
 
@@ -393,14 +395,23 @@ String ModelTextWithoutDirectories( const String& text, const StringList& knownD
          while ( lineEnd < n && text[lineEnd] != '\n' && text[lineEnd] != '\r' )
             ++lineEnd;
       }
-      // To the last '/' before the next KNOWN path on the line (round 5, M2: an unknown " /" -- e.g. a folder
-      // name ending in a space -- stays inside this path; absorbing an unknown second path only loses detail).
+      // To the last '/' before the next path on the line. A known path always starts a new one. An unknown '/'
+      // after a space (or another path boundary) continues THIS path only when the text so far is a real folder
+      // on disk -- a folder name ending in a space, "…/a /b/x" (round 5, M2) -- otherwise it is prose followed by
+      // another path, "Saved …/out.xisf and loaded /opt/…" (round 6, re-review 4 M2), which keeps its words and
+      // is scrubbed on its own. One stat per such '/', each seen once: linear.
       size_type slash = i;
       for ( size_type k = i; k < lineEnd; ++k )
          if ( text[k] == '/' )
          {
-            if ( k > i && boundaryAt( k ) && knownAt( k ) )
-               break;
+            if ( k > i && boundaryAt( k ) && k + 1 < n && text[k+1] != ' ' )
+            {
+               if ( knownAt( k ) )
+                  break;
+               struct stat st;   // POSIX, not File::DirectoryExists: PCL trims the trailing space that matters here
+               if ( ::stat( U8( text.Substring( i, k - i ) ).c_str(), &st ) != 0 || !S_ISDIR( st.st_mode ) )
+                  break;
+            }
             slash = k;
          }
       size_type e = slash + 1;

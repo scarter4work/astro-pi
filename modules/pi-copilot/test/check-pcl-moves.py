@@ -134,51 +134,124 @@ def template_text(line, start):
     return line[start:], len(line)
 
 
-def check_file(name, src, bearing, problems):
+MUTATIONS_R6 = [r"(?:std::)?ranges::(sort|stable_sort|remove_if|remove|unique|rotate|reverse|shuffle|partition)\s*\(\s*{v}\b",
+                r"(?:std::)?(?:ranges::)?(sort|stable_sort|remove_if|unique|rotate|reverse)\s*\(\s*{v}\s*[,)]"]
+MOVED = re.compile(r"std::move\s*\(\s*((?:this\s*->\s*)?[A-Za-z_]\w*(?:\s*(?:\.|->)\s*[A-Za-z_]\w*)*)\s*\)")
+
+
+def container_decl_regex(code):
+    if re.search(r"using\s+namespace\s+std\s*;", code) or re.search(r"using\s+std::(vector|deque|list|array)\s*;", code):
+        return re.compile(r"(?<![\w:])(?:std::)?(vector|deque|list|array)\s*<")
+    return re.compile(r"std::(vector|deque|list|array)\s*<")
+
+
+def bearing_container(inner, bearing):
+    if re.match(r"\s*(std::)?(unique_ptr|shared_ptr)\b", inner) or inner.strip().endswith("*"):
+        return set()
+    words = set(re.findall(r"[A-Za-z_]\w*", inner)) - {"std", "pcl", "const", "unique_ptr", "shared_ptr"}
+    return words & (PCL_VALUE_TYPES | bearing)
+
+
+def aliases_of(code, bearing):
+    """using A = std::vector<Bearing>;  typedef std::vector<Bearing> A;  -> {A: hit}"""
+    out = {}
+    decl = container_decl_regex(code)
+    for m in re.finditer(r"\busing\s+([A-Za-z_]\w*)\s*=\s*([^;]+);", code):
+        d = decl.search(m.group(2))
+        if d:
+            targs, _ = template_text(m.group(2), d.end() - 1)
+            hit = bearing_container(targs[1:-1], bearing)
+            if hit:
+                out[m.group(1)] = hit
+    for m in re.finditer(r"\btypedef\s+([^;]+?)\s+([A-Za-z_]\w*)\s*;", code):
+        d = decl.search(m.group(1))
+        if d:
+            targs, _ = template_text(m.group(1), d.end() - 1)
+            hit = bearing_container(targs[1:-1], bearing)
+            if hit:
+                out[m.group(2)] = hit
+    return out
+
+
+def mutated(v, all_code):
+    for pat in MUTATIONS + MUTATIONS_R6:
+        rx = pat.format(v=re.escape(v))
+        if re.search(rx, all_code):
+            return rx
+    return ""
+
+
+def check_file(name, src, bearing, aliases, all_code, problems):
     code = strip_comments(src)
     lines = code.split("\n")
     raw = src.split("\n")
+    decl = container_decl_regex(code)
+    std_ns = re.search(r"using\s+namespace\s+std\s*;", code) is not None
     for ln, line in enumerate(lines, 1):
-        comment_free = re.sub(r"//.*", "", line)
         annotated = "pcl-move-ok:" in raw[ln - 1] if ln - 1 < len(raw) else False
-        # R2
-        if re.search(r"std::move\s*\(\s*m_\w+\s*\)", comment_free) and not annotated:
+        # R2: moving out of a data member (reused later).
+        if re.search(r"std::move\s*\(\s*m_\w+\s*\)", line) and not annotated:
             problems.append(f"{name}:{ln}: R2 moving out of a data member (reused later?): {line.strip()}")
-        # R1
-        for m in DECL.finditer(comment_free):
-            targs, end = template_text(comment_free, m.end() - 1)
-            inner = targs[1:-1]
-            if re.match(r"\s*(std::)?(unique_ptr|shared_ptr)\b", inner) or inner.strip().endswith("*"):
-                continue
-            words = set(re.findall(r"[A-Za-z_]\w*", inner))
-            words -= {"std", "pcl", "const", "unique_ptr", "shared_ptr"}
-            # pointers / unique_ptr nested inside a pair etc. are still flagged: be explicit then.
-            hit = words & (PCL_VALUE_TYPES | bearing)
+        # R4 (round 6): std::swap / std::exchange move-assign into a moved-from value.
+        if (re.search(r"std::(swap|exchange)\s*\(", line)
+                or (std_ns and re.search(r"(?<![\w.:>])(swap|exchange)\s*\(", line))) and not annotated:
+            problems.append(f"{name}:{ln}: R4 std::swap / std::exchange assigns into a moved-from value: {line.strip()}")
+        # R3 (round 6): a moved-from object (local, obj.member, this->member) assigned to again later.
+        for m in MOVED.finditer(line):
+            target = re.sub(r"\s+", "", m.group(1))
+            if target.startswith("m_") or annotated:
+                continue   # data members: R2
+            tail = "\n".join(lines[ln - 1:ln + 400])
+            after = tail[tail.find(m.group(0)) + len(m.group(0)):]
+            pieces = [re.escape(x) for x in re.split(r"(\.|->)", target)]
+            name_rx = r"\s*".join(pieces)
+            if re.search(r"(^|[;{}])\s*" + name_rx + r"\s*(=(?!=)|\+=)", after, re.M) \
+               or re.search(r"(?<![\w.>])" + name_rx + r"\s*\.\s*(Assign|Append|Add|Clear|Insert|Remove)\s*\(", after):
+                problems.append(f"{name}:{ln}: R3 '{target}' is moved from and assigned again later (a moved-from "
+                                f"PCL value crashes on assignment): {line.strip()}")
+        # R1: container declarations (std::, bare under using namespace std, aliases, auto v = std::vector<...>{}).
+        found = []
+        for m in decl.finditer(line):
+            targs, end = template_text(line, m.end() - 1)
+            hit = bearing_container(targs[1:-1], bearing)
             if not hit:
                 continue
-            rest = comment_free[end:].lstrip()
-            if rest.startswith(("&", "*", ">")) or rest.startswith("const") :
-                continue   # a reference / pointer (parameter) or a nested template argument
+            if re.search(r"\b(using|typedef)\b", line[:m.start()]):
+                continue   # an alias definition: its uses are checked below
+            rest = line[end:].lstrip()
+            if rest.startswith(("&", "*", ">")) or rest.startswith("const"):
+                continue
             var = re.match(r"([A-Za-z_]\w*)", rest)
             if var is None:
-                continue   # a return type or a cast
-            v = var.group(1)
+                am = re.search(r"\bauto\s+([A-Za-z_]\w*)\s*=\s*$", line[:m.start()])
+                if am is None:
+                    continue   # a return type or a cast
+                var = am
+            found.append((var.group(1), hit, "std::" + m.group(1)))
+        for alias, hit in aliases.items():
+            for am in re.finditer(r"(?<![\w:])" + re.escape(alias) + r"\s+([A-Za-z_]\w*)\s*[;={(]", line):
+                found.append((am.group(1), hit, "alias " + alias))
+        for v, hit, kind in found:
             if not annotated:
-                problems.append(f"{name}:{ln}: R1 std::{m.group(1)} of {sorted(hit)} (moved-from PCL values crash on "
+                problems.append(f"{name}:{ln}: R1 {kind} of {sorted(hit)} (moved-from PCL values crash on "
                                 f"erase/insert/sort): {line.strip()}")
                 continue
-            for pat in MUTATIONS:
-                if re.search(pat.format(v=re.escape(v)), code):
-                    problems.append(f"{name}:{ln}: R1 '{v}' is annotated pcl-move-ok but the file mutates it "
-                                    f"({pat.format(v=v)})")
+            rx = mutated(v, all_code)   # every source: a member declared in a .h is mutated in its .cpp (C1)
+            if rx:
+                problems.append(f"{name}:{ln}: R1 '{v}' is annotated pcl-move-ok but some source mutates it ({rx})")
 
 
 def run(files):
     sources = {f: open(f, encoding="utf-8").read() for f in files}
     bearing = bearing_types(sources.values())
+    stripped = {f: strip_comments(s) for f, s in sources.items()}
+    all_code = "\n".join(stripped.values())
+    aliases = {}
+    for c in stripped.values():
+        aliases.update(aliases_of(c, bearing))
     problems = []
     for f, src in sources.items():
-        check_file(os.path.basename(f), src, bearing, problems)
+        check_file(os.path.basename(f), src, bearing, aliases, all_code, problems)
     return problems, bearing
 
 
@@ -189,6 +262,23 @@ BAD_FIXTURES = {
     "bad2.cpp": "struct R { String text; };\nstruct X { R m_held; void g() { R r = std::move( m_held ); m_held = R(); } };\n",
     "bad3.cpp": "struct N { IsoString id; };\nstruct W { N n; };\nvoid h() { std::vector<W> v; std::sort( v.begin(), v.end() ); }\n",
     "bad4.cpp": "std::vector<String> dirs; // pcl-move-ok: read only\nvoid k() { std::sort( dirs.begin(), dirs.end() ); }\n",
+}
+# Round 6 (re-review 4, M1): each gap gets a known-bad snippet. Multi-file entries are checked together.
+BAD_FIXTURES_R6 = {
+    "cross-file member (C1's layout: annotated in .h, erased in .cpp)": {
+        "x.h": "struct PF { String reason; };\nclass T { std::vector<PF> m_pf; // pcl-move-ok: claimed read only\n};\n",
+        "x.cpp": "void T::f() { m_pf.erase( m_pf.begin() ); }\n"},
+    "std::swap of PCL values": {"s.cpp": "void f( String& a, String& b ) { std::swap( a, b ); }\n"},
+    "std::exchange out of a PCL value": {"e.cpp": "struct R { String t; };\nvoid f( R& r ) { R old = std::exchange( r, R() ); }\n"},
+    "moved-from local reused": {"l.cpp": "void f() { String a = \"x\"; String b = std::move( a ); a = b; }\n"},
+    "moved-from obj.member reused": {"o.cpp": "struct R { String t; };\nvoid f( R& r ) { String b = std::move( r.t ); r.t = b; }\n"},
+    "moved-from this->member reused": {"t.cpp": "struct R { String t; void f() { String b = std::move( this->t ); this->t = b; } };\n"},
+    "type alias of a bearing container": {"a.cpp": "using Names = std::vector<String>;\nvoid f() { Names v; std::sort( v.begin(), v.end() ); }\n"},
+    "auto v = std::vector<...>{}": {"u.cpp": "void f() { auto v = std::vector<IsoString>{}; v.erase( v.begin() ); }\n"},
+    "using namespace std": {"n.cpp": "using namespace std;\nvoid f() { vector<String> v; sort( v.begin(), v.end() ); }\n"},
+    "ranges::sort": {"r.cpp": "std::vector<String> v; // pcl-move-ok: claimed read only\nvoid f() { std::ranges::sort( v ); }\n"},
+    "moved-from StringList reused": {"sl.cpp": "void f() { StringList a; StringList b = std::move( a ); a = b; }\n"},
+    "moved-from pcl::Array member": {"am.cpp": "struct Q { Array<int> m_a; void f() { Array<int> b = std::move( m_a ); m_a = b; } };\n"},
 }
 GOOD_FIXTURE = ("struct P { std::string a; };\nstd::vector<P> v;\nvoid f( const std::vector<String>& in );\n"
                 "std::vector<std::unique_ptr<W>> w;\nstd::vector<String> ok; // pcl-move-ok: push_back + read only\n")
@@ -202,6 +292,16 @@ def self_check(tmp):
         problems, _ = run([p])
         if not problems:
             return f"self-check: the guard did not flag {name}"
+    for label, files in BAD_FIXTURES_R6.items():
+        d = os.path.join(tmp, re.sub(r"\W+", "_", label))
+        os.makedirs(d, exist_ok=True)
+        paths = []
+        for name, text in files.items():
+            paths.append(os.path.join(d, name))
+            open(paths[-1], "w").write(text)
+        problems, _ = run(paths)
+        if not problems:
+            return f"self-check: the guard did not flag: {label}"
     p = os.path.join(tmp, "good.cpp")
     open(p, "w").write(GOOD_FIXTURE)
     problems, _ = run([p])

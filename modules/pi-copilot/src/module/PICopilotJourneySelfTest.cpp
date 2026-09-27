@@ -7412,14 +7412,24 @@ r1.ok && r1.inferred.size() == 1 && r1.inferred[0].first == 7 && r1.inferred[0].
                { "/tmp/pcx/j (1)/export: missing", "export: missing" },
                { "a/b and $T/2 stay", "a/b and $T/2 stay" },
                { "copy to /home/s/M42 (Orion), 2026/out failed; saved in /tmp/pcx/j 1/26 instead", "copy to out failed; saved in 26 instead" },
-               // Round 5 (re-review 3, M2): a folder name ending in a space ("a ") before the next '/'.
-               { "see /home/s/a /b/x.xisf now", "see x.xisf now" } };
+               // Round 6 (re-review 4, M2): prose between a known and an unknown path survives.
+               { "Saved /home/s/out.xisf and loaded /opt/PixInsight/x.xpsm ok", "Saved out.xisf and loaded x.xpsm ok" } };
             nlohmann::json bad = nlohmann::json::array();
             for ( const auto& c : cases )
             {
                const String got = ModelTextWithoutDirectories( c.first, known );
                if ( got != c.second )
                   bad.push_back( { { "in", c.first }, { "got", U8( got ) }, { "want", c.second } } );
+            }
+            // Round 5/6 (M2): a REAL folder whose name ends in a space ("sp a ") stays inside its path (confirmed on disk).
+            {
+               const String spaced = root.Path() + "/sp a ";
+               ::mkdir( U8( spaced ).c_str(), 0700 );          // POSIX: PCL's CreateDirectory refuses the trailing space
+               ::mkdir( U8( spaced + "/b" ).c_str(), 0700 );
+               const String in = "see " + root.Path() + "/sp a /b/x.xisf now";
+               const String got = ModelTextWithoutDirectories( in, StringList( 1, root.Path() ) );
+               if ( got != "see x.xisf now" )
+                  bad.push_back( { { "in", U8( in ) }, { "got", U8( got ) }, { "want", "see x.xisf now" } } );
             }
             // Linear with known directories too (round 5, re-review 3 M1): doubling the input at most ~doubles the time.
             std::string big;
