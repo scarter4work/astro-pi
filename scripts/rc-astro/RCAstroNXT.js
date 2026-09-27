@@ -2,7 +2,7 @@
 #script-id     RCAstroNXT
 #feature-info  Runs the GPU-accelerated rc-astro NoiseXTerminator on the target view.
 
-#define VERSION "1.0.0"
+#define VERSION "1.1.0"
 
 #include <pjsr/Sizer.jsh>
 #include <pjsr/NumericControl.jsh>
@@ -43,7 +43,17 @@ var NXTParams = {
       if (g.has("dchf")) this.dchf=g.getReal("dchf");
       if (g.has("dclf")) this.dclf=g.getReal("dclf");
       if (g.has("useAdvanced")) this.useAdvanced=g.getBoolean("useAdvanced");
-      if (g.has("mlVersion")) this.mlVersion=g.getInteger("mlVersion");
+      if (g.has("mlVersion")) {
+         // Real, not integer: CLI 2.x model versions are e.g. 3.1.
+         this.mlVersion = g.getReal("mlVersion");
+         // rc-astro CLI 2.x ships NoiseXTerminator models 2 and 3.1 only;
+         // "--ml-version 3" is rejected ("no model (version 3) is available").
+         if (this.mlVersion == 3) {
+            this.mlVersion = 3.1;
+            console.noteln("RC-Astro NXT: migrated legacy model version 3 to 3.1 " +
+                           "(rc-astro CLI 2.x no longer provides NoiseXTerminator model 3).");
+         }
+      }
       if (g.has("device")) this.device=g.getString("device");
    },
    buildArgs: function(inPath, outPath) {
@@ -133,9 +143,9 @@ function NXTDialog() {
       if (!toggleBegin) NXTParams.useAdvanced = bar.isExpanded();
    };
 
-   this.mlv = new ComboBox(this); this.mlv.addItem("Latest"); this.mlv.addItem("v3"); this.mlv.addItem("v2");
-   this.mlv.currentItem = (NXTParams.mlVersion==3)?1:(NXTParams.mlVersion==2)?2:0;
-   this.mlv.onItemSelected = function(i){ NXTParams.mlVersion = (i==1)?3:(i==2)?2:0; };
+   this.mlv = new ComboBox(this); this.mlv.addItem("Latest"); this.mlv.addItem("v3.1"); this.mlv.addItem("v2");
+   this.mlv.currentItem = (NXTParams.mlVersion==3.1)?1:(NXTParams.mlVersion==2)?2:0;
+   this.mlv.onItemSelected = function(i){ NXTParams.mlVersion = (i==1)?3.1:(i==2)?2:0; };
    this.dev = new ComboBox(this); this.dev.addItem("GPU"); this.dev.addItem("CPU");
    this.dev.currentItem = (NXTParams.device=="cpu")?1:0;
    this.dev.onItemSelected = function(i){ NXTParams.device = (i==1)?"cpu":"gpu"; };

@@ -23,7 +23,13 @@
 var KEYS_FILE   = "/home/scarter4work/projects/keys/scarter4work_keys.xssk";
 var PASS_FILE   = "/tmp/.pi_codesign_pass";
 var RESULT_FILE = "/tmp/.ez_sign_result.json";
-var PROJECT_DIR = "/home/scarter4work/projects/astro-pi/scripts/ez-stretch";
+// Resolved from THIS file's own location (#__FILE__), never a hardcoded
+// checkout path: release.sh runs the signer from the tree being released, and a
+// hardcoded /home/.../astro-pi path made a release run from a git worktree sign
+// the MAIN checkout's files instead, packaging stale signatures.
+function parentDir(d) { return d.substring(0, d.lastIndexOf("/")); }
+var TOOLS_DIR   = File.extractDirectory(#__FILE__);
+var PROJECT_DIR = parentDir(TOOLS_DIR);   // scripts/ez-stretch
 var SCRIPTS_DIR = PROJECT_DIR + "/src/scripts/EZ Stretch BSC";
 
 var SCRIPTS = [ "EZStretch", "EZDonutRepair", "EZHazeKill" ];
@@ -48,7 +54,7 @@ function readPassword() {
 }
 
 function main() {
-   var result = { ok: false, developerId: null, signed: [], failed: [], error: null };
+   var result = { ok: false, dir: SCRIPTS_DIR, developerId: null, signed: [], failed: [], error: null };
 
    // Start from a clean slate so a crash before completion is detectable.
    if (File.exists(RESULT_FILE))

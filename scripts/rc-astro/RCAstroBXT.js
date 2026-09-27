@@ -2,7 +2,7 @@
 #script-id     RCAstroBXT
 #feature-info  Runs the GPU-accelerated rc-astro BlurXTerminator on the target view.
 
-#define VERSION "1.0.0"
+#define VERSION "1.1.0"
 
 #include <pjsr/Sizer.jsh>
 #include <pjsr/FrameStyle.jsh>
@@ -19,7 +19,10 @@ var BXTParams = {
    sharpenNonstellar: 0.90,
    adjustHalos: 0.0,
    autoPSF: true,
-   psfRadius: 0.0,
+   // Nonstellar PSF DIAMETER in pixels, [0, 8] (rc-astro CLI 2.x --nsd). The
+   // 0.9.x wrappers stored a RADIUS ("psfRadius", [0, 4], --nsr); load()
+   // migrates such instances. See RCAstroLib.jsh MIN_CLI_MAJOR.
+   psfDiameter: 0.0,
    correctOnly: false,
    mlVersion: 0,   // 0 = Latest
    device: "gpu",
@@ -29,7 +32,7 @@ var BXTParams = {
       Parameters.set("sharpenNonstellar", this.sharpenNonstellar);
       Parameters.set("adjustHalos", this.adjustHalos);
       Parameters.set("autoPSF", this.autoPSF);
-      Parameters.set("psfRadius", this.psfRadius);
+      Parameters.set("psfDiameter", this.psfDiameter);
       Parameters.set("correctOnly", this.correctOnly);
       Parameters.set("mlVersion", this.mlVersion);
       Parameters.set("device", this.device);
@@ -39,7 +42,18 @@ var BXTParams = {
       if (Parameters.has("sharpenNonstellar")) this.sharpenNonstellar = Parameters.getReal("sharpenNonstellar");
       if (Parameters.has("adjustHalos"))       this.adjustHalos = Parameters.getReal("adjustHalos");
       if (Parameters.has("autoPSF"))           this.autoPSF = Parameters.getBoolean("autoPSF");
-      if (Parameters.has("psfRadius"))         this.psfRadius = Parameters.getReal("psfRadius");
+      if (Parameters.has("psfDiameter")) {
+         this.psfDiameter = Parameters.getReal("psfDiameter");
+      } else if (Parameters.has("psfRadius")) {
+         // Legacy (wrapper <= 1.0.x / CLI 0.9.x) instance. CLI 2.x renamed the
+         // parameter radius -> diameter and doubled its range [0,4] -> [0,8],
+         // so the same PSF is diameter = 2 x radius.
+         let r = Parameters.getReal("psfRadius");
+         this.psfDiameter = Math.max(0, Math.min(8, 2 * r));
+         console.noteln("RC-Astro BXT: migrated legacy nonstellar PSF radius " + format("%.2f", r) +
+                        " to diameter " + format("%.2f", this.psfDiameter) +
+                        " (rc-astro CLI 2.x uses a PSF diameter, range 0-8).");
+      }
       if (Parameters.has("correctOnly"))       this.correctOnly = Parameters.getBoolean("correctOnly");
       if (Parameters.has("mlVersion"))         this.mlVersion = Parameters.getInteger("mlVersion");
       if (Parameters.has("device"))            this.device = Parameters.getString("device");
@@ -47,23 +61,23 @@ var BXTParams = {
    buildArgs: function(inPath, outPath) {
       let a = [inPath];
       if (this.correctOnly) {
-         // --correct-only forces THREE params on the real CLI (rc-astro
-         // 0.9.10) and rejects any conflicting value for any of them —
-         // verified empirically against the real binary:
-         //   --correct-only --ash <x>          -> forces --ash to 0
-         //   --correct-only --no-ansr --nsr 1.5 -> forces --ansr to true
-         //   --correct-only --nsr 1.5           -> forces --nsr to 0
-         // "--correct-only" alone (and "--correct-only --ansr") are the only
+         // --correct-only forces --ss/--ash/--ansp/--nsd on the real CLI
+         // (rc-astro 2.6.9) and rejects any conflicting value for any of them
+         // — verified empirically against the real binary (2026-09-26):
+         //   --correct-only --ash 0.1           -> forces --ash to 0
+         //   --correct-only --no-ansp [--nsd x] -> forces --ansp to true
+         //   --correct-only --nsd 1.5           -> forces --nsd to 0
+         // "--correct-only" alone (and "--correct-only --ansp") are the only
          // accepted forms, so emit ONLY --correct-only (plus --ml-version /
-         // --device / --output below) — never --ss/--sn/--ash/--ansr/
-         // --no-ansr/--nsr in this mode.
+         // --device / --output below) — never --ss/--sn/--ash/--ansp/
+         // --no-ansp/--nsd in this mode.
          a.push("--correct-only");
       } else {
          a.push("--ss", format("%.3f", this.sharpenStars),
                 "--sn", format("%.3f", this.sharpenNonstellar));
          a.push("--ash", format("%.3f", this.adjustHalos));
-         if (this.autoPSF) a.push("--ansr");
-         else a.push("--no-ansr", "--nsr", format("%.2f", this.psfRadius));
+         if (this.autoPSF) a.push("--ansp");
+         else a.push("--no-ansp", "--nsd", format("%.2f", this.psfDiameter));
       }
       if (this.mlVersion != 0) a.push("--ml-version", String(this.mlVersion));
       a.push("--device", this.device, "--output", outPath);
@@ -113,14 +127,14 @@ function BXTDialog() {
    this.ss  = slider("Sharpen stars:",      0, 0.7, 3, function(){return BXTParams.sharpenStars;},      function(v){BXTParams.sharpenStars=v;});
    this.sn  = slider("Sharpen nonstellar:", 0, 1.0, 3, function(){return BXTParams.sharpenNonstellar;}, function(v){BXTParams.sharpenNonstellar=v;});
    this.ash = slider("Adjust star halos:", -0.5, 0.5, 3, function(){return BXTParams.adjustHalos;},     function(v){BXTParams.adjustHalos=v;});
-   this.nsr = slider("Nonstellar radius:",  0, 4.0, 2, function(){return BXTParams.psfRadius;},         function(v){BXTParams.psfRadius=v;});
+   this.nsr = slider("Nonstellar PSF diameter:", 0, 8.0, 2, function(){return BXTParams.psfDiameter;}, function(v){BXTParams.psfDiameter=v;});
    this.nsr.enabled = !BXTParams.autoPSF;
 
    this.autoPSF = new CheckBox(this); this.autoPSF.text = "Auto nonstellar PSF"; this.autoPSF.checked = BXTParams.autoPSF;
    this.autoPSF.onCheck = function(c){ BXTParams.autoPSF = c; self.nsr.enabled = !c; };
 
    this.correctOnly = new CheckBox(this); this.correctOnly.text = "Correct only (no sharpening)"; this.correctOnly.checked = BXTParams.correctOnly;
-   // --correct-only forces --ash/--ansr/--nsr on the real CLI (see buildArgs())
+   // --correct-only forces --ash/--ansp/--nsd on the real CLI (see buildArgs())
    // and rejects any conflicting value, so autoPSF and the nsr slider must be
    // disabled right alongside ss/sn/ash whenever correct-only is checked --
    // otherwise the user can reach a state (e.g. autoPSF unchecked, a manual
@@ -136,7 +150,7 @@ function BXTDialog() {
    // required now that Fix C opens this dialog pre-populated from a saved
    // process icon's parameters (previously only reachable via the Scripts
    // menu, where params were always defaults and this never mattered).
-   // --ash/--ansr/--nsr are all invalid together with --correct-only (see
+   // --ash/--ansp/--nsd are all invalid together with --correct-only (see
    // buildArgs()), so ss/sn/ash/autoPSF/nsr must all start disabled whenever
    // a loaded/default correctOnly is true.
    this.ss.enabled = !BXTParams.correctOnly;

@@ -70,10 +70,12 @@ sign_scripts() {
     if [ ! -f "$SIGN_RESULT" ]; then
         echo "  ERROR: signer produced no result file - did PixInsight run? ($SIGN_RESULT)" >&2; exit 1
     fi
-    if ! python3 - "$SIGN_RESULT" "${SCRIPTS[@]}" <<'PY'
-import json, sys
-res = json.load(open(sys.argv[1])); want = set(sys.argv[2:])
+    if ! python3 - "$SIGN_RESULT" "$SCRIPTS_DIR" "${SCRIPTS[@]}" <<'PY'
+import json, os, sys
+res = json.load(open(sys.argv[1])); want = set(sys.argv[3:])
 ok = res.get("ok") and set(res.get("signed", [])) >= want and not res.get("failed")
+if os.path.realpath(res.get("dir") or "") != os.path.realpath(sys.argv[2]):
+    print(f"  ERROR: signer signed {res.get('dir')!r}, expected {sys.argv[2]!r}", file=sys.stderr); ok = False
 for s in res.get("signed", []): print(f"  Signed: {s}")
 for f in res.get("failed", []): print(f"  FAILED: {f}", file=sys.stderr)
 if res.get("error"): print(f"  ERROR: {res['error']}", file=sys.stderr)

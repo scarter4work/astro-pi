@@ -33,7 +33,7 @@ function runTest() {
       BXTParams.sharpenNonstellar = 0.90;
       BXTParams.adjustHalos = 0.0;
       BXTParams.autoPSF = true;
-      BXTParams.psfRadius = 0.0;
+      BXTParams.psfDiameter = 0.0;
       BXTParams.correctOnly = false;
       BXTParams.mlVersion = 0;
       BXTParams.device = "gpu";
@@ -52,49 +52,50 @@ function runTest() {
       BXTParams.sharpenNonstellar = 0.90;
       BXTParams.adjustHalos = 0.10;
       BXTParams.autoPSF = true;
-      BXTParams.psfRadius = 0.0;
+      BXTParams.psfDiameter = 0.0;
       BXTParams.correctOnly = false;
       BXTParams.mlVersion = 0;
       BXTParams.device = "gpu";
       let a1 = BXTParams.buildArgs("IN.xisf", "OUT.xisf");
       W("argv[default ss/sn, autoPSF=true]: " + JSON.stringify(a1));
       assert(a1.indexOf("--ss") >= 0 && a1.indexOf("--sn") >= 0, "expected --ss/--sn present when correctOnly=false");
-      assert(a1.indexOf("--ansr") >= 0, "expected --ansr present when autoPSF=true");
-      assert(a1.indexOf("--no-ansr") < 0 && a1.indexOf("--nsr") < 0, "expected no --no-ansr/--nsr when autoPSF=true");
+      assert(a1.indexOf("--ansp") >= 0, "expected --ansp present when autoPSF=true");
+      assert(a1.indexOf("--no-ansp") < 0 && a1.indexOf("--nsd") < 0, "expected no --no-ansp/--nsd when autoPSF=true");
+      // CLI 2.x removed the 0.9.x radius flags outright (exit 109 "argument was not expected").
+      assert(a1.indexOf("--ansr") < 0 && a1.indexOf("--nsr") < 0, "legacy 0.9.x --ansr/--nsr must never be emitted");
       assert(a1.indexOf("--correct-only") < 0, "expected no --correct-only when correctOnly=false");
       assert(a1.indexOf("--ml-version") < 0, "expected no --ml-version when mlVersion=0 (Latest)");
 
       BXTParams.autoPSF = false;
-      BXTParams.psfRadius = 1.5;
+      BXTParams.psfDiameter = 3.0;
       let a2 = BXTParams.buildArgs("IN.xisf", "OUT.xisf");
-      W("argv[autoPSF=false, psfRadius=1.5]: " + JSON.stringify(a2));
-      assert(a2.indexOf("--no-ansr") >= 0, "expected --no-ansr when autoPSF=false");
-      assert(a2.indexOf("--nsr") >= 0 && a2[a2.indexOf("--nsr")+1] == "1.50", "expected --nsr 1.50 when autoPSF=false");
-      assert(a2.indexOf("--ansr") < 0, "expected plain --ansr NOT present when autoPSF=false");
+      W("argv[autoPSF=false, psfDiameter=3.0]: " + JSON.stringify(a2));
+      assert(a2.indexOf("--no-ansp") >= 0, "expected --no-ansp when autoPSF=false");
+      assert(a2.indexOf("--nsd") >= 0 && a2[a2.indexOf("--nsd")+1] == "3.00", "expected --nsd 3.00 when autoPSF=false");
+      assert(a2.indexOf("--ansp") < 0, "expected plain --ansp NOT present when autoPSF=false");
+      assert(a2.indexOf("--no-ansr") < 0 && a2.indexOf("--nsr") < 0, "legacy 0.9.x --no-ansr/--nsr must never be emitted");
 
-      // BXTParams still has autoPSF=false, psfRadius=1.5 from the previous
+      // BXTParams still has autoPSF=false, psfDiameter=3.0 from the previous
       // block at this point — deliberately NOT reset before flipping
-      // correctOnly, so this proves buildArgs() suppresses --ansr/--no-ansr/
-      // --nsr purely because of correctOnly, not because those fields happen
+      // correctOnly, so this proves buildArgs() suppresses --ansp/--no-ansp/
+      // --nsd purely because of correctOnly, not because those fields happen
       // to be at defaults.
       BXTParams.correctOnly = true;
       let a3 = BXTParams.buildArgs("IN.xisf", "OUT.xisf");
       W("argv[correctOnly=true]: " + JSON.stringify(a3));
       assert(a3.indexOf("--correct-only") >= 0, "expected --correct-only when correctOnly=true");
       assert(a3.indexOf("--ss") < 0 && a3.indexOf("--sn") < 0, "expected --correct-only to suppress --ss/--sn");
-      // Fix 1: --correct-only forces THREE params on the real CLI (rc-astro
-      // 0.9.10) and rejects any conflicting value for ANY of them (verified
-      // against the real binary):
-      //   --correct-only --ash <x>           -> {"event":"error","message":
-      //     "--correct-only forces --ash to 0, which conflicts with the value
-      //     you gave; omit --ash"}
-      //   --correct-only --no-ansr --nsr 1.5 -> forces --ansr to true
-      //   --correct-only --nsr 1.5           -> forces --nsr to 0
-      // None of --ash/--ansr/--no-ansr/--nsr may ever be emitted in this mode.
+      // --correct-only forces --ss/--ash/--ansp/--nsd on the real CLI (rc-astro
+      // 2.6.9) and rejects any conflicting value for ANY of them (verified
+      // against the real binary 2026-09-26):
+      //   --correct-only --ash 0.1           -> "--correct-only forces --ash to 0, ...; omit --ash"
+      //   --correct-only --no-ansp [--nsd x] -> "--correct-only forces --ansp to true, ...; omit --ansp"
+      //   --correct-only --nsd 1.5           -> "--correct-only forces --nsd to 0, ...; omit --nsd"
+      // None of --ss/--ash/--ansp/--no-ansp/--nsd may ever be emitted in this mode.
       assert(a3.indexOf("--ash") < 0, "expected no --ash when correctOnly=true (CLI rejects --ash with --correct-only)");
-      assert(a3.indexOf("--ansr") < 0, "expected no --ansr when correctOnly=true (CLI rejects it with --correct-only)");
-      assert(a3.indexOf("--no-ansr") < 0, "expected no --no-ansr when correctOnly=true (CLI rejects it with --correct-only)");
-      assert(a3.indexOf("--nsr") < 0, "expected no --nsr when correctOnly=true (CLI rejects it with --correct-only)");
+      assert(a3.indexOf("--ansp") < 0, "expected no --ansp when correctOnly=true");
+      assert(a3.indexOf("--no-ansp") < 0, "expected no --no-ansp when correctOnly=true (CLI rejects it with --correct-only)");
+      assert(a3.indexOf("--nsd") < 0, "expected no --nsd when correctOnly=true (CLI rejects it with --correct-only)");
 
       // --- Fix 1: real end-to-end run of runBXT() with correctOnly=true ---
       // Correct-only has never been exercised against the real CLI before —
@@ -107,7 +108,7 @@ function runTest() {
       BXTParams.targetView = vCO;
       BXTParams.correctOnly = true;
       BXTParams.autoPSF = true;
-      BXTParams.psfRadius = 0.0;
+      BXTParams.psfDiameter = 0.0;
       BXTParams.mlVersion = 0;
       BXTParams.device = "gpu";
 
@@ -124,6 +125,52 @@ function runTest() {
       let a4 = BXTParams.buildArgs("IN.xisf", "OUT.xisf");
       W("argv[mlVersion=4]: " + JSON.stringify(a4));
       assert(a4.indexOf("--ml-version") >= 0 && a4[a4.indexOf("--ml-version")+1] == "4", "expected --ml-version 4");
+
+      // --- real end-to-end run with a MANUAL PSF diameter (--no-ansp --nsd) ---
+      let srcM = ImageWindow.open("/home/scarter4work/astro_work/cygnus/gxp/panel_1-1.xisf")[0];
+      let vM = srcM.mainView;
+      let beforeM = vM.image.stdDev();
+      BXTParams.targetView = vM;
+      BXTParams.correctOnly = false;
+      BXTParams.autoPSF = false;
+      BXTParams.psfDiameter = 3.0;
+      BXTParams.mlVersion = 0;
+      BXTParams.device = "gpu";
+      runBXT(vM);
+      assert(Math.abs(vM.image.stdDev() - beforeM) > 1e-8,
+             "manual-diameter runBXT() did not modify the target view in place");
+      W("manual psfDiameter=3.0 end-to-end run: PASS (stdDev before=" + beforeM +
+        " after=" + vM.image.stdDev() + ")");
+      srcM.forceClose();
+
+      // --- legacy instance migration: psfRadius (0.9.x, [0,4]) -> psfDiameter ([0,8]) ---
+      function loadFrom(params) {
+         Parameters.clear();
+         for (let k in params) Parameters.set(k, params[k]);
+         BXTParams.psfDiameter = -1;   // sentinel: load() must overwrite it
+         BXTParams.load();
+         return BXTParams.psfDiameter;
+      }
+      let m1 = loadFrom({ psfRadius: 1.5, autoPSF: false });
+      W("migrate psfRadius=1.5 -> psfDiameter=" + m1);
+      assert(Math.abs(m1 - 3.0) < 1e-9, "legacy psfRadius 1.5 must migrate to psfDiameter 3.0, got " + m1);
+      let m2 = loadFrom({ psfRadius: 4.0 });
+      assert(Math.abs(m2 - 8.0) < 1e-9, "legacy psfRadius 4.0 must migrate to psfDiameter 8.0, got " + m2);
+      let m3 = loadFrom({ psfRadius: 5.0 });
+      assert(Math.abs(m3 - 8.0) < 1e-9, "migrated diameter must clamp to 8.0, got " + m3);
+      let m4 = loadFrom({ psfRadius: 1.0, psfDiameter: 5.0 });
+      assert(Math.abs(m4 - 5.0) < 1e-9, "a saved psfDiameter must win over a legacy psfRadius, got " + m4);
+      let m5 = loadFrom({ psfDiameter: 2.5 });
+      assert(Math.abs(m5 - 2.5) < 1e-9, "a 1.1.0 instance must load psfDiameter unchanged, got " + m5);
+      // save() writes the new name, so a re-saved instance never re-migrates.
+      Parameters.clear();
+      BXTParams.psfDiameter = 6.0;
+      BXTParams.save();
+      assert(Parameters.has("psfDiameter") && Math.abs(Parameters.getReal("psfDiameter") - 6.0) < 1e-9,
+             "save() must write psfDiameter");
+      assert(!Parameters.has("psfRadius"), "save() must not write the legacy psfRadius");
+      Parameters.clear();
+      W("legacy psfRadius migration: PASS");
 
       W("PASS t_bxt");
    } catch (e) {

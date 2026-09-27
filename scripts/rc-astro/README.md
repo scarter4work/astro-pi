@@ -20,6 +20,8 @@ These scripts wrap that CLI so it can be launched from PixInsight's `Script`
 menu with a normal parameter dialog, process icons, and headless automation
 support — instead of dropping to a terminal for every run.
 
+**Requires rc-astro CLI 2.x** (2.0 or newer; older CLIs are refused with an error — update with `rc-astro update --install`, then run the `install.sh` it downloads with `sudo`).
+
 ## GPU requirement
 
 **System cuDNN must be >= 9.13.** NVIDIA's cuDNN release notes document an
@@ -46,8 +48,8 @@ step via PixelMath).
 | Sharpen stars | `--ss` | [0, 0.7], default 0.25 |
 | Sharpen nonstellar | `--sn` | [0, 1], default 0.90 |
 | Adjust star halos | `--ash` | [-0.5, 0.5], default 0.0 |
-| Auto nonstellar PSF | `--ansr` / `--no-ansr` | default on |
-| Nonstellar radius (manual) | `--nsr` | [0, 4], only when auto-PSF is off |
+| Auto nonstellar PSF | `--ansp` / `--no-ansp` | default on |
+| Nonstellar PSF diameter (manual) | `--nsd` | [0, 8], only when auto-PSF is off (instances saved by wrapper 1.0.x with a radius are migrated: diameter = 2 x radius) |
 | Correct only (no sharpening) | `--correct-only` | default off; disables the sharpen sliders |
 | AI model | `--ml-version` | Latest (default, flag omitted) / 4 / 2 |
 | Device | `--device` | gpu (default) / cpu |
@@ -72,7 +74,7 @@ step), same as BXT.
 
 Main controls: Denoise `--dn` [0,1] default 0.90 - Iterations `--it` [1,5]
 default 2 - Frequency scale `--fs` [1,100] default 5.0 - AI model
-`--ml-version` (Latest / 3 / 2) - Device.
+`--ml-version` (Latest / 3.1 / 2; a saved model 3 is migrated to 3.1, which CLI 2.x replaced it with) - Device.
 
 **Advanced** section (collapsed `SectionBar`, off by default), each [0,1]
 default 0.90: Intensity `--di`, Color `--dc`, Denoise hi-freq `--dhf`, lo-freq
@@ -90,7 +92,7 @@ Advanced section is expanded; otherwise the CLI's own defaults apply.
 
 ## Error handling
 
-Every failure path (missing `rc-astro` binary, nonzero exit code, a `--json`
+Every failure path (missing `rc-astro` binary, a CLI older than 2.0, nonzero exit code, a `--json`
 `error` event, or a missing/unreadable output file) surfaces as a loud
 `console.criticalln` plus a modal `MessageBox` with the real message from the
 CLI. There is no silent fallback and no mock/placeholder data — if something
@@ -138,6 +140,9 @@ test/run-headless.sh "$PWD/test/t_lib_runcli.js";    cat /tmp/rc_t2_result.log
 test/run-headless.sh "$PWD/test/t_bxt.js";           cat /tmp/rc_t3_result.log
 test/run-headless.sh "$PWD/test/t_sxt.js";           cat /tmp/rc_t4_result.log
 test/run-headless.sh "$PWD/test/t_nxt.js";           cat /tmp/rc_t5_result.log
+test/run-headless.sh "$PWD/test/t_lib_version.js";   cat /tmp/rc_t_version_result.log
+test/run-headless.sh "$PWD/test/t_lib_env_scrub.js"; cat /tmp/rc_t_env_scrub_result.log
+test/run-headless.sh "$PWD/test/t_lib_dispatch_splice.js"; cat /tmp/rc_t_dispatch_splice_result.log
 ```
 
 Each PixInsight startup under Xvfb takes roughly 40 seconds, so the full suite
