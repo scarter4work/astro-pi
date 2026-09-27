@@ -347,7 +347,7 @@ KeepOutcome KeeperExporter::Keep( int64 journeyId, int64 endImageId, const Strin
    o.alreadyKept = j.kept;
    if ( !j.kept )
    {
-      m_store->MarkKept( journeyId, endImageId, NowIso() );
+      m_store->MarkKeptDurably( journeyId, endImageId, NowIso() );   // on disk before anything else (Task 7 m7)
       o.marked = true;
    }
    o.files = WriteKeeperFiles( *m_store, journeyId, kGenerator );
@@ -430,24 +430,71 @@ void KeeperExporter::Finish( JourneyWriteupJob& job, StringList& notes )
          // not stored is named (the malformed ones by position, the rest by step id).
          std::vector<std::string> notStored = w.rejected;
          int stored = 0;
-         for ( const auto& in : w.inferred )
+         // All the reasons of one reply are one transaction (Task 7's API): a
+         // failed or aborted group leaves none of them behind.
+         if ( !w.inferred.empty() )
+         try
          {
-            const std::string label = "step " + std::to_string( in.first );
-            try
+            JourneyStore::Transaction tx( *m_store );
+            std::vector<std::string> tentative;   // stored inside the transaction, not yet committed
+            String aborted;
+            for ( size_t i = 0; i < w.inferred.size(); ++i )
             {
-               const char* why = InferredReasonRejection( *m_store, jid, in.first );
-               if ( why != nullptr )
+               const auto& in = w.inferred[i];
+               const std::string label = "step " + std::to_string( in.first );
+               String failure;
+               try
                {
-                  notStored.push_back( label + " (" + why + ")" );
+                  const char* why = InferredReasonRejection( *m_store, jid, in.first );
+                  if ( why != nullptr )
+                  {
+                     notStored.push_back( label + " (" + why + ")" );
+                     continue;
+                  }
+                  m_store->SetStepReason( in.first, in.second, true/*inferred*/ );
+                  tentative.push_back( label );
                   continue;
                }
-               m_store->SetStepReason( in.first, in.second, true/*inferred*/ );
-               ++stored;
+               catch ( const pcl::Exception& x ) { failure = x.Message(); }
+               catch ( const std::exception& x ) { failure = String( x.what() ); }
+               if ( m_store->TransactionAborted() )
+               {
+                  // SQLite rolled the whole group back itself: nothing of it is stored, and
+                  // later writes would autocommit one by one. Stop here and name every entry.
+                  aborted = failure;
+                  for ( const std::string& t : tentative )
+                     notStored.push_back( t + " (" + U8( failure ) + ")" );
+                  tentative.clear();
+                  notStored.push_back( label + " (" + U8( failure ) + ")" );
+                  for ( size_t k = i + 1; k < w.inferred.size(); ++k )
+                     notStored.push_back( "step " + std::to_string( w.inferred[k].first ) + " (" + U8( failure ) + ")" );
+                  break;
+               }
+               notStored.push_back( label + " (" + U8( failure ) + ")" );   // the others still go ahead
             }
-            catch ( const pcl::Exception& x )
+            if ( aborted.IsEmpty() && !tentative.empty() )
             {
-               notStored.push_back( label + " (" + U8( x.Message() ) + ")" );   // the others still go ahead
+               try
+               {
+                  tx.Commit();
+                  stored = int( tentative.size() );
+               }
+               catch ( const pcl::Exception& x )
+               {
+                  for ( const std::string& t : tentative )
+                     notStored.push_back( t + " (the reasons could not be committed: " + U8( x.Message() ) + ")" );
+               }
             }
+         }
+         catch ( const pcl::Exception& x )   // the transaction could not begin (e.g. locked by another instance)
+         {
+            for ( const auto& in : w.inferred )
+               notStored.push_back( "step " + std::to_string( in.first ) + " (" + U8( x.Message() ) + ")" );
+         }
+         catch ( const std::exception& x )
+         {
+            for ( const auto& in : w.inferred )
+               notStored.push_back( "step " + std::to_string( in.first ) + " (" + std::string( x.what() ) + ")" );
          }
          if ( !notStored.empty() )
          {
