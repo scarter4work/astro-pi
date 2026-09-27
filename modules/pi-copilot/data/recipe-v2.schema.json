@@ -1,0 +1,127 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/scarter4work/astro-pi/main/modules/pi-copilot/data/recipe-v2.schema.json",
+  "title": "PI Copilot image-journey recipe, schema version 2",
+  "description": "Written by PI Copilot next to <name>.xpsm when a journey is kept. Version 2 (a kept \"(continued)\" journey covers its whole lineage): \"lineage\" lists the journeys of the chain, root first, ending with journey.id; images, steps and gaps name the journey they belong to; steps are in chain order. Additive optional fields keep schemaVersion 2; any removal, rename or change of meaning is schemaVersion 3.",
+  "type": "object",
+  "required": ["schema", "schemaVersion", "generator", "journey", "lineage", "statsBasis", "images", "links", "steps", "gaps"],
+  "properties": {
+    "schema": { "const": "picopilot-recipe" },
+    "schemaVersion": { "const": 2 },
+    "generator": { "type": "string", "minLength": 1 },
+    "journey": {
+      "type": "object",
+      "required": ["id", "name", "target", "created", "keptAt", "endImage"],
+      "properties": {
+        "id": { "type": "integer", "minimum": 1 },
+        "name": { "type": "string" },
+        "target": { "type": "string" },
+        "created": { "type": "string" },
+        "keptAt": { "type": ["string", "null"] },
+        "endImage": { "type": ["string", "null"] }
+      }
+    },
+    "lineage": {
+      "description": "The journeys whose steps this recipe holds, root first; the last is journey.id. Every journey but the last is kept (a continuation is only made from a kept journey). Ids are unique.",
+      "type": "array", "minItems": 1,
+      "items": { "type": "object", "required": ["journeyId", "name", "keptAt"],
+                 "properties": { "journeyId": { "type": "integer", "minimum": 1 }, "name": { "type": "string" },
+                                 "keptAt": { "type": ["string", "null"] } } }
+    },
+    "statsBasis": { "type": "string" },
+    "images": {
+      "type": "array", "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["key", "journey", "viewId", "fileName", "isMaster", "acquisition", "startStats", "thumbnail"],
+        "properties": {
+          "journey": { "type": "integer", "minimum": 1, "description": "a journeyId of lineage" },
+          "key": { "type": "string", "pattern": "^img[0-9]+$" },
+          "viewId": { "type": "string" },
+          "fileName": { "type": "string" },
+          "isMaster": { "type": "boolean" },
+          "acquisition": { "oneOf": [ { "type": "null" }, { "$ref": "#/$defs/acquisition" } ] },
+          "startStats": { "$ref": "#/$defs/statsOrNull" },
+          "thumbnail": { "type": ["string", "null"] }
+        }
+      }
+    },
+    "links": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["from", "to", "viaStep", "evidence"],
+        "properties": {
+          "from": { "type": "string", "pattern": "^img[0-9]+$" },
+          "to": { "type": "string", "pattern": "^img[0-9]+$" },
+          "viaStep": { "type": ["integer", "null"] },
+          "evidence": { "enum": ["copilot", "timing", "reference"] }
+        }
+      }
+    },
+    "steps": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "journey", "image", "seq", "processId", "parameters", "tableParameters", "mask", "started", "durationS",
+                     "actor", "reason", "reasonInferred", "manual", "manualWhy", "statsBefore", "statsAfter", "achieved", "thumbnail"],
+        "properties": {
+          "id": { "type": "integer", "minimum": 1 },
+          "journey": { "type": "integer", "minimum": 1, "description": "a journeyId of lineage" },
+          "image": { "type": "string", "pattern": "^img[0-9]+$" },
+          "seq": { "type": "integer", "minimum": 1 },
+          "processId": { "type": "string", "minLength": 1 },
+          "parameters": { "type": "object" },
+          "tableParameters": { "type": "object" },
+          "mask": { "oneOf": [ { "type": "null" },
+                               { "type": "object", "required": ["id", "inverted"],
+                                 "properties": { "id": { "type": "string" }, "inverted": { "type": "boolean" } } } ] },
+          "started": { "type": ["string", "null"] },
+          "durationS": { "type": ["number", "null"] },
+          "actor": { "enum": ["user", "copilot"] },
+          "reason": { "type": ["string", "null"] },
+          "reasonInferred": { "type": "boolean" },
+          "manual": { "type": "boolean" },
+          "manualWhy": { "type": ["string", "null"] },
+          "statsBefore": { "$ref": "#/$defs/statsOrNull" },
+          "statsAfter": { "$ref": "#/$defs/statsOrNull" },
+          "achieved": { "oneOf": [ { "type": "null" },
+                                   { "type": "object", "required": ["median"],
+                                     "properties": { "median": { "type": "object", "required": ["from", "to"],
+                                       "properties": { "from": { "type": "array", "items": { "type": "number" } },
+                                                       "to": { "type": "array", "items": { "type": "number" } } } } } } ] },
+          "thumbnail": { "type": ["string", "null"] }
+        }
+      }
+    },
+    "gaps": {
+      "type": "array",
+      "items": { "type": "object", "required": ["journey", "image", "afterSeq", "reason"],
+                 "properties": { "journey": { "type": "integer", "minimum": 1 }, "image": { "type": ["string", "null"] },
+                                 "afterSeq": { "type": "integer" },
+                                 "reason": { "type": "string" } } }
+    }
+  },
+  "$defs": {
+    "acquisition": {
+      "type": "object",
+      "required": ["target", "filter", "camera", "gain", "offset", "sensorTempC", "subExposureS", "subCount",
+                   "totalIntegrationS", "sessionDate"],
+      "properties": {
+        "target": { "type": "string" }, "filter": { "type": "string" }, "camera": { "type": "string" },
+        "gain": { "type": ["number", "null"] }, "offset": { "type": ["number", "null"] },
+        "sensorTempC": { "type": ["number", "null"] }, "subExposureS": { "type": ["number", "null"] },
+        "subCount": { "type": ["integer", "null"] }, "totalIntegrationS": { "type": ["number", "null"] },
+        "sessionDate": { "type": "string" }
+      }
+    },
+    "stats": {
+      "type": "array", "minItems": 1,
+      "items": { "type": "object", "required": ["channel", "median", "mad", "mean", "min", "max", "noise"],
+                 "properties": { "channel": { "type": "integer", "minimum": 0 }, "median": { "type": "number" },
+                                 "mad": { "type": "number" }, "mean": { "type": "number" }, "min": { "type": "number" },
+                                 "max": { "type": "number" }, "noise": { "type": "number" } } }
+    },
+    "statsOrNull": { "oneOf": [ { "type": "null" }, { "$ref": "#/$defs/stats" } ] }
+  }
+}

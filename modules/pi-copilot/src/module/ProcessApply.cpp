@@ -3,10 +3,13 @@
 
 #include "ProcessApply.h"
 #include "GlobalRunFiles.h"   // NulTextProblem, DuplicateKeyProblem
+#include "HistoryReader.h"
 #include "ProcessCatalog.h"
 #include "ProcessSafety.h"
+#include "StringParameterRules.h"
 #include "Utf8.h"
 
+#include <pcl/AutoViewLock.h>
 #include <pcl/Exception.h>
 #include <pcl/ImageWindow.h>
 #include <pcl/Process.h>
@@ -20,6 +23,8 @@
 #include <chrono>
 #include <cmath>
 #include <cstdint>
+#include <cstring>
+#include <limits>
 #include <memory>
 #include <set>
 #include <string>
@@ -37,6 +42,9 @@ namespace
 constexpr size_type kScalarRow = 0;
 
 InstanceBuildObserver g_instanceObserver;   // self-test only
+bool g_inProcessAppliesExpected = false;     // self-test only (SetInProcessAppliesExpectedForSelfTest)
+int  g_inProcessUnrecorded = 0;              // self-test only
+std::function<void()> g_beforeExecuteHook;  // self-test only (SetBeforeExecuteHookForSelfTest)
 
 void NoteInstanceBuild( const IsoString& processId, const char* stage )
 {
@@ -198,13 +206,12 @@ Variant ToVariant( const ProcessParameter& p, const nlohmann::json& v, const Str
       if ( s.Length() < minLen )
          throw ApplyError{ name + String().Format( ": text is %u characters; the minimum is %u",
                                                    unsigned( s.Length() ), unsigned( minLen ) ) };
-      const String allowed = p.AllowedCharacters();
-      if ( !allowed.IsEmpty() )
-         for ( size_type i = 0; i < s.Length(); ++i )
-            if ( !allowed.Contains( s[i] ) )
-               throw ApplyError{ name + ": character '" + String( s[i] )
-                                 + String().Format( "' at position %u is not allowed; allowed characters: ", unsigned( i ) )
-                                 + allowed };
+      // Declared characters (the core does not enforce them on set). Not
+      // p.AllowedCharacters() directly: the core cannot copy a non-empty
+      // declared set and it throws (StringParameterRules.h).
+      const String problem = StringCharacterProblem( ResolveStringCharacterRule( p ), s, name );
+      if ( !problem.IsEmpty() )
+         throw ApplyError{ problem };
       return Variant( s );
    }
    if ( p.IsNumeric() )
@@ -340,7 +347,7 @@ void SetParameters( const Process& P, ProcessInstance* instance, const String& p
    // values were resolved ONCE by the caller (the tools, before any dialog:
    // what the user was shown is what runs) and are only checked for
    // completeness here; a direct caller without them resolves now.
-   std::vector<PinnedParameter> pinned;
+   std::vector<PinnedParameter> pinned;   // pcl-move-ok: filled by ResolvePinnedParameters (push_back/clear), read only
    if ( resolvedPinned != nullptr )
    {
       const String e = CheckResolvedPinnedParameters( P.Id(), parameters, tableParameters, *resolvedPinned );
@@ -461,6 +468,251 @@ void SetParameters( const Process& P, ProcessInstance* instance, const String& p
    }
 }
 
+// DETECT's second signal (step 7), for a completed history-updating run on
+// a main view whose ModifyCount did not advance: is there a NEW active step of
+// this process right after the pre-run position? Recorded: the active count
+// grew by exactly one and that step is `processId`. NotRecorded: it did not
+// (the hazard: PixInsight was still inside another process execution).
+// Unknown: a read was busy (EvalGuard) or failed -- never guessed either way.
+struct StepCheck
+{
+   enum Verdict { Recorded, NotRecorded, Unknown } verdict = Unknown;
+   String reason;
+};
+
+StepCheck CheckNewHistoryStep( const View& view, const HistorySnapshot& before, const IsoString& processId )
+{
+   StepCheck c;
+   if ( !before.ok )
+   {
+      c.reason = before.busy ? String( "another script evaluation was running before the run" )
+                             : "reading the History before the run failed: " + before.error;
+      return c;
+   }
+   const HistorySnapshot after = ReadViewHistory( view.FullId(), before.ActiveCount() );
+   if ( !after.ok )
+   {
+      c.reason = after.busy ? String( "another script evaluation was running" )
+                            : "reading the History failed: " + after.error;
+      return c;
+   }
+   const bool grew = after.ActiveCount() == before.ActiveCount() + 1;
+   const bool ours = !after.steps.empty() && after.steps.front().combinedIndex == before.ActiveCount()
+                  && after.steps.front().processId == std::string( processId.c_str() );
+   c.verdict = grew && ours ? StepCheck::Recorded : StepCheck::NotRecorded;
+   return c;
+}
+
+// The same for a PREVIEW (measured, T-hist round 2): a preview's History
+// holds ONE step -- each new step REPLACES the previous one (length stays 1,
+// historyIndex 1) and is computed from the MAIN image's pixels, not from the
+// earlier preview step (0.6 then $T*0.5 gives 0.4); Undo returns the preview
+// to the main image's pixels; the main image (pixels inside and outside the
+// preview rectangle), its ModifyCount and its History never change. In the
+// hazard window nothing is recorded (fresh preview stays at 0 steps, a prior
+// step stays in place) though the preview pixels change. Recorded: the
+// preview's active step is `processId` and is not any step read before the
+// run (a step's identity includes its start time).
+StepCheck CheckNewPreviewStep( const View& view, const HistorySnapshot& before, const IsoString& processId )
+{
+   StepCheck c;
+   if ( !before.ok )
+   {
+      c.reason = before.busy ? String( "another script evaluation was running before the run" )
+                             : "reading the History before the run failed: " + before.error;
+      return c;
+   }
+   const HistorySnapshot after = ReadViewHistory( view.FullId(), 0 );
+   if ( !after.ok )
+   {
+      c.reason = after.busy ? String( "another script evaluation was running" )
+                            : "reading the History failed: " + after.error;
+      return c;
+   }
+   const int active = after.ActiveCount();
+   bool recorded = active >= 1 && size_t( active ) <= after.steps.size()
+                && after.steps[active - 1].processId == std::string( processId.c_str() );
+   if ( recorded )
+      for ( const HistoryStep& b : before.steps )
+         if ( b.identity == after.steps[active - 1].identity )
+            recorded = false;
+   c.verdict = recorded ? StepCheck::Recorded : StepCheck::NotRecorded;
+   return c;
+}
+
+// ImageContentDigest's mixer: four independent 64-bit lanes over 8-byte words
+// (one multiply each, so the read pass stays close to memory bandwidth), then
+// a final avalanche. Not cryptographic -- it only has to tell "identical" from
+// "changed".
+class ContentHasher
+{
+public:
+   void Word( uint64 w )
+   {
+      uint64& h = m_lane[m_next];
+      m_next = (m_next + 1) & 3;
+      h ^= w;
+      h *= 0x9E3779B97F4A7C15ull;
+      h ^= h >> 29;
+   }
+
+   void Bytes( const void* data, size_t n )
+   {
+      const uint8* p = static_cast<const uint8*>( data );
+      Word( uint64( n ) );
+      size_t i = 0;
+      // Four words per step, one per lane (the loop the compiler can keep in registers).
+      for ( ; i + 32 <= n; i += 32 )
+      {
+         uint64 w[4];
+         std::memcpy( w, p + i, 32 );
+         for ( int k = 0; k < 4; ++k )
+         {
+            uint64& h = m_lane[k];
+            h ^= w[k];
+            h *= 0x9E3779B97F4A7C15ull;
+            h ^= h >> 29;
+         }
+      }
+      for ( ; i + 8 <= n; i += 8 )
+      {
+         uint64 w;
+         std::memcpy( &w, p + i, 8 );
+         Word( w );
+      }
+      if ( i < n )
+      {
+         uint64 w = 0;
+         std::memcpy( &w, p + i, n - i );
+         Word( w ^ 0xA5ull );
+      }
+   }
+
+   uint64 Final() const
+   {
+      uint64 h = 0x243F6A8885A308D3ull;
+      for ( uint64 l : m_lane )
+      {
+         h ^= l + 0x9E3779B97F4A7C15ull + (h << 6) + (h >> 2);
+         h ^= h >> 33;
+         h *= 0xFF51AFD7ED558CCDull;
+         h ^= h >> 33;
+      }
+      return h;
+   }
+
+private:
+   uint64 m_lane[4] = { 0x6A09E667F3BCC908ull, 0xBB67AE8584CAA73Bull, 0x3C6EF372FE94F82Bull, 0xA54FF53A5F1D36F1ull };
+   int    m_next = 0;
+};
+
+// Row by row over `r` (the whole image or a region), so an image and the same
+// pixels as a region of a larger image hash identically (a preview's baseline).
+template <class P>
+void HashChannels( const GenericImage<P>& img, const Rect& r, ContentHasher& h )
+{
+   const size_t rowBytes = size_t( r.Width() )*sizeof( typename P::sample );
+   for ( int c = 0; c < img.NumberOfChannels(); ++c )   // nominal + alpha
+   {
+      h.Word( uint64( c ) );
+      for ( int y = r.y0; y < r.y1; ++y )
+         h.Bytes( img.PixelAddress( r.x0, y, c ), rowBytes );
+   }
+}
+
+// The target's content digest. Callers probe ViewBusy() first: a write lock
+// on a view a running process holds hangs PixInsight (ViewCapture.cpp).
+uint64 ViewContentDigest( View& view )
+{
+   AutoViewWriteLock lock( view );
+   return ImageContentDigest( view.Image() );
+}
+
+// What a PREVIEW starts from when a process runs on it: the MAIN image's
+// pixels in the preview rectangle (measured, T-hist round 2 and T-graxpert
+// fix round 1: a no-op GraXpert run on a preview whose step was PixelMath
+// $T*0.5 leaves the preview showing the main image's pixels, mean
+// 0.0875 -> 0.175). Comparing against the preview's CURRENT pixels would call
+// that revert a change. `busy` when the main view is locked.
+uint64 PreviewBaselineDigest( View& preview, bool& busy )
+{
+   ImageWindow w = preview.Window();
+   View main = w.MainView();
+   busy = ViewBusy( main );
+   if ( busy )
+      return 0;
+   const Rect r = w.PreviewRect( preview.Id() );
+   AutoViewWriteLock lock( main );
+   return ImageContentDigest( main.Image(), r );
+}
+
+} // namespace
+
+// ---- External-program bridges (ProcessApply.h) -----------------------------------
+
+const std::vector<ExternalProgramBridge>& ExternalProgramBridges()
+{
+   static const std::vector<ExternalProgramBridge> table = {
+      { "GraXpert", "replaceImage", "GraXpert",
+        "launches the external GraXpert program (appPath, pinned in the policy) with the image in a fixed shared "
+        "temp file (/tmp/PixInsight.xisf -> /tmp/PixInsight_GraXpert.xisf) and reports success even when the "
+        "program failed, wrote nothing, or another PixInsight instance used the same files (measured "
+        "2026-09-26)" },
+   };
+   return table;
+}
+
+const ExternalProgramBridge* FindExternalProgramBridge( const IsoString& canonicalProcessId )
+{
+   for ( const ExternalProgramBridge& b : ExternalProgramBridges() )
+      if ( canonicalProcessId == b.processId )
+         return &b;
+   return nullptr;
+}
+
+uint64 ImageContentDigest( const ImageVariant& image )
+{
+   // Not a defaulted Rect() argument: PCL's default Rect is UNINITIALIZED
+   // (Rectangle.h), which fix round 1 measured as a wrong digest.
+   return image ? ImageContentDigest( image, image.Bounds() ) : ContentHasher().Final();
+}
+
+uint64 ImageContentDigest( const ImageVariant& image, const Rect& region )
+{
+   ContentHasher h;
+   if ( !image )
+      return h.Final();
+   const Rect r = region.Ordered().Intersection( image.Bounds() );
+   h.Word( uint64( r.Width() ) );
+   h.Word( uint64( r.Height() ) );
+   h.Word( uint64( image.NumberOfChannels() ) );
+   h.Word( uint64( image.BitsPerSample() ) | (image.IsFloatSample() ? 0x100u : 0u)
+           | (image.IsComplexSample() ? 0x200u : 0u) | (uint64( image.ColorSpace() ) << 16) );
+   if ( image.IsComplexSample() )
+   {
+      if ( image.BitsPerSample() == 64 )
+         HashChannels( static_cast<const ComplexImage&>( *image ), r, h );
+      else
+         HashChannels( static_cast<const DComplexImage&>( *image ), r, h );
+   }
+   else if ( image.IsFloatSample() )
+   {
+      if ( image.BitsPerSample() == 32 )
+         HashChannels( static_cast<const Image&>( *image ), r, h );
+      else
+         HashChannels( static_cast<const DImage&>( *image ), r, h );
+   }
+   else
+      switch ( image.BitsPerSample() )
+      {
+      case 8:  HashChannels( static_cast<const UInt8Image&>( *image ), r, h );  break;
+      case 16: HashChannels( static_cast<const UInt16Image&>( *image ), r, h ); break;
+      default: HashChannels( static_cast<const UInt32Image&>( *image ), r, h ); break;
+      }
+   return h.Final();
+}
+
+// Declared in ProcessApply.h (shared with the journey tools, pre-flight P22).
 std::set<std::string> OpenMainViewIds()
 {
    std::set<std::string> ids;
@@ -468,8 +720,6 @@ std::set<std::string> OpenMainViewIds()
       ids.insert( std::string( w.MainView().Id().c_str() ) );
    return ids;
 }
-
-} // namespace
 
 ApplyProcessResult ApplyProcess( const IsoString& processId, const nlohmann::json& parameters,
                                  const nlohmann::json& tableParameters, View view,
@@ -517,6 +767,55 @@ ApplyProcessResult ApplyProcess( const IsoString& processId, const nlohmann::jso
       if ( ViewBusy( view ) )
          throw ApplyError{ BusyMessage( r.viewId ) };
 
+      // DETECT (step 7): what must change if the step is recorded.
+      const bool historyUpdater = instance.IsHistoryUpdater( view );
+      r.targetHistoryStep = historyUpdater;
+      const bool isPreview = !view.IsMainView();
+      ImageWindow window = view.Window();
+      const size_type modifyCountBefore = window.ModifyCount();
+      // The History before the run: counts only for a main view (for steps
+      // that do not advance ModifyCount -- measured: ImageIdentifier,
+      // RGBWorkingSpace); the whole (one-step) list for a preview.
+      HistorySnapshot historyBefore;
+      if ( historyUpdater && !g_inProcessAppliesExpected )
+         historyBefore = ReadViewHistory( view.FullId(), isPreview ? 0 : std::numeric_limits<int>::max() );
+
+      // NO-EFFECT (step 8, Task T-graxpert): for a process that bridges to an
+      // external program, what must be different after a real run -- the
+      // target's pixel content (replace mode) or the set of open windows.
+      const ExternalProgramBridge* bridge = FindExternalProgramBridge( P->Id() );
+      bool bridgeReplaces = false;
+      uint64 digestBefore = 0;      // the target's own pixels before the run
+      uint64 previewBaseline = 0;   // a preview: the main image's pixels in its rectangle
+      std::set<std::string> windowsBefore;
+      if ( bridge != nullptr )
+      {
+         bridgeReplaces = instance.ParameterValue( ProcessParameter( *P, IsoString( bridge->replaceParameter ) ),
+                                                   kScalarRow ).ToBoolean();
+         if ( !bridgeReplaces )
+            windowsBefore = OpenMainViewIds();
+         else
+         {
+            digestBefore = ViewContentDigest( view );   // not busy: probed just above
+            // A preview's no-op result is EITHER of two inputs (measured,
+            // fix round 1): when PixInsight records the step it is computed
+            // from the main image's pixels (a preview holding PixelMath
+            // $T*0.5 reverts to them); in the self-test's in-process context,
+            // where nothing is recorded, the preview keeps its own pixels. A
+            // real result equals neither.
+            if ( isPreview )
+            {
+               bool mainBusy = false;
+               previewBaseline = PreviewBaselineDigest( view, mainBusy );
+               if ( mainBusy )
+                  throw ApplyError{ BusyMessage( String( window.MainView().FullId() ) ) };
+            }
+         }
+      }
+
+      if ( g_beforeExecuteHook )
+         g_beforeExecuteHook();   // self-test only (SetBeforeExecuteHookForSelfTest)
+
       const auto t0 = std::chrono::steady_clock::now();
       bool ran = false;
       try
@@ -542,14 +841,210 @@ ApplyProcessResult ApplyProcess( const IsoString& processId, const nlohmann::jso
                              "(the reason is in the Process Console). Do not simply retry: if the user may have "
                              "aborted it, ask them first; otherwise check the values you set: " + changes };
       }
+      // Step 8 BEFORE step 7: a bridged run that did nothing would otherwise
+      // pass as a recorded step (its generic History transaction still runs)
+      // or be misread as an unrecorded change.
+      //
+      // LIMITATION (stated in ProcessApply.h and the README): this proves
+      // only "changed" vs "identical". When two PixInsight instances race on
+      // the core's shared temp file, one outcome is a CHANGED but WRONG
+      // result (the other instance's output blended in); a digest cannot
+      // tell that from a correct result, and nothing module-side can.
+      if ( bridge != nullptr )
+      {
+         String changes = DescribeParameterChanges( parameters, tableParameters, 400 );
+         changes.ReplaceString( "\n", "; " );
+         const String program( bridge->program );
+         const String why = "PixInsight's " + r.processId + " process hands the image to the external " + program
+                          + " program through one temporary file shared by every PixInsight instance on this "
+                            "computer, and it reports success even when that program failed or wrote no result. "
+                            "The usual cause is another PixInsight instance running " + r.processId + " at the same "
+                            "time; otherwise the " + program + " program itself failed (see the Process Console). ";
+         const String tell = "Tell the user this plainly; retry only after they confirm no other PixInsight instance is "
+                             "running " + r.processId + ". What ran: " + r.processId + " with " + changes;
+         if ( bridgeReplaces )
+         {
+            if ( ViewBusy( view ) )
+            {
+               r.unverifiedChange = true;   // may have changed: never reported as ok
+               throw ApplyError{ r.processId + " reported success, but PI Copilot could NOT check whether it changed "
+                                 + r.viewId + " (" + BusyMessage( r.viewId ) + "). Ask the user to look at the image "
+                                 "before continuing. What ran: " + r.processId + " with " + changes };
+            }
+            const uint64 digestAfter = ViewContentDigest( view );
+            const bool sameAsOwn = digestAfter == digestBefore;
+            const bool sameAsMain = isPreview && digestAfter == previewBaseline;
+            if ( sameAsOwn || sameAsMain )
+            {
+               r.noEffect = true;
+               // Whether the core nevertheless added a History step to the target (measured: it usually
+               // does; the modification count says). The journey records only a step that exists (m3).
+               r.historyStepAdded = !isPreview && window.ModifyCount() > modifyCountBefore;
+               // What History holds is stated only as far as it is verified.
+               String history;
+               if ( !isPreview )
+                  // Measured: the core adds a step that changed nothing; the
+                  // modification count says whether it did here.
+                  history = window.ModifyCount() > modifyCountBefore
+                          ? "PixInsight still added a " + r.processId + " step to " + r.viewId + "'s History that "
+                            "changed nothing, so there is nothing to undo (Edit > Undo would only remove that empty "
+                            "step). "
+                          : String( "The image was not changed, so there is nothing to undo. " );
+               else
+               {
+                  // A preview keeps ONE step, which each new step replaces
+                  // (T-hist); measured for a no-op GraXpert run (fix round 1):
+                  // a fresh preview gets one GraXpert step, a preview holding
+                  // a PixelMath step has it REPLACED by the GraXpert step and
+                  // shows the main image's pixels again. Read, never assumed.
+                  const String unchanged = " The main image " + String( window.MainView().FullId() )
+                                         + " was not changed.";
+                  if ( g_inProcessAppliesExpected )
+                     history = "(self-test, in-process: the preview's History is not recorded or read here.)"
+                             + unchanged + " ";
+                  else
+                  {
+                     const StepCheck c = CheckNewPreviewStep( view, historyBefore, P->Id() );
+                     const bool hadStep = historyBefore.ok && historyBefore.ActiveCount() >= 1;
+                     if ( c.verdict == StepCheck::Recorded )
+                        history = "PixInsight still recorded an empty " + r.processId + " step as the preview "
+                                + r.viewId + "'s History step (verified in its History list). A preview keeps ONE step, "
+                                  "so " + (hadStep ? String( "it REPLACED the preview's earlier step, whose effect is "
+                                                             "gone; " )
+                                                   : String( "the preview had none before; " ))
+                                + "Undo on the preview returns it to the main image's pixels there, so there is nothing "
+                                  "to undo." + unchanged + " ";
+                     else if ( c.verdict == StepCheck::NotRecorded )
+                        history = "PixInsight recorded no History step for it on the preview " + r.viewId
+                                + " (verified in its History list), so there is nothing to undo." + unchanged + " ";
+                     else
+                        history = "Whether PixInsight recorded an empty step as the preview " + r.viewId
+                                + "'s History step could NOT be checked (" + c.reason + ")." + unchanged + " ";
+                  }
+               }
+               throw ApplyError{ r.processId + " reported success but the image did not change: every pixel of "
+                                 + r.viewId + " is identical to "
+                                 + (sameAsOwn ? String( "before the run" )
+                                              : String( "the main image's unprocessed pixels it started from (the "
+                                                        "preview's earlier step no longer shows)" ))
+                                 + " (checked by PI Copilot). " + why + history + tell };
+            }
+         }
+         else
+         {
+            // Attribution (fix round 1): only a new window whose History
+            // STARTS with a step of this process counts as its result --
+            // measured, every GraXpert result window (GraXpert_background_
+            // extraction[N], GraXpert_background[N]) has exactly one
+            // initialProcessing step, "GraXpert". A window that opened
+            // meanwhile for any other reason (the user, a script) does not.
+            StringList others;
+            for ( const std::string& id : OpenMainViewIds() )
+            {
+               if ( windowsBefore.count( id ) != 0 )
+                  continue;
+               const HistorySnapshot h = ReadViewHistory( IsoString( id.c_str() ), 0 );
+               bool ours = false;
+               if ( h.ok )
+                  for ( const HistoryStep& st : h.steps )
+                     if ( st.combinedIndex >= 0 && st.combinedIndex < h.initialLength
+                       && st.processId == std::string( P->Id().c_str() ) )
+                        ours = true;
+               if ( ours )
+                  r.resultWindows.push_back( id );
+               else
+                  others.Add( S16( id ) + (h.ok ? String( " (its History does not start with a " ) + r.processId
+                                                  + " step)"
+                                                : " (its History could not be read: "
+                                                  + (h.busy ? String( "another script evaluation was running" ) : h.error)
+                                                  + ")") );
+            }
+            if ( r.resultWindows.empty() )
+            {
+               r.noEffect = true;
+               // Measured (fix round 2, Timer run on a top-level view, stand-in writing nothing): in new-window
+               // mode the core adds NO History step to the target (History 1 -> 1, ModifyCount 1 -> 1). Set
+               // from what happened, not from that measurement.
+               r.historyStepAdded = !isPreview && window.ModifyCount() > modifyCountBefore;
+               String meanwhile;
+               if ( !others.IsEmpty() )
+               {
+                  meanwhile = "Window(s) that opened during the run but are NOT " + r.processId + " results: ";
+                  for ( size_type i = 0; i < others.Length(); ++i )
+                     meanwhile += (i > 0 ? "; " : "") + others[i];
+                  meanwhile += ". ";
+               }
+               throw ApplyError{ r.processId + " reported success but produced no result window: no new image from "
+                                 + r.processId + " opened (checked by PI Copilot; with " + String( bridge->replaceParameter )
+                                 + " = false the result should open as a new image, and " + r.viewId + " is not changed "
+                                 "in this mode, so there is nothing to undo). " + meanwhile + why + tell };
+            }
+         }
+      }
+      if ( !historyUpdater )
+         r.undo = r.processId + " adds no History step to " + r.viewId + ": it does not change that image's History "
+                  "(e.g. it creates a new image or changes only display settings), so there is nothing to undo there.";
+      else if ( !isPreview && window.ModifyCount() > modifyCountBefore )
+         r.undo = "Recorded in " + r.viewId + "'s History (verified: the image's modification count advanced); "
+                  "the user can undo it with Edit > Undo.";
+      else if ( g_inProcessAppliesExpected )
+      {
+         ++g_inProcessUnrecorded;   // self-test's own executeGlobal(): never recorded (see ProcessApply.h)
+         r.undo = "(self-test, in-process: not recorded in History)";
+      }
+      else
+      {
+         // Main view whose ModifyCount did not advance -- a step that does
+         // not count as a modification (e.g. a rename) or no step at all --
+         // or a preview (ModifyCount never moves for one): the History list
+         // decides (read from `view`: a rename changed the id).
+         const StepCheck c = isPreview ? CheckNewPreviewStep( view, historyBefore, P->Id() )
+                                       : CheckNewHistoryStep( view, historyBefore, P->Id() );
+         if ( c.verdict == StepCheck::Recorded )
+            r.undo = isPreview
+               ? "Recorded as the preview " + r.viewId + "'s History step (verified). A preview keeps ONE step: it "
+                 "was applied to the main image's pixels in that area and REPLACED any earlier preview step (whose "
+                 "effect is gone); Undo on the preview returns it to the main image's pixels. A preview step does not "
+                 "change the main image."
+               : "Recorded in " + String( view.FullId() ) + "'s History (verified in the History list); the user "
+                 "can undo it with Edit > Undo.";
+         else if ( c.verdict == StepCheck::Unknown )
+         {
+            // Review round 2: never "ok" for a change nobody could verify.
+            r.unverifiedChange = true;
+            String changes = DescribeParameterChanges( parameters, tableParameters, 400 );
+            changes.ReplaceString( "\n", "; " );
+            throw ApplyError{ r.processId + " ran and changed " + r.viewId + ", but PI Copilot could NOT verify that "
+                              "PixInsight recorded it in the image's History (" + c.reason + "). Tell the user this "
+                              "now and ask them to check Edit > Undo (or the History Explorer) before continuing; do "
+                              "not apply anything else to " + r.viewId + " until they have. What ran: " + r.processId
+                              + " with " + changes };
+         }
+         else
+         {
+            r.unrecordedChange = true;
+            String changes = DescribeParameterChanges( parameters, tableParameters, 400 );
+            changes.ReplaceString( "\n", "; " );
+            throw ApplyError{ r.processId + " CHANGED " + r.viewId + " but PixInsight did NOT record it in the "
+                              "image's History (PixInsight was still busy executing another process), so Edit > Undo "
+                              "cannot revert it. Tell the user this plainly now: the image was modified outside "
+                              "History; the previous state can only be recovered from a saved copy or by redoing "
+                              "the earlier steps. Do not apply anything else to " + r.viewId + " until the user "
+                              "decides. What ran: " + r.processId + " with " + changes };
+         }
+      }
       r.ok = true;
    }
    catch ( const ApplyError& e )
    {
       r.ok = false;
       r.error = e.message;
-      r.parametersSet = nlohmann::json::object();
-      r.pinnedSet = nlohmann::json::object();
+      r.undo.Clear();
+      if ( !r.unrecordedChange && !r.unverifiedChange )   // what DID change the image stays reported
+      {
+         r.parametersSet = nlohmann::json::object();
+         r.pinnedSet = nlohmann::json::object();
+      }
    }
    catch ( const pcl::Exception& x )
    {
@@ -792,6 +1287,26 @@ GlobalRunResult RunGlobalProcess( const IsoString& processId, const nlohmann::js
 void SetInstanceBuildObserverForSelfTest( InstanceBuildObserver observer )
 {
    g_instanceObserver = std::move( observer );
+}
+
+void SetBeforeExecuteHookForSelfTest( std::function<void()> hook )
+{
+   g_beforeExecuteHook = std::move( hook );
+}
+
+void SetInProcessAppliesExpectedForSelfTest( bool on )
+{
+   g_inProcessAppliesExpected = on;
+}
+
+bool InProcessAppliesExpectedForSelfTest()
+{
+   return g_inProcessAppliesExpected;
+}
+
+int InProcessUnrecordedAppliesForSelfTest()
+{
+   return g_inProcessUnrecorded;
 }
 
 String DescribeParameterChanges( const nlohmann::json& parameters, const nlohmann::json& tableParameters,

@@ -9,11 +9,13 @@
 #include "PICopilotModule.h"
 #include "ProcessApply.h"
 #include "ProcessCatalog.h"
+#include "StringParameterRules.h"
 #include "SystemPrompt.h"
 #include "TurnEndNotes.h"
 #include "Utf8.h"
 #include "ViewCapture.h"
 #include "VisionTurn.h"
+#include "SelfTestTiming.h"
 
 #include <pcl/AutoViewLock.h>
 #include <pcl/Exception.h>
@@ -61,12 +63,17 @@ class AgentTestWindow
 {
 public:
 
+   // Holds only the window's id and re-resolves it for each use (Task 7 re-review m-4r): a held
+   // ImageWindow whose window a test closed by id would be a stale handle whose destructor detaches a
+   // reused address.
    explicit AgentTestWindow( const char* id )
-      : m_window( kAgW, kAgH, 3, 32, true/*floatSample*/, true/*color*/,
-                  false/*initialProcessing*/, IsoString( id ) )
    {
-      if ( m_window.IsNull() )
-         throw Error( "AgentTestWindow: ImageWindow construction returned a null window" );
+      {
+         ImageWindow w( kAgW, kAgH, 3, 32, true/*floatSample*/, true/*color*/, false/*initialProcessing*/, IsoString( id ) );
+         if ( w.IsNull() )
+            throw Error( "AgentTestWindow: ImageWindow construction returned a null window" );
+         m_id = w.MainView().Id();
+      }
       try
       {
          Fill();
@@ -88,24 +95,25 @@ public:
 
    View MainView() const
    {
-      return m_window.MainView();
+      return ImageWindow::WindowById( m_id ).MainView();
    }
 
    // Shows the window and makes it the active one (what a user click does).
    void Activate()
    {
-      m_window.Show( false/*fitWindow*/ );
-      m_window.BringToFront();
+      ImageWindow w = ImageWindow::WindowById( m_id );
+      w.Show( false/*fitWindow*/ );
+      w.BringToFront();
       ThePICopilotModule->ProcessEvents( true/*excludeUserInputEvents*/ );
    }
 
 private:
 
-   ImageWindow m_window;
+   IsoString m_id;
 
    void Fill()
    {
-      View view = m_window.MainView();
+      View view = ImageWindow::WindowById( m_id ).MainView();
       AutoViewLock lock( view );
       ImageVariant v = view.Image();
       if ( !v || !v.IsFloatSample() || v.BitsPerSample() != 32 || v.NumberOfChannels() != 3 )
@@ -124,8 +132,9 @@ private:
    {
       try
       {
-         if ( !m_window.IsNull() )
-            m_window.ForceClose();
+         ImageWindow w = ImageWindow::WindowById( m_id );
+         if ( !w.IsNull() )
+            w.ForceClose();
       }
       catch ( ... )
       {
@@ -268,6 +277,7 @@ bool RunAgentSelfTest( nlohmann::json& out )
    bool allOk = true;
 
    // ---- Section A0: native process execution smoke (Task 1) ---------------
+   SelfTestSectionMark( "A0 native process execution smoke" );
    // Proves the primitives ApplyProcess() is built on, from INSIDE this
    // self-test's own ExecuteGlobal() (nested process execution), and records
    // the parameter facts later sections assert.
@@ -457,6 +467,7 @@ bool RunAgentSelfTest( nlohmann::json& out )
    }
 
    // ---- Section A1: ApplyProcess (Task 2) ----------------------------------
+   SelfTestSectionMark( "A1 ApplyProcess" );
    {
       bool pmOk = false, htOk = false, scnrOk = false, errorsOk = true, busyOk = false,
            changesOk = false, enumDefaultOk = false;
@@ -667,7 +678,284 @@ bool RunAgentSelfTest( nlohmann::json& out )
       allOk = allOk && ok;
    }
 
+   // ---- Section A1b: String parameter character rules (Task T-pmid) -------
+   SelfTestSectionMark( "A1b String parameter character rules" );
+   // PixelMath createNewImage + newImageId failed with
+   // "GetParameterAllowedCharacters(): API function error": the core's copy
+   // of a declared character set always fails (StringParameterRules.h).
+   {
+      bool namedOk = false, toolOk = false, refusedOk = false, digitOk = false, scanOk = false, setOk = false,
+           unsafeOk = false, describeOk = false;
+      nlohmann::json detail = nlohmann::json::object();
+      String error;
+      auto closeNew = []( const std::set<std::string>& before )
+      {
+         std::vector<std::string> created;
+         for ( const ImageWindow& x : ImageWindow::AllWindows() )
+            if ( before.count( std::string( x.MainView().Id().c_str() ) ) == 0 )
+               created.push_back( std::string( x.MainView().Id().c_str() ) );
+         for ( const std::string& id : created )
+         {
+            ImageWindow w = ImageWindow::WindowById( IsoString( id.c_str() ) );
+            if ( !w.IsNull() )
+               w.ForceClose();
+         }
+         return created;
+      };
+      auto openIds = []()
+      {
+         std::set<std::string> ids;
+         for ( const ImageWindow& x : ImageWindow::AllWindows() )
+            ids.insert( std::string( x.MainView().Id().c_str() ) );
+         return ids;
+      };
+      try
+      {
+         {  // ApplyProcess: the named window exists with the right pixels; the source is unchanged.
+            AgentTestWindow tw( "PICopilotPmidSrc" );
+            View v = tw.MainView();
+            const double before = ChannelMedian( v, 0 );
+            const std::set<std::string> was = openIds();
+            const ApplyProcessResult r = ApplyProcess( "PixelMath",
+               { { "expression", "$T*0.5" }, { "createNewImage", true }, { "newImageId", "pcPmidStars" } },
+               nlohmann::json::object(), v );
+            ImageWindow w = ImageWindow::WindowById( "pcPmidStars" );
+            const double named = w.IsNull() ? -1 : ChannelMedian( w.MainView(), 0 );
+            const double srcAfter = ChannelMedian( v, 0 );
+            const std::vector<std::string> created = closeNew( was );
+            detail["named"] = { { "ok", r.ok }, { "error", U8( r.error ) }, { "created", created },
+                                { "srcMedian", before }, { "namedMedian", named } };
+            namedOk = r.ok && created == std::vector<std::string>{ "pcPmidStars" }
+                   && std::fabs( named - 0.5*before ) < 1e-5 && std::fabs( srcAfter - before ) < 1e-12;
+         }
+         {  // The reported call, through the apply_process tool.
+            AgentTestWindow tw( "PICopilotPmidTool" );
+            View v = tw.MainView();
+            const double before = ChannelMedian( v, 0 );
+            ToolContext ctx;
+            ctx.mode = AgentMode::Copilot;
+            ctx.turnViewId = v.FullId();
+            const std::set<std::string> was = openIds();
+            const ToolOutcome o = ExecuteTool( ToolCall{ "toolu_pmid1", "apply_process",
+               { { "process_id", "PixelMath" },
+                 { "parameters", { { "expression", "$T*0.5" }, { "createNewImage", true }, { "newImageId", "stars_x" } } } } }, ctx );
+            ImageWindow w = ImageWindow::WindowById( "stars_x" );
+            const double named = w.IsNull() ? -1 : ChannelMedian( w.MainView(), 0 );
+            const std::vector<std::string> created = closeNew( was );
+            const std::string text = o.content.empty() ? std::string() : o.content.at( 0 ).value( "text", std::string() );
+            detail["tool"] = { { "isError", o.isError }, { "text", text.substr( 0, 400 ) }, { "created", created }, { "namedMedian", named } };
+            toolOk = !o.isError && created == std::vector<std::string>{ "stars_x" } && std::fabs( named - 0.5*before ) < 1e-5;
+         }
+         {  // Invalid identifiers: refused before the core sees them; nothing created, source untouched.
+            AgentTestWindow tw( "PICopilotPmidBad" );
+            View v = tw.MainView();
+            const double before = ChannelMedian( v, 0 );
+            const std::set<std::string> was = openIds();
+            const ApplyProcessResult sp = ApplyProcess( "PixelMath",
+               { { "expression", "$T*0.5" }, { "createNewImage", true }, { "newImageId", "1bad id" } }, nlohmann::json::object(), v );
+            const ApplyProcessResult dg = ApplyProcess( "PixelMath",
+               { { "expression", "$T*0.5" }, { "createNewImage", true }, { "newImageId", "1bad" } }, nlohmann::json::object(), v );
+            const String pre = PrecheckApplyRun( "PixelMath", { { "newImageId", "a-b" } }, nlohmann::json::object() );
+            const std::vector<std::string> created = closeNew( was );
+            detail["refused"] = { { "space", U8( sp.error ) }, { "digit", U8( dg.error ) }, { "precheck", U8( pre ) },
+                                  { "created", created } };
+            refusedOk = !sp.ok && sp.error == "PixelMath.newImageId: \"1bad id\" is not a valid PixInsight identifier "
+                                              "(character ' ' at position 4 is not allowed); use only letters A-Z/a-z, "
+                                              "digits 0-9 and underscores, not starting with a digit"
+                     && pre == "PixelMath.newImageId: \"a-b\" is not a valid PixInsight identifier "
+                               "(character '-' at position 1 is not allowed); use only letters A-Z/a-z, "
+                               "digits 0-9 and underscores, not starting with a digit"
+                     && created.empty() && std::fabs( ChannelMedian( v, 0 ) - before ) < 1e-12;
+            digitOk = !dg.ok && dg.error == "PixelMath.newImageId: \"1bad\" is not a valid PixInsight identifier "
+                                            "(it starts with the digit '1'); use only letters A-Z/a-z, "
+                                            "digits 0-9 and underscores, not starting with a digit";
+         }
+         {  // A non-identifier set (table column + scalar) and an empty (unrestricted) one.
+            const String okList = PrecheckApplyRun( "ExtractAlphaChannels", { { "channelList", "0, 1" } }, nlohmann::json::object() );
+            const String badList = PrecheckApplyRun( "ExtractAlphaChannels", { { "channelList", "0;1" } }, nlohmann::json::object() );
+            const String okCol = PrecheckApplyRun( "ChannelCombination", nlohmann::json::object(),
+               { { "channels", { { true, "R_1" }, { true, "" }, { true, "B" } } } } );
+            const String badCol = PrecheckApplyRun( "ChannelCombination", nlohmann::json::object(),
+               { { "channels", { { true, "R" }, { true, "G.x" }, { true, "B" } } } } );
+            const String free = PrecheckApplyRun( "PixelMath", { { "expression", "iif($T > 0.5, 1, 0) // any text" } },
+                                                  nlohmann::json::object() );
+            detail["sets"] = { { "okList", U8( okList ) }, { "badList", U8( badList ) }, { "okCol", U8( okCol ) },
+                               { "badCol", U8( badCol ) }, { "free", U8( free ) } };
+            setOk = okList.IsEmpty() && badList == "ExtractAlphaChannels.channelList: character ';' at position 1 is not allowed; "
+                                                   "allowed characters: space , 0-9"
+                 && okCol.IsEmpty()
+                 && badCol == "ChannelCombination.channels[1].id: \"G.x\" is not a valid PixInsight identifier "
+                              "(character '.' at position 1 is not allowed); use only letters A-Z/a-z, "
+                              "digits 0-9 and underscores, not starting with a digit"
+                 && free.IsEmpty();
+         }
+         {  // Review round 1: an offending control / bidi / invisible character is never
+            // put raw into a message (TextSafety.h); an ordinary one stays readable.
+            auto pm = []( const std::string& id )
+            {
+               return PrecheckApplyRun( "PixelMath", { { "newImageId", id } }, nlohmann::json::object() );
+            };
+            const String bidi = pm( "ab\xE2\x80\xAE" "cd" );    // U+202E
+            const String zw   = pm( "ab\xE2\x80\x8B" "cd" );    // U+200B
+            const String ctl  = pm( std::string( "ab\x01" "cd" ) );
+            const String dash = pm( "ab-cd" );
+            const String astral = pm( "ab\xF0\x9F\x93\xB7" );    // U+1F4F7, a visible non-BMP character
+            const String setBidi = PrecheckApplyRun( "ExtractAlphaChannels",
+               { { "channelList", "0\xE2\x80\xAE" "1" } }, nlohmann::json::object() );
+            const char* tail = " is not allowed); use only letters A-Z/a-z, digits 0-9 and underscores, not starting with a digit";
+            auto noRaw = []( const String& m )
+            {
+               for ( size_type i = 0; i < m.Length(); ++i )
+                  if ( m[i] < 0x20 || m[i] == 0x202E || m[i] == 0x200B )
+                     return false;
+               return true;
+            };
+            detail["unsafe"] = { { "bidi", U8( bidi ) }, { "zw", U8( zw ) }, { "ctl", U8( ctl ) }, { "dash", U8( dash ) },
+                                 { "astral", U8( astral ) }, { "setBidi", U8( setBidi ) } };
+            unsafeOk = bidi == String( "PixelMath.newImageId: \"ab<U+202E>cd\" is not a valid PixInsight identifier "
+                                       "(character U+202E RIGHT-TO-LEFT OVERRIDE (a bidirectional text control) at position 2" ) + tail
+                    && zw == String( "PixelMath.newImageId: \"ab<U+200B>cd\" is not a valid PixInsight identifier "
+                                     "(character U+200B ZERO WIDTH SPACE (an invisible format character) at position 2" ) + tail
+                    && ctl == String( "PixelMath.newImageId: \"ab<U+0001>cd\" is not a valid PixInsight identifier "
+                                      "(character U+0001 (a control character) at position 2" ) + tail
+                    && dash == String( "PixelMath.newImageId: \"ab-cd\" is not a valid PixInsight identifier "
+                                       "(character '-' at position 2" ) + tail
+                    && astral == String::UTF8ToUTF16( "PixelMath.newImageId: \"ab\xF0\x9F\x93\xB7\" is not a valid PixInsight identifier "
+                                                      "(character '\xF0\x9F\x93\xB7' at position 2" ) + tail
+                    && setBidi == "ExtractAlphaChannels.channelList: character U+202E RIGHT-TO-LEFT OVERRIDE "
+                                  "(a bidirectional text control) at position 1 is not allowed; allowed characters: space , 0-9"
+                    && noRaw( bidi ) && noRaw( zw ) && noRaw( ctl ) && noRaw( setBidi );
+         }
+         {  // Review round 1: describe_process shows the SAME rule apply_process enforces.
+            nlohmann::json seen = nlohmann::json::object();
+            bool agree = true;
+            std::set<std::string> procs;
+            for ( size_type i = 0; i < CompiledStringCharacterRuleCount(); ++i )
+            {
+               const std::string path = U8( CompiledStringCharacterRulePath( i ) );
+               procs.insert( path.substr( 0, path.find( '.' ) ) );
+            }
+            procs.insert( "PixelMath" );
+            int restricted = 0;
+            for ( const std::string& proc : procs )
+            {
+               const nlohmann::json d = DescribeProcess( IsoString( proc.c_str() ) );
+               const Process P( IsoString( proc.c_str() ) );
+               auto check = [&]( const nlohmann::json& pj, const ProcessParameter& p )
+               {
+                  if ( !p.IsString() )
+                     return;
+                  const StringCharacterRule r = ResolveStringCharacterRule( p );
+                  const std::string want = r.ok && r.kind != StringCharacterRuleKind::None
+                                         ? U8( CompactCharacterSet( r.allowed ) ) : std::string();
+                  const std::string got = pj.value( "allowedCharacters", std::string() );
+                  const bool ident = pj.value( "identifier", false );
+                  const bool okHere = r.ok && got == want && ident == (r.kind == StringCharacterRuleKind::Identifier)
+                                   && !pj.contains( "allowedCharactersError" );
+                  if ( !want.empty() )
+                     ++restricted;
+                  if ( !okHere )
+                  {
+                     agree = false;
+                     seen[U8( StringParameterPath( p ) )] = pj;
+                  }
+               };
+               for ( const nlohmann::json& pj : d.at( "parameters" ) )
+               {
+                  const ProcessParameter p( P, IsoString( pj.at( "id" ).get<std::string>().c_str() ) );
+                  check( pj, p );
+                  if ( p.IsTable() && pj.contains( "columns" ) )
+                     for ( const nlohmann::json& cj : pj.at( "columns" ) )
+                        check( cj, ProcessParameter( p, IsoString( cj.at( "id" ).get<std::string>().c_str() ) ) );
+               }
+            }
+            nlohmann::json pmId, pmExpr, eaList;
+            const nlohmann::json pmDescribe = DescribeProcess( "PixelMath" );            // kept alive: at() returns a reference into it
+            const nlohmann::json eaDescribe = DescribeProcess( "ExtractAlphaChannels" );
+            for ( const nlohmann::json& pj : pmDescribe.at( "parameters" ) )
+            {
+               if ( pj.at( "id" ) == "newImageId" ) pmId = pj;
+               if ( pj.at( "id" ) == "expression" ) pmExpr = pj;
+            }
+            for ( const nlohmann::json& pj : eaDescribe.at( "parameters" ) )
+               if ( pj.at( "id" ) == "channelList" ) eaList = pj;
+            detail["describe"] = { { "disagree", seen }, { "restricted", restricted }, { "pmNewImageId", pmId },
+                                   { "pmExpression", pmExpr }, { "eaChannelList", eaList } };
+            describeOk = agree && size_type( restricted ) == CompiledStringCharacterRuleCount()
+                      && pmId.value( "allowedCharacters", std::string() ) == "0-9 A-Z _ a-z" && pmId.value( "identifier", false )
+                      && !pmExpr.contains( "allowedCharacters" ) && !pmExpr.contains( "identifier" )
+                      && eaList.value( "allowedCharacters", std::string() ) == "space , 0-9" && !eaList.contains( "identifier" );
+         }
+         {  // Every String parameter of every installed process resolves; every
+            // compiled-in entry matches an installed parameter's declared length.
+            int strings = 0, fromCore = 0, compiled = 0, unrestricted = 0;
+            nlohmann::json unresolved = nlohmann::json::array(), coreSets = nlohmann::json::array();
+            std::set<std::string> compiledSeen;
+            for ( const Process& P : Process::AllProcesses() )
+            {
+               std::vector<ProcessParameter> ps;
+               for ( const ProcessParameter& p : P.Parameters() )
+               {
+                  ps.push_back( p );
+                  if ( p.IsTable() )
+                     for ( const ProcessParameter& c : p.TableColumns() )
+                        ps.push_back( c );
+               }
+               for ( const ProcessParameter& p : ps )
+                  if ( p.IsString() )
+                  {
+                     ++strings;
+                     const StringCharacterRule r = ResolveStringCharacterRule( p );
+                     const std::string path = U8( StringParameterPath( p ) );
+                     if ( !r.ok )
+                        unresolved.push_back( { { "path", path }, { "error", U8( r.error ) } } );
+                     else if ( r.source == "compiled-in" )
+                     {
+                        ++compiled;
+                        compiledSeen.insert( path );
+                     }
+                     else if ( r.source == "core" )
+                     {
+                        ++fromCore;
+                        coreSets.push_back( { { "path", path }, { "allowed", U8( r.allowed ) } } );
+                     }
+                     else
+                        ++unrestricted;
+                  }
+            }
+            nlohmann::json unused = nlohmann::json::array();
+            for ( size_type i = 0; i < CompiledStringCharacterRuleCount(); ++i )
+               if ( compiledSeen.count( U8( CompiledStringCharacterRulePath( i ) ) ) == 0 )
+                  unused.push_back( U8( CompiledStringCharacterRulePath( i ) ) );
+            detail["scan"] = { { "strings", strings }, { "fromCore", fromCore }, { "compiled", compiled },
+                               { "unrestricted", unrestricted }, { "unresolved", unresolved },
+                               { "coreSets", coreSets }, { "compiledNotInstalled", unused } };
+            scanOk = strings > 100 && unresolved.empty() && unused.empty()
+                  && size_type( compiled ) == CompiledStringCharacterRuleCount();
+         }
+      }
+      catch ( const pcl::Exception& x ) { error = x.Message(); }
+      catch ( const std::exception& x ) { error = String( x.what() ); }
+      catch ( ... )                     { error = "unknown exception"; }
+
+      const bool ok = namedOk && toolOk && refusedOk && digitOk && setOk && scanOk && unsafeOk && describeOk
+                    && error.IsEmpty();
+      out["stringRulesDetail"] = detail;
+      out["stringRulesNamedImageOk"] = namedOk;
+      out["stringRulesToolOk"] = toolOk;
+      out["stringRulesRefusedOk"] = refusedOk;
+      out["stringRulesDigitOk"] = digitOk;
+      out["stringRulesSetsOk"] = setOk;
+      out["stringRulesScanOk"] = scanOk;
+      out["stringRulesUnsafeCharsOk"] = unsafeOk;
+      out["stringRulesDescribeOk"] = describeOk;
+      out["stringRulesError"] = U8( error );
+      out["stringRulesOk"] = ok;
+      allOk = allOk && ok;
+   }
+
    // ---- Section A2: tool transport (Task 3, no network) --------------------
+   SelfTestSectionMark( "A2 tool transport" );
    // (The wire leg below is loopback only: the harness's echo server.)
    {
       bool bodyOk = false, noToolsOk = false, parseToolUseOk = false, parseToolOnlyOk = false,
@@ -751,11 +1039,23 @@ bool RunAgentSelfTest( nlohmann::json& out )
          const ParseCase cases[] =
          {
             { "toolUseEmptyContent", 200, "{\"content\":[],\"stop_reason\":\"tool_use\"}", "",
-              false, "stop_reason tool_use but no tool_use block", "", "", false },
+              false, "stop_reason tool_use but no tool_use block (blocks: none) -- the reply said it wanted to use "
+                     "a tool but sent none; nothing ran and nothing changed. Send the message again.", "", "", false },
             { "toolUseNullContent", 200, "{\"content\":null,\"stop_reason\":\"tool_use\"}", "",
               false, "response missing expected content/text field: content is not an array", "", "", false },
             { "toolUseTextOnly", 200, "{\"content\":[{\"type\":\"text\",\"text\":\"hm\"}],\"stop_reason\":\"tool_use\"}", "",
-              false, "stop_reason tool_use but no tool_use block", "", "", false },
+              false, "stop_reason tool_use but no tool_use block (blocks: text) -- the reply said it wanted to use "
+                     "a tool but sent none; nothing ran and nothing changed. Send the message again.", "", "", false },
+            // RED-first case for Task T-diag (tooluse-flake-investigation.md): a
+            // reply that thought, then answered in text, but never called the
+            // tool it claimed stop_reason "tool_use" for -- the exact shape of
+            // the flake seen live. The message must list both block types.
+            { "toolUseThinkingTextOnly", 200,
+              "{\"content\":[{\"type\":\"thinking\",\"thinking\":\"hmm\"},{\"type\":\"text\",\"text\":\"cannot decide\"}],"
+              "\"stop_reason\":\"tool_use\"}", "",
+              false, "stop_reason tool_use but no tool_use block (blocks: thinking, text) -- the reply said it "
+                     "wanted to use a tool but sent none; nothing ran and nothing changed. Send the message again.",
+              "", "", false },
             { "toolUseNoInput", 200, "{\"content\":[{\"type\":\"tool_use\",\"id\":\"t\",\"name\":\"n\"}],\"stop_reason\":\"tool_use\"}", "",
               false, "stop_reason tool_use but a tool_use block lacks a string id, a string name or an object input (content[0])", "", "", false },
             { "toolUseNumericId", 200, "{\"content\":[{\"type\":\"text\",\"text\":\"x\"},{\"type\":\"tool_use\",\"id\":7,\"name\":\"n\",\"input\":{}}],\"stop_reason\":\"tool_use\"}", "",
@@ -804,6 +1104,53 @@ bool RunAgentSelfTest( nlohmann::json& out )
             parseDetail.push_back( { { "case", c.name }, { "pass", pass }, { "ok", r.ok },
                                      { "error", U8( r.error ) }, { "stopReason", r.stopReason } } );
             parseCasesOk = parseCasesOk && pass;
+         }
+
+         // Task T-diag: emptyToolUseReply / emptyToolUseBlockTypes are the
+         // ONLY reply fields that survive the "everything cleared on
+         // failure" rule above (nothing here is ever echoed back to the
+         // API), so a live flake's detail JSON can log the raw block types
+         // even though stopReason/contentBlocks are gone. False/empty for a
+         // failure of any other kind.
+         {
+            const AnthropicResult empty = ParseMessagesResponse( 200, IsoString( "{\"content\":[],\"stop_reason\":\"tool_use\"}" ), String() );
+            const AnthropicResult textOnly = ParseMessagesResponse( 200, IsoString(
+               "{\"content\":[{\"type\":\"text\",\"text\":\"hm\"}],\"stop_reason\":\"tool_use\"}" ), String() );
+            const AnthropicResult thinkingText = ParseMessagesResponse( 200, IsoString(
+               "{\"content\":[{\"type\":\"thinking\",\"thinking\":\"hmm\"},{\"type\":\"text\",\"text\":\"cannot decide\"}],"
+               "\"stop_reason\":\"tool_use\"}" ), String() );
+            const AnthropicResult otherFailure = ParseMessagesResponse( 200, IsoString( "{\"content\":[],\"stop_reason\":\"refusal\"}" ), String() );
+            const bool fieldsPass = empty.emptyToolUseReply && empty.emptyToolUseBlockTypes.empty()
+                                 && textOnly.emptyToolUseReply && textOnly.emptyToolUseBlockTypes == std::vector<std::string>{ "text" }
+                                 && thinkingText.emptyToolUseReply
+                                 && thinkingText.emptyToolUseBlockTypes == std::vector<std::string>{ "thinking", "text" }
+                                 && !otherFailure.emptyToolUseReply && otherFailure.emptyToolUseBlockTypes.empty();
+            parseDetail.push_back( { { "case", "emptyToolUseDiagFields" }, { "pass", fieldsPass } } );
+            parseCasesOk = parseCasesOk && fieldsPass;
+         }
+
+         // Bounding: >20 block types -> the first 20, then ", +N more". The
+         // full (unbounded) list still lands in emptyToolUseBlockTypes.
+         {
+            nlohmann::json manyContent = nlohmann::json::array();
+            for ( int i = 0; i < 23; ++i )
+               manyContent.push_back( { { "type", "text" }, { "text", "x" } } );
+            const nlohmann::json manyBody = { { "content", manyContent }, { "stop_reason", "tool_use" } };
+            const AnthropicResult many = ParseMessagesResponse( 200, IsoString( manyBody.dump().c_str() ), String() );
+            std::string expectedList;
+            for ( int i = 0; i < 20; ++i )
+            {
+               if ( i > 0 )
+                  expectedList += ", ";
+               expectedList += "text";
+            }
+            expectedList += ", +3 more";
+            const String expectedError = String::UTF8ToUTF16( ( "stop_reason tool_use but no tool_use block (blocks: "
+               + expectedList + ") -- the reply said it wanted to use a tool but sent none; nothing ran and "
+                 "nothing changed. Send the message again." ).c_str() );
+            const bool boundPass = many.emptyToolUseReply && many.emptyToolUseBlockTypes.size() == 23 && many.error == expectedError;
+            parseDetail.push_back( { { "case", "emptyToolUseBound" }, { "pass", boundPass }, { "error", U8( many.error ) } } );
+            parseCasesOk = parseCasesOk && boundPass;
          }
 
          // On the wire: the core POSTs the tool-bearing body as strict UTF-8
@@ -898,6 +1245,7 @@ bool RunAgentSelfTest( nlohmann::json& out )
    }
 
    // ---- Section A3: tools + system prompt (Task 4) --------------------------
+   SelfTestSectionMark( "A3 tools + system prompt" );
    {
       bool schemaOk = false, promptOk = true, htColumnsOk = false, dispatchOk = false, applyToolOk = false,
            declineOk = false, approveOk = false, advisorOk = false, noViewOk = false;
@@ -913,8 +1261,10 @@ bool RunAgentSelfTest( nlohmann::json& out )
             return n;
          };
          const std::vector<std::string> all = { "list_processes", "describe_process", "get_view_context", "apply_process",
-                                                 "run_global_process" };
-         const std::vector<std::string> readOnly = { "list_processes", "describe_process", "get_view_context" };
+                                                 "run_global_process", "list_journeys", "get_journey", "compare_to_journey",
+                                                 "mark_journey_best", "start_journey", "replay_journey" };
+         const std::vector<std::string> readOnly = { "list_processes", "describe_process", "get_view_context",
+                                                      "list_journeys", "get_journey", "compare_to_journey", "mark_journey_best" };
          const nlohmann::json tc = ToolDefinitions( AgentMode::Copilot );
          const nlohmann::json tg = ToolDefinitions( AgentMode::Guided );
          const nlohmann::json ta = ToolDefinitions( AgentMode::Advisor );
@@ -1068,10 +1418,11 @@ bool RunAgentSelfTest( nlohmann::json& out )
    }
 
    // ---- Section A4: AgentSession loop (Task 5, no network) -----------------
+   SelfTestSectionMark( "A4 AgentSession loop" );
    {
       bool loopOk = false, multiOk = false, capOk = false, stopOk = false, failFirstOk = false,
            cancelFirstOk = false, failMidOk = false, stripOk = false, invalidOk = false,
-           truncOk = false, validatorMoreOk = false, abortOk = false;
+           truncOk = false, validatorMoreOk = false, abortOk = false, toolUseNoBlockOk = false;
       nlohmann::json detail = nlohmann::json::object();
       String error;
       try
@@ -1167,6 +1518,34 @@ bool RunAgentSelfTest( nlohmann::json& out )
             const AgentStep lookalike = s.OnResponse( ErrorResult( "request cancelled", 0 ), run, never );
             cancelFirstOk = c.kind == AgentStep::Stopped && c.restoreInput && cancelRolledBack
                          && lookalike.kind == AgentStep::Failed && s.History().Length() == n0;
+         }
+         {  // Task T-diag, end to end through the session's response handler:
+            // a synthetic reply body ("stop_reason": "tool_use" with only
+            // thinking/text blocks -- the shape of the live flake) fed through
+            // ParseMessagesResponse and then OnResponse rolls back + restores
+            // input exactly like any other pre-round failure, and the panel
+            // note names the block types, explains nothing ran, and asks to
+            // resend -- never "Error 0" (httpStatus 0: no HTTP reply of its own,
+            // this is a 200 whose body failed to parse as a usable reply).
+            AgentSession s;
+            const size_type n0 = s.History().Length();   // BeginUserTurn snapshots THIS; Fail() rolls back to it
+            s.BeginUserTurn( userTurn( "call a tool" ) );
+            const AnthropicResult r = ParseMessagesResponse( 200, IsoString(
+               "{\"content\":[{\"type\":\"thinking\",\"thinking\":\"hmm\"},{\"type\":\"text\",\"text\":\"cannot decide\"}],"
+               "\"stop_reason\":\"tool_use\"}" ), String() );
+            const AgentStep f = s.OnResponse( r, run, never );
+            const TurnEndView v = DescribeTurnEnd( f, r.httpStatus );
+            String notes;
+            for ( const String& n : v.notes )
+               notes += n;
+            const String expected = "Unexpected reply from the Anthropic API: stop_reason tool_use but no tool_use "
+               "block (blocks: thinking, text) -- the reply said it wanted to use a tool but sent none; nothing ran "
+               "and nothing changed. Send the message again.";
+            toolUseNoBlockOk = !r.ok && r.errorKind == RequestErrorKind::BadReply
+                            && f.kind == AgentStep::Failed && f.restoreInput && !f.toolsRan
+                            && s.History().Length() == n0 && v.restoreInput && !v.offerClear
+                            && notes == expected && !notes.Contains( "Error 0" );
+            detail["toolUseNoBlockNote"] = U8( notes );
          }
          {  // failure after a round: the round stays, next message merges, still valid.
             // toolsRan = an image was changed: not for a read-only round, yes after an apply.
@@ -1358,7 +1737,7 @@ bool RunAgentSelfTest( nlohmann::json& out )
       catch ( ... )                     { error = "unknown exception"; }
 
       const bool ok = loopOk && multiOk && capOk && stopOk && failFirstOk && cancelFirstOk && failMidOk && stripOk && invalidOk
-                   && truncOk && validatorMoreOk && abortOk;
+                   && truncOk && validatorMoreOk && abortOk && toolUseNoBlockOk;
       out["loopDetail"] = detail;
       out["loopApplyOk"] = loopOk;
       out["loopMultiToolOk"] = multiOk;
@@ -1372,12 +1751,14 @@ bool RunAgentSelfTest( nlohmann::json& out )
       out["loopTruncatedToolUseOk"] = truncOk;
       out["loopValidatorMoreOk"] = validatorMoreOk;
       out["loopAbortTurnOk"] = abortOk;
+      out["loopToolUseNoBlockOk"] = toolUseNoBlockOk;
       out["loopError"] = U8( error );
       out["agentLoopOk"] = ok;
       allOk = allOk && ok;
    }
 
    // ---- Section A5: tool loop on the wire (Task 5; loopback scripted server) --
+   SelfTestSectionMark( "A5 tool loop on the wire" );
    // Real AnthropicRequest bytes: tools + tool_use/tool_result history, with
    // non-BMP text both in the prompt and in the echoed-back assistant blocks,
    // strict-UTF-8-decoded and pairing-checked by the harness's "/agent" server.
@@ -1448,6 +1829,7 @@ bool RunAgentSelfTest( nlohmann::json& out )
    }
 
    // ---- Section A7: panel resizability probe (Task 6) ----------------------
+   SelfTestSectionMark( "A7 panel resizability probe" );
    {
       bool ok = false;
       nlohmann::json probe;
@@ -1476,6 +1858,7 @@ bool RunAgentSelfTest( nlohmann::json& out )
    }
 
    // ---- Section A7b: end-of-turn notes shown by the panel (Task 6) ----------
+   SelfTestSectionMark( "A7b end-of-turn notes shown by the panel" );
    {
       bool ok = true;
       nlohmann::json detail = nlohmann::json::array();
@@ -1562,6 +1945,7 @@ bool RunAgentSelfTest( nlohmann::json& out )
    }
 
    // ---- Section A8: turn-bound target view + per-step tool cap (final review) --
+   SelfTestSectionMark( "A8 turn-bound target view + per-step tool cap" );
    // The turn's target is the view captured when the user pressed Send, NOT
    // whatever window is active when the tool runs; a view_id other than that
    // is honoured only after get_view_context inspected it in the same turn.
@@ -1716,6 +2100,7 @@ bool RunAgentSelfTest( nlohmann::json& out )
    }
 
    // ---- Section A6: gated LIVE agent run (Task 7) --------------------------
+   SelfTestSectionMark( "A6 gated LIVE agent run" );
    // Real model, Copilot tools, the panel's own turn composition: the model
    // must call apply_process(PixelMath) and the synthetic image's median must
    // be ~halved (0.45..0.55 -- also catches a double application).
@@ -1784,6 +2169,7 @@ bool RunAgentSelfTest( nlohmann::json& out )
    }
 
    // ---- inc4 sections end ----
+   SelfTestSectionMark( nullptr );
 
    // Let the core finish the deferred teardown of the windows force-closed
    // above before control returns to --force-exit (same reasoning as the

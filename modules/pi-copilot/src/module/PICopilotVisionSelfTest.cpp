@@ -11,6 +11,7 @@
 #include "ViewContext.h"
 #include "ViewPreview.h"
 #include "VisionTurn.h"
+#include "SelfTestTiming.h"
 
 #include <pcl/AutoViewLock.h>
 #include <pcl/Bitmap.h>
@@ -369,6 +370,7 @@ bool RunVisionSelfTest( nlohmann::json& out )
    bool allOk = true;
 
    // ---- Section 1: platform smoke (Task 1) --------------------------------
+   SelfTestSectionMark( "inc3 1 platform smoke" );
    // Proves, under --automation-mode: ImageWindow creation, View::Image()
    // read under a write lock, ImageVariant copy, Bitmap::Render, and
    // Bitmap::Save to a temp .jpg that reads back as a JPEG and is removed.
@@ -412,6 +414,7 @@ bool RunVisionSelfTest( nlohmann::json& out )
    }
 
    // ---- Section 2: ViewContext (Task 2) -----------------------------------
+   SelfTestSectionMark( "inc3 2 ViewContext" );
    {
       bool ctxOk = false;
       String error;
@@ -496,6 +499,7 @@ bool RunVisionSelfTest( nlohmann::json& out )
    }
 
    // ---- Section 3: ViewPreview (Task 3) -----------------------------------
+   SelfTestSectionMark( "inc3 3 ViewPreview" );
    {
       bool previewOk = false, unchanged = false, tempRemoved = false, pixelsOk = false;
       String error;
@@ -592,6 +596,7 @@ bool RunVisionSelfTest( nlohmann::json& out )
    }
 
    // ---- Section 3b: ViewPreview on 16-bit integer images (Task 3 fix) -----
+   SelfTestSectionMark( "inc3 3b ViewPreview on 16-bit integer images" );
    // Raw subs are uint16 and the user shoots a mono camera: prove the typed
    // block-average normalizes integer samples and handles 1 channel.
    {
@@ -625,6 +630,7 @@ bool RunVisionSelfTest( nlohmann::json& out )
    }
 
    // ---- Section 4: ProcessCatalog (Task 4) --------------------------------
+   SelfTestSectionMark( "inc3 4 ProcessCatalog" );
    {
       bool listOk = false, pmOk = false, htOk = false, unknownOk = false;
       String error;
@@ -695,6 +701,7 @@ bool RunVisionSelfTest( nlohmann::json& out )
    }
 
    // ---- Section 5: request shape + history stripping (Task 5, no network) --
+   SelfTestSectionMark( "inc3 5 request shape + history stripping" );
    {
       bool shapeOk = false, stripOk = false, composeOk = false;
       String error;
@@ -795,6 +802,7 @@ bool RunVisionSelfTest( nlohmann::json& out )
    }
 
    // ---- Section 6: gated REAL vision round-trip (Task 5) -------------------
+   SelfTestSectionMark( "inc3 6 gated REAL vision round-trip" );
    // Runs only when PICOPILOT_TEST_API_KEY is set (harness: keyring -> file).
    {
       bool visionSkipped = true, visionOk = true;
@@ -835,6 +843,7 @@ bool RunVisionSelfTest( nlohmann::json& out )
    }
 
    // ---- Section 7: panel capture + default placement (Task 6, no network) --
+   SelfTestSectionMark( "inc3 7 panel capture + default placement" );
    // The pure halves of the panel's Send capture and right-edge placement.
    // The panel wiring itself (checkbox, OnShow, log) is GUI-only.
    {
@@ -956,6 +965,7 @@ bool RunVisionSelfTest( nlohmann::json& out )
    }
 
    // ---- Section 8: multi-turn request body is strict UTF-8 on the wire ---
+   SelfTestSectionMark( "inc3 8 multi-turn body is strict UTF-8 on the wire" );
    // Regression for the turn-2 "400: str is not valid UTF-8: surrogates not
    // allowed". Builds the exact turn-2 history the panel builds (turn 1 with
    // view context + image, a long markdown assistant reply, turn 2 with
@@ -1101,6 +1111,7 @@ bool RunVisionSelfTest( nlohmann::json& out )
    }
 
    // ---- Section 8b: gated REAL two-turn conversation ----------------------
+   SelfTestSectionMark( "inc3 8b gated REAL two-turn conversation" );
    // Turn 1 (context + real preview) -> the model's reply is forced to carry
    // non-BMP text -> turn 2 (context + preview) must be accepted by the API.
    {
@@ -1164,6 +1175,7 @@ bool RunVisionSelfTest( nlohmann::json& out )
    }
 
    // ---- inc3 sections end ----
+   SelfTestSectionMark( nullptr );
 
    // Every WindowCloser above has now force-closed its ImageWindow (the last
    // one just above, in Section 7). ImageWindow::ForceClose() only POSTS the

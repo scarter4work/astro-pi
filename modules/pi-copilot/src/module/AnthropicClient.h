@@ -11,6 +11,7 @@
 
 #include <memory>
 #include <string>
+#include <vector>
 
 namespace pcl
 {
@@ -110,6 +111,20 @@ struct AnthropicResult
    RequestErrorKind errorKind = RequestErrorKind::None;   // set whenever ok == false
    nlohmann::json   usage;                 // the reply's "usage" object (incl. cache_read_input_tokens), when present
    nlohmann::json   inputTransformations;  // the reply's "input_transformations" array, when present
+
+   // Diagnostics for one specific failure (Task T-diag): stop_reason
+   // "tool_use" with no tool_use content block (API-side; our SSE assembler
+   // cannot drop a block it received -- see
+   // .superpowers/sdd/2026-09-25-pi-copilot-image-journey/tooluse-flake-investigation.md).
+   // Unlike every other reply field above, these are NOT cleared when the
+   // rest of the failure fields are (nothing here is ever echoed back to the
+   // API, so keeping them cannot corrupt history): emptyToolUseReply is true
+   // only for this exact failure, and emptyToolUseBlockTypes is the full,
+   // UNBOUNDED list of content block types the reply carried, in order
+   // (error's own text bounds its copy to 20, then "+N more"). Empty/false
+   // for every other outcome, ok or not.
+   bool                      emptyToolUseReply = false;
+   std::vector<std::string> emptyToolUseBlockTypes;
 };
 
 // Parses one Messages API HTTP response. ok=true only for a 2xx body whose
@@ -119,7 +134,11 @@ struct AnthropicResult
 // Failures (ok=false, all reply fields cleared), exact messages:
 //  - not JSON: "unparseable response: <first 200 bytes>"
 //  - bad shape: "response missing expected content/text field: <detail>"
-//  - "stop_reason tool_use but no tool_use block"
+//  - "stop_reason tool_use but no tool_use block (blocks: <types arrived, in
+//    order, comma-joined, capped at 20 then ", +N more", or "none">) -- the
+//    reply said it wanted to use a tool but sent none; nothing ran and
+//    nothing changed. Send the message again." (also sets emptyToolUseReply
+//    and emptyToolUseBlockTypes above)
 //  - "stop_reason tool_use but a tool_use block lacks a string id, a string
 //    name or an object input (content[i])"
 //  - no text, stop_reason refusal: "the model declined this request
