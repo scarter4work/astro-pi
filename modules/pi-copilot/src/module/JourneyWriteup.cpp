@@ -100,6 +100,83 @@ String MarkerPath( JourneyStore& store, int64 journeyId )
 
 } // namespace
 
+int StoreInferredReasons( JourneyStore& store, int64 jid, const std::vector<std::pair<int64, std::string>>& inferred,
+                          std::vector<std::string>& notStored )
+{
+   if ( inferred.empty() )
+      return 0;
+   // One JourneyStore::Transaction per reply. A per-entry refusal or failure is
+   // named and the other entries go ahead; what is all-or-nothing is the
+   // COMMIT: a transaction SQLite aborted itself, a failed COMMIT or a failed
+   // BEGIN stores none of the entries and names every one.
+   int stored = 0;
+   try
+   {
+      JourneyStore::Transaction tx( store );
+      std::vector<std::string> tentative;   // stored inside the transaction, not yet committed
+      bool aborted = false;
+      for ( size_t i = 0; i < inferred.size(); ++i )
+      {
+         const auto& in = inferred[i];
+         const std::string label = "step " + std::to_string( in.first );
+         String failure;
+         try
+         {
+            const char* why = InferredReasonRejection( store, jid, in.first );
+            if ( why != nullptr )
+            {
+               notStored.push_back( label + " (" + why + ")" );
+               continue;
+            }
+            store.SetStepReason( in.first, in.second, true/*inferred*/ );
+            tentative.push_back( label );
+            continue;
+         }
+         catch ( const pcl::Exception& x ) { failure = x.Message(); }
+         catch ( const std::exception& x ) { failure = String( x.what() ); }
+         if ( store.TransactionAborted() )
+         {
+            // SQLite rolled the whole group back itself: nothing of it is stored, and
+            // later writes would autocommit one by one. Stop here and name every entry.
+            aborted = true;
+            const std::string f = U8( failure );
+            for ( const std::string& t : tentative )
+               notStored.push_back( t + " (the reasons were rolled back: " + f + ")" );
+            tentative.clear();
+            notStored.push_back( label + " (" + f + ")" );
+            for ( size_t k = i + 1; k < inferred.size(); ++k )
+               notStored.push_back( "step " + std::to_string( inferred[k].first ) + " (the reasons were rolled back: " + f + ")" );
+            break;
+         }
+         notStored.push_back( label + " (" + U8( failure ) + ")" );   // the others still go ahead
+      }
+      if ( !aborted && !tentative.empty() )
+      {
+         try
+         {
+            tx.Commit();
+            stored = int( tentative.size() );
+         }
+         catch ( const pcl::Exception& x )
+         {
+            for ( const std::string& t : tentative )
+               notStored.push_back( t + " (the reasons could not be committed: " + U8( x.Message() ) + ")" );
+         }
+      }
+   }
+   catch ( const pcl::Exception& x )   // the transaction could not begin (e.g. locked by another instance)
+   {
+      for ( const auto& in : inferred )
+         notStored.push_back( "step " + std::to_string( in.first ) + " (" + U8( x.Message() ) + ")" );
+   }
+   catch ( const std::exception& x )
+   {
+      for ( const auto& in : inferred )
+         notStored.push_back( "step " + std::to_string( in.first ) + " (" + std::string( x.what() ) + ")" );
+   }
+   return stored;
+}
+
 // One write-up request: a ChatThread built and destroyed on the root thread.
 class JourneyWriteupJob
 {
@@ -429,73 +506,7 @@ void KeeperExporter::Finish( JourneyWriteupJob& job, StringList& notes )
          // The reply is untrusted: each entry is checked against the store, and every one that is
          // not stored is named (the malformed ones by position, the rest by step id).
          std::vector<std::string> notStored = w.rejected;
-         int stored = 0;
-         // All the reasons of one reply are one transaction (Task 7's API): a
-         // failed or aborted group leaves none of them behind.
-         if ( !w.inferred.empty() )
-         try
-         {
-            JourneyStore::Transaction tx( *m_store );
-            std::vector<std::string> tentative;   // stored inside the transaction, not yet committed
-            String aborted;
-            for ( size_t i = 0; i < w.inferred.size(); ++i )
-            {
-               const auto& in = w.inferred[i];
-               const std::string label = "step " + std::to_string( in.first );
-               String failure;
-               try
-               {
-                  const char* why = InferredReasonRejection( *m_store, jid, in.first );
-                  if ( why != nullptr )
-                  {
-                     notStored.push_back( label + " (" + why + ")" );
-                     continue;
-                  }
-                  m_store->SetStepReason( in.first, in.second, true/*inferred*/ );
-                  tentative.push_back( label );
-                  continue;
-               }
-               catch ( const pcl::Exception& x ) { failure = x.Message(); }
-               catch ( const std::exception& x ) { failure = String( x.what() ); }
-               if ( m_store->TransactionAborted() )
-               {
-                  // SQLite rolled the whole group back itself: nothing of it is stored, and
-                  // later writes would autocommit one by one. Stop here and name every entry.
-                  aborted = failure;
-                  for ( const std::string& t : tentative )
-                     notStored.push_back( t + " (" + U8( failure ) + ")" );
-                  tentative.clear();
-                  notStored.push_back( label + " (" + U8( failure ) + ")" );
-                  for ( size_t k = i + 1; k < w.inferred.size(); ++k )
-                     notStored.push_back( "step " + std::to_string( w.inferred[k].first ) + " (" + U8( failure ) + ")" );
-                  break;
-               }
-               notStored.push_back( label + " (" + U8( failure ) + ")" );   // the others still go ahead
-            }
-            if ( aborted.IsEmpty() && !tentative.empty() )
-            {
-               try
-               {
-                  tx.Commit();
-                  stored = int( tentative.size() );
-               }
-               catch ( const pcl::Exception& x )
-               {
-                  for ( const std::string& t : tentative )
-                     notStored.push_back( t + " (the reasons could not be committed: " + U8( x.Message() ) + ")" );
-               }
-            }
-         }
-         catch ( const pcl::Exception& x )   // the transaction could not begin (e.g. locked by another instance)
-         {
-            for ( const auto& in : w.inferred )
-               notStored.push_back( "step " + std::to_string( in.first ) + " (" + U8( x.Message() ) + ")" );
-         }
-         catch ( const std::exception& x )
-         {
-            for ( const auto& in : w.inferred )
-               notStored.push_back( "step " + std::to_string( in.first ) + " (" + std::string( x.what() ) + ")" );
-         }
+         const int stored = StoreInferredReasons( *m_store, jid, w.inferred, notStored );
          if ( !notStored.empty() )
          {
             std::string list;

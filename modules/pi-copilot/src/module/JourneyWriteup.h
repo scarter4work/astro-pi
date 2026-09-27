@@ -53,6 +53,15 @@ struct WriteupReply
 // "reason": <non-empty string>} goes to `rejected`, named by its 1-based position.
 WriteupReply ParseWriteupReply( const std::string& text );
 
+// Stores a reply's inferred reasons for journey `jid` in ONE JourneyStore
+// transaction and returns how many were committed. Every entry not stored is
+// appended to `notStored` with why: refused (not a user step of this journey
+// without a stated reason), failed on its own (the others go ahead), or -- when
+// SQLite aborted the transaction, the COMMIT failed or the BEGIN failed --
+// every entry of the reply. Root thread. Never throws for one entry.
+int StoreInferredReasons( JourneyStore& store, int64 jid, const std::vector<std::pair<int64, std::string>>& inferred,
+                          std::vector<std::string>& notStored );
+
 struct KeepOutcome
 {
    bool              marked = false;        // this call marked the journey kept

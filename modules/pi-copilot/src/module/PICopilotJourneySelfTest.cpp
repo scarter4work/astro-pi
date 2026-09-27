@@ -68,6 +68,7 @@
 #include <memory>
 #include <random>
 #include <set>
+#include <stdexcept>
 #include <string>
 #include <thread>
 #include <utility>
@@ -890,7 +891,8 @@ const char* const kJ6Checks[] = { "settings", "master", "manual", "undo", "copil
                                   "gateStallWaiting", "gateStallGap", "txDefer", "noopNoLock", "owner", "gapKinds",
                                   "pjsrAbortRestored", "gapRowGone", "linkRowGone", "ignoredThenMaster", "chaos",
                                   "recentRowGone", "ownerPrune", "writeCap", "deathOverflow", "deathWhileOff",
-                                  "createdAfterDeath", "startAfterDeath" };
+                                  "createdAfterDeath", "startAfterDeath", "renameWhileOff", "renameUnnotified",
+                                  "realNotify" };
 
 struct J6State
 {
@@ -920,7 +922,20 @@ struct J6State
    int  writeCapBefore = 0, writeCapReads = 0;
    bool writeCapPaused = false;
    std::map<std::string, int> chaosCount;   // m-g coverage
+   // Re-review round 5 n-2: real notifications (no explicit feed).
+   int   fwdRenamed0 = 0, fwdDeleted0 = 0;
+   int64 realRImg = 0, realRJ = 0;
 };
+
+// Decisions containing `what` (and `id`, when given).
+int J6DecisionsWith( JourneyTracker& trk, const std::string& what, const std::string& id = std::string() )
+{
+   int n = 0;
+   for ( const std::string& x : trk.RecentDecisionsForSelfTest() )
+      if ( x.find( what ) != std::string::npos && (id.empty() || x.find( id ) != std::string::npos) )
+         ++n;
+   return n;
+}
 
 J6State& J6()
 {
@@ -2382,6 +2397,97 @@ void J6Step( J6State& st, const std::string& step, const nlohmann::json& payload
       for ( const char* id : { "pcTrkDW1", "pcTrkDW2", "pcTrkDW3", "pcTrkDX" } )
          J6Close( st, id );
       JTick( trk );
+   }
+   else if ( step == "renameSetup" )
+   {
+      // Re-review round 5 n-1 / n-2: the windows were made in JS (JS closes them); here they become masters.
+      for ( const char* id : { "pcTrkRWM", "pcTrkRNM", "pcTrkRealR", "pcTrkRealD" } )
+         JSetKeywords( id, Kw( { { "IMAGETYP", "'Master Light'" }, { "OBJECT", ( std::string( "'" ) + id + "'" ).c_str() } } ) );
+      JTick( trk, 3 );
+      st.realRImg = trk.ImageOfView( "pcTrkRealR" );
+      st.realRJ = trk.JourneyOfView( "pcTrkRealR" );
+      st.d["renameSetup"] = { { "RWM", trk.JourneyOfView( "pcTrkRWM" ) }, { "RNM", trk.JourneyOfView( "pcTrkRNM" ) },
+                              { "realR", st.realRJ }, { "realD", trk.JourneyOfView( "pcTrkRealD" ) } };
+   }
+   else if ( step == "renameWhileOff" )
+   {
+      // n-1: recording off -> rename a tracked master and its linked image -> recording on. The Renamed
+      // notifications are real (View::Rename) and are dropped while off; the journey must simply go on.
+      JTick( trk, 3 );
+      const int64 mImg = trk.ImageOfView( "pcTrkRWM" ), mJ = trk.JourneyOfView( "pcTrkRWM" );
+      const int64 lImg = trk.ImageOfView( "pcTrkRWL" ), lJ = trk.JourneyOfView( "pcTrkRWL" );
+      trk.SetEnabled( false );
+      ImageWindow::WindowById( "pcTrkRWL" ).MainView().Rename( "pcTrkRWL2" );
+      ImageWindow::WindowById( "pcTrkRWM" ).MainView().Rename( "pcTrkRWM2" );
+      trk.SetEnabled( true );
+      JTick( trk, 3 );
+      JourneyRow jr;
+      const bool got = mJ != 0 && store.GetJourney( mJ, jr );
+      st.d["renameWhileOff"] = { { "master", { mImg, trk.ImageOfView( "pcTrkRWM2" ) } },
+                                 { "linked", { lImg, trk.ImageOfView( "pcTrkRWL2" ) } },
+                                 { "journey", { mJ, lJ, trk.JourneyOfView( "pcTrkRWM2" ), trk.JourneyOfView( "pcTrkRWL2" ) } },
+                                 { "status", got ? jr.status : std::string() },
+                                 { "idChangeDecisions", J6DecisionsWith( trk, "id change without a rename notification", "pcTrkRW" ) } };
+      st.ok["renameWhileOff"] = mImg != 0 && lImg != 0 && mJ != 0 && lJ == mJ
+                             && trk.ImageOfView( "pcTrkRWM2" ) == mImg && trk.ImageOfView( "pcTrkRWL2" ) == lImg
+                             && trk.JourneyOfView( "pcTrkRWM2" ) == mJ && trk.JourneyOfView( "pcTrkRWL2" ) == mJ
+                             && got && jr.status == "recording";
+   }
+   else if ( step == "renameUnnotified" )
+   {
+      // n-2: the id-change branch itself -- recording on, and the Renamed notifications never reach the
+      // tracker (the forward is detached for the renames). A master and its linked image are followed as
+      // renames, each with the diagnostic decision.
+      JTick( trk, 3 );
+      const int64 mImg = trk.ImageOfView( "pcTrkRNM" ), j = trk.JourneyOfView( "pcTrkRNM" );
+      const int64 lImg = trk.ImageOfView( "pcTrkRNL" ), lJ = trk.JourneyOfView( "pcTrkRNL" );
+      JourneyService::Instance().SetNotificationForwardForSelfTest( nullptr );
+      try
+      {
+         ImageWindow::WindowById( "pcTrkRNL" ).MainView().Rename( "pcTrkRNL2" );
+         ImageWindow::WindowById( "pcTrkRNM" ).MainView().Rename( "pcTrkRNM2" );
+      }
+      catch ( ... )
+      {
+         JourneyService::Instance().SetNotificationForwardForSelfTest( st.trk.get() );
+         throw;
+      }
+      JourneyService::Instance().SetNotificationForwardForSelfTest( st.trk.get() );
+      JTick( trk, 2 );
+      JourneyRow jr;
+      const bool got = j != 0 && store.GetJourney( j, jr );
+      const int diag = J6DecisionsWith( trk, "id change without a rename notification", "pcTrkRNM -> pcTrkRNM2" )
+                     + J6DecisionsWith( trk, "id change without a rename notification", "pcTrkRNL -> pcTrkRNL2" );
+      ImageRow ir;
+      const bool gotImg = lImg != 0 && store.GetImage( lImg, ir );
+      st.d["renameUnnotified"] = { { "master", { mImg, trk.ImageOfView( "pcTrkRNM2" ) } }, { "linked", { lImg, trk.ImageOfView( "pcTrkRNL2" ) } },
+                                   { "journey", { j, lJ, trk.JourneyOfView( "pcTrkRNM2" ), trk.JourneyOfView( "pcTrkRNL2" ) } },
+                                   { "status", got ? jr.status : std::string() }, { "diagnostic", diag },
+                                   { "linkedRowView", gotImg ? ir.viewId : std::string() } };
+      st.ok["renameUnnotified"] = mImg != 0 && lImg != 0 && j != 0 && lJ == j
+                               && trk.ImageOfView( "pcTrkRNM2" ) == mImg && trk.ImageOfView( "pcTrkRNL2" ) == lImg
+                               && trk.JourneyOfView( "pcTrkRNM2" ) == j && trk.JourneyOfView( "pcTrkRNL2" ) == j
+                               && got && jr.status == "recording" && diag == 2 && gotImg && ir.viewId == "pcTrkRNL2";
+      st.fwdRenamed0 = JourneyService::Instance().ForwardedForSelfTest( 2 );
+      st.fwdDeleted0 = JourneyService::Instance().ForwardedForSelfTest( 3 );
+   }
+   else if ( step == "realNotify" )
+   {
+      // n-2: JS renamed pcTrkRealR and force-closed pcTrkRealD at top level, with NO explicit feed. Only the
+      // notifications PixInsight delivered (interface -> JourneyService -> forward) can have told the tracker.
+      JTick( trk, 2 );
+      const int fr = JourneyService::Instance().ForwardedForSelfTest( 2 ) - st.fwdRenamed0;
+      const int fd = JourneyService::Instance().ForwardedForSelfTest( 3 ) - st.fwdDeleted0;
+      const int death = J6DecisionsWith( trk, "closed (death): pcTrkRealD" );
+      const int diag = J6DecisionsWith( trk, "id change without a rename notification", "pcTrkRealR" );
+      JourneyRow jr;
+      const bool got = st.realRJ != 0 && store.GetJourney( st.realRJ, jr );
+      st.d["realNotify"] = { { "forwardedRenamed", fr }, { "forwardedDeleted", fd }, { "closedByDeath", death },
+                             { "idChangeWithoutRename", diag }, { "image", { st.realRImg, trk.ImageOfView( "pcTrkRealR2" ) } },
+                             { "status", got ? jr.status : std::string() } };
+      st.ok["realNotify"] = fr >= 1 && fd >= 1 && death == 1 && diag == 0 && st.realRImg != 0
+                         && trk.ImageOfView( "pcTrkRealR2" ) == st.realRImg && trk.JourneyOfView( "pcTrkRealR2" ) == st.realRJ
+                         && got && jr.status == "recording";
    }
    else if ( step == "gate" )
    {
@@ -6083,9 +6189,164 @@ r1.ok && r1.inferred.size() == 1 && r1.inferred[0].first == 7 && r1.inferred[0].
       catch ( const pcl::Exception& x ) { if ( error.IsEmpty() ) error = "nested: " + x.Message(); }
       catch ( const std::exception& x ) { if ( error.IsEmpty() ) error = "nested: " + String( x.what() ); }
 
-      const bool ok = e2eOk && durableOk && nestedOk && error.IsEmpty();
+      // (d)-(g) StoreInferredReasons under REAL failures (integration review, Important):
+      //   (d) one entry throws a std::exception (synthetic, not an SQLite error): the others commit;
+      //   (e) SQLite's progress handler interrupts the 2nd UPDATE (SQLITE_INTERRUPT inside an explicit
+      //       transaction: SQLite rolls the whole transaction back itself): nothing persists;
+      //   (f) a deferred foreign-key violation makes COMMIT itself fail (SQLITE_CONSTRAINT): nothing persists;
+      //   (g) a second connection holds the write lock (BEGIN IMMEDIATE): BEGIN fails SQLITE_BUSY.
+      // Each asserts: nothing partial persisted, every entry named, the connection and the store's
+      // transaction flag back to "none open", and the next write on the same store works.
+      bool faultEntryOk = false, faultAbortOk = false, faultCommitOk = false, faultBusyOk = false;
+      try
+      {
+         JTempDir root( "picopilot-j9f-" );
+         String oe;
+         std::unique_ptr<JourneyStore> t = JourneyStore::Open( root.Path(), oe );
+         if ( !t )
+            throw Error( "store: " + oe );
+         struct Made { int64 jid = 0; std::vector<int64> steps; };
+         auto make = [&t]( const char* name, int n )
+         {
+            const std::string now = NowIso();
+            Made m;
+            m.jid = t->CreateJourney( name, "J9F", now );
+            const int64 img = t->AddImage( m.jid, name, "", std::string( "fp-" ) + name, true, now );
+            for ( int i = 0; i < n; ++i )
+            {
+               StepRow r;
+               r.imageId = img; r.seq = i + 1; r.processId = "PixelMath"; r.started = now; r.actor = "user";
+               r.params = { { "expression", "$T*1.1" } };
+               m.steps.push_back( t->AddStep( r ) );
+            }
+            return m;
+         };
+         auto reasons = []( const Made& m )
+         {
+            std::vector<std::pair<int64, std::string>> v;
+            for ( int64 id : m.steps ) v.push_back( { id, "reason " + std::to_string( id ) } );
+            return v;
+         };
+         auto persisted = [&t]( const Made& m )   // how many of m's steps carry an inferred reason
+         {
+            int n = 0;
+            for ( int64 id : m.steps ) { StepRow r; if ( t->GetStep( id, r ) && r.reasonInferred && !r.reason.empty() ) ++n; }
+            return n;
+         };
+         auto clean = [&t]() { return !t->InTransaction() && t->AutocommitForSelfTest() == 1; };
+         auto named = []( const std::vector<std::string>& ns, int64 id, const char* what )
+         {
+            const std::string label = "step " + std::to_string( id ) + " (";
+            for ( const std::string& n : ns )
+               if ( n.rfind( label, 0 ) == 0 && (what == nullptr || n.find( what ) != std::string::npos) )
+                  return true;
+            return false;
+         };
+         auto list = []( const std::vector<std::string>& ns ) { nlohmann::json a = nlohmann::json::array(); for ( auto& n : ns ) a.push_back( n ); return a; };
+
+         // (d)
+         {
+            const Made m = make( "fEntry", 3 );
+            const int64 bad = m.steps[1];
+            t->SetStepReasonHookForSelfTest( [bad]( int64 id ) { if ( id == bad ) throw std::runtime_error( "synthetic entry failure" ); } );
+            std::vector<std::string> ns;
+            const int stored = StoreInferredReasons( *t, m.jid, reasons( m ), ns );
+            t->SetStepReasonHookForSelfTest( nullptr );
+            StepRow r1; t->GetStep( bad, r1 );
+            d["faultEntry"] = { { "stored", stored }, { "persisted", persisted( m ) }, { "notStored", list( ns ) }, { "clean", clean() } };
+            faultEntryOk = stored == 2 && persisted( m ) == 2 && r1.reason.empty() && ns.size() == 1
+                        && named( ns, bad, "synthetic entry failure" ) && clean();
+         }
+         // (e)
+         {
+            const Made m = make( "fAbort", 3 );
+            const int64 second = m.steps[1];
+            JourneyStore* ts = t.get();
+            t->SetStepReasonHookForSelfTest( [second, ts]( int64 id ) { if ( id == second ) ts->ArmInterruptForSelfTest(); } );
+            std::vector<std::string> ns;
+            const int stored = StoreInferredReasons( *t, m.jid, reasons( m ), ns );
+            t->SetStepReasonHookForSelfTest( nullptr );
+            const bool cleanAfter = clean();
+            const int p = persisted( m );
+            std::vector<std::string> ns2;
+            const int again = StoreInferredReasons( *t, m.jid, reasons( m ), ns2 );
+            d["faultAbort"] = { { "stored", stored }, { "persisted", p }, { "notStored", list( ns ) }, { "clean", cleanAfter },
+                                { "again", again }, { "againNotStored", list( ns2 ) } };
+            faultAbortOk = stored == 0 && p == 0 && ns.size() == 3 && named( ns, m.steps[0], "rolled back" )
+                        && named( ns, second, "interrupt" ) && named( ns, m.steps[2], "rolled back" ) && cleanAfter
+                        && again == 3 && ns2.empty() && persisted( m ) == 3 && clean();
+         }
+         // (f)
+         {
+            const Made m = make( "fCommit", 2 );
+            const int64 last = m.steps.back();
+            JourneyStore* ts = t.get();
+            t->SetStepReasonHookForSelfTest( [last, ts]( int64 id )
+            {
+               if ( id != last ) return;
+               ts->ExecForSelfTest( "PRAGMA defer_foreign_keys=ON" );
+               ts->ExecForSelfTest( "INSERT INTO gap(journey_id, reason) VALUES(987654321, 'j9 fault')" );
+            } );
+            std::vector<std::string> ns;
+            const int stored = StoreInferredReasons( *t, m.jid, reasons( m ), ns );
+            t->SetStepReasonHookForSelfTest( nullptr );
+            const bool cleanAfter = clean();
+            const int p = persisted( m );
+            int orphanGaps = -1;
+            {
+               sqlite3* raw = nullptr;
+               if ( sqlite3_open_v2( IsoString( t->DbPath().ToUTF8() ).c_str(), &raw, SQLITE_OPEN_READONLY, nullptr ) == SQLITE_OK )
+               {
+                  sqlite3_stmt* q = nullptr;
+                  if ( sqlite3_prepare_v2( raw, "SELECT count(*) FROM gap WHERE journey_id=987654321", -1, &q, nullptr ) == SQLITE_OK
+                    && sqlite3_step( q ) == SQLITE_ROW )
+                     orphanGaps = sqlite3_column_int( q, 0 );
+                  sqlite3_finalize( q );
+               }
+               sqlite3_close( raw );
+            }
+            std::vector<std::string> ns2;
+            const int again = StoreInferredReasons( *t, m.jid, reasons( m ), ns2 );
+            d["faultCommit"] = { { "stored", stored }, { "persisted", p }, { "notStored", list( ns ) }, { "clean", cleanAfter },
+                                 { "orphanGaps", orphanGaps }, { "again", again } };
+            faultCommitOk = stored == 0 && p == 0 && ns.size() == 2 && named( ns, m.steps[0], "could not be committed" )
+                         && named( ns, last, "could not be committed" ) && cleanAfter && orphanGaps == 0
+                         && again == 2 && ns2.empty() && persisted( m ) == 2 && clean();
+         }
+         // (g)
+         {
+            const Made m = make( "fBusy", 2 );
+            sqlite3* raw = nullptr;
+            if ( sqlite3_open_v2( IsoString( t->DbPath().ToUTF8() ).c_str(), &raw, SQLITE_OPEN_READWRITE, nullptr ) != SQLITE_OK )
+            {
+               sqlite3_close( raw );
+               throw Error( "second connection could not be opened" );
+            }
+            const int began = sqlite3_exec( raw, "BEGIN IMMEDIATE", nullptr, nullptr, nullptr );
+            std::vector<std::string> ns;
+            const int stored = StoreInferredReasons( *t, m.jid, reasons( m ), ns );
+            const bool cleanAfter = clean();
+            const int p = persisted( m );
+            sqlite3_exec( raw, "ROLLBACK", nullptr, nullptr, nullptr );
+            sqlite3_close( raw );
+            std::vector<std::string> ns2;
+            const int again = StoreInferredReasons( *t, m.jid, reasons( m ), ns2 );
+            d["faultBusy"] = { { "began", began }, { "stored", stored }, { "persisted", p }, { "notStored", list( ns ) },
+                               { "clean", cleanAfter }, { "again", again } };
+            faultBusyOk = began == SQLITE_OK && stored == 0 && p == 0 && ns.size() == 2
+                       && named( ns, m.steps[0], "locked" ) && named( ns, m.steps[1], "locked" ) && cleanAfter
+                       && again == 2 && ns2.empty() && persisted( m ) == 2 && clean();
+         }
+      }
+      catch ( const pcl::Exception& x ) { if ( error.IsEmpty() ) error = "fault: " + x.Message(); }
+      catch ( const std::exception& x ) { if ( error.IsEmpty() ) error = "fault: " + String( x.what() ); }
+
+      const bool ok = e2eOk && durableOk && nestedOk && faultEntryOk && faultAbortOk && faultCommitOk && faultBusyOk
+                   && error.IsEmpty();
       out["journeyWiringDetail"] = d;
-      out["journeyWiringChecks"] = { { "e2e", e2eOk }, { "durable", durableOk }, { "nested", nestedOk } };
+      out["journeyWiringChecks"] = { { "e2e", e2eOk }, { "durable", durableOk }, { "nested", nestedOk },
+                                     { "faultEntry", faultEntryOk }, { "faultAbort", faultAbortOk },
+                                     { "faultCommit", faultCommitOk }, { "faultBusy", faultBusyOk } };
       out["journeyWiringError"] = U8( error );
       out["journeyWiringOk"] = ok;
       allOk = allOk && ok;

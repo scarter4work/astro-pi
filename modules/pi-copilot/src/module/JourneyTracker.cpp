@@ -749,23 +749,17 @@ void JourneyTracker::Scan( double now, const std::vector<OpenWindow>& open )
          if ( id != t->id )
          try
          {
-            // The same live handle under a new id. With a rename notification since the last scan, a rename.
-            // Without one (notifications working), it cannot be told from a new window at a reused address:
-            // re-review I-1r -- the old window is closed and this one is a new window (a master re-joins its
-            // own journey through the fingerprint resume).
+            // The same live handle under a new id: a rename (re-review round 5 n-1). Deaths are complete
+            // (m_deaths is never dropped and is consumed by DropClosed before this scan), so a window at a
+            // reused address has already been separated from this entry; the one case where identity is
+            // genuinely unknown, an overflowed death list, closes every entry through m_identityLost. A
+            // missing Renamed notification (recording was off, or the event queue overflowed) is therefore
+            // no reason to end the journey; it is recorded for diagnosis only.
             if ( m_renamedHandles.count( o.handle ) == 0 && PICopilotJourneyNotificationsWork )
             {
                char head[48];
                std::snprintf( head, sizeof head, "%.3f ", now );
-               Decision( head + std::string( "id change without a rename notification (closed + new): " ) + t->id + " -> " + id );
-               m_closed.push_back( t->journeyId );
-               m_closedImages.push_back( t->imageId );
-               if ( t->dirty )
-                  m_pendingGaps.push_back( { t->journeyId, t->imageId, 0, "closed before its last steps were recorded" } );
-               const void* h = o.handle;
-               EraseIf( m_tracked, [h]( const Tracked& x ) { return x.handle == h; } );
-               AddCandidate( id, h, now, m_scannedOnce );
-               continue;
+               Decision( head + std::string( "id change without a rename notification (followed as a rename): " ) + t->id + " -> " + id );
             }
             m_store->SetImageView( t->imageId, id, FilePathOf( id ) );
             t->id = id;
@@ -2201,14 +2195,14 @@ void JourneyService::OnTick()
       RunRetention();
 }
 
-#define PICOPILOT_FORWARD( call ) \
-   do { if ( m_tracker ) m_tracker->call; if ( m_forward != nullptr ) m_forward->call; } while ( false )
-void JourneyService::OnImageCreated( const View& v ) { PICOPILOT_FORWARD( OnImageCreated( v, JourneyWallNow() ) ); }
-void JourneyService::OnImageUpdated( const View& v ) { PICOPILOT_FORWARD( OnImageUpdated( v, JourneyWallNow() ) ); }
-void JourneyService::OnImageRenamed( const View& v ) { PICOPILOT_FORWARD( OnImageRenamed( v, JourneyWallNow() ) ); }
-void JourneyService::OnImageDeleted( const View& v ) { PICOPILOT_FORWARD( OnImageDeleted( v, JourneyWallNow() ) ); }
-void JourneyService::OnImageSaved( const View& v )   { PICOPILOT_FORWARD( OnImageSaved( v, JourneyWallNow() ) ); }
-void JourneyService::OnImageFocused( const View& v ) { PICOPILOT_FORWARD( OnImageFocused( v, JourneyWallNow() ) ); }
+#define PICOPILOT_FORWARD( k, call ) \
+   do { if ( m_tracker ) m_tracker->call; if ( m_forward != nullptr ) { ++m_forwarded[k]; m_forward->call; } } while ( false )
+void JourneyService::OnImageCreated( const View& v ) { PICOPILOT_FORWARD( 0, OnImageCreated( v, JourneyWallNow() ) ); }
+void JourneyService::OnImageUpdated( const View& v ) { PICOPILOT_FORWARD( 1, OnImageUpdated( v, JourneyWallNow() ) ); }
+void JourneyService::OnImageRenamed( const View& v ) { PICOPILOT_FORWARD( 2, OnImageRenamed( v, JourneyWallNow() ) ); }
+void JourneyService::OnImageDeleted( const View& v ) { PICOPILOT_FORWARD( 3, OnImageDeleted( v, JourneyWallNow() ) ); }
+void JourneyService::OnImageSaved( const View& v )   { PICOPILOT_FORWARD( 4, OnImageSaved( v, JourneyWallNow() ) ); }
+void JourneyService::OnImageFocused( const View& v ) { PICOPILOT_FORWARD( 5, OnImageFocused( v, JourneyWallNow() ) ); }
 #undef PICOPILOT_FORWARD
 
 void JourneyService::AddNote( const String& note )
