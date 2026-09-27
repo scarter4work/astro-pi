@@ -18,6 +18,8 @@
 #include <chrono>
 #include <cstdio>
 #include <cstring>
+#include <sstream>
+#include <fstream>
 #include <ctime>
 
 #include <dirent.h>
@@ -350,6 +352,10 @@ JourneyStore::~JourneyStore()
 
 void JourneyStore::Fail( const char* what ) const
 {
+   if ( sqlite3_extended_errcode( m_db ) == SQLITE_CONSTRAINT_FOREIGNKEY )
+      throw JourneyRowMissing( "journey database " + m_dbPath + ": " + FromU8( sqlite3_errmsg( m_db ) )
+                               + " (" + FromU8( std::string( what != nullptr ? what : "" ).substr( 0, 60 ) )
+                               + "): a row it refers to no longer exists" );
    throw Error( "journey database " + m_dbPath + ": " + FromU8( sqlite3_errmsg( m_db ) )
                 + " (" + FromU8( std::string( what != nullptr ? what : "" ).substr( 0, 60 ) ) + ")" );
 }
@@ -690,6 +696,13 @@ void JourneyStore::AddGap( const GapRow& g )
       .Int( 1, g.journeyId ).IntOrNull( 2, g.imageId ).Int( 3, g.afterSeq ).Text( 4, g.reason ).Run();
 }
 
+bool JourneyStore::HasReadGaps( int64 imageId )
+{
+   Stmt s( *this, "SELECT 1 FROM gap WHERE image_id=? AND substr(reason, 1, ?) = ? LIMIT 1" );
+   s.Int( 1, imageId ).Int( 2, int64( std::strlen( PICopilotJourneyReadGapPrefix ) ) ).Text( 3, PICopilotJourneyReadGapPrefix );
+   return s.Row();
+}
+
 int JourneyStore::ResolveGaps( int64 imageId, int recordedUpToSeq )
 {
    Stmt( *this, "DELETE FROM gap WHERE image_id=? AND after_step_seq < ? AND substr(reason, 1, ?) = ?" )
@@ -955,6 +968,17 @@ int JourneyStore::PruneUnkept( const std::string& cutoffIso, StringList* removed
       Stmt( *this, "DELETE FROM journey WHERE id=? AND kept=0 AND updated < ?" ).Int( 1, id ).Text( 2, cutoffIso ).Run();
       if ( sqlite3_changes( m_db ) == 0 )
          continue;   // the transaction rolls back (nothing was changed)
+      {
+         // Re-review m-a: an image of it is being recorded by a live PixInsight process (another instance
+         // included): never pruned, whatever its `updated` says. The DELETE above is rolled back.
+         bool live = false;
+         Stmt o( *this, "SELECT owner FROM image WHERE journey_id=? AND owner IS NOT NULL" );
+         o.Int( 1, id );
+         while ( !live && o.Row() )
+            live = JourneyOwnerAlive( o.ColText( 0 ) );
+         if ( live )
+            continue;
+      }
       RemoveDirectoryTree( dir );   // throws naming the path -> the row delete rolls back, the next pass retries
       tx.Commit();
       ++n;
@@ -967,6 +991,35 @@ int JourneyStore::PruneUnkept( const std::string& cutoffIso, StringList* removed
 void JourneyStore::Checkpoint()
 {
    Exec( "PRAGMA wal_checkpoint(TRUNCATE)" );
+}
+
+std::string JourneyOwnerOf( long pid )
+{
+   if ( pid <= 0 )
+      pid = long( ::getpid() );
+   std::ifstream f( "/proc/" + std::to_string( pid ) + "/stat" );
+   std::string line;
+   if ( !f || !std::getline( f, line ) )
+      return std::string();
+   // Field 22 (starttime) counted after the ")" that ends the command name.
+   const size_t close = line.rfind( ')' );
+   if ( close == std::string::npos )
+      return std::string();
+   std::istringstream rest( line.substr( close + 1 ) );
+   std::string field;
+   for ( int i = 3; i <= 22; ++i )
+      if ( !(rest >> field) )
+         return std::string();
+   return std::to_string( pid ) + ":" + field;
+}
+
+bool JourneyOwnerAlive( const std::string& owner )
+{
+   const size_t colon = owner.find( ':' );
+   if ( owner.empty() || colon == std::string::npos )
+      return false;
+   const long pid = std::strtol( owner.substr( 0, colon ).c_str(), nullptr, 10 );
+   return pid > 0 && JourneyOwnerOf( pid ) == owner;
 }
 
 } // namespace pcl

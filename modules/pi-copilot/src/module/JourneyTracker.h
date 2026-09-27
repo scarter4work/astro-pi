@@ -26,13 +26,6 @@ namespace pcl
 double JourneyWallNow();   // Unix epoch seconds (the clock of PI's <time start>)
 std::string LocalDateToday();   // "YYYY-MM-DD", local time
 
-// The recording owner of an image row (re-review m6): "<pid>:<process start
-// ticks>" of a PixInsight process (this one when pid <= 0); "" when that
-// process does not exist. JourneyOwnerAlive: the owner names a running process
-// (pid and start ticks match, so a reused pid is not "alive").
-std::string JourneyOwnerOf( long pid = 0 );
-bool        JourneyOwnerAlive( const std::string& owner );
-
 enum class RecordingState { Off, NotTracked, Recording, Paused };
 
 struct JourneyStatus
@@ -58,7 +51,8 @@ using HistoryReadFn = std::function<HistorySnapshot( const IsoString&, int )>;
  *
  * Notification handlers only append to m_events. A tick:
  *   1. DropClosed(): forgets windows that are no longer open (their journeys
- *      may end) -- reads nothing;
+ *      may end); a window closed with unrecorded changes queues a gap (its
+ *      only read: the image's last recorded seq);
  *   2. DrainEvents(): applies the queued notifications -- reads nothing;
  *   3. the busy gate (review I4, re-review R4): the rest of the tick is
  *      deferred while PixInsight is busy -- RecorderActivity() (the console
@@ -81,6 +75,18 @@ using HistoryReadFn = std::function<HistorySnapshot( const IsoString&, int )>;
  * PCL's attach). Every join and every recorded batch of steps is ONE
  * JourneyStore::Transaction: a failure leaves no partial journey, image or
  * step rows, and the next tick retries from the database's state.
+ *
+ * Failure boundaries (fix round 3): every per-item unit of work has its own.
+ * JourneyRowMissing (a missing row, or SQLITE_CONSTRAINT_FOREIGNKEY) drops /
+ * cleans that item with one note and schedules Reconcile(); any other error
+ * defers that item only and the tick goes on. Only a missing store, an open
+ * transaction or an unexpected escape pauses the whole tick. The boundaries:
+ * DrainEvents (per event), DropClosed (per closing image's seq read), Scan
+ * (per view), FlushPendingGaps (per gap), ProcessDirty (per image, incl. its
+ * gap flush and statistics), ProcessCandidates (per candidate, incl. joins
+ * and their statistics), EndClosedJourneys (per journey, per owner clear),
+ * Reconcile (per row check), and the service's retention pass (with a 60 s
+ * back-off after a failure).
  */
 class JourneyTracker
 {
@@ -137,6 +143,9 @@ public:
    // The last 100 candidate evaluations and scan anomalies
    // ("<t> r=<result> ticks=<n> <view> <evidence summary>"), for self-test diagnostics.
    std::vector<std::string> RecentDecisionsForSelfTest() const { return { m_decisions.begin(), m_decisions.end() }; }
+   // The tick-wide failure (m_pausedReason) the last tick ended with; "" = none. Only a failure no
+   // per-item boundary could contain sets it (fix round 3).
+   String TickFailureForSelfTest() const { return m_pausedReason; }
 
 private:
 
@@ -164,8 +173,9 @@ private:
       bool            hasSnap = false;   // the last read, reused while ModifyCount is unchanged (review M8)
       size_type       modifyCount = 0;
       HistorySnapshot snap;
+      int             failures = 0;      // evaluations that threw (not a missing row): ignored after kCandidateTicks
    };
-   struct Ignored   { View view; size_type modifyCount = 0; };
+   struct Ignored   { View view; size_type modifyCount = 0; double firstSeen = 0; };   // firstSeen carried over (N3)
    struct CopilotNote { std::string viewId, processId, reason; double t = 0; };
    struct CreatedNote { std::string id, sourceViewId; bool integration = false, first = false; double t = 0; };
    // A notification, queued by a handler and applied by DrainEvents() at the start of Tick() (pre-flight P10).
@@ -189,6 +199,7 @@ private:
    bool                     m_gateNoted = false;     // the "waiting" note was given for the current stall
    std::string              m_owner;                 // JourneyOwnerOf() of this process (m6)
    std::vector<int64>       m_closedImages;          // images whose window closed: owner cleared in EndClosedJourneys
+   bool                     m_reconcile = false;     // a row went missing this tick: Reconcile() at its end
    std::deque<PendingEvent> m_events;          // queued notifications (handlers only append)
    double                   m_lastScan = -1e300;
    std::vector<std::unique_ptr<Tracked>>   m_tracked;
@@ -236,6 +247,10 @@ private:
    // Drops a tracked image whose journey row vanished (R2): one note, and the
    // window is re-seen as a candidate (not fresh). Index into m_tracked.
    void           DropMissing( size_t index, const String& why );
+   // Fix round 3: after any JourneyRowMissing, re-checks every tracked image / journey row that still
+   // exists; drops the vanished ones (DropMissing) and purges their remembered steps, Copilot notes,
+   // queued gaps, closed-journey and owner work. Its own failure only defers it to the next tick.
+   void           Reconcile();
    int64          JoinLinked( const View& v, const HistorySnapshot& snap, int64 journeyId,
                               const std::vector<PlannedLink>& links, const std::string& evidence, const std::string& why );
    std::vector<int64> AddBaseAndSteps( int64 imageId, const HistorySnapshot& snap, int baseCount );
@@ -321,6 +336,7 @@ private:
    StringList                        m_notes;
    std::string                       m_retentionLastRun;
    std::string                       m_openTouchedDate;       // R1: in memory, per instance
+   double                            m_retentionRetryAfter = 0;   // m-b: back-off after a failed pass
    String                            m_lastRetentionError;   // one note per distinct failure (review I1)
 
    void OpenStore();

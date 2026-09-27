@@ -730,6 +730,22 @@ try
       pm( "pcTrkRenamed", "$T*1.0" ); j6( "txDefer" );                        // re-review m1 / m2
       j6( "owner" );                                                          // re-review m6
 
+      pm( "pcTrkRenamed", "$T*1.0" ); j6( "gapRowGone" );                    // fix round 3: N1
+      j6( "linkRowGone" );                                                    // N2
+      [ "pcTrkIgA", "pcTrkIgB", "pcTrkIgC" ].forEach( function( id ) {        // N3
+         new ImageWindow( 32, 32, 1, 32, true, false, id ); } );
+      j6( "ignSetup" );
+      [ "pcTrkIgA", "pcTrkIgB", "pcTrkIgC" ].forEach( function( id, k ) {
+         pm( id, "0.4" ); pm( id, "$T*1.1" );
+         var fh = new FITSHeader;
+         fh.keywords = [ [ "IMAGETYP", "'Master Light'", "" ], [ "OBJECT", "'Ig" + k + "'", "" ] ];
+         fh.executeOn( View.viewById( id ) );
+      } );
+      j6( "ignCheck" );
+      j6( "chaosSetup" );                                                     // fault injection
+      for ( var r = 0; r < 5; ++r ) { j6( "chaosRound", { round: r } ); pm( "pcTrkRenamed", "$T*1.0" ); }
+      j6( "chaosEnd" );
+
       [ true, false ].forEach( function( mc )                                 // (s)
       {
          j6( "scanMode", { mc: mc } );

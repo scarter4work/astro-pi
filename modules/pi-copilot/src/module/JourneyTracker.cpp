@@ -191,35 +191,6 @@ std::string LocalDateToday()
    return buf;
 }
 
-std::string JourneyOwnerOf( long pid )
-{
-   if ( pid <= 0 )
-      pid = long( ::getpid() );
-   std::ifstream f( "/proc/" + std::to_string( pid ) + "/stat" );
-   std::string line;
-   if ( !f || !std::getline( f, line ) )
-      return std::string();
-   // Field 22 (starttime) counted after the ")" that ends the command name.
-   const size_t close = line.rfind( ')' );
-   if ( close == std::string::npos )
-      return std::string();
-   std::istringstream rest( line.substr( close + 1 ) );
-   std::string field;
-   for ( int i = 3; i <= 22; ++i )
-      if ( !(rest >> field) )
-         return std::string();
-   return std::to_string( pid ) + ":" + field;
-}
-
-bool JourneyOwnerAlive( const std::string& owner )
-{
-   const size_t colon = owner.find( ':' );
-   if ( owner.empty() || colon == std::string::npos )
-      return false;
-   const long pid = std::strtol( owner.substr( 0, colon ).c_str(), nullptr, 10 );
-   return pid > 0 && JourneyOwnerOf( pid ) == owner;
-}
-
 // ---- JourneyTracker ----------------------------------------------------------
 
 JourneyTracker::JourneyTracker( JourneyStore* store, const String& storeError )
@@ -387,15 +358,16 @@ void JourneyTracker::ApplyEvent( const PendingEvent& e, const View& view )
          break;
       }
       {
-         bool wasIgnored = false;
+         double seen = -1;
          for ( const std::unique_ptr<Ignored>& i : m_ignored )
-            wasIgnored = wasIgnored || i->view == view;
-         if ( wasIgnored )
+            if ( i->view == view )
+               seen = i->firstSeen;
+         if ( seen >= 0 )
          {
             EraseIf( m_ignored, [&view]( const Ignored& x ) { return x.view == view; } );
             // Re-evaluated (a new step may now reference a tracked view), but it did not APPEAR now:
-            // never linked by timing (c) (review I3).
-            AddCandidate( view, e.t, false );
+            // never linked by timing (c) (review I3), and its first sighting is kept (re-review N3).
+            AddCandidate( view, seen, false );
          }
       }
       break;
@@ -516,6 +488,8 @@ void JourneyTracker::Tick( double now, bool forceScan )
       ProcessDirty( now );
       ProcessCandidates( now );
       EndClosedJourneys();
+      if ( m_reconcile )
+         Reconcile();
       m_copilot.erase( std::remove_if( m_copilot.begin(), m_copilot.end(),
                                        [now]( const CopilotNote& n ) { return now - n.t > kCopilotNoteSeconds; } ), m_copilot.end() );
       m_created.erase( std::remove_if( m_created.begin(), m_created.end(),
@@ -566,9 +540,13 @@ void JourneyTracker::DropClosed( std::vector<View>& open, std::vector<size_type>
             }
             catch ( ... )
             {
+               // The seq could not be read (locked, row gone): the gap is written at 0, the conservative
+               // "somewhere in this image" (re-review m-d). A vanished row is discarded by FlushPendingGaps.
             }
             m_pendingGaps.push_back( { t->journeyId, t->imageId, lastSeq,
-                                       "closed while PixInsight was busy; its last steps were not recorded" } );
+                                       "closed before its last steps were recorded" } );
+            Decision( "gap: " + t->id + " closed with unrecorded changes (image " + std::to_string( t->imageId )
+                      + (t->dirty ? ", dirty" : ", queued update") + ")" );
          }
       }
    EraseIf( m_tracked, [&]( const Tracked& t ) { return !isOpen( t.view ); } );
@@ -629,8 +607,9 @@ void JourneyTracker::Scan( double now, const std::vector<View>& open, const std:
             ignored = true;
             if ( ig->modifyCount != counts[i] )
             {
+               const double seen = ig->firstSeen;   // N3: the first sighting, not the time of this change
                EraseIf( m_ignored, [&v]( const Ignored& x ) { return x.view == v; } );
-               AddCandidate( v, now, false/*changed, not new: no timing (c)*/ );
+               AddCandidate( v, seen, false/*changed, not new: no timing (c)*/ );
             }
             break;
          }
@@ -710,16 +689,13 @@ void JourneyTracker::ProcessDirty( double now )
       {
          ProcessOne( t, now );
       }
-      catch ( const JourneyRowMissing& x )
+      catch ( const JourneyRowMissing& x )   // a missing row or SQLITE_CONSTRAINT_FOREIGNKEY (m-f)
       {
          gone.push_back( { k, x.Message() } );
       }
       catch ( const pcl::Exception& x )
       {
-         if ( x.Message().Contains( "FOREIGN KEY constraint failed" ) )
-            gone.push_back( { k, x.Message() } );
-         else
-            t.pausedReason = x.Message();
+         t.pausedReason = x.Message();
       }
       catch ( const std::exception& x )
       {
@@ -850,6 +826,16 @@ void JourneyTracker::DropMissing( size_t index, const String& why )
    m_joinNotes << "PI Copilot: the journey of " + String( id.c_str() )
                   + " was removed from the library; recording of " + String( id.c_str() ) + " stopped (" + why + ")";
    Decision( "dropped " + id + ": " + U8( why ) );
+   const int64 img = t->imageId;
+   // N1: nothing queued for the vanished image may be retried on every tick.
+   m_pendingGaps.erase( std::remove_if( m_pendingGaps.begin(), m_pendingGaps.end(),
+                                        [img]( const GapRow& g ) { return g.imageId == img; } ), m_pendingGaps.end() );
+   m_closedImages.erase( std::remove( m_closedImages.begin(), m_closedImages.end(), img ), m_closedImages.end() );
+   m_recent.erase( std::remove_if( m_recent.begin(), m_recent.end(),
+                                   [img]( const RecentStep& r ) { return r.imageId == img; } ), m_recent.end() );
+   m_created.erase( std::remove_if( m_created.begin(), m_created.end(),
+                                    [&id]( const CreatedNote& n ) { return n.sourceViewId == id; } ), m_created.end() );
+   m_reconcile = true;
    m_tracked.erase( m_tracked.begin() + index );
    AddCandidate( view, JourneyWallNow(), false/*not fresh: it existed; it may start a new journey by the rules*/ );
 }
@@ -879,6 +865,25 @@ void JourneyTracker::ProcessCandidates( double now )
       {
          r = kCandidateDeferred;   // locked between the probe and the geometry read
       }
+      catch ( const JourneyRowMissing& x )
+      {
+         // Re-review N2: a join into a journey (or from an image) whose row vanished. The candidate is
+         // re-evaluated next tick against a reconciled tracker (it may then be a master or ignored).
+         r = kCandidateDeferred;
+         m_reconcile = true;
+         m_evalNote += " rowMissing: " + U8( x.Message() );
+      }
+      catch ( const pcl::Exception& x )
+      {
+         // Any other failure: this candidate only; after kCandidateTicks such failures it is ignored.
+         m_evalNote += " failed: " + U8( x.Message() );
+         r = ++c.failures >= kCandidateTicks ? -1 : kCandidateDeferred;
+      }
+      catch ( const std::exception& x )
+      {
+         m_evalNote += std::string( " failed: " ) + x.what();
+         r = ++c.failures >= kCandidateTicks ? -1 : kCandidateDeferred;
+      }
       {
          char head[96];
          std::snprintf( head, sizeof head, "%.3f r=%d ticks=%d ", now, r, c.ticks );
@@ -898,6 +903,7 @@ void JourneyTracker::ProcessCandidates( double now )
          std::unique_ptr<Ignored> ig( new Ignored );
          ig->view = c.view;
          ig->modifyCount = ModifyCountOf( c.view );
+         ig->firstSeen = c.firstSeen;
          m_ignored.push_back( std::move( ig ) );
          m_candidates.erase( m_candidates.begin() + i );
       }
@@ -1137,6 +1143,7 @@ int64 JourneyTracker::JoinAsMaster( const View& v, const HistorySnapshot& snap, 
          t->imageId = row.id;
          t->journeyId = row.journeyId;
          t->dirty = true;
+         t->hasGaps = m_store->HasReadGaps( row.id );   // re-review m-e: earlier sessions' read gaps resolve too
          m_tracked.push_back( std::move( t ) );
          m_joinNotes << "PI Copilot: continuing the recorded journey of " + String( id.c_str() );
          return row.journeyId;
@@ -1296,11 +1303,24 @@ int64 JourneyTracker::StartJourneyFor( const View& view, String& error, double /
 
 void JourneyTracker::FlushPendingGaps()
 {
-   while ( !m_pendingGaps.empty() )
-   {
-      m_store->AddGap( m_pendingGaps.front() );   // throws (and keeps the rest) while the DB is unusable
-      m_pendingGaps.erase( m_pendingGaps.begin() );
-   }
+   // Fix round 3 (N1): one boundary per gap. A gap whose image / journey vanished is discarded (there is
+   // nothing left to mark); any other failure keeps THAT gap for the next tick and the rest go on.
+   std::vector<GapRow> keep;
+   for ( const GapRow& g : m_pendingGaps )
+      try
+      {
+         m_store->AddGap( g );
+      }
+      catch ( const JourneyRowMissing& x )
+      {
+         Decision( "gap of vanished image " + std::to_string( g.imageId ) + " discarded: " + U8( x.Message() ) );
+         m_reconcile = true;
+      }
+      catch ( ... )
+      {
+         keep.push_back( g );
+      }
+   m_pendingGaps.swap( keep );
 }
 
 void JourneyTracker::EndClosedJourneys()
@@ -1324,8 +1344,7 @@ void JourneyTracker::EndClosedJourneys()
          }
          catch ( ... )
          {
-            m_closed.insert( m_closed.end(), closed.begin() + k, closed.end() );   // retried on the next tick
-            throw;
+            m_closed.push_back( jid );   // this journey only: retried on the next tick; the others go on
          }
    }
    // Re-review m6: closed images are no longer recorded by this instance.
@@ -1341,9 +1360,48 @@ void JourneyTracker::EndClosedJourneys()
       }
       catch ( ... )
       {
-         m_closedImages.insert( m_closedImages.end(), images.begin() + k, images.end() );
-         throw;
+         m_closedImages.push_back( images[k] );   // this image only, next tick
       }
+}
+
+void JourneyTracker::Reconcile()
+{
+   bool retry = false;
+   for ( size_t k = m_tracked.size(); k-- > 0; )
+   {
+      const Tracked& t = *m_tracked[k];
+      try
+      {
+         ImageRow ir;
+         JourneyRow jr;
+         if ( !m_store->GetImage( t.imageId, ir ) || !m_store->GetJourney( t.journeyId, jr ) )
+         {
+            DropMissing( k, "its row is no longer in the journey library" );
+         }
+      }
+      catch ( ... )
+      {
+         retry = true;   // could not check (locked): again at the next tick's end
+      }
+   }
+   m_reconcile = retry;   // DropMissing set it; the rows re-checked here are settled
+   auto journeyGone = [this]( int64 jid )
+   {
+      try
+      {
+         JourneyRow jr;
+         return !m_store->GetJourney( jid, jr );
+      }
+      catch ( ... )
+      {
+         return false;   // unknown: kept, checked again later
+      }
+   };
+   m_recent.erase( std::remove_if( m_recent.begin(), m_recent.end(),
+                                   [&]( const RecentStep& r ) { return journeyGone( r.journeyId ); } ), m_recent.end() );
+   m_closed.erase( std::remove_if( m_closed.begin(), m_closed.end(), journeyGone ), m_closed.end() );
+   m_pendingGaps.erase( std::remove_if( m_pendingGaps.begin(), m_pendingGaps.end(),
+                                        [&]( const GapRow& g ) { return journeyGone( g.journeyId ); } ), m_pendingGaps.end() );
 }
 
 JourneyStatus JourneyTracker::StatusFor( const IsoString& viewFullId ) const
@@ -1445,6 +1503,8 @@ int RetentionPass( JourneyStore& store, const JourneyTracker& tracker, int days,
                    std::string& openTouchedDate, std::string& lastRun, StringList* removed )
 {
    const std::vector<int64> open = tracker.OpenJourneyIds();
+   if ( today != openTouchedDate && open.empty() )
+      openTouchedDate = today;   // re-review m-b: nothing open, no write lock
    if ( today != openTouchedDate )
    {
       // R1: per instance, once per local date, independent of lastRun (another instance may already have
@@ -1575,6 +1635,9 @@ void JourneyService::ApplySettings()
 
 void JourneyService::RunRetention()
 {
+   const double now = JourneyWallNow();
+   if ( now < m_retentionRetryAfter )
+      return;   // re-review m-b: backing off after a failure (no 250 ms busy-wait on every tick)
    String failure;
    int n = -1;
    try
@@ -1596,6 +1659,7 @@ void JourneyService::RunRetention()
    Settings::Write( kRetentionLastRunKey, String( m_retentionLastRun.c_str() ) );   // ran today, whatever the outcome
    if ( !failure.IsEmpty() )
    {
+      m_retentionRetryAfter = now + 60;
       if ( failure != m_lastRetentionError )   // one note per distinct failure, not per pass
       {
          const String m = "PI Copilot: journey retention paused until tomorrow: " + failure;
