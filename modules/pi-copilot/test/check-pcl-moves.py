@@ -181,8 +181,38 @@ def mutated(v, all_code):
     return ""
 
 
+def function_ends(code):
+    """For every offset, where the enclosing FUNCTION body closes: {offset of '{': offset of its '}'}, only for
+    the outermost code brace (a function body, not a namespace/class/struct/enum/extern scope). A moved-from
+    local cannot outlive that body, so R3 never looks past it into another function."""
+    spans = []
+    stack = []   # (kind, open offset)
+    last = 0     # start of the text preceding the next '{' (after the last ';', '{' or '}')
+    for i, c in enumerate(code):
+        if c == "{":
+            head = code[last:i]
+            scope = re.search(r"\b(namespace|class|struct|union|enum)\b|\bextern\s*\"", head) and "(" not in head
+            in_code = any(k == "code" for k, _ in stack)
+            kind = "code" if (in_code or not scope) else "scope"
+            stack.append((kind, i))
+            last = i + 1
+        elif c == "}":
+            if stack:
+                kind, start = stack.pop()
+                if kind == "code" and not any(k == "code" for k, _ in stack):
+                    spans.append((start, i))
+            last = i + 1
+        elif c == ";":
+            last = i + 1
+    return spans
+
+
 def check_file(name, src, bearing, aliases, all_code, problems):
     code = strip_comments(src)
+    fn_spans = function_ends(code)
+    line_start = [0]
+    for part in code.split("\n")[:-1]:
+        line_start.append(line_start[-1] + len(part) + 1)
     lines = code.split("\n")
     raw = src.split("\n")
     decl = container_decl_regex(code)
@@ -201,8 +231,13 @@ def check_file(name, src, bearing, aliases, all_code, problems):
             target = re.sub(r"\s+", "", m.group(1))
             if target.startswith("m_") or annotated:
                 continue   # data members: R2
-            tail = "\n".join(lines[ln - 1:ln + 400])
-            after = tail[tail.find(m.group(0)) + len(m.group(0)):]
+            pos = line_start[ln - 1] + m.end()
+            end = next((e for s, e in fn_spans if s < pos <= e), None)
+            if end is not None:
+                after = code[pos:end]   # the rest of the enclosing function body, never the next function
+            else:
+                tail = "\n".join(lines[ln - 1:ln + 400])
+                after = tail[tail.find(m.group(0)) + len(m.group(0)):]
             pieces = [re.escape(x) for x in re.split(r"(\.|->)", target)]
             name_rx = r"\s*".join(pieces)
             if re.search(r"(^|[;{}])\s*" + name_rx + r"\s*(=(?!=)|\+=)", after, re.M) \
@@ -279,9 +314,15 @@ BAD_FIXTURES_R6 = {
     "ranges::sort": {"r.cpp": "std::vector<String> v; // pcl-move-ok: claimed read only\nvoid f() { std::ranges::sort( v ); }\n"},
     "moved-from StringList reused": {"sl.cpp": "void f() { StringList a; StringList b = std::move( a ); a = b; }\n"},
     "moved-from pcl::Array member": {"am.cpp": "struct Q { Array<int> m_a; void f() { Array<int> b = std::move( m_a ); m_a = b; } };\n"},
+    "moved in an inner block, reused in the outer block": {
+        "ib.cpp": "namespace pcl {\nvoid f( bool c ) {\n  String a;\n  if ( c ) {\n    String b = std::move( a );\n  }\n  a = \"y\";\n}\n}\n"},
 }
 GOOD_FIXTURE = ("struct P { std::string a; };\nstd::vector<P> v;\nvoid f( const std::vector<String>& in );\n"
-                "std::vector<std::unique_ptr<W>> w;\nstd::vector<String> ok; // pcl-move-ok: push_back + read only\n")
+                "std::vector<std::unique_ptr<W>> w;\nstd::vector<String> ok; // pcl-move-ok: push_back + read only\n"
+                # Same local name in two functions: the second function's `r = ...` is not a reuse of the first's r.
+                "namespace pcl {\nstruct H { String t; };\nclass I {\n  H m_h;\n  void f();\n  void g();\n};\n"
+                "void I::f() {\n  { H r; m_h = std::move( r ); }\n}\n"
+                "void I::g() {\n  H r;\n  r = H();\n}\n}\n")
 
 
 def self_check(tmp):
