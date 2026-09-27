@@ -96,7 +96,10 @@ public:
    {
       if ( !ShouldContinue() )
          return false;
-      buffer.Append( reinterpret_cast<const char*>( data ), size_type( size ) );
+      // Not Append( ptr, n ): PCL runs strlen() over its source (String.h Insert), and a network chunk is
+      // not NUL-terminated -- a heap over-read ASan reported (Task 7 fix round 4). Copy the exact range.
+      const char* bytes = reinterpret_cast<const char*>( data );
+      buffer.Append( IsoString( bytes, bytes + size ) );
       lastData = clock::now();
       // Every body is fed, including a non-2xx JSON error body (whose lines
       // are no SSE fields, so it yields no events). The status is NOT known
