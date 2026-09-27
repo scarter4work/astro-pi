@@ -3042,6 +3042,30 @@ double JApplyMedian( const ToolOutcome& o )
    return s.at( "newContext" ).at( "channelStats" ).at( 0 ).at( "median" ).get<double>();
 }
 
+// A small kept journey of rows only (no window): one master, one active step per process id, default parameters.
+int64 JAddKeeperSteps( JourneyStore& store, const std::string& target, const std::vector<std::string>& processIds )
+{
+   const std::string now = NowIso();
+   const int64 jid = store.CreateJourney( target + " Ha 2026-09-27", target, now );
+   const int64 img = store.AddImage( jid, "pc" + target + "M", "", target + "-fp", true, now );
+   int seq = 0;
+   for ( const std::string& pid : processIds )
+   {
+      StepRow r;
+      r.imageId = img;
+      r.seq = ++seq;
+      r.processId = pid;
+      r.state = "active";
+      r.historyIndex = seq;
+      r.params = { { "parameters", nlohmann::json::object() }, { "tableParameters", nlohmann::json::object() }, { "xpsm", "" },
+                   { "identity", pid + "@" + target + "#" + std::to_string( seq ) }, { "mask", nullptr },
+                   { "replayable", true }, { "parseNote", "" } };
+      store.AddStep( r );
+   }
+   store.MarkKept( jid, img, NowIso() );
+   return jid;
+}
+
 // A realistic kept journey whose replay material is far over one tool result
 // (review I2): a DynamicBackgroundExtraction step with a 400-sample table
 // (manual) and `curves` CurvesTransformation steps with 400-point K curves.
@@ -6107,6 +6131,8 @@ r1.ok && r1.inferred.size() == 1 && r1.inferred[0].first == 7 && r1.inferred[0].
       bool scrubFuzzOk = false, gxOk = false, replayExpiryOk = false, inTickFreezeOk = false, lineageOk = false;
       // Fix round 3 (export lineage).
       bool exportLineageOk = false;
+      // Fix round 4.
+      bool replayFlowOk = false, knownDirsOk = false, candidatesOk = false, loopOk = false;
       String error;
       std::vector<std::string> made;
       try
@@ -6704,8 +6730,8 @@ r1.ok && r1.inferred.size() == 1 && r1.inferred[0].first == 7 && r1.inferred[0].
             gxOk = ok && modes.contains( "replace" ) && modes.contains( "newWindow" )
                 && modes["replace"].at( "historyGrew" ) == true;   // measured: the core adds its empty step in replace mode
          }
-         // (q) Re-review minor 4: a replay lookup expires -- an unrelated later run (another process) does not name the
-         //     journey, the replay's own next step does; ForgetPendingReplays (each new user message) drops it.
+         // (q) Re-review minor 4: an unrelated later run (another process) does not name the journey, the replay's own
+         //     next step does; ForgetPendingReplays (a new conversation) drops it.
          {
             JourneyRow before, afterUnrelated, afterStep, forgot;
             const int64 jo = trk.JourneyOfView( "pcJtOther" );
@@ -6858,6 +6884,135 @@ r1.ok && r1.inferred.size() == 1 && r1.inferred[0].first == 7 && r1.inferred[0].
                            && !of.recipeOk && !of.xpsmOk && of.recipeError.Contains( "lineage" ) && of.xpsmError.Contains( "lineage" )
                            && orphanNoRecipe;
          }
+         // (v) Re-review round 2, I1 + minor 2: the replay name survives the user-message boundaries of a real replay
+         //     (a manual DBE first, a "go ahead"), its clock restarts on replay activity, it matches any non-manual
+         //     step of the page (the model may substitute step 1), and it still expires without activity.
+         {
+            double now = JourneyWallNow();
+            SetReplayNameClockForSelfTest( [&now]() { return now; } );
+            auto named = [&]( const char* view, int64 keeper )
+            {
+               JourneyRow r;
+               store->GetJourney( trk.JourneyOfView( view ), r );
+               return r.name.find( "(replay of #" + std::to_string( keeper ) + ")" ) != std::string::npos;
+            };
+            auto apply = [&]( const char* view, const char* pid )
+            {
+               return ExecuteTool( ToolCall{ "v", "apply_process", { { "process_id", pid } } }, ctxFor( AgentMode::Copilot, view ) );
+            };
+            const int64 dbeFirst = JAddKeeperSteps( *store, "JtDbe", { "DynamicBackgroundExtraction", "Invert" } );
+            const int64 mixed = JAddKeeperSteps( *store, "JtMix", { "Invert", "PixelMath" } );
+            for ( const char* id : { "pcJtR1", "pcJtR2", "pcJtR3", "pcJtR4" } )
+            {
+               JMakeNoiseMaster( id, 70 + unsigned( id[5] ) );
+               made.push_back( id );
+               ExecuteTool( ToolCall{ "vs", "start_journey", nlohmann::json::object() }, ctxFor( AgentMode::Copilot, id ) );
+            }
+            // DBE first: the user places samples for 20 minutes; the next message leads to the first real step.
+            ExecuteTool( ToolCall{ "v1", "replay_journey", { { "journey_id", dbeFirst } } }, ctxFor( AgentMode::Copilot, "pcJtR1" ) );
+            now += 1200;
+            apply( "pcJtR1", "Invert" );
+            const bool dbeNamed = named( "pcJtR1", dbeFirst );
+            // "Go ahead" with activity: another run at +50 min restarts the clock; the replay step at +100 min names it.
+            ExecuteTool( ToolCall{ "v2", "replay_journey", { { "journey_id", jA } } }, ctxFor( AgentMode::Copilot, "pcJtR2" ) );
+            now += 3000;
+            apply( "pcJtR2", "Invert" );
+            now += 3000;
+            ExecuteTool( ToolCall{ "v2b", "apply_process", { { "process_id", "PixelMath" }, { "parameters", { { "expression", "$T" } } } } },
+                         ctxFor( AgentMode::Copilot, "pcJtR2" ) );
+            const bool restartNamed = named( "pcJtR2", jA );
+            // Substitution: the model runs step 2's process first.
+            ExecuteTool( ToolCall{ "v3", "replay_journey", { { "journey_id", mixed } } }, ctxFor( AgentMode::Copilot, "pcJtR3" ) );
+            ExecuteTool( ToolCall{ "v3b", "apply_process", { { "process_id", "PixelMath" }, { "parameters", { { "expression", "$T" } } } } },
+                         ctxFor( AgentMode::Copilot, "pcJtR3" ) );
+            const bool substitutedNamed = named( "pcJtR3", mixed );
+            // No activity for more than the window: expired.
+            ExecuteTool( ToolCall{ "v4", "replay_journey", { { "journey_id", jA } } }, ctxFor( AgentMode::Copilot, "pcJtR4" ) );
+            now += 7300;
+            ExecuteTool( ToolCall{ "v4b", "apply_process", { { "process_id", "PixelMath" }, { "parameters", { { "expression", "$T" } } } } },
+                         ctxFor( AgentMode::Copilot, "pcJtR4" ) );
+            const bool expiredNamed = named( "pcJtR4", jA );
+            SetReplayNameClockForSelfTest( std::function<double()>() );
+            d["replayFlow"] = { { "dbeFirst", dbeNamed }, { "restart", restartNamed }, { "substituted", substitutedNamed },
+                                { "expired", expiredNamed } };
+            replayFlowOk = dbeNamed && restartNamed && substitutedNamed && !expiredNamed;
+         }
+         // (w) Re-review round 2, minor 1: paths under a directory PI Copilot knows lose it literally, whatever
+         //     characters its folders hold; and a keep with such an export folder tells the model no folder.
+         {
+            const StringList known = { "/home/s", "/tmp/pcx" };
+            const std::vector<std::pair<const char*, const char*>> cases = {
+               { "cannot create /home/s/M42 (Orion)/x.xisf: denied", "cannot create x.xisf: denied" },
+               { "open /home/s/Scott's Data/x.xisf failed", "open x.xisf failed" },
+               { "copy /home/s/Data, 2026/x.xisf", "copy x.xisf" },
+               { "at /home/s/NGC 7000 [HOO]/x.xisf.", "at x.xisf." },
+               { "in /home/s/a: b/x.xisf now", "in x.xisf now" },
+               { "/tmp/pcx/j (1)/export: missing", "export: missing" },
+               { "a/b and $T/2 stay", "a/b and $T/2 stay" },
+               { "copy to /home/s/M42 (Orion), 2026/out failed; saved in /tmp/pcx/j 1/26 instead", "copy to out failed; saved in 26 instead" } };
+            nlohmann::json bad = nlohmann::json::array();
+            for ( const auto& c : cases )
+            {
+               const String got = ModelTextWithoutDirectories( c.first, known );
+               if ( got != c.second )
+                  bad.push_back( { { "in", c.first }, { "got", U8( got ) }, { "want", c.second } } );
+            }
+            // Linear with known directories too.
+            std::string big;
+            while ( big.size() < 100000 )
+               big += "/home/s/M42 (Orion)/";
+            const jclock::time_point t0 = jclock::now();
+            ModelTextWithoutDirectories( String( big.c_str() ), known );
+            const double bigMs = MsSince( t0 );
+            // A keep whose export folder has such names (missing, so the copy error names it).
+            const JBuilt X = JBuildJourney( *store, "pcJtX", "JtOrion", 64 );
+            made.push_back( "pcJtX" );
+            host.exportFolder = root.Path() + "/M42 (Orion), 2026/out";
+            answer = true;
+            const KeepFlowResult k = RunKeepFlow( host, X.jid, "" );
+            host.exportFolder.Clear();
+            d["knownDirs"] = { { "bad", bad }, { "bigMs", bigMs }, { "keep", U8( k.modelMessage ) }, { "keepLog", U8( k.message ) } };
+            knownDirsOk = bad.empty() && bigMs < 500 && k.ok && k.message.Contains( "Orion" )
+                       && !k.modelMessage.Contains( "Orion" ) && !k.modelMessage.Contains( "2026/" )
+                       && k.modelMessage.Contains( "does not exist" );   // the prose between two paths survives
+         }
+         // (x) Re-review round 2, minor 3: auto-matched candidates follow lineage -- a kept journey that a kept
+         //     continuation continues is not offered beside it, the current image's own ancestors are never offered,
+         //     and a candidate's step count is its lineage's.
+         {
+            const ToolOutcome onNew = ExecuteTool( ToolCall{ "x1", "replay_journey", nlohmann::json::object() }, ctxFor( AgentMode::Copilot, "pcJtNew" ) );
+            const ToolOutcome onA = ExecuteTool( ToolCall{ "x2", "replay_journey", nlohmann::json::object() }, ctxFor( AgentMode::Copilot, "pcJtA" ) );
+            const nlohmann::json n = nlohmann::json::parse( text0( onNew ) ), a = nlohmann::json::parse( text0( onA ) );
+            std::vector<int64> ids;
+            int contSteps = -1;
+            if ( n.contains( "candidates" ) )
+               for ( const nlohmann::json& c : n.at( "candidates" ) )
+               {
+                  ids.push_back( c.at( "id" ).get<int64>() );
+                  if ( c.at( "id" ) != jB )
+                     contSteps = c.at( "steps" ).get<int>();
+               }
+            std::sort( ids.begin(), ids.end() );
+            d["candidates"] = { { "onNew", n.value( "candidates", nlohmann::json() ) },
+                                { "onA", a.contains( "candidates" ) ? a.at( "candidates" ) : a.at( "keeper" ).at( "id" ) } };
+            const int64 contKept = d["lineage"].value( "contA", int64( 0 ) );
+            candidatesOk = !onNew.isError && ids == std::vector<int64>( { std::min( jB, contKept ), std::max( jB, contKept ) } )
+                        && contSteps == 5
+                        && !onA.isError && !a.contains( "candidates" ) && a.at( "keeper" ).at( "id" ) == jB;
+         }
+         // (y) Re-review round 2, minor 4: a lineage loop is refused by name (and never hangs).
+         {
+            const int64 x = store->CreateJourney( "JtLoopA", "JtLoop", NowIso() ), y = store->CreateJourney( "JtLoopB", "JtLoop", NowIso() );
+            store->SetJourneyContinues( x, y );
+            store->SetJourneyContinues( y, x );
+            store->MarkKept( x, 0, NowIso() );
+            store->MarkKept( y, 0, NowIso() );
+            const ToolOutcome o = ExecuteTool( ToolCall{ "y1", "replay_journey", { { "journey_id", x } } }, ctxFor( AgentMode::Copilot, "pcJtNew" ) );
+            std::string recipeThrow;
+            try { BuildRecipe( *store, x, "t" ); } catch ( const pcl::Exception& e ) { recipeThrow = U8( e.Message() ); }
+            d["loop"] = { { "replay", text0( o ) }, { "recipe", recipeThrow } };
+            loopOk = o.isError && text0( o ).find( "loops" ) != std::string::npos && recipeThrow.find( "loops" ) != std::string::npos;
+         }
       }
       catch ( const pcl::Exception& x ) { error = x.Message(); }
       catch ( const std::exception& x ) { error = String( x.what() ); }
@@ -6868,6 +7023,7 @@ r1.ok && r1.inferred.size() == 1 && r1.inferred[0].first == 7 && r1.inferred[0].
                    && keepErrorOk && startOk && noEffectOk && replayMatchOk && attributionOk && cancelOk
                    && offFreezeOk && inFlightOk && pagingOk && idTypeOk && markViewOk && orderOk && noteActionOk && scrubOk
                    && replayLookupOk && scrubFuzzOk && gxOk && replayExpiryOk && inTickFreezeOk && lineageOk && exportLineageOk
+                   && replayFlowOk && knownDirsOk && candidatesOk && loopOk
                    && error.IsEmpty();
       out["journeyToolsDetail"] = d;
       out["journeyToolsChecks"] = { { "schema", schemaOk }, { "prompt", promptOk }, { "noHost", noHostOk }, { "list", listOk },
@@ -6878,7 +7034,9 @@ r1.ok && r1.inferred.size() == 1 && r1.inferred[0].first == 7 && r1.inferred[0].
                                     { "idType", idTypeOk }, { "markView", markViewOk }, { "order", orderOk },
                                     { "noteAction", noteActionOk }, { "scrub", scrubOk }, { "replayLookup", replayLookupOk },
                                     { "scrubFuzz", scrubFuzzOk }, { "graxpert", gxOk }, { "replayExpiry", replayExpiryOk },
-                                    { "inTickFreeze", inTickFreezeOk }, { "lineage", lineageOk }, { "exportLineage", exportLineageOk } };
+                                    { "inTickFreeze", inTickFreezeOk }, { "lineage", lineageOk }, { "exportLineage", exportLineageOk },
+                                    { "replayFlow", replayFlowOk }, { "knownDirs", knownDirsOk }, { "candidates", candidatesOk },
+                                    { "loop", loopOk } };
       out["journeyToolsError"] = U8( error );
       out["journeyToolsOk"] = ok;
       allOk = allOk && ok;

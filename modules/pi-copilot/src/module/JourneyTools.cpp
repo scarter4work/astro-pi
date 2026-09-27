@@ -9,10 +9,13 @@
 #include "ViewContext.h"   // ViewContextFileName
 
 #include <pcl/Exception.h>
+#include <pcl/File.h>
 #include <pcl/ImageWindow.h>
 #include <pcl/View.h>
 
 #include <algorithm>
+#include <cstdlib>
+#include <set>
 #include <exception>
 
 namespace pcl
@@ -249,12 +252,23 @@ String JourneyIdFor( JourneyToolHost& host, const ToolContext& ctx, const nlohma
                                 "journeys, or start_journey records this image from now on";
 }
 
-constexpr double kReplayNameSeconds = 900;   // a replay lookup names its journey only if its step follows within this
+// A pending replay name lapses after this long WITHOUT replay activity on its view (a lookup, or any
+// successful apply_process there): a manual DBE can take a while, but its step follows activity (re-review 2, I1).
+constexpr double kReplayNameSeconds = 3600;
 
 // Pending replay names (review m6, re-review m4), keyed by {library, main view id}. The library pointer is only
 // compared, never dereferenced. Root thread only (the tools run there).
-struct PendingReplay { int64 journeyId = 0; std::string name, processId; double t = 0; };
+struct PendingReplay { int64 journeyId = 0; std::string name; std::set<std::string> processIds; double t = 0; };
 using PendingKey = std::pair<const void*, std::string>;
+std::function<double()>& ReplayClock()
+{
+   static std::function<double()> clock;
+   return clock;
+}
+double ReplayNow()
+{
+   return ReplayClock() ? ReplayClock()() : JourneyWallNow();
+}
 std::map<PendingKey, PendingReplay>& PendingReplays()
 {
    static std::map<PendingKey, PendingReplay> pending;
@@ -288,9 +302,122 @@ void ForgetPendingReplays( JourneyToolHost& host )
          ++it;
 }
 
+StringList JourneyKnownDirs( const JourneyToolHost& host )
+{
+   StringList d;
+   if ( !host.exportFolder.Trimmed().IsEmpty() )
+      d << host.exportFolder.Trimmed();
+   if ( host.store != nullptr )
+      d << host.store->Root();
+   if ( const char* home = std::getenv( "HOME" ) )
+      d << String( home );
+   d << File::SystemTempDirectory();
+   try
+   {
+      for ( const ImageWindow& w : ImageWindow::AllWindows() )   // temporaries only: nothing is kept
+      {
+         const String f = w.FilePath();
+         if ( !f.IsEmpty() )
+            d << File::ExtractDrive( f ) + File::ExtractDirectory( f );
+      }
+   }
+   catch ( ... )
+   {
+      // the open windows could not be listed: the generic scrubber still applies
+   }
+   return d;
+}
+
 String ModelTextWithoutDirectories( const String& text )
 {
    return WithoutDirectories( text );
+}
+
+String ModelTextWithoutDirectories( const String& text, const StringList& knownDirs )
+{
+   // Re-review 2, minor 1: a path under a directory PI Copilot knows is recognised by that prefix, whatever
+   // characters its folders hold; it runs to the last '/' before the next path on its line, then to the end of the
+   // file name. Longest prefix first. Linear: a token's scan stops where the next token starts, so each character
+   // is scanned a bounded number of times.
+   // The prefixes, longest first. PCL Strings live only in a PCL StringList and are ordered through an index
+   // vector: a moved-from pcl::String is not a valid assignment target, and std::sort / vector::insert assign
+   // into moved-from elements (measured: SIGSEGV in both first GREEN attempts of round 4).
+   StringList dirList;
+   for ( const String& raw : knownDirs )
+   {
+      String d = raw;
+      while ( d.Length() > 1 && d.EndsWith( '/' ) )
+         d.DeleteRight( d.Length() - 1 );
+      if ( d.Length() > 1 && d.StartsWith( '/' ) )
+         dirList.Add( d );
+   }
+   std::vector<size_t> order( dirList.Length() );
+   for ( size_t k = 0; k < order.size(); ++k )
+      order[k] = k;
+   std::stable_sort( order.begin(), order.end(), [&dirList]( size_t a, size_t b ) { return dirList[a].Length() > dirList[b].Length(); } );
+   if ( order.empty() )
+      return WithoutDirectories( text );
+   const size_type n = text.Length();
+   String out;
+   size_type plain = 0;   // start of the text not yet emitted (goes through the heuristic)
+   for ( size_type i = 0; i < n; ++i )
+   {
+      if ( text[i] != '/' )
+         continue;
+      if ( i > 0 )
+      {
+         const char16_type b = text[i-1];
+         if ( !(b == ' ' || b == '\t' || b == '(' || b == '[' || b == '\'' || b == '"' || b == '=' || b == ':') )
+            continue;
+      }
+      bool hit = false;
+      for ( size_t k : order )
+         if ( i + dirList[k].Length() < n && text[i + dirList[k].Length()] == '/'
+              && text.Substring( i, dirList[k].Length() ) == dirList[k] )
+         {
+            hit = true;
+            break;
+         }
+      if ( !hit )
+         continue;
+      size_type lineEnd = i;
+      while ( lineEnd < n && text[lineEnd] != '\n' && text[lineEnd] != '\r' )
+         ++lineEnd;
+      // To the last '/' of the line that comes before the next path (a '/' right after a space, '(', '[', a quote,
+      // '=' or ':', followed by a non-space): "…/M42 (Orion), 2026/out does not exist; saved in /x/y" keeps the prose.
+      size_type slash = i;
+      for ( size_type k = i; k < lineEnd; ++k )
+         if ( text[k] == '/' )
+         {
+            if ( k > i && k + 1 < n && text[k+1] != ' ' )
+            {
+               const char16_type b = text[k-1];
+               if ( b == ' ' || b == '\t' || b == '(' || b == '[' || b == '\'' || b == '"' || b == '=' || b == ':' )
+                  break;
+            }
+            slash = k;
+         }
+      size_type e = slash + 1;
+      while ( e < n && text[e] != ' ' && text[e] != '\t' && text[e] != ',' && text[e] != ';' && text[e] != ')' && text[e] != ']'
+              && text[e] != '\'' && text[e] != '"' && text[e] != '\n' && text[e] != '\r' && !(text[e] == ':' && (e + 1 == n || text[e+1] == ' ')) )
+         ++e;
+      String name = text.Substring( slash + 1, e - slash - 1 );
+      String tail;
+      while ( !name.IsEmpty() && (name.EndsWith( '.' ) || name.EndsWith( ':' )) )
+      {
+         tail.Prepend( name[name.Length() - 1] );
+         name.DeleteRight( name.Length() - 1 );
+      }
+      out += WithoutDirectories( text.Substring( plain, i - plain ) ) + (name.IsEmpty() ? String( "(a folder)" ) : name) + tail;
+      plain = e;
+      i = e - 1;
+   }
+   return out + WithoutDirectories( text.Substring( plain, n - plain ) );
+}
+
+void SetReplayNameClockForSelfTest( std::function<double()> clock )
+{
+   ReplayClock() = std::move( clock );
 }
 
 String NoteReplayStepApplied( JourneyToolHost& host, const IsoString& viewFullId, const std::string& processId )
@@ -300,13 +427,16 @@ String NoteReplayStepApplied( JourneyToolHost& host, const IsoString& viewFullId
    if ( it == pending.end() )
       return String();
    const PendingReplay want = it->second;
-   if ( JourneyWallNow() - want.t > kReplayNameSeconds )
+   if ( ReplayNow() - want.t > kReplayNameSeconds )
    {
       pending.erase( it );   // expired: the replay was not followed
       return String();
    }
-   if ( processId != want.processId )
-      return String();   // an unrelated run: not the replay's step (the lookup stays pending)
+   if ( want.processIds.count( processId ) == 0 )
+   {
+      it->second.t = ReplayNow();   // replay activity (e.g. an adapted extra step): the lookup stays pending
+      return String();
+   }
    pending.erase( it );
    if ( host.store == nullptr || JourneyForView( host, viewFullId ) != want.journeyId )
       return String();   // the image left that journey meanwhile (e.g. kept): nothing to name
@@ -396,7 +526,7 @@ KeepFlowResult RunKeepFlow( JourneyToolHost& host, int64 journeyId, const IsoStr
    if ( host.store == nullptr || host.keeper == nullptr )
    {
       r.message = "the journey library is not available" + (host.storeError.IsEmpty() ? String() : ": " + host.storeError);
-      r.modelMessage = WithoutDirectories( r.message );
+      r.modelMessage = ModelTextWithoutDirectories( r.message, JourneyKnownDirs( host ) );
       return r;
    }
    // Integration concern #4: the durable keep commits on its own and is refused inside an open transaction;
@@ -425,7 +555,7 @@ KeepFlowResult RunKeepFlow( JourneyToolHost& host, int64 journeyId, const IsoStr
                                    &r.outcome.writeupError, &r.outcome.copyError } )
             if ( !e->IsEmpty() )
                r.message += " " + *e + ".";
-         r.modelMessage = WithoutDirectories( r.message );
+         r.modelMessage = ModelTextWithoutDirectories( r.message, JourneyKnownDirs( host ) );
          return r;
       }
       if ( !host.confirmKeeper || !host.confirmKeeper( KeeperSummaryHtml( s ) ) )
@@ -449,7 +579,7 @@ KeepFlowResult RunKeepFlow( JourneyToolHost& host, int64 journeyId, const IsoStr
       if ( !r.ok )
       {
          r.message = "keeping journey failed: " + r.outcome.files.recipeError;
-         r.modelMessage = WithoutDirectories( r.message );
+         r.modelMessage = ModelTextWithoutDirectories( r.message, JourneyKnownDirs( host ) );
          return r;
       }
       const String dir = ExportDirOf( *host.store, journeyId );
@@ -484,20 +614,20 @@ KeepFlowResult RunKeepFlow( JourneyToolHost& host, int64 journeyId, const IsoStr
          r.message += frozen;
          r.modelMessage += frozen;
       }
-      r.modelMessage = WithoutDirectories( r.modelMessage );   // error texts from the exporter may still name paths
+      r.modelMessage = ModelTextWithoutDirectories( r.modelMessage, JourneyKnownDirs( host ) );   // error texts from the exporter may still name paths
    }
    catch ( const pcl::Exception& x )
    {
       // E.g. MarkKeptDurably: "... database is locked" (another program holds the library) -- nothing was kept.
       r.ok = false;
       r.message = "keeping journey failed: " + x.Message();
-      r.modelMessage = WithoutDirectories( r.message );
+      r.modelMessage = ModelTextWithoutDirectories( r.message, JourneyKnownDirs( host ) );
    }
    catch ( const std::exception& x )
    {
       r.ok = false;
       r.message = "keeping journey failed: " + String( x.what() );
-      r.modelMessage = WithoutDirectories( r.message );
+      r.modelMessage = ModelTextWithoutDirectories( r.message, JourneyKnownDirs( host ) );
    }
    return r;
 }
@@ -514,7 +644,7 @@ ToolOutcome ExecuteJourneyTool( const ToolCall& call, const ToolContext& ctx )
                                    "no access to the journey library, so journeys cannot be listed, compared, kept or "
                                    "replayed from chat here" )
                          : "the journey library is not available"
-                           + (ctx.journeys->storeError.IsEmpty() ? String() : ": " + WithoutDirectories( ctx.journeys->storeError )) );
+                           + (ctx.journeys->storeError.IsEmpty() ? String() : ": " + ModelTextWithoutDirectories( ctx.journeys->storeError, JourneyKnownDirs( *ctx.journeys ) )) );
    JourneyToolHost& host = *ctx.journeys;
    JourneyStore& store = *host.store;
    if ( (call.name == "start_journey" || call.name == "replay_journey") && ctx.mode == AgentMode::Advisor )
@@ -683,22 +813,53 @@ ToolOutcome ExecuteJourneyTool( const ToolCall& call, const ToolContext& ctx )
                                                 "to follow (list_journeys kept_only)", static_cast<long long>( keeperId ) ) );
          if ( keeperId == 0 )
          {
-            nlohmann::json candidates = nlohmann::json::array();
+            // Re-review 2, minor 3: by lineage. Never the current image's own lineage; never a kept journey that
+            // another matching keeper continues (offered once, as its latest keeper); steps count the lineage.
+            std::vector<int64> curChain;
+            {
+               const String broken = LineageOf( store, cur, curChain );
+               if ( !broken.IsEmpty() )
+                  return Fail( name, broken );
+            }
+            struct Cand { JourneyRow j; std::vector<int64> chain; };
+            std::vector<Cand> found;
+            nlohmann::json skipped = nlohmann::json::array();
             for ( const JourneyRow& j : store.ListJourneys( true, std::string(), 50 ) )
             {
-               const int64 m = FirstMaster( store, j.id );
+               if ( std::find( curChain.begin(), curChain.end(), j.id ) != curChain.end() )
+                  continue;
+               Cand c{ j, {} };
+               const String broken = LineageOf( store, j.id, c.chain );
+               if ( !broken.IsEmpty() )
+               {
+                  skipped.push_back( U8( broken ) );   // named, never silently dropped
+                  continue;
+               }
+               const int64 m = FirstMaster( store, c.chain.front() );
                AcquisitionFacts a;
-               if ( j.id == cur || m == 0 || !store.Acquisition( m, a ) )
+               if ( m == 0 || !store.Acquisition( m, a ) )
                   continue;
                if ( AsciiLower( a.target ) == AsciiLower( ca.target ) && AsciiLower( a.filter ) == AsciiLower( ca.filter )
                  && AsciiLower( a.camera ) == AsciiLower( ca.camera ) )
-                  candidates.push_back( { { "id", j.id }, { "name", j.name }, { "keptAt", j.keptAt }, { "steps", store.StepCount( j.id, true ) } } );
+                  found.push_back( c );
+            }
+            nlohmann::json candidates = nlohmann::json::array();
+            for ( const Cand& c : found )
+            {
+               bool ancestor = false;
+               for ( const Cand& o : found )
+                  ancestor = ancestor || (o.j.id != c.j.id && std::find( o.chain.begin(), o.chain.end() - 1, c.j.id ) != o.chain.end() - 1);
+               if ( !ancestor )
+                  candidates.push_back( { { "id", c.j.id }, { "name", c.j.name }, { "keptAt", c.j.keptAt },
+                                          { "steps", int( LineageSteps( store, c.chain ).size() ) },
+                                          { "lineage", c.chain } } );
             }
             if ( candidates.empty() )
                return Fail( name, "no kept journey for target '" + FromU8( ca.target ) + "', filter '" + FromU8( ca.filter )
-                                  + "', camera '" + FromU8( ca.camera ) + "'; list_journeys with kept_only shows the keepers" );
+                                  + "', camera '" + FromU8( ca.camera ) + "'; list_journeys with kept_only shows the keepers"
+                                  + (skipped.empty() ? String() : " (skipped: " + FromU8( skipped.dump() ) + ")") );
             if ( candidates.size() > 1 )
-               return Ok( name, { { "needsChoice", true }, { "candidates", candidates },
+               return Ok( name, { { "needsChoice", true }, { "candidates", candidates }, { "skipped", skipped },
                                   { "note", "Several kept journeys match. Ask the user which one to follow, then call replay_journey with its journey_id." } } );
             keeperId = candidates.at( 0 ).at( "id" ).get<int64>();
          }
@@ -810,16 +971,15 @@ ToolOutcome ExecuteJourneyTool( const ToolCall& call, const ToolContext& ctx )
          store.GetJourney( cur, cj );
          if ( cj.name.find( "(replay of #" ) == std::string::npos )
          {
-            std::string next;   // the replay's next step (the first non-manual one from this page on)
+            // Any non-manual step of this page names it (re-review 2, minor 2: the model may adapt / substitute
+            // the first step); a page of manual steps only waits for a later lookup.
+            std::set<std::string> next;
             for ( const nlohmann::json& st : steps )
                if ( st.at( "manual" ) == false )
-               {
-                  next = st.at( "processId" ).get<std::string>();
-                  break;
-               }
+                  next.insert( st.at( "processId" ).get<std::string>() );
             if ( !next.empty() )
                PendingReplays()[{ static_cast<const void*>( host.store ), std::string( vid.c_str() ) }] =
-                  { cur, kj.name + " (replay of #" + std::to_string( keeperId ) + ")", next, JourneyWallNow() };
+                  { cur, kj.name + " (replay of #" + std::to_string( keeperId ) + ")", next, ReplayNow() };
          }
          return Ok( name + String().Format( " #%lld", static_cast<long long>( keeperId ) ), r );
       }
@@ -827,11 +987,11 @@ ToolOutcome ExecuteJourneyTool( const ToolCall& call, const ToolContext& ctx )
    }
    catch ( const pcl::Exception& x )
    {
-      return Fail( name, name + " failed: " + WithoutDirectories( x.Message() ) );
+      return Fail( name, name + " failed: " + ModelTextWithoutDirectories( x.Message(), JourneyKnownDirs( host ) ) );
    }
    catch ( const std::exception& x )
    {
-      return Fail( name, name + " failed: " + WithoutDirectories( String( x.what() ) ) );
+      return Fail( name, name + " failed: " + ModelTextWithoutDirectories( String( x.what() ), JourneyKnownDirs( host ) ) );
    }
 }
 

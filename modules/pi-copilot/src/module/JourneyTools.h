@@ -9,6 +9,7 @@
 #include "JourneyWriteup.h"
 
 #include <functional>
+#include <pcl/StringList.h>
 #include <map>
 #include <string>
 #include <utility>
@@ -70,18 +71,34 @@ int64 JourneyForView( JourneyToolHost& host, const IsoString& viewFullId );
 
 // apply_process ran processId successfully on viewFullId (a main view): a
 // replay looked up for that view names its journey "<keeper> (replay of #<id>)"
-// now -- only when processId is the replay's next step and the lookup is at
-// most 15 minutes old (review m6, re-review m4). "" or why the name could not
+// now -- when processId is one of the non-manual steps of the page that lookup
+// returned (the model may adapt or substitute a step), within an hour of the
+// last replay activity on the view (a lookup or any apply there, which also
+// restarts that clock). "" or why the name could not
 // be set. Pending lookups are kept per library + view inside JourneyTools, so
 // they survive the panel rebuilding its JourneyToolHost. Root thread.
 String NoteReplayStepApplied( JourneyToolHost& host, const IsoString& viewFullId, const std::string& processId );
-// Forgets every pending replay lookup of host's library (call at each new user
-// message, so a declined replay never names a journey later). Root thread.
+// Forgets every pending replay lookup of host's library. Call it when the
+// conversation is cleared / a new chat starts, and on a library switch -- NOT
+// per user message: a replay that starts with a manual step (DBE) or waits for
+// "go ahead" applies its first real step only after the user's next message
+// (re-review round 2, I1). Between those, a pending name lapses only after an
+// hour without replay activity on its view. Root thread.
 void ForgetPendingReplays( JourneyToolHost& host );
 
 // GC privacy (P6): text for the model with every absolute path reduced to its
 // file name (a path may contain spaces). Pure; any thread.
 String ModelTextWithoutDirectories( const String& text );
+// The same, first reducing every path under one of knownDirs (the export
+// folder, the library, $HOME, the temp directory, open images' folders) to its
+// last component literally -- whatever characters its folders hold ("M42
+// (Orion)", "Scott's Data", "Data, 2026"). Pure; any thread.
+String ModelTextWithoutDirectories( const String& text, const StringList& knownDirs );
+// The directories model text is scrubbed against: the export folder, the
+// library, $HOME, the temp directory, and every open image's folder. Root thread.
+StringList JourneyKnownDirs( const JourneyToolHost& host );
+// Self-test only: the clock the pending replay names expire by (empty = JourneyWallNow).
+void SetReplayNameClockForSelfTest( std::function<double()> clock );
 
 } // namespace pcl
 
