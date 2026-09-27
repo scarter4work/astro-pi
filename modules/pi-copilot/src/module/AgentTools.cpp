@@ -307,6 +307,7 @@ ToolOutcome ApplyProcessTool( const nlohmann::json& in, const ToolContext& ctx, 
    JourneyTracker* journey = ctx.journeys != nullptr ? ctx.journeys->tracker : nullptr;
    uint64 journeyNote = 0;
    IsoString journeyMain;
+   String replayNameError;
    std::set<std::string> windowsBefore;
    if ( journey != nullptr )
    {
@@ -319,12 +320,15 @@ ToolOutcome ApplyProcessTool( const nlohmann::json& in, const ToolContext& ctx, 
    const ApplyProcessResult ar = ApplyProcess( IsoString( pid.c_str() ), params, tables, target, &pinned );
    if ( journey != nullptr )
    {
-      if ( ar.noEffect && ar.targetHistoryStep )
-         journey->SetCopilotNoteNoEffect( journeyNote );
-      else if ( !((ar.ok && ar.targetHistoryStep) || ar.unverifiedChange) )
-         journey->CancelCopilotNote( journeyNote );
+      switch ( JourneyNoteActionFor( ar ) )
+      {
+      case JourneyNoteAction::FlagNoEffect: journey->SetCopilotNoteNoEffect( journeyNote ); break;
+      case JourneyNoteAction::Cancel:       journey->CancelCopilotNote( journeyNote ); break;
+      case JourneyNoteAction::Keep:         break;
+      }
       if ( ar.ok )
       {
+         replayNameError = NoteReplayStepApplied( *ctx.journeys, journeyMain );   // a replay names its journey now (m6)
          std::vector<std::string> created;
          for ( const std::string& id : OpenMainViewIds() )
             if ( windowsBefore.count( id ) == 0 )
@@ -353,6 +357,8 @@ ToolOutcome ApplyProcessTool( const nlohmann::json& in, const ToolContext& ctx, 
       summary["pinnedParameters"] = ar.pinnedSet;   // set by PI Copilot, not by you: never pass them
    if ( !ar.resultWindows.empty() )
       summary["resultWindows"] = ar.resultWindows;  // new windows attributed to this run (ProcessApply.h)
+   if ( !replayNameError.IsEmpty() )
+      summary["journeyNote"] = U8( ModelTextWithoutDirectories( replayNameError ) );
    try
    {
       summary["newContext"] = CollapsedViewContext( BuildViewContext( target ) );
@@ -599,6 +605,17 @@ ToolOutcome RunPjsrTool( const nlohmann::json& in, const ToolContext& ctx, clock
 } // namespace
 
 // Declared in ToolHelpers.h (shared with the journey tools, pre-flight P22).
+JourneyNoteAction JourneyNoteActionFor( const ApplyProcessResult& r )
+{
+   // A no-effect run: its note may only mark the History step THIS run left; without one it is dropped, so it
+   // can never flag a later, successful run of the same process on the same image (review m3).
+   if ( r.noEffect )
+      return r.historyStepAdded ? JourneyNoteAction::FlagNoEffect : JourneyNoteAction::Cancel;
+   if ( (r.ok && r.targetHistoryStep) || r.unverifiedChange )
+      return JourneyNoteAction::Keep;
+   return JourneyNoteAction::Cancel;
+}
+
 nlohmann::json TextBlock( const std::string& utf8 )
 {
    return { { "type", "text" }, { "text", utf8 } };

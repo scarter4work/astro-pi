@@ -1611,7 +1611,22 @@ int64 JourneyTracker::FreezeNow( int64 journeyId, String& error )
          ++k;
          continue;
       }
-      m_pendingFreeze.push_back( { t.handle, t.id, to, String() } );
+      if ( m_enabled )
+      {
+         // Review m4: what the kept journey holds of this image; later steps (in flight) continue.
+         int recorded = -1;
+         try
+         {
+            recorded = 0;
+            for ( const StepRow& r : m_store->Steps( t.imageId, false ) )
+               recorded = std::max( recorded, r.seq );
+         }
+         catch ( ... )
+         {
+            recorded = -1;   // unknown: the whole history is base (nothing is recorded twice)
+         }
+         m_pendingFreeze.push_back( { t.handle, t.id, to, String(), recorded } );
+      }
       m_closedImages.push_back( t.imageId );   // its kept row is no longer recorded by this instance (owner cleared)
       m_tracked.erase( m_tracked.begin() + k );
       ++moved;
@@ -1622,6 +1637,14 @@ int64 JourneyTracker::FreezeNow( int64 journeyId, String& error )
    m_closed.push_back( journeyId );   // EndClosedJourneys: status "ended" (retried there on failure)
    if ( moved == 0 )
       return 0;
+   if ( !m_enabled )
+   {
+      // Review I1 (spec §8): recording is off -- the images left the kept journey, but no history is read and no
+      // continuation is stored. Turned on again, the next scan sees them like any window (Task 7 rules).
+      error = "journey recording is off (PI Copilot settings: Record image journeys), so no \"(continued)\" journey "
+              "was started for its images";
+      return 0;
+   }
    // The continuation now, so the caller can name it even when every image is busy.
    try
    {
@@ -1714,7 +1737,8 @@ bool JourneyTracker::JoinContinued( PendingFreeze& p )
                                       MasterFingerprint( g.w, g.h, g.ch, g.bits, g.isFloat, StepIdentities( snap ), kw ), true, now );
       m_store->SetImageOwner( t->imageId, m_owner );
       m_store->SetAcquisition( t->imageId, p.to->acq );
-      AddBaseAndSteps( t->imageId, snap, snap.TotalCount() );   // the kept result is its starting point
+      // The kept result is the starting point; steps in flight at the freeze (review m4) are its first steps.
+      AddBaseAndSteps( t->imageId, snap, p.baseCount < 0 ? snap.TotalCount() : std::min( p.baseCount, snap.TotalCount() ) );
       m_store->SetJourneyStatus( jid, "recording" );
       m_store->TouchJourney( jid, now );
       tx.Commit();

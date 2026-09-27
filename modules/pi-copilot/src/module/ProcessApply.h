@@ -51,6 +51,11 @@ struct ApplyProcessResult
    // PixelMath createNewImage: the source gets no step. Set before the run,
    // so it is valid for every outcome after the process was resolved.
    bool           targetHistoryStep = false;
+   // noEffect only: the run nevertheless added a step to the target's
+   // History (a main view whose modification count advanced). The journey
+   // records that step flagged "noEffect"; without one there is nothing to
+   // attribute (Task 10 fix round 1, review m3).
+   bool           historyStepAdded = false;
    // When ok: what is known about undoing it, stated only as far as it was
    // VERIFIED (model-facing): a checked History step on a main view, an
    // unverifiable preview step, or no History step on the target at all
