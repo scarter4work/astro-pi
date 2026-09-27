@@ -7107,7 +7107,11 @@ r1.ok && r1.inferred.size() == 1 && r1.inferred[0].first == 7 && r1.inferred[0].
          made.push_back( "pcUiKeep" );
          {
             ui.m_turnViewId.Clear();
-            const ToolContext c = ui.MakeToolContext();
+            (void)ui.MakeToolContext();
+            ui.m_journeyHost.pendingReplayName["pcUiPending"] = { 42, "X (replay of #7)" };
+            const ToolContext c = ui.MakeToolContext();   // a later tool round rebuilds the host
+            const bool pendingKept = c.journeys != nullptr && c.journeys->pendingReplayName.count( "pcUiPending" ) == 1;
+            ui.m_journeyHost.pendingReplayName.erase( "pcUiPending" );
             ui.UpdateJourneyStripFor( "pcUiKeep" );
             const String keepStrip = ui.GUI->JourneyStrip_Label.Text();
             const bool keepDisabled = !ui.m_keepAllowed && !ui.GUI->Keep_ToolButton.IsEnabled();
@@ -7124,7 +7128,8 @@ r1.ok && r1.inferred.size() == 1 && r1.inferred[0].first == 7 && r1.inferred[0].
                            { "turnInProgress", ui.TurnInProgress() }, { "thread", bool( ui.m_thread ) },
                            { "handling", ui.m_handlingResult }, { "held", ui.m_resultHeld }, { "keepRunning", ui.m_keepRunning },
                            { "panelEnabled", ui.IsEnabled() } };
-            panelOk = c.journeys != nullptr && c.journeys->tracker == &svc.Tracker()
+            d["panel"]["pendingReplayKept"] = pendingKept;
+            panelOk = pendingKept && c.journeys != nullptr && c.journeys->tracker == &svc.Tracker()
                    && c.journeys->store == svc.Store() && c.journeys->keeper == &svc.Keeper()
                    && c.journeys->confirmKeeper && c.journeys->apiKey
                    && keepStrip == "Journey: not tracked" && keepDisabled
