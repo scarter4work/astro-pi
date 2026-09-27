@@ -3,9 +3,12 @@
 
 #include "ConfigDialog.h"
 #include "CopilotSettings.h"
+#include "JourneyTracker.h"
 #include "KeyStore.h"
 #include "ModelCatalog.h"
 
+#include <pcl/File.h>
+#include <pcl/FileDialog.h>
 #include <pcl/MessageBox.h>
 
 namespace pcl
@@ -77,6 +80,20 @@ const char* const kRunPjsrExplanation =
 
 } // namespace
 
+String ValidateExportFolderSetting( const String& dir )
+{
+   const String d = dir.Trimmed();
+   if ( d.IsEmpty() )
+      return String();
+   if ( !d.StartsWith( '/' ) )
+      return "The export folder must be an absolute folder (e.g. /mnt/qnap/astro_data/keepers): " + d;
+   if ( File::Exists( d ) && !File::DirectoryExists( d ) )
+      return "The export folder is a file, not a folder: " + d;
+   if ( !File::DirectoryExists( d ) )
+      return "The export folder does not exist: " + d + ". Create it (or mount the drive) first; PI Copilot never creates it.";
+   return String();
+}
+
 ConfigDialog::ConfigDialog()
 {
    ApiKey_Label.SetText( "Anthropic API key:" );
@@ -106,6 +123,29 @@ ConfigDialog::ConfigDialog()
    Side_Sizer.Add( Side_Label );
    Side_Sizer.Add( Side_ComboBox, 100 );
 
+   RecordJourneys_CheckBox.SetText( "Record image journeys" );
+   RecordJourneys_CheckBox.SetToolTip( "<p>Record each image's processing from the stacked master on (steps by you and by "
+                                       "PI Copilot), locally on this computer. Location and observer keywords are never "
+                                       "stored.</p>" );
+   Export_Label.SetText( "Export folder for keepers:" );
+   Export_Edit.SetToolTip( "<p>Optional. When set, each kept journey is also copied here, under "
+                           "&lt;target&gt;/&lt;date&gt;-&lt;name&gt;. The folder must already exist.</p>" );
+   Export_ToolButton.SetText( String::UTF8ToUTF16( "\xE2\x80\xA6" ) );
+   Export_ToolButton.SetToolTip( "<p>Choose the folder.</p>" );
+   Export_ToolButton.OnClick( (Button::click_event_handler)&ConfigDialog::Export_Browse_Click, *this );
+   Export_Sizer.SetSpacing( 6 );
+   Export_Sizer.Add( Export_Label );
+   Export_Sizer.Add( Export_Edit, 100 );
+   Export_Sizer.Add( Export_ToolButton );
+   Days_Label.SetText( "Keep unsaved journeys for (days):" );
+   Days_SpinBox.SetRange( 1, 3650 );
+   Days_SpinBox.SetToolTip( "<p>Journeys you have not kept are deleted after this many days without changes. Kept "
+                            "journeys are never deleted.</p>" );
+   Days_Sizer.SetSpacing( 6 );
+   Days_Sizer.Add( Days_Label );
+   Days_Sizer.Add( Days_SpinBox );
+   Days_Sizer.AddStretch();
+
    OK_PushButton.SetText( "OK" );
    OK_PushButton.SetDefault();
    OK_PushButton.OnClick( (Button::click_event_handler)&ConfigDialog::OK_Button_Click, *this );
@@ -128,6 +168,10 @@ ConfigDialog::ConfigDialog()
    Global_Sizer.Add( RunPjsrInfo_Label );
    Global_Sizer.AddSpacing( 6 );
    Global_Sizer.Add( Side_Sizer );
+   Global_Sizer.AddSpacing( 6 );
+   Global_Sizer.Add( RecordJourneys_CheckBox );
+   Global_Sizer.Add( Export_Sizer );
+   Global_Sizer.Add( Days_Sizer );
    Global_Sizer.AddSpacing( 8 );
    Global_Sizer.Add( Buttons_Sizer );
 
@@ -157,6 +201,9 @@ ConfigOutcome ConfigDialog::Run()
    RunPjsr_CheckBox.SetChecked( CopilotSettings::LoadRunPjsrEnabled() );
    m_initialSide = CopilotSettings::LoadPanelSide();
    Side_ComboBox.SetCurrentItem( int( m_initialSide ) );
+   RecordJourneys_CheckBox.SetChecked( CopilotSettings::LoadRecordJourneys() );
+   Export_Edit.SetText( CopilotSettings::LoadJourneyExportFolder() );
+   Days_SpinBox.SetValue( CopilotSettings::LoadJourneyRetentionDays() );
    m_outcome = ConfigOutcome();
    AdjustToContents();
    SetFixedSize();
@@ -181,6 +228,14 @@ void ConfigDialog::RunPjsr_Click( Button&, bool checked )
 
 void ConfigDialog::OK_Button_Click( Button&, bool )
 {
+   // Ruling 18: a folder that cannot be written into is refused here, with the
+   // dialog kept open, rather than failing at the first keep.
+   const String folderProblem = ValidateExportFolderSetting( Export_Edit.Text() );
+   if ( !folderProblem.IsEmpty() )
+   {
+      Tell( folderProblem + " Nothing was saved.", StdIcon::Error );
+      return;
+   }
    const String key = ApiKey_Edit.Text().Trimmed();
    if ( !key.IsEmpty() && !IsValidApiKey( key ) )
    {
@@ -220,9 +275,24 @@ void ConfigDialog::OK_Button_Click( Button&, bool )
    CopilotSettings::SaveRunPjsrEnabled( RunPjsr_CheckBox.IsChecked() );
    const PanelSide side = Side_ComboBox.CurrentItem() == 1 ? PanelSide::Left : PanelSide::Right;
    CopilotSettings::SavePanelSide( side );
+   CopilotSettings::SaveRecordJourneys( RecordJourneys_CheckBox.IsChecked() );
+   CopilotSettings::SaveJourneyExportFolder( Export_Edit.Text() );
+   CopilotSettings::SaveJourneyRetentionDays( Days_SpinBox.Value() );
+   JourneyService::Instance().ApplySettings();   // Record journeys takes effect now; days / folder are read per use
    m_outcome.accepted = true;
    m_outcome.sideChanged = side != m_initialSide;
    Ok();
+}
+
+void ConfigDialog::Export_Browse_Click( Button&, bool )
+{
+   GetDirectoryDialog d;
+   d.SetCaption( "PI Copilot: export folder for kept journeys" );
+   const String current = Export_Edit.Text().Trimmed();
+   if ( !current.IsEmpty() && File::DirectoryExists( current ) )
+      d.SetInitialPath( current );
+   if ( d.Execute() )
+      Export_Edit.SetText( d.Directory() );
 }
 
 void ConfigDialog::Cancel_Button_Click( Button&, bool )
