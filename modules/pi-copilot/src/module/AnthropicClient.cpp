@@ -96,7 +96,7 @@ public:
    {
       if ( !ShouldContinue() )
          return false;
-      buffer.Append( reinterpret_cast<const char*>( data ), size_type( size ) );
+      AppendBytes( buffer, data, size_t( size ) );
       lastData = clock::now();
       // Every body is fed, including a non-2xx JSON error body (whose lines
       // are no SSE fields, so it yields no events). The status is NOT known
