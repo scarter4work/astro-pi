@@ -109,6 +109,8 @@ public:
    // fail through the foreign keys when it does not exist.
    int64 CreateJourney( const std::string& name, const std::string& target, const std::string& nowIso );
    void  RenameJourney( int64 journeyId, const std::string& name );
+   // Ruling 26 lineage (Task 10 fix round 2): journeyId continues the kept journey keptJourneyId.
+   void  SetJourneyContinues( int64 journeyId, int64 keptJourneyId );
    void  TouchJourney( int64 journeyId, const std::string& nowIso );
    void  SetJourneyStatus( int64 journeyId, const std::string& status );
    void  MarkKept( int64 journeyId, int64 endImageId, const std::string& nowIso );

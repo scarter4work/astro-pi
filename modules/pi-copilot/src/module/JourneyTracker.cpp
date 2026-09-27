@@ -883,7 +883,7 @@ void JourneyTracker::Remember( const HistoryStep& h, int64 imageId, int64 journe
 void JourneyTracker::ProcessDirty( double now )
 {
    bool processed = false;
-   std::vector<std::pair<size_t, String>> gone;   // R2: images whose journey rows vanished
+   std::vector<std::pair<size_t, String>> gone;   // R2: images whose journey rows vanished -- pcl-move-ok: push_back + read only
    for ( size_t k = 0; k < m_tracked.size(); ++k )
    {
       Tracked& t = *m_tracked[k];
@@ -1620,7 +1620,7 @@ int64 JourneyTracker::FreezeNow( int64 journeyId, String& error )
          {
             recorded = -1;   // unknown: the whole history is base (nothing is recorded twice)
          }
-         m_pendingFreeze.push_back( { t.handle, t.id, to, String(), recorded } );
+         m_pendingFreeze.push_back( { t.handle, t.id, to, std::string(), recorded } );
       }
       m_closedImages.push_back( t.imageId );   // its kept row is no longer recorded by this instance (owner cleared)
       m_tracked.erase( m_tracked.begin() + k );
@@ -1645,6 +1645,7 @@ int64 JourneyTracker::FreezeNow( int64 journeyId, String& error )
    {
       JourneyStore::Transaction tx( *m_store );
       const int64 jid = m_store->CreateJourney( to->name, to->target, NowIso() );
+      m_store->SetJourneyContinues( jid, journeyId );   // lineage: replay/compare follow it (fix round 2, 4a)
       tx.Commit();
       to->journeyId = jid;
    }
@@ -1653,7 +1654,7 @@ int64 JourneyTracker::FreezeNow( int64 journeyId, String& error )
       error = "the continued journey could not be created yet (" + x.Message() + "); its images join it at a later tick";
       for ( PendingFreeze& p : m_pendingFreeze )
          if ( p.to == to )
-            p.reason = x.Message();
+            p.reason = U8( x.Message() );
    }
    ProcessPendingFreezes();
    return to->journeyId;
@@ -1687,15 +1688,15 @@ void JourneyTracker::ProcessPendingFreezes()
       catch ( const JourneyRowMissing& x )
       {
          p.to->journeyId = 0;   // the continuation vanished: made again at the next attempt
-         p.reason = x.Message();
+         p.reason = U8( x.Message() );
       }
       catch ( const pcl::Exception& x )
       {
-         p.reason = x.Message();   // visible in StatusFor; retried next tick, never dropped silently
+         p.reason = U8( x.Message() );   // visible in StatusFor; retried next tick, never dropped silently
       }
       catch ( const std::exception& x )
       {
-         p.reason = String( x.what() );
+         p.reason = x.what();
       }
       if ( joined )
          m_pendingFreeze.erase( m_pendingFreeze.begin() + k );
@@ -1727,7 +1728,10 @@ bool JourneyTracker::JoinContinued( PendingFreeze& p )
    {
       JourneyStore::Transaction tx( *m_store );   // the continuation's image exists whole or not at all
       if ( jid == 0 )
+      {
          jid = m_store->CreateJourney( p.to->name, p.to->target, now );
+         m_store->SetJourneyContinues( jid, p.to->keptJourneyId );
+      }
       t->imageId = m_store->AddImage( jid, id, FilePathOf( id ),
                                       MasterFingerprint( g.w, g.h, g.ch, g.bits, g.isFloat, StepIdentities( snap ), kw ), true, now );
       m_store->SetImageOwner( t->imageId, m_owner );
@@ -1893,7 +1897,7 @@ JourneyStatus JourneyTracker::StatusFor( const IsoString& viewFullId ) const
             s.name = p.to->name;
             s.target = p.to->target;
             s.reason = String().Format( "waiting to continue kept journey #%lld: ", static_cast<long long>( p.to->keptJourneyId ) )
-                     + (p.reason.IsEmpty() ? String( "the image is busy" ) : p.reason);
+                     + (p.reason.empty() ? String( "the image is busy" ) : FromU8( p.reason ));
          }
       return s;
    }

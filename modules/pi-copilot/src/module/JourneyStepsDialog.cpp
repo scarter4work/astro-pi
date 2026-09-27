@@ -57,11 +57,11 @@ JourneyStepsDialog::JourneyStepsDialog( JourneyStore& store, int64 journeyId )
          const String thumb = store.JourneyDir( journeyId ) + String().Format( "/thumbs/%lld.jpg", static_cast<long long>( s.id ) );
          if ( File::Exists( thumb ) )
          {
-            m_thumbs.push_back( thumb );
+            m_thumbs << thumb;
             ++m_icons;
          }
          else
-            m_thumbs.push_back( String() );
+            m_thumbs << String();
          if ( !after.empty() && s.state == "active" )
             before = after;
          ++m_rows;
@@ -113,7 +113,7 @@ JourneyStepsDialog::~JourneyStepsDialog()
 
 String JourneyStepsDialog::ThumbnailOfRow( int row ) const
 {
-   return (row >= 0 && row < int( m_thumbs.size() )) ? m_thumbs[row] : String();
+   return (row >= 0 && row < int( m_thumbs.Length() )) ? m_thumbs[row] : String();
 }
 
 void JourneyStepsDialog::ShowPreview( int row )

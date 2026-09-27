@@ -9,10 +9,13 @@
 #include "ViewContext.h"   // ViewContextFileName
 
 #include <pcl/Exception.h>
+#include <pcl/File.h>
 #include <pcl/ImageWindow.h>
 #include <pcl/View.h>
 
 #include <algorithm>
+#include <cstdlib>
+#include <set>
 #include <exception>
 
 namespace pcl
@@ -52,7 +55,9 @@ const char* const kJourneyPromptAct =
    "statistics with the recorded ones for that step and adjust the parameters toward the recorded result.\n"
    "- Steps marked manual (sample points, masks, scripts, interactive geometry) are for the user: stop at each, say "
    "exactly what to do, and continue only after they say it is done. Never invent a substitute for a manual step.\n"
-   "- Give every process run a short reason (the reason field), so the new journey records why.\n";
+   "- Give every process run a short reason (the reason field), so the new journey records why.\n"
+   "- Every apply_process that carries out a replay step passes replay_step {journey_id, n} with that step's n from "
+   "replay_journey (also when you adapt it); no other run passes it. If the user declines the replay, never pass it.\n";
 
 namespace
 {
@@ -90,46 +95,77 @@ bool BoolField( const nlohmann::json& in, const char* key )
    return in.contains( key ) && in[key].is_boolean() && in[key].get<bool>();
 }
 
-// GC privacy (P6): text for the model names files, never directories. An
-// absolute path token starts with '/' at the start or after a space, '(' or a
-// quote. It ends at ',', ';', ')', a quote or a line break -- and at a space,
-// unless the next word still holds a '/' (a directory name with a space:
-// "/Users/s/Library/Application Support/PixInsight/x", review m7). The token
-// is replaced by its last component; sentence punctuation after it stays.
+// GC privacy (P6): text for the model names files, never directories.
+// A path token starts, right after the start of the text or a space, tab,
+// '(', '[', a quote, '=' or ':' (file:/x, path=/x), with '/' (not a lone
+// "/"), "~/", "./" or "../". It runs to the end of the LAST word, before the
+// next hard delimiter (',', ';', ')', ']', a quote, a line break, or ':'
+// followed by a space or the end), that holds a '/' -- so directory names with
+// any number of spaces stay inside it (re-review round 1, minor 2) -- unless a
+// word starting with '/' or "~/" (a new path) comes first. The token becomes its
+// last component; sentence punctuation after it stays. Over-absorbing prose
+// between two slash words only loses detail, never leaks a directory.
+// Linear: each character is scanned at most twice.
 String WithoutDirectories( const String& text )
 {
-   auto hard = []( char16_type c ) { return c == ',' || c == ';' || c == ')' || c == '\'' || c == '"' || c == '\n' || c == '\r'; };
-   String out;
    const size_type n = text.Length();
+   auto hardAt = [&]( size_type k )
+   {
+      const char16_type c = text[k];
+      return c == ',' || c == ';' || c == ')' || c == ']' || c == '\'' || c == '"' || c == '\n' || c == '\r'
+          || (c == ':' && (k + 1 == n || text[k+1] == ' '));
+   };
+   auto boundaryBefore = [&]( size_type k )
+   {
+      if ( k == 0 )
+         return true;
+      const char16_type c = text[k-1];
+      return c == ' ' || c == '\t' || c == '(' || c == '[' || c == '\'' || c == '"' || c == '=' || c == ':';
+   };
+   auto startsToken = [&]( size_type k )
+   {
+      if ( !boundaryBefore( k ) )
+         return false;
+      const char16_type c = text[k];
+      if ( c == '/' )
+         return k + 1 < n && text[k+1] != ' ' && text[k+1] != '\t' && !hardAt( k + 1 );
+      if ( c == '~' )
+         return k + 1 < n && text[k+1] == '/';
+      if ( c == '.' )
+         return (k + 1 < n && text[k+1] == '/') || (k + 2 < n && text[k+1] == '.' && text[k+2] == '/');
+      return false;
+   };
+   String out;
    for ( size_type i = 0; i < n; )
    {
-      const char16_type c = text[i];
-      const bool starts = c == '/' && (i == 0 || text[i-1] == ' ' || text[i-1] == '(' || text[i-1] == '\'' || text[i-1] == '"');
-      if ( !starts )
+      if ( !startsToken( i ) )
       {
-         out += c;
+         out += text[i];
          ++i;
          continue;
       }
-      size_type j = i;
-      for ( ;; )
+      size_type e = i;
+      while ( e < n && text[e] != ' ' && text[e] != '\t' && !hardAt( e ) )
+         ++e;   // the first word (holds the '/')
+      for ( size_type k = e; k < n && (text[k] == ' ' || text[k] == '\t'); )
       {
-         while ( j < n && text[j] != ' ' && !hard( text[j] ) )
-            ++j;
-         if ( j >= n || text[j] != ' ' )
-            break;
-         size_type k = j + 1;   // the next word: part of the path only if it still holds a '/'
+         size_type w = k;
+         while ( w < n && (text[w] == ' ' || text[w] == '\t') )
+            ++w;
+         if ( w >= n || hardAt( w ) || text[w] == '/' || (text[w] == '~' && w + 1 < n && text[w+1] == '/') )
+            break;   // the end of the segment, or a new path
          bool slash = false;
-         for ( ; k < n && text[k] != ' ' && !hard( text[k] ); ++k )
-            if ( text[k] == '/' )
+         size_type x = w;
+         for ( ; x < n && text[x] != ' ' && text[x] != '\t' && !hardAt( x ); ++x )
+            if ( text[x] == '/' )
                slash = true;
-         if ( !slash )
-            break;
-         j = k;
+         if ( slash )
+            e = x;
+         k = x;
       }
-      String path = text.Substring( i, j - i );
-      String tail;
-      while ( path.Length() > 1 && (path.EndsWith( ':' ) || path.EndsWith( '.' )) )
+      String path = text.Substring( i, e - i );
+      String tail;   // sentence punctuation after the path stays after the name
+      while ( path.Length() > 1 && (path.EndsWith( ':' ) || path.EndsWith( '.' )) && !path.EndsWith( "/." ) )
       {
          tail.Prepend( path[path.Length() - 1] );
          path.DeleteRight( path.Length() - 1 );
@@ -137,8 +173,8 @@ String WithoutDirectories( const String& text )
       while ( path.Length() > 1 && path.EndsWith( '/' ) )
          path.DeleteRight( path.Length() - 1 );
       const String name = ViewContextFileName( path );
-      out += (name.IsEmpty() || name == "/" ? String( "(a folder)" ) : name) + tail;
-      i = j;
+      out += (name.IsEmpty() || name.EndsWith( '/' ) ? String( "(a folder)" ) : name) + tail;
+      i = e;
    }
    return out;
 }
@@ -218,25 +254,215 @@ String JourneyIdFor( JourneyToolHost& host, const ToolContext& ctx, const nlohma
                                 "journeys, or start_journey records this image from now on";
 }
 
+// A pending replay name lapses after this long WITHOUT replay activity on its view (a lookup, or any
+// successful apply_process there): a manual DBE can take a while, but its step follows activity (re-review 2, I1).
+constexpr double kReplayNameSeconds = 3600;
+
+// Pending replay names (review m6, re-review m4), keyed by {library, main view id}. The library pointer is only
+// compared, never dereferenced. Root thread only (the tools run there).
+// Round 5 (re-review 3, I1): the steps are the explicit contract -- apply_process names the one it follows with
+// replay_step {journey_id, n}; no inference from process ids. steps: n -> processId of the non-manual steps the
+// lookups of this replay returned (pages accumulate). t: the last replay activity (a lookup, a replay step).
+struct PendingReplay { int64 journeyId = 0, keeperId = 0; std::string name; std::map<int, std::string> steps; double t = 0; };
+using PendingKey = std::pair<const void*, std::string>;
+std::function<double()>& ReplayClock()
+{
+   static std::function<double()> clock;
+   return clock;
+}
+double ReplayNow()
+{
+   return ReplayClock() ? ReplayClock()() : JourneyWallNow();
+}
+std::map<PendingKey, PendingReplay>& PendingReplays()
+{
+   static std::map<PendingKey, PendingReplay> pending;
+   return pending;
+}
+
+// Re-review 4a / fix round 3: the lineage rule is JourneyLineage (JourneyExport.h), shared with the export.
+String LineageOf( JourneyStore& s, int64 journeyId, std::vector<int64>& chain )
+{
+   return JourneyLineage( s, journeyId, chain );
+}
+
+std::vector<StepRow> LineageSteps( JourneyStore& s, const std::vector<int64>& chain )
+{
+   std::vector<StepRow> r;
+   for ( int64 id : chain )
+      for ( const StepRow& st : ActiveSteps( s, id ) )
+         r.push_back( st );
+   return r;
+}
+
 } // namespace
+
+void ForgetPendingReplays( JourneyToolHost& host )
+{
+   std::map<PendingKey, PendingReplay>& p = PendingReplays();
+   for ( auto it = p.begin(); it != p.end(); )
+      if ( it->first.first == static_cast<const void*>( host.store ) )
+         it = p.erase( it );
+      else
+         ++it;
+}
+
+StringList JourneyKnownDirs( const JourneyToolHost& host )
+{
+   StringList d;
+   if ( !host.exportFolder.Trimmed().IsEmpty() )
+      d << host.exportFolder.Trimmed();
+   if ( host.store != nullptr )
+      d << host.store->Root();
+   if ( const char* home = std::getenv( "HOME" ) )
+      d << String( home );
+   d << File::SystemTempDirectory();
+   try
+   {
+      for ( const ImageWindow& w : ImageWindow::AllWindows() )   // temporaries only: nothing is kept
+      {
+         const String f = w.FilePath();
+         if ( !f.IsEmpty() )
+            d << File::ExtractDrive( f ) + File::ExtractDirectory( f );
+      }
+   }
+   catch ( ... )
+   {
+      // the open windows could not be listed: the generic scrubber still applies
+   }
+   return d;
+}
 
 String ModelTextWithoutDirectories( const String& text )
 {
    return WithoutDirectories( text );
 }
 
-String NoteReplayStepApplied( JourneyToolHost& host, const IsoString& viewFullId )
+String ModelTextWithoutDirectories( const String& text, const StringList& knownDirs )
 {
-   const auto it = host.pendingReplayName.find( std::string( viewFullId.c_str() ) );
-   if ( it == host.pendingReplayName.end() )
-      return String();
-   const std::pair<int64, std::string> want = it->second;
-   host.pendingReplayName.erase( it );
-   if ( host.store == nullptr || JourneyForView( host, viewFullId ) != want.first )
+   // Re-review 2, minor 1: a path under a directory PI Copilot knows is recognised by that prefix, whatever
+   // characters its folders hold; it runs to the last '/' before the next path on its line, then to the end of the
+   // file name. Longest prefix first. Linear: a token's scan stops where the next token starts, so each character
+   // is scanned a bounded number of times.
+   // The prefixes, longest first. PCL Strings live only in a PCL StringList and are ordered through an index
+   // vector: a moved-from pcl::String is not a valid assignment target, and std::sort / vector::insert assign
+   // into moved-from elements (measured: SIGSEGV in both first GREEN attempts of round 4).
+   StringList dirList;
+   for ( const String& raw : knownDirs )
+   {
+      String d = raw;
+      while ( d.Length() > 1 && d.EndsWith( '/' ) )
+         d.DeleteRight( d.Length() - 1 );
+      if ( d.Length() > 1 && d.StartsWith( '/' ) )
+         dirList.Add( d );
+   }
+   std::vector<size_t> order( dirList.Length() );
+   for ( size_t k = 0; k < order.size(); ++k )
+      order[k] = k;
+   std::stable_sort( order.begin(), order.end(), [&dirList]( size_t a, size_t b ) { return dirList[a].Length() > dirList[b].Length(); } );
+   if ( order.empty() )
+      return WithoutDirectories( text );
+   const size_type n = text.Length();
+   auto boundaryAt = [&]( size_type k )   // a path may start at k ('/' right after one of these)
+   {
+      if ( k == 0 )
+         return true;
+      const char16_type b = text[k-1];
+      return b == ' ' || b == '\t' || b == '(' || b == '[' || b == '\'' || b == '"' || b == '=' || b == ':';
+   };
+   auto knownAt = [&]( size_type k )   // a known directory + '/' starts at k
+   {
+      for ( size_t o : order )
+      {
+         const size_type len = dirList[o].Length();
+         if ( k + len < n && text[k + len] == '/' && text.Substring( k, len ) == dirList[o] )
+            return true;
+      }
+      return false;
+   };
+   String out;
+   size_type plain = 0;       // start of the text not yet emitted (goes through the heuristic)
+   size_type lineEnd = 0;     // cached end of the current line (round 5, re-review 3 M1: linear)
+   for ( size_type i = 0; i < n; ++i )
+   {
+      if ( text[i] != '/' || !boundaryAt( i ) || !knownAt( i ) )
+         continue;
+      if ( lineEnd <= i )
+      {
+         lineEnd = i;
+         while ( lineEnd < n && text[lineEnd] != '\n' && text[lineEnd] != '\r' )
+            ++lineEnd;
+      }
+      // To the last '/' before the next KNOWN path on the line (round 5, M2: an unknown " /" -- e.g. a folder
+      // name ending in a space -- stays inside this path; absorbing an unknown second path only loses detail).
+      size_type slash = i;
+      for ( size_type k = i; k < lineEnd; ++k )
+         if ( text[k] == '/' )
+         {
+            if ( k > i && boundaryAt( k ) && knownAt( k ) )
+               break;
+            slash = k;
+         }
+      size_type e = slash + 1;
+      while ( e < n && text[e] != ' ' && text[e] != '\t' && text[e] != ',' && text[e] != ';' && text[e] != ')' && text[e] != ']'
+              && text[e] != '\'' && text[e] != '"' && text[e] != '\n' && text[e] != '\r' && !(text[e] == ':' && (e + 1 == n || text[e+1] == ' ')) )
+         ++e;
+      String name = text.Substring( slash + 1, e - slash - 1 );
+      String tail;
+      while ( !name.IsEmpty() && (name.EndsWith( '.' ) || name.EndsWith( ':' )) )
+      {
+         tail.Prepend( name[name.Length() - 1] );
+         name.DeleteRight( name.Length() - 1 );
+      }
+      out += WithoutDirectories( text.Substring( plain, i - plain ) ) + (name.IsEmpty() ? String( "(a folder)" ) : name) + tail;
+      plain = e;
+      i = e - 1;
+   }
+   return out + WithoutDirectories( text.Substring( plain, n - plain ) );
+}
+
+void SetReplayNameClockForSelfTest( std::function<double()> clock )
+{
+   ReplayClock() = std::move( clock );
+}
+
+String CheckReplayStep( JourneyToolHost& host, const IsoString& viewFullId, int64 keeperId, int64 n )
+{
+   std::map<PendingKey, PendingReplay>& pending = PendingReplays();
+   const auto it = pending.find( { static_cast<const void*>( host.store ), std::string( viewFullId.c_str() ) } );
+   if ( it == pending.end() || it->second.keeperId != keeperId )
+      return String().Format( "replay_step names journey #%lld, but no replay of it was looked up for %s: call replay_journey "
+                              "with journey_id %lld first (or leave replay_step out for a step that is not part of a replay)",
+                              static_cast<long long>( keeperId ), IsoString( viewFullId ).c_str(), static_cast<long long>( keeperId ) );
+   if ( ReplayNow() - it->second.t > kReplayNameSeconds )
+   {
+      pending.erase( it );
+      return String().Format( "replay_step: the replay of journey #%lld on %s was looked up more than an hour ago with no "
+                              "replay step since; call replay_journey again before continuing it",
+                              static_cast<long long>( keeperId ), IsoString( viewFullId ).c_str() );
+   }
+   if ( n < 1 || it->second.steps.count( int( std::min<int64>( n, 1 << 30 ) ) ) == 0 )
+      return String().Format( "replay_step: step %lld is not a non-manual step of the replay_journey pages returned for journey "
+                              "#%lld (manual steps are the user's; fetch the page with from_step if it was not returned yet)",
+                              static_cast<long long>( n ), static_cast<long long>( keeperId ) );
+   return String();
+}
+
+String NoteReplayStepApplied( JourneyToolHost& host, const IsoString& viewFullId, int64 keeperId, int64 /*n*/ )
+{
+   std::map<PendingKey, PendingReplay>& pending = PendingReplays();
+   const auto it = pending.find( { static_cast<const void*>( host.store ), std::string( viewFullId.c_str() ) } );
+   if ( it == pending.end() || it->second.keeperId != keeperId )
+      return String();   // validated before the run (CheckReplayStep); gone only if forgotten meanwhile
+   it->second.t = ReplayNow();   // replay activity: the rest of the replay stays open
+   const PendingReplay want = it->second;
+   if ( host.store == nullptr || JourneyForView( host, viewFullId ) != want.journeyId )
       return String();   // the image left that journey meanwhile (e.g. kept): nothing to name
    try
    {
-      host.store->RenameJourney( want.first, want.second );   // spec §13.7: "<keeper> (replay of #<id>)"
+      JourneyRow cur;
+      if ( host.store->GetJourney( want.journeyId, cur ) && cur.name.find( "(replay of #" ) == std::string::npos )
+         host.store->RenameJourney( want.journeyId, want.name );   // spec §13.7: "<keeper> (replay of #<id>)"
       return String();
    }
    catch ( const pcl::Exception& x )
@@ -320,7 +546,7 @@ KeepFlowResult RunKeepFlow( JourneyToolHost& host, int64 journeyId, const IsoStr
    if ( host.store == nullptr || host.keeper == nullptr )
    {
       r.message = "the journey library is not available" + (host.storeError.IsEmpty() ? String() : ": " + host.storeError);
-      r.modelMessage = WithoutDirectories( r.message );
+      r.modelMessage = ModelTextWithoutDirectories( r.message, JourneyKnownDirs( host ) );
       return r;
    }
    // Integration concern #4: the durable keep commits on its own and is refused inside an open transaction;
@@ -360,7 +586,7 @@ KeepFlowResult RunKeepFlow( JourneyToolHost& host, int64 journeyId, const IsoStr
                                    &r.outcome.writeupError, &r.outcome.copyError } )
             if ( !e->IsEmpty() )
                r.message += " " + *e + ".";
-         r.modelMessage = WithoutDirectories( r.message );
+         r.modelMessage = ModelTextWithoutDirectories( r.message, JourneyKnownDirs( host ) );
          return r;
       }
       if ( !host.confirmKeeper || !host.confirmKeeper( KeeperSummaryHtml( s ) ) )
@@ -384,7 +610,7 @@ KeepFlowResult RunKeepFlow( JourneyToolHost& host, int64 journeyId, const IsoStr
       if ( !r.ok )
       {
          r.message = "keeping journey failed: " + r.outcome.files.recipeError;
-         r.modelMessage = WithoutDirectories( r.message );
+         r.modelMessage = ModelTextWithoutDirectories( r.message, JourneyKnownDirs( host ) );
          return r;
       }
       const String dir = ExportDirOf( *host.store, journeyId );
@@ -435,20 +661,20 @@ KeepFlowResult RunKeepFlow( JourneyToolHost& host, int64 journeyId, const IsoStr
          r.message += frozenUser;
          r.modelMessage += frozen;
       }
-      r.modelMessage = WithoutDirectories( r.modelMessage );   // error texts from the exporter may still name paths
+      r.modelMessage = ModelTextWithoutDirectories( r.modelMessage, JourneyKnownDirs( host ) );   // error texts from the exporter may still name paths
    }
    catch ( const pcl::Exception& x )
    {
       // E.g. MarkKeptDurably: "... database is locked" (another program holds the library) -- nothing was kept.
       r.ok = false;
       r.message = "keeping journey failed: " + x.Message();
-      r.modelMessage = WithoutDirectories( r.message );
+      r.modelMessage = ModelTextWithoutDirectories( r.message, JourneyKnownDirs( host ) );
    }
    catch ( const std::exception& x )
    {
       r.ok = false;
       r.message = "keeping journey failed: " + String( x.what() );
-      r.modelMessage = WithoutDirectories( r.message );
+      r.modelMessage = ModelTextWithoutDirectories( r.message, JourneyKnownDirs( host ) );
    }
    return r;
 }
@@ -465,7 +691,7 @@ ToolOutcome ExecuteJourneyTool( const ToolCall& call, const ToolContext& ctx )
                                    "no access to the journey library, so journeys cannot be listed, compared, kept or "
                                    "replayed from chat here" )
                          : "the journey library is not available"
-                           + (ctx.journeys->storeError.IsEmpty() ? String() : ": " + WithoutDirectories( ctx.journeys->storeError )) );
+                           + (ctx.journeys->storeError.IsEmpty() ? String() : ": " + ModelTextWithoutDirectories( ctx.journeys->storeError, JourneyKnownDirs( *ctx.journeys ) )) );
    JourneyToolHost& host = *ctx.journeys;
    JourneyStore& store = *host.store;
    if ( (call.name == "start_journey" || call.name == "replay_journey") && ctx.mode == AgentMode::Advisor )
@@ -485,7 +711,8 @@ ToolOutcome ExecuteJourneyTool( const ToolCall& call, const ToolContext& ctx )
                   masters.push_back( AcqJson( store, i.id ) );
             rows.push_back( { { "id", j.id }, { "name", j.name }, { "target", j.target }, { "kept", j.kept },
                               { "keptAt", j.keptAt }, { "created", j.created }, { "updated", j.updated }, { "status", j.status },
-                              { "steps", store.StepCount( j.id, true ) }, { "masters", masters } } );
+                              { "steps", store.StepCount( j.id, true ) }, { "masters", masters },
+                              { "continues", j.continuesJourneyId == 0 ? nlohmann::json() : nlohmann::json( j.continuesJourneyId ) } } );
          }
          return Ok( name, { { "journeys", rows } } );
       }
@@ -496,6 +723,14 @@ ToolOutcome ExecuteJourneyTool( const ToolCall& call, const ToolContext& ctx )
          if ( !e.IsEmpty() )
             return Fail( name, e );
          nlohmann::json r = BuildRecipe( store, jid, "PI Copilot" );   // file names only; parameters privacy-stripped
+         {
+            JourneyRow gj;
+            store.GetJourney( jid, gj );
+            if ( gj.continuesJourneyId != 0 )   // Ruling 26: this journey is the tail of a kept one
+               r["continues"] = { { "journeyId", gj.continuesJourneyId },
+                                  { "note", "This journey continues a kept journey; its steps start from that result. "
+                                            "replay_journey and compare_to_journey use the whole lineage." } };
+         }
          if ( !BoolField( in, "include_parameters" ) )
             for ( nlohmann::json& s : r["steps"] )
             {
@@ -519,12 +754,19 @@ ToolOutcome ExecuteJourneyTool( const ToolCall& call, const ToolContext& ctx )
             return Fail( name, "the current image is not part of a recorded journey; start_journey records it" );
          JourneyRow cj;
          store.GetJourney( cur, cj );
-         const int64 om = FirstMaster( store, other ), cm = FirstMaster( store, cur );
+         // Re-review 4a: both sides over their whole lineage (a "(continued)" journey is only a tail).
+         std::vector<int64> oChain, cChain;
+         String broken = LineageOf( store, other, oChain );
+         if ( broken.IsEmpty() )
+            broken = LineageOf( store, cur, cChain );
+         if ( !broken.IsEmpty() )
+            return Fail( name, broken );
+         const int64 om = FirstMaster( store, oChain.front() ), cm = FirstMaster( store, cChain.front() );
          const std::vector<ChannelStats> os = om ? store.Stats( om, 0 ) : std::vector<ChannelStats>();
          const std::vector<ChannelStats> cs = cm ? store.Stats( cm, 0 ) : std::vector<ChannelStats>();
          nlohmann::json ratios = StartRatios( os, cs );
          ratios["note"] = "current divided by keeper, per channel";
-         const std::vector<StepRow> ost = ActiveSteps( store, other ), cst = ActiveSteps( store, cur );
+         const std::vector<StepRow> ost = LineageSteps( store, oChain ), cst = LineageSteps( store, cChain );
          nlohmann::json diverges = nullptr;
          for ( size_t i = 0; i < std::max( ost.size(), cst.size() ); ++i )
             if ( i >= ost.size() || i >= cst.size() || ost[i].processId != cst[i].processId )
@@ -536,9 +778,11 @@ ToolOutcome ExecuteJourneyTool( const ToolCall& call, const ToolContext& ctx )
          for ( size_t i = 0; i < ost.size() && i < 40; ++i ) ol.push_back( ost[i].processId );
          for ( size_t i = 0; i < cst.size() && i < 40; ++i ) cl.push_back( cst[i].processId );
          return Ok( name + String().Format( " #%lld vs #%lld", static_cast<long long>( cur ), static_cast<long long>( other ) ), {
-            { "keeper", { { "id", other }, { "name", oj.name }, { "kept", oj.kept }, { "acquisition", om ? AcqJson( store, om ) : nlohmann::json() },
+            { "keeper", { { "id", other }, { "name", oj.name }, { "kept", oj.kept }, { "lineage", oChain },
+                          { "acquisition", om ? AcqJson( store, om ) : nlohmann::json() },
                           { "startStats", StatsArray( os ) }, { "steps", ol } } },
-            { "current", { { "id", cur }, { "name", cj.name }, { "acquisition", cm ? AcqJson( store, cm ) : nlohmann::json() },
+            { "current", { { "id", cur }, { "name", cj.name }, { "lineage", cChain },
+                           { "acquisition", cm ? AcqJson( store, cm ) : nlohmann::json() },
                            { "startStats", StatsArray( cs ) }, { "steps", cl } } },
             { "startRatios", ratios },
             { "divergesAtStep", diverges } } );
@@ -616,47 +860,90 @@ ToolOutcome ExecuteJourneyTool( const ToolCall& call, const ToolContext& ctx )
                                                 "to follow (list_journeys kept_only)", static_cast<long long>( keeperId ) ) );
          if ( keeperId == 0 )
          {
-            nlohmann::json candidates = nlohmann::json::array();
+            // Re-review 2, minor 3: by lineage. Never the current image's own lineage; never a kept journey that
+            // another matching keeper continues (offered once, as its latest keeper); steps count the lineage.
+            std::vector<int64> curChain;
+            {
+               const String broken = LineageOf( store, cur, curChain );
+               if ( !broken.IsEmpty() )
+                  return Fail( name, broken );
+            }
+            struct Cand { JourneyRow j; std::vector<int64> chain; };
+            std::vector<Cand> found;
+            nlohmann::json skipped = nlohmann::json::array();
             for ( const JourneyRow& j : store.ListJourneys( true, std::string(), 50 ) )
             {
-               const int64 m = FirstMaster( store, j.id );
+               if ( std::find( curChain.begin(), curChain.end(), j.id ) != curChain.end() )
+                  continue;
+               Cand c{ j, {} };
+               const String broken = LineageOf( store, j.id, c.chain );
+               if ( !broken.IsEmpty() )
+               {
+                  skipped.push_back( U8( broken ) );   // named, never silently dropped
+                  continue;
+               }
+               const int64 m = FirstMaster( store, c.chain.front() );
                AcquisitionFacts a;
-               if ( j.id == cur || m == 0 || !store.Acquisition( m, a ) )
+               if ( m == 0 || !store.Acquisition( m, a ) )
                   continue;
                if ( AsciiLower( a.target ) == AsciiLower( ca.target ) && AsciiLower( a.filter ) == AsciiLower( ca.filter )
                  && AsciiLower( a.camera ) == AsciiLower( ca.camera ) )
-                  candidates.push_back( { { "id", j.id }, { "name", j.name }, { "keptAt", j.keptAt }, { "steps", store.StepCount( j.id, true ) } } );
+                  found.push_back( c );
+            }
+            nlohmann::json candidates = nlohmann::json::array();
+            for ( const Cand& c : found )
+            {
+               bool ancestor = false;
+               for ( const Cand& o : found )
+                  ancestor = ancestor || (o.j.id != c.j.id && std::find( o.chain.begin(), o.chain.end() - 1, c.j.id ) != o.chain.end() - 1);
+               if ( !ancestor )
+                  candidates.push_back( { { "id", c.j.id }, { "name", c.j.name }, { "keptAt", c.j.keptAt },
+                                          { "steps", int( LineageSteps( store, c.chain ).size() ) },
+                                          { "lineage", c.chain } } );
             }
             if ( candidates.empty() )
                return Fail( name, "no kept journey for target '" + FromU8( ca.target ) + "', filter '" + FromU8( ca.filter )
-                                  + "', camera '" + FromU8( ca.camera ) + "'; list_journeys with kept_only shows the keepers" );
+                                  + "', camera '" + FromU8( ca.camera ) + "'; list_journeys with kept_only shows the keepers"
+                                  + (skipped.empty() ? String() : " (skipped: " + FromU8( skipped.dump() ) + ")") );
             if ( candidates.size() > 1 )
-               return Ok( name, { { "needsChoice", true }, { "candidates", candidates },
+               return Ok( name, { { "needsChoice", true }, { "candidates", candidates }, { "skipped", skipped },
                                   { "note", "Several kept journeys match. Ask the user which one to follow, then call replay_journey with its journey_id." } } );
             keeperId = candidates.at( 0 ).at( "id" ).get<int64>();
          }
          JourneyRow kj;
          if ( !store.GetJourney( keeperId, kj ) )
             return Fail( name, String().Format( "no journey #%lld", static_cast<long long>( keeperId ) ) );
-         const int64 km = FirstMaster( store, keeperId );
+         // Re-review 4a: the whole lineage, root first (a "(continued)" keeper alone is only the tail).
+         std::vector<int64> chain;
+         {
+            const String broken = LineageOf( store, keeperId, chain );
+            if ( !broken.IsEmpty() )
+               return Fail( name, broken + "; replay_journey cannot give the whole processing" );
+         }
+         const int64 km = FirstMaster( store, chain.front() );
          const std::vector<ChannelStats> ks = km ? store.Stats( km, 0 ) : std::vector<ChannelStats>();
          const std::vector<ChannelStats> cs = cm ? store.Stats( cm, 0 ) : std::vector<ChannelStats>();
          const nlohmann::json ratios = StartRatios( ks, cs );
          nlohmann::json links = nlohmann::json::array();
-         for ( const LinkRow& l : store.Links( keeperId ) )
-         {
-            ImageRow a, b;
-            store.GetImage( l.fromImageId, a );
-            store.GetImage( l.toImageId, b );
-            links.push_back( { { "from", a.viewId }, { "to", b.viewId }, { "evidence", l.evidence } } );
-         }
-         const std::vector<StepRow> all = ActiveSteps( store, keeperId );
-         const int total = int( all.size() );
-         const int first = fromStep == 0 ? 1 : int( fromStep );
-         if ( total > 0 && first > total )
-            return Fail( name, String().Format( "from_step %d is past the last step (the journey has %d)", first, total ) );
+         for ( int64 id : chain )
+            for ( const LinkRow& l : store.Links( id ) )
+            {
+               ImageRow a, b;
+               store.GetImage( l.fromImageId, a );
+               store.GetImage( l.toImageId, b );
+               links.push_back( { { "from", a.viewId }, { "to", b.viewId }, { "evidence", l.evidence } } );
+            }
+         const std::vector<StepRow> all = LineageSteps( store, chain );
+         const int64 total64 = int64( all.size() );
+         // Re-review R1: validated in int64 BEFORE any narrowing (from_step 2^32 would otherwise wrap to 0).
+         if ( fromStep > std::max<int64>( total64, 1 ) )
+            return Fail( name, String().Format( "from_step %lld is past the last step (the journey has %lld)",
+                                                static_cast<long long>( fromStep ), static_cast<long long>( total64 ) ) );
+         const int total = int( total64 );
+         const int first = fromStep == 0 ? 1 : int( fromStep );   // 1 <= first <= max( total, 1 )
          nlohmann::json r = {
-            { "keeper", { { "id", keeperId }, { "name", kj.name }, { "acquisition", km ? AcqJson( store, km ) : nlohmann::json() },
+            { "keeper", { { "id", keeperId }, { "name", kj.name }, { "lineage", chain },
+                          { "acquisition", km ? AcqJson( store, km ) : nlohmann::json() },
                           { "startStats", StatsArray( ks ) }, { "links", links } } },
             { "current", { { "view", std::string( vid.c_str() ) }, { "journeyId", cur },
                            { "acquisition", cm ? AcqJson( store, cm ) : nlohmann::json() }, { "startStats", StatsArray( cs ) } } },
@@ -725,23 +1012,35 @@ ToolOutcome ExecuteJourneyTool( const ToolCall& call, const ToolContext& ctx )
                                          "from_step %d for the next ones.", first, n, total,
                                          static_cast<long long>( keeperId ), n + 1 ) );
          }
-         // Review m6: a lookup changes nothing. The current journey is named "<keeper> (replay of #<id>)" when the
-         // first replay step is applied to this view (NoteReplayStepApplied, from apply_process).
-         JourneyRow cj;
-         store.GetJourney( cur, cj );
-         if ( cj.name.find( "(replay of #" ) == std::string::npos )
-            host.pendingReplayName[std::string( vid.c_str() )] = { cur, kj.name + " (replay of #" + std::to_string( keeperId ) + ")" };
+         // Review m6 / round 5: a lookup changes nothing. It opens this replay for the view: apply_process runs that
+         // pass replay_step {journey_id, n} for one of these non-manual steps are the replay's, and the first names
+         // the current journey "<keeper> (replay of #<id>)" (NoteReplayStepApplied). Pages accumulate.
+         {
+            PendingReplay& p = PendingReplays()[{ static_cast<const void*>( host.store ), std::string( vid.c_str() ) }];
+            if ( p.keeperId != keeperId || p.journeyId != cur )
+               p = PendingReplay();
+            p.journeyId = cur;
+            p.keeperId = keeperId;
+            p.name = kj.name + " (replay of #" + std::to_string( keeperId ) + ")";
+            p.t = ReplayNow();
+            for ( const nlohmann::json& st : steps )
+               if ( st.at( "manual" ) == false )
+                  p.steps[st.at( "n" ).get<int>()] = st.at( "processId" ).get<std::string>();
+         }
+         r["replayStep"] = "When you run one of these steps with apply_process, pass replay_step {\"journey_id\": "
+                           + std::to_string( keeperId ) + ", \"n\": <the step's n>} (also when you adapt it). Never pass "
+                           "replay_step for anything else.";
          return Ok( name + String().Format( " #%lld", static_cast<long long>( keeperId ) ), r );
       }
       return Fail( name, "unknown journey tool '" + name + "'" );
    }
    catch ( const pcl::Exception& x )
    {
-      return Fail( name, name + " failed: " + WithoutDirectories( x.Message() ) );
+      return Fail( name, name + " failed: " + ModelTextWithoutDirectories( x.Message(), JourneyKnownDirs( host ) ) );
    }
    catch ( const std::exception& x )
    {
-      return Fail( name, name + " failed: " + WithoutDirectories( String( x.what() ) ) );
+      return Fail( name, name + " failed: " + ModelTextWithoutDirectories( String( x.what() ), JourneyKnownDirs( host ) ) );
    }
 }
 

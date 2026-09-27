@@ -294,7 +294,9 @@ private:
    // baseCount: the image's steps recorded in the kept journey (combined count) at the freeze; the steps after
    // it were in flight (made, not yet recorded) and become the continuation's first steps (review m4). -1: not
    // known (the rows could not be read) -> the whole history is base.
-   struct PendingFreeze { const void* handle = nullptr; std::string id; std::shared_ptr<Continuation> to; String reason;
+   // Round 5 (re-review 3, C1): NO pcl::String here -- this vector is erased in the middle, and a moved-from
+   // pcl::String is not a valid assignment target (SIGSEGV keeping a journey with 3+ open images). reason: UTF-8.
+   struct PendingFreeze { const void* handle = nullptr; std::string id; std::shared_ptr<Continuation> to; std::string reason;
                           int baseCount = -1; };
    std::vector<PendingFreeze> m_pendingFreeze;
    std::vector<int64>       m_freezeRequests;   // FreezeJourney called inside a tick: done at the next tick

@@ -269,7 +269,26 @@ ToolOutcome ApplyProcessTool( const nlohmann::json& in, const ToolContext& ctx, 
    const IsoString targetId = target.FullId();
    what += " on " + String( targetId );
 
-   std::vector<PinnedParameter> pinned;
+   // Round 5 (re-review 3, I1): replay_step marks this run as a step of a replay the model looked up; validated
+   // before anything is asked or run.
+   int64 replayKeeper = 0, replayN = 0;
+   if ( in.contains( "replay_step" ) && !in["replay_step"].is_null() )
+   {
+      const nlohmann::json& rs = in["replay_step"];
+      if ( !rs.is_object() || !rs.contains( "journey_id" ) || !rs["journey_id"].is_number_integer()
+        || !rs.contains( "n" ) || !rs["n"].is_number_integer() || rs["journey_id"].get<int64>() < 1 || rs["n"].get<int64>() < 1 )
+         return Fail( what, "replay_step must be {\"journey_id\": <kept journey id>, \"n\": <step number>} with positive whole numbers" );
+      if ( ctx.journeys == nullptr || ctx.journeys->store == nullptr )
+         return Fail( what, "replay_step: the journey tools are not connected in this session; leave replay_step out" );
+      replayKeeper = rs["journey_id"].get<int64>();
+      replayN = rs["n"].get<int64>();
+      const IsoString main = target.IsMainView() ? targetId : target.Window().MainView().FullId();
+      const String e = CheckReplayStep( *ctx.journeys, main, replayKeeper, replayN );
+      if ( !e.IsEmpty() )
+         return Fail( what, e );
+   }
+
+   std::vector<PinnedParameter> pinned;   // pcl-move-ok: filled by ResolvePinnedParameters (push_back/clear), read only
    {
       String e = PreGateChecks( pid, params, tables, pinned );
       if ( !e.IsEmpty() )
@@ -328,7 +347,8 @@ ToolOutcome ApplyProcessTool( const nlohmann::json& in, const ToolContext& ctx, 
       }
       if ( ar.ok )
       {
-         replayNameError = NoteReplayStepApplied( *ctx.journeys, journeyMain );   // a replay names its journey now (m6)
+         if ( replayKeeper != 0 )   // an explicit replay step names its journey (round 5)
+            replayNameError = NoteReplayStepApplied( *ctx.journeys, journeyMain, replayKeeper, replayN );
          std::vector<std::string> created;
          for ( const std::string& id : OpenMainViewIds() )
             if ( windowsBefore.count( id ) == 0 )
@@ -358,7 +378,7 @@ ToolOutcome ApplyProcessTool( const nlohmann::json& in, const ToolContext& ctx, 
    if ( !ar.resultWindows.empty() )
       summary["resultWindows"] = ar.resultWindows;  // new windows attributed to this run (ProcessApply.h)
    if ( !replayNameError.IsEmpty() )
-      summary["journeyNote"] = U8( ModelTextWithoutDirectories( replayNameError ) );
+      summary["journeyNote"] = U8( ModelTextWithoutDirectories( replayNameError, JourneyKnownDirs( *ctx.journeys ) ) );
    try
    {
       summary["newContext"] = CollapsedViewContext( BuildViewContext( target ) );
@@ -398,7 +418,7 @@ ToolOutcome RunGlobalTool( const nlohmann::json& in, const ToolContext& ctx, clo
    if ( pid.empty() )
       return Fail( "run_global_process", "run_global_process needs process_id; call list_processes for valid ids" );
 
-   std::vector<PinnedParameter> pinned;
+   std::vector<PinnedParameter> pinned;   // pcl-move-ok: filled by ResolvePinnedParameters (push_back/clear), read only
    {
       String e = PreGateChecks( pid, params, tables, pinned );
       if ( !e.IsEmpty() )
@@ -700,6 +720,11 @@ nlohmann::json ToolDefinitions( AgentMode mode, const ToolOptions& options )
       props["view_id"] = { { "type", "string" }, { "description", "Target view id; default: the view this message is about. Any other view must first be "
                                                                  "inspected with get_view_context in the same turn." } };
       props["reason"] = kReasonProp;
+      props["replay_step"] = { { "type", "object" },
+                               { "description", "Only when this run carries out a step of a replay_journey result: "
+                                                "{\"journey_id\": <the kept journey>, \"n\": <that step's n>} (also when you adapt "
+                                                "the step). Leave it out for every other run." },
+                               { "properties", { { "journey_id", { { "type", "integer" } } }, { "n", { { "type", "integer" } } } } } };
       nlohmann::json apply = nlohmann::json::object();
       apply["name"] = "apply_process";
       apply["description"] = "Run a PixInsight process on the user's real image (recorded in the view's History, so "
