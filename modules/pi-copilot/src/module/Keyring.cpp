@@ -80,7 +80,7 @@ IsoString Bytes( const ByteArray& b )
 {
    IsoString s;
    if ( !b.IsEmpty() )
-      s.Append( reinterpret_cast<const char*>( b.Begin() ), b.Length() );
+      AppendBytes( s, b.Begin(), size_t( b.Length() ) );
    return s;
 }
 

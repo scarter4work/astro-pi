@@ -411,6 +411,7 @@ required_true = [
     # increment 5
     'inc5SmokeOk',
     'sseParserOk',
+    'byteAppendOk',
     'streamTransportOk',
     'conversationOk', 'liveConversationOk',
     'keyStoreKeyringOk',

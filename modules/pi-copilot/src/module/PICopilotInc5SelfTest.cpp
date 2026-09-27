@@ -975,6 +975,26 @@ bool RunInc5SelfTest( nlohmann::json& out )
       allOk = allOk && ok;
    }
 
+   // ---- Section B1b: byte-exact appends (stream chunks, secret-tool output) ---
+   // IsoString::Append( ptr, n ) clamps n to strlen( ptr ): on a buffer that is
+   // not NUL-terminated it over-reads (ASan) and it truncates at an embedded NUL.
+   // The embedded-NUL case makes that deterministic without ASan: every byte of
+   // the source, including the NUL and the bytes after it, must arrive.
+   SelfTestSectionMark( "B1b byte-exact append" );
+   {
+      bool ok = false;
+      nlohmann::json detail = nlohmann::json::object();
+      const char src[] = { 'a', 'b', '\0', 'c', 'd' };   // no terminator
+      IsoString s( "x" );
+      AppendBytes( s, src, sizeof( src ) );
+      AppendBytes( s, src, 0 );
+      ok = s.Length() == 6 && s[0] == 'x' && s[1] == 'a' && s[3] == '\0' && s[4] == 'c' && s[5] == 'd';
+      detail["length"] = int( s.Length() );
+      out["byteAppendDetail"] = detail;
+      out["byteAppendOk"] = ok;
+      allOk = allOk && ok;
+   }
+
    // ---- Section B2: streaming transport (Task 3) ------------------------------
    SelfTestSectionMark( "B2 streaming transport" );
    {
