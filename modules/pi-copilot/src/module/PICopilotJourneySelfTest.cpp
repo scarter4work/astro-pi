@@ -5098,7 +5098,9 @@ bool RunJourneySelfTest( nlohmann::json& out )
          d["recipeSteps"] = nlohmann::json::array();
          for ( const nlohmann::json& s : steps )
             d["recipeSteps"].push_back( { s.at( "processId" ), s.at( "seq" ), s.at( "manual" ) } );
-         recipeOk = valid && recipe.at( "schema" ) == "picopilot-recipe" && recipe.at( "schemaVersion" ) == 1
+         recipeOk = valid && recipe.at( "schema" ) == "picopilot-recipe" && recipe.at( "schemaVersion" ) == 2
+                 && recipe.at( "lineage" ) == nlohmann::json::array( { { { "journeyId", jid }, { "name", recipe.at( "journey" ).at( "name" ) },
+                                                                          { "keptAt", recipe.at( "journey" ).at( "keptAt" ) } } } )
                  && recipe.at( "images" ).size() == 2 && recipe.at( "images" ).at( 0 ).at( "isMaster" ) == true
                  && recipe.at( "images" ).at( 0 ).at( "acquisition" ).at( "subCount" ) == 20
                  && steps.size() == 5 && steps.at( 0 ).at( "processId" ) == "PixelMath"
@@ -5118,7 +5120,13 @@ bool RunJourneySelfTest( nlohmann::json& out )
                return !ValidateRecipe( r, w ) && w.find( expect ) != std::string::npos;
             };
             validatorOk = bad( []( nlohmann::json& r ) { r.erase( "schemaVersion" ); }, "schemaVersion" )
-                       && bad( []( nlohmann::json& r ) { r["schemaVersion"] = 2; }, "schemaVersion" )
+                       && bad( []( nlohmann::json& r ) { r["schemaVersion"] = 1; }, "schemaVersion" )
+                       // Fix round 3 (v2 lineage): strict like the rest.
+                       && bad( []( nlohmann::json& r ) { r.erase( "lineage" ); }, "lineage" )
+                       && bad( []( nlohmann::json& r ) { r["lineage"] = nlohmann::json::array(); }, "lineage" )
+                       && bad( []( nlohmann::json& r ) { r["lineage"][0]["journeyId"] = 999999; }, "lineage" )
+                       && bad( []( nlohmann::json& r ) { r["steps"][0]["journey"] = 999999; }, "steps[0].journey" )
+                       && bad( []( nlohmann::json& r ) { r["images"][0].erase( "journey" ); }, "images[0]" )
                        && bad( []( nlohmann::json& r ) { r["steps"][0]["actor"] = "robot"; }, "steps[0].actor" )
                        && bad( []( nlohmann::json& r ) { r["steps"][0]["image"] = "img999999"; }, "steps[0].image" )
                        && bad( []( nlohmann::json& r ) { r["links"][0]["to"] = "img999999"; }, "links[0].to" )
@@ -5137,7 +5145,7 @@ bool RunJourneySelfTest( nlohmann::json& out )
                        && bad( []( nlohmann::json& r ) { r["journey"] = nlohmann::json::array(); }, "journey" )
                        && bad( []( nlohmann::json& r ) { r["steps"][0]["statsBefore"][0]["channel"] = -1; }, "steps[0].statsBefore[0].channel" )
                        && bad( []( nlohmann::json& r ) { r["journey"]["endImage"] = "img999999"; }, "journey.endImage" )
-                       && nlohmann::json::parse( RecipeSchemaText() ).at( "properties" ).at( "schemaVersion" ).at( "const" ) == 1
+                       && nlohmann::json::parse( RecipeSchemaText() ).at( "properties" ).at( "schemaVersion" ).at( "const" ) == 2
                        && nlohmann::json::parse( RecipeSchemaText() ).at( "properties" ).at( "schema" ).at( "const" ) == PICopilotRecipeSchemaId;
          }
 
@@ -6097,6 +6105,8 @@ r1.ok && r1.inferred.size() == 1 && r1.inferred[0].first == 7 && r1.inferred[0].
            orderOk = false, noteActionOk = false, scrubOk = false, replayLookupOk = false;
       // Fix round 2.
       bool scrubFuzzOk = false, gxOk = false, replayExpiryOk = false, inTickFreezeOk = false, lineageOk = false;
+      // Fix round 3 (export lineage).
+      bool exportLineageOk = false;
       String error;
       std::vector<std::string> made;
       try
@@ -6788,6 +6798,65 @@ r1.ok && r1.inferred.size() == 1 && r1.inferred[0].first == 7 && r1.inferred[0].
                      && !rootStart.empty() && r.at( "keeper" ).at( "startStats" ).at( 0 ).at( "median" ) == rootStart[0].median
                      && c.at( "keeper" ).at( "steps" ).size() == size_t( 3 + ownSteps )
                      && broken.isError && text0( broken ).find( "lineage" ) != std::string::npos;
+
+            // (t) Fix round 3: the kept continuation's EXPORT covers the whole lineage too -- recipe.json (schema v2,
+            //     "lineage", steps in chain order, each naming its journey), the .xpsm (every image of the chain),
+            //     the thumbnails it references, and the summary; a broken lineage is a loud error, nothing partial.
+            JourneyRow cr;
+            store->GetJourney( contA, cr );
+            const String dir = ExportDirOf( *store, contA );
+            nlohmann::json rec;
+            std::string why = "no recipe.json";
+            bool valid = false;
+            if ( File::Exists( dir + "/recipe.json" ) )
+            {
+               rec = nlohmann::json::parse( File::ReadTextFile( dir + "/recipe.json" ).c_str() );
+               valid = ValidateRecipe( rec, why );
+            }
+            std::vector<int64> stepJourneys;
+            bool thumbsThere = true;
+            if ( valid )
+            {
+               for ( const nlohmann::json& st : rec.at( "steps" ) )
+               {
+                  stepJourneys.push_back( st.at( "journey" ).get<int64>() );
+                  if ( st.at( "thumbnail" ).is_string() )
+                     thumbsThere = thumbsThere && File::Exists( dir + "/" + FromU8( st.at( "thumbnail" ).get<std::string>() ) );
+               }
+               for ( const nlohmann::json& im : rec.at( "images" ) )
+                  if ( im.at( "thumbnail" ).is_string() )
+                     thumbsThere = thumbsThere && File::Exists( dir + "/" + FromU8( im.at( "thumbnail" ).get<std::string>() ) );
+            }
+            const String xpsmPath = dir + "/" + ExportBaseName( cr ) + ".xpsm";
+            const std::string xpsm = File::Exists( xpsmPath ) ? std::string( File::ReadTextFile( xpsmPath ).c_str() ) : std::string();
+            size_t pmInstances = 0;
+            for ( size_t at = xpsm.find( "class=\"PixelMath\"" ); at != std::string::npos; at = xpsm.find( "class=\"PixelMath\"", at + 1 ) )
+               ++pmInstances;
+            const std::string rootContainer = "PICopilot_J" + std::to_string( jA ) + "_I" + std::to_string( A.img ) + "_instance";
+            const KeeperSummary ks = BuildKeeperSummary( *store, contA );
+            std::string recipeThrow, summaryThrow;
+            try { BuildRecipe( *store, orphan, "PI Copilot test" ); } catch ( const pcl::Exception& x ) { recipeThrow = U8( x.Message() ); }
+            try { BuildKeeperSummary( *store, orphan ); } catch ( const pcl::Exception& x ) { summaryThrow = U8( x.Message() ); }
+            const KeeperFilesResult of = WriteKeeperFiles( *store, orphan, "PI Copilot test" );
+            JourneyRow orow;
+            store->GetJourney( orphan, orow );
+            const bool orphanNoRecipe = !File::Exists( ExportDirOf( *store, orphan ) + "/recipe.json" )
+                                     && !File::Exists( ExportDirOf( *store, orphan ) + "/" + ExportBaseName( orow ) + ".xpsm" );
+            d["exportLineage"] = { { "why", why }, { "lineage", valid ? rec.at( "lineage" ) : nlohmann::json() },
+                                   { "stepJourneys", stepJourneys }, { "thumbsThere", thumbsThere }, { "pmInstances", pmInstances },
+                                   { "rootContainer", xpsm.find( rootContainer ) != std::string::npos },
+                                   { "summarySteps", ks.steps }, { "summaryLineage", ks.lineageLines },
+                                   { "recipeThrow", recipeThrow }, { "summaryThrow", summaryThrow },
+                                   { "orphanRecipeError", U8( of.recipeError ) }, { "orphanXpsmError", U8( of.xpsmError ) } };
+            exportLineageOk = valid && rec.at( "schemaVersion" ) == 2 && rec.at( "journey" ).at( "id" ) == contA
+                           && rec.at( "lineage" ).size() == 2 && rec.at( "lineage" ).at( 0 ).at( "journeyId" ) == jA
+                           && rec.at( "lineage" ).at( 1 ).at( "journeyId" ) == contA
+                           && stepJourneys == std::vector<int64>( { jA, jA, jA, contA, contA } ) && thumbsThere
+                           && pmInstances == 5 && xpsm.find( rootContainer ) != std::string::npos
+                           && ks.steps == 5 && !ks.lineageLines.empty()
+                           && recipeThrow.find( "lineage" ) != std::string::npos && summaryThrow.find( "lineage" ) != std::string::npos
+                           && !of.recipeOk && !of.xpsmOk && of.recipeError.Contains( "lineage" ) && of.xpsmError.Contains( "lineage" )
+                           && orphanNoRecipe;
          }
       }
       catch ( const pcl::Exception& x ) { error = x.Message(); }
@@ -6798,7 +6867,8 @@ r1.ok && r1.inferred.size() == 1 && r1.inferred[0].first == 7 && r1.inferred[0].
       const bool ok = schemaOk && promptOk && noHostOk && listOk && getOk && markOk && compareOk && freezeBusyOk
                    && keepErrorOk && startOk && noEffectOk && replayMatchOk && attributionOk && cancelOk
                    && offFreezeOk && inFlightOk && pagingOk && idTypeOk && markViewOk && orderOk && noteActionOk && scrubOk
-                   && replayLookupOk && scrubFuzzOk && gxOk && replayExpiryOk && inTickFreezeOk && lineageOk && error.IsEmpty();
+                   && replayLookupOk && scrubFuzzOk && gxOk && replayExpiryOk && inTickFreezeOk && lineageOk && exportLineageOk
+                   && error.IsEmpty();
       out["journeyToolsDetail"] = d;
       out["journeyToolsChecks"] = { { "schema", schemaOk }, { "prompt", promptOk }, { "noHost", noHostOk }, { "list", listOk },
                                     { "get", getOk }, { "mark", markOk }, { "compare", compareOk }, { "freezeBusy", freezeBusyOk },
@@ -6808,7 +6878,7 @@ r1.ok && r1.inferred.size() == 1 && r1.inferred[0].first == 7 && r1.inferred[0].
                                     { "idType", idTypeOk }, { "markView", markViewOk }, { "order", orderOk },
                                     { "noteAction", noteActionOk }, { "scrub", scrubOk }, { "replayLookup", replayLookupOk },
                                     { "scrubFuzz", scrubFuzzOk }, { "graxpert", gxOk }, { "replayExpiry", replayExpiryOk },
-                                    { "inTickFreeze", inTickFreezeOk }, { "lineage", lineageOk } };
+                                    { "inTickFreeze", inTickFreezeOk }, { "lineage", lineageOk }, { "exportLineage", exportLineageOk } };
       out["journeyToolsError"] = U8( error );
       out["journeyToolsOk"] = ok;
       allOk = allOk && ok;
