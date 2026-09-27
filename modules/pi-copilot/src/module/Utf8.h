@@ -113,6 +113,22 @@ inline String FromU8( const std::string& s )
    return r;
 }
 
+// Appends exactly n raw bytes to an IsoString. Deliberately NOT
+// IsoString::Append( const char*, size_type ): PCL's Insert( i, t, n )
+// clamps n to strlen( t ) (String.h, GenericString::Insert), so on a buffer
+// that is not NUL-terminated -- a network chunk, a pipe read, a ByteArray --
+// it reads past the end of the buffer (heap over-read, found by ASan) and
+// silently truncates at any embedded NUL byte.
+inline void AppendBytes( IsoString& s, const void* data, size_t n )
+{
+   // The iterator-range constructor copies exactly j - i bytes (no strlen).
+   if ( n > 0 )
+   {
+      const char* p = reinterpret_cast<const char*>( data );
+      s.Append( IsoString( p, p + n ) );
+   }
+}
+
 } // namespace pcl
 
 #endif // PICopilot_Utf8_h

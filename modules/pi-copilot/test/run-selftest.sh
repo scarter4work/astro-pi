@@ -39,13 +39,147 @@ if (( 10#$PICOPILOT_TEST_SLOT < 50 || 10#$PICOPILOT_TEST_SLOT > 256 )); then
 fi
 PICOPILOT_TEST_SLOT=$(( 10#$PICOPILOT_TEST_SLOT ))
 
+# Per-run private TMPDIR (thist-hang-investigation.md item 2). Measured: PI's
+# own ~PI~*.swp image swap files, its qipc instance lock files, and
+# xvfb-run's own auth/lock dir all follow $TMPDIR. Giving every run its own
+# private (0700), throwaway directory means a killed/timed-out run's leaked
+# files can never collide with another concurrent run's and never pile up in
+# bare /tmp (16,940 leaked swap files / 5.5 GB were found there from before
+# this existed -- see test/clean-stale-swap.sh). Every OTHER mktemp /
+# mktemp -d call below (HANDOFF_DIR, JOURNEY_XDG, LIB_STAMP, STALL_PORT_FILE,
+# ECHO_DIR, R, ...) already honours $TMPDIR with no further changes, and
+# cleanup() removes the whole thing on every exit path.
+# /tmp/picopilot-<uid>: the per-user private directory shared by the watchdog
+# logs, the throwlog and the module's GraXpert self-test lock
+# (GraXpertCoreSelfTestLock refuses it unless it is a real 0700 directory of
+# this user). `mkdir -p -m 700 <dir>/sub` would create <dir> itself with the
+# umask mode (0755) and fail every later GraXpert check, so it is created on
+# its own, 0700, and verified here -- loudly, never chmod-ed behind the user.
+PICOPILOT_PRIVATE_TMP="/tmp/picopilot-$(id -u)"
+mkdir -m 700 "$PICOPILOT_PRIVATE_TMP" 2>/dev/null || true
+if [ -L "$PICOPILOT_PRIVATE_TMP" ] || [ ! -d "$PICOPILOT_PRIVATE_TMP" ] \
+   || [ "$(stat -c '%u %a' "$PICOPILOT_PRIVATE_TMP")" != "$(id -u) 700" ]; then
+   echo "FAIL: $PICOPILOT_PRIVATE_TMP must be a real directory owned by $(id -u) with mode 700 (got: $(stat -c '%U %a %F' "$PICOPILOT_PRIVATE_TMP" 2>&1))"
+   exit 1
+fi
+PICOPILOT_RUNTIME_BASE="${XDG_RUNTIME_DIR:-/tmp/picopilot-$(id -u)/runs}"
+mkdir -p -m 700 "$PICOPILOT_RUNTIME_BASE"
+TMPDIR="$(mktemp -d "$PICOPILOT_RUNTIME_BASE/run.XXXXXX")"
+chmod 700 "$TMPDIR"
+export TMPDIR
+
+# Static guard (Task 10 fix round 5): no pcl::String / IsoString (or a type holding one) in a std sequence
+# container that is erased / inserted / sorted, and no move out of a data member -- a moved-from PCL value is not
+# a valid assignment target (proven SIGSEGVs). Checks itself against known-bad snippets first. Fails fast.
+if ! python3 "$HERE/check-pcl-moves.py" "$TMPDIR/pcl-move-guard"; then
+   echo "FAIL: the moved-from PCL value guard (test/check-pcl-moves.py) found a violation"
+   exit 1
+fi
+
 SLOT_SETTINGS="$(printf '%s/core-%03d-pxi.settings' "$HOME/.PixInsight" "$PICOPILOT_TEST_SLOT")"
 rm -f "$SLOT_SETTINGS"
-trap 'rm -f "$SLOT_SETTINGS"' EXIT
+# One cleanup for every EXIT path (0.2.0.0). Every variable is empty until the
+# line that sets it has run (set -u: always ${VAR:-}), so an early exit cleans
+# exactly what exists. JOURNEY_XDG is our own temp dir; never rm the caller's
+# XDG_DATA_HOME.
+cleanup()
+{
+   if [ -n "${PICOPILOT_ECHO_KEEP:-}" ] && [ -n "${ECHO_DIR:-}" ]; then
+      cp "$ECHO_DIR"/body-* "$PICOPILOT_ECHO_KEEP"/ 2>/dev/null || true
+   fi
+   rm -f "${R:-}" "${STALL_PORT_FILE:-}" "${SLOT_SETTINGS:-}" "${LIB_STAMP:-}"
+   if [ -n "${HANDOFF_DIR:-}" ]; then rm -rf "$HANDOFF_DIR"; fi
+   if [ -n "${ECHO_DIR:-}" ]; then rm -rf "$ECHO_DIR"; fi
+   if [ -n "${JOURNEY_XDG:-}" ]; then rm -rf "$JOURNEY_XDG"; fi
+   if [ -n "${STALL_PID:-}" ]; then kill "$STALL_PID" 2>/dev/null || true; fi
+   if [ -n "${ECHO_PID:-}" ]; then kill "$ECHO_PID" 2>/dev/null || true; fi
+   if [ -n "${WATCHDOG_PID:-}" ]; then kill "$WATCHDOG_PID" 2>/dev/null || true; fi
+   # Belt and suspenders on top of the individual removals above: everything
+   # this run created via a bare mktemp/mktemp -d lives under TMPDIR (see
+   # where it's set, above), so this catches anything new added here later
+   # without a matching explicit rm, and covers an abnormal exit (e.g. ^C)
+   # that never reaches the lines below it.
+   if [ -n "${TMPDIR:-}" ] && [ -d "${TMPDIR:-}" ]; then rm -rf "$TMPDIR"; fi
+   return 0
+}
+trap cleanup EXIT
+
+# Image journey (0.2.0.0): the production JourneyService records into
+# $XDG_DATA_HOME/PICopilot/journeys. Point it at a private temp dir so a test run
+# never touches the user's real library, and prove afterwards that it did not.
+REAL_LIB="$HOME/.local/share/PICopilot"
+LIB_STAMP="$(mktemp)"
+REAL_LIB_BEFORE="$( [ -e "$REAL_LIB" ] && echo present || echo absent )"
+JOURNEY_XDG="$(mktemp -d)"
+# Isolate ONLY the PICopilot subtree. An empty XDG_DATA_HOME breaks unrelated
+# PI checks (measured in Task 1: the live GraXpert run fails and the process
+# catalog scan loses most enumerations), so every other top-level entry of the
+# real data home is mirrored in as a symlink. cleanup()'s rm -rf removes the
+# links, never their targets.
+REAL_XDG="${XDG_DATA_HOME:-$HOME/.local/share}"
+if [ -d "$REAL_XDG" ]; then
+   for entry in "$REAL_XDG"/* "$REAL_XDG"/.[!.]*; do
+      [ -e "$entry" ] || [ -L "$entry" ] || continue
+      [ "$(basename "$entry")" = "PICopilot" ] && continue
+      ln -s "$entry" "$JOURNEY_XDG/$(basename "$entry")"
+   done
+fi
+export XDG_DATA_HOME="$JOURNEY_XDG"
+# Every file handed between selftest.js and the module lives in one private
+# (0700, mktemp -d) directory owned by this shell, so no writer ever opens a
+# guessable or pre-planted path (CWE-59); cleanup() removes it.
+HANDOFF_DIR="$(mktemp -d "${TMPDIR:-/tmp}/picopilot-handoff.XXXXXX")"
+chmod 700 "$HANDOFF_DIR"
+# The selftest.js pre-phase ("user actions, panel never opened") writes its result here.
+export PICOPILOT_SELFTEST_PRE="$HANDOFF_DIR/pre.json"
+# Multi-phase harness: selftest.js writes {"phase", "payload"} here before each
+# top-level check phase (PICopilot.executeGlobal() then runs that phase's
+# handler instead of the self-test). See the header of test/selftest.js.
+export PICOPILOT_SELFTEST_PHASE="$HANDOFF_DIR/phase.json"
+# Scratch directory for top-level fixtures that write files (e.g. J0 save+reopen).
+export PICOPILOT_SELFTEST_SCRATCH="$HANDOFF_DIR/scratch"
+mkdir -m 700 "$PICOPILOT_SELFTEST_SCRATCH"
+# Per-section wall-clock timings, rewritten at every section mark by selftest.js
+# (fixture blocks) and by the module (self-test sections), so any run -- even
+# one that hangs until the timeout -- prints where its time went.
+export PICOPILOT_SELFTEST_JS_TIMINGS="$HANDOFF_DIR/js-timings.json"
+export PICOPILOT_SELFTEST_SECTION_TIMINGS="$HANDOFF_DIR/section-timings.json"
+print_timings()
+{
+   python3 - "$PICOPILOT_SELFTEST_JS_TIMINGS" "$PICOPILOT_SELFTEST_SECTION_TIMINGS" <<'PY' || true
+import json, sys
+for tag, path in (("js", sys.argv[1]), ("module", sys.argv[2])):
+    try:
+        d = json.load(open(path))
+    except (OSError, ValueError) as e:
+        print("timing %-6s (no timings: %s)" % (tag, e.__class__.__name__)); continue
+    for t in d.get("done", []):
+        print("timing %-6s %-52s +%7.1fs %9.0f ms" % (tag, t["section"], t["startS"], t["ms"]))
+    if d.get("open"):
+        print("timing %-6s %-52s +%7.1fs  STILL RUNNING at exit" % (tag, d["open"]["section"], d["open"]["startS"]))
+PY
+}
 
 [ -f "$SO" ] || { echo "FAIL: module not built at $SO"; exit 1; }
+# Resolve before use (thist-hang-investigation.md item 3): a -m= path reached
+# through a symlinked component (e.g. a harness copy living under a /tmp that
+# is itself a symlink) can make PI's own module search silently map a
+# DIFFERENT file than the one this argument names, while looking identical as
+# text. Measured live: a copy under /tmp ran the INSTALLED 0.1.2.0 module
+# instead of this dev build's -m= .so, and "T-hist takes minutes" turned out
+# to be the live self-test running there, not a hang. Always pass PI the
+# canonical, symlink-free path; watchdog.py's /proc/<pid>/maps check then
+# compares like for like instead of maybe comparing two spellings of the same
+# file, or missing a real substitution.
+SO="$(realpath -e "$SO")"
 "$PI" --sign-module-file="$SO" --xssk-file="$KEYS" --xssk-password="$PASS"
 [ -f "${SO%.so}.xsgn" ] || { echo "FAIL: signing produced no .xsgn"; exit 1; }
+
+# Vendored SQLite must stay private to the module (a clash with any other
+# libsqlite3 in the PixInsight process would be undefined behaviour).
+if nm -D --defined-only "$SO" | grep -q ' sqlite3_'; then
+   echo "FAIL: PICopilot-pxm.so exports sqlite3_* symbols"; exit 1
+fi
 
 # Load the module headlessly and run the self-test harness. --force-exit only
 # exits AFTER running -r= scripts, so a bare -m= with no -r= sits idle
@@ -57,7 +191,6 @@ trap 'rm -f "$SLOT_SETTINGS"' EXIT
 # PICopilotInstance.cpp.
 R="$(mktemp -u "${TMPDIR:-/tmp}/picopilot-selftest.XXXXXX.json")"
 rm -f "$R"
-trap 'rm -f "$R" "$SLOT_SETTINGS"' EXIT
 
 # Gated real-API checks (text + vision). Key source order: system keyring,
 # then the gitignored local file, else skip. The key is never printed.
@@ -77,6 +210,21 @@ unset KR_KEY
 # GraXpert live check (self-test B10): the app path is the user's OWN GraXpert
 # setting, read (read-only) from the real PixInsight settings file -- the
 # slot-90 settings are empty. An explicit PICOPILOT_TEST_GRAXPERT_APP wins.
+# Concurrent slots: PixInsight's GraXpert core bridges to the program through
+# shared exchange files named /PixInsight.xisf and /PixInsight_GraXpert.xisf
+# UNDER $TMPDIR -- MEASURED 2026-09-26 (thist-hang-investigation.md item 2):
+# with this run's own private TMPDIR (set above) exported to PI, those two
+# files showed up under it, actively rewritten, exactly during this run's own
+# B10 live section -- not in bare /tmp. So two runs that BOTH use this
+# harness (each with its own private TMPDIR) no longer clobber each other
+# through these files. The flock below stays anyway: it still protects
+# against anything that ISN'T isolated this way -- an older harness copy that
+# predates the TMPDIR fix, or the user's own live, interactive PixInsight
+# session, both of which still fall back to plain /tmp/PixInsight*.xisf.
+# The self-test therefore still runs every GraXpert-core call (B10 live, B10b
+# stand-in) under an exclusive flock on /tmp/picopilot-<uid>/graxpert-selftest.lock
+# (dir 0700) (GraXpertCoreSelfTestLock); only those sections are serialized,
+# the rest of the run stays parallel. The wait is printed below (lockWaitMs).
 if [ -z "${PICOPILOT_TEST_GRAXPERT_APP:-}" ] && [ -f "$HOME/.PixInsight/core-001-pxi.settings" ]; then
    PICOPILOT_TEST_GRAXPERT_APP="$(python3 - "$HOME/.PixInsight/core-001-pxi.settings" <<'PY' 2>/dev/null || true
 import sys, xml.etree.ElementTree as ET
@@ -110,7 +258,6 @@ while True:
     threading.Thread(target=hold, args=(c,), daemon=True).start()
 PY
 STALL_PID=$!
-trap 'rm -f "$R" "$STALL_PORT_FILE" "$SLOT_SETTINGS"; kill "$STALL_PID" 2>/dev/null || true' EXIT
 for _ in $(seq 50); do [ -s "$STALL_PORT_FILE" ] && break; sleep 0.1; done
 [ -s "$STALL_PORT_FILE" ] || { echo "FAIL: stall server did not start"; exit 1; }
 export PICOPILOT_SELFTEST_STALL_URL="http://127.0.0.1:$(cat "$STALL_PORT_FILE")/v1/messages"
@@ -256,6 +403,36 @@ class H(BaseHTTPRequestHandler):
                     return self.reply(400, {"type": "error", "error": {"type": "invalid_request_error",
                                             "message": "body #%d: \"stream\" is not true" % n}})
                 return self.sse(self.stream_events(req, n, kind), stall=(kind == "stall"))
+        if self.path.split("?", 1)[0].endswith("/writeup"):   # Haiku journey write-up (plan Task 9)
+            # ?reasons=<JSON array>: the reply's inferredReasons entries, verbatim (guard tests);
+            # ?truncate=1: the reply stops inside an opened, never-closed json fence (stop_reason max_tokens).
+            from urllib.parse import parse_qs, urlsplit
+            q = parse_qs(urlsplit(self.path).query)
+            msgs = req.get("messages") or []
+            def blocks(m):
+                c = m.get("content")
+                return c if isinstance(c, list) else [{"type": "text", "text": c or ""}]
+            has_image = any(b.get("type") == "image" for m in msgs for b in blocks(m))
+            if (has_image or req.get("stream") or req.get("tools") or req.get("thinking")
+                    or req.get("model") != "claude-haiku-4-5" or req.get("max_tokens") != 8000 or len(msgs) != 1):
+                return self.reply(400, {"type": "error", "error": {"type": "invalid_request_error",
+                                        "message": "body #%d: write-up request shape is wrong" % n}})
+            text = "".join(b.get("text", "") for b in blocks(msgs[0]))
+            rec = json.loads(text.split("CONDENSED_RECIPE_JSON:\n", 1)[1])
+            sid = next((s["id"] for s in rec["steps"] if s["actor"] == "user" and not s.get("reason")), None)
+            fence = "`" * 3   # never three literal backticks in this file's markdown source
+            if "truncate" in q:
+                md = ("# %s\n\n## Processing\nStep %s brightened the faint signal (inferred).\n\n" + fence
+                      + "json\n{\"inferredReasons\": [{\"step\": %s, \"reas") % (rec["journey"]["name"], sid, sid)
+                return self.reply(200, {"content": [{"type": "text", "text": md}], "stop_reason": "max_tokens"})
+            if "reasons" in q:
+                md = ("# %s\n\n## Processing\nGuard test.\n\n" + fence + "json\n%s\n" + fence + "\n") % (
+                      rec["journey"]["name"], json.dumps({"inferredReasons": json.loads(q["reasons"][0])}))
+                return self.reply(200, {"content": [{"type": "text", "text": md}], "stop_reason": "end_turn"})
+            md =("# %s\n\n## Equipment\nLoopback.\n\n## Acquisition\nLoopback.\n\n## Processing\nStep %s brightened the "
+                  "faint signal (inferred).\n\n" + fence + "json\n%s\n" + fence + "\n") % (rec["journey"]["name"], sid,
+                  json.dumps({"inferredReasons": [{"step": sid, "reason": "brighten the faint signal"}]}))
+            return self.reply(200, {"content": [{"type": "text", "text": md}], "stop_reason": "end_turn"})
         if self.path.endswith("/agent"):
             return self.reply(*self.agent_reply(req, n))
         self.reply(200, {"content": [{"type": "text", "text": json.dumps({"messages": req.get("messages"), "tools": req.get("tools"), "system": req.get("system"),
@@ -269,13 +446,33 @@ srv.serve_forever()
 PY
 ECHO_PID=$!
 # PICOPILOT_ECHO_KEEP=<dir> keeps the captured request bodies for inspection.
-trap 'if [ -n "${PICOPILOT_ECHO_KEEP:-}" ]; then cp "$ECHO_DIR"/body-* "$PICOPILOT_ECHO_KEEP"/ 2>/dev/null || true; fi; rm -f "$R" "$STALL_PORT_FILE" "$SLOT_SETTINGS"; rm -rf "$ECHO_DIR"; kill "$STALL_PID" "$ECHO_PID" 2>/dev/null || true' EXIT
 for _ in $(seq 50); do [ -s "$ECHO_PORT_FILE" ] && break; sleep 0.1; done
 [ -s "$ECHO_PORT_FILE" ] || { echo "FAIL: echo server did not start"; exit 1; }
 export PICOPILOT_SELFTEST_ECHO_URL="http://127.0.0.1:$(cat "$ECHO_PORT_FILE")/v1/messages"
 export PICOPILOT_SELFTEST_AGENT_URL="http://127.0.0.1:$(cat "$ECHO_PORT_FILE")/v1/agent"
 export PICOPILOT_SELFTEST_STREAM_BASE="http://127.0.0.1:$(cat "$ECHO_PORT_FILE")/v1"
+export PICOPILOT_SELFTEST_WRITEUP_URL="http://127.0.0.1:$(cat "$ECHO_PORT_FILE")/v1/writeup"
 export PICOPILOT_SELFTEST_FIXTURES="$HERE/fixtures"
+
+# Optional exception-logging shim (thist-hang-investigation.md item 4):
+# PICOPILOT_THROWLOG=1 builds test/throwlog.c fresh into this run's private
+# TMPDIR (never a committed binary -- see test/throwlog.c) and LD_PRELOADs it
+# into PI ONLY (a per-command env prefix below, not `export`, so nothing else
+# this script runs picks it up). Every std::bad_alloc-family throw anywhere in
+# the process then logs a backtrace. Kept available because the T-hist
+# "Out of memory" modal's actual throw site was never identified (investigation
+# doc, "Recommended fixes" #4); the next occurrence under this flag catches it.
+PICOPILOT_THROWLOG_PRELOAD=()
+if [ "${PICOPILOT_THROWLOG:-0}" = "1" ]; then
+   command -v gcc >/dev/null 2>&1 || { echo "FAIL: PICOPILOT_THROWLOG=1 needs gcc"; exit 1; }
+   THROWLOG_SO="$TMPDIR/throwlog.so"
+   gcc -shared -fPIC -O2 -o "$THROWLOG_SO" "$HERE/throwlog.c" -ldl
+   [ -f "$THROWLOG_SO" ] || { echo "FAIL: throwlog.so build failed"; exit 1; }
+   mkdir -m 700 "$PICOPILOT_PRIVATE_TMP/watchdog-logs" 2>/dev/null || [ -d "$PICOPILOT_PRIVATE_TMP/watchdog-logs" ]
+   THROWLOG_FILE="/tmp/picopilot-$(id -u)/watchdog-logs/throwlog-$(date +%Y%m%dT%H%M%S)-slot${PICOPILOT_TEST_SLOT}.txt"
+   PICOPILOT_THROWLOG_PRELOAD=( "LD_PRELOAD=$THROWLOG_SO" "THROWLOG_FILE=$THROWLOG_FILE" )
+   echo "PICOPILOT_THROWLOG=1: LD_PRELOAD=$THROWLOG_SO, log (created only if something throws) -> $THROWLOG_FILE"
+fi
 
 # Private virtual display (Xvfb). A core-side rejection can raise a MODAL
 # dialog that no module API can suppress or catch (Task 1: "PixelMath: Invalid
@@ -285,11 +482,73 @@ export PICOPILOT_SELFTEST_FIXTURES="$HERE/fixtures"
 # xvfb-run still tears down the Xvfb server (which also takes down any
 # PixInsight process the PixInsight.sh wrapper left behind).
 command -v xvfb-run >/dev/null 2>&1 || { echo "FAIL: xvfb-run not found (needed to keep dialogs off the real display)"; exit 1; }
-if ! PICOPILOT_SELFTEST_OUT="$R" xvfb-run -a -s "-screen 0 1920x1080x24" \
-        timeout 600 "$PI" -n="$PICOPILOT_TEST_SLOT" --automation-mode --no-startup-scripts -m="$SO" -r="$HERE/selftest.js" --force-exit; then
-   echo "FAIL: PI load timed out (600s) or exited non-zero"; exit 1
+
+# Section watchdog (thist-hang-investigation.md item 1). Runs alongside PI and
+# reads the very JS + module section-timing files (selftest.js's jsMark() /
+# SelfTestTiming.h's SelfTestSectionMark()) this run is about to write, plus a
+# live /proc/<pid>/maps check against the -m= module we just resolved above
+# (item 3). On a section overrun -- or a module-load mismatch -- it captures
+# an all-thread gdb backtrace (symbol names only; NEVER disassemble PI, EULA)
+# and an Xvfb screenshot into $WATCHDOG_LOG_BASE/<run>/, kills PI, and writes
+# $WATCHDOG_FAIL_MARKER for us to report below with the section name and
+# artefact paths -- instead of sitting out the full 900s `timeout` with
+# nothing to show for it.
+WATCHDOG_LOG_BASE="$PICOPILOT_PRIVATE_TMP/watchdog-logs"
+mkdir -m 700 "$WATCHDOG_LOG_BASE" 2>/dev/null || [ -d "$WATCHDOG_LOG_BASE" ] || { echo "FAIL: cannot create $WATCHDOG_LOG_BASE"; exit 1; }
+WATCHDOG_FAIL_MARKER="$HANDOFF_DIR/watchdog-fail.json"
+python3 "$HERE/watchdog.py" \
+   --slot "$PICOPILOT_TEST_SLOT" \
+   --module-so "$SO" \
+   --js-timings "$PICOPILOT_SELFTEST_JS_TIMINGS" \
+   --section-timings "$PICOPILOT_SELFTEST_SECTION_TIMINGS" \
+   --budgets "$HERE/section-budgets.json" \
+   --fail-marker "$WATCHDOG_FAIL_MARKER" \
+   --log-dir-base "$WATCHDOG_LOG_BASE" \
+   ${PICOPILOT_WATCHDOG_OVERRIDE:+--override "$PICOPILOT_WATCHDOG_OVERRIDE"} \
+   ${PICOPILOT_WATCHDOG_DEFAULT_CAP_S:+--default-cap "$PICOPILOT_WATCHDOG_DEFAULT_CAP_S"} \
+   ${PICOPILOT_WATCHDOG_FLOOR_S:+--floor "$PICOPILOT_WATCHDOG_FLOOR_S"} \
+   ${PICOPILOT_WATCHDOG_MULTIPLIER:+--multiplier "$PICOPILOT_WATCHDOG_MULTIPLIER"} \
+   >>"$WATCHDOG_LOG_BASE/driver.log" 2>&1 &
+WATCHDOG_PID=$!
+
+PI_RC=0
+env "${PICOPILOT_THROWLOG_PRELOAD[@]}" PICOPILOT_SELFTEST_OUT="$R" xvfb-run -a -s "-screen 0 1920x1080x24" \
+      timeout 900 "$PI" -n="$PICOPILOT_TEST_SLOT" --automation-mode --no-startup-scripts -m="$SO" -r="$HERE/selftest.js" --force-exit \
+   || PI_RC=$?
+
+kill "$WATCHDOG_PID" 2>/dev/null || true
+wait "$WATCHDOG_PID" 2>/dev/null || true
+
+if [ -s "$WATCHDOG_FAIL_MARKER" ]; then
+   print_timings
+   python3 - "$WATCHDOG_FAIL_MARKER" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1]))
+if d.get("reason") == "module-mismatch":
+    print("FAIL: watchdog caught a module-load mismatch")
+    print("  expected (-m=, resolved): %s" % d.get("expected"))
+    print("  actual (mapped, resolved): %s" % d.get("actual"))
+else:
+    print("FAIL: watchdog killed PI -- section %r (%s) ran %.1fs > cap %.1fs (baseline=%s)" %
+          (d.get("section"), d.get("source"), d.get("elapsed", 0.0), d.get("cap", 0.0), d.get("baseline")))
+print("  pid: %s" % d.get("pid"))
+print("  log dir: %s" % d.get("log_dir"))
+if d.get("stacks"): print("  stacks: %s" % d.get("stacks"))
+if d.get("screenshot"): print("  screenshot: %s" % d.get("screenshot"))
+PY
+   exit 1
 fi
+
+if [ "$PI_RC" -ne 0 ]; then
+   print_timings
+   echo "FAIL: PI load timed out (900s) or exited non-zero (rc=$PI_RC)"; exit 1
+fi
+print_timings
 [ -f "$R" ] || { echo "FAIL: no result file"; exit 1; }
+REAL_LIB_AFTER="$( [ -e "$REAL_LIB" ] && echo present || echo absent )"
+if [ "$REAL_LIB_BEFORE" != "$REAL_LIB_AFTER" ] || { [ -e "$REAL_LIB" ] && [ -n "$(find "$REAL_LIB" -newer "$LIB_STAMP" -print -quit)" ]; }; then
+   echo "FAIL: the self-test touched the real journey library $REAL_LIB"; exit 1
+fi
 cat "$R"
 echo
 python3 - "$R" <<'PY' || { echo "FAIL: self-test verdict not all green"; exit 1; }
@@ -312,6 +571,7 @@ required_true = [
     # increment 4
     'agentSmokeOk',
     'applyProcessOk',
+    'stringRulesOk',
     'toolTransportOk',
     'agentToolsOk',
     'agentLoopOk', 'agentWireOk',
@@ -321,6 +581,7 @@ required_true = [
     # increment 5
     'inc5SmokeOk',
     'sseParserOk',
+    'byteAppendOk',
     'streamTransportOk',
     'conversationOk', 'liveConversationOk',
     'keyStoreKeyringOk',
@@ -330,8 +591,23 @@ required_true = [
     'runPjsrOk', 'runPjsrBreakoutOk',
     'finalFixOk',
     'pinnedOk',
+    'bridgeOk',
     'rereviewFixOk',
     'reviewE4422c9Ok',
+    'keyringRetryOk',
+    # 0.2.0.0 image journey
+    'journeySpikeOk',
+    'sqliteVendorOk',
+    'historyReaderOk',
+    'stepStatsOk',
+    'journeyStoreOk',
+    'masterFactsOk',
+    'journeyTrackerOk',
+    'journeyExportOk',
+    'journeyWriteupOk', 'liveWriteupOk',
+    'journeyToolsOk', 'liveReplayOk', 'journeyUiOk',
+    'journeyWiringOk',
+    'histLandedOk',
     'ok',
 ]
 missing = [k for k in required_true if d.get(k) is not True]
@@ -343,15 +619,20 @@ if d.get('streamLoopbackSkipped') is not False: missing.append('streamLoopbackSk
 import os
 if os.environ.get('PICOPILOT_REQUIRE_LIVE') == '1':
     for k in ('anthropicSkipped', 'twoTurnSkipped', 'visionSkipped', 'liveAgentSkipped', 'liveConversationSkipped',
-              'graxpertLiveSkipped'):
+              'graxpertLiveSkipped', 'bridgeStandInSkipped', 'liveWriteupSkipped', 'liveReplaySkipped'):
         if d.get(k) is not False: missing.append(k + '==false (PICOPILOT_REQUIRE_LIVE=1)')
 print('anthropic check: %s' % ('SKIPPED (no key)' if d.get('anthropicSkipped') else 'RAN against real API'))
 print('two-turn check: %s' % ('SKIPPED (no key)' if d.get('twoTurnSkipped') else 'RAN against real API'))
 print('vision check: %s' % ('SKIPPED (no key)' if d.get('visionSkipped') else 'RAN against real API, answer=%r' % d.get('visionAnswer')))
 print('live agent check: %s' % ('SKIPPED (no key)' if d.get('liveAgentSkipped') else 'RAN against real API, ratio=%r log=%r' % (d.get('liveAgentRatio'), d.get('liveAgentLog'))))
 print('live conversation check: %s' % ('SKIPPED (no key)' if d.get('liveConversationSkipped') else 'RAN against real API, cacheRead=%r trimThought=%r trimTransformations=%r%s' % (d.get('liveCacheRead'), d.get('liveTrimThought'), d.get('liveTrimTransformations'), ('' if d.get('liveConversationOk') else ' FAILED: %r' % d.get('liveConversationDetail', {}).get('trimLiveReason')))))
+print('live write-up check: %s' % ('SKIPPED (no key)' if d.get('liveWriteupSkipped') else 'RAN against real API (claude-haiku-4-5), %r' % d.get('liveWriteupDetail')))
+lr = d.get('liveReplayDetail') or {}
+print('live replay check: %s' % ('SKIPPED (no key)' if d.get('liveReplaySkipped') else 'RAN against real API, recorded=%r replayed=%r final=%r requests=%r%s' % (lr.get('recorded'), lr.get('replayed'), lr.get('finalMedian'), lr.get('requests'), ('' if d.get('liveReplayOk') else ' FAILED: %r' % d.get('liveReplayError')))))
 pd = d.get('pinnedDetail', {})
-print('GraXpert live check: %s' % (('SKIPPED: %s' % pd.get('liveSkipReason')) if d.get('graxpertLiveSkipped') is not False else 'RAN, %r' % {k: pd.get('live', {}).get(k) for k in ('seconds', 'gradientBefore', 'gradientAfter', 'log')}))
+print('GraXpert live check: %s' % (('SKIPPED: %s' % pd.get('liveSkipReason')) if d.get('graxpertLiveSkipped') is not False else 'RAN, %r lockWaitMs=%r' % ({k: pd.get('live', {}).get(k) for k in ('seconds', 'gradientBefore', 'gradientAfter', 'log')}, pd.get('liveLock', {}).get('waitedMs'))))
+bd = d.get('bridgeDetail', {})
+print('GraXpert no-effect detection (stand-in): %s; digest 60 MP RGB float = %r ms; checks=%r' % (('SKIPPED: %s' % bd.get('standInSkipReason')) if d.get('bridgeStandInSkipped') is not False else 'RAN (lockWaitMs=%r)' % bd.get('lock', {}).get('waitedMs'), bd.get('digest60MP', {}).get('ms'), bd.get('checks')))
 rd = d.get('rereviewFixDetail', {})
 print('describe_process sizes (chars, cap %r): %r; list_processes chars=%r' % (rd.get('describeSizes', {}).get('cap'), rd.get('describeSizes', {}).get('top10'), rd.get('listProcesses', {}).get('chars')))
 if d.get('liveModelSwitch') is not None:

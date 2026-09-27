@@ -2,9 +2,12 @@
 // Copyright (c) 2026 Scott Carter. MIT License.
 
 #include "PjsrRunner.h"
+#include "EvalGuard.h"
 #include "PICopilotModule.h"
+#include "TextSafety.h"
 #include "Utf8.h"
 
+#include <pcl/Console.h>
 #include <pcl/ByteArray.h>
 #include <pcl/Exception.h>
 #include <pcl/StringList.h>
@@ -64,8 +67,14 @@ const char* const kHelpersJs =
 nlohmann::json EvalJson( const std::string& body )
 {
    const std::string src = std::string( "(function(){ " ) + kHelpersJs + " " + body + " })()";
-   const Variant v = ThePICopilotModule->EvaluateScript( String( src.c_str() ), "JavaScript" );
-   return nlohmann::json::parse( U8( v.ToString() ) );
+   String r;
+   {
+      // Held for the call so timer-driven readers (HistoryReader, the journey
+      // tracker) defer instead of nesting an EvaluateScript inside this one.
+      EvalDepthGuard guard;
+      r = ThePICopilotModule->EvaluateScript( String( src.c_str() ), "JavaScript" ).ToString();
+   }
+   return nlohmann::json::parse( U8( r ) );
 }
 
 // A line reported by pcLine() as a 1-based line of the model's code; 0 when unknown.
@@ -129,24 +138,7 @@ String ScriptConsoleText( const String& log )
    return out;
 }
 
-// Unicode general category Cf (format characters), Unicode 15.1.
-struct CpRange { uint32 first, last; };
-const CpRange kFormatChars[] =
-{
-   { 0x00AD, 0x00AD }, { 0x0600, 0x0605 }, { 0x061C, 0x061C }, { 0x06DD, 0x06DD }, { 0x070F, 0x070F },
-   { 0x0890, 0x0891 }, { 0x08E2, 0x08E2 }, { 0x180E, 0x180E }, { 0x200B, 0x200F }, { 0x202A, 0x202E },
-   { 0x2060, 0x2064 }, { 0x2066, 0x206F }, { 0xFEFF, 0xFEFF }, { 0xFFF9, 0xFFFB }, { 0x110BD, 0x110BD },
-   { 0x110CD, 0x110CD }, { 0x13430, 0x1343F }, { 0x1BCA0, 0x1BCA3 }, { 0x1D173, 0x1D17A }, { 0xE0001, 0xE0001 },
-   { 0xE0020, 0xE007F }
-};
-
-bool IsFormatChar( uint32 c )
-{
-   for ( const CpRange& r : kFormatChars )
-      if ( c >= r.first && c <= r.last )
-         return true;
-   return false;
-}
+// IsFormatChar(): TextSafety.h (shared with message display).
 
 // What kind of refused character c is; nullptr when it is allowed.
 const char* RefusedKind( uint32 c )
@@ -281,8 +273,36 @@ PjsrCheck CheckPjsrSyntax( const String& code )
    return c;
 }
 
+namespace
+{
+int g_scriptsRunning = 0;
+struct ScriptRunningScope
+{
+   ScriptRunningScope()  { ++g_scriptsRunning; }
+   ~ScriptRunningScope() { --g_scriptsRunning; }
+};
+} // namespace
+
+bool IsPjsrScriptRunning()
+{
+   return g_scriptsRunning > 0;
+}
+
 PjsrRun RunPjsr( const String& code, const IsoString& targetViewId )
 {
+   const ScriptRunningScope running;
+   // Task 7 re-review R5, MEASURED headless: a model script that opens a file
+   // (ImageWindow.open) leaves the Process Console's abort ENABLED after
+   // EvaluateScript returns, and the journey recorder's (and the tool loop's)
+   // busy gate then reads "a script is running" until something resets it.
+   // (In the GUI, File > Open and a console-run script that opens a file left it
+   // disabled.) The script has ended here, so the state it found is restored.
+   struct AbortRestore
+   {
+      bool wasEnabled = true;
+      AbortRestore() { try { wasEnabled = Console().AbortEnabled(); } catch ( ... ) {} }
+      ~AbortRestore() { try { if ( !wasEnabled && Console().AbortEnabled() ) Console().DisableAbort(); } catch ( ... ) {} }
+   } abortRestore;
    PjsrRun r;
    try
    {
@@ -357,6 +377,11 @@ PjsrRun RunPjsr( const String& code, const IsoString& targetViewId )
       r.consoleTruncated = true;
    }
    return r;
+}
+
+nlohmann::json EvaluateAsciiJson( const std::string& body )
+{
+   return EvalJson( body );
 }
 
 } // namespace pcl

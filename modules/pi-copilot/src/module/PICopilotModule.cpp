@@ -14,6 +14,9 @@
 #include "PICopilotModule.h"
 #include "PICopilotProcess.h"
 #include "PICopilotInterface.h"
+#include "JourneyConstants.h"
+#include "JourneySpikeProbe.h"
+#include "JourneyTracker.h"
 
 namespace pcl
 {
@@ -40,7 +43,7 @@ IsoString PICopilotModule::Name() const
 String PICopilotModule::Description() const
 {
    return "PI Copilot v" PICOPILOT_STR(PICOPILOT_MODULE_VERSION_MAJOR) " — In-app AI assistant for PixInsight. "
-          "Chat that sees the active view, streams its replies and works on your images: Copilot (acts, undoable), Guided (asks first), Advisor (read-only); integrates files with ImageIntegration; optional scripts you approve one by one.";
+          "Chat that sees the active view, streams its replies and works on your images: Copilot (acts, undoable), Guided (asks first), Advisor (read-only). Records each image's processing journey from the stacked master; keep your best as a process icon set, a recipe and a write-up, and replay it on new data.";
 }
 
 String PICopilotModule::Company() const
@@ -80,7 +83,24 @@ void PICopilotModule::GetReleaseDate( int& year, int& month, int& day ) const
 {
    year  = 2026;
    month = 9;
-   day   = 25;
+   day   = 27;
+}
+
+void PICopilotModule::OnLoad()
+{
+   // Test-only (no-op unless run by test/run-selftest.sh): the plan's Task 1
+   // spike records which image notifications and timer ticks reach the module
+   // while the PI Copilot panel has never been opened.
+   ArmJourneySpikeProbeIfSelfTest();
+   // Image journey (0.2.0.0): always recording, panel open or not (Ruling 22).
+   if ( PICopilotJourneyServiceStartsOnLoad )
+      JourneyService::Instance().Start();
+}
+
+void PICopilotModule::OnUnload()
+{
+   JourneyService::Instance().Stop();
+   DisarmJourneySpikeProbe();
 }
 
 } // namespace pcl

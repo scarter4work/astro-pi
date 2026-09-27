@@ -12,6 +12,7 @@
 #include "Keyring.h"
 #include "ModelCatalog.h"
 #include "PanelPlacement.h"
+#include "GraXpertSelfTestLock.h"
 #include "PICopilotInc5SelfTest.h"
 #include "PICopilotModule.h"
 #include "ProcessApply.h"
@@ -23,6 +24,7 @@
 #include "TurnEndNotes.h"
 #include "Utf8.h"
 #include "ViewCapture.h"
+#include "SelfTestTiming.h"
 
 #include <pcl/AutoViewLock.h>
 #include <pcl/ByteArray.h>
@@ -41,6 +43,7 @@
 #include <pcl/View.h>
 
 #include <algorithm>
+#include <cctype>
 #include <chrono>
 #include <cmath>
 #include <cstdint>
@@ -49,11 +52,16 @@
 #include <filesystem>
 #include <fstream>
 #include <functional>
+#include <map>
 #include <set>
 #include <string>
 #include <thread>
 #include <vector>
 
+#include <cerrno>
+#include <cstring>
+#include <fcntl.h>
+#include <sys/file.h>
 #include <sys/stat.h>
 #include <unistd.h>
 
@@ -167,14 +175,6 @@ private:
    double     m_meanOfMeans = 0;
 };
 
-std::set<std::string> OpenMainViewIds()
-{
-   std::set<std::string> ids;
-   for ( const ImageWindow& w : ImageWindow::AllWindows() )
-      ids.insert( std::string( w.MainView().Id().c_str() ) );
-   return ids;
-}
-
 void ForceCloseWindows( const std::vector<std::string>& ids )
 {
    for ( const std::string& id : ids )
@@ -224,6 +224,7 @@ private:
 
    ImageWindow m_window;
 };
+
 
 double Inc5Median( View v, int channel )
 {
@@ -394,6 +395,7 @@ bool RunInc5SelfTest( nlohmann::json& out )
    bool allOk = true;
 
    // ---- Section B0: platform smoke (Task 1) --------------------------------
+   SelfTestSectionMark( "B0 platform smoke" );
    {
       bool iiOk = false, parseNoExecOk = false, breakoutOk = false, syntaxLineOk = false,
            runtimeLineOk = false, consoleOk = false, throwOk = false;
@@ -638,6 +640,7 @@ bool RunInc5SelfTest( nlohmann::json& out )
    }
 
    // ---- Section B1: SSE parser + assembler (Task 2) --------------------------
+   SelfTestSectionMark( "B1 SSE parser + assembler" );
    {
       bool s1Ok = true, crlfOk = false, errorOk = false, unknownDeltaOk = false, truncOk = false,
            thinkingOk = false, badJsonOk = false, orderOk = false, fixturesOk = true,
@@ -871,7 +874,28 @@ bool RunInc5SelfTest( nlohmann::json& out )
       allOk = allOk && ok;
    }
 
+   // ---- Section B1b: byte-exact appends (stream chunks, secret-tool output) ---
+   // IsoString::Append( ptr, n ) clamps n to strlen( ptr ): on a buffer that is
+   // not NUL-terminated it over-reads (ASan) and it truncates at an embedded NUL.
+   // The embedded-NUL case makes that deterministic without ASan: every byte of
+   // the source, including the NUL and the bytes after it, must arrive.
+   SelfTestSectionMark( "B1b byte-exact append" );
+   {
+      bool ok = false;
+      nlohmann::json detail = nlohmann::json::object();
+      const char src[] = { 'a', 'b', '\0', 'c', 'd' };   // no terminator
+      IsoString s( "x" );
+      AppendBytes( s, src, sizeof( src ) );
+      AppendBytes( s, src, 0 );
+      ok = s.Length() == 6 && s[0] == 'x' && s[1] == 'a' && s[3] == '\0' && s[4] == 'c' && s[5] == 'd';
+      detail["length"] = int( s.Length() );
+      out["byteAppendDetail"] = detail;
+      out["byteAppendOk"] = ok;
+      allOk = allOk && ok;
+   }
+
    // ---- Section B2: streaming transport (Task 3) ------------------------------
+   SelfTestSectionMark( "B2 streaming transport" );
    {
       using clock = std::chrono::steady_clock;
       auto secondsSince = []( clock::time_point t0 ) { return std::chrono::duration<double>( clock::now() - t0 ).count(); };
@@ -1096,6 +1120,7 @@ bool RunInc5SelfTest( nlohmann::json& out )
    }
 
    // ---- Section B3: models, caching/binding shape, history budget (Task 4) ----
+   SelfTestSectionMark( "B3 models, caching/binding shape, history budget" );
    {
       bool modelsOk = false, shapeOk = false, wireOk = false, trimOk = false, sessionTrimOk = true, noTrimOk = false;
       bool thinkOnlyOk = false, trimResetOk = false;
@@ -1284,6 +1309,7 @@ bool RunInc5SelfTest( nlohmann::json& out )
    }
 
    // ---- Section B3L: gated LIVE caching + thinking binding (Task 4) ------------
+   SelfTestSectionMark( "B3L gated LIVE caching + thinking binding" );
    {
       bool skipped = true, ok = true;
       nlohmann::json detail = nlohmann::json::object();
@@ -1354,7 +1380,20 @@ bool RunInc5SelfTest( nlohmann::json& out )
                   seconds.push_back( std::chrono::duration<double>( std::chrono::steady_clock::now() - t0 ).count() );
                   ++requests;
                   if ( !r.ok )
+                  {
                      d["bindingError"] = { { "status", r.httpStatus }, { "error", U8( r.error ) } };
+                     // Task T-diag (tooluse-flake-investigation.md): if this IS
+                     // that flake, record the stop_reason and the raw block
+                     // types so a future occurrence is classifiable without a
+                     // live repro -- these two are the only reply fields that
+                     // survive ParseMessagesResponse clearing everything else
+                     // on failure. No retry: the check stays strict.
+                     if ( r.emptyToolUseReply )
+                     {
+                        d["bindingError"]["stopReason"] = "tool_use";
+                        d["bindingError"]["blockTypes"] = r.emptyToolUseBlockTypes;
+                     }
+                  }
                   allArrays = allArrays && (binding ? r.inputTransformations.is_array() : r.inputTransformations.is_null());
                   transformations.push_back( r.inputTransformations );
                   if ( r.contentBlocks.is_array() )
@@ -1569,6 +1608,7 @@ bool RunInc5SelfTest( nlohmann::json& out )
    }
 
    // ---- Section B4: keyring-first key storage (Task 5) ------------------------
+   SelfTestSectionMark( "B4 keyring-first key storage" );
    {
       bool missOk = false, saveOk = false, loadOk = false, migrateOk = false, fallbackOk = false,
            clearOk = false, noLeakOk = true;
@@ -1647,6 +1687,9 @@ bool RunInc5SelfTest( nlohmann::json& out )
       Settings::Remove( sk );
 
       const bool ok = missOk && saveOk && loadOk && migrateOk && fallbackOk && clearOk && noLeakOk;
+      // Which sub-check failed (a one-off red B4 was undiagnosable without this).
+      detail["verdicts"] = { { "miss", missOk }, { "save", saveOk }, { "load", loadOk }, { "migrate", migrateOk },
+                             { "fallback", fallbackOk }, { "clear", clearOk }, { "noLeak", noLeakOk } };
       out["keyStoreDetail"] = detail;
       out["keyStoreError"] = U8( error );
       out["keyStoreKeyringOk"] = ok;
@@ -1654,6 +1697,7 @@ bool RunInc5SelfTest( nlohmann::json& out )
    }
 
    // ---- Section B5: settings, placement side, failure wording (Task 6) ---------
+   SelfTestSectionMark( "B5 settings, placement side, failure wording" );
    {
       bool settingsOk = false, placementOk = false, wordingOk = true, kindOk = false, refusalOk = false;
       nlohmann::json detail = nlohmann::json::object();
@@ -1952,7 +1996,12 @@ bool RunInc5SelfTest( nlohmann::json& out )
             return String( path.c_str() );
          };
          KeyringId slow = id;
-         slow.program = script( "slow", "sleep 1\nexit 1" );
+         // Only the "lookup" call sleeps: a silent miss (exit 1, empty
+         // stdout+stderr, exactly what this produces) now makes KeyringLookup
+         // (T-keyring) issue one disambiguating `secret-tool search` call
+         // too, and that second call must stay fast so this test still
+         // measures exactly one slow call / one wait-notifier cycle.
+         slow.program = script( "slow", "if [ \"$1\" = lookup ]; then sleep 1; fi\nexit 1" );
          KeyringId fast = id;
          fast.program = script( "fast", "exit 1" );
          std::vector<int> events;
@@ -2001,6 +2050,7 @@ bool RunInc5SelfTest( nlohmann::json& out )
    }
 
    // ---- Section B6: process safety policy (Task 7) -----------------------------
+   SelfTestSectionMark( "B6 process safety policy" );
    {
       bool coverageOk = false, idsOk = false, verdictOk = false, denyToolOk = false, confirmToolOk = false;
       nlohmann::json detail = nlohmann::json::object();
@@ -2200,6 +2250,7 @@ bool RunInc5SelfTest( nlohmann::json& out )
    }
 
    // ---- Section B7: global processes / run_global_process (Task 8) --------------
+   SelfTestSectionMark( "B7 global processes / run_global_process" );
    {
       bool precheckOk = true, runOk = false, guidedOk = false, advisorOk = false, safetyOk = false, denyOk = false,
            schemaOk = false, redirectOk = false, cleanupOk = false;
@@ -2260,7 +2311,7 @@ bool RunInc5SelfTest( nlohmann::json& out )
             return r;
          };
          struct Case { const char* name; IsoString process; nlohmann::json params; nlohmann::json tables; std::string expect; };
-         const std::vector<Case> cases = {
+         const std::vector<Case> cases = {   // pcl-move-ok: const, read only
             { "noTable", "ImageIntegration", nlohmann::json::object(), nlohmann::json::object(),
               "ImageIntegration.images is required: pass table_parameters.images as rows [enabled, path, drizzlePath, "
               "localNormalizationDataPath]" },
@@ -2541,6 +2592,7 @@ bool RunInc5SelfTest( nlohmann::json& out )
    }
 
    // ---- Section B8: run_pjsr (Task 9) ------------------------------------------
+   SelfTestSectionMark( "B8 run_pjsr" );
    {
       bool checkOk = false, runOk = false, errorOk = false, boundOk = false, valueBoundOk = false, pixelOk = false,
            offOk = false, declineOk = false, approveOk = false, guidedOk = false, syntaxNoDialogOk = false,
@@ -2762,6 +2814,7 @@ bool RunInc5SelfTest( nlohmann::json& out )
    }
 
    // ---- Section B8a: run_pjsr breakout suite (Task 9) ---------------------------
+   SelfTestSectionMark( "B8a run_pjsr breakout suite" );
    // The model's script reaches the engine ONLY as data (ScriptLiteral). Each
    // hostile text must either parse as exactly its own source, or fail as a
    // SyntaxError -- and the sentinel (a window named PCBreakout) must NEVER
@@ -2802,7 +2855,7 @@ bool RunInc5SelfTest( nlohmann::json& out )
 
          const String sentinel = "new ImageWindow( 8, 8, 1, 32, true, false, \"PCBreakout\" );";
          struct BreakoutCase { const char* name; String code; };
-         const std::vector<BreakoutCase> list = {
+         const std::vector<BreakoutCase> list = {   // pcl-move-ok: const, read only
             { "quote",         "var s = \"a\\\"b\"; return s; \" " + sentinel },
             { "backslash",     "return \"\\\\\"; \\\" " + sentinel },
             { "commentClose",  "*/ " + sentinel + " /*" },
@@ -2890,6 +2943,7 @@ bool RunInc5SelfTest( nlohmann::json& out )
    }
 
    // ---- Section B9: final-review fixes (inc 5) ---------------------------------
+   SelfTestSectionMark( "B9 final-review fixes" );
    {
       bool globalGateOk = false, globalRuntimeOk = false, globalToolOk = false, nulOk = false, gmmOk = false,
            tableAliasOk = false, wordingOk = false, unknownToolOk = false, capOk = false, promptOk = false;
@@ -3133,10 +3187,13 @@ bool RunInc5SelfTest( nlohmann::json& out )
          const std::string uAdvisor = ExecuteTool( ToolCall{ "u3", "nope", nlohmann::json::object() }, tc ).content.at( 0 ).at( "text" );
          detail["unknownTool"] = { uCopilot, uScripts, uAdvisor };
          unknownToolOk = uCopilot == "unknown tool 'nope'; available: list_processes, describe_process, get_view_context, "
-                                     "apply_process, run_global_process"
+                                     "apply_process, run_global_process, list_journeys, get_journey, compare_to_journey, "
+                                     "mark_journey_best, start_journey, replay_journey"
                       && uScripts == "unknown tool 'nope'; available: list_processes, describe_process, get_view_context, "
-                                     "apply_process, run_global_process, run_pjsr"
-                      && uAdvisor == "unknown tool 'nope'; available: list_processes, describe_process, get_view_context";
+                                     "apply_process, run_global_process, list_journeys, get_journey, compare_to_journey, "
+                                     "mark_journey_best, start_journey, replay_journey, run_pjsr"
+                      && uAdvisor == "unknown tool 'nope'; available: list_processes, describe_process, get_view_context, "
+                                     "list_journeys, get_journey, compare_to_journey, mark_journey_best";
 
          // 7. Tool-result cap.
          {
@@ -3191,6 +3248,7 @@ bool RunInc5SelfTest( nlohmann::json& out )
    }
 
    // ---- Section B10: pinned parameters -- GraXpert.appPath ----------------------
+   SelfTestSectionMark( "B10 pinned parameters" );
    {
       bool policyOk = false, modelRefusedOk = false, missingOk = false, invalidOk = false, resolvedOk = false,
            dialogOk = false, liveOk = false, liveSkipped = true;
@@ -3266,7 +3324,7 @@ bool RunInc5SelfTest( nlohmann::json& out )
                value = fixture;
                return true;
             } );
-            std::vector<PinnedParameter> pins;
+            std::vector<PinnedParameter> pins;   // pcl-move-ok: push_back/clear + read only
             auto resolve = [&]( const String& v, bool present = true )
             {
                fixture = v;
@@ -3364,6 +3422,16 @@ bool RunInc5SelfTest( nlohmann::json& out )
          else
          {
             liveSkipped = false;
+            // Serialized across concurrent test instances (the core's shared
+            // temp files; see GraXpertCoreSelfTestLock). Held until the end of
+            // this block, i.e. across the whole real run.
+            SelfTestSectionMark( "B10 live: waiting for the GraXpert lock" );
+            GraXpertCoreSelfTestLock coreLock( 300 );
+            SelfTestSectionMark( "B10 live: replace mode" );
+            detail["liveLock"] = { { "path", U8( GraXpertCoreSelfTestLock::Path() ) }, { "waitedMs", coreLock.WaitedMs() },
+                                   { "error", U8( coreLock.Error() ) } };
+            if ( !coreLock.Locked() )
+               throw Error( "GraXpert live check: " + coreLock.Error() );
             SetGlobalSettingReaderForSelfTest( [&]( const IsoString&, String& value ) { value = appPath; return true; } );
             Inc5TestWindow gw( "PCGraXpertLive", 256, 256, 1, 0 );
             {
@@ -3403,6 +3471,30 @@ bool RunInc5SelfTest( nlohmann::json& out )
                { { "process_id", "GraXpert" }, { "parameters", { { "backgroundExtraction", true }, { "replaceImage", true } } } } }, lc );
             const double secs = std::chrono::duration<double>( std::chrono::steady_clock::now() - t0 ).count();
             edgeMeans( l1, r1 );
+            SelfTestSectionMark( "B10 live: new-window mode" );
+            // Fix round 1 (T-graxpert): new-window mode with the REAL program
+            // -- its result window must be attributed to the run (History
+            // starts with a GraXpert step) and named in resultWindows.
+            const auto tw0 = std::chrono::steady_clock::now();
+            const ToolOutcome keep = ExecuteTool( ToolCall{ "glk", "apply_process",
+               { { "process_id", "GraXpert" }, { "parameters", { { "backgroundExtraction", true }, { "replaceImage", false } } } } }, lc );
+            const double keepSecs = std::chrono::duration<double>( std::chrono::steady_clock::now() - tw0 ).count();
+            nlohmann::json keepSummary;
+            try { keepSummary = nlohmann::json::parse( keep.content.at( 0 ).at( "text" ).get<std::string>() ); } catch ( ... ) {}
+            const nlohmann::json resultWindows = keepSummary.value( "resultWindows", nlohmann::json::array() );
+            bool keepNamed = resultWindows.size() == 1;
+            for ( const auto& id : resultWindows )
+            {
+               const std::string s = id.is_string() ? id.get<std::string>() : std::string();
+               keepNamed = keepNamed && s.rfind( "GraXpert_background_extraction", 0 ) == 0;
+               ImageWindow rw = ImageWindow::WindowById( IsoString( s.c_str() ) );
+               if ( !rw.IsNull() )
+                  rw.ForceClose();
+            }
+            detail["liveNewWindow"] = { { "result", keep.content.at( 0 ).at( "text" ) }, { "log", U8( keep.logLine ) },
+                                        { "seconds", keepSecs } };
+            const bool keepOk = !keep.isError && keepNamed;
+            SelfTestSectionMark( "B10 live: done" );
             SetGlobalSettingReaderForSelfTest( GlobalSettingReader() );
             nlohmann::json summary;
             try { summary = nlohmann::json::parse( run.content.at( 0 ).at( "text" ).get<std::string>() ); } catch ( ... ) {}
@@ -3411,7 +3503,7 @@ bool RunInc5SelfTest( nlohmann::json& out )
             detail["live"] = { { "result", run.content.at( 0 ).at( "text" ) }, { "log", U8( run.logLine ) },
                                { "seconds", secs }, { "gradientBefore", r0 - l0 }, { "gradientAfter", r1 - l1 },
                                { "confirms", liveConfirms } };
-            liveOk = !run.isError && liveConfirms == 0
+            liveOk = !run.isError && liveConfirms == 0 && keepOk
                   && summary.value( "pinnedParameters", nlohmann::json::object() ).value( "appPath", std::string() ) == U8( canonical )
                   && !summary.value( "parametersSet", nlohmann::json::object() ).contains( "appPath" )
                   && (r0 - l0) > 0.2 && std::fabs( r1 - l1 ) < 0.25*(r0 - l0);
@@ -3437,7 +3529,376 @@ bool RunInc5SelfTest( nlohmann::json& out )
       allOk = allOk && ok;
    }
 
+   // ---- Section B10b: external-program bridges -- "ok but no effect" (T-graxpert)
+   // PixInsight's GraXpert core process reports success (and records a History
+   // step) even when the external program did nothing. apply_process must say
+   // so, distinctly, for the processes in ExternalProgramBridges() -- and only
+   // for them. Deterministic: a stand-in "GraXpert" program that writes no
+   // result reproduces the race's "ok but unchanged" outcome without a race.
+   SelfTestSectionMark( "B10b external-program bridges (T-graxpert)" );
+   {
+      bool digestOk = false, tableOk = false, scanOk = false, replaceOk = false, failExitOk = false,
+           newWindowOk = false, controlOk = false, budgetOk = false, unrelatedOk = false, previewFreshOk = false,
+           previewPriorOk = false;
+      bool standInSkipped = true;
+      nlohmann::json detail = nlohmann::json::object();
+      String error;
+      try
+      {
+         // -- 1. ImageContentDigest: every channel (alpha too), geometry, type.
+         {
+            auto make = []( int w, int h, int n, float v )
+            {
+               Image img( w, h, ColorSpace::Gray );
+               img.AllocateData( w, h, n, n >= 3 ? ColorSpace::RGB : ColorSpace::Gray );
+               img.Fill( v );
+               return img;
+            };
+            Image a = make( 64, 48, 4, 0.25f ), b = make( 64, 48, 4, 0.25f );   // RGB + alpha
+            const uint64 da = ImageContentDigest( ImageVariant( &a ) ), db = ImageContentDigest( ImageVariant( &b ) );
+            b( 63, 47, 3 ) = 0.2500001f;                                         // last sample of the ALPHA channel
+            const uint64 dAlpha = ImageContentDigest( ImageVariant( &b ) );
+            b( 63, 47, 3 ) = 0.25f;
+            b( 0, 0, 1 ) = 0.26f;                                                // first sample of channel 1
+            const uint64 dCh1 = ImageContentDigest( ImageVariant( &b ) );
+            b( 0, 0, 1 ) = 0.25f;
+            const uint64 dBack = ImageContentDigest( ImageVariant( &b ) );
+            Image c = make( 48, 64, 4, 0.25f );                                  // same samples, other geometry
+            UInt16Image u;
+            u.AllocateData( 64, 48, 4, ColorSpace::RGB );
+            u.Zero();
+            Image z = make( 64, 48, 4, 0.0f );                                   // zero bytes as float vs uint16
+            const uint64 dGeom = ImageContentDigest( ImageVariant( &c ) );
+            const uint64 dU16 = ImageContentDigest( ImageVariant( &u ) ), dZ = ImageContentDigest( ImageVariant( &z ) );
+            // A region of a larger image digests like an image of the same pixels
+            // (a preview's baseline is the main image's pixels in its rectangle).
+            Image host = make( 100, 90, 4, 0.5f );
+            for ( int c = 0; c < 4; ++c )
+               for ( int y = 0; y < 48; ++y )
+                  for ( int x = 0; x < 64; ++x )
+                     host( 20 + x, 30 + y, c ) = 0.25f;
+            const uint64 dRegion = ImageContentDigest( ImageVariant( &host ), Rect( 20, 30, 84, 78 ) );
+            const uint64 dRegionOff = ImageContentDigest( ImageVariant( &host ), Rect( 21, 30, 85, 78 ) );
+            digestOk = da == db && dAlpha != da && dCh1 != da && dBack == da && dGeom != da && dU16 != dZ
+                    && dRegion == da && dRegionOff != da;
+            detail["digestRegion"] = { { "regionEqualsImage", dRegion == da }, { "shiftedRegionDiffers", dRegionOff != da } };
+            detail["digest"] = { { "equal", da == db }, { "alphaDiffers", dAlpha != da }, { "ch1Differs", dCh1 != da },
+                                 { "restored", dBack == da }, { "geometryDiffers", dGeom != da },
+                                 { "sampleTypeDiffers", dU16 != dZ } };
+
+            // Cost budget: a 60 MP RGB 32-bit float image (720 MB), the
+            // largest a user plausibly runs GraXpert on; the check pays this
+            // twice per bridged apply (before + after).
+            Image big;
+            big.AllocateData( 9504, 6336, 3, ColorSpace::RGB );   // 60.2 MP
+            big.Fill( 0.125f );
+            const auto t0 = std::chrono::steady_clock::now();
+            const uint64 dBig = ImageContentDigest( ImageVariant( &big ) );
+            const double ms = std::chrono::duration<double, std::milli>( std::chrono::steady_clock::now() - t0 ).count();
+            // Generous against machine load; a real regression (e.g. per-sample
+            // virtual calls) costs many seconds.
+            budgetOk = ms < 2500 && dBig != 0;
+            detail["digest60MP"] = { { "width", 9504 }, { "height", 6336 }, { "channels", 3 }, { "ms", ms },
+                                     { "budgetMs", 2500 } };
+         }
+
+         // -- 2. The table: explicit, installed, its switch parameter real.
+         bool installed = false;
+         try { installed = Process( IsoString( "GraXpert" ) ).Id() == "GraXpert"; } catch ( ... ) {}
+         {
+            const ExternalProgramBridge* gx = FindExternalProgramBridge( "GraXpert" );
+            nlohmann::json rows = nlohmann::json::array();
+            bool rowsOk = gx != nullptr && FindExternalProgramBridge( "PixelMath" ) == nullptr;
+            const nlohmann::json& pol = CompiledProcessSafety();
+            for ( const ExternalProgramBridge& b : ExternalProgramBridges() )
+            {
+               bool paramOk = false, pinnedProgram = false;
+               try
+               {
+                  const Process P( IsoString( b.processId ) );
+                  paramOk = P.Id() == b.processId && ProcessParameter( P, IsoString( b.replaceParameter ) ).IsBoolean();
+               }
+               catch ( ... ) {}
+               // The program it launches is pinned (never model-chosen).
+               const nlohmann::json pins = pol.value( "pinnedParameters", nlohmann::json::object() )
+                                              .value( b.processId, nlohmann::json::object() );
+               for ( const auto& kv : pins.items() )
+                  if ( kv.value().is_object() && kv.value().value( "kind", "" ) == "executable" )
+                     pinnedProgram = true;
+               rows.push_back( { { "process", b.processId }, { "replaceParameter", b.replaceParameter },
+                                 { "switchIsBoolean", paramOk }, { "programPinned", pinnedProgram } } );
+               // Not installed: only the policy half can be checked.
+               rowsOk = rowsOk && pinnedProgram && (paramOk || !installed);
+            }
+            tableOk = rowsOk;
+            detail["table"] = rows;
+         }
+
+         // -- 3. Catalog scan (membership evidence, metadata only -- no
+         // instance is built: some plug-ins crash when instantiated). Every
+         // installed process with a parameter that names an external
+         // program must be in the table, or reviewed here as not a bridge.
+         {
+            // Whole camelCase words of an id ("appPath" -> app, path).
+            auto words = []( const std::string& id )
+            {
+               std::vector<std::string> w;
+               std::string cur;
+               for ( size_t i = 0; i < id.size(); ++i )
+               {
+                  const unsigned char c = static_cast<unsigned char>( id[i] );
+                  if ( !std::isalnum( c ) )
+                  {
+                     if ( !cur.empty() )
+                        w.push_back( cur );
+                     cur.clear();
+                     continue;
+                  }
+                  if ( std::isupper( c ) && !cur.empty()
+                    && (std::islower( static_cast<unsigned char>( id[i - 1] ) ) || std::isdigit( static_cast<unsigned char>( id[i - 1] ) )
+                        || (i + 1 < id.size() && std::islower( static_cast<unsigned char>( id[i + 1] ) ))) )
+                  {
+                     w.push_back( cur );
+                     cur.clear();
+                  }
+                  cur += char( std::tolower( c ) );
+               }
+               if ( !cur.empty() )
+                  w.push_back( cur );
+               return w;
+            };
+            static const std::set<std::string> kProgramWords = { "app", "application", "program", "executable", "exec",
+                                                                 "exe", "launch", "launcher", "binary", "cli", "command",
+                                                                 "python", "tool" };
+            auto programLike = [&]( const std::string& id )
+            {
+               for ( const std::string& w : words( id ) )
+                  if ( kProgramWords.count( w ) )
+                     return true;
+               return false;
+            };
+            // Reviewed: hits that do NOT launch an external program.
+            // (First scan, PixInsight 1.9.5, 2026-09-26: exactly these + GraXpert.)
+            static const std::map<std::string, std::string> notBridges = {
+               { "APASS", "'command' runs a catalog-database operation inside PixInsight; 'generateBinaryOutput' "
+                          "is an output-file option (policy: confirmAlways)" },
+               { "Gaia", "'command' runs a catalog-database operation inside PixInsight; 'generateBinaryOutput' "
+                         "is an output-file option (policy: confirmAlways)" },
+               { "IndigoDeviceController", "'serverCommand'/'getCommand*' talk to an INDIGO server over the "
+                                           "network, not a program run through files (policy: deny)" },
+               { "IndigoMount", "'Command' is a mount command sent to an INDIGO server (policy: deny)" },
+               { "MultiscaleGradientCorrection", "'command' selects a MARS database operation run inside "
+                                                 "PixInsight (policy: confirmWhen command != \"\")" },
+               { "Preferences", "'Application_*' are PixInsight's own settings (policy: deny)" },
+            };
+            nlohmann::json hits = nlohmann::json::object();
+            std::vector<std::string> unreviewed;
+            for ( const Process& P : Process::AllProcesses() )
+            {
+               const std::string pid( P.Id().c_str() );
+               nlohmann::json ids = nlohmann::json::array();
+               for ( const ProcessParameter& p : P.Parameters() )
+               {
+                  if ( programLike( std::string( p.Id().c_str() ) ) )
+                     ids.push_back( std::string( p.Id().c_str() ) );
+                  if ( p.IsTable() )
+                     for ( const ProcessParameter& c : p.TableColumns() )
+                        if ( programLike( std::string( c.Id().c_str() ) ) )
+                           ids.push_back( std::string( p.Id().c_str() ) + "." + c.Id().c_str() );
+               }
+               if ( ids.empty() )
+                  continue;
+               hits[pid] = ids;
+               if ( FindExternalProgramBridge( P.Id() ) == nullptr && notBridges.count( pid ) == 0 )
+                  unreviewed.push_back( pid );
+            }
+            detail["bridgeScan"] = { { "hits", hits }, { "unreviewed", unreviewed } };
+            scanOk = unreviewed.empty() && (!installed || hits.contains( "GraXpert" ));
+         }
+
+         // -- 4. The stand-in: a "GraXpert" program that exits without
+         // writing a result (measured: the core then reports success, adds a
+         // History step, and leaves every pixel as it was).
+         if ( !installed )
+            detail["standInSkipReason"] = "the GraXpert process is not installed";
+         else
+         {
+            standInSkipped = false;
+            SelfTestSectionMark( "B10b stand-in: waiting for the GraXpert lock" );
+            GraXpertCoreSelfTestLock coreLock( 300 );
+            SelfTestSectionMark( "B10b stand-in: replace / failing / new-window" );
+            detail["lock"] = { { "path", U8( GraXpertCoreSelfTestLock::Path() ) }, { "waitedMs", coreLock.WaitedMs() },
+                               { "error", U8( coreLock.Error() ) } };
+            if ( !coreLock.Locked() )
+               throw Error( "stand-in GraXpert checks: " + coreLock.Error() );
+            SyntheticFrames dir( 0 );
+            const String noResult = dir.AddFile( "GraXpert", "#!/bin/sh\nexit 0\n" );
+            const String failing = dir.AddFile( "GraXpert-exit3", "#!/bin/sh\nexit 3\n" );
+            ::chmod( noResult.ToUTF8().c_str(), 0755 );
+            ::chmod( failing.ToUTF8().c_str(), 0755 );
+            String program = noResult;
+            SetGlobalSettingReaderForSelfTest( [&]( const IsoString&, String& value ) { value = program; return true; } );
+
+            // 256x256: GraXpert does not even launch its program for a 64x64
+            // image (measured), which would test nothing.
+            Inc5TestWindow gw( "PCGraXpertStandIn", 256, 256, 1, 0 );
+            {
+               View v = gw.MainView();
+               AutoViewLock lock( v );
+               ImageVariant iv = v.Image();
+               Image& img = static_cast<Image&>( *iv );
+               for ( int y = 0; y < img.Height(); ++y )
+                  for ( int x = 0; x < img.Width(); ++x )
+                     img( x, y ) = float( 0.05 + 0.25*x/double( img.Width() - 1 ) );
+            }
+            auto digest = [&]()
+            {
+               View v = gw.MainView();
+               AutoViewLock lock( v );
+               return ImageContentDigest( v.Image() );
+            };
+            ToolContext sc;
+            sc.mode = AgentMode::Copilot;
+            sc.turnViewId = gw.MainView().FullId();
+            sc.confirm = []( const String&, const String&, const String& ) { return false; };
+            auto text = []( const ToolOutcome& o )
+            {
+               return o.content.at( 0 ).at( "type" ) == "text" ? FromU8( o.content.at( 0 ).at( "text" ).get<std::string>() )
+                                                               : String();
+            };
+            auto windowCount = []() { return ImageWindow::AllWindows().Length(); };
+            const String kReplaceLead = "GraXpert reported success but the image did not change";
+            const String kWindowLead = "GraXpert reported success but produced no result window";
+
+            // a. replace mode, program writes nothing.
+            const uint64 d0 = digest();
+            const ToolOutcome r1 = ExecuteTool( ToolCall{ "sb1", "apply_process",
+               { { "process_id", "GraXpert" }, { "parameters", { { "backgroundExtraction", true }, { "replaceImage", true } } } } }, sc );
+            const uint64 d1 = digest();
+            replaceOk = r1.isError && !r1.mutated && d1 == d0
+                     && text( r1 ).StartsWith( kReplaceLead )
+                     && text( r1 ).Contains( "another PixInsight instance" )
+                     && text( r1 ).Contains( "PCGraXpertStandIn" )
+                     && r1.logLine.Contains( kReplaceLead );
+            detail["replace"] = { { "isError", r1.isError }, { "mutated", r1.mutated }, { "pixelsIdentical", d1 == d0 },
+                                  { "text", U8( text( r1 ) ) }, { "log", U8( r1.logLine ) } };
+
+            // b. the program FAILS (exit 3): the core still reports success.
+            program = failing;
+            const ToolOutcome r2 = ExecuteTool( ToolCall{ "sb2", "apply_process",
+               { { "process_id", "GraXpert" }, { "parameters", { { "backgroundExtraction", true }, { "replaceImage", true } } } } }, sc );
+            const uint64 d2 = digest();
+            failExitOk = r2.isError && !r2.mutated && d2 == d0 && text( r2 ).StartsWith( kReplaceLead );
+            detail["failingProgram"] = { { "isError", r2.isError }, { "pixelsIdentical", d2 == d0 },
+                                         { "text", U8( text( r2 ) ) } };
+
+            // c. new-window mode (replaceImage false): no result window opened.
+            program = noResult;
+            const size_type w0 = windowCount();
+            const ToolOutcome r3 = ExecuteTool( ToolCall{ "sb3", "apply_process",
+               { { "process_id", "GraXpert" }, { "parameters", { { "backgroundExtraction", true }, { "replaceImage", false } } } } }, sc );
+            const size_type w1 = windowCount();
+            newWindowOk = r3.isError && !r3.mutated && w1 == w0 && digest() == d0 && text( r3 ).StartsWith( kWindowLead );
+            detail["newWindow"] = { { "isError", r3.isError }, { "windowsBefore", int( w0 ) }, { "windowsAfter", int( w1 ) },
+                                    { "text", U8( text( r3 ) ) } };
+            SelfTestSectionMark( "B10b stand-in: unrelated window" );
+            // c2. new-window mode while an UNRELATED window opens during the
+            // run (as a user or a script could): it must not count as the
+            // result (fix round 1, I1). The hook runs after every "before"
+            // measurement, right before ExecuteOn().
+            {
+               std::unique_ptr<Inc5TestWindow> unrelated;
+               SetBeforeExecuteHookForSelfTest( [&]()
+               {
+                  if ( !unrelated )
+                     unrelated.reset( new Inc5TestWindow( "PCUnrelatedDuringRun", 32, 32, 1, 0.5 ) );
+               } );
+               const ToolOutcome r5 = ExecuteTool( ToolCall{ "sb5", "apply_process",
+                  { { "process_id", "GraXpert" }, { "parameters", { { "backgroundExtraction", true }, { "replaceImage", false } } } } }, sc );
+               SetBeforeExecuteHookForSelfTest( std::function<void()>() );
+               unrelatedOk = unrelated != nullptr && r5.isError && !r5.mutated && text( r5 ).StartsWith( kWindowLead )
+                          && text( r5 ).Contains( "PCUnrelatedDuringRun (its History does not start with a GraXpert step)" );
+               detail["unrelatedWindow"] = { { "opened", unrelated != nullptr }, { "isError", r5.isError },
+                                             { "text", U8( text( r5 ) ) } };
+            }
+
+            SelfTestSectionMark( "B10b stand-in: previews" );
+            // c3. PREVIEW targets (fix round 1, I2). The baseline is the main
+            // image's pixels in the preview rectangle: a no-op run on a preview
+            // whose step was PixelMath $T*0.5 reverts it to those pixels
+            // (measured), which is NOT a change GraXpert made.
+            {
+               ImageWindow win = gw.MainView().Window();
+               View pv = win.CreatePreview( Rect( 32, 32, 224, 224 ), "PCGxPV" );
+               ToolContext pc = sc;
+               pc.turnViewId = pv.FullId();
+               auto pvDigest = [&]() { AutoViewLock lock( pv ); return ImageContentDigest( pv.Image() ); };
+               auto mainRegion = [&]()
+               {
+                  View mv = win.MainView();
+                  AutoViewLock lock( mv );
+                  return ImageContentDigest( mv.Image(), win.PreviewRect( "PCGxPV" ) );
+               };
+               const String kPreviewLead = kReplaceLead + ": every pixel of " + String( pv.FullId() ) + " is identical to ";
+               const uint64 m0 = digest();
+               const ToolOutcome p1 = ExecuteTool( ToolCall{ "sp1", "apply_process",
+                  { { "process_id", "GraXpert" }, { "parameters", { { "backgroundExtraction", true }, { "replaceImage", true } } } } }, pc );
+               previewFreshOk = p1.isError && !p1.mutated && text( p1 ).StartsWith( kPreviewLead )
+                             && text( p1 ).Contains( "The main image PCGraXpertStandIn was not changed." )
+                             && pvDigest() == mainRegion() && digest() == m0;
+               detail["previewFresh"] = { { "isError", p1.isError }, { "text", U8( text( p1 ) ) } };
+
+               const ToolOutcome pm = ExecuteTool( ToolCall{ "sp2", "apply_process",
+                  { { "process_id", "PixelMath" }, { "parameters", { { "expression", "$T*0.5" } } } } }, pc );
+               const uint64 halved = pvDigest();
+               const ToolOutcome p2 = ExecuteTool( ToolCall{ "sp3", "apply_process",
+                  { { "process_id", "GraXpert" }, { "parameters", { { "backgroundExtraction", true }, { "replaceImage", true } } } } }, pc );
+               const uint64 afterNoOp = pvDigest();
+               // In-process (nothing recorded) the preview keeps its own
+               // pixels (measured, this run); recorded (PJSR probe) it reverts
+               // to the main image's -- both are "no effect", never "ok".
+               previewPriorOk = !pm.isError && halved != mainRegion() && p2.isError && !p2.mutated
+                             && text( p2 ).StartsWith( kPreviewLead )
+                             && (afterNoOp == halved || afterNoOp == mainRegion()) && digest() == m0;
+               detail["previewPriorStep"] = { { "pixelMathError", pm.isError }, { "halvedDiffersFromMain", halved != mainRegion() },
+                                              { "keptOwnPixels", afterNoOp == halved },
+                                              { "revertedToMain", afterNoOp == mainRegion() },
+                                              { "isError", p2.isError }, { "text", U8( text( p2 ) ) } };
+               win.DeletePreview( "PCGxPV" );
+            }
+            SetGlobalSettingReaderForSelfTest( GlobalSettingReader() );
+
+            // d. Control: a process NOT in the table that legitimately leaves
+            // the pixels identical (PixelMath $T) is still ok.
+            const ToolOutcome r4 = ExecuteTool( ToolCall{ "sb4", "apply_process",
+               { { "process_id", "PixelMath" }, { "parameters", { { "expression", "$T" } } } } }, sc );
+            controlOk = !r4.isError && digest() == d0;
+            detail["control"] = { { "isError", r4.isError }, { "pixelsIdentical", digest() == d0 },
+                                  { "text", U8( text( r4 ).Left( 300 ) ) } };
+         }
+      }
+      catch ( const pcl::Exception& x ) { error = x.Message(); }
+      catch ( const std::exception& x ) { error = String( x.what() ); }
+      catch ( ... )                     { error = "unknown exception"; }
+      SetGlobalSettingReaderForSelfTest( GlobalSettingReader() );
+      detail["checks"] = { { "digest", digestOk }, { "budget", budgetOk }, { "table", tableOk }, { "scan", scanOk },
+                           { "replace", replaceOk }, { "failingProgram", failExitOk }, { "newWindow", newWindowOk },
+                           { "control", controlOk }, { "unrelatedWindow", unrelatedOk },
+                           { "previewFresh", previewFreshOk }, { "previewPriorStep", previewPriorOk },
+                           { "standInSkipped", standInSkipped } };
+      SetBeforeExecuteHookForSelfTest( std::function<void()>() );
+      const bool ok = error.IsEmpty() && digestOk && budgetOk && tableOk && scanOk
+                   && (standInSkipped || (replaceOk && failExitOk && newWindowOk && controlOk && unrelatedOk
+                                          && previewFreshOk && previewPriorOk));
+      out["bridgeDetail"] = detail;
+      out["bridgeError"] = U8( error );
+      out["bridgeStandInSkipped"] = standInSkipped;
+      out["bridgeOk"] = ok;
+      allOk = allOk && ok;
+   }
+
    // ---- Section B11: re-review fixes (5ba3632..12a97ee) --------------------------
+   SelfTestSectionMark( "B11 re-review fixes" );
    {
       bool describeCapOk = false, listCapOk = false, globalReviewOk = false, preDialogOk = false,
            pinnedObjectOk = false, pinnedKeysOk = false, patternsOk = false, describeMarkOk = false,
@@ -3683,7 +4144,7 @@ bool RunInc5SelfTest( nlohmann::json& out )
             {
                nlohmann::json bad = CompiledProcessSafety();
                bad["pinnedParameters"]["GraXpert"] = "not an object";
-               std::vector<PinnedParameter> pins;
+               std::vector<PinnedParameter> pins;   // pcl-move-ok: push_back/clear + read only
                SetProcessSafetyPolicyForSelfTest( &bad );
                const String eEntry = ResolvePinnedParameters( "GraXpert", nlohmann::json::object(), nlohmann::json::object(), pins );
                Inc5TestWindow gw( "PCPinnedBad", 16, 16, 1, 0.5 );
@@ -3855,6 +4316,7 @@ bool RunInc5SelfTest( nlohmann::json& out )
    }
 
    // ---- Section B12: review-e4422c9 fixes (M-b, M-c, M-d) -----------------------
+   SelfTestSectionMark( "B12 review-e4422c9 fixes" );
    {
       bool applyDeclinedOk = false, metadataPreDialogOk = false, afterApprovalOk = false, globalDeclinedOk = false,
            scopedOk = false, rcAstroOk = false, hdrFilesOk = false, enumDefaultOk = false;
@@ -4155,7 +4617,495 @@ bool RunInc5SelfTest( nlohmann::json& out )
       allOk = allOk && ok;
    }
 
+   // ---- Section B13: T-keyring -- secret-tool session-mismatch retry -----------
+   // Root cause (keyring-flake-investigation.md): ~1/256 secret-service sessions
+   // derive mismatched keys (gnutls strips a leading-zero DH shared-secret byte;
+   // KDE ksecretd pads it). Each secret-tool call opens its own session, so a
+   // fresh process = a fresh, independent chance. store signature: exit 1,
+   // stderr "Can't find session /org/freedesktop/secrets/session/N". lookup
+   // signature: exit 1, empty stdout AND empty stderr (indistinguishable from a
+   // genuine "no such item" without a disambiguating search).
+   SelfTestSectionMark( "B13 secret-tool session-mismatch retry (T-keyring)" );
+   {
+      bool storeRetryOk = false, storeOtherOk = false, lookupRetryOk = false, lookupGenuineMissOk = false,
+           storeBoundOk = false,
+           leakSegvOk = false, leakExit3Ok = false,   // (f) C1
+           cleanLookupOk = false,                     // (g) M1
+           clearMessageOk = false, clearSilentOk = false,   // (h) I1
+           existsUnreadableOk = false,                // (i) M2
+           storeVerifyExhaustedOk = false,             // (j) round 2 m4
+           searchNoLeakOk = false,                      // (k) round 2 m7b
+           scratchDirsCleanOk = false;                  // round 2 m7a
+      nlohmann::json detail = nlohmann::json::object();
+      String error;
+      std::string scriptDir;
+      const IsoString sk = "PICopilot/SelfTestApiKeyKR";
+      // round 2 m7a: every RunSecretTool call makes and removes its own
+      // private scratch dir (Keyring.cpp ScratchDirGuard); nothing from this
+      // whole section should still be there once it's done.
+      auto countScratchDirs = []() -> int {
+         int n = 0;
+         std::error_code ec;
+         const std::string tmp = std::string( File::SystemTempDirectory().ToUTF8().c_str() );
+         for ( const auto& entry : std::filesystem::directory_iterator( tmp, ec ) )
+            if ( entry.path().filename().string().rfind( "picopilot-scratch-", 0 ) == 0 )
+               ++n;
+         return n;
+      };
+      const int scratchBefore = countScratchDirs();
+      try
+      {
+         scriptDir = std::string( File::SystemTempDirectory().ToUTF8().c_str() )
+                   + "/picopilot-kr-" + std::to_string( std::chrono::steady_clock::now().time_since_epoch().count() );
+         std::filesystem::create_directories( scriptDir );
+         auto script = [&]( const char* name, const std::string& body ) {
+            const std::string path = scriptDir + "/" + name;
+            std::ofstream( path ) << "#!/bin/sh\n" << body;
+            std::filesystem::permissions( path, std::filesystem::perms::owner_all );
+            return String( path.c_str() );
+         };
+         auto counter = [&]( const char* name ) -> int {
+            std::ifstream f( scriptDir + "/" + name );
+            int n = 0; f >> n; return n;
+         };
+         auto newId = [&]( const char* account ) {
+            KeyringId id;
+            id.service = "picopilot-selftest";
+            id.account = String( account ) + String().Format( "-%u",
+               unsigned( std::chrono::steady_clock::now().time_since_epoch().count() & 0xFFFFFF ) );
+            return id;
+         };
+
+         // (a) store fails once with the exact signature, then succeeds: the
+         // retry is transparent -- KeyStore::Save reports Keyring, no note, no
+         // Settings copy. (The fake also answers "lookup" for StoreVerified's
+         // read-back.) RED on current code: no retry, immediate fallback.
+         {
+            KeyringId id = newId( "kr-a" );
+            id.program = script( "a", std::string(
+               "cmd=\"$1\"\n"
+               "if [ \"$cmd\" = store ]; then\n"
+               "  cat >/dev/null\n"
+               "  n=$(( $(cat '" + scriptDir + "/count_a' 2>/dev/null || echo 0) + 1 ))\n"
+               "  echo \"$n\" > '" + scriptDir + "/count_a'\n"
+               "  if [ \"$n\" -eq 1 ]; then\n"
+               "    echo \"secret-tool: Can't find session /org/freedesktop/secrets/session/7\" 1>&2\n"
+               "    exit 1\n"
+               "  fi\n"
+               "  exit 0\n"
+               "elif [ \"$cmd\" = lookup ]; then\n"
+               "  printf '%s' 'sk-ant-selftest-KRA'\n"
+               "  exit 0\n"
+               "fi\n"
+               "exit 1\n" ) );
+            KeyStore::SetKeyringForSelfTest( id, sk );
+            Settings::Remove( sk );
+            const KeyStore::State saved = KeyStore::Save( "sk-ant-selftest-KRA" );
+            String settingsCopy;
+            Settings::Read( sk, settingsCopy );
+            const int storeCalls = counter( "count_a" );
+            detail["a"] = { { "where", int( saved.where ) }, { "note", U8( saved.note ) }, { "storeCalls", storeCalls } };
+            storeRetryOk = saved.where == KeyStore::Where::Keyring && saved.note.IsEmpty()
+                        && settingsCopy.IsEmpty() && storeCalls == 2;
+            KeyStore::Clear();
+            Settings::Remove( sk );
+         }
+
+         // (b) store fails with a different (non-signature) error: no retry,
+         // today's visible fallback -- and the note carries the real stderr
+         // text, including non-ASCII, decoded correctly (not Latin-1 mangled).
+         // RED on current code: Detail() widens stderr bytes as Latin-1, so
+         // "réinitialisée" comes back mojibake.
+         {
+            KeyringId id = newId( "kr-b" );
+            const std::string nonAscii = "connexion r\xC3\xA9initialis\xC3\xA9" "e"; // "connexion réinitialisée"
+            id.program = script( "b", std::string(
+               "if [ \"$1\" = store ]; then\n"
+               "  cat >/dev/null\n"
+               "  n=$(( $(cat '" + scriptDir + "/count_b' 2>/dev/null || echo 0) + 1 ))\n"
+               "  echo \"$n\" > '" + scriptDir + "/count_b'\n"
+               "  echo \"secret-tool: org.freedesktop.DBus.Error.NoReply: " + nonAscii + "\" 1>&2\n"
+               "  exit 1\n"
+               "fi\n"
+               "exit 1\n" ) );
+            KeyStore::SetKeyringForSelfTest( id, sk );
+            Settings::Remove( sk );
+            const KeyStore::State fb = KeyStore::Save( "sk-ant-selftest-KRB" );
+            String plain;
+            Settings::Read( sk, plain );
+            const int storeCalls = counter( "count_b" );
+            const String expectFrag = FromU8( nonAscii );
+            detail["b"] = { { "where", int( fb.where ) }, { "note", U8( fb.note ) }, { "storeCalls", storeCalls } };
+            storeOtherOk = fb.where == KeyStore::Where::Settings && plain == "sk-ant-selftest-KRB"
+                        && fb.note.Contains( "keyring could not be used" )
+                        && fb.note.Contains( expectFrag )
+                        && !fb.note.Contains( char16_type( 0xFFFD ) )
+                        && !fb.note.Contains( "sk-ant-selftest" )   // I2: lock in the no-leak invariant
+                        && storeCalls == 1;
+            KeyStore::Clear();
+            Settings::Remove( sk );
+         }
+
+         // (c) lookup silent-miss once, then `secret-tool search` (no --unlock,
+         // never prompts) shows the item exists: the lookup is retried and the
+         // key comes back. RED on current code: silent miss -> "not found".
+         {
+            KeyringId id = newId( "kr-c" );
+            id.program = script( "c", std::string(
+               "cmd=\"$1\"\n"
+               "if [ \"$cmd\" = lookup ]; then\n"
+               "  n=$(( $(cat '" + scriptDir + "/count_c_lookup' 2>/dev/null || echo 0) + 1 ))\n"
+               "  echo \"$n\" > '" + scriptDir + "/count_c_lookup'\n"
+               "  if [ \"$n\" -eq 1 ]; then\n"
+               "    exit 1\n"
+               "  fi\n"
+               "  printf '%s' 'sk-ant-selftest-KRC'\n"
+               "  exit 0\n"
+               "elif [ \"$cmd\" = search ]; then\n"
+               "  m=$(( $(cat '" + scriptDir + "/count_c_search' 2>/dev/null || echo 0) + 1 ))\n"
+               "  echo \"$m\" > '" + scriptDir + "/count_c_search'\n"
+               "  echo 'label = fake'\n"
+               "  exit 0\n"
+               "fi\n"
+               "exit 1\n" ) );
+            KeyStore::SetKeyringForSelfTest( id, sk );
+            Settings::Remove( sk );
+            // M5 (review): exercise KeyringSearchExists directly too -- it is
+            // declared "exposed for tests" and nothing was calling it
+            // directly. Same fixture, so this adds one more `search` call
+            // (bumping the expected count below from 1 to 2).
+            const KeyringExistsResult direct = KeyringSearchExists( id );
+            const KeyStore::State loaded = KeyStore::Load();
+            const int lookupCalls = counter( "count_c_lookup" );
+            const int searchCalls = counter( "count_c_search" );
+            detail["c"] = { { "where", int( loaded.where ) }, { "note", U8( loaded.note ) },
+                            { "lookupCalls", lookupCalls }, { "searchCalls", searchCalls },
+                            { "directSearch", { { "ok", direct.ok }, { "exists", direct.exists } } } };
+            lookupRetryOk = loaded.where == KeyStore::Where::Keyring && loaded.key == "sk-ant-selftest-KRC"
+                         && loaded.note.IsEmpty() && lookupCalls == 2 && searchCalls == 2
+                         && direct.ok && direct.exists;
+            KeyStore::Clear();
+            Settings::Remove( sk );
+         }
+
+         // (d) lookup silent-miss, search shows nothing: genuine "no key", exactly
+         // one lookup + one search -- no retry storm, no re-prompt. This is also
+         // what a locked keyring looks like (search never unlocks). Today's
+         // behaviour, unchanged.
+         {
+            KeyringId id = newId( "kr-d" );
+            id.program = script( "d", std::string(
+               "cmd=\"$1\"\n"
+               "if [ \"$cmd\" = lookup ]; then\n"
+               "  n=$(( $(cat '" + scriptDir + "/count_d_lookup' 2>/dev/null || echo 0) + 1 ))\n"
+               "  echo \"$n\" > '" + scriptDir + "/count_d_lookup'\n"
+               "  exit 1\n"
+               "elif [ \"$cmd\" = search ]; then\n"
+               "  m=$(( $(cat '" + scriptDir + "/count_d_search' 2>/dev/null || echo 0) + 1 ))\n"
+               "  echo \"$m\" > '" + scriptDir + "/count_d_search'\n"
+               "  exit 0\n"
+               "fi\n"
+               "exit 1\n" ) );
+            KeyStore::SetKeyringForSelfTest( id, sk );
+            Settings::Remove( sk );
+            const KeyStore::State loaded = KeyStore::Load();
+            const int lookupCalls = counter( "count_d_lookup" );
+            const int searchCalls = counter( "count_d_search" );
+            detail["d"] = { { "where", int( loaded.where ) }, { "note", U8( loaded.note ) },
+                            { "lookupCalls", lookupCalls }, { "searchCalls", searchCalls } };
+            lookupGenuineMissOk = loaded.where == KeyStore::Where::None && loaded.key.IsEmpty() && loaded.note.IsEmpty()
+                               && lookupCalls == 1 && searchCalls == 1;
+            KeyStore::Clear();
+            Settings::Remove( sk );
+         }
+
+         // (e) 3 consecutive signature failures on store: bounded, never an
+         // unbounded loop -- exactly 3 calls, then today's visible error. The
+         // stderr is padded with a long run of a 2-byte UTF-8 character so the
+         // bounded detail text is truncated on a decoded-codepoint boundary
+         // (never a raw byte cut that could split a multi-byte sequence).
+         {
+            KeyringId id = newId( "kr-e" );
+            std::string filler, longRunUtf8, shortRunUtf8;
+            for ( int i = 0; i < 220; ++i )
+               filler += "\xC3\xA9";   // precomposed 'é' (U+00E9 UTF-8), x220 (440 bytes) -- not a combining sequence (review M4)
+            for ( int i = 0; i < 201; ++i )
+               longRunUtf8 += "\xC3\xA9";
+            for ( int i = 0; i < 100; ++i )
+               shortRunUtf8 += "\xC3\xA9";
+            id.program = script( "e", std::string(
+               "if [ \"$1\" = store ]; then\n"
+               "  cat >/dev/null\n"
+               "  n=$(( $(cat '" + scriptDir + "/count_e' 2>/dev/null || echo 0) + 1 ))\n"
+               "  echo \"$n\" > '" + scriptDir + "/count_e'\n"
+               "  echo \"secret-tool: Can't find session /org/freedesktop/secrets/session/9 " + filler + "\" 1>&2\n"
+               "  exit 1\n"
+               "fi\n"
+               "exit 1\n" ) );
+            KeyStore::SetKeyringForSelfTest( id, sk );
+            Settings::Remove( sk );
+            const KeyStore::State fb = KeyStore::Save( "sk-ant-selftest-KRE" );
+            String plain;
+            Settings::Read( sk, plain );
+            const int storeCalls = counter( "count_e" );
+            detail["e"] = { { "where", int( fb.where ) }, { "note", U8( fb.note ) }, { "noteLen", int( fb.note.Length() ) },
+                            { "storeCalls", storeCalls } };
+            // M4 (review): assert the DIAGNOSTIC portion itself is bounded to
+            // <=200 characters (Detail()'s actual contract) via a run longer
+            // than that (must be absent) and a run within it (must survive),
+            // not just a loose bound on the whole note's length.
+            storeBoundOk = fb.where == KeyStore::Where::Settings && plain == "sk-ant-selftest-KRE"
+                        && fb.note.Contains( "Can't find session" ) && storeCalls == 3
+                        && !fb.note.Contains( char16_type( 0xFFFD ) )
+                        && !fb.note.Contains( "sk-ant-selftest" )   // I2: lock in the no-leak invariant
+                        && !fb.note.Contains( FromU8( longRunUtf8 ) ) && fb.note.Contains( FromU8( shortRunUtf8 ) );
+            KeyStore::Clear();
+            Settings::Remove( sk );
+         }
+
+         // (f) C1 (Critical, review): a lookup that already wrote the key to
+         // stdout, then dies abnormally instead of a clean exit 0, must never
+         // let that key reach a visible note or error. RunSecretTool's
+         // private-file stderr capture makes r.err the ONLY thing Detail()
+         // reads, so this holds no matter which stream secret-tool used or
+         // what it wrote there. Two variants: killed by a signal (crash), and
+         // a plain unexpected nonzero exit (no crash). Both must still be
+         // LOUD (non-empty, naming the exit/crash), never a silent drop.
+         // RED on d94a6f3c: before the root fix, FailureText() fell back to
+         // r.out, which on a lookup IS the secret.
+         {
+            KeyringId id = newId( "kr-f1" );
+            id.program = script( "f1", std::string(
+               "if [ \"$1\" = lookup ]; then\n"
+               "  printf '%s\\n' 'sk-ant-selftest-KRF1'\n"
+               "  kill -SEGV $$\n"
+               "fi\n"
+               "exit 1\n" ) );
+            KeyStore::SetKeyringForSelfTest( id, sk );
+            Settings::Remove( sk );
+            const KeyringResult direct = KeyringLookup( id );
+            const KeyStore::State loaded = KeyStore::Load();
+            detail["f1"] = { { "directError", U8( direct.error ) }, { "loadedNote", U8( loaded.note ) } };
+            leakSegvOk = !direct.error.IsEmpty() && !direct.error.Contains( "sk-ant-selftest" )
+                      && direct.error.Contains( "crash" )
+                      && !loaded.note.Contains( "sk-ant-selftest" ) && loaded.note.Contains( "crash" );
+            KeyStore::Clear();
+            Settings::Remove( sk );
+         }
+         {
+            KeyringId id = newId( "kr-f2" );
+            id.program = script( "f2", std::string(
+               "if [ \"$1\" = lookup ]; then\n"
+               "  printf '%s\\n' 'sk-ant-selftest-KRF2'\n"
+               "  exit 3\n"
+               "fi\n"
+               "exit 1\n" ) );
+            KeyStore::SetKeyringForSelfTest( id, sk );
+            Settings::Remove( sk );
+            const KeyringResult direct = KeyringLookup( id );
+            const KeyStore::State loaded = KeyStore::Load();
+            detail["f2"] = { { "directError", U8( direct.error ) }, { "loadedNote", U8( loaded.note ) } };
+            leakExit3Ok = !direct.error.IsEmpty() && !direct.error.Contains( "sk-ant-selftest" )
+                       && direct.error.Contains( "exit 3" )
+                       && !loaded.note.Contains( "sk-ant-selftest" ) && loaded.note.Contains( "exit 3" );
+            KeyStore::Clear();
+            Settings::Remove( sk );
+         }
+
+         // (g) M1: a SUCCESSFUL lookup whose secret-tool prints noise on its
+         // real stderr (e.g. a GLib-WARNING) alongside the key on stdout must
+         // return the clean key, not the key with the warning appended --
+         // proves the private stderr file keeps the two streams apart on the
+         // success path too, not only on failure. RED on d94a6f3c: the merge
+         // appended the warning to stdout, so the "secret" failed
+         // IsPrintableAscii and the key never came back clean.
+         {
+            KeyringId id = newId( "kr-g" );
+            id.program = script( "g", std::string(
+               "if [ \"$1\" = lookup ]; then\n"
+               "  printf '%s\\n' 'sk-ant-selftest-KRG'\n"
+               "  echo '(secret-tool:1): GLib-WARNING **: bogus warning' 1>&2\n"
+               "  exit 0\n"
+               "fi\n"
+               "exit 1\n" ) );
+            KeyStore::SetKeyringForSelfTest( id, sk );
+            Settings::Remove( sk );
+            const KeyringResult direct = KeyringLookup( id );
+            detail["g"] = { { "ok", direct.ok }, { "found", direct.found }, { "secret", U8( String( direct.secret ) ) } };
+            cleanLookupOk = direct.ok && direct.found && direct.secret == "sk-ant-selftest-KRG";
+            KeyStore::Clear();
+            Settings::Remove( sk );
+         }
+
+         // (h) I1 (Important, review): KeyringClear's success check reads
+         // FailureText()/r.err (now the real, separate stderr) instead of the
+         // always-empty-under-the-old-merge r.err.Trimmed().IsEmpty() -- a
+         // real clear failure with a message must be a visible error, not
+         // silently "nothing to clear". (h1) RED on the OLD (pre-root-fix)
+         // semantics: an exit-1 clear with a real stderr message used to be
+         // indistinguishable from "nothing to clear" whenever the merge put
+         // that message where r.err.Trimmed().IsEmpty() could never see it.
+         // (h2) stays "nothing to clear", unchanged.
+         {
+            KeyringId id = newId( "kr-h1" );
+            id.program = script( "h1", std::string(
+               "if [ \"$1\" = clear ]; then\n"
+               "  echo 'secret-tool: Cannot remove: org.freedesktop.DBus.Error.Failed' 1>&2\n"
+               "  exit 1\n"
+               "fi\n"
+               "exit 1\n" ) );
+            const KeyringResult r = KeyringClear( id );
+            detail["h1"] = { { "ok", r.ok }, { "error", U8( r.error ) } };
+            clearMessageOk = !r.ok && r.error.Contains( "clear failed (exit 1)" )
+                          && r.error.Contains( "Cannot remove" );
+         }
+         {
+            KeyringId id = newId( "kr-h2" );
+            id.program = script( "h2", std::string(
+               "if [ \"$1\" = clear ]; then\n"
+               "  exit 1\n"
+               "fi\n"
+               "exit 1\n" ) );
+            const KeyringResult r = KeyringClear( id );
+            detail["h2"] = { { "ok", r.ok }, { "error", U8( r.error ) } };
+            clearSilentOk = r.ok && r.error.IsEmpty();
+         }
+
+         // (i) M2 (Minor, review): every lookup attempt silently misses while
+         // `search` keeps finding the item -- bounded at exactly 3 lookups +
+         // 2 searches (the loop breaks on the attempt cap before a 3rd
+         // search), and KeyStore::Load() must say the key exists but could
+         // not be read (Where::Unreadable, round 2 m1), not the generic (and
+         // here false) "no key" note. The fake `search` now prints
+         // `secret = <value>` like the real one (round 2 m7b), so the
+         // no-leak assertion below is non-vacuous, not just "label = fake"
+         // (which could never leak anything). RED on d94a6f3c: KeyringResult
+         // had no existsButUnreadable signal, so this always produced the
+         // plain "no key" miss.
+         {
+            KeyringId id = newId( "kr-i" );
+            id.program = script( "i", std::string(
+               "cmd=\"$1\"\n"
+               "if [ \"$cmd\" = lookup ]; then\n"
+               "  n=$(( $(cat '" + scriptDir + "/count_i_lookup' 2>/dev/null || echo 0) + 1 ))\n"
+               "  echo \"$n\" > '" + scriptDir + "/count_i_lookup'\n"
+               "  exit 1\n"
+               "elif [ \"$cmd\" = search ]; then\n"
+               "  m=$(( $(cat '" + scriptDir + "/count_i_search' 2>/dev/null || echo 0) + 1 ))\n"
+               "  echo \"$m\" > '" + scriptDir + "/count_i_search'\n"
+               "  echo 'secret = sk-ant-selftest-KRI'\n"
+               "  exit 0\n"
+               "fi\n"
+               "exit 1\n" ) );
+            KeyStore::SetKeyringForSelfTest( id, sk );
+            Settings::Remove( sk );
+            const KeyStore::State loaded = KeyStore::Load();
+            const int lookupCalls = counter( "count_i_lookup" );
+            const int searchCalls = counter( "count_i_search" );
+            detail["i"] = { { "where", int( loaded.where ) }, { "note", U8( loaded.note ) },
+                            { "lookupCalls", lookupCalls }, { "searchCalls", searchCalls } };
+            existsUnreadableOk = loaded.where == KeyStore::Where::Unreadable && loaded.key.IsEmpty()
+                              && !loaded.note.Contains( "sk-ant-selftest" )   // I2/m7b: search's own output must not leak either
+                              && !KeyStore::DescribeWhere( loaded ).Contains( "not set" )   // m1: no contradiction
+                              && loaded.note.Contains( "exists in the system keyring" )
+                              && loaded.note.Contains( "could not be read" )
+                              // m2: cause worded as a likelihood, not asserted as fact, and the
+                              // attempt count comes from the shared constant, not a hardcoded "3".
+                              && loaded.note.Contains( "most likely a libsecret/KWallet session glitch" )
+                              && loaded.note.Contains( String().Format( "%d attempts", PICopilotKeyringMaxAttempts ) )
+                              && lookupCalls == PICopilotKeyringMaxAttempts && searchCalls == PICopilotKeyringMaxAttempts - 1;
+            KeyStore::Clear();
+            Settings::Remove( sk );
+         }
+
+         // (j) round 2 m4: StoreVerified's read-back exhausts with
+         // existsButUnreadable (store succeeds, but every verify-lookup
+         // silently misses while search keeps confirming the item) --
+         // Save()'s fallback note must say "could not be read back", not
+         // "did not match what was written" (nothing was ever compared).
+         {
+            KeyringId id = newId( "kr-j" );
+            id.program = script( "j", std::string(
+               "cmd=\"$1\"\n"
+               "if [ \"$cmd\" = store ]; then\n"
+               "  cat >/dev/null\n"
+               "  exit 0\n"
+               "elif [ \"$cmd\" = lookup ]; then\n"
+               "  exit 1\n"
+               "elif [ \"$cmd\" = search ]; then\n"
+               "  echo 'secret = sk-ant-selftest-KRJ'\n"
+               "  exit 0\n"
+               "fi\n"
+               "exit 1\n" ) );
+            KeyStore::SetKeyringForSelfTest( id, sk );
+            Settings::Remove( sk );
+            const KeyStore::State saved = KeyStore::Save( "sk-ant-selftest-KRJ" );
+            String plain;
+            Settings::Read( sk, plain );
+            detail["j"] = { { "where", int( saved.where ) }, { "note", U8( saved.note ) } };
+            storeVerifyExhaustedOk = saved.where == KeyStore::Where::Settings && plain == "sk-ant-selftest-KRJ"
+                                  && saved.note.Contains( "could not be read back" )
+                                  && !saved.note.Contains( "did not match" )
+                                  && saved.note.Contains( "most likely a libsecret/KWallet session glitch" )
+                                  && !saved.note.Contains( "sk-ant-selftest" );
+            KeyStore::Clear();
+            Settings::Remove( sk );
+         }
+
+         // (k) round 2 m7b: KeyringSearchExists's OWN failure path must not
+         // leak either -- a search that prints the real secret-tool success
+         // format (`secret = <value>`) to stdout and THEN exits nonzero
+         // (a genuine failure after a partial/garbled reply) must still
+         // produce a sentinel-free .error, proving Detail()'s r.err-only
+         // read holds for search failures specifically, not only for
+         // lookup/store.
+         {
+            KeyringId id = newId( "kr-k" );
+            id.program = script( "k", std::string(
+               "if [ \"$1\" = search ]; then\n"
+               "  echo 'secret = sk-ant-selftest-KRK'\n"
+               "  exit 3\n"
+               "fi\n"
+               "exit 1\n" ) );
+            const KeyringExistsResult r = KeyringSearchExists( id );
+            detail["k"] = { { "ok", r.ok }, { "exists", r.exists }, { "error", U8( r.error ) } };
+            searchNoLeakOk = !r.ok && !r.error.IsEmpty() && !r.error.Contains( "sk-ant-selftest" )
+                          && r.error.Contains( "exit 3" );
+         }
+      }
+      catch ( const pcl::Exception& x ) { error = x.Message(); }
+      catch ( const std::exception& x ) { error = String( x.what() ); }
+      Settings::Remove( sk );
+      if ( !scriptDir.empty() )
+      {
+         std::error_code ec;
+         std::filesystem::remove_all( scriptDir, ec );
+      }
+      // round 2 m7a: nothing this section's RunSecretTool calls created is
+      // still there.
+      scratchDirsCleanOk = countScratchDirs() == scratchBefore;
+      detail["scratchDirs"] = { { "before", scratchBefore }, { "after", countScratchDirs() } };
+      detail["verdicts"] = { { "storeRetry", storeRetryOk }, { "storeOther", storeOtherOk },
+                            { "lookupRetry", lookupRetryOk }, { "lookupGenuineMiss", lookupGenuineMissOk },
+                            { "storeBound", storeBoundOk },
+                            { "leakSegv", leakSegvOk }, { "leakExit3", leakExit3Ok },
+                            { "cleanLookup", cleanLookupOk },
+                            { "clearMessage", clearMessageOk }, { "clearSilent", clearSilentOk },
+                            { "existsUnreadable", existsUnreadableOk },
+                            { "storeVerifyExhausted", storeVerifyExhaustedOk },
+                            { "searchNoLeak", searchNoLeakOk },
+                            { "scratchDirsClean", scratchDirsCleanOk } };
+      const bool ok = storeRetryOk && storeOtherOk && lookupRetryOk && lookupGenuineMissOk && storeBoundOk
+                   && leakSegvOk && leakExit3Ok && cleanLookupOk && clearMessageOk && clearSilentOk
+                   && existsUnreadableOk && storeVerifyExhaustedOk && searchNoLeakOk && scratchDirsCleanOk;
+      out["keyringRetryDetail"] = detail;
+      out["keyringRetryError"] = U8( error );
+      out["keyringRetryOk"] = ok;
+      allOk = allOk && ok;
+   }
+
    // ---- inc5 sections end ----
+   SelfTestSectionMark( nullptr );
 
    // Let the core finish deferred window teardown before --force-exit (same
    // reasoning as the drains in the vision and agent self-tests).

@@ -23,6 +23,15 @@ set(MODULE_SOURCES
     PICopilotVisionSelfTest.cpp
     ViewContext.cpp
     ViewPreview.cpp
+    StepStats.cpp
+    SafeFileWrite.cpp
+    JourneyStore.cpp
+    MasterFacts.cpp
+    JourneyTools.cpp
+    JourneyStepsDialog.cpp
+    JourneyTracker.cpp
+    JourneyExport.cpp
+    JourneyWriteup.cpp
     ProcessCatalog.cpp
     VisionTurn.cpp
     ViewCapture.cpp
@@ -42,6 +51,12 @@ set(MODULE_SOURCES
     ProcessSafety.cpp
     PjsrRunner.cpp
     ScriptConfirmDialog.cpp
+    JourneySpikeProbe.cpp
+    PICopilotJourneySelfTest.cpp
+    HistoryReader.cpp
+    ProcessActivity.cpp
+    StringParameterRules.cpp
+    TextSafety.cpp
 )
 
 add_library(PICopilot SHARED ${MODULE_SOURCES})
@@ -57,6 +72,11 @@ set(PICOPILOT_SAFETY_SRC "${CMAKE_CURRENT_SOURCE_DIR}/../../data/process-safety.
 set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${PICOPILOT_SAFETY_SRC}")
 file(READ "${PICOPILOT_SAFETY_SRC}" PICOPILOT_PROCESS_SAFETY_JSON)
 configure_file(ProcessSafetyData.h.in "${CMAKE_CURRENT_BINARY_DIR}/generated/ProcessSafetyData.h" @ONLY)
+# recipe.json schema v2 (Task 8; v2 = lineage, Task 10 fix round 3), compiled in and written next to every keeper's recipe.json.
+set(PICOPILOT_RECIPE_SCHEMA_SRC "${CMAKE_CURRENT_SOURCE_DIR}/../../data/recipe-v2.schema.json")
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${PICOPILOT_RECIPE_SCHEMA_SRC}")
+file(READ "${PICOPILOT_RECIPE_SCHEMA_SRC}" PICOPILOT_RECIPE_SCHEMA_JSON)
+configure_file(RecipeSchemaData.h.in "${CMAKE_CURRENT_BINARY_DIR}/generated/RecipeSchemaData.h" @ONLY)
 target_include_directories(PICopilot PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/generated")
 
 # PCL include directories.
@@ -96,6 +116,7 @@ target_link_libraries(PICopilot PRIVATE
     lcms-pxi
     cminpack-pxi
     nlohmann_json::nlohmann_json
+    picopilot_sqlite3
 )
 
 # Shared library flags

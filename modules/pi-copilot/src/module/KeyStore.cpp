@@ -38,6 +38,13 @@ String StoreVerified( const String& key )
    const KeyringResult r = KeyringLookup( g_id );
    if ( !r.ok )
       return "the key was written but could not be read back: " + r.error;
+   // review m4: existsButUnreadable means the read-back genuinely never
+   // happened (every lookup attempt silently missed while search confirmed
+   // the item is there) -- nothing was compared, so "did not match what was
+   // written" below would misstate what happened.
+   if ( r.existsButUnreadable )
+      return String().Format( "the key was written but could not be read back after %d attempts "
+                              "(most likely a libsecret/KWallet session glitch)", PICopilotKeyringMaxAttempts );
    if ( !r.found || r.secret != bytes )
       return "the key read back from the keyring did not match what was written";
    return String();
@@ -100,6 +107,15 @@ State Load()
    }
    else if ( !r.ok )
       st.note = "Could not read the system keyring (" + r.error + ").";
+   else if ( r.existsButUnreadable )
+   {
+      // review m1: a distinct Where, not None, so callers never pair this
+      // note with "no key set"/"not set" wording -- one coherent message.
+      st.where = Where::Unreadable;
+      st.note = String().Format( "The key exists in the system keyring but could not be read after %d attempts "
+                                 "(most likely a libsecret/KWallet session glitch); try again.",
+                                 PICopilotKeyringMaxAttempts );
+   }
    return Remember( st );
 }
 
@@ -152,9 +168,10 @@ String DescribeWhere( const State& s )
 {
    switch ( s.where )
    {
-   case Where::Keyring:  return "stored in the system keyring";
-   case Where::Settings: return "stored in PixInsight's settings (plain text)";
-   default:              return "not set";
+   case Where::Keyring:     return "stored in the system keyring";
+   case Where::Settings:    return "stored in PixInsight's settings (plain text)";
+   case Where::Unreadable:  return "found in the system keyring, but could not be read just now";
+   default:                 return "not set";
    }
 }
 

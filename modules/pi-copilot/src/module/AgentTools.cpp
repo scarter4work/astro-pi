@@ -4,16 +4,20 @@
 #include "AgentTools.h"
 #include "AnthropicClient.h"   // JpegImageBlock
 #include "GlobalRunFiles.h"    // NulTextProblem
+#include "JourneyTools.h"
+#include "MasterFacts.h"       // IsIntegrationProcess
 #include "PjsrRunner.h"
 #include "ProcessApply.h"
 #include "ProcessCatalog.h"
 #include "ProcessSafety.h"
+#include "ToolHelpers.h"   // IsBusy
 #include "Utf8.h"
 #include "ViewContext.h"
 #include "ViewPreview.h"
 
 #include <pcl/Exception.h>
 #include <pcl/ImageWindow.h>
+#include <pcl/Process.h>
 #include <pcl/Thread.h>
 
 #include <algorithm>
@@ -68,47 +72,31 @@ String EscapeHtmlText( const String& s )
    return out;
 }
 
-nlohmann::json TextBlock( const std::string& utf8 )
-{
-   return { { "type", "text" }, { "text", utf8 } };
-}
-
-std::string StringField( const nlohmann::json& in, const char* key )
-{
-   return (in.contains( key ) && in[key].is_string()) ? in[key].get<std::string>() : std::string();
-}
-
 bool BoolField( const nlohmann::json& in, const char* key )
 {
    return in.contains( key ) && in[key].is_boolean() && in[key].get<bool>();
+}
+
+const nlohmann::json kReasonProp = { { "type", "string" },
+                                     { "description", "One short sentence: why this step (recorded in the image journey)." } };
+
+// The canonical id (Process::Id()) of a process id or alias the prechecks accepted; "" when unknown.
+std::string CanonicalProcessId( const std::string& pid )
+{
+   try
+   {
+      return std::string( Process( IsoString( pid.c_str() ) ).Id().c_str() );
+   }
+   catch ( ... )
+   {
+      return std::string();
+   }
 }
 
 String OkLine( const String& what, clock::time_point t0 )
 {
    const double s = std::chrono::duration<double>( clock::now() - t0 ).count();
    return S16( kOkMarkUtf8 ) + what + S16( kArrowUtf8 ) + String().Format( "ok (%.1f s)", s );
-}
-
-ToolOutcome Fail( const String& what, const String& error )
-{
-   ToolOutcome o;
-   o.isError = true;
-   o.content.push_back( TextBlock( U8( error ) ) );
-   o.logLine = S16( kErrMarkUtf8 ) + what + S16( kArrowUtf8 ) + "error: " + Shorten( error, 200 );
-   return o;
-}
-
-bool IsBusy( const View& v )
-{
-   bool busy = true;
-   try
-   {
-      busy = !v.CanRead() || !v.CanWrite();
-   }
-   catch ( ... )
-   {
-   }
-   return busy;
 }
 
 // View::ViewById() on a full id ("Image01", "Image01->Preview01"); null when
@@ -281,7 +269,26 @@ ToolOutcome ApplyProcessTool( const nlohmann::json& in, const ToolContext& ctx, 
    const IsoString targetId = target.FullId();
    what += " on " + String( targetId );
 
-   std::vector<PinnedParameter> pinned;
+   // Round 5 (re-review 3, I1): replay_step marks this run as a step of a replay the model looked up; validated
+   // before anything is asked or run.
+   int64 replayKeeper = 0, replayN = 0;
+   if ( in.contains( "replay_step" ) && !in["replay_step"].is_null() )
+   {
+      const nlohmann::json& rs = in["replay_step"];
+      if ( !rs.is_object() || !rs.contains( "journey_id" ) || !rs["journey_id"].is_number_integer()
+        || !rs.contains( "n" ) || !rs["n"].is_number_integer() || rs["journey_id"].get<int64>() < 1 || rs["n"].get<int64>() < 1 )
+         return Fail( what, "replay_step must be {\"journey_id\": <kept journey id>, \"n\": <step number>} with positive whole numbers" );
+      if ( ctx.journeys == nullptr || ctx.journeys->store == nullptr )
+         return Fail( what, "replay_step: the journey tools are not connected in this session; leave replay_step out" );
+      replayKeeper = rs["journey_id"].get<int64>();
+      replayN = rs["n"].get<int64>();
+      const IsoString main = target.IsMainView() ? targetId : target.Window().MainView().FullId();
+      const String e = CheckReplayStep( *ctx.journeys, main, replayKeeper, replayN );
+      if ( !e.IsEmpty() )
+         return Fail( what, e );
+   }
+
+   std::vector<PinnedParameter> pinned;   // pcl-move-ok: filled by ResolvePinnedParameters (push_back/clear), read only
    {
       String e = PreGateChecks( pid, params, tables, pinned );
       if ( !e.IsEmpty() )
@@ -311,9 +318,52 @@ ToolOutcome ApplyProcessTool( const nlohmann::json& in, const ToolContext& ctx, 
       return Fail( what, "view " + String( targetId ) + " is no longer open (closed while the confirmation "
                          "dialog was up); nothing was changed" );
 
+   // Image journey (Ruling 21, review M5): the step note is posted BEFORE the run, so a tick recording the
+   // step right after it can never give it to the user; it is dropped when the run failed or added no History
+   // step to the target (e.g. createNewImage), so it can never claim the user's next step either. A run that
+   // reported success but changed nothing (noEffect, T-graxpert) keeps its note, flagged: the History entry
+   // it left is recorded as a no-effect step, never as a real one. Ids only: nothing here keeps a View.
+   JourneyTracker* journey = ctx.journeys != nullptr ? ctx.journeys->tracker : nullptr;
+   uint64 journeyNote = 0;
+   IsoString journeyMain;
+   String replayNameError;
+   std::set<std::string> windowsBefore;
+   if ( journey != nullptr )
+   {
+      journeyMain = target.IsMainView() ? targetId : target.Window().MainView().FullId();
+      windowsBefore = OpenMainViewIds();
+      if ( target.IsMainView() )   // Ruling 25: previews are not part of a journey
+         journeyNote = journey->NoteCopilotStep( targetId, CanonicalProcessId( pid ), StringField( in, "reason" ), {}, false,
+                                                 JourneyWallNow() );
+   }
    const ApplyProcessResult ar = ApplyProcess( IsoString( pid.c_str() ), params, tables, target, &pinned );
+   if ( journey != nullptr )
+   {
+      switch ( JourneyNoteActionFor( ar ) )
+      {
+      case JourneyNoteAction::FlagNoEffect: journey->SetCopilotNoteNoEffect( journeyNote ); break;
+      case JourneyNoteAction::Cancel:       journey->CancelCopilotNote( journeyNote ); break;
+      case JourneyNoteAction::Keep:         break;
+      }
+      if ( ar.ok )
+      {
+         if ( replayKeeper != 0 )   // an explicit replay step names its journey (round 5)
+            replayNameError = NoteReplayStepApplied( *ctx.journeys, journeyMain, replayKeeper, replayN );
+         std::vector<std::string> created;
+         for ( const std::string& id : OpenMainViewIds() )
+            if ( windowsBefore.count( id ) == 0 )
+               created.push_back( id );
+         journey->NoteCopilotCreated( journeyMain, created, false, JourneyWallNow() );
+      }
+   }
    if ( !ar.ok )
-      return Fail( what, ar.error );
+   {
+      ToolOutcome o = Fail( what, ar.error );
+      // Task T-hist DETECT: the image WAS changed, outside History. An error,
+      // never "ok" -- but the turn-end notes must still know an image changed.
+      o.mutated = ar.unrecordedChange || ar.unverifiedChange;
+      return o;
+   }
 
    nlohmann::json summary = {
       { "result", "ok" },
@@ -321,10 +371,14 @@ ToolOutcome ApplyProcessTool( const nlohmann::json& in, const ToolContext& ctx, 
       { "view", U8( ar.viewId ) },
       { "parametersSet", ar.parametersSet },
       { "elapsedMs", std::lround( ar.elapsedMs ) },
-      { "undo", "Recorded in the view's History; the user can undo it." }
+      { "undo", U8( ar.undo ) }   // only what ApplyProcess verified (ProcessApply.h)
    };
    if ( !ar.pinnedSet.empty() )
       summary["pinnedParameters"] = ar.pinnedSet;   // set by PI Copilot, not by you: never pass them
+   if ( !ar.resultWindows.empty() )
+      summary["resultWindows"] = ar.resultWindows;  // new windows attributed to this run (ProcessApply.h)
+   if ( !replayNameError.IsEmpty() )
+      summary["journeyNote"] = U8( ModelTextWithoutDirectories( replayNameError, JourneyKnownDirs( *ctx.journeys ) ) );
    try
    {
       summary["newContext"] = CollapsedViewContext( BuildViewContext( target ) );
@@ -364,7 +418,7 @@ ToolOutcome RunGlobalTool( const nlohmann::json& in, const ToolContext& ctx, clo
    if ( pid.empty() )
       return Fail( "run_global_process", "run_global_process needs process_id; call list_processes for valid ids" );
 
-   std::vector<PinnedParameter> pinned;
+   std::vector<PinnedParameter> pinned;   // pcl-move-ok: filled by ResolvePinnedParameters (push_back/clear), read only
    {
       String e = PreGateChecks( pid, params, tables, pinned );
       if ( !e.IsEmpty() )
@@ -400,6 +454,10 @@ ToolOutcome RunGlobalTool( const nlohmann::json& in, const ToolContext& ctx, clo
       }
       return Fail( what, e );
    }
+   // Image journey: the windows this run created (a global run changes no open image, so there is no step note).
+   if ( ctx.journeys != nullptr && ctx.journeys->tracker != nullptr )
+      ctx.journeys->tracker->NoteCopilotCreated( IsoString(), g.createdWindows, IsIntegrationProcess( U8( g.processId ) ),
+                                                 JourneyWallNow() );
 
    // The main result: the integration image if the process names one it
    // opened, else the first new window. It is described (and listed) first.
@@ -566,6 +624,52 @@ ToolOutcome RunPjsrTool( const nlohmann::json& in, const ToolContext& ctx, clock
 
 } // namespace
 
+// Declared in ToolHelpers.h (shared with the journey tools, pre-flight P22).
+JourneyNoteAction JourneyNoteActionFor( const ApplyProcessResult& r )
+{
+   // A no-effect run: its note may only mark the History step THIS run left; without one it is dropped, so it
+   // can never flag a later, successful run of the same process on the same image (review m3).
+   if ( r.noEffect )
+      return r.historyStepAdded ? JourneyNoteAction::FlagNoEffect : JourneyNoteAction::Cancel;
+   if ( (r.ok && r.targetHistoryStep) || r.unverifiedChange )
+      return JourneyNoteAction::Keep;
+   return JourneyNoteAction::Cancel;
+}
+
+nlohmann::json TextBlock( const std::string& utf8 )
+{
+   return { { "type", "text" }, { "text", utf8 } };
+}
+
+std::string StringField( const nlohmann::json& in, const char* key )
+{
+   return (in.contains( key ) && in[key].is_string()) ? in[key].get<std::string>() : std::string();
+}
+
+ToolOutcome Fail( const String& what, const String& error )
+{
+   ToolOutcome o;
+   o.isError = true;
+   o.content.push_back( TextBlock( U8( error ) ) );
+   o.logLine = S16( kErrMarkUtf8 ) + what + S16( kArrowUtf8 ) + "error: " + Shorten( error, 200 );
+   return o;
+}
+
+// Declared in ToolHelpers.h: the one non-waiting busy probe, shared with the
+// journey tracker (pre-flight P22).
+bool IsBusy( const View& v )
+{
+   bool busy = true;
+   try
+   {
+      busy = !v.CanRead() || !v.CanWrite();
+   }
+   catch ( ... )
+   {
+   }
+   return busy;
+}
+
 AgentMode AgentModeFromIndex( int index )
 {
    return index == 1 ? AgentMode::Advisor : index == 2 ? AgentMode::Guided : AgentMode::Copilot;
@@ -615,6 +719,12 @@ nlohmann::json ToolDefinitions( AgentMode mode, const ToolOptions& options )
                                     { "description", "{tableParameterId: [[row values in column order], ...]}; replaces the whole table." } };
       props["view_id"] = { { "type", "string" }, { "description", "Target view id; default: the view this message is about. Any other view must first be "
                                                                  "inspected with get_view_context in the same turn." } };
+      props["reason"] = kReasonProp;
+      props["replay_step"] = { { "type", "object" },
+                               { "description", "Only when this run carries out a step of a replay_journey result: "
+                                                "{\"journey_id\": <the kept journey>, \"n\": <that step's n>} (also when you adapt "
+                                                "the step). Leave it out for every other run." },
+                               { "properties", { { "journey_id", { { "type", "integer" } } }, { "n", { { "type", "integer" } } } } } };
       nlohmann::json apply = nlohmann::json::object();
       apply["name"] = "apply_process";
       apply["description"] = "Run a PixInsight process on the user's real image (recorded in the view's History, so "
@@ -631,6 +741,7 @@ nlohmann::json ToolDefinitions( AgentMode mode, const ToolOptions& options )
                                      { "description", "{tableParameterId: [[row values in column order], ...]}. "
                                                       "ImageIntegration: {\"images\": [[enabled, path, drizzlePath, "
                                                       "localNormalizationDataPath], ...]} with absolute paths." } };
+      gprops["reason"] = kReasonProp;
       nlohmann::json global = nlohmann::json::object();
       global["name"] = "run_global_process";
       global["description"] = "Run a PixInsight process in the global context (not on a view), e.g. ImageIntegration "
@@ -642,6 +753,8 @@ nlohmann::json ToolDefinitions( AgentMode mode, const ToolOptions& options )
                                  { "required", nlohmann::json::array( { "process_id" } ) } };
       tools.push_back( global );
    }
+   for ( const nlohmann::json& t : JourneyToolDefinitions( mode ) )
+      tools.push_back( t );
    if ( mode != AgentMode::Advisor && options.runPjsr )
    {
       nlohmann::json sprops = nlohmann::json::object();
@@ -809,6 +922,8 @@ ToolOutcome ExecuteToolUncapped( const ToolCall& call, const ToolContext& ctx )
          return RunGlobalTool( in, ctx, t0 );
       if ( call.name == "run_pjsr" )
          return RunPjsrTool( in, ctx, t0 );
+      if ( IsJourneyTool( call.name ) )
+         return ExecuteJourneyTool( call, ctx );
       // Only what this turn actually offers (the same function builds the
       // request's tools array).
       String offered;
@@ -831,6 +946,20 @@ ToolOutcome ExecuteToolUncapped( const ToolCall& call, const ToolContext& ctx )
 }
 
 } // namespace
+
+bool ResponseCallsImageChangingTool( const nlohmann::json& contentBlocks )
+{
+   if ( !contentBlocks.is_array() )
+      return false;
+   for ( const nlohmann::json& b : contentBlocks )
+      if ( b.is_object() && b.value( "type", std::string() ) == "tool_use" )
+      {
+         const nlohmann::json name = b.value( "name", nlohmann::json() );
+         if ( name.is_string() && (name == "apply_process" || name == "run_global_process" || name == "run_pjsr") )
+            return true;
+      }
+   return false;
+}
 
 ToolOutcome ExecuteTool( const ToolCall& call, const ToolContext& ctx )
 {

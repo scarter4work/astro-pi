@@ -8,6 +8,8 @@
 
 #include <pcl/Settings.h>
 
+#include <algorithm>
+
 namespace pcl { namespace CopilotSettings {
 
 namespace
@@ -15,6 +17,9 @@ namespace
 const char* const kModelKey   = "PICopilot/Model";
 const char* const kRunPjsrKey = "PICopilot/RunPjsrEnabled";
 const char* const kSideKey    = "PICopilot/PanelSide";
+const char* const kRecordJourneysKey = "PICopilot/RecordJourneys";
+const char* const kJourneyExportKey  = "PICopilot/JourneyExportFolder";
+const char* const kJourneyDaysKey    = "PICopilot/JourneyRetentionDays";
 
 // Models an earlier version offered (ruling 2026-09-25 removed them): named
 // by their label in the migration note. Any other unknown id is quoted as is.
@@ -79,6 +84,42 @@ PanelSide LoadPanelSide()
 void SavePanelSide( PanelSide side )
 {
    Settings::Write( kSideKey, int( side ) );
+}
+
+bool LoadRecordJourneys()
+{
+   bool on = true;
+   Settings::Read( kRecordJourneysKey, on );
+   return on;
+}
+
+void SaveRecordJourneys( bool on )
+{
+   Settings::Write( kRecordJourneysKey, on );
+}
+
+String LoadJourneyExportFolder()
+{
+   String dir;
+   Settings::Read( kJourneyExportKey, dir );
+   return dir.Trimmed();
+}
+
+void SaveJourneyExportFolder( const String& dir )
+{
+   Settings::Write( kJourneyExportKey, dir.Trimmed() );
+}
+
+int LoadJourneyRetentionDays()
+{
+   int days = 30;
+   Settings::Read( kJourneyDaysKey, days );
+   return std::min( 3650, std::max( 1, days ) );
+}
+
+void SaveJourneyRetentionDays( int days )
+{
+   Settings::Write( kJourneyDaysKey, std::min( 3650, std::max( 1, days ) ) );
 }
 
 } } // namespace pcl::CopilotSettings

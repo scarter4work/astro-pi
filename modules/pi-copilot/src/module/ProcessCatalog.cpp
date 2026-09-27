@@ -2,6 +2,8 @@
 // Copyright (c) 2026 Scott Carter. MIT License.
 
 #include "ProcessCatalog.h"
+#include "StringParameterRules.h"
+#include "EvalGuard.h"
 #include "PICopilotModule.h"
 #include "ProcessSummaries.h"   // generated: kProcessSummariesJson
 #include "Utf8.h"
@@ -119,8 +121,12 @@ EnumerationInfo ScriptEnumerationInfo( const IsoString& processId, const IsoStri
    script.ReplaceString( IsoString( "@PARAM@" ), paramId );
    script.ReplaceString( IsoString( "@VALUES@" ), values );
 
-   const Variant result = ThePICopilotModule->EvaluateScript( String( script ), "JavaScript" );
-   const nlohmann::json j = nlohmann::json::parse( U8( result.ToString() ) );
+   String result;
+   {
+      EvalDepthGuard guard;   // no timer-driven EvaluateScript nests inside this one
+      result = ThePICopilotModule->EvaluateScript( String( script ), "JavaScript" ).ToString();
+   }
+   const nlohmann::json j = nlohmann::json::parse( U8( result ) );
    if ( j.contains( "error" ) )
       throw Error( String::UTF8ToUTF16( j.at( "error" ).get<std::string>().c_str() ) );
 
@@ -271,6 +277,22 @@ nlohmann::json ParameterJson( const ProcessParameter& p )
    {
       j.erase( "default" );
       j["error"] = U8( x.Message() );
+   }
+
+   // Declared characters, from the SAME resolution apply_process enforces
+   // (StringParameterRules.h), so describe and apply never disagree. An
+   // unresolved rule is shown, not hidden: apply_process refuses such a value.
+   if ( p.IsString() )
+   {
+      const StringCharacterRule rule = ResolveStringCharacterRule( p );
+      if ( !rule.ok )
+         j["allowedCharactersError"] = U8( rule.error );
+      else if ( rule.kind != StringCharacterRuleKind::None )
+      {
+         j["allowedCharacters"] = U8( CompactCharacterSet( rule.allowed ) );
+         if ( rule.kind == StringCharacterRuleKind::Identifier )
+            j["identifier"] = true;
+      }
    }
 
    if ( p.IsNumeric() )

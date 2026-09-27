@@ -41,14 +41,16 @@ struct TempFileGuard
 // k x k integer block average of the source's first n channels into dst
 // (already allocated as floor(W/k) x floor(H/k) x n). The source is only
 // read. P::FromSample normalizes integer samples to [0,1] (e.g. uint16/65535),
-// so every sample type lands on the same float scale.
+// so every sample type lands on the same float scale. stride > 1 sums only
+// every stride-th row of each block (k*ceil(k/stride) samples per output pixel).
 template <class P>
-void BlockAverage( const GenericImage<P>& src, Image& dst, int k, int n )
+void BlockAverage( const GenericImage<P>& src, Image& dst, int k, int n, int stride )
 {
    const int sw = src.Width();
    const int dw = dst.Width();
    const int dh = dst.Height();
-   const double norm = 1.0/(double( k )*k);
+   const int rowsUsed = (k + stride - 1)/stride;
+   const double norm = 1.0/(double( k )*rowsUsed);
    for ( int c = 0; c < n; ++c )
    {
       const typename P::sample* s = src.PixelData( c );
@@ -57,7 +59,7 @@ void BlockAverage( const GenericImage<P>& src, Image& dst, int k, int n )
          for ( int x = 0; x < dw; ++x )
          {
             double sum = 0;
-            for ( int j = 0; j < k; ++j )
+            for ( int j = 0; j < k; j += stride )
             {
                const typename P::sample* row = s + size_type( y*k + j )*sw + size_type( x )*k;
                for ( int i = 0; i < k; ++i )
@@ -74,6 +76,66 @@ void BlockAverage( const GenericImage<P>& src, Image& dst, int k, int n )
 
 } // namespace
 
+Image BlockAveragedCopy( const View& view, int maxEdge, int& blockFactor, int rowStride, int* samplesPerBlock )
+{
+   View v = view;                   // alias; locking needs a non-const View
+   // No lock notifications (Task 7 review M2): this read is no "process
+   // activity" for the busy gate (ProcessActivity.h), so the journey tracker's
+   // per-step statistics never make the tool loop or itself wait 0.3 s.
+   v.LockForWrite( false/*notify*/ );
+   struct Unlock { View& v; ~Unlock() { try { v.UnlockForWrite( false ); } catch ( ... ) {} } } unlock{ v };
+   ImageVariant src = v.Image();
+   if ( !src )
+      throw Error( "view has no image" );
+   if ( src.IsComplexSample() )
+      throw Error( "complex-sample images cannot be previewed" );
+   const int w = src.Width();
+   const int h = src.Height();
+   const int n = src.NumberOfNominalChannels();   // 1 (grey) or 3 (RGB)
+   const int k = std::max( 1, (std::max( w, h ) + maxEdge - 1)/maxEdge );
+   if ( w/k < 1 || h/k < 1 )
+      throw Error( String().Format( "image is too thin to preview (%dx%d)", w, h ) );
+   const int stride = std::max( 1, rowStride );
+   blockFactor = k;
+   if ( samplesPerBlock != nullptr )
+      *samplesPerBlock = k*((k + stride - 1)/stride);
+   Image work;
+   work.AllocateData( w/k, h/k, n, src.IsColor() ? ColorSpace::RGB : ColorSpace::Gray );
+#define BLOCK_AVERAGE( I ) BlockAverage( static_cast<const I&>( *src ), work, k, n, stride )
+   SOLVE_TEMPLATE_REAL_2( src, BLOCK_AVERAGE )
+#undef BLOCK_AVERAGE
+   return work;
+}
+
+Bitmap StretchAndRender( Image& work, int maxEdge )
+{
+   // 2. Downscale to a long edge <= maxEdge.
+   const int longEdge = std::max( work.Width(), work.Height() );
+   if ( longEdge > maxEdge )
+   {
+      BicubicSplinePixelInterpolation bicubic;
+      Resample resample( bicubic, double( maxEdge )/longEdge );
+      resample >> work;
+   }
+
+   // 3. Auto-STF, statistics measured on the small copy.
+   const int n = work.NumberOfNominalChannels();
+   const Rect r = work.Bounds();
+   DVector center( n ), sigma( n );
+   for ( int c = 0; c < n; ++c )
+   {
+      center[c] = work.Median( r, c, c );
+      sigma[c] = PICopilotMadToSigma*work.MAD( center[c], r, c, c );
+   }
+   DisplayFunction stf;
+   stf.SetLinkedRGB( false );
+   stf.ComputeAutoStretch( sigma, center );
+   stf >> work;
+
+   // 4. Render to an 8-bit bitmap.
+   return Bitmap::Render( ImageVariant( &work ), 1/*zoom*/, DisplayChannel::RGBK, false/*transparency*/ );
+}
+
 ViewPreviewResult RenderViewPreview( const View& view )
 {
    ViewPreviewResult res;
@@ -86,67 +148,20 @@ ViewPreviewResult RenderViewPreview( const View& view )
          return res;
       }
 
-      // 1. Read the shared view image in place (never copied at full
-      //    resolution, never written) and block-average it into a new small
-      //    float image. Only nominal channels are kept (alpha is dropped).
+      // 1. Read-only block average into a new small float image (shared with StepStats).
       Image work;
+      try
       {
-         View v = view;                   // alias; locking needs a non-const View
-         AutoViewWriteLock lock( v );
-         ImageVariant src = v.Image();
-         if ( !src )
-         {
-            res.error = "view has no image";
-            return res;
-         }
-         if ( src.IsComplexSample() )
-         {
-            res.error = "complex-sample images cannot be previewed";
-            return res;
-         }
-         const int w = src.Width();
-         const int h = src.Height();
-         const int n = src.NumberOfNominalChannels();   // 1 (grey) or 3 (RGB)
-         const int longEdge = std::max( w, h );
-         const int k = std::max( 1, (longEdge + PICopilotPreviewBlockEdge - 1)/PICopilotPreviewBlockEdge );
-         if ( w/k < 1 || h/k < 1 )
-         {
-            res.error = String().Format( "image is too thin to preview (%dx%d)", w, h );
-            return res;
-         }
-         res.blockFactor = k;
-         work.AllocateData( w/k, h/k, n, src.IsColor() ? ColorSpace::RGB : ColorSpace::Gray );
-
-#define BLOCK_AVERAGE( I ) BlockAverage( static_cast<const I&>( *src ), work, k, n )
-         SOLVE_TEMPLATE_REAL_2( src, BLOCK_AVERAGE )
-#undef BLOCK_AVERAGE
+         work = BlockAveragedCopy( view, PICopilotPreviewBlockEdge, res.blockFactor );
+      }
+      catch ( const Error& x )
+      {
+         res.error = x.Message();   // exact increment-3 wording (the earlier self-tests pin it)
+         return res;
       }
 
-      // 2. Downscale to a long edge <= PICopilotPreviewMaxEdge.
-      const int longEdge = std::max( work.Width(), work.Height() );
-      if ( longEdge > PICopilotPreviewMaxEdge )
-      {
-         BicubicSplinePixelInterpolation bicubic;
-         Resample resample( bicubic, double( PICopilotPreviewMaxEdge )/longEdge );
-         resample >> work;
-      }
-
-      // 3. Auto-STF, statistics measured on the small copy.
-      const int n = work.NumberOfNominalChannels();
-      const Rect r = work.Bounds();
-      DVector center( n ), sigma( n );
-      for ( int c = 0; c < n; ++c )
-      {
-         center[c] = work.Median( r, c, c );
-         sigma[c] = PICopilotMadToSigma*work.MAD( center[c], r, c, c );
-      }
-      DisplayFunction stf;
-      stf.SetLinkedRGB( false );
-      stf.ComputeAutoStretch( sigma, center );
-      stf >> work;
-
-      // 4. Render to an 8-bit bitmap.
-      Bitmap bmp = Bitmap::Render( ImageVariant( &work ), 1/*zoom*/, DisplayChannel::RGBK, false/*transparency*/ );
+      // 2-4. Downscale, auto-STF, render (shared with the journey thumbnail).
+      Bitmap bmp = StretchAndRender( work, PICopilotPreviewMaxEdge );
       res.width = bmp.Width();
       res.height = bmp.Height();
       if ( std::max( res.width, res.height ) > PICopilotPreviewMaxEdge )
