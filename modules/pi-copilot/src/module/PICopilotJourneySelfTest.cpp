@@ -7,6 +7,7 @@
 #include "ConfigDialog.h"
 #include "EvalGuard.h"
 #include "CopilotSettings.h"
+#include "GraXpertSelfTestLock.h"
 #include "HistoryReader.h"
 #include "JourneyConstants.h"
 #include "JourneyExport.h"
@@ -24,6 +25,7 @@
 #include "PjsrRunner.h"
 #include "ProcessActivity.h"
 #include "ProcessApply.h"
+#include "ProcessSafety.h"
 #include "SafeFileWrite.h"
 #include "StepStats.h"
 #include "SystemPrompt.h"
@@ -454,6 +456,41 @@ nlohmann::json PhaseHistCheck( const nlohmann::json& payload )
    return { { "top", payload }, { "tick", JourneySpikeProbeHazardApplyResult() } };
 }
 
+// ---- Section J10 (Task 10 fix round 2) GraXpert measurement phases ----
+// A GraXpert run from the module Timer on a TOP-LEVEL window (where History IS
+// recorded, unlike in-process), with a stand-in program that exits 0 and writes
+// nothing: measures whether the core adds a History step in replace and in
+// new-window mode, and what ApplyProcess reports (noEffect, historyStepAdded).
+// Serialized with every other slot's GraXpert runs (the core's shared temp files).
+std::unique_ptr<GraXpertCoreSelfTestLock>& J10GxLock()
+{
+   static std::unique_ptr<GraXpertCoreSelfTestLock> lock;
+   return lock;
+}
+
+nlohmann::json PhaseJ10GxBegin( const nlohmann::json& )
+{
+   J10GxLock().reset( new GraXpertCoreSelfTestLock( 300 ) );
+   nlohmann::json r = { { "locked", J10GxLock()->Locked() }, { "waitedMs", J10GxLock()->WaitedMs() },
+                        { "error", U8( J10GxLock()->Error() ) } };
+   const char* scratch = std::getenv( "PICOPILOT_SELFTEST_SCRATCH" );
+   if ( scratch == nullptr || *scratch == '\0' )
+      throw Error( "PICOPILOT_SELFTEST_SCRATCH not set" );
+   const String program = String( scratch ) + "/j10-graxpert-standin";
+   File::WriteTextFile( program, IsoString( "#!/bin/sh\nexit 0\n" ) );
+   ::chmod( U8( program ).c_str(), 0755 );
+   SetGlobalSettingReaderForSelfTest( [program]( const IsoString&, String& value ) { value = program; return true; } );
+   r["program"] = U8( program );
+   return r;
+}
+
+nlohmann::json PhaseJ10GxEnd( const nlohmann::json& )
+{
+   SetGlobalSettingReaderForSelfTest( GlobalSettingReader() );
+   J10GxLock().reset();
+   return nlohmann::json::object();
+}
+
 // ---- Section J2 (HistoryReader, Task 3) fixtures and phases ----
 
 // Verbatim XPSM (PI 1.9.5, plan API facts) used by the pure parser tests.
@@ -818,6 +855,9 @@ const std::map<std::string, SelfTestPhaseHandler>& SelfTestPhaseHandlers()
       { "hist.preview.check", PhaseHistCheck },
       { "j6",          PhaseJourneyTracker },
       { "j7.exp",      PhaseJourneyExport },
+      { "j10.gx.begin", PhaseJ10GxBegin },
+      { "j10.gx.check", PhaseHistCheck },
+      { "j10.gx.end",   PhaseJ10GxEnd },
       { "gui.keepInFlight", PhaseGuiKeepInFlight },
       { "gui.panel", PhaseGuiPanel },
    };
@@ -3167,10 +3207,13 @@ struct JFakeHistory
 {
    std::map<std::string, std::vector<HistoryStep>> steps;
    mutable int reads = 0;   // every read through this reader (fixture windows and real ones)
+   std::function<void( const std::string& )> onRead;   // called at every read (inside the tick that reads)
 
    HistorySnapshot Read( const IsoString& viewId, int from ) const
    {
       ++reads;
+      if ( onRead )
+         onRead( std::string( viewId.c_str() ) );
       const auto it = steps.find( std::string( viewId.c_str() ) );
       if ( it == steps.end() )
          return ReadViewHistory( viewId, from );
@@ -3225,6 +3268,30 @@ double JApplyMedian( const ToolOutcome& o )
 {
    const nlohmann::json s = nlohmann::json::parse( o.content.at( 0 ).at( "text" ).get<std::string>() );
    return s.at( "newContext" ).at( "channelStats" ).at( 0 ).at( "median" ).get<double>();
+}
+
+// A small kept journey of rows only (no window): one master, one active step per process id, default parameters.
+int64 JAddKeeperSteps( JourneyStore& store, const std::string& target, const std::vector<std::string>& processIds )
+{
+   const std::string now = NowIso();
+   const int64 jid = store.CreateJourney( target + " Ha 2026-09-27", target, now );
+   const int64 img = store.AddImage( jid, "pc" + target + "M", "", target + "-fp", true, now );
+   int seq = 0;
+   for ( const std::string& pid : processIds )
+   {
+      StepRow r;
+      r.imageId = img;
+      r.seq = ++seq;
+      r.processId = pid;
+      r.state = "active";
+      r.historyIndex = seq;
+      r.params = { { "parameters", nlohmann::json::object() }, { "tableParameters", nlohmann::json::object() }, { "xpsm", "" },
+                   { "identity", pid + "@" + target + "#" + std::to_string( seq ) }, { "mask", nullptr },
+                   { "replayable", true }, { "parseNote", "" } };
+      store.AddStep( r );
+   }
+   store.MarkKept( jid, img, NowIso() );
+   return jid;
 }
 
 // A realistic kept journey whose replay material is far over one tool result
@@ -4537,7 +4604,8 @@ bool RunJourneySelfTest( nlohmann::json& out )
          {
             RawDb raw( st->DbPath() );
             const std::map<std::string, std::vector<std::string>> want = {
-               { "journey", { "id", "created", "updated", "name", "target", "kept", "kept_at", "end_image_id", "status" } },
+               { "journey", { "id", "created", "updated", "name", "target", "kept", "kept_at", "end_image_id", "status",
+                                 "continues_journey_id" } },
                { "image", { "id", "journey_id", "view_id", "file_path", "fingerprint", "is_master", "created", "owner" } },   // owner: Task 7 re-review m6
                { "acquisition", { "image_id", "target", "filter", "camera", "gain", "offset", "sensor_temp", "sub_exposure",
                                   "sub_count", "total_integration_s", "session_date" } },
@@ -5292,7 +5360,9 @@ bool RunJourneySelfTest( nlohmann::json& out )
          d["recipeSteps"] = nlohmann::json::array();
          for ( const nlohmann::json& s : steps )
             d["recipeSteps"].push_back( { s.at( "processId" ), s.at( "seq" ), s.at( "manual" ) } );
-         recipeOk = valid && recipe.at( "schema" ) == "picopilot-recipe" && recipe.at( "schemaVersion" ) == 1
+         recipeOk = valid && recipe.at( "schema" ) == "picopilot-recipe" && recipe.at( "schemaVersion" ) == 2
+                 && recipe.at( "lineage" ) == nlohmann::json::array( { { { "journeyId", jid }, { "name", recipe.at( "journey" ).at( "name" ) },
+                                                                          { "keptAt", recipe.at( "journey" ).at( "keptAt" ) } } } )
                  && recipe.at( "images" ).size() == 2 && recipe.at( "images" ).at( 0 ).at( "isMaster" ) == true
                  && recipe.at( "images" ).at( 0 ).at( "acquisition" ).at( "subCount" ) == 20
                  && steps.size() == 5 && steps.at( 0 ).at( "processId" ) == "PixelMath"
@@ -5312,7 +5382,13 @@ bool RunJourneySelfTest( nlohmann::json& out )
                return !ValidateRecipe( r, w ) && w.find( expect ) != std::string::npos;
             };
             validatorOk = bad( []( nlohmann::json& r ) { r.erase( "schemaVersion" ); }, "schemaVersion" )
-                       && bad( []( nlohmann::json& r ) { r["schemaVersion"] = 2; }, "schemaVersion" )
+                       && bad( []( nlohmann::json& r ) { r["schemaVersion"] = 1; }, "schemaVersion" )
+                       // Fix round 3 (v2 lineage): strict like the rest.
+                       && bad( []( nlohmann::json& r ) { r.erase( "lineage" ); }, "lineage" )
+                       && bad( []( nlohmann::json& r ) { r["lineage"] = nlohmann::json::array(); }, "lineage" )
+                       && bad( []( nlohmann::json& r ) { r["lineage"][0]["journeyId"] = 999999; }, "lineage" )
+                       && bad( []( nlohmann::json& r ) { r["steps"][0]["journey"] = 999999; }, "steps[0].journey" )
+                       && bad( []( nlohmann::json& r ) { r["images"][0].erase( "journey" ); }, "images[0]" )
                        && bad( []( nlohmann::json& r ) { r["steps"][0]["actor"] = "robot"; }, "steps[0].actor" )
                        && bad( []( nlohmann::json& r ) { r["steps"][0]["image"] = "img999999"; }, "steps[0].image" )
                        && bad( []( nlohmann::json& r ) { r["links"][0]["to"] = "img999999"; }, "links[0].to" )
@@ -5331,7 +5407,7 @@ bool RunJourneySelfTest( nlohmann::json& out )
                        && bad( []( nlohmann::json& r ) { r["journey"] = nlohmann::json::array(); }, "journey" )
                        && bad( []( nlohmann::json& r ) { r["steps"][0]["statsBefore"][0]["channel"] = -1; }, "steps[0].statsBefore[0].channel" )
                        && bad( []( nlohmann::json& r ) { r["journey"]["endImage"] = "img999999"; }, "journey.endImage" )
-                       && nlohmann::json::parse( RecipeSchemaText() ).at( "properties" ).at( "schemaVersion" ).at( "const" ) == 1
+                       && nlohmann::json::parse( RecipeSchemaText() ).at( "properties" ).at( "schemaVersion" ).at( "const" ) == 2
                        && nlohmann::json::parse( RecipeSchemaText() ).at( "properties" ).at( "schema" ).at( "const" ) == PICopilotRecipeSchemaId;
          }
 
@@ -6444,6 +6520,14 @@ r1.ok && r1.inferred.size() == 1 && r1.inferred[0].first == 7 && r1.inferred[0].
       // Fix round 1.
       bool offFreezeOk = false, inFlightOk = false, pagingOk = false, idTypeOk = false, markViewOk = false,
            orderOk = false, noteActionOk = false, scrubOk = false, replayLookupOk = false;
+      // Fix round 2.
+      bool scrubFuzzOk = false, gxOk = false, replayExpiryOk = false, inTickFreezeOk = false, lineageOk = false;
+      // Fix round 3 (export lineage).
+      bool exportLineageOk = false;
+      // Fix round 4.
+      bool replayFlowOk = false, knownDirsOk = false, candidatesOk = false, loopOk = false;
+      // Fix round 5.
+      bool threeImagesOk = false;
       String error;
       std::vector<std::string> made;
       try
@@ -6762,7 +6846,8 @@ r1.ok && r1.inferred.size() == 1 && r1.inferred[0].first == 7 && r1.inferred[0].
             const ToolOutcome self = ExecuteTool( ToolCall{ "r4", "replay_journey", { { "journey_id", trk.JourneyOfView( "pcJtNew" ) } } },
                                                   ctxFor( AgentMode::Copilot, "pcJtNew" ) );
             const ToolOutcome step = ExecuteTool( ToolCall{ "r5", "apply_process", { { "process_id", "PixelMath" },
-                                                  { "parameters", { { "expression", "$T" } } }, { "reason", "replay step 1" } } },
+                                                  { "parameters", { { "expression", "$T" } } }, { "reason", "replay step 1" },
+                                                  { "replay_step", { { "journey_id", jA }, { "n", 1 } } } } },
                                                   ctxFor( AgentMode::Copilot, "pcJtNew" ) );
             store->GetJourney( trk.JourneyOfView( "pcJtNew" ), cur );
             store->GetJourney( jA, keptA );
@@ -6871,8 +6956,29 @@ r1.ok && r1.inferred.size() == 1 && r1.inferred[0].first == 7 && r1.inferred[0].
             const ToolOutcome g = ExecuteTool( ToolCall{ "t1", "get_journey", { { "journey_id", "1" } } }, ctxFor( AgentMode::Advisor, "pcJtA" ) );
             const ToolOutcome m = ExecuteTool( ToolCall{ "t2", "mark_journey_best", { { "journey_id", "1" } } }, ctxFor( AgentMode::Advisor, "pcJtA" ) );
             const ToolOutcome r = ExecuteTool( ToolCall{ "t3", "replay_journey", { { "journey_id", 1.5 } } }, ctxFor( AgentMode::Copilot, "pcJtNew" ) );
-            d["idType"] = { { "get", text0( g ) }, { "mark", text0( m ) }, { "replay", text0( r ) } };
-            idTypeOk = g.isError && m.isError && r.isError && confirms == before
+            // Re-review R1: numbers past 32 bits are validated in 64 bits before any narrowing (no out-of-bounds step).
+            nlohmann::json wide = nlohmann::json::array();
+            bool wideOk = true;
+            const std::vector<std::pair<const char*, nlohmann::json>> wideArgs = {
+               { "from_step", nlohmann::json( int64( 4294967296LL ) ) }, { "from_step", nlohmann::json( int64( 4294967295LL ) ) },
+               { "from_step", nlohmann::json( int64( 9223372036854775807LL ) ) }, { "from_step", nlohmann::json( -3 ) },
+               { "from_step", nlohmann::json( 1e30 ) }, { "journey_id", nlohmann::json( uint64( 18446744073709551615ULL ) ) },
+               { "max_steps", nlohmann::json( -1 ) } };
+            for ( const auto& a : wideArgs )
+            {
+               nlohmann::json args = { { "journey_id", jA } };
+               args[a.first] = a.second;
+               const ToolOutcome o = ExecuteTool( ToolCall{ "w", "replay_journey", args }, ctxFor( AgentMode::Copilot, "pcJtNew" ) );
+               wide.push_back( { { "arg", a.first }, { "value", a.second }, { "isError", o.isError }, { "text", text0( o ).substr( 0, 160 ) } } );
+               // The precise refusal -- never an exception from reading a step that is not there.
+               wideOk = wideOk && o.isError && (text0( o ).find( "past the last step" ) != std::string::npos
+                                               || text0( o ).find( "must be a positive whole number" ) != std::string::npos);
+            }
+            const ToolOutcome bigMax = ExecuteTool( ToolCall{ "w2", "replay_journey", { { "journey_id", jA }, { "max_steps", int64( 4294967296LL ) } } },
+                                                    ctxFor( AgentMode::Copilot, "pcJtNew" ) );
+            wideOk = wideOk && !bigMax.isError && nlohmann::json::parse( text0( bigMax ) ).at( "steps" ).size() == 3;
+            d["idType"] = { { "get", text0( g ) }, { "mark", text0( m ) }, { "replay", text0( r ) }, { "wide", wide } };
+            idTypeOk = wideOk && g.isError && m.isError && r.isError && confirms == before
                     && text0( g ).find( "journey_id must be" ) != std::string::npos
                     && text0( m ).find( "journey_id must be" ) != std::string::npos
                     && text0( r ).find( "journey_id must be" ) != std::string::npos;
@@ -6921,9 +7027,479 @@ r1.ok && r1.inferred.size() == 1 && r1.inferred[0].first == 7 && r1.inferred[0].
             const String b = ModelTextWithoutDirectories( "journey database /Users/s/Library/Application Support/PixInsight/journeys/journeys.sqlite3: database is locked" );
             const String c = ModelTextWithoutDirectories( "Kept. In the journey's export folder: the process icon set (.xpsm), recipe.json." );
             d["scrub"] = { { "a", U8( a ) }, { "b", U8( b ) }, { "c", U8( c ) } };
+            // Re-review round 1, minor 2: folder names with 2+ spaces, and paths after file:, =, [, ~/, ../, ./
+            const std::vector<std::pair<const char*, const char*>> more = {
+               { "cannot create /home/s/My Astro Data/exports/x.xisf: denied", "cannot create x.xisf: denied" },
+               { "copy to /run/media/scott/Astro Drive 2TB/out 2026/y.xisf failed", "copy to y.xisf failed" },
+               { "see file:/home/s/a b c/d.txt now", "see file:d.txt now" },
+               { "path=/home/s/e f/g.xisf", "path=g.xisf" },
+               { "[/home/s/h i j/k.xisf]", "[k.xisf]" },
+               { "opened ~/Pictures/Deep Sky/l.xisf", "opened l.xisf" },
+               { "read ../secret dir/m.xisf, and ./n o/p.xisf", "read m.xisf, and p.xisf" },
+               { "Sh2-240 / Simeis 147 and $T/2", "Sh2-240 / Simeis 147 and $T/2" } };
+            nlohmann::json bad = nlohmann::json::array();
+            for ( const auto& m : more )
+            {
+               const String got = ModelTextWithoutDirectories( m.first );
+               if ( got != m.second )
+                  bad.push_back( { { "in", m.first }, { "got", U8( got ) }, { "want", m.second } } );
+            }
+            d["scrub"]["more"] = bad;
             scrubOk = a == "copy failed: cannot create x.xisf: denied"
                    && b == "journey database journeys.sqlite3: database is locked"
-                   && c == "Kept. In the journey's export folder: the process icon set (.xpsm), recipe.json.";
+                   && c == "Kept. In the journey's export folder: the process icon set (.xpsm), recipe.json."
+                   && bad.empty();
+         }
+         // (o2) Scrubber: generated paths (directory names with any number of spaces) never leave a directory, and
+         //      random / adversarial text always terminates in linear time.
+         {
+            std::mt19937 rng( 4242 );
+            auto pick = [&rng]( const char* set ) { const size_t n = std::strlen( set ); return set[rng() % n]; };
+            nlohmann::json fails = nlohmann::json::array();
+            for ( int t = 0; t < 400; ++t )
+            {
+               std::string path;
+               const int depth = 1 + int( rng() % 5 );
+               for ( int k = 0; k < depth; ++k )
+               {
+                  path += "/";
+                  const int words = 1 + int( rng() % 4 );
+                  for ( int w = 0; w < words; ++w )
+                  {
+                     if ( w > 0 ) path += " ";
+                     for ( int c = 0, len = 1 + int( rng() % 6 ); c < len; ++c ) path += pick( "abcXYZ0129-_." );
+                  }
+               }
+               const std::string name = "f" + std::to_string( t ) + ".xisf";
+               const std::string in = "error: " + path + "/" + name + ": denied";
+               const String got = ModelTextWithoutDirectories( String( in.c_str() ) );
+               if ( got != String( ("error: " + name + ": denied").c_str() ) && fails.size() < 5 )
+                  fails.push_back( { { "in", in }, { "got", U8( got ) } } );
+            }
+            double worstMs = 0;
+            for ( int t = 0; t < 3000; ++t )
+            {
+               std::string in;
+               for ( int c = 0, len = int( rng() % 160 ); c < len; ++c ) in += pick( "/ a.:,;)'\"\n(~=[]" );
+               const jclock::time_point t0 = jclock::now();
+               ModelTextWithoutDirectories( String( in.c_str() ) );
+               worstMs = std::max( worstMs, MsSince( t0 ) );
+            }
+            nlohmann::json big = nlohmann::json::object();
+            bool linear = true;
+            for ( const char* unit : { "/", " /", "/a b/", "/x y/", "~/ ", "../a ", "a/ ", "/a: " } )
+            {
+               std::string in;
+               while ( in.size() < 100000 )
+                  in += unit;
+               const jclock::time_point t0 = jclock::now();
+               ModelTextWithoutDirectories( String( in.c_str() ) );
+               const double ms = MsSince( t0 );
+               big[unit] = ms;
+               linear = linear && ms < 500;
+            }
+            d["scrubFuzz"] = { { "pathFails", fails }, { "randomWorstMs", worstMs }, { "adversarialMs", big } };
+            scrubFuzzOk = fails.empty() && worstMs < 50 && linear;
+         }
+         // (p) GraXpert no-effect runs measured from the module Timer on top-level windows (fixture j10.graxpert):
+         //     ApplyProcess's historyStepAdded must equal what History shows, in both modes (m3 guard: deleting the
+         //     assignment fails the replace case, where the core adds its empty step).
+         {
+            const nlohmann::json& ph = SelfTestPhaseStore()["j10.gx.check"];
+            nlohmann::json modes = nlohmann::json::object();
+            bool ok = ph.is_array() && ph.size() == 2;
+            for ( size_t k = 0; ok && k < ph.size(); ++k )
+            {
+               const nlohmann::json& top = ph[k].at( "top" );
+               const nlohmann::json& tick = ph[k].at( "tick" );
+               if ( top.contains( "skipped" ) || tick.is_null() )
+               {
+                  ok = false;
+                  break;
+               }
+               const bool historyGrew = top.at( "lengthAfter" ).get<int>() > top.at( "lengthBefore" ).get<int>();
+               modes[top.at( "mode" ).get<std::string>()] = { { "historyGrew", historyGrew }, { "tick", tick }, { "top", top } };
+               ok = ok && tick.value( "ok", true ) == false && tick.value( "noEffect", false ) == true
+                  && tick.value( "historyStepAdded", !historyGrew ) == historyGrew;
+            }
+            d["graxpert"] = { { "phases", ph }, { "modes", modes } };
+            gxOk = ok && modes.contains( "replace" ) && modes.contains( "newWindow" )
+                && modes["replace"].at( "historyGrew" ) == true;   // measured: the core adds its empty step in replace mode
+         }
+         // (q) Re-review minor 4: an unrelated later run (another process) does not name the journey, the replay's own
+         //     next step does; ForgetPendingReplays (a new conversation) drops it.
+         {
+            JourneyRow before, afterUnrelated, afterStep, forgot;
+            const int64 jo = trk.JourneyOfView( "pcJtOther" );
+            store->GetJourney( jo, before );
+            ExecuteTool( ToolCall{ "q1", "replay_journey", { { "journey_id", jA } } }, ctxFor( AgentMode::Copilot, "pcJtOther" ) );
+            const ToolOutcome inv = ExecuteTool( ToolCall{ "q2", "apply_process", { { "process_id", "Invert" } } }, ctxFor( AgentMode::Copilot, "pcJtOther" ) );
+            store->GetJourney( jo, afterUnrelated );
+            // The panel rebuilds its host every tool round (Task 11 0703cd5d): the pending name must survive that.
+            JourneyToolHost rebuilt;
+            rebuilt.store = host.store;
+            rebuilt.tracker = host.tracker;
+            rebuilt.keeper = host.keeper;
+            ToolContext rc = ctxFor( AgentMode::Copilot, "pcJtOther" );
+            rc.journeys = &rebuilt;
+            const ToolOutcome pm = ExecuteTool( ToolCall{ "q3", "apply_process", { { "process_id", "PixelMath" },
+                                                { "parameters", { { "expression", "$T" } } },
+                                                { "replay_step", { { "journey_id", jA }, { "n", 1 } } } } }, rc );
+            store->GetJourney( jo, afterStep );
+            const int64 jp = trk.JourneyOfView( "pcJtPlain" );
+            ExecuteTool( ToolCall{ "q4", "replay_journey", { { "journey_id", jA } } }, ctxFor( AgentMode::Copilot, "pcJtPlain" ) );
+            ForgetPendingReplays( host );
+            const ToolOutcome q5 = ExecuteTool( ToolCall{ "q5", "apply_process", { { "process_id", "PixelMath" }, { "parameters", { { "expression", "$T" } } },
+                                                { "replay_step", { { "journey_id", jA }, { "n", 1 } } } } }, ctxFor( AgentMode::Copilot, "pcJtPlain" ) );
+            store->GetJourney( jp, forgot );
+            d["replayExpiry"] = { { "before", before.name }, { "afterUnrelated", afterUnrelated.name }, { "afterStep", afterStep.name },
+                                  { "forgot", forgot.name }, { "inv", text0( inv ).substr( 0, 200 ) }, { "pm", text0( pm ).substr( 0, 200 ) } };
+            replayExpiryOk = !inv.isError && !pm.isError && afterUnrelated.name == before.name
+                          && afterStep.name.find( "(replay of #" + std::to_string( jA ) + ")" ) != std::string::npos
+                          && forgot.name.find( "(replay of #" ) == std::string::npos && q5.isError;
+         }
+         // (r) Review test gap: FreezeJourney called INSIDE a tick (re-entered) is queued and done at the next tick.
+         {
+            const JBuilt Q = JBuildJourney( *store, "pcJtQ", "JtInTick", 63 );
+            made.push_back( "pcJtQ" );
+            fake.steps["pcJtQ"] = JHistoryOfImage( *store, Q.img );
+            JTick( trk, 2 );
+            if ( trk.JourneyOfView( "pcJtQ" ) != Q.jid )
+               throw Error( "fixture: the tracker did not resume pcJtQ" );
+            store->MarkKept( Q.jid, Q.img, NowIso() );
+            int64 inTick = -1;
+            String inTickError;
+            fake.onRead = [&]( const std::string& id )
+            {
+               if ( id == "pcJtQ" && inTick < 0 )
+                  inTick = trk.FreezeJourney( Q.jid, inTickError );
+            };
+            std::vector<HistoryStep>& hq = fake.steps["pcJtQ"];
+            hq.push_back( JPixelMathStep( "$T*0.97", int( hq.size() ), NowIso() ) );
+            trk.NoteCopilotStep( "pcJtQ", "NoSuchProcess", "", {}, false, JourneyWallNow() );   // marks it dirty
+            JTick( trk );
+            fake.onRead = nullptr;
+            const int64 afterFirst = trk.JourneyOfView( "pcJtQ" );
+            JTick( trk, 2 );
+            const int64 afterNext = trk.JourneyOfView( "pcJtQ" );
+            JourneyRow qr;
+            store->GetJourney( afterNext, qr );
+            d["inTickFreeze"] = { { "inTick", inTick }, { "error", U8( inTickError ) }, { "afterFirst", afterFirst },
+                                  { "afterNext", afterNext }, { "name", qr.name }, { "continues", qr.continuesJourneyId } };
+            inTickFreezeOk = inTick == 0 && inTickError.Contains( "next tick" ) && afterNext != 0 && afterNext != Q.jid
+                          && qr.name.find( "(continued)" ) != std::string::npos && qr.continuesJourneyId == Q.jid;
+         }
+         // (s) Re-review 4a: a keeper that is itself a "(continued)" journey is replayed and compared over its whole
+         //     lineage (the kept journey it continues first); a broken lineage is refused loudly.
+         {
+            const int64 contA = trk.JourneyOfView( "pcJtA" );
+            JourneyRow ca;
+            store->GetJourney( contA, ca );
+            answer = true;
+            const KeepFlowResult k = RunKeepFlow( host, contA, "pcJtA" );
+            const int ownSteps = store->StepCount( contA, true );
+            const nlohmann::json r = nlohmann::json::parse( text0( ExecuteTool( ToolCall{ "s1", "replay_journey", { { "journey_id", contA } } },
+                                                                                ctxFor( AgentMode::Copilot, "pcJtNew" ) ) ) );
+            const nlohmann::json c = nlohmann::json::parse( text0( ExecuteTool( ToolCall{ "s2", "compare_to_journey", { { "journey_id", contA } } },
+                                                                                ctxFor( AgentMode::Copilot, "pcJtNew" ) ) ) );
+            const std::vector<ChannelStats> rootStart = store->Stats( A.img, 0 );
+            // Broken: a journey whose recorded parent is not a kept journey.
+            const int64 orphanParent = store->CreateJourney( "JtOrphan Ha", "JtOrphan", NowIso() );
+            const int64 orphan = store->CreateJourney( "JtOrphan Ha (continued)", "JtOrphan", NowIso() );
+            store->SetJourneyContinues( orphan, orphanParent );
+            store->MarkKept( orphan, 0, NowIso() );
+            const ToolOutcome broken = ExecuteTool( ToolCall{ "s3", "replay_journey", { { "journey_id", orphan } } },
+                                                    ctxFor( AgentMode::Copilot, "pcJtNew" ) );
+            d["lineage"] = { { "contA", contA }, { "continues", ca.continuesJourneyId }, { "keep", U8( k.modelMessage ) },
+                             { "ownSteps", ownSteps }, { "replayTotal", r.value( "totalSteps", -1 ) },
+                             { "lineage", r.at( "keeper" ).value( "lineage", nlohmann::json() ) },
+                             { "compareSteps", c.at( "keeper" ).at( "steps" ) }, { "broken", text0( broken ) } };
+            lineageOk = ca.continuesJourneyId == jA && k.ok && ownSteps == 2
+                     && r.value( "totalSteps", -1 ) == 3 + ownSteps
+                     && r.at( "keeper" ).at( "lineage" ) == nlohmann::json::array( { jA, contA } )
+                     && r.at( "steps" ).at( 0 ).at( "processId" ) == "PixelMath"
+                     && !rootStart.empty() && r.at( "keeper" ).at( "startStats" ).at( 0 ).at( "median" ) == rootStart[0].median
+                     && c.at( "keeper" ).at( "steps" ).size() == size_t( 3 + ownSteps )
+                     && broken.isError && text0( broken ).find( "lineage" ) != std::string::npos;
+
+            // (t) Fix round 3: the kept continuation's EXPORT covers the whole lineage too -- recipe.json (schema v2,
+            //     "lineage", steps in chain order, each naming its journey), the .xpsm (every image of the chain),
+            //     the thumbnails it references, and the summary; a broken lineage is a loud error, nothing partial.
+            JourneyRow cr;
+            store->GetJourney( contA, cr );
+            const String dir = ExportDirOf( *store, contA );
+            nlohmann::json rec;
+            std::string why = "no recipe.json";
+            bool valid = false;
+            if ( File::Exists( dir + "/recipe.json" ) )
+            {
+               rec = nlohmann::json::parse( File::ReadTextFile( dir + "/recipe.json" ).c_str() );
+               valid = ValidateRecipe( rec, why );
+            }
+            std::vector<int64> stepJourneys;
+            bool thumbsThere = true;
+            if ( valid )
+            {
+               for ( const nlohmann::json& st : rec.at( "steps" ) )
+               {
+                  stepJourneys.push_back( st.at( "journey" ).get<int64>() );
+                  if ( st.at( "thumbnail" ).is_string() )
+                     thumbsThere = thumbsThere && File::Exists( dir + "/" + FromU8( st.at( "thumbnail" ).get<std::string>() ) );
+               }
+               for ( const nlohmann::json& im : rec.at( "images" ) )
+                  if ( im.at( "thumbnail" ).is_string() )
+                     thumbsThere = thumbsThere && File::Exists( dir + "/" + FromU8( im.at( "thumbnail" ).get<std::string>() ) );
+            }
+            const String xpsmPath = dir + "/" + ExportBaseName( cr ) + ".xpsm";
+            const std::string xpsm = File::Exists( xpsmPath ) ? std::string( File::ReadTextFile( xpsmPath ).c_str() ) : std::string();
+            size_t pmInstances = 0;
+            for ( size_t at = xpsm.find( "class=\"PixelMath\"" ); at != std::string::npos; at = xpsm.find( "class=\"PixelMath\"", at + 1 ) )
+               ++pmInstances;
+            const std::string rootContainer = "PICopilot_J" + std::to_string( jA ) + "_I" + std::to_string( A.img ) + "_instance";
+            const KeeperSummary ks = BuildKeeperSummary( *store, contA );
+            std::string recipeThrow, summaryThrow;
+            try { BuildRecipe( *store, orphan, "PI Copilot test" ); } catch ( const pcl::Exception& x ) { recipeThrow = U8( x.Message() ); }
+            try { BuildKeeperSummary( *store, orphan ); } catch ( const pcl::Exception& x ) { summaryThrow = U8( x.Message() ); }
+            const KeeperFilesResult of = WriteKeeperFiles( *store, orphan, "PI Copilot test" );
+            JourneyRow orow;
+            store->GetJourney( orphan, orow );
+            const bool orphanNoRecipe = !File::Exists( ExportDirOf( *store, orphan ) + "/recipe.json" )
+                                     && !File::Exists( ExportDirOf( *store, orphan ) + "/" + ExportBaseName( orow ) + ".xpsm" );
+            d["exportLineage"] = { { "why", why }, { "lineage", valid ? rec.at( "lineage" ) : nlohmann::json() },
+                                   { "stepJourneys", stepJourneys }, { "thumbsThere", thumbsThere }, { "pmInstances", pmInstances },
+                                   { "rootContainer", xpsm.find( rootContainer ) != std::string::npos },
+                                   { "summarySteps", ks.steps }, { "summaryLineage", ks.lineageLines },
+                                   { "recipeThrow", recipeThrow }, { "summaryThrow", summaryThrow },
+                                   { "orphanRecipeError", U8( of.recipeError ) }, { "orphanXpsmError", U8( of.xpsmError ) } };
+            exportLineageOk = valid && rec.at( "schemaVersion" ) == 2 && rec.at( "journey" ).at( "id" ) == contA
+                           && rec.at( "lineage" ).size() == 2 && rec.at( "lineage" ).at( 0 ).at( "journeyId" ) == jA
+                           && rec.at( "lineage" ).at( 1 ).at( "journeyId" ) == contA
+                           && stepJourneys == std::vector<int64>( { jA, jA, jA, contA, contA } ) && thumbsThere
+                           && pmInstances == 5 && xpsm.find( rootContainer ) != std::string::npos
+                           && ks.steps == 5 && !ks.lineageLines.empty()
+                           && recipeThrow.find( "lineage" ) != std::string::npos && summaryThrow.find( "lineage" ) != std::string::npos
+                           && !of.recipeOk && !of.xpsmOk && of.recipeError.Contains( "lineage" ) && of.xpsmError.Contains( "lineage" )
+                           && orphanNoRecipe;
+         }
+         // (z) Round 5 (re-review 3, C1): keeping a journey with THREE open images (master + two derived windows)
+         //     freezes three images at once (the pending list is erased in the middle), and so does closing the first
+         //     of three frozen-but-busy images. Both crashed PixInsight before (moved-from pcl::String in a std::vector).
+         {
+            auto threeImages = [&]( const char* id, const char* object, unsigned seed ) -> JBuilt
+            {
+               const JBuilt b = JBuildJourney( *store, id, object, seed );
+               made.push_back( id );
+               fake.steps[id] = JHistoryOfImage( *store, b.img );
+               JTick( trk, 2 );
+               for ( const char* suffix : { "_c1", "_c2" } )
+               {
+                  const std::string copy = std::string( id ) + suffix;
+                  ExecuteTool( ToolCall{ "z", "apply_process", { { "process_id", "PixelMath" },
+                               { "parameters", { { "expression", "$T" }, { "createNewImage", true }, { "newImageId", copy } } } } },
+                               ctxFor( AgentMode::Copilot, id ) );
+                  made.push_back( copy );
+               }
+               JTick( trk, 3 );
+               return b;
+            };
+            answer = true;
+            // Free images: all three join the continuation at once.
+            const JBuilt T = threeImages( "pcJtT", "JtThree", 65 );
+            const bool tLinked = trk.JourneyOfView( "pcJtT_c1" ) == T.jid && trk.JourneyOfView( "pcJtT_c2" ) == T.jid;
+            const KeepFlowResult kt = RunKeepFlow( host, T.jid, "pcJtT" );
+            const int64 tc = trk.JourneyOfView( "pcJtT" );
+            const bool tJoined = kt.ok && tc != 0 && tc != T.jid && trk.JourneyOfView( "pcJtT_c1" ) == tc && trk.JourneyOfView( "pcJtT_c2" ) == tc;
+            // Busy images: all three pending; the first closes; the other two join at the next tick.
+            const JBuilt U = threeImages( "pcJtU", "JtThreeBusy", 66 );
+            KeepFlowResult ku;
+            {
+               View a = ImageWindow::WindowById( "pcJtU" ).MainView(), b = ImageWindow::WindowById( "pcJtU_c1" ).MainView(),
+                    c = ImageWindow::WindowById( "pcJtU_c2" ).MainView();
+               AutoViewLock la( a ), lb( b ), lc( c );
+               ku = RunKeepFlow( host, U.jid, "pcJtU" );
+            }
+            JForceClose( "pcJtU" );
+            JTick( trk, 2 );
+            const int64 u1 = trk.JourneyOfView( "pcJtU_c1" ), u2 = trk.JourneyOfView( "pcJtU_c2" );
+            d["threeImages"] = { { "tLinked", tLinked }, { "tJoined", tJoined }, { "tContinued", tc }, { "keepT", U8( kt.modelMessage ) },
+                                 { "uKept", ku.ok }, { "u1", u1 }, { "u2", u2 }, { "uJid", U.jid } };
+            threeImagesOk = tLinked && tJoined && ku.ok && u1 != 0 && u1 != U.jid && u1 == u2;
+         }
+         // (v) Round 5 (re-review 3, I1): only an EXPLICIT replay step names the journey -- apply_process with
+         //     replay_step {journey_id, n} validated against the pending page. It survives the user-message boundaries
+         //     of a real replay (a manual DBE first, a "go ahead"), may be adapted (another process), restarts its clock
+         //     on replay activity (a lookup / a replay step), expires without it, and a declined replay followed by an
+         //     ordinary run of a process that IS on the page names nothing.
+         {
+            double now = JourneyWallNow();
+            SetReplayNameClockForSelfTest( [&now]() { return now; } );
+            auto named = [&]( const char* view, int64 keeper )
+            {
+               JourneyRow r;
+               store->GetJourney( trk.JourneyOfView( view ), r );
+               return r.name.find( "(replay of #" + std::to_string( keeper ) + ")" ) != std::string::npos;
+            };
+            auto step = [&]( const char* view, const char* pid, int64 keeper, int n )
+            {
+               nlohmann::json in = { { "process_id", pid } };
+               if ( std::string( pid ) == "PixelMath" )
+                  in["parameters"] = { { "expression", "$T" } };
+               if ( keeper != 0 )
+                  in["replay_step"] = { { "journey_id", keeper }, { "n", n } };
+               return ExecuteTool( ToolCall{ "v", "apply_process", in }, ctxFor( AgentMode::Copilot, view ) );
+            };
+            auto lookup = [&]( const char* view, int64 keeper )
+            {
+               return ExecuteTool( ToolCall{ "vl", "replay_journey", { { "journey_id", keeper } } }, ctxFor( AgentMode::Copilot, view ) );
+            };
+            const int64 dbeFirst = JAddKeeperSteps( *store, "JtDbe", { "DynamicBackgroundExtraction", "Invert" } );
+            const int64 mixed = JAddKeeperSteps( *store, "JtMix", { "Invert", "PixelMath" } );
+            for ( const char* id : { "pcJtR1", "pcJtR2", "pcJtR3", "pcJtR4", "pcJtR5" } )
+            {
+               JMakeNoiseMaster( id, 70 + unsigned( id[5] ) );
+               made.push_back( id );
+               ExecuteTool( ToolCall{ "vs", "start_journey", nlohmann::json::object() }, ctxFor( AgentMode::Copilot, id ) );
+            }
+            // DBE first: the user places samples for 20 minutes; after their next message step 2 runs.
+            lookup( "pcJtR1", dbeFirst );
+            now += 1200;
+            const ToolOutcome s1 = step( "pcJtR1", "Invert", dbeFirst, 2 );
+            const bool dbeNamed = !s1.isError && named( "pcJtR1", dbeFirst );
+            // "Go ahead" with a later page lookup (activity) in between: named at +100 min.
+            lookup( "pcJtR2", jA );
+            now += 3000;
+            lookup( "pcJtR2", jA );
+            now += 3000;
+            const ToolOutcome s2 = step( "pcJtR2", "PixelMath", jA, 1 );
+            const bool restartNamed = !s2.isError && named( "pcJtR2", jA );
+            // Adapted: step 1 (Invert) done with another process.
+            lookup( "pcJtR3", mixed );
+            const ToolOutcome s3 = step( "pcJtR3", "PixelMath", mixed, 1 );
+            const bool adaptedNamed = !s3.isError && named( "pcJtR3", mixed );
+            // No replay activity for two hours: the replay step is refused (look it up again), nothing named.
+            lookup( "pcJtR4", jA );
+            now += 7300;
+            const ToolOutcome s4 = step( "pcJtR4", "PixelMath", jA, 1 );
+            const bool expiredNamed = named( "pcJtR4", jA );
+            // Declined: the user says "no, just stretch it"; an ordinary PixelMath (on the page!) names nothing, and a
+            // replay_step for a journey never looked up / a step not on the page is refused before anything runs.
+            lookup( "pcJtR5", jA );
+            const ToolOutcome plain = step( "pcJtR5", "PixelMath", 0, 0 );
+            const ToolOutcome wrongJourney = step( "pcJtR5", "PixelMath", jB, 1 );
+            const ToolOutcome wrongStep = step( "pcJtR5", "PixelMath", jA, 99 );
+            const bool declinedNamed = named( "pcJtR5", jA );
+            SetReplayNameClockForSelfTest( std::function<double()>() );
+            d["replayFlow"] = { { "dbeFirst", dbeNamed }, { "restart", restartNamed }, { "adapted", adaptedNamed },
+                                { "expired", { { "named", expiredNamed }, { "text", text0( s4 ).substr( 0, 200 ) } } },
+                                { "declined", declinedNamed }, { "plainError", plain.isError },
+                                { "wrongJourney", text0( wrongJourney ).substr( 0, 200 ) }, { "wrongStep", text0( wrongStep ).substr( 0, 200 ) } };
+            replayFlowOk = dbeNamed && restartNamed && adaptedNamed
+                        && !expiredNamed && s4.isError && text0( s4 ).find( "replay_journey" ) != std::string::npos
+                        && !declinedNamed && !plain.isError
+                        && wrongJourney.isError && text0( wrongJourney ).find( "replay_step" ) != std::string::npos
+                        && wrongStep.isError && text0( wrongStep ).find( "replay_step" ) != std::string::npos;
+         }
+         // (w) Re-review round 2, minor 1: paths under a directory PI Copilot knows lose it literally, whatever
+         //     characters its folders hold; and a keep with such an export folder tells the model no folder.
+         {
+            const StringList known = { "/home/s", "/tmp/pcx" };
+            const std::vector<std::pair<const char*, const char*>> cases = {
+               { "cannot create /home/s/M42 (Orion)/x.xisf: denied", "cannot create x.xisf: denied" },
+               { "open /home/s/Scott's Data/x.xisf failed", "open x.xisf failed" },
+               { "copy /home/s/Data, 2026/x.xisf", "copy x.xisf" },
+               { "at /home/s/NGC 7000 [HOO]/x.xisf.", "at x.xisf." },
+               { "in /home/s/a: b/x.xisf now", "in x.xisf now" },
+               { "/tmp/pcx/j (1)/export: missing", "export: missing" },
+               { "a/b and $T/2 stay", "a/b and $T/2 stay" },
+               { "copy to /home/s/M42 (Orion), 2026/out failed; saved in /tmp/pcx/j 1/26 instead", "copy to out failed; saved in 26 instead" },
+               // Round 5 (re-review 3, M2): a folder name ending in a space ("a ") before the next '/'.
+               { "see /home/s/a /b/x.xisf now", "see x.xisf now" } };
+            nlohmann::json bad = nlohmann::json::array();
+            for ( const auto& c : cases )
+            {
+               const String got = ModelTextWithoutDirectories( c.first, known );
+               if ( got != c.second )
+                  bad.push_back( { { "in", c.first }, { "got", U8( got ) }, { "want", c.second } } );
+            }
+            // Linear with known directories too (round 5, re-review 3 M1): doubling the input at most ~doubles the time.
+            std::string big;
+            while ( big.size() < 100000 )
+               big += "/home/s/M42 (Orion)/";
+            const jclock::time_point t0 = jclock::now();
+            ModelTextWithoutDirectories( String( big.c_str() ), known );
+            const double bigMs = MsSince( t0 );
+            auto timeOf = [&known]( const std::string& unit, size_t chars )
+            {
+               std::string in;
+               while ( in.size() < chars )
+                  in += unit;
+               const String t( in.c_str() );
+               double best = 1e30;
+               for ( int r = 0; r < 3; ++r )
+               {
+                  const jclock::time_point a = jclock::now();
+                  ModelTextWithoutDirectories( t, known );
+                  best = std::min( best, MsSince( a ) );
+               }
+               return best;
+            };
+            nlohmann::json scaling = nlohmann::json::object();
+            bool linearKnown = true;
+            for ( const char* unit : { "/home/s/a ", "/home/s/a/b ", "x /home/s/ " } )
+            {
+               const double t1 = timeOf( unit, 50000 ), t2 = timeOf( unit, 100000 );
+               scaling[unit] = { t1, t2 };
+               linearKnown = linearKnown && t2 < std::max( 3.0*t1, 5.0 );   // quadratic would be ~4x (and >> 5 ms here)
+            }
+            d["knownDirsScaling"] = scaling;
+            // A keep whose export folder has such names (missing, so the copy error names it).
+            const JBuilt X = JBuildJourney( *store, "pcJtX", "JtOrion", 64 );
+            made.push_back( "pcJtX" );
+            host.exportFolder = root.Path() + "/M42 (Orion), 2026/out";
+            answer = true;
+            const KeepFlowResult k = RunKeepFlow( host, X.jid, "" );
+            host.exportFolder.Clear();
+            d["knownDirs"] = { { "bad", bad }, { "bigMs", bigMs }, { "keep", U8( k.modelMessage ) }, { "keepLog", U8( k.message ) } };
+            knownDirsOk = bad.empty() && bigMs < 500 && linearKnown && k.ok && k.message.Contains( "Orion" )
+                       && !k.modelMessage.Contains( "Orion" ) && !k.modelMessage.Contains( "2026/" )
+                       && k.modelMessage.Contains( "does not exist" );   // the prose between two paths survives
+         }
+         // (x) Re-review round 2, minor 3: auto-matched candidates follow lineage -- a kept journey that a kept
+         //     continuation continues is not offered beside it, the current image's own ancestors are never offered,
+         //     and a candidate's step count is its lineage's.
+         {
+            const ToolOutcome onNew = ExecuteTool( ToolCall{ "x1", "replay_journey", nlohmann::json::object() }, ctxFor( AgentMode::Copilot, "pcJtNew" ) );
+            const ToolOutcome onA = ExecuteTool( ToolCall{ "x2", "replay_journey", nlohmann::json::object() }, ctxFor( AgentMode::Copilot, "pcJtA" ) );
+            const nlohmann::json n = nlohmann::json::parse( text0( onNew ) ), a = nlohmann::json::parse( text0( onA ) );
+            std::vector<int64> ids;
+            int contSteps = -1;
+            if ( n.contains( "candidates" ) )
+               for ( const nlohmann::json& c : n.at( "candidates" ) )
+               {
+                  ids.push_back( c.at( "id" ).get<int64>() );
+                  if ( c.at( "id" ) != jB )
+                     contSteps = c.at( "steps" ).get<int>();
+               }
+            std::sort( ids.begin(), ids.end() );
+            d["candidates"] = { { "onNew", n.value( "candidates", nlohmann::json() ) },
+                                { "onA", a.contains( "candidates" ) ? a.at( "candidates" ) : a.at( "keeper" ).at( "id" ) } };
+            const int64 contKept = d["lineage"].value( "contA", int64( 0 ) );
+            candidatesOk = !onNew.isError && ids == std::vector<int64>( { std::min( jB, contKept ), std::max( jB, contKept ) } )
+                        && contSteps == 5
+                        && !onA.isError && !a.contains( "candidates" ) && a.at( "keeper" ).at( "id" ) == jB;
+         }
+         // (y) Re-review round 2, minor 4: a lineage loop is refused by name (and never hangs).
+         {
+            const int64 x = store->CreateJourney( "JtLoopA", "JtLoop", NowIso() ), y = store->CreateJourney( "JtLoopB", "JtLoop", NowIso() );
+            store->SetJourneyContinues( x, y );
+            store->SetJourneyContinues( y, x );
+            store->MarkKept( x, 0, NowIso() );
+            store->MarkKept( y, 0, NowIso() );
+            const ToolOutcome o = ExecuteTool( ToolCall{ "y1", "replay_journey", { { "journey_id", x } } }, ctxFor( AgentMode::Copilot, "pcJtNew" ) );
+            std::string recipeThrow;
+            try { BuildRecipe( *store, x, "t" ); } catch ( const pcl::Exception& e ) { recipeThrow = U8( e.Message() ); }
+            d["loop"] = { { "replay", text0( o ) }, { "recipe", recipeThrow } };
+            loopOk = o.isError && text0( o ).find( "loops" ) != std::string::npos && recipeThrow.find( "loops" ) != std::string::npos;
          }
       }
       catch ( const pcl::Exception& x ) { error = x.Message(); }
@@ -6934,7 +7510,9 @@ r1.ok && r1.inferred.size() == 1 && r1.inferred[0].first == 7 && r1.inferred[0].
       const bool ok = schemaOk && promptOk && noHostOk && listOk && getOk && markOk && compareOk && freezeBusyOk
                    && keepErrorOk && startOk && noEffectOk && replayMatchOk && attributionOk && cancelOk
                    && offFreezeOk && inFlightOk && pagingOk && idTypeOk && markViewOk && orderOk && noteActionOk && scrubOk
-                   && replayLookupOk && error.IsEmpty();
+                   && replayLookupOk && scrubFuzzOk && gxOk && replayExpiryOk && inTickFreezeOk && lineageOk && exportLineageOk
+                   && replayFlowOk && knownDirsOk && candidatesOk && loopOk && threeImagesOk
+                   && error.IsEmpty();
       out["journeyToolsDetail"] = d;
       out["journeyToolsChecks"] = { { "schema", schemaOk }, { "prompt", promptOk }, { "noHost", noHostOk }, { "list", listOk },
                                     { "get", getOk }, { "mark", markOk }, { "compare", compareOk }, { "freezeBusy", freezeBusyOk },
@@ -6942,7 +7520,11 @@ r1.ok && r1.inferred.size() == 1 && r1.inferred[0].first == 7 && r1.inferred[0].
                                     { "replayMatch", replayMatchOk }, { "attribution", attributionOk }, { "cancel", cancelOk },
                                     { "offFreeze", offFreezeOk }, { "inFlight", inFlightOk }, { "paging", pagingOk },
                                     { "idType", idTypeOk }, { "markView", markViewOk }, { "order", orderOk },
-                                    { "noteAction", noteActionOk }, { "scrub", scrubOk }, { "replayLookup", replayLookupOk } };
+                                    { "noteAction", noteActionOk }, { "scrub", scrubOk }, { "replayLookup", replayLookupOk },
+                                    { "scrubFuzz", scrubFuzzOk }, { "graxpert", gxOk }, { "replayExpiry", replayExpiryOk },
+                                    { "inTickFreeze", inTickFreezeOk }, { "lineage", lineageOk }, { "exportLineage", exportLineageOk },
+                                    { "replayFlow", replayFlowOk }, { "knownDirs", knownDirsOk }, { "candidates", candidatesOk },
+                                    { "loop", loopOk }, { "threeImages", threeImagesOk } };
       out["journeyToolsError"] = U8( error );
       out["journeyToolsOk"] = ok;
       allOk = allOk && ok;
@@ -7052,8 +7634,13 @@ r1.ok && r1.inferred.size() == 1 && r1.inferred[0].first == 7 && r1.inferred[0].
                calledReplay = calledReplay || line.get<std::string>().find( "replay_journey" ) != std::string::npos;
             d = { { "requests", requests }, { "log", log }, { "recorded", recorded }, { "replayed", replayed },
                   { "finalMedian", finalMedian }, { "kind", int( s.kind ) }, { "text", U8( s.assistantText ).substr( 0, 600 ) } };
+            // Round 5: the model marks its replay runs (replay_step), so the new journey carries the replay name.
+            JourneyRow nr;
+            store->GetJourney( trk.JourneyOfView( "pcJtN" ), nr );
+            d["journeyName"] = nr.name;
             liveOk = s.kind == AgentStep::Done && calledReplay && replayed.size() >= 2 && perStep
-                  && std::fabs( finalMedian - recorded.back() ) <= 0.03;
+                  && std::fabs( finalMedian - recorded.back() ) <= 0.03
+                  && nr.name.find( "(replay of #" + std::to_string( K.jid ) + ")" ) != std::string::npos;
          }
          catch ( const pcl::Exception& x ) { error = x.Message(); }
          catch ( const std::exception& x ) { error = String( x.what() ); }
@@ -7077,7 +7664,7 @@ r1.ok && r1.inferred.size() == 1 && r1.inferred[0].first == 7 && r1.inferred[0].
    {
       nlohmann::json d = nlohmann::json::object();
       bool stripOk = false, folderOk = false, dialogOk = false, panelOk = false, keepOk = false, notesOk = false;
-      bool emptyKeepOk = false, keepYesOk = false, wordingOk = false, thumbOk = false;
+      bool emptyKeepOk = false, keepYesOk = false, wordingOk = false, thumbOk = false, newChatOk = false;
       String error;
       std::vector<std::string> made;
       try
@@ -7193,11 +7780,7 @@ r1.ok && r1.inferred.size() == 1 && r1.inferred[0].first == 7 && r1.inferred[0].
          made.push_back( "pcUiKeep" );
          {
             ui.m_turnViewId.Clear();
-            (void)ui.MakeToolContext();
-            ui.m_journeyHost.pendingReplayName["pcUiPending"] = { 42, "X (replay of #7)" };
-            const ToolContext c = ui.MakeToolContext();   // a later tool round rebuilds the host
-            const bool pendingKept = c.journeys != nullptr && c.journeys->pendingReplayName.count( "pcUiPending" ) == 1;
-            ui.m_journeyHost.pendingReplayName.erase( "pcUiPending" );
+            const ToolContext c = ui.MakeToolContext();
             ui.UpdateJourneyStripFor( "pcUiKeep" );
             const String keepStrip = ui.GUI->JourneyStrip_Label.Text();
             const bool keepDisabled = !ui.m_keepAllowed && !ui.GUI->Keep_ToolButton.IsEnabled();
@@ -7214,8 +7797,7 @@ r1.ok && r1.inferred.size() == 1 && r1.inferred[0].first == 7 && r1.inferred[0].
                            { "turnInProgress", ui.TurnInProgress() }, { "thread", bool( ui.m_thread ) },
                            { "handling", ui.m_handlingResult }, { "held", ui.m_resultHeld }, { "keepRunning", ui.m_keepRunning },
                            { "panelEnabled", ui.IsEnabled() } };
-            d["panel"]["pendingReplayKept"] = pendingKept;
-            panelOk = pendingKept && c.journeys != nullptr && c.journeys->tracker == &svc.Tracker()
+            panelOk = c.journeys != nullptr && c.journeys->tracker == &svc.Tracker()
                    && c.journeys->store == svc.Store() && c.journeys->keeper == &svc.Keeper()
                    && c.journeys->confirmKeeper && c.journeys->apiKey
                    && keepStrip == "Journey: not tracked" && keepDisabled
@@ -7379,6 +7961,28 @@ r1.ok && r1.inferred.size() == 1 && r1.inferred[0].first == 7 && r1.inferred[0].
             keepYesOk = asked == 1 && jr.kept && yes.StartsWith( "Kept." ) && !yes.Contains( "journey_id" )
                      && ui.GUI->ChatLog.Text().Contains( yes );
          }
+         // (j) Task 10 merge: a replay lookup stays pending across tool rounds (the panel rebuilds its host
+         //     each round) and is forgotten by New chat -- never per message.
+         {
+            JMakeNoiseMaster( "pcUiReplayTgt", 74 );
+            made.push_back( "pcUiReplayTgt" );
+            String se;
+            if ( svc.Tracker().StartJourneyFor( ImageWindow::WindowById( "pcUiReplayTgt" ).MainView(), se, JourneyWallNow() ) == 0 )
+               throw Error( "(j) start_journey on pcUiReplayTgt: " + se );
+            ui.m_turnMode = AgentMode::Copilot;
+            ui.m_turnViewId = "pcUiReplayTgt";
+            const ToolOutcome look = ExecuteTool( ToolCall{ "u1", "replay_journey", { { "journey_id", k.jid } } },
+                                                  ui.MakeToolContext() );
+            (void)ui.MakeToolContext();   // a later tool round
+            const String pendingBefore = CheckReplayStep( *ui.MakeToolContext().journeys, "pcUiReplayTgt", k.jid, 1 );
+            ui.e_Clear_Click( ui.GUI->Clear_Button, false );
+            const String pendingAfter = CheckReplayStep( *ui.MakeToolContext().journeys, "pcUiReplayTgt", k.jid, 1 );
+            ui.m_turnViewId.Clear();
+            d["newChat"] = { { "lookupError", look.isError }, { "lookup", look.content.empty() ? std::string()
+                               : look.content.at( 0 ).value( "text", std::string() ).substr( 0, 300 ) },
+                             { "before", U8( pendingBefore ) }, { "after", U8( pendingAfter ) } };
+            newChatOk = !look.isError && pendingBefore.IsEmpty() && !pendingAfter.IsEmpty();
+         }
       }
       catch ( const pcl::Exception& x ) { error = x.Message(); }
       catch ( const std::exception& x ) { error = String( x.what() ); }
@@ -7386,12 +7990,12 @@ r1.ok && r1.inferred.size() == 1 && r1.inferred[0].first == 7 && r1.inferred[0].
       for ( const std::string& id : made )
          JForceClose( id );
       const bool ok = stripOk && folderOk && dialogOk && panelOk && keepOk && notesOk && emptyKeepOk && keepYesOk
-                   && wordingOk && thumbOk && error.IsEmpty();
+                   && wordingOk && thumbOk && newChatOk && error.IsEmpty();
       out["journeyUiDetail"] = d;
       out["journeyUiChecks"] = { { "strip", stripOk }, { "folder", folderOk }, { "dialog", dialogOk },
                                  { "panel", panelOk }, { "keep", keepOk }, { "notes", notesOk },
                                  { "emptyKeep", emptyKeepOk }, { "keepYes", keepYesOk }, { "wording", wordingOk },
-                                 { "thumb", thumbOk } };
+                                 { "thumb", thumbOk }, { "newChat", newChatOk } };
       out["journeyUiError"] = U8( error );
       out["journeyUiOk"] = ok;
       allOk = allOk && ok;

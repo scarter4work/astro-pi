@@ -121,6 +121,9 @@ void HazardTick( SpikeState& s )
          r["error"] = U8( a.error );
          r["unrecordedChange"] = a.unrecordedChange;
          r["undo"] = U8( a.undo );
+         r["noEffect"] = a.noEffect;
+         r["historyStepAdded"] = a.historyStepAdded;
+         r["targetHistoryStep"] = a.targetHistoryStep;
          r["modifyCountAfter"] = uint64_t( w.ModifyCount() );
       }
    }

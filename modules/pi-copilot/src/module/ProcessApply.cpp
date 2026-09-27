@@ -347,7 +347,7 @@ void SetParameters( const Process& P, ProcessInstance* instance, const String& p
    // values were resolved ONCE by the caller (the tools, before any dialog:
    // what the user was shown is what runs) and are only checked for
    // completeness here; a direct caller without them resolves now.
-   std::vector<PinnedParameter> pinned;
+   std::vector<PinnedParameter> pinned;   // pcl-move-ok: filled by ResolvePinnedParameters (push_back/clear), read only
    if ( resolvedPinned != nullptr )
    {
       const String e = CheckResolvedPinnedParameters( P.Id(), parameters, tableParameters, *resolvedPinned );
@@ -962,6 +962,10 @@ ApplyProcessResult ApplyProcess( const IsoString& processId, const nlohmann::jso
             if ( r.resultWindows.empty() )
             {
                r.noEffect = true;
+               // Measured (fix round 2, Timer run on a top-level view, stand-in writing nothing): in new-window
+               // mode the core adds NO History step to the target (History 1 -> 1, ModifyCount 1 -> 1). Set
+               // from what happened, not from that measurement.
+               r.historyStepAdded = !isPreview && window.ModifyCount() > modifyCountBefore;
                String meanwhile;
                if ( !others.IsEmpty() )
                {

@@ -701,7 +701,9 @@ void PICopilotInterface::e_Poll_Timer( Timer& )
       break;
    }
 
-   AnthropicResult r = std::move( m_heldResult );
+   // A COPY, then the reset (round 5 audit): moving out of m_heldResult leaves its pcl::String members null, and
+   // the reset below would then assign into them -- SIGSEGV on every held reply (proven standalone).
+   AnthropicResult r = m_heldResult;
    const bool partialReplyCut = m_heldPartialReplyCut;
    m_heldResult = AnthropicResult();
    m_resultHeld = false;
@@ -751,6 +753,12 @@ void PICopilotInterface::e_Clear_Click( Button&, bool )
    if ( TurnInProgress() )
       return;
    m_session.Clear();
+   // A new conversation: replay lookups the model made in the old one no
+   // longer name a journey (Task 10: only here, never per message).
+   {
+      JourneyToolHost h = MakeJourneyHost();
+      ForgetPendingReplays( h );
+   }
    m_lastModel.Clear();   // name the model again in the new chat
    GUI->ChatLog.Clear();
    AppendToLog( PlainText( "(new chat started: the model no longer sees the earlier conversation; your images are unchanged)" ) + "\n\n" );
@@ -816,12 +824,9 @@ bool PICopilotInterface::ConfirmKeeper( const String& summaryHtml )
 
 void PICopilotInterface::RefreshJourneyHost()
 {
-   // The replay renames a replay_journey lookup left pending belong to the
-   // tool calls, not to one request: a replay looked up in one round (or
-   // message) is applied in a later one, which rebuilds the host.
-   std::map<std::string, std::pair<int64, std::string>> pending = std::move( m_journeyHost.pendingReplayName );
+   // Pending replay lookups live in JourneyTools (Task 10 round 5), keyed by
+   // library: rebuilding the host per tool round keeps them.
    m_journeyHost = MakeJourneyHost();
-   m_journeyHost.pendingReplayName = std::move( pending );
 }
 
 JourneyToolHost PICopilotInterface::MakeJourneyHost()

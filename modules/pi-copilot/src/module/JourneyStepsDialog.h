@@ -13,7 +13,7 @@
 #include <pcl/Sizer.h>
 #include <pcl/TreeBox.h>
 
-#include <vector>
+#include <pcl/StringList.h>
 
 namespace pcl
 {
@@ -62,7 +62,7 @@ private:
    int m_rows = 0;
    int m_icons = 0;
    bool m_closing = false;
-   std::vector<String> m_thumbs;   // per row, "" = no thumbnail
+   StringList m_thumbs;   // per row, "" = no thumbnail (a PCL container: std::vector<String> is barred, check-pcl-moves.py R1)
 
    void ShowPreview( int row );
    void e_Close( Button& sender, bool checked );

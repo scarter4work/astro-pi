@@ -12,6 +12,7 @@
 #include "Keyring.h"
 #include "ModelCatalog.h"
 #include "PanelPlacement.h"
+#include "GraXpertSelfTestLock.h"
 #include "PICopilotInc5SelfTest.h"
 #include "PICopilotModule.h"
 #include "ProcessApply.h"
@@ -224,100 +225,6 @@ private:
    ImageWindow m_window;
 };
 
-// Serializes the self-test's runs of PixInsight's GraXpert core process (real
-// program or stand-in) across CONCURRENT PixInsight instances (Task
-// T-graxpert). The core bridges to the external program through FIXED shared
-// temp files (/tmp/PixInsight.xisf, /tmp/PixInsight_GraXpert.xisf), so two
-// test slots running it at once clobber each other (proven: ok with pixels
-// unchanged or blended). One fixed per-user lock file,
-// /tmp/picopilot-<uid>/graxpert-selftest.lock, flock(2)ed exclusively. The
-// directory is created 0700 and must be a real directory owned by this user
-// with no group/other access (lstat: a planted symlink or foreign directory
-// is refused); the file is opened O_NOFOLLOW. Bounded wait, reported.
-class GraXpertCoreSelfTestLock
-{
-public:
-
-   static String Dir()
-   {
-      return String().Format( "/tmp/picopilot-%u", unsigned( ::getuid() ) );
-   }
-
-   static String Path()
-   {
-      return Dir() + "/graxpert-selftest.lock";
-   }
-
-   explicit GraXpertCoreSelfTestLock( double timeoutS )
-   {
-      const auto t0 = std::chrono::steady_clock::now();
-      const IsoString dir = Dir().ToUTF8(), path = Path().ToUTF8();
-      if ( ::mkdir( dir.c_str(), 0700 ) != 0 && errno != EEXIST )
-      {
-         m_error = "cannot create " + Dir() + ": " + String( ::strerror( errno ) );
-         return;
-      }
-      struct stat st;
-      if ( ::lstat( dir.c_str(), &st ) != 0 || !S_ISDIR( st.st_mode ) || st.st_uid != ::getuid()
-        || (st.st_mode & 077) != 0 )
-      {
-         m_error = Dir() + " is not a private directory of this user (not a real directory, a link, foreign-owned, "
-                           "or group/other-accessible); refusing to use it";
-         return;
-      }
-      m_fd = ::open( path.c_str(), O_RDWR | O_CREAT | O_NOFOLLOW | O_CLOEXEC, 0600 );
-      if ( m_fd < 0 )
-      {
-         m_error = "cannot open " + Path() + ": " + String( ::strerror( errno ) );
-         return;
-      }
-      for ( ;; )
-      {
-         if ( ::flock( m_fd, LOCK_EX | LOCK_NB ) == 0 )
-         {
-            m_locked = true;
-            break;
-         }
-         if ( errno != EWOULDBLOCK && errno != EINTR )
-         {
-            m_error = "flock " + Path() + ": " + String( ::strerror( errno ) );
-            break;
-         }
-         if ( std::chrono::duration<double>( std::chrono::steady_clock::now() - t0 ).count() > timeoutS )
-         {
-            m_error = "another PixInsight test instance held " + Path()
-                    + String().Format( " for more than %.0f s", timeoutS );
-            break;
-         }
-         ::usleep( 100000 );
-      }
-      m_waitedMs = std::chrono::duration<double, std::milli>( std::chrono::steady_clock::now() - t0 ).count();
-   }
-
-   ~GraXpertCoreSelfTestLock()
-   {
-      if ( m_fd >= 0 )
-      {
-         if ( m_locked )
-            ::flock( m_fd, LOCK_UN );
-         ::close( m_fd );
-      }
-   }
-
-   GraXpertCoreSelfTestLock( const GraXpertCoreSelfTestLock& ) = delete;
-   GraXpertCoreSelfTestLock& operator =( const GraXpertCoreSelfTestLock& ) = delete;
-
-   bool Locked() const { return m_locked; }
-   double WaitedMs() const { return m_waitedMs; }
-   const String& Error() const { return m_error; }
-
-private:
-
-   int    m_fd = -1;
-   bool   m_locked = false;
-   double m_waitedMs = 0;
-   String m_error;
-};
 
 double Inc5Median( View v, int channel )
 {
@@ -2404,7 +2311,7 @@ bool RunInc5SelfTest( nlohmann::json& out )
             return r;
          };
          struct Case { const char* name; IsoString process; nlohmann::json params; nlohmann::json tables; std::string expect; };
-         const std::vector<Case> cases = {
+         const std::vector<Case> cases = {   // pcl-move-ok: const, read only
             { "noTable", "ImageIntegration", nlohmann::json::object(), nlohmann::json::object(),
               "ImageIntegration.images is required: pass table_parameters.images as rows [enabled, path, drizzlePath, "
               "localNormalizationDataPath]" },
@@ -2948,7 +2855,7 @@ bool RunInc5SelfTest( nlohmann::json& out )
 
          const String sentinel = "new ImageWindow( 8, 8, 1, 32, true, false, \"PCBreakout\" );";
          struct BreakoutCase { const char* name; String code; };
-         const std::vector<BreakoutCase> list = {
+         const std::vector<BreakoutCase> list = {   // pcl-move-ok: const, read only
             { "quote",         "var s = \"a\\\"b\"; return s; \" " + sentinel },
             { "backslash",     "return \"\\\\\"; \\\" " + sentinel },
             { "commentClose",  "*/ " + sentinel + " /*" },
@@ -3417,7 +3324,7 @@ bool RunInc5SelfTest( nlohmann::json& out )
                value = fixture;
                return true;
             } );
-            std::vector<PinnedParameter> pins;
+            std::vector<PinnedParameter> pins;   // pcl-move-ok: push_back/clear + read only
             auto resolve = [&]( const String& v, bool present = true )
             {
                fixture = v;
@@ -4237,7 +4144,7 @@ bool RunInc5SelfTest( nlohmann::json& out )
             {
                nlohmann::json bad = CompiledProcessSafety();
                bad["pinnedParameters"]["GraXpert"] = "not an object";
-               std::vector<PinnedParameter> pins;
+               std::vector<PinnedParameter> pins;   // pcl-move-ok: push_back/clear + read only
                SetProcessSafetyPolicyForSelfTest( &bad );
                const String eEntry = ResolvePinnedParameters( "GraXpert", nlohmann::json::object(), nlohmann::json::object(), pins );
                Inc5TestWindow gw( "PCPinnedBad", 16, 16, 1, 0.5 );

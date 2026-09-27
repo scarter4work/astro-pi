@@ -17,7 +17,8 @@ namespace pcl
 {
 
 constexpr const char* PICopilotRecipeSchemaId = "picopilot-recipe";
-constexpr int         PICopilotRecipeSchemaVersion = 1;
+constexpr int         PICopilotRecipeSchemaVersion = 2;   // v2: lineage (Task 10 fix round 3)
+constexpr size_t      PICopilotMaxLineageLength = 1000;   // a longer chain is refused as broken (loop safety)
 
 // What the user confirms before a journey becomes a keeper (spec §6, Ruling 17).
 struct KeeperSummary
@@ -29,14 +30,20 @@ struct KeeperSummary
    std::vector<std::string> masterLines;   // "ExpM42 (Ha, 20 x 300 s)"
    std::vector<std::string> linkLines;     // "pcExpM -> pcExpM_starless (linked by timing)"
    std::vector<std::string> gapLines;      // "after step 2 of pcExpM_starless: <reason>"
+   // Ruling 26 lineage (fix round 3): a "(continued)" journey's summary covers the kept journeys it continues;
+   // one line per journey of the chain, root first ("#12 M42 Ha 2026-09-20 (kept), 3 steps"). Empty for a
+   // journey that continues nothing.
+   std::vector<std::string> lineageLines;
 };
 
 // All JourneyStore-reading functions below are ROOT THREAD ONLY (the store's rule).
-KeeperSummary BuildKeeperSummary( JourneyStore& store, int64 journeyId );
+KeeperSummary BuildKeeperSummary( JourneyStore& store, int64 journeyId );   // whole lineage; broken -> throws
 // THE "has keepable steps" rule (Task 11 round 3), shared by ★ (via
-// JourneyStatus::activeSteps, which the tracker fills from it), RunKeepFlow
-// (★ and mark_journey_best) and the keeper summary's step count: active steps
-// that are neither base nor noEffect (IsBase). Root thread.
+// JourneyStatus::activeSteps, which the tracker fills from it) and RunKeepFlow
+// (★ and mark_journey_best): THIS journey's own active steps that are neither
+// base nor noEffect (IsBase, as the summary counts them). Deliberately not the
+// lineage: a "(continued)" journey with no new steps has nothing new to keep,
+// even though the summary (whole lineage) counts its ancestors' steps.
 int JourneyKeepableSteps( JourneyStore& store, int64 journeyId );
 String KeeperSummaryHtml( const KeeperSummary& s );   // MessageBox rich text, every value HTML-escaped
 
@@ -88,7 +95,14 @@ nlohmann::json PrivacyStripPaths( const nlohmann::json& v );
 nlohmann::json PrivacyStripStepParameters( const std::string& processId, const nlohmann::json& parameters,
                                            const nlohmann::json& tableParameters );
 
-// recipe.json v1 (data/recipe-v1.schema.json): active, non-base steps only.
+// Ruling 26 lineage: journeyId's chain, root first, ending with journeyId (a
+// journey that continues nothing: just itself). Every parent must exist and be
+// kept; a loop or a chain longer than PICopilotMaxLineageLength is refused. ""
+// when fine, else why it is broken. Root thread (store).
+String JourneyLineage( JourneyStore& store, int64 journeyId, std::vector<int64>& chain );
+
+// recipe.json v2 (data/recipe-v2.schema.json): active, non-base steps only, of
+// the whole lineage in chain order (fix round 3). A broken lineage throws.
 nlohmann::json BuildRecipe( JourneyStore& store, int64 journeyId, const std::string& generator );
 // Every rule and type the schema declares, plus: image keys unique, and every
 // image reference (links, steps, gaps, journey.endImage) names an image of the

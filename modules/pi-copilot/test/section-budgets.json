@@ -17,6 +17,7 @@
     "fixture j2.hr": 2.3,
     "fixture j2.utf8": 0.3,
     "fixture j2.long (500 steps)": 8.9,
+    "fixture j10.graxpert": { "baseline": 8, "cap": 330 },
     "final executeGlobal (the full self-test)": 99.4
   },
   "module": {
