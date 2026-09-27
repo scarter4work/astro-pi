@@ -551,6 +551,7 @@ required_true = [
     'journeyStoreOk',
     'masterFactsOk',
     'journeyTrackerOk',
+    'journeyExportOk',
     'histLandedOk',
     'ok',
 ]

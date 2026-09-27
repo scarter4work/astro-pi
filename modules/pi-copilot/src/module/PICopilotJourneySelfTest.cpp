@@ -6,6 +6,7 @@
 #include "CopilotSettings.h"
 #include "HistoryReader.h"
 #include "JourneyConstants.h"
+#include "JourneyExport.h"
 #include "JourneyStore.h"
 #include "JourneyTracker.h"
 #include "JourneySpikeProbe.h"
@@ -34,9 +35,11 @@
 #include <pcl/Image.h>
 #include <pcl/ImageVariant.h>
 #include <pcl/ImageWindow.h>
+#include <pcl/Process.h>
+#include <pcl/ProcessParameter.h>
 #include <pcl/Settings.h>
-#include <pcl/Variant.h>
 #include <pcl/Thread.h>
+#include <pcl/Variant.h>
 #include <pcl/View.h>
 #include <pcl/XML.h>
 
@@ -49,6 +52,7 @@
 #include <cmath>
 #include <cstdint>
 #include <cstdlib>
+#include <functional>
 #include <initializer_list>
 #include <map>
 #include <memory>
@@ -202,6 +206,36 @@ void JWriteFits( const String& path, const Image& img, const FITSKeywordArray& k
    if ( !f.WriteImage( img ) )
       throw Error( "JWriteFits: cannot write " + path );
    f.Close();
+}
+
+// Largest per-pixel difference of two views' images (1e9 on a geometry mismatch).
+double JMaxAbsDiff( View a, View b )
+{
+   AutoViewWriteLock la( a );
+   AutoViewWriteLock lb( b );
+   ImageVariant va = a.Image();
+   ImageVariant vb = b.Image();
+   const Image& ia = static_cast<const Image&>( *va );
+   const Image& ib = static_cast<const Image&>( *vb );
+   if ( ia.Width() != ib.Width() || ia.Height() != ib.Height() || ia.NumberOfChannels() != ib.NumberOfChannels() )
+      return 1e9;
+   double m = 0;
+   for ( int c = 0; c < ia.NumberOfChannels(); ++c )
+      for ( size_type i = 0; i < ia.NumberOfPixels(); ++i )
+         m = std::max( m, std::fabs( double( ia.PixelData( c )[i] ) - ib.PixelData( c )[i] ) );
+   return m;
+}
+
+// A 96x64 mono float "master" window with deterministic noise, no history.
+void JMakeNoiseMaster( const char* id, unsigned seed )
+{
+   ImageWindow w( 96, 64, 1, 32, true, false, true, IsoString( id ) );
+   if ( w.IsNull() )
+      throw Error( String( "JMakeNoiseMaster: null window " ) + id );
+   View v = w.MainView();
+   AutoViewLock lock( v );
+   ImageVariant iv = v.Image();
+   JFillNoise( static_cast<Image&>( *iv ), 0.1, 0.01, seed );
 }
 
 // Used by later journey sections (plan Tasks 3-11).
@@ -633,6 +667,8 @@ using SelfTestPhaseHandler = nlohmann::json (*)( const nlohmann::json& payload )
 
 nlohmann::json PhaseJourneyTracker( const nlohmann::json& payload );   // Section J6 (defined below)
 
+nlohmann::json PhaseJourneyExport( const nlohmann::json& payload );   // j7.exp (Section J7's fixture, below)
+
 // Adding a phase: one entry here + one checkPhase( id, payload ) call in
 // test/selftest.js. Handlers run in-process: they may READ history, never
 // create it.
@@ -652,6 +688,7 @@ const std::map<std::string, SelfTestPhaseHandler>& SelfTestPhaseHandlers()
       { "hist.kind.check", PhaseHistCheck },
       { "hist.preview.check", PhaseHistCheck },
       { "j6",          PhaseJourneyTracker },
+      { "j7.exp",      PhaseJourneyExport },
    };
    return handlers;
 }
@@ -2632,6 +2669,149 @@ nlohmann::json PhaseJourneyTracker( const nlohmann::json& payload )
    return { { "step", step } };
 }
 
+// ---- Section J7 (JourneyExport, Task 8) fixture: phase j7.exp ----
+// pcExpM's journey is recorded here, step by step, from REAL top-level history
+// (test/selftest.js runs the three steps; in-process steps are never recorded,
+// Task 1). The handler does what the journey tracker does for a keyword master
+// -- base history, acquisition, starting stats + thumbnail, then one row +
+// stats + thumbnail per new step -- straight through the Task 3-6 units, so
+// Section J7 depends on nothing but the store it exports from.
+struct J7State
+{
+   std::unique_ptr<JTempDir>     root;    // the test library (removed by Section J7)
+   std::unique_ptr<JourneyStore> store;
+   int64                         jid = 0;
+   int64                         mimg = 0;
+   int                           known = 0;      // history entries already stored (base + recorded)
+   int                           recorded = 0;   // steps recorded after the image joined
+   std::string                   error;          // the first failure, verbatim
+   nlohmann::json                detail = nlohmann::json::array();
+};
+
+// Runs one call on a PCL worker thread (Thread::IsRootThread() is false there;
+// a std::thread is invisible to PCL and counts as root) and captures what it threw.
+class J7CallThread : public Thread
+{
+public:
+
+   explicit J7CallThread( std::function<void()> fn ) : m_fn( std::move( fn ) ) {}
+
+   void Run() override
+   {
+      try { m_fn(); }
+      catch ( const pcl::Exception& x ) { threw = true; error = x.Message(); }
+      catch ( const std::exception& x ) { threw = true; error = String( x.what() ); }
+      catch ( ... )                     { threw = true; error = "unknown exception"; }
+   }
+
+   bool   threw = false;
+   String error;
+
+private:
+
+   std::function<void()> m_fn;
+};
+
+J7State& J7()
+{
+   static J7State s;
+   return s;
+}
+
+void J7Stats( J7State& st, int64 stepId, const String& thumbName )
+{
+   const View v = ImageWindow::WindowById( "pcExpM" ).MainView();
+   const StepStatsResult r = ComputeStepStats( v, st.store->JourneyDir( st.jid ) + "/thumbs/" + thumbName );
+   if ( !r.ok )
+      throw Error( "j7.exp stats: " + r.error );
+   if ( r.thumbnailPath.IsEmpty() )
+      throw Error( "j7.exp thumbnail: " + r.thumbnailError );
+   st.store->AddStats( st.mimg, stepId, r.channels );
+}
+
+nlohmann::json PhaseJourneyExport( const nlohmann::json& payload )
+{
+   J7State& st = J7();
+   const std::string step = payload.at( "step" ).get<std::string>();
+   try
+   {
+      if ( step == "make" )
+      {
+         JMakeNoiseMaster( "pcExpM", 31 );
+         const FITSKeywordArray kw = Kw( { { "IMAGETYP", "'Master Light'" }, { "OBJECT", "'ExpM42'" }, { "FILTER", "'Ha'" },
+                                           { "EXPTIME", "300" }, { "NCOMBINE", "20" }, { "SITELAT", "'+40 11 12'" } } );
+         ImageWindow::WindowById( "pcExpM" ).SetKeywords( kw );
+         st.detail.push_back( { { "step", step } } );
+      }
+      else if ( step == "join" )
+      {
+         // A separate phase: the window's creation entry (process "PICopilot", the executeGlobal
+         // that made it) lands in its history only after that phase has returned. Measured:
+         // read inside "make" the history was empty, and the first top-level step then found 2.
+         const FITSKeywordArray kw = ImageWindow::WindowById( "pcExpM" ).Keywords();
+         st.root.reset( new JTempDir( "picopilot-exp-" ) );
+         String oe;
+         st.store = JourneyStore::Open( st.root->Path(), oe );
+         if ( !st.store )
+            throw Error( "store: " + oe );
+         const HistorySnapshot base = ReadViewHistory( "pcExpM", 0 );
+         if ( !base.ok )
+            throw Error( "base history: " + (base.busy ? String( "busy" ) : base.error) );
+         std::vector<std::string> ids;
+         for ( const HistoryStep& h : base.steps )
+            ids.push_back( h.processId );
+         const MasterEvidence me = DetectMaster( ids, kw );
+         if ( !me.isMaster )
+            throw Error( "pcExpM is not detected as a master" );
+         const std::string now = NowIso();
+         const std::string target = DeriveTarget( kw, String(), "pcExpM" );
+         const AcquisitionFacts a = ExtractAcquisition( kw, base.steps, String(), "pcExpM" );
+         st.jid = st.store->CreateJourney( DeriveJourneyName( target, a.filter, 1, now ), target, now );
+         st.mimg = st.store->AddImage( st.jid, "pcExpM", "", MasterFingerprint( 96, 64, 1, 32, true, {}, kw ), true, now );
+         st.store->SetAcquisition( st.mimg, a );
+         for ( const HistoryStep& h : base.steps )
+         {
+            StepRow r = MakeStepRow( h, st.mimg, "active", "user", "", base.ActiveCount() );
+            r.params["base"] = true;   // pre-join history (the tracker's rule)
+            st.store->AddStep( r );
+         }
+         st.known = base.TotalCount();
+         J7Stats( st, 0, String().Format( "start-%lld.jpg", static_cast<long long>( st.mimg ) ) );
+         st.detail.push_back( { { "step", step }, { "base", ids }, { "target", target } } );
+      }
+      else if ( step == "record" )
+      {
+         if ( !st.store )
+            throw Error( "record before make" );
+         const HistorySnapshot s = ReadViewHistory( "pcExpM", st.known );
+         if ( !s.ok )
+            throw Error( "history: " + (s.busy ? String( "busy" ) : s.error) );
+         if ( s.TotalCount() != st.known + 1 || s.steps.size() != 1 )
+         {
+            String got;
+            for ( const HistoryStep& h : s.steps )
+               got += (got.IsEmpty() ? "" : ",") + FromU8( h.processId );
+            throw Error( String().Format( "expected exactly one new step, history has %d entries (known %d, initial %d): ",
+                                          s.TotalCount(), st.known, s.initialLength ) + got );
+         }
+         const int64 sid = st.store->AddStep( MakeStepRow( s.steps[0], st.mimg, "active", "user", "", s.ActiveCount() ) );
+         st.known = s.TotalCount();
+         ++st.recorded;
+         J7Stats( st, sid, String().Format( "%lld.jpg", static_cast<long long>( sid ) ) );
+         st.detail.push_back( { { "step", step }, { "processId", s.steps[0].processId }, { "seq", s.steps[0].combinedIndex + 1 } } );
+      }
+      else
+         throw Error( String( "j7.exp: unknown step " ) + step.c_str() );
+   }
+   catch ( const pcl::Exception& x )
+   {
+      if ( st.error.empty() )
+         st.error = step + ": " + U8( x.Message() );
+      throw;
+   }
+   return { { "step", step } };
+}
+
 } // namespace
 
 bool RunPendingSelfTestPhase()
@@ -4576,6 +4756,561 @@ bool RunJourneySelfTest( nlohmann::json& out )
       out["journeyTrackerChecks"] = checks;
       out["journeyTrackerError"] = U8( error );
       out["journeyTrackerOk"] = ok;
+      allOk = allOk && ok;
+   }
+
+   // ---- Section J7: JourneyExport (Task 8) ---------------------------------
+   SelfTestSectionMark( "J7 JourneyExport" );
+   {
+      nlohmann::json d = nlohmann::json::object();
+      bool fixtureOk = false, summaryOk = false, recipeOk = false, validatorOk = false, privacyOk = false, manualOk = false,
+           xpsmOk = false, replayOk = false, copyOk = false, missingRootOk = false, readOnlyOk = false,
+           relativeOk = false, retryOk = false, independentOk = false, exportThumbsOk = false, pathParamOk = false,
+           stripOk = false, modesOk = false, fileParamOk = false, enabledRewriteOk = false, rollbackOk = false,
+           referenceOk = false, offRootOk = false, catalogFailOk = false;
+      String error;
+      std::vector<std::string> made = { "pcExpM" };
+      // Owned here from now on: the store goes first, then its folder (reverse declaration order).
+      std::unique_ptr<JTempDir> root = std::move( J7().root );
+      std::unique_ptr<JourneyStore> store = std::move( J7().store );
+      try
+      {
+         // The recorded journey (phase j7.exp): keyword master + PixelMath, HistogramTransformation, PixelMath (by hand).
+         d["fixture"] = { { "error", J7().error }, { "recorded", J7().recorded }, { "phases", J7().detail } };
+         fixtureOk = store != nullptr && J7().error.empty() && J7().recorded == 3;
+         if ( !fixtureOk )
+            throw Error( "the j7.exp fixture did not record the journey: " + FromU8( J7().error ) );
+         const int64 jid = J7().jid;
+         const int64 mimg = J7().mimg;
+
+         // A stored Script step (manual; its path must not leave the machine) and a masked step, as the
+         // tracker would store them, on a second, derived image of the same journey.
+         const int64 img2 = store->AddImage( jid, "pcExpM_starless", "/home/u/data/starless.xisf", "fp-x", false, NowIso() );
+         store->AddLink( { mimg, img2, 0, "timing" } );
+         HistoryStep scr, masked;
+         String pe;
+         ParseXpsmStep( "<instance class=\"Script\" version=\"256\" id=\"Script_instance\">"
+                        "<parameter id=\"filePath\">/home/u/scripts/FixStars.js</parameter><parameter id=\"md5sum\">ab</parameter>"
+                        "<table id=\"parameters\" rows=\"0\"/><parameter id=\"information\"></parameter></instance>", scr, pe );
+         scr.combinedIndex = 0;
+         store->AddStep( MakeStepRow( scr, img2, "active", "user", "", 1 ) );
+         ParseXpsmStep( kXpsmPixelMath, masked, pe );
+         masked.combinedIndex = 1;
+         masked.maskId = "pcExpMask";
+         masked.maskInverted = true;
+         store->AddStep( MakeStepRow( masked, img2, "active", "copilot", "protect the stars", 2 ) );
+         store->AddGap( { jid, img2, 2, "history read of pcExpM_starless failed: test" } );
+
+         // (a) Summary shown before keeping.
+         const KeeperSummary ks = BuildKeeperSummary( *store, jid );
+         const String html = KeeperSummaryHtml( ks );
+         d["summary"] = { { "masters", ks.masters }, { "images", ks.images }, { "steps", ks.steps }, { "copilot", ks.copilotSteps },
+                          { "masterLines", ks.masterLines }, { "links", ks.linkLines }, { "gaps", ks.gapLines } };
+         summaryOk = ks.masters == 1 && ks.images == 2 && ks.steps == 5 && ks.copilotSteps == 1 && ks.linkLines.size() == 1
+                  && ks.linkLines[0].find( "linked by timing" ) != std::string::npos && ks.gapLines.size() == 1
+                  && ks.masterLines.size() == 1 && ks.masterLines[0] == "ExpM42 (Ha, 20 x 300 s)"
+                  && html.Contains( "timing" ) && html.Contains( "ExpM42" ) && !ks.alreadyKept;
+
+         // (b) recipe.json: shape, only active non-base steps, stats before/after, achieved medians.
+         store->MarkKept( jid, mimg, NowIso() );
+         const nlohmann::json recipe = BuildRecipe( *store, jid, "PI Copilot test" );
+         std::string why;
+         const bool valid = ValidateRecipe( recipe, why );
+         d["recipeWhy"] = why;
+         const nlohmann::json& steps = recipe.at( "steps" );
+         d["recipeSteps"] = nlohmann::json::array();
+         for ( const nlohmann::json& s : steps )
+            d["recipeSteps"].push_back( { s.at( "processId" ), s.at( "seq" ), s.at( "manual" ) } );
+         recipeOk = valid && recipe.at( "schema" ) == "picopilot-recipe" && recipe.at( "schemaVersion" ) == 1
+                 && recipe.at( "images" ).size() == 2 && recipe.at( "images" ).at( 0 ).at( "isMaster" ) == true
+                 && recipe.at( "images" ).at( 0 ).at( "acquisition" ).at( "subCount" ) == 20
+                 && steps.size() == 5 && steps.at( 0 ).at( "processId" ) == "PixelMath"
+                 && steps.at( 1 ).at( "tableParameters" ).at( "H" ).at( 3 ).at( 1 ) == 0.3
+                 && steps.at( 0 ).at( "statsBefore" ).is_array() && steps.at( 2 ).at( "statsAfter" ).is_array()
+                 && steps.at( 2 ).at( "achieved" ).at( "median" ).at( "to" ).size() == 1
+                 && recipe.at( "links" ).at( 0 ).at( "evidence" ) == "timing" && recipe.at( "gaps" ).size() == 1
+                 && recipe.at( "journey" ).at( "endImage" ) == "img" + std::to_string( mimg );
+
+         // (c) The validator rejects what the schema rejects, naming the place.
+         {
+            auto bad = [&recipe]( const std::function<void( nlohmann::json& )>& mutate, const char* expect )
+            {
+               nlohmann::json r = recipe;
+               mutate( r );
+               std::string w;
+               return !ValidateRecipe( r, w ) && w.find( expect ) != std::string::npos;
+            };
+            validatorOk = bad( []( nlohmann::json& r ) { r.erase( "schemaVersion" ); }, "schemaVersion" )
+                       && bad( []( nlohmann::json& r ) { r["schemaVersion"] = 2; }, "schemaVersion" )
+                       && bad( []( nlohmann::json& r ) { r["steps"][0]["actor"] = "robot"; }, "steps[0].actor" )
+                       && bad( []( nlohmann::json& r ) { r["steps"][0]["image"] = "img999999"; }, "steps[0].image" )
+                       && bad( []( nlohmann::json& r ) { r["links"][0]["to"] = "img999999"; }, "links[0].to" )
+                       && bad( []( nlohmann::json& r ) { r["steps"][1]["seq"] = 0; }, "steps[1].seq" )
+                       && bad( []( nlohmann::json& r ) { r["steps"][0]["statsAfter"] = "x"; }, "steps[0].statsAfter" )
+                       && bad( []( nlohmann::json& r ) { r["images"][0]["key"] = "M42"; }, "images[0].key" )
+                       // Type checks the schema declares (pre-flight P27).
+                       && bad( []( nlohmann::json& r ) { r["journey"]["name"] = 5; }, "journey.name" )
+                       && bad( []( nlohmann::json& r ) { r["images"][0]["acquisition"]["subCount"] = "20"; }, "images[0].acquisition.subCount" )
+                       && bad( []( nlohmann::json& r ) { r["steps"][4]["mask"]["inverted"] = "yes"; }, "steps[4].mask.inverted" )
+                       && bad( []( nlohmann::json& r ) { r["steps"][2]["achieved"]["median"]["to"] = nlohmann::json::array( { "x" } ); },
+                               "steps[2].achieved.median.to" )
+                       && bad( []( nlohmann::json& r ) { r["gaps"][0]["afterSeq"] = "2"; }, "gaps[0].afterSeq" )
+                       && bad( []( nlohmann::json& r ) { r["gaps"][0]["reason"] = nullptr; }, "gaps[0].reason" )
+                       // Wrong container types never reach a lookup (no exception, a named refusal).
+                       && bad( []( nlohmann::json& r ) { r["journey"] = nlohmann::json::array(); }, "journey" )
+                       && bad( []( nlohmann::json& r ) { r["steps"][0]["statsBefore"][0]["channel"] = -1; }, "steps[0].statsBefore[0].channel" )
+                       && bad( []( nlohmann::json& r ) { r["journey"]["endImage"] = "img999999"; }, "journey.endImage" )
+                       && nlohmann::json::parse( RecipeSchemaText() ).at( "properties" ).at( "schemaVersion" ).at( "const" ) == 1
+                       && nlohmann::json::parse( RecipeSchemaText() ).at( "properties" ).at( "schema" ).at( "const" ) == PICopilotRecipeSchemaId;
+         }
+
+         // (d) Privacy: no directory, no location value, anywhere in the recipe.
+         {
+            const std::string dump = recipe.dump();
+            privacyOk = dump.find( "/home/" ) == std::string::npos && dump.find( "40 11 12" ) == std::string::npos
+                     && steps.at( 3 ).at( "parameters" ).at( "filePath" ) == "FixStars.js"
+                     && recipe.at( "images" ).at( 1 ).at( "fileName" ) == "starless.xisf";
+         }
+
+         // (e) Manual steps (Ruling 16): the script and the masked step, with the reason.
+         manualOk = steps.at( 3 ).at( "manual" ) == true && steps.at( 3 ).at( "manualWhy" ).get<std::string>().find( "FixStars.js" ) != std::string::npos
+                 && steps.at( 3 ).at( "manualWhy" ).get<std::string>().find( "/home/" ) == std::string::npos
+                 && steps.at( 4 ).at( "manual" ) == true && steps.at( 4 ).at( "manualWhy" ).get<std::string>().find( "pcExpMask" ) != std::string::npos
+                 && steps.at( 0 ).at( "manual" ) == false && IsManualProcess( "DynamicBackgroundExtraction" )
+                 && !IsManualProcess( "AutomaticBackgroundExtractor" );
+
+         // (e2) PrivacyStripPaths turns only real absolute paths into file names: a PixelMath
+         //      expression that starts with '~' (inversion) or a comment is left alone.
+         {
+            const nlohmann::json in = { { "a", "/home/u/x/y.fits" }, { "b", "~/data/z.xisf" }, { "c", "C:\\astro\\m42.fit" },
+                                        { "d", "~$T/2" }, { "e", "/* stretch */ $T*2" }, { "f", "$T/2" },
+                                        { "g", nlohmann::json::array( { "/opt/m.pb", 3, true } ) }, { "h", { { "i", "/a/b/c.js" } } } };
+            const nlohmann::json o = PrivacyStripPaths( in );
+            d["strip"] = o;
+            stripOk = o.at( "a" ) == "y.fits" && o.at( "b" ) == "z.xisf" && o.at( "c" ) == "m42.fit" && o.at( "d" ) == "~$T/2"
+                   && o.at( "e" ) == "/* stretch */ $T*2" && o.at( "f" ) == "$T/2" && o.at( "g" ).at( 0 ) == "m.pb"
+                   && o.at( "g" ).at( 1 ) == 3 && o.at( "h" ).at( "i" ) == "c.js";
+         }
+
+         // (f) Keeper files: .xpsm (well-formed, containers per image, icons) + recipe.json + recipe.schema.json.
+         const KeeperFilesResult kf = WriteKeeperFiles( *store, jid, "PI Copilot test" );
+         JourneyRow jr;
+         store->GetJourney( jid, jr );
+         const String xpsmPath = kf.dir + "/" + ExportBaseName( jr ) + ".xpsm";
+         int containers = 0, icons = 0;
+         {
+            XMLDocument doc;
+            doc.Parse( FromU8( FileBytes( xpsmPath ) ) );
+            if ( doc.RootElement() != nullptr )
+               for ( const XMLElement& e : doc.RootElement()->ChildElements() )
+               {
+                  if ( e.Name() == "instance" && e.AttributeValue( "class" ) == "ProcessContainer" ) ++containers;
+                  if ( e.Name() == "icon" ) ++icons;
+               }
+         }
+         // The Script step is a comment naming only FixStars.js; no directory anywhere in the .xpsm (P5).
+         const std::string xpsmText = FileBytes( xpsmPath );
+         d["files"] = { { "dir", U8( kf.dir ) }, { "xpsmError", U8( kf.xpsmError ) }, { "recipeError", U8( kf.recipeError ) },
+                        { "thumbsError", U8( kf.thumbsError ) }, { "containers", containers }, { "icons", icons } };
+         xpsmOk = kf.xpsmOk && kf.recipeOk && containers == 2 && icons == 2
+               && File::Exists( kf.dir + "/recipe.json" ) && File::Exists( kf.dir + "/recipe.schema.json" )
+               && nlohmann::json::parse( FileBytes( kf.dir + "/recipe.json" ) ) == recipe
+               && FileBytes( kf.dir + "/recipe.schema.json" ) == RecipeSchemaText()
+               && xpsmText.find( "/home/" ) == std::string::npos && xpsmText.find( "class=\"Script\"" ) == std::string::npos
+               && xpsmText.find( "FixStars.js" ) != std::string::npos;
+         // Exported files are shared (0644 at most, umask applied); export/ and export/thumbs/ are ours (0700).
+         {
+            const int m = JModeOf( xpsmPath ), mr = JModeOf( kf.dir + "/recipe.json" ), md = JModeOf( kf.dir ),
+                      mt = JModeOf( kf.dir + "/thumbs" );
+            d["modes"] = { { "xpsm", m }, { "recipe", mr }, { "export", md }, { "thumbs", mt } };
+            const int want = 0644 & ~int( JProcUmask() );
+            modesOk = m == want && mr == want && md == 0700 && mt == 0700;
+         }
+         // Thumbnails travel inside export/, so the recipe's (and journey.md's) relative links resolve there (P25).
+         {
+            const nlohmann::json& t0 = recipe.at( "images" ).at( 0 ).at( "thumbnail" );
+            const nlohmann::json& t2 = steps.at( 2 ).at( "thumbnail" );
+            const String stepThumb = kf.dir + String().Format( "/thumbs/%lld.jpg", static_cast<long long>( steps.at( 2 ).at( "id" ).get<int64>() ) );
+            d["thumbs"] = { { "t0", t0 }, { "t2", t2 } };
+            exportThumbsOk = kf.thumbsOk && t0.is_string() && t2.is_string()
+                          && File::Exists( kf.dir + "/" + FromU8( t0.get<std::string>() ) )
+                          && FromU8( t2.get<std::string>() ) == stepThumb.Substring( kf.dir.Length() + 1 )
+                          && File::Exists( stepThumb );
+         }
+
+         // (g) The .xpsm replays on a fresh copy of the master to the same pixels (Ruling 13).
+         //     Every step must be a full ApplyProcess success (ok, i.e. also recorded in History).
+         {
+            JMakeNoiseMaster( "pcExpCopy", 31 );
+            made.push_back( "pcExpCopy" );
+            XMLDocument doc;
+            doc.Parse( FromU8( xpsmText ) );
+            int applied = 0;
+            String replayError;
+            const XMLElement* first = nullptr;
+            if ( doc.RootElement() != nullptr )
+               for ( const XMLElement& e : doc.RootElement()->ChildElements() )
+                  if ( e.Name() == "instance" && e.AttributeValue( "class" ) == "ProcessContainer" )
+                  {
+                     first = &e;
+                     break;
+                  }
+            if ( first == nullptr )
+               replayError = "no ProcessContainer in the .xpsm";
+            else
+               for ( const XMLElement& inst : first->ChildElements() )
+               {
+                  HistoryStep hs;
+                  String e;
+                  if ( !ParseXpsmElement( inst, hs, e ) )
+                  {
+                     replayError = e;
+                     break;
+                  }
+                  const ApplyProcessResult ar = ApplyProcess( IsoString( hs.processId.c_str() ), hs.parameters, hs.tableParameters,
+                                                              ImageWindow::WindowById( "pcExpCopy" ).MainView() );
+                  if ( !ar.ok )
+                  {
+                     replayError = ar.error;
+                     break;
+                  }
+                  ++applied;
+               }
+            const double diff = JMaxAbsDiff( ImageWindow::WindowById( "pcExpM" ).MainView(),
+                                             ImageWindow::WindowById( "pcExpCopy" ).MainView() );
+            d["replay"] = { { "applied", applied },{ "maxAbsDiff", diff }, { "error", U8( replayError ) } };
+            replayOk = applied == 3 && diff <= 1e-6 && replayError.IsEmpty();
+         }
+
+         // (h) Export copy into an existing folder.
+         JTempDir exportRoot( "picopilot-exp-out-" );
+         String copiedTo;
+         const String c1 = CopyKeeperToExportFolder( *store, jid, exportRoot.Path(), copiedTo );
+         d["copy"] = { { "error", U8( c1 ) }, { "to", U8( copiedTo ) } };
+         copyOk = c1.IsEmpty() && copiedTo.StartsWith( exportRoot.Path() + "/ExpM42/" )
+               && File::Exists( copiedTo + "/recipe.json" ) && File::Exists( copiedTo + "/" + ExportBaseName( jr ) + ".xpsm" )
+               && File::DirectoryExists( copiedTo + "/thumbs" )
+               && FileBytes( copiedTo + "/recipe.json" ) == FileBytes( kf.dir + "/recipe.json" )
+               && File::Exists( copiedTo + "/" + FromU8( steps.at( 2 ).at( "thumbnail" ).get<std::string>() ) );
+
+         // (i) Unmounted NAS: a missing root is reported and NOT created (Ruling 18, Review Focus 4).
+         {
+            String to;
+            const String e = CopyKeeperToExportFolder( *store, jid, "/nonexistent-picopilot-nas/astro_data/keepers", to );
+            missingRootOk = e.Contains( "/nonexistent-picopilot-nas/astro_data/keepers" ) && e.Contains( "does not exist" )
+                         && !File::DirectoryExists( "/nonexistent-picopilot-nas" ) && to.IsEmpty();
+            d["missingRoot"] = U8( e );
+         }
+         // (j) Read-only root: a named failure, the local keeper stands; (l) retry works once writable.
+         {
+            JTempDir ro( "picopilot-exp-ro-" );
+            ::chmod( U8( ro.Path() ).c_str(), 0555 );
+            String to;
+            const String e = CopyKeeperToExportFolder( *store, jid, ro.Path(), to );
+            readOnlyOk = !e.IsEmpty() && e.Contains( ro.Path() ) && File::Exists( kf.dir + "/recipe.json" ) && to.IsEmpty();
+            ::chmod( U8( ro.Path() ).c_str(), 0755 );
+            String to2;
+            retryOk = CopyKeeperToExportFolder( *store, jid, ro.Path(), to2 ).IsEmpty() && File::Exists( to2 + "/recipe.json" );
+            d["readOnly"] = U8( e );
+         }
+         // (k) A relative export folder is refused (never resolved against PI's working directory).
+         {
+            String to;
+            relativeOk = CopyKeeperToExportFolder( *store, jid, "keepers", to ).Contains( "absolute" );
+         }
+         // (m) Independence: a failing .xpsm write does not stop recipe.json.
+         {
+            const String bad = kf.dir + "/" + ExportBaseName( jr ) + ".xpsm";
+            File::Remove( bad );
+            File::CreateDirectory( bad );   // a directory where the file must go: the write fails
+            const KeeperFilesResult k2 = WriteKeeperFiles( *store, jid, "PI Copilot test" );
+            File::RemoveDirectory( bad );
+            independentOk = !k2.xpsmOk && k2.xpsmError.Contains( ".xpsm" ) && k2.recipeOk && k2.thumbsOk;
+            d["independent"] = { { "xpsmError", U8( k2.xpsmError ) }, { "recipeOk", k2.recipeOk } };
+         }
+         // (n) A replayable step whose parameter names a file (here PixelMath's symbols) would put a
+         //     directory into the .xpsm: it is manual, stays out of the icon set, and the recipe keeps
+         //     only the file name (the .xpsm never holds a directory, P5).
+         {
+            std::string x = kXpsmPixelMath;
+            const std::string from = "<parameter id=\"symbols\"></parameter>";
+            x.replace( x.find( from ), from.size(), "<parameter id=\"symbols\">/home/u/secret/k.txt</parameter>" );
+            HistoryStep ps;
+            ParseXpsmStep( x, ps, pe );
+            ps.combinedIndex = 0;
+            const int64 j2 = store->CreateJourney( "path parameter", "PathT", NowIso() );
+            const int64 i2 = store->AddImage( j2, "pcExpPath", "", "fp-p", true, NowIso() );
+            store->AddStep( MakeStepRow( ps, i2, "active", "user", "", 1 ) );
+            const std::string px = BuildJourneyXpsm( *store, j2 );
+            const nlohmann::json pr = BuildRecipe( *store, j2, "PI Copilot test" );
+            std::string pw;
+            const nlohmann::json& s0 = pr.at( "steps" ).at( 0 );
+            d["pathParam"] = { { "manualWhy", s0.at( "manualWhy" ) }, { "symbols", s0.at( "parameters" ).at( "symbols" ) } };
+            pathParamOk = ps.replayable && px.find( "/home/" ) == std::string::npos && px.find( "k.txt" ) != std::string::npos
+                       && px.find( "class=\"PixelMath\"" ) == std::string::npos
+                       && ValidateRecipe( pr, pw ) && s0.at( "manual" ) == true && s0.at( "parameters" ).at( "symbols" ) == "k.txt"
+                       && s0.at( "manualWhy" ).get<std::string>().find( "k.txt" ) != std::string::npos
+                       && pr.dump().find( "/home/" ) == std::string::npos;
+         }
+         // (o) Fix round 1 (review Important + controller ruling): a FILE parameter -- known by its
+         //     id (PCL has no file type: *file*, *path*, *directory*, *folder*, *Dir), or by its table
+         //     column's id from the installed process's metadata -- whose value has ANY directory
+         //     component (relative, or a //server share) is manual and reduced to its file name; a bare
+         //     file name stays replayable and untouched; PixelMath expressions are never file values.
+         // (p) Review Minor 1: the id -> enabled rewrite finds the real (quote-aware) end of the tag.
+         {
+            auto row = []( int64 image, int seq, const char* processId, const nlohmann::json& p, const nlohmann::json& t,
+                           const std::string& xpsm )
+            {
+               StepRow r;
+               r.imageId = image;
+               r.seq = seq;
+               r.processId = processId;
+               r.params = { { "parameters", p }, { "tableParameters", t }, { "xpsm", xpsm }, { "identity", "" },
+                            { "mask", nullptr }, { "replayable", true }, { "parseNote", "" } };
+               return r;
+            };
+            const std::string icOpen = "<instance class=\"ImageCalibration\" version=\"256\" id=\"ImageCalibration_instance\">";
+            const int64 j3 = store->CreateJourney( "file parameters", "FileT", NowIso() );
+            const int64 i3 = store->AddImage( j3, "pcExpFile", "", "fp-f", true, NowIso() );
+            const std::vector<int64> ids = {
+               store->AddStep( row( i3, 1, "ImageCalibration", { { "outputDirectory", "//cal-server/share/out" }, { "masterBiasPath", "bias.xisf" } },
+                                    nlohmann::json::object(),
+                                    icOpen + "<parameter id=\"outputDirectory\">//cal-server/share/out</parameter></instance>" ) ),
+               store->AddStep( row( i3, 2, "ImageCalibration", { { "masterBiasPath", "models/bias.xisf" } }, nlohmann::json::object(),
+                                    icOpen + "<parameter id=\"masterBiasPath\">models/bias.xisf</parameter></instance>" ) ),
+               store->AddStep( row( i3, 3, "ImageIntegration", nlohmann::json::object(),
+                                    { { "images", nlohmann::json::array( { nlohmann::json::array( { true, "subs/a.xisf", "", "" } ) } ) } },
+                                    "<instance class=\"ImageIntegration\" version=\"256\" id=\"ImageIntegration_instance\">"
+                                    "<table id=\"images\" rows=\"1\"><tr><td id=\"enabled\" value=\"true\"/><td id=\"path\">subs/a.xisf</td>"
+                                    "</tr></table></instance>" ) ),
+               store->AddStep( row( i3, 4, "PixelMath", { { "expression", "//pm-comment/x" }, { "expression1", "models/foo.onnx" } },
+                                    nlohmann::json::object(),
+                                    "<instance class=\"PixelMath\" version=\"256\" id=\"PixelMath_instance\">"
+                                    "<parameter id=\"expression\">//pm-comment/x</parameter>"
+                                    "<parameter id=\"expression1\">models/foo.onnx</parameter></instance>" ) ),
+               store->AddStep( row( i3, 5, "ImageCalibration", { { "masterBiasPath", "swin2sr_v11.onnx" } }, nlohmann::json::object(),
+                                    icOpen + "<parameter id=\"masterBiasPath\">swin2sr_v11.onnx</parameter></instance>" ) ) };
+            // (p) on its own journey: a literal '>' in an attribute value is legal XML, but PCL's own XML
+            //     parser rejects it (measured: "Unmatched double or single quote"), so this .xpsm is checked
+            //     as text; WriteKeeperFiles' parse check would refuse to write it, loudly.
+            const int64 j4 = store->CreateJourney( "quoted gt", "GtT", NowIso() );
+            const int64 i4 = store->AddImage( j4, "pcExpGt", "", "fp-g", true, NowIso() );
+            store->AddStep( row( i4, 1, "PixelMath", { { "expression", "$T" } }, nlohmann::json::object(),
+                                 "<instance class=\"PixelMath\" note=\"a>b\" version=\"256\" id=\"PixelMath_instance\">"
+                                 "<parameter id=\"expression\">$T</parameter></instance>" ) );
+            const std::string gx = BuildJourneyXpsm( *store, j4 );
+            const nlohmann::json fr = BuildRecipe( *store, j3, "PI Copilot test" );
+            const std::string fx = BuildJourneyXpsm( *store, j3 );
+            std::string fw;
+            const nlohmann::json& fs = fr.at( "steps" );
+            nlohmann::json manual = nlohmann::json::array();
+            for ( const nlohmann::json& s : fs )
+               manual.push_back( s.at( "manual" ) );
+            int inst = 0;
+            String parseError;
+            try
+            {
+               XMLDocument doc;
+               doc.Parse( FromU8( fx ) );
+               for ( const XMLElement& e : doc.RootElement()->ChildElements() )
+                  if ( e.Name() == "instance" )
+                     inst += int( e.ChildElements().Length() );
+            }
+            catch ( const pcl::Exception& x )
+            {
+               parseError = x.Message();   // recorded; inst stays 0 and fails the check
+            }
+            d["fileParamXpsmParse"] = U8( parseError );
+            d["fileParam"] = { { "manual", manual }, { "p0", fs.at( 0 ).at( "parameters" ) }, { "p1", fs.at( 1 ).at( "parameters" ) },
+                               { "t2", fs.at( 2 ).at( "tableParameters" ) }, { "p3", fs.at( 3 ).at( "parameters" ) },
+                               { "p4", fs.at( 4 ).at( "parameters" ) }, { "instances", inst },
+                               { "why0", fs.at( 0 ).at( "manualWhy" ) } };
+            fileParamOk = ValidateRecipe( fr, fw ) && fs.size() == 5
+                       && manual == nlohmann::json::array( { true, true, true, false, false } )
+                       && fs.at( 0 ).at( "parameters" ).at( "outputDirectory" ) == "out"
+                       && fs.at( 0 ).at( "parameters" ).at( "masterBiasPath" ) == "bias.xisf"
+                       && fs.at( 1 ).at( "parameters" ).at( "masterBiasPath" ) == "bias.xisf"
+                       && fs.at( 2 ).at( "tableParameters" ).at( "images" ).at( 0 ).at( 1 ) == "a.xisf"
+                       && fs.at( 3 ).at( "parameters" ).at( "expression" ) == "//pm-comment/x"
+                       && fs.at( 3 ).at( "parameters" ).at( "expression1" ) == "models/foo.onnx"
+                       && fs.at( 4 ).at( "parameters" ).at( "masterBiasPath" ) == "swin2sr_v11.onnx"
+                       && fs.at( 0 ).at( "manualWhy" ).get<std::string>().find( "cal-server" ) == std::string::npos
+                       && fr.dump().find( "cal-server" ) == std::string::npos && fr.dump().find( "models/bias" ) == std::string::npos
+                       && fr.dump().find( "subs/" ) == std::string::npos
+                       && fx.find( "cal-server" ) == std::string::npos && fx.find( "models/bias" ) == std::string::npos
+                       && fx.find( "subs/" ) == std::string::npos && fx.find( "swin2sr_v11.onnx" ) != std::string::npos
+                       && fx.find( "//pm-comment/x" ) != std::string::npos && inst == 2 && parseError.IsEmpty()
+                       && IsFileParameter( "ImageCalibration", "outputDirectory" ) && IsFileParameter( "Script", "filePath" )
+                       && !IsFileParameter( "PixelMath", "expression" ) && !IsFileParameter( "PixelMath", "symbols" )
+                       && !IsFileParameter( "Convolution", "direction" );
+            enabledRewriteOk = fx.find( "id=\"PixelMath_instance\"" ) == std::string::npos
+                            && fx.find( "id=\"ImageCalibration_instance\"" ) == std::string::npos
+                            && gx.find( "note=\"a>b\" version=\"256\" enabled=\"true\"" ) != std::string::npos
+                            && gx.find( "id=\"PixelMath_instance\"" ) == std::string::npos;
+            (void)ids;
+         }
+         // (r) Fix round 2 (re-review round 1).
+         {
+            auto stepOf = []( const char* processId, const nlohmann::json& p, const nlohmann::json& t )
+            {
+               StepRow r;
+               r.processId = processId;
+               r.params = { { "parameters", p }, { "tableParameters", t }, { "xpsm", "" }, { "identity", "" },
+                            { "mask", nullptr }, { "replayable", true }, { "parseNote", "" } };
+               return r;
+            };
+            // (r1) The explicit list of file-holding ids the name heuristic misses is real: every entry is a
+            //      String parameter / String table column of the INSTALLED process, and IsFileParameter knows it.
+            nlohmann::json listed = nlohmann::json::array();
+            bool listReal = !KnownFileParameterIds().empty();
+            for ( const std::string& k : KnownFileParameterIds() )
+            {
+               const size_t slash = k.find( '/' ), dot = k.find( '.', slash );
+               const std::string proc = k.substr( 0, slash );
+               const std::string param = k.substr( slash + 1, dot == std::string::npos ? std::string::npos : dot - slash - 1 );
+               bool isString = false;
+               try
+               {
+                  const Process P( IsoString( proc.c_str() ) );
+                  const ProcessParameter p( P, IsoString( param.c_str() ) );
+                  if ( dot == std::string::npos )
+                     isString = !p.IsNull() && p.IsString();
+                  else if ( !p.IsNull() && p.IsTable() )
+                     for ( const ProcessParameter& c : p.TableColumns() )
+                        if ( std::string( c.Id().c_str() ) == k.substr( dot + 1 ) )
+                           isString = c.IsString();
+               }
+               catch ( ... )
+               {
+                  isString = false;   // not installed / unknown id: the entry is not real here
+               }
+               const bool known = IsFileParameter( proc, k.substr( slash + 1 ) );
+               listed.push_back( { k, isString, known } );
+               listReal = listReal && isString && known;
+            }
+            // (r2) StarAlignment.referenceImage and its targets table: a relative path is manual and reduced to its
+            //      name; a bare file name or a view id stays replayable.
+            const StepRow sa = stepOf( "StarAlignment", { { "referenceImage", "lights/ref.xisf" } },
+                                       { { "targets", nlohmann::json::array( { nlohmann::json::array( { true, true, "lights/a.xisf" } ) } ) } } );
+            const nlohmann::json saOut = PrivacyStripStepParameters( sa.processId, sa.params["parameters"], sa.params["tableParameters"] );
+            const std::string saWhy = ManualWhy( sa );
+            const std::string bareWhy = ManualWhy( stepOf( "StarAlignment", { { "referenceImage", "ref.xisf" } }, nlohmann::json::object() ) );
+            const std::string viewWhy = ManualWhy( stepOf( "StarAlignment", { { "referenceImage", "pcRef" } }, nlohmann::json::object() ) );
+            const std::string fiWhy = ManualWhy( stepOf( "FastIntegration", { { "referenceImage", "//nas/ref.xisf" } }, nlohmann::json::object() ) );
+            referenceOk = !saWhy.empty() && saWhy.find( "lights/" ) == std::string::npos
+                       && saOut.at( "parameters" ).at( "referenceImage" ) == "ref.xisf"
+                       && saOut.at( "tableParameters" ).at( "targets" ).at( 0 ).at( 2 ) == "a.xisf"
+                       && bareWhy.empty() && viewWhy.empty() && !fiWhy.empty() && fiWhy.find( "//nas" ) == std::string::npos;
+            // (r3) Off the root thread every catalog-reading entry point refuses, loudly (never an empty guess).
+            J7CallThread ts( [&sa]() { PrivacyStripStepParameters( sa.processId, sa.params["parameters"], sa.params["tableParameters"] ); } );
+            J7CallThread tw( [&sa]() { (void)ManualWhy( sa ); } );
+            bool finished = true;
+            for ( J7CallThread* t : { &ts, &tw } )
+            {
+               t->Start();
+               finished = t->Wait( 10000 ) && finished;
+            }
+            const std::string offStrip = U8( ts.error ), offWhy = U8( tw.error );
+            offRootOk = finished && ts.threw && tw.threw
+                     && offStrip.find( "root thread" ) != std::string::npos && offWhy.find( "root thread" ) != std::string::npos;
+            // (r4) A catalog failure while resolving table columns fails CLOSED: the step is manual and every
+            //      value with a directory component in that table is reduced to its name. An UNKNOWN process
+            //      (not installed) is not a failure: its array rows fall back to the generic check.
+            const StepRow ii = stepOf( "ImageIntegration", nlohmann::json::object(),
+                                       { { "images", nlohmann::json::array( { nlohmann::json::array( { true, "subs/b.xisf", "", "" } ) } ) } } );
+            const StepRow iiBare = stepOf( "ImageIntegration", nlohmann::json::object(),
+                                           { { "images", nlohmann::json::array( { nlohmann::json::array( { true, "b.xisf", "", "" } ) } ) } } );
+            SetJourneyExportCatalogFailForSelfTest( true );
+            std::string failWhy, failBareWhy;
+            nlohmann::json failOut;
+            try
+            {
+               failWhy = ManualWhy( ii );
+               failBareWhy = ManualWhy( iiBare );
+               failOut = PrivacyStripStepParameters( ii.processId, ii.params["parameters"], ii.params["tableParameters"] );
+            }
+            catch ( const pcl::Exception& x ) { failWhy = "threw: " + U8( x.Message() ); }
+            SetJourneyExportCatalogFailForSelfTest( false );
+            const std::string unknownWhy = ManualWhy( stepOf( "NoSuchPICopilotProcess", nlohmann::json::object(),
+                                                              { { "rows", nlohmann::json::array( { nlohmann::json::array( { "x", 1 } ) } ) } } ) );
+            catalogFailOk = failWhy.find( "images" ) != std::string::npos && failWhy.find( "injected" ) != std::string::npos
+                         && failWhy.find( "subs/" ) == std::string::npos && !failBareWhy.empty()
+                         && failOut.is_object() && failOut.at( "tableParameters" ).at( "images" ).at( 0 ).at( 1 ) == "b.xisf"
+                         && unknownWhy.empty() && ManualWhy( iiBare ).empty();
+            // The ICC false positive is accepted (privacy-safe: a profile path is manual, a profile NAME stays).
+            const bool iccKnown = IsFileParameter( "ICCProfileTransformation", "targetProfile" );
+            d["round2"] = { { "listed", listed }, { "saWhy", saWhy }, { "saOut", saOut }, { "bareWhy", bareWhy }, { "viewWhy", viewWhy },
+                            { "fiWhy", fiWhy }, { "offStrip", offStrip }, { "offWhy", offWhy }, { "failWhy", failWhy },
+                            { "failBareWhy", failBareWhy }, { "failOut", failOut }, { "unknownWhy", unknownWhy },
+                            { "iccTargetProfileIsFile", iccKnown } };
+            referenceOk = referenceOk && listReal;
+         }
+         // (q) Review Minor 3: a copy that fails part-way removes exactly what THIS call created --
+         //     never a file or folder that was already there -- and says so.
+         {
+            const String leaf = File::ExtractNameAndExtension( copiedTo );   // from (h): <date>-<name>
+            const String stepThumb = FromU8( steps.at( 2 ).at( "thumbnail" ).get<std::string>() );   // thumbs/<n>.jpg
+            // (q1) Mid-copy: the destination folder exists with a user file; a later thumbnail's name is taken by a folder.
+            JTempDir q1( "picopilot-exp-q1-" );
+            const String dest = q1.Path() + "/ExpM42/" + leaf;
+            File::CreateDirectory( q1.Path() + "/ExpM42" );
+            File::CreateDirectory( dest );
+            File::CreateDirectory( dest + "/thumbs" );
+            File::CreateDirectory( dest + "/" + stepThumb );                // the conflict
+            File::WriteTextFile( dest + "/notes.txt", IsoString( "mine" ) );
+            String to1;
+            const String e1 = CopyKeeperToExportFolder( *store, jid, q1.Path(), to1 );
+            StringList left;
+            for ( const char* n : { "/recipe.json", "/recipe.schema.json" } )
+               if ( File::Exists( dest + n ) ) left << dest + n;
+            if ( File::Exists( dest + "/" + ExportBaseName( jr ) + ".xpsm" ) ) left << "xpsm";
+            int thumbFiles = 0;
+            {
+               DIR* dd = ::opendir( U8( dest + "/thumbs" ).c_str() );
+               if ( dd != nullptr )
+               {
+                  for ( const dirent* e; (e = ::readdir( dd )) != nullptr; )
+                     if ( std::string( e->d_name ) != "." && std::string( e->d_name ) != ".." )
+                        ++thumbFiles;
+                  ::closedir( dd );
+               }
+            }
+            // (q2) First write fails: the two folders this call made are removed again; the root stays empty.
+            JTempDir q2( "picopilot-exp-q2-" );
+            SetSafeFileWriteFailBeforeRenameForSelfTest( true );
+            String to2;
+            const String e2 = CopyKeeperToExportFolder( *store, jid, q2.Path(), to2 );
+            SetSafeFileWriteFailBeforeRenameForSelfTest( false );
+            d["rollback"] = { { "e1", U8( e1 ) }, { "left", left.Length() }, { "thumbEntries", thumbFiles }, { "e2", U8( e2 ) },
+                              { "q2Target", File::DirectoryExists( q2.Path() + "/ExpM42" ) } };
+            rollbackOk = !e1.IsEmpty() && e1.Contains( stepThumb ) && e1.Contains( "removed" ) && to1.IsEmpty() && left.IsEmpty()
+                      && File::Exists( dest + "/notes.txt" ) && File::DirectoryExists( dest + "/" + stepThumb ) && thumbFiles == 1
+                      && !e2.IsEmpty() && e2.Contains( "removed" ) && to2.IsEmpty() && !File::DirectoryExists( q2.Path() + "/ExpM42" );
+         }
+      }
+      catch ( const pcl::Exception& x ) { error = x.Message(); }
+      catch ( const std::exception& x ) { error = String( x.what() ); }
+      catch ( ... )                     { error = "unknown exception"; }
+      for ( const std::string& id : made )
+         JForceClose( id );
+      store.reset();
+      root.reset();
+      const bool ok = fixtureOk && summaryOk && recipeOk && validatorOk && privacyOk && manualOk && xpsmOk && replayOk && copyOk
+                   && missingRootOk && readOnlyOk && relativeOk && retryOk && independentOk && exportThumbsOk && pathParamOk
+                   && stripOk && modesOk && fileParamOk && enabledRewriteOk && rollbackOk
+                   && referenceOk && offRootOk && catalogFailOk;
+      out["journeyExportDetail"] = d;
+      out["journeyExportChecks"] = { { "fixture", fixtureOk }, { "summary", summaryOk }, { "recipe", recipeOk },
+                                     { "validator", validatorOk }, { "privacy", privacyOk }, { "manual", manualOk },
+                                     { "xpsm", xpsmOk }, { "replay", replayOk }, { "copy", copyOk }, { "missingRoot", missingRootOk },
+                                     { "readOnly", readOnlyOk }, { "relative", relativeOk }, { "retry", retryOk },
+                                     { "independent", independentOk }, { "exportThumbs", exportThumbsOk },
+                                     { "pathParam", pathParamOk }, { "strip", stripOk }, { "modes", modesOk },
+                                     { "fileParam", fileParamOk }, { "enabledRewrite", enabledRewriteOk }, { "rollback", rollbackOk },
+                                     { "reference", referenceOk }, { "offRoot", offRootOk }, { "catalogFail", catalogFailOk } };
+      out["journeyExportError"] = U8( error );
+      out["journeyExportOk"] = ok;
       allOk = allOk && ok;
    }
 
