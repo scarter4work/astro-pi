@@ -9,6 +9,9 @@
 #include "JourneyWriteup.h"
 
 #include <functional>
+#include <map>
+#include <string>
+#include <utility>
 
 namespace pcl
 {
@@ -24,6 +27,10 @@ struct JourneyToolHost
    String          exportFolder;                                     // ⚙; empty = off
    std::function<String()> apiKey;                                   // the write-up's key
    std::function<bool( const String& summaryHtml )> confirmKeeper;   // Yes/No, default No (Ruling 17)
+   // replay_journey is a lookup: the current journey is named "<keeper> (replay
+   // of #<id>)" only when a replay step is applied (review m6). Main view id ->
+   // {current journey id, the new name}. Owned by the tool calls.
+   std::map<std::string, std::pair<int64, std::string>> pendingReplayName;
 };
 
 extern const char* const kJourneyPromptRead;   // every mode (UTF-8)
@@ -60,6 +67,14 @@ KeepFlowResult RunKeepFlow( JourneyToolHost& host, int64 journeyId, const IsoStr
 // continue a kept journey: its continuation), else the newest recording
 // journey that names it in the library.
 int64 JourneyForView( JourneyToolHost& host, const IsoString& viewFullId );
+
+// apply_process ran successfully on viewFullId (a main view): a replay asked
+// for on that view names its journey now. "" or why the name could not be set.
+String NoteReplayStepApplied( JourneyToolHost& host, const IsoString& viewFullId );
+
+// GC privacy (P6): text for the model with every absolute path reduced to its
+// file name (a path may contain spaces). Pure; any thread.
+String ModelTextWithoutDirectories( const String& text );
 
 } // namespace pcl
 

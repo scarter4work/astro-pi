@@ -5,6 +5,7 @@
 #define PICopilot_ToolHelpers_h
 
 #include "AgentTools.h"   // ToolOutcome
+#include "ProcessApply.h" // ApplyProcessResult
 
 #include <pcl/String.h>
 #include <pcl/View.h>
@@ -28,6 +29,13 @@ std::string StringField( const nlohmann::json& in, const char* key );
 
 // is_error outcome: the error text for the model, "✖ what → error: …" (cut to 200) for the log.
 ToolOutcome Fail( const String& what, const String& error );
+
+// What apply_process does with the journey step note it posted before the run
+// (review M5), from the run's result. Keep: the run's History step is the
+// Copilot's; Cancel: there is no such step (failed, or no History step on the
+// target); FlagNoEffect: the step it left changed nothing (T-graxpert).
+enum class JourneyNoteAction { Keep, Cancel, FlagNoEffect };
+JourneyNoteAction JourneyNoteActionFor( const ApplyProcessResult& r );
 
 } // namespace pcl
 

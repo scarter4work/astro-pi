@@ -146,7 +146,9 @@ public:
    // Ruling 26: a kept journey records nothing more. Its open images continue
    // in ONE new journey "<name> (continued)" whose starting point is the kept
    // result (their whole current history is base). Returns its id; 0 when none
-   // of its images is open (error empty), or when it could not be made now
+   // of its images is open (error empty), when recording is off (spec §8:
+   // the images leave the kept journey, but nothing is read or stored for a
+   // continuation; error says so), or when it could not be made now
    // (error says why; its images then join it at a later tick, and until
    // then nothing of theirs is recorded into the kept journey). Never waits
    // on a busy image (GC): a busy one joins the new journey at the first Tick
@@ -176,6 +178,14 @@ public:
    // The last 100 candidate evaluations and scan anomalies
    // ("<t> r=<result> ticks=<n> <view> <evidence summary>"), for self-test diagnostics.
    std::vector<std::string> RecentDecisionsForSelfTest() const { return { m_decisions.begin(), m_decisions.end() }; }
+   // The pending Copilot step notes as "<view>|<process>|<reason>|<noEffect 0/1>" (ordering guard, review M5).
+   std::vector<std::string> CopilotNotesForSelfTest() const
+   {
+      std::vector<std::string> r;
+      for ( const CopilotNote& n : m_copilot )
+         r.push_back( n.viewId + "|" + n.processId + "|" + n.reason + "|" + (n.noEffect ? "1" : "0") );
+      return r;
+   }
    // A candidate's / ignored window's first sighting (-1 when not a candidate or ignored).
    double FirstSeenForSelfTest( const IsoString& viewId ) const;
    // The tick-wide failure (m_pausedReason) the last tick ended with; "" = none. Only a failure no
@@ -281,7 +291,11 @@ private:
    struct Continuation { int64 keptJourneyId = 0, journeyId = 0; std::string name, target; AcquisitionFacts acq; };
    // An image of a frozen journey that has not joined its continuation yet
    // (busy, or the write failed). Ids + an opaque handle only (fix round 4).
-   struct PendingFreeze { const void* handle = nullptr; std::string id; std::shared_ptr<Continuation> to; String reason; };
+   // baseCount: the image's steps recorded in the kept journey (combined count) at the freeze; the steps after
+   // it were in flight (made, not yet recorded) and become the continuation's first steps (review m4). -1: not
+   // known (the rows could not be read) -> the whole history is base.
+   struct PendingFreeze { const void* handle = nullptr; std::string id; std::shared_ptr<Continuation> to; String reason;
+                          int baseCount = -1; };
    std::vector<PendingFreeze> m_pendingFreeze;
    std::vector<int64>       m_freezeRequests;   // FreezeJourney called inside a tick: done at the next tick
    double                   m_lastStepMs = 0;

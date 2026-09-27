@@ -79,7 +79,7 @@
     "J3 StepStats": 1.1,
     "J4 JourneyStore": 0.6,
     "J5 MasterFacts": 0.1,
-    "J10 journey tools": 3.0,
+    "J10 journey tools": 6.2,
     "J10 gated LIVE journey replay": { "baseline": 90, "cap": 600 }
   }
 }
