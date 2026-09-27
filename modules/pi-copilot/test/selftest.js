@@ -43,6 +43,22 @@ function jsMark( label )
 }
 jsMark( "pre-phase (panel never opened)" );
 
+// Watchdog demo/test hook (plan item 1, thist-hang-investigation.md):
+// PICOPILOT_WATCHDOG_TEST_HANG=1 makes this run deliberately stall forever in
+// a real, named section, so test/watchdog.py's section-overrun path (budget
+// check -> gdb all-thread bt + Xvfb screenshot -> kill PI -> fail loudly) can
+// be proven end-to-end on demand, without needing to reproduce (or wait out)
+// an actual PixInsight-core hang. Never set this in a normal run.
+if ( getEnvironmentVariable( "PICOPILOT_WATCHDOG_TEST_HANG" ) == "1" )
+{
+   jsMark( "watchdog-test-hang" );
+   for ( ;; )
+   {
+      processEvents();
+      msleep( 200 );
+   }
+}
+
 function pumpEvents( ms )
 {
    var t0 = Date.now();
