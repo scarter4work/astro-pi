@@ -4,7 +4,9 @@
 #include "WorkspaceIcons.h"
 #include "EvalGuard.h"       // EvaluateScriptDepth
 #include "HistoryReader.h"   // ParseXpsmElement
-#include "PjsrRunner.h"      // EvaluateAsciiJson
+#include "PjsrRunner.h"      // EvaluateAsciiJson, ScriptLiteral
+#include "ProcessApply.h"     // NoteProcessInstanceBuild
+#include "ProcessSafety.h"    // CompiledProcessSafety, NoInstanceBeforeApproval
 #include "JourneyExport.h"   // FileParameterValues, PrivacyStripStepParameters
 #include "ToolHelpers.h"     // TextBlock, StringField, Fail
 #include "Utf8.h"
@@ -49,6 +51,7 @@ struct IconRead
 {
    std::string           processId;   // "ProcessContainer" for a container
    bool                  container = false;
+   bool                  notRead = false;   // an icon of a process PI Copilot builds no instance of (review I1)
    std::vector<IconItem> items;       // one for a plain icon
 };
 
@@ -72,17 +75,54 @@ IconItem ItemFromElement( const XMLElement& e )
    return it;
 }
 
+int& IconScriptRuns()
+{
+   static int runs = 0;
+   return runs;
+}
+
+// The processes PI Copilot never builds an instance of before the user approved a run (policy deny and
+// confirmAlways: NoInstanceBeforeApproval), except ProcessContainer, whose icons are read (below).
+std::vector<std::string> NoInstanceProcessIds()
+{
+   std::vector<std::string> ids;
+   const nlohmann::json& policy = CompiledProcessSafety();
+   for ( const char* section : { "deny", "confirmAlways" } )
+      if ( policy.contains( section ) && policy[section].is_object() )
+         for ( auto it = policy[section].begin(); it != policy[section].end(); ++it )
+            if ( it.key() != "ProcessContainer" && it.key().rfind( "_", 0 ) != 0 )
+               ids.push_back( it.key() );
+   return ids;
+}
+
 // Every process icon on the workspace as {icon, xpsm} (or {icon, error}), read through PJSR in one script.
 // PCL's ProcessInstance::FromIcon() duplicates the instance, which a ProcessContainer refuses ("Invalid routine
 // invoked: MetaProcessContainer::clonationRoutine", measured); the PJSR fromIcon() serializes it fine. Nothing is
 // kept past the script. Throws when a script is already running (EvaluateScript cannot nest) or on a bad result.
+//
+// Review I1 -- instances before approval. fromIcon() duplicates the icon's instance. An icon of a deny/confirmAlways
+// process (e.g. BlurXTerminator, StarAlignment) is therefore never opened: it is found by
+// ProcessInstance.iconsByProcessId() (an id lookup, no instance) and listed as not read. DECISION (written down, as
+// the review asked): ProcessContainer icons ARE read. ProcessContainer is denied because PI Copilot cannot check the
+// processes it would RUN; the measured hazard is its CanExecuteGlobal() on a default instance, which is never
+// called here -- the duplicate is only serialized (toSource), never validated or executed. A container that holds
+// an item of a confirmAlways process duplicates that item too; its contents cannot be known without reading it,
+// and Scott asked for container icons to be visible. Default instances of such processes are never built
+// (Defaults::Of).
 std::vector<std::pair<std::string, std::string>> AllIconSources()
 {
    if ( EvaluateScriptDepth() > 0 )
       throw Error( "PixInsight is running a script right now; the workspace icons cannot be read until it ends -- try again" );
+   ++IconScriptRuns();
+   const nlohmann::json skip = NoInstanceProcessIds();
    const nlohmann::json j = EvaluateAsciiJson(
-      "var r = [], ids = ProcessInstance.icons();\n"
+      "var r = [], ids = ProcessInstance.icons(), skip = {}, noInstance = JSON.parse( " + ScriptLiteral( FromU8( skip.dump() ) ) + " );\n"
+      "for ( var k = 0; k < noInstance.length; ++k ) {\n"
+      "  try { var a = ProcessInstance.iconsByProcessId( noInstance[k] ); for ( var m = 0; m < a.length; ++m ) skip[a[m]] = noInstance[k]; }\n"
+      "  catch ( e ) {}\n"
+      "}\n"
       "for ( var i = 0; i < ids.length; ++i ) {\n"
+      "  if ( skip.hasOwnProperty( ids[i] ) ) { r.push( { icon: pcWell( ids[i] ), skipped: pcWell( skip[ids[i]] ) } ); continue; }\n"
       "  try { var P = ProcessInstance.fromIcon( ids[i] );\n"
       "        r.push( P ? { icon: pcWell( ids[i] ), xpsm: pcWell( P.toSource( 'XPSM 1.0' ) ) }\n"
       "                  : { icon: pcWell( ids[i] ), error: 'not a process icon' } ); }\n"
@@ -92,7 +132,9 @@ std::vector<std::pair<std::string, std::string>> AllIconSources()
    std::vector<std::pair<std::string, std::string>> out;
    for ( const nlohmann::json& e : j )
       out.emplace_back( e.at( "icon" ).get<std::string>(),
-                        e.contains( "xpsm" ) ? e.at( "xpsm" ).get<std::string>() : "\x01" + e.value( "error", std::string() ) );
+                        e.contains( "xpsm" ) ? e.at( "xpsm" ).get<std::string>()
+                        : e.contains( "skipped" ) ? "\x02" + e.at( "skipped" ).get<std::string>()
+                        : "\x01" + e.value( "error", std::string() ) );
    return out;
 }
 
@@ -101,6 +143,12 @@ String ParseIcon( const std::pair<std::string, std::string>& src, IconRead& out 
 {
    if ( !src.second.empty() && src.second[0] == '\x01' )
       return FromU8( "icon " + src.first + " cannot be read: " + src.second.substr( 1 ) );
+   if ( !src.second.empty() && src.second[0] == '\x02' )
+   {
+      out.processId = src.second.substr( 1 );
+      out.notRead = true;
+      return String();
+   }
    const std::string& xpsm = src.second;
    XMLDocument doc;
    doc.SetParserOption( XMLParserOption::IgnoreComments );
@@ -131,11 +179,16 @@ struct Defaults
       if ( it != cache.end() )
          return it->second;
       IconItem d;
+      d.note = "none";   // "none": no defaults known (not compared)
       try
       {
+         if ( NoInstanceBeforeApproval( IsoString( processId.c_str() ) ) )
+            return cache.emplace( processId, d ).first->second;   // review I1: never a default instance of it
          std::string xpsm;
          {
-            const ProcessInstance P( Process( IsoString( processId.c_str() ) ) );
+            const Process proc( IsoString( processId.c_str() ) );
+            NoteProcessInstanceBuild( proc.Id(), "iconDefaults" );
+            const ProcessInstance P( proc );
             if ( !P.IsNull() )
                xpsm = U8( P.ToSource( "XPSM 1.0" ) );
          }
@@ -145,7 +198,10 @@ struct Defaults
             doc.SetParserOption( XMLParserOption::IgnoreComments );
             doc.Parse( FromU8( xpsm ) );
             if ( doc.RootElement() != nullptr )
+            {
                d = ItemFromElement( *doc.RootElement() );
+               d.note.clear();
+            }
          }
       }
       catch ( ... )
@@ -159,6 +215,8 @@ struct Defaults
 nlohmann::json ChangedFromDefaults( const IconItem& it, Defaults& defaults )
 {
    const IconItem& d = defaults.Of( it.processId );
+   if ( d.note == "none" )
+      return nullptr;   // not compared: no default instance is built for this process (or none exists)
    nlohmann::json changed = nlohmann::json::array();
    for ( auto p = it.parameters.begin(); p != it.parameters.end(); ++p )
       if ( !d.parameters.contains( p.key() ) || d.parameters[p.key()] != p.value() )
@@ -190,14 +248,16 @@ nlohmann::json ModelValues( const IconItem& it, nlohmann::json& files )
    for ( const FileParameterValue& v : fv )
    {
       const std::string name = PathFileName( v.value );
+      if ( std::find( files.begin(), files.end(), nlohmann::json( name ) ) == files.end() )
+         files.push_back( name );
+      if ( FileRoleOf( it.processId, v ) != FileRole::Input )
+         continue;   // pinned / output / folder values stay plain names: never a reusable reference (I2, M1)
       const nlohmann::json ref = FileReferenceJson( "file", name, !UsableFilePath( v.value ).empty(), std::string() );
       if ( !v.inTable )
          p[v.parameter] = ref;
       else if ( t.contains( v.parameter ) && t[v.parameter].is_array() && v.row < t[v.parameter].size()
                 && t[v.parameter][v.row].is_array() && v.column < t[v.parameter][v.row].size() )
          t[v.parameter][v.row][v.column] = ref;
-      if ( std::find( files.begin(), files.end(), nlohmann::json( name ) ) == files.end() )
-         files.push_back( name );
    }
    nlohmann::json r = { { "parameters", p }, { "table_parameters", t } };
    if ( !catalogNote.empty() )
@@ -213,6 +273,12 @@ nlohmann::json ItemSummary( const IconItem& it, Defaults& defaults )
    if ( !it.note.empty() )
       s["note"] = it.note;
    return s;
+}
+
+std::string NotReadText( const std::string& processId )
+{
+   return "PI Copilot does not open icons of " + processId + ": it never builds an instance of " + processId
+        + " before the user approves a run of it. Ask the user for its settings if they matter.";
 }
 
 ToolOutcome Ok( const String& what, const nlohmann::json& result )
@@ -257,6 +323,11 @@ nlohmann::json WorkspaceIconToolDefinitions()
    return t;
 }
 
+int WorkspaceIconScriptRunsForSelfTest()
+{
+   return IconScriptRuns();
+}
+
 bool IsWorkspaceIconTool( const std::string& name )
 {
    return name == "list_process_icons" || name == "get_process_icon";
@@ -269,14 +340,17 @@ void AddWorkspaceIconFileCandidates( std::vector<FileCandidate>& to )
       for ( const auto& src : AllIconSources() )
       {
          IconRead r;
-         if ( !ParseIcon( src, r ).IsEmpty() )
+         if ( !ParseIcon( src, r ).IsEmpty() || r.notRead )
             continue;
          for ( const IconItem& it : r.items )
          {
             try
             {
-               AddFileCandidates( to, FileParameterValues( it.processId, it.parameters, it.tables ),
-                                  "workspace icon " + src.first );
+               std::vector<FileParameterValue> input;
+               for ( const FileParameterValue& v : FileParameterValues( it.processId, it.parameters, it.tables ) )
+                  if ( FileRoleOf( it.processId, v ) == FileRole::Input )
+                     input.push_back( v );
+               AddFileCandidates( to, input, "workspace icon " + src.first );
             }
             catch ( ... )
             {
@@ -321,7 +395,9 @@ ToolOutcome ExecuteWorkspaceIconTool( const ToolCall& call, const ToolContext& /
                if ( !match )
                   continue;
                row["processId"] = r.processId;
-               if ( r.container )
+               if ( r.notRead )
+                  row["notRead"] = NotReadText( r.processId );
+               else if ( r.container )
                {
                   nlohmann::json items = nlohmann::json::array();
                   int n = 0;
@@ -387,6 +463,8 @@ ToolOutcome ExecuteWorkspaceIconTool( const ToolCall& call, const ToolContext& /
             if ( !found )
                return Fail( what, FromU8( "no process icon '" + iconId + "' on the workspace (list_process_icons shows them)" ) );
          }
+         if ( r.notRead )
+            return Fail( what, FromU8( NotReadText( r.processId ) ) );
          if ( r.container && item == 0 )
          {
             nlohmann::json items = nlohmann::json::array();

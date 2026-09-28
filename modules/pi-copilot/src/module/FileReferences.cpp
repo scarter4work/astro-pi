@@ -5,12 +5,17 @@
 #include "HistoryReader.h"   // ParseXpsmStep
 #include "JourneyStore.h"
 #include "JourneyTools.h"    // ModelTextWithoutDirectories
+#include "ProcessApply.h"    // NoteProcessInstanceBuild
+#include "ProcessSafety.h"   // CompiledProcessSafety, NoInstanceBeforeApproval
 #include "Utf8.h"
+#include "WorkspaceIcons.h"  // AddWorkspaceIconFileCandidates
 
 #include <pcl/Exception.h>
 #include <pcl/Process.h>
 #include <pcl/ProcessInstance.h>
 
+#include <algorithm>
+#include <cctype>
 #include <map>
 #include <set>
 
@@ -30,9 +35,17 @@ std::string UsableFilePath( const std::string& path )
    return path;
 }
 
-bool FindKnownFile( const std::string& name, const std::vector<FileCandidate>& candidates, FileCandidate& out )
+bool IsPlainFileName( const std::string& name )
 {
-   if ( name.empty() )
+   return !name.empty() && name != "." && name != ".." && name.find_first_of( std::string( "/\\\0", 3 ) ) == std::string::npos;
+}
+
+namespace
+{
+
+bool FindIn( const std::string& name, const std::vector<FileCandidate>& candidates, FileCandidate& out )
+{
+   if ( !IsPlainFileName( name ) )
       return false;
    for ( const FileCandidate& c : candidates )
       if ( PathFileName( c.path ) == name && !UsableFilePath( c.path ).empty() )
@@ -43,39 +56,71 @@ bool FindKnownFile( const std::string& name, const std::vector<FileCandidate>& c
    return false;
 }
 
-void AddFileCandidates( std::vector<FileCandidate>& to, const std::vector<FileParameterValue>& values, const std::string& foundIn )
-{
-   for ( const FileParameterValue& v : values )
-      if ( !v.value.empty() && v.value[0] == '/' )
-         to.push_back( FileCandidate{ v.value, foundIn } );
-}
-
-void AddDefaultInstanceFileCandidates( std::vector<FileCandidate>& to, const std::string& processId )
+bool IsPinnedParameterId( const std::string& processId, const std::string& parameterId )
 {
    try
    {
+      const nlohmann::json& policy = CompiledProcessSafety();
+      if ( !policy.contains( "pinnedParameters" ) || !policy["pinnedParameters"].is_object() )
+         return false;
+      const nlohmann::json& pp = policy["pinnedParameters"];
+      return pp.contains( processId ) && pp[processId].is_object() && pp[processId].contains( parameterId );
+   }
+   catch ( ... )
+   {
+      return true;   // fails closed: never resolve what might be pinned
+   }
+}
+
+bool IsOutputLikeId( const std::string& id )
+{
+   std::string l;
+   for ( char c : id )
+      l += char( std::tolower( static_cast<unsigned char>( c ) ) );
+   for ( const char* w : { "output", "overwrite", "write", "save", "destination", "export", "cache", "directory", "folder" } )
+      if ( l.find( w ) != std::string::npos )
+         return true;
+   return l.size() >= 3 && l.compare( l.size() - 3, 3, "dir" ) == 0;
+}
+
+// The process's default instance's file values. Never for a process PI Copilot builds no instance of before the
+// user approved a run (review I1). The build is reported to the self-test's instance observer.
+std::vector<FileCandidate> DefaultInstanceCandidates( const std::string& processId )
+{
+   std::vector<FileCandidate> to;
+   try
+   {
+      if ( NoInstanceBeforeApproval( IsoString( processId.c_str() ) ) )
+         return to;
       std::string xpsm;
       {
          const Process P( IsoString( processId.c_str() ) );
+         NoteProcessInstanceBuild( P.Id(), "fileDefaults" );
          const ProcessInstance defaults( P );   // a temporary: never kept
          if ( defaults.IsNull() )
-            return;
+            return to;
          xpsm = U8( defaults.ToSource( "XPSM 1.0" ) );
       }
       HistoryStep h;
       String e;
       if ( !ParseXpsmStep( xpsm, h, e ) )
-         return;
-      AddFileCandidates( to, FileParameterValues( processId, h.parameters, h.tableParameters ), processId + "'s default settings" );
+         return to;
+      std::vector<FileParameterValue> input;
+      for ( const FileParameterValue& v : FileParameterValues( processId, h.parameters, h.tableParameters ) )
+         if ( FileRoleOf( processId, v ) == FileRole::Input )
+            input.push_back( v );
+      AddFileCandidates( to, input, processId + "'s default settings" );
    }
    catch ( ... )
    {
       // no default instance or unreadable metadata: nothing to add (the resolution names every place it looked)
    }
+   return to;
 }
 
-void AddLibraryFileCandidates( std::vector<FileCandidate>& to, JourneyStore& store )
+std::vector<FileCandidate> LibraryCandidates( JourneyStore& store )
 {
+   std::vector<FileCandidate> to;
    try
    {
       for ( const JourneyRow& j : store.ListJourneys( false, std::string(), 500 ) )
@@ -88,7 +133,11 @@ void AddLibraryFileCandidates( std::vector<FileCandidate>& to, JourneyStore& sto
                   continue;
                try
                {
-                  AddFileCandidates( to, FileParameterValues( s.processId, p, t ), "a step of journey #" + std::to_string( j.id ) );
+                  std::vector<FileParameterValue> input;
+                  for ( const FileParameterValue& v : FileParameterValues( s.processId, p, t ) )
+                     if ( FileRoleOf( s.processId, v ) == FileRole::Input )
+                        input.push_back( v );
+                  AddFileCandidates( to, input, "a step of journey #" + std::to_string( j.id ) );
                }
                catch ( ... )
                {
@@ -100,6 +149,58 @@ void AddLibraryFileCandidates( std::vector<FileCandidate>& to, JourneyStore& sto
    {
       // the library cannot be read: no candidates from it
    }
+   return to;
+}
+
+} // namespace
+
+FileRole FileRoleOfId( const std::string& processId, const std::string& parameterId, const std::string& columnId )
+{
+   if ( columnId.empty() && IsPinnedParameterId( processId, parameterId ) )
+      return FileRole::Pinned;
+   if ( IsOutputLikeId( parameterId ) || (!columnId.empty() && IsOutputLikeId( columnId )) )
+      return FileRole::Output;
+   return FileRole::Input;
+}
+
+FileRole FileRoleOf( const std::string& processId, const FileParameterValue& v )
+{
+   return FileRoleOfId( processId, v.parameter, v.inTable ? v.columnId : std::string() );
+}
+
+bool FileSources::Find( const std::string& name, const std::vector<FileCandidate>& recorded, const std::string& processId,
+                        FileCandidate& out )
+{
+   if ( !IsPlainFileName( name ) )
+      return false;
+   if ( FindIn( name, recorded, out ) )
+      return true;
+   if ( !m_haveIcons )
+   {
+      AddWorkspaceIconFileCandidates( m_icons );
+      m_haveIcons = true;
+   }
+   if ( FindIn( name, m_icons, out ) )
+      return true;
+   auto d = m_defaults.find( processId );
+   if ( d == m_defaults.end() )
+      d = m_defaults.emplace( processId, DefaultInstanceCandidates( processId ) ).first;
+   if ( FindIn( name, d->second, out ) )
+      return true;
+   if ( !m_haveLibrary )
+   {
+      if ( m_store != nullptr )
+         m_library = LibraryCandidates( *m_store );
+      m_haveLibrary = true;
+   }
+   return FindIn( name, m_library, out );
+}
+
+void AddFileCandidates( std::vector<FileCandidate>& to, const std::vector<FileParameterValue>& values, const std::string& foundIn )
+{
+   for ( const FileParameterValue& v : values )
+      if ( !v.value.empty() && v.value[0] == '/' )
+         to.push_back( FileCandidate{ v.value, foundIn } );
 }
 
 nlohmann::json FileReferenceJson( const char* key, const std::string& name, bool available, const std::string& foundIn )
@@ -137,18 +238,18 @@ std::string CanonicalProcessIdOf( const std::string& processId )
 
 String SubstituteFileReferences( const std::string& pid, nlohmann::json& parameters, nlohmann::json& tableParameters,
                                  const std::vector<FileParameterValue>* recorded, const nlohmann::json& recordedTables,
-                                 const std::vector<FileCandidate>& known, std::vector<FileSubstitution>& subs )
+                                 const FileFinder& find, std::vector<FileSubstitution>& subs )
 {
    subs.clear();
    auto hasDir = []( const std::string& s ) { return s.find_first_of( "/\\" ) != std::string::npos; };
    // Resolves `name` for `where`; "" + sub pushed, or the error for the model.
    auto resolve = [&]( const std::string& name, const std::string& where, std::string& path ) -> String
    {
-      if ( name.empty() || hasDir( name ) )
-         return FromU8( pid + "." + where + ": a file reference names a file by its name only, without a folder (e.g. {\"file\": \""
-                        + PathFileName( name ) + "\"})" );
+      if ( !IsPlainFileName( name ) )
+         return FromU8( pid + "." + where + ": a file reference names one file by its plain name: not empty, no folder "
+                        "('/' or '\\'), not '.' or '..', no NUL character (e.g. {\"file\": \"MARS-DR2.xmars\"})" );
       FileCandidate c;
-      if ( !FindKnownFile( name, known, c ) )
+      if ( !find( name, c ) )
          return FromU8( "the file " + name + " (" + pid + "." + where + ") was not found on this machine: not at the recorded "
                         "location (replay steps), in a workspace process icon, in " + pid + "'s default settings, or in another "
                         "recorded journey step. Nothing ran. Tell the user which file is needed; they can put a process icon "
@@ -175,8 +276,9 @@ String SubstituteFileReferences( const std::string& pid, nlohmann::json& paramet
          std::string name;
          if ( IsFileReference( it.value(), name ) )
          {
-            if ( !IsFileParameter( pid, it.key() ) )
-               return FromU8( pid + "." + it.key() + " is not a file parameter; a {\"file\": ...} reference only goes in one" );
+            if ( !IsFileParameter( pid, it.key() ) || FileRoleOfId( pid, it.key(), std::string() ) != FileRole::Input )
+               return FromU8( pid + "." + it.key() + " is not an input-file parameter (a pinned, output or folder parameter "
+                              "is never set from a reference); a {\"file\": ...} reference only goes in one" );
             std::string path;
             const String e = resolve( name, it.key(), path );
             if ( !e.IsEmpty() )
@@ -238,8 +340,9 @@ String SubstituteFileReferences( const std::string& pid, nlohmann::json& paramet
                std::string name;
                if ( IsFileReference( row[k], name ) )
                {
-                  if ( !fileCell )
-                     return FromU8( pid + "." + where + " is not a file column; a {\"file\": ...} reference only goes in one" );
+                  if ( !fileCell || FileRoleOfId( pid, tid, known ? cols[k] : std::string() ) != FileRole::Input )
+                     return FromU8( pid + "." + where + " is not an input-file column (an output or folder column is never "
+                                    "set from a reference); a {\"file\": ...} reference only goes in one" );
                   std::string path;
                   const String e = resolve( name, where, path );
                   if ( !e.IsEmpty() )

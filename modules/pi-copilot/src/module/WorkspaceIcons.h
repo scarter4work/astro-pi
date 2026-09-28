@@ -31,8 +31,12 @@ bool IsWorkspaceIconTool( const std::string& name );
 ToolOutcome ExecuteWorkspaceIconTool( const ToolCall& call, const ToolContext& ctx );
 
 // Every FILE-parameter value in the workspace's process icons (containers
-// included), found in "workspace icon <id>". Root thread. Never throws.
+// included; INPUT files only: FileRoleOf), found in "workspace icon <id>".
+// Icons of deny/confirmAlways processes are never opened. Root thread. Never throws.
 void AddWorkspaceIconFileCandidates( std::vector<FileCandidate>& to );
+
+// Self-test only: how many times the icon-reading script has run (review M3).
+int WorkspaceIconScriptRunsForSelfTest();
 
 } // namespace pcl
 
