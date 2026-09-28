@@ -8032,7 +8032,7 @@ r1.ok && r1.inferred.size() == 1 && r1.inferred[0].first == 7 && r1.inferred[0].
            iconFoundOk = false, iconsListOk = false, iconGetOk = false, iconContainerOk = false, iconPagingOk = false,
            iconApplyOk = false, getJourneyOk = false, promptOk = false, mlOk = false;
       // Review round 1 (file-params-review.md).
-      bool i1DeniedOk = false, i1ConfirmOk = false, i1ConfirmMissingOk = false, i1IconsOk = false, i2Ok = false, m1Ok = false, m2Ok = false, m3Ok = false,
+      bool i1DeniedOk = false, i1ConfirmOk = false, i1ConfirmMissingOk = false, i1IconsOk = false, i2Ok = false, m1Ok = false, m1LogOk = false, m2Ok = false, m3Ok = false,
            badNamesOk = false, orderOk = false;
       bool mlSkipped = true;
       std::string mlSkipReason;
@@ -8455,6 +8455,27 @@ r1.ok && r1.inferred.size() == 1 && r1.inferred[0].first == 7 && r1.inferred[0].
                 && s.at( "parameters" ).value( "outputDirectory", nlohmann::json() ).is_string()
                 && text0( o ).find( rootDir ) == std::string::npos;
          }
+         // (M1b) Log and report files are outputs too (0.2.1.0 follow-up): matched as whole words of the id, so a
+         //       "catalog" or "dialog" file stays an input.
+         {
+            const std::vector<std::pair<std::string, FileRole>> cases = {
+               { "logFile", FileRole::Output }, { "logFilePath", FileRole::Output }, { "log_path", FileRole::Output },
+               { "reportFile", FileRole::Output }, { "reportsPath", FileRole::Output }, { "errorLogFile", FileRole::Output },
+               { "catalogFile", FileRole::Input }, { "dialogPath", FileRole::Input }, { "logarithmFile", FileRole::Input },
+               { "referenceImage", FileRole::Input } };
+            nlohmann::json got = nlohmann::json::object();
+            bool all = true;
+            for ( const auto& c : cases )
+            {
+               const FileRole r = FileRoleOfId( "J12Proc", c.first, std::string() );
+               got[c.first] = r == FileRole::Output ? "output" : r == FileRole::Input ? "input" : "pinned";
+               all = all && r == c.second;
+            }
+            const bool column = FileRoleOfId( "J12Proc", "files", "logPath" ) == FileRole::Output
+                             && FileRoleOfId( "J12Proc", "files", "catalogPath" ) == FileRole::Input;
+            d["m1Log"] = { { "roles", got }, { "column", column } };
+            m1LogOk = all && column;
+         }
          // (M2) run_global_process resolves {"file"} too (after the deny check): the dialog shows the icon's full path.
          {
             int asked = 0;
@@ -8556,7 +8577,7 @@ r1.ok && r1.inferred.size() == 1 && r1.inferred[0].first == 7 && r1.inferred[0].
          JForceClose( id );
       const bool ok = pageOk && applyOk && refOk && refusePathOk && missingOk && otherStepOk && iconFoundOk && iconsListOk
                    && iconGetOk && iconContainerOk && iconPagingOk && iconApplyOk && getJourneyOk && promptOk
-                   && (mlSkipped || mlOk) && i1DeniedOk && i1ConfirmOk && i1ConfirmMissingOk && i1IconsOk && i2Ok && m1Ok && m2Ok && m3Ok
+                   && (mlSkipped || mlOk) && i1DeniedOk && i1ConfirmOk && i1ConfirmMissingOk && i1IconsOk && i2Ok && m1Ok && m1LogOk && m2Ok && m3Ok
                    && badNamesOk && orderOk && error.IsEmpty();
       SetInstanceBuildObserverForSelfTest( InstanceBuildObserver() );
       d["mlSkipReason"] = mlSkipReason;
@@ -8567,7 +8588,7 @@ r1.ok && r1.inferred.size() == 1 && r1.inferred[0].first == 7 && r1.inferred[0].
                                   { "iconPaging", iconPagingOk }, { "iconApply", iconApplyOk }, { "getJourney", getJourneyOk },
                                   { "prompt", promptOk }, { "ml", mlOk },
                                   { "i1Denied", i1DeniedOk }, { "i1Confirm", i1ConfirmOk }, { "i1ConfirmMissing", i1ConfirmMissingOk }, { "i1Icons", i1IconsOk }, { "i2", i2Ok },
-                                  { "m1", m1Ok }, { "m2", m2Ok }, { "m3", m3Ok }, { "badNames", badNamesOk }, { "order", orderOk } };
+                                  { "m1", m1Ok }, { "m1Log", m1LogOk }, { "m2", m2Ok }, { "m3", m3Ok }, { "badNames", badNamesOk }, { "order", orderOk } };
       out["fileParamsError"] = U8( error );
       out["mlDenoiseSkipped"] = mlSkipped;
       out["fileParamsOk"] = ok;
