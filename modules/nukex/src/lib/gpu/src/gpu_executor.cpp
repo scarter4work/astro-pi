@@ -3,7 +3,7 @@
 #include "nukex/stacker/cache_sig.hpp"
 #include "nukex/stacker/frame_cache.hpp"
 #include "nukex/core/progress_observer.hpp"
-#include <omp.h>
+#include "nukex/gpu/parallel_for.hpp"
 
 #if NUKEX_HAS_OPENCL
 #define CL_TARGET_OPENCL_VERSION 300
@@ -504,15 +504,15 @@ std::int64_t GPUExecutor::execute_phase_b(
         //   - vals / wts are per-iteration stack locals.
         // dynamic scheduling with a moderately large chunk keeps the
         // heterogeneous per-voxel work balanced without excessive
-        // OpenMP scheduling overhead.
+        // scheduling overhead (parallel_for_dynamic: std::thread, not
+        // OpenMP -- libgomp is not on stock distros, see parallel_for.hpp).
         obs.advance(0, "  fitting distributions (Ceres, parallel)");
         int w = cube.width;
         // Heartbeat: emits a "fitted K/N voxels (Ts)" line every 2 s from
         // thread 0 so PI's Process Console shows liveness during the 3-4 min
         // single-batch fit (otherwise silent between kernel 2 and kernel 3).
         FitHeartbeat hb(count, 2000);
-        #pragma omp parallel for schedule(dynamic, 256)
-        for (int vi = 0; vi < count; vi++) {
+        parallel_for_dynamic(count, 256, [&](int vi, int worker) {
             int voxel_idx = processed + vi;
             int px = voxel_idx % w;
             int py = voxel_idx / w;
@@ -531,8 +531,8 @@ std::int64_t GPUExecutor::execute_phase_b(
                         n_channels, buf.channel_n_frames.data(),
                         frame_stats.data());
 
-            hb.tick(omp_get_thread_num(), obs);
-        }
+            hb.tick(worker, obs);
+        });
 
         // Step 6: Extract fitted distributions for select_pixels
         buf.extract_distributions(cube, processed, count, n_channels);
