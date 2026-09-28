@@ -8032,7 +8032,7 @@ r1.ok && r1.inferred.size() == 1 && r1.inferred[0].first == 7 && r1.inferred[0].
            iconFoundOk = false, iconsListOk = false, iconGetOk = false, iconContainerOk = false, iconPagingOk = false,
            iconApplyOk = false, getJourneyOk = false, promptOk = false, mlOk = false;
       // Review round 1 (file-params-review.md).
-      bool i1DeniedOk = false, i1ConfirmOk = false, i1IconsOk = false, i2Ok = false, m1Ok = false, m2Ok = false, m3Ok = false,
+      bool i1DeniedOk = false, i1ConfirmOk = false, i1ConfirmMissingOk = false, i1IconsOk = false, i2Ok = false, m1Ok = false, m2Ok = false, m3Ok = false,
            badNamesOk = false, orderOk = false;
       bool mlSkipped = true;
       std::string mlSkipReason;
@@ -8390,6 +8390,20 @@ r1.ok && r1.inferred.size() == 1 && r1.inferred[0].first == 7 && r1.inferred[0].
             i1ConfirmOk = buildsAtDialog == 0 && dialog.Contains( String( iconFile.c_str() ) ) && o.isError
                        && text0( o ).find( "declined" ) != std::string::npos && text0( o ).find( iconDir ) == std::string::npos;
          }
+         // (I1b') The same confirmAlways process with a {"file"} reference to a name that exists NOWHERE: every source
+         //        is consulted (the defaults one included), so this is what catches a default instance of StarAlignment
+         //        being built for the lookup (file-params-review.md R1). The call fails, and nothing of it was built.
+         {
+            builds.clear();
+            bool asked = false;
+            ToolContext c = ctxFor( AgentMode::Copilot, "pcJfNew" );
+            c.confirm = [&]( const String&, const String&, const String& ) { asked = true; return false; };
+            const ToolOutcome o = ExecuteTool( ToolCall{ "j12m", "apply_process", { { "process_id", "StarAlignment" },
+                                                   { "parameters", { { "referenceImage", { { "file", "nowhere-J12.xisf" } } } } } } }, c );
+            d["i1ConfirmMissing"] = { { "text", text0( o ).substr( 0, 300 ) }, { "builds", builds }, { "asked", asked } };
+            i1ConfirmMissingOk = o.isError && !asked && text0( o ).find( "nowhere-J12.xisf" ) != std::string::npos
+                              && builtOf( "StarAlignment" ) == 0;
+         }
          // (I1c) list_process_icons in Advisor with a StarAlignment (confirmAlways) icon: listed, not opened, and no
          //       instance of it is built.
          {
@@ -8542,7 +8556,7 @@ r1.ok && r1.inferred.size() == 1 && r1.inferred[0].first == 7 && r1.inferred[0].
          JForceClose( id );
       const bool ok = pageOk && applyOk && refOk && refusePathOk && missingOk && otherStepOk && iconFoundOk && iconsListOk
                    && iconGetOk && iconContainerOk && iconPagingOk && iconApplyOk && getJourneyOk && promptOk
-                   && (mlSkipped || mlOk) && i1DeniedOk && i1ConfirmOk && i1IconsOk && i2Ok && m1Ok && m2Ok && m3Ok
+                   && (mlSkipped || mlOk) && i1DeniedOk && i1ConfirmOk && i1ConfirmMissingOk && i1IconsOk && i2Ok && m1Ok && m2Ok && m3Ok
                    && badNamesOk && orderOk && error.IsEmpty();
       SetInstanceBuildObserverForSelfTest( InstanceBuildObserver() );
       d["mlSkipReason"] = mlSkipReason;
@@ -8552,7 +8566,7 @@ r1.ok && r1.inferred.size() == 1 && r1.inferred[0].first == 7 && r1.inferred[0].
                                   { "iconsList", iconsListOk }, { "iconGet", iconGetOk }, { "iconContainer", iconContainerOk },
                                   { "iconPaging", iconPagingOk }, { "iconApply", iconApplyOk }, { "getJourney", getJourneyOk },
                                   { "prompt", promptOk }, { "ml", mlOk },
-                                  { "i1Denied", i1DeniedOk }, { "i1Confirm", i1ConfirmOk }, { "i1Icons", i1IconsOk }, { "i2", i2Ok },
+                                  { "i1Denied", i1DeniedOk }, { "i1Confirm", i1ConfirmOk }, { "i1ConfirmMissing", i1ConfirmMissingOk }, { "i1Icons", i1IconsOk }, { "i2", i2Ok },
                                   { "m1", m1Ok }, { "m2", m2Ok }, { "m3", m3Ok }, { "badNames", badNamesOk }, { "order", orderOk } };
       out["fileParamsError"] = U8( error );
       out["mlDenoiseSkipped"] = mlSkipped;
