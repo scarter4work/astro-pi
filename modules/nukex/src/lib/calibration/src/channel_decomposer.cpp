@@ -6,7 +6,12 @@ namespace nukex {
 Eigen::MatrixXd ChannelDecomposer::build_q(const std::string& camera,
                                            const std::string& filter_name) const {
     if (!db_.has_camera(camera)) {
-        throw UnknownCameraError("Camera not in QE DB: " + camera);
+        throw UnknownCameraError(
+            "Camera not in QE DB: '" + camera + "' (normalized key '" +
+            QEDatabase::normalize_camera_key(camera) +
+            "' matches no camera id or alias). Add an entry for this camera "
+            "(or an alias to an existing one with the SAME sensor and colour/mono "
+            "type) to qe_overrides.json.");
     }
     if (!db_.has_filter(filter_name)) {
         throw UnknownFilterError("Filter not in QE DB: " + filter_name);
