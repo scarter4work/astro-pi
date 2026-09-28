@@ -82,6 +82,7 @@
     "J5 MasterFacts": 0.1,
     "J10 journey tools": 6.2,
     "J11 journey UI units": 2.0,
+    "J12 file parameters + workspace icons": 12.0,
     "J10 gated LIVE journey replay": { "baseline": 90, "cap": 600 }
   }
 }

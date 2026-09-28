@@ -139,6 +139,11 @@ export PICOPILOT_SELFTEST_PHASE="$HANDOFF_DIR/phase.json"
 # Scratch directory for top-level fixtures that write files (e.g. J0 save+reopen).
 export PICOPILOT_SELFTEST_SCRATCH="$HANDOFF_DIR/scratch"
 mkdir -m 700 "$PICOPILOT_SELFTEST_SCRATCH"
+# Workspace process icons (fix/replay-file-params): test/load-icons.js, the
+# first -r= script, writes a fixture .xpsm + the file its icons name here and
+# yields it to this instance, which loads the icons before selftest.js runs.
+export PICOPILOT_SELFTEST_ICONS="$HANDOFF_DIR/icons"
+mkdir -m 700 "$PICOPILOT_SELFTEST_ICONS"
 # Per-section wall-clock timings, rewritten at every section mark by selftest.js
 # (fixture blocks) and by the module (self-test sections), so any run -- even
 # one that hangs until the timeout -- prints where its time went.
@@ -513,7 +518,7 @@ WATCHDOG_PID=$!
 
 PI_RC=0
 env "${PICOPILOT_THROWLOG_PRELOAD[@]}" PICOPILOT_SELFTEST_OUT="$R" xvfb-run -a -s "-screen 0 1920x1080x24" \
-      timeout 900 "$PI" -n="$PICOPILOT_TEST_SLOT" --automation-mode --no-startup-scripts -m="$SO" -r="$HERE/selftest.js" --force-exit \
+      timeout 900 "$PI" -n="$PICOPILOT_TEST_SLOT" --automation-mode --no-startup-scripts -m="$SO" -r="$HERE/load-icons.js" -r="$HERE/selftest.js" --force-exit \
    || PI_RC=$?
 
 kill "$WATCHDOG_PID" 2>/dev/null || true
@@ -608,6 +613,8 @@ required_true = [
     'journeyToolsOk', 'liveReplayOk', 'journeyUiOk',
     'journeyWiringOk',
     'histLandedOk',
+    # fix/replay-file-params: file parameters in replays + workspace process icons
+    'fileParamsOk',
     'ok',
 ]
 missing = [k for k in required_true if d.get(k) is not True]
@@ -619,7 +626,8 @@ if d.get('streamLoopbackSkipped') is not False: missing.append('streamLoopbackSk
 import os
 if os.environ.get('PICOPILOT_REQUIRE_LIVE') == '1':
     for k in ('anthropicSkipped', 'twoTurnSkipped', 'visionSkipped', 'liveAgentSkipped', 'liveConversationSkipped',
-              'graxpertLiveSkipped', 'bridgeStandInSkipped', 'liveWriteupSkipped', 'liveReplaySkipped'):
+              'graxpertLiveSkipped', 'bridgeStandInSkipped', 'liveWriteupSkipped', 'liveReplaySkipped',
+              'mlDenoiseSkipped'):
         if d.get(k) is not False: missing.append(k + '==false (PICOPILOT_REQUIRE_LIVE=1)')
 print('anthropic check: %s' % ('SKIPPED (no key)' if d.get('anthropicSkipped') else 'RAN against real API'))
 print('two-turn check: %s' % ('SKIPPED (no key)' if d.get('twoTurnSkipped') else 'RAN against real API'))
@@ -635,6 +643,8 @@ bd = d.get('bridgeDetail', {})
 print('GraXpert no-effect detection (stand-in): %s; digest 60 MP RGB float = %r ms; checks=%r' % (('SKIPPED: %s' % bd.get('standInSkipReason')) if d.get('bridgeStandInSkipped') is not False else 'RAN (lockWaitMs=%r)' % bd.get('lock', {}).get('waitedMs'), bd.get('digest60MP', {}).get('ms'), bd.get('checks')))
 rd = d.get('rereviewFixDetail', {})
 print('describe_process sizes (chars, cap %r): %r; list_processes chars=%r' % (rd.get('describeSizes', {}).get('cap'), rd.get('describeSizes', {}).get('top10'), rd.get('listProcesses', {}).get('chars')))
+fp = d.get('fileParamsDetail', {})
+print('file parameters: checks=%r; MLDenoise end-to-end: %s' % (d.get('fileParamsChecks'), ('SKIPPED: %s' % fp.get('mlSkipReason')) if d.get('mlDenoiseSkipped') is not False else 'RAN %r' % fp.get('ml')))
 if d.get('liveModelSwitch') is not None:
     print('live model switch: %r' % d.get('liveModelSwitch'))
 if missing:
