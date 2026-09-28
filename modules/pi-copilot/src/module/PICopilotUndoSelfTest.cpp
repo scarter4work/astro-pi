@@ -6,6 +6,7 @@
 #include "AgentTools.h"
 #include "AnthropicClient.h"
 #include "EvalGuard.h"
+#include "HistoryStepTool.h"
 #include "JourneyStore.h"
 #include "JourneyTools.h"
 #include "JourneyTracker.h"
@@ -30,6 +31,7 @@
 #include <cstdint>
 #include <cstdlib>
 #include <cstdio>
+#include <functional>
 #include <map>
 #include <memory>
 #include <set>
@@ -313,7 +315,8 @@ bool RunUndoSelfTest( nlohmann::json& out )
       try
       {
          auto run = [&]( AgentMode mode, const IsoString& turn, const nlohmann::json& in, int* confirmCalls = nullptr,
-                         bool approve = true, std::string* dialog = nullptr, std::set<std::string>* inspected = nullptr )
+                         bool approve = true, std::string* dialog = nullptr, std::set<std::string>* inspected = nullptr,
+                         std::function<void()> whileDialogUp = std::function<void()>() )
          {
             ToolContext ctx;
             ctx.mode = mode;
@@ -323,6 +326,7 @@ bool RunUndoSelfTest( nlohmann::json& out )
             ctx.confirmHistory = [=]( const String& html ) {
                if ( confirmCalls != nullptr ) ++*confirmCalls;
                if ( dialog != nullptr ) *dialog = U8( html );
+               if ( whileDialogUp ) whileDialogUp();   // what the user / a timer does while the modal is up
                return approve;
             };
             return ExecuteTool( ToolCall{ "toolu_ju", "history_step", in }, ctx );
@@ -348,7 +352,9 @@ bool RunUndoSelfTest( nlohmann::json& out )
             const String pc = BuildSystemPrompt( AgentMode::Copilot ), pg = BuildSystemPrompt( AgentMode::Guided ),
                          pa = BuildSystemPrompt( AgentMode::Advisor );
             ok["prompt"] = pc.Contains( "history_step {" ) && pg.Contains( "history_step {" ) && !pa.Contains( "history_step" )
-                        && pc.Contains( "undo the last" );
+                        && pc.Contains( "undo the last" )
+                        && pg.Contains( "each history_step call first shows one listing the History steps" )   // review minor 6
+                        && !pg.Contains( "(history_step:" );
          }
 
          // (b) Advisor refuses; nothing moves.
@@ -396,7 +402,10 @@ bool RunUndoSelfTest( nlohmann::json& out )
             const ToolOutcome no = run( AgentMode::Guided, unit, { { "direction", "undo" }, { "count", 2 } }, &calls, false, &html );
             d["guidedNo"] = { { "text", Text0( no ) }, { "calls", calls }, { "html", html } };
             ok["guidedDecline"] = no.isError && Has( Text0( no ), "declined" ) && calls == 1 && pos( unit ) == start
-                               && Has( html, "PixelMath" ) && Has( html, "Undo" ) && Has( html, unit );
+                               && Has( html, "Undo 2 History steps on" ) && Has( html, unit )
+                               && Has( html, "#4 PixelMath" ) && Has( html, "#3 PixelMath" ) && Has( html, " UTC: " )
+                               && Has( html, ": $T+0.1<br/>" ) && Has( html, ": $T*1.5<br/>" )
+                               && html.find( "#4 PixelMath" ) < html.find( "#3 PixelMath" );   // newest first
          }
 
          // (e) Copilot: undo 2 -> position 1, pixels at step 1, the result names both stepped entries.
@@ -411,6 +420,8 @@ bool RunUndoSelfTest( nlohmann::json& out )
             if ( stepsOk )
                for ( const nlohmann::json& s : r["steps"] )
                   stepsOk = stepsOk && s.value( "process", std::string() ) == "PixelMath" && s.value( "step", 0 ) > 0;
+            stepsOk = stepsOk && r["steps"][0].value( "hint", std::string() ) == "$T+0.1"
+                              && r["steps"][1].value( "hint", std::string() ) == "$T*1.5";
             ok["undo"] = !o.isError && o.mutated && stepsOk && r.value( "historyIndex", -1 ) == 1
                       && r.value( "undoAvailable", -1 ) == 1 && r.value( "redoAvailable", -1 ) == 2
                       && pos( unit ) == nlohmann::json::array( { 1, 3 } ) && std::fabs( UPixel( unit ) - 0.2 ) < 1e-6
@@ -424,11 +435,21 @@ bool RunUndoSelfTest( nlohmann::json& out )
             const nlohmann::json p1 = pos( unit );
             const double px1 = UPixel( unit );
             int calls = 0;
-            const ToolOutcome o2 = run( AgentMode::Guided, unit, { { "direction", "redo" }, { "count", 1 } }, &calls, true );
+            const ToolOutcome o2 = run( AgentMode::Guided, unit, { { "direction", "redo" }, { "count", 1 } }, &calls, true, nullptr,
+                                        nullptr, []() { UPump( 500 ); } );   // the user reads the dialog for 0.5 s
+            double runS = -1, dialogS = -1;
+            {
+               const std::string l = U8( o2.logLine );
+               const size_t k = l.find( "ok (" );
+               if ( k != std::string::npos )
+                  std::sscanf( l.c_str() + k, "ok (%lf s, plus %lf s in the confirmation dialog)", &runS, &dialogS );
+            }
             d["redo"] = { { "t1", Text0( o1 ).substr( 0, 600 ) }, { "p1", p1 }, { "px1", px1 }, { "t2", Text0( o2 ).substr( 0, 600 ) },
-                          { "calls", calls }, { "p2", pos( unit ) }, { "px2", UPixel( unit ) } };
+                          { "calls", calls }, { "p2", pos( unit ) }, { "px2", UPixel( unit ) }, { "log2", U8( o2.logLine ) },
+                          { "runS", runS }, { "dialogS", dialogS } };
             ok["redo"] = !o1.isError && p1 == nlohmann::json::array( { 2, 3 } ) && std::fabs( px1 - 0.3 ) < 1e-6
-                      && !o2.isError && calls == 1 && pos( unit ) == start && std::fabs( UPixel( unit ) - 0.4 ) < 1e-6;
+                      && !o2.isError && calls == 1 && pos( unit ) == start && std::fabs( UPixel( unit ) - 0.4 ) < 1e-6
+                      && dialogS >= 0.45 && runS >= 0 && runS < 0.45;
          }
 
          // (g) Targeting: another view needs get_view_context first (same rule as apply_process).
@@ -479,6 +500,57 @@ bool RunUndoSelfTest( nlohmann::json& out )
             ok["preview"] = !o.isError && pos( pv ) == nlohmann::json::array( { 0, 1 } ) && pos( unit ) == start
                          && r.value( "scope", std::string() ) == "preview";
          }
+
+         auto setIndex = []( const char* id, int i ) {
+            ThePICopilotModule->EvaluateScript( String( "(function(){ View.viewById( \"" ) + id + "\" ).historyIndex = "
+                                                + String( i ) + "; return 0; })()", "JavaScript" );
+         };
+
+         // (k) Review minor 1a: the position is VERIFIED after the write, never assumed. Seam: an offset on the
+         //     written position. Out of range -> PixInsight ignores it silently (measured) -> loud, nothing moved;
+         //     a different valid position -> loud, and mutated (the image DID change).
+         {
+            SetHistoryStepIndexOffsetForSelfTest( 100 );
+            const ToolOutcome ign = run( AgentMode::Copilot, unit, { { "direction", "undo" } } );
+            const nlohmann::json pIgn = pos( unit );
+            SetHistoryStepIndexOffsetForSelfTest( -1 );
+            const ToolOutcome off = run( AgentMode::Copilot, unit, { { "direction", "undo" } } );
+            SetHistoryStepIndexOffsetForSelfTest( 0 );
+            const nlohmann::json pOff = pos( unit );
+            setIndex( unit, 3 );
+            d["verify"] = { { "ignored", Text0( ign ) }, { "ignoredMutated", ign.mutated }, { "pIgn", pIgn },
+                            { "offset", Text0( off ) }, { "offsetMutated", off.mutated }, { "pOff", pOff } };
+            ok["verify"] = ign.isError && !ign.mutated && Has( Text0( ign ), "did not move the History" ) && pIgn == start
+                        && off.isError && off.mutated && Has( Text0( off ), "did not move the History" )
+                        && pOff == nlohmann::json::array( { 1, 3 } ) && pos( unit ) == start;
+         }
+
+         // (l) Review minors 1b + 2: everything is re-checked after the Guided dialog (it pumps events).
+         {
+            // The position moved while the dialog was up.
+            const ToolOutcome moved = run( AgentMode::Guided, unit, { { "direction", "undo" } }, nullptr, true, nullptr, nullptr,
+                                           [&]() { setIndex( unit, 2 ); } );
+            const nlohmann::json pMoved = pos( unit );
+            setIndex( unit, 3 );
+            // Same shape, different entry (undo + a different new step): only the identity tells. The seam edits the
+            // re-read snapshot's identity (a new History step cannot be made in-process: harness fact).
+            SetHistoryStepRereadHookForSelfTest( []( HistorySnapshot& s ) {
+               if ( !s.steps.empty() ) s.steps.front().identity += "#changed";
+            } );
+            const ToolOutcome ident = run( AgentMode::Guided, unit, { { "direction", "undo" } } );
+            SetHistoryStepRereadHookForSelfTest( std::function<void( HistorySnapshot& )>() );
+            const nlohmann::json pIdent = pos( unit );
+            // The image was closed while the dialog was up (pcUndoOther sits at 0/1 after (g): redo is possible).
+            const ToolOutcome closed = run( AgentMode::Guided, "pcUndoOther", { { "direction", "redo" } }, nullptr, true, nullptr,
+                                            nullptr, []() { UForceClose( "pcUndoOther" ); } );
+            d["postDialog"] = { { "moved", Text0( moved ) }, { "pMoved", pMoved }, { "identity", Text0( ident ) },
+                                { "pIdent", pIdent }, { "closed", Text0( closed ) } };
+            ok["postDialog"] = moved.isError && Has( Text0( moved ), "changed while the confirmation dialog was up" )
+                            && pMoved == nlohmann::json::array( { 2, 3 } )   // the stand-in's move, not the tool's
+                            && ident.isError && Has( Text0( ident ), "changed while the confirmation dialog was up" )
+                            && pIdent == start
+                            && closed.isError && Has( Text0( closed ), "no longer open" );
+         }
       }
       catch ( const pcl::Exception& x ) { error = x.Message(); }
       catch ( const std::exception& x ) { error = String( x.what() ); }
@@ -503,7 +575,7 @@ bool RunUndoSelfTest( nlohmann::json& out )
          all = all && kv.second;
       }
       for ( const char* k : { "fixture", "schema", "prompt", "advisor", "validation", "guidedDecline", "undo", "redo",
-                              "target", "busy", "preview" } )
+                              "target", "busy", "preview", "verify", "postDialog" } )
          all = all && ok.count( k ) > 0;
       out["historyStepChecks"] = checks;
       out["historyStepDetail"] = d;
