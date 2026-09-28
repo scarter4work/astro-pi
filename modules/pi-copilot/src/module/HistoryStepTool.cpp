@@ -5,6 +5,7 @@
 #include "AnthropicClient.h"   // JpegImageBlock
 #include "EvalGuard.h"
 #include "HistoryReader.h"
+#include "JourneyTools.h"     // ModelTextWithoutDirectories
 #include "PjsrRunner.h"
 #include "ToolHelpers.h"       // Fail, IsBusy, StringField, TextBlock
 #include "Utf8.h"
@@ -16,6 +17,7 @@
 
 #include <chrono>
 #include <cstdint>
+#include <functional>
 #include <limits>
 #include <string>
 
@@ -99,12 +101,64 @@ String ParseCount( const nlohmann::json& in, int64& count )
    return String();
 }
 
-// The History entries a step would pass: "#<step> <process>" per entry, one per line.
+// Self-test seams (HistoryStepTool.h): 0 / empty in production.
+int g_indexOffsetForSelfTest = 0;
+std::function<void( HistorySnapshot& )> g_rereadHookForSelfTest;
+
+// A short, path-free hint that tells same-process steps apart: PixelMath's expression, else the first
+// two scalar parameters ("k=v"), cut to 60 characters. Paths are reduced to file names (GC privacy).
+std::string StepHint( const HistoryStep& h )
+{
+   auto scalar = []( const nlohmann::json& v ) -> std::string {
+      if ( v.is_string() ) return v.get<std::string>();
+      if ( v.is_boolean() ) return v.get<bool>() ? "true" : "false";
+      if ( v.is_number() ) return v.dump();
+      return std::string();
+   };
+   std::string hint;
+   if ( h.parameters.is_object() && h.parameters.contains( "expression" ) && h.parameters["expression"].is_string() )
+      hint = h.parameters["expression"].get<std::string>();
+   else if ( h.parameters.is_object() )
+   {
+      int n = 0;
+      for ( auto it = h.parameters.begin(); it != h.parameters.end() && n < 2; ++it )
+      {
+         const std::string v = scalar( it.value() );
+         if ( v.empty() )
+            continue;
+         hint += (n++ > 0 ? ", " : "") + it.key() + "=" + v;
+      }
+   }
+   String t = ModelTextWithoutDirectories( FromU8( hint ) );
+   for ( size_type i = 0; i < t.Length(); ++i )
+      if ( t[i] == '\n' || t[i] == '\r' || t[i] == '\t' )
+         t[i] = ' ';
+   if ( t.Length() > 60 )
+      t = t.Left( 57 ) + "...";
+   return U8( t );
+}
+
+// "HH:MM:SS UTC" of a step's <time start> ("" when absent).
+std::string StepTime( const HistoryStep& h )
+{
+   const size_t tpos = h.started.find( 'T' );
+   return (tpos == std::string::npos || h.started.size() < tpos + 9) ? std::string() : h.started.substr( tpos + 1, 8 ) + " UTC";
+}
+
+// The History entries a step would pass, one per line: "#<step> <process>, <time>: <hint>".
 String StepsText( const std::vector<HistoryStep>& steps )
 {
    String s;
    for ( const HistoryStep& h : steps )
-      s += String().Format( "#%d ", h.combinedIndex + 1 ) + FromU8( h.processId ) + "\n";
+   {
+      std::string line = "#" + std::to_string( h.combinedIndex + 1 ) + " " + h.processId;
+      const std::string t = StepTime( h ), hint = StepHint( h );
+      if ( !t.empty() )
+         line += ", " + t;
+      if ( !hint.empty() )
+         line += ": " + hint;
+      s += FromU8( line ) + "\n";
+   }
    return s;
 }
 
@@ -142,9 +196,10 @@ nlohmann::json HistoryStepToolDefinition()
    return t;
 }
 
-String HistoryStepDialogHtml( bool undo, const String& viewId, const String& stepsText )
+String HistoryStepDialogHtml( bool undo, int count, const String& viewId, const String& stepsText )
 {
-   return "<p>" + String( undo ? "Undo" : "Redo" ) + " these History steps on <b>" + EscapeHtml( viewId ) + "</b>?</p>"
+   return "<p>" + String( undo ? "Undo " : "Redo " ) + String( count ) + (count == 1 ? " History step" : " History steps")
+          + " on <b>" + EscapeHtml( viewId ) + "</b>?</p>"
           + "<p>" + EscapeHtml( stepsText ) + "</p>"
           + "<p>" + String( undo ? "Undone steps can be redone (Edit > Redo) until a new process runs on the image."
                                  : "Redone steps can be undone again (Edit > Undo)." ) + "</p>";
@@ -153,6 +208,7 @@ String HistoryStepDialogHtml( bool undo, const String& viewId, const String& ste
 ToolOutcome ExecuteHistoryStepTool( const nlohmann::json& in, const ToolContext& ctx )
 {
    const hclock::time_point t0 = hclock::now();
+   double dialogS = 0;   // time in the Guided dialog, reported apart from the run (review minor 5)
    const std::string direction = StringField( in, "direction" );
    const bool undo = direction == "undo";
    String what = "history_step " + FromU8( direction );
@@ -243,6 +299,7 @@ ToolOutcome ExecuteHistoryStepTool( const nlohmann::json& in, const ToolContext&
                          + (range.busy ? String( "another script is running" ) : range.ok ? String( "the History changed while it was read" ) : range.error)
                          + "; nothing was changed" );
    range.steps.resize( size_t( n ) );
+   const int readFrom = counts.initialLength + lo;
    // Undo passes the entries newest first (the order they are taken back).
    std::vector<HistoryStep> passed;
    if ( undo )
@@ -255,7 +312,10 @@ ToolOutcome ExecuteHistoryStepTool( const nlohmann::json& in, const ToolContext&
    {
       if ( !ctx.confirmHistory )
          return Fail( what, "internal error: no confirmation callback" );
-      if ( !ctx.confirmHistory( HistoryStepDialogHtml( undo, String( targetId ), StepsText( passed ) ) ) )
+      const hclock::time_point d0 = hclock::now();
+      const bool approved = ctx.confirmHistory( HistoryStepDialogHtml( undo, n, String( targetId ), StepsText( passed ) ) );
+      dialogS = std::chrono::duration<double>( hclock::now() - d0 ).count();
+      if ( !approved )
       {
          ToolOutcome o;
          o.isError = true;
@@ -272,8 +332,16 @@ ToolOutcome ExecuteHistoryStepTool( const nlohmann::json& in, const ToolContext&
       const String e = busyError( again );
       if ( !e.IsEmpty() )
          return Fail( what, e );
-      const HistorySnapshot now = ReadViewHistory( targetId, std::numeric_limits<int>::max()/2 );
-      if ( !now.ok || now.historyIndex != counts.historyIndex || now.length != counts.length )
+      // Same position AND the same entries (review minor 2): an undo + a different new step while the
+      // dialog was up keeps the shape but changes the identity (process, start time, parameters digest).
+      HistorySnapshot now = ReadViewHistory( targetId, readFrom );
+      if ( g_rereadHookForSelfTest )
+         g_rereadHookForSelfTest( now );
+      bool same = now.ok && now.historyIndex == counts.historyIndex && now.length == counts.length
+               && int( now.steps.size() ) >= n;
+      for ( int i = 0; same && i < n; ++i )
+         same = now.steps[size_t( i )].identity == range.steps[size_t( i )].identity;
+      if ( !same )
          return Fail( what, "the History of " + String( targetId ) + " changed while the confirmation dialog was up; nothing was "
                             "changed. Check the image again before stepping" );
    }
@@ -281,7 +349,7 @@ ToolOutcome ExecuteHistoryStepTool( const nlohmann::json& in, const ToolContext&
    nlohmann::json set;
    try
    {
-      set = SetHistoryIndex( targetId, newIndex );
+      set = SetHistoryIndex( targetId, newIndex + g_indexOffsetForSelfTest );
    }
    catch ( const pcl::Exception& x )
    {
@@ -304,7 +372,13 @@ ToolOutcome ExecuteHistoryStepTool( const nlohmann::json& in, const ToolContext&
 
    nlohmann::json stepped = nlohmann::json::array();
    for ( const HistoryStep& h : passed )
-      stepped.push_back( { { "step", h.combinedIndex + 1 }, { "process", h.processId } } );
+   {
+      nlohmann::json e = { { "step", h.combinedIndex + 1 }, { "process", h.processId } };
+      const std::string hint = StepHint( h );
+      if ( !hint.empty() )
+         e["hint"] = hint;
+      stepped.push_back( e );
+   }
    nlohmann::json summary = {
       { "result", "ok" },
       { "view", std::string( targetId.c_str() ) },
@@ -344,9 +418,26 @@ ToolOutcome ExecuteHistoryStepTool( const nlohmann::json& in, const ToolContext&
    o.content.push_back( TextBlock( summary.dump() ) );
    if ( p.ok )
       o.content.push_back( JpegImageBlock( p.base64 ) );
-   const double s = std::chrono::duration<double>( hclock::now() - t0 ).count();
-   o.logLine = Line( true, what, String().Format( "ok (%.1f s)", s ) );
+   const double s = std::chrono::duration<double>( hclock::now() - t0 ).count() - dialogS;
+   o.logLine = Line( true, what, ctx.mode == AgentMode::Guided
+                                    ? String().Format( "ok (%.1f s, plus %.1f s in the confirmation dialog)", s, dialogS )
+                                    : String().Format( "ok (%.1f s)", s ) );
    return o;
+}
+
+} // namespace pcl
+
+namespace pcl
+{
+
+void SetHistoryStepIndexOffsetForSelfTest( int offset )
+{
+   g_indexOffsetForSelfTest = offset;
+}
+
+void SetHistoryStepRereadHookForSelfTest( std::function<void( HistorySnapshot& )> hook )
+{
+   g_rereadHookForSelfTest = std::move( hook );
 }
 
 } // namespace pcl

@@ -5,6 +5,9 @@
 #define PICopilot_HistoryStepTool_h
 
 #include "AgentTools.h"
+#include "HistoryReader.h"
+
+#include <functional>
 
 #include <pcl/String.h>
 
@@ -52,9 +55,19 @@ nlohmann::json HistoryStepToolDefinition();
 // Never throws; every failure is isError with a precise, model-correctable message.
 ToolOutcome ExecuteHistoryStepTool( const nlohmann::json& input, const ToolContext& ctx );
 
-// The Guided confirmation dialog's text (HTML): "Undo 2 steps on <view>?",
-// then the (escaped) list of History entries that would be stepped.
-String HistoryStepDialogHtml( bool undo, const String& viewId, const String& stepsText );
+// The Guided confirmation dialog's text (HTML): "Undo 2 History steps on
+// <view>?" ("1 History step" for one; "Redo ..." for redo), then the (escaped)
+// entries that would be stepped, one per line: "#<step> <process>, <HH:MM:SS>
+// UTC: <parameter hint>" (hint path-free, <= 60 chars), then what can be
+// taken back afterwards.
+String HistoryStepDialogHtml( bool undo, int count, const String& viewId, const String& stepsText );
+
+// Self-test seams (never set in production). The offset is added to the
+// position the tool writes (proves the loud "did not move" branch); the hook
+// edits the snapshot re-read after the Guided dialog (proves the identity
+// re-check). Root thread only.
+void SetHistoryStepIndexOffsetForSelfTest( int offset );
+void SetHistoryStepRereadHookForSelfTest( std::function<void( HistorySnapshot& )> hook );
 
 } // namespace pcl
 

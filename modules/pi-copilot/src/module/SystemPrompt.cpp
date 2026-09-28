@@ -49,7 +49,8 @@ const char* const kCopilotMode =
 
 const char* const kGuidedMode =
    "MODE: Guided. Each apply_process or run_global_process call first shows the user a confirmation dialog listing "
-   "the process and its parameters (history_step: the History steps it would undo or redo). If a tool_result says the user declined, do not repeat that call; ask what "
+   "the process and its parameters, and each history_step call first shows one listing the History steps it would "
+   "undo or redo. If a tool_result says the user declined, do not repeat that call; ask what "
    "they would like instead. Approved apply_process runs are recorded in the view's History and can be undone.\n\n";
 
 const char* const kAdvisorMode =
