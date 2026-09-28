@@ -107,7 +107,7 @@ A "confirm" asks you in every mode, Copilot included, and the dialog defaults to
 | FilterManager | always ask you first | it reads and writes the filters database file |
 | Gaia | always ask you first | it can write catalog search results to files, and its configure commands change the catalog database settings |
 | ImageCalibration | always ask you first | it writes calibrated copies of the input frames to its output directory and can overwrite existing files |
-| MARSGen | always ask you first | it generates MARS gradient-model database files on disk |
+| MARSGen | always ask you first | it generates MARS gradient-model database files on disk (PixInsight builds before 1.9.5 build 1706, which removed MARSGen) |
 | LocalNormalization | always ask you first | it writes normalization data files (.xnml) to disk |
 | NSGXnml | always ask you first | it writes normalization data files (.xnml) to its output directory |
 | NoiseXTerminator | always ask you first | its compiled plug-in can crash PixInsight (SIGABRT) on NVIDIA Blackwell GPUs such as the RTX 50 series, losing unsaved work; Script > RC-Astro runs the same tool through its command-line version instead |

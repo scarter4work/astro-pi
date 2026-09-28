@@ -154,6 +154,36 @@ def parse_overrides(spec):
     return out
 
 
+def check_display(pid, timeout_s):
+    """Display isolation (PI 1.9.5 build 1706). That build's PixInsight.sh no
+    longer exports QT_QPA_PLATFORM=xcb, so with WAYLAND_DISPLAY inherited from
+    a Wayland desktop Qt picks its wayland plugin and the "headless" PI opens
+    on the user's REAL desktop, not on xvfb-run's display (measured: maps held
+    libqwayland-generic.so; the panel came up at the desktop's 1.5 scale).
+    The PI process must carry QT_QPA_PLATFORM=xcb and no WAYLAND_DISPLAY, and
+    map the xcb platform plugin, never a wayland one.
+    Returns (ok, detail)."""
+    env = read_environ(pid)
+    if env.get("WAYLAND_DISPLAY") or env.get("QT_QPA_PLATFORM") != "xcb":
+        return False, ["WAYLAND_DISPLAY=%r QT_QPA_PLATFORM=%r in the PI process" %
+                       (env.get("WAYLAND_DISPLAY"), env.get("QT_QPA_PLATFORM"))]
+    deadline = time.time() + timeout_s
+    while time.time() < deadline:
+        try:
+            with open("/proc/%s/maps" % pid) as f:
+                libs = {os.path.basename(l.split(None, 5)[5]) for l in f.read().splitlines()
+                        if len(l.split(None, 5)) == 6}
+        except OSError:
+            return True, []   # process gone; the run's own exit status reports that
+        wayland = sorted(l for l in libs if l.startswith("libqwayland"))
+        if wayland:
+            return False, ["Qt wayland platform plugin mapped: %s" % wayland]
+        if "libqxcb.so" in libs:
+            return True, []
+        time.sleep(0.1)
+    return False, ["no Qt platform plugin (libqxcb.so) mapped within %ss" % timeout_s]
+
+
 def read_environ(pid):
     try:
         with open("/proc/%s/environ" % pid, "rb") as f:
@@ -306,6 +336,10 @@ def main():
         if env.get("XDG_DATA_HOME") != args.xdg_data_home:
             return fail_module(args, pid, "isolation-missing", args.xdg_data_home,
                                ["XDG_DATA_HOME=%r in the PI process" % env.get("XDG_DATA_HOME")])
+
+    ok, detail = check_display(pid, args.module_load_timeout)
+    if not ok:
+        return fail_module(args, pid, "display-isolation", "QT_QPA_PLATFORM=xcb on xvfb-run's display", detail)
 
     ok, reason, expected_real, foreign = check_module_load(pid, argv, args.module_so, args.module_load_timeout)
     if not ok:

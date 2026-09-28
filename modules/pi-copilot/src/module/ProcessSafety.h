@@ -92,7 +92,10 @@ nlohmann::json UnclassifiedSideEffectCandidates();
 // tables/columns that do not exist (canonical ids), pinnedParameters entries
 // that are not canonical string parameters with a supported source/kind, and
 // parameterValues entries that are not writable canonical string parameters
-// with a well-formed rule and a default the rule accepts.
+// with a well-formed rule and a default the rule accepts. A process listed in
+// retiredProcesses that this PixInsight does not have is skipped (its rules
+// stay for older builds); a retiredProcesses entry needs a reason and a rule
+// that names it.
 nlohmann::json UnknownPolicyProcessIds();
 
 // ---- Pinned parameters (policy "pinnedParameters") --------------------------

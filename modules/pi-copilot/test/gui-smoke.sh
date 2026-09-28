@@ -41,6 +41,7 @@ TMPDIR="$(mktemp -d "$PRIV/gui.XXXXXX")"; export TMPDIR
 SLOT_SETTINGS="$(printf '%s/core-%03d-pxi.settings' "$HOME/.PixInsight" "$SLOT")"
 rm -f "$SLOT_SETTINGS"
 picopilot_isolate_data "$TMPDIR/xdg" || exit 1
+picopilot_isolate_display
 JOURNEYS_BEFORE="$(picopilot_journeys_fingerprint)"
 export PICOPILOT_GUI_DIR="$TMPDIR/gui"; mkdir -m 700 "$PICOPILOT_GUI_DIR"
 export PICOPILOT_SELFTEST_PHASE="$TMPDIR/phase.json"
