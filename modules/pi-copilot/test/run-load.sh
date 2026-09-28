@@ -6,7 +6,9 @@ ROOT="$(cd "$HERE/.." && pwd)"
 PI="$PICOPILOT_PI"
 KEYS=/home/scarter4work/projects/keys/scarter4work_keys.xssk
 PASS="$(cat /tmp/.pi_codesign_pass)"
-SO="$ROOT/build/src/module/PICopilot-pxm.so"
+# PICOPILOT_SO: test another build of the module, e.g. the portable release
+# build (build-portable/, see tools/build-env/) instead of the dev build.
+SO="${PICOPILOT_SO:-$ROOT/build/src/module/PICopilot-pxm.so}"
 
 # -n (no slot number) claims the first free instance slot -- slot 1 when the
 # GUI isn't running -- whose settings file IS the user's real
@@ -47,6 +49,7 @@ RUN_DIR="$(mktemp -d "${TMPDIR:-/tmp}/picopilot-load.XXXXXX")"
 chmod 700 "$RUN_DIR"
 trap 'rm -f "$SLOT_SETTINGS"; rm -rf "$RUN_DIR"' EXIT
 picopilot_isolate_data "$RUN_DIR/xdg" || exit 1
+picopilot_isolate_display
 JOURNEYS_BEFORE="$(picopilot_journeys_fingerprint)"
 
 [ -f "$SO" ] || { echo "FAIL: module not built at $SO"; exit 1; }

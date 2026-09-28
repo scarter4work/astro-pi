@@ -110,3 +110,34 @@ TEST_CASE("ChannelDecomposer: unknown filter throws", "[decomposer]") {
     ChannelDecomposer d(db);
     REQUIRE_THROWS_AS(d.build_q("ASI585MC", "DoesNotExist"), UnknownFilterError);
 }
+
+// ── Production path: compiled-in DB + raw FITS INSTRUME + classifier filter ──
+// Reproduces "Phase B Q-solve: Camera not in QE DB: ZWO ASI585MC Air".
+TEST_CASE("ChannelDecomposer: embedded DB builds Q for real INSTRUME 'ZWO ASI585MC Air' + HaO3/S2O3",
+          "[decomposer][embedded]") {
+    QEDatabase db;
+    REQUIRE(db.load_embedded().ok);
+    ChannelDecomposer d(db);
+    Eigen::MatrixXd Q;
+    REQUIRE_NOTHROW(Q = d.build_q("ZWO ASI585MC Air", "HaO3"));
+    REQUIRE(Q.rows() == 3);
+    REQUIRE(Q.cols() == 2);
+    // asi585mc (IMX585) R-photosite QE at Ha, per share/qe_database.json.
+    REQUIRE(Q(0, 0) == Catch::Approx(0.73).margin(0.01));
+    REQUIRE_NOTHROW(d.build_q("ZWO ASI585MC Air", "S2O3"));
+}
+
+TEST_CASE("ChannelDecomposer: unknown camera error names the raw INSTRUME and the normalized key tried",
+          "[decomposer][embedded]") {
+    QEDatabase db;
+    REQUIRE(db.load_embedded().ok);
+    ChannelDecomposer d(db);
+    try {
+        d.build_q("ZWO ASI9999MC Pro", "HaO3");
+        FAIL("expected UnknownCameraError");
+    } catch (const UnknownCameraError& e) {
+        const std::string msg = e.what();
+        REQUIRE(msg.find("ZWO ASI9999MC Pro") != std::string::npos);
+        REQUIRE(msg.find("zwoasi9999mcpro") != std::string::npos);
+    }
+}

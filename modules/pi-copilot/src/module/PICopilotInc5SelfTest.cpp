@@ -2064,6 +2064,61 @@ bool RunInc5SelfTest( nlohmann::json& out )
          coverageOk = unclassified.is_array() && unclassified.empty();
          idsOk = unknown.is_array() && unknown.empty();
 
+         // retiredProcesses (PI 1.9.5 build 1706 removed MARSGen): a rule for a
+         // process that PixInsight no longer ships is KEPT (older builds still
+         // have it), and only an id listed in retiredProcesses may be absent.
+         // An unlisted absent id (a typo) is still reported, and a retired entry
+         // must carry a reason and be named by a rule.
+         {
+            const nlohmann::json& live = CompiledProcessSafety();
+            const std::string ghost = "PCSelfTestRetiredProcess";
+            nlohmann::json base = nlohmann::json::parse(
+               "{\"deny\":{},\"confirmAlways\":{},\"reviewedSafe\":{},\"fileTables\":{},\"confirmWhen\":{}}" );
+            base["confirmAlways"][ghost] = "self-test: a process this PixInsight does not have";
+            base["confirmWhen"][ghost] = { { { "parameter", "p" }, { "equals", true }, { "reason", "r" } } };
+            nlohmann::json listed = base;
+            listed["retiredProcesses"][ghost] = "self-test: removed from PixInsight";
+            nlohmann::json noReason = base;
+            noReason["retiredProcesses"][ghost] = "";
+            nlohmann::json orphan = base;
+            orphan["retiredProcesses"][ghost] = "self-test: removed from PixInsight";
+            orphan["retiredProcesses"]["PCSelfTestOrphan"] = "self-test: named by no rule";
+            nlohmann::json installed = base;
+            installed["confirmAlways"] = { { "PixelMath", "self-test" } };
+            installed["confirmWhen"] = nlohmann::json::object();
+            installed["retiredProcesses"]["PixelMath"] = "self-test: still installed here";
+            auto report = [&]( const nlohmann::json& p )
+            {
+               SetProcessSafetyPolicyForSelfTest( &p );
+               const nlohmann::json r = UnknownPolicyProcessIds();
+               SetProcessSafetyPolicyForSelfTest( nullptr );
+               return r;
+            };
+            const nlohmann::json rBase = report( base ), rListed = report( listed ), rNoReason = report( noReason ),
+                                 rOrphan = report( orphan ), rInstalled = report( installed );
+            const std::string sBase = rBase.dump(), sNoReason = rNoReason.dump(), sOrphan = rOrphan.dump();
+            bool marsgenAbsent = false;
+            try { Process( IsoString( "MARSGen" ) ); } catch ( ... ) { marsgenAbsent = true; }
+            detail["retired"] = { { "unlisted", rBase }, { "listed", rListed }, { "noReason", rNoReason },
+                                  { "orphan", rOrphan }, { "installed", rInstalled },
+                                  { "marsgenAbsentHere", marsgenAbsent },
+                                  { "marsgenRuleKept", live.value( "confirmAlways", nlohmann::json::object() ).contains( "MARSGen" ) },
+                                  { "marsgenListed", live.value( "retiredProcesses", nlohmann::json::object() ).contains( "MARSGen" ) } };
+            const bool retiredOk =
+                  sBase.find( "confirmAlways:" + ghost ) != std::string::npos        // a typo is still caught
+               && sBase.find( "confirmWhen:" + ghost + ".p" ) != std::string::npos
+               && rListed.is_array() && rListed.empty()                              // listed: accepted, whole entry
+               && sNoReason.find( "retiredProcesses:" + ghost ) != std::string::npos // needs a reason
+               && sOrphan.find( "retiredProcesses:PCSelfTestOrphan" ) != std::string::npos
+               && sOrphan.find( "retiredProcesses:" + ghost ) == std::string::npos
+               && rInstalled.is_array() && rInstalled.empty()                        // present on an older build: fine
+               // MARSGen's rule stays for the builds that still ship it; where it is gone it must be listed.
+               && live.value( "confirmAlways", nlohmann::json::object() ).contains( "MARSGen" )
+               && (!marsgenAbsent || live.value( "retiredProcesses", nlohmann::json::object() ).contains( "MARSGen" ));
+            detail["retired"]["ok"] = retiredOk;
+            idsOk = idsOk && retiredOk;
+         }
+
          const SafetyVerdict pc = CheckProcessSafety( "ProcessContainer", nlohmann::json::object(), nlohmann::json() );
          const SafetyVerdict iiPlain = CheckProcessSafety( "ImageIntegration",
             { { "generateDrizzleData", false }, { "closePreviousImages", false } }, nlohmann::json() );

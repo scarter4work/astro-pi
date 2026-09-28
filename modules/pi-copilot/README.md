@@ -107,7 +107,7 @@ A "confirm" asks you in every mode, Copilot included, and the dialog defaults to
 | FilterManager | always ask you first | it reads and writes the filters database file |
 | Gaia | always ask you first | it can write catalog search results to files, and its configure commands change the catalog database settings |
 | ImageCalibration | always ask you first | it writes calibrated copies of the input frames to its output directory and can overwrite existing files |
-| MARSGen | always ask you first | it generates MARS gradient-model database files on disk |
+| MARSGen | always ask you first | it generates MARS gradient-model database files on disk (PixInsight builds before 1.9.5 build 1706, which removed MARSGen) |
 | LocalNormalization | always ask you first | it writes normalization data files (.xnml) to disk |
 | NSGXnml | always ask you first | it writes normalization data files (.xnml) to its output directory |
 | NoiseXTerminator | always ask you first | its compiled plug-in can crash PixInsight (SIGABRT) on NVIDIA Blackwell GPUs such as the RTX 50 series, losing unsaved work; Script > RC-Astro runs the same tool through its command-line version instead |
@@ -168,6 +168,11 @@ A process in none of these lists (a newer PixInsight, a third-party module) whos
 - **Privacy.** File and folder paths are reduced to file names before anything reaches the model or an exported file.
 - **Statistics per observation.** Statistics are measured when PI Copilot observes a change. Steps made between two observations share one measurement (recorded on the last of them), because the pixels in between no longer exist.
 - **Self-test** additions: a notification/timer spike with the panel never opened, vendored SQLite, history parsing and undo/redo/branch diffs, statistics and noise on known noise, the store (schema, retention, redaction, damaged/locked files), master detection on a real WBPP keyword set, the tracker end to end (links by all three evidences, rename, reopen, busy views, 60 MP budget), `.xpsm` replaying pixel-identical, the recipe validator and lineage, export failures, the journey panel pieces, and gated live checks: a Haiku write-up and an Opus 5.5 replay landing within 0.03 of each recorded median.
+
+## 0.2.1.1 — Loads on older Linux distributions
+
+- 0.2.1.0 and earlier were built on the developer's Fedora 44 box and required glibc 2.43 / GLIBCXX 3.4.32, so they failed to load on anything older (Ubuntu 24.04, Debian 12, RHEL 9, …). Modules are now built in a Rocky Linux 9 container (`tools/build-env/`) and require at most GLIBC 2.34 / GLIBCXX 3.4.29 — the same floor as the PixInsight 1.9.5 core. `release.sh` refuses to ship a build that fails to `dlopen` on stock Ubuntu 22.04, Debian 12 or Rocky 9. The module now exports only the three PixInsight entry points (a linker version script keeps the vendored SQLite and everything else private).
+- **PixInsight 1.9.5 build 1706 (20260927):** that build removed `MARSGen`. Its always-ask rule is kept for older PixInsight builds and the process is listed under `retiredProcesses` in `process-safety.json`, so the policy self-check no longer flags it. The test harness now forces the hidden X11 display: build 1706's launcher stopped setting `QT_QPA_PLATFORM=xcb`, so under a Wayland session "headless" test runs had opened on the real desktop. Full self-test green on build 1706.
 
 ## 0.2.1.0 — Undo/redo, files in replays, process icons
 

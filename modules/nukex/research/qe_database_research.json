@@ -449,6 +449,10 @@
       "sensor": "IMX585",
       "type": "OSC",
       "bayer_pattern": "RGGB",
+      "aliases": [
+        "ZWO ASI585MC Air"
+      ],
+      "alias_evidence": "INSTRUME written by the ASI585MC Air's built-in ASIAIR (CREATOR='ZWO 585AIR'); verified in the user's own subs, e.g. astro_data/2026-09-27/NGC 7000 (BAYERPAT=RGGB, 3840x2160, XPIXSZ=2.9 um = IMX585). ZWO lists the ASI585MC Air as IMX585: https://www.zwoastro.com/product/asi585air/",
       "qe_inherits_from_sensor": false,
       "qe": {
         "486": { "R": 0.03, "Gr": 0.65, "Gb": 0.65, "B": 0.70 },
@@ -618,6 +622,10 @@
       "sensor": "IMX410",
       "type": "OSC",
       "bayer_pattern": "RGGB",
+      "aliases": [
+        "ZWO ASI2400MC Pro"
+      ],
+      "alias_evidence": "INSTRUME written by ZWO ASIAIR Plus; verified in the user's own subs (astro_data/10_3_2023/M1 and 400+ other dirs, BAYERPAT=RGGB).",
       "qe_inherits_from_sensor": true,
       "source_urls": [
         "https://www.zwoastro.com/product/asi2400mc-pro/"
@@ -774,6 +782,10 @@
       "sensor": "IMX183",
       "type": "OSC",
       "bayer_pattern": "RGGB",
+      "aliases": [
+        "ZWO ASI183MC"
+      ],
+      "alias_evidence": "INSTRUME in a real ASIAIR header (CREATOR='ZWO ASIAIR') quoted at https://discuss.pixls.us/t/ra-and-dec-in-zwo-asi-fits-header/25634",
       "qe_inherits_from_sensor": true,
       "source_urls": [
         "https://us.zwoastro.com/products/asi183mm-mc",
@@ -1062,6 +1074,10 @@
       "sensor": "IMX071",
       "type": "OSC",
       "bayer_pattern": "RGGB",
+      "aliases": [
+        "ZWO ASI071MC Pro"
+      ],
+      "alias_evidence": "INSTRUME written by ZWO ASIAIR / ASIAIR Plus; verified in the user's own subs (astro_data/6_3/M3, astro_data/9_20/Autorun/Light/Elephant, BAYERPAT=RGGB).",
       "qe_inherits_from_sensor": false,
       "qe": {
         "486": { "R": 0.05, "Gr": 0.55, "Gb": 0.55, "B": 0.65 },
@@ -1164,6 +1180,22 @@
     }
   },
   "filters": {
+    "HaO3": {
+      "type": "dual-narrowband",
+      "lines": [
+        { "name": "Ha",   "wavelength_nm": 656.3, "fwhm_nm": 7.0 },
+        { "name": "OIII", "wavelength_nm": 500.7, "fwhm_nm": 7.0 }
+      ],
+      "notes": "Generic Ha+OIII dual-narrowband CLASS, not a product. This is the key the NukeX Phase B Q-solve looks up: FilterClassifier maps FITS FILTER 'HaO3'/'HaOIII' (e.g. the user's Askar ColorMagic D1 slot label) to canonical 'HaO3'. Q depends only on the line wavelengths (656.3 / 500.7 nm, identical across every Ha+OIII product entry here); fwhm_nm is nominal and unused by Q. Line names MUST equal the engine's derived-slot names (Ha, OIII) that NukeXInstance reads -- do not rename to Halpha."
+    },
+    "S2O3": {
+      "type": "dual-narrowband",
+      "lines": [
+        { "name": "SII",  "wavelength_nm": 672.4, "fwhm_nm": 7.0 },
+        { "name": "OIII", "wavelength_nm": 500.7, "fwhm_nm": 7.0 }
+      ],
+      "notes": "Generic SII+OIII dual-narrowband CLASS, not a product. Canonical key for FITS FILTER 'S2O3'/'SIIOIII' (e.g. the user's Askar ColorMagic D2 slot label). Q depends only on the line wavelengths (672.4 / 500.7 nm, identical across every SII+OIII product entry here); fwhm_nm is nominal and unused by Q. Line names MUST equal the engine's derived-slot names (SII, OIII)."
+    },
     "Astrodon-Ha-3nm-50mm": {
       "manufacturer": "Astrodon (now CXB)",
       "type": "narrowband-single",

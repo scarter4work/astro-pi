@@ -71,8 +71,16 @@ small lookup table names the well-known narrowband astro lines
 the canonical value, and everything else (broadband RGB/LPR/
 luminance passbands, and near-but-not-quite narrowband lines that
 this script declines to guess the identity of) falls back to a
-"<wavelength>nm" label. `name` is documentation only -- it is not
-matched against anything elsewhere in the codebase.
+"<wavelength>nm" label.
+
+`name` is NOT documentation only: the Phase B Q-solve in
+src/lib/stacker/src/stacking_engine.cpp writes each solved line into the
+derived slot called `lines[j].name`, and NukeXInstance reads the slots
+"Ha", "OIII" and "SII". The filters the Q-solve actually looks up are the
+FilterClassifier's canonical classes ("HaO3", "S2O3"); those are carried
+in the research JSON with shipping-shape `lines` (passed through as-is)
+named to match the slots. Synthesised "Halpha" names on product entries
+would not be read by the module if a product entry were ever looked up.
 
 If a filter entry already uses the shipping `lines` key directly
 (e.g. in unit-test fixtures), it is passed through as-is.
@@ -217,15 +225,43 @@ def normalise_qe_block(qe, camera_name):
     return out
 
 
+def normalize_camera_key(name):
+    """Mirror of QEDatabase::normalize_camera_key (C++): lowercase ASCII
+    alphanumerics only. The C++ loader matches a frame's raw FITS INSTRUME
+    string against camera ids and `aliases` by this key, so collisions are
+    checked here with the identical rule."""
+    return "".join(c.lower() for c in name if c.isascii() and c.isalnum())
+
+
 def resolve_camera(name, cam, sensors):
     """Resolve qe_inherits_from_sensor by copying the sensor's qe block,
     then normalise photosite keys. Returns a dict containing only the
-    shipping-schema camera fields (sensor, type, bayer, confidence, qe).
+    shipping-schema camera fields (sensor, type, bayer, confidence,
+    aliases, qe).
+
+    `aliases` (optional) lists real FITS INSTRUME strings written by
+    capture software for this exact camera (e.g. "ZWO ASI585MC Air").
+    Each must be a verified real-world string for the SAME sensor and
+    colour/mono type -- the C++ loader matches them exactly (modulo
+    case/punctuation), never fuzzily.
     """
     out = {}
     for field in ("sensor", "type", "confidence"):
         if field in cam:
             out[field] = cam[field]
+
+    if "aliases" in cam:
+        aliases = cam["aliases"]
+        if not isinstance(aliases, list) or not all(isinstance(a, str) for a in aliases):
+            raise ValueError(
+                f"Camera '{name}' has 'aliases' that is not a list of strings: {aliases!r}"
+            )
+        for a in aliases:
+            if not normalize_camera_key(a):
+                raise ValueError(
+                    f"Camera '{name}' has alias {a!r} with no alphanumeric characters"
+                )
+        out["aliases"] = list(aliases)
 
     bayer = cam.get("bayer", cam.get("bayer_pattern"))
     if bayer:
@@ -309,6 +345,22 @@ def validate_filter(name, filt):
             )
 
 
+def validate_camera_keys(cameras):
+    """Every camera id and alias must normalise to a key claimed by exactly
+    one camera -- otherwise a frame's INSTRUME could resolve to the wrong
+    sensor's QE curve. Same rule the C++ loader enforces at load time."""
+    claimed = {}
+    for name, cam in cameras.items():
+        for raw in [name] + cam.get("aliases", []):
+            key = normalize_camera_key(raw)
+            owner = claimed.setdefault(key, name)
+            if owner != name:
+                raise ValueError(
+                    f"Camera name/alias {raw!r} (normalized {key!r}) is claimed by "
+                    f"both '{owner}' and '{name}' -- ambiguous camera identification"
+                )
+
+
 def transform(research):
     sensors = research.get("sensors", {})
 
@@ -317,6 +369,7 @@ def transform(research):
         resolved = resolve_camera(name, cam, sensors)
         validate_camera(name, resolved)
         out_cameras[name] = resolved
+    validate_camera_keys(out_cameras)
 
     out_filters = {}
     for name, filt in research.get("filters", {}).items():

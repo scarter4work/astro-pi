@@ -6,7 +6,7 @@
 
 namespace nukex {
 
-/// Rate-limited, thread-safe progress emitter for the OpenMP-parallelised
+/// Rate-limited, thread-safe progress emitter for the parallel_for_dynamic
 /// Ceres fit loop in GPUExecutor::execute_phase_b.
 ///
 /// Every worker thread calls tick() after completing a voxel.  Only thread 0
@@ -14,8 +14,8 @@ namespace nukex {
 /// observer's mutex off the hot path and log noise bounded (~one line per
 /// interval regardless of core count).  The rate limit is enforced with an
 /// atomic compare-exchange on the "last report time" so simultaneous
-/// thread-0 iterations (theoretically impossible under OpenMP static/dynamic
-/// scheduling, but defensive) emit at most once.
+/// worker-0 iterations (impossible under parallel_for_dynamic, where worker 0
+/// is a single thread, but defensive) emit at most once.
 ///
 /// Message shape: `    fitted K/N voxels (Ts)` where T is whole seconds
 /// since construction.

@@ -1,0 +1,21 @@
+{
+  "schema_version": 1,
+  "cameras": {
+    "asi585mc": {
+      "sensor": "IMX585",
+      "type": "OSC",
+      "bayer": "RGGB",
+      "aliases": ["ZWO ASI585 Pro"],
+      "qe": { "656": { "R": 0.73, "G": 0.32, "B": 0.03 } },
+      "confidence": "high"
+    },
+    "asi585mm": {
+      "sensor": "IMX585",
+      "type": "mono",
+      "aliases": ["zwo-asi585-pro"],
+      "qe": { "656": { "mono_pk": 0.75 } },
+      "confidence": "medium"
+    }
+  },
+  "filters": {}
+}

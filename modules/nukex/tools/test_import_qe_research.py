@@ -444,6 +444,74 @@ def test_validates_filter_required_fields(tmp_path):
     assert "NoPasses" in r.stderr
 
 
+def _cam(**extra):
+    base = {"sensor": "IMX585", "type": "OSC", "bayer_pattern": "RGGB",
+            "confidence": "high",
+            "qe": {"656": {"R": 0.73, "G": 0.32, "B": 0.03}}}
+    base.update(extra)
+    return base
+
+
+def test_camera_aliases_passed_through(tmp_path):
+    src = tmp_path / "research.json"
+    src.write_text(json.dumps({
+        "cameras": {"asi585mc": _cam(aliases=["ZWO ASI585MC Air"])},
+        "filters": {},
+    }))
+    dst = tmp_path / "shipped.json"
+    r = run_import(src, dst)
+    assert r.returncode == 0, r.stderr
+    out = json.loads(dst.read_text())
+    assert out["cameras"]["asi585mc"]["aliases"] == ["ZWO ASI585MC Air"]
+
+
+def test_rejects_alias_claimed_by_two_cameras(tmp_path):
+    # Same normalized key ("zwoasi585pro") on colour and mono: ambiguous.
+    src = tmp_path / "research.json"
+    src.write_text(json.dumps({
+        "cameras": {
+            "asi585mc": _cam(aliases=["ZWO ASI585 Pro"]),
+            "asi585mm": _cam(type="mono", aliases=["zwo-asi585-pro"]),
+        },
+        "filters": {},
+    }))
+    r = run_import(src, tmp_path / "shipped.json")
+    assert r.returncode != 0
+    assert "zwoasi585pro" in r.stderr
+
+
+def test_rejects_alias_equal_to_another_camera_id(tmp_path):
+    src = tmp_path / "research.json"
+    src.write_text(json.dumps({
+        "cameras": {
+            "asi585mc": _cam(aliases=["ASI585MM"]),
+            "asi585mm": _cam(type="mono"),
+        },
+        "filters": {},
+    }))
+    r = run_import(src, tmp_path / "shipped.json")
+    assert r.returncode != 0
+    assert "asi585mm" in r.stderr
+
+
+def test_rejects_non_string_or_empty_alias(tmp_path):
+    for bad in (["ok", 5], ["--"], "ZWO ASI585MC Air"):
+        src = tmp_path / "research.json"
+        src.write_text(json.dumps({
+            "cameras": {"asi585mc": _cam(aliases=bad)}, "filters": {},
+        }))
+        r = run_import(src, tmp_path / "shipped.json")
+        assert r.returncode != 0, bad
+        assert "asi585mc" in r.stderr
+
+
+def test_normalize_camera_key_matches_cpp_contract():
+    # Must stay identical to QEDatabase::normalize_camera_key (C++).
+    assert iqr.normalize_camera_key("ZWO ASI585MC Air") == "zwoasi585mcair"
+    assert iqr.normalize_camera_key("  asi-585_mc ") == "asi585mc"
+    assert iqr.normalize_camera_key("\u00c9A") == "a"   # non-ASCII dropped
+
+
 # --- Unit-level tests against the imported module (finer-grained) ---
 
 def test_normalise_qe_block_averages_gr_gb():
@@ -476,7 +544,7 @@ def test_real_research_file_transforms_cleanly(tmp_path):
     assert "_meta" not in out
     assert "sensors" not in out
     assert len(out["cameras"]) == 55
-    assert len(out["filters"]) == 87
+    assert len(out["filters"]) == 89   # 87 researched + generic HaO3/S2O3 classes
 
     allowed_site_keys = {"R", "G", "B", "mono_pk"}
     for name, cam in out["cameras"].items():
@@ -494,3 +562,13 @@ def test_real_research_file_transforms_cleanly(tmp_path):
         assert filt["lines"], f"{name} has no lines"
         for line in filt["lines"]:
             assert {"name", "wavelength_nm", "fwhm_nm"} <= set(line)
+
+
+@pytest.mark.skipif(not RESEARCH_JSON.exists(), reason="research JSON not present")
+def test_committed_shipping_db_is_the_import_of_research(tmp_path):
+    # share/qe_database.json is compiled into the module; it must be exactly
+    # what this importer produces from research/, so neither can drift.
+    dst = tmp_path / "qe_database.json"
+    r = run_import(RESEARCH_JSON, dst)
+    assert r.returncode == 0, r.stderr
+    assert dst.read_bytes() == (REPO / "share" / "qe_database.json").read_bytes()
