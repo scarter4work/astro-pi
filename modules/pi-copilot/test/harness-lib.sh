@@ -6,6 +6,7 @@
 #
 #   . "$HERE/harness-lib.sh"
 #   picopilot_isolate_data "$TMPDIR/xdg"              # private XDG_DATA_HOME, exported
+#   picopilot_isolate_display                         # Xvfb only, never the real (Wayland) desktop
 #   JOURNEYS_BEFORE="$(picopilot_journeys_fingerprint)"
 #   picopilot_seed_slot_modules "$SLOT" "$TMPDIR"      # slot settings WITHOUT the installed PICopilot
 #   picopilot_require_isolation || exit 1              # immediately before EVERY PixInsight launch
@@ -65,6 +66,18 @@ picopilot_isolate_data()
    export PICOPILOT_ISOLATED_XDG="$dir"
 }
 
+# Display isolation. PixInsight 1.9.5 build 1706 (20260927) dropped
+# `QT_QPA_PLATFORM=xcb` from bin/PixInsight.sh, so a PixInsight started from a
+# Wayland desktop session (WAYLAND_DISPLAY inherited) uses Qt's wayland plugin
+# and opens on the user's REAL desktop -- xvfb-run's DISPLAY is ignored
+# (measured: libqwayland-generic.so mapped, the panel at the desktop's 1.5
+# scale). Force the X11 plugin so every test PixInsight lands on its Xvfb.
+picopilot_isolate_display()
+{
+   unset WAYLAND_DISPLAY
+   export QT_QPA_PLATFORM=xcb
+}
+
 # Refuse to launch PixInsight unless data isolation is really in effect.
 # Call it immediately before EVERY PixInsight launch.
 picopilot_require_isolation()
@@ -82,6 +95,10 @@ picopilot_require_isolation()
    real_home="$(realpath -m "$PICOPILOT_REAL_DATA_HOME")"
    if [ "$(realpath -m "$xdg")" = "$real_home" ]; then
       echo "FAIL: refusing to launch PixInsight: XDG_DATA_HOME resolves to the real data home $real_home"; return 1
+   fi
+   # Display isolation (PI 1.9.5 build 1706): see picopilot_isolate_display.
+   if [ -n "${WAYLAND_DISPLAY:-}" ] || [ "${QT_QPA_PLATFORM:-}" != "xcb" ]; then
+      echo "FAIL: refusing to launch PixInsight: WAYLAND_DISPLAY='${WAYLAND_DISPLAY:-}' QT_QPA_PLATFORM='${QT_QPA_PLATFORM:-}' -- PixInsight would open on the real desktop instead of Xvfb (call picopilot_isolate_display)"; return 1
    fi
    lib="$xdg/PICopilot"
    if [ -e "$lib" ] || [ -L "$lib" ]; then
