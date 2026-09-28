@@ -10,6 +10,7 @@
 #include "PICopilotAgentSelfTest.h"
 #include "PICopilotInc5SelfTest.h"
 #include "PICopilotJourneySelfTest.h"
+#include "PICopilotUndoSelfTest.h"
 #include "JourneyTracker.h"
 #include "Utf8.h"
 #include "KeyStore.h"
@@ -26,6 +27,8 @@
 
 #include <chrono>
 #include <cstdlib>
+
+#include <dlfcn.h>
 
 namespace pcl
 {
@@ -371,10 +374,37 @@ bool RunSelfTest( String& jsonOut )
       j["journeyException"] = "unknown exception";
    }
 
+   // history_step (undo / redo). Same isolation as the blocks above.
+   bool undoOk = false;
+   try
+   {
+      nlohmann::json undo;
+      undoOk = RunUndoSelfTest( undo );
+      j.update( undo );
+   }
+   catch ( const std::exception& x )
+   {
+      j["undoException"] = x.what();
+   }
+   catch ( ... )
+   {
+      j["undoException"] = "unknown exception";
+   }
+
    SelfTestSectionMark( nullptr );
    j["sectionTimings"] = SelfTestTiming().done;
 
-   ok = ok && visionOk && agentOk && inc5Ok && journeyOk;
+   // Which PICopilot-pxm.so this code actually lives in (dladdr on this very
+   // function). test/run-selftest.sh requires it to be the -m= dev build: an
+   // installed release that PixInsight also loaded must never be the one that
+   // answered (harness-lib.sh, picopilot_seed_slot_modules).
+   {
+      Dl_info info = {};
+      j["modulePath"] = dladdr( reinterpret_cast<void*>( &RunSelfTest ), &info ) != 0 && info.dli_fname != nullptr
+                      ? std::string( info.dli_fname ) : std::string();
+   }
+
+   ok = ok && visionOk && agentOk && inc5Ok && journeyOk && undoOk;
    j["ok"] = ok;
    jsonOut = String::UTF8ToUTF16( j.dump().c_str() );
    return ok;

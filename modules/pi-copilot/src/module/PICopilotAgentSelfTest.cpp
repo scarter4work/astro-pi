@@ -1261,10 +1261,12 @@ bool RunAgentSelfTest( nlohmann::json& out )
             return n;
          };
          const std::vector<std::string> all = { "list_processes", "describe_process", "get_view_context", "apply_process",
-                                                 "run_global_process", "list_journeys", "get_journey", "compare_to_journey",
-                                                 "mark_journey_best", "start_journey", "replay_journey" };
+                                                 "run_global_process", "history_step", "list_journeys", "get_journey", "compare_to_journey",
+                                                 "mark_journey_best", "start_journey", "replay_journey",
+                                                 "list_process_icons", "get_process_icon" };
          const std::vector<std::string> readOnly = { "list_processes", "describe_process", "get_view_context",
-                                                      "list_journeys", "get_journey", "compare_to_journey", "mark_journey_best" };
+                                                      "list_journeys", "get_journey", "compare_to_journey", "mark_journey_best",
+                                                      "list_process_icons", "get_process_icon" };
          const nlohmann::json tc = ToolDefinitions( AgentMode::Copilot );
          const nlohmann::json tg = ToolDefinitions( AgentMode::Guided );
          const nlohmann::json ta = ToolDefinitions( AgentMode::Advisor );

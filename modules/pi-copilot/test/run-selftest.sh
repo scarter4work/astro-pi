@@ -2,7 +2,11 @@
 set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$HERE/.." && pwd)"
-PI=/opt/PixInsight/bin/PixInsight.sh
+# Shared isolation helpers: private XDG_DATA_HOME, the real-journey-library
+# check, and the slot-module seeding that keeps the INSTALLED PICopilot out of
+# the test process (see harness-lib.sh's header for the measured root cause).
+. "$HERE/harness-lib.sh"
+PI="$PICOPILOT_PI"
 KEYS=/home/scarter4work/projects/keys/scarter4work_keys.xssk
 PASS="$(cat /tmp/.pi_codesign_pass)"
 SO="$ROOT/build/src/module/PICopilot-pxm.so"
@@ -16,6 +20,10 @@ SO="$ROOT/build/src/module/PICopilot-pxm.so"
 # identifier"). Pin every headless test run to one fixed, otherwise-unused
 # slot instead, and wipe that slot's settings before AND after each run so
 # every run starts hermetic and never accumulates dev-only Modules state.
+# Before PI starts, the wiped slot is re-seeded with a Modules list that
+# excludes the installed PICopilot (picopilot_seed_slot_modules, harness-lib.sh):
+# a settings-less slot would otherwise install every bin/*-pxm.so, the
+# installed PICopilot included, next to the -m= dev build.
 PICOPILOT_TEST_SLOT="${PICOPILOT_TEST_SLOT:-90}"
 
 # Guard: PICOPILOT_TEST_SLOT is env-controlled (typo/override risk), and this
@@ -46,7 +54,7 @@ PICOPILOT_TEST_SLOT=$(( 10#$PICOPILOT_TEST_SLOT ))
 # files can never collide with another concurrent run's and never pile up in
 # bare /tmp (16,940 leaked swap files / 5.5 GB were found there from before
 # this existed -- see test/clean-stale-swap.sh). Every OTHER mktemp /
-# mktemp -d call below (HANDOFF_DIR, JOURNEY_XDG, LIB_STAMP, STALL_PORT_FILE,
+# mktemp -d call below (HANDOFF_DIR, the private XDG_DATA_HOME, STALL_PORT_FILE,
 # ECHO_DIR, R, ...) already honours $TMPDIR with no further changes, and
 # cleanup() removes the whole thing on every exit path.
 # /tmp/picopilot-<uid>: the per-user private directory shared by the watchdog
@@ -80,17 +88,16 @@ SLOT_SETTINGS="$(printf '%s/core-%03d-pxi.settings' "$HOME/.PixInsight" "$PICOPI
 rm -f "$SLOT_SETTINGS"
 # One cleanup for every EXIT path (0.2.0.0). Every variable is empty until the
 # line that sets it has run (set -u: always ${VAR:-}), so an early exit cleans
-# exactly what exists. JOURNEY_XDG is our own temp dir; never rm the caller's
-# XDG_DATA_HOME.
+# exactly what exists. The private XDG_DATA_HOME lives under TMPDIR (removed
+# below); never rm the caller's XDG_DATA_HOME.
 cleanup()
 {
    if [ -n "${PICOPILOT_ECHO_KEEP:-}" ] && [ -n "${ECHO_DIR:-}" ]; then
       cp "$ECHO_DIR"/body-* "$PICOPILOT_ECHO_KEEP"/ 2>/dev/null || true
    fi
-   rm -f "${R:-}" "${STALL_PORT_FILE:-}" "${SLOT_SETTINGS:-}" "${LIB_STAMP:-}"
+   rm -f "${R:-}" "${STALL_PORT_FILE:-}" "${SLOT_SETTINGS:-}"
    if [ -n "${HANDOFF_DIR:-}" ]; then rm -rf "$HANDOFF_DIR"; fi
    if [ -n "${ECHO_DIR:-}" ]; then rm -rf "$ECHO_DIR"; fi
-   if [ -n "${JOURNEY_XDG:-}" ]; then rm -rf "$JOURNEY_XDG"; fi
    if [ -n "${STALL_PID:-}" ]; then kill "$STALL_PID" 2>/dev/null || true; fi
    if [ -n "${ECHO_PID:-}" ]; then kill "$ECHO_PID" 2>/dev/null || true; fi
    if [ -n "${WATCHDOG_PID:-}" ]; then kill "$WATCHDOG_PID" 2>/dev/null || true; fi
@@ -105,26 +112,12 @@ cleanup()
 trap cleanup EXIT
 
 # Image journey (0.2.0.0): the production JourneyService records into
-# $XDG_DATA_HOME/PICopilot/journeys. Point it at a private temp dir so a test run
-# never touches the user's real library, and prove afterwards that it did not.
-REAL_LIB="$HOME/.local/share/PICopilot"
-LIB_STAMP="$(mktemp)"
-REAL_LIB_BEFORE="$( [ -e "$REAL_LIB" ] && echo present || echo absent )"
-JOURNEY_XDG="$(mktemp -d)"
-# Isolate ONLY the PICopilot subtree. An empty XDG_DATA_HOME breaks unrelated
-# PI checks (measured in Task 1: the live GraXpert run fails and the process
-# catalog scan loses most enumerations), so every other top-level entry of the
-# real data home is mirrored in as a symlink. cleanup()'s rm -rf removes the
-# links, never their targets.
-REAL_XDG="${XDG_DATA_HOME:-$HOME/.local/share}"
-if [ -d "$REAL_XDG" ]; then
-   for entry in "$REAL_XDG"/* "$REAL_XDG"/.[!.]*; do
-      [ -e "$entry" ] || [ -L "$entry" ] || continue
-      [ "$(basename "$entry")" = "PICopilot" ] && continue
-      ln -s "$entry" "$JOURNEY_XDG/$(basename "$entry")"
-   done
-fi
-export XDG_DATA_HOME="$JOURNEY_XDG"
+# $XDG_DATA_HOME/PICopilot/journeys. Every PixInsight this script launches gets
+# a private data home (harness-lib.sh; PICopilot left out, everything else
+# mirrored), is refused unless that isolation is in effect, and the run fails
+# if the user's real library (~/.local/share/PICopilot/journeys) changed.
+picopilot_isolate_data "$TMPDIR/xdg" || exit 1
+JOURNEYS_BEFORE="$(picopilot_journeys_fingerprint)"
 # Every file handed between selftest.js and the module lives in one private
 # (0700, mktemp -d) directory owned by this shell, so no writer ever opens a
 # guessable or pre-planted path (CWE-59); cleanup() removes it.
@@ -139,6 +132,11 @@ export PICOPILOT_SELFTEST_PHASE="$HANDOFF_DIR/phase.json"
 # Scratch directory for top-level fixtures that write files (e.g. J0 save+reopen).
 export PICOPILOT_SELFTEST_SCRATCH="$HANDOFF_DIR/scratch"
 mkdir -m 700 "$PICOPILOT_SELFTEST_SCRATCH"
+# Workspace process icons (fix/replay-file-params): test/load-icons.js, the
+# first -r= script, writes a fixture .xpsm + the file its icons name here and
+# yields it to this instance, which loads the icons before selftest.js runs.
+export PICOPILOT_SELFTEST_ICONS="$HANDOFF_DIR/icons"
+mkdir -m 700 "$PICOPILOT_SELFTEST_ICONS"
 # Per-section wall-clock timings, rewritten at every section mark by selftest.js
 # (fixture blocks) and by the module (self-test sections), so any run -- even
 # one that hangs until the timeout -- prints where its time went.
@@ -172,6 +170,7 @@ PY
 # compares like for like instead of maybe comparing two spellings of the same
 # file, or missing a real substitution.
 SO="$(realpath -e "$SO")"
+picopilot_require_isolation || exit 1
 "$PI" --sign-module-file="$SO" --xssk-file="$KEYS" --xssk-password="$PASS"
 [ -f "${SO%.so}.xsgn" ] || { echo "FAIL: signing produced no .xsgn"; exit 1; }
 
@@ -496,6 +495,10 @@ command -v xvfb-run >/dev/null 2>&1 || { echo "FAIL: xvfb-run not found (needed 
 WATCHDOG_LOG_BASE="$PICOPILOT_PRIVATE_TMP/watchdog-logs"
 mkdir -m 700 "$WATCHDOG_LOG_BASE" 2>/dev/null || [ -d "$WATCHDOG_LOG_BASE" ] || { echo "FAIL: cannot create $WATCHDOG_LOG_BASE"; exit 1; }
 WATCHDOG_FAIL_MARKER="$HANDOFF_DIR/watchdog-fail.json"
+WATCHDOG_OK_MARKER="$HANDOFF_DIR/watchdog-module-ok.json"
+# The slot's settings: every installed module EXCEPT the installed
+# PICopilot-pxm.so, so -m= is the only PICopilot in the process.
+picopilot_seed_slot_modules "$PICOPILOT_TEST_SLOT" "$TMPDIR" || exit 1
 python3 "$HERE/watchdog.py" \
    --slot "$PICOPILOT_TEST_SLOT" \
    --module-so "$SO" \
@@ -503,6 +506,8 @@ python3 "$HERE/watchdog.py" \
    --section-timings "$PICOPILOT_SELFTEST_SECTION_TIMINGS" \
    --budgets "$HERE/section-budgets.json" \
    --fail-marker "$WATCHDOG_FAIL_MARKER" \
+   --ok-marker "$WATCHDOG_OK_MARKER" \
+   --xdg-data-home "$XDG_DATA_HOME" \
    --log-dir-base "$WATCHDOG_LOG_BASE" \
    ${PICOPILOT_WATCHDOG_OVERRIDE:+--override "$PICOPILOT_WATCHDOG_OVERRIDE"} \
    ${PICOPILOT_WATCHDOG_DEFAULT_CAP_S:+--default-cap "$PICOPILOT_WATCHDOG_DEFAULT_CAP_S"} \
@@ -512,8 +517,9 @@ python3 "$HERE/watchdog.py" \
 WATCHDOG_PID=$!
 
 PI_RC=0
+picopilot_require_isolation || exit 1
 env "${PICOPILOT_THROWLOG_PRELOAD[@]}" PICOPILOT_SELFTEST_OUT="$R" xvfb-run -a -s "-screen 0 1920x1080x24" \
-      timeout 900 "$PI" -n="$PICOPILOT_TEST_SLOT" --automation-mode --no-startup-scripts -m="$SO" -r="$HERE/selftest.js" --force-exit \
+      timeout 900 "$PI" -n="$PICOPILOT_TEST_SLOT" --automation-mode --no-startup-scripts -m="$SO" -r="$HERE/load-icons.js" -r="$HERE/selftest.js" --force-exit \
    || PI_RC=$?
 
 kill "$WATCHDOG_PID" 2>/dev/null || true
@@ -524,10 +530,10 @@ if [ -s "$WATCHDOG_FAIL_MARKER" ]; then
    python3 - "$WATCHDOG_FAIL_MARKER" <<'PY'
 import json, sys
 d = json.load(open(sys.argv[1]))
-if d.get("reason") == "module-mismatch":
-    print("FAIL: watchdog caught a module-load mismatch")
+if d.get("reason") in ("module-mismatch", "module-not-loaded", "isolation-missing"):
+    print("FAIL: watchdog module/isolation check: %s" % d.get("reason"))
     print("  expected (-m=, resolved): %s" % d.get("expected"))
-    print("  actual (mapped, resolved): %s" % d.get("actual"))
+    print("  actual: %s" % d.get("actual"))
 else:
     print("FAIL: watchdog killed PI -- section %r (%s) ran %.1fs > cap %.1fs (baseline=%s)" %
           (d.get("section"), d.get("source"), d.get("elapsed", 0.0), d.get("cap", 0.0), d.get("baseline")))
@@ -544,16 +550,21 @@ if [ "$PI_RC" -ne 0 ]; then
    echo "FAIL: PI load timed out (900s) or exited non-zero (rc=$PI_RC)"; exit 1
 fi
 print_timings
+picopilot_journeys_check "$JOURNEYS_BEFORE" || exit 1
+[ -s "$WATCHDOG_OK_MARKER" ] || { echo "FAIL: the watchdog never confirmed that only the dev module was mapped (see $WATCHDOG_LOG_BASE/driver.log)"; exit 1; }
+echo "watchdog: $(tr -d '\n ' < "$WATCHDOG_OK_MARKER")"
 [ -f "$R" ] || { echo "FAIL: no result file"; exit 1; }
-REAL_LIB_AFTER="$( [ -e "$REAL_LIB" ] && echo present || echo absent )"
-if [ "$REAL_LIB_BEFORE" != "$REAL_LIB_AFTER" ] || { [ -e "$REAL_LIB" ] && [ -n "$(find "$REAL_LIB" -newer "$LIB_STAMP" -print -quit)" ]; }; then
-   echo "FAIL: the self-test touched the real journey library $REAL_LIB"; exit 1
-fi
 cat "$R"
 echo
-python3 - "$R" <<'PY' || { echo "FAIL: self-test verdict not all green"; exit 1; }
-import json, sys
+python3 - "$R" "$SO" <<'PY' || { echo "FAIL: self-test verdict not all green"; exit 1; }
+import json, os, sys
 d = json.load(open(sys.argv[1]))
+# The code that ran the self-test must be the -m= dev build (dladdr in RunSelfTest).
+mp = d.get('modulePath') or ''
+if not mp or os.path.realpath(mp) != sys.argv[2]:
+    print('FAIL: the self-test ran in %r, not the dev build %r' % (mp, sys.argv[2]))
+    sys.exit(1)
+print('self-test ran in the dev build: %s' % mp)
 required_true = [
     'evalOk', 'processInstanceValid', 'keyStoreOk', 'anthropicOk', 'workerThreadOk',
     'cancelOk', 'deadlineOk', 'plainTextOk',
@@ -608,6 +619,10 @@ required_true = [
     'journeyToolsOk', 'liveReplayOk', 'journeyUiOk',
     'journeyWiringOk',
     'histLandedOk',
+    # history_step (undo / redo)
+    'historyStepOk', 'liveHistoryStepOk',
+    # fix/replay-file-params: file parameters in replays + workspace process icons
+    'fileParamsOk',
     'ok',
 ]
 missing = [k for k in required_true if d.get(k) is not True]
@@ -619,7 +634,8 @@ if d.get('streamLoopbackSkipped') is not False: missing.append('streamLoopbackSk
 import os
 if os.environ.get('PICOPILOT_REQUIRE_LIVE') == '1':
     for k in ('anthropicSkipped', 'twoTurnSkipped', 'visionSkipped', 'liveAgentSkipped', 'liveConversationSkipped',
-              'graxpertLiveSkipped', 'bridgeStandInSkipped', 'liveWriteupSkipped', 'liveReplaySkipped'):
+              'graxpertLiveSkipped', 'bridgeStandInSkipped', 'liveWriteupSkipped', 'liveReplaySkipped', 'liveHistoryStepSkipped',
+              'mlDenoiseSkipped'):
         if d.get(k) is not False: missing.append(k + '==false (PICOPILOT_REQUIRE_LIVE=1)')
 print('anthropic check: %s' % ('SKIPPED (no key)' if d.get('anthropicSkipped') else 'RAN against real API'))
 print('two-turn check: %s' % ('SKIPPED (no key)' if d.get('twoTurnSkipped') else 'RAN against real API'))
@@ -635,6 +651,10 @@ bd = d.get('bridgeDetail', {})
 print('GraXpert no-effect detection (stand-in): %s; digest 60 MP RGB float = %r ms; checks=%r' % (('SKIPPED: %s' % bd.get('standInSkipReason')) if d.get('bridgeStandInSkipped') is not False else 'RAN (lockWaitMs=%r)' % bd.get('lock', {}).get('waitedMs'), bd.get('digest60MP', {}).get('ms'), bd.get('checks')))
 rd = d.get('rereviewFixDetail', {})
 print('describe_process sizes (chars, cap %r): %r; list_processes chars=%r' % (rd.get('describeSizes', {}).get('cap'), rd.get('describeSizes', {}).get('top10'), rd.get('listProcesses', {}).get('chars')))
+print('live history_step check: %s' % ('SKIPPED (no key)' if d.get('liveHistoryStepSkipped') else 'RAN against real API, positions=%r log=%r%s' % (d.get('liveHistoryStepPositions'), d.get('liveHistoryStepLog'), ('' if d.get('liveHistoryStepOk') else ' FAILED: %r' % d.get('liveHistoryStepError')))))
+print('history_step checks: %r' % d.get('historyStepChecks'))
+fp = d.get('fileParamsDetail', {})
+print('file parameters: checks=%r; MLDenoise end-to-end: %s' % (d.get('fileParamsChecks'), ('SKIPPED: %s' % fp.get('mlSkipReason')) if d.get('mlDenoiseSkipped') is not False else 'RAN %r' % fp.get('ml')))
 if d.get('liveModelSwitch') is not None:
     print('live model switch: %r' % d.get('liveModelSwitch'))
 if missing:

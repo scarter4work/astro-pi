@@ -38,6 +38,7 @@ set(MODULE_SOURCES
     PICopilotAgentSelfTest.cpp
     ProcessApply.cpp
     AgentTools.cpp
+    HistoryStepTool.cpp
     SystemPrompt.cpp
     GlobalRunFiles.cpp
     AgentSession.cpp
@@ -53,10 +54,13 @@ set(MODULE_SOURCES
     ScriptConfirmDialog.cpp
     JourneySpikeProbe.cpp
     PICopilotJourneySelfTest.cpp
+    PICopilotUndoSelfTest.cpp
     HistoryReader.cpp
     ProcessActivity.cpp
     StringParameterRules.cpp
     TextSafety.cpp
+    FileReferences.cpp
+    WorkspaceIcons.cpp
 )
 
 add_library(PICopilot SHARED ${MODULE_SOURCES})

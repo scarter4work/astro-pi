@@ -3187,13 +3187,14 @@ bool RunInc5SelfTest( nlohmann::json& out )
          const std::string uAdvisor = ExecuteTool( ToolCall{ "u3", "nope", nlohmann::json::object() }, tc ).content.at( 0 ).at( "text" );
          detail["unknownTool"] = { uCopilot, uScripts, uAdvisor };
          unknownToolOk = uCopilot == "unknown tool 'nope'; available: list_processes, describe_process, get_view_context, "
-                                     "apply_process, run_global_process, list_journeys, get_journey, compare_to_journey, "
-                                     "mark_journey_best, start_journey, replay_journey"
+                                     "apply_process, run_global_process, history_step, list_journeys, get_journey, compare_to_journey, "
+                                     "mark_journey_best, start_journey, replay_journey, list_process_icons, get_process_icon"
                       && uScripts == "unknown tool 'nope'; available: list_processes, describe_process, get_view_context, "
-                                     "apply_process, run_global_process, list_journeys, get_journey, compare_to_journey, "
-                                     "mark_journey_best, start_journey, replay_journey, run_pjsr"
+                                     "apply_process, run_global_process, history_step, list_journeys, get_journey, compare_to_journey, "
+                                     "mark_journey_best, start_journey, replay_journey, list_process_icons, get_process_icon, run_pjsr"
                       && uAdvisor == "unknown tool 'nope'; available: list_processes, describe_process, get_view_context, "
-                                     "list_journeys, get_journey, compare_to_journey, mark_journey_best";
+                                     "list_journeys, get_journey, compare_to_journey, mark_journey_best, list_process_icons, "
+                                     "get_process_icon";
 
          // 7. Tool-result cap.
          {
