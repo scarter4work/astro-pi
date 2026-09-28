@@ -1,0 +1,15 @@
+/* Export exactly the three symbols PixInsight uses to load a module; every
+   other symbol -- including those of the statically linked PCL, Ceres,
+   OpenCL ICD loader, SQLite, zlib -- stays local, so nothing can interpose
+   with (or be interposed by) another module in the PixInsight process.
+   Two of the three are defined in the PCL static library, which is why
+   --exclude-libs,ALL is NOT an option: it silently hides them.
+   tools/build-env/verify-portable.sh checks all three are exported. */
+{
+   global:
+      IdentifyPixInsightModule;
+      InitializePixInsightModule;
+      InstallPixInsightModule;
+   local:
+      *;
+};

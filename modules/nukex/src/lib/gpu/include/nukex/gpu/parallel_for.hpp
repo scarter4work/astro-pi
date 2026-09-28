@@ -42,15 +42,17 @@ void parallel_for_dynamic(int count, int chunk, Body&& body) {
     std::exception_ptr error;
     std::mutex error_mutex;
 
-    auto run = [&](int worker) {
+    // Claims and runs chunks until the range is exhausted (or, with
+    // `one_chunk`, after a single chunk). Never throws.
+    auto run = [&](int worker, bool one_chunk) {
         try {
-            for (;;) {
+            do {
                 if (failed.load(std::memory_order_relaxed)) return;
                 const int begin = next.fetch_add(chunk, std::memory_order_relaxed);
                 if (begin >= count) return;
                 const int end = std::min(begin + chunk, count);
                 for (int i = begin; i < end; ++i) body(i, worker);
-            }
+            } while (!one_chunk);
         } catch (...) {
             std::lock_guard<std::mutex> lk(error_mutex);
             if (!error) error = std::current_exception();
@@ -58,10 +60,23 @@ void parallel_for_dynamic(int count, int chunk, Body&& body) {
         }
     };
 
+    // Worker 0 takes the first chunk before any thread exists, so it always
+    // participates (FitHeartbeat) even when spawned workers would otherwise
+    // drain a small range before the caller got to it.
+    run(0, true);
+
+    // A spawn can fail (std::system_error: EAGAIN under a process or cgroup
+    // limit, or memory pressure). Degrade to the workers already running --
+    // as OpenMP does -- instead of letting the exception unwind past joinable
+    // threads, which is std::terminate (and PixInsight going down with it).
     std::vector<std::thread> pool;
-    pool.reserve(workers - 1);
-    for (int w = 1; w < workers; ++w) pool.emplace_back(run, w);
-    run(0);
+    try {
+        pool.reserve(workers - 1);
+        for (int w = 1; w < workers; ++w) pool.emplace_back(run, w, false);
+    } catch (const std::exception&) {
+        // fewer workers; worker 0 below finishes whatever is left
+    }
+    run(0, false);
     for (auto& t : pool) t.join();
 
     if (error) std::rethrow_exception(error);

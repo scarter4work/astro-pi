@@ -11,7 +11,7 @@
 # Usage: tools/build-env/verify-portable.sh <module.so>...
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-IMAGE="astro-pi-build:rocky9"
+. "$ROOT/tools/build-env/image-tag.sh"
 DISTROS=(docker.io/library/ubuntu:22.04 docker.io/library/debian:12 docker.io/rockylinux/rockylinux:9)
 MAX_GLIBC=2.34
 MAX_GLIBCXX=3.4.30
@@ -24,12 +24,19 @@ vmax() { printf '%s\n' "$@" | sort -V | tail -1; }
 for so in "$@"; do
    so="$(realpath -e "$so")"
    g="$(objdump -T "$so" | grep -oE 'GLIBC_[0-9.]+' | sed 's/GLIBC_//' | sort -Vu | tail -1)"
-   x="$(objdump -T "$so" | grep -oE 'GLIBCXX_[0-9.]+' | sed 's/GLIBCXX_//' | sort -Vu | tail -1)"
+   # A module may legitimately use no libstdc++ versioned symbol at all.
+   x="$(objdump -T "$so" | { grep -oE 'GLIBCXX_[0-9.]+' || true; } | sed 's/GLIBCXX_//' | sort -Vu | tail -1)"
    needed="$(readelf -d "$so" | sed -n 's/.*NEEDED.*\[\(.*\)\]/\1/p' | tr '\n' ' ')"
    echo "$(basename "$so"): GLIBC_$g GLIBCXX_${x:-none}  NEEDED: $needed"
    [ "$(vmax "$g" "$MAX_GLIBC")" = "$MAX_GLIBC" ] || { echo "  FAIL: GLIBC_$g > $MAX_GLIBC"; fail=1; }
    [ -z "$x" ] || [ "$(vmax "$x" "$MAX_GLIBCXX")" = "$MAX_GLIBCXX" ] || { echo "  FAIL: GLIBCXX_$x > $MAX_GLIBCXX"; fail=1; }
    if readelf -d "$so" | grep -qE 'RPATH|RUNPATH'; then echo "  FAIL: carries an RPATH/RUNPATH"; fail=1; fi
+   # PixInsight loads a module through exactly these three symbols. dlopen()
+   # succeeds without them, so check them explicitly (two live in the PCL
+   # static library, so a symbol-hiding linker flag can silently drop them).
+   for ep in IdentifyPixInsightModule InitializePixInsightModule InstallPixInsightModule; do
+      nm -D --defined-only "$so" | grep -qE " T $ep\$" || { echo "  FAIL: PixInsight entry point $ep is not exported"; fail=1; }
+   done
 done
 
 # 2. dlopen probe, built once in the Rocky 9 image (glibc 2.34) so it runs on
@@ -48,6 +55,7 @@ int main(int argc, char **argv) {
    return bad;
 }
 EOF
+ensure_image
 podman run --rm --security-opt label=disable -v "$work:/w" "$IMAGE" gcc -O2 -o /w/probe /w/probe.c
 args=(); mounts=()
 for so in "$@"; do

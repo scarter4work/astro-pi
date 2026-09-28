@@ -88,7 +88,10 @@ set_target_properties(NukeX-pxm PROPERTIES
     PREFIX ""
     SUFFIX ".so"
     OUTPUT_NAME "NukeX-pxm"
-    LINK_FLAGS "-shared -Wl,-z,defs"
+    LINK_FLAGS "-shared -Wl,-z,defs -Wl,--version-script=${CMAKE_CURRENT_SOURCE_DIR}/pixinsight-module.map"
 )
 
 target_compile_features(NukeX-pxm PRIVATE cxx_std_17)
+
+# Relink when the export map changes.
+set_property(TARGET NukeX-pxm APPEND PROPERTY LINK_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/pixinsight-module.map)
