@@ -50,6 +50,10 @@ function loadIcons( dir )
    cont.add( mgc2 );
    cont.add( pm );
 
+   // A confirmAlways process (review I1): PI Copilot must list it without opening it.
+   var sa = new StarAlignment;
+   sa.referenceImage = dir + "/MGC-icon-fixture.xmars";
+
    // A big table (a 2500-point K curve), far over one tool result: paging.
    var curves = new CurvesTransformation;
    var K = [];
@@ -73,10 +77,12 @@ function loadIcons( dir )
             + withId( cont.toSource( 'XPSM 1.0' ), 'J12_cont_instance' ) + '\n'
             + withId( pm.toSource( 'XPSM 1.0' ), 'J12_pm_instance' ) + '\n'
             + withId( curves.toSource( 'XPSM 1.0' ), 'J12_curves_instance' ) + '\n'
+            + withId( sa.toSource( 'XPSM 1.0' ), 'J12_sa_instance' ) + '\n'
             + '<icon id="J12MGC" instance="J12_mgc_instance" xpos="8" ypos="8" workspace="Workspace01"/>\n'
             + '<icon id="J12Cont" instance="J12_cont_instance" xpos="8" ypos="56" workspace="Workspace01"/>\n'
             + '<icon id="J12PM" instance="J12_pm_instance" xpos="8" ypos="104" workspace="Workspace01"/>\n'
             + '<icon id="J12Curves" instance="J12_curves_instance" xpos="8" ypos="152" workspace="Workspace01"/>\n'
+            + '<icon id="J12SA" instance="J12_sa_instance" xpos="8" ypos="200" workspace="Workspace01"/>\n'
             + '</xpsm>\n';
    File.writeTextFile( dir + "/workspace-icons.xpsm", xpsm );
 

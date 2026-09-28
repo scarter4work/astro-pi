@@ -1284,6 +1284,11 @@ GlobalRunResult RunGlobalProcess( const IsoString& processId, const nlohmann::js
    return r;
 }
 
+void NoteProcessInstanceBuild( const IsoString& processId, const char* stage )
+{
+   NoteInstanceBuild( processId, stage );
+}
+
 void SetInstanceBuildObserverForSelfTest( InstanceBuildObserver observer )
 {
    g_instanceObserver = std::move( observer );

@@ -34,6 +34,7 @@
 #include "ViewCapture.h"
 #include "ViewPreview.h"
 #include "VisionTurn.h"
+#include "WorkspaceIcons.h"
 #include "SelfTestTiming.h"
 
 #include <pcl/AutoViewLock.h>
@@ -8028,6 +8029,9 @@ r1.ok && r1.inferred.size() == 1 && r1.inferred[0].first == 7 && r1.inferred[0].
       bool pageOk = false, applyOk = false, refOk = false, refusePathOk = false, missingOk = false, otherStepOk = false,
            iconFoundOk = false, iconsListOk = false, iconGetOk = false, iconContainerOk = false, iconPagingOk = false,
            iconApplyOk = false, getJourneyOk = false, promptOk = false, mlOk = false;
+      // Review round 1 (file-params-review.md).
+      bool i1DeniedOk = false, i1ConfirmOk = false, i1IconsOk = false, i2Ok = false, m1Ok = false, m2Ok = false, m3Ok = false,
+           badNamesOk = false, orderOk = false;
       bool mlSkipped = true;
       std::string mlSkipReason;
       String error;
@@ -8344,6 +8348,158 @@ r1.ok && r1.inferred.size() == 1 && r1.inferred[0].first == 7 && r1.inferred[0].
             promptOk = pa.Contains( "list_process_icons" ) && pa.Contains( "get_process_icon" ) && pc.Contains( "list_process_icons" )
                     && pc.Contains( "recorded_file" ) && pc.Contains( "{\"file\"" ) && !pa.Contains( "apply_process {" );
          }
+         // ---- Review round 1 (file-params-review.md) ----
+         std::vector<std::string> builds;   // every ProcessInstance build the tool paths report
+         SetInstanceBuildObserverForSelfTest( [&builds]( const IsoString& id, const char* stage )
+                                              { builds.push_back( std::string( id.c_str() ) + ":" + stage ); } );
+         auto builtOf = [&builds]( const std::string& pid )
+         {
+            int n = 0;
+            for ( const std::string& b : builds )
+               n += b.rfind( pid + ":", 0 ) == 0 ? 1 : 0;
+            return n;
+         };
+         // (I1a) A {"file"} reference on a DENIED process is refused as denied, before any resolution builds anything.
+         {
+            builds.clear();
+            const ToolOutcome o = call( "apply_process", { { "process_id", "ProcessContainer" },
+                                                           { "parameters", { { "x", { { "file", "MGC-icon-fixture.xmars" } } } } } },
+                                        AgentMode::Copilot, "pcJfNew" );
+            d["i1Denied"] = { { "text", text0( o ).substr( 0, 300 ) }, { "builds", builds } };
+            i1DeniedOk = o.isError && text0( o ).find( "not allowed from PI Copilot" ) != std::string::npos && builds.empty();
+         }
+         // (I1b) A confirmAlways process with a {"file"} reference: resolved from the icon WITHOUT a default instance of
+         //       it; nothing of it is built before the user answers the dialog (declined here).
+         {
+            builds.clear();
+            int buildsAtDialog = -1;
+            String dialog;
+            ToolContext c = ctxFor( AgentMode::Copilot, "pcJfNew" );
+            c.confirm = [&]( const String&, const String&, const String& changes )
+            {
+               buildsAtDialog = builtOf( "StarAlignment" );
+               dialog = changes;
+               return false;
+            };
+            const ToolOutcome o = ExecuteTool( ToolCall{ "j12", "apply_process", { { "process_id", "StarAlignment" },
+                                                   { "parameters", { { "referenceImage", { { "file", "MGC-icon-fixture.xmars" } } } } } } }, c );
+            d["i1Confirm"] = { { "text", text0( o ).substr( 0, 300 ) }, { "builds", builds }, { "buildsAtDialog", buildsAtDialog },
+                               { "dialog", U8( dialog ).substr( 0, 400 ) } };
+            i1ConfirmOk = buildsAtDialog == 0 && dialog.Contains( String( iconFile.c_str() ) ) && o.isError
+                       && text0( o ).find( "declined" ) != std::string::npos && text0( o ).find( iconDir ) == std::string::npos;
+         }
+         // (I1c) list_process_icons in Advisor with a StarAlignment (confirmAlways) icon: listed, not opened, and no
+         //       instance of it is built.
+         {
+            builds.clear();
+            const ToolOutcome l = call( "list_process_icons", nlohmann::json::object(), AgentMode::Advisor, "" );
+            nlohmann::json sa;
+            const nlohmann::json listed = l.isError ? nlohmann::json::object() : nlohmann::json::parse( text0( l ) );
+            for ( const nlohmann::json& i : listed.value( "icons", nlohmann::json::array() ) )
+               if ( i.at( "icon" ) == "J12SA" )
+                  sa = i;
+            const ToolOutcome g = call( "get_process_icon", { { "icon_id", "J12SA" } }, AgentMode::Advisor, "" );
+            d["i1Icons"] = { { "row", sa }, { "get", text0( g ).substr( 0, 300 ) }, { "builds", builds } };
+            i1IconsOk = sa.is_object() && sa.value( "processId", "" ) == "StarAlignment" && sa.contains( "notRead" )
+                     && !sa.contains( "files" ) && builtOf( "StarAlignment" ) == 0
+                     && g.isError && text0( g ).find( "never builds an instance" ) != std::string::npos;
+         }
+         SetInstanceBuildObserverForSelfTest( InstanceBuildObserver() );
+         // (I2) A recorded GraXpert step: appPath is pinned (the user's GraXpert setting), so the replay page leaves it
+         //      out (setByPICopilot) and a replay apply never fills it from the recording.
+         {
+            File::WriteTextFile( root.Path() + "/rec/GraXpert-fixture", IsoString( "fixture\n" ) );
+            const int64 kg = addKeeper( "JfGx", { { "GraXpert", { { "parameters", { { "appPath", rootDir + "/rec/GraXpert-fixture" },
+                                                                                      { "correction", "Division" } } } } } } );
+            const ToolOutcome o = call( "replay_journey", { { "journey_id", kg } }, AgentMode::Copilot, "pcJfNew" );
+            nlohmann::json s, p = { { "correction", "Division" } }, t = nlohmann::json::object();
+            std::vector<FileSubstitution> subs;
+            String e = "not run";
+            if ( !o.isError )
+            {
+               s = pageStep( o, 1 );
+               e = ResolveApplyFileReferences( &host, "pcJfNew", kg, 1, "GraXpert", p, t, subs );
+            }
+            d["i2"] = { { "step", s }, { "resolve", U8( e ) }, { "params", p }, { "subs", subs.size() } };
+            i2Ok = s.is_object() && s.at( "manual" ) == false && !s.at( "parameters" ).contains( "appPath" )
+                && s.value( "setByPICopilot", nlohmann::json::array() ) == nlohmann::json::array( { "appPath" } )
+                && s.at( "parameters" ).value( "correction", "" ) == "Division"
+                && e.IsEmpty() && !p.contains( "appPath" ) && subs.empty();
+         }
+         // (M1) An output folder in a recorded step is never taken from history: the step stays the user's, and says why.
+         {
+            const int64 ko = addKeeper( "JfOut", { { "ImageCalibration", { { "parameters", { { "outputDirectory", rootDir + "/rec" } } } } } } );
+            const ToolOutcome o = call( "replay_journey", { { "journey_id", ko } }, AgentMode::Copilot, "pcJfNew" );
+            nlohmann::json s;
+            if ( !o.isError )
+               s = pageStep( o, 1 );
+            d["m1"] = { { "step", s }, { "text", text0( o ).substr( 0, 300 ) } };
+            m1Ok = s.is_object() && s.at( "manual" ) == true && s.at( "manualWhy" ).is_string()
+                && s.at( "manualWhy" ).get<std::string>().find( "never takes an output location" ) != std::string::npos
+                && s.at( "parameters" ).value( "outputDirectory", nlohmann::json() ).is_string()
+                && text0( o ).find( rootDir ) == std::string::npos;
+         }
+         // (M2) run_global_process resolves {"file"} too (after the deny check): the dialog shows the icon's full path.
+         {
+            int asked = 0;
+            String dialog;
+            ToolContext c = ctxFor( AgentMode::Copilot, "" );
+            c.confirm = [&]( const String&, const String&, const String& changes ) { ++asked; dialog = changes; return false; };
+            const ToolOutcome o = ExecuteTool( ToolCall{ "j12", "run_global_process", { { "process_id", "MultiscaleGradientCorrection" },
+                                                   { "table_parameters", { { "marsDatabaseFiles", nlohmann::json::array( { nlohmann::json::array(
+                                                       { true, { { "file", "MGC-icon-fixture.xmars" } } } ) } ) } } } } }, c );
+            d["m2"] = { { "asked", asked }, { "dialog", U8( dialog ).substr( 0, 400 ) }, { "text", text0( o ).substr( 0, 300 ) } };
+            m2Ok = asked == 1 && dialog.Contains( String( iconFile.c_str() ) ) && o.isError
+                && text0( o ).find( "declined" ) != std::string::npos && text0( o ).find( iconDir ) == std::string::npos;
+         }
+         // (M3) Lazy: a page / get_journey whose files are at their recorded location never runs the icon script; a
+         //      file that moved does.
+         {
+            const int r0 = WorkspaceIconScriptRunsForSelfTest();
+            call( "replay_journey", { { "journey_id", k1 } }, AgentMode::Copilot, "pcJfNew" );
+            call( "get_journey", { { "journey_id", k1 }, { "include_parameters", true } }, AgentMode::Advisor, "" );
+            call( "get_journey", { { "journey_id", k1 } }, AgentMode::Advisor, "" );
+            const int r1 = WorkspaceIconScriptRunsForSelfTest();
+            call( "replay_journey", { { "journey_id", k4 } }, AgentMode::Copilot, "pcJfNew" );
+            const int r2 = WorkspaceIconScriptRunsForSelfTest();
+            d["m3"] = { { "before", r0 }, { "afterRecorded", r1 }, { "afterMoved", r2 } };
+            m3Ok = r1 == r0 && r2 == r1 + 1;
+         }
+         // Bad names in {"file"}: '/', '..', NUL, empty -- refused before anything runs, the NUL never echoed.
+         {
+            nlohmann::json bad = nlohmann::json::array();
+            for ( const std::string& n : { std::string( "/x/MGC-icon-fixture.xmars" ), std::string( ".." ), std::string( "." ),
+                                           std::string( "MGC-icon\0fixture.xmars", 22 ), std::string() } )
+            {
+               const ToolOutcome o = call( "apply_process", { { "process_id", "MultiscaleGradientCorrection" },
+                                                              { "table_parameters", { { "marsDatabaseFiles", nlohmann::json::array( { nlohmann::json::array(
+                                                                  { true, { { "file", n } } } ) } ) } } } }, AgentMode::Copilot, "pcJfNew" );
+               const std::string t = text0( o );
+               if ( !o.isError || t.find( "plain name" ) == std::string::npos || t.find( '\0' ) != std::string::npos || runStage( t ) )
+                  bad.push_back( { { "nameLength", n.size() }, { "text", U8( ModelTextWithoutDirectories( FromU8( t.substr( 0, 200 ) ) ) ) } } );
+            }
+            d["badNames"] = bad;
+            badNamesOk = bad.empty();
+         }
+         // Fallback order with several matches: recorded location first (even when an icon has the name), then the
+         // workspace icons before another recorded step.
+         {
+            File::CreateDirectory( root.Path() + "/rec2" );
+            const std::string rec2 = rootDir + "/rec2/MGC-icon-fixture.xmars";
+            File::WriteTextFile( String( rec2.c_str() ), IsoString( "fixture\n" ) );
+            const int64 k7 = addKeeper( "JfOrder", { mgcStep( rec2 ) } );   // also a library candidate for k4 now
+            const ToolOutcome o7 = call( "replay_journey", { { "journey_id", k7 } }, AgentMode::Copilot, "pcJfNew" );
+            const nlohmann::json c7 = o7.isError ? nlohmann::json() : marsCell( pageStep( o7, 1 ), "table_parameters" );
+            const ToolOutcome a7 = call( "apply_process", { { "process_id", "MultiscaleGradientCorrection" },
+                                                            { "parameters", { { "useMARSDatabase", true } } },
+                                                            { "replay_step", { { "journey_id", k7 }, { "n", 1 } } } }, AgentMode::Copilot, "pcJfNew" );
+            const ToolOutcome o4 = call( "replay_journey", { { "journey_id", k4 } }, AgentMode::Copilot, "pcJfNew" );
+            const nlohmann::json c4 = o4.isError ? nlohmann::json() : marsCell( pageStep( o4, 1 ), "table_parameters" );
+            d["order"] = { { "recorded", c7 }, { "recordedLog", U8( a7.logLine ).substr( 0, 300 ) }, { "icon", c4 } };
+            orderOk = c7.is_object() && c7.value( "foundIn", "" ) == "its recorded location" && a7.logLine.Contains( String( rec2.c_str() ) )
+                   && c4.is_object() && c4.value( "foundIn", "" ).find( "workspace icon" ) != std::string::npos;
+         }
+
          // (k) A REAL successful end-to-end run with a module-substituted file: MLDenoise with the user's own model
          //     (a link to it in a folder of this test, so the recorded location is not the model's own), replayed
          //     with modelPath omitted. Skipped (named) when this machine has no MLDenoise model.
@@ -8384,14 +8540,18 @@ r1.ok && r1.inferred.size() == 1 && r1.inferred[0].first == 7 && r1.inferred[0].
          JForceClose( id );
       const bool ok = pageOk && applyOk && refOk && refusePathOk && missingOk && otherStepOk && iconFoundOk && iconsListOk
                    && iconGetOk && iconContainerOk && iconPagingOk && iconApplyOk && getJourneyOk && promptOk
-                   && (mlSkipped || mlOk) && error.IsEmpty();
+                   && (mlSkipped || mlOk) && i1DeniedOk && i1ConfirmOk && i1IconsOk && i2Ok && m1Ok && m2Ok && m3Ok
+                   && badNamesOk && orderOk && error.IsEmpty();
+      SetInstanceBuildObserverForSelfTest( InstanceBuildObserver() );
       d["mlSkipReason"] = mlSkipReason;
       out["fileParamsDetail"] = d;
       out["fileParamsChecks"] = { { "page", pageOk }, { "apply", applyOk }, { "ref", refOk }, { "refusePath", refusePathOk },
                                   { "missing", missingOk }, { "otherStep", otherStepOk }, { "iconFound", iconFoundOk },
                                   { "iconsList", iconsListOk }, { "iconGet", iconGetOk }, { "iconContainer", iconContainerOk },
                                   { "iconPaging", iconPagingOk }, { "iconApply", iconApplyOk }, { "getJourney", getJourneyOk },
-                                  { "prompt", promptOk }, { "ml", mlOk } };
+                                  { "prompt", promptOk }, { "ml", mlOk },
+                                  { "i1Denied", i1DeniedOk }, { "i1Confirm", i1ConfirmOk }, { "i1Icons", i1IconsOk }, { "i2", i2Ok },
+                                  { "m1", m1Ok }, { "m2", m2Ok }, { "m3", m3Ok }, { "badNames", badNamesOk }, { "order", orderOk } };
       out["fileParamsError"] = U8( error );
       out["mlDenoiseSkipped"] = mlSkipped;
       out["fileParamsOk"] = ok;

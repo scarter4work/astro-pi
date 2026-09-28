@@ -67,7 +67,8 @@ const char* const kJourneyPromptAct =
    "with replay_step, omit that parameter (or pass the object back as shown) and PI Copilot sets the recorded file; "
    "set every other parameter of the step as usual. Never write a folder path. available false means the file is not "
    "on this machine: the step is then manual and names the file for the user.\n"
-   "- Outside a replay, to use a file the user already has (e.g. from a workspace process icon), pass {\"file\": "
+   "- Outside a replay, to use an input file the user already has (e.g. from a workspace process icon) in apply_process "
+   "or run_global_process, pass {\"file\": "
    "<file name>} as that parameter's value or table cell; PI Copilot sets its full path, or says the file was not found.\n";
 
 namespace
@@ -311,30 +312,49 @@ std::vector<StepRow> LineageSteps( JourneyStore& s, const std::vector<int64>& ch
 
 // ---- Recorded files (fix/replay-file-params) ----
 
-// Where a recorded file may be found besides its recorded location, in order: the workspace's process icons, then
-// the library's recorded steps. Built once per tool call. Root thread.
-struct SharedFileCandidates
+// A step's file values by role (review I2, M1): input files are resolved; pinned parameters are left to the pin
+// (dropped from what the model sees, never filled from the recording); an output file or folder keeps the step
+// manual (never filled from history).
+struct StepFiles
 {
-   std::vector<FileCandidate> icons, library;
-   explicit SharedFileCandidates( JourneyStore* store )
-   {
-      AddWorkspaceIconFileCandidates( icons );
-      if ( store != nullptr )
-         AddLibraryFileCandidates( library, *store );
-   }
+   std::vector<FileParameterValue> input, pinned, output;
 };
 
-// A recorded step's candidates: its recorded location, the workspace icons, the process's default settings, the
-// library's recorded steps.
-std::vector<FileCandidate> StepFileCandidates( const std::string& processId, const std::vector<FileParameterValue>& recorded,
-                                               const SharedFileCandidates& shared )
+StepFiles SplitFiles( const std::string& processId, const std::vector<FileParameterValue>& values )
 {
-   std::vector<FileCandidate> c;
-   AddFileCandidates( c, recorded, "its recorded location" );
-   c.insert( c.end(), shared.icons.begin(), shared.icons.end() );
-   AddDefaultInstanceFileCandidates( c, processId );
-   c.insert( c.end(), shared.library.begin(), shared.library.end() );
-   return c;
+   StepFiles f;
+   for ( const FileParameterValue& v : values )
+      switch ( FileRoleOf( processId, v ) )
+      {
+      case FileRole::Input:  f.input.push_back( v ); break;
+      case FileRole::Pinned: f.pinned.push_back( v ); break;
+      case FileRole::Output: f.output.push_back( v ); break;
+      }
+   return f;
+}
+
+// Pinned parameters leave the model-facing parameters; their ids are listed for the model instead.
+void DropPinned( nlohmann::json& parameters, const std::vector<FileParameterValue>& pinned, nlohmann::json& step )
+{
+   if ( pinned.empty() )
+      return;
+   nlohmann::json ids = nlohmann::json::array();
+   for ( const FileParameterValue& v : pinned )
+   {
+      if ( parameters.is_object() )
+         parameters.erase( v.parameter );
+      ids.push_back( v.parameter );
+   }
+   step["setByPICopilot"] = ids;   // never pass them: PI Copilot sets them from the user's own settings
+}
+
+std::string OutputFilesWhy( const std::vector<FileParameterValue>& output )
+{
+   std::string list;
+   for ( const FileParameterValue& v : output )
+      list += (list.empty() ? "" : ", ") + v.Where() + " (" + PathFileName( v.value ) + ")";
+   return "names an output file or folder: " + list + ". PI Copilot never takes an output location from a recording: the "
+          "user sets it and runs this step";
 }
 
 // Puts marker at a file value's place in {parameters, tables} (the model-facing, privacy-stripped copies).
@@ -351,22 +371,24 @@ void PlaceFileMarker( nlohmann::json& parameters, nlohmann::json& tables, const 
       tables[v.parameter][v.row][v.column] = marker;
 }
 
-// Marks every recorded file value of a step in its model-facing parameters as {"recorded_file", "available",
-// "foundIn"}; `missing` lists "<name> (<where>)" of the files found nowhere; `files` one entry per value.
+// Marks every recorded INPUT file value of a step in its model-facing parameters as {"recorded_file", "available",
+// "foundIn"}; `missing` lists "<name> (<where>)" of the files found nowhere; `files` one entry per value. The other
+// places are read only when the recorded location does not have the file (FileSources, review M3).
 void MarkRecordedFiles( const std::string& processId, const std::vector<FileParameterValue>& values,
-                        const SharedFileCandidates& shared, nlohmann::json& parameters, nlohmann::json& tables,
+                        FileSources& sources, nlohmann::json& parameters, nlohmann::json& tables,
                         std::vector<std::string>& missing, nlohmann::json& files )
 {
    missing.clear();
    files = nlohmann::json::array();
    if ( values.empty() )
       return;
-   const std::vector<FileCandidate> c = StepFileCandidates( processId, values, shared );
+   std::vector<FileCandidate> recorded;
+   AddFileCandidates( recorded, values, "its recorded location" );
    for ( const FileParameterValue& v : values )
    {
       const std::string name = PathFileName( v.value );
       FileCandidate f;
-      const bool found = FindKnownFile( name, c, f );
+      const bool found = sources.Find( name, recorded, processId, f );
       const nlohmann::json marker = FileReferenceJson( "recorded_file", name, found, found ? f.foundIn : std::string() );
       PlaceFileMarker( parameters, tables, v, marker );
       nlohmann::json entry = marker;
@@ -588,23 +610,31 @@ String ResolveApplyFileReferences( JourneyToolHost* host, const IsoString& viewF
    }
    std::vector<FileParameterValue> recValues;
    if ( recorded.is_object() )
+   {
       try
       {
-         recValues = FileParameterValues( canonical, recorded.value( "parameters", nlohmann::json::object() ),
-                                          recorded.value( "tableParameters", nlohmann::json::object() ) );
+         const StepFiles f = SplitFiles( canonical, FileParameterValues( canonical, recorded.value( "parameters", nlohmann::json::object() ),
+                                                                         recorded.value( "tableParameters", nlohmann::json::object() ) ) );
+         if ( f.output.empty() )
+            recValues = f.input;   // pinned ones are left to the pin
+         else
+            recorded = nlohmann::json();   // defensive: such a step is manual; never fill an output from history
       }
       catch ( const pcl::Exception& x )
       {
          return "the recorded step's table columns could not be read from the process catalog (" + x.Message() + ")";
       }
+   }
    if ( recValues.empty() && !ContainsFileReference( parameters ) && !ContainsFileReference( tableParameters ) )
       return String();
-   const SharedFileCandidates shared( host != nullptr ? host->store : nullptr );
-   const std::vector<FileCandidate> known = StepFileCandidates( canonical, recValues, shared );
+   std::vector<FileCandidate> recordedAt;
+   AddFileCandidates( recordedAt, recValues, "its recorded location" );
+   FileSources sources( host != nullptr ? host->store : nullptr );
+   const FileFinder find = [&]( const std::string& name, FileCandidate& out ) { return sources.Find( name, recordedAt, canonical, out ); };
    return SubstituteFileReferences( canonical, parameters, tableParameters, recorded.is_object() ? &recValues : nullptr,
                                     recorded.is_object() ? recorded.value( "tableParameters", nlohmann::json::object() )
                                                          : nlohmann::json::object(),
-                                    known, subs );
+                                    find, subs );
 }
 
 String NoteReplayStepApplied( JourneyToolHost& host, const IsoString& viewFullId, int64 keeperId, int64 /*n*/ )
@@ -893,7 +923,7 @@ ToolOutcome ExecuteJourneyTool( const ToolCall& call, const ToolContext& ctx )
          // fix/replay-file-params: the recipe (also exported) calls a step with a file parameter manual; for the
          // model it is not -- replay_journey resolves the file -- so such a step shows its files as references.
          {
-            const SharedFileCandidates shared( host.store );
+            FileSources sources( host.store );   // read only when a step's file is not at its recorded location (M3)
             for ( nlohmann::json& s : r["steps"] )
             {
                StepRow row;
@@ -911,9 +941,13 @@ ToolOutcome ExecuteJourneyTool( const ToolCall& call, const ToolContext& ctx )
                {
                   continue;   // stays manual, as the recipe says
                }
+               const StepFiles split = SplitFiles( row.processId, values );
+               if ( !split.output.empty() )
+                  continue;   // stays manual, as the recipe says (M1)
                std::vector<std::string> missing;
                nlohmann::json files;
-               MarkRecordedFiles( row.processId, values, shared, s["parameters"], s["tableParameters"], missing, files );
+               DropPinned( s["parameters"], split.pinned, s );
+               MarkRecordedFiles( row.processId, split.input, sources, s["parameters"], s["tableParameters"], missing, files );
                s["files"] = files;
                s["manual"] = !missing.empty();
                s["manualWhy"] = missing.empty() ? nlohmann::json() : nlohmann::json( MissingFilesWhy( row.processId, missing ) );
@@ -1152,7 +1186,7 @@ ToolOutcome ExecuteJourneyTool( const ToolCall& call, const ToolContext& ctx )
          // module-resolved reference {"recorded_file", "available", "foundIn"}; the step keeps every other parameter;
          // apply_process with replay_step sets the recorded full path (ResolveApplyFileReferences). A file found
          // nowhere on this machine makes the step manual, naming the file (its parameters stay, for the user).
-         const SharedFileCandidates shared( host.store );
+         FileSources sources( host.store );   // read only when a step's file is not at its recorded location (M3)
          std::map<int, nlohmann::json> recordedByN;   // the page's non-manual steps, as recorded (never sent)
          int n = first - 1;
          for ( ; n < total && (maxSteps == 0 || int( steps.size() ) < maxSteps); ++n )
@@ -1189,13 +1223,18 @@ ToolOutcome ExecuteJourneyTool( const ToolCall& call, const ToolContext& ctx )
                const nlohmann::json stripped = PrivacyStripStepParameters( s.processId, recParams, recTables );
                nlohmann::json p = stripped.value( "parameters", nlohmann::json::object() );
                nlohmann::json t = stripped.value( "tableParameters", nlohmann::json::object() );
+               const StepFiles split = SplitFiles( s.processId, fileValues );
                std::vector<std::string> missing;
                nlohmann::json files;
-               MarkRecordedFiles( s.processId, fileValues, shared, p, t, missing, files );
+               DropPinned( p, split.pinned, st );
+               if ( split.output.empty() )
+                  MarkRecordedFiles( s.processId, split.input, sources, p, t, missing, files );
                st["parameters"] = p;
                st["table_parameters"] = t;
                keepParameters = true;
-               if ( !missing.empty() )
+               if ( !split.output.empty() )
+                  why = OutputFilesWhy( split.output );
+               else if ( !missing.empty() )
                   why = MissingFilesWhy( s.processId, missing );
                const size_t size = st.dump().size();
                if ( size + 1500 > kBudget )
