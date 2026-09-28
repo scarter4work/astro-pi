@@ -458,16 +458,52 @@ bool HasFileTables( const IsoString& processId )
    return DeclaresFileTables( processId, Section( CompiledProcessSafety(), "fileTables" ) );
 }
 
+// A policy id listed in "retiredProcesses" whose process this PixInsight does
+// not have at all (PixInsight removed it, e.g. MARSGen in 1.9.5 build 1706).
+// Its rules stay in force for the older builds that still ship it, so they are
+// kept and not reported here. An id that resolves -- even as an alias of
+// another process -- is never "retired": it is checked like any other.
+static bool RetiredAndAbsent( const nlohmann::json& policy, const std::string& id )
+{
+   if ( !Section( policy, "retiredProcesses" ).contains( id ) )
+      return false;
+   try
+   {
+      Process( IsoString( id.c_str() ) );
+      return false;
+   }
+   catch ( ... )
+   {
+      return true;
+   }
+}
+
 nlohmann::json UnknownPolicyProcessIds()
 {
    nlohmann::json out = nlohmann::json::array();
    const nlohmann::json& policy = CompiledProcessSafety();
-   for ( const char* s : { "deny", "confirmAlways", "confirmWhen", "reviewedSafe", "globalSafe", "globalConfirm",
-                           "fileTables", "pinnedParameters", "parameterValues" } )
+   const char* const ruleSections[] = { "deny", "confirmAlways", "confirmWhen", "reviewedSafe", "globalSafe",
+                                        "globalConfirm", "fileTables", "pinnedParameters", "parameterValues" };
+   // retiredProcesses: each entry says why it is gone, and a rule names it
+   // (else it is a stale leftover that could hide a later typo of that id).
+   const nlohmann::json& retired = Section( policy, "retiredProcesses" );
+   for ( auto it = retired.begin(); it != retired.end(); ++it )
+   {
+      bool named = false;
+      for ( const char* s : ruleSections )
+         named = named || Section( policy, s ).contains( it.key() );
+      if ( !it.value().is_string() || it.value().get<std::string>().empty() )
+         out.push_back( "retiredProcesses:" + it.key() + " (needs a reason)" );
+      else if ( !named )
+         out.push_back( "retiredProcesses:" + it.key() + " (no rule names it)" );
+   }
+   for ( const char* s : ruleSections )
    {
       const nlohmann::json& section = Section( policy, s );
       for ( auto it = section.begin(); it != section.end(); ++it )
       {
+         if ( RetiredAndAbsent( policy, it.key() ) )
+            continue;
          bool installed = false;
          try
          {
@@ -484,7 +520,9 @@ nlohmann::json UnknownPolicyProcessIds()
    // confirmWhen rules must name real parameters of their process.
    const nlohmann::json& when = Section( policy, "confirmWhen" );
    for ( auto it = when.begin(); it != when.end(); ++it )
-      if ( it.value().is_array() )
+      if ( RetiredAndAbsent( policy, it.key() ) )
+         continue;
+      else if ( it.value().is_array() )
          for ( const nlohmann::json& rule : it.value() )
          {
             const std::string param = rule.value( "parameter", std::string() );
@@ -513,7 +551,9 @@ nlohmann::json UnknownPolicyProcessIds()
    // fileTables: canonical table ids that are tables, with real columns.
    const nlohmann::json& tables = Section( policy, "fileTables" );
    for ( auto it = tables.begin(); it != tables.end(); ++it )
-      if ( it.value().is_object() )
+      if ( RetiredAndAbsent( policy, it.key() ) )
+         continue;
+      else if ( it.value().is_object() )
          for ( auto t = it.value().begin(); t != it.value().end(); ++t )
          {
             const std::string where = "fileTables:" + it.key() + "." + t.key();
@@ -546,7 +586,9 @@ nlohmann::json UnknownPolicyProcessIds()
    // a source and a kind this build implements.
    const nlohmann::json& pinned = Section( policy, "pinnedParameters" );
    for ( auto it = pinned.begin(); it != pinned.end(); ++it )
-      if ( it.value().is_object() )
+      if ( RetiredAndAbsent( policy, it.key() ) )
+         continue;
+      else if ( it.value().is_object() )
          for ( auto q = it.value().begin(); q != it.value().end(); ++q )
          {
             const std::string where = "pinnedParameters:" + it.key() + "." + q.key();
@@ -576,7 +618,9 @@ nlohmann::json UnknownPolicyProcessIds()
    // accepts (else every default run would be refused).
    const nlohmann::json& valueRules = Section( policy, "parameterValues" );
    for ( auto it = valueRules.begin(); it != valueRules.end(); ++it )
-      if ( it.value().is_object() )
+      if ( RetiredAndAbsent( policy, it.key() ) )
+         continue;
+      else if ( it.value().is_object() )
          for ( auto q = it.value().begin(); q != it.value().end(); ++q )
          {
             const std::string where = "parameterValues:" + it.key() + "." + q.key();
