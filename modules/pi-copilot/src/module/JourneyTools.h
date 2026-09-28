@@ -5,6 +5,7 @@
 #define PICopilot_JourneyTools_h
 
 #include "AgentTools.h"
+#include "FileReferences.h"
 #include "JourneyTracker.h"
 #include "JourneyWriteup.h"
 
@@ -81,6 +82,20 @@ String NoteReplayStepApplied( JourneyToolHost& host, const IsoString& viewFullId
 // replay_journey lookup of that journey for this view (within an hour of the last replay activity) returned n
 // as a non-manual step; else the error for the model (nothing runs).
 String CheckReplayStep( JourneyToolHost& host, const IsoString& viewFullId, int64 keeperId, int64 n );
+// fix/replay-file-params: before apply_process (after CheckReplayStep), sets
+// FILE parameters PI Copilot resolves itself, in place: every {"file": name} /
+// {"recorded_file": name} reference, and -- for a replay step (keeperId != 0)
+// run with the recorded step's own process -- every recorded file parameter
+// the model omitted (the recorded full path, or the same file name where the
+// user keeps it: workspace icons, the process defaults, other recorded steps).
+// A replay step's file parameter given as a folder path is refused. "" when
+// fine (subs = what was set, full paths: chat log and dialog only), else the
+// error for the model; nothing may run then. host may be null (no library:
+// workspace icons and defaults only). Root thread.
+String ResolveApplyFileReferences( JourneyToolHost* host, const IsoString& viewFullId, int64 keeperId, int64 n,
+                                   const std::string& processId, nlohmann::json& parameters, nlohmann::json& tableParameters,
+                                   std::vector<FileSubstitution>& subs );
+
 // Forgets every pending replay lookup of host's library. Call it when the
 // conversation is cleared / a new chat starts, and on a library switch -- NOT
 // per user message: a replay that starts with a manual step (DBE) or waits for

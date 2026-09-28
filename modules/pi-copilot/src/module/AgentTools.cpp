@@ -15,6 +15,7 @@
 #include "Utf8.h"
 #include "ViewContext.h"
 #include "ViewPreview.h"
+#include "WorkspaceIcons.h"   // list_process_icons, get_process_icon (fix/replay-file-params)
 
 #include <pcl/Exception.h>
 #include <pcl/ImageWindow.h>
@@ -229,8 +230,9 @@ String PinnedLogText( const std::vector<PinnedParameter>& pinned )
 ToolOutcome ApplyProcessTool( const nlohmann::json& in, const ToolContext& ctx, clock::time_point t0 )
 {
    const std::string pid = StringField( in, "process_id" );
-   const nlohmann::json params = in.contains( "parameters" ) ? in["parameters"] : nlohmann::json::object();
-   const nlohmann::json tables = in.contains( "table_parameters" ) ? in["table_parameters"] : nlohmann::json::object();
+   // Not const: file references are resolved in place (fix/replay-file-params, below).
+   nlohmann::json params = in.contains( "parameters" ) ? in["parameters"] : nlohmann::json::object();
+   nlohmann::json tables = in.contains( "table_parameters" ) ? in["table_parameters"] : nlohmann::json::object();
    nlohmann::json shown = params.is_object() ? params : nlohmann::json::object();
    if ( tables.is_object() )
       for ( auto it = tables.begin(); it != tables.end(); ++it )
@@ -289,19 +291,35 @@ ToolOutcome ApplyProcessTool( const nlohmann::json& in, const ToolContext& ctx, 
          return Fail( what, e );
    }
 
+   // A denied process is refused before anything else looks at it (file resolution included: review I1).
+   {
+      ToolOutcome denied;
+      if ( RefuseDenied( pid, params, tables, SafetyRunKind::OnView, what, denied ) )
+         return denied;
+   }
+   // fix/replay-file-params: FILE parameters PI Copilot sets itself -- {"file": name} references, and a replay
+   // step's recorded files (omitted by the model, which never sees a folder). The full paths go to the chat log
+   // and the dialog; the model only ever gets file names back (fileText).
+   std::vector<FileSubstitution> fileSubs;
+   {
+      const IsoString main = target.IsMainView() ? targetId : target.Window().MainView().FullId();
+      const String e = ResolveApplyFileReferences( ctx.journeys, main, replayKeeper, replayN, pid, params, tables, fileSubs );
+      if ( !e.IsEmpty() )
+         return Fail( what, e );
+   }
+   what += FileSubstitutionLogText( fileSubs );
+   auto fileText = [&fileSubs]( const String& t ) { return fileSubs.empty() ? t : WithoutSubstitutedPaths( t, fileSubs ); };
+
    std::vector<PinnedParameter> pinned;   // pcl-move-ok: filled by ResolvePinnedParameters (push_back/clear), read only
    {
       String e = PreGateChecks( pid, params, tables, pinned );
       if ( !e.IsEmpty() )
-         return Fail( what, e );
-      ToolOutcome denied;
-      if ( RefuseDenied( pid, params, tables, SafetyRunKind::OnView, what, denied ) )
-         return denied;
+         return Fail( what, fileText( e ) );
       // Every parameter check ApplyProcess makes, as a dry run: an error comes
       // back before the user is asked, never after they approved.
       e = PrecheckApplyRun( IsoString( pid.c_str() ), params, tables, &pinned );
       if ( !e.IsEmpty() )
-         return Fail( what, e );
+         return Fail( what, fileText( e ) );
    }
    what += PinnedLogText( pinned );
 
@@ -359,7 +377,7 @@ ToolOutcome ApplyProcessTool( const nlohmann::json& in, const ToolContext& ctx, 
    }
    if ( !ar.ok )
    {
-      ToolOutcome o = Fail( what, ar.error );
+      ToolOutcome o = Fail( what, fileText( ar.error ) );
       // Task T-hist DETECT: the image WAS changed, outside History. An error,
       // never "ok" -- but the turn-end notes must still know an image changed.
       o.mutated = ar.unrecordedChange || ar.unverifiedChange;
@@ -370,10 +388,17 @@ ToolOutcome ApplyProcessTool( const nlohmann::json& in, const ToolContext& ctx, 
       { "result", "ok" },
       { "process", U8( ar.processId ) },
       { "view", U8( ar.viewId ) },
-      { "parametersSet", ar.parametersSet },
+      { "parametersSet", RedactSubstitutedPaths( ar.parametersSet, fileSubs ) },   // file names only
       { "elapsedMs", std::lround( ar.elapsedMs ) },
       { "undo", U8( ar.undo ) }   // only what ApplyProcess verified (ProcessApply.h)
    };
+   if ( !fileSubs.empty() )
+   {
+      nlohmann::json files = nlohmann::json::array();
+      for ( const FileSubstitution& f : fileSubs )
+         files.push_back( { { "where", f.where }, { "file", f.name }, { "foundIn", f.foundIn } } );
+      summary["filesSetByPICopilot"] = files;   // full paths: chat log only
+   }
    if ( !ar.pinnedSet.empty() )
       summary["pinnedParameters"] = ar.pinnedSet;   // set by PI Copilot, not by you: never pass them
    if ( !ar.resultWindows.empty() )
@@ -406,8 +431,9 @@ ToolOutcome ApplyProcessTool( const nlohmann::json& in, const ToolContext& ctx, 
 ToolOutcome RunGlobalTool( const nlohmann::json& in, const ToolContext& ctx, clock::time_point t0 )
 {
    const std::string pid = StringField( in, "process_id" );
-   const nlohmann::json params = in.contains( "parameters" ) ? in["parameters"] : nlohmann::json::object();
-   const nlohmann::json tables = in.contains( "table_parameters" ) ? in["table_parameters"] : nlohmann::json::object();
+   // Not const: {"file": name} references are resolved in place (fix/replay-file-params, review M2).
+   nlohmann::json params = in.contains( "parameters" ) ? in["parameters"] : nlohmann::json::object();
+   nlohmann::json tables = in.contains( "table_parameters" ) ? in["table_parameters"] : nlohmann::json::object();
    nlohmann::json shown = params.is_object() ? params : nlohmann::json::object();
    if ( tables.is_object() )
       for ( auto it = tables.begin(); it != tables.end(); ++it )
@@ -419,17 +445,29 @@ ToolOutcome RunGlobalTool( const nlohmann::json& in, const ToolContext& ctx, clo
    if ( pid.empty() )
       return Fail( "run_global_process", "run_global_process needs process_id; call list_processes for valid ids" );
 
+   {
+      ToolOutcome denied;
+      if ( RefuseDenied( pid, params, tables, SafetyRunKind::Global, what, denied ) )
+         return denied;
+   }
+   // {"file": name} references (fix/replay-file-params, review M2): after the deny check, before every other one.
+   std::vector<FileSubstitution> fileSubs;
+   {
+      const String e = ResolveApplyFileReferences( ctx.journeys, IsoString(), 0, 0, pid, params, tables, fileSubs );
+      if ( !e.IsEmpty() )
+         return Fail( what, e );
+   }
+   what += FileSubstitutionLogText( fileSubs );
+   auto fileText = [&fileSubs]( const String& t ) { return fileSubs.empty() ? t : WithoutSubstitutedPaths( t, fileSubs ); };
+
    std::vector<PinnedParameter> pinned;   // pcl-move-ok: filled by ResolvePinnedParameters (push_back/clear), read only
    {
       String e = PreGateChecks( pid, params, tables, pinned );
       if ( !e.IsEmpty() )
-         return Fail( what, e );
-      ToolOutcome denied;
-      if ( RefuseDenied( pid, params, tables, SafetyRunKind::Global, what, denied ) )
-         return denied;
+         return Fail( what, fileText( e ) );
       e = PrecheckGlobalRun( IsoString( pid.c_str() ), params, tables, &pinned );
       if ( !e.IsEmpty() )
-         return Fail( what, e );
+         return Fail( what, fileText( e ) );
    }
    what += PinnedLogText( pinned );
 
@@ -453,7 +491,7 @@ ToolOutcome RunGlobalTool( const nlohmann::json& in, const ToolContext& ctx, clo
             e += (i > 0 ? String( ", " ) : String()) + S16( opened[i] );
          e += ")";
       }
-      return Fail( what, e );
+      return Fail( what, fileText( e ) );
    }
    // Image journey: the windows this run created (a global run changes no open image, so there is no step note).
    if ( ctx.journeys != nullptr && ctx.journeys->tracker != nullptr )
@@ -494,7 +532,7 @@ ToolOutcome RunGlobalTool( const nlohmann::json& in, const ToolContext& ctx, clo
    nlohmann::json summary = {
       { "result", "ok" },
       { "process", U8( g.processId ) },
-      { "parametersSet", g.parametersSet },
+      { "parametersSet", RedactSubstitutedPaths( g.parametersSet, fileSubs ) },   // file names only
       { "elapsedMs", std::lround( g.elapsedMs ) },
       { "outputIds", g.outputIds },
       { "pinnedParameters", g.pinnedSet },
@@ -757,6 +795,8 @@ nlohmann::json ToolDefinitions( AgentMode mode, const ToolOptions& options )
    }
    for ( const nlohmann::json& t : JourneyToolDefinitions( mode ) )
       tools.push_back( t );
+   for ( const nlohmann::json& t : WorkspaceIconToolDefinitions() )   // read-only: every mode
+      tools.push_back( t );
    if ( mode != AgentMode::Advisor && options.runPjsr )
    {
       nlohmann::json sprops = nlohmann::json::object();
@@ -928,6 +968,8 @@ ToolOutcome ExecuteToolUncapped( const ToolCall& call, const ToolContext& ctx )
          return RunPjsrTool( in, ctx, t0 );
       if ( IsJourneyTool( call.name ) )
          return ExecuteJourneyTool( call, ctx );
+      if ( IsWorkspaceIconTool( call.name ) )
+         return ExecuteWorkspaceIconTool( call, ctx );
       // Only what this turn actually offers (the same function builds the
       // request's tools array).
       String offered;

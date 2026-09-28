@@ -254,6 +254,10 @@ String DescribeParameterChanges( const nlohmann::json& parameters, const nlohman
 // function removes the observer. Root thread.
 using InstanceBuildObserver = std::function<void( const IsoString& processId, const char* stage )>;
 void SetInstanceBuildObserverForSelfTest( InstanceBuildObserver observer );
+// Reports a ProcessInstance build made outside ProcessApply (file-reference
+// defaults, workspace-icon defaults: stages "fileDefaults", "iconDefaults") to
+// that observer, so the same instrumentation sees every build. Root thread.
+void NoteProcessInstanceBuild( const IsoString& processId, const char* stage );
 
 // Self-test only: called in ApplyProcess() after every "before" measurement
 // (History, content digest, open windows) and right before ExecuteOn() -- so a
