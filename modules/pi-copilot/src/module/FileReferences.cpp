@@ -80,7 +80,30 @@ bool IsOutputLikeId( const std::string& id )
    for ( const char* w : { "output", "overwrite", "write", "save", "destination", "export", "cache", "directory", "folder" } )
       if ( l.find( w ) != std::string::npos )
          return true;
-   return l.size() >= 3 && l.compare( l.size() - 3, 3, "dir" ) == 0;
+   if ( l.size() >= 3 && l.compare( l.size() - 3, 3, "dir" ) == 0 )
+      return true;
+   // Log and report files: whole words of the id only (camelCase, '_', '.', '-'), so "catalogFile",
+   // "dialogPath" or "logarithm" stay inputs.
+   std::string word;
+   auto isOutputWord = []( const std::string& w )
+   {
+      return w == "log" || w == "logs" || w == "report" || w == "reports";
+   };
+   for ( size_t i = 0; i <= id.size(); ++i )
+   {
+      const char c = i < id.size() ? id[i] : '\0';
+      const bool upper = c >= 'A' && c <= 'Z';
+      const bool alnum = upper || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9');
+      if ( !alnum || (upper && !word.empty()) )
+      {
+         if ( isOutputWord( word ) )
+            return true;
+         word.clear();
+      }
+      if ( alnum )
+         word += char( std::tolower( static_cast<unsigned char>( c ) ) );
+   }
+   return false;
 }
 
 // The process's default instance's file values. Never for a process PI Copilot builds no instance of before the

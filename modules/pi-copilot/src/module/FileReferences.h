@@ -48,7 +48,8 @@ struct FileCandidate
 //             e.g. GraXpert.appPath): never resolved, never shown as a file.
 //   Output -- an output file or a folder (ids with output, overwrite, write,
 //             save, destination, export, cache, directory, folder, or ending in
-//             "dir"): never resolved or filled from a recording.
+//             "dir"; or the whole word log(s) / report(s)): never resolved or
+//             filled from a recording.
 enum class FileRole { Input, Pinned, Output };
 FileRole FileRoleOf( const std::string& processId, const FileParameterValue& v );
 // The same for a parameter id or "table.column" (a table cell: the column id).
