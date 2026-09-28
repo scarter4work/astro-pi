@@ -20,7 +20,7 @@
 FROM docker.io/rockylinux/rockylinux:9
 
 RUN dnf -y install dnf-plugins-core \
- && dnf -y install gcc-toolset-14-gcc gcc-toolset-14-gcc-c++ libgomp \
+ && dnf -y install gcc-toolset-14-gcc gcc-toolset-14-gcc-c++ \
                    cmake make git patch tar gzip unzip xz zlib-devel binutils \
  && dnf clean all
 
@@ -29,20 +29,29 @@ ENV PATH=/opt/rh/gcc-toolset-14/root/usr/bin:$PATH \
     CXX=/opt/rh/gcc-toolset-14/root/usr/bin/g++ \
     DEPS=/opt/deps
 
+# Every third-party input is pinned by checksum or full commit: these bytes
+# end up inside modules signed with the release key.
 ARG EIGEN_VER=5.0.1
+ARG EIGEN_SHA256=e9c326dc8c05cd1e044c71f30f1b2e34a6161a3b6ecf445d56b53ff1669e3dec
 ARG CERES_VER=2.2.0
-ARG OPENCL_VER=v2025.07.22
+ARG CERES_SHA256=12efacfadbfdc1bbfa203c236e96f4d3c210bed96994288b3ff0c8e7c6f350d4
+# Khronos tag v2025.07.22
+ARG OPENCL_HEADERS_COMMIT=8a97ebc88daa3495d6f57ec10bb515224400186f
+ARG OPENCL_ICD_COMMIT=ad770a1b64c6b8d5f2ed4e153f22e4f45939f27f
 
 WORKDIR /tmp/src
-RUN curl -fsSL https://gitlab.com/libeigen/eigen/-/archive/${EIGEN_VER}/eigen-${EIGEN_VER}.tar.gz | tar xz \
+RUN curl -fsSL -o eigen.tgz https://gitlab.com/libeigen/eigen/-/archive/${EIGEN_VER}/eigen-${EIGEN_VER}.tar.gz \
+ && echo "${EIGEN_SHA256}  eigen.tgz" | sha256sum -c - && tar xzf eigen.tgz \
  && cmake -S eigen-${EIGEN_VER} -B eigen-build -DCMAKE_INSTALL_PREFIX=$DEPS \
           -DEIGEN_BUILD_TESTING=OFF -DEIGEN_BUILD_DOC=OFF -DBUILD_TESTING=OFF \
           -DEIGEN_BUILD_BLAS=OFF -DEIGEN_BUILD_LAPACK=OFF \
  && cmake --install eigen-build \
  && rm -rf /tmp/src/*
 
-RUN git clone -q --depth 1 -b ${OPENCL_VER} https://github.com/KhronosGroup/OpenCL-Headers.git \
- && git clone -q --depth 1 -b ${OPENCL_VER} https://github.com/KhronosGroup/OpenCL-ICD-Loader.git \
+RUN git clone -q https://github.com/KhronosGroup/OpenCL-Headers.git \
+ && git -C OpenCL-Headers checkout -q ${OPENCL_HEADERS_COMMIT} \
+ && git clone -q https://github.com/KhronosGroup/OpenCL-ICD-Loader.git \
+ && git -C OpenCL-ICD-Loader checkout -q ${OPENCL_ICD_COMMIT} \
  && cmake -S OpenCL-Headers -B headers-build -DCMAKE_INSTALL_PREFIX=$DEPS -DBUILD_TESTING=OFF \
  && cmake --install headers-build \
  && cmake -S OpenCL-ICD-Loader -B icd-build -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=$DEPS \
@@ -54,7 +63,8 @@ RUN git clone -q --depth 1 -b ${OPENCL_VER} https://github.com/KhronosGroup/Open
 # Upstream Ceres commit f9b7b66 ("Support Eigen3 5.0.0"), as cherry-picked by
 # Fedora's ceres-solver package; 2.2.0 predates Eigen 5.
 COPY ceres-solver-Support-Eigen3-5.0.0.patch /tmp/
-RUN curl -fsSL https://github.com/ceres-solver/ceres-solver/archive/refs/tags/${CERES_VER}.tar.gz | tar xz \
+RUN curl -fsSL -o ceres.tgz https://github.com/ceres-solver/ceres-solver/archive/refs/tags/${CERES_VER}.tar.gz \
+ && echo "${CERES_SHA256}  ceres.tgz" | sha256sum -c - && tar xzf ceres.tgz \
  && patch -d ceres-solver-${CERES_VER} -p1 < /tmp/ceres-solver-Support-Eigen3-5.0.0.patch \
  && cmake -S ceres-solver-${CERES_VER} -B ceres-build -DCMAKE_BUILD_TYPE=Release \
           -DCMAKE_INSTALL_PREFIX=$DEPS -DCMAKE_PREFIX_PATH=$DEPS \
@@ -71,7 +81,7 @@ RUN curl -fsSL https://github.com/ceres-solver/ceres-solver/archive/refs/tags/${
 # not have -- so they cannot be linked into a portable module. Same commit as
 # ~/PCL, so headers and archives stay in lockstep with what modules compile
 # against.
-ARG PCL_COMMIT=3a4af8008
+ARG PCL_COMMIT=3a4af80082cfe07dcc11099e8d93ea9cb72101b1
 ENV PCLDIR=/opt/pcl
 RUN git clone -q https://gitlab.com/pixinsight/PCL.git $PCLDIR \
  && git -C $PCLDIR checkout -q ${PCL_COMMIT} \

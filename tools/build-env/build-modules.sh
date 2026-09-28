@@ -11,16 +11,13 @@
 # Usage: tools/build-env/build-modules.sh [--no-tests]
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-IMAGE="astro-pi-build:rocky9"
+. "$ROOT/tools/build-env/image-tag.sh"
 RUN_TESTS=1
 [ "${1:-}" = "--no-tests" ] && RUN_TESTS=0
 
 die() { echo "FAIL: $*" >&2; exit 1; }
 command -v podman >/dev/null || die "podman not found"
-if ! podman image exists "$IMAGE"; then
-   echo "== building $IMAGE (one-time, ~10 min) =="
-   podman build -t "$IMAGE" "$ROOT/tools/build-env" >/dev/null
-fi
+ensure_image
 
 # label=disable: bind-mounting the repo without relabelling it (no :Z) on
 # SELinux hosts. keep-id runs the build AS the invoking user (not container
@@ -40,7 +37,7 @@ podman run --rm --security-opt label=disable --userns=keep-id \
    if [ "$RUN_TESTS" = 1 ]; then
       # test_gpu_context needs a GPU; the container has none. It runs on the
       # host below, against this same container-built binary.
-      (cd /src/modules/nukex/build-portable && ctest --output-on-failure -j"$(nproc)" -E "^test_gpu_context$")
+      (cd /src/modules/nukex/build-portable && ctest --output-on-failure --no-tests=error -j"$(nproc)" -E "^test_gpu_context$")
    fi'
 
 if [ "$RUN_TESTS" = 1 ]; then
