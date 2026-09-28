@@ -3,6 +3,7 @@
 
 #include "SystemPrompt.h"
 #include "JourneyTools.h"
+#include "WorkspaceIcons.h"
 
 #include <string>
 
@@ -49,7 +50,8 @@ const char* const kCopilotMode =
 
 const char* const kGuidedMode =
    "MODE: Guided. Each apply_process or run_global_process call first shows the user a confirmation dialog listing "
-   "the process and its parameters. If a tool_result says the user declined, do not repeat that call; ask what "
+   "the process and its parameters, and each history_step call first shows one listing the History steps it would "
+   "undo or redo. If a tool_result says the user declined, do not repeat that call; ask what "
    "they would like instead. Approved apply_process runs are recorded in the view's History and can be undone.\n\n";
 
 const char* const kAdvisorMode =
@@ -73,7 +75,13 @@ const char* const kApplyTool =
    "(the view this message is about unless view_id is given). To work on any other view, inspect it first with "
    "get_view_context {view_id} in the same turn.\n"
    "- run_global_process {process_id, parameters, table_parameters}: runs a process in the global context, e.g. "
-   "ImageIntegration over files on disk. It opens NEW image windows and never changes an open image.\n";
+   "ImageIntegration over files on disk. It opens NEW image windows and never changes an open image.\n"
+   "- history_step {direction: \"undo\"|\"redo\", count, view_id}: steps the view's History back or forward, exactly like "
+   "Edit > Undo / Redo, and returns the History entries it passed plus fresh statistics and a preview. Use it when the "
+   "user asks you to undo something (\"undo the last two steps and try X instead\": history_step undo 2, then "
+   "apply_process), or to take back your own step that made the image worse. Never re-create an earlier state with "
+   "another process when history_step can return to it. Undone steps stay redoable until the next process runs on "
+   "the view. On a preview it steps only that preview's own History.\n";
 
 const char* const kScriptTool =
    "- run_pjsr {code, purpose}: runs a PixInsight JavaScript (PJSR) script, but only after the user has read and "
@@ -135,6 +143,7 @@ String BuildSystemPrompt( AgentMode mode, const ToolOptions& options )
    p += mode == AgentMode::Copilot ? kCopilotMode : mode == AgentMode::Guided ? kGuidedMode : kAdvisorMode;
    p += kReadTools;
    p += kJourneyPromptRead;
+   p += kWorkspaceIconPrompt;   // every mode (fix/replay-file-params)
    if ( mode != AgentMode::Advisor )
    {
       p += kApplyTool;

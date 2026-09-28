@@ -502,6 +502,7 @@ ToolContext PICopilotInterface::MakeToolContext()
    ctx.confirm = &PICopilotInterface::ConfirmApply;
    ctx.runPjsr = m_turnTools.runPjsr;
    ctx.confirmScript = &ScriptConfirmDialog::Ask;   // every script, every mode
+   ctx.confirmHistory = &PICopilotInterface::ConfirmHistoryStep;   // history_step, Guided only
    // The journey tools use the production library (Task 10 concern 3: without
    // this they answer "not available"). Rebuilt per turn: the ⚙ export folder
    // and the store (reopened after a failure) are current.
@@ -516,6 +517,13 @@ bool PICopilotInterface::ConfirmApply( const String& processId, const String& vi
    // Asked in Guided mode, and in EVERY mode when the process safety policy
    // says confirm, so the title names neither mode.
    return MessageBox( text, String::UTF8ToUTF16( "PI Copilot \xE2\x80\x94 confirm" ), StdIcon::Question,
+                      StdButton::Yes, StdButton::No, StdButton::NoButton, 1/*default: No*/, 1/*Esc: No*/ ).Execute()
+          == StdButton::Yes;
+}
+
+bool PICopilotInterface::ConfirmHistoryStep( const String& html )
+{
+   return MessageBox( html, String::UTF8ToUTF16( "PI Copilot \xE2\x80\x94 confirm" ), StdIcon::Question,
                       StdButton::Yes, StdButton::No, StdButton::NoButton, 1/*default: No*/, 1/*Esc: No*/ ).Execute()
           == StdButton::Yes;
 }

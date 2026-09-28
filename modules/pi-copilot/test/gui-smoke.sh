@@ -21,7 +21,8 @@
 set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$HERE/.." && pwd)"
-PI=/opt/PixInsight/bin/PixInsight.sh
+. "$HERE/harness-lib.sh"   # data isolation + slot module seeding (see its header)
+PI="$PICOPILOT_PI"
 KEYS=/home/scarter4work/projects/keys/scarter4work_keys.xssk
 SO="$(realpath -e "$ROOT/build/src/module/PICopilot-pxm.so")"
 OUT="${1:?usage: gui-smoke.sh <out-dir>}"
@@ -39,16 +40,8 @@ mkdir -m 700 "$PRIV" 2>/dev/null || true
 TMPDIR="$(mktemp -d "$PRIV/gui.XXXXXX")"; export TMPDIR
 SLOT_SETTINGS="$(printf '%s/core-%03d-pxi.settings' "$HOME/.PixInsight" "$SLOT")"
 rm -f "$SLOT_SETTINGS"
-REAL_LIB="$HOME/.local/share/PICopilot"
-REAL_LIB_BEFORE="$( [ -e "$REAL_LIB" ] && find "$REAL_LIB" -printf '%p %s %T@\n' 2>/dev/null | sort | md5sum || echo absent )"
-JOURNEY_XDG="$TMPDIR/xdg"; mkdir "$JOURNEY_XDG"
-REAL_XDG="${XDG_DATA_HOME:-$HOME/.local/share}"
-for entry in "$REAL_XDG"/* "$REAL_XDG"/.[!.]*; do
-   [ -e "$entry" ] || [ -L "$entry" ] || continue
-   [ "$(basename "$entry")" = "PICopilot" ] && continue
-   ln -s "$entry" "$JOURNEY_XDG/$(basename "$entry")"
-done
-export XDG_DATA_HOME="$JOURNEY_XDG"
+picopilot_isolate_data "$TMPDIR/xdg" || exit 1
+JOURNEYS_BEFORE="$(picopilot_journeys_fingerprint)"
 export PICOPILOT_GUI_DIR="$TMPDIR/gui"; mkdir -m 700 "$PICOPILOT_GUI_DIR"
 export PICOPILOT_SELFTEST_PHASE="$TMPDIR/phase.json"
 export PICOPILOT_SELFTEST_OUT="$TMPDIR/unused-verdict.json"   # enables the phase handlers only
@@ -63,6 +56,7 @@ cleanup()
 }
 trap cleanup EXIT
 
+picopilot_require_isolation || exit 1
 "$PI" --sign-module-file="$SO" --xssk-file="$KEYS" --xssk-password="$(cat /tmp/.pi_codesign_pass)" >/dev/null
 
 Xvfb ":$DISPLAY_NO" -screen 0 1920x1080x24 -nolisten tcp >"$OUT/xvfb.log" 2>&1 & XVFB_PID=$!
@@ -88,7 +82,10 @@ while True:
     c, _ = s.accept(); threading.Thread(target=serve, args=(c,), daemon=True).start()
 PY
 
+# The slot's settings: every installed module EXCEPT the installed PICopilot-pxm.so.
+picopilot_seed_slot_modules "$SLOT" "$TMPDIR" || exit 1
 START=$(date +%s.%N)
+picopilot_require_isolation || exit 1
 timeout 900 "$PI" -n="$SLOT" --no-startup-scripts -m="$SO" -r="$HERE/gui-smoke-setup.js" >"$OUT/pi.log" 2>&1 & PI_PID=$!
 # A fresh slot shows start-up notices (e.g. "a system temporary folder is used
 # for swap files"): each is answered with Return until the script is ready.
@@ -107,16 +104,18 @@ fi
 
 cp "$PICOPILOT_GUI_DIR/ready" "$OUT/ready.txt"
 cp "$PICOPILOT_GUI_DIR/panel.json" "$OUT/panel.json" 2>/dev/null || true
-# The DEV module must be the one running (review m7): a fresh slot imports an old settings file, and an
-# installed PICopilot-pxm.so listed there makes -m= fail ("Duplicate MetaProcess identifier").
+# The DEV module must be the one running (review m7), and the only PICopilot-pxm.so mapped: a settings-less
+# slot installs every bin/*-pxm.so, the installed PICopilot included (prevented by picopilot_seed_slot_modules).
 LOADED="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("module",""))' "$OUT/panel.json" 2>/dev/null || true)"
 if [ "$(realpath -e "$LOADED" 2>/dev/null || true)" != "$SO" ]; then
    echo "FAIL: the dev module did not load: running '${LOADED:-no PICopilot phase handler answered}', expected $SO."
-   echo "      An installed PICopilot-pxm.so in the slot's module list collides with -m= (see $OUT/pi.log)."
+   echo "      An installed PICopilot-pxm.so in the slot's module list collides with -m= (see $OUT/pi.log, $TMPDIR/seed-bootstrap.log)."
    exit 1
 fi
 echo "dev module loaded: $LOADED"
+picopilot_assert_only_dev_mapped "$SLOT" "$SO" || exit 1
 python3 "$HERE/gui_drive.py" ${PICOPILOT_GUI_DRIVE_ARGS:-} "$OUT" || { echo "FAIL: driver"; exit 1; }
+picopilot_require_isolation || exit 1
 "$PI" -x="$SLOT:$HERE/gui-smoke-keep.js" >/dev/null 2>&1
 for _ in $(seq 240); do [ -f "$PICOPILOT_GUI_DIR/keep-end" ] && break; kill -0 "$PI_PID" 2>/dev/null || break; sleep 0.25; done
 cp "$PICOPILOT_GUI_DIR/keep-end" "$OUT/keep-end.txt" 2>/dev/null || true
@@ -137,8 +136,7 @@ EXIT_AT=$(date +%s.%N)
 cp "$PICOPILOT_GUI_DIR/keep.json" "$OUT/keep.json" 2>/dev/null || true
 printf 'pi exit code %s; shutdown took %.1f s after Quit (total %.1f s)\n' \
    "$rc" "$(echo "$EXIT_AT - $END_SCRIPT" | bc)" "$(echo "$EXIT_AT - $START" | bc)" | tee "$OUT/result.txt"
-REAL_LIB_AFTER="$( [ -e "$REAL_LIB" ] && find "$REAL_LIB" -printf '%p %s %T@\n' 2>/dev/null | sort | md5sum || echo absent )"
-[ "$REAL_LIB_BEFORE" = "$REAL_LIB_AFTER" ] || { echo "FAIL: the real journey library changed"; exit 1; }
+picopilot_journeys_check "$JOURNEYS_BEFORE" || exit 1
 ok=1
 [ "$rc" = 0 ] || { echo "FAIL: PixInsight exit code $rc"; ok=0; }
 grep -q '"writeupStarted":true' "$OUT/keep.json" 2>/dev/null || { echo "FAIL: no write-up was in flight (keep.json)"; ok=0; }

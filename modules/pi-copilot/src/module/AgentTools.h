@@ -35,7 +35,7 @@ struct ToolOptions
 
 // The Anthropic "tools" array for a mode: list_processes, describe_process,
 // get_view_context, and -- except in Advisor -- apply_process and
-// run_global_process; then the journey tools (JourneyToolDefinitions: four in
+// run_global_process, history_step; then the journey tools (JourneyToolDefinitions: four in
 // every mode, start_journey + replay_journey except in Advisor); run_pjsr
 // (last) when options.runPjsr.
 nlohmann::json ToolDefinitions( AgentMode mode, const ToolOptions& options = ToolOptions() );
@@ -62,6 +62,10 @@ using ConfirmApplyFn = std::function<bool( const String& processId, const String
 
 // run_pjsr: asked for EVERY script, in every mode; true = the user clicked Run script.
 using ConfirmScriptFn = std::function<bool( const String& purpose, const String& code, const IsoString& targetViewId )>;
+
+// history_step (HistoryStepTool.h): asked in Guided mode before stepping a
+// view's History; `html` is HistoryStepDialogHtml(). true = the user approved.
+using ConfirmHistoryFn = std::function<bool( const String& html )>;
 
 struct JourneyToolHost;   // JourneyTools.h
 
@@ -90,6 +94,9 @@ struct ToolContext
    // Required for run_pjsr: shows the whole script; nothing runs without a yes.
    ConfirmScriptFn confirmScript;
 
+   // Required for history_step in Guided mode.
+   ConfirmHistoryFn confirmHistory;
+
    // Image journey (0.2.0.0): the library, tracker and keeper the journey
    // tools use, and where Copilot's own steps are reported (Ruling 21).
    // Null: journey tools answer "not available"; nothing is reported.
@@ -97,7 +104,8 @@ struct ToolContext
 };
 
 // True when the reply's content blocks hold a tool_use of a tool that can
-// change or create images (apply_process, run_global_process, run_pjsr): the
+// change or create images (apply_process, run_global_process, run_pjsr,
+// history_step): the
 // panel runs such a step only while PixInsight is idle (ProcessActivity.h,
 // Task T-hist). Pure; any other shape is false.
 bool ResponseCallsImageChangingTool( const nlohmann::json& contentBlocks );

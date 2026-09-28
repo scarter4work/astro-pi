@@ -157,14 +157,19 @@ std::vector<std::string> TableColumnIds( const std::string& processId, const std
 // file name; f = the first location found. A table whose column ids cannot be
 // read fails CLOSED: every one of its values is treated as a file value and
 // f.catalogError is set (the step is manual).
+// ignoreFileParams (ManualWhyExceptFiles): values of FILE parameters are kept
+// as they are and never count as a location found; everything else as usual.
 nlohmann::json RedactStep( const std::string& processId, const nlohmann::json& parameters, const nlohmann::json& tableParameters,
-                           PathFound& f )
+                           PathFound& f, bool ignoreFileParams = false )
 {
    RequireRootThread( "PI Copilot's export path check" );
    nlohmann::json p = nlohmann::json::object(), t = nlohmann::json::object();
    if ( parameters.is_object() )
       for ( auto it = parameters.begin(); it != parameters.end(); ++it )
-         p[it.key()] = RedactValue( it.value(), IsFileParameter( processId, it.key() ), it.key(), f );
+      {
+         const bool fileParameter = IsFileParameter( processId, it.key() );
+         p[it.key()] = ignoreFileParams && fileParameter ? it.value() : RedactValue( it.value(), fileParameter, it.key(), f );
+      }
    else
       p = RedactValue( parameters, false, "parameters", f );
    if ( tableParameters.is_object() )
@@ -174,7 +179,7 @@ nlohmann::json RedactStep( const std::string& processId, const nlohmann::json& p
          bool tableIsFile = IsFileParameter( processId, tid );
          if ( !it.value().is_array() )
          {
-            t[tid] = RedactValue( it.value(), tableIsFile, tid, f );
+            t[tid] = ignoreFileParams && tableIsFile ? it.value() : RedactValue( it.value(), tableIsFile, tid, f );
             continue;
          }
          std::vector<std::string> cols;
@@ -211,8 +216,9 @@ nlohmann::json RedactStep( const std::string& processId, const nlohmann::json& p
                for ( size_t k = 0; k < row.size(); ++k )
                {
                   const bool known = k < cols.size();
-                  out.push_back( RedactValue( row[k], tableIsFile || (known && IsFileParameter( processId, tid + "." + cols[k] )),
-                                              at + (known ? "." + cols[k] : "[" + std::to_string( k ) + "]"), f ) );
+                  const bool fileCell = tableIsFile || (known && IsFileParameter( processId, tid + "." + cols[k] ));
+                  out.push_back( ignoreFileParams && fileCell && f.catalogError.empty() ? row[k]
+                                 : RedactValue( row[k], fileCell, at + (known ? "." + cols[k] : "[" + std::to_string( k ) + "]"), f ) );
                }
                rows.push_back( out );
             }
@@ -220,12 +226,15 @@ nlohmann::json RedactStep( const std::string& processId, const nlohmann::json& p
             {
                nlohmann::json out = nlohmann::json::object();
                for ( auto c = row.begin(); c != row.end(); ++c )
-                  out[c.key()] = RedactValue( c.value(), tableIsFile || IsFileParameter( processId, tid + "." + c.key() ),
-                                              at + "." + c.key(), f );
+               {
+                  const bool fileCell = tableIsFile || IsFileParameter( processId, tid + "." + c.key() );
+                  out[c.key()] = ignoreFileParams && fileCell && f.catalogError.empty() ? c.value()
+                                 : RedactValue( c.value(), fileCell, at + "." + c.key(), f );
+               }
                rows.push_back( out );
             }
             else
-               rows.push_back( RedactValue( row, tableIsFile, at, f ) );
+               rows.push_back( ignoreFileParams && tableIsFile && f.catalogError.empty() ? row : RedactValue( row, tableIsFile, at, f ) );
          }
          t[tid] = rows;
       }
@@ -235,10 +244,10 @@ nlohmann::json RedactStep( const std::string& processId, const nlohmann::json& p
 }
 
 // Root thread only (throws pcl::Error elsewhere).
-bool PathParameter( const StepRow& s, PathFound& f )
+bool PathParameter( const StepRow& s, PathFound& f, bool ignoreFileParams = false )
 {
    RedactStep( s.processId, s.params.value( "parameters", nlohmann::json::object() ),
-               s.params.value( "tableParameters", nlohmann::json::object() ), f );
+               s.params.value( "tableParameters", nlohmann::json::object() ), f, ignoreFileParams );
    return f.Found();
 }
 
@@ -656,7 +665,10 @@ bool IsFileParameter( const std::string& processId, const std::string& id )
    return l.size() >= 3 && l.compare( l.size() - 3, 3, "dir" ) == 0;
 }
 
-std::string ManualWhy( const StepRow& s )
+namespace
+{
+
+std::string ManualWhyImpl( const StepRow& s, bool ignoreFileParams )
 {
    RequireRootThread( "ManualWhy" );
    if ( s.processId == "Script" )
@@ -670,7 +682,7 @@ std::string ManualWhy( const StepRow& s )
    if ( IsManualProcess( s.processId ) )
       return s.processId + " needs your hand (sample points or interactive geometry): set it up yourself, then continue";
    PathFound f;
-   if ( PathParameter( s, f ) )
+   if ( PathParameter( s, f, ignoreFileParams ) )
    {
       if ( !f.catalogError.empty() )
          return "could not read the columns of table " + f.catalogTable + " from the process catalog (" + f.catalogError
@@ -688,6 +700,82 @@ std::string ManualWhy( const StepRow& s )
       return note.empty() ? std::string( "cannot be replayed" ) : note;
    }
    return std::string();
+}
+
+} // namespace
+
+std::string ManualWhy( const StepRow& s )
+{
+   return ManualWhyImpl( s, false );
+}
+
+std::string ManualWhyExceptFiles( const StepRow& s )
+{
+   return ManualWhyImpl( s, true );
+}
+
+std::string PathFileName( const std::string& path )
+{
+   return FileNameOf( path );
+}
+
+std::vector<std::string> ProcessTableColumnIds( const std::string& processId, const std::string& tableId )
+{
+   return TableColumnIds( processId, tableId );
+}
+
+std::string FileParameterValue::Where() const
+{
+   if ( !inTable )
+      return parameter;
+   return parameter + "[" + std::to_string( row ) + "]" + (columnId.empty() ? "[" + std::to_string( column ) + "]" : "." + columnId);
+}
+
+std::vector<FileParameterValue> FileParameterValues( const std::string& processId, const nlohmann::json& parameters,
+                                                     const nlohmann::json& tableParameters )
+{
+   RequireRootThread( "FileParameterValues" );
+   std::vector<FileParameterValue> r;
+   auto nonEmpty = []( const nlohmann::json& v ) { return v.is_string() && !v.get_ref<const std::string&>().empty(); };
+   if ( parameters.is_object() )
+      for ( auto it = parameters.begin(); it != parameters.end(); ++it )
+         if ( nonEmpty( it.value() ) && IsFileParameter( processId, it.key() ) )
+         {
+            FileParameterValue v;
+            v.parameter = it.key();
+            v.value = it.value().get<std::string>();
+            r.push_back( v );
+         }
+   if ( tableParameters.is_object() )
+      for ( auto it = tableParameters.begin(); it != tableParameters.end(); ++it )
+      {
+         if ( !it.value().is_array() )
+            continue;
+         const std::string& tid = it.key();
+         const bool tableIsFile = IsFileParameter( processId, tid );
+         const std::vector<std::string> cols = TableColumnIds( processId, tid );   // throws: the caller fails closed
+         for ( size_t row = 0; row < it.value().size(); ++row )
+         {
+            const nlohmann::json& cells = it.value()[row];
+            if ( !cells.is_array() )
+               continue;
+            for ( size_t k = 0; k < cells.size(); ++k )
+            {
+               const bool known = k < cols.size();
+               if ( !nonEmpty( cells[k] ) || !(tableIsFile || (known && IsFileParameter( processId, tid + "." + cols[k] ))) )
+                  continue;
+               FileParameterValue v;
+               v.parameter = tid;
+               v.inTable = true;
+               v.row = row;
+               v.column = k;
+               v.columnId = known ? cols[k] : std::string();
+               v.value = cells[k].get<std::string>();
+               r.push_back( v );
+            }
+         }
+      }
+   return r;
 }
 
 nlohmann::json PrivacyStripStepParameters( const std::string& processId, const nlohmann::json& parameters,
