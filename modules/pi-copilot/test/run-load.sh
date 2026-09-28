@@ -2,7 +2,8 @@
 set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$HERE/.." && pwd)"
-PI=/opt/PixInsight/bin/PixInsight.sh
+. "$HERE/harness-lib.sh"   # data isolation + slot module seeding (see its header)
+PI="$PICOPILOT_PI"
 KEYS=/home/scarter4work/projects/keys/scarter4work_keys.xssk
 PASS="$(cat /tmp/.pi_codesign_pass)"
 SO="$ROOT/build/src/module/PICopilot-pxm.so"
@@ -41,9 +42,16 @@ PICOPILOT_TEST_SLOT=$(( 10#$PICOPILOT_TEST_SLOT ))
 
 SLOT_SETTINGS="$(printf '%s/core-%03d-pxi.settings' "$HOME/.PixInsight" "$PICOPILOT_TEST_SLOT")"
 rm -f "$SLOT_SETTINGS"
-trap 'rm -f "$SLOT_SETTINGS"' EXIT
+# Private scratch (0700) for this run; holds the private XDG_DATA_HOME too.
+RUN_DIR="$(mktemp -d "${TMPDIR:-/tmp}/picopilot-load.XXXXXX")"
+chmod 700 "$RUN_DIR"
+trap 'rm -f "$SLOT_SETTINGS"; rm -rf "$RUN_DIR"' EXIT
+picopilot_isolate_data "$RUN_DIR/xdg" || exit 1
+JOURNEYS_BEFORE="$(picopilot_journeys_fingerprint)"
 
 [ -f "$SO" ] || { echo "FAIL: module not built at $SO"; exit 1; }
+SO="$(realpath -e "$SO")"
+picopilot_require_isolation || exit 1
 "$PI" --sign-module-file="$SO" --xssk-file="$KEYS" --xssk-password="$PASS"
 [ -f "${SO%.so}.xsgn" ] || { echo "FAIL: signing produced no .xsgn"; exit 1; }
 
@@ -53,9 +61,7 @@ trap 'rm -f "$SLOT_SETTINGS"' EXIT
 #
 # Private, unpredictable result path (mktemp) passed via env var — same
 # defense-in-depth as run-selftest.sh, rather than a fixed /tmp name.
-OUT2="$(mktemp -u "${TMPDIR:-/tmp}/picopilot-load.XXXXXX.txt")"
-rm -f "$OUT2"
-trap 'rm -f "$OUT2" "$SLOT_SETTINGS"' EXIT
+OUT2="$RUN_DIR/load-probe-out.txt"
 # Private virtual display (Xvfb). A core-side rejection can raise a MODAL
 # dialog that no module API can suppress or catch (Task 1: "PixelMath: Invalid
 # table row index"); on the user's real DISPLAY that dialog would block his
@@ -64,9 +70,12 @@ trap 'rm -f "$OUT2" "$SLOT_SETTINGS"' EXIT
 # xvfb-run still tears down the Xvfb server (which also takes down any
 # PixInsight process the PixInsight.sh wrapper left behind).
 command -v xvfb-run >/dev/null 2>&1 || { echo "FAIL: xvfb-run not found (needed to keep dialogs off the real display)"; exit 1; }
+picopilot_seed_slot_modules "$PICOPILOT_TEST_SLOT" "$RUN_DIR" || exit 1
+picopilot_require_isolation || exit 1
 if ! PICOPILOT_LOAD_OUT="$OUT2" xvfb-run -a -s "-screen 0 1920x1080x24" \
         timeout 180 "$PI" -n="$PICOPILOT_TEST_SLOT" --automation-mode --no-startup-scripts -m="$SO" -r="$HERE/load-probe.js" --force-exit; then
    echo "FAIL: PI load timed out (180s) or exited non-zero"; exit 1
 fi
 [ -f "$OUT2" ] || { echo "FAIL: module loaded but PI never reached the probe script (load error)"; exit 1; }
+picopilot_journeys_check "$JOURNEYS_BEFORE" || exit 1
 echo "PASS: module built, signed, and loaded"

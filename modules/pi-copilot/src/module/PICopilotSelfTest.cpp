@@ -27,6 +27,8 @@
 #include <chrono>
 #include <cstdlib>
 
+#include <dlfcn.h>
+
 namespace pcl
 {
 
@@ -373,6 +375,16 @@ bool RunSelfTest( String& jsonOut )
 
    SelfTestSectionMark( nullptr );
    j["sectionTimings"] = SelfTestTiming().done;
+
+   // Which PICopilot-pxm.so this code actually lives in (dladdr on this very
+   // function). test/run-selftest.sh requires it to be the -m= dev build: an
+   // installed release that PixInsight also loaded must never be the one that
+   // answered (harness-lib.sh, picopilot_seed_slot_modules).
+   {
+      Dl_info info = {};
+      j["modulePath"] = dladdr( reinterpret_cast<void*>( &RunSelfTest ), &info ) != 0 && info.dli_fname != nullptr
+                      ? std::string( info.dli_fname ) : std::string();
+   }
 
    ok = ok && visionOk && agentOk && inc5Ok && journeyOk;
    j["ok"] = ok;
