@@ -79,44 +79,50 @@ def module_so_from_argv(argv):
     return None
 
 
+def picopilot_mappings(pid, basename):
+    """Realpaths of every file named <basename> mapped in /proc/<pid>/maps
+    (None if the process is gone)."""
+    try:
+        with open("/proc/%s/maps" % pid) as f:
+            maps = f.read()
+    except OSError:
+        return None
+    found = set()
+    for line in maps.splitlines():
+        parts = line.split(None, 5)
+        if len(parts) == 6 and os.path.basename(parts[5]) == basename:
+            found.add(os.path.realpath(parts[5]))
+    return found
+
+
 def check_module_load(pid, argv, expected_so_cli, timeout_s):
-    """Item 3: verify /proc/<pid>/maps actually mapped the -m= module we asked
-    for, not some other PICopilot-pxm.so PI's own module search path picked up
-    (measured cause of the "T-hist takes minutes, not a hang" confounder: a
-    /tmp harness copy silently ran the INSTALLED 0.1.2.0 module instead).
-    Returns (ok, expected_realpath, actual_path_or_None)."""
-    expected = argv and module_so_from_argv(argv)
+    """Item 3 (made strict 2026-09-27): the -m= dev module must be mapped, and
+    NO other file named PICopilot-pxm.so may ever be. The old check took the
+    FIRST PICopilot-pxm.so line in /proc/<pid>/maps, but on a slot that did
+    PixInsight's first-run module scan both the installed
+    /opt/PixInsight/bin/PICopilot-pxm.so and the dev build are mapped, the
+    installed one ~70 ms earlier (measured) -- so the verdict depended on
+    where a 0.5 s poll landed: the intermittent "module-load mismatch".
+    harness-lib.sh now seeds the slot so the installed one is never loaded;
+    this check stays loud in case anything reintroduces it.
+    Returns (ok, reason, expected_realpath, foreign_realpaths)."""
+    expected = (argv and module_so_from_argv(argv)) or expected_so_cli
     if not expected:
-        expected = expected_so_cli
-    if not expected:
-        return True, None, None  # nothing to compare against; not this check's job
+        return False, "no -m= module to verify", None, []
     expected_real = os.path.realpath(expected)
     basename = os.path.basename(expected_real)
     deadline = time.time() + timeout_s
     while time.time() < deadline:
-        if not pid_alive(pid):
-            return True, expected_real, None  # process already gone; another check will report that
-        try:
-            with open("/proc/%s/maps" % pid) as f:
-                maps = f.read()
-        except OSError:
-            return True, expected_real, None
-        found = None
-        for line in maps.splitlines():
-            parts = line.split(None, 5)
-            if len(parts) < 6:
-                continue
-            path = parts[5]
-            if os.path.basename(path) == basename:
-                found = path
-                break
-        if found:
-            actual_real = os.path.realpath(found)
-            return actual_real == expected_real, expected_real, actual_real
-        time.sleep(0.5)
-    log("module-load check: %s never appeared in /proc/%d/maps within %ss (not failing here; "
-        "some other check will surface a module load failure)" % (basename, pid, timeout_s))
-    return True, expected_real, None
+        found = picopilot_mappings(pid, basename)
+        if found is None:
+            return True, None, expected_real, []   # process already gone; the run's own exit status reports that
+        foreign = sorted(found - {expected_real})
+        if foreign:
+            return False, "module-mismatch", expected_real, foreign
+        if expected_real in found:
+            return True, None, expected_real, []
+        time.sleep(0.1)
+    return False, "module-not-loaded", expected_real, []
 
 
 def resolve_cap(budgets, source, section, floor_s, multiplier, default_cap):
@@ -229,6 +235,32 @@ def write_marker(path, payload):
     os.replace(tmp, path)
 
 
+def fail_module(args, pid, reason, expected_real, actual):
+    log_dir = os.path.join(args.log_dir_base, "%s-%d-%d" % (reason, int(time.time()), pid))
+    os.makedirs(log_dir, exist_ok=True)
+    detail_path = os.path.join(log_dir, "module-check.txt")
+    with open(detail_path, "w") as f:
+        f.write("reason: %s\nexpected (-m=, realpath): %s\nactual: %s\n" % (reason, expected_real, actual))
+    # Marker MUST land before we kill PI: run-selftest.sh's foreground
+    # `timeout ... "$PI" ...` unblocks the instant PI dies, and it then
+    # kills this watchdog process almost immediately afterwards -- if the
+    # marker were written after kill_pi(), that race can (and, measured,
+    # does) reap us before write_marker() ever runs, so run-selftest.sh
+    # sees a plain nonzero exit with no marker and reports the generic
+    # timeout/FAIL instead of this specific, evidenced one.
+    write_marker(args.fail_marker, {
+        "reason": reason,
+        "expected": expected_real,
+        "actual": actual,
+        "pid": pid,
+        "log_dir": log_dir,
+        "detail": detail_path,
+    })
+    kill_pi(pid)
+    log("FAIL %s: expected %s, got %s" % (reason, expected_real, actual))
+    return 0
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--slot", required=True)
@@ -244,7 +276,11 @@ def main():
     ap.add_argument("--default-cap", type=float, default=90.0)
     ap.add_argument("--override", default="")
     ap.add_argument("--gdb-timeout", type=float, default=90.0)
-    ap.add_argument("--module-load-timeout", type=float, default=20.0)
+    ap.add_argument("--module-load-timeout", type=float, default=90.0)
+    ap.add_argument("--ok-marker", default=None,
+                    help="written once the module-load (and isolation) checks passed")
+    ap.add_argument("--xdg-data-home", default=None,
+                    help="the private XDG_DATA_HOME the PI process must carry (data isolation)")
     ap.add_argument("--pid-discovery-timeout", type=float, default=120.0)
     args = ap.parse_args()
 
@@ -265,31 +301,20 @@ def main():
         return 0
     log("found PI pid=%d" % pid)
 
-    ok, expected_real, actual_real = check_module_load(pid, argv, args.module_so, args.module_load_timeout)
+    if args.xdg_data_home:
+        env = read_environ(pid)
+        if env.get("XDG_DATA_HOME") != args.xdg_data_home:
+            return fail_module(args, pid, "isolation-missing", args.xdg_data_home,
+                               ["XDG_DATA_HOME=%r in the PI process" % env.get("XDG_DATA_HOME")])
+
+    ok, reason, expected_real, foreign = check_module_load(pid, argv, args.module_so, args.module_load_timeout)
     if not ok:
-        log_dir = os.path.join(args.log_dir_base, "module-mismatch-%d-%d" % (int(time.time()), pid))
-        os.makedirs(log_dir, exist_ok=True)
-        detail_path = os.path.join(log_dir, "module-mismatch.txt")
-        with open(detail_path, "w") as f:
-            f.write("expected (-m=, realpath): %s\nactual (mapped, realpath):  %s\n" % (expected_real, actual_real))
-        # Marker MUST land before we kill PI: run-selftest.sh's foreground
-        # `timeout ... "$PI" ...` unblocks the instant PI dies, and it then
-        # kills this watchdog process almost immediately afterwards -- if the
-        # marker were written after kill_pi(), that race can (and, measured,
-        # does) reap us before write_marker() ever runs, so run-selftest.sh
-        # sees a plain nonzero exit with no marker and reports the generic
-        # timeout/FAIL instead of this specific, evidenced one.
-        write_marker(args.fail_marker, {
-            "reason": "module-mismatch",
-            "expected": expected_real,
-            "actual": actual_real,
-            "pid": pid,
-            "log_dir": log_dir,
-            "detail": detail_path,
-        })
-        kill_pi(pid)
-        log("FAIL module-mismatch: expected %s, PI actually mapped %s" % (expected_real, actual_real))
-        return 0
+        return fail_module(args, pid, reason, expected_real, foreign)
+    log("module-load check: only %s is mapped" % expected_real)
+    if args.ok_marker:
+        write_marker(args.ok_marker, {"module": expected_real, "pid": pid,
+                                      "xdgDataHome": read_environ(pid).get("XDG_DATA_HOME")})
+    basename = os.path.basename(expected_real)
 
     tracked_key = None       # (section, source)
     tracked_since = None
@@ -298,6 +323,10 @@ def main():
         if not pid_alive(pid):
             log("PI pid=%d gone; run finished, watchdog exiting" % pid)
             return 0
+
+        found = picopilot_mappings(pid, basename)
+        if found is not None and found - {expected_real}:
+            return fail_module(args, pid, "module-mismatch", expected_real, sorted(found - {expected_real}))
 
         section_js = read_json(args.js_timings)
         section_mod = read_json(args.section_timings)
