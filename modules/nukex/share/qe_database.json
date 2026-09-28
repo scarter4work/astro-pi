@@ -32,6 +32,9 @@
       "type": "mono"
     },
     "asi071mc": {
+      "aliases": [
+        "ZWO ASI071MC Pro"
+      ],
       "bayer": "RGGB",
       "confidence": "low",
       "qe": {
@@ -161,6 +164,9 @@
       "type": "mono"
     },
     "asi183mc": {
+      "aliases": [
+        "ZWO ASI183MC"
+      ],
       "bayer": "RGGB",
       "confidence": "medium",
       "qe": {
@@ -252,6 +258,9 @@
       "type": "OSC"
     },
     "asi2400mc": {
+      "aliases": [
+        "ZWO ASI2400MC Pro"
+      ],
       "bayer": "RGGB",
       "confidence": "medium",
       "qe": {
@@ -549,6 +558,9 @@
       "type": "mono"
     },
     "asi585mc": {
+      "aliases": [
+        "ZWO ASI585MC Air"
+      ],
       "bayer": "RGGB",
       "confidence": "high",
       "qe": {
@@ -2136,6 +2148,21 @@
       ],
       "type": "narrowband-single"
     },
+    "HaO3": {
+      "lines": [
+        {
+          "fwhm_nm": 7.0,
+          "name": "Ha",
+          "wavelength_nm": 656.3
+        },
+        {
+          "fwhm_nm": 7.0,
+          "name": "OIII",
+          "wavelength_nm": 500.7
+        }
+      ],
+      "type": "dual-narrowband"
+    },
     "Hutech-LPS-V4": {
       "lines": [
         {
@@ -2415,6 +2442,21 @@
         }
       ],
       "type": "luminance"
+    },
+    "S2O3": {
+      "lines": [
+        {
+          "fwhm_nm": 7.0,
+          "name": "SII",
+          "wavelength_nm": 672.4
+        },
+        {
+          "fwhm_nm": 7.0,
+          "name": "OIII",
+          "wavelength_nm": 500.7
+        }
+      ],
+      "type": "dual-narrowband"
     },
     "STC-Astro-Duo-NB": {
       "lines": [
