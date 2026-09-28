@@ -2,6 +2,7 @@
 #include "nukex/calibration/qe_database.hpp"
 
 #include <filesystem>
+#include <fstream>
 
 using namespace nukex;
 namespace fs = std::filesystem;
@@ -75,4 +76,86 @@ TEST_CASE("QEDatabase: confidence enum reads from JSON", "[qe_database]") {
     REQUIRE(db.load_shipped(fixture("minimal_db.json").string()).ok);
     REQUIRE(db.confidence("ASI585MC") == QEConfidence::HIGH);
     REQUIRE(db.confidence("Unknown")  == QEConfidence::UNKNOWN);
+}
+
+// ── Camera identification: ids + explicit aliases, never fuzzy ──
+
+TEST_CASE("QEDatabase: normalize_camera_key keeps only lowercase ASCII alphanumerics",
+          "[qe_database][camera_id]") {
+    REQUIRE(QEDatabase::normalize_camera_key("ZWO ASI585MC Air") == "zwoasi585mcair");
+    REQUIRE(QEDatabase::normalize_camera_key("  asi-585_mc ") == "asi585mc");
+    REQUIRE(QEDatabase::normalize_camera_key("") == "");
+    REQUIRE(QEDatabase::normalize_camera_key("--") == "");
+}
+
+TEST_CASE("QEDatabase: camera ids match case/punctuation-insensitively",
+          "[qe_database][camera_id]") {
+    QEDatabase db;
+    REQUIRE(db.load_shipped(fixture("minimal_db.json").string()).ok);
+    REQUIRE(db.resolve_camera_id("ASI585MC")  == "ASI585MC");   // exact
+    REQUIRE(db.resolve_camera_id("asi585mc")  == "ASI585MC");
+    REQUIRE(db.resolve_camera_id("ASI-585MC") == "ASI585MC");
+    REQUIRE(db.lookup_camera_qe("asi585mc", 656.3, Photosite::R) == Catch::Approx(0.73).margin(0.01));
+}
+
+TEST_CASE("QEDatabase: explicit aliases resolve; colour and mono never cross",
+          "[qe_database][camera_id]") {
+    QEDatabase db;
+    REQUIRE(db.load_shipped(fixture("aliases_db.json").string()).ok);
+
+    REQUIRE(db.resolve_camera_id("ZWO ASI585MC Air")   == "asi585mc");
+    REQUIRE(db.resolve_camera_id("zwo asi585mc pro")   == "asi585mc");
+    REQUIRE(db.resolve_camera_id("ZWO ASI585MM Pro")   == "asi585mm");
+    REQUIRE(db.lookup_camera_qe("ZWO ASI585MC Air", 656.3, Photosite::R) == Catch::Approx(0.73));
+
+    // Not listed -> unknown. No prefix/suffix stripping, no nearest match.
+    REQUIRE(db.resolve_camera_id("ZWO ASI585MM Air").empty()); // not an alias of anything
+    REQUIRE(db.resolve_camera_id("ZWO ASI585").empty());       // colour/mono ambiguous
+    REQUIRE(db.resolve_camera_id("ASI585MC Air").empty());     // alias is the full string only
+    REQUIRE(db.resolve_camera_id("").empty());
+    REQUIRE_FALSE(db.has_camera("ZWO ASI585MM Air"));
+    REQUIRE(db.confidence("ZWO ASI585MM Air") == QEConfidence::UNKNOWN);
+    REQUIRE(db.lookup_camera_qe("ZWO ASI585MM Air", 656.3, Photosite::R) == 0.0);
+}
+
+TEST_CASE("QEDatabase: an alias claimed by two cameras is a loud load error",
+          "[qe_database][camera_id]") {
+    QEDatabase db;
+    auto r = db.load_shipped(fixture("aliases_collision.json").string());
+    REQUIRE_FALSE(r.ok);
+    REQUIRE(r.error.find("ambiguous") != std::string::npos);
+    REQUIRE(r.error.find("zwoasi585pro") != std::string::npos);
+    // Rejected document merged nothing.
+    REQUIRE(db.n_cameras() == 0);
+    REQUIRE_FALSE(db.has_camera("asi585mc"));
+}
+
+TEST_CASE("QEDatabase: override naming an existing id case-insensitively replaces that record",
+          "[qe_database][camera_id]") {
+    QEDatabase db;
+    REQUIRE(db.load_shipped(fixture("aliases_db.json").string()).ok);
+    const int n_before = db.n_cameras();
+
+    auto path = fs::temp_directory_path() / "qe_alias_override.json";
+    {
+        std::ofstream f(path);
+        f << R"({ "cameras": {
+            "ASI585MC": { "sensor": "IMX585", "type": "OSC", "bayer": "RGGB",
+                          "qe": { "656": { "R": 0.99, "G": 0.10, "B": 0.01 } },
+                          "confidence": "low" },
+            "ZWO ASI585MM Pro": { "sensor": "IMX585", "type": "mono",
+                          "qe": { "656": { "mono_pk": 0.42 } }, "confidence": "low" }
+        } })";
+    }
+    REQUIRE(db.load_override(path.string()).ok);
+
+    // "ASI585MC" == id asi585mc -> replaced in place, aliases still reach it.
+    REQUIRE(db.resolve_camera_id("ASI585MC") == "asi585mc");
+    REQUIRE(db.lookup_camera_qe("ZWO ASI585MC Air", 656.3, Photosite::R) == Catch::Approx(0.99));
+    // Override naming an existing ALIAS becomes its own record; the aliased
+    // camera's data under its id is untouched.
+    REQUIRE(db.resolve_camera_id("ZWO ASI585MM Pro") == "ZWO ASI585MM Pro");
+    REQUIRE(db.lookup_camera_qe("ZWO ASI585MM Pro", 656.3, Photosite::MONO_PEAK) == Catch::Approx(0.42));
+    REQUIRE(db.lookup_camera_qe("asi585mm", 656.3, Photosite::MONO_PEAK) == Catch::Approx(0.75));
+    REQUIRE(db.n_cameras() == n_before + 1);
 }

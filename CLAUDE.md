@@ -34,6 +34,13 @@ instead — ~2.7 s per 22 MP panel on GPU.
 3. Run `./release.sh` — it builds, native-signs, packages, writes ONE `repository/updates.xri`,
    signs the manifest LAST, and integrity-checks every declared sha1 vs the on-disk artifact.
 4. Signing order is load-bearing: `.xsgn` embeds a timestamp → hash AFTER packaging, sign manifest LAST.
+4a. Shipped modules are built ONLY in the Rocky 9 container (`tools/build-env/build-modules.sh`, which
+   release.sh calls) — never ship a host build. A host build carries this box's GLIBC_2.43/GLIBCXX_3.4.32
+   and Fedora-only sonames and loads nowhere else (NukeX ≤5.1.0.2 / PICopilot ≤0.2.1.0 shipped that way).
+   `tools/build-env/verify-portable.sh` gates the release: ≤GLIBC_2.34/GLIBCXX_3.4.30 (the PI core's
+   own floor), no RPATH, and a real `dlopen` on stock Ubuntu 22.04 / Debian 12 / Rocky 9. New third-party
+   C++ deps go into the image as static `-fPIC` archives; no OpenMP (libgomp is not on stock distros —
+   use `nukex::parallel_for_dynamic`). PCL is rebuilt in the image from the pinned commit, not `~/PCL`.
 5. Commit the version bump + `repository/` artifacts together, then push.
 
 ## Build / test NukeX

@@ -117,6 +117,7 @@ nukex_add_test(test_gpu_cpu_fallback unit/gpu/test_gpu_cpu_fallback.cpp nukex4_g
 nukex_add_test(test_gpu_kernels unit/gpu/test_gpu_kernels.cpp nukex4_gpu)
 nukex_add_test(test_gpu_agreement unit/gpu/test_gpu_agreement.cpp nukex4_gpu nukex4_stacker)
 nukex_add_test(test_fit_heartbeat unit/gpu/test_fit_heartbeat.cpp nukex4_gpu)
+nukex_add_test(test_parallel_for unit/gpu/test_parallel_for.cpp nukex4_gpu)
 
 # Module-layer tests (fits_metadata and future module code)
 add_library(nukex4_module_testlib OBJECT

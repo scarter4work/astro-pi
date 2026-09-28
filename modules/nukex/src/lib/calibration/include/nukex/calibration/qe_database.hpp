@@ -52,6 +52,24 @@ public:
     LoadResult load_shipped(const std::string& path);
     LoadResult load_override(const std::string& path);
 
+    // Camera identification.
+    //
+    // Callers pass whatever the frame says (the raw FITS INSTRUME string,
+    // e.g. "ZWO ASI585MC Air"); the DB keys cameras by ids ("asi585mc").
+    // A name resolves when its normalized key (see normalize_camera_key)
+    // equals the normalized key of a camera id OR of one of that camera's
+    // explicit `aliases` in the JSON. There is NO fuzzy matching: no token
+    // stripping, no prefix/suffix guessing, no nearest match. A name that is
+    // not listed verbatim (modulo case/punctuation) stays unknown, so an
+    // unlisted camera fails loudly instead of borrowing a wrong QE curve
+    // (e.g. mono "ASI585MM" can never land on colour "asi585mc").
+    //
+    // resolve_camera_id returns the DB id, or "" when nothing matches.
+    std::string resolve_camera_id(const std::string& name) const;
+
+    // Lowercase ASCII alphanumerics only: "ZWO ASI585MC Air" -> "zwoasi585mcair".
+    static std::string normalize_camera_key(const std::string& name);
+
     bool has_camera(const std::string& name) const;
     bool has_filter(const std::string& name) const;
 
@@ -71,8 +89,11 @@ public:
 private:
     std::unordered_map<std::string, CameraQE>       cameras_;
     std::unordered_map<std::string, FilterPassband> filters_;
+    // normalize_camera_key(id or alias) -> camera id (key of cameras_).
+    std::unordered_map<std::string, std::string>    camera_keys_;
 
     LoadResult parse_and_merge(const std::string& text, const char* context);
+    const CameraQE* find_camera(const std::string& name) const;
 };
 
 } // namespace nukex

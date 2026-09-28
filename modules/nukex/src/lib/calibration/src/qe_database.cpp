@@ -2,8 +2,10 @@
 
 #include <nlohmann/json.hpp>
 
+#include <cctype>
 #include <fstream>
 #include <sstream>
+#include <vector>
 
 namespace nukex {
 
@@ -81,11 +83,62 @@ LoadResult QEDatabase::parse_and_merge(const std::string& text, const char* cont
         return {false, oss.str()};
     }
 
+    // Cameras are parsed and validated in full before anything is merged, so
+    // a rejected document leaves the database exactly as it was.
+    struct ParsedCamera {
+        std::string              name;
+        CameraQE                 cam;
+        std::vector<std::string> alias_keys;   // normalized
+    };
+    std::vector<ParsedCamera> parsed_cameras;
+
     if (doc.contains("cameras") && doc["cameras"].is_object()) {
+        // normalized key -> camera name that claimed it in THIS document.
+        std::unordered_map<std::string, std::string> doc_keys;
+        auto claim = [&](const std::string& key, const std::string& raw,
+                         const std::string& cam_name, std::string& err) {
+            if (key.empty()) {
+                err = std::string(context) + ": camera '" + cam_name + "' has name/alias '" +
+                      raw + "' with no alphanumeric characters";
+                return false;
+            }
+            auto [pos, inserted] = doc_keys.emplace(key, cam_name);
+            if (!inserted && pos->second != cam_name) {
+                err = std::string(context) + ": camera name/alias '" + raw +
+                      "' (normalized '" + key + "') is claimed by both '" + pos->second +
+                      "' and '" + cam_name + "' -- ambiguous camera identification";
+                return false;
+            }
+            return true;
+        };
+
         for (auto it = doc["cameras"].begin(); it != doc["cameras"].end(); ++it) {
             const std::string& name = it.key();
             const json& cam_json    = it.value();
-            CameraQE cam;
+            std::string err;
+            if (!claim(normalize_camera_key(name), name, name, err)) return {false, err};
+
+            ParsedCamera pc;
+            pc.name = name;
+            if (cam_json.contains("aliases")) {
+                const json& aj = cam_json["aliases"];
+                if (!aj.is_array()) {
+                    return {false, std::string(context) + ": camera '" + name +
+                                   "' has non-array 'aliases'"};
+                }
+                for (const auto& a : aj) {
+                    if (!a.is_string()) {
+                        return {false, std::string(context) + ": camera '" + name +
+                                       "' has a non-string alias"};
+                    }
+                    const std::string raw = a.get<std::string>();
+                    const std::string key = normalize_camera_key(raw);
+                    if (!claim(key, raw, name, err)) return {false, err};
+                    pc.alias_keys.push_back(key);
+                }
+            }
+
+            CameraQE& cam = pc.cam;
             if (cam_json.contains("sensor")) cam.sensor = cam_json["sensor"].get<std::string>();
             if (cam_json.contains("type"))   cam.type   = cam_json["type"].get<std::string>();
             if (cam_json.contains("bayer"))  cam.bayer  = cam_json["bayer"].get<std::string>();
@@ -102,10 +155,27 @@ LoadResult QEDatabase::parse_and_merge(const std::string& text, const char* cont
                     cam.qe_by_wavelength[wl] = per_site;
                 }
             }
-            // Override semantics: replace whole camera record.
-            // (Coarse but reflects spec: "override wins on key collision".)
-            cameras_[name] = std::move(cam);
+            parsed_cameras.push_back(std::move(pc));
         }
+    }
+
+    for (auto& pc : parsed_cameras) {
+        // Override semantics: "override wins on key collision". A later
+        // document naming an EXISTING camera id (case/punctuation-insensitive)
+        // replaces that whole record. A later document whose camera name
+        // matches only an existing ALIAS becomes its own record and the alias
+        // key is re-pointed to it (the later document wins that name without
+        // rewriting the aliased camera's data for its other names).
+        const std::string key = normalize_camera_key(pc.name);
+        std::string target = pc.name;
+        auto existing = camera_keys_.find(key);
+        if (existing != camera_keys_.end() &&
+            normalize_camera_key(existing->second) == key) {
+            target = existing->second;
+        }
+        cameras_[target]  = std::move(pc.cam);
+        camera_keys_[key] = target;
+        for (const auto& ak : pc.alias_keys) camera_keys_[ak] = target;
     }
 
     if (doc.contains("filters") && doc["filters"].is_object()) {
@@ -130,8 +200,35 @@ LoadResult QEDatabase::parse_and_merge(const std::string& text, const char* cont
     return {true, ""};
 }
 
+std::string QEDatabase::normalize_camera_key(const std::string& name) {
+    std::string out;
+    out.reserve(name.size());
+    for (char c : name) {
+        const unsigned char u = static_cast<unsigned char>(c);
+        if (u < 0x80 && std::isalnum(u)) {
+            out.push_back(static_cast<char>(std::tolower(u)));
+        }
+    }
+    return out;
+}
+
+std::string QEDatabase::resolve_camera_id(const std::string& name) const {
+    if (cameras_.count(name)) return name;          // exact id
+    const std::string key = normalize_camera_key(name);
+    if (key.empty()) return {};
+    auto it = camera_keys_.find(key);
+    return it == camera_keys_.end() ? std::string{} : it->second;
+}
+
+const CameraQE* QEDatabase::find_camera(const std::string& name) const {
+    const std::string id = resolve_camera_id(name);
+    if (id.empty()) return nullptr;
+    auto it = cameras_.find(id);
+    return it == cameras_.end() ? nullptr : &it->second;
+}
+
 bool QEDatabase::has_camera(const std::string& name) const {
-    return cameras_.find(name) != cameras_.end();
+    return find_camera(name) != nullptr;
 }
 
 bool QEDatabase::has_filter(const std::string& name) const {
@@ -139,17 +236,16 @@ bool QEDatabase::has_filter(const std::string& name) const {
 }
 
 QEConfidence QEDatabase::confidence(const std::string& camera) const {
-    auto it = cameras_.find(camera);
-    if (it == cameras_.end()) return QEConfidence::UNKNOWN;
-    return it->second.confidence;
+    const CameraQE* cam = find_camera(camera);
+    return cam ? cam->confidence : QEConfidence::UNKNOWN;
 }
 
 double QEDatabase::lookup_camera_qe(const std::string& camera,
                                     double             wavelength_nm,
                                     Photosite          photosite) const {
-    auto it = cameras_.find(camera);
-    if (it == cameras_.end()) return 0.0;
-    const auto& curve = it->second.qe_by_wavelength;
+    const CameraQE* cam = find_camera(camera);
+    if (!cam) return 0.0;
+    const auto& curve = cam->qe_by_wavelength;
     if (curve.empty()) return 0.0;
 
     auto upper = curve.upper_bound(static_cast<int>(wavelength_nm + 0.5));

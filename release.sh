@@ -32,19 +32,18 @@ open(mf,'w').write(s)
 PY
 }
 
-echo "== 1/6 build NukeX module =="
-cmake -B "$ROOT/modules/nukex/build" -S "$ROOT/modules/nukex" \
-  -DPCLDIR="$HOME/PCL" -DNUKEX_BUILD_MODULE=ON -DNUKEX_BUILD_TESTS=ON >/dev/null
-cmake --build "$ROOT/modules/nukex/build" -j"$(nproc)" >/dev/null
-SO="$(find "$ROOT/modules/nukex/build" -name 'NukeX-pxm.so' -print -quit)"
+echo "== 1/6 build NukeX + PICopilot modules (portable Rocky 9 container) =="
+# NEVER ship a host build: the dev box's glibc/libstdc++ symbol versions and
+# Fedora-only sonames (libceres/libglog/libgflags) end up in the module, which
+# then loads on this machine and nowhere else. See tools/build-env/Containerfile.
+"$ROOT/tools/build-env/build-modules.sh" || die "portable module build/tests failed"
+SO="$(find "$ROOT/modules/nukex/build-portable" -name 'NukeX-pxm.so' -print -quit)"
 [ -n "$SO" ] || die "NukeX-pxm.so not found after build"
-
-echo "== 1b/6 build PICopilot module =="
-cmake -B "$ROOT/modules/pi-copilot/build" -S "$ROOT/modules/pi-copilot" \
-  -DPCLDIR="$HOME/PCL" -DPICOPILOT_BUILD_MODULE=ON >/dev/null
-cmake --build "$ROOT/modules/pi-copilot/build" -j"$(nproc)" >/dev/null
-PICOPILOT_SO="$(find "$ROOT/modules/pi-copilot/build" -name 'PICopilot-pxm.so' -print -quit)"
+PICOPILOT_SO="$(find "$ROOT/modules/pi-copilot/build-portable" -name 'PICopilot-pxm.so' -print -quit)"
 [ -n "$PICOPILOT_SO" ] || die "PICopilot-pxm.so not found after build"
+
+echo "== 1b/6 prove both modules load on stock older distros =="
+"$ROOT/tools/build-env/verify-portable.sh" "$SO" "$PICOPILOT_SO" || die "a module would not load on a stock distro"
 
 echo "== 2/6 sign NukeX module =="
 XSGN="${SO%-pxm.so}-pxm.xsgn"
