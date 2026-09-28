@@ -3,6 +3,7 @@
 
 #include "SystemPrompt.h"
 #include "JourneyTools.h"
+#include "WorkspaceIcons.h"
 
 #include <string>
 
@@ -142,6 +143,7 @@ String BuildSystemPrompt( AgentMode mode, const ToolOptions& options )
    p += mode == AgentMode::Copilot ? kCopilotMode : mode == AgentMode::Guided ? kGuidedMode : kAdvisorMode;
    p += kReadTools;
    p += kJourneyPromptRead;
+   p += kWorkspaceIconPrompt;   // every mode (fix/replay-file-params)
    if ( mode != AgentMode::Advisor )
    {
       p += kApplyTool;
