@@ -47,6 +47,7 @@ RUN_DIR="$(mktemp -d "${TMPDIR:-/tmp}/picopilot-load.XXXXXX")"
 chmod 700 "$RUN_DIR"
 trap 'rm -f "$SLOT_SETTINGS"; rm -rf "$RUN_DIR"' EXIT
 picopilot_isolate_data "$RUN_DIR/xdg" || exit 1
+picopilot_isolate_display
 JOURNEYS_BEFORE="$(picopilot_journeys_fingerprint)"
 
 [ -f "$SO" ] || { echo "FAIL: module not built at $SO"; exit 1; }

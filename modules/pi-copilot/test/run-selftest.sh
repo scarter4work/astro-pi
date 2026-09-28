@@ -117,6 +117,7 @@ trap cleanup EXIT
 # mirrored), is refused unless that isolation is in effect, and the run fails
 # if the user's real library (~/.local/share/PICopilot/journeys) changed.
 picopilot_isolate_data "$TMPDIR/xdg" || exit 1
+picopilot_isolate_display
 JOURNEYS_BEFORE="$(picopilot_journeys_fingerprint)"
 # Every file handed between selftest.js and the module lives in one private
 # (0700, mktemp -d) directory owned by this shell, so no writer ever opens a
@@ -530,7 +531,7 @@ if [ -s "$WATCHDOG_FAIL_MARKER" ]; then
    python3 - "$WATCHDOG_FAIL_MARKER" <<'PY'
 import json, sys
 d = json.load(open(sys.argv[1]))
-if d.get("reason") in ("module-mismatch", "module-not-loaded", "isolation-missing"):
+if d.get("reason") in ("module-mismatch", "module-not-loaded", "isolation-missing", "display-isolation"):
     print("FAIL: watchdog module/isolation check: %s" % d.get("reason"))
     print("  expected (-m=, resolved): %s" % d.get("expected"))
     print("  actual: %s" % d.get("actual"))
