@@ -4,6 +4,7 @@
 #include "AgentTools.h"
 #include "AnthropicClient.h"   // JpegImageBlock
 #include "GlobalRunFiles.h"    // NulTextProblem
+#include "HistoryStepTool.h"   // history_step (undo / redo)
 #include "JourneyTools.h"
 #include "MasterFacts.h"       // IsIntegrationProcess
 #include "PjsrRunner.h"
@@ -752,6 +753,7 @@ nlohmann::json ToolDefinitions( AgentMode mode, const ToolOptions& options )
       global["input_schema"] = { { "type", "object" }, { "properties", gprops },
                                  { "required", nlohmann::json::array( { "process_id" } ) } };
       tools.push_back( global );
+      tools.push_back( HistoryStepToolDefinition() );
    }
    for ( const nlohmann::json& t : JourneyToolDefinitions( mode ) )
       tools.push_back( t );
@@ -920,6 +922,8 @@ ToolOutcome ExecuteToolUncapped( const ToolCall& call, const ToolContext& ctx )
          return ApplyProcessTool( in, ctx, t0 );
       if ( call.name == "run_global_process" )
          return RunGlobalTool( in, ctx, t0 );
+      if ( call.name == "history_step" )
+         return ExecuteHistoryStepTool( in, ctx );
       if ( call.name == "run_pjsr" )
          return RunPjsrTool( in, ctx, t0 );
       if ( IsJourneyTool( call.name ) )
@@ -955,7 +959,8 @@ bool ResponseCallsImageChangingTool( const nlohmann::json& contentBlocks )
       if ( b.is_object() && b.value( "type", std::string() ) == "tool_use" )
       {
          const nlohmann::json name = b.value( "name", nlohmann::json() );
-         if ( name.is_string() && (name == "apply_process" || name == "run_global_process" || name == "run_pjsr") )
+         if ( name.is_string() && (name == "apply_process" || name == "run_global_process" || name == "run_pjsr"
+                                     || name == "history_step") )
             return true;
       }
    return false;

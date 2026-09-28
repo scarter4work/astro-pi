@@ -20,6 +20,7 @@
 #include "MasterFacts.h"
 #include "PICopilotInterface.h"
 #include "PICopilotJourneySelfTest.h"
+#include "PICopilotUndoSelfTest.h"
 #include "PICopilotModule.h"
 #include "PICopilotProcess.h"
 #include "PjsrRunner.h"
@@ -860,6 +861,7 @@ const std::map<std::string, SelfTestPhaseHandler>& SelfTestPhaseHandlers()
       { "j10.gx.end",   PhaseJ10GxEnd },
       { "gui.keepInFlight", PhaseGuiKeepInFlight },
       { "gui.panel", PhaseGuiPanel },
+      { "undo",      PhaseUndoTool },   // Section JU (PICopilotUndoSelfTest.cpp)
    };
    return handlers;
 }

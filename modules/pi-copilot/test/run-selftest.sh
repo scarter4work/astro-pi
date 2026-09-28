@@ -614,6 +614,8 @@ required_true = [
     'journeyToolsOk', 'liveReplayOk', 'journeyUiOk',
     'journeyWiringOk',
     'histLandedOk',
+    # history_step (undo / redo)
+    'historyStepOk', 'liveHistoryStepOk',
     'ok',
 ]
 missing = [k for k in required_true if d.get(k) is not True]
@@ -625,7 +627,7 @@ if d.get('streamLoopbackSkipped') is not False: missing.append('streamLoopbackSk
 import os
 if os.environ.get('PICOPILOT_REQUIRE_LIVE') == '1':
     for k in ('anthropicSkipped', 'twoTurnSkipped', 'visionSkipped', 'liveAgentSkipped', 'liveConversationSkipped',
-              'graxpertLiveSkipped', 'bridgeStandInSkipped', 'liveWriteupSkipped', 'liveReplaySkipped'):
+              'graxpertLiveSkipped', 'bridgeStandInSkipped', 'liveWriteupSkipped', 'liveReplaySkipped', 'liveHistoryStepSkipped'):
         if d.get(k) is not False: missing.append(k + '==false (PICOPILOT_REQUIRE_LIVE=1)')
 print('anthropic check: %s' % ('SKIPPED (no key)' if d.get('anthropicSkipped') else 'RAN against real API'))
 print('two-turn check: %s' % ('SKIPPED (no key)' if d.get('twoTurnSkipped') else 'RAN against real API'))
@@ -641,6 +643,8 @@ bd = d.get('bridgeDetail', {})
 print('GraXpert no-effect detection (stand-in): %s; digest 60 MP RGB float = %r ms; checks=%r' % (('SKIPPED: %s' % bd.get('standInSkipReason')) if d.get('bridgeStandInSkipped') is not False else 'RAN (lockWaitMs=%r)' % bd.get('lock', {}).get('waitedMs'), bd.get('digest60MP', {}).get('ms'), bd.get('checks')))
 rd = d.get('rereviewFixDetail', {})
 print('describe_process sizes (chars, cap %r): %r; list_processes chars=%r' % (rd.get('describeSizes', {}).get('cap'), rd.get('describeSizes', {}).get('top10'), rd.get('listProcesses', {}).get('chars')))
+print('live history_step check: %s' % ('SKIPPED (no key)' if d.get('liveHistoryStepSkipped') else 'RAN against real API, positions=%r log=%r%s' % (d.get('liveHistoryStepPositions'), d.get('liveHistoryStepLog'), ('' if d.get('liveHistoryStepOk') else ' FAILED: %r' % d.get('liveHistoryStepError')))))
+print('history_step checks: %r' % d.get('historyStepChecks'))
 if d.get('liveModelSwitch') is not None:
     print('live model switch: %r' % d.get('liveModelSwitch'))
 if missing:
