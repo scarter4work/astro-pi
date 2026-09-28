@@ -907,6 +907,69 @@ catch ( e )
    harnessError( "j10.graxpert", e );
 }
 
+jsMark( "fixture undo (history_step)" );
+// Section JU: the history_step tool. Every History step is made HERE, at top
+// level (in-process steps are never recorded). Journey part: two keyword
+// masters with identical histories; the USER steps pcUndoUser (historyIndex
+// writes, as the History Explorer does), the TOOL steps pcUndoTool in phase
+// "undo"; after each pair the phase ticks a private tracker and compares the
+// two images' recorded rows. Unit windows (pcUndoUnit, pcUndoOther,
+// pcUndoLive) stay open for the main run's Section JU.
+try
+{
+   ( function ()
+   {
+      function pm( id, x ) { var p = new PixelMath; p.expression = x; p.executeOn( View.viewById( id ) ); }
+      function up( step, extra ) { var p = extra || {}; p.step = step; checkPhase( "undo", p ); }
+      function master( id, object )
+      {
+         var w = new ImageWindow( 64, 64, 1, 32, true, false, id );
+         w.keywords = [ new FITSKeyword( "IMAGETYP", "'Master Light'", "" ),
+                        new FITSKeyword( "OBJECT", "'" + object + "'", "" ),
+                        new FITSKeyword( "FILTER", "'L'", "" ),
+                        new FITSKeyword( "EXPTIME", "120", "" ) ];
+         w.show();
+      }
+      function positions() { var t = View.viewById( "pcUndoTool" ), u = View.viewById( "pcUndoUser" );
+                             return [ t.historyIndex, t.processing.length, u.historyIndex, u.processing.length ]; }
+      var steps = [ "0.2", "$T*1.5", "$T+0.1" ];
+
+      var unit = new ImageWindow( 32, 32, 1, 32, true, false, "pcUndoUnit" );
+      unit.show();
+      steps.forEach( function( x ) { pm( "pcUndoUnit", x ); } );
+      unit.createPreview( new Rect( 0, 0, 16, 16 ), "pv" );
+      pm( "pcUndoUnit->pv", "0.9" );
+      var other = new ImageWindow( 32, 32, 1, 32, true, false, "pcUndoOther" );
+      other.show();
+      pm( "pcUndoOther", "0.6" );
+      var live = new ImageWindow( 32, 32, 1, 32, true, false, "pcUndoLive" );
+      live.show();
+      pm( "pcUndoLive", "0.2" ); pm( "pcUndoLive", "0.5" );
+
+      master( "pcUndoTool", "UndoToolM1" );
+      master( "pcUndoUser", "UndoUserM1" );
+      pumpEvents( 300 );
+      up( "begin" );
+      steps.forEach( function( x ) { pm( "pcUndoTool", x ); pm( "pcUndoUser", x ); } );
+      up( "recorded" );
+      var u = View.viewById( "pcUndoUser" );
+      u.historyIndex = u.historyIndex - 2;                        // the user's undo x2
+      up( "toolUndo", { count: 2 } );                             // the tool's undo x2
+      up( "compare", { label: "undo", rows: 3, undone: 2, superseded: 0, positions: positions() } );
+      u = View.viewById( "pcUndoUser" );
+      u.historyIndex = u.historyIndex + 1;                        // the user's redo x1
+      up( "toolRedo", { count: 1 } );                             // the tool's redo x1
+      up( "compare", { label: "redo", rows: 3, undone: 1, superseded: 0, positions: positions() } );
+      pm( "pcUndoTool", "$T*0.5" ); pm( "pcUndoUser", "$T*0.5" ); // a new step after the undo: a user step on both
+      up( "compare", { label: "branch", rows: 4, undone: 0, superseded: 1, positions: positions() } );
+      up( "end" );
+   } )();
+}
+catch ( e )
+{
+   harnessError( "undo", e );
+}
+
 // ---- fixture phases end (add new phases above this line, each block starting with jsMark( "fixture <id>" )) ----
 
 jsMark( "final executeGlobal (the full self-test)" );

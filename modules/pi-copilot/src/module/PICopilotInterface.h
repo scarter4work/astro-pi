@@ -176,6 +176,8 @@ private:
 
    // Guided-mode confirmation (modal MessageBox, root thread).
    static bool ConfirmApply( const String& processId, const String& viewId, const String& changes );
+   // history_step in Guided mode: html is HistoryStepDialogHtml().
+   static bool ConfirmHistoryStep( const String& html );
 
    // ── Image journey (0.2.0.0) ───────────────────────────────────
    // What the journey tools and ★ use, rebuilt from JourneyService per turn /
