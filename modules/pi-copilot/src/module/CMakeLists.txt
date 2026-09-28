@@ -57,6 +57,8 @@ set(MODULE_SOURCES
     ProcessActivity.cpp
     StringParameterRules.cpp
     TextSafety.cpp
+    FileReferences.cpp
+    WorkspaceIcons.cpp
 )
 
 add_library(PICopilot SHARED ${MODULE_SOURCES})

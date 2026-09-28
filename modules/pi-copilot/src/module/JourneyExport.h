@@ -75,6 +75,45 @@ void SetJourneyExportCatalogFailForSelfTest( bool on );
 // so are BuildRecipe and BuildJourneyXpsm, which use it.
 std::string ManualWhy( const StepRow& step );
 
+// ManualWhy without the file-parameter reason (fix/replay-file-params): a
+// value of a FILE parameter (IsFileParameter; table columns by the installed
+// process's column ids) never makes the step manual here, because replays
+// resolve recorded files themselves (JourneyTools: module-resolved references).
+// Everything else is as ManualWhy: a Script step, a Ruling 16 process, a path
+// in a parameter that is NOT a file parameter, a table whose columns cannot be
+// read (fails closed), a masked step, a step that cannot be replayed. ROOT
+// THREAD ONLY. The export (.xpsm, recipe.json) keeps ManualWhy.
+std::string ManualWhyExceptFiles( const StepRow& step );
+
+// One value of a FILE parameter of a step or a process instance: a non-empty
+// string, as recorded (a full path, or a bare file name).
+struct FileParameterValue
+{
+   std::string parameter;        // parameter or table id
+   bool        inTable = false;
+   size_t      row = 0;          // table cell: row and column index
+   size_t      column = 0;
+   std::string columnId;         // "" when not known
+   std::string value;
+   std::string Where() const;    // "modelPath", "marsDatabaseFiles[0].path"
+};
+
+// Every FILE-parameter value of {parameters, tableParameters} (tables with
+// array rows; the table id itself may be the file parameter, e.g.
+// marsDatabaseFiles, which makes every string cell of it a file value). ROOT
+// THREAD ONLY. Throws pcl::Error when a table's column ids cannot be read
+// from the catalog (the caller fails closed).
+std::vector<FileParameterValue> FileParameterValues( const std::string& processId, const nlohmann::json& parameters,
+                                                     const nlohmann::json& tableParameters );
+
+// The file name of a path: after the last '/' or '\'.
+std::string PathFileName( const std::string& path );
+
+// The column ids of a table parameter of the INSTALLED process; empty when the
+// process is not installed or has no such parameter. Root thread; throws
+// pcl::Error when the catalog cannot be read.
+std::vector<std::string> ProcessTableColumnIds( const std::string& processId, const std::string& tableId );
+
 // Any string that is an absolute path ("/..." but not a "/*" or "//" comment,
 // "~" or "~/...", "X:\..." or "X:/...") and holds no line break becomes its file
 // name (after the last '/' or '\'). Everything else -- e.g. the PixelMath
