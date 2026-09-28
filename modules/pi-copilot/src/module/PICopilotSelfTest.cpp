@@ -10,6 +10,7 @@
 #include "PICopilotAgentSelfTest.h"
 #include "PICopilotInc5SelfTest.h"
 #include "PICopilotJourneySelfTest.h"
+#include "PICopilotUndoSelfTest.h"
 #include "JourneyTracker.h"
 #include "Utf8.h"
 #include "KeyStore.h"
@@ -371,10 +372,27 @@ bool RunSelfTest( String& jsonOut )
       j["journeyException"] = "unknown exception";
    }
 
+   // history_step (undo / redo). Same isolation as the blocks above.
+   bool undoOk = false;
+   try
+   {
+      nlohmann::json undo;
+      undoOk = RunUndoSelfTest( undo );
+      j.update( undo );
+   }
+   catch ( const std::exception& x )
+   {
+      j["undoException"] = x.what();
+   }
+   catch ( ... )
+   {
+      j["undoException"] = "unknown exception";
+   }
+
    SelfTestSectionMark( nullptr );
    j["sectionTimings"] = SelfTestTiming().done;
 
-   ok = ok && visionOk && agentOk && inc5Ok && journeyOk;
+   ok = ok && visionOk && agentOk && inc5Ok && journeyOk && undoOk;
    j["ok"] = ok;
    jsonOut = String::UTF8ToUTF16( j.dump().c_str() );
    return ok;
