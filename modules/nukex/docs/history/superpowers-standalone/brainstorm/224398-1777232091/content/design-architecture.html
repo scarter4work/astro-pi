@@ -1,0 +1,91 @@
+<h2>Design — Section 1 of 5: Architecture</h2>
+<p class="subtitle">Big-picture data flow. Five sections total: architecture (now), components, data flow detail, error handling, testing. Approving each one before moving on.</p>
+
+<div class="section">
+  <div class="mockup">
+    <div class="mockup-header">Pipeline architecture (new)</div>
+    <div class="mockup-body" style="background:#0a0a0a;color:#ddd;padding:22px;font-family:monospace;font-size:11px;line-height:1.6">
+<pre style="margin:0">
+                                                                            ┌──────────────────┐
+                                                                            │   QE Database    │
+                                                                            │ (sensors,        │
+                                                                            │  filters JSON)   │
+                                                                            │ + user override  │
+                                                                            └────────┬─────────┘
+                                                                                     │  reads
+                                                                                     ▼
+   FITS frame ──► <span style="color:#5fc55f">FilterClassifier</span> ──► <span style="color:#5fc55f">DebayerEngine</span> ──► <span style="color:#aaa">flat-correct</span> ──► <span style="color:#aaa">align</span> ──► <span style="color:#aaa">cache</span> ──► <span style="color:#5fc55f">FilterAwareAccumulator</span>
+                          │             (naive R/G/B,                                                  │
+                          │              unchanged)                                                    │ Q-matrix
+                          ▼                                                                            │ solve
+                  <span style="color:#888">{Filter, FilterClass,</span>                                                            ▼
+                  <span style="color:#888"> Camera, Bayer}</span>                                                  ┌──────────────────────────────────────┐
+                                                                                  │ Cube (per-class slot layout)         │
+                                                                                  │  HaO3   → Ha + OIII slots            │
+                                                                                  │  S2O3   → SII + OIII slots           │
+                                                                                  │  OSC    → R + G + B slots            │
+                                                                                  │  LRGB   → L + R + G + B slots        │
+                                                                                  │  Mixed  → union of all input classes │
+                                                                                  │                                      │
+                                                                                  │  Each slot: Welford + histogram      │
+                                                                                  │  per pixel across all frames         │
+                                                                                  └─────────────┬────────────────────────┘
+                                                                                                │ Phase B fits +
+                                                                                                │ selects per slot
+                                                                                                ▼
+                                                                                  ┌──────────────────────────────────────┐
+                                                                                  │ Stacked cube (1 fitted value /       │
+                                                                                  │ pixel / slot)                        │
+                                                                                  └─────────────┬────────────────────────┘
+                                                                                                │
+                                                                                                ▼
+                                                                                  <span style="color:#5fc55f">ColorComposer</span> (Lab/LCH default,
+                                                                                                continuum-subtract opt-in)
+                                                                                                │
+                                                                                                ▼
+                                                                                       <span style="color:#aaa">stretch → emit RGB</span>
+</pre>
+      <div style="margin-top:14px;color:#888;border-top:1px solid #222;padding-top:10px">
+        <span style="color:#5fc55f">Green</span> = new or refactored module. <span style="color:#aaa">Grey</span> = existing module unchanged or only lightly touched.
+      </div>
+    </div>
+  </div>
+</div>
+
+<h3>The four architectural pillars</h3>
+
+<div class="section" style="font-size:14px;line-height:1.7">
+  <p><b>1. Filter is a first-class type.</b> Each frame carries its (FilterClass, FilterName, Camera) before debayer. Disambiguation dialog fires only if FITS <code>FILTER</code> is missing or unrecognized. The classifier is small (lookup table + heuristic for fuzzy names like "L-eXtreme" vs "L_eXtreme"), <strong>not</strong> a learned model.</p>
+
+  <p><b>2. DebayerEngine stays naive.</b> It demosaics RGGB/BGGR/GRBG/GBRG to R/G/B and stops there. Filter-class awareness lives <em>downstream</em> of debayer. This preserves raw broadband for the alignment + saturation-guard + continuum-subtract paths.</p>
+
+  <p><b>3. The voxel grows filter-class-shaped slots.</b> Voxel is the data structure of record (per the existing rule). For an HaO3 frame entering accumulate, raw R/G/B are passed through the per-pixel Q-matrix solve and routed into the voxel's Ha + OIII slots. For LRGBSHO (multiple filter classes in one batch), the cube has the union of all needed slots; each frame fills the slots its filter class produces.</p>
+
+  <p><b>4. ColorComposer is the only place that knows about palettes.</b> It reads the accumulated cube, applies the calibrated emission-line palette for narrowband, natural color for broadband, Lab/LCH composite for mixed (with continuum-subtract as opt-in advanced mode). The composer is where "no greens" is enforced — not by post-hoc SCNR, but by mathematical construction of the output color from line spectra.</p>
+</div>
+
+<h3>Does this architecture look right?</h3>
+
+<div class="options">
+  <div class="option" data-choice="a" onclick="toggleSelect(this)">
+    <div class="letter">A</div>
+    <div class="content">
+      <h3>Yes, looks right — proceed to components</h3>
+      <p>The diagram and four pillars match what we settled on. Move to section 2 (components).</p>
+    </div>
+  </div>
+  <div class="option" data-choice="b" onclick="toggleSelect(this)">
+    <div class="letter">B</div>
+    <div class="content">
+      <h3>Mostly right, but I want to clarify one piece</h3>
+      <p>I'll describe in the terminal — could be: where Phase 8 ratings hook in, where flat-correction sits relative to filter routing, what happens to the noise map, etc.</p>
+    </div>
+  </div>
+  <div class="option" data-choice="c" onclick="toggleSelect(this)">
+    <div class="letter">C</div>
+    <div class="content">
+      <h3>Reframe — something at the architecture level is off</h3>
+      <p>One of the four pillars or the diagram doesn't match my mental model. I'll describe.</p>
+    </div>
+  </div>
+</div>

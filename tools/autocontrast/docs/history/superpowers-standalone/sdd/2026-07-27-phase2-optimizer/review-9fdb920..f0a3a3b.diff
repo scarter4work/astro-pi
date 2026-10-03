@@ -1,0 +1,81 @@
+# Review package: 9fdb920..f0a3a3b
+
+## Commits
+f0a3a3b optimize: strengthen recipe tests + error handling (round 1)
+
+## Files changed
+ src/autocontrast/optimize/recipe.py | 5 +++++
+ tests/test_optimize_recipe.py       | 6 ++++++
+ 2 files changed, 11 insertions(+)
+
+## Diff
+diff --git a/src/autocontrast/optimize/recipe.py b/src/autocontrast/optimize/recipe.py
+index fed25ad..ef8e542 100644
+--- a/src/autocontrast/optimize/recipe.py
++++ b/src/autocontrast/optimize/recipe.py
+@@ -58,20 +58,25 @@ class Recipe:
+         return cls(actions=tuple(
+             Action(kind=a["kind"], level=a["level"],
+                    scale_arcsec=a["scale_arcsec"], params=a.get("params", {}))
+             for a in d["actions"]
+         ))
+ 
+     def to_pixinsight_steps(self) -> list[dict]:
+         """Render to stock PI process invocations -- the SS12 audit artifact."""
+         steps = []
+         for a in self.actions:
++            if a.kind not in PROCESS_FOR_KIND:
++                raise ValueError(
++                    f"unmapped action kind '{a.kind}'; known kinds: "
++                    f"{', '.join(sorted(PROCESS_FOR_KIND.keys()))}"
++                )
+             params = dict(a.params)
+             params["strength"] = a.strength
+             if a.scale_arcsec is not None:
+                 params["scale_arcsec"] = a.scale_arcsec
+             steps.append({
+                 "process": PROCESS_FOR_KIND[a.kind],
+                 "action": a.key,
+                 "params": params,
+             })
+         return steps
+diff --git a/tests/test_optimize_recipe.py b/tests/test_optimize_recipe.py
+index a255902..7861b26 100644
+--- a/tests/test_optimize_recipe.py
++++ b/tests/test_optimize_recipe.py
+@@ -8,29 +8,35 @@ def _a(kind="local_contrast", level="moderate", scale=8.0):
+ 
+ def test_recipe_is_immutable_and_extends_to_a_new_object():
+     empty = Recipe.empty()
+     one = empty.extend(_a())
+     assert len(empty.actions) == 0
+     assert len(one.actions) == 1
+ 
+ 
+ def test_recipe_key_distinguishes_order():
+     a, b = _a(kind="black_point", scale=None), _a(kind="chroma", scale=None)
++    # Same ordering must produce same key
++    assert Recipe.empty().extend(a).extend(b).key == Recipe.empty().extend(a).extend(b).key
++    # Different orderings must produce different keys
+     assert Recipe.empty().extend(a).extend(b).key != Recipe.empty().extend(b).extend(a).key
+ 
+ 
+ def test_applied_kinds_tracks_once_only_actions():
+     r = Recipe.empty().extend(_a(kind="star_split", level="", scale=None))
+     assert "star_split" in r.applied_kinds
+ 
+ 
+ def test_round_trips_through_dict():
+     r = Recipe.empty().extend(_a()).extend(_a(kind="chroma", scale=None))
++    # Key must match
+     assert Recipe.from_dict(r.to_dict()).key == r.key
++    # Params must be preserved through round-trip (Action.params not in key, so explicit check)
++    assert r.to_pixinsight_steps() == Recipe.from_dict(r.to_dict()).to_pixinsight_steps()
+ 
+ 
+ def test_renders_to_stock_pixinsight_steps():
+     r = Recipe.empty().extend(_a())
+     steps = r.to_pixinsight_steps()
+     assert steps[0]["process"] == "MultiscaleLinearTransform"
+     assert steps[0]["params"]["layer"] == 3
+     assert "strength" in steps[0]["params"]

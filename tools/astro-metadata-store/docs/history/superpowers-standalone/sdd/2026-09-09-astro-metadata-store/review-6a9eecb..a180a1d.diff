@@ -1,0 +1,586 @@
+# Review package: 6a9eecb..HEAD
+
+## Commits
+a180a1d feat: per-frame quality measurement via astap -analyse
+
+## Files changed
+ src/astrometa/quality.py | 170 ++++++++++++++++++++
+ tests/test_quality.py    | 393 +++++++++++++++++++++++++++++++++++++++++++++++
+ 2 files changed, 563 insertions(+)
+
+## Diff
+diff --git a/src/astrometa/quality.py b/src/astrometa/quality.py
+new file mode 100644
+index 0000000..b8151cf
+--- /dev/null
++++ b/src/astrometa/quality.py
+@@ -0,0 +1,170 @@
++"""
++Per-frame image quality via astap_cli -analyse: star count and median HFD
++(a focus/seeing proxy), feeding automatic culling decisions downstream.
++
++-analyse only detects and characterizes stars in the frame; it does not
++match against the star catalog, so unlike solve.py's full solve it needs
++no -d database argument at all (verified 2026-09-09 against the real
++binary: -analyse with -d pointed at a nonexistent directory still
++succeeds). A successful -analyse run also writes no .ini sidecar --
++HFD_MEDIAN and STARS print straight to stdout, e.g. "HFD_MEDIAN=3.9" /
++"STARS=240". Note -analyse2 performs a full plate solve instead and must
++not be used here -- this task only wants star-detection stats, not a
++solve (Task 7 already owns solving, once per field, which is a much more
++expensive operation).
++
++Sky background is NOT re-derived here: frames.bg_median was already
++computed from the same pixel read during Task 5's inventory pass, so
++measure_frames reuses that column and this module never decodes pixel
++data itself.
++
++astap_cli returns exit code 1 for a genuine access/read failure just as
++it does for other environment problems (see solve.py's module
++docstring), and -- measured 2026-09-09 against a corrupt/missing input --
++it still writes an .ini with an ERROR field in that case, even though a
++successful -analyse run writes no sidecar at all. So a genuine
++measurement (including a legitimate "zero stars found" -- measured
++against a real bias frame: HFD_MEDIAN=21.5 STARS=0, exit 0) is
++distinguished from a failure by exit code 0 together with both metrics
++present in stdout; parse_analyse alone can't make that call reliably,
++since a process could exit 0 with corrupted/unexpected stdout containing
++no metrics, so measure_frame folds the exit code in too.
++
++measure_frames only ever writes a quality row for a genuine measurement.
++A subprocess failure (timeout, crash, unparseable output) writes nothing
++-- see the module-level correction this encodes: measure_frames selects
++candidates via a LEFT JOIN against quality on content_hash, so a
++NULL-metric row would otherwise permanently mark a frame "measured" with
++no data and it would never be retried.
++
++Reuses solve._preflight (same poisoning risk this module faces: a
++misconfigured astap_cli install is indistinguishable from "no stars
++found" without it) and solve._diagnostics (same bounded stdout/stderr
++tail behaviour) rather than duplicating either.
++"""
++import re
++import shutil
++import sqlite3
++import subprocess
++import tempfile
++from dataclasses import dataclass
++from datetime import datetime, timezone
++from pathlib import Path
++
++from .solve import _diagnostics, _preflight
++
++TIMEOUT_S = 60
++_HFD = re.compile(r"^HFD_MEDIAN=([0-9.]+)", re.MULTILINE)
++_STARS = re.compile(r"^STARS=([0-9]+)", re.MULTILINE)
++
++
++@dataclass
++class QualityResult:
++    measured: int = 0
++    failed: int = 0
++
++
++def parse_analyse(stdout: str) -> dict:
++    """Extract HFD_MEDIAN/STARS from astap_cli -analyse stdout."""
++    h = _HFD.search(stdout or "")
++    s = _STARS.search(stdout or "")
++    return {"hfd_median": float(h.group(1)) if h else None,
++            "star_count": int(s.group(1)) if s else None}
++
++
++def _ini_error(ini: Path) -> str | None:
++    """astap_cli's own ERROR= line from a failure .ini, when present."""
++    if not ini.exists():
++        return None
++    for line in ini.read_text().splitlines():
++        if line.startswith("ERROR="):
++            return line.partition("=")[2].strip()
++    return None
++
++
++def measure_frame(cfg, frame_path: Path) -> dict:
++    """
++    Run astap_cli -analyse on one frame and return its metrics.
++
++    Always returns {"hfd_median", "star_count", "ok", "error"}. `ok` is
++    True only for a genuine measurement -- exit code 0 with both metrics
++    present in stdout, which includes a legitimate "no stars found"
++    result (hfd_median/star_count are still real numbers then, just an
++    uninformative HFD with star_count 0). Never raises for an ordinary
++    measurement failure; only an environment problem the caller's
++    preflight should already have caught would raise.
++    """
++    cfg.scratch_dir.mkdir(parents=True, exist_ok=True)
++    with tempfile.TemporaryDirectory(dir=cfg.scratch_dir) as tmp:
++        work = Path(tmp) / "quality.fit"
++        shutil.copy2(frame_path, work)          # sources are read-only
++        cmd = [str(cfg.astap_bin), "-f", str(work), "-analyse"]
++        try:
++            result = subprocess.run(cmd, capture_output=True, timeout=TIMEOUT_S)
++        except subprocess.TimeoutExpired:
++            return {"hfd_median": None, "star_count": None, "ok": False,
++                    "error": f"timeout after {TIMEOUT_S}s"}
++
++        stdout = (result.stdout or b"").decode("utf-8", "replace")
++        metrics = parse_analyse(stdout)
++        if (result.returncode == 0 and metrics["hfd_median"] is not None
++                and metrics["star_count"] is not None):
++            return {**metrics, "ok": True, "error": None}
++
++        # Failure: fold astap_cli's own .ini ERROR field (written even
++        # for -analyse on an access failure -- see module docstring)
++        # together with the exit code/output tail, so the reason is
++        # never a bare, unhelpful "solve failed".
++        reason = _ini_error(work.with_suffix(".ini"))
++        diag = _diagnostics(result)
++        error = f"{reason} ({diag})" if reason else diag
++        return {"hfd_median": None, "star_count": None, "ok": False,
++                "error": error}
++
++
++def measure_frames(conn, cfg, limit: int | None = None) -> QualityResult:
++    """
++    Measure quality for every light frame not yet measured.
++
++    Idempotent: candidates come from a LEFT JOIN against quality on
++    content_hash, WHERE quality.content_hash IS NULL -- a frame that
++    already has a quality row (written only for a genuine measurement,
++    see measure_frame) is never re-measured, and a frame whose
++    measurement failed writes no row so it stays a candidate on the next
++    run.
++
++    Returns a QualityResult(measured, failed) rather than a bare count,
++    so a caller can tell "nothing left to do" apart from "N frames are
++    still stuck failing" -- both look identical as a single int.
++    """
++    _preflight(cfg)
++    prev_factory = conn.row_factory
++    conn.row_factory = sqlite3.Row
++    try:
++        q = ("SELECT f.content_hash, f.path, f.bg_median FROM frames f "
++             "LEFT JOIN quality q ON q.content_hash = f.content_hash "
++             "WHERE f.frame_type='light' AND f.read_error IS NULL "
++             "AND q.content_hash IS NULL ORDER BY f.content_hash")
++        params: list = []
++        if limit is not None:
++            q += " LIMIT ?"
++            params.append(int(limit))
++        rows = conn.execute(q, params).fetchall()
++
++        res = QualityResult()
++        for row in rows:
++            m = measure_frame(cfg, Path(row["path"]))
++            if not m["ok"]:
++                res.failed += 1
++                continue
++            conn.execute("""
++                INSERT INTO quality (content_hash, star_count, hfd_median,
++                    sky_background, measured_at)
++                VALUES (?,?,?,?,?)""",
++                (row["content_hash"], m["star_count"], m["hfd_median"],
++                 row["bg_median"], datetime.now(timezone.utc).isoformat()))
++            res.measured += 1
++            conn.commit()
++        return res
++    finally:
++        conn.row_factory = prev_factory
+diff --git a/tests/test_quality.py b/tests/test_quality.py
+new file mode 100644
+index 0000000..a2b33ed
+--- /dev/null
++++ b/tests/test_quality.py
+@@ -0,0 +1,393 @@
++import stat
++from pathlib import Path
++
++import pytest
++
++from astrometa import db, quality
++from astrometa.config import Config
++
++# A stub "astap_cli" used in place of the real binary. It mimics only the
++# -analyse behaviours these tests care about, all measured 2026-09-09
++# against the real binary:
++#   - a genuine measurement prints "HFD_MEDIAN=<f>\nSTARS=<n>\n" to stdout
++#     and exits 0, WITHOUT writing any .ini sidecar at all (unlike a
++#     solve, -analyse writes no sidecar on success)
++#   - even a bare "-analyse" (no snr_min) works -- it is not a required arg
++#   - a file-access failure (bad/missing/corrupt input) exits 1 and DOES
++#     write an .ini next to the input, with an ERROR= line and no metrics
++#     on stdout
++# Controlled entirely through env vars (inherited from the test process),
++# so one stub script covers every scenario below:
++#   STUB_MODE=solved (default) -> prints STUB_STDOUT (or a canned
++#                                   HFD_MEDIAN/STARS pair) to stdout, exits
++#                                   STUB_EXIT_CODE (default 0), no sidecar
++#   STUB_MODE=no_metrics         -> prints unrelated text to stdout, exits
++#                                   0, no sidecar (simulates a run that
++#                                   didn't crash but produced nothing
++#                                   parseable)
++#   STUB_MODE=error_ini          -> writes an .ini with ERROR=<STUB_ERROR>
++#                                   next to the -f path, exits 1, no
++#                                   metrics on stdout
++#   STUB_MODE=crash               -> prints to stdout/stderr, writes no
++#                                   .ini, exits 139
++#   STUB_MODE=sleep                -> sleeps STUB_SLEEP seconds, writes
++#                                   nothing (exercises the timeout path
++#                                   without waiting on the real 60s)
++_STUB_SOURCE = '''#!/usr/bin/env python3
++import os
++import sys
++import time
++from pathlib import Path
++
++def main():
++    argv = sys.argv[1:]
++    mode = os.environ.get("STUB_MODE", "solved")
++    if mode == "sleep":
++        time.sleep(float(os.environ.get("STUB_SLEEP", "5")))
++        return
++    if mode == "crash":
++        print("simulated astap_cli crash: assertion failed at foo.pas:123")
++        print("segmentation fault detected", file=sys.stderr)
++        sys.exit(139)
++    if mode == "no_metrics":
++        print("Using star database D50")
++        print("Done")
++        return
++
++    f_path = Path(argv[argv.index("-f") + 1])
++    if mode == "error_ini":
++        err = os.environ.get("STUB_ERROR", "Error reading image file.")
++        f_path.with_suffix(".ini").write_text(
++            f"\\nPLTSOLVD=F\\nCMDLINE=x\\nERROR={err}\\n")
++        sys.exit(1)
++
++    stdout = os.environ.get("STUB_STDOUT", "HFD_MEDIAN=3.9\\nSTARS=240\\n")
++    sys.stdout.write(stdout)
++    sys.exit(int(os.environ.get("STUB_EXIT_CODE", "0")))
++
++if __name__ == "__main__":
++    main()
++'''
++
++
++def _make_stub(tmp_path: Path) -> Path:
++    stub = tmp_path / "stub_astap.py"
++    stub.write_text(_STUB_SOURCE)
++    mode = stub.stat().st_mode
++    stub.chmod(mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
++    return stub
++
++
++def _cfg(tmp_path: Path, astap_bin: Path) -> Config:
++    db_dir = tmp_path / "astap_db"
++    db_dir.mkdir(exist_ok=True)
++    return Config(scratch_dir=tmp_path / "scratch",
++                  astap_bin=astap_bin, astap_db_dir=db_dir)
++
++
++# --- parse_analyse -----------------------------------------------------
++
++def test_parse_analyse_extracts_metrics():
++    r = quality.parse_analyse("HFD_MEDIAN=3.9\nSTARS=240\n")
++    assert r["hfd_median"] == 3.9
++    assert r["star_count"] == 240
++
++
++def test_parse_analyse_tolerates_extra_lines():
++    r = quality.parse_analyse(
++        "Using star database D50\nHFD_MEDIAN=2.5\nSTARS=1024\nDone\n")
++    assert r["hfd_median"] == 2.5 and r["star_count"] == 1024
++
++
++def test_parse_analyse_on_garbage_returns_none():
++    r = quality.parse_analyse("total failure\n")
++    assert r["hfd_median"] is None and r["star_count"] is None
++
++
++# --- measure_frame -------------------------------------------------------
++
++def test_measure_frame_stub_solver_leaves_source_directory_clean(tmp_path, monkeypatch):
++    # astap_cli writes sidecars next to whatever -f path it is given, and
++    # the archive mount is read-only by design, so measure_frame must
++    # copy the frame to scratch before invoking astap_cli.
++    source_dir = tmp_path / "read_only_source"
++    source_dir.mkdir()
++    frame = source_dir / "frame.fit"
++    frame.write_bytes(b"pretend this is FITS data, the stub never reads it")
++
++    stub = _make_stub(tmp_path)
++    monkeypatch.setenv("STUB_MODE", "solved")
++
++    cfg = _cfg(tmp_path, stub)
++    result = quality.measure_frame(cfg, frame)
++
++    assert result["ok"] is True
++    assert result["hfd_median"] == 3.9
++    assert result["star_count"] == 240
++    assert [p.name for p in source_dir.iterdir()] == ["frame.fit"]
++
++
++def test_measure_frame_zero_stars_is_still_a_genuine_measurement(tmp_path, monkeypatch):
++    # Measured 2026-09-09 against the real binary on an actual bias
++    # frame: HFD_MEDIAN=21.5 STARS=0, exit 0, no .ini. A field with no
++    # detectable stars is a legitimate result, not a failure -- it must
++    # still be written.
++    source_dir = tmp_path / "source"; source_dir.mkdir()
++    frame = source_dir / "frame.fit"; frame.write_bytes(b"x")
++
++    stub = _make_stub(tmp_path)
++    monkeypatch.setenv("STUB_MODE", "solved")
++    monkeypatch.setenv("STUB_STDOUT", "HFD_MEDIAN=21.5\nSTARS=0\n")
++
++    cfg = _cfg(tmp_path, stub)
++    result = quality.measure_frame(cfg, frame)
++
++    assert result["ok"] is True
++    assert result["hfd_median"] == 21.5
++    assert result["star_count"] == 0
++
++
++def test_measure_frame_unparseable_output_is_a_failure_not_a_measurement(tmp_path, monkeypatch):
++    # Exit 0 but nothing parseable on stdout: must not be silently
++    # reported as a zero-star measurement -- that would fabricate data
++    # astap_cli never actually reported.
++    source_dir = tmp_path / "source"; source_dir.mkdir()
++    frame = source_dir / "frame.fit"; frame.write_bytes(b"x")
++
++    stub = _make_stub(tmp_path)
++    monkeypatch.setenv("STUB_MODE", "no_metrics")
++
++    cfg = _cfg(tmp_path, stub)
++    result = quality.measure_frame(cfg, frame)
++
++    assert result["ok"] is False
++    assert result["hfd_median"] is None
++    assert result["star_count"] is None
++    assert "exit 0" in result["error"]
++
++
++def test_measure_frame_crash_carries_exit_code_and_output(tmp_path, monkeypatch):
++    source_dir = tmp_path / "source"; source_dir.mkdir()
++    frame = source_dir / "frame.fit"; frame.write_bytes(b"x")
++
++    stub = _make_stub(tmp_path)
++    monkeypatch.setenv("STUB_MODE", "crash")
++
++    cfg = _cfg(tmp_path, stub)
++    result = quality.measure_frame(cfg, frame)
++
++    assert result["ok"] is False
++    assert "exit 139" in result["error"]
++    assert "simulated astap_cli crash" in result["error"]
++
++
++def test_measure_frame_environment_failure_carries_ini_error(tmp_path, monkeypatch):
++    # Reproduces the shape measured against the real binary for a bad
++    # input file: an .ini IS written even though a successful -analyse
++    # writes none at all, with an ERROR field and exit code 1.
++    source_dir = tmp_path / "source"; source_dir.mkdir()
++    frame = source_dir / "frame.fit"; frame.write_bytes(b"x")
++
++    stub = _make_stub(tmp_path)
++    monkeypatch.setenv("STUB_MODE", "error_ini")
++    monkeypatch.setenv("STUB_ERROR", "Error reading image file.")
++
++    cfg = _cfg(tmp_path, stub)
++    result = quality.measure_frame(cfg, frame)
++
++    assert result["ok"] is False
++    assert "Error reading image file." in result["error"]
++    assert "exit 1" in result["error"]
++
++
++def test_measure_frame_records_timeout_loudly(tmp_path, monkeypatch):
++    source_dir = tmp_path / "source"; source_dir.mkdir()
++    frame = source_dir / "frame.fit"; frame.write_bytes(b"x")
++
++    stub = _make_stub(tmp_path)
++    monkeypatch.setenv("STUB_MODE", "sleep")
++    monkeypatch.setenv("STUB_SLEEP", "2")
++    monkeypatch.setattr(quality, "TIMEOUT_S", 0.2)
++
++    cfg = _cfg(tmp_path, stub)
++    result = quality.measure_frame(cfg, frame)
++
++    assert result["ok"] is False
++    assert "timeout" in result["error"]
++
++
++REAL_ASTAP = Path("/opt/astap/astap_cli")
++
++
++def _find_real_frame() -> Path | None:
++    root = Path("/mnt/qnap/astro_data")
++    if not root.exists():
++        return None
++    for p in root.rglob("Light_*.fit"):
++        return p
++    return None
++
++
++@pytest.mark.skipif(not REAL_ASTAP.exists(),
++                     reason="astap_cli not installed on this host")
++def test_measure_frame_against_real_astap(tmp_path):
++    frame = _find_real_frame()
++    if frame is None:
++        pytest.skip("no archive frame reachable on this host")
++
++    cfg = Config(scratch_dir=tmp_path / "scratch",
++                 astap_bin=REAL_ASTAP, astap_db_dir=REAL_ASTAP.parent)
++
++    result = quality.measure_frame(cfg, frame)
++
++    assert result["ok"] is True
++    assert result["hfd_median"] is not None
++    assert result["star_count"] is not None
++
++
++# --- measure_frames --------------------------------------------------------
++
++def _insert_frame(conn, content_hash: str, path: Path, frame_type="light",
++                   read_error=None, bg_median=None) -> None:
++    conn.execute("""
++        INSERT INTO frames (content_hash, path, filename, size, mtime,
++            frame_type, disposition, read_error, bg_median)
++        VALUES (?,?,?,1,1.0,?,'present',?,?)""",
++        (content_hash, str(path), path.name, frame_type, read_error, bg_median))
++
++
++def test_measure_frames_writes_quality_row_for_a_genuine_measurement(tmp_path, monkeypatch):
++    conn = db.connect(tmp_path / "t.sqlite"); db.init_schema(conn)
++    source_dir = tmp_path / "source"; source_dir.mkdir()
++    frame = source_dir / "frame.fit"; frame.write_bytes(b"x")
++    _insert_frame(conn, "h1", frame, bg_median=123.4)
++
++    stub = _make_stub(tmp_path)
++    monkeypatch.setenv("STUB_MODE", "solved")
++    cfg = _cfg(tmp_path, stub)
++
++    res = quality.measure_frames(conn, cfg)
++    assert res.measured == 1
++    assert res.failed == 0
++
++    row = conn.execute(
++        "SELECT star_count, hfd_median, sky_background, measured_at "
++        "FROM quality WHERE content_hash='h1'").fetchone()
++    assert row[0] == 240
++    assert row[1] == 3.9
++    assert row[2] == 123.4          # copied straight from frames.bg_median
++    assert row[3] is not None
++
++    # source frame is never touched
++    assert [p.name for p in source_dir.iterdir()] == ["frame.fit"]
++
++
++def test_measure_frames_only_considers_light_frames_without_read_error(tmp_path, monkeypatch):
++    conn = db.connect(tmp_path / "t.sqlite"); db.init_schema(conn)
++    source_dir = tmp_path / "source"; source_dir.mkdir()
++    dark = source_dir / "dark.fit"; dark.write_bytes(b"x")
++    broken = source_dir / "broken.fit"; broken.write_bytes(b"x")
++    _insert_frame(conn, "dark1", dark, frame_type="dark")
++    _insert_frame(conn, "broken1", broken, frame_type="light",
++                  read_error="pixels: OSError: truncated")
++
++    stub = _make_stub(tmp_path)
++    monkeypatch.setenv("STUB_MODE", "solved")
++    cfg = _cfg(tmp_path, stub)
++
++    res = quality.measure_frames(conn, cfg)
++    assert res.measured == 0
++    assert res.failed == 0
++    assert conn.execute("SELECT COUNT(*) FROM quality").fetchone()[0] == 0
++
++
++def test_measure_frames_is_idempotent(tmp_path, monkeypatch):
++    conn = db.connect(tmp_path / "t.sqlite"); db.init_schema(conn)
++    source_dir = tmp_path / "source"; source_dir.mkdir()
++    frame = source_dir / "frame.fit"; frame.write_bytes(b"x")
++    _insert_frame(conn, "h1", frame)
++
++    stub = _make_stub(tmp_path)
++    monkeypatch.setenv("STUB_MODE", "solved")
++    cfg = _cfg(tmp_path, stub)
++
++    assert quality.measure_frames(conn, cfg).measured == 1
++    # re-run finds nothing new: the frame already has a quality row
++    assert quality.measure_frames(conn, cfg).measured == 0
++    assert conn.execute("SELECT COUNT(*) FROM quality").fetchone()[0] == 1
++
++
++def test_measure_frames_failure_writes_no_row_and_stays_a_candidate(tmp_path, monkeypatch):
++    # The core correction this task exists to enforce: a NULL-metric row
++    # would permanently mark the frame measured-with-no-data (the
++    # candidate query is a LEFT JOIN ... WHERE quality.content_hash IS
++    # NULL) and it would never be retried. A failed measurement must
++    # leave no row at all.
++    conn = db.connect(tmp_path / "t.sqlite"); db.init_schema(conn)
++    source_dir = tmp_path / "source"; source_dir.mkdir()
++    frame = source_dir / "frame.fit"; frame.write_bytes(b"x")
++    _insert_frame(conn, "h1", frame)
++
++    stub = _make_stub(tmp_path)
++    monkeypatch.setenv("STUB_MODE", "no_metrics")
++    cfg = _cfg(tmp_path, stub)
++
++    res = quality.measure_frames(conn, cfg)
++    assert res.measured == 0
++    assert res.failed == 1
++    assert conn.execute("SELECT COUNT(*) FROM quality").fetchone()[0] == 0
++
++    # a later run (e.g. once the environment is fixed) retries it
++    monkeypatch.setenv("STUB_MODE", "solved")
++    res2 = quality.measure_frames(conn, cfg)
++    assert res2.measured == 1
++    assert res2.failed == 0
++    assert conn.execute("SELECT COUNT(*) FROM quality").fetchone()[0] == 1
++
++
++def test_measure_frames_respects_limit(tmp_path, monkeypatch):
++    conn = db.connect(tmp_path / "t.sqlite"); db.init_schema(conn)
++    source_dir = tmp_path / "source"; source_dir.mkdir()
++    frame1 = source_dir / "frame1.fit"; frame1.write_bytes(b"x")
++    frame2 = source_dir / "frame2.fit"; frame2.write_bytes(b"x")
++    _insert_frame(conn, "h1", frame1)
++    _insert_frame(conn, "h2", frame2)
++
++    stub = _make_stub(tmp_path)
++    monkeypatch.setenv("STUB_MODE", "solved")
++    cfg = _cfg(tmp_path, stub)
++
++    res = quality.measure_frames(conn, cfg, limit=1)
++    assert res.measured == 1
++    assert conn.execute("SELECT COUNT(*) FROM quality").fetchone()[0] == 1
++
++
++def test_measure_frames_raises_on_missing_astap_binary(tmp_path):
++    conn = db.connect(tmp_path / "t.sqlite"); db.init_schema(conn)
++    source_dir = tmp_path / "source"; source_dir.mkdir()
++    frame = source_dir / "frame.fit"; frame.write_bytes(b"x")
++    _insert_frame(conn, "h1", frame)
++
++    missing_bin = tmp_path / "does_not_exist_astap_cli"
++    cfg = _cfg(tmp_path, missing_bin)
++
++    with pytest.raises(RuntimeError, match="astap_bin"):
++        quality.measure_frames(conn, cfg)
++
++    assert conn.execute("SELECT COUNT(*) FROM quality").fetchone()[0] == 0
++
++
++def test_measure_frames_raises_on_missing_astap_db_dir(tmp_path):
++    conn = db.connect(tmp_path / "t.sqlite"); db.init_schema(conn)
++    source_dir = tmp_path / "source"; source_dir.mkdir()
++    frame = source_dir / "frame.fit"; frame.write_bytes(b"x")
++    _insert_frame(conn, "h1", frame)
++
++    stub = _make_stub(tmp_path)
++    cfg = Config(scratch_dir=tmp_path / "scratch", astap_bin=stub,
++                 astap_db_dir=tmp_path / "does_not_exist_db_dir")
++
++    with pytest.raises(RuntimeError, match="astap_db_dir"):
++        quality.measure_frames(conn, cfg)
++
++    assert conn.execute("SELECT COUNT(*) FROM quality").fetchone()[0] == 0

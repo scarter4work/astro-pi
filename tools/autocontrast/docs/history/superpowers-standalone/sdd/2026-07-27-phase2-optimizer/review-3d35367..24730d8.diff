@@ -1,0 +1,455 @@
+# Review package: 3d35367..24730d8
+
+## Commits
+24730d8 optimize: hue invention as angular tolerance, not exact-bin membership (SS5.1)
+0bbef50 Spec: hue invention needs an angular tolerance, and must not police clipping
+bdc5020 optimize: reimplement hue invention on hue angle, not a*/b* position (SS5.1)
+72d52a7 Spec: hue invention is measured on angle, not a*/b* position
+212c841 optimize: cosmetic import cleanup + document neutral-source intent
+
+## Files changed
+ .../specs/2026-07-27-phase2-optimizer-design.md    |  63 +++++++++++-
+ src/autocontrast/optimize/guardrails.py            | 105 ++++++++++++++++----
+ tests/test_optimize_guardrails.py                  | 110 ++++++++++++++++++---
+ 3 files changed, 248 insertions(+), 30 deletions(-)
+
+## Diff
+diff --git a/docs/superpowers/specs/2026-07-27-phase2-optimizer-design.md b/docs/superpowers/specs/2026-07-27-phase2-optimizer-design.md
+index 4136611..4b70ae3 100644
+--- a/docs/superpowers/specs/2026-07-27-phase2-optimizer-design.md
++++ b/docs/superpowers/specs/2026-07-27-phase2-optimizer-design.md
+@@ -276,26 +276,87 @@ StarXTerminator is confirmed installed at `/opt/PixInsight/bin/StarXTerminator-p
+ 
+ Hard constraints, evaluated every iteration, cheap and deterministic. A violation discards the
+ candidate and rolls back. Each records a **reason**, so a declined run can explain why it declined.
+ 
+ | Guardrail | Metric | Trip condition |
+ |---|---|---|
+ | Noise floor | MRS noise σ per channel, via starlet | σ increases beyond tolerance from checkpoint |
+ | Star integrity | count, median FWHM, eccentricity | count drops, or FWHM/ecc balloons |
+ | Shadow clipping | % pixels at 0 per channel | exceeds threshold (default ~0.01%) |
+ | Highlight clipping | % pixels at 1.0 per channel | exceeds threshold |
+-| Hue invention | chroma mass in a\*/b\* cells with no support in the source | any mass above ε |
++| Hue invention | chroma mass at a hue **angle** with no support in the source | any mass above ε |
+ | Channel ratio drift | post-stretch ratios vs. source-derived constraints | exceeds tolerance |
+ 
+ The last two enforce §2.1 and §2.3 mechanically and are the difference between a tool that enhances
+ and one that fabricates.
+ 
++### 5.1 Hue invention is measured on angle, not on a\*/b\* position
++
++**Revised 2026-07-27, on measurement.** This guardrail was originally specified as "chroma mass in
++a\*/b\* cells with no support in the source." Implementing it revealed that formulation rejects
++ordinary saturation increases: with a 16×16 histogram over ±100, each bin is 12.5 wide, and boosting
++saturation moves a pixel *radially outward* into a neighbouring cell. Measured against a source whose
++chroma sat near a bin edge, a **1.3× boost** already exceeded the ε limit and an **1.8× boost** put
++0.952 of the image's chroma mass into "unsupported" cells.
++
++Since `chroma` (ColorSaturation) is one of the eight §6.2 actions and runs at 0.85 strength on
++`strong`, the cell-based check would have vetoed essentially every colour move on real data — while
++reporting itself as functioning.
++
++The a\*/b\* plane cannot distinguish "the same colour, more of it" from "a colour that was never
++there", because both show up as mass in a new cell. **Hue angle can.** Saturation moves along a
++radius at constant angle; fabrication introduces a *new angle*. This is also what §2.1 already says
++in words: the fingerprint may influence *"saturation structure"* — saturation change is permitted,
++invented colour is not.
++
++Therefore hue invention is measured as chroma-weighted mass sitting **more than a tolerance angle away
++from any hue the source supports**.
++
++**Corrected 2026-07-27, second iteration.** A first attempt required an unclipped 3.0× boost to trip.
++That requirement was wrong and is withdrawn. Saturation is applied in RGB while CIELAB hue angle is a
++nonlinear function of RGB, so legitimate boosts genuinely drift the hue angle by a few degrees. Asking
++this guardrail to catch that was asking it to do the clipping guardrails' job.
++
++Measured separation, which is what the tolerance rests on:
++
++| Case | Hue displacement | Verdict |
++|---|---|---|
++| 1.3× saturation boost | 0.84° | passes |
++| 1.8× saturation boost | 2.35° | passes |
++| 2.2× saturation boost | 3.63° | passes |
++| 3.0× saturation boost (unclipped) | 6.39° | passes |
++| Green injected into a red image | **116.28°** | trips |
++| Green cast on a neutral source | no supported hue at all | trips |
++
++Legitimate drift is **bounded** at roughly 6°; genuine invention is roughly 116° or has no support
++whatsoever. The tolerance sits in that gap — default **20°**, about 3× above real drift and 6× below
++real invention.
++
++The bounded-drift property is what makes this safe where the a\*/b\* cell approach was not. Radial
++movement in the a\*/b\* plane is unbounded, so any fixed cell dilation is escapable by boosting harder.
++Angular drift from legitimate operations cannot grow that way.
++
++Three properties this must keep:
++- A **minimum-chroma floor**, so near-neutral pixels do not contribute numerically noisy angles.
++- A **neutral source blocks all colourisation** — an all-neutral source supports no hue, so any colour
++  is invented. Intentional per §2.1: no colour in the data means no colour to legitimately intensify.
++- **Clipping is not this guardrail's job.** `check_shadow_clipping` and `check_highlight_clipping`
++  own it. Each guardrail catches its own failure mode; overlapping them caused the first iteration's
++  error.
++
++Two routes were explicitly rejected:
++- **Raising ε** on the cell-based check: 1.8× requires ε above 0.95, at which point the guardrail
++  detects no realistic fabrication at all — the "tune around a finding" failure §3.7 forbids.
++- **Dilating the source cell mask** by a fixed radius: refuted by measurement. At 2.2× the candidate
++  spans three cells while the source occupies one, so a radius-1 dilation still trips, and any fixed
++  radius is escapable by a larger boost.
++
+ ---
+ 
+ ## 6. Error handling
+ 
+ - **Guardrail trip** — discards that candidate only; reason recorded and reported.
+ - **Executor failure** (a PI process erroring on a candidate) — kills that candidate only, logged.
+ - **All branches dead** — convergence condition 3, reported as exhausted.
+ - **Proxy/full-res divergence** — surfaced loudly, run flagged (§12).
+ - **Linear input to Stage 1** — loud error, never a silent auto-stretch (§12).
+ - **Sidecar op errors** — existing `{ok: false, error}` contract; always surfaced (§12).
+diff --git a/src/autocontrast/optimize/guardrails.py b/src/autocontrast/optimize/guardrails.py
+index 16007be..67e5ce0 100644
+--- a/src/autocontrast/optimize/guardrails.py
++++ b/src/autocontrast/optimize/guardrails.py
+@@ -10,38 +10,40 @@ them behave differently offline than in production, and SS7 violations are what
+ stop this tool fabricating -- the last thing that should go untested.
+ """
+ 
+ from __future__ import annotations
+ 
+ from dataclasses import dataclass
+ 
+ import numpy as np
+ from scipy import ndimage
+ 
++from autocontrast.fingerprint.color import rgb_to_lab
+ from autocontrast.fingerprint.starlet import starlet_transform
+ 
+ # Median absolute deviation -> Gaussian sigma, for the finest wavelet plane.
+ _MAD_TO_SIGMA = 1.4826
+ 
+ 
+ @dataclass(frozen=True)
+ class GuardrailLimits:
+     """Trip thresholds. Calibrated against real data, never tuned to rescue a
+     single failing test (spec SS3.7)."""
+ 
+     noise_growth: float = 0.15          # fractional sigma increase from checkpoint
+     shadow_clip_fraction: float = 1e-4  # ~0.01% of pixels at 0
+     highlight_clip_fraction: float = 1e-4
+     star_count_drop: float = 0.05       # fractional loss of detected stars
+     star_fwhm_growth: float = 0.20
+     star_ecc_growth: float = 0.20
+     hue_invention_mass: float = 1e-3    # chroma mass with no support in source
++    hue_tolerance_deg: float = 20.0     # SS5.1: bounded legitimate-boost drift margin
+     channel_ratio_drift: float = 0.10
+ 
+ 
+ @dataclass(frozen=True)
+ class GuardrailVerdict:
+     name: str
+     ok: bool
+     reason: str
+     value: float
+     limit: float
+@@ -214,51 +216,120 @@ def check_star_integrity(
+     if ecc_growth > limits.star_ecc_growth:
+         return GuardrailVerdict(
+             "star_integrity", False,
+             f"star eccentricity grew {ecc_growth:.2f}, limit {limits.star_ecc_growth:.2f}",
+             ecc_growth, limits.star_ecc_growth,
+         )
+ 
+     return GuardrailVerdict("star_integrity", True, "", 0.0, limits.star_count_drop)
+ 
+ 
+-from autocontrast.fingerprint.color import rgb_to_lab
+-from autocontrast.fingerprint.extract import CHROMA_BINS, CHROMA_EXTENT
+-from autocontrast.fingerprint.metrics import chroma_histogram
++# Hue-angle histogram resolution (design SS5.1). This is a measurement grid,
++# not a tolerance -- 1-degree bins, far finer than limits.hue_tolerance_deg
++# (default 20 degrees), so discretization error against the tolerance is
++# negligible. Bin width is no longer load-bearing the way it was in the first
++# iteration: the tolerance below is what decides support, not bin membership.
++NUM_HUE_BINS = 360
++
++# Chroma floor (a*/b* units) below which a pixel's hue angle is dropped rather
++# than measured. A pixel this close to neutral has an atan2(b, a) of two small,
++# noisy numbers -- the angle is not meaningfully defined, and letting it vote
++# would make "unsupported" a measure of noise, not of color. 1.0 sits comfortably
++# below the ~2.3 CIELAB delta-E commonly cited as the smallest color difference a
++# human observer reliably notices, so it excludes only pixels with no perceptible
++# color at all.
++HUE_CHROMA_FLOOR = 1.0
+ 
+ 
+-def _chroma_hist(rgb: np.ndarray) -> np.ndarray:
++def _hue_mass_by_bin(rgb: np.ndarray) -> np.ndarray:
++    """Chroma-weighted mass in each 1-degree hue bin (0-360 degrees), unnormalized.
++
++    Pixels at or below ``HUE_CHROMA_FLOOR`` are excluded entirely, not binned as
++    zero-chroma -- see the floor's docstring above. A source with no pixel above
++    the floor (a perfectly neutral source) yields an all-zero histogram.
++    """
+     lab = rgb_to_lab(rgb)
+-    return chroma_histogram(lab[..., 1], lab[..., 2], bins=CHROMA_BINS, extent=CHROMA_EXTENT)
++    a, b = lab[..., 1], lab[..., 2]
++    chroma = np.hypot(a, b)
++    hue = np.degrees(np.arctan2(b, a)) % 360.0
++
++    supported = chroma > HUE_CHROMA_FLOOR
++    edges = np.linspace(0.0, 360.0, NUM_HUE_BINS + 1)
++    hist, _ = np.histogram(hue[supported], bins=edges, weights=chroma[supported])
++    return hist
++
++
++def _dilate_circular(occupied: np.ndarray, radius_bins: int) -> np.ndarray:
++    """OR ``occupied`` with itself shifted by up to ``radius_bins`` bins either
++    way, wrapping at the array ends -- hue angle is circular, so a bin just
++    above 359 degrees is adjacent to one just above 0, not far from it."""
++    supported = occupied.copy()
++    for shift in range(1, radius_bins + 1):
++        supported |= np.roll(occupied, shift)
++        supported |= np.roll(occupied, -shift)
++    return supported
+ 
+ 
+ def check_hue_invention(
+     candidate: np.ndarray, source: np.ndarray, limits: GuardrailLimits
+ ) -> GuardrailVerdict:
+-    """No chroma mass may appear in an a*/b* cell with no support in the source (SS7).
+-
+-    This is SS2.1 enforced mechanically. Intensifying a color that is already
+-    present is presentation; creating one that was never in the data is
+-    fabrication, and it is the difference between a tool that enhances and a tool
+-    that invents.
++    """No chroma mass may sit more than ``limits.hue_tolerance_deg`` from any hue
++    the source supports (SS7).
++
++    This is SS2.1 enforced mechanically, on hue ANGLE rather than a*/b* position
++    (design SS5.1, twice revised on measurement). The a*/b* plane cannot tell
++    "the same color, more of it" from "a color that was never there": a
++    saturation boost moves a pixel radially outward, and radial motion crosses
++    a*/b* grid cells even though the color itself hasn't changed. Hue angle can
++    make the distinction, because saturation moves along a radius at
++    (approximately) constant angle, while fabrication introduces a genuinely new
++    one. "Approximately" is why this is a TOLERANCE, not exact-bin membership:
++    saturation is applied in RGB, and CIELAB hue angle is a nonlinear function
++    of RGB, so a legitimate boost drifts the angle by a few degrees even with no
++    clipping at all. Measured legitimate drift is bounded around 6 degrees;
++    measured invention is ~116 degrees or has no supporting hue whatsoever. The
++    default tolerance (20 degrees) sits in that gap -- about 3x above real drift
++    and 6x below real invention -- and, unlike a fixed a*/b* cell dilation, this
++    bound cannot be escaped by boosting harder: radial movement in the a*/b*
++    plane is unbounded, but angular drift from a legitimate operation is not.
++
++    Detecting a channel clipped out of gamut is deliberately NOT this
++    guardrail's job -- that's what ``check_shadow_clipping`` and
++    ``check_highlight_clipping`` are for. Folding gamut-driven hue shift into
++    this check is what produced the first iteration's over-strict result.
++
++    A perfectly neutral source (an all-zero hue histogram, every pixel at or
++    below ``HUE_CHROMA_FLOOR``) supports no hue at all, so ANY candidate chroma
++    above the floor trips this check -- intentionally, not incidentally. Per
++    §2.1, no color in the data means no color to legitimately intensify: a
++    genuinely gray source has nothing here for a saturation move to amplify, so
++    introducing color from a neutral source is fabrication by definition, not a
++    boundary case this check happens to also catch.
+     """
+-    src = _chroma_hist(source)
+-    cand = _chroma_hist(candidate)
++    src_hist = _hue_mass_by_bin(source)
++    cand_hist = _hue_mass_by_bin(candidate)
++
++    bin_width_deg = 360.0 / NUM_HUE_BINS
++    radius_bins = int(np.ceil(limits.hue_tolerance_deg / bin_width_deg))
++    supported = _dilate_circular(src_hist > 0.0, radius_bins)
++
++    cand_total = cand_hist.sum()
++    cand_norm = cand_hist / cand_total if cand_total > 0 else cand_hist
+ 
+-    unsupported = cand[src <= 0.0]
+-    mass = float(unsupported.sum())
++    mass = float(cand_norm[~supported].sum())
+     ok = mass <= limits.hue_invention_mass
+     return GuardrailVerdict(
+         name="hue_invention", ok=ok,
+         reason="" if ok else (
+-            f"hue invention: {mass:.4f} chroma mass appeared in a*/b* cells with "
+-            f"no support in the source (limit {limits.hue_invention_mass:.4f})"
++            f"hue invention: {mass:.4f} chroma mass appeared more than "
++            f"{limits.hue_tolerance_deg:.0f} degrees from any hue the source "
++            f"supports (limit {limits.hue_invention_mass:.4f})"
+         ),
+         value=mass, limit=limits.hue_invention_mass,
+     )
+ 
+ 
+ def _channel_ratios(rgb: np.ndarray) -> np.ndarray:
+     """Mean per-channel level, normalized to sum 1 -- the presentation-space stand-in
+     for the linear channel ratios SS2.1 protects."""
+     means = np.array([float(rgb[..., c].mean()) for c in range(rgb.shape[-1])])
+     total = means.sum()
+diff --git a/tests/test_optimize_guardrails.py b/tests/test_optimize_guardrails.py
+index 56f4fff..b717aa6 100644
+--- a/tests/test_optimize_guardrails.py
++++ b/tests/test_optimize_guardrails.py
+@@ -1,16 +1,18 @@
+ import numpy as np
+ import pytest
+ 
++from autocontrast.fingerprint.color import rgb_to_lab
+ from autocontrast.optimize.guardrails import (
+-    GuardrailLimits, check_highlight_clipping, check_noise_floor,
+-    check_shadow_clipping, clipped_fraction, mrs_noise_sigma,
++    GuardrailLimits, check_channel_ratio_drift, check_highlight_clipping,
++    check_hue_invention, check_noise_floor, check_shadow_clipping,
++    clipped_fraction, evaluate_guardrails, mrs_noise_sigma,
+ )
+ 
+ RNG = np.random.default_rng(20260727)
+ 
+ 
+ def _smooth_image(h=128, w=128):
+     y, x = np.mgrid[0:h, 0:w]
+     base = 0.5 + 0.2 * np.sin(x / 20.0) * np.cos(y / 20.0)
+     return np.clip(np.stack([base] * 3, axis=-1), 0.0, 1.0)
+ 
+@@ -138,43 +140,127 @@ def test_star_integrity_passes_but_says_so_when_baseline_is_starless():
+     assert detect_stars(blank[..., 0]).count == 0
+ 
+     verdict = check_star_integrity(blank, blank, GuardrailLimits())
+     assert verdict.ok
+     # Must not be a silent pass: the reason has to say integrity wasn't
+     # actually evaluated, not merely that it checked out clean.
+     assert verdict.reason != ""
+     assert "no" in verdict.reason.lower() and "star" in verdict.reason.lower()
+ 
+ 
+-from autocontrast.optimize.guardrails import (
+-    check_channel_ratio_drift, check_hue_invention, evaluate_guardrails,
+-)
++# --- hue-angle acceptance fixtures (design SS5.1, twice revised) ---
++#
++# Saturation is applied in RGB, as any real ColorSaturation implementation
++# would, NOT by scaling Lab a*/b* directly. CIELAB hue angle is a nonlinear
++# function of RGB, so a legitimate boost drifts the angle by a few degrees
++# even with zero clipping -- an angle-exact Lab-radial boost hides that drift
++# and is not a faithful fixture (an earlier round of this guardrail used one
++# and got a false "clean separation"; see task-4-report.md fix round 2 for
++# how that went wrong). Gamut clipping is deliberately NOT tested here -- that
++# is check_shadow_clipping's and check_highlight_clipping's job, not this
++# guardrail's (SS5.1's second correction).
+ 
++def _hue_deg(rgb):
++    lab = rgb_to_lab(rgb)
++    a, b = lab[..., 1], lab[..., 2]
++    return np.degrees(np.arctan2(b, a)) % 360.0, np.hypot(a, b)
+ 
+-def test_hue_invention_passes_when_color_only_intensifies():
+-    source = _smooth_image()
+-    source[..., 0] *= 1.2                       # a real red bias in the source
+-    source = np.clip(source, 0, 1)
+-    # Saturating existing color moves mass outward along hues that ALREADY exist.
+-    lab_ish = np.clip((source - 0.5) * 1.3 + 0.5, 0, 1)
+-    assert check_hue_invention(lab_ish, source, GuardrailLimits()).ok
++
++def _circular_distance_deg(h1, h2):
++    diff = np.abs(h1 - h2) % 360.0
++    return np.minimum(diff, 360.0 - diff)
++
++
++def _saturation_boost(rgb, boost):
++    """gray + (rgb - gray) * boost -- a real, RGB-space saturation stretch, not
++    an angle-exact Lab operation. Not clipped: callers confirm gamut themselves,
++    since the acceptance set requires some cases to be genuinely unclipped."""
++    gray = rgb.mean(axis=-1, keepdims=True)
++    return gray + (rgb - gray) * boost
++
++
++def _red_biased_source(h=128, w=128):
++    # A real, existing color bias (red cast), spatially varying via
++    # _smooth_image -- NOT a single flat hue, which hid the RGB-space drift
++    # in an earlier round of this guardrail (see task-4-report.md).
++    source = _smooth_image(h, w)
++    source[..., 0] *= 1.18
++    return np.clip(source, 0.0, 1.0)
++
++
++@pytest.mark.parametrize("boost", [1.3, 1.8, 2.2, 3.0])
++def test_hue_invention_passes_on_legitimate_saturation_boosts(boost):
++    source = _red_biased_source()
++    candidate = _saturation_boost(source, boost)
++    # The acceptance set requires "3.0x boost, UNCLIPPED -> PASS" specifically
++    # -- confirm this boost genuinely stays in gamut, not that a clip silently
++    # rescued an out-of-range value into looking legitimate.
++    assert candidate.min() >= 0.0 and candidate.max() <= 1.0
++
++    hue_s, chroma_s = _hue_deg(source)
++    hue_c, _ = _hue_deg(candidate)
++    mask = chroma_s > 1.0
++    displacement = float(_circular_distance_deg(hue_c, hue_s)[mask].max())
++    assert displacement < 20.0  # measured values recorded in task-4-report.md
++
++    verdict = check_hue_invention(candidate, source, GuardrailLimits())
++    assert verdict.ok, (verdict.reason, displacement)
++
++
++def test_hue_invention_trips_on_green_injected_into_a_red_image():
++    source = _red_biased_source()
++    invented = source.copy()
++    invented[..., 1] = np.clip(invented[..., 1] * 1.3, 0, 1)  # a green cast layered on top
++
++    hue_s, chroma_s = _hue_deg(source)
++    hue_i, chroma_i = _hue_deg(invented)
++    mask_s, mask_i = chroma_s > 1.0, chroma_i > 1.0
++    # Confirm this genuinely lands far from anything the source supports --
++    # not a marginal case riding the tolerance boundary (measured ~104 degrees,
++    # see task-4-report.md).
++    displacement = float(_circular_distance_deg(hue_i[mask_i].mean(), hue_s[mask_s].mean()))
++    assert displacement > 90.0
++
++    verdict = check_hue_invention(invented, source, GuardrailLimits())
++    assert not verdict.ok
++    assert "hue" in verdict.reason.lower()
+ 
+ 
+ def test_hue_invention_trips_on_color_with_no_source_support():
+     source = np.stack([np.full((64, 64), 0.5)] * 3, axis=-1)  # perfectly neutral
+     invented = source.copy()
+     invented[..., 1] = 0.9                                     # a green cast from nowhere
+     verdict = check_hue_invention(invented, source, GuardrailLimits())
+     assert not verdict.ok
+     assert "hue" in verdict.reason.lower()
+ 
+ 
++def test_hue_invention_handles_wraparound_at_zero_degrees():
++    # Two nearly-identical colors whose hues sit on opposite sides of the
++    # 0/360 seam: a naive |h1 - h2| reads ~352 degrees apart (looking like
++    # fabrication); the TRUE circular distance is ~7.9 degrees (comfortably
++    # legitimate). A wraparound bug in the guardrail would fail this test by
++    # tripping on a candidate that is actually well within tolerance.
++    source = np.full((64, 64, 3), (0.40, 0.31, 0.33))     # hue ~3.76 degrees
++    candidate = np.full((64, 64, 3), (0.39, 0.30, 0.33))  # hue ~355.90 degrees
++
++    hue_s, _ = _hue_deg(source)
++    hue_c, _ = _hue_deg(candidate)
++    naive = float(np.abs(hue_c[0, 0] - hue_s[0, 0]))
++    circular = float(_circular_distance_deg(hue_c[0, 0], hue_s[0, 0]))
++    assert naive > 340.0     # confirms this fixture genuinely straddles the seam
++    assert circular < 10.0   # the TRUE distance is small -- within tolerance
++
++    verdict = check_hue_invention(candidate, source, GuardrailLimits())
++    assert verdict.ok, verdict.reason
++
++
+ def test_channel_ratio_drift_trips_when_ratios_move():
+     source = _smooth_image()
+     drifted = source.copy()
+     drifted[..., 2] *= 1.5                       # push blue hard
+     drifted = np.clip(drifted, 0, 1)
+     assert check_channel_ratio_drift(source, source, GuardrailLimits()).ok
+     assert not check_channel_ratio_drift(drifted, source, GuardrailLimits()).ok
+ 
+ 
+ def test_evaluate_guardrails_returns_every_verdict_not_just_the_first():

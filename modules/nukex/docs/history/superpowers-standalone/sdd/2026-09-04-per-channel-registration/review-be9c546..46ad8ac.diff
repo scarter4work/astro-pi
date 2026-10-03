@@ -1,0 +1,310 @@
+# Review package: be9c546..HEAD
+
+## Commits
+46ad8ac fix(alignment): warp edge zeroing and channel-measurement erasure
+
+## Files changed
+ src/lib/alignment/src/frame_aligner.cpp    |  9 +++--
+ src/lib/alignment/src/homography.cpp       | 27 +++++++++++----
+ test/unit/alignment/test_frame_aligner.cpp | 54 ++++++++++++++++++++++++++++--
+ test/unit/alignment/test_homography.cpp    | 26 ++++++++++++++
+ 4 files changed, 106 insertions(+), 10 deletions(-)
+
+## Diff
+diff --git a/src/lib/alignment/src/frame_aligner.cpp b/src/lib/alignment/src/frame_aligner.cpp
+index c3b20f5..b6f13e1 100644
+--- a/src/lib/alignment/src/frame_aligner.cpp
++++ b/src/lib/alignment/src/frame_aligner.cpp
+@@ -40,21 +40,26 @@ FrameAligner::AlignedFrame FrameAligner::align(const Image& frame, int frame_ind
+     // The near-identity skip. A well-corrected rig should not pay for
+     // interpolation it does not need, and this is what makes "always on"
+     // affordable without exposing a threshold for users to argue about.
+     // The radius is the frame's own corner, where the scale term is largest.
+     const double corner_radius =
+         std::hypot(frame.width() / 2.0, frame.height() / 2.0);
+     const bool channels_matter =
+         !result.channels.empty()
+         && !result.channels.negligible(corner_radius,
+                                        kNegligibleChannelShiftPx);
+-    if (!channels_matter) result.channels = ChannelTransforms{};
++    // result.channels is kept even when it does not matter enough to apply --
++    // it is a measurement, and the Fit rung it recorded (including a
++    // deliberate Fit::Identity from the fallback ladder) is reported
++    // downstream. Only the decision to warp with it depends on
++    // channels_matter; each warp call below passes the transform only when
++    // it does.
+ 
+     if (frame_index == ref_index_) {
+         // This IS the reference. Matching it against its own catalog would
+         // only reintroduce fit noise into a transform that is exactly the
+         // identity by construction.
+         //
+         // Its CHANNELS are a different matter. Every other frame registers to
+         // this one, so if its own channels disagree the whole stack inherits
+         // that. Warp it with the identity homography when there is a channel
+         // correction to make, and clone it when there is not.
+@@ -79,21 +84,21 @@ FrameAligner::AlignedFrame FrameAligner::align(const Image& frame, int frame_ind
+ 
+     // Handle meridian flip
+     if (result.alignment.is_meridian_flipped && !result.alignment.alignment_failed) {
+         result.alignment.H = HomographyComputer::correct_meridian_flip(
+             result.alignment.H, ref_width_, ref_height_);
+     }
+ 
+     if (!result.alignment.alignment_failed) {
+         result.image = HomographyComputer::warp(
+             frame, result.alignment.H, ref_width_, ref_height_,
+-            result.channels);
++            channels_matter ? result.channels : ChannelTransforms{});
+     } else if (channels_matter) {
+         // Failed alignment: the frame is still stacked, with its weight
+         // penalised, so its channels still have to be put right. The
+         // homography is the identity because there isn't a usable one.
+         result.image = HomographyComputer::warp(
+             frame, HomographyMatrix::identity(),
+             frame.width(), frame.height(), result.channels);
+     } else {
+         result.image = frame.clone();
+     }
+diff --git a/src/lib/alignment/src/homography.cpp b/src/lib/alignment/src/homography.cpp
+index b2c378d..056b075 100644
+--- a/src/lib/alignment/src/homography.cpp
++++ b/src/lib/alignment/src/homography.cpp
+@@ -1,16 +1,17 @@
+ #include "nukex/alignment/types.hpp"
+ #include "nukex/alignment/homography.hpp"
+ #include <Eigen/Dense>
+ #include <Eigen/SVD>
+ #include <random>
+ #include <cmath>
++#include <algorithm>
+ 
+ namespace nukex {
+ 
+ bool HomographyMatrix::is_identity(float tolerance) const {
+     for (int r = 0; r < 3; r++) {
+         for (int c = 0; c < 3; c++) {
+             float expected = (r == c) ? 1.0f : 0.0f;
+             if (std::abs(H[r][c] - expected) > tolerance) return false;
+         }
+     }
+@@ -307,20 +308,27 @@ AlignmentResult HomographyComputer::compute(
+ Image HomographyComputer::warp(const Image& source, const HomographyMatrix& H,
+                                int output_width, int output_height) {
+     return warp(source, H, output_width, output_height, ChannelTransforms{});
+ }
+ 
+ Image HomographyComputer::warp(const Image& source, const HomographyMatrix& H,
+                                int output_width, int output_height,
+                                const ChannelTransforms& channels) {
+     Image output(output_width, output_height, source.n_channels());
+ 
++    // A source narrower or shorter than 2 px has no `+1` neighbour for
++    // bilinear interpolation to reach. Rather than let the clamp below
++    // compute a negative index, return the zero-filled output -- the same
++    // thing the old bounds check produced for such an image, since sx could
++    // never satisfy `sx >= sw - 1` when sw <= 1.
++    if (source.width() < 2 || source.height() < 2) return output;
++
+     // Compute inverse H for backward mapping
+     // H maps source→ref, so H_inv maps ref→source
+     Eigen::Matrix3f He;
+     for (int r = 0; r < 3; r++)
+         for (int c = 0; c < 3; c++)
+             He(r, c) = H(r, c);
+ 
+     Eigen::Matrix3f H_inv = He.inverse();
+ 
+     int sw = source.width();
+@@ -337,26 +345,33 @@ Image HomographyComputer::warp(const Image& source, const HomographyMatrix& H,
+                 // Map output (x, y) back to source coordinates
+                 float w = H_inv(2, 0) * x + H_inv(2, 1) * y + H_inv(2, 2);
+                 if (std::abs(w) < 1e-10f) continue;
+                 float sx = (H_inv(0, 0) * x + H_inv(0, 1) * y + H_inv(0, 2)) / w;
+                 float sy = (H_inv(1, 0) * x + H_inv(1, 1) * y + H_inv(1, 2)) / w;
+ 
+                 if (apply_ct) ct.apply(channels.cx, channels.cy, sx, sy);
+ 
+                 // Bilinear interpolation
+                 if (!std::isfinite(sx) || !std::isfinite(sy)) continue;
+-                if (sx < 0 || sx >= sw - 1 || sy < 0 || sy >= sh - 1) continue;
+-
+-                int ix = static_cast<int>(sx);
+-                int iy = static_cast<int>(sy);
+-                float fx = sx - ix;
+-                float fy = sy - iy;
++                if (sx < 0 || sx > sw - 1 || sy < 0 || sy > sh - 1) continue;
++
++                // Clamp the base index so the +1 neighbour stays in range, rather than
++                // refusing the sample. Without this the last row and column are dropped:
++                // with an identity homography sx == x, so x == sw-1 failed the old
++                // `sx >= sw - 1` test and the output edge was left at zero. That began to
++                // matter when the reference frame started being warped rather than cloned
++                // -- it used to keep its edge -- and the stacker feeds every pixel into
++                // the accumulator with no no-data guard, so those zeros count as samples.
++                const int ix = std::min(static_cast<int>(sx), sw - 2);
++                const int iy = std::min(static_cast<int>(sy), sh - 2);
++                const float fx = sx - ix;
++                const float fy = sy - iy;
+ 
+                 float v00 = source.at(ix,     iy,     ch);
+                 float v10 = source.at(ix + 1, iy,     ch);
+                 float v01 = source.at(ix,     iy + 1, ch);
+                 float v11 = source.at(ix + 1, iy + 1, ch);
+ 
+                 float val = v00 * (1-fx) * (1-fy) +
+                             v10 * fx * (1-fy) +
+                             v01 * (1-fx) * fy +
+                             v11 * fx * fy;
+diff --git a/test/unit/alignment/test_frame_aligner.cpp b/test/unit/alignment/test_frame_aligner.cpp
+index c877ee3..e327118 100644
+--- a/test/unit/alignment/test_frame_aligner.cpp
++++ b/test/unit/alignment/test_frame_aligner.cpp
+@@ -159,22 +159,23 @@ TEST_CASE("FrameAligner: reset clears an explicitly set reference", "[aligner]")
+     aligner.reset();
+     REQUIRE(aligner.has_reference() == false);
+ 
+     // With no reference, the next frame to arrive becomes it again.
+     auto r = aligner.align(frame, 5);
+     REQUIRE(aligner.has_reference() == true);
+     REQUIRE(r.alignment.H.is_identity() == true);
+ }
+ 
+ // --- per-channel registration through the aligner ------------------------
+-
+-#include "nukex/alignment/channel_registration.hpp"
++//
++// nukex/alignment/channel_registration.hpp is reachable transitively through
++// frame_aligner.hpp, already included above.
+ 
+ namespace {
+ 
+ // A 3-channel frame with a star grid; red displaced by a pure translation.
+ nukex::Image make_colour_frame(int w, int h, double red_dx, double red_dy,
+                                double jitter_x = 0.0, double jitter_y = 0.0) {
+     nukex::Image img(w, h, 3);
+     img.fill(0.002f);
+     auto blob = [&](int ch, double cx, double cy) {
+         for (int dy = -6; dy <= 6; dy++)
+@@ -198,20 +199,49 @@ nukex::Image make_colour_frame(int w, int h, double red_dx, double red_dy,
+             const double oy = 9.0 * std::cos(1.9 * (i + 1) + 1.3 * (j + 1));
+             double x = 50.0 + 0.37 + i * (w - 100.0) / 4.0 + ox + jitter_x;
+             double y = 50.0 + 0.61 + j * (h - 100.0) / 4.0 + oy + jitter_y;
+             blob(1, x, y);
+             blob(2, x, y);
+             blob(0, x + red_dx, y + red_dy);
+         }
+     return img;
+ }
+ 
++// A 3-channel frame with only 3 stars -- too few to reach the matcher's
++// 8-match minimum against a 25-star reference catalog, so alignment fails
++// for a reason unrelated to how well the stars themselves would line up.
++// Used to test that a failed-alignment frame still gets its channels put
++// right.
++nukex::Image make_sparse_colour_frame(int w, int h, double red_dx, double red_dy) {
++    nukex::Image img(w, h, 3);
++    img.fill(0.002f);
++    auto blob = [&](int ch, double cx, double cy) {
++        for (int dy = -6; dy <= 6; dy++)
++            for (int dx = -6; dx <= 6; dx++) {
++                int px = int(std::lround(cx)) + dx;
++                int py = int(std::lround(cy)) + dy;
++                if (px < 0 || px >= w || py < 0 || py >= h) continue;
++                double ex = px - cx, ey = py - cy;
++                img.at(px, py, ch) += float(0.5 * std::exp(-(ex*ex + ey*ey) / 5.12));
++            }
++    };
++    static const double positions[3][2] = {
++        {60.0, 70.0}, {250.0, 120.0}, {150.0, 300.0}};
++    for (const auto& p : positions) {
++        double x = p[0], y = p[1];
++        blob(1, x, y);
++        blob(2, x, y);
++        blob(0, x + red_dx, y + red_dy);
++    }
++    return img;
++}
++
+ double channel_offset_x(const nukex::Image& im, int ch_a, int ch_b,
+                         int x0, int x1, int y0, int y1) {
+     auto com = [&](int ch) {
+         double w = 0, wx = 0;
+         for (int y = y0; y < y1; y++)
+             for (int x = x0; x < x1; x++) {
+                 double v = im.at(x, y, ch) - 0.002;
+                 if (v <= 0) continue;
+                 w += v; wx += v * x;
+             }
+@@ -302,10 +332,30 @@ TEST_CASE("channel registration can be switched off",
+ 
+     nukex::FrameAligner::Config cfg;
+     cfg.register_channels = false;
+     nukex::FrameAligner aligner(cfg);
+     aligner.set_reference(ref, 0);
+     auto out = aligner.align(ref, 0);
+ 
+     REQUIRE(out.channels.empty());
+     CHECK(std::abs(channel_offset_x(out.image, 0, 1, 30, 90, 30, 90)) > 1.0);
+ }
++
++TEST_CASE("a frame whose alignment fails still gets its channels registered",
++          "[frame_aligner]") {
++    // Alignment fails here because the frame has too few stars to reach the
++    // matcher's 8-match minimum, not because the stars are badly placed.
++    // This is the one image-producing path whose output geometry is the
++    // frame's own dimensions rather than the reference's, and one of only
++    // two paths that changed from cloning to warping -- it needs its own
++    // coverage rather than an inference from the reference-frame path.
++    nukex::Image ref    = make_colour_frame(400, 400, 1.2, 0.0);
++    nukex::Image sparse = make_sparse_colour_frame(400, 400, 1.2, 0.0);
++
++    nukex::FrameAligner aligner;
++    aligner.set_reference(ref, 0);
++    (void)aligner.align(ref, 0);
++    auto out = aligner.align(sparse, 1);
++
++    REQUIRE(out.alignment.alignment_failed);
++    CHECK(std::abs(channel_offset_x(out.image, 0, 1, 30, 90, 30, 90)) < 0.06);
++}
+diff --git a/test/unit/alignment/test_homography.cpp b/test/unit/alignment/test_homography.cpp
+index 770bfc6..6f94144 100644
+--- a/test/unit/alignment/test_homography.cpp
++++ b/test/unit/alignment/test_homography.cpp
+@@ -262,10 +262,36 @@ TEST_CASE("warp with empty channel transforms matches the old warp exactly",
+     H(1, 2) = -1.25f;
+ 
+     nukex::Image a = nukex::HomographyComputer::warp(src, H, 64, 64);
+     nukex::Image b = nukex::HomographyComputer::warp(src, H, 64, 64,
+                                                     nukex::ChannelTransforms{});
+ 
+     REQUIRE(a.data_size() == b.data_size());
+     for (size_t i = 0; i < a.data_size(); i++)
+         REQUIRE(a.data()[i] == b.data()[i]);
+ }
++
++TEST_CASE("warp with identity preserves the last row and column exactly",
++          "[homography]") {
++    // With an identity homography sx == x and sy == y, so the last column
++    // (x == sw-1) and last row (y == sh-1) used to fail the old
++    // `sx >= sw - 1` / `sy >= sh - 1` bounds check and come out zero. That
++    // was cosmetic while the reference frame was always frame.clone() --
++    // once Task 5 started warping the reference frame itself, those zeros
++    // fed the stacker's accumulator as if they were real samples.
++    nukex::Image src(10, 8, 2);
++    for (int c = 0; c < 2; c++)
++        for (int y = 0; y < 8; y++)
++            for (int x = 0; x < 10; x++)
++                src.at(x, y, c) = float((x * 11 + y * 17 + c * 31) % 97) / 97.0f;
++
++    nukex::Image out = nukex::HomographyComputer::warp(
++        src, nukex::HomographyMatrix::identity(), 10, 8,
++        nukex::ChannelTransforms{});
++
++    for (int c = 0; c < 2; c++) {
++        for (int x = 0; x < 10; x++)
++            REQUIRE(out.at(x, 7, c) == src.at(x, 7, c));
++        for (int y = 0; y < 8; y++)
++            REQUIRE(out.at(9, y, c) == src.at(9, y, c));
++    }
++}

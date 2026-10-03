@@ -1,0 +1,436 @@
+# Review package: 8bcdb29..HEAD
+
+## Commits
+35f8fd1 chore(module): delete module-local filter_classifier + fits_metadata
+
+## Files changed
+ src/module/CMakeLists.txt                   | 15 -------
+ src/module/filter_classifier.cpp            | 49 --------------------
+ src/module/filter_classifier.hpp            | 24 ----------
+ src/module/fits_metadata.cpp                | 66 ---------------------------
+ src/module/fits_metadata.hpp                | 25 -----------
+ test/CMakeLists.txt                         | 22 +--------
+ test/unit/module/test_filter_classifier.cpp | 69 -----------------------------
+ test/unit/module/test_fits_metadata.cpp     | 26 -----------
+ 8 files changed, 1 insertion(+), 295 deletions(-)
+
+## Diff
+diff --git a/src/module/CMakeLists.txt b/src/module/CMakeLists.txt
+index 6fe853c..ac3d77a 100644
+--- a/src/module/CMakeLists.txt
++++ b/src/module/CMakeLists.txt
+@@ -3,38 +3,28 @@
+ 
+ set(PCLDIR "$ENV{HOME}/PCL" CACHE PATH "PixInsight Class Library directory")
+ 
+ if(NOT EXISTS "${PCLDIR}/include/pcl/MetaModule.h")
+     message(STATUS "PCL not found at ${PCLDIR} -- skipping module build")
+     return()
+ endif()
+ 
+ message(STATUS "PCL found at ${PCLDIR} -- building NukeX module")
+ 
+-# filter_classifier.cpp (the old 4-class module-local classifier) is
+-# intentionally NOT compiled into the module: it defines the externally
+-# linked nukex::filter_class_name(nukex::FilterClass), which mangles
+-# identically to the new nukex::filter_class_name in nukex4_core despite
+-# being a different enum, so the two would silently collide at link time
+-# with no error -- whichever object file the linker sees first wins, and
+-# it produced wrong class-name text in the Process Console log line.
+-# Nothing in the module calls the old classifier anymore after Task 14;
+-# the file itself stays on disk untouched and is deleted by Task 19.
+ set(MODULE_SOURCES
+     NukeXModule.cpp
+     NukeXProcess.cpp
+     NukeXInstance.cpp
+     NukeXInterface.cpp
+     NukeXParameters.cpp
+     NukeXProgress.cpp
+     RatingDialog.cpp
+-    fits_metadata.cpp
+     stretch_auto_selector.cpp
+     stretch_factory.cpp
+ )
+ 
+ add_library(NukeX-pxm SHARED ${MODULE_SOURCES})
+ 
+ # PCL include directories.
+ #
+ # PCL headers are treated as SYSTEM includes so GCC's -Wparentheses and
+ # other warnings originating inside PCL (e.g. Image.h:16807's
+@@ -54,25 +44,20 @@ target_compile_definitions(NukeX-pxm PRIVATE
+     _REENTRANT
+ )
+ 
+ # PCL compile flags
+ target_compile_options(NukeX-pxm PRIVATE
+     -fPIC
+     -fvisibility=hidden
+     -fvisibility-inlines-hidden
+ )
+ 
+-# cfitsio: fits_metadata.cpp in the module uses fitsio.h directly.
+-# cfitsio is vendored via FetchContent in src/lib/io — link the target here
+-# so the module also gets the include path and the static archive.
+-target_link_libraries(NukeX-pxm PRIVATE cfitsio)
+-
+ # Link NukeX v4 libraries
+ target_link_libraries(NukeX-pxm PRIVATE
+     nukex4_stacker
+     nukex4_gpu
+     nukex4_stretch
+     nukex4_combine
+     nukex4_fitting
+     nukex4_classify
+     nukex4_alignment
+     nukex4_compose
+diff --git a/src/module/filter_classifier.cpp b/src/module/filter_classifier.cpp
+deleted file mode 100644
+index 83b2b1e..0000000
+--- a/src/module/filter_classifier.cpp
++++ /dev/null
+@@ -1,49 +0,0 @@
+-#include "filter_classifier.hpp"
+-#include <algorithm>
+-#include <cctype>
+-#include <set>
+-
+-namespace nukex {
+-
+-namespace {
+-
+-// Defensive — the FITS reader upper-cases the FILTER keyword before it
+-// reaches here, but keep the classifier robust against any future
+-// caller that forgets to normalise.  Cheap to do once per classify.
+-std::string to_upper(const std::string& s) {
+-    std::string out(s);
+-    std::transform(out.begin(), out.end(), out.begin(),
+-                   [](unsigned char c) { return static_cast<char>(std::toupper(c)); });
+-    return out;
+-}
+-
+-bool is_narrowband_name(const std::string& filter) {
+-    static const std::set<std::string> names{
+-        "HA", "H-ALPHA", "HALPHA", "H_ALPHA",
+-        "OIII", "O3", "O-III", "O_III",
+-        "SII", "S2", "S-II", "S_II",
+-        "NARROWBAND", "NB",
+-    };
+-    return names.find(to_upper(filter)) != names.end();
+-}
+-
+-} // namespace
+-
+-FilterClass classify_filter(const FITSMetadata& meta) {
+-    if (!meta.bayer_pat.empty()) return FilterClass::BAYER_RGB;
+-    if (is_narrowband_name(meta.filter)) return FilterClass::NARROWBAND;
+-    if (meta.naxis3 == 3) return FilterClass::LRGB_COLOR;
+-    return FilterClass::LRGB_MONO;
+-}
+-
+-const char* filter_class_name(FilterClass c) {
+-    switch (c) {
+-        case FilterClass::LRGB_MONO:  return "LRGB-mono";
+-        case FilterClass::LRGB_COLOR: return "LRGB-color";
+-        case FilterClass::BAYER_RGB:  return "Bayer-RGB";
+-        case FilterClass::NARROWBAND: return "Narrowband";
+-    }
+-    return "unknown";
+-}
+-
+-} // namespace nukex
+diff --git a/src/module/filter_classifier.hpp b/src/module/filter_classifier.hpp
+deleted file mode 100644
+index 6f3f5d2..0000000
+--- a/src/module/filter_classifier.hpp
++++ /dev/null
+@@ -1,24 +0,0 @@
+-// NukeX v4 — Classifies FITS metadata into one of four filter classes
+-// used for stretch Auto-selection.
+-// Copyright (c) 2026 Scott Carter. MIT License.
+-
+-#ifndef __NukeX_filter_classifier_h
+-#define __NukeX_filter_classifier_h
+-
+-#include "fits_metadata.hpp"
+-
+-namespace nukex {
+-
+-enum class FilterClass {
+-    LRGB_MONO,
+-    LRGB_COLOR,
+-    BAYER_RGB,
+-    NARROWBAND,
+-};
+-
+-FilterClass classify_filter(const FITSMetadata& meta);
+-const char* filter_class_name(FilterClass c);
+-
+-} // namespace nukex
+-
+-#endif
+diff --git a/src/module/fits_metadata.cpp b/src/module/fits_metadata.cpp
+deleted file mode 100644
+index 51b776d..0000000
+--- a/src/module/fits_metadata.cpp
++++ /dev/null
+@@ -1,66 +0,0 @@
+-// NukeX v4 — FITS metadata extraction via cfitsio (already vendored).
+-// Copyright (c) 2026 Scott Carter. MIT License.
+-
+-#include "fits_metadata.hpp"
+-
+-#include <fitsio.h>
+-#include <algorithm>
+-#include <cctype>
+-#include <cstring>
+-
+-namespace nukex {
+-
+-namespace {
+-
+-std::string normalize(const char* raw) {
+-    if (!raw) return {};
+-    std::string s(raw);
+-    auto is_junk = [](char c) {
+-        return c == '\'' || c == '"' || std::isspace(static_cast<unsigned char>(c));
+-    };
+-    while (!s.empty() && is_junk(s.front())) s.erase(s.begin());
+-    while (!s.empty() && is_junk(s.back()))  s.pop_back();
+-    std::transform(s.begin(), s.end(), s.begin(),
+-                   [](unsigned char c) { return static_cast<char>(std::toupper(c)); });
+-    return s;
+-}
+-
+-} // namespace
+-
+-FITSMetadata read_fits_metadata(const std::string& path) {
+-    FITSMetadata meta;
+-    fitsfile* fptr = nullptr;
+-    int status = 0;
+-
+-    if (fits_open_file(&fptr, path.c_str(), READONLY, &status) != 0) {
+-        return meta;  // read_ok stays false
+-    }
+-
+-    char value[FLEN_VALUE]    = {0};
+-    char comment[FLEN_COMMENT] = {0};
+-
+-    int local_status = 0;
+-    if (fits_read_key(fptr, TSTRING, "FILTER", value, comment, &local_status) == 0) {
+-        meta.filter = normalize(value);
+-    }
+-
+-    local_status = 0;
+-    std::memset(value, 0, sizeof(value));
+-    if (fits_read_key(fptr, TSTRING, "BAYERPAT", value, comment, &local_status) == 0) {
+-        meta.bayer_pat = normalize(value);
+-    }
+-
+-    long naxis3 = 1;
+-    local_status = 0;
+-    if (fits_read_key(fptr, TLONG, "NAXIS3", &naxis3, comment, &local_status) == 0) {
+-        meta.naxis3 = static_cast<int>(naxis3);
+-    } else {
+-        meta.naxis3 = 1;
+-    }
+-
+-    fits_close_file(fptr, &status);
+-    meta.read_ok = true;
+-    return meta;
+-}
+-
+-} // namespace nukex
+diff --git a/src/module/fits_metadata.hpp b/src/module/fits_metadata.hpp
+deleted file mode 100644
+index 9745ebd..0000000
+--- a/src/module/fits_metadata.hpp
++++ /dev/null
+@@ -1,25 +0,0 @@
+-// NukeX v4 — FITS metadata extraction for module-layer stretch selection.
+-// Copyright (c) 2026 Scott Carter. MIT License.
+-
+-#ifndef __NukeX_fits_metadata_h
+-#define __NukeX_fits_metadata_h
+-
+-#include <string>
+-
+-namespace nukex {
+-
+-struct FITSMetadata {
+-    std::string filter;     // FITS "FILTER" keyword, uppercased, trimmed. Empty if absent.
+-    std::string bayer_pat;  // FITS "BAYERPAT" keyword, uppercased, trimmed. Empty if absent.
+-    int naxis3 = 1;         // FITS "NAXIS3" keyword. Defaults to 1 (mono) if absent.
+-    bool read_ok = false;   // True if the file opened and header read without error.
+-};
+-
+-/// Read the primary HDU header of a FITS file at `path` and return its
+-/// metadata. On I/O or parse error, returns a default-constructed
+-/// FITSMetadata with read_ok=false.
+-FITSMetadata read_fits_metadata(const std::string& path);
+-
+-} // namespace nukex
+-
+-#endif // __NukeX_fits_metadata_h
+diff --git a/test/CMakeLists.txt b/test/CMakeLists.txt
+index a1dfca1..b1fadb7 100644
+--- a/test/CMakeLists.txt
++++ b/test/CMakeLists.txt
+@@ -100,49 +100,29 @@ nukex_add_test(test_rating_db_migration unit/learning/test_rating_db_migration.c
+ nukex_add_test(test_train_model unit/learning/test_train_model.cpp nukex4_learning sqlite3_vendored)
+ nukex_add_test(test_atomic_write unit/learning/test_atomic_write.cpp nukex4_learning)
+ 
+ # GPU tests (link nukex4_stacker to resolve FrameCache symbols)
+ nukex_add_test(test_gpu_context unit/gpu/test_gpu_context.cpp nukex4_gpu)
+ nukex_add_test(test_gpu_cpu_fallback unit/gpu/test_gpu_cpu_fallback.cpp nukex4_gpu nukex4_stacker)
+ nukex_add_test(test_gpu_kernels unit/gpu/test_gpu_kernels.cpp nukex4_gpu)
+ nukex_add_test(test_gpu_agreement unit/gpu/test_gpu_agreement.cpp nukex4_gpu nukex4_stacker)
+ nukex_add_test(test_fit_heartbeat unit/gpu/test_fit_heartbeat.cpp nukex4_gpu)
+ 
+-# Module-layer tests (fits_metadata and future module code)
+-#
+-# Split into two OBJECT libraries that never share a link: the old
+-# filter_classifier.cpp and the new nukex4_io/nukex4_core both define an
+-# externally linked nukex::filter_class_name(nukex::FilterClass), which
+-# mangles identically despite being different enums. Combining their
+-# object files in one binary lets the linker silently pick either
+-# implementation with no error. This legacy lib exists only to keep the
+-# old classifier's objects out of any link that also holds nukex4_core;
+-# Task 19 deletes it along with filter_classifier.{hpp,cpp}.
+-add_library(nukex4_module_legacy_testlib OBJECT
+-    "${CMAKE_SOURCE_DIR}/src/module/fits_metadata.cpp"
+-    "${CMAKE_SOURCE_DIR}/src/module/filter_classifier.cpp"
+-)
+-target_include_directories(nukex4_module_legacy_testlib PUBLIC
+-    "${CMAKE_SOURCE_DIR}/src/module"
+-)
+-target_link_libraries(nukex4_module_legacy_testlib PUBLIC cfitsio)
+-
++# Module-layer tests (auto-selector, stretch factory, Phase 8 fallback)
+ add_library(nukex4_module_testlib OBJECT
+     "${CMAKE_SOURCE_DIR}/src/module/stretch_auto_selector.cpp"
+     "${CMAKE_SOURCE_DIR}/src/module/stretch_factory.cpp"
+ )
+ target_include_directories(nukex4_module_testlib PUBLIC
+     "${CMAKE_SOURCE_DIR}/src/module"
+     "${CMAKE_SOURCE_DIR}/src/lib/io/include"
+     "${CMAKE_SOURCE_DIR}/src/lib/stretch/include"
+ )
+ target_link_libraries(nukex4_module_testlib PUBLIC nukex4_stretch nukex4_io)
+ 
+-nukex_add_test(test_fits_metadata unit/module/test_fits_metadata.cpp nukex4_module_legacy_testlib)
+-nukex_add_test(test_filter_classifier unit/module/test_filter_classifier.cpp nukex4_module_legacy_testlib)
+ nukex_add_test(test_stretch_auto_selector unit/module/test_stretch_auto_selector.cpp nukex4_module_testlib)
+ nukex_add_test(test_stretch_factory unit/module/test_stretch_factory.cpp nukex4_module_testlib)
+ nukex_add_test(test_phase8_fallback unit/module/test_phase8_fallback.cpp nukex4_stretch nukex4_learning sqlite3_vendored)
+ 
+ # Integration tests (Task 9 onward) — gated under [.integration] so they
+ # don't run by default; opt in with `./test_<name> [integration]`.
+ add_subdirectory(integration)
+diff --git a/test/unit/module/test_filter_classifier.cpp b/test/unit/module/test_filter_classifier.cpp
+deleted file mode 100644
+index f2a7143..0000000
+--- a/test/unit/module/test_filter_classifier.cpp
++++ /dev/null
+@@ -1,69 +0,0 @@
+-#include "catch_amalgamated.hpp"
+-#include "filter_classifier.hpp"
+-
+-using nukex::FITSMetadata;
+-using nukex::FilterClass;
+-using nukex::classify_filter;
+-
+-TEST_CASE("classify_filter: NAXIS3=3 no BAYERPAT -> LRGB_COLOR", "[module][filter_classifier]") {
+-    FITSMetadata m;
+-    m.naxis3 = 3;
+-    REQUIRE(classify_filter(m) == FilterClass::LRGB_COLOR);
+-}
+-
+-TEST_CASE("classify_filter: BAYERPAT present -> BAYER_RGB", "[module][filter_classifier]") {
+-    FITSMetadata m;
+-    m.naxis3 = 1;
+-    m.bayer_pat = "RGGB";
+-    REQUIRE(classify_filter(m) == FilterClass::BAYER_RGB);
+-}
+-
+-TEST_CASE("classify_filter: narrowband names -> NARROWBAND", "[module][filter_classifier]") {
+-    for (const std::string& name : {"HA", "H-ALPHA", "HALPHA", "OIII", "O3", "SII", "S2", "NARROWBAND"}) {
+-        FITSMetadata m;
+-        m.filter = name;
+-        REQUIRE(classify_filter(m) == FilterClass::NARROWBAND);
+-    }
+-}
+-
+-TEST_CASE("classify_filter: mono LRGB filters -> LRGB_MONO", "[module][filter_classifier]") {
+-    for (const std::string& name : {"L", "LUM", "R", "G", "B", "RED", "GREEN", "BLUE"}) {
+-        FITSMetadata m;
+-        m.filter = name;
+-        REQUIRE(classify_filter(m) == FilterClass::LRGB_MONO);
+-    }
+-}
+-
+-TEST_CASE("classify_filter: empty metadata -> LRGB_MONO (safe default)",
+-          "[module][filter_classifier]") {
+-    FITSMetadata m;
+-    REQUIRE(classify_filter(m) == FilterClass::LRGB_MONO);
+-}
+-
+-TEST_CASE("classify_filter: BAYERPAT wins over NAXIS3=3",
+-          "[module][filter_classifier]") {
+-    FITSMetadata m;
+-    m.naxis3 = 3;
+-    m.bayer_pat = "RGGB";
+-    REQUIRE(classify_filter(m) == FilterClass::BAYER_RGB);
+-}
+-
+-TEST_CASE("classify_filter: mixed-case narrowband names classify correctly",
+-          "[module][filter_classifier]") {
+-    // The FITS reader upper-cases FILTER on the real path, but the
+-    // classifier case-folds defensively too (see filter_classifier.cpp
+-    // is_narrowband_name).  These lowercased / mixed-case variants
+-    // must still resolve to NARROWBAND so a different FITS-reader
+-    // implementation — or a caller bypassing the reader — can't silently
+-    // misclassify narrowband data as LRGB-mono.
+-    for (const std::string& name : {"Ha", "ha", "hA",
+-                                    "h-alpha", "H-Alpha", "HALpha",
+-                                    "oiii", "OIii",
+-                                    "sii", "Sii",
+-                                    "narrowband", "Narrowband", "nb"}) {
+-        FITSMetadata m;
+-        m.filter = name;
+-        INFO("filter = " << name);
+-        REQUIRE(classify_filter(m) == FilterClass::NARROWBAND);
+-    }
+-}
+diff --git a/test/unit/module/test_fits_metadata.cpp b/test/unit/module/test_fits_metadata.cpp
+deleted file mode 100644
+index 7880498..0000000
+--- a/test/unit/module/test_fits_metadata.cpp
++++ /dev/null
+@@ -1,26 +0,0 @@
+-#include "catch_amalgamated.hpp"
+-#include "fits_metadata.hpp"
+-#include <cstdlib>
+-
+-using nukex::FITSMetadata;
+-using nukex::read_fits_metadata;
+-
+-TEST_CASE("read_fits_metadata: missing file returns read_ok=false", "[module][fits_metadata]") {
+-    auto meta = read_fits_metadata("/nonexistent/path/does_not_exist.fits");
+-    REQUIRE(meta.read_ok == false);
+-    REQUIRE(meta.filter.empty());
+-    REQUIRE(meta.bayer_pat.empty());
+-    REQUIRE(meta.naxis3 == 1);
+-}
+-
+-TEST_CASE("read_fits_metadata: live FITS file parses OK", "[module][fits_metadata]") {
+-    const char* env = std::getenv("NUKEX_TEST_FITS_LRGB_MONO");
+-    if (!env) {
+-        WARN("NUKEX_TEST_FITS_LRGB_MONO unset — skipping live-read test");
+-        return;
+-    }
+-    auto meta = read_fits_metadata(env);
+-    REQUIRE(meta.read_ok == true);
+-    REQUIRE(meta.naxis3 >= 1);
+-    REQUIRE(meta.naxis3 <= 3);
+-}

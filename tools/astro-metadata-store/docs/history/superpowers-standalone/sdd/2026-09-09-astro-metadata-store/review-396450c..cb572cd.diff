@@ -1,0 +1,199 @@
+# Review package: 396450c..HEAD
+
+## Commits
+cb572cd fix: quarantine idempotency and destination-collision refusal
+
+## Files changed
+ src/astrometa/disposition.py | 43 +++++++++++++++++++++--
+ tests/test_disposition.py    | 81 ++++++++++++++++++++++++++++++++++++++++++++
+ 2 files changed, 122 insertions(+), 2 deletions(-)
+
+## Diff
+diff --git a/src/astrometa/disposition.py b/src/astrometa/disposition.py
+index c976ff5..e4b4903 100644
+--- a/src/astrometa/disposition.py
++++ b/src/astrometa/disposition.py
+@@ -161,36 +161,75 @@ def quarantine(conn: sqlite3.Connection, content_hash: str, reason: str,
+     disk, this raises FileNotFoundError -- in both dry_run and real
+     mode. That disagreement (DB says the frame lives at `path`,
+     filesystem disagrees) is exactly the kind of silent-fallback trap
+     this task exists to close: a dry run that reported a plausible
+     `dest` for a move that could never actually happen would be lying
+     about what a real run would do, undermining the one function in
+     this system that's supposed to be trustworthy enough to run for
+     real. In a real (dry_run=False) run this check is redundant with
+     what shutil.move would raise anyway, but making it explicit keeps
+     dry_run and real runs honest about the same failure the same way.
++
++    Idempotent: a frame already recorded as `quarantined`, or whose
++    recorded path already sits under a `rejected/` directory (checked
++    independently, as a structural fallback in case disposition
++    somehow disagrees), is not moved again -- this returns its current
++    location unchanged. Without this, a second call on the same
++    content_hash (a quality-gate re-run, an operator re-applying
++    mark_culled then quarantine) would recompute `dest` from the
++    already-relocated path and nest into `rejected/rejected/...`
++    without bound. A repeat call makes no database write either: the
++    reason recorded by the original quarantine is left as-is rather
++    than silently overwritten by a differently-worded repeat call.
++
++    Refuses to move onto an existing destination: if `dest` already
++    exists, this raises FileExistsError -- in both dry_run and real
++    mode, naming both paths, and leaves the source untouched -- rather
++    than moving. `shutil.move` silently overwrites an existing
++    destination on the same filesystem (it falls back to `os.rename`,
++    which does not error), and that would itself be a deletion on the
++    one function in this system that promises never to delete. This
++    isn't hypothetical: the operator's own manual culling method is to
++    move a bad sub into `rejected/` by hand, so that directory routinely
++    already holds files he put there himself, and filenames in this
++    archive are not unique. A name collision in `rejected/` is for the
++    operator to see and resolve -- this deliberately does not invent a
++    uniquifying suffix to paper over it.
+     """
+-    row = conn.execute("SELECT path FROM frames WHERE content_hash=?",
+-                       (content_hash,)).fetchone()
++    row = conn.execute("SELECT path, disposition FROM frames WHERE "
++                       "content_hash=?", (content_hash,)).fetchone()
+     if row is None:
+         return None
+ 
+     src = Path(row[0])
++    already_quarantined = row[1] == "quarantined" or src.parent.name == "rejected"
++
+     if not src.exists():
+         raise FileNotFoundError(
+             f"quarantine: frame {content_hash} is recorded at {src} but "
+             f"that file does not exist -- refusing to report or perform "
+             f"a move that couldn't actually happen. Check whether this "
+             f"frame was already moved/quarantined or the archive path "
+             f"has drifted.")
+ 
++    if already_quarantined:
++        return src
++
+     dest = src.parent / "rejected" / src.name
++    if dest.exists():
++        raise FileExistsError(
++            f"quarantine: refusing to move {src} to {dest} -- a file "
++            f"already exists at the destination (the operator's own "
++            f"manual culling routinely leaves files in rejected/, and "
++            f"filenames in this archive are not unique). Resolve the "
++            f"collision by hand; this will not overwrite or rename "
++            f"around it.")
+     if dry_run:
+         return dest
+ 
+     dest.parent.mkdir(parents=True, exist_ok=True)
+     shutil.move(str(src), str(dest))      # move, never delete
+     conn.execute("""UPDATE frames SET path=?, disposition='quarantined',
+         disposition_reason=?, disposition_source='auto', disposition_at=?
+         WHERE content_hash=?""", (str(dest), reason, _now(), content_hash))
+     conn.commit()
+     return dest
+diff --git a/tests/test_disposition.py b/tests/test_disposition.py
+index 348b10b..b161c42 100644
+--- a/tests/test_disposition.py
++++ b/tests/test_disposition.py
+@@ -95,20 +95,101 @@ def test_quarantine_raises_loudly_when_source_file_already_gone(tmp_path):
+     # dest path that a real run could never actually produce.
+     src = tmp_path / "M 42" / "Light_M 42_0002.fit"
+     conn = db.connect(tmp_path / "t.sqlite"); db.init_schema(conn)
+     _frame(conn, "h1", str(src))
+     with pytest.raises(FileNotFoundError):
+         disposition.quarantine(conn, "h1", "hfd", dry_run=True)
+     with pytest.raises(FileNotFoundError):
+         disposition.quarantine(conn, "h1", "hfd", dry_run=False)
+ 
+ 
++def test_quarantine_is_idempotent_on_repeat_calls(tmp_path):
++    # A quality-gate re-run or an operator re-applying mark_culled then
++    # quarantine must not nest rejected/rejected/ on the second call --
++    # once a frame is quarantined, quarantine() is a no-op that reports
++    # where the frame already lives.
++    src = tmp_path / "M 42" / "Light_M 42_0001.fit"
++    src.parent.mkdir(parents=True); src.write_bytes(b"x")
++    conn = db.connect(tmp_path / "t.sqlite"); db.init_schema(conn)
++    _frame(conn, "h1", str(src))
++
++    dest1 = disposition.quarantine(conn, "h1", "hfd 6.2 > 5.1", dry_run=False)
++    dest2 = disposition.quarantine(conn, "h1", "hfd re-check", dry_run=False)
++
++    assert dest2 == dest1
++    assert dest2.parent.name == "rejected"
++    assert not (dest1.parent / "rejected").exists()   # no nested rejected/rejected
++    assert dest2.exists() and dest2.read_bytes() == b"x"
++    # The repeat call is a true no-op: it doesn't touch the database, so
++    # the originally recorded reason survives rather than being silently
++    # overwritten by the second call's (different) reason.
++    row = conn.execute("SELECT disposition_reason FROM frames WHERE "
++                       "content_hash='h1'").fetchone()
++    assert row[0] == "hfd 6.2 > 5.1"
++
++
++def test_quarantine_treats_a_path_already_under_rejected_as_idempotent(tmp_path):
++    # Defense in depth beyond the disposition check: even if disposition
++    # somehow isn't (yet) 'quarantined', a recorded path that already
++    # lives under a rejected/ directory must never be nested into
++    # rejected/rejected/ -- the structural signal is checked independently.
++    rejected_dir = tmp_path / "M 42" / "rejected"
++    rejected_dir.mkdir(parents=True)
++    f = rejected_dir / "Light_M 42_0001.fit"
++    f.write_bytes(b"x")
++    conn = db.connect(tmp_path / "t.sqlite"); db.init_schema(conn)
++    _frame(conn, "h1", str(f))   # disposition column is still 'present'
++    dest = disposition.quarantine(conn, "h1", "hfd", dry_run=False)
++    assert dest == f
++    assert f.exists()
++    assert not (rejected_dir / "rejected").exists()
++
++
++def test_quarantine_refuses_to_overwrite_an_existing_destination(tmp_path):
++    # The operator's own manual culling method is "move the bad sub into
++    # rejected/ by hand" -- that directory routinely already holds files
++    # he put there himself, and filenames in this archive are not
++    # unique. A machine silently overwriting a hand-culled frame via
++    # shutil.move's os.rename fallback would itself be a deletion, on
++    # the one function in this system that promises never to delete.
++    src = tmp_path / "M 42" / "Light_M 42_0001.fit"
++    src.parent.mkdir(parents=True); src.write_bytes(b"new frame")
++    existing = src.parent / "rejected" / src.name
++    existing.parent.mkdir(parents=True)
++    existing.write_bytes(b"operator's hand-culled frame")
++    conn = db.connect(tmp_path / "t.sqlite"); db.init_schema(conn)
++    _frame(conn, "h1", str(src))
++
++    with pytest.raises(FileExistsError):
++        disposition.quarantine(conn, "h1", "hfd", dry_run=False)
++    assert src.exists() and src.read_bytes() == b"new frame"
++    assert existing.read_bytes() == b"operator's hand-culled frame"
++
++
++def test_quarantine_dry_run_also_refuses_a_destination_collision(tmp_path):
++    # Consistent with the FileNotFoundError check: a dry run that reports
++    # a move as feasible when it would actually clobber something is
++    # itself a silent-fallback bug.
++    src = tmp_path / "M 42" / "Light_M 42_0001.fit"
++    src.parent.mkdir(parents=True); src.write_bytes(b"new frame")
++    existing = src.parent / "rejected" / src.name
++    existing.parent.mkdir(parents=True)
++    existing.write_bytes(b"operator's hand-culled frame")
++    conn = db.connect(tmp_path / "t.sqlite"); db.init_schema(conn)
++    _frame(conn, "h1", str(src))
++
++    with pytest.raises(FileExistsError):
++        disposition.quarantine(conn, "h1", "hfd", dry_run=True)
++    assert src.exists()
++    assert existing.read_bytes() == b"operator's hand-culled frame"
++
++
+ def test_session_thresholds_scale_with_the_night():
+     good = [2.0, 2.1, 2.2, 2.0, 2.3]
+     poor = [5.0, 5.2, 5.1, 5.3, 5.1]
+     assert disposition.session_thresholds(good)[0] < \
+            disposition.session_thresholds(poor)[0]
+ 
+ 
+ def test_session_thresholds_falls_back_to_absolute_floor_with_too_few_samples():
+     lo, floor = disposition.session_thresholds([4.0, 4.1])
+     assert lo == floor == disposition.ABSOLUTE_HFD_FLOOR

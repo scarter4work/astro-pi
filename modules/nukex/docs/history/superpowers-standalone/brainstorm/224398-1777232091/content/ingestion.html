@@ -1,0 +1,42 @@
+<h2>Multi-Filter Ingestion</h2>
+<p class="subtitle">An SHO image needs HaO3 frames + S2O3 frames. An LRGB-mono image needs L + R + G + B sets. How does the user hand them to NukeX?</p>
+
+<div class="options">
+  <div class="option" data-choice="a" onclick="toggleSelect(this)">
+    <div class="letter">A</div>
+    <div class="content">
+      <h3>Single batch, auto-route by FITS <code>FILTER</code> keyword</h3>
+      <p><strong>UI stays as-is.</strong> User drops every frame from every filter into the existing file list. NukeX reads <code>FILTER</code> from each FITS header, groups frames by filter automatically, stacks each group, then combines.</p>
+      <p>Example FITS values seen in the wild: <code>HaO3</code>, <code>S2O3</code>, <code>L</code>, <code>R</code>, <code>G</code>, <code>B</code>, <code>Ha</code>, <code>SII</code>, <code>OIII</code>, <code>L-eXtreme</code>, <code>ALP-T</code>.</p>
+      <p><strong>Pros:</strong> zero UI surface change. Honors "simple UI" rule. Works for all combos (HaO3-only, S2O3-only, HaO3+S2O3, LRGB-mono, plain OSC, plain mono).</p>
+      <p><strong>Cons:</strong> garbage-in-garbage-out if FITS headers are wrong; needs a FILTER-name normalization table that handles aliases.</p>
+    </div>
+  </div>
+  <div class="option" data-choice="b" onclick="toggleSelect(this)">
+    <div class="letter">B</div>
+    <div class="content">
+      <h3>Per-filter file lists in the UI</h3>
+      <p>Add tabs or expandable sections in NukeXInterface: "Lights (HaO3)", "Lights (S2O3)", "Lights (Ha)", "Lights (OIII)", etc. User drags frames into the right bucket.</p>
+      <p><strong>Pros:</strong> explicit; impossible to misroute on bad FITS. Familiar to APP / WBPP users.</p>
+      <p><strong>Cons:</strong> breaks the "simple UI" rule. The interface gets noisy. More code in NukeXInterface.</p>
+    </div>
+  </div>
+  <div class="option" data-choice="c" onclick="toggleSelect(this)">
+    <div class="letter">C</div>
+    <div class="content">
+      <h3>Multi-pass workflow (per-filter NukeX runs, then a combine tool)</h3>
+      <p>User runs NukeX once for HaO3, once for S2O3, gets two intermediate FITS images. A separate "Combine" mode (or a follow-up Process) combines them.</p>
+      <p><strong>Pros:</strong> separation of concerns; easy to swap a single filter's stack without redoing everything.</p>
+      <p><strong>Cons:</strong> two-step workflow conflicts with NukeX's "one-shot finished image" promise. Combine state has to live in saved FITS metadata or a sidecar file.</p>
+    </div>
+  </div>
+  <div class="option" data-choice="d" onclick="toggleSelect(this)">
+    <div class="letter">D</div>
+    <div class="content">
+      <h3>A primary, with a fallback if FILTER is missing</h3>
+      <p>Default to <strong>A</strong> (auto-route from FILTER). If the keyword is missing or unrecognized, surface a small disambiguation dialog asking the user to confirm the filter for that frame batch — once, with a remembered choice.</p>
+      <p><strong>Pros:</strong> zero-friction common case + graceful handling of bad/exotic data. Honors the "simple UI" rule.</p>
+      <p><strong>Cons:</strong> small UI escape hatch to design and test.</p>
+    </div>
+  </div>
+</div>

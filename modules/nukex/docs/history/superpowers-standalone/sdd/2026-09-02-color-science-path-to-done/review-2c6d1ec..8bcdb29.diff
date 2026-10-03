@@ -1,0 +1,452 @@
+# Review package: 2c6d1ec..HEAD
+
+## Commits
+8bcdb29 chore(core): remove StackingMode, from_mode, output_rgb_mapping, is_mono
+
+## Files changed
+ src/lib/core/include/nukex/core/channel_config.hpp | 25 -------
+ src/lib/core/src/channel_config.cpp                | 67 ------------------
+ test/unit/combine/test_output_assembler.cpp        | 12 +++-
+ test/unit/combine/test_spatial_context.cpp         | 10 ++-
+ test/unit/core/test_channel_config.cpp             | 81 +++++-----------------
+ test/unit/core/test_cube.cpp                       | 22 ++++--
+ 6 files changed, 52 insertions(+), 165 deletions(-)
+
+## Diff
+diff --git a/src/lib/core/include/nukex/core/channel_config.hpp b/src/lib/core/include/nukex/core/channel_config.hpp
+index e396be8..9d3a6b1 100644
+--- a/src/lib/core/include/nukex/core/channel_config.hpp
++++ b/src/lib/core/include/nukex/core/channel_config.hpp
+@@ -1,54 +1,29 @@
+ #pragma once
+ 
+ #include "nukex/core/types.hpp"
+ #include "nukex/core/filter.hpp"
+ #include <cstdint>
+ #include <string>
+ 
+ namespace nukex {
+ 
+-enum class StackingMode : uint8_t {
+-    MONO_L   = 0,
+-    MONO_LRGB = 1,
+-    OSC_RGB  = 2,
+-    OSC_HAO3 = 3,
+-    OSC_S2O3 = 4,
+-    CUSTOM   = 5
+-};
+-
+-inline const char* stacking_mode_name(StackingMode mode) {
+-    switch (mode) {
+-        case StackingMode::MONO_L:    return "MONO_L";
+-        case StackingMode::MONO_LRGB: return "MONO_LRGB";
+-        case StackingMode::OSC_RGB:   return "OSC_RGB";
+-        case StackingMode::OSC_HAO3:  return "OSC_HAO3";
+-        case StackingMode::OSC_S2O3:  return "OSC_S2O3";
+-        case StackingMode::CUSTOM:    return "CUSTOM";
+-    }
+-    return "UNKNOWN";
+-}
+-
+ enum class BayerPattern : uint8_t {
+     NONE = 0, RGGB = 1, BGGR = 2, GRBG = 3, GBRG = 4
+ };
+ 
+ struct ChannelConfig {
+-    StackingMode mode          = StackingMode::MONO_L;
+     uint8_t      n_channels    = 1;
+     std::string  channel_names[MAX_CHANNELS];
+-    uint8_t      output_rgb_mapping[3] = {0, 0, 0};   // (removed in Task 18)
+     BayerPattern bayer         = BayerPattern::NONE;
+ 
+-    static ChannelConfig from_mode(StackingMode mode);
+     static ChannelConfig from_filter(const Filter& f);
+     static ChannelConfig merge(const ChannelConfig& a, const ChannelConfig& b);
+ 
+     int channel_index_for_name(const std::string& name) const;
+     int slot_index(const std::string& name) const; // == channel_index_for_name; legible alias
+     // Reverse of slot_index: returns the slot name at position i.
+     // i must be in [0, n_channels).
+     const std::string& slot_name(int i) const { return channel_names[i]; }
+-    bool is_mono() const;
+ };
+ 
+ } // namespace nukex
+diff --git a/src/lib/core/src/channel_config.cpp b/src/lib/core/src/channel_config.cpp
+index a04f50e..34ff487 100644
+--- a/src/lib/core/src/channel_config.cpp
++++ b/src/lib/core/src/channel_config.cpp
+@@ -1,90 +1,23 @@
+ #include "nukex/core/channel_config.hpp"
+ 
+ #include <cstdlib>
+ 
+ namespace nukex {
+ 
+-ChannelConfig ChannelConfig::from_mode(StackingMode mode) {
+-    ChannelConfig cfg;
+-    cfg.mode = mode;
+-    switch (mode) {
+-        case StackingMode::MONO_L:
+-            cfg.n_channels = 1;
+-            cfg.channel_names[0] = "L";
+-            cfg.bayer = BayerPattern::NONE;
+-            cfg.output_rgb_mapping[0] = 0;
+-            cfg.output_rgb_mapping[1] = 0;
+-            cfg.output_rgb_mapping[2] = 0;
+-            break;
+-        case StackingMode::MONO_LRGB:
+-            cfg.n_channels = 4;
+-            cfg.channel_names[0] = "L";
+-            cfg.channel_names[1] = "R";
+-            cfg.channel_names[2] = "G";
+-            cfg.channel_names[3] = "B";
+-            cfg.bayer = BayerPattern::NONE;
+-            cfg.output_rgb_mapping[0] = 1;
+-            cfg.output_rgb_mapping[1] = 2;
+-            cfg.output_rgb_mapping[2] = 3;
+-            break;
+-        case StackingMode::OSC_RGB:
+-            cfg.n_channels = 3;
+-            cfg.channel_names[0] = "R";
+-            cfg.channel_names[1] = "G";
+-            cfg.channel_names[2] = "B";
+-            cfg.bayer = BayerPattern::RGGB;
+-            cfg.output_rgb_mapping[0] = 0;
+-            cfg.output_rgb_mapping[1] = 1;
+-            cfg.output_rgb_mapping[2] = 2;
+-            break;
+-        case StackingMode::OSC_HAO3:
+-            cfg.n_channels = 2;
+-            cfg.channel_names[0] = "Ha";
+-            cfg.channel_names[1] = "OIII";
+-            cfg.bayer = BayerPattern::RGGB;
+-            cfg.output_rgb_mapping[0] = 0;
+-            cfg.output_rgb_mapping[1] = 1;
+-            cfg.output_rgb_mapping[2] = 1;
+-            break;
+-        case StackingMode::OSC_S2O3:
+-            cfg.n_channels = 2;
+-            cfg.channel_names[0] = "SII";
+-            cfg.channel_names[1] = "OIII";
+-            cfg.bayer = BayerPattern::RGGB;
+-            cfg.output_rgb_mapping[0] = 0;
+-            cfg.output_rgb_mapping[1] = 1;
+-            cfg.output_rgb_mapping[2] = 1;
+-            break;
+-        case StackingMode::CUSTOM:
+-            cfg.n_channels = 1;
+-            cfg.channel_names[0] = "CH0";
+-            cfg.bayer = BayerPattern::NONE;
+-            cfg.output_rgb_mapping[0] = 0;
+-            cfg.output_rgb_mapping[1] = 0;
+-            cfg.output_rgb_mapping[2] = 0;
+-            break;
+-    }
+-    return cfg;
+-}
+-
+ int ChannelConfig::channel_index_for_name(const std::string& name) const {
+     for (int i = 0; i < static_cast<int>(n_channels); i++) {
+         if (channel_names[i] == name) return i;
+     }
+     return -1;
+ }
+ 
+-bool ChannelConfig::is_mono() const {
+-    return mode == StackingMode::MONO_L || mode == StackingMode::MONO_LRGB;
+-}
+-
+ ChannelConfig ChannelConfig::from_filter(const Filter& f) {
+     ChannelConfig cfg;
+     switch (f.cls) {
+         case FilterClass::BROADBAND_L:
+             cfg.n_channels = 1;
+             cfg.channel_names[0] = "L";
+             cfg.bayer = BayerPattern::NONE;
+             break;
+ 
+         case FilterClass::BROADBAND_RGB:
+diff --git a/test/unit/combine/test_output_assembler.cpp b/test/unit/combine/test_output_assembler.cpp
+index 952c905..f7d61fd 100644
+--- a/test/unit/combine/test_output_assembler.cpp
++++ b/test/unit/combine/test_output_assembler.cpp
+@@ -1,19 +1,27 @@
+ #include "catch_amalgamated.hpp"
+ #include "nukex/combine/output_assembler.hpp"
+ #include "nukex/core/cube.hpp"
+ #include "nukex/core/channel_config.hpp"
++#include "nukex/core/filter.hpp"
+ 
+ using namespace nukex;
+ 
++static ChannelConfig cfg_for(FilterClass cls, const char* name) {
++    Filter f;
++    f.cls  = cls;
++    f.name = name;
++    return ChannelConfig::from_filter(f);
++}
++
+ TEST_CASE("OutputAssembler: quality map has 4 channels", "[assembler]") {
+-    auto config = ChannelConfig::from_mode(StackingMode::MONO_L);
++    auto config = cfg_for(FilterClass::BROADBAND_L, "L");
+     Cube cube(8, 8, config);
+ 
+     for (int y = 0; y < 8; y++)
+         for (int x = 0; x < 8; x++) {
+             auto& v = cube.at(x, y);
+             v.distribution[0].shape = DistributionShape::GAUSSIAN;
+             v.distribution[0].true_signal_estimate = 0.5f;
+             v.distribution[0].signal_uncertainty = 0.01f;
+             v.distribution[0].confidence = 0.9f;
+             v.dominant_shape = DistributionShape::GAUSSIAN;
+@@ -23,21 +31,21 @@ TEST_CASE("OutputAssembler: quality map has 4 channels", "[assembler]") {
+     REQUIRE(quality.width() == 8);
+     REQUIRE(quality.height() == 8);
+     REQUIRE(quality.n_channels() == 4);
+     REQUIRE(quality.at(4, 4, 0) == Catch::Approx(0.5f));
+     REQUIRE(quality.at(4, 4, 1) == Catch::Approx(0.01f));
+     REQUIRE(quality.at(4, 4, 2) == Catch::Approx(0.9f));
+     REQUIRE(quality.at(4, 4, 3) == Catch::Approx(0.0f));
+ }
+ 
+ TEST_CASE("OutputAssembler: shape channel encodes dominant_shape correctly", "[assembler]") {
+-    auto config = ChannelConfig::from_mode(StackingMode::MONO_L);
++    auto config = cfg_for(FilterClass::BROADBAND_L, "L");
+     Cube cube(4, 4, config);
+ 
+     cube.at(0, 0).dominant_shape = DistributionShape::GAUSSIAN;
+     cube.at(1, 0).dominant_shape = DistributionShape::BIMODAL;
+     cube.at(2, 0).dominant_shape = DistributionShape::HEAVY_TAILED;
+     cube.at(3, 0).dominant_shape = DistributionShape::CONTAMINATED;
+ 
+     auto quality = OutputAssembler::assemble_quality_map(cube);
+     REQUIRE(quality.at(0, 0, 3) == Catch::Approx(0.0f));
+     REQUIRE(quality.at(1, 0, 3) == Catch::Approx(1.0f));
+diff --git a/test/unit/combine/test_spatial_context.cpp b/test/unit/combine/test_spatial_context.cpp
+index 1c3c096..2440767 100644
+--- a/test/unit/combine/test_spatial_context.cpp
++++ b/test/unit/combine/test_spatial_context.cpp
+@@ -1,19 +1,27 @@
+ #include "catch_amalgamated.hpp"
+ #include "nukex/combine/spatial_context.hpp"
+ #include "nukex/io/image.hpp"
+ #include "nukex/core/cube.hpp"
+ #include "nukex/core/channel_config.hpp"
++#include "nukex/core/filter.hpp"
+ #include <cmath>
+ 
+ using namespace nukex;
+ 
++static ChannelConfig cfg_for(FilterClass cls, const char* name) {
++    Filter f;
++    f.cls  = cls;
++    f.name = name;
++    return ChannelConfig::from_filter(f);
++}
++
+ TEST_CASE("SpatialContext::sobel_gradient: flat image → zero gradient", "[spatial]") {
+     Image img(32, 32, 1);
+     img.fill(0.5f);
+     float grad = SpatialContext::sobel_gradient(img, 16, 16);
+     REQUIRE(grad == Catch::Approx(0.0f).margin(1e-6f));
+ }
+ 
+ TEST_CASE("SpatialContext::sobel_gradient: sharp edge → high gradient", "[spatial]") {
+     Image img(32, 32, 1);
+     for (int y = 0; y < 32; y++)
+@@ -24,21 +32,21 @@ TEST_CASE("SpatialContext::sobel_gradient: sharp edge → high gradient", "[spat
+ }
+ 
+ TEST_CASE("SpatialContext::sobel_gradient: border → zero", "[spatial]") {
+     Image img(32, 32, 1);
+     img.fill(0.5f);
+     REQUIRE(SpatialContext::sobel_gradient(img, 0, 0) == 0.0f);
+     REQUIRE(SpatialContext::sobel_gradient(img, 31, 31) == 0.0f);
+ }
+ 
+ TEST_CASE("SpatialContext::compute: writes to voxels", "[spatial]") {
+-    auto config = ChannelConfig::from_mode(StackingMode::MONO_L);
++    auto config = cfg_for(FilterClass::BROADBAND_L, "L");
+     Cube cube(16, 16, config);
+     Image output(16, 16, 1);
+     for (int y = 0; y < 16; y++)
+         for (int x = 0; x < 16; x++)
+             output.at(x, y, 0) = 0.5f;
+ 
+     SpatialContext ctx;
+     ctx.compute(output, cube);
+ 
+     auto& v = cube.at(8, 8);
+diff --git a/test/unit/core/test_channel_config.cpp b/test/unit/core/test_channel_config.cpp
+index 6139ce2..5e10bba 100644
+--- a/test/unit/core/test_channel_config.cpp
++++ b/test/unit/core/test_channel_config.cpp
+@@ -1,79 +1,34 @@
+ #include "catch_amalgamated.hpp"
+ #include "nukex/core/channel_config.hpp"
+-#include <string>
++#include "nukex/core/filter.hpp"
+ 
+ using namespace nukex;
+ 
+-TEST_CASE("StackingMode enum covers all modes", "[channel]") {
+-    REQUIRE(static_cast<uint8_t>(StackingMode::MONO_L) == 0);
+-    REQUIRE(static_cast<uint8_t>(StackingMode::MONO_LRGB) == 1);
+-    REQUIRE(static_cast<uint8_t>(StackingMode::OSC_RGB) == 2);
+-    REQUIRE(static_cast<uint8_t>(StackingMode::OSC_HAO3) == 3);
+-    REQUIRE(static_cast<uint8_t>(StackingMode::OSC_S2O3) == 4);
+-    REQUIRE(static_cast<uint8_t>(StackingMode::CUSTOM) == 5);
++static ChannelConfig cfg_for(FilterClass cls, const char* name) {
++    Filter f;
++    f.cls  = cls;
++    f.name = name;
++    return ChannelConfig::from_filter(f);
+ }
+ 
+-TEST_CASE("ChannelConfig::from_mode MONO_L", "[channel]") {
+-    auto cfg = ChannelConfig::from_mode(StackingMode::MONO_L);
+-    REQUIRE(cfg.mode == StackingMode::MONO_L);
+-    REQUIRE(cfg.n_channels == 1);
+-    REQUIRE(cfg.channel_names[0] == "L");
+-    REQUIRE(cfg.bayer == BayerPattern::NONE);
+-}
+-
+-TEST_CASE("ChannelConfig::from_mode MONO_LRGB", "[channel]") {
+-    auto cfg = ChannelConfig::from_mode(StackingMode::MONO_LRGB);
++TEST_CASE("ChannelConfig: channel_index_for_name / slot_index / slot_name over a merged LRGB config", "[channel]") {
++    ChannelConfig cfg = cfg_for(FilterClass::BROADBAND_L, "L");
++    for (const char* c : {"R", "G", "B"}) {
++        cfg = ChannelConfig::merge(cfg, cfg_for(FilterClass::BROADBAND_RGB, c));
++    }
+     REQUIRE(cfg.n_channels == 4);
+-    REQUIRE(cfg.channel_names[0] == "L");
+-    REQUIRE(cfg.channel_names[1] == "R");
+-    REQUIRE(cfg.channel_names[2] == "G");
+-    REQUIRE(cfg.channel_names[3] == "B");
+-}
+-
+-TEST_CASE("ChannelConfig::from_mode OSC_RGB", "[channel]") {
+-    auto cfg = ChannelConfig::from_mode(StackingMode::OSC_RGB);
+-    REQUIRE(cfg.n_channels == 3);
+-    REQUIRE(cfg.channel_names[0] == "R");
+-    REQUIRE(cfg.channel_names[1] == "G");
+-    REQUIRE(cfg.channel_names[2] == "B");
+-    REQUIRE(cfg.bayer == BayerPattern::RGGB);
+-    REQUIRE(cfg.output_rgb_mapping[0] == 0);
+-    REQUIRE(cfg.output_rgb_mapping[1] == 1);
+-    REQUIRE(cfg.output_rgb_mapping[2] == 2);
+-}
+-
+-TEST_CASE("ChannelConfig::from_mode OSC_HAO3", "[channel]") {
+-    auto cfg = ChannelConfig::from_mode(StackingMode::OSC_HAO3);
+-    REQUIRE(cfg.n_channels == 2);
+-    REQUIRE(cfg.channel_names[0] == "Ha");
+-    REQUIRE(cfg.channel_names[1] == "OIII");
+-    REQUIRE(cfg.bayer == BayerPattern::RGGB);
+-}
+-
+-TEST_CASE("ChannelConfig::from_mode OSC_S2O3", "[channel]") {
+-    auto cfg = ChannelConfig::from_mode(StackingMode::OSC_S2O3);
+-    REQUIRE(cfg.n_channels == 2);
+-    REQUIRE(cfg.channel_names[0] == "SII");
+-    REQUIRE(cfg.channel_names[1] == "OIII");
+-}
+-
+-TEST_CASE("ChannelConfig: channel_index_for_name", "[channel]") {
+-    auto cfg = ChannelConfig::from_mode(StackingMode::MONO_LRGB);
+     REQUIRE(cfg.channel_index_for_name("L") == 0);
+     REQUIRE(cfg.channel_index_for_name("R") == 1);
+     REQUIRE(cfg.channel_index_for_name("G") == 2);
+     REQUIRE(cfg.channel_index_for_name("B") == 3);
+     REQUIRE(cfg.channel_index_for_name("Ha") == -1);
++    REQUIRE(cfg.slot_index("G") == cfg.channel_index_for_name("G"));
++    REQUIRE(cfg.slot_name(3) == "B");
+ }
+ 
+-TEST_CASE("ChannelConfig: is_mono", "[channel]") {
+-    REQUIRE(ChannelConfig::from_mode(StackingMode::MONO_L).is_mono() == true);
+-    REQUIRE(ChannelConfig::from_mode(StackingMode::MONO_LRGB).is_mono() == true);
+-    REQUIRE(ChannelConfig::from_mode(StackingMode::OSC_RGB).is_mono() == false);
+-    REQUIRE(ChannelConfig::from_mode(StackingMode::OSC_HAO3).is_mono() == false);
+-}
+-
+-TEST_CASE("stacking_mode_name", "[channel]") {
+-    REQUIRE(stacking_mode_name(StackingMode::MONO_L) == std::string("MONO_L"));
+-    REQUIRE(stacking_mode_name(StackingMode::OSC_RGB) == std::string("OSC_RGB"));
++TEST_CASE("ChannelConfig: bayer defaults to NONE for mono classes and RGGB for Bayer classes", "[channel]") {
++    REQUIRE(cfg_for(FilterClass::BROADBAND_L, "L").bayer        == BayerPattern::NONE);
++    REQUIRE(cfg_for(FilterClass::NARROWBAND_SINGLE, "Ha").bayer == BayerPattern::NONE);
++    REQUIRE(cfg_for(FilterClass::BROADBAND_OSC, "OSC").bayer    == BayerPattern::RGGB);
++    REQUIRE(cfg_for(FilterClass::DUAL_NB_OSC, "HaO3").bayer     == BayerPattern::RGGB);
+ }
+diff --git a/test/unit/core/test_cube.cpp b/test/unit/core/test_cube.cpp
+index 50b8753..f50e20b 100644
+--- a/test/unit/core/test_cube.cpp
++++ b/test/unit/core/test_cube.cpp
+@@ -1,50 +1,58 @@
+ #include "catch_amalgamated.hpp"
+ #include "nukex/core/cube.hpp"
++#include "nukex/core/filter.hpp"
+ 
+ using namespace nukex;
+ 
++static ChannelConfig cfg_for(FilterClass cls, const char* name) {
++    Filter f;
++    f.cls  = cls;
++    f.name = name;
++    return ChannelConfig::from_filter(f);
++}
++
+ TEST_CASE("Cube: construction with dimensions", "[cube]") {
+-    auto cfg = ChannelConfig::from_mode(StackingMode::OSC_RGB);
++    auto cfg = cfg_for(FilterClass::BROADBAND_OSC, "OSC");
+     Cube cube(100, 80, cfg);
+     REQUIRE(cube.width == 100);
+     REQUIRE(cube.height == 80);
+-    REQUIRE(cube.channel_config.n_channels == 3);
++    REQUIRE(cube.channel_config.n_channels == 4);
+     REQUIRE(cube.n_frames_loaded == 0);
+     REQUIRE(cube.total_pixels() == 8000);
+ }
+ 
+ TEST_CASE("Cube: voxel access by coordinates", "[cube]") {
+-    auto cfg = ChannelConfig::from_mode(StackingMode::MONO_L);
++    auto cfg = cfg_for(FilterClass::BROADBAND_L, "L");
+     Cube cube(10, 10, cfg);
+     cube.at(3, 5).n_frames = 42;
+     cube.at(3, 5).confidence = 0.95f;
+     REQUIRE(cube.at(3, 5).n_frames == 42);
+     REQUIRE(cube.at(3, 5).confidence == Catch::Approx(0.95f));
+     REQUIRE(cube.at(0, 0).n_frames == 0);
+ }
+ 
+ TEST_CASE("Cube: voxels initialized with correct channel count", "[cube]") {
+-    auto cfg = ChannelConfig::from_mode(StackingMode::OSC_HAO3);
++    auto cfg = cfg_for(FilterClass::DUAL_NB_OSC, "HaO3");
+     Cube cube(4, 4, cfg);
+     for (int y = 0; y < 4; y++)
+         for (int x = 0; x < 4; x++)
+-            REQUIRE(cube.at(x, y).n_channels == 2);
++            REQUIRE(cube.at(x, y).n_channels == 3);
+ }
+ 
+ TEST_CASE("Cube: const access", "[cube]") {
+-    auto cfg = ChannelConfig::from_mode(StackingMode::OSC_RGB);
++    auto cfg = cfg_for(FilterClass::BROADBAND_OSC, "OSC");
+     Cube cube(5, 5, cfg);
+     cube.at(2, 3).confidence = 0.8f;
+     const Cube& c = cube;
+     REQUIRE(c.at(2, 3).confidence == Catch::Approx(0.8f));
+ }
+ 
+ TEST_CASE("Cube: is_valid_coord", "[cube]") {
+-    auto cfg = ChannelConfig::from_mode(StackingMode::MONO_L);
++    auto cfg = cfg_for(FilterClass::BROADBAND_L, "L");
+     Cube cube(10, 8, cfg);
+     REQUIRE(cube.is_valid_coord(0, 0) == true);
+     REQUIRE(cube.is_valid_coord(9, 7) == true);
+     REQUIRE(cube.is_valid_coord(10, 0) == false);
+     REQUIRE(cube.is_valid_coord(0, 8) == false);
+     REQUIRE(cube.is_valid_coord(-1, 0) == false);
+ }

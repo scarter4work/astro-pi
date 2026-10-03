@@ -1,0 +1,111 @@
+# Review package: b00ad25..HEAD
+
+## Commits
+88f41e1 fix(tools): enforce Ha/SII-before-OIII order for product-mapped canonical filters
+
+## Files changed
+ tools/import_qe_research.py      | 14 ++++++++++----
+ tools/test_import_qe_research.py | 12 ++++++++++++
+ 2 files changed, 22 insertions(+), 4 deletions(-)
+
+## Diff
+diff --git a/tools/import_qe_research.py b/tools/import_qe_research.py
+index 45eda60..5fbe1a1 100755
+--- a/tools/import_qe_research.py
++++ b/tools/import_qe_research.py
+@@ -77,20 +77,28 @@ def passes_to_lines(passes):
+         if name is None:
+             continue
+         out.append({"name": name, "wavelength_nm": LINES[name], "fwhm_nm": float(p["fwhm_nm"])})
+     return out
+ 
+ 
+ def q_solve_lines(lines):
+     return [l for l in lines if l["name"] in Q_SOLVE_LINES]
+ 
+ 
++def ordered_for_q_solve(lines):
++    """Canonical dual-NB line order the classifier documents: Ha/SII before
++    OIII, i.e. descending wavelength_nm. Applied to every dual-NB canonical
++    entry, whether it's derived (HaO3, S2O3) or product-mapped (L-eXtreme,
++    L-eNhance, L-Ultimate, ALP-T) -- source `passes` order is not guaranteed."""
++    return sorted(lines, key=lambda l: -l["wavelength_nm"])
++
++
+ def median_lines(entries):
+     """Same line set across several products -> one entry with median FWHM per line."""
+     by_name = {}
+     order = []
+     for lines in entries:
+         for l in lines:
+             if l["name"] not in by_name:
+                 order.append(l["name"])
+                 by_name[l["name"]] = []
+             by_name[l["name"]].append(l["fwhm_nm"])
+@@ -112,27 +120,25 @@ def transform_filters(filters):
+ 
+         q_lines = q_solve_lines(lines)
+         if f.get("type") == "dual-narrowband":   # tri/quad products carry extra passes; keep them out of the medians
+             key = CANONICAL_DUAL.get(frozenset(l["name"] for l in q_lines))
+             if key:
+                 dual_sources.setdefault(key, []).append(q_lines)
+         elif ftype == "NARROWBAND" and len(q_lines) == 1:
+             single_sources.setdefault(q_lines[0]["name"], []).append(q_lines)
+ 
+         if name in PRODUCT_CANONICAL:
+-            out[PRODUCT_CANONICAL[name]] = {"type": "DUAL_NB", "lines": q_lines}
++            out[PRODUCT_CANONICAL[name]] = {"type": "DUAL_NB", "lines": ordered_for_q_solve(q_lines)}
+ 
+     for key, sources in dual_sources.items():
+         # Ha before OIII, SII before OIII: the order the classifier documents.
+-        lines = median_lines(sources)
+-        lines.sort(key=lambda l: -l["wavelength_nm"])
+-        out[key] = {"type": "DUAL_NB", "lines": lines}
++        out[key] = {"type": "DUAL_NB", "lines": ordered_for_q_solve(median_lines(sources))}
+     for line_name, sources in single_sources.items():
+         out[line_name] = {"type": "NARROWBAND", "lines": median_lines(sources)}
+ 
+     missing = [k for k in REQUIRED_CANONICAL if k not in out]
+     if missing:
+         raise TransformError(f"Research data yields no source for canonical filter(s): {missing}")
+     return out
+ 
+ 
+ def resolved_qe(name, cam, sensors):
+diff --git a/tools/test_import_qe_research.py b/tools/test_import_qe_research.py
+index 55df506..b886160 100644
+--- a/tools/test_import_qe_research.py
++++ b/tools/test_import_qe_research.py
+@@ -110,20 +110,32 @@ def test_classifier_product_canonicals_present_and_hb_dropped(tmp_path):
+ 
+ 
+ def test_single_line_canonicals_and_broadband_products(tmp_path):
+     src, dst = write(tmp_path, BASE)
+     assert run(src, dst).returncode == 0
+     f = json.loads(dst.read_text())["filters"]
+     assert f["Ha"]["lines"] == [{"name": "Ha", "wavelength_nm": 656.3, "fwhm_nm": 3.0}]
+     assert f["Optolong-Lpro"] == {"type": "BROADBAND", "lines": []}
+ 
+ 
++def test_product_canonical_line_order_enforced_regardless_of_source_order(tmp_path):
++    doc = json.loads(json.dumps(BASE))
++    doc["filters"]["Optolong-LeXtreme-7nm"] = {"type": "dual-narrowband",
++        "passes": [{"center_nm": 500.7, "fwhm_nm": 7.0}, {"center_nm": 656.3, "fwhm_nm": 7.0}]}  # OIII listed first
++    src, dst = write(tmp_path, doc)
++    r = run(src, dst)
++    assert r.returncode == 0, r.stderr
++    f = json.loads(dst.read_text())["filters"]
++    assert [l["name"] for l in f["L-eXtreme"]["lines"]] == ["Ha", "OIII"]
++    assert [l["name"] for l in f["HaO3"]["lines"]] == ["Ha", "OIII"]
++
++
+ def test_generic_sony_osc_camera_is_mean_of_sony_osc_cameras(tmp_path):
+     doc = json.loads(json.dumps(BASE))
+     doc["sensors"]["IMX571"] = sensor({"501": {"R": 0.07, "Gr": 0.89, "Gb": 0.89, "B": 0.6},
+                                        "656": {"R": 0.47, "Gr": 0.06, "Gb": 0.04, "B": 0.05}})
+     doc["cameras"]["asi2600mc"] = osc_cam("IMX571")
+     src, dst = write(tmp_path, doc)
+     assert run(src, dst).returncode == 0
+     g = json.loads(dst.read_text())["cameras"]["generic_sony_imx_osc"]
+     assert g["type"] == "OSC" and g["bayer"] == "RGGB" and g["confidence"] == "low"
+     assert g["qe"]["656"]["R"] == round((0.73 + 0.47) / 2, 4)

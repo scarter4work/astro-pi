@@ -1,0 +1,136 @@
+# Review package: 4166859..HEAD
+
+## Commits
+9fdb920 optimize: the recipe is the audit artifact
+
+## Files changed
+ src/autocontrast/optimize/recipe.py | 77 +++++++++++++++++++++++++++++++++++++
+ tests/test_optimize_recipe.py       | 36 +++++++++++++++++
+ 2 files changed, 113 insertions(+)
+
+## Diff
+diff --git a/src/autocontrast/optimize/recipe.py b/src/autocontrast/optimize/recipe.py
+new file mode 100644
+index 0000000..fed25ad
+--- /dev/null
++++ b/src/autocontrast/optimize/recipe.py
+@@ -0,0 +1,77 @@
++"""The recipe: an ordered, replayable audit log (SS12).
++
++SS12 requires the output be reconstructible as a sequence of stock PixInsight
++processes. The recipe IS that artifact -- it must be sufficient to reproduce the
++result with AutoContrast absent from the machine. Auditability is the point.
++"""
++
++from __future__ import annotations
++
++from dataclasses import dataclass
++
++from .actions import Action
++
++# SS6.2's action -> stock PixInsight process mapping.
++PROCESS_FOR_KIND = {
++    "local_contrast": "MultiscaleLinearTransform",
++    "local_equalize": "LocalHistogramEqualization",
++    "core_hdr": "HDRMultiscaleTransform",
++    "tonal_reshape": "CurvesTransformation",
++    "black_point": "HistogramTransformation",
++    "chroma": "ColorSaturation",
++    "background_neutralize": "BackgroundNeutralization",
++    "star_split": "StarXTerminator",
++}
++
++
++@dataclass(frozen=True)
++class Recipe:
++    actions: tuple[Action, ...] = ()
++
++    @classmethod
++    def empty(cls) -> "Recipe":
++        return cls(actions=())
++
++    def extend(self, action: Action) -> "Recipe":
++        return Recipe(actions=self.actions + (action,))
++
++    @property
++    def key(self) -> str:
++        """Order-sensitive identity, used for beam distinctness."""
++        return " | ".join(a.key for a in self.actions)
++
++    @property
++    def applied_kinds(self) -> frozenset[str]:
++        return frozenset(a.kind for a in self.actions)
++
++    def to_dict(self) -> dict:
++        return {
++            "actions": [
++                {"kind": a.kind, "level": a.level,
++                 "scale_arcsec": a.scale_arcsec, "params": a.params}
++                for a in self.actions
++            ]
++        }
++
++    @classmethod
++    def from_dict(cls, d: dict) -> "Recipe":
++        return cls(actions=tuple(
++            Action(kind=a["kind"], level=a["level"],
++                   scale_arcsec=a["scale_arcsec"], params=a.get("params", {}))
++            for a in d["actions"]
++        ))
++
++    def to_pixinsight_steps(self) -> list[dict]:
++        """Render to stock PI process invocations -- the SS12 audit artifact."""
++        steps = []
++        for a in self.actions:
++            params = dict(a.params)
++            params["strength"] = a.strength
++            if a.scale_arcsec is not None:
++                params["scale_arcsec"] = a.scale_arcsec
++            steps.append({
++                "process": PROCESS_FOR_KIND[a.kind],
++                "action": a.key,
++                "params": params,
++            })
++        return steps
+diff --git a/tests/test_optimize_recipe.py b/tests/test_optimize_recipe.py
+new file mode 100644
+index 0000000..a255902
+--- /dev/null
++++ b/tests/test_optimize_recipe.py
+@@ -0,0 +1,36 @@
++from autocontrast.optimize.actions import Action
++from autocontrast.optimize.recipe import Recipe
++
++
++def _a(kind="local_contrast", level="moderate", scale=8.0):
++    return Action(kind=kind, level=level, scale_arcsec=scale, params={"layer": 3})
++
++
++def test_recipe_is_immutable_and_extends_to_a_new_object():
++    empty = Recipe.empty()
++    one = empty.extend(_a())
++    assert len(empty.actions) == 0
++    assert len(one.actions) == 1
++
++
++def test_recipe_key_distinguishes_order():
++    a, b = _a(kind="black_point", scale=None), _a(kind="chroma", scale=None)
++    assert Recipe.empty().extend(a).extend(b).key != Recipe.empty().extend(b).extend(a).key
++
++
++def test_applied_kinds_tracks_once_only_actions():
++    r = Recipe.empty().extend(_a(kind="star_split", level="", scale=None))
++    assert "star_split" in r.applied_kinds
++
++
++def test_round_trips_through_dict():
++    r = Recipe.empty().extend(_a()).extend(_a(kind="chroma", scale=None))
++    assert Recipe.from_dict(r.to_dict()).key == r.key
++
++
++def test_renders_to_stock_pixinsight_steps():
++    r = Recipe.empty().extend(_a())
++    steps = r.to_pixinsight_steps()
++    assert steps[0]["process"] == "MultiscaleLinearTransform"
++    assert steps[0]["params"]["layer"] == 3
++    assert "strength" in steps[0]["params"]

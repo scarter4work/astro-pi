@@ -1,0 +1,536 @@
+# Review package: 537e03c..HEAD
+
+## Commits
+6a9eecb fix: distinguish astap_cli environment failures from unsolvable frames
+
+## Files changed
+ src/astrometa/solve.py |  83 +++++++++++++++++++++--
+ tests/test_solve.py    | 180 ++++++++++++++++++++++++++++++++++++++++++++-----
+ 2 files changed, 241 insertions(+), 22 deletions(-)
+
+## Diff
+diff --git a/src/astrometa/solve.py b/src/astrometa/solve.py
+index 51b0b4a..5979592 100644
+--- a/src/astrometa/solve.py
++++ b/src/astrometa/solve.py
+@@ -18,57 +18,89 @@ astap_cli writes its .ini/.wcs sidecars NEXT TO the input file (verified
+ behaviour). The archive mounts are read-only by design and must stay free
+ of solver droppings, so solve_frame always copies the frame into
+ cfg.scratch_dir first and only ever hands astap_cli that scratch copy.
+ 
+ Roughly 405 frames in this archive (Moon, planets, bright stars) have no
+ star field to match and cannot be solved at all -- one measured taking 90s
+ to fail blind. solve_fields caps attempts per field so those don't get
+ retried forever, and records the failure reason so "permanently
+ unsolvable" (solve_attempts hit the cap, solve_error set) stays
+ distinguishable from "not yet processed" (solve_attempts still 0).
++
++astap_cli returns exit code 1 for BOTH a genuinely unsolvable frame and
++an environment problem (missing star database, unreadable input) --
++measured 2026-09-09 against the real binary -- so the exit code alone
++cannot tell them apart, and a misconfigured install would otherwise burn
++the whole attempt cap across every field on the very first run,
++permanently marking them failed. Two things close that gap: solve_fields
++preflights cfg.astap_bin/cfg.astap_db_dir once before solving anything
++and raises loudly if either is wrong, and solve_frame folds astap_cli's
++own ERROR/WARNING .ini field (when present -- e.g. "No star database
++found.") together with the exit code and a bounded stdout/stderr tail
++into the reason it returns, so a genuine "no solution" stays
++distinguishable from a broken install in the DB row itself.
+ """
++import os
+ import shutil
+ import sqlite3
+ import subprocess
+ import tempfile
+ from datetime import datetime, timezone
+ from pathlib import Path
+ 
+ BLIND_RADIUS = 180
+ HINT_RADIUS = 30
+ TIMEOUT_S = 120
+ MAX_SOLVE_ATTEMPTS = 3
++DIAG_TAIL_CHARS = 300
+ 
+ _UNSOLVED = {"solved": False, "ra": None, "dec": None,
+              "scale_arcsec_px": None, "rotation": None, "warning": None}
+ 
+ 
+ def parse_ini(text: str) -> dict:
+     """Parse an astap_cli .ini sidecar into a solution dict."""
+     kv: dict[str, str] = {}
+     for line in text.splitlines():
+         if "=" in line:
+             k, _, v = line.partition("=")
+             kv[k.strip()] = v.strip()
+     if kv.get("PLTSOLVD") != "T":
+-        return {**_UNSOLVED, "warning": kv.get("WARNING")}
++        # ERROR is astap_cli's own field for an environment problem (e.g.
++        # "No star database found."); a genuine "no solution" .ini has
++        # neither ERROR nor WARNING. Prefer ERROR when present -- it is
++        # the most precise diagnosis available.
++        return {**_UNSOLVED, "warning": kv.get("ERROR") or kv.get("WARNING")}
+     return {
+         "solved": True,
+         "ra": float(kv["CRVAL1"]),
+         "dec": float(kv["CRVAL2"]),
+         # CDELT1 is degrees/px in the .ini; callers want arcsec/px.
+         "scale_arcsec_px": abs(float(kv["CDELT1"])) * 3600.0,
+         "rotation": float(kv["CROTA1"]),
+         "warning": kv.get("WARNING"),
+     }
+ 
+ 
++def _diagnostics(result: subprocess.CompletedProcess) -> str:
++    """
++    Bounded diagnostic summary of a completed astap_cli invocation: exit
++    code plus a short tail of its combined stdout/stderr. Bounded to a
++    few hundred characters so a verbose multi-pass solve attempt (astap
++    logs progress at every FOV step it tries) doesn't bloat solve_error.
++    """
++    out = (result.stdout or b"").decode("utf-8", "replace")
++    err = (result.stderr or b"").decode("utf-8", "replace")
++    tail = (out + err).strip()[-DIAG_TAIL_CHARS:]
++    return f"exit {result.returncode}: {tail}" if tail else f"exit {result.returncode}"
++
++
+ def solve_frame(cfg, frame_path: Path, hint: tuple[float, float] | None = None) -> dict:
+     """
+     Plate-solve one frame and return its solution (or a `solved: False`
+     failure dict -- never raises for an ordinary "couldn't solve this
+     frame", only for genuine environment failures such as a missing
+     astap_cli binary).
+ 
+     `hint`, when given, is (ra_degrees, dec_degrees) from the frame's FITS
+     header -- the mount's commanded position, close enough to narrow the
+     search radius from a 180-degree blind search down to 30 degrees.
+@@ -85,49 +117,86 @@ def solve_frame(cfg, frame_path: Path, hint: tuple[float, float] | None = None)
+         cmd = [str(cfg.astap_bin), "-f", str(work), "-d",
+                str(cfg.astap_db_dir), "-fov", "0", "-wcs"]
+         if hint and hint[0] is not None and hint[1] is not None:
+             hint_ra_degrees, hint_dec = hint
+             cmd += ["-ra", str(hint_ra_degrees / 15.0),
+                     "-spd", str(hint_dec + 90.0),
+                     "-r", str(HINT_RADIUS)]
+         else:
+             cmd += ["-r", str(BLIND_RADIUS)]
+         try:
+-            subprocess.run(cmd, capture_output=True, timeout=TIMEOUT_S)
++            result = subprocess.run(cmd, capture_output=True, timeout=TIMEOUT_S)
+         except subprocess.TimeoutExpired:
+             return {**_UNSOLVED, "warning": f"timeout after {TIMEOUT_S}s"}
+         ini = work.with_suffix(".ini")
+         if not ini.exists():
+-            return {**_UNSOLVED, "warning": "no .ini produced"}
+-        return parse_ini(ini.read_text())
++            return {**_UNSOLVED,
++                    "warning": f"no .ini produced ({_diagnostics(result)})"}
++        parsed = parse_ini(ini.read_text())
++        if parsed["solved"]:
++            return parsed
++        # Fold the exit code and output tail in alongside whatever
++        # astap_cli's own .ini told us (may be nothing, for a genuine
++        # "no solution" -- see module docstring), so the DB row is never
++        # just a bare "solve failed" with no way to tell an environment
++        # problem from an unsolvable frame.
++        reason = parsed["warning"]
++        diag = _diagnostics(result)
++        parsed["warning"] = f"{reason} ({diag})" if reason else diag
++        return parsed
++
++
++def _preflight(cfg) -> None:
++    """
++    Verify astap_cli and its database directory are actually usable
++    before solving anything, and raise loudly if not.
++
++    astap_cli exits 1 for both a genuinely unsolvable frame and a broken
++    install (missing star database, etc -- see module docstring), so
++    per-field diagnostics alone can't prevent a misconfigured install
++    from burning MAX_SOLVE_ATTEMPTS across every field on the first run
++    and permanently marking them failed. Catching the whole
++    misconfiguration class here, once, before the loop starts, is the
++    real protection against that; solve_frame's diagnostics are the
++    fallback for whatever this can't anticipate.
++    """
++    if not (cfg.astap_bin.is_file() and os.access(cfg.astap_bin, os.X_OK)):
++        raise RuntimeError(
++            f"astap_bin is not an executable file: {cfg.astap_bin}")
++    if not cfg.astap_db_dir.is_dir():
++        raise RuntimeError(
++            f"astap_db_dir does not exist: {cfg.astap_db_dir}")
+ 
+ 
+ def solve_fields(conn, cfg, limit: int | None = None) -> int:
+     """
+     Solve one representative frame for every field not yet solved (or not
+     yet permanently given up on), and write the result back.
+ 
+     Idempotent: the candidate query only ever selects
+     solve_source='none' AND solve_attempts < MAX_SOLVE_ATTEMPTS, so a
+     solved field (solve_source='astap') is never re-solved, and a field
+     that has exhausted its attempts is never retried, on a re-run.
+ 
+     Returns the number of fields newly solved by this call.
+     """
++    _preflight(cfg)
+     prev_factory = conn.row_factory
+     conn.row_factory = sqlite3.Row
+     try:
+         q = ("SELECT id FROM fields WHERE solve_source='none' "
+-             f"AND solve_attempts < {MAX_SOLVE_ATTEMPTS} ORDER BY id")
++             "AND solve_attempts < ? ORDER BY id")
++        params: list = [MAX_SOLVE_ATTEMPTS]
+         if limit is not None:
+-            q += f" LIMIT {int(limit)}"
+-        field_ids = [r["id"] for r in conn.execute(q).fetchall()]
++            q += " LIMIT ?"
++            params.append(int(limit))
++        field_ids = [r["id"] for r in conn.execute(q, params).fetchall()]
+ 
+         solved = 0
+         for fid in field_ids:
+             rep = conn.execute(
+                 "SELECT path, header_ra, header_dec FROM frames "
+                 "WHERE field_id=? AND read_error IS NULL LIMIT 1",
+                 (fid,)).fetchone()
+             if rep is None:
+                 continue
+             res = solve_frame(cfg, Path(rep["path"]),
+diff --git a/tests/test_solve.py b/tests/test_solve.py
+index 296b9d3..0b29975 100644
+--- a/tests/test_solve.py
++++ b/tests/test_solve.py
+@@ -2,30 +2,40 @@ import stat
+ from pathlib import Path
+ 
+ import pytest
+ 
+ from astrometa import db, solve
+ from astrometa.config import Config
+ 
+ FIXTURE = Path(__file__).parent / "fixtures" / "solved.ini"
+ 
+ # A stub "astap_cli" used in place of the real binary. It never touches
+-# star catalogs -- it only mimics the one behaviour these tests care about:
++# star catalogs -- it only mimics the behaviours these tests care about:
+ # astap_cli writes its .ini sidecar NEXT TO whatever file it was given via
+-# -f. Controlled entirely through env vars (inherited from the test
+-# process, since solve_frame's subprocess.run call passes no explicit env)
+-# so one stub script covers every scenario below:
+-#   STUB_MODE=solved (default)  -> writes STUB_INI_TEXT (or a canned
+-#                                   PLTSOLVD=T block) next to the -f path
+-#   STUB_MODE=no_ini             -> writes nothing (simulates an
+-#                                   unsolvable frame -- no star field to
+-#                                   match, e.g. Moon/planet frames)
++# -f, and (measured 2026-09-09 against the real binary) returns exit code
++# 1 for BOTH a genuinely unsolvable frame and an environment problem
++# (missing star database, unreadable input) while still writing an .ini
++# with an ERROR field for the latter. Controlled entirely through env
++# vars (inherited from the test process, since solve_frame's
++# subprocess.run call passes no explicit env) so one stub script covers
++# every scenario below:
++#   STUB_MODE=solved (default)  -> prints a line to stdout, writes
++#                                   STUB_INI_TEXT (or a canned PLTSOLVD=T
++#                                   block) next to the -f path, exits
++#                                   STUB_EXIT_CODE (default 0)
++#   STUB_MODE=no_ini             -> writes nothing, exits 0 (simulates a
++#                                   crash-free run that still produced no
++#                                   sidecar)
++#   STUB_MODE=crash              -> prints to stdout/stderr, writes no
++#                                   .ini, exits 139 (simulates a hard
++#                                   crash -- the case _diagnostics exists
++#                                   for)
+ #   STUB_MODE=sleep              -> sleeps STUB_SLEEP seconds, writes
+ #                                   nothing (used to exercise the timeout
+ #                                   path without waiting on the real 120s)
+ #   STUB_ARGV_LOG=<path>         -> if set, records the argv it was
+ #                                   invoked with, so tests can assert on
+ #                                   the -ra/-spd/-r conversion
+ _STUB_SOURCE = '''#!/usr/bin/env python3
+ import os
+ import sys
+ import time
+@@ -36,45 +46,53 @@ def main():
+     log = os.environ.get("STUB_ARGV_LOG")
+     if log:
+         Path(log).write_text(" ".join(argv))
+ 
+     mode = os.environ.get("STUB_MODE", "solved")
+     if mode == "sleep":
+         time.sleep(float(os.environ.get("STUB_SLEEP", "5")))
+         return
+     if mode == "no_ini":
+         return
++    if mode == "crash":
++        print("simulated astap_cli crash: assertion failed at foo.pas:123")
++        print("segmentation fault detected", file=sys.stderr)
++        sys.exit(139)
+ 
+     f_path = Path(argv[argv.index("-f") + 1])
++    print(f"stub astap_cli solving {f_path.name}")
+     ini_text = os.environ.get(
+         "STUB_INI_TEXT",
+         "PLTSOLVD=T\\nCRVAL1=10.0\\nCRVAL2=20.0\\nCDELT1=0.0003\\nCROTA1=1.5\\n",
+     )
+     f_path.with_suffix(".ini").write_text(ini_text)
++    sys.exit(int(os.environ.get("STUB_EXIT_CODE", "0")))
+ 
+ if __name__ == "__main__":
+     main()
+ '''
+ 
+ 
+ def _make_stub(tmp_path: Path) -> Path:
+     stub = tmp_path / "stub_astap.py"
+     stub.write_text(_STUB_SOURCE)
+     mode = stub.stat().st_mode
+     stub.chmod(mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+     return stub
+ 
+ 
+ def _cfg(tmp_path: Path, astap_bin: Path) -> Config:
++    db_dir = tmp_path / "astap_db"
++    db_dir.mkdir(exist_ok=True)
+     return Config(scratch_dir=tmp_path / "scratch",
+                   astap_bin=astap_bin,
+-                  astap_db_dir=tmp_path / "astap_db")
++                  astap_db_dir=db_dir)
+ 
+ 
+ def test_parse_ini_extracts_solution():
+     r = solve.parse_ini(FIXTURE.read_text())
+     assert r["solved"] is True
+     assert abs(r["ra"] - 42.8625007) < 1e-6
+     assert abs(r["dec"] - 60.0697047) < 1e-6
+     # CDELT1 in degrees/px -> arcsec/px
+     assert abs(r["scale_arcsec_px"] - 1.2172) < 0.001
+     assert abs(r["rotation"] - 2.3244457) < 1e-6
+@@ -84,20 +102,35 @@ def test_parse_ini_extracts_solution():
+ def test_parse_ini_reports_failure():
+     r = solve.parse_ini("PLTSOLVD=F\n")
+     assert r["solved"] is False
+     assert r["ra"] is None
+ 
+ 
+ def test_parse_ini_on_empty_input_is_unsolved():
+     assert solve.parse_ini("")["solved"] is False
+ 
+ 
++def test_parse_ini_surfaces_error_field_on_failure():
++    # Measured 2026-09-09 against the real binary: `-d /nonexistent-dir`
++    # produces exactly this shape -- PLTSOLVD=F plus an ERROR field, no
++    # WARNING. ERROR is astap_cli's own diagnosis of an environment
++    # problem and must not be dropped.
++    r = solve.parse_ini("PLTSOLVD=F\nCMDLINE=x\nERROR=No star database found.\n")
++    assert r["solved"] is False
++    assert r["warning"] == "No star database found."
++
++
++def test_parse_ini_prefers_error_over_warning():
++    r = solve.parse_ini("PLTSOLVD=F\nERROR=db missing\nWARNING=some other text\n")
++    assert r["warning"] == "db missing"
++
++
+ def test_solve_frame_stub_solver_leaves_source_directory_clean(tmp_path, monkeypatch):
+     # The constraint that matters: the archive mount is read-only by
+     # design, so solve_frame must copy the frame to scratch before
+     # invoking astap_cli, never hand astap_cli the original source path.
+     source_dir = tmp_path / "read_only_source"
+     source_dir.mkdir()
+     frame = source_dir / "frame.fit"
+     frame.write_bytes(b"pretend this is FITS data, the stub never reads it")
+ 
+     stub = _make_stub(tmp_path)
+@@ -150,36 +183,111 @@ def test_solve_frame_blind_search_uses_wide_radius_when_no_hint(tmp_path, monkey
+     cfg = _cfg(tmp_path, stub)
+     solve.solve_frame(cfg, frame, hint=None)
+ 
+     argv = log.read_text().split()
+     assert "-ra" not in argv
+     assert "-spd" not in argv
+     assert argv[argv.index("-r") + 1] == "180"
+ 
+ 
+ def test_solve_frame_no_ini_produced_is_recorded_as_unsolved(tmp_path, monkeypatch):
+-    # Simulates a genuinely unsolvable frame (Moon/planet/bright star --
+-    # no star field to match): astap_cli exits without ever writing an
+-    # .ini, so this must be reported as a normal (not exceptional) failure.
++    # Defensive fallback path: astap_cli exits cleanly without ever
++    # writing an .ini at all. The real binary was measured (2026-09-09)
++    # to still write an .ini even for a genuinely unsolvable Moon frame
++    # (see test_solve_frame_genuine_no_solution_carries_only_diagnostics
++    # below), so this covers the code path's handling of the case where
++    # even that doesn't happen -- this must still be reported as a
++    # normal (not exceptional) failure, with its exit code recorded.
+     source_dir = tmp_path / "source"
+     source_dir.mkdir()
+     frame = source_dir / "frame.fit"
+     frame.write_bytes(b"x")
+ 
+     stub = _make_stub(tmp_path)
+     monkeypatch.setenv("STUB_MODE", "no_ini")
+ 
+     cfg = _cfg(tmp_path, stub)
+     result = solve.solve_frame(cfg, frame, hint=None)
+ 
+     assert result["solved"] is False
+-    assert result["warning"] == "no .ini produced"
++    assert result["warning"] == "no .ini produced (exit 0)"
++
++
++def test_solve_frame_no_ini_produced_includes_exit_code_and_output(tmp_path, monkeypatch):
++    # A hard crash (missing shared library, segfault, ...): no .ini, but
++    # astap_cli's stdout/stderr before it died is exactly the diagnostic
++    # an operator needs, and it must not be discarded.
++    source_dir = tmp_path / "source"
++    source_dir.mkdir()
++    frame = source_dir / "frame.fit"
++    frame.write_bytes(b"x")
++
++    stub = _make_stub(tmp_path)
++    monkeypatch.setenv("STUB_MODE", "crash")
++
++    cfg = _cfg(tmp_path, stub)
++    result = solve.solve_frame(cfg, frame, hint=None)
++
++    assert result["solved"] is False
++    assert "no .ini produced" in result["warning"]
++    assert "exit 139" in result["warning"]
++    assert "simulated astap_cli crash" in result["warning"]
++
++
++def test_solve_frame_environment_failure_carries_ini_error_and_diagnostics(tmp_path, monkeypatch):
++    # Reproduces the exact shape measured against the real binary for a
++    # bad database directory: an .ini IS produced, PLTSOLVD=F, with an
++    # ERROR field and exit code 1 -- the same exit code a genuinely
++    # unsolvable frame produces, so the ERROR text plus diagnostics is
++    # what must make it into solve_error, not a bare "solve failed".
++    source_dir = tmp_path / "source"
++    source_dir.mkdir()
++    frame = source_dir / "frame.fit"
++    frame.write_bytes(b"x")
++
++    stub = _make_stub(tmp_path)
++    monkeypatch.setenv("STUB_MODE", "solved")
++    monkeypatch.setenv("STUB_EXIT_CODE", "1")
++    monkeypatch.setenv("STUB_INI_TEXT",
++                        "PLTSOLVD=F\nERROR=No star database found.\n")
++
++    cfg = _cfg(tmp_path, stub)
++    result = solve.solve_frame(cfg, frame, hint=None)
++
++    assert result["solved"] is False
++    assert "No star database found." in result["warning"]
++    assert "exit 1" in result["warning"]
++
++
++def test_solve_frame_genuine_no_solution_carries_only_diagnostics(tmp_path, monkeypatch):
++    # Reproduces the exact .ini shape measured against the real binary
++    # for a genuinely unsolvable Moon frame: PLTSOLVD=F, exit 1, but NO
++    # ERROR or WARNING field -- astap_cli has nothing more specific to
++    # say. This must still carry the exit code/output diagnostics (never
++    # a bare, unhelpful "solve failed"), which is also what makes it
++    # distinguishable from the ERROR case above: no structured reason
++    # here, just the raw diagnostic tail.
++    source_dir = tmp_path / "source"
++    source_dir.mkdir()
++    frame = source_dir / "frame.fit"
++    frame.write_bytes(b"x")
++
++    stub = _make_stub(tmp_path)
++    monkeypatch.setenv("STUB_MODE", "solved")
++    monkeypatch.setenv("STUB_EXIT_CODE", "1")
++    monkeypatch.setenv("STUB_INI_TEXT", "PLTSOLVD=F\n")
++
++    cfg = _cfg(tmp_path, stub)
++    result = solve.solve_frame(cfg, frame, hint=None)
++
++    assert result["solved"] is False
++    assert result["warning"].startswith("exit 1")
+ 
+ 
+ def test_solve_frame_records_timeout_loudly(tmp_path, monkeypatch):
+     source_dir = tmp_path / "source"
+     source_dir.mkdir()
+     frame = source_dir / "frame.fit"
+     frame.write_bytes(b"x")
+ 
+     stub = _make_stub(tmp_path)
+     monkeypatch.setenv("STUB_MODE", "sleep")
+@@ -291,21 +399,21 @@ def test_solve_fields_records_failure_without_marking_solved(tmp_path, monkeypat
+     stub = _make_stub(tmp_path)
+     monkeypatch.setenv("STUB_MODE", "no_ini")
+     cfg = _cfg(tmp_path, stub)
+ 
+     assert solve.solve_fields(conn, cfg) == 0
+     row = conn.execute(
+         "SELECT solve_source, solve_attempts, solve_error "
+         "FROM fields WHERE id=?", (fid,)).fetchone()
+     assert row[0] == "none"
+     assert row[1] == 1
+-    assert row[2] == "no .ini produced"
++    assert row[2] == "no .ini produced (exit 0)"
+ 
+ 
+ def test_solve_fields_stops_retrying_after_max_attempts(tmp_path, monkeypatch):
+     # A genuinely unsolvable frame (e.g. Moon) must not be retried
+     # forever, and must be distinguishable from a frame that simply
+     # hasn't been processed yet.
+     conn = db.connect(tmp_path / "t.sqlite"); db.init_schema(conn)
+     source_dir = tmp_path / "source"; source_dir.mkdir()
+     frame = source_dir / "frame.fit"; frame.write_bytes(b"x")
+     fid = _insert_field_with_rep(conn, frame)
+@@ -337,10 +445,52 @@ def test_solve_fields_respects_limit(tmp_path, monkeypatch):
+ 
+     stub = _make_stub(tmp_path)
+     monkeypatch.setenv("STUB_MODE", "solved")
+     monkeypatch.setenv("STUB_INI_TEXT", FIXTURE.read_text())
+     cfg = _cfg(tmp_path, stub)
+ 
+     assert solve.solve_fields(conn, cfg, limit=1) == 1
+     solved_count = conn.execute(
+         "SELECT COUNT(*) FROM fields WHERE solve_source='astap'").fetchone()[0]
+     assert solved_count == 1
++
++
++def test_solve_fields_raises_on_missing_astap_binary(tmp_path):
++    # The poisoning scenario this guards against: a misconfigured
++    # install would otherwise fail every field identically to a genuine
++    # unsolvable frame, burning the whole attempt cap across the archive
++    # on the very first run. Preflighting must catch this BEFORE
++    # touching a single field.
++    conn = db.connect(tmp_path / "t.sqlite"); db.init_schema(conn)
++    source_dir = tmp_path / "source"; source_dir.mkdir()
++    frame = source_dir / "frame.fit"; frame.write_bytes(b"x")
++    _insert_field_with_rep(conn, frame)
++
++    missing_bin = tmp_path / "does_not_exist_astap_cli"
++    cfg = _cfg(tmp_path, missing_bin)
++
++    with pytest.raises(RuntimeError, match="astap_bin"):
++        solve.solve_fields(conn, cfg)
++
++    row = conn.execute(
++        "SELECT solve_attempts, solve_source FROM fields").fetchone()
++    assert row[0] == 0
++    assert row[1] == "none"
++
++
++def test_solve_fields_raises_on_missing_astap_db_dir(tmp_path):
++    conn = db.connect(tmp_path / "t.sqlite"); db.init_schema(conn)
++    source_dir = tmp_path / "source"; source_dir.mkdir()
++    frame = source_dir / "frame.fit"; frame.write_bytes(b"x")
++    _insert_field_with_rep(conn, frame)
++
++    stub = _make_stub(tmp_path)
++    cfg = Config(scratch_dir=tmp_path / "scratch", astap_bin=stub,
++                 astap_db_dir=tmp_path / "does_not_exist_db_dir")
++
++    with pytest.raises(RuntimeError, match="astap_db_dir"):
++        solve.solve_fields(conn, cfg)
++
++    row = conn.execute(
++        "SELECT solve_attempts, solve_source FROM fields").fetchone()
++    assert row[0] == 0
++    assert row[1] == "none"
