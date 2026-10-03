@@ -32,3 +32,13 @@ inline float sorted_median_f(float* sorted, int n) {
 }
 
 #endif // NUKEX_COMMON_CL
+
+
+// One bit per (channel, frame slot, voxel), same index as pixel_values.
+// 1 = that frame covered this pixel; 0 = the warp left it outside the source,
+// so the stored value is an absence and not a dark measurement.
+inline int sample_is_valid(__global const uchar* pixel_valid,
+                           int ch, int fi, int vi, int N, int B) {
+    ulong b = ((ulong)ch * N + fi) * B + vi;
+    return (pixel_valid[b >> 3] >> (b & 7)) & 1u;
+}

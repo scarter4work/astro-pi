@@ -9,9 +9,8 @@ Eigen::MatrixXd ChannelDecomposer::build_q(const std::string& camera,
         throw UnknownCameraError(
             "Camera not in QE DB: '" + camera + "' (normalized key '" +
             QEDatabase::normalize_camera_key(camera) +
-            "' matches no camera id or alias). Add an entry for this camera "
-            "(or an alias to an existing one with the SAME sensor and colour/mono "
-            "type) to qe_overrides.json.");
+            "' matches no camera key). Add an entry for this camera to "
+            "qe_overrides.json.");
     }
     if (!db_.has_filter(filter_name)) {
         throw UnknownFilterError("Filter not in QE DB: " + filter_name);
@@ -31,13 +30,13 @@ Eigen::MatrixXd ChannelDecomposer::build_q(const std::string& camera,
     }
 
     // Singularity check via rank. A rank-deficient Q means the QE values at
-    // the chosen line wavelengths don't form a non-degenerate basis — usually
+    // the chosen line wavelengths don't form a non-degenerate basis -- usually
     // because a buggy or fudged DB entry has identical R/G/B values. Loud
     // failure beats a silently nonsensical least-squares answer.
     Eigen::FullPivLU<Eigen::MatrixXd> lu(Q);
     if (lu.rank() < n_lines) {
         throw SingularQError("Q matrix for (" + camera + ", " + filter_name +
-                             ") is singular — QE values must form a non-degenerate basis. " +
+                             ") is singular -- QE values must form a non-degenerate basis. " +
                              "Filter QE in DB is suspect. Report bug + check override.");
     }
 

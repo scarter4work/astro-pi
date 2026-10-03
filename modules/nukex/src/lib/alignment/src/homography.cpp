@@ -4,6 +4,7 @@
 #include <Eigen/SVD>
 #include <random>
 #include <cmath>
+#include <algorithm>
 
 namespace nukex {
 
@@ -305,8 +306,36 @@ AlignmentResult HomographyComputer::compute(
 }
 
 Image HomographyComputer::warp(const Image& source, const HomographyMatrix& H,
-                                int output_width, int output_height) {
+                               int output_width, int output_height) {
+    return warp(source, H, output_width, output_height, ChannelTransforms{});
+}
+
+Image HomographyComputer::warp(const Image& source, const HomographyMatrix& H,
+                               int output_width, int output_height,
+                               const ChannelTransforms& channels) {
+    return warp_impl(source, H, output_width, output_height, channels, nullptr);
+}
+
+Image HomographyComputer::warp(const Image& source, const HomographyMatrix& H,
+                               int output_width, int output_height,
+                               const ChannelTransforms& channels,
+                               CoverageMask& coverage) {
+    coverage = CoverageMask(output_width, output_height, source.n_channels());
+    return warp_impl(source, H, output_width, output_height, channels, &coverage);
+}
+
+Image HomographyComputer::warp_impl(const Image& source, const HomographyMatrix& H,
+                                    int output_width, int output_height,
+                                    const ChannelTransforms& channels,
+                                    CoverageMask* coverage) {
     Image output(output_width, output_height, source.n_channels());
+
+    // A source narrower or shorter than 2 px has no `+1` neighbour for
+    // bilinear interpolation to reach. Rather than let the clamp below
+    // compute a negative index, return the zero-filled output -- the same
+    // thing the old bounds check produced for such an image, since sx could
+    // never satisfy `sx >= sw - 1` when sw <= 1.
+    if (source.width() < 2 || source.height() < 2) return output;
 
     // Compute inverse H for backward mapping
     // H maps source→ref, so H_inv maps ref→source
@@ -321,6 +350,11 @@ Image HomographyComputer::warp(const Image& source, const HomographyMatrix& H,
     int sh = source.height();
 
     for (int ch = 0; ch < source.n_channels(); ch++) {
+        const bool has_ct = ch < static_cast<int>(channels.per_channel.size());
+        const ChannelTransform ct =
+            has_ct ? channels.per_channel[ch] : ChannelTransform{};
+        const bool apply_ct = has_ct && !ct.is_identity();
+
         for (int y = 0; y < output_height; y++) {
             for (int x = 0; x < output_width; x++) {
                 // Map output (x, y) back to source coordinates
@@ -329,14 +363,23 @@ Image HomographyComputer::warp(const Image& source, const HomographyMatrix& H,
                 float sx = (H_inv(0, 0) * x + H_inv(0, 1) * y + H_inv(0, 2)) / w;
                 float sy = (H_inv(1, 0) * x + H_inv(1, 1) * y + H_inv(1, 2)) / w;
 
+                if (apply_ct) ct.apply(channels.cx, channels.cy, sx, sy);
+
                 // Bilinear interpolation
                 if (!std::isfinite(sx) || !std::isfinite(sy)) continue;
-                if (sx < 0 || sx >= sw - 1 || sy < 0 || sy >= sh - 1) continue;
+                if (sx < 0 || sx > sw - 1 || sy < 0 || sy > sh - 1) continue;
 
-                int ix = static_cast<int>(sx);
-                int iy = static_cast<int>(sy);
-                float fx = sx - ix;
-                float fy = sy - iy;
+                // Clamp the base index so the +1 neighbour stays in range, rather than
+                // refusing the sample. Without this the last row and column are dropped:
+                // with an identity homography sx == x, so x == sw-1 failed the old
+                // `sx >= sw - 1` test and the output edge was left at zero. That began to
+                // matter when the reference frame started being warped rather than cloned
+                // -- it used to keep its edge -- and the stacker feeds every pixel into
+                // the accumulator with no no-data guard, so those zeros count as samples.
+                const int ix = std::min(static_cast<int>(sx), sw - 2);
+                const int iy = std::min(static_cast<int>(sy), sh - 2);
+                const float fx = sx - ix;
+                const float fy = sy - iy;
 
                 float v00 = source.at(ix,     iy,     ch);
                 float v10 = source.at(ix + 1, iy,     ch);
@@ -349,56 +392,15 @@ Image HomographyComputer::warp(const Image& source, const HomographyMatrix& H,
                             v11 * fx * fy;
 
                 output.at(x, y, ch) = val;
+                // This pixel was sampled from real source data. Everything
+                // the `continue`s above skipped stays uncovered, and the
+                // stacker must not count it as a measurement of black.
+                if (coverage) coverage->set_covered(ch, y, x, true);
             }
         }
     }
 
     return output;
-}
-
-HomographyMatrix HomographyComputer::correct_meridian_flip(
-    const HomographyMatrix& H, int width, int height) {
-    // Pre-multiply H with 180-degree rotation F about image center to remove the flip.
-    //
-    // H maps source -> reference and contains a 180-degree flip component.
-    // Decompose H as H = F * T where F is the flip and T is the residual transform.
-    // We want to recover T = F_inv * H. Since F is a 180-degree rotation about
-    // the image center, F is its own inverse (F * F = I), so T = F * H.
-    //
-    // This is why pre-multiplication (F * H) is the correct order:
-    //   F * H = F * (F * T) = (F * F) * T = I * T = T
-    //
-    // Note: H * F would give (F * T) * F = F * T * F which is NOT T in general,
-    // because matrix multiplication is not commutative.
-    //
-    // flip F = [-1  0  w-1]
-    //          [ 0 -1  h-1]
-    //          [ 0  0    1]
-    Eigen::Matrix3f He, Fe;
-    for (int r = 0; r < 3; r++)
-        for (int c = 0; c < 3; c++)
-            He(r, c) = H(r, c);
-
-    Fe << -1, 0, static_cast<float>(width - 1),
-           0, -1, static_cast<float>(height - 1),
-           0,  0, 1;
-
-    Eigen::Matrix3f result = Fe * He;
-
-    HomographyMatrix corrected;
-    for (int r = 0; r < 3; r++)
-        for (int c = 0; c < 3; c++)
-            corrected(r, c) = result(r, c);
-
-    // Normalize
-    if (std::abs(corrected(2, 2)) > 1e-10f) {
-        float s = 1.0f / corrected(2, 2);
-        for (int r = 0; r < 3; r++)
-            for (int c = 0; c < 3; c++)
-                corrected(r, c) *= s;
-    }
-
-    return corrected;
 }
 
 } // namespace nukex

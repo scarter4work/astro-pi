@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "cameras": {
+    "ASI2600MC-Pro": {
+      "sensor": "IMX571",
+      "type": "OSC",
+      "bayer": "RGGB",
+      "qe": { "501": { "R": 0.08, "G": 0.89, "B": 0.60 }, "656": { "R": 0.46, "G": 0.05, "B": 0.04 } },
+      "confidence": "medium"
+    }
+  }
+}

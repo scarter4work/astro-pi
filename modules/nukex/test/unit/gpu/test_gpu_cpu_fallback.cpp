@@ -3,6 +3,7 @@
 #include "nukex/gpu/gpu_shadow_buffers.hpp"
 #include "nukex/core/frame_stats.hpp"
 #include "nukex/classify/weight_computer.hpp"
+#include <algorithm>
 #include <cmath>
 #include <random>
 #include <iostream>
@@ -15,7 +16,12 @@ static void fill_synthetic(ShadowBuffers& buf, int B, int C, int N,
     std::normal_distribution<float> gauss(0.5f, 0.05f);
 
     for (int vi = 0; vi < B; vi++) {
-        buf.n_frames[vi] = static_cast<uint16_t>(N);
+        // n_frames is [C * B] now -- one count per channel, because two
+        // slots can read different caches with different frame sets. Setting
+        // only [vi] would leave every channel above 0 with zero frames and
+        // quietly stop testing them.
+        for (int ch = 0; ch < C; ch++)
+            buf.n_frames[ch * B + vi] = static_cast<uint16_t>(N);
 
         for (int ch = 0; ch < C; ch++) {
             // Synthetic Welford accumulators
@@ -159,7 +165,7 @@ TEST_CASE("CPU Fallback: robust_stats MAD matches reference", "[gpu][fallback]")
     ShadowBuffers buf;
     buf.allocate(B, C, N);
 
-    buf.n_frames[0] = 5;
+    for (int ch = 0; ch < C; ch++) buf.n_frames[ch * B + 0] = 5;
     float vals[] = {1.0f, 2.0f, 3.0f, 4.0f, 5.0f};
     for (int fi = 0; fi < 5; fi++)
         buf.pixel_values[fi * B + 0] = vals[fi] / 10.0f;  // Normalize to [0,1]
@@ -210,166 +216,71 @@ TEST_CASE("CPU Fallback: select_pixels produces valid output", "[gpu][fallback]"
     }
 }
 
-TEST_CASE("CPU Fallback: select_pixels falls back to median when the fit "
-          "did not converge (n=1)", "[gpu][fallback]") {
-    // Reproduces the KDEFitter::fit n<3 case: dist_true_signal is left at
-    // its zeroed default and dist_converged is explicitly false. Without
-    // the fallback this silently stacks to 0.0f instead of the one
-    // available sample.
-    int B = 1, C = 1, N = 1;
+TEST_CASE("CPU Fallback: select_pixels noise falls as 1/sqrt(N) with equal weights",
+          "[gpu][fallback]") {
+    // N identical samples under the CCD model, unit weights: the propagated
+    // noise is sigma_sample / sqrt(N). Ten frames against a hundred must
+    // therefore differ by sqrt(10). This used to be asserted on a CPU copy of
+    // kernel 3 that nothing in the product called; it is asserted here on the
+    // path that runs.
+    auto run = [](int N) {
+        const int B = 1, C = 1;
+        ShadowBuffers buf;
+        buf.allocate(B, C, N);
+        for (int fi = 0; fi < N; fi++) {
+            buf.pixel_values[fi * B] = 0.5f;
+            buf.pixel_weights[fi * B] = 1.0f;
+        }
+        buf.n_frames[0] = static_cast<uint16_t>(N);
+        buf.dist_true_signal[0] = 0.5f;
+        auto fs = make_frame_stats(N);          // gain 1.5, read noise 3, keywords present
+        GPUCPUFallback::select_pixels(buf, fs.data(), B, C, N);
+        return buf.noise_sigma[0];
+    };
+    const float n10 = run(10), n100 = run(100);
+    REQUIRE(n10 > 0.0f);
+    REQUIRE(n100 < n10);
+    REQUIRE(n10 / n100 == Catch::Approx(std::sqrt(10.0f)).epsilon(0.01));
+}
+
+TEST_CASE("CPU Fallback: predicted noise uses a robust scale, not Welford",
+          "[gpu][fallback]") {
+    // Without GAIN/RDNOISE keywords the noise model falls back to an
+    // across-frame scale. Welford variance is NOT robust: one satellite trail
+    // or cosmic ray inflates it, the predicted noise rises to meet whatever
+    // the estimator produced, and the measured/predicted check goes blind.
+    //
+    // 21 samples: ten at 0.49, ten at 0.51, one outlier at 0.90.
+    //   median 0.51, MAD 0.02  -> robust sigma = 0.02 * 1.4826 = 0.0296520
+    //   predicted = sigma / sqrt(21)             = 0.0064707
+    // Welford on the same samples gives sigma 0.0878584, i.e. 0.0191723 --
+    // 3x larger, and driven entirely by the one bad sample.
+    const int B = 1, C = 1, N = 21;
     ShadowBuffers buf;
     buf.allocate(B, C, N);
 
-    buf.n_frames[0] = 1;
-    buf.pixel_values[0] = 0.42f;   // ch=0,fi=0,vi=0
-    buf.pixel_weights[0] = 1.0f;
+    for (int fi = 0; fi < N; fi++) {
+        const float v = (fi < 10) ? 0.49f : (fi < 20 ? 0.51f : 0.90f);
+        buf.pixel_values[fi * B] = v;
+        buf.pixel_weights[fi * B] = 1.0f;
+    }
+    buf.n_frames[0] = static_cast<uint16_t>(N);
+    buf.dist_true_signal[0] = 0.51f;
 
-    buf.dist_true_signal[0] = 0.0f;  // what a !converged FitResult leaves
-    buf.dist_converged[0] = 0;
+    // Welford of that sample set, computed exactly.
+    buf.welford_mean[0] = 0.5190476f;
+    buf.welford_M2[0]   = 0.1543810f;
+    buf.welford_n[0]    = static_cast<uint32_t>(N);
+    // Robust scale from kernel 2.
+    buf.mad_out[0]      = 0.02f;
 
+    // No noise keywords -> the across-frame fallback is what runs.
     auto fs = make_frame_stats(N);
-    REQUIRE(buf.low_n_fallback_count == 0);
+    for (int i = 0; i < N; i++) fs[i].has_noise_keywords = false;
 
     GPUCPUFallback::select_pixels(buf, fs.data(), B, C, N);
 
-    REQUIRE(buf.output_value[0] == Catch::Approx(0.42f));
-    REQUIRE(buf.low_n_fallback_count == 1);
-}
-
-TEST_CASE("CPU Fallback: select_pixels falls back to median when the fit "
-          "did not converge (n=2)", "[gpu][fallback]") {
-    int B = 1, C = 1, N = 2;
-    ShadowBuffers buf;
-    buf.allocate(B, C, N);
-
-    buf.n_frames[0] = 2;
-    buf.pixel_values[0 * B + 0] = 0.3f;  // fi=0
-    buf.pixel_values[1 * B + 0] = 0.7f;  // fi=1
-    buf.pixel_weights[0 * B + 0] = 1.0f;
-    buf.pixel_weights[1 * B + 0] = 1.0f;
-
-    buf.dist_true_signal[0] = 0.0f;
-    buf.dist_converged[0] = 0;
-
-    auto fs = make_frame_stats(N);
-
-    GPUCPUFallback::select_pixels(buf, fs.data(), B, C, N);
-
-    float expected_median = 0.5f * (0.3f + 0.7f);  // n even -> avg of both
-    REQUIRE(buf.output_value[0] == Catch::Approx(expected_median));
-    REQUIRE(buf.low_n_fallback_count == 1);
-}
-
-TEST_CASE("CPU Fallback: select_pixels trusts dist_true_signal when "
-          "converged (no fallback, no counter)", "[gpu][fallback]") {
-    // Control case: dist_converged defaults to 1 (true) from allocate();
-    // a converged fit's true_signal_estimate must pass through untouched
-    // and the fallback counter must stay at 0.
-    int B = 1, C = 1, N = 1;
-    ShadowBuffers buf;
-    buf.allocate(B, C, N);
-
-    buf.n_frames[0] = 1;
-    buf.pixel_values[0] = 0.42f;
-    buf.pixel_weights[0] = 1.0f;
-    buf.dist_true_signal[0] = 0.9f;  // converged fit's mode estimate
-
-    auto fs = make_frame_stats(N);
-    GPUCPUFallback::select_pixels(buf, fs.data(), B, C, N);
-
-    REQUIRE(buf.output_value[0] == Catch::Approx(0.9f));
-    REQUIRE(buf.low_n_fallback_count == 0);
-}
-
-// ══════════════════════════════════════════════════════════
-// Per-channel frame accounting (heterogeneous-geometry fix)
-// ══════════════════════════════════════════════════════════
-//
-// Models the mixed mono-L + Bayer batch at the kernel level: two channels,
-// each with a SINGLE real sample, but the two samples come from DIFFERENT
-// global frames. The per-voxel union count (n_frames[vi]) is 2. The old
-// per-voxel kernels looped fi<2 for every channel and indexed
-// frame_stats[fi] directly, which (a) walked channel 0's loop into channel
-// 1's pixel_values slot (aliasing) and (b) read the wrong frame_stats. The
-// per-channel accounting must loop only channel_n_frames[ch] and index
-// frame_stats[channel_frame_remap[ch*N+fi]].
-
-TEST_CASE("Per-channel accounting: classify_weights respects per-channel count "
-          "and frame remap (no cross-channel aliasing)", "[gpu][fallback]") {
-    int B = 1, C = 2, N = 2;
-    ShadowBuffers buf;
-    buf.allocate(B, C, N);
-
-    // Union of contributing frames across channels = 2 (liveness gate only).
-    buf.n_frames[0] = 2;
-
-    // Channel 0: 1 real sample, from GLOBAL frame 0.
-    buf.channel_n_frames[0] = 1;
-    buf.channel_frame_remap[0 * N + 0] = 0;
-    buf.pixel_values[0 * N * B + 0 * B + 0] = 0.6f;
-    buf.welford_mean[0 * B + 0] = 0.6f;
-    buf.welford_n[0 * B + 0] = 1;
-
-    // Channel 1: 1 real sample, from GLOBAL frame 1.
-    buf.channel_n_frames[1] = 1;
-    buf.channel_frame_remap[1 * N + 0] = 1;
-    buf.pixel_values[1 * N * B + 0 * B + 0] = 0.3f;
-    buf.welford_mean[1 * B + 0] = 0.3f;
-    buf.welford_n[1 * B + 0] = 1;
-
-    // Distinct per-frame stats so we can prove the remap picked the right one.
-    auto fs = make_frame_stats(N);
-    fs[0].exposure = 100.0f;
-    fs[1].exposure = 200.0f;
-    WeightConfig config;
-
-    GPUCPUFallback::classify_weights(buf, fs.data(), config, B, C, N);
-
-    // Summaries accumulate over channel 0's REAL frames only (global frame 0).
-    // Aliasing (looping fi<2) would have added fs[1].exposure too → 300.
-    REQUIRE(buf.total_exposure_out[0] == Catch::Approx(100.0f));
-
-    // Channel 1's weight must be written at its own dense position 0 (not
-    // overwritten by / aliased from channel 0's loop). weight_floor is the
-    // minimum, so a real positive weight confirms the slot was populated.
-    REQUIRE(buf.pixel_weights[1 * N * B + 0 * B + 0] >= config.weight_floor);
-    // Channel 0's padding position (fi=1) must remain untouched at 0 — the
-    // loop bound is 1, so it was never written.
-    REQUIRE(buf.pixel_weights[0 * N * B + 1 * B + 0] == 0.0f);
-}
-
-TEST_CASE("Per-channel accounting: select_pixels median fallback uses "
-          "per-channel count, not the per-voxel union", "[gpu][fallback]") {
-    int B = 1, C = 2, N = 2;
-    ShadowBuffers buf;
-    buf.allocate(B, C, N);
-
-    buf.n_frames[0] = 2;  // union
-
-    buf.channel_n_frames[0] = 1;
-    buf.channel_frame_remap[0 * N + 0] = 0;
-    buf.pixel_values[0 * N * B + 0 * B + 0] = 0.6f;   // ch0 real sample
-    buf.pixel_weights[0 * N * B + 0 * B + 0] = 1.0f;
-
-    buf.channel_n_frames[1] = 1;
-    buf.channel_frame_remap[1 * N + 0] = 1;
-    buf.pixel_values[1 * N * B + 0 * B + 0] = 0.3f;   // ch1 real sample
-    buf.pixel_weights[1 * N * B + 0 * B + 0] = 1.0f;
-
-    // Force the sparse-coverage median fallback for both channels.
-    buf.dist_true_signal[0 * B + 0] = 0.0f;
-    buf.dist_true_signal[1 * B + 0] = 0.0f;
-    buf.dist_converged[0 * B + 0] = 0;
-    buf.dist_converged[1 * B + 0] = 0;
-
-    auto fs = make_frame_stats(N);
-    GPUCPUFallback::select_pixels(buf, fs.data(), B, C, N);
-
-    // Each channel's median is over its OWN single real sample. Under the old
-    // per-voxel bound (n=2) channel 0 would median [0.6, aliased-0.3] = 0.45.
-    REQUIRE(buf.output_value[0 * B + 0] == Catch::Approx(0.6f));
-    REQUIRE(buf.output_value[1 * B + 0] == Catch::Approx(0.3f));
-    REQUIRE(buf.low_n_fallback_count == 2);
+    REQUIRE(buf.noise_sigma[0] == Catch::Approx(0.0064707f).epsilon(0.02));
 }
 
 // ══════════════════════════════════════════════════════════
@@ -419,4 +330,310 @@ TEST_CASE("CPU Fallback: spatial_context Sobel on uniform image is zero", "[gpu]
     for (int y = 1; y < H - 1; y++)
         for (int x = 1; x < W - 1; x++)
             REQUIRE(grad[y * W + x] == Catch::Approx(0.0f).margin(1e-6f));
+}
+
+// ── local_rms measures REALISED noise, and is blind to structure ──
+//
+// local_rms is the stack's own answer to "how noisy is it here", and the
+// detection-horizon work reads it as the yardstick for what a single pixel can
+// show. MAD about a local median cannot serve: on smooth structure it reports
+// the structure as noise. These pin the estimator to neighbour differences,
+// which cancel anything smooth.
+
+TEST_CASE("CPU Fallback: local_rms is blind to a smooth gradient", "[gpu][fallback]") {
+    // A noiseless linear ramp. There is nothing to measure: the true
+    // pixel-to-pixel noise is exactly zero.
+    const int W = 64, H = 64, C = 1;
+    const float slope = 0.001f;
+    std::vector<float> stacked(W * H);
+    for (int y = 0; y < H; y++)
+        for (int x = 0; x < W; x++)
+            stacked[y * W + x] = 0.2f + slope * static_cast<float>(x);
+
+    std::vector<float> grad(W * H), bg(W * H), rms(W * H);
+    GPUCPUFallback::spatial_context(stacked.data(), W, H, C,
+                                     grad.data(), bg.data(), rms.data());
+
+    // Interior only -- window clipping at the border is a separate concern.
+    for (int y = 12; y < H - 12; y++)
+        for (int x = 12; x < W - 12; x++)
+            REQUIRE(rms[y * W + x] == Catch::Approx(0.0f).margin(1e-5f));
+}
+
+TEST_CASE("CPU Fallback: local_rms recovers a known noise sigma", "[gpu][fallback]") {
+    const int W = 64, H = 64, C = 1;
+    const float sigma = 0.01f;
+    std::mt19937 rng(12345);
+    std::normal_distribution<float> gauss(0.0f, sigma);
+
+    std::vector<float> stacked(W * H);
+    for (int i = 0; i < W * H; i++) stacked[i] = 0.5f + gauss(rng);
+
+    std::vector<float> grad(W * H), bg(W * H), rms(W * H);
+    GPUCPUFallback::spatial_context(stacked.data(), W, H, C,
+                                     grad.data(), bg.data(), rms.data());
+
+    double sum = 0.0; int n = 0;
+    for (int y = 12; y < H - 12; y++)
+        for (int x = 12; x < W - 12; x++) { sum += rms[y * W + x]; n++; }
+    const double mean_rms = sum / n;
+
+    // 15% tolerance: a 15x15 window gives ~200 difference pairs, so the MAD of
+    // those differences carries real sampling scatter.
+    REQUIRE(mean_rms == Catch::Approx(sigma).epsilon(0.15));
+}
+
+TEST_CASE("CPU Fallback: local_rms equals the brute-force sorted estimator exactly",
+          "[gpu][fallback]") {
+    // The kernel takes the pooled median of |d - median| without sorting the
+    // deviations (two-pointer walks and a merge). It must equal the sorted
+    // version to the bit, on data with ties and with structure.
+    const int W = 40, H = 36, C = 1;
+    std::mt19937 rng(77);
+    std::normal_distribution<float> gauss(0.0f, 0.02f);
+    std::vector<float> stacked(W * H);
+    for (int y = 0; y < H; y++)
+        for (int x = 0; x < W; x++) {
+            float v = 0.3f + 0.002f * x + gauss(rng);
+            if ((x + y) % 7 == 0) v = 0.31f;              // ties
+            stacked[y * W + x] = v;
+        }
+    std::vector<float> grad(W * H), bg(W * H), rms(W * H);
+    GPUCPUFallback::spatial_context(stacked.data(), W, H, C,
+                                     grad.data(), bg.data(), rms.data());
+
+    auto sorted_median = [](std::vector<float> v) {
+        std::sort(v.begin(), v.end());
+        const int n = static_cast<int>(v.size());
+        return (n % 2 == 1) ? v[n / 2] : 0.5f * (v[n / 2 - 1] + v[n / 2]);
+    };
+    const int R = 7, LAG = 8;
+    for (int y = 0; y < H; y += 5)
+        for (int x = 0; x < W; x += 7) {
+            const int y0 = std::max(0, y - R), y1 = std::min(H - 1, y + R);
+            const int x0 = std::max(0, x - R), x1 = std::min(W - 1, x + R);
+            const int ww = x1 - x0 + 1, wh = y1 - y0 + 1;
+            std::vector<float> win;
+            for (int wy = y0; wy <= y1; wy++)
+                for (int wx = x0; wx <= x1; wx++) win.push_back(stacked[wy * W + wx]);
+            std::vector<float> dh, dv;
+            for (int ry = 0; ry < wh; ry++)
+                for (int rx = 0; rx + LAG < ww; rx++) dh.push_back(win[ry * ww + rx + LAG] - win[ry * ww + rx]);
+            for (int rx = 0; rx < ww; rx++)
+                for (int ry = 0; ry + LAG < wh; ry++) dv.push_back(win[(ry + LAG) * ww + rx] - win[ry * ww + rx]);
+            std::vector<float> dev;
+            if (!dh.empty()) { const float m = sorted_median(dh); for (float d : dh) dev.push_back(std::fabs(d - m)); }
+            if (!dv.empty()) { const float m = sorted_median(dv); for (float d : dv) dev.push_back(std::fabs(d - m)); }
+            const float expect = (dev.size() > 1) ? sorted_median(dev) * 1.4826f * 0.70710678f : 0.0f;
+            INFO("pixel " << x << "," << y);
+            REQUIRE(rms[y * W + x] == expect);      // exact, deliberately
+        }
+}
+
+TEST_CASE("CPU Fallback: local_rms reads the MARGINAL sigma of correlated noise",
+          "[gpu][fallback]") {
+    // A real stack's pixels are correlated: debayering and resampling both
+    // average neighbours. Here white noise of sigma s is box-averaged 3x3, so
+    // every pixel's marginal sigma is s/3 while adjacent pixels share 6 of 9
+    // source samples (rho = 2/3). A lag-1 difference estimator reads
+    // s/3 * sqrt(1 - rho) = 0.58 * s/3 -- 42% low. The predicted noise map is
+    // a marginal sigma, so the measured one must be too.
+    const int W = 96, H = 96, C = 1;
+    const float s = 0.03f;
+    std::mt19937 rng(2024);
+    std::normal_distribution<float> gauss(0.0f, s);
+    std::vector<float> white((W + 2) * (H + 2));
+    for (auto& v : white) v = gauss(rng);
+    std::vector<float> stacked(W * H);
+    for (int y = 0; y < H; y++)
+        for (int x = 0; x < W; x++) {
+            float acc = 0.0f;
+            for (int dy = 0; dy < 3; dy++)
+                for (int dx = 0; dx < 3; dx++) acc += white[(y + dy) * (W + 2) + (x + dx)];
+            stacked[y * W + x] = 0.5f + acc / 9.0f;
+        }
+    std::vector<float> grad(W * H), bg(W * H), rms(W * H);
+    GPUCPUFallback::spatial_context(stacked.data(), W, H, C,
+                                     grad.data(), bg.data(), rms.data());
+    double sum = 0.0; int n = 0;
+    for (int y = 12; y < H - 12; y++)
+        for (int x = 12; x < W - 12; x++) { sum += rms[y * W + x]; n++; }
+    const double mean_rms = sum / n;
+    REQUIRE(mean_rms == Catch::Approx(s / 3.0).epsilon(0.15));
+}
+
+TEST_CASE("CPU Fallback: local_rms is not inflated by a gradient under the noise",
+          "[gpu][fallback]") {
+    // The case that matters on real data: faint noise riding a sky gradient.
+    // The gradient must not be counted as noise.
+    const int W = 64, H = 64, C = 1;
+    const float sigma = 0.01f;
+    const float slope = 0.002f;     // 15x15 window spans 0.03 -- 3x sigma
+    std::mt19937 rng(999);
+    std::normal_distribution<float> gauss(0.0f, sigma);
+
+    std::vector<float> stacked(W * H);
+    for (int y = 0; y < H; y++)
+        for (int x = 0; x < W; x++)
+            stacked[y * W + x] = 0.2f + slope * static_cast<float>(x) + gauss(rng);
+
+    std::vector<float> grad(W * H), bg(W * H), rms(W * H);
+    GPUCPUFallback::spatial_context(stacked.data(), W, H, C,
+                                     grad.data(), bg.data(), rms.data());
+
+    double sum = 0.0; int n = 0;
+    for (int y = 12; y < H - 12; y++)
+        for (int x = 12; x < W - 12; x++) { sum += rms[y * W + x]; n++; }
+    const double mean_rms = sum / n;
+
+    REQUIRE(mean_rms == Catch::Approx(sigma).epsilon(0.15));
+}
+
+// ══════════════════════════════════════════════════════════
+// Batch-size invariance
+//
+// Phase B slices the cube into batches sized from GPU VRAM, and the shadow
+// buffers are host-side vectors of that size. Before capping the batch by
+// host RAM it has to be established that batch size is a staging choice and
+// not a numerical one -- if it moved pixel output, every E2E golden would
+// silently depend on how much VRAM the machine happened to have.
+//
+// Batch size is part of the SoA stride (ch * N * B + fi * B + vi), so this is
+// not self-evidently true from reading the indexing.
+// ══════════════════════════════════════════════════════════
+
+namespace {
+
+void fill_dist_inputs(ShadowBuffers& buf, int B, int C) {
+    for (int ch = 0; ch < C; ch++)
+        for (int vi = 0; vi < B; vi++) {
+            buf.dist_true_signal[ch * B + vi] = 0.4f + 0.001f * ((vi * 7 + ch) % 97);
+            buf.dist_uncertainty[ch * B + vi] = 0.01f + 0.0001f * ((vi * 13 + ch) % 51);
+            buf.dist_confidence[ch * B + vi]  = 0.5f + 0.004f * ((vi * 3 + ch) % 101);
+        }
+}
+
+// Copy one voxel's inputs out of `src` (batch Bs, voxel si) into `dst`
+// (batch Bd, voxel di), re-striding as it goes.
+void copy_voxel_inputs(const ShadowBuffers& src, int Bs, int si,
+                       ShadowBuffers& dst, int Bd, int di, int C, int N) {
+    for (int ch = 0; ch < C; ch++)
+        dst.n_frames[ch * Bd + di] = src.n_frames[ch * Bs + si];
+    for (int ch = 0; ch < C; ch++) {
+        dst.welford_mean[ch * Bd + di] = src.welford_mean[ch * Bs + si];
+        dst.welford_M2  [ch * Bd + di] = src.welford_M2  [ch * Bs + si];
+        dst.welford_n   [ch * Bd + di] = src.welford_n   [ch * Bs + si];
+        dst.dist_true_signal[ch * Bd + di] = src.dist_true_signal[ch * Bs + si];
+        dst.dist_uncertainty[ch * Bd + di] = src.dist_uncertainty[ch * Bs + si];
+        dst.dist_confidence [ch * Bd + di] = src.dist_confidence [ch * Bs + si];
+        for (int fi = 0; fi < N; fi++)
+            dst.pixel_values[ch * N * Bd + fi * Bd + di] =
+                src.pixel_values[ch * N * Bs + fi * Bs + si];
+    }
+}
+
+} // namespace
+
+TEST_CASE("CPU Fallback: kernel output does not depend on batch size",
+          "[gpu][fallback]") {
+    const int B = 96, C = 3, N = 12;
+    auto fs = make_frame_stats(N);
+    WeightConfig wc;
+
+    std::mt19937 rng(20260905u);
+    ShadowBuffers full;
+    full.allocate(B, C, N);
+    fill_synthetic(full, B, C, N, rng);
+    fill_dist_inputs(full, B, C);
+
+    GPUCPUFallback::classify_weights(full, fs.data(), wc, B, C, N);
+    GPUCPUFallback::robust_stats(full, B, C, N);
+    GPUCPUFallback::select_pixels(full, fs.data(), B, C, N);
+
+    for (int split : {48, 32, 7}) {
+        INFO("batch split = " << split);
+        // Re-run the identical voxels in chunks of `split` and compare.
+        for (int base = 0; base < B; base += split) {
+            const int count = std::min(split, B - base);
+
+            ShadowBuffers part;
+            part.allocate(count, C, N);
+            for (int vi = 0; vi < count; vi++)
+                copy_voxel_inputs(full, B, base + vi, part, count, vi, C, N);
+
+            GPUCPUFallback::classify_weights(part, fs.data(), wc, count, C, N);
+            GPUCPUFallback::robust_stats(part, count, C, N);
+            GPUCPUFallback::select_pixels(part, fs.data(), count, C, N);
+
+            for (int vi = 0; vi < count; vi++) {
+                const int si = base + vi;
+                INFO("voxel " << si);
+                REQUIRE(part.cloud_frame_count[vi] == full.cloud_frame_count[si]);
+                REQUIRE(part.trail_frame_count[vi] == full.trail_frame_count[si]);
+                REQUIRE(part.worst_sigma_score[vi] == full.worst_sigma_score[si]);
+                REQUIRE(part.best_sigma_score[vi]  == full.best_sigma_score[si]);
+                REQUIRE(part.mean_weight_out[vi]   == full.mean_weight_out[si]);
+                REQUIRE(part.total_exposure_out[vi]== full.total_exposure_out[si]);
+                for (int ch = 0; ch < C; ch++) {
+                    REQUIRE(part.mad_out[ch * count + vi]
+                            == full.mad_out[ch * B + si]);
+                    REQUIRE(part.biweight_midvar_out[ch * count + vi]
+                            == full.biweight_midvar_out[ch * B + si]);
+                    REQUIRE(part.iqr_out[ch * count + vi]
+                            == full.iqr_out[ch * B + si]);
+                    REQUIRE(part.output_value[ch * count + vi]
+                            == full.output_value[ch * B + si]);
+                    REQUIRE(part.noise_sigma[ch * count + vi]
+                            == full.noise_sigma[ch * B + si]);
+                    REQUIRE(part.snr_out[ch * count + vi]
+                            == full.snr_out[ch * B + si]);
+                }
+            }
+        }
+    }
+}
+
+TEST_CASE("ShadowBuffers: coverage bits use the batch's own stride, not the "
+          "allocated one", "[gpu][fallback][coverage]") {
+    // The final batch of a cube is usually PARTIAL, so the voxel stride the
+    // kernels use (count) is smaller than the stride the buffers were
+    // allocated for (batch_size). Writing the coverage bits at one stride and
+    // reading them at the other put them where nothing looked, and since the
+    // number of batches now depends on free memory, that made pixel output
+    // vary between otherwise identical runs -- but only on cubes big enough
+    // to need more than one batch, which is why the two OSC corpora moved and
+    // the single-batch mono ones did not.
+    const int alloc_B = 100, C = 2, N = 4;
+    ShadowBuffers buf;
+    buf.allocate(alloc_B, C, N);
+    // extract_from_cube sizes the plane; do the same here.
+    buf.pixel_valid.assign((static_cast<std::size_t>(C) * N * alloc_B + 7) / 8, 0);
+
+    const int count = 37;   // a partial final batch
+    REQUIRE(count < alloc_B);
+
+    // Mark a deterministic pattern using the BATCH stride.
+    auto want = [](int ch, int fi, int vi) { return ((ch * 7 + fi * 3 + vi) % 5) != 0; };
+    for (int ch = 0; ch < C; ch++)
+        for (int fi = 0; fi < N; fi++)
+            for (int vi = 0; vi < count; vi++)
+                buf.set_sample_valid(ch, fi, vi, want(ch, fi, vi), count);
+
+    // Read it back at the same stride: every bit must survive.
+    for (int ch = 0; ch < C; ch++)
+        for (int fi = 0; fi < N; fi++)
+            for (int vi = 0; vi < count; vi++) {
+                INFO("ch=" << ch << " fi=" << fi << " vi=" << vi);
+                REQUIRE(buf.sample_valid(ch, fi, vi, count) == want(ch, fi, vi));
+            }
+
+    // And reading at the ALLOCATED stride must NOT agree, which is exactly
+    // the mistake this guards: if the two ever coincide the test is vacuous.
+    int disagreements = 0;
+    for (int ch = 0; ch < C; ch++)
+        for (int fi = 0; fi < N; fi++)
+            for (int vi = 0; vi < count; vi++)
+                if (buf.sample_valid(ch, fi, vi, alloc_B) != want(ch, fi, vi))
+                    ++disagreements;
+    REQUIRE(disagreements > 0);
 }

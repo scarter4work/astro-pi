@@ -1,6 +1,6 @@
 #include "stretch_auto_selector.hpp"
+#include "nukex/io/filter_classifier.hpp"
 #include "nukex/stretch/veralux_stretch.hpp"
-#include "nukex/core/frame_metadata.hpp"
 #include <sstream>
 
 namespace nukex {
@@ -15,29 +15,23 @@ const char* champion_name(FilterClass /*cls*/) {
     return "VeraLux";
 }
 
-// Minimal FITSMetadata -> FrameMetadata bridge. FilterClassifier::classify()
-// only reads .filter and .bayer_pattern (see filter_classifier.cpp), so
-// that's all this populates -- no other FrameMetadata field is fabricated.
-FrameMetadata to_frame_metadata(const FITSMetadata& meta) {
-    FrameMetadata fm;
-    fm.filter        = meta.filter;
-    fm.bayer_pattern = meta.bayer_pat;
-    return fm;
-}
-
 } // namespace
 
-AutoSelection select_auto(const FITSMetadata& meta) {
+AutoSelection select_auto(const FrameMetadata& meta) {
     FilterClassifier classifier;
-    FilterClass cls = classifier.classify(to_frame_metadata(meta)).cls;
+    const Filter f = classifier.classify(meta);
+
     AutoSelection sel;
-    sel.op = make_champion(cls);
+    sel.op = make_champion(f.cls);
     std::ostringstream oss;
-    oss << "Auto: classified as " << filter_class_name(cls)
+    oss << "Auto: classified as " << filter_class_name(f.cls)
         << " (FITS FILTER='" << meta.filter
-        << "', BAYERPAT='" << meta.bayer_pat
-        << "', NAXIS3=" << meta.naxis3
-        << ") -> " << champion_name(cls);
+        << "', BAYERPAT='" << meta.bayer_pattern
+        << "', INSTRUME='" << meta.instrument
+        << "') -> " << champion_name(f.cls);
+    if (!classifier.last_warning().empty()) {
+        oss << " | " << classifier.last_warning();
+    }
     sel.log_line = oss.str();
     return sel;
 }

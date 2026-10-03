@@ -1,6 +1,6 @@
 #include "catch_amalgamated.hpp"
 #include "stretch_factory.hpp"
-#include "fits_metadata.hpp"
+#include "nukex/core/frame_metadata.hpp"
 #include "nukex/stretch/veralux_stretch.hpp"
 #include "nukex/stretch/ghs_stretch.hpp"
 #include "nukex/stretch/mtf_stretch.hpp"
@@ -14,7 +14,7 @@
 using namespace nukex;
 
 TEST_CASE("build_primary: Auto fills log_line", "[module][stretch_factory]") {
-    FITSMetadata meta;
+    FrameMetadata meta;
     meta.filter = "L";
     std::string log;
     auto op = build_primary(PrimaryStretch::Auto, meta, log);
@@ -23,7 +23,7 @@ TEST_CASE("build_primary: Auto fills log_line", "[module][stretch_factory]") {
 }
 
 TEST_CASE("build_primary: explicit values return empty log_line", "[module][stretch_factory]") {
-    FITSMetadata meta;
+    FrameMetadata meta;
     std::string log = "prior";
     auto op = build_primary(PrimaryStretch::GHS, meta, log);
     REQUIRE(op != nullptr);
@@ -32,7 +32,7 @@ TEST_CASE("build_primary: explicit values return empty log_line", "[module][stre
 }
 
 TEST_CASE("build_primary: all named enums produce the correct op type", "[module][stretch_factory]") {
-    FITSMetadata meta;
+    FrameMetadata meta;
     std::string log;
     REQUIRE(dynamic_cast<VeraLuxStretch*>(build_primary(PrimaryStretch::VeraLux, meta, log).get()) != nullptr);
     REQUIRE(dynamic_cast<GHSStretch*>    (build_primary(PrimaryStretch::GHS,     meta, log).get()) != nullptr);
@@ -49,7 +49,7 @@ TEST_CASE("build_finishing: None returns nullptr", "[module][stretch_factory]") 
 
 TEST_CASE("build_primary Auto: no Phase 8 context leaves op at factory defaults",
           "[module][stretch_factory][phase8]") {
-    FITSMetadata meta; meta.filter = "L";
+    FrameMetadata meta; meta.filter = "L";
     std::string log;
     auto op = build_primary(PrimaryStretch::Auto, meta, log, nullptr);
     REQUIRE(op != nullptr);
@@ -63,7 +63,7 @@ TEST_CASE("build_primary Auto: empty LayerLoader falls through to factory",
     ImageStats stats;
     Phase8Context ctx{&empty_loader, &stats};
 
-    FITSMetadata meta; meta.filter = "L";
+    FrameMetadata meta; meta.filter = "L";
     std::string log;
     auto op = build_primary(PrimaryStretch::Auto, meta, log, &ctx);
     REQUIRE(op != nullptr);
@@ -79,7 +79,7 @@ TEST_CASE("build_primary: explicit enum ignores Phase 8 context",
     ImageStats stats;
     Phase8Context ctx{&empty_loader, &stats};
 
-    FITSMetadata meta;
+    FrameMetadata meta;
     std::string log;
     auto op = build_primary(PrimaryStretch::GHS, meta, log, &ctx);
     REQUIRE(op != nullptr);

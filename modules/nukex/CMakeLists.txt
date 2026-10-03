@@ -1,5 +1,10 @@
 cmake_minimum_required(VERSION 3.24)
-project(NukeX VERSION 5.0.0 LANGUAGES CXX)
+# C is enabled for third_party/tweetnacl/tweetnacl.c (Ed25519 verification and
+# SHA-512). Without it CMake emits a compile rule with no C compiler behind
+# it, silently produces no object, and fails at the ar step. Vendored deps
+# pulled in by FetchContent (cfitsio) declare their own project() and are
+# unaffected either way.
+project(NukeX VERSION 5.2.0 LANGUAGES CXX C)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -125,9 +130,13 @@ include(${CMAKE_SOURCE_DIR}/cmake/PackageAndSign.cmake)
 
 # ═══════════════════════════════════════════════════════════════════════════
 # `make e2e` — runs tools/validate_e2e.js through PixInsight against the
-# manifest at test/fixtures/e2e_manifest.json.  The currently installed
-# NukeX-pxm.so in /opt/PixInsight/bin is what gets exercised, so make sure
-# to install the dev build first (sign + copy).
+# manifest at test/fixtures/e2e_manifest.json.
+#
+# PixInsight only loads modules from <PI>/bin, so run_e2e.sh copies the freshly
+# built module there, signs it, runs, and REMOVES it again in an EXIT trap.
+# Never install one by hand: what the user tests is what they pull from GitHub,
+# and a build left in <PI>/bin silently becomes the thing under test instead.
+# Signing needs NUKEX_SIGN_PASS or /tmp/.pi_codesign_pass.
 #
 # To refresh goldens instead of verifying:
 #     make e2e-regen
@@ -137,13 +146,15 @@ include(${CMAKE_SOURCE_DIR}/cmake/PackageAndSign.cmake)
 add_custom_target(e2e
     COMMAND env NUKEX_BUILD_DIR=${CMAKE_BINARY_DIR}
         ${CMAKE_SOURCE_DIR}/tools/run_e2e.sh
-    COMMENT "Running E2E validation harness against installed NukeX module"
+    DEPENDS NukeX-pxm
+    COMMENT "Running E2E validation harness (module is borrowed and removed)"
     VERBATIM
 )
 
 add_custom_target(e2e-regen
     COMMAND env NUKEX_BUILD_DIR=${CMAKE_BINARY_DIR}
         ${CMAKE_SOURCE_DIR}/tools/run_e2e.sh regen
-    COMMENT "Regenerating E2E golden fingerprints from current binary"
+    DEPENDS NukeX-pxm
+    COMMENT "Regenerating E2E goldens (module is borrowed and removed)"
     VERBATIM
 )

@@ -1,4 +1,5 @@
 #include "nukex/io/fits_reader.hpp"
+#include <cctype>
 #include <fitsio.h>
 #include <cstring>
 #include <cmath>
@@ -59,12 +60,39 @@ FrameMetadata FITSReader::extract_metadata(void* fptr) {
     m.exposure = read_float_key(f, "EXPTIME", 0.0f);
     if (m.exposure == 0.0f) m.exposure = read_float_key(f, "EXPOSURE", 0.0f);
 
-    // Gain — try EGAIN first (e-/ADU), then GAIN
+    // Gain — EGAIN is electronic gain in e-/ADU by convention. GAIN usually
+    // is NOT: on ZWO and QHY cameras it is the gain MENU INDEX (0-500), so
+    // reading it as e-/ADU puts a number like 200 into the Poisson term and
+    // understates shot noise by orders of magnitude. Older CCD software does
+    // write GAIN in e-/ADU, so it is still accepted when the value is one a
+    // real detector could have; above that ceiling it is an index, and the
+    // honest answer is that the gain is unknown -- which leaves
+    // has_noise_keywords false and sends Phase B to the across-frame scale.
+    constexpr float MAX_PLAUSIBLE_EGAIN = 25.0f;   // e-/ADU
+    // Camera identity settles what GAIN means. ZWO (ASI) and QHY firmware
+    // write the gain MENU INDEX, and a low index (0-25) is a legitimate
+    // setting on those cameras that the plausibility ceiling alone would
+    // accept as e-/ADU -- a 10x error in the Poisson term.
+    m.instrument = read_string_key(f, "INSTRUME");
+    std::string inst_upper = m.instrument;
+    for (auto& c : inst_upper) c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
+    const bool gain_is_menu_index =
+        inst_upper.find("ZWO") != std::string::npos ||
+        inst_upper.find("ASI") != std::string::npos ||
+        inst_upper.find("QHY") != std::string::npos;
+    bool gain_known = false;
     float egain = read_float_key(f, "EGAIN", -1.0f);
     if (egain > 0.0f) {
         m.gain = egain;
+        gain_known = true;
     } else {
-        m.gain = read_float_key(f, "GAIN", 1.0f);
+        const float g = read_float_key(f, "GAIN", -1.0f);
+        if (!gain_is_menu_index && g > 0.0f && g <= MAX_PLAUSIBLE_EGAIN) {
+            m.gain = g;
+            gain_known = true;
+        } else {
+            m.gain = 1.0f;      // unknown; unused while has_noise_keywords is false
+        }
     }
 
     // Read noise — try multiple keywords
@@ -73,7 +101,7 @@ FrameMetadata FITSReader::extract_metadata(void* fptr) {
     if (rdnoise < 0.0f) rdnoise = read_float_key(f, "NOISE", -1.0f);
     if (rdnoise > 0.0f) {
         m.read_noise = rdnoise;
-        m.has_noise_keywords = (m.gain > 0.0f);
+        m.has_noise_keywords = gain_known;
     }
 
     // Temperature
@@ -99,7 +127,6 @@ FrameMetadata FITSReader::extract_metadata(void* fptr) {
 
     // Strings
     m.filter        = read_string_key(f, "FILTER");
-    m.instrument    = read_string_key(f, "INSTRUME");
     m.bayer_pattern = read_string_key(f, "BAYERPAT");
     m.date_obs      = read_string_key(f, "DATE-OBS");
 

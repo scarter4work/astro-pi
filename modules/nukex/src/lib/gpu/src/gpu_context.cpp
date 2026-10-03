@@ -1,16 +1,15 @@
 #include "nukex/gpu/gpu_context.hpp"
 
+#include <fstream>
+#include <limits>
+#include <string>
+
 #if NUKEX_HAS_OPENCL
 #include <CL/cl.h>
 #endif
 
 #include <algorithm>
-#include <cstdint>
-#include <cstdio>
 #include <cstring>
-#include <climits>
-#include <fstream>
-#include <string>
 
 namespace nukex {
 
@@ -209,37 +208,34 @@ GPUContext& GPUContext::operator=(GPUContext&& other) noexcept {
 
 #endif // NUKEX_HAS_OPENCL
 
-namespace {
-
-// Currently-available system RAM in bytes (Linux). MemAvailable already
-// accounts for reclaimable page cache, so it is the honest "how much can we
-// allocate right now" figure. Returns 0 if it can't be read, letting the
-// caller fall back to a conservative constant.
-size_t available_host_bytes() {
-    std::ifstream f("/proc/meminfo");
-    std::string line;
-    while (std::getline(f, line)) {
-        // Format: "MemAvailable:   12345678 kB"
-        if (line.rfind("MemAvailable:", 0) == 0) {
+std::size_t GPUContext::host_available_bytes() {
+#if defined(__linux__)
+    // MemAvailable is the kernel's own estimate of what a new allocation can
+    // get without swapping -- the right question here. MemFree is not: it
+    // excludes reclaimable page cache and would understate wildly.
+    std::ifstream mi("/proc/meminfo");
+    std::string key;
+    while (mi >> key) {
+        if (key == "MemAvailable:") {
             unsigned long long kb = 0;
-            if (std::sscanf(line.c_str(), "MemAvailable: %llu kB", &kb) == 1)
-                return static_cast<size_t>(kb) * 1024;
+            if (mi >> kb) return static_cast<std::size_t>(kb) * 1024ULL;
+            break;
         }
+        mi.ignore(std::numeric_limits<std::streamsize>::max(), '\n');
     }
-    return 0;
+#endif
+    return 0;   // unknown: callers fall back to the VRAM-only figure
 }
 
-} // namespace
-
-int GPUContext::batch_size_for_budgets(int n_frames, int n_channels,
-                                       size_t gpu_budget_bytes,
-                                       size_t host_budget_bytes) {
-    // Memory per voxel in the shadow buffers (mirrored host + device):
+int GPUContext::estimate_batch_size(int n_frames, int n_channels) const {
+    // Memory per voxel in the shadow buffers:
     // welford: 3 floats * n_channels
     // pixel_values: n_frames * n_channels
     // pixel_weights: n_frames * n_channels (intermediate)
     // classification output: 6 floats + 2 shorts
-    // robust + distribution + selection output: 9 * n_channels floats
+    // robust stats: 3 * n_channels
+    // distribution input: 3 * n_channels + n_channels bytes
+    // selection output: 3 * n_channels
     // Bookkeeping: 32 bytes padding
     size_t per_voxel =
         sizeof(float) * n_channels * 3                    // welford
@@ -247,34 +243,47 @@ int GPUContext::batch_size_for_budgets(int n_frames, int n_channels,
       + sizeof(float) * n_channels * n_frames             // pixel_weights
       + sizeof(float) * 6 + sizeof(uint16_t) * 2          // classification
       + sizeof(float) * n_channels * 9                    // robust + dist + output
+      + (static_cast<size_t>(n_channels) * n_frames + 7) / 8  // coverage bits
       + 32;                                               // padding
-    if (per_voxel == 0) per_voxel = 1;
 
-    // The batch must fit BOTH in device memory and in host RAM, so bound by
-    // the smaller of the two budgets.
-    size_t budget = std::min(gpu_budget_bytes, host_budget_bytes);
-    size_t batch = budget / per_voxel;
-    if (batch < 1) batch = 1;
-    if (batch > static_cast<size_t>(INT_MAX)) batch = static_cast<size_t>(INT_MAX);
-    return static_cast<int>(batch);
-}
+    size_t available;
+    if (backend_ == GPUBackend::OPENCL && device_info_.global_mem_bytes > 0) {
+        available = device_info_.global_mem_bytes * 85 / 100;  // 85% utilization
+    } else {
+        // CPU fallback: use 2 GB as a reasonable working set
+        available = 2ULL * 1024 * 1024 * 1024;
+    }
 
-int GPUContext::estimate_batch_size(int n_frames, int n_channels) const {
-    // Device (VRAM) budget — only constrains when running on the GPU.
-    size_t gpu_budget = SIZE_MAX;
-    if (backend_ == GPUBackend::OPENCL && device_info_.global_mem_bytes > 0)
-        gpu_budget = static_cast<size_t>(device_info_.global_mem_bytes) * 85 / 100;
+    // Cap by host RAM as well. ShadowBuffers::allocate sizes its vectors to
+    // this same batch on the HOST, so a batch that fits in VRAM can still be
+    // one the machine cannot hold beside the cube it is reading from.
+    std::size_t host_budget = host_budget_;
+    if (host_budget == 0) {
+        const std::size_t avail = host_available_bytes();
+        // Half of what is available, but never more than the ceiling.
+        //
+        // The fraction alone is not safe. MemAvailable counts reclaimable page
+        // cache, and the frame cache fills page cache by design, so it
+        // overstates what an anonymous allocation can actually get. Measured
+        // on a 30 GB box during a 156-frame run: this returned a 13.2 GB
+        // staging batch, PixInsight reached 13.5 GB RSS beside a 4.67 GB cube,
+        // the machine went 3.9 GB into swap, and Phase A's per-frame cost
+        // degraded from 3.85 s to 13.4 s. Roughly half of an 18-minute phase
+        // was spent swapping.
+        //
+        // Batch size is a staging choice, not a numerical one -- proven
+        // bit-exact across batch splits in test_gpu_cpu_fallback -- so a
+        // smaller batch buys more kernel launches and costs nothing else. At
+        // 2 GiB a 156-frame, 4-channel run still stages ~400k voxels at a
+        // time, which is ~21 batches for a 24 MP frame.
+        constexpr std::size_t kMaxHostStagingBytes = 2ull * 1024 * 1024 * 1024;
+        if (avail > 0) host_budget = std::min(avail / 2, kMaxHostStagingBytes);
+        else           host_budget = kMaxHostStagingBytes;
+    }
+    if (host_budget > 0 && host_budget < available) available = host_budget;
 
-    // Host (system RAM) budget — the shadow buffers live in host RAM too, and
-    // PixInsight is already holding the loaded frames + the output cube. Keep
-    // only half of what is free right now as headroom for that growth and the
-    // GPU host-staging copies, so Phase B can never OOM-kill the process (the
-    // failure that a VRAM-only estimate caused on a 16 GB GPU / 30 GB host).
-    size_t host_avail = available_host_bytes();
-    size_t host_budget = host_avail ? host_avail / 2
-                                    : 2ULL * 1024 * 1024 * 1024;  // fallback working set
-
-    return batch_size_for_budgets(n_frames, n_channels, gpu_budget, host_budget);
+    int batch = static_cast<int>(available / per_voxel);
+    return std::max(batch, 1);
 }
 
 } // namespace nukex

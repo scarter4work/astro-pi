@@ -9,11 +9,12 @@
 
 using namespace nukex;
 
-TEST_CASE("VeraLux: param_bounds covers log_D / protect_b / convergence_power",
+TEST_CASE("VeraLux: param_bounds covers SP / log_D / protect_b / convergence_power",
           "[stretch][param_bounds]") {
     VeraLuxStretch op;
     auto b = op.param_bounds();
-    REQUIRE(b.size() == 3);
+    REQUIRE(b.size() == 4);
+    REQUIRE(b.at("SP").first  == 0.0f);
     REQUIRE(b.at("log_D").first  == 0.0f);
     REQUIRE(b.at("log_D").second == 7.0f);
     REQUIRE(b.at("protect_b").first == 0.1f);

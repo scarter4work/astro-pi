@@ -1,7 +1,7 @@
 #ifndef __NukeX_stretch_factory_h
 #define __NukeX_stretch_factory_h
 
-#include "fits_metadata.hpp"
+#include "nukex/core/frame_metadata.hpp"
 #include "nukex/stretch/stretch_op.hpp"
 #include "nukex/stretch/image_stats.hpp"
 #include "nukex/stretch/layer_loader.hpp"
@@ -30,7 +30,7 @@ struct Phase8Context {
 };
 
 std::unique_ptr<StretchOp> build_primary(PrimaryStretch e,
-                                         const FITSMetadata& meta,
+                                         const FrameMetadata& meta,
                                          std::string& out_log_line,
                                          const Phase8Context* p8 = nullptr);
 

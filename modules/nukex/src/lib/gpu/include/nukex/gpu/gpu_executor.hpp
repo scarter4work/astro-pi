@@ -1,6 +1,7 @@
 #pragma once
 
 #include "nukex/gpu/gpu_config.hpp"
+#include "nukex/core/luminance_spec.hpp"
 #include "nukex/gpu/gpu_context.hpp"
 #include "nukex/gpu/gpu_kernels.hpp"
 #include "nukex/gpu/gpu_shadow_buffers.hpp"
@@ -43,24 +44,27 @@ public:
     /// Run the full Phase B pipeline on the cube.
     /// fitting_fn: called per-voxel to run distribution fitting (Ceres).
     ///   signature: void(SubcubeVoxel& voxel, const float* values,
-    ///                    const float* weights, int stride_N, int n_channels,
-    ///                    const uint16_t* n_frames_per_channel,
-    ///                    const FrameStats* frame_stats)
+    ///                    const float* weights, int stride, int n_channels,
+    ///                    const FrameStats* frame_stats,
+    ///                    const int* n_frames_per_channel)
     ///
-    /// values/weights are laid out [ch * stride_N + fi]. Only the first
-    /// n_frames_per_channel[ch] positions of each channel are REAL samples
-    /// (a heterogeneous-geometry channel may have fewer real frames than the
-    /// stride N); positions beyond that are zero-padding and MUST NOT be fed
-    /// to the fitter. The callback iterates channels and passes each
-    /// channel's own real-sample count to the model selector.
+    /// `stride` is the row length of `values`/`weights` (the batch's widest
+    /// frame set); `n_frames_per_channel[ch]` is how many of those entries
+    /// are real for that channel. They differ whenever two slots read
+    /// different caches -- an LRGB-mono batch with L24 R12 G12 B24 being the
+    /// motivating case. Fitting `stride` entries for a short channel would
+    /// average its samples against zero padding.
     using FittingFn = std::function<void(SubcubeVoxel&, const float*, const float*,
-                                          int, int, const uint16_t*, const FrameStats*)>;
+                                          int, int, const FrameStats*,
+                                          const int*)>;
 
-    /// Returns the number of voxel-channels that fell back to the median
-    /// of raw per-frame samples because the Phase B distribution fit did
-    /// not converge (sparse coverage, <3 contributing frames) — see
-    /// ShadowBuffers::low_n_fallback_count. 0 when every fit converged.
-    std::int64_t execute_phase_b(
+    /// Location of one channel's samples, for a half-stack: called on the
+    /// even-indexed and on the odd-indexed samples of every voxel so the two
+    /// halves can be differenced afterwards. Anything common to both -- a
+    /// fixed pattern -- cancels in the difference; what does not is noise.
+    using HalfStackFn = std::function<float(const float* values, const float* weights, int n)>;
+
+    void execute_phase_b(
         Cube& cube,
         const std::vector<ChannelCacheRef>& slot_refs,
         int n_frames_written,
@@ -69,47 +73,40 @@ public:
         FittingFn fitting_fn,
         Image& stacked_output,
         Image& noise_output,
-        ProgressObserver* progress = nullptr);
+        ProgressObserver* progress = nullptr,
+        HalfStackFn half_fn = nullptr,
+        Image* half_even = nullptr,
+        Image* half_odd = nullptr);
 
     /// Run spatial context on the stacked output.
     void execute_spatial_context(
         const Image& stacked,
         Cube& cube,
-        ProgressObserver* progress = nullptr);
+        ProgressObserver* progress = nullptr,
+        LuminanceSpec luminance = LuminanceSpec{});
 
     GPUBackend active_backend() const { return context_.backend(); }
     const GPUDeviceInfo& device_info() const { return context_.device_info(); }
 
     /// Execute kernels 1+2 on a shadow buffer batch.
     /// Public for GPU vs CPU agreement testing.
-    ///
-    /// n_frames is the per-channel dense stride N (= max real-sample count
-    /// across channels). n_frames_total is the GLOBAL frame count (=
-    /// frame_stats.size()): the per-frame constant arrays (frame_weight,
-    /// psf_weight, cloud_score, frame_exposure, …) are SHARED across channels
-    /// and indexed by the GLOBAL frame index gf = channel_frame_remap[ch*N+fi],
-    /// which for a heterogeneous-geometry batch can exceed N. They must be
-    /// sized by the global count, not N, or the kernel reads out of bounds.
     void execute_batch_gpu(ShadowBuffers& buf, const FrameStats* fs,
                            const WeightConfig& wc, int batch_size,
-                           int n_channels, int n_frames, int n_frames_total);
+                           int n_channels, int n_frames);
 
     void execute_batch_cpu(ShadowBuffers& buf, const FrameStats* fs,
                            const WeightConfig& wc, int batch_size,
                            int n_channels, int n_frames);
 
     /// Execute kernel 3 (select_pixels) on GPU for a batch.
-    /// See execute_batch_gpu for the n_frames (stride N) vs n_frames_total
-    /// (global count, for sizing the gf-indexed per-frame noise arrays)
-    /// distinction.
     void execute_select_gpu(ShadowBuffers& buf, const FrameStats* fs,
-                            int batch_size, int n_channels, int n_frames,
-                            int n_frames_total);
+                            int batch_size, int n_channels, int n_frames);
 
     /// Execute kernel 4 (spatial_context) on GPU.
     void execute_spatial_gpu(const Image& stacked,
                               float* gradient_mag, float* local_background,
-                              float* local_rms);
+                              float* local_rms,
+        LuminanceSpec luminance = LuminanceSpec{});
 
 private:
     GPUContext   context_;
