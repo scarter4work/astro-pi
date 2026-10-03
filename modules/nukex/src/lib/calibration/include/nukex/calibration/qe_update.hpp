@@ -11,6 +11,23 @@ struct FetchResult {
     std::string error;
 };
 
+// What one HTTP(S) GET produced, before any of it is trusted as a fetch.
+struct TransferOutcome {
+    bool        performed_ok  = false;   // the transfer ran to completion
+    bool        aborted       = false;   // a handler stopped it
+    bool        overflow      = false;   // stopped for exceeding the size cap
+    int         response_code = 0;       // HTTP status; 0 = none retrieved
+    std::string body;
+    std::string error;                   // transport's own description, if any
+};
+
+// Only a completed transfer with a 2xx status is a fetched body. Anything
+// else -- a 404 or 5xx error page included -- is a failed fetch, which the
+// updater reports as OFFLINE. Handing an error page to signature
+// verification instead would turn a missing file into a "possible
+// tampering" warning.
+FetchResult fetch_result_from_transfer(const TransferOutcome& t);
+
 // Injected, so nukex4_calibration never links PCL and no test touches the
 // network. The module supplies a NetworkTransfer-backed implementation.
 class Fetcher {

@@ -391,3 +391,61 @@ TEST_CASE("the published set is exactly what the updater fetches, and installs",
         want.push_back(std::string(kQEUpdateBaseURL) + "/" + name);
     REQUIRE(f.requested == want);
 }
+
+// ------------------------------------------------ HTTP status of a transfer
+
+// A transfer that completes is not a fetch that succeeded: raw.githubusercontent
+// answers a missing file with a completed transfer, status 404 and a short
+// text body. Treated as a body, that page reached signature verification and
+// surfaced as "update REJECTED -- possible tampering".
+
+TEST_CASE("transfer: a completed 2xx transfer is the fetched body", "[qe_update][http]") {
+    TransferOutcome t;
+    t.performed_ok = true; t.response_code = 200; t.body = "payload";
+    const FetchResult r = fetch_result_from_transfer(t);
+    REQUIRE(r.ok);
+    REQUIRE(r.body == "payload");
+}
+
+TEST_CASE("transfer: an HTTP error status is a failed fetch, never a body", "[qe_update][http]") {
+    for (int code : {404, 403, 500, 503, 301}) {
+        TransferOutcome t;
+        t.performed_ok = true; t.response_code = code; t.body = "404: Not Found";
+        INFO("HTTP " << code);
+        const FetchResult r = fetch_result_from_transfer(t);
+        REQUIRE_FALSE(r.ok);
+        REQUIRE(r.body.empty());
+        REQUIRE(r.error.find(std::to_string(code)) != std::string::npos);
+    }
+}
+
+TEST_CASE("transfer: no status at all is a failed fetch", "[qe_update][http]") {
+    TransferOutcome t;
+    t.performed_ok = true; t.response_code = 0; t.body = "something";
+    REQUIRE_FALSE(fetch_result_from_transfer(t).ok);
+}
+
+TEST_CASE("updater: a 404 for the manifest signature is OFFLINE, not tampering", "[qe_update][http]") {
+    // A fetcher shaped like the module's: every response passes through
+    // fetch_result_from_transfer with the status the server sent.
+    class HttpFetcher : public Fetcher {
+    public:
+        std::map<std::string, std::pair<int, std::string>> served;
+        FetchResult get(const std::string& url) override {
+            TransferOutcome t;
+            t.performed_ok = true;
+            auto it = served.find(url);
+            if (it == served.end()) { t.response_code = 404; t.body = "404: Not Found"; }
+            else { t.response_code = it->second.first; t.body = it->second.second; }
+            return fetch_result_from_transfer(t);
+        }
+    } f;
+    auto pub = unhex(kTestPubHex);
+    f.served[std::string(kBase) + "/qe_manifest.json"] = { 200, kManifestV14 };
+    // qe_manifest.json.sig not published: the server answers 404.
+
+    QEUpdater up(f, kBase, pub.data());
+    const CheckResult r = up.check(13);
+    INFO(to_string(r.outcome) << " / " << r.detail);
+    REQUIRE(r.outcome == UpdateOutcome::OFFLINE);
+}
