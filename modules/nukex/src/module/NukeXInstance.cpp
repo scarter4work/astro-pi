@@ -14,6 +14,7 @@
 #include "nukex/io/filter_alias.hpp"
 #include "nukex/io/filter_classifier.hpp"
 #include "nukex/calibration/qe_update_state.hpp"
+#include "nukex/calibration/qe_database.hpp"
 #include <filesystem>
 #include <pcl/ImageWindow.h>
 #include <pcl/View.h>
@@ -185,16 +186,30 @@ static std::string QEUpdateStatePath()
    return QEUserDataRoot() + "/qe_update_state.json";
 }
 
-// Precedence: a downloaded database beats the shipped one, which is compiled
-// into the module binary. The shipped copy cannot be modified or removed, so
-// deleting a single file always restores the as-installed behaviour. The user's qe_overrides.json still layers on
-// top of whichever wins here -- the engine applies that separately.
-static bool UsingDownloadedQEDatabase()
+// Precedence: a downloaded database is used only while it is newer than the
+// one compiled into the module (nukex::active_qe_database). The built-in copy
+// cannot be modified or removed, so deleting a single file always restores the
+// as-installed behaviour, and a module update that ships a newer database is
+// never shadowed by an older download. The user's qe_overrides.json still
+// layers on top of whichever wins here -- the engine applies that separately.
+static bool DownloadedQEDatabasePresent()
 {
    std::error_code ec;
    const bool present = std::filesystem::exists(
        QEUserDataRoot() + "/qe_database.json", ec );
    return present && !ec;
+}
+
+static nukex::ActiveQEDatabase CurrentQEDatabase()
+{
+   return nukex::active_qe_database( nukex::load_update_state( QEUpdateStatePath() ),
+                                     DownloadedQEDatabasePresent(),
+                                     nukex::embedded_qe_database_version() );
+}
+
+static bool UsingDownloadedQEDatabase()
+{
+   return CurrentQEDatabase().use_downloaded;
 }
 
 static std::string ResolveQEDatabasePath()
@@ -205,15 +220,14 @@ static std::string ResolveQEDatabasePath()
 }
 
 // The version of the database actually loaded, which is not the same thing
-// as the version last installed: delete the downloaded file and the shipped
-// one takes over. A provenance keyword that names a version we did not use
-// is worse than none at all, since explaining a changed result is its only
-// job. 0 means "the database that shipped with this module".
+// as the version last installed: delete the downloaded file, or update to a
+// module that carries a newer one, and the built-in database takes over. A
+// provenance keyword that names a version we did not use is worse than none
+// at all, since explaining a changed result is its only job. 0 means a
+// built-in database that was never published (a development build).
 static int ActiveQEDatabaseVersion()
 {
-   if ( !UsingDownloadedQEDatabase() )
-      return 0;
-   return nukex::load_update_state( QEUpdateStatePath() ).installed_db_version;
+   return CurrentQEDatabase().version;
 }
 
 } // anonymous namespace

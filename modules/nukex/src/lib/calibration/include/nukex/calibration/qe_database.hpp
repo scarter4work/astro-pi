@@ -41,14 +41,20 @@ struct LoadResult {
 // qe_database_embedded.cpp -- see embed_qe_database.cmake.
 std::string embedded_qe_database_json();
 
+// The db_version the embedded database was published as (the signed
+// repository/qe_manifest.json whose db_sha512 matches it), so the updater
+// never offers the database the module already carries. 0 when the
+// embedded bytes match no publication (an unreleased local edit).
+int embedded_qe_database_version();
+
 class QEDatabase {
 public:
     QEDatabase() = default;
 
     // Parse the compiled-in database. This is the shipped baseline: no file,
     // no path lookup, no working-directory assumption -- it cannot be "not
-    // found". A database downloaded by the updater is loaded with
-    // load_shipped(path) instead and takes precedence over this one.
+    // found". A newer database downloaded by the updater is loaded with
+    // load_shipped(path) instead (see active_qe_database()).
     LoadResult load_embedded();
     // Parse a database from a file on disk (downloaded update, tests).
     LoadResult load_shipped(const std::string& path);

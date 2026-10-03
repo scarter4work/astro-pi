@@ -1,10 +1,30 @@
 # Embeds a file as a C++ byte array so the QE database ships INSIDE the module
 # binary — no loose file, no runtime path lookup, no CWD dependency.
 #
-# Invoked at build time via:  cmake -DQE_JSON_IN=<in> -DQE_CPP_OUT=<out> -P embed_qe_database.cmake
+# Invoked at build time via:
+#   cmake -DQE_JSON_IN=<in> -DQE_MANIFEST_IN=<manifest> -DQE_CPP_OUT=<out> -P embed_qe_database.cmake
 #
 # HEX embedding (not a raw string literal) is deliberate: it cannot be broken by
 # any byte sequence in the JSON (e.g. a stray )json" delimiter, NULs, or non-UTF8).
+# The version is the db_version of the signed publication whose db_sha512
+# matches these exact bytes (repository/qe_manifest.json). A database edited
+# since its last publication matches none and embeds as 0 -- harmless in a
+# dev build, and root release.sh refuses to ship that state.
+set(_qe_version 0)
+if(EXISTS "${QE_MANIFEST_IN}")
+    file(SHA512 "${QE_JSON_IN}" _sha)
+    file(READ "${QE_MANIFEST_IN}" _manifest)
+    string(JSON _published_sha GET "${_manifest}" db_sha512)
+    string(TOLOWER "${_published_sha}" _published_sha)
+    if(_published_sha STREQUAL _sha)
+        string(JSON _qe_version GET "${_manifest}" db_version)
+    else()
+        message(WARNING "share/qe_database.json differs from the published "
+                        "repository/qe_manifest.json; embedding it as version 0 "
+                        "(unreleased). Publish it with tools/sign_qe_database.py.")
+    endif()
+endif()
+
 file(READ "${QE_JSON_IN}" _hex HEX)
 string(LENGTH "${_hex}" _hexlen)
 math(EXPR _n "${_hexlen} / 2")
@@ -24,6 +44,10 @@ static const unsigned char kEmbeddedQeDbBytes[] = { ${_bytes} };
 
 std::string embedded_qe_database_json() {
     return std::string(reinterpret_cast<const char*>(kEmbeddedQeDbBytes), ${_n});
+}
+
+int embedded_qe_database_version() {
+    return ${_qe_version};
 }
 
 } // namespace nukex

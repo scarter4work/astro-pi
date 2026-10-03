@@ -6,6 +6,9 @@
 // loader -- and proves the copy compiled into the module is that same file.
 #include "catch_amalgamated.hpp"
 #include "nukex/calibration/qe_database.hpp"
+#include "nukex/calibration/ed25519_verify.hpp"
+
+#include <nlohmann/json.hpp>
 
 #include <filesystem>
 #include <fstream>
@@ -123,4 +126,23 @@ TEST_CASE("QEDatabase: embedded DB carries the classifier's dual-NB filter class
     REQUIRE(s2o3.lines[0].wavelength_nm == Catch::Approx(672.4));
     REQUIRE(s2o3.lines[1].name == "OIII");
     REQUIRE(s2o3.lines[1].wavelength_nm == Catch::Approx(500.7));
+}
+
+// The embedded database must carry the version it was published as, and be
+// byte-for-byte the database that publication describes -- otherwise the
+// updater either re-offers what the user has or skips a real update.
+TEST_CASE("QEDatabase: embedded DB version is the version it was published as",
+          "[qe_database][embedded][version]") {
+    std::ifstream f((fs::path(NUKEX_REPOSITORY_DIR) / "qe_manifest.json").string(),
+                    std::ios::binary);
+    REQUIRE(f.is_open());
+    std::stringstream ss;
+    ss << f.rdbuf();
+    const auto manifest = nlohmann::json::parse(ss.str());
+
+    const std::string db = embedded_qe_database_json();
+    REQUIRE(sha512_hex(reinterpret_cast<const unsigned char*>(db.data()), db.size())
+            == manifest.at("db_sha512").get<std::string>());
+    REQUIRE(embedded_qe_database_version() == manifest.at("db_version").get<int>());
+    REQUIRE(embedded_qe_database_version() > 0);
 }

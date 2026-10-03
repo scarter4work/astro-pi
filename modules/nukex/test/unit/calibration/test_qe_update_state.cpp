@@ -86,3 +86,48 @@ TEST_CASE("update state: a clock that moved backwards does not wedge checking", 
     s.last_check_unix = 2000000000;
     REQUIRE(should_check_now(s, 1000000000));
 }
+
+// ── Which database is in effect ──
+// The module carries a database of its own (compiled in). Counting it as
+// version 0 meant the updater offered users the very database they already
+// had, and a stale download kept overriding a newer built-in one.
+
+TEST_CASE("active database: a fresh install runs the embedded one at its published version",
+          "[qe_update_state][active]") {
+    const QEUpdateState s;   // nothing downloaded, nothing recorded
+    const ActiveQEDatabase a = active_qe_database(s, false, 2);
+    REQUIRE_FALSE(a.use_downloaded);
+    REQUIRE(a.version == 2);
+}
+
+TEST_CASE("active database: a newer download wins over the embedded one",
+          "[qe_update_state][active]") {
+    QEUpdateState s;
+    s.installed_db_version = 3;
+    const ActiveQEDatabase a = active_qe_database(s, true, 2);
+    REQUIRE(a.use_downloaded);
+    REQUIRE(a.version == 3);
+}
+
+TEST_CASE("active database: a download no newer than the embedded one is ignored",
+          "[qe_update_state][active]") {
+    // A module update that ships v3 must not be shadowed by the v2 the user
+    // downloaded under the previous module -- nor by a same-version copy.
+    for (int downloaded : {2, 3}) {
+        QEUpdateState s;
+        s.installed_db_version = downloaded;
+        INFO("downloaded v" << downloaded << ", embedded v3");
+        const ActiveQEDatabase a = active_qe_database(s, true, 3);
+        REQUIRE_FALSE(a.use_downloaded);
+        REQUIRE(a.version == 3);
+    }
+}
+
+TEST_CASE("active database: a recorded install whose file is gone falls back to the embedded one",
+          "[qe_update_state][active]") {
+    QEUpdateState s;
+    s.installed_db_version = 5;   // the user deleted the downloaded file
+    const ActiveQEDatabase a = active_qe_database(s, false, 2);
+    REQUIRE_FALSE(a.use_downloaded);
+    REQUIRE(a.version == 2);
+}
