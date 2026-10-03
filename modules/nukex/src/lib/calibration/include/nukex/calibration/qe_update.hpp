@@ -34,6 +34,20 @@ enum class UpdateOutcome {
 
 const char* to_string(UpdateOutcome o);
 
+// Where the module fetches camera-database updates: published alongside the
+// PixInsight repository by root release.sh, which checks this exact string
+// against the URL it publishes to. HTTPS only; QEFetcher forces TLS with peer
+// and host verification, and every payload carries its own Ed25519 signature.
+inline constexpr const char* kQEUpdateBaseURL =
+    "https://raw.githubusercontent.com/scarter4work/astro-pi/main/repository";
+
+// The files the updater fetches from kQEUpdateBaseURL, in the order check()
+// and install() request them. release.sh publishes exactly this set.
+inline constexpr const char* kQEPublishedFiles[] = {
+    "qe_manifest.json", "qe_manifest.json.sig",
+    "qe_database.json", "qe_database.json.sig",
+};
+
 // The shipped signing public key (kEd25519PublicKeyBytes bytes). Published
 // data is signed with the matching private key, which lives outside this
 // repository beside the .xssk keys and is never committed.

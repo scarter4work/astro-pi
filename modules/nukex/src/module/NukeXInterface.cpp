@@ -681,12 +681,6 @@ void NukeXInterface::e_SuppressRating( Button& /*sender*/, bool checked )
 namespace
 {
 
-// Published alongside the PixInsight repository. HTTPS only; QEFetcher
-// forces TLS with peer and host verification, and the payload carries its
-// own Ed25519 signature besides.
-const char* kQEUpdateBaseURL =
-   "https://raw.githubusercontent.com/scarter4work/astro-pi/main/repository";
-
 std::string QEUserDataDir()
 {
    const char* home = std::getenv( "HOME" );
@@ -752,7 +746,7 @@ void NukeXInterface::CheckForDatabaseUpdate( bool user_initiated )
       return;
 
    QEFetcher fetcher;
-   nukex::QEUpdater updater( fetcher, kQEUpdateBaseURL,
+   nukex::QEUpdater updater( fetcher, nukex::kQEUpdateBaseURL,
                              nukex::qe_signing_public_key() );
 
    // Compare against the database actually in effect -- the built-in one

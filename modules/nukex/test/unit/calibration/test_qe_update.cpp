@@ -4,6 +4,7 @@
 #include "nukex/calibration/qe_database.hpp"
 #include "nukex/calibration/qe_update_state.hpp"
 
+#include <cstdlib>
 #include <map>
 #include <string>
 #include <vector>
@@ -274,8 +275,18 @@ static std::string slurp_or_empty(const std::string& p) {
                         std::istreambuf_iterator<char>());
 }
 
-TEST_CASE("published artifacts verify against the shipped signing key", "[qe_update]") {
-    const std::string dir = NUKEX_REPOSITORY_DIR;
+// The publication under test: modules/nukex/repository by default (the
+// signed source the module's embedded version is read from), or the
+// directory named by NUKEX_QE_PUBLISHED_DIR -- root release.sh points this
+// at the root repository/ it is about to publish, and runs the [published]
+// cases against it with the binary it just built.
+static std::string published_dir() {
+    const char* env = std::getenv("NUKEX_QE_PUBLISHED_DIR");
+    return (env && *env) ? std::string(env) : std::string(NUKEX_REPOSITORY_DIR);
+}
+
+TEST_CASE("published artifacts verify against the shipped signing key", "[qe_update][published]") {
+    const std::string dir = published_dir();
 
     for (const char* name : { "qe_manifest.json", "qe_database.json" }) {
         const std::string body = slurp_or_empty(dir + "/" + name);
@@ -313,8 +324,8 @@ TEST_CASE("published artifacts verify against the shipped signing key", "[qe_upd
     }
 }
 
-TEST_CASE("the published database matches the digest its manifest names", "[qe_update]") {
-    const std::string dir = NUKEX_REPOSITORY_DIR;
+TEST_CASE("the published database matches the digest its manifest names", "[qe_update][published]") {
+    const std::string dir = published_dir();
     const std::string db  = slurp_or_empty(dir + "/qe_database.json");
     const std::string mf  = slurp_or_empty(dir + "/qe_manifest.json");
     REQUIRE_FALSE(db.empty());
@@ -329,24 +340,54 @@ TEST_CASE("the published database matches the digest its manifest names", "[qe_u
 // The regression this guards: with the database compiled into the module
 // counted as version 0, a fresh install was offered -- and prompted to
 // download -- the very database it already carried. Serve the REAL
-// published files to the REAL updater with the REAL shipped key, exactly as
-// the module wires them, and require that a fresh install sees nothing new.
-TEST_CASE("a fresh install is not offered the database it already carries", "[qe_update]") {
-    const std::string dir = NUKEX_REPOSITORY_DIR;
+// published files to the REAL updater with the REAL shipped key, at the REAL
+// URL the module fetches, and require that a fresh install sees nothing new.
+TEST_CASE("a fresh install is not offered the database it already carries", "[qe_update][published]") {
+    const std::string dir = published_dir();
     FakeFetcher f;
-    for (const char* name : { "qe_manifest.json", "qe_database.json" }) {
-        serve(f, name, slurp_or_empty(dir + "/" + name),
-                       slurp_or_empty(dir + "/" + name + ".sig"));
-    }
+    for (const char* name : kQEPublishedFiles)
+        f.responses[std::string(kQEUpdateBaseURL) + "/" + name] =
+            { true, slurp_or_empty(dir + "/" + name), "" };
 
     const QEUpdateState fresh;   // nothing downloaded, nothing recorded
     const ActiveQEDatabase active =
         active_qe_database(fresh, /*downloaded_present=*/false,
                            embedded_qe_database_version());
 
-    QEUpdater up(f, kBase, qe_signing_public_key());
+    QEUpdater up(f, kQEUpdateBaseURL, qe_signing_public_key());
     const CheckResult r = up.check(active.version);
     INFO("embedded v" << embedded_qe_database_version()
          << ", published v" << r.manifest.db_version);
     REQUIRE(r.outcome == UpdateOutcome::UP_TO_DATE);
+}
+
+// The whole publication, end to end, as an older install would take it:
+// every file the updater requests exists in the published set, the chain
+// manifest-signature -> digest -> database-signature holds, and what lands
+// on disk is byte-for-byte the database built into this module.
+TEST_CASE("the published set is exactly what the updater fetches, and installs", "[qe_update][published]") {
+    const std::string dir = published_dir();
+    FakeFetcher f;
+    for (const char* name : kQEPublishedFiles) {
+        const std::string body = slurp_or_empty(dir + "/" + name);
+        INFO("published file: " << name);
+        REQUIRE_FALSE(body.empty());
+        f.responses[std::string(kQEUpdateBaseURL) + "/" + name] = { true, body, "" };
+    }
+
+    QEUpdater up(f, kQEUpdateBaseURL, qe_signing_public_key());
+    const CheckResult r = up.check(0);   // an install that predates any publication
+    REQUIRE(r.outcome == UpdateOutcome::AVAILABLE);
+    REQUIRE(r.manifest.db_version == embedded_qe_database_version());
+
+    const fs::path dest = fs::temp_directory_path() /
+        ("nukex_qe_published_" + std::to_string(static_cast<long>(::getpid()))) / "qe_database.json";
+    REQUIRE(up.install(r.manifest, dest.string()) == UpdateOutcome::INSTALLED);
+    REQUIRE(slurp_or_empty(dest.string()) == embedded_qe_database_json());
+    fs::remove_all(dest.parent_path());
+
+    std::vector<std::string> want;
+    for (const char* name : kQEPublishedFiles)
+        want.push_back(std::string(kQEUpdateBaseURL) + "/" + name);
+    REQUIRE(f.requested == want);
 }

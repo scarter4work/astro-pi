@@ -17,7 +17,7 @@
 - **Two `nukex::FilterClass` enums coexist until Task 19.** Old: `src/module/filter_classifier.hpp` (4 values). New: `src/lib/core/include/nukex/core/filter.hpp` (`UNKNOWN=0, BROADBAND_L=1, BROADBAND_RGB=2, BROADBAND_OSC=3, NARROWBAND_SINGLE=4, DUAL_NB_OSC=5`). A translation unit may include only one of them.
 - **Engine lookup keys.** `FilterClassifier` emits canonical filter names (`HaO3`, `S2O3`, `L-eXtreme`, `L-eNhance`, `L-Ultimate`, `ALP-T`, `Ha`, `OIII`, `SII`, `L`, `R`, `G`, `B`, `OSC`, `L_unnamed`) and `Filter.camera = FITS INSTRUME verbatim`. `QEDatabase::lookup_filter`/`build_q` are keyed by those names. The shipped database must be keyed the same way.
 - **No `lenient()`, no stubs, no TODOs, no silent fallbacks.** Loud errors. Root-cause fixes only.
-- **Release workflow (CLAUDE.md):** never `make install`; bump `src/module/NukeXVersion.h` + release date; clean build; ctest; `tools/release.sh package`; commit version bump + package together; push. `tools/release.sh` refuses a stale build and needs `/tmp/.pi_codesign_pass`.
+- **Release workflow (astro-pi `CLAUDE.md`):** never `make install`; bump `src/module/NukeXVersion.h` + release date; ctest; run the astro-pi root `./release.sh` (Rocky 9 container build, sign, package, one manifest, camera-database publication, integrity checks); commit the version bump + `repository/` together; push. The standalone `tools/release.sh` (a host-build packager) was removed on 2026-10-03: a host build loads only on this box. Signing needs `/tmp/.pi_codesign_pass`.
 - **Commit trailer** on every commit:
   ```
   Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>

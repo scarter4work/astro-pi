@@ -12,7 +12,7 @@
 
 ## Global Constraints
 
-- **Release workflow (CLAUDE.md):** never `make install`; bump `src/module/NukeXVersion.h` + release date; clean build; ctest; `tools/release.sh package`; commit version bump + package together; push. `tools/release.sh` refuses a stale build and needs `/tmp/.pi_codesign_pass`.
+- **Release workflow (astro-pi `CLAUDE.md`):** never `make install`; bump `src/module/NukeXVersion.h` + release date; ctest; run the astro-pi root `./release.sh` (Rocky 9 container build, sign, package, one manifest, camera-database publication, integrity checks); commit the version bump + `repository/` together; push. The standalone `tools/release.sh` (a host-build packager) was removed on 2026-10-03: a host build loads only on this box. Signing needs `/tmp/.pi_codesign_pass`.
 - **No `lenient()`, no stubs, no TODOs, no silent fallbacks. Loud errors. Root-cause fixes only.**
 - **Never put non-ASCII in a PCL string literal** — PCL reads `const char*` as ISO-8859-1. Scan for ESCAPED bytes (`\xHH`, octal, `\uXXXX`) too, not just visible characters.
 - **Never `sudo` into `/opt/PixInsight`** — it is user-owned; root-owned files break PI's own updater half-way.
@@ -487,7 +487,7 @@ Run: `tools/measure_channel_registration.py` on the M3 set. The bar is red-green
 
 - [ ] **Step 6: Bump version and release date, package, sign, commit, tag, push**
 
-Follow the CLAUDE.md release workflow exactly. `tools/release.sh package`.
+Follow the astro-pi `CLAUDE.md` release workflow exactly: root `./release.sh`.
 
 - [ ] **Step 7: Verify the published artefact**
 
