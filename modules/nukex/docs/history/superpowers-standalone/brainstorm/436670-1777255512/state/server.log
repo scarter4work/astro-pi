@@ -1,0 +1,8 @@
+{"type":"server-started","port":53050,"host":"127.0.0.1","url_host":"localhost","url":"http://localhost:53050","screen_dir":"/home/scarter4work/projects/nukex4/.superpowers/brainstorm/436670-1777255512/content","state_dir":"/home/scarter4work/projects/nukex4/.superpowers/brainstorm/436670-1777255512/state"}
+{"type":"screen-added","file":"/home/scarter4work/projects/nukex4/.superpowers/brainstorm/436670-1777255512/content/design-components.html"}
+{"source":"user-event","type":"click","text":"A\n    \n      Yes — proceed to data flow detail (section 3)\n      New code, refactors, and deletions all match what we settled on.","choice":"a","id":null,"timestamp":1777255681048}
+{"source":"user-event","type":"click","text":"A\n    \n      Yes — proceed to data flow detail (section 3)\n      New code, refactors, and deletions all match what we settled on.","choice":"a","id":null,"timestamp":1777255687222}
+{"source":"user-event","type":"click","text":"A\n    \n      Yes — proceed to data flow detail (section 3)\n      New code, refactors, and deletions all match what we settled on.","choice":"a","id":null,"timestamp":1777255687508}
+{"type":"screen-added","file":"/home/scarter4work/projects/nukex4/.superpowers/brainstorm/436670-1777255512/content/design-data-flow.html"}
+{"type":"screen-added","file":"/home/scarter4work/projects/nukex4/.superpowers/brainstorm/436670-1777255512/content/decomp-locus-refined.html"}
+{"type":"server-stopped","reason":"idle timeout"}

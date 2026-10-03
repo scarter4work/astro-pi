@@ -1,0 +1,174 @@
+# Review package: 547ad1e..ec6c662
+
+## Commits
+ec6c662 fix: refuse an unreadable candidate_suffix at optimize_begin
+
+## Files changed
+ src/autocontrast/io/loaders.py | 16 ++++++++++++++++
+ src/autocontrast/sidecar.py    | 23 +++++++++++++++++++++--
+ tests/test_optimize_sidecar.py | 26 ++++++++++++++++++++++++++
+ 3 files changed, 63 insertions(+), 2 deletions(-)
+
+## Diff
+diff --git a/src/autocontrast/io/loaders.py b/src/autocontrast/io/loaders.py
+index d72c2e5..cc6eb01 100644
+--- a/src/autocontrast/io/loaders.py
++++ b/src/autocontrast/io/loaders.py
+@@ -65,20 +65,36 @@ def load_fits(path: str | Path) -> LoadedImage:
+     filters: list[str] = []
+     if "FILTER" in header:
+         filters = [str(header["FILTER"]).strip()]
+ 
+     return LoadedImage(data=data, pixel_scale_arcsec=pixel_scale, filters=filters)
+ 
+ 
+ _FITS_SUFFIXES = {".fits", ".fit", ".fts"}
+ 
+ 
++def supported_suffixes() -> frozenset[str]:
++    """Every file suffix :func:`load_image` can actually read back.
++
++    ``load_image`` dispatches on suffix: FITS goes through astropy, everything
++    else through Pillow's ``Image.open``. The FITS half is ``_FITS_SUFFIXES``,
++    the one place that dispatch condition lives; the raster half is read off
++    Pillow's own registered plugins rather than hand-copied, so this can never
++    drift from what Pillow can actually open. Callers that hand a path to
++    something outside this set (a PixInsight-native ``.xisf``, say) need to
++    fail immediately and loudly, not discover it as a read error deep inside a
++    run (§12).
++    """
++    Image.init()  # populate Image.registered_extensions(); idempotent
++    return frozenset(_FITS_SUFFIXES) | frozenset(Image.registered_extensions())
++
++
+ def image_dimensions(path: str | Path) -> tuple[int, int]:
+     """Native ``(width, height)`` of an image on disk, without decoding its pixels.
+ 
+     Needed to compute how much :func:`load_image` downsampled a file, so a
+     WCS-derived pixel scale can be corrected to the scale of the array we actually
+     fingerprint (§2.2).
+     """
+     path = Path(path)
+     if path.suffix.lower() in _FITS_SUFFIXES:
+         with fits.open(path) as hdul:
+diff --git a/src/autocontrast/sidecar.py b/src/autocontrast/sidecar.py
+index ee0a717..4df7aa5 100644
+--- a/src/autocontrast/sidecar.py
++++ b/src/autocontrast/sidecar.py
+@@ -27,21 +27,26 @@ from pathlib import Path
+ 
+ from autocontrast import __version__
+ from autocontrast.db.discover.crawl import PoliteFetcher
+ from autocontrast.db.discover.discover import acquire_reference
+ from autocontrast.db.discover.index import GalleryIndex
+ from autocontrast.db.store import FingerprintStore
+ from autocontrast.db.wcs import acquire_wcs
+ from autocontrast.fingerprint.distance import fingerprint_distance
+ from autocontrast.fingerprint.extract import FingerprintData, extract
+ from autocontrast.fingerprint.palette import palette_class_from_filters
+-from autocontrast.io.loaders import downsample_factor, load_image, load_raster
++from autocontrast.io.loaders import (
++    downsample_factor,
++    load_image,
++    load_raster,
++    supported_suffixes,
++)
+ from autocontrast.optimize import loop
+ from autocontrast.optimize.session import session_path
+ 
+ 
+ def _op_ping(_req: dict) -> dict:
+     return {"pong": True, "version": __version__}
+ 
+ 
+ def _op_fingerprint(req: dict) -> dict:
+     rgb = load_raster(req["image"], max_dim=req.get("max_dim", 1600))
+@@ -240,22 +245,36 @@ def _op_optimize_begin(req: dict) -> dict:
+     effective_scale = req["pixel_scale_arcsec"] * downsample_factor(image, load(image))
+ 
+     session = loop.begin(
+         source_path=req.get("source_path", image), proxy_path=image,
+         reference_id=req["reference_id"],
+         reference_fp=FingerprintData.from_dict(req["reference_fingerprint"]),
+         work_dir=work_dir, pixel_scale_arcsec=effective_scale,
+         psf_fwhm_arcsec=req["psf_fwhm_arcsec"], palette_class=req["palette_class"],
+         n_scales=req.get("n_scales", 7), session_id=session_id, load=load,
+     )
++    candidate_suffix = req.get("candidate_suffix", ".png")
++    supported = supported_suffixes()
++    if candidate_suffix.lower() not in supported:
++        # Caught here, this is one bad config field. Left to the loader, it
++        # becomes every candidate raising inside `_ingest_batch`, every branch
++        # discarded, and a run that reports "guardrails or executor failure"
++        # for what was actually a suffix PixInsight can save but the sidecar
++        # can never read back (§12) -- e.g. its own native `.xisf`.
++        raise ValueError(
++            f"candidate_suffix {candidate_suffix!r} is not a format the sidecar "
++            "can load back (it reads every candidate through the same loader as "
++            f"everything else); supported suffixes are {sorted(supported)}"
++        )
++
+     session.max_dim = max_dim
+-    session.candidate_suffix = req.get("candidate_suffix", ".png")
++    session.candidate_suffix = candidate_suffix
+ 
+     instructions = loop.begin_batch(session, load=load)
+     session.save(session_path(work_dir, session_id))
+     return {
+         "baseline_distance": session.baseline_distance,
+         "reference_id": session.reference_id,
+         **_batch_result(session, instructions),
+     }
+ 
+ 
+diff --git a/tests/test_optimize_sidecar.py b/tests/test_optimize_sidecar.py
+index 57bb7f1..ce6b001 100644
+--- a/tests/test_optimize_sidecar.py
++++ b/tests/test_optimize_sidecar.py
+@@ -171,20 +171,46 @@ def test_optimize_begin_writes_a_resumable_session_and_a_first_batch(tmp_path):
+ 
+ 
+ def test_the_first_batch_never_exceeds_the_beam_width_of_the_root(tmp_path):
+     """One branch reaching for top_k live candidates -- not the whole menu."""
+     png, ref_fp = _fixture(tmp_path)
+     resp = _begin(tmp_path, png, ref_fp)
+     session = Session.load(session_path(tmp_path, resp["result"]["session_id"]))
+     assert len(resp["result"]["instructions"]) == session.config.top_k
+ 
+ 
++def test_an_unreadable_candidate_suffix_is_refused_at_begin_not_misdiagnosed_later(tmp_path):
++    """`.xisf` is PixInsight's native format and the obvious choice for a PJSR
++    caller to pick -- but the sidecar reads every candidate back through
++    `load_image`, which cannot open it. Left unvalidated, every candidate would
++    raise inside `_ingest_batch`, every branch would be discarded, and the run
++    would report "guardrails or executor failure" for what is really one bad
++    config field. This must fail immediately, at `optimize_begin`, naming the
++    offending suffix."""
++    png, ref_fp = _fixture(tmp_path)
++    resp = _begin(tmp_path, png, ref_fp, candidate_suffix=".xisf")
++    assert resp["ok"] is False
++    assert ".xisf" in resp["error"]
++    assert "candidate_suffix" in resp["error"]
++    # No session should be left behind implying a run is in flight.
++    assert not any(tmp_path.glob("*.json"))
++
++
++def test_the_default_candidate_suffix_still_works(tmp_path):
++    """The `.png` default must not regress: PixInsight can save it and the
++    sidecar can read it back."""
++    png, ref_fp = _fixture(tmp_path)
++    resp = _begin(tmp_path, png, ref_fp)
++    assert resp["ok"] is True, resp.get("error")
++    assert resp["result"]["instructions"][0]["candidate_path"].endswith(".png")
++
++
+ # --------------------------------------------------------------------------
+ # 3. The key structural proof: the sidecar scores what it did not produce.
+ # --------------------------------------------------------------------------
+ 
+ def test_the_sidecar_scores_candidates_it_did_not_produce(tmp_path):
+     png, ref_fp = _fixture(tmp_path)
+     first = _begin(tmp_path, png, ref_fp)["result"]
+     sid = first["session_id"]
+ 
+     result, written, next_batch = _drive_to_iteration(

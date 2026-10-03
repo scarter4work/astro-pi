@@ -1,0 +1,111 @@
+# Review package: ad675e0..HEAD
+
+## Commits
+767d47e feat: WCS load and field footprint
+
+## Files changed
+ src/gaia_depth_grade/wcs.py | 36 ++++++++++++++++++++++++++++++++++++
+ tests/conftest.py           | 19 +++++++++++++++++++
+ tests/test_wcs.py           | 26 ++++++++++++++++++++++++++
+ 3 files changed, 81 insertions(+)
+
+## Diff
+diff --git a/src/gaia_depth_grade/wcs.py b/src/gaia_depth_grade/wcs.py
+new file mode 100644
+index 0000000..0d4f41a
+--- /dev/null
++++ b/src/gaia_depth_grade/wcs.py
+@@ -0,0 +1,36 @@
++from __future__ import annotations
++
++from dataclasses import dataclass
++
++import numpy as np
++from astropy.coordinates import SkyCoord
++from astropy.wcs import WCS
++
++
++@dataclass(frozen=True)
++class FieldFootprint:
++    center_ra: float
++    center_dec: float
++    radius_deg: float
++
++
++def load_wcs(header) -> WCS:
++    w = WCS(header)
++    if not w.has_celestial:
++        raise ValueError("FITS header has no usable WCS")
++    return w.celestial
++
++
++def field_footprint(wcs: WCS, shape: tuple[int, int]) -> FieldFootprint:
++    ny, nx = shape
++    cx, cy = (nx - 1) / 2.0, (ny - 1) / 2.0
++    center = wcs.pixel_to_world(cx, cy)
++    corners_x = [0, nx - 1, 0, nx - 1]
++    corners_y = [0, 0, ny - 1, ny - 1]
++    corners = wcs.pixel_to_world(corners_x, corners_y)
++    sep = center.separation(corners).deg
++    return FieldFootprint(
++        center_ra=float(center.ra.deg),
++        center_dec=float(center.dec.deg),
++        radius_deg=float(np.max(sep)),
++    )
+diff --git a/tests/conftest.py b/tests/conftest.py
+new file mode 100644
+index 0000000..a089f2e
+--- /dev/null
++++ b/tests/conftest.py
+@@ -0,0 +1,19 @@
++import numpy as np
++import pytest
++from astropy.io import fits
++from astropy.wcs import WCS
++
++
++@pytest.fixture
++def simple_wcs_header():
++    """A tangent-plane WCS centered at RA=10, Dec=20, 1 arcsec/px, 200x300."""
++    w = WCS(naxis=2)
++    w.wcs.ctype = ["RA---TAN", "DEC--TAN"]
++    w.wcs.crpix = [150.0, 100.0]      # center of 300(x) x 200(y)
++    w.wcs.crval = [10.0, 20.0]
++    w.wcs.cdelt = [-1.0 / 3600.0, 1.0 / 3600.0]
++    hdr = w.to_header()
++    hdr["NAXIS"] = 2
++    hdr["NAXIS1"] = 300
++    hdr["NAXIS2"] = 200
++    return hdr
+diff --git a/tests/test_wcs.py b/tests/test_wcs.py
+new file mode 100644
+index 0000000..ae90345
+--- /dev/null
++++ b/tests/test_wcs.py
+@@ -0,0 +1,26 @@
++import numpy as np
++import pytest
++from astropy.io import fits
++from gaia_depth_grade.wcs import load_wcs, field_footprint, FieldFootprint
++
++
++def test_load_wcs_ok(simple_wcs_header):
++    w = load_wcs(simple_wcs_header)
++    assert w.has_celestial
++
++
++def test_load_wcs_missing_raises():
++    hdr = fits.Header()
++    hdr["NAXIS"] = 2
++    with pytest.raises(ValueError):
++        load_wcs(hdr)
++
++
++def test_field_footprint_center_and_radius(simple_wcs_header):
++    w = load_wcs(simple_wcs_header)
++    fp = field_footprint(w, (200, 300))
++    assert isinstance(fp, FieldFootprint)
++    assert fp.center_ra == pytest.approx(10.0, abs=1e-3)
++    assert fp.center_dec == pytest.approx(20.0, abs=1e-3)
++    # half-diagonal of 300x200 px at 1"/px ≈ 180.3" ≈ 0.0501 deg
++    assert fp.radius_deg == pytest.approx(0.0501, abs=2e-3)

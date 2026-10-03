@@ -1,0 +1,891 @@
+# Review package: 5b19c1f..HEAD
+
+## Commits
+5915c01 Fix wave C: interactive dialogs, temp-dir cleanup, SXT metadata/collision
+fc24b4b Fix wave B: silent PixelMath failure, saveAs window re-bind, headless hang
+
+## Files changed
+ RCAstroBXT.js  |  61 ++++++++++++++++++++-----
+ RCAstroLib.jsh | 138 ++++++++++++++++++++++++++++++++++++++++++++++++++-------
+ RCAstroNXT.js  |  34 +++++++++++---
+ RCAstroSXT.js  |  77 +++++++++++++++++++++++++++-----
+ test/t_bxt.js  |  34 +++++++++-----
+ test/t_nxt.js  |  26 ++++++-----
+ test/t_sxt.js  |  50 ++++++++++++++++++++-
+ 7 files changed, 353 insertions(+), 67 deletions(-)
+
+## Diff
+diff --git a/RCAstroBXT.js b/RCAstroBXT.js
+index f4c1e8b..d9c68ab 100644
+--- a/RCAstroBXT.js
++++ b/RCAstroBXT.js
+@@ -36,43 +36,57 @@ var BXTParams = {
+       if (Parameters.has("sharpenNonstellar")) this.sharpenNonstellar = Parameters.getReal("sharpenNonstellar");
+       if (Parameters.has("adjustHalos"))       this.adjustHalos = Parameters.getReal("adjustHalos");
+       if (Parameters.has("autoPSF"))           this.autoPSF = Parameters.getBoolean("autoPSF");
+       if (Parameters.has("psfRadius"))         this.psfRadius = Parameters.getReal("psfRadius");
+       if (Parameters.has("correctOnly"))       this.correctOnly = Parameters.getBoolean("correctOnly");
+       if (Parameters.has("mlVersion"))         this.mlVersion = Parameters.getInteger("mlVersion");
+       if (Parameters.has("device"))            this.device = Parameters.getString("device");
+    },
+    buildArgs: function(inPath, outPath) {
+       let a = [inPath];
+-      if (this.correctOnly) a.push("--correct-only");
+-      else { a.push("--ss", format("%.3f", this.sharpenStars),
+-                    "--sn", format("%.3f", this.sharpenNonstellar)); }
+-      a.push("--ash", format("%.3f", this.adjustHalos));
++      if (this.correctOnly) {
++         a.push("--correct-only");
++         // --ash is invalid together with --correct-only: verified empirically
++         // (`rc-astro bxt --correct-only --ash 0.100` --> {"event":"error",
++         // "message":"--correct-only forces --ash to 0, which conflicts with
++         // the value you gave; omit --ash"}). Never emit it in this mode.
++      } else {
++         a.push("--ss", format("%.3f", this.sharpenStars),
++                "--sn", format("%.3f", this.sharpenNonstellar));
++         a.push("--ash", format("%.3f", this.adjustHalos));
++      }
+       if (this.autoPSF) a.push("--ansr");
+       else a.push("--no-ansr", "--nsr", format("%.2f", this.psfRadius));
+       if (this.mlVersion != 0) a.push("--ml-version", String(this.mlVersion));
+       a.push("--device", this.device, "--output", outPath);
+       return a;
+    }
+ };
+ 
+ function runBXT(view) {
+    if (view == null || view.isNull) { RCAstro.fail("No target view."); return; }
+-   let dir = RCAstro.tempDir();
+-   let inP = RCAstro.saveView(view, dir);
+-   let outP = dir + "/" + view.id + "_bxt.xisf";
++   // Vars declared before the try, but tempDir()/saveView() are CALLED inside
++   // it: if saveView() throws (disk full, read-only TMPDIR, non-main-view
++   // guard, ...) the temp directory tempDir() just created must still be
++   // swept up by the `finally` below, not stranded.
++   let dir = null, inP = null, outP = null;
+    try {
++      dir = RCAstro.tempDir();
++      inP = RCAstro.saveView(view, dir);
++      outP = dir + "/" + view.id + "_bxt.xisf";
+       let r = RCAstro.runCli("bxt", BXTParams.buildArgs(inP, outP), null);
+       if (!r.ok) { RCAstro.fail("BlurXTerminator failed: " + r.errorMsg); return; }
+       let out = RCAstro.importResult(outP, view.id + "_bxt_tmp");
+       RCAstro.applyInPlace(out, view);   // applyInPlace closes `out` — do NOT forceClose it
+    } finally {
++      // cleanup() null-guards each path entry, and always sweeps the temp
++      // dir(s) recorded by tempDir() regardless of what's passed here.
+       RCAstro.cleanup([inP, outP]);
+    }
+ }
+ 
+ function BXTDialog() {
+    this.__base__ = Dialog; this.__base__();
+    let self = this;
+    this.windowTitle = BXT_TITLE;
+    this.scaledMinWidth = 420;
+ 
+@@ -90,21 +104,31 @@ function BXTDialog() {
+    this.ss  = slider("Sharpen stars:",      0, 0.7, 3, function(){return BXTParams.sharpenStars;},      function(v){BXTParams.sharpenStars=v;});
+    this.sn  = slider("Sharpen nonstellar:", 0, 1.0, 3, function(){return BXTParams.sharpenNonstellar;}, function(v){BXTParams.sharpenNonstellar=v;});
+    this.ash = slider("Adjust star halos:", -0.5, 0.5, 3, function(){return BXTParams.adjustHalos;},     function(v){BXTParams.adjustHalos=v;});
+    this.nsr = slider("Nonstellar radius:",  0, 4.0, 2, function(){return BXTParams.psfRadius;},         function(v){BXTParams.psfRadius=v;});
+    this.nsr.enabled = !BXTParams.autoPSF;
+ 
+    this.autoPSF = new CheckBox(this); this.autoPSF.text = "Auto nonstellar PSF"; this.autoPSF.checked = BXTParams.autoPSF;
+    this.autoPSF.onCheck = function(c){ BXTParams.autoPSF = c; self.nsr.enabled = !c; };
+ 
+    this.correctOnly = new CheckBox(this); this.correctOnly.text = "Correct only (no sharpening)"; this.correctOnly.checked = BXTParams.correctOnly;
+-   this.correctOnly.onCheck = function(c){ BXTParams.correctOnly = c; self.ss.enabled = !c; self.sn.enabled = !c; };
++   this.correctOnly.onCheck = function(c){ BXTParams.correctOnly = c; self.ss.enabled = !c; self.sn.enabled = !c; self.ash.enabled = !c; };
++   // Initialize ALL dependent enabled-states from the loaded param values at
++   // construction, not just when the user toggles a checkbox interactively --
++   // required now that Fix C opens this dialog pre-populated from a saved
++   // process icon's parameters (previously only reachable via the Scripts
++   // menu, where params were always defaults and this never mattered).
++   // --ash is invalid together with --correct-only (see buildArgs()), so the
++   // slider must start disabled whenever a loaded/default correctOnly is true.
++   this.ss.enabled = !BXTParams.correctOnly;
++   this.sn.enabled = !BXTParams.correctOnly;
++   this.ash.enabled = !BXTParams.correctOnly;
+ 
+    this.mlv = new ComboBox(this); this.mlv.addItem("Latest"); this.mlv.addItem("AI 4"); this.mlv.addItem("AI 2");
+    this.mlv.currentItem = (BXTParams.mlVersion==4)?1:(BXTParams.mlVersion==2)?2:0;
+    this.mlv.onItemSelected = function(i){ BXTParams.mlVersion = (i==1)?4:(i==2)?2:0; };
+ 
+    this.dev = new ComboBox(this); this.dev.addItem("GPU"); this.dev.addItem("CPU");
+    this.dev.currentItem = (BXTParams.device=="cpu")?1:0;
+    this.dev.onItemSelected = function(i){ BXTParams.device = (i==1)?"cpu":"gpu"; };
+ 
+    this.newInstanceButton = new ToolButton(this);
+@@ -133,23 +157,40 @@ function BXTDialog() {
+    this.sizer.add(this.ss); this.sizer.add(this.sn); this.sizer.add(this.ash);
+    this.sizer.add(this.autoPSF); this.sizer.add(this.nsr);
+    this.sizer.add(this.correctOnly);
+    this.sizer.add(devRow);
+    this.sizer.add(btns);
+    this.adjustToContents();
+ }
+ BXTDialog.prototype = new Dialog;
+ 
+ function main() {
++   // isViewTarget: a saved-instance drop targeting a specific view (the
++   // headless/automation path, e.g. a scripted mosaic pipeline). Run
++   // immediately, no dialog -- RCAstro.interactive stays at its default
++   // (false), so a failure never pops a modal MessageBox that nothing is
++   // present to dismiss.
+    if (Parameters.isViewTarget) { BXTParams.load(); runBXT(Parameters.targetView); return; }
+-   if (Parameters.isGlobalTarget) { BXTParams.load(); runBXT(ImageWindow.activeWindow.mainView); return; }
+-   BXTParams.targetView = ImageWindow.activeWindow.isNull ? undefined : ImageWindow.activeWindow.mainView;
++   // isGlobalTarget: double-clicking a saved process icon. Previously this
++   // ran immediately against ImageWindow.activeWindow -- silently and
++   // destructively rewriting whatever window happened to be active (e.g. the
++   // user's master flat), with settings that could never be reviewed or
++   // edited because the dialog was only reachable from the Scripts menu
++   // (where params are always defaults). Matches the bundled-script
++   // convention (e.g. MaskMerge.js): load() the saved params, then fall
++   // through to show the dialog pre-populated -- never auto-run.
++   if (Parameters.isGlobalTarget) BXTParams.load();
++   if (BXTParams.targetView === undefined)
++      BXTParams.targetView = ImageWindow.activeWindow.isNull ? undefined : ImageWindow.activeWindow.mainView;
++   // Dialog-driven branch: the user is present, so let fail() show its modal
++   // MessageBox in addition to the console log.
++   RCAstro.interactive = true;
+    let d = new BXTDialog();
+    d.doRun = false;
+    if (d.execute() && d.doRun) runBXT(BXTParams.targetView);
+ }
+ // RCAstroBXT_TESTING is set by test/t_bxt.js before #include-ing this file so
+ // it can call BXTParams.buildArgs() directly without launching the (headless-
+ // incompatible) interactive dialog. Normal launches (Scripts menu, process
+ // icon, #feature-id) never define this global, so main() runs as usual.
+ if (typeof RCAstroBXT_TESTING === "undefined") {
+    main();
+diff --git a/RCAstroLib.jsh b/RCAstroLib.jsh
+index f167354..3844d8e 100644
+--- a/RCAstroLib.jsh
++++ b/RCAstroLib.jsh
+@@ -1,56 +1,119 @@
+ // RC-Astro CLI engine — shared by RCAstro{BXT,SXT,NXT}.js
+ #include <pjsr/UndoFlag.jsh>
+ #include <pjsr/StdIcon.jsh>
+ #include <pjsr/StdButton.jsh>
+ 
+ var RCAstro = {
+    TITLE: "RC-Astro CLI",
+    binaryPath: null,
+ 
++   // When false (the default — correct for headless/automation use), fail()
++   // never pops a modal dialog: it logs via console.criticalln() and throws,
++   // which is safe under `--automation-mode` (no one is present to dismiss a
++   // MessageBox, so a modal there is an indefinite hang). Interactive callers
++   // (a tool's dialog-driven main()) should set RCAstro.interactive = true
++   // before calling into the engine so failures are also shown to the user.
++   interactive: false,
++
+    findBinary: function() {
+       if (this.binaryPath && File.exists(this.binaryPath)) return this.binaryPath;
+       let candidates = ["/usr/local/bin/rc-astro"];
+-      // resolve via PATH
+-      let p = new ExternalProcess;
+-      p.start("/usr/bin/which rc-astro");
+-      // NOTE: CoreApplication.processEvents() is documented but is not a
+-      // callable function in this PixInsight 1.9.4 "Lockhart" build
+-      // (verified: typeof CoreApplication.processEvents === "undefined").
+-      // The bare global processEvents() (Global.processEvents, deprecated
+-      // in the docs but functional here) is used instead.
+-      for (; p.isStarting;) processEvents();
+-      for (; p.isRunning;)  processEvents();
+-      let which = String(p.stdout).trim();
++      // resolve via PATH -- best-effort only. The File.exists candidate loop
++      // below is authoritative, so if `which` itself is missing (p.start()
++      // throwing) we simply fall through with no extra candidate rather than
++      // letting a raw exception escape findBinary().
++      let which = "";
++      try {
++         let p = new ExternalProcess;
++         p.start("/usr/bin/which rc-astro");
++         // NOTE: CoreApplication.processEvents() is documented but is not a
++         // callable function in this PixInsight 1.9.4 "Lockhart" build
++         // (verified: typeof CoreApplication.processEvents === "undefined").
++         // The bare global processEvents() (Global.processEvents, deprecated
++         // in the docs but functional here) is used instead.
++         for (; p.isStarting;) processEvents();
++         for (; p.isRunning;)  processEvents();
++         which = String(p.stdout).trim();
++      } catch (e) {
++         console.warningln("RC-Astro: `which rc-astro` could not be run (" + e.message + "); " +
++                            "falling back to the fixed candidate path list.");
++      }
+       if (which.length > 0) candidates.push(which);
+       for (let i = 0; i < candidates.length; ++i)
+          if (candidates[i] && File.exists(candidates[i])) { this.binaryPath = candidates[i]; return candidates[i]; }
+       return null;
+    },
+ 
+    // Directories created here are recorded so cleanup() can remove them later.
+    _tempDirs: [],
+ 
+    tempDir: function() {
+       let base = (typeof(getEnvironmentVariable) != 'undefined' && getEnvironmentVariable("TMPDIR"))
+                  ? getEnvironmentVariable("TMPDIR") : File.systemTempDirectory;
+       let dir = base + "/rc-astro-" + Math.trunc(Date.now()) + "-" + Math.trunc(Math.random()*1e6);
+       if (!File.directoryExists(dir)) File.createDirectory(dir, true);
+       this._tempDirs.push(dir);
+       return dir;
+    },
+ 
+    saveView: function(view, dir) {
+-      let win = view.isMainView ? view.window : view.mainView.window;
++      // View has no `mainView` property (verified against the PJSR docs:
++      // /opt/PixInsight/doc/pjsr/objects/View/View.html lists isMainView,
++      // isPreview, window, etc. -- no mainView). Dropping this on a preview
++      // used to hit `undefined.window` and throw a raw, unhelpful TypeError.
++      // Fail loudly and specifically instead; preview support is out of scope.
++      if (!view.isMainView)
++         this.fail("RC-Astro: only main views are supported (previews are not). Target: " + view.id);
++      let win = view.window;
+       let path = dir + "/" + view.id + ".xisf";
+-      // saveAs(path, queryOptions=false, allowMessages=false, strict=true, verifyOverwrite=false)
+-      if (!win.saveAs(path, false, false, true, false))
++
++      // ImageWindow.saveAs() has Save-As semantics: it re-binds THIS window's
++      // filePath to the new path (verified empirically -- see
++      // test/probe_fix5_saveas.js / fix-wave-b-report.md). Since `win` here is
++      // the user's real, on-screen window, saving straight to a throwaway temp
++      // path would leave the user's window pointing at a file that
++      // RCAstro.cleanup() later deletes -- their next Ctrl+S would silently
++      // stop overwriting the original image file.
++      //
++      // Fix: never call saveAs() on the source window itself. Build an
++      // independent, off-screen ImageWindow with matching geometry/sample
++      // format, copy the pixel data into it with Image.assign() (the
++      // canonical PJSR pattern used by bundled scripts, e.g.
++      // AstroMarkSignatureAdder.js, Halo-B-Gon.js), save AND close *that*
++      // temporary window, and leave the caller's real window/view completely
++      // untouched. Also verified empirically (test/probe_fix5_newwin.js) that
++      // this leaves the original window's filePath and pixel data intact.
++      //
++      // NOTE: `new ImageWindow(existingWindow)` is NOT a safe alternative --
++      // verified empirically (test/probe_fix5_dup.js) that in this PJSR build
++      // it does not create an independent copy: it aliases the SAME
++      // underlying window, so saveAs()/forceClose() on the "duplicate"
++      // mutated and then destroyed the original.
++      let srcImg = win.mainView.image;
++      let tmpWin = new ImageWindow(srcImg.width, srcImg.height, srcImg.numberOfChannels,
++                                    srcImg.bitsPerSample, srcImg.isReal, srcImg.isColor);
++      let ok = false;
++      try {
++         tmpWin.mainView.beginProcess();
++         tmpWin.mainView.image.assign(srcImg);
++         tmpWin.mainView.endProcess();
++         // Carry FITS keywords along so the temp file handed to the rc-astro
++         // CLI (and anything it echoes back) isn't silently stripped of
++         // metadata relative to the pre-fix behavior of saving the real window.
++         tmpWin.keywords = win.keywords;
++         // saveAs(path, queryOptions=false, allowMessages=false, strict=true, verifyOverwrite=false)
++         ok = tmpWin.saveAs(path, false, false, true, false);
++      } finally {
++         tmpWin.forceClose();
++      }
++      if (!ok)
+          this.fail("Could not write temp image: " + path);
+       return path;
+    },
+ 
+    importResult: function(path, id) {
+       if (!File.exists(path)) this.fail("Expected output not found: " + path);
+       let wins = (id && id.length) ? ImageWindow.open(path, id, "", true)
+                                    : ImageWindow.open(path);
+       if (!wins || wins.length == 0) this.fail("Could not open output: " + path);
+       return wins[0];
+@@ -70,22 +133,38 @@ var RCAstro = {
+       P.rescale = false;
+       P.truncate = false;
+       // NOTE: PixelMath.SameAsTarget is undefined in this PJSR build (verified
+       // empirically: typeof PixelMath.SameAsTarget === "undefined", causes
+       // "invalid argument type: unsigned integer value expected."). The
+       // correct constant lives on the prototype, matching every bundled PI
+       // reference script (AstroMarkSignatureAdder.js, MaskMerge.js,
+       // DonutRepair.js, BlemishBlaster.js, AdvStarmask.js, ...).
+       P.newImageColorSpace = PixelMath.prototype.SameAsTarget;
+       P.newImageSampleFormat = PixelMath.prototype.SameAsTarget;
+-      P.executeOn(targetView);
++      // executeOn() returns Boolean and MUST be checked. PixelMath silently
++      // declines (locked view, geometry/colorspace mismatch, ...) rather than
++      // throwing, so ignoring the return value here used to mean: a failed
++      // apply looked identical to a successful one from every caller's point
++      // of view -- targetView is left completely unmodified, but runBXT/
++      // runNXT/etc. return normally as if the rc-astro result had been
++      // applied. In a headless batch (e.g. a 12-panel mosaic), that is
++      // exactly the silent-fallback failure mode this project forbids.
++      //
++      // Ownership contract (unchanged, still documented above): applyInPlace
++      // owns resultWindow and must close it on EVERY path -- success or
++      // failure -- so callers' `finally` blocks (which only clean up temp
++      // FILES) never strand the hidden result ImageWindow (a full-resolution
++      // float image) in memory/swap after a failed apply.
++      let ok = P.executeOn(targetView);
+       resultWindow.forceClose();
++      if (!ok)
++         this.fail("PixelMath failed to apply the rc-astro result to " + targetView.id);
+    },
+ 
+    newWindow: function(resultWindow, id) {
+       resultWindow.mainView.id = id;
+       resultWindow.show();
+       resultWindow.zoomToFit();
+       return resultWindow;
+    },
+ 
+    // Removes the given files, then removes any per-run temp directories
+@@ -130,22 +209,30 @@ var RCAstro = {
+             }
+             File.removeDirectory(dir);
+          } catch (e) {
+             console.warningln("RC-Astro: could not remove temp dir " + dir + ": " + e.message);
+          }
+       }
+       this._tempDirs = [];
+    },
+ 
+    fail: function(message) {
++      // Always loud, always throws. The MessageBox is gated on
++      // RCAstro.interactive (default false) because it is MODAL: under
++      // `PixInsight --automation-mode -r=pipeline.js` there is nobody to
++      // click it, so the first CLI failure in a headless run would hang
++      // forever with --force-exit never reached. Interactive callers (a
++      // tool's dialog-driven main()) opt in by setting RCAstro.interactive =
++      // true before invoking the engine.
+       console.criticalln("*** " + this.TITLE + ": " + message);
+-      (new MessageBox("<p>" + message + "</p>", this.TITLE, StdIcon.Error, StdButton.Ok)).execute();
++      if (this.interactive)
++         (new MessageBox("<p>" + message + "</p>", this.TITLE, StdIcon.Error, StdButton.Ok)).execute();
+       throw new Error(message);
+    },
+ 
+    // Run rc-astro <tool> with args; parse --json NDJSON stream via onEvent.
+    runCli: function(tool, argsArray, onEvent) {
+       let bin = this.findBinary();
+       if (!bin) this.fail("rc-astro CLI not found at /usr/local/bin/rc-astro or on PATH.");
+ 
+       // Build a quoted command line: quote tokens that are paths / contain spaces.
+       let quote = function(s){ return /[^A-Za-z0-9_.\-\/]/.test(s) ? '"' + s + '"' : s; };
+@@ -195,31 +282,48 @@ var RCAstro = {
+          while ((nl = buffer.indexOf("\n")) >= 0) { dispatch(buffer.substring(0, nl)); buffer = buffer.substring(nl + 1); }
+       };
+       p.onStandardErrorDataAvailable = function() {
+          let e = String(this.stderr).trim();
+          if (e.length) {
+             console.warningln("rc-astro[stderr]: " + e);
+             stderrText += (stderrText.length ? "\n" : "") + e;
+          }
+       };
+ 
++      let aborted = false;
+       try {
+          // NOTE: bare global processEvents(), not CoreApplication.processEvents()
+          // (verified not callable in this PI 1.9.4 build — see findBinary() above).
+          p.start(cmdLine);
+          for (; p.isStarting;) processEvents();
+-         for (; p.isRunning;)  processEvents();
++         for (; p.isRunning;) {
++            processEvents();
++            // A wedged rc-astro process used to busy-spin here forever: nothing
++            // checked console.abortRequested, so the PixInsight Abort button did
++            // nothing and the only recourse was killing PixInsight itself.
++            if (console.abortRequested) {
++               aborted = true;
++               try { p.kill(); } catch (e) { /* best-effort */ }
++               // Let a few more event pumps flush so isRunning can settle after
++               // kill() rather than spinning indefinitely if it doesn't.
++               for (let guard = 0; p.isRunning && guard < 100; ++guard) processEvents();
++               break;
++            }
++         }
+       } catch (e) {
+          this.fail("Failed to launch rc-astro: " + e.message);
+       }
+       if (buffer.length) dispatch(buffer);
+ 
++      if (aborted)
++         return { exit: p.exitCode, ok: false, errorMsg: "rc-astro run aborted by user." };
++
+       let exit = p.exitCode;
+       let ok = (exit == 0) && (errorMsg.length == 0);
+       // A JSON {"event":"error"} takes precedence (already captured above). If the
+       // run failed without ever emitting one (license failure, crash, bad argument
+       // caught before JSON init, etc.), fall back to the accumulated stderr text so
+       // the real reason isn't lost — only fall back to the generic exit-code message
+       // when stderr is also empty.
+       if (!ok && errorMsg.length == 0) {
+          let trimmedStderr = stderrText.trim();
+          let trimmedStray  = strayText.trim();
+diff --git a/RCAstroNXT.js b/RCAstroNXT.js
+index 404972a..fbc1a35 100644
+--- a/RCAstroNXT.js
++++ b/RCAstroNXT.js
+@@ -54,29 +54,36 @@ var NXTParams = {
+                 "--dchf", format("%.3f",this.dchf), "--dclf", format("%.3f",this.dclf));
+       }
+       if (this.mlVersion != 0) a.push("--ml-version", String(this.mlVersion));
+       a.push("--device", this.device, "--output", outPath);
+       return a;
+    }
+ };
+ 
+ function runNXT(view) {
+    if (view == null || view.isNull) { RCAstro.fail("No target view."); return; }
+-   let dir = RCAstro.tempDir();
+-   let inP = RCAstro.saveView(view, dir);
+-   let outP = dir + "/" + view.id + "_nxt.xisf";
++   // Vars declared before the try, but tempDir()/saveView() are CALLED inside
++   // it: if saveView() throws (disk full, read-only TMPDIR, non-main-view
++   // guard, ...) the temp directory tempDir() just created must still be
++   // swept up by the `finally` below, not stranded.
++   let dir = null, inP = null, outP = null;
+    try {
++      dir = RCAstro.tempDir();
++      inP = RCAstro.saveView(view, dir);
++      outP = dir + "/" + view.id + "_nxt.xisf";
+       let r = RCAstro.runCli("nxt", NXTParams.buildArgs(inP, outP), null);
+       if (!r.ok) { RCAstro.fail("NoiseXTerminator failed: " + r.errorMsg); return; }
+       let out = RCAstro.importResult(outP, view.id + "_nxt_tmp");
+       RCAstro.applyInPlace(out, view);   // applyInPlace closes `out` — do NOT forceClose it
+    } finally {
++      // cleanup() null-guards each path entry, and always sweeps the temp
++      // dir(s) recorded by tempDir() regardless of what's passed here.
+       RCAstro.cleanup([inP, outP]);
+    }
+ }
+ 
+ function NXTDialog() {
+    this.__base__ = Dialog; this.__base__();
+    let self = this; this.windowTitle = NXT_TITLE; this.scaledMinWidth = 440;
+ 
+    this.viewList = new ViewList(this); this.viewList.getMainViews();
+    if (NXTParams.targetView) this.viewList.currentView = NXTParams.targetView;
+@@ -143,23 +150,40 @@ function NXTDialog() {
+ 
+    this.sizer = new VerticalSizer; this.sizer.margin=8; this.sizer.spacing=6;
+    this.sizer.add(this.viewList); this.sizer.add(this.dn); this.sizer.add(this.it); this.sizer.add(this.fs);
+    this.sizer.add(this.advBar); this.sizer.add(this.advCtl);
+    this.sizer.add(mlRow); this.sizer.add(btns);
+    this.adjustToContents();
+ }
+ NXTDialog.prototype = new Dialog;
+ 
+ function main() {
++   // isViewTarget: a saved-instance drop targeting a specific view (the
++   // headless/automation path, e.g. a scripted mosaic pipeline). Run
++   // immediately, no dialog -- RCAstro.interactive stays at its default
++   // (false), so a failure never pops a modal MessageBox that nothing is
++   // present to dismiss.
+    if (Parameters.isViewTarget) { NXTParams.load(); runNXT(Parameters.targetView); return; }
+-   if (Parameters.isGlobalTarget) { NXTParams.load(); runNXT(ImageWindow.activeWindow.mainView); return; }
+-   NXTParams.targetView = ImageWindow.activeWindow.isNull ? undefined : ImageWindow.activeWindow.mainView;
++   // isGlobalTarget: double-clicking a saved process icon. Previously this
++   // ran immediately against ImageWindow.activeWindow -- silently and
++   // destructively rewriting whatever window happened to be active, with
++   // settings that could never be reviewed or edited because the dialog was
++   // only reachable from the Scripts menu (where params are always
++   // defaults). Matches the bundled-script convention (e.g. MaskMerge.js):
++   // load() the saved params, then fall through to show the dialog
++   // pre-populated -- never auto-run.
++   if (Parameters.isGlobalTarget) NXTParams.load();
++   if (NXTParams.targetView === undefined)
++      NXTParams.targetView = ImageWindow.activeWindow.isNull ? undefined : ImageWindow.activeWindow.mainView;
++   // Dialog-driven branch: the user is present, so let fail() show its modal
++   // MessageBox in addition to the console log.
++   RCAstro.interactive = true;
+    let d = new NXTDialog(); d.doRun=false;
+    if (d.execute() && d.doRun) runNXT(NXTParams.targetView);
+ }
+ // RCAstroNXT_TESTING is set by test/t_nxt.js before #include-ing this file so
+ // it can call runNXT()/NXTParams directly without launching the (headless-
+ // incompatible) interactive dialog. Normal launches (Scripts menu, process
+ // icon, #feature-id) never define this global, so main() runs as usual.
+ if (typeof RCAstroNXT_TESTING === "undefined") {
+    main();
+ }
+diff --git a/RCAstroSXT.js b/RCAstroSXT.js
+index 55401f7..e775c33 100644
+--- a/RCAstroSXT.js
++++ b/RCAstroSXT.js
+@@ -30,47 +30,85 @@ var SXTParams = {
+    },
+    buildArgs: function(inPath, outPath) {
+       let a = [inPath];
+       if (this.outputStars) { a.push("--output-stars"); if (this.unscreen) a.push("--unscreen"); }
+       if (this.mlVersion != 0) a.push("--ml-version", String(this.mlVersion));
+       a.push("--device", this.device, "--output", outPath);
+       return a;
+    }
+ };
+ 
++// Fix H: runSXT() always targets the deterministic "<id>_starless"/"<id>_stars"
++// ids. Re-running on the same view (typical while tuning sliders) would find
++// those ids already taken by the previous run's windows: ImageWindow.open()
++// uniquifies on open (best case "_starless1" pile-up), and the subsequent
++// `newWindow()` id= re-assignment onto the SAME still-taken id could throw
++// after the multi-second CLI run has already completed (worst case). Close
++// any prior same-named window first so a re-run deliberately replaces it.
++function closeWindowById(id) {
++   let w = ImageWindow.windowById(id);
++   if (!w.isNull) w.forceClose();
++}
++
+ function runSXT(view) {
+    if (view == null || view.isNull) { RCAstro.fail("No target view."); return; }
+    let id = view.id;
+-   let dir = RCAstro.tempDir();
+-   let inP = RCAstro.saveView(view, dir);
+-   let outP = dir + "/" + id + "_starless.xisf";
+-   // CONFIRMED via Task 4 Step 2 empirical run (see task-4 report): the CLI
+-   // derives the stars filename from the starless OUTPUT basename using a
+-   // HYPHEN, not an underscore: "<outP-without-.xisf>-stars.xisf".
+-   let starsP = dir + "/" + id + "_starless-stars.xisf";
+-   let temps = [inP, outP, starsP];
++   // Vars declared before the try, but tempDir()/saveView() are CALLED inside
++   // it: if saveView() throws (disk full, read-only TMPDIR, non-main-view
++   // guard, ...) the temp directory tempDir() just created must still be
++   // swept up by the `finally` below, not stranded.
++   let dir = null, inP = null, outP = null, starsP = null;
+    try {
++      dir = RCAstro.tempDir();
++      inP = RCAstro.saveView(view, dir);
++      outP = dir + "/" + id + "_starless.xisf";
++      // CONFIRMED via Task 4 Step 2 empirical run (see task-4 report): the CLI
++      // derives the stars filename from the starless OUTPUT basename using a
++      // HYPHEN, not an underscore: "<outP-without-.xisf>-stars.xisf".
++      starsP = dir + "/" + id + "_starless-stars.xisf";
++
+       let r = RCAstro.runCli("sxt", SXTParams.buildArgs(inP, outP), null);
+       if (!r.ok) { RCAstro.fail("StarXTerminator failed: " + r.errorMsg); return; }
++
++      closeWindowById(id + "_starless");
+       let starless = RCAstro.importResult(outP, id + "_starless");
+       RCAstro.newWindow(starless, id + "_starless");
++      // Fix D: neither the temp file saveView() hands to the CLI nor the
++      // CLI's own output carries the astrometric solution (verified
++      // empirically with a throwaway probe -- see fix-wave-c-report.md:
++      // FITS keywords round-trip fine already, but
++      // ImageWindow.hasAstrometricSolution is false on the freshly-imported
++      // result even when the source has a real solution -- it lives in a
++      // separate XISF metadata property, not in the FITS keyword list, so
++      // saveView()'s `tmpWin.keywords = ...` never touched it). SXT is the
++      // only one of the three tools that hands back brand-new windows the
++      // user relies on for plate-solved mosaic/registration work, so
++      // restore it explicitly from the real source window (pattern per
++      // AutoDBE.js: guard on hasAstrometricSolution, then
++      // copyAstrometricSolution(src)).
++      if (view.window.hasAstrometricSolution) starless.copyAstrometricSolution(view.window);
++
+       if (SXTParams.outputStars) {
+          if (!File.exists(starsP)) {
+             RCAstro.fail("Stars image was requested but rc-astro did not produce the " +
+                          "expected output: " + starsP);
+             return;
+          }
++         closeWindowById(id + "_stars");
+          let stars = RCAstro.importResult(starsP, id + "_stars");
+          RCAstro.newWindow(stars, id + "_stars");
++         if (view.window.hasAstrometricSolution) stars.copyAstrometricSolution(view.window);
+       }
+    } finally {
+-      RCAstro.cleanup(temps);
++      // cleanup() null-guards each path entry, and always sweeps the temp
++      // dir(s) recorded by tempDir() regardless of what's passed here.
++      RCAstro.cleanup([inP, outP, starsP]);
+    }
+ }
+ 
+ function SXTDialog() {
+    this.__base__ = Dialog; this.__base__();
+    let self = this;
+    this.windowTitle = SXT_TITLE;
+    this.scaledMinWidth = 380;
+ 
+    this.viewList = new ViewList(this); this.viewList.getMainViews();
+@@ -107,23 +145,40 @@ function SXTDialog() {
+    btns.add(this.newInstanceButton); btns.addStretch(); btns.add(this.ok); btns.add(this.cancel);
+ 
+    this.sizer = new VerticalSizer; this.sizer.margin=8; this.sizer.spacing=6;
+    this.sizer.add(this.viewList); this.sizer.add(this.starsCB); this.sizer.add(this.unscreenCB);
+    this.sizer.add(mlRow); this.sizer.add(btns);
+    this.adjustToContents();
+ }
+ SXTDialog.prototype = new Dialog;
+ 
+ function main() {
++   // isViewTarget: a saved-instance drop targeting a specific view (the
++   // headless/automation path, e.g. a scripted mosaic pipeline). Run
++   // immediately, no dialog -- RCAstro.interactive stays at its default
++   // (false), so a failure never pops a modal MessageBox that nothing is
++   // present to dismiss.
+    if (Parameters.isViewTarget) { SXTParams.load(); runSXT(Parameters.targetView); return; }
+-   if (Parameters.isGlobalTarget) { SXTParams.load(); runSXT(ImageWindow.activeWindow.mainView); return; }
+-   SXTParams.targetView = ImageWindow.activeWindow.isNull ? undefined : ImageWindow.activeWindow.mainView;
++   // isGlobalTarget: double-clicking a saved process icon. Previously this
++   // ran immediately against ImageWindow.activeWindow -- silently and
++   // destructively rewriting whatever window happened to be active, with
++   // settings that could never be reviewed or edited because the dialog was
++   // only reachable from the Scripts menu (where params are always
++   // defaults). Matches the bundled-script convention (e.g. MaskMerge.js):
++   // load() the saved params, then fall through to show the dialog
++   // pre-populated -- never auto-run.
++   if (Parameters.isGlobalTarget) SXTParams.load();
++   if (SXTParams.targetView === undefined)
++      SXTParams.targetView = ImageWindow.activeWindow.isNull ? undefined : ImageWindow.activeWindow.mainView;
++   // Dialog-driven branch: the user is present, so let fail() show its modal
++   // MessageBox in addition to the console log.
++   RCAstro.interactive = true;
+    let d = new SXTDialog(); d.doRun = false;
+    if (d.execute() && d.doRun) runSXT(SXTParams.targetView);
+ }
+ // RCAstroSXT_TESTING is set by test/t_sxt.js before #include-ing this file so
+ // it can call runSXT()/SXTParams directly without launching the (headless-
+ // incompatible) interactive dialog. Normal launches (Scripts menu, process
+ // icon, #feature-id) never define this global, so main() runs as usual.
+ if (typeof RCAstroSXT_TESTING === "undefined") {
+    main();
+ }
+diff --git a/test/t_bxt.js b/test/t_bxt.js
+index 83ba679..060b2c5 100644
+--- a/test/t_bxt.js
++++ b/test/t_bxt.js
+@@ -1,13 +1,13 @@
+ // RCAstroBXT_TESTING suppresses RCAstroBXT.js's auto-invoked main() (which
+ // would otherwise launch the interactive BXTDialog — dialogs don't run under
+-// --automation-mode) so this test can call the real BXTParams.buildArgs()
++// --automation-mode) so this test can call the real runBXT()/BXTParams
+ // directly. See the comment at the bottom of RCAstroBXT.js.
+ // NOTE: RCAstroBXT.js already #include "RCAstroLib.jsh" itself — do not also
+ // include it here. PJSR's quoted #include silently aborts the whole script
+ // if the same file is #include-d twice (confirmed empirically; see task-3
+ // report), unlike angle-bracket <pjsr/...> system includes which tolerate it.
+ var RCAstroBXT_TESTING = true;
+ #include "../RCAstroBXT.js"
+ 
+ // Result goes to a FILE — console.* does not reach stdout under --automation-mode.
+ var RESULT_LOG = "/tmp/rc_t3_result.log";
+@@ -16,33 +16,39 @@ function assert(c, m){ if(!c){ throw new Error(m); } }
+ function runTest() {
+    let log = new File;
+    log.createForWriting(RESULT_LOG);
+    function W(s){ log.outTextLn(s); log.flush(); console.noteln(s); }
+ 
+    try {
+       let src = ImageWindow.open("/home/scarter4work/astro_work/cygnus/gxp/panel_1-1.xisf")[0];
+       let v = src.mainView;
+       let before = v.image.stdDev();
+ 
+-      // headless path: engine round-trip with BXT args (mirrors BXTParams.buildArgs)
+-      let dir = RCAstro.tempDir();
+-      let inP = RCAstro.saveView(v, dir);
+-      let outP = dir + "/o.xisf";
+-      let r = RCAstro.runCli("bxt", [inP, "--ss","0.25","--sn","0.90","--ansr","--device","gpu","--output",outP], null);
+-      assert(r.ok, "bxt failed: " + r.errorMsg);
++      // headless path: call the REAL production entry point runBXT(), not a
++      // reimplementation, so the actual shipped glue (BXTParams -> buildArgs
++      // -> runCli -> the !r.ok fail branch -> the finally cleanup) is
++      // genuinely exercised. This is what would have caught Fix B (temp dir
++      // stranded when saveView() throws before the try).
++      BXTParams.targetView = v;
++      BXTParams.sharpenStars = 0.25;
++      BXTParams.sharpenNonstellar = 0.90;
++      BXTParams.adjustHalos = 0.0;
++      BXTParams.autoPSF = true;
++      BXTParams.psfRadius = 0.0;
++      BXTParams.correctOnly = false;
++      BXTParams.mlVersion = 0;
++      BXTParams.device = "gpu";
+ 
+-      let out = RCAstro.importResult(outP, "bxt_out");
+-      RCAstro.applyInPlace(out, v);   // NOTE: applyInPlace closes `out` — do NOT forceClose it
+-      assert(Math.abs(v.image.stdDev() - before) > 1e-8, "applyInPlace did not modify target");
++      runBXT(v);
++      assert(Math.abs(v.image.stdDev() - before) > 1e-8, "runBXT did not modify target view in place");
+ 
+       src.forceClose();
+-      RCAstro.cleanup([inP, outP]);
+ 
+       // --- BXTParams.buildArgs() argv verification (per task-3-brief table) ---
+       // Call the real function (defined in RCAstroBXT.js, included above with
+       // its auto-run main() suppressed) and log the argv for a few
+       // representative combinations so it can be eyeballed against the brief's
+       // flag table without a GUI.
+       BXTParams.sharpenStars = 0.25;
+       BXTParams.sharpenNonstellar = 0.90;
+       BXTParams.adjustHalos = 0.10;
+       BXTParams.autoPSF = true;
+@@ -64,20 +70,26 @@ function runTest() {
+       W("argv[autoPSF=false, psfRadius=1.5]: " + JSON.stringify(a2));
+       assert(a2.indexOf("--no-ansr") >= 0, "expected --no-ansr when autoPSF=false");
+       assert(a2.indexOf("--nsr") >= 0 && a2[a2.indexOf("--nsr")+1] == "1.50", "expected --nsr 1.50 when autoPSF=false");
+       assert(a2.indexOf("--ansr") < 0, "expected plain --ansr NOT present when autoPSF=false");
+ 
+       BXTParams.correctOnly = true;
+       let a3 = BXTParams.buildArgs("IN.xisf", "OUT.xisf");
+       W("argv[correctOnly=true]: " + JSON.stringify(a3));
+       assert(a3.indexOf("--correct-only") >= 0, "expected --correct-only when correctOnly=true");
+       assert(a3.indexOf("--ss") < 0 && a3.indexOf("--sn") < 0, "expected --correct-only to suppress --ss/--sn");
++      // Fix G: --ash is invalid together with --correct-only (verified against
++      // a real `rc-astro bxt --correct-only --ash 0.100` invocation --
++      // {"event":"error","message":"--correct-only forces --ash to 0, which
++      // conflicts with the value you gave; omit --ash"}). Must never be
++      // emitted in this mode, even when adjustHalos is non-zero.
++      assert(a3.indexOf("--ash") < 0, "expected no --ash when correctOnly=true (CLI rejects --ash with --correct-only)");
+ 
+       BXTParams.correctOnly = false;
+       BXTParams.autoPSF = true;
+       BXTParams.mlVersion = 4;
+       let a4 = BXTParams.buildArgs("IN.xisf", "OUT.xisf");
+       W("argv[mlVersion=4]: " + JSON.stringify(a4));
+       assert(a4.indexOf("--ml-version") >= 0 && a4[a4.indexOf("--ml-version")+1] == "4", "expected --ml-version 4");
+ 
+       W("PASS t_bxt");
+    } catch (e) {
+diff --git a/test/t_nxt.js b/test/t_nxt.js
+index 2c46652..722d433 100644
+--- a/test/t_nxt.js
++++ b/test/t_nxt.js
+@@ -1,13 +1,13 @@
+ // RCAstroNXT_TESTING suppresses RCAstroNXT.js's auto-invoked main() (which
+ // would otherwise launch the interactive NXTDialog — dialogs don't run under
+-// --automation-mode) so this test can call the real NXTParams.buildArgs()
++// --automation-mode) so this test can call the real runNXT()/NXTParams
+ // directly. See the comment at the bottom of RCAstroNXT.js.
+ // NOTE: RCAstroNXT.js already #include "RCAstroLib.jsh" itself — do not also
+ // include it here. PJSR's quoted #include silently aborts the whole script
+ // if the same file is #include-d twice (confirmed empirically; see task-3
+ // report), unlike angle-bracket <pjsr/...> system includes which tolerate it.
+ var RCAstroNXT_TESTING = true;
+ #include "../RCAstroNXT.js"
+ 
+ // Result goes to a FILE — console.* does not reach stdout under --automation-mode.
+ var RESULT_LOG = "/tmp/rc_t5_result.log";
+@@ -16,33 +16,37 @@ function assert(c, m){ if(!c){ throw new Error(m); } }
+ function runTest() {
+    let log = new File;
+    log.createForWriting(RESULT_LOG);
+    function W(s){ log.outTextLn(s); log.flush(); console.noteln(s); }
+ 
+    try {
+       let src = ImageWindow.open("/home/scarter4work/astro_work/cygnus/gxp/panel_1-1.xisf")[0];
+       let v = src.mainView;
+       let before = v.image.stdDev();
+ 
+-      // headless path: engine round-trip with NXT args (mirrors NXTParams.buildArgs, useAdvanced=false)
+-      let dir = RCAstro.tempDir();
+-      let inP = RCAstro.saveView(v, dir);
+-      let outP = dir + "/o.xisf";
+-      let r = RCAstro.runCli("nxt", [inP, "--dn","0.90","--it","2","--fs","5.0","--device","gpu","--output",outP], null);
+-      assert(r.ok, "nxt failed: " + r.errorMsg);
++      // headless path: call the REAL production entry point runNXT(), not a
++      // reimplementation, so the actual shipped glue (NXTParams -> buildArgs
++      // -> runCli -> the !r.ok fail branch -> the finally cleanup) is
++      // genuinely exercised. This is what would have caught Fix B (temp dir
++      // stranded when saveView() throws before the try).
++      NXTParams.targetView = v;
++      NXTParams.denoise = 0.90;
++      NXTParams.iterations = 2;
++      NXTParams.freqScale = 5.0;
++      NXTParams.useAdvanced = false;
++      NXTParams.mlVersion = 0;
++      NXTParams.device = "gpu";
+ 
+-      let out = RCAstro.importResult(outP, "nxt_out");
+-      RCAstro.applyInPlace(out, v);   // NOTE: applyInPlace closes `out` — do NOT forceClose it
+-      assert(Math.abs(v.image.stdDev() - before) > 1e-8, "applyInPlace did not modify target");
++      runNXT(v);
++      assert(Math.abs(v.image.stdDev() - before) > 1e-8, "runNXT did not modify target view in place");
+ 
+       src.forceClose();
+-      RCAstro.cleanup([inP, outP]);
+ 
+       // --- NXTParams.buildArgs() argv verification: advanced off vs on ---
+       // Call the real function (defined in RCAstroNXT.js, included above with
+       // its auto-run main() suppressed) and log the argv for both shapes so
+       // it can be eyeballed against the brief's flag table without a GUI.
+       NXTParams.denoise = 0.90;
+       NXTParams.iterations = 2;
+       NXTParams.freqScale = 5.0;
+       NXTParams.useAdvanced = false;
+       NXTParams.mlVersion = 0;
+diff --git a/test/t_sxt.js b/test/t_sxt.js
+index bdac042..af39ccd 100644
+--- a/test/t_sxt.js
++++ b/test/t_sxt.js
+@@ -56,24 +56,70 @@ function main() {
+ 
+       assert(!v.isNull, "original view was closed by runSXT (must be preserved)");
+       assert(Math.abs(v.image.stdDev() - beforeStdDev) < 1e-9,
+              "original view pixels changed — runSXT must NOT apply in place");
+ 
+       let starlessWin = ImageWindow.windowById(id + "_starless");
+       assert(!starlessWin.isNull, "no " + id + "_starless window created");
+       let starsWin = ImageWindow.windowById(id + "_stars");
+       assert(!starsWin.isNull, "no " + id + "_stars window created");
+ 
+-      starlessWin.forceClose();
+-      starsWin.forceClose();
++      // --- Part 2b: Fix H — re-run on the SAME view must not collide with
++      // the windows the first run just created (deterministic "<id>_starless"
++      // / "<id>_stars" ids). Before the fix, PI's own id-uniquify-on-open
++      // (best case "_starless1" pile-up) or the newWindow() id= re-assignment
++      // onto the still-taken id (worst case: throws after the ~2.7s CLI run)
++      // would have broken this.
++      runSXT(v);
++      let starlessWin2 = ImageWindow.windowById(id + "_starless");
++      let starsWin2 = ImageWindow.windowById(id + "_stars");
++      assert(!starlessWin2.isNull, "re-run did not (re)create " + id + "_starless");
++      assert(!starsWin2.isNull, "re-run did not (re)create " + id + "_stars");
++      assert(ImageWindow.windowById(id + "_starless1").isNull,
++             "found a stray uniquified '" + id + "_starless1' window — Fix H collision not handled");
++      assert(ImageWindow.windowById(id + "_stars1").isNull,
++             "found a stray uniquified '" + id + "_stars1' window — Fix H collision not handled");
++
++      starlessWin2.forceClose();
++      starsWin2.forceClose();
+       src.forceClose();
+ 
++      // --- Part 2c: Fix D — SXT's new windows must preserve the source's
++      // astrometric solution. The gxp panel used above has none to begin
++      // with (verified: hasAstrometricSolution=false, 0 FITS keywords), so
++      // it can't exercise this. Use a real plate-solved/registered frame
++      // instead (confirmed via probe: hasAstrometricSolution=true).
++      let srcSolved = ImageWindow.open(
++         "/home/scarter4work/astro_work/ic4604/registered/Light_IC 4604_2-4_60.0s_Bin1_Lqef_20260616-001157_181deg_0001_d_r.xisf")[0];
++      let vSolved = srcSolved.mainView; let idSolved = vSolved.id;
++      assert(srcSolved.hasAstrometricSolution, "test fixture unexpectedly has no astrometric solution");
++
++      SXTParams.targetView = vSolved;
++      SXTParams.outputStars = true;
++      SXTParams.unscreen = false;
++      SXTParams.mlVersion = 0;
++      SXTParams.device = "gpu";
++      runSXT(vSolved);
++
++      let starlessSolved = ImageWindow.windowById(idSolved + "_starless");
++      let starsSolved = ImageWindow.windowById(idSolved + "_stars");
++      assert(!starlessSolved.isNull, "no " + idSolved + "_starless window created");
++      assert(!starsSolved.isNull, "no " + idSolved + "_stars window created");
++      assert(starlessSolved.hasAstrometricSolution,
++             "Fix D regressed: " + idSolved + "_starless has no astrometric solution");
++      assert(starsSolved.hasAstrometricSolution,
++             "Fix D regressed: " + idSolved + "_stars has no astrometric solution");
++
++      starlessSolved.forceClose();
++      starsSolved.forceClose();
++      srcSolved.forceClose();
++
+       // --- Part 3: buildArgs() argv checks ---
+       SXTParams.outputStars = false;
+       SXTParams.unscreen = false;
+       SXTParams.mlVersion = 0;
+       SXTParams.device = "gpu";
+       let a1 = SXTParams.buildArgs("IN.xisf", "OUT.xisf");
+       W("argv[outputStars=false]: " + JSON.stringify(a1));
+       assert(a1.indexOf("--output-stars") < 0, "expected no --output-stars when outputStars=false");
+       assert(a1.indexOf("--unscreen") < 0, "expected no --unscreen when outputStars=false");
+       assert(a1.indexOf("--ml-version") < 0, "expected no --ml-version when mlVersion=0 (Latest)");

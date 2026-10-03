@@ -1,0 +1,222 @@
+# Review package: 1121569..HEAD
+
+## Commits
+6a08f01 feat(alignment): channel-aware warp overload
+
+## Files changed
+ .../include/nukex/alignment/homography.hpp         | 15 ++++
+ src/lib/alignment/src/homography.cpp               | 15 +++-
+ test/unit/alignment/test_homography.cpp            | 79 ++++++++++++++++++++++
+ 3 files changed, 108 insertions(+), 1 deletion(-)
+
+## Diff
+diff --git a/src/lib/alignment/include/nukex/alignment/homography.hpp b/src/lib/alignment/include/nukex/alignment/homography.hpp
+index 9285b00..62376a1 100644
+--- a/src/lib/alignment/include/nukex/alignment/homography.hpp
++++ b/src/lib/alignment/include/nukex/alignment/homography.hpp
+@@ -1,12 +1,13 @@
+ #pragma once
+ 
++#include "nukex/alignment/channel_registration.hpp"
+ #include "nukex/alignment/types.hpp"
+ #include "nukex/io/image.hpp"
+ 
+ namespace nukex {
+ 
+ /// Compute projective homography using RANSAC + Direct Linear Transform (DLT).
+ class HomographyComputer {
+ public:
+     struct Config {
+         int   ransac_iterations = 500;
+@@ -29,20 +30,34 @@ public:
+         const std::vector<std::pair<int, int>>& matches)
+     {
+         return compute(source, reference, matches, Config{});
+     }
+ 
+     /// Apply homography to an image using bilinear interpolation.
+     /// Pixels outside the transformed boundary get value 0.
+     static Image warp(const Image& source, const HomographyMatrix& H,
+                       int output_width, int output_height);
+ 
++    /// Warp, additionally registering each channel to the reference channel.
++    ///
++    /// H_inv maps an output pixel to where the REFERENCE channel sees it in
++    /// the source. A_c then maps that to where channel c sees it. So the
++    /// sample position for channel c is A_c(H_inv(x, y)) -- one resample per
++    /// channel, exactly as the plain warp does, with the correction folded in
++    /// rather than applied as a second pass.
++    ///
++    /// An empty `channels`, or an identity entry within it, takes the same
++    /// path as the four-argument overload for that channel.
++    static Image warp(const Image& source, const HomographyMatrix& H,
++                      int output_width, int output_height,
++                      const ChannelTransforms& channels);
++
+     /// Correct a meridian-flipped homography by pre-multiplying with
+     /// a 180-degree rotation about the image center.
+     static HomographyMatrix correct_meridian_flip(
+         const HomographyMatrix& H, int width, int height);
+ 
+ private:
+     /// Solve for homography from exactly 4 point correspondences using DLT.
+     static HomographyMatrix dlt_4point(
+         const float src_x[4], const float src_y[4],
+         const float dst_x[4], const float dst_y[4]);
+diff --git a/src/lib/alignment/src/homography.cpp b/src/lib/alignment/src/homography.cpp
+index 64c1109..b2c378d 100644
+--- a/src/lib/alignment/src/homography.cpp
++++ b/src/lib/alignment/src/homography.cpp
+@@ -298,44 +298,57 @@ AlignmentResult HomographyComputer::compute(
+         return result;
+     }
+ 
+     // Check for meridian flip
+     result.is_meridian_flipped = result.H.is_meridian_flip();
+ 
+     return result;
+ }
+ 
+ Image HomographyComputer::warp(const Image& source, const HomographyMatrix& H,
+-                                int output_width, int output_height) {
++                               int output_width, int output_height) {
++    return warp(source, H, output_width, output_height, ChannelTransforms{});
++}
++
++Image HomographyComputer::warp(const Image& source, const HomographyMatrix& H,
++                               int output_width, int output_height,
++                               const ChannelTransforms& channels) {
+     Image output(output_width, output_height, source.n_channels());
+ 
+     // Compute inverse H for backward mapping
+     // H maps source→ref, so H_inv maps ref→source
+     Eigen::Matrix3f He;
+     for (int r = 0; r < 3; r++)
+         for (int c = 0; c < 3; c++)
+             He(r, c) = H(r, c);
+ 
+     Eigen::Matrix3f H_inv = He.inverse();
+ 
+     int sw = source.width();
+     int sh = source.height();
+ 
+     for (int ch = 0; ch < source.n_channels(); ch++) {
++        const bool has_ct = ch < static_cast<int>(channels.per_channel.size());
++        const ChannelTransform ct =
++            has_ct ? channels.per_channel[ch] : ChannelTransform{};
++        const bool apply_ct = has_ct && !ct.is_identity();
++
+         for (int y = 0; y < output_height; y++) {
+             for (int x = 0; x < output_width; x++) {
+                 // Map output (x, y) back to source coordinates
+                 float w = H_inv(2, 0) * x + H_inv(2, 1) * y + H_inv(2, 2);
+                 if (std::abs(w) < 1e-10f) continue;
+                 float sx = (H_inv(0, 0) * x + H_inv(0, 1) * y + H_inv(0, 2)) / w;
+                 float sy = (H_inv(1, 0) * x + H_inv(1, 1) * y + H_inv(1, 2)) / w;
+ 
++                if (apply_ct) ct.apply(channels.cx, channels.cy, sx, sy);
++
+                 // Bilinear interpolation
+                 if (!std::isfinite(sx) || !std::isfinite(sy)) continue;
+                 if (sx < 0 || sx >= sw - 1 || sy < 0 || sy >= sh - 1) continue;
+ 
+                 int ix = static_cast<int>(sx);
+                 int iy = static_cast<int>(sy);
+                 float fx = sx - ix;
+                 float fy = sy - iy;
+ 
+                 float v00 = source.at(ix,     iy,     ch);
+diff --git a/test/unit/alignment/test_homography.cpp b/test/unit/alignment/test_homography.cpp
+index cce1a59..770bfc6 100644
+--- a/test/unit/alignment/test_homography.cpp
++++ b/test/unit/alignment/test_homography.cpp
+@@ -183,10 +183,89 @@ TEST_CASE("StarMatcher: recovers correspondences under rotation + translation",
+ 
+     // Correspondences must be self-index (star i in ref maps to star i in src)
+     // because we constructed them that way.
+     int correct = 0;
+     for (const auto& [si, ri] : matches)
+         if (si == ri) correct++;
+     // Allow a couple of near-coincidence misses due to noise-induced descriptor
+     // jitter, but the vast majority must be correct.
+     REQUIRE(correct >= static_cast<int>(matches.size() * 0.9f));
+ }
++
++// --- channel-aware warp --------------------------------------------------
++
++#include "nukex/alignment/channel_registration.hpp"
++
++TEST_CASE("warp with channel transforms brings a displaced channel into "
++          "register", "[homography]") {
++    // Red drawn 1.5 px right of green. A channel transform of exactly that
++    // must pull it back on top.
++    nukex::Image src(200, 200, 3);
++    src.fill(0.0f);
++
++    auto blob = [&](int ch, double cx, double cy) {
++        for (int dy = -6; dy <= 6; dy++)
++            for (int dx = -6; dx <= 6; dx++) {
++                int px = int(std::lround(cx)) + dx;
++                int py = int(std::lround(cy)) + dy;
++                if (px < 0 || px >= 200 || py < 0 || py >= 200) continue;
++                double ex = px - cx, ey = py - cy;
++                src.at(px, py, ch) += float(0.5 * std::exp(-(ex*ex + ey*ey) / 5.12));
++            }
++    };
++    blob(1, 100.0, 100.0);   // green
++    blob(0, 101.5, 100.0);   // red, displaced
++
++    nukex::ChannelTransforms ct;
++    ct.cx = 99.5; ct.cy = 99.5;
++    ct.reference_channel = 1;
++    ct.per_channel.resize(3);
++    ct.per_channel[0].s  = 1.0;
++    ct.per_channel[0].tx = 1.5;         // where red images a green position
++    ct.per_channel[0].fit = nukex::ChannelTransform::Fit::TranslationOnly;
++
++    nukex::Image out = nukex::HomographyComputer::warp(
++        src, nukex::HomographyMatrix::identity(), 200, 200, ct);
++
++    // Centre of mass of each channel in a box around the green position.
++    auto com_x = [&](const nukex::Image& im, int ch) {
++        double w = 0, wx = 0;
++        for (int y = 90; y < 110; y++)
++            for (int x = 90; x < 112; x++) {
++                double v = im.at(x, y, ch);
++                if (v <= 0) continue;
++                w += v; wx += v * x;
++            }
++        return wx / w;
++    };
++
++    // Before: red sits 1.5 px away. After: within a twentieth of a pixel.
++    REQUIRE(std::abs(com_x(src, 0) - com_x(src, 1)) > 1.4);
++    REQUIRE(std::abs(com_x(out, 0) - com_x(out, 1)) < 0.05);
++
++    // Green must be untouched. It is the reference; resampling it would blur
++    // it for nothing, and the acceptance criterion checks its FWHM.
++    for (int y = 0; y < 200; y++)
++        for (int x = 0; x < 200; x++)
++            REQUIRE(out.at(x, y, 1) == Catch::Approx(src.at(x, y, 1)));
++}
++
++TEST_CASE("warp with empty channel transforms matches the old warp exactly",
++          "[homography]") {
++    nukex::Image src(64, 64, 3);
++    for (int c = 0; c < 3; c++)
++        for (int y = 0; y < 64; y++)
++            for (int x = 0; x < 64; x++)
++                src.at(x, y, c) = float((x * 7 + y * 13 + c * 29) % 251) / 251.0f;
++
++    nukex::HomographyMatrix H = nukex::HomographyMatrix::identity();
++    H(0, 2) = 2.5f;
++    H(1, 2) = -1.25f;
++
++    nukex::Image a = nukex::HomographyComputer::warp(src, H, 64, 64);
++    nukex::Image b = nukex::HomographyComputer::warp(src, H, 64, 64,
++                                                    nukex::ChannelTransforms{});
++
++    REQUIRE(a.data_size() == b.data_size());
++    for (size_t i = 0; i < a.data_size(); i++)
++        REQUIRE(a.data()[i] == b.data()[i]);
++}

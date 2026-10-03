@@ -1,0 +1,323 @@
+# Review package: 9c5e19c..df577e7
+
+## Commits
+df577e7 fix: stop loop.py rebuilding propose.py's menu just to bound it
+
+## Files changed
+ src/autocontrast/optimize/loop.py    | 31 +++++++-----------
+ src/autocontrast/optimize/propose.py | 13 ++++++--
+ tests/test_optimize_loop.py          | 61 +++++++++++++++++++++++++++++++++++-
+ tests/test_optimize_propose.py       | 19 +++++++++++
+ 4 files changed, 101 insertions(+), 23 deletions(-)
+
+## Diff
+diff --git a/src/autocontrast/optimize/loop.py b/src/autocontrast/optimize/loop.py
+index 6c793ad..008d476 100644
+--- a/src/autocontrast/optimize/loop.py
++++ b/src/autocontrast/optimize/loop.py
+@@ -13,23 +13,22 @@ not a recombination of whatever the search happened to produce along the way.
+ """
+ 
+ from __future__ import annotations
+ 
+ from pathlib import Path
+ 
+ import numpy as np
+ 
+ from autocontrast.fingerprint.distance import fingerprint_distance
+ from autocontrast.fingerprint.extract import FingerprintData, extract
+-from autocontrast.fingerprint.palette import palette_chroma_compatible
+ 
+-from .actions import Action, available_actions
++from .actions import Action
+ from .beam import BeamConfig, Branch, prune
+ from .executor import Executor
+ from .guardrails import GuardrailLimits, evaluate_guardrails
+ from .propose import propose_actions
+ from .recipe import Recipe
+ from .session import Session
+ 
+ 
+ def _measure(rgb, session: Session) -> FingerprintData:
+     return extract(
+@@ -106,40 +105,31 @@ def resume(session_file: str | Path, *, proxy_path: str) -> Session:
+         )
+     return session
+ 
+ 
+ def _ranked_menu(
+     reference_fp: FingerprintData, parent_fp: FingerprintData, *,
+     applied_kinds: frozenset[str], n_scales: int,
+ ) -> list[Action]:
+     """Every legal action for this state, in the proposer's own priority order.
+ 
+-    ``propose_actions`` returns at most ``top_k`` entries, so obtaining the WHOLE
+-    ranking means handing it a bound that cannot truncate the list. The menu is
+-    that bound: ``available_actions`` is precisely what the proposer groups and
+-    ranks, and a set of groups can never outnumber its members. Rebuilding the
+-    menu here duplicates no ranking logic -- it only counts what is on offer --
+-    and it tracks ``actions.py`` automatically if a kind is ever added.
++    ``top_k=None`` is ``propose_actions``'s own contract for "the whole
++    ranking, no truncation" -- this is not a second implementation of that
++    idea, it delegates outright. ``propose.py`` alone knows how the menu is
++    built and grouped; a second copy of that construction here could drift
++    from it (a new keyword argument, a changed ``psf_fwhm_arcsec`` expression)
++    and would then silently under-count the ranking, truncating exactly the
++    tail the bounded retry (SS3.3) exists to reach.
+     """
+-    compatible = palette_chroma_compatible(
+-        reference_fp.palette_class, parent_fp.palette_class
+-    )
+-    menu = available_actions(
+-        pixel_scale_arcsec=parent_fp.pixel_scale_arcsec,
+-        psf_fwhm_arcsec=max(reference_fp.psf_fwhm_arcsec, parent_fp.psf_fwhm_arcsec),
+-        n_scales=n_scales,
+-        palette_compatible=compatible,
+-        applied_kinds=applied_kinds,
+-    )
+     return propose_actions(
+         reference_fp, parent_fp, applied_kinds=applied_kinds,
+-        n_scales=n_scales, top_k=len(menu),
++        n_scales=n_scales, top_k=None,
+     )
+ 
+ 
+ def advance(session: Session, executor: Executor, *, load, save,
+             limits: GuardrailLimits = GuardrailLimits()) -> Session:
+     """One iteration: expand every live branch, guardrail, score, prune.
+ 
+     A branch reaches for ``config.top_k`` LIVE candidates, walking the ranked
+     menu until it has them or until ``config.max_attempts`` actions have been
+     tried -- whichever comes first (§3.3). It is deliberately not "attempt the
+@@ -290,21 +280,22 @@ def advance(session: Session, executor: Executor, *, load, save,
+         session.branches = []
+         session.converged = True
+         session.convergence_reason = (
+             "every branch was discarded by guardrails or executor failure"
+         )
+         return session
+ 
+     session.branches = survivors
+     best_candidate = survivors[0]
+     if best_candidate.distance < session.best.distance - session.config.epsilon_improve:
+-        session.best = best_candidate  # checkpoint (§6.1)
++        session.best = best_candidate  # in-memory only; durability is Session.save (§2.1),
++        # called by the sidecar (Task 11) between loop calls, not by the loop itself
+ 
+     session.distance_history.append(session.best.distance)
+     _check_convergence(session)
+     return session
+ 
+ 
+ def _check_convergence(session: Session) -> None:
+     """§6.3, OR of the conditions. Condition 2 (VLM) is absent in Phase 2."""
+     cfg = session.config
+     if session.iteration >= cfg.iteration_cap:
+diff --git a/src/autocontrast/optimize/propose.py b/src/autocontrast/optimize/propose.py
+index 2274cca..d0b1487 100644
+--- a/src/autocontrast/optimize/propose.py
++++ b/src/autocontrast/optimize/propose.py
+@@ -100,24 +100,33 @@ def _band_deficits(ref, target) -> np.ndarray:
+     deficits = np.zeros_like(target.energy.energy)
+     bl = band_limit(ref.energy, target.energy, ref.psf_fwhm_arcsec, target.psf_fwhm_arcsec)
+     if not bl.usable:
+         return deficits
+     mask = (target.energy.centers_arcsec >= bl.lo_arcsec) & (target.energy.centers_arcsec <= bl.hi_arcsec)
+     deficits[mask] = bl.ref_shape - bl.target_shape
+     return deficits
+ 
+ 
+ def propose_actions(
+-    ref, target, *, applied_kinds: frozenset[str], n_scales: int, top_k: int
++    ref, target, *, applied_kinds: frozenset[str], n_scales: int, top_k: int | None
+ ) -> list[Action]:
+     """The top_k actions most likely to close the largest gap.
+ 
++    ``top_k=None`` means the WHOLE ranking, with no truncation: every group the
++    menu produces, in priority order. This is the single source of truth for
++    "how many groups can the menu possibly produce" -- a caller that needs the
++    entire ranking (rather than a truncated one) should pass ``None`` here
++    rather than reconstruct the menu itself to compute a bound, which would
++    silently drift out of sync with this function's own grouping if that ever
++    changes (the failure this closes: `loop.py` used to rebuild the menu just to
++    learn its length).
++
+     local_contrast/local_equalize are ranked by the structural deficit at their
+     own band (SS3.5); every other action kind is ranked by the aggregate
+     component gap it addresses. Chroma actions are withheld entirely when the
+     palette gate is closed (SS2.3); the gate is consulted here as well as in the
+     distance function so a mismatched reference can never even suggest a color
+     move.
+ 
+     Every leveled action kind carries three tied magnitude levels (gentle/
+     moderate/strong) that always score identically for a given (kind, band) --
+     sorting and slicing directly would let the single highest-priority group
+@@ -165,21 +174,21 @@ def propose_actions(
+         scale_key = action.scale_arcsec if action.scale_arcsec is not None else -1.0
+         return (-gap_for(action), scale_key, action.kind)
+ 
+     groups: dict[tuple[float, float, str], list[Action]] = {}
+     for action in menu:
+         groups.setdefault(group_key(action), []).append(action)
+     ordered_groups = sorted(groups)
+ 
+     proposed: list[Action] = []
+     for gk in ordered_groups:
+-        if len(proposed) >= top_k:
++        if top_k is not None and len(proposed) >= top_k:
+             break
+         members = groups[gk]
+         kind = members[0].kind
+         # Mode-change actions (background_neutralize, star_split) change mode
+         # rather than degree and carry level "" -- they have no magnitude axis to
+         # pick from, so they pass through untouched. Tested on the level itself
+         # rather than on ONCE_ONLY membership: "may be applied at most once" and
+         # "has no magnitude" are two different properties that merely happen to
+         # coincide today, and it is the latter that decides this branch.
+         # (Action.strength returns 1.0 for "" but RAISES for any other
+diff --git a/tests/test_optimize_loop.py b/tests/test_optimize_loop.py
+index 3858e88..4d73d51 100644
+--- a/tests/test_optimize_loop.py
++++ b/tests/test_optimize_loop.py
+@@ -4,26 +4,30 @@ The fail-safe is structural: best-so-far is seeded with the INPUT, so an image
+ already at the valley floor sees every candidate score worse and the loop
+ declines by itself. These tests assert BOTH sides of that -- a flattened image is
+ measurably improved, and an already-good one is returned byte-identical.
+ """
+ 
+ from __future__ import annotations
+ 
+ import numpy as np
+ import pytest
+ 
++import autocontrast.optimize.loop as loop_mod
+ from autocontrast.eval.degrade import flatten
+ from autocontrast.fingerprint.extract import extract
+ from autocontrast.optimize.beam import BeamConfig
+ from autocontrast.optimize.guardrails import GuardrailLimits, detect_stars
+ from autocontrast.optimize.executors.numpy_exec import NumpyExecutor
+-from autocontrast.optimize.loop import advance, begin, outcome, resume, run_to_convergence
++from autocontrast.optimize.loop import (
++    _ranked_menu, advance, begin, outcome, resume, run_to_convergence,
++)
++from autocontrast.optimize.propose import propose_actions
+ from autocontrast.optimize.session import Session, session_path
+ 
+ SCALE, PSF, NSCALES = 1.0, 2.0, 7
+ 
+ # Every convergence reason the loop is allowed to report (§6.3). A run that
+ # terminates for a reason outside this set has invented one.
+ _RECOGNIZED_REASONS = (
+     "iteration cap",
+     "deltaD below",
+     "every branch was discarded",
+@@ -566,10 +570,65 @@ def test_resume_compares_exactly_not_by_resolution(tmp_path):
+     a guess.
+     """
+     ref = _reference_image(h=64, w=64)
+     store, load, save = _memory_io()
+     session = _session_for(ref, ref, store, load, save)
+     path = session_path(tmp_path, session.session_id)
+     session.save(path)
+ 
+     with pytest.raises(ValueError):
+         resume(path, proxy_path="/mem/./proxy.png")
++
++
++def test_ranked_menu_has_no_menu_construction_of_its_own(monkeypatch):
++    """`_ranked_menu` must be nothing more than "the whole ranking" -- it must
++    not know how the menu is built. It used to: a verbatim copy of
++    `propose.py`'s ``palette_chroma_compatible`` + ``available_actions(...)``
++    call, kept only to learn ``len(menu)``. That copy is dangerous because
++    nothing enforces that it stays byte-identical to the real one -- if
++    `propose.py` ever changes what it considers the menu, this module's own
++    (unchanged) copy would compute a bound too small, and ``propose_actions``
++    would silently truncate the tail of the ranking. On the measured fixture
++    that tail is exactly where ``local_contrast@2"`` sits, ranked fifth, and it
++    is the action that actually closes the gap.
++
++    Simulated here by patching THIS module's own ``available_actions`` binding
++    -- exactly the shape a reintroduced duplicate would take -- while leaving
++    ``propose.py``'s binding (the real menu construction) untouched. If
++    `_ranked_menu` delegates entirely to ``propose_actions(..., top_k=None)``,
++    the patch is inert. If it reconstructs the menu itself, the patch starves
++    it and the ranking it returns diverges from the real one.
++    """
++    ref = _reference_image()
++    flat = flatten(ref, strength=0.6)
++    ref_fp = extract(ref, pixel_scale_arcsec=SCALE, n_scales=NSCALES,
++                      psf_fwhm_arcsec=PSF, palette_class="HOO")
++    target_fp = extract(flat, pixel_scale_arcsec=SCALE, n_scales=NSCALES,
++                         psf_fwhm_arcsec=PSF, palette_class="HOO")
++
++    # `raising=False`: after the fix, loop.py has no `available_actions` name
++    # of its own to patch at all -- that absence is part of what this proves.
++    monkeypatch.setattr(loop_mod, "available_actions", lambda *a, **k: [], raising=False)
++
++    via_wrapper = _ranked_menu(ref_fp, target_fp, applied_kinds=frozenset(), n_scales=NSCALES)
++    via_direct = propose_actions(ref_fp, target_fp, applied_kinds=frozenset(),
++                                  n_scales=NSCALES, top_k=None)
++
++    assert len(via_wrapper) > 0
++    assert via_wrapper == via_direct
++
++
++def test_ranked_menu_matches_an_explicit_top_k_none_call():
++    """`_ranked_menu` and ``propose_actions(..., top_k=None)`` are the same
++    call under two names -- not two implementations that happen to agree."""
++    ref = _reference_image()
++    flat = flatten(ref, strength=0.6)
++    ref_fp = extract(ref, pixel_scale_arcsec=SCALE, n_scales=NSCALES,
++                      psf_fwhm_arcsec=PSF, palette_class="HOO")
++    target_fp = extract(flat, pixel_scale_arcsec=SCALE, n_scales=NSCALES,
++                         psf_fwhm_arcsec=PSF, palette_class="HOO")
++
++    assert _ranked_menu(
++        ref_fp, target_fp, applied_kinds=frozenset(), n_scales=NSCALES,
++    ) == propose_actions(
++        ref_fp, target_fp, applied_kinds=frozenset(), n_scales=NSCALES, top_k=None,
++    )
+diff --git a/tests/test_optimize_propose.py b/tests/test_optimize_propose.py
+index e2acdfc..fe66c73 100644
+--- a/tests/test_optimize_propose.py
++++ b/tests/test_optimize_propose.py
+@@ -98,20 +98,39 @@ def test_proposals_are_deterministic_across_hash_seeds():
+     assert outputs[0] == outputs[1] == outputs[2]
+     assert outputs[0] != ""
+ 
+ 
+ def test_top_k_is_respected():
+     ref, target = _fp(_textured()), _fp(_flat())
+     assert len(propose_actions(ref, target, applied_kinds=frozenset(),
+                                n_scales=7, top_k=3)) == 3
+ 
+ 
++def test_top_k_none_returns_the_whole_ranking_untruncated():
++    """``top_k=None`` is the explicit "no truncation" contract this function
++    exposes for a caller that needs the ENTIRE ranking -- `loop.py`'s
++    `_ranked_menu`, in service of SS3.3's bounded retry -- rather than a fixed
++    slice of it. It must be the SAME ranking a bounded call sees a prefix of,
++    not a second computation that only happens to agree with it.
++    """
++    ref, target = _fp(_textured()), _fp(_flat())
++    full = propose_actions(ref, target, applied_kinds=frozenset(), n_scales=7, top_k=None)
++    generous = propose_actions(ref, target, applied_kinds=frozenset(), n_scales=7, top_k=1000)
++    small = propose_actions(ref, target, applied_kinds=frozenset(), n_scales=7, top_k=3)
++
++    # top_k=1000 already exceeds the group count, so it too is "everything" --
++    # confirming top_k=None isn't a distinct code path that merely matches by luck.
++    assert full == generous
++    assert full[:3] == small  # a bounded call is a strict PREFIX of the full ranking
++    assert len(full) > 3  # otherwise the prefix check above is vacuous
++
++
+ def test_chroma_is_never_proposed_on_a_palette_mismatch():
+     # L-only matches nothing, not even itself -- the hardest gate case.
+     ref = _fp(_textured(), palette="L-only")
+     target = _fp(_flat(), palette="HOO")
+     proposed = propose_actions(ref, target, applied_kinds=frozenset(),
+                                n_scales=7, top_k=8)
+     assert not any(a.kind == "chroma" for a in proposed)
+ 
+ 
+ def test_chroma_is_proposed_when_palette_is_compatible():

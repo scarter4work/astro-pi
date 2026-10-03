@@ -1,0 +1,180 @@
+# Review package: 7a94fca..HEAD
+
+## Commits
+55b9fa7 fix: never reassign an already-clustered frame; seed reps by insertion order
+
+## Files changed
+ src/astrometa/cluster.py | 54 +++++++++++++++++++++++++++++++++---------------
+ tests/test_cluster.py    | 41 ++++++++++++++++++++++++++++++++++++
+ 2 files changed, 78 insertions(+), 17 deletions(-)
+
+## Diff
+diff --git a/src/astrometa/cluster.py b/src/astrometa/cluster.py
+index 1c9a583..8c16a38 100644
+--- a/src/astrometa/cluster.py
++++ b/src/astrometa/cluster.py
+@@ -47,66 +47,86 @@ def frame_fov_deg(row) -> tuple[float, float]:
+     return (arcsec_px * n1 / 3600.0, arcsec_px * n2 / 3600.0)
+ 
+ 
+ def _seed_reps(conn) -> list[dict]:
+     """
+     Load one representative frame per field already in the database, so a
+     re-run matches frames against existing fields instead of creating a
+     duplicate field for every frame (the clustering loop below only ever
+     searches this in-memory list, never the database).
+ 
+-    The representative for a field is the frame carrying that field_id
+-    with the smallest content_hash. That is always the frame that
+-    originally created the field: assign_fields processes candidate frames
+-    in ascending content_hash order, and a field is only ever created when
+-    the frame being processed fails to match any rep already in `reps` --
+-    so the first (smallest-hash) frame of a field is necessarily the one
+-    that created it, and every later member matched against it (or against
+-    a rep chained from it) rather than creating a field of its own.
++    The representative for a field is its EARLIEST-INSERTED member, found
++    via SQLite's implicit `rowid` (MIN(rowid) per field_id) rather than
++    content_hash: content_hash is a BLAKE2b digest, so its sort order is
++    unrelated to insertion order, and a frame added on a later incremental
++    run has roughly even odds of sorting before the frame that originally
++    created the field. Picking by content_hash let representative status
++    drift to a newly-inserted frame across runs -- and because matching is
++    greedy single-link (a field's members are only guaranteed to be within
++    tolerance of whichever single frame was rep AT THE TIME they matched,
++    not of every other member), a member that matched the ORIGINAL
++    representative could fall outside tolerance of a DIFFERENT one picked
++    on a later run and silently move to a new field. rowid always
++    increases with insertion, so the original representative keeps the
++    role for as long as the row exists -- this relies on rowid stability,
++    which holds unless the store is VACUUMed (VACUUM may renumber rowids).
++
++    Filters on fingerprint IS NOT NULL as well as field_id IS NOT NULL:
++    field_id is only ever set (below, by this module) on rows that already
++    passed a fingerprint-not-null check, so this is currently unreachable,
++    but it documents that invariant so a future change to how field_id
++    gets set can't silently violate it here.
+     """
+     rows = conn.execute("""
+         SELECT f.field_id AS id, f.fingerprint AS fingerprint,
+                f.header_ra AS ra, f.header_dec AS dec
+         FROM frames f
+         INNER JOIN (
+-            SELECT field_id, MIN(content_hash) AS rep_hash
++            SELECT field_id, MIN(rowid) AS rep_rowid
+             FROM frames
+-            WHERE field_id IS NOT NULL
++            WHERE field_id IS NOT NULL AND fingerprint IS NOT NULL
+             GROUP BY field_id
+-        ) rep ON f.field_id = rep.field_id AND f.content_hash = rep.rep_hash
++        ) rep ON f.field_id = rep.field_id AND f.rowid = rep.rep_rowid
+         ORDER BY f.field_id
+     """).fetchall()
+     return [{"id": r["id"], "fingerprint": r["fingerprint"],
+              "ra": r["ra"], "dec": r["dec"]} for r in rows]
+ 
+ 
+ def assign_fields(conn, fp_threshold: int = FP_THRESHOLD_DEFAULT) -> int:
+     """
+     Cluster light frames into fields by fingerprint + pointing proximity
+     and write the assignment to frames.field_id.
+ 
+-    Idempotent: `reps` is seeded from fields already in the database (see
+-    `_seed_reps`) before the clustering loop runs, so a frame that already
+-    belongs to a field matches its existing field again rather than
+-    spawning a duplicate. Returns the number of NEW fields created by this
+-    call (0 on a re-run that finds nothing new to cluster).
++    Idempotent in two parts:
++      - Structural guarantee: the candidate query below only ever selects
++        frames with field_id IS NULL, so a frame is never re-evaluated,
++        and never reassigned, once it has been assigned a field_id. This
++        holds regardless of representative selection.
++      - Convergence: `reps` is seeded from fields already in the database
++        (see `_seed_reps`) before the clustering loop runs, so a NEW frame
++        still matches the same field a single full run would have put it
++        in, rather than spawning a duplicate.
++    Returns the number of NEW fields created by this call (0 on a re-run
++    that finds nothing new to cluster).
+     """
+     prev_factory = conn.row_factory
+     conn.row_factory = sqlite3.Row
+     try:
+         reps = _seed_reps(conn)
+         created = 0
+ 
+         rows = conn.execute(
+             "SELECT * FROM frames WHERE frame_type='light' "
+             "AND fingerprint IS NOT NULL AND header_ra IS NOT NULL "
+-            "AND header_dec IS NOT NULL ORDER BY content_hash").fetchall()
++            "AND header_dec IS NOT NULL AND field_id IS NULL "
++            "ORDER BY content_hash").fetchall()
+ 
+         for row in rows:
+             fov_w, fov_h = frame_fov_deg(row)
+             tol = max(fov_w, fov_h)
+             match = None
+             for rep in reps:
+                 if hamming(row["fingerprint"], rep["fingerprint"]) > fp_threshold:
+                     continue
+                 if angular_separation(row["header_ra"], row["header_dec"],
+                                       rep["ra"], rep["dec"]) > tol:
+diff --git a/tests/test_cluster.py b/tests/test_cluster.py
+index 8217dc6..27d0aa4 100644
+--- a/tests/test_cluster.py
++++ b/tests/test_cluster.py
+@@ -73,15 +73,56 @@ def test_measured_different_field_distance_does_not_cluster(tmp_path):
+     _insert(conn, "h2", fp2, 42.86, 60.07)
+     assert cluster.assign_fields(conn) == 2
+ 
+ def test_assign_fields_is_idempotent(tmp_path):
+     conn = db.connect(tmp_path / "t.sqlite"); db.init_schema(conn)
+     _insert(conn, "h1", "ffff0000", 42.86, 60.07)
+     cluster.assign_fields(conn)
+     cluster.assign_fields(conn)
+     assert conn.execute("SELECT COUNT(*) FROM fields").fetchone()[0] == 1
+ 
++def test_incremental_rerun_does_not_reassign_when_new_hash_sorts_first(tmp_path):
++    # Regression test for representative drift (found in review 2026-09-09):
++    # content_hash is a content digest, unrelated to insertion order, so
++    # picking a field's representative by MIN(content_hash) let a later
++    # incremental run silently hand representative status to a newly
++    # inserted frame -- and because matching is greedy single-link, a
++    # member that only matched the ORIGINAL representative could then fall
++    # outside tolerance of the NEW one and get moved to a different field.
++    #
++    # z_orig uses a long focal length -> a tight FOV tolerance (~0.13 deg).
++    # a_drift uses the default (short) focal length -> a generous FOV
++    # tolerance (~1.3 deg), and its content_hash ("a_drift") sorts BEFORE
++    # z_orig's alphabetically. The asymmetric tolerance is what makes this
++    # a real regression check rather than a tautology: with same-width FOV
++    # on both frames, angular distance is symmetric and reseeding to
++    # either frame gives the same match/no-match answer either way, so the
++    # bug wouldn't be observable. With asymmetric FOV, z_orig and a_drift
++    # are 0.5 deg apart -- within a_drift's own generous tolerance (so
++    # a_drift validly joins z_orig's field) but beyond z_orig's own tight
++    # tolerance, so if reseeding ever put a_drift forward as the field's
++    # representative, re-evaluating z_orig against it would wrongly fail.
++    conn = db.connect(tmp_path / "t.sqlite"); db.init_schema(conn)
++    _insert(conn, "z_orig", "ffff0000", 100.0, 40.0, focallen=4910.0)
++    assert cluster.assign_fields(conn) == 1
++    original_field_id = conn.execute(
++        "SELECT field_id FROM frames WHERE content_hash='z_orig'").fetchone()[0]
++    assert original_field_id is not None
++
++    _insert(conn, "a_drift", "ffff0001", 100.5, 40.0)
++    assert cluster.assign_fields(conn) == 0  # joins the existing field
++
++    # A third call with nothing new to cluster -- pure idempotency check,
++    # and the exact point at which the old MIN(content_hash) seeding would
++    # reseed the field's representative to a_drift (its hash sorts first)
++    # and wrongly re-evaluate z_orig against it.
++    assert cluster.assign_fields(conn) == 0
++    rows = dict(conn.execute("SELECT content_hash, field_id FROM frames"))
++    assert rows["z_orig"] == original_field_id
++    assert rows["a_drift"] == original_field_id
++    assert conn.execute("SELECT COUNT(*) FROM fields").fetchone()[0] == 1
++
+ def test_frames_without_pointing_are_left_unassigned(tmp_path):
+     conn = db.connect(tmp_path / "t.sqlite"); db.init_schema(conn)
+     _insert(conn, "h1", "ffff0000", None, None)
+     cluster.assign_fields(conn)
+     assert conn.execute("SELECT field_id FROM frames").fetchone()[0] is None

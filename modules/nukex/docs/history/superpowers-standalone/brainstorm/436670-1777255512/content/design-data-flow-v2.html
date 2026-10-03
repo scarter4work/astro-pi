@@ -1,0 +1,153 @@
+<h2>Design — Section 3 of 5 (revised V2): Data Flow</h2>
+<p class="subtitle">Phase A is pure I/O + routing — no Q-solve math. Voxel holds raw filter-grouped slots. Phase B does fit/select on raw slots, then Q-solve to derive semantic slots. The cube is the data of record.</p>
+
+<div class="section">
+  <div class="mockup">
+    <div class="mockup-header">Scenario A — pure HaO3 batch (50 frames, ASI585MC, FILTER="HaO3")</div>
+    <div class="mockup-body" style="background:#0a0a0a;color:#ddd;padding:18px;font-family:monospace;font-size:11px;line-height:1.6">
+<pre style="margin:0">
+1. Pre-batch scan
+   FilterClassifier runs over each FITSMetadata once
+   filter classes seen: {DUAL_NB_OSC}
+   filter group(s):     "HaO3"
+   raw slot allocation: {R_HaO3, G_HaO3, B_HaO3}    ← 3 slots per voxel
+
+2. Phase A — streaming I/O, no math (per frame)
+   read FITS → FITSReader{1ch Bayer image}
+   debayer naive    → Image{3ch R/G/B}                 ← unchanged DebayerEngine
+   flat-correct     → unchanged
+   align            → uses raw R/G/B for star detection (full SNR)
+   cache            → write_frame
+   route into cube:
+     for each pixel (x,y):
+       voxel(x,y).slots["R_HaO3"].welford.update(R)
+       voxel(x,y).slots["G_HaO3"].welford.update(G)
+       voxel(x,y).slots["B_HaO3"].welford.update(B)
+       (+ histogram updates)
+
+3. Phase B — fit + select per raw slot
+   for each pixel × each raw slot:
+     distribution = ModelSelector.fit(voxel.slots[slot].histogram)
+     best_value   = PixelSelector.select(distribution)
+     stacked.raw[slot].at(x, y) = best_value
+
+4. Phase B — Q-solve to derive semantic channels
+   Q = QEDatabase.q_matrix(camera="ASI585MC", filter="HaO3")
+        =  [[0.83  0.05]   ← R, G, B QE × HaO3 passband at 656nm (Ha)
+            [0.05  0.85]   ← at 501nm (OIII)
+            [0.02  0.55]]
+   pinv_Q = pseudoinverse(Q)
+   for each pixel:
+     (R*, G*, B*)  = stacked.raw[R_HaO3, G_HaO3, B_HaO3].at(x, y)
+     (Ha, OIII)    = pinv_Q @ (R*, G*, B*)
+     stacked.derived["Ha"].at(x,y)   = Ha
+     stacked.derived["OIII"].at(x,y) = OIII
+
+5. ColorComposer (calibrated palette, no greens)
+   for each pixel:
+     Ha   value → Lab vector  (a*=+50, b*=+10)   ← red, slightly warm
+     OIII value → Lab vector  (a*=-15, b*=-35)   ← cyan-blue
+     Lab_total = signal_weighted_sum(Ha_vec, OIII_vec)
+     L         = norm(Ha + OIII) mapped to 0..100
+   convert Lab → sRGB → emit ImageWindow{3ch R/G/B}
+
+6. Stretch (existing pipeline, unchanged) — operates on calibrated RGB
+</pre>
+    </div>
+  </div>
+</div>
+
+<div class="section">
+  <div class="mockup">
+    <div class="mockup-header">Scenario B — LRGBSHO mixed (100 frames: 30 L mono, 20 R, 20 G, 20 B, 30 HaO3 OSC, 30 S2O3 OSC)</div>
+    <div class="mockup-body" style="background:#0a0a0a;color:#ddd;padding:18px;font-family:monospace;font-size:11px;line-height:1.6">
+<pre style="margin:0">
+1. Pre-batch scan
+   filter classes seen:   {BROADBAND_L, BROADBAND_RGB, DUAL_NB_OSC×2}
+   filter groups:         {L, R, G, B, HaO3, S2O3}
+   raw slot allocation:   {L, R, G, B,                                    ← broadband (4)
+                          R_HaO3, G_HaO3, B_HaO3,                        ← HaO3 raw (3)
+                          R_S2O3, G_S2O3, B_S2O3}                        ← S2O3 raw (3)
+                                                                         = 10 slots/voxel
+
+2. Phase A — pure routing
+   ┌──────────────┬──────────────────────────────────────────────────────────┐
+   │ Frame class  │ Routing                                                  │
+   ├──────────────┼──────────────────────────────────────────────────────────┤
+   │ Mono L       │ value → L slot                                           │
+   │ Mono R       │ value → R slot                                           │
+   │ Mono G       │ value → G slot                                           │
+   │ Mono B       │ value → B slot                                           │
+   │ HaO3 OSC     │ debayer → (R,G,B) → R_HaO3, G_HaO3, B_HaO3 slots         │
+   │ S2O3 OSC     │ debayer → (R,G,B) → R_S2O3, G_S2O3, B_S2O3 slots         │
+   └──────────────┴──────────────────────────────────────────────────────────┘
+   No Q-solve runs. Phase A is purely streaming + routing.
+
+3. Phase B — fit + select per raw slot
+   ⇒ stacked.raw[*] = best value per (pixel, slot)   for all 10 slots
+
+4. Phase B — derive semantic channels via per-filter-group Q-solve
+   for each pixel:
+     (Ha,   OIII_HaO3) = pinv_Q(camera, "HaO3") @ stacked.raw[R_HaO3, G_HaO3, B_HaO3]
+     (SII,  OIII_S2O3) = pinv_Q(camera, "S2O3") @ stacked.raw[R_S2O3, G_S2O3, B_S2O3]
+
+     ── multi-source OIII merge ─────────────────────────────────────────
+     n_HaO3 = stacked.raw["G_HaO3"].sample_count   (Welford count)
+     n_S2O3 = stacked.raw["G_S2O3"].sample_count
+     OIII = (n_HaO3 · OIII_HaO3 + n_S2O3 · OIII_S2O3) / (n_HaO3 + n_S2O3)
+
+   stacked.derived = {L, R, G, B, Ha, OIII, SII}     ← 7 derived semantic slots
+
+5. ColorComposer — Lab/LCH composite
+   for each pixel:
+     L_broadband  = stacked.derived["L"]                 ← native L (best detail)
+                    OR if absent, synth from R+G+B (rec709 luminance formula)
+     RGB_natural  = (R, G, B)
+     Lab_natural  = sRGB_to_Lab(RGB_natural with L_broadband)
+                    → extract a*_natural, b*_natural
+
+     Emission_a* = w_Ha · pal_Ha.a*   +  w_SII · pal_SII.a*  +  w_OIII · pal_OIII.a*
+     Emission_b* = w_Ha · pal_Ha.b*   +  w_SII · pal_SII.b*  +  w_OIII · pal_OIII.b*
+                   (where w_X = signal-strength weight, normalised, gamut-clamped)
+
+     Lab_final = (L_broadband, a*_natural + Emission_a*, b*_natural + Emission_b*)
+   convert Lab → sRGB → emit ImageWindow
+
+6. Continuum-subtract opt-in (advanced mode)
+   BEFORE step 5's Emission_a*b* computation:
+     Ha_pure   = Ha   − k_Ha   · stacked.derived["R"]
+     OIII_pure = OIII − k_OIII · ( (G + B) / 2 )         ← interp continuum at 501nm
+     SII_pure  = SII  − k_SII  · stacked.derived["R"]
+   k_X coefficients come from QEDatabase: filter passband × camera continuum response.
+   Then Emission_a*b* uses {Ha_pure, OIII_pure, SII_pure}.
+   The natural-RGB voxels are right there in the cube — no Q-inverse reconstruction needed.
+</pre>
+    </div>
+  </div>
+</div>
+
+<h3>Does the V2 data flow look right?</h3>
+
+<div class="options">
+  <div class="option" data-choice="a" onclick="toggleSelect(this)">
+    <div class="letter">A</div>
+    <div class="content">
+      <h3>Yes — proceed to error handling (section 4)</h3>
+      <p>Phase A is purely streaming routing. Phase B does the Q-solve on accumulated cube data. Continuum subtraction has the natural RGB voxels right there. Multi-source OIII merge is sample-count weighted. Composer reads derived slots only.</p>
+    </div>
+  </div>
+  <div class="option" data-choice="b" onclick="toggleSelect(this)">
+    <div class="letter">B</div>
+    <div class="content">
+      <h3>Mostly right; one part to clarify</h3>
+      <p>I'll describe.</p>
+    </div>
+  </div>
+  <div class="option" data-choice="c" onclick="toggleSelect(this)">
+    <div class="letter">C</div>
+    <div class="content">
+      <h3>Wrong somewhere</h3>
+      <p>The routing or one of the Phase B steps is off.</p>
+    </div>
+  </div>
+</div>

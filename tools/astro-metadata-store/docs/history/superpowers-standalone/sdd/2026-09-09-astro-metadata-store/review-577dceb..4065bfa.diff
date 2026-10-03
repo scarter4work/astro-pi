@@ -1,0 +1,126 @@
+# Review package: 577dceb..HEAD
+
+## Commits
+4065bfa fix: match .fits case-insensitively and raise loudly on a missing root
+
+## Files changed
+ src/astrometa/inventory.py | 15 ++++++++++++---
+ tests/test_inventory.py    | 45 +++++++++++++++++++++++++++++++++++++++++++++
+ 2 files changed, 57 insertions(+), 3 deletions(-)
+
+## Diff
+diff --git a/src/astrometa/inventory.py b/src/astrometa/inventory.py
+index 55f5867..eaf5df6 100644
+--- a/src/astrometa/inventory.py
++++ b/src/astrometa/inventory.py
+@@ -19,26 +19,35 @@ class InventoryResult:
+ 
+ def _excluded(p: Path) -> bool:
+     s = str(p)
+     return any(m in s for m in EXCLUDED_PATH_MARKERS)
+ 
+ 
+ def _now() -> str:
+     return datetime.now(timezone.utc).isoformat()
+ 
+ 
++_FITS_SUFFIXES = (".fit", ".fits")
++
++
+ def _iter_fits(roots):
+     for root in roots:
+         if not root.exists():
+-            continue
+-        for p in root.rglob("*.fit"):
+-            if p.is_file() and "_thn" not in p.name and not _excluded(p):
++            # A missing root (e.g. an unmounted NAS bind mount) must not be
++            # mistaken for an empty archive: scan() returning cleanly with
++            # zero results would make a caller's mark_missing() pass flip
++            # every known frame to "missing", indistinguishable from the
++            # operator having deleted the archive. Fail loudly instead.
++            raise FileNotFoundError(f"inventory root does not exist: {root}")
++        for p in root.rglob("*"):
++            if (p.is_file() and p.suffix.lower() in _FITS_SUFFIXES
++                    and "_thn" not in p.name and not _excluded(p)):
+                 yield p
+ 
+ 
+ def _read_header(path: Path) -> tuple[dict, str | None]:
+     """Independent header read. On failure, returns ({}, "header: ...")."""
+     try:
+         return fitsheader.read_header(path), None
+     except Exception as exc:                      # loud, never silent
+         return {}, f"header: {type(exc).__name__}: {exc}"
+ 
+diff --git a/tests/test_inventory.py b/tests/test_inventory.py
+index c64486c..c9e14e0 100644
+--- a/tests/test_inventory.py
++++ b/tests/test_inventory.py
+@@ -1,11 +1,12 @@
+ import numpy as np
++import pytest
+ from astropy.io import fits
+ from astrometa import db, inventory
+ 
+ 
+ def _write_light(path, obj="M 42", ra=83.8, dec=-5.4, seed=1):
+     rng = np.random.default_rng(seed)
+     data = rng.normal(100, 5, (64, 64)).astype(np.float32)
+     hdu = fits.PrimaryHDU(data)
+     hdu.header["OBJECT"] = obj
+     hdu.header["RA"] = ra
+@@ -130,10 +131,54 @@ def test_nan_pixels_dont_lose_header_metadata(tmp_path):
+     # IMAGETYP header wins over the filename in classify() -- proof the
+     # header was actually parsed and passed through despite the pixel error.
+     assert frame_type == "light"
+     assert camera == "ZWO ASI585MC Air"
+     assert filt == "HaO3"
+     assert fingerprint is None
+     assert bg_median is None
+     assert sat_frac is None
+     assert err is not None and err.startswith("pixels:")
+     assert "header:" not in err
++
++
++@pytest.mark.parametrize("suffix", [".fit", ".fits", ".FIT", ".FITS", ".Fits"])
++def test_fit_and_fits_extensions_are_scanned_case_insensitively(tmp_path, suffix):
++    # 6,290 real files in the archive carry .fits (a different rig's naming
++    # convention) rather than .fit -- rglob("*.fit") alone silently drops
++    # ~22% of the science data. Both extensions, any casing, must be seen.
++    root = tmp_path / "astro_data" / "d"; root.mkdir(parents=True)
++    name = f"Light_M57_20250811_030222_0001_300.0s_Bin1{suffix}"
++    _write_light(root / name)
++    conn = db.connect(tmp_path / "t.sqlite"); db.init_schema(conn)
++    res = inventory.scan(conn, [tmp_path / "astro_data"])
++    assert res.added == 1
++
++
++def test_xisf_extension_is_not_scanned(tmp_path):
++    # .xisf is PixInsight's own format (processed intermediates, not subs)
++    # and needs a different parser entirely -- explicitly out of scope.
++    root = tmp_path / "astro_data" / "d"; root.mkdir(parents=True)
++    (root / "master_stack.xisf").write_bytes(b"not a real xisf but irrelevant")
++    conn = db.connect(tmp_path / "t.sqlite"); db.init_schema(conn)
++    res = inventory.scan(conn, [tmp_path / "astro_data"])
++    assert res.added == 0
++    assert res.failed == 0
++
++
++def test_missing_root_raises_loudly_instead_of_scanning_empty(tmp_path):
++    # A root that doesn't exist (e.g. an unmounted NAS bind mount) must not
++    # be silently skipped: scan() returning cleanly with an empty
++    # seen_hashes would make mark_missing() flip every known frame to
++    # "missing", indistinguishable from the operator deleting the archive.
++    missing = tmp_path / "does_not_exist"
++    conn = db.connect(tmp_path / "t.sqlite"); db.init_schema(conn)
++    with pytest.raises(FileNotFoundError, match=str(missing)):
++        inventory.scan(conn, [missing])
++
++
++def test_missing_root_raises_even_when_another_root_is_valid(tmp_path):
++    ok = tmp_path / "astro_data" / "d"; ok.mkdir(parents=True)
++    _write_light(ok / "Light_M 42_a_0001.fit")
++    missing = tmp_path / "astro_data" / "does_not_exist"
++    conn = db.connect(tmp_path / "t.sqlite"); db.init_schema(conn)
++    with pytest.raises(FileNotFoundError):
++        inventory.scan(conn, [ok, missing])

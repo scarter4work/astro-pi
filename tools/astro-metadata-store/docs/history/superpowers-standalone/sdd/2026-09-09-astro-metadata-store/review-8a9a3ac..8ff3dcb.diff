@@ -1,0 +1,397 @@
+# Review package: 8a9a3ac..HEAD
+
+## Commits
+8ff3dcb feat: command-line interface
+
+## Files changed
+ pyproject.toml       |   3 +
+ src/astrometa/cli.py | 129 ++++++++++++++++++++++++++++++
+ tests/test_cli.py    | 221 +++++++++++++++++++++++++++++++++++++++++++++++++++
+ 3 files changed, 353 insertions(+)
+
+## Diff
+diff --git a/pyproject.toml b/pyproject.toml
+index 53da3c7..f1ea281 100644
+--- a/pyproject.toml
++++ b/pyproject.toml
+@@ -1,15 +1,18 @@
+ [project]
+ name = "astrometa"
+ version = "0.1.0"
+ requires-python = ">=3.13"
+ dependencies = ["numpy>=2.0", "astropy>=7.0", "astroquery>=0.4.7"]
+ 
++[project.scripts]
++astrometa = "astrometa.cli:main"
++
+ [build-system]
+ requires = ["setuptools>=68"]
+ build-backend = "setuptools.build_meta"
+ 
+ [tool.setuptools.packages.find]
+ where = ["src"]
+ 
+ [tool.pytest.ini_options]
+ testpaths = ["tests"]
+diff --git a/src/astrometa/cli.py b/src/astrometa/cli.py
+new file mode 100644
+index 0000000..b6c29c0
+--- /dev/null
++++ b/src/astrometa/cli.py
+@@ -0,0 +1,129 @@
++"""
++Command-line entry point wiring the eleven passes into one tool.
++
++Every subcommand shares a `--db` flag (defined once on a common parent
++parser so it can be given right after the subcommand name, matching how
++every other flag here works) and otherwise takes only what it needs:
++`--root` on `scan`, `--limit` on `solve`/`measure`, `--out-dir` on
++`manifest`.
++
++Errors from the underlying passes (a missing archive root, a missing
++astap_cli install, a refusal to mark everything missing from an empty
++scan) are never caught here. They are deliberate, loud failures --
++letting them propagate as an uncaught exception (non-zero exit, real
++traceback) is the correct behaviour, not a gap. Only argparse's own
++usage errors (bad flags, unknown subcommand) are translated into a
++plain non-zero return, since those are user-input mistakes rather than
++archive-state problems.
++
++There is deliberately no `quarantine` subcommand: nothing here may
++touch or move FITS data.
++"""
++import argparse
++import sys
++from pathlib import Path
++
++from . import cluster, db, disposition, grouping, inventory, manifest, quality, solve
++from .config import Config
++
++
++def _build_parser() -> argparse.ArgumentParser:
++    common = argparse.ArgumentParser(add_help=False)
++    common.add_argument("--db", required=True,
++                         help="path to the sqlite metadata store")
++
++    parser = argparse.ArgumentParser(prog="astrometa")
++    sub = parser.add_subparsers(dest="command", required=True)
++
++    scan_p = sub.add_parser(
++        "scan", parents=[common],
++        help="walk archive roots, inventory frames, then mark absent "
++             "frames missing")
++    scan_p.add_argument(
++        "--root", action="append", default=[],
++        help="root directory to walk (repeatable); defaults to the "
++             "configured archive and live roots")
++
++    sub.add_parser(
++        "cluster", parents=[common],
++        help="cluster unassigned light frames into fields")
++
++    solve_p = sub.add_parser(
++        "solve", parents=[common],
++        help="plate-solve one representative frame per unsolved field")
++    solve_p.add_argument("--limit", type=int, default=None,
++                          help="solve at most this many fields")
++
++    measure_p = sub.add_parser(
++        "measure", parents=[common],
++        help="measure HFD/star-count quality for unmeasured light frames")
++    measure_p.add_argument("--limit", type=int, default=None,
++                            help="measure at most this many frames")
++
++    sub.add_parser(
++        "group", parents=[common],
++        help="rebuild projects from light frames")
++
++    manifest_p = sub.add_parser(
++        "manifest", parents=[common],
++        help="export a manifest sidecar for every leaf directory")
++    manifest_p.add_argument(
++        "--out-dir", default=None,
++        help="mirror manifests under this directory instead of writing "
++             "beside the frames -- required when the archive is mounted "
++             "read-only")
++
++    sub.add_parser(
++        "status", parents=[common],
++        help="print row counts for the core tables")
++
++    return parser
++
++
++def main(argv: list[str] | None = None) -> int:
++    parser = _build_parser()
++    try:
++        args = parser.parse_args(argv)
++    except SystemExit as exc:
++        # argparse's own usage errors (bad flags, unknown subcommand,
++        # --help) -- a plain non-zero return, not a pass failure.
++        return exc.code if isinstance(exc.code, int) else 2
++
++    cfg = Config()
++    conn = db.connect(Path(args.db))
++    db.init_schema(conn)
++
++    if args.command == "scan":
++        roots = ([Path(r) for r in args.root] if args.root
++                 else [cfg.archive_root, cfg.live_root])
++        res = inventory.scan(conn, roots)
++        missing = disposition.mark_missing(conn, res.seen_hashes)
++        print(f"added={res.added} updated={res.updated} "
++              f"failed={res.failed} missing={missing} "
++              f"(failed overlaps added/updated: a frame that fails a "
++              f"read is still inventoried, with its failure recorded)")
++    elif args.command == "cluster":
++        created = cluster.assign_fields(conn)
++        print(f"fields_created={created}")
++    elif args.command == "solve":
++        solved = solve.solve_fields(conn, cfg, args.limit)
++        print(f"solved={solved}")
++    elif args.command == "measure":
++        res = quality.measure_frames(conn, cfg, args.limit)
++        print(f"measured={res.measured} failed={res.failed}")
++    elif args.command == "group":
++        projects = grouping.build_projects(conn)
++        print(f"projects={projects}")
++    elif args.command == "manifest":
++        out_dir = Path(args.out_dir) if args.out_dir else None
++        manifests = manifest.export_all(conn, out_dir=out_dir)
++        print(f"manifests={manifests}")
++    elif args.command == "status":
++        for table in ("frames", "fields", "objects", "projects"):
++            n = conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
++            print(f"{table}: {n}")
++    return 0
++
++
++if __name__ == "__main__":
++    sys.exit(main())
+diff --git a/tests/test_cli.py b/tests/test_cli.py
+new file mode 100644
+index 0000000..de3eeb2
+--- /dev/null
++++ b/tests/test_cli.py
+@@ -0,0 +1,221 @@
++import stat
++from pathlib import Path
++
++import numpy as np
++import pytest
++from astropy.io import fits
++
++from astrometa import cli, manifest
++from astrometa.config import Config
++
++
++def _write_light(path, object_name="M 42", ra=83.8, dec=-5.4, seed=3):
++    rng = np.random.default_rng(seed)
++    hdu = fits.PrimaryHDU(rng.normal(100, 5, (64, 64)).astype(np.float32))
++    hdu.header["OBJECT"] = object_name
++    hdu.header["RA"] = ra
++    hdu.header["DEC"] = dec
++    hdu.header["IMAGETYP"] = "Light Frame"
++    hdu.writeto(path, overwrite=True)
++
++
++def _stub(tmp_path, source, name):
++    p = tmp_path / name
++    p.write_text(source)
++    mode = p.stat().st_mode
++    p.chmod(mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
++    return p
++
++
++# Stub astap_cli for -wcs solving: writes a solved .ini next to whatever
++# path it was given via -f, ignoring every other argument. Good enough to
++# exercise the CLI's wiring to solve.solve_fields without depending on a
++# real star database.
++_SOLVE_STUB = '''#!/usr/bin/env python3
++import sys
++from pathlib import Path
++argv = sys.argv[1:]
++f_path = Path(argv[argv.index("-f") + 1])
++f_path.with_suffix(".ini").write_text(
++    "PLTSOLVD=T\\nCRVAL1=10.0\\nCRVAL2=20.0\\nCDELT1=0.0003\\nCROTA1=1.5\\n")
++sys.exit(0)
++'''
++
++# Stub astap_cli for -analyse: always reports a clean measurement.
++_MEASURE_STUB = '''#!/usr/bin/env python3
++print("HFD_MEDIAN=2.5")
++print("STARS=40")
++'''
++
++
++def test_scan_then_status(tmp_path, capsys):
++    root = tmp_path / "astro_data" / "2026-09-08" / "M 42"
++    root.mkdir(parents=True)
++    _write_light(root / "Light_M 42_120.0s_Bin1_HaO3_20260908-220000_0deg_0001.fit")
++    dbp = tmp_path / "store.sqlite"
++
++    assert cli.main(["scan", "--db", str(dbp),
++                     "--root", str(tmp_path / "astro_data")]) == 0
++    assert cli.main(["status", "--db", str(dbp)]) == 0
++    out = capsys.readouterr().out
++    assert "frames" in out and "1" in out
++
++
++def test_unknown_command_returns_nonzero(tmp_path):
++    assert cli.main(["nonsense", "--db", str(tmp_path / "x.sqlite")]) != 0
++
++
++def test_missing_db_flag_returns_nonzero(tmp_path):
++    assert cli.main(["status"]) != 0
++
++
++def test_scan_missing_root_raises_loudly(tmp_path):
++    # inventory.scan raises FileNotFoundError for a missing root -- the
++    # CLI must let this propagate, not swallow it into a tidy message or
++    # a zero exit code.
++    dbp = tmp_path / "store.sqlite"
++    with pytest.raises(FileNotFoundError):
++        cli.main(["scan", "--db", str(dbp),
++                  "--root", str(tmp_path / "does_not_exist")])
++
++
++def test_rescan_against_empty_root_raises_loudly(tmp_path):
++    # A rescan whose walk finds nothing, while the db still holds
++    # 'present' frames, must not silently mark everything missing --
++    # disposition.mark_missing refuses with ValueError, and the CLI must
++    # surface that, not catch it.
++    root = tmp_path / "astro_data"
++    root.mkdir()
++    _write_light(root / "Light_M 42_120.0s_Bin1_HaO3_20260908-220000_0deg_0001.fit")
++    dbp = tmp_path / "store.sqlite"
++    assert cli.main(["scan", "--db", str(dbp), "--root", str(root)]) == 0
++
++    empty_root = tmp_path / "empty_root"
++    empty_root.mkdir()
++    with pytest.raises(ValueError):
++        cli.main(["scan", "--db", str(dbp), "--root", str(empty_root)])
++
++
++def test_scan_reports_failed_overlapping_added_not_disjoint(tmp_path, capsys):
++    # inventory.scan's `failed` count overlaps `added`/`updated` -- a
++    # frame that fails a read is still inventoried. The CLI's scan output
++    # must not read as if the three were disjoint counts.
++    root = tmp_path / "astro_data"
++    root.mkdir()
++    _write_light(root / "Light_M 42_120.0s_Bin1_HaO3_20260908-220000_0deg_0001.fit")
++    bad = root / "Light_M 42_120.0s_Bin1_HaO3_20260908-220100_0deg_0002.fit"
++    bad.write_bytes(b"not a real fits file")
++    dbp = tmp_path / "store.sqlite"
++
++    assert cli.main(["scan", "--db", str(dbp), "--root", str(root)]) == 0
++    out = capsys.readouterr().out
++    assert "added=2" in out
++    assert "failed=1" in out
++    assert "overlap" in out
++
++
++def test_cluster_labels_newly_created_fields(tmp_path, capsys):
++    # cluster.assign_fields returns fields created THIS call, not the
++    # total -- a re-run must read as "0 new", not "no fields exist".
++    root = tmp_path / "astro_data"
++    root.mkdir()
++    _write_light(root / "Light_M 42_120.0s_Bin1_HaO3_20260908-220000_0deg_0001.fit")
++    dbp = tmp_path / "store.sqlite"
++    assert cli.main(["scan", "--db", str(dbp), "--root", str(root)]) == 0
++
++    assert cli.main(["cluster", "--db", str(dbp)]) == 0
++    assert "fields_created=1" in capsys.readouterr().out
++
++    assert cli.main(["cluster", "--db", str(dbp)]) == 0
++    assert "fields_created=0" in capsys.readouterr().out
++
++
++def test_group_reports_project_count(tmp_path, capsys):
++    root = tmp_path / "astro_data"
++    root.mkdir()
++    _write_light(root / "Light_M 42_120.0s_Bin1_HaO3_20260908-220000_0deg_0001.fit")
++    dbp = tmp_path / "store.sqlite"
++    assert cli.main(["scan", "--db", str(dbp), "--root", str(root)]) == 0
++
++    assert cli.main(["group", "--db", str(dbp)]) == 0
++    assert "projects=1" in capsys.readouterr().out
++
++
++def test_manifest_out_dir_mirrors_leaf_structure(tmp_path, capsys):
++    # export_all(out_dir=...) matters operationally: the deployment
++    # mounts the archive read-only, so an out-dir mirror is the working
++    # path, not a nice-to-have.
++    root = tmp_path / "astro_data" / "2026-09-08" / "M 42"
++    root.mkdir(parents=True)
++    _write_light(root / "Light_M 42_120.0s_Bin1_HaO3_20260908-220000_0deg_0001.fit")
++    dbp = tmp_path / "store.sqlite"
++    out_dir = tmp_path / "manifests"
++    out_dir.mkdir()
++
++    assert cli.main(["scan", "--db", str(dbp),
++                     "--root", str(tmp_path / "astro_data")]) == 0
++    assert cli.main(["manifest", "--db", str(dbp),
++                     "--out-dir", str(out_dir)]) == 0
++    assert "manifests=1" in capsys.readouterr().out
++
++    found = list(out_dir.rglob(manifest.MANIFEST_NAME))
++    assert len(found) == 1
++    # nothing written beside the (read-only, in production) archive frames
++    assert not (root / manifest.MANIFEST_NAME).exists()
++
++
++def test_solve_reports_solved_count(tmp_path, capsys, monkeypatch):
++    root = tmp_path / "astro_data"
++    root.mkdir()
++    _write_light(root / "Light_M 42_120.0s_Bin1_HaO3_20260908-220000_0deg_0001.fit")
++    dbp = tmp_path / "store.sqlite"
++    assert cli.main(["scan", "--db", str(dbp), "--root", str(root)]) == 0
++    assert cli.main(["cluster", "--db", str(dbp)]) == 0
++
++    astap_db = tmp_path / "astap_db"
++    astap_db.mkdir()
++    stub = _stub(tmp_path, _SOLVE_STUB, "stub_solve.py")
++    fake_cfg = Config(scratch_dir=tmp_path / "scratch", astap_bin=stub,
++                       astap_db_dir=astap_db)
++    monkeypatch.setattr(cli, "Config", lambda: fake_cfg)
++
++    assert cli.main(["solve", "--db", str(dbp)]) == 0
++    assert "solved=1" in capsys.readouterr().out
++
++
++def test_measure_reports_measured_and_failed(tmp_path, capsys, monkeypatch):
++    root = tmp_path / "astro_data"
++    root.mkdir()
++    _write_light(root / "Light_M 42_120.0s_Bin1_HaO3_20260908-220000_0deg_0001.fit")
++    dbp = tmp_path / "store.sqlite"
++    assert cli.main(["scan", "--db", str(dbp), "--root", str(root)]) == 0
++
++    astap_db = tmp_path / "astap_db"
++    astap_db.mkdir()
++    stub = _stub(tmp_path, _MEASURE_STUB, "stub_measure.py")
++    fake_cfg = Config(scratch_dir=tmp_path / "scratch", astap_bin=stub,
++                       astap_db_dir=astap_db)
++    monkeypatch.setattr(cli, "Config", lambda: fake_cfg)
++
++    assert cli.main(["measure", "--db", str(dbp)]) == 0
++    assert "measured=1 failed=0" in capsys.readouterr().out
++
++
++def test_solve_missing_astap_raises_loudly(tmp_path, monkeypatch):
++    dbp = tmp_path / "store.sqlite"
++    fake_cfg = Config(scratch_dir=tmp_path / "scratch",
++                       astap_bin=tmp_path / "no_such_binary",
++                       astap_db_dir=tmp_path / "no_such_db")
++    monkeypatch.setattr(cli, "Config", lambda: fake_cfg)
++    with pytest.raises(RuntimeError):
++        cli.main(["solve", "--db", str(dbp)])
++
++
++def test_measure_missing_astap_raises_loudly(tmp_path, monkeypatch):
++    dbp = tmp_path / "store.sqlite"
++    fake_cfg = Config(scratch_dir=tmp_path / "scratch",
++                       astap_bin=tmp_path / "no_such_binary",
++                       astap_db_dir=tmp_path / "no_such_db")
++    monkeypatch.setattr(cli, "Config", lambda: fake_cfg)
++    with pytest.raises(RuntimeError):
++        cli.main(["measure", "--db", str(dbp)])

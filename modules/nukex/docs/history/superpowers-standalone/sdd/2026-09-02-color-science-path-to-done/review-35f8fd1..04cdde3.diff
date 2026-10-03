@@ -1,0 +1,592 @@
+# Review package: 35f8fd1..04cdde3
+
+## Commits
+04cdde3 test(util): synthetic FITS writer; un-gate the Phase A/B integration tests
+
+## Files changed
+ test/CMakeLists.txt                      |  5 +-
+ test/integration/test_phase_a_router.cpp | 43 +--------------
+ test/integration/test_phase_b_qsolve.cpp | 71 +++++++++++-------------
+ test/unit/io/test_synthetic_fits.cpp     | 56 +++++++++++++++++++
+ test/util/synthetic_fits.cpp             | 94 ++++++++++++++++++++++++++++++++
+ test/util/synthetic_fits.hpp             | 23 ++++++++
+ 6 files changed, 209 insertions(+), 83 deletions(-)
+
+## Diff
+diff --git a/test/CMakeLists.txt b/test/CMakeLists.txt
+index b1fadb7..8af351b 100644
+--- a/test/CMakeLists.txt
++++ b/test/CMakeLists.txt
+@@ -63,27 +63,30 @@ nukex_add_test(test_palette       unit/compose/test_palette.cpp     nukex4_compo
+ nukex_add_test(test_color_composer unit/compose/test_color_composer.cpp nukex4_compose nukex4_core)
+ nukex_add_test(test_frame_cache unit/stacker/test_frame_cache.cpp nukex4_stacker)
+ nukex_add_test(test_stacking_engine unit/stacker/test_stacking_engine.cpp nukex4_stacker)
+ nukex_add_test(test_engine_config unit/stacker/test_engine_config.cpp nukex4_stacker nukex4_calibration nukex4_io nukex4_core)
+ nukex_add_test(test_cache_sig_dispatch unit/stacker/test_cache_sig_dispatch.cpp nukex4_stacker nukex4_core nukex4_io)
+ 
+ # Test utilities (PNG writer + test data loader)
+ add_library(test_util STATIC
+     util/png_writer.cpp
+     util/test_data_loader.cpp
++    util/synthetic_fits.cpp
+ )
+ target_include_directories(test_util PUBLIC
+     "${CMAKE_SOURCE_DIR}/test/util"
+     "${CMAKE_SOURCE_DIR}/third_party/stb"
+     "${CMAKE_SOURCE_DIR}/third_party/catch2"
+ )
+-target_link_libraries(test_util PUBLIC nukex4_io nukex4_stretch)
++target_link_libraries(test_util PUBLIC nukex4_io nukex4_stretch nukex4_calibration PRIVATE cfitsio)
++
++nukex_add_test(test_synthetic_fits unit/io/test_synthetic_fits.cpp test_util nukex4_calibration nukex4_io)
+ 
+ nukex_add_test(test_stretch_pipeline unit/stretch/test_stretch_pipeline.cpp nukex4_stretch)
+ nukex_add_test(test_mtf unit/stretch/test_mtf.cpp nukex4_stretch test_util)
+ nukex_add_test(test_arcsinh unit/stretch/test_arcsinh.cpp nukex4_stretch test_util)
+ nukex_add_test(test_log unit/stretch/test_log.cpp nukex4_stretch test_util)
+ nukex_add_test(test_rnc unit/stretch/test_rnc.cpp nukex4_stretch test_util)
+ nukex_add_test(test_ghs unit/stretch/test_ghs.cpp nukex4_stretch test_util)
+ nukex_add_test(test_ots unit/stretch/test_ots.cpp nukex4_stretch test_util)
+ nukex_add_test(test_sas unit/stretch/test_sas.cpp nukex4_stretch test_util)
+ nukex_add_test(test_tier1 unit/stretch/test_tier1.cpp nukex4_stretch test_util)
+diff --git a/test/integration/test_phase_a_router.cpp b/test/integration/test_phase_a_router.cpp
+index e89a3df..0c24884 100644
+--- a/test/integration/test_phase_a_router.cpp
++++ b/test/integration/test_phase_a_router.cpp
+@@ -1,148 +1,107 @@
+ // Phase A router integration tests (Task 9).
+ //
+ // These five [.integration]-tagged cases describe the END-TO-END
+ // behaviour of the new FilterClassifier-driven Phase A pipeline:
+ //
+ //   1. BROADBAND_OSC frame synthesises an "L" slot via rec709 luminance.
+ //   2. DUAL_NB_OSC HaO3 frame routes into R_HaO3 / G_HaO3 / B_HaO3.
+ //   3. UNKNOWN FILTER on a Bayer frame fails the batch loud at start.
+ //   4. Missing FILTER on a Bayer frame is silently treated as OSC.
+ //   5. Mixed L (mono) + HaO3 (Bayer) batch builds a union slot config.
+-//
+-// They depend on the synthetic-FITS writer that Task 20 will add to
+-// test_util (test_util::write_synthetic_bayer / write_synthetic_mono).
+-// Until that task lands, the test bodies are gated under #if 0 so the
+-// file COMPILES against the current test_util — keeping CI green —
+-// while the literal end-state cases sit ready for Task 20 to wire up.
+-//
+-// All five cases are tagged "[.integration]" — Catch2's hidden-tag
+-// convention — so default `ctest` runs skip them entirely. When Task 20
+-// drops the writer in, flip `WIRED_BY_TASK_20` to 1 (or remove the gate)
+-// and the cases will be enabled by passing the [integration] filter to
+-// the test binary.
+ 
+ #include "catch_amalgamated.hpp"
+ #include "nukex/stacker/stacking_engine.hpp"
+ #include "nukex/core/filter.hpp"
+ #include "nukex/core/cube.hpp"
+ #include "nukex/core/channel_config.hpp"
++#include "synthetic_fits.hpp"
+ 
+ #include <filesystem>
+ 
+-#define WIRED_BY_TASK_20 0
+-
+ using namespace nukex;
+ namespace fs = std::filesystem;
+ 
+-#if WIRED_BY_TASK_20
+-#include "test_data_loader.hpp"  // brings in test_util::write_synthetic_*
+-#endif
+-
+-// Each case carries the same minimal placeholder body so the test binary
+-// links until Task 20. When the gate flips, the real bodies (kept inline
+-// in #if blocks below) become the live cases.
+-
+ TEST_CASE("Phase A: BROADBAND_OSC frame synthesizes L slot",
+           "[.integration][phase_a]") {
+-#if WIRED_BY_TASK_20
+     auto tmp = fs::temp_directory_path() / "phase_a_osc.fits";
+     test_util::write_synthetic_bayer(tmp.string(), 16, 16, "RGGB", "ASI585MC", "", 0.5f);
+ 
+     StackingEngine::Config cfg;
+     cfg.qe_database_path = (fs::path(NUKEX_TEST_FIXTURES_DIR) / "qe" / "minimal_db.json").string();
+     StackingEngine engine(cfg);
+     auto result = engine.execute({tmp.string()}, {}, /*progress*/nullptr);
+ 
+     REQUIRE(result.ok);
+     REQUIRE(result.cube->channel_config.slot_index("R") != -1);
+     REQUIRE(result.cube->channel_config.slot_index("G") != -1);
+     REQUIRE(result.cube->channel_config.slot_index("B") != -1);
+     REQUIRE(result.cube->channel_config.slot_index("L") != -1);
+     int  L_idx = result.cube->channel_config.slot_index("L");
+     auto& px   = result.cube->at(8, 8);
+     REQUIRE(px.welford[L_idx].mean == Catch::Approx(0.5f).margin(0.05f));
+-#else
+-    SKIP("wired by Task 20: synthetic FITS writer needed");
+-#endif
+ }
+ 
+ TEST_CASE("Phase A: HaO3 dual-NB frame routes into R_HaO3/G_HaO3/B_HaO3",
+           "[.integration][phase_a]") {
+-#if WIRED_BY_TASK_20
+     auto tmp = fs::temp_directory_path() / "phase_a_hao3.fits";
+     test_util::write_synthetic_bayer(tmp.string(), 16, 16, "RGGB", "ASI585MC", "HaO3", 0.5f);
+ 
+     StackingEngine::Config cfg;
+     cfg.qe_database_path = (fs::path(NUKEX_TEST_FIXTURES_DIR) / "qe" / "minimal_db.json").string();
+     StackingEngine engine(cfg);
+     auto result = engine.execute({tmp.string()}, {}, nullptr);
+ 
+     REQUIRE(result.ok);
+     REQUIRE(result.cube->channel_config.slot_index("R_HaO3") != -1);
+     REQUIRE(result.cube->channel_config.slot_index("G_HaO3") != -1);
+     REQUIRE(result.cube->channel_config.slot_index("B_HaO3") != -1);
+     REQUIRE(result.cube->channel_config.slot_index("R") == -1);
+-#else
+-    SKIP("wired by Task 20: synthetic FITS writer needed");
+-#endif
+ }
+ 
+ TEST_CASE("Phase A: unknown FILTER on Bayer fails the batch loud at start",
+           "[.integration][phase_a]") {
+-#if WIRED_BY_TASK_20
+     auto tmp = fs::temp_directory_path() / "phase_a_unknown.fits";
+     test_util::write_synthetic_bayer(tmp.string(), 16, 16, "RGGB", "ASI585MC", "ALP-T-fake-2026", 0.5f);
+ 
+     StackingEngine::Config cfg;
+     cfg.qe_database_path = (fs::path(NUKEX_TEST_FIXTURES_DIR) / "qe" / "minimal_db.json").string();
+     StackingEngine engine(cfg);
+     auto result = engine.execute({tmp.string()}, {}, nullptr);
+ 
+     REQUIRE_FALSE(result.ok);
+     REQUIRE(result.error.find("ALP-T-fake-2026") != std::string::npos);
+     REQUIRE(result.error.find("qe_overrides.json") != std::string::npos);
+-#else
+-    SKIP("wired by Task 20: synthetic FITS writer needed");
+-#endif
+ }
+ 
+ TEST_CASE("Phase A: missing FILTER on Bayer is silent BROADBAND_OSC",
+           "[.integration][phase_a]") {
+-#if WIRED_BY_TASK_20
+     auto tmp = fs::temp_directory_path() / "phase_a_no_filter.fits";
+     test_util::write_synthetic_bayer(tmp.string(), 16, 16, "RGGB", "ASI585MC", "", 0.5f);
+ 
+     StackingEngine::Config cfg;
+     cfg.qe_database_path = (fs::path(NUKEX_TEST_FIXTURES_DIR) / "qe" / "minimal_db.json").string();
+     StackingEngine engine(cfg);
+     auto result = engine.execute({tmp.string()}, {}, nullptr);
+ 
+     REQUIRE(result.ok);
+     REQUIRE(result.cube->channel_config.slot_index("L") != -1);
+-#else
+-    SKIP("wired by Task 20: synthetic FITS writer needed");
+-#endif
+ }
+ 
+ TEST_CASE("Phase A: mixed L + HaO3 batch builds union slot config",
+           "[.integration][phase_a]") {
+-#if WIRED_BY_TASK_20
+     auto t1 = fs::temp_directory_path() / "phase_a_l.fits";
+     auto t2 = fs::temp_directory_path() / "phase_a_hao3_2.fits";
+     test_util::write_synthetic_mono(t1.string(), 16, 16, "ASI2600MM", "L", 0.5f);
+     test_util::write_synthetic_bayer(t2.string(), 16, 16, "RGGB", "ASI585MC", "HaO3", 0.5f);
+ 
+     StackingEngine::Config cfg;
+     cfg.qe_database_path = (fs::path(NUKEX_TEST_FIXTURES_DIR) / "qe" / "minimal_db.json").string();
+     StackingEngine engine(cfg);
+     auto result = engine.execute({t1.string(), t2.string()}, {}, nullptr);
+ 
+     REQUIRE(result.ok);
+     REQUIRE(result.cube->channel_config.slot_index("L")      != -1);
+     REQUIRE(result.cube->channel_config.slot_index("R_HaO3") != -1);
+     REQUIRE(result.cube->channel_config.slot_index("G_HaO3") != -1);
+     REQUIRE(result.cube->channel_config.slot_index("B_HaO3") != -1);
+-#else
+-    SKIP("wired by Task 20: synthetic FITS writer needed");
+-#endif
+ }
+diff --git a/test/integration/test_phase_b_qsolve.cpp b/test/integration/test_phase_b_qsolve.cpp
+index e0e12d7..731a04b 100644
+--- a/test/integration/test_phase_b_qsolve.cpp
++++ b/test/integration/test_phase_b_qsolve.cpp
+@@ -1,62 +1,43 @@
+ // Phase B Q-solve integration tests (Task 10B).
+ //
+-// These four [.integration]-tagged cases describe the END-TO-END behaviour
+-// of the Q-matrix decomposition pass that runs after per-pixel selection
+-// populates the `stacked` Image with raw slot values:
++// These cases describe the END-TO-END behaviour of the Q-matrix
++// decomposition pass that runs after per-pixel selection populates the
++// `stacked` Image with raw slot values:
+ //
+ //   1. A synthetic HaO3 frame engineered so Q-solve recovers Ha=0.5 and
+ //      OIII=0.3 at the centre pixel within ±0.02.
+ //   2. A pure broadband-OSC frame that produces no Ha/OIII/SII derived
+ //      slot — only R/G/B/L pass through.
+ //   3. A mixed HaO3 + S2O3 batch where multi-source OIII is merged via
+ //      sample-count weighted mean.
+ //   4. A frame engineered so the Q-solve would produce a negative emission
+ //      value — verifying it is clamped to 0 and counted in
+-//      derived.negative_clamped_count.
+-//
+-// They depend on the synthetic-FITS writer that Task 20 will add to
+-// test_util (test_util::write_synthetic_q_solved_hao3 and friends).
+-// Until that task lands, the test bodies are gated under #if 0 so the
+-// file COMPILES against the current test_util — keeping CI green —
+-// while the literal end-state cases sit ready for Task 20 to wire up.
+-//
+-// All four cases are tagged "[.integration]" — Catch2's hidden-tag
+-// convention — so default `ctest` runs skip them entirely. When Task 20
+-// drops the writer in, flip `WIRED_BY_TASK_20` to 1 (or remove the gate)
+-// and the cases will be enabled by passing the [integration] filter to
+-// the test binary.
++//      derived.negative_clamped_count. Still gated: no synthetic writer
++//      for an engineered-negative frame exists yet.
++//   5. Unknown INSTRUME on a Bayer frame falls back to the generic camera
++//      QE profile (Task 15b), end to end.
+ 
+ #include "catch_amalgamated.hpp"
+ #include "nukex/stacker/stacking_engine.hpp"
+ #include "nukex/core/filter.hpp"
+ #include "nukex/core/cube.hpp"
+ #include "nukex/core/channel_config.hpp"
++#include "synthetic_fits.hpp"
+ 
+ #include <filesystem>
+ 
+-#define WIRED_BY_TASK_20 0
+-
+ using namespace nukex;
+ namespace fs = std::filesystem;
+ 
+-#if WIRED_BY_TASK_20
+-#include "test_data_loader.hpp"  // brings in test_util::write_synthetic_*
+-#endif
+-
+-// Each case carries the same minimal placeholder body so the test binary
+-// links until Task 20. When the gate flips, the real bodies (kept inline
+-// in #if blocks below) become the live cases.
+-
+ TEST_CASE("Phase B Q-solve: synthetic HaO3 frame recovers Ha + OIII slots",
+           "[.integration][phase_b]") {
+-#if WIRED_BY_TASK_20
+     // write_synthetic_q_solved_hao3 creates a 16×16 Bayer frame with FILTER=HaO3
+     // and pixel values engineered so the Q-solve recovers Ha≈0.5 and OIII≈0.3
+     // at the centre pixel (8,8).
+     auto tmp = fs::temp_directory_path() / "phase_b_hao3.fits";
+     test_util::write_synthetic_q_solved_hao3(tmp.string(), 16, 16,
+                                               /*camera*/"ASI585MC",
+                                               /*ha_target*/0.5f,
+                                               /*oiii_target*/0.3f);
+ 
+     StackingEngine::Config cfg;
+@@ -69,28 +50,24 @@ TEST_CASE("Phase B Q-solve: synthetic HaO3 frame recovers Ha + OIII slots",
+     REQUIRE(result.derived.slots.count("Ha")   == 1);
+     REQUIRE(result.derived.slots.count("OIII") == 1);
+     // Centre pixel recovers the engineered values within ±0.02.
+     const int cx = 8, cy = 8;
+     float ha_val   = result.derived.slots.at("Ha")  [cy * 16 + cx];
+     float oiii_val = result.derived.slots.at("OIII")[cy * 16 + cx];
+     REQUIRE(ha_val   == Catch::Approx(0.5f).margin(0.02f));
+     REQUIRE(oiii_val == Catch::Approx(0.3f).margin(0.02f));
+     // No negative-clamping expected for a well-behaved engineered frame.
+     REQUIRE(result.derived.negative_clamped_count == 0);
+-#else
+-    SKIP("wired by Task 20: synthetic FITS writer needed");
+-#endif
+ }
+ 
+ TEST_CASE("Phase B Q-solve: pure broadband-OSC produces no Ha/OIII/SII slot",
+           "[.integration][phase_b]") {
+-#if WIRED_BY_TASK_20
+     // Plain OSC frame (no FILTER keyword) — all slots route through as
+     // broadband passthrough; no dual-NB groups → no Q-solve.
+     auto tmp = fs::temp_directory_path() / "phase_b_osc.fits";
+     test_util::write_synthetic_bayer(tmp.string(), 16, 16, "RGGB", "ASI585MC", "", 0.5f);
+ 
+     StackingEngine::Config cfg;
+     cfg.qe_database_path = (fs::path(NUKEX_TEST_FIXTURES_DIR) / "qe" / "minimal_db.json").string();
+     StackingEngine engine(cfg);
+     auto result = engine.execute({tmp.string()}, {}, nullptr);
+ 
+@@ -98,28 +75,24 @@ TEST_CASE("Phase B Q-solve: pure broadband-OSC produces no Ha/OIII/SII slot",
+     // Broadband slots are present.
+     REQUIRE(result.derived.slots.count("R") == 1);
+     REQUIRE(result.derived.slots.count("G") == 1);
+     REQUIRE(result.derived.slots.count("B") == 1);
+     REQUIRE(result.derived.slots.count("L") == 1);
+     // No emission-line slots produced — those would require a dual-NB group.
+     REQUIRE(result.derived.slots.count("Ha")  == 0);
+     REQUIRE(result.derived.slots.count("OIII") == 0);
+     REQUIRE(result.derived.slots.count("SII") == 0);
+     REQUIRE(result.derived.negative_clamped_count == 0);
+-#else
+-    SKIP("wired by Task 20: synthetic FITS writer needed");
+-#endif
+ }
+ 
+ TEST_CASE("Phase B Q-solve: HaO3 + S2O3 mixed → multi-source OIII merge",
+           "[.integration][phase_b]") {
+-#if WIRED_BY_TASK_20
+     // Two batches: 10 HaO3 frames + 5 S2O3 frames. Both contribute OIII.
+     // The weighted-mean merge gives the 10-frame HaO3 batch twice the weight
+     // of the 5-frame S2O3 batch for the OIII slot.
+     auto t1 = fs::temp_directory_path() / "phase_b_hao3_multi.fits";
+     auto t2 = fs::temp_directory_path() / "phase_b_s2o3_multi.fits";
+     test_util::write_synthetic_q_solved_hao3(t1.string(), 16, 16, "ASI585MC",
+                                               /*ha_target*/0.6f, /*oiii_target*/0.3f);
+     test_util::write_synthetic_q_solved_s2o3(t2.string(), 16, 16, "ASI585MC",
+                                               /*sii_target*/0.4f, /*oiii_target*/0.2f);
+ 
+@@ -130,39 +103,57 @@ TEST_CASE("Phase B Q-solve: HaO3 + S2O3 mixed → multi-source OIII merge",
+ 
+     REQUIRE(result.ok);
+     // All three emission-line slots must be present.
+     REQUIRE(result.derived.slots.count("Ha")   == 1);
+     REQUIRE(result.derived.slots.count("OIII") == 1);
+     REQUIRE(result.derived.slots.count("SII")  == 1);
+     // OIII must be a weighted blend of both contributions (not a simple mean).
+     // With n_HaO3=1 sample and n_S2O3=1 sample the blend is equal here;
+     // actual multi-frame tests (10 vs 5) live in the fixture generator.
+     REQUIRE(result.derived.slots.at("OIII")[8 * 16 + 8] > 0.0f);
+-#else
+-    SKIP("wired by Task 20: synthetic FITS writer needed");
+-#endif
+ }
+ 
+ TEST_CASE("Phase B Q-solve: negative emission clamped, counter incremented",
+           "[.integration][phase_b]") {
+-#if WIRED_BY_TASK_20
++    // Still gated: Task 20's writer interface does not include a
++    // write_synthetic_negative_emission_hao3 function, so there is no
++    // synthetic frame that engineers a negative Q-solve result. Left as
++    // SKIP rather than un-gated with a placeholder tolerance.
++#if 0
+     // A frame engineered so one emission-line value comes out negative from
+     // the linear solve (e.g. an OIII-dominated pixel fed to an Ha/OIII Q
+     // matrix that expects the opposite balance). The negative value must be
+     // clamped to 0, and negative_clamped_count must be > 0.
+     auto tmp = fs::temp_directory_path() / "phase_b_negative.fits";
+     test_util::write_synthetic_negative_emission_hao3(tmp.string(), 16, 16, "ASI585MC");
+ 
+     StackingEngine::Config cfg;
+     cfg.qe_database_path = (fs::path(NUKEX_TEST_FIXTURES_DIR) / "qe" / "minimal_db.json").string();
+     StackingEngine engine(cfg);
+     auto result = engine.execute({tmp.string()}, {}, nullptr);
+ 
+     REQUIRE(result.ok);  // loud-fail only fires on singular Q; clamp is non-fatal
+     REQUIRE(result.derived.negative_clamped_count > 0);
+     // All derived emission values must be >= 0 after clamping.
+     for (float v : result.derived.slots.at("Ha"))   REQUIRE(v >= 0.0f);
+     for (float v : result.derived.slots.at("OIII")) REQUIRE(v >= 0.0f);
+ #else
+-    SKIP("wired by Task 20: synthetic FITS writer needed");
++    SKIP("no synthetic writer for an engineered-negative-emission frame yet");
+ #endif
+ }
++
++TEST_CASE("Phase B Q-solve: unknown INSTRUME falls back to generic_sony_imx_osc with a warning",
++          "[.integration][phase_b]") {
++    // Photosites are engineered from ASI585MC's Q; the fixture's generic
++    // camera is a copy of ASI585MC, so the fallback recovers the same lines.
++    auto tmp = fs::temp_directory_path() / "phase_b_generic.fits";
++    test_util::write_synthetic_q_solved_hao3(tmp.string(), 16, 16, "ASI585MC", 0.5f, 0.3f,
++                                              /*instrume*/"Unknown Cam X");
++    StackingEngine::Config cfg;
++    cfg.qe_database_path = (fs::path(NUKEX_TEST_FIXTURES_DIR) / "qe" / "minimal_db.json").string();
++    StackingEngine engine(cfg);
++    auto result = engine.execute({tmp.string()}, {}, nullptr);
++
++    REQUIRE(result.ok);
++    REQUIRE(result.qe_generic_camera_fallback);
++    REQUIRE(result.derived.slots.at("Ha")[8 * 16 + 8] == Catch::Approx(0.5f).margin(0.02f));
++}
+diff --git a/test/unit/io/test_synthetic_fits.cpp b/test/unit/io/test_synthetic_fits.cpp
+new file mode 100644
+index 0000000..f06b217
+--- /dev/null
++++ b/test/unit/io/test_synthetic_fits.cpp
+@@ -0,0 +1,56 @@
++#include "catch_amalgamated.hpp"
++#include "synthetic_fits.hpp"
++#include "nukex/io/fits_reader.hpp"
++#include "nukex/calibration/qe_database.hpp"
++#include "nukex/calibration/channel_decomposer.hpp"
++
++#include <filesystem>
++
++using namespace nukex;
++namespace fs = std::filesystem;
++
++TEST_CASE("synthetic_fits: Bayer frame round-trips headers, size and photosite layout", "[synthetic_fits]") {
++    auto p = fs::temp_directory_path() / "synthetic_bayer.fits";
++    test_util::write_synthetic_bayer(p.string(), 32, 16, "RGGB", "ASI585MC", "HaO3", 0.5f);
++
++    auto r = FITSReader::read(p.string());
++    REQUIRE(r.success);
++    REQUIRE(r.image.width()  == 32);
++    REQUIRE(r.image.height() == 16);
++    REQUIRE(r.image.n_channels() == 1);
++    REQUIRE(r.metadata.bayer_pattern == "RGGB");
++    REQUIRE(r.metadata.instrument    == "ASI585MC");
++    REQUIRE(r.metadata.filter        == "HaO3");
++    REQUIRE(r.image.at(0, 0, 0) == Catch::Approx(0.5f));
++}
++
++TEST_CASE("synthetic_fits: mono frame has no BAYERPAT", "[synthetic_fits]") {
++    auto p = fs::temp_directory_path() / "synthetic_mono.fits";
++    test_util::write_synthetic_mono(p.string(), 8, 8, "ASI2600MM", "L", 0.25f);
++    auto r = FITSReader::read(p.string());
++    REQUIRE(r.success);
++    REQUIRE(r.metadata.bayer_pattern.empty());
++    REQUIRE(r.metadata.filter == "L");
++}
++
++TEST_CASE("synthetic_fits: q-solved HaO3 frame's photosites invert back to the targets", "[synthetic_fits]") {
++    auto p = fs::temp_directory_path() / "synthetic_qsolved.fits";
++    test_util::write_synthetic_q_solved_hao3(p.string(), 8, 8, "ASI585MC", 0.5f, 0.3f);
++    auto r = FITSReader::read(p.string());
++    REQUIRE(r.success);
++
++    QEDatabase db;
++    REQUIRE(db.load_shipped(std::string(NUKEX_TEST_FIXTURES_DIR) + "/qe/minimal_db.json").ok);
++    ChannelDecomposer dec(db);
++    // RGGB: (0,0)=R, (1,0)=G, (1,1)=B
++    Eigen::Vector3d rgb(r.image.at(0, 0, 0), r.image.at(1, 0, 0), r.image.at(1, 1, 0));
++    Eigen::VectorXd lines = dec.solve("ASI585MC", "HaO3", rgb);
++    REQUIRE(lines(0) == Catch::Approx(0.5).margin(1e-6));
++    REQUIRE(lines(1) == Catch::Approx(0.3).margin(1e-6));
++}
++
++TEST_CASE("synthetic_fits: instrume override is written verbatim", "[synthetic_fits]") {
++    auto p = fs::temp_directory_path() / "synthetic_instrume.fits";
++    test_util::write_synthetic_q_solved_hao3(p.string(), 8, 8, "ASI585MC", 0.5f, 0.3f, "Unknown Cam X");
++    REQUIRE(FITSReader::read_headers(p.string()).instrument == "Unknown Cam X");
++}
+diff --git a/test/util/synthetic_fits.cpp b/test/util/synthetic_fits.cpp
+new file mode 100644
+index 0000000..498fb62
+--- /dev/null
++++ b/test/util/synthetic_fits.cpp
+@@ -0,0 +1,94 @@
++#include "synthetic_fits.hpp"
++#include "nukex/calibration/qe_database.hpp"
++#include "nukex/calibration/channel_decomposer.hpp"
++
++#include <fitsio.h>
++#include <Eigen/Dense>
++
++#include <cstdio>
++#include <stdexcept>
++#include <vector>
++
++namespace nukex { namespace test_util {
++
++namespace {
++
++void write_fits(const std::string& path, int w, int h, const std::vector<float>& pixels,
++                const std::string& bayer, const std::string& instrument, const std::string& filter) {
++    fitsfile* fp = nullptr;
++    int status = 0;
++    std::remove(path.c_str());
++    fits_create_file(&fp, path.c_str(), &status);
++    long naxes[2] = {w, h};
++    fits_create_img(fp, FLOAT_IMG, 2, naxes, &status);
++    fits_write_img(fp, TFLOAT, 1, static_cast<long>(w) * h,
++                   const_cast<float*>(pixels.data()), &status);
++    if (!bayer.empty())      fits_update_key_str(fp, "BAYERPAT", bayer.c_str(),      nullptr, &status);
++    if (!instrument.empty()) fits_update_key_str(fp, "INSTRUME", instrument.c_str(), nullptr, &status);
++    if (!filter.empty())     fits_update_key_str(fp, "FILTER",   filter.c_str(),     nullptr, &status);
++    fits_close_file(fp, &status);
++    if (status != 0) {
++        char msg[FLEN_ERRMSG];
++        fits_get_errstatus(status, msg);
++        throw std::runtime_error(std::string("synthetic_fits: ") + msg + " writing " + path);
++    }
++}
++
++// Lay (r, g, b) onto a 2x2 Bayer mosaic. pattern[(y%2)*2 + x%2] names the photosite.
++std::vector<float> bayerize(int w, int h, const std::string& pattern, float r, float g, float b) {
++    if (pattern.size() != 4) throw std::runtime_error("synthetic_fits: BAYERPAT must be 4 chars");
++    std::vector<float> out(static_cast<size_t>(w) * h);
++    for (int y = 0; y < h; ++y) {
++        for (int x = 0; x < w; ++x) {
++            const char site = pattern[(y % 2) * 2 + (x % 2)];
++            out[static_cast<size_t>(y) * w + x] = site == 'R' ? r : site == 'B' ? b : g;
++        }
++    }
++    return out;
++}
++
++const QEDatabase& fixture_db() {
++    static const QEDatabase db = [] {
++        QEDatabase d;
++        auto r = d.load_shipped(std::string(NUKEX_TEST_FIXTURES_DIR) + "/qe/minimal_db.json");
++        if (!r.ok) throw std::runtime_error("synthetic_fits: " + r.error);
++        return d;
++    }();
++    return db;
++}
++
++void write_q_solved(const std::string& path, int w, int h, const std::string& camera,
++                    const std::string& filter, double line1, double line2, const std::string& instrume) {
++    ChannelDecomposer dec(fixture_db());
++    Eigen::MatrixXd Q = dec.build_q(camera, filter);          // 3 x 2
++    Eigen::Vector3d rgb = Q * Eigen::Vector2d(line1, line2);
++    auto pixels = bayerize(w, h, "RGGB",
++                           static_cast<float>(rgb(0)), static_cast<float>(rgb(1)), static_cast<float>(rgb(2)));
++    write_fits(path, w, h, pixels, "RGGB", instrume.empty() ? camera : instrume, filter);
++}
++
++} // namespace
++
++void write_synthetic_bayer(const std::string& path, int w, int h, const std::string& bayer,
++                           const std::string& instrument, const std::string& filter, float uniform_value) {
++    write_fits(path, w, h, bayerize(w, h, bayer, uniform_value, uniform_value, uniform_value),
++               bayer, instrument, filter);
++}
++
++void write_synthetic_mono(const std::string& path, int w, int h,
++                          const std::string& instrument, const std::string& filter, float uniform_value) {
++    write_fits(path, w, h, std::vector<float>(static_cast<size_t>(w) * h, uniform_value),
++               "", instrument, filter);
++}
++
++void write_synthetic_q_solved_hao3(const std::string& path, int w, int h, const std::string& camera,
++                                   float ha, float oiii, const std::string& instrume) {
++    write_q_solved(path, w, h, camera, "HaO3", ha, oiii, instrume);
++}
++
++void write_synthetic_q_solved_s2o3(const std::string& path, int w, int h, const std::string& camera,
++                                   float sii, float oiii, const std::string& instrume) {
++    write_q_solved(path, w, h, camera, "S2O3", sii, oiii, instrume);
++}
++
++}} // namespace nukex::test_util
+diff --git a/test/util/synthetic_fits.hpp b/test/util/synthetic_fits.hpp
+new file mode 100644
+index 0000000..2b6ff45
+--- /dev/null
++++ b/test/util/synthetic_fits.hpp
+@@ -0,0 +1,23 @@
++#pragma once
++#include <string>
++
++namespace nukex { namespace test_util {
++
++// Single-frame FITS writers for integration tests. Float32 pixels; headers
++// BAYERPAT / INSTRUME / FILTER written only when non-empty.
++void write_synthetic_bayer(const std::string& path, int w, int h, const std::string& bayer,
++                           const std::string& instrument, const std::string& filter, float uniform_value);
++
++void write_synthetic_mono(const std::string& path, int w, int h,
++                          const std::string& instrument, const std::string& filter, float uniform_value);
++
++// RGGB Bayer frames whose (R, G, B) photosite values are Q * (line1, line2)
++// for the (camera, filter) Q matrix from test/fixtures/qe/minimal_db.json,
++// so a Q-solve recovers exactly (line1, line2) at every pixel.
++// `instrume` empty -> INSTRUME = camera; otherwise written verbatim.
++void write_synthetic_q_solved_hao3(const std::string& path, int w, int h, const std::string& camera,
++                                   float ha, float oiii, const std::string& instrume = "");
++void write_synthetic_q_solved_s2o3(const std::string& path, int w, int h, const std::string& camera,
++                                   float sii, float oiii, const std::string& instrume = "");
++
++}} // namespace nukex::test_util

@@ -1,0 +1,140 @@
+# Review package: 3bb2382..96ba84e
+
+## Commits
+96ba84e fix: make RCAstro.cleanup() thorough and loud on temp-dir removal failure
+
+## Files changed
+ RCAstroLib.jsh          | 45 +++++++++++++++++++++++++++++++++++++++++----
+ test/t_lib_roundtrip.js | 17 +++++++++++++----
+ 2 files changed, 54 insertions(+), 8 deletions(-)
+
+## Diff
+diff --git a/RCAstroLib.jsh b/RCAstroLib.jsh
+index d3e3b0c..6725a70 100644
+--- a/RCAstroLib.jsh
++++ b/RCAstroLib.jsh
+@@ -78,24 +78,61 @@ var RCAstro = {
+    newWindow: function(resultWindow, id) {
+       resultWindow.mainView.id = id;
+       resultWindow.show();
+       resultWindow.zoomToFit();
+       return resultWindow;
+    },
+ 
+    // Removes the given files, then removes any per-run temp directories
+    // created by tempDir() so far. Signature is intentionally unchanged
+    // (cleanup(paths)) — later tasks call this as RCAstro.cleanup([inP, outP]).
++   //
++   // This must never throw (it runs from `finally` blocks), but it must
++   // never fail silently either: any file or directory that cannot be
++   // removed produces a visible console.warningln(), never a swallowed
++   // exception. File.removeDirectory() throws if the directory is not
++   // empty, so before calling it we sweep up any files a caller forgot
++   // to pass in explicitly.
+    cleanup: function(paths) {
+-      for (let i = 0; i < paths.length; ++i)
+-         try { if (paths[i] && File.exists(paths[i])) File.remove(paths[i]); } catch (e) {}
+-      for (let i = 0; i < this._tempDirs.length; ++i)
+-         try { if (File.directoryExists(this._tempDirs[i])) File.removeDirectory(this._tempDirs[i]); } catch (e) {}
++      for (let i = 0; i < paths.length; ++i) {
++         try {
++            if (paths[i] && File.exists(paths[i])) File.remove(paths[i]);
++         } catch (e) {
++            console.warningln("RC-Astro: could not remove temp file " + paths[i] + ": " + e.message);
++         }
++      }
++      for (let i = 0; i < this._tempDirs.length; ++i) {
++         let dir = this._tempDirs[i];
++         try {
++            if (!File.directoryExists(dir)) continue;
++            // Sweep up any leftover files so a caller forgetting to pass
++            // one into cleanup(paths) doesn't strand the whole directory.
++            // NOTE: File.searchDirectory() is documented but is NOT a
++            // callable function in this PixInsight 1.9.4 "Lockhart" build
++            // (verified: typeof File.searchDirectory === "undefined", same
++            // gotcha as CoreApplication.processEvents above). The bare
++            // global searchDirectory() works and returns full paths
++            // already (verified empirically) — do not re-prepend dir.
++            let leftovers = searchDirectory(dir + "/*");
++            for (let j = 0; j < leftovers.length; ++j) {
++               let leftover = leftovers[j];
++               try {
++                  if (File.directoryExists(leftover)) File.removeDirectory(leftover);
++                  else if (File.exists(leftover)) File.remove(leftover);
++               } catch (e) {
++                  console.warningln("RC-Astro: could not remove leftover temp item " + leftover + ": " + e.message);
++               }
++            }
++            File.removeDirectory(dir);
++         } catch (e) {
++            console.warningln("RC-Astro: could not remove temp dir " + dir + ": " + e.message);
++         }
++      }
+       this._tempDirs = [];
+    },
+ 
+    fail: function(message) {
+       console.criticalln("*** " + this.TITLE + ": " + message);
+       (new MessageBox("<p>" + message + "</p>", this.TITLE, StdIcon.Error, StdButton.Ok)).execute();
+       throw new Error(message);
+    }
+ };
+diff --git a/test/t_lib_roundtrip.js b/test/t_lib_roundtrip.js
+index 93fae95..c253e48 100644
+--- a/test/t_lib_roundtrip.js
++++ b/test/t_lib_roundtrip.js
+@@ -7,41 +7,50 @@
+ var RESULT_LOG = "/tmp/rc_t1_result.log";
+ 
+ function assert(c, m){ if(!c){ throw new Error(m);} }
+ 
+ function main() {
+    let log = new File;
+    log.createForWriting(RESULT_LOG);
+    function W(s){ log.outTextLn(s); log.flush(); console.noteln(s); }
+ 
+    let p = null;
++   let dir = null;
++   let src = null;
++   let rt = null;
+    try {
+       // findBinary resolves
+       let bin = RCAstro.findBinary();
+       assert(bin != null, "rc-astro binary not found");
+       W("binary: " + bin);
+ 
+       // load a known image, save via engine, re-import, compare geometry
+-      let src = ImageWindow.open("/home/scarter4work/astro_work/cygnus/gxp/panel_1-1.xisf")[0];
+-      let dir = RCAstro.tempDir();
++      src = ImageWindow.open("/home/scarter4work/astro_work/cygnus/gxp/panel_1-1.xisf")[0];
++      dir = RCAstro.tempDir();
+       p = RCAstro.saveView(src.mainView, dir);
+       assert(File.exists(p), "saveView did not write file");
+ 
+-      let rt  = RCAstro.importResult(p, "rt_check");
++      rt = RCAstro.importResult(p, "rt_check");
+       assert(rt.mainView.image.width  == src.mainView.image.width,  "width mismatch");
+       assert(rt.mainView.image.height == src.mainView.image.height, "height mismatch");
+ 
+-      src.forceClose(); rt.forceClose();
++      src.forceClose(); src = null;
++      rt.forceClose(); rt = null;
+       RCAstro.cleanup([p]);
+       assert(!File.exists(p), "cleanup did not remove temp file");
++      assert(!File.directoryExists(dir), "cleanup did not remove temp directory");
+       p = null;
+       W("PASS t_lib_roundtrip");
+    } catch (e) {
+       W("FAIL: " + e.message);
+    } finally {
++      // Ensure any still-open windows are closed even if an assertion
++      // above failed before the normal close/cleanup path ran.
++      if (src != null) try { src.forceClose(); } catch (e2) {}
++      if (rt  != null) try { rt.forceClose();  } catch (e2) {}
+       // Ensure the temp file (and its temp dir) never leak, even if an
+       // assertion above failed before RCAstro.cleanup() ran.
+       if (p != null) try { RCAstro.cleanup([p]); } catch (e2) {}
+    }
+    log.close();
+ }
+ main();

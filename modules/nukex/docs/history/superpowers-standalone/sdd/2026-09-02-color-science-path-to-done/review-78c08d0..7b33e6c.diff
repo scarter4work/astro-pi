@@ -1,0 +1,154 @@
+# Review package: 78c08d0..HEAD
+
+## Commits
+7b33e6c fix(io): broadband filter names resolve by sensor type (OSC on Bayer, L on mono)
+
+## Files changed
+ src/lib/io/src/filter_classifier.cpp    | 30 ++++++++++++++++++++++++++++--
+ test/unit/io/test_filter_classifier.cpp | 22 ++++++++++++++++++++++
+ 2 files changed, 50 insertions(+), 2 deletions(-)
+
+## Diff
+diff --git a/src/lib/io/src/filter_classifier.cpp b/src/lib/io/src/filter_classifier.cpp
+index 665b2b1..d5aa017 100644
+--- a/src/lib/io/src/filter_classifier.cpp
++++ b/src/lib/io/src/filter_classifier.cpp
+@@ -1,31 +1,30 @@
+ #include "nukex/io/filter_classifier.hpp"
+ #include "nukex/core/frame_metadata.hpp"
+ 
+ #include <cctype>
+ #include <unordered_map>
++#include <unordered_set>
+ 
+ namespace nukex {
+ 
+ namespace {
+ 
+ struct KnownFilter {
+     FilterClass    cls;
+     const char*    canonical;
+     double         center_nm;
+     double         fwhm_nm;
+ };
+ 
+ const std::unordered_map<std::string, KnownFilter>& known_table() {
+     static const std::unordered_map<std::string, KnownFilter> table = {
+-        {"l",         {FilterClass::BROADBAND_L,       "L",   550.0, 300.0}},
+-        {"luminance", {FilterClass::BROADBAND_L,       "L",   550.0, 300.0}},
+         {"r",         {FilterClass::BROADBAND_RGB,     "R",   620.0, 100.0}},
+         {"red",       {FilterClass::BROADBAND_RGB,     "R",   620.0, 100.0}},
+         {"g",         {FilterClass::BROADBAND_RGB,     "G",   540.0, 100.0}},
+         {"green",     {FilterClass::BROADBAND_RGB,     "G",   540.0, 100.0}},
+         {"b",         {FilterClass::BROADBAND_RGB,     "B",   460.0, 100.0}},
+         {"blue",      {FilterClass::BROADBAND_RGB,     "B",   460.0, 100.0}},
+ 
+         {"ha",        {FilterClass::NARROWBAND_SINGLE, "Ha",   656.3,   7.0}},
+         {"halpha",    {FilterClass::NARROWBAND_SINGLE, "Ha",   656.3,   7.0}},
+         {"oiii",      {FilterClass::NARROWBAND_SINGLE, "OIII", 500.7,   7.0}},
+@@ -38,20 +37,35 @@ const std::unordered_map<std::string, KnownFilter>& known_table() {
+         {"s2o3",      {FilterClass::DUAL_NB_OSC,       "S2O3", 586.0, 170.0}},
+         {"siioiii",   {FilterClass::DUAL_NB_OSC,       "S2O3", 586.0, 170.0}},
+         {"lextreme",  {FilterClass::DUAL_NB_OSC,       "L-eXtreme",  578.5,  7.0}},
+         {"lenhance",  {FilterClass::DUAL_NB_OSC,       "L-eNhance",  578.5, 25.0}},
+         {"lultimate", {FilterClass::DUAL_NB_OSC,       "L-Ultimate", 578.5,  3.0}},
+         {"alpt",      {FilterClass::DUAL_NB_OSC,       "ALP-T",      578.5,  5.0}},
+     };
+     return table;
+ }
+ 
++// Broadband names whose class depends on the sensor: OSC on a Bayer frame,
++// luminance on a mono frame. Normalised (lowercase, alphanumerics only).
++// Sources: research/qe_database_research.json types `luminance` and
++// `broadband-LPR`, plus the bare L aliases moved out of known_table().
++const std::unordered_set<std::string>& broadband_any_names() {
++    static const std::unordered_set<std::string> names = {
++        "l", "lum", "luminance",
++        "lpro", "lpr", "lps", "lpsd1", "lpsd2", "lpsd3", "lpsv4",
++        "uvir", "uvircut", "uvirblock", "irblock", "uvcut",
++        "cls", "clsccd",
++        "l1", "l2", "l3",           // Astronomik L1/L2/L3 UV-IR block
++    };
++    return names;
++}
++
+ } // namespace
+ 
+ std::string FilterClassifier::normalize_name(const std::string& raw) {
+     std::string out;
+     out.reserve(raw.size());
+     for (char c : raw) {
+         if (std::isalnum(static_cast<unsigned char>(c))) {
+             out.push_back(static_cast<char>(std::tolower(static_cast<unsigned char>(c))));
+         }
+     }
+@@ -85,20 +99,32 @@ Filter FilterClassifier::classify(const FrameMetadata& meta) {
+             out.name      = "OSC";
+             out.bandwidth = BandwidthSpec{550.0, 300.0};
+         } else {
+             out.cls       = FilterClass::BROADBAND_L;
+             out.name      = "L_unnamed";
+             out.bandwidth = BandwidthSpec{550.0, 300.0};
+         }
+         return out;
+     }
+ 
++    if (broadband_any_names().count(normalized)) {
++        if (is_bayer) {
++            out.cls  = FilterClass::BROADBAND_OSC;
++            out.name = "OSC";
++        } else {
++            out.cls  = FilterClass::BROADBAND_L;
++            out.name = "L";
++        }
++        out.bandwidth = BandwidthSpec{550.0, 300.0};
++        return out;
++    }
++
+     std::string   canonical;
+     BandwidthSpec bw;
+     FilterClass   cls = lookup_known(normalized, canonical, bw);
+     if (cls != FilterClass::UNKNOWN) {
+         out.cls       = cls;
+         out.name      = canonical;
+         out.bandwidth = bw;
+         return out;
+     }
+ 
+diff --git a/test/unit/io/test_filter_classifier.cpp b/test/unit/io/test_filter_classifier.cpp
+index edee967..21f7a22 100644
+--- a/test/unit/io/test_filter_classifier.cpp
++++ b/test/unit/io/test_filter_classifier.cpp
+@@ -85,10 +85,32 @@ TEST_CASE("FilterClassifier: unknown FILTER + Bayer -> UNKNOWN sentinel",
+ 
+ TEST_CASE("FilterClassifier: unknown FILTER + mono -> BROADBAND_L preserve name + warn",
+           "[filter_classifier]") {
+     FilterClassifier c;
+     Filter f = c.classify(make_meta("custom_Hbeta", ""));
+     REQUIRE(f.cls == FilterClass::BROADBAND_L);
+     REQUIRE(f.name == "custom_Hbeta");
+     REQUIRE(c.last_warning().find("Unknown filter") != std::string::npos);
+     REQUIRE(c.last_warning().find("custom_Hbeta")   != std::string::npos);
+ }
++
++TEST_CASE("FilterClassifier: broadband names on Bayer resolve to BROADBAND_OSC", "[filter_classifier]") {
++    FilterClassifier c;
++    for (const char* name : {"L", "Luminance", "LPro", "L-Pro", "UV/IR Cut", "CLS-CCD", "LPS-D1", "L1"}) {
++        Filter f = c.classify(make_meta(name, "RGGB", "ZWO ASI2400MC Pro"));
++        INFO(name);
++        REQUIRE(f.cls  == FilterClass::BROADBAND_OSC);
++        REQUIRE(f.name == "OSC");
++        REQUIRE(c.last_warning().empty());
++    }
++}
++
++TEST_CASE("FilterClassifier: broadband LPR names on mono resolve to BROADBAND_L named L", "[filter_classifier]") {
++    FilterClassifier c;
++    for (const char* name : {"LPro", "UV-IR-Cut", "CLS", "LPS-D2"}) {
++        Filter f = c.classify(make_meta(name, "", "ASI2600MM"));
++        INFO(name);
++        REQUIRE(f.cls  == FilterClass::BROADBAND_L);
++        REQUIRE(f.name == "L");
++        REQUIRE(c.last_warning().empty());
++    }
++}

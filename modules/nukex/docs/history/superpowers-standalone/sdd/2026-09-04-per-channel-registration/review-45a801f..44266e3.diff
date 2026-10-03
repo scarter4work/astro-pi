@@ -1,0 +1,454 @@
+# Review package: 45a801f..HEAD
+
+## Commits
+44266e3 feat(alignment): detect stars on green, not on channel 0
+
+## Files changed
+ .../include/nukex/alignment/star_detector.hpp      | 36 ++++++++++++++----
+ src/lib/alignment/src/star_detector.cpp            | 38 +++++++++++--------
+ test/unit/alignment/test_star_detector.cpp         | 43 ++++++++++++++++++++++
+ 3 files changed, 94 insertions(+), 23 deletions(-)
+
+## Diff
+diff --git a/src/lib/alignment/include/nukex/alignment/star_detector.hpp b/src/lib/alignment/include/nukex/alignment/star_detector.hpp
+index d197be8..984ce5c 100644
+--- a/src/lib/alignment/include/nukex/alignment/star_detector.hpp
++++ b/src/lib/alignment/include/nukex/alignment/star_detector.hpp
+@@ -1,61 +1,81 @@
+ #pragma once
+ 
+ #include "nukex/alignment/types.hpp"
+ #include "nukex/io/image.hpp"
+ 
+ namespace nukex {
+ 
++/// The channel star detection and channel registration both use as their
++/// reference: green for a colour image, the only channel for a mono one.
++///
++/// Free rather than a member because channel registration needs the same
++/// answer and must not depend on StarDetector to get it.
++inline int default_reference_channel(int n_channels) {
++    return n_channels >= 3 ? 1 : 0;
++}
++
+ /// Detect stars in an image via local maxima detection + Gaussian centroid refinement.
+ ///
+ /// Process:
+ /// 1. Compute background level and noise (median + MAD)
+ /// 2. Find local maxima above SNR threshold (median + snr_multiplier * MAD)
+ /// 3. Refine centroid with 2D Gaussian fit on 7x7 neighborhood
+ /// 4. Compute flux, peak, SNR for each star
+ /// 5. Sort by flux, keep top max_stars
+ ///
+-/// Input should be a single-channel (luminance) image. For RGB, extract
+-/// or compute luminance first.
++/// Works on single-channel (mono) or multi-channel (colour) images. For a
++/// colour image, detection runs on green by default -- see Config::channel.
+ class StarDetector {
+ public:
+     struct Config {
+         float snr_multiplier = 5.0f;   // detection threshold: median + snr_mult * MAD
+         int   max_stars      = 200;    // keep top N brightest
+         int   exclusion_radius = 5;    // minimum distance between detected stars (pixels)
+         float saturation_level = 0.95f; // reject stars with peak above this
+         float saturation_reject_fraction = 0.5f; // reject whole frame if this
+                                                   // fraction of pixels is at
+                                                   // saturation_level or above
++
++        /// Which channel to detect stars on. -1 means auto: green (channel 1)
++        /// for any image with 3 or more channels, channel 0 otherwise.
++        ///
++        /// Green is the right default for a colour frame. It has two of every
++        /// four photosites on an RGGB sensor, so its centroids are the least
++        /// noisy available, and through a multi-band filter it is not the
++        /// starved channel. Detecting on channel 0 -- red, after debayer --
++        /// registers frames using the channel that carries the lateral-colour
++        /// error, which is exactly backwards.
++        int channel = -1;
+     };
+ 
+-    /// Detect stars in a single-channel image.
+-    /// If image is multi-channel, only channel 0 is used.
++    /// Detect stars in an image. The channel used is Config::channel, or the
++    /// auto choice from default_reference_channel() when it is left at -1.
+     static StarCatalog detect(const Image& image, const Config& config);
+ 
+     /// Detect stars using default configuration.
+     static StarCatalog detect(const Image& image) { return detect(image, Config{}); }
+ 
+     /// Fraction of pixels at or above `saturation_level`, measured on a 4x
+     /// decimated sample of channel 0.  Callers use this to decide whether a
+     /// frame is unusable before attempting expensive detection work.
+     static float saturation_fraction(const Image& image, float saturation_level);
+ 
+ private:
+     /// Compute robust background (median) and noise (MAD) of the image.
+-    static std::pair<float, float> compute_background_noise(const Image& image);
++    static std::pair<float, float> compute_background_noise(const Image& image, int ch);
+ 
+     /// Find local maxima above threshold. Returns (x, y, peak_value) triples.
+     static std::vector<std::tuple<int, int, float>> find_local_maxima(
+-        const Image& image, float threshold, int exclusion_radius);
++        const Image& image, float threshold, int exclusion_radius, int ch);
+ 
+     /// Refine centroid with 2D Gaussian fit on a 7x7 neighborhood.
+     /// Returns sub-pixel (x, y) or the input if fit fails.
+     static std::pair<float, float> refine_centroid(
+-        const Image& image, int x, int y);
++        const Image& image, int x, int y, int ch);
+ 
+     /// Compute flux in a circular aperture of given radius.
+     static float compute_flux(const Image& image, float cx, float cy,
+-                              float background, int aperture_radius = 5);
++                              float background, int ch, int aperture_radius = 5);
+ };
+ 
+ } // namespace nukex
+diff --git a/src/lib/alignment/src/star_detector.cpp b/src/lib/alignment/src/star_detector.cpp
+index a588391..251a32a 100644
+--- a/src/lib/alignment/src/star_detector.cpp
++++ b/src/lib/alignment/src/star_detector.cpp
+@@ -1,26 +1,26 @@
+ #include "nukex/alignment/star_detector.hpp"
+ #include <algorithm>
+ #include <cmath>
+ #include <numeric>
+ #include <vector>
+ #include <tuple>
+ 
+ namespace nukex {
+ 
+-std::pair<float, float> StarDetector::compute_background_noise(const Image& image) {
++std::pair<float, float> StarDetector::compute_background_noise(const Image& image, int ch) {
+     // Sample pixels for background estimation (every 4th pixel for speed)
+     std::vector<float> samples;
+     int step = 4;
+     for (int y = 0; y < image.height(); y += step) {
+         for (int x = 0; x < image.width(); x += step) {
+-            samples.push_back(image.at(x, y, 0));
++            samples.push_back(image.at(x, y, ch));
+         }
+     }
+ 
+     if (samples.empty()) return {0.0f, 1.0f};
+ 
+     // Median
+     size_t n = samples.size();
+     std::nth_element(samples.begin(), samples.begin() + n / 2, samples.end());
+     float median = samples[n / 2];
+ 
+@@ -32,40 +32,40 @@ std::pair<float, float> StarDetector::compute_background_noise(const Image& imag
+     float mad = samples[n / 2];
+ 
+     // Scale MAD to estimate sigma: sigma ≈ 1.4826 * MAD for Gaussian data
+     float sigma = 1.4826f * mad;
+     if (sigma < 1e-10f) sigma = 1e-10f;
+ 
+     return {median, sigma};
+ }
+ 
+ std::vector<std::tuple<int, int, float>> StarDetector::find_local_maxima(
+-    const Image& image, float threshold, int exclusion_radius) {
++    const Image& image, float threshold, int exclusion_radius, int ch) {
+ 
+     int w = image.width();
+     int h = image.height();
+     int r = 3; // local max search radius
+ 
+     std::vector<std::tuple<int, int, float>> candidates;
+ 
+     // Skip border pixels
+     for (int y = r; y < h - r; y++) {
+         for (int x = r; x < w - r; x++) {
+-            float val = image.at(x, y, 0);
++            float val = image.at(x, y, ch);
+             if (val < threshold) continue;
+ 
+             // Check if this is a local maximum in a (2r+1) × (2r+1) neighborhood
+             bool is_max = true;
+             for (int dy = -r; dy <= r && is_max; dy++) {
+                 for (int dx = -r; dx <= r && is_max; dx++) {
+                     if (dx == 0 && dy == 0) continue;
+-                    if (image.at(x + dx, y + dy, 0) > val) {
++                    if (image.at(x + dx, y + dy, ch) > val) {
+                         is_max = false;
+                     }
+                 }
+             }
+ 
+             if (is_max) {
+                 candidates.emplace_back(x, y, val);
+             }
+         }
+     }
+@@ -90,93 +90,97 @@ std::vector<std::tuple<int, int, float>> StarDetector::find_local_maxima(
+         }
+         if (!too_close) {
+             filtered.emplace_back(cx, cy, cv);
+         }
+     }
+ 
+     return filtered;
+ }
+ 
+ std::pair<float, float> StarDetector::refine_centroid(
+-    const Image& image, int x, int y) {
++    const Image& image, int x, int y, int ch) {
+ 
+     // Compute intensity-weighted centroid in a 7×7 window
+     // This is faster and more robust than full 2D Gaussian fitting
+     // for the purpose of sub-pixel centroid estimation.
+     int w = image.width();
+     int h = image.height();
+     int radius = 3;
+ 
+     float background = 0.0f;
+     int bg_count = 0;
+ 
+     // Estimate local background from corners of an 11×11 region
+     for (int dy = -5; dy <= 5; dy += 10) {
+         for (int dx = -5; dx <= 5; dx += 10) {
+             int px = x + dx;
+             int py = y + dy;
+             if (px >= 0 && px < w && py >= 0 && py < h) {
+-                background += image.at(px, py, 0);
++                background += image.at(px, py, ch);
+                 bg_count++;
+             }
+         }
+     }
+     if (bg_count > 0) background /= static_cast<float>(bg_count);
+ 
+     float sum_x = 0.0f, sum_y = 0.0f, sum_w = 0.0f;
+ 
+     for (int dy = -radius; dy <= radius; dy++) {
+         for (int dx = -radius; dx <= radius; dx++) {
+             int px = x + dx;
+             int py = y + dy;
+             if (px < 0 || px >= w || py < 0 || py >= h) continue;
+ 
+-            float val = image.at(px, py, 0) - background;
++            float val = image.at(px, py, ch) - background;
+             if (val <= 0.0f) continue;
+ 
+             sum_x += val * static_cast<float>(px);
+             sum_y += val * static_cast<float>(py);
+             sum_w += val;
+         }
+     }
+ 
+     if (sum_w > 1e-10f) {
+         return {sum_x / sum_w, sum_y / sum_w};
+     }
+     return {static_cast<float>(x), static_cast<float>(y)};
+ }
+ 
+ float StarDetector::compute_flux(const Image& image, float cx, float cy,
+-                                  float background, int aperture_radius) {
++                                  float background, int ch, int aperture_radius) {
+     int w = image.width();
+     int h = image.height();
+     int icx = static_cast<int>(cx + 0.5f);
+     int icy = static_cast<int>(cy + 0.5f);
+     float r2 = static_cast<float>(aperture_radius * aperture_radius);
+     float flux = 0.0f;
+ 
+     for (int dy = -aperture_radius; dy <= aperture_radius; dy++) {
+         for (int dx = -aperture_radius; dx <= aperture_radius; dx++) {
+             int px = icx + dx;
+             int py = icy + dy;
+             if (px < 0 || px >= w || py < 0 || py >= h) continue;
+             float dist2 = static_cast<float>(dx * dx + dy * dy);
+             if (dist2 > r2) continue;
+ 
+-            float val = image.at(px, py, 0) - background;
++            float val = image.at(px, py, ch) - background;
+             if (val > 0.0f) flux += val;
+         }
+     }
+ 
+     return flux;
+ }
+ 
++/// Deliberately measured on channel 0 rather than the detection channel:
++/// this answers "is this frame clipped", which is a property of the exposure,
++/// not of a colour. Changing it would move the blown-out cut for reasons that
++/// have nothing to do with channel registration.
+ float StarDetector::saturation_fraction(const Image& image, float saturation_level) {
+     if (image.empty()) return 0.0f;
+     const int w = image.width();
+     const int h = image.height();
+     const int step = 4;  // 4x decimation: ~16x faster than full scan
+     long saturated = 0;
+     long total = 0;
+     for (int y = 0; y < h; y += step) {
+         for (int x = 0; x < w; x += step) {
+             if (image.at(x, y, 0) >= saturation_level) saturated++;
+@@ -187,68 +191,72 @@ float StarDetector::saturation_fraction(const Image& image, float saturation_lev
+     return static_cast<float>(saturated) / static_cast<float>(total);
+ }
+ 
+ StarCatalog StarDetector::detect(const Image& image, const Config& config) {
+     StarCatalog catalog;
+ 
+     if (image.empty() || image.width() < 20 || image.height() < 20) {
+         return catalog;
+     }
+ 
++    const int ch = (config.channel >= 0 && config.channel < image.n_channels())
++                 ? config.channel
++                 : default_reference_channel(image.n_channels());
++
+     // Saturation guard: reject frames where a majority of pixels are clipped
+     // to saturation.  Without this, find_local_maxima sees the entire clipped
+     // plateau as candidate stars and the O(n^2) exclusion-radius filter hangs
+     // (observed 2026-04-20 on a dawn-twilight M27 frame; 5 min per frame).
+     if (saturation_fraction(image, config.saturation_level)
+             >= config.saturation_reject_fraction) {
+         return catalog;  // empty — caller treats as alignment failure
+     }
+ 
+     // Step 1: Background and noise estimation
+-    auto [background, sigma] = compute_background_noise(image);
++    auto [background, sigma] = compute_background_noise(image, ch);
+     float threshold = background + config.snr_multiplier * sigma;
+ 
+     // Step 2: Find local maxima
+-    auto candidates = find_local_maxima(image, threshold, config.exclusion_radius);
++    auto candidates = find_local_maxima(image, threshold, config.exclusion_radius, ch);
+ 
+     // Step 3: Build star catalog with refined centroids
+     for (const auto& [ix, iy, peak] : candidates) {
+         // Reject saturated stars
+         if (peak > config.saturation_level) continue;
+ 
+         Star star;
+         star.peak = peak;
+         star.background = background;
+ 
+         // Refine centroid
+-        auto [rx, ry] = refine_centroid(image, ix, iy);
++        auto [rx, ry] = refine_centroid(image, ix, iy, ch);
+         star.x = rx;
+         star.y = ry;
+ 
+         // Estimate FWHM from second moments of intensity around centroid.
+         // For a Gaussian PSF, FWHM = 2.355 * sigma (the Gaussian FWHM-sigma relation).
+         // We compute sigma_x and sigma_y independently, then use geometric mean.
+         {
+             int w = image.width();
+             int h = image.height();
+             int fwhm_radius = 3;
+             float sum_xx = 0.0f, sum_yy = 0.0f, sum_wt = 0.0f;
+             int icx = static_cast<int>(rx + 0.5f);
+             int icy = static_cast<int>(ry + 0.5f);
+ 
+             for (int dy = -fwhm_radius; dy <= fwhm_radius; dy++) {
+                 for (int dx = -fwhm_radius; dx <= fwhm_radius; dx++) {
+                     int px = icx + dx;
+                     int py = icy + dy;
+                     if (px < 0 || px >= w || py < 0 || py >= h) continue;
+ 
+-                    float val = image.at(px, py, 0) - background;
++                    float val = image.at(px, py, ch) - background;
+                     if (val <= 0.0f) continue;
+ 
+                     float dxc = static_cast<float>(px) - rx;
+                     float dyc = static_cast<float>(py) - ry;
+                     sum_xx += val * dxc * dxc;
+                     sum_yy += val * dyc * dyc;
+                     sum_wt += val;
+                 }
+             }
+ 
+@@ -258,21 +266,21 @@ StarCatalog StarDetector::detect(const Image& image, const Config& config) {
+                 float sigma = std::sqrt(sigma_x * sigma_y);
+                 if (sigma > 0.1f) {
+                     star.fwhm_x = 2.355f * sigma_x;
+                     star.fwhm_y = 2.355f * sigma_y;
+                     star.fwhm = 2.355f * sigma;
+                 }
+             }
+         }
+ 
+         // Compute flux
+-        star.flux = compute_flux(image, rx, ry, background);
++        star.flux = compute_flux(image, rx, ry, background, ch);
+ 
+         // SNR
+         star.snr = (peak - background) / sigma;
+ 
+         // Require minimum SNR above detection threshold
+         if (star.snr < config.snr_multiplier) continue;
+ 
+         catalog.stars.push_back(star);
+     }
+ 
+diff --git a/test/unit/alignment/test_star_detector.cpp b/test/unit/alignment/test_star_detector.cpp
+index 90a02f8..2eb5895 100644
+--- a/test/unit/alignment/test_star_detector.cpp
++++ b/test/unit/alignment/test_star_detector.cpp
+@@ -231,20 +231,63 @@ TEST_CASE("StarDetector: real FITS file", "[star_detector][integration]") {
+ 
+     // All stars should have valid coordinates within image bounds
+     for (const auto& star : catalog.stars) {
+         REQUIRE(star.x >= 0.0f);
+         REQUIRE(star.x < static_cast<float>(result.image.width()));
+         REQUIRE(star.y >= 0.0f);
+         REQUIRE(star.y < static_cast<float>(result.image.height()));
+     }
+ }
+ 
++// --- green as the detection channel -------------------------------------
++
++TEST_CASE("default_reference_channel: green for colour, channel 0 for mono",
++          "[star_detector]") {
++    REQUIRE(nukex::default_reference_channel(1) == 0);
++    REQUIRE(nukex::default_reference_channel(2) == 0);
++    REQUIRE(nukex::default_reference_channel(3) == 1);
++    REQUIRE(nukex::default_reference_channel(4) == 1);
++}
++
++TEST_CASE("StarDetector detects on green, not on channel 0",
++          "[star_detector]") {
++    // Red carries one star, green carries three. Detecting on channel 0 finds
++    // one; detecting on green finds three. This is the whole point: on an OSC
++    // frame channel 0 is red, and red is the channel we least want to trust.
++    nukex::Image img(120, 120, 3);
++    img.fill(0.01f);
++
++    auto blob = [&](int ch, float cx, float cy) {
++        for (int dy = -4; dy <= 4; dy++)
++            for (int dx = -4; dx <= 4; dx++) {
++                float r2 = float(dx * dx + dy * dy);
++                img.at(int(cx) + dx, int(cy) + dy, ch) += 0.6f * std::exp(-r2 / 3.0f);
++            }
++    };
++
++    blob(0, 30, 30);                 // red: one star
++    blob(1, 30, 30);
++    blob(1, 70, 40);                 // green: three stars
++    blob(1, 50, 85);
++
++    nukex::StarDetector::Config cfg;
++    cfg.snr_multiplier = 3.0f;
++
++    auto cat = nukex::StarDetector::detect(img, cfg);
++    REQUIRE(cat.size() == 3);
++
++    // And the channel is overridable, which is how the ladder tests in
++    // Task 3 pin a specific plane.
++    cfg.channel = 0;
++    REQUIRE(nukex::StarDetector::detect(img, cfg).size() == 1);
++}
++
+ TEST_CASE("HomographyMatrix: identity", "[homography]") {
+     auto H = HomographyMatrix::identity();
+     REQUIRE(H.is_identity());
+ 
+     auto [x, y] = H.transform(100.0f, 200.0f);
+     REQUIRE(x == Catch::Approx(100.0f));
+     REQUIRE(y == Catch::Approx(200.0f));
+ }
+ 
+ TEST_CASE("HomographyMatrix: rotation detection", "[homography]") {

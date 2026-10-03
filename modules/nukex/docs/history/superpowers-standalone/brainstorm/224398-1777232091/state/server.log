@@ -1,0 +1,11 @@
+{"type":"server-started","port":50719,"host":"127.0.0.1","url_host":"localhost","url":"http://localhost:50719","screen_dir":"/home/scarter4work/projects/nukex4/.superpowers/brainstorm/224398-1777232091/content","state_dir":"/home/scarter4work/projects/nukex4/.superpowers/brainstorm/224398-1777232091/state"}
+{"type":"screen-added","file":"/home/scarter4work/projects/nukex4/.superpowers/brainstorm/224398-1777232091/content/scope.html"}
+{"type":"screen-added","file":"/home/scarter4work/projects/nukex4/.superpowers/brainstorm/224398-1777232091/content/palette-goal.html"}
+{"type":"screen-added","file":"/home/scarter4work/projects/nukex4/.superpowers/brainstorm/224398-1777232091/content/ingestion.html"}
+{"type":"screen-added","file":"/home/scarter4work/projects/nukex4/.superpowers/brainstorm/224398-1777232091/content/filter-taxonomy.html"}
+{"source":"user-event","type":"click","text":"A\n    \n      Yes, complete\n      Five classes cover everything I shoot (HaO3, S2O3, plain OSC, LRGB-mono, LRGBSHO, narrowband-mono). Build the design around this.","choice":"a","id":null,"timestamp":1777235418346}
+{"type":"screen-added","file":"/home/scarter4work/projects/nukex4/.superpowers/brainstorm/224398-1777232091/content/combine-algorithm.html"}
+{"type":"screen-added","file":"/home/scarter4work/projects/nukex4/.superpowers/brainstorm/224398-1777232091/content/qe-source.html"}
+{"type":"screen-added","file":"/home/scarter4work/projects/nukex4/.superpowers/brainstorm/224398-1777232091/content/regression-policy.html"}
+{"type":"screen-added","file":"/home/scarter4work/projects/nukex4/.superpowers/brainstorm/224398-1777232091/content/decomposition-locus.html"}
+{"type":"server-stopped","reason":"idle timeout"}

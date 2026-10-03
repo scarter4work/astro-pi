@@ -1,0 +1,66 @@
+<h2>Regression Baselines — what stays bit-identical, what doesn't?</h2>
+<p class="subtitle">v4.0.1.0 has 6 E2E pixel-hash baselines (NGC7635 stacked / noise / stretched, plus GHS / MTF / ArcSinh sweep). Touching the channel pipeline changes some outputs by design. Need a policy.</p>
+
+<div class="section">
+  <div class="mockup">
+    <div class="mockup-header">Today's E2E baselines (NGC7635, LRGB-mono single-filter test)</div>
+    <div class="mockup-body" style="background:#0a0a0a;color:#ddd;padding:18px;font-family:monospace;font-size:12px">
+      <div style="display:grid;grid-template-columns:280px 90px 1fr;gap:12px;align-items:center;margin-bottom:6px;color:#888;border-bottom:1px solid #333;padding-bottom:4px">
+        <div>Hash target</div><div>Class</div><div>Affected by color-science overhaul?</div>
+      </div>
+      <div style="display:grid;grid-template-columns:280px 90px 1fr;gap:12px;font-size:12px;align-items:center;padding:4px 0">
+        <div>lrgb_mono_ngc7635 (stacked)</div><div style="color:#aaa">LRGB-mono</div><div><span style="color:#ffaa00">maybe</span> — depends on whether MONO_LRGB combine path changes</div>
+      </div>
+      <div style="display:grid;grid-template-columns:280px 90px 1fr;gap:12px;font-size:12px;align-items:center;padding:4px 0">
+        <div>lrgb_mono_ngc7635 (noise)</div><div style="color:#aaa">LRGB-mono</div><div><span style="color:#5fc55f">no</span> — noise map is per-channel</div>
+      </div>
+      <div style="display:grid;grid-template-columns:280px 90px 1fr;gap:12px;font-size:12px;align-items:center;padding:4px 0">
+        <div>lrgb_mono_ngc7635 (stretched)</div><div style="color:#aaa">LRGB-mono</div><div><span style="color:#ffaa00">maybe</span> — stretch input changes if L gets wired into composite</div>
+      </div>
+      <div style="display:grid;grid-template-columns:280px 90px 1fr;gap:12px;font-size:12px;align-items:center;padding:4px 0">
+        <div>sweep_ghs / sweep_mtf / sweep_arcsinh</div><div style="color:#aaa">single-channel</div><div><span style="color:#5fc55f">no</span> — single-channel stretch math unaffected</div>
+      </div>
+      <div style="display:grid;grid-template-columns:280px 90px 1fr;gap:12px;font-size:12px;align-items:center;padding:4px 0;border-top:1px dashed #333;margin-top:6px">
+        <div style="color:#aaa">(new) bayer_rgb_*</div><div style="color:#aaa">OSC</div><div><span style="color:#ff6060">yes</span> — new baseline needed (OSC-as-LRGB changes output)</div>
+      </div>
+      <div style="display:grid;grid-template-columns:280px 90px 1fr;gap:12px;font-size:12px;align-items:center;padding:4px 0">
+        <div style="color:#aaa">(new) bayer_nb_hao3_*</div><div style="color:#aaa">Dual-NB-OSC</div><div><span style="color:#ff6060">yes</span> — new — replaces broken OSC_RGB-as-HaO3 behavior</div>
+      </div>
+      <div style="display:grid;grid-template-columns:280px 90px 1fr;gap:12px;font-size:12px;align-items:center;padding:4px 0">
+        <div style="color:#aaa">(new) lrgbsho_*</div><div style="color:#aaa">Mixed</div><div><span style="color:#ff6060">yes</span> — new combine path needs its own gold-path</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="options">
+  <div class="option" data-choice="a" onclick="toggleSelect(this)">
+    <div class="letter">A</div>
+    <div class="content">
+      <h3>Strict — every existing baseline stays bit-identical</h3>
+      <p>The MONO_LRGB and OSC_RGB output paths must produce byte-for-byte identical results to v4.0.1.0. New paths (Bayer-NB, LRGBSHO) get fresh baselines.</p>
+      <p><strong>Cost:</strong> requires gating new behavior behind an opt-in flag for existing users; defeats some of the L-synthesis benefit (existing OSC users don't get it unless they ask).</p>
+      <p><strong>Why pick:</strong> zero-risk for the user who upgrades and expects nothing to change.</p>
+    </div>
+  </div>
+  <div class="option" data-choice="b" onclick="toggleSelect(this)">
+    <div class="letter">B</div>
+    <div class="content">
+      <h3>Pragmatic — single-channel stretches stay bit-identical, multi-channel paths re-baseline</h3>
+      <p>Sweep tests (GHS / MTF / ArcSinh single-channel) must not move — they verify stretch math, which we don't touch. The LRGB-mono multi-channel and OSC paths get new baselines because the channel pipeline genuinely changed.</p>
+      <p><strong>Cost:</strong> need to verify "before vs after" looks right on real data (M27 bench, NGC7635) and document why the change is correct.</p>
+      <p><strong>Why pick:</strong> matches what the design is actually doing — the math we trust stays trusted, the paths we're rewriting get re-validated. No opt-in flag drift.</p>
+    </div>
+  </div>
+  <div class="option" data-choice="c" onclick="toggleSelect(this)">
+    <div class="letter">c</div>
+    <div class="content">
+      <h3>Wholesale re-baseline</h3>
+      <p>Treat this as a v5.0.0 release. Every E2E baseline is replaced; cold-flake tracking starts fresh. Document each rebaseline.</p>
+      <p><strong>Why pick:</strong> simplest mental model. Gives implicit cover to any incidental drift in numerical paths we touched obliquely.</p>
+      <p><strong>Cost:</strong> loses the regression floor of stretch correctness — might mask a real bug introduced by the refactor that happens to also produce a "reasonable" image.</p>
+    </div>
+  </div>
+</div>
+
+<p style="margin-top:18px;color:#aaa;font-size:13px"><b>Note on versioning:</b> regardless of policy choice, the API surface that callers depend on (PCL Process parameters, FITS keyword writes) needs explicit migration. Picking "B" doesn't free us from documenting "OSC output now has 4 channels; here's how downstream PI scripts adapt".</p>

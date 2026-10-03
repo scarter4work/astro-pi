@@ -1,0 +1,145 @@
+<h2>Refining Decomposition Locus — When Does Q-Solve Run?</h2>
+<p class="subtitle">Both keep DebayerEngine naive. Both let Phase A be streaming I/O. They differ in what voxel slots hold and where the linear Q-solve runs.</p>
+
+<div class="section">
+  <div class="mockup">
+    <div class="mockup-header">Variant 1 — Q-solve at accumulate (what Section 3 showed)</div>
+    <div class="mockup-body" style="background:#0a0a0a;color:#ddd;padding:18px;font-family:monospace;font-size:11px;line-height:1.6">
+<pre style="margin:0">
+Phase A (per-frame streaming I/O):
+  read frame f → debayer naive → align → cache
+  for each pixel: Q_solve(R,G,B) → (Ha, OIII) → voxel.slots["Ha"].update(Ha)
+                                                voxel.slots["OIII"].update(OIII)
+
+Voxel slots (LRGBSHO case):    {Ha, OIII, SII, L, R, G, B}    ← 7 semantic slots
+Phase B fits + selects on:     each semantic slot
+ColorComposer reads:           semantic slots directly
+
+Trade-off: voxel slots hold derived values; Q-solve happens at streaming time
+           per-frame; if user updates QE override JSON later, must re-stack.
+</pre>
+    </div>
+  </div>
+</div>
+
+<div class="section">
+  <div class="mockup">
+    <div class="mockup-header">Variant 2 — Q-solve at Phase B (more subcube-y)</div>
+    <div class="mockup-body" style="background:#0a0a0a;color:#ddd;padding:18px;font-family:monospace;font-size:11px;line-height:1.6">
+<pre style="margin:0">
+Phase A (per-frame streaming I/O — pure routing, no math):
+  read frame f → debayer naive → align → cache
+  for each pixel:
+    if filter==HaO3: voxel.slots["R_HaO3"].update(R), G_HaO3.update(G), B_HaO3.update(B)
+    if filter==S2O3: voxel.slots["R_S2O3"].update(R), G_S2O3.update(G), B_S2O3.update(B)
+    if filter==L:    voxel.slots["L"].update(value)
+    if filter==R:    voxel.slots["R"].update(value)
+    ...
+
+Voxel slots (LRGBSHO case):    {R_HaO3, G_HaO3, B_HaO3,             ← 6 raw filter-grouped
+                                 R_S2O3, G_S2O3, B_S2O3,
+                                 L, R, G, B}                          ← 4 broadband     = 10 total
+
+Phase B (per-pixel cube-time work — THIS is where semantics emerge):
+  for each pixel:
+    fit + select per raw slot → best (R_HaO3, G_HaO3, B_HaO3) etc.
+    Q_solve(camera, "HaO3") on (R_HaO3, G_HaO3, B_HaO3) → (Ha, OIII_HaO3)
+    Q_solve(camera, "S2O3") on (R_S2O3, G_S2O3, B_S2O3) → (SII, OIII_S2O3)
+    OIII = sample-weighted_mean(OIII_HaO3, OIII_S2O3)   ← multi-source OIII merge
+    derived slots = {Ha, OIII, SII, L, R, G, B}
+
+ColorComposer reads:           derived slots
+
+Trade-off: ~50% more voxel slot memory in Phase A; Phase B does the algebra;
+           "voxel is record" holds raw data; user updates QE override → re-run
+           Phase B only, no re-stacking; continuum subtraction has natural-RGB
+           voxels right there to use.
+</pre>
+    </div>
+  </div>
+</div>
+
+<h3>Comparison</h3>
+
+<div class="section">
+  <div class="mockup">
+    <div class="mockup-body" style="background:#0a0a0a;color:#ddd;padding:18px;font-family:monospace;font-size:12px">
+      <table style="width:100%;border-collapse:collapse;font-family:inherit;font-size:12px">
+        <tr style="border-bottom:1px solid #333">
+          <th style="text-align:left;padding:6px 10px;color:#888">Concern</th>
+          <th style="text-align:left;padding:6px 10px;color:#888">V1 (per-frame Q-solve)</th>
+          <th style="text-align:left;padding:6px 10px;color:#888">V2 (Phase B Q-solve)</th>
+        </tr>
+        <tr style="border-bottom:1px solid #1a1a1a">
+          <td style="padding:6px 10px"><b>Voxel holds</b></td>
+          <td style="padding:6px 10px">derived (Ha, OIII)</td>
+          <td style="padding:6px 10px;color:#5fc55f">raw filter-grouped (R_HaO3, …)</td>
+        </tr>
+        <tr style="border-bottom:1px solid #1a1a1a">
+          <td style="padding:6px 10px"><b>Phase A is</b></td>
+          <td style="padding:6px 10px">streaming I/O + linear Q math</td>
+          <td style="padding:6px 10px;color:#5fc55f">streaming I/O + slot routing only</td>
+        </tr>
+        <tr style="border-bottom:1px solid #1a1a1a">
+          <td style="padding:6px 10px"><b>Phase B is</b></td>
+          <td style="padding:6px 10px">fit/select per semantic slot</td>
+          <td style="padding:6px 10px">fit/select per raw slot, then Q-solve to derive semantic</td>
+        </tr>
+        <tr style="border-bottom:1px solid #1a1a1a">
+          <td style="padding:6px 10px"><b>Subcube fit</b></td>
+          <td style="padding:6px 10px">good (cube is record)</td>
+          <td style="padding:6px 10px;color:#5fc55f">cleaner (raw data lives in cube)</td>
+        </tr>
+        <tr style="border-bottom:1px solid #1a1a1a">
+          <td style="padding:6px 10px"><b>Memory (LRGBSHO worst case)</b></td>
+          <td style="padding:6px 10px;color:#5fc55f">~7 slots/voxel</td>
+          <td style="padding:6px 10px">~10 slots/voxel (~+43%)</td>
+        </tr>
+        <tr style="border-bottom:1px solid #1a1a1a">
+          <td style="padding:6px 10px"><b>QE override re-apply</b></td>
+          <td style="padding:6px 10px">re-stack from cached frames</td>
+          <td style="padding:6px 10px;color:#5fc55f">re-run Phase B only</td>
+        </tr>
+        <tr style="border-bottom:1px solid #1a1a1a">
+          <td style="padding:6px 10px"><b>Continuum subtract has raw RGB</b></td>
+          <td style="padding:6px 10px">no — must reconstruct (R̂ = inv_Q · Ha,OIII)</td>
+          <td style="padding:6px 10px;color:#5fc55f">yes — raw R/G/B are right there in voxel</td>
+        </tr>
+        <tr style="border-bottom:1px solid #1a1a1a">
+          <td style="padding:6px 10px"><b>Phase A loop wording</b></td>
+          <td style="padding:6px 10px">"for each frame, do Q-solve"</td>
+          <td style="padding:6px 10px;color:#5fc55f">"for each frame, route into raw slot"</td>
+        </tr>
+        <tr>
+          <td style="padding:6px 10px"><b>Math correctness</b></td>
+          <td style="padding:6px 10px">identical</td>
+          <td style="padding:6px 10px">identical (Q-solve is linear)</td>
+        </tr>
+      </table>
+    </div>
+  </div>
+</div>
+
+<div class="options">
+  <div class="option" data-choice="a" onclick="toggleSelect(this)">
+    <div class="letter">A</div>
+    <div class="content">
+      <h3>V2 — Phase B Q-solve</h3>
+      <p>Voxel holds raw filter-grouped data; Q-solve happens on accumulated cube data at Phase B. More subcube-y, ~43% more slot memory in Phase A, but every other axis favors V2 (re-apply QE without re-stacking, continuum subtract has raw data, Phase A is pure routing).</p>
+    </div>
+  </div>
+  <div class="option" data-choice="b" onclick="toggleSelect(this)">
+    <div class="letter">B</div>
+    <div class="content">
+      <h3>V1 — keep per-frame Q-solve at accumulate</h3>
+      <p>Less memory, simpler voxel slot count, but the "per-frame" wording is real — Q math runs in Phase A.</p>
+    </div>
+  </div>
+  <div class="option" data-choice="c" onclick="toggleSelect(this)">
+    <div class="letter">C</div>
+    <div class="content">
+      <h3>Wait — there's a third option I want to explore</h3>
+      <p>I'll describe in the terminal.</p>
+    </div>
+  </div>
+</div>

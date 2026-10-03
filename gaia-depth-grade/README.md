@@ -109,7 +109,7 @@ existing headless PI harness.
 ## Setup
 
 ```bash
-cd /home/scarter4work/projects/gaia-depth-grade
+cd /home/scarter4work/projects/astro-pi/gaia-depth-grade
 uv venv --python 3.14 .venv
 . .venv/bin/activate
 uv pip install -e .          # installs the package so `python -m gaia_depth_grade.cli` resolves

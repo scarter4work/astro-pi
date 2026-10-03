@@ -1,0 +1,70 @@
+<h2>Combine Algorithm — Mixed Broadband + Narrowband (LRGBSHO)</h2>
+<p class="subtitle">Pure-NB → calibrated palette. Pure-broadband → natural color. <b>Mixed</b> is the hard case — broadband gives natural color and detail, NB gives line-emission emphasis. Different combine algorithms produce different looks.</p>
+
+<div class="section">
+  <div class="mockup">
+    <div class="mockup-header">Inputs to the composer for an LRGBSHO image</div>
+    <div class="mockup-body" style="background:#0a0a0a;color:#ccc;padding:20px;font-family:monospace;font-size:12px">
+      <div style="margin-bottom:8px;color:#aaa">After per-filter stacks complete, the composer sees:</div>
+      <div style="display:grid;grid-template-columns:auto 1fr;gap:8px;align-items:center">
+        <span style="background:#222;padding:2px 8px;border-radius:3px">L</span><span>broadband luminance — best detail, full visible range</span>
+        <span style="background:#222;padding:2px 8px;border-radius:3px">R, G, B</span><span>broadband chrominance — natural color across continuum</span>
+        <span style="background:#cc0000;color:#fff;padding:2px 8px;border-radius:3px">Ha</span><span>narrowband 656nm — strong in HII regions, dust emission</span>
+        <span style="background:#00bfa5;color:#000;padding:2px 8px;border-radius:3px">OIII</span><span>narrowband 501nm — strong in planetary nebulae, ionization fronts</span>
+        <span style="background:#660000;color:#fff;padding:2px 8px;border-radius:3px">SII</span><span>narrowband 672nm — supernova remnants, shocked gas</span>
+      </div>
+    </div>
+  </div>
+</div>
+
+<h3>Three combine algorithms — pick one as the calibrated default</h3>
+
+<div class="options">
+  <div class="option" data-choice="a" onclick="toggleSelect(this)">
+    <div class="letter">A</div>
+    <div class="content">
+      <h3>Lab/LCH composite — broadband L, NB-enhanced chrominance</h3>
+      <p>1. Build natural-color RGB from broadband (L+RGB or OSC).<br>
+         2. Convert to CIE-Lab.<br>
+         3. Build NB-chrominance: Ha pushes a*-axis toward red, OIII pushes b*-axis toward blue (calibrated emission-line vectors). SII adds deep-red push.<br>
+         4. Add NB chrominance into broadband Lab (a*, b* boost where NB signal is strong; clamped to gamut).<br>
+         5. Convert Lab→RGB. L (detail) preserved from broadband.</p>
+      <p><strong>Result:</strong> natural color base; HII regions get a calibrated red boost where Ha fires; OIII regions get a calibrated cyan-blue push. Greens only appear where the broadband actually has them (planet star colors, foreground stars). NB-only patches still respect the no-greens palette.</p>
+      <p><strong>Why pick:</strong> preserves broadband detail (L stays untouched), color stays scientifically defensible. Standard for PixInsight LRGB+SHO workflows. Smooth handling of "what if NB signal is absent in this region" — falls back to natural color cleanly.</p>
+    </div>
+  </div>
+  <div class="option" data-choice="b" onclick="toggleSelect(this)">
+    <div class="letter">B</div>
+    <div class="content">
+      <h3>Continuum-subtracted emission overlay</h3>
+      <p>1. Estimate continuum at Ha wavelength from broadband R (Ha is buried in the R bandpass — most of broadband R is continuum, not Ha).<br>
+         2. Subtract continuum from Ha frame → "pure emission" Ha.<br>
+         3. Same for OIII (continuum from interpolated G+B), SII (from R).<br>
+         4. Pure emission gets added to broadband RGB at calibrated colors. Continuum-only regions remain natural-color.</p>
+      <p><strong>Result:</strong> physically purest. Strong line emission stands out; continuum-only stars stay natural. Mathematically what professional H-alpha imaging does.</p>
+      <p><strong>Why pick:</strong> highest scientific defensibility. Cleanest separation of line emission from continuum.</p>
+      <p><strong>Cost:</strong> continuum estimation is fragile in low-SNR data; needs scale factors per camera/filter combo; can introduce subtraction artifacts on bright stars.</p>
+    </div>
+  </div>
+  <div class="option" data-choice="c" onclick="toggleSelect(this)">
+    <div class="letter">C</div>
+    <div class="content">
+      <h3>Soft additive (HaRGB-style)</h3>
+      <p>1. Stretch broadband + NB independently.<br>
+         2. NB added on top of matching broadband channel with a soft maximum: <code>R_out = max(R_broadband, a*Ha)</code> for some calibrated <code>a</code>. Same for OIII→B/G, SII→deep-R.<br>
+         3. No Lab conversion; works directly in display RGB.</p>
+      <p><strong>Result:</strong> NB-bright regions get punchier without darkening broadband-only areas. Familiar look — close to PixelMath HaRGB recipe.</p>
+      <p><strong>Why pick:</strong> simplest math, easy to debug, easy to predict. No color-space conversion bugs.</p>
+      <p><strong>Cost:</strong> not strictly calibrated (the "a" weights are tuned by feel); can produce hue shifts in magenta when Ha + R both saturate; doesn't honor the calibrated-palette goal as cleanly.</p>
+    </div>
+  </div>
+  <div class="option" data-choice="d" onclick="toggleSelect(this)">
+    <div class="letter">D</div>
+    <div class="content">
+      <h3>A as default, with B as an opt-in advanced mode</h3>
+      <p>Ship A (Lab/LCH) as the calibrated default — Auto picks it, fits the simple-UI rule. Expose B (continuum subtraction) as a separately selectable mode for users who want the maximum physical purity and have the SNR for it.</p>
+      <p><strong>Why pick:</strong> covers both scientific levels in one design.</p>
+      <p><strong>Cost:</strong> two combine paths to write, test, and maintain. Phase 8 ratings would need to know which path is active.</p>
+    </div>
+  </div>
+</div>

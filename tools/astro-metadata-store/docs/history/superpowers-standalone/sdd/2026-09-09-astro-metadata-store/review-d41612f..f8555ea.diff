@@ -1,0 +1,71 @@
+# Review package: d41612f..HEAD
+
+## Commits
+f8555ea fix: case-insensitive filename classification for light/dark/bias
+
+## Files changed
+ src/astrometa/classify.py | 11 ++++++-----
+ tests/test_classify.py    |  2 ++
+ 2 files changed, 8 insertions(+), 5 deletions(-)
+
+## Diff
+diff --git a/src/astrometa/classify.py b/src/astrometa/classify.py
+index b2a973d..c6cbd97 100644
+--- a/src/astrometa/classify.py
++++ b/src/astrometa/classify.py
+@@ -23,22 +23,23 @@ def classify(filename: str, header: dict) -> str:
+     Returns:
+         One of: "light", "dark", "flat", "bias", "derived", "unknown"
+     """
+     # IMAGETYP header wins when present
+     raw = header.get("IMAGETYP")
+     if isinstance(raw, str):
+         mapped = _HEADER_MAP.get(raw.strip().lower())
+         if mapped:
+             return mapped
+ 
+-    # Filename conventions are fallback
++    # Filename conventions are fallback (case-insensitive)
++    filename_lower = filename.lower()
+     if _DERIVED.match(filename):
+         return "derived"
+-    if filename.startswith("Light_"):
++    if filename_lower.startswith("light_"):
+         return "light"
+-    if filename.startswith("Dark"):
++    if filename_lower.startswith("dark"):
+         return "dark"
+-    if filename.startswith("Bias"):
++    if filename_lower.startswith("bias"):
+         return "bias"
+-    if _FLAT.match(filename) or "master_flat" in filename.lower():
++    if _FLAT.match(filename) or "master_flat" in filename_lower:
+         return "flat"
+     return "unknown"
+diff --git a/tests/test_classify.py b/tests/test_classify.py
+index 755ce98..dd3622f 100644
+--- a/tests/test_classify.py
++++ b/tests/test_classify.py
+@@ -7,20 +7,22 @@ from astrometa.classify import classify
+     ("Dark_120.0s_Bin1_Lqef_20260101-000000_1deg_0001.fit", "dark"),
+     ("Bias_1.0ms_Bin1_HaO3_20260101-000000_0001.fit", "bias"),
+     ("B_master_flat.fit", "flat"),
+     ("flat_001.fit", "flat"),
+     ("pp_light_00260.fit", "derived"),
+     ("r_pp_light_00012.fit", "derived"),
+     ("ASIVideoStack_Output_01.fit", "derived"),
+     ("AS_P20_moon.fit", "derived"),
+     ("Autosave001.fit", "derived"),
+     ("something_unrecognised.fit", "unknown"),
++    ("light_0001.fit", "light"),
++    ("dark_0001.fit", "dark"),
+ ])
+ def test_classify_from_filename(name, expected):
+     assert classify(name, {}) == expected
+ 
+ 
+ def test_imagetyp_header_overrides_filename():
+     assert classify("mystery.fit", {"IMAGETYP": "Dark Frame"}) == "dark"
+     assert classify("mystery.fit", {"IMAGETYP": "Light Frame"}) == "light"
+     assert classify("mystery.fit", {"IMAGETYP": "FLAT"}) == "flat"
+     assert classify("mystery.fit", {"IMAGETYP": "Bias Frame"}) == "bias"

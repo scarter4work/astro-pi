@@ -1,0 +1,52 @@
+<h2>Where in the pipeline does channel decomposition happen?</h2>
+<p class="subtitle">Three architecturally-distinct approaches. Each has SNR, code-modularity, and voxel-structure consequences.</p>
+
+<div class="section">
+  <div class="mockup">
+    <div class="mockup-header">Pipeline today (simplified)</div>
+    <div class="mockup-body" style="background:#0a0a0a;color:#ddd;padding:20px;font-family:monospace;font-size:12px">
+      <pre style="margin:0;color:#ddd">FITS frame → Debayer → Align → Cache → Cube accumulate → Phase B fit/select → Stretch → Emit</pre>
+      <div style="color:#888;margin-top:8px">Each frame is independent until "Cube accumulate". Voxel holds per-pixel statistics across all frames.</div>
+    </div>
+  </div>
+</div>
+
+<h3>Three approaches — pick one</h3>
+
+<div class="options">
+  <div class="option" data-choice="a" onclick="toggleSelect(this)">
+    <div class="letter">A</div>
+    <div class="content">
+      <h3>Decompose at debayer time (filter-aware DebayerEngine)</h3>
+      <pre style="background:#0a0a0a;color:#ddd;padding:8px;border-radius:3px;font-size:11px;margin:6px 0">FITS → DebayerEngine[filter-class-aware] → emits {Ha, OIII} or {R,G,B} or {SII,OIII} per frame → Align → Cube</pre>
+      <p>The DebayerEngine reads filter class + camera, applies QE matrix solve per pixel, emits already-decomposed channels. Stacker downstream sees clean line-emission channels for NB-OSC; clean R/G/B for plain OSC.</p>
+      <p><strong>Voxel for HaO3:</strong> stores Ha + OIII + per-line stats. No raw R/G/B kept (lost after debayer).</p>
+      <p><strong>Pros:</strong> downstream stages (align, stack, stretch) don't care about filter class — they just see "channels"; clean separation; voxel remains canonical truth.</p>
+      <p><strong>Cons:</strong> per-frame decomposition has lower SNR than post-stack decomposition (each Q-matrix solve uses one frame's data); changing QE coefficients later requires re-running debayer; filter-class coupling lives in DebayerEngine.</p>
+    </div>
+  </div>
+  <div class="option" data-choice="b" onclick="toggleSelect(this)">
+    <div class="letter">B</div>
+    <div class="content">
+      <h3>Decompose at cube-finalization (after Phase B fit/select)</h3>
+      <pre style="background:#0a0a0a;color:#ddd;padding:8px;border-radius:3px;font-size:11px;margin:6px 0">FITS → Debayer[naive RGB] → Align → Cube → Phase B fit/select on R,G,B → ChannelDecomposer{filter-class} → {Ha,OIII} → Stretch</pre>
+      <p>DebayerEngine stays naive — emits R/G/B always. Stacker accumulates R/G/B voxels. After Phase B selects best pixels, a new ChannelDecomposer pass applies the QE matrix to the stacked R/G/B values, emitting line-emission channels.</p>
+      <p><strong>Voxel:</strong> raw R/G/B stays canonical through Phase B. Line-emission channels appear at finalization time as a derived projection.</p>
+      <p><strong>Pros:</strong> highest-SNR decomposition (operates on stacked-and-fit pixels, not single-frame); QE coefficients can change without re-running stack; existing Phase B logic is filter-class-agnostic.</p>
+      <p><strong>Cons:</strong> two channel "shapes" exist in the codebase (raw R/G/B before Phase B; line-emission after); voxel structure has to accommodate both (or hold raw and add derived); one extra pass over the cube.</p>
+    </div>
+  </div>
+  <div class="option" data-choice="c" onclick="toggleSelect(this)">
+    <div class="letter">C</div>
+    <div class="content">
+      <h3>Per-frame decompose into voxel from day one (filter-aware accumulate)</h3>
+      <pre style="background:#0a0a0a;color:#ddd;padding:8px;border-radius:3px;font-size:11px;margin:6px 0">FITS → Debayer[naive RGB] → Align → Cube[per-line voxel slots] → accumulate(R,G,B) into Ha/OIII slots via QE solve → Phase B fit/select on Ha,OIII → Stretch</pre>
+      <p>DebayerEngine stays naive. Voxel grows to hold per-emission-line slots (Ha welford+histogram, OIII welford+histogram, SII welford+histogram, plus L/R/G/B for broadband). At cube accumulate time, the QE matrix routes incoming R/G/B values into the correct line-emission slots.</p>
+      <p><strong>Voxel:</strong> from the first accumulated frame, holds whatever the filter class implies (Ha+OIII for HaO3; SII+OIII for S2O3; R+G+B for plain OSC; L+R+G+B for LRGB-mono).</p>
+      <p><strong>Pros:</strong> Phase B fit/select operates on the line-emission channels directly (matches the user's "voxel is canonical record" rule cleanly); per-line per-frame data accumulated with full statistics; supports the LRGBSHO multi-class case (each frame routes to the correct slots based on its FILTER keyword).</p>
+      <p><strong>Cons:</strong> voxel structure is more complex (variable slot count by filter class); accumulate step has a per-filter dispatch; Phase B fitting code has to accept that "channels" can be Ha/OIII not R/G/B.</p>
+    </div>
+  </div>
+</div>
+
+<p style="margin-top:18px;color:#aaa;font-size:13px"><b>Common ground:</b> all three approaches use the same filter taxonomy, the same QE database, the same Lab/LCH composer at output time, and produce the same final RGB image for a given input. They differ in <em>when</em> the QE solve happens and <em>what</em> the voxel holds across the pipeline.</p>

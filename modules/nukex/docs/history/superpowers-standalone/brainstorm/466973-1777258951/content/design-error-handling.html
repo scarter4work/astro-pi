@@ -1,0 +1,156 @@
+<h2>Design — Section 4 of 5: Error Handling</h2>
+<p class="subtitle">Per the "no silent fallbacks" rule: errors are loud, propagate up, never paper over. Per "no workarounds": failures point at root causes. Per "no stubs": every error path has a real implementation, not a TODO.</p>
+
+<div class="section">
+  <div class="mockup">
+    <div class="mockup-header">A. Configuration / startup errors — refuse to start the batch</div>
+    <div class="mockup-body" style="background:#0a0a0a;color:#ddd;padding:18px;font-family:monospace;font-size:11px;line-height:1.6">
+<pre style="margin:0">
+QE database file missing or unreadable
+   ⤳ ProcessConsole error: "share/qe_database.json missing — module install corrupt.
+                            Reinstall NukeX from PI Resources → Updates."
+   ⤳ Execute() returns false; no partial output emitted.
+
+QE override JSON (~/.nukex4/qe_overrides.json) malformed
+   ⤳ Specific error with line / column / parser message.
+   ⤳ "Override file is malformed at line 23: trailing comma. Fix or delete and retry."
+   ⤳ Refuses to start (per no-workarounds — silently ignoring would mask real config bugs).
+
+Filter passband (k_continuum) missing for filter F + camera C, AND continuum-subtract opt-in mode
+   ⤳ "Continuum subtract requires filter passband data for {filter}; not available in DB.
+       Disable continuum-subtract or update the QE database."
+   ⤳ Refuses to start opt-in mode. Default Lab/LCH mode unaffected — runs normally.
+</pre>
+    </div>
+  </div>
+</div>
+
+<div class="section">
+  <div class="mockup">
+    <div class="mockup-header">B. Per-frame errors — skip frame, loud log, continue batch</div>
+    <div class="mockup-body" style="background:#0a0a0a;color:#ddd;padding:18px;font-family:monospace;font-size:11px;line-height:1.6">
+<pre style="margin:0">
+Frame read failed                              → existing behavior, log "skipped (read failed)"
+Frame dimensions ≠ first-frame dimensions      → existing behavior
+Frame Bayer pattern ≠ first-frame Bayer        → reject "BAYERPAT mismatch; frame N has BGGR, batch is RGGB"
+Frame INSTRUME differs from prior frames       → ALLOWED if both cameras in QE DB  — per-frame Q matrix.
+                                                 Log "frame N camera ASI2600MC, prior was ASI585MC — both QE-known"
+                                                 If second camera unknown, treat as next case.
+Saturation > reject threshold (existing)       → existing behavior, "SKIPPED — blown out, X%"
+Alignment failed                               → existing behavior, weight penalty
+</pre>
+    </div>
+  </div>
+</div>
+
+<div class="section">
+  <div class="mockup">
+    <div class="mockup-header">C. Filter / camera resolution — UI escape hatch (DisambiguationDialog)</div>
+    <div class="mockup-body" style="background:#0a0a0a;color:#ddd;padding:18px;font-family:monospace;font-size:11px;line-height:1.6">
+<pre style="margin:0">
+Missing FITS FILTER keyword                    ─┐
+Unknown FILTER value (no DB match,             ─┤
+  no fuzzy hit on alias table)                  │   ⟹ DisambiguationDialog at batch start
+Frame INSTRUME unknown                         ─┘      modal, blocks Execute until resolved
+
+Dialog content:
+   "These frames have unrecognised filter / camera metadata:
+        15 frames, FILTER='ALP-T', INSTRUME='ASI585MC'      (filter unknown)
+         8 frames, FILTER='Ha 7nm', INSTRUME='unknown_dev'  (camera unknown)
+
+    Pick a class for each group, OR cancel:
+      ALP-T:    [ Broadband-L | Broadband-RGB | Narrowband-Single | Dual-NB-OSC ]
+      Ha 7nm:   [ ... same options ... ]
+                + camera fallback: [ ASI585MC | ASI2600MC | Generic Sony IMX OSC ]
+   [ Confirm  ]   [ Cancel batch ]"
+
+User picks → choice persisted to FILTER alias table for future runs.
+User cancels → batch rejected, no output emitted.
+
+NO silent auto-classification. Period.
+</pre>
+    </div>
+  </div>
+</div>
+
+<div class="section">
+  <div class="mockup">
+    <div class="mockup-header">D. Phase B + composer errors — bound to known math edge cases</div>
+    <div class="mockup-body" style="background:#0a0a0a;color:#ddd;padding:18px;font-family:monospace;font-size:11px;line-height:1.6">
+<pre style="margin:0">
+Q matrix singular for (camera, filter)         → fail loud at Phase B start
+                                                  "Q matrix for (ASI585MC, HaO3) is singular —
+                                                   QE values must form a non-degenerate basis.
+                                                   Filter QE in DB is suspect. Report bug + check override."
+
+Q-solve produces negative emission values      → clamp to 0, count occurrences
+                                                  in low-SNR pixels (read noise)        log "clamped N pixels (X% of total) to ≥0"
+                                                  Not an error — physically expected     this is a quality stat, not a fault.
+                                                  in low-photon regions
+
+Lab → sRGB out of gamut                        → soft-clip toward gamut boundary,
+                                                  preserve hue, log per-pixel count.
+                                                  Standard color-science behaviour.
+
+All frames failed alignment                    → existing behavior — empty stacked output
+
+Multi-source OIII merge with zero contributors → impossible (means all frames failed) — covered above
+</pre>
+    </div>
+  </div>
+</div>
+
+<div class="section">
+  <div class="mockup">
+    <div class="mockup-header">E. Observability — what the user sees in the Process Console</div>
+    <div class="mockup-body" style="background:#0a0a0a;color:#ddd;padding:18px;font-family:monospace;font-size:11px;line-height:1.6">
+<pre style="margin:0">
+Per-frame log lines (Phase A):
+   Frame 12/100: light_HaO3_005.fits
+     filter:   HaO3 (DUAL_NB_OSC)
+     camera:   ASI585MC (QE: high confidence)
+     debayered, aligned: ok (stars=842, inliers=783, rms=0.412 px)
+     accumulated → R_HaO3, G_HaO3, B_HaO3
+
+Phase B summary (after fit + Q-solve):
+   Cube has 10 raw slots, 7 derived semantic slots
+   Q-solve coverage:
+     HaO3 / ASI585MC: high-confidence Q matrix from share/qe_database.json
+     S2O3 / ASI585MC: high-confidence Q matrix
+   Multi-source OIII merge: 30 HaO3 contributors + 30 S2O3 contributors
+   Negative-emission clamp: 142 pixels (0.0006% of total)
+
+Composer output:
+   Output mode: Lab/LCH calibrated palette (default)
+   Out-of-gamut soft-clipped: 23 pixels (0.0001%)
+   Emit ImageWindow{3ch, 32bf, RGB, "NukeX_stacked"}
+</pre>
+    </div>
+  </div>
+</div>
+
+<h3>Does the error handling look right?</h3>
+
+<div class="options">
+  <div class="option" data-choice="a" onclick="toggleSelect(this)">
+    <div class="letter">A</div>
+    <div class="content">
+      <h3>Yes — proceed to testing (section 5)</h3>
+      <p>Five categories: startup config (refuse), per-frame (skip+log), filter resolution (DisambiguationDialog), Phase B/composer math edges (clamp or fail loud), observability (verbose Process Console). No silent fallbacks.</p>
+    </div>
+  </div>
+  <div class="option" data-choice="b" onclick="toggleSelect(this)">
+    <div class="letter">B</div>
+    <div class="content">
+      <h3>Mostly right; one error path to discuss</h3>
+      <p>I'll describe.</p>
+    </div>
+  </div>
+  <div class="option" data-choice="c" onclick="toggleSelect(this)">
+    <div class="letter">C</div>
+    <div class="content">
+      <h3>Missing an error case / wrong policy</h3>
+      <p>I'll describe.</p>
+    </div>
+  </div>
+</div>

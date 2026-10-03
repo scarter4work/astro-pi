@@ -1,0 +1,89 @@
+<h2>Phase 8 — Data Flow</h2>
+<p class="subtitle">Two paths: Execute (left) and Rate (right). Shared state: rating DB + coefficients file.</p>
+
+<div class="section">
+  <div class="split">
+    <div class="mockup">
+      <div class="mockup-header">Execute flow</div>
+      <div class="mockup-body" style="padding:1rem;font-size:.88rem;line-height:1.55">
+        <ol style="margin:0;padding-left:1.3rem">
+          <li>User clicks <b>Execute</b></li>
+          <li>Phases A / B / C → <code>result.stacked</code> (linear)</li>
+          <li>Read FITS metadata (FILTER, OBJECT, BAYERPAT)</li>
+          <li><code>classify_filter(meta)</code> → FilterClass</li>
+          <li>Auto-selector → stretch name (e.g. VeraLux)</li>
+          <li><b>NEW</b> <code>compute_image_stats(stacked)</code> → 25-dim stat vector</li>
+          <li><b>NEW</b> Load active <code>ParamModel</code> for this stretch
+              (Layer 3 if on disk, else Layer 2)</li>
+          <li><b>NEW</b> <code>model.predict(stats, target_hint)</code> → params</li>
+          <li><b>NEW</b> Mutate StretchOp with predicted params + log which layer answered</li>
+          <li>Stretch pipeline runs → stretched window opens</li>
+          <li><b>NEW</b> Create PENDING DB row
+              <code>(run_id, stats, params, stretch, target_hint, ts)</code></li>
+          <li><b>NEW</b> Show rating popup (unless opted out); <br>Interface's "Rate last run" button lights up</li>
+        </ol>
+      </div>
+    </div>
+
+    <div class="mockup">
+      <div class="mockup-header">Rate flow</div>
+      <div class="mockup-body" style="padding:1rem;font-size:.88rem;line-height:1.55">
+        <ol style="margin:0;padding-left:1.3rem">
+          <li>User moves sliders, clicks <b>Save</b></li>
+          <li>DB row for <code>run_id</code> updated with ratings + <code>rated_at</code></li>
+          <li>Retrain <b>this stretch's</b> model (foreground, ~50 ms):
+            <ul style="margin:.25rem 0">
+              <li>Load all rated rows for this stretch (bootstrap + user)</li>
+              <li>Fit ridge regression per param via Eigen</li>
+              <li>Write coefficients to
+                <code>~/.nukex4/phase8_user_model.bin</code></li>
+            </ul>
+          </li>
+          <li>Invalidate cached <code>ParamModel</code> for this stretch</li>
+          <li>Next Execute picks up refreshed Layer 3</li>
+        </ol>
+        <div class="section" style="margin-top:1rem">
+          <div class="label">Skip / opt-out</div>
+          <div style="font-size:.85rem">
+            <b>Skip</b> — PENDING row stays; Rate button still available.
+            <br><b>Don't show again</b> — popup disabled in persistent settings; button still works.
+            <br><b>Never rated</b> rows stay PENDING; can be pruned after 30 days via housekeeping.
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="section">
+  <h3>What each layer reads/writes</h3>
+  <table style="width:100%;border-collapse:collapse;font-size:.9rem">
+    <thead>
+      <tr style="text-align:left;border-bottom:1px solid #444">
+        <th style="padding:.4rem">Layer</th><th style="padding:.4rem">Reads</th><th style="padding:.4rem">Writes</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr style="border-bottom:1px solid #333">
+        <td style="padding:.4rem"><b>Factory</b></td>
+        <td style="padding:.4rem">—</td>
+        <td style="padding:.4rem">—</td>
+      </tr>
+      <tr style="border-bottom:1px solid #333">
+        <td style="padding:.4rem"><b>Bootstrap</b></td>
+        <td style="padding:.4rem"><code>share/phase8_bootstrap.bin</code> (shipped)</td>
+        <td style="padding:.4rem">—</td>
+      </tr>
+      <tr style="border-bottom:1px solid #333">
+        <td style="padding:.4rem"><b>User-learned</b></td>
+        <td style="padding:.4rem"><code>rating_db</code> (bootstrap + user rows)</td>
+        <td style="padding:.4rem"><code>~/.nukex4/phase8_user_model.bin</code></td>
+      </tr>
+      <tr>
+        <td style="padding:.4rem"><b>Per-image</b></td>
+        <td style="padding:.4rem">Layer 3 coeffs + stats of this stack</td>
+        <td style="padding:.4rem">StretchOp params for this run</td>
+      </tr>
+    </tbody>
+  </table>
+</div>

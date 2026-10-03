@@ -1,0 +1,169 @@
+# Review package: 0ef2511..HEAD
+
+## Commits
+2c6d1ec docs: QE override file format + accurate remediation messages
+
+## Files changed
+ docs/qe_overrides_format.md             | 74 +++++++++++++++++++++++++++++++++
+ src/lib/io/src/filter_classifier.cpp    |  2 +-
+ src/lib/stacker/src/stacking_engine.cpp |  9 ++--
+ 3 files changed, 80 insertions(+), 5 deletions(-)
+
+## Diff
+diff --git a/docs/qe_overrides_format.md b/docs/qe_overrides_format.md
+new file mode 100644
+index 0000000..0dc65d9
+--- /dev/null
++++ b/docs/qe_overrides_format.md
+@@ -0,0 +1,74 @@
++# QE override file
++
++NukeX ships a quantum-efficiency database (`<PixInsight>/share/qe_database.json`,
++56 cameras, 96 filters). To add a camera or filter it does not know, or to
++replace shipped values with your own measurements, write a JSON file with
++the same shape and select it with **QE override file… → Browse** in the
++NukeX interface. Leave the field empty to use the shipped database only.
++
++## Schema
++
++```json
++{
++  "schema_version": 1,
++  "cameras": {
++    "<camera-key>": {
++      "sensor": "IMX585",
++      "type": "OSC",
++      "bayer": "RGGB",
++      "qe": {
++        "501": { "R": 0.03, "G": 0.85, "B": 0.50 },
++        "656": { "R": 0.73, "G": 0.32, "B": 0.03 }
++      },
++      "confidence": "high"
++    }
++  },
++  "filters": {
++    "<filter-key>": {
++      "type": "DUAL_NB",
++      "lines": [
++        { "name": "Ha",   "wavelength_nm": 656.3, "fwhm_nm": 7.0 },
++        { "name": "OIII", "wavelength_nm": 500.7, "fwhm_nm": 7.0 }
++      ]
++    }
++  }
++}
++```
++
++- `qe` keys are wavelengths in nm; values are QE fractions 0–1 per photosite.
++  OSC cameras use `R`, `G`, `B`; mono cameras use `mono_pk`.
++- `confidence` is `high`, `medium` or `low`. It is informational.
++- `type` on filters is informational (`DUAL_NB`, `NARROWBAND`, `BROADBAND`).
++
++## How keys are matched
++
++**Cameras** are matched against the FITS `INSTRUME` keyword after normalising
++both to lowercase alphanumerics, and a database key may be a substring of the
++header value. `INSTRUME = 'ZWO ASI2400MC Pro'` matches the shipped key
++`asi2400mc`. Use the model name as the key (`asi2400mc`, `qhy268c`), not the
++full header string. When no key matches, NukeX uses `generic_sony_imx_osc`,
++prints a warning in the Process Console, and writes
++`NUKEX_QE_CONFIDENCE = 'generic-fallback'` on the composed image.
++
++**Filters** are matched by the *canonical* name the classifier derives from
++the FITS `FILTER` keyword, not by the raw header text. Recognised spellings
++(case and punctuation ignored): `HaO3`/`HaOIII` → `HaO3`; `S2O3`/`SIIOIII` →
++`S2O3`; `L-eXtreme`, `L-eNhance`, `L-Ultimate`, `ALP-T`; `Ha`/`Halpha`,
++`OIII`/`O3`, `SII`/`S2`; `L`/`Luminance`/`L-Pro`/`LPS`/`UV-IR-cut`/`CLS`
++(broadband); `R`, `G`, `B`. A dual-narrowband filter with any other name on a
++Bayer camera stops the batch at start — rename the `FILTER` keyword to one of
++the spellings above, or set it to one of the canonical names and add a
++matching `filters` entry here. Mono frames with an unknown `FILTER` are
++treated as luminance with a warning.
++
++## Override semantics
++
++- `cameras` and `filters` merge with the shipped database.
++- An entry whose key collides with a shipped key **replaces the whole entry**.
++- New keys are added. `"cameras": {}` / `"filters": {}` is a valid no-op.
++
++## Errors
++
++Malformed JSON stops the batch with the parser's line and column. A camera
++that exists but lacks QE at a needed wavelength yields a singular Q matrix
++and stops Phase B with the camera and filter named.
+diff --git a/src/lib/io/src/filter_classifier.cpp b/src/lib/io/src/filter_classifier.cpp
+index d5aa017..e139857 100644
+--- a/src/lib/io/src/filter_classifier.cpp
++++ b/src/lib/io/src/filter_classifier.cpp
+@@ -130,16 +130,16 @@ Filter FilterClassifier::classify(const FrameMetadata& meta) {
+ 
+     if (is_bayer) {
+         out.cls  = FilterClass::UNKNOWN;
+         out.name = meta.filter;
+     } else {
+         out.cls       = FilterClass::BROADBAND_L;
+         out.name      = meta.filter;
+         out.bandwidth = BandwidthSpec{550.0, 300.0};
+         last_warning_ = "Unknown filter '" + meta.filter
+                       + "' for mono frame -- treating as generic luminance. "
+-                      + "If this is a narrowband filter, add it to qe_overrides.json.";
++                      + "If this is a narrowband filter, rename FILTER to Ha/OIII/SII or add it to a qe_overrides.json selected in the NukeX interface.";
+     }
+     return out;
+ }
+ 
+ } // namespace nukex
+diff --git a/src/lib/stacker/src/stacking_engine.cpp b/src/lib/stacker/src/stacking_engine.cpp
+index 603df8b..d630b46 100644
+--- a/src/lib/stacker/src/stacking_engine.cpp
++++ b/src/lib/stacker/src/stacking_engine.cpp
+@@ -189,23 +189,24 @@ StackingEngine::ExecuteResult StackingEngine::execute(
+     // Classify the first frame's filter (drives initial ChannelConfig).
+     Filter first_filter = filter_classifier_->classify(first.metadata);
+     BayerPattern bayer = parse_bayer_pattern(first.metadata.bayer_pattern);
+ 
+     // Loud-fail: an unknown FILTER on Bayer data is a batch-stopper per
+     // spec §6.3 — silently treating it as plain OSC would corrupt the
+     // routing and silently mis-color downstream output.
+     if (first_filter.cls == FilterClass::UNKNOWN && bayer != BayerPattern::NONE) {
+         ExecuteResult err{};
+         err.ok    = false;
+-        err.error = "FILTER='" + first_filter.name + "' on Bayer frame not in QE DB. " +
+-                    "Add it to ~/.nukex4/qe_overrides.json (see docs) and retry, " +
+-                    "or remove the FILTER keyword to default to plain OSC.";
++        err.error = "FILTER='" + first_filter.name + "' on Bayer frame not in QE DB. "
++                    "Rename FILTER to a known spelling, or add the filter to a "
++                    "qe_overrides.json file and select it with the QE override picker "
++                    "(see docs/qe_overrides_format.md). Remove FILTER to stack as plain OSC.";
+         obs.message(err.error);
+         return err;
+     }
+ 
+     // Surface mono-side warning if the classifier emitted one (e.g. the
+     // mono-with-FILTER guesses we accept silently but want logged).
+     if (!filter_classifier_->last_warning().empty()) {
+         obs.message(filter_classifier_->last_warning());
+     }
+ 
+@@ -322,21 +323,21 @@ StackingEngine::ExecuteResult StackingEngine::execute(
+         auto& meta = read_result.metadata;
+ 
+         // 1b. Per-frame filter classification — drives Phase A routing.
+         Filter frame_filter = filter_classifier_->classify(meta);
+ 
+         // Mid-batch unknown-on-Bayer is rejected per-frame (not the whole
+         // batch — only the first frame's UNKNOWN-on-Bayer is fatal).
+         bool frame_is_bayer = parse_bayer_pattern(meta.bayer_pattern) != BayerPattern::NONE;
+         if (frame_filter.cls == FilterClass::UNKNOWN && frame_is_bayer) {
+             obs.advance(1, "  skipped — unknown FILTER='" + frame_filter.name +
+-                           "' on Bayer frame (add to qe_overrides.json to recover)");
++                           "' on Bayer frame (add it to a qe_overrides.json selected in the NukeX interface to recover)");
+             // Filter rejection: the frame was skipped because its FILTER
+             // keyword is not present in the QE database. This is not an
+             // alignment failure — the aligner was never invoked. Track it
+             // separately so the user-facing summary can distinguish
+             // "your scope wandered" from "your filter wheel reported an
+             // unknown name." (Task 12 counter split.)
+             result.n_frames_rejected_filter++;
+             continue;
+         }
+ 

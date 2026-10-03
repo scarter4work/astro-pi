@@ -1,0 +1,42 @@
+<h2>Output Palette Goal</h2>
+<p class="subtitle">Before we design the channel pipeline, we need to fix the target. "No greens" is the constraint — but where exactly should HOO and SHO land on the color wheel?</p>
+
+<div class="options">
+  <div class="option" data-choice="a" onclick="toggleSelect(this)">
+    <div class="letter">A</div>
+    <div class="content">
+      <h3>True emission-line color (scientifically calibrated)</h3>
+      <p>Each line maps to its actual visible-light color: <span style="display:inline-block;width:14px;height:14px;background:#cc0000;border-radius:2px;vertical-align:middle"></span> Ha 656nm → red, <span style="display:inline-block;width:14px;height:14px;background:#00bfa5;border-radius:2px;vertical-align:middle"></span> OIII 501nm → teal/cyan, <span style="display:inline-block;width:14px;height:14px;background:#8b0000;border-radius:2px;vertical-align:middle"></span> SII 672nm → deep red.</p>
+      <p><strong>HOO result:</strong> Ha-bright regions go red, OIII-bright go cyan, mixed regions go magenta-violet (purple). <strong>No greens by construction.</strong></p>
+      <p><strong>SHO result:</strong> SII regions go deep red/maroon, Ha goes red-orange, OIII goes cyan. The palette has reds-through-cyan only — green is mathematically excluded.</p>
+      <p><strong>Why pick:</strong> defensible, reproducible, matches what the photons are physically.</p>
+    </div>
+  </div>
+  <div class="option" data-choice="b" onclick="toggleSelect(this)">
+    <div class="letter">B</div>
+    <div class="content">
+      <h3>HOO traditional with SCNR-style green suppression</h3>
+      <p>Ha→R, OIII→G+B (cyan), then explicitly subtract G from output to chrominance-limit. Standard PixInsight pattern: SCNR removes green chromatic noise after combine.</p>
+      <p><strong>Result:</strong> traditional HOO look (R + cyan), green never present in output.</p>
+      <p><strong>Why pick:</strong> matches what most users expect; comparable to existing PI workflows; easy to verify against reference processors.</p>
+    </div>
+  </div>
+  <div class="option" data-choice="c" onclick="toggleSelect(this)">
+    <div class="letter">C</div>
+    <div class="content">
+      <h3>Foraxx-style or custom palette mapping</h3>
+      <p>Apply a non-linear remapping function (Foraxx, Bicolor, Adaptive HOO etc.) that distributes the line signals creatively across the output color wheel. Often used to push Ha into orange and OIII into deep blue, opening more visual contrast.</p>
+      <p><strong>Result:</strong> visually striking but not literally calibrated — popular on AstroBin.</p>
+      <p><strong>Why pick:</strong> processing flexibility / artistic latitude.</p>
+    </div>
+  </div>
+  <div class="option" data-choice="d" onclick="toggleSelect(this)">
+    <div class="letter">D</div>
+    <div class="content">
+      <h3>Both A and C — calibrated default + selectable preset</h3>
+      <p>Ship A (calibrated emission-line color) as the default, also expose B / Foraxx as named presets the user can switch to per-stretch. Auto picks A unless overridden.</p>
+      <p><strong>Why pick:</strong> sets a scientific baseline AND keeps creative flexibility. Stays with the v4 "Auto picks correctly out of the box" theme.</p>
+      <p><strong>Cost:</strong> bigger UI surface; preset framework needs to be designed up-front.</p>
+    </div>
+  </div>
+</div>
