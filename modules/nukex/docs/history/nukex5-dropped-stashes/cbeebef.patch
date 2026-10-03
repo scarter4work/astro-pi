@@ -1,0 +1,285 @@
+commit cbeebefd0584ef5d97bc627bc67ee8420ea57ca0
+Merge: ba3555d df8cb1a
+Author: Brian Scott Carter <scarter4work@yahoo.com>
+Date:   Wed Sep 9 22:07:01 2026 -0400
+
+    WIP on main: ba3555d test(e2e): assert the colour, instead of describing it in a comment
+
+ .../include/nukex/combine/output_assembler.hpp     |  6 ++++
+ src/lib/combine/src/output_assembler.cpp           |  8 +++++
+ .../include/nukex/stacker/stacking_engine.hpp      |  1 +
+ src/lib/stacker/src/stacking_engine.cpp            | 12 +++++--
+ .../include/nukex/stretch/veralux_stretch.hpp      | 21 ++++++++++++
+ src/lib/stretch/src/veralux_stretch.cpp            | 39 ++++++++++++++++++++--
+ src/module/NukeXInstance.cpp                       | 22 ++++++++++++
+ test/CMakeLists.txt                                |  1 +
+ test/unit/combine/test_output_assembler.cpp        | 19 +++++++++++
+ 9 files changed, 124 insertions(+), 5 deletions(-)
+
+diff --cc src/lib/combine/include/nukex/combine/output_assembler.hpp
+index c9e93ee,c9e93ee..a4ee37d
+--- a/src/lib/combine/include/nukex/combine/output_assembler.hpp
++++ b/src/lib/combine/include/nukex/combine/output_assembler.hpp
+@@@ -18,6 -18,6 +18,12 @@@ public
+      /// questions and only the predicted one existed before.
+      static Image assemble_measured_noise(const Cube& cube);
+  
+++    /// Per-pixel local background, one channel, from
+++    /// SubcubeVoxel::local_background. VeraLux uses it to tell a compact
+++    /// source from an extended one: it is a windowed median, so inside an
+++    /// extended object the window is that object and the excess is ~0.
+++    static Image assemble_local_background(const Cube& cube);
+++
+      /// Median measured/predicted noise over pixels where both are finite and
+      /// positive. A value above 1 means the stack is noisier than its own model
+      /// says it should be -- which is what an estimator injecting noise looks
+diff --cc src/lib/combine/src/output_assembler.cpp
+index a5c3007,a5c3007..6ae2b50
+--- a/src/lib/combine/src/output_assembler.cpp
++++ b/src/lib/combine/src/output_assembler.cpp
+@@@ -44,6 -44,6 +44,14 @@@ Image OutputAssembler::assemble_measure
+      return measured;
+  }
+  
+++Image OutputAssembler::assemble_local_background(const Cube& cube) {
+++    Image bg(cube.width, cube.height, 1);
+++    for (int y = 0; y < cube.height; y++)
+++        for (int x = 0; x < cube.width; x++)
+++            bg.at(x, y, 0) = cube.at(x, y).local_background;
+++    return bg;
+++}
+++
+  double OutputAssembler::measured_vs_predicted_ratio(const Image& measured,
+                                                      const Image& predicted) {
+      if (measured.empty() || predicted.empty()) return 0.0;
+diff --cc src/lib/stacker/include/nukex/stacker/stacking_engine.hpp
+index 0f9d228,0f9d228..bed5263
+--- a/src/lib/stacker/include/nukex/stacker/stacking_engine.hpp
++++ b/src/lib/stacker/include/nukex/stacker/stacking_engine.hpp
+@@@ -163,6 -163,6 +163,7 @@@ public
+          Image                  stacked;
+          Image                  noise_map;        // PREDICTED uncertainty (CCD model / Welford)
+          Image                  measured_noise;   // REALISED pixel-to-pixel scatter
+++        Image                  local_background; // windowed median; compact-vs-extended
+          Image                  quality_map;
+          std::unique_ptr<Cube>  cube;     // populated by Phase A; consumed by Phase B (Task 10)
+          DerivedStack           derived;  // Phase B Q-solve output (Task 10B)
+diff --cc src/lib/stacker/src/stacking_engine.cpp
+index 4008aba,4008aba..a9353d0
+--- a/src/lib/stacker/src/stacking_engine.cpp
++++ b/src/lib/stacker/src/stacking_engine.cpp
+@@@ -1325,6 -1325,6 +1325,11 @@@ StackingEngine::ExecuteResult StackingE
+      // its own was invisible to NukeX's own diagnostics.
+      Image measured_noise = OutputAssembler::assemble_measured_noise(cube);
+  
+++    // The stretch needs this to tell a compact star from an extended nebula;
+++    // whitening a nebula is what cost M16 its colour. Cropped with the rest so
+++    // it still lines up with `stacked` after the coverage trim.
+++    Image local_background = OutputAssembler::assemble_local_background(cube);
+++
+      // ═══ PHASE B FOLLOW-UP — Q-solve derived semantic slots ═══════════
+      //
+      // PixelSelector wrote the per-pixel best raw value for each cube slot
+@@@ -1523,16 -1523,16 +1528,18 @@@
+              Image tn = noise_map.cropped(trim.x0, trim.y0, tw, th);
+              Image tq = quality_map.cropped(trim.x0, trim.y0, tw, th);
+              Image tm = measured_noise.cropped(trim.x0, trim.y0, tw, th);
+++            Image tb = local_background.cropped(trim.x0, trim.y0, tw, th);
+              // A refused crop returns an empty image; keeping the untrimmed
+              // frame is the only safe answer, and silence is not.
+--            if (ts.empty() || tn.empty() || tq.empty() || tm.empty()) {
+++            if (ts.empty() || tn.empty() || tq.empty() || tm.empty() || tb.empty()) {
+                  obs.message("Coverage trim skipped: the computed rectangle did "
+                              "not fit the output.");
+              } else {
+                  stacked        = std::move(ts);
+                  noise_map      = std::move(tn);
+                  quality_map    = std::move(tq);
+--                measured_noise = std::move(tm);
+++                measured_noise   = std::move(tm);
+++                local_background = std::move(tb);
+                  for (auto& [name, plane] : result.derived.slots) {
+                      if (plane.size() != static_cast<std::size_t>(out_width) *
+                                          static_cast<std::size_t>(out_height))
+@@@ -1652,6 -1652,6 +1659,7 @@@
+      result.stacked = std::move(stacked);
+      result.noise_map = std::move(noise_map);
+      result.measured_noise = std::move(measured_noise);
+++    result.local_background = std::move(local_background);
+      result.quality_map = std::move(quality_map);
+      // Move the cube into a heap-allocated holder on the result so
+      // Phase B (Task 10) and the integration tests can read derived
+diff --cc src/lib/stretch/include/nukex/stretch/veralux_stretch.hpp
+index 211fbe6,211fbe6..c996f75
+--- a/src/lib/stretch/include/nukex/stretch/veralux_stretch.hpp
++++ b/src/lib/stretch/include/nukex/stretch/veralux_stretch.hpp
+@@@ -64,12 -64,12 +64,33 @@@ public
+      /// as a user control.
+      float auto_tune(const Image& img, float target_background = 0.12f);
+  
+++    /// Per-pixel local background luminance, width*height, row-major.
+++    ///
+++    /// Convergence-to-white exists to whiten STAR CORES, but it decided on
+++    /// absolute luminance, so on narrowband -- where the nebula is the
+++    /// brightest thing in frame -- it whitened the nebula too. A local
+++    /// background separates the two for free: it is a median over a window, so
+++    /// inside an extended object the window is itself that object and the
+++    /// excess is ~0, while a star fills only a few of the window's pixels and
+++    /// its excess is large.
+++    ///
+++    /// Optional. Supply nothing and convergence falls back to absolute
+++    /// luminance, which is bit-for-bit the previous behaviour.
+++    void set_local_background(std::vector<float> bg);
+++
+      /// Scalar version: stretches a single luminance value.
+      float apply_scalar(float x) const override;
+  
+      std::map<std::string, std::pair<float, float>> param_bounds() const override;
+      bool                                           set_param(const std::string&, float) override;
+      std::optional<float>                           get_param(const std::string&) const override;
+++
+++private:
+++    /// Not a tunable parameter -- it is per-image measured data, so it is
+++    /// deliberately outside the param block that param_bounds/set_param expose.
+++    /// Empty means "no spatial context supplied": convergence then uses
+++    /// absolute luminance, exactly as before.
+++    std::vector<float> local_bg_;
+  };
+  
+  } // namespace nukex
+diff --cc src/lib/stretch/src/veralux_stretch.cpp
+index 7a61c3d,7a61c3d..55f449a
+--- a/src/lib/stretch/src/veralux_stretch.cpp
++++ b/src/lib/stretch/src/veralux_stretch.cpp
+@@@ -247,6 -247,6 +247,11 @@@ void VeraLuxStretch::apply(Image& img) 
+  
+      constexpr float eps = 1e-9f;
+  
+++    // Spatial context is optional; a size mismatch means it does not describe
+++    // this image and is ignored rather than trusted.
+++    const bool use_local_bg =
+++        local_bg_.size() == static_cast<std::size_t>(n);
+++
+      for (int i = 0; i < n; i++) {
+          float r = R[i], g = G[i], bv = B[i];
+  
+@@@ -262,9 -262,9 +267,33 @@@
+          float g_stretched = hms_curve(g,  D, b, SP, den);
+          float b_stretched = hms_curve(bv, D, b, SP, den);
+  
+--        // Convergence factor: bright pixels transition toward white
+--        // k approaches 1 for bright pixels, 0 for faint pixels
+--        float k = std::pow(L_stretched, convergence_power);
+++        // Convergence factor: COMPACT bright pixels transition toward white.
+++        //
+++        // This used to be pow(L_stretched, p) -- absolute brightness. That
+++        // assumes the brightest thing in the frame is a star, which is true of
+++        // broadband and false of narrowband, where the nebula is. M16's
+++        // saturation fell from 0.0947 to 0.0000 in v5.0.3.2 on exactly that
+++        // assumption, and no test looked at colour, so it stood for three
+++        // releases.
+++        //
+++        // With a local background the discrimination is free. It is a median
+++        // over a window, so inside an extended object the window is itself
+++        // that object and the excess is ~0; a star fills only a few of the
+++        // window's pixels, so its excess is nearly the full range. Convergence
+++        // now follows how far a pixel stands ABOVE its own surroundings.
+++        //
+++        // No local background supplied -> the old formula, bit for bit.
+++        float k;
+++        if (use_local_bg) {
+++            const float bg_s = hms_curve(std::max(local_bg_[i], SP), D, b, SP, den);
+++            const float head = 1.0f - bg_s;
+++            const float excess = head > eps
+++                               ? std::clamp((L_stretched - bg_s) / head, 0.0f, 1.0f)
+++                               : 0.0f;
+++            k = std::pow(excess, convergence_power);
+++        } else {
+++            k = std::pow(L_stretched, convergence_power);
+++        }
+  
+          // Reconstruct: blend each stretched channel toward the stretched
+          // luminance, which is neutral. k -> 1 at a star core, so cores still
+@@@ -275,6 -275,6 +304,10 @@@
+      }
+  }
+  
+++void VeraLuxStretch::set_local_background(std::vector<float> bg) {
+++    local_bg_ = std::move(bg);
+++}
+++
+  std::map<std::string, std::pair<float, float>> VeraLuxStretch::param_bounds() const {
+      return {
+          {"SP",                {0.0f,  1.0f}},
+diff --cc src/module/NukeXInstance.cpp
+index 9f51361,9f51361..9597fa6
+--- a/src/module/NukeXInstance.cpp
++++ b/src/module/NukeXInstance.cpp
+@@@ -1020,6 -1020,6 +1020,28 @@@ bool NukeXInstance::ExecuteGlobal(
+        {
+           if ( auto* vl = dynamic_cast<nukex::VeraLuxStretch*>( primary_op.get() ) )
+           {
+++            // Hand VeraLux the spatial context so convergence-to-white can
+++            // tell a compact star from an extended nebula. Without it,
+++            // whitening keys on absolute brightness and flattens narrowband
+++            // nebulae, which is what cost M16 its colour from v5.0.3.2.
+++            //
+++            // Size-guarded: the local background is cropped with `stacked`, so
+++            // it matches only when the stretch runs on that geometry. A
+++            // mismatch is ignored inside VeraLux and it falls back to the
+++            // previous behaviour rather than trusting the wrong map.
+++            if ( !result.local_background.empty()
+++              && result.local_background.width()  == stretch_source.width()
+++              && result.local_background.height() == stretch_source.height() )
+++            {
+++               const int npix = stretch_source.width() * stretch_source.height();
+++               std::vector<float> lb( static_cast<std::size_t>( npix ) );
+++               const float* src = result.local_background.channel_data( 0 );
+++               std::copy( src, src + npix, lb.begin() );
+++               vl->set_local_background( std::move( lb ) );
+++               progress.message( "Stretch: using local background to protect "
+++                                 "extended objects from star whitening." );
+++            }
+++
+              const float solved = vl->auto_tune( stretch_source, backgroundTarget );
+              progress.message( pcl::String().Format(
+                 "Stretch solved for this image: shadow point = %.4f, "
+diff --cc test/CMakeLists.txt
+index 798a917,798a917..11549f0
+--- a/test/CMakeLists.txt
++++ b/test/CMakeLists.txt
+@@@ -103,6 -103,6 +103,7 @@@ nukex_add_test(test_ghs unit/stretch/te
+  nukex_add_test(test_ots unit/stretch/test_ots.cpp nukex4_stretch test_util)
+  nukex_add_test(test_sas unit/stretch/test_sas.cpp nukex4_stretch test_util)
+  nukex_add_test(test_tier1 unit/stretch/test_tier1.cpp nukex4_stretch test_util)
+++nukex_add_test(test_veralux_convergence unit/stretch/test_veralux_convergence.cpp nukex4_stretch nukex4_io nukex4_core)
+  nukex_add_test(test_calibrate unit/stretch/test_calibrate.cpp nukex4_stretch test_util)
+  nukex_add_test(test_param_bounds unit/stretch/test_param_bounds.cpp nukex4_stretch)
+  nukex_add_test(test_image_stats unit/stretch/test_image_stats.cpp nukex4_stretch test_util)
+diff --cc test/unit/combine/test_output_assembler.cpp
+index 4764d08,4764d08..80015c7
+--- a/test/unit/combine/test_output_assembler.cpp
++++ b/test/unit/combine/test_output_assembler.cpp
+@@@ -148,3 -148,3 +148,22 @@@ TEST_CASE("OutputAssembler: printed pre
+      REQUIRE(ratio == Catch::Approx(1.5).epsilon(1e-3));
+      REQUIRE(1.5f * 0.74961f / printed_p == Catch::Approx(ratio).epsilon(1e-3));
+  }
+++
+++TEST_CASE("OutputAssembler: local background map carries local_background",
+++          "[assembler]") {
+++    // The stretch needs this to tell a compact star from an extended nebula.
+++    // It is computed into every voxel by the spatial-context kernel and, until
+++    // now, read by nobody.
+++    auto config = cfg_for(FilterClass::BROADBAND_L, "L");
+++    Cube cube(8, 8, config);
+++    for (int y = 0; y < 8; y++)
+++        for (int x = 0; x < 8; x++)
+++            cube.at(x, y).local_background = 0.125f * static_cast<float>(y);
+++
+++    auto bg = OutputAssembler::assemble_local_background(cube);
+++    REQUIRE(bg.width() == 8);
+++    REQUIRE(bg.height() == 8);
+++    REQUIRE(bg.n_channels() == 1);
+++    REQUIRE(bg.at(3, 0, 0) == Catch::Approx(0.0f));
+++    REQUIRE(bg.at(3, 4, 0) == Catch::Approx(0.5f));
+++}

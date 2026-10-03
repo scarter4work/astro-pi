@@ -1,0 +1,250 @@
+commit f62b95282b4d1e2d61d62b2b2ca81bd393e742fd
+Merge: ba3555d 57ddfee
+Author: Brian Scott Carter <scarter4work@yahoo.com>
+Date:   Wed Sep 9 22:24:41 2026 -0400
+
+    WIP on main: ba3555d test(e2e): assert the colour, instead of describing it in a comment
+
+ .../include/nukex/combine/output_assembler.hpp     |   1 +
+ src/lib/stacker/src/stacking_engine.cpp            |   3 +-
+ .../include/nukex/stretch/veralux_stretch.hpp      |  24 ++++
+ src/lib/stretch/src/veralux_stretch.cpp            | 125 ++++++++++++++++++++-
+ test/CMakeLists.txt                                |   1 +
+ 5 files changed, 150 insertions(+), 4 deletions(-)
+
+diff --cc src/lib/combine/include/nukex/combine/output_assembler.hpp
+index c9e93ee,c9e93ee..f6bcd86
+--- a/src/lib/combine/include/nukex/combine/output_assembler.hpp
++++ b/src/lib/combine/include/nukex/combine/output_assembler.hpp
+@@@ -18,6 -18,6 +18,7 @@@ public
+      /// questions and only the predicted one existed before.
+      static Image assemble_measured_noise(const Cube& cube);
+  
+++
+      /// Median measured/predicted noise over pixels where both are finite and
+      /// positive. A value above 1 means the stack is noisier than its own model
+      /// says it should be -- which is what an estimator injecting noise looks
+diff --cc src/lib/stacker/src/stacking_engine.cpp
+index 4008aba,4008aba..2c0542b
+--- a/src/lib/stacker/src/stacking_engine.cpp
++++ b/src/lib/stacker/src/stacking_engine.cpp
+@@@ -1325,6 -1325,6 +1325,7 @@@ StackingEngine::ExecuteResult StackingE
+      // its own was invisible to NukeX's own diagnostics.
+      Image measured_noise = OutputAssembler::assemble_measured_noise(cube);
+  
+++
+      // ═══ PHASE B FOLLOW-UP — Q-solve derived semantic slots ═══════════
+      //
+      // PixelSelector wrote the per-pixel best raw value for each cube slot
+@@@ -1532,7 -1532,7 +1533,7 @@@
+                  stacked        = std::move(ts);
+                  noise_map      = std::move(tn);
+                  quality_map    = std::move(tq);
+--                measured_noise = std::move(tm);
+++                measured_noise   = std::move(tm);
+                  for (auto& [name, plane] : result.derived.slots) {
+                      if (plane.size() != static_cast<std::size_t>(out_width) *
+                                          static_cast<std::size_t>(out_height))
+diff --cc src/lib/stretch/include/nukex/stretch/veralux_stretch.hpp
+index 211fbe6,211fbe6..207fd24
+--- a/src/lib/stretch/include/nukex/stretch/veralux_stretch.hpp
++++ b/src/lib/stretch/include/nukex/stretch/veralux_stretch.hpp
+@@@ -64,12 -64,12 +64,36 @@@ public
+      /// as a user control.
+      float auto_tune(const Image& img, float target_background = 0.12f);
+  
+++    /// Per-pixel local background luminance, width*height, row-major.
+++    ///
+++    /// Convergence-to-white exists to whiten STAR CORES, but it decided on
+++    /// absolute luminance, so on narrowband -- where the nebula is the
+++    /// brightest thing in frame -- it whitened the nebula too. A local
+++    /// background separates the two for free: it is a median over a window, so
+++    /// inside an extended object the window is itself that object and the
+++    /// excess is ~0, while a star fills only a few of the window's pixels and
+++    /// its excess is large.
+++    ///
+++    /// Optional. Supply nothing and convergence falls back to absolute
+++    /// luminance, which is bit-for-bit the previous behaviour.
+++    void set_local_background(std::vector<float> bg);
+++
+      /// Scalar version: stretches a single luminance value.
+      float apply_scalar(float x) const override;
+  
+      std::map<std::string, std::pair<float, float>> param_bounds() const override;
+      bool                                           set_param(const std::string&, float) override;
+      std::optional<float>                           get_param(const std::string&) const override;
+++
+++private:
+++    /// Local background in this image's own units, derived when none is set.
+++    std::vector<float> local_background_from(const Image& img) const;
+++
+++    /// Not a tunable parameter -- it is per-image measured data, so it is
+++    /// deliberately outside the param block that param_bounds/set_param expose.
+++    /// Empty means "no spatial context supplied": convergence then uses
+++    /// absolute luminance, exactly as before.
+++    std::vector<float> local_bg_;
+  };
+  
+  } // namespace nukex
+diff --cc src/lib/stretch/src/veralux_stretch.cpp
+index 7a61c3d,7a61c3d..1a9f8b2
+--- a/src/lib/stretch/src/veralux_stretch.cpp
++++ b/src/lib/stretch/src/veralux_stretch.cpp
+@@@ -247,6 -247,6 +247,26 @@@ void VeraLuxStretch::apply(Image& img) 
+  
+      constexpr float eps = 1e-9f;
+  
+++    // The local background MUST be in this image's own photometric space.
+++    //
+++    // The cube carries one, but it is measured on `stacked` while the stretch
+++    // runs on `composed` -- medians 0.01661 vs 0.04761 on M16, 2.9x apart. Fed
+++    // that, the excess reads large everywhere and convergence silently reverts
+++    // to its old behaviour. Colour composition is per-pixel nonlinear, so no
+++    // scalar rescale fixes it. Derive it here instead, from the pixels being
+++    // stretched.
+++    //
+++    // Block MEDIAN, not mean: a star must not lift its own background, or it
+++    // stops being distinguishable from an extended source. At 16x16 a star's
+++    // few pixels cannot move the median, while genuine extended structure
+++    // does. Then bilinear between block centres so the result is smooth.
+++    std::vector<float> derived_bg;
+++    if (local_bg_.size() != static_cast<std::size_t>(n))
+++        derived_bg = local_background_from(img);
+++    const std::vector<float>& bg_map =
+++        local_bg_.size() == static_cast<std::size_t>(n) ? local_bg_ : derived_bg;
+++    const bool use_local_bg = bg_map.size() == static_cast<std::size_t>(n);
+++
+      for (int i = 0; i < n; i++) {
+          float r = R[i], g = G[i], bv = B[i];
+  
+@@@ -262,9 -262,9 +282,33 @@@
+          float g_stretched = hms_curve(g,  D, b, SP, den);
+          float b_stretched = hms_curve(bv, D, b, SP, den);
+  
+--        // Convergence factor: bright pixels transition toward white
+--        // k approaches 1 for bright pixels, 0 for faint pixels
+--        float k = std::pow(L_stretched, convergence_power);
+++        // Convergence factor: COMPACT bright pixels transition toward white.
+++        //
+++        // This used to be pow(L_stretched, p) -- absolute brightness. That
+++        // assumes the brightest thing in the frame is a star, which is true of
+++        // broadband and false of narrowband, where the nebula is. M16's
+++        // saturation fell from 0.0947 to 0.0000 in v5.0.3.2 on exactly that
+++        // assumption, and no test looked at colour, so it stood for three
+++        // releases.
+++        //
+++        // With a local background the discrimination is free. It is a median
+++        // over a window, so inside an extended object the window is itself
+++        // that object and the excess is ~0; a star fills only a few of the
+++        // window's pixels, so its excess is nearly the full range. Convergence
+++        // now follows how far a pixel stands ABOVE its own surroundings.
+++        //
+++        // No local background supplied -> the old formula, bit for bit.
+++        float k;
+++        if (use_local_bg) {
+++            const float bg_s = hms_curve(std::max(bg_map[i], SP), D, b, SP, den);
+++            const float head = 1.0f - bg_s;
+++            const float excess = head > eps
+++                               ? std::clamp((L_stretched - bg_s) / head, 0.0f, 1.0f)
+++                               : 0.0f;
+++            k = std::pow(excess, convergence_power);
+++        } else {
+++            k = std::pow(L_stretched, convergence_power);
+++        }
+  
+          // Reconstruct: blend each stretched channel toward the stretched
+          // luminance, which is neutral. k -> 1 at a star core, so cores still
+@@@ -275,6 -275,6 +319,81 @@@
+      }
+  }
+  
+++namespace {
+++
+++/// Local background luminance, in the image's OWN units.
+++///
+++/// A 16x16 block median, bilinearly interpolated between block centres.
+++/// Median because a star occupies a handful of a block's 256 pixels and must
+++/// not lift its own background -- if it did, a star would look as "extended"
+++/// as a nebula and convergence could not tell them apart. Extended structure
+++/// fills the block and does move it, which is exactly the discrimination
+++/// wanted.
+++std::vector<float> block_median_background(const Image& img,
+++                                           float w_R, float w_G, float w_B) {
+++    const int w = img.width(), h = img.height();
+++    const std::size_t n = static_cast<std::size_t>(w) * h;
+++    if (w <= 0 || h <= 0) return {};
+++
+++    constexpr int BLK = 16;
+++    const int bw = (w + BLK - 1) / BLK, bh = (h + BLK - 1) / BLK;
+++    const bool colour = img.n_channels() >= 3;
+++    const float* c0 = img.channel_data(0);
+++    const float* c1 = colour ? img.channel_data(1) : nullptr;
+++    const float* c2 = colour ? img.channel_data(2) : nullptr;
+++
+++    std::vector<float> coarse(static_cast<std::size_t>(bw) * bh, 0.0f);
+++    std::vector<float> cell;
+++    cell.reserve(BLK * BLK);
+++    for (int by = 0; by < bh; ++by)
+++        for (int bx = 0; bx < bw; ++bx) {
+++            cell.clear();
+++            const int y1 = std::min(h, (by + 1) * BLK), x1 = std::min(w, (bx + 1) * BLK);
+++            for (int y = by * BLK; y < y1; ++y)
+++                for (int x = bx * BLK; x < x1; ++x) {
+++                    const std::size_t i = static_cast<std::size_t>(y) * w + x;
+++                    cell.push_back(colour ? w_R * c0[i] + w_G * c1[i] + w_B * c2[i]
+++                                          : c0[i]);
+++                }
+++            if (cell.empty()) continue;
+++            const std::size_t m = cell.size() / 2;
+++            std::nth_element(cell.begin(), cell.begin() + m, cell.end());
+++            coarse[static_cast<std::size_t>(by) * bw + bx] = cell[m];
+++        }
+++
+++    // Bilinear between block centres, clamped at the edges.
+++    std::vector<float> out(n, 0.0f);
+++    for (int y = 0; y < h; ++y) {
+++        const float fy = (static_cast<float>(y) - 0.5f * (BLK - 1)) / BLK;
+++        const int y0 = std::clamp(static_cast<int>(std::floor(fy)), 0, bh - 1);
+++        const int y2 = std::clamp(y0 + 1, 0, bh - 1);
+++        const float ty = std::clamp(fy - static_cast<float>(y0), 0.0f, 1.0f);
+++        for (int x = 0; x < w; ++x) {
+++            const float fx = (static_cast<float>(x) - 0.5f * (BLK - 1)) / BLK;
+++            const int x0 = std::clamp(static_cast<int>(std::floor(fx)), 0, bw - 1);
+++            const int x2 = std::clamp(x0 + 1, 0, bw - 1);
+++            const float tx = std::clamp(fx - static_cast<float>(x0), 0.0f, 1.0f);
+++            const float a = coarse[static_cast<std::size_t>(y0) * bw + x0];
+++            const float bb = coarse[static_cast<std::size_t>(y0) * bw + x2];
+++            const float c = coarse[static_cast<std::size_t>(y2) * bw + x0];
+++            const float d = coarse[static_cast<std::size_t>(y2) * bw + x2];
+++            out[static_cast<std::size_t>(y) * w + x] =
+++                (a * (1 - tx) + bb * tx) * (1 - ty) + (c * (1 - tx) + d * tx) * ty;
+++        }
+++    }
+++    return out;
+++}
+++
+++} // namespace
+++
+++std::vector<float> VeraLuxStretch::local_background_from(const Image& img) const {
+++    return block_median_background(img, w_R, w_G, w_B);
+++}
+++
+++void VeraLuxStretch::set_local_background(std::vector<float> bg) {
+++    local_bg_ = std::move(bg);
+++}
+++
+  std::map<std::string, std::pair<float, float>> VeraLuxStretch::param_bounds() const {
+      return {
+          {"SP",                {0.0f,  1.0f}},
+diff --cc test/CMakeLists.txt
+index 798a917,798a917..11549f0
+--- a/test/CMakeLists.txt
++++ b/test/CMakeLists.txt
+@@@ -103,6 -103,6 +103,7 @@@ nukex_add_test(test_ghs unit/stretch/te
+  nukex_add_test(test_ots unit/stretch/test_ots.cpp nukex4_stretch test_util)
+  nukex_add_test(test_sas unit/stretch/test_sas.cpp nukex4_stretch test_util)
+  nukex_add_test(test_tier1 unit/stretch/test_tier1.cpp nukex4_stretch test_util)
+++nukex_add_test(test_veralux_convergence unit/stretch/test_veralux_convergence.cpp nukex4_stretch nukex4_io nukex4_core)
+  nukex_add_test(test_calibrate unit/stretch/test_calibrate.cpp nukex4_stretch test_util)
+  nukex_add_test(test_param_bounds unit/stretch/test_param_bounds.cpp nukex4_stretch)
+  nukex_add_test(test_image_stats unit/stretch/test_image_stats.cpp nukex4_stretch test_util)
