@@ -524,3 +524,11 @@ The Process Console must show no QE-database error and the `NukeX_composed` wind
 - [ ] **Step 5: If `share/qe_database.json` is absent, ship the JSON under `bin/`**
 
 Change `PIShareRoot()` accordingly and re-package. The plan calls this a release blocker if the layout is not honoured. Report which happened.
+
+---
+
+## Not part of this program — parked designs
+
+These are captured design seeds, **outside** the single-re-baseline ordering above (they move no goldens). Do not fold them into Tasks 1–9.
+
+- **XISF language server** — `docs/superpowers/specs/2026-09-18-xisf-language-server-design.md`. Triggered by XISF 1.0 Spec **Revision 1** (Sept 2026, shipped with PI 1.9.5), which adds a formal XSD, the `AstrometricSolution` property namespace (1.9.5 writes solutions here), and Zstandard codecs. Third dev-tooling server alongside the PCL and PJSR parsers. Gated behind this program and the manuscript-platform-first priority.
