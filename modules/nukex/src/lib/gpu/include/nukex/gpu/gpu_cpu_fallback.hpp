@@ -1,6 +1,7 @@
 #pragma once
 
 #include "nukex/gpu/gpu_shadow_buffers.hpp"
+#include "nukex/core/luminance_spec.hpp"
 #include "nukex/core/frame_stats.hpp"
 #include "nukex/classify/weight_computer.hpp"
 
@@ -41,7 +42,8 @@ public:
                                  int width, int height, int n_channels,
                                  float* gradient_mag,
                                  float* local_background,
-                                 float* local_rms);
+                                 float* local_rms,
+                                 LuminanceSpec luminance = LuminanceSpec{});
 };
 
 } // namespace nukex

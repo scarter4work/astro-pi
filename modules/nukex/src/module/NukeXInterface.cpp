@@ -7,7 +7,18 @@
 #include "NukeXVersion.h"
 #include "RatingDialog.h"
 
+#include "QEFetcher.h"
+
+#include "nukex/calibration/qe_update.hpp"
+#include "nukex/calibration/qe_update_state.hpp"
+
 #include <pcl/FileDialog.h>
+#include <pcl/MessageBox.h>
+#include <pcl/Console.h>
+
+#include <ctime>
+#include <cstdlib>
+#include <string>
 #include <pcl/ErrorHandler.h>
 
 namespace pcl
@@ -63,8 +74,13 @@ bool NukeXInterface::Launch( const MetaProcess&, const ProcessImplementation*, b
    if ( GUI == nullptr )
    {
       GUI = new GUIData( *this );
-      SetWindowTitle( "NukeX v" NUKEX_STR(NUKEX_MODULE_VERSION_MAJOR) );
+      SetWindowTitle( "NukeX" );
       UpdateControls();
+      UpdateDatabaseStatusLabel();
+      // Interval-gated, silent when offline or up to date. This is what
+      // keeps the camera roster from going stale without anyone having to
+      // remember to look -- the failure mode this feature exists to avoid.
+      CheckForDatabaseUpdate( false );
    }
 
    dynamic = false;
@@ -165,7 +181,7 @@ NukeXInterface::GUIData::GUIData( NukeXInterface& w )
    FlatFrames_TreeBox.SetToolTip(
       "Optional flat-field frames.  Enabled flats are combined into a master "
       "flat and applied per-channel before alignment.  Leave empty if you "
-      "have no flats — NukeX will skip calibration." );
+      "have no flats -- NukeX will skip calibration." );
    FlatFrames_Add_Button.SetText( "Add" );
    FlatFrames_Add_Button.SetToolTip( "Add FITS files (.fit/.fits) to the flat frames list." );
    FlatFrames_Add_Button.OnClick( (Button::click_event_handler)&NukeXInterface::e_FlatAdd, w );
@@ -199,9 +215,9 @@ NukeXInterface::GUIData::GUIData( NukeXInterface& w )
    // ── Options Section ──
    const char* kPrimaryStretchTip =
       "Curve applied to the stacked image to produce NukeX_stretched.\n\n"
-      "Auto — picks a Phase-5 champion curve based on the first light "
+      "Auto -- picks a Phase-5 champion curve based on the first light "
       "frame's FITS metadata (FILTER / BAYERPAT / NAXIS3). Recommended.\n\n"
-      "VeraLux / GHS / MTF / ArcSinh / Log / Lupton / CLAHE — force a "
+      "VeraLux / GHS / MTF / ArcSinh / Log / Lupton / CLAHE -- force a "
       "specific curve regardless of filter class.\n\n"
       "The Process Console logs the Auto classification and choice so "
       "you can see exactly why a given curve was picked.";
@@ -225,7 +241,7 @@ NukeXInterface::GUIData::GUIData( NukeXInterface& w )
 
    const char* kFinishingStretchTip =
       "Optional second-stage stretch applied after the Primary curve.\n\n"
-      "None — only curve enrolled today. SAS / OTS / Photometric "
+      "None -- only curve enrolled today. SAS / OTS / Photometric "
       "finishers are slated for future phases.";
    FinishingStretch_Label.SetText( "Finishing Stretch:" );
    FinishingStretch_Label.SetTextAlignment( TextAlign::Right | TextAlign::VertCenter );
@@ -238,14 +254,76 @@ NukeXInterface::GUIData::GUIData( NukeXInterface& w )
    FinishingStretch_Sizer.Add( FinishingStretch_Label );
    FinishingStretch_Sizer.Add( FinishingStretch_ComboBox, 100 );
 
+   BackgroundTarget_NumericControl.label.SetText( "Background level:" );
+   BackgroundTarget_NumericControl.slider.SetRange( 0, 90 );
+   BackgroundTarget_NumericControl.SetReal();
+   BackgroundTarget_NumericControl.SetRange(
+      TheNXBackgroundTargetParameter->MinimumValue(),
+      TheNXBackgroundTargetParameter->MaximumValue() );
+   BackgroundTarget_NumericControl.SetPrecision(
+      TheNXBackgroundTargetParameter->Precision() );
+   BackgroundTarget_NumericControl.SetToolTip(
+      "Where the auto-stretch puts the sky, from 0.05 (dark) to 0.50 (bright).\n\n"
+      "0.25 is the screen-autostretch convention and the default. It is also "
+      "what lifts the noise floor into plain view: lower the target and the "
+      "sky darkens without losing a pixel of detail, so faint grain stops "
+      "competing with the subject. Raise it to judge the faintest structure.\n\n"
+      "Affects the stretched image only. The stacked and composed images are "
+      "linear and are not touched." );
+   BackgroundTarget_NumericControl.edit.SetFixedWidth( 80 );
+   BackgroundTarget_NumericControl.OnValueUpdated(
+      (NumericEdit::value_event_handler)&NukeXInterface::e_ValueUpdated, w );
+
    EnableGPU_CheckBox.SetText( "Enable GPU acceleration (OpenCL)" );
    EnableGPU_CheckBox.SetToolTip(
       "Runs Phase B's per-voxel weight classification, robust statistics, "
       "and pixel-selection kernels on an OpenCL device "
       "(NVIDIA / AMD / Intel).  Distribution fitting (Ceres) stays on "
-      "CPU regardless.  Disable to run the whole stack on CPU — useful "
+      "CPU regardless.  Disable to run the whole stack on CPU -- useful "
       "for debugging or on machines without OpenCL.  Default: on." );
    EnableGPU_CheckBox.OnClick( (Button::click_event_handler)&NukeXInterface::e_OptionToggled, w );
+
+   Options_Sizer.Add( BackgroundTarget_NumericControl );
+
+   const char* kEstimatorTip =
+      "Which estimator produces each pixel of the stack.  Distribution race: "
+      "NukeX's original method -- fits Student-t, Gaussian-mixture, "
+      "Contamination and KDE models to every pixel's samples and picks by "
+      "AICc; also produces the per-pixel model diagnostics.  Huber "
+      "M-estimator: a robust weighted location (median seed, MAD scale, "
+      "tuning 1.345).  Measured on four real sessions the race's result is "
+      "1.05x to 1.47x noisier than Huber's at the pixel scale, and Huber "
+      "costs a small fraction of the time.  Huber is the default since "
+      "5.0.6.0.";
+   Estimator_Label.SetText( "Estimator:" );
+   Estimator_Label.SetTextAlignment( TextAlign::Right | TextAlign::VertCenter );
+   Estimator_Label.SetToolTip( kEstimatorTip );
+   Estimator_ComboBox.AddItem( "Distribution race" );
+   Estimator_ComboBox.AddItem( "Huber M-estimator" );
+   Estimator_ComboBox.SetToolTip( kEstimatorTip );
+   Estimator_ComboBox.OnItemSelected( (ComboBox::item_event_handler)&NukeXInterface::e_ItemSelected, w );
+   Estimator_Sizer.SetSpacing( 4 );
+   Estimator_Sizer.Add( Estimator_Label );
+   Estimator_Sizer.Add( Estimator_ComboBox );
+   Estimator_Sizer.AddStretch();
+   Options_Sizer.Add( Estimator_Sizer );
+
+   RemoveSkyGradient_CheckBox.SetText( "Remove sky gradient (tilt only)" );
+   RemoveSkyGradient_CheckBox.SetToolTip(
+      "Removes the fixed-pattern sky tilt from the stacked image: a flat "
+      "plane fitted to the background, with anything brighter than the sky "
+      "ignored so stars and nebulosity do not pull it.  Only the tilt comes "
+      "off -- the sky level is left where it was, and a curved gradient "
+      "(vignetting, a dome) is deliberately not touched, because a curved "
+      "fit can follow the faint outskirts of a large object and subtract "
+      "them.  Turn off to keep the stack exactly as accumulated, e.g. to "
+      "remove gradients yourself in PixInsight.  Default: on." );
+   RemoveSkyGradient_CheckBox.OnClick( (Button::click_event_handler)&NukeXInterface::e_OptionToggled, w );
+
+   SkyGradient_Sizer.SetSpacing( 16 );
+   SkyGradient_Sizer.Add( RemoveSkyGradient_CheckBox );
+   SkyGradient_Sizer.AddStretch();
+   Options_Sizer.Add( SkyGradient_Sizer );
 
    GPU_Sizer.SetSpacing( 16 );
    GPU_Sizer.Add( EnableGPU_CheckBox );
@@ -293,7 +371,7 @@ NukeXInterface::GUIData::GUIData( NukeXInterface& w )
    QEOverride_Edit.SetText( w.instance.qeOverridePath );
    QEOverride_Edit.SetToolTip( kQEOverrideTip );
 
-   QEOverride_Browse_Button.SetText( "Browse\xE2\x80\xA6" );  // UTF-8 ellipsis
+   QEOverride_Browse_Button.SetText( "Browse..." );  // UTF-8 ellipsis
    QEOverride_Browse_Button.SetToolTip( "Select a QE override JSON file." );
    QEOverride_Browse_Button.OnClick(
       (Button::click_event_handler)&NukeXInterface::e_QEOverrideBrowse, w );
@@ -314,7 +392,30 @@ NukeXInterface::GUIData::GUIData( NukeXInterface& w )
    Options_Sizer.Add( FinishingStretch_Sizer );
    Options_Sizer.Add( GPU_Sizer );
    Options_Sizer.Add( Rating_Sizer );
+   QEUpdate_CheckBox.SetText( "Check for camera database updates" );
+   QEUpdate_CheckBox.SetToolTip(
+      "<p>Periodically check whether a newer QE camera database has been "
+      "published, so newly released cameras are recognised without waiting "
+      "for a NukeX release.</p>"
+      "<p>Nothing is downloaded or installed without your consent, the check "
+      "never runs while a stack is in progress, and every published database "
+      "is cryptographically signed and verified before use. Being offline is "
+      "not an error.</p>" );
+   QEUpdate_CheckBox.OnClick( (Button::click_event_handler)&NukeXInterface::e_QEUpdateToggled, w );
+
+   QEUpdate_Check_Button.SetText( "Check now" );
+   QEUpdate_Check_Button.SetToolTip( "<p>Check for a newer camera database immediately.</p>" );
+   QEUpdate_Check_Button.OnClick( (Button::click_event_handler)&NukeXInterface::e_QEUpdateCheck, w );
+
+   QEUpdate_Status_Label.SetTextAlignment( TextAlign::Left | TextAlign::VertCenter );
+
+   QEUpdate_Sizer.SetSpacing( 4 );
+   QEUpdate_Sizer.Add( QEUpdate_CheckBox );
+   QEUpdate_Sizer.Add( QEUpdate_Check_Button );
+   QEUpdate_Sizer.Add( QEUpdate_Status_Label, 100 );
+
    Options_Sizer.Add( QEOverride_Sizer );
+   Options_Sizer.Add( QEUpdate_Sizer );
 
    Options_Control.SetSizer( Options_Sizer );
 
@@ -345,6 +446,9 @@ void NukeXInterface::UpdateControls()
    UpdateFlatFramesList();
    GUI->PrimaryStretch_ComboBox.SetCurrentItem( instance.primaryStretch );
    GUI->FinishingStretch_ComboBox.SetCurrentItem( instance.finishingStretch );
+   GUI->BackgroundTarget_NumericControl.SetValue( instance.backgroundTarget );
+   GUI->RemoveSkyGradient_CheckBox.SetChecked( instance.removeSkyGradient );
+   GUI->Estimator_ComboBox.SetCurrentItem( instance.estimator );
    GUI->EnableGPU_CheckBox.SetChecked( instance.enableGPU );
    GUI->QEOverride_Edit.SetText( instance.qeOverridePath );
 
@@ -503,12 +607,22 @@ void NukeXInterface::e_ItemSelected( ComboBox& sender, int itemIndex )
       instance.primaryStretch = itemIndex;
    else if ( sender == GUI->FinishingStretch_ComboBox )
       instance.finishingStretch = itemIndex;
+   else if ( sender == GUI->Estimator_ComboBox )
+      instance.estimator = itemIndex;
 }
 
 void NukeXInterface::e_OptionToggled( Button& sender, bool checked )
 {
    if ( sender == GUI->EnableGPU_CheckBox )
       instance.enableGPU = checked;
+   else if ( sender == GUI->RemoveSkyGradient_CheckBox )
+      instance.removeSkyGradient = checked;
+}
+
+void NukeXInterface::e_ValueUpdated( NumericEdit& sender, double value )
+{
+   if ( sender == GUI->BackgroundTarget_NumericControl )
+      instance.backgroundTarget = static_cast<float>( value );
 }
 
 // ── QE override file picker handlers ─────────────────────────────
@@ -556,6 +670,169 @@ void NukeXInterface::e_SuppressRating( Button& /*sender*/, bool checked )
 {
    if ( TheNukeXProcess != nullptr )
       TheNukeXProcess->set_rating_popup_suppressed( checked );
+}
+
+// ----------------------------------------------------------------------------
+// Camera-database updater
+// ----------------------------------------------------------------------------
+
+namespace
+{
+
+// Published alongside the PixInsight repository. HTTPS only; QEFetcher
+// forces TLS with peer and host verification, and the payload carries its
+// own Ed25519 signature besides.
+const char* kQEUpdateBaseURL =
+   "https://raw.githubusercontent.com/scarter4work/astro-pi/main/repository";
+
+std::string QEUserDataDir()
+{
+   const char* home = std::getenv( "HOME" );
+   return ( home ? std::string( home ) + "/.config" : std::string( "/tmp" ) )
+          + "/nukex4";
+}
+
+std::string QEStatePath()    { return QEUserDataDir() + "/qe_update_state.json"; }
+std::string QEDatabasePath() { return QEUserDataDir() + "/qe_database.json"; }
+
+} // anonymous namespace
+
+void NukeXInterface::UpdateDatabaseStatusLabel()
+{
+   if ( GUI == nullptr )
+      return;
+
+   const nukex::QEUpdateState st = nukex::load_update_state( QEStatePath() );
+   GUI->QEUpdate_CheckBox.SetChecked( st.enabled );
+
+   String text;
+   if ( st.installed_db_version > 0 )
+      text = String().Format( "database v%d", st.installed_db_version );
+   else
+      text = "shipped database";
+   GUI->QEUpdate_Status_Label.SetText( text );
+}
+
+void NukeXInterface::e_QEUpdateToggled( Button& sender, bool checked )
+{
+   if ( sender == GUI->QEUpdate_CheckBox )
+   {
+      nukex::QEUpdateState st = nukex::load_update_state( QEStatePath() );
+      st.enabled = checked;
+      nukex::save_update_state( QEStatePath(), st );
+   }
+}
+
+void NukeXInterface::e_QEUpdateCheck( Button& sender, bool /*checked*/ )
+{
+   if ( sender == GUI->QEUpdate_Check_Button )
+      CheckForDatabaseUpdate( true );
+}
+
+void NukeXInterface::CheckForDatabaseUpdate( bool user_initiated )
+{
+   nukex::QEUpdateState st = nukex::load_update_state( QEStatePath() );
+
+   const long long now = static_cast<long long>( std::time( nullptr ) );
+   if ( !user_initiated && !nukex::should_check_now( st, now ) )
+      return;
+
+   QEFetcher fetcher;
+   nukex::QEUpdater updater( fetcher, kQEUpdateBaseURL,
+                             nukex::qe_signing_public_key() );
+
+   const nukex::CheckResult r = updater.check( st.installed_db_version );
+
+   // Record the attempt whatever happened, so a broken endpoint cannot turn
+   // every interface open into a network round trip.
+   st.last_check_unix = now;
+   st.last_result     = nukex::to_string( r.outcome );
+   nukex::save_update_state( QEStatePath(), st );
+
+   switch ( r.outcome )
+   {
+   case nukex::UpdateOutcome::AVAILABLE:
+      break;   // handled below
+
+   case nukex::UpdateOutcome::UP_TO_DATE:
+      if ( user_initiated )
+         MessageBox( "The camera database is up to date.", "NukeX",
+                     StdIcon::Information, StdButton::Ok ).Execute();
+      return;
+
+   case nukex::UpdateOutcome::OFFLINE:
+      // Silent unless the user asked: a telescope laptop with no network is
+      // the normal case, not a condition worth interrupting anyone over.
+      if ( user_initiated )
+         MessageBox( "Could not reach the camera database server.\n"
+                     "This is not a problem -- the installed database is still in use.",
+                     "NukeX", StdIcon::Information, StdButton::Ok ).Execute();
+      return;
+
+   case nukex::UpdateOutcome::BAD_SIGNATURE:
+   case nukex::UpdateOutcome::DIGEST_MISMATCH:
+      // Loud even when nobody asked. This is possible tampering, not a
+      // network hiccup, and it must never be retried silently.
+      Console().WarningLn(
+         "<end><cbr>** NukeX: camera database update REJECTED -- " +
+         String( nukex::to_string( r.outcome ) ) +
+         ". The installed database is unchanged. If this repeats, do not "
+         "install the update and report it." );
+      return;
+
+   case nukex::UpdateOutcome::SCHEMA_TOO_NEW:
+      Console().WarningLn(
+         "<end><cbr>** NukeX: the published camera database needs a newer "
+         "version of NukeX. Update the module to receive it." );
+      return;
+
+   default:
+      if ( user_initiated )
+         MessageBox( String( "Camera database check: " ) +
+                     nukex::to_string( r.outcome ), "NukeX",
+                     StdIcon::Information, StdButton::Ok ).Execute();
+      return;
+   }
+
+   // AVAILABLE. Respect a version the user already declined, unless they
+   // asked for this check themselves.
+   if ( !user_initiated && r.manifest.db_version == st.declined_version )
+      return;
+
+   String prompt = String().Format(
+         "A newer camera database is available (v%d).\n\n", r.manifest.db_version );
+   prompt += String().Format( "%d cameras across %d sensors.\n",
+                              r.manifest.n_cameras, r.manifest.n_sensors );
+   if ( !r.manifest.summary.empty() )
+      prompt += String( r.manifest.summary.c_str() ) + "\n";
+   prompt += "\nInstall it now?";
+
+   if ( MessageBox( prompt, "NukeX", StdIcon::Question,
+                    StdButton::Yes, StdButton::No ).Execute() != StdButton::Yes )
+   {
+      st.declined_version = r.manifest.db_version;
+      nukex::save_update_state( QEStatePath(), st );
+      return;
+   }
+
+   const nukex::UpdateOutcome out = updater.install( r.manifest, QEDatabasePath() );
+   if ( out == nukex::UpdateOutcome::INSTALLED )
+   {
+      st.installed_db_version = r.manifest.db_version;
+      st.declined_version     = 0;
+      st.last_result          = nukex::to_string( out );
+      nukex::save_update_state( QEStatePath(), st );
+      UpdateDatabaseStatusLabel();
+      Console().NoteLn( String().Format(
+         "<end><cbr>* NukeX: camera database updated to v%d.", r.manifest.db_version ) );
+   }
+   else
+   {
+      Console().WarningLn(
+         "<end><cbr>** NukeX: camera database update failed -- " +
+         String( nukex::to_string( out ) ) +
+         ". The installed database is unchanged." );
+   }
 }
 
 } // namespace pcl

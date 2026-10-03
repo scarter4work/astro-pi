@@ -2,6 +2,7 @@
 // Copyright (c) 2026 Scott Carter. MIT License.
 
 #include "NukeXParameters.h"
+#include "nukex/stacker/cache_paths.hpp"
 
 namespace pcl
 {
@@ -120,6 +121,54 @@ size_type NXFinishingStretch::DefaultValueIndex() const { return None; }
 
 // ── GPU Configuration ────────────────────────────────────────────
 
+NXBackgroundTarget* TheNXBackgroundTargetParameter = nullptr;
+
+NXBackgroundTarget::NXBackgroundTarget( MetaProcess* p ) : MetaFloat( p )
+{
+   TheNXBackgroundTargetParameter = this;
+}
+
+IsoString NXBackgroundTarget::Id() const { return "backgroundTarget"; }
+int       NXBackgroundTarget::Precision() const { return 3; }
+double    NXBackgroundTarget::DefaultValue() const { return 0.12; }
+double    NXBackgroundTarget::MinimumValue() const { return 0.05; }
+double    NXBackgroundTarget::MaximumValue() const { return 0.50; }
+
+// ── Estimator ────────────────────────────────────────────────────
+
+NXEstimator* TheNXEstimatorParameter = nullptr;
+
+NXEstimator::NXEstimator( MetaProcess* p ) : MetaEnumeration( p )
+{
+   TheNXEstimatorParameter = this;
+}
+
+IsoString NXEstimator::Id() const { return "estimator"; }
+size_type NXEstimator::NumberOfElements() const { return NumberOfItems; }
+IsoString NXEstimator::ElementId( size_type i ) const
+{
+   switch ( i )
+   {
+   case ModelRace: return "ModelRace";
+   case Huber:     return "Huber";
+   default:        return IsoString();
+   }
+}
+int NXEstimator::ElementValue( size_type i ) const { return int( i ); }
+size_type NXEstimator::DefaultValueIndex() const { return Huber; }
+
+// ── Sky gradient ─────────────────────────────────────────────────
+
+NXRemoveSkyGradient* TheNXRemoveSkyGradientParameter = nullptr;
+
+NXRemoveSkyGradient::NXRemoveSkyGradient( MetaProcess* p ) : MetaBoolean( p )
+{
+   TheNXRemoveSkyGradientParameter = this;
+}
+
+IsoString NXRemoveSkyGradient::Id() const { return "removeSkyGradient"; }
+bool NXRemoveSkyGradient::DefaultValue() const { return true; }
+
 NXEnableGPU::NXEnableGPU( MetaProcess* p ) : MetaBoolean( p )
 {
    TheNXEnableGPUParameter = this;
@@ -136,7 +185,12 @@ NXCacheDirectory::NXCacheDirectory( MetaProcess* p ) : MetaString( p )
 }
 
 IsoString NXCacheDirectory::Id() const { return "cacheDirectory"; }
-String NXCacheDirectory::DefaultValue() const { return "/tmp"; }
+String NXCacheDirectory::DefaultValue() const
+{
+   // Never /tmp: on Fedora and most systemd distributions it is a RAM-backed
+   // tmpfs, so a frame cache there is memory. See nukex::default_cache_dir.
+   return String( nukex::default_cache_dir().c_str() );
+}
 
 // ── QE Override Path ─────────────────────────────────────────────
 

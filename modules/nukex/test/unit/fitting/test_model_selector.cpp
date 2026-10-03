@@ -90,14 +90,14 @@ TEST_CASE("ModelSelector: writes robust stats to voxel", "[selector]") {
     auto data = generate_gaussian(0.50f, 0.03f, 100, 40004);
     auto wt = uniform_weights(100);
 
-    SubcubeVoxel voxel{};
+    StandaloneVoxel<1> voxel;
     ModelSelector selector;
-    selector.select(data.data(), wt.data(), 100, voxel, 0);
+    selector.select(data.data(), wt.data(), 100, *voxel, 0);
 
-    REQUIRE(voxel.mad[0] > 0.0f);
-    REQUIRE(voxel.biweight_midvariance[0] > 0.0f);
-    REQUIRE(voxel.iqr[0] > 0.0f);
-    REQUIRE(voxel.distribution[0].shape != DistributionShape::UNKNOWN);
+    REQUIRE(voxel->channel(0).mad > 0.0f);
+    REQUIRE(voxel->channel(0).biweight_midvariance > 0.0f);
+    REQUIRE(voxel->channel(0).iqr > 0.0f);
+    REQUIRE(voxel->channel(0).distribution.shape != DistributionShape::UNKNOWN);
 }
 
 TEST_CASE("ModelSelector: very few samples → KDE fallback", "[selector]") {
@@ -113,4 +113,16 @@ TEST_CASE("ModelSelector: very few samples → KDE fallback", "[selector]") {
 
     REQUIRE(result.converged);
     REQUIRE(result.distribution.used_nonparametric);
+}
+
+TEST_CASE("ModelSelector::select: a single sample sets FIT_FAILED but keeps the sample as the estimate",
+          "[selector]") {
+    float v[] = {0.42f};
+    float w[] = {1.0f};
+    StandaloneVoxel<1> voxel;
+    ModelSelector selector;
+    selector.select(v, w, 1, *voxel, 0);
+    REQUIRE(voxel->has_flag(VoxelFlags::FIT_FAILED));
+    REQUIRE(voxel->channel(0).distribution.true_signal_estimate == Catch::Approx(0.42f));
+    REQUIRE(voxel->channel(0).distribution.shape == DistributionShape::UNKNOWN);
 }

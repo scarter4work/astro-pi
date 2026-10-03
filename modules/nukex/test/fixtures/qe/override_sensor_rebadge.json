@@ -1,0 +1,25 @@
+{
+  "schema_version": 1,
+  "cameras": {
+    "ASI585MM": {
+      "sensor": "IMX585",
+      "type": "mono",
+      "bayer": "",
+      "qe": {
+        "500": { "MONO_PEAK": 0.85 },
+        "656": { "MONO_PEAK": 0.72 }
+      },
+      "confidence": "medium"
+    },
+    "ASI2600MM": {
+      "sensor": "IMX571",
+      "type": "mono",
+      "bayer": "",
+      "qe": {
+        "500": { "MONO_PEAK": 0.88 },
+        "656": { "MONO_PEAK": 0.75 }
+      },
+      "confidence": "medium"
+    }
+  }
+}

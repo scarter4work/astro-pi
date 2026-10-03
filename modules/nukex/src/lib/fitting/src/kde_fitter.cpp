@@ -126,7 +126,22 @@ FitResult KDEFitter::fit(const float* values, const float* weights,
     result.n_samples = n;
 
     if (n < 3) {
+        // A KDE needs at least three samples for a bandwidth. One or two
+        // frames give no distribution to fit, but they do give a value: the
+        // robust location the selector already computed (the sample itself
+        // for n == 1, the biweight of the pair for n == 2). Returning a
+        // default-constructed distribution here silently zeroed every
+        // stacked pixel fed by fewer than three frames. converged stays
+        // false so ModelSelector::select flags the voxel FIT_FAILED; the
+        // estimate is the data's own, never zero.
         result.converged = false;
+        result.distribution.shape                = DistributionShape::UNKNOWN;
+        result.distribution.used_nonparametric   = true;
+        result.distribution.true_signal_estimate = static_cast<float>(robust_location);
+        result.distribution.kde_mode             = static_cast<float>(robust_location);
+        result.distribution.kde_bandwidth        = 0.0f;
+        result.distribution.signal_uncertainty   = static_cast<float>(robust_scale);
+        result.distribution.confidence           = 0.0f;
         return result;
     }
 

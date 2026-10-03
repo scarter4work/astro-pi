@@ -7,13 +7,13 @@
 
 namespace nukex {
 
-std::pair<float, float> StarDetector::compute_background_noise(const Image& image) {
+std::pair<float, float> StarDetector::compute_background_noise(const Image& image, int ch) {
     // Sample pixels for background estimation (every 4th pixel for speed)
     std::vector<float> samples;
     int step = 4;
     for (int y = 0; y < image.height(); y += step) {
         for (int x = 0; x < image.width(); x += step) {
-            samples.push_back(image.at(x, y, 0));
+            samples.push_back(image.at(x, y, ch));
         }
     }
 
@@ -39,7 +39,7 @@ std::pair<float, float> StarDetector::compute_background_noise(const Image& imag
 }
 
 std::vector<std::tuple<int, int, float>> StarDetector::find_local_maxima(
-    const Image& image, float threshold, int exclusion_radius) {
+    const Image& image, float threshold, int exclusion_radius, int ch) {
 
     int w = image.width();
     int h = image.height();
@@ -50,7 +50,7 @@ std::vector<std::tuple<int, int, float>> StarDetector::find_local_maxima(
     // Skip border pixels
     for (int y = r; y < h - r; y++) {
         for (int x = r; x < w - r; x++) {
-            float val = image.at(x, y, 0);
+            float val = image.at(x, y, ch);
             if (val < threshold) continue;
 
             // Check if this is a local maximum in a (2r+1) × (2r+1) neighborhood
@@ -58,7 +58,7 @@ std::vector<std::tuple<int, int, float>> StarDetector::find_local_maxima(
             for (int dy = -r; dy <= r && is_max; dy++) {
                 for (int dx = -r; dx <= r && is_max; dx++) {
                     if (dx == 0 && dy == 0) continue;
-                    if (image.at(x + dx, y + dy, 0) > val) {
+                    if (image.at(x + dx, y + dy, ch) > val) {
                         is_max = false;
                     }
                 }
@@ -97,7 +97,7 @@ std::vector<std::tuple<int, int, float>> StarDetector::find_local_maxima(
 }
 
 std::pair<float, float> StarDetector::refine_centroid(
-    const Image& image, int x, int y) {
+    const Image& image, int x, int y, int ch) {
 
     // Compute intensity-weighted centroid in a 7×7 window
     // This is faster and more robust than full 2D Gaussian fitting
@@ -115,7 +115,7 @@ std::pair<float, float> StarDetector::refine_centroid(
             int px = x + dx;
             int py = y + dy;
             if (px >= 0 && px < w && py >= 0 && py < h) {
-                background += image.at(px, py, 0);
+                background += image.at(px, py, ch);
                 bg_count++;
             }
         }
@@ -130,7 +130,7 @@ std::pair<float, float> StarDetector::refine_centroid(
             int py = y + dy;
             if (px < 0 || px >= w || py < 0 || py >= h) continue;
 
-            float val = image.at(px, py, 0) - background;
+            float val = image.at(px, py, ch) - background;
             if (val <= 0.0f) continue;
 
             sum_x += val * static_cast<float>(px);
@@ -146,7 +146,7 @@ std::pair<float, float> StarDetector::refine_centroid(
 }
 
 float StarDetector::compute_flux(const Image& image, float cx, float cy,
-                                  float background, int aperture_radius) {
+                                  float background, int ch, int aperture_radius) {
     int w = image.width();
     int h = image.height();
     int icx = static_cast<int>(cx + 0.5f);
@@ -162,7 +162,7 @@ float StarDetector::compute_flux(const Image& image, float cx, float cy,
             float dist2 = static_cast<float>(dx * dx + dy * dy);
             if (dist2 > r2) continue;
 
-            float val = image.at(px, py, 0) - background;
+            float val = image.at(px, py, ch) - background;
             if (val > 0.0f) flux += val;
         }
     }
@@ -170,6 +170,10 @@ float StarDetector::compute_flux(const Image& image, float cx, float cy,
     return flux;
 }
 
+/// Deliberately measured on channel 0 rather than the detection channel:
+/// this answers "is this frame clipped", which is a property of the exposure,
+/// not of a colour. Changing it would move the blown-out cut for reasons that
+/// have nothing to do with channel registration.
 float StarDetector::saturation_fraction(const Image& image, float saturation_level) {
     if (image.empty()) return 0.0f;
     const int w = image.width();
@@ -194,6 +198,8 @@ StarCatalog StarDetector::detect(const Image& image, const Config& config) {
         return catalog;
     }
 
+    const int ch = resolve_detection_channel(config.channel, image.n_channels());
+
     // Saturation guard: reject frames where a majority of pixels are clipped
     // to saturation.  Without this, find_local_maxima sees the entire clipped
     // plateau as candidate stars and the O(n^2) exclusion-radius filter hangs
@@ -204,11 +210,11 @@ StarCatalog StarDetector::detect(const Image& image, const Config& config) {
     }
 
     // Step 1: Background and noise estimation
-    auto [background, sigma] = compute_background_noise(image);
+    auto [background, sigma] = compute_background_noise(image, ch);
     float threshold = background + config.snr_multiplier * sigma;
 
     // Step 2: Find local maxima
-    auto candidates = find_local_maxima(image, threshold, config.exclusion_radius);
+    auto candidates = find_local_maxima(image, threshold, config.exclusion_radius, ch);
 
     // Step 3: Build star catalog with refined centroids
     for (const auto& [ix, iy, peak] : candidates) {
@@ -220,7 +226,7 @@ StarCatalog StarDetector::detect(const Image& image, const Config& config) {
         star.background = background;
 
         // Refine centroid
-        auto [rx, ry] = refine_centroid(image, ix, iy);
+        auto [rx, ry] = refine_centroid(image, ix, iy, ch);
         star.x = rx;
         star.y = ry;
 
@@ -241,7 +247,7 @@ StarCatalog StarDetector::detect(const Image& image, const Config& config) {
                     int py = icy + dy;
                     if (px < 0 || px >= w || py < 0 || py >= h) continue;
 
-                    float val = image.at(px, py, 0) - background;
+                    float val = image.at(px, py, ch) - background;
                     if (val <= 0.0f) continue;
 
                     float dxc = static_cast<float>(px) - rx;
@@ -265,7 +271,7 @@ StarCatalog StarDetector::detect(const Image& image, const Config& config) {
         }
 
         // Compute flux
-        star.flux = compute_flux(image, rx, ry, background);
+        star.flux = compute_flux(image, rx, ry, background, ch);
 
         // SNR
         star.snr = (peak - background) / sigma;

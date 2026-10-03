@@ -17,7 +17,12 @@ namespace nukex {
 struct PixelHistogram {
     static constexpr int N_BINS = 16;
 
-    uint32_t bins[N_BINS] = {};
+    /// One bin is incremented per sample, and a channel receives at most one
+    /// sample per frame, so no bin can exceed the voxel's frame count — which
+    /// is itself uint16_t. 16-bit bins are exactly lossless for every stack
+    /// this codebase can represent, and halve the histogram from 72 to 40
+    /// bytes per channel. test_voxel.cpp static-asserts the two widths match.
+    uint16_t bins[N_BINS] = {};
     float    range_min    = 0.0f;
     float    range_max    = 1.0f;
 

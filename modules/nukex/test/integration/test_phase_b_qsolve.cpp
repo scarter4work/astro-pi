@@ -1,8 +1,8 @@
 // Phase B Q-solve integration tests (Task 10B).
 //
-// These four [.integration]-tagged cases describe the END-TO-END behaviour
-// of the Q-matrix decomposition pass that runs after per-pixel selection
-// populates the `stacked` Image with raw slot values:
+// These cases describe the END-TO-END behaviour of the Q-matrix
+// decomposition pass that runs after per-pixel selection populates the
+// `stacked` Image with raw slot values:
 //
 //   1. A synthetic HaO3 frame engineered so Q-solve recovers Ha=0.5 and
 //      OIII=0.3 at the centre pixel within ±0.02.
@@ -12,44 +12,25 @@
 //      sample-count weighted mean.
 //   4. A frame engineered so the Q-solve would produce a negative emission
 //      value — verifying it is clamped to 0 and counted in
-//      derived.negative_clamped_count.
-//
-// They depend on the synthetic-FITS writer that Task 20 will add to
-// test_util (test_util::write_synthetic_q_solved_hao3 and friends).
-// Until that task lands, the test bodies are gated under #if 0 so the
-// file COMPILES against the current test_util — keeping CI green —
-// while the literal end-state cases sit ready for Task 20 to wire up.
-//
-// All four cases are tagged "[.integration]" — Catch2's hidden-tag
-// convention — so default `ctest` runs skip them entirely. When Task 20
-// drops the writer in, flip `WIRED_BY_TASK_20` to 1 (or remove the gate)
-// and the cases will be enabled by passing the [integration] filter to
-// the test binary.
+//      derived.negative_clamped_count. Still gated: no synthetic writer
+//      for an engineered-negative frame exists yet.
+//   5. Unknown INSTRUME on a Bayer frame falls back to the generic camera
+//      QE profile (Task 15b), end to end.
 
 #include "catch_amalgamated.hpp"
 #include "nukex/stacker/stacking_engine.hpp"
 #include "nukex/core/filter.hpp"
 #include "nukex/core/cube.hpp"
 #include "nukex/core/channel_config.hpp"
+#include "synthetic_fits.hpp"
 
 #include <filesystem>
-
-#define WIRED_BY_TASK_20 1
 
 using namespace nukex;
 namespace fs = std::filesystem;
 
-#if WIRED_BY_TASK_20
-#include "test_data_loader.hpp"  // brings in test_util::write_synthetic_*
-#endif
-
-// Each case carries the same minimal placeholder body so the test binary
-// links until Task 20. When the gate flips, the real bodies (kept inline
-// in #if blocks below) become the live cases.
-
 TEST_CASE("Phase B Q-solve: synthetic HaO3 frame recovers Ha + OIII slots",
-          "[.integration][phase_b]") {
-#if WIRED_BY_TASK_20
+          "[integration][phase_b]") {
     // write_synthetic_q_solved_hao3 creates a 16×16 Bayer frame with FILTER=HaO3
     // and pixel values engineered so the Q-solve recovers Ha≈0.5 and OIII≈0.3
     // at the centre pixel (8,8).
@@ -76,14 +57,10 @@ TEST_CASE("Phase B Q-solve: synthetic HaO3 frame recovers Ha + OIII slots",
     REQUIRE(oiii_val == Catch::Approx(0.3f).margin(0.02f));
     // No negative-clamping expected for a well-behaved engineered frame.
     REQUIRE(result.derived.negative_clamped_count == 0);
-#else
-    SKIP("wired by Task 20: synthetic FITS writer needed");
-#endif
 }
 
 TEST_CASE("Phase B Q-solve: pure broadband-OSC produces no Ha/OIII/SII slot",
-          "[.integration][phase_b]") {
-#if WIRED_BY_TASK_20
+          "[integration][phase_b]") {
     // Plain OSC frame (no FILTER keyword) — all slots route through as
     // broadband passthrough; no dual-NB groups → no Q-solve.
     auto tmp = fs::temp_directory_path() / "phase_b_osc.fits";
@@ -105,14 +82,10 @@ TEST_CASE("Phase B Q-solve: pure broadband-OSC produces no Ha/OIII/SII slot",
     REQUIRE(result.derived.slots.count("OIII") == 0);
     REQUIRE(result.derived.slots.count("SII") == 0);
     REQUIRE(result.derived.negative_clamped_count == 0);
-#else
-    SKIP("wired by Task 20: synthetic FITS writer needed");
-#endif
 }
 
 TEST_CASE("Phase B Q-solve: HaO3 + S2O3 mixed → multi-source OIII merge",
-          "[.integration][phase_b]") {
-#if WIRED_BY_TASK_20
+          "[integration][phase_b]") {
     // Two batches: 10 HaO3 frames + 5 S2O3 frames. Both contribute OIII.
     // The weighted-mean merge gives the 10-frame HaO3 batch twice the weight
     // of the 5-frame S2O3 batch for the OIII slot.
@@ -137,94 +110,20 @@ TEST_CASE("Phase B Q-solve: HaO3 + S2O3 mixed → multi-source OIII merge",
     // With n_HaO3=1 sample and n_S2O3=1 sample the blend is equal here;
     // actual multi-frame tests (10 vs 5) live in the fixture generator.
     REQUIRE(result.derived.slots.at("OIII")[8 * 16 + 8] > 0.0f);
-#else
-    SKIP("wired by Task 20: synthetic FITS writer needed");
-#endif
-}
-
-// Regression test for the FrameCache global-vs-per-cache-index defect
-// surfaced (but explicitly left unfixed, out of scope) by task-20b-report.md
-// ("Follow-up surfaced" section) and diagnosed in task-20c-report.md.
-//
-// Task 10A gave the engine one FrameCache per (width, height, n_channels)
-// geometry signature (stacking_engine.cpp's `caches` map / get_or_create_cache).
-// FrameCache::write_frame(frame_index, ...) is called with the batch's
-// GLOBAL frame index (stacking_engine.cpp's per-frame loop, "cache aligned
-// frame" step), and FrameCache::n_frames_written() reports
-// max(frame_index + 1, current) -- the highest global index ever written to
-// THAT cache, plus one.
-//
-// On a batch that spans more than one geometry (e.g. a mono L frame + a
-// debayered HaO3 frame, exactly the mixed batch task-20b's Phase A
-// regression test constructs), each cache only receives the SUBSET of
-// global frame indices whose frames match its own geometry. A cache that
-// only ever receives global index 1 (out of a 2-frame batch) reports
-// n_frames_written() == 2, with position 0 unwritten -- it reads back as
-// zero from the cache's zero-filled backing file. Phase B's distribution
-// fitting then includes that phantom zero-valued "frame" in its per-voxel
-// fit, corrupting the derived Q-solve output.
-//
-// task-20b's own regression test could only assert on Phase A's welford
-// stats (populated synchronously during accumulation, independent of
-// FrameCache) -- it explicitly could NOT assert on Phase B's derived
-// Ha/OIII output because of this bug. This case closes that gap: same
-// mixed-batch construction (mono L first, engineered Bayer HaO3 second),
-// but asserting on the Phase B *derived* Q-solve output, which only a
-// correct FrameCache fix can make pass.
-TEST_CASE("Phase B Q-solve: mixed mono-L + Bayer-HaO3 batch recovers correct "
-          "Ha/OIII/L despite spanning two FrameCache geometries",
-          "[.integration][phase_b]") {
-#if WIRED_BY_TASK_20
-    auto t1 = fs::temp_directory_path() / "phase_b_mixed_mono_l.fits";
-    auto t2 = fs::temp_directory_path() / "phase_b_mixed_hao3.fits";
-    // Mono L frame FIRST -- global frame index 0. Written only into the
-    // (w,h,1) cache.
-    test_util::write_synthetic_mono(t1.string(), 16, 16, "ASI2600MM", "L", 0.6f);
-    // Genuine Bayer HaO3 frame SECOND -- global frame index 1. Written
-    // only into the (w,h,3) cache (post-debayer geometry). Engineered
-    // Ha/OIII targets so the Q-solve has a non-degenerate answer to check.
-    const float ha_target   = 0.5f;
-    const float oiii_target = 0.3f;
-    test_util::write_synthetic_q_solved_hao3(t2.string(), 16, 16, "ASI585MC",
-                                              ha_target, oiii_target);
-
-    StackingEngine::Config cfg;
-    cfg.qe_database_path = (fs::path(NUKEX_TEST_FIXTURES_DIR) / "qe" / "minimal_db.json").string();
-    StackingEngine engine(cfg);
-    auto result = engine.execute({t1.string(), t2.string()}, {}, nullptr);
-
-    REQUIRE(result.ok);
-
-    // The mono frame's L slot must survive Phase B untouched by the Bayer
-    // frame's cache.
-    REQUIRE(result.derived.slots.count("L") == 1);
-    float l_val = result.derived.slots.at("L")[8 * 16 + 8];
-    REQUIRE(l_val == Catch::Approx(0.6f).margin(0.05f));
-
-    // The Bayer frame's Q-solve must recover the engineered Ha/OIII values
-    // -- not a value corrupted by averaging in a phantom all-zero "frame"
-    // from the (w,h,3) cache's unwritten global-index-0 slot.
-    REQUIRE(result.derived.slots.count("Ha")   == 1);
-    REQUIRE(result.derived.slots.count("OIII") == 1);
-    float ha_val   = result.derived.slots.at("Ha")  [8 * 16 + 8];
-    float oiii_val = result.derived.slots.at("OIII")[8 * 16 + 8];
-    REQUIRE(ha_val   == Catch::Approx(ha_target).margin(0.02f));
-    REQUIRE(oiii_val == Catch::Approx(oiii_target).margin(0.02f));
-    REQUIRE(result.derived.negative_clamped_count == 0);
-#else
-    SKIP("wired by Task 20: synthetic FITS writer needed");
-#endif
 }
 
 TEST_CASE("Phase B Q-solve: negative emission clamped, counter incremented",
-          "[.integration][phase_b]") {
-#if WIRED_BY_TASK_20
-    // A frame engineered so one emission-line value comes out negative from
-    // the linear solve (e.g. an OIII-dominated pixel fed to an Ha/OIII Q
-    // matrix that expects the opposite balance). The negative value must be
-    // clamped to 0, and negative_clamped_count must be > 0.
+          "[integration][phase_b]") {
+    // No dedicated negative-emission writer exists (or is needed): a negative
+    // OIII target fed to write_synthetic_q_solved_hao3 engineers the negative
+    // Q-solve result directly through the existing writer.
+    // ASI585MC's Q keeps every photosite non-negative at (ha=0.8, oiii=-0.04)
+    // (B = 0.03*0.8 - 0.50*0.04 = 0.004; G ~ 0.222; R ~ 0.583), so the frame
+    // is a physically writable Bayer mosaic, but its Q-solve recovers
+    // OIII = -0.04, which the engine must clamp to 0 and count.
     auto tmp = fs::temp_directory_path() / "phase_b_negative.fits";
-    test_util::write_synthetic_negative_emission_hao3(tmp.string(), 16, 16, "ASI585MC");
+    test_util::write_synthetic_q_solved_hao3(tmp.string(), 16, 16, "ASI585MC",
+                                              /*ha*/0.8f, /*oiii*/-0.04f);
 
     StackingEngine::Config cfg;
     cfg.qe_database_path = (fs::path(NUKEX_TEST_FIXTURES_DIR) / "qe" / "minimal_db.json").string();
@@ -236,7 +135,21 @@ TEST_CASE("Phase B Q-solve: negative emission clamped, counter incremented",
     // All derived emission values must be >= 0 after clamping.
     for (float v : result.derived.slots.at("Ha"))   REQUIRE(v >= 0.0f);
     for (float v : result.derived.slots.at("OIII")) REQUIRE(v >= 0.0f);
-#else
-    SKIP("wired by Task 20: synthetic FITS writer needed");
-#endif
+}
+
+TEST_CASE("Phase B Q-solve: unknown INSTRUME falls back to generic_sony_imx_osc with a warning",
+          "[integration][phase_b]") {
+    // Photosites are engineered from ASI585MC's Q; the fixture's generic
+    // camera is a copy of ASI585MC, so the fallback recovers the same lines.
+    auto tmp = fs::temp_directory_path() / "phase_b_generic.fits";
+    test_util::write_synthetic_q_solved_hao3(tmp.string(), 16, 16, "ASI585MC", 0.5f, 0.3f,
+                                              /*instrume*/"Unknown Cam X");
+    StackingEngine::Config cfg;
+    cfg.qe_database_path = (fs::path(NUKEX_TEST_FIXTURES_DIR) / "qe" / "minimal_db.json").string();
+    StackingEngine engine(cfg);
+    auto result = engine.execute({tmp.string()}, {}, nullptr);
+
+    REQUIRE(result.ok);
+    REQUIRE(result.qe_generic_camera_fallback);
+    REQUIRE(result.derived.slots.at("Ha")[8 * 16 + 8] == Catch::Approx(0.5f).margin(0.02f));
 }

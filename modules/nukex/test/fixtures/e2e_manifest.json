@@ -1,114 +1,102 @@
 {
   "schema_version": 2,
-  "description": "v5 color-science overhaul E2E corpus. sweep_ghs/sweep_mtf/sweep_arcsinh are the bit-identical regression floor (stretch math is unchanged by the color-science overhaul, run against the same mono-L corpus so color/composer code never enters the path). mono_lrgb_ngc7635_v5 is the only live color-science case on this machine; bayer_rgb_ngc7635_v5, bayer_nb_hao3_m27, bayer_nb_s2o3_target and lrgbsho_target are scaffolded but skip:true until their corpora are captured.",
+  "description": "v5 E2E corpus: preserved v4 LRGB-mono floor + OSC, dual-NB (M16 HaO3) and LRGB-mono (M27 2025) cases",
   "cases": [
     {
-      "name": "sweep_ghs",
-      "type": "stretch_sweep",
-      "stretch": "GHS",
-      "filter_class_expected": "BROADBAND_L",
-      "light_dir": "/mnt/qnap/astro_data/NGC7635/L/Lights",
-      "flat_dir": "",
-      "primary_stretch": 2,
-      "finishing_stretch": 0,
-      "wall_time_budget_s": 900,
-      "min_frames_ok_alignment": 65,
-      "preserve_bit_identical": true
-    },
-    {
-      "name": "sweep_mtf",
-      "type": "stretch_sweep",
-      "stretch": "MTF",
-      "filter_class_expected": "BROADBAND_L",
-      "light_dir": "/mnt/qnap/astro_data/NGC7635/L/Lights",
-      "flat_dir": "",
-      "primary_stretch": 3,
-      "finishing_stretch": 0,
-      "wall_time_budget_s": 900,
-      "min_frames_ok_alignment": 65,
-      "preserve_bit_identical": true
-    },
-    {
-      "name": "sweep_arcsinh",
-      "type": "stretch_sweep",
-      "stretch": "ArcSinh",
-      "filter_class_expected": "BROADBAND_L",
-      "light_dir": "/mnt/qnap/astro_data/NGC7635/L/Lights",
-      "flat_dir": "",
-      "primary_stretch": 4,
-      "finishing_stretch": 0,
-      "wall_time_budget_s": 900,
-      "min_frames_ok_alignment": 65,
-      "preserve_bit_identical": true
-    },
-    {
-      "name": "mono_lrgb_ngc7635_v5",
-      "filter_class_expected": "BROADBAND_L",
+      "name": "lrgb_mono_ngc7635",
+      "filter_class_expected": "LRGB-mono",
       "light_dir": "/mnt/qnap/astro_data/NGC7635/L/Lights",
       "flat_dir": "",
       "primary_stretch": 0,
       "primary_stretch_label": "Auto",
       "finishing_stretch": 0,
-      "wall_time_budget_s": 900,
+      "finishing_stretch_label": "None",
+      "wall_time_budget_s": 3600,
       "min_frames_ok_alignment": 65,
-      "rebaseline_v5": true
+      "dropdown_sweep": [
+        {
+          "primary_stretch": 2,
+          "label": "GHS"
+        },
+        {
+          "primary_stretch": 3,
+          "label": "MTF"
+        },
+        {
+          "primary_stretch": 4,
+          "label": "ArcSinh"
+        }
+      ],
+      "golden_frozen": true,
+      "golden_note": "Re-cut 2026-09-10 for v5.0.6.0: the default estimator is Huber. ONE cause, attributed: `noise` (the predicted map, which the estimator does not touch) is bit-identical to the v5.0.5.3 golden (dd20195b); moved: stacked f70287cf->c6ebc044, stretched 4e179f5f->1e25c53b, composed 3bc83f61->3eece7ba and every sweep. Hashes come from the A/B run on the v5.0.5.3 binary with estimator=Huber; the v5.0.6.0 proof run must reproduce them. || Previous note: Re-cut 2026-09-10 for v5.0.5.3. Identical to the v5.0.5.2 golden: stacked, noise, stretched, composed, sweep.GHS, sweep.MTF, sweep.ArcSinh. Nothing moved. || Previous note: Re-cut 2026-09-10 for v5.0.5.1's corrected tilt fit (darkest-sample seed, kept-only scatter, sampled inside the full-coverage rectangle, corner-to-corner amplitude). ONE attributed cause: `noise` -- the PREDICTED map, which the fit cannot touch -- is bit-identical to the 06a6b41 golden (dd20195b), and stacked 43ef3bbf->f70287cf, stretched 46fb2161->4e179f5f, composed 1cba7236->3bc83f61 plus every sweep moved with the plane the fit removes. The earlier 06a6b41 notes hold for the 5.0.4.1->5.0.5.0 step. Console (lag-8 noise estimator, see 4e7de6c): tilt 1.282e-03 corner to corner (dx +9.269e-05, dy +1.190e-03); Noise check measured 2.831e-04 predicted 2.281e-04 ratio 1.24x. Do not re-cut without the same kind of controlled attribution. || Previous note: Frozen floor re-cut 2026-09-10 for v5.0.5.1 (pixels identical to v5.0.5.0, which shipped WITHOUT this re-cut). TWO attributed causes. (1) v5.0.5.0's sky-tilt removal moved stacked fe52757a->43ef3bbf, stretched 9a1051f4->46fb2161, composed 7b1b49e6->1cba7236 and all three sweeps (GHS cf23fb5c->ead81689, MTF 8be5f2d8->573009f3, ArcSinh d93f9aa7->09722d4b); with the tilt OFF all seven came back bit-identical to the v5.0.4.1 golden, so nothing else since v5.0.4.1 touched a pixel of them. (2) v5.0.4.3's robust across-frame fallback noise scale (kernel 2 MAD instead of Welford -- the path every corpus here takes, because none carries RDNOISE) moved noise dcf69a6e->dd20195b, identically with the tilt on or off. Console: tilt 1.334e-03 across the frame (dx +3.330e-04, dy +1.292e-03), identical across five runs today; Noise check measured 2.370e-04 predicted 2.281e-04 ratio 1.06x with the tilt on or off, as a neighbour-difference estimator must be blind to a plane. Attribution method: the same build run twice, once with removeSkyGradient=false via instance_overrides, compared against the v5.0.4.1 goldens. Every hash that came back bit-identical with the tilt off was moved by the tilt ALONE; the one that moved either way was moved by something tilt-independent. History: 2026-09-08 re-cut for v5.0.4.1 (only `stretched` moved: auto-stretch sky level 0.25->0.12, measured to raise saturation 1.34x-1.72x and clip nothing); v5.0.4.0 per-frame normalisation moved everything. Do not re-cut this floor without the same kind of controlled attribution."
     },
     {
-      "name": "bayer_rgb_ngc7635_v5",
+      "name": "bayer_rgb_m27_2023",
       "filter_class_expected": "BROADBAND_OSC",
-      "light_dir": "/mnt/qnap/astro_data/NGC7635/OSC/Lights",
+      "light_dir": "/mnt/qnap/astro_data/4_12_2023/M27",
       "flat_dir": "",
       "primary_stretch": 0,
+      "primary_stretch_label": "Auto",
       "finishing_stretch": 0,
-      "wall_time_budget_s": 900,
+      "finishing_stretch_label": "None",
+      "wall_time_budget_s": 10800,
       "min_frames_ok_alignment": 30,
-      "rebaseline_v5": true,
-      "skip": true,
-      "skip_reason": "no NGC7635 OSC/Bayer-RGB corpus on this machine — /mnt/qnap/astro_data/NGC7635/OSC/Lights does not exist. The NGC7635 corpus captured here is filter-wheel LRGB only (L/R/G/B/Ha dirs), not one-shot-color."
+      "min_bright_saturation": 0.1,
+      "min_bright_saturation_note": "measured 0.121 on v5.0.5.0",
+      "golden_note": "Re-cut 2026-09-10 for v5.0.6.0: the default estimator is Huber. ONE cause, attributed: `noise` (the predicted map, which the estimator does not touch) is bit-identical to the v5.0.5.3 golden (c5d71a29); moved: stacked 5660208d->34d20220, stretched 194701ee->80f25a66, composed 0040d1df->f4d1e807. Hashes come from the A/B run on the v5.0.5.3 binary with estimator=Huber; the v5.0.6.0 proof run must reproduce them. || Previous note: Re-cut 2026-09-10 for v5.0.5.3. Identical to the v5.0.5.2 golden: stacked, noise. Moved: stretched d6a83212->194701ee, composed 36d2520c->0040d1df. composed and stretched moved because the synthesized L plane now takes the rec709 combination of the R, G, B sky tilts (its own fit before), and the composer reads that plane as luminance; the hashed stacked window is R, G, B only and is identical, as is the predicted noise. || Previous note: Re-cut 2026-09-10 for v5.0.5.1's corrected tilt fit (darkest-sample seed, kept-only scatter, sampled inside the full-coverage rectangle, corner-to-corner amplitude). ONE attributed cause: `noise` -- the PREDICTED map, which the fit cannot touch -- is bit-identical to the 06a6b41 golden (c5d71a29), and stacked 7b490825->5660208d, stretched a67311b6->d6a83212, composed 2826191b->36d2520c moved with the plane the fit removes. The earlier 06a6b41 notes hold for the 5.0.4.1->5.0.5.0 step. Console (lag-8 noise estimator, see 4e7de6c): tilt 4.294e-04 corner to corner (dx -3.003e-04, dy +1.291e-04); Noise check measured 7.779e-05 predicted 2.974e-05 ratio 2.62x. Do not re-cut without the same kind of controlled attribution. || Previous note: Re-cut 2026-09-10 for v5.0.5.1 (pixels identical to v5.0.5.0). Tilt removal moved stacked d4773f6b->7b490825, stretched c5bfaa34->a67311b6, composed 26db4fa5->2826191b (all three back to the golden with the tilt off); v5.0.4.3's robust fallback noise scale moved noise c25efa8e->c5d71a29 either way. Noise check on the fixed console: measured 3.732e-05 predicted 2.974e-05 ratio 1.28x -- the three numbers now reconcile. Attribution method: the same build run twice, once with removeSkyGradient=false via instance_overrides, compared against the v5.0.4.1 goldens. Every hash that came back bit-identical with the tilt off was moved by the tilt ALONE; the one that moved either way was moved by something tilt-independent."
     },
     {
-      "name": "bayer_nb_hao3_m27",
+      "name": "bayer_nb_hao3_m16",
       "filter_class_expected": "DUAL_NB_OSC",
-      "light_dir": "/mnt/qnap/astro_data/M27/HaO3/Lights",
+      "light_dir": "/home/scarter4work/projects/processing/M16",
+      "light_glob": "*HaO3*.fit",
+      "max_frames": 12,
       "flat_dir": "",
       "primary_stretch": 0,
+      "primary_stretch_label": "Auto",
       "finishing_stretch": 0,
-      "wall_time_budget_s": 900,
-      "min_frames_ok_alignment": 20,
-      "rebaseline_v5": true,
-      "visual_bar": "no green cast; calibrated red+cyan distribution",
-      "skip": true,
-      "skip_reason": "no HaO3 dual-NB OSC corpus — /mnt/qnap/astro_data/M27/HaO3/Lights does not exist. The M27 corpus captured here is LRGB-mono (single Light/ dir mixing L/R/G/B filter-wheel frames), not dual-narrowband OSC — this is the motivating case for a future capture session, not for this run."
+      "finishing_stretch_label": "None",
+      "wall_time_budget_s": 7200,
+      "min_frames_ok_alignment": 12,
+      "visual_bar": "no green cast in the nebula; Ha red, OIII teal; NUKEX_QE_CONFIDENCE = database",
+      "min_bright_saturation": 0.25,
+      "min_bright_saturation_note": "2026-09-04 produced 0.085; v5.0.3.2 to v5.0.5.1 produced 0.011-0.015 (FAILED BY DESIGN at floor 0.07); v5.0.5.2's emission-line stretch route measured 0.322, floor ratcheted to 0.25",
+      "golden_note": "Re-cut 2026-09-10 for v5.0.6.1: the chroma gate is a detection threshold (+3 to +6 sigma) judged on the 7x7-smoothed signed emission total with sky = clipped median and noise from lag-16 differences. Moved: stretched d6db8469->4ec89cee, composed 7ada6747->9f7f0759; everything else bit-identical to the v5.0.6.0 golden. || Previous note: Re-cut 2026-09-10 for v5.0.6.1: the chroma gate is a detection threshold (+3 to +6 sigma). Moved: stretched 4d13157b->d6db8469, composed 590a511d->7ada6747; everything else bit-identical to the v5.0.6.0 golden. || Previous note: Re-cut 2026-09-10 for v5.0.6.0: the default estimator is Huber. ONE cause, attributed: `noise` (the predicted map, which the estimator does not touch) is bit-identical to the v5.0.5.3 golden (ae14d804); moved: stacked dfc1f5c6->d9ef720d, stretched ffaea6fb->4d13157b, composed 7c7c1ea1->590a511d, Ha b897741d->4abb332d, OIII 66c62c63->79de0311. Hashes come from the A/B run on the v5.0.5.3 binary with estimator=Huber; the v5.0.6.0 proof run must reproduce them. || Previous note: Re-cut 2026-09-10 for v5.0.5.3. Identical to the v5.0.5.2 golden: stacked, noise. Moved: stretched 9a42ea0b->ffaea6fb, composed 2aaa955d->7c7c1ea1. stretched and composed moved because hue is now the ratio of SKY-SUBTRACTED line fluxes (Ha sky 0.0247, OIII 0.0229 subtracted; nebula 87% Ha) and the palette is Ha (+50,+25) OIII (-32,-8); stacked and predicted noise identical. Ha and OIII plane hashes recorded for the first time. New keys: Ha, OIII. || Previous note: Re-cut 2026-09-10 for v5.0.5.2: ONLY `stretched` moved (44532f00->9a42ea0b), the emission-line stretch route (luminance stretched alone, colour composed at the stretched L*); stacked, noise and composed are bit-identical to the v5.0.5.1 golden. Colour floor now PASSES at 0.322. || Previous note: Re-cut 2026-09-10 for v5.0.5.1's corrected tilt fit (darkest-sample seed, kept-only scatter, sampled inside the full-coverage rectangle, corner-to-corner amplitude). ONE attributed cause: `noise` -- the PREDICTED map, which the fit cannot touch -- is bit-identical to the 06a6b41 golden (ae14d804), and stacked 489d544c->dfc1f5c6, stretched de070085->44532f00, composed 0fccc4c1->2aaa955d moved with the plane the fit removes. The earlier 06a6b41 notes hold for the 5.0.4.1->5.0.5.0 step. Console (lag-8 noise estimator, see 4e7de6c): tilt 5.366e-05 corner to corner (dx -3.758e-05, dy -1.609e-05); Noise check measured 2.214e-05 predicted 1.486e-05 ratio 1.49x. Do not re-cut without the same kind of controlled attribution. || Previous note: Re-cut 2026-09-10 for v5.0.5.1 (pixels identical to v5.0.5.0). NOTE this case FAILS BY DESIGN on min_bright_saturation (0.0105 vs floor 0.07) and the golden is therefore not compared until the dual-narrowband colour regression is fixed; it is recorded so that fix's diff shows exactly what moved. Tilt removal moved stacked bb3a3e85->489d544c, stretched 893ed6a2->de070085, composed 1d84c5b5->0fccc4c1 (all back to the golden with the tilt off); v5.0.4.3's robust fallback noise scale moved noise da5e64e2->ae14d804 either way. Attribution method: the same build run twice, once with removeSkyGradient=false via instance_overrides, compared against the v5.0.4.1 goldens. Every hash that came back bit-identical with the tilt off was moved by the tilt ALONE; the one that moved either way was moved by something tilt-independent."
     },
     {
-      "name": "bayer_nb_s2o3_target",
-      "filter_class_expected": "DUAL_NB_OSC",
-      "light_dir": "/mnt/qnap/astro_data/SH2-101/S2O3/Lights",
+      "name": "mono_lrgb_m27_2025",
+      "filter_class_expected": "BROADBAND_L + BROADBAND_RGB",
+      "light_dir": "/mnt/qnap/astro_data/9_1_2025/M27",
       "flat_dir": "",
       "primary_stretch": 0,
+      "primary_stretch_label": "Auto",
       "finishing_stretch": 0,
-      "wall_time_budget_s": 900,
-      "min_frames_ok_alignment": 20,
-      "rebaseline_v5": true,
-      "skip": true,
-      "skip_reason": "no S2O3 dual-NB corpus — /mnt/qnap/astro_data/SH2-101/S2O3/Lights does not exist; SH2-101 has not been captured on this machine at all."
+      "finishing_stretch_label": "None",
+      "wall_time_budget_s": 3600,
+      "min_frames_ok_alignment": 66,
+      "alignment_note": "66 of 72 measured 2026-09-10 (v5.0.6.2). The six failures detect 4-67 stars where the rest find 200: cloud or wind, correctly rejected. || 51 of 72 measured 2026-09-04. The 21 failures are the two temporal ends of a 7-hour session: chronological frames 0-19 and 66-71. Failure rate rises monotonically with distance from the reference (0-15 frames away: 31 ok / 0 failed; 32-39 away: 0 ok / 9 failed), and the reference is already the temporal midpoint, so this is cumulative tracking drift the single-reference matcher cannot bridge -- not filter, and not reference selection, which took this case from 1 of 72 to 51 of 72. Raise this floor when chained alignment lands.",
+      "skip": false,
+      "skip_reason": "",
+      "note": "Re-enabled 2026-09-05. Phase B now carries a per-channel frame set: CacheSig gained a routing key so each mono filter gets its own cache, ShadowBuffers::n_frames is per channel, and global_frame_of maps each channel's local slot to the batch-global frame its FrameStats belong to. The golden for this case has never existed -- the previous one was deleted because it recorded three empty channels -- so it is generated fresh in this re-baseline.",
+      "min_bright_saturation": 0.06,
+      "min_bright_saturation_note": "measured 0.071 on v5.0.5.0",
+      "golden_note": "Re-cut 2026-09-10 for v5.0.6.2: chained alignment tries anchors nearest in DATE-OBS time. The session's first exposure (frame 48 in listing order, 200 stars, 0 inliers before) now aligns through its temporal neighbours: failed alignment 7 -> 6, the six left detecting 4-67 stars (cloud/wind). The rescued frame is an L frame, so only the L slot changed: the hashed stacked and noise windows carry R, G, B and are identical, while the composer reads L, moving: stretched 4e9e245d->0cf7ee00, composed 00aa5fc0->a14fccb3. The other three corpora are bit-identical (every frame aligned directly). || Previous note: Re-cut 2026-09-10 for v5.0.6.0: the default estimator is Huber. ONE cause, attributed: `noise` (the predicted map, which the estimator does not touch) is bit-identical to the v5.0.5.3 golden (c47abf7b); moved: stacked 978f17cd->ad3d19ec, stretched 282acd24->4e9e245d, composed 3e56485f->00aa5fc0. Hashes come from the A/B run on the v5.0.5.3 binary with estimator=Huber; the v5.0.6.0 proof run must reproduce them. || Previous note: Re-cut 2026-09-10 for v5.0.5.3. Identical to the v5.0.5.2 golden: stacked, noise, stretched, composed. Nothing moved. || Previous note: Re-cut 2026-09-10 for v5.0.5.1's corrected tilt fit (darkest-sample seed, kept-only scatter, sampled inside the full-coverage rectangle, corner-to-corner amplitude). ONE attributed cause: `noise` -- the PREDICTED map, which the fit cannot touch -- is bit-identical to the 06a6b41 golden (c47abf7b), and stacked 87b53af8->978f17cd, stretched 3c22c739->282acd24, composed 7f8a87b5->3e56485f moved with the plane the fit removes. The earlier 06a6b41 notes hold for the 5.0.4.1->5.0.5.0 step. Console (lag-8 noise estimator, see 4e7de6c): tilt 7.943e-04 corner to corner (dx +3.843e-04, dy +4.100e-04); Noise check measured 4.131e-04 predicted 2.567e-04 ratio 1.61x. Do not re-cut without the same kind of controlled attribution. || Previous note: Re-cut 2026-09-10 for v5.0.5.1 (pixels identical to v5.0.5.0). Tilt removal moved stacked c13304cf->87b53af8, stretched 29decca4->3c22c739, composed 790648fb->7f8a87b5 (all back to the golden with the tilt off); v5.0.4.3's robust fallback noise scale moved noise 00fca590->c47abf7b either way. Noise check: measured 3.512e-04 predicted 2.567e-04 ratio 1.39x. Attribution method: the same build run twice, once with removeSkyGradient=false via instance_overrides, compared against the v5.0.4.1 goldens. Every hash that came back bit-identical with the tilt off was moved by the tilt ALONE; the one that moved either way was moved by something tilt-independent."
     },
     {
-      "name": "lrgbsho_target",
-      "filter_class_expected": "MIXED",
-      "light_dir": "/mnt/qnap/astro_data/M27/LRGBSHO/Lights",
-      "flat_dir": "",
-      "primary_stretch": 0,
-      "finishing_stretch": 0,
-      "wall_time_budget_s": 900,
-      "min_frames_ok_alignment": 50,
-      "rebaseline_v5": true,
+      "name": "bayer_nb_s2o3_placeholder",
       "skip": true,
-      "skip_reason": "no mixed LRGB+HaO3 corpus — /mnt/qnap/astro_data/M27/LRGBSHO/Lights does not exist. M27 corpus captured here is LRGB-mono only (no narrowband channels), so there is nothing to combine with L/R/G/B."
+      "skip_reason": "no S2O3 corpus on this machine"
+    },
+    {
+      "name": "lrgbsho_placeholder",
+      "skip": true,
+      "skip_reason": "no mixed L+R+G+B+HaO3 corpus on this machine"
     }
   ],
   "phaseB_baseline_file": "phaseB_baseline_ms.txt",
   "phaseB_speedup_min": 1.5,
-  "output_root": "/tmp/nukex_e2e",
-  "golden_dir": "test/fixtures/golden"
+  "output_root": "/home/scarter4work/.cache/nukex_e2e",
+  "golden_dir": "test/fixtures/golden",
+  "cache_dir": "/home/scarter4work/.cache/nukex_e2e_frames",
+  "budget_note": "wall_time_budget_s is a hang detector, not a speed limit: set well clear of measured times so a slow-but-correct run passes and only a stuck one fails."
 }

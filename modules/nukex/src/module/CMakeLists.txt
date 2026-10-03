@@ -17,8 +17,10 @@ set(MODULE_SOURCES
     NukeXInterface.cpp
     NukeXParameters.cpp
     NukeXProgress.cpp
+    NukeXConsoleText.cpp
+    QEFetcher.cpp
     RatingDialog.cpp
-    fits_metadata.cpp
+    FilterDialog.cpp
     stretch_auto_selector.cpp
     stretch_factory.cpp
 )
@@ -51,11 +53,6 @@ target_compile_options(NukeX-pxm PRIVATE
     -fvisibility=hidden
     -fvisibility-inlines-hidden
 )
-
-# cfitsio: fits_metadata.cpp in the module uses fitsio.h directly.
-# cfitsio is vendored via FetchContent in src/lib/io — link the target here
-# so the module also gets the include path and the static archive.
-target_link_libraries(NukeX-pxm PRIVATE cfitsio)
 
 # Link NukeX v4 libraries
 target_link_libraries(NukeX-pxm PRIVATE

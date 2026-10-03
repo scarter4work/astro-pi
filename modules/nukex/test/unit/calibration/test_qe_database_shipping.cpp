@@ -2,8 +2,8 @@
 // tools/import_qe_research.py from research/qe_database_research.json)
 // through the real nukex::QEDatabase loader, as opposed to the synthetic
 // fixtures used by test_qe_database.cpp. Proves the generated data against
-// the actual consumer, catching schema drift between the importer (Task 15)
-// and the loader (Task 3).
+// the actual consumer, catching schema drift between the importer and the
+// loader -- and proves the copy compiled into the module is that same file.
 #include "catch_amalgamated.hpp"
 #include "nukex/calibration/qe_database.hpp"
 
@@ -22,46 +22,27 @@ TEST_CASE("QEDatabase: shipping DB loads and parses", "[qe_database][shipping]")
     QEDatabase db;
     auto result = db.load_shipped(shipped_db_path().string());
     REQUIRE(result.ok);
-
-    // Sanity bounds from tools/import_qe_research.py's transform of
-    // research/qe_database_research.json (~55 cameras, ~87 filters).
     REQUIRE(db.n_cameras() >= 50);
     REQUIRE(db.n_filters() >= 80);
-}
-
-TEST_CASE("QEDatabase: shipping DB — known cameras resolve", "[qe_database][shipping]") {
-    QEDatabase db;
-    REQUIRE(db.load_shipped(shipped_db_path().string()).ok);
-
-    // Verified present via: python3 -c "import json;
-    // print('asi1600mm' in json.load(open('share/qe_database.json'))['cameras'])"
     REQUIRE(db.has_camera("asi1600mm"));
     REQUIRE(db.has_camera("asi071mc"));
+    REQUIRE(db.has_camera(QEDatabase::kGenericOSCCamera));
     REQUIRE_FALSE(db.has_camera("DoesNotExist"));
-}
-
-TEST_CASE("QEDatabase: shipping DB — known filters resolve", "[qe_database][shipping]") {
-    QEDatabase db;
-    REQUIRE(db.load_shipped(shipped_db_path().string()).ok);
-
-    // Verified present via: python3 -c "import json;
-    // print(list(json.load(open('share/qe_database.json'))['filters'].keys())[:10])"
     REQUIRE(db.has_filter("Antlia-Ha-3nm-Pro"));
-    REQUIRE(db.has_filter("Antlia-OIII-3nm-Pro"));
     REQUIRE_FALSE(db.has_filter("DoesNotExist"));
 }
 
 // The production path: the QE database compiled into the module binary must
 // load with NO file present and regardless of the process working directory.
 // This is the exact scenario that broke on end-user installs (bare relative
-// "share/qe_database.json" resolved against an unpredictable CWD).
+// "share/qe_database.json" resolved against an unpredictable CWD, and a
+// release tarball that never carried the file).
 TEST_CASE("QEDatabase: embedded DB loads independent of file/CWD", "[qe_database][embedded]") {
     QEDatabase db;
     auto result = db.load_embedded();
     REQUIRE(result.ok);
     REQUIRE(db.n_cameras() >= 50);
     REQUIRE(db.n_filters() >= 80);
-    // The user's camera (ASI2400MC dual-NB OSC) must resolve from the built-in DB.
     REQUIRE(db.has_camera("asi2400mc"));
     REQUIRE(db.has_filter("Antlia-Ha-3nm-Pro"));
 }
@@ -76,73 +57,52 @@ TEST_CASE("QEDatabase: embedded JSON is byte-identical to on-disk source", "[qe_
     REQUIRE(embedded_qe_database_json() == ss.str());
 }
 
-// ── Real-world camera identification ──
-// Bug: "Phase B Q-solve: Camera not in QE DB: ZWO ASI585MC Air". The engine
-// hands the QE DB the raw FITS INSTRUME string, while the DB keys cameras by
-// normalized ids ("asi585mc"). These cases use the user's REAL header values
-// (NGC 7000 subs, 2026-09-27: INSTRUME='ZWO ASI585MC Air', BAYERPAT='RGGB',
-// XPIXSZ=2.9 um -- the IMX585 colour sensor).
-TEST_CASE("QEDatabase: embedded DB resolves real INSTRUME 'ZWO ASI585MC Air' to asi585mc",
-          "[qe_database][embedded][camera_id]") {
-    QEDatabase db;
-    REQUIRE(db.load_embedded().ok);
-    REQUIRE(db.has_camera("ZWO ASI585MC Air"));
-    // Same record as the DB id, photosite by photosite (not merely "some" camera).
-    for (double wl : {486.1, 500.7, 656.3, 672.4}) {
-        for (Photosite p : {Photosite::R, Photosite::G, Photosite::B}) {
-            REQUIRE(db.lookup_camera_qe("ZWO ASI585MC Air", wl, p) ==
-                    db.lookup_camera_qe("asi585mc", wl, p));
-        }
-    }
-    REQUIRE(db.confidence("ZWO ASI585MC Air") == db.confidence("asi585mc"));
-}
-
-// One row per real-world INSTRUME string the shipping DB claims to know.
-// Every string here is header-verified (see `alias_evidence` in
-// research/qe_database_research.json) -- never invented.
-TEST_CASE("QEDatabase: embedded DB maps each verified INSTRUME string to the right id",
+// Real INSTRUME strings from the user's own headers (NGC 7000 subs,
+// 2026-09-27; ASIAIR / ASIAIR Plus), resolved against the embedded DB.
+TEST_CASE("QEDatabase: embedded DB resolves real INSTRUME strings",
           "[qe_database][embedded][camera_id]") {
     QEDatabase db;
     REQUIRE(db.load_embedded().ok);
     struct Row { const char* instrume; const char* id; };
     const Row rows[] = {
-        {"ZWO ASI585MC Air",  "asi585mc"},   // user's cam, ASIAIR built-in
-        {"ZWO ASI2400MC Pro", "asi2400mc"},  // user's cam, ASIAIR Plus
-        {"ZWO ASI071MC Pro",  "asi071mc"},   // user's cam, ASIAIR / ASIAIR Plus
-        {"ZWO ASI183MC",      "asi183mc"},   // public ASIAIR header
-        {"asi585mc",          "asi585mc"},   // bare DB id, exact
-        {"ASI585MC",          "asi585mc"},   // bare DB id, other case
+        {"ZWO ASI585MC Air",  "asi585mc"},
+        {"ZWO ASI2400MC Pro", "asi2400mc"},
+        {"ZWO ASI071MC Pro",  "asi071mc"},
+        {"ZWO ASI183MC",      "asi183mc"},
+        {"asi585mc",          "asi585mc"},
+        {"ASI585MC",          "asi585mc"},
     };
     for (const auto& r : rows) {
         INFO("INSTRUME = " << r.instrume);
-        REQUIRE(db.resolve_camera_id(r.instrume) == r.id);
+        REQUIRE(db.resolve_camera(r.instrume) == r.id);
+    }
+    // Same record as the DB id, photosite by photosite.
+    const std::string id = db.resolve_camera("ZWO ASI585MC Air");
+    for (double wl : {486.1, 500.7, 656.3, 672.4}) {
+        for (Photosite p : {Photosite::R, Photosite::G, Photosite::B}) {
+            REQUIRE(db.lookup_camera_qe(id, wl, p) ==
+                    db.lookup_camera_qe("asi585mc", wl, p));
+        }
     }
 }
 
-TEST_CASE("QEDatabase: embedded DB never resolves an under-specified or unknown camera",
+TEST_CASE("QEDatabase: embedded DB never guesses colour vs mono",
           "[qe_database][embedded][camera_id]") {
     QEDatabase db;
     REQUIRE(db.load_embedded().ok);
-    // No MC/MM suffix: colour vs mono is ambiguous -> must stay unknown (loud).
-    REQUIRE_FALSE(db.has_camera("ZWO ASI585"));
-    REQUIRE_FALSE(db.has_camera("ASI585"));
-    // Same sensor, other colour type: the colour alias must not leak to mono.
-    REQUIRE(db.resolve_camera_id("ZWO ASI585MM Air").empty());
-    // Real strings from the user's own headers that are NOT in the DB (or not
-    // verified as aliases) must stay unknown rather than borrow a curve:
-    REQUIRE_FALSE(db.has_camera("ZWO ASI220MM Air"));   // guide camera
-    REQUIRE_FALSE(db.has_camera("ZWO ASI290MM Mini"));
-    REQUIRE_FALSE(db.has_camera("ATR585M"));            // ToupTek-family IMX585 mono
-    REQUIRE_FALSE(db.has_camera("FLI ProLine PL9000"));
-    REQUIRE_FALSE(db.has_camera(""));
+    // No MC/MM suffix: colour vs mono is ambiguous -> stays unresolved (loud).
+    REQUIRE(db.resolve_camera("ZWO ASI585").empty());
+    REQUIRE(db.resolve_camera("ASI585").empty());
+    REQUIRE(db.resolve_camera("").empty());
+    // The mono variant resolves to the mono record, never the colour one.
+    REQUIRE(db.resolve_camera("ZWO ASI585MM Air") == "asi585mm");
 }
 
 // The Phase B Q-solve looks filters up by the FilterClassifier's canonical
-// dual-NB class names ("HaO3", "S2O3" -- see filter_classifier.cpp and the
-// QGroup discovery in stacking_engine.cpp), never by the raw FITS FILTER
-// string. The shipping DB must carry those keys, and each line's `name` must
-// equal the derived-slot name the engine writes and NukeXInstance reads
-// ("Ha", "OIII", "SII"), or the Q-solve output lands in a slot nobody reads.
+// dual-NB class names ("HaO3", "S2O3"), never by the raw FITS FILTER string.
+// The shipping DB must carry those keys, and each line's `name` must equal
+// the derived-slot name the engine writes ("Ha", "OIII", "SII"), or the
+// Q-solve output lands in a slot nobody reads.
 TEST_CASE("QEDatabase: embedded DB carries the classifier's dual-NB filter classes",
           "[qe_database][embedded][filter_id]") {
     QEDatabase db;

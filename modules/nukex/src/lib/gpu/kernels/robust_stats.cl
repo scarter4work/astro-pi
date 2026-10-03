@@ -1,4 +1,4 @@
-// ── NukeX v5: Kernel 2 — Robust Statistics ──────────────────────
+// ── NukeX v4: Kernel 2 — Robust Statistics ──────────────────────
 // One work-item per (voxel, channel) pair.
 // Global size = batch_size * n_channels.
 //
@@ -10,8 +10,8 @@
 
 __kernel void robust_stats(
     __global const float*   pixel_values,       // [C * N * B]
-    __global const ushort*  n_frames_in,        // [B] — per-voxel union count (unused; kept for arg parity)
-    __global const ushort*  channel_n_frames,   // [C] — per-channel real-sample count
+    __global const ushort*  n_frames_in,        // [C * B]
+    __global const uchar*   pixel_valid,        // [C * N * B] bits
     int n_channels,
     int max_frames,
     int batch_size,
@@ -28,22 +28,30 @@ __kernel void robust_stats(
     int ch = gid / B;
     if (ch >= C || vi >= B) return;
 
-    // Per-channel real-sample count (was the shared per-voxel scalar).
-    int nf_ch = (int)channel_n_frames[ch];
-    if (nf_ch < 2) {
+    // Per-channel: a slot reading its own cache has its own count.
+    int nf = (int)n_frames_in[ch * B + vi];
+    if (nf < 2) {
         mad_out[ch * B + vi] = 0.0f;
         biweight_midvar_out[ch * B + vi] = 0.0f;
         iqr_out[ch * B + vi] = 0.0f;
         return;
     }
 
-    int n = min(nf_ch, GPU_MAX_FRAMES);
-
-    // Load values into private memory
+    // Load only the COVERED values: an uncovered sample would drag the
+    // median and the MAD toward zero exactly at the frame edges.
     float vals[GPU_MAX_FRAMES];
     float sorted[GPU_MAX_FRAMES];
-    for (int fi = 0; fi < n; fi++)
-        vals[fi] = pixel_values[ch * N * B + fi * B + vi];
+    int navail = min(nf, GPU_MAX_FRAMES);
+    int n = 0;
+    for (int fi = 0; fi < navail; fi++)
+        if (sample_is_valid(pixel_valid, ch, fi, vi, N, B))
+            vals[n++] = pixel_values[ch * N * B + fi * B + vi];
+    if (n < 2) {
+        mad_out[ch * B + vi] = 0.0f;
+        biweight_midvar_out[ch * B + vi] = 0.0f;
+        iqr_out[ch * B + vi] = 0.0f;
+        return;
+    }
 
     // ── MAD ──
     for (int i = 0; i < n; i++) sorted[i] = vals[i];

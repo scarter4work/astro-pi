@@ -238,6 +238,49 @@ TEST_CASE("StarDetector: real FITS file", "[star_detector][integration]") {
     }
 }
 
+// --- green as the detection channel -------------------------------------
+
+TEST_CASE("default_reference_channel: green for colour, channel 0 for mono",
+          "[star_detector]") {
+    REQUIRE(nukex::default_reference_channel(1) == 0);
+    REQUIRE(nukex::default_reference_channel(2) == 0);
+    REQUIRE(nukex::default_reference_channel(3) == 1);
+    REQUIRE(nukex::default_reference_channel(4) == 1);
+}
+
+TEST_CASE("StarDetector detects on green, not on channel 0",
+          "[star_detector]") {
+    // Red carries one star, green carries three. Detecting on channel 0 finds
+    // one; detecting on green finds three. This is the whole point: on an OSC
+    // frame channel 0 is red, and red is the channel we least want to trust.
+    nukex::Image img(120, 120, 3);
+    img.fill(0.01f);
+
+    auto blob = [&](int ch, float cx, float cy) {
+        for (int dy = -4; dy <= 4; dy++)
+            for (int dx = -4; dx <= 4; dx++) {
+                float r2 = float(dx * dx + dy * dy);
+                img.at(int(cx) + dx, int(cy) + dy, ch) += 0.6f * std::exp(-r2 / 3.0f);
+            }
+    };
+
+    blob(0, 30, 30);                 // red: one star
+    blob(1, 30, 30);
+    blob(1, 70, 40);                 // green: three stars
+    blob(1, 50, 85);
+
+    nukex::StarDetector::Config cfg;
+    cfg.snr_multiplier = 3.0f;
+
+    auto cat = nukex::StarDetector::detect(img, cfg);
+    REQUIRE(cat.size() == 3);
+
+    // And the channel is overridable, which is how the ladder tests in
+    // Task 3 pin a specific plane.
+    cfg.channel = 0;
+    REQUIRE(nukex::StarDetector::detect(img, cfg).size() == 1);
+}
+
 TEST_CASE("HomographyMatrix: identity", "[homography]") {
     auto H = HomographyMatrix::identity();
     REQUIRE(H.is_identity());

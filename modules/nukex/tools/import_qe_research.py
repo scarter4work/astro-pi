@@ -1,407 +1,291 @@
 #!/usr/bin/env python3
+"""Transform research/qe_database_research.json -> share/qe_database.json.
+
+The research file is keyed the way a researcher thinks: product filter names
+with `passes`, cameras that inherit QE from a `sensors` block, Gr/Gb/mono_pk
+photosites. The engine is keyed the way FilterClassifier + QEDatabase think:
+canonical filter names ("HaO3", "L-eXtreme", ...) with emission `lines`, one
+resolved QE block per camera with R/G/B (OSC) or mono_pk (mono) photosites.
+This script is the only bridge between the two. It is deterministic and
+refuses to write a database the engine cannot consume.
+
+Two research-data gaps are handled explicitly rather than silently: a mono
+sensor's peak QE is sometimes keyed "mono" instead of "mono_pk" (vocabulary
+drift, same quantity, aliased through); an OSC camera whose sensor was only
+ever researched as a flat panchromatic curve, with no Bayer-channel split at
+any wavelength, is excluded from the shipped file with a note rather than
+invented or shipped broken (spec 6.3's generic_sony_imx_osc fallback covers
+it at runtime, with a Process Console warning). A camera with a Bayer split
+at SOME wavelengths but not others is different — inconsistent data, not a
+missing measurement — and still fails loud.
+
+Usage: import_qe_research.py <research.json> <shipped.json>
 """
-Transform research/qe_database_research.json into the shipping
-share/qe_database.json consumed by the C++ loader
-(src/lib/calibration/src/qe_database.cpp).
-
-Responsibilities:
-  1. Read the research JSON.
-  2. Drop the `_meta` block (research-only metadata).
-  3. Resolve `qe_inherits_from_sensor: true` markers by copying the QE
-     block from the corresponding entry in the research `sensors` map,
-     then drop the marker (and the `sensors` map itself -- it is not
-     part of the shipping schema).
-  4. Normalise photosite keys inside each per-wavelength QE block so
-     they are EXACTLY the tokens accepted by the C++ loader's
-     `parse_photosite_key()` -- see PHOTOSITE KEY CONTRACT below.
-  5. Normalise filter `passes` (research schema) into `lines` (shipping
-     schema) -- see FILTER LINE CONTRACT below.
-  6. Validate the result against the shipping schema.
-  7. Write share/qe_database.json (schema_version 1, sorted, indented).
-
-This is a one-shot script (run by the dev when refreshing the shipped
-DB); it lives in tools/ so the transform is reproducible and testable,
-not because it runs in CI.
-
-PHOTOSITE KEY CONTRACT (source of truth: parse_photosite_key() in
-src/lib/calibration/src/qe_database.cpp):
-
-    "R"          -> Photosite::R
-    "G"          -> Photosite::G
-    "B"          -> Photosite::B
-    "Gr" / "Gb"  -> Photosite::G   (both map to the SAME enum value)
-    anything else -> Photosite::MONO_PEAK   (silent catch-all!)
-
-Two consequences that drive the normalisation below:
-
-  * nlohmann::json objects in this codebase use the default (sorted)
-    `json`, not `ordered_json`. If a wavelength entry has both "Gr"
-    and "Gb" keys, the loader's std::map<Photosite,double> insertion
-    order is alphabetical ("Gb" before "Gr"), so "Gb" is silently
-    overwritten by "Gr" and its value is lost. To avoid depending on
-    that iteration-order footgun, this script pre-averages Gr/Gb into
-    a single explicit "G" key (mean of the two) before shipping.
-
-  * Because *any* unrecognised key silently becomes MONO_PEAK, the
-    research data's two synonyms for the mono/no-CFA photosite --
-    "mono" and "mono_pk" -- are NOT passed through as free-form
-    strings. They are explicitly whitelisted and normalised to one
-    canonical token, `mono_pk`. Any OTHER key we don't recognise is a
-    hard error, not a silent MONO_PEAK fallback (a typo in the
-    research JSON must not silently masquerade as valid QE data in
-    the shipped DB).
-
-  Accepted input photosite keys: R, B, G, Gr, Gb, mono, mono_pk.
-  Emitted output photosite keys: R, B, G, mono_pk (only).
-
-FILTER LINE CONTRACT (source of truth: the `filters` block in
-src/lib/calibration/src/qe_database.cpp, and Task 3 fixtures):
-
-    filters.<name> = { "type": str, "lines": [ {"name": str,
-                        "wavelength_nm": float, "fwhm_nm": float} ] }
-
-The research JSON instead stores each filter's transmission peaks as
-`passes`: [{"center_nm": float, "fwhm_nm": float,
-"peak_transmission": float, ["passband_nm": ...]}]. This script maps
-`passes` -> `lines`, `center_nm` -> `wavelength_nm`, drops
-`peak_transmission` / `passband_nm` (not part of the shipping
-schema), and synthesises a human-readable `name` for each line: a
-small lookup table names the well-known narrowband astro lines
-(H-alpha, OIII, H-beta, SII) when the wavelength is within 0.3 nm of
-the canonical value, and everything else (broadband RGB/LPR/
-luminance passbands, and near-but-not-quite narrowband lines that
-this script declines to guess the identity of) falls back to a
-"<wavelength>nm" label.
-
-`name` is NOT documentation only: the Phase B Q-solve in
-src/lib/stacker/src/stacking_engine.cpp writes each solved line into the
-derived slot called `lines[j].name`, and NukeXInstance reads the slots
-"Ha", "OIII" and "SII". The filters the Q-solve actually looks up are the
-FilterClassifier's canonical classes ("HaO3", "S2O3"); those are carried
-in the research JSON with shipping-shape `lines` (passed through as-is)
-named to match the slots. Synthesised "Halpha" names on product entries
-would not be read by the module if a product entry were ever looked up.
-
-If a filter entry already uses the shipping `lines` key directly
-(e.g. in unit-test fixtures), it is passed through as-is.
-"""
-
 import argparse
 import json
+import statistics
 import sys
 
+SCHEMA_VERSION = 1
+GENERIC_OSC_KEY = "generic_sony_imx_osc"
+
+# Emission lines the engine solves for. Hb is intentionally absent from the
+# canonical Q-solve set: at 486 nm it lands on the same B/G photosites as
+# OIII (501 nm), so a Q matrix with both columns is rank-deficient on an
+# RGB sensor and ChannelDecomposer would throw SingularQError.
+LINES = {"Ha": 656.3, "OIII": 500.7, "SII": 672.4, "Hb": 486.1}
+Q_SOLVE_LINES = ("Ha", "OIII", "SII")
+LINE_TOL_NM = 4.0
+
+# Canonical dual-NB keys emitted by FilterClassifier::known_table(), by the
+# set of Q-solve lines their passes cover.
+# A quad-band filter such as Optolong's L-Quad Enhance passes Hb as well, but
+# Hb is not a Q-solve line, so what it contributes is the three-line set. That
+# set is exactly determined on an RGB sensor -- three unknowns from three
+# photosites -- and had no canonical name until 2026-09-04, which meant the
+# classifier could not reach it and the batch stopped at start even though the
+# QE data shipped.
+CANONICAL_DUAL = {
+    frozenset(("Ha", "OIII")):        "HaO3",
+    frozenset(("SII", "OIII")):       "S2O3",
+    frozenset(("Ha", "OIII", "SII")): "HaO3S2",
+}
+
+# Product entries that FilterClassifier maps to their own canonical name.
+PRODUCT_CANONICAL = {
+    "Optolong-LeXtreme-7nm":    "L-eXtreme",
+    "Optolong-LeNhance":        "L-eNhance",
+    "Optolong-LUltimate-3nm":   "L-Ultimate",
+    "Antlia-ALP-T-Ha-OIII-5nm": "ALP-T",
+}
+REQUIRED_CANONICAL = tuple(CANONICAL_DUAL.values()) + tuple(PRODUCT_CANONICAL.values()) + Q_SOLVE_LINES
+
+TYPE_MAP = {
+    "narrowband-single": "NARROWBAND",
+    "dual-narrowband": "DUAL_NB", "tri-narrowband": "DUAL_NB",
+    "quad-narrowband": "DUAL_NB", "narrowband-multi": "DUAL_NB",
+    "luminance": "BROADBAND", "broadband-RGB": "BROADBAND", "broadband-LPR": "BROADBAND",
+}
+BAYER_OK = {"RGGB", "BGGR", "GRBG", "GBRG"}
 REQUIRED_CAMERA_FIELDS = ("sensor", "type", "confidence")
 
-# Photosite keys the research JSON may use, and how each is handled.
-DIRECT_PHOTOSITE_KEYS = ("R", "B")          # passed through unchanged
-GREEN_SPLIT_KEYS = ("Gr", "Gb")             # averaged into a single "G"
-MONO_KEY_ALIASES = ("mono", "mono_pk")      # normalised to one canonical key
-CANONICAL_MONO_KEY = "mono_pk"
-KNOWN_PHOTOSITE_KEYS = frozenset(
-    ("G",) + DIRECT_PHOTOSITE_KEYS + GREEN_SPLIT_KEYS + MONO_KEY_ALIASES
-)
 
-# Well-known narrowband astro emission lines, used only to synthesise a
-# readable `name` for filter passbands. Tolerance is deliberately tight
-# (0.3 nm) so we never mislabel a filter that happens to sit nearby but
-# is not actually centred on the line (e.g. tri/quad-band NII-inclusive
-# passes near 657-658 nm are left as numeric labels rather than guessed).
-KNOWN_LINES_NM = {
-    486.1: "Hbeta",
-    500.7: "OIII",
-    656.3: "Halpha",
-    658.3: "NII",
-    672.4: "SII",
-}
-LINE_NAME_TOLERANCE_NM = 0.3
-
-# NII (658.3nm) sits only 1.7nm from Halpha (656.3nm), well inside two
-# filters' *combined* default tolerance windows. In particular the real
-# research data has "Optolong-LeXtreme-F2" -- a Halpha+OIII dual-narrowband
-# filter with its Halpha pass deliberately pre-shifted to 658.0nm for f/2
-# optics (see its `notes`) -- which is 0.3nm from the NII line under the
-# default tolerance and would otherwise be mislabelled "NII". Only the
-# genuine Astrodon NII filter (658.4nm, 0.1nm away) should match, so NII
-# gets its own tighter override instead of loosening the shared default.
-LINE_NAME_TOLERANCE_OVERRIDES_NM = {
-    658.3: 0.15,
-}
-
-# Confidence strings the C++ loader's parse_confidence() explicitly
-# recognises (src/lib/calibration/src/qe_database.cpp). Anything else
-# silently becomes QEConfidence::UNKNOWN in the loader, so a typo here
-# must be a hard error at import time, not a silent downgrade.
-ALLOWED_CONFIDENCE_VALUES = frozenset(("high", "medium", "low"))
+class TransformError(ValueError):
+    pass
 
 
-def _line_name_for_wavelength(wavelength_nm):
-    for known_wl, name in KNOWN_LINES_NM.items():
-        tolerance = LINE_NAME_TOLERANCE_OVERRIDES_NM.get(known_wl, LINE_NAME_TOLERANCE_NM)
-        if abs(wavelength_nm - known_wl) <= tolerance:
-            return name
-    return f"{wavelength_nm:g}nm"
+def nearest_line(center_nm):
+    name, wl = min(LINES.items(), key=lambda kv: abs(kv[1] - center_nm))
+    return name if abs(wl - center_nm) <= LINE_TOL_NM else None
 
 
-def normalise_qe_block(qe, camera_name):
-    """Rewrite a research `qe` block ({wavelength: {site: value}}) into
-    the shipping form using only the photosite tokens the C++ loader's
-    parse_photosite_key() explicitly recognises (R, G, B, mono_pk).
-
-    Raises ValueError on unrecognised photosite keys, non-integer
-    wavelength keys, a merged "G" coexisting with separate "Gr"/"Gb"
-    readings for the same wavelength, ambiguous mono aliasing (both
-    "mono" and "mono_pk" present for one wavelength), or QE values
-    outside the physically valid [0, 1] range.
-    """
-    out = {}
-    for wl, sites in qe.items():
-        # The C++ loader does `int wl = std::stoi(wlit.key())` with no
-        # validation (qe_database.cpp): a key like "656.5" silently
-        # truncates to 656 (data corruption) and a key like "Ha" throws
-        # uncaught. Require a plain integer string here instead.
-        if not wl.isdigit():
-            raise ValueError(
-                f"Camera '{camera_name}' has non-integer wavelength key "
-                f"{wl!r}; expected a plain integer string (e.g. '656')"
-            )
-
-        unknown = set(sites) - KNOWN_PHOTOSITE_KEYS
-        if unknown:
-            raise ValueError(
-                f"Camera '{camera_name}' wavelength {wl!r} has unrecognised "
-                f"photosite key(s) {sorted(unknown)}; expected one of "
-                f"{sorted(KNOWN_PHOTOSITE_KEYS)}"
-            )
-
-        s = {}
-
-        for key in DIRECT_PHOTOSITE_KEYS:
-            if key in sites:
-                s[key] = sites[key]
-
-        if "G" in sites:
-            split_present = [k for k in GREEN_SPLIT_KEYS if k in sites]
-            if split_present:
-                raise ValueError(
-                    f"Camera '{camera_name}' wavelength {wl!r} has both a "
-                    f"merged 'G' and separate {split_present} readings; "
-                    f"ambiguous which is authoritative"
-                )
-            s["G"] = sites["G"]
-        else:
-            gr = sites.get("Gr")
-            gb = sites.get("Gb")
-            if gr is not None and gb is not None:
-                s["G"] = (gr + gb) / 2.0
-            elif gr is not None:
-                s["G"] = gr
-            elif gb is not None:
-                s["G"] = gb
-
-        mono_present = [k for k in MONO_KEY_ALIASES if k in sites]
-        if len(mono_present) > 1:
-            raise ValueError(
-                f"Camera '{camera_name}' wavelength {wl!r} has both "
-                f"{mono_present} for the mono photosite; ambiguous"
-            )
-        if mono_present:
-            s[CANONICAL_MONO_KEY] = sites[mono_present[0]]
-
-        for site_key, value in s.items():
-            if not isinstance(value, (int, float)) or not (0.0 <= value <= 1.0):
-                raise ValueError(
-                    f"Camera '{camera_name}' wavelength {wl!r} site "
-                    f"'{site_key}' has out-of-range QE value {value!r} "
-                    f"(expected a fraction in [0, 1])"
-                )
-
-        if not s:
-            raise ValueError(
-                f"Camera '{camera_name}' wavelength {wl!r} has no usable "
-                f"photosite values after normalisation"
-            )
-
-        out[wl] = s
+def passes_to_lines(passes):
+    """Research `passes` -> engine `lines`, keeping only passes on a known emission line."""
+    out = []
+    for p in passes:
+        name = nearest_line(float(p["center_nm"]))
+        if name is None:
+            continue
+        out.append({"name": name, "wavelength_nm": LINES[name], "fwhm_nm": float(p["fwhm_nm"])})
     return out
 
 
-def normalize_camera_key(name):
-    """Mirror of QEDatabase::normalize_camera_key (C++): lowercase ASCII
-    alphanumerics only. The C++ loader matches a frame's raw FITS INSTRUME
-    string against camera ids and `aliases` by this key, so collisions are
-    checked here with the identical rule."""
-    return "".join(c.lower() for c in name if c.isascii() and c.isalnum())
+def q_solve_lines(lines):
+    return [l for l in lines if l["name"] in Q_SOLVE_LINES]
 
 
-def resolve_camera(name, cam, sensors):
-    """Resolve qe_inherits_from_sensor by copying the sensor's qe block,
-    then normalise photosite keys. Returns a dict containing only the
-    shipping-schema camera fields (sensor, type, bayer, confidence,
-    aliases, qe).
+def ordered_for_q_solve(lines):
+    """Canonical dual-NB line order the classifier documents: Ha/SII before
+    OIII, i.e. descending wavelength_nm. Applied to every dual-NB canonical
+    entry, whether it's derived (HaO3, S2O3) or product-mapped (L-eXtreme,
+    L-eNhance, L-Ultimate, ALP-T) -- source `passes` order is not guaranteed."""
+    return sorted(lines, key=lambda l: -l["wavelength_nm"])
 
-    `aliases` (optional) lists real FITS INSTRUME strings written by
-    capture software for this exact camera (e.g. "ZWO ASI585MC Air").
-    Each must be a verified real-world string for the SAME sensor and
-    colour/mono type -- the C++ loader matches them exactly (modulo
-    case/punctuation), never fuzzily.
-    """
+
+def median_lines(entries):
+    """Same line set across several products -> one entry with median FWHM per line."""
+    by_name = {}
+    order = []
+    for lines in entries:
+        for l in lines:
+            if l["name"] not in by_name:
+                order.append(l["name"])
+                by_name[l["name"]] = []
+            by_name[l["name"]].append(l["fwhm_nm"])
+    return [{"name": n, "wavelength_nm": LINES[n], "fwhm_nm": round(statistics.median(by_name[n]), 2)}
+            for n in order]
+
+
+def transform_filters(filters):
     out = {}
-    for field in ("sensor", "type", "confidence"):
-        if field in cam:
-            out[field] = cam[field]
+    dual_sources = {}    # canonical key -> [lines, ...]
+    single_sources = {}  # line name -> [lines, ...]
 
-    if "aliases" in cam:
-        aliases = cam["aliases"]
-        if not isinstance(aliases, list) or not all(isinstance(a, str) for a in aliases):
-            raise ValueError(
-                f"Camera '{name}' has 'aliases' that is not a list of strings: {aliases!r}"
-            )
-        for a in aliases:
-            if not normalize_camera_key(a):
-                raise ValueError(
-                    f"Camera '{name}' has alias {a!r} with no alphanumeric characters"
-                )
-        out["aliases"] = list(aliases)
+    for name, f in filters.items():
+        ftype = TYPE_MAP.get(f.get("type"))
+        if ftype is None:
+            raise TransformError(f"Filter '{name}': unknown type {f.get('type')!r}")
+        lines = passes_to_lines(f.get("passes", []))
+        out[name] = {"type": ftype, "lines": lines}
 
-    bayer = cam.get("bayer", cam.get("bayer_pattern"))
-    if bayer:
-        out["bayer"] = bayer
+        q_lines = q_solve_lines(lines)
+        key = CANONICAL_DUAL.get(frozenset(l["name"] for l in q_lines))
+        # Two-line canonicals are built from dual-band products only: a quad
+        # filter's Ha pass is a different piece of glass from a dual's, and
+        # averaging their FWHMs together would describe neither. A three-line
+        # canonical is the opposite case -- only a tri- or quad-band product
+        # can cover all three Q-solve lines, so those products are its only
+        # possible source, and excluding them left the set with no canonical
+        # name at all. That is what stopped an L-Quad Enhance batch at start
+        # while its measured QE sat in the database, unreachable.
+        if key and (f.get("type") == "dual-narrowband" or len(q_lines) == 3):
+            dual_sources.setdefault(key, []).append(q_lines)
+        if ftype == "NARROWBAND" and len(q_lines) == 1:
+            single_sources.setdefault(q_lines[0]["name"], []).append(q_lines)
 
-    if cam.get("qe_inherits_from_sensor"):
-        sensor_name = cam.get("sensor")
-        sensor = sensors.get(sensor_name)
-        if sensor is None or "qe" not in sensor:
-            raise ValueError(
-                f"Camera '{name}' inherits from sensor '{sensor_name}' but "
-                f"that sensor (with a 'qe' block) was not found in research"
-            )
-        qe = sensor["qe"]
-    else:
-        qe = cam.get("qe")
+        if name in PRODUCT_CANONICAL:
+            out[PRODUCT_CANONICAL[name]] = {"type": "DUAL_NB", "lines": ordered_for_q_solve(q_lines)}
 
-    if qe is not None:
-        out["qe"] = normalise_qe_block(qe, name)
+    for key, sources in dual_sources.items():
+        # Ha before OIII, SII before OIII: the order the classifier documents.
+        out[key] = {"type": "DUAL_NB", "lines": ordered_for_q_solve(median_lines(sources))}
+    for line_name, sources in single_sources.items():
+        out[line_name] = {"type": "NARROWBAND", "lines": median_lines(sources)}
 
-    return out
-
-
-def validate_camera(name, cam):
-    missing = [f for f in REQUIRED_CAMERA_FIELDS if f not in cam]
+    missing = [k for k in REQUIRED_CANONICAL if k not in out]
     if missing:
-        raise ValueError(f"Camera '{name}' missing required fields: {missing}")
-    if cam["confidence"] not in ALLOWED_CONFIDENCE_VALUES:
-        raise ValueError(
-            f"Camera '{name}' has invalid confidence {cam['confidence']!r}; "
-            f"expected one of {sorted(ALLOWED_CONFIDENCE_VALUES)}"
-        )
-    if "qe" not in cam or not cam["qe"]:
-        raise ValueError(
-            f"Camera '{name}' missing 'qe' block (after inheritance resolution)"
-        )
-
-
-def resolve_filter(name, filt):
-    """Return a dict containing only the shipping-schema filter fields
-    (type, lines). Converts research `passes` into shipping `lines` if
-    the filter doesn't already use `lines` directly.
-    """
-    out = {}
-    if "type" in filt:
-        out["type"] = filt["type"]
-
-    if "lines" in filt:
-        out["lines"] = filt["lines"]
-    elif "passes" in filt:
-        lines = []
-        for p in filt["passes"]:
-            wavelength_nm = p.get("wavelength_nm", p.get("center_nm"))
-            fwhm_nm = p.get("fwhm_nm")
-            if wavelength_nm is None or fwhm_nm is None:
-                raise ValueError(
-                    f"Filter '{name}' has a pass missing "
-                    f"center_nm/wavelength_nm or fwhm_nm: {p!r}"
-                )
-            lines.append({
-                "name": _line_name_for_wavelength(wavelength_nm),
-                "wavelength_nm": wavelength_nm,
-                "fwhm_nm": fwhm_nm,
-            })
-        out["lines"] = lines
-
+        raise TransformError(f"Research data yields no source for canonical filter(s): {missing}")
     return out
 
 
-def validate_filter(name, filt):
-    if "type" not in filt:
-        raise ValueError(f"Filter '{name}' missing required field: 'type'")
-    lines = filt.get("lines")
-    if not lines:
-        raise ValueError(f"Filter '{name}' missing non-empty 'lines'")
-    for i, line in enumerate(lines):
-        missing = [f for f in ("name", "wavelength_nm", "fwhm_nm") if f not in line]
-        if missing:
-            raise ValueError(
-                f"Filter '{name}' line[{i}] missing required fields: {missing}"
-            )
+def resolved_qe(name, cam, sensors):
+    if cam.get("qe_inherits_from_sensor"):
+        s = sensors.get(cam.get("sensor"))
+        if s is None:
+            raise TransformError(f"Camera '{name}' inherits from sensor {cam.get('sensor')!r} which is not in `sensors`")
+        return s.get("qe", {})
+    return cam.get("qe", {})
 
 
-def validate_camera_keys(cameras):
-    """Every camera id and alias must normalise to a key claimed by exactly
-    one camera -- otherwise a frame's INSTRUME could resolve to the wrong
-    sensor's QE curve. Same rule the C++ loader enforces at load time."""
-    claimed = {}
-    for name, cam in cameras.items():
-        for raw in [name] + cam.get("aliases", []):
-            key = normalize_camera_key(raw)
-            owner = claimed.setdefault(key, name)
-            if owner != name:
-                raise ValueError(
-                    f"Camera name/alias {raw!r} (normalized {key!r}) is claimed by "
-                    f"both '{owner}' and '{name}' -- ambiguous camera identification"
-                )
+def photosites(name, cam_type, qe_block):
+    """Collapse research photosites to what the loader consumes.
+
+    OSC: a wavelength with no R/G/B is not immediately fatal — some sensors
+    were only ever researched as a flat panchromatic curve (`ICX694` and
+    friends), never split by Bayer channel. If NONE of the camera's
+    wavelengths have a Bayer split, the caller excludes the camera outright
+    (spec 6.3: generic_sony_imx_osc covers it at runtime). But if SOME
+    wavelengths have a split and others don't, that is inconsistent research
+    data, not a missing-measurement camera, and must still fail loud.
+    """
+    out = {}
+    incomplete = []
+    for wl, sites in qe_block.items():
+        if cam_type == "mono":
+            # "mono" is research vocabulary drift, not a different quantity:
+            # some sensors record the same peak/measured mono QE under the
+            # bare key instead of "mono_pk". Ship it under the one key name
+            # the loader knows.
+            pk = sites.get("mono_pk", sites.get("mono"))
+            if pk is not None:
+                out[str(wl)] = {"mono_pk": float(pk)}
+            continue
+        greens = [sites[k] for k in ("G", "Gr", "Gb") if k in sites]
+        if "R" not in sites or "B" not in sites or not greens:
+            incomplete.append(wl)
+            continue
+        out[str(wl)] = {"R": float(sites["R"]),
+                        "G": round(statistics.mean(float(g) for g in greens), 4),
+                        "B": float(sites["B"])}
+    if out and incomplete:
+        raise TransformError(f"Camera '{name}': wavelength(s) {sorted(incomplete)} lack R/G/B "
+                              f"photosites while other wavelengths have them (inconsistent Bayer data)")
+    return out
+
+
+def transform_camera(name, cam, sensors):
+    """Returns the shipped camera dict, or None if an OSC camera's sensor has
+    no Bayer-split QE at any wavelength (excluded by the caller, not an error:
+    spec 6.3's generic_sony_imx_osc fallback covers it at runtime)."""
+    missing = [k for k in REQUIRED_CAMERA_FIELDS if k not in cam]
+    if missing:
+        raise TransformError(f"Camera '{name}' missing required field(s): {missing}")
+    out = {"sensor": cam["sensor"], "type": cam["type"], "confidence": cam["confidence"]}
+    if "manufacturer" in cam:
+        out["manufacturer"] = cam["manufacturer"]
+    if cam["type"] == "OSC":
+        bayer = cam.get("bayer_pattern")
+        if bayer not in BAYER_OK:
+            raise TransformError(f"Camera '{name}': OSC camera needs bayer_pattern in {sorted(BAYER_OK)}, got {bayer!r}")
+        out["bayer"] = bayer
+    out["qe"] = photosites(name, cam["type"], resolved_qe(name, cam, sensors))
+    if cam["type"] == "OSC" and not out["qe"]:
+        return None
+    if cam["type"] == "OSC" and len(out["qe"]) < 2:
+        raise TransformError(f"Camera '{name}': OSC camera needs QE at >= 2 wavelengths")
+    return out
+
+
+def generic_sony_osc(cameras, sensors):
+    """Mean R/G/B per wavelength over Sony-sensor OSC cameras; the spec 6.3 unknown-INSTRUME fallback."""
+    members = [c for c in cameras.values()
+               if c["type"] == "OSC" and "sony" in sensors.get(c["sensor"], {}).get("manufacturer", "").lower()]
+    if not members:
+        raise TransformError("No Sony-sensor OSC cameras found; cannot derive generic_sony_imx_osc")
+    wavelengths = set.intersection(*(set(c["qe"]) for c in members))
+    qe = {}
+    for wl in sorted(wavelengths, key=int):
+        qe[wl] = {site: round(statistics.mean(c["qe"][wl][site] for c in members), 4) for site in ("R", "G", "B")}
+    return {"sensor": "generic", "manufacturer": "generic", "type": "OSC", "bayer": "RGGB",
+            "confidence": "low", "qe": qe}
 
 
 def transform(research):
     sensors = research.get("sensors", {})
-
-    out_cameras = {}
+    cameras = {}
+    mono_without_qe = []
+    osc_without_bayer_qe = []
     for name, cam in research.get("cameras", {}).items():
-        resolved = resolve_camera(name, cam, sensors)
-        validate_camera(name, resolved)
-        out_cameras[name] = resolved
-    validate_camera_keys(out_cameras)
-
-    out_filters = {}
-    for name, filt in research.get("filters", {}).items():
-        resolved = resolve_filter(name, filt)
-        validate_filter(name, resolved)
-        out_filters[name] = resolved
-
+        result = transform_camera(name, cam, sensors)
+        if result is None:
+            osc_without_bayer_qe.append(name)
+            continue
+        cameras[name] = result
+        if cam.get("type") == "mono" and not cameras[name]["qe"]:
+            mono_without_qe.append(name)
+    cameras[GENERIC_OSC_KEY] = generic_sony_osc(cameras, sensors)
     return {
-        "schema_version": 1,
-        "cameras": out_cameras,
-        "filters": out_filters,
-    }
+        "schema_version": SCHEMA_VERSION,
+        "generated_from": "research/qe_database_research.json via tools/import_qe_research.py",
+        "cameras": cameras,
+        "filters": transform_filters(research.get("filters", {})),
+    }, mono_without_qe, osc_without_bayer_qe
 
 
-def main(argv=None):
-    ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("input", help="path to research/qe_database_research.json")
-    ap.add_argument("output", help="path to share/qe_database.json")
-    args = ap.parse_args(argv)
-
-    with open(args.input, "r") as f:
+def main():
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("input")
+    ap.add_argument("output")
+    args = ap.parse_args()
+    with open(args.input) as f:
         research = json.load(f)
-
     try:
-        shipped = transform(research)
-    except ValueError as e:
-        print(f"Validation error: {e}", file=sys.stderr)
+        shipped, mono_without_qe, osc_without_bayer_qe = transform(research)
+    except TransformError as e:
+        print(f"import_qe_research: {e}", file=sys.stderr)
         return 1
-
+    if mono_without_qe:
+        print(f"note: {len(mono_without_qe)} mono camera(s) ship without a QE block "
+              f"(sensor has no mono_pk; mono frames never enter the Q-solve): {mono_without_qe}",
+              file=sys.stderr)
+    if osc_without_bayer_qe:
+        print(f"note: {len(osc_without_bayer_qe)} OSC camera(s) excluded — research has no "
+              f"Bayer-split QE; generic_sony_imx_osc applies at runtime with a Process Console "
+              f"warning: {osc_without_bayer_qe}", file=sys.stderr)
     with open(args.output, "w") as f:
         json.dump(shipped, f, indent=2, sort_keys=True)
         f.write("\n")
+    print(f"wrote {args.output}: {len(shipped['cameras'])} cameras, {len(shipped['filters'])} filters")
     return 0
 
 

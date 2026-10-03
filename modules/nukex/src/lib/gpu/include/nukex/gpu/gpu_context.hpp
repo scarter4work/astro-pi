@@ -3,6 +3,7 @@
 #include "nukex/gpu/gpu_config.hpp"
 #include <vector>
 #include <string>
+#include <cstddef>
 
 // Forward-declare OpenCL types to avoid including cl.h in the header.
 // Consumers that need the actual cl_* handles include <CL/cl.h> themselves.
@@ -30,20 +31,27 @@ public:
     GPUBackend backend() const { return backend_; }
     const GPUDeviceInfo& device_info() const { return device_info_; }
 
-    /// Estimate how many voxels fit in a single Phase-B batch, bounded by the
-    /// SMALLER of GPU VRAM and available system RAM. The shadow buffers are
-    /// allocated in host RAM as well as on the device, so host memory is often
-    /// the tighter constraint (e.g. a large-VRAM GPU on a modest-RAM host); a
-    /// VRAM-only estimate can drive the process into swap / OOM.
+    /// Estimate how many voxels one batch should hold.
+    ///
+    /// Capped by HOST memory as well as VRAM. The batch is sized for the
+    /// device, but ShadowBuffers mirrors it in host RAM -- roughly twenty
+    /// std::vectors, dominated by pixel_values and pixel_weights at
+    /// n_channels * n_frames * batch floats each. Sizing that from VRAM
+    /// alone asked a 30 GB box for a ~13.6 GB staging buffer beside a
+    /// 14.8 GB cube and sent the run into swap.
+    ///
+    /// Batch size is a staging choice, not a numerical one -- proven
+    /// bit-exact across batch splits in test_gpu_cpu_fallback -- so a
+    /// smaller batch costs more kernel launches and nothing else.
     int estimate_batch_size(int n_frames, int n_channels) const;
 
-    /// Pure batch-size calculation from explicit memory budgets (bytes).
-    /// Exposed so the sizing logic can be unit-tested without a GPU or a
-    /// particular host-memory state. Returns voxels that fit in
-    /// min(gpu_budget, host_budget), clamped to [1, INT_MAX].
-    static int batch_size_for_budgets(int n_frames, int n_channels,
-                                      size_t gpu_budget_bytes,
-                                      size_t host_budget_bytes);
+    /// Override the host-memory budget the batch is capped by, in bytes.
+    /// 0 restores the measured default (a fraction of MemAvailable).
+    void set_host_memory_budget(std::size_t bytes) { host_budget_ = bytes; }
+    std::size_t host_memory_budget() const { return host_budget_; }
+
+    /// Host memory currently available, in bytes; 0 when it cannot be read.
+    static std::size_t host_available_bytes();
 
 #if NUKEX_HAS_OPENCL
     cl_context       context() const { return context_; }
@@ -60,6 +68,7 @@ public:
     GPUContext& operator=(const GPUContext&) = delete;
 
 private:
+    std::size_t host_budget_ = 0;   ///< 0 = measure at use
     GPUContext() = default;
 
     GPUBackend  backend_     = GPUBackend::CPU_FALLBACK;

@@ -59,7 +59,12 @@ struct ContaminationParams {
 };
 
 struct ZDistribution {
-    DistributionShape shape = DistributionShape::UNKNOWN;
+    // shape and used_nonparametric are both one byte. Declared adjacently they
+    // share a single 4-byte slot; declared apart (the flag last, as it was)
+    // they cost 4 bytes each plus 6 bytes of padding — 64 bytes instead of 60,
+    // on every channel of every voxel.
+    DistributionShape shape              = DistributionShape::UNKNOWN;
+    bool              used_nonparametric = false;
 
     union {
         StudentTParams      student_t;
@@ -76,7 +81,6 @@ struct ZDistribution {
 
     float kde_mode      = 0.0f;
     float kde_bandwidth = 0.0f;
-    bool  used_nonparametric = false;
 };
 
 } // namespace nukex

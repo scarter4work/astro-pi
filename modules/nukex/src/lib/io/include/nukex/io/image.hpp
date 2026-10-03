@@ -62,6 +62,13 @@ public:
     /// Create a deep copy.
     Image clone() const;
 
+    /// A deep copy of the [x, x+w) x [y, y+h) window, all channels.
+    ///
+    /// Returns an empty image if the window is not wholly inside this one:
+    /// the coverage trim cuts every output plane to the same rectangle, and a
+    /// silently smaller plane would put the channels out of step.
+    Image cropped(int x, int y, int w, int h) const;
+
     /// Apply a function to every pixel value in-place.
     template<typename Fn>
     void apply(Fn&& fn) {
