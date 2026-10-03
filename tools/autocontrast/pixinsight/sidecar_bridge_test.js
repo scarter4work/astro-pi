@@ -15,7 +15,7 @@
 
 #feature-id    AutoContrast > SidecarBridgeTest
 
-var PROJECT      = "/home/scarter4work/projects/autocontrast";
+var PROJECT      = "/home/scarter4work/projects/astro-pi/tools/autocontrast";
 var PYTHON       = PROJECT + "/.venv/bin/python";
 var TEST_IMAGE   = PROJECT + "/data/references/eso1103a.jpg";
 var WORK         = "/tmp/autocontrast_bridge";

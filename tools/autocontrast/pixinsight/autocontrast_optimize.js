@@ -41,7 +41,7 @@ function envOr(name, fallback) {
    return (v && v.length > 0) ? v : fallback;
 }
 
-var PROJECT     = envOr("AUTOCONTRAST_PROJECT", "/home/scarter4work/projects/autocontrast");
+var PROJECT     = envOr("AUTOCONTRAST_PROJECT", "/home/scarter4work/projects/astro-pi/tools/autocontrast");
 var PYTHON      = envOr("AUTOCONTRAST_PYTHON",   PROJECT + "/.venv/bin/python");
 var INDEX       = envOr("AUTOCONTRAST_INDEX",    PROJECT + "/data/gallery_index.sqlite");
 var STORE       = envOr("AUTOCONTRAST_STORE",    PROJECT + "/data/fingerprints.sqlite");
