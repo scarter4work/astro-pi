@@ -8,6 +8,12 @@ namespace nukex { namespace test_util {
 void write_synthetic_bayer(const std::string& path, int w, int h, const std::string& bayer,
                            const std::string& instrument, const std::string& filter, float uniform_value);
 
+// A Bayer mosaic of a flat (r, g, b) scene laid out in `bayer`'s CFA order, so
+// the same scene can be written under different patterns.
+void write_synthetic_bayer_rgb(const std::string& path, int w, int h, const std::string& bayer,
+                               const std::string& instrument, const std::string& filter,
+                               float r, float g, float b);
+
 void write_synthetic_mono(const std::string& path, int w, int h,
                           const std::string& instrument, const std::string& filter, float uniform_value);
 

@@ -75,6 +75,12 @@ void write_synthetic_bayer(const std::string& path, int w, int h, const std::str
                bayer, instrument, filter);
 }
 
+void write_synthetic_bayer_rgb(const std::string& path, int w, int h, const std::string& bayer,
+                               const std::string& instrument, const std::string& filter,
+                               float r, float g, float b) {
+    write_fits(path, w, h, bayerize(w, h, bayer, r, g, b), bayer, instrument, filter);
+}
+
 void write_synthetic_mono(const std::string& path, int w, int h,
                           const std::string& instrument, const std::string& filter, float uniform_value) {
     write_fits(path, w, h, std::vector<float>(static_cast<size_t>(w) * h, uniform_value),

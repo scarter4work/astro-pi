@@ -165,6 +165,35 @@ TEST_CASE("Phase A: a batch mixing Bayer and mono frames is refused in either or
     }
 }
 
+// One scene, two CFA layouts: frame 0 is RGGB, frame 1 BGGR. Debayered with
+// its OWN pattern, frame 1 contributes the same (R, G, B) as frame 0, so each
+// slot's mean is the scene value with no spread. Debayered with frame 0's
+// pattern, frame 1's red and blue swap: R and B each average to 0.4.
+TEST_CASE("Phase A: each Bayer frame is debayered with its own CFA pattern",
+          "[integration][phase_a]") {
+    const float r = 0.7f, g = 0.4f, b = 0.1f;
+    auto f0 = fs::temp_directory_path() / "phase_a_cfa_rggb.fits";
+    auto f1 = fs::temp_directory_path() / "phase_a_cfa_bggr.fits";
+    test_util::write_synthetic_bayer_rgb(f0.string(), 16, 16, "RGGB", "ASI585MC", "", r, g, b);
+    test_util::write_synthetic_bayer_rgb(f1.string(), 16, 16, "BGGR", "ASI585MC", "", r, g, b);
+
+    StackingEngine::Config cfg;
+    cfg.qe_database_path = (fs::path(NUKEX_TEST_FIXTURES_DIR) / "qe" / "minimal_db.json").string();
+    StackingEngine engine(cfg);
+    auto result = engine.execute({f0.string(), f1.string()}, {}, nullptr);
+    REQUIRE(result.ok);
+    REQUIRE(result.n_frames_processed == 2);
+
+    const auto& cc = result.cube->channel_config;
+    const int R = cc.slot_index("R"), G = cc.slot_index("G"), B = cc.slot_index("B");
+    REQUIRE(R != -1); REQUIRE(G != -1); REQUIRE(B != -1);
+    auto& px = result.cube->at(8, 8);
+    REQUIRE(px.channel(R).welford.n == 2);
+    REQUIRE(px.channel(R).welford.mean == Catch::Approx(r).margin(1e-4));
+    REQUIRE(px.channel(G).welford.mean == Catch::Approx(g).margin(1e-4));
+    REQUIRE(px.channel(B).welford.mean == Catch::Approx(b).margin(1e-4));
+}
+
 TEST_CASE("Phase A: missing FILTER on mono (L_unnamed) routes into the L slot",
           "[integration][phase_a]") {
     auto tmp = fs::temp_directory_path() / "phase_a_mono_unnamed.fits";
