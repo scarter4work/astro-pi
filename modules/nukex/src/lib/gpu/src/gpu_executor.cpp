@@ -13,8 +13,69 @@
 #include <iostream>
 #include <algorithm>
 #include <cstring>
+#include <cstdio>
+#include <cstdlib>
+#include <vector>
 
 namespace nukex {
+
+// ══════════════════════════════════════════════════════════════════════
+// RESEARCH INSTRUMENTATION — do not ship.  (2026-09-07 fitting spike.)
+//
+// NUKEX_DUMP_MU=<path> writes, for EVERY voxel and channel, the mu the
+// model race produced next to the mu a Huber M-estimator would have
+// produced, so the two can be compared as images rather than as
+// percentiles.  Costs one getenv at Phase B entry when unset.
+//
+// Layout: int32 width, height, n_channels, then
+//         float32 race[ch][y][x], float32 huber[ch][y][x],
+//         float32 shape[ch][y][x]  (DistributionShape of the winning model).
+//
+// The third plane exists so a HYBRID can be scored offline -- "the race,
+// except fall back to Huber wherever the GMM won" -- without re-running the
+// stack.  Without it, the benefit of gating one model could only be inferred
+// from an unrelated statistic, and the driver of this ratio has already been
+// guessed wrong twice.
+// ══════════════════════════════════════════════════════════════════════
+namespace mudump {
+
+inline float huber_irls(const float* x, const float* fw, int n, int iters,
+                        float* scratch) {
+    if (n <= 0) return 0.0f;
+    std::memcpy(scratch, x, sizeof(float) * n);
+    std::nth_element(scratch, scratch + n / 2, scratch + n);
+    float med = scratch[n / 2];
+    if (n % 2 == 0) {
+        float lo = *std::max_element(scratch, scratch + n / 2);
+        med = 0.5f * (lo + med);
+    }
+    for (int i = 0; i < n; ++i) scratch[i] = std::fabs(x[i] - med);
+    std::nth_element(scratch, scratch + n / 2, scratch + n);
+    float madv = scratch[n / 2];
+    if (n % 2 == 0) {
+        float lo = *std::max_element(scratch, scratch + n / 2);
+        madv = 0.5f * (lo + madv);
+    }
+    float sigma = madv * 1.4826f;
+    if (!(sigma > 1e-12f)) return med;
+    const float delta = 1.345f * sigma;
+    float mu = med;
+    for (int it = 0; it < iters; ++it) {
+        double num = 0.0, den = 0.0;
+        for (int i = 0; i < n; ++i) {
+            float r = std::fabs(x[i] - mu);
+            float hw = (r <= delta) ? 1.0f : (delta / r);
+            double ww = static_cast<double>(hw) * fw[i];
+            num += ww * x[i];
+            den += ww;
+        }
+        if (den <= 0.0) break;
+        mu = static_cast<float>(num / den);
+    }
+    return mu;
+}
+
+} // namespace mudump
 
 GPUExecutor::GPUExecutor(const GPUExecutorConfig& config)
     : context_(GPUContext::create(config)) {
@@ -472,6 +533,17 @@ void GPUExecutor::execute_phase_b(
 
     std::string backend_tag = use_gpu ? " [GPU]" : " [CPU]";
 
+    // ── research instrumentation (NUKEX_DUMP_MU), see mudump above ──
+    const char* mu_dump_path = std::getenv("NUKEX_DUMP_MU");
+    std::vector<float> mu_race, mu_huber, mu_shape;
+    if (mu_dump_path && *mu_dump_path) {
+        mu_race.assign(static_cast<size_t>(total_voxels) * n_channels, 0.0f);
+        mu_huber.assign(static_cast<size_t>(total_voxels) * n_channels, 0.0f);
+        // 255 = "never fitted", distinct from every real DistributionShape.
+        mu_shape.assign(static_cast<size_t>(total_voxels) * n_channels, 255.0f);
+    }
+    const bool mu_dump = !mu_race.empty();
+
     int processed = 0;
     int batch_idx = 0;
     while (processed < total_voxels) {
@@ -572,6 +644,19 @@ void GPUExecutor::execute_phase_b(
                 }
             }
 
+            if (mu_dump) {
+                std::vector<float> scratch(N);
+                for (int ch = 0; ch < n_channels; ch++) {
+                    const size_t o = static_cast<size_t>(ch) * total_voxels + voxel_idx;
+                    mu_race[o]  = voxel.channel(ch).distribution.true_signal_estimate;
+                    mu_huber[o] = mudump::huber_irls(vals.data() + ch * N,
+                                                     wts.data() + ch * N,
+                                                     nf_ch[ch], 6, scratch.data());
+                    mu_shape[o] = static_cast<float>(
+                        static_cast<int>(voxel.channel(ch).distribution.shape));
+                }
+            }
+
             hb.tick(worker, obs);
         });
 
@@ -599,6 +684,18 @@ void GPUExecutor::execute_phase_b(
             obs.message("Cancelled during batch " + std::to_string(batch_idx)
                         + "/" + std::to_string(total_batches));
             break;
+        }
+    }
+
+    if (mu_dump) {
+        if (std::FILE* f = std::fopen(mu_dump_path, "wb")) {
+            int hdr[3] = { cube.width, cube.height, n_channels };
+            std::fwrite(hdr, sizeof(int), 3, f);
+            std::fwrite(mu_race.data(),  sizeof(float), mu_race.size(),  f);
+            std::fwrite(mu_huber.data(), sizeof(float), mu_huber.size(), f);
+            std::fwrite(mu_shape.data(), sizeof(float), mu_shape.size(), f);
+            std::fclose(f);
+            obs.message("NUKEX_DUMP_MU: wrote " + std::string(mu_dump_path));
         }
     }
 
