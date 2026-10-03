@@ -1,0 +1,57 @@
+<h2>Phase 8 — Architecture</h2>
+<p class="subtitle">The 4-layer prediction stack, how data flows, what writes each layer.</p>
+
+<div class="section">
+  <div class="mockup">
+    <div class="mockup-header">Prediction flow — "Auto" or any stretch dropdown</div>
+    <div class="mockup-body" style="padding:1.5rem">
+
+      <div style="display:flex;gap:1rem;align-items:stretch">
+
+        <div style="flex:1;display:flex;flex-direction:column;gap:.75rem">
+          <div style="border:1px solid #666;padding:.75rem;border-radius:6px;background:#2a2a2a">
+            <div class="label">Layer 1 — Factory defaults</div>
+            <div style="font-size:.9rem">Immutable constants in each StretchOp.<br>Written <b>never</b>.  "Reset to factory" reverts here.</div>
+          </div>
+          <div style="text-align:center;font-size:1.2rem;color:#888">↓ if model absent / confidence low</div>
+
+          <div style="border:1px solid #666;padding:.75rem;border-radius:6px;background:#2a2a2a">
+            <div class="label">Layer 2 — Community bootstrap</div>
+            <div style="font-size:.9rem">Ridge model fit from Scott's labeled corpus.<br>Written <b>at release time</b>, shipped as coefficients file.</div>
+          </div>
+          <div style="text-align:center;font-size:1.2rem;color:#888">↓ always additive</div>
+
+          <div style="border:1px solid #666;padding:.75rem;border-radius:6px;background:#2a2a2a">
+            <div class="label">Layer 3 — User-learned current</div>
+            <div style="font-size:.9rem">Same ridge model retrained on<br>bootstrap rows + user's local ratings.<br>Written <b>whenever user saves a rating</b>.</div>
+          </div>
+          <div style="text-align:center;font-size:1.2rem;color:#888">↓ per-run</div>
+
+          <div style="border:1px solid #666;padding:.75rem;border-radius:6px;background:#2a2a2a">
+            <div class="label">Layer 4 — Per-image prediction</div>
+            <div style="font-size:.9rem">Apply the current model to<br>this image's stats → final params.</div>
+          </div>
+        </div>
+
+        <div style="width:32%;background:#1a1a1a;border-left:2px solid #444;padding:1rem">
+          <div class="label" style="margin-bottom:.5rem">Reset / escape hatches</div>
+          <ul style="margin:0;padding-left:1.2rem;font-size:.85rem;line-height:1.6">
+            <li><b>Reset to factory</b> — ignore all model layers, use Layer 1 constants.</li>
+            <li><b>Reset to bootstrap</b> — discard user ratings, use only shipped Layer-2 model.</li>
+            <li><b>Explain</b> — print Layer-3 coefficients + top-3 most similar past runs (kNN on DB) for transparency.</li>
+          </ul>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="section">
+  <h3>Key invariants</h3>
+  <ul>
+    <li>Layers 2, 3, 4 are <b>the same ridge model</b> at different training snapshots + a final predict() call. Not three separate models stacked.</li>
+    <li>Layer 1 is the <b>only</b> hard-coded constant in the system. Every coefficient in layers 2/3 comes from labeled data.</li>
+    <li><b>Cold start</b> (user has zero ratings): Layer 3 = Layer 2 (shipped model, unmodified).</li>
+    <li>Retraining is <b>closed-form ridge regression</b> — runs in &lt;50ms on a laptop even for thousands of rows. Happens on rating save.</li>
+  </ul>
+</div>

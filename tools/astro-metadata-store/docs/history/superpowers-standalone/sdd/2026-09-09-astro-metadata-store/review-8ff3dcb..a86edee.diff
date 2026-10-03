@@ -1,0 +1,2078 @@
+# Review package: 8ff3dcb..HEAD
+
+## Commits
+a86edee fix: captured_at falls back to the filename, and dropped frames are counted
+4146a42 fix: backfill_known_culls must not silently no-op on an unmatched cull
+6792967 fix: constrain frames.disposition to its three contract values
+88c3a2d fix: coerce numeric header cards, and stop one bad row discarding a run
+2844668 fix: bucket projects on a recorded fallback identity, not object_id alone
+ae88034 feat: persist the OBJECT card and the leaf directory name
+879d888 fix: a narrowed --root scan must not run the whole-DB missing sweep
+3833c2f fix: inventory upsert must refresh every column a scan derives
+
+## Files changed
+ src/astrometa/cli.py         |  43 +++++-
+ src/astrometa/cluster.py     |  86 ++++++++++--
+ src/astrometa/db.py          |  42 +++++-
+ src/astrometa/disposition.py |  75 +++++++++--
+ src/astrometa/grouping.py    |  96 ++++++++++++--
+ src/astrometa/inventory.py   | 195 ++++++++++++++++++++++++++--
+ tests/test_cli.py            | 128 ++++++++++++++++--
+ tests/test_cluster.py        |  86 ++++++++++++
+ tests/test_db.py             |  25 ++++
+ tests/test_disposition.py    |  95 +++++++++++++-
+ tests/test_grouping.py       | 139 ++++++++++++++++++--
+ tests/test_inventory.py      | 303 +++++++++++++++++++++++++++++++++++++++++++
+ 12 files changed, 1231 insertions(+), 82 deletions(-)
+
+## Diff
+diff --git a/src/astrometa/cli.py b/src/astrometa/cli.py
+index b6c29c0..561e614 100644
+--- a/src/astrometa/cli.py
++++ b/src/astrometa/cli.py
+@@ -87,40 +87,71 @@ def main(argv: list[str] | None = None) -> int:
+     except SystemExit as exc:
+         # argparse's own usage errors (bad flags, unknown subcommand,
+         # --help) -- a plain non-zero return, not a pass failure.
+         return exc.code if isinstance(exc.code, int) else 2
+ 
+     cfg = Config()
+     conn = db.connect(Path(args.db))
+     db.init_schema(conn)
+ 
+     if args.command == "scan":
+-        roots = ([Path(r) for r in args.root] if args.root
+-                 else [cfg.archive_root, cfg.live_root])
++        configured = [cfg.archive_root, cfg.live_root]
++        roots = ([Path(r) for r in args.root] if args.root else configured)
+         res = inventory.scan(conn, roots)
+-        missing = disposition.mark_missing(conn, res.seen_hashes)
++
++        # The whole-database missing sweep runs ONLY when this scan
++        # covered the full configured root set. `mark_missing` flips
++        # every 'present' frame absent from seen_hashes, so running it
++        # after `scan --root /archive/astro_data/2026-09-08` would flip
++        # the other ~34,000 frames to 'missing' purely because the walk
++        # never reached them. mark_missing's own guard cannot catch
++        # that: it only refuses a COMPLETELY empty seen_hashes, and a
++        # one-night scan returns a perfectly healthy non-empty set.
++        #
++        # `missing` is how a deliberate cull gets recorded -- the single
++        # signal this project exists to make trustworthy -- so
++        # fabricating it from a partial walk corrupts the store's whole
++        # purpose. Coverage is a set comparison on resolved paths, and
++        # deliberately conservative: a --root that happens to be a
++        # PARENT of the configured roots is not recognised as covering
++        # them and skips the sweep too. Skipping is always the safe
++        # direction, and it is never silent -- the skip and its reason
++        # are printed where the count would otherwise be.
++        covers_configured = ({r.resolve() for r in roots}
++                             >= {r.resolve() for r in configured})
++        if covers_configured:
++            missing_txt = f"missing={disposition.mark_missing(conn, res.seen_hashes)}"
++        else:
++            missing_txt = (
++                f"missing=skipped (--root narrowed this scan to "
++                f"{len(roots)} root(s); the whole-database missing "
++                f"sweep runs only when the scan covers the configured "
++                f"archive and live roots, so frames outside the "
++                f"scanned roots are NOT marked missing)")
+         print(f"added={res.added} updated={res.updated} "
+-              f"failed={res.failed} missing={missing} "
++              f"failed={res.failed} {missing_txt} "
+               f"(failed overlaps added/updated: a frame that fails a "
+               f"read is still inventoried, with its failure recorded)")
+     elif args.command == "cluster":
+         created = cluster.assign_fields(conn)
+         print(f"fields_created={created}")
+     elif args.command == "solve":
+         solved = solve.solve_fields(conn, cfg, args.limit)
+         print(f"solved={solved}")
+     elif args.command == "measure":
+         res = quality.measure_frames(conn, cfg, args.limit)
+         print(f"measured={res.measured} failed={res.failed}")
+     elif args.command == "group":
+-        projects = grouping.build_projects(conn)
+-        print(f"projects={projects}")
++        res = grouping.build_projects(conn)
++        print(f"projects={res.projects} "
++              f"skipped_no_capture_instant="
++              f"{res.skipped_no_capture_instant}")
+     elif args.command == "manifest":
+         out_dir = Path(args.out_dir) if args.out_dir else None
+         manifests = manifest.export_all(conn, out_dir=out_dir)
+         print(f"manifests={manifests}")
+     elif args.command == "status":
+         for table in ("frames", "fields", "objects", "projects"):
+             n = conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+             print(f"{table}: {n}")
+     return 0
+ 
+diff --git a/src/astrometa/cluster.py b/src/astrometa/cluster.py
+index 8c16a38..e87772f 100644
+--- a/src/astrometa/cluster.py
++++ b/src/astrometa/cluster.py
+@@ -22,20 +22,51 @@ DEFAULT_FOV_DEG = 1.0
+ # and well below the observed between-field minimum (113), erring toward
+ # the cheaper mistake: a threshold set too low only costs an extra plate
+ # solve (Task 7), while one set too high risks merging frames of different
+ # objects into the same field. Fingerprint is also ANDed with pointing
+ # proximity (see assign_fields), which is the stronger discriminator, so
+ # 80 is a safe margin rather than an aggressive one. A meridian-flipped
+ # frame splitting into its own field is accepted, not fixed here --
+ # rotation-invariant hashing is out of scope.
+ FP_THRESHOLD_DEFAULT = 80
+ 
++# How many failing frames an error message names before it truncates.
++MAX_REPORTED_FAILURES = 10
++
++
++class ClusteringError(Exception):
++    """One or more frames could not be clustered.
++
++    Raised AFTER the run's successful work has been committed, so a
++    single unusable row costs only that row -- see assign_fields.
++    """
++
++
++def _pointing(row) -> tuple[float, float]:
++    """
++    The frame's header pointing as two floats, or ValueError naming the
++    offending column.
++
++    Validated up front rather than left to fail inside the matching
++    loop, so an unusable frame can never become a field representative:
++    if it did, every later frame compared against it would fail too,
++    cascading one bad value into a whole-run failure by a second route.
++    """
++    for name in ("header_ra", "header_dec"):
++        v = row[name]
++        if isinstance(v, bool) or not isinstance(v, (int, float)):
++            raise ValueError(
++                f"{name} is {v!r} ({type(v).__name__}), not a number -- "
++                f"a value SQLite stored in a numeric column without "
++                f"converting it (see inventory._coerce_numeric)")
++    return float(row["header_ra"]), float(row["header_dec"])
++
+ 
+ def angular_separation(ra1, dec1, ra2, dec2) -> float:
+     p1, p2 = math.radians(dec1), math.radians(dec2)
+     dl = math.radians(ra2 - ra1)
+     v = (math.sin(p1) * math.sin(p2) +
+          math.cos(p1) * math.cos(p2) * math.cos(dl))
+     return math.degrees(math.acos(max(-1.0, min(1.0, v))))
+ 
+ 
+ def frame_fov_deg(row) -> tuple[float, float]:
+@@ -101,48 +132,79 @@ def assign_fields(conn, fp_threshold: int = FP_THRESHOLD_DEFAULT) -> int:
+       - Structural guarantee: the candidate query below only ever selects
+         frames with field_id IS NULL, so a frame is never re-evaluated,
+         and never reassigned, once it has been assigned a field_id. This
+         holds regardless of representative selection.
+       - Convergence: `reps` is seeded from fields already in the database
+         (see `_seed_reps`) before the clustering loop runs, so a NEW frame
+         still matches the same field a single full run would have put it
+         in, rather than spawning a duplicate.
+     Returns the number of NEW fields created by this call (0 on a re-run
+     that finds nothing new to cluster).
++
++    Resilient to an unusable row: a frame whose pointing or fingerprint
++    cannot be used is skipped, recorded, and reported by raising
++    ClusteringError AFTER the rest of the run has been committed.
++    Previously the single commit at the end meant one bad value among
++    34,000 frames aborted the pass and discarded the ENTIRE run's work
++    (verified: 3 frames, 1 bad -> TypeError, 0 fields and 0 assignments
++    persisted). The failure is still loud -- it just no longer costs
++    every other frame its clustering.
+     """
+     prev_factory = conn.row_factory
+     conn.row_factory = sqlite3.Row
+     try:
+         reps = _seed_reps(conn)
+         created = 0
++        failures: list[tuple[str, str]] = []
+ 
+         rows = conn.execute(
+             "SELECT * FROM frames WHERE frame_type='light' "
+             "AND fingerprint IS NOT NULL AND header_ra IS NOT NULL "
+             "AND header_dec IS NOT NULL AND field_id IS NULL "
+             "ORDER BY content_hash").fetchall()
+ 
+         for row in rows:
+-            fov_w, fov_h = frame_fov_deg(row)
+-            tol = max(fov_w, fov_h)
+-            match = None
+-            for rep in reps:
+-                if hamming(row["fingerprint"], rep["fingerprint"]) > fp_threshold:
+-                    continue
+-                if angular_separation(row["header_ra"], row["header_dec"],
+-                                      rep["ra"], rep["dec"]) > tol:
+-                    continue
+-                match = rep
+-                break
++            # Everything that can fail on this row happens before
++            # anything is written for it, so a failure leaves neither an
++            # orphan field nor a half-assigned frame.
++            try:
++                ra, dec = _pointing(row)
++                fov_w, fov_h = frame_fov_deg(row)
++                tol = max(fov_w, fov_h)
++                match = None
++                for rep in reps:
++                    if hamming(row["fingerprint"],
++                               rep["fingerprint"]) > fp_threshold:
++                        continue
++                    if angular_separation(ra, dec,
++                                          rep["ra"], rep["dec"]) > tol:
++                        continue
++                    match = rep
++                    break
++            except Exception as exc:
++                failures.append((row["content_hash"],
++                                 f"{type(exc).__name__}: {exc}"))
++                continue
++
+             if match is None:
+                 cur = conn.execute(
+                     "INSERT INTO fields (solve_source) VALUES ('none')")
+                 match = {"id": cur.lastrowid, "fingerprint": row["fingerprint"],
+-                         "ra": row["header_ra"], "dec": row["header_dec"]}
++                         "ra": ra, "dec": dec}
+                 reps.append(match)
+                 created += 1
+             conn.execute("UPDATE frames SET field_id=? WHERE content_hash=?",
+                          (match["id"], row["content_hash"]))
+         conn.commit()
++        if failures:
++            shown = failures[:MAX_REPORTED_FAILURES]
++            more = len(failures) - len(shown)
++            detail = "; ".join(f"{h}: {why}" for h, why in shown)
++            if more:
++                detail += f"; ... and {more} more"
++            raise ClusteringError(
++                f"{len(failures)} frame(s) could not be clustered and were "
++                f"left unassigned. This call's other work was committed "
++                f"first: {created} new field(s) created. Failures: {detail}")
+         return created
+     finally:
+         conn.row_factory = prev_factory
+diff --git a/src/astrometa/db.py b/src/astrometa/db.py
+index 43dc1fd..822b1f0 100644
+--- a/src/astrometa/db.py
++++ b/src/astrometa/db.py
+@@ -3,25 +3,37 @@ from pathlib import Path
+ 
+ SCHEMA = """
+ CREATE TABLE IF NOT EXISTS frames (
+   content_hash TEXT PRIMARY KEY,
+   path TEXT NOT NULL, filename TEXT NOT NULL,
+   size INTEGER NOT NULL, mtime REAL NOT NULL,
+   first_seen TEXT, last_seen TEXT,
+   frame_type TEXT NOT NULL,
+   camera TEXT, filter TEXT, exptime REAL, binning INTEGER,
+   gain REAL, ccd_temp REAL, captured_at TEXT,
++  -- The OBJECT card as written in the header, and the name of the
++  -- directory the frame sits in. Neither is an identity claim: both
++  -- are the operator's own labelling, kept verbatim so spec 6.7 can
++  -- cross-check a solved identity against them without a second
++  -- 34,000-file header read, and so grouping has a per-frame target
++  -- name to fall back on while object_id is still unresolved.
++  object_card TEXT, leaf_dir TEXT,
+   header_ra REAL, header_dec REAL, focallen REAL, xpixsz REAL,
+   naxis1 INTEGER, naxis2 INTEGER,
+   fingerprint TEXT, bg_median REAL, saturated_frac REAL,
+   field_id INTEGER REFERENCES fields(id),
+-  disposition TEXT NOT NULL,
++  -- These three values are a contract across inventory, disposition,
++  -- manifest and quality, and inventory's rescan guard compares a
++  -- bare literal (CASE WHEN disposition='quarantined'). A typo
++  -- anywhere would silently defeat that guard rather than fail.
++  disposition TEXT NOT NULL
++    CHECK (disposition IN ('present', 'missing', 'quarantined')),
+   disposition_reason TEXT, disposition_at TEXT, disposition_source TEXT,
+   read_error TEXT
+ );
+ CREATE INDEX IF NOT EXISTS idx_frames_path ON frames(path);
+ CREATE INDEX IF NOT EXISTS idx_frames_field ON frames(field_id);
+ CREATE INDEX IF NOT EXISTS idx_frames_type ON frames(frame_type);
+ 
+ CREATE TABLE IF NOT EXISTS fields (
+   id INTEGER PRIMARY KEY AUTOINCREMENT,
+   solved_ra REAL, solved_dec REAL,
+@@ -45,30 +57,56 @@ CREATE TABLE IF NOT EXISTS aliases (
+   PRIMARY KEY (object_id, alias)
+ );
+ 
+ CREATE TABLE IF NOT EXISTS identity_assertions (
+   id INTEGER PRIMARY KEY AUTOINCREMENT,
+   field_id INTEGER NOT NULL REFERENCES fields(id),
+   object_id INTEGER NOT NULL REFERENCES objects(id),
+   source TEXT NOT NULL, confidence TEXT NOT NULL, asserted_at TEXT NOT NULL
+ );
+ 
++-- Historical culls recorded independently of any frame row.
++--
++-- The 39 IC 59 frames culled on 2026-09-07 exist on neither the live
++-- NAS nor the ZFS backup (verified 2026-09-09: both hold 91 frames,
++-- HaO3 indices stopping at 0018 while the culled range is 0019-0040).
++-- They survive only on the camera, which is not one of the store's
++-- roots, so there is no frames row to carry their disposition and there
++-- may never be one. Fabricating a frames row with an invented
++-- content_hash would corrupt the store's central identity claim -- the
++-- primary key means "the bytes of this file" -- so the knowledge lives
++-- here instead, keyed on the cull pattern.
++CREATE TABLE IF NOT EXISTS known_culls (
++  pattern TEXT PRIMARY KEY,
++  reason TEXT NOT NULL,
++  recorded_at TEXT NOT NULL,
++  matched INTEGER NOT NULL DEFAULT 0
++);
++
+ CREATE TABLE IF NOT EXISTS quality (
+   content_hash TEXT PRIMARY KEY REFERENCES frames(content_hash),
+   star_count INTEGER, hfd_median REAL, sky_background REAL, measured_at TEXT
+ );
+ 
+ CREATE TABLE IF NOT EXISTS projects (
+   id INTEGER PRIMARY KEY AUTOINCREMENT,
+   object_id INTEGER REFERENCES objects(id),
+   filter TEXT, kind TEXT NOT NULL,
+-  started_at TEXT, ended_at TEXT
++  started_at TEXT, ended_at TEXT,
++  -- How this project's target was identified, and under what name.
++  -- object_id is authoritative when set; until it is, grouping falls
++  -- back to a per-frame identity and records which one it used, so a
++  -- fallback label is never mistaken for a solved one. Mirrors the
++  -- confidence model in spec 7: 'object' (authoritative), 'object_card'
++  -- (medium), 'dirname' (low), 'unknown'. identity_name is NULL when
++  -- object_id carries the identity, and when there was none to find.
++  identity_name TEXT, identity_source TEXT
+ );
+ 
+ CREATE TABLE IF NOT EXISTS frame_projects (
+   content_hash TEXT NOT NULL REFERENCES frames(content_hash),
+   project_id INTEGER NOT NULL REFERENCES projects(id),
+   panel TEXT,
+   PRIMARY KEY (content_hash, project_id)
+ );
+ """
+ 
+diff --git a/src/astrometa/disposition.py b/src/astrometa/disposition.py
+index e4b4903..791f6b7 100644
+--- a/src/astrometa/disposition.py
++++ b/src/astrometa/disposition.py
+@@ -60,29 +60,44 @@ generic -- the real historical list (39 IC 59 frames, night of
+ supply it. That real list is itself a trap for a careless pattern: its
+ Lqef and HaO3 filter sub-lists overlap on frame index (0038, 0039, 0040
+ appear in both), so a `filename LIKE` pattern keyed on index alone would
+ over-match across filters and quarantine the wrong frame. Patterns must
+ include the filter token, not just the index -- see
+ tests/test_disposition.py for a case proving two same-index,
+ different-filter frames are told apart.
+ """
+ import shutil
+ import sqlite3
++from dataclasses import dataclass, field
+ from datetime import datetime, timezone
+ from pathlib import Path
+ from statistics import median, pstdev
+ 
+ # session_thresholds constants, per the task brief.
+ HFD_SIGMA = 2.0
+ ABSOLUTE_HFD_FLOOR = 10.0
+ 
+ 
++@dataclass
++class BackfillResult:
++    """The outcome of one backfill_known_culls run.
++
++    A bare pair count could not distinguish "nothing to do" from "the
++    cull list matched nothing at all", which is precisely the case this
++    project exists for -- see backfill_known_culls.
++    """
++    applied: int = 0             # (pattern, frame) pairs actually recorded
++    matched: int = 0             # patterns matching at least one frame
++    unmatched: int = 0           # patterns matching no frame at all
++    unmatched_patterns: list[str] = field(default_factory=list)
++
++
+ def _now() -> str:
+     return datetime.now(timezone.utc).isoformat()
+ 
+ 
+ def mark_missing(conn: sqlite3.Connection, seen_hashes: set[str]) -> int:
+     """
+     Flip every currently-`present` frame absent from `seen_hashes` to
+     `missing`. Never deletes a row and never touches a frame that is
+     already `missing` or `quarantined` -- only `present` frames are
+     candidates, so a frame already dispositioned keeps its recorded
+@@ -251,35 +266,67 @@ def session_thresholds(hfds: list[float]) -> tuple[float, float]:
+     number rather than trusting statistics computed from noise.
+     """
+     vals = [v for v in hfds if v is not None]
+     if len(vals) < 3:
+         return ABSOLUTE_HFD_FLOOR, ABSOLUTE_HFD_FLOOR
+     med = median(vals)
+     sd = pstdev(vals) or 0.0
+     return med + HFD_SIGMA * sd, ABSOLUTE_HFD_FLOOR
+ 
+ 
+-def backfill_known_culls(conn: sqlite3.Connection, culls: list[dict]) -> int:
++def backfill_known_culls(conn: sqlite3.Connection,
++                          culls: list[dict]) -> BackfillResult:
+     """
+     Apply a list of {"filename_like": ..., "reason": ...} historical cull
+-    records to matching frames via mark_culled(source="manual").
++    records to matching frames via mark_culled(source="manual"), and
++    record every cull entry in `known_culls` whether or not it matched.
+ 
+     Generic and data-free by design -- see module docstring for why the
+     real cull list stays out of this source file, and why each pattern
+     must include the filter token (not just the frame index) to avoid
+     over-matching across filters that happen to share an index.
+ 
+-    Returns the number of (pattern, matching frame) pairs applied. A
+-    frame already quarantined that matches again (e.g. this is run
+-    twice) is counted and re-recorded, not skipped -- mark_culled is
+-    idempotent (it just rewrites the same reason/source), so re-running
+-    this is safe, but the count reports matches made, not "newly
+-    culled".
++    A pattern matching ZERO frames is the case this whole project exists
++    for, and it must never look like "nothing to do". The 39 IC 59
++    frames culled on 2026-09-07 are absent from both the live NAS and
++    the ZFS backup (verified 2026-09-09: both hold 91 frames, HaO3
++    indices stopping at 0018 while the culled range is 0019-0040) --
++    they survive only on the camera, which is not one of the store's
++    roots. There is therefore no frames row to UPDATE, and an
++    UPDATE-only implementation returned 0 having silently done nothing.
++    The returned BackfillResult reports matched AND unmatched counts and
++    names every unmatched pattern, and the cull itself is persisted in
++    `known_culls` so the knowledge exists independently of any frame
++    row -- since there may never be one.
++
++    No frames row is ever synthesised for a file that exists nowhere:
++    content_hash means "the bytes of this file", and inventing one would
++    corrupt the store's central identity claim.
++
++    Idempotent. Re-running rewrites the same disposition (mark_culled
++    just rewrites the same reason/source) and upserts one `known_culls`
++    row per pattern, refreshing `matched` so the record self-corrects if
++    a frame later turns up. `recorded_at` is preserved across re-runs --
++    it records when this knowledge was first written down, not when it
++    was last re-applied.
+     """
+-    n = 0
++    res = BackfillResult()
+     for c in culls:
+-        for (h,) in conn.execute(
+-                "SELECT content_hash FROM frames WHERE filename LIKE ?",
+-                (c["filename_like"],)).fetchall():
++        pattern = c["filename_like"]
++        hashes = [h for (h,) in conn.execute(
++            "SELECT content_hash FROM frames WHERE filename LIKE ?",
++            (pattern,)).fetchall()]
++        for h in hashes:
+             mark_culled(conn, h, c["reason"], "manual")
+-            n += 1
+-    return n
++        res.applied += len(hashes)
++        if hashes:
++            res.matched += 1
++        else:
++            res.unmatched += 1
++            res.unmatched_patterns.append(pattern)
++        conn.execute("""INSERT INTO known_culls
++            (pattern, reason, recorded_at, matched) VALUES (?,?,?,?)
++            ON CONFLICT(pattern) DO UPDATE SET
++              reason=excluded.reason, matched=excluded.matched""",
++            (pattern, c["reason"], _now(), len(hashes)))
++    conn.commit()
++    return res
+diff --git a/src/astrometa/grouping.py b/src/astrometa/grouping.py
+index 29b716a..48d5391 100644
+--- a/src/astrometa/grouping.py
++++ b/src/astrometa/grouping.py
+@@ -1,15 +1,24 @@
+ r"""
+ Session and project grouping: bucket light frames by (object, filter,
+ night) into `projects`, distinguishing a single-pointing session from a
+ multi-panel mosaic campaign.
+ 
++"Object" here is fields.object_id when it is resolved and a recorded
++per-frame fallback while it is not -- see `frame_identity`. That
++fallback is load-bearing rather than defensive: nothing populates
++object_id yet (live SIMBAD resolution is deferred), so bucketing on it
++alone put every target shot on one night with one filter into a single
++"project". Each project records which identity named it, so a
++directory- or OBJECT-card-derived label is never mistaken for a solved
++one.
++
+ The dusk rule (session_date) fixes a repeated real-world failure:
+ imaging sessions cross midnight, so a run starting at 01:39 carries only
+ the NEXT day's datestamp in its filename. A naive date filter then
+ mis-files or re-pulls a whole night's data. Folders in this archive are
+ named for the night a session STARTED, so an instant before dusk_hour
+ (default 17:00) is folded back onto the previous calendar day -- this
+ was verified against a real session (SH2-129, 2026-07): 100 frames
+ captured 22:54-01:39 all carrying the following day's datestamp, which
+ must land in one project rather than two.
+ 
+@@ -33,33 +42,53 @@ build_projects is idempotent by full rebuild, not by dedup-on-insert:
+ `projects` and `frame_projects` are wholly derived from `frames`, so
+ clearing and reinserting them from scratch on every call is
+ deterministic given the same frame data, and needs no schema change.
+ Deduplicating on (object_id, filter, started_at) was considered and
+ rejected -- started_at is the MINIMUM capture instant in a bucket, which
+ shifts whenever frames captured earlier the same night are pulled in on
+ a later incremental run, so it isn't a stable key across runs.
+ """
+ import re
+ import sqlite3
++from dataclasses import dataclass
+ from datetime import date, datetime, timedelta
+ 
++@dataclass
++class GroupingResult:
++    """What one build_projects rebuild produced.
++
++    A bare project count hid two things worth seeing: how each bucket's
++    target was identified, and how many frames were dropped for having
++    no parseable capture instant.
++    """
++    projects: int = 0
++    # Light frames dropped from every project because their filename
++    # carries no `_YYYYMMDD-HHMMSS_` token. Legitimately unplaceable
++    # (ASIAIR autosaves have no capture stamp anywhere), but silence
++    # made a frame vanishing from the grouping indistinguishable from
++    # there being nothing to place.
++    skipped_no_capture_instant: int = 0
++
++
+ _INSTANT = re.compile(r"_(\d{8})-(\d{6})_")
+ _PANEL = re.compile(r"_(\d+-\d+)_\d+(?:\.\d+)?s_")
+ 
+ 
+ def capture_instant(filename: str) -> datetime | None:
+     """Parse the `_YYYYMMDD-HHMMSS_` capture timestamp out of a filename.
+ 
+     Returns None when the pattern is absent -- a frame with no parseable
+     capture instant is legitimately skipped by build_projects, not an
+     error, since not every file in the archive carries this stamp (e.g.
+-    ASIAIR autosave files).
++    ASIAIR autosave files). build_projects counts those skips and
++    reports them (GroupingResult.skipped_no_capture_instant) so
++    "legitimately skipped" never means "silently gone".
+     """
+     m = _INSTANT.search(filename)
+     if not m:
+         return None
+     return datetime.strptime(m.group(1) + m.group(2), "%Y%m%d%H%M%S")
+ 
+ 
+ def session_date(instant: datetime, dusk_hour: int = 17) -> date:
+     """Which night `instant` belongs to, folding pre-dusk hours back a day.
+ 
+@@ -82,66 +111,109 @@ def panel_of(filename: str) -> str | None:
+     itself contains a digit-hyphen-digit run (e.g. `Sh2-106`) is never
+     mistaken for a panel tag -- the exposure-time suffix immediately
+     after the candidate is required. Row/col each match one or more
+     digits, not exactly one: real panels in this archive run into double
+     digits (M42 has panels up to `8-12`).
+     """
+     m = _PANEL.search(filename)
+     return m.group(1) if m else None
+ 
+ 
+-def build_projects(conn) -> int:
++def frame_identity(object_id, object_card, leaf_dir) -> tuple[str | None, str]:
++    """
++    The target identity to bucket one frame on, and where it came from.
++
++    `object_id` is authoritative when set, and the returned name is then
++    None -- the FK carries the identity, and two differently-spelled
++    directories for one resolved object (M31 and M 31 are real sibling
++    directories here) must still land in one project.
++
++    Nothing populates fields.object_id yet: live SIMBAD resolution is
++    deliberately deferred, so in practice object_id is NULL for every
++    frame in the archive today. Bucketing on it alone therefore put
++    EVERY target shot on one night with one filter into a single
++    "project". The fallbacks are the OBJECT card and then the leaf
++    directory name -- both are the target name in practice -- and the
++    source is recorded alongside so a fallback label is never mistaken
++    for a solved one. Per spec 7 neither may ever drive a Phase 2 move.
++    """
++    if object_id is not None:
++        return None, "object"
++    if object_card:
++        return object_card, "object_card"
++    if leaf_dir:
++        return leaf_dir, "dirname"
++    return None, "unknown"
++
++
++def build_projects(conn) -> GroupingResult:
+     """
+     Rebuild `projects` and `frame_projects` from `frames`, grouping light
+     frames into per-night sessions (or multi-panel mosaics) keyed on
+-    (object_id, filter, session_date(capture_instant)).
++    (object identity, filter, session_date(capture_instant)) -- where the
++    object identity is fields.object_id when resolved and a recorded
++    per-frame fallback (see `frame_identity`) while it is not.
+ 
+     Idempotent: this is a full rebuild of both tables (see module
+     docstring), so calling it repeatedly with unchanged frame data
+     reproduces the same projects and memberships every time, and calling
+     it after new frames were added folds them into the correct existing
+     night rather than creating a duplicate project for it.
+ 
+-    Returns the number of projects in the rebuilt table (not just those
+-    newly created -- a full rebuild has no such distinction).
++    Returns a GroupingResult, not a bare count -- see its docstring.
++    A frame with no parseable capture instant is skipped, as before, but
++    now counted and reported rather than dropped in silence.
+     """
+     prev_factory = conn.row_factory
+     conn.row_factory = sqlite3.Row
+     try:
+         rows = conn.execute(
+-            "SELECT f.content_hash, f.filename, f.filter, fl.object_id "
++            "SELECT f.content_hash, f.filename, f.filter, f.object_card, "
++            "f.leaf_dir, fl.object_id "
+             "FROM frames f LEFT JOIN fields fl ON fl.id = f.field_id "
+             "WHERE f.frame_type = 'light'").fetchall()
+ 
+         buckets: dict[tuple, list] = {}
++        identity_sources: dict[tuple, str] = {}
++        skipped = 0
+         for r in rows:
+             inst = capture_instant(r["filename"])
+             if inst is None:
+-                continue  # no parseable capture instant -- skip, not an error
+-            key = (r["object_id"], r["filter"], session_date(inst))
++                # Not an error -- but counted, never silent.
++                skipped += 1
++                continue
++            identity_name, identity_source = frame_identity(
++                r["object_id"], r["object_card"], r["leaf_dir"])
++            key = (r["object_id"], identity_name, r["filter"],
++                   session_date(inst))
++            identity_sources[key] = identity_source
+             buckets.setdefault(key, []).append(
+                 (r["content_hash"], panel_of(r["filename"]), inst))
+ 
+         # Full rebuild: both tables are wholly derived from frames, so
+         # clearing and reinserting is deterministic and idempotent by
+         # construction. frame_projects first -- it references projects.
+         conn.execute("DELETE FROM frame_projects")
+         conn.execute("DELETE FROM projects")
+ 
+-        for (object_id, filt, _session_date), members in buckets.items():
++        for key, members in buckets.items():
++            object_id, identity_name, filt, _session_date = key
++            identity_source = identity_sources[key]
+             kind = "mosaic" if any(p for _, p, _ in members) else "session"
+             instants = [i for _, _, i in members]
+             cur = conn.execute(
+                 "INSERT INTO projects (object_id, filter, kind, started_at, "
+-                "ended_at) VALUES (?,?,?,?,?)",
++                "ended_at, identity_name, identity_source) "
++                "VALUES (?,?,?,?,?,?,?)",
+                 (object_id, filt, kind, min(instants).isoformat(),
+-                 max(instants).isoformat()))
++                 max(instants).isoformat(), identity_name, identity_source))
+             pid = cur.lastrowid
+             for chash, panel, _inst in members:
+                 conn.execute(
+                     "INSERT OR REPLACE INTO frame_projects (content_hash, "
+                     "project_id, panel) VALUES (?,?,?)",
+                     (chash, pid, panel))
+         conn.commit()
+-        return len(buckets)
++        return GroupingResult(projects=len(buckets),
++                              skipped_no_capture_instant=skipped)
+     finally:
+         conn.row_factory = prev_factory
+diff --git a/src/astrometa/inventory.py b/src/astrometa/inventory.py
+index 1da3d05..42bb356 100644
+--- a/src/astrometa/inventory.py
++++ b/src/astrometa/inventory.py
+@@ -1,18 +1,19 @@
+ from dataclasses import dataclass, field as dc_field
+ from datetime import datetime, timezone
+ from pathlib import Path
+ 
+ from astropy.io import fits
+ 
+ from . import fitsheader, imagekeys
+ from .classify import classify
++from .grouping import capture_instant
+ from .config import EXCLUDED_PATH_MARKERS
+ 
+ 
+ @dataclass
+ class InventoryResult:
+     added: int = 0
+     updated: int = 0
+     failed: int = 0
+     seen_hashes: set = dc_field(default_factory=set)
+ 
+@@ -64,72 +65,244 @@ def _read_pixels(path: Path) -> tuple[str | None, float | None, float | None, st
+     """
+     try:
+         data = fits.getdata(path, memmap=False)
+         fp = imagekeys.fingerprint(data)
+         bg, sat = imagekeys.pixel_stats(data)
+         return fp, bg, sat, None
+     except Exception as exc:                       # loud, never silent
+         return None, None, None, f"pixels: {type(exc).__name__}: {exc}"
+ 
+ 
++# Header cards that must land in a numeric column, and what they must
++# become. fitsheader._parse_value returns whatever a card happens to
++# parse to, and SQLite's REAL/INTEGER affinity does NOT reject a value
++# it cannot convert -- it stores the string as TEXT. That text survives
++# the whole inventory pass silently and only surfaces much later, as a
++# TypeError inside cluster.assign_fields, which is exactly the place it
++# does the most damage. Coerce here, at the point of reading, and record
++# a failure loudly when a value will not coerce.
++#
++# Measured 2026-09-09 across a 200-frame archive-wide sample: every `RA`
++# card is already a bare decimal, so today's trigger is not present --
++# the sexagesimal form appears only under `OBJCTRA`, which nothing here
++# reads. This archive spans seven cameras and three naming eras, so the
++# guard is kept regardless; sexagesimal is deliberately NOT parsed into
++# a decimal, because inventing a value for a card this code does not
++# claim to understand is precisely the silent fallback the project
++# rules forbid.
++_NUMERIC_HEADER_FIELDS: dict[str, type] = {
++    "EXPTIME": float, "RA": float, "DEC": float,
++    "FOCALLEN": float, "XPIXSZ": float,
++    "NAXIS1": int, "NAXIS2": int,
++}
++
++
++def _coerce_numeric(header: dict) -> tuple[dict, str | None]:
++    """
++    Coerce the numeric header cards, returning (values, error).
++
++    A card that is absent is None and is not an error. A card that will
++    not coerce is recorded in the error string and stored as None --
++    never as text in a numeric column. Booleans are rejected outright:
++    Python would happily coerce a FITS `T` card to 1.0, inventing a
++    pointing out of a flag.
++    """
++    values: dict[str, float | int | None] = {}
++    bad: list[str] = []
++    for card, caster in _NUMERIC_HEADER_FIELDS.items():
++        v = header.get(card)
++        if v is None:
++            values[card] = None
++        elif isinstance(v, bool):
++            values[card] = None
++            bad.append(f"{card}={v!r} (boolean, not a number)")
++        else:
++            try:
++                values[card] = caster(v)
++            except (TypeError, ValueError) as exc:
++                values[card] = None
++                bad.append(f"{card}={v!r} ({type(exc).__name__})")
++    if not bad:
++        return values, None
++    return values, "numeric: uncoercible header value(s): " + "; ".join(bad)
++
++
++def _captured_at(header: dict, filename: str) -> str | None:
++    """
++    The frame's capture instant: DATE-OBS, falling back to the
++    `_YYYYMMDD-HHMMSS_` token in the filename (spec 7).
++
++    The fallback is not cosmetic. Without it a frame whose header
++    carries no DATE-OBS has no capture instant on record anywhere, so it
++    can never be placed in a session or project. Nothing is invented:
++    when neither source has one, this is None.
++
++    The filename parser is grouping.capture_instant -- the same one
++    grouping itself buckets on -- rather than a second copy of the
++    regex, so the two can never disagree about what a capture instant is.
++    """
++    v = header.get("DATE-OBS")
++    if isinstance(v, str) and v.strip():
++        return v.strip()
++    if v is not None and not isinstance(v, str):
++        return str(v)
++    inst = capture_instant(filename)
++    return inst.isoformat() if inst else None
++
++
++def _object_card(header: dict) -> str | None:
++    """
++    The OBJECT card as a string, or None when absent or blank.
++
++    Coerced rather than passed through: fitsheader._parse_value returns
++    whatever a card parses to, and an unquoted numeric OBJECT (a target
++    written as a bare catalogue number) would otherwise land in a TEXT
++    column as an int. This is the operator's own label, never an
++    identity claim -- it is stored verbatim, not canonicalised.
++    """
++    v = header.get("OBJECT")
++    if v is None:
++        return None
++    s = v.strip() if isinstance(v, str) else str(v)
++    return s or None
++
++
+ def scan(conn, roots, read_pixels: bool = True) -> InventoryResult:
+     res = InventoryResult()
+     for path in _iter_fits(roots):
+         stat = path.stat()
+         chash = imagekeys.content_hash(path)
+         res.seen_hashes.add(chash)
+         existing = conn.execute(
+             "SELECT 1 FROM frames WHERE content_hash=?", (chash,)).fetchone()
+ 
+         # Header and pixel reads are independent: one failing must not
+         # discard data the other successfully recovered.
+         header, header_err = _read_header(path)
++        nums, numeric_err = _coerce_numeric(header)
+ 
+         fp, bg, sat, pixel_err = None, None, None, None
+         if read_pixels:
+             fp, bg, sat, pixel_err = _read_pixels(path)
+ 
+-        errors = [e for e in (header_err, pixel_err) if e]
++        errors = [e for e in (header_err, numeric_err, pixel_err) if e]
+         err = "; ".join(errors) if errors else None
+         if errors:
+             res.failed += 1
+ 
++        # The upsert refreshes EVERY column a scan derives, not just
++        # path/last_seen/disposition/read_error. A row can reach this
++        # table by a route other than a successful scan -- manifest
++        # restore (which carries no header_ra/focallen/naxis/bg_median),
++        # or a scan whose pixel read failed -- and if the update clause
++        # skipped those columns, no number of rescans could ever fill
++        # them. That silently defeated two things measured in review:
++        # a manifest-restored store could never be clustered (
++        # cluster.assign_fields requires header_ra/header_dec/
++        # fingerprint), and a frame that recovered from a transient
++        # pixel-read failure had read_error cleared to NULL while
++        # fingerprint/bg_median/saturated_frac stayed NULL -- dropping
++        # out of clustering with nothing left on record to say why.
++        #
++        # Which columns update is gated on WHICH READ SUCCEEDED, not
++        # written blindly from `excluded`: the header read and the pixel
++        # read are independent (see _read_header/_read_pixels), so a
++        # later transient failure must not overwrite good values with
++        # NULL. Nulling a fingerprint would drop that frame from
++        # cluster._seed_reps -- which only considers non-null
++        # fingerprints as field representatives -- and spawn duplicate
++        # fields on the next run.
++        #
++        # first_seen is deliberately absent from the update clause: it
++        # records when this content_hash was FIRST inventoried and must
++        # survive every rescan.
++        #
+         # Ownership split enforced here: scan() owns the present/missing
+         # transition (a rescan may legitimately move a frame back to
+         # 'present', e.g. one disposition.mark_missing() previously
+         # flagged), but it must never overwrite 'quarantined' -- that
+         # disposition is the operator's/quality gate's, recorded via
+         # disposition.mark_culled()/quarantine(). Without the CASE guard,
+         # quarantine() moving a file into its sibling rejected/ dir (still
+         # under the scanned root) would get walked right back into by the
+         # next scan and silently flipped back to 'present', erasing the
+         # cull -- unqualified `disposition` on the right of the CASE reads
+         # the pre-existing row's value (SQLite UPSERT semantics), not the
+         # value this INSERT would have written. path/last_seen/read_error
+         # still update unconditionally: relocating a quarantined frame's
+         # recorded path to where it now actually lives is useful, not
+         # a disposition change.
+         conn.execute("""
+             INSERT INTO frames (content_hash, path, filename, size, mtime,
+                 first_seen, last_seen, frame_type, camera, filter, exptime,
+-                captured_at, header_ra, header_dec, focallen, xpixsz,
++                captured_at, object_card, leaf_dir,
++                header_ra, header_dec, focallen, xpixsz,
+                 naxis1, naxis2, fingerprint, bg_median, saturated_frac,
+                 disposition, read_error)
+-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'present',?)
++            VALUES (:chash, :path, :filename, :size, :mtime,
++                :now, :now, :frame_type, :camera, :filter, :exptime,
++                :captured_at, :object_card, :leaf_dir,
++                :header_ra, :header_dec, :focallen, :xpixsz,
++                :naxis1, :naxis2, :fingerprint, :bg_median, :saturated_frac,
++                'present', :read_error)
+             ON CONFLICT(content_hash) DO UPDATE SET
+-                path=excluded.path, last_seen=excluded.last_seen,
++                path=excluded.path,
++                filename=excluded.filename,
++                size=excluded.size,
++                mtime=excluded.mtime,
++                last_seen=excluded.last_seen,
++                frame_type=excluded.frame_type,
++                camera=CASE WHEN :header_ok THEN excluded.camera
++                            ELSE camera END,
++                filter=CASE WHEN :header_ok THEN excluded.filter
++                            ELSE filter END,
++                exptime=CASE WHEN :header_ok THEN excluded.exptime
++                             ELSE exptime END,
++                captured_at=CASE WHEN :header_ok THEN excluded.captured_at
++                                 ELSE captured_at END,
++                object_card=CASE WHEN :header_ok THEN excluded.object_card
++                                 ELSE object_card END,
++                leaf_dir=excluded.leaf_dir,
++                header_ra=CASE WHEN :header_ok THEN excluded.header_ra
++                               ELSE header_ra END,
++                header_dec=CASE WHEN :header_ok THEN excluded.header_dec
++                                ELSE header_dec END,
++                focallen=CASE WHEN :header_ok THEN excluded.focallen
++                              ELSE focallen END,
++                xpixsz=CASE WHEN :header_ok THEN excluded.xpixsz
++                            ELSE xpixsz END,
++                naxis1=CASE WHEN :header_ok THEN excluded.naxis1
++                            ELSE naxis1 END,
++                naxis2=CASE WHEN :header_ok THEN excluded.naxis2
++                            ELSE naxis2 END,
++                fingerprint=CASE WHEN :pixel_ok THEN excluded.fingerprint
++                                 ELSE fingerprint END,
++                bg_median=CASE WHEN :pixel_ok THEN excluded.bg_median
++                               ELSE bg_median END,
++                saturated_frac=CASE WHEN :pixel_ok
++                                    THEN excluded.saturated_frac
++                                    ELSE saturated_frac END,
+                 disposition=CASE WHEN disposition='quarantined'
+                                   THEN disposition ELSE 'present' END,
+                 read_error=excluded.read_error
+-        """, (chash, str(path), path.name, stat.st_size, stat.st_mtime,
+-              _now(), _now(), classify(path.name, header),
+-              header.get("INSTRUME"), header.get("FILTER"),
+-              header.get("EXPTIME"), header.get("DATE-OBS"),
+-              header.get("RA"), header.get("DEC"), header.get("FOCALLEN"),
+-              header.get("XPIXSZ"), header.get("NAXIS1"), header.get("NAXIS2"),
+-              fp, bg, sat, err))
++        """, {
++            "chash": chash, "path": str(path), "filename": path.name,
++            "size": stat.st_size, "mtime": stat.st_mtime, "now": _now(),
++            "frame_type": classify(path.name, header),
++            "camera": header.get("INSTRUME"), "filter": header.get("FILTER"),
++            "exptime": nums["EXPTIME"],
++            "captured_at": _captured_at(header, path.name),
++            "object_card": _object_card(header), "leaf_dir": path.parent.name,
++            "header_ra": nums["RA"], "header_dec": nums["DEC"],
++            "focallen": nums["FOCALLEN"], "xpixsz": nums["XPIXSZ"],
++            "naxis1": nums["NAXIS1"], "naxis2": nums["NAXIS2"],
++            "fingerprint": fp, "bg_median": bg, "saturated_frac": sat,
++            "read_error": err,
++            "header_ok": 1 if header_err is None else 0,
++            "pixel_ok": 1 if (read_pixels and pixel_err is None) else 0,
++        })
+         if existing:
+             res.updated += 1
+         else:
+             res.added += 1
+     conn.commit()
+     return res
+diff --git a/tests/test_cli.py b/tests/test_cli.py
+index de3eeb2..5e26c20 100644
+--- a/tests/test_cli.py
++++ b/tests/test_cli.py
+@@ -1,10 +1,11 @@
++import sqlite3
+ import stat
+ from pathlib import Path
+ 
+ import numpy as np
+ import pytest
+ from astropy.io import fits
+ 
+ from astrometa import cli, manifest
+ from astrometa.config import Config
+ 
+@@ -20,20 +21,32 @@ def _write_light(path, object_name="M 42", ra=83.8, dec=-5.4, seed=3):
+ 
+ 
+ def _stub(tmp_path, source, name):
+     p = tmp_path / name
+     p.write_text(source)
+     mode = p.stat().st_mode
+     p.chmod(mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+     return p
+ 
+ 
++def _use_roots(monkeypatch, tmp_path, archive, live):
++    """Point cli.Config's archive/live roots at test directories.
++
++    A scan that passes no --root walks exactly these two, which is the
++    condition under which the whole-database missing sweep is allowed to
++    run (see cli.main).
++    """
++    fake = Config(archive_root=archive, live_root=live,
++                  scratch_dir=tmp_path / "scratch")
++    monkeypatch.setattr(cli, "Config", lambda: fake)
++    return fake
++
+ # Stub astap_cli for -wcs solving: writes a solved .ini next to whatever
+ # path it was given via -f, ignoring every other argument. Good enough to
+ # exercise the CLI's wiring to solve.solve_fields without depending on a
+ # real star database.
+ _SOLVE_STUB = '''#!/usr/bin/env python3
+ import sys
+ from pathlib import Path
+ argv = sys.argv[1:]
+ f_path = Path(argv[argv.index("-f") + 1])
+ f_path.with_suffix(".ini").write_text(
+@@ -72,35 +85,48 @@ def test_missing_db_flag_returns_nonzero(tmp_path):
+ def test_scan_missing_root_raises_loudly(tmp_path):
+     # inventory.scan raises FileNotFoundError for a missing root -- the
+     # CLI must let this propagate, not swallow it into a tidy message or
+     # a zero exit code.
+     dbp = tmp_path / "store.sqlite"
+     with pytest.raises(FileNotFoundError):
+         cli.main(["scan", "--db", str(dbp),
+                   "--root", str(tmp_path / "does_not_exist")])
+ 
+ 
+-def test_rescan_against_empty_root_raises_loudly(tmp_path):
++def test_rescan_against_empty_configured_roots_raises_loudly(tmp_path,
++                                                              monkeypatch):
+     # A rescan whose walk finds nothing, while the db still holds
+     # 'present' frames, must not silently mark everything missing --
+     # disposition.mark_missing refuses with ValueError, and the CLI must
+     # surface that, not catch it.
+-    root = tmp_path / "astro_data"
+-    root.mkdir()
+-    _write_light(root / "Light_M 42_120.0s_Bin1_HaO3_20260908-220000_0deg_0001.fit")
++    #
++    # This is driven through the CONFIGURED roots rather than --root: a
++    # --root scan is a deliberately narrowed one and no longer runs the
++    # whole-database missing sweep at all (see
++    # test_narrowed_root_scan_does_not_mark_unscanned_frames_missing),
++    # so the guard now lives on the path that still performs the sweep.
++    archive = tmp_path / "astro_data"
++    archive.mkdir()
++    live = tmp_path / "live"
++    live.mkdir()
++    _write_light(archive / "Light_M 42_120.0s_Bin1_HaO3_20260908-220000_0deg_0001.fit")
+     dbp = tmp_path / "store.sqlite"
+-    assert cli.main(["scan", "--db", str(dbp), "--root", str(root)]) == 0
+-
+-    empty_root = tmp_path / "empty_root"
+-    empty_root.mkdir()
++    _use_roots(monkeypatch, tmp_path, archive, live)
++    assert cli.main(["scan", "--db", str(dbp)]) == 0
++
++    empty_a = tmp_path / "empty_a"
++    empty_a.mkdir()
++    empty_b = tmp_path / "empty_b"
++    empty_b.mkdir()
++    _use_roots(monkeypatch, tmp_path, empty_a, empty_b)
+     with pytest.raises(ValueError):
+-        cli.main(["scan", "--db", str(dbp), "--root", str(empty_root)])
++        cli.main(["scan", "--db", str(dbp)])
+ 
+ 
+ def test_scan_reports_failed_overlapping_added_not_disjoint(tmp_path, capsys):
+     # inventory.scan's `failed` count overlaps `added`/`updated` -- a
+     # frame that fails a read is still inventoried. The CLI's scan output
+     # must not read as if the three were disjoint counts.
+     root = tmp_path / "astro_data"
+     root.mkdir()
+     _write_light(root / "Light_M 42_120.0s_Bin1_HaO3_20260908-220000_0deg_0001.fit")
+     bad = root / "Light_M 42_120.0s_Bin1_HaO3_20260908-220100_0deg_0002.fit"
+@@ -212,10 +238,94 @@ def test_solve_missing_astap_raises_loudly(tmp_path, monkeypatch):
+ 
+ 
+ def test_measure_missing_astap_raises_loudly(tmp_path, monkeypatch):
+     dbp = tmp_path / "store.sqlite"
+     fake_cfg = Config(scratch_dir=tmp_path / "scratch",
+                        astap_bin=tmp_path / "no_such_binary",
+                        astap_db_dir=tmp_path / "no_such_db")
+     monkeypatch.setattr(cli, "Config", lambda: fake_cfg)
+     with pytest.raises(RuntimeError):
+         cli.main(["measure", "--db", str(dbp)])
++
++
++# --- FIX 2: a narrowed scan must not run the whole-DB missing sweep ---
++
++
++def test_narrowed_root_scan_does_not_mark_unscanned_frames_missing(tmp_path):
++    # `astrometa scan --root /archive/astro_data/2026-09-08` walked one
++    # night but then ran mark_missing across the WHOLE database, flipping
++    # every frame outside that night to 'missing'. mark_missing's own
++    # guard only trips on a completely empty seen_hashes, so it cannot
++    # catch this. `missing` is how a deliberate cull is recorded -- the
++    # single signal this project exists to make trustworthy.
++    archive = tmp_path / "astro_data"
++    night_a = archive / "2026-09-07" / "IC 59"; night_a.mkdir(parents=True)
++    night_b = archive / "2026-09-08" / "M 42"; night_b.mkdir(parents=True)
++    _write_light(night_a / "Light_IC 59_120.0s_HaO3_20260907-220000_0deg_0001.fit",
++                 object_name="IC 59", seed=1)
++    _write_light(night_b / "Light_M 42_120.0s_HaO3_20260908-220000_0deg_0001.fit",
++                 object_name="M 42", seed=2)
++    dbp = tmp_path / "store.sqlite"
++
++    assert cli.main(["scan", "--db", str(dbp), "--root", str(archive)]) == 0
++
++    # Rescan only the second night.
++    assert cli.main(["scan", "--db", str(dbp), "--root", str(night_b)]) == 0
++
++    conn = sqlite3.connect(dbp)
++    dispositions = {r[0] for r in conn.execute(
++        "SELECT disposition FROM frames")}
++    assert dispositions == {"present"}
++
++
++def test_narrowed_root_scan_says_the_missing_sweep_was_skipped(tmp_path, capsys):
++    # Skipping the sweep must be visible in the output, never silent --
++    # an operator has to be able to tell that `missing` was not refreshed.
++    root = tmp_path / "astro_data"; root.mkdir()
++    _write_light(root / "Light_M 42_120.0s_Bin1_HaO3_20260908-220000_0deg_0001.fit")
++    dbp = tmp_path / "store.sqlite"
++
++    assert cli.main(["scan", "--db", str(dbp), "--root", str(root)]) == 0
++    out = capsys.readouterr().out
++    assert "missing=skipped" in out
++    assert "--root" in out
++
++
++def test_full_configured_root_scan_still_runs_the_missing_sweep(
++        tmp_path, capsys, monkeypatch):
++    # The sweep is not disabled -- a scan covering the configured roots
++    # still marks a vanished frame missing, which is the whole point of
++    # the disposition column.
++    archive = tmp_path / "archive"; archive.mkdir()
++    live = tmp_path / "live"; live.mkdir()
++    kept = archive / "Light_M 42_120.0s_HaO3_20260908-220000_0deg_0001.fit"
++    gone = archive / "Light_M 42_120.0s_HaO3_20260908-220100_0deg_0002.fit"
++    _write_light(kept, seed=1)
++    _write_light(gone, seed=2)
++    dbp = tmp_path / "store.sqlite"
++    _use_roots(monkeypatch, tmp_path, archive, live)
++
++    assert cli.main(["scan", "--db", str(dbp)]) == 0
++    gone.unlink()
++    assert cli.main(["scan", "--db", str(dbp)]) == 0
++    out = capsys.readouterr().out
++    assert "missing=1" in out
++
++    conn = sqlite3.connect(dbp)
++    rows = dict(conn.execute("SELECT filename, disposition FROM frames"))
++    assert rows[kept.name] == "present"
++    assert rows[gone.name] == "missing"
++
++
++def test_group_reports_frames_skipped_for_lack_of_a_capture_instant(
++        tmp_path, capsys):
++    root = tmp_path / "astro_data" / "M 42"
++    root.mkdir(parents=True)
++    _write_light(root / "Light_M 42_120.0s_Bin1_HaO3_20260908-220000_0deg_0001.fit")
++    _write_light(root / "Autosave001.fit", seed=9)
++    dbp = tmp_path / "store.sqlite"
++    assert cli.main(["scan", "--db", str(dbp), "--root", str(root)]) == 0
++
++    assert cli.main(["group", "--db", str(dbp)]) == 0
++    out = capsys.readouterr().out
++    assert "projects=1" in out
++    assert "skipped_no_capture_instant=1" in out
+diff --git a/tests/test_cluster.py b/tests/test_cluster.py
+index 27d0aa4..9c5cdda 100644
+--- a/tests/test_cluster.py
++++ b/tests/test_cluster.py
+@@ -1,11 +1,15 @@
+ import math
++import sqlite3
++
++import pytest
++
+ from astrometa import db, cluster
+ 
+ def _insert(conn, h, fp, ra, dec, focallen=491.0, xpixsz=2.9,
+             naxis1=3840, naxis2=2160):
+     conn.execute("""INSERT INTO frames (content_hash, path, filename, size,
+         mtime, frame_type, disposition, fingerprint, header_ra, header_dec,
+         focallen, xpixsz, naxis1, naxis2)
+         VALUES (?,?,?,1,1.0,'light','present',?,?,?,?,?,?,?)""",
+         (h, f"/x/{h}.fit", f"{h}.fit", fp, ra, dec, focallen, xpixsz,
+          naxis1, naxis2))
+@@ -119,10 +123,92 @@ def test_incremental_rerun_does_not_reassign_when_new_hash_sorts_first(tmp_path)
+     rows = dict(conn.execute("SELECT content_hash, field_id FROM frames"))
+     assert rows["z_orig"] == original_field_id
+     assert rows["a_drift"] == original_field_id
+     assert conn.execute("SELECT COUNT(*) FROM fields").fetchone()[0] == 1
+ 
+ def test_frames_without_pointing_are_left_unassigned(tmp_path):
+     conn = db.connect(tmp_path / "t.sqlite"); db.init_schema(conn)
+     _insert(conn, "h1", "ffff0000", None, None)
+     cluster.assign_fields(conn)
+     assert conn.execute("SELECT field_id FROM frames").fetchone()[0] is None
++
++
++# --- FIX 5: one unusable row must not discard the entire run ----------
++
++def _insert_raw(conn, h, fp, ra, dec):
++    """Insert a frame with whatever ra/dec value is given, bypassing any
++    coercion -- this is how a store populated before inventory coerced
++    numeric headers, or restored from an older manifest, actually looks."""
++    conn.execute("""INSERT INTO frames (content_hash, path, filename, size,
++        mtime, frame_type, disposition, fingerprint, header_ra, header_dec,
++        focallen, xpixsz, naxis1, naxis2)
++        VALUES (?,?,?,1,1.0,'light','present',?,?,?,491.0,2.9,3840,2160)""",
++        (h, f"/x/{h}.fit", f"{h}.fit", fp, ra, dec))
++
++
++def test_one_unusable_row_does_not_discard_the_whole_clustering_run(tmp_path):
++    # assign_fields commits once at the end, so a TypeError raised on a
++    # single bad row rolled back every assignment the run had made.
++    # Verified against the unfixed code with 3 frames (1 bad): the run
++    # raised TypeError and persisted 0 fields and 0 assignments. Across
++    # 34,000 frames that is the entire clustering run thrown away.
++    conn = db.connect(tmp_path / "t.sqlite"); db.init_schema(conn)
++    _insert_raw(conn, "aaa_good1", "ffff0000", 42.86, 60.07)
++    _insert_raw(conn, "bbb_bad", "ffff0001", "02 51 27.0", 60.07)
++    _insert_raw(conn, "ccc_good2", "ffff0002", 10.00, -20.00)
++    conn.commit()
++
++    with pytest.raises(cluster.ClusteringError, match="bbb_bad"):
++        cluster.assign_fields(conn)
++
++    # The good frames' work survived -- and it is COMMITTED, not merely
++    # visible to this connection's open transaction.
++    fresh = sqlite3.connect(tmp_path / "t.sqlite")
++    assert fresh.execute("SELECT COUNT(*) FROM fields").fetchone()[0] == 2
++    assigned = dict(fresh.execute(
++        "SELECT content_hash, field_id FROM frames"))
++    assert assigned["aaa_good1"] is not None
++    assert assigned["ccc_good2"] is not None
++    assert assigned["bbb_bad"] is None
++
++
++def test_unusable_row_is_never_made_a_field_representative(tmp_path):
++    # The bad row must be rejected BEFORE any field is created for it --
++    # otherwise it becomes a representative with a text ra, and every
++    # subsequent frame compared against it fails too, cascading one bad
++    # value into a whole-run failure by another route.
++    conn = db.connect(tmp_path / "t.sqlite"); db.init_schema(conn)
++    _insert_raw(conn, "aaa_bad", "ffff0000", "02 51 27.0", 60.07)
++    _insert_raw(conn, "bbb_good", "ffff0001", 42.86, 60.07)
++    _insert_raw(conn, "ccc_good", "ffff0002", 42.87, 60.08)
++    conn.commit()
++
++    with pytest.raises(cluster.ClusteringError):
++        cluster.assign_fields(conn)
++
++    fresh = sqlite3.connect(tmp_path / "t.sqlite")
++    assert fresh.execute("SELECT COUNT(*) FROM fields").fetchone()[0] == 1
++    assert fresh.execute(
++        "SELECT COUNT(*) FROM frames WHERE field_id IS NOT NULL"
++    ).fetchone()[0] == 2
++
++
++def test_clustering_error_names_every_failure_and_the_work_it_kept(tmp_path):
++    conn = db.connect(tmp_path / "t.sqlite"); db.init_schema(conn)
++    _insert_raw(conn, "bad1", "ffff0000", "02 51 27.0", 60.07)
++    _insert_raw(conn, "bad2", "ffff0001", 42.86, "+60 04 11")
++    _insert_raw(conn, "good", "ffff0002", 42.86, 60.07)
++    conn.commit()
++
++    with pytest.raises(cluster.ClusteringError) as exc:
++        cluster.assign_fields(conn)
++    msg = str(exc.value)
++    assert "bad1" in msg and "bad2" in msg
++    assert "1" in msg          # the run's kept work is reported, not lost
++
++
++def test_a_clean_run_still_returns_the_new_field_count(tmp_path):
++    conn = db.connect(tmp_path / "t.sqlite"); db.init_schema(conn)
++    _insert_raw(conn, "h1", "ffff0000", 42.86, 60.07)
++    _insert_raw(conn, "h2", "ffff0001", 10.00, -20.00)
++    conn.commit()
++    assert cluster.assign_fields(conn) == 2
+diff --git a/tests/test_db.py b/tests/test_db.py
+index 41f19f5..8399166 100644
+--- a/tests/test_db.py
++++ b/tests/test_db.py
+@@ -1,11 +1,14 @@
+ import sqlite3
++
++import pytest
++
+ from astrometa import db
+ 
+ def test_init_schema_creates_expected_tables(tmp_path):
+     conn = db.connect(tmp_path / "t.sqlite")
+     db.init_schema(conn)
+     names = {r[0] for r in conn.execute(
+         "SELECT name FROM sqlite_master WHERE type='table'")}
+     assert {"frames", "fields", "objects", "aliases",
+             "identity_assertions", "quality", "projects",
+             "frame_projects"} <= names
+@@ -26,10 +29,32 @@ def test_frames_primary_key_is_content_hash(tmp_path):
+     conn.execute("INSERT INTO frames (content_hash, path, filename, size, mtime, "
+                  "frame_type, disposition) VALUES ('h1','/a/b.fit','b.fit',1,1.0,"
+                  "'light','present')")
+     try:
+         conn.execute("INSERT INTO frames (content_hash, path, filename, size, mtime, "
+                      "frame_type, disposition) VALUES ('h1','/c/d.fit','d.fit',1,1.0,"
+                      "'light','present')")
+         raise AssertionError("duplicate content_hash must be rejected")
+     except sqlite3.IntegrityError:
+         pass
++
++
++def test_disposition_is_constrained_to_the_three_contract_values(tmp_path):
++    # 'present' / 'missing' / 'quarantined' are a contract across four
++    # modules, and inventory's rescan guard compares a bare literal
++    # (CASE WHEN disposition='quarantined'). A typo anywhere would
++    # silently defeat that guard instead of failing.
++    conn = db.connect(tmp_path / "t.sqlite"); db.init_schema(conn)
++    with pytest.raises(sqlite3.IntegrityError):
++        conn.execute("""INSERT INTO frames (content_hash, path, filename,
++            size, mtime, frame_type, disposition)
++            VALUES ('h1','/x/a.fit','a.fit',1,1.0,'light','quarantine')""")
++
++
++@pytest.mark.parametrize("value", ["present", "missing", "quarantined"])
++def test_the_three_contract_dispositions_are_accepted(tmp_path, value):
++    conn = db.connect(tmp_path / "t.sqlite"); db.init_schema(conn)
++    conn.execute("""INSERT INTO frames (content_hash, path, filename,
++        size, mtime, frame_type, disposition)
++        VALUES ('h1','/x/a.fit','a.fit',1,1.0,'light',?)""", (value,))
++    assert conn.execute(
++        "SELECT disposition FROM frames").fetchone()[0] == value
+diff --git a/tests/test_disposition.py b/tests/test_disposition.py
+index b161c42..2de8634 100644
+--- a/tests/test_disposition.py
++++ b/tests/test_disposition.py
+@@ -191,55 +191,55 @@ def test_session_thresholds_scale_with_the_night():
+ 
+ 
+ def test_session_thresholds_falls_back_to_absolute_floor_with_too_few_samples():
+     lo, floor = disposition.session_thresholds([4.0, 4.1])
+     assert lo == floor == disposition.ABSOLUTE_HFD_FLOOR
+ 
+ 
+ def test_backfill_known_culls(tmp_path):
+     conn = db.connect(tmp_path / "t.sqlite"); db.init_schema(conn)
+     _frame(conn, "h1", "/a/Light_IC 59_HaO3_0019.fit")
+-    n = disposition.backfill_known_culls(conn, [
++    res = disposition.backfill_known_culls(conn, [
+         {"filename_like": "%IC 59%HaO3%0019%",
+          "reason": "operator cull, night of 2026-09-07"}])
+-    assert n == 1
++    assert res.applied == 1
+     assert conn.execute("SELECT disposition FROM frames").fetchone()[0] \
+         == "quarantined"
+ 
+ 
+ def test_backfill_known_culls_pattern_discriminates_by_filter(tmp_path):
+     # Real data trap (2026-09-07 IC 59 culls): the Lqef and HaO3 filter
+     # lists overlap on frame index (0038, 0039, 0040 appear in both). A
+     # pattern keyed on index alone would over-match across filters and
+     # quarantine the wrong frame. Two frames sharing an index but
+     # differing by filter must be told apart.
+     conn = db.connect(tmp_path / "t.sqlite"); db.init_schema(conn)
+     _frame(conn, "h1", "/a/Light_IC 59_Lqef_0038.fit")
+     _frame(conn, "h2", "/a/Light_IC 59_HaO3_0038.fit")
+-    n = disposition.backfill_known_culls(conn, [
++    res = disposition.backfill_known_culls(conn, [
+         {"filename_like": "%IC 59%HaO3%0038%", "reason": "HaO3 cull 0038"}])
+-    assert n == 1
++    assert res.applied == 1
+     rows = dict(conn.execute("SELECT content_hash, disposition FROM frames"))
+     assert rows["h1"] == "present"
+     assert rows["h2"] == "quarantined"
+ 
+ 
+ def test_backfill_known_culls_multiple_patterns_sum(tmp_path):
+     conn = db.connect(tmp_path / "t.sqlite"); db.init_schema(conn)
+     _frame(conn, "h1", "/a/Light_IC 59_Lqef_0006.fit")
+     _frame(conn, "h2", "/a/Light_IC 59_HaO3_0019.fit")
+     _frame(conn, "h3", "/a/Light_IC 59_HaO3_0041.fit")  # outside the cull range
+-    n = disposition.backfill_known_culls(conn, [
++    res = disposition.backfill_known_culls(conn, [
+         {"filename_like": "%IC 59%Lqef%0006%", "reason": "Lqef cull 0006"},
+         {"filename_like": "%IC 59%HaO3%0019%", "reason": "HaO3 cull 0019"},
+     ])
+-    assert n == 2
++    assert res.applied == 2
+     rows = dict(conn.execute("SELECT content_hash, disposition FROM frames"))
+     assert rows["h1"] == "quarantined"
+     assert rows["h2"] == "quarantined"
+     assert rows["h3"] == "present"
+ 
+ 
+ def test_mark_missing_never_touches_a_quarantined_frame(tmp_path):
+     # The store's ownership split: inventory (mark_missing) owns the
+     # present/missing transition; the operator (mark_culled/quarantine)
+     # owns quarantined. A quarantined frame legitimately absent from a
+@@ -289,10 +289,93 @@ def test_quarantine_survives_a_rescan(tmp_path):
+     assert dest is not None and dest.exists()
+     assert dest.is_relative_to(tmp_path / "astro_data")  # still under the scan root
+ 
+     inventory.scan(conn, [tmp_path / "astro_data"])
+ 
+     row = conn.execute("SELECT disposition, disposition_reason, path "
+                        "FROM frames WHERE content_hash=?", (chash,)).fetchone()
+     assert row[0] == "quarantined"
+     assert row[1] == "hfd 6.2 > 5.1"
+     assert row[2] == str(dest)
++
++
++# --- FIX 7: a cull matching nothing is the case this project exists for
++
++
++def test_backfill_reports_unmatched_culls_instead_of_a_silent_zero(tmp_path):
++    # The motivating case. The 39 real IC 59 culls are absent from BOTH
++    # the live NAS and the ZFS backup (verified 2026-09-09: both hold 91
++    # frames, HaO3 indices stop at 0018 while the culled range is
++    # 0019-0040). They survive only on the camera, which is not one of
++    # the store's roots -- so there is no frames row to UPDATE, and the
++    # old implementation returned 0 having silently done nothing, on
++    # exactly the case this project was built for.
++    conn = db.connect(tmp_path / "t.sqlite"); db.init_schema(conn)
++    _frame(conn, "h1", "/a/Light_IC 59_HaO3_0018.fit")   # not culled
++
++    res = disposition.backfill_known_culls(conn, [
++        {"filename_like": "%IC 59%HaO3%0019%",
++         "reason": "operator cull, night of 2026-09-07"}])
++
++    assert res.applied == 0
++    assert res.matched == 0
++    assert res.unmatched == 1
++    assert res.unmatched_patterns == ["%IC 59%HaO3%0019%"]
++
++
++def test_an_unmatched_cull_is_persisted_independently_of_any_frame_row(tmp_path):
++    # There may never be a frames row for these culls -- the bytes exist
++    # nowhere the store can reach. Fabricating a row with an invented
++    # content_hash would corrupt the store's central identity claim
++    # ("the bytes of this file"), so the knowledge is kept in its own
++    # table instead.
++    conn = db.connect(tmp_path / "t.sqlite"); db.init_schema(conn)
++    disposition.backfill_known_culls(conn, [
++        {"filename_like": "%IC 59%HaO3%0019%",
++         "reason": "operator cull, night of 2026-09-07"}])
++
++    row = conn.execute(
++        "SELECT pattern, reason, recorded_at, matched "
++        "FROM known_culls").fetchone()
++    assert row[0] == "%IC 59%HaO3%0019%"
++    assert row[1] == "operator cull, night of 2026-09-07"
++    assert row[2] is not None and row[2] != ""
++    assert row[3] == 0
++    # No frames row was invented for a file that exists nowhere.
++    assert conn.execute("SELECT COUNT(*) FROM frames").fetchone()[0] == 0
++
++
++def test_matched_culls_are_recorded_too(tmp_path):
++    conn = db.connect(tmp_path / "t.sqlite"); db.init_schema(conn)
++    _frame(conn, "h1", "/a/Light_IC 59_HaO3_0019.fit")
++    res = disposition.backfill_known_culls(conn, [
++        {"filename_like": "%IC 59%HaO3%0019%", "reason": "HaO3 cull 0019"}])
++    assert res.matched == 1 and res.unmatched == 0
++    assert conn.execute(
++        "SELECT matched FROM known_culls").fetchone()[0] == 1
++
++
++def test_backfill_is_idempotent_and_self_corrects_when_a_frame_appears(tmp_path):
++    # Re-running must not duplicate the cull record, and if the frame
++    # later turns up (restored from the camera), the recorded match count
++    # must catch up rather than stay stale at 0.
++    conn = db.connect(tmp_path / "t.sqlite"); db.init_schema(conn)
++    culls = [{"filename_like": "%IC 59%HaO3%0019%", "reason": "HaO3 cull 0019"}]
++
++    first = disposition.backfill_known_culls(conn, culls)
++    assert first.unmatched == 1
++    recorded_at = conn.execute(
++        "SELECT recorded_at FROM known_culls").fetchone()[0]
++
++    disposition.backfill_known_culls(conn, culls)
++    assert conn.execute("SELECT COUNT(*) FROM known_culls").fetchone()[0] == 1
++
++    _frame(conn, "h1", "/a/Light_IC 59_HaO3_0019.fit")
++    third = disposition.backfill_known_culls(conn, culls)
++    assert third.matched == 1 and third.unmatched == 0
++    row = conn.execute(
++        "SELECT matched, recorded_at FROM known_culls").fetchone()
++    assert row[0] == 1
++    # recorded_at is when this knowledge was FIRST written down.
++    assert row[1] == recorded_at
++    assert conn.execute(
++        "SELECT disposition FROM frames").fetchone()[0] == "quarantined"
+diff --git a/tests/test_grouping.py b/tests/test_grouping.py
+index 4dc501c..b136816 100644
+--- a/tests/test_grouping.py
++++ b/tests/test_grouping.py
+@@ -6,25 +6,28 @@ from astrometa import db, grouping, naming
+ def _object(conn, name="M42"):
+     return naming.upsert_object(conn, name, "deepsky")
+ 
+ 
+ def _field(conn, object_id):
+     return conn.execute(
+         "INSERT INTO fields (solve_source, object_id) VALUES ('none', ?)",
+         (object_id,)).lastrowid
+ 
+ 
+-def _frame(conn, content_hash, filename, field_id=None, filt="Ha"):
++def _frame(conn, content_hash, filename, field_id=None, filt="Ha",
++           object_card=None, leaf_dir=None):
+     conn.execute("""INSERT INTO frames (content_hash, path, filename, size,
+-        mtime, frame_type, disposition, filter, field_id)
+-        VALUES (?,?,?,1,1.0,'light','present',?,?)""",
+-        (content_hash, f"/x/{filename}", filename, filt, field_id))
++        mtime, frame_type, disposition, filter, field_id, object_card,
++        leaf_dir)
++        VALUES (?,?,?,1,1.0,'light','present',?,?,?,?)""",
++        (content_hash, f"/x/{leaf_dir or 'd'}/{filename}", filename, filt,
++         field_id, object_card, leaf_dir))
+ 
+ 
+ def test_capture_instant_parsed():
+     i = grouping.capture_instant(
+         "Light_IC 1848_1-1_120.0s_Bin1_HaO3_20260909-014908_182deg_0018.fit")
+     assert i == datetime(2026, 9, 9, 1, 49, 8)
+ 
+ 
+ def test_capture_instant_absent_returns_none():
+     assert grouping.capture_instant("Autosave001.fit") is None
+@@ -77,98 +80,214 @@ def test_datestamp_is_not_mistaken_for_a_panel():
+ 
+ def test_build_projects_groups_same_night_frames_into_one_session(tmp_path):
+     conn = db.connect(tmp_path / "t.sqlite"); db.init_schema(conn)
+     oid = _object(conn, "SH2-106")
+     fid = _field(conn, oid)
+     _frame(conn, "h1",
+            "Light_Sh2-106_120.0s_Bin1_HaO3_20260908-225448_182deg_0001.fit", fid)
+     _frame(conn, "h2",
+            "Light_Sh2-106_120.0s_Bin1_HaO3_20260908-230112_182deg_0002.fit", fid)
+ 
+-    assert grouping.build_projects(conn) == 1
++    assert grouping.build_projects(conn).projects == 1
+     row = conn.execute("SELECT kind, object_id, filter FROM projects").fetchone()
+     assert row == ("session", oid, "Ha")
+     members = {r[0] for r in conn.execute(
+         "SELECT content_hash FROM frame_projects")}
+     assert members == {"h1", "h2"}
+ 
+ 
+ def test_build_projects_crossing_midnight_stays_one_session(tmp_path):
+     # The real-world failure the dusk rule fixes: SH2-129 started 2026-07's
+     # night at 22:54 and ran past midnight to 01:39, all under the NEXT
+     # day's datestamp. Both frames must land in the same project.
+     conn = db.connect(tmp_path / "t.sqlite"); db.init_schema(conn)
+     oid = _object(conn, "SH2-129")
+     fid = _field(conn, oid)
+     _frame(conn, "h1",
+            "Light_Sh2-129_120.0s_Bin1_HaO3_20260908-225448_182deg_0001.fit", fid)
+     _frame(conn, "h2",
+            "Light_Sh2-129_120.0s_Bin1_HaO3_20260909-013900_182deg_0100.fit", fid)
+ 
+-    assert grouping.build_projects(conn) == 1
++    assert grouping.build_projects(conn).projects == 1
+     members = {r[0] for r in conn.execute(
+         "SELECT content_hash FROM frame_projects")}
+     assert members == {"h1", "h2"}
+ 
+ 
+ def test_build_projects_detects_mosaic_when_panels_present(tmp_path):
+     conn = db.connect(tmp_path / "t.sqlite"); db.init_schema(conn)
+     oid = _object(conn, "IC1848")
+     fid = _field(conn, oid)
+     _frame(conn, "h1",
+            "Light_IC 1848_1-1_120.0s_Bin1_HaO3_20260909-014908_182deg_0018.fit", fid)
+     _frame(conn, "h2",
+            "Light_IC 1848_1-2_120.0s_Bin1_HaO3_20260909-015200_182deg_0019.fit", fid)
+ 
+-    assert grouping.build_projects(conn) == 1
++    assert grouping.build_projects(conn).projects == 1
+     assert conn.execute("SELECT kind FROM projects").fetchone()[0] == "mosaic"
+     panels = dict(conn.execute(
+         "SELECT content_hash, panel FROM frame_projects"))
+     assert panels == {"h1": "1-1", "h2": "1-2"}
+ 
+ 
+ def test_build_projects_skips_frames_with_no_capture_instant(tmp_path):
+     conn = db.connect(tmp_path / "t.sqlite"); db.init_schema(conn)
+     oid = _object(conn, "M42")
+     fid = _field(conn, oid)
+     _frame(conn, "h1", "Autosave001.fit", fid)
+ 
+-    assert grouping.build_projects(conn) == 0
++    assert grouping.build_projects(conn).projects == 0
+     assert conn.execute("SELECT COUNT(*) FROM projects").fetchone()[0] == 0
+     assert conn.execute(
+         "SELECT COUNT(*) FROM frame_projects").fetchone()[0] == 0
+ 
+ 
+ def test_build_projects_is_idempotent(tmp_path):
+     conn = db.connect(tmp_path / "t.sqlite"); db.init_schema(conn)
+     oid = _object(conn, "SH2-106")
+     fid = _field(conn, oid)
+     _frame(conn, "h1",
+            "Light_Sh2-106_120.0s_Bin1_HaO3_20260908-225448_182deg_0001.fit", fid)
+     _frame(conn, "h2",
+            "Light_Sh2-106_120.0s_Bin1_HaO3_20260908-230112_182deg_0002.fit", fid)
+ 
+     first = grouping.build_projects(conn)
+     second = grouping.build_projects(conn)
+-    assert first == second == 1
++    assert first.projects == second.projects == 1
+     assert conn.execute("SELECT COUNT(*) FROM projects").fetchone()[0] == 1
+     assert conn.execute(
+         "SELECT COUNT(*) FROM frame_projects").fetchone()[0] == 2
+ 
+ 
+ def test_build_projects_rerun_after_new_frame_added_still_one_project_per_night(tmp_path):
+     # Incremental-pull scenario: a third frame from the same night arrives
+     # on a later run. Rebuild must fold it into the SAME session rather
+     # than creating a duplicate project for the night.
+     conn = db.connect(tmp_path / "t.sqlite"); db.init_schema(conn)
+     oid = _object(conn, "SH2-106")
+     fid = _field(conn, oid)
+     _frame(conn, "h1",
+            "Light_Sh2-106_120.0s_Bin1_HaO3_20260908-225448_182deg_0001.fit", fid)
+     grouping.build_projects(conn)
+ 
+     _frame(conn, "h2",
+            "Light_Sh2-106_120.0s_Bin1_HaO3_20260908-230112_182deg_0002.fit", fid)
+-    assert grouping.build_projects(conn) == 1
++    assert grouping.build_projects(conn).projects == 1
+     assert conn.execute("SELECT COUNT(*) FROM projects").fetchone()[0] == 1
+     assert conn.execute(
+         "SELECT COUNT(*) FROM frame_projects").fetchone()[0] == 2
++
++
++# --- FIX 4: an unresolved object_id must not lump every target together
++
++
++def test_different_targets_same_night_same_filter_are_separate_projects(tmp_path):
++    # Nothing populates fields.object_id yet (live SIMBAD resolution is
++    # deliberately deferred), so object_id is NULL for every frame in the
++    # archive. Bucketing on (object_id, filter, session_date) alone
++    # therefore collapsed EVERY target shot on one night with one filter
++    # into a single "project".
++    conn = db.connect(tmp_path / "t.sqlite"); db.init_schema(conn)
++    _frame(conn, "h1",
++           "Light_IC 59_120.0s_Bin1_HaO3_20260908-225448_182deg_0001.fit",
++           object_card="IC 59", leaf_dir="IC 59")
++    _frame(conn, "h2",
++           "Light_M 42_120.0s_Bin1_HaO3_20260908-230112_182deg_0001.fit",
++           object_card="M 42", leaf_dir="M 42")
++
++    assert grouping.build_projects(conn).projects == 2
++    names = {r[0] for r in conn.execute(
++        "SELECT identity_name FROM projects")}
++    assert names == {"IC 59", "M 42"}
++
++
++def test_identity_falls_back_to_leaf_dir_when_no_object_card(tmp_path):
++    # 85% of leaf directories hold frames with no OBJECT card at all; the
++    # directory name is the target name in practice.
++    conn = db.connect(tmp_path / "t.sqlite"); db.init_schema(conn)
++    _frame(conn, "h1",
++           "Light_a_120.0s_Bin1_HaO3_20260908-225448_182deg_0001.fit",
++           leaf_dir="Veil2")
++    _frame(conn, "h2",
++           "Light_b_120.0s_Bin1_HaO3_20260908-230112_182deg_0001.fit",
++           leaf_dir="NGC6960")
++
++    assert grouping.build_projects(conn).projects == 2
++    rows = {r[0]: r[1] for r in conn.execute(
++        "SELECT identity_name, identity_source FROM projects")}
++    assert rows == {"Veil2": "dirname", "NGC6960": "dirname"}
++
++
++def test_identity_source_records_how_the_bucket_was_named(tmp_path):
++    # A fallback identity must never be mistaken for a solved one: the
++    # confidence model (spec 7) rates `object_card` medium and `dirname`
++    # low, and neither may drive a Phase 2 move.
++    conn = db.connect(tmp_path / "t.sqlite"); db.init_schema(conn)
++    _frame(conn, "h1",
++           "Light_IC 59_120.0s_Bin1_HaO3_20260908-225448_182deg_0001.fit",
++           object_card="IC 59", leaf_dir="whatever")
++    assert grouping.build_projects(conn).projects == 1
++    row = conn.execute(
++        "SELECT identity_name, identity_source FROM projects").fetchone()
++    assert row == ("IC 59", "object_card")
++
++
++def test_resolved_object_id_takes_precedence_over_the_fallback(tmp_path):
++    # Once object_id IS resolved it is authoritative -- two frames of the
++    # same object filed under differently-spelled directories (M31 vs
++    # M 31, both real sibling directories in this archive) must still
++    # land in ONE project, which is the whole reason object_id is the
++    # primary key of the bucket.
++    conn = db.connect(tmp_path / "t.sqlite"); db.init_schema(conn)
++    oid = _object(conn, "M31")
++    fid = _field(conn, oid)
++    _frame(conn, "h1",
++           "Light_M31_120.0s_Bin1_HaO3_20260908-225448_182deg_0001.fit",
++           fid, object_card="M31", leaf_dir="M31")
++    _frame(conn, "h2",
++           "Light_M 31_120.0s_Bin1_HaO3_20260908-230112_182deg_0001.fit",
++           fid, object_card="M 31", leaf_dir="M 31")
++
++    assert grouping.build_projects(conn).projects == 1
++    row = conn.execute(
++        "SELECT object_id, identity_name, identity_source "
++        "FROM projects").fetchone()
++    assert row == (oid, None, "object")
++
++
++def test_frames_with_no_identity_at_all_still_group_by_night(tmp_path):
++    conn = db.connect(tmp_path / "t.sqlite"); db.init_schema(conn)
++    _frame(conn, "h1",
++           "Light_x_120.0s_Bin1_HaO3_20260908-225448_182deg_0001.fit")
++    assert grouping.build_projects(conn).projects == 1
++    row = conn.execute(
++        "SELECT identity_name, identity_source FROM projects").fetchone()
++    assert row == (None, "unknown")
++
++
++# --- FIX 8: dropped frames must be a reported number, not silence -----
++
++
++def test_frames_without_a_capture_instant_are_counted_not_silently_dropped(tmp_path):
++    # build_projects skipped any frame lacking the _YYYYMMDD-HHMMSS_
++    # token from every project, and said nothing about it. An operator
++    # had no way to tell a frame was left out of the grouping at all.
++    conn = db.connect(tmp_path / "t.sqlite"); db.init_schema(conn)
++    _frame(conn, "h1",
++           "Light_M 42_120.0s_Bin1_HaO3_20260908-225448_182deg_0001.fit",
++           leaf_dir="M 42")
++    _frame(conn, "h2", "Autosave001.fit", leaf_dir="M 42")
++    _frame(conn, "h3", "Autosave002.fit", leaf_dir="M 42")
++
++    res = grouping.build_projects(conn)
++    assert res.projects == 1
++    assert res.skipped_no_capture_instant == 2
++    assert conn.execute(
++        "SELECT COUNT(*) FROM frame_projects").fetchone()[0] == 1
++
++
++def test_nothing_skipped_reports_zero(tmp_path):
++    conn = db.connect(tmp_path / "t.sqlite"); db.init_schema(conn)
++    _frame(conn, "h1",
++           "Light_M 42_120.0s_Bin1_HaO3_20260908-225448_182deg_0001.fit",
++           leaf_dir="M 42")
++    assert grouping.build_projects(conn).skipped_no_capture_instant == 0
+diff --git a/tests/test_inventory.py b/tests/test_inventory.py
+index c9e14e0..18c9dd1 100644
+--- a/tests/test_inventory.py
++++ b/tests/test_inventory.py
+@@ -175,10 +175,313 @@ def test_missing_root_raises_loudly_instead_of_scanning_empty(tmp_path):
+         inventory.scan(conn, [missing])
+ 
+ 
+ def test_missing_root_raises_even_when_another_root_is_valid(tmp_path):
+     ok = tmp_path / "astro_data" / "d"; ok.mkdir(parents=True)
+     _write_light(ok / "Light_M 42_a_0001.fit")
+     missing = tmp_path / "astro_data" / "does_not_exist"
+     conn = db.connect(tmp_path / "t.sqlite"); db.init_schema(conn)
+     with pytest.raises(FileNotFoundError):
+         inventory.scan(conn, [ok, missing])
++
++
++# --- FIX 1: the upsert must refresh every column a scan derives -------
++#
++# The original ON CONFLICT clause set only path/last_seen/disposition/
++# read_error, so any row that reached the table by a route other than a
++# successful scan -- a manifest restore, or a scan whose pixel read
++# failed -- could never acquire its derived columns, no matter how many
++# times the archive was rescanned.
++
++
++def test_rescan_after_manifest_restore_repopulates_derived_columns(tmp_path):
++    # Manifest restore is a first-class durability guarantee (spec 3, 10),
++    # but a manifest carries no header_ra/focallen/naxis/bg_median and only
++    # the fingerprint. Restoring into a fresh database and then rescanning
++    # the real files must yield a store that can actually be clustered --
++    # cluster.assign_fields requires header_ra, header_dec, focallen,
++    # xpixsz, naxis1 and naxis2, none of which the old upsert would fill.
++    from astrometa import cluster, manifest
++
++    def _write_indexed(path, index):
++        # Identical pixels (so both frames share a fingerprint and cluster
++        # into one field) but distinct bytes, so they are two distinct
++        # content_hash identities rather than one.
++        rng = np.random.default_rng(1)
++        hdu = fits.PrimaryHDU(rng.normal(100, 5, (64, 64)).astype(np.float32))
++        hdu.header["OBJECT"] = "M 42"
++        hdu.header["RA"] = 83.8
++        hdu.header["DEC"] = -5.4
++        hdu.header["INSTRUME"] = "ZWO ASI585MC Air"
++        hdu.header["FILTER"] = "HaO3"
++        hdu.header["EXPTIME"] = 120.0
++        hdu.header["FOCALLEN"] = 491.0
++        hdu.header["XPIXSZ"] = 2.9
++        hdu.header["IMAGETYP"] = "Light Frame"
++        hdu.header["FRAMENUM"] = index
++        hdu.writeto(path, overwrite=True)
++
++    leaf = tmp_path / "astro_data" / "2026-09-08" / "M 42"
++    leaf.mkdir(parents=True)
++    _write_indexed(leaf / "Light_M 42_a_0001.fit", 1)
++    _write_indexed(leaf / "Light_M 42_a_0002.fit", 2)
++
++    original = db.connect(tmp_path / "a.sqlite"); db.init_schema(original)
++    inventory.scan(original, [tmp_path / "astro_data"])
++    manifest_path = manifest.export_dir(original, leaf, out_dir=tmp_path / "m")
++
++    # DB lost; rebuild from the sidecar, then rescan the real files.
++    restored = db.connect(tmp_path / "b.sqlite"); db.init_schema(restored)
++    assert manifest.import_file(restored, manifest_path) == 2
++    assert restored.execute(
++        "SELECT COUNT(*) FROM frames WHERE header_ra IS NOT NULL"
++    ).fetchone()[0] == 0
++
++    res = inventory.scan(restored, [tmp_path / "astro_data"])
++    assert res.added == 0 and res.updated == 2
++
++    row = restored.execute(
++        "SELECT header_ra, header_dec, focallen, xpixsz, naxis1, naxis2, "
++        "bg_median, saturated_frac, fingerprint FROM frames "
++        "ORDER BY filename").fetchone()
++    assert row[0] is not None and row[1] is not None
++    assert row[2] == 491.0 and row[3] == 2.9
++    assert row[4] == 64 and row[5] == 64
++    assert row[6] is not None and row[7] is not None and row[8] is not None
++
++    # The whole point: a restored store must be clusterable.
++    assert cluster.assign_fields(restored) == 1
++    assert restored.execute(
++        "SELECT COUNT(*) FROM frames WHERE field_id IS NOT NULL"
++    ).fetchone()[0] == 2
++
++
++def test_successful_rescan_fills_columns_a_failed_pixel_read_left_null(tmp_path):
++    # A transient pixel-read failure (a NAS hiccup) records read_error and
++    # leaves fingerprint/bg_median/saturated_frac NULL. The next SUCCESSFUL
++    # scan of the same bytes cleared read_error but never filled those
++    # columns, so the frame dropped out of clustering (which requires
++    # fingerprint IS NOT NULL) with nothing left on record to say why.
++    root = tmp_path / "astro_data" / "d"; root.mkdir(parents=True)
++    _write_light(root / "Light_M 42_a_0001.fit")
++    conn = db.connect(tmp_path / "t.sqlite"); db.init_schema(conn)
++
++    real_getdata = inventory.fits.getdata
++
++    def _transient(*a, **kw):
++        raise OSError("transient read failure")
++
++    inventory.fits.getdata = _transient
++    try:
++        first = inventory.scan(conn, [tmp_path / "astro_data"])
++    finally:
++        inventory.fits.getdata = real_getdata
++    assert first.added == 1 and first.failed == 1
++    assert conn.execute(
++        "SELECT fingerprint FROM frames").fetchone()[0] is None
++
++    second = inventory.scan(conn, [tmp_path / "astro_data"])
++    assert second.updated == 1 and second.failed == 0
++    fp, bg, sat, err = conn.execute(
++        "SELECT fingerprint, bg_median, saturated_frac, read_error "
++        "FROM frames").fetchone()
++    assert err is None
++    assert fp is not None and bg is not None and sat is not None
++
++
++def test_pixel_read_failure_does_not_wipe_a_previously_good_fingerprint(tmp_path):
++    # The converse of the above, and the reason the refreshed columns are
++    # gated on which read actually succeeded rather than written blindly
++    # from `excluded`: a later transient failure must not overwrite good
++    # derived values with NULL. cluster._seed_reps only considers frames
++    # with a non-null fingerprint as field representatives, so nulling one
++    # would silently drop a field's representative and spawn duplicate
++    # fields on the next clustering run.
++    root = tmp_path / "astro_data" / "d"; root.mkdir(parents=True)
++    _write_light(root / "Light_M 42_a_0001.fit")
++    conn = db.connect(tmp_path / "t.sqlite"); db.init_schema(conn)
++    inventory.scan(conn, [tmp_path / "astro_data"])
++    good_fp = conn.execute("SELECT fingerprint FROM frames").fetchone()[0]
++    assert good_fp is not None
++
++    real_getdata = inventory.fits.getdata
++
++    def _transient(*a, **kw):
++        raise OSError("transient read failure")
++
++    inventory.fits.getdata = _transient
++    try:
++        inventory.scan(conn, [tmp_path / "astro_data"])
++    finally:
++        inventory.fits.getdata = real_getdata
++
++    fp, err = conn.execute(
++        "SELECT fingerprint, read_error FROM frames").fetchone()
++    assert fp == good_fp
++    assert err is not None and err.startswith("pixels:")
++
++
++def test_first_seen_is_preserved_across_rescans(tmp_path):
++    root = tmp_path / "astro_data" / "d"; root.mkdir(parents=True)
++    _write_light(root / "Light_M 42_a_0001.fit")
++    conn = db.connect(tmp_path / "t.sqlite"); db.init_schema(conn)
++    inventory.scan(conn, [tmp_path / "astro_data"])
++    first_seen = conn.execute("SELECT first_seen FROM frames").fetchone()[0]
++    inventory.scan(conn, [tmp_path / "astro_data"])
++    row = conn.execute("SELECT first_seen, last_seen FROM frames").fetchone()
++    assert row[0] == first_seen
++    assert row[1] >= first_seen
++
++
++# --- FIX 3: persist the OBJECT card and the leaf directory name -------
++
++
++def test_scan_persists_object_card_and_leaf_dir(tmp_path):
++    # inventory parsed OBJECT and threw it away, and `frames` had nowhere
++    # to put it. Spec 6.7 needs both the OBJECT card and the directory
++    # name later to cross-check a solved identity; recovering them after
++    # the fact costs a fresh 34,000-file header re-read.
++    leaf = tmp_path / "astro_data" / "2026-09-08" / "IC 1848"
++    leaf.mkdir(parents=True)
++    _write_light(leaf / "Light_IC 1848_1-1_120.0s_HaO3_20260908-220000_0deg_0001.fit",
++                 obj="IC 1848")
++    conn = db.connect(tmp_path / "t.sqlite"); db.init_schema(conn)
++    inventory.scan(conn, [tmp_path / "astro_data"])
++    row = conn.execute("SELECT object_card, leaf_dir FROM frames").fetchone()
++    assert row == ("IC 1848", "IC 1848")
++
++
++def test_object_card_absent_is_null_but_leaf_dir_still_recorded(tmp_path):
++    # 30 real directories are named only `Lights`, and many frames carry
++    # no OBJECT card at all. The directory name is still worth having.
++    import numpy as np
++    from astropy.io import fits as _fits
++
++    leaf = tmp_path / "astro_data" / "2026-09-08" / "Lights"
++    leaf.mkdir(parents=True)
++    rng = np.random.default_rng(4)
++    hdu = _fits.PrimaryHDU(rng.normal(100, 5, (32, 32)).astype(np.float32))
++    hdu.header["IMAGETYP"] = "Light Frame"
++    hdu.writeto(leaf / "Light_x_0001.fit")
++    conn = db.connect(tmp_path / "t.sqlite"); db.init_schema(conn)
++    inventory.scan(conn, [tmp_path / "astro_data"])
++    row = conn.execute("SELECT object_card, leaf_dir FROM frames").fetchone()
++    assert row == (None, "Lights")
++
++
++def test_object_card_and_leaf_dir_refresh_on_rescan(tmp_path):
++    leaf = tmp_path / "astro_data" / "2026-09-08" / "M 42"
++    leaf.mkdir(parents=True)
++    _write_light(leaf / "Light_M 42_a_0001.fit", obj="M 42")
++    conn = db.connect(tmp_path / "t.sqlite"); db.init_schema(conn)
++    inventory.scan(conn, [tmp_path / "astro_data"])
++    conn.execute("UPDATE frames SET object_card=NULL, leaf_dir=NULL")
++    conn.commit()
++    inventory.scan(conn, [tmp_path / "astro_data"])
++    row = conn.execute("SELECT object_card, leaf_dir FROM frames").fetchone()
++    assert row == ("M 42", "M 42")
++
++
++# --- FIX 5: numeric header values must be coerced at inventory time ---
++
++
++def _write_with_cards(path, extra: dict, seed=7):
++    rng = np.random.default_rng(seed)
++    hdu = fits.PrimaryHDU(rng.normal(100, 5, (64, 64)).astype(np.float32))
++    hdu.header["INSTRUME"] = "ZWO ASI585MC Air"
++    hdu.header["FILTER"] = "HaO3"
++    hdu.header["IMAGETYP"] = "Light Frame"
++    for k, v in extra.items():
++        hdu.header[k] = v
++    hdu.writeto(path, overwrite=True)
++
++
++def test_sexagesimal_ra_is_not_stored_as_text_in_a_real_column(tmp_path):
++    # fitsheader returns whatever a card parses to, and SQLite's REAL
++    # affinity stores an unparseable string as TEXT rather than
++    # rejecting it. That text only surfaces much later, as a TypeError
++    # inside cluster.assign_fields. It must be caught and recorded here.
++    root = tmp_path / "astro_data" / "d"; root.mkdir(parents=True)
++    _write_with_cards(root / "Light_x_0001.fit",
++                      {"RA": "02 51 27.0", "DEC": 60.07})
++    conn = db.connect(tmp_path / "t.sqlite"); db.init_schema(conn)
++    res = inventory.scan(conn, [tmp_path / "astro_data"])
++    assert res.added == 1
++    assert res.failed == 1
++    ra, kind, err = conn.execute(
++        "SELECT header_ra, typeof(header_ra), read_error FROM frames"
++    ).fetchone()
++    assert ra is None
++    assert kind == "null"
++    assert err is not None and "RA" in err
++
++
++def test_uncoercible_value_is_loud_but_the_rest_of_the_header_survives(tmp_path):
++    # An unusable RA must not cost the frame its camera, filter or
++    # fingerprint -- the header and pixel reads both succeeded.
++    root = tmp_path / "astro_data" / "d"; root.mkdir(parents=True)
++    _write_with_cards(root / "Light_x_0001.fit",
++                      {"RA": "02 51 27.0", "DEC": 60.07, "EXPTIME": 120.0})
++    conn = db.connect(tmp_path / "t.sqlite"); db.init_schema(conn)
++    inventory.scan(conn, [tmp_path / "astro_data"])
++    camera, filt, exptime, dec, fp = conn.execute(
++        "SELECT camera, filter, exptime, header_dec, fingerprint "
++        "FROM frames").fetchone()
++    assert camera == "ZWO ASI585MC Air"
++    assert filt == "HaO3"
++    assert exptime == 120.0
++    assert dec == 60.07
++    assert fp is not None
++
++
++def test_numeric_headers_are_stored_with_the_right_sqlite_type(tmp_path):
++    # This archive spans seven cameras and three naming eras; an integer
++    # EXPTIME or a float-formatted NAXIS must land as REAL/INTEGER, not
++    # as whatever the card happened to parse to.
++    root = tmp_path / "astro_data" / "d"; root.mkdir(parents=True)
++    _write_with_cards(root / "Light_x_0001.fit",
++                      {"RA": 42.86, "DEC": 60.07, "EXPTIME": 120,
++                       "FOCALLEN": 491, "XPIXSZ": 2.9})
++    conn = db.connect(tmp_path / "t.sqlite"); db.init_schema(conn)
++    res = inventory.scan(conn, [tmp_path / "astro_data"])
++    assert res.failed == 0
++    types = conn.execute(
++        "SELECT typeof(header_ra), typeof(exptime), typeof(focallen), "
++        "typeof(naxis1) FROM frames").fetchone()
++    assert types == ("real", "real", "real", "integer")
++
++
++# --- FIX 8: captured_at falls back to the filename capture instant ----
++
++
++def test_captured_at_falls_back_to_the_filename_capture_instant(tmp_path):
++    # Spec 7: captured_at is "DATE-OBS, falling back to the filename
++    # capture instant". Without the fallback a frame whose header lacks
++    # DATE-OBS has no capture instant on record at all.
++    root = tmp_path / "astro_data" / "d"; root.mkdir(parents=True)
++    _write_with_cards(
++        root / "Light_M 42_120.0s_Bin1_HaO3_20260908-220000_0deg_0001.fit", {})
++    conn = db.connect(tmp_path / "t.sqlite"); db.init_schema(conn)
++    inventory.scan(conn, [tmp_path / "astro_data"])
++    assert conn.execute("SELECT captured_at FROM frames").fetchone()[0] \
++        == "2026-09-08T22:00:00"
++
++
++def test_date_obs_wins_over_the_filename_fallback(tmp_path):
++    root = tmp_path / "astro_data" / "d"; root.mkdir(parents=True)
++    _write_with_cards(
++        root / "Light_M 42_120.0s_Bin1_HaO3_20260908-220000_0deg_0001.fit",
++        {"DATE-OBS": "2026-09-09T03:00:00.500"})
++    conn = db.connect(tmp_path / "t.sqlite"); db.init_schema(conn)
++    inventory.scan(conn, [tmp_path / "astro_data"])
++    assert conn.execute("SELECT captured_at FROM frames").fetchone()[0] \
++        == "2026-09-09T03:00:00.500"
++
++
++def test_captured_at_is_null_when_neither_source_has_one(tmp_path):
++    # ASIAIR autosave files carry no capture stamp in either place.
++    # NULL is the honest answer; nothing is invented.
++    root = tmp_path / "astro_data" / "d"; root.mkdir(parents=True)
++    _write_with_cards(root / "Autosave001.fit", {})
++    conn = db.connect(tmp_path / "t.sqlite"); db.init_schema(conn)
++    inventory.scan(conn, [tmp_path / "astro_data"])
++    assert conn.execute("SELECT captured_at FROM frames").fetchone()[0] is None

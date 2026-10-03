@@ -1,0 +1,89 @@
+# Review package: b6c8169..d01489a
+
+## Commits
+d01489a optimize: fix two Important review findings
+
+## Files changed
+ src/autocontrast/optimize/actions.py | 10 +++++++++-
+ tests/test_optimize_actions.py       | 25 +++++++++++++++++++++++++
+ 2 files changed, 34 insertions(+), 1 deletion(-)
+
+## Diff
+diff --git a/src/autocontrast/optimize/actions.py b/src/autocontrast/optimize/actions.py
+index 71c67cb..aad9435 100644
+--- a/src/autocontrast/optimize/actions.py
++++ b/src/autocontrast/optimize/actions.py
+@@ -32,21 +32,29 @@ class Action:
+     params: dict = field(default_factory=dict, compare=False)
+ 
+     @property
+     def key(self) -> str:
+         """Stable identity, used for recipe distinctness in the beam."""
+         scale = "-" if self.scale_arcsec is None else f"{self.scale_arcsec:.3f}"
+         return f"{self.kind}@{scale}/{self.level or '-'}"
+ 
+     @property
+     def strength(self) -> float:
+-        return _STRENGTH.get(self.level, 1.0)
++        # Empty level is legitimate for mode-change actions (star_split, background_neutralize).
++        if self.level == "":
++            return 1.0
++        if self.level not in _STRENGTH:
++            valid = ", ".join(sorted(_STRENGTH.keys()))
++            raise ValueError(
++                f"level {self.level!r} is not recognized; valid levels are: {valid}"
++            )
++        return _STRENGTH[self.level]
+ 
+ 
+ def scale_for_layer(layer: int, pixel_scale_arcsec: float) -> float:
+     """Angular center of wavelet plane ``layer`` (matches energy.py's convention)."""
+     return (2.0**layer) * pixel_scale_arcsec
+ 
+ 
+ def layer_for_scale(scale_arcsec: float, pixel_scale_arcsec: float) -> int:
+     """Inverse of :func:`scale_for_layer`, rounded to the nearest plane."""
+     if scale_arcsec < pixel_scale_arcsec:
+diff --git a/tests/test_optimize_actions.py b/tests/test_optimize_actions.py
+index f0dd7cb..b1d9805 100644
+--- a/tests/test_optimize_actions.py
++++ b/tests/test_optimize_actions.py
+@@ -47,13 +47,38 @@ def test_chroma_actions_are_withheld_when_palette_is_incompatible():
+ 
+ 
+ def test_once_only_actions_are_not_reoffered():
+     once = available_actions(
+         pixel_scale_arcsec=1.0, psf_fwhm_arcsec=2.0, n_scales=7,
+         palette_compatible=True, applied_kinds=frozenset({"star_split", "background_neutralize"}),
+     )
+     assert not any(a.kind in ("star_split", "background_neutralize") for a in once)
+ 
+ 
++def test_once_only_actions_are_offered_when_unspent():
++    # Positive assertion: star_split and background_neutralize appear exactly once each
++    # when they have not yet been applied.
++    actions = available_actions(
++        pixel_scale_arcsec=1.0, psf_fwhm_arcsec=2.0, n_scales=7,
++        palette_compatible=True, applied_kinds=frozenset(),
++    )
++    assert sum(1 for a in actions if a.kind == "star_split") == 1
++    assert sum(1 for a in actions if a.kind == "background_neutralize") == 1
++
++
+ def test_scale_below_pixel_scale_is_rejected_outright():
+     with pytest.raises(ValueError):
+         layer_for_scale(0.1, 1.0)
++
++
++def test_empty_level_is_valid_for_mode_changes():
++    # Mode-change actions (star_split, background_neutralize) have level=""
++    # and strength should return 1.0 without raising.
++    a = Action(kind="star_split", level="", scale_arcsec=None, params={})
++    assert a.strength == 1.0
++
++
++def test_invalid_level_raises_value_error():
++    # Any level not in LEVELS and not "" must raise ValueError naming the valid levels.
++    a = Action(kind="local_contrast", level="bad_level", scale_arcsec=8.0, params={})
++    with pytest.raises(ValueError, match="bad_level"):
++        _ = a.strength

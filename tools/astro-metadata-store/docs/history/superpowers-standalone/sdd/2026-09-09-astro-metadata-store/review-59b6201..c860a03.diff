@@ -1,0 +1,143 @@
+# Review package: 59b6201..HEAD
+
+## Commits
+c860a03 refactor: add precise type hints including int
+2c2c301 feat: raw FITS header parser
+
+## Files changed
+ src/astrometa/fitsheader.py | 47 +++++++++++++++++++++++++++++++++++++++++++++
+ tests/conftest.py           | 25 ++++++++++++++++++++++++
+ tests/test_fitsheader.py    | 40 ++++++++++++++++++++++++++++++++++++++
+ 3 files changed, 112 insertions(+)
+
+## Diff
+diff --git a/src/astrometa/fitsheader.py b/src/astrometa/fitsheader.py
+new file mode 100644
+index 0000000..de19aaf
+--- /dev/null
++++ b/src/astrometa/fitsheader.py
+@@ -0,0 +1,47 @@
++from pathlib import Path
++
++BLOCK = 2880
++CARD = 80
++MAX_BLOCKS = 100          # 288 KB; a real header never approaches this
++
++
++class FitsHeaderError(Exception):
++    pass
++
++
++def _parse_value(raw: str) -> str | int | float | bool:
++    raw = raw.strip()
++    if raw.startswith("'"):
++        end = raw.find("'", 1)
++        if end == -1:
++            raise FitsHeaderError(f"unterminated string: {raw!r}")
++        return raw[1:end].strip()
++    raw = raw.split("/", 1)[0].strip()
++    if raw in ("T", "F"):
++        return raw == "T"
++    try:
++        return int(raw)
++    except ValueError:
++        pass
++    try:
++        return float(raw)
++    except ValueError:
++        return raw
++
++
++def read_header(path: Path) -> dict[str, str | int | float | bool]:
++    cards: dict[str, str | int | float | bool] = {}
++    with open(path, "rb") as f:
++        for _ in range(MAX_BLOCKS):
++            block = f.read(BLOCK)
++            if len(block) < BLOCK:
++                raise FitsHeaderError(f"truncated header in {path}")
++            for i in range(0, BLOCK, CARD):
++                card = block[i:i + CARD].decode("ascii", errors="replace")
++                key = card[:8].strip()
++                if key == "END":
++                    return cards
++                if card[8:10] != "= ":
++                    continue
++                cards[key] = _parse_value(card[10:])
++    raise FitsHeaderError(f"no END card within {MAX_BLOCKS} blocks in {path}")
+diff --git a/tests/conftest.py b/tests/conftest.py
+new file mode 100644
+index 0000000..93f1d8c
+--- /dev/null
++++ b/tests/conftest.py
+@@ -0,0 +1,25 @@
++import pytest
++
++
++def _card(key: str, value: str) -> bytes:
++    return f"{key:<8}= {value:<70}"[:80].encode("ascii")
++
++
++def build_fits_header(cards: dict[str, str], pad_to_blocks: int = 1) -> bytes:
++    out = b"".join(_card(k, v) for k, v in cards.items())
++    out += b"END".ljust(80)
++    remainder = len(out) % 2880
++    if remainder:
++        out += b" " * (2880 - remainder)
++    while len(out) < 2880 * pad_to_blocks:
++        out += b" " * 2880
++    return out
++
++
++@pytest.fixture
++def make_fits(tmp_path):
++    def _make(name: str, cards: dict[str, str], pixels: bytes = b"") -> "Path":
++        p = tmp_path / name
++        p.write_bytes(build_fits_header(cards) + pixels)
++        return p
++    return _make
+diff --git a/tests/test_fitsheader.py b/tests/test_fitsheader.py
+new file mode 100644
+index 0000000..d460287
+--- /dev/null
++++ b/tests/test_fitsheader.py
+@@ -0,0 +1,40 @@
++import pytest
++from astrometa import fitsheader
++
++
++def test_parses_string_number_and_logical(make_fits):
++    p = make_fits("a.fit", {
++        "SIMPLE": "                   T",
++        "OBJECT": "'IC 1848_1-1'",
++        "EXPTIME": "            120.0",
++        "NAXIS1": "             3840",
++    })
++    h = fitsheader.read_header(p)
++    assert h["OBJECT"] == "IC 1848_1-1"
++    assert h["EXPTIME"] == 120.0
++    assert h["NAXIS1"] == 3840
++    assert h["SIMPLE"] is True
++
++
++def test_object_value_preserves_internal_spaces(make_fits):
++    p = make_fits("b.fit", {"OBJECT": "'M 20'"})
++    assert fitsheader.read_header(p)["OBJECT"] == "M 20"
++
++
++def test_slash_inside_quoted_string_is_not_a_comment(make_fits):
++    p = make_fits("c.fit", {"FILTER": "'Ha/O3'  / dual band"})
++    assert fitsheader.read_header(p)["FILTER"] == "Ha/O3"
++
++
++def test_stops_at_END_and_does_not_read_pixels(make_fits):
++    p = make_fits("d.fit", {"OBJECT": "'X'"}, pixels=b"\xff" * 100000)
++    h = fitsheader.read_header(p)
++    assert h["OBJECT"] == "X"
++    assert "\xff" not in str(h)
++
++
++def test_missing_END_raises(tmp_path):
++    p = tmp_path / "bad.fit"
++    p.write_bytes(b" " * 2880)
++    with pytest.raises(fitsheader.FitsHeaderError):
++        fitsheader.read_header(p)

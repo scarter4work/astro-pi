@@ -1,0 +1,65 @@
+<h2>QE Source — where do the decomposition coefficients come from?</h2>
+<p class="subtitle">For Bayer-NB decomposition (and broadband-RGB calibration), we need to know each photosite's quantum efficiency at the line wavelengths. Three legitimate scientific paths, plus one that's not.</p>
+
+<div class="section">
+  <div class="mockup">
+    <div class="mockup-header">What we need: ~9 numbers per camera, ~6 per broadband filter set</div>
+    <div class="mockup-body" style="background:#0a0a0a;color:#ddd;padding:20px;font-family:monospace;font-size:11px">
+<pre style="margin:0;color:#a8d8ff">{
+  "cameras": {
+    "ASI585MC":  { "qe_at_656": [0.83, 0.05, 0.02],   <span style="color:#888">// R G B at Ha</span>
+                   "qe_at_672": [0.81, 0.04, 0.02],   <span style="color:#888">// R G B at SII</span>
+                   "qe_at_501": [0.05, 0.85, 0.55] }, <span style="color:#888">// R G B at OIII</span>
+    "ASI2600MC": { "qe_at_656": [0.79, 0.06, 0.02], ... },
+    "ASI294MC":  { "qe_at_656": [0.75, 0.07, 0.03], ... },
+    "default":   { "qe_at_656": [0.80, 0.06, 0.03], ... }  <span style="color:#888">// Sony IMX generic</span>
+  },
+  "filters": {
+    "Optolong-LPro":   { "transmission": [400, 0.85, 580, 0.0, 700, 0.85] },
+    "Astronomik-CCD-R":{ "passband": [580, 700], "peak_t": 0.96 },
+    ...
+  }
+}</pre>
+    </div>
+  </div>
+</div>
+
+<div class="options">
+  <div class="option" data-choice="a" onclick="toggleSelect(this)">
+    <div class="letter">A</div>
+    <div class="content">
+      <h3>Shipped JSON database — manufacturer-published QE curves</h3>
+      <p>Curate a database from public datasheets (ZWO QE plots, Sony IMX/IMX585/IMX571 datasheets, Astrodon/Optolong/Antlia spec sheets). Resolve at runtime by reading <code>INSTRUME</code> and <code>FILTER</code> from FITS. Fall back to a generic-Sony-IMX default if camera unknown.</p>
+      <p><strong>Initial coverage:</strong> ASI cameras (585/2600/294/533/183/678/485 MC), Sony A7s family if they appear, common Optolong/Antlia filters.</p>
+      <p><strong>Cost:</strong> data-curation pass once; recurring small additions as new cameras appear.</p>
+      <p><strong>Pros:</strong> deterministic, reproducible, the only path that gives bit-stable output across runs. Verifiable against datasheets.</p>
+    </div>
+  </div>
+  <div class="option" data-choice="b" onclick="toggleSelect(this)">
+    <div class="letter">B</div>
+    <div class="content">
+      <h3>Self-calibrating from bright stars (per-frame)</h3>
+      <p>Detect bright A0V or G2V stars in each frame, look them up in Gaia/SIMBAD, fit per-channel response from the difference between observed flux and known SED. Use that to derive per-frame QE × filter weights.</p>
+      <p><strong>Pros:</strong> no database needed; auto-handles unknown cameras; per-frame calibration handles atmospheric effects.</p>
+      <p><strong>Cost:</strong> heavy lift — need plate-solving, Gaia/SIMBAD catalog ingestion, SED fitting, per-frame variance handling. Order-of-magnitude bigger feature than A. Marginal benefit for OSC narrowband (atmospheric effects are tiny across 6nm).</p>
+    </div>
+  </div>
+  <div class="option" data-choice="c" onclick="toggleSelect(this)">
+    <div class="letter">C</div>
+    <div class="content">
+      <h3>A primary, with override JSON in user data dir</h3>
+      <p>Ship the database (A). If <code>~/.nukex4/qe_overrides.json</code> exists, merge it on top — user's own measured QE values take precedence over manufacturer datasheet values when they conflict.</p>
+      <p><strong>Pros:</strong> reproducible default + escape hatch for users who measure their own QE. Honors the no-stub rule (override is fully functional from day one, not a TODO).</p>
+      <p><strong>Cost:</strong> small — one extra file load + merge step.</p>
+    </div>
+  </div>
+  <div class="option" data-choice="d" onclick="toggleSelect(this)">
+    <div class="letter">D</div>
+    <div class="content">
+      <h3>Hand-tuned 0.25-style weights (DO NOT PICK)</h3>
+      <p>Equal weights everywhere — what the original notes proposed. Treats all photosites as having equal QE at every wavelength.</p>
+      <p><strong>Why this is wrong:</strong> it's the path that produced your green M17. It collapses to the existing broken behavior.</p>
+      <p><strong>Listed only for completeness so you can see why we ruled it out.</strong></p>
+    </div>
+  </div>
+</div>

@@ -1,0 +1,636 @@
+# Review package: 952a088..HEAD
+
+## Commits
+4f307b0 fix: cap the worker count, and commit the inventory pass periodically
+
+## Files changed
+ src/astrometa/cli.py       |  32 +++++++-
+ src/astrometa/inventory.py |  98 ++++++++++++++++++++++--
+ tests/test_cli.py          |  95 ++++++++++++++++++++++-
+ tests/test_inventory.py    | 185 +++++++++++++++++++++++++++++++++++++++++++++
+ 4 files changed, 396 insertions(+), 14 deletions(-)
+
+## Diff
+diff --git a/src/astrometa/cli.py b/src/astrometa/cli.py
+index c67c693..794a9f6 100644
+--- a/src/astrometa/cli.py
++++ b/src/astrometa/cli.py
+@@ -20,40 +20,61 @@ There is deliberately no `quarantine` subcommand: nothing here may
+ touch or move FITS data.
+ """
+ import argparse
+ import sys
+ from pathlib import Path
+ 
+ from . import cluster, db, disposition, grouping, inventory, manifest, quality, solve
+ from .config import Config
+ 
+ 
++def _worker_count(raw: str) -> int:
++    """
++    argparse type for --workers: a positive integer, or a usage error.
++
++    A bad --workers is user input, not archive state, so it belongs with
++    argparse's own errors (usage message, exit 2) rather than escaping
++    main() as a raw ValueError traceback. The upper bound is not
++    enforced here -- inventory.resolve_workers clamps it to the CPU
++    count, and the scan output reports the effective number.
++    """
++    try:
++        n = int(raw)
++    except ValueError:
++        raise argparse.ArgumentTypeError(
++            f"must be an integer, got {raw!r}") from None
++    if n < 1:
++        raise argparse.ArgumentTypeError(f"must be at least 1, got {n}")
++    return n
++
++
+ def _build_parser() -> argparse.ArgumentParser:
+     common = argparse.ArgumentParser(add_help=False)
+     common.add_argument("--db", required=True,
+                          help="path to the sqlite metadata store")
+ 
+     parser = argparse.ArgumentParser(prog="astrometa")
+     sub = parser.add_subparsers(dest="command", required=True)
+ 
+     scan_p = sub.add_parser(
+         "scan", parents=[common],
+         help="walk archive roots, inventory frames, then mark absent "
+              "frames missing")
+     scan_p.add_argument(
+         "--root", action="append", default=[],
+         help="root directory to walk (repeatable); defaults to the "
+              "configured archive and live roots")
+     scan_p.add_argument(
+-        "--workers", type=int, default=None,
++        "--workers", type=_worker_count, default=None,
+         help=f"worker processes for the per-frame reads (default: "
+-             f"one per CPU less one, {inventory.default_workers()} here). "
++             f"one per CPU less one, {inventory.default_workers()} here; "
++             f"capped at {inventory.max_workers()}, one per CPU). "
+              f"1 runs everything in this process. Database writes are "
+              f"always single-writer in the parent regardless.")
+ 
+     sub.add_parser(
+         "cluster", parents=[common],
+         help="cluster unassigned light frames into fields")
+ 
+     solve_p = sub.add_parser(
+         "solve", parents=[common],
+         help="plate-solve one representative frame per unsolved field")
+@@ -95,20 +116,24 @@ def main(argv: list[str] | None = None) -> int:
+         # --help) -- a plain non-zero return, not a pass failure.
+         return exc.code if isinstance(exc.code, int) else 2
+ 
+     cfg = Config()
+     conn = db.connect(Path(args.db))
+     db.init_schema(conn)
+ 
+     if args.command == "scan":
+         configured = [cfg.archive_root, cfg.live_root]
+         roots = ([Path(r) for r in args.root] if args.root else configured)
++        # Resolved before the scan so a clamped --workers is reported
++        # rather than silently applied. Same function scan() uses, so
++        # the number printed is the number used.
++        effective_workers = inventory.resolve_workers(args.workers)
+         res = inventory.scan(conn, roots, workers=args.workers)
+ 
+         # The whole-database missing sweep runs ONLY when this scan
+         # covered the full configured root set. `mark_missing` flips
+         # every 'present' frame absent from seen_hashes, so running it
+         # after `scan --root /archive/astro_data/2026-09-08` would flip
+         # the other ~34,000 frames to 'missing' purely because the walk
+         # never reached them. mark_missing's own guard cannot catch
+         # that: it only refuses a COMPLETELY empty seen_hashes, and a
+         # one-night scan returns a perfectly healthy non-empty set.
+@@ -126,22 +151,25 @@ def main(argv: list[str] | None = None) -> int:
+                              >= {r.resolve() for r in configured})
+         if covers_configured:
+             missing_txt = f"missing={disposition.mark_missing(conn, res.seen_hashes)}"
+         else:
+             missing_txt = (
+                 f"missing=skipped (--root narrowed this scan to "
+                 f"{len(roots)} root(s); the whole-database missing "
+                 f"sweep runs only when the scan covers the configured "
+                 f"archive and live roots, so frames outside the "
+                 f"scanned roots are NOT marked missing)")
++        clamped = ("" if args.workers in (None, effective_workers)
++                   else f" (--workers {args.workers} clamped to one per CPU)")
+         print(f"added={res.added} updated={res.updated} "
+               f"failed={res.failed} {missing_txt} "
++              f"workers={effective_workers}{clamped} "
+               f"(failed overlaps added/updated: a frame that fails a "
+               f"read is still inventoried, with its failure recorded)")
+     elif args.command == "cluster":
+         created = cluster.assign_fields(conn)
+         print(f"fields_created={created}")
+     elif args.command == "solve":
+         solved = solve.solve_fields(conn, cfg, args.limit)
+         print(f"solved={solved}")
+     elif args.command == "measure":
+         res = quality.measure_frames(conn, cfg, args.limit)
+diff --git a/src/astrometa/inventory.py b/src/astrometa/inventory.py
+index 64bb6fd..5009ad3 100644
+--- a/src/astrometa/inventory.py
++++ b/src/astrometa/inventory.py
+@@ -196,37 +196,110 @@ def _object_card(header: dict) -> str | None:
+ # pays for itself. Standing up a spawn-based pool costs roughly a
+ # quarter-second; hashing and decoding a single frame costs
+ # milliseconds, so a pool is a straight loss on a handful of frames and
+ # would turn the test suite (dozens of one- and two-frame scans) into a
+ # process-startup benchmark. Worker count is damped by this so a tiny
+ # scan runs serially in-process, and the full archive (34,000+ frames)
+ # always reaches the configured maximum.
+ _MIN_FRAMES_PER_WORKER = 8
+ 
+ 
++# How many frames a mid-pass abort is allowed to cost.
++#
++# The pass used to run as a single transaction, which made a scan
++# all-or-nothing: one transient error at frame 34,000 threw away the
++# whole walk. Over 2.6 TB, roughly half of it across SMB, a transient
++# EIO inside stat() or content_hash is an ordinary event rather than an
++# exotic one, and this abort-on-any-worker-failure design turns each one
++# into a lost multi-hour run. Committing periodically trades whole-run
++# atomicity for resumability, which is the right trade here ONLY because
++# every pass in this project is idempotent: a partial commit followed by
++# a re-run converges on exactly the state an uninterrupted run would
++# have produced.
++#
++# 500 is sized off measured throughput, not taste. A parallel scan
++# manages roughly 10 frames/s on warm local frames and less over SMB, so
++# 500 frames is a rework budget of well under two minutes on a failure,
++# against 69 commits across the whole 34,400-frame archive -- an
++# unmeasurable cost on a multi-hour pass.
++#
++# What this does NOT weaken: a partial scan still raises, and
++# disposition.mark_missing() therefore still never runs against a
++# partial walk (cli.main lets the exception propagate). That ordering is
++# the thing that must not break -- a missing sweep over a half-finished
++# walk would flip thousands of present frames to 'missing', which is the
++# worst outcome this store has.
++COMMIT_EVERY_FRAMES = 500
++
++
+ def default_workers() -> int:
+     """
+     Default parallelism: every available CPU but one.
+ 
+     The per-frame work is 94% CPU-bound (measured over a 3h52m partial
+     pass on the deployment host: 3h37m of CPU against 3h52m elapsed), so
+     the core count is the right scale. One core is left for the parent,
+     which is not idle -- it unpickles every result and performs every
+     upsert, and starving it would just move the bottleneck.
+ 
+     os.process_cpu_count() rather than os.cpu_count(): it honours CPU
+     affinity and cgroup limits, so running under a restricted cpuset
+     does not silently oversubscribe.
+     """
+     return max(1, (os.process_cpu_count() or 1) - 1)
+ 
+ 
++def max_workers() -> int:
++    """
++    The hard ceiling on worker processes: one per available CPU.
++
++    An override has to be bounded by SOMETHING, because the damping in
++    resolve_workers() only limits workers by how much work there is --
++    against a 34,400-frame archive `--workers 100000` would ask for
++    4,300 processes, and this host also runs a Minecraft server and two
++    other containers. One fat-fingered digit is not an acceptable
++    distance from a fork bomb.
++
++    The CPU count is the right ceiling rather than an arbitrary number
++    because more processes than cores cannot help: the per-frame work is
++    CPU- and memory-bound, and measured throughput on a 16-core box is
++    already flat from 8 workers on (2.43x at 8, 2.86x at 31). It also
++    bounds memory, which is the sharper risk -- a worker holds ~0.5 GB
++    while decoding a 31 MB frame, so the ceiling is roughly
++    cpu_count x 0.5 GB rather than unbounded.
++
++    Deliberately computed per call, not at import: CPU affinity can be
++    changed after the module is loaded.
++    """
++    return max(1, os.process_cpu_count() or 1)
++
++
++def resolve_workers(workers: int | None) -> int:
++    """
++    The effective worker cap for a scan: the default when unset, the
++    request clamped to max_workers() otherwise.
++
++    Zero and negative are an error rather than a clamp -- they express
++    an intent this cannot satisfy, so guessing at one would be the
++    silent correction this project forbids. Above the ceiling IS
++    clamped: the intent there is unambiguously "use everything", which
++    is exactly what the ceiling delivers. The CLI reports the effective
++    number so a clamp is never invisible.
++    """
++    if workers is None:
++        return default_workers()
++    workers = int(workers)
++    if workers < 1:
++        raise ValueError(f"workers must be at least 1, got {workers!r}")
++    return min(workers, max_workers())
++
++
+ def _frame_payload(path_str: str, read_pixels: bool) -> dict:
+     """
+     All of one frame's per-file work, in whichever process is running it.
+ 
+     This is the entire expensive half of a scan -- content_hash (BLAKE2b
+     over the whole file), the header read, the pixel decode, the
+     fingerprint and the pixel stats -- and it is deliberately the SAME
+     function on the serial and parallel paths, so the two cannot drift
+     apart. Nothing here touches the database: SQLite stays single-writer
+     in the parent.
+@@ -531,47 +604,56 @@ def _record(conn, res, p: dict) -> None:
+                                 ELSE saturated_frac END,
+             disposition=CASE WHEN disposition='quarantined'
+                               THEN disposition ELSE 'present' END,
+             read_error=excluded.read_error
+     """, {**p, "now": _now()})
+     if existing:
+         res.updated += 1
+     else:
+         res.added += 1
+ 
++    # Checkpoint. added+updated rises by exactly one per call, so this
++    # is a frame counter without a second piece of state to keep in
++    # step. Both the serial and the parallel path reach it, so they
++    # cannot diverge in durability either.
++    if (res.added + res.updated) % COMMIT_EVERY_FRAMES == 0:
++        conn.commit()
++
+ 
+ def scan(conn, roots, read_pixels: bool = True,
+          workers: int | None = None) -> InventoryResult:
+     """
+     Inventory every FITS frame under `roots`.
+ 
+     The expensive per-frame work runs across a process pool; every
+     database write happens here, in the parent, because SQLite is
+     single-writer. `workers` caps the pool and defaults to
+-    default_workers(); 1 runs everything in-process.
++    default_workers(), clamped to max_workers(); 1 runs everything
++    in-process.
+ 
+     The walk stays lazy. Only enough of it is drawn up front to size the
+     pool -- there is no point starting 47 workers for 30 frames -- and
+     the rest is pulled through as results are consumed, so a missing
+     root still raises the moment the walk reaches it, exactly as it did
+     when this was a plain loop.
++
++    This is NOT atomic across the whole pass; it commits every
++    COMMIT_EVERY_FRAMES frames. An abort therefore leaves the frames
++    already processed on record and still propagates its exception, so a
++    re-run resumes rather than restarting. See COMMIT_EVERY_FRAMES.
+     """
+-    max_workers = default_workers() if workers is None else int(workers)
+-    if max_workers < 1:
+-        raise ValueError(
+-            f"workers must be at least 1, got {workers!r}")
++    cap = resolve_workers(workers)
+ 
+     res = InventoryResult()
+     frames = _iter_fits(roots)
+-    head = list(itertools.islice(frames, _MIN_FRAMES_PER_WORKER * max_workers))
++    head = list(itertools.islice(frames, _MIN_FRAMES_PER_WORKER * cap))
+     frames = itertools.chain(head, frames)
+-    n_workers = min(max_workers,
+-                    max(1, len(head) // _MIN_FRAMES_PER_WORKER))
++    n_workers = min(cap, max(1, len(head) // _MIN_FRAMES_PER_WORKER))
+ 
+     if n_workers == 1:
+         for path in frames:
+             _record(conn, res, _frame_payload(str(path), read_pixels))
+     else:
+         _scan_parallel(conn, res, frames, read_pixels, n_workers)
+ 
+     conn.commit()
+     return res
+diff --git a/tests/test_cli.py b/tests/test_cli.py
+index 71bcdcd..8376c75 100644
+--- a/tests/test_cli.py
++++ b/tests/test_cli.py
+@@ -1,10 +1,11 @@
++import os
+ import sqlite3
+ import stat
+ from pathlib import Path
+ 
+ import numpy as np
+ import pytest
+ from astropy.io import fits
+ 
+ from astrometa import cli, inventory, manifest
+ from astrometa.config import Config
+@@ -365,17 +366,103 @@ def test_scan_without_workers_flag_lets_inventory_choose(tmp_path, monkeypatch):
+         return real_scan(conn, roots, read_pixels, workers)
+ 
+     monkeypatch.setattr(cli.inventory, "scan", spy)
+     assert cli.main(["scan", "--db", str(tmp_path / "s.sqlite"),
+                      "--root", str(root)]) == 0
+     # None, not a number baked in by the CLI -- the default belongs to
+     # inventory.default_workers() so there is exactly one of it.
+     assert seen["workers"] is None
+ 
+ 
+-def test_scan_rejects_a_zero_worker_count_loudly(tmp_path):
++@pytest.mark.parametrize("bad", ["0", "-5", "eight"])
++def test_scan_rejects_a_bad_worker_count_as_a_usage_error(
++        tmp_path, capsys, bad):
++    # A bad --workers is user input, not archive state. Unlike a missing
++    # root or a refused missing-sweep -- which are deliberate loud
++    # failures and must propagate -- this belongs with argparse's own
++    # errors: usage on stderr, exit 2, no traceback.
+     root = tmp_path / "astro_data"
+     root.mkdir()
+     _write_light(root / "Light_M 42_120.0s_Bin1_HaO3_20260908-220000_0deg_0001.fit")
+-    with pytest.raises(ValueError):
+-        cli.main(["scan", "--db", str(tmp_path / "s.sqlite"),
+-                  "--root", str(root), "--workers", "0"])
++    dbp = tmp_path / "s.sqlite"
++
++    assert cli.main(["scan", "--db", str(dbp),
++                     "--root", str(root), "--workers", bad]) == 2
++    err = capsys.readouterr().err
++    assert "usage:" in err
++    assert "--workers" in err
++    # Rejected before any work: the scan never ran.
++    assert not dbp.exists()
++
++
++def test_scan_clamps_an_absurd_worker_count_and_says_so(tmp_path, capsys):
++    # An override has to be bounded by something. Without a ceiling,
++    # `--workers 100000` against the real archive asks for one process
++    # per eight frames -- 4,300 of them on a host that also runs a
++    # Minecraft server. Clamping is right for a too-LARGE value (the
++    # intent is unambiguously "use everything"), but it must not be
++    # invisible, so the effective count is printed.
++    root = tmp_path / "astro_data"
++    root.mkdir()
++    _write_light(root / "Light_M 42_120.0s_Bin1_HaO3_20260908-220000_0deg_0001.fit")
++
++    assert cli.main(["scan", "--db", str(tmp_path / "s.sqlite"),
++                     "--root", str(root), "--workers", "100000"]) == 0
++    out = capsys.readouterr().out
++    assert f"workers={inventory.max_workers()}" in out
++    assert "clamped" in out
++
++
++def test_scan_does_not_claim_a_clamp_when_there_was_none(tmp_path, capsys):
++    root = tmp_path / "astro_data"
++    root.mkdir()
++    _write_light(root / "Light_M 42_120.0s_Bin1_HaO3_20260908-220000_0deg_0001.fit")
++
++    assert cli.main(["scan", "--db", str(tmp_path / "s.sqlite"),
++                     "--root", str(root), "--workers", "2"]) == 0
++    out = capsys.readouterr().out
++    assert "workers=2" in out
++    assert "clamped" not in out
++
++
++@pytest.mark.skipif(os.geteuid() == 0,
++                    reason="root ignores the mode bits this test relies on")
++def test_an_aborted_scan_never_runs_the_missing_sweep(tmp_path, monkeypatch):
++    # THE safety property behind periodic commits. inventory.scan is no
++    # longer atomic, so a partial walk now leaves rows on record. If an
++    # aborted scan could still reach disposition.mark_missing, that
++    # sweep would flip every frame the walk never reached to 'missing'
++    # -- fabricating thousands of culls, which is the worst outcome this
++    # store has. The ordering that prevents it is that scan() propagates
++    # its exception and main() does not catch it.
++    archive = tmp_path / "astro_data"
++    live = tmp_path / "live"
++    archive.mkdir()
++    live.mkdir()
++    for i in range(25):
++        _write_light(archive / f"Light_M 42_x_{i:04d}.fit", seed=i)
++    dbp = tmp_path / "store.sqlite"
++    _use_roots(monkeypatch, tmp_path, archive, live)
++
++    # A clean pass first, so every frame is on record as 'present'.
++    assert cli.main(["scan", "--db", str(dbp)]) == 0
++    conn = sqlite3.connect(dbp)
++    assert conn.execute("SELECT COUNT(*) FROM frames "
++                        "WHERE disposition='present'").fetchone()[0] == 25
++    conn.close()
++
++    victim = sorted(archive.glob("*.fit"))[3]
++    monkeypatch.setattr(inventory, "COMMIT_EVERY_FRAMES", 4)
++    victim.chmod(0o000)
++    try:
++        with pytest.raises(inventory.InventoryWorkerError):
++            cli.main(["scan", "--db", str(dbp)])
++    finally:
++        victim.chmod(0o644)
++
++    conn = sqlite3.connect(dbp)
++    missing = conn.execute("SELECT COUNT(*) FROM frames "
++                           "WHERE disposition='missing'").fetchone()[0]
++    conn.close()
++    assert missing == 0, (
++        "an aborted scan reached the missing sweep -- frames the walk "
++        "never got to were marked missing")
+diff --git a/tests/test_inventory.py b/tests/test_inventory.py
+index 66a2c9d..b3a1129 100644
+--- a/tests/test_inventory.py
++++ b/tests/test_inventory.py
+@@ -915,10 +915,195 @@ def test_quarantine_survives_a_parallel_rescan(tmp_path):
+ 
+     row = conn.execute("SELECT disposition, disposition_reason, path "
+                        "FROM frames WHERE content_hash=?", (chash,)).fetchone()
+     assert row[0] == "quarantined"
+     assert row[1] == "hfd 6.2 > 5.1"
+     assert row[2] == str(dest)
+     # Every other frame is still plainly present.
+     assert conn.execute(
+         "SELECT COUNT(*) FROM frames WHERE disposition='present'"
+     ).fetchone()[0] == 24
++
++
++# ---------------------------------------------------------------------------
++# Worker ceiling
++# ---------------------------------------------------------------------------
++
++def test_worker_count_is_capped_at_one_per_cpu(tmp_path):
++    # Without a ceiling the damping in resolve_workers only limits
++    # workers by how much work there is, so `--workers 100000` against
++    # the 34,400-frame archive asks for 4,300 processes. The cap is the
++    # CPU count because more processes than cores cannot help (measured:
++    # flat from 8 workers on a 16-core box) and because it bounds memory
++    # at roughly cpu_count x 0.5 GB.
++    cap = inventory.max_workers()
++    assert cap == max(1, os.process_cpu_count() or 1)
++    assert inventory.resolve_workers(100000) == cap
++    assert inventory.resolve_workers(cap + 1) == cap
++    # Below the cap the request is honoured untouched.
++    assert inventory.resolve_workers(2) == 2
++    assert inventory.resolve_workers(None) == inventory.default_workers()
++    assert inventory.default_workers() <= cap
++
++
++@pytest.mark.parametrize("bad", [0, -1, -100])
++def test_non_positive_worker_counts_raise_rather_than_clamp(bad):
++    # A too-large value is clamped because "use everything" is a
++    # satisfiable intent. Zero and negative are not, so guessing at one
++    # would be a silent correction.
++    with pytest.raises(ValueError, match="at least 1"):
++        inventory.resolve_workers(bad)
++
++
++def test_an_absurd_worker_count_does_not_spawn_a_process_per_frame(tmp_path):
++    # End to end through scan(), not just the resolver: the pool that
++    # actually gets built must respect the ceiling.
++    root = tmp_path / "astro_data" / "d"; root.mkdir(parents=True)
++    for i in range(24):
++        _write_light(root / f"Light_M 42_x_{i:04d}.fit", seed=i)
++    conn = db.connect(tmp_path / "t.sqlite"); db.init_schema(conn)
++
++    real_parallel = inventory._scan_parallel
++    seen = []
++
++    def spy(conn_, res, frames, read_pixels, workers):
++        seen.append(workers)
++        return real_parallel(conn_, res, frames, read_pixels, workers)
++
++    mp = pytest.MonkeyPatch()
++    try:
++        mp.setattr(inventory, "_scan_parallel", spy)
++        res = inventory.scan(conn, [tmp_path / "astro_data"], workers=100000)
++    finally:
++        mp.undo()
++    assert res.added == 24
++    assert seen and seen[0] <= inventory.max_workers()
++
++
++# ---------------------------------------------------------------------------
++# Resumability
++#
++# The pass is deliberately NOT one transaction. Over 2.6 TB, half of it
++# across SMB, a transient EIO in stat() or content_hash is ordinary, and
++# with abort-on-any-worker-failure a single one at frame 34,000 used to
++# discard the entire walk. These pin the trade: an abort keeps what it
++# already did, still raises, and a re-run converges on the same state an
++# uninterrupted run would have produced.
++# ---------------------------------------------------------------------------
++
++def _ordered_frames(root):
++    """The walk order scan() will consume, so a test can place a failure
++    at a known index instead of hoping rglob cooperates."""
++    return list(inventory._iter_fits([root]))
++
++
++@pytest.mark.skipif(os.geteuid() == 0,
++                    reason="root ignores the mode bits this test relies on")
++def test_a_mid_pass_failure_keeps_the_frames_already_committed(tmp_path):
++    root = tmp_path / "astro_data"
++    d = root / "d"; d.mkdir(parents=True)
++    for i in range(25):
++        _write_light(d / f"Light_M 42_x_{i:04d}.fit", seed=i)
++
++    # Fail at a KNOWN position in the walk, not wherever rglob happens
++    # to put it -- otherwise "some frames were committed" is a coin toss.
++    victim = _ordered_frames(root)[17]
++    conn = db.connect(tmp_path / "t.sqlite"); db.init_schema(conn)
++
++    mp = pytest.MonkeyPatch()
++    try:
++        mp.setattr(inventory, "COMMIT_EVERY_FRAMES", 4)
++        victim.chmod(0o000)
++        with pytest.raises(inventory.InventoryWorkerError):
++            inventory.scan(conn, [root], workers=8)
++    finally:
++        mp.undo()
++        victim.chmod(0o644)
++
++    # 17 frames were recorded before the abort; the last checkpoint at a
++    # multiple of 4 committed 16 of them. The uncommitted remainder is
++    # the rework budget, and it is bounded by COMMIT_EVERY_FRAMES.
++    committed = db.connect(tmp_path / "t.sqlite").execute(
++        "SELECT COUNT(*) FROM frames").fetchone()[0]
++    assert committed == (17 // 4) * 4 == 16
++
++
++@pytest.mark.skipif(os.geteuid() == 0,
++                    reason="root ignores the mode bits this test relies on")
++def test_a_rerun_after_a_mid_pass_failure_matches_an_uninterrupted_scan(tmp_path):
++    root = tmp_path / "astro_data"
++    d = root / "d"; d.mkdir(parents=True)
++    for i in range(25):
++        _write_light(d / f"Light_M 42_x_{i:04d}.fit", seed=i)
++    victim = _ordered_frames(root)[17]
++
++    # The reference: one clean uninterrupted scan.
++    clean_conn = db.connect(tmp_path / "clean.sqlite")
++    db.init_schema(clean_conn)
++    clean = inventory.scan(clean_conn, [root], workers=8)
++
++    # The interrupted one, then a plain re-run with nothing special done
++    # to recover -- resumability has to be a property of the pass, not
++    # of an operator remembering a flag.
++    conn = db.connect(tmp_path / "t.sqlite"); db.init_schema(conn)
++    mp = pytest.MonkeyPatch()
++    try:
++        mp.setattr(inventory, "COMMIT_EVERY_FRAMES", 4)
++        victim.chmod(0o000)
++        with pytest.raises(inventory.InventoryWorkerError):
++            inventory.scan(conn, [root], workers=8)
++    finally:
++        mp.undo()
++        victim.chmod(0o644)
++
++    # Close and reopen rather than reusing the connection. A real abort
++    # kills the process, so the transaction open at that moment is rolled
++    # back and its frames are lost -- reusing the connection here would
++    # quietly carry those uncommitted rows into the re-run and test a
++    # kinder failure than the one that actually happens.
++    conn.close()
++    conn = db.connect(tmp_path / "t.sqlite")
++    committed_before = db.connect(tmp_path / "t.sqlite").execute(
++        "SELECT COUNT(*) FROM frames").fetchone()[0]
++    resumed = inventory.scan(conn, [root], workers=8)
++
++    # The re-run RESUMES rather than restarts, and the added/updated
++    # split is what proves it: the frames the aborted pass committed come
++    # back as updates, only the rest are new. Under the old
++    # single-transaction behaviour this would read added=25, updated=0,
++    # because the abort had discarded everything.
++    assert committed_before == 16
++    assert resumed.updated == committed_before
++    assert resumed.added == clean.added - committed_before
++    assert resumed.added + resumed.updated == clean.added
++    assert resumed.failed == clean.failed == 0
++    clean_cols, clean_rows = _all_rows(clean_conn)
++    resumed_cols, resumed_rows = _all_rows(conn)
++    assert clean_cols == resumed_cols
++    assert resumed_rows == clean_rows
++
++
++def test_the_commit_interval_is_a_named_constant_not_a_magic_number(tmp_path):
++    # Sized off measured throughput (~10 frames/s parallel on warm local
++    # frames): 500 frames is a rework budget under two minutes, against
++    # 69 commits across the whole 34,400-frame archive.
++    assert inventory.COMMIT_EVERY_FRAMES == 500
++
++
++def test_a_successful_scan_still_commits_the_tail(tmp_path):
++    # 25 frames is not a multiple of the interval, so the last 24 exist
++    # only because scan() commits once more on the way out.
++    root = tmp_path / "astro_data" / "d"; root.mkdir(parents=True)
++    for i in range(25):
++        _write_light(root / f"Light_M 42_x_{i:04d}.fit", seed=i)
++    conn = db.connect(tmp_path / "t.sqlite"); db.init_schema(conn)
++
++    mp = pytest.MonkeyPatch()
++    try:
++        mp.setattr(inventory, "COMMIT_EVERY_FRAMES", 4)
++        res = inventory.scan(conn, [tmp_path / "astro_data"], workers=8)
++    finally:
++        mp.undo()
++
++    assert res.added == 25
++    assert db.connect(tmp_path / "t.sqlite").execute(
++        "SELECT COUNT(*) FROM frames").fetchone()[0] == 25

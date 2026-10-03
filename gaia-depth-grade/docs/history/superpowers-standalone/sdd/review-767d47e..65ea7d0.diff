@@ -1,0 +1,124 @@
+# Review package: 767d47e..HEAD
+
+## Commits
+65ea7d0 feat: star detection and second-moment FWHM
+
+## Files changed
+ src/gaia_depth_grade/detect.py | 43 ++++++++++++++++++++++++++++++++++++++++++
+ tests/conftest.py              | 17 +++++++++++++++++
+ tests/test_detect.py           | 25 ++++++++++++++++++++++++
+ 3 files changed, 85 insertions(+)
+
+## Diff
+diff --git a/src/gaia_depth_grade/detect.py b/src/gaia_depth_grade/detect.py
+new file mode 100644
+index 0000000..16eccf9
+--- /dev/null
++++ b/src/gaia_depth_grade/detect.py
+@@ -0,0 +1,43 @@
++from __future__ import annotations
++
++import numpy as np
++from astropy.stats import sigma_clipped_stats
++from astropy.table import Table
++from photutils.detection import DAOStarFinder
++
++
++def measure_fwhm(image: np.ndarray, x: float, y: float, box: int = 7) -> float:
++    half = box // 2
++    xi, yi = int(round(x)), int(round(y))
++    if xi - half < 0 or yi - half < 0 or xi + half >= image.shape[1] or yi + half >= image.shape[0]:
++        return float("nan")
++    cut = image[yi - half : yi + half + 1, xi - half : xi + half + 1].astype(float)
++    cut = cut - np.median(cut)
++    cut[cut < 0] = 0.0
++    total = cut.sum()
++    if total <= 0:
++        return float("nan")
++    yy, xx = np.mgrid[0 : cut.shape[0], 0 : cut.shape[1]]
++    mx = (xx * cut).sum() / total
++    my = (yy * cut).sum() / total
++    varx = ((xx - mx) ** 2 * cut).sum() / total
++    vary = ((yy - my) ** 2 * cut).sum() / total
++    sigma = np.sqrt(max((varx + vary) / 2.0, 0.0))
++    return float(2.3548 * sigma)
++
++
++def detect_stars(image: np.ndarray, fwhm: float, threshold_sigma: float) -> Table:
++    mean, median, std = sigma_clipped_stats(image, sigma=3.0)
++    finder = DAOStarFinder(fwhm=fwhm, threshold=threshold_sigma * std)
++    found = finder(image - median)
++    if found is None or len(found) == 0:
++        return Table(names=("x", "y", "flux", "fwhm"), dtype=(float, float, float, float))
++    out = Table()
++    # Use x_centroid/y_centroid (photutils 3.0+), fallback to xcentroid/ycentroid for older versions
++    x_col = "x_centroid" if "x_centroid" in found.colnames else "xcentroid"
++    y_col = "y_centroid" if "y_centroid" in found.colnames else "ycentroid"
++    out["x"] = np.asarray(found[x_col], dtype=float)
++    out["y"] = np.asarray(found[y_col], dtype=float)
++    out["flux"] = np.asarray(found["flux"], dtype=float)
++    out["fwhm"] = [measure_fwhm(image, xx, yy) for xx, yy in zip(out["x"], out["y"])]
++    return out
+diff --git a/tests/conftest.py b/tests/conftest.py
+index a089f2e..0e80180 100644
+--- a/tests/conftest.py
++++ b/tests/conftest.py
+@@ -10,10 +10,27 @@ def simple_wcs_header():
+     w = WCS(naxis=2)
+     w.wcs.ctype = ["RA---TAN", "DEC--TAN"]
+     w.wcs.crpix = [150.0, 100.0]      # center of 300(x) x 200(y)
+     w.wcs.crval = [10.0, 20.0]
+     w.wcs.cdelt = [-1.0 / 3600.0, 1.0 / 3600.0]
+     hdr = w.to_header()
+     hdr["NAXIS"] = 2
+     hdr["NAXIS1"] = 300
+     hdr["NAXIS2"] = 200
+     return hdr
++
++
++def _gaussian_star(img, x, y, flux, sigma):
++    ny, nx = img.shape
++    yy, xx = np.mgrid[0:ny, 0:nx]
++    img += flux * np.exp(-((xx - x) ** 2 + (yy - y) ** 2) / (2 * sigma**2))
++
++
++@pytest.fixture
++def synthetic_stars():
++    """64x64 frame, 3 stars at known positions/fluxes, sigma=2 px, faint noise."""
++    rng = np.random.default_rng(0)
++    img = rng.normal(0.0, 0.001, size=(64, 64)).astype(np.float64)
++    truth = [(16.0, 16.0, 1.0), (48.0, 20.0, 0.6), (32.0, 50.0, 0.3)]
++    for x, y, f in truth:
++        _gaussian_star(img, x, y, f, sigma=2.0)
++    return img, truth
+diff --git a/tests/test_detect.py b/tests/test_detect.py
+new file mode 100644
+index 0000000..1090416
+--- /dev/null
++++ b/tests/test_detect.py
+@@ -0,0 +1,25 @@
++import numpy as np
++import pytest
++from gaia_depth_grade.detect import detect_stars, measure_fwhm
++
++
++def test_detects_all_three(synthetic_stars):
++    img, truth = synthetic_stars
++    tbl = detect_stars(img, fwhm=3.0, threshold_sigma=5.0)
++    assert len(tbl) >= 3
++    # brightest detected source should sit near the brightest truth star (16,16)
++    tbl.sort("flux", reverse=True)
++    assert tbl["x"][0] == pytest.approx(16.0, abs=1.0)
++    assert tbl["y"][0] == pytest.approx(16.0, abs=1.0)
++
++
++def test_measure_fwhm_matches_sigma(synthetic_stars):
++    img, _ = synthetic_stars
++    f = measure_fwhm(img, 16.0, 16.0, box=11)
++    # FWHM = 2.355 * sigma ; sigma=2 -> ~4.71 px
++    assert f == pytest.approx(4.71, abs=1.2)
++
++
++def test_measure_fwhm_offedge_is_nan(synthetic_stars):
++    img, _ = synthetic_stars
++    assert np.isnan(measure_fwhm(img, 1.0, 1.0, box=11))

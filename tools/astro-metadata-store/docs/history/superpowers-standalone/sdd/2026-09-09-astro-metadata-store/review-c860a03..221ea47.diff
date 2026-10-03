@@ -1,0 +1,119 @@
+# Review package: c860a03..HEAD
+
+## Commits
+221ea47 fix: loud ASCII validation and FITS escaped quotes handling
+
+## Files changed
+ src/astrometa/fitsheader.py | 29 ++++++++++++++++++++++++-----
+ tests/test_fitsheader.py    | 21 +++++++++++++++++++++
+ 2 files changed, 45 insertions(+), 5 deletions(-)
+
+## Diff
+diff --git a/src/astrometa/fitsheader.py b/src/astrometa/fitsheader.py
+index de19aaf..ad81b08 100644
+--- a/src/astrometa/fitsheader.py
++++ b/src/astrometa/fitsheader.py
+@@ -5,24 +5,38 @@ CARD = 80
+ MAX_BLOCKS = 100          # 288 KB; a real header never approaches this
+ 
+ 
+ class FitsHeaderError(Exception):
+     pass
+ 
+ 
+ def _parse_value(raw: str) -> str | int | float | bool:
+     raw = raw.strip()
+     if raw.startswith("'"):
+-        end = raw.find("'", 1)
+-        if end == -1:
+-            raise FitsHeaderError(f"unterminated string: {raw!r}")
+-        return raw[1:end].strip()
++        # Find closing quote, handling FITS escaped quotes ('')
++        i = 1
++        while i < len(raw):
++            if raw[i] == "'":
++                # Check if this quote is escaped (doubled)
++                if i + 1 < len(raw) and raw[i + 1] == "'":
++                    # Escaped quote: skip both characters
++                    i += 2
++                else:
++                    # This is the closing quote
++                    value = raw[1:i]
++                    # Unescape: '' -> '
++                    value = value.replace("''", "'")
++                    return value.strip()
++            else:
++                i += 1
++        # No closing quote found
++        raise FitsHeaderError(f"unterminated string: {raw!r}")
+     raw = raw.split("/", 1)[0].strip()
+     if raw in ("T", "F"):
+         return raw == "T"
+     try:
+         return int(raw)
+     except ValueError:
+         pass
+     try:
+         return float(raw)
+     except ValueError:
+@@ -30,18 +44,23 @@ def _parse_value(raw: str) -> str | int | float | bool:
+ 
+ 
+ def read_header(path: Path) -> dict[str, str | int | float | bool]:
+     cards: dict[str, str | int | float | bool] = {}
+     with open(path, "rb") as f:
+         for _ in range(MAX_BLOCKS):
+             block = f.read(BLOCK)
+             if len(block) < BLOCK:
+                 raise FitsHeaderError(f"truncated header in {path}")
+             for i in range(0, BLOCK, CARD):
+-                card = block[i:i + CARD].decode("ascii", errors="replace")
++                try:
++                    card = block[i:i + CARD].decode("ascii")
++                except UnicodeDecodeError as e:
++                    raise FitsHeaderError(
++                        f"non-ASCII byte in header card in {path}: {e}"
++                    ) from e
+                 key = card[:8].strip()
+                 if key == "END":
+                     return cards
+                 if card[8:10] != "= ":
+                     continue
+                 cards[key] = _parse_value(card[10:])
+     raise FitsHeaderError(f"no END card within {MAX_BLOCKS} blocks in {path}")
+diff --git a/tests/test_fitsheader.py b/tests/test_fitsheader.py
+index d460287..d7aa400 100644
+--- a/tests/test_fitsheader.py
++++ b/tests/test_fitsheader.py
+@@ -31,10 +31,31 @@ def test_stops_at_END_and_does_not_read_pixels(make_fits):
+     h = fitsheader.read_header(p)
+     assert h["OBJECT"] == "X"
+     assert "\xff" not in str(h)
+ 
+ 
+ def test_missing_END_raises(tmp_path):
+     p = tmp_path / "bad.fit"
+     p.write_bytes(b" " * 2880)
+     with pytest.raises(fitsheader.FitsHeaderError):
+         fitsheader.read_header(p)
++
++
++def test_escaped_quotes_in_string_value(make_fits):
++    """FITS standard: '' inside a quoted string means one literal '"""
++    p = make_fits("e.fit", {"OBJECT": "'Barnard''s Loop'"})
++    assert fitsheader.read_header(p)["OBJECT"] == "Barnard's Loop"
++
++
++def test_non_ascii_byte_raises(tmp_path):
++    """Non-ASCII bytes in header cards must raise loudly, not be silently replaced"""
++    from tests.conftest import build_fits_header
++    p = tmp_path / "bad_ascii.fit"
++    # Create a valid header with one card having a non-ASCII byte
++    cards = {"OBJECT": "'Test'"}
++    header = build_fits_header(cards)
++    # Replace a byte in the first card with non-ASCII (0xff)
++    header_bytes = bytearray(header)
++    header_bytes[50] = 0xff
++    p.write_bytes(bytes(header_bytes))
++    with pytest.raises(fitsheader.FitsHeaderError, match="non-ASCII"):
++        fitsheader.read_header(p)

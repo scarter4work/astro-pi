@@ -1,0 +1,385 @@
+# Review package: 46ad8ac..HEAD
+
+## Commits
+c62ba8a feat(stacker): report channel registration in the console
+
+## Files changed
+ .../nukex/alignment/channel_registration.hpp       | 22 +++++++++
+ src/lib/alignment/src/channel_registration.cpp     | 36 ++++++++++++++
+ src/lib/alignment/src/frame_aligner.cpp            |  7 ---
+ src/lib/stacker/src/stacking_engine.cpp            | 39 +++++++++++++--
+ test/unit/alignment/test_channel_registration.cpp  | 57 ++++++++++++++++++++++
+ 5 files changed, 151 insertions(+), 10 deletions(-)
+
+## Diff
+diff --git a/src/lib/alignment/include/nukex/alignment/channel_registration.hpp b/src/lib/alignment/include/nukex/alignment/channel_registration.hpp
+index 2a7ed0d..06fc7cc 100644
+--- a/src/lib/alignment/include/nukex/alignment/channel_registration.hpp
++++ b/src/lib/alignment/include/nukex/alignment/channel_registration.hpp
+@@ -1,21 +1,31 @@
+ #pragma once
+ 
+ #include "nukex/alignment/types.hpp"
+ #include "nukex/alignment/star_detector.hpp"
+ #include "nukex/io/image.hpp"
+ 
+ #include <cmath>
++#include <string>
+ #include <vector>
+ 
+ namespace nukex {
+ 
++/// A channel correction smaller than this at the field corner is not worth a
++/// resample: it is below the centroid noise floor measured on real data
++/// (0.058 px between blue and green on the M3 set) by a wide margin.
++///
++/// Shared between FrameAligner (which decides whether to warp) and the
++/// console report (which decides whether to say so) -- one definition so the
++/// two can never disagree about what "applied" means.
++constexpr double kNegligibleChannelShiftPx = 0.01;
++
+ /// How one channel is displaced relative to the reference channel, within a
+ /// single frame.
+ ///
+ /// This is NOT frame-to-frame alignment. It is the disagreement between the
+ /// colour planes of one exposure, which has two physical causes and no
+ /// correction anywhere else in the pipeline:
+ ///
+ ///   Lateral chromatic aberration -- the optics focus different wavelengths
+ ///   at slightly different image scales. Fixed for a given rig, radial, zero
+ ///   at the field centre and largest at the corners. Absorbed by `s`.
+@@ -174,11 +184,23 @@ ChannelTransforms measure_channel_transforms(
+     const Image& image, const StarCatalog& stars, int reference_channel,
+     const ChannelRegistrationConfig& config);
+ 
+ inline ChannelTransforms measure_channel_transforms(
+     const Image& image, const StarCatalog& stars, int reference_channel)
+ {
+     return measure_channel_transforms(image, stars, reference_channel,
+                                       ChannelRegistrationConfig{});
+ }
+ 
++/// One line describing what channel registration did, for the Process
++/// Console. Empty when there was nothing to report.
++///
++/// `radius` is where the displacement is quoted -- normally the frame corner,
++/// which is where a scale term is largest and where a user looking at their
++/// stars will notice.
++///
++/// ASCII only: PCL reads const char* as ISO-8859-1, so a UTF-8 character here
++/// reaches the console as mojibake.
++std::string describe_channel_transforms(const ChannelTransforms& ct,
++                                        double radius);
++
+ } // namespace nukex
+diff --git a/src/lib/alignment/src/channel_registration.cpp b/src/lib/alignment/src/channel_registration.cpp
+index 8e021c5..ff1d889 100644
+--- a/src/lib/alignment/src/channel_registration.cpp
++++ b/src/lib/alignment/src/channel_registration.cpp
+@@ -1,14 +1,16 @@
+ #include "nukex/alignment/channel_registration.hpp"
+ 
+ #include <algorithm>
+ #include <cmath>
++#include <cstdio>
++#include <string>
+ 
+ namespace nukex {
+ namespace {
+ 
+ double median_of(std::vector<double> v) {
+     if (v.empty()) return 0.0;
+     const size_t mid = v.size() / 2;
+     std::nth_element(v.begin(), v.begin() + mid, v.end());
+     return v[mid];
+ }
+@@ -312,11 +314,45 @@ ChannelTransforms measure_channel_transforms(
+             pairs.push_back({ ref[i].x - out.cx, ref[i].y - out.cy,
+                               c.x      - out.cx, c.y      - out.cy });
+         }
+ 
+         out.per_channel[ch] = fit_channel(pairs, config);
+     }
+ 
+     return out;
+ }
+ 
++std::string describe_channel_transforms(const ChannelTransforms& ct,
++                                        double radius) {
++    if (ct.empty()) return {};
++
++    std::string out;
++    for (size_t ch = 0; ch < ct.per_channel.size(); ch++) {
++        if (static_cast<int>(ch) == ct.reference_channel) continue;
++        const ChannelTransform& t = ct.per_channel[ch];
++
++        char buf[192];
++        switch (t.fit) {
++        case ChannelTransform::Fit::Affine:
++            std::snprintf(buf, sizeof(buf),
++                          "ch%zu affine %+.0f ppm t=(%+.2f,%+.2f) "
++                          "n=%d res=%.3fpx max=%.3fpx",
++                          ch, (t.s - 1.0) * 1e6, t.tx, t.ty,
++                          t.n_stars, t.residual, t.max_displacement(radius));
++            break;
++        case ChannelTransform::Fit::TranslationOnly:
++            std::snprintf(buf, sizeof(buf),
++                          "ch%zu translation t=(%+.2f,%+.2f) n=%d res=%.3fpx",
++                          ch, t.tx, t.ty, t.n_stars, t.residual);
++            break;
++        case ChannelTransform::Fit::Identity:
++            std::snprintf(buf, sizeof(buf),
++                          "ch%zu identity (nothing measurable)", ch);
++            break;
++        }
++        if (!out.empty()) out += "; ";
++        out += buf;
++    }
++    return out;
++}
++
+ } // namespace nukex
+diff --git a/src/lib/alignment/src/frame_aligner.cpp b/src/lib/alignment/src/frame_aligner.cpp
+index b6f13e1..51bf722 100644
+--- a/src/lib/alignment/src/frame_aligner.cpp
++++ b/src/lib/alignment/src/frame_aligner.cpp
+@@ -1,23 +1,16 @@
+ #include "nukex/alignment/frame_aligner.hpp"
+ 
+ #include <cmath>
+ 
+ namespace nukex {
+ 
+-namespace {
+-/// A channel correction smaller than this at the field corner is not worth a
+-/// resample: it is below the centroid noise floor measured on real data
+-/// (0.058 px between blue and green on the M3 set) by a wide margin.
+-constexpr double kNegligibleChannelShiftPx = 0.01;
+-}
+-
+ FrameAligner::FrameAligner(const Config& config) : config_(config) {}
+ 
+ FrameAligner::AlignedFrame FrameAligner::align(const Image& frame, int frame_index) {
+     AlignedFrame result;
+     result.frame_index = frame_index;
+ 
+     // Detect stars
+     result.stars = StarDetector::detect(frame, config_.star_config);
+ 
+     if (!has_ref_) {
+diff --git a/src/lib/stacker/src/stacking_engine.cpp b/src/lib/stacker/src/stacking_engine.cpp
+index dab562d..b2658f7 100644
+--- a/src/lib/stacker/src/stacking_engine.cpp
++++ b/src/lib/stacker/src/stacking_engine.cpp
+@@ -10,20 +10,21 @@
+ #include "nukex/io/debayer.hpp"
+ #include "nukex/io/flat_calibration.hpp"
+ // TASK-14-COLLAPSE: this include exists so we can dereference the
+ // pImpl unique_ptr<FilterClassifier>. When the v4 module-level
+ // FilterClass enum is deleted, the pImpl can revert to a value
+ // member and this include can move into the header.
+ #include "nukex/io/filter_classifier.hpp"
+ #include "nukex/io/filter_alias.hpp"
+ #include "nukex/alignment/frame_aligner.hpp"
+ #include "nukex/alignment/reference_selector.hpp"
++#include "nukex/alignment/channel_registration.hpp"
+ // TASK-14-COLLAPSE: same — pImpl-only include, can move to the
+ // header once the namespace collision is gone.
+ #include "nukex/calibration/qe_database.hpp"
+ // TASK-14-COLLAPSE: same — for ChannelDecomposer pImpl.
+ #include "nukex/calibration/channel_decomposer.hpp"
+ #include <Eigen/Dense>
+ #include "nukex/classify/weight_computer.hpp"
+ // ColorComposer is module-owned (Task 11 / Task 12). The engine produces
+ // structured DerivedStack output; the module composes it for display.
+ #include "nukex/fitting/model_selector.hpp"
+@@ -552,21 +553,21 @@ StackingEngine::ExecuteResult StackingEngine::execute(
+         Image image = std::move(read_result.image);
+         auto& meta = read_result.metadata;
+ 
+         // 1b. Per-frame filter classification — drives Phase A routing.
+         Filter frame_filter = filter_classifier_->classify(meta);
+ 
+         // Mid-batch unknown-on-Bayer is rejected per-frame (not the whole
+         // batch — only the first frame's UNKNOWN-on-Bayer is fatal).
+         bool frame_is_bayer = parse_bayer_pattern(meta.bayer_pattern) != BayerPattern::NONE;
+         if (frame_filter.cls == FilterClass::UNKNOWN && frame_is_bayer) {
+-            obs.advance(1, "  skipped — unknown FILTER='" + frame_filter.name +
++            obs.advance(1, "  skipped -- unknown FILTER='" + frame_filter.name +
+                            "' on Bayer frame (add it to a qe_overrides.json selected in the NukeX interface to recover)");
+             // Filter rejection: the frame was skipped because its FILTER
+             // keyword is not present in the QE database. This is not an
+             // alignment failure — the aligner was never invoked. Track it
+             // separately so the user-facing summary can distinguish
+             // "your scope wandered" from "your filter wheel reported an
+             // unknown name." (Task 12 counter split.)
+             result.n_frames_rejected_filter++;
+             continue;
+         }
+@@ -632,60 +633,92 @@ StackingEngine::ExecuteResult StackingEngine::execute(
+         }
+ 
+         // 3. Flat correct
+         if (!master_flat.empty()) {
+             obs.advance(0, "  flat correcting");
+             FlatCalibration::apply(image, master_flat);
+         }
+ 
+         // 4. Align
+         // Pre-check saturation so a blown-out frame gets a specific log line
+-        // ("SKIPPED — blown out, X%") rather than the generic
++        // ("SKIPPED -- blown out, X%") rather than the generic
+         // "aligned: FAILED (stars=0)".  The actual guard that keeps
+         // StarDetector fast lives in StarDetector::detect — this is purely
+         // for log clarity in the Process Console.
+         float sat_frac = StarDetector::saturation_fraction(
+             image, config_.aligner_config.star_config.saturation_level);
+         bool blown_out =
+             sat_frac >= config_.aligner_config.star_config.saturation_reject_fraction;
+ 
+         obs.advance(0, "  aligning");
+         auto aligned = aligner.align(image, f);
+         // Surface the alignment outcome including the actual inlier / RMS
+         // numbers so a user reading the Process Console can tell which
+         // frames genuinely aligned from which were weight-penalised.
+         // (The previous log said "aligned (N stars)" regardless of success,
+         // which hid 61-failed-of-65 alignment-quality regressions for an
+         // entire release cycle.)
+         if (blown_out) {
+             char pct[16];
+             std::snprintf(pct, sizeof(pct), "%.1f", sat_frac * 100.0f);
+             obs.advance(0,
+-                std::string("  aligned: SKIPPED (blown out — ") + pct
++                std::string("  aligned: SKIPPED (blown out -- ") + pct
+                 + "% pixels at saturation)");
+         } else {
+            const auto& a = aligned.alignment;
+            std::string status = a.alignment_failed ? "FAILED" : "ok";
+            std::string rms_str;
+            {
+               char buf[32];
+               std::snprintf(buf, sizeof(buf), "%.3f", a.match.rms_error);
+               rms_str = buf;
+            }
+            obs.advance(0, "  aligned: " + status
+                           + " (stars=" + std::to_string(aligned.stars.stars.size())
+                           + ", inliers=" + std::to_string(a.match.n_inliers)
+                           + ", rms=" + rms_str + " px"
+                           + (a.is_meridian_flipped ? ", meridian-flipped" : "")
+                           + ")");
+         }
+ 
++        // Channel registration, when there is something to say about it.
++        // AlignedFrame::channels is populated whenever a colour frame was
++        // measured, whether or not the correction was applied, so silence
++        // alone cannot be the guard here -- it would fire on every frame of a
++        // well-corrected rig, each reporting a few negligible ppm that was
++        // never applied. Report a frame only when the correction actually
++        // moved pixels, or when the fit gave up on some non-reference
++        // channel: that second case is a frame with too few isolated stars
++        // to measure, which is the opposite situation from "nothing was
++        // wrong" and must not look the same in the log.
++        if (!aligned.channels.empty()) {
++            const double corner_radius =
++                std::hypot(image.width() / 2.0, image.height() / 2.0);
++            const bool applied = !aligned.channels.negligible(
++                corner_radius, kNegligibleChannelShiftPx);
++            bool gave_up = false;
++            for (size_t ch = 0; ch < aligned.channels.per_channel.size(); ch++) {
++                if (static_cast<int>(ch) == aligned.channels.reference_channel)
++                    continue;
++                if (aligned.channels.per_channel[ch].fit ==
++                    ChannelTransform::Fit::Identity) {
++                    gave_up = true;
++                    break;
++                }
++            }
++            if (applied || gave_up) {
++                const std::string desc =
++                    describe_channel_transforms(aligned.channels, corner_radius);
++                if (!desc.empty()) obs.advance(0, "  channel reg: " + desc);
++            }
++        }
++
+         // 5. Cache aligned frame into the geometry-matched cache.
+         obs.advance(0, "  caching");
+         get_or_create_cache(aligned.image.width(),
+                             aligned.image.height(),
+                             aligned.image.n_channels()).write_frame(f, aligned.image);
+ 
+         // 6. Frame-level stats
+         float frame_median = compute_frame_median(aligned.image);
+         float frame_fwhm = compute_median_fwhm(aligned.stars);
+ 
+diff --git a/test/unit/alignment/test_channel_registration.cpp b/test/unit/alignment/test_channel_registration.cpp
+index 791a6b1..c78aa25 100644
+--- a/test/unit/alignment/test_channel_registration.cpp
++++ b/test/unit/alignment/test_channel_registration.cpp
+@@ -337,10 +337,67 @@ TEST_CASE("an outlier centroid is clipped out of the fit",
+     ChannelTransforms ct = measure_channel_transforms(f.image, f.catalog, 1);
+     const ChannelTransform& red = ct.per_channel[0];
+ 
+     // Without clipping, one 4 px outlier among 25 stars drags the fit well
+     // past 0.02 px. With clipping it barely registers.
+     const double R = std::hypot(cx, cy);
+     CHECK(std::abs(red.s - s) * R < 0.02);
+     CHECK(std::abs(red.tx - tx) < 0.02);
+     CHECK(red.n_stars < int(f.catalog.stars.size()));
+ }
++
++// --- console reporting ---------------------------------------------------
++
++TEST_CASE("describe_channel_transforms names the rung and the size",
++          "[channel_registration]") {
++    ChannelTransforms ct;
++    ct.cx = 399.5; ct.cy = 399.5; ct.reference_channel = 1;
++    ct.per_channel.resize(3);
++    ct.per_channel[0] = ChannelTransform{1.000238, 0.31, -0.12, 187, 0.043,
++                                         ChannelTransform::Fit::Affine};
++    ct.per_channel[1].fit = ChannelTransform::Fit::Identity;
++    ct.per_channel[2] = ChannelTransform{1.0, 0.02, -0.01, 190, 0.031,
++                                         ChannelTransform::Fit::TranslationOnly};
++
++    const std::string s = describe_channel_transforms(ct, 565.0);
++
++    // The rung, the size of the correction, and the star count all have to be
++    // there: a user seeing a moved golden needs to know why from the log.
++    CHECK(s.find("ch0") != std::string::npos);
++    CHECK(s.find("affine") != std::string::npos);
++    CHECK(s.find("238 ppm") != std::string::npos);
++    CHECK(s.find("n=187") != std::string::npos);
++    CHECK(s.find("ch2") != std::string::npos);
++    CHECK(s.find("translation") != std::string::npos);
++    CHECK(s.find("ch1") == std::string::npos);   // the reference is not reported
++
++    // ASCII only. PCL reads const char* as ISO-8859-1, so a stray UTF-8 byte
++    // reaches the Process Console as mojibake.
++    for (unsigned char c : s) CHECK(c < 0x80);
++}
++
++TEST_CASE("describe_channel_transforms says so when there is nothing to say",
++          "[channel_registration]") {
++    CHECK(describe_channel_transforms(ChannelTransforms{}, 565.0).empty());
++}
++
++TEST_CASE("describe_channel_transforms names channels the fit gave up on",
++          "[channel_registration]") {
++    // A frame with too few isolated stars to measure anything is the opposite
++    // situation from a frame whose channels already agreed: this one needs to
++    // be visible in the console too, not silently indistinguishable from the
++    // near-identity skip.
++    ChannelTransforms ct;
++    ct.cx = 399.5; ct.cy = 399.5; ct.reference_channel = 1;
++    ct.per_channel.resize(3);
++    ct.per_channel[0].fit = ChannelTransform::Fit::Identity;
++    ct.per_channel[1].fit = ChannelTransform::Fit::Identity;   // reference
++    ct.per_channel[2].fit = ChannelTransform::Fit::Identity;
++
++    const std::string s = describe_channel_transforms(ct, 565.0);
++
++    CHECK_FALSE(s.empty());
++    CHECK(s.find("ch0") != std::string::npos);
++    CHECK(s.find("ch2") != std::string::npos);
++    CHECK(s.find("identity") != std::string::npos);
++    CHECK(s.find("ch1") == std::string::npos);   // the reference is not reported
++}

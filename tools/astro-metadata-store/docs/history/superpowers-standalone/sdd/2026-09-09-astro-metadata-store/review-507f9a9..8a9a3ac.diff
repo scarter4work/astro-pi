@@ -1,0 +1,192 @@
+# Review package: 507f9a9..HEAD
+
+## Commits
+8a9a3ac fix: guard manifest mirror path against out_dir traversal
+
+## Files changed
+ src/astrometa/manifest.py | 39 ++++++++++++++++++++++++++++++++++++++-
+ tests/test_manifest.py    | 46 ++++++++++++++++++++++++++++++++++++++++++++++
+ 2 files changed, 84 insertions(+), 1 deletion(-)
+
+## Diff
+diff --git a/src/astrometa/manifest.py b/src/astrometa/manifest.py
+index 93ed48b..2b83171 100644
+--- a/src/astrometa/manifest.py
++++ b/src/astrometa/manifest.py
+@@ -70,25 +70,52 @@ def _like_escape(s: str) -> str:
+     return s.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+ 
+ 
+ def _mirror_leaf_dir(leaf_dir: Path, out_dir: Path) -> Path:
+     """
+     Map `leaf_dir` onto a path beneath `out_dir` that preserves its full
+     directory structure (minus the leading root), so two different leaf
+     directories that happen to share a basename -- a target or panel
+     name reused under a different night or object -- land at distinct
+     destinations instead of colliding on the same manifest filename.
++
++    Stripping the anchor handles a well-formed absolute leaf_dir, but
++    does nothing about a literal '..' segment: a relative leaf_dir that
++    contains one, or an absolute one carrying more '..' than the
++    anchor-strip accounts for, is not collapsed by joinpath alone, and
++    could otherwise walk the target back out of out_dir entirely --
++    `export_dir` then mkdirs whatever path this function returns, so
++    that is not cosmetic, it can create real directories outside
++    out_dir (verified: an unguarded version of this function resolved a
++    crafted path all the way to filesystem root). Both sides are
++    resolved (symlinks and '..' collapsed) and checked with
++    `is_relative_to` -- not string-prefix matching, which a sibling
++    directory like "out_dir_evil" would defeat -- before anything is
++    returned. Raises ValueError, naming both the original leaf_dir and
++    where it actually resolved to, rather than silently handing back an
++    unsafe path.
+     """
+     parts = leaf_dir.parts
+     if leaf_dir.anchor:
+         parts = parts[len(Path(leaf_dir.anchor).parts):]
+-    return out_dir.joinpath(*parts) if parts else out_dir
++    target = out_dir.joinpath(*parts) if parts else out_dir
++
++    resolved_out_dir = out_dir.resolve()
++    resolved_target = target.resolve()
++    if (resolved_target != resolved_out_dir
++            and not resolved_target.is_relative_to(resolved_out_dir)):
++        raise ValueError(
++            f"refusing to mirror leaf directory {leaf_dir} to {target} -- "
++            f"it resolves to {resolved_target}, which is outside out_dir "
++            f"({resolved_out_dir}). This would create directories outside "
++            f"out_dir.")
++    return resolved_target
+ 
+ 
+ def export_dir(conn, leaf_dir: Path, out_dir: Path | None = None) -> Path:
+     """
+     Write a `.astro-manifest.json` sidecar for every frame recorded
+     under `leaf_dir`, into `out_dir` if given, else into `leaf_dir`
+     itself.
+ 
+     Frames are selected by path prefix with an escaped LIKE (see module
+     docstring) so a sibling directory differing from `leaf_dir` only
+@@ -135,20 +162,30 @@ def export_all(conn, out_dir: Path | None = None, dry_run: bool = False) -> int:
+     exported without writing anything -- neither export_dir nor any
+     filesystem call runs.
+ 
+     When `out_dir` is given, each leaf's manifest is written beneath a
+     mirror of its full directory structure under `out_dir` (see
+     `_mirror_leaf_dir`), never flattened into `out_dir` directly -- see
+     module docstring for why flattening would collide. A write failure
+     raises immediately, naming the offending leaf directory (via
+     export_dir); no directory is silently skipped, so a partial run
+     never looks like a complete one.
++
++    Not atomic: this aborts on the FIRST failure rather than attempting
++    every leaf and reporting failures at the end, so on a partial run
++    the manifests already written for leaves processed earlier in the
++    same call remain on disk exactly as written -- each one is
++    independently complete and valid for its own leaf. That's the
++    intended, safe behaviour (a leaf's manifest is never half-written),
++    not a bug; an operator reading a raised export_all should read it as
++    "some real manifests exist, some leaves are not yet done", not as
++    "nothing happened".
+     """
+     leaves = {Path(r[0]).parent for r in
+               conn.execute("SELECT path FROM frames").fetchall()}
+     if dry_run:
+         return len(leaves)
+     out_dir = Path(out_dir) if out_dir is not None else None
+     for leaf in leaves:
+         target_dir = _mirror_leaf_dir(leaf, out_dir) if out_dir is not None else None
+         export_dir(conn, leaf, out_dir=target_dir)
+     return len(leaves)
+diff --git a/tests/test_manifest.py b/tests/test_manifest.py
+index 3ebb85d..9bf9eff 100644
+--- a/tests/test_manifest.py
++++ b/tests/test_manifest.py
+@@ -64,20 +64,27 @@ def test_importing_twice_does_not_duplicate_rows(tmp_path):
+ 
+ 
+ def test_exporting_twice_produces_the_same_manifest(tmp_path):
+     leaf = tmp_path / "2026-09-08" / "Sh2-106"; leaf.mkdir(parents=True)
+     conn = db.connect(tmp_path / "a.sqlite"); db.init_schema(conn)
+     _frame(conn, "h1", str(leaf / "Light_Sh2-106_0001.fit"))
+     manifest.export_dir(conn, leaf)
+     doc1 = json.loads((leaf / manifest.MANIFEST_NAME).read_text())
+     manifest.export_dir(conn, leaf)
+     doc2 = json.loads((leaf / manifest.MANIFEST_NAME).read_text())
++    # Compare only "frames", not the whole doc: generated_at is a
++    # wall-clock timestamp that legitimately differs between the two
++    # calls even though nothing about the underlying data changed --
++    # asserting doc1 == doc2 would make this test flaky (or, worse,
++    # tempt a future reader to "fix" the flake by freezing time rather
++    # than by narrowing the comparison to what idempotency actually
++    # promises: the same frames, not the same generated_at).
+     assert doc1["frames"] == doc2["frames"]
+ 
+ 
+ # --- Correction 1: the LIKE prefix must be escaped --------------------
+ 
+ def test_like_escape_rejects_underscore_wildcard_sibling(tmp_path):
+     """
+     A naive f"{leaf_dir}/%" LIKE pattern treats '_' as a single-character
+     wildcard, so a sibling path differing from the leaf ONLY where an
+     underscore sits would incorrectly match. This archive's real root
+@@ -165,20 +172,59 @@ def test_export_all_out_dir_avoids_basename_collision(tmp_path):
+ 
+     n = manifest.export_all(conn, out_dir=out_dir)
+     assert n == 2
+ 
+     found = sorted(out_dir.rglob(manifest.MANIFEST_NAME))
+     assert len(found) == 2  # both survive -- no basename collision
+     leaf_dirs = {json.loads(p.read_text())["leaf_dir"] for p in found}
+     assert leaf_dirs == {str(leaf1), str(leaf2)}
+ 
+ 
++def test_export_all_rejects_relative_leaf_dir_that_escapes_out_dir(tmp_path):
++    """
++    A frame path is normally an absolute DB-sourced path, but export_dir
++    and export_all are public, unvalidated entry points -- a relative
++    leaf directory containing '..' segments is not collapsed by
++    joinpath alone, so out_dir.joinpath(*parts) could otherwise walk the
++    manifest target back out of out_dir entirely before export_dir
++    mkdirs it.
++    """
++    out_dir = tmp_path / "manifests"; out_dir.mkdir()
++    conn = db.connect(tmp_path / "t.sqlite"); db.init_schema(conn)
++    _frame(conn, "h1", "somedir/../../escape/Light_Sh2-106_0001.fit")
++
++    with pytest.raises(ValueError, match="out_dir"):
++        manifest.export_all(conn, out_dir=out_dir)
++
++    # Refused before any filesystem call -- nothing created anywhere.
++    assert list(out_dir.rglob(manifest.MANIFEST_NAME)) == []
++    assert not (out_dir / "somedir").exists()
++    assert not (tmp_path / "escape").exists()
++
++
++def test_export_all_rejects_leaf_dir_that_resolves_outside_out_dir(tmp_path):
++    """
++    Even a well-formed absolute leaf_dir (as every real DB row is) can
++    carry more '..' segments than the anchor-strip accounts for, and
++    still resolve outside out_dir after being rejoined beneath it.
++    """
++    out_dir = tmp_path / "manifests"; out_dir.mkdir()
++    conn = db.connect(tmp_path / "t.sqlite"); db.init_schema(conn)
++    evil_path = "/" + "../" * 6 + "escape/Light_Sh2-106_0001.fit"
++    _frame(conn, "h1", evil_path)
++
++    with pytest.raises(ValueError, match="out_dir"):
++        manifest.export_all(conn, out_dir=out_dir)
++
++    assert list(out_dir.rglob(manifest.MANIFEST_NAME)) == []
++
++
+ def test_export_dir_raises_loudly_on_write_failure(tmp_path):
+     leaf = tmp_path / "2026-09-08" / "Sh2-106"; leaf.mkdir(parents=True)
+     conn = db.connect(tmp_path / "t.sqlite"); db.init_schema(conn)
+     _frame(conn, "h1", str(leaf / "Light_Sh2-106_0001.fit"))
+ 
+     readonly_out = tmp_path / "readonly"; readonly_out.mkdir()
+     os.chmod(readonly_out, stat.S_IRUSR | stat.S_IXUSR)  # read+execute, no write
+     try:
+         with pytest.raises(OSError) as exc_info:
+             manifest.export_dir(conn, leaf, out_dir=readonly_out)

@@ -1,0 +1,475 @@
+### Task 3: Capture fixtures and parse detail pages
+
+**Files:**
+- Create: `tools/capture_gallery_fixtures.sh`, `tests/fixtures/gallery/` (6 files)
+- Modify: `src/autocontrast/db/discover/gallery.py` (add `GalleryEntry`, `parse_detail`, credit and filter helpers)
+- Test: `tests/test_gallery_detail.py`
+
+**Interfaces:**
+- Consumes: Task 2's parsers and `GalleryConfig`/`GALLERIES`.
+- Produces: `GalleryEntry` dataclass (fields listed in the code below);
+  `parse_detail(doc, *, entry_id, gallery, detail_url, width_px=None, height_px=None) -> GalleryEntry`;
+  `parse_credit(doc) -> str | None`; `asserts_copyright(credit) -> bool`;
+  `parse_filter_bands(doc) -> list[str]`; `parse_size_px(lines) -> tuple[int, int] | None`.
+
+- [ ] **Step 1: Write the fixture capture script**
+
+```bash
+# tools/capture_gallery_fixtures.sh
+#!/usr/bin/env bash
+# Capture the gallery HTML fixtures used by the discovery parser tests.
+#
+# Fixtures are COMMITTED, so the test suite never touches the network. Re-run this only
+# to refresh them deliberately (e.g. after tests/test_gallery_live.py reports drift).
+# One request per second, as everywhere else in this subsystem.
+set -euo pipefail
+
+DEST="$(dirname "$0")/../tests/fixtures/gallery"
+UA='AutoContrast/0.1 (+https://github.com/scarter4work/autocontrast; scarter4work@yahoo.com)'
+mkdir -p "$DEST"
+
+fetch () {  # $1 = destination filename, $2 = URL
+  echo "  $1"
+  curl -sSL -A "$UA" --max-time 60 "$2" -o "$DEST/$1"
+  sleep 1
+}
+
+echo "Capturing gallery fixtures into $DEST"
+fetch hubble_listing_orion.html \
+  'https://esahubble.org/images/archive/search/page/1/?subject_name=Orion+Nebula&minimum_size=2'
+fetch eso_listing_orion.html \
+  'https://www.eso.org/public/images/archive/search/?subject_name=Orion+Nebula'
+fetch hubble_detail_heic0601a.html   'https://esahubble.org/images/heic0601a/'
+fetch eso_detail_eso1103a.html       'https://www.eso.org/public/images/eso1103a/'
+fetch hubble_detail_opo0205c.html    'https://esahubble.org/images/opo0205c/'
+fetch hubble_detail_heic0211i.html   'https://esahubble.org/images/heic0211i/'
+echo "Done. Review the diff before committing — these are test ground truth."
+```
+
+Run it, then confirm six files exist:
+
+```bash
+chmod +x tools/capture_gallery_fixtures.sh
+./tools/capture_gallery_fixtures.sh
+ls -l tests/fixtures/gallery/
+```
+
+Expected: six HTML files, each 40–90 KB.
+
+- [ ] **Step 2: Write the failing test**
+
+```python
+# tests/test_gallery_detail.py
+"""Detail-page parsing against committed real pages (§5.2.1).
+
+Every expectation here is measured ground truth from data/seed_catalog.json or from the
+pages themselves. Fixture choice is deliberate: alongside two clean observations there is
+a render with no published position (opo0205c) and an artist's impression (heic0211i).
+Commit 12e7041 shipped two bugs past 138 green tests because every fixture was a 2D mono
+FITS — the gap was fixture diversity, not coverage. Hence the awkward cases are here from
+the start.
+"""
+
+from __future__ import annotations
+
+from pathlib import Path
+
+import pytest
+
+from autocontrast.db.discover.gallery import (
+    GALLERIES,
+    asserts_copyright,
+    parse_credit,
+    parse_detail,
+    parse_filter_bands,
+    parse_size_px,
+    text_lines,
+)
+
+FIXTURES = Path(__file__).parent / "fixtures" / "gallery"
+
+
+def load(name: str) -> str:
+    return (FIXTURES / name).read_text(encoding="utf-8", errors="replace")
+
+
+@pytest.fixture
+def heic0601a():
+    return parse_detail(
+        load("hubble_detail_heic0601a.html"),
+        entry_id="heic0601a", gallery="esa_hubble",
+        detail_url="https://esahubble.org/images/heic0601a/",
+        width_px=18000, height_px=18000,
+    )
+
+
+@pytest.fixture
+def eso1103a():
+    return parse_detail(
+        load("eso_detail_eso1103a.html"),
+        entry_id="eso1103a", gallery="eso",
+        detail_url="https://www.eso.org/public/images/eso1103a/",
+        width_px=8948, height_px=8597,
+    )
+
+
+def test_hubble_position_matches_the_curated_catalog(heic0601a):
+    """seed_catalog.json declares 83.7905 / -5.4140 from the embedded AVM tag; the
+    published text must agree, since that is what makes pre-download filtering sound."""
+    assert heic0601a.ra_deg == pytest.approx(83.7905, abs=1e-3)
+    assert heic0601a.dec_deg == pytest.approx(-5.4140, abs=1e-3)
+
+
+def test_eso_position_matches_the_curated_catalog(eso1103a):
+    assert eso1103a.ra_deg == pytest.approx(83.82217, abs=1e-4)
+    assert eso1103a.dec_deg == pytest.approx(-5.39099, abs=1e-4)
+
+
+def test_footprint_radii_match_the_curated_catalog(heic0601a, eso1103a):
+    assert heic0601a.fov_radius_arcmin == pytest.approx(21.23, abs=0.02)
+    assert eso1103a.fov_radius_arcmin == pytest.approx(24.61, abs=0.02)
+
+
+def test_pixel_scale_is_derivable_from_published_metadata(heic0601a, eso1103a):
+    """fov_w * 60 / width_px. Catalog says 0.1001 and 0.238 arcsec/px. This is what lets
+    gate G4 be satisfied without downloading a 324-megapixel JPEG."""
+    assert heic0601a.pixel_scale_arcsec == pytest.approx(0.1001, abs=1e-4)
+    assert eso1103a.pixel_scale_arcsec == pytest.approx(0.238, abs=1e-3)
+
+
+def test_image_urls_point_at_the_cdn(heic0601a, eso1103a):
+    assert heic0601a.image_url == \
+        "https://cdn.esahubble.org/archives/images/large/heic0601a.jpg"
+    assert eso1103a.image_url == "https://cdn.eso.org/images/large/eso1103a.jpg"
+
+
+def test_names_types_and_release_dates(heic0601a, eso1103a):
+    assert heic0601a.object_name == "Messier 42"
+    assert eso1103a.object_name == "M 42"          # the naming swamp §5.1 warns about
+    assert heic0601a.entry_type == "Observation"
+    assert heic0601a.published_utc == "2006-01-11T16:00:00Z"
+    assert eso1103a.published_utc == "2011-01-19T12:00:00Z"
+
+
+def test_palette_is_derived_from_published_filters(heic0601a, eso1103a):
+    """Both are broadband-dominated composites; the catalog declares RGB for both."""
+    assert heic0601a.palette_class == "RGB"
+    assert eso1103a.palette_class == "RGB"
+
+
+def test_filter_bands_are_extracted(heic0601a):
+    bands = parse_filter_bands(load("hubble_detail_heic0601a.html"))
+    assert bands == ["B", "V", "H-alpha", "I", "Z"]
+
+
+def test_size_is_published_as_a_cross_check_on_listing_dimensions():
+    lines = text_lines(load("hubble_detail_heic0601a.html"))
+    assert parse_size_px(lines) == (18000, 18000)
+
+
+def test_attribution_is_the_full_credit_line(heic0601a):
+    """The site states crediting with the FULL credit line is mandatory, so the whole
+    string is captured, not the first fragment before a nested tag."""
+    assert "NASA" in heic0601a.attribution
+    assert "ESA" in heic0601a.attribution
+    assert "Robberto" in heic0601a.attribution
+    assert "Orion Treasury Project Team" in heic0601a.attribution
+
+
+def test_license_defaults_to_the_gallery_license_when_no_copyright_is_asserted(heic0601a):
+    assert heic0601a.license == "CC BY 4.0"
+    assert GALLERIES["esa_hubble"].default_license == "CC BY 4.0"
+
+
+def test_render_with_no_published_position_yields_nulls_not_a_guess():
+    """opo0205c: ESA/Hubble publishes neither coordinates nor field of view. It must
+    become a NULL row so the crawler remembers it, never a guessed position — a wrong
+    pixel scale corrupts band-limiting (§4.4)."""
+    entry = parse_detail(
+        load("hubble_detail_opo0205c.html"),
+        entry_id="opo0205c", gallery="esa_hubble",
+        detail_url="https://esahubble.org/images/opo0205c/",
+    )
+    assert entry.ra_deg is None
+    assert entry.dec_deg is None
+    assert entry.fov_radius_arcmin is None
+    assert entry.pixel_scale_arcsec is None
+    assert entry.entry_type == "Photographic"
+    assert entry.parsed_ok is True     # the page parsed; the data is simply absent
+
+
+def test_copyrighted_render_is_flagged_so_it_is_never_ingested_as_cc_by():
+    """opo0205c's credit asserts AAO copyright. ESA/Hubble hosts third-party
+    copyrighted images, so the per-gallery CC BY 4.0 default is NOT universal. Claiming
+    CC BY 4.0 here would attach a false license to every fingerprint record (§5.5)."""
+    credit = parse_credit(load("hubble_detail_opo0205c.html"))
+    assert asserts_copyright(credit) is True
+    entry = parse_detail(
+        load("hubble_detail_opo0205c.html"),
+        entry_id="opo0205c", gallery="esa_hubble",
+        detail_url="https://esahubble.org/images/opo0205c/",
+    )
+    assert entry.license is None       # unestablished, not defaulted
+
+
+def test_permissive_credits_are_not_flagged_as_copyrighted():
+    assert asserts_copyright(parse_credit(load("hubble_detail_heic0601a.html"))) is False
+    assert asserts_copyright(parse_credit(load("eso_detail_eso1103a.html"))) is False
+    assert asserts_copyright(None) is False
+
+
+def test_artwork_has_no_position_and_no_filters():
+    """An artist's impression has nothing to match; it must not enter the position index."""
+    entry = parse_detail(
+        load("hubble_detail_heic0211i.html"),
+        entry_id="heic0211i", gallery="esa_hubble",
+        detail_url="https://esahubble.org/images/heic0211i/",
+    )
+    assert entry.entry_type == "Artwork"
+    assert entry.ra_deg is None
+    assert entry.palette_class == "unknown"
+
+
+def test_a_page_that_does_not_parse_at_all_reports_failure():
+    """Distinguishing 'parsed fine, data absent' from 'parse broke' is what lets the
+    crawler abort loudly on a site redesign instead of indexing an empty archive."""
+    entry = parse_detail(
+        "<html><body><p>503 Service Unavailable</p></body></html>",
+        entry_id="whatever", gallery="eso",
+        detail_url="https://www.eso.org/public/images/whatever/",
+    )
+    assert entry.parsed_ok is False
+```
+
+- [ ] **Step 3: Run test to verify it fails**
+
+Run: `.venv/bin/python -m pytest tests/test_gallery_detail.py -v`
+Expected: FAIL — `ImportError: cannot import name 'parse_detail'`
+
+- [ ] **Step 4: Write the implementation**
+
+Append to `src/autocontrast/db/discover/gallery.py`:
+
+```python
+from autocontrast.fingerprint.palette import palette_class_from_gallery_bands
+
+
+@dataclass
+class GalleryEntry:
+    """One gallery render's published metadata. Position fields are ``None`` when the
+    gallery does not publish them — an expected, first-class outcome (§5.2)."""
+
+    id: str
+    gallery: str
+    detail_url: str
+    image_url: str | None
+    ra_deg: float | None
+    dec_deg: float | None
+    fov_w_arcmin: float | None
+    fov_h_arcmin: float | None
+    fov_radius_arcmin: float | None
+    width_px: int | None
+    height_px: int | None
+    pixel_scale_arcsec: float | None
+    object_name: str | None
+    category: str | None
+    entry_type: str | None
+    palette_class: str
+    license: str | None
+    attribution: str | None
+    published_utc: str | None
+    parsed_ok: bool
+
+    @property
+    def has_position(self) -> bool:
+        return (self.ra_deg is not None and self.dec_deg is not None
+                and self.fov_radius_arcmin is not None)
+
+
+def parse_credit(doc: str) -> str | None:
+    """The full credit line from ``class="credit"``.
+
+    The block contains nested anchors, so tags are stripped and whitespace collapsed —
+    taking only the first text node would truncate "NASA, ESA, M. Robberto ..." to "NASA".
+    The site states that crediting with the full line is mandatory.
+    """
+    match = re.search(r'class="credit"[^>]*>(.*?)</div>', doc, re.S)
+    if match is None:
+        return None
+    text = _html.unescape(re.sub(r"(?s)<[^>]+>", " ", match.group(1)))
+    text = re.sub(r"\s+", " ", text).strip()
+    # Tag stripping leaves gaps around punctuation: "NASA , ESA , M. Robberto ( STScI / ESA )".
+    text = re.sub(r"\s+([,.;:])", r"\1", text)
+    text = re.sub(r"\(\s+", "(", text)
+    text = re.sub(r"\s+\)", ")", text)
+    text = re.sub(r"\s*/\s*", "/", text)
+    return text or None
+
+
+# No per-image machine-readable license exists on either site: the copyright block is
+# site boilerplate and no CC BY string appears. The only signal is the credit itself,
+# and ESA/Hubble does host third-party copyrighted images (opo0205c is AAO's).
+_COPYRIGHT_MARKERS = re.compile(r"(?i)copyright|©|\(c\)\s|all rights reserved")
+
+
+def asserts_copyright(credit: str | None) -> bool:
+    """True when a credit line claims copyright, so the gallery default must not apply."""
+    return bool(credit) and _COPYRIGHT_MARKERS.search(credit) is not None
+
+
+def parse_filter_bands(doc: str) -> list[str]:
+    """Filter names from the published 'Colours & filters' table, in table order.
+
+    Rows look like ``Optical B | 435 nm | Hubble Space Telescope | ACS``; the filter name
+    is the trailing token of the band cell ("Optical H-alpha" -> "H-alpha").
+    """
+    section = re.search(r"(?is)Colours?\s*&(?:amp;)?\s*[Ff]ilters?(.*?)</table>", doc)
+    if section is None:
+        return []
+    bands: list[str] = []
+    for row in re.findall(r"(?is)<tr[^>]*>(.*?)</tr>", section.group(1)):
+        cells = [
+            re.sub(r"\s+", " ", _html.unescape(re.sub(r"(?s)<[^>]+>", " ", cell))).strip()
+            for cell in re.findall(r"(?is)<t[dh][^>]*>(.*?)</t[dh]>", row)
+        ]
+        cells = [c for c in cells if c]
+        if not cells or cells[0].lower().startswith("band"):
+            continue
+        bands.append(cells[0].split()[-1])
+    return bands
+
+
+def parse_size_px(lines: list[str]) -> tuple[int, int] | None:
+    """``'18000 x 18000 px'`` -> ``(18000, 18000)``. Cross-checks the listing dimensions."""
+    value = labelled_value(lines, "Size")
+    if value is None:
+        return None
+    match = re.match(r"\s*(\d+)\s*[x×]\s*(\d+)", value)
+    return (int(match.group(1)), int(match.group(2))) if match else None
+
+
+def _image_url(doc: str) -> str | None:
+    """The CDN 'large' JPEG, read from the page rather than constructed, so a CDN or path
+    change surfaces as a missing URL instead of a 404 at download time."""
+    urls = re.findall(
+        r"https?://cdn\.[^\"' ]*?/images/large/[^\"' ]+\.(?:jpg|jpeg|png)", doc
+    )
+    return urls[0] if urls else None
+
+
+def parse_detail(
+    doc: str,
+    *,
+    entry_id: str,
+    gallery: str,
+    detail_url: str,
+    width_px: int | None = None,
+    height_px: int | None = None,
+) -> GalleryEntry:
+    """Parse a gallery detail page into a :class:`GalleryEntry`.
+
+    Never raises. ``parsed_ok`` distinguishes "the page parsed but publishes no position"
+    (normal — starless treatments, artwork, older releases) from "parsing broke" (a site
+    redesign or an error page), which is what lets the crawler abort loudly rather than
+    quietly index nothing.
+    """
+    lines = text_lines(doc)
+    cfg = GALLERIES.get(gallery)
+
+    # A real detail page always carries at least an Id or a Name label. Neither means
+    # this is not a detail page at all.
+    parsed_ok = labelled_value(lines, "Id") is not None or labelled_value(lines, "Name") is not None
+
+    ra_text = labelled_value(lines, "Position (RA)")
+    dec_text = labelled_value(lines, "Position (Dec)")
+    fov_text = labelled_value(lines, "Field of view")
+
+    ra_deg = parse_ra_sexagesimal(ra_text) if ra_text else None
+    dec_deg = parse_dec_sexagesimal(dec_text) if dec_text else None
+    fov = parse_fov_arcmin(fov_text) if fov_text else None
+    fov_w, fov_h = fov if fov else (None, None)
+    radius = fov_radius_arcmin(fov_w, fov_h) if fov else None
+
+    if width_px is None or height_px is None:
+        size = parse_size_px(lines)
+        if size is not None:
+            width_px, height_px = size
+
+    # §2.2: scale must be angular. Derived from published metadata so the cone can be
+    # filtered before any download.
+    pixel_scale = None
+    if fov_w is not None and width_px:
+        pixel_scale = fov_w * 60.0 / float(width_px)
+
+    credit = parse_credit(doc)
+    # A copyright-asserting credit means the gallery default does NOT apply. Leave the
+    # license unestablished rather than attaching a false one (§5.5).
+    license_text = None
+    if cfg is not None and not asserts_copyright(credit):
+        license_text = cfg.default_license
+
+    release = labelled_value(lines, "Release date")
+
+    return GalleryEntry(
+        id=entry_id,
+        gallery=gallery,
+        detail_url=detail_url,
+        image_url=_image_url(doc),
+        ra_deg=ra_deg,
+        dec_deg=dec_deg,
+        fov_w_arcmin=fov_w,
+        fov_h_arcmin=fov_h,
+        fov_radius_arcmin=radius,
+        width_px=width_px,
+        height_px=height_px,
+        pixel_scale_arcsec=pixel_scale,
+        object_name=labelled_value(lines, "Name"),
+        category=labelled_value(lines, "Category"),
+        entry_type=labelled_value(lines, "Type"),
+        palette_class=palette_class_from_gallery_bands(parse_filter_bands(doc)),
+        license=license_text,
+        attribution=credit,
+        published_utc=parse_release_date(release) if release else None,
+        parsed_ok=parsed_ok,
+    )
+```
+
+Note: this imports `palette_class_from_gallery_bands`, built in Task 4. Implement Task 4
+first if working strictly test-green, or add a temporary local stub returning `"unknown"`
+and delete it in Task 4. **Preferred: do Task 4 before Task 3's Step 5.**
+
+- [ ] **Step 5: Run test to verify it passes**
+
+Run: `.venv/bin/python -m pytest tests/test_gallery_detail.py -v`
+Expected: PASS, 16 tests.
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add tools/capture_gallery_fixtures.sh tests/fixtures/gallery \
+        src/autocontrast/db/discover/gallery.py tests/test_gallery_detail.py
+git commit -m "discover: parse gallery detail pages; six committed fixtures
+
+Published metadata reproduces the hand-built catalog exactly — eso1103a parses to
+83.82217 / -5.39099 and 24.61' against catalog values of the same, and pixel scale
+falls out as 0.1001 and 0.238 arcsec/px from fov/width. So the cone can be filtered
+BEFORE downloading a 324-megapixel JPEG.
+
+Fixtures deliberately include the awkward cases, not just the happy path: opo0205c
+(no published position -> NULL row) and heic0211i (artwork). Commit 12e7041 shipped
+two bugs past 138 green tests because every fixture was 2D mono FITS; that was a
+fixture-diversity gap, so the diversity is here from the start.
+
+Licensing finding: ESA/Hubble hosts third-party COPYRIGHTED renders (opo0205c is
+'Copyright (c) Anglo-Australian Observatory'), and there is no per-image
+machine-readable license anywhere on either site. So the per-gallery CC BY 4.0
+default applies only when the credit does not assert copyright; otherwise the
+license is left unestablished. Attaching a false CC BY 4.0 to a fingerprint record
+would be a §5.5 violation that travels with the record forever.
+
+parsed_ok separates 'parsed fine, data absent' from 'parsing broke', which is what
+lets the crawler abort loudly on a redesign instead of indexing an empty archive."
+```
+
+---
+

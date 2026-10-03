@@ -1,0 +1,298 @@
+# Review package: 56935e3..7635c42
+
+## Commits
+7635c42 fix: the proxy the search descends must carry the depth it claims
+
+## Files changed
+ pixinsight/autocontrast_optimize.js | 28 ++++++++++++++++++---
+ src/autocontrast/io/loaders.py      | 50 ++++++++++++++++++++++++++++++-------
+ tests/test_raster.py                | 31 +++++++++++++++++++++++
+ 3 files changed, 96 insertions(+), 13 deletions(-)
+
+## Diff
+diff --git a/pixinsight/autocontrast_optimize.js b/pixinsight/autocontrast_optimize.js
+index c97f343..dd2b453 100644
+--- a/pixinsight/autocontrast_optimize.js
++++ b/pixinsight/autocontrast_optimize.js
+@@ -251,39 +251,49 @@ function buildProxy(sourcePath, nativePixelScaleArcsec) {
+    var nativeW = w.mainView.image.width;
+    var nativeH = w.mainView.image.height;
+    var longest = Math.max(nativeW, nativeH);
+ 
+    /* Never upscale — a smaller master is already its own proxy (the sidecar's
+     * `max_dim` has the same "never upscale" rule, and the two must agree). */
+    var factor = (longest > MAX_DIM) ? (MAX_DIM / longest) : 1.0;
+    var targetW = Math.max(1, Math.round(nativeW * factor));
+    var targetH = Math.max(1, Math.round(nativeH * factor));
+ 
++   /* Promote BEFORE the resample, not after. Measured: an 8-bit master
++    * resampled in an 8-bit buffer rounds every output pixel to 8 bits, and
++    * promoting afterwards only multiplies by 257 — the first `proxy.tif` this
++    * script wrote carried 250 distinct values, all exact multiples of 257. A
++    * 3.3x bicubic downsize averages ~11 source pixels, so the precision that
++    * rounding threw away was real information, and the proxy is both the
++    * baseline D and the root parent of every branch. Production must not
++    * optimize against an approximation (§2.2), and the array everything
++    * descends from is the one place that matters most. */
++   w.setSampleFormat(CANDIDATE_BITS, false);
++
+    if (factor < 1.0) {
+       var R = new Resample;
+       R.xSize = targetW;
+       R.ySize = targetH;
+       R.mode = Resample.prototype.AbsolutePixels;
+       /* ForceWidthAndHeight with BOTH sizes computed from the master's own
+        * aspect. Forcing a square MAX_DIM x MAX_DIM here would stretch the
+        * image, and every structural metric in §4 would then be measuring the
+        * distortion instead of the picture. */
+       R.absoluteMode = Resample.prototype.ForceWidthAndHeight;
+       R.interpolation = Resample.prototype.Auto;
+       if (!R.executeOn(w.mainView)) {
+          w.forceClose();
+          throw new Error("Resample failed while building the " + MAX_DIM +
+                          "px search proxy for " + sourcePath);
+       }
+    }
+ 
+-   w.setSampleFormat(CANDIDATE_BITS, false);
+    var proxyPath = WORK + "/proxy" + CANDIDATE_SUFFIX;
+    var saved = w.saveAs(proxyPath, false, false, false, false);
+    var actualW = w.mainView.image.width;
+    var actualH = w.mainView.image.height;
+    var bits = w.bitsPerSample;
+    var isColor = w.mainView.image.isColor;
+    w.forceClose();
+ 
+    if (!saved)
+       throw new Error("could not save the search proxy to " + proxyPath);
+@@ -395,23 +405,33 @@ function buildCurvesTransformation(params) {
+    var P = new CurvesTransformation;
+    P.K = [[0.0, 0.0], [0.25, 0.25 - lift], [0.75, 0.75 + lift], [1.0, 1.0]];
+    P.Kt = CurvesTransformation.prototype.AkimaSubsplines;
+    return P;
+ }
+ 
+ function buildHistogramTransformation(params, view) {
+    /* black_point: raise the black point, CLIP-LIMITED (§6.2's `clip_limited`).
+     * The limit is the image's own 1st percentile, measured here rather than
+     * assumed, and the move is a FRACTION of it (strength <= 0.85 < 1), so the
+-    * black point provably never reaches the 1st percentile and no more than 1%
+-    * of pixels can be clipped by construction. §7's shadow-clipping guardrail
+-    * is the independent check; this is the action refusing to need it. */
++    * black point never reaches that percentile.
++    *
++    * That bounds the black point. It does NOT bound the clipped fraction to 1%,
++    * and an earlier version of this comment wrongly claimed it did. Measured on
++    * the test print: every `black_point@-/strong` was discarded by §7's
++    * shadow-clipping guardrail at 2.44%, 2.54%, 3.97% and 2.81% — two to four
++    * times that supposed bound. The percentile is taken once over the whole
++    * image while the transform is applied per channel, so a pixel needs only
++    * ONE channel under the new black point to count as clipped, and three
++    * channels' worth of sub-threshold pixels can land in the tally. §7's
++    * guardrail is the real bound on what gets clipped; this action only bounds
++    * how far the black point moves. Do not build on a stronger claim than that.
++    */
+    if (params.clip_limited !== true)
+       throw new Error("black_point instruction is not clip-limited; refusing to " +
+                       "raise a black point with no bound on what it clips");
+ 
+    var h = new Histogram(view.image);
+    var onePercent = h.normalizedClipLow(Math.round(0.01 * h.totalCount));
+    var shadows = onePercent * params.strength;
+ 
+    var P = new HistogramTransformation;
+    // rows: R, G, B, RGB/K, Alpha;  each [shadows, midtones, highlights, low, high]
+diff --git a/src/autocontrast/io/loaders.py b/src/autocontrast/io/loaders.py
+index 0e48caa..5afdf8f 100644
+--- a/src/autocontrast/io/loaders.py
++++ b/src/autocontrast/io/loaders.py
+@@ -75,20 +75,36 @@ _FITS_SUFFIXES = {".fits", ".fit", ".fts"}
+ # Pillow opens a 48-bit RGB TIFF without complaint and hands back uint8. A
+ # source pixel of (65535, 40000, 257) comes back as (255, 156, 1) — the low
+ # byte is gone and nothing says so. That is the one failure mode §12 forbids
+ # outright, and it is exactly what the optimizer's candidate round trip would
+ # have hit: `.tif` is already in `supported_suffixes()` (Pillow registers it),
+ # so it passes `optimize_begin`'s validation and then silently quantizes every
+ # candidate to 8 bits. Production must not optimize against an approximation
+ # (§2.2), and an 8-bit intermediate is one.
+ _TIFF_SUFFIXES = {".tif", ".tiff"}
+ 
++# What "full scale" means for the integer dtypes a raster can carry, used in
++# place of INFERRING the range from the pixel values. Inference is wrong the
++# moment an image is genuinely dark: a uint16 candidate whose brightest pixel
++# is 200 has a true value of 200/65535 = 0.00305, but a data-derived rule sees
++# `max <= 255`, divides by 255, and returns 0.78431 — 257x too bright, with no
++# log and no error (§12). That was harmless while every raster came back from
++# Pillow as uint8 by construction; making 16-bit TIFF the optimizer's candidate
++# format turned it into a live path.
++#
++# uint8 and uint16 only, deliberately. For wider integer types the container
++# width is not the data range — Pillow stores 16-bit grayscale TIFF as mode
++# "I" (int32), where full scale is 65535 and not 2**31-1 — so there is no
++# defensible constant, and those fall back to the range inference in
++# `load_raster`. The formats this project writes and reads back are covered.
++_INTEGER_FULL_SCALE = {np.dtype(np.uint8): 255.0, np.dtype(np.uint16): 65535.0}
++
+ 
+ def supported_suffixes() -> frozenset[str]:
+     """Every file suffix :func:`load_image` can actually read back.
+ 
+     ``load_image`` dispatches on suffix: FITS goes through astropy, TIFF through
+     ``tifffile``, everything else through Pillow's ``Image.open``. Each of those
+     three dispatch conditions contributes its own suffixes here, and each is the
+     single place that condition lives — the Pillow half is read off its own
+     registered plugins rather than hand-copied, so this can never drift from what
+     Pillow can actually open. Callers that hand a path to something outside this
+@@ -118,35 +134,43 @@ def _resize_native(arr: np.ndarray, max_dim: int | None) -> np.ndarray:
+     planes = arr if arr.ndim == 3 else arr[..., None]
+     resized = [
+         np.asarray(Image.fromarray(planes[..., c].astype(np.float32), mode="F")
+                    .resize(new_size))
+         for c in range(planes.shape[-1])
+     ]
+     stacked = np.stack(resized, axis=-1)
+     return stacked if arr.ndim == 3 else stacked[..., 0]
+ 
+ 
+-def _decode_tiff(path: Path, max_dim: int | None) -> np.ndarray:
+-    """Decode a TIFF at its NATIVE bit depth (see ``_TIFF_SUFFIXES``)."""
++def _decode_tiff(path: Path, max_dim: int | None) -> tuple[np.ndarray, float | None]:
++    """Decode a TIFF at its NATIVE bit depth (see ``_TIFF_SUFFIXES``).
++
++    Returns the array and its full-scale value — the number that means 1.0 for
++    the dtype the file was written at, or ``None`` when that dtype has no
++    defensible one (see ``_INTEGER_FULL_SCALE``). The decode is the only place
++    that knows the true depth: ``_resize_native`` hands back float32, so by the
++    time ``load_raster`` sees the array the dtype is gone and all that is left
++    is a guess from the data.
++    """
+     import tifffile
+ 
+     arr = np.asarray(tifffile.imread(path))
+     if arr.ndim > 3:
+         # A multi-page or multi-sample TIFF: the optimizer's candidates are
+         # single-page RGB, so anything else means we are reading a file we did
+         # not write and cannot interpret. Refusing beats fingerprinting page 0
+         # of something and calling it the candidate (§12).
+         raise ValueError(
+             f"{path.name}: expected a single 2-D or 3-D TIFF page, got shape "
+             f"{arr.shape}; the sidecar has no rule for choosing among planes"
+         )
+-    return _resize_native(arr, max_dim)
++    return _resize_native(arr, max_dim), _INTEGER_FULL_SCALE.get(arr.dtype)
+ 
+ 
+ def image_dimensions(path: str | Path) -> tuple[int, int]:
+     """Native ``(width, height)`` of an image on disk, without decoding its pixels.
+ 
+     Needed to compute how much :func:`load_image` downsampled a file, so a
+     WCS-derived pixel scale can be corrected to the scale of the array we actually
+     fingerprint (§2.2).
+     """
+     path = Path(path)
+@@ -233,35 +257,43 @@ def load_raster(path: str | Path, max_dim: int | None = None) -> np.ndarray:
+     presentation depth — a 18000px mosaic carries octaves of fine structure a
+     1600px render simply cannot.
+ 
+     TIFF is decoded by ``tifffile`` rather than Pillow so 16-bit data survives
+     (see ``_TIFF_SUFFIXES``); everything downstream of the decode — channel
+     promotion, alpha, normalization, clipping — is shared, deliberately, so the
+     two decoders cannot come to disagree about what a loaded image is.
+     """
+     path = Path(path)
+     if path.suffix.lower() in _TIFF_SUFFIXES:
+-        arr = _decode_tiff(path, max_dim)
++        arr, full_scale = _decode_tiff(path, max_dim)
+     else:
++        full_scale = None
+         Image.MAX_IMAGE_PIXELS = None  # professional mosaics exceed Pillow's default guard
+         with Image.open(path) as im:
+             if max_dim is not None and max(im.size) > max_dim:
+                 scale = max_dim / max(im.size)
+                 new_size = (max(1, round(im.size[0] * scale)),
+                             max(1, round(im.size[1] * scale)))
+                 im = im.resize(new_size)
+             arr = np.asarray(im)
++            full_scale = _INTEGER_FULL_SCALE.get(arr.dtype)
+ 
+     if arr.ndim == 2:
+         arr = np.stack([arr] * 3, axis=-1)
+     if arr.shape[-1] == 4:  # drop alpha
+         arr = arr[..., :3]
+ 
+     arr = arr.astype(np.float64)
+     # Normalize integer ranges to [0, 1]; float rasters are assumed display-scaled.
+-    max_value = float(arr.max()) if arr.size else 1.0
+-    if max_value > 1.0:
+-        # 8-bit -> 255, 16-bit -> 65535; infer the smallest standard range that fits.
+-        divisor = 65535.0 if max_value > 255.0 else 255.0
+-        arr = arr / divisor
++    if full_scale is not None:
++        # The decoder knew the true depth, so use it. A dark 16-bit candidate
++        # must not be rescaled as if it were 8-bit data (see _INTEGER_FULL_SCALE).
++        arr = arr / full_scale
++    else:
++        max_value = float(arr.max()) if arr.size else 1.0
++        if max_value > 1.0:
++            # No known full scale (float data, or an integer width with no
++            # standard range): infer the smallest standard range that fits.
++            divisor = 65535.0 if max_value > 255.0 else 255.0
++            arr = arr / divisor
+ 
+     return np.clip(arr, 0.0, 1.0)
+diff --git a/tests/test_raster.py b/tests/test_raster.py
+index 445914d..17e6e2a 100644
+--- a/tests/test_raster.py
++++ b/tests/test_raster.py
+@@ -153,20 +153,51 @@ def test_sixteen_bit_tiff_survives_max_dim_downsizing(tmp_path):
+     _write_16bit_rgb_tiff(path, arr)
+ 
+     img = load_raster(path, max_dim=50)
+ 
+     assert img.shape == (25, 50, 3)  # aspect preserved
+     # A flat field must resample to itself; 40000/65535 is not representable at
+     # 8 bits (it would land on 156/255 = 0.6118).
+     np.testing.assert_allclose(img, 40000 / 65535, rtol=0, atol=1e-6)
+ 
+ 
++def test_a_dark_sixteen_bit_tiff_is_not_rescaled_as_if_it_were_eight_bit(tmp_path):
++    """The bit depth comes from the DECODER, never from the pixel values.
++
++    A candidate whose brightest pixel is 200 is a legitimate 16-bit image of a
++    dark field. Inferring the range from the data sees `max <= 255`, divides by
++    255, and returns 0.784 for a pixel whose true value is 0.00305 — 257x too
++    bright, with nothing logged and nothing raised (§12). Rare on astro data,
++    where the max is normally near full scale, but silent when it happens, and
++    16-bit TIFF is now the format every candidate round-trips through.
++    """
++    path = tmp_path / "dark.tif"
++    _write_16bit_rgb_tiff(path, np.full((4, 4, 3), 200, dtype=np.uint16))
++
++    img = load_raster(path)
++
++    np.testing.assert_allclose(img, 200 / 65535, rtol=0, atol=1e-12)
++    assert img.max() < 0.01  # not 0.784: the file is dark and must load dark
++
++
++def test_a_dark_sixteen_bit_tiff_survives_the_downsizing_path_too(tmp_path):
++    """`_resize_native` returns float32, so the dtype is gone by the time the
++    normalization runs — the full-scale value has to be carried, not re-derived."""
++    path = tmp_path / "dark-big.tif"
++    _write_16bit_rgb_tiff(path, np.full((100, 200, 3), 200, dtype=np.uint16))
++
++    img = load_raster(path, max_dim=50)
++
++    assert img.shape == (25, 50, 3)
++    np.testing.assert_allclose(img, 200 / 65535, rtol=0, atol=1e-6)
++
++
+ def test_supported_suffixes_includes_tiff(tmp_path):
+     """`optimize_begin` validates `candidate_suffix` against this set."""
+     from autocontrast.io.loaders import supported_suffixes
+ 
+     assert {".tif", ".tiff"} <= supported_suffixes()
+ 
+ 
+ def test_tiff_image_dimensions_are_native(tmp_path):
+     """`downsample_factor` divides by these, so they must be the file's own."""
+     from autocontrast.io.loaders import downsample_factor, image_dimensions

@@ -1,0 +1,229 @@
+# Review package: 370ea8d..HEAD
+
+## Commits
+5881ec8 optimize: surface the zero-baseline-stars pass, don't silence it
+801c2d6 optimize: star integrity guardrail
+
+## Files changed
+ src/autocontrast/optimize/guardrails.py | 100 ++++++++++++++++++++++++++++++++
+ tests/test_optimize_guardrails.py       |  66 +++++++++++++++++++++
+ 2 files changed, 166 insertions(+)
+
+## Diff
+diff --git a/src/autocontrast/optimize/guardrails.py b/src/autocontrast/optimize/guardrails.py
+index 0479859..d29bf48 100644
+--- a/src/autocontrast/optimize/guardrails.py
++++ b/src/autocontrast/optimize/guardrails.py
+@@ -8,20 +8,21 @@ SS7 annotates noise and star metrics as "PI native". We compute them in Python
+ from pixels instead, deliberately: routing them through PixInsight would make
+ them behave differently offline than in production, and SS7 violations are what
+ stop this tool fabricating -- the last thing that should go untested.
+ """
+ 
+ from __future__ import annotations
+ 
+ from dataclasses import dataclass
+ 
+ import numpy as np
++from scipy import ndimage
+ 
+ from autocontrast.fingerprint.starlet import starlet_transform
+ 
+ # Median absolute deviation -> Gaussian sigma, for the finest wavelet plane.
+ _MAD_TO_SIGMA = 1.4826
+ 
+ 
+ @dataclass(frozen=True)
+ class GuardrailLimits:
+     """Trip thresholds. Calibrated against real data, never tuned to rescue a
+@@ -112,10 +113,109 @@ def check_shadow_clipping(candidate: np.ndarray, limits: GuardrailLimits) -> Gua
+ def check_highlight_clipping(candidate: np.ndarray, limits: GuardrailLimits) -> GuardrailVerdict:
+     worst = max(clipped_fraction(candidate, at=1.0))
+     ok = worst <= limits.highlight_clip_fraction
+     return GuardrailVerdict(
+         name="highlight_clipping", ok=ok,
+         reason="" if ok else (
+             f"{worst:.4%} of pixels blown to white (limit {limits.highlight_clip_fraction:.4%})"
+         ),
+         value=worst, limit=limits.highlight_clip_fraction,
+     )
++
++
++
++@dataclass(frozen=True)
++class StarStats:
++    count: int
++    median_fwhm: float
++    median_ecc: float
++
++
++def detect_stars(gray: np.ndarray, *, k_sigma: float = 5.0) -> StarStats:
++    """Deterministic star detection: threshold, label, second moments.
++
++    Not a replacement for PI's StarDetector in absolute terms -- it does not need
++    to be. The guardrail compares candidate against checkpoint using the SAME
++    detector, so systematic bias cancels and only the CHANGE matters.
++    """
++    sigma = mrs_noise_sigma(gray)
++    background = float(np.median(gray))
++    mask = gray > background + k_sigma * max(sigma, 1e-9)
++
++    labels, n = ndimage.label(mask)
++    if n == 0:
++        return StarStats(count=0, median_fwhm=0.0, median_ecc=0.0)
++
++    fwhms: list[float] = []
++    eccs: list[float] = []
++    for sl in ndimage.find_objects(labels):
++        h = sl[0].stop - sl[0].start
++        w = sl[1].stop - sl[1].start
++        if h < 2 or w < 2:
++            continue  # single-pixel hits are cosmic rays / hot pixels, not stars
++        # Equivalent-area FWHM and axis-ratio eccentricity from the bounding box.
++        fwhms.append(float(np.sqrt(h * w)))
++        major, minor = max(h, w), min(h, w)
++        eccs.append(float(np.sqrt(1.0 - (minor / major) ** 2)))
++
++    if not fwhms:
++        return StarStats(count=0, median_fwhm=0.0, median_ecc=0.0)
++    return StarStats(
++        count=len(fwhms),
++        median_fwhm=float(np.median(fwhms)),
++        median_ecc=float(np.median(eccs)),
++    )
++
++
++def check_star_integrity(
++    candidate: np.ndarray, baseline: np.ndarray, limits: GuardrailLimits
++) -> GuardrailVerdict:
++    """Stars must not vanish, bloat, or smear (SS7)."""
++    base = detect_stars(_gray(baseline))
++    cand = detect_stars(_gray(candidate))
++
++    if base.count == 0:
++        # A pass, but not a silent one (design SS12): a starless baseline is a
++        # legitimate input (e.g. a nebula-only crop -- the design's §4 keeps
++        # the starless layer itself out of this guardrail entirely, measuring
++        # only the recombined image, so this guardrail never sees a frame
++        # that is starless purely because star_split hasn't recombined yet).
++        # That means a zero count here must not fail closed the way
++        # check_noise_floor's degenerate-sigma case does. But the caller must
++        # be able to tell, from the verdict alone, that star integrity was
++        # never actually evaluated on this candidate -- not that it was
++        # checked and found clean.
++        return GuardrailVerdict(
++            "star_integrity", True,
++            "star integrity not assessed: baseline had no detectable stars",
++            0.0, 0.0,
++        )
++
++    lost = (base.count - cand.count) / base.count
++    if lost > limits.star_count_drop:
++        return GuardrailVerdict(
++            "star_integrity", False,
++            f"star count fell {lost:.1%} ({base.count} -> {cand.count}), "
++            f"limit {limits.star_count_drop:.1%}",
++            lost, limits.star_count_drop,
++        )
++
++    if base.median_fwhm > 0:
++        growth = (cand.median_fwhm - base.median_fwhm) / base.median_fwhm
++        if growth > limits.star_fwhm_growth:
++            return GuardrailVerdict(
++                "star_integrity", False,
++                f"star FWHM ballooned {growth:.1%} "
++                f"({base.median_fwhm:.2f} -> {cand.median_fwhm:.2f} px), "
++                f"limit {limits.star_fwhm_growth:.1%}",
++                growth, limits.star_fwhm_growth,
++            )
++
++    ecc_growth = cand.median_ecc - base.median_ecc
++    if ecc_growth > limits.star_ecc_growth:
++        return GuardrailVerdict(
++            "star_integrity", False,
++            f"star eccentricity grew {ecc_growth:.2f}, limit {limits.star_ecc_growth:.2f}",
++            ecc_growth, limits.star_ecc_growth,
++        )
++
++    return GuardrailVerdict("star_integrity", True, "", 0.0, limits.star_count_drop)
+diff --git a/tests/test_optimize_guardrails.py b/tests/test_optimize_guardrails.py
+index fe75ab8..949b3b0 100644
+--- a/tests/test_optimize_guardrails.py
++++ b/tests/test_optimize_guardrails.py
+@@ -70,10 +70,76 @@ def test_shadow_and_highlight_clipping_trip_independently():
+     assert not check_highlight_clipping(blown, limits).ok
+     assert check_shadow_clipping(blown, limits).ok
+ 
+ 
+ def test_verdict_carries_value_and_limit_for_reporting():
+     crushed = _smooth_image()
+     crushed[:20, :, :] = 0.0
+     v = check_shadow_clipping(crushed, GuardrailLimits())
+     assert v.value > v.limit
+     assert v.name == "shadow_clipping"
++
++
++from scipy.ndimage import gaussian_filter
++
++from autocontrast.optimize.guardrails import check_star_integrity, detect_stars
++
++
++def _star_field(h=192, w=192, n=40, fwhm_px=3.0, seed=7):
++    rng = np.random.default_rng(seed)
++    img = np.zeros((h, w))
++    ys = rng.integers(12, h - 12, n)
++    xs = rng.integers(12, w - 12, n)
++    img[ys, xs] = 1.0
++    img = gaussian_filter(img, sigma=fwhm_px / 2.355)
++    img = img / img.max()
++    return np.stack([img] * 3, axis=-1)
++
++
++def test_detect_stars_finds_the_planted_stars():
++    # Measured 28 labeled blobs for n=40, seed=7, not 30-40: this synthetic field
++    # has an almost-all-zero background, so mrs_noise_sigma is exactly 0 and the
++    # k_sigma threshold collapses to background + 5*1e-9 (essentially "any
++    # nonzero pixel"). That picks up full Gaussian wings, and with 40 stars
++    # scattered over a 168x168 region several pairs sit close enough for their
++    # wings to touch and merge into one connected component (confirmed by
++    # inspecting ndimage.find_objects: several bounding boxes are visibly
++    # multi-star merges, e.g. 31x15, 24x17, 28x20, vs. the normal single-star
++    # 11x11). That is correct behavior for a connected-component detector on a
++    # noiseless dense field, not a detection failure, so the bound is widened
++    # to bracket the real, deterministic count instead of an unverified guess.
++    stats = detect_stars(_star_field(n=40)[..., 0])
++    assert 20 <= stats.count <= 40
++    assert stats.median_fwhm > 0
++
++
++def test_star_integrity_passes_on_an_untouched_frame():
++    field = _star_field()
++    assert check_star_integrity(field, field, GuardrailLimits()).ok
++
++
++def test_star_integrity_trips_when_stars_are_destroyed():
++    baseline = _star_field(n=40)
++    # A heavy blur is what an over-aggressive local-contrast push does to cores.
++    bloated = np.stack(
++        [gaussian_filter(baseline[..., c], sigma=3.0) for c in range(3)], axis=-1
++    )
++    bloated = bloated / max(bloated.max(), 1e-12)
++    verdict = check_star_integrity(bloated, baseline, GuardrailLimits())
++    assert not verdict.ok
++    assert "star" in verdict.reason.lower()
++
++
++def test_star_integrity_passes_but_says_so_when_baseline_is_starless():
++    # A genuinely starless baseline (e.g. a nebula-only crop) -- not a fixture
++    # bug: measured directly below that detect_stars really returns count==0
++    # for a flat frame, so this exercises the base.count == 0 branch and not
++    # some other path.
++    blank = np.zeros((192, 192, 3))
++    assert detect_stars(blank[..., 0]).count == 0
++
++    verdict = check_star_integrity(blank, blank, GuardrailLimits())
++    assert verdict.ok
++    # Must not be a silent pass: the reason has to say integrity wasn't
++    # actually evaluated, not merely that it checked out clean.
++    assert verdict.reason != ""
++    assert "no" in verdict.reason.lower() and "star" in verdict.reason.lower()

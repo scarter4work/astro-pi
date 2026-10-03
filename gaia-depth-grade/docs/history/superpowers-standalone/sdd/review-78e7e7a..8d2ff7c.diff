@@ -1,0 +1,178 @@
+# Review package: 78e7e7a..HEAD
+
+## Commits
+8d2ff7c fix: degenerate distance range yields neutral strength, not foreground boost
+ed29dd9 docs: fix Task 6 degenerate-distance semantics in plan
+f560a84 feat: log-distance depth transform with confidence weighting
+
+## Files changed
+ .../plans/2026-06-23-gaia-depth-grade-phase1.md    | 20 +++++++---
+ src/gaia_depth_grade/transform.py                  | 41 +++++++++++++++++++++
+ tests/test_transform.py                            | 43 ++++++++++++++++++++++
+ 3 files changed, 98 insertions(+), 6 deletions(-)
+
+## Diff
+diff --git a/docs/superpowers/plans/2026-06-23-gaia-depth-grade-phase1.md b/docs/superpowers/plans/2026-06-23-gaia-depth-grade-phase1.md
+index 762cc27..cf37c55 100644
+--- a/docs/superpowers/plans/2026-06-23-gaia-depth-grade-phase1.md
++++ b/docs/superpowers/plans/2026-06-23-gaia-depth-grade-phase1.md
+@@ -821,26 +821,34 @@ def test_nan_maps_to_neutral():
+ def test_confidence_tight_vs_loose():
+     r_med = np.array([100.0, 100.0])
+     r_lo = np.array([98.0, 50.0])
+     r_hi = np.array([102.0, 150.0])
+     c = confidence(r_med, r_lo, r_hi)
+     assert c[0] > c[1]                 # tight error -> higher confidence
+     assert 0.0 <= c[1] <= c[0] <= 1.0
+ 
+ 
+ def test_effective_strength_attenuates_noisy():
+-    r_med = np.array([10.0, 10.0])
+-    r_lo = np.array([9.8, 1.0])
+-    r_hi = np.array([10.2, 30.0])
++    # distinct distances -> a real depth range (no degenerate hi<=lo case)
++    r_med = np.array([10.0, 1000.0])
++    r_lo = np.array([9.8, 500.0])
++    r_hi = np.array([10.2, 2000.0])
+     e = effective_strength(r_med, r_lo, r_hi, p_low=0, p_high=100, neutral=0.0)
+-    # both at same (nearest) distance; the noisier one is pulled toward 0
++    # nearer + tighter error -> larger magnitude strength
+     assert abs(e[0]) > abs(e[1])
++
++
++def test_degenerate_equal_distances_are_neutral():
++    # all matched stars at one distance -> no depth spread -> neutral, not a boost
++    r_med = np.array([10.0, 10.0])
++    s = depth_strength(r_med, p_low=0, p_high=100, neutral=0.0)
++    assert np.allclose(s, 0.0)
+ ```
+ 
+ - [ ] **Step 2: Run test to verify it fails**
+ 
+ Run: `pytest tests/test_transform.py -v`
+ Expected: FAIL — `ModuleNotFoundError: gaia_depth_grade.transform`.
+ 
+ - [ ] **Step 3: Implement `transform.py`**
+ 
+ ```python
+@@ -851,22 +859,22 @@ import numpy as np
+ 
+ def depth_strength(r_med, p_low=5.0, p_high=95.0, neutral=0.0) -> np.ndarray:
+     r = np.asarray(r_med, dtype=float)
+     out = np.full(r.shape, float(neutral), dtype=float)
+     finite = np.isfinite(r) & (r > 0)
+     if not np.any(finite):
+         return out
+     logr = np.log10(r[finite])
+     lo = np.percentile(logr, p_low)
+     hi = np.percentile(logr, p_high)
+-    if hi <= lo:
+-        out[finite] = 0.0
++    if hi <= lo:           # degenerate: no distance spread -> neutral, not a boost
++        out[finite] = float(neutral)
+         return out
+     norm = (np.clip(logr, lo, hi) - lo) / (hi - lo)  # 0=near..1=far
+     out[finite] = 1.0 - 2.0 * norm                    # +1 near .. -1 far
+     return out
+ 
+ 
+ def confidence(r_med, r_lo, r_hi) -> np.ndarray:
+     rm = np.asarray(r_med, dtype=float)
+     rl = np.asarray(r_lo, dtype=float)
+     rh = np.asarray(r_hi, dtype=float)
+diff --git a/src/gaia_depth_grade/transform.py b/src/gaia_depth_grade/transform.py
+new file mode 100644
+index 0000000..05e78cd
+--- /dev/null
++++ b/src/gaia_depth_grade/transform.py
+@@ -0,0 +1,41 @@
++from __future__ import annotations
++
++import numpy as np
++
++
++def depth_strength(r_med, p_low=5.0, p_high=95.0, neutral=0.0) -> np.ndarray:
++    r = np.asarray(r_med, dtype=float)
++    out = np.full(r.shape, float(neutral), dtype=float)
++    finite = np.isfinite(r) & (r > 0)
++    if not np.any(finite):
++        return out
++    logr = np.log10(r[finite])
++    lo = np.percentile(logr, p_low)
++    hi = np.percentile(logr, p_high)
++    if hi <= lo:           # degenerate: no distance spread -> neutral, not a boost
++        out[finite] = float(neutral)
++        return out
++    norm = (np.clip(logr, lo, hi) - lo) / (hi - lo)  # 0=near..1=far
++    out[finite] = 1.0 - 2.0 * norm                    # +1 near .. -1 far
++    return out
++
++
++def confidence(r_med, r_lo, r_hi) -> np.ndarray:
++    rm = np.asarray(r_med, dtype=float)
++    rl = np.asarray(r_lo, dtype=float)
++    rh = np.asarray(r_hi, dtype=float)
++    with np.errstate(invalid="ignore", divide="ignore"):
++        frac = (rh - rl) / (2.0 * rm)
++    c = 1.0 - np.clip(frac, 0.0, 1.0)
++    c[~np.isfinite(c)] = 0.0
++    return c
++
++
++def effective_strength(r_med, r_lo, r_hi, p_low=5.0, p_high=95.0, neutral=0.0) -> np.ndarray:
++    s = depth_strength(r_med, p_low, p_high, neutral)
++    c = confidence(r_med, r_lo, r_hi)
++    rm = np.asarray(r_med, dtype=float)
++    e = s * c
++    nanmask = ~np.isfinite(rm)
++    e[nanmask] = neutral
++    return e
+diff --git a/tests/test_transform.py b/tests/test_transform.py
+new file mode 100644
+index 0000000..1e39016
+--- /dev/null
++++ b/tests/test_transform.py
+@@ -0,0 +1,43 @@
++import numpy as np
++import pytest
++from gaia_depth_grade.transform import depth_strength, confidence, effective_strength
++
++
++def test_near_is_plus_one_far_is_minus_one():
++    r = np.array([10.0, 100.0, 1000.0])
++    s = depth_strength(r, p_low=0, p_high=100)
++    assert s[0] == pytest.approx(1.0, abs=1e-6)   # nearest
++    assert s[-1] == pytest.approx(-1.0, abs=1e-6)  # farthest
++    assert s[0] > s[1] > s[2]                      # monotonic decreasing
++
++
++def test_nan_maps_to_neutral():
++    r = np.array([10.0, np.nan, 1000.0])
++    s = depth_strength(r, p_low=0, p_high=100, neutral=0.0)
++    assert s[1] == 0.0
++
++
++def test_confidence_tight_vs_loose():
++    r_med = np.array([100.0, 100.0])
++    r_lo = np.array([98.0, 50.0])
++    r_hi = np.array([102.0, 150.0])
++    c = confidence(r_med, r_lo, r_hi)
++    assert c[0] > c[1]                 # tight error -> higher confidence
++    assert 0.0 <= c[1] <= c[0] <= 1.0
++
++
++def test_effective_strength_attenuates_noisy():
++    # distinct distances -> a real depth range (no degenerate hi<=lo case)
++    r_med = np.array([10.0, 1000.0])
++    r_lo = np.array([9.8, 500.0])
++    r_hi = np.array([10.2, 2000.0])
++    e = effective_strength(r_med, r_lo, r_hi, p_low=0, p_high=100, neutral=0.0)
++    # nearer + tighter error -> larger magnitude strength
++    assert abs(e[0]) > abs(e[1])
++
++
++def test_degenerate_equal_distances_are_neutral():
++    # all matched stars at one distance -> no depth spread -> neutral, not a boost
++    r_med = np.array([10.0, 10.0])
++    s = depth_strength(r_med, p_low=0, p_high=100, neutral=0.0)
++    assert np.allclose(s, 0.0)

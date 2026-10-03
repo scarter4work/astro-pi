@@ -1,0 +1,205 @@
+### Task 6: Executor protocol and NumpyExecutor
+
+**Files:**
+- Create: `src/autocontrast/optimize/executor.py`, `src/autocontrast/optimize/executors/__init__.py`, `src/autocontrast/optimize/executors/numpy_exec.py`
+- Test: `tests/test_optimize_executor.py`
+
+**Interfaces:**
+- Consumes: `Action`.
+- Produces: `Executor` (Protocol with `apply(rgb: np.ndarray, action: Action, *, pixel_scale_arcsec: float) -> np.ndarray`), `NumpyExecutor` implementing it.
+
+- [ ] **Step 1: Write the failing test**
+
+```python
+# tests/test_optimize_executor.py
+import numpy as np
+import pytest
+
+from autocontrast.optimize.actions import Action
+from autocontrast.optimize.executors.numpy_exec import NumpyExecutor
+
+
+def _img(h=96, w=96):
+    y, x = np.mgrid[0:h, 0:w]
+    base = 0.35 + 0.15 * np.sin(x / 8.0) * np.cos(y / 11.0)
+    return np.clip(np.stack([base, base * 0.9, base * 1.1], axis=-1), 0.0, 1.0)
+
+
+@pytest.mark.parametrize("kind,level,scale", [
+    ("local_contrast", "moderate", 8.0),
+    ("local_equalize", "gentle", 8.0),
+    ("core_hdr", "moderate", None),
+    ("tonal_reshape", "strong", None),
+    ("black_point", "gentle", None),
+    ("chroma", "moderate", None),
+    ("background_neutralize", "", None),
+])
+def test_every_action_kind_is_executable_and_stays_in_range(kind, level, scale):
+    ex = NumpyExecutor()
+    src = _img()
+    out = ex.apply(src, Action(kind, level, scale, {"layer": 3, "radius_arcsec": 8.0}),
+                   pixel_scale_arcsec=1.0)
+    assert out.shape == src.shape
+    assert np.all(np.isfinite(out))
+    assert out.min() >= 0.0 and out.max() <= 1.0
+
+
+def test_executor_does_not_mutate_its_input():
+    ex, src = NumpyExecutor(), _img()
+    before = src.copy()
+    ex.apply(src, Action("tonal_reshape", "strong", None, {}), pixel_scale_arcsec=1.0)
+    assert np.array_equal(src, before)
+
+
+def test_stronger_local_contrast_moves_the_image_further():
+    ex, src = NumpyExecutor(), _img()
+    gentle = ex.apply(src, Action("local_contrast", "gentle", 8.0, {"layer": 3}),
+                      pixel_scale_arcsec=1.0)
+    strong = ex.apply(src, Action("local_contrast", "strong", 8.0, {"layer": 3}),
+                      pixel_scale_arcsec=1.0)
+    assert np.abs(strong - src).mean() > np.abs(gentle - src).mean()
+
+
+def test_unknown_action_kind_is_a_loud_error():
+    with pytest.raises(ValueError, match="unknown action"):
+        NumpyExecutor().apply(_img(), Action("teleport", "strong", None, {}),
+                              pixel_scale_arcsec=1.0)
+```
+
+- [ ] **Step 2: Run test to verify it fails**
+
+Run: `.venv/bin/python -m pytest tests/test_optimize_executor.py -v`
+Expected: FAIL — `ModuleNotFoundError: No module named 'autocontrast.optimize.executor'`
+
+- [ ] **Step 3: Write minimal implementation**
+
+```python
+# src/autocontrast/optimize/executor.py
+"""The Executor seam.
+
+The loop never touches pixels. It emits an Action; an Executor realizes it.
+Production uses real PixInsight processes; tests use a numpy approximation. Loop
+logic is identical under both, which is what lets the SS7 guardrails and SS6.3
+convergence be covered by fast offline tests (SS3.1 requires the sidecar run
+standalone with no PI present).
+"""
+
+from __future__ import annotations
+
+from typing import Protocol
+
+import numpy as np
+
+from .actions import Action
+
+
+class Executor(Protocol):
+    def apply(
+        self, rgb: np.ndarray, action: Action, *, pixel_scale_arcsec: float
+    ) -> np.ndarray:
+        """Return a new image with ``action`` applied. Must not mutate ``rgb``."""
+        ...
+```
+
+```python
+# src/autocontrast/optimize/executors/__init__.py
+"""Executor implementations."""
+```
+
+```python
+# src/autocontrast/optimize/executors/numpy_exec.py
+"""An approximate, PI-free Executor for offline tests and CI.
+
+IMPORTANT: these approximations do NOT match PixInsight's processes and are not
+meant to. They exist so beam pruning, guardrails, and convergence can be tested
+without PixInsight. A green offline suite proves the LOOP is correct; it proves
+nothing about whether the output is beautiful. Only the live tests can say that
+(spec SS7.4).
+"""
+
+from __future__ import annotations
+
+import numpy as np
+from scipy.ndimage import gaussian_filter
+
+from autocontrast.fingerprint.starlet import starlet_transform
+
+from ..actions import Action
+
+
+def _sigma_for_scale(scale_arcsec: float, pixel_scale_arcsec: float) -> float:
+    return max(scale_arcsec / max(pixel_scale_arcsec, 1e-9) / 2.355, 0.5)
+
+
+class NumpyExecutor:
+    """Approximate each SS6.2 action with a cheap numpy analogue."""
+
+    def apply(
+        self, rgb: np.ndarray, action: Action, *, pixel_scale_arcsec: float
+    ) -> np.ndarray:
+        out = np.array(rgb, dtype=np.float64, copy=True)
+        s = action.strength
+
+        if action.kind == "local_contrast":
+            layer = int(action.params.get("layer", 3))
+            for c in range(out.shape[-1]):
+                planes, residual = starlet_transform(out[..., c], n_scales=layer + 1)
+                planes[layer] *= 1.0 + s
+                out[..., c] = planes.sum(axis=0) + residual
+
+        elif action.kind == "local_equalize":
+            sigma = _sigma_for_scale(action.scale_arcsec or 8.0, pixel_scale_arcsec)
+            for c in range(out.shape[-1]):
+                local_mean = gaussian_filter(out[..., c], sigma=sigma)
+                out[..., c] = out[..., c] + s * (out[..., c] - local_mean)
+
+        elif action.kind == "core_hdr":
+            # Compress the bright end, which is what HDRMT does to cores.
+            out = np.log1p(out * (1.0 + 8.0 * s)) / np.log1p(1.0 + 8.0 * s)
+
+        elif action.kind == "tonal_reshape":
+            # Monotone S-curve about the midpoint (SS6.2: monotone-constrained).
+            out = np.clip(0.5 + (out - 0.5) * (1.0 + s), 0.0, 1.0)
+
+        elif action.kind == "black_point":
+            # Clip-limited: never move the black point past the 1st percentile.
+            floor = float(np.percentile(out, 1.0)) * s
+            out = np.clip((out - floor) / max(1.0 - floor, 1e-9), 0.0, 1.0)
+
+        elif action.kind == "chroma":
+            gray = out.mean(axis=-1, keepdims=True)
+            out = gray + (out - gray) * (1.0 + s)
+
+        elif action.kind == "background_neutralize":
+            medians = np.array([np.median(out[..., c]) for c in range(out.shape[-1])])
+            out = out - medians + medians.mean()
+
+        elif action.kind == "star_split":
+            # A mode change, not a pixel change; the loop handles layer routing.
+            pass
+
+        else:
+            raise ValueError(f"unknown action kind {action.kind!r}")
+
+        return np.clip(out, 0.0, 1.0)
+```
+
+- [ ] **Step 4: Run test to verify it passes**
+
+Run: `.venv/bin/python -m pytest tests/test_optimize_executor.py -v`
+Expected: PASS (10 tests)
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add src/autocontrast/optimize/executor.py src/autocontrast/optimize/executors/ tests/test_optimize_executor.py
+git commit -m "optimize: Executor seam + numpy stand-in
+
+The loop never touches pixels; it emits Actions an Executor realizes.
+This is what lets SS7 guardrails and SS6.3 convergence be tested with no
+PixInsight present, as SS3.1 requires -- while production still runs real
+processes rather than optimizing a model of PixInsight."
+```
+
+---
+

@@ -1,0 +1,202 @@
+### Task 9: CLI orchestration with FITS I/O and honesty metadata
+
+**Files:**
+- Create: `src/gaia_depth_grade/cli.py`
+- Test: `tests/test_e2e_synthetic.py`
+
+**Interfaces:**
+- Consumes: everything above; `DistanceSource` (injectable for tests).
+- Produces:
+  - `grade_array(image, header, config, source: DistanceSource) -> tuple[np.ndarray, dict]`. Returns `(graded_image, qa)` where `qa` includes `n_detected`, `n_matched`, `match_rate`, `median_offset_px`, `low_match_warning` (bool). Pipeline: pick luminance (mono image, or mean over channels for color) for detection → `field_footprint` → `source.distances_for` → `cross_match` → `effective_strength` → `compute_modulation` → `render_stars`. If `match_rate < config.min_match_rate`, set `low_match_warning=True` and log a loud warning.
+  - `write_fits(path, image, header, qa)` — writes the graded image, appends the verbatim honesty `HISTORY` line and `DEPTHTAG` keyword, and writes `<path>.qa.json`.
+  - `main(argv=None)` — argparse: `grade <in.fits> <out.fits> [--config c.toml]` and `debug <in.fits> <overlay.fits> [--config]`. `grade` uses `GaiaStarSource(config.cache_dir)`.
+- Honesty tag verbatim: `GAIA depth-derived; physically motivated, not per-pixel correct for gas`.
+
+- [ ] **Step 1: Write the failing E2E test (injected fake source, no network)**
+
+`tests/test_e2e_synthetic.py`:
+```python
+import json
+import numpy as np
+import pytest
+from astropy.io import fits
+from astropy.table import Table
+from gaia_depth_grade.config import GradeConfig, Gains
+from gaia_depth_grade.distances import DistanceSource
+from gaia_depth_grade.cli import grade_array, write_fits
+
+HONESTY = "GAIA depth-derived; physically motivated, not per-pixel correct for gas"
+
+
+class FakeSource(DistanceSource):
+    """Two stars: a near one (100pc) and a far one (2000pc)."""
+    def __init__(self, wcs, near_xy, far_xy):
+        self._w = wcs; self._near = near_xy; self._far = far_xy
+
+    def distances_for(self, footprint):
+        sky = self._w.pixel_to_world(
+            [self._near[0], self._far[0]], [self._near[1], self._far[1]])
+        t = Table()
+        t["ra"] = sky.ra.deg; t["dec"] = sky.dec.deg
+        t["r_med_geo"] = [100.0, 2000.0]
+        t["r_lo_geo"] = [98.0, 1900.0]; t["r_hi_geo"] = [102.0, 2100.0]
+        t["source_id"] = [1, 2]
+        return t
+
+
+def _two_star_frame(simple_wcs_header):
+    from gaia_depth_grade.wcs import load_wcs
+    w = load_wcs(simple_wcs_header)
+    ny, nx = 200, 300
+    yy, xx = np.mgrid[0:ny, 0:nx]
+    near = (90.0, 100.0); far = (210.0, 100.0)
+    img = np.zeros((ny, nx))
+    for (x, y) in (near, far):
+        img += 0.4 * np.exp(-((xx - x) ** 2 + (yy - y) ** 2) / (2 * 2.0**2))
+    return w, img, near, far
+
+
+def test_near_brightens_far_dims_end_to_end(simple_wcs_header):
+    w, img, near, far = _two_star_frame(simple_wcs_header)
+    cfg = GradeConfig(gains=Gains(brightness=0.6, size=0.0, contrast=0.0, saturation=0.0),
+                      p_low=0, p_high=100, min_match_rate=0.0)
+    src = FakeSource(w, near, far)
+    graded, qa = grade_array(img, simple_wcs_header, cfg, src)
+    near_peak = graded[96:104, 86:94].max()
+    far_peak = graded[96:104, 206:214].max()
+    assert near_peak > 0.4   # near star brightened above original 0.4
+    assert far_peak < 0.4    # far star dimmed
+    assert qa["n_matched"] == 2
+    assert qa["low_match_warning"] is False
+
+
+def test_write_fits_has_honesty_tag(tmp_path, simple_wcs_header):
+    w, img, near, far = _two_star_frame(simple_wcs_header)
+    out = tmp_path / "g.fits"
+    write_fits(str(out), img, simple_wcs_header, {"match_rate": 1.0})
+    hdr = fits.getheader(str(out))
+    assert HONESTY in str(hdr.get("DEPTHTAG", "")) or any(HONESTY in str(c) for c in hdr["HISTORY"])
+    qa = json.loads((tmp_path / "g.fits.qa.json").read_text())
+    assert qa["match_rate"] == 1.0
+```
+
+- [ ] **Step 2: Run test to verify it fails**
+
+Run: `pytest tests/test_e2e_synthetic.py -v`
+Expected: FAIL — `ModuleNotFoundError: gaia_depth_grade.cli`.
+
+- [ ] **Step 3: Implement `cli.py`**
+
+```python
+from __future__ import annotations
+
+import argparse
+import json
+import logging
+
+import numpy as np
+from astropy.io import fits
+
+from .config import GradeConfig, load_config
+from .detect import detect_stars
+from .distances import DistanceSource, GaiaStarSource
+from .match import cross_match
+from .modulate import compute_modulation
+from .render import render_stars
+from .transform import effective_strength
+from .wcs import field_footprint, load_wcs
+
+log = logging.getLogger(__name__)
+HONESTY = "GAIA depth-derived; physically motivated, not per-pixel correct for gas"
+
+
+def _luminance(image: np.ndarray) -> np.ndarray:
+    return image.mean(axis=2) if image.ndim == 3 else image
+
+
+def grade_array(image, header, config: GradeConfig, source: DistanceSource):
+    wcs = load_wcs(header)
+    lum = _luminance(image)
+    detected = detect_stars(lum, config.detect_fwhm, config.detect_threshold_sigma)
+    fp = field_footprint(wcs, lum.shape)
+    catalog = source.distances_for(fp)
+    matched, stats = cross_match(detected, catalog, wcs, config.match_tolerance_px)
+    strength = effective_strength(
+        np.asarray(matched["r_med_geo"]), np.asarray(matched["r_lo_geo"]),
+        np.asarray(matched["r_hi_geo"]), config.p_low, config.p_high, config.neutral_strength)
+    modulation = compute_modulation(strength, config.gains)
+    graded = render_stars(image, matched, modulation, config.base_sigma_px)
+
+    low = stats.match_rate < config.min_match_rate
+    if low:
+        log.warning("LOW MATCH RATE %.2f < %.2f — depth grade is unreliable",
+                    stats.match_rate, config.min_match_rate)
+    qa = {
+        "n_detected": stats.n_detected, "n_matched": stats.n_matched,
+        "match_rate": stats.match_rate, "median_offset_px": stats.median_offset_px,
+        "low_match_warning": bool(low),
+    }
+    return graded, qa
+
+
+def write_fits(path, image, header, qa):
+    data = np.moveaxis(image, -1, 0) if image.ndim == 3 else image
+    hdr = header.copy()
+    hdr["DEPTHTAG"] = HONESTY[:68]
+    hdr.add_history(HONESTY)
+    fits.PrimaryHDU(data=data.astype(np.float32), header=hdr).writeto(path, overwrite=True)
+    with open(path + ".qa.json", "w") as fh:
+        json.dump(qa, fh, indent=2)
+
+
+def _read_image(path):
+    with fits.open(path) as hdul:
+        data = hdul[0].data.astype(float)
+        header = hdul[0].header
+    if data.ndim == 3:               # FITS stores color as (3, ny, nx)
+        data = np.moveaxis(data, 0, -1)
+    return data, header
+
+
+def main(argv=None):
+    p = argparse.ArgumentParser("gaia_depth_grade")
+    sub = p.add_subparsers(dest="cmd", required=True)
+    for name in ("grade", "debug"):
+        sp = sub.add_parser(name)
+        sp.add_argument("input"); sp.add_argument("output")
+        sp.add_argument("--config", default=None)
+    args = p.parse_args(argv)
+
+    logging.basicConfig(level=logging.INFO)
+    cfg = load_config(args.config)
+    image, header = _read_image(args.input)
+    source = GaiaStarSource(cfg.cache_dir)
+    graded, qa = grade_array(image, header, cfg, source)
+    write_fits(args.output, graded, header, qa)
+    log.info("wrote %s (qa: %s)", args.output, qa)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
+```
+
+- [ ] **Step 4: Run tests to verify they pass**
+
+Run: `pytest tests/test_e2e_synthetic.py -v`
+Expected: PASS (2 passed).
+
+- [ ] **Step 5: Run the full suite**
+
+Run: `pytest -v`
+Expected: all tasks' tests pass.
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add src/gaia_depth_grade/cli.py tests/test_e2e_synthetic.py
+git commit -m "feat: CLI orchestration, FITS I/O, honesty metadata, synthetic E2E"
+```
+
+---
+

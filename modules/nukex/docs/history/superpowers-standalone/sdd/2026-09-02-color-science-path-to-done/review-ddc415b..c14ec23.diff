@@ -1,0 +1,1081 @@
+# Review package: ddc415b..HEAD
+
+## Commits
+c14ec23 refactor(module): 5-class filter enum for ratings + auto-selector; rating DB user_version 1 -> 2
+
+## Files changed
+ .../learning/include/nukex/learning/rating_db.hpp  |  19 +++-
+ src/lib/learning/src/rating_db.cpp                 |  58 +++++++++-
+ src/module/CMakeLists.txt                          |  10 +-
+ src/module/NukeXInstance.cpp                       |  41 +++----
+ src/module/RatingDialog.cpp                        |   4 +-
+ src/module/RatingDialog.h                          |   6 +-
+ src/module/stretch_auto_selector.cpp               |  20 ++--
+ src/module/stretch_auto_selector.hpp               |  16 +--
+ src/module/stretch_factory.cpp                     |   4 +-
+ src/module/stretch_factory.hpp                     |   4 +-
+ test/CMakeLists.txt                                |  25 ++++-
+ test/unit/learning/test_rating_db.cpp              |   4 +-
+ test/unit/learning/test_rating_db_migration.cpp    | 122 +++++++++++++++++++++
+ test/unit/module/test_stretch_auto_selector.cpp    |  91 ++++++++-------
+ test/unit/module/test_stretch_factory.cpp          |  14 +--
+ 15 files changed, 324 insertions(+), 114 deletions(-)
+
+## Diff
+diff --git a/src/lib/learning/include/nukex/learning/rating_db.hpp b/src/lib/learning/include/nukex/learning/rating_db.hpp
+index f3db511..ebdb5a5 100644
+--- a/src/lib/learning/include/nukex/learning/rating_db.hpp
++++ b/src/lib/learning/include/nukex/learning/rating_db.hpp
+@@ -35,23 +35,36 @@ struct RunRecord {
+     std::string params_json;
+ 
+     // Ratings (-2..2 on signed axes; 1..5 on overall)
+     int                  rating_brightness = 0;
+     int                  rating_saturation = 0;
+     std::optional<int>   rating_color;          // NULL for mono/narrowband
+     int                  rating_star_bloat = 0;
+     int                  rating_overall    = 0;
+ };
+ 
+-// Opens (or creates) a SQLite DB at `path`. Applies schema v1 if the DB is
+-// empty. Enables WAL mode. Runs PRAGMA integrity_check; on failure renames
+-// the DB to `<path>.corrupt.<timestamp>` and returns a fresh DB.
++// Schema version stamped in SQLite `PRAGMA user_version`.
++//   1 = v4.0.1.0 layout. filter_class holds the v4 rating-axis codes
++//       (0 mono-or-LRGB-color, 1 Bayer RGB, 2 narrowband, 3 reserved).
++//   2 = identical layout; filter_class holds the 5-class FilterClass rating
++//       ints (1 BROADBAND_L, 2 BROADBAND_RGB, 3 BROADBAND_OSC,
++//       4 NARROWBAND_SINGLE, 5 DUAL_NB_OSC, 0 UNKNOWN). open_rating_db()
++//       migrates 1 -> 2 in place on first open.
++constexpr int kRatingDbSchemaVersion = 2;
++
++// Reads PRAGMA user_version. Returns -1 if the handle cannot answer.
++int rating_db_schema_version(sqlite3* db);
++
++// Opens (or creates) a SQLite DB at `path`. Applies the schema if the DB is
++// empty and migrates older user_version stamps forward. Enables WAL mode.
++// Runs PRAGMA integrity_check; on failure renames the DB to
++// `<path>.corrupt.<timestamp>` and returns a fresh DB.
+ //
+ // Returns nullptr on unrecoverable failure (e.g. dir not writable).
+ sqlite3* open_rating_db(const std::string& path);
+ 
+ // Optional: attach the read-only bootstrap DB under alias "bootstrap".
+ // No-op when bootstrap_path is empty or the file does not exist.
+ // Used by train_model to union user + bootstrap rows at fit time.
+ bool attach_bootstrap(sqlite3* db, const std::string& bootstrap_path);
+ 
+ // Insert a single row (runs table). Wrap in a transaction; return false on
+diff --git a/src/lib/learning/src/rating_db.cpp b/src/lib/learning/src/rating_db.cpp
+index f6b176c..032fbfd 100644
+--- a/src/lib/learning/src/rating_db.cpp
++++ b/src/lib/learning/src/rating_db.cpp
+@@ -38,34 +38,84 @@ CREATE TABLE IF NOT EXISTS runs (
+     params_json TEXT NOT NULL,
+ 
+     rating_brightness INTEGER NOT NULL CHECK (rating_brightness BETWEEN -2 AND 2),
+     rating_saturation INTEGER NOT NULL CHECK (rating_saturation BETWEEN -2 AND 2),
+     rating_color      INTEGER          CHECK (rating_color      BETWEEN -2 AND 2),
+     rating_star_bloat INTEGER NOT NULL CHECK (rating_star_bloat BETWEEN -2 AND 2),
+     rating_overall    INTEGER NOT NULL CHECK (rating_overall    BETWEEN 1 AND 5)
+ );
+ CREATE INDEX IF NOT EXISTS idx_runs_stretch ON runs(stretch_name);
+ CREATE INDEX IF NOT EXISTS idx_runs_target  ON runs(target_class);
+-PRAGMA user_version = 1;
+ )SQL";
+ 
++int read_user_version(sqlite3* db) {
++    sqlite3_stmt* s = nullptr;
++    if (sqlite3_prepare_v2(db, "PRAGMA user_version;", -1, &s, nullptr) != SQLITE_OK) return -1;
++    int v = -1;
++    if (sqlite3_step(s) == SQLITE_ROW) v = sqlite3_column_int(s, 0);
++    sqlite3_finalize(s);
++    return v;
++}
++
++bool set_user_version(sqlite3* db, int v) {
++    const std::string sql = "PRAGMA user_version = " + std::to_string(v) + ";";
++    char* err = nullptr;
++    const int rc = sqlite3_exec(db, sql.c_str(), nullptr, nullptr, &err);
++    if (err) sqlite3_free(err);
++    return rc == SQLITE_OK;
++}
++
++// v1 rows carry the v4 rating-axis encoding written by the old
++// NukeXInstance::filter_class_to_rating_int:
++//   0 = LRGB_MONO or LRGB_COLOR (collapsed), 1 = BAYER_RGB,
++//   2 = NARROWBAND, 3 = reserved S2O3 (never written).
++// v2 rows carry FilterClass rating ints (see rating_db.hpp).
++// One CASE expression: sequential `UPDATE … WHERE filter_class = N` would
++// chain (a row moved 0 -> 1 would then match the 1 -> 3 rule).
++bool migrate_v1_to_v2(sqlite3* db) {
++    const char* sql =
++        "BEGIN IMMEDIATE;"
++        "UPDATE runs SET filter_class = CASE filter_class"
++        "   WHEN 0 THEN 1"
++        "   WHEN 1 THEN 3"
++        "   WHEN 2 THEN 4"
++        "   WHEN 3 THEN 4"
++        "   ELSE filter_class END;"
++        "PRAGMA user_version = 2;"
++        "COMMIT;";
++    char* err = nullptr;
++    if (sqlite3_exec(db, sql, nullptr, nullptr, &err) != SQLITE_OK) {
++        if (err) sqlite3_free(err);
++        sqlite3_exec(db, "ROLLBACK;", nullptr, nullptr, nullptr);
++        return false;
++    }
++    return true;
++}
++
+ bool apply_pragmas_and_schema(sqlite3* db) {
+     char* err = nullptr;
+     if (sqlite3_exec(db, "PRAGMA journal_mode=WAL;", nullptr, nullptr, &err) != SQLITE_OK) {
+         sqlite3_free(err);
+         return false;
+     }
++    // A garbage-bytes file fails here with SQLITE_NOTADB -> -1 -> false,
++    // which open_rating_db() treats as corruption (rename + retry).
++    const int before = read_user_version(db);
++    if (before < 0) return false;
++
+     if (sqlite3_exec(db, kSchemaV1, nullptr, nullptr, &err) != SQLITE_OK) {
+         sqlite3_free(err);
+         return false;
+     }
+-    return true;
++    if (before == 0) return set_user_version(db, kRatingDbSchemaVersion); // brand-new file
++    if (before == 1) return migrate_v1_to_v2(db);
++    return true; // already current (or newer: leave untouched)
+ }
+ 
+ bool integrity_ok(sqlite3* db) {
+     sqlite3_stmt* stmt = nullptr;
+     if (sqlite3_prepare_v2(db, "PRAGMA integrity_check;", -1, &stmt, nullptr) != SQLITE_OK) {
+         return false;
+     }
+     bool ok = false;
+     if (sqlite3_step(stmt) == SQLITE_ROW) {
+         const unsigned char* txt = sqlite3_column_text(stmt, 0);
+@@ -112,20 +162,24 @@ sqlite3* open_rating_db(const std::string& path) {
+         }
+         return nullptr;
+     }
+     return nullptr;
+ }
+ 
+ void close_rating_db(sqlite3* db) {
+     if (db) sqlite3_close(db);
+ }
+ 
++int rating_db_schema_version(sqlite3* db) {
++    return db ? read_user_version(db) : -1;
++}
++
+ namespace {
+ int bind_double_or_null(sqlite3_stmt* s, int col, double v) {
+     if (std::isnan(v)) return sqlite3_bind_null(s, col);
+     return sqlite3_bind_double(s, col, v);
+ }
+ } // namespace
+ 
+ bool insert_run(sqlite3* db, const RunRecord& rec) {
+     if (!db) return false;
+     const char* sql = R"SQL(
+diff --git a/src/module/CMakeLists.txt b/src/module/CMakeLists.txt
+index aee4074..6fe853c 100644
+--- a/src/module/CMakeLists.txt
++++ b/src/module/CMakeLists.txt
+@@ -3,30 +3,38 @@
+ 
+ set(PCLDIR "$ENV{HOME}/PCL" CACHE PATH "PixInsight Class Library directory")
+ 
+ if(NOT EXISTS "${PCLDIR}/include/pcl/MetaModule.h")
+     message(STATUS "PCL not found at ${PCLDIR} -- skipping module build")
+     return()
+ endif()
+ 
+ message(STATUS "PCL found at ${PCLDIR} -- building NukeX module")
+ 
++# filter_classifier.cpp (the old 4-class module-local classifier) is
++# intentionally NOT compiled into the module: it defines the externally
++# linked nukex::filter_class_name(nukex::FilterClass), which mangles
++# identically to the new nukex::filter_class_name in nukex4_core despite
++# being a different enum, so the two would silently collide at link time
++# with no error -- whichever object file the linker sees first wins, and
++# it produced wrong class-name text in the Process Console log line.
++# Nothing in the module calls the old classifier anymore after Task 14;
++# the file itself stays on disk untouched and is deleted by Task 19.
+ set(MODULE_SOURCES
+     NukeXModule.cpp
+     NukeXProcess.cpp
+     NukeXInstance.cpp
+     NukeXInterface.cpp
+     NukeXParameters.cpp
+     NukeXProgress.cpp
+     RatingDialog.cpp
+     fits_metadata.cpp
+-    filter_classifier.cpp
+     stretch_auto_selector.cpp
+     stretch_factory.cpp
+ )
+ 
+ add_library(NukeX-pxm SHARED ${MODULE_SOURCES})
+ 
+ # PCL include directories.
+ #
+ # PCL headers are treated as SYSTEM includes so GCC's -Wparentheses and
+ # other warnings originating inside PCL (e.g. Image.h:16807's
+diff --git a/src/module/NukeXInstance.cpp b/src/module/NukeXInstance.cpp
+index 4e6b66b..ede2df5 100644
+--- a/src/module/NukeXInstance.cpp
++++ b/src/module/NukeXInstance.cpp
+@@ -1,36 +1,36 @@
+ // NukeX v4 — Distribution-Fitted Stacking for PixInsight
+ // Copyright (c) 2026 Scott Carter. MIT License.
+ 
+ #include "NukeXInstance.h"
+ #include "NukeXParameters.h"
+ #include "NukeXProcess.h"
+ #include "NukeXVersion.h"
+ 
+ #include "NukeXProgress.h"
+ #include "RatingDialog.h"
+-#include "filter_classifier.hpp"
++#include "nukex/io/filter_classifier.hpp"
+ #include <pcl/ImageWindow.h>
+ #include <pcl/View.h>
+ #include <pcl/FITSHeaderKeyword.h>
+ 
+ // NukeX pipeline headers
+ #include "nukex/stacker/stacking_engine.hpp"
+ #include "nukex/compose/color_composer.hpp"
+ #include "nukex/stretch/stretch_pipeline.hpp"
+ #include "nukex/stretch/image_stats.hpp"
+ #include "nukex/stretch/layer_loader.hpp"
+ #include "nukex/stretch/param_model.hpp"
+ #include "nukex/learning/rating_db.hpp"
+ #include "nukex/learning/train_model.hpp"
+ #include "nukex/learning/atomic_write.hpp"
+-#include "fits_metadata.hpp"
++#include "nukex/io/fits_reader.hpp"
+ #include "stretch_factory.hpp"
+ 
+ #include <nlohmann/json.hpp>
+ 
+ #include <sys/stat.h>
+ #include <unistd.h>
+ 
+ #include <chrono>
+ #include <cstdint>
+ #include <cstdlib>   // std::getenv
+@@ -68,44 +68,35 @@ pcl::FITSKeywordArray base_output_keywords(
+    ka.Append( pcl::FITSHeaderKeyword(
+       "NFAILALN", pcl::IsoString().Format( "%d", n_frames_failed_alignment ),
+       "Frames flagged as failed alignment (weight x 0.5)" ) );
+    ka.Append( pcl::FITSHeaderKeyword(
+       "HISTORY", pcl::IsoString(),
+       pcl::IsoString( "NukeX v" ) + nukex_version
+           + " - Distribution-Fitted Stacking" ) );
+    return ka;
+ }
+ 
+-// Phase 8 rating-popup filter-class encoding.
++// Phase 8 rating-DB filter-class encoding (rating_db.hpp schema v2).
+ //
+-// The plan's rating-axis encoding (per RatingDialog) is:
+-//   0 = LRGB_mono, 1 = Bayer_RGB, 2 = Narrowband_HaO3, 3 = Narrowband_S2O3
+-//
+-// Our FilterClass enum is:
+-//   LRGB_MONO=0, LRGB_COLOR=1, BAYER_RGB=2, NARROWBAND=3
+-//
+-// The ONLY semantic contract at Task 17 is "filter_class == 1 shows color
+-// axis; everything else hides it" — i.e. only a Bayer mosaic run offers
+-// meaningful color-balance feedback. LRGB_COLOR (separate RGB channel
+-// stacks) collapses to the same no-color-slider UI as mono for this
+-// dialog: users rate brightness, saturation, star bloat, overall.
+-// Narrowband Ha-O3 vs S2-O3 distinction is not derivable from FITS
+-// metadata today and is deferred to Phase 8.5 with explicit filter
+-// assignment.
++// RatingDialog shows the color-balance axis only for classes whose output
++// carries broadband chrominance: BROADBAND_RGB (2) and BROADBAND_OSC (3).
++// Luminance, single-line narrowband and dual-NB composites hide it.
+ int filter_class_to_rating_int( nukex::FilterClass fc )
+ {
+    switch ( fc )
+    {
+-   case nukex::FilterClass::LRGB_MONO:  return 0;
+-   case nukex::FilterClass::LRGB_COLOR: return 0; // treat as mono for color-axis purposes
+-   case nukex::FilterClass::BAYER_RGB:  return 1;
+-   case nukex::FilterClass::NARROWBAND: return 2; // Ha-O3 default; S2-O3 distinction deferred
++   case nukex::FilterClass::BROADBAND_L:       return 1;
++   case nukex::FilterClass::BROADBAND_RGB:     return 2;
++   case nukex::FilterClass::BROADBAND_OSC:     return 3;
++   case nukex::FilterClass::NARROWBAND_SINGLE: return 4;
++   case nukex::FilterClass::DUAL_NB_OSC:       return 5;
++   case nukex::FilterClass::UNKNOWN:           return 0;
+    }
+    return 0;
+ }
+ 
+ // Serialize the trainable params on `op` to a compact JSON object so Task
+ // 19 can store it in the rating DB verbatim. Keys come from
+ // op.param_bounds(); only params whose current value is readable via
+ // get_param() are emitted.
+ std::string op_trainable_params_json( const nukex::StretchOp& op )
+ {
+@@ -654,21 +645,21 @@ bool NukeXInstance::ExecuteGlobal()
+    }
+ 
+    // ── Stretch pipeline (Phase 7 wiring + Phase 8 context) ──────
+    //
+    // Phase 8 Layer 3 → Layer 2 → Layer 1 fallback runs inside build_primary.
+    // At v4.0.1.0 ship, Layer 2 ships empty (bootstrap deferred to Phase 8.5)
+    // and Layer 3 is empty until the user saves a rating, so this reduces to
+    // factory defaults — preserving bit-identical output vs v4.0.0.8.
+    if ( !result.stacked.empty() && !light_paths.empty() )
+    {
+-      nukex::FITSMetadata meta = nukex::read_fits_metadata( light_paths.front() );
++      nukex::FrameMetadata meta = nukex::FITSReader::read_headers( light_paths.front() );
+ 
+       // Resolve Phase 8 file paths. user_data_root is where per-user rating
+       // DB + trained-model JSON live; share_root is where the read-only
+       // bootstrap ships (absent today — LayerLoader falls back cleanly).
+       //
+       // Path strategy (intentionally pragmatic for Task 17):
+       //   * user_data_root = $HOME/.config (falls back to /tmp if no HOME)
+       //   * share_root     = /opt/PixInsight/share (files absent until
+       //                      Phase 8.5 ships a bootstrap)
+       // Phase 8.5 will revisit this to use PCL's File::ApplicationData()
+@@ -696,22 +687,24 @@ bool NukeXInstance::ExecuteGlobal()
+ 
+       // Capture last-run state BEFORE the unique_ptr is moved into the
+       // pipeline, so we can read op.name / op.get_param() cheaply. The
+       // rating dialog (below) and Task 18's "Rate last run" button both
+       // depend on lastRun being populated for every successful Execute.
+       if ( primary_op )
+       {
+          lastRun.valid               = true;
+          lastRun.stats               = stats;
+          lastRun.stretch_name        = primary_op->name;
+-         lastRun.filter_class        =
+-             filter_class_to_rating_int( nukex::classify_filter( meta ) );
++         {
++            nukex::FilterClassifier classifier;
++            lastRun.filter_class = filter_class_to_rating_int( classifier.classify( meta ).cls );
++         }
+          lastRun.target_class        = 0; // TODO(Phase 8.5): FITS OBJECT -> class
+          lastRun.params_json_applied = op_trainable_params_json( *primary_op );
+          // Fresh 128-bit run id. std::rand is not seeded anywhere in NukeX
+          // and would repeat across PI launches, so Task 19's DB would get
+          // silent primary-key collisions; use random_device-seeded mt19937
+          // instead. ExecuteGlobal is UI-thread only, so the static RNG is safe.
+          {
+             static std::mt19937_64 rng{ std::random_device{}() };
+             std::uniform_int_distribution<int> byte_dist( 0, 255 );
+             for ( auto& byte : lastRun.run_id )
+diff --git a/src/module/RatingDialog.cpp b/src/module/RatingDialog.cpp
+index 7926d05..2d5389d 100644
+--- a/src/module/RatingDialog.cpp
++++ b/src/module/RatingDialog.cpp
+@@ -43,42 +43,42 @@ RatingDialog::RatingDialog(int filter_class) : filter_class_(filter_class) {
+     buttons_.AddSpacing(8);
+     buttons_.Add(skip_);
+     buttons_.AddStretch();
+ 
+     root_.Add(title_);
+     root_.AddSpacing(8);
+     root_.Add(brightness_label_); root_.Add(brightness_);
+     root_.Add(saturation_label_); root_.Add(saturation_);
+ 
+     // Hide color axis for mono / narrowband.
+-    if (filter_class_ == 1 /* Bayer_RGB */) {
++    if (has_color_axis(filter_class_)) {
+         root_.Add(color_label_); root_.Add(color_);
+     }
+ 
+     root_.Add(star_bloat_label_); root_.Add(star_bloat_);
+     root_.Add(overall_label_);    root_.Add(overall_);
+     root_.AddSpacing(8);
+     root_.Add(dont_show_again_);
+     root_.AddSpacing(8);
+     root_.Add(buttons_);
+ 
+     SetSizer(root_);
+     AdjustToContents();
+     SetFixedSize();
+ }
+ 
+ void RatingDialog::OnSaveClick(Button&, bool) {
+     result_.saved            = true;
+     result_.dont_show_again  = dont_show_again_.IsChecked();
+     result_.brightness       = brightness_.Value();
+     result_.saturation       = saturation_.Value();
+-    if (filter_class_ == 1) result_.color = color_.Value();
++    if (has_color_axis(filter_class_)) result_.color = color_.Value();
+     result_.star_bloat       = star_bloat_.Value();
+     result_.overall          = overall_.Value();
+     Ok();
+ }
+ 
+ void RatingDialog::OnSkipClick(Button&, bool) {
+     result_.saved = false;
+     result_.dont_show_again = dont_show_again_.IsChecked();
+     Cancel();
+ }
+diff --git a/src/module/RatingDialog.h b/src/module/RatingDialog.h
+index 3f78ea9..eb65387 100644
+--- a/src/module/RatingDialog.h
++++ b/src/module/RatingDialog.h
+@@ -22,23 +22,25 @@ struct RatingResult {
+     bool                dont_show_again = false;
+     int                 brightness = 0;
+     int                 saturation = 0;
+     std::optional<int>  color;   // nullopt for mono / narrowband
+     int                 star_bloat = 0;
+     int                 overall = 3;
+ };
+ 
+ class RatingDialog : public Dialog {
+ public:
+-    // filter_class: 0 = LRGB_mono, 1 = Bayer_RGB, 2 = Narrowband_HaO3, 3 = Narrowband_S2O3.
+-    // Color axis is hidden for filter_class != 1.
++    // filter_class: rating-DB schema v2 ints (1 BROADBAND_L, 2 BROADBAND_RGB,
++    // 3 BROADBAND_OSC, 4 NARROWBAND_SINGLE, 5 DUAL_NB_OSC, 0 UNKNOWN).
++    // The color axis is shown only when has_color_axis(filter_class).
+     RatingDialog(int filter_class);
++    static bool has_color_axis(int filter_class) { return filter_class == 2 || filter_class == 3; }
+ 
+     RatingResult Run();
+ 
+ private:
+     VerticalSizer root_;
+     Label         title_;
+     Label         brightness_label_, saturation_label_, color_label_, star_bloat_label_, overall_label_;
+     HorizontalSlider brightness_, saturation_, color_, star_bloat_;
+     SpinBox       overall_;
+     CheckBox      dont_show_again_;
+diff --git a/src/module/stretch_auto_selector.cpp b/src/module/stretch_auto_selector.cpp
+index 3d14d8e..336c56c 100644
+--- a/src/module/stretch_auto_selector.cpp
++++ b/src/module/stretch_auto_selector.cpp
+@@ -1,38 +1,44 @@
+ #include "stretch_auto_selector.hpp"
++#include "nukex/io/filter_classifier.hpp"
+ #include "nukex/stretch/veralux_stretch.hpp"
+ #include <sstream>
+ 
+ namespace nukex {
+ 
+ namespace {
+ 
+ std::unique_ptr<StretchOp> make_champion(FilterClass /*cls*/) {
+     return std::make_unique<VeraLuxStretch>();
+ }
+ 
+ const char* champion_name(FilterClass /*cls*/) {
+     return "VeraLux";
+ }
+ 
+ } // namespace
+ 
+-AutoSelection select_auto(const FITSMetadata& meta) {
+-    FilterClass cls = classify_filter(meta);
++AutoSelection select_auto(const FrameMetadata& meta) {
++    FilterClassifier classifier;
++    const Filter f = classifier.classify(meta);
++
+     AutoSelection sel;
+-    sel.op = make_champion(cls);
++    sel.op = make_champion(f.cls);
+     std::ostringstream oss;
+-    oss << "Auto: classified as " << filter_class_name(cls)
++    oss << "Auto: classified as " << filter_class_name(f.cls)
+         << " (FITS FILTER='" << meta.filter
+-        << "', BAYERPAT='" << meta.bayer_pat
+-        << "', NAXIS3=" << meta.naxis3
+-        << ") -> " << champion_name(cls);
++        << "', BAYERPAT='" << meta.bayer_pattern
++        << "', INSTRUME='" << meta.instrument
++        << "') -> " << champion_name(f.cls);
++    if (!classifier.last_warning().empty()) {
++        oss << " | " << classifier.last_warning();
++    }
+     sel.log_line = oss.str();
+     return sel;
+ }
+ 
+ AutoSelection select_auto(FilterClass cls) {
+     AutoSelection sel;
+     sel.op = make_champion(cls);
+     std::ostringstream oss;
+     oss << "Auto: classified as " << filter_class_name(cls)
+         << " -> " << champion_name(cls);
+diff --git a/src/module/stretch_auto_selector.hpp b/src/module/stretch_auto_selector.hpp
+index f341ea5..3bff93b 100644
+--- a/src/module/stretch_auto_selector.hpp
++++ b/src/module/stretch_auto_selector.hpp
+@@ -1,28 +1,28 @@
+ #ifndef __NukeX_stretch_auto_selector_h
+ #define __NukeX_stretch_auto_selector_h
+ 
+-#include "filter_classifier.hpp"
+-#include "fits_metadata.hpp"
++#include "nukex/core/filter.hpp"
++#include "nukex/core/frame_metadata.hpp"
+ #include "nukex/stretch/stretch_op.hpp"
+ #include <memory>
+ #include <string>
+ 
+ namespace nukex {
+ 
+ struct AutoSelection {
+     std::unique_ptr<StretchOp> op;
+     std::string log_line;
+ };
+ 
+-/// Primary entry point: classify + select + build a rationale log line.
+-/// The `meta` is used only to populate the log line with the FITS header
+-/// values that actually drove the classification, so a user reading the
+-/// Process Console can trace "why LRGB-mono?" back to FILTER/BAYERPAT/NAXIS3.
+-AutoSelection select_auto(const FITSMetadata& meta);
++/// Primary entry point: classify (lib FilterClassifier) + select + build a
++/// rationale log line. `meta` populates the log with the FITS header values
++/// that drove the classification (FILTER / BAYERPAT / INSTRUME) so a user
++/// can trace "why BROADBAND_L?" in the Process Console.
++AutoSelection select_auto(const FrameMetadata& meta);
+ 
+-/// Backward-compat overload (FilterClass-only; empty log detail).
++/// FilterClass-only overload (empty header detail in the log line).
+ AutoSelection select_auto(FilterClass cls);
+ 
+ } // namespace nukex
+ 
+ #endif
+diff --git a/src/module/stretch_factory.cpp b/src/module/stretch_factory.cpp
+index 5e4df61..0e729c4 100644
+--- a/src/module/stretch_factory.cpp
++++ b/src/module/stretch_factory.cpp
+@@ -25,30 +25,30 @@ static void phase8_apply(StretchOp& op,
+         log_line += " | Phase 8: " + active.description + " -> factory defaults";
+         return;
+     }
+     const bool applied = active.model->predict_and_apply(*ctx.stats, op);
+     std::ostringstream oss;
+     oss << " | Phase 8: " << active.description << (applied ? " applied" : " no-op");
+     log_line += oss.str();
+ }
+ 
+ std::unique_ptr<StretchOp> build_primary(PrimaryStretch e,
+-                                         const FITSMetadata& meta,
++                                         const FrameMetadata& meta,
+                                          std::string& out_log_line,
+                                          const Phase8Context* p8) {
+     out_log_line.clear();
+     std::unique_ptr<StretchOp> op;
+ 
+     switch (e) {
+         case PrimaryStretch::Auto: {
+             // Pass the full metadata to select_auto so the log line can
+-            // include the FITS values (FILTER/BAYERPAT/NAXIS3) that drove
++            // include the FITS values (FILTER/BAYERPAT/INSTRUME) that drove
+             // the classification — useful when a user is debugging an
+             // unexpected auto-selection.
+             auto sel = select_auto(meta);
+             out_log_line = std::move(sel.log_line);
+             op = std::move(sel.op);
+             if (op && p8 != nullptr) {
+                 phase8_apply(*op, *p8, out_log_line);
+             }
+             return op;
+         }
+diff --git a/src/module/stretch_factory.hpp b/src/module/stretch_factory.hpp
+index 55d3a4a..f037ef7 100644
+--- a/src/module/stretch_factory.hpp
++++ b/src/module/stretch_factory.hpp
+@@ -1,14 +1,14 @@
+ #ifndef __NukeX_stretch_factory_h
+ #define __NukeX_stretch_factory_h
+ 
+-#include "fits_metadata.hpp"
++#include "nukex/core/frame_metadata.hpp"
+ #include "nukex/stretch/stretch_op.hpp"
+ #include "nukex/stretch/image_stats.hpp"
+ #include "nukex/stretch/layer_loader.hpp"
+ 
+ #include <memory>
+ #include <string>
+ 
+ namespace nukex {
+ 
+ // Library-layer enum that mirrors the PCL NXPrimaryStretch enum in
+@@ -23,19 +23,19 @@ enum class FinishingStretch {
+ };
+ 
+ // NEW: optional Phase 8 context. When loader is null, behaviour is identical
+ // to pre-Phase-8 -- factory defaults only.
+ struct Phase8Context {
+     const LayerLoader* loader      = nullptr;
+     const ImageStats*  stats       = nullptr;  // for this stack, linear
+ };
+ 
+ std::unique_ptr<StretchOp> build_primary(PrimaryStretch e,
+-                                         const FITSMetadata& meta,
++                                         const FrameMetadata& meta,
+                                          std::string& out_log_line,
+                                          const Phase8Context* p8 = nullptr);
+ 
+ std::unique_ptr<StretchOp> build_finishing(FinishingStretch e);
+ 
+ } // namespace nukex
+ 
+ #endif
+diff --git a/test/CMakeLists.txt b/test/CMakeLists.txt
+index 1eb6d06..a1dfca1 100644
+--- a/test/CMakeLists.txt
++++ b/test/CMakeLists.txt
+@@ -89,43 +89,60 @@ nukex_add_test(test_sas unit/stretch/test_sas.cpp nukex4_stretch test_util)
+ nukex_add_test(test_tier1 unit/stretch/test_tier1.cpp nukex4_stretch test_util)
+ nukex_add_test(test_calibrate unit/stretch/test_calibrate.cpp nukex4_stretch test_util)
+ nukex_add_test(test_param_bounds unit/stretch/test_param_bounds.cpp nukex4_stretch)
+ nukex_add_test(test_image_stats unit/stretch/test_image_stats.cpp nukex4_stretch test_util)
+ nukex_add_test(test_param_model unit/stretch/test_param_model.cpp nukex4_stretch test_util)
+ nukex_add_test(test_layer_loader unit/stretch/test_layer_loader.cpp nukex4_stretch test_util)
+ 
+ # Learning library tests (Phase 8 stats-driven tuning)
+ nukex_add_test(test_ridge_regression unit/learning/test_ridge_regression.cpp nukex4_learning)
+ nukex_add_test(test_rating_db unit/learning/test_rating_db.cpp nukex4_learning sqlite3_vendored)
++nukex_add_test(test_rating_db_migration unit/learning/test_rating_db_migration.cpp nukex4_learning sqlite3_vendored)
+ nukex_add_test(test_train_model unit/learning/test_train_model.cpp nukex4_learning sqlite3_vendored)
+ nukex_add_test(test_atomic_write unit/learning/test_atomic_write.cpp nukex4_learning)
+ 
+ # GPU tests (link nukex4_stacker to resolve FrameCache symbols)
+ nukex_add_test(test_gpu_context unit/gpu/test_gpu_context.cpp nukex4_gpu)
+ nukex_add_test(test_gpu_cpu_fallback unit/gpu/test_gpu_cpu_fallback.cpp nukex4_gpu nukex4_stacker)
+ nukex_add_test(test_gpu_kernels unit/gpu/test_gpu_kernels.cpp nukex4_gpu)
+ nukex_add_test(test_gpu_agreement unit/gpu/test_gpu_agreement.cpp nukex4_gpu nukex4_stacker)
+ nukex_add_test(test_fit_heartbeat unit/gpu/test_fit_heartbeat.cpp nukex4_gpu)
+ 
+ # Module-layer tests (fits_metadata and future module code)
+-add_library(nukex4_module_testlib OBJECT
++#
++# Split into two OBJECT libraries that never share a link: the old
++# filter_classifier.cpp and the new nukex4_io/nukex4_core both define an
++# externally linked nukex::filter_class_name(nukex::FilterClass), which
++# mangles identically despite being different enums. Combining their
++# object files in one binary lets the linker silently pick either
++# implementation with no error. This legacy lib exists only to keep the
++# old classifier's objects out of any link that also holds nukex4_core;
++# Task 19 deletes it along with filter_classifier.{hpp,cpp}.
++add_library(nukex4_module_legacy_testlib OBJECT
+     "${CMAKE_SOURCE_DIR}/src/module/fits_metadata.cpp"
+     "${CMAKE_SOURCE_DIR}/src/module/filter_classifier.cpp"
++)
++target_include_directories(nukex4_module_legacy_testlib PUBLIC
++    "${CMAKE_SOURCE_DIR}/src/module"
++)
++target_link_libraries(nukex4_module_legacy_testlib PUBLIC cfitsio)
++
++add_library(nukex4_module_testlib OBJECT
+     "${CMAKE_SOURCE_DIR}/src/module/stretch_auto_selector.cpp"
+     "${CMAKE_SOURCE_DIR}/src/module/stretch_factory.cpp"
+ )
+ target_include_directories(nukex4_module_testlib PUBLIC
+     "${CMAKE_SOURCE_DIR}/src/module"
+     "${CMAKE_SOURCE_DIR}/src/lib/io/include"
+     "${CMAKE_SOURCE_DIR}/src/lib/stretch/include"
+ )
+-target_link_libraries(nukex4_module_testlib PUBLIC cfitsio nukex4_stretch)
++target_link_libraries(nukex4_module_testlib PUBLIC nukex4_stretch nukex4_io)
+ 
+-nukex_add_test(test_fits_metadata unit/module/test_fits_metadata.cpp nukex4_module_testlib)
+-nukex_add_test(test_filter_classifier unit/module/test_filter_classifier.cpp nukex4_module_testlib)
++nukex_add_test(test_fits_metadata unit/module/test_fits_metadata.cpp nukex4_module_legacy_testlib)
++nukex_add_test(test_filter_classifier unit/module/test_filter_classifier.cpp nukex4_module_legacy_testlib)
+ nukex_add_test(test_stretch_auto_selector unit/module/test_stretch_auto_selector.cpp nukex4_module_testlib)
+ nukex_add_test(test_stretch_factory unit/module/test_stretch_factory.cpp nukex4_module_testlib)
+ nukex_add_test(test_phase8_fallback unit/module/test_phase8_fallback.cpp nukex4_stretch nukex4_learning sqlite3_vendored)
+ 
+ # Integration tests (Task 9 onward) — gated under [.integration] so they
+ # don't run by default; opt in with `./test_<name> [integration]`.
+ add_subdirectory(integration)
+diff --git a/test/unit/learning/test_rating_db.cpp b/test/unit/learning/test_rating_db.cpp
+index eb38d63..8893329 100644
+--- a/test/unit/learning/test_rating_db.cpp
++++ b/test/unit/learning/test_rating_db.cpp
+@@ -25,25 +25,25 @@ TEST_CASE("open_rating_db: creates fresh DB with schema", "[learning][rating_db]
+     REQUIRE(db != nullptr);
+ 
+     // runs table must exist
+     sqlite3_stmt* stmt = nullptr;
+     const char* sql = "SELECT count(*) FROM sqlite_master WHERE type='table' AND name='runs';";
+     REQUIRE(sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) == SQLITE_OK);
+     REQUIRE(sqlite3_step(stmt) == SQLITE_ROW);
+     REQUIRE(sqlite3_column_int(stmt, 0) == 1);
+     sqlite3_finalize(stmt);
+ 
+-    // user_version == 1
++    // user_version == kRatingDbSchemaVersion
+     stmt = nullptr;
+     REQUIRE(sqlite3_prepare_v2(db, "PRAGMA user_version;", -1, &stmt, nullptr) == SQLITE_OK);
+     REQUIRE(sqlite3_step(stmt) == SQLITE_ROW);
+-    REQUIRE(sqlite3_column_int(stmt, 0) == 1);
++    REQUIRE(sqlite3_column_int(stmt, 0) == kRatingDbSchemaVersion);
+     sqlite3_finalize(stmt);
+ 
+     close_rating_db(db);
+     fs::remove(path);
+ }
+ 
+ TEST_CASE("open_rating_db: reopens existing DB without clobbering data", "[learning][rating_db]") {
+     const auto path = tmp_db_path("reopen");
+ 
+     sqlite3* db = open_rating_db(path.string());
+diff --git a/test/unit/learning/test_rating_db_migration.cpp b/test/unit/learning/test_rating_db_migration.cpp
+new file mode 100644
+index 0000000..a63ba20
+--- /dev/null
++++ b/test/unit/learning/test_rating_db_migration.cpp
+@@ -0,0 +1,122 @@
++#include "catch_amalgamated.hpp"
++#include "nukex/learning/rating_db.hpp"
++
++#include <sqlite3.h>
++#include <filesystem>
++#include <string>
++
++namespace fs = std::filesystem;
++using namespace nukex::learning;
++
++namespace {
++
++// The exact v4.0.1.0 column order (select_runs_for_stretch reads by index),
++// stamped user_version = 1. Written with the raw C API so the open-path
++// migration under test cannot touch the setup.
++const char* kV1Schema = R"SQL(
++CREATE TABLE runs (
++    run_id           BLOB PRIMARY KEY,
++    created_at       INTEGER NOT NULL,
++    stretch_name     TEXT NOT NULL,
++    target_class     INTEGER NOT NULL,
++    filter_class     INTEGER NOT NULL,
++    stat_median_r REAL, stat_median_g REAL, stat_median_b REAL,
++    stat_mad_r    REAL, stat_mad_g    REAL, stat_mad_b    REAL,
++    stat_p50_r    REAL, stat_p50_g    REAL, stat_p50_b    REAL,
++    stat_p95_r    REAL, stat_p95_g    REAL, stat_p95_b    REAL,
++    stat_p99_r    REAL, stat_p99_g    REAL, stat_p99_b    REAL,
++    stat_p999_r   REAL, stat_p999_g   REAL, stat_p999_b   REAL,
++    stat_skew_r   REAL, stat_skew_g   REAL, stat_skew_b   REAL,
++    stat_sat_frac_r REAL, stat_sat_frac_g REAL, stat_sat_frac_b REAL,
++    stat_bright_concentration REAL,
++    stat_color_rg  REAL, stat_color_bg REAL,
++    stat_fwhm_median REAL,
++    stat_star_count  INTEGER,
++    params_json TEXT NOT NULL,
++    rating_brightness INTEGER NOT NULL,
++    rating_saturation INTEGER NOT NULL,
++    rating_color      INTEGER,
++    rating_star_bloat INTEGER NOT NULL,
++    rating_overall    INTEGER NOT NULL
++);
++PRAGMA user_version = 1;
++)SQL";
++
++void insert_v1_row(sqlite3* db, unsigned char id, int filter_class) {
++    const char* sql =
++        "INSERT INTO runs(run_id, created_at, stretch_name, target_class, filter_class,"
++        " params_json, rating_brightness, rating_saturation, rating_star_bloat, rating_overall)"
++        " VALUES(?, 1, 'GHS', 0, ?, '{}', 0, 0, 0, 3);";
++    sqlite3_stmt* s = nullptr;
++    REQUIRE(sqlite3_prepare_v2(db, sql, -1, &s, nullptr) == SQLITE_OK);
++    unsigned char run_id[16] = {};
++    run_id[0] = id;
++    sqlite3_bind_blob(s, 1, run_id, 16, SQLITE_TRANSIENT);
++    sqlite3_bind_int(s, 2, filter_class);
++    REQUIRE(sqlite3_step(s) == SQLITE_DONE);
++    sqlite3_finalize(s);
++}
++
++fs::path fresh_path(const char* name) {
++    auto p = fs::temp_directory_path() / name;
++    fs::remove(p);
++    fs::remove(fs::path(p.string() + "-wal"));
++    fs::remove(fs::path(p.string() + "-shm"));
++    return p;
++}
++
++} // namespace
++
++TEST_CASE("open_rating_db: v1 filter_class codes are remapped to the 5-class encoding once",
++          "[learning][rating_db][migration]") {
++    auto path = fresh_path("nukex_rating_v1_migration.sqlite");
++    {
++        sqlite3* raw = nullptr;
++        REQUIRE(sqlite3_open(path.string().c_str(), &raw) == SQLITE_OK);
++        REQUIRE(sqlite3_exec(raw, kV1Schema, nullptr, nullptr, nullptr) == SQLITE_OK);
++        insert_v1_row(raw, 1, 0);   // LRGB_MONO / LRGB_COLOR collapsed
++        insert_v1_row(raw, 2, 1);   // BAYER_RGB
++        insert_v1_row(raw, 3, 2);   // NARROWBAND
++        insert_v1_row(raw, 4, 3);   // reserved S2O3, never written by v4
++        sqlite3_close(raw);
++    }
++
++    sqlite3* db = open_rating_db(path.string());
++    REQUIRE(db != nullptr);
++    REQUIRE(rating_db_schema_version(db) == kRatingDbSchemaVersion);
++
++    auto rows = select_runs_for_stretch(db, "GHS");
++    REQUIRE(rows.size() == 4);
++    int n_bb_l = 0, n_bb_osc = 0, n_nb_single = 0, n_other = 0;
++    for (const auto& r : rows) {
++        switch (r.filter_class) {
++            case 1:  ++n_bb_l;      break;
++            case 3:  ++n_bb_osc;    break;
++            case 4:  ++n_nb_single; break;
++            default: ++n_other;     break;
++        }
++    }
++    REQUIRE(n_bb_l      == 1);
++    REQUIRE(n_bb_osc    == 1);
++    REQUIRE(n_nb_single == 2);
++    REQUIRE(n_other     == 0);
++    close_rating_db(db);
++
++    // A second open must be a no-op: re-running the CASE would move 1 -> 3.
++    db = open_rating_db(path.string());
++    REQUIRE(db != nullptr);
++    REQUIRE(rating_db_schema_version(db) == kRatingDbSchemaVersion);
++    n_bb_l = 0;
++    for (const auto& r : select_runs_for_stretch(db, "GHS")) if (r.filter_class == 1) ++n_bb_l;
++    REQUIRE(n_bb_l == 1);
++    close_rating_db(db);
++}
++
++TEST_CASE("open_rating_db: a fresh DB is stamped with the current schema version",
++          "[learning][rating_db][migration]") {
++    auto path = fresh_path("nukex_rating_fresh_version.sqlite");
++    sqlite3* db = open_rating_db(path.string());
++    REQUIRE(db != nullptr);
++    REQUIRE(rating_db_schema_version(db) == kRatingDbSchemaVersion);
++    close_rating_db(db);
++}
+diff --git a/test/unit/module/test_stretch_auto_selector.cpp b/test/unit/module/test_stretch_auto_selector.cpp
+index ce77bf0..983f18f 100644
+--- a/test/unit/module/test_stretch_auto_selector.cpp
++++ b/test/unit/module/test_stretch_auto_selector.cpp
+@@ -1,72 +1,67 @@
+ #include "catch_amalgamated.hpp"
+ #include "stretch_auto_selector.hpp"
+-#include "filter_classifier.hpp"
+-#include "fits_metadata.hpp"
++#include "nukex/core/frame_metadata.hpp"
+ #include "nukex/stretch/veralux_stretch.hpp"
+ 
+ using namespace nukex;
+ 
+-TEST_CASE("select_auto: LRGB_MONO picks VeraLux and logs class name", "[module][auto_selector]") {
+-    auto sel = select_auto(FilterClass::LRGB_MONO);
++static FrameMetadata meta_of(const std::string& filter, const std::string& bayer,
++                             const std::string& instrument) {
++    FrameMetadata m;
++    m.filter        = filter;
++    m.bayer_pattern = bayer;
++    m.instrument    = instrument;
++    return m;
++}
++
++TEST_CASE("select_auto: BROADBAND_L picks VeraLux and logs the class name", "[module][auto_selector]") {
++    auto sel = select_auto(FilterClass::BROADBAND_L);
+     REQUIRE(sel.op != nullptr);
+     REQUIRE(dynamic_cast<VeraLuxStretch*>(sel.op.get()) != nullptr);
+-    REQUIRE(sel.log_line.find("LRGB-mono") != std::string::npos);
+-    REQUIRE(sel.log_line.find("VeraLux") != std::string::npos);
++    REQUIRE(sel.log_line.find("BROADBAND_L") != std::string::npos);
++    REQUIRE(sel.log_line.find("VeraLux")     != std::string::npos);
+ }
+ 
+-TEST_CASE("select_auto: all classes produce non-null op + non-empty log", "[module][auto_selector]") {
+-    for (FilterClass c : {FilterClass::LRGB_MONO, FilterClass::LRGB_COLOR,
+-                          FilterClass::BAYER_RGB, FilterClass::NARROWBAND}) {
++TEST_CASE("select_auto: every class produces a non-null op + non-empty log", "[module][auto_selector]") {
++    for (FilterClass c : {FilterClass::UNKNOWN, FilterClass::BROADBAND_L, FilterClass::BROADBAND_RGB,
++                          FilterClass::BROADBAND_OSC, FilterClass::NARROWBAND_SINGLE,
++                          FilterClass::DUAL_NB_OSC}) {
+         auto sel = select_auto(c);
+         REQUIRE(sel.op != nullptr);
+         REQUIRE(!sel.log_line.empty());
+     }
+ }
+ 
+-TEST_CASE("select_auto(meta): log line includes FITS FILTER/BAYERPAT/NAXIS3",
+-          "[module][auto_selector]") {
+-    FITSMetadata m;
+-    m.filter    = "L";
+-    m.bayer_pat = "";
+-    m.naxis3    = 1;
+-    m.read_ok   = true;
+-
+-    auto sel = select_auto(m);
+-    REQUIRE(sel.op != nullptr);
++TEST_CASE("select_auto(meta): log line carries FILTER/BAYERPAT/INSTRUME + class", "[module][auto_selector]") {
++    auto sel = select_auto(meta_of("L", "", "ASI2600MM"));
+     REQUIRE(dynamic_cast<VeraLuxStretch*>(sel.op.get()) != nullptr);
+-
+-    // The enriched rationale must carry the actual FITS values that drove
+-    // the classification, so a user can trace "why LRGB-mono?" back to
+-    // the source of truth.
+-    REQUIRE(sel.log_line.find("FILTER='L'")    != std::string::npos);
+-    REQUIRE(sel.log_line.find("BAYERPAT=''")   != std::string::npos);
+-    REQUIRE(sel.log_line.find("NAXIS3=1")      != std::string::npos);
+-    REQUIRE(sel.log_line.find("LRGB-mono")     != std::string::npos);
+-    REQUIRE(sel.log_line.find("VeraLux")       != std::string::npos);
++    REQUIRE(sel.log_line.find("FILTER='L'")           != std::string::npos);
++    REQUIRE(sel.log_line.find("BAYERPAT=''")          != std::string::npos);
++    REQUIRE(sel.log_line.find("INSTRUME='ASI2600MM'") != std::string::npos);
++    REQUIRE(sel.log_line.find("BROADBAND_L")          != std::string::npos);
++    REQUIRE(sel.log_line.find("VeraLux")              != std::string::npos);
+ }
+ 
+-TEST_CASE("select_auto(meta): Bayer-RGB classification shown in log",
+-          "[module][auto_selector]") {
+-    FITSMetadata m;
+-    m.filter    = "";
+-    m.bayer_pat = "RGGB";
+-    m.naxis3    = 1;
+-    m.read_ok   = true;
+-
+-    auto sel = select_auto(m);
++TEST_CASE("select_auto(meta): Bayer without FILTER classifies as BROADBAND_OSC", "[module][auto_selector]") {
++    auto sel = select_auto(meta_of("", "RGGB", "ZWO ASI2400MC Pro"));
+     REQUIRE(sel.log_line.find("BAYERPAT='RGGB'") != std::string::npos);
+-    REQUIRE(sel.log_line.find("Bayer-RGB")       != std::string::npos);
++    REQUIRE(sel.log_line.find("BROADBAND_OSC")   != std::string::npos);
++}
++
++TEST_CASE("select_auto(meta): dual-NB FILTER on Bayer classifies as DUAL_NB_OSC", "[module][auto_selector]") {
++    auto sel = select_auto(meta_of("HaO3", "RGGB", "ZWO ASI2400MC Pro"));
++    REQUIRE(sel.log_line.find("FILTER='HaO3'") != std::string::npos);
++    REQUIRE(sel.log_line.find("DUAL_NB_OSC")   != std::string::npos);
+ }
+ 
+-TEST_CASE("select_auto(meta): Narrowband classification via FILTER name",
+-          "[module][auto_selector]") {
+-    FITSMetadata m;
+-    m.filter    = "Ha";
+-    m.bayer_pat = "";
+-    m.naxis3    = 1;
+-    m.read_ok   = true;
++TEST_CASE("select_auto(meta): single-line FILTER on mono classifies as NARROWBAND_SINGLE", "[module][auto_selector]") {
++    auto sel = select_auto(meta_of("Ha", "", "ASI2600MM"));
++    REQUIRE(sel.log_line.find("FILTER='Ha'")       != std::string::npos);
++    REQUIRE(sel.log_line.find("NARROWBAND_SINGLE") != std::string::npos);
++}
+ 
+-    auto sel = select_auto(m);
+-    REQUIRE(sel.log_line.find("FILTER='Ha'") != std::string::npos);
+-    REQUIRE(sel.log_line.find("Narrowband")  != std::string::npos);
++TEST_CASE("select_auto(meta): unknown FILTER on mono appends the classifier warning", "[module][auto_selector]") {
++    auto sel = select_auto(meta_of("5", "", "Asi294mc Pro"));
++    REQUIRE(sel.log_line.find("BROADBAND_L")       != std::string::npos);
++    REQUIRE(sel.log_line.find("Unknown filter '5'") != std::string::npos);
+ }
+diff --git a/test/unit/module/test_stretch_factory.cpp b/test/unit/module/test_stretch_factory.cpp
+index cbfd279..885f2cd 100644
+--- a/test/unit/module/test_stretch_factory.cpp
++++ b/test/unit/module/test_stretch_factory.cpp
+@@ -1,88 +1,88 @@
+ #include "catch_amalgamated.hpp"
+ #include "stretch_factory.hpp"
+-#include "fits_metadata.hpp"
++#include "nukex/core/frame_metadata.hpp"
+ #include "nukex/stretch/veralux_stretch.hpp"
+ #include "nukex/stretch/ghs_stretch.hpp"
+ #include "nukex/stretch/mtf_stretch.hpp"
+ #include "nukex/stretch/arcsinh_stretch.hpp"
+ #include "nukex/stretch/log_stretch.hpp"
+ #include "nukex/stretch/lupton_stretch.hpp"
+ #include "nukex/stretch/clahe_stretch.hpp"
+ #include "nukex/stretch/layer_loader.hpp"
+ #include "nukex/stretch/image_stats.hpp"
+ 
+ using namespace nukex;
+ 
+ TEST_CASE("build_primary: Auto fills log_line", "[module][stretch_factory]") {
+-    FITSMetadata meta;
++    FrameMetadata meta;
+     meta.filter = "L";
+     std::string log;
+     auto op = build_primary(PrimaryStretch::Auto, meta, log);
+     REQUIRE(op != nullptr);
+     REQUIRE(!log.empty());
+ }
+ 
+ TEST_CASE("build_primary: explicit values return empty log_line", "[module][stretch_factory]") {
+-    FITSMetadata meta;
++    FrameMetadata meta;
+     std::string log = "prior";
+     auto op = build_primary(PrimaryStretch::GHS, meta, log);
+     REQUIRE(op != nullptr);
+     REQUIRE(log.empty());
+     REQUIRE(dynamic_cast<GHSStretch*>(op.get()) != nullptr);
+ }
+ 
+ TEST_CASE("build_primary: all named enums produce the correct op type", "[module][stretch_factory]") {
+-    FITSMetadata meta;
++    FrameMetadata meta;
+     std::string log;
+     REQUIRE(dynamic_cast<VeraLuxStretch*>(build_primary(PrimaryStretch::VeraLux, meta, log).get()) != nullptr);
+     REQUIRE(dynamic_cast<GHSStretch*>    (build_primary(PrimaryStretch::GHS,     meta, log).get()) != nullptr);
+     REQUIRE(dynamic_cast<MTFStretch*>    (build_primary(PrimaryStretch::MTF,     meta, log).get()) != nullptr);
+     REQUIRE(dynamic_cast<ArcSinhStretch*>(build_primary(PrimaryStretch::ArcSinh, meta, log).get()) != nullptr);
+     REQUIRE(dynamic_cast<LogStretch*>    (build_primary(PrimaryStretch::Log,     meta, log).get()) != nullptr);
+     REQUIRE(dynamic_cast<LuptonStretch*> (build_primary(PrimaryStretch::Lupton,  meta, log).get()) != nullptr);
+     REQUIRE(dynamic_cast<CLAHEStretch*>  (build_primary(PrimaryStretch::CLAHE,   meta, log).get()) != nullptr);
+ }
+ 
+ TEST_CASE("build_finishing: None returns nullptr", "[module][stretch_factory]") {
+     REQUIRE(build_finishing(FinishingStretch::None) == nullptr);
+ }
+ 
+ TEST_CASE("build_primary Auto: no Phase 8 context leaves op at factory defaults",
+           "[module][stretch_factory][phase8]") {
+-    FITSMetadata meta; meta.filter = "L";
++    FrameMetadata meta; meta.filter = "L";
+     std::string log;
+     auto op = build_primary(PrimaryStretch::Auto, meta, log, nullptr);
+     REQUIRE(op != nullptr);
+     // Log does not mention Phase 8 when no context is passed
+     REQUIRE(log.find("Phase 8") == std::string::npos);
+ }
+ 
+ TEST_CASE("build_primary Auto: empty LayerLoader falls through to factory",
+           "[module][stretch_factory][phase8]") {
+     LayerLoader empty_loader("", "");
+     ImageStats stats;
+     Phase8Context ctx{&empty_loader, &stats};
+ 
+-    FITSMetadata meta; meta.filter = "L";
++    FrameMetadata meta; meta.filter = "L";
+     std::string log;
+     auto op = build_primary(PrimaryStretch::Auto, meta, log, &ctx);
+     REQUIRE(op != nullptr);
+     REQUIRE(log.find("Layer 1") != std::string::npos);
+     // VeraLux factory default log_D is 2.0 -- unchanged
+     auto* v = dynamic_cast<VeraLuxStretch*>(op.get());
+     if (v) REQUIRE(v->log_D == 2.0f);
+ }
+ 
+ TEST_CASE("build_primary: explicit enum ignores Phase 8 context",
+           "[module][stretch_factory][phase8]") {
+     LayerLoader empty_loader("", "");
+     ImageStats stats;
+     Phase8Context ctx{&empty_loader, &stats};
+ 
+-    FITSMetadata meta;
++    FrameMetadata meta;
+     std::string log;
+     auto op = build_primary(PrimaryStretch::GHS, meta, log, &ctx);
+     REQUIRE(op != nullptr);
+     REQUIRE(log.empty());  // explicit path never logs Phase 8 metadata
+     REQUIRE(dynamic_cast<GHSStretch*>(op.get()) != nullptr);
+ }

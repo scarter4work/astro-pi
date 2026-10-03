@@ -1,0 +1,383 @@
+# Review package: 88f41e1..HEAD
+
+## Commits
+d1a2daa fix(calibration): resolve FITS INSTRUME onto QE DB keys; generic OSC fallback per spec 6.3
+
+## Files changed
+ .../include/nukex/calibration/qe_database.hpp      | 14 +++++++++
+ src/lib/calibration/src/qe_database.cpp            | 31 +++++++++++++++++---
+ .../include/nukex/stacker/stacking_engine.hpp      |  1 +
+ src/lib/stacker/src/stacking_engine.cpp            | 15 +++++++++-
+ src/module/NukeXInstance.cpp                       |  4 +++
+ test/fixtures/qe/minimal_db.json                   | 12 ++++++++
+ test/fixtures/qe/override_camera_pro.json          | 12 ++++++++
+ test/unit/calibration/test_qe_database.cpp         | 33 ++++++++++++++++++++++
+ 8 files changed, 117 insertions(+), 5 deletions(-)
+
+## Diff
+diff --git a/src/lib/calibration/include/nukex/calibration/qe_database.hpp b/src/lib/calibration/include/nukex/calibration/qe_database.hpp
+index aee5a6b..87c12eb 100644
+--- a/src/lib/calibration/include/nukex/calibration/qe_database.hpp
++++ b/src/lib/calibration/include/nukex/calibration/qe_database.hpp
+@@ -36,20 +36,34 @@ struct LoadResult {
+     std::string error;
+ };
+ 
+ class QEDatabase {
+ public:
+     QEDatabase() = default;
+ 
+     LoadResult load_shipped(const std::string& path);
+     LoadResult load_override(const std::string& path);
+ 
++    // Key used for the spec-6.3 unknown-INSTRUME fallback. Shipped by
++    // tools/import_qe_research.py as the mean of Sony-sensor OSC cameras.
++    static constexpr const char* kGenericOSCCamera = "generic_sony_imx_osc";
++
++    // Lowercase, alphanumerics only. Applied to every camera key on load and
++    // to every camera argument on lookup, so "ASI585MC" == "asi585mc".
++    static std::string normalize_camera_key(const std::string& raw);
++
++    // Maps a FITS INSTRUME value onto a DB camera key: exact normalised match
++    // first, else the longest DB key contained in the normalised INSTRUME
++    // ("ZWO ASI2400MC Pro" -> "asi2400mc"). Returns "" when nothing matches;
++    // callers decide between failing loud and kGenericOSCCamera.
++    std::string resolve_camera(const std::string& instrume) const;
++
+     bool has_camera(const std::string& name) const;
+     bool has_filter(const std::string& name) const;
+ 
+     QEConfidence confidence(const std::string& camera) const;
+ 
+     // Returns 0.0 if camera unknown or wavelength out of bounds.
+     // Otherwise: nearest-wavelength QE if outside data range, linear interpolation otherwise.
+     double lookup_camera_qe(const std::string& camera,
+                             double             wavelength_nm,
+                             Photosite          photosite) const;
+diff --git a/src/lib/calibration/src/qe_database.cpp b/src/lib/calibration/src/qe_database.cpp
+index 647fc9b..5d601a7 100644
+--- a/src/lib/calibration/src/qe_database.cpp
++++ b/src/lib/calibration/src/qe_database.cpp
+@@ -1,14 +1,15 @@
+ #include "nukex/calibration/qe_database.hpp"
+ 
+ #include <nlohmann/json.hpp>
+ 
++#include <cctype>
+ #include <fstream>
+ #include <sstream>
+ 
+ namespace nukex {
+ 
+ namespace {
+ 
+ QEConfidence parse_confidence(const std::string& s) {
+     if (s == "high")   return QEConfidence::HIGH;
+     if (s == "medium") return QEConfidence::MEDIUM;
+@@ -93,21 +94,21 @@ LoadResult QEDatabase::parse_and_merge(const std::string& text, const char* cont
+                     int wl = std::stoi(wlit.key());
+                     std::map<Photosite, double> per_site;
+                     for (auto pit = wlit.value().begin(); pit != wlit.value().end(); ++pit) {
+                         per_site[parse_photosite_key(pit.key())] = pit.value().get<double>();
+                     }
+                     cam.qe_by_wavelength[wl] = per_site;
+                 }
+             }
+             // Override semantics: replace whole camera record.
+             // (Coarse but reflects spec: "override wins on key collision".)
+-            cameras_[name] = std::move(cam);
++            cameras_[normalize_camera_key(name)] = std::move(cam);
+         }
+     }
+ 
+     if (doc.contains("filters") && doc["filters"].is_object()) {
+         for (auto it = doc["filters"].begin(); it != doc["filters"].end(); ++it) {
+             const std::string& name = it.key();
+             const json& fjson = it.value();
+             FilterPassband fp;
+             if (fjson.contains("type")) fp.type = fjson["type"].get<std::string>();
+             if (fjson.contains("lines") && fjson["lines"].is_array()) {
+@@ -119,38 +120,60 @@ LoadResult QEDatabase::parse_and_merge(const std::string& text, const char* cont
+                     fp.lines.push_back(el);
+                 }
+             }
+             filters_[name] = std::move(fp);
+         }
+     }
+ 
+     return {true, ""};
+ }
+ 
++std::string QEDatabase::normalize_camera_key(const std::string& raw) {
++    std::string out;
++    out.reserve(raw.size());
++    for (unsigned char c : raw) {
++        if (std::isalnum(c)) out.push_back(static_cast<char>(std::tolower(c)));
++    }
++    return out;
++}
++
++std::string QEDatabase::resolve_camera(const std::string& instrume) const {
++    const std::string key = normalize_camera_key(instrume);
++    if (key.empty()) return {};
++    if (cameras_.count(key)) return key;
++    std::string best;
++    for (const auto& kv : cameras_) {
++        if (kv.first.size() > best.size() && key.find(kv.first) != std::string::npos) {
++            best = kv.first;
++        }
++    }
++    return best;
++}
++
+ bool QEDatabase::has_camera(const std::string& name) const {
+-    return cameras_.find(name) != cameras_.end();
++    return cameras_.find(normalize_camera_key(name)) != cameras_.end();
+ }
+ 
+ bool QEDatabase::has_filter(const std::string& name) const {
+     return filters_.find(name) != filters_.end();
+ }
+ 
+ QEConfidence QEDatabase::confidence(const std::string& camera) const {
+-    auto it = cameras_.find(camera);
++    auto it = cameras_.find(normalize_camera_key(camera));
+     if (it == cameras_.end()) return QEConfidence::UNKNOWN;
+     return it->second.confidence;
+ }
+ 
+ double QEDatabase::lookup_camera_qe(const std::string& camera,
+                                     double             wavelength_nm,
+                                     Photosite          photosite) const {
+-    auto it = cameras_.find(camera);
++    auto it = cameras_.find(normalize_camera_key(camera));
+     if (it == cameras_.end()) return 0.0;
+     const auto& curve = it->second.qe_by_wavelength;
+     if (curve.empty()) return 0.0;
+ 
+     auto upper = curve.upper_bound(static_cast<int>(wavelength_nm + 0.5));
+     if (upper == curve.begin()) {
+         auto p = upper->second.find(photosite);
+         return (p == upper->second.end()) ? 0.0 : p->second;
+     }
+     if (upper == curve.end()) {
+diff --git a/src/lib/stacker/include/nukex/stacker/stacking_engine.hpp b/src/lib/stacker/include/nukex/stacker/stacking_engine.hpp
+index 28484ef..466f03f 100644
+--- a/src/lib/stacker/include/nukex/stacker/stacking_engine.hpp
++++ b/src/lib/stacker/include/nukex/stacker/stacking_engine.hpp
+@@ -106,20 +106,21 @@ public:
+         std::string error;               // human-readable explanation when !ok
+ 
+         Image                  stacked;
+         Image                  noise_map;
+         Image                  quality_map;
+         std::unique_ptr<Cube>  cube;     // populated by Phase A; consumed by Phase B (Task 10)
+         DerivedStack           derived;  // Phase B Q-solve output (Task 10B)
+         int                    n_frames_processed        = 0;
+         int                    n_frames_failed_alignment = 0;  // real alignment misses only
+         int                    n_frames_rejected_filter  = 0;  // unknown FILTER on Bayer
++        bool qe_generic_camera_fallback = false; // spec 6.3: INSTRUME not in QE DB, generic Sony OSC QE used
+ 
+         ExecuteResult();
+         ~ExecuteResult();
+         ExecuteResult(ExecuteResult&&) noexcept;
+         ExecuteResult& operator=(ExecuteResult&&) noexcept;
+         ExecuteResult(const ExecuteResult&)            = delete;
+         ExecuteResult& operator=(const ExecuteResult&) = delete;
+     };
+ 
+     // Backwards-compat alias: pre-Phase-9 callers used `Result`.
+diff --git a/src/lib/stacker/src/stacking_engine.cpp b/src/lib/stacker/src/stacking_engine.cpp
+index 3c63d8b..603df8b 100644
+--- a/src/lib/stacker/src/stacking_engine.cpp
++++ b/src/lib/stacker/src/stacking_engine.cpp
+@@ -260,20 +260,21 @@ StackingEngine::ExecuteResult StackingEngine::execute(
+     };
+ 
+     // Camera names of frames that contributed to a DUAL_NB_OSC slot. Used to
+     // gate the Q-solve at Phase B end: per-camera Q matrices are not yet
+     // implemented, so a multi-camera dual-NB stack would silently apply
+     // camera A's Q to camera B's data (wrong color). One camera per dual-NB
+     // batch is currently the contract; mixed-camera support is a Task 11+
+     // follow-up. Broadband / single-line slots don't go through Q-solve and
+     // therefore don't care, so we only track this for DUAL_NB_OSC frames.
+     std::set<std::string> dual_nb_cameras;
++    std::set<std::string> unknown_instrume_warned;
+ 
+     // Frame-level metadata
+     std::vector<FrameStats> frame_stats(n_frames);
+     std::vector<float> frame_fwhms(n_frames, 0.0f);
+ 
+     // Initialize aligner
+     FrameAligner aligner(config_.aligner_config);
+ 
+     // ═══ PHASE A — Streaming Accumulation ════════════════════════════
+ 
+@@ -338,22 +339,34 @@ StackingEngine::ExecuteResult StackingEngine::execute(
+             result.n_frames_rejected_filter++;
+             continue;
+         }
+ 
+         // Surface mono-side warnings for downstream visibility.
+         if (!filter_classifier_->last_warning().empty()) {
+             obs.advance(0, std::string("  ") + filter_classifier_->last_warning());
+         }
+ 
+         // Track DUAL_NB_OSC cameras for the Q-solve mixed-camera guard.
++        // Resolve the raw INSTRUME onto a DB key here so the guard compares
++        // DB identities ("asi2400mc"), not header spellings.
+         if (frame_filter.cls == FilterClass::DUAL_NB_OSC) {
+-            dual_nb_cameras.insert(frame_filter.camera);
++            std::string key = qe_database_->resolve_camera(frame_filter.camera);
++            if (key.empty()) {
++                key = QEDatabase::kGenericOSCCamera;
++                result.qe_generic_camera_fallback = true;
++                if (unknown_instrume_warned.insert(frame_filter.camera).second) {
++                    obs.message("Camera '" + frame_filter.camera +
++                                "' unknown; using generic Sony IMX OSC QE values. "
++                                "Output marked as low-confidence (NUKEX_QE_CONFIDENCE).");
++                }
++            }
++            dual_nb_cameras.insert(key);
+         }
+ 
+         // Merge per-frame config into the cube's running channel_config.
+         // Idempotent if the per-frame filter matches the running config.
+         ChannelConfig per_frame_cfg = ChannelConfig::from_filter(frame_filter);
+         cube.channel_config = ChannelConfig::merge(cube.channel_config, per_frame_cfg);
+ 
+         // 2. Debayer
+         if (bayer != BayerPattern::NONE) {
+             obs.advance(0, "  debayering (" + meta.bayer_pattern + ")");
+diff --git a/src/module/NukeXInstance.cpp b/src/module/NukeXInstance.cpp
+index ede2df5..81ac3fc 100644
+--- a/src/module/NukeXInstance.cpp
++++ b/src/module/NukeXInstance.cpp
+@@ -629,20 +629,24 @@ bool NukeXInstance::ExecuteGlobal()
+       // Provenance keywords: include gamut-clip diagnostic so users can
+       // compare palette choices and see how many pixels needed clipping.
+       pcl::FITSKeywordArray cw_ka = base_output_keywords(
+           NUKEX_VERSION_STRING, "composed",
+           result.n_frames_processed, result.n_frames_failed_alignment );
+       cw_ka.Append( pcl::FITSHeaderKeyword(
+           "NUKEX_GAMUT_CLIPPED",
+           pcl::IsoString().Format( "%lld",
+               static_cast<long long>( composer.gamut_clipped_count() ) ),
+           "Pixels clipped to sRGB gamut by ColorComposer" ) );
++      cw_ka.Append( pcl::FITSHeaderKeyword(
++          "NUKEX_QE_CONFIDENCE",
++          result.qe_generic_camera_fallback ? "generic-fallback" : "database",
++          "QE source for Phase B: camera entry or generic Sony OSC fallback" ) );
+       cw.SetKeywords( cw_ka );
+ 
+       cw.Show();
+       progress.message( String().Format(
+          "Composed image opened (%lld pixel(s) gamut-clipped).",
+          static_cast<long long>( composer.gamut_clipped_count() ) ).ToUTF8().c_str() );
+    }
+ 
+    // ── Stretch pipeline (Phase 7 wiring + Phase 8 context) ──────
+    //
+diff --git a/test/fixtures/qe/minimal_db.json b/test/fixtures/qe/minimal_db.json
+index c093ef1..429ba8f 100644
+--- a/test/fixtures/qe/minimal_db.json
++++ b/test/fixtures/qe/minimal_db.json
+@@ -17,20 +17,32 @@
+       "sensor": "IMX571",
+       "type": "OSC",
+       "bayer": "RGGB",
+       "qe": {
+         "486": { "R": 0.07, "G": 0.78, "B": 0.86 },
+         "501": { "R": 0.08, "G": 0.89, "B": 0.60 },
+         "656": { "R": 0.46, "G": 0.05, "B": 0.04 },
+         "672": { "R": 0.42, "G": 0.05, "B": 0.05 }
+       },
+       "confidence": "high"
++    },
++    "generic_sony_imx_osc": {
++      "sensor": "generic",
++      "type": "OSC",
++      "bayer": "RGGB",
++      "qe": {
++        "486": { "R": 0.03, "G": 0.65, "B": 0.70 },
++        "501": { "R": 0.03, "G": 0.85, "B": 0.50 },
++        "656": { "R": 0.73, "G": 0.32, "B": 0.03 },
++        "672": { "R": 0.71, "G": 0.33, "B": 0.05 }
++      },
++      "confidence": "low"
+     }
+   },
+   "filters": {
+     "HaO3": {
+       "type": "DUAL_NB",
+       "lines": [
+         { "name": "Ha",   "wavelength_nm": 656.3, "fwhm_nm": 7.0 },
+         { "name": "OIII", "wavelength_nm": 500.7, "fwhm_nm": 7.0 }
+       ]
+     },
+diff --git a/test/fixtures/qe/override_camera_pro.json b/test/fixtures/qe/override_camera_pro.json
+new file mode 100644
+index 0000000..2a777b7
+--- /dev/null
++++ b/test/fixtures/qe/override_camera_pro.json
+@@ -0,0 +1,12 @@
++{
++  "schema_version": 1,
++  "cameras": {
++    "ASI2600MC-Pro": {
++      "sensor": "IMX571",
++      "type": "OSC",
++      "bayer": "RGGB",
++      "qe": { "501": { "R": 0.08, "G": 0.89, "B": 0.60 }, "656": { "R": 0.46, "G": 0.05, "B": 0.04 } },
++      "confidence": "medium"
++    }
++  }
++}
+diff --git a/test/unit/calibration/test_qe_database.cpp b/test/unit/calibration/test_qe_database.cpp
+index 0a89aee..013868c 100644
+--- a/test/unit/calibration/test_qe_database.cpp
++++ b/test/unit/calibration/test_qe_database.cpp
+@@ -69,10 +69,43 @@ TEST_CASE("QEDatabase: malformed override → loud fail with line/col", "[qe_dat
+     // nlohmann json reports a byte offset, surfaced as "at line N, col M"
+     REQUIRE(r.error.find("line") != std::string::npos);
+ }
+ 
+ TEST_CASE("QEDatabase: confidence enum reads from JSON", "[qe_database]") {
+     QEDatabase db;
+     REQUIRE(db.load_shipped(fixture("minimal_db.json").string()).ok);
+     REQUIRE(db.confidence("ASI585MC") == QEConfidence::HIGH);
+     REQUIRE(db.confidence("Unknown")  == QEConfidence::UNKNOWN);
+ }
++
++TEST_CASE("QEDatabase: camera keys normalise (case, punctuation)", "[qe_database]") {
++    REQUIRE(QEDatabase::normalize_camera_key("ZWO ASI2400MC Pro") == "zwoasi2400mcpro");
++    REQUIRE(QEDatabase::normalize_camera_key("asi_585-MC")        == "asi585mc");
++}
++
++TEST_CASE("QEDatabase: lookups are case-insensitive", "[qe_database]") {
++    QEDatabase db;
++    REQUIRE(db.load_shipped(fixture("minimal_db.json").string()).ok);
++    REQUIRE(db.has_camera("asi585mc"));
++    REQUIRE(db.has_camera("ASI585MC"));
++    REQUIRE(db.lookup_camera_qe("asi585mc", 656.3, Photosite::R) ==
++            db.lookup_camera_qe("ASI585MC", 656.3, Photosite::R));
++}
++
++TEST_CASE("QEDatabase: resolve_camera maps a real INSTRUME onto a DB key", "[qe_database]") {
++    QEDatabase db;
++    REQUIRE(db.load_shipped(fixture("minimal_db.json").string()).ok);
++    REQUIRE(db.resolve_camera("ASI585MC")            == "asi585mc");   // exact
++    REQUIRE(db.resolve_camera("ZWO ASI2600MC Pro")   == "asi2600mc");  // key is a substring
++    REQUIRE(db.resolve_camera("asi2600mc-pro")       == "asi2600mc");
++    REQUIRE(db.resolve_camera("ATR585M")             == "");           // no key contained
++    REQUIRE(db.resolve_camera("ASI585")              == "");           // partial key does not count
++    REQUIRE(db.resolve_camera("")                    == "");
++}
++
++TEST_CASE("QEDatabase: resolve_camera prefers the longest contained key", "[qe_database]") {
++    QEDatabase db;
++    REQUIRE(db.load_shipped(fixture("minimal_db.json").string()).ok);
++    REQUIRE(db.load_override(fixture("override_camera_pro.json").string()).ok);
++    REQUIRE(db.resolve_camera("ZWO ASI2600MC Pro") == "asi2600mcpro");
++    REQUIRE(db.resolve_camera("ZWO ASI2600MC")     == "asi2600mc");
++}

@@ -1,0 +1,96 @@
+# Review package: 1a633d3..3c059c9
+
+## Commits
+3c059c9 fix(stacker): route mono frames by the registered slot, not the raw filter name
+
+## Files changed
+ src/lib/stacker/src/stacking_engine.cpp  | 11 +++++++++--
+ test/integration/test_phase_a_router.cpp | 32 ++++++++++++++++++++++++++++++++
+ 2 files changed, 41 insertions(+), 2 deletions(-)
+
+## Diff
+diff --git a/src/lib/stacker/src/stacking_engine.cpp b/src/lib/stacker/src/stacking_engine.cpp
+index d630b46..1e74e60 100644
+--- a/src/lib/stacker/src/stacking_engine.cpp
++++ b/src/lib/stacker/src/stacking_engine.cpp
+@@ -517,24 +517,31 @@ StackingEngine::ExecuteResult StackingEngine::execute(
+                         route_sample_idx(voxel, b_idx, aligned.image.at(x, y, 2));
+                         voxel.n_frames++;
+                     }
+                 }
+                 break;
+             }
+             case FilterClass::BROADBAND_L:
+             case FilterClass::NARROWBAND_SINGLE:
+             case FilterClass::BROADBAND_RGB: {
+                 // Mono frames: channel 0 of the (post-debayer) image. The
+-                // slot name comes from the filter — "L" for broadband-L,
++                // slot name comes from from_filter() — "L" for broadband-L,
+                 // "Ha"/"OIII"/"SII" for narrowband-single, "R"/"G"/"B"
+                 // for an explicit R/G/B mono filter.
+-                const std::string& slot_name = frame_filter.name;
++                // Route by the slot merge() actually registered for this
++                // frame's class — from_filter() maps BROADBAND_L to "L"
++                // regardless of Filter.name (which may be "L_unnamed" or a
++                // raw unknown FILTER value such as a wheel-slot number),
++                // and R/G/B or Ha/OIII/SII to the name itself. Looking up
++                // frame_filter.name directly aborted on every mono frame
++                // whose FILTER was not literally "L".
++                const std::string& slot_name = per_frame_cfg.channel_names[0];
+                 // One lookup per frame instead of one per pixel — same
+                 // rationale as the OSC cases above. Abort if the slot is
+                 // absent: it means merge() didn't register this filter's
+                 // slot, which is a dispatch-table programmer error.
+                 int slot_idx = cube.channel_config.slot_index(slot_name);
+                 if (slot_idx < 0) {
+                     std::abort(); // missing mono slot — dispatch-table bug
+                 }
+                 for (int y = 0; y < out_height; y++) {
+                     for (int x = 0; x < out_width; x++) {
+diff --git a/test/integration/test_phase_a_router.cpp b/test/integration/test_phase_a_router.cpp
+index 0c24884..106fda6 100644
+--- a/test/integration/test_phase_a_router.cpp
++++ b/test/integration/test_phase_a_router.cpp
+@@ -98,10 +98,42 @@ TEST_CASE("Phase A: mixed L + HaO3 batch builds union slot config",
+     cfg.qe_database_path = (fs::path(NUKEX_TEST_FIXTURES_DIR) / "qe" / "minimal_db.json").string();
+     StackingEngine engine(cfg);
+     auto result = engine.execute({t1.string(), t2.string()}, {}, nullptr);
+ 
+     REQUIRE(result.ok);
+     REQUIRE(result.cube->channel_config.slot_index("L")      != -1);
+     REQUIRE(result.cube->channel_config.slot_index("R_HaO3") != -1);
+     REQUIRE(result.cube->channel_config.slot_index("G_HaO3") != -1);
+     REQUIRE(result.cube->channel_config.slot_index("B_HaO3") != -1);
+ }
++
++TEST_CASE("Phase A: missing FILTER on mono (L_unnamed) routes into the L slot",
++          "[.integration][phase_a]") {
++    auto tmp = fs::temp_directory_path() / "phase_a_mono_unnamed.fits";
++    test_util::write_synthetic_mono(tmp.string(), 16, 16, "ASI2600MM", /*filter*/"", 0.5f);
++
++    StackingEngine::Config cfg;
++    cfg.qe_database_path = (fs::path(NUKEX_TEST_FIXTURES_DIR) / "qe" / "minimal_db.json").string();
++    StackingEngine engine(cfg);
++    auto result = engine.execute({tmp.string()}, {}, nullptr);
++
++    REQUIRE(result.ok);
++    int L_idx = result.cube->channel_config.slot_index("L");
++    REQUIRE(L_idx != -1);
++    REQUIRE(result.cube->at(8, 8).welford[L_idx].mean == Catch::Approx(0.5f).margin(0.05f));
++}
++
++TEST_CASE("Phase A: unknown FILTER on mono routes into the L slot (spec 6.3, e.g. a wheel slot number)",
++          "[.integration][phase_a]") {
++    auto tmp = fs::temp_directory_path() / "phase_a_mono_unknown.fits";
++    test_util::write_synthetic_mono(tmp.string(), 16, 16, "ATR585M", /*filter*/"1", 0.5f);
++
++    StackingEngine::Config cfg;
++    cfg.qe_database_path = (fs::path(NUKEX_TEST_FIXTURES_DIR) / "qe" / "minimal_db.json").string();
++    StackingEngine engine(cfg);
++    auto result = engine.execute({tmp.string()}, {}, nullptr);
++
++    REQUIRE(result.ok);
++    int L_idx = result.cube->channel_config.slot_index("L");
++    REQUIRE(L_idx != -1);
++    REQUIRE(result.cube->at(8, 8).welford[L_idx].mean == Catch::Approx(0.5f).margin(0.05f));
++}
