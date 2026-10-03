@@ -1,0 +1,2356 @@
+{
+  "cameras": {
+    "ares-m-pro": {
+      "confidence": "medium",
+      "manufacturer": "Player One",
+      "qe": {
+        "486": {
+          "mono_pk": 0.87
+        },
+        "501": {
+          "mono_pk": 0.91
+        },
+        "656": {
+          "mono_pk": 0.55
+        },
+        "672": {
+          "mono_pk": 0.5
+        }
+      },
+      "sensor": "IMX533",
+      "type": "mono"
+    },
+    "asi071mc": {
+      "bayer": "RGGB",
+      "confidence": "low",
+      "manufacturer": "ZWO",
+      "qe": {
+        "486": {
+          "B": 0.65,
+          "G": 0.55,
+          "R": 0.05
+        },
+        "501": {
+          "B": 0.4,
+          "G": 0.65,
+          "R": 0.06
+        },
+        "656": {
+          "B": 0.04,
+          "G": 0.05,
+          "R": 0.55
+        },
+        "672": {
+          "B": 0.05,
+          "G": 0.05,
+          "R": 0.52
+        }
+      },
+      "sensor": "IMX071",
+      "type": "OSC"
+    },
+    "asi1600mm": {
+      "confidence": "low",
+      "manufacturer": "ZWO",
+      "qe": {
+        "486": {
+          "mono_pk": 0.55
+        },
+        "501": {
+          "mono_pk": 0.6
+        },
+        "656": {
+          "mono_pk": 0.4
+        },
+        "672": {
+          "mono_pk": 0.36
+        }
+      },
+      "sensor": "Panasonic-MN34230",
+      "type": "mono"
+    },
+    "asi174mm": {
+      "confidence": "medium",
+      "manufacturer": "ZWO",
+      "qe": {
+        "486": {
+          "mono_pk": 0.71
+        },
+        "501": {
+          "mono_pk": 0.74
+        },
+        "656": {
+          "mono_pk": 0.55
+        },
+        "672": {
+          "mono_pk": 0.5
+        }
+      },
+      "sensor": "IMX174",
+      "type": "mono"
+    },
+    "asi178mc": {
+      "bayer": "RGGB",
+      "confidence": "medium",
+      "manufacturer": "ZWO",
+      "qe": {
+        "486": {
+          "B": 0.65,
+          "G": 0.55,
+          "R": 0.04
+        },
+        "501": {
+          "B": 0.45,
+          "G": 0.74,
+          "R": 0.05
+        },
+        "656": {
+          "B": 0.03,
+          "G": 0.04,
+          "R": 0.61
+        },
+        "672": {
+          "B": 0.04,
+          "G": 0.05,
+          "R": 0.58
+        }
+      },
+      "sensor": "IMX178",
+      "type": "OSC"
+    },
+    "asi178mm": {
+      "confidence": "medium",
+      "manufacturer": "ZWO",
+      "qe": {
+        "486": {
+          "mono_pk": 0.81
+        },
+        "501": {
+          "mono_pk": 0.81
+        },
+        "656": {
+          "mono_pk": 0.55
+        },
+        "672": {
+          "mono_pk": 0.5
+        }
+      },
+      "sensor": "IMX178",
+      "type": "mono"
+    },
+    "asi183mc": {
+      "bayer": "RGGB",
+      "confidence": "medium",
+      "manufacturer": "ZWO",
+      "qe": {
+        "486": {
+          "B": 0.7,
+          "G": 0.58,
+          "R": 0.04
+        },
+        "501": {
+          "B": 0.5,
+          "G": 0.78,
+          "R": 0.05
+        },
+        "656": {
+          "B": 0.03,
+          "G": 0.04,
+          "R": 0.62
+        },
+        "672": {
+          "B": 0.04,
+          "G": 0.04,
+          "R": 0.58
+        }
+      },
+      "sensor": "IMX183",
+      "type": "OSC"
+    },
+    "asi183mm": {
+      "confidence": "medium",
+      "manufacturer": "ZWO",
+      "qe": {
+        "486": {
+          "mono_pk": 0.84
+        },
+        "501": {
+          "mono_pk": 0.84
+        },
+        "656": {
+          "mono_pk": 0.62
+        },
+        "672": {
+          "mono_pk": 0.55
+        }
+      },
+      "sensor": "IMX183",
+      "type": "mono"
+    },
+    "asi224mc": {
+      "bayer": "RGGB",
+      "confidence": "medium",
+      "manufacturer": "ZWO",
+      "qe": {
+        "486": {
+          "B": 0.72,
+          "G": 0.6,
+          "R": 0.05
+        },
+        "501": {
+          "B": 0.48,
+          "G": 0.76,
+          "R": 0.05
+        },
+        "656": {
+          "B": 0.03,
+          "G": 0.05,
+          "R": 0.65
+        },
+        "672": {
+          "B": 0.04,
+          "G": 0.05,
+          "R": 0.62
+        }
+      },
+      "sensor": "IMX224",
+      "type": "OSC"
+    },
+    "asi2400mc": {
+      "bayer": "RGGB",
+      "confidence": "medium",
+      "manufacturer": "ZWO",
+      "qe": {
+        "486": {
+          "B": 0.74,
+          "G": 0.65,
+          "R": 0.05
+        },
+        "501": {
+          "B": 0.5,
+          "G": 0.78,
+          "R": 0.06
+        },
+        "656": {
+          "B": 0.04,
+          "G": 0.05,
+          "R": 0.62
+        },
+        "672": {
+          "B": 0.05,
+          "G": 0.05,
+          "R": 0.58
+        }
+      },
+      "sensor": "IMX410",
+      "type": "OSC"
+    },
+    "asi2600mc": {
+      "bayer": "RGGB",
+      "confidence": "medium",
+      "manufacturer": "ZWO",
+      "qe": {
+        "486": {
+          "B": 0.86,
+          "G": 0.78,
+          "R": 0.07
+        },
+        "501": {
+          "B": 0.6,
+          "G": 0.89,
+          "R": 0.08
+        },
+        "656": {
+          "B": 0.04,
+          "G": 0.05,
+          "R": 0.46
+        },
+        "672": {
+          "B": 0.05,
+          "G": 0.05,
+          "R": 0.42
+        }
+      },
+      "sensor": "IMX571",
+      "type": "OSC"
+    },
+    "asi2600mm": {
+      "confidence": "medium",
+      "manufacturer": "ZWO",
+      "qe": {
+        "486": {
+          "mono_pk": 0.89
+        },
+        "501": {
+          "mono_pk": 0.9
+        },
+        "656": {
+          "mono_pk": 0.5
+        },
+        "672": {
+          "mono_pk": 0.46
+        }
+      },
+      "sensor": "IMX571",
+      "type": "mono"
+    },
+    "asi294mc": {
+      "bayer": "RGGB",
+      "confidence": "medium",
+      "manufacturer": "ZWO",
+      "qe": {
+        "486": {
+          "B": 0.55,
+          "G": 0.41,
+          "R": 0.04
+        },
+        "501": {
+          "B": 0.38,
+          "G": 0.64,
+          "R": 0.045
+        },
+        "656": {
+          "B": 0.02,
+          "G": 0.03,
+          "R": 0.59
+        },
+        "672": {
+          "B": 0.03,
+          "G": 0.04,
+          "R": 0.56
+        }
+      },
+      "sensor": "IMX294",
+      "type": "OSC"
+    },
+    "asi294mm": {
+      "confidence": "medium",
+      "manufacturer": "ZWO",
+      "qe": {
+        "486": {
+          "mono_pk": 0.66
+        },
+        "501": {
+          "mono_pk": 0.71
+        },
+        "656": {
+          "mono_pk": 0.52
+        },
+        "672": {
+          "mono_pk": 0.48
+        }
+      },
+      "sensor": "IMX294",
+      "type": "mono"
+    },
+    "asi462mc": {
+      "bayer": "RGGB",
+      "confidence": "medium",
+      "manufacturer": "ZWO",
+      "qe": {
+        "486": {
+          "B": 0.76,
+          "G": 0.62,
+          "R": 0.04
+        },
+        "501": {
+          "B": 0.5,
+          "G": 0.81,
+          "R": 0.04
+        },
+        "656": {
+          "B": 0.04,
+          "G": 0.05,
+          "R": 0.72
+        },
+        "672": {
+          "B": 0.05,
+          "G": 0.05,
+          "R": 0.7
+        }
+      },
+      "sensor": "IMX462",
+      "type": "OSC"
+    },
+    "asi464mc": {
+      "bayer": "RGGB",
+      "confidence": "medium",
+      "manufacturer": "ZWO",
+      "qe": {
+        "486": {
+          "B": 0.81,
+          "G": 0.7,
+          "R": 0.04
+        },
+        "501": {
+          "B": 0.56,
+          "G": 0.85,
+          "R": 0.04
+        },
+        "656": {
+          "B": 0.04,
+          "G": 0.05,
+          "R": 0.74
+        },
+        "672": {
+          "B": 0.05,
+          "G": 0.05,
+          "R": 0.72
+        }
+      },
+      "sensor": "IMX464",
+      "type": "OSC"
+    },
+    "asi485mc": {
+      "bayer": "RGGB",
+      "confidence": "medium",
+      "manufacturer": "ZWO",
+      "qe": {
+        "486": {
+          "B": 0.78,
+          "G": 0.64,
+          "R": 0.04
+        },
+        "501": {
+          "B": 0.52,
+          "G": 0.81,
+          "R": 0.04
+        },
+        "656": {
+          "B": 0.04,
+          "G": 0.05,
+          "R": 0.66
+        },
+        "672": {
+          "B": 0.05,
+          "G": 0.05,
+          "R": 0.62
+        }
+      },
+      "sensor": "IMX485",
+      "type": "OSC"
+    },
+    "asi533mc": {
+      "bayer": "RGGB",
+      "confidence": "medium",
+      "manufacturer": "ZWO",
+      "qe": {
+        "486": {
+          "B": 0.86,
+          "G": 0.77,
+          "R": 0.07
+        },
+        "501": {
+          "B": 0.55,
+          "G": 0.85,
+          "R": 0.08
+        },
+        "656": {
+          "B": 0.04,
+          "G": 0.05,
+          "R": 0.5
+        },
+        "672": {
+          "B": 0.05,
+          "G": 0.05,
+          "R": 0.47
+        }
+      },
+      "sensor": "IMX533",
+      "type": "OSC"
+    },
+    "asi533mm": {
+      "confidence": "medium",
+      "manufacturer": "ZWO",
+      "qe": {
+        "486": {
+          "mono_pk": 0.87
+        },
+        "501": {
+          "mono_pk": 0.91
+        },
+        "656": {
+          "mono_pk": 0.55
+        },
+        "672": {
+          "mono_pk": 0.5
+        }
+      },
+      "sensor": "IMX533",
+      "type": "mono"
+    },
+    "asi585mc": {
+      "bayer": "RGGB",
+      "confidence": "high",
+      "manufacturer": "ZWO",
+      "qe": {
+        "486": {
+          "B": 0.7,
+          "G": 0.65,
+          "R": 0.03
+        },
+        "501": {
+          "B": 0.5,
+          "G": 0.85,
+          "R": 0.03
+        },
+        "656": {
+          "B": 0.03,
+          "G": 0.32,
+          "R": 0.73
+        },
+        "672": {
+          "B": 0.05,
+          "G": 0.33,
+          "R": 0.71
+        }
+      },
+      "sensor": "IMX585",
+      "type": "OSC"
+    },
+    "asi585mm": {
+      "confidence": "medium",
+      "manufacturer": "ZWO",
+      "qe": {
+        "486": {
+          "mono_pk": 0.85
+        },
+        "501": {
+          "mono_pk": 0.912
+        },
+        "656": {
+          "mono_pk": 0.809
+        },
+        "672": {
+          "mono_pk": 0.787
+        }
+      },
+      "sensor": "IMX585",
+      "type": "mono"
+    },
+    "asi6200mc": {
+      "bayer": "RGGB",
+      "confidence": "medium",
+      "manufacturer": "ZWO",
+      "qe": {
+        "486": {
+          "B": 0.85,
+          "G": 0.77,
+          "R": 0.07
+        },
+        "501": {
+          "B": 0.58,
+          "G": 0.86,
+          "R": 0.08
+        },
+        "656": {
+          "B": 0.04,
+          "G": 0.05,
+          "R": 0.5
+        },
+        "672": {
+          "B": 0.05,
+          "G": 0.05,
+          "R": 0.47
+        }
+      },
+      "sensor": "IMX455",
+      "type": "OSC"
+    },
+    "asi6200mm": {
+      "confidence": "medium",
+      "manufacturer": "ZWO",
+      "qe": {
+        "486": {
+          "mono_pk": 0.88
+        },
+        "501": {
+          "mono_pk": 0.88
+        },
+        "656": {
+          "mono_pk": 0.55
+        },
+        "672": {
+          "mono_pk": 0.5
+        }
+      },
+      "sensor": "IMX455",
+      "type": "mono"
+    },
+    "asi676mc": {
+      "bayer": "RGGB",
+      "confidence": "medium",
+      "manufacturer": "ZWO",
+      "qe": {
+        "486": {
+          "B": 0.75,
+          "G": 0.66,
+          "R": 0.05
+        },
+        "501": {
+          "B": 0.5,
+          "G": 0.78,
+          "R": 0.06
+        },
+        "656": {
+          "B": 0.04,
+          "G": 0.05,
+          "R": 0.6
+        },
+        "672": {
+          "B": 0.05,
+          "G": 0.05,
+          "R": 0.57
+        }
+      },
+      "sensor": "IMX676",
+      "type": "OSC"
+    },
+    "asi676mm": {
+      "confidence": "medium",
+      "manufacturer": "ZWO",
+      "qe": {
+        "486": {
+          "mono_pk": 0.78
+        },
+        "501": {
+          "mono_pk": 0.83
+        },
+        "656": {
+          "mono_pk": 0.55
+        },
+        "672": {
+          "mono_pk": 0.5
+        }
+      },
+      "sensor": "IMX676",
+      "type": "mono"
+    },
+    "asi678mc": {
+      "bayer": "RGGB",
+      "confidence": "medium",
+      "manufacturer": "ZWO",
+      "qe": {
+        "486": {
+          "B": 0.76,
+          "G": 0.66,
+          "R": 0.05
+        },
+        "501": {
+          "B": 0.51,
+          "G": 0.78,
+          "R": 0.06
+        },
+        "656": {
+          "B": 0.04,
+          "G": 0.05,
+          "R": 0.62
+        },
+        "672": {
+          "B": 0.05,
+          "G": 0.05,
+          "R": 0.59
+        }
+      },
+      "sensor": "IMX678",
+      "type": "OSC"
+    },
+    "asi678mm": {
+      "confidence": "medium",
+      "manufacturer": "ZWO",
+      "qe": {
+        "486": {
+          "mono_pk": 0.78
+        },
+        "501": {
+          "mono_pk": 0.83
+        },
+        "656": {
+          "mono_pk": 0.55
+        },
+        "672": {
+          "mono_pk": 0.5
+        }
+      },
+      "sensor": "IMX678",
+      "type": "mono"
+    },
+    "atik-16200": {
+      "confidence": "high",
+      "manufacturer": "Atik",
+      "qe": {
+        "486": {
+          "mono_pk": 0.45
+        },
+        "501": {
+          "mono_pk": 0.5
+        },
+        "656": {
+          "mono_pk": 0.42
+        },
+        "672": {
+          "mono_pk": 0.38
+        }
+      },
+      "sensor": "KAF-16200",
+      "type": "mono"
+    },
+    "atik-383l": {
+      "confidence": "high",
+      "manufacturer": "Atik",
+      "qe": {
+        "486": {
+          "mono_pk": 0.45
+        },
+        "501": {
+          "mono_pk": 0.5
+        },
+        "656": {
+          "mono_pk": 0.4
+        },
+        "672": {
+          "mono_pk": 0.36
+        }
+      },
+      "sensor": "KAF-8300",
+      "type": "mono"
+    },
+    "atik-460ex": {
+      "confidence": "medium",
+      "manufacturer": "Atik",
+      "qe": {
+        "486": {
+          "mono_pk": 0.65
+        },
+        "501": {
+          "mono_pk": 0.67
+        },
+        "656": {
+          "mono_pk": 0.65
+        },
+        "672": {
+          "mono_pk": 0.6
+        }
+      },
+      "sensor": "ICX694",
+      "type": "mono"
+    },
+    "canon-eos-ra": {
+      "bayer": "RGGB",
+      "confidence": "low",
+      "manufacturer": "Canon",
+      "qe": {
+        "486": {
+          "B": 0.5,
+          "G": 0.42,
+          "R": 0.04
+        },
+        "501": {
+          "B": 0.32,
+          "G": 0.55,
+          "R": 0.05
+        },
+        "656": {
+          "B": 0.03,
+          "G": 0.04,
+          "R": 0.5
+        },
+        "672": {
+          "B": 0.04,
+          "G": 0.04,
+          "R": 0.46
+        }
+      },
+      "sensor": "Canon CMOS (proprietary)",
+      "type": "OSC"
+    },
+    "generic_sony_imx_osc": {
+      "bayer": "RGGB",
+      "confidence": "low",
+      "manufacturer": "generic",
+      "qe": {
+        "486": {
+          "B": 0.7614,
+          "G": 0.6611,
+          "R": 0.0507
+        },
+        "501": {
+          "B": 0.5161,
+          "G": 0.8071,
+          "R": 0.0571
+        },
+        "656": {
+          "B": 0.0368,
+          "G": 0.0671,
+          "R": 0.6079
+        },
+        "672": {
+          "B": 0.0475,
+          "G": 0.0689,
+          "R": 0.5768
+        }
+      },
+      "sensor": "generic",
+      "type": "OSC"
+    },
+    "mars-c": {
+      "bayer": "RGGB",
+      "confidence": "medium",
+      "manufacturer": "Player One",
+      "qe": {
+        "486": {
+          "B": 0.76,
+          "G": 0.62,
+          "R": 0.04
+        },
+        "501": {
+          "B": 0.5,
+          "G": 0.81,
+          "R": 0.04
+        },
+        "656": {
+          "B": 0.04,
+          "G": 0.05,
+          "R": 0.72
+        },
+        "672": {
+          "B": 0.05,
+          "G": 0.05,
+          "R": 0.7
+        }
+      },
+      "sensor": "IMX462",
+      "type": "OSC"
+    },
+    "neptune-c-ii": {
+      "bayer": "RGGB",
+      "confidence": "medium",
+      "manufacturer": "Player One",
+      "qe": {
+        "486": {
+          "B": 0.81,
+          "G": 0.7,
+          "R": 0.04
+        },
+        "501": {
+          "B": 0.56,
+          "G": 0.85,
+          "R": 0.04
+        },
+        "656": {
+          "B": 0.04,
+          "G": 0.05,
+          "R": 0.74
+        },
+        "672": {
+          "B": 0.05,
+          "G": 0.05,
+          "R": 0.72
+        }
+      },
+      "sensor": "IMX464",
+      "type": "OSC"
+    },
+    "nikon-z6-ii": {
+      "bayer": "RGGB",
+      "confidence": "medium",
+      "manufacturer": "Nikon",
+      "qe": {
+        "486": {
+          "B": 0.74,
+          "G": 0.65,
+          "R": 0.05
+        },
+        "501": {
+          "B": 0.5,
+          "G": 0.78,
+          "R": 0.06
+        },
+        "656": {
+          "B": 0.04,
+          "G": 0.05,
+          "R": 0.62
+        },
+        "672": {
+          "B": 0.05,
+          "G": 0.05,
+          "R": 0.58
+        }
+      },
+      "sensor": "IMX410",
+      "type": "OSC"
+    },
+    "poseidon-c": {
+      "bayer": "RGGB",
+      "confidence": "medium",
+      "manufacturer": "Player One",
+      "qe": {
+        "486": {
+          "B": 0.86,
+          "G": 0.78,
+          "R": 0.07
+        },
+        "501": {
+          "B": 0.6,
+          "G": 0.89,
+          "R": 0.08
+        },
+        "656": {
+          "B": 0.04,
+          "G": 0.05,
+          "R": 0.46
+        },
+        "672": {
+          "B": 0.05,
+          "G": 0.05,
+          "R": 0.42
+        }
+      },
+      "sensor": "IMX571",
+      "type": "OSC"
+    },
+    "poseidon-m": {
+      "confidence": "medium",
+      "manufacturer": "Player One",
+      "qe": {
+        "486": {
+          "mono_pk": 0.89
+        },
+        "501": {
+          "mono_pk": 0.9
+        },
+        "656": {
+          "mono_pk": 0.5
+        },
+        "672": {
+          "mono_pk": 0.46
+        }
+      },
+      "sensor": "IMX571",
+      "type": "mono"
+    },
+    "qhy128c": {
+      "bayer": "RGGB",
+      "confidence": "medium",
+      "manufacturer": "QHYCCD",
+      "qe": {
+        "486": {
+          "B": 0.74,
+          "G": 0.65,
+          "R": 0.05
+        },
+        "501": {
+          "B": 0.5,
+          "G": 0.78,
+          "R": 0.06
+        },
+        "656": {
+          "B": 0.04,
+          "G": 0.05,
+          "R": 0.62
+        },
+        "672": {
+          "B": 0.05,
+          "G": 0.05,
+          "R": 0.58
+        }
+      },
+      "sensor": "IMX410",
+      "type": "OSC"
+    },
+    "qhy174": {
+      "confidence": "medium",
+      "manufacturer": "QHYCCD",
+      "qe": {
+        "486": {
+          "mono_pk": 0.71
+        },
+        "501": {
+          "mono_pk": 0.74
+        },
+        "656": {
+          "mono_pk": 0.55
+        },
+        "672": {
+          "mono_pk": 0.5
+        }
+      },
+      "sensor": "IMX174",
+      "type": "mono"
+    },
+    "qhy183m": {
+      "confidence": "medium",
+      "manufacturer": "QHYCCD",
+      "qe": {
+        "486": {
+          "mono_pk": 0.84
+        },
+        "501": {
+          "mono_pk": 0.84
+        },
+        "656": {
+          "mono_pk": 0.62
+        },
+        "672": {
+          "mono_pk": 0.55
+        }
+      },
+      "sensor": "IMX183",
+      "type": "mono"
+    },
+    "qhy268c": {
+      "bayer": "RGGB",
+      "confidence": "medium",
+      "manufacturer": "QHYCCD",
+      "qe": {
+        "486": {
+          "B": 0.86,
+          "G": 0.78,
+          "R": 0.07
+        },
+        "501": {
+          "B": 0.6,
+          "G": 0.89,
+          "R": 0.08
+        },
+        "656": {
+          "B": 0.04,
+          "G": 0.05,
+          "R": 0.46
+        },
+        "672": {
+          "B": 0.05,
+          "G": 0.05,
+          "R": 0.42
+        }
+      },
+      "sensor": "IMX571",
+      "type": "OSC"
+    },
+    "qhy268m": {
+      "confidence": "high",
+      "manufacturer": "QHYCCD",
+      "qe": {
+        "486": {
+          "mono_pk": 0.89
+        },
+        "501": {
+          "mono_pk": 0.9
+        },
+        "656": {
+          "mono_pk": 0.5
+        },
+        "672": {
+          "mono_pk": 0.46
+        }
+      },
+      "sensor": "IMX571",
+      "type": "mono"
+    },
+    "qhy294c": {
+      "bayer": "RGGB",
+      "confidence": "medium",
+      "manufacturer": "QHYCCD",
+      "qe": {
+        "486": {
+          "B": 0.55,
+          "G": 0.41,
+          "R": 0.04
+        },
+        "501": {
+          "B": 0.38,
+          "G": 0.64,
+          "R": 0.045
+        },
+        "656": {
+          "B": 0.02,
+          "G": 0.03,
+          "R": 0.59
+        },
+        "672": {
+          "B": 0.03,
+          "G": 0.04,
+          "R": 0.56
+        }
+      },
+      "sensor": "IMX294",
+      "type": "OSC"
+    },
+    "qhy294m": {
+      "confidence": "low",
+      "manufacturer": "QHYCCD",
+      "qe": {
+        "486": {
+          "mono_pk": 0.7
+        },
+        "501": {
+          "mono_pk": 0.72
+        },
+        "656": {
+          "mono_pk": 0.5
+        },
+        "672": {
+          "mono_pk": 0.45
+        }
+      },
+      "sensor": "IMX492",
+      "type": "mono"
+    },
+    "qhy410c": {
+      "bayer": "RGGB",
+      "confidence": "medium",
+      "manufacturer": "QHYCCD",
+      "qe": {
+        "486": {
+          "B": 0.74,
+          "G": 0.65,
+          "R": 0.05
+        },
+        "501": {
+          "B": 0.5,
+          "G": 0.78,
+          "R": 0.06
+        },
+        "656": {
+          "B": 0.04,
+          "G": 0.05,
+          "R": 0.62
+        },
+        "672": {
+          "B": 0.05,
+          "G": 0.05,
+          "R": 0.58
+        }
+      },
+      "sensor": "IMX410",
+      "type": "OSC"
+    },
+    "qhy461m": {
+      "confidence": "medium",
+      "manufacturer": "QHYCCD",
+      "qe": {
+        "486": {
+          "mono_pk": 0.85
+        },
+        "501": {
+          "mono_pk": 0.88
+        },
+        "656": {
+          "mono_pk": 0.5
+        },
+        "672": {
+          "mono_pk": 0.45
+        }
+      },
+      "sensor": "IMX461",
+      "type": "mono"
+    },
+    "qhy533c": {
+      "bayer": "RGGB",
+      "confidence": "medium",
+      "manufacturer": "QHYCCD",
+      "qe": {
+        "486": {
+          "B": 0.86,
+          "G": 0.77,
+          "R": 0.07
+        },
+        "501": {
+          "B": 0.55,
+          "G": 0.85,
+          "R": 0.08
+        },
+        "656": {
+          "B": 0.04,
+          "G": 0.05,
+          "R": 0.5
+        },
+        "672": {
+          "B": 0.05,
+          "G": 0.05,
+          "R": 0.47
+        }
+      },
+      "sensor": "IMX533",
+      "type": "OSC"
+    },
+    "qhy5iii462c": {
+      "bayer": "RGGB",
+      "confidence": "medium",
+      "manufacturer": "QHYCCD",
+      "qe": {
+        "486": {
+          "B": 0.76,
+          "G": 0.62,
+          "R": 0.04
+        },
+        "501": {
+          "B": 0.5,
+          "G": 0.81,
+          "R": 0.04
+        },
+        "656": {
+          "B": 0.04,
+          "G": 0.05,
+          "R": 0.72
+        },
+        "672": {
+          "B": 0.05,
+          "G": 0.05,
+          "R": 0.7
+        }
+      },
+      "sensor": "IMX462",
+      "type": "OSC"
+    },
+    "qhy600c": {
+      "bayer": "RGGB",
+      "confidence": "medium",
+      "manufacturer": "QHYCCD",
+      "qe": {
+        "486": {
+          "B": 0.85,
+          "G": 0.77,
+          "R": 0.07
+        },
+        "501": {
+          "B": 0.58,
+          "G": 0.86,
+          "R": 0.08
+        },
+        "656": {
+          "B": 0.04,
+          "G": 0.05,
+          "R": 0.5
+        },
+        "672": {
+          "B": 0.05,
+          "G": 0.05,
+          "R": 0.47
+        }
+      },
+      "sensor": "IMX455",
+      "type": "OSC"
+    },
+    "qhy600m": {
+      "confidence": "medium",
+      "manufacturer": "QHYCCD",
+      "qe": {
+        "486": {
+          "mono_pk": 0.88
+        },
+        "501": {
+          "mono_pk": 0.88
+        },
+        "656": {
+          "mono_pk": 0.55
+        },
+        "672": {
+          "mono_pk": 0.5
+        }
+      },
+      "sensor": "IMX455",
+      "type": "mono"
+    },
+    "saturn-c": {
+      "bayer": "RGGB",
+      "confidence": "medium",
+      "manufacturer": "Player One",
+      "qe": {
+        "486": {
+          "B": 0.86,
+          "G": 0.77,
+          "R": 0.07
+        },
+        "501": {
+          "B": 0.55,
+          "G": 0.85,
+          "R": 0.08
+        },
+        "656": {
+          "B": 0.04,
+          "G": 0.05,
+          "R": 0.5
+        },
+        "672": {
+          "B": 0.05,
+          "G": 0.05,
+          "R": 0.47
+        }
+      },
+      "sensor": "IMX533",
+      "type": "OSC"
+    },
+    "sony-a7-iii": {
+      "bayer": "RGGB",
+      "confidence": "medium",
+      "manufacturer": "Sony",
+      "qe": {
+        "486": {
+          "B": 0.74,
+          "G": 0.65,
+          "R": 0.05
+        },
+        "501": {
+          "B": 0.5,
+          "G": 0.78,
+          "R": 0.06
+        },
+        "656": {
+          "B": 0.04,
+          "G": 0.05,
+          "R": 0.62
+        },
+        "672": {
+          "B": 0.05,
+          "G": 0.05,
+          "R": 0.58
+        }
+      },
+      "sensor": "IMX410",
+      "type": "OSC"
+    },
+    "uranus-c": {
+      "bayer": "RGGB",
+      "confidence": "medium",
+      "manufacturer": "Player One",
+      "qe": {
+        "486": {
+          "B": 0.7,
+          "G": 0.65,
+          "R": 0.03
+        },
+        "501": {
+          "B": 0.5,
+          "G": 0.85,
+          "R": 0.03
+        },
+        "656": {
+          "B": 0.03,
+          "G": 0.32,
+          "R": 0.73
+        },
+        "672": {
+          "B": 0.05,
+          "G": 0.33,
+          "R": 0.71
+        }
+      },
+      "sensor": "IMX585",
+      "type": "OSC"
+    },
+    "uranus-m": {
+      "confidence": "medium",
+      "manufacturer": "Player One",
+      "qe": {
+        "486": {
+          "mono_pk": 0.85
+        },
+        "501": {
+          "mono_pk": 0.912
+        },
+        "656": {
+          "mono_pk": 0.809
+        },
+        "672": {
+          "mono_pk": 0.787
+        }
+      },
+      "sensor": "IMX585",
+      "type": "mono"
+    },
+    "uranus-m-pro": {
+      "confidence": "medium",
+      "manufacturer": "Player One",
+      "qe": {
+        "486": {
+          "mono_pk": 0.85
+        },
+        "501": {
+          "mono_pk": 0.912
+        },
+        "656": {
+          "mono_pk": 0.809
+        },
+        "672": {
+          "mono_pk": 0.787
+        }
+      },
+      "sensor": "IMX585",
+      "type": "mono"
+    }
+  },
+  "filters": {
+    "ALP-T": {
+      "lines": [
+        {
+          "fwhm_nm": 5.0,
+          "name": "Ha",
+          "wavelength_nm": 656.3
+        },
+        {
+          "fwhm_nm": 5.0,
+          "name": "OIII",
+          "wavelength_nm": 500.7
+        }
+      ],
+      "type": "DUAL_NB"
+    },
+    "Antlia-ALP-T-Ha-OIII-3nm": {
+      "lines": [
+        {
+          "fwhm_nm": 3.0,
+          "name": "Ha",
+          "wavelength_nm": 656.3
+        },
+        {
+          "fwhm_nm": 3.0,
+          "name": "OIII",
+          "wavelength_nm": 500.7
+        }
+      ],
+      "type": "DUAL_NB"
+    },
+    "Antlia-ALP-T-Ha-OIII-5nm": {
+      "lines": [
+        {
+          "fwhm_nm": 5.0,
+          "name": "Ha",
+          "wavelength_nm": 656.3
+        },
+        {
+          "fwhm_nm": 5.0,
+          "name": "OIII",
+          "wavelength_nm": 500.7
+        }
+      ],
+      "type": "DUAL_NB"
+    },
+    "Antlia-ALP-T-SII-Hb-5nm": {
+      "lines": [
+        {
+          "fwhm_nm": 5.0,
+          "name": "SII",
+          "wavelength_nm": 672.4
+        },
+        {
+          "fwhm_nm": 5.0,
+          "name": "Hb",
+          "wavelength_nm": 486.1
+        }
+      ],
+      "type": "DUAL_NB"
+    },
+    "Antlia-ALP-T-SII-OIII-3nm": {
+      "lines": [
+        {
+          "fwhm_nm": 3.0,
+          "name": "SII",
+          "wavelength_nm": 672.4
+        },
+        {
+          "fwhm_nm": 3.0,
+          "name": "OIII",
+          "wavelength_nm": 500.7
+        }
+      ],
+      "type": "DUAL_NB"
+    },
+    "Antlia-Ha-3nm-Pro": {
+      "lines": [
+        {
+          "fwhm_nm": 3.0,
+          "name": "Ha",
+          "wavelength_nm": 656.3
+        }
+      ],
+      "type": "NARROWBAND"
+    },
+    "Antlia-Ha-4.5nm-Edge": {
+      "lines": [
+        {
+          "fwhm_nm": 4.5,
+          "name": "Ha",
+          "wavelength_nm": 656.3
+        }
+      ],
+      "type": "NARROWBAND"
+    },
+    "Antlia-Hb-3nm-Pro": {
+      "lines": [
+        {
+          "fwhm_nm": 3.0,
+          "name": "Hb",
+          "wavelength_nm": 486.1
+        }
+      ],
+      "type": "NARROWBAND"
+    },
+    "Antlia-OIII-3nm-Pro": {
+      "lines": [
+        {
+          "fwhm_nm": 3.0,
+          "name": "OIII",
+          "wavelength_nm": 500.7
+        }
+      ],
+      "type": "NARROWBAND"
+    },
+    "Antlia-SII-3nm-Pro": {
+      "lines": [
+        {
+          "fwhm_nm": 3.0,
+          "name": "SII",
+          "wavelength_nm": 672.4
+        }
+      ],
+      "type": "NARROWBAND"
+    },
+    "Askar-ColorMagic-D1-Ha-OIII": {
+      "lines": [
+        {
+          "fwhm_nm": 8.5,
+          "name": "Ha",
+          "wavelength_nm": 656.3
+        },
+        {
+          "fwhm_nm": 6.5,
+          "name": "OIII",
+          "wavelength_nm": 500.7
+        }
+      ],
+      "type": "DUAL_NB"
+    },
+    "Askar-ColorMagic-D2-SII-OIII": {
+      "lines": [
+        {
+          "fwhm_nm": 8.5,
+          "name": "SII",
+          "wavelength_nm": 672.4
+        },
+        {
+          "fwhm_nm": 6.5,
+          "name": "OIII",
+          "wavelength_nm": 500.7
+        }
+      ],
+      "type": "DUAL_NB"
+    },
+    "Astrodon-Ha-3nm-50mm": {
+      "lines": [
+        {
+          "fwhm_nm": 3.0,
+          "name": "Ha",
+          "wavelength_nm": 656.3
+        }
+      ],
+      "type": "NARROWBAND"
+    },
+    "Astrodon-Ha-5nm-50mm": {
+      "lines": [
+        {
+          "fwhm_nm": 5.0,
+          "name": "Ha",
+          "wavelength_nm": 656.3
+        }
+      ],
+      "type": "NARROWBAND"
+    },
+    "Astrodon-LRGB-Gen2-E-Series-B": {
+      "lines": [],
+      "type": "BROADBAND"
+    },
+    "Astrodon-LRGB-Gen2-E-Series-G": {
+      "lines": [],
+      "type": "BROADBAND"
+    },
+    "Astrodon-LRGB-Gen2-E-Series-Lum": {
+      "lines": [],
+      "type": "BROADBAND"
+    },
+    "Astrodon-LRGB-Gen2-E-Series-R": {
+      "lines": [],
+      "type": "BROADBAND"
+    },
+    "Astrodon-NII-3nm-50mm": {
+      "lines": [
+        {
+          "fwhm_nm": 3.0,
+          "name": "Ha",
+          "wavelength_nm": 656.3
+        }
+      ],
+      "type": "NARROWBAND"
+    },
+    "Astrodon-OIII-3nm-50mm": {
+      "lines": [
+        {
+          "fwhm_nm": 3.0,
+          "name": "OIII",
+          "wavelength_nm": 500.7
+        }
+      ],
+      "type": "NARROWBAND"
+    },
+    "Astrodon-OIII-5nm-50mm": {
+      "lines": [
+        {
+          "fwhm_nm": 5.0,
+          "name": "OIII",
+          "wavelength_nm": 500.7
+        }
+      ],
+      "type": "NARROWBAND"
+    },
+    "Astrodon-SII-3nm-50mm": {
+      "lines": [
+        {
+          "fwhm_nm": 3.0,
+          "name": "SII",
+          "wavelength_nm": 672.4
+        }
+      ],
+      "type": "NARROWBAND"
+    },
+    "Astrodon-SII-5nm-50mm": {
+      "lines": [
+        {
+          "fwhm_nm": 5.0,
+          "name": "SII",
+          "wavelength_nm": 672.4
+        }
+      ],
+      "type": "NARROWBAND"
+    },
+    "Astronomik-CLS": {
+      "lines": [
+        {
+          "fwhm_nm": 100.0,
+          "name": "OIII",
+          "wavelength_nm": 500.7
+        },
+        {
+          "fwhm_nm": 50.0,
+          "name": "Ha",
+          "wavelength_nm": 656.3
+        }
+      ],
+      "type": "BROADBAND"
+    },
+    "Astronomik-DeepSky-RGB-Type2c-B": {
+      "lines": [],
+      "type": "BROADBAND"
+    },
+    "Astronomik-DeepSky-RGB-Type2c-G": {
+      "lines": [],
+      "type": "BROADBAND"
+    },
+    "Astronomik-DeepSky-RGB-Type2c-R": {
+      "lines": [],
+      "type": "BROADBAND"
+    },
+    "Astronomik-Ha-12nm-CCD": {
+      "lines": [
+        {
+          "fwhm_nm": 12.0,
+          "name": "Ha",
+          "wavelength_nm": 656.3
+        }
+      ],
+      "type": "NARROWBAND"
+    },
+    "Astronomik-Ha-6nm-CCD": {
+      "lines": [
+        {
+          "fwhm_nm": 6.0,
+          "name": "Ha",
+          "wavelength_nm": 656.3
+        }
+      ],
+      "type": "NARROWBAND"
+    },
+    "Astronomik-L1-UV-IR-Block": {
+      "lines": [],
+      "type": "BROADBAND"
+    },
+    "Astronomik-L2-UV-IR-Block": {
+      "lines": [],
+      "type": "BROADBAND"
+    },
+    "Astronomik-L3-UV-IR-Block": {
+      "lines": [],
+      "type": "BROADBAND"
+    },
+    "Astronomik-OIII-12nm-CCD": {
+      "lines": [
+        {
+          "fwhm_nm": 12.0,
+          "name": "OIII",
+          "wavelength_nm": 500.7
+        }
+      ],
+      "type": "NARROWBAND"
+    },
+    "Astronomik-OIII-6nm-CCD": {
+      "lines": [
+        {
+          "fwhm_nm": 6.0,
+          "name": "OIII",
+          "wavelength_nm": 500.7
+        }
+      ],
+      "type": "NARROWBAND"
+    },
+    "Astronomik-SII-12nm-CCD": {
+      "lines": [
+        {
+          "fwhm_nm": 12.0,
+          "name": "SII",
+          "wavelength_nm": 672.4
+        }
+      ],
+      "type": "NARROWBAND"
+    },
+    "Astronomik-SII-6nm-CCD": {
+      "lines": [
+        {
+          "fwhm_nm": 6.0,
+          "name": "SII",
+          "wavelength_nm": 672.4
+        }
+      ],
+      "type": "NARROWBAND"
+    },
+    "Astronomik-UHC": {
+      "lines": [
+        {
+          "fwhm_nm": 16.0,
+          "name": "Hb",
+          "wavelength_nm": 486.1
+        },
+        {
+          "fwhm_nm": 22.0,
+          "name": "OIII",
+          "wavelength_nm": 500.7
+        },
+        {
+          "fwhm_nm": 16.0,
+          "name": "Ha",
+          "wavelength_nm": 656.3
+        }
+      ],
+      "type": "DUAL_NB"
+    },
+    "Baader-Ha-3.5nm-f2-CMOS": {
+      "lines": [
+        {
+          "fwhm_nm": 3.5,
+          "name": "Ha",
+          "wavelength_nm": 656.3
+        }
+      ],
+      "type": "NARROWBAND"
+    },
+    "Baader-Ha-6.5nm-CMOS": {
+      "lines": [
+        {
+          "fwhm_nm": 6.5,
+          "name": "Ha",
+          "wavelength_nm": 656.3
+        }
+      ],
+      "type": "NARROWBAND"
+    },
+    "Baader-LRGB-Lum": {
+      "lines": [],
+      "type": "BROADBAND"
+    },
+    "Baader-OIII-4nm-f2-CMOS": {
+      "lines": [
+        {
+          "fwhm_nm": 4.0,
+          "name": "OIII",
+          "wavelength_nm": 500.7
+        }
+      ],
+      "type": "NARROWBAND"
+    },
+    "Baader-OIII-6.5nm-CMOS": {
+      "lines": [
+        {
+          "fwhm_nm": 6.5,
+          "name": "OIII",
+          "wavelength_nm": 500.7
+        }
+      ],
+      "type": "NARROWBAND"
+    },
+    "Baader-SII-4nm-f2-CMOS": {
+      "lines": [
+        {
+          "fwhm_nm": 4.0,
+          "name": "SII",
+          "wavelength_nm": 672.4
+        }
+      ],
+      "type": "NARROWBAND"
+    },
+    "Baader-SII-6.5nm-CMOS": {
+      "lines": [
+        {
+          "fwhm_nm": 6.5,
+          "name": "SII",
+          "wavelength_nm": 672.4
+        }
+      ],
+      "type": "NARROWBAND"
+    },
+    "Baader-UHC-S": {
+      "lines": [
+        {
+          "fwhm_nm": 25.0,
+          "name": "Ha",
+          "wavelength_nm": 656.3
+        }
+      ],
+      "type": "BROADBAND"
+    },
+    "Chroma-Ha-3nm": {
+      "lines": [
+        {
+          "fwhm_nm": 3.0,
+          "name": "Ha",
+          "wavelength_nm": 656.3
+        }
+      ],
+      "type": "NARROWBAND"
+    },
+    "Chroma-Ha-3nm-F3-Highspeed": {
+      "lines": [
+        {
+          "fwhm_nm": 3.0,
+          "name": "Ha",
+          "wavelength_nm": 656.3
+        }
+      ],
+      "type": "NARROWBAND"
+    },
+    "Chroma-Ha-5nm": {
+      "lines": [
+        {
+          "fwhm_nm": 5.0,
+          "name": "Ha",
+          "wavelength_nm": 656.3
+        }
+      ],
+      "type": "NARROWBAND"
+    },
+    "Chroma-Ha-8nm": {
+      "lines": [
+        {
+          "fwhm_nm": 8.0,
+          "name": "Ha",
+          "wavelength_nm": 656.3
+        }
+      ],
+      "type": "NARROWBAND"
+    },
+    "Chroma-OIII-3nm": {
+      "lines": [
+        {
+          "fwhm_nm": 3.0,
+          "name": "OIII",
+          "wavelength_nm": 500.7
+        }
+      ],
+      "type": "NARROWBAND"
+    },
+    "Chroma-OIII-5nm": {
+      "lines": [
+        {
+          "fwhm_nm": 5.0,
+          "name": "OIII",
+          "wavelength_nm": 500.7
+        }
+      ],
+      "type": "NARROWBAND"
+    },
+    "Chroma-SII-3nm": {
+      "lines": [
+        {
+          "fwhm_nm": 3.0,
+          "name": "SII",
+          "wavelength_nm": 672.4
+        }
+      ],
+      "type": "NARROWBAND"
+    },
+    "Chroma-SII-5nm": {
+      "lines": [
+        {
+          "fwhm_nm": 5.0,
+          "name": "SII",
+          "wavelength_nm": 672.4
+        }
+      ],
+      "type": "NARROWBAND"
+    },
+    "Ha": {
+      "lines": [
+        {
+          "fwhm_nm": 4.75,
+          "name": "Ha",
+          "wavelength_nm": 656.3
+        }
+      ],
+      "type": "NARROWBAND"
+    },
+    "HaO3": {
+      "lines": [
+        {
+          "fwhm_nm": 7.0,
+          "name": "Ha",
+          "wavelength_nm": 656.3
+        },
+        {
+          "fwhm_nm": 6.75,
+          "name": "OIII",
+          "wavelength_nm": 500.7
+        }
+      ],
+      "type": "DUAL_NB"
+    },
+    "HaO3S2": {
+      "lines": [
+        {
+          "fwhm_nm": 15.0,
+          "name": "SII",
+          "wavelength_nm": 672.4
+        },
+        {
+          "fwhm_nm": 25.0,
+          "name": "Ha",
+          "wavelength_nm": 656.3
+        },
+        {
+          "fwhm_nm": 15.0,
+          "name": "OIII",
+          "wavelength_nm": 500.7
+        }
+      ],
+      "type": "DUAL_NB"
+    },
+    "Hutech-LPS-V4": {
+      "lines": [],
+      "type": "BROADBAND"
+    },
+    "IDAS-LPS-D1": {
+      "lines": [],
+      "type": "BROADBAND"
+    },
+    "IDAS-LPS-D2": {
+      "lines": [],
+      "type": "BROADBAND"
+    },
+    "IDAS-LPS-D3": {
+      "lines": [],
+      "type": "BROADBAND"
+    },
+    "IDAS-NBZ": {
+      "lines": [
+        {
+          "fwhm_nm": 10.0,
+          "name": "Ha",
+          "wavelength_nm": 656.3
+        },
+        {
+          "fwhm_nm": 10.0,
+          "name": "OIII",
+          "wavelength_nm": 500.7
+        }
+      ],
+      "type": "DUAL_NB"
+    },
+    "L-Ultimate": {
+      "lines": [
+        {
+          "fwhm_nm": 3.0,
+          "name": "Ha",
+          "wavelength_nm": 656.3
+        },
+        {
+          "fwhm_nm": 3.0,
+          "name": "OIII",
+          "wavelength_nm": 500.7
+        }
+      ],
+      "type": "DUAL_NB"
+    },
+    "L-eNhance": {
+      "lines": [
+        {
+          "fwhm_nm": 24.0,
+          "name": "Ha",
+          "wavelength_nm": 656.3
+        },
+        {
+          "fwhm_nm": 10.0,
+          "name": "OIII",
+          "wavelength_nm": 500.7
+        }
+      ],
+      "type": "DUAL_NB"
+    },
+    "L-eXtreme": {
+      "lines": [
+        {
+          "fwhm_nm": 7.0,
+          "name": "Ha",
+          "wavelength_nm": 656.3
+        },
+        {
+          "fwhm_nm": 7.0,
+          "name": "OIII",
+          "wavelength_nm": 500.7
+        }
+      ],
+      "type": "DUAL_NB"
+    },
+    "OIII": {
+      "lines": [
+        {
+          "fwhm_nm": 5.0,
+          "name": "OIII",
+          "wavelength_nm": 500.7
+        }
+      ],
+      "type": "NARROWBAND"
+    },
+    "Optolong-Ha-3nm": {
+      "lines": [
+        {
+          "fwhm_nm": 3.0,
+          "name": "Ha",
+          "wavelength_nm": 656.3
+        }
+      ],
+      "type": "NARROWBAND"
+    },
+    "Optolong-Ha-7nm": {
+      "lines": [
+        {
+          "fwhm_nm": 7.0,
+          "name": "Ha",
+          "wavelength_nm": 656.3
+        }
+      ],
+      "type": "NARROWBAND"
+    },
+    "Optolong-L-Quad-Enhance": {
+      "lines": [
+        {
+          "fwhm_nm": 15.0,
+          "name": "Hb",
+          "wavelength_nm": 486.1
+        },
+        {
+          "fwhm_nm": 15.0,
+          "name": "OIII",
+          "wavelength_nm": 500.7
+        },
+        {
+          "fwhm_nm": 25.0,
+          "name": "Ha",
+          "wavelength_nm": 656.3
+        },
+        {
+          "fwhm_nm": 15.0,
+          "name": "SII",
+          "wavelength_nm": 672.4
+        }
+      ],
+      "type": "DUAL_NB"
+    },
+    "Optolong-L-Synergy-7nm": {
+      "lines": [
+        {
+          "fwhm_nm": 7.0,
+          "name": "SII",
+          "wavelength_nm": 672.4
+        },
+        {
+          "fwhm_nm": 7.0,
+          "name": "OIII",
+          "wavelength_nm": 500.7
+        }
+      ],
+      "type": "DUAL_NB"
+    },
+    "Optolong-LRGB-B": {
+      "lines": [],
+      "type": "BROADBAND"
+    },
+    "Optolong-LRGB-G": {
+      "lines": [],
+      "type": "BROADBAND"
+    },
+    "Optolong-LRGB-L": {
+      "lines": [],
+      "type": "BROADBAND"
+    },
+    "Optolong-LRGB-R": {
+      "lines": [],
+      "type": "BROADBAND"
+    },
+    "Optolong-LUltimate-3nm": {
+      "lines": [
+        {
+          "fwhm_nm": 3.0,
+          "name": "Ha",
+          "wavelength_nm": 656.3
+        },
+        {
+          "fwhm_nm": 3.0,
+          "name": "OIII",
+          "wavelength_nm": 500.7
+        }
+      ],
+      "type": "DUAL_NB"
+    },
+    "Optolong-LeNhance": {
+      "lines": [
+        {
+          "fwhm_nm": 24.0,
+          "name": "Ha",
+          "wavelength_nm": 656.3
+        },
+        {
+          "fwhm_nm": 10.0,
+          "name": "OIII",
+          "wavelength_nm": 500.7
+        },
+        {
+          "fwhm_nm": 10.0,
+          "name": "Hb",
+          "wavelength_nm": 486.1
+        }
+      ],
+      "type": "DUAL_NB"
+    },
+    "Optolong-LeXtreme-7nm": {
+      "lines": [
+        {
+          "fwhm_nm": 7.0,
+          "name": "Ha",
+          "wavelength_nm": 656.3
+        },
+        {
+          "fwhm_nm": 7.0,
+          "name": "OIII",
+          "wavelength_nm": 500.7
+        }
+      ],
+      "type": "DUAL_NB"
+    },
+    "Optolong-LeXtreme-F2": {
+      "lines": [
+        {
+          "fwhm_nm": 7.0,
+          "name": "Ha",
+          "wavelength_nm": 656.3
+        },
+        {
+          "fwhm_nm": 7.0,
+          "name": "OIII",
+          "wavelength_nm": 500.7
+        }
+      ],
+      "type": "DUAL_NB"
+    },
+    "Optolong-Lpro": {
+      "lines": [],
+      "type": "BROADBAND"
+    },
+    "Optolong-OIII-3nm": {
+      "lines": [
+        {
+          "fwhm_nm": 3.0,
+          "name": "OIII",
+          "wavelength_nm": 500.7
+        }
+      ],
+      "type": "NARROWBAND"
+    },
+    "Optolong-OIII-6.5nm": {
+      "lines": [
+        {
+          "fwhm_nm": 6.5,
+          "name": "OIII",
+          "wavelength_nm": 500.7
+        }
+      ],
+      "type": "NARROWBAND"
+    },
+    "Optolong-SII-3nm": {
+      "lines": [
+        {
+          "fwhm_nm": 3.0,
+          "name": "SII",
+          "wavelength_nm": 672.4
+        }
+      ],
+      "type": "NARROWBAND"
+    },
+    "Optolong-SII-6.5nm": {
+      "lines": [
+        {
+          "fwhm_nm": 6.5,
+          "name": "SII",
+          "wavelength_nm": 672.4
+        }
+      ],
+      "type": "NARROWBAND"
+    },
+    "Optolong-UV-IR-Cut": {
+      "lines": [],
+      "type": "BROADBAND"
+    },
+    "S2O3": {
+      "lines": [
+        {
+          "fwhm_nm": 7.0,
+          "name": "SII",
+          "wavelength_nm": 672.4
+        },
+        {
+          "fwhm_nm": 6.75,
+          "name": "OIII",
+          "wavelength_nm": 500.7
+        }
+      ],
+      "type": "DUAL_NB"
+    },
+    "SII": {
+      "lines": [
+        {
+          "fwhm_nm": 5.0,
+          "name": "SII",
+          "wavelength_nm": 672.4
+        }
+      ],
+      "type": "NARROWBAND"
+    },
+    "STC-Astro-Duo-NB": {
+      "lines": [
+        {
+          "fwhm_nm": 10.0,
+          "name": "Ha",
+          "wavelength_nm": 656.3
+        },
+        {
+          "fwhm_nm": 10.0,
+          "name": "OIII",
+          "wavelength_nm": 500.7
+        }
+      ],
+      "type": "DUAL_NB"
+    },
+    "STC-Astro-Multispectra": {
+      "lines": [],
+      "type": "BROADBAND"
+    },
+    "SVBony-SV220-3nm": {
+      "lines": [
+        {
+          "fwhm_nm": 3.0,
+          "name": "Ha",
+          "wavelength_nm": 656.3
+        },
+        {
+          "fwhm_nm": 3.0,
+          "name": "OIII",
+          "wavelength_nm": 500.7
+        }
+      ],
+      "type": "DUAL_NB"
+    },
+    "SVBony-SV220-7nm": {
+      "lines": [
+        {
+          "fwhm_nm": 7.0,
+          "name": "Ha",
+          "wavelength_nm": 656.3
+        },
+        {
+          "fwhm_nm": 7.0,
+          "name": "OIII",
+          "wavelength_nm": 500.7
+        }
+      ],
+      "type": "DUAL_NB"
+    },
+    "SVBony-SV220-7nm-SII-OIII": {
+      "lines": [
+        {
+          "fwhm_nm": 7.0,
+          "name": "SII",
+          "wavelength_nm": 672.4
+        },
+        {
+          "fwhm_nm": 7.0,
+          "name": "OIII",
+          "wavelength_nm": 500.7
+        }
+      ],
+      "type": "DUAL_NB"
+    },
+    "ZWO-Ha-7nm": {
+      "lines": [
+        {
+          "fwhm_nm": 7.0,
+          "name": "Ha",
+          "wavelength_nm": 656.3
+        }
+      ],
+      "type": "NARROWBAND"
+    },
+    "ZWO-LRGB-B": {
+      "lines": [],
+      "type": "BROADBAND"
+    },
+    "ZWO-LRGB-G": {
+      "lines": [],
+      "type": "BROADBAND"
+    },
+    "ZWO-LRGB-L": {
+      "lines": [],
+      "type": "BROADBAND"
+    },
+    "ZWO-LRGB-R": {
+      "lines": [],
+      "type": "BROADBAND"
+    },
+    "ZWO-OIII-7nm": {
+      "lines": [
+        {
+          "fwhm_nm": 7.0,
+          "name": "OIII",
+          "wavelength_nm": 500.7
+        }
+      ],
+      "type": "NARROWBAND"
+    },
+    "ZWO-SII-7nm": {
+      "lines": [
+        {
+          "fwhm_nm": 7.0,
+          "name": "SII",
+          "wavelength_nm": 672.4
+        }
+      ],
+      "type": "NARROWBAND"
+    }
+  },
+  "generated_from": "research/qe_database_research.json via tools/import_qe_research.py",
+  "schema_version": 1
+}
