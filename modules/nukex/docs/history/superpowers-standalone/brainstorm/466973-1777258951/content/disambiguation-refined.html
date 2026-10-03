@@ -1,0 +1,72 @@
+<h2>Refining Disambiguation — Minimal-Prompt Defaults</h2>
+<p class="subtitle">Your guidance simplifies the no-FILTER case. One residual case (unknown FILTER value) needs an explicit call.</p>
+
+<div class="section">
+  <div class="mockup">
+    <div class="mockup-header">Confirmed defaults from your input</div>
+    <div class="mockup-body" style="background:#0a0a0a;color:#ddd;padding:18px;font-family:monospace;font-size:12px;line-height:1.7">
+<pre style="margin:0">
+<span style="color:#5fc55f">No FILTER keyword in FITS + Bayer pattern detected (color OSC)</span>
+   ⤳ Treat as <b>BROADBAND_OSC → OSC-as-LRGB pipeline</b>. No prompt.
+   ⤳ Auto-synthesise L from R+G+B for the LRGB combine path.
+
+<span style="color:#5fc55f">No FILTER keyword + mono (no Bayer)</span>
+   ⤳ Treat as <b>generic mono</b> — assigned temp filter name like <code>"L_unnamed"</code>.
+   ⤳ Single-channel stack + stretch + emit. No prompt.
+</pre>
+    </div>
+  </div>
+</div>
+
+<div class="section">
+  <div class="mockup">
+    <div class="mockup-header">Open question — FILTER keyword PRESENT but value unrecognised</div>
+    <div class="mockup-body" style="background:#0a0a0a;color:#ddd;padding:18px;font-family:monospace;font-size:12px;line-height:1.7">
+<pre style="margin:0">
+Example: <code>FILTER = "ALP-T 5nm"</code> — Antlia's dual-NB filter, but our shipped
+QE DB doesn't have it (or user mistypes the name "L-Quad" as "L_Quad" and the
+fuzzy alias table doesn't catch it).
+
+Two reasonable choices:
+  - silent default by sensor type (loud Process Console warning) — matches your
+    minimal-prompt direction, but if it WAS a dual-NB filter we silently
+    fall back to plain OSC and recreate the green-M17 problem
+  - <b>loud failure</b> at batch start — refuses to process, points the user at the
+    override JSON; consistent with the "no silent fallbacks" rule
+
+Pick what you want for this case:
+</pre>
+    </div>
+  </div>
+</div>
+
+<div class="options">
+  <div class="option" data-choice="a" onclick="toggleSelect(this)">
+    <div class="letter">A</div>
+    <div class="content">
+      <h3>Loud-fail at batch start, point at override JSON</h3>
+      <p>Process Console: <code>"FILTER='ALP-T 5nm' on 30 frames not in QE DB. Add it to ~/.nukex4/qe_overrides.json (see docs) and retry, or remove the FILTER keyword to default to plain OSC."</code></p>
+      <p><b>Pros:</b> consistent with no-silent-fallbacks; can't accidentally re-create the green-M17 problem with a real dual-NB filter; user gets a precise instruction.</p>
+      <p><b>Cons:</b> first-run pain if the user's filter isn't in our DB. They have to edit JSON to proceed.</p>
+    </div>
+  </div>
+  <div class="option" data-choice="b" onclick="toggleSelect(this)">
+    <div class="letter">B</div>
+    <div class="content">
+      <h3>Silent default by sensor + loud Process Console warning</h3>
+      <p>Default Bayer→plain OSC, mono→generic L. Console: <code>"WARNING: 30 frames have FILTER='ALP-T 5nm' which is not in QE DB. Treating as plain OSC. If this is a narrowband filter, add it to qe_overrides.json and re-run."</code></p>
+      <p><b>Pros:</b> first-run never blocked; matches the minimal-prompt direction.</p>
+      <p><b>Cons:</b> if it WAS a dual-NB filter the user forgot to register, we silently produce the bad output. Console warning is the only signal.</p>
+    </div>
+  </div>
+  <div class="option" data-choice="c" onclick="toggleSelect(this)">
+    <div class="letter">C</div>
+    <div class="content">
+      <h3>Tiered — loud-fail for OSC unknown filter, silent default for mono unknown</h3>
+      <p>Mono unknown → temp name + proceed (mono filter mismatch is low-risk; you only get one channel either way).<br>
+        OSC unknown → fail loud (because the dual-NB-vs-broadband distinction is the high-impact case).</p>
+      <p><b>Pros:</b> matches minimal-prompt for the low-risk case while protecting the high-risk one.</p>
+      <p><b>Cons:</b> two policies to remember; user might find the asymmetry surprising.</p>
+    </div>
+  </div>
+</div>

@@ -1,0 +1,1066 @@
+# Review package: 094133f..9c5e19c
+
+## Commits
+9c5e19c optimize: bound the guardrail retry at max_attempts (3x top_k)
+eb2ac3e Spec: a guardrail trip must not cost search breadth, but bound the retry
+f1c8e41 optimize: the loop, and the fail-safe that falls out of the valley
+
+## Files changed
+ .../specs/2026-07-27-phase2-optimizer-design.md    |  34 +-
+ src/autocontrast/optimize/beam.py                  |  26 +
+ src/autocontrast/optimize/loop.py                  | 351 +++++++++++++
+ tests/test_optimize_loop.py                        | 575 +++++++++++++++++++++
+ 4 files changed, 983 insertions(+), 3 deletions(-)
+
+## Diff
+diff --git a/docs/superpowers/specs/2026-07-27-phase2-optimizer-design.md b/docs/superpowers/specs/2026-07-27-phase2-optimizer-design.md
+index 2a1c66a..9fa9f6d 100644
+--- a/docs/superpowers/specs/2026-07-27-phase2-optimizer-design.md
++++ b/docs/superpowers/specs/2026-07-27-phase2-optimizer-design.md
+@@ -154,26 +154,54 @@ This works because the fingerprint distance is a **valley** — D=0 at the refer
+ `reference_is_local_minimum` harness in `eval/degrade.py`). An already-well-processed image starts
+ near the valley floor, every available action moves it up the wall, every candidate scores worse
+ than baseline, and the loop declines.
+ 
+ "Fails safe" is therefore not a guard bolted on top. It is what a valley-shaped objective does on
+ its own once best-so-far is seeded with the input. A monotone "more contrast is better" objective
+ could not produce this behavior at any amount of guardrailing.
+ 
+ ### 3.3 Beam
+ 
+-Width 3. Each iteration expands every live branch by the top-k proposed actions (k=3), yielding at
+-most 9 candidates, pruned back to the 3 best **distinct** ones. Distinctness is by recipe, so two
+-branches cannot converge onto the same action sequence and waste a beam slot.
++Width 3. Each iteration expands every live branch toward `top_k` (=3) **surviving** candidates,
++pruned back to the 3 best **distinct** ones. Distinctness is by recipe, so two branches cannot
++converge onto the same action sequence and waste a beam slot.
+ 
+ Checkpoint on every improvement to best-so-far (§6.1).
+ 
++**A guardrail trip must not also cost search breadth — but the retry is bounded.**
++Added 2026-07-27, on measurement. §6.1's pseudocode reads `for a in top_k(actions)` and discards
++violators, i.e. `top_k` *attempts*. That makes a guardrail trip consume one of the branch's three
++slots, so a branch tripping two of three explores a single candidate that iteration. The loop would
++then search *least* thoroughly exactly where the image is most fragile — and §7 is explicit that a
++violation discards the candidate and is **never** a score term. A discard that also costs exploration
++is a score effect wearing a different hat.
++
++Measured on a real degraded render, 4 of 10 proposed actions tripped a guardrail, so this is the
++common case rather than an edge case.
++
++The unbounded fix — keep proposing until `top_k` survive — is unaffordable. At the 1600px search
++proxy the action menu holds 50 entries and each candidate costs ~2.5s (fingerprint extraction 1.5s
++dominates, the image operation itself is 0.2s), giving a worst case of 150 candidates per iteration
++and ~127 minutes for 20 iterations against a 15-minute budget.
++
++Therefore: **propose until `top_k` live candidates OR `max_attempts` attempts, whichever comes
++first.** Default `max_attempts = 3 × top_k`.
++
++| Policy | Candidates/iteration | 20 iterations |
++|---|---|---|
++| `top_k` attempts (original) | 9 | ~7.6 min |
++| **bounded retry (adopted)** | **≤27** | **~23 min worst case** |
++| unbounded until `top_k` live | ≤150 | ~127 min |
++
++The cap binds only when trips are frequent; typical runs cost far less than the worst case.
++`max_attempts` is a tunable under §3.7's calibration discipline.
++
+ ### 3.4 Convergence
+ 
+ The OR of §6.3. Condition 2 (VLM director) is absent in Phase 2.
+ 
+ | # | Condition | Terminates with |
+ |---|---|---|
+ | 1 | ΔD over the last *k*=3 iterations < `epsilon` | best-so-far |
+ | 3 | every branch dead from guardrail trips | best-so-far (may be the input) |
+ | 4 | iteration cap reached (default 20) | best-so-far |
+ 
+diff --git a/src/autocontrast/optimize/beam.py b/src/autocontrast/optimize/beam.py
+index e82f537..f05b9e4 100644
+--- a/src/autocontrast/optimize/beam.py
++++ b/src/autocontrast/optimize/beam.py
+@@ -14,20 +14,46 @@ from .recipe import Recipe
+ 
+ @dataclass(frozen=True)
+ class BeamConfig:
+     width: int = 3
+     top_k: int = 3
+     iteration_cap: int = 20
+     convergence_window: int = 3
+     epsilon: float = 1e-3
+     epsilon_improve: float = 1e-3
+ 
++    # How many actions a branch may ATTEMPT while reaching for ``top_k`` live
++    # candidates (§3.3, added 2026-07-27 on measurement). `top_k` counts
++    # candidates that SURVIVED, not candidates tried: a guardrail trip discards
++    # the candidate and must not also cost the branch a slot, or the loop
++    # searches least thoroughly exactly where the image is most fragile, and the
++    # §7 filter becomes a score effect wearing a different hat. Measured on a
++    # real degraded render, 4 of 10 proposed actions tripped a guardrail, so
++    # trips are the common case.
++    #
++    # But the retry has to be bounded. At the 1600px search proxy the menu holds
++    # 50 actions at ~2.5s each (fingerprint extraction 1.5s dominates; the image
++    # operation itself is 0.2s), so retrying until top_k survive costs ~150
++    # candidates/iteration and ~127 min over 20 iterations against a 15-minute
++    # budget -- and an unpredictable cost makes a budget meaningless. At 3x it is
++    # <=27 candidates/iteration, ~23 min worst case, and the cap binds only when
++    # trips are frequent.
++    #
++    # ``None`` means "derive 3 x top_k", so the relationship survives a change to
++    # top_k instead of silently decoupling from it. A tunable under §3.7's
++    # calibration discipline. Always an int after construction.
++    max_attempts: int | None = None
++
++    def __post_init__(self) -> None:
++        if self.max_attempts is None:
++            object.__setattr__(self, "max_attempts", 3 * self.top_k)
++
+ 
+ @dataclass(frozen=True)
+ class Branch:
+     recipe: Recipe
+     image_path: str
+     distance: float
+     alive: bool = True
+ 
+ 
+ def prune(candidates: list[Branch], width: int) -> list[Branch]:
+diff --git a/src/autocontrast/optimize/loop.py b/src/autocontrast/optimize/loop.py
+new file mode 100644
+index 0000000..6c793ad
+--- /dev/null
++++ b/src/autocontrast/optimize/loop.py
+@@ -0,0 +1,351 @@
++"""The optimization loop (§6).
++
++The fail-safe is structural, not a special case. Best-so-far is seeded with the
++INPUT and its own baseline distance; a candidate replaces it only on a strict
++improvement beyond ``epsilon_improve``. Because the fingerprint distance is a
++VALLEY -- D=0 at the reference and rising in BOTH directions, including the
++over-processed one -- an already-good image starts near the floor, every move
++climbs, and the loop declines on its own. A monotone "more contrast is better"
++objective could not do that at any amount of guardrailing.
++
++"Untouched" is literal. On a decline the loop hands back ``proxy_path`` itself,
++not a recombination of whatever the search happened to produce along the way.
++"""
++
++from __future__ import annotations
++
++from pathlib import Path
++
++import numpy as np
++
++from autocontrast.fingerprint.distance import fingerprint_distance
++from autocontrast.fingerprint.extract import FingerprintData, extract
++from autocontrast.fingerprint.palette import palette_chroma_compatible
++
++from .actions import Action, available_actions
++from .beam import BeamConfig, Branch, prune
++from .executor import Executor
++from .guardrails import GuardrailLimits, evaluate_guardrails
++from .propose import propose_actions
++from .recipe import Recipe
++from .session import Session
++
++
++def _measure(rgb, session: Session) -> FingerprintData:
++    return extract(
++        rgb, pixel_scale_arcsec=session.pixel_scale_arcsec,
++        n_scales=session.n_scales, psf_fwhm_arcsec=session.psf_fwhm_arcsec,
++        palette_class=session.palette_class,
++    )
++
++
++class _Stub:
++    """Carries just the measurement metadata `_measure` needs before a Session exists."""
++
++    def __init__(self, pixel_scale_arcsec, psf_fwhm_arcsec, palette_class, n_scales):
++        self.pixel_scale_arcsec = pixel_scale_arcsec
++        self.psf_fwhm_arcsec = psf_fwhm_arcsec
++        self.palette_class = palette_class
++        self.n_scales = n_scales
++
++
++def begin(
++    *, source_path: str, proxy_path: str, reference_id: str,
++    reference_fp: FingerprintData, work_dir: str, pixel_scale_arcsec: float,
++    psf_fwhm_arcsec: float, palette_class: str, n_scales: int, session_id: str,
++    load, config: BeamConfig | None = None,
++) -> Session:
++    """Open a session, measuring the input as the baseline AND as best-so-far."""
++    config = config or BeamConfig()
++    proxy = load(proxy_path)
++    baseline_fp = _measure(proxy, _Stub(pixel_scale_arcsec, psf_fwhm_arcsec,
++                                        palette_class, n_scales))
++    baseline = fingerprint_distance(reference_fp, baseline_fp)
++
++    root = Branch(recipe=Recipe.empty(), image_path=proxy_path, distance=baseline)
++    return Session(
++        session_id=session_id, work_dir=work_dir, source_path=source_path,
++        proxy_path=proxy_path, reference_id=reference_id,
++        reference_fp=reference_fp.to_dict(), pixel_scale_arcsec=pixel_scale_arcsec,
++        psf_fwhm_arcsec=psf_fwhm_arcsec, palette_class=palette_class,
++        n_scales=n_scales, config=config, iteration=0, branches=[root], best=root,
++        baseline_distance=baseline, distance_history=[baseline], converged=False,
++        convergence_reason="", guardrail_log=[],
++    )
++
++
++def resume(session_file: str | Path, *, proxy_path: str) -> Session:
++    """Reopen a persisted session, refusing to resume against a different image.
++
++    ``Session.load`` deliberately does not check this: the session record carries
++    no image dimensions, so it has nothing to verify a proxy against, and the
++    check belongs where the information lives. This is that place -- the caller
++    here is the one holding the path of the image it means to keep optimizing.
++
++    The comparison is EXACT string equality, not a resolved or normalized one.
++    Two reasons. First, path identity is the only evidence available that the
++    resumed image is the one the session's ``layer`` values were computed for;
++    normalizing would trade that evidence for a guess about which distinct
++    strings ought to denote the same file. Second, ``proxy_path`` need not be a
++    filesystem path at all -- the executor seam is free to address images through
++    an in-memory or PixInsight-side store -- so there is not always anything to
++    resolve.
++
++    A session silently resumed against a different image would carry ``layer``
++    values, band assignments and a baseline distance computed for the wrong
++    geometry, and would go on to report an improvement it never measured.
++    """
++    session = Session.load(session_file)
++    if proxy_path != session.proxy_path:
++        raise ValueError(
++            f"refusing to resume session {session.session_id!r} against a "
++            f"different image: the session was built for proxy_path "
++            f"{session.proxy_path!r} but resume was called with {proxy_path!r}. "
++            "The session records no image dimensions, so its layer assignments "
++            "and baseline distance cannot be re-verified against another image."
++        )
++    return session
++
++
++def _ranked_menu(
++    reference_fp: FingerprintData, parent_fp: FingerprintData, *,
++    applied_kinds: frozenset[str], n_scales: int,
++) -> list[Action]:
++    """Every legal action for this state, in the proposer's own priority order.
++
++    ``propose_actions`` returns at most ``top_k`` entries, so obtaining the WHOLE
++    ranking means handing it a bound that cannot truncate the list. The menu is
++    that bound: ``available_actions`` is precisely what the proposer groups and
++    ranks, and a set of groups can never outnumber its members. Rebuilding the
++    menu here duplicates no ranking logic -- it only counts what is on offer --
++    and it tracks ``actions.py`` automatically if a kind is ever added.
++    """
++    compatible = palette_chroma_compatible(
++        reference_fp.palette_class, parent_fp.palette_class
++    )
++    menu = available_actions(
++        pixel_scale_arcsec=parent_fp.pixel_scale_arcsec,
++        psf_fwhm_arcsec=max(reference_fp.psf_fwhm_arcsec, parent_fp.psf_fwhm_arcsec),
++        n_scales=n_scales,
++        palette_compatible=compatible,
++        applied_kinds=applied_kinds,
++    )
++    return propose_actions(
++        reference_fp, parent_fp, applied_kinds=applied_kinds,
++        n_scales=n_scales, top_k=len(menu),
++    )
++
++
++def advance(session: Session, executor: Executor, *, load, save,
++            limits: GuardrailLimits = GuardrailLimits()) -> Session:
++    """One iteration: expand every live branch, guardrail, score, prune.
++
++    A branch reaches for ``config.top_k`` LIVE candidates, walking the ranked
++    menu until it has them or until ``config.max_attempts`` actions have been
++    tried -- whichever comes first (§3.3). It is deliberately not "attempt the
++    first top_k actions and keep whatever survives": a discarded candidate would
++    then cost search breadth as well as itself, and a guardrail that narrows the
++    search is a score term wearing a different hat (§7 forbids exactly that).
++    Measured on the flattened fixture: the first three ranked actions are two
++    guardrail trips and one move that climbs, while the action that actually
++    closes the gap -- ``local_contrast@2"`` -- ranks fifth. Stopping at three
++    proposals means never reaching it, and the loop declines on an image it could
++    plainly have fixed.
++
++    Nor is it "retry until top_k survive, however long that takes": at the 1600px
++    proxy that is ~150 candidates and ~10 minutes per iteration, and a cost that
++    varies with how often guardrails happen to trip is a cost nobody can budget
++    for. When the cap binds the branch simply contributes fewer than ``top_k``
++    candidates -- legitimate, since the beam already tolerates shrinking and an
++    empty beam is itself a convergence condition -- and the event is LOGGED. A
++    branch that spent every attempt without filling its slots means the
++    guardrails are rejecting nearly everything on that image, which is worth
++    reporting; truncating silently would read as "explored fully" when it was
++    not (§12).
++    """
++    if session.converged:
++        return session
++
++    reference_fp = FingerprintData.from_dict(session.reference_fp)
++    source = load(session.proxy_path)
++    candidates: list[Branch] = []
++    iteration = session.iteration + 1
++
++    for branch in session.branches:
++        parent = load(branch.image_path)
++        parent_fp = _measure(parent, session)
++        actions = _ranked_menu(
++            reference_fp, parent_fp,
++            applied_kinds=branch.recipe.applied_kinds, n_scales=session.n_scales,
++        )
++
++        kept = 0
++        attempts = 0
++        for action in actions:
++            if kept >= session.config.top_k or attempts >= session.config.max_attempts:
++                break
++            # Counted here, before the executor runs: an attempt is an action
++            # this branch spent, whatever became of it. Every path below costs
++            # at least an executor call, and the bound exists to cap work.
++            attempts += 1
++
++            try:
++                produced = executor.apply(
++                    parent, action, pixel_scale_arcsec=session.pixel_scale_arcsec
++                )
++            except Exception as exc:  # a dead candidate, not a dead run (§12)
++                session.guardrail_log.append({
++                    "iteration": iteration, "action": action.key,
++                    "failed": ["executor"], "reason": f"{type(exc).__name__}: {exc}",
++                })
++                continue
++
++            if np.array_equal(produced, parent):
++                # A candidate identical to its parent has, by definition, learned
++                # nothing: same pixels, same fingerprint, same distance -- but a
++                # distinct recipe key, so `prune`'s deduplication cannot see it
++                # for what it is. Left in, it ties with its parent's score, which
++                # on an already-good image is the BEST score available, and takes
++                # a beam slot having explored none of the space.
++                #
++                # The test is the PROPERTY (pixels unchanged), never the action's
++                # name. `star_split` is the no-op that exists today, but only
++                # because the numpy executor has no starless layer to route; the
++                # PixInsight executor's star_split does change the image and must
++                # survive this check. Matching on the string would hard-code one
++                # executor's limitation into the loop.
++                session.guardrail_log.append({
++                    "iteration": iteration, "action": action.key,
++                    "failed": ["no_op"],
++                    "reason": (
++                        "candidate was pixel-identical to its parent; it explored "
++                        "nothing and must not hold a beam slot"
++                    ),
++                })
++                continue
++
++            verdicts = evaluate_guardrails(produced, parent, source, limits)
++
++            # A guardrail may PASS and still report that it could not assess
++            # anything -- star_integrity does exactly that on a starless
++            # baseline. That reason has to reach the caller, or the run cannot
++            # report "this guardrail did not actually protect anything here"
++            # (§12: degraded paths surface). Recorded under `noted`, never
++            # `failed`: it is an observation, not a discard, and the two must
++            # stay distinguishable in the log. Recorded whatever the candidate's
++            # fate, because "star integrity was never evaluated" is equally true
++            # of a candidate some OTHER guardrail went on to reject.
++            noted = [v for v in verdicts if v.ok and v.reason]
++            if noted:
++                session.guardrail_log.append({
++                    "iteration": iteration, "action": action.key,
++                    "noted": [v.name for v in noted],
++                    "reason": "; ".join(v.reason for v in noted),
++                })
++
++            failed = [v for v in verdicts if not v.ok]
++            if failed:
++                # A violation DISCARDS the candidate; it is never a score term (§7).
++                session.guardrail_log.append({
++                    "iteration": iteration, "action": action.key,
++                    "failed": [v.name for v in failed],
++                    "reason": "; ".join(v.reason for v in failed),
++                })
++                continue
++
++            recipe = branch.recipe.extend(action)
++            path = f"{session.work_dir}/cand-{iteration}-{len(candidates)}.png"
++            save(path, produced)
++            distance = fingerprint_distance(reference_fp, _measure(produced, session))
++            candidates.append(Branch(recipe=recipe, image_path=path, distance=distance))
++            kept += 1
++
++        if kept < session.config.top_k and attempts >= session.config.max_attempts:
++            # The attempt cap bound before the branch filled its slots. Surfaced,
++            # not silent: this says the guardrails rejected nearly everything
++            # tried on this image, which is a different statement from "the menu
++            # was explored and this is all there was" (§12). `noted`, not
++            # `failed` -- nothing was discarded here, the branch just stopped
++            # looking. Keyed by `branch` rather than `action` because it is a
++            # property of the branch's whole expansion, not of one candidate.
++            session.guardrail_log.append({
++                "iteration": iteration,
++                "branch": branch.recipe.key or "(root)",
++                "noted": ["attempt_cap"],
++                "reason": (
++                    f"branch stopped after {attempts} attempts (cap "
++                    f"{session.config.max_attempts}) holding only {kept} of "
++                    f"{session.config.top_k} live candidates; guardrails or the "
++                    "executor rejected nearly everything tried on this image"
++                ),
++            })
++
++    session.iteration = iteration
++    survivors = prune(candidates, session.config.width)
++
++    if not survivors:
++        # §6.3 condition 3: guardrails exhausted the branch set. Reported
++        # honestly -- and `best` is untouched, so this terminates in a decline
++        # rather than in a result nobody vetted.
++        session.branches = []
++        session.converged = True
++        session.convergence_reason = (
++            "every branch was discarded by guardrails or executor failure"
++        )
++        return session
++
++    session.branches = survivors
++    best_candidate = survivors[0]
++    if best_candidate.distance < session.best.distance - session.config.epsilon_improve:
++        session.best = best_candidate  # checkpoint (§6.1)
++
++    session.distance_history.append(session.best.distance)
++    _check_convergence(session)
++    return session
++
++
++def _check_convergence(session: Session) -> None:
++    """§6.3, OR of the conditions. Condition 2 (VLM) is absent in Phase 2."""
++    cfg = session.config
++    if session.iteration >= cfg.iteration_cap:
++        session.converged = True
++        session.convergence_reason = f"iteration cap ({cfg.iteration_cap}) reached"
++        return
++
++    window = session.distance_history[-(cfg.convergence_window + 1):]
++    if len(window) > cfg.convergence_window:
++        if abs(window[0] - window[-1]) < cfg.epsilon:
++            session.converged = True
++            session.convergence_reason = (
++                f"deltaD below {cfg.epsilon} across the last "
++                f"{cfg.convergence_window} iterations"
++            )
++
++
++def run_to_convergence(session: Session, executor: Executor, *, load, save,
++                       limits: GuardrailLimits = GuardrailLimits()) -> Session:
++    while not session.converged:
++        session = advance(session, executor, load=load, save=save, limits=limits)
++    return session
++
++
++def outcome(session: Session) -> dict:
++    """The reportable result. ``improved`` False means we DECLINED and the user
++    gets their original file back untouched (spec §3.2)."""
++    improved = session.best.distance < (
++        session.baseline_distance - session.config.epsilon_improve
++    )
++    return {
++        "improved": improved,
++        "baseline_distance": session.baseline_distance,
++        "distance": session.best.distance if improved else session.baseline_distance,
++        "result_path": session.best.image_path if improved else session.proxy_path,
++        "recipe": (session.best.recipe if improved else Recipe.empty()).to_dict(),
++        "pixinsight_steps": (
++            session.best.recipe if improved else Recipe.empty()
++        ).to_pixinsight_steps(),
++        "iterations": session.iteration,
++        "convergence_reason": session.convergence_reason,
++        "reference_id": session.reference_id,
++        "guardrail_log": session.guardrail_log,
++    }
+diff --git a/tests/test_optimize_loop.py b/tests/test_optimize_loop.py
+new file mode 100644
+index 0000000..3858e88
+--- /dev/null
++++ b/tests/test_optimize_loop.py
+@@ -0,0 +1,575 @@
++"""The loop (§6) and the fail-safe.
++
++The fail-safe is structural: best-so-far is seeded with the INPUT, so an image
++already at the valley floor sees every candidate score worse and the loop
++declines by itself. These tests assert BOTH sides of that -- a flattened image is
++measurably improved, and an already-good one is returned byte-identical.
++"""
++
++from __future__ import annotations
++
++import numpy as np
++import pytest
++
++from autocontrast.eval.degrade import flatten
++from autocontrast.fingerprint.extract import extract
++from autocontrast.optimize.beam import BeamConfig
++from autocontrast.optimize.guardrails import GuardrailLimits, detect_stars
++from autocontrast.optimize.executors.numpy_exec import NumpyExecutor
++from autocontrast.optimize.loop import advance, begin, outcome, resume, run_to_convergence
++from autocontrast.optimize.session import Session, session_path
++
++SCALE, PSF, NSCALES = 1.0, 2.0, 7
++
++# Every convergence reason the loop is allowed to report (§6.3). A run that
++# terminates for a reason outside this set has invented one.
++_RECOGNIZED_REASONS = (
++    "iteration cap",
++    "deltaD below",
++    "every branch was discarded",
++)
++
++
++def _reference_image(h=160, w=160, seed=11):
++    """A deep-looking render: structure across several scales plus color."""
++    rng = np.random.default_rng(seed)
++    field = rng.normal(0, 1, (h, w))
++    layered = sum(
++        np.roll(field, k, axis=0) / (k + 1) for k in (1, 2, 4, 8, 16)
++    )
++    # np.ptp(), not layered.ptp(): the ndarray method was removed in NumPy 2.0.
++    layered = (layered - layered.min()) / (np.ptp(layered) + 1e-12)
++    return np.clip(np.stack([layered, layered * 0.85, layered * 1.1], axis=-1), 0.02, 0.98)
++
++
++def _starry_image(h=160, w=160, seed=11, n_stars=40):
++    """``_reference_image`` with point sources injected.
++
++    The roll-sum field on its own is starless -- nothing in it survives the
++    5-sigma threshold as a multi-pixel blob -- which is exactly why it serves as
++    the "star integrity could not be assessed" fixture. This is its counterpart:
++    the same field with real stars in it, so the absence of a `noted` entry can
++    be shown to mean something. Both fixtures assert their star counts rather
++    than trusting these docstrings.
++    """
++    base = _reference_image(h, w, seed)
++    rng = np.random.default_rng(seed + 1)
++    ys = rng.integers(4, h - 4, n_stars)
++    xs = rng.integers(4, w - 4, n_stars)
++    yy, xx = np.mgrid[0:h, 0:w]
++    out = np.asarray(base, dtype=np.float64)
++    for y, x in zip(ys, xs):
++        out = out + 0.6 * np.exp(-((yy - y) ** 2 + (xx - x) ** 2) / (2 * 1.3**2))[..., None]
++    return np.clip(out, 0.02, 0.98)
++
++
++def _memory_io():
++    """In-memory stand-ins for the disk round-trip the PI executor performs."""
++    store: dict[str, np.ndarray] = {}
++
++    def save(path, rgb):
++        store[path] = np.array(rgb, copy=True)
++
++    def load(path):
++        return np.array(store[path], copy=True)
++
++    return store, load, save
++
++
++def _session_for(image, reference, store, load, save, **overrides):
++    ref_fp = extract(reference, pixel_scale_arcsec=SCALE, n_scales=NSCALES,
++                     psf_fwhm_arcsec=PSF, palette_class="HOO")
++    save("/mem/proxy.png", image)
++    kwargs = dict(
++        source_path="/mem/src.png", proxy_path="/mem/proxy.png",
++        reference_id="synthetic", reference_fp=ref_fp, work_dir="/mem",
++        pixel_scale_arcsec=SCALE, psf_fwhm_arcsec=PSF, palette_class="HOO",
++        n_scales=NSCALES, session_id="t1", load=load,
++    )
++    kwargs.update(overrides)
++    return begin(**kwargs)
++
++
++# --------------------------------------------------------------------------
++# The two sides of the fail-safe.
++# --------------------------------------------------------------------------
++
++def test_a_flattened_image_is_measurably_improved():
++    ref = _reference_image()
++    flat = flatten(ref, strength=0.6)
++    store, load, save = _memory_io()
++    session = _session_for(flat, ref, store, load, save)
++
++    done = run_to_convergence(session, NumpyExecutor(), load=load, save=save)
++    result = outcome(done)
++
++    assert result["improved"] is True
++    assert result["distance"] < result["baseline_distance"]
++    assert len(result["recipe"]["actions"]) >= 1
++    # The mirror of the decline test: having improved, the loop must hand back a
++    # DIFFERENT file, whose pixels actually differ from the input.
++    assert result["result_path"] != done.proxy_path
++    assert not np.array_equal(load(result["result_path"]), load(done.proxy_path))
++    # The §12 audit artifact must cover every action, not a subset.
++    assert len(result["pixinsight_steps"]) == len(result["recipe"]["actions"])
++
++
++def test_the_reference_itself_is_declined():
++    ref = _reference_image()
++    store, load, save = _memory_io()
++    session = _session_for(ref, ref, store, load, save)
++
++    # The fixture must genuinely sit at the valley floor, or this test proves
++    # nothing about declining -- it would just be a test of a bad reference.
++    assert session.baseline_distance == pytest.approx(0.0, abs=1e-12), (
++        f"fixture is not at the valley floor: D={session.baseline_distance}"
++    )
++
++    done = run_to_convergence(session, NumpyExecutor(), load=load, save=save)
++    result = outcome(done)
++
++    # D is a valley: the image is already at the floor, every move climbs.
++    assert result["improved"] is False
++    assert result["recipe"]["actions"] == []
++    assert result["pixinsight_steps"] == []
++    assert result["result_path"] == "/mem/proxy.png"
++    assert result["distance"] == result["baseline_distance"]
++    # The loop really did search -- it declined on the evidence, it did not
++    # simply fail to run.
++    assert done.iteration >= 1
++
++
++def test_declining_returns_the_input_untouched():
++    ref = _reference_image()
++    store, load, save = _memory_io()
++    session = _session_for(ref, ref, store, load, save)
++    before = np.array(store["/mem/proxy.png"], copy=True)
++
++    done = run_to_convergence(session, NumpyExecutor(), load=load, save=save)
++    result = outcome(done)
++    assert result["improved"] is False
++
++    returned = load(result["result_path"])
++    # Byte-identical, not merely "equal": a split-and-recombined approximation
++    # of the input would pass array_equal on a lucky fixture but not this.
++    assert returned.dtype == before.dtype
++    assert returned.shape == before.shape
++    assert returned.tobytes() == before.tobytes()
++
++
++def test_a_climbing_candidate_never_becomes_best():
++    """Every candidate off an already-good image scores WORSE than baseline.
++
++    This is the mechanism behind the decline, asserted directly rather than
++    inferred from the outcome: if some candidate did beat baseline, the decline
++    above would be an accident of convergence timing rather than the valley.
++    """
++    ref = _reference_image()
++    store, load, save = _memory_io()
++    session = _session_for(ref, ref, store, load, save)
++
++    session = advance(session, NumpyExecutor(), load=load, save=save)
++
++    assert session.branches, "nothing was explored, so nothing was proven"
++    assert all(b.distance > session.baseline_distance for b in session.branches)
++    assert session.best.image_path == session.proxy_path
++    assert session.best.recipe.actions == ()
++
++
++# --------------------------------------------------------------------------
++# Termination, honestly reported (§6.3).
++# --------------------------------------------------------------------------
++
++def test_iteration_cap_terminates_the_loop():
++    ref = _reference_image()
++    flat = flatten(ref, strength=0.6)
++    store, load, save = _memory_io()
++    session = _session_for(flat, ref, store, load, save)
++    session.config = type(session.config)(iteration_cap=2)
++
++    done = run_to_convergence(session, NumpyExecutor(), load=load, save=save)
++    assert done.iteration <= 2
++    assert done.converged
++    assert "iteration cap (2) reached" == done.convergence_reason
++
++
++def test_convergence_reason_is_always_reported():
++    ref = _reference_image()
++    store, load, save = _memory_io()
++    session = _session_for(ref, ref, store, load, save)
++    done = run_to_convergence(session, NumpyExecutor(), load=load, save=save)
++    assert done.convergence_reason
++    assert any(r in done.convergence_reason for r in _RECOGNIZED_REASONS)
++
++
++def test_exhausting_every_branch_is_not_dressed_up_as_success():
++    """Guardrails that discard everything must say so, and must decline."""
++    ref = _reference_image()
++    flat = flatten(ref, strength=0.6)
++    store, load, save = _memory_io()
++    session = _session_for(flat, ref, store, load, save)
++
++    # No candidate may raise the noise floor at all -- every real action does.
++    impossible = GuardrailLimits(noise_growth=-1.0)
++    done = run_to_convergence(session, NumpyExecutor(), load=load, save=save,
++                              limits=impossible)
++
++    assert done.converged
++    assert done.branches == []
++    assert "every branch was discarded" in done.convergence_reason
++    result = outcome(done)
++    assert result["improved"] is False
++    assert result["result_path"] == done.proxy_path
++    assert result["guardrail_log"], "candidates were discarded with no record of why"
++    # Every guardrail discard names the guardrail that did it. `no_op` and
++    # `executor` entries are discards too, but not guardrail ones, so they are
++    # excluded rather than folded in -- lumping them together would let a run
++    # that discarded everything for the WRONG reason pass this assertion.
++    guardrail_discards = [
++        e for e in result["guardrail_log"]
++        if "failed" in e and e["failed"] not in (["no_op"], ["executor"])
++    ]
++    assert guardrail_discards
++    assert all("noise_floor" in e["failed"] for e in guardrail_discards)
++
++
++def test_a_guardrail_violation_discards_rather_than_scores():
++    """A violation is a filter, never a score term (§7).
++
++    A candidate that trips a guardrail must not appear in the beam even when its
++    distance would have made it the best of the iteration.
++    """
++    ref = _reference_image()
++    flat = flatten(ref, strength=0.6)
++    store, load, save = _memory_io()
++    session = _session_for(flat, ref, store, load, save)
++
++    strict = GuardrailLimits(noise_growth=-1.0)
++    session = advance(session, NumpyExecutor(), load=load, save=save, limits=strict)
++    assert session.branches == []
++
++    # Same candidates, ordinary limits: they DO survive, so the emptiness above
++    # is the guardrail's doing and not an empty proposal list.
++    store2, load2, save2 = _memory_io()
++    other = _session_for(flat, ref, store2, load2, save2)
++    other = advance(other, NumpyExecutor(), load=load2, save=save2)
++    assert other.branches
++
++
++def test_an_executor_failure_kills_the_candidate_not_the_run():
++    ref = _reference_image()
++    flat = flatten(ref, strength=0.6)
++    store, load, save = _memory_io()
++    session = _session_for(flat, ref, store, load, save)
++    session.config = BeamConfig(iteration_cap=2)
++
++    class _Flaky:
++        inner = NumpyExecutor()
++
++        def apply(self, rgb, action, *, pixel_scale_arcsec):
++            if action.kind == "local_contrast":
++                raise RuntimeError("simulated PixInsight process failure")
++            return self.inner.apply(rgb, action, pixel_scale_arcsec=pixel_scale_arcsec)
++
++    done = run_to_convergence(session, _Flaky(), load=load, save=save)
++
++    executor_entries = [e for e in done.guardrail_log if "executor" in e.get("failed", [])]
++    assert executor_entries, "an executor failure went unrecorded"
++    assert "RuntimeError: simulated PixInsight process failure" in executor_entries[0]["reason"]
++    assert done.converged
++    assert done.branches, "one dead candidate killed the whole run"
++
++
++# --------------------------------------------------------------------------
++# (A) A guardrail that PASSED without assessing anything must still be heard.
++# --------------------------------------------------------------------------
++
++def test_a_passing_guardrail_that_assessed_nothing_is_logged():
++    starless = _reference_image()
++    ref = _reference_image()
++    store, load, save = _memory_io()
++    session = _session_for(starless, ref, store, load, save)
++
++    # Verify the fixture actually is what it claims -- a starless baseline is
++    # the whole premise of this test.
++    assert detect_stars(starless.mean(axis=-1)).count == 0, (
++        "fixture has detectable stars, so star_integrity would assess normally"
++    )
++
++    session = advance(session, NumpyExecutor(), load=load, save=save)
++
++    # Filtered by name, not merely "has a noted field": `noted` also carries the
++    # attempt-cap event, and a test that accepted any noted entry would pass on
++    # the wrong one.
++    noted = [e for e in session.guardrail_log if "star_integrity" in e.get("noted", [])]
++    assert noted, (
++        "star_integrity passed while reporting it could not assess anything, "
++        "and that reason never reached the log"
++    )
++    assert all("not assessed" in e["reason"] for e in noted)
++    # Distinguishable from a discard: a noted entry is not a failure.
++    assert all("failed" not in e for e in noted)
++
++
++def test_nothing_is_noted_when_the_guardrail_really_did_its_job():
++    """The other direction: with stars to protect, star_integrity assesses them
++    and reports no reason, so the log stays quiet. Without this, the test above
++    would pass against an implementation that noted every candidate."""
++    starry = _starry_image()
++    ref = _reference_image()
++    store, load, save = _memory_io()
++    session = _session_for(starry, ref, store, load, save)
++
++    assert detect_stars(starry.mean(axis=-1)).count > 0, (
++        "fixture is starless, so this proves nothing about a working guardrail"
++    )
++
++    session = advance(session, NumpyExecutor(), load=load, save=save)
++
++    # Candidates really were guardrailed -- otherwise "no noted entries" is
++    # vacuous, since nothing was evaluated.
++    assert session.branches, "no candidate reached the guardrails"
++    assert not [e for e in session.guardrail_log if "star_integrity" in e.get("noted", [])]
++
++
++# --------------------------------------------------------------------------
++# The bounded retry (§3.3): top_k live candidates OR max_attempts, whichever
++# comes first.
++# --------------------------------------------------------------------------
++
++def _attempt_cap_events(session):
++    return [e for e in session.guardrail_log if "attempt_cap" in e.get("noted", [])]
++
++
++def test_max_attempts_defaults_to_three_times_top_k():
++    """The bound is a named, visible tunable that tracks top_k rather than an
++    inline literal that silently decouples from it."""
++    assert BeamConfig().max_attempts == 9
++    assert BeamConfig(top_k=5).max_attempts == 15
++    # ...and it stays overridable.
++    assert BeamConfig(top_k=3, max_attempts=4).max_attempts == 4
++
++
++def test_max_attempts_survives_a_session_round_trip(tmp_path):
++    ref = _reference_image(h=64, w=64)
++    store, load, save = _memory_io()
++    session = _session_for(ref, ref, store, load, save)
++    session.config = BeamConfig(top_k=4, max_attempts=7)
++    path = session_path(tmp_path, session.session_id)
++    session.save(path)
++
++    restored = resume(path, proxy_path="/mem/proxy.png")
++    assert restored.config.max_attempts == 7
++    assert restored.config.top_k == 4
++
++
++def test_the_attempt_cap_binds_and_says_so():
++    """When nearly everything is rejected the branch contributes fewer than
++    top_k candidates -- without error -- and the truncation is surfaced."""
++    ref = _reference_image()
++    flat = flatten(ref, strength=0.6)
++    store, load, save = _memory_io()
++    session = _session_for(flat, ref, store, load, save)
++
++    class _OnlyChromaWorks:
++        """Everything but chroma is unavailable, so the branch spends its whole
++        attempt budget to find a single live candidate."""
++
++        inner = NumpyExecutor()
++
++        def apply(self, rgb, action, *, pixel_scale_arcsec):
++            if action.kind != "chroma":
++                raise RuntimeError(f"{action.kind} unavailable")
++            return self.inner.apply(rgb, action, pixel_scale_arcsec=pixel_scale_arcsec)
++
++    session = advance(session, _OnlyChromaWorks(), load=load, save=save)
++
++    # Fewer than top_k, and no exception: a bound branch is legitimate.
++    assert 0 < len(session.branches) < session.config.top_k
++
++    events = _attempt_cap_events(session)
++    assert len(events) == 1, "the branch truncated silently"
++    event = events[0]
++    assert event["branch"] == "(root)"
++    assert "failed" not in event, "stopping early is not a discard"
++    assert str(session.config.max_attempts) in event["reason"]
++    # The count of attempts actually spent must be the cap, not a guess.
++    assert f"stopped after {session.config.max_attempts} attempts" in event["reason"]
++
++    # The cap bounded the work: no more actions were tried than the cap allows.
++    attempted = {e["action"] for e in session.guardrail_log if "action" in e}
++    assert len(attempted) <= session.config.max_attempts
++
++
++def test_the_attempt_cap_does_not_bind_on_an_ordinary_branch():
++    """The other direction: a branch whose actions survive still gets its full
++    top_k. A cap that always bound would satisfy the test above on its own."""
++    ref = _reference_image()
++    store, load, save = _memory_io()
++    session = _session_for(ref, ref, store, load, save)
++
++    session = advance(session, NumpyExecutor(), load=load, save=save)
++
++    assert len(session.branches) == session.config.top_k
++    assert not _attempt_cap_events(session)
++
++
++def test_a_tight_cap_binds_where_a_loose_one_does_not():
++    """Same image, same executor, same guardrails -- only the bound differs.
++
++    This isolates the cap as the cause: if the flattened branch still fills its
++    slots under max_attempts=2, the test above proves nothing about the bound.
++    """
++    ref = _reference_image()
++    flat = flatten(ref, strength=0.6)
++
++    store, load, save = _memory_io()
++    loose = _session_for(flat, ref, store, load, save)
++    loose = advance(loose, NumpyExecutor(), load=load, save=save)
++    assert len(loose.branches) == loose.config.top_k
++    assert not _attempt_cap_events(loose)
++
++    store2, load2, save2 = _memory_io()
++    tight = _session_for(flat, ref, store2, load2, save2)
++    tight.config = BeamConfig(max_attempts=2)
++    tight = advance(tight, NumpyExecutor(), load=load2, save=save2)
++
++    # The first two ranked actions on this image are one climb and one guardrail
++    # trip, so two attempts cannot yield three live candidates.
++    assert len(tight.branches) < tight.config.top_k
++    assert _attempt_cap_events(tight)
++
++
++# --------------------------------------------------------------------------
++# (B) A candidate identical to its parent has learned nothing.
++# --------------------------------------------------------------------------
++
++def _wide_session(image, reference, store, load, save):
++    """top_k wide enough that the levelless actions -- including star_split --
++    are actually proposed. With all component gaps at zero they sort last."""
++    session = _session_for(image, reference, store, load, save)
++    session.config = BeamConfig(top_k=6, width=3)
++    return session
++
++
++class _NoOpFor:
++    """Delegates to NumpyExecutor except for ``kind``, which returns the input.
++
++    Used to prove the no-op rule keys on the PROPERTY (pixels unchanged) and not
++    on the string "star_split".
++    """
++
++    def __init__(self, kind: str):
++        self.kind = kind
++        self.inner = NumpyExecutor()
++
++    def apply(self, rgb, action, *, pixel_scale_arcsec):
++        if action.kind == self.kind:
++            return np.array(rgb, copy=True)
++        return self.inner.apply(rgb, action, pixel_scale_arcsec=pixel_scale_arcsec)
++
++
++class _EffectiveStarSplit:
++    """An executor where star_split genuinely changes pixels -- it must survive."""
++
++    inner = NumpyExecutor()
++
++    def apply(self, rgb, action, *, pixel_scale_arcsec):
++        if action.kind == "star_split":
++            return np.clip(np.asarray(rgb, dtype=np.float64) * 0.999, 0.0, 1.0)
++        return self.inner.apply(rgb, action, pixel_scale_arcsec=pixel_scale_arcsec)
++
++
++def test_a_no_op_candidate_does_not_take_a_beam_slot():
++    ref = _reference_image()
++    store, load, save = _memory_io()
++    session = _wide_session(ref, ref, store, load, save)
++
++    session = advance(session, NumpyExecutor(), load=load, save=save)
++
++    # star_split is a no-op in the numpy executor: pixel-identical to its
++    # parent, identical distance, distinct recipe key. Under a plain
++    # append-and-prune it would be the BEST candidate of the iteration (its
++    # distance equals the floor) and would hold a beam slot having explored
++    # nothing.
++    assert session.branches, "nothing survived, so the slot claim is untested"
++    kinds = {a.kind for b in session.branches for a in b.recipe.actions}
++    assert "star_split" not in kinds
++    assert len(session.branches) == session.config.width
++
++    discarded = [e for e in session.guardrail_log if "no_op" in e.get("failed", [])]
++    assert discarded, "the no-op candidate vanished with no record"
++    assert any("star_split" in e["action"] for e in discarded)
++    assert all("identical" in e["reason"] for e in discarded)
++
++
++def test_the_no_op_rule_is_a_property_not_a_name():
++    """Both directions: a non-star_split no-op is discarded, and a star_split
++    that genuinely changes pixels is not."""
++    ref = _reference_image()
++
++    store, load, save = _memory_io()
++    session = _wide_session(ref, ref, store, load, save)
++    session = advance(session, _NoOpFor("chroma"), load=load, save=save)
++    no_ops = [e for e in session.guardrail_log if "no_op" in e.get("failed", [])]
++    assert any("chroma" in e["action"] for e in no_ops), (
++        "a chroma action that changed nothing was allowed to hold a slot"
++    )
++
++    store2, load2, save2 = _memory_io()
++    other = _wide_session(ref, ref, store2, load2, save2)
++    other = advance(other, _EffectiveStarSplit(), load=load2, save=save2)
++    other_no_ops = [e for e in other.guardrail_log if "no_op" in e.get("failed", [])]
++    assert not any("star_split" in e["action"] for e in other_no_ops), (
++        "a star_split that really changed the image was discarded as a no-op"
++    )
++
++
++# --------------------------------------------------------------------------
++# (C) Resuming against the wrong image.
++# --------------------------------------------------------------------------
++
++def test_resuming_against_a_different_proxy_is_refused(tmp_path):
++    ref = _reference_image(h=64, w=64)
++    store, load, save = _memory_io()
++    session = _session_for(ref, ref, store, load, save)
++    path = session_path(tmp_path, session.session_id)
++    session.save(path)
++
++    with pytest.raises(ValueError) as exc:
++        resume(path, proxy_path="/mem/some-other-proxy.png")
++
++    message = str(exc.value)
++    assert "/mem/some-other-proxy.png" in message
++    assert "/mem/proxy.png" in message
++
++
++def test_resuming_against_the_same_proxy_succeeds(tmp_path):
++    ref = _reference_image(h=64, w=64)
++    store, load, save = _memory_io()
++    session = _session_for(ref, ref, store, load, save)
++    path = session_path(tmp_path, session.session_id)
++    session.save(path)
++
++    restored = resume(path, proxy_path="/mem/proxy.png")
++    assert isinstance(restored, Session)
++    assert restored.proxy_path == session.proxy_path
++    assert restored.baseline_distance == pytest.approx(session.baseline_distance)
++
++
++def test_resume_compares_exactly_not_by_resolution(tmp_path):
++    """An equivalent-looking path is still a different path.
++
++    The session records no image dimensions, so path identity is the only
++    evidence available that the resumed image is the one the ``layer`` values
++    were computed for. Normalizing the comparison would trade that evidence for
++    a guess.
++    """
++    ref = _reference_image(h=64, w=64)
++    store, load, save = _memory_io()
++    session = _session_for(ref, ref, store, load, save)
++    path = session_path(tmp_path, session.session_id)
++    session.save(path)
++
++    with pytest.raises(ValueError):
++        resume(path, proxy_path="/mem/./proxy.png")

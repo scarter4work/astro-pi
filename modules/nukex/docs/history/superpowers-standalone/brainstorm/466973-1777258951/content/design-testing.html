@@ -1,0 +1,154 @@
+<h2>Design — Section 5 of 5: Testing</h2>
+<p class="subtitle">Three layers — unit, integration, E2E — plus real-data validation and performance regression. Regression policy is C (wholesale rebaseline for multi-channel paths; single-channel sweep stays bit-identical as the stretch-math floor).</p>
+
+<div class="section">
+  <div class="mockup">
+    <div class="mockup-header">Unit tests — boundaries verified in isolation</div>
+    <div class="mockup-body" style="background:#0a0a0a;color:#ddd;padding:18px;font-family:monospace;font-size:11px;line-height:1.6">
+<pre style="margin:0">
+test_qe_database_load             load valid share/qe_database.json — schema OK, 22 sensors loaded
+test_qe_database_malformed_fail   malformed override → loud fail with line/col message
+test_qe_database_override_merge   shipped + override = override wins on key collision
+test_qe_database_missing          no qe_database.json → refuses to start
+
+test_filter_classifier            HaO3 / S2O3 / L / R / G / B / Hα / OIII / SII → correct class
+test_filter_classifier_aliases    "L-eXtreme" == "L_eXtreme" == "L Extreme" (alias table)
+test_filter_classifier_unknown_osc   unknown + Bayer → returns FAIL_LOUD sentinel
+test_filter_classifier_unknown_mono  unknown + mono → returns DEFAULT with temp name
+test_filter_classifier_no_filter_osc no FILTER + Bayer → BROADBAND_OSC class
+test_filter_classifier_no_filter_mono no FILTER + mono → BROADBAND_L with "L_unnamed"
+
+test_channel_decomposer_synthetic   inject (R, G, B) corresponding to (Ha=0.5, OIII=0.3) →
+                                    Q-solve recovers (0.5, 0.3) ± 1e-6 (linear, exact)
+test_channel_decomposer_singular    forced singular Q matrix → throws SingularQError
+test_channel_decomposer_multi_filter Q matrix lookup picks (camera, filter) correctly
+
+test_palette_emission_vectors     Ha vector points to a*+50, b*+10 in CIE-Lab
+test_palette_no_greens_invariant  no Lab vector has +b* > 0 AND a*<0 (would be green quadrant)
+
+test_color_composer_lab_basic     known Lab input → known sRGB output (color-science baseline)
+test_color_composer_gamut_clip    saturated emission → soft-clip preserves hue, log count
+test_color_composer_continuum     advanced mode: known continuum input → known emission_pure
+
+test_cube_slot_allocation_pure_hao3   3 slots: R_HaO3, G_HaO3, B_HaO3
+test_cube_slot_allocation_lrgbsho     10 slots, correct names
+test_voxel_slot_routing_per_filter    HaO3 frame routes into R_HaO3 slot, not R slot
+
+test_multi_source_oiii_merge      30 HaO3 contributors + 30 S2O3 → weighted mean correct
+test_multi_source_oiii_zero_one_side  one side empty → other side wins (no NaN)
+
+test_lab_lch_composer             single-pixel test: known (Ha, OIII) → known sRGB
+test_continuum_k_lookup           filter passband × camera continuum → known k values
+</pre>
+    </div>
+  </div>
+</div>
+
+<div class="section">
+  <div class="mockup">
+    <div class="mockup-header">Integration tests — pipeline slices</div>
+    <div class="mockup-body" style="background:#0a0a0a;color:#ddd;padding:18px;font-family:monospace;font-size:11px;line-height:1.6">
+<pre style="margin:0">
+test_int_pure_hao3_synthetic     synthetic FITS frames with known Ha/OIII signal,
+                                 ASI585MC Q matrix → recovered values match within tolerance
+
+test_int_lrgbsho_synthetic       multi-class batch with known signals across L/R/G/B/Ha/OIII/SII
+                                 → all derived slots recover signal
+
+test_int_no_filter_osc           Bayer FITS, no FILTER keyword → no prompt, OSC-as-LRGB ran
+
+test_int_no_filter_mono          mono FITS, no FILTER → no prompt, "L_unnamed" stack output
+
+test_int_unknown_filter_osc_fail FILTER="ALP-T-fake-2026" + Bayer → fail loud at batch start,
+                                 ProcessConsole shows the override-JSON instruction
+
+test_int_unknown_filter_mono     FILTER="custom_Hβ" + mono → temp name "custom_Hβ", batch runs
+
+test_int_qe_override_applied     custom override JSON for unknown camera → Q-solve uses
+                                 override values, output differs from default
+</pre>
+    </div>
+  </div>
+</div>
+
+<div class="section">
+  <div class="mockup">
+    <div class="mockup-header">E2E tests — gold-path pixel hashes (per regression policy C)</div>
+    <div class="mockup-body" style="background:#0a0a0a;color:#ddd;padding:18px;font-family:monospace;font-size:11px;line-height:1.6">
+<pre style="margin:0">
+NEW baselines (replace v4.0.1.0 multi-channel hashes):
+  bayer_rgb_ngc7635_v5    plain OSC stacked / noise / stretched      ← new L-synth path
+  bayer_nb_hao3_m27       HaO3 dual-NB stacked / stretched           ← the M27 case
+  bayer_nb_s2o3_target    S2O3 dual-NB                               ← needs test data
+  lrgbsho_target          mixed: L+R+G+B+HaO3                        ← needs test data
+  mono_lrgb_ngc7635_v5    LRGB-mono with composer (replaces v4.0.1.0 hash)
+
+PRESERVED bit-identical from v4.0.1.0 (the stretch-math regression floor):
+  sweep_ghs               GHS single-channel hash       ← MUST NOT CHANGE
+  sweep_mtf               MTF single-channel hash
+  sweep_arcsinh           ArcSinh single-channel hash
+
+Cold-flake tracking continues — current floor 6 stretch tests on cold serial; if it
+widens to >6 or fails a non-stretch test, treat as real regression.
+</pre>
+    </div>
+  </div>
+</div>
+
+<div class="section">
+  <div class="mockup">
+    <div class="mockup-header">Real-data validation — manual benchmarks</div>
+    <div class="mockup-body" style="background:#0a0a0a;color:#ddd;padding:18px;font-family:monospace;font-size:11px;line-height:1.6">
+<pre style="margin:0">
+M27 HaO3 (motivating dataset)              visual check: no green cast, calibrated red+cyan
+NGC7635 LRGB-mono (existing benchmark)     visual check: detail preserved, color natural
+LRGBSHO target (you mentioned you have)    visual check: broadband natural + emission boost
+
+Capture before/after PNG screenshots for each real-data target. Save to
+docs/superpowers/specs/2026-04-26-color-science-overhaul/visual-evidence/.
+These pin the visual-quality regression bar.
+</pre>
+    </div>
+  </div>
+</div>
+
+<div class="section">
+  <div class="mockup">
+    <div class="mockup-header">Performance regression — quantitative budget</div>
+    <div class="mockup-body" style="background:#0a0a0a;color:#ddd;padding:18px;font-family:monospace;font-size:11px;line-height:1.6">
+<pre style="margin:0">
+Phase B time:    ≤ 10% slower than v4.0.1.0 (Q-solve adds work but is linear, fast)
+Memory (Phase A): histogram count grows with raw slot count; LRGBSHO worst case is ~+43%
+                 (10 slots vs 7) — should still fit disk-cache budget on 6000×4000 images
+Phase A time:    no expected change (debayer + align unchanged; routing is O(slot lookup))
+Cold-build flake: ≤ 6 stretch tests, same as today (no Ceres math touched)
+</pre>
+    </div>
+  </div>
+</div>
+
+<h3>Does the test plan look right?</h3>
+
+<div class="options">
+  <div class="option" data-choice="a" onclick="toggleSelect(this)">
+    <div class="letter">A</div>
+    <div class="content">
+      <h3>Yes — proceed to writing the spec doc (section 6)</h3>
+      <p>Unit + integration + E2E (with new baselines) + real-data benchmarks + performance budget. Single-channel stretch sweep stays bit-identical as the regression floor.</p>
+    </div>
+  </div>
+  <div class="option" data-choice="b" onclick="toggleSelect(this)">
+    <div class="letter">B</div>
+    <div class="content">
+      <h3>Mostly right; one test tier to discuss</h3>
+      <p>I'll describe.</p>
+    </div>
+  </div>
+  <div class="option" data-choice="c" onclick="toggleSelect(this)">
+    <div class="letter">C</div>
+    <div class="content">
+      <h3>Missing a test category</h3>
+      <p>I'll describe.</p>
+    </div>
+  </div>
+</div>

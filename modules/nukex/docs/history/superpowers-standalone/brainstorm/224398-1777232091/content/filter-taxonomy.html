@@ -1,0 +1,98 @@
+<h2>Filter Taxonomy — Does this capture your data?</h2>
+<p class="subtitle">Five filter classes drive different decomposition + combine paths. Pick the option that best matches your thinking; flag missing types in the terminal.</p>
+
+<div class="section">
+  <div class="mockup">
+    <div class="mockup-header">Filter classes — wavelength × role</div>
+    <div class="mockup-body" style="background:#0a0a0a;color:#ddd;padding:20px;font-family:monospace">
+      <div style="display:grid;grid-template-columns:160px 90px 1fr 200px;gap:10px;font-size:13px;align-items:center;margin-bottom:8px;color:#888;border-bottom:1px solid #333;padding-bottom:8px">
+        <div>Class</div><div>BW</div><div>Spectral footprint</div><div>Output role</div>
+      </div>
+
+      <div style="display:grid;grid-template-columns:160px 90px 1fr 200px;gap:10px;font-size:12px;align-items:center;padding:6px 0;border-bottom:1px solid #1a1a1a">
+        <div><b>Broadband-L</b><br><span style="color:#888;font-size:10px">L, LPro, LQEF, IR-cut</span></div>
+        <div>~300nm</div>
+        <div style="background:linear-gradient(to right, #4a004a 0%, #003366 15%, #00aaff 25%, #00ff88 40%, #ddff00 55%, #ff8800 70%, #cc0000 85%, #660000 100%);height:18px;border-radius:3px"></div>
+        <div>Luminance source</div>
+      </div>
+
+      <div style="display:grid;grid-template-columns:160px 90px 1fr 200px;gap:10px;font-size:12px;align-items:center;padding:6px 0;border-bottom:1px solid #1a1a1a">
+        <div><b>Broadband-RGB</b><br><span style="color:#888;font-size:10px">R, G, B (LRGB filters)</span></div>
+        <div>~100nm ea</div>
+        <div style="display:flex;gap:2px;height:18px">
+          <div style="flex:1;background:linear-gradient(to right, #4a004a 0%, #003366 100%);border-radius:3px 0 0 3px"></div>
+          <div style="flex:1.2;background:linear-gradient(to right, #003366 0%, #00aaff 100%)"></div>
+          <div style="flex:1.2;background:linear-gradient(to right, #00aa55 0%, #aaff00 100%)"></div>
+          <div style="flex:1.5;background:linear-gradient(to right, #ff8800 0%, #cc0000 100%);border-radius:0 3px 3px 0"></div>
+        </div>
+        <div>Natural-color source</div>
+      </div>
+
+      <div style="display:grid;grid-template-columns:160px 90px 1fr 200px;gap:10px;font-size:12px;align-items:center;padding:6px 0;border-bottom:1px solid #1a1a1a">
+        <div><b>Broadband-OSC</b><br><span style="color:#888;font-size:10px">no NB filter, OSC sensor</span></div>
+        <div>~100nm via Bayer</div>
+        <div style="background:linear-gradient(to right, #003366 5%, #00aaff 25%, #00ff88 45%, #ddff00 60%, #ff8800 75%, #cc0000 95%);height:18px;border-radius:3px"></div>
+        <div>Natural-color (after debayer)</div>
+      </div>
+
+      <div style="display:grid;grid-template-columns:160px 90px 1fr 200px;gap:10px;font-size:12px;align-items:center;padding:6px 0;border-bottom:1px solid #1a1a1a">
+        <div><b>Narrowband-Single</b><br><span style="color:#888;font-size:10px">Ha, OIII, SII (mono)</span></div>
+        <div>~3-8nm</div>
+        <div style="background:#0a0a0a;height:18px;position:relative;border-radius:3px;border:1px solid #222">
+          <div style="position:absolute;left:18%;top:0;bottom:0;width:3px;background:#00bfa5;box-shadow:0 0 4px #00bfa5"></div>
+          <div style="position:absolute;left:78%;top:0;bottom:0;width:3px;background:#cc0000;box-shadow:0 0 4px #cc0000"></div>
+          <div style="position:absolute;left:82%;top:0;bottom:0;width:3px;background:#660000;box-shadow:0 0 4px #660000"></div>
+          <div style="position:absolute;left:1px;top:1px;font-size:9px;color:#888">501</div>
+          <div style="position:absolute;left:73%;top:1px;font-size:9px;color:#888">656 672</div>
+        </div>
+        <div>Emission-line channel</div>
+      </div>
+
+      <div style="display:grid;grid-template-columns:160px 90px 1fr 200px;gap:10px;font-size:12px;align-items:center;padding:6px 0">
+        <div><b>Dual-NB-OSC</b><br><span style="color:#888;font-size:10px">HaO3, S2O3, ALP-T, etc.</span></div>
+        <div>2× ~3-8nm</div>
+        <div style="background:#0a0a0a;height:18px;position:relative;border-radius:3px;border:1px solid #222">
+          <div style="position:absolute;left:18%;top:0;bottom:0;width:5px;background:#00bfa5;box-shadow:0 0 6px #00bfa5"></div>
+          <div style="position:absolute;left:78%;top:0;bottom:0;width:5px;background:#cc0000;box-shadow:0 0 6px #cc0000"></div>
+          <div style="position:absolute;right:6px;top:1px;font-size:9px;color:#888">2 lines × QE-decomp</div>
+        </div>
+        <div>2 emission lines via Bayer</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<h3>Does this taxonomy capture your data?</h3>
+
+<div class="options">
+  <div class="option" data-choice="a" onclick="toggleSelect(this)">
+    <div class="letter">A</div>
+    <div class="content">
+      <h3>Yes, complete</h3>
+      <p>Five classes cover everything I shoot (HaO3, S2O3, plain OSC, LRGB-mono, LRGBSHO, narrowband-mono). Build the design around this.</p>
+    </div>
+  </div>
+  <div class="option" data-choice="b" onclick="toggleSelect(this)">
+    <div class="letter">B</div>
+    <div class="content">
+      <h3>Yes, but split <em>Broadband-L</em> further</h3>
+      <p>I want to separate "true L (clear/IR-cut only)" from "LPro/LQEF (light-pollution-suppressing broadband)" because their downstream calibration paths differ.</p>
+    </div>
+  </div>
+  <div class="option" data-choice="c" onclick="toggleSelect(this)">
+    <div class="letter">C</div>
+    <div class="content">
+      <h3>Add a sixth class</h3>
+      <p>I have data using a filter type that doesn't fit (e.g. tri-band like Optolong L-Quad, hydrogen continuum, or something exotic). I'll describe in the terminal.</p>
+    </div>
+  </div>
+  <div class="option" data-choice="d" onclick="toggleSelect(this)">
+    <div class="letter">D</div>
+    <div class="content">
+      <h3>Reframe — don't taxonomize, infer continuously</h3>
+      <p>Don't enumerate filter classes. Instead, for each filter, store (center wavelength array, FWHM array). Compute decomposition matrix from those numerics. Treat LPro as "1 line at 550nm × 300nm FWHM", treat Ha as "1 line at 656nm × 6nm FWHM". One pipeline, no enum.</p>
+    </div>
+  </div>
+</div>
+
+<p style="margin-top:20px;color:#888;font-size:13px"><b>Output combining hint (so you can sanity-check):</b> Pure-NB → calibrated palette (option A from earlier — no greens). Pure-broadband → natural color. <b>Mixed (LRGBSHO)</b> → natural-color base + emission-line enhancement via Lab/LCH (broadband provides L+chrominance, NB enhances where it's strong) — that's the "wider bandpass" output you mentioned.</p>

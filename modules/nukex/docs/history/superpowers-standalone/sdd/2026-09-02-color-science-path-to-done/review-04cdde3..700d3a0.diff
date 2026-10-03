@@ -1,0 +1,174 @@
+# Review package: 04cdde3..700d3a0
+
+## Commits
+700d3a0 fix(fitting): n < 3 keeps the sample's robust location instead of zeroing the voxel
+
+## Files changed
+ .../fitting/include/nukex/fitting/kde_fitter.hpp   |  4 +++
+ src/lib/fitting/src/kde_fitter.cpp                 | 15 ++++++++
+ test/unit/fitting/test_kde_fitter.cpp              | 41 ++++++++++++++++++++++
+ test/unit/fitting/test_model_selector.cpp          | 12 +++++++
+ 4 files changed, 72 insertions(+)
+
+## Diff
+diff --git a/src/lib/fitting/include/nukex/fitting/kde_fitter.hpp b/src/lib/fitting/include/nukex/fitting/kde_fitter.hpp
+index dbe6dfe..cdb7f4d 100644
+--- a/src/lib/fitting/include/nukex/fitting/kde_fitter.hpp
++++ b/src/lib/fitting/include/nukex/fitting/kde_fitter.hpp
+@@ -1,14 +1,18 @@
+ #pragma once
+ #include "nukex/fitting/curve_fitter.hpp"
+ namespace nukex {
+ class KDEFitter : public CurveFitter {
+ public:
+     static constexpr int GRID_SIZE = 512;
++    /// n < 3: no KDE is possible; returns converged=false with
++    /// true_signal_estimate = robust_location and signal_uncertainty =
++    /// robust_scale (shape UNKNOWN, used_nonparametric). Callers keep the
++    /// FIT_FAILED flag as the loud signal; the value is never zeroed.
+     FitResult fit(const float* values, const float* weights,
+                   int n, double robust_location, double robust_scale) override;
+     static double evaluate_kde(double x, const float* values, int n, double h);
+     static double find_mode(const float* values, int n, double h,
+                             double grid_min, double grid_max);
+     static double isj_bandwidth(const float* values, int n);
+ };
+ } // namespace nukex
+diff --git a/src/lib/fitting/src/kde_fitter.cpp b/src/lib/fitting/src/kde_fitter.cpp
+index d3beb46..4880d41 100644
+--- a/src/lib/fitting/src/kde_fitter.cpp
++++ b/src/lib/fitting/src/kde_fitter.cpp
+@@ -119,21 +119,36 @@ double KDEFitter::isj_bandwidth(const float* values, int n) {
+     return h_opt;
+ }
+ 
+ FitResult KDEFitter::fit(const float* values, const float* weights,
+                           int n, double robust_location, double robust_scale) {
+     FitResult result;
+     result.n_params = 1;
+     result.n_samples = n;
+ 
+     if (n < 3) {
++        // A KDE needs at least three samples for a bandwidth. One or two
++        // frames give no distribution to fit, but they do give a value: the
++        // robust location the selector already computed (the sample itself
++        // for n == 1, the biweight of the pair for n == 2). Returning a
++        // default-constructed distribution here silently zeroed every
++        // stacked pixel fed by fewer than three frames. converged stays
++        // false so ModelSelector::select flags the voxel FIT_FAILED; the
++        // estimate is the data's own, never zero.
+         result.converged = false;
++        result.distribution.shape                = DistributionShape::UNKNOWN;
++        result.distribution.used_nonparametric   = true;
++        result.distribution.true_signal_estimate = static_cast<float>(robust_location);
++        result.distribution.kde_mode             = static_cast<float>(robust_location);
++        result.distribution.kde_bandwidth        = 0.0f;
++        result.distribution.signal_uncertainty   = static_cast<float>(robust_scale);
++        result.distribution.confidence           = 0.0f;
+         return result;
+     }
+ 
+     double h = isj_bandwidth(values, n);
+ 
+     float data_min = *std::min_element(values, values + n);
+     float data_max = *std::max_element(values, values + n);
+     double pad = 3.0 * h;
+     double mode = find_mode(values, n, h, data_min - pad, data_max + pad);
+ 
+diff --git a/test/unit/fitting/test_kde_fitter.cpp b/test/unit/fitting/test_kde_fitter.cpp
+index 02ca60e..2b16f6d 100644
+--- a/test/unit/fitting/test_kde_fitter.cpp
++++ b/test/unit/fitting/test_kde_fitter.cpp
+@@ -1,13 +1,14 @@
+ #include "catch_amalgamated.hpp"
+ #include "nukex/fitting/kde_fitter.hpp"
+ #include "nukex/fitting/robust_stats.hpp"
++#include "nukex/core/distribution.hpp"
+ #include <vector>
+ #include <random>
+ #include <cmath>
+ 
+ using namespace nukex;
+ 
+ TEST_CASE("KDEFitter: mode of unimodal Gaussian data", "[kde]") {
+     std::mt19937 rng(77777);
+     std::normal_distribution<float> d(0.5f, 0.03f);
+     std::vector<float> data(200);
+@@ -62,10 +63,50 @@ TEST_CASE("KDEFitter: confidence is 0.5", "[kde]") {
+     std::vector<float> wt(64, 1.0f);
+     float rl = biweight_location(data.data(), 64);
+     float rs = mad(data.data(), 64) * 1.4826f;
+ 
+     KDEFitter fitter;
+     auto result = fitter.fit(data.data(), wt.data(), 64, rl, rs);
+ 
+     REQUIRE(result.converged);
+     REQUIRE(result.distribution.confidence == Catch::Approx(0.5f));
+ }
++
++TEST_CASE("KDEFitter: n=1 returns the sample as the estimate, not zero", "[kde]") {
++    float v[] = {0.37f};
++    float w[] = {1.0f};
++    KDEFitter kde;
++    auto r = kde.fit(v, w, 1, biweight_location(v, 1), 0.0f);
++    REQUIRE_FALSE(r.converged);
++    REQUIRE(r.n_samples == 1);
++    REQUIRE(r.distribution.true_signal_estimate == Catch::Approx(0.37f));
++    REQUIRE(r.distribution.kde_mode             == Catch::Approx(0.37f));
++    REQUIRE(r.distribution.signal_uncertainty   == Catch::Approx(0.0f));
++    REQUIRE(r.distribution.confidence           == 0.0f);
++    REQUIRE(r.distribution.used_nonparametric);
++    REQUIRE(r.distribution.shape == DistributionShape::UNKNOWN);
++}
++
++TEST_CASE("KDEFitter: n=2 estimate is the robust location of the pair", "[kde]") {
++    float v[] = {0.30f, 0.34f};
++    float w[] = {1.0f, 1.0f};
++    float rl = biweight_location(v, 2);
++    float rs = mad(v, 2) * 1.4826f;
++    KDEFitter kde;
++    auto r = kde.fit(v, w, 2, rl, rs);
++    REQUIRE_FALSE(r.converged);
++    REQUIRE(r.n_samples == 2);
++    REQUIRE(r.distribution.true_signal_estimate == Catch::Approx(rl));
++    REQUIRE(r.distribution.true_signal_estimate == Catch::Approx(0.32f).margin(0.01f));
++    REQUIRE(r.distribution.signal_uncertainty   == Catch::Approx(rs));
++    REQUIRE(r.distribution.used_nonparametric);
++}
++
++TEST_CASE("KDEFitter: n=3 still runs the real KDE", "[kde]") {
++    float v[] = {0.30f, 0.32f, 0.34f};
++    float w[] = {1.0f, 1.0f, 1.0f};
++    KDEFitter kde;
++    auto r = kde.fit(v, w, 3, biweight_location(v, 3), mad(v, 3) * 1.4826f);
++    REQUIRE(r.converged);
++    REQUIRE(r.distribution.used_nonparametric);
++    REQUIRE(r.distribution.true_signal_estimate == Catch::Approx(0.32f).margin(0.02f));
++}
+diff --git a/test/unit/fitting/test_model_selector.cpp b/test/unit/fitting/test_model_selector.cpp
+index 320aaf8..155e0f7 100644
+--- a/test/unit/fitting/test_model_selector.cpp
++++ b/test/unit/fitting/test_model_selector.cpp
+@@ -107,10 +107,22 @@ TEST_CASE("ModelSelector: very few samples → KDE fallback", "[selector]") {
+     ModelSelector::Config cfg;
+     cfg.aicc_threshold     = 2.0;
+     cfg.min_samples_for_gmm = 30;
+     cfg.min_samples_for_fit = 10;
+     ModelSelector selector(cfg);
+     auto result = selector.select_best(data, wt, 5);
+ 
+     REQUIRE(result.converged);
+     REQUIRE(result.distribution.used_nonparametric);
+ }
++
++TEST_CASE("ModelSelector::select: a single sample sets FIT_FAILED but keeps the sample as the estimate",
++          "[selector]") {
++    float v[] = {0.42f};
++    float w[] = {1.0f};
++    SubcubeVoxel voxel{};
++    ModelSelector selector;
++    selector.select(v, w, 1, voxel, 0);
++    REQUIRE(voxel.has_flag(VoxelFlags::FIT_FAILED));
++    REQUIRE(voxel.distribution[0].true_signal_estimate == Catch::Approx(0.42f));
++    REQUIRE(voxel.distribution[0].shape == DistributionShape::UNKNOWN);
++}

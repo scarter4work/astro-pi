@@ -1,0 +1,41 @@
+<h2>Color Science Overhaul — Scope</h2>
+<p class="subtitle">You raised two related-but-distinct issues. Which scope feels right for one design doc?</p>
+
+<div class="options">
+  <div class="option" data-choice="a" onclick="toggleSelect(this)">
+    <div class="letter">A</div>
+    <div class="content">
+      <h3>Bundled — full color-science overhaul</h3>
+      <p><strong>Includes:</strong> OSC-as-LRGB synthesis (Q1) + Bayer-NB decomposition with QE-aware OIII recombination (Q2) + palette/no-greens output, all in one design.</p>
+      <p><strong>Why pick:</strong> the two share infrastructure — channel_config refactor, output composer, color-space helpers. One design, one plan, one regression sweep.</p>
+      <p><strong>Cost:</strong> bigger spec, longer implementation phase, single big commit point.</p>
+    </div>
+  </div>
+  <div class="option" data-choice="b" onclick="toggleSelect(this)">
+    <div class="letter">B</div>
+    <div class="content">
+      <h3>Narrowband first (Q2 only)</h3>
+      <p><strong>Includes:</strong> Bayer-NB decomposition + QE-aware OIII recombination + no-greens palette. OSC-as-LRGB is a separate later design.</p>
+      <p><strong>Why pick:</strong> M17 bothered you today; this fixes the visible bug fastest. OSC-as-LRGB is a quality lift you can stage independently after this lands and is field-tested.</p>
+      <p><strong>Cost:</strong> two smaller designs over time. Some duplicated channel-config thinking.</p>
+    </div>
+  </div>
+  <div class="option" data-choice="c" onclick="toggleSelect(this)">
+    <div class="letter">C</div>
+    <div class="content">
+      <h3>OSC-as-LRGB first (Q1 only)</h3>
+      <p><strong>Includes:</strong> luminance synthesis + Lab/LCH composite for OSC and MONO_LRGB. Narrowband fix waits.</p>
+      <p><strong>Why pick:</strong> broader user impact (every OSC user benefits), simpler to design, lower regression risk.</p>
+      <p><strong>Cost:</strong> M17 stays green until next cycle.</p>
+    </div>
+  </div>
+  <div class="option" data-choice="d" onclick="toggleSelect(this)">
+    <div class="letter">D</div>
+    <div class="content">
+      <h3>Reframe — they're different beasts, do them in parallel</h3>
+      <p><strong>Includes:</strong> two parallel design docs and plans. Each ships independently. Explicit shared-infra contract between them.</p>
+      <p><strong>Why pick:</strong> if the user thinks the two problems pull in opposite architectural directions and shouldn't be coupled.</p>
+      <p><strong>Cost:</strong> overhead of coordinating two streams; risk of incompatible refactors.</p>
+    </div>
+  </div>
+</div>

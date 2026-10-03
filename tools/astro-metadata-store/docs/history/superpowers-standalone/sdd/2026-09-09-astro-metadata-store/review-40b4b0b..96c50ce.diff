@@ -1,0 +1,99 @@
+# Review package: 40b4b0b..HEAD
+
+## Commits
+96c50ce fix: raise loudly on hamming width mismatch and NaN pixel stats
+
+## Files changed
+ src/astrometa/imagekeys.py | 19 +++++++++++++++++++
+ tests/test_imagekeys.py    | 21 +++++++++++++++++++++
+ 2 files changed, 40 insertions(+)
+
+## Diff
+diff --git a/src/astrometa/imagekeys.py b/src/astrometa/imagekeys.py
+index 70fc2cf..1fb2f8e 100644
+--- a/src/astrometa/imagekeys.py
++++ b/src/astrometa/imagekeys.py
+@@ -39,16 +39,35 @@ def fingerprint(pixels: np.ndarray, size: int = 16) -> str:
+     a = np.clip((a - lo) / (hi - lo), 0.0, 1.0)
+     small = _block_mean(a, size, size + 1)
+     bits = (small[:, 1:] > small[:, :-1]).flatten()
+     value = 0
+     for bit in bits:
+         value = (value << 1) | int(bit)
+     return f"{value:0{(bits.size + 3) // 4}x}"
+ 
+ 
+ def hamming(a: str, b: str) -> int:
++    if len(a) != len(b):
++        raise ValueError(
++            f"cannot compare fingerprints of different width: "
++            f"{len(a)} hex chars vs {len(b)} hex chars"
++        )
+     return bin(int(a, 16) ^ int(b, 16)).count("1")
+ 
+ 
+ def pixel_stats(pixels: np.ndarray) -> tuple[float, float]:
++    """
++    Returns (background_median, saturated_fraction) for a raw pixel array.
++
++    Unlike fingerprint()'s degenerate-image handling, non-finite pixel
++    data here is a hard error rather than a sentinel result: bg_median
++    feeds directly into downstream quality thresholds (e.g. session
++    culling), and np.median/.mean() would otherwise propagate NaN into
++    that value silently — a NaN there makes every later `<` / `>`
++    comparison against it silently false instead of raising, which is
++    exactly the quiet-wrong-answer failure mode this project's
++    no-silent-fallbacks rule exists to prevent.
++    """
+     a = np.asarray(pixels, dtype=np.float64)
++    if not np.isfinite(a).all():
++        raise ValueError("pixel_stats: input contains NaN or infinite pixels")
+     return float(np.median(a)), float((a >= SATURATION_LEVEL).mean())
+diff --git a/tests/test_imagekeys.py b/tests/test_imagekeys.py
+index 5056780..ae55cf9 100644
+--- a/tests/test_imagekeys.py
++++ b/tests/test_imagekeys.py
+@@ -1,11 +1,12 @@
+ import numpy as np
++import pytest
+ from astrometa import imagekeys
+ 
+ 
+ def test_content_hash_is_stable_and_distinct(tmp_path):
+     a = tmp_path / "a"; a.write_bytes(b"hello")
+     b = tmp_path / "b"; b.write_bytes(b"hello")
+     c = tmp_path / "c"; c.write_bytes(b"world")
+     assert imagekeys.content_hash(a) == imagekeys.content_hash(b)
+     assert imagekeys.content_hash(a) != imagekeys.content_hash(c)
+ 
+@@ -50,10 +51,30 @@ def test_flat_fingerprint_matches_length_of_normal_fingerprint():
+     normal_fp = imagekeys.fingerprint(_field(3))
+     assert len(flat_fp) == len(normal_fp)
+ 
+ 
+ def test_pixel_stats_reports_background_and_saturation():
+     img = np.full((100, 100), 200.0)
+     img[:10, :] = 65535.0
+     bg, sat = imagekeys.pixel_stats(img)
+     assert bg == 200.0
+     assert abs(sat - 0.10) < 0.001
++
++
++def test_hamming_raises_on_mismatched_width():
++    # A width mismatch (e.g. one fingerprint from a different `size`, or a
++    # corrupt/truncated value) must not silently XOR as raw integers and
++    # produce a numerically plausible but meaningless distance — Task 6
++    # clusters frames by this distance, so a bad comparison here would
++    # silently misfile frames into the wrong sky-field group.
++    with pytest.raises(ValueError):
++        imagekeys.hamming("ab", "abcd")
++
++
++def test_pixel_stats_raises_on_nan_pixels():
++    # NaN pixels must not silently propagate into bg_median/saturated_frac:
++    # a NaN there would make every later threshold comparison silently
++    # false (e.g. session culling in Task 11) instead of raising loudly.
++    img = np.full((10, 10), 200.0)
++    img[0, 0] = np.nan
++    with pytest.raises(ValueError):
++        imagekeys.pixel_stats(img)

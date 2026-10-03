@@ -1,0 +1,271 @@
+# Review package: 96c50ce..HEAD
+
+## Commits
+577dceb feat: inventory pass with independent header/pixel reads
+
+## Files changed
+ src/astrometa/inventory.py | 109 +++++++++++++++++++++++++++++++++++
+ tests/test_inventory.py    | 139 +++++++++++++++++++++++++++++++++++++++++++++
+ 2 files changed, 248 insertions(+)
+
+## Diff
+diff --git a/src/astrometa/inventory.py b/src/astrometa/inventory.py
+new file mode 100644
+index 0000000..55f5867
+--- /dev/null
++++ b/src/astrometa/inventory.py
+@@ -0,0 +1,109 @@
++from dataclasses import dataclass, field as dc_field
++from datetime import datetime, timezone
++from pathlib import Path
++
++from astropy.io import fits
++
++from . import fitsheader, imagekeys
++from .classify import classify
++from .config import EXCLUDED_PATH_MARKERS
++
++
++@dataclass
++class InventoryResult:
++    added: int = 0
++    updated: int = 0
++    failed: int = 0
++    seen_hashes: set = dc_field(default_factory=set)
++
++
++def _excluded(p: Path) -> bool:
++    s = str(p)
++    return any(m in s for m in EXCLUDED_PATH_MARKERS)
++
++
++def _now() -> str:
++    return datetime.now(timezone.utc).isoformat()
++
++
++def _iter_fits(roots):
++    for root in roots:
++        if not root.exists():
++            continue
++        for p in root.rglob("*.fit"):
++            if p.is_file() and "_thn" not in p.name and not _excluded(p):
++                yield p
++
++
++def _read_header(path: Path) -> tuple[dict, str | None]:
++    """Independent header read. On failure, returns ({}, "header: ...")."""
++    try:
++        return fitsheader.read_header(path), None
++    except Exception as exc:                      # loud, never silent
++        return {}, f"header: {type(exc).__name__}: {exc}"
++
++
++def _read_pixels(path: Path) -> tuple[str | None, float | None, float | None, str | None]:
++    """
++    Independent pixel read: one `fits.getdata` feeds both the fingerprint
++    and the pixel stats, so the archive is never read three times for a
++    single frame. On failure, all three derived values stay None -- the
++    fingerprint is never partially committed if pixel_stats subsequently
++    raises (e.g. on NaN pixels), so a failure here can't leave a
++    fingerprint on record without the stats that would normally sit
++    beside it.
++    """
++    try:
++        data = fits.getdata(path, memmap=False)
++        fp = imagekeys.fingerprint(data)
++        bg, sat = imagekeys.pixel_stats(data)
++        return fp, bg, sat, None
++    except Exception as exc:                       # loud, never silent
++        return None, None, None, f"pixels: {type(exc).__name__}: {exc}"
++
++
++def scan(conn, roots, read_pixels: bool = True) -> InventoryResult:
++    res = InventoryResult()
++    for path in _iter_fits(roots):
++        stat = path.stat()
++        chash = imagekeys.content_hash(path)
++        res.seen_hashes.add(chash)
++        existing = conn.execute(
++            "SELECT 1 FROM frames WHERE content_hash=?", (chash,)).fetchone()
++
++        # Header and pixel reads are independent: one failing must not
++        # discard data the other successfully recovered.
++        header, header_err = _read_header(path)
++
++        fp, bg, sat, pixel_err = None, None, None, None
++        if read_pixels:
++            fp, bg, sat, pixel_err = _read_pixels(path)
++
++        errors = [e for e in (header_err, pixel_err) if e]
++        err = "; ".join(errors) if errors else None
++        if errors:
++            res.failed += 1
++
++        conn.execute("""
++            INSERT INTO frames (content_hash, path, filename, size, mtime,
++                first_seen, last_seen, frame_type, camera, filter, exptime,
++                captured_at, header_ra, header_dec, focallen, xpixsz,
++                naxis1, naxis2, fingerprint, bg_median, saturated_frac,
++                disposition, read_error)
++            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'present',?)
++            ON CONFLICT(content_hash) DO UPDATE SET
++                path=excluded.path, last_seen=excluded.last_seen,
++                disposition='present', read_error=excluded.read_error
++        """, (chash, str(path), path.name, stat.st_size, stat.st_mtime,
++              _now(), _now(), classify(path.name, header),
++              header.get("INSTRUME"), header.get("FILTER"),
++              header.get("EXPTIME"), header.get("DATE-OBS"),
++              header.get("RA"), header.get("DEC"), header.get("FOCALLEN"),
++              header.get("XPIXSZ"), header.get("NAXIS1"), header.get("NAXIS2"),
++              fp, bg, sat, err))
++        if existing:
++            res.updated += 1
++        else:
++            res.added += 1
++    conn.commit()
++    return res
+diff --git a/tests/test_inventory.py b/tests/test_inventory.py
+new file mode 100644
+index 0000000..c64486c
+--- /dev/null
++++ b/tests/test_inventory.py
+@@ -0,0 +1,139 @@
++import numpy as np
++from astropy.io import fits
++from astrometa import db, inventory
++
++
++def _write_light(path, obj="M 42", ra=83.8, dec=-5.4, seed=1):
++    rng = np.random.default_rng(seed)
++    data = rng.normal(100, 5, (64, 64)).astype(np.float32)
++    hdu = fits.PrimaryHDU(data)
++    hdu.header["OBJECT"] = obj
++    hdu.header["RA"] = ra
++    hdu.header["DEC"] = dec
++    hdu.header["INSTRUME"] = "ZWO ASI585MC Air"
++    hdu.header["FILTER"] = "HaO3"
++    hdu.header["EXPTIME"] = 120.0
++    hdu.header["IMAGETYP"] = "Light Frame"
++    hdu.writeto(path, overwrite=True)
++
++
++def _write_light_with_nan_pixel(path, obj="M 42", seed=1):
++    # A derived/stacked frame with a good header but a NaN edge pixel from
++    # registration -- header metadata must survive even though pixel_stats
++    # (Task 4) raises loudly on non-finite pixels.
++    rng = np.random.default_rng(seed)
++    data = rng.normal(100, 5, (64, 64)).astype(np.float32)
++    data[0, 0] = np.nan
++    hdu = fits.PrimaryHDU(data)
++    hdu.header["OBJECT"] = obj
++    hdu.header["INSTRUME"] = "ZWO ASI585MC Air"
++    hdu.header["FILTER"] = "HaO3"
++    hdu.header["EXPTIME"] = 120.0
++    hdu.header["IMAGETYP"] = "Light Frame"
++    hdu.writeto(path, overwrite=True)
++
++
++def test_scan_records_frames(tmp_path):
++    root = tmp_path / "astro_data" / "2026-09-08" / "M 42"
++    root.mkdir(parents=True)
++    _write_light(root / "Light_M 42_120.0s_Bin1_HaO3_20260908-220000_0deg_0001.fit")
++    conn = db.connect(tmp_path / "t.sqlite"); db.init_schema(conn)
++    res = inventory.scan(conn, [tmp_path / "astro_data"])
++    assert res.added == 1
++    row = conn.execute("SELECT frame_type, camera, filter, fingerprint, "
++                       "disposition FROM frames").fetchone()
++    assert row[0] == "light" and row[1] == "ZWO ASI585MC Air"
++    assert row[2] == "HaO3" and row[3] and row[4] == "present"
++
++
++def test_scan_is_idempotent(tmp_path):
++    root = tmp_path / "astro_data" / "d" ; root.mkdir(parents=True)
++    _write_light(root / "Light_M 42_a_0001.fit")
++    conn = db.connect(tmp_path / "t.sqlite"); db.init_schema(conn)
++    inventory.scan(conn, [tmp_path / "astro_data"])
++    inventory.scan(conn, [tmp_path / "astro_data"])
++    assert conn.execute("SELECT COUNT(*) FROM frames").fetchone()[0] == 1
++
++
++def test_colliding_filenames_are_distinct_rows(tmp_path):
++    a = tmp_path / "astro_data" / "n1"; a.mkdir(parents=True)
++    b = tmp_path / "astro_data" / "n2"; b.mkdir(parents=True)
++    _write_light(a / "Light_M 42_x_0001.fit", seed=1)
++    _write_light(b / "Light_M 42_x_0001.fit", seed=2)
++    conn = db.connect(tmp_path / "t.sqlite"); db.init_schema(conn)
++    res = inventory.scan(conn, [tmp_path / "astro_data"])
++    assert res.added == 2
++
++
++def test_excluded_paths_are_skipped(tmp_path):
++    q = tmp_path / "astro_data" / "_dedup_quarantine_2026-05-12"
++    q.mkdir(parents=True)
++    _write_light(q / "Light_M 42_x_0001.fit")
++    conn = db.connect(tmp_path / "t.sqlite"); db.init_schema(conn)
++    assert inventory.scan(conn, [tmp_path / "astro_data"]).added == 0
++
++
++def test_unreadable_file_is_recorded_not_skipped(tmp_path):
++    root = tmp_path / "astro_data" / "d"; root.mkdir(parents=True)
++    (root / "Light_broken_0001.fit").write_bytes(b"not a fits file at all")
++    conn = db.connect(tmp_path / "t.sqlite"); db.init_schema(conn)
++    res = inventory.scan(conn, [tmp_path / "astro_data"])
++    # A failed read is a diagnostic overlay, not disjoint from added/updated:
++    # the frame still gets a row (added), and the failure is also counted.
++    assert res.added == 1
++    assert res.failed == 1
++    err = conn.execute("SELECT read_error FROM frames").fetchone()[0]
++    assert err is not None and err != ""
++
++
++def test_zero_byte_file_is_recorded_not_skipped(tmp_path):
++    # Two genuine zero-byte .fit files exist in the real archive.
++    # content_hash succeeds (hash of empty input); read_header raises on
++    # the truncated block; the row must still be written with the
++    # failure recorded, not silently dropped from the scan.
++    root = tmp_path / "astro_data" / "d"; root.mkdir(parents=True)
++    (root / "Light_empty_0001.fit").write_bytes(b"")
++    conn = db.connect(tmp_path / "t.sqlite"); db.init_schema(conn)
++    res = inventory.scan(conn, [tmp_path / "astro_data"])
++    assert res.added == 1
++    assert res.failed == 1
++    row = conn.execute("SELECT size, read_error FROM frames").fetchone()
++    assert row[0] == 0
++    assert row[1] is not None and row[1] != ""
++
++
++def test_failed_scan_is_idempotent_and_updates_on_rescan(tmp_path):
++    root = tmp_path / "astro_data" / "d"; root.mkdir(parents=True)
++    (root / "Light_broken_0001.fit").write_bytes(b"still not a fits file")
++    conn = db.connect(tmp_path / "t.sqlite"); db.init_schema(conn)
++    first = inventory.scan(conn, [tmp_path / "astro_data"])
++    second = inventory.scan(conn, [tmp_path / "astro_data"])
++    assert first.added == 1 and first.failed == 1
++    assert second.added == 0 and second.updated == 1 and second.failed == 1
++    assert conn.execute("SELECT COUNT(*) FROM frames").fetchone()[0] == 1
++
++
++def test_nan_pixels_dont_lose_header_metadata(tmp_path):
++    # Header parses fine; pixel_stats raises on the NaN edge pixel. Per the
++    # corrected design, the header read and the pixel read are independent:
++    # losing pixel-derived fields must not also discard camera/filter/etc.
++    root = tmp_path / "astro_data" / "d"; root.mkdir(parents=True)
++    _write_light_with_nan_pixel(root / "pp_light_stack_0001.fit")
++    conn = db.connect(tmp_path / "t.sqlite"); db.init_schema(conn)
++    res = inventory.scan(conn, [tmp_path / "astro_data"])
++    assert res.added == 1
++    assert res.failed == 1
++    row = conn.execute(
++        "SELECT frame_type, camera, filter, fingerprint, bg_median, "
++        "saturated_frac, read_error FROM frames").fetchone()
++    frame_type, camera, filt, fingerprint, bg_median, sat_frac, err = row
++    # IMAGETYP header wins over the filename in classify() -- proof the
++    # header was actually parsed and passed through despite the pixel error.
++    assert frame_type == "light"
++    assert camera == "ZWO ASI585MC Air"
++    assert filt == "HaO3"
++    assert fingerprint is None
++    assert bg_median is None
++    assert sat_frac is None
++    assert err is not None and err.startswith("pixels:")
++    assert "header:" not in err

@@ -1,0 +1,137 @@
+<h2>Design — Section 3 of 5: Data Flow</h2>
+<p class="subtitle">Concrete walk-through for two scenarios: pure HaO3 (the M27 case) and LRGBSHO mixed batch. Same pipeline, different routing.</p>
+
+<div class="section">
+  <div class="mockup">
+    <div class="mockup-header">Scenario A — pure HaO3 batch (50 frames, ASI585MC, FILTER="HaO3")</div>
+    <div class="mockup-body" style="background:#0a0a0a;color:#ddd;padding:18px;font-family:monospace;font-size:11px;line-height:1.6">
+<pre style="margin:0">
+1. FITS read (per frame)
+   FITSReader → Image{1ch, Bayer=RGGB} + FITSMetadata{FILTER="HaO3", INSTRUME="ASI585MC"}
+
+2. Filter classification (per frame, once per batch usually)
+   FilterClassifier(meta) → Filter{
+       class    = DUAL_NB_OSC,
+       name     = "HaO3",
+       camera   = "ASI585MC",   ← keys QE database
+       passes   = [{656nm/7nm}, {501nm/7nm}]   ← from QEDatabase.lookup_filter("HaO3")
+   }
+
+3. Debayer (NAIVE — no filter awareness)
+   DebayerEngine.debayer(image, RGGB) → Image{3ch, R/G/B}
+
+4. Flat correct, align, cache  (unchanged from today; uses raw RGB)
+   FlatCalibration.apply(image, master_flat)
+   FrameAligner.align(image, frame_idx) → AlignedFrame  ← star detection on raw RGB
+   FrameCache.write_frame(f, aligned.image)
+
+5. Accumulate into cube  (THE NEW BIT)
+   For each pixel (x,y):
+       (R, G, B) = aligned.image.at(x, y, *)
+       Q = QEDatabase.q_matrix(camera="ASI585MC", filter="HaO3")
+            =  [[0.83  0.05]    ← R,G,B QE × filter passband at 656nm (Ha)
+                [0.05  0.85]    ← at 501nm (OIII)  -- middle row is Gr/Gb avg
+                [0.02  0.55]]
+       (Ha, OIII) = ChannelDecomposer.solve(Q, [R, G, B])    ← LSQ pinv solve
+       voxel(x,y).slots["Ha"].welford.update(Ha)
+       voxel(x,y).slots["OIII"].welford.update(OIII)
+       voxel(x,y).slots["Ha"].histogram.update(Ha)
+       voxel(x,y).slots["OIII"].histogram.update(OIII)
+
+6. Phase B — fit per slot, select best pixel per slot
+   For each (pixel, slot) in {(x,y,"Ha"), (x,y,"OIII")}:
+       distribution = ModelSelector.fit(voxel.slots[slot].histogram)
+       best_value   = PixelSelector.select(distribution)
+       stacked.at(x, y, slot) = best_value
+   ⇒ stacked cube has 2 channels: Ha, OIII
+
+7. ColorComposer (calibrated palette, no greens)
+   For each pixel:
+       Ha   value → Lab vector  (a*=+50,  b*=+10)   ← red, slightly warm
+       OIII value → Lab vector  (a*=-15,  b*=-35)   ← cyan-blue
+       Lab_total = signal_weighted_sum(Ha_vec, OIII_vec)
+       L         = norm(Ha + OIII) mapped to 0..100   ← luminance from emission magnitude
+   Convert Lab → sRGB → emit ImageWindow{3ch, R/G/B}
+
+8. Stretch (existing pipeline, unchanged)
+   StretchPipeline.execute(rgb_image)  ← Phase 8 ratings now operate on calibrated RGB
+</pre>
+    </div>
+  </div>
+</div>
+
+<div class="section">
+  <div class="mockup">
+    <div class="mockup-header">Scenario B — LRGBSHO mixed batch (100 frames: 30 L mono, 20 R, 20 G, 20 B, 30 HaO3 OSC, 30 S2O3 OSC)</div>
+    <div class="mockup-body" style="background:#0a0a0a;color:#ddd;padding:18px;font-family:monospace;font-size:11px;line-height:1.6">
+<pre style="margin:0">
+1. Pre-batch scan: classifier runs over every FITS metadata once
+   resulting filter classes seen: {BROADBAND_L, BROADBAND_RGB, DUAL_NB_OSC}
+   union of voxel slots: {L, R, G, B, Ha, OIII, SII}
+   Cube allocated with 7 slots per voxel
+
+2. Per-frame routing
+   ┌──────────────┬─────────────────────────────────────────────────────────────┐
+   │ Frame class  │ Routing                                                     │
+   ├──────────────┼─────────────────────────────────────────────────────────────┤
+   │ Mono L       │ value → L slot                                              │
+   │ Mono R       │ value → R slot                                              │
+   │ Mono G       │ value → G slot                                              │
+   │ Mono B       │ value → B slot                                              │
+   │ HaO3 OSC     │ debayer → (R,G,B) → Q-solve → (Ha, OIII) → Ha + OIII slots  │
+   │ S2O3 OSC     │ debayer → (R,G,B) → Q-solve → (SII, OIII) → SII + OIII slots│
+   └──────────────┴─────────────────────────────────────────────────────────────┘
+
+3. Critical detail — OIII accumulates from TWO sources
+   The OIII slot's Welford gathers samples from HaO3 frames AND S2O3 frames.
+   Same semantic slot, multi-source accumulation. The original "0.25 × O1 + 0.25 × O2 +
+   0.25 × O3 + 0.25 × O4" intuition falls out automatically: same-pixel OIII signal across
+   all OIII-bearing frames lands in the same Welford accumulator with proper sample counts.
+
+4. Phase B fits + selects per slot (independent fits per channel)
+
+5. ColorComposer — Lab/LCH composite path
+   Per pixel:
+     L_broadband = native L slot value (or synthesized from R+G+B if no L frames)
+     RGB_natural = (R, G, B) slots → CIE Lab (a*, b* extracted as natural chrominance)
+     Emission_a*b* = Ha→(+50, +10)  +  OIII→(-15, -35)  +  SII→(+60, +25)
+                     each weighted by signal strength, clamped to gamut
+     Lab_final = (L_broadband, a*_natural + a*_emission, b*_natural + b*_emission)
+   sRGB output preserves broadband detail (L untouched) + line-emission boost in
+   chrominance only.
+
+   Continuum-subtraction opt-in (advanced):
+     before adding emission_a*b*, subtract estimated continuum:
+        Ha_pure   = Ha   − k_Ha   × R_continuum
+        OIII_pure = OIII − k_OIII × G_continuum
+     pure-emission then drives the chrominance vectors. Stars stay natural-color.
+</pre>
+    </div>
+  </div>
+</div>
+
+<h3>Does the data flow look right?</h3>
+
+<div class="options">
+  <div class="option" data-choice="a" onclick="toggleSelect(this)">
+    <div class="letter">A</div>
+    <div class="content">
+      <h3>Yes — proceed to error handling (section 4)</h3>
+      <p>Both scenarios make sense. Multi-source OIII accumulation is a clean side-effect of the slot architecture — that addresses the original ".25 × OIII" idea correctly.</p>
+    </div>
+  </div>
+  <div class="option" data-choice="b" onclick="toggleSelect(this)">
+    <div class="letter">B</div>
+    <div class="content">
+      <h3>Mostly right; one part to clarify</h3>
+      <p>Maybe the L synthesis when no native L frame is present, or the continuum-scale factors, or how Phase 8 ratings interact with the multi-class case.</p>
+    </div>
+  </div>
+  <div class="option" data-choice="c" onclick="toggleSelect(this)">
+    <div class="letter">C</div>
+    <div class="content">
+      <h3>Wrong somewhere — the routing or composer math is off</h3>
+      <p>I'll describe.</p>
+    </div>
+  </div>
+</div>

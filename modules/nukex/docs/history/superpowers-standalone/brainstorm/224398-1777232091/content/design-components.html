@@ -1,0 +1,127 @@
+<h2>Design — Section 2 of 5: Components</h2>
+<p class="subtitle">What's new, what's refactored, what gets deleted. Each item lists its single responsibility — if you can't articulate that in one sentence, the boundary is wrong.</p>
+
+<div class="section">
+  <div class="mockup">
+    <div class="mockup-header">New code (single-responsibility scoped)</div>
+    <div class="mockup-body" style="background:#0a0a0a;color:#ddd;padding:18px;font-family:monospace;font-size:11px;line-height:1.6">
+<pre style="margin:0">
+<span style="color:#5fc55f">src/lib/core/</span>
+  Filter.{hpp,cpp}                  → typed wrapper: (FilterClass, FilterName, Camera, BandwidthSpec)
+                                       lives in core because everyone downstream consumes it
+
+<span style="color:#5fc55f">src/lib/io/</span>
+  FilterClassifier.{hpp,cpp}        → FITSMetadata → Filter; emits "needs disambiguation"
+                                       result if FILTER + INSTRUME insufficient
+                                       (extends, doesn't replace, the existing
+                                        filter_classifier.cpp in src/module/)
+
+<span style="color:#5fc55f">src/lib/calibration/   ← new directory</span>
+  QEDatabase.{hpp,cpp}              → loads share/qe_database.json + ~/.nukex4/qe_overrides.json,
+                                       exposes lookup(Camera, wavelength) and
+                                       lookup(FilterName) → BandwidthSpec
+  ChannelDecomposer.{hpp,cpp}       → builds Q-matrix per (Filter, Camera), returns
+                                       a per-pixel solver: (R,G,B) → recovered line channels
+
+<span style="color:#5fc55f">src/lib/compose/       ← new directory</span>
+  Palette.{hpp,cpp}                 → calibrated emission-line color vectors at 656/501/672 nm
+                                       in CIE-Lab; "no greens by construction" enforced here
+  ColorComposer.{hpp,cpp}           → cube → final RGB; Lab/LCH composite default,
+                                       continuum-subtract opt-in mode
+
+<span style="color:#5fc55f">src/module/</span>
+  DisambiguationDialog.{hpp,cpp}    → PI dialog: "FITS FILTER missing/unknown for N frames —
+                                       which class is this?" Only shown when classifier asks.
+
+<span style="color:#5fc55f">share/</span>
+  qe_database.json                  → 22 sensors + 55 cameras + 87 filters
+                                       (research agent's output, normalized + reviewed)
+
+<span style="color:#5fc55f">tools/</span>
+  import_qe_research.py             → one-shot transform from research JSON to shipping format
+                                       (drops _meta, validates schema, writes share/)
+</pre>
+    </div>
+  </div>
+</div>
+
+<div class="section">
+  <div class="mockup">
+    <div class="mockup-header">Refactored existing code</div>
+    <div class="mockup-body" style="background:#0a0a0a;color:#ddd;padding:18px;font-family:monospace;font-size:11px;line-height:1.6">
+<pre style="margin:0">
+<span style="color:#ffaa00">src/lib/core/channel_config.{hpp,cpp}</span>
+  → driven by Filter+FilterClass instead of StackingMode enum
+  → slot allocation is filter-class-shaped (Ha+OIII vs R+G+B vs L+R+G+B)
+  → mixed-class cube takes the union of all filter classes seen in the batch
+  → REMOVES the dead output_rgb_mapping[3] field
+
+<span style="color:#ffaa00">src/lib/core/cube.{hpp,cpp} + SubcubeVoxel</span>
+  → variable-arity slot layout (replaces hardcoded MAX_CHANNELS arrays)
+  → each slot still holds Welford + histogram per pixel
+  → memory layout stays SoA-friendly for GPU — slots are contiguous arrays
+
+<span style="color:#ffaa00">src/lib/stacker/stacking_engine.cpp</span>
+  → REMOVES the hardcoded OSC_RGB at line 107
+  → per-frame accumulate calls ChannelDecomposer.solve(frame R,G,B) → routes into voxel slots
+  → multi-filter batches: dispatch on per-frame filter class
+
+<span style="color:#ffaa00">src/module/NukeXInstance.cpp</span>
+  → wires QEDatabase + FilterClassifier + ChannelDecomposer at execution start
+  → emits ImageWindow from ColorComposer output (always 3-channel RGB)
+  → optional 2nd window for "raw line emission" channels (Ha mono, OIII mono)
+    if user wants to do their own combine
+
+<span style="color:#ffaa00">src/module/NukeXInterface.cpp</span>
+  → new "QE override file…" file picker (optional; defaults to ~/.nukex4/qe_overrides.json)
+  → no other UI changes (honors simple-UI rule)
+</pre>
+    </div>
+  </div>
+</div>
+
+<div class="section">
+  <div class="mockup">
+    <div class="mockup-header">Deletions (dead code, per no-stubs rule)</div>
+    <div class="mockup-body" style="background:#0a0a0a;color:#ddd;padding:18px;font-family:monospace;font-size:11px;line-height:1.6">
+<pre style="margin:0">
+<span style="color:#ff6060">src/lib/core/include/nukex/core/channel_config.hpp:38</span>
+  output_rgb_mapping[3]   ← never read by any consumer; classic stub
+
+<span style="color:#ff6060">src/lib/core/src/channel_config.cpp</span>
+  StackingMode::OSC_HAO3 case  ← dead enum value; replaced by FilterClass::DUAL_NB_OSC
+  StackingMode::OSC_S2O3 case  ← dead enum value; same
+
+<span style="color:#ff6060">src/lib/core/include/nukex/core/channel_config.hpp:9-16</span>
+  enum class StackingMode      ← entire enum replaced by FilterClass + Filter
+  (callers migrate to FilterClass; one or two minor signature changes)
+</pre>
+    </div>
+  </div>
+</div>
+
+<h3>Does the component map look right?</h3>
+
+<div class="options">
+  <div class="option" data-choice="a" onclick="toggleSelect(this)">
+    <div class="letter">A</div>
+    <div class="content">
+      <h3>Yes — proceed to data flow detail (section 3)</h3>
+      <p>New code, refactors, and deletions all match what we settled on.</p>
+    </div>
+  </div>
+  <div class="option" data-choice="b" onclick="toggleSelect(this)">
+    <div class="letter">B</div>
+    <div class="content">
+      <h3>Mostly right; one component to discuss</h3>
+      <p>I'll describe in the terminal. (E.g., maybe DisambiguationDialog should live in lib/io not module/, or ColorComposer should be split into smaller pieces.)</p>
+    </div>
+  </div>
+  <div class="option" data-choice="c" onclick="toggleSelect(this)">
+    <div class="letter">C</div>
+    <div class="content">
+      <h3>Missing a component / wrong boundary</h3>
+      <p>Something I didn't list, or one of the new boundaries is wrong. I'll describe.</p>
+    </div>
+  </div>
+</div>

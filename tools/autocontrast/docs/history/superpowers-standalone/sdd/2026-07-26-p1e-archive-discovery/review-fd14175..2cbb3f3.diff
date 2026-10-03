@@ -1,0 +1,151 @@
+# Review package: fd14175..2cbb3f3
+
+## Commits
+2cbb3f3 §4.3: derive palette class from gallery-published filter bands
+
+## Files changed
+ src/autocontrast/fingerprint/palette.py | 51 +++++++++++++++++++++++++
+ tests/test_palette_gallery.py           | 68 +++++++++++++++++++++++++++++++++
+ 2 files changed, 119 insertions(+)
+
+## Diff
+diff --git a/src/autocontrast/fingerprint/palette.py b/src/autocontrast/fingerprint/palette.py
+index a6cdcff..c17ea70 100644
+--- a/src/autocontrast/fingerprint/palette.py
++++ b/src/autocontrast/fingerprint/palette.py
+@@ -75,10 +75,61 @@ def palette_class_from_filters(filters: list[str]) -> str:
+     if narrow == {"Ha", "OIII"} and broad == {"R", "G", "B"}:
+         return "HaOIII-RGB"
+     if narrow == {"Ha"} and broad == {"R", "G", "B"}:
+         return "HaRGB"
+     if broad == {"R", "G", "B"}:
+         return "LRGB" if has_lum else "RGB"
+     if has_lum and not broad and not narrow:
+         return "L-only"
+ 
+     return "unknown"
++
++
++# Professional galleries publish photometric band letters and emission-line names rather
++# than amateur filter-wheel labels, so they need their own mapping. Broadband letters
++# span UV through near-IR; all of them contribute to a broadband colour composite.
++_GALLERY_BROADBAND = {
++    "U", "B", "V", "R", "I", "Z", "Y", "G", "J", "H", "K", "W", "L", "M",
++}
++
++_GALLERY_NARROWBAND = {
++    "HA": "Ha", "H-ALPHA": "Ha", "HALPHA": "Ha", "H_ALPHA": "Ha",
++    "OIII": "OIII", "O-III": "OIII", "O3": "OIII", "[O III]": "OIII", "[OIII]": "OIII",
++    "SII": "SII", "S-II": "SII", "S2": "SII", "[S II]": "SII", "[SII]": "SII",
++}
++
++
++def palette_class_from_gallery_bands(bands: list[str]) -> str:
++    """Derive a §4.3 palette class from a gallery's published filter bands.
++
++    Note the asymmetry against :func:`palette_class_from_filters`: an *empty* FITS FILTER
++    keyword is positive evidence of a one-shot-colour camera and yields ``RGB``, whereas
++    an empty gallery filter table is simply absent metadata and must yield ``unknown``.
++    Guessing here would let a mismatched reference push channel ratios (§2.1).
++
++    A broadband-dominated composite is classified ``RGB`` even when a narrowband layer is
++    blended in, matching how the curated catalog labels heic0601a (B, V, H-alpha, I, Z).
++    """
++    if not bands:
++        return "unknown"
++
++    broad: set[str] = set()
++    narrow: set[str] = set()
++    for raw in bands:
++        key = str(raw).strip().upper()
++        if not key:
++            continue
++        if key in _GALLERY_NARROWBAND:
++            narrow.add(_GALLERY_NARROWBAND[key])
++        elif key in _GALLERY_BROADBAND:
++            broad.add(key)
++
++    # Two or more broadband filters make a colour composite; incidental narrowband
++    # blending does not change the presentation palette.
++    if len(broad) >= 2:
++        return "RGB"
++    if not broad:
++        if narrow == {"SII", "Ha", "OIII"}:
++            return "SHO"
++        if narrow == {"Ha", "OIII"}:
++            return "HOO"
++    return "unknown"
+diff --git a/tests/test_palette_gallery.py b/tests/test_palette_gallery.py
+new file mode 100644
+index 0000000..3ff2c73
+--- /dev/null
++++ b/tests/test_palette_gallery.py
+@@ -0,0 +1,68 @@
++"""Palette derivation from gallery-published filter bands (§4.3)."""
++
++from __future__ import annotations
++
++import pytest
++
++from autocontrast.fingerprint.palette import (
++    PALETTE_CLASSES,
++    palette_class_from_filters,
++    palette_class_from_gallery_bands,
++)
++
++
++def test_absent_filter_table_is_unknown_not_rgb():
++    """The critical asymmetry against palette_class_from_filters: an empty FITS FILTER
++    keyword is POSITIVE evidence of a one-shot-colour camera, so that function returns
++    RGB. An absent gallery filter table is merely missing metadata, so this one must
++    return 'unknown'. Same empty input, opposite correct answers."""
++    assert palette_class_from_gallery_bands([]) == "unknown"
++    assert palette_class_from_filters([]) == "RGB"
++
++
++def test_real_hubble_bands_are_rgb():
++    """heic0601a: B, V, H-alpha, I, Z — broadband-dominated; catalog declares RGB."""
++    assert palette_class_from_gallery_bands(["B", "V", "H-alpha", "I", "Z"]) == "RGB"
++
++
++def test_real_eso_bands_are_rgb():
++    """eso1103a: U, B, V, R, H-alpha."""
++    assert palette_class_from_gallery_bands(["U", "B", "V", "R", "H-alpha"]) == "RGB"
++
++
++def test_pure_narrowband_triplet_is_sho():
++    assert palette_class_from_gallery_bands(["S-II", "H-alpha", "O-III"]) == "SHO"
++
++
++def test_pure_narrowband_pair_is_hoo():
++    assert palette_class_from_gallery_bands(["H-alpha", "O-III"]) == "HOO"
++
++
++@pytest.mark.parametrize("alias", ["H-alpha", "Halpha", "Ha", "H-Alpha"])
++def test_h_alpha_aliases_are_recognised(alias):
++    assert palette_class_from_gallery_bands([alias, "O-III"]) == "HOO"
++
++
++@pytest.mark.parametrize("alias", ["O-III", "OIII", "O3", "[O III]"])
++def test_oiii_aliases_are_recognised(alias):
++    assert palette_class_from_gallery_bands(["H-alpha", alias]) == "HOO"
++
++
++def test_single_broadband_filter_is_not_a_colour_palette():
++    """One filter cannot make a colour composite; claiming RGB would be a guess."""
++    assert palette_class_from_gallery_bands(["V"]) == "unknown"
++
++
++def test_single_narrowband_filter_is_unknown():
++    assert palette_class_from_gallery_bands(["H-alpha"]) == "unknown"
++
++
++def test_unrecognised_bands_are_unknown_never_guessed():
++    """§2.1: a mis-derived palette lets a mismatched reference push channel ratios."""
++    assert palette_class_from_gallery_bands(["Radio 21cm"]) == "unknown"
++    assert palette_class_from_gallery_bands(["", "  "]) == "unknown"
++
++
++def test_result_is_always_a_declared_palette_class():
++    for bands in ([], ["V"], ["B", "V"], ["H-alpha", "O-III"], ["nonsense"]):
++        assert palette_class_from_gallery_bands(bands) in PALETTE_CLASSES

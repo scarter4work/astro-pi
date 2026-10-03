@@ -1,0 +1,410 @@
+# Review package: cb572cd..HEAD
+
+## Commits
+507f9a9 feat: per-leaf-dir manifest export and import
+
+## Files changed
+ src/astrometa/manifest.py | 185 ++++++++++++++++++++++++++++++++++++++++++
+ tests/test_manifest.py    | 202 ++++++++++++++++++++++++++++++++++++++++++++++
+ 2 files changed, 387 insertions(+)
+
+## Diff
+diff --git a/src/astrometa/manifest.py b/src/astrometa/manifest.py
+new file mode 100644
+index 0000000..93ed48b
+--- /dev/null
++++ b/src/astrometa/manifest.py
+@@ -0,0 +1,185 @@
++r"""
++Per-leaf-directory manifest export and import: the project's durability
++concession against database loss.
++
++The SQLite database in db.py is the working store for every other module
++in this system, but it is one file that can be lost or corrupted, and it
++does not travel with the archive when a directory gets moved or renamed.
++A `.astro-manifest.json` sidecar written into (or mirroring) each LEAF
++directory -- the ~845 terminal directories that actually hold frame
++files, not the ~28,135 individual frames -- means every frame's
++classification and disposition labels survive independently of the
++database and travel with the folder that holds them.
++
++export_dir/export_all only ever READ frames out of the database and
++write a JSON sidecar; import_file only ever writes rows back into a
++fresh (or recovering) database. Neither one ever touches a FITS file --
++the manifest sidecar is the one write this system makes outside of
++disposition.py's quarantine (which moves FITS files themselves; see its
++module docstring), never the frame data.
++
++LIKE escaping (export_dir): SQLite's LIKE operator treats `_` as a
++single-character wildcard, not a literal underscore. This archive's own
++root path (`/mnt/qnap/astro_data/...`) contains one, and so do many
++target directory names (`Sh2-106`, `IC 1848_1-1`), so an unescaped
++`f"{leaf_dir}/%"` prefix is broader than intended and can silently match
++a sibling path that differs from the leaf only where an underscore
++sits. `_like_escape` neutralises `\`, `%` and `_` in the interpolated
++prefix and the query pairs it with `ESCAPE '\'` so that escaped
++underscore is matched literally rather than as a wildcard -- see
++test_like_escape_rejects_underscore_wildcard_sibling for the concrete
++collision this closes.
++
++Read-only archive vs. the manifest write (export_all's out_dir): the
++deployment mounts (`/archive`, `/live`) are read-only, so export_dir's
++default of writing into the leaf directory it just read from would fail
++on every call there. export_dir already accepted an `out_dir` escape
++hatch; export_all did not propagate one, making it unusable on the
++deployment host entirely. It now accepts `out_dir` and, when given,
++writes each leaf's manifest beneath a MIRROR of that leaf's full
++directory structure under `out_dir` (see `_mirror_leaf_dir`), rather
++than flattening every manifest into one directory -- flattening would
++collide on basename alone (target and panel directory names repeat
++across different nights/objects in this archive) and silently keep only
++the last manifest written for each colliding name. A write failure (a
++still-read-only target, a permission error) is never swallowed: both
++export_dir and export_all let the OSError propagate, naming the leaf
++directory and the destination path, rather than skipping a directory
++silently -- a partial export that looks complete is exactly the failure
++this whole project exists to prevent.
++"""
++import json
++import sqlite3
++from datetime import datetime, timezone
++from pathlib import Path
++
++MANIFEST_NAME = ".astro-manifest.json"
++_FIELDS = ("content_hash", "filename", "size", "frame_type", "camera",
++           "filter", "exptime", "captured_at", "fingerprint",
++           "disposition", "disposition_reason", "disposition_source")
++
++
++def _like_escape(s: str) -> str:
++    """
++    Escape LIKE metacharacters (`\\`, `%`, `_`) in `s` so it is matched
++    literally rather than as a pattern. SQLite's LIKE treats `_` as a
++    single-character wildcard -- this archive's paths are full of
++    literal underscores -- so an unescaped prefix is broader than the
++    caller intends. Pair with `ESCAPE '\\'` in the query.
++    """
++    return s.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
++
++
++def _mirror_leaf_dir(leaf_dir: Path, out_dir: Path) -> Path:
++    """
++    Map `leaf_dir` onto a path beneath `out_dir` that preserves its full
++    directory structure (minus the leading root), so two different leaf
++    directories that happen to share a basename -- a target or panel
++    name reused under a different night or object -- land at distinct
++    destinations instead of colliding on the same manifest filename.
++    """
++    parts = leaf_dir.parts
++    if leaf_dir.anchor:
++        parts = parts[len(Path(leaf_dir.anchor).parts):]
++    return out_dir.joinpath(*parts) if parts else out_dir
++
++
++def export_dir(conn, leaf_dir: Path, out_dir: Path | None = None) -> Path:
++    """
++    Write a `.astro-manifest.json` sidecar for every frame recorded
++    under `leaf_dir`, into `out_dir` if given, else into `leaf_dir`
++    itself.
++
++    Frames are selected by path prefix with an escaped LIKE (see module
++    docstring) so a sibling directory differing from `leaf_dir` only
++    where an underscore sits is never pulled in.
++
++    Raises OSError, naming both `leaf_dir` and the destination path, if
++    the manifest can't actually be written (e.g. a read-only target) --
++    never silently skips.
++    """
++    leaf_dir = Path(leaf_dir)
++    prev_factory = conn.row_factory
++    conn.row_factory = sqlite3.Row
++    try:
++        pattern = _like_escape(str(leaf_dir)) + "/%"
++        rows = conn.execute(
++            f"SELECT {', '.join(_FIELDS)} FROM frames "
++            f"WHERE path LIKE ? ESCAPE '\\'",
++            (pattern,)).fetchall()
++    finally:
++        conn.row_factory = prev_factory
++
++    doc = {
++        "version": 1,
++        "generated_at": datetime.now(timezone.utc).isoformat(),
++        "leaf_dir": str(leaf_dir),
++        "frames": [dict(r) for r in rows],
++    }
++    target = (Path(out_dir) if out_dir is not None else leaf_dir) / MANIFEST_NAME
++    try:
++        target.parent.mkdir(parents=True, exist_ok=True)
++        target.write_text(json.dumps(doc, indent=2))
++    except OSError as e:
++        raise OSError(
++            f"failed to write manifest for leaf directory {leaf_dir} to "
++            f"{target}: {e}") from e
++    return target
++
++
++def export_all(conn, out_dir: Path | None = None, dry_run: bool = False) -> int:
++    """
++    Export a manifest for every leaf directory referenced by `frames`.
++
++    `dry_run=True` returns the count of leaf directories that would be
++    exported without writing anything -- neither export_dir nor any
++    filesystem call runs.
++
++    When `out_dir` is given, each leaf's manifest is written beneath a
++    mirror of its full directory structure under `out_dir` (see
++    `_mirror_leaf_dir`), never flattened into `out_dir` directly -- see
++    module docstring for why flattening would collide. A write failure
++    raises immediately, naming the offending leaf directory (via
++    export_dir); no directory is silently skipped, so a partial run
++    never looks like a complete one.
++    """
++    leaves = {Path(r[0]).parent for r in
++              conn.execute("SELECT path FROM frames").fetchall()}
++    if dry_run:
++        return len(leaves)
++    out_dir = Path(out_dir) if out_dir is not None else None
++    for leaf in leaves:
++        target_dir = _mirror_leaf_dir(leaf, out_dir) if out_dir is not None else None
++        export_dir(conn, leaf, out_dir=target_dir)
++    return len(leaves)
++
++
++def import_file(conn, manifest_path: Path) -> int:
++    """
++    Reconstruct `frames` rows from one manifest sidecar.
++
++    Identity is `content_hash`, never filename -- filenames are not
++    unique across this archive -- so this is an upsert keyed on
++    content_hash: re-running it against the same manifest updates the
++    same rows rather than duplicating them.
++    """
++    doc = json.loads(Path(manifest_path).read_text())
++    leaf = Path(doc["leaf_dir"])
++    n = 0
++    for fr in doc["frames"]:
++        conn.execute("""INSERT INTO frames (content_hash, path, filename,
++            size, mtime, frame_type, camera, filter, exptime, captured_at,
++            fingerprint, disposition, disposition_reason, disposition_source)
++            VALUES (?,?,?,?,0.0,?,?,?,?,?,?,?,?,?)
++            ON CONFLICT(content_hash) DO UPDATE SET
++              filter=excluded.filter, camera=excluded.camera,
++              disposition=excluded.disposition,
++              disposition_reason=excluded.disposition_reason""",
++            (fr["content_hash"], str(leaf / fr["filename"]), fr["filename"],
++             fr["size"], fr["frame_type"], fr["camera"], fr["filter"],
++             fr["exptime"], fr["captured_at"], fr["fingerprint"],
++             fr["disposition"], fr["disposition_reason"],
++             fr["disposition_source"]))
++        n += 1
++    conn.commit()
++    return n
+diff --git a/tests/test_manifest.py b/tests/test_manifest.py
+new file mode 100644
+index 0000000..3ebb85d
+--- /dev/null
++++ b/tests/test_manifest.py
+@@ -0,0 +1,202 @@
++import json
++import os
++import stat
++from pathlib import Path
++
++import pytest
++
++from astrometa import db, manifest
++
++
++def _frame(conn, h, path, obj_name=None):
++    conn.execute("""INSERT INTO frames (content_hash, path, filename, size,
++        mtime, frame_type, disposition, filter, camera)
++        VALUES (?,?,?,10,1.0,'light','present','HaO3','ZWO ASI585MC Air')""",
++        (h, path, Path(path).name))
++    conn.commit()
++
++
++def test_export_writes_manifest(tmp_path):
++    leaf = tmp_path / "2026-09-08" / "Sh2-106"; leaf.mkdir(parents=True)
++    conn = db.connect(tmp_path / "t.sqlite"); db.init_schema(conn)
++    _frame(conn, "h1", str(leaf / "Light_Sh2-106_0001.fit"))
++    out = manifest.export_dir(conn, leaf)
++    assert out.name == ".astro-manifest.json"
++    doc = json.loads(out.read_text())
++    assert doc["frames"][0]["content_hash"] == "h1"
++    assert doc["frames"][0]["filter"] == "HaO3"
++
++
++def test_roundtrip_reconstructs_labels_after_db_loss(tmp_path):
++    leaf = tmp_path / "2026-09-08" / "Sh2-106"; leaf.mkdir(parents=True)
++    conn = db.connect(tmp_path / "a.sqlite"); db.init_schema(conn)
++    _frame(conn, "h1", str(leaf / "Light_Sh2-106_0001.fit"))
++    out = manifest.export_dir(conn, leaf)
++
++    fresh = db.connect(tmp_path / "b.sqlite"); db.init_schema(fresh)
++    assert manifest.import_file(fresh, out) == 1
++    row = fresh.execute("SELECT content_hash, filter FROM frames").fetchone()
++    assert row == ("h1", "HaO3")
++
++
++def test_filename_with_space_survives_roundtrip(tmp_path):
++    leaf = tmp_path / "d" / "NGC 7635"; leaf.mkdir(parents=True)
++    conn = db.connect(tmp_path / "a.sqlite"); db.init_schema(conn)
++    _frame(conn, "h9", str(leaf / "Light_NGC 7635_300.0s_0001.fit"))
++    out = manifest.export_dir(conn, leaf)
++    fresh = db.connect(tmp_path / "b.sqlite"); db.init_schema(fresh)
++    manifest.import_file(fresh, out)
++    assert fresh.execute("SELECT filename FROM frames").fetchone()[0] \
++        == "Light_NGC 7635_300.0s_0001.fit"
++
++
++def test_importing_twice_does_not_duplicate_rows(tmp_path):
++    leaf = tmp_path / "2026-09-08" / "Sh2-106"; leaf.mkdir(parents=True)
++    conn = db.connect(tmp_path / "a.sqlite"); db.init_schema(conn)
++    _frame(conn, "h1", str(leaf / "Light_Sh2-106_0001.fit"))
++    out = manifest.export_dir(conn, leaf)
++
++    fresh = db.connect(tmp_path / "b.sqlite"); db.init_schema(fresh)
++    manifest.import_file(fresh, out)
++    manifest.import_file(fresh, out)
++    count = fresh.execute("SELECT COUNT(*) FROM frames").fetchone()[0]
++    assert count == 1
++
++
++def test_exporting_twice_produces_the_same_manifest(tmp_path):
++    leaf = tmp_path / "2026-09-08" / "Sh2-106"; leaf.mkdir(parents=True)
++    conn = db.connect(tmp_path / "a.sqlite"); db.init_schema(conn)
++    _frame(conn, "h1", str(leaf / "Light_Sh2-106_0001.fit"))
++    manifest.export_dir(conn, leaf)
++    doc1 = json.loads((leaf / manifest.MANIFEST_NAME).read_text())
++    manifest.export_dir(conn, leaf)
++    doc2 = json.loads((leaf / manifest.MANIFEST_NAME).read_text())
++    assert doc1["frames"] == doc2["frames"]
++
++
++# --- Correction 1: the LIKE prefix must be escaped --------------------
++
++def test_like_escape_rejects_underscore_wildcard_sibling(tmp_path):
++    """
++    A naive f"{leaf_dir}/%" LIKE pattern treats '_' as a single-character
++    wildcard, so a sibling path differing from the leaf ONLY where an
++    underscore sits would incorrectly match. This archive's real root
++    (/mnt/qnap/astro_data/...) has exactly this shape, and so do many
++    target directory names.
++    """
++    leaf = tmp_path / "astro_data" / "Sh2-106"; leaf.mkdir(parents=True)
++    # Same length as "astro_data", differing only at the underscore's
++    # position -- an unescaped '_' wildcard matches 'X' here just as
++    # readily as it matches the real '_'.
++    sibling = tmp_path / "astroXdata" / "Sh2-106"; sibling.mkdir(parents=True)
++
++    conn = db.connect(tmp_path / "t.sqlite"); db.init_schema(conn)
++    _frame(conn, "h1", str(leaf / "Light_Sh2-106_0001.fit"))
++    _frame(conn, "h2", str(sibling / "Light_Sh2-106_0002.fit"))
++
++    out = manifest.export_dir(conn, leaf)
++    doc = json.loads(out.read_text())
++    hashes = {f["content_hash"] for f in doc["frames"]}
++    assert hashes == {"h1"}
++
++
++# --- Correction 2: export_all must work against a read-only archive ---
++
++def test_export_all_writes_into_each_leaf_by_default(tmp_path):
++    leaf1 = tmp_path / "2026-09-08" / "Sh2-106"; leaf1.mkdir(parents=True)
++    leaf2 = tmp_path / "2026-09-09" / "M 20"; leaf2.mkdir(parents=True)
++    conn = db.connect(tmp_path / "t.sqlite"); db.init_schema(conn)
++    _frame(conn, "h1", str(leaf1 / "Light_Sh2-106_0001.fit"))
++    _frame(conn, "h2", str(leaf2 / "Light_M 20_0001.fit"))
++
++    n = manifest.export_all(conn)
++    assert n == 2
++    assert (leaf1 / manifest.MANIFEST_NAME).exists()
++    assert (leaf2 / manifest.MANIFEST_NAME).exists()
++
++
++def test_export_all_dry_run_counts_without_writing(tmp_path):
++    leaf = tmp_path / "2026-09-08" / "Sh2-106"; leaf.mkdir(parents=True)
++    conn = db.connect(tmp_path / "t.sqlite"); db.init_schema(conn)
++    _frame(conn, "h1", str(leaf / "Light_Sh2-106_0001.fit"))
++
++    n = manifest.export_all(conn, dry_run=True)
++    assert n == 1
++    assert not (leaf / manifest.MANIFEST_NAME).exists()
++
++
++def test_export_all_mirrors_leaf_structure_under_out_dir(tmp_path):
++    archive = tmp_path / "archive"
++    leaf = archive / "2026-09-08" / "Sh2-106"; leaf.mkdir(parents=True)
++    out_dir = tmp_path / "manifests"; out_dir.mkdir()
++    conn = db.connect(tmp_path / "t.sqlite"); db.init_schema(conn)
++    _frame(conn, "h1", str(leaf / "Light_Sh2-106_0001.fit"))
++
++    n = manifest.export_all(conn, out_dir=out_dir)
++    assert n == 1
++
++    found = list(out_dir.rglob(manifest.MANIFEST_NAME))
++    assert len(found) == 1
++    # Nothing written into the archive tree itself (read-only on the
++    # deployment host).
++    assert not (leaf / manifest.MANIFEST_NAME).exists()
++    doc = json.loads(found[0].read_text())
++    assert doc["frames"][0]["content_hash"] == "h1"
++    assert doc["leaf_dir"] == str(leaf)
++    # The leaf's own path is preserved in the mirror, not collapsed away.
++    assert "Sh2-106" in str(found[0])
++    assert "2026-09-08" in str(found[0])
++
++
++def test_export_all_out_dir_avoids_basename_collision(tmp_path):
++    """
++    Two different leaf directories can share a basename (a reused target
++    or panel name under different nights) -- flattening every manifest
++    into one out_dir would collide on filename and silently keep only
++    the last one written. Mirroring the full leaf path avoids that.
++    """
++    archive = tmp_path / "archive"
++    leaf1 = archive / "2026-09-08" / "Sh2-106"; leaf1.mkdir(parents=True)
++    leaf2 = archive / "2026-09-09" / "Sh2-106"; leaf2.mkdir(parents=True)
++    out_dir = tmp_path / "manifests"; out_dir.mkdir()
++    conn = db.connect(tmp_path / "t.sqlite"); db.init_schema(conn)
++    _frame(conn, "h1", str(leaf1 / "Light_Sh2-106_0001.fit"))
++    _frame(conn, "h2", str(leaf2 / "Light_Sh2-106_0002.fit"))
++
++    n = manifest.export_all(conn, out_dir=out_dir)
++    assert n == 2
++
++    found = sorted(out_dir.rglob(manifest.MANIFEST_NAME))
++    assert len(found) == 2  # both survive -- no basename collision
++    leaf_dirs = {json.loads(p.read_text())["leaf_dir"] for p in found}
++    assert leaf_dirs == {str(leaf1), str(leaf2)}
++
++
++def test_export_dir_raises_loudly_on_write_failure(tmp_path):
++    leaf = tmp_path / "2026-09-08" / "Sh2-106"; leaf.mkdir(parents=True)
++    conn = db.connect(tmp_path / "t.sqlite"); db.init_schema(conn)
++    _frame(conn, "h1", str(leaf / "Light_Sh2-106_0001.fit"))
++
++    readonly_out = tmp_path / "readonly"; readonly_out.mkdir()
++    os.chmod(readonly_out, stat.S_IRUSR | stat.S_IXUSR)  # read+execute, no write
++    try:
++        with pytest.raises(OSError) as exc_info:
++            manifest.export_dir(conn, leaf, out_dir=readonly_out)
++        assert str(leaf) in str(exc_info.value)
++    finally:
++        os.chmod(readonly_out, stat.S_IRWXU)  # let tmp_path clean up
++
++
++def test_export_all_raises_and_names_the_failing_leaf(tmp_path):
++    leaf = tmp_path / "2026-09-08" / "Sh2-106"; leaf.mkdir(parents=True)
++    conn = db.connect(tmp_path / "t.sqlite"); db.init_schema(conn)
++    _frame(conn, "h1", str(leaf / "Light_Sh2-106_0001.fit"))
++
++    out_dir = tmp_path / "readonly"; out_dir.mkdir()
++    os.chmod(out_dir, stat.S_IRUSR | stat.S_IXUSR)  # read+execute, no write
++    try:
++        with pytest.raises(OSError) as exc_info:
++            manifest.export_all(conn, out_dir=out_dir)
++        assert str(leaf) in str(exc_info.value)
++    finally:
++        os.chmod(out_dir, stat.S_IRWXU)  # let tmp_path clean up
