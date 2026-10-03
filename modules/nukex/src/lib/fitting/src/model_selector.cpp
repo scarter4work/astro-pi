@@ -87,13 +87,13 @@ FitResult ModelSelector::select_best(const float* values, const float* weights, 
 
 void ModelSelector::select(const float* values, const float* weights, int n,
                            SubcubeVoxel& voxel, int channel) {
-    voxel.mad[channel]                = mad(values, n);
-    voxel.biweight_midvariance[channel] = biweight_midvariance(values, n);
-    voxel.iqr[channel]                = iqr(values, n);
+    voxel.channel(channel).mad                = mad(values, n);
+    voxel.channel(channel).biweight_midvariance = biweight_midvariance(values, n);
+    voxel.channel(channel).iqr                = iqr(values, n);
 
     FitResult best = select_best(values, weights, n);
 
-    voxel.distribution[channel] = best.distribution;
+    voxel.channel(channel).distribution = best.distribution;
 
     if (!best.converged) {
         voxel.set_flag(VoxelFlags::FIT_FAILED);

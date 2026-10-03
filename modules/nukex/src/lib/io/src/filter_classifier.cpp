@@ -18,8 +18,6 @@ struct KnownFilter {
 
 const std::unordered_map<std::string, KnownFilter>& known_table() {
     static const std::unordered_map<std::string, KnownFilter> table = {
-        {"l",         {FilterClass::BROADBAND_L,       "L",   550.0, 300.0}},
-        {"luminance", {FilterClass::BROADBAND_L,       "L",   550.0, 300.0}},
         {"r",         {FilterClass::BROADBAND_RGB,     "R",   620.0, 100.0}},
         {"red",       {FilterClass::BROADBAND_RGB,     "R",   620.0, 100.0}},
         {"g",         {FilterClass::BROADBAND_RGB,     "G",   540.0, 100.0}},
@@ -42,26 +40,49 @@ const std::unordered_map<std::string, KnownFilter>& known_table() {
         {"lenhance",  {FilterClass::DUAL_NB_OSC,       "L-eNhance",  578.5, 25.0}},
         {"lultimate", {FilterClass::DUAL_NB_OSC,       "L-Ultimate", 578.5,  3.0}},
         {"alpt",      {FilterClass::DUAL_NB_OSC,       "ALP-T",      578.5,  5.0}},
+
     };
     return table;
 }
 
-// Filter-wheel slot labels that denote NO narrowband isolation — i.e. a clear
-// slot or a broadband light-pollution / UV-IR-cut filter. These pass the full
-// visible band, so for channel routing they are equivalent to "no filter":
-// Bayer -> BROADBAND_OSC (plain RGB debayer), mono -> BROADBAND_L. Recognising
-// them here prevents a spurious UNKNOWN-on-Bayer hard-abort (they are not
-// narrowband filters, so there is nothing to mis-colour by treating them as OSC).
-// Normalized form = lowercased alphanumerics only (see normalize_name).
-bool is_clear_broadband(const std::string& normalized) {
-    static const std::unordered_set<std::string> clear = {
-        "full",                                   // Optolong L-Pro / L-QEF slot label (user kit)
-        "clear", "none", "open", "nofilter", "no", // generic no-filter slots
-        "lpro", "optolonglpro",                   // Optolong L-Pro (broadband LP)
-        "lqef", "lquadenhance", "lquad",          // Optolong L-Quad Enhance
-        "uvir", "uvircut", "ircut", "luvir",      // UV/IR-cut (broadband)
+// Broadband names whose class depends on the sensor: OSC on a Bayer frame,
+// luminance on a mono frame. Normalised (lowercase, alphanumerics only).
+// Sources: research/qe_database_research.json types `luminance` and
+// `broadband-LPR`, plus the bare L aliases moved out of known_table().
+const std::unordered_set<std::string>& broadband_any_names() {
+    static const std::unordered_set<std::string> names = {
+        "l", "lum", "luminance",
+        "lpro", "lpr", "lps", "lpsd1", "lpsd2", "lpsd3", "lpsv4",
+
+        // Quad-band light-pollution glass. It passes Ha, OIII and SII, which
+        // is why v5.0.0.2 filed it as narrowband -- but it passes ~175 nm to
+        // do it, against 3 nm for L-Ultimate, 5 for ALP-T and 7 for
+        // L-eXtreme. A 175 nm passband is not narrowband, and the filter says
+        // what light gets through, not what the target emits: asked to
+        // decompose the continuum of a galaxy into three emission lines, the
+        // Q-solve drove one line to zero across a whole 114-frame stack of
+        // M63 and the picture came out teal. This is what people image RGB
+        // with, so it is classified as what it is.
+        //
+        // Note what this costs: the three-line Q-solve now has no shipped
+        // spelling at all, and a taught alias cannot restore one, because
+        // aliases are consulted only when the table has no answer (see
+        // classify()). ChannelDecomposer still supports three lines; reaching
+        // it again needs a deliberate opt-in rather than a filter name.
+        "hao3s2", "haoiiisii", "lqef", "lquad", "lquadenhance",
+        "optolonglquadenhance", "lsynergy",
+        "uvir", "uvircut", "uvirblock", "irblock", "uvcut",
+        "cls", "clsccd",
+        "l1", "l2", "l3",           // Astronomik L1/L2/L3 UV-IR block
+        "ircut", "luvir", "optolonglpro",
+
+        // Filter-wheel slot labels that mean "no narrowband isolation": a
+        // clear slot, or the user's own label for an L-Pro / L-QEF slot
+        // ("Full"). Without these a Bayer frame labelled "Full" classified
+        // as UNKNOWN and hard-aborted the stack (astro-pi NukeX 5.1.0.1).
+        "full", "clear", "none", "open", "nofilter", "no",
     };
-    return clear.count(normalized) != 0;
+    return names;
 }
 
 } // namespace
@@ -98,19 +119,28 @@ Filter FilterClassifier::classify(const FrameMetadata& meta) {
     Filter out;
     out.camera = meta.instrument;
 
-    // Empty filter, or a clear/broadband-LP slot label (e.g. "Full", "Clear",
-    // L-Pro, L-QEF): no narrowband isolation -> plain broadband routing. Keep
-    // the original label for logging when the frame named a filter.
-    if (normalized.empty() || is_clear_broadband(normalized)) {
+    if (normalized.empty()) {
         if (is_bayer) {
             out.cls       = FilterClass::BROADBAND_OSC;
-            out.name      = normalized.empty() ? "OSC" : meta.filter;
+            out.name      = "OSC";
             out.bandwidth = BandwidthSpec{550.0, 300.0};
         } else {
             out.cls       = FilterClass::BROADBAND_L;
-            out.name      = normalized.empty() ? "L_unnamed" : meta.filter;
+            out.name      = "L_unnamed";
             out.bandwidth = BandwidthSpec{550.0, 300.0};
         }
+        return out;
+    }
+
+    if (broadband_any_names().count(normalized)) {
+        if (is_bayer) {
+            out.cls  = FilterClass::BROADBAND_OSC;
+            out.name = "OSC";
+        } else {
+            out.cls  = FilterClass::BROADBAND_L;
+            out.name = "L";
+        }
+        out.bandwidth = BandwidthSpec{550.0, 300.0};
         return out;
     }
 
@@ -124,6 +154,22 @@ Filter FilterClassifier::classify(const FrameMetadata& meta) {
         return out;
     }
 
+    // Not in the shipped table. Before giving up, consult what the user has
+    // taught us: the interface offers to learn an unrecognised name by asking
+    // which emission lines it passes, and records the answer against the
+    // normalised header value. Checked here, last, so a taught name can only
+    // add a spelling -- it can never redefine Ha or HaO3.
+    const std::string taught = aliases_.lookup(normalized);
+    if (!taught.empty()) {
+        cls = lookup_known(FilterAliasStore::normalize(taught), canonical, bw);
+        if (cls != FilterClass::UNKNOWN) {
+            out.cls       = cls;
+            out.name      = canonical;
+            out.bandwidth = bw;
+            return out;
+        }
+    }
+
     if (is_bayer) {
         out.cls  = FilterClass::UNKNOWN;
         out.name = meta.filter;
@@ -133,7 +179,7 @@ Filter FilterClassifier::classify(const FrameMetadata& meta) {
         out.bandwidth = BandwidthSpec{550.0, 300.0};
         last_warning_ = "Unknown filter '" + meta.filter
                       + "' for mono frame -- treating as generic luminance. "
-                      + "If this is a narrowband filter, add it to qe_overrides.json.";
+                      + "If this is a narrowband filter, rename FILTER to Ha/OIII/SII or add it to a qe_overrides.json selected in the NukeX interface.";
     }
     return out;
 }

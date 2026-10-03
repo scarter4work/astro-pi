@@ -1,5 +1,6 @@
 add_library(nukex4_stacker STATIC
     src/frame_cache.cpp
+    src/cache_paths.cpp
     src/stacking_engine.cpp
 )
 

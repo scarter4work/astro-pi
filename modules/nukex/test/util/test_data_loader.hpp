@@ -1,8 +1,6 @@
 #pragma once
 
 #include "nukex/io/image.hpp"
-#include "mini_fits_writer.hpp"  // brings in test_util::write_synthetic_* for
-                                  // integration tests that #include this header
 #include <string>
 
 namespace nukex { namespace test_util {

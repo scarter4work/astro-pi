@@ -11,6 +11,10 @@ REPO="$ROOT/repository"
 DATE="$(date +%Y%m%d)"
 
 die(){ echo "ERROR: $*" >&2; exit 1; }
+# Every PixInsight launch below goes through pi_headless: a private Xvfb, no
+# WAYLAND_DISPLAY, QT_QPA_PLATFORM=xcb -- never the user's desktop.
+. "$ROOT/tools/pi-headless.sh"
+python3 "$ROOT/tools/check-pi-launches.py" "$ROOT" || die "a script launches PixInsight outside pi_headless"
 [ -x "$PI" ]        || die "PixInsight.sh not executable at $PI"
 [ -f "$KEYS" ]      || die "signing keys not found at $KEYS"
 [ -f "$PASS_FILE" ] || die "password file not found at $PASS_FILE (create it 0600, never commit)"
@@ -32,6 +36,68 @@ open(mf,'w').write(s)
 PY
 }
 
+# ── NukeX camera (QE) database publication ──────────────────────────────────
+# The module embeds modules/nukex/share/qe_database.json and fetches updates
+# from $QE_URL (nukex::kQEUpdateBaseURL). The signed publication -- the four
+# files below, Ed25519-signed with the key whose public half is pinned in
+# qe_update.cpp -- lives in modules/nukex/repository/ and is copied verbatim to
+# repository/. The module reads its embedded db_version from that manifest at
+# BUILD time, so the publication must be settled before step 1.
+#
+# The QE key is a raw Ed25519 seed (0600, beside the .xssk), not the .xssk:
+# the module verifies Ed25519, and PixInsight's code-signing identity cannot
+# produce that. It is only needed to publish a CHANGED database; set
+# ASTROPI_QE_DB_VERSION (> the published one) and ASTROPI_QE_DB_SUMMARY to do so.
+QE_SRC="$ROOT/modules/nukex/repository"
+QE_DB="$ROOT/modules/nukex/share/qe_database.json"
+QE_KEY="${ASTROPI_QE_SIGN_KEY:-/home/scarter4work/projects/keys/nukex_qe_signing.key}"
+QE_FILES=(qe_manifest.json qe_manifest.json.sig qe_database.json qe_database.json.sig)
+QE_URL="https://raw.githubusercontent.com/scarter4work/astro-pi/main/repository"
+# The URL this script publishes to must be the one the module fetches from.
+grep -qF "kQEUpdateBaseURL =" "$ROOT/modules/nukex/src/lib/calibration/include/nukex/calibration/qe_update.hpp" \
+  && grep -qF "\"$QE_URL\";" "$ROOT/modules/nukex/src/lib/calibration/include/nukex/calibration/qe_update.hpp" \
+  || die "nukex::kQEUpdateBaseURL is not $QE_URL -- the updater would fetch from somewhere this release does not publish"
+
+# qe_check <dir>: the publication in <dir> is complete, signed by the pinned key,
+# its manifest names the exact bytes of the embedded database, and it carries
+# that database verbatim. Independent of the C++ verifier (step 6 runs that too).
+qe_check(){
+  python3 - "$1" "$QE_DB" "$ROOT/modules/nukex/src/lib/calibration/src/qe_update.cpp" <<'PY'
+import base64,hashlib,json,re,sys,os
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
+d,db,src=sys.argv[1:4]
+m=re.search(r'kQEPublicKey\[[^\]]*\]\s*=\s*\{([^}]*)\}', open(src).read())
+if not m: sys.exit("cannot find kQEPublicKey in "+src)
+pub=Ed25519PublicKey.from_public_bytes(bytes(int(x,16) for x in re.findall(r'0x([0-9a-fA-F]{2})', m.group(1))))
+bad=0
+for name in ("qe_manifest.json","qe_database.json"):
+    p=os.path.join(d,name)
+    if not (os.path.isfile(p) and os.path.isfile(p+".sig")): print("  MISSING",name,"or its .sig in",d); bad=1; continue
+    try: pub.verify(base64.b64decode(open(p+".sig").read().strip(), validate=True), open(p,'rb').read())
+    except Exception as e: print("  BAD SIGNATURE",name,type(e).__name__); bad=1
+if bad: sys.exit(1)
+mf=json.load(open(os.path.join(d,"qe_manifest.json")))
+body=open(db,'rb').read()
+if mf["db_sha512"].lower()!=hashlib.sha512(body).hexdigest(): sys.exit("  manifest db_sha512 does not name the embedded share/qe_database.json")
+if open(os.path.join(d,"qe_database.json"),'rb').read()!=body: sys.exit("  published qe_database.json differs from the embedded one")
+if mf["db_bytes"]!=len(body): sys.exit("  manifest db_bytes is wrong")
+print("  OK  qe db_version %d, %d bytes, signatures verify against the pinned key" % (mf["db_version"], len(body)))
+PY
+}
+
+echo "== 0/6 settle the NukeX camera-database publication (before the build embeds its version) =="
+if ! qe_check "$QE_SRC"; then
+  [ -n "${ASTROPI_QE_DB_VERSION:-}" ] && [ -n "${ASTROPI_QE_DB_SUMMARY:-}" ] \
+    || die "modules/nukex/share/qe_database.json is not the published camera database. To publish it, set ASTROPI_QE_DB_VERSION (greater than the current db_version) and ASTROPI_QE_DB_SUMMARY and re-run."
+  [ -f "$QE_KEY" ] || die "QE signing key not found at $QE_KEY"
+  OLD_QE_VER="$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["db_version"])' "$QE_SRC/qe_manifest.json" 2>/dev/null || echo 0)"
+  [ "$ASTROPI_QE_DB_VERSION" -gt "$OLD_QE_VER" ] || die "ASTROPI_QE_DB_VERSION=$ASTROPI_QE_DB_VERSION must exceed the published $OLD_QE_VER (clients refuse a rollback)"
+  ( cd "$ROOT/modules/nukex" && python3 tools/sign_qe_database.py share/qe_database.json \
+      --key "$QE_KEY" --db-version "$ASTROPI_QE_DB_VERSION" --summary "$ASTROPI_QE_DB_SUMMARY" --out repository ) \
+    || die "QE database signing failed"
+  qe_check "$QE_SRC" || die "freshly signed QE publication does not verify"
+fi
+
 echo "== 1/6 build NukeX + PICopilot modules (portable Rocky 9 container) =="
 # NEVER ship a host build: the dev box's glibc/libstdc++ symbol versions and
 # Fedora-only sonames (libceres/libglog/libgflags) end up in the module, which
@@ -48,13 +114,13 @@ echo "== 1b/6 prove both modules load on stock older distros =="
 echo "== 2/6 sign NukeX module =="
 XSGN="${SO%-pxm.so}-pxm.xsgn"
 rm -f "$XSGN"   # a stale .xsgn from a prior build/self-test must not survive a failed sign
-"$PI" --sign-module-file="$SO" --xssk-file="$KEYS" --xssk-password="$PASS"
+pi_headless "$PI" --sign-module-file="$SO" --xssk-file="$KEYS" --xssk-password="$PASS"
 [ -f "$XSGN" ] || die "module signature $XSGN not produced"
 
 echo "== 2a/6 sign PICopilot module =="
 PICOPILOT_XSGN="${PICOPILOT_SO%-pxm.so}-pxm.xsgn"
 rm -f "$PICOPILOT_XSGN"   # same guard as NukeX above
-"$PI" --sign-module-file="$PICOPILOT_SO" --xssk-file="$KEYS" --xssk-password="$PASS"
+pi_headless "$PI" --sign-module-file="$PICOPILOT_SO" --xssk-file="$KEYS" --xssk-password="$PASS"
 [ -f "$PICOPILOT_XSGN" ] || die "module signature $PICOPILOT_XSGN not produced"
 
 echo "== 2b/6 native-sign EZ scripts =="
@@ -65,7 +131,7 @@ echo "== 2c/6 native-sign gaia-depth-grade scripts =="
 # Writes /tmp/.gaia_sign_result.json (automation-mode console never reaches stdout).
 rm -f /tmp/.gaia_sign_result.json
 LD_LIBRARY_PATH="${ASTROPI_PI_DIR:-/opt/PixInsight}/bin/lib:${ASTROPI_PI_DIR:-/opt/PixInsight}/bin" \
-  "$PI" -n --automation-mode --no-startup-scripts --no-startup-check-updates \
+  pi_headless "$PI" -n --automation-mode --no-startup-scripts --no-startup-check-updates \
         --no-startup-gui-messages -r="$ROOT/gaia-depth-grade/tools/SignGaiaScriptsNative.js" \
         --force-exit >/dev/null 2>&1 || true
 python3 - /tmp/.gaia_sign_result.json "$ROOT/gaia-depth-grade/pi" <<'PY' || die "gaia script signing/verification failed"
@@ -82,7 +148,7 @@ echo "== 2d/6 native-sign rc-astro CLI wrapper scripts =="
 # Writes /tmp/.rcastro_sign_result.json (automation-mode console never reaches stdout).
 rm -f /tmp/.rcastro_sign_result.json
 LD_LIBRARY_PATH="${ASTROPI_PI_DIR:-/opt/PixInsight}/bin/lib:${ASTROPI_PI_DIR:-/opt/PixInsight}/bin" \
-  "$PI" -n --automation-mode --no-startup-scripts --no-startup-check-updates \
+  pi_headless "$PI" -n --automation-mode --no-startup-scripts --no-startup-check-updates \
         --no-startup-gui-messages -r="$ROOT/scripts/rc-astro/tools/SignRCAstroScriptsNative.js" \
         --force-exit >/dev/null 2>&1 || true
 python3 - /tmp/.rcastro_sign_result.json "$ROOT/scripts/rc-astro" <<'PY' || die "rc-astro script signing/verification failed"
@@ -261,6 +327,10 @@ if n!=1: sys.exit("expected exactly one rc-astro-cli package entry, found %d" % 
 open(mf,'w').write(s)
 PY2
 
+echo "== 3e/6 publish the NukeX camera database (repository/qe_*) =="
+for f in "${QE_FILES[@]}"; do cp "$QE_SRC/$f" "$REPO/$f"; done
+qe_check "$REPO" || die "published QE set in repository/ does not verify"
+
 echo "== 4/6 write fileName/sha1/releaseDate into ONE manifest =="
 write_pkg "$REPO/updates.xri" "$MOD_TGZ"                  "$(sha1 "$REPO/$MOD_TGZ")"
 write_pkg "$REPO/updates.xri" "$PICOPILOT_TGZ"            "$(sha1 "$REPO/$PICOPILOT_TGZ")"
@@ -272,7 +342,7 @@ write_pkg "$REPO/updates.xri" "$RCASTRO_ZIP"              "$(sha1 "$REPO/$RCASTR
 
 echo "== 5/6 sign manifest LAST =="
 sed -i '/<Signature developerId=/d' "$REPO/updates.xri"
-"$PI" --sign-xml-file="$REPO/updates.xri" --xssk-file="$KEYS" --xssk-password="$PASS"
+pi_headless "$PI" --sign-xml-file="$REPO/updates.xri" --xssk-file="$KEYS" --xssk-password="$PASS"
 grep -q '<Signature developerId="scarter4work"' "$REPO/updates.xri" || die "manifest signature not appended"
 
 echo "== 6/6 integrity check: declared sha1 == on-disk =="
@@ -289,5 +359,13 @@ for fn,h in re.findall(r'fileName="([^"]+)"\s+sha1="([0-9a-fA-F]{40})"', s):
     else: print("OK",fn)
 sys.exit(1 if bad else 0)
 PY
+
+echo "== 6b/6 integrity check: camera-database publication, with the module's own verifier =="
+qe_check "$REPO" || die "repository/ QE publication is stale, unsigned or does not match the embedded database"
+# The C++ updater from THIS build, served exactly the files in repository/ at
+# the URL the module fetches: signatures, digest, the full install path, and
+# that a fresh install is not offered the database it already carries.
+NUKEX_QE_PUBLISHED_DIR="$REPO" "$ROOT/modules/nukex/build-portable/test/test_qe_update" "[published]" \
+  || die "the module's updater rejects the published camera database in repository/"
 
 echo "RELEASE OK — repository/ ready to commit & push"

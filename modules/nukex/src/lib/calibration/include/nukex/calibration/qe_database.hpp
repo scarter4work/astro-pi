@@ -38,37 +38,53 @@ struct LoadResult {
 
 // Returns the QE database JSON compiled into the module binary (embedded at
 // build time from share/qe_database.json). Defined in the generated TU
-// qe_database_embedded.cpp — see embed_qe_database.cmake.
+// qe_database_embedded.cpp -- see embed_qe_database.cmake.
 std::string embedded_qe_database_json();
+
+// The db_version the embedded database was published as (the signed
+// repository/qe_manifest.json whose db_sha512 matches it), so the updater
+// never offers the database the module already carries. 0 when the
+// embedded bytes match no publication (an unreleased local edit).
+int embedded_qe_database_version();
 
 class QEDatabase {
 public:
     QEDatabase() = default;
 
-    // Parse the compiled-in database. This is the production path: no file,
-    // no path lookup, no working-directory assumption — it cannot be "not found".
+    // Parse the compiled-in database. This is the shipped baseline: no file,
+    // no path lookup, no working-directory assumption -- it cannot be "not
+    // found". A newer database downloaded by the updater is loaded with
+    // load_shipped(path) instead (see active_qe_database()).
     LoadResult load_embedded();
-    // Parse a database from a file on disk (tests / advanced overrides).
+    // Parse a database from a file on disk (downloaded update, tests).
     LoadResult load_shipped(const std::string& path);
     LoadResult load_override(const std::string& path);
 
-    // Camera identification.
-    //
-    // Callers pass whatever the frame says (the raw FITS INSTRUME string,
-    // e.g. "ZWO ASI585MC Air"); the DB keys cameras by ids ("asi585mc").
-    // A name resolves when its normalized key (see normalize_camera_key)
-    // equals the normalized key of a camera id OR of one of that camera's
-    // explicit `aliases` in the JSON. There is NO fuzzy matching: no token
-    // stripping, no prefix/suffix guessing, no nearest match. A name that is
-    // not listed verbatim (modulo case/punctuation) stays unknown, so an
-    // unlisted camera fails loudly instead of borrowing a wrong QE curve
-    // (e.g. mono "ASI585MM" can never land on colour "asi585mc").
-    //
-    // resolve_camera_id returns the DB id, or "" when nothing matches.
-    std::string resolve_camera_id(const std::string& name) const;
+    // Key used for the spec-6.3 unknown-INSTRUME fallback. Shipped by
+    // tools/import_qe_research.py as the mean of Sony-sensor OSC cameras.
+    static constexpr const char* kGenericOSCCamera = "generic_sony_imx_osc";
 
-    // Lowercase ASCII alphanumerics only: "ZWO ASI585MC Air" -> "zwoasi585mcair".
-    static std::string normalize_camera_key(const std::string& name);
+    // Lowercase, alphanumerics only. Applied to every camera key on load and
+    // to every camera argument on lookup, so "ASI585MC" == "asi585mc".
+    static std::string normalize_camera_key(const std::string& raw);
+
+    // Maps a FITS INSTRUME value onto a DB camera key, in three tiers:
+    //   1. exact normalised match ("ASI585MC" -> "asi585mc");
+    //   2. the longest DB key contained in the normalised INSTRUME
+    //      ("ZWO ASI2400MC Pro" -> "asi2400mc");
+    //   3. the sensor itself, for rebadged cameras carrying no DB product
+    //      key: the trailing number plus the vendor's mono/colour marker
+    //      are matched against each entry's `sensor` field and `type`
+    //      ("ATR585M" -> IMX585 + mono -> "asi585mm"). Matching uses the
+    //      sensor field, never the product key -- ASI2600MM is an IMX571.
+    //      A name with no mono/colour marker ("ASI585") stays unresolved
+    //      rather than guessing between a sensor's mono and OSC variants,
+    //      and kGenericOSCCamera is never returned from this tier.
+    // On a tie within a tier the lexicographically smaller key wins, so the
+    // result is deterministic regardless of the map's iteration order.
+    // Returns "" when nothing matches; callers decide between failing loud
+    // and kGenericOSCCamera.
+    std::string resolve_camera(const std::string& instrume) const;
 
     bool has_camera(const std::string& name) const;
     bool has_filter(const std::string& name) const;
@@ -89,11 +105,18 @@ public:
 private:
     std::unordered_map<std::string, CameraQE>       cameras_;
     std::unordered_map<std::string, FilterPassband> filters_;
-    // normalize_camera_key(id or alias) -> camera id (key of cameras_).
-    std::unordered_map<std::string, std::string>    camera_keys_;
+
+    // (model number, mono/colour) -> camera key, for the third resolution
+    // tier. Holds both the vendor product number and the sensor designation
+    // of every camera, read straight off the loaded entries: which sensor a
+    // product number denotes is a stored fact, never one derived from the
+    // digits. Rebuilt after each successful load or override merge.
+    std::unordered_map<std::string, std::string>    sensor_index_;
+
+    void rebuild_sensor_index();
+    static std::string sensor_index_key(const std::string& number, bool mono);
 
     LoadResult parse_and_merge(const std::string& text, const char* context);
-    const CameraQE* find_camera(const std::string& name) const;
 };
 
 } // namespace nukex

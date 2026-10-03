@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <string>
 #include <tuple>
 
 namespace nukex {
@@ -11,10 +12,19 @@ class FrameCache; // forward declare — defined in frame_cache.hpp
 // CacheSig: key for the engine's per-geometry cache map.
 //
 // Two frames share a FrameCache iff their post-debayer Image has the same
-// (width, height, n_ch). BayerPattern and FilterClass are NOT part of the
-// key — the cache only cares about what DebayerEngine::debayer() outputs.
+// (width, height, n_ch) AND they route into the same slot group.
+//
+// The routing key is what makes multi-filter mono batches work. Every mono
+// frame is (W, H, 1) whatever its filter, so a geometry-only key collapsed
+// L, R, G and B into one cache file and there was no way for a slot to read
+// only its own frames -- which is why such batches produced one populated
+// channel of four and three exactly-zero ones.
+//
+// It is the slot name for a single-channel frame ("L", "Ha", "R"), and empty
+// for multi-channel frames, which serve several slots from one cache by
+// channel index and were always correct.
 // ─────────────────────────────────────────────────────────────────────────────
-using CacheSig = std::tuple<int, int, int>; // (width, height, n_ch)
+using CacheSig = std::tuple<int, int, int, std::string>; // (w, h, n_ch, routing key)
 
 // ─────────────────────────────────────────────────────────────────────────────
 // SlotSynthesis: how a cube slot's per-frame value is derived during Phase B.

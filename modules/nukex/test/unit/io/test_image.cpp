@@ -101,3 +101,41 @@ TEST_CASE("Image: move semantics", "[image]") {
     REQUIRE(moved.width() == 10);
     REQUIRE(img.empty() == true);
 }
+
+TEST_CASE("Image: cropped() keeps the requested window and nothing else",
+          "[image]") {
+    // Intersection trimming hands the stacker a rectangle; every output plane
+    // has to be cut to it identically or the channels stop lining up.
+    Image img(6, 4, 2);
+    for (int ch = 0; ch < 2; ++ch)
+        for (int y = 0; y < 4; ++y)
+            for (int x = 0; x < 6; ++x)
+                img.at(x, y, ch) = static_cast<float>(ch * 100 + y * 10 + x);
+
+    const Image c = img.cropped(1, 1, 4, 2);
+    REQUIRE(c.width() == 4);
+    REQUIRE(c.height() == 2);
+    REQUIRE(c.n_channels() == 2);
+    for (int ch = 0; ch < 2; ++ch)
+        for (int y = 0; y < 2; ++y)
+            for (int x = 0; x < 4; ++x)
+                REQUIRE(c.at(x, y, ch) == Catch::Approx(ch * 100 + (y + 1) * 10 + (x + 1)));
+}
+
+TEST_CASE("Image: cropped() to the full frame is the same image", "[image]") {
+    Image img(3, 3, 1);
+    img.fill(0.5f);
+    const Image c = img.cropped(0, 0, 3, 3);
+    REQUIRE(c.width() == 3);
+    REQUIRE(c.height() == 3);
+    REQUIRE(c.at(2, 2, 0) == Catch::Approx(0.5f));
+}
+
+TEST_CASE("Image: cropped() refuses a window off the edge", "[image]") {
+    // Returning a silently smaller image would put every downstream plane out
+    // of step with the others.
+    Image img(4, 4, 1);
+    REQUIRE(img.cropped(2, 0, 4, 4).empty());
+    REQUIRE(img.cropped(-1, 0, 2, 2).empty());
+    REQUIRE(img.cropped(0, 0, 0, 2).empty());
+}
