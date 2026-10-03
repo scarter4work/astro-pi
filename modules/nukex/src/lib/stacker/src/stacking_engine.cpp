@@ -464,46 +464,29 @@ StackingEngine::ExecuteResult StackingEngine::execute(
     // The slot union is now final; everything downstream sizes against it.
     n_ch = ch_config.n_channels;
 
-    // Guard: more than one slot fed by un-debayered (single-channel) frames.
-    //
-    // FrameCache is keyed on post-debayer geometry, so every mono frame in a
-    // batch lands in the same (W, H, 1) cache regardless of its filter. Phase B
-    // then has no way to read a given slot's own frames: one slot reads that
-    // cache and fits a mixture of every filter's samples, and the rest are
-    // routed to no cache at all and fit a buffer of zeros. On M27 2025
-    // (L24 R12 G12 B24) that produced one populated channel out of four and
-    // three exactly-zero ones -- an image that looked like a colour-balance
-    // problem and was not.
-    //
-    // Phase A routes correctly; the per-slot Welford accumulators are right.
-    // The gap is that Phase B's read path, shadow buffers and weight kernels
-    // all assume every channel shares one frame set. Separating them is an
-    // architectural change, not a cache key, so until it lands this refuses to
-    // run rather than emitting channels that are silently empty.
     // Guard: a batch that mixes Bayer and mono frames.
     //
-    // The batch-level Bayer pattern comes from frame 0 alone and the Phase A
-    // loop debayers on that one global, so the two orderings are wrong in
-    // different directions. Mono first: the Bayer frame is never demosaiced
-    // and the OSC routing branches read channels 1 and 2 of a one-channel
-    // image, which Image::at does not bounds-check. Bayer first: every mono
-    // frame IS demosaiced as though it were a CFA mosaic, and BROADBAND_L
-    // routes channel 0 of that fabricated image into the L slot -- no fault,
-    // wrong pixels.
-    //
-    // Debayering per frame would fix the read, but it would then put two
-    // geometries in one batch, which lands on the same Phase B limitation as
-    // multi-filter mono: FrameCache is keyed on geometry and cannot keep two
-    // frame sets apart. So refuse until that is addressed.
+    // Each frame is debayered with its own CFA pattern, and multi-filter mono
+    // batches stack (every slot has its own frame set), so neither the decode
+    // nor the mono routing is the problem any more. What remains is that a
+    // slot reads its per-frame samples from exactly ONE FrameCache
+    // (ChannelCacheRef), and caches are keyed on post-debayer geometry: a
+    // debayered frame lands in the (W, H, 3) cache and a mono frame in the
+    // (W, H, 1) one. A mixed batch can put both into the same slot -- the OSC
+    // frames' synthesised L beside mono L frames, OSC R/G/B beside mono R/G/B
+    // -- and the slot routing before Phase B picks one cache per slot (mono L
+    // over the OSC luminance, the OSC cache over mono R/G/B), silently
+    // dropping the other group from that channel. Mixes whose slots happen not
+    // to collide are refused as well: nothing exercises them. Lift this once a
+    // slot can read more than one cache.
     if (saw_bayer_frame && saw_mono_frame) {
         ExecuteResult err{};
         err.ok    = false;
         err.error = "This batch mixes Bayer (CFA) frames with mono frames. "
-                    "NukeX debayers a batch according to its first frame, so "
-                    "one of the two groups would be decoded the wrong way -- "
-                    "silently, in the direction that does not crash. Stack the "
-                    "Bayer frames and the mono frames separately and combine "
-                    "the results.";
+                    "Their channels can land in the same slot (L, R, G, B), and "
+                    "NukeX stacks each slot from one kind of frame only, so one "
+                    "group would be silently left out. Stack the Bayer frames "
+                    "and the mono frames separately and combine the results.";
         obs.message(err.error);
         return err;
     }
