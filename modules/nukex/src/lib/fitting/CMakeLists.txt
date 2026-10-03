@@ -8,6 +8,7 @@ add_library(nukex4_fitting STATIC
     src/contamination_fitter.cpp
     src/kde_fitter.cpp
     src/model_selector.cpp
+    src/huber_estimator.cpp
 )
 
 target_include_directories(nukex4_fitting

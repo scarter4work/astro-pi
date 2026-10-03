@@ -1,6 +1,4 @@
 add_library(nukex4_combine STATIC
-    src/pixel_selector.cpp
-    src/spatial_context.cpp
     src/output_assembler.cpp
 )
 

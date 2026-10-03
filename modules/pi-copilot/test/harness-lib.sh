@@ -31,6 +31,9 @@
 # every @pxi_bin_dir/*-pxm.so except PICopilot-pxm.so. -m= then adds the dev
 # build, and nothing else named PICopilot-pxm.so is ever mapped.
 
+# Display isolation is shared with every other PixInsight launch in astro-pi.
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)/tools/pi-headless.sh"
+
 PICOPILOT_PI="${PICOPILOT_PI:-/opt/PixInsight/bin/PixInsight.sh}"
 PICOPILOT_PI_BIN_DIR="$(dirname "$PICOPILOT_PI")"
 PICOPILOT_REAL_DATA_HOME="$HOME/.local/share"
@@ -74,8 +77,7 @@ picopilot_isolate_data()
 # scale). Force the X11 plugin so every test PixInsight lands on its Xvfb.
 picopilot_isolate_display()
 {
-   unset WAYLAND_DISPLAY
-   export QT_QPA_PLATFORM=xcb
+   pi_headless_env   # tools/pi-headless.sh, shared by every PixInsight launch in astro-pi
 }
 
 # Refuse to launch PixInsight unless data isolation is really in effect.
@@ -97,9 +99,7 @@ picopilot_require_isolation()
       echo "FAIL: refusing to launch PixInsight: XDG_DATA_HOME resolves to the real data home $real_home"; return 1
    fi
    # Display isolation (PI 1.9.5 build 1706): see picopilot_isolate_display.
-   if [ -n "${WAYLAND_DISPLAY:-}" ] || [ "${QT_QPA_PLATFORM:-}" != "xcb" ]; then
-      echo "FAIL: refusing to launch PixInsight: WAYLAND_DISPLAY='${WAYLAND_DISPLAY:-}' QT_QPA_PLATFORM='${QT_QPA_PLATFORM:-}' -- PixInsight would open on the real desktop instead of Xvfb (call picopilot_isolate_display)"; return 1
-   fi
+   pi_require_headless_env || return 1
    lib="$xdg/PICopilot"
    if [ -e "$lib" ] || [ -L "$lib" ]; then
       real_lib="$(realpath -m "$PICOPILOT_REAL_LIB")"
@@ -178,7 +178,7 @@ picopilot_seed_slot_modules()
    # PixInsight writes the slot's settings file (with its own LastVersion) at
    # start-up; --no-modules keeps every module, including the installed
    # PICopilot, out of this bootstrap process.
-   xvfb-run -a -s "-screen 0 1280x800x24" \
+   PI_HEADLESS_SCREEN=1280x800x24 pi_headless \
       timeout 120 "$PICOPILOT_PI" -n="$(( 10#$slot ))" --automation-mode --no-startup-scripts --no-modules \
       -r="$noop" --force-exit >"$scratch/seed-bootstrap.log" 2>&1 || rc=$?
    rm -f "$noop"

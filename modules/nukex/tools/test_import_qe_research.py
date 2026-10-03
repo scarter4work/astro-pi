@@ -1,574 +1,325 @@
-import importlib.util
 import json
 import pathlib
 import subprocess
-import sys
 
 import pytest
 
-REPO = pathlib.Path(__file__).parent.parent
+REPO = pathlib.Path(__file__).resolve().parent.parent
 SCRIPT = REPO / "tools" / "import_qe_research.py"
-RESEARCH_JSON = REPO / "research" / "qe_database_research.json"
-
-# Import the script as a module too, so we can unit-test its helper
-# functions directly (not just the CLI's exit code / stdout contract).
-_spec = importlib.util.spec_from_file_location("import_qe_research", SCRIPT)
-iqr = importlib.util.module_from_spec(_spec)
-_spec.loader.exec_module(iqr)
+RESEARCH = REPO / "research" / "qe_database_research.json"
+SHIPPED = REPO / "share" / "qe_database.json"
 
 
-def run_import(input_path, output_path):
-    result = subprocess.run(
-        [sys.executable, str(SCRIPT), str(input_path), str(output_path)],
-        capture_output=True, text=True, check=False,
-    )
-    return result
+def run(src, dst):
+    return subprocess.run(["python3", str(SCRIPT), str(src), str(dst)],
+                          capture_output=True, text=True, check=False)
 
 
-# --- CLI-level tests (subprocess, matches how the script is actually run) ---
+def sensor(qe, **extra):
+    return {"manufacturer": "Sony Semiconductor", "type": "both-variants", "qe": qe, **extra}
 
-def test_drops_meta_block(tmp_path):
+
+def osc_cam(sensor_name, **extra):
+    return {"manufacturer": "ZWO", "sensor": sensor_name, "type": "OSC", "bayer_pattern": "RGGB",
+            "qe_inherits_from_sensor": True, "confidence": "high", "source_urls": [], "notes": "", **extra}
+
+
+BASE = {
+    "_meta": {"researcher": "test"},
+    "sensors": {
+        "IMX585": sensor({"501": {"R": 0.03, "Gr": 0.85, "Gb": 0.87, "B": 0.5, "mono_pk": 0.91},
+                          "656": {"R": 0.73, "Gr": 0.32, "Gb": 0.30, "B": 0.03, "mono_pk": 0.81}}),
+    },
+    "cameras": {
+        "asi585mc": osc_cam("IMX585"),
+        "asi585mm": {"manufacturer": "ZWO", "sensor": "IMX585", "type": "mono", "bayer_pattern": None,
+                     "qe_inherits_from_sensor": True, "confidence": "medium", "source_urls": [], "notes": ""},
+    },
+    "filters": {
+        "Optolong-LeXtreme-7nm": {"type": "dual-narrowband",
+                                  "passes": [{"center_nm": 656.3, "fwhm_nm": 7.0}, {"center_nm": 500.7, "fwhm_nm": 7.0}]},
+        "SVBony-SV220-3nm": {"type": "dual-narrowband",
+                             "passes": [{"center_nm": 656.3, "fwhm_nm": 3.0}, {"center_nm": 500.7, "fwhm_nm": 3.0}]},
+        "Antlia-ALP-T-SII-OIII-3nm": {"type": "dual-narrowband",
+                                      "passes": [{"center_nm": 672.4, "fwhm_nm": 3.0}, {"center_nm": 500.7, "fwhm_nm": 3.0}]},
+        "Optolong-LeNhance": {"type": "tri-narrowband",
+                              "passes": [{"center_nm": 656.3, "fwhm_nm": 24}, {"center_nm": 500.7, "fwhm_nm": 10}, {"center_nm": 486.1, "fwhm_nm": 10}]},
+        "Optolong-LUltimate-3nm": {"type": "dual-narrowband",
+                                   "passes": [{"center_nm": 656.3, "fwhm_nm": 3.0}, {"center_nm": 500.7, "fwhm_nm": 3.0}]},
+        "Antlia-ALP-T-Ha-OIII-5nm": {"type": "dual-narrowband",
+                                     "passes": [{"center_nm": 656.3, "fwhm_nm": 5.0}, {"center_nm": 500.7, "fwhm_nm": 5.0}]},
+        "Astrodon-Ha-3nm-50mm": {"type": "narrowband-single", "passes": [{"center_nm": 656.3, "fwhm_nm": 3.0}]},
+        "Astrodon-OIII-3nm-50mm": {"type": "narrowband-single", "passes": [{"center_nm": 500.7, "fwhm_nm": 3.0}]},
+        "Astrodon-SII-3nm-50mm": {"type": "narrowband-single", "passes": [{"center_nm": 672.4, "fwhm_nm": 3.0}]},
+        "Optolong-Lpro": {"type": "broadband-LPR", "passes": [{"center_nm": 540, "fwhm_nm": 300}]},
+        # The only source of the three-line HaO3S2 canonical the importer
+        # requires (REQUIRED_CANONICAL); without it every transform refuses.
+        "Optolong-LQuadEnhance": {"type": "quad-narrowband",
+                                  "passes": [{"center_nm": 656.3, "fwhm_nm": 12.0}, {"center_nm": 500.7, "fwhm_nm": 12.0},
+                                             {"center_nm": 672.4, "fwhm_nm": 12.0}, {"center_nm": 486.1, "fwhm_nm": 12.0}]},
+    },
+}
+
+
+def write(tmp_path, doc):
     src = tmp_path / "research.json"
-    src.write_text(json.dumps({
-        "_meta": {"researcher": "test"},
-        "sensors": {},
-        "cameras": {
-            "ASI_test": {
-                "sensor": "Fake",
-                "type": "OSC",
-                "bayer": "RGGB",
-                "qe": {"656": {"R": 0.5, "G": 0.1, "B": 0.05}},
-                "confidence": "high"
-            }
-        },
-        "filters": {}
-    }))
-    dst = tmp_path / "shipped.json"
-    r = run_import(src, dst)
+    src.write_text(json.dumps(doc))
+    return src, tmp_path / "shipped.json"
+
+
+def assert_fails_loud(r, dst, *needles):
+    """A rejection is a TransformError message and exit 1 -- not a crash
+    traceback that happens to exit nonzero, and never a written file."""
+    assert r.returncode == 1, r.stderr
+    assert "Traceback" not in r.stderr, r.stderr
+    for n in needles:
+        assert n in r.stderr, (n, r.stderr)
+    assert not dst.exists()
+
+
+def test_drops_meta_and_research_only_fields(tmp_path):
+    src, dst = write(tmp_path, BASE)
+    r = run(src, dst)
     assert r.returncode == 0, r.stderr
     out = json.loads(dst.read_text())
     assert "_meta" not in out
-    assert "sensors" not in out
-    assert "ASI_test" in out["cameras"]
-    assert out["cameras"]["ASI_test"]["bayer"] == "RGGB"
-
-
-def test_resolves_sensor_inheritance(tmp_path):
-    src = tmp_path / "research.json"
-    src.write_text(json.dumps({
-        "_meta": {"researcher": "test"},
-        "sensors": {
-            "IMX571": {
-                "qe": {
-                    "656": {"R": 0.46, "Gr": 0.05, "Gb": 0.05, "B": 0.04, "mono_pk": 0.50}
-                },
-                "confidence": "high"
-            }
-        },
-        "cameras": {
-            "ASI2600MC": {
-                "sensor": "IMX571",
-                "type": "OSC",
-                "bayer": "RGGB",
-                "qe_inherits_from_sensor": True,
-                "confidence": "medium"
-            }
-        },
-        "filters": {}
-    }))
-    dst = tmp_path / "shipped.json"
-    r = run_import(src, dst)
-    assert r.returncode == 0, r.stderr
-    out = json.loads(dst.read_text())
-    cam = out["cameras"]["ASI2600MC"]
-    assert "qe_inherits_from_sensor" not in cam
-    assert "qe" in cam
-    assert cam["qe"]["656"]["R"] == 0.46
-    # Gr/Gb averaged into a single explicit "G" key (see photosite key
-    # contract docstring: avoids the C++ loader's alphabetical-iteration
-    # overwrite footgun for objects with both Gr and Gb keys).
-    assert cam["qe"]["656"]["G"] == pytest.approx(0.05)
-    assert "Gr" not in cam["qe"]["656"]
-    assert "Gb" not in cam["qe"]["656"]
-    # mono is a separate photosite (raw sensor QE) and must survive
-    # under the canonical key even though the camera itself is OSC.
-    assert cam["qe"]["656"]["mono_pk"] == 0.50
-
-
-def test_validates_camera_required_fields(tmp_path):
-    src = tmp_path / "research.json"
-    src.write_text(json.dumps({
-        "cameras": {
-            "Bad": {"type": "OSC"}  # missing sensor, qe, confidence
-        },
-        "filters": {}
-    }))
-    dst = tmp_path / "shipped.json"
-    r = run_import(src, dst)
-    assert r.returncode != 0
-    assert "Bad" in r.stderr
-
-
-def test_writes_schema_version(tmp_path):
-    src = tmp_path / "research.json"
-    src.write_text(json.dumps({"sensors": {}, "cameras": {}, "filters": {}}))
-    dst = tmp_path / "shipped.json"
-    r = run_import(src, dst)
-    assert r.returncode == 0
-    out = json.loads(dst.read_text())
-    assert out.get("schema_version") == 1
-
-
-def test_bayer_pattern_renamed_to_bayer(tmp_path):
-    """Real research cameras use 'bayer_pattern', not 'bayer' -- the
-    shipping schema (and the C++ loader) expects 'bayer'."""
-    src = tmp_path / "research.json"
-    src.write_text(json.dumps({
-        "cameras": {
-            "Cam": {
-                "sensor": "S",
-                "type": "OSC",
-                "bayer_pattern": "RGGB",
-                "confidence": "high",
-                "qe": {"656": {"R": 0.5, "G": 0.4, "B": 0.3}},
-            }
-        },
-        "filters": {}
-    }))
-    dst = tmp_path / "shipped.json"
-    r = run_import(src, dst)
-    assert r.returncode == 0, r.stderr
-    out = json.loads(dst.read_text())
-    assert out["cameras"]["Cam"]["bayer"] == "RGGB"
-    assert "bayer_pattern" not in out["cameras"]["Cam"]
-
-
-def test_mono_camera_no_bayer_key(tmp_path):
-    src = tmp_path / "research.json"
-    src.write_text(json.dumps({
-        "cameras": {
-            "MonoCam": {
-                "sensor": "S",
-                "type": "mono",
-                "bayer_pattern": None,
-                "confidence": "high",
-                "qe": {"656": {"mono": 0.55}},
-            }
-        },
-        "filters": {}
-    }))
-    dst = tmp_path / "shipped.json"
-    r = run_import(src, dst)
-    assert r.returncode == 0, r.stderr
-    out = json.loads(dst.read_text())
-    cam = out["cameras"]["MonoCam"]
-    assert "bayer" not in cam
-    # "mono" alias normalised to the canonical "mono_pk" token.
-    assert cam["qe"]["656"]["mono_pk"] == 0.55
-
-
-def test_rejects_unknown_photosite_key(tmp_path):
-    src = tmp_path / "research.json"
-    src.write_text(json.dumps({
-        "cameras": {
-            "Typo": {
-                "sensor": "S",
-                "type": "OSC",
-                "confidence": "high",
-                "qe": {"656": {"Rr": 0.5}},  # typo: not a recognised key
-            }
-        },
-        "filters": {}
-    }))
-    dst = tmp_path / "shipped.json"
-    r = run_import(src, dst)
-    assert r.returncode != 0
-    assert "Typo" in r.stderr
-    assert not dst.exists()
-
-
-def test_rejects_ambiguous_mono_aliases(tmp_path):
-    src = tmp_path / "research.json"
-    src.write_text(json.dumps({
-        "cameras": {
-            "Ambiguous": {
-                "sensor": "S",
-                "type": "mono",
-                "confidence": "high",
-                "qe": {"656": {"mono": 0.5, "mono_pk": 0.6}},
-            }
-        },
-        "filters": {}
-    }))
-    dst = tmp_path / "shipped.json"
-    r = run_import(src, dst)
-    assert r.returncode != 0
-    assert "Ambiguous" in r.stderr
-
-
-def test_rejects_non_integer_wavelength_key(tmp_path):
-    """The C++ loader does `int wl = std::stoi(wlit.key())` with no
-    validation (qe_database.cpp): a key like "656.5" would silently
-    truncate to 656 (data corruption). Must be a hard error at import
-    time instead."""
-    src = tmp_path / "research.json"
-    src.write_text(json.dumps({
-        "cameras": {
-            "BadWavelength": {
-                "sensor": "S",
-                "type": "OSC",
-                "confidence": "high",
-                "qe": {"656.5": {"R": 0.5}},
-            }
-        },
-        "filters": {}
-    }))
-    dst = tmp_path / "shipped.json"
-    r = run_import(src, dst)
-    assert r.returncode != 0
-    assert "656.5" in r.stderr
-    assert not dst.exists()
-
-
-def test_rejects_g_and_gr_gb_conflict(tmp_path):
-    """If a wavelength dict has both a merged "G" and separate "Gr"/"Gb"
-    readings, silently preferring "G" would drop real data -- the exact
-    silent-fallback pattern this repo forbids. Must hard-error, matching
-    the mono "mono"/"mono_pk" ambiguity handling."""
-    src = tmp_path / "research.json"
-    src.write_text(json.dumps({
-        "cameras": {
-            "GreenConflict": {
-                "sensor": "S",
-                "type": "OSC",
-                "confidence": "high",
-                "qe": {"656": {"G": 0.5, "Gr": 0.4, "Gb": 0.6}},
-            }
-        },
-        "filters": {}
-    }))
-    dst = tmp_path / "shipped.json"
-    r = run_import(src, dst)
-    assert r.returncode != 0
-    assert "GreenConflict" in r.stderr
-    assert not dst.exists()
-
-
-def test_rejects_invalid_confidence_value(tmp_path):
-    """Only the presence of 'confidence' was previously checked -- a typo
-    like "medium-high" would silently become QEConfidence::UNKNOWN in the
-    C++ loader (parse_confidence()). Must hard-error on any value outside
-    the loader's recognised set (high/medium/low)."""
-    src = tmp_path / "research.json"
-    src.write_text(json.dumps({
-        "cameras": {
-            "BadConfidence": {
-                "sensor": "S",
-                "type": "OSC",
-                "confidence": "medium-high",
-                "qe": {"656": {"R": 0.5}},
-            }
-        },
-        "filters": {}
-    }))
-    dst = tmp_path / "shipped.json"
-    r = run_import(src, dst)
-    assert r.returncode != 0
-    assert "BadConfidence" in r.stderr
-    assert "medium-high" in r.stderr
-    assert not dst.exists()
-
-
-def test_rejects_out_of_range_qe_value(tmp_path):
-    src = tmp_path / "research.json"
-    src.write_text(json.dumps({
-        "cameras": {
-            "OutOfRange": {
-                "sensor": "S",
-                "type": "OSC",
-                "confidence": "high",
-                "qe": {"656": {"R": 1.5}},
-            }
-        },
-        "filters": {}
-    }))
-    dst = tmp_path / "shipped.json"
-    r = run_import(src, dst)
-    assert r.returncode != 0
-    assert "OutOfRange" in r.stderr
-
-
-def test_filter_passes_converted_to_lines(tmp_path):
-    """Real research filters use 'passes' with 'center_nm', not the
-    shipping schema's 'lines' with 'wavelength_nm'."""
-    src = tmp_path / "research.json"
-    src.write_text(json.dumps({
-        "cameras": {},
-        "filters": {
-            "Astrodon-Ha-3nm": {
-                "type": "narrowband-single",
-                "passes": [
-                    {"center_nm": 656.3, "fwhm_nm": 3.0, "peak_transmission": 0.92}
-                ],
-                "confidence": "high",
-            }
-        }
-    }))
-    dst = tmp_path / "shipped.json"
-    r = run_import(src, dst)
-    assert r.returncode == 0, r.stderr
-    out = json.loads(dst.read_text())
-    filt = out["filters"]["Astrodon-Ha-3nm"]
-    assert "passes" not in filt
-    assert filt["lines"] == [
-        {"name": "Halpha", "wavelength_nm": 656.3, "fwhm_nm": 3.0}
-    ]
-
-
-def test_filter_multi_pass_and_unknown_wavelength_falls_back_to_numeric_name(tmp_path):
-    src = tmp_path / "research.json"
-    src.write_text(json.dumps({
-        "cameras": {},
-        "filters": {
-            "Optolong-LeNhance": {
-                "type": "tri-narrowband",
-                "passes": [
-                    {"center_nm": 656.3, "fwhm_nm": 24, "peak_transmission": 0.9},
-                    {"center_nm": 500.7, "fwhm_nm": 10, "peak_transmission": 0.85},
-                    {"center_nm": 486.1, "fwhm_nm": 10, "peak_transmission": 0.85},
-                ],
-            },
-            "Generic-Broadband-Red": {
-                "type": "broadband-RGB",
-                "passes": [
-                    {"center_nm": 625, "fwhm_nm": 90, "peak_transmission": 0.95}
-                ],
-            },
-        }
-    }))
-    dst = tmp_path / "shipped.json"
-    r = run_import(src, dst)
-    assert r.returncode == 0, r.stderr
-    out = json.loads(dst.read_text())
-    tri = out["filters"]["Optolong-LeNhance"]["lines"]
-    assert [l["name"] for l in tri] == ["Halpha", "OIII", "Hbeta"]
-    broadband = out["filters"]["Generic-Broadband-Red"]["lines"]
-    assert broadband == [{"name": "625nm", "wavelength_nm": 625, "fwhm_nm": 90}]
-
-
-def test_filter_nii_line_named(tmp_path):
-    """Real research data has Astrodon-NII-3nm-50mm passing at 658.4nm --
-    unambiguously NII. KNOWN_LINES_NM must name it rather than falling
-    back to a generic "658.4nm" label. The nearby 657.5/658.0nm passes
-    the script deliberately leaves generic must NOT be captured by the
-    tolerance widening this requires -- in particular the real
-    Optolong-LeXtreme-F2 filter's Halpha pass, deliberately pre-shifted
-    to 658.0nm for f/2 optics (see its research `notes`), must NOT be
-    mislabelled "NII" just because it now sits within the default 0.3nm
-    tolerance of the new NII line."""
-    src = tmp_path / "research.json"
-    src.write_text(json.dumps({
-        "cameras": {},
-        "filters": {
-            "Astrodon-NII-3nm-50mm": {
-                "type": "narrowband-single",
-                "passes": [
-                    {"center_nm": 658.4, "fwhm_nm": 3.0, "peak_transmission": 0.9}
-                ],
-            },
-            "Generic-Ambiguous-657_5": {
-                "type": "narrowband-single",
-                "passes": [
-                    {"center_nm": 657.5, "fwhm_nm": 3.0, "peak_transmission": 0.9}
-                ],
-            },
-            "Optolong-LeXtreme-F2": {
-                "type": "dual-narrowband",
-                "passes": [
-                    {"center_nm": 658.0, "fwhm_nm": 7.0, "peak_transmission": 0.88},
-                    {"center_nm": 502.0, "fwhm_nm": 7.0, "peak_transmission": 0.88},
-                ],
-            },
-        }
-    }))
-    dst = tmp_path / "shipped.json"
-    r = run_import(src, dst)
-    assert r.returncode == 0, r.stderr
-    out = json.loads(dst.read_text())
-    assert out["filters"]["Astrodon-NII-3nm-50mm"]["lines"] == [
-        {"name": "NII", "wavelength_nm": 658.4, "fwhm_nm": 3.0}
-    ]
-    # 657.5nm stays generic -- not close enough to Halpha (656.3) or
-    # NII (658.3) within the 0.3nm tolerance.
-    assert out["filters"]["Generic-Ambiguous-657_5"]["lines"] == [
-        {"name": "657.5nm", "wavelength_nm": 657.5, "fwhm_nm": 3.0}
-    ]
-    # 658.0nm is a genuine (pre-shifted) Halpha pass, not NII -- it must
-    # stay generic under NII's tighter 0.15nm override tolerance.
-    lextreme = out["filters"]["Optolong-LeXtreme-F2"]["lines"]
-    assert lextreme[0] == {"name": "658nm", "wavelength_nm": 658.0, "fwhm_nm": 7.0}
-    assert lextreme[1] == {"name": "502nm", "wavelength_nm": 502.0, "fwhm_nm": 7.0}
-
-
-def test_filter_lines_passthrough_when_already_shipping_shape(tmp_path):
-    src = tmp_path / "research.json"
-    src.write_text(json.dumps({
-        "cameras": {},
-        "filters": {
-            "AlreadyShipping": {
-                "type": "narrowband-single",
-                "lines": [{"name": "Halpha", "wavelength_nm": 656.3, "fwhm_nm": 3.0}],
-            }
-        }
-    }))
-    dst = tmp_path / "shipped.json"
-    r = run_import(src, dst)
-    assert r.returncode == 0, r.stderr
-    out = json.loads(dst.read_text())
-    assert out["filters"]["AlreadyShipping"]["lines"] == [
-        {"name": "Halpha", "wavelength_nm": 656.3, "fwhm_nm": 3.0}
-    ]
-
-
-def test_validates_filter_required_fields(tmp_path):
-    src = tmp_path / "research.json"
-    src.write_text(json.dumps({
-        "cameras": {},
-        "filters": {
-            "NoPasses": {"type": "narrowband-single"}
-        }
-    }))
-    dst = tmp_path / "shipped.json"
-    r = run_import(src, dst)
-    assert r.returncode != 0
-    assert "NoPasses" in r.stderr
-
-
-def _cam(**extra):
-    base = {"sensor": "IMX585", "type": "OSC", "bayer_pattern": "RGGB",
-            "confidence": "high",
-            "qe": {"656": {"R": 0.73, "G": 0.32, "B": 0.03}}}
-    base.update(extra)
-    return base
-
-
-def test_camera_aliases_passed_through(tmp_path):
-    src = tmp_path / "research.json"
-    src.write_text(json.dumps({
-        "cameras": {"asi585mc": _cam(aliases=["ZWO ASI585MC Air"])},
-        "filters": {},
-    }))
-    dst = tmp_path / "shipped.json"
-    r = run_import(src, dst)
-    assert r.returncode == 0, r.stderr
-    out = json.loads(dst.read_text())
-    assert out["cameras"]["asi585mc"]["aliases"] == ["ZWO ASI585MC Air"]
-
-
-def test_rejects_alias_claimed_by_two_cameras(tmp_path):
-    # Same normalized key ("zwoasi585pro") on colour and mono: ambiguous.
-    src = tmp_path / "research.json"
-    src.write_text(json.dumps({
-        "cameras": {
-            "asi585mc": _cam(aliases=["ZWO ASI585 Pro"]),
-            "asi585mm": _cam(type="mono", aliases=["zwo-asi585-pro"]),
-        },
-        "filters": {},
-    }))
-    r = run_import(src, tmp_path / "shipped.json")
-    assert r.returncode != 0
-    assert "zwoasi585pro" in r.stderr
-
-
-def test_rejects_alias_equal_to_another_camera_id(tmp_path):
-    src = tmp_path / "research.json"
-    src.write_text(json.dumps({
-        "cameras": {
-            "asi585mc": _cam(aliases=["ASI585MM"]),
-            "asi585mm": _cam(type="mono"),
-        },
-        "filters": {},
-    }))
-    r = run_import(src, tmp_path / "shipped.json")
-    assert r.returncode != 0
-    assert "asi585mm" in r.stderr
-
-
-def test_rejects_non_string_or_empty_alias(tmp_path):
-    for bad in (["ok", 5], ["--"], "ZWO ASI585MC Air"):
-        src = tmp_path / "research.json"
-        src.write_text(json.dumps({
-            "cameras": {"asi585mc": _cam(aliases=bad)}, "filters": {},
-        }))
-        r = run_import(src, tmp_path / "shipped.json")
-        assert r.returncode != 0, bad
-        assert "asi585mc" in r.stderr
-
-
-def test_normalize_camera_key_matches_cpp_contract():
-    # Must stay identical to QEDatabase::normalize_camera_key (C++).
-    assert iqr.normalize_camera_key("ZWO ASI585MC Air") == "zwoasi585mcair"
-    assert iqr.normalize_camera_key("  asi-585_mc ") == "asi585mc"
-    assert iqr.normalize_camera_key("\u00c9A") == "a"   # non-ASCII dropped
-
-
-# --- Unit-level tests against the imported module (finer-grained) ---
-
-def test_normalise_qe_block_averages_gr_gb():
-    out = iqr.normalise_qe_block({"656": {"Gr": 0.10, "Gb": 0.20}}, "cam")
-    assert out["656"]["G"] == pytest.approx(0.15)
-
-
-def test_normalise_qe_block_single_green_split_key_used_directly():
-    out = iqr.normalise_qe_block({"656": {"Gr": 0.10}}, "cam")
-    assert out["656"]["G"] == pytest.approx(0.10)
-
-
-def test_resolve_filter_missing_wavelength_field_raises():
-    with pytest.raises(ValueError, match="BadPass"):
-        iqr.resolve_filter("BadPass", {"type": "x", "passes": [{"fwhm_nm": 3.0}]})
-
-
-# --- Real-data smoke test: proves the script survives the actual research
-# file end-to-end (without committing its output -- that's Task 16). ---
-
-@pytest.mark.skipif(not RESEARCH_JSON.exists(), reason="research JSON not present")
-def test_real_research_file_transforms_cleanly(tmp_path):
-    dst = tmp_path / "qe_database.json"
-    r = run_import(RESEARCH_JSON, dst)
-    assert r.returncode == 0, r.stderr
-    out = json.loads(dst.read_text())
-
     assert out["schema_version"] == 1
-    assert set(out.keys()) >= {"schema_version", "cameras", "filters"}
-    assert "_meta" not in out
-    assert "sensors" not in out
-    assert len(out["cameras"]) == 55
-    assert len(out["filters"]) == 89   # 87 researched + generic HaO3/S2O3 classes
+    cam = out["cameras"]["asi585mc"]
+    for k in ("qe_inherits_from_sensor", "bayer_pattern", "source_urls", "notes"):
+        assert k not in cam
 
-    allowed_site_keys = {"R", "G", "B", "mono_pk"}
+
+def test_osc_camera_inherits_sensor_qe_with_G_mean_and_bayer_key(tmp_path):
+    src, dst = write(tmp_path, BASE)
+    assert run(src, dst).returncode == 0
+    cam = json.loads(dst.read_text())["cameras"]["asi585mc"]
+    assert cam["bayer"] == "RGGB"
+    assert cam["qe"]["656"] == {"R": 0.73, "G": 0.31, "B": 0.03}
+
+
+def test_mono_camera_ships_mono_pk_only_and_no_bayer(tmp_path):
+    src, dst = write(tmp_path, BASE)
+    assert run(src, dst).returncode == 0
+    cam = json.loads(dst.read_text())["cameras"]["asi585mm"]
+    assert "bayer" not in cam
+    assert cam["qe"]["656"] == {"mono_pk": 0.81}
+
+
+def test_canonical_dual_nb_entries_use_median_fwhm(tmp_path):
+    src, dst = write(tmp_path, BASE)
+    assert run(src, dst).returncode == 0
+    f = json.loads(dst.read_text())["filters"]
+    hao3 = f["HaO3"]
+    assert hao3["type"] == "DUAL_NB"
+    assert [(l["name"], l["wavelength_nm"]) for l in hao3["lines"]] == [("Ha", 656.3), ("OIII", 500.7)]
+    assert hao3["lines"][0]["fwhm_nm"] == 4.0          # median of 7.0, 3.0, 3.0, 5.0 (dual-narrowband products only)
+    s2o3 = f["S2O3"]
+    assert [l["name"] for l in s2o3["lines"]] == ["SII", "OIII"]
+    assert s2o3["lines"][0]["fwhm_nm"] == 3.0
+
+
+def test_classifier_product_canonicals_present_and_hb_dropped(tmp_path):
+    src, dst = write(tmp_path, BASE)
+    assert run(src, dst).returncode == 0
+    f = json.loads(dst.read_text())["filters"]
+    assert [l["name"] for l in f["L-eXtreme"]["lines"]] == ["Ha", "OIII"]
+    assert [l["name"] for l in f["L-eNhance"]["lines"]] == ["Ha", "OIII"]   # Hb dropped: same photosites as OIII
+    assert "Optolong-LeNhance" in f                                          # product entry kept (informational)
+
+
+def test_single_line_canonicals_and_broadband_products(tmp_path):
+    src, dst = write(tmp_path, BASE)
+    assert run(src, dst).returncode == 0
+    f = json.loads(dst.read_text())["filters"]
+    assert f["Ha"]["lines"] == [{"name": "Ha", "wavelength_nm": 656.3, "fwhm_nm": 3.0}]
+    assert f["Optolong-Lpro"] == {"type": "BROADBAND", "lines": []}
+
+
+def test_product_canonical_line_order_enforced_regardless_of_source_order(tmp_path):
+    doc = json.loads(json.dumps(BASE))
+    doc["filters"]["Optolong-LeXtreme-7nm"] = {"type": "dual-narrowband",
+        "passes": [{"center_nm": 500.7, "fwhm_nm": 7.0}, {"center_nm": 656.3, "fwhm_nm": 7.0}]}  # OIII listed first
+    src, dst = write(tmp_path, doc)
+    r = run(src, dst)
+    assert r.returncode == 0, r.stderr
+    f = json.loads(dst.read_text())["filters"]
+    assert [l["name"] for l in f["L-eXtreme"]["lines"]] == ["Ha", "OIII"]
+    assert [l["name"] for l in f["HaO3"]["lines"]] == ["Ha", "OIII"]
+
+
+def test_generic_sony_osc_camera_is_mean_of_sony_osc_cameras(tmp_path):
+    doc = json.loads(json.dumps(BASE))
+    doc["sensors"]["IMX571"] = sensor({"501": {"R": 0.07, "Gr": 0.89, "Gb": 0.89, "B": 0.6},
+                                       "656": {"R": 0.47, "Gr": 0.06, "Gb": 0.04, "B": 0.05}})
+    doc["cameras"]["asi2600mc"] = osc_cam("IMX571")
+    src, dst = write(tmp_path, doc)
+    assert run(src, dst).returncode == 0
+    g = json.loads(dst.read_text())["cameras"]["generic_sony_imx_osc"]
+    assert g["type"] == "OSC" and g["bayer"] == "RGGB" and g["confidence"] == "low"
+    assert g["qe"]["656"]["R"] == round((0.73 + 0.47) / 2, 4)
+    assert g["qe"]["656"]["G"] == round((0.31 + 0.05) / 2, 4)
+
+
+def test_missing_required_field_fails_loud(tmp_path):
+    doc = json.loads(json.dumps(BASE))
+    del doc["cameras"]["asi585mc"]["confidence"]
+    src, dst = write(tmp_path, doc)
+    r = run(src, dst)
+    assert r.returncode == 1
+    assert "asi585mc" in r.stderr and "confidence" in r.stderr
+    assert not dst.exists()
+
+
+def test_missing_canonical_filter_fails_loud(tmp_path):
+    doc = json.loads(json.dumps(BASE))
+    del doc["filters"]["Antlia-ALP-T-SII-OIII-3nm"]     # no S2O3 source left
+    src, dst = write(tmp_path, doc)
+    r = run(src, dst)
+    assert r.returncode == 1
+    assert "S2O3" in r.stderr
+
+
+def test_osc_camera_without_bayer_qe_is_excluded_with_note(tmp_path):
+    doc = json.loads(json.dumps(BASE))
+    # ICX694-shaped gap: a "both-variants" sensor researched only as a flat
+    # panchromatic curve, never split by Bayer channel at any wavelength.
+    doc["sensors"]["ICX694"] = sensor({"501": {"mono": 0.67}, "656": {"mono": 0.65}})
+    doc["cameras"]["atik-460ex-color"] = osc_cam("ICX694")
+    src, dst = write(tmp_path, doc)
+    r = run(src, dst)
+    assert r.returncode == 0, r.stderr
+    out = json.loads(dst.read_text())
+    assert "atik-460ex-color" not in out["cameras"]
+    assert "atik-460ex-color" in r.stderr
+    assert "Bayer-split" in r.stderr
+    assert "asi585mc" in out["cameras"]
+    assert "asi585mm" in out["cameras"]
+
+
+def test_mono_alias_key_ships_as_mono_pk(tmp_path):
+    doc = json.loads(json.dumps(BASE))
+    doc["sensors"]["IMX174"] = sensor({"656": {"mono": 0.55}})
+    doc["cameras"]["asi174mm"] = {"manufacturer": "ZWO", "sensor": "IMX174", "type": "mono", "bayer_pattern": None,
+                                   "qe_inherits_from_sensor": True, "confidence": "medium", "source_urls": [], "notes": ""}
+    src, dst = write(tmp_path, doc)
+    r = run(src, dst)
+    assert r.returncode == 0, r.stderr
+    cam = json.loads(dst.read_text())["cameras"]["asi174mm"]
+    assert cam["qe"]["656"] == {"mono_pk": 0.55}
+
+
+def test_real_research_file_round_trip(tmp_path):
+    dst = tmp_path / "shipped.json"
+    r = run(RESEARCH, dst)
+    assert r.returncode == 0, r.stderr
+    out = json.loads(dst.read_text())
+    for key in ("HaO3", "S2O3", "L-eXtreme", "L-eNhance", "L-Ultimate", "ALP-T", "Ha", "OIII", "SII"):
+        assert key in out["filters"], key
+    assert "generic_sony_imx_osc" in out["cameras"]
+    assert len(out["cameras"]) >= 55
+    assert out["cameras"]["asi2400mc"]["bayer"] == "RGGB"
     for name, cam in out["cameras"].items():
-        for field in ("sensor", "type", "confidence", "qe"):
-            assert field in cam, f"{name} missing {field}"
-        assert cam["confidence"] in ("high", "medium", "low")
-        for wl, sites in cam["qe"].items():
-            assert wl.isdigit(), f"{name} has non-integer wavelength key {wl!r}"
-            assert set(sites) <= allowed_site_keys, f"{name}@{wl} has {sites.keys()}"
-            for v in sites.values():
-                assert 0.0 <= v <= 1.0
-
-    for name, filt in out["filters"].items():
-        assert "type" in filt, f"{name} missing type"
-        assert filt["lines"], f"{name} has no lines"
-        for line in filt["lines"]:
-            assert {"name", "wavelength_nm", "fwhm_nm"} <= set(line)
+        if cam["type"] == "OSC":
+            wavelengths_with_rgb = [wl for wl, sites in cam["qe"].items()
+                                     if all(k in sites for k in ("R", "G", "B"))]
+            assert len(wavelengths_with_rgb) >= 2, name
 
 
-@pytest.mark.skipif(not RESEARCH_JSON.exists(), reason="research JSON not present")
+@pytest.mark.parametrize("site,value", [
+    ("R", 65),            # a percentage, not a fraction
+    ("mono_pk", 81),      # same, on the mono path
+    ("Gr", 1.01),
+    ("B", -0.01),
+    ("R", "0.73"),        # a string must not be coerced through float()
+    ("mono_pk", None),
+])
+def test_qe_value_outside_unit_interval_or_non_numeric_fails_loud(tmp_path, site, value):
+    doc = json.loads(json.dumps(BASE))
+    doc["sensors"]["IMX585"]["qe"]["656"][site] = value
+    src, dst = write(tmp_path, doc)
+    assert_fails_loud(run(src, dst), dst, "asi585m", "656", site)
+
+
+@pytest.mark.parametrize("confidence", ["Medium", "hi", "unknown", "", None])
+def test_invalid_confidence_fails_loud(tmp_path, confidence):
+    # The loader's parse_confidence() knows exactly high/medium/low and
+    # silently maps anything else to UNKNOWN.
+    doc = json.loads(json.dumps(BASE))
+    doc["cameras"]["asi585mc"]["confidence"] = confidence
+    src, dst = write(tmp_path, doc)
+    assert_fails_loud(run(src, dst), dst, "asi585mc", "confidence", repr(confidence))
+
+
+@pytest.mark.parametrize("wl", ["656.3", "656.0", " 656", "0656", "Ha"])
+def test_non_integer_wavelength_key_fails_loud(tmp_path, wl):
+    # The loader does an unguarded std::stoi(): "656.3" silently truncates.
+    doc = json.loads(json.dumps(BASE))
+    doc["sensors"]["IMX585"]["qe"][wl] = doc["sensors"]["IMX585"]["qe"].pop("656")
+    src, dst = write(tmp_path, doc)
+    assert_fails_loud(run(src, dst), dst, "asi585m", "wavelength", repr(wl))
+
+
+@pytest.mark.parametrize("cam_type", ["OSC", "mono"])
+def test_unknown_photosite_key_fails_loud(tmp_path, cam_type):
+    # "Gg" is a typo for a green photosite; dropping it would silently ship
+    # the wrong green. Checked on both paths: a mono camera ignores R/Gr/Gb/B
+    # legitimately, but must not ignore a key nobody recognises.
+    doc = json.loads(json.dumps(BASE))
+    if cam_type == "OSC":
+        doc["sensors"]["IMX585"]["qe"]["656"]["Gg"] = 0.31
+        cam = "asi585mc"
+    else:
+        doc["sensors"]["IMX174"] = sensor({"656": {"mono_pk": 0.55, "Gg": 0.31}})
+        doc["cameras"]["asi174mm"] = {"manufacturer": "ZWO", "sensor": "IMX174", "type": "mono",
+                                      "bayer_pattern": None, "qe_inherits_from_sensor": True,
+                                      "confidence": "medium", "source_urls": [], "notes": ""}
+        cam = "asi174mm"
+    src, dst = write(tmp_path, doc)
+    assert_fails_loud(run(src, dst), dst, cam, "656", "'Gg'")
+
+
+@pytest.mark.parametrize("greens", [
+    {"G": 0.5, "Gr": 0.32, "Gb": 0.30},   # merged G alongside the split
+    {"G": 0.5, "Gr": 0.32},
+    {"Gr": 0.32},                          # half a split: Gb unknown, not equal
+    {"Gb": 0.30},
+])
+def test_ambiguous_green_photosites_fail_loud(tmp_path, greens):
+    doc = json.loads(json.dumps(BASE))
+    sites = doc["sensors"]["IMX585"]["qe"]["656"]
+    for k in ("Gr", "Gb"):
+        del sites[k]
+    sites.update(greens)
+    src, dst = write(tmp_path, doc)
+    assert_fails_loud(run(src, dst), dst, "asi585mc", "656")
+
+
+def test_merged_G_alone_ships_unchanged(tmp_path):
+    # The unambiguous counterpart of the rule above: a sensor researched with
+    # one merged green ships it as-is (Gr+Gb -> mean is covered elsewhere).
+    doc = json.loads(json.dumps(BASE))
+    for wl in ("501", "656"):
+        sites = doc["sensors"]["IMX585"]["qe"][wl]
+        sites["G"] = round((sites.pop("Gr") + sites.pop("Gb")) / 2 + 0.001, 4)
+    src, dst = write(tmp_path, doc)
+    r = run(src, dst)
+    assert r.returncode == 0, r.stderr
+    assert json.loads(dst.read_text())["cameras"]["asi585mc"]["qe"]["656"]["G"] == 0.311
+
+
+def test_mono_and_mono_pk_both_present_fails_loud(tmp_path):
+    # "mono" is an alias for "mono_pk"; both at once leaves which one ships
+    # to dict-lookup order.
+    doc = json.loads(json.dumps(BASE))
+    doc["sensors"]["IMX585"]["qe"]["656"]["mono"] = 0.79
+    src, dst = write(tmp_path, doc)
+    assert_fails_loud(run(src, dst), dst, "IMX585", "656", "mono_pk")
+
+
 def test_committed_shipping_db_is_the_import_of_research(tmp_path):
     # share/qe_database.json is compiled into the module; it must be exactly
     # what this importer produces from research/, so neither can drift.
     dst = tmp_path / "qe_database.json"
-    r = run_import(RESEARCH_JSON, dst)
+    r = run(RESEARCH, dst)
     assert r.returncode == 0, r.stderr
-    assert dst.read_bytes() == (REPO / "share" / "qe_database.json").read_bytes()
+    assert dst.read_bytes() == SHIPPED.read_bytes()

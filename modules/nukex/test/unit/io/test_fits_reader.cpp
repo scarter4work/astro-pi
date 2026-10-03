@@ -68,3 +68,92 @@ TEST_CASE("FITSReader: read_headers from nonexistent file returns default", "[fi
     REQUIRE(meta.width == 0);
     REQUIRE(meta.height == 0);
 }
+
+// ── Gain keywords: EGAIN is e-/ADU, GAIN often is not ──────────────
+//
+// ZWO and QHY cameras write GAIN as the gain MENU INDEX (0-500) and EGAIN as
+// the electronic gain in e-/ADU. Reading GAIN as if it were e-/ADU puts a
+// number like 200 into the Poisson term, which understates shot noise by
+// orders of magnitude. When the electronic gain is genuinely unknown, the
+// across-frame fallback is the honest answer.
+
+#include <fitsio.h>
+
+namespace {
+
+// Minimal 4x4 float frame carrying a chosen gain-keyword combination.
+// egain/gain/rdnoise are written only when >= 0.
+std::string write_gain_fits(const std::string& name,
+                            double egain, double gain, double rdnoise,
+                            const char* instrument = nullptr) {
+    const std::string path = (std::filesystem::temp_directory_path() / name).string();
+    std::filesystem::remove(path);
+    fitsfile* f = nullptr;
+    int status = 0;
+    fits_create_file(&f, path.c_str(), &status);
+    long naxes[2] = {4, 4};
+    fits_create_img(f, FLOAT_IMG, 2, naxes, &status);
+    float px[16];
+    for (int i = 0; i < 16; i++) px[i] = 0.5f;
+    fits_write_img(f, TFLOAT, 1, 16, px, &status);
+    double exptime = 120.0;
+    fits_update_key(f, TDOUBLE, "EXPTIME", &exptime, nullptr, &status);
+    if (egain >= 0.0)   fits_update_key(f, TDOUBLE, "EGAIN",   &egain,   nullptr, &status);
+    if (gain >= 0.0)    fits_update_key(f, TDOUBLE, "GAIN",    &gain,    nullptr, &status);
+    if (rdnoise >= 0.0) fits_update_key(f, TDOUBLE, "RDNOISE", &rdnoise, nullptr, &status);
+    if (instrument) fits_update_key(f, TSTRING, "INSTRUME", const_cast<char*>(instrument), nullptr, &status);
+    fits_close_file(f, &status);
+    REQUIRE(status == 0);
+    return path;
+}
+
+} // namespace
+
+TEST_CASE("FITSReader: EGAIN wins over GAIN when both are present", "[fits]") {
+    const auto p = write_gain_fits("nukex_gain_egain.fits", 0.24, 200.0, 1.9);
+    auto meta = FITSReader::read_headers(p);
+    REQUIRE(meta.gain == Catch::Approx(0.24f));
+    REQUIRE(meta.has_noise_keywords == true);
+    std::filesystem::remove(p);
+}
+
+TEST_CASE("FITSReader: a GAIN menu index is not accepted as electronic gain",
+          "[fits]") {
+    // The ZWO case that matters: EGAIN written as 0 (unset), GAIN = 200.
+    // 200 e-/ADU is not a physical electronic gain for any astro camera, so
+    // the gain is unknown and the CCD noise model must not claim otherwise.
+    const auto p = write_gain_fits("nukex_gain_menu.fits", 0.0, 200.0, 1.9);
+    auto meta = FITSReader::read_headers(p);
+    REQUIRE(meta.has_noise_keywords == false);
+    std::filesystem::remove(p);
+}
+
+TEST_CASE("FITSReader: a low GAIN index on a ZWO or QHY camera is still an index, "
+          "not electronic gain", "[fits]") {
+    // GAIN=10 passes the plausibility ceiling, but on these cameras GAIN is
+    // the menu setting whatever its value; only EGAIN is electronic gain.
+    for (const char* cam : {"ZWO ASI2600MM Pro", "QHY268M", "Asi294mc Pro"}) {
+        const auto p = write_gain_fits("nukex_gain_index_low.fits", -1.0, 10.0, 1.5, cam);
+        auto meta = FITSReader::read_headers(p);
+        INFO(cam);
+        REQUIRE(meta.has_noise_keywords == false);
+        std::filesystem::remove(p);
+    }
+    // The same header from a camera whose GAIN really is e-/ADU is accepted.
+    const auto p = write_gain_fits("nukex_gain_index_ccd.fits", -1.0, 10.0, 1.5, "SBIG STL-11000M");
+    auto meta = FITSReader::read_headers(p);
+    REQUIRE(meta.has_noise_keywords == true);
+    REQUIRE(meta.gain == Catch::Approx(10.0f));
+    std::filesystem::remove(p);
+}
+
+TEST_CASE("FITSReader: a plausible GAIN is still accepted as electronic gain",
+          "[fits]") {
+    // Older CCD software does write GAIN in e-/ADU. A physically plausible
+    // value must keep working.
+    const auto p = write_gain_fits("nukex_gain_plausible.fits", -1.0, 1.9, 3.5);
+    auto meta = FITSReader::read_headers(p);
+    REQUIRE(meta.gain == Catch::Approx(1.9f));
+    REQUIRE(meta.has_noise_keywords == true);
+    std::filesystem::remove(p);
+}

@@ -47,24 +47,72 @@ TEST_CASE("GPU: batch size estimation is reasonable", "[gpu]") {
     REQUIRE(batch > 1000);
 }
 
-TEST_CASE("GPU: batch size is bounded by host RAM, not just VRAM", "[gpu]") {
-    // Regression for the Phase-B OOM kill: the shadow buffers live in host RAM
-    // too, so a batch sized only to fit a large GPU's VRAM over-allocated system
-    // RAM and got OOM-killed. The 48-frame / 4-channel broadband-OSC case that
-    // blew up: ~1788 bytes/voxel.
-    const size_t GB = 1024ULL * 1024 * 1024;
-    const size_t vram = 13ULL * GB;   // ~85% of a 16 GB card
+TEST_CASE("GPUContext: host memory is readable on this platform", "[gpu][context]") {
+    // The cap is only real if the budget can actually be measured. If this
+    // ever returns 0 the batch silently reverts to the VRAM-only figure,
+    // which is the behaviour that sent a 30 GB box into swap.
+    const std::size_t avail = GPUContext::host_available_bytes();
+#if defined(__linux__)
+    REQUIRE(avail > 0);
+#else
+    SUCCEED("host_available_bytes not implemented for this platform");
+#endif
+}
 
-    // A tight host budget MUST cap the batch below the VRAM-only figure.
-    int host_bound = GPUContext::batch_size_for_budgets(48, 4, vram, 4 * GB);
-    int vram_only  = GPUContext::batch_size_for_budgets(48, 4, vram, 1000 * GB);
-    REQUIRE(host_bound < vram_only);
-    REQUIRE(host_bound == static_cast<int>((4 * GB) / 1788));  // exact host bound
+TEST_CASE("GPUContext: the batch is capped by host memory, not just VRAM",
+          "[gpu][context]") {
+    GPUContext ctx = GPUContext::create({});
 
-    // Symmetric: a tiny VRAM budget caps it when the GPU is the scarce side.
-    REQUIRE(GPUContext::batch_size_for_budgets(48, 4, 1 * GB, 1000 * GB)
-            == static_cast<int>((1 * GB) / 1788));
+    // A deliberately small host budget must produce a smaller batch than a
+    // large one, whatever the device reports for VRAM.
+    ctx.set_host_memory_budget(64ull * 1024 * 1024);      // 64 MB
+    const int small = ctx.estimate_batch_size(30, 3);
 
-    // Always at least one voxel, even with an absurdly small budget.
-    REQUIRE(GPUContext::batch_size_for_budgets(48, 4, 0, 0) == 1);
+    ctx.set_host_memory_budget(16ull * 1024 * 1024 * 1024); // 16 GB
+    const int large = ctx.estimate_batch_size(30, 3);
+
+    INFO("small=" << small << " large=" << large);
+    REQUIRE(small >= 1);
+    REQUIRE(small < large);
+
+    // And the cap must actually bind: 64 MB of shadow buffers for 30 frames
+    // and 3 channels cannot hold anywhere near a million voxels.
+    REQUIRE(small < 1000000);
+}
+
+TEST_CASE("GPUContext: a zero budget restores the measured default",
+          "[gpu][context]") {
+    GPUContext ctx = GPUContext::create({});
+    ctx.set_host_memory_budget(64ull * 1024 * 1024);
+    const int capped = ctx.estimate_batch_size(30, 3);
+    ctx.set_host_memory_budget(0);
+    const int measured = ctx.estimate_batch_size(30, 3);
+    REQUIRE(ctx.host_memory_budget() == 0);
+    REQUIRE(measured > capped);
+}
+
+TEST_CASE("GPUContext: the measured default is bounded, not just proportional",
+          "[gpu][context]") {
+    // Taking a FRACTION of MemAvailable scales with the machine, which sounds
+    // prudent and is not. MemAvailable counts reclaimable page cache, and the
+    // frame cache fills page cache by design, so it overstates what an
+    // anonymous allocation can actually get. Measured on a 30 GB box during a
+    // 156-frame run: PixInsight reached 13.5 GB RSS beside a 4.67 GB cube, the
+    // machine went 3.9 GB into swap, and Phase A's per-frame cost degraded
+    // from 3.85 s to 13.4 s -- roughly half the phase lost to thrash.
+    //
+    // Batch size is a staging choice, not a numerical one -- proven bit-exact
+    // across batch splits in test_gpu_cpu_fallback -- so a smaller batch buys
+    // more kernel launches and costs nothing else. Bound it.
+    GPUContext ctx = GPUContext::create({});
+
+    ctx.set_host_memory_budget(0);                          // measured default
+    const int measured = ctx.estimate_batch_size(156, 4);
+
+    ctx.set_host_memory_budget(2ull * 1024 * 1024 * 1024);  // the ceiling
+    const int at_ceiling = ctx.estimate_batch_size(156, 4);
+
+    INFO("measured=" << measured << " at_ceiling=" << at_ceiling);
+    REQUIRE(measured >= 1);
+    REQUIRE(measured <= at_ceiling);
 }

@@ -55,7 +55,7 @@ JOURNEYS_BEFORE="$(picopilot_journeys_fingerprint)"
 [ -f "$SO" ] || { echo "FAIL: module not built at $SO"; exit 1; }
 SO="$(realpath -e "$SO")"
 picopilot_require_isolation || exit 1
-"$PI" --sign-module-file="$SO" --xssk-file="$KEYS" --xssk-password="$PASS"
+pi_headless "$PI" --sign-module-file="$SO" --xssk-file="$KEYS" --xssk-password="$PASS"
 [ -f "${SO%.so}.xsgn" ] || { echo "FAIL: signing produced no .xsgn"; exit 1; }
 
 # Load the module headlessly and run a trivial probe script that proves PI got
@@ -75,7 +75,7 @@ OUT2="$RUN_DIR/load-probe-out.txt"
 command -v xvfb-run >/dev/null 2>&1 || { echo "FAIL: xvfb-run not found (needed to keep dialogs off the real display)"; exit 1; }
 picopilot_seed_slot_modules "$PICOPILOT_TEST_SLOT" "$RUN_DIR" || exit 1
 picopilot_require_isolation || exit 1
-if ! PICOPILOT_LOAD_OUT="$OUT2" xvfb-run -a -s "-screen 0 1920x1080x24" \
+if ! PICOPILOT_LOAD_OUT="$OUT2" pi_headless \
         timeout 180 "$PI" -n="$PICOPILOT_TEST_SLOT" --automation-mode --no-startup-scripts -m="$SO" -r="$HERE/load-probe.js" --force-exit; then
    echo "FAIL: PI load timed out (180s) or exited non-zero"; exit 1
 fi

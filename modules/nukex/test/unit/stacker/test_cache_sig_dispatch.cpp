@@ -44,19 +44,42 @@ TEST_CASE("SlotSynthesis: DIRECT and REC709_LUMA are distinct", "[cache_sig]") {
 
 TEST_CASE("CacheSig: std::map key comparison works correctly", "[cache_sig]") {
     std::map<CacheSig, int> m;
-    m[{100, 200, 3}] = 3;
-    m[{100, 200, 1}] = 1;
-    m[{200, 100, 3}] = 99;
+    m[{100, 200, 3, ""}] = 3;
+    m[{100, 200, 1, "L"}] = 1;
+    m[{200, 100, 3, ""}] = 99;
 
     REQUIRE(m.size() == 3);
-    REQUIRE(m.at({100, 200, 3}) == 3);
-    REQUIRE(m.at({100, 200, 1}) == 1);
-    REQUIRE(m.at({200, 100, 3}) == 99);
+    REQUIRE(m.at({100, 200, 3, ""}) == 3);
+    REQUIRE(m.at({100, 200, 1, "L"}) == 1);
+    REQUIRE(m.at({200, 100, 3, ""}) == 99);
 
     // Same sig as an existing entry should not create a new entry.
-    m[{100, 200, 3}] = 42;
+    m[{100, 200, 3, ""}] = 42;
     REQUIRE(m.size() == 3);
-    REQUIRE(m.at({100, 200, 3}) == 42);
+    REQUIRE(m.at({100, 200, 3, ""}) == 42);
+}
+
+TEST_CASE("CacheSig: mono filters of identical geometry get separate caches",
+          "[cache_sig]") {
+    // The whole point of the routing key. Every mono frame is (W, H, 1)
+    // whatever its filter, so a geometry-only key collapsed L, R, G and B
+    // into ONE cache file -- which is why a multi-filter mono batch produced
+    // one populated channel of four and three exactly-zero ones.
+    std::map<CacheSig, int> m;
+    m[{4096, 4096, 1, "L"}] = 1;
+    m[{4096, 4096, 1, "R"}] = 2;
+    m[{4096, 4096, 1, "G"}] = 3;
+    m[{4096, 4096, 1, "B"}] = 4;
+
+    REQUIRE(m.size() == 4);
+    REQUIRE(m.at({4096, 4096, 1, "L"}) == 1);
+    REQUIRE(m.at({4096, 4096, 1, "B"}) == 4);
+
+    // Multi-channel frames still share one cache: they serve several slots
+    // from one file by channel index, which was always correct.
+    m[{4096, 4096, 3, ""}] = 10;
+    m[{4096, 4096, 3, ""}] = 11;
+    REQUIRE(m.size() == 5);
 }
 
 // ── ChannelConfig::slot_name() inverse of slot_index() ────────────────────────

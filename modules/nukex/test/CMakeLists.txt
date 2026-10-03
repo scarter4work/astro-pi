@@ -8,6 +8,8 @@ target_include_directories(catch2_main PUBLIC
 
 # Path to test/fixtures/, used by tests that load JSON/FITS fixtures from disk.
 add_compile_definitions(NUKEX_TEST_FIXTURES_DIR="${CMAKE_SOURCE_DIR}/test/fixtures")
+# So a test can verify the ACTUAL published artifacts with the ACTUAL verifier.
+add_compile_definitions(NUKEX_REPOSITORY_DIR="${CMAKE_SOURCE_DIR}/repository")
 
 # Path to share/, used by tests that load the real shipping data files
 # (as opposed to synthetic test/fixtures/ data) through their real loaders.
@@ -34,37 +36,52 @@ endfunction()
 
 # Core library tests — each added when implemented (Tasks 4-10)
 nukex_add_test(test_image         unit/io/test_image.cpp           nukex4_io)
-nukex_add_test(test_fits_reader   unit/io/test_fits_reader.cpp     nukex4_io)
+nukex_add_test(test_fits_reader   unit/io/test_fits_reader.cpp     nukex4_io cfitsio)
 nukex_add_test(test_debayer       unit/io/test_debayer.cpp         nukex4_io)
 nukex_add_test(test_filter        unit/io/test_filter.cpp          nukex4_io)
 nukex_add_test(test_filter_classifier_io unit/io/test_filter_classifier.cpp nukex4_io nukex4_core)
+nukex_add_test(test_filter_alias      unit/io/test_filter_alias.cpp      nukex4_io nukex4_core)
 nukex_add_test(test_welford       unit/core/test_welford.cpp       nukex4_core)
 nukex_add_test(test_histogram     unit/core/test_histogram.cpp     nukex4_core)
 nukex_add_test(test_reservoir     unit/core/test_reservoir.cpp     nukex4_core)
 nukex_add_test(test_distribution  unit/core/test_distribution.cpp  nukex4_core)
+nukex_add_test(test_channel       unit/core/test_channel_config.cpp nukex4_core)
 nukex_add_test(test_channel_config_from_filter unit/core/test_channel_config_from_filter.cpp nukex4_core nukex4_io)
 nukex_add_test(test_voxel         unit/core/test_voxel.cpp          nukex4_core)
 nukex_add_test(test_cube          unit/core/test_cube.cpp           nukex4_core)
+nukex_add_test(test_coverage_trim unit/core/test_coverage_trim.cpp  nukex4_core)
+nukex_add_test(test_noise_model   unit/core/test_noise_model.cpp    nukex4_core)
+nukex_add_test(test_luminance_spec unit/core/test_luminance_spec.cpp nukex4_core nukex4_io)
+nukex_add_test(test_fits_time      unit/core/test_fits_time.cpp      nukex4_core)
 nukex_add_test(test_flat          unit/io/test_flat_calibration.cpp nukex4_io)
 nukex_add_test(test_star_detector unit/alignment/test_star_detector.cpp nukex4_alignment)
 nukex_add_test(test_homography     unit/alignment/test_homography.cpp     nukex4_alignment)
 nukex_add_test(test_frame_aligner unit/alignment/test_frame_aligner.cpp nukex4_alignment)
 nukex_add_test(test_alignment_diag unit/alignment/test_alignment_diag.cpp nukex4_alignment)
+nukex_add_test(test_reference_selector unit/alignment/test_reference_selector.cpp nukex4_alignment)
+nukex_add_test(test_channel_registration unit/alignment/test_channel_registration.cpp nukex4_alignment)
+nukex_add_test(test_coverage_mask unit/alignment/test_coverage_mask.cpp nukex4_alignment)
 nukex_add_test(test_qe_database   unit/calibration/test_qe_database.cpp nukex4_calibration nukex4_io nukex4_core)
-nukex_add_test(test_qe_database_shipping unit/calibration/test_qe_database_shipping.cpp nukex4_calibration nukex4_io nukex4_core)
+nukex_add_test(test_qe_database_shipping unit/calibration/test_qe_database_shipping.cpp nukex4_calibration nukex4_io nukex4_core nlohmann_json::nlohmann_json)
 nukex_add_test(test_channel_decomposer unit/calibration/test_channel_decomposer.cpp nukex4_calibration nukex4_io nukex4_core)
+nukex_add_test(test_ed25519_verify unit/calibration/test_ed25519_verify.cpp nukex4_calibration nukex4_io nukex4_core)
+nukex_add_test(test_frame_normalization unit/calibration/test_frame_normalization.cpp nukex4_calibration nukex4_io nukex4_core)
+nukex_add_test(test_qe_update unit/calibration/test_qe_update.cpp nukex4_calibration nukex4_io nukex4_core)
+nukex_add_test(test_qe_update_state unit/calibration/test_qe_update_state.cpp nukex4_calibration nukex4_io nukex4_core)
+nukex_add_test(test_background_neutralization unit/calibration/test_background_neutralization.cpp nukex4_calibration nukex4_io nukex4_core)
+nukex_add_test(test_background_gradient unit/calibration/test_background_gradient.cpp nukex4_calibration nukex4_io nukex4_core)
 nukex_add_test(test_robust_stats  unit/fitting/test_robust_stats.cpp   nukex4_fitting)
 nukex_add_test(test_student_t  unit/fitting/test_student_t_fitter.cpp  nukex4_fitting)
 nukex_add_test(test_gmm        unit/fitting/test_gmm_fitter.cpp       nukex4_fitting)
 nukex_add_test(test_contamination unit/fitting/test_contamination_fitter.cpp nukex4_fitting)
 nukex_add_test(test_kde          unit/fitting/test_kde_fitter.cpp         nukex4_fitting)
 nukex_add_test(test_model_selector unit/fitting/test_model_selector.cpp nukex4_fitting)
+nukex_add_test(test_huber_estimator unit/fitting/test_huber_estimator.cpp nukex4_fitting nukex4_core)
 nukex_add_test(test_weight_computer unit/classify/test_weight_computer.cpp nukex4_classify)
-nukex_add_test(test_pixel_selector unit/combine/test_pixel_selector.cpp nukex4_combine)
-nukex_add_test(test_spatial_context unit/combine/test_spatial_context.cpp nukex4_combine)
 nukex_add_test(test_output_assembler unit/combine/test_output_assembler.cpp nukex4_combine)
 nukex_add_test(test_palette       unit/compose/test_palette.cpp     nukex4_compose nukex4_core)
 nukex_add_test(test_color_composer unit/compose/test_color_composer.cpp nukex4_compose nukex4_core)
+nukex_add_test(test_compose_image  unit/compose/test_compose_image.cpp  nukex4_compose nukex4_core nukex4_io)
 nukex_add_test(test_frame_cache unit/stacker/test_frame_cache.cpp nukex4_stacker)
 nukex_add_test(test_stacking_engine unit/stacker/test_stacking_engine.cpp nukex4_stacker)
 nukex_add_test(test_engine_config unit/stacker/test_engine_config.cpp nukex4_stacker nukex4_calibration nukex4_io nukex4_core)
@@ -74,19 +91,16 @@ nukex_add_test(test_cache_sig_dispatch unit/stacker/test_cache_sig_dispatch.cpp 
 add_library(test_util STATIC
     util/png_writer.cpp
     util/test_data_loader.cpp
-    util/mini_fits_writer.cpp
+    util/synthetic_fits.cpp
 )
 target_include_directories(test_util PUBLIC
     "${CMAKE_SOURCE_DIR}/test/util"
     "${CMAKE_SOURCE_DIR}/third_party/stb"
     "${CMAKE_SOURCE_DIR}/third_party/catch2"
 )
-target_link_libraries(test_util
-    PUBLIC nukex4_io nukex4_stretch nukex4_calibration
-    PRIVATE cfitsio
-)
+target_link_libraries(test_util PUBLIC nukex4_io nukex4_stretch nukex4_calibration PRIVATE cfitsio)
 
-nukex_add_test(test_mini_fits_writer util/test_mini_fits_writer.cpp nukex4_io test_util)
+nukex_add_test(test_synthetic_fits unit/io/test_synthetic_fits.cpp test_util nukex4_calibration nukex4_io)
 nukex_add_test(test_png_writer util/test_png_writer.cpp nukex4_io test_util)
 
 nukex_add_test(test_stretch_pipeline unit/stretch/test_stretch_pipeline.cpp nukex4_stretch)
@@ -116,12 +130,13 @@ nukex_add_test(test_gpu_context unit/gpu/test_gpu_context.cpp nukex4_gpu)
 nukex_add_test(test_gpu_cpu_fallback unit/gpu/test_gpu_cpu_fallback.cpp nukex4_gpu nukex4_stacker)
 nukex_add_test(test_gpu_kernels unit/gpu/test_gpu_kernels.cpp nukex4_gpu)
 nukex_add_test(test_gpu_agreement unit/gpu/test_gpu_agreement.cpp nukex4_gpu nukex4_stacker)
+nukex_add_test(test_shadow_buffers unit/gpu/test_shadow_buffers.cpp nukex4_gpu nukex4_stacker)
 nukex_add_test(test_fit_heartbeat unit/gpu/test_fit_heartbeat.cpp nukex4_gpu)
 nukex_add_test(test_parallel_for unit/gpu/test_parallel_for.cpp nukex4_gpu)
 
-# Module-layer tests (fits_metadata and future module code)
+# Module-layer tests (auto-selector, stretch factory, Phase 8 fallback)
 add_library(nukex4_module_testlib OBJECT
-    "${CMAKE_SOURCE_DIR}/src/module/fits_metadata.cpp"
+    "${CMAKE_SOURCE_DIR}/src/module/NukeXConsoleText.cpp"
     "${CMAKE_SOURCE_DIR}/src/module/stretch_auto_selector.cpp"
     "${CMAKE_SOURCE_DIR}/src/module/stretch_factory.cpp"
 )
@@ -130,11 +145,11 @@ target_include_directories(nukex4_module_testlib PUBLIC
     "${CMAKE_SOURCE_DIR}/src/lib/io/include"
     "${CMAKE_SOURCE_DIR}/src/lib/stretch/include"
 )
-target_link_libraries(nukex4_module_testlib PUBLIC cfitsio nukex4_stretch)
+target_link_libraries(nukex4_module_testlib PUBLIC nukex4_stretch nukex4_io)
 
-nukex_add_test(test_fits_metadata unit/module/test_fits_metadata.cpp nukex4_module_testlib)
 nukex_add_test(test_stretch_auto_selector unit/module/test_stretch_auto_selector.cpp nukex4_module_testlib)
 nukex_add_test(test_stretch_factory unit/module/test_stretch_factory.cpp nukex4_module_testlib)
+nukex_add_test(test_console_text unit/module/test_console_text.cpp nukex4_module_testlib)
 nukex_add_test(test_phase8_fallback unit/module/test_phase8_fallback.cpp nukex4_stretch nukex4_learning sqlite3_vendored)
 
 # Integration tests (Task 9 onward) — gated under [.integration] so they

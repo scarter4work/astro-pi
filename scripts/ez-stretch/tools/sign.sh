@@ -38,6 +38,9 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 PI_DIR="${PIXINSIGHT_DIR:-/opt/PixInsight}"
 PI="$PI_DIR/bin/PixInsight.sh"
+# Every PixInsight launch goes through pi_headless (private Xvfb, never the
+# user's desktop) -- see tools/pi-headless.sh at the astro-pi root.
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)/tools/pi-headless.sh"
 KEYS_XSSK="/home/scarter4work/projects/keys/scarter4work_keys.xssk"
 PASS_FILE="/tmp/.pi_codesign_pass"
 NATIVE_SIGNER="$SCRIPT_DIR/SignScriptsNative.js"
@@ -64,7 +67,7 @@ sign_scripts() {
     # stdout and the process exits 0 even on a silent no-op.
     rm -f "$SIGN_RESULT"
     LD_LIBRARY_PATH="$PI_DIR/bin/lib:$PI_DIR/bin:${LD_LIBRARY_PATH:-}" \
-        "$PI" -n --automation-mode --no-startup-scripts --no-startup-check-updates \
+        pi_headless "$PI" -n --automation-mode --no-startup-scripts --no-startup-check-updates \
               --no-startup-gui-messages -r="$NATIVE_SIGNER" --force-exit >/dev/null 2>&1
 
     if [ ! -f "$SIGN_RESULT" ]; then
@@ -90,7 +93,7 @@ sign_xri() {
     echo "Manifest (PixInsight --sign-xml-file):"
     # The native signer appends a <Signature>; strip any existing one first.
     sed -i '/<Signature developerId=/d' "$XRI"
-    "$PI" --sign-xml-file="$XRI" \
+    pi_headless "$PI" --sign-xml-file="$XRI" \
           --xssk-file="$KEYS_XSSK" \
           --xssk-password="$(cat "$PASS_FILE")" 2>&1 | grep -iE 'signature|error|fail' | sed 's/^/  /'
     if ! grep -q "<Signature developerId=" "$XRI"; then

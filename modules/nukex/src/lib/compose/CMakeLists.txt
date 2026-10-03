@@ -1,6 +1,7 @@
 add_library(nukex4_compose STATIC
     src/palette.cpp
     src/color_composer.cpp
+    src/compose_image.cpp
 )
 
 target_include_directories(nukex4_compose

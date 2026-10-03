@@ -1,8 +1,8 @@
 #ifndef __NukeX_stretch_auto_selector_h
 #define __NukeX_stretch_auto_selector_h
 
-#include "nukex/io/filter_classifier.hpp"
-#include "fits_metadata.hpp"
+#include "nukex/core/filter.hpp"
+#include "nukex/core/frame_metadata.hpp"
 #include "nukex/stretch/stretch_op.hpp"
 #include <memory>
 #include <string>
@@ -14,13 +14,13 @@ struct AutoSelection {
     std::string log_line;
 };
 
-/// Primary entry point: classify + select + build a rationale log line.
-/// The `meta` is used only to populate the log line with the FITS header
-/// values that actually drove the classification, so a user reading the
-/// Process Console can trace "why LRGB-mono?" back to FILTER/BAYERPAT/NAXIS3.
-AutoSelection select_auto(const FITSMetadata& meta);
+/// Primary entry point: classify (lib FilterClassifier) + select + build a
+/// rationale log line. `meta` populates the log with the FITS header values
+/// that drove the classification (FILTER / BAYERPAT / INSTRUME) so a user
+/// can trace "why BROADBAND_L?" in the Process Console.
+AutoSelection select_auto(const FrameMetadata& meta);
 
-/// Backward-compat overload (FilterClass-only; empty log detail).
+/// FilterClass-only overload (empty header detail in the log line).
 AutoSelection select_auto(FilterClass cls);
 
 } // namespace nukex

@@ -32,7 +32,7 @@ static void phase8_apply(StretchOp& op,
 }
 
 std::unique_ptr<StretchOp> build_primary(PrimaryStretch e,
-                                         const FITSMetadata& meta,
+                                         const FrameMetadata& meta,
                                          std::string& out_log_line,
                                          const Phase8Context* p8) {
     out_log_line.clear();
@@ -41,7 +41,7 @@ std::unique_ptr<StretchOp> build_primary(PrimaryStretch e,
     switch (e) {
         case PrimaryStretch::Auto: {
             // Pass the full metadata to select_auto so the log line can
-            // include the FITS values (FILTER/BAYERPAT/NAXIS3) that drove
+            // include the FITS values (FILTER/BAYERPAT/INSTRUME) that drove
             // the classification — useful when a user is debugging an
             // unexpected auto-selection.
             auto sel = select_auto(meta);

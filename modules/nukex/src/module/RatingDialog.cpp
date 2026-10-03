@@ -11,14 +11,6 @@ static void init_signed_slider(HorizontalSlider& s) {
     s.SetMinWidth(120);
 }
 
-// filter_class is a nukex::FilterClass identity code (nukex/core/filter.hpp).
-// Color-balance feedback is only meaningful for a colour-capable broadband
-// mosaic/OSC frame: BROADBAND_RGB(2) or BROADBAND_OSC(3). Mono (BROADBAND_L),
-// narrowband, and dual-NB OSC runs hide the color slider.
-static bool is_color_capable(int filter_class) {
-    return filter_class == 2 /* BROADBAND_RGB */ || filter_class == 3 /* BROADBAND_OSC */;
-}
-
 RatingDialog::RatingDialog(int filter_class) : filter_class_(filter_class) {
     SetWindowTitle("Rate last NukeX run");
 
@@ -57,8 +49,8 @@ RatingDialog::RatingDialog(int filter_class) : filter_class_(filter_class) {
     root_.Add(brightness_label_); root_.Add(brightness_);
     root_.Add(saturation_label_); root_.Add(saturation_);
 
-    // Hide color axis for mono / narrowband / dual-NB OSC.
-    if (is_color_capable(filter_class_)) {
+    // Hide color axis for mono / narrowband.
+    if (has_color_axis(filter_class_)) {
         root_.Add(color_label_); root_.Add(color_);
     }
 
@@ -79,7 +71,7 @@ void RatingDialog::OnSaveClick(Button&, bool) {
     result_.dont_show_again  = dont_show_again_.IsChecked();
     result_.brightness       = brightness_.Value();
     result_.saturation       = saturation_.Value();
-    if (is_color_capable(filter_class_)) result_.color = color_.Value();
+    if (has_color_axis(filter_class_)) result_.color = color_.Value();
     result_.star_bloat       = star_bloat_.Value();
     result_.overall          = overall_.Value();
     Ok();

@@ -75,6 +75,26 @@ struct HomographyMatrix {
 
     /// Return the identity matrix.
     static HomographyMatrix identity();
+
+    /// Matrix product, normalised so H(2,2) == 1.
+    ///
+    /// Used to compose a chained alignment: if `a` maps anchor->reference and
+    /// `b` maps frame->anchor, then `a.compose(b)` maps frame->reference, and
+    /// the frame is still resampled exactly once. Chaining the TRANSFORMS is
+    /// the point; chaining resampling would blur every chained frame.
+    HomographyMatrix compose(const HomographyMatrix& b) const {
+        HomographyMatrix out;
+        for (int r = 0; r < 3; ++r)
+            for (int c = 0; c < 3; ++c) {
+                float acc = 0.0f;
+                for (int k = 0; k < 3; ++k) acc += H[r][k] * b.H[k][c];
+                out.H[r][c] = acc;
+            }
+        const float w = out.H[2][2];
+        if (std::abs(w) > 1e-20f)
+            for (auto& row : out.H) for (auto& v : row) v /= w;
+        return out;
+    }
 };
 
 /// Result of a star matching attempt between two catalogs.
@@ -92,6 +112,13 @@ struct AlignmentResult {
     bool is_meridian_flipped = false;
     bool alignment_failed = false;   // true if <8 matches found
     float weight_penalty = 1.0f;     // 0.5 if alignment failed
+
+    /// True when H was reached by composing through an already-aligned
+    /// neighbour rather than by matching the reference directly. Only frames
+    /// that would otherwise have failed take this path, so a corpus that
+    /// aligns fully today never sets it.
+    bool chained = false;
+    int  chained_via = -1;           ///< anchor frame index, or -1
 };
 
 } // namespace nukex

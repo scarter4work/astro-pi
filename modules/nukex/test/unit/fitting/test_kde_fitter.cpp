@@ -1,6 +1,7 @@
 #include "catch_amalgamated.hpp"
 #include "nukex/fitting/kde_fitter.hpp"
 #include "nukex/fitting/robust_stats.hpp"
+#include "nukex/core/distribution.hpp"
 #include <vector>
 #include <random>
 #include <cmath>
@@ -68,4 +69,44 @@ TEST_CASE("KDEFitter: confidence is 0.5", "[kde]") {
 
     REQUIRE(result.converged);
     REQUIRE(result.distribution.confidence == Catch::Approx(0.5f));
+}
+
+TEST_CASE("KDEFitter: n=1 returns the sample as the estimate, not zero", "[kde]") {
+    float v[] = {0.37f};
+    float w[] = {1.0f};
+    KDEFitter kde;
+    auto r = kde.fit(v, w, 1, biweight_location(v, 1), 0.0f);
+    REQUIRE_FALSE(r.converged);
+    REQUIRE(r.n_samples == 1);
+    REQUIRE(r.distribution.true_signal_estimate == Catch::Approx(0.37f));
+    REQUIRE(r.distribution.kde_mode             == Catch::Approx(0.37f));
+    REQUIRE(r.distribution.signal_uncertainty   == Catch::Approx(0.0f));
+    REQUIRE(r.distribution.confidence           == 0.0f);
+    REQUIRE(r.distribution.used_nonparametric);
+    REQUIRE(r.distribution.shape == DistributionShape::UNKNOWN);
+}
+
+TEST_CASE("KDEFitter: n=2 estimate is the robust location of the pair", "[kde]") {
+    float v[] = {0.30f, 0.34f};
+    float w[] = {1.0f, 1.0f};
+    float rl = biweight_location(v, 2);
+    float rs = mad(v, 2) * 1.4826f;
+    KDEFitter kde;
+    auto r = kde.fit(v, w, 2, rl, rs);
+    REQUIRE_FALSE(r.converged);
+    REQUIRE(r.n_samples == 2);
+    REQUIRE(r.distribution.true_signal_estimate == Catch::Approx(rl));
+    REQUIRE(r.distribution.true_signal_estimate == Catch::Approx(0.32f).margin(0.01f));
+    REQUIRE(r.distribution.signal_uncertainty   == Catch::Approx(rs));
+    REQUIRE(r.distribution.used_nonparametric);
+}
+
+TEST_CASE("KDEFitter: n=3 still runs the real KDE", "[kde]") {
+    float v[] = {0.30f, 0.32f, 0.34f};
+    float w[] = {1.0f, 1.0f, 1.0f};
+    KDEFitter kde;
+    auto r = kde.fit(v, w, 3, biweight_location(v, 3), mad(v, 3) * 1.4826f);
+    REQUIRE(r.converged);
+    REQUIRE(r.distribution.used_nonparametric);
+    REQUIRE(r.distribution.true_signal_estimate == Catch::Approx(0.32f).margin(0.02f));
 }

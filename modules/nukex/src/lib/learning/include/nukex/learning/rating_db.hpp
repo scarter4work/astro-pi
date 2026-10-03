@@ -42,11 +42,29 @@ struct RunRecord {
     int                  rating_overall    = 0;
 };
 
-// Opens (or creates) a SQLite DB at `path`. Applies schema v1 if the DB is
-// empty. Enables WAL mode. Runs PRAGMA integrity_check; on failure renames
-// the DB to `<path>.corrupt.<timestamp>` and returns a fresh DB.
+// Schema version stamped in SQLite `PRAGMA user_version`.
+//   1 = v4.0.1.0 layout. filter_class holds the v4 rating-axis codes
+//       (0 mono-or-LRGB-color, 1 Bayer RGB, 2 narrowband, 3 reserved).
+//   2 = identical layout; filter_class holds the 5-class FilterClass rating
+//       ints (1 BROADBAND_L, 2 BROADBAND_RGB, 3 BROADBAND_OSC,
+//       4 NARROWBAND_SINGLE, 5 DUAL_NB_OSC, 0 UNKNOWN). open_rating_db()
+//       migrates 1 -> 2 in place on first open.
+constexpr int kRatingDbSchemaVersion = 2;
+
+// Reads PRAGMA user_version. Returns -1 if the handle cannot answer.
+int rating_db_schema_version(sqlite3* db);
+
+// How long open_rating_db waits for another connection's lock.
+constexpr int kRatingDbBusyTimeoutMs = 5000;
+
+// Opens (or creates) a SQLite DB at `path`. Applies the schema if the DB is
+// empty and migrates older user_version stamps forward. Enables WAL mode.
+// Runs PRAGMA integrity_check. Only genuine damage (SQLITE_CORRUPT /
+// SQLITE_NOTADB, or a failed integrity check) renames the DB to
+// `<path>.corrupt.<timestamp>` and returns a fresh DB; a database still locked
+// by another connection after kRatingDbBusyTimeoutMs is left untouched.
 //
-// Returns nullptr on unrecoverable failure (e.g. dir not writable).
+// Returns nullptr on failure (dir not writable, database busy, I/O error).
 sqlite3* open_rating_db(const std::string& path);
 
 // Optional: attach the read-only bootstrap DB under alias "bootstrap".

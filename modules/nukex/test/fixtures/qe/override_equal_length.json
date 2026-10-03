@@ -1,0 +1,19 @@
+{
+  "schema_version": 1,
+  "cameras": {
+    "ZWO-ABD1": {
+      "sensor": "TestSensor",
+      "type": "OSC",
+      "bayer": "RGGB",
+      "qe": { "656": { "R": 0.50, "G": 0.10, "B": 0.05 } },
+      "confidence": "low"
+    },
+    "ZWO-ABC1": {
+      "sensor": "TestSensor",
+      "type": "OSC",
+      "bayer": "RGGB",
+      "qe": { "656": { "R": 0.40, "G": 0.20, "B": 0.10 } },
+      "confidence": "low"
+    }
+  }
+}
