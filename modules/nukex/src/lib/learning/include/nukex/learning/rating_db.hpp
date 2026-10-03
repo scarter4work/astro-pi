@@ -54,12 +54,17 @@ constexpr int kRatingDbSchemaVersion = 2;
 // Reads PRAGMA user_version. Returns -1 if the handle cannot answer.
 int rating_db_schema_version(sqlite3* db);
 
+// How long open_rating_db waits for another connection's lock.
+constexpr int kRatingDbBusyTimeoutMs = 5000;
+
 // Opens (or creates) a SQLite DB at `path`. Applies the schema if the DB is
 // empty and migrates older user_version stamps forward. Enables WAL mode.
-// Runs PRAGMA integrity_check; on failure renames the DB to
-// `<path>.corrupt.<timestamp>` and returns a fresh DB.
+// Runs PRAGMA integrity_check. Only genuine damage (SQLITE_CORRUPT /
+// SQLITE_NOTADB, or a failed integrity check) renames the DB to
+// `<path>.corrupt.<timestamp>` and returns a fresh DB; a database still locked
+// by another connection after kRatingDbBusyTimeoutMs is left untouched.
 //
-// Returns nullptr on unrecoverable failure (e.g. dir not writable).
+// Returns nullptr on failure (dir not writable, database busy, I/O error).
 sqlite3* open_rating_db(const std::string& path);
 
 // Optional: attach the read-only bootstrap DB under alias "bootstrap".

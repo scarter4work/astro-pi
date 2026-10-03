@@ -56,12 +56,12 @@ int read_user_version(sqlite3* db) {
     return v;
 }
 
-bool set_user_version(sqlite3* db, int v) {
+int set_user_version(sqlite3* db, int v) {
     const std::string sql = "PRAGMA user_version = " + std::to_string(v) + ";";
     char* err = nullptr;
     const int rc = sqlite3_exec(db, sql.c_str(), nullptr, nullptr, &err);
     if (err) sqlite3_free(err);
-    return rc == SQLITE_OK;
+    return rc;
 }
 
 // v1 rows carry the v4 rating-axis encoding written by the old
@@ -71,7 +71,7 @@ bool set_user_version(sqlite3* db, int v) {
 // v2 rows carry FilterClass rating ints (see rating_db.hpp).
 // One CASE expression: sequential `UPDATE … WHERE filter_class = N` would
 // chain (a row moved 0 -> 1 would then match the 1 -> 3 rule).
-bool migrate_v1_to_v2(sqlite3* db) {
+int migrate_v1_to_v2(sqlite3* db) {
     const char* sql =
         "BEGIN IMMEDIATE;"
         "UPDATE runs SET filter_class = CASE filter_class"
@@ -83,46 +83,56 @@ bool migrate_v1_to_v2(sqlite3* db) {
         "PRAGMA user_version = 2;"
         "COMMIT;";
     char* err = nullptr;
-    if (sqlite3_exec(db, sql, nullptr, nullptr, &err) != SQLITE_OK) {
+    const int rc = sqlite3_exec(db, sql, nullptr, nullptr, &err);
+    if (rc != SQLITE_OK) {
         if (err) sqlite3_free(err);
         sqlite3_exec(db, "ROLLBACK;", nullptr, nullptr, nullptr);
-        return false;
     }
-    return true;
+    return rc;   // the failing statement's code, not the ROLLBACK's
 }
 
-bool apply_pragmas_and_schema(sqlite3* db) {
+// Returns SQLITE_OK or the primary result code of the step that failed, so
+// the caller can tell a damaged file (SQLITE_CORRUPT / SQLITE_NOTADB) from one
+// that is merely in use (SQLITE_BUSY / SQLITE_LOCKED).
+int apply_pragmas_and_schema(sqlite3* db) {
     char* err = nullptr;
-    if (sqlite3_exec(db, "PRAGMA journal_mode=WAL;", nullptr, nullptr, &err) != SQLITE_OK) {
-        sqlite3_free(err);
-        return false;
-    }
-    // A garbage-bytes file fails here with SQLITE_NOTADB -> -1 -> false,
-    // which open_rating_db() treats as corruption (rename + retry).
-    const int before = read_user_version(db);
-    if (before < 0) return false;
+    int rc = sqlite3_exec(db, "PRAGMA journal_mode=WAL;", nullptr, nullptr, &err);
+    if (err) sqlite3_free(err);
+    if (rc != SQLITE_OK) return rc;
 
-    if (sqlite3_exec(db, kSchemaV1, nullptr, nullptr, &err) != SQLITE_OK) {
-        sqlite3_free(err);
-        return false;
-    }
+    // A garbage-bytes file fails here with SQLITE_NOTADB.
+    const int before = read_user_version(db);
+    if (before < 0) return sqlite3_errcode(db);
+
+    rc = sqlite3_exec(db, kSchemaV1, nullptr, nullptr, &err);
+    if (err) sqlite3_free(err);
+    if (rc != SQLITE_OK) return rc;
+
     if (before == 0) return set_user_version(db, kRatingDbSchemaVersion); // brand-new file
     if (before == 1) return migrate_v1_to_v2(db);
-    return true; // already current (or newer: leave untouched)
+    return SQLITE_OK; // already current (or newer: leave untouched)
 }
 
-bool integrity_ok(sqlite3* db) {
+bool is_corruption(int rc) {
+    rc &= 0xff;   // primary code of an extended one
+    return rc == SQLITE_CORRUPT || rc == SQLITE_NOTADB;
+}
+
+// SQLITE_OK when PRAGMA integrity_check reports "ok"; SQLITE_CORRUPT when it
+// reports damage; otherwise the code that stopped the check itself.
+int integrity_check(sqlite3* db) {
     sqlite3_stmt* stmt = nullptr;
-    if (sqlite3_prepare_v2(db, "PRAGMA integrity_check;", -1, &stmt, nullptr) != SQLITE_OK) {
-        return false;
-    }
-    bool ok = false;
-    if (sqlite3_step(stmt) == SQLITE_ROW) {
+    int rc = sqlite3_prepare_v2(db, "PRAGMA integrity_check;", -1, &stmt, nullptr);
+    if (rc != SQLITE_OK) return rc;
+    rc = sqlite3_step(stmt);
+    int result = rc;
+    if (rc == SQLITE_ROW) {
         const unsigned char* txt = sqlite3_column_text(stmt, 0);
-        ok = (txt != nullptr) && (std::string(reinterpret_cast<const char*>(txt)) == "ok");
+        const bool ok = (txt != nullptr) && (std::string(reinterpret_cast<const char*>(txt)) == "ok");
+        result = ok ? SQLITE_OK : SQLITE_CORRUPT;
     }
     sqlite3_finalize(stmt);
-    return ok;
+    return result;
 }
 
 std::string rename_corrupt(const std::string& path) {
@@ -144,20 +154,24 @@ sqlite3* open_rating_db(const std::string& path) {
             if (db) sqlite3_close(db);
             return nullptr;
         }
-        // A garbage-bytes file opens without error but fails on the first
-        // real statement (SQLITE_NOTADB). Treat schema-apply failure as
-        // corruption on attempt 0 so we rename-and-retry the same way as a
-        // post-integrity-check failure.
-        const bool schema_ok   = apply_pragmas_and_schema(db);
-        const bool integrity   = schema_ok && integrity_ok(db);
-        if (schema_ok && integrity) {
-            return db;
-        }
+        // Another connection (a second PixInsight saving a rating) may hold
+        // the write lock for a moment. Wait for it rather than failing.
+        sqlite3_busy_timeout(db, kRatingDbBusyTimeoutMs);
+
+        int rc = apply_pragmas_and_schema(db);
+        if (rc == SQLITE_OK) rc = integrity_check(db);
+        if (rc == SQLITE_OK) return db;
         sqlite3_close(db);
+
+        // Only a damaged file is set aside. Anything else -- the database
+        // still locked after the timeout, an I/O error -- fails this open and
+        // leaves the user's ratings exactly where they are: renaming a busy
+        // database as "corrupt" and starting a fresh one loses them.
+        if (!is_corruption(rc)) return nullptr;
         if (attempt == 0) {
-            if (rename_corrupt(path).empty()) {
-                return nullptr;
-            }
+            // A garbage-bytes file opens without error but fails on the first
+            // real statement (SQLITE_NOTADB); rename and retry with a fresh DB.
+            if (rename_corrupt(path).empty()) return nullptr;
             continue;
         }
         return nullptr;
