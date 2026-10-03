@@ -12,6 +12,10 @@
 set -euo pipefail   # pipefail so `PixInsight.sh … | tee` surfaces PI crashes
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# Every PixInsight launch goes through pi_headless: a private Xvfb, no
+# WAYLAND_DISPLAY, QT_QPA_PLATFORM=xcb. xvfb-run alone was not enough -- with
+# WAYLAND_DISPLAY inherited, PixInsight opened on the user's real desktop.
+. "${REPO}/../../tools/pi-headless.sh"
 # NUKEX_E2E_MANIFEST points the run at another manifest (an attribution or
 # bisect run with instance_overrides); the default is the repo corpus.
 MANIFEST="${NUKEX_E2E_MANIFEST:-${REPO}/test/fixtures/e2e_manifest.json}"
@@ -81,7 +85,7 @@ trap uninstall_module EXIT
 
 echo "NukeX E2E: borrowing ${MODULE_SRC} -> ${MODULE_DST} for this run only."
 cp "${MODULE_SRC}" "${MODULE_DST}"
-"${PI_BIN}/PixInsight.sh" --sign-module-file="${MODULE_DST}" \
+pi_headless "${PI_BIN}/PixInsight.sh" --sign-module-file="${MODULE_DST}" \
     --xssk-file="${KEYS}" --xssk-password="${PASS}" >/dev/null
 
 # Run a single case by name. The full v5 corpus takes hours across four
@@ -133,8 +137,8 @@ export NUKEX_PHASE8_NO_POPUP=1
 # out of sync with the on-disk binaries (e.g. after a sign + reinstall
 # cycle during dev).  For a test harness that installs fresh modules, the
 # fresh-scan behaviour is what we want every run.
-timeout --kill-after=30s "${NUKEX_E2E_TIMEOUT}" \
-    /opt/PixInsight/bin/PixInsight.sh --automation-mode --force-exit --default-modules \
+pi_headless timeout --kill-after=30s "${NUKEX_E2E_TIMEOUT}" \
+    "${PI_BIN}/PixInsight.sh" --automation-mode --force-exit --default-modules \
         "-r=${REPO}/tools/validate_e2e.js,manifest=${MANIFEST}${REGEN_ARG}${ONLY_ARG}" \
         2>&1 | tee "${E2E_LOG}"
 

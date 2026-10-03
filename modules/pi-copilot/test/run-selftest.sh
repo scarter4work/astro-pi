@@ -174,7 +174,7 @@ PY
 # file, or missing a real substitution.
 SO="$(realpath -e "$SO")"
 picopilot_require_isolation || exit 1
-"$PI" --sign-module-file="$SO" --xssk-file="$KEYS" --xssk-password="$PASS"
+pi_headless "$PI" --sign-module-file="$SO" --xssk-file="$KEYS" --xssk-password="$PASS"
 [ -f "${SO%.so}.xsgn" ] || { echo "FAIL: signing produced no .xsgn"; exit 1; }
 
 # Vendored SQLite must stay private to the module (a clash with any other
@@ -521,9 +521,11 @@ WATCHDOG_PID=$!
 
 PI_RC=0
 picopilot_require_isolation || exit 1
-env "${PICOPILOT_THROWLOG_PRELOAD[@]}" PICOPILOT_SELFTEST_OUT="$R" xvfb-run -a -s "-screen 0 1920x1080x24" \
-      timeout 900 "$PI" -n="$PICOPILOT_TEST_SLOT" --automation-mode --no-startup-scripts -m="$SO" -r="$HERE/load-icons.js" -r="$HERE/selftest.js" --force-exit \
-   || PI_RC=$?
+( for kv in "${PICOPILOT_THROWLOG_PRELOAD[@]}"; do export "$kv"; done
+  export PICOPILOT_SELFTEST_OUT="$R"
+  pi_headless \
+      timeout 900 "$PI" -n="$PICOPILOT_TEST_SLOT" --automation-mode --no-startup-scripts -m="$SO" -r="$HERE/load-icons.js" -r="$HERE/selftest.js" --force-exit
+) || PI_RC=$?
 
 kill "$WATCHDOG_PID" 2>/dev/null || true
 wait "$WATCHDOG_PID" 2>/dev/null || true

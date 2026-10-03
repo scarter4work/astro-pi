@@ -9,6 +9,7 @@
 # their own tests) and grabbing "first free" risks colliding with one of
 # them; pick a slot known to be free at the time.
 set -euo pipefail
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)/tools/pi-headless.sh"
 dirname=/opt/PixInsight/bin
 export LD_LIBRARY_PATH=/usr/local/cuda/lib64:$dirname/lib:$dirname
 export CUDA_VISIBLE_DEVICES=0
@@ -25,5 +26,6 @@ script="$1"
 slot="${2:-}"
 newflag="--new"
 if [ -n "$slot" ]; then newflag="--new=$slot"; fi
-xvfb-run -a -s "-screen 0 1920x1080x24" \
-  /opt/PixInsight/bin/PixInsight "$newflag" --automation-mode --force-exit -r="$script"
+# pi_headless: private Xvfb and no WAYLAND_DISPLAY (QT_QPA_PLATFORM=xcb alone
+# is set above too, but the guard inside pi_headless is what proves it).
+pi_headless /opt/PixInsight/bin/PixInsight "$newflag" --automation-mode --force-exit -r="$script"

@@ -58,7 +58,7 @@ cleanup()
 trap cleanup EXIT
 
 picopilot_require_isolation || exit 1
-"$PI" --sign-module-file="$SO" --xssk-file="$KEYS" --xssk-password="$(cat /tmp/.pi_codesign_pass)" >/dev/null
+pi_headless "$PI" --sign-module-file="$SO" --xssk-file="$KEYS" --xssk-password="$(cat /tmp/.pi_codesign_pass)" >/dev/null
 
 Xvfb ":$DISPLAY_NO" -screen 0 1920x1080x24 -nolisten tcp >"$OUT/xvfb.log" 2>&1 & XVFB_PID=$!
 export DISPLAY=":$DISPLAY_NO"
@@ -87,6 +87,7 @@ PY
 picopilot_seed_slot_modules "$SLOT" "$TMPDIR" || exit 1
 START=$(date +%s.%N)
 picopilot_require_isolation || exit 1
+pi_require_private_display || exit 1   # this harness's own Xvfb, never the desktop
 timeout 900 "$PI" -n="$SLOT" --no-startup-scripts -m="$SO" -r="$HERE/gui-smoke-setup.js" >"$OUT/pi.log" 2>&1 & PI_PID=$!
 # A fresh slot shows start-up notices (e.g. "a system temporary folder is used
 # for swap files"): each is answered with Return until the script is ready.
@@ -117,6 +118,7 @@ echo "dev module loaded: $LOADED"
 picopilot_assert_only_dev_mapped "$SLOT" "$SO" || exit 1
 python3 "$HERE/gui_drive.py" ${PICOPILOT_GUI_DRIVE_ARGS:-} "$OUT" || { echo "FAIL: driver"; exit 1; }
 picopilot_require_isolation || exit 1
+pi_require_private_display || exit 1
 "$PI" -x="$SLOT:$HERE/gui-smoke-keep.js" >/dev/null 2>&1
 for _ in $(seq 240); do [ -f "$PICOPILOT_GUI_DIR/keep-end" ] && break; kill -0 "$PI_PID" 2>/dev/null || break; sleep 0.25; done
 cp "$PICOPILOT_GUI_DIR/keep-end" "$OUT/keep-end.txt" 2>/dev/null || true

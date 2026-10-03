@@ -11,6 +11,10 @@ REPO="$ROOT/repository"
 DATE="$(date +%Y%m%d)"
 
 die(){ echo "ERROR: $*" >&2; exit 1; }
+# Every PixInsight launch below goes through pi_headless: a private Xvfb, no
+# WAYLAND_DISPLAY, QT_QPA_PLATFORM=xcb -- never the user's desktop.
+. "$ROOT/tools/pi-headless.sh"
+python3 "$ROOT/tools/check-pi-launches.py" "$ROOT" || die "a script launches PixInsight outside pi_headless"
 [ -x "$PI" ]        || die "PixInsight.sh not executable at $PI"
 [ -f "$KEYS" ]      || die "signing keys not found at $KEYS"
 [ -f "$PASS_FILE" ] || die "password file not found at $PASS_FILE (create it 0600, never commit)"
@@ -110,13 +114,13 @@ echo "== 1b/6 prove both modules load on stock older distros =="
 echo "== 2/6 sign NukeX module =="
 XSGN="${SO%-pxm.so}-pxm.xsgn"
 rm -f "$XSGN"   # a stale .xsgn from a prior build/self-test must not survive a failed sign
-"$PI" --sign-module-file="$SO" --xssk-file="$KEYS" --xssk-password="$PASS"
+pi_headless "$PI" --sign-module-file="$SO" --xssk-file="$KEYS" --xssk-password="$PASS"
 [ -f "$XSGN" ] || die "module signature $XSGN not produced"
 
 echo "== 2a/6 sign PICopilot module =="
 PICOPILOT_XSGN="${PICOPILOT_SO%-pxm.so}-pxm.xsgn"
 rm -f "$PICOPILOT_XSGN"   # same guard as NukeX above
-"$PI" --sign-module-file="$PICOPILOT_SO" --xssk-file="$KEYS" --xssk-password="$PASS"
+pi_headless "$PI" --sign-module-file="$PICOPILOT_SO" --xssk-file="$KEYS" --xssk-password="$PASS"
 [ -f "$PICOPILOT_XSGN" ] || die "module signature $PICOPILOT_XSGN not produced"
 
 echo "== 2b/6 native-sign EZ scripts =="
@@ -127,7 +131,7 @@ echo "== 2c/6 native-sign gaia-depth-grade scripts =="
 # Writes /tmp/.gaia_sign_result.json (automation-mode console never reaches stdout).
 rm -f /tmp/.gaia_sign_result.json
 LD_LIBRARY_PATH="${ASTROPI_PI_DIR:-/opt/PixInsight}/bin/lib:${ASTROPI_PI_DIR:-/opt/PixInsight}/bin" \
-  "$PI" -n --automation-mode --no-startup-scripts --no-startup-check-updates \
+  pi_headless "$PI" -n --automation-mode --no-startup-scripts --no-startup-check-updates \
         --no-startup-gui-messages -r="$ROOT/gaia-depth-grade/tools/SignGaiaScriptsNative.js" \
         --force-exit >/dev/null 2>&1 || true
 python3 - /tmp/.gaia_sign_result.json "$ROOT/gaia-depth-grade/pi" <<'PY' || die "gaia script signing/verification failed"
@@ -144,7 +148,7 @@ echo "== 2d/6 native-sign rc-astro CLI wrapper scripts =="
 # Writes /tmp/.rcastro_sign_result.json (automation-mode console never reaches stdout).
 rm -f /tmp/.rcastro_sign_result.json
 LD_LIBRARY_PATH="${ASTROPI_PI_DIR:-/opt/PixInsight}/bin/lib:${ASTROPI_PI_DIR:-/opt/PixInsight}/bin" \
-  "$PI" -n --automation-mode --no-startup-scripts --no-startup-check-updates \
+  pi_headless "$PI" -n --automation-mode --no-startup-scripts --no-startup-check-updates \
         --no-startup-gui-messages -r="$ROOT/scripts/rc-astro/tools/SignRCAstroScriptsNative.js" \
         --force-exit >/dev/null 2>&1 || true
 python3 - /tmp/.rcastro_sign_result.json "$ROOT/scripts/rc-astro" <<'PY' || die "rc-astro script signing/verification failed"
@@ -338,7 +342,7 @@ write_pkg "$REPO/updates.xri" "$RCASTRO_ZIP"              "$(sha1 "$REPO/$RCASTR
 
 echo "== 5/6 sign manifest LAST =="
 sed -i '/<Signature developerId=/d' "$REPO/updates.xri"
-"$PI" --sign-xml-file="$REPO/updates.xri" --xssk-file="$KEYS" --xssk-password="$PASS"
+pi_headless "$PI" --sign-xml-file="$REPO/updates.xri" --xssk-file="$KEYS" --xssk-password="$PASS"
 grep -q '<Signature developerId="scarter4work"' "$REPO/updates.xri" || die "manifest signature not appended"
 
 echo "== 6/6 integrity check: declared sha1 == on-disk =="

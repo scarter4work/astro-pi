@@ -79,5 +79,5 @@ read -p "Launch PixInsight now with unsigned modules? [y/N] " -n 1 -r
 echo
 if [[ $REPLY =~ ^[Yy]$ ]]; then
     echo "Launching PixInsight..."
-    "$PI_BIN" --allow-unsigned-modules &
+    "$PI_BIN" --allow-unsigned-modules &   # interactive-gui: the user just answered y to open PixInsight on their desktop
 fi
