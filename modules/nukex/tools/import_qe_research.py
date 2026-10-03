@@ -19,10 +19,19 @@ it at runtime, with a Process Console warning). A camera with a Bayer split
 at SOME wavelengths but not others is different — inconsistent data, not a
 missing measurement — and still fails loud.
 
+Every QE block a camera consumes is validated before anything is derived
+from it, and a violation is a TransformError (exit 1, nothing written), never
+a silent drop or coercion: wavelength keys must be plain integers, photosite
+keys must be ones this script knows, values must be numbers in [0, 1], the
+mono/mono_pk alias may not appear twice, and the green photosites must be
+unambiguous (see `green_qe`). Confidence must be a string the C++ loader's
+parse_confidence() recognises.
+
 Usage: import_qe_research.py <research.json> <shipped.json>
 """
 import argparse
 import json
+import re
 import statistics
 import sys
 
@@ -68,6 +77,26 @@ TYPE_MAP = {
 }
 BAYER_OK = {"RGGB", "BGGR", "GRBG", "GBRG"}
 REQUIRED_CAMERA_FIELDS = ("sensor", "type", "confidence")
+
+# Exactly the strings parse_confidence() in src/lib/calibration/src/
+# qe_database.cpp recognises. Anything else -- "Medium", "hi", null -- the
+# loader silently turns into QEConfidence::UNKNOWN, so it must fail here.
+ALLOWED_CONFIDENCE = ("high", "medium", "low")
+
+# The loader parses wavelength keys with an unguarded std::stoi(): "656.3"
+# silently truncates to 656, " 656" and "0656" parse too but are distinct
+# JSON keys that can collide, and "Ha" throws. Only a canonical positive
+# integer string is accepted.
+WAVELENGTH_KEY = re.compile(r"[1-9][0-9]*")
+
+# Every photosite key the research file may use. OSC cameras consume R, B and
+# the greens; mono cameras consume mono_pk (or its drift alias "mono"). A
+# "both-variants" sensor legitimately carries both vocabularies, and each
+# camera type ignores the other's keys -- but a key outside this set is a typo
+# or an unknown quantity, and dropping it would ship the wrong number.
+OSC_SITES = ("R", "G", "Gr", "Gb", "B")
+MONO_SITES = ("mono_pk", "mono")
+KNOWN_SITES = frozenset(OSC_SITES + MONO_SITES)
 
 
 class TransformError(ValueError):
@@ -167,7 +196,68 @@ def resolved_qe(name, cam, sensors):
     return cam.get("qe", {})
 
 
-def photosites(name, cam_type, qe_block):
+def validate_qe_block(label, qe_block):
+    """Reject any QE block that would otherwise be dropped, coerced or
+    truncated on its way to the engine. Checks every key the block carries,
+    including the ones this camera's type ignores: a percentage typed into a
+    mono_pk column is corrupt research data whichever camera reads it."""
+    if not isinstance(qe_block, dict):
+        raise TransformError(f"{label}: qe must be an object keyed by wavelength, got {type(qe_block).__name__}")
+    for wl, sites in qe_block.items():
+        if not WAVELENGTH_KEY.fullmatch(wl):
+            raise TransformError(f"{label}: wavelength key {wl!r} is not a plain integer nm "
+                                 f"(e.g. '656'); the loader would truncate or reject it")
+        if not isinstance(sites, dict):
+            raise TransformError(f"{label} wavelength '{wl}': photosites must be an object, "
+                                 f"got {type(sites).__name__}")
+        unknown = sorted(set(sites) - KNOWN_SITES)
+        if unknown:
+            raise TransformError(f"{label} wavelength '{wl}': unknown photosite key(s) {unknown}; "
+                                 f"known: {sorted(KNOWN_SITES)}")
+        for site, v in sites.items():
+            if isinstance(v, bool) or not isinstance(v, (int, float)):
+                raise TransformError(f"{label} wavelength '{wl}': photosite '{site}' = {v!r} is not a number")
+            if not 0.0 <= v <= 1.0:
+                raise TransformError(f"{label} wavelength '{wl}': photosite '{site}' = {v!r} is not a "
+                                     f"QE fraction in [0, 1] (a percentage?)")
+        if all(k in sites for k in MONO_SITES):
+            raise TransformError(f"{label} wavelength '{wl}': both 'mono' and its alias 'mono_pk' are "
+                                 f"present; ambiguous which one ships")
+
+
+def green_qe(label, wl, sites):
+    """The single G value the loader consumes, or None if the wavelength has
+    no green at all (the caller decides whether that is a gap or an error).
+
+    Deterministic rule, no implicit averaging of mismatched data:
+      - "G" alone        -> shipped as-is (already the per-pixel green).
+      - "Gr" and "Gb"    -> their mean. A Bayer cell has two green photosites,
+                            one on the red row and one on the blue row, and the
+                            loader's G is the one green channel both feed, so
+                            the mean is the physically correct collapse. This
+                            is the shape of all the real research data.
+      - "G" with Gr/Gb   -> error: two independent answers for one quantity,
+                            and silently averaging all three would weight the
+                            split readings 2:1 over the merged one.
+      - Gr without Gb, or vice versa -> error: half a split is not a
+                            measurement of the mean; the other half is unknown,
+                            not equal.
+    """
+    split = [k for k in ("Gr", "Gb") if k in sites]
+    if "G" in sites:
+        if split:
+            raise TransformError(f"{label} wavelength '{wl}': merged 'G' and split {split} are both "
+                                 f"present; ambiguous which is authoritative")
+        return float(sites["G"])
+    if len(split) == 1:
+        raise TransformError(f"{label} wavelength '{wl}': only {split[0]!r} of the Gr/Gb pair is "
+                             f"present; cannot form G from half a Bayer green split")
+    if not split:
+        return None
+    return round(statistics.mean((float(sites["Gr"]), float(sites["Gb"]))), 4)
+
+
+def photosites(name, cam_type, qe_block, label=None):
     """Collapse research photosites to what the loader consumes.
 
     OSC: a wavelength with no R/G/B is not immediately fatal — some sensors
@@ -178,6 +268,8 @@ def photosites(name, cam_type, qe_block):
     wavelengths have a split and others don't, that is inconsistent research
     data, not a missing-measurement camera, and must still fail loud.
     """
+    label = label or f"Camera '{name}'"
+    validate_qe_block(label, qe_block)
     out = {}
     incomplete = []
     for wl, sites in qe_block.items():
@@ -185,18 +277,17 @@ def photosites(name, cam_type, qe_block):
             # "mono" is research vocabulary drift, not a different quantity:
             # some sensors record the same peak/measured mono QE under the
             # bare key instead of "mono_pk". Ship it under the one key name
-            # the loader knows.
+            # the loader knows. validate_qe_block() has already refused a
+            # wavelength that carries both, so this lookup cannot choose.
             pk = sites.get("mono_pk", sites.get("mono"))
             if pk is not None:
                 out[str(wl)] = {"mono_pk": float(pk)}
             continue
-        greens = [sites[k] for k in ("G", "Gr", "Gb") if k in sites]
-        if "R" not in sites or "B" not in sites or not greens:
+        g = green_qe(label, wl, sites)
+        if "R" not in sites or "B" not in sites or g is None:
             incomplete.append(wl)
             continue
-        out[str(wl)] = {"R": float(sites["R"]),
-                        "G": round(statistics.mean(float(g) for g in greens), 4),
-                        "B": float(sites["B"])}
+        out[str(wl)] = {"R": float(sites["R"]), "G": g, "B": float(sites["B"])}
     if out and incomplete:
         raise TransformError(f"Camera '{name}': wavelength(s) {sorted(incomplete)} lack R/G/B "
                               f"photosites while other wavelengths have them (inconsistent Bayer data)")
@@ -210,6 +301,9 @@ def transform_camera(name, cam, sensors):
     missing = [k for k in REQUIRED_CAMERA_FIELDS if k not in cam]
     if missing:
         raise TransformError(f"Camera '{name}' missing required field(s): {missing}")
+    if not isinstance(cam["confidence"], str) or cam["confidence"] not in ALLOWED_CONFIDENCE:
+        raise TransformError(f"Camera '{name}': invalid confidence {cam['confidence']!r}; "
+                             f"the loader accepts exactly {list(ALLOWED_CONFIDENCE)}")
     out = {"sensor": cam["sensor"], "type": cam["type"], "confidence": cam["confidence"]}
     if "manufacturer" in cam:
         out["manufacturer"] = cam["manufacturer"]
@@ -218,7 +312,10 @@ def transform_camera(name, cam, sensors):
         if bayer not in BAYER_OK:
             raise TransformError(f"Camera '{name}': OSC camera needs bayer_pattern in {sorted(BAYER_OK)}, got {bayer!r}")
         out["bayer"] = bayer
-    out["qe"] = photosites(name, cam["type"], resolved_qe(name, cam, sensors))
+    label = f"Camera '{name}'"
+    if cam.get("qe_inherits_from_sensor"):
+        label += f" (QE inherited from sensor '{cam['sensor']}')"
+    out["qe"] = photosites(name, cam["type"], resolved_qe(name, cam, sensors), label)
     if cam["type"] == "OSC" and not out["qe"]:
         return None
     if cam["type"] == "OSC" and len(out["qe"]) < 2:

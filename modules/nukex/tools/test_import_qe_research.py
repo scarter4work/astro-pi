@@ -2,9 +2,12 @@ import json
 import pathlib
 import subprocess
 
+import pytest
+
 REPO = pathlib.Path(__file__).resolve().parent.parent
 SCRIPT = REPO / "tools" / "import_qe_research.py"
 RESEARCH = REPO / "research" / "qe_database_research.json"
+SHIPPED = REPO / "share" / "qe_database.json"
 
 
 def run(src, dst):
@@ -62,6 +65,16 @@ def write(tmp_path, doc):
     src = tmp_path / "research.json"
     src.write_text(json.dumps(doc))
     return src, tmp_path / "shipped.json"
+
+
+def assert_fails_loud(r, dst, *needles):
+    """A rejection is a TransformError message and exit 1 -- not a crash
+    traceback that happens to exit nonzero, and never a written file."""
+    assert r.returncode == 1, r.stderr
+    assert "Traceback" not in r.stderr, r.stderr
+    for n in needles:
+        assert n in r.stderr, (n, r.stderr)
+    assert not dst.exists()
 
 
 def test_drops_meta_and_research_only_fields(tmp_path):
@@ -210,3 +223,103 @@ def test_real_research_file_round_trip(tmp_path):
             wavelengths_with_rgb = [wl for wl, sites in cam["qe"].items()
                                      if all(k in sites for k in ("R", "G", "B"))]
             assert len(wavelengths_with_rgb) >= 2, name
+
+
+@pytest.mark.parametrize("site,value", [
+    ("R", 65),            # a percentage, not a fraction
+    ("mono_pk", 81),      # same, on the mono path
+    ("Gr", 1.01),
+    ("B", -0.01),
+    ("R", "0.73"),        # a string must not be coerced through float()
+    ("mono_pk", None),
+])
+def test_qe_value_outside_unit_interval_or_non_numeric_fails_loud(tmp_path, site, value):
+    doc = json.loads(json.dumps(BASE))
+    doc["sensors"]["IMX585"]["qe"]["656"][site] = value
+    src, dst = write(tmp_path, doc)
+    assert_fails_loud(run(src, dst), dst, "asi585m", "656", site)
+
+
+@pytest.mark.parametrize("confidence", ["Medium", "hi", "unknown", "", None])
+def test_invalid_confidence_fails_loud(tmp_path, confidence):
+    # The loader's parse_confidence() knows exactly high/medium/low and
+    # silently maps anything else to UNKNOWN.
+    doc = json.loads(json.dumps(BASE))
+    doc["cameras"]["asi585mc"]["confidence"] = confidence
+    src, dst = write(tmp_path, doc)
+    assert_fails_loud(run(src, dst), dst, "asi585mc", "confidence", repr(confidence))
+
+
+@pytest.mark.parametrize("wl", ["656.3", "656.0", " 656", "0656", "Ha"])
+def test_non_integer_wavelength_key_fails_loud(tmp_path, wl):
+    # The loader does an unguarded std::stoi(): "656.3" silently truncates.
+    doc = json.loads(json.dumps(BASE))
+    doc["sensors"]["IMX585"]["qe"][wl] = doc["sensors"]["IMX585"]["qe"].pop("656")
+    src, dst = write(tmp_path, doc)
+    assert_fails_loud(run(src, dst), dst, "asi585m", "wavelength", repr(wl))
+
+
+@pytest.mark.parametrize("cam_type", ["OSC", "mono"])
+def test_unknown_photosite_key_fails_loud(tmp_path, cam_type):
+    # "Gg" is a typo for a green photosite; dropping it would silently ship
+    # the wrong green. Checked on both paths: a mono camera ignores R/Gr/Gb/B
+    # legitimately, but must not ignore a key nobody recognises.
+    doc = json.loads(json.dumps(BASE))
+    if cam_type == "OSC":
+        doc["sensors"]["IMX585"]["qe"]["656"]["Gg"] = 0.31
+        cam = "asi585mc"
+    else:
+        doc["sensors"]["IMX174"] = sensor({"656": {"mono_pk": 0.55, "Gg": 0.31}})
+        doc["cameras"]["asi174mm"] = {"manufacturer": "ZWO", "sensor": "IMX174", "type": "mono",
+                                      "bayer_pattern": None, "qe_inherits_from_sensor": True,
+                                      "confidence": "medium", "source_urls": [], "notes": ""}
+        cam = "asi174mm"
+    src, dst = write(tmp_path, doc)
+    assert_fails_loud(run(src, dst), dst, cam, "656", "'Gg'")
+
+
+@pytest.mark.parametrize("greens", [
+    {"G": 0.5, "Gr": 0.32, "Gb": 0.30},   # merged G alongside the split
+    {"G": 0.5, "Gr": 0.32},
+    {"Gr": 0.32},                          # half a split: Gb unknown, not equal
+    {"Gb": 0.30},
+])
+def test_ambiguous_green_photosites_fail_loud(tmp_path, greens):
+    doc = json.loads(json.dumps(BASE))
+    sites = doc["sensors"]["IMX585"]["qe"]["656"]
+    for k in ("Gr", "Gb"):
+        del sites[k]
+    sites.update(greens)
+    src, dst = write(tmp_path, doc)
+    assert_fails_loud(run(src, dst), dst, "asi585mc", "656")
+
+
+def test_merged_G_alone_ships_unchanged(tmp_path):
+    # The unambiguous counterpart of the rule above: a sensor researched with
+    # one merged green ships it as-is (Gr+Gb -> mean is covered elsewhere).
+    doc = json.loads(json.dumps(BASE))
+    for wl in ("501", "656"):
+        sites = doc["sensors"]["IMX585"]["qe"][wl]
+        sites["G"] = round((sites.pop("Gr") + sites.pop("Gb")) / 2 + 0.001, 4)
+    src, dst = write(tmp_path, doc)
+    r = run(src, dst)
+    assert r.returncode == 0, r.stderr
+    assert json.loads(dst.read_text())["cameras"]["asi585mc"]["qe"]["656"]["G"] == 0.311
+
+
+def test_mono_and_mono_pk_both_present_fails_loud(tmp_path):
+    # "mono" is an alias for "mono_pk"; both at once leaves which one ships
+    # to dict-lookup order.
+    doc = json.loads(json.dumps(BASE))
+    doc["sensors"]["IMX585"]["qe"]["656"]["mono"] = 0.79
+    src, dst = write(tmp_path, doc)
+    assert_fails_loud(run(src, dst), dst, "IMX585", "656", "mono_pk")
+
+
+def test_committed_shipping_db_is_the_import_of_research(tmp_path):
+    # share/qe_database.json is compiled into the module; it must be exactly
+    # what this importer produces from research/, so neither can drift.
+    dst = tmp_path / "qe_database.json"
+    r = run(RESEARCH, dst)
+    assert r.returncode == 0, r.stderr
+    assert dst.read_bytes() == SHIPPED.read_bytes()
