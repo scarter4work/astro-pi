@@ -3,7 +3,9 @@
 
 #include <sqlite3.h>
 #include <filesystem>
+#include <chrono>
 #include <string>
+#include <thread>
 
 namespace fs = std::filesystem;
 using namespace nukex::learning;
@@ -119,4 +121,104 @@ TEST_CASE("open_rating_db: a fresh DB is stamped with the current schema version
     REQUIRE(db != nullptr);
     REQUIRE(rating_db_schema_version(db) == kRatingDbSchemaVersion);
     close_rating_db(db);
+}
+
+// ── A busy database is not a corrupt one ──
+// open_rating_db renames a database it cannot open to <path>.corrupt.<ts> and
+// starts a fresh one. Before this fix it did that for ANY schema-apply
+// failure, including SQLITE_BUSY from another connection holding a write lock
+// (a second PixInsight saving a rating) -- and since a fresh DB was returned,
+// the user's ratings silently vanished into a .corrupt file.
+
+namespace {
+
+int count_corrupt_siblings(const fs::path& db) {
+    int n = 0;
+    const std::string prefix = db.filename().string() + ".corrupt.";
+    for (const auto& e : fs::directory_iterator(db.parent_path()))
+        if (e.path().filename().string().rfind(prefix, 0) == 0) ++n;
+    return n;
+}
+
+void remove_corrupt_siblings(const fs::path& db) {
+    const std::string prefix = db.filename().string() + ".corrupt.";
+    for (const auto& e : fs::directory_iterator(db.parent_path()))
+        if (e.path().filename().string().rfind(prefix, 0) == 0) fs::remove(e.path());
+}
+
+fs::path make_v1_db(const char* name) {
+    auto path = fresh_path(name);
+    remove_corrupt_siblings(path);
+    sqlite3* raw = nullptr;
+    REQUIRE(sqlite3_open(path.string().c_str(), &raw) == SQLITE_OK);
+    REQUIRE(sqlite3_exec(raw, kV1Schema, nullptr, nullptr, nullptr) == SQLITE_OK);
+    insert_v1_row(raw, 7, 1);   // one Bayer-RGB rating the user cares about
+    sqlite3_close(raw);
+    return path;
+}
+
+int count_rows(const fs::path& path) {
+    sqlite3* raw = nullptr;
+    REQUIRE(sqlite3_open(path.string().c_str(), &raw) == SQLITE_OK);
+    sqlite3_stmt* s = nullptr;
+    REQUIRE(sqlite3_prepare_v2(raw, "SELECT count(*) FROM runs;", -1, &s, nullptr) == SQLITE_OK);
+    REQUIRE(sqlite3_step(s) == SQLITE_ROW);
+    const int n = sqlite3_column_int(s, 0);
+    sqlite3_finalize(s);
+    sqlite3_close(raw);
+    return n;
+}
+
+} // namespace
+
+TEST_CASE("open_rating_db: a locked database fails the open and is NOT renamed as corrupt",
+          "[learning][rating_db][busy]") {
+    auto path = make_v1_db("nukex_rating_locked.sqlite");
+
+    // Another connection holds an exclusive lock for longer than the busy
+    // timeout. The v1 database needs a write (WAL switch + migration).
+    sqlite3* holder = nullptr;
+    REQUIRE(sqlite3_open(path.string().c_str(), &holder) == SQLITE_OK);
+    REQUIRE(sqlite3_exec(holder, "BEGIN EXCLUSIVE;", nullptr, nullptr, nullptr) == SQLITE_OK);
+
+    sqlite3* db = open_rating_db(path.string());
+    const bool opened = db != nullptr;
+    if (db) close_rating_db(db);
+    sqlite3_exec(holder, "ROLLBACK;", nullptr, nullptr, nullptr);
+    sqlite3_close(holder);
+
+    REQUIRE_FALSE(opened);                       // loud failure, no fresh DB
+    REQUIRE(count_corrupt_siblings(path) == 0);  // nothing renamed away
+    REQUIRE(count_rows(path) == 1);              // the rating is still there
+
+    // Once the lock is gone the same file opens and migrates in place.
+    db = open_rating_db(path.string());
+    REQUIRE(db != nullptr);
+    REQUIRE(rating_db_schema_version(db) == kRatingDbSchemaVersion);
+    close_rating_db(db);
+    REQUIRE(count_rows(path) == 1);
+    remove_corrupt_siblings(path);
+}
+
+TEST_CASE("open_rating_db: waits out a short lock instead of failing",
+          "[learning][rating_db][busy]") {
+    auto path = make_v1_db("nukex_rating_short_lock.sqlite");
+
+    sqlite3* holder = nullptr;
+    REQUIRE(sqlite3_open(path.string().c_str(), &holder) == SQLITE_OK);
+    REQUIRE(sqlite3_exec(holder, "BEGIN EXCLUSIVE;", nullptr, nullptr, nullptr) == SQLITE_OK);
+    std::thread release([holder] {
+        std::this_thread::sleep_for(std::chrono::milliseconds(300));
+        sqlite3_exec(holder, "ROLLBACK;", nullptr, nullptr, nullptr);
+    });
+
+    sqlite3* db = open_rating_db(path.string());
+    release.join();
+    sqlite3_close(holder);
+
+    REQUIRE(db != nullptr);
+    REQUIRE(rating_db_schema_version(db) == kRatingDbSchemaVersion);
+    close_rating_db(db);
+    REQUIRE(count_corrupt_siblings(path) == 0);
+    REQUIRE(count_rows(path) == 1);
 }

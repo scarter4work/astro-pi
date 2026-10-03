@@ -256,7 +256,9 @@ void NukeXInstance::SaveRatingFromLastRun( const pcl::RatingResult& res )
    sqlite3* db = nukex::learning::open_rating_db( lastRun.user_db_path );
    if ( db == nullptr )
    {
-      console.CriticalLn( String( "NukeX: couldn't open rating DB; rating discarded." ) );
+      console.CriticalLn( String( "NukeX: couldn't open the rating DB (another PixInsight may "
+                                  "be writing to it); this rating was discarded. Ratings "
+                                  "already saved are untouched." ) );
       return;
    }
 
