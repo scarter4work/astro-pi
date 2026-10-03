@@ -17,6 +17,33 @@ Rocky 9 container, loads on glibc 2.34 and later, no OpenMP runtime needed.
   as broadband (OSC on a colour camera, L on mono) instead of stopping the run.
 - **Each colour frame is debayered with its own CFA pattern**, not the first
   frame's.
+- **A failed update check says so honestly.** An HTTP error from the update
+  server (a missing file, a 5xx) is treated as "could not reach the server",
+  not as a rejected, possibly tampered update. The module's built-in database
+  now counts as installed, so a fresh install is no longer offered the
+  database it already has, and an older download can no longer shadow a newer
+  built-in one.
+- **Your ratings are not set aside when the rating database is busy.** A
+  database locked by another PixInsight used to be renamed `.corrupt` and
+  replaced with an empty one; NukeX now waits for the lock and, if it does not
+  clear, discards only the rating being saved.
+
+### Behaviour you will notice coming from 5.1.0.x
+
+- **A batch that mixes colour (Bayer) frames with mono frames is refused**,
+  with a message saying to stack the two separately. 5.1.0.x accepted some of
+  these; each channel can only be stacked from one kind of frame, so one group
+  would have been silently left out.
+- **More cameras are recognised from the FITS header.** `INSTRUME` values that
+  contain a known model (e.g. `ZWO ASI585MM Air`) and rebadged sensors (e.g.
+  `ATR585M`, matched through its IMX585 sensor) now resolve to a database
+  entry, where 5.1.0.x stopped with "camera not in QE database". Dual-
+  narrowband frames from a colour camera nobody recognises fall back to a
+  generic Sony-OSC response, with a Process Console warning and
+  `NUKEX_QE_CONFIDENCE = generic-fallback`.
+- The end-to-end regression goldens are nukex5's (re-cut at v5.0.6.x);
+  astro-pi's 5.1.0 manifest changes (placeholder colour/narrowband cases) were
+  superseded by nukex5's real-data cases.
 
 ## v5.0.7.0 — 2026-09-10
 
