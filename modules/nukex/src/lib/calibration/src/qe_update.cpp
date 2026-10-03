@@ -74,6 +74,22 @@ const unsigned char* qe_signing_public_key() {
     return kQEPublicKey;
 }
 
+FetchResult fetch_result_from_transfer(const TransferOutcome& t) {
+    if (t.overflow)
+        return { false, std::string(), "response exceeded the size limit for this resource" };
+    if (!t.performed_ok || t.aborted)
+        return { false, std::string(), t.error.empty() ? std::string("transfer failed") : t.error };
+    // A transfer can complete and still not have fetched the resource: the
+    // server answers a missing file with a status and an error page.
+    if (t.response_code < 200 || t.response_code > 299) {
+        std::string why = t.response_code == 0
+            ? std::string("server returned no HTTP status")
+            : "server returned HTTP " + std::to_string(t.response_code);
+        return { false, std::string(), why };
+    }
+    return { true, t.body, std::string() };
+}
+
 const char* to_string(UpdateOutcome o) {
     switch (o) {
         case UpdateOutcome::UP_TO_DATE:         return "up to date";

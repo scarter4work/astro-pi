@@ -45,20 +45,17 @@ nukex::FetchResult QEFetcher::get( const std::string& url )
             static_cast<NetworkTransfer::download_event_handler>( &Sink::OnData ),
             m_sink );
 
-      const bool ok = transfer.Download();
+      nukex::TransferOutcome t;
+      t.performed_ok  = transfer.Download();
+      t.aborted       = transfer.WasAborted();
+      t.overflow      = m_sink.overflow;
+      t.response_code = transfer.ResponseCode();
+      t.body.assign( m_sink.data.c_str(), m_sink.data.Length() );
+      t.error = IsoString( transfer.ErrorInformation() ).c_str();
 
-      if ( m_sink.overflow )
-         return { false, std::string(), "response exceeded the size limit for this resource" };
-
-      if ( !ok || transfer.WasAborted() )
-      {
-         const IsoString info( transfer.ErrorInformation() );
-         return { false, std::string(),
-                  info.IsEmpty() ? std::string( "transfer failed" )
-                                 : std::string( info.c_str() ) };
-      }
-
-      return { true, std::string( m_sink.data.c_str(), m_sink.data.Length() ), std::string() };
+      // Only a 2xx response is a fetched body; a 404 page for a missing
+      // .sig must come back as OFFLINE, not reach signature verification.
+      return nukex::fetch_result_from_transfer( t );
    }
    catch ( const Exception& x )
    {
