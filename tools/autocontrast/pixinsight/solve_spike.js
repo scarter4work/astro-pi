@@ -39,7 +39,7 @@
 #include "/opt/PixInsight/src/scripts/ImageSolver/ImageSolverDialog.js"
 #include "/opt/PixInsight/src/scripts/ImageSolver/ImageSolverEngine.js"
 
-var PROJECT     = "/home/scarter4work/projects/autocontrast";
+var PROJECT     = "/home/scarter4work/projects/astro-pi/tools/autocontrast";
 var IMAGE       = PROJECT + "/data/references/opo0205c.jpg";  // ground-based, star-rich
 var STATUS_FILE = "/tmp/autocontrast_bridge/solve_spike.txt";
 
