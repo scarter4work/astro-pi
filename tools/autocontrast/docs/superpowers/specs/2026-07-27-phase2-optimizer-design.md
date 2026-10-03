@@ -1,0 +1,568 @@
+# Phase 2 — Deterministic Optimizer Loop (Stage 1)
+
+**Date:** 2026-07-27
+**Status:** approved, not yet implemented
+**Spec sections implemented:** §6 (optimization loop), §7 (guardrails), §3.1 (transport)
+**Exit criterion:** §10, Phase 2
+
+---
+
+## 1. Scope
+
+This spec covers **Stage 1 — the refinement loop** only.
+
+The optimizer accepts an **already-stretched** image and improves its nonlinear presentation
+toward a professional reference. It never touches linear-space channel ratios (§2.1).
+
+**Stage 0 — stretch selection for linear input — is out of scope and is not committed work.**
+
+Rationale: both §10 exit-criterion inputs are already stretched, so Stage 1 alone proves Phase 2.
+Deciding the initial stretch is also the single most consequential move available, and it is an
+action class §6.2 never defines — a large new search space bolted onto the phase that has to prove
+the deterministic core. Stretched-only is the deliberate scope (decision: 2026-07-27).
+
+The user performs their own initial stretch. AutoContrast refines presentation from there, which is
+consistent with §2.4 — the reference is a direction, and the user retains the stretch decision.
+
+If Stage 0 is ever built, it attaches at a defined seam: consume a linear master, emit a stretched
+image, hand off to Stage 1 unchanged. Nothing in this spec forecloses that. Nothing in it promises
+it either.
+
+Input linearity is detected on load. A linear master handed to Stage 1 is a **loud error** naming
+the problem and telling the user to stretch first — never a silent auto-stretch (§12).
+
+**No AI.** Action ranking is heuristic and deterministic. The VLM director is Phase 3 and must earn
+its place there.
+
+**Nothing in this spec relaxes §2 or §12.** Where a choice below appears to trade one off, that is a
+bug in this document.
+
+---
+
+## 2. Architecture
+
+Approach: **the sidecar owns the loop; PixInsight executes real processes; the executor is
+pluggable.**
+
+Two constraints drove this choice:
+
+- §3.1 — *"the sidecar must be able to run standalone with no PI present"*
+- §12 — output must be *"reconstructible as a sequence of stock PixInsight processes"*
+
+A design where PJSR owns the loop satisfies the second but violates the first: beam-search and
+convergence bugs would only reproduce inside a GUI application that writes nothing useful to
+stdout. A design where Python simulates the processes end-to-end satisfies the first but optimizes
+a *model* of PixInsight rather than PixInsight itself.
+
+### 2.1 The sidecar is not a server
+
+The file protocol spawns `python -m autocontrast.sidecar request.json response.json` **fresh per
+request**. "The sidecar owns the loop" therefore cannot mean holding it in memory. Loop state —
+beam contents, checkpoints, iteration count, best-so-far — **serializes to disk between calls**.
+
+The loop is a *resumable state machine*. A crashed or interrupted run leaves an inspectable session
+file rather than nothing.
+
+### 2.2 The Executor seam
+
+```
+Executor protocol:  apply(state, action) -> state
+```
+
+| Implementation | Used by | Fidelity |
+|---|---|---|
+| `PixInsightExecutor` | production runs | real PI processes |
+| `NumpyExecutor` | offline tests, CI | approximate |
+
+Loop logic is **identical** under both. Tests exercise the real beam search, real guardrails, real
+convergence, with no PixInsight present. Production never optimizes against an approximation.
+
+### 2.3 Module layout — `src/autocontrast/optimize/`
+
+| Module | Responsibility |
+|---|---|
+| `actions.py` | §6.2 discretized menu; arcsec→layer mapping; serialization to PI process params |
+| `executor.py` | `Executor` protocol definition |
+| `executors/numpy_exec.py` | offline approximation |
+| `guardrails.py` | §7 table as pure functions of pixels |
+| `propose.py` | heuristic action ranking from fingerprint gap |
+| `beam.py` | beam expansion, pruning, checkpoint/rollback |
+| `session.py` | serialize/resume loop state across sidecar invocations |
+| `recipe.py` | ordered audit log → stock PI process sequence (§12) |
+
+### 2.4 Guardrails are computed in Python, from pixels
+
+§7 annotates MRS noise and star detection as "PI native". This design **deliberately computes them
+in Python instead.**
+
+Routing guardrails through PixInsight would make them behave differently offline than in
+production — gutting the offline tests exactly where correctness matters most. Since §7 violations
+are what stop the tool from fabricating, they are the last thing that should be untested.
+
+- **MRS noise σ** — implementable directly on the existing `fingerprint/starlet.py` transform.
+- **Star integrity** — threshold at background + kσ, `scipy.ndimage.label` for connected
+  components, second moments for FWHM and eccentricity. Deterministic; no new dependencies.
+
+Consequence: §7 is enforced **identically** in tests and in production.
+
+### 2.5 Instructions are batched per iteration
+
+The sidecar returns *all* candidates for the current beam expansion in a single response. This
+turns roughly 225 round trips into roughly 15.
+
+```
+PJSR                          sidecar (spawned per call)
+────                          ─────────────────────────
+optimize_begin  ──────────►   load image, resolve reference, measure baseline
+                ◄──────────   session_id + instruction BATCH 1
+apply N processes in PI
+save N candidates
+optimize_step   ──────────►   measure all N, guardrail, score, prune beam
+                ◄──────────   BATCH 2  |  or  converged + recipe
+      ⋮                              ⋮
+                ◄──────────   converged + recipe + improved: true/false
+replay recipe at full res
+```
+
+New sidecar ops: `optimize_begin`, `optimize_step`. Existing response contract unchanged
+(`{ok, op, result}` / `{ok, op, error}`).
+
+---
+
+## 3. Loop mechanics
+
+### 3.1 Scoring
+
+`score = -D(candidate, reference)` per §6.1.
+
+Guardrail violations are **not scored** — a violation discards the candidate outright (§7). This
+distinction is load-bearing: as a score penalty, a large enough distance gain could buy its way
+past a noise explosion. Guardrails are a filter, never a term.
+
+### 3.2 The fail-safe is structural
+
+Best-so-far is seeded with **the input image and its own baseline distance**. A candidate replaces
+it only on a strict improvement exceeding `epsilon_improve`. If nothing clears that bar, the loop
+returns **the original input, byte-for-byte unmodified**, with `improved: false`.
+
+"Unmodified" is literal. On decline, any `star_split` that was applied during the search is
+discarded along with everything else — the user gets back the file they handed in, not a
+split-and-recombined approximation of it.
+
+This works because the fingerprint distance is a **valley** — D=0 at the reference, rising in
+*both* directions, including the over-processed direction (established in Phase 0; see the
+`reference_is_local_minimum` harness in `eval/degrade.py`). An already-well-processed image starts
+near the valley floor, every available action moves it up the wall, every candidate scores worse
+than baseline, and the loop declines.
+
+"Fails safe" is therefore not a guard bolted on top. It is what a valley-shaped objective does on
+its own once best-so-far is seeded with the input. A monotone "more contrast is better" objective
+could not produce this behavior at any amount of guardrailing.
+
+### 3.3 Beam
+
+Width 3. Each iteration expands every live branch toward `top_k` (=3) **surviving** candidates,
+pruned back to the 3 best **distinct** ones. Distinctness is by recipe, so two branches cannot
+converge onto the same action sequence and waste a beam slot.
+
+Checkpoint on every improvement to best-so-far (§6.1).
+
+**A guardrail trip must not also cost search breadth — but the retry is bounded.**
+Added 2026-07-27, on measurement. §6.1's pseudocode reads `for a in top_k(actions)` and discards
+violators, i.e. `top_k` *attempts*. That makes a guardrail trip consume one of the branch's three
+slots, so a branch tripping two of three explores a single candidate that iteration. The loop would
+then search *least* thoroughly exactly where the image is most fragile — and §7 is explicit that a
+violation discards the candidate and is **never** a score term. A discard that also costs exploration
+is a score effect wearing a different hat.
+
+Measured on a real degraded render, 4 of 10 proposed actions tripped a guardrail, so this is the
+common case rather than an edge case.
+
+Therefore: **propose until `top_k` live candidates OR `max_attempts` attempts, whichever comes
+first.** Default `max_attempts = 3 × top_k`.
+
+#### The cost of that, measured
+
+Revised 2026-07-28 (Task 16). The first version of this section rejected the unbounded retry
+because it exceeded a 15-minute budget and then adopted a cap whose own worst case, four lines
+later, also exceeded it. The argument did not reach its conclusion. Both arms were re-measured
+rather than re-argued, and three of the four inputs were wrong:
+
+- **The menu does not hold 50 actions.** Measured across the configurations the loop actually
+  runs (`pixel_scale` 0.25–1.5″/px × `n_scales` 5–9), the band-limited ranked menu holds
+  **14–22** entries. Actions are constructed band-limited (§2.2, §4.4), so the menu is bounded
+  by the number of resolvable wavelet planes, not by the catalog of action kinds.
+- **A discarded candidate does not cost a full candidate.** `ingest_candidate` runs the §7
+  guardrails *before* it fingerprints, so a candidate the guardrails reject never pays for an
+  extraction. The old arithmetic charged every attempt the full price; a trip costs ~57% of a
+  survivor, and the cap binds precisely when trips are frequent — i.e. when candidates are
+  cheapest.
+- **A candidate no longer costs 2.5s.** Fingerprint extraction was computing the *same* starlet
+  decomposition of L\* twice — once for the energy spectrum (§4.2), once for the
+  structure/gradient ratio — and `advance` re-extracted every branch's parent each iteration
+  although it had already been fingerprinted as a candidate. Both removed in Task 16, proven
+  bit-identical on real cached renders (`tests/test_fingerprint_cost.py`).
+
+Measured at the real 1600px search proxy (`data/discovery_cache/eso0104a.jpg` flattened,
+1600×1575, `n_scales=7`), before → after Task 16:
+
+| | before | after |
+|---|---|---|
+| fingerprint extraction | 1.497s | **0.919s** |
+| §7 guardrails | 0.855s | 0.857s (untouched) |
+| executor (mean over the ranked menu) | 0.367s | 0.360s (untouched) |
+| **candidate that is SCORED** | **2.719s** | **2.136s** |
+| **candidate DISCARDED by a guardrail** | **1.222s** | **1.217s** |
+| parent re-measure, per branch per iteration | 1.497s | **0s** (carried on the `Branch`) |
+
+Worst case is a branch that burns every attempt: it can only do that by keeping fewer than
+`top_k` (it stops at `top_k` kept), so the most expensive branch is `top_k - 1` scored plus the
+rest discarded. With `width=3`, `top_k=3`, `max_attempts=9`, `iteration_cap=20`:
+
+| Policy | Attempts/iteration | 20 iterations (before) | 20 iterations (after) |
+|---|---|---|---|
+| `top_k` attempts (original) | 9 | ~9.7 min | ~6.4 min |
+| **bounded retry (adopted)** | **≤27** | ~15.5 min | **~12.8 min worst case** |
+| unbounded until `top_k` live | ≤66 | ~31.4 min | ~28.6 min |
+
+**The 15-minute budget is met, and it is met by attacking the cost, not by narrowing the cap.**
+Before Task 16 the adopted policy cost ~15.5 min worst case and genuinely did not fit; it now
+costs ~12.8 min, and the nominal run — no guardrail trips, `3 × 3` candidates per iteration —
+costs ~6.4 min. The unbounded retry remains rejected on its own merits at ~28.6 min, more than
+twice the bounded cost and still over budget, so the conclusion this section reached is
+unchanged. What changed is that the numbers now support it.
+
+Two honest qualifications on that budget:
+
+1. It covers the **sidecar's** work — executor, guardrails, extraction, scoring. In production
+   the executor is PixInsight over a file round trip (§2.5), not the in-process NumPy executor
+   measured here; that round trip is additive and has not been measured. The figures above are a
+   floor for the real pipeline, not a ceiling.
+2. It is a *worst* case in two independent senses at once — every branch burning every attempt
+   *and* the run going the full 20 iterations. A cost model built from these unit prices
+   over-predicts three consecutively measured real iterations by 9–12%, so it errs toward
+   pessimism, which is the right direction for a budget.
+
+The cap binds only when trips are frequent; typical runs cost far less than the worst case.
+`max_attempts` is a tunable under §3.7's calibration discipline and was **not** adjusted here —
+narrowing it would stop a branch before `local_contrast@2″`, which ranks fifth on the measured
+flattened fixture and is the action that actually closes the gap.
+
+### 3.4 Convergence
+
+The OR of §6.3. Condition 2 (VLM director) is absent in Phase 2.
+
+| # | Condition | Terminates with |
+|---|---|---|
+| 1 | ΔD over the last *k*=3 iterations < `epsilon` | best-so-far |
+| 3 | every branch dead from guardrail trips | best-so-far (may be the input) |
+| 4 | iteration cap reached (default 20) | best-so-far |
+
+Condition 3 is reported honestly as *exhausted*, never dressed up as success.
+
+### 3.5 Proposer
+
+Deterministic, no AI. `fingerprint/distance.py` already decomposes D into spectrum / tonal /
+chroma / background components. The proposer ranks actions by **which component carries the largest
+gap**:
+
+- energy deficit at a given arcsec band → `local_contrast` at that band
+- lifted black quantiles → `black_point`
+- chroma shortfall → `chroma@hue`, **only when the palette gate admits chroma at all** (§2.3);
+  otherwise chroma actions are never proposed
+
+Ranking is by gap magnitude and is fully reproducible for a given input and reference.
+
+**Scale-denominated actions are ranked PER BAND, not by the aggregate spectrum gap.**
+Clarified 2026-07-27 after the first implementation collapsed the spectrum to a single scalar. That
+collapse made every structural remedy tie, so an alphabetical tiebreak decided the order and
+`top_k=3` returned three `core_hdr` magnitudes on every iteration of every branch. Because `core_hdr`
+is not once-only it was re-proposed indefinitely, and `local_contrast` and `local_equalize` were
+never proposed at any band. Beam width 3 explored exactly one option, and the band structure of the
+§6.2 action menu went entirely unused.
+
+The fingerprint already carries what is needed: `EnergySpectrum` stores energy per angular scale.
+The band-limited, L2-normalized shapes of reference and target give a **per-band deficit**, and each
+scale-denominated action is ranked by the deficit at *its own* band. Measured on a target blurred at
+fine scales, the deficit localises correctly:
+
+| Band | Deficit (ref − target) |
+|---|---|
+| 1″ | **+0.465** — target is short here |
+| 2″ | −0.488 |
+| 4″ | −0.355 |
+| 8″ | −0.109 |
+
+Non-scale actions (`core_hdr`, `tonal_reshape`, `black_point`, `chroma`,
+`background_neutralize`) continue to rank on their component's aggregate gap.
+
+Two properties this must keep:
+- **Numeric, not lexicographic, ordering of bands.** The first implementation's tiebreak sorted on
+  the formatted action key, giving `16.000` < `2.000` < `32.000`. Any residual tiebreak must be
+  numerically sensible.
+- **No single kind may monopolise `top_k`.** A ranking that returns only one action kind for every
+  branch on every iteration defeats the beam. This is a testable property, not a stylistic wish.
+
+**Magnitude is chosen by gap size, one level per (kind, band) group.**
+Added 2026-07-27, after fixing the kind-monopoly exposed a second monopoly of the same shape. The
+first fix grouped actions and filled `top_k` round-robin, gentlest level first. But `LEVELS` has
+exactly three entries and `top_k` defaults to 3, and there are always more groups than slots, so a
+second pass never happens: `moderate` and `strong` became structurally unreachable at every `top_k`
+the beam uses (measured gentle-only at `top_k` 3, 6 and 9). That left §6.2's magnitude axis as
+decorative as the band axis had been.
+
+Therefore each (kind, band) group contributes **one** action, whose magnitude is selected from the
+size of that group's gap:
+
+| Gap | Level |
+|---|---|
+| large | `strong` |
+| medium | `moderate` |
+| small | `gentle` |
+
+A large deficit warrants a large step; that is what the magnitude axis is for. Kind diversity in
+`top_k` is preserved because each group still contributes exactly one entry.
+
+The bucket boundaries are tunables and fall under §3.7's calibration discipline — in particular they
+must not be adjusted to rescue a single exit-criterion test without re-running all of them.
+
+Rejected alternatives: keeping gentle-only and relying on compounding across iterations (risks
+hitting the iteration cap before converging, which would fail §10's "measurably improves" half); and
+raising `top_k` until round-robin wraps (needs `top_k` around 15-20, multiplying per-iteration cost
+by ~5 and blowing the runtime budget, while still choosing the level arbitrarily).
+
+### 3.6 Hybrid proxy validation
+
+Search runs on a ~1600px proxy — the resolution the fingerprint already reduces to, so the
+*measurement* never sees full resolution regardless.
+
+**PJSR creates the proxy once, at `optimize_begin`**, and every search-time process execution runs
+against it. The full-resolution original is touched only at validation checkpoints and at final
+replay.
+
+Every 5 iterations, the best-so-far recipe is replayed at full resolution and re-measured. If proxy
+and full-resolution distance diverge beyond tolerance, the divergence is **surfaced loudly and the
+run flagged** — never silently trusted (§12).
+
+Actions are denominated in arcseconds (§2.2), which is what makes proxy→full-res transfer
+plausible. It is not assumed. It is checked.
+
+### 3.7 Tunables and calibration discipline
+
+These carry defaults; the rest are calibrated empirically during implementation:
+
+| Parameter | Default |
+|---|---|
+| beam width | 3 |
+| top-k actions per branch | 3 |
+| iteration cap | 20 |
+| convergence window *k* | 3 |
+| proxy longest side | 1600 px |
+| full-res validation interval | 5 iterations |
+| shadow / highlight clipping | ~0.01% of pixels |
+
+**Calibrated against real data, not assumed:** `epsilon` (convergence), `epsilon_improve`
+(minimum improvement to replace best-so-far), noise-floor σ tolerance, star FWHM/eccentricity
+tolerance, channel-ratio drift tolerance, hue-invention ε, proxy/full-res divergence tolerance.
+
+**The calibration hazard, stated plainly.** `epsilon_improve` is the single knob that trades the
+two halves of the §10 exit criterion against each other. Lower it and test 3 (improve a flat image)
+passes more easily while tests 1 and 2 (decline on well-processed input) get more fragile. Raise it
+and the reverse.
+
+Therefore: **no tunable may be adjusted to make one exit-criterion test pass without re-running all
+three.** A value that satisfies test 3 by breaking the fail-safe has not been calibrated, it has
+been defeated. If no single value satisfies all three, that is a finding about the fingerprint —
+report it, do not tune around it. The Phase 0 exit criterion was reframed on exactly this kind of
+finding rather than papered over.
+
+---
+
+## 4. Action space
+
+Actions are constructed **band-limited**: each carries its scale in arcseconds, and the constructor
+**refuses to emit any action whose scale is below the image's own resolvable limit** (PSF FWHM,
+§4.4).
+
+This enforces §2.2 at the point of proposal rather than catching it later as a guardrail trip. The
+optimizer is structurally incapable of proposing that 0.05″/px HST detail be sharpened into
+1.01″/px backyard data.
+
+| Action | PI process | Magnitude levels | Constraint |
+|---|---|---|---|
+| `local_contrast@Narcsec` | MultiscaleLinearTransform | gentle / moderate / strong | band ≥ PSF limit |
+| `core_hdr` | HDRMultiscaleTransform | 2 / 3 / 4 layers | masked |
+| `tonal_reshape` | CurvesTransformation | gentle / moderate / strong | monotone-constrained |
+| `black_point` | HistogramTransformation | gentle / moderate / strong | clip-limited (§7) |
+| `local_equalize` | LocalHistogramEqualization | gentle / moderate / strong | kernel in arcsec |
+| `chroma@hue` | ColorSaturation | gentle / moderate / strong | only if palette-compatible |
+| `background_neutralize` | BackgroundNeutralization | — | idempotent, early only, once |
+| `star_split` | StarXTerminator | — | once, early |
+
+`star_split` is a **mode change**, not a scored move. Once applied to a branch, all subsequent
+actions on that branch operate on the **starless layer only**; the star layer is held aside
+unmodified and recombined at the end of the branch's recipe. This is what lets local contrast be
+pushed hard without blowing star cores.
+
+Measurement and guardrails always run on the **recombined** image, never on the starless layer
+alone — otherwise star integrity (§7) would be measured against a frame with no stars in it.
+
+StarXTerminator is confirmed installed at `/opt/PixInsight/bin/StarXTerminator-pxm.so`.
+
+---
+
+## 5. Guardrails (§7)
+
+Hard constraints, evaluated every iteration, cheap and deterministic. A violation discards the
+candidate and rolls back. Each records a **reason**, so a declined run can explain why it declined.
+
+| Guardrail | Metric | Trip condition |
+|---|---|---|
+| Noise floor | MRS noise σ per channel, via starlet | σ increases beyond tolerance from checkpoint |
+| Star integrity | count, median FWHM, eccentricity | count drops, or FWHM/ecc balloons |
+| Shadow clipping | % pixels at 0 per channel | exceeds threshold (default ~0.01%) |
+| Highlight clipping | % pixels at 1.0 per channel | exceeds threshold |
+| Hue invention | chroma mass at a hue **angle** with no support in the source | any mass above ε |
+| Channel ratio drift | post-stretch ratios vs. source-derived constraints | exceeds tolerance |
+
+The last two enforce §2.1 and §2.3 mechanically and are the difference between a tool that enhances
+and one that fabricates.
+
+### 5.1 Hue invention is measured on angle, not on a\*/b\* position
+
+**Revised 2026-07-27, on measurement.** This guardrail was originally specified as "chroma mass in
+a\*/b\* cells with no support in the source." Implementing it revealed that formulation rejects
+ordinary saturation increases: with a 16×16 histogram over ±100, each bin is 12.5 wide, and boosting
+saturation moves a pixel *radially outward* into a neighbouring cell. Measured against a source whose
+chroma sat near a bin edge, a **1.3× boost** already exceeded the ε limit and an **1.8× boost** put
+0.952 of the image's chroma mass into "unsupported" cells.
+
+Since `chroma` (ColorSaturation) is one of the eight §6.2 actions and runs at 0.85 strength on
+`strong`, the cell-based check would have vetoed essentially every colour move on real data — while
+reporting itself as functioning.
+
+The a\*/b\* plane cannot distinguish "the same colour, more of it" from "a colour that was never
+there", because both show up as mass in a new cell. **Hue angle can.** Saturation moves along a
+radius at constant angle; fabrication introduces a *new angle*. This is also what §2.1 already says
+in words: the fingerprint may influence *"saturation structure"* — saturation change is permitted,
+invented colour is not.
+
+Therefore hue invention is measured as chroma-weighted mass sitting **more than a tolerance angle away
+from any hue the source supports**.
+
+**Corrected 2026-07-27, second iteration.** A first attempt required an unclipped 3.0× boost to trip.
+That requirement was wrong and is withdrawn. Saturation is applied in RGB while CIELAB hue angle is a
+nonlinear function of RGB, so legitimate boosts genuinely drift the hue angle by a few degrees. Asking
+this guardrail to catch that was asking it to do the clipping guardrails' job.
+
+Measured separation, which is what the tolerance rests on:
+
+| Case | Hue displacement | Verdict |
+|---|---|---|
+| 1.3× saturation boost | 0.84° | passes |
+| 1.8× saturation boost | 2.35° | passes |
+| 2.2× saturation boost | 3.63° | passes |
+| 3.0× saturation boost (unclipped) | 6.39° | passes |
+| Green injected into a red image | **116.28°** | trips |
+| Green cast on a neutral source | no supported hue at all | trips |
+
+Legitimate drift is **bounded** at roughly 6°; genuine invention is roughly 116° or has no support
+whatsoever. The tolerance sits in that gap — default **20°**, about 3× above real drift and 6× below
+real invention.
+
+The bounded-drift property is what makes this safe where the a\*/b\* cell approach was not. Radial
+movement in the a\*/b\* plane is unbounded, so any fixed cell dilation is escapable by boosting harder.
+Angular drift from legitimate operations cannot grow that way.
+
+Three properties this must keep:
+- A **minimum-chroma floor**, so near-neutral pixels do not contribute numerically noisy angles.
+- A **neutral source blocks all colourisation** — an all-neutral source supports no hue, so any colour
+  is invented. Intentional per §2.1: no colour in the data means no colour to legitimately intensify.
+- **Clipping is not this guardrail's job.** `check_shadow_clipping` and `check_highlight_clipping`
+  own it. Each guardrail catches its own failure mode; overlapping them caused the first iteration's
+  error.
+
+Two routes were explicitly rejected:
+- **Raising ε** on the cell-based check: 1.8× requires ε above 0.95, at which point the guardrail
+  detects no realistic fabrication at all — the "tune around a finding" failure §3.7 forbids.
+- **Dilating the source cell mask** by a fixed radius: refuted by measurement. At 2.2× the candidate
+  spans three cells while the source occupies one, so a radius-1 dilation still trips, and any fixed
+  radius is escapable by a larger boost.
+
+---
+
+## 6. Error handling
+
+- **Guardrail trip** — discards that candidate only; reason recorded and reported.
+- **Executor failure** (a PI process erroring on a candidate) — kills that candidate only, logged.
+- **All branches dead** — convergence condition 3, reported as exhausted.
+- **Proxy/full-res divergence** — surfaced loudly, run flagged (§12).
+- **Linear input to Stage 1** — loud error, never a silent auto-stretch (§12).
+- **Sidecar op errors** — existing `{ok: false, error}` contract; always surfaced (§12).
+
+No degraded path proceeds silently. This is a §12 requirement, not a preference.
+
+---
+
+## 7. Testing
+
+### 7.1 Unit — fast, no PI, no network
+
+Arcsec→layer mapping; band-limit refusal; each §7 guardrail independently, using synthetic images
+built to trip exactly one apiece (noise-injected → noise floor; clipped → shadow clipping; a\*/b\*
+mass with no source support → hue invention); proposer ranking; beam pruning and distinctness; each
+convergence condition; session serialize/resume round-trip.
+
+### 7.2 Offline integration — `NumpyExecutor`, no PI
+
+The full loop, end to end:
+
+- `flatten(good_render, strength=0.6)` → must measurably reduce D
+- pro render in → must decline, `improved: false`
+- guardrail-hostile input → must terminate via condition 3 and say so
+
+### 7.3 Live — real PixInsight, real data
+
+The §10 exit criterion:
+
+1. `eso1103a` (cached pro render) → must decline. CI-runnable, needs no user data.
+2. Finished HOO M42 from `/mnt/qnap/astro_data/prints/` → must decline. Authentic scenario.
+3. Linear M42 stack, hand-stretched → must measurably improve.
+
+Live tests run **by default**, consistent with Phase 1. Politeness comes from the existing
+persistent caches, not from deselection. No test is deselected to make a suite look green.
+
+### 7.4 What the offline tests do and do not prove
+
+`NumpyExecutor` approximations **do not match** PixInsight's processes. This is acceptable for
+testing loop logic — beam pruning and convergence do not care whether LHE is exact.
+
+**The offline tests prove the loop is correct. They do not prove the output is good.** Only the
+live tests can prove the latter. A green offline suite must never be read as evidence that the
+optimizer produces beautiful images.
+
+---
+
+## 8. Deliverable
+
+A PJSR script `pixinsight/autocontrast_optimize.js` registering `AutoContrast > Optimize`,
+producing:
+
+- a new image window with the result (or the untouched input, when it declines)
+- the recipe printed to console **and** written as JSON (§12 auditability)
+- a `STATUS_FILE` report — headless PixInsight writes nothing useful to stdout
+
+The recipe is the audit artifact: an ordered list of stock PixInsight processes and parameters that
+reproduces the result without AutoContrast present.
+
+**Note:** this script inherits the open release-compliance defect affecting
+`autocontrast_analyze.js` — unversioned, unsigned, unpackaged, never registered with PI. That is
+tracked separately and is not resolved by this spec.
+
+---
+
+## 9. Out of scope
+
+- Stage 0, stretch selection for linear input — not committed work; see §1
+- Any VLM involvement — Phase 3, and it must earn its place
+- Anything in §12
