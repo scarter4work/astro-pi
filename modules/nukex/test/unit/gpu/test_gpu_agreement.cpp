@@ -352,6 +352,86 @@ TEST_CASE("GPU Agreement: select_pixels agrees under NON-identity sky "
     REQUIRE(max_rel < 1e-4f);
 }
 
+// Heterogeneous per-channel frame sets: channel 1 reads GLOBAL frames 3..5
+// while the stride N is 3, so every gf it uses is >= N. FrameStats is indexed
+// by gf; a kernel that sized or indexed the per-frame constants by N instead
+// reads past them (astro-pi 0c63457d fixed exactly that on its own branch).
+// Distinct stats per frame make a wrong frame visible in the weights.
+static std::vector<FrameStats> make_distinct_frame_stats(int n_global) {
+    std::vector<FrameStats> fs(n_global);
+    for (int i = 0; i < n_global; i++) {
+        fs[i].frame_weight = 0.40f + 0.11f * i;
+        fs[i].psf_weight   = 0.60f + 0.06f * i;
+        fs[i].cloud_score  = 1.00f - 0.03f * i;
+        fs[i].exposure     = 100.0f * (i + 1);
+        fs[i].gain         = 1.2f + 0.2f * i;
+        fs[i].read_noise   = 2.0f + 0.5f * i;
+        fs[i].has_noise_keywords = true;
+        for (int c = 0; c < 2; ++c) {
+            fs[i].norm_scale[c]  = 0.9f + 0.05f * i;
+            fs[i].norm_offset[c] = 0.01f * i;
+        }
+    }
+    return fs;
+}
+
+static void fill_hetero(ShadowBuffers& buf, int B, int C, int N,
+                        std::vector<int32_t> global_frame_of) {
+    buf.allocate(B, C, N);
+    buf.global_frame_of = std::move(global_frame_of);
+    std::mt19937 rng(123);
+    fill_synthetic(buf, B, C, N, rng);
+    for (int ch = 0; ch < C; ch++)
+        for (int vi = 0; vi < B; vi++)
+            buf.dist_true_signal[ch * B + vi] = buf.welford_mean[ch * B + vi];
+}
+
+TEST_CASE("GPU Agreement: per-channel frame sets with global frame >= N",
+          "[gpu][agreement]") {
+    const int B = 64, C = 2, N = 3;
+    const auto fs = make_distinct_frame_stats(6);
+    WeightConfig wc;
+
+    // CPU first, on any machine: the remap must actually be honoured --
+    // channel 1 weighted by frames 3..5 differs from channel 1 weighted by
+    // frames 0..2 on identical samples, and channel 0 is unaffected.
+    ShadowBuffers hetero, aliased;
+    fill_hetero(hetero,  B, C, N, {0, 1, 2, 3, 4, 5});
+    fill_hetero(aliased, B, C, N, {0, 1, 2, 0, 1, 2});
+    GPUCPUFallback::classify_weights(hetero,  fs.data(), wc, B, C, N);
+    GPUCPUFallback::classify_weights(aliased, fs.data(), wc, B, C, N);
+    float ch0_diff = 0.0f, ch1_diff = 0.0f;
+    for (int i = 0; i < N * B; i++) {
+        ch0_diff = std::max(ch0_diff, std::fabs(hetero.pixel_weights[i] - aliased.pixel_weights[i]));
+        ch1_diff = std::max(ch1_diff, std::fabs(hetero.pixel_weights[N * B + i] - aliased.pixel_weights[N * B + i]));
+    }
+    REQUIRE(ch0_diff == 0.0f);
+    REQUIRE(ch1_diff > 0.05f);
+
+    auto ctx = GPUContext::create();
+    if (!ctx.is_gpu_available()) {
+        SKIP("No GPU available");
+    }
+
+    ShadowBuffers gpu_buf;
+    fill_hetero(gpu_buf, B, C, N, {0, 1, 2, 3, 4, 5});
+    GPUCPUFallback::robust_stats(hetero, B, C, N);
+    GPUExecutor exec;
+    exec.execute_batch_gpu(gpu_buf, fs.data(), wc, B, C, N);
+
+    for (size_t i = 0; i < hetero.pixel_weights.size(); i++)
+        REQUIRE(gpu_buf.pixel_weights[i] == Catch::Approx(hetero.pixel_weights[i]).margin(GPU_TOL));
+    for (int vi = 0; vi < B; vi++)
+        REQUIRE(gpu_buf.total_exposure_out[vi] == Catch::Approx(hetero.total_exposure_out[vi]).margin(1e-2));
+
+    GPUCPUFallback::select_pixels(hetero, fs.data(), B, C, N);
+    exec.execute_select_gpu(gpu_buf, fs.data(), B, C, N);
+    for (int i = 0; i < C * B; i++) {
+        REQUIRE(gpu_buf.output_value[i] == Catch::Approx(hetero.output_value[i]).margin(GPU_TOL));
+        REQUIRE(gpu_buf.noise_sigma[i]  == Catch::Approx(hetero.noise_sigma[i]).margin(GPU_TOL));
+    }
+}
+
 TEST_CASE("GPU Agreement: spatial_context GPU == CPU", "[gpu][agreement]") {
     auto ctx = GPUContext::create();
     if (!ctx.is_gpu_available()) { SKIP("No GPU available"); }

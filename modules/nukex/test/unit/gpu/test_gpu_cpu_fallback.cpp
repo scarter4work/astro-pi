@@ -287,6 +287,48 @@ TEST_CASE("CPU Fallback: predicted noise uses a robust scale, not Welford",
 // Kernel 4: spatial_context
 // ══════════════════════════════════════════════════════════
 
+// Per-channel accounting (ported from astro-pi's per-channel frame-count
+// fix): channel 0 and channel 1 each have ONE real sample, from different
+// global frames. Neither may read the other's frame or its padding slot.
+TEST_CASE("Per-channel accounting: classify_weights respects per-channel count "
+          "and frame map (no cross-channel aliasing)", "[gpu][fallback]") {
+    const int B = 1, C = 2, N = 2;
+    ShadowBuffers buf;
+    buf.allocate(B, C, N);
+    buf.global_frame_of = {0, -1,    // channel 0: global frame 0, then nothing
+                           1, -1};   // channel 1: global frame 1, then nothing
+
+    buf.n_frames[0 * B + 0] = 1;
+    buf.pixel_values[0 * N * B + 0 * B + 0] = 0.6f;
+    buf.welford_mean[0 * B + 0] = 0.6f;
+    buf.welford_n[0 * B + 0] = 1;
+
+    buf.n_frames[1 * B + 0] = 1;
+    buf.pixel_values[1 * N * B + 0 * B + 0] = 0.3f;
+    buf.welford_mean[1 * B + 0] = 0.3f;
+    buf.welford_n[1 * B + 0] = 1;
+
+    auto fs = make_frame_stats(N);
+    fs[0].exposure = 100.0f;  fs[0].psf_weight = 0.50f;
+    fs[1].exposure = 200.0f;  fs[1].psf_weight = 0.80f;
+    WeightConfig config;
+
+    GPUCPUFallback::classify_weights(buf, fs.data(), config, B, C, N);
+
+    // Summaries come from channel 0's real frame only (global frame 0);
+    // walking fi < N would have added frame 1's exposure too -> 300.
+    REQUIRE(buf.total_exposure_out[0] == Catch::Approx(100.0f));
+    // Each channel is weighted by ITS frame: a single sample has no spread,
+    // so the weight is frame_weight * psf_weight * cloud_score of that frame.
+    REQUIRE(buf.pixel_weights[0 * N * B + 0 * B + 0] ==
+            Catch::Approx(fs[0].frame_weight * fs[0].psf_weight * fs[0].cloud_score));
+    REQUIRE(buf.pixel_weights[1 * N * B + 0 * B + 0] ==
+            Catch::Approx(fs[1].frame_weight * fs[1].psf_weight * fs[1].cloud_score));
+    // Padding slots are never written.
+    REQUIRE(buf.pixel_weights[0 * N * B + 1 * B + 0] == 0.0f);
+    REQUIRE(buf.pixel_weights[1 * N * B + 1 * B + 0] == 0.0f);
+}
+
 TEST_CASE("CPU Fallback: spatial_context produces valid output", "[gpu][fallback]") {
     int W = 32, H = 32, C = 3;
     std::vector<float> stacked(W * H * C);
