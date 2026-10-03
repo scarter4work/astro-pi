@@ -14,7 +14,8 @@ public:
     explicit ModelSelector(const Config& config);
     void select(const float* values, const float* weights, int n,
                 SubcubeVoxel& voxel, int channel);
-    FitResult select_best(const float* values, const float* weights, int n);
+    FitResult select_best(const float* values, const float* weights, int n,
+                          int dump_channel = -1);
 private:
     Config config_;
 };

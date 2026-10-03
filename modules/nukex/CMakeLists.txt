@@ -109,6 +109,11 @@ add_subdirectory(src/lib/stretch)
 add_subdirectory(src/lib/learning)
 add_subdirectory(src/module)
 
+option(NUKEX_BUILD_RESEARCH_TOOLS "Build headless research drivers under tools/research" OFF)
+if(NUKEX_BUILD_RESEARCH_TOOLS)
+    add_subdirectory(tools/research)
+endif()
+
 option(NUKEX_BUILD_TESTS "Build unit and integration tests" ON)
 if(NUKEX_BUILD_TESTS)
     enable_testing()
