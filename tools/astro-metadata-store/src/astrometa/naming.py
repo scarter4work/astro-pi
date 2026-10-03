@@ -1,0 +1,151 @@
+"""
+Object naming, aliasing, and the identity confidence gate.
+
+The archive's directory names and FITS OBJECT cards are inconsistent
+about what to call a target -- measured against this archive: M33 (6
+directories) and Triangulum Galaxy (7 directories) are the same galaxy;
+M31 (13 directories) and M 31 (12) are the same object split across two
+spellings, as are M45/M 45 and IC1848/IC 1848; Veil2, Pickering-triang
+and NGC6960 are all the Veil complex. canonicalise() folds the mechanical
+spelling variants (spacing, case, missing/extra hyphen) of a catalogue
+designator into one string so "M33" and "M 33" land on the same objects
+row without help; the free-text variants that don't share a mechanical
+pattern (Triangulum Galaxy, Veil2, Pickering-triang) are reconciled by
+hand via add_alias, pointing every spelling seen for a target at one
+canonical objects row.
+
+The endgame this store exists for is physically reorganising the archive
+into by-object/<object>/<filter>/<project>/, so a wrong identity claim
+here doesn't just mislabel a database row -- eventually it misfiles a
+real file. Not every source of an identity claim is equally trustworthy:
+a plate solve (source="solved") or a value propagated from another frame
+in the same solved field (source="propagated") is derived from the
+actual star geometry in the pixel data, and a human confirming a target
+(source="manual") is authoritative by definition. A directory name
+(source="dirname") or a FITS OBJECT card (source="object_card") is
+whatever the imaging session software or the person operating it typed
+at capture time -- routinely wrong, abbreviated, or stale from a copy-
+pasted session template. CONFIDENCE records a confidence label for every
+source so the claim is never lost, but may_drive_move() is the actual
+gate: only solved, propagated, and manual claims may ever authorise
+moving a file on disk. A future task will call may_drive_move() before
+touching the filesystem; assert_identity() enforces the same gate when
+it decides whether to update fields.object_id.
+
+SIMBAD resolution is deliberately out of scope here. upsert_object
+accepts simbad_id/ra/dec so the schema and interface are ready for it,
+but the search radius that would make a SIMBAD lookup reliable needs
+calibrating against real solve results from Task 14 first, and a live
+network dependency has no place in this module's test suite. No network
+calls are made anywhere in this file.
+"""
+import re
+from datetime import datetime, timezone
+
+CONFIDENCE = {
+    "solved": "high",
+    "propagated": "high",
+    "manual": "authoritative",
+    "object_card": "medium",
+    "dirname": "low",
+}
+
+# Only these sources are trustworthy enough to ever authorise moving a
+# file: a plate solve, a value propagated from a solved sibling frame, or
+# a human confirming the target by hand. dirname and object_card are
+# recorded (every claim is, via assert_identity) but never acted on.
+_MOVE_ALLOWED = {"solved", "propagated", "manual"}
+
+# Recognised catalogue prefixes. Sh2 designators conventionally keep a
+# hyphen before the number (SH2-106); every other catalogue here is
+# written prefix+number with no separator (M42, NGC7635, IC1848).
+_CATALOG = re.compile(
+    r"^\s*(M|NGC|IC|SH2|LDN|LBN|B|VDB)\s*-?\s*([0-9]+)\s*$", re.IGNORECASE)
+
+
+def canonicalise(name: str) -> str:
+    """
+    Collapse mechanical spelling variants of a catalogue designator to
+    one canonical string: "M 42", "M42", "m42", and "  M  42 " all become
+    "M42". A name that doesn't match a recognised catalogue prefix (a
+    proper name like "Triangulum Galaxy") is returned merely stripped of
+    surrounding whitespace, unchanged otherwise -- those variants are
+    reconciled by hand via add_alias, not guessed at here.
+    """
+    if not name:
+        return name
+    m = _CATALOG.match(name)
+    if not m:
+        return name.strip()
+    prefix = m.group(1).upper()
+    number = m.group(2)
+    sep = "-" if prefix == "SH2" else ""
+    return f"{prefix}{sep}{number}"
+
+
+def may_drive_move(source: str) -> bool:
+    """True only for the identity sources trustworthy enough to
+    authorise physically moving a file: solved, propagated, manual."""
+    return source in _MOVE_ALLOWED
+
+
+def upsert_object(conn, canonical, object_type,
+                  simbad_id=None, ra=None, dec=None) -> int:
+    """
+    Insert an objects row for `canonical`, or return the existing one's
+    id unchanged. Idempotent: calling this twice with the same canonical
+    name never creates a second row (objects.canonical_name is UNIQUE,
+    and this upserts against that).
+
+    On a repeat call, object_type is overwritten with whatever this call
+    passed (a later, more confident classification is meant to win);
+    simbad_id/ra/dec only overwrite an existing NULL -- a repeat call
+    with no new SIMBAD data (the common case while SIMBAD resolution is
+    out of scope, see module docstring) must not clobber a value a
+    previous call already set.
+    """
+    conn.execute("""INSERT INTO objects (canonical_name, object_type,
+        simbad_id, ra, dec) VALUES (?,?,?,?,?)
+        ON CONFLICT(canonical_name) DO UPDATE SET
+          object_type=excluded.object_type,
+          simbad_id=COALESCE(excluded.simbad_id, objects.simbad_id),
+          ra=COALESCE(excluded.ra, objects.ra),
+          dec=COALESCE(excluded.dec, objects.dec)""",
+        (canonical, object_type, simbad_id, ra, dec))
+    conn.commit()
+    return conn.execute("SELECT id FROM objects WHERE canonical_name=?",
+                        (canonical,)).fetchone()[0]
+
+
+def add_alias(conn, object_id: int, alias: str, source: str) -> None:
+    """
+    Record that `alias` refers to `object_id`. Idempotent: aliases is
+    keyed on (object_id, alias), so re-adding the same alias for the same
+    object is a no-op rather than a duplicate row.
+    """
+    conn.execute("INSERT OR IGNORE INTO aliases (object_id, alias, source) "
+                 "VALUES (?,?,?)", (object_id, alias, source))
+    conn.commit()
+
+
+def assert_identity(conn, field_id: int, object_id: int, source: str) -> None:
+    """
+    Record an identity claim -- field_id is object_id, according to
+    source -- with the confidence CONFIDENCE[source] implies. Every claim
+    is recorded regardless of source, including a low-confidence dirname
+    or object_card guess: recording a weak claim is correct, acting on
+    one is not.
+
+    fields.object_id (the column a future physical-move task would read)
+    is only ever updated when may_drive_move(source) is True. A dirname
+    or object_card claim lands in identity_assertions for the record but
+    never moves fields.object_id.
+    """
+    conn.execute("""INSERT INTO identity_assertions (field_id, object_id,
+        source, confidence, asserted_at) VALUES (?,?,?,?,?)""",
+        (field_id, object_id, source, CONFIDENCE[source],
+         datetime.now(timezone.utc).isoformat()))
+    if may_drive_move(source):
+        conn.execute("UPDATE fields SET object_id=? WHERE id=?",
+                     (object_id, field_id))
+    conn.commit()
