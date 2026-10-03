@@ -77,4 +77,16 @@ bool should_check_now(const QEUpdateState& state, long long now_unix) {
            static_cast<long long>(state.interval_days) * 86400LL;
 }
 
+ActiveQEDatabase active_qe_database(const QEUpdateState& state,
+                                    bool downloaded_present,
+                                    int embedded_version) {
+    // A download is used only while it is strictly newer than what the module
+    // carries. Anything else -- the file gone, or a module update that ships
+    // the same or a later database -- leaves the embedded one in effect, at
+    // the version it was published as, so the updater compares like with like.
+    if (downloaded_present && state.installed_db_version > embedded_version)
+        return { true, state.installed_db_version };
+    return { false, embedded_version };
+}
+
 } // namespace nukex

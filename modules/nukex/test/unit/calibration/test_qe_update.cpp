@@ -1,6 +1,8 @@
 #include "catch_amalgamated.hpp"
 #include "nukex/calibration/qe_update.hpp"
 #include "nukex/calibration/ed25519_verify.hpp"
+#include "nukex/calibration/qe_database.hpp"
+#include "nukex/calibration/qe_update_state.hpp"
 
 #include <map>
 #include <string>
@@ -322,4 +324,29 @@ TEST_CASE("the published database matches the digest its manifest names", "[qe_u
         sha512_hex(reinterpret_cast<const unsigned char*>(db.data()), db.size());
     INFO("manifest: " << mf);
     REQUIRE(mf.find(got) != std::string::npos);
+}
+
+// The regression this guards: with the database compiled into the module
+// counted as version 0, a fresh install was offered -- and prompted to
+// download -- the very database it already carried. Serve the REAL
+// published files to the REAL updater with the REAL shipped key, exactly as
+// the module wires them, and require that a fresh install sees nothing new.
+TEST_CASE("a fresh install is not offered the database it already carries", "[qe_update]") {
+    const std::string dir = NUKEX_REPOSITORY_DIR;
+    FakeFetcher f;
+    for (const char* name : { "qe_manifest.json", "qe_database.json" }) {
+        serve(f, name, slurp_or_empty(dir + "/" + name),
+                       slurp_or_empty(dir + "/" + name + ".sig"));
+    }
+
+    const QEUpdateState fresh;   // nothing downloaded, nothing recorded
+    const ActiveQEDatabase active =
+        active_qe_database(fresh, /*downloaded_present=*/false,
+                           embedded_qe_database_version());
+
+    QEUpdater up(f, kBase, qe_signing_public_key());
+    const CheckResult r = up.check(active.version);
+    INFO("embedded v" << embedded_qe_database_version()
+         << ", published v" << r.manifest.db_version);
+    REQUIRE(r.outcome == UpdateOutcome::UP_TO_DATE);
 }

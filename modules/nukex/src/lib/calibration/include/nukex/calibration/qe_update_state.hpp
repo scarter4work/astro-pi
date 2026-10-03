@@ -29,6 +29,20 @@ bool save_update_state(const std::string& path, const QEUpdateState& state);
 // bad timestamp cannot wedge updates off until the clock catches up.
 bool should_check_now(const QEUpdateState& state, long long now_unix);
 
+// The camera database actually in effect, and the version the updater must
+// compare a published manifest against.
+struct ActiveQEDatabase {
+    bool use_downloaded = false;   // false: the database built into the module
+    int  version        = 0;
+};
+
+// Decides between the database compiled into the module (embedded_version,
+// the db_version it was published as) and one the updater downloaded
+// (downloaded_present, at state.installed_db_version).
+ActiveQEDatabase active_qe_database(const QEUpdateState& state,
+                                    bool downloaded_present,
+                                    int embedded_version);
+
 } // namespace nukex
 
 #endif

@@ -11,12 +11,14 @@
 
 #include "nukex/calibration/qe_update.hpp"
 #include "nukex/calibration/qe_update_state.hpp"
+#include "nukex/calibration/qe_database.hpp"
 
 #include <pcl/FileDialog.h>
 #include <pcl/MessageBox.h>
 #include <pcl/Console.h>
 
 #include <ctime>
+#include <filesystem>
 #include <cstdlib>
 #include <string>
 #include <pcl/ErrorHandler.h>
@@ -695,6 +697,15 @@ std::string QEUserDataDir()
 std::string QEStatePath()    { return QEUserDataDir() + "/qe_update_state.json"; }
 std::string QEDatabasePath() { return QEUserDataDir() + "/qe_database.json"; }
 
+// The database in effect and its version: a download only while it is newer
+// than the one built into this module (see nukex::active_qe_database).
+nukex::ActiveQEDatabase CurrentQEDatabase( const nukex::QEUpdateState& st )
+{
+   std::error_code ec;
+   const bool present = std::filesystem::exists( QEDatabasePath(), ec ) && !ec;
+   return nukex::active_qe_database( st, present, nukex::embedded_qe_database_version() );
+}
+
 } // anonymous namespace
 
 void NukeXInterface::UpdateDatabaseStatusLabel()
@@ -705,11 +716,14 @@ void NukeXInterface::UpdateDatabaseStatusLabel()
    const nukex::QEUpdateState st = nukex::load_update_state( QEStatePath() );
    GUI->QEUpdate_CheckBox.SetChecked( st.enabled );
 
+   const nukex::ActiveQEDatabase active = CurrentQEDatabase( st );
    String text;
-   if ( st.installed_db_version > 0 )
-      text = String().Format( "database v%d", st.installed_db_version );
+   if ( active.use_downloaded )
+      text = String().Format( "database v%d (downloaded)", active.version );
+   else if ( active.version > 0 )
+      text = String().Format( "built-in database v%d", active.version );
    else
-      text = "shipped database";
+      text = "built-in database";
    GUI->QEUpdate_Status_Label.SetText( text );
 }
 
@@ -741,7 +755,10 @@ void NukeXInterface::CheckForDatabaseUpdate( bool user_initiated )
    nukex::QEUpdater updater( fetcher, kQEUpdateBaseURL,
                              nukex::qe_signing_public_key() );
 
-   const nukex::CheckResult r = updater.check( st.installed_db_version );
+   // Compare against the database actually in effect -- the built-in one
+   // counts at the version it was published as, so a fresh install is never
+   // offered the database it already carries.
+   const nukex::CheckResult r = updater.check( CurrentQEDatabase( st ).version );
 
    // Record the attempt whatever happened, so a broken endpoint cannot turn
    // every interface open into a network round trip.
