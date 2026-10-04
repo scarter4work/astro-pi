@@ -1,5 +1,7 @@
 # PCL Parser Server
 
+> **Schemas are local-only.** `schemas/*.json` is derived from the installed PixInsight PCL headers and is gitignored: the PCL License 2.0 bars PixInsight sources from AI code-generation services, so it is never published. Restore from `~/projects/backups/astro-pi-schemas/`.
+
 A language parser server for PixInsight's PCL (PixInsight Class Library) for C++ module development.
 
 ## Overview

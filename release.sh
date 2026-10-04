@@ -142,23 +142,6 @@ assert os.path.realpath(r.get("dir") or "") == os.path.realpath(sys.argv[2]), ("
 print("  signed+verified:", ", ".join(r["verified"]))
 PY
 
-echo "== 2d/6 native-sign rc-astro CLI wrapper scripts =="
-# Signs RCAstro{BXT,SXT,NXT}.js + the shared RCAstroLib.jsh -> *.xsgn and verifies each.
-# PI verifies #included files by their OWN signature, so the .jsh is signed too.
-# Writes /tmp/.rcastro_sign_result.json (automation-mode console never reaches stdout).
-rm -f /tmp/.rcastro_sign_result.json
-LD_LIBRARY_PATH="${ASTROPI_PI_DIR:-/opt/PixInsight}/bin/lib:${ASTROPI_PI_DIR:-/opt/PixInsight}/bin" \
-  pi_headless "$PI" -n --automation-mode --no-startup-scripts --no-startup-check-updates \
-        --no-startup-gui-messages -r="$ROOT/scripts/rc-astro/tools/SignRCAstroScriptsNative.js" \
-        --force-exit >/dev/null 2>&1 || true
-python3 - /tmp/.rcastro_sign_result.json "$ROOT/scripts/rc-astro" <<'PY' || die "rc-astro script signing/verification failed"
-import json,os,sys
-r=json.load(open(sys.argv[1]))
-assert r.get("ok"), r
-assert os.path.realpath(r.get("dir") or "") == os.path.realpath(sys.argv[2]), ("signed the wrong tree", r.get("dir"), sys.argv[2])
-print("  signed+verified:", ", ".join(r["verified"]))
-PY
-
 echo "== 3/6 package NukeX module tarball =="
 mkdir -p "$REPO/bin"
 cp "$SO" "$XSGN" "$REPO/bin/"
@@ -295,38 +278,6 @@ reuse_if_published "$GAIA_ZIP"
 # After bumping the sidecar, rebuild+upload it (gaia-depth-grade/tools/build-sidecar.sh)
 # and update those pins; this script only ships the thin signed scripts.
 
-echo "== 3d/6 package rc-astro CLI wrapper script zip =="
-# Mirror PI's install layout (src/scripts/RCAstro/) so the package extracts into
-# PixInsight's scripts tree. The 3 feature scripts + the shared engine, each with its .xsgn.
-# NOTE: these WRAP the separately-licensed rc-astro CLI binary — they ship as thin scripts
-# only, and fail loudly (MessageBox) if the CLI is not installed. No RC-Astro IP is bundled.
-RCASTRO_VER=1.1.0
-RCASTRO_ZIP="rc-astro-cli_v${RCASTRO_VER}.zip"
-RCASTRO_STAGE="$(mktemp -d)"
-mkdir -p "$RCASTRO_STAGE/src/scripts/RCAstro"
-cp "$ROOT/scripts/rc-astro/RCAstroBXT.js"  "$ROOT/scripts/rc-astro/RCAstroBXT.xsgn" \
-   "$ROOT/scripts/rc-astro/RCAstroSXT.js"  "$ROOT/scripts/rc-astro/RCAstroSXT.xsgn" \
-   "$ROOT/scripts/rc-astro/RCAstroNXT.js"  "$ROOT/scripts/rc-astro/RCAstroNXT.xsgn" \
-   "$ROOT/scripts/rc-astro/RCAstroLib.jsh" "$ROOT/scripts/rc-astro/RCAstroLib.xsgn" \
-   "$RCASTRO_STAGE/src/scripts/RCAstro/"
-rm -f "$REPO/$RCASTRO_ZIP"
-( cd "$RCASTRO_STAGE" && zip -qr "$REPO/$RCASTRO_ZIP" src )
-rm -rf "$RCASTRO_STAGE"
-[ -f "$REPO/$RCASTRO_ZIP" ] || die "zip $RCASTRO_ZIP not produced"
-reuse_if_published "$RCASTRO_ZIP"
-# Point the manifest's rc-astro entry at THIS version's zip. write_pkg (step 4)
-# matches by exact fileName, so without this rename a version bump built a new
-# zip while the manifest kept declaring (and integrity-checking) the old one:
-# the release "passed" and shipped nothing new.
-python3 - "$REPO/updates.xri" "$RCASTRO_ZIP" <<'PY2' || die "manifest has no rc-astro-cli package entry to update"
-import re,sys
-mf,fn=sys.argv[1:3]
-s=open(mf).read()
-s,n=re.subn(r'fileName="rc-astro-cli_v[0-9.]+\.zip"', 'fileName="'+fn+'"', s)
-if n!=1: sys.exit("expected exactly one rc-astro-cli package entry, found %d" % n)
-open(mf,'w').write(s)
-PY2
-
 echo "== 3e/6 publish the NukeX camera database (repository/qe_*) =="
 for f in "${QE_FILES[@]}"; do cp "$QE_SRC/$f" "$REPO/$f"; done
 qe_check "$REPO" || die "published QE set in repository/ does not verify"
@@ -338,7 +289,6 @@ write_pkg "$REPO/updates.xri" "EZStretch_v1.0.10.zip"     "$(sha1 "$REPO/EZStret
 write_pkg "$REPO/updates.xri" "EZDonutRepair_v1.0.3.zip"  "$(sha1 "$REPO/EZDonutRepair_v1.0.3.zip")"
 write_pkg "$REPO/updates.xri" "EZHazeKill_v1.0.1.zip"     "$(sha1 "$REPO/EZHazeKill_v1.0.1.zip")"
 write_pkg "$REPO/updates.xri" "$GAIA_ZIP"                 "$(sha1 "$REPO/$GAIA_ZIP")"
-write_pkg "$REPO/updates.xri" "$RCASTRO_ZIP"              "$(sha1 "$REPO/$RCASTRO_ZIP")"
 
 echo "== 5/6 sign manifest LAST =="
 sed -i '/<Signature developerId=/d' "$REPO/updates.xri"

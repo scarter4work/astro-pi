@@ -1,3 +1,7 @@
 node_modules/
 *.log
 .DS_Store
+
+# Local only, never published: generated from the installed PixInsight SDK/docs, which the
+# PCL License 2.0 bars from AI code-generation services. Backup: ~/projects/backups/astro-pi-schemas/
+schemas/

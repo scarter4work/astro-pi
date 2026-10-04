@@ -6,7 +6,7 @@
       <p>Repository: https://raw.githubusercontent.com/scarter4work/astro-pi/main/repository/</p>
    </description>
    <platform os="linux" arch="x64" version="1.8.0:2.0.0">
-      <package fileName="20261003-linux-x64-NukeX-5.2.0.0.tar.gz" sha1="944f5223afd34851cab445d9a0ebe3898af1e66a" type="module" releaseDate="20261003">
+      <package fileName="20261003-linux-x64-NukeX-5.2.0.0.tar.gz" sha1="944f5223afd34851cab445d9a0ebe3898af1e66a" type="module" releaseDate="20261004">
          <title>NukeX</title>
          <description>
             <p>
@@ -18,7 +18,7 @@
             <p>v5.1.0.1: broadband / clear filter-wheel slot labels (Full, Clear, None, Open, L-Pro, L-QEF, UV/IR-cut) on Bayer frames now route as plain OSC instead of hard-aborting the stack; corrected stale &quot;v4&quot; labels in the UI to v5.</p>
          </description>
       </package>
-      <package fileName="20260928-linux-x64-PICopilot-0.2.1.1.tar.gz" sha1="20412479381912ab42e8e31377cc27deb5210961" type="module" releaseDate="20261003">
+      <package fileName="20260928-linux-x64-PICopilot-0.2.1.1.tar.gz" sha1="20412479381912ab42e8e31377cc27deb5210961" type="module" releaseDate="20261004">
          <title>PI Copilot</title>
          <description>
             <p>
@@ -30,7 +30,7 @@
       </package>
    </platform>
    <platform os="all" arch="noarch" version="1.8.0:2.0.0">
-      <package fileName="EZStretch_v1.0.10.zip" sha1="9bb0e6afcdfd349c3cf29c942c80e25935b57b56" type="script" releaseDate="20261003">
+      <package fileName="EZStretch_v1.0.10.zip" sha1="9bb0e6afcdfd349c3cf29c942c80e25935b57b56" type="script" releaseDate="20261004">
          <title>EZ Stretch</title>
          <description>
             <p>
@@ -39,7 +39,7 @@
             <p>Unified stretch suite combining three algorithms in a single interface.</p>
          </description>
       </package>
-      <package fileName="EZDonutRepair_v1.0.3.zip" sha1="e89349f3cc638a637990818db37b16557354fb36" type="script" releaseDate="20261003">
+      <package fileName="EZDonutRepair_v1.0.3.zip" sha1="e89349f3cc638a637990818db37b16557354fb36" type="script" releaseDate="20261004">
          <title>EZ Donut Repair</title>
          <description>
             <p>
@@ -48,7 +48,7 @@
             <p>Removes donut/dust artifacts from astrophotography frames.</p>
          </description>
       </package>
-      <package fileName="EZHazeKill_v1.0.1.zip" sha1="d1145bb5b3dbb4f847b3985e0d0bc29df7d86b64" type="script" releaseDate="20261003">
+      <package fileName="EZHazeKill_v1.0.1.zip" sha1="d1145bb5b3dbb4f847b3985e0d0bc29df7d86b64" type="script" releaseDate="20261004">
          <title>EZ Haze Kill</title>
          <description>
             <p>
@@ -57,19 +57,7 @@
             <p>Gradient and haze reduction.</p>
          </description>
       </package>
-      <package fileName="rc-astro-cli_v1.1.0.zip" sha1="d3765035bcb502f6329d27bdb01c6d0a2f4c659e" type="script" releaseDate="20261003">
-         <title>RC-Astro CLI Wrappers</title>
-         <description>
-            <p>
-               <b>RC-Astro CLI Wrappers v1.1.0</b>
-            </p>
-            <p>Runs BlurXTerminator, StarXTerminator and NoiseXTerminator through the stand-alone RC-Astro command-line tool instead of the compiled PixInsight plug-ins. Adds Script &gt; RC-Astro &gt; BlurXTerminator / StarXTerminator / NoiseXTerminator (CLI).</p>
-            <p>Why: on Blackwell GPUs (RTX 50-series, compute capability 12.0) the plug-ins&apos; bundled TensorFlow has no sm_120 kernels — it JIT-compiles every kernel from PTX, exhausts system RAM into swap, and aborts. The RC-Astro CLI uses ONNX Runtime instead and runs roughly 2.7 s per 22 MP panel on GPU.</p>
-            <p>BlurX and NoiseX modify the target view in place (undoable). StarX writes &lt;id&gt;_starless, plus &lt;id&gt;_stars when enabled, to new windows and leaves the original untouched; the astrometric solution is carried over. Full dialogs, saveable process icons, and view-target automation for headless pipelines.</p>
-            <p>REQUIRES the separately-purchased RC-Astro CLI (rc-astro) version 2.0 or newer on your PATH (update an older CLI with rc-astro update --install, then run the install.sh it downloads), with BlurXTerminator / StarXTerminator / NoiseXTerminator licensed and their models downloaded. These scripts bundle no RC-Astro code — they shell out to it, and report a clear error if it is not installed. GPU acceleration additionally needs system cuDNN 9.13 or newer; older cuDNN silently falls back to CPU on Blackwell.</p>
-         </description>
-      </package>
-      <package fileName="gaia-depth-grade_v1.0.12.zip" sha1="d4c4c6850290cb86648694ca73be2d637ca9e420" type="script" releaseDate="20261003">
+      <package fileName="gaia-depth-grade_v1.0.12.zip" sha1="d4c4c6850290cb86648694ca73be2d637ca9e420" type="script" releaseDate="20261004">
          <title>Gaia Depth Grade</title>
          <description>
             <p>
@@ -82,4 +70,4 @@
       </package>
    </platform>
 </xri>
-<Signature developerId="scarter4work" timestamp="2026-10-03T18:55:26.582Z" encoding="Base64">7g9VqM3CFeND5R3VifGu6VjO+QGM9koK+7+pPz3hG3cltHCvsVHTkfHnXjmu2o06TCNtJOlHGdta22rP5m4iDA==</Signature>
+<Signature developerId="scarter4work" timestamp="2026-10-04T04:05:12.170Z" encoding="Base64">ONz9JrnSdThUJjd1PjRpLFFRtJ65IWpIiv5nw3g756dI3qd95zbh0gZ5MSyVyCG7KIIaZbLwASzYEQBswlhhAQ==</Signature>
