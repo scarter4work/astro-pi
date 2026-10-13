@@ -44,7 +44,9 @@ constexpr int PICopilotStreamMaxTokens = 16000;
 // Why a request failed; the panel words its note by this (Task 6).
 // Internal: an exception escaped the request machinery itself (a worker
 // thread exception, a failed request construction) -- a defect, not the API.
-enum class RequestErrorKind { None, Build, Cancelled, TimedOut, Stalled, Network, Http, Stream, BadReply, Internal };
+// Consent: the user has not agreed to data being sent to Anthropic
+// (DataConsent.h); the request never touched the network.
+enum class RequestErrorKind { None, Build, Cancelled, TimedOut, Stalled, Network, Http, Stream, BadReply, Internal, Consent };
 
 // How a request is shaped on the wire. The default is the non-streamed
 // increment-4 shape the older self-tests pin; production uses

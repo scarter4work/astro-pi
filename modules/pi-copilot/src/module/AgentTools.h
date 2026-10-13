@@ -26,19 +26,13 @@ constexpr size_type PICopilotToolLogParamChars   = 120;   // parameters shown in
 constexpr size_type PICopilotConfirmChangesChars = 1500;  // parameter text in the Guided dialog
 constexpr size_type PICopilotMaxToolResultChars  = 20000; // one tool_result text block (characters), then a cut note
 
-// Which optional tools a message offers. run_pjsr: the user allowed scripts
-// in ⚙ (never offered in Advisor, whatever this says).
-struct ToolOptions
-{
-   bool runPjsr = false;
-};
-
 // The Anthropic "tools" array for a mode: list_processes, describe_process,
 // get_view_context, and -- except in Advisor -- apply_process and
 // run_global_process, history_step; then the journey tools (JourneyToolDefinitions: four in
-// every mode, start_journey + replay_journey except in Advisor); run_pjsr
-// (last) when options.runPjsr.
-nlohmann::json ToolDefinitions( AgentMode mode, const ToolOptions& options = ToolOptions() );
+// every mode, start_journey + replay_journey except in Advisor), the workspace
+// icon tools, and the script tools (ScriptTools.h: list_scripts and
+// describe_script in every mode, run_script except in Advisor).
+nlohmann::json ToolDefinitions( AgentMode mode );
 
 struct ToolCall
 {
@@ -60,8 +54,9 @@ struct ToolOutcome
 // viewId is EMPTY for a global run (run_global_process).
 using ConfirmApplyFn = std::function<bool( const String& processId, const String& viewId, const String& changes )>;
 
-// run_pjsr: asked for EVERY script, in every mode; true = the user clicked Run script.
-using ConfirmScriptFn = std::function<bool( const String& purpose, const String& code, const IsoString& targetViewId )>;
+// run_script: asked for EVERY run, in every mode; `html` is RunScriptConfirmHtml().
+// true = the user approved (the default answer is No).
+using ConfirmRunScriptFn = std::function<bool( const String& html )>;
 
 // history_step (HistoryStepTool.h): asked in Guided mode before stepping a
 // view's History; `html` is HistoryStepDialogHtml(). true = the user approved.
@@ -88,11 +83,13 @@ struct ToolContext
 
    ConfirmApplyFn confirm;   // required in Guided mode and for safety-policy confirmations
 
-   // The user allowed scripts (⚙ Allow scripts) for this message.
-   bool runPjsr = false;
+   // Required for run_script: nothing runs without a yes.
+   ConfirmRunScriptFn confirmRunScript;
 
-   // Required for run_pjsr: shows the whole script; nothing runs without a yes.
-   ConfirmScriptFn confirmScript;
+   // SELF-TEST ONLY: the script directory run_script/list_scripts use instead
+   // of <PixInsight>/src/scripts (the eligibility proofs need a private tree).
+   // The panel never sets it; no model input can.
+   String scriptsRootOverride;
 
    // Required for history_step in Guided mode.
    ConfirmHistoryFn confirmHistory;
@@ -104,7 +101,7 @@ struct ToolContext
 };
 
 // True when the reply's content blocks hold a tool_use of a tool that can
-// change or create images (apply_process, run_global_process, run_pjsr,
+// change or create images (apply_process, run_global_process, run_script,
 // history_step): the
 // panel runs such a step only while PixInsight is idle (ProcessActivity.h,
 // Task T-hist). Pure; any other shape is false.

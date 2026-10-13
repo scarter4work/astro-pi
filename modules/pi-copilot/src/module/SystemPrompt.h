@@ -18,9 +18,8 @@ extern const char* const kPICopilotToneGuidance;
 // prompt), so the tone rules cannot silently regress.
 extern const char* const kPICopilotToneMarkers[7];
 
-// The full system prompt for one mode (run_pjsr described only when
-// options.runPjsr and the mode is not Advisor).
-String BuildSystemPrompt( AgentMode mode, const ToolOptions& options = ToolOptions() );
+// The full system prompt for one mode (run_script described except in Advisor).
+String BuildSystemPrompt( AgentMode mode );
 
 } // namespace pcl
 

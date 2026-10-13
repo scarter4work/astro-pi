@@ -40,6 +40,32 @@ public:
    EvalDepthGuard& operator =( const EvalDepthGuard& ) = delete;
 };
 
+// run_script (ScriptTools.h): the core is executing an installed script for
+// PI Copilot (Console::ExecuteScriptOn/Global). The script pumps events, so
+// timer-driven readers would otherwise nest an EvaluateScript inside it; like
+// EvaluateScriptDepth(), they defer while this is true. Root thread only.
+inline std::atomic<int>& CoreScriptCounter()
+{
+   static std::atomic<int> depth( 0 );
+   return depth;
+}
+
+inline bool IsCopilotScriptRunning()
+{
+   return CoreScriptCounter().load() > 0;
+}
+
+class CoreScriptGuard
+{
+public:
+
+   CoreScriptGuard()  { ++CoreScriptCounter(); }
+   ~CoreScriptGuard() { --CoreScriptCounter(); }
+
+   CoreScriptGuard( const CoreScriptGuard& ) = delete;
+   CoreScriptGuard& operator =( const CoreScriptGuard& ) = delete;
+};
+
 } // namespace pcl
 
 #endif // PICopilot_EvalGuard_h

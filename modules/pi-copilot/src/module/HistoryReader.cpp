@@ -4,7 +4,7 @@
 #include "HistoryReader.h"
 #include "EvalGuard.h"
 #include "JourneyConstants.h"
-#include "PjsrRunner.h"   // ScriptLiteral
+#include "ModuleScript.h"   // ScriptLiteral, EvaluateAsciiJson
 #include "Utf8.h"
 
 #include <pcl/Exception.h>
@@ -402,7 +402,7 @@ HistorySnapshot ReadViewHistory( const IsoString& viewFullId, int from )
    try
    {
       const std::string js = HistoryReadScript( viewFullId, s.from );
-      // The shared ASCII-safe path (PjsrRunner): the result crosses
+      // The shared ASCII-safe path (ModuleScript): the result crosses
       // EvaluateScript as pcAscii() text, so user data in a step (an
       // expression, a path, a FITS value) is never re-encoded on the way, and
       // it holds the EvalDepthGuard.

@@ -8,11 +8,11 @@
     "PICopilot": "it is PI Copilot itself (running it from the chat would recurse)",
     "Preferences": "it changes PixInsight's application settings, including its script-signature security settings",
     "ProcessContainer": "it runs a list of other processes that PI Copilot cannot check one by one",
-    "Script": "it runs a PJSR script file, which PI Copilot cannot review from here (scripts go through run_pjsr, which shows the whole script first)"
+    "Script": "it runs whatever PJSR script file its path names, which PI Copilot cannot check from here; installed scripts that PixInsight verifies as signed by a certified developer go through run_script instead, which asks you before every run"
   },
   "confirmAlways": {
     "APASS": "it can write catalog search results to files, and its configure commands change the catalog database settings",
-    "BlurXTerminator": "its compiled plug-in can crash PixInsight (SIGABRT) on NVIDIA Blackwell GPUs such as the RTX 50 series, losing unsaved work; Script > RC-Astro runs the same tool through its command-line version instead",
+    "BlurXTerminator": "its compiled plug-in can crash PixInsight (SIGABRT) on NVIDIA Blackwell GPUs such as the RTX 50 series, losing unsaved work",
     "ColorManagementSetup": "it changes PixInsight's global color-management settings",
     "CometAlignment": "it writes comet-aligned copies of the input frames to its output directory and can overwrite existing files",
     "CosmeticCorrection": "it writes corrected copies of the input frames to its output directory",
@@ -26,13 +26,13 @@
     "LocalNormalization": "it writes normalization data files (.xnml) to disk",
     "MARSGen": "it generates MARS gradient-model database files on disk",
     "NSGXnml": "it writes normalization data files (.xnml) to its output directory",
-    "NoiseXTerminator": "its compiled plug-in can crash PixInsight (SIGABRT) on NVIDIA Blackwell GPUs such as the RTX 50 series, losing unsaved work; Script > RC-Astro runs the same tool through its command-line version instead",
+    "NoiseXTerminator": "its compiled plug-in can crash PixInsight (SIGABRT) on NVIDIA Blackwell GPUs such as the RTX 50 series, losing unsaved work",
     "NukeX": "it writes cache files to its cache directory while stacking",
     "RGBWorkingSpace": "in the global context it changes PixInsight's default RGB working space for every image; on a view it assigns a new working space to that image",
     "ReadoutOptions": "it changes PixInsight's global pixel readout options (what the cursor readouts show and how they are computed)",
     "SplitCFA": "in the global context it writes split CFA frames to its output directory",
     "StarAlignment": "in the global context it writes registered copies of the input frames to its output directory",
-    "StarXTerminator": "its compiled plug-in can crash PixInsight (SIGABRT) on NVIDIA Blackwell GPUs such as the RTX 50 series, losing unsaved work; Script > RC-Astro runs the same tool through its command-line version instead",
+    "StarXTerminator": "its compiled plug-in can crash PixInsight (SIGABRT) on NVIDIA Blackwell GPUs such as the RTX 50 series, losing unsaved work",
     "SubframeSelector": "it can copy or move approved and rejected frames to output directories",
     "SubframeStudio": "it writes measurement CSV files and a metrics cache to disk"
   },

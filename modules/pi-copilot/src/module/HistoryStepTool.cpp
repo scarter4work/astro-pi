@@ -6,7 +6,7 @@
 #include "EvalGuard.h"
 #include "HistoryReader.h"
 #include "JourneyTools.h"     // ModelTextWithoutDirectories
-#include "PjsrRunner.h"
+#include "ModuleScript.h"
 #include "ToolHelpers.h"       // Fail, IsBusy, StringField, TextBlock
 #include "Utf8.h"
 #include "ViewContext.h"
@@ -265,7 +265,7 @@ ToolOutcome ExecuteHistoryStepTool( const nlohmann::json& in, const ToolContext&
       if ( IsBusy( v ) )
          return "view " + String( targetId ) + " is busy (locked, or a process is running on it); nothing was changed. "
                 "Try again once PixInsight is idle";
-      if ( IsPjsrScriptRunning() || EvaluateScriptDepth() > 0 )
+      if ( IsCopilotScriptRunning() || EvaluateScriptDepth() > 0 )
          return "another script is running in PixInsight; nothing was changed. Try again once it has finished";
       return String();
    };

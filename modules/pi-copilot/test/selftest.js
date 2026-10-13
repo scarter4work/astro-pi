@@ -744,11 +744,6 @@ try
       j6( "joinFault" );                                                      // review I5
       j6( "startJourney" );                                                   // review I6
 
-      j6( "pjsrOpen", { path: fpath } );                                      // re-review R5 (b)
-      var abortAfterPjsr = console.abortEnabled;
-      j6( "abortSeen", { where: "topLevelAfterRunPjsrPhase", js: abortAfterPjsr } );
-      if ( console.abortEnabled ) { console.abortEnabled = false; j6( "abortReset", { where: "topLevelAfterRunPjsrPhase" } ); }
-      j6( "pjsrOpenNext" );
       j6( "retentionOpen" );                                                  // re-review R1
       j6( "rowGoneSetup" );                                                   // re-review R2
       pm( "pcTrkG3", "$T*1.0" ); pm( "pcTrkRenamed", "$T*1.0" );

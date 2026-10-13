@@ -23,7 +23,7 @@
 #include "PICopilotUndoSelfTest.h"
 #include "PICopilotModule.h"
 #include "PICopilotProcess.h"
-#include "PjsrRunner.h"
+#include "ModuleScript.h"
 #include "ProcessActivity.h"
 #include "ProcessApply.h"
 #include "ProcessSafety.h"
@@ -1001,7 +1001,7 @@ const char* const kJ6Checks[] = { "settings", "master", "manual", "undo", "copil
                                   "startJourney", "perImagePause", "gapResolved", "retentionOnce", "resumeTouch",
                                   "transaction", "mutatorsLoud", "retentionOpen", "rowGone", "offThenOn", "gateStallLock",
                                   "gateStallWaiting", "gateStallGap", "txDefer", "noopNoLock", "owner", "gapKinds",
-                                  "pjsrAbortRestored", "gapRowGone", "linkRowGone", "ignoredThenMaster", "chaos",
+                                  "gapRowGone", "linkRowGone", "ignoredThenMaster", "chaos",
                                   "recentRowGone", "ownerPrune", "writeCap", "deathOverflow", "deathWhileOff",
                                   "createdAfterDeath", "startAfterDeath", "renameWhileOff", "renameUnnotified",
                                   "realNotify" };
@@ -1583,26 +1583,6 @@ void J6Step( J6State& st, const std::string& step, const nlohmann::json& payload
    else if ( step == "abortReset" )
    {
       st.d["abortMeasured"][payload.at( "where" ).get<std::string>()]["fixtureReset"] = true;
-   }
-   else if ( step == "pjsrOpen" )
-   {
-      // R5 (b): Copilot's own run_pjsr path (RunPjsr) running a script that opens a file.
-      const bool before = Console().AbortEnabled();
-      const std::string path = payload.at( "path" ).get<std::string>();
-      const PjsrRun r = RunPjsr( String( "var ws = ImageWindow.open( " ) + String( ScriptLiteral( FromU8( path ) ).c_str() )
-                                 + " ); ws[0].mainView.id = \"pcTrkPjsrOpen\"; return console.abortEnabled;", IsoString() );
-      const bool after = Console().AbortEnabled();
-      st.made.push_back( "pcTrkPjsrOpen" );
-      st.d["abortMeasured"]["runPjsrOpen"] = { { "before", before }, { "insideScriptAfterOpen", U8( r.value ) },
-                                               { "cppAfterRunPjsrReturned", after }, { "ok", r.ok }, { "error", U8( r.error ) } };
-      // The fix: RunPjsr restores the abort state the script found (it was left enabled, measured).
-      st.ok["pjsrAbortRestored"] = r.ok && !before && !after;
-   }
-   else if ( step == "pjsrOpenNext" )
-   {
-      st.d["abortMeasured"]["runPjsrOpen"]["cppAtNextPhaseStart"] = Console().AbortEnabled();
-      J6Close( st, "pcTrkPjsrOpen" );   // made in-process (run_pjsr): no JS wrapper holds it
-      JTick( trk );
    }
    else if ( step == "retentionOpen" )
    {
@@ -3852,7 +3832,7 @@ bool RunJourneySelfTest( nlohmann::json& out )
             const nlohmann::json text = { { "type", "text" }, { "text", "apply_process" } };
             classifierOk = ResponseCallsImageChangingTool( nlohmann::json::array( { text, tu( "apply_process" ) } ) )
                         && ResponseCallsImageChangingTool( nlohmann::json::array( { tu( "run_global_process" ) } ) )
-                        && ResponseCallsImageChangingTool( nlohmann::json::array( { tu( "describe_process" ), tu( "run_pjsr" ) } ) )
+                        && ResponseCallsImageChangingTool( nlohmann::json::array( { tu( "describe_process" ), tu( "run_script" ) } ) )
                         && !ResponseCallsImageChangingTool( nlohmann::json::array( { tu( "get_view_context" ), tu( "list_processes" ),
                                                                                      tu( "describe_process" ), text } ) )
                         && !ResponseCallsImageChangingTool( nlohmann::json::array() )
@@ -6554,14 +6534,12 @@ r1.ok && r1.inferred.size() == 1 && r1.inferred[0].first == 7 && r1.inferred[0].
 
          // (a) Schemas and mode gating (Ruling 14).
          {
-            ToolOptions scripts;
-            scripts.runPjsr = true;
             const std::vector<std::string> adv = names( ToolDefinitions( AgentMode::Advisor ) );
-            const std::vector<std::string> cop = names( ToolDefinitions( AgentMode::Copilot, scripts ) );
+            const std::vector<std::string> cop = names( ToolDefinitions( AgentMode::Copilot ) );
             bool shapes = true;
             for ( const nlohmann::json& t : JourneyToolDefinitions( AgentMode::Copilot ) )
                shapes = shapes && t.at( "input_schema" ).at( "type" ) == "object" && !t.at( "description" ).get<std::string>().empty();
-            schemaOk = shapes && cop.back() == "run_pjsr"
+            schemaOk = shapes && cop.back() == "run_script"
                     && std::find( adv.begin(), adv.end(), "mark_journey_best" ) != adv.end()
                     && std::find( adv.begin(), adv.end(), "replay_journey" ) == adv.end()
                     && std::find( adv.begin(), adv.end(), "start_journey" ) == adv.end()

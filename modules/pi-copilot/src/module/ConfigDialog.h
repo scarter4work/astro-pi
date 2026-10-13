@@ -30,19 +30,19 @@ struct ConfigOutcome
 // acceptable, else the message shown to the user.
 String ValidateExportFolderSetting( const String& dir );
 
-// PI Copilot settings: API key (masked; its storage shown), model, Allow
-// scripts (run_pjsr; off by default), default panel side, and the image
-// journey fields (Record journeys, Export folder for keepers, Keep unsaved
-// journeys N days). On OK:
+// PI Copilot settings: API key (masked; its storage shown), model, the
+// agreement to send data to Anthropic (DataConsent.h; checking it shows the
+// full list of what is sent and asks, default No; unchecking withdraws it on
+// OK), default panel side, and the image journey fields (Record journeys,
+// Export folder for keepers, Keep unsaved journeys N days). On OK:
 //  - an export folder ValidateExportFolderSetting() refuses -> error box, the
 //    dialog stays open, nothing is saved;
 //  - the key is saved only if changed: emptied -> KeyStore::Clear(); any
 //    character outside printable ASCII (0x21-0x7E; CR/LF would inject HTTP
 //    header lines) -> error box, the dialog stays open, nothing is saved;
 //    otherwise KeyStore::Save() (keyring, or Settings with a warning box);
-//  - model, scripts, side and the journey fields are persisted
-//    (CopilotSettings) and applied to the running JourneyService.
-// Checking Allow scripts asks first (default: No) and explains what it allows.
+//  - model, consent, side and the journey fields are persisted
+//    (CopilotSettings, DataConsent) and applied to the running JourneyService.
 // Cancel saves nothing. Every text shown in a MessageBox is HTML-escaped.
 class ConfigDialog : public Dialog
 {
@@ -61,8 +61,10 @@ private:
    HorizontalSizer Model_Sizer;
    Label           Model_Label;
    ComboBox        Model_ComboBox;
-   CheckBox        RunPjsr_CheckBox;
-   Label           RunPjsrInfo_Label;
+   CheckBox        Consent_CheckBox;
+   PushButton      ConsentWhat_PushButton;
+   HorizontalSizer Consent_Sizer;
+   Label           ConsentInfo_Label;
    HorizontalSizer Side_Sizer;
    Label           Side_Label;
    ComboBox        Side_ComboBox;
@@ -79,13 +81,15 @@ private:
    PushButton      Cancel_PushButton;
 
    String        m_initialKey;
+   bool          m_agreedInDialog = false;   // the user said Yes to the consent text in this dialog
    PanelSide     m_initialSide = PanelSide::Right;
    int           m_initialModel = 0;   // combo index shown when the dialog opened
    ConfigOutcome m_outcome;
 
    void OK_Button_Click( Button& sender, bool checked );
    void Cancel_Button_Click( Button& sender, bool checked );
-   void RunPjsr_Click( Button& sender, bool checked );
+   void Consent_Click( Button& sender, bool checked );
+   void ConsentWhat_Click( Button& sender, bool checked );
    void Export_Browse_Click( Button& sender, bool checked );
 };
 

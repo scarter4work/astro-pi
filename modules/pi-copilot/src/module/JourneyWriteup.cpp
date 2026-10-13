@@ -2,6 +2,7 @@
 // Copyright (c) 2026 Scott Carter. MIT License.
 
 #include "JourneyWriteup.h"
+#include "DataConsent.h"
 #include "SafeFileWrite.h"
 #include "Utf8.h"
 
@@ -376,6 +377,13 @@ bool KeeperExporter::StartWriteup( int64 journeyId, const String& apiKey, const 
    {
       o.writeupError = "journey.md was not written: no Anthropic API key is set (PI Copilot settings); mark the journey "
                        "best again once it is, to write it";
+      return false;
+   }
+   if ( !DataConsent::Granted() )   // CPD rule 6.2: the request would be refused anyway (AnthropicRequest)
+   {
+      o.writeupError = "journey.md was not written: you have not agreed to PI Copilot sending data to Anthropic (the "
+                       "write-up is made by Claude Haiku from the recorded steps). Agree in PI Copilot's settings, then "
+                       "mark the journey best again to write it";
       return false;
    }
    try

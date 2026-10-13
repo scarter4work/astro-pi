@@ -7,6 +7,7 @@
 #include "PanelPlacement.h"
 
 #include <pcl/String.h>
+#include <pcl/StringList.h>
 
 namespace pcl { namespace CopilotSettings {
 
@@ -19,8 +20,6 @@ namespace pcl { namespace CopilotSettings {
 // the next caller that shows it). Otherwise note is cleared.
 IsoString LoadModel( String* note = nullptr );
 void      SaveModel( const IsoString& id );
-bool      LoadRunPjsrEnabled();        // default false: run_pjsr is off until the user allows scripts
-void      SaveRunPjsrEnabled( bool enabled );
 PanelSide LoadPanelSide();             // default Right
 void      SavePanelSide( PanelSide side );
 
@@ -33,6 +32,12 @@ String LoadJourneyExportFolder();
 void   SaveJourneyExportFolder( const String& dir );
 int    LoadJourneyRetentionDays();
 void   SaveJourneyRetentionDays( int days );
+
+// Settings earlier versions stored that this version no longer has (0.2.2.0:
+// PICopilot/RunPjsrEnabled, the "Allow scripts" switch of the removed
+// run_pjsr tool). Removed through the PCL Settings API so a stale value never
+// lingers; called once at module load. Returns the keys it removed.
+StringList RemoveRetiredSettings();
 
 } } // namespace pcl::CopilotSettings
 

@@ -15,7 +15,6 @@ namespace pcl { namespace CopilotSettings {
 namespace
 {
 const char* const kModelKey   = "PICopilot/Model";
-const char* const kRunPjsrKey = "PICopilot/RunPjsrEnabled";
 const char* const kSideKey    = "PICopilot/PanelSide";
 const char* const kRecordJourneysKey = "PICopilot/RecordJourneys";
 const char* const kJourneyExportKey  = "PICopilot/JourneyExportFolder";
@@ -60,18 +59,6 @@ IsoString LoadModel( String* note )
 void SaveModel( const IsoString& id )
 {
    Settings::Write( kModelKey, String( id ) );
-}
-
-bool LoadRunPjsrEnabled()
-{
-   bool enabled = false;
-   Settings::Read( kRunPjsrKey, enabled );
-   return enabled;
-}
-
-void SaveRunPjsrEnabled( bool enabled )
-{
-   Settings::Write( kRunPjsrKey, enabled );
 }
 
 PanelSide LoadPanelSide()
@@ -120,6 +107,25 @@ int LoadJourneyRetentionDays()
 void SaveJourneyRetentionDays( int days )
 {
    Settings::Write( kJourneyDaysKey, std::min( 3650, std::max( 1, days ) ) );
+}
+
+StringList RemoveRetiredSettings()
+{
+   // Retired keys: read as a String (any stored type converts or fails; either
+   // way Read() reports whether the key exists), then removed.
+   static const char* const kRetired[] = { "PICopilot/RunPjsrEnabled" };
+   StringList removed;
+   for ( const char* k : kRetired )
+   {
+      bool b = false;
+      String s;
+      if ( Settings::Read( k, b ) || Settings::Read( k, s ) )
+      {
+         Settings::Remove( k );
+         removed << String( k );
+      }
+   }
+   return removed;
 }
 
 } } // namespace pcl::CopilotSettings

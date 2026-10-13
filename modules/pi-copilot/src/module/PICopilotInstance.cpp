@@ -2,6 +2,7 @@
 // Copyright (c) 2026 Scott Carter. MIT License.
 
 #include "PICopilotInstance.h"
+#include "DataConsent.h"
 #include "PICopilotJourneySelfTest.h"
 #include "PICopilotSelfTest.h"
 #include "ProcessActivity.h"
@@ -76,6 +77,12 @@ bool PICopilotInstance::ExecuteGlobal()
       Console().WriteLn( "PI Copilot: open the chat panel via Process > &lt;Etc&gt; > PICopilot" );
       return true;
    }
+
+   // CPD rule 6.2 (DataConsent.h): requests are refused until the user agreed.
+   // The harness runs in an isolated, wiped settings slot and agrees there, so
+   // its loopback and gated live requests can run; section S7 revokes it to
+   // prove the refusal, then agrees again.
+   DataConsent::Grant();
 
    // Multi-phase harness: a top-level check phase, not the final run.
    if ( RunPendingSelfTestPhase() )

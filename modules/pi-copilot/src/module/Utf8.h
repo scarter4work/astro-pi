@@ -62,8 +62,8 @@ inline std::string U8( const String& s )
 
 // UTF-8 std::string -> UTF-16 pcl::String, the inverse of U8(), LENGTH-aware:
 // an embedded NUL (legal in JSON text) is kept. PCL's String::UTF8ToUTF16()
-// stops at the first NUL even when given an explicit length (measured: a
-// run_pjsr script "…\0…" reached the approval dialog cut at the NUL). An
+// stops at the first NUL even when given an explicit length (measured in 0.1.x:
+// a text "…\0…" reached a dialog cut at the NUL). An
 // invalid, overlong or surrogate-encoding sequence becomes U+FFFD.
 inline String FromU8( const std::string& s )
 {

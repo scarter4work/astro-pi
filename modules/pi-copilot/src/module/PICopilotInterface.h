@@ -110,10 +110,6 @@ private:
    String    m_apiKey;
    AgentMode m_turnMode = AgentMode::Copilot;
 
-   // Per user message: the optional tools offered (run_pjsr = ⚙ Allow
-   // scripts, read at Send like the model).
-   ToolOptions m_turnTools;
-
    // The model this user message runs on (read from the ⚙ settings at Send)
    // and the one last named in the log (named again when it changes).
    IsoString m_turnModel;
@@ -178,6 +174,8 @@ private:
    static bool ConfirmApply( const String& processId, const String& viewId, const String& changes );
    // history_step in Guided mode: html is HistoryStepDialogHtml().
    static bool ConfirmHistoryStep( const String& html );
+   // run_script, every mode: html is RunScriptConfirmHtml().
+   static bool ConfirmRunScript( const String& html );
 
    // ── Image journey (0.2.0.0) ───────────────────────────────────
    // What the journey tools and ★ use, rebuilt from JourneyService per turn /

@@ -4,7 +4,7 @@
 #include "WorkspaceIcons.h"
 #include "EvalGuard.h"       // EvaluateScriptDepth
 #include "HistoryReader.h"   // ParseXpsmElement
-#include "PjsrRunner.h"      // EvaluateAsciiJson, ScriptLiteral
+#include "ModuleScript.h"    // EvaluateAsciiJson, ScriptLiteral
 #include "ProcessApply.h"     // NoteProcessInstanceBuild
 #include "ProcessSafety.h"    // CompiledProcessSafety, NoInstanceBeforeApproval
 #include "JourneyExport.h"   // FileParameterValues, PrivacyStripStepParameters

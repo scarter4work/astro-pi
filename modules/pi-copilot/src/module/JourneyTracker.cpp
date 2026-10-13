@@ -7,7 +7,7 @@
 #include "EvalGuard.h"
 #include "JourneyConstants.h"
 #include "MasterFacts.h"
-#include "PjsrRunner.h"   // IsPjsrScriptRunning, ScriptLiteral
+#include "ModuleScript.h"   // ScriptLiteral
 #include "PICopilotModule.h"
 #include "ProcessActivity.h"   // CurrentProcessActivity (the busy gate)
 #include "StepStats.h"
@@ -511,14 +511,15 @@ void JourneyTracker::NoteActive( const std::string& id, double now )
 }
 
 uint64 JourneyTracker::NoteCopilotStep( const IsoString& viewFullId, const std::string& processId, const std::string& reason,
-                                        const std::vector<std::string>& createdWindowIds, bool integration, double now )
+                                        const std::vector<std::string>& createdWindowIds, bool integration, double now,
+                                        const std::string& notReplayable )
 {
    const std::string vid( viewFullId.c_str() );
    uint64 token = 0;
    if ( !vid.empty() && !processId.empty() )
    {
       token = ++m_noteToken;
-      m_copilot.push_back( { vid, processId, reason, now, token, false } );
+      m_copilot.push_back( { vid, processId, reason, now, token, false, notReplayable } );
    }
    NoteCopilotCreated( viewFullId, createdWindowIds, integration, now );
    for ( const std::unique_ptr<Tracked>& t : m_tracked )
@@ -569,9 +570,9 @@ void JourneyTracker::Tick( double now, bool forceScan )
    if ( !m_enabled || m_inTick )
       return;
    // Never nests an EvaluateScript (history reads, the batch scan) inside a
-   // model-written run_pjsr script or another module EvaluateScript
+   // script PI Copilot runs (run_script) or another module EvaluateScript
    // (controller ruling after Task 1; EvalGuard.h).
-   if ( IsPjsrScriptRunning() || EvaluateScriptDepth() > 0 || (m_store != nullptr && m_store->InTransaction()) )
+   if ( IsCopilotScriptRunning() || EvaluateScriptDepth() > 0 || (m_store != nullptr && m_store->InTransaction()) )
    {
       ++m_deferrals;
       return;
@@ -995,6 +996,11 @@ void JourneyTracker::ProcessOne( Tracked& t, double now )
                                     n >= 0 ? m_copilot[n].reason : std::string(), snap.ActiveCount() );
          if ( n >= 0 && m_copilot[n].noEffect )
             row.params["noEffect"] = true;   // T-graxpert: success reported, nothing changed; skipped like a base step
+         if ( n >= 0 && !m_copilot[n].notReplayable.empty() && row.params.value( "replayable", true ) )
+         {
+            row.params["replayable"] = false;   // run_script: a replay never re-runs what a script did
+            row.params["parseNote"] = m_copilot[n].notReplayable;
+         }
          const int64 sid = m_store->AddStep( row );
          appendedIds.push_back( sid );
          maxSeq = std::max( maxSeq, h.combinedIndex + 1 );

@@ -17,8 +17,7 @@ bool IsFormatChar( uint32 c );
 // bidirectional text control, an unpaired surrogate, an invisible format
 // character, a line/paragraph separator, a non-ASCII space, or an invisible
 // filler / variation selector / combining character. nullptr when it is an
-// ordinary visible character. The same classes PjsrRunner refuses in script
-// text (RefusedKind), for text that is only DISPLAYED.
+// ordinary visible character.
 const char* UnsafeDisplayKind( uint32 c );
 
 // The Unicode name of a few common unsafe characters ("RIGHT-TO-LEFT

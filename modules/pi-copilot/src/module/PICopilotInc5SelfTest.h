@@ -10,7 +10,7 @@ namespace pcl
 {
 
 // Increment-5 headless self-test sections (platform smoke, SSE, streaming,
-// conversation, keyring, config, safety policy, global processes, run_pjsr,
+// conversation, keyring, config, safety policy, global processes,
 // gated live checks). Root thread only. Adds its keys to `out`; returns true
 // iff every section passed.
 bool RunInc5SelfTest( nlohmann::json& out );
