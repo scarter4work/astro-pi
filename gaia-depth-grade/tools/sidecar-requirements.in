@@ -1,0 +1,18 @@
+# Inputs of the frozen sidecar build (tools/build-sidecar.sh). Pinned to the
+# versions sidecar 1.0.7 was built from; tools/sidecar-requirements.txt is the
+# hash-locked resolution of this file:
+#   uv pip compile tools/sidecar-requirements.in --generate-hashes \
+#      --python-version 3.14 --python-platform x86_64-manylinux_2_28 \
+#      -o tools/sidecar-requirements.txt
+# The bytes of every package below end up inside a signed update package.
+numpy==2.5.0
+scipy==1.18.0
+astropy==8.0.0
+astropy-iers-data==0.2026.6.22.1.23.34
+pyerfa==2.0.1.5
+photutils==3.0.0
+astroquery==0.4.11
+pyvo==1.9.1
+pillow==12.2.0
+pyinstaller==6.21.0
+pyinstaller-hooks-contrib==2026.6

@@ -131,3 +131,38 @@ def test_tap_failure_raises_runtimeerror(tmp_path, monkeypatch):
 
 def test_is_distance_source():
     assert issubclass(GaiaStarSource, DistanceSource)
+
+
+def test_fetch_uses_pinned_https_archive(tmp_path, monkeypatch):
+    # CPD rule 6.3: the online query must use a secure protocol. _fetch builds
+    # its own client on the pinned HTTPS archive URL (not astroquery's default
+    # instance) and does not re-fetch the archive's status notices.
+    import sys
+    import types
+
+    from gaia_depth_grade import distances
+
+    assert distances.GAIA_ARCHIVE_URL.startswith("https://")
+    seen = {}
+
+    class FakeJob:
+        def get_results(self):
+            return _fake_catalog()
+
+    class FakeGaiaClass:
+        def __init__(self, **kw):
+            seen.update(kw)
+
+        def launch_job_async(self, adql):
+            seen["adql"] = adql
+            return FakeJob()
+
+    fake = types.ModuleType("astroquery.gaia")
+    fake.GaiaClass = FakeGaiaClass
+    monkeypatch.setitem(sys.modules, "astroquery.gaia", fake)  # no real client, no network
+    tbl = GaiaStarSource(cache_dir=str(tmp_path))._fetch("SELECT 1")
+    assert len(tbl) == 2
+    assert seen["gaia_tap_server"] == distances.GAIA_ARCHIVE_URL
+    assert seen["gaia_data_server"] == distances.GAIA_ARCHIVE_URL
+    assert seen["show_server_messages"] is False
+    assert seen["adql"] == "SELECT 1"

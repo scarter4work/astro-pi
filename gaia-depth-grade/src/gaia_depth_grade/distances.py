@@ -13,6 +13,12 @@ log = logging.getLogger(__name__)
 
 _REQUIRED = ("ra", "dec", "r_med_geo", "r_lo_geo", "r_hi_geo", "source_id")
 
+# The ESA Gaia archive (TAP queries and result downloads). Pinned here, HTTPS
+# only, rather than inherited from astroquery's defaults: the only network
+# connection the sidecar makes must use a secure protocol (and is documented in
+# doc/scripts/GaiaDepthGrade/GaiaDepthGrade.html).
+GAIA_ARCHIVE_URL = "https://gea.esac.esa.int/"
+
 
 class DistanceSource(abc.ABC):
     @abc.abstractmethod
@@ -66,7 +72,12 @@ class GaiaStarSource(DistanceSource):
     _RETRIES = 3
 
     def _fetch(self, adql: str) -> Table:
-        from astroquery.gaia import Gaia
+        # Importing astroquery.gaia builds its default client, which fetches the
+        # archive's status notices (HTTPS, same host). Our own client is pinned
+        # to GAIA_ARCHIVE_URL and does not fetch them again.
+        from astroquery.gaia import GaiaClass
+        gaia = GaiaClass(gaia_tap_server=GAIA_ARCHIVE_URL, gaia_data_server=GAIA_ARCHIVE_URL,
+                         show_server_messages=False)
 
         # ASYNCHRONOUS endpoint: a dense field needs the full mag-cut catalogue
         # (tens of thousands of sources, each joined to external.gaiaedr3_distance).
@@ -75,7 +86,7 @@ class GaiaStarSource(DistanceSource):
         # caps ~2000 rows anyway. The async TAP service is built for heavy
         # queries; the caller retries it to ride out the archive's intermittent
         # HTTP 500 "lost result" / 408 under load.
-        return Gaia.launch_job_async(adql).get_results()
+        return gaia.launch_job_async(adql).get_results()
 
     def _run_query(self, footprint: FieldFootprint) -> Table:
         # LOUD about the cut (no silent cap): announce the policy up front. We

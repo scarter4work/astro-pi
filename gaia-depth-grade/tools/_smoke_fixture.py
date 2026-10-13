@@ -1,14 +1,18 @@
-"""Build a hermetic (no-network) render fixture for the frozen-sidecar smoke test.
+"""Build a hermetic (no-network) fixture for the frozen-sidecar smoke test.
 
-`grade`/`prepare` query Gaia over the network, which a build smoke test must not
-depend on. `render` does not — it replays a saved prep cache through the image
-pipeline. So we synthesize a two-star scene here (mirroring tests/conftest.py),
-run the real prepare stage against an in-process fake catalog, and persist the
-prep cache + stars FITS. The frozen binary's `render` then exercises the actual
-image-read / render_from_prep / write_fits path with zero network.
+`grade` and online `prepare` query Gaia over the network, which a build smoke
+test must not depend on. Everything the PJSR dialog runs in its default offline
+mode does not: `footprint`, `prepare --gaia-tsv` (a local-DR3 export), `preview`,
+`render` and `nebula`. So we synthesize a two-star scene (mirroring
+tests/conftest.py) with a WCS, the matching local-DR3 TSV, a starless layer, and
+-- for a render that does not depend on the frozen prepare -- a prep cache made
+by the real prepare stage against an in-process fake catalog.
+tools/sidecar-smoke.sh then drives every one of those subcommands through the
+frozen binary, so a module the slimmed bundle lacks fails the build.
 
 Usage: python _smoke_fixture.py <out_dir>
-  writes <out_dir>/stars.fits and <out_dir>/cache/{prep.npz,qa.json}
+  writes <out_dir>/{stars.fits,starless.fits,gaia_local.tsv} and
+  <out_dir>/cache/{prep.npz,qa.json}
 """
 import sys
 
@@ -67,6 +71,20 @@ def main(out_dir):
     save_prep(f"{out_dir}/cache", table, qa)
     fits.PrimaryHDU(data=img.astype("float32"), header=hdr).writeto(
         f"{out_dir}/stars.fits", overwrite=True)
+
+    # Starless layer: a smooth glow with a darker lane, so `nebula` has structure.
+    neb = 0.15 + 0.10 * np.exp(-((xx - 150) ** 2 + (yy - 100) ** 2) / (2 * 60.0 ** 2))
+    neb -= 0.05 * np.exp(-((xx - 150) ** 2) / (2 * 8.0 ** 2))
+    fits.PrimaryHDU(data=neb.astype("float32"), header=hdr).writeto(
+        f"{out_dir}/starless.fits", overwrite=True)
+
+    # The offline catalogue the dialog exports from PI's local Gaia DR3 database:
+    # the same two stars, near (10 mas = 100 pc) and far (0.5 mas = 2000 pc).
+    sky = load_wcs(hdr).pixel_to_world([near[0], far[0]], [near[1], far[1]])
+    with open(f"{out_dir}/gaia_local.tsv", "w") as fh:
+        fh.write("ra\tdec\tparallax\tphot_g_mean_mag\n")
+        for ra, dec, plx, g in zip(sky.ra.deg, sky.dec.deg, (10.0, 0.5), (9.0, 10.0)):
+            fh.write(f"{float(ra):.10f}\t{float(dec):.10f}\t{plx}\t{g}\n")
     print(f"smoke fixture written to {out_dir}")
 
 
