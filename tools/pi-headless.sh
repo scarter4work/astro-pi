@@ -16,7 +16,9 @@
 #       xvfb-run starts and tears down, with WAYLAND_DISPLAY removed and
 #       QT_QPA_PLATFORM=xcb. pi_require_private_display runs INSIDE the launch,
 #       on the environment PixInsight will inherit, and refuses to exec if it
-#       could reach the desktop. Screen size: PI_HEADLESS_SCREEN.
+#       could reach the desktop. Screen size: PI_HEADLESS_SCREEN. The run also
+#       gets a throwaway XDG_DATA_HOME unless the caller exported a private one,
+#       so nothing it records lands in the user's ~/.local/share.
 #
 #   pi_headless_env
 #       For harnesses that start their own Xvfb: strip WAYLAND_DISPLAY and
@@ -84,8 +86,23 @@ pi_headless()
       echo "FAIL: xvfb-run not found; refusing to launch PixInsight on the real display" >&2
       return 127
    }
-   env -u WAYLAND_DISPLAY QT_QPA_PLATFORM=xcb PI_HEADLESS_LIB="$PI_HEADLESS_LIB" \
+   # Private XDG_DATA_HOME unless the caller already isolated one: an installed
+   # PI Copilot records journeys under $XDG_DATA_HOME/PICopilot/journeys, so a
+   # headless run inheriting the real ~/.local/share writes test journeys into
+   # the user's library (2026-10-13: a gaia-depth-grade e2e run leaked 22).
+   local real_data="${HOME}/.local/share" data_home="${XDG_DATA_HOME:-}" own_data="" rc
+   if [ -z "$data_home" ] || [ "$(realpath -m "$data_home")" = "$(realpath -m "$real_data")" ]; then
+      own_data="$(mktemp -d "${TMPDIR:-/tmp}/pi-headless-xdg.XXXXXX")" || {
+         echo "FAIL: cannot create a private XDG_DATA_HOME; refusing to launch PixInsight" >&2
+         return 1
+      }
+      data_home="$own_data"
+   fi
+   env -u WAYLAND_DISPLAY QT_QPA_PLATFORM=xcb XDG_DATA_HOME="$data_home" PI_HEADLESS_LIB="$PI_HEADLESS_LIB" \
       xvfb-run -a -s "-screen 0 $PI_HEADLESS_SCREEN -nolisten tcp" \
       bash -c '. "$PI_HEADLESS_LIB" && pi_require_private_display || exit 97
                exec "$@"' pi_headless "$@"
+   rc=$?
+   [ -n "$own_data" ] && rm -rf -- "$own_data"
+   return $rc
 }
