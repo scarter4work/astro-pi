@@ -50,9 +50,12 @@ is built, so neither chat messages nor journey write-ups can be sent without it.
 <li>The text you type and the conversation so far.</li>
 <li>With <i>Include view</i> on: an auto-stretched JPEG preview of the active image (at most 1024 pixels on its long
 side), its size, view id, per-channel statistics (median, deviation, mean, minimum, maximum), its <b>file name</b>
-(never the folder), and up to 60 of its FITS keywords. Location and observer keywords (SITELAT, SITELONG, SITEELEV,
-OBSGEO-B, OBSGEO-L, OBSGEO-H, LAT-OBS, LONG-OBS, ALT-OBS, OBSERVER) are never sent, and any folder path inside a keyword
-value is reduced to its file name.</li>
+(never the folder), and up to 60 of its FITS keywords. Keywords that name a place or a person are never sent: SITELAT,
+SITELONG, SITEELEV, OBSGEO-B, OBSGEO-L, OBSGEO-H, LAT-OBS, LONG-OBS, ALT-OBS, OBSERVER, and in any spelling (also
+HIERARCH and long names) every keyword whose name contains SITE, OBSGEO, GEOLAT/GEOLON/GEOELEV, LATITUD, LONGITUD, GPS,
+OBSERVER, OBSERVAT, LOCATION, AUTHOR or a LAT/LON/ELEV/ALT part. COMMENT and HISTORY keywords are never sent. Every
+folder path inside a keyword value (also Windows, network-share, <code>~/</code> and <code>file://</code> paths, and
+relative paths) is reduced to its file name; a folder name, or a path cut short, becomes <code>[path]</code>.</li>
 <li>Results of what PI Copilot looks up or does for you: other images' previews and statistics, process
 descriptions and parameters, an image's processing history, your workspace process icons, the list of installed
 scripts, and the console output of a script you let it run. File names only, never folders.</li>
@@ -149,7 +152,11 @@ whether it opens a dialog. This is read from the script's source text; nothing i
 <p><b>Every run asks you first</b>, in Copilot and Guided mode alike (never available in Advisor). The dialog shows the
 script's menu entry, file, signing developer, the image it runs on (or "globally") and the arguments; the default
 answer is No. PixInsight then loads, checks and runs the file itself, exactly as from a process icon. Arguments must
-be parameters the script reads, with the right types. A script runs with full access to PixInsight and your files,
+be parameters the script reads, with the right types, and may contain only letters, digits, spaces and
+<code>. _ - + : / , = @ # ( ) [ ] { } ! ~ ^ &apos; &amp; % ;</code> (PixInsight passes them on a command line; each of these is tested to
+arrive unchanged, so file paths with spaces work). What the script tools tell the model never contains a folder: script
+files are named relative to the script directory, and a script's console output has its paths reduced to file
+names. A script runs with full access to PixInsight and your files,
 may open its own dialogs, and cannot be stopped by PI Copilot once it starts. In an image journey, the steps a script
 makes are recorded as PI Copilot's and are never re-run by a replay.</p>
 

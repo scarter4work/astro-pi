@@ -1297,6 +1297,26 @@ nlohmann::json ScriptDescriptionJson( const ScriptDescription& d )
    return j;
 }
 
+// Measured (self-test S5b, PixInsight 1.9.5 build 1706): every printable
+// ASCII character arrives intact EXCEPT the double quote (it ends the value:
+// x" -p="inj,1 adds a parameter "inj"; an odd count leaves the core's console
+// in an unterminated string, and the instance then hangs) and the backslash
+// (a trailing one escapes the closing quote: "Unterminated string literal").
+// $ is escaped by the core itself; ; | ` ' & % are literal. The allowlist keeps
+// what file names and text need, each character proven in S5b on every run.
+const char* const kSafeArgumentPunctuation = "._-+:/,=@#()[]{}!~^'&%;";
+
+bool ScriptArgumentCharAllowed( uint32 c )
+{
+   if ( c < 0x80 )
+      return std::isalnum( int( c ) ) || c == ' ' || (c != 0 && std::strchr( kSafeArgumentPunctuation, int( c ) ) != nullptr);
+   // Non-ASCII: ordinary visible characters of the Basic Multilingual Plane
+   // (accented letters, CJK, ...); never controls, format/bidi/invisible
+   // characters or surrogates. Not above U+FFFF: PCL re-encodes those wrongly
+   // on the way (measured in S5b: U+1F4F7 arrived as U+1F4FD).
+   return c <= 0xFFFF && UnsafeDisplayKind( c ) == nullptr;
+}
+
 String ValidateScriptArguments( const ScriptDescription& d, const nlohmann::json& args,
                                 StringKeyValueList& out, nlohmann::json& shown )
 {
@@ -1346,11 +1366,15 @@ String ValidateScriptArguments( const ScriptDescription& d, const nlohmann::json
          return FromU8( "argument \"" + key + "\" must be " + TypeWords( p->type ) + " (the script reads it with "
                         + p->getters.back() + "()); got " + it.value().dump() + ". Nothing ran." );
       // PixInsight hands script arguments to its script runner as a command
-      // line (measured: run -x -p="key,value" ... "<file>"), so a double
-      // quote in a value could end the value and add arguments of its own.
-      if ( text.find( '"' ) != std::string::npos || key.find( '"' ) != std::string::npos || key.find( ',' ) != std::string::npos )
-         return FromU8( "argument \"" + CleanUtf8( key ) + "\" contains a double quote (\"), or its name a comma, which "
-                        "PixInsight cannot pass to a script safely. Nothing ran." );
+      // line (measured: run -x -p="key,value" ... "<file>"). ALLOWLIST, never a
+      // blocklist: the name is [A-Za-z0-9_] (every installed script's are), and
+      // every character of the value is one ScriptArgumentCharAllowed() admits
+      // -- each of those is proven by self-test S5b to arrive in Parameters
+      // unchanged, in any position, without disturbing the other arguments.
+      for ( char ch : key )
+         if ( !(std::isalnum( uint8( ch ) ) || ch == '_') )
+            return FromU8( "the script's parameter name \"" + CleanUtf8( key ) + "\" has characters PixInsight cannot pass "
+                           "safely on its script command line; it cannot be set from PI Copilot. Nothing ran." );
       if ( text.size() > 4096 )
          return FromU8( "argument \"" + key + "\" is longer than 4096 characters. Nothing ran." );
       const String t16 = FromU8( text );
@@ -1358,10 +1382,11 @@ String ValidateScriptArguments( const ScriptDescription& d, const nlohmann::json
       {
          size_type units = 1;
          const uint32 c = CodePointAt( t16, i, units );
-         if ( UnsafeDisplayKind( c ) != nullptr && c != ' ' )
+         if ( !ScriptArgumentCharAllowed( c ) )
             return FromU8( "argument \"" + key + "\" contains " ) + DisplayCharacter( c )
-                 + ": control, invisible and text-reordering characters are refused so the confirmation shows exactly "
-                   "what is passed. Nothing ran.";
+                 + String( ", which PI Copilot does not pass to a script: PixInsight hands arguments over on a command "
+                           "line, so only letters, digits, spaces and " ) + String( kSafeArgumentPunctuation )
+                 + " are allowed. Nothing ran.";
          i += units;
       }
       out << StringKeyValue( FromU8( key ), t16 );

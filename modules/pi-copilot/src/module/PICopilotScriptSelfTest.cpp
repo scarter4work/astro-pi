@@ -9,7 +9,8 @@
 #include "DataConsent.h"
 #include "HistoryReader.h"
 #include "JourneyExport.h"   // ManualWhy
-#include "JourneyStore.h"
+#include "JourneyStore.h"   // RemoveDirectoryTree
+#include "ToolHelpers.h"    // TextBlock
 #include "JourneyTools.h"    // JourneyToolHost
 #include "JourneyTracker.h"
 #include "ModuleScript.h"
@@ -20,10 +21,12 @@
 #include "ScriptTools.h"
 #include "SelfTestTiming.h"
 #include "SystemPrompt.h"
+#include "TextSafety.h"   // CodePointAt
 #include "Utf8.h"
 #include "ViewContext.h"
 
 #include <pcl/AutoViewLock.h>
+#include <pcl/ByteArray.h>
 #include <pcl/Console.h>
 #include <pcl/Exception.h>
 #include <pcl/FITSHeaderKeyword.h>
@@ -619,6 +622,120 @@ bool RunScriptSelfTest( nlohmann::json& out )
       allOk = allOk && ok && runOk;
    }
 
+   // ---- S4c: nothing the script tools say names the user's home or account -------
+   // A PixInsight install can live under /home/<user>. A private script tree is built
+   // under $HOME/.cache (removed afterwards) with: a validly signed copy of a PixInsight
+   // script (it runs, and its console names its file path), an unsigned script whose
+   // #feature-info, #include and Parameters key name absolute home paths, a link leading
+   // out of the tree, and a tampered copy. Every result list_scripts, describe_script and
+   // run_script hand the model is scanned for "/home/" and the user name.
+   SelfTestSectionMark( "S4c script tools leak no home path" );
+   {
+      nlohmann::json d;
+      bool ok = false;
+      const std::set<std::string> windowsBefore = OpenMainViewIds();
+      std::string base;
+      try
+      {
+         const char* home = std::getenv( "HOME" );
+         if ( home == nullptr || *home == '\0' )
+            throw Error( "HOME is not set" );
+         const std::string homeReal = RealPath8( home );
+         std::string user = homeReal.substr( homeReal.rfind( '/' ) + 1 );
+         if ( const char* u = std::getenv( "USER" ) )
+            if ( *u != '\0' )
+               user = u;
+         MakeDir( homeReal + "/.cache" );
+         std::string tmpl = homeReal + "/.cache/picopilot-selftest-XXXXXX";
+         std::vector<char> buf( tmpl.begin(), tmpl.end() );
+         buf.push_back( '\0' );
+         if ( ::mkdtemp( buf.data() ) == nullptr )
+            throw Error( "cannot create a private folder under ~/.cache" );
+         base = buf.data();
+         const std::string root = base + "/PixInsight/src/scripts";
+         MakeDir( base + "/PixInsight" );
+         MakeDir( base + "/PixInsight/src" );
+         MakeDir( root );
+         for ( const char* sub : { "/Good", "/Plain", "/Tampered", "/Link" } )
+            MakeDir( root + sub );
+         const std::string srcJs = U8( productionRoot ) + "/NoiseEvaluation/NoiseEvaluation.js";
+         const std::string srcSig = U8( productionRoot ) + "/NoiseEvaluation/NoiseEvaluation.xsgn";
+         CopyFile8( root + "/Good/NoiseEvaluation.js", srcJs );
+         CopyFile8( root + "/Good/NoiseEvaluation.xsgn", srcSig );
+         std::string tampered = ReadText( srcJs );
+         tampered.replace( tampered.find( "Scaled Noise Evaluation Script v" ), 6, "Forged" );
+         WriteText( root + "/Tampered/NoiseEvaluation.js", tampered );
+         CopyFile8( root + "/Tampered/NoiseEvaluation.xsgn", srcSig );
+         const std::string homeData = homeReal + "/astro/M31/session1";
+         WriteText( root + "/Plain/Plain.js",
+            "#feature-id PCPlain : PICopilotTest > Plain\n"
+            "#feature-info Reads " + homeData + "/light_001.fits and file://" + homeReal + "/astro/x.xisf\n"
+            "#include \"" + homeReal + "/lib/helpers.jsh\"\n"
+            "var k = Parameters.get( \"" + homeReal + "/\" + 'x' );\n"
+            "if ( Parameters.isViewTarget ) console.writeln( '" + homeData + "' );\n" );
+         ::unlink( (root + "/Link/Escape.js").c_str() );
+         if ( ::symlink( (base + "/PixInsight/Escape.js").c_str(), (root + "/Link/Escape.js").c_str() ) != 0 )
+            throw Error( "cannot create the escape link" );
+         WriteText( base + "/PixInsight/Escape.js", "#feature-id PCEscape : PICopilotTest > Escape\n" );
+         CopyFile8( base + "/PixInsight/Escape.xsgn", srcSig );
+         const String fxRoot = FromU8( RealPath8( root ) );
+
+         RgbWindow hw( "PCHomeLeak", 0.2, 0.3, 0.4 );
+         hw.AddNoise( 0.2, 0.05 );
+         int asks = 0;
+         ToolContext ctx = BaseContext( hw.MainView().FullId(), asks, true );
+         ctx.scriptsRootOverride = fxRoot;
+         std::vector<std::pair<std::string, ToolOutcome>> calls;   // pcl-move-ok: push_back only, read in order
+         calls.push_back( { "list", ExecuteTool( ToolCall{ "h1", "list_scripts", nlohmann::json::object() }, ctx ) } );
+         calls.push_back( { "listPlain", ExecuteTool( ToolCall{ "h2", "list_scripts", { { "query", "plain" } } }, ctx ) } );
+         calls.push_back( { "listEscape", ExecuteTool( ToolCall{ "h3", "list_scripts", { { "query", "link" } } }, ctx ) } );
+         calls.push_back( { "listNoise", ExecuteTool( ToolCall{ "h4", "list_scripts", { { "query", "noise" } } }, ctx ) } );
+         calls.push_back( { "describe", ExecuteTool( ToolCall{ "h5", "describe_script", { { "script_id", "NoiseEvaluation" } } }, ctx ) } );
+         calls.push_back( { "describePlain", ExecuteTool( ToolCall{ "h6", "describe_script", { { "script_id", "PCPlain" } } }, ctx ) } );
+         calls.push_back( { "runPlain", ExecuteTool( ToolCall{ "h7", "run_script", { { "script_id", "Plain" } } }, ctx ) } );
+         calls.push_back( { "run", ExecuteTool( ToolCall{ "h8", "run_script", { { "script_id", "NoiseEvaluation" },
+                                                                                 { "arguments", nlohmann::json::object() } } }, ctx ) } );
+         // The unsigned script's own description (never offered to the model, since it is not
+         // eligible) through the same choke point: info, includes and the key expression.
+         ToolOutcome plainDesc;
+         plainDesc.content.push_back( TextBlock( ScriptDescriptionJson(
+            DescribeScriptSource( fxRoot + "/Plain/Plain.js", fxRoot, PixInsightIncludeDirectory() ) ).dump() ) );
+         const std::string rawPlain = Text0( plainDesc );
+         ScriptToolResultForModel( plainDesc );
+         calls.push_back( { "plainDescriptionChokePoint", plainDesc } );
+
+         bool clean = true;
+         nlohmann::json texts = nlohmann::json::object();
+         for ( const auto& c : calls )
+         {
+            std::string all;
+            for ( const nlohmann::json& b : c.second.content )
+               if ( b.value( "type", std::string() ) == "text" )
+                  all += b.value( "text", std::string() );
+            const bool leak = Has( all, "/home/" ) || Has( all, homeReal ) || Has( all, user );
+            clean = clean && !leak;
+            texts[c.first] = { { "leak", leak }, { "text", all.size() > 1500 ? all.substr( 0, 1500 ) : all } };
+         }
+         d["user"] = user.empty() ? "?" : "(set)";
+         d["results"] = texts;
+         const nlohmann::json run = Json0( calls[7].second );
+         // The fixture really exercised the leaks: the raw description and console named the home folder.
+         const bool exercised = Has( rawPlain, homeReal ) && !calls[7].second.isError
+                             && Has( run.value( "console", std::string() ), "NoiseEvaluation.js" )
+                             && Has( Text0( calls[2].second ), "symbolic link" ) && Has( Text0( calls[3].second ), "does not match" );
+         d["exercised"] = exercised;
+         ok = clean && exercised && asks == 1;
+      }
+      catch ( const pcl::Exception& x ) { d["error"] = U8( x.Message() ); }
+      catch ( const std::exception& x ) { d["error"] = x.what(); }
+      CloseNewWindows( windowsBefore );
+      if ( !base.empty() )
+         try { RemoveDirectoryTree( FromU8( base ) ); } catch ( ... ) {}
+      out["scriptHomeLeakDetail"] = d;
+      out["scriptHomeLeakOk"] = ok;
+      allOk = allOk && ok;
+   }
+
    // ---- S5: run_script arguments arrive in Parameters ----------------------------
    SelfTestSectionMark( "S5 script arguments reach Parameters" );
    {
@@ -675,7 +792,7 @@ bool RunScriptSelfTest( nlohmann::json& out )
          // a comma and a backslash in a value arrive intact; a double quote is refused by the module.
          StringKeyValueList odd;
          nlohmann::json oddShown;
-         const String oddErr = ValidateScriptArguments( pd, { { "s", "a,b\\c" } }, odd, oddShown );
+         const String oddErr = ValidateScriptArguments( pd, { { "s", "/mnt/My Data/a,b (1).xisf" } }, odd, oddShown );
          ::unlink( outGlobal.c_str() );
          String oErr;
          try { Console().ExecuteScriptGlobal( FromU8( root + "/ArgsProbeG.js" ), odd ); }
@@ -688,8 +805,8 @@ bool RunScriptSelfTest( nlohmann::json& out )
          d["commaBackslash"] = { { "validate", U8( oddErr ) }, { "error", U8( oErr ) }, { "arrived", og } };
          d["quoteRefused"] = U8( quoteErr );
          const bool quotingOk = oddErr.IsEmpty() && oErr.IsEmpty() && og.is_object()
-                             && og.value( "s", std::string() ) == "a,b\\c"
-                             && quoteErr.Contains( "double quote" ) && q.IsEmpty();
+                             && og.value( "s", std::string() ) == "/mnt/My Data/a,b (1).xisf"
+                             && quoteErr.Contains( "does not pass" ) && q.IsEmpty();
          d["quotingOk"] = quotingOk;
          ok = quotingOk && verr.IsEmpty() && pd.parameters.size() == 6 && gErr.IsEmpty() && vErr.IsEmpty()
            && valuesOk( g ) && g.value( "isGlobal", false ) && !g.value( "isView", true )
@@ -701,6 +818,176 @@ bool RunScriptSelfTest( nlohmann::json& out )
       CloseNewWindows( windowsBefore );
       out["scriptArgsPlumbingDetail"] = d;
       out["scriptArgsPlumbingOk"] = ok;
+      allOk = allOk && ok;
+   }
+
+   // ---- S5b: PixInsight's script command line, character by character -------------
+   // Measured, not assumed: the core passes arguments as run -x -p="key,value" ... "<file>".
+   // Every printable ASCII character goes through it in three positions (inside, leading,
+   // trailing) between two sentinel arguments, plus multi-character injection candidates.
+   // The module's allowlist (ScriptArgumentCharAllowed) must hold only characters that
+   // arrive intact without disturbing the sentinels or adding arguments; everything else
+   // is refused by ValidateScriptArguments. What the refused characters do is recorded.
+   SelfTestSectionMark( "S5b script argument characters" );
+   {
+      nlohmann::json d;
+      bool ok = false;
+      try
+      {
+         const std::string dir = ScratchDir() + "/argchars";
+         MakeDir( dir );
+         const std::string outPath = dir + "/out.json";
+         WriteText( dir + "/CharProbe.js",
+            "#feature-id PCCharProbe : PICopilotTest > CharProbe\n"
+            "var o = { s0: Parameters.get( \"s0\" ), p1: Parameters.get( \"p1\" ), p2: Parameters.get( \"p2\" ),\n"
+            "  p3: Parameters.get( \"p3\" ), s9: Parameters.get( \"s9\" ), inj: Parameters.has( \"inj\" ),\n"
+            "  injValue: Parameters.get( \"inj\" ), isGlobal: Parameters.isGlobalTarget };\n"
+            "File.writeTextFile( " + ScriptLiteral( FromU8( outPath ) ) + ", JSON.stringify( o ) );\n" );
+         const String probe = FromU8( RealPath8( dir ) + "/CharProbe.js" );
+         // One run: returns what arrived, the core's command line and any console error line.
+         auto runProbe = [&]( const std::vector<std::pair<std::string, std::string>>& kv, nlohmann::json& rec ) -> nlohmann::json
+         {
+            StringKeyValueList list;
+            for ( const auto& e : kv )
+               list << StringKeyValue( FromU8( e.first ), FromU8( e.second ) );
+            ::unlink( outPath.c_str() );
+            EvaluateAsciiJson( "console.beginLog(); return pcAscii( JSON.stringify( true ) );" );
+            String err;
+            try { Console().ExecuteScriptGlobal( probe, list ); }
+            catch ( const pcl::Exception& x ) { err = x.Message(); }
+            const nlohmann::json log = EvaluateAsciiJson(
+               "var b = console.endLog(); return pcAscii( JSON.stringify( b ? String( b.toBase64() ) : \"\" ) );" );
+            const ByteArray raw = IsoString( log.get<std::string>().c_str() ).FromBase64();
+            const std::string text( reinterpret_cast<const char*>( raw.Begin() ), raw.Length() );
+            std::string cmd, errs;
+            std::istringstream ls( text );
+            for ( std::string line; std::getline( ls, line ); )
+            {
+               if ( line.find( "run -x" ) != std::string::npos && cmd.empty() )
+                  cmd = line.substr( line.find( "run -x" ) );
+               if ( line.find( "*** Error" ) != std::string::npos || line.find( "Unknown" ) != std::string::npos
+                    || line.find( "Invalid" ) != std::string::npos )
+                  errs += line + "\n";
+            }
+            rec["cmd"] = cmd.size() > 400 ? cmd.substr( 0, 400 ) : cmd;
+            if ( !errs.empty() )
+               rec["consoleErrors"] = errs.substr( 0, 400 );
+            if ( !err.IsEmpty() )
+               rec["executeError"] = U8( err );
+            nlohmann::json got;
+            try { got = nlohmann::json::parse( ReadText( outPath ) ); } catch ( ... ) {}
+            return got;
+         };
+         nlohmann::json chars = nlohmann::json::array();
+         std::string safe, unsafe;
+         bool allowedAllSafe = true, refusedAllRefused = true;
+         for ( int c = 0x20; c <= 0x7E; ++c )
+         {
+            const std::string ch( 1, char( c ) );
+            const std::string v1 = "a" + ch + "b", v2 = ch + "a", v3 = "a" + ch;
+            nlohmann::json rec = { { "char", ch }, { "code", c } };
+            // Never sent: '"' and '\' wedge the core's command line (an unterminated string swallows what the
+            // instance runs next -- measured: the instance then never exits). Their refusal is asserted below.
+            const bool wedges = c == '"' || c == '\\';
+            const nlohmann::json got = wedges ? nlohmann::json()
+                                     : runProbe( { { "s0", "first" }, { "p1", v1 }, { "p2", v2 }, { "p3", v3 }, { "s9", "last" } }, rec );
+            if ( wedges )
+               rec["notSent"] = "breaks PixInsight's script command line (measured 2026-10-13); refused by the module";
+            const bool intact = !wedges && got.is_object() && got.value( "s0", std::string() ) == "first" && got.value( "p1", std::string() ) == v1
+                             && got.value( "p2", std::string() ) == v2 && got.value( "p3", std::string() ) == v3
+                             && got.value( "s9", std::string() ) == "last" && !got.value( "inj", true );
+            rec["intact"] = intact;
+            if ( !intact )
+               rec["arrived"] = got;
+            const bool allowed = ScriptArgumentCharAllowed( uint32( c ) );
+            rec["allowed"] = allowed;
+            (intact ? safe : unsafe) += ch;
+            if ( allowed && !intact )
+               allowedAllSafe = false;
+            // The module refuses every character it does not allow.
+            if ( !allowed )
+            {
+               ScriptDescription one;
+               one.ok = true;
+               ScriptParameter sp;
+               sp.name = "p1";
+               sp.type = "string";
+               sp.getters = { "get" };
+               one.parameters.push_back( sp );
+               StringKeyValueList kv;
+               nlohmann::json shown;
+               const String e = ValidateScriptArguments( one, { { "p1", v1 } }, kv, shown );
+               if ( e.IsEmpty() || !kv.IsEmpty() )
+                  refusedAllRefused = false;
+            }
+            if ( !intact || !allowed )
+               chars.push_back( rec );
+         }
+         d["notIntactOrNotAllowed"] = chars;
+         d["intactChars"] = safe;
+         d["notIntactChars"] = unsafe;
+         // Multi-character candidates (recorded; the allowlist decides).
+         const std::vector<std::string> cands = {   // pcl-move-ok: const, read only
+            "a\\", "a\\\\", "a\\\"b", "x\" -p=\"inj,1", "a -p=inj,1", "a;b", "$HOME", "${HOME}", "%PATH%", "a|b",
+            "`id`", "a'b", "a&b", "a>b", "/tmp/My Data/x y.fits", "/home/x/Scott's M81&M82 50%; v2 (final).xisf",
+            "h\xC3\xA9llo w\xC3\xB6rld", "\xE6\x97\xA5\xE6\x9C\xAC", "\xF0\x9F\x93\xB7" };
+         nlohmann::json multi = nlohmann::json::array();
+         bool multiOk = true;
+         for ( const std::string& v : cands )
+         {
+            nlohmann::json rec = { { "value", v } };
+            const bool wedges = v.find( '"' ) != std::string::npos || v.find( '\\' ) != std::string::npos;
+            const nlohmann::json got = wedges ? nlohmann::json() : runProbe( { { "s0", "first" }, { "p1", v }, { "s9", "last" } }, rec );
+            if ( wedges )
+               rec["notSent"] = "contains '\"' or '\\' (refused by the module; measured to break the command line)";
+            const bool intact = !wedges && got.is_object() && got.value( "s0", std::string() ) == "first" && got.value( "p1", std::string() ) == v
+                             && got.value( "s9", std::string() ) == "last" && !got.value( "inj", true );
+            rec["intact"] = intact;
+            if ( !intact )
+               rec["arrived"] = got;
+            bool allowed = true;
+            const String v16 = FromU8( v );
+            for ( size_type i = 0; i < v16.Length(); )
+            {
+               size_type u = 1;
+               allowed = allowed && ScriptArgumentCharAllowed( CodePointAt( v16, i, u ) );
+               i += u;
+            }
+            rec["allowed"] = allowed;
+            if ( allowed && !intact )
+               multiOk = false;
+            multi.push_back( rec );
+         }
+         d["candidates"] = multi;
+         // A path with spaces round-trips (allowed and intact).
+         bool spacePathOk = false;
+         for ( const nlohmann::json& m : multi )
+            if ( m.value( "value", std::string() ) == "/tmp/My Data/x y.fits" )
+               spacePathOk = m.value( "intact", false ) && m.value( "allowed", false );
+         // Parameter NAMES: [A-Za-z0-9_] only (a ',' or '"' in a name would split or end the -p="key,value" pair).
+         bool keysOk = true;
+         for ( const char* bad : { "a,b", "a\"b", "a b", "a-b" } )
+         {
+            ScriptDescription one;
+            one.ok = true;
+            ScriptParameter sp;
+            sp.name = bad;
+            sp.type = "string";
+            sp.getters = { "get" };
+            one.parameters.push_back( sp );
+            StringKeyValueList kv;
+            nlohmann::json shown;
+            const String e = ValidateScriptArguments( one, { { bad, "x" } }, kv, shown );
+            keysOk = keysOk && !e.IsEmpty() && kv.IsEmpty();
+         }
+         d["checks"] = { { "allowedAllIntact", allowedAllSafe }, { "refusedAllRefused", refusedAllRefused },
+                         { "multiAllowedIntact", multiOk }, { "spacePath", spacePathOk }, { "keyNames", keysOk } };
+         ok = allowedAllSafe && refusedAllRefused && multiOk && spacePathOk && keysOk;
+      }
+      catch ( const pcl::Exception& x ) { d["error"] = U8( x.Message() ); }
+      catch ( const std::exception& x ) { d["error"] = x.what(); }
+      out["scriptArgCharsDetail"] = d;
+      out["scriptArgCharsOk"] = ok;
       allOk = allOk && ok;
    }
 
@@ -907,8 +1194,11 @@ bool RunScriptSelfTest( nlohmann::json& out )
       allOk = allOk && ok;
    }
 
-   // ---- S8: FITS keyword values carry file names, never folders ------------------
-   SelfTestSectionMark( "S8 FITS path scrub" );
+   // ---- S8: FITS privacy: location/identity keywords and folders never sent --------
+   // Fail-closed (security review of 0.2.2.0): keyword names any case, HIERARCH and long
+   // names, location under other names, COMMENT/HISTORY text, Windows/UNC/~/file:// paths,
+   // paths inside text, relative paths, and values cut mid-path.
+   SelfTestSectionMark( "S8 FITS privacy" );
    {
       nlohmann::json d = nlohmann::json::array();
       bool ok = true;
@@ -920,12 +1210,25 @@ bool RunScriptSelfTest( nlohmann::json& out )
             { "ImageIntegration.images: /home/u/f1.xisf /home/u/f2.xisf", "ImageIntegration.images: f1.xisf f2.xisf" },
             { "Integrated from /mnt/qnap/astro_data/M 31/x.fits and 3 others", "Integrated from x.fits and 3 others" },
             { "~/stack/master.xisf", "master.xisf" },
+            { "~\\stack\\master.xisf", "master.xisf" },
             { "\\\\server\\share\\dir\\f.fits", "f.fits" },
             { "file='/tmp/a/b.fits'", "file='b.fits'" },
-            { "https://example.com/a/b", "https:b" },
+            { "file:///home/u/x.fits", "x.fits" },
+            { "FILE:///C:/Users/bob/x.fits", "x.fits" },
+            { "src{/home/u/x.fits}", "src{x.fits}" },          // after any non-alphanumeric
+            { "a*/home/u/x.fits", "a*x.fits" },
+            { "<C:\\Users\\bob\\x.fits>", "<x.fits>" },
+            { "/mnt/qnap/astro_data", "[path]" },               // a folder: its name is not kept
+            { "/home/u/data/M31/sessi", "[path]" },             // cut mid-path
+            { "data/M31/raw", "[path]" },                       // relative
+            { "M31/light_001.fits", "light_001.fits" },
+            { "../x/y.fits", "y.fits" },
+            { "https://example.com/a/b", "https:[path]" },
             { "$T/2", "$T/2" },
             { "ratio 1/2", "ratio 1/2" },
             { "2026/10/13", "2026/10/13" },
+            { "N/A", "N/A" },
+            { "Ha/OIII", "Ha/OIII" },
             { "Master Light", "Master Light" },
             { "L / R", "L / R" },
             { "/", "/" },
@@ -937,22 +1240,61 @@ bool RunScriptSelfTest( nlohmann::json& out )
             d.push_back( { { "in", c.first }, { "out", got }, { "ok", caseOk } } );
             ok = ok && caseOk;
          }
+         const char* redacted[] = { "SITELAT", "sitelat", " SiteLong ", "SITEELEV", "SITENAME", "OBSSITE", "LAT-OBS",
+            "LONG-OBS", "ALT-OBS", "OBSGEO-X", "OBSGEO-Y", "OBSGEO-Z", "OBSGEO-B", "OBSGEO-L", "OBSGEO-H", "GEOLAT",
+            "GEOLON", "HIERARCH ESO TEL GEOLAT", "ESO TEL GEOLON", "ESO TEL GEOELEV", "GPS-LAT", "GPSLAT", "GPS LONG",
+            "LATITUDE", "LONGITUD", "OBSERVER", "observer", "OBSERVAT", "Observation:Location:Latitude", "AUTHOR",
+            "SITE", "LAT", "LON", "ELEVATIO", "HIERARCH OBS PI-COI NAME", "OPERATOR", "ORIGIN", "USER", "CONTACT" };
+         const char* kept[] = { "OBJECT", "FILTER", "EXPTIME", "DATE-OBS", "OBJCTALT", "OBJCTRA", "OBJCTDEC", "CENTALT",
+            "INSTRUME", "TELESCOP", "CCD-TEMP", "SET-TEMP", "IMAGETYP", "NCOMBINE", "XBINNING", "FOCALLEN", "COMPOSIT",
+            "POSITION", "AIRMASS", "PIERSIDE", "FLATFILE", "GAIN", "OFFSET" };
+         nlohmann::json names = nlohmann::json::array();
+         for ( const char* k : redacted )
+            if ( !IsRedactedFitsKeyword( IsoString( k ) ) )
+            {
+               names.push_back( std::string( "not redacted: " ) + k );
+               ok = false;
+            }
+         for ( const char* k : kept )
+            if ( IsRedactedFitsKeyword( IsoString( k ) ) )
+            {
+               names.push_back( std::string( "over-redacted: " ) + k );
+               ok = false;
+            }
+         d.push_back( { { "names", names }, { "redactedChecked", sizeof( redacted )/sizeof( *redacted ) },
+                        { "keptChecked", sizeof( kept )/sizeof( *kept ) } } );
+
          // End to end through the view context sent to the model.
          RgbWindow w( "PCFitsPaths", 0.1, 0.1, 0.1 );
          FITSKeywordArray k;
          k.Add( FITSHeaderKeyword( "FILENAME", "'/home/someone/data/M31/light_001.fits'", "" ) );
          k.Add( FITSHeaderKeyword( "INPUTS", "'C:\\Users\\bob\\M31\\a.xisf, /mnt/x/b.xisf'", "" ) );
+         k.Add( FITSHeaderKeyword( "SOURCE", "'file:///home/someone/raw/x.fits'", "" ) );
+         k.Add( FITSHeaderKeyword( "DATADIR", "'/home/someone/astro/M31/sess'", "" ) );   // cut mid-path
          k.Add( FITSHeaderKeyword( "OBJECT", "'M31'", "" ) );
+         k.Add( FITSHeaderKeyword( "FILTER", "'Ha/OIII'", "" ) );
          k.Add( FITSHeaderKeyword( "OBSERVER", "'Someone'", "" ) );
+         k.Add( FITSHeaderKeyword( "observat", "'Backyard of Someone'", "" ) );
+         k.Add( FITSHeaderKeyword( "HIERARCH ESO TEL GEOLAT", "-24.6", "" ) );
+         k.Add( FITSHeaderKeyword( "GPS-LAT", "'40 11 12'", "" ) );
+         k.Add( FITSHeaderKeyword( "OBSGEO-X", "1234567.0", "" ) );
+         k.Add( FITSHeaderKeyword( "COMMENT", "'/home/someone/notes.txt'", "Someone's notes /home/someone" ) );
+         k.Add( FITSHeaderKeyword( "HISTORY", "", "ImageIntegration.images: /home/someone/l1.xisf" ) );
          w.Window().SetKeywords( k );
          const nlohmann::json ctx = BuildViewContext( w.MainView() );
          std::map<std::string, std::string> kv;
          for ( const nlohmann::json& e : ctx["fitsKeywords"] )
             kv[e.value( "name", std::string() )] = e.value( "value", std::string() );
-         const bool e2e = kv["FILENAME"] == "light_001.fits" && kv["INPUTS"] == "a.xisf, b.xisf" && kv["OBJECT"] == "M31"
-                       && kv.count( "OBSERVER" ) == 0 && ctx.value( "fitsValuesPathsScrubbed", 0 ) == 2
-                       && !Has( ctx.dump(), "someone" ) && !Has( ctx.dump(), "Users" );
-         d.push_back( { { "endToEnd", ctx["fitsKeywords"] }, { "scrubbed", ctx.value( "fitsValuesPathsScrubbed", 0 ) }, { "ok", e2e } } );
+         const std::string dump = ctx.dump();
+         const bool e2e = kv["FILENAME"] == "light_001.fits" && kv["INPUTS"] == "a.xisf, b.xisf" && kv["SOURCE"] == "x.fits"
+                       && kv["DATADIR"] == "[path]" && kv["OBJECT"] == "M31" && kv["FILTER"] == "Ha/OIII" && kv.size() == 6
+                       && ctx.value( "fitsKeywordsRedacted", 0 ) == 5 && ctx.value( "fitsCommentaryKeywordsOmitted", 0 ) == 2
+                       && ctx.value( "fitsValuesPathsScrubbed", 0 ) == 4
+                       && !Has( dump, "someone" ) && !Has( dump, "Someone" ) && !Has( dump, "Users" ) && !Has( dump, "/home/" )
+                       && !Has( dump, "-24.6" ) && !Has( dump, "40 11 12" );
+         d.push_back( { { "endToEnd", ctx["fitsKeywords"] }, { "redacted", ctx.value( "fitsKeywordsRedacted", 0 ) },
+                        { "commentary", ctx.value( "fitsCommentaryKeywordsOmitted", 0 ) },
+                        { "scrubbed", ctx.value( "fitsValuesPathsScrubbed", 0 ) }, { "ok", e2e } } );
          ok = ok && e2e;
       }
       catch ( const pcl::Exception& x ) { d.push_back( { { "error", U8( x.Message() ) } } ); ok = false; }

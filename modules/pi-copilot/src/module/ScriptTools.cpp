@@ -717,28 +717,53 @@ bool IsScriptTool( const std::string& name )
    return name == "list_scripts" || name == "describe_script" || name == "run_script";
 }
 
+void ScriptToolResultForModel( ToolOutcome& o )
+{
+   for ( nlohmann::json& b : o.content )
+   {
+      if ( !b.is_object() || b.value( "type", std::string() ) != "text" || !b.contains( "text" ) || !b["text"].is_string() )
+         continue;
+      const std::string t = b["text"].get<std::string>();
+      try
+      {
+         const nlohmann::json j = nlohmann::json::parse( t );
+         b["text"] = JsonWithoutAbsolutePaths( j ).dump();
+      }
+      catch ( ... )
+      {
+         b["text"] = TextWithoutAbsolutePaths( t );
+      }
+   }
+}
+
 ToolOutcome ExecuteScriptTool( const ToolCall& call, const ToolContext& ctx )
 {
    const clock::time_point t0 = clock::now();
    const nlohmann::json in = call.input.is_object() ? call.input : nlohmann::json::object();
+   ToolOutcome o;
    try
    {
       if ( call.name == "list_scripts" )
-         return ListScripts( in, ctx, t0 );
-      if ( call.name == "describe_script" )
-         return DescribeScript( in, ctx, t0 );
-      if ( call.name == "run_script" )
-         return RunScript( in, ctx, t0 );
-      return Fail( S16( call.name ), "not a script tool" );
+         o = ListScripts( in, ctx, t0 );
+      else if ( call.name == "describe_script" )
+         o = DescribeScript( in, ctx, t0 );
+      else if ( call.name == "run_script" )
+         o = RunScript( in, ctx, t0 );
+      else
+         o = Fail( S16( call.name ), "not a script tool" );
    }
    catch ( const pcl::Exception& x )
    {
-      return Fail( S16( call.name ), S16( call.name ) + " failed: " + x.Message() );
+      o = Fail( S16( call.name ), S16( call.name ) + " failed: " + x.Message() );
    }
    catch ( const std::exception& x )
    {
-      return Fail( S16( call.name ), S16( call.name ) + " failed: " + String( x.what() ) );
+      o = Fail( S16( call.name ), S16( call.name ) + " failed: " + String( x.what() ) );
    }
+   // The one exit to the model: no absolute path (the PixInsight install and the
+   // user's folders may be under /home/<user>) in anything the script tools say.
+   ScriptToolResultForModel( o );
+   return o;
 }
 
 } // namespace pcl

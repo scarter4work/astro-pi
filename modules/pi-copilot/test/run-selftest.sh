@@ -614,8 +614,8 @@ required_true = [
     'processSafetyOk',
     'globalProcessOk',
     # 0.2.2.0: run_pjsr removed; run_script (installed, signed scripts only), consent, FITS paths
-    'runPjsrRemovedOk', 'dataLiteralOk', 'scriptSourceOk', 'scriptEligibilityOk', 'runScriptOk',
-    'scriptArgsPlumbingOk', 'scriptAcceptanceOk', 'scriptJourneyOk', 'consentOk', 'fitsPathScrubOk', 'scriptSelfTestOk',
+    'runPjsrRemovedOk', 'dataLiteralOk', 'scriptSourceOk', 'scriptEligibilityOk', 'runScriptOk', 'scriptHomeLeakOk',
+    'scriptArgsPlumbingOk', 'scriptArgCharsOk', 'scriptAcceptanceOk', 'scriptJourneyOk', 'consentOk', 'fitsPathScrubOk', 'scriptSelfTestOk',
     'finalFixOk',
     'pinnedOk',
     'bridgeOk',

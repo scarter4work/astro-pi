@@ -31,7 +31,14 @@ nlohmann::json ScriptToolDefinitions( AgentMode mode );
 bool IsScriptTool( const std::string& name );
 
 // Root thread. Never throws; every failure is isError with a precise message.
+// Every result passes ScriptToolResultForModel() on its way out.
 ToolOutcome ExecuteScriptTool( const ToolCall& call, const ToolContext& ctx );
+
+// Privacy choke point: every text block of a script tool's result with its
+// absolute paths reduced to file names (JsonWithoutAbsolutePaths for JSON,
+// TextWithoutAbsolutePaths otherwise). Paths relative to src/scripts stay.
+// Console output was already through the full TextWithoutFolders scrub.
+void ScriptToolResultForModel( ToolOutcome& o );
 
 // The run_script confirmation text (HTML, every value escaped). Pure.
 struct RunScriptConfirmation
