@@ -76,7 +76,9 @@ std::string ReducedTail( const std::string& rest )
    bool file = dot != std::string::npos && dot > 0 && dot + 1 < name.size() && name.size() - dot - 1 <= 10;
    for ( size_t k = dot == std::string::npos ? name.size() : dot + 1; file && k < name.size(); ++k )
       file = IsAlnum( name[k] );
-   return (file ? name : std::string( "[path]" )) + rest.substr( end );
+   // Not a file name: the whole rest of the segment goes ("/home/scott carter":
+   // the part after a space in a folder name is part of the folder).
+   return file ? name + rest.substr( end ) : std::string( "[path]" );
 }
 
 // A whitespace/quote/punctuation-delimited token that is a RELATIVE path:
@@ -245,7 +247,8 @@ bool IsRedactedFitsKeyword( const IsoString& name )
          return true;
    static const char* const kSubstrings[] = {
       "OBSGEO", "GEOLAT", "GEOLON", "GEOELEV", "GEOALT", "GEODETIC", "LATITUD", "LONGITUD", "ELEVATIO",
-      "GPS", "OBSERVER", "OBSERVAT", "LOCATION", "ADDRESS", "AUTHOR", "EMAIL", "TELEPHON" };
+      "GPS", "OBSERVER", "OBSERVAT", "LOCATION", "ADDRESS", "AUTHOR", "EMAIL", "TELEPHON", "OWNER", "LICENS",
+      "HOSTNAM", "COMPUTER" };
    for ( const char* s : kSubstrings )
       if ( n.find( s ) != std::string::npos )
          return true;
@@ -265,8 +268,8 @@ bool IsRedactedFitsKeyword( const IsoString& name )
    if ( hasLower )
       return false;
    static const char* const kTokens[] = {
-      "LAT", "LON", "LONG", "LNG", "ELEV", "ALT", "CITY", "COUNTRY", "TOWN", "PLACE", "OWNER", "USER", "USERNAME",
-      "CONTACT", "OBSNAME", "PI", "PINAME", "OPERATOR", "ORIGIN" };
+      "LAT", "LON", "LONG", "LNG", "ELEV", "ALT", "CITY", "COUNTRY", "TOWN", "PLACE", "USER", "USERNAME",
+      "CONTACT", "OBSNAME", "PI", "PINAME", "OPERATOR", "ORIGIN", "HOST" };
    std::string tok;
    for ( size_t i = 0; i <= n.size(); ++i )
    {
@@ -280,6 +283,43 @@ bool IsRedactedFitsKeyword( const IsoString& name )
             return true;
       tok.clear();
    }
+   return false;
+}
+
+bool IsFitsValueAllowed( const IsoString& name )
+{
+   static const char* const kExact[] = {
+      "SIMPLE", "BITPIX", "NAXIS", "EXTEND", "BZERO", "BSCALE", "IMAGETYP", "FRAME", "FRAMETYP", "BAYERPAT", "XBAYROFF",
+      "YBAYROFF", "PEDESTAL", "CALSTAT", "ROWORDER", "IMAGEW", "IMAGEH", "XORGSUBF", "YORGSUBF",
+      "OBJECT", "FILTER",
+      "EXPTIME", "EXPOSURE", "LIVETIME", "DATE-OBS", "DATE-AVG", "DATE-END", "DATE-LOC", "MJD-OBS", "MJD-AVG",
+      "GAIN", "EGAIN", "OFFSET", "CCD-TEMP", "SET-TEMP", "XBINNING", "YBINNING", "CCDXBIN", "CCDYBIN", "XPIXSZ", "YPIXSZ",
+      "PIXSIZE", "INSTRUME", "READOUTM", "READNOIS", "RDNOISE",
+      "TELESCOP", "FOCALLEN", "APERTURE", "APTDIA", "FOCRATIO", "FOCUSPOS", "FOCPOS",
+      "RA", "DEC", "OBJCTRA", "OBJCTDEC",
+      "EQUINOX", "EPOCH", "RADESYS", "RADECSYS", "PIXSCALE", "SCALE", "PLTSOLVD", "A_ORDER", "B_ORDER", "AP_ORDER", "BP_ORDER",
+      "NCOMBINE", "STACKCNT" };
+   const std::string n = name.Trimmed().Uppercase().c_str();
+   for ( const char* k : kExact )
+      if ( n == k )
+         return true;
+   // Indexed families: a fixed prefix followed only by digits (NAXIS1, CRVAL2, CD1_1, A_0_2, ...).
+   auto digitsAndUnderscores = []( const std::string& s, size_t from, bool underscore )
+   {
+      if ( from >= s.size() || !std::isdigit( uint8( s[from] ) ) )
+         return false;
+      for ( size_t i = from; i < s.size(); ++i )
+         if ( !(std::isdigit( uint8( s[i] ) ) || (underscore && s[i] == '_')) )
+            return false;
+      return true;
+   };
+   for ( const char* p : { "NAXIS", "CTYPE", "CRVAL", "CRPIX", "CDELT", "CROTA", "CUNIT" } )
+      if ( n.compare( 0, std::strlen( p ), p ) == 0 && digitsAndUnderscores( n, std::strlen( p ), false ) )
+         return true;
+   for ( const char* p : { "CD", "PC", "A_", "B_", "AP_", "BP_" } )
+      if ( n.compare( 0, std::strlen( p ), p ) == 0 && digitsAndUnderscores( n, std::strlen( p ), true )
+        && n.find( '_', std::strlen( p ) ) != std::string::npos )
+         return true;
    return false;
 }
 
@@ -351,7 +391,7 @@ nlohmann::json BuildViewContext( const View& view )
 
    const FITSKeywordArray keywords = window.IsNull() ? FITSKeywordArray() : window.Keywords();
    nlohmann::json fits = nlohmann::json::array();
-   size_type kept = 0, redacted = 0, scrubbed = 0, commentary = 0;
+   size_type kept = 0, redacted = 0, scrubbed = 0, commentary = 0, withheld = 0;
    for ( const FITSHeaderKeyword& kw : keywords )
    {
       if ( IsCommentaryFitsKeyword( kw.name ) )
@@ -367,6 +407,13 @@ nlohmann::json BuildViewContext( const View& view )
       if ( kept == size_type( PICopilotMaxFitsKeywords ) )
          continue;   // counted below as omitted
       ++kept;
+      // Not on the allowlist: the name only, never the value.
+      if ( !IsFitsValueAllowed( kw.name ) )
+      {
+         ++withheld;
+         fits.push_back( { { "name", FitsValueWithoutPaths( FitsU8( kw.name ) ) } } );
+         continue;
+      }
       // Paths out first (file names only), then the length cap.
       const std::string raw = FitsU8( kw.StripValueDelimiters() );
       const std::string clean = FitsValueWithoutPaths( raw );
@@ -388,6 +435,10 @@ nlohmann::json BuildViewContext( const View& view )
    ctx["fitsKeywordsRedacted"] = redacted;
    ctx["fitsKeywordsOmitted"] = keywords.Length() - redacted - commentary - kept;
    ctx["fitsCommentaryKeywordsOmitted"] = commentary;
+   ctx["fitsKeywordValuesWithheld"] = withheld;
+   ctx["fitsNote"] = "Values are sent only for keywords that matter to processing (structure, target, filter, exposure, "
+                     "camera, optics, pointing, astrometry, integration); other keywords are listed by name only, and "
+                     "location/identity keywords are left out.";
    ctx["fitsValuesPathsScrubbed"] = scrubbed;
    return ctx;
 }

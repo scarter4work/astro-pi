@@ -50,12 +50,26 @@ is built, so neither chat messages nor journey write-ups can be sent without it.
 <li>The text you type and the conversation so far.</li>
 <li>With <i>Include view</i> on: an auto-stretched JPEG preview of the active image (at most 1024 pixels on its long
 side), its size, view id, per-channel statistics (median, deviation, mean, minimum, maximum), its <b>file name</b>
-(never the folder), and up to 60 of its FITS keywords. Keywords that name a place or a person are never sent: SITELAT,
-SITELONG, SITEELEV, OBSGEO-B, OBSGEO-L, OBSGEO-H, LAT-OBS, LONG-OBS, ALT-OBS, OBSERVER, and in any spelling (also
-HIERARCH and long names) every keyword whose name contains SITE, OBSGEO, GEOLAT/GEOLON/GEOELEV, LATITUD, LONGITUD, GPS,
-OBSERVER, OBSERVAT, LOCATION, AUTHOR or a LAT/LON/ELEV/ALT part. COMMENT and HISTORY keywords are never sent. Every
-folder path inside a keyword value (also Windows, network-share, <code>~/</code> and <code>file://</code> paths, and
-relative paths) is reduced to its file name; a folder name, or a path cut short, becomes <code>[path]</code>.</li>
+(never the folder), and up to 60 of its FITS keywords:
+  <ul>
+  <li><b>with their values</b>, only these keywords, which processing needs: SIMPLE, BITPIX, NAXIS and NAXIS<i>n</i>,
+  EXTEND, BZERO, BSCALE, IMAGETYP, FRAME, FRAMETYP, BAYERPAT, XBAYROFF, YBAYROFF, PEDESTAL, CALSTAT, ROWORDER, IMAGEW,
+  IMAGEH, XORGSUBF, YORGSUBF; OBJECT, FILTER; EXPTIME, EXPOSURE, LIVETIME, DATE-OBS, DATE-AVG, DATE-END, DATE-LOC,
+  MJD-OBS, MJD-AVG; GAIN, EGAIN, OFFSET, CCD-TEMP, SET-TEMP, XBINNING, YBINNING, CCDXBIN, CCDYBIN, XPIXSZ, YPIXSZ,
+  PIXSIZE, INSTRUME, READOUTM, READNOIS, RDNOISE; TELESCOP, FOCALLEN, APERTURE, APTDIA, FOCRATIO, FOCUSPOS, FOCPOS; RA,
+  DEC, OBJCTRA, OBJCTDEC; EQUINOX, EPOCH, RADESYS, RADECSYS, CTYPE<i>n</i>, CRVAL<i>n</i>, CRPIX<i>n</i>,
+  CDELT<i>n</i>, CROTA<i>n</i>, CUNIT<i>n</i>, CD<i>i_j</i>, PC<i>i_j</i>, PIXSCALE, SCALE, PLTSOLVD and the SIP
+  coefficients (A_, B_, AP_, BP_); NCOMBINE, STACKCNT. Any folder path in these values (also Windows, network-share,
+  <code>~/</code>, <code>file://</code> and relative paths) is reduced to its file name; a folder name, or a path
+  cut short, becomes <code>[path]</code>. The target's altitude, azimuth, hour angle, sidereal time and airmass are
+  not among them: with the time they locate the observer.</li>
+  <li><b>by name only</b> (no value): every other keyword, for example SWCREATE or FILENAME.</li>
+  <li><b>never</b>: keywords that name a place or a person, in any case or spelling (HIERARCH and long names too):
+  SITELAT, SITELONG, SITEELEV, OBSGEO-B, OBSGEO-L, OBSGEO-H, LAT-OBS, LONG-OBS, ALT-OBS, OBSERVER, and every keyword
+  whose name contains SITE, OBSGEO, GEOLAT/GEOLON/GEOELEV, LATITUD, LONGITUD, GPS, OBSERVER, OBSERVAT, LOCATION,
+  AUTHOR, OWNER, LICENS, HOSTNAM or COMPUTER, or has a LAT, LON, ELEV, ALT, USER, HOST, OPERATOR, ORIGIN or PI part;
+  and COMMENT and HISTORY keywords.</li>
+  </ul></li>
 <li>Results of what PI Copilot looks up or does for you: other images' previews and statistics, process
 descriptions and parameters, an image's processing history, your workspace process icons, the list of installed
 scripts, and the console output of a script you let it run. File names only, never folders.</li>

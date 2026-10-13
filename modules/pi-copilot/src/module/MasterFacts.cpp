@@ -104,7 +104,10 @@ bool IsIntegrationAuxiliary( const std::string& viewId, const std::vector<Histor
 std::string KeywordText( const FITSKeywordArray& keywords, const char* name )
 {
    const IsoString want = IsoString( name ).Trimmed().Uppercase();
-   if ( IsRedactedFitsKeyword( want ) )
+   // Only allowlisted keywords' values are ever read (ViewContext.h): what this
+   // returns can reach the model and Haiku through the journey (acquisition
+   // facts, target, recipe, comparisons, replays).
+   if ( IsRedactedFitsKeyword( want ) || !IsFitsValueAllowed( want ) )
       return std::string();
    for ( const FITSHeaderKeyword& k : keywords )
       if ( k.name.Trimmed().Uppercase() == want )
@@ -160,7 +163,7 @@ MasterEvidence DetectMaster( const std::vector<std::string>& ids, const FITSKeyw
 
 std::string DeriveTarget( const FITSKeywordArray& keywords, const String& filePath, const std::string& viewId )
 {
-   const std::string object = KeywordText( keywords, "OBJECT" );
+   const std::string object = FitsValueWithoutPaths( KeywordText( keywords, "OBJECT" ) );
    if ( !object.empty() )
       return object;
    if ( !filePath.IsEmpty() )
@@ -186,8 +189,8 @@ AcquisitionFacts ExtractAcquisition( const FITSKeywordArray& kw, const std::vect
 {
    AcquisitionFacts a;
    a.target = DeriveTarget( kw, filePath, viewId );
-   a.filter = KeywordText( kw, "FILTER" );
-   a.camera = KeywordText( kw, "INSTRUME" );
+   a.filter = FitsValueWithoutPaths( KeywordText( kw, "FILTER" ) );   // free text: second layer
+   a.camera = FitsValueWithoutPaths( KeywordText( kw, "INSTRUME" ) );
    a.gain = Number( KeywordText( kw, "GAIN" ) );
    a.offset = Number( KeywordText( kw, "OFFSET" ) );
    a.sensorTempC = Number( KeywordText( kw, "CCD-TEMP" ) );
