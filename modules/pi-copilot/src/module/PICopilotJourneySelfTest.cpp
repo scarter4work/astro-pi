@@ -4686,7 +4686,7 @@ bool RunJourneySelfTest( nlohmann::json& out )
                     && r.params.at( "tableParameters" ).at( "keywords" ).at( 0 ).at( 1 ) == "[redacted]"
                     && r.params.at( "tableParameters" ).at( "keywords" ).at( 1 ).at( 1 ) == "'M42'"
                     && r.params.at( "replayable" ) == false && r.params.at( "xpsm" ) == ""
-                    && r.params.at( "parseNote" ) == "contained observing-site data; not stored";
+                    && r.params.at( "parseNote" ) == "contained location, identity or other FITS keyword data; not stored";
          }
 
          // (f) Retention: only the old unkept journey goes (row, cascade, folder).
@@ -4792,7 +4792,7 @@ bool RunJourneySelfTest( nlohmann::json& out )
                           && back.params.at( "parameters" ).at( "note" ) == "kept"
                           && back.params.at( "tableParameters" ).at( "keywords" ).at( 0 ).at( 1 ) == "[redacted]"
                           && back.params.at( "xpsm" ) == "" && back.params.at( "replayable" ) == false
-                          && back.params.at( "parseNote" ) == "contained observing-site data; not stored";
+                          && back.params.at( "parseNote" ) == "contained location, identity or other FITS keyword data; not stored";
          }
          st.reset();
 

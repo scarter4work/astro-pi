@@ -3084,9 +3084,29 @@ bool RunInc5SelfTest( nlohmann::json& out )
             lc.turnViewId = gw.MainView().FullId();
             int liveConfirms = 0;
             lc.confirm = [&]( const String&, const String&, const String& ) { ++liveConfirms; return false; };
+            // The GraXpert process of PixInsight's 2026-10-07 GraXpert update (GraXpert 4.0) defaults to its
+            // sample-free extraction (backgroundExtractionSampleFree = true), which leaves this synthetic linear
+            // gradient nearly unchanged (measured 0.2353 -> 0.2347). The check is about the pinned program running
+            // and doing its job, so the test picks the AI background extraction explicitly -- the extraction the
+            // earlier GraXpert process always used -- whenever the installed process has that switch.
+            nlohmann::json liveParams = { { "backgroundExtraction", true }, { "replaceImage", true } };
+            bool sampleFreeSwitch = false;
+            try
+            {
+               sampleFreeSwitch = !ProcessParameter( Process( IsoString( "GraXpert" ) ),
+                                                     IsoString( "backgroundExtractionSampleFree" ) ).IsNull();
+            }
+            catch ( ... )
+            {
+            }
+            if ( sampleFreeSwitch )
+               liveParams["backgroundExtractionSampleFree"] = false;
+            detail["liveSampleFreeSwitchSetOff"] = sampleFreeSwitch;
+            nlohmann::json keepParams = liveParams;
+            keepParams["replaceImage"] = false;
             const auto t0 = std::chrono::steady_clock::now();
             const ToolOutcome run = ExecuteTool( ToolCall{ "gl", "apply_process",
-               { { "process_id", "GraXpert" }, { "parameters", { { "backgroundExtraction", true }, { "replaceImage", true } } } } }, lc );
+               { { "process_id", "GraXpert" }, { "parameters", liveParams } } }, lc );
             const double secs = std::chrono::duration<double>( std::chrono::steady_clock::now() - t0 ).count();
             edgeMeans( l1, r1 );
             SelfTestSectionMark( "B10 live: new-window mode" );
@@ -3095,7 +3115,7 @@ bool RunInc5SelfTest( nlohmann::json& out )
             // starts with a GraXpert step) and named in resultWindows.
             const auto tw0 = std::chrono::steady_clock::now();
             const ToolOutcome keep = ExecuteTool( ToolCall{ "glk", "apply_process",
-               { { "process_id", "GraXpert" }, { "parameters", { { "backgroundExtraction", true }, { "replaceImage", false } } } } }, lc );
+               { { "process_id", "GraXpert" }, { "parameters", keepParams } } }, lc );
             const double keepSecs = std::chrono::duration<double>( std::chrono::steady_clock::now() - tw0 ).count();
             nlohmann::json keepSummary;
             try { keepSummary = nlohmann::json::parse( keep.content.at( 0 ).at( "text" ).get<std::string>() ); } catch ( ... ) {}
@@ -3104,7 +3124,10 @@ bool RunInc5SelfTest( nlohmann::json& out )
             for ( const auto& id : resultWindows )
             {
                const std::string s = id.is_string() ? id.get<std::string>() : std::string();
-               keepNamed = keepNamed && s.rfind( "GraXpert_background_extraction", 0 ) == 0;
+               // GraXpert's background-extraction result window: "GraXpert_background_extraction..." from the
+               // earlier process, "GraXpert_ai_background_extraction..." from the GraXpert 4.0 process (measured).
+               keepNamed = keepNamed && (s.rfind( "GraXpert_background_extraction", 0 ) == 0
+                                         || s.rfind( "GraXpert_ai_background_extraction", 0 ) == 0);
                ImageWindow rw = ImageWindow::WindowById( IsoString( s.c_str() ) );
                if ( !rw.IsNull() )
                   rw.ForceClose();

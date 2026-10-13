@@ -300,6 +300,19 @@ bool RedactLocationData( nlohmann::json& parameters, nlohmann::json& tables )
                      if ( !IsRedactedName( cell ) && !(cell.is_string() && IsLocationId( cell.get<std::string>() )) )
                         cell = "[redacted]";
             }
+            // FITSHeader's "keywords" table (columns name, value, comment; measured): a
+            // keyword off the value allowlist (ViewContext.h) keeps its name only.
+            if ( !hit && row.is_array() && row.size() >= 2 && row.at( 0 ).is_string()
+                 && AsciiLower( t.key() ) == "keywords"
+                 && !IsFitsValueAllowed( IsoString( row.at( 0 ).get<std::string>().c_str() ) ) )
+            {
+               for ( size_t c = 1; c < row.size(); ++c )
+                  if ( row.at( c ) != "[redacted]" )
+                  {
+                     row.at( c ) = "[redacted]";
+                     hit = true;
+                  }
+            }
             else if ( row.is_object() )   // raw rows of an uninstalled process
                for ( auto c = row.begin(); c != row.end(); ++c )
                   if ( IsLocationId( c.key() ) || IsRedactedName( c.value() ) )
@@ -334,7 +347,7 @@ StepRow MakeStepRow( const HistoryStep& h, int64 imageId, const std::string& sta
       { "identity", h.identity },   // a hash: reveals nothing, and must keep matching future reads
       { "mask", h.maskId.empty() ? nlohmann::json() : nlohmann::json( { { "id", h.maskId }, { "inverted", h.maskInverted } } ) },
       { "replayable", h.replayable && !redacted },
-      { "parseNote", redacted ? std::string( "contained observing-site data; not stored" ) : h.parseNote } };
+      { "parseNote", redacted ? std::string( "contained location, identity or other FITS keyword data; not stored" ) : h.parseNote } };
    return r;
 }
 
@@ -656,7 +669,7 @@ int64 JourneyStore::AddStep( const StepRow& s )
    {
       params["xpsm"] = "";
       params["replayable"] = false;
-      params["parseNote"] = "contained observing-site data; not stored";
+      params["parseNote"] = "contained location, identity or other FITS keyword data; not stored";
    }
    Stmt st( *this, "INSERT INTO step(image_id, seq, process_id, params_json, started, duration_s, actor, reason, "
                    "reason_inferred, state, history_index) VALUES(?,?,?,?,?,?,?,?,?,?,?)" );

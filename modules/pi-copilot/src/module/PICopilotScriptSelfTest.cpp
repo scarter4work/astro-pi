@@ -1244,7 +1244,8 @@ bool RunScriptSelfTest( nlohmann::json& out )
             "LONG-OBS", "ALT-OBS", "OBSGEO-X", "OBSGEO-Y", "OBSGEO-Z", "OBSGEO-B", "OBSGEO-L", "OBSGEO-H", "GEOLAT",
             "GEOLON", "HIERARCH ESO TEL GEOLAT", "ESO TEL GEOLON", "ESO TEL GEOELEV", "GPS-LAT", "GPSLAT", "GPS LONG",
             "LATITUDE", "LONGITUD", "OBSERVER", "observer", "OBSERVAT", "Observation:Location:Latitude", "AUTHOR",
-            "SITE", "LAT", "LON", "ELEVATIO", "HIERARCH OBS PI-COI NAME", "OPERATOR", "ORIGIN", "USER", "CONTACT" };
+            "SITE", "LAT", "LON", "ELEVATIO", "HIERARCH OBS PI-COI NAME", "OPERATOR", "ORIGIN", "USER", "CONTACT",
+            "SWOWNER", "HOSTNAME", "HOST", "COMPUTER", "LICENSE" };
          const char* kept[] = { "OBJECT", "FILTER", "EXPTIME", "DATE-OBS", "OBJCTALT", "OBJCTRA", "OBJCTDEC", "CENTALT",
             "INSTRUME", "TELESCOP", "CCD-TEMP", "SET-TEMP", "IMAGETYP", "NCOMBINE", "XBINNING", "FOCALLEN", "COMPOSIT",
             "POSITION", "AIRMASS", "PIERSIDE", "FLATFILE", "GAIN", "OFFSET" };
@@ -1261,39 +1262,74 @@ bool RunScriptSelfTest( nlohmann::json& out )
                names.push_back( std::string( "over-redacted: " ) + k );
                ok = false;
             }
+         // The value allowlist.
+         const char* valued[] = { "OBJECT", "filter", "EXPTIME", "DATE-OBS", "GAIN", "OFFSET", "CCD-TEMP", "XBINNING", "XPIXSZ",
+            "INSTRUME", "TELESCOP", "FOCALLEN", "OBJCTRA", "OBJCTDEC", "RA", "DEC", "BAYERPAT", "NAXIS1", "CTYPE2", "CRVAL1",
+            "CRPIX2", "CD1_1", "CD2_2", "PC1_2", "CDELT1", "A_ORDER", "A_0_2", "BP_1_1", "EQUINOX", "NCOMBINE", "IMAGETYP" };
+         const char* notValued[] = { "OBJCTALT", "OBJCTAZ", "CENTALT", "AIRMASS", "OBJCTHA", "LST", "HA", "SWCREATE", "SWOWNER",
+            "FILENAME", "CREATOR", "PROGRAM", "MYKEY", "NAXISX", "CD1", "CDX_1", "A_", "CTYPE", "DATE-OBSX", "SITELAT" };
+         for ( const char* k : valued )
+            if ( !IsFitsValueAllowed( IsoString( k ) ) )
+            {
+               names.push_back( std::string( "value not allowed: " ) + k );
+               ok = false;
+            }
+         for ( const char* k : notValued )
+            if ( IsFitsValueAllowed( IsoString( k ) ) )
+            {
+               names.push_back( std::string( "value allowed: " ) + k );
+               ok = false;
+            }
          d.push_back( { { "names", names }, { "redactedChecked", sizeof( redacted )/sizeof( *redacted ) },
                         { "keptChecked", sizeof( kept )/sizeof( *kept ) } } );
 
-         // End to end through the view context sent to the model.
+         // End to end through the view context sent to the model: values only for allowlisted
+         // keywords (still path-scrubbed), names only for the rest, nothing for location/identity
+         // names and COMMENT/HISTORY.
          RgbWindow w( "PCFitsPaths", 0.1, 0.1, 0.1 );
          FITSKeywordArray k;
-         k.Add( FITSHeaderKeyword( "FILENAME", "'/home/someone/data/M31/light_001.fits'", "" ) );
-         k.Add( FITSHeaderKeyword( "INPUTS", "'C:\\Users\\bob\\M31\\a.xisf, /mnt/x/b.xisf'", "" ) );
-         k.Add( FITSHeaderKeyword( "SOURCE", "'file:///home/someone/raw/x.fits'", "" ) );
-         k.Add( FITSHeaderKeyword( "DATADIR", "'/home/someone/astro/M31/sess'", "" ) );   // cut mid-path
-         k.Add( FITSHeaderKeyword( "OBJECT", "'M31'", "" ) );
+         k.Add( FITSHeaderKeyword( "OBJECT", "'/home/someone/data/M31/light_001.fits'", "" ) );
+         k.Add( FITSHeaderKeyword( "TELESCOP", "'C:\\Users\\bob\\M31\\a.xisf, /mnt/x/b.xisf'", "" ) );
+         k.Add( FITSHeaderKeyword( "INSTRUME", "'file:///home/someone/raw/x.fits'", "" ) );
+         k.Add( FITSHeaderKeyword( "FRAME", "'/home/scott carter'", "" ) );                   // a folder with a space
          k.Add( FITSHeaderKeyword( "FILTER", "'Ha/OIII'", "" ) );
+         k.Add( FITSHeaderKeyword( "EXPTIME", "300", "" ) );
+         k.Add( FITSHeaderKeyword( "SWCREATE", "'N.I.N.A. 3.1 on DESKTOP-SCOTT'", "" ) );    // host name: name only
+         k.Add( FITSHeaderKeyword( "FILENAME", "'/home/someone/data/M31/light_001.fits'", "" ) );
+         k.Add( FITSHeaderKeyword( "MYKEY", "'secret value'", "" ) );                         // unknown: name only
+         k.Add( FITSHeaderKeyword( "SWOWNER", "'Scott Carter'", "" ) );                       // SGP licence owner: left out
          k.Add( FITSHeaderKeyword( "OBSERVER", "'Someone'", "" ) );
          k.Add( FITSHeaderKeyword( "observat", "'Backyard of Someone'", "" ) );
          k.Add( FITSHeaderKeyword( "HIERARCH ESO TEL GEOLAT", "-24.6", "" ) );
          k.Add( FITSHeaderKeyword( "GPS-LAT", "'40 11 12'", "" ) );
          k.Add( FITSHeaderKeyword( "OBSGEO-X", "1234567.0", "" ) );
+         k.Add( FITSHeaderKeyword( "OBJCTALT", "41.5", "" ) );                                 // locates the site with the time
          k.Add( FITSHeaderKeyword( "COMMENT", "'/home/someone/notes.txt'", "Someone's notes /home/someone" ) );
          k.Add( FITSHeaderKeyword( "HISTORY", "", "ImageIntegration.images: /home/someone/l1.xisf" ) );
          w.Window().SetKeywords( k );
          const nlohmann::json ctx = BuildViewContext( w.MainView() );
          std::map<std::string, std::string> kv;
+         std::set<std::string> nameOnly;
          for ( const nlohmann::json& e : ctx["fitsKeywords"] )
-            kv[e.value( "name", std::string() )] = e.value( "value", std::string() );
+         {
+            if ( e.contains( "value" ) )
+               kv[e.value( "name", std::string() )] = e.value( "value", std::string() );
+            else
+               nameOnly.insert( e.value( "name", std::string() ) );
+         }
          const std::string dump = ctx.dump();
-         const bool e2e = kv["FILENAME"] == "light_001.fits" && kv["INPUTS"] == "a.xisf, b.xisf" && kv["SOURCE"] == "x.fits"
-                       && kv["DATADIR"] == "[path]" && kv["OBJECT"] == "M31" && kv["FILTER"] == "Ha/OIII" && kv.size() == 6
-                       && ctx.value( "fitsKeywordsRedacted", 0 ) == 5 && ctx.value( "fitsCommentaryKeywordsOmitted", 0 ) == 2
-                       && ctx.value( "fitsValuesPathsScrubbed", 0 ) == 4
+         const bool e2e = kv["OBJECT"] == "light_001.fits" && kv["TELESCOP"] == "a.xisf, b.xisf" && kv["INSTRUME"] == "x.fits"
+                       && kv["FRAME"] == "[path]" && kv["FILTER"] == "Ha/OIII" && kv["EXPTIME"] == "300" && kv.size() == 6
+                       && nameOnly == std::set<std::string>( { "SWCREATE", "FILENAME", "MYKEY", "OBJCTALT" } )
+                       && ctx.value( "fitsKeywordsRedacted", 0 ) == 6 && ctx.value( "fitsCommentaryKeywordsOmitted", 0 ) == 2
+                       && ctx.value( "fitsKeywordValuesWithheld", 0 ) == 4 && ctx.value( "fitsValuesPathsScrubbed", 0 ) == 4
                        && !Has( dump, "someone" ) && !Has( dump, "Someone" ) && !Has( dump, "Users" ) && !Has( dump, "/home/" )
-                       && !Has( dump, "-24.6" ) && !Has( dump, "40 11 12" );
+                       && !Has( dump, "carter" ) && !Has( dump, "Carter" ) && !Has( dump, "DESKTOP" ) && !Has( dump, "SCOTT" )
+                       && !Has( dump, "SWOWNER" ) && !Has( dump, "secret" ) && !Has( dump, "-24.6" ) && !Has( dump, "40 11 12" )
+                       && !Has( dump, "41.5" );
          d.push_back( { { "endToEnd", ctx["fitsKeywords"] }, { "redacted", ctx.value( "fitsKeywordsRedacted", 0 ) },
                         { "commentary", ctx.value( "fitsCommentaryKeywordsOmitted", 0 ) },
+                        { "withheld", ctx.value( "fitsKeywordValuesWithheld", 0 ) },
                         { "scrubbed", ctx.value( "fitsValuesPathsScrubbed", 0 ) }, { "ok", e2e } } );
          ok = ok && e2e;
       }

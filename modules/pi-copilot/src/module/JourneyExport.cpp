@@ -783,7 +783,11 @@ nlohmann::json PrivacyStripStepParameters( const std::string& processId, const n
 {
    RequireRootThread( "PrivacyStripStepParameters" );
    PathFound f;
-   return RedactStep( processId, parameters, tableParameters, f );
+   // Location/identity data and FITS keyword values off the allowlist (e.g. a
+   // FITSHeader icon or step) are withheld too, not only folders (0.2.2.0).
+   nlohmann::json p = parameters, t = tableParameters;
+   RedactLocationData( p, t );
+   return RedactStep( processId, p, t, f );
 }
 
 nlohmann::json PrivacyStripPaths( const nlohmann::json& v )

@@ -48,6 +48,32 @@ bool IsRedactedFitsKeyword( const IsoString& name );
 // COMMENT, HISTORY and blank-name keywords: free text, never sent.
 bool IsCommentaryFitsKeyword( const IsoString& name );
 
+// THE ALLOWLIST (security review of 0.2.2.0: a blocklist keeps losing): the
+// keywords whose VALUES may reach the model, because processing needs them --
+// what NukeX, PixInsight's own processes (WBPP, Debayer, ImageSolver,
+// SPCC/PCC, astrometry) and PI Copilot's journey facts read, and what
+// NINA/SGP/SharpCap/ASIAIR write for them:
+//  image structure  SIMPLE BITPIX NAXIS NAXISn EXTEND BZERO BSCALE IMAGETYP FRAME
+//                   FRAMETYP BAYERPAT XBAYROFF YBAYROFF PEDESTAL CALSTAT ROWORDER
+//                   IMAGEW IMAGEH XORGSUBF YORGSUBF
+//  target, filter   OBJECT FILTER
+//  exposure         EXPTIME EXPOSURE LIVETIME DATE-OBS DATE-AVG DATE-END DATE-LOC
+//                   MJD-OBS MJD-AVG
+//  camera           GAIN EGAIN OFFSET CCD-TEMP SET-TEMP XBINNING YBINNING CCDXBIN
+//                   CCDYBIN XPIXSZ YPIXSZ PIXSIZE INSTRUME READOUTM READNOIS
+//                   RDNOISE
+//  optics           TELESCOP FOCALLEN APERTURE APTDIA FOCRATIO FOCUSPOS FOCPOS
+//  pointing         RA DEC OBJCTRA OBJCTDEC (never ALT/AZ, hour angle, LST or
+//                   airmass: with the time they locate the observer)
+//  astrometry       EQUINOX EPOCH RADESYS RADECSYS CTYPEn CRVALn CRPIXn CDELTn
+//                   CROTAn CUNITn CDi_j PCi_j PIXSCALE SCALE PLTSOLVD and the SIP
+//                   coefficients A_/B_/AP_/BP_ (ORDER, i_j)
+//  integration      NCOMBINE STACKCNT
+// Every other keyword reaches the model by NAME only (no value), and only
+// when IsRedactedFitsKeyword() passes it. Allowlisted values still go
+// through FitsValueWithoutPaths() (second layer). Any case.
+bool IsFitsValueAllowed( const IsoString& name );
+
 // Text with every filesystem path reduced to its file name, FAIL-CLOSED
 // (privacy: a path names the user's account and folders):
 //  - an absolute path starts with '/', a double backslash (network share),

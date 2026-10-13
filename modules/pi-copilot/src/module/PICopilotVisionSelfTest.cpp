@@ -229,6 +229,8 @@ void AddSyntheticKeywords( ImageWindow& window )
    k.Add( FITSHeaderKeyword( "SITELAT", "'" + IsoString( kSyntheticSiteLat ) + "'", "synthetic" ) );
    k.Add( FITSHeaderKeyword( "OBSERVER", "'" + IsoString( kSyntheticObserver ) + "'", "synthetic" ) );
    const IsoString longValue = "'" + IsoString( 'x', 100 ) + "'";
+   // 0.2.2.0: values only for allowlisted keywords -- the 80-character cap is shown on TELESCOP; KWnnn go by name.
+   k.Add( FITSHeaderKeyword( "TELESCOP", longValue, "synthetic" ) );
    for ( int i = 1; i <= 68; ++i )
       k.Add( FITSHeaderKeyword( IsoString().Format( "KW%03d", i ), longValue, "" ) );
    window.SetKeywords( k );
@@ -453,15 +455,17 @@ bool RunVisionSelfTest( nlohmann::json& out )
               && near( s[1].at( "min" ).get<double>(), 0.0, 1e-9 )                  // square is 0 in G
               && near( s[1].at( "max" ).get<double>(), SynthBackground( kSynthW - 1 ), 1e-6 )
               && s[0].at( "mean" ).get<double>() > s[1].at( "mean" ).get<double>()
-              && ctx.at( "fitsKeywordsTotal" ) == 72
+              && ctx.at( "fitsKeywordsTotal" ) == 73
               && ctx.at( "fitsKeywordsRedacted" ) == 2
-              && ctx.at( "fitsKeywordsOmitted" ) == 10
+              && ctx.at( "fitsKeywordsOmitted" ) == 11
               && redactedAbsent
               && k.size() == size_t( PICopilotMaxFitsKeywords )
               && k[0].at( "name" ) == "OBJECT" && k[0].at( "value" ) == "M42"
-              && k[2].at( "name" ) == "KW001"
+              && k[2].at( "name" ) == "TELESCOP"
               && k[2].at( "value" ).get<std::string>().size() == size_t( PICopilotMaxFitsValueChars )
               && k[2].at( "valueTruncated" ) == true
+              && k[3].at( "name" ) == "KW001" && !k[3].contains( "value" )   // not allowlisted: name only
+              && ctx.at( "fitsKeywordValuesWithheld" ) == 57
               && !k[0].contains( "valueTruncated" );
       }
       catch ( const pcl::Exception& x ) { error = x.Message(); }
