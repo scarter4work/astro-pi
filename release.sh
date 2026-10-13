@@ -11,6 +11,133 @@ REPO="$ROOT/repository"
 DATE="$(date +%Y%m%d)"
 
 die(){ echo "ERROR: $*" >&2; exit 1; }
+
+# ── Module packages: bin/ + the module's documentation ──────────────────────
+# A module tarball deploys bin/<Name>-pxm.{so,xsgn} and doc/tools/<Name>/.
+# doc/tools is the deployment directory the PixInsight Update Repository
+# Reference (section 4.2, Example 2) assigns to documentation of PCL modules,
+# and the core's Browse Documentation opens doc/tools/<ProcessId>/<ProcessId>.html,
+# so the folder and the page carry the process Id ("NukeX", "PICopilot").
+# doc/docs is for documents "not related to a particular module or script".
+# The source is modules/<m>/doc/<Name>/: <Name>.html (CPD rule 6.1 -- what the
+# module does, its network connections, external programs and file locations)
+# and THIRD_PARTY_NOTICES.txt (CPD rule 7.3 -- PCL License 2.0 conditions 2 and
+# 4, and every linked component's notice).
+NUKEX_DOC="$ROOT/modules/nukex/doc/NukeX"
+PICOPILOT_DOC="$ROOT/modules/pi-copilot/doc/PICopilot"
+PCL_ACK='This product is based on software from the PixInsight project, developed by Pleiades Astrophoto and its contributors (https://pixinsight.com/).'
+
+modver(){ sed -nE "s/^#define $2_MODULE_VERSION_(MAJOR|MINOR|REVISION|BUILD) +([0-9]+).*/\\2/p" "$1" | paste -sd. -; }
+
+module_doc_check(){ # <doc source dir> <Name>
+  local d="$1" n="$2"
+  [ -f "$d/$n.html" ] || die "$d/$n.html missing: every module package ships its user documentation (CPD rule 6.1)"
+  [ -f "$d/THIRD_PARTY_NOTICES.txt" ] || die "$d/THIRD_PARTY_NOTICES.txt missing (CPD rule 7.3)"
+  tr -s '[:space:]' ' ' < "$d/THIRD_PARTY_NOTICES.txt" | grep -qF "$PCL_ACK" \
+    || die "$d/THIRD_PARTY_NOTICES.txt lacks the PCL License 2.0 condition-4 acknowledgment"
+  grep -qF 'PixInsight Class Library License' "$d/THIRD_PARTY_NOTICES.txt" \
+    && grep -qF 'Redistributions in binary form must reproduce the above copyright notice' "$d/THIRD_PARTY_NOTICES.txt" \
+    || die "$d/THIRD_PARTY_NOTICES.txt lacks the full PCL licence text (PCL License 2.0 condition 2)"
+}
+
+build_module_tgz(){ # <out.tar.gz> <Name> <module .so> <module .xsgn> <doc source dir>
+  local out="$1" n="$2" so="$3" xsgn="$4" doc="$5" st
+  [ "$(basename "$so")" = "$n-pxm.so" ] && [ "$(basename "$xsgn")" = "$n-pxm.xsgn" ] \
+    || die "build_module_tgz $n: expected $n-pxm.so + $n-pxm.xsgn, got $so + $xsgn"
+  module_doc_check "$doc" "$n"
+  st="$(mktemp -d)"
+  mkdir -p "$st/bin" "$st/doc/tools/$n"
+  cp "$so" "$xsgn" "$st/bin/"
+  cp -R "$doc/." "$st/doc/tools/$n/"
+  # World-readable whatever the build's umask: the updater installs as root
+  # while PixInsight runs as the user (the published PICopilot 0.2.1.1
+  # tarball carries a 0700 .so and a 0600 .xsgn).
+  tar -C "$st" --sort=name --mode='u+rwX,go+rX,go-w' -czf "$out" bin doc
+  rm -rf "$st"
+}
+
+module_pkg_check(){ # <tgz> <Name> <doc source dir> : deploys exactly bin/<Name>-pxm.{so,xsgn} + doc/tools/<Name>/ (Repository Reference 4.2), docs == source
+  python3 - "$1" "$2" "$3" <<'PY'
+import os,sys,tarfile
+tgz,n,doc=sys.argv[1:4]
+want={}
+for r,_,fs in os.walk(doc):
+    for f in fs:
+        p=os.path.join(r,f)
+        want["doc/tools/%s/%s"%(n,os.path.relpath(p,doc))]=open(p,'rb').read()
+need={"bin/%s-pxm.so"%n,"bin/%s-pxm.xsgn"%n}|set(want)
+dirs={"bin","doc","doc/tools","doc/tools/"+n}
+errs=[]
+with tarfile.open(tgz) as t:
+    files={}
+    for m in t.getmembers():
+        name=m.name[2:] if m.name.startswith("./") else m.name
+        if m.isdir():
+            if name.rstrip("/") not in dirs and not name.startswith("doc/tools/%s/"%n): errs.append("unexpected directory "+name)
+        elif m.isfile():
+            files[name]=m
+            if m.mode & 0o044 != 0o044: errs.append("%s is not world-readable (mode %o)"%(name,m.mode))
+        else: errs.append("not a regular file or directory: "+name)
+    for f in sorted(set(files)-need): errs.append("deploys %s, outside bin/%s-pxm.* and doc/tools/%s/"%(f,n,n))
+    for f in sorted(need-set(files)): errs.append("missing "+f)
+    for f in sorted(set(want)&set(files)):
+        if t.extractfile(files[f]).read()!=want[f]: errs.append("%s differs from %s"%(f,os.path.join(doc,f.split("/",3)[3])))
+if errs:
+    print("  "+os.path.basename(tgz)+":"); [print("    "+e) for e in errs]; sys.exit(1)
+print("  OK  %s: bin/%s-pxm.{so,xsgn} + %d doc file(s) in doc/tools/%s/, all world-readable, docs match source"%(os.path.basename(tgz),n,len(want),n))
+PY
+}
+
+# The published tarball of a module VERSION, whatever date it was cut on
+# (the name is <YYYYMMDD>-linux-x64-<Module>-<ver>.tar.gz), else a new dated
+# name. Matching the dated name alone re-packaged an unchanged version under
+# a new name on any later day, and the updater (which tracks installed
+# packages by fileName) then offered the same version as an update.
+module_tgz(){ # <Module> <ver>
+  local hit
+  hit="$(git -C "$ROOT" ls-files "repository/*-linux-x64-$1-$2.tar.gz" | sed 's#^repository/##')"
+  [ "$(printf '%s\n' "$hit" | grep -c .)" -le 1 ] || die "several published tarballs for $1 $2: $hit"
+  if [ -n "$hit" ]; then echo "$hit"; else echo "$DATE-linux-x64-$1-$2.tar.gz"; fi
+}
+
+# A published (committed) module tarball is reused byte for byte, never rebuilt
+# (see package_module). That is only correct while it already deploys exactly
+# the current documentation; otherwise the version must be bumped.
+published_pkg_reusable(){ # <tarball> <Name> <doc source dir>; 0 = new package, or published and up to date
+  git -C "$ROOT" ls-files --error-unmatch "repository/$1" >/dev/null 2>&1 || { echo "  new package $1"; return 0; }
+  local tmp rc=0; tmp="$(mktemp -d)"
+  git -C "$ROOT" show ":repository/$1" > "$tmp/$1"
+  module_pkg_check "$tmp/$1" "$2" "$3" || rc=1
+  rm -rf "$tmp"
+  return $rc
+}
+
+# Packaging self-test: the same build_module_tgz + module_pkg_check the release
+# uses, on any .so/.xsgn pair (e.g. a container build and a stand-in .xsgn),
+# into a scratch directory, then the reuse verdict step 0b would give for the
+# current module versions. No build, no signing, no manifest, repository/ untouched.
+#   ./release.sh --package-test <outdir> <NukeX-pxm.so> <NukeX-pxm.xsgn> <PICopilot-pxm.so> <PICopilot-pxm.xsgn>
+if [ "${1:-}" = "--package-test" ]; then
+  [ $# -eq 6 ] || die "usage: $0 --package-test <outdir> <NukeX-pxm.so> <NukeX-pxm.xsgn> <PICopilot-pxm.so> <PICopilot-pxm.xsgn>"
+  OUT="$2"; mkdir -p "$OUT"
+  case "$(cd "$OUT" && pwd)/" in "$REPO/"*) die "--package-test must not write into repository/";; esac
+  NV="$(modver "$ROOT/modules/nukex/src/module/NukeXVersion.h" NUKEX)"
+  PV="$(modver "$ROOT/modules/pi-copilot/src/module/PICopilotVersion.h" PICOPILOT)"
+  NT="$OUT/$DATE-linux-x64-NukeX-$NV.tar.gz"
+  PT="$OUT/$DATE-linux-x64-PICopilot-$PV.tar.gz"
+  build_module_tgz "$NT" NukeX "$3" "$4" "$NUKEX_DOC"
+  module_pkg_check "$NT" NukeX "$NUKEX_DOC" || die "NukeX package check failed"
+  build_module_tgz "$PT" PICopilot "$5" "$6" "$PICOPILOT_DOC"
+  module_pkg_check "$PT" PICopilot "$PICOPILOT_DOC" || die "PICopilot package check failed"
+  for t in "$NT" "$PT"; do echo "== $(basename "$t")"; tar -tzvf "$t"; done
+  echo "== release step 0b verdict for the current versions"
+  published_pkg_reusable "$(module_tgz NukeX "$NV")" NukeX "$NUKEX_DOC" \
+    || echo "  release.sh would STOP: NukeX $NV is published without the current docs -- bump its version"
+  published_pkg_reusable "$(module_tgz PICopilot "$PV")" PICopilot "$PICOPILOT_DOC" \
+    || echo "  release.sh would STOP: PICopilot $PV is published without the current docs -- bump its version"
+  exit 0
+fi
+
 # Every PixInsight launch below goes through pi_headless: a private Xvfb, no
 # WAYLAND_DISPLAY, QT_QPA_PLATFORM=xcb -- never the user's desktop.
 . "$ROOT/tools/pi-headless.sh"
@@ -98,6 +225,50 @@ if ! qe_check "$QE_SRC"; then
   qe_check "$QE_SRC" || die "freshly signed QE publication does not verify"
 fi
 
+echo "== 0b/6 module package names and documentation (before the long build) =="
+# The version goes in the tarball name (ported from nukex5 3868a85). Several
+# releases on one day otherwise share "<date>-linux-x64-<Name>.tar.gz":
+# raw.githubusercontent.com keeps serving the previous bytes for that path for
+# minutes after a push while the signed manifest already names the new sha1,
+# and PixInsight's updater records installed packages by fileName
+# (/opt/PixInsight/etc/update/installed.xri). A name that changes with every
+# release can be neither stale nor mistaken for the installed one.
+NUKEX_VER="$(modver "$ROOT/modules/nukex/src/module/NukeXVersion.h" NUKEX)"
+PICOPILOT_VER="$(modver "$ROOT/modules/pi-copilot/src/module/PICopilotVersion.h" PICOPILOT)"
+[[ "$NUKEX_VER" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]] || die "could not read NukeX version (got '$NUKEX_VER')"
+[[ "$PICOPILOT_VER" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]] || die "could not read PICopilot version (got '$PICOPILOT_VER')"
+MOD_TGZ="$(module_tgz NukeX "$NUKEX_VER")"
+PICOPILOT_TGZ="$(module_tgz PICopilot "$PICOPILOT_VER")"
+# A versioned module tarball that is already committed is PUBLISHED: never
+# rebuild it (a re-sign changes its bytes under the same name, and the raw CDN
+# would serve the old bytes against the new manifest sha1). Bump the module
+# version to ship new bytes.
+reuse_if_published(){ # <file in repository/>: restore the committed bytes of an already-published package
+  if git -C "$ROOT" ls-files --error-unmatch "repository/$1" >/dev/null 2>&1; then
+    git -C "$ROOT" checkout -- "repository/$1"
+    echo "   $1 already published -- reusing the committed bytes"
+  fi
+}
+package_module(){ # <tarball> <Name> <module .so> <module .xsgn> <doc source dir>
+  local tgz="$1"
+  if git -C "$ROOT" ls-files --error-unmatch "repository/$tgz" >/dev/null 2>&1; then
+    git -C "$ROOT" checkout -- "repository/$tgz"
+    echo "   $tgz already published -- reusing the committed bytes"
+  else
+    build_module_tgz "$REPO/$tgz" "$2" "$3" "$4" "$5"
+  fi
+  module_pkg_check "$REPO/$tgz" "$2" "$5" || die "$tgz does not deploy exactly bin/$2-pxm.{so,xsgn} + the current doc/tools/$2/"
+}
+# Fail now, not after the build: the docs each package will ship must be
+# complete, and an already-published version can only be reused if its
+# tarball already carries exactly the current docs (else: bump the version).
+module_doc_check "$NUKEX_DOC" NukeX
+module_doc_check "$PICOPILOT_DOC" PICopilot
+published_pkg_reusable "$MOD_TGZ" NukeX "$NUKEX_DOC" \
+  || die "NukeX $NUKEX_VER is already published as $MOD_TGZ without the current doc/tools/NukeX/ -- bump NukeX's version so a new package is built"
+published_pkg_reusable "$PICOPILOT_TGZ" PICopilot "$PICOPILOT_DOC" \
+  || die "PICopilot $PICOPILOT_VER is already published as $PICOPILOT_TGZ without the current doc/tools/PICopilot/ -- bump PICopilot's version so a new package is built"
+
 echo "== 1/6 build NukeX + PICopilot modules (portable Rocky 9 container) =="
 # NEVER ship a host build: the dev box's glibc/libstdc++ symbol versions and
 # Fedora-only sonames (libceres/libglog/libgflags) end up in the module, which
@@ -143,52 +314,7 @@ print("  signed+verified:", ", ".join(r["verified"]))
 PY
 
 echo "== 3/6 package NukeX module tarball =="
-mkdir -p "$REPO/bin"
-cp "$SO" "$XSGN" "$REPO/bin/"
-# The version goes in the tarball name (ported from nukex5 3868a85). Several
-# releases on one day otherwise share "<date>-linux-x64-<Name>.tar.gz":
-# raw.githubusercontent.com keeps serving the previous bytes for that path for
-# minutes after a push while the signed manifest already names the new sha1,
-# and PixInsight's updater records installed packages by fileName
-# (/opt/PixInsight/etc/update/installed.xri). A name that changes with every
-# release can be neither stale nor mistaken for the installed one.
-modver(){ sed -nE "s/^#define $2_MODULE_VERSION_(MAJOR|MINOR|REVISION|BUILD) +([0-9]+).*/\\2/p" "$1" | paste -sd. -; }
-NUKEX_VER="$(modver "$ROOT/modules/nukex/src/module/NukeXVersion.h" NUKEX)"
-PICOPILOT_VER="$(modver "$ROOT/modules/pi-copilot/src/module/PICopilotVersion.h" PICOPILOT)"
-[[ "$NUKEX_VER" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]] || die "could not read NukeX version (got '$NUKEX_VER')"
-[[ "$PICOPILOT_VER" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]] || die "could not read PICopilot version (got '$PICOPILOT_VER')"
-# The published tarball of a module VERSION, whatever date it was cut on
-# (the name is <YYYYMMDD>-linux-x64-<Module>-<ver>.tar.gz), else a new dated
-# name. Matching the dated name alone re-packaged an unchanged version under
-# a new name on any later day, and the updater (which tracks installed
-# packages by fileName) then offered the same version as an update.
-module_tgz(){ # <Module> <ver>
-  local hit
-  hit="$(git -C "$ROOT" ls-files "repository/*-linux-x64-$1-$2.tar.gz" | sed 's#^repository/##')"
-  [ "$(printf '%s\n' "$hit" | grep -c .)" -le 1 ] || die "several published tarballs for $1 $2: $hit"
-  if [ -n "$hit" ]; then echo "$hit"; else echo "$DATE-linux-x64-$1-$2.tar.gz"; fi
-}
-MOD_TGZ="$(module_tgz NukeX "$NUKEX_VER")"
-# A versioned module tarball that is already committed is PUBLISHED: never
-# rebuild it (a re-sign changes its bytes under the same name, and the raw CDN
-# would serve the old bytes against the new manifest sha1). Bump the module
-# version to ship new bytes.
-reuse_if_published(){ # <file in repository/>: restore the committed bytes of an already-published package
-  if git -C "$ROOT" ls-files --error-unmatch "repository/$1" >/dev/null 2>&1; then
-    git -C "$ROOT" checkout -- "repository/$1"
-    echo "   $1 already published -- reusing the committed bytes"
-  fi
-}
-package_module(){ # <tarball> <files...>
-  local tgz="$1"; shift
-  if git -C "$ROOT" ls-files --error-unmatch "repository/$tgz" >/dev/null 2>&1; then
-    git -C "$ROOT" checkout -- "repository/$tgz"
-    echo "   $tgz already published -- reusing the committed bytes"
-  else
-    tar -C "$REPO" -czf "$REPO/$tgz" "$@"
-  fi
-}
-package_module "$MOD_TGZ" bin/NukeX-pxm.so bin/NukeX-pxm.xsgn
+package_module "$MOD_TGZ" NukeX "$SO" "$XSGN" "$NUKEX_DOC"
 python3 - "$REPO/updates.xri" "$MOD_TGZ" <<'PY'
 import re,sys
 mf,fn=sys.argv[1:3]
@@ -198,9 +324,7 @@ open(mf,'w').write(s)
 PY
 
 echo "== 3a/6 package PICopilot module tarball =="
-cp "$PICOPILOT_SO" "$PICOPILOT_XSGN" "$REPO/bin/"
-PICOPILOT_TGZ="$(module_tgz PICopilot "$PICOPILOT_VER")"
-package_module "$PICOPILOT_TGZ" bin/PICopilot-pxm.so bin/PICopilot-pxm.xsgn
+package_module "$PICOPILOT_TGZ" PICopilot "$PICOPILOT_SO" "$PICOPILOT_XSGN" "$PICOPILOT_DOC"
 # Stale dated PICopilot tarballs (like stale dated NukeX tarballs) are not
 # auto-deleted here -- they're pruned manually at commit time (see repository/
 # git history, e.g. "Dropped stale repository/ artifacts ... 20260627 NukeX tarball").
