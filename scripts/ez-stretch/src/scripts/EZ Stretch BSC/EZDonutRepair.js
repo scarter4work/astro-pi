@@ -32,7 +32,7 @@
 #include <pjsr/ButtonCodes.jsh>
 
 #define TITLE "EZ Donut Repair"
-#define VERSION "1.0.3"
+#define VERSION "1.0.4"
 
 var jsAutoGC = true;
 

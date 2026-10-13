@@ -40,29 +40,29 @@
       </package>
    </platform>
    <platform os="all" arch="noarch" version="1.8.0:2.0.0">
-      <package fileName="EZStretch_v1.0.10.zip" sha1="9bb0e6afcdfd349c3cf29c942c80e25935b57b56" type="script" releaseDate="20261004">
+      <package fileName="EZStretch_v1.0.11.zip" sha1="9bb0e6afcdfd349c3cf29c942c80e25935b57b56" type="script" releaseDate="20261004">
          <title>EZ Stretch</title>
          <description>
             <p>
-               <b>EZ Stretch v1.0.10</b>
+               <b>EZ Stretch v1.0.11</b>
             </p>
             <p>Unified stretch suite combining three algorithms in a single interface.</p>
          </description>
       </package>
-      <package fileName="EZDonutRepair_v1.0.3.zip" sha1="e89349f3cc638a637990818db37b16557354fb36" type="script" releaseDate="20261004">
+      <package fileName="EZDonutRepair_v1.0.4.zip" sha1="e89349f3cc638a637990818db37b16557354fb36" type="script" releaseDate="20261004">
          <title>EZ Donut Repair</title>
          <description>
             <p>
-               <b>EZ Donut Repair v1.0.3</b>
+               <b>EZ Donut Repair v1.0.4</b>
             </p>
             <p>Removes donut/dust artifacts from astrophotography frames.</p>
          </description>
       </package>
-      <package fileName="EZHazeKill_v1.0.1.zip" sha1="d1145bb5b3dbb4f847b3985e0d0bc29df7d86b64" type="script" releaseDate="20261004">
+      <package fileName="EZHazeKill_v1.0.2.zip" sha1="d1145bb5b3dbb4f847b3985e0d0bc29df7d86b64" type="script" releaseDate="20261004">
          <title>EZ Haze Kill</title>
          <description>
             <p>
-               <b>EZ Haze Kill v1.0.1</b>
+               <b>EZ Haze Kill v1.0.2</b>
             </p>
             <p>Gradient and haze reduction.</p>
          </description>

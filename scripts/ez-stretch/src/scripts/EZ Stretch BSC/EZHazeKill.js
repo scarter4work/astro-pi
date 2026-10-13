@@ -30,7 +30,7 @@
 #include <pjsr/TextAlign.jsh>
 
 #define TITLE   "EZ Haze Kill"
-#define VERSION "1.0.1"
+#define VERSION "1.0.2"
 
 var jsAutoGC = true;
 

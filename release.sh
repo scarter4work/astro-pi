@@ -365,7 +365,7 @@ PY
 [ -f "$REPO/$PICOPILOT_TGZ" ] || die "tarball $PICOPILOT_TGZ not produced"
 
 echo "== 3b/6 package EZ script zips (install under src/scripts/scarter4work) =="
-declare -A EZVER=( [EZStretch]=1.0.10 [EZDonutRepair]=1.0.3 [EZHazeKill]=1.0.1 )
+declare -A EZVER=( [EZStretch]=1.0.11 [EZDonutRepair]=1.0.4 [EZHazeKill]=1.0.2 )
 EZSRC="$ROOT/scripts/ez-stretch/src/scripts/EZ Stretch BSC"
 for name in EZStretch EZDonutRepair EZHazeKill; do
   ver="${EZVER[$name]}"
@@ -374,8 +374,12 @@ for name in EZStretch EZDonutRepair EZHazeKill; do
   # read scarter4work (the #feature-id in each .js already points there).
   stage="$(mktemp -d)"; mkdir -p "$stage/src/scripts/scarter4work"
   cp "$EZSRC/$name.js" "$EZSRC/$name.xsgn" "$stage/src/scripts/scarter4work/"
+  # World-readable whatever the build's umask (mktemp -d is 0700): the updater
+  # keeps archive modes and installs as root, so 0600/0700 entries would leave
+  # the scripts unreadable to the user. (EZ <= 1.0.10/1.0.3/1.0.1 shipped 0600.)
+  chmod -R u=rwX,go=rX "$stage"
   rm -f "$REPO/$zipname"
-  ( cd "$stage" && zip -qr "$REPO/$zipname" src )
+  ( cd "$stage" && zip -qrX "$REPO/$zipname" src )
   rm -rf "$stage"
   [ -f "$REPO/$zipname" ] || die "zip $zipname not produced"
   reuse_if_published "$zipname"
@@ -440,9 +444,10 @@ qe_check "$REPO" || die "published QE set in repository/ does not verify"
 echo "== 4/6 write fileName/sha1/releaseDate into ONE manifest =="
 write_pkg "$REPO/updates.xri" "$MOD_TGZ"                  "$(sha1 "$REPO/$MOD_TGZ")"
 write_pkg "$REPO/updates.xri" "$PICOPILOT_TGZ"            "$(sha1 "$REPO/$PICOPILOT_TGZ")"
-write_pkg "$REPO/updates.xri" "EZStretch_v1.0.10.zip"     "$(sha1 "$REPO/EZStretch_v1.0.10.zip")"
-write_pkg "$REPO/updates.xri" "EZDonutRepair_v1.0.3.zip"  "$(sha1 "$REPO/EZDonutRepair_v1.0.3.zip")"
-write_pkg "$REPO/updates.xri" "EZHazeKill_v1.0.1.zip"     "$(sha1 "$REPO/EZHazeKill_v1.0.1.zip")"
+for name in EZStretch EZDonutRepair EZHazeKill; do
+  zipname="${name}_v${EZVER[$name]}.zip"
+  write_pkg "$REPO/updates.xri" "$zipname" "$(sha1 "$REPO/$zipname")"
+done
 write_pkg "$REPO/updates.xri" "$GAIA_ZIP"                 "$(sha1 "$REPO/$GAIA_ZIP")"
 write_pkg "$REPO/updates.xri" "$SIDECAR_TGZ"              "$(sha1 "$REPO/$SIDECAR_TGZ")"
 
