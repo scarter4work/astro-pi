@@ -1,0 +1,177 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PI Copilot</title>
+<style>
+body { font-family: sans-serif; max-width: 60em; margin: 1.5em auto; padding: 0 1em; line-height: 1.45; color: #222; background: #fff; }
+h1 { font-size: 1.7em; margin-bottom: 0.2em; }
+h2 { font-size: 1.3em; margin-top: 1.6em; border-bottom: 1px solid #ccc; padding-bottom: 0.15em; }
+h3 { font-size: 1.05em; margin-top: 1.2em; }
+code { font-family: monospace; background: #f3f3f3; padding: 0 0.2em; }
+table { border-collapse: collapse; width: 100%; margin: 0.6em 0; }
+th, td { border: 1px solid #ccc; padding: 0.35em 0.5em; text-align: left; vertical-align: top; }
+th { background: #f3f3f3; }
+.small { font-size: 0.9em; color: #555; }
+</style>
+</head>
+<body>
+
+<h1>PI Copilot</h1>
+<p class="small">Module PICopilot, version 0.2.2.0 (2026-10-13). Process &gt; &lt;Etc&gt; &gt; PICopilot opens the panel.
+This document is installed with the module (doc/tools/PICopilot/).</p>
+
+<p>PI Copilot is a chat panel for PixInsight. You talk to Claude, an AI model made by Anthropic, using your own
+Anthropic API key. It can see the active image (a small preview, its statistics and keywords) and, depending on the
+mode you choose, run PixInsight processes on your images, start installed PixInsight scripts that you confirm, and
+record how each image was processed.</p>
+
+<h2>Modes</h2>
+<ul>
+<li><b>Copilot</b>: applies processes when you ask. Every change is recorded in the image's History, so Undo works.</li>
+<li><b>Guided</b>: shows each process and its parameters and runs it only if you press Yes (the default is No).</li>
+<li><b>Advisor</b>: read-only. It looks and advises; it never changes an image and never runs a script.</li>
+</ul>
+<p>Some processes always ask first, in every mode (they write files, close windows or change PixInsight settings), and
+some are never run by PI Copilot (for example Preferences, ProcessContainer, Script, the INDIGO device processes). The
+full list is in the module's README.</p>
+
+<h2>Data sent to Anthropic, and your consent</h2>
+<p>PI Copilot sends nothing anywhere until you agree. Before your first message it shows a dialog that names Anthropic,
+lists what can be sent and links to Anthropic's privacy policy
+(<a href="https://www.anthropic.com/legal/privacy">https://www.anthropic.com/legal/privacy</a>). If you do not agree,
+nothing is sent. Your agreement is stored in PixInsight's settings; you can withdraw it at any time in the settings
+dialog (the &#x2699; button: uncheck <i>Send data to Anthropic</i> and press OK). The check is made where every request
+is built, so neither chat messages nor journey write-ups can be sent without it.</p>
+
+<h3>What can be sent</h3>
+<ul>
+<li>The text you type and the conversation so far.</li>
+<li>With <i>Include view</i> on: an auto-stretched JPEG preview of the active image (at most 1024 pixels on its long
+side), its size, view id, per-channel statistics (median, deviation, mean, minimum, maximum), its <b>file name</b>
+(never the folder), and up to 60 of its FITS keywords. Location and observer keywords (SITELAT, SITELONG, SITEELEV,
+OBSGEO-B, OBSGEO-L, OBSGEO-H, LAT-OBS, LONG-OBS, ALT-OBS, OBSERVER) are never sent, and any folder path inside a keyword
+value is reduced to its file name.</li>
+<li>Results of what PI Copilot looks up or does for you: other images' previews and statistics, process
+descriptions and parameters, an image's processing history, your workspace process icons, the list of installed
+scripts, and the console output of a script you let it run. File names only, never folders.</li>
+<li>Image journey data: recorded steps, their statistics, acquisition facts (target, filter, camera, gain, exposure,
+number of subframes, dates) and file names: to the chat model when you ask about a journey, and to Claude Haiku when
+you keep a journey, to write its journey.md. No image is sent for the write-up.</li>
+</ul>
+<p><b>Never sent:</b> your files themselves, full-resolution image data, folder paths, location or observer keywords.
+Your API key is sent only to Anthropic, as the credential of each request.</p>
+
+<h2>Network connections</h2>
+<table>
+<tr><th>Endpoint</th><th>When</th><th>What is sent</th></tr>
+<tr><td><code>https://api.anthropic.com/v1/messages</code> (HTTPS, certificate and host verified; POST)</td>
+<td>Each chat message, and each further step while the model uses tools for that message (at most 12 per
+message).</td>
+<td>Your API key (header <code>x-api-key</code>), the model you chose (Claude Opus 5.5 or Claude Sonnet 5), PI Copilot's
+instructions, the conversation, the tool descriptions, and the data listed above. Replies are streamed back.</td></tr>
+<tr><td><code>https://api.anthropic.com/v1/messages</code> (same)</td>
+<td>Only when you keep a journey (&#x2605; Keep journey, or by asking in the chat), to write journey.md.</td>
+<td>Your API key, model <code>claude-haiku-4-5</code>, fixed instructions, and a condensed recipe of the journey
+(steps, statistics, acquisition facts, file names). No image.</td></tr>
+</table>
+<p>PI Copilot makes no other network connection. Each request has an overall limit of 600 s, and a reply stream
+that is silent for 120 s is stopped.</p>
+
+<h2>External programs launched</h2>
+<table>
+<tr><th>Program</th><th>When</th><th>Why</th></tr>
+<tr><td><code>/bin/sh</code>, which runs <code>/usr/bin/env -u LD_LIBRARY_PATH secret-tool &hellip;</code></td>
+<td>When the API key is read (your first message of a session, opening &#x2699;, a journey write-up), saved, cleared, or
+moved from PixInsight's settings into the keyring.</td>
+<td>To keep your API key in the system keyring (freedesktop Secret Service, for example GNOME Keyring or KWallet).
+<code>secret-tool</code> is the standard command of your Linux desktop and is found on your PATH. The shell
+only redirects <code>secret-tool</code>'s error output into a private file; <code>env -u LD_LIBRARY_PATH</code> keeps
+PixInsight's own libraries out of it. Commands: <code>lookup</code>, <code>store</code> (the key goes through standard
+input, never the command line), <code>search</code>, <code>clear</code>, all for the item
+<code>service picopilot account anthropic-api-key</code>.</td></tr>
+</table>
+<p>Indirectly: when the model runs PixInsight's own <b>GraXpert</b> process, that process starts the GraXpert program
+you selected in GraXpert's own settings (PI Copilot reads that setting and never lets the model choose the program).
+A script you allow PI Copilot to start (see below) runs with full access to PixInsight and may start programs of its
+own, as it would from the Script menu.</p>
+
+<h2>Files outside the PixInsight installation</h2>
+<table>
+<tr><th>Location</th><th>What</th></tr>
+<tr><td><code>$XDG_DATA_HOME/PICopilot/journeys/</code> (default <code>~/.local/share/PICopilot/journeys/</code>)</td>
+<td>The image journey library: <code>journeys.sqlite3</code> (with <code>-wal</code> and <code>-shm</code> files),
+and one folder per journey with <code>thumbs/</code> (small JPEG thumbnails), <code>export/</code> for a kept journey
+(<code>&lt;name&gt;.xpsm</code>, <code>recipe.json</code>, <code>recipe.schema.json</code>, <code>journey.md</code>,
+<code>thumbs/</code>) and a <code>.copied-to</code> marker naming the last export copy. Folders are private (0700),
+the database 0600. Journeys you do not keep are deleted after the number of days set in &#x2699; (default 30).</td></tr>
+<tr><td>The export folder you choose in &#x2699; (off by default)</td>
+<td>A copy of each kept journey in <code>&lt;folder&gt;/&lt;target&gt;/&lt;YYYY-MM-DD&gt;-&lt;name&gt;/</code>. PI Copilot
+never creates the folder itself.</td></tr>
+<tr><td>System temporary directory (<code>$TMPDIR</code> or <code>/tmp</code>):
+<code>picopilot-preview-&lt;random&gt;.jpg</code></td>
+<td>The JPEG preview of an image while it is being encoded; deleted immediately after it is read back.</td></tr>
+<tr><td>System temporary directory: <code>picopilot-scratch-&lt;random&gt;/</code></td>
+<td>A private (0700) working folder for one keyring command (its error output) or one thumbnail; removed as soon as
+that operation ends.</td></tr>
+<tr><td>Next to a journey or export file: <code>.&lt;name&gt;.tmp-&lt;random&gt;</code></td>
+<td>A file being written; renamed onto its final name at once (or removed if the write fails).</td></tr>
+<tr><td>The system keyring</td><td>Your API key (item <code>service picopilot account anthropic-api-key</code>).</td></tr>
+<tr><td>PixInsight's settings (through PixInsight's settings interface)</td>
+<td>PI Copilot's preferences under <code>PICopilot/</code>: model, mode, panel side and placement marker, journey
+options, the consent and its date, notice markers. Only if no keyring is available, the API key is kept there in
+plain text (<code>PICopilot/AnthropicApiKey</code>); the settings dialog says so. Version 0.2.2.0 removes the setting
+<code>PICopilot/RunPjsrEnabled</code> left by older versions.</td></tr>
+</table>
+
+<h2>Scripts: run_script</h2>
+<p>PI Copilot never runs code written by the model. (Versions up to 0.2.1.1 had a tool, run_pjsr, that could run a
+script the model wrote after you approved it; 0.2.2.0 removed it completely.) Instead, the model can ask PixInsight to
+run a script that is already installed, choosing it by an id from a list PI Copilot builds. It never supplies a file
+path or any code. A script can be on that list only if <b>all</b> of these hold:</p>
+<ol>
+<li>Its real location, with symbolic links resolved, is inside PixInsight's script directory
+(<code>&lt;PixInsight&gt;/src/scripts</code>), where the PixInsight distribution and update packages install scripts.
+Links that lead elsewhere, paths with <code>..</code> and unusual characters are refused.</li>
+<li>It is a main script (it has a <code>#feature-id</code>) and is not one of PixInsight's developer tools
+(Script &gt; Development: code signing, signing keys, CPD submission, documentation compiler).</li>
+<li>It is signed: a <code>.xsgn</code> signature file is next to it, PixInsight's own signature check reports it valid
+for the file as it is now (the signature covers the script and every file it includes, so any change to the code
+invalidates it), and the signer is in PixInsight's database of certified developers. This holds even if you allowed
+unsigned scripts in PixInsight's security preferences: PI Copilot never runs an unsigned script.</li>
+</ol>
+<p>PixInsight does not record which update package installed which file, so a script copied into the script directory
+by hand is refused unless it carries a valid signature of a certified developer.</p>
+<p>Before suggesting a script, the model can read its description (<i>describe_script</i>): its menu entry, version,
+description, whether it works on a view or globally, which parameters it reads (with their types and defaults) and
+whether it opens a dialog. This is read from the script's source text; nothing is executed to find it out.</p>
+<p><b>Every run asks you first</b>, in Copilot and Guided mode alike (never available in Advisor). The dialog shows the
+script's menu entry, file, signing developer, the image it runs on (or "globally") and the arguments; the default
+answer is No. PixInsight then loads, checks and runs the file itself, exactly as from a process icon. Arguments must
+be parameters the script reads, with the right types. A script runs with full access to PixInsight and your files,
+may open its own dialogs, and cannot be stopped by PI Copilot once it starts. In an image journey, the steps a script
+makes are recorded as PI Copilot's and are never re-run by a replay.</p>
+
+<h2>Image journeys</h2>
+<p>From the moment a stacked master is opened, PI Copilot records each step of its processing locally (the library
+above), whether you or PI Copilot made it. You can keep your best result as a process icon set, a recipe and a
+write-up, compare new data with it, and ask PI Copilot to replay it on a new master. Recording can be turned off in
+&#x2699;.</p>
+
+<h2>Developer self-test</h2>
+<p>The module contains a self-test that runs only when the environment variable <code>PICOPILOT_SELFTEST_OUT</code>
+is set by its test harness (in an isolated PixInsight instance slot). In a normal installation that variable is not
+set, and running the PICopilot process only points you to the panel: no settings are written, nothing is sent, no
+file is created.</p>
+
+<h2>Acknowledgments</h2>
+<p>This product is based on software from the PixInsight project, developed by Pleiades Astrophoto and its
+contributors (https://pixinsight.com/).</p>
+<p>PI Copilot includes third-party components under their own licences (for example SQLite and nlohmann/json); their
+notices are distributed with the module.</p>
+<p class="small">Copyright &copy; 2026 Scott Carter. PI Copilot is not made, certified or endorsed by Pleiades
+Astrophoto or by Anthropic.</p>
+
+</body>
+</html>
