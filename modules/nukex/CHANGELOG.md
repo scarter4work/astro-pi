@@ -1,5 +1,21 @@
 # NukeX — Changelog
 
+## v5.2.0.1 — 2026-10-13
+
+Documentation and licence notices only; stacking and stretching are unchanged.
+
+- **Documentation ships with the module.** The package now installs
+  `doc/tools/NukeX/NukeX.html`, opened by PixInsight's Browse Documentation for
+  the NukeX process. It lists the module's one network connection (the
+  camera-database update check), every file NukeX writes outside the
+  PixInsight installation, and that it launches no external programs.
+- **Third-party notices ship with the module** in
+  `doc/tools/NukeX/THIRD_PARTY_NOTICES.txt`: the full PixInsight Class Library
+  License and the notices of CFITSIO, Ceres Solver, Eigen, the Khronos OpenCL
+  ICD Loader, JSON for Modern C++, SQLite and TweetNaCl.
+- **The module description carries the PCL acknowledgment** ("This product is
+  based on software from the PixInsight project ...").
+
 ## v5.2.0.0 — 2026-10-03
 
 ### One NukeX

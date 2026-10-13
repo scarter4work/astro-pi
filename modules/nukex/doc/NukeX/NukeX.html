@@ -1,0 +1,198 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<meta name="author" content="Scott Carter" />
+<meta name="description" content="NukeX: distribution-fitted stacking and auto-stretch for PixInsight. What it does, its network connections, external programs, the files it writes outside the PixInsight installation, and acknowledgments." />
+<title>NukeX</title>
+<style>
+   body { font-family: "DejaVu Sans", "Segoe UI", Helvetica, Arial, sans-serif; font-size: 14px;
+          line-height: 1.5; color: #222; background: #fff; max-width: 52em; margin: 0 auto; padding: 1em 1.5em 3em; }
+   h1 { font-size: 1.9em; margin-bottom: 0.1em; }
+   h2 { font-size: 1.35em; margin-top: 1.8em; border-bottom: 1px solid #ccc; padding-bottom: 0.15em; }
+   h3 { font-size: 1.1em; margin-top: 1.3em; }
+   .subtitle { color: #555; margin-top: 0; }
+   code { font-family: "DejaVu Sans Mono", Consolas, monospace; font-size: 0.92em; background: #f2f2f2; padding: 0 0.2em; }
+   table { border-collapse: collapse; width: 100%; margin: 0.6em 0; }
+   th, td { border: 1px solid #ccc; padding: 0.35em 0.5em; text-align: left; vertical-align: top; }
+   th { background: #f2f2f2; }
+   .ack { border-left: 4px solid #888; padding: 0.3em 0.8em; background: #f7f7f7; }
+   .toc a { text-decoration: none; }
+</style>
+</head>
+<body>
+
+<h1>NukeX</h1>
+<p class="subtitle">Distribution-fitted stacking and auto-stretch for PixInsight &mdash; module version 5.2.0.1 (Linux x64).<br />
+By Scott Carter. Copyright &copy; 2026 Scott Carter. MIT License.</p>
+
+<div class="toc">
+<p><b>Contents:</b>
+<a href="#what">What NukeX does</a> &middot;
+<a href="#network">Network connections</a> &middot;
+<a href="#files">Files written outside the PixInsight installation</a> &middot;
+<a href="#reads">Files NukeX reads</a> &middot;
+<a href="#programs">External programs</a> &middot;
+<a href="#ack">Acknowledgments</a> &middot;
+<a href="#more">More information</a></p>
+</div>
+
+<h2 id="what">What NukeX does</h2>
+<p>NukeX (Process &rarr; NukeX) stacks the FITS light frames you add to it, with optional flats. Instead of averaging or
+sigma-clipping, it fits a statistical distribution to every pixel's samples across the stack and estimates the signal from
+the fitted model; it then applies one of its stretches (Auto is recommended). It reads <code>FILTER</code>,
+<code>BAYERPAT</code> and <code>INSTRUME</code> from the FITS headers and uses a camera quantum-efficiency (QE) database,
+built into the module, to route each frame and to decompose dual-narrowband colour data into emission lines.</p>
+<p>Results open as ordinary PixInsight image windows (<code>NukeX_stacked</code>, <code>NukeX_composed</code>,
+<code>NukeX_stretched</code>, <code>NukeX_noise</code>). NukeX does not save images to disk; you save them through PixInsight
+as usual.</p>
+
+<h2 id="network">Network connections</h2>
+<p>NukeX makes exactly one kind of network connection: the <b>camera-database update check</b>. Nothing else in the module
+uses the network. Reading your frames is local only (the FITS library inside NukeX is built without network support, and
+NukeX opens only the files you select).</p>
+
+<h3>What is contacted</h3>
+<p>HTTPS requests to GitHub, at</p>
+<p><code>https://raw.githubusercontent.com/scarter4work/astro-pi/main/repository/</code></p>
+<ul>
+   <li><b>A check</b> downloads two small files: <code>qe_manifest.json</code> and its signature
+       <code>qe_manifest.json.sig</code>.</li>
+   <li><b>An installation</b>, only after you agree to it, downloads <code>qe_database.json</code> and its signature
+       <code>qe_database.json.sig</code>.</li>
+</ul>
+
+<h3>When</h3>
+<ul>
+   <li>Automatically, the first time you open the NukeX window in a PixInsight session, but no more often than once every
+       7 days. Nothing is contacted when PixInsight starts or when the module loads.</li>
+   <li>Whenever you press <b>Check now</b> in the NukeX window (this works even when automatic checking is off).</li>
+</ul>
+
+<h3>Your consent</h3>
+<p>When a newer, verified database exists, NukeX shows what it contains and asks <i>&ldquo;Install it now?&rdquo;</i>.
+Nothing is downloaded beyond the manifest, and nothing is installed, unless you answer Yes. If you answer No, automatic
+checks do not ask again about that version.</p>
+
+<h3>What is sent</h3>
+<p>Plain HTTPS GET requests for the files above. NukeX sends no identifier, no usage data, no image data and no
+information about your computer. As with any web request, GitHub receives your IP address and standard request headers.</p>
+
+<h3>Security</h3>
+<ul>
+   <li>TLS is mandatory, with certificate and host-name verification; plain HTTP is refused. Each response is limited to
+       8&nbsp;MiB, and the connection timeout is 20&nbsp;seconds.</li>
+   <li>The manifest and the database are each signed with Ed25519. NukeX verifies both signatures against a public key
+       compiled into the module, and verifies the database against the SHA-512 digest named in the signed manifest. It
+       refuses an older database than the one it has, and one whose format is newer than it understands.</li>
+   <li>Nothing is written unless every check passes; the new file then replaces the old one in a single step. A rejected
+       update leaves the database in use unchanged and is reported in the Process Console.</li>
+   <li>Being offline is not an error: an automatic check that cannot reach the server stays silent.</li>
+</ul>
+
+<h3>Turning it off</h3>
+<p>Untick <b>Check for camera database updates</b> in the NukeX window. Automatic checks then stop; only <b>Check now</b>
+contacts the server. To return to the database built into the module, delete <code>~/.config/nukex4/qe_database.json</code>.</p>
+
+<h2 id="files">Files written outside the PixInsight installation</h2>
+
+<h3>1. User data: <code>~/.config/nukex4/</code></h3>
+<p>Created with owner-only permissions (0700). If the <code>HOME</code> environment variable is not set, NukeX uses
+<code>/tmp/nukex4/</code> instead. <code>XDG_CONFIG_HOME</code> is not used for this directory.</p>
+<table>
+   <tr><th>File</th><th>Contents</th><th>Written when</th></tr>
+   <tr><td><code>qe_update_state.json</code></td>
+       <td>Update-check settings and state: on/off, check interval in days (default 7, 1&ndash;365), time and result of the
+           last check, installed and declined database versions.</td>
+       <td>After each check, and when you change the setting, decline or install an update.</td></tr>
+   <tr><td><code>qe_database.json</code></td>
+       <td>A downloaded, verified camera database. Used only while it is newer than the one built into the module.</td>
+       <td>Only after you accept an update.</td></tr>
+   <tr><td><code>filter_aliases.json</code></td>
+       <td>Filter names (FITS <code>FILTER</code> values) you have taught NukeX, mapped to the filters they stand for.</td>
+       <td>Only when you save the unknown-filter dialog.</td></tr>
+   <tr><td><code>phase8_user.sqlite</code><br />(with <code>-wal</code> and <code>-shm</code> companion files)</td>
+       <td>Your stretch ratings. For each rated run: a random run identifier, the time, the stretch and filter class, image
+           statistics, the stretch parameters and your ratings. No file names, paths or FITS header text.</td>
+       <td>When you save a rating. Grows by one row per rating.</td></tr>
+   <tr><td><code>phase8_user_model.json</code></td>
+       <td>Stretch-parameter model trained from your ratings, used by the Auto stretch.</td>
+       <td>After a rating is saved, once there are enough ratings.</td></tr>
+   <tr><td><code>phase8_user.sqlite.corrupt.&lt;time&gt;</code></td>
+       <td>A damaged rating database, set aside.</td>
+       <td>Only if the rating database is found to be corrupt.</td></tr>
+</table>
+<p>Short-lived <code>.tmp</code> and <code>.stage</code> files appear beside these while they are being replaced, and are
+removed when the write completes. None of this data is transmitted anywhere.</p>
+
+<h3>2. Frame cache: <code>~/.cache/nukex4/cache/</code></h3>
+<p>Stacking keeps aligned frame data in the directory named by NukeX's <code>cacheDirectory</code> parameter (there is no
+control for it in the NukeX window; it can be changed in a process icon's parameters or from a script). NukeX creates the
+directory if it is missing. The default is <code>$XDG_CACHE_HOME/nukex4/cache</code>, otherwise
+<code>~/.cache/nukex4/cache</code>, otherwise (no <code>HOME</code>) <code>/var/tmp</code>.</p>
+<ul>
+   <li><code>nukex_cache_XXXXXX</code> (random suffix): aligned frame data for the current run. It is large &mdash; about
+       13&nbsp;GB for 33 frames from a 24-megapixel colour camera &mdash; and is deleted when the run ends. If PixInsight
+       crashes or is killed during a run, the file can remain; it is safe to delete while PixInsight is not running.</li>
+   <li><code>nukex_cube_XXXXXX</code>: only when the working data would not fit in memory. It is removed from the directory
+       as soon as it is created, so it never remains after a run, but it occupies disk space while the run lasts.</li>
+</ul>
+
+<h3>3. Progress files in <code>/tmp</code></h3>
+<ul>
+   <li><code>/tmp/nukex_progress.log</code>: a time-stamped log of the most recent run's phases and progress messages.
+       Started afresh at the beginning of each run.</li>
+   <li><code>/tmp/nukex_heartbeat.txt</code>: the current phase and elapsed time, rewritten every 10 seconds during a run.</li>
+</ul>
+<p>These fixed paths are not deleted by NukeX; they stay until <code>/tmp</code> is cleaned. They contain processing
+status only.</p>
+
+<h3>4. PixInsight settings</h3>
+<p>One setting, <code>NukeX/Phase8/RatingPopupSuppressed</code> (the &ldquo;Don't show rating popup after Execute&rdquo;
+choice), is stored through PixInsight's own settings interface.</p>
+
+<h2 id="reads">Files NukeX reads</h2>
+<ul>
+   <li>The light and flat FITS frames you add, and a QE override file if you choose one.</li>
+   <li>The files in <code>~/.config/nukex4/</code> listed above.</li>
+   <li><code>/proc/meminfo</code>, to size its work to the memory available.</li>
+   <li>The system's OpenCL driver registrations in <code>/etc/OpenCL/vendors/</code> (see below).</li>
+</ul>
+
+<h2 id="programs">External programs</h2>
+<p><b>None.</b> NukeX does not launch any program or process.</p>
+<p>For GPU acceleration (<b>Enable GPU acceleration (OpenCL)</b>, on by default), the OpenCL loader built into NukeX reads the driver
+registrations in <code>/etc/OpenCL/vendors/</code> (the standard <code>OCL_ICD_VENDORS</code> and
+<code>OCL_ICD_FILENAMES</code> environment variables can redirect this) and loads the OpenCL driver library installed by
+your GPU vendor into PixInsight. That driver is part of your system, not of NukeX. Without a usable GPU, NukeX computes on
+the CPU.</p>
+
+<h2 id="ack">Acknowledgments</h2>
+<p class="ack">This product is based on software from the PixInsight project, developed by Pleiades Astrophoto and its
+contributors (https://pixinsight.com/).</p>
+<p>NukeX also contains the following third-party software:</p>
+<table>
+   <tr><th>Component</th><th>Licence</th></tr>
+   <tr><td>PixInsight Class Library (PCL) 2.9.4</td><td>PixInsight Class Library License 2.0</td></tr>
+   <tr><td>CFITSIO 4.6.3 (NASA HEASARC)</td><td>CFITSIO licence (NASA)</td></tr>
+   <tr><td>Ceres Solver 2.2.0 (Google)</td><td>BSD 3-Clause</td></tr>
+   <tr><td>Eigen 5.0.1</td><td>Mozilla Public License 2.0 (parts BSD 3-Clause and Apache 2.0). Source:
+       <code>https://gitlab.com/libeigen/eigen/-/archive/5.0.1/eigen-5.0.1.tar.gz</code></td></tr>
+   <tr><td>Khronos OpenCL ICD Loader and OpenCL Headers</td><td>Apache License 2.0</td></tr>
+   <tr><td>JSON for Modern C++ 3.11.3 (Niels Lohmann)</td><td>MIT</td></tr>
+   <tr><td>SQLite 3.46.1</td><td>Public domain</td></tr>
+   <tr><td>TweetNaCl</td><td>Public domain</td></tr>
+</table>
+<p>The complete copyright notices, licence conditions and disclaimers, including the full PixInsight Class Library
+License, are in the file <a href="THIRD_PARTY_NOTICES.txt"><code>THIRD_PARTY_NOTICES.txt</code></a> in this documentation
+folder (<code>doc/tools/NukeX/</code> in your PixInsight installation).</p>
+
+<h2 id="more">More information</h2>
+<p>The full README, with usage notes, known limitations and build instructions:<br />
+<code>https://github.com/scarter4work/astro-pi/blob/main/modules/nukex/README.md</code></p>
+<p>Release notes:<br />
+<code>https://github.com/scarter4work/astro-pi/blob/main/modules/nukex/CHANGELOG.md</code></p>
+
+</body>
+</html>
