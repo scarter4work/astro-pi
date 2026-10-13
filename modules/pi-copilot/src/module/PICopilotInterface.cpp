@@ -16,7 +16,8 @@
 #include "PICopilotModule.h"
 #include "PanelPlacement.h"
 #include "ProcessActivity.h"
-#include "ScriptConfirmDialog.h"
+#include "DataConsent.h"
+#include "ScriptTools.h"
 #include "SystemPrompt.h"
 #include "TurnEndNotes.h"
 #include "ViewCapture.h"
@@ -340,6 +341,15 @@ void PICopilotInterface::SendCurrentInput()
    if ( prompt.IsEmpty() )
       return;
 
+   // CPD rule 6.2: nothing goes to Anthropic before the user agreed, in a
+   // dialog naming Anthropic and listing what is sent (DataConsent.h). The
+   // request layer refuses too; this is where the user is asked.
+   if ( !DataConsent::Granted() && !DataConsent::Ask() )
+   {
+      AppendToLog( PlainText( "(" + DataConsent::NotGrantedText() + ")" ) + "\n\n" );
+      return;   // the prompt stays in the input line
+   }
+
    KeyStore::State ks;
    {
       // A keyring read can block on the desktop's unlock prompt: say so on
@@ -384,7 +394,6 @@ void PICopilotInterface::SendCurrentInput()
    // bound to the model that produced them.
    String modelNote;
    m_turnModel = CopilotSettings::LoadModel( &modelNote );
-   m_turnTools.runPjsr = CopilotSettings::LoadRunPjsrEnabled();
    if ( !modelNote.IsEmpty() && modelNote != m_lastModelNote )
    {
       AppendToLog( PlainText( "(" + modelNote + ")" ) + "\n\n" );   // once per distinct note
@@ -425,9 +434,9 @@ void PICopilotInterface::StartRequest()
    try
    {
       // ChatThread serializes key, prompt, history snapshot and tools HERE (UI thread).
-      m_thread = new ChatThread( m_apiKey, BuildSystemPrompt( m_turnMode, m_turnTools ), m_session.History(),
+      m_thread = new ChatThread( m_apiKey, BuildSystemPrompt( m_turnMode ), m_session.History(),
                                  m_turnModel, PICOPILOT_MESSAGES_URL,
-                                 PICopilotRequestTimeoutSeconds, ToolDefinitions( m_turnMode, m_turnTools ),
+                                 PICopilotRequestTimeoutSeconds, ToolDefinitions( m_turnMode ),
                                  ProductionRequestShape( m_turnModel ) );
       m_thread->Start();
    }
@@ -500,8 +509,7 @@ ToolContext PICopilotInterface::MakeToolContext()
    ctx.turnViewId = m_turnViewId;
    ctx.inspectedViews = &m_inspectedViews;
    ctx.confirm = &PICopilotInterface::ConfirmApply;
-   ctx.runPjsr = m_turnTools.runPjsr;
-   ctx.confirmScript = &ScriptConfirmDialog::Ask;   // every script, every mode
+   ctx.confirmRunScript = &PICopilotInterface::ConfirmRunScript;   // every run_script, every mode
    ctx.confirmHistory = &PICopilotInterface::ConfirmHistoryStep;   // history_step, Guided only
    // The journey tools use the production library (Task 10 concern 3: without
    // this they answer "not available"). Rebuilt per turn: the ⚙ export folder
@@ -517,6 +525,14 @@ bool PICopilotInterface::ConfirmApply( const String& processId, const String& vi
    // Asked in Guided mode, and in EVERY mode when the process safety policy
    // says confirm, so the title names neither mode.
    return MessageBox( text, String::UTF8ToUTF16( "PI Copilot \xE2\x80\x94 confirm" ), StdIcon::Question,
+                      StdButton::Yes, StdButton::No, StdButton::NoButton, 1/*default: No*/, 1/*Esc: No*/ ).Execute()
+          == StdButton::Yes;
+}
+
+bool PICopilotInterface::ConfirmRunScript( const String& html )
+{
+   // Every run_script, in every mode; default and Esc: No (nothing runs).
+   return MessageBox( html, String::UTF8ToUTF16( "PI Copilot \xE2\x80\x94 run a script?" ), StdIcon::Warning,
                       StdButton::Yes, StdButton::No, StdButton::NoButton, 1/*default: No*/, 1/*Esc: No*/ ).Execute()
           == StdButton::Yes;
 }
@@ -935,6 +951,10 @@ String PICopilotInterface::KeepJourneyOfView( const IsoString& mainViewId )
       {
          m_keepRunning = true;
          GUI->Keep_ToolButton.Disable();
+         // The keep's journey.md is written by Claude Haiku: ask before anything is sent (CPD rule 6.2). Declining
+         // keeps everything else; the write-up then says why it was not written.
+         if ( !DataConsent::Granted() )
+            (void)DataConsent::Ask();
          KeepFlowResult r;
          try
          {
@@ -1063,8 +1083,9 @@ PICopilotInterface::GUIData::GUIData( PICopilotInterface& w )
 
    IncludeView_CheckBox.SetText( "Include view" );
    IncludeView_CheckBox.SetChecked( true );
-   IncludeView_CheckBox.SetToolTip( "<p>Send the active view with each message: an auto-stretched "
-                                    "preview (display only) plus its geometry, statistics and FITS keywords.</p>" );
+   IncludeView_CheckBox.SetToolTip( "<p>Send the active view to Anthropic with each message: an auto-stretched "
+                                    "preview (display only) plus its geometry, statistics, file name (never the "
+                                    "folder) and FITS keywords (never location or observer keywords).</p>" );
 
    Clear_Button.SetText( "New chat" );
    Clear_Button.SetToolTip( "<p>Start a new chat: the model forgets this conversation and the log is cleared. "
@@ -1072,7 +1093,7 @@ PICopilotInterface::GUIData::GUIData( PICopilotInterface& w )
    Clear_Button.OnClick( (Button::click_event_handler)&PICopilotInterface::e_Clear_Click, w );
 
    Config_ToolButton.SetText( String::UTF8ToUTF16( kGearUtf8 ) );
-   Config_ToolButton.SetToolTip( "<p>Settings: API key, model, scripts (run_pjsr), default panel side, image journeys.</p>" );
+   Config_ToolButton.SetToolTip( "<p>Settings: API key, model, data sent to Anthropic, default panel side, image journeys.</p>" );
    Config_ToolButton.OnClick( (Button::click_event_handler)&PICopilotInterface::e_Config_Click, w );
 
    Top_Sizer.SetSpacing( 4 );

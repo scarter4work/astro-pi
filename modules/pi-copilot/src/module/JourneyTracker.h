@@ -59,7 +59,7 @@ using HistoryReadFn = std::function<HistorySnapshot( const IsoString&, int )>;
  *   3. the busy gate (review I4, re-review R4): the rest of the tick is
  *      deferred while PixInsight is busy -- RecorderActivity() (the console
  *      abort enabled, or less than 0.3 s since the last image notification /
- *      process end), a run_pjsr script, another module EvaluateScript, or an
+ *      process end), a script run by run_script, another module EvaluateScript, or an
  *      open JourneyStore::Transaction. A LOCKED view defers only itself
  *      (per-view IsBusy), never the whole recorder. After 5 s of continuous
  *      deferral StatusFor() reports "waiting: <reason>". A tracked window
@@ -122,8 +122,11 @@ public:
    // NoteCopilotCreated reports those after the run) and cancel it when the
    // run failed or added no History step to the target. Returns the step
    // note's token (0 when no step note was posted: empty view or process id).
+   // notReplayable (run_script): the matched step is stored as not replayable
+   // with this note (a step a script made is never replayed on its own).
    uint64 NoteCopilotStep( const IsoString& viewFullId, const std::string& processId, const std::string& reason,
-                           const std::vector<std::string>& createdWindowIds, bool integration, double now );
+                           const std::vector<std::string>& createdWindowIds, bool integration, double now,
+                           const std::string& notReplayable = std::string() );
    // The windows a Copilot run created (known only after it): linked to
    // sourceViewFullId's journey ('copilot' evidence), or, for a global
    // integration run, the first one a master (Ruling 29).
@@ -232,7 +235,8 @@ private:
       int             rowMissing = 0;    // row-missing evaluations: the 1st only defers (Reconcile runs), repeats count as failures (I-A)
    };
    struct Ignored   { const void* handle = nullptr; std::string id; size_type modifyCount = 0; double firstSeen = 0; };   // N3
-   struct CopilotNote { std::string viewId, processId, reason; double t = 0; uint64 token = 0; bool noEffect = false; };
+   struct CopilotNote { std::string viewId, processId, reason; double t = 0; uint64 token = 0; bool noEffect = false;
+                       std::string notReplayable; };
    struct CreatedNote { std::string id, sourceViewId; bool integration = false, first = false; double t = 0; };
    // A notification, queued by a handler and applied by DrainEvents() at the start of Tick() (pre-flight P10).
    enum class EventKind { Created, Updated, Renamed, Deleted, Saved, Focused };

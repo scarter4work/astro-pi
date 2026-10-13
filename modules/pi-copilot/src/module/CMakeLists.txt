@@ -50,8 +50,12 @@ set(MODULE_SOURCES
     Keyring.cpp
     CopilotSettings.cpp
     ProcessSafety.cpp
-    PjsrRunner.cpp
-    ScriptConfirmDialog.cpp
+    ModuleScript.cpp
+    ScriptSource.cpp
+    ScriptCatalog.cpp
+    ScriptTools.cpp
+    DataConsent.cpp
+    PICopilotScriptSelfTest.cpp
     JourneySpikeProbe.cpp
     PICopilotJourneySelfTest.cpp
     PICopilotUndoSelfTest.cpp

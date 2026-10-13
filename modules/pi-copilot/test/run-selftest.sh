@@ -85,6 +85,12 @@ if ! python3 "$HERE/check-pcl-moves.py" "$TMPDIR/pcl-move-guard"; then
    echo "FAIL: the moved-from PCL value guard (test/check-pcl-moves.py) found a violation"
    exit 1
 fi
+# Static guard (0.2.2.0, CPD rules 5.1/5.4): every place that evaluates script text or asks the core to run a
+# script file is a reviewed, listed call site; no trace of the removed run_pjsr tool.
+if ! python3 "$HERE/check-eval-sites.py"; then
+   echo "FAIL: the evaluation call-site guard (test/check-eval-sites.py) found an unreviewed change"
+   exit 1
+fi
 
 SLOT_SETTINGS="$(printf '%s/core-%03d-pxi.settings' "$HOME/.PixInsight" "$PICOPILOT_TEST_SLOT")"
 rm -f "$SLOT_SETTINGS"
@@ -555,7 +561,10 @@ if [ "$PI_RC" -ne 0 ]; then
    echo "FAIL: PI load timed out (900s) or exited non-zero (rc=$PI_RC)"; exit 1
 fi
 print_timings
-picopilot_journeys_check "$JOURNEYS_BEFORE" || exit 1
+# The verdict is printed even when the real library changed (e.g. another PixInsight with the installed
+# PICopilot was running meanwhile): both are reported, and either fails the run.
+JOURNEYS_OK=1
+picopilot_journeys_check "$JOURNEYS_BEFORE" || JOURNEYS_OK=0
 [ -s "$WATCHDOG_OK_MARKER" ] || { echo "FAIL: the watchdog never confirmed that only the dev module was mapped (see $WATCHDOG_LOG_BASE/driver.log)"; exit 1; }
 echo "watchdog: $(tr -d '\n ' < "$WATCHDOG_OK_MARKER")"
 [ -f "$R" ] || { echo "FAIL: no result file"; exit 1; }
@@ -604,7 +613,9 @@ required_true = [
     'configPolishOk',
     'processSafetyOk',
     'globalProcessOk',
-    'runPjsrOk', 'runPjsrBreakoutOk',
+    # 0.2.2.0: run_pjsr removed; run_script (installed, signed scripts only), consent, FITS paths
+    'runPjsrRemovedOk', 'dataLiteralOk', 'scriptSourceOk', 'scriptEligibilityOk', 'runScriptOk',
+    'scriptArgsPlumbingOk', 'scriptAcceptanceOk', 'scriptJourneyOk', 'consentOk', 'fitsPathScrubOk', 'scriptSelfTestOk',
     'finalFixOk',
     'pinnedOk',
     'bridgeOk',
@@ -666,4 +677,7 @@ if missing:
     print('FAILED keys: ' + ', '.join(missing))
     sys.exit(1)
 PY
+if [ "$JOURNEYS_OK" != 1 ]; then
+   echo "FAIL: the verdict above is green, but the user's real journey library changed during this run (see above)"; exit 1
+fi
 echo "PASS: self-test verdict all green"

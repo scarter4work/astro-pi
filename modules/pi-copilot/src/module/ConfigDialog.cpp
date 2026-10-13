@@ -3,6 +3,7 @@
 
 #include "ConfigDialog.h"
 #include "CopilotSettings.h"
+#include "DataConsent.h"
 #include "JourneyTracker.h"
 #include "KeyStore.h"
 #include "ModelCatalog.h"
@@ -73,11 +74,6 @@ void Tell( const String& text, StdIcon::value_type icon )
    MessageBox( "<p>" + EscapeHtml( text ) + "</p>", "PI Copilot", icon, StdButton::Ok ).Execute();
 }
 
-const char* const kRunPjsrExplanation =
-   "When allowed, PI Copilot may propose JavaScript to run inside PixInsight for jobs no process "
-   "can do. Every script is shown to you in full and runs only if you click Run script. "
-   "Scripts have full access to PixInsight and your files, and cannot be interrupted once running.";
-
 } // namespace
 
 String ValidateExportFolderSetting( const String& dir )
@@ -109,10 +105,15 @@ ConfigDialog::ConfigDialog()
    Model_Sizer.Add( Model_Label );
    Model_Sizer.Add( Model_ComboBox, 100 );
 
-   RunPjsr_CheckBox.SetText( "Allow scripts (run_pjsr)" );
-   RunPjsr_CheckBox.OnClick( (Button::click_event_handler)&ConfigDialog::RunPjsr_Click, *this );
-   RunPjsrInfo_Label.EnableWordWrapping();
-   RunPjsrInfo_Label.SetText( kRunPjsrExplanation );
+   Consent_CheckBox.SetText( "Send data to Anthropic (required for chat and journey write-ups)" );
+   Consent_CheckBox.OnClick( (Button::click_event_handler)&ConfigDialog::Consent_Click, *this );
+   ConsentWhat_PushButton.SetText( String::UTF8ToUTF16( "What is sent\xE2\x80\xA6" ) );
+   ConsentWhat_PushButton.OnClick( (Button::click_event_handler)&ConfigDialog::ConsentWhat_Click, *this );
+   Consent_Sizer.SetSpacing( 6 );
+   Consent_Sizer.Add( Consent_CheckBox );
+   Consent_Sizer.AddStretch();
+   Consent_Sizer.Add( ConsentWhat_PushButton );
+   ConsentInfo_Label.EnableWordWrapping();
 
    Side_Label.SetText( "Default side:" );
    Side_ComboBox.AddItem( "Right" );
@@ -164,8 +165,8 @@ ConfigDialog::ConfigDialog()
    Global_Sizer.AddSpacing( 6 );
    Global_Sizer.Add( Model_Sizer );
    Global_Sizer.AddSpacing( 6 );
-   Global_Sizer.Add( RunPjsr_CheckBox );
-   Global_Sizer.Add( RunPjsrInfo_Label );
+   Global_Sizer.Add( Consent_Sizer );
+   Global_Sizer.Add( ConsentInfo_Label );
    Global_Sizer.AddSpacing( 6 );
    Global_Sizer.Add( Side_Sizer );
    Global_Sizer.AddSpacing( 6 );
@@ -198,7 +199,11 @@ ConfigOutcome ConfigDialog::Run()
    const int mi = ModelIndex( CopilotSettings::LoadModel() );
    m_initialModel = mi < 0 ? 0 : mi;
    Model_ComboBox.SetCurrentItem( m_initialModel );
-   RunPjsr_CheckBox.SetChecked( CopilotSettings::LoadRunPjsrEnabled() );
+   m_agreedInDialog = false;
+   Consent_CheckBox.SetChecked( DataConsent::Granted() );
+   ConsentInfo_Label.SetText( DataConsent::Granted()
+      ? "You agreed on " + DataConsent::GrantedAt() + ". Uncheck and press OK to withdraw: nothing is sent after that."
+      : String( "Not agreed: nothing is sent to Anthropic (api.anthropic.com) until you do." ) );
    m_initialSide = CopilotSettings::LoadPanelSide();
    Side_ComboBox.SetCurrentItem( int( m_initialSide ) );
    RecordJourneys_CheckBox.SetChecked( CopilotSettings::LoadRecordJourneys() );
@@ -211,19 +216,26 @@ ConfigOutcome ConfigDialog::Run()
    return m_outcome;
 }
 
-void ConfigDialog::RunPjsr_Click( Button&, bool checked )
+void ConfigDialog::Consent_Click( Button&, bool checked )
 {
    if ( !checked )
+      return;   // withdrawn on OK
+   // Agreeing is asked with the full list of what is sent (default: No).
+   if ( DataConsent::Granted() || m_agreedInDialog )
       return;
-   // Turning scripts ON is the one setting that widens what PI Copilot may
-   // do: say exactly what it means and default to No.
-   const bool yes = MessageBox( "<p><b>Allow scripts?</b></p><p>" + EscapeHtml( kRunPjsrExplanation ) + "</p>"
-                                "<p>You can turn this off again here at any time.</p>",
-                                "PI Copilot", StdIcon::Warning,
+   const bool yes = MessageBox( DataConsent::ConsentHtml(),
+                                String::UTF8ToUTF16( "PI Copilot \xE2\x80\x94 data sent to Anthropic" ), StdIcon::Question,
                                 StdButton::Yes, StdButton::No, StdButton::NoButton, 1/*default: No*/, 1/*Esc: No*/ ).Execute()
                     == StdButton::Yes;
+   m_agreedInDialog = yes;
    if ( !yes )
-      RunPjsr_CheckBox.SetChecked( false );
+      Consent_CheckBox.SetChecked( false );
+}
+
+void ConfigDialog::ConsentWhat_Click( Button&, bool )
+{
+   MessageBox( DataConsent::ConsentHtml( false ), String::UTF8ToUTF16( "PI Copilot \xE2\x80\x94 data sent to Anthropic" ),
+               StdIcon::Information, StdButton::Ok ).Execute();
 }
 
 void ConfigDialog::OK_Button_Click( Button&, bool )
@@ -272,7 +284,10 @@ void ConfigDialog::OK_Button_Click( Button&, bool )
    const int mi = Model_ComboBox.CurrentItem();
    if ( mi != m_initialModel && mi >= 0 && size_type( mi ) < PICopilotModelCount )
       CopilotSettings::SaveModel( kPICopilotModels[mi].id );
-   CopilotSettings::SaveRunPjsrEnabled( RunPjsr_CheckBox.IsChecked() );
+   if ( Consent_CheckBox.IsChecked() && !DataConsent::Granted() && m_agreedInDialog )
+      DataConsent::Grant();
+   else if ( !Consent_CheckBox.IsChecked() && DataConsent::Granted() )
+      DataConsent::Revoke();
    const PanelSide side = Side_ComboBox.CurrentItem() == 1 ? PanelSide::Left : PanelSide::Right;
    CopilotSettings::SavePanelSide( side );
    CopilotSettings::SaveRecordJourneys( RecordJourneys_CheckBox.IsChecked() );

@@ -57,8 +57,6 @@
     "B5 settings, placement side, failure wording": 1.8,
     "B6 process safety policy": 0.2,
     "B7 global processes / run_global_process": 0.7,
-    "B8 run_pjsr": 0.4,
-    "B8a run_pjsr breakout suite": 0.1,
     "B9 final-review fixes": 0.1,
     "B10 pinned parameters": 0.1,
     "B10 live: waiting for the GraXpert lock": { "baseline": 7.4, "cap": 330 },

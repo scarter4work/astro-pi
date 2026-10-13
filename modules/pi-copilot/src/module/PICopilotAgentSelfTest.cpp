@@ -1263,10 +1263,12 @@ bool RunAgentSelfTest( nlohmann::json& out )
          const std::vector<std::string> all = { "list_processes", "describe_process", "get_view_context", "apply_process",
                                                  "run_global_process", "history_step", "list_journeys", "get_journey", "compare_to_journey",
                                                  "mark_journey_best", "start_journey", "replay_journey",
-                                                 "list_process_icons", "get_process_icon" };
+                                                 "list_process_icons", "get_process_icon",
+                                                 "list_scripts", "describe_script", "run_script" };
          const std::vector<std::string> readOnly = { "list_processes", "describe_process", "get_view_context",
                                                       "list_journeys", "get_journey", "compare_to_journey", "mark_journey_best",
-                                                      "list_process_icons", "get_process_icon" };
+                                                      "list_process_icons", "get_process_icon",
+                                                      "list_scripts", "describe_script" };
          const nlohmann::json tc = ToolDefinitions( AgentMode::Copilot );
          const nlohmann::json tg = ToolDefinitions( AgentMode::Guided );
          const nlohmann::json ta = ToolDefinitions( AgentMode::Advisor );
@@ -1275,15 +1277,8 @@ bool RunAgentSelfTest( nlohmann::json& out )
             for ( const nlohmann::json& t : *set )
                shapes = shapes && t.at( "input_schema" ).at( "type" ) == "object"
                      && t.at( "description" ).is_string() && !t.at( "description" ).get<std::string>().empty();
-         // With scripts allowed (inc 5), run_pjsr comes last; never in Advisor.
-         ToolOptions scripts;
-         scripts.runPjsr = true;
-         std::vector<std::string> allWithScript = all;
-         allWithScript.push_back( "run_pjsr" );
+         // 0.2.2.0: run_pjsr is gone in every mode; run_script (installed, signed scripts only) is last, never in Advisor.
          schemaOk = shapes && names( tc ) == all && names( tg ) == all && names( ta ) == readOnly
-                 && names( ToolDefinitions( AgentMode::Copilot, scripts ) ) == allWithScript
-                 && names( ToolDefinitions( AgentMode::Guided, scripts ) ) == allWithScript
-                 && names( ToolDefinitions( AgentMode::Advisor, scripts ) ) == readOnly
                  && tc.at( 3 ).at( "input_schema" ).at( "required" ) == nlohmann::json::array( { "process_id" } )
                  && tc.at( 3 ).at( "input_schema" ).at( "properties" ).contains( "table_parameters" )
                  && tc.at( 1 ).at( "input_schema" ).at( "required" ) == nlohmann::json::array( { "id" } );

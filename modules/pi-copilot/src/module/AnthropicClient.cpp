@@ -2,6 +2,7 @@
 // Copyright (c) 2026 Scott Carter. MIT License.
 
 #include "AnthropicClient.h"
+#include "DataConsent.h"
 #include "ModelCatalog.h"
 #include "SseStream.h"
 #include "Utf8.h"
@@ -249,6 +250,7 @@ struct AnthropicRequest::Impl
    NetworkTransfer transfer;
    String          body;      // request body as POST() wants it -- see PostBytes()
    String          buildError;
+   bool            noConsent = false;   // DataConsent::Granted() was false at construction
    int             timeoutSeconds = PICopilotRequestTimeoutSeconds;
    RequestShape    shape;
 };
@@ -259,6 +261,13 @@ AnthropicRequest::AnthropicRequest( const String& apiKey, const IsoString& model
                                     const nlohmann::json& tools, const RequestShape& shape )
    : m( new Impl )
 {
+   // CPD rule 6.2 (DataConsent.h): the ONE place every request is built. No
+   // agreement -> nothing is configured and Perform() never touches the network.
+   if ( !DataConsent::Granted() )
+   {
+      m->noConsent = true;
+      return;
+   }
    m->timeoutSeconds = timeoutSeconds;
    m->shape = shape;
    if ( shape.stream )
@@ -326,6 +335,12 @@ AnthropicResult AnthropicRequest::Perform()
 {
    AnthropicResult result;
 
+   if ( m->noConsent )
+   {
+      result.errorKind = RequestErrorKind::Consent;
+      result.error = DataConsent::NotGrantedText();
+      return result;
+   }
    if ( !m->buildError.IsEmpty() )
    {
       result.errorKind = RequestErrorKind::Build;

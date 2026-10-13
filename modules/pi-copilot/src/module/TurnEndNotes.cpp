@@ -41,6 +41,8 @@ String FailureNote( const AgentStep& s, int httpStatus )
             n += " (the service is busy; wait a moment, then send again)";
          return n;
       }
+   case RequestErrorKind::Consent:
+      return s.error;
    case RequestErrorKind::None:   // no cause recorded: the increment-4 form
       break;
    }

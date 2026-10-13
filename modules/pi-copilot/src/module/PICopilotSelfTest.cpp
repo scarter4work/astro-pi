@@ -5,6 +5,7 @@
 #include "PICopilotModule.h"     // ThePICopilotModule
 #include "AnthropicClient.h"
 #include "ChatThread.h"
+#include "PICopilotScriptSelfTest.h"
 #include "PICopilotInterface.h"   // PICopilotInterface::PlainText
 #include "PICopilotVisionSelfTest.h"
 #include "PICopilotAgentSelfTest.h"
@@ -391,6 +392,23 @@ bool RunSelfTest( String& jsonOut )
       j["undoException"] = "unknown exception";
    }
 
+   // 0.2.2.0 compliance (run_script, consent, FITS paths). Same isolation as the blocks above.
+   bool scriptOk = false;
+   try
+   {
+      nlohmann::json script;
+      scriptOk = RunScriptSelfTest( script );
+      j.update( script );
+   }
+   catch ( const std::exception& x )
+   {
+      j["scriptException"] = x.what();
+   }
+   catch ( ... )
+   {
+      j["scriptException"] = "unknown exception";
+   }
+
    SelfTestSectionMark( nullptr );
    j["sectionTimings"] = SelfTestTiming().done;
 
@@ -404,7 +422,7 @@ bool RunSelfTest( String& jsonOut )
                       ? std::string( info.dli_fname ) : std::string();
    }
 
-   ok = ok && visionOk && agentOk && inc5Ok && journeyOk && undoOk;
+   ok = ok && visionOk && agentOk && inc5Ok && journeyOk && undoOk && scriptOk;
    j["ok"] = ok;
    jsonOut = String::UTF8ToUTF16( j.dump().c_str() );
    return ok;

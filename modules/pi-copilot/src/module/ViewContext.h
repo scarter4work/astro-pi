@@ -8,6 +8,8 @@
 
 #include <nlohmann/json.hpp>
 
+#include <string>
+
 namespace pcl
 {
 
@@ -31,6 +33,16 @@ constexpr const char* PICopilotRedactedFitsKeywords[] =
 // True iff name (trimmed, any case) is in PICopilotRedactedFitsKeywords.
 bool IsRedactedFitsKeyword( const IsoString& name );
 
+// A FITS keyword value with every absolute filesystem path in it reduced to
+// its file name (privacy: a path usually names the user's account; e.g. a
+// HISTORY or FILENAME value written by a stacker). A path starts with '/', a
+// double backslash (network share), "~/", or a drive ("X:\" or "X:/"), at the
+// start of the value or after a space, tab, quote, '=', '(', '[', ',', ';' or
+// ':'; it is cut back to what follows its last '/' or '\' before the next
+// path. "1/2", "$T/2", dates such as "2026/10/13" and plain names are
+// unchanged. Pure.
+std::string FitsValueWithoutPaths( const std::string& value );
+
 // What the context carries for the image's file: the file name only
 // (File::ExtractNameAndExtension), never the directory -- a local path
 // usually contains the user's account name. Empty for an empty path.
@@ -41,7 +53,8 @@ String ViewContextFileName( const String& filePath );
  * file NAME, see ViewContextFileName), geometry, robust per-channel
  * statistics of the REAL (usually linear) data, and the first
  * PICopilotMaxFitsKeywords FITS keywords that are not redacted
- * (PICopilotRedactedFitsKeywords). There is deliberately no process
+ * (PICopilotRedactedFitsKeywords), each value with its paths reduced to file
+ * names (FitsValueWithoutPaths; counted in "fitsValuesPathsScrubbed"). There is deliberately no process
  * history: PCL exposes no API for it.
  *
  * Root thread only. Reads the image under AutoViewWriteLock (blocks writers,

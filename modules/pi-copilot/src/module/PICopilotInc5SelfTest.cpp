@@ -17,7 +17,7 @@
 #include "PICopilotModule.h"
 #include "ProcessApply.h"
 #include "ProcessSafety.h"
-#include "PjsrRunner.h"
+#include "ModuleScript.h"
 #include "ProcessCatalog.h"
 #include "SseStream.h"
 #include "SystemPrompt.h"
@@ -397,8 +397,7 @@ bool RunInc5SelfTest( nlohmann::json& out )
    // ---- Section B0: platform smoke (Task 1) --------------------------------
    SelfTestSectionMark( "B0 platform smoke" );
    {
-      bool iiOk = false, parseNoExecOk = false, breakoutOk = false, syntaxLineOk = false,
-           runtimeLineOk = false, consoleOk = false, throwOk = false;
+      bool iiOk = false, consoleOk = false, throwOk = false;
       nlohmann::json info = nlohmann::json::object();
       std::vector<std::string> created;
       String error;
@@ -500,88 +499,6 @@ bool RunInc5SelfTest( nlohmann::json& out )
       catch ( ... )                     { error = "unknown exception"; }
       ForceCloseWindows( created );
 
-      // (b) PJSR: parse without executing; breakout stays a SyntaxError; line numbers.
-      try
-      {
-         const String parsed = EvalJs(
-            "(function(){ var m = { v: 0 }; var f;"
-            " try { f = new Function( \"m\", \"m.v = 1;\" ); } catch ( e ) { return \"error: \" + e; }"
-            " var before = m.v; f( m ); return \"parsed:\" + before + \":\" + m.v; })()" );
-         info["pjsrParse"] = U8( parsed );
-         parseNoExecOk = parsed == "parsed:0:1";   // not run by parsing; runs when called
-
-         const String breakout = EvalJs(
-            "(function(){ var m = { v: 0 };"
-            " try { new Function( \"m\", \"}); m.v = 2; (function(){\" ); return \"parsed:\" + m.v; }"
-            " catch ( e ) { return \"syntax:\" + m.v + \":\" + (e instanceof SyntaxError); } })()" );
-         info["pjsrBreakout"] = U8( breakout );
-         breakoutOk = breakout == "syntax:0:true";
-
-         // FINDING: under MetaModule::EvaluateScript(), a caught Error's own
-         // properties are ONLY {message, stack} -- no lineNumber, columnNumber
-         // or fileName (confirmed via Object.getOwnPropertyNames(e); "in e"
-         // is false too, so it isn't an inherited-but-shadowed accessor
-         // either). This is a different engine/mode than the core's own
-         // script runner (a plain -r= script DOES expose e.lineNumber), and
-         // its error TEXT differs too ("Unexpected token ';'" / "Cannot set
-         // properties of null (setting 'x')" here vs "syntax error" / "null
-         // has no properties" from a plain -r= script on the same platform).
-         // For a SyntaxError thrown while COMPILING a new Function() body,
-         // e.stack carries no body-relative location either: its frames are
-         // "at new Function (<anonymous>)" (no line:col -- parsing never
-         // reached a frame) and two "at unnamed:1:N" frames that are just the
-         // new Function(...) CALL SITE and the END of the one-line wrapper
-         // script -- both constant regardless of where inside the body the
-         // syntax error actually is. Ruling #2 (global-constraints.md) cannot
-         // get a body-relative line number for a rejected script this way.
-         const String syn = EvalJs(
-            "(function(){ try { new Function( \"targetViewId\", \"var a = 1;\\nvar b = 2;\\nvar c = ;\\n\" ); return \"parsed\"; }"
-            " catch ( e ) { return JSON.stringify( { name: e.name, message: String( e.message ),"
-            " hasLineNumber: (\"lineNumber\" in e) && typeof e.lineNumber === \"number\","
-            " ownProps: Object.getOwnPropertyNames( e ), stack: String( e.stack ) } ); } })()" );
-         info["pjsrSyntaxForBodyLine3"] = U8( syn );
-         const nlohmann::json sj = nlohmann::json::parse( U8( syn ) );
-         const bool syntaxNoLineNumberConfirmed = sj.value( "name", std::string() ) == "SyntaxError"
-                                                && sj.value( "hasLineNumber", true ) == false;
-         syntaxLineOk = syntaxNoLineNumberConfirmed;   // the FACT itself, not a numeric line (see finding above)
-
-         // FINDING (positive): unlike a compile-time SyntaxError, a RUNTIME
-         // error thrown by CALLING the compiled function DOES get a usable
-         // inner frame: "at eval (eval at <anonymous> (unnamed:L:C),
-         // <anonymous>:LINE:COL)". <anonymous>:LINE:COL is relative to the
-         // engine's synthesized source "function anonymous(args\n) {\n<body>\n}"
-         // -- a 2-line header before the body's own line 1 -- so
-         // LINE - 2 recovers the 1-based body line. Verified on two separate
-         // bodies (a 1-line body throwing at its own line 1 reports inner
-         // LINE 3; this 2-line body throwing at its own line 2 reports inner
-         // LINE 4): the header offset is a stable +2 in both cases.
-         const String run = EvalJs(
-            "(function(){ try { var f = new Function( \"targetViewId\", \"var a = 1;\\nnull.x = 2;\\n\" ); f( \"\" ); return \"ran\"; }"
-            " catch ( e ) { var innerLine = null, innerCol = null;"
-            " var lines = String( e.stack ).split( \"\\n\" );"
-            " for ( var i = 0; i < lines.length; ++i ) {"
-            " var mm = /<anonymous>:(\\d+):(\\d+)/.exec( lines[i] );"
-            " if ( mm ) { innerLine = parseInt( mm[1], 10 ); innerCol = parseInt( mm[2], 10 ); break; } }"
-            " return JSON.stringify( { name: e.name, message: String( e.message ),"
-            " hasLineNumber: (\"lineNumber\" in e) && typeof e.lineNumber === \"number\","
-            " innerLine: innerLine, innerCol: innerCol, bodyLine: innerLine === null ? null : innerLine - 2,"
-            " stack: String( e.stack ) } ); } })()" );
-         info["pjsrRuntimeForBodyLine2"] = U8( run );
-         const nlohmann::json rj = nlohmann::json::parse( U8( run ) );
-         // Body line 2 ("null.x = 2;") is the second statement of this body -> bodyLine must read back as 2.
-         runtimeLineOk = rj.value( "name", std::string() ) == "TypeError" && rj.value( "bodyLine", -1 ) == 2;
-
-         info["pjsrLineNumberFinding"] =
-            "MetaModule::EvaluateScript() Error objects have no lineNumber/columnNumber/fileName "
-            "(only message+stack), unlike the core's own -r= script engine. A new Function() "
-            "SyntaxError (compile-time) carries NO body-relative location anywhere (own props or "
-            "stack). A runtime error thrown by CALLING the compiled function DOES: e.stack's "
-            "\"<anonymous>:LINE:COL\" frame, minus a constant 2-line synthesized-header offset, "
-            "gives the 1-based body line (confirmed on two different body lengths).";
-      }
-      catch ( const pcl::Exception& x ) { info["pjsrError"] = U8( x.Message() ); }
-      catch ( const std::exception& x ) { info["pjsrError"] = x.what(); }
-
       // (c) console capture inside ONE EvaluateScript; (d) what an uncaught throw looks like.
       try
       {
@@ -598,7 +515,7 @@ bool RunInc5SelfTest( nlohmann::json& out )
          // specific to strings originating from ByteArray.toString() (very
          // likely SpiderMonkey's Latin1-narrow string storage colliding with
          // the core's Value->pcl::String extraction). Fact for Tasks 8/9
-         // (run_pjsr console capture): never return ByteArray.toString()
+         // (console capture, now run_script's): never return ByteArray.toString()
          // directly across this boundary -- round-trip it through
          // ByteArray.toBase64() (pure ASCII, immune to the narrow-string
          // issue) and decode with IsoString::FromBase64() in C++ instead.
@@ -628,12 +545,11 @@ bool RunInc5SelfTest( nlohmann::json& out )
          throwOk = x.Message().Contains( "pc-boom" );
       }
 
-      const bool ok = iiOk && parseNoExecOk && breakoutOk && syntaxLineOk && runtimeLineOk && consoleOk;
+      const bool ok = iiOk && consoleOk;
       out["inc5SmokeInfo"] = info;
       out["inc5SmokeIiOk"] = iiOk;
-      out["inc5SmokePjsrOk"] = parseNoExecOk && breakoutOk && syntaxLineOk && runtimeLineOk;
       out["inc5SmokeConsoleOk"] = consoleOk;
-      out["inc5SmokeEvalThrowNamesMessage"] = throwOk;   // informational (RunPjsr catches inside JS anyway)
+      out["inc5SmokeEvalThrowNamesMessage"] = throwOk;   // informational
       out["inc5SmokeError"] = U8( error );
       out["inc5SmokeOk"] = ok;
       allOk = allOk && ok;
@@ -1704,19 +1620,17 @@ bool RunInc5SelfTest( nlohmann::json& out )
       String error;
       try
       {
-         for ( const char* k : { "PICopilot/Model", "PICopilot/RunPjsrEnabled", "PICopilot/PanelSide" } )
+         for ( const char* k : { "PICopilot/Model", "PICopilot/PanelSide" } )
             Settings::Remove( IsoString( k ) );
          const bool defaults = CopilotSettings::LoadModel() == PICOPILOT_DEFAULT_MODEL
-                            && !CopilotSettings::LoadRunPjsrEnabled()
                             && CopilotSettings::LoadPanelSide() == PanelSide::Right;
          CopilotSettings::SaveModel( "claude-sonnet-5" );   // not the default: proves the round trip
-         CopilotSettings::SaveRunPjsrEnabled( true );
          CopilotSettings::SavePanelSide( PanelSide::Left );
-         const bool stored = CopilotSettings::LoadModel() == "claude-sonnet-5" && CopilotSettings::LoadRunPjsrEnabled()
+         const bool stored = CopilotSettings::LoadModel() == "claude-sonnet-5"
                           && CopilotSettings::LoadPanelSide() == PanelSide::Left;
          Settings::Write( "PICopilot/Model", String( "claude-bogus-9" ) );
          const bool unknownFallsBack = CopilotSettings::LoadModel() == PICOPILOT_DEFAULT_MODEL;
-         for ( const char* k : { "PICopilot/Model", "PICopilot/RunPjsrEnabled", "PICopilot/PanelSide" } )
+         for ( const char* k : { "PICopilot/Model", "PICopilot/PanelSide" } )
             Settings::Remove( IsoString( k ) );
          settingsOk = defaults && stored && unknownFallsBack;
 
@@ -2646,357 +2560,6 @@ bool RunInc5SelfTest( nlohmann::json& out )
       allOk = allOk && ok;
    }
 
-   // ---- Section B8: run_pjsr (Task 9) ------------------------------------------
-   SelfTestSectionMark( "B8 run_pjsr" );
-   {
-      bool checkOk = false, runOk = false, errorOk = false, boundOk = false, valueBoundOk = false, pixelOk = false,
-           offOk = false, declineOk = false, approveOk = false, guidedOk = false, syntaxNoDialogOk = false,
-           advisorOk = false, tooLongOk = false, schemaOk = false, promptOk = false,
-           errorBoundOk = false, charRefusalOk = false, purposeBoundOk = false, errorToolBoundOk = false;
-      nlohmann::json detail = nlohmann::json::object();
-      String error;
-      try
-      {
-         // Task 1 finding: a new Function() SyntaxError carries NO line under
-         // EvaluateScript, so the check reports line 0 (unknown), never a guess.
-         const PjsrCheck good = CheckPjsrSyntax( "var a = 1;\nreturn a + 2;" );
-         const PjsrCheck bad = CheckPjsrSyntax( "var a = 1;\nvar b = ;\n" );
-         detail["bad"] = { { "error", U8( bad.error ) }, { "line", bad.line }, { "offset", PjsrLineOffset() } };
-         checkOk = good.ok && !bad.ok && bad.line == 0 && bad.error.StartsWith( "SyntaxError" )
-                && PjsrLineOffset() == 2;   // Task 1: the synthesized header is 2 lines
-
-         const PjsrRun r1 = RunPjsr( "console.writeln( \"hi pc\" );\nreturn { a: 1, t: targetViewId };", "PCPjsrT" );
-         // Only what the script wrote: the core's log banner and per-line
-         // timestamps are stripped; write() without a newline joins the line.
-         const PjsrRun quiet = RunPjsr( "return 0;", IsoString() );
-         const PjsrRun lines = RunPjsr( "console.writeln( 'L1' ); console.write( 'L2a' ); console.writeln( 'L2b' );"
-                                        " console.warningln( 'W' ); return 0;", IsoString() );
-         detail["r1"] = { { "value", U8( r1.value ) }, { "console", U8( r1.console ) }, { "error", U8( r1.error ) },
-                          { "quietConsole", U8( quiet.console ) }, { "linesConsole", U8( lines.console ) } };
-         runOk = r1.ok && r1.value == "{\"a\":1,\"t\":\"PCPjsrT\"}" && r1.console == "hi pc\n"
-              && quiet.ok && quiet.console.IsEmpty() && lines.console == "L1\nL2aL2b\nW\n";
-
-         // Runtime errors DO have a position: reported in the model's own lines,
-         // including a throw from inside a nested function.
-         const PjsrRun r2 = RunPjsr( "var a = 1;\nthrow new Error( \"pc-script-fail\" );", IsoString() );
-         const PjsrRun r2b = RunPjsr( "function f() {\n   return null.x;\n}\nvar q = 0;\nreturn f();", IsoString() );
-         detail["r2"] = { { "error", U8( r2.error ) }, { "line", r2.line },
-                          { "nestedError", U8( r2b.error ) }, { "nestedLine", r2b.line } };
-         errorOk = !r2.ok && r2.line == 2 && r2.error.Contains( "pc-script-fail" ) && !r2b.ok && r2b.line == 2;
-
-         const PjsrRun r3 = RunPjsr( "for ( var i = 0; i < 400; ++i ) console.writeln( \"0123456789012345678901234567890123456789012345678\" );\n"
-                                     "console.writeln( \"pc-last-line-\\u00e9\" );\nreturn \"x\";", IsoString() );
-         detail["r3"] = { { "consoleLength", r3.console.Length() }, { "head", U8( r3.console.Left( 60 ) ) },
-                          { "tail", U8( r3.console.Right( 40 ) ) }, { "value", U8( r3.value ) }, { "error", U8( r3.error ) } };
-         boundOk = r3.ok && r3.consoleTruncated && r3.console.StartsWith( "[... " )
-                && r3.console.Length() <= PICopilotMaxScriptConsoleChars + 64 && r3.value == "\"x\""
-                && r3.console.Contains( String::UTF8ToUTF16( "pc-last-line-\xC3\xA9" ) );   // the TAIL is kept, UTF-8 intact
-
-         const PjsrRun r5 = RunPjsr( "var s = \"\";\nfor ( var i = 0; i < 5000; ++i ) s += \"a\";\nreturn s;", IsoString() );
-         detail["r5"] = { { "valueLength", r5.value.Length() }, { "valueTruncated", r5.valueTruncated }, { "error", U8( r5.error ) } };
-         valueBoundOk = r5.ok && r5.valueTruncated && r5.value.Length() == PICopilotMaxScriptValueChars;
-
-         const PjsrRun r6 = RunPjsr( "throw \"e\".repeat( 10000000 );", IsoString() );
-         detail["r6"] = { { "errorLength", r6.error.Length() }, { "errorTruncated", r6.errorTruncated } };
-         // The syntax check's error is capped exactly too (an engine message
-         // quoting a 19000-character identifier).
-         const PjsrCheck bigSyntax = CheckPjsrSyntax( "var a = 1 " + String( 'x', 19000 ) + ";" );
-         detail["r6"]["syntaxErrorLength"] = bigSyntax.error.Length();
-         detail["r6"]["syntaxErrorTruncated"] = bigSyntax.errorTruncated;
-         errorBoundOk = !r6.ok && r6.errorTruncated && r6.error.Length() == PICopilotMaxScriptErrorChars
-                     && !bigSyntax.ok && bigSyntax.errorTruncated && bigSyntax.error.Length() == PICopilotMaxScriptErrorChars
-                     && bigSyntax.error.StartsWith( "SyntaxError" );
-
-         Inc5TestWindow tw( "PCPjsrPix", 32, 32, 1, 0.4 );
-         View v = tw.MainView();
-         // The EvaluateScript engine (PI 1.9.5) namespaces the constants:
-         // UndoFlag.PixelData / ImageOp.Mul (UndoFlag_PixelData is undefined
-         // there). The prompt teaches exactly this spelling, and the change
-         // it makes is really undoable: the window's undo() restores the
-         // original pixels.
-         const PjsrRun r4 = RunPjsr( "var v = View.viewById( targetViewId );\nv.beginProcess( UndoFlag.PixelData );\n"
-                                     "v.image.apply( 0.5, ImageOp.Mul );\nv.endProcess();\nreturn v.image.median();", v.FullId() );
-         const double afterRun = Inc5Median( v, 0 );
-         EvalJs( "(function(){ ImageWindow.windowById( \"PCPjsrPix\" ).undo(); return 0; })()" );
-         const double afterUndo = Inc5Median( v, 0 );
-         detail["r4"] = { { "value", U8( r4.value ) }, { "error", U8( r4.error ) },
-                          { "afterRun", afterRun }, { "afterUndo", afterUndo } };
-         pixelOk = r4.ok && std::fabs( afterRun - 0.2 ) < 1e-6 && std::fabs( afterUndo - 0.4 ) < 1e-6;
-
-         int asks = 0;
-         bool answer = false;
-         String askedCode;
-         ToolContext ctx;
-         ctx.mode = AgentMode::Copilot;
-         ctx.turnViewId = v.FullId();
-         ctx.confirmScript = [&]( const String&, const String& code, const IsoString& ) { ++asks; askedCode = code; return answer; };
-         const std::string markCode = "new ImageWindow( 8, 8, 1, 32, true, false, \"PCPjsrMark\" );\nreturn 1;";
-         const ToolCall mark{ "p1", "run_pjsr", { { "purpose", "Create a marker window" }, { "code", markCode } } };
-         auto markExists = []() { return !ImageWindow::WindowById( IsoString( "PCPjsrMark" ) ).IsNull(); };
-         auto text0 = []( const ToolOutcome& o ) { return o.content.at( 0 ).at( "text" ).get<std::string>(); };
-
-         ctx.runPjsr = false;
-         const ToolOutcome off = ExecuteTool( mark, ctx );
-         offOk = off.isError && asks == 0 && !markExists() && text0( off ).find( "turned off" ) != std::string::npos;
-
-         ctx.runPjsr = true;
-         answer = false;
-         const ToolOutcome declined = ExecuteTool( mark, ctx );
-         declineOk = declined.isError && asks == 1 && U8( askedCode ) == markCode && !markExists() && !declined.mutated;
-
-         answer = true;
-         const ToolOutcome approved = ExecuteTool( mark, ctx );
-         detail["approved"] = text0( approved );
-         approveOk = !approved.isError && asks == 2 && markExists() && approved.mutated;
-         ForceCloseWindows( { "PCPjsrMark" } );
-
-         ctx.mode = AgentMode::Guided;   // asked in Guided too (and in Copilot above): every time
-         answer = false;
-         ExecuteTool( mark, ctx );
-         guidedOk = asks == 3 && !markExists();
-
-         ctx.mode = AgentMode::Copilot;
-         const ToolOutcome syn = ExecuteTool( ToolCall{ "p2", "run_pjsr", { { "purpose", "broken" }, { "code", "var = ;" } } }, ctx );
-         detail["syntax"] = text0( syn );
-         syntaxNoDialogOk = syn.isError && asks == 3 && text0( syn ).find( "syntax error (line unknown)" ) != std::string::npos;
-
-         const ToolOutcome longer = ExecuteTool( ToolCall{ "p3", "run_pjsr", { { "purpose", "too long" },
-                                                 { "code", "return 1;" + std::string( PICopilotMaxScriptChars, ' ' ) } } }, ctx );
-         detail["tooLong"] = text0( longer );
-         tooLongOk = longer.isError && asks == 3 && text0( longer ).find( "the limit is 20000" ) != std::string::npos;
-
-         ctx.mode = AgentMode::Advisor;
-         const ToolOutcome adv = ExecuteTool( mark, ctx );
-         advisorOk = adv.isError && asks == 3 && text0( adv ).find( "not available in Advisor" ) != std::string::npos;
-
-         // Fix round 1: what the dialog shows must be what runs. Invisible,
-         // reordering and line-terminator characters are refused BEFORE the
-         // parse check and the dialog (asks unchanged); CRLF is normalised.
-         ctx.mode = AgentMode::Copilot;
-         answer = false;
-         {
-            auto withUnits = []( const char* head, std::initializer_list<uint32_t> cps, const char* tail )
-            {
-               std::string s = head;
-               for ( uint32_t c : cps )   // UTF-8 encode
-                  if ( c < 0x80 ) s += char( c );
-                  else if ( c < 0x800 ) { s += char( 0xC0 | (c >> 6) ); s += char( 0x80 | (c & 0x3F) ); }
-                  else if ( c < 0x10000 ) { s += char( 0xE0 | (c >> 12) ); s += char( 0x80 | ((c >> 6) & 0x3F) ); s += char( 0x80 | (c & 0x3F) ); }
-                  else { s += char( 0xF0 | (c >> 18) ); s += char( 0x80 | ((c >> 12) & 0x3F) ); s += char( 0x80 | ((c >> 6) & 0x3F) ); s += char( 0x80 | (c & 0x3F) ); }
-               return s + tail;
-            };
-            const std::vector<std::pair<const char*, uint32_t>> refused = {
-               { "NUL", 0x00 }, { "loneCR", 0x0D }, { "VT", 0x0B }, { "ESC", 0x1B }, { "DEL", 0x7F }, { "C1-NEL", 0x85 },
-               { "LS", 0x2028 }, { "PS", 0x2029 }, { "RLO", 0x202E }, { "LRE", 0x202A }, { "RLI", 0x2067 }, { "PDI", 0x2069 },
-               { "ZWSP", 0x200B }, { "ZWJ", 0x200D }, { "RLM", 0x200F }, { "BOM", 0xFEFF }, { "SHY", 0x00AD },
-               { "WJ", 0x2060 }, { "ALM", 0x061C }, { "MVS", 0x180E }, { "TAG-A", 0xE0041 }, { "ILA", 0xFFF9 },
-               // Not Cf, but invisible and legal inside JavaScript identifiers
-               // ("safe" + VS1 and "safe" are different variables that look the same).
-               { "HCF", 0x115F }, { "HJF", 0x1160 }, { "HF", 0x3164 }, { "HWHF", 0xFFA0 },
-               { "VS1", 0xFE00 }, { "VS16", 0xFE0F }, { "VS17", 0xE0100 }, { "VS256", 0xE01EF }, { "CGJ", 0x034F }
-            };
-            bool allRefused = true;
-            nlohmann::json rj = nlohmann::json::object();
-            for ( const auto& rc : refused )
-            {
-               const std::string code = withUnits( "var s = 1; // c", { rc.second }, " new ImageWindow( 8, 8, 1, 32, true, false, \"PCPjsrMark\" );\nreturn s;" );
-               const ToolOutcome o = ExecuteTool( ToolCall{ "p4", "run_pjsr", { { "purpose", "hidden text" }, { "code", code } } }, ctx );
-               const bool r = o.isError && asks == 3 && !markExists()
-                           && text0( o ).find( "\\uXXXX escapes" ) != std::string::npos;
-               if ( !r )
-                  rj[rc.first] = text0( o );
-               allRefused = allRefused && r;
-            }
-            // Tabs and CRLF line ends are fine: CRLF reaches the dialog (and the engine) as LF.
-            const ToolOutcome crlf = ExecuteTool( ToolCall{ "p5", "run_pjsr", { { "purpose", "crlf" },
-                                                  { "code", "var a = 1;\r\n\tvar b = 2;\r\nreturn a + b;" } } }, ctx );
-            detail["charRefusalFailures"] = rj;
-            charRefusalOk = allRefused && crlf.isError && asks == 4
-                         && askedCode == "var a = 1;\n\tvar b = 2;\nreturn a + b;";
-         }
-
-         // Fix round 1: purpose is bounded (it is shown in the dialog).
-         const ToolOutcome longPurpose = ExecuteTool( ToolCall{ "p6", "run_pjsr", { { "purpose", std::string( PICopilotMaxScriptPurposeChars + 1, 'p' ) },
-                                                      { "code", "return 1;" } } }, ctx );
-         detail["longPurpose"] = text0( longPurpose );
-         purposeBoundOk = longPurpose.isError && asks == 4 && text0( longPurpose ).find( "the limit is 300" ) != std::string::npos;
-
-         // Fix round 1: a huge thrown value never becomes a huge tool_result.
-         answer = true;
-         const ToolOutcome bigThrow = ExecuteTool( ToolCall{ "p7", "run_pjsr", { { "purpose", "big throw" },
-                                                   { "code", "throw \"x\".repeat( 10000000 );" } } }, ctx );
-         detail["bigThrowResultChars"] = text0( bigThrow ).size();
-         errorToolBoundOk = bigThrow.isError && asks == 5 && text0( bigThrow ).size() < PICopilotMaxScriptErrorChars + 1000
-                         && text0( bigThrow ).find( "\"errorTruncated\":true" ) != std::string::npos;
-         answer = false;
-
-         ToolOptions on;
-         on.runPjsr = true;
-         const nlohmann::json tOn = ToolDefinitions( AgentMode::Copilot, on );
-         const nlohmann::json tOff = ToolDefinitions( AgentMode::Copilot );
-         const nlohmann::json tAdv = ToolDefinitions( AgentMode::Advisor, on );
-         bool offHas = false, advHas = false;
-         for ( const nlohmann::json& t : tOff ) offHas = offHas || t.at( "name" ) == "run_pjsr";
-         for ( const nlohmann::json& t : tAdv ) advHas = advHas || t.at( "name" ) == "run_pjsr";
-         schemaOk = tOn.back().at( "name" ) == "run_pjsr"
-                 && tOn.back().at( "input_schema" ).at( "required" ) == nlohmann::json::array( { "code", "purpose" } )
-                 && !offHas && !advHas && ToolDefinitions( AgentMode::Guided, on ).back().at( "name" ) == "run_pjsr";
-         promptOk = BuildSystemPrompt( AgentMode::Copilot, on ).Contains( "run_pjsr" )
-                 && BuildSystemPrompt( AgentMode::Copilot, on ).Contains( "view.beginProcess(UndoFlag.PixelData)" )
-                 && BuildSystemPrompt( AgentMode::Guided, on ).Contains( "run_pjsr" )
-                 && !BuildSystemPrompt( AgentMode::Copilot ).Contains( "run_pjsr" )
-                 && !BuildSystemPrompt( AgentMode::Advisor, on ).Contains( "run_pjsr" )
-                 // folded inc-4 minor: assert the literal mode-switch phrase, not the ever-present "PI Copilot"
-                 && BuildSystemPrompt( AgentMode::Advisor ).Contains( "switching the mode selector to Copilot" );
-      }
-      catch ( const pcl::Exception& x ) { error = x.Message(); }
-      catch ( const std::exception& x ) { error = String( x.what() ); }
-      ForceCloseWindows( { "PCPjsrMark" } );
-
-      detail["flags"] = { { "check", checkOk }, { "run", runOk }, { "error", errorOk }, { "bound", boundOk },
-                          { "valueBound", valueBoundOk }, { "pixel", pixelOk }, { "off", offOk }, { "decline", declineOk },
-                          { "approve", approveOk }, { "guided", guidedOk }, { "syntaxNoDialog", syntaxNoDialogOk },
-                          { "tooLong", tooLongOk }, { "advisor", advisorOk }, { "schema", schemaOk }, { "prompt", promptOk },
-                          { "errorBound", errorBoundOk }, { "charRefusal", charRefusalOk }, { "purposeBound", purposeBoundOk },
-                          { "errorToolBound", errorToolBoundOk } };
-      const bool ok = checkOk && runOk && errorOk && boundOk && valueBoundOk && pixelOk && offOk && declineOk
-                   && approveOk && guidedOk && syntaxNoDialogOk && tooLongOk && advisorOk && schemaOk && promptOk
-                   && errorBoundOk && charRefusalOk && purposeBoundOk && errorToolBoundOk;
-      out["runPjsrDetail"] = detail;
-      out["runPjsrError"] = U8( error );
-      out["runPjsrOk"] = ok;
-      allOk = allOk && ok;
-   }
-
-   // ---- Section B8a: run_pjsr breakout suite (Task 9) ---------------------------
-   SelfTestSectionMark( "B8a run_pjsr breakout suite" );
-   // The model's script reaches the engine ONLY as data (ScriptLiteral). Each
-   // hostile text must either parse as exactly its own source, or fail as a
-   // SyntaxError -- and the sentinel (a window named PCBreakout) must NEVER
-   // appear during the parse check.
-   {
-      bool allCasesOk = true;
-      nlohmann::json cases = nlohmann::json::array();
-      String error;
-      try
-      {
-         auto u16 = []( std::initializer_list<unsigned> units )
-         {
-            String s;
-            for ( unsigned u : units )
-               s += char16_type( u );
-            return s;
-         };
-         // UTF-16 code units as "u,u,u" (a lone surrogate is not valid text: it travels as U+FFFD).
-         auto codes = []( const String& s )
-         {
-            String r;
-            for ( size_type i = 0; i < s.Length(); ++i )
-            {
-               unsigned u = s[i];
-               if ( u >= 0xD800 && u <= 0xDFFF )
-               {
-                  const bool hi = u <= 0xDBFF && i+1 < s.Length() && s[i+1] >= 0xDC00 && s[i+1] <= 0xDFFF;
-                  const bool lo = u >= 0xDC00 && i > 0 && s[i-1] >= 0xD800 && s[i-1] <= 0xDBFF;
-                  if ( !hi && !lo )
-                     u = 0xFFFD;
-               }
-               r += String().Format( i ? ",%u" : "%u", u );
-            }
-            return r;
-         };
-         const char* const kCodesJs = "; var r = \"\"; for ( var i = 0; i < s.length; ++i ) r += (i ? \",\" : \"\") + s.charCodeAt( i ); return r; })()";
-         auto sentinelExists = []() { return !ImageWindow::WindowById( IsoString( "PCBreakout" ) ).IsNull(); };
-
-         const String sentinel = "new ImageWindow( 8, 8, 1, 32, true, false, \"PCBreakout\" );";
-         struct BreakoutCase { const char* name; String code; };
-         const std::vector<BreakoutCase> list = {   // pcl-move-ok: const, read only
-            { "quote",         "var s = \"a\\\"b\"; return s; \" " + sentinel },
-            { "backslash",     "return \"\\\\\"; \\\" " + sentinel },
-            { "commentClose",  "*/ " + sentinel + " /*" },
-            { "scriptTag",     "return \"</script><script>" + sentinel + "</script>\";" },
-            { "newlines",      "var a = 1;\r\n" + sentinel + "\n\"\n" },
-            { "nulControl",    "return \"a" + u16( { 0 } ) + "b" + u16( { 1, 0x1f, 0x7f } ) + "\"; " + sentinel },
-            { "lineSep2028",   "// c" + u16( { 0x2028 } ) + sentinel },
-            { "paraSep2029",   "return \"p" + u16( { 0x2029 } ) + "\" + (" + sentinel + ")" },
-            { "surrogates",    "return \"" + u16( { 0xD83D, 0xDE00 } ) + "\"; // " + sentinel },
-            { "loneSurrogate", "return \"" + u16( { 0xD83D } ) + "\"; " + sentinel },
-            { "literalEscape", "\"); " + sentinel + " (\"" },
-            { "fnClose",       "}); " + sentinel + " (function(){" },
-            { "unicodeEscape", "\\u0022); " + sentinel + " //" },
-         };
-         for ( const BreakoutCase& c : list )
-         {
-            nlohmann::json j;
-            j["name"] = c.name;
-            const std::string lit = ScriptLiteral( c.code );
-            bool ascii = true;
-            for ( unsigned char ch : lit )
-               ascii = ascii && ch >= 0x20 && ch < 0x7f;
-            j["asciiOnly"] = ascii;
-
-            // Inside the engine the literal is exactly the code, code unit for code unit.
-            const String want = codes( c.code );
-            const String back = EvalJs( "(function(){ var s = " + String( lit.c_str() ) + kCodesJs );
-            j["literalFaithful"] = back == want;
-
-            const PjsrCheck chk = CheckPjsrSyntax( c.code );
-            const bool ranOnCheck = sentinelExists();
-            ForceCloseWindows( { "PCBreakout" } );
-            j["parsed"] = chk.ok;
-            j["error"] = U8( chk.error );
-            j["sentinelRanOnCheck"] = ranOnCheck;
-
-            bool outcomeOk;
-            if ( chk.ok )
-            {
-               // Parsed: the compiled function's own source holds the code verbatim.
-               const String src = EvalJs( "(function(){ var s = String( new Function( \"targetViewId\", "
-                                          + String( lit.c_str() ) + " ) )" + kCodesJs );
-               outcomeOk = ("," + src + ",").Contains( "," + want + "," );
-               j["functionSourceHasCode"] = outcomeOk;
-            }
-            else
-               outcomeOk = chk.error.StartsWith( "SyntaxError" );
-            const bool caseOk = ascii && back == want && !ranOnCheck && outcomeOk;
-            j["ok"] = caseOk;
-            allCasesOk = allCasesOk && caseOk;
-            cases.push_back( j );
-         }
-
-         // End to end through RunPjsr: non-BMP and NUL survive both ways, and a
-         // literal-escape attempt is just a string expression statement.
-         const PjsrRun e1 = RunPjsr( "return \"" + u16( { 0xD83D, 0xDE00 } ) + "\" + \"a" + u16( { 0 } ) + "b\".length;", IsoString() );
-         const PjsrRun e2 = RunPjsr( "\"); new ImageWindow( 8, 8, 1, 32, true, false, 'PCBreakout' ); (\"\nreturn 7;", IsoString() );
-         const bool e2Sentinel = sentinelExists();
-         ForceCloseWindows( { "PCBreakout" } );
-         // Wrapper-closing texts, RUN (not just parsed): still only a SyntaxError.
-         const PjsrRun e3 = RunPjsr( "}); " + sentinel + " (function(){", IsoString() );
-         const bool e3Sentinel = sentinelExists();
-         ForceCloseWindows( { "PCBreakout" } );
-         const PjsrRun e4 = RunPjsr( "*/ " + sentinel + " /*", IsoString() );
-         const bool e4Sentinel = sentinelExists();
-         ForceCloseWindows( { "PCBreakout" } );
-         const bool endToEndOk = e1.ok && e1.value == "\"" + u16( { 0xD83D, 0xDE00 } ) + "3\""
-                              && e2.ok && e2.value == "7" && !e2Sentinel
-                              && !e3.ok && e3.error.StartsWith( "SyntaxError" ) && !e3Sentinel
-                              && !e4.ok && e4.error.StartsWith( "SyntaxError" ) && !e4Sentinel;
-         cases.push_back( { { "name", "endToEnd" }, { "e1Value", U8( e1.value ) }, { "e1Error", U8( e1.error ) },
-                            { "e2Value", U8( e2.value ) }, { "e2Error", U8( e2.error ) }, { "e2Sentinel", e2Sentinel },
-                            { "fnCloseRunError", U8( e3.error ) }, { "fnCloseRunSentinel", e3Sentinel },
-                            { "commentCloseRunError", U8( e4.error ) }, { "commentCloseRunSentinel", e4Sentinel },
-                            { "ok", endToEndOk } } );
-         allCasesOk = allCasesOk && endToEndOk;
-      }
-      catch ( const pcl::Exception& x ) { error = x.Message(); allCasesOk = false; }
-      catch ( const std::exception& x ) { error = String( x.what() ); allCasesOk = false; }
-      ForceCloseWindows( { "PCBreakout" } );
-      out["runPjsrBreakoutCases"] = cases;
-      out["runPjsrBreakoutError"] = U8( error );
-      out["runPjsrBreakoutOk"] = allCasesOk;
-      allOk = allOk && allCasesOk;
-   }
-
    // ---- Section B9: final-review fixes (inc 5) ---------------------------------
    SelfTestSectionMark( "B9 final-review fixes" );
    {
@@ -3236,20 +2799,19 @@ bool RunInc5SelfTest( nlohmann::json& out )
          ToolContext tc;
          tc.mode = AgentMode::Copilot;
          const std::string uCopilot = ExecuteTool( ToolCall{ "u1", "nope", nlohmann::json::object() }, tc ).content.at( 0 ).at( "text" );
-         tc.runPjsr = true;
-         const std::string uScripts = ExecuteTool( ToolCall{ "u2", "nope", nlohmann::json::object() }, tc ).content.at( 0 ).at( "text" );
          tc.mode = AgentMode::Advisor;
          const std::string uAdvisor = ExecuteTool( ToolCall{ "u3", "nope", nlohmann::json::object() }, tc ).content.at( 0 ).at( "text" );
-         detail["unknownTool"] = { uCopilot, uScripts, uAdvisor };
+         tc.mode = AgentMode::Copilot;
+         const std::string uPjsr = ExecuteTool( ToolCall{ "u4", "run_pjsr", nlohmann::json::object() }, tc ).content.at( 0 ).at( "text" );
+         detail["unknownTool"] = { uCopilot, uAdvisor, uPjsr };
          unknownToolOk = uCopilot == "unknown tool 'nope'; available: list_processes, describe_process, get_view_context, "
                                      "apply_process, run_global_process, history_step, list_journeys, get_journey, compare_to_journey, "
-                                     "mark_journey_best, start_journey, replay_journey, list_process_icons, get_process_icon"
-                      && uScripts == "unknown tool 'nope'; available: list_processes, describe_process, get_view_context, "
-                                     "apply_process, run_global_process, history_step, list_journeys, get_journey, compare_to_journey, "
-                                     "mark_journey_best, start_journey, replay_journey, list_process_icons, get_process_icon, run_pjsr"
+                                     "mark_journey_best, start_journey, replay_journey, list_process_icons, get_process_icon, "
+                                     "list_scripts, describe_script, run_script"
                       && uAdvisor == "unknown tool 'nope'; available: list_processes, describe_process, get_view_context, "
                                      "list_journeys, get_journey, compare_to_journey, mark_journey_best, list_process_icons, "
-                                     "get_process_icon";
+                                     "get_process_icon, list_scripts, describe_script"
+                      && uPjsr.compare( 0, 23, "unknown tool 'run_pjsr'" ) == 0;   // 0.2.2.0: removed
 
          // 7. Tool-result cap.
          {
@@ -3283,10 +2845,10 @@ bool RunInc5SelfTest( nlohmann::json& out )
                  && FromU8( listed ).Length() <= 20000 + 300;
          }
 
-         // 8. System prompt: no run_pjsr detour around a denied process.
-         const String withScripts = BuildSystemPrompt( AgentMode::Copilot, ToolOptions{ true } );
-         promptOk = withScripts.Contains( "Never use run_pjsr to run a process that apply_process or run_global_process "
-                                          "refused as not allowed" );
+         // 8. System prompt: no script detour around a denied process.
+         const String withScripts = BuildSystemPrompt( AgentMode::Copilot );
+         promptOk = withScripts.Contains( "Never use run_script to get around a process the safety policy refused" )
+                 && !withScripts.Contains( "run_pjsr" );
       }
       catch ( const pcl::Exception& x ) { error = x.Message(); }
       catch ( const std::exception& x ) { error = String( x.what() ); }

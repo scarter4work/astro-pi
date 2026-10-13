@@ -17,6 +17,7 @@
 #include "JourneyConstants.h"
 #include "JourneySpikeProbe.h"
 #include "JourneyTracker.h"
+#include "CopilotSettings.h"
 
 namespace pcl
 {
@@ -42,8 +43,13 @@ IsoString PICopilotModule::Name() const
 
 String PICopilotModule::Description() const
 {
-   return "PI Copilot v" PICOPILOT_STR(PICOPILOT_MODULE_VERSION_MAJOR) " — In-app AI assistant for PixInsight. "
-          "Chat that sees the active view, streams its replies and works on your images: Copilot (acts, undoable), Guided (asks first), Advisor (read-only). Records each image's processing journey from the stacked master; keep your best as a process icon set, a recipe and a write-up, and replay it on new data.";
+   // UTF-8 source text (the em dash): String( const char* ) would decode it as ISO-8859-1.
+   return String::UTF8ToUTF16( "PI Copilot " PICOPILOT_VERSION_STRING " \xE2\x80\x94 In-app AI assistant for PixInsight. "
+          "Chat that sees the active view, streams its replies and works on your images: Copilot (acts, undoable), Guided (asks first), Advisor (read-only). "
+          "Can start installed, signed PixInsight scripts (you confirm every run); never runs model-written code. "
+          "Records each image's processing journey from the stacked master; keep your best as a process icon set, a recipe and a write-up, and replay it on new data. "
+          "Sends data to Anthropic (api.anthropic.com) only after you agree. "
+          "This product is based on software from the PixInsight project, developed by Pleiades Astrophoto and its contributors (https://pixinsight.com/)." );
 }
 
 String PICopilotModule::Company() const
@@ -82,8 +88,8 @@ String PICopilotModule::OriginalFileName() const
 void PICopilotModule::GetReleaseDate( int& year, int& month, int& day ) const
 {
    year  = 2026;
-   month = 9;
-   day   = 27;
+   month = 10;
+   day   = 13;
 }
 
 void PICopilotModule::OnLoad()
@@ -92,6 +98,8 @@ void PICopilotModule::OnLoad()
    // spike records which image notifications and timer ticks reach the module
    // while the PI Copilot panel has never been opened.
    ArmJourneySpikeProbeIfSelfTest();
+   // 0.2.2.0: settings of removed features (PICopilot/RunPjsrEnabled) never linger.
+   CopilotSettings::RemoveRetiredSettings();
    // Image journey (0.2.0.0): always recording, panel open or not (Ruling 22).
    if ( PICopilotJourneyServiceStartsOnLoad )
       JourneyService::Instance().Start();
