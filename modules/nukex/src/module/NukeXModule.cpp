@@ -46,7 +46,12 @@ String NukeXModule::Description() const
    return "NukeX " NUKEX_VERSION_STRING " -- Distribution-Fitted Stacking. "
           "Per-pixel distribution fitting (Student-t, GMM, Contamination, KDE) "
           "with GPU-accelerated weight computation, 10 scientifically validated "
-          "stretch operations, and automatic channel/filter detection.";
+          "stretch operations, and automatic channel/filter detection. "
+          // PCL License 2.0, condition 4 (verbatim). Third-party notices ship
+          // in doc/tools/NukeX/THIRD_PARTY_NOTICES.txt.
+          "This product is based on software from the PixInsight project, "
+          "developed by Pleiades Astrophoto and its contributors "
+          "(https://pixinsight.com/).";
 }
 
 String NukeXModule::Company() const
