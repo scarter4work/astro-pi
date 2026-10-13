@@ -6,8 +6,10 @@
 //
 // Run from PixInsight: Script > Execute Script... -> this file. Prepare works on a
 // DUPLICATE of the target so your master is never modified.
-#feature-id    scarter4work > Gaia Depth Grade
-#script-id     GaiaDepthGrade
+// The "Id : menu path" form names the script GaiaDepthGrade (so PixInsight finds
+// its documentation at doc/scripts/GaiaDepthGrade/GaiaDepthGrade.html) and
+// replaces #script-id: code signing allows only one identification directive.
+#feature-id    GaiaDepthGrade : scarter4work > Gaia Depth Grade
 #feature-info  Physically-grounded depth grade for astrophotographs using Gaia distances.
 #include "gaia_depth_grade_lib.jsh"
 #include <pjsr/Sizer.jsh>
@@ -45,11 +47,10 @@ function GaiaDepthGradeDialog() {
    this.insetCx = 0; this.insetCy = 0;
    this.previewBmp = null;
    this.insetBmp = null;
-   this.cacheDir = TMP_DIR + "/ui";
-   this.starsPath = this.cacheDir + "/stars_full.fits";
-   this.starlessPath = this.cacheDir + "/starless_full.fits";
-   this.fullPng = this.cacheDir + "/preview_full.png";
-   this.insetPng = this.cacheDir + "/preview_inset.png";
+   // Working files live in the private working directory (gdgWorkDir("ui")),
+   // resolved and verified when Prepare starts; Preview and Execute only run
+   // after a Prepare, so they always read the cache this session wrote there.
+   this.cacheDir = null;
 
    // live render params. Defaults tuned for "more depth, low grain" (validated on a
    // real HaO3 master): lead with SIZE (additive near-star glow — clean depth cue,
@@ -327,7 +328,8 @@ GaiaDepthGradeDialog.prototype.doPrepare = function () {
    var dup = null;
    try {
       this.cursor = new Cursor(StdCursor_Wait);
-      gdgEnsureDir(this.cacheDir);
+      sidecarBin();   // a missing or wrong sidecar fails here, before a minute of solving
+      this.setWorkDir(gdgWorkDir("ui"));
       this.setStatus("Preparing: solving + StarXTerminator + Gaia match (~50s)…");
 
       dup = duplicateWindow(this.targetWindow, this.targetWindow.mainView.id + "_gdgwork");
@@ -342,27 +344,27 @@ GaiaDepthGradeDialog.prototype.doPrepare = function () {
       this.fullW = img.width; this.fullH = img.height;
       this.insetCx = Math.round(this.fullW / 2); this.insetCy = Math.round(this.fullH / 2);
 
-      var prepareArgs = ["prepare", gdgQuote(this.starsPath), gdgQuote(this.cacheDir),
-                         "--config", gdgQuote(this.writePrepareConfig())];
+      var prepareArgs = ["prepare", this.starsPath, this.cacheDir,
+                         "--config", this.writePrepareConfig()];
       if (this.offlineCheck.checked) {
          // Offline: ask the sidecar for the field footprint (reusing its tested
          // WCS math), cone-query the local Gaia DR3, and feed the result in.
          this.setStatus("Querying local Gaia DR3 (offline)…");
-         var fpLine = runCapture(sidecarCmd(["footprint", gdgQuote(this.starsPath)]));
+         var fpLine = runSidecar(["footprint", this.starsPath]);
          var fp = parseFootprint(fpLine);   // robust to PI merging stderr warnings into stdout
          var tsv = this.cacheDir + "/gaia_local.tsv";
          var n = queryLocalGaiaDR3(fp[0], fp[1], fp[2], GDG_MAG_LIMIT, tsv);
          this.setStatus("Local Gaia DR3: " + n + " sources. Running prepare (detect + match)…");
-         prepareArgs.push("--gaia-tsv", gdgQuote(tsv));
+         prepareArgs.push("--gaia-tsv", tsv);
       } else {
          this.setStatus("Running prepare (detect + online Gaia query). On a dense field the " +
                         "async query can take several minutes the first time; the result is " +
                         "cached so re-runs are fast…");
       }
-      run(sidecarCmd(prepareArgs));
+      runSidecar(prepareArgs);
 
       // Defense-in-depth: a prepare that fails must NOT look like success. If the
-      // Gaia query or detection threw, the sidecar exited non-zero (run() throws)
+      // Gaia query or detection threw, the sidecar exited non-zero (runSidecar throws)
       // — but verify the artifacts exist before we trust them and run preview, so
       // a missing prep.npz/qa.json surfaces loudly instead of failing in preview.
       if (!File.exists(this.cacheDir + "/prep.npz") ||
@@ -391,11 +393,22 @@ GaiaDepthGradeDialog.prototype.doPrepare = function () {
    }
 };
 
+GaiaDepthGradeDialog.prototype.setWorkDir = function (dir) {
+   this.cacheDir = dir;
+   this.starsPath = dir + "/stars_full.fits";
+   this.starlessPath = dir + "/starless_full.fits";
+   this.fullPng = dir + "/preview_full.png";
+   this.insetPng = dir + "/preview_inset.png";
+};
+
 GaiaDepthGradeDialog.prototype.writePrepareConfig = function () {
-   // emit a tiny TOML so prepare uses the dialog's detect/match values
+   // emit a tiny TOML so prepare uses the dialog's detect/match values, and
+   // keeps the online Gaia query cache in the private working directory (the
+   // sidecar's default is relative to its working directory).
    var path = this.cacheDir + "/prepare.toml";
    var toml = format("detect_threshold_sigma = %.3f\nmatch_tolerance_px = %.3f\n",
-                     this.detectSigma, this.matchTol);
+                     this.detectSigma, this.matchTol) +
+              "cache_dir = " + gdgTomlString(gdgWorkDir("gaia_cache")) + "\n";
    File.writeTextFile(path, toml);
    return path;
 };
@@ -429,11 +442,11 @@ GaiaDepthGradeDialog.prototype.doPreview = function () {
    try {
       this.cursor = new Cursor(StdCursor_Wait);
       this.setStatus("Rendering preview…");
-      var args = ["preview", gdgQuote(this.cacheDir), gdgQuote(this.starsPath),
-                  gdgQuote(this.starlessPath), gdgQuote(this.fullPng),
-                  "--inset", gdgQuote(this.insetPng), "--region", this.insetRegion(),
+      var args = ["preview", this.cacheDir, this.starsPath,
+                  this.starlessPath, this.fullPng,
+                  "--inset", this.insetPng, "--region", this.insetRegion(),
                   "--max-width", String(PREVIEW_W)].concat(this.renderArgs());
-      run(sidecarCmd(args));
+      runSidecar(args);
       this.previewBmp = new Bitmap(this.fullPng);
       this.insetBmp = new Bitmap(this.insetPng);
       this.previewStale = false;
@@ -456,16 +469,14 @@ GaiaDepthGradeDialog.prototype.doExecute = function () {
       this.cursor = new Cursor(StdCursor_Wait);
       this.setStatus("Executing: full-res render + recombine…");
       var gradedPath = this.cacheDir + "/graded_full.fits";
-      run(sidecarCmd(["render", gdgQuote(this.cacheDir), gdgQuote(this.starsPath),
-                 gdgQuote(gradedPath)].concat(this.renderArgs())));
+      runSidecar(["render", this.cacheDir, this.starsPath, gradedPath].concat(this.renderArgs()));
 
       // Nebula depth (opt-in): grade the starless layer to a FITS and blend THAT
       // instead of the raw starless, so the recombine carries the nebula depth too.
       var starlessForBlend = this.starlessPath;
       if (this.nebEnabled && this.nebStrength > 0) {
          var nebPath = this.cacheDir + "/nebula_full.fits";
-         run(sidecarCmd(["nebula", gdgQuote(this.cacheDir), gdgQuote(this.starlessPath),
-                    gdgQuote(nebPath)].concat(this.renderArgs())));
+         runSidecar(["nebula", this.cacheDir, this.starlessPath, nebPath].concat(this.renderArgs()));
          starlessForBlend = nebPath;
       }
 

@@ -1,20 +1,28 @@
 # Gaia Depth Grade
 
-**Status:** Phase 1 (star-field depth) implemented — 2026-06-23. Python core complete and
-tested (29 tests); PJSR harness wrapper present (manual validation in PixInsight pending).
-Design spec: `docs/superpowers/specs/2026-06-23-gaia-depth-grade-design.md`.
-Implementation plan: `docs/superpowers/plans/2026-06-23-gaia-depth-grade-phase1.md`.
-
 A physically-grounded "depth" grade for astrophotographs. Instead of faking depth with
 aesthetic local-contrast tricks (LHE, masked curves), use **real 3D distance data from
 Gaia** to determine how far away each part of an object actually is, then modulate contrast
 / brightness / size based on that distance relative to the viewer. Nearer structure pops,
 farther structure recedes — a depth cue that is *measured*, not invented.
 
-As far as we know, nobody ships this as a processing step. It is the conspicuous gap the
-RC-Astro suite never filled (the running joke: "ContrastXTerminator"), precisely because
-contrast/depth is aesthetic and has no training ground-truth — but Gaia *gives* us a ground
-truth for distance.
+**Status:** shipped from the astro-pi PixInsight repository (Linux x64) as two packages:
+
+| Package | What | Installs to |
+|---|---|---|
+| *Gaia Depth Grade* (`gaia-depth-grade_v<ver>.zip`, noarch) | signed PJSR scripts + user documentation | `src/scripts/GaiaDepthGrade/`, `doc/scripts/GaiaDepthGrade/GaiaDepthGrade.html` |
+| *Gaia Depth Grade sidecar* (`<date>-linux-x64-GaiaDepthGradeSidecar-<ver>.tar.gz`) | the Python core frozen into one program (PyInstaller), + its third-party licences | `bin/gaia-depth-grade-sidecar` (0755), `doc/scripts/GaiaDepthGrade/gaia-depth-grade-sidecar-THIRD_PARTY_NOTICES.txt` |
+
+Users install both with *Resources ▸ Updates ▸ Check for Updates*. The scripts run the sidecar
+only from `<PixInsight>/bin/` and never download, unpack, chmod or install code (Certified
+PixInsight Developer rules 5.1/5.2); a missing, non-runnable or wrong-version sidecar stops the
+script with an explanation. What the product does on the user's machine — network connections,
+programs launched, files written — is documented for users in
+[`doc/GaiaDepthGrade/GaiaDepthGrade.html`](doc/GaiaDepthGrade/GaiaDepthGrade.html) (CPD rule 6.1);
+keep it in step with the code.
+
+Versions 1.0.0–1.0.12 of the scripts downloaded the sidecar from a GitHub Release into
+`~/.astro-pi/gaia-depth-grade/`; that path is gone (the old Release assets are left as they are).
 
 ---
 
@@ -106,56 +114,69 @@ existing headless PI harness.
 
 ---
 
-## Setup
+## Layout
 
-```bash
-cd /home/scarter4work/projects/astro-pi/gaia-depth-grade
-uv venv --python 3.14 .venv
-. .venv/bin/activate
-uv pip install -e .          # installs the package so `python -m gaia_depth_grade.cli` resolves
-pytest                       # 29 tests, all green
+```
+pi/                 PJSR scripts (dialog, headless harness, shared .jsh) + their .xsgn
+doc/GaiaDepthGrade/ user documentation, shipped as doc/scripts/GaiaDepthGrade/
+src/gaia_depth_grade/  the Python core (the sidecar's code)
+tests/              pytest suite for the core
+tools/
+  build-sidecar.sh            freeze + smoke-test + package the sidecar (called by ../release.sh)
+  gaia-depth-grade-sidecar.spec, pyinstaller-hooks/   what goes into the frozen program
+  sidecar-requirements.{in,txt}                       pinned, hash-locked build inputs
+  sidecar-smoke.sh, _smoke_fixture.py                 hermetic smoke test of every offline subcommand
+  cpython-licenses.py, licenses/                      licence texts for the notices file
+  SignGaiaScriptsNative.js                            script signing (release.sh step 2c)
 ```
 
-The editable install is required for the PJSR wrapper, which invokes
-`python -m gaia_depth_grade.cli grade <in.fits> <out.fits>`.
+## Developing the core
 
-CLI directly (outside the harness, on a star-layer FITS that already has WCS):
 ```bash
-python -m gaia_depth_grade.cli grade stars_in.fits stars_out.fits [--config grade.toml]
+cd gaia-depth-grade
+uv venv --python 3.14.3 .venv
+uv pip install --python .venv/bin/python -r tools/sidecar-requirements.txt
+uv pip install --python .venv/bin/python -e .
+.venv/bin/python -m pytest -q
 ```
 
----
-
-## Running the depth grade (PixInsight harness)
-
-The Python core is wrapped in a PJSR script that runs inside PixInsight's automation harness.
-The script orchestrates:
-1. Plate-solving via ImageSolver
-2. Star/starless split via StarXTerminator
-3. Passing the stars layer to the Python CLI
-4. Recombining the modulated stars over the starless layer
-
-**Interactive (recommended):** open a master, then **Script ▸ Execute Script…** →
-`pi/GaiaDepthGradeDialog.js`. A two-phase dialog (Prepare → Preview → Execute) with a
-live preview and gain sliders.
-
-**Headless harness:**
+CLI (the same argv the scripts pass to the frozen sidecar):
 ```bash
-DISPLAY=:95 GAIA_DEPTH_INPUT=/path/master.xisf GAIA_DEPTH_OUTPUT=/path/out.xisf \
-  /opt/PixInsight/bin/PixInsight.sh -n --automation-mode \
-    --run=/home/scarter4work/projects/astro-pi/gaia-depth-grade/pi/gaia_depth_grade.js
+.venv/bin/python -m gaia_depth_grade.cli <grade|prepare|footprint|preview|render|nebula> ...
 ```
+Pass `--config <toml>` with an absolute `cache_dir` for online queries; the default
+(`.cache`) is relative to the working directory.
 
-The harness runs on the active PixInsight window (or `GAIA_DEPTH_INPUT`).
-Output: a new window `<image_id>_depthgraded` containing the depth-graded result.
+## Building and releasing the sidecar
 
----
+`tools/build-sidecar.sh <out.tar.gz>` freezes the sidecar inside the portable Rocky 9 build
+image (glibc 2.34, PixInsight's own floor) — never on the dev box: a host build bundles the
+host's libstdc++/libz and does not start on older distributions (sidecar 1.0.7 failed on
+Ubuntu 22.04, Debian 12 and Rocky 9). It then runs `tools/sidecar-smoke.sh` (every offline
+subcommand) on the host and in bare Ubuntu 22.04 / Debian 12 / Rocky 9 images, and packages the
+result.
+
+The package lives in `repository/` like every other package (raw.githubusercontent.com serves it
+directly; PixInsight's updater does not follow redirects), so it must stay well under GitHub's
+100 MB per-file limit. The bundle carries only what the sidecar runs — measured by run-time
+import/file-open traces of every subcommand, see the spec. 1.0.8: 61.3 MB package (1.0.7 was
+100.0 MB), output bit-identical to 1.0.7 on a real master.
+
+To ship a new sidecar: bump `__version__` in `src/gaia_depth_grade/__init__.py` **and**
+`SIDECAR_VERSION` in `pi/gaia_depth_grade_lib.jsh` (release.sh refuses a mismatch), bump the
+scripts' `GAIA_VER` in `../release.sh` and both package entries in `../repository/updates.xri`,
+then run `../release.sh`. A sidecar version already committed in `repository/` is reused byte for
+byte, never rebuilt.
+
+## Testing in PixInsight
+
+Launch PixInsight only through `../tools/pi-headless.sh`, in a test instance slot (`-n=94`),
+never the user's slot 1. The dialog can be driven without its modal loop by `#define GDG_NO_MAIN`
+before `#include`-ing `GaiaDepthGradeDialog.js` and calling `doPrepare()` / `doPreview()` /
+`doExecute()`. To exercise the installed layout, extract both packages into a scratch copy of the
+PixInsight installation (`cp -a --reflink=always /opt/PixInsight ...`) and run that copy.
 
 ## Next steps
-- **Validate Phase 1 in the live PixInsight harness** on a real master (e.g. newest combined
-  master in `~/projects/processing/master/`). Verify the PJSR API assumptions that CI can't:
-  StarXTerminator headless scriptability + `_stars` window naming, `ImageSolver.SolveImage`,
-  `ImageWindow.saveAs` signature, and the screen-blend recombine. Then tune the modulation
-  gains against the look.
 - **Phase 2 — dust depth:** add a `DustMapSource` (Edenhofer+ 2024 via `dustmaps`)
   implementing the same `DistanceSource` interface; the entire downstream pipeline is reused.
+- StarNet 2 as an alternative to the paid StarXTerminator.

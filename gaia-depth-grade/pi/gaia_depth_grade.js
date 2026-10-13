@@ -3,21 +3,23 @@
 //
 // Interactive: open a master and run this script on the active window.
 //
-// Headless (validated on PixInsight 1.9.4): run a controlled Xvfb you keep alive,
-// pass the image via env, force a new instance, and do NOT use --force-exit (it
-// exits before -r scripts run). PI's console does not reach stdout — read errors
-// by screenshotting the GUI. Detect completion via the output file, then kill PI.
-//   Xvfb :95 -screen 0 1600x1000x24 &
-//   DISPLAY=:95 GAIA_DEPTH_INPUT=/path/master.xisf GAIA_DEPTH_OUTPUT=/path/out.xisf \
-//     /opt/PixInsight/bin/PixInsight.sh -n --automation-mode \
-//       --run=/abs/path/pi/gaia_depth_grade.js
+// Headless: pass the image via env and launch PixInsight through the repo's
+// tools/pi-headless.sh (private Xvfb, never the desktop) in a test instance slot.
+// PI's console does not reach stdout; detect completion via the output file.
+//   . tools/pi-headless.sh
+//   GAIA_DEPTH_INPUT=/path/master.xisf GAIA_DEPTH_OUTPUT=/path/out.xisf \
+//     pi_headless /opt/PixInsight/bin/PixInsight.sh -n=94 --automation-mode \
+//       --no-startup-scripts -r=/opt/PixInsight/src/scripts/GaiaDepthGrade/gaia_depth_grade.js --force-exit
+// The sidecar must be installed (package "Gaia Depth Grade sidecar"); see
+// doc/scripts/GaiaDepthGrade/GaiaDepthGrade.html.
 //
-// Shared helpers (solver preamble, run, splitStars, writeWcsKeywords, solveAndSplit):
+// Shared helpers (solver preamble, runSidecar, splitStars, writeWcsKeywords, solveAndSplit):
 #script-id     GaiaDepthGradeHeadless
 #include "gaia_depth_grade_lib.jsh"
 
 function gradeWindow(window) {
-   gdgEnsureDir(TMP_DIR);
+   sidecarBin();   // a missing or wrong sidecar fails here, before solving
+   var work = gdgWorkDir("headless");   // private, verified; see gaia_depth_grade_lib.jsh
    var view = window.mainView;
 
    // 1+2. Plate-solve, split stars/starless, stamp WCS onto the stars layer.
@@ -26,13 +28,17 @@ function gradeWindow(window) {
    var starless = split.starless;
 
    // 3. Export stars layer (+WCS) to FITS for the Python core.
-   var inPath  = TMP_DIR + "/stars_in.fits";
-   var outPath = TMP_DIR + "/stars_out.fits";
+   var inPath  = work + "/stars_in.fits";
+   var outPath = work + "/stars_out.fits";
    if (!starsWin.saveAs(inPath, false, false, false, false))
       throw new Error("failed to save stars FITS: " + inPath);
 
-   // 4. Run the Python depth grade.
-   run(sidecarCmd(["grade", gdgQuote(inPath), gdgQuote(outPath)]));
+   // 4. Run the Python depth grade (online Gaia query). The config keeps the
+   //    query cache in the private working directory; the sidecar's default is
+   //    relative to its working directory.
+   var cfgPath = work + "/grade.toml";
+   File.writeTextFile(cfgPath, "cache_dir = " + gdgTomlString(gdgWorkDir("gaia_cache")) + "\n");
+   runSidecar(["grade", inPath, outPath, "--config", cfgPath]);
 
    // 5. Read the modulated stars layer back.
    var graded = ImageWindow.open(outPath)[0];
