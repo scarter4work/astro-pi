@@ -1,0 +1,188 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<meta name="author" content="Scott Carter" />
+<meta name="description" content="Gaia Depth Grade: a depth grade for astrophotographs driven by Gaia star distances. What it does, what it needs, its network connections, the programs it launches, and the files it writes outside the PixInsight installation." />
+<title>Gaia Depth Grade</title>
+<style>
+   body { font-family: "DejaVu Sans", "Segoe UI", Helvetica, Arial, sans-serif; font-size: 14px;
+          line-height: 1.5; color: #222; background: #fff; max-width: 52em; margin: 0 auto; padding: 1em 1.5em 3em; }
+   h1 { font-size: 1.9em; margin-bottom: 0.1em; }
+   h2 { font-size: 1.35em; margin-top: 1.8em; border-bottom: 1px solid #ccc; padding-bottom: 0.15em; }
+   h3 { font-size: 1.1em; margin-top: 1.3em; }
+   .subtitle { color: #555; margin-top: 0; }
+   code { font-family: "DejaVu Sans Mono", Consolas, monospace; font-size: 0.92em; background: #f2f2f2; padding: 0 0.2em; }
+   table { border-collapse: collapse; width: 100%; margin: 0.6em 0; }
+   th, td { border: 1px solid #ccc; padding: 0.35em 0.5em; text-align: left; vertical-align: top; }
+   th { background: #f2f2f2; }
+   .toc a { text-decoration: none; }
+</style>
+</head>
+<body>
+
+<h1>Gaia Depth Grade</h1>
+<p class="subtitle">A depth grade for astrophotographs driven by measured Gaia star distances &mdash; script version 1.0.13,
+sidecar version 1.0.8 (Linux x64).<br />
+By Scott Carter. Copyright &copy; 2026 Scott Carter.</p>
+
+<div class="toc">
+<p><b>Contents:</b>
+<a href="#what">What it does</a> &middot;
+<a href="#needs">What it needs</a> &middot;
+<a href="#use">Using it</a> &middot;
+<a href="#network">Network connections</a> &middot;
+<a href="#programs">External programs</a> &middot;
+<a href="#files">Files written outside the PixInsight installation</a> &middot;
+<a href="#reads">Files it reads</a> &middot;
+<a href="#old">Leftovers from earlier versions</a> &middot;
+<a href="#licences">Third-party software</a></p>
+</div>
+
+<h2 id="what">What it does</h2>
+<p>Gaia Depth Grade plate-solves your image, separates the stars from the rest of the image with StarXTerminator, finds
+each detected star in the Gaia catalogue to learn how far away it is, and then makes near stars a little brighter, larger
+and more saturated and far stars a little quieter. Optionally it also grades the starless layer (dust lanes forward,
+diffuse glow back), scaled to the spread of star distances. The result is recombined into a new image window named
+<code>&lt;image&gt;_depthgraded</code>. The depth is derived from Gaia distances and is physically motivated; it is not
+a per-pixel distance map of the gas.</p>
+<p>The image processing runs in the <b>sidecar</b>, a separate program installed with the scripts (see
+<a href="#programs">External programs</a>). The PixInsight scripts do the plate solving, the star separation, the local
+Gaia query and the final recombination.</p>
+
+<h2 id="needs">What it needs</h2>
+<ul>
+   <li><b>PixInsight on Linux x64.</b> The sidecar program exists only for Linux x64; on other platforms the script stops
+   with a message.</li>
+   <li><b>Two packages from the astro-pi repository</b>
+   (<code>https://raw.githubusercontent.com/scarter4work/astro-pi/main/repository/</code>), installed by PixInsight's
+   update system (<i>Resources &gt; Updates &gt; Check for Updates</i>):
+      <ul>
+         <li><i>Gaia Depth Grade</i> &mdash; the scripts and this documentation;</li>
+         <li><i>Gaia Depth Grade sidecar</i> &mdash; the sidecar program, installed as
+         <code>&lt;PixInsight&gt;/bin/gaia-depth-grade-sidecar</code>.</li>
+      </ul>
+   The two are released together. If the sidecar is missing, cannot run, or is not the version the scripts were released
+   with, the script stops and tells you to install or update both packages. The scripts never download, unpack or install
+   any program themselves.</li>
+   <li><b>StarXTerminator</b> by RC Astro, a separately licensed PixInsight module that you install and license yourself.
+   Gaia Depth Grade uses it through PixInsight's process interface (with <i>Generate star image</i> and <i>Unscreen
+   stars</i> enabled) to split the image into stars and starless layers. Without it the script stops with a message.</li>
+   <li><b>A plate-solvable image.</b> Plate solving uses PixInsight's own ImageSolver script with your ImageSolver
+   settings; the image's RA/DEC and focal-length keywords help it.</li>
+   <li><b>For the default offline mode:</b> PixInsight's local Gaia DR3 (or DR3/SP) database files &mdash; the ones
+   PixInsight uses for plate solving &mdash; configured in PixInsight.</li>
+</ul>
+
+<h2 id="use">Using it</h2>
+<p>Open an image and run <i>Script &gt; scarter4work &gt; Gaia Depth Grade</i>.</p>
+<ol>
+   <li><b>Prepare</b> works on a duplicate of the target (your image is never modified): plate solve, star separation,
+   Gaia query, star detection and matching. The status line then reports how many detected stars were matched to Gaia.</li>
+   <li><b>Preview / Update</b> re-renders a screen-stretched preview, with a 1:1 inset you move by clicking the preview,
+   after you change the sliders.</li>
+   <li><b>Execute</b> renders at full resolution and opens the result as a new window.</li>
+</ol>
+<p><b>Offline (local Gaia DR3)</b>, checked by default, takes distances from parallaxes in your local Gaia database.
+Unchecked, the sidecar queries the ESA Gaia archive for Bailer-Jones geometric distances (more sources; on dense fields
+the archive can take several minutes).</p>
+<p>The package also installs <code>gaia_depth_grade.js</code>, a non-interactive variant for automation: it grades the
+active image (or the file named by the <code>GAIA_DEPTH_INPUT</code> environment variable) with the online catalogue and,
+if <code>GAIA_DEPTH_OUTPUT</code> is set, saves the result there. Unlike the dialog it replaces the input window's image
+with its starless layer.</p>
+
+<h2 id="network">Network connections</h2>
+<h3>Offline mode (the default)</h3>
+<p>Gaia Depth Grade makes <b>no network connections</b>. The Gaia query reads your local database through PixInsight's
+Gaia process, and the sidecar works on local files only.</p>
+<h3>Online mode (<i>Offline</i> unchecked, and <code>gaia_depth_grade.js</code>)</h3>
+<p>The sidecar connects to the <b>ESA Gaia Archive</b>, <code>https://gea.esac.esa.int/</code>, over HTTPS (TCP port 443)
+with the server certificate verified. It makes no connection to any other host. During one <b>Prepare</b> it:</p>
+<ol>
+   <li>reads the archive's status notices (<code>/tap-server/notification</code>); any notice, such as planned
+   maintenance, appears in the PixInsight console;</li>
+   <li>submits one asynchronous ADQL query (<code>/tap-server/tap/async</code>) for the Gaia DR3 sources brighter than
+   G&nbsp;=&nbsp;18 in a circle around the image centre, joined with the Bailer-Jones distance catalogue
+   (<code>gaiadr3.gaia_source</code> and <code>external.gaiaedr3_distance</code>); polls the job until it finishes; and
+   downloads the result table. A failed job is submitted again, up to three attempts in all.</li>
+</ol>
+<p>What is sent: the query text, which contains the image's centre coordinates and radius and the magnitude limit. No
+image data, no personal data, no identifiers. What is received: a table of star positions, magnitudes and distances
+&mdash; data, never executable code. The result is cached (see <a href="#files">Files</a>) so a repeated Prepare of the
+same field does not query again.</p>
+<h3>Plate solving</h3>
+<p>Plate solving is done by PixInsight's ImageSolver script with your own ImageSolver settings. If those settings select an
+online star catalogue (for example VizieR), ImageSolver contacts that service; with a local Gaia database it does not.
+This is ImageSolver's behaviour, configured by you, in either mode.</p>
+<p>Gaia Depth Grade sends no telemetry and checks for no updates; updates come only through PixInsight's update system.</p>
+
+<h2 id="programs">External programs</h2>
+<table>
+   <tr><th>Program</th><th>When and why</th></tr>
+   <tr><td><code>&lt;PixInsight&gt;/bin/gaia-depth-grade-sidecar</code></td>
+   <td>The sidecar: the Python image-processing core of Gaia Depth Grade, frozen into one program with PyInstaller (it
+   contains its own Python 3.14 interpreter and NumPy, SciPy, Astropy, photutils, astroquery and Pillow). It is installed
+   and updated only by PixInsight's update system, from the signed astro-pi repository (package <i>Gaia Depth Grade
+   sidecar</i>). The scripts run it once with <code>--version</code> to check it, then once per step:
+   <code>footprint</code>, <code>prepare</code>, <code>preview</code>, <code>render</code> and <code>nebula</code> (dialog)
+   or <code>grade</code> (<code>gaia_depth_grade.js</code>). Its working directory is
+   <code>/tmp/gaia_depth_grade</code>. Each run starts the program's own start-up code once more (PyInstaller one-file
+   mode); it starts no other program.</td></tr>
+   <tr><td><code>/usr/bin/env</code></td>
+   <td>Your system's standard <code>env</code> utility, used only to start the sidecar with PixInsight's
+   <code>LD_LIBRARY_PATH</code> removed (<code>/usr/bin/env -u LD_LIBRARY_PATH &lt;sidecar&gt; ...</code>), so that the
+   sidecar uses its own and your system's libraries rather than PixInsight's.</td></tr>
+</table>
+<p>No other program is started. StarXTerminator, ImageSolver, PixelMath and PixInsight's Gaia process run inside
+PixInsight as ordinary processes and scripts.</p>
+
+<h2 id="files">Files written outside the PixInsight installation</h2>
+<table>
+   <tr><th>Location</th><th>Contents</th><th>Lifetime</th></tr>
+   <tr><td><code>/tmp/gaia_depth_grade/ui/</code></td>
+   <td>Working files of the dialog: <code>stars_full.fits</code>, <code>starless_full.fits</code> (the two layers),
+   <code>gaia_local.tsv</code> (offline Gaia export), <code>prepare.toml</code>, <code>prep.npz</code> and
+   <code>qa.json</code> (the prepared match), <code>preview_full.png</code> and <code>preview_inset.png</code>,
+   <code>graded_full.fits</code> and <code>nebula_full.fits</code> (plus <code>.qa.json</code> files next to them).</td>
+   <td>Overwritten by the next Prepare; kept between sessions. Safe to delete when the script is not running.</td></tr>
+   <tr><td><code>/tmp/gaia_depth_grade/gaia_cache/</code></td>
+   <td>Online mode only: Gaia query results, <code>gaia_&lt;hash&gt;.ecsv</code>, one per field and magnitude limit.</td>
+   <td>Reused by later queries of the same field. Safe to delete.</td></tr>
+   <tr><td><code>/tmp/gaia_depth_grade/</code></td>
+   <td><code>gaia_depth_grade.js</code> only: <code>stars_in.fits</code>, <code>stars_out.fits</code>,
+   <code>stars_out.fits.qa.json</code>, <code>grade.toml</code>.</td>
+   <td>Overwritten by the next run. Safe to delete.</td></tr>
+   <tr><td><code>/tmp/_MEI</code><i>xxxxxx</i><code>/</code> (in <code>$TMPDIR</code> if set)</td>
+   <td>The sidecar unpacks its bundled Python runtime (about 175 MB) into a new directory each time it starts.</td>
+   <td>Removed by the sidecar when it exits. Only a crash or a forced kill can leave one behind; it is then safe to
+   delete.</td></tr>
+</table>
+<p>Nothing is written to your home directory, and nothing is written into the PixInsight installation except by
+PixInsight's update system when it installs the packages. The result image is an ordinary PixInsight window; it is saved
+only if you save it.</p>
+
+<h2 id="reads">Files it reads</h2>
+<ul>
+   <li>The image you select.</li>
+   <li>Offline mode: PixInsight's settings files <code>~/.PixInsight/core-*-pxi.settings</code>, <b>read only</b>, to
+   find the Gaia DR3 database files configured for plate solving, and those database files (through PixInsight's Gaia
+   process).</li>
+</ul>
+
+<h2 id="old">Leftovers from earlier versions</h2>
+<p>Versions 1.0.12 and earlier downloaded the sidecar themselves. The current version never uses or touches these
+locations; you can delete them:</p>
+<ul>
+   <li><code>~/.astro-pi/gaia-depth-grade/</code> &mdash; the previously downloaded sidecar program (about 100&nbsp;MB).</li>
+   <li><code>&lt;PixInsight&gt;/bin/.cache/</code> &mdash; online Gaia query results that earlier versions could write
+   into PixInsight's program directory (only if that directory was writable).</li>
+</ul>
+
+<h2 id="licences">Third-party software</h2>
+<p>The sidecar program bundles third-party software (CPython, NumPy, SciPy and their OpenBLAS/GFortran runtime, Astropy,
+pyerfa, photutils, astroquery, Pillow and others). Their licences are installed with it, in
+<code>gaia-depth-grade-sidecar-THIRD_PARTY_NOTICES.txt</code> in this folder.</p>
+
+</body>
+</html>

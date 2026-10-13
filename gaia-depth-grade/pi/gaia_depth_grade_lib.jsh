@@ -22,35 +22,30 @@
 #define USE_SOLVER_LIBRARY true
 #include "/opt/PixInsight/src/scripts/AdP/ImageSolver.js"
 
-#define TMP_DIR  "/tmp/gaia_depth_grade"
+// Every file this product writes outside the PixInsight installation lives
+// under TMP_DIR (see doc/scripts/GaiaDepthGrade/GaiaDepthGrade.html).
+#define TMP_DIR        "/tmp/gaia_depth_grade"
+#define GAIA_CACHE_DIR "/tmp/gaia_depth_grade/gaia_cache"   // online Gaia query results
 
-// --- Frozen sidecar (the Python core, shipped as a PyInstaller binary) ---------
-// The public user has no Python; the Python core is fetched on first run from a
-// GitHub Release asset and cached. These three are bumped per sidecar release;
-// SIDECAR_SHA256 MUST match the uploaded asset byte-for-byte (verified below).
-#define SIDECAR_VERSION  "1.0.7"
-#define SIDECAR_TGZ      "gaia-depth-grade-sidecar-1.0.7-linux-x64.tar.gz"
-#define SIDECAR_URL      "https://github.com/scarter4work/astro-pi/releases/download/gaia-depth-grade-v1.0.7/gaia-depth-grade-sidecar-1.0.7-linux-x64.tar.gz"
-#define SIDECAR_SHA256   "cc002fdd56f34abd321b9e4a231e8bad4475fdb5290d91ff1373b2127c5cb618"
+// --- The sidecar: the Python core, frozen into one executable -----------------
+// PixInsight's update system installs it from the signed astro-pi repository
+// (package "Gaia Depth Grade sidecar", linux-x64) as
+// <PixInsight>/bin/gaia-depth-grade-sidecar. These scripts never download,
+// unpack, chmod or install code: they run that installed file, and stop with
+// an explanation when it is missing, cannot run, or is not the version they
+// were released with. SIDECAR_VERSION is bumped together with the sidecar
+// package (release.sh refuses a mismatch).
+#define SIDECAR_VERSION  "1.0.8"
 #define SIDECAR_NAME     "gaia-depth-grade-sidecar"
+var GDG_UPDATE_HINT = "Install or update \"Gaia Depth Grade\" and \"Gaia Depth Grade sidecar\" " +
+                      "from the astro-pi repository with Resources > Updates > Check for Updates, " +
+                      "then restart PixInsight.";
 
 function gdgEnsureDir(d) {
    if (!File.directoryExists(d))   // createDirectory throws if it exists
       File.createDirectory(d, true);
 }
 
-function gdgQuote(s) { return "\"" + s + "\""; }
-
-// PI exports its own LD_LIBRARY_PATH (/opt/PixInsight/bin/lib) to every child
-// process, so an external binary loads PI's bundled libs (e.g. an older libssl
-// without OPENSSL_3.2.0) instead of the system's and fails to link. Run every
-// external command through `env -u LD_LIBRARY_PATH` so curl, the frozen sidecar,
-// and the coreutils below all link against the system libraries.
-function scrub(cmd) { return "/usr/bin/env -u LD_LIBRARY_PATH " + cmd; }
-
-// ExternalProcess(commandLineString) starts a shell command immediately; the
-// constructor wants a single string (an array throws "String expected").
-//
 // Do NOT use waitForFinished(): in PI it can return BEFORE a long-running child
 // actually exits, so exitCode reads as 0 prematurely — a `prepare` whose Gaia
 // query takes minutes (or fails) would look like success and we'd march on to
@@ -63,28 +58,33 @@ function spinUntilDone(p) {
    while (p.isRunning) processEvents();
 }
 
-function run(cmd) {
-   var p = new ExternalProcess(scrub(cmd));
+// Start `program args...` and wait for it. The working directory is TMP_DIR, so
+// nothing a child writes by relative path can land in PixInsight's own
+// directory (PI's working directory is its bin/). Returns trimmed output; throws
+// loudly on a failed start or a non-zero exit.
+//
+// PI exports its own LD_LIBRARY_PATH (<PixInsight>/bin/lib:<PixInsight>/bin) to
+// every child process, so a child would load PI's bundled libraries (e.g. an
+// older libssl) instead of the system's and fail to link. /usr/bin/env -u
+// LD_LIBRARY_PATH starts the child without it.
+//
+// IMPORTANT: PI's ExternalProcess MERGES the child's stderr into `.stdout`
+// (verified: `.stderr` comes back empty), so the returned text can contain
+// stderr diagnostics ahead of the real payload, and error reports must quote
+// `.stdout` or the real error (e.g. a Python traceback) is lost. Callers that
+// parse structured output must tolerate leading noise -- see parseFootprint().
+function gdgExec(program, args) {
+   gdgEnsureDir(TMP_DIR);
+   var argv = ["-u", "LD_LIBRARY_PATH", program].concat(args);
+   var p = new ExternalProcess;
+   p.workingDirectory = TMP_DIR;
+   p.start("/usr/bin/env", argv);
    spinUntilDone(p);
+   var out = p.stdout.toString().trim();
    if (p.exitCode != 0)
-      // PI merges child stderr into .stdout, so .stderr is empty — report .stdout
-      // or the real sidecar error (e.g. a Python traceback) is lost.
-      throw new Error("command failed (exit " + p.exitCode + "): " + cmd +
-                      "\n" + p.stdout);
-}
-
-// Like run(), but capture and return trimmed output. Throws loudly on non-zero exit.
-// IMPORTANT: PI's ExternalProcess MERGES the child's stderr into `.stdout` (verified:
-// `.stderr` comes back empty), so the returned text can contain stderr diagnostics
-// ahead of the real payload. Callers that parse structured output must tolerate
-// leading noise — see parseFootprint() for why the footprint triplet is read from
-// the LAST line, not split blindly off the front.
-function runCapture(cmd) {
-   var p = new ExternalProcess(scrub(cmd));
-   spinUntilDone(p);
-   if (p.exitCode != 0)
-      throw new Error("command failed (exit " + p.exitCode + "): " + cmd + "\n" + p.stdout);
-   return p.stdout.toString().trim();
+      throw new Error("command failed (exit " + p.exitCode + "): /usr/bin/env " +
+                      argv.join(" ") + "\n" + out);
+   return out;
 }
 
 // Extract [ra, dec, radiusDeg] from `footprint` output. Because PI merges the
@@ -108,85 +108,44 @@ function parseFootprint(blob) {
    throw new Error("could not parse a center RA/Dec/radius from footprint output:\n" + blob);
 }
 
-// Download `url` to `path`. GitHub Release assets 302-redirect to a signed CDN
-// URL, and PI's NetworkTransfer does NOT follow redirects (no CURLOPT_FOLLOWLOCATION
-// in NetworkTransfer.cpp) — it "succeeds" with the empty redirect body. So we shell
-// out to curl, then wget; both follow redirects. Phase 1 is linux-x64 only, where
-// one of the two is effectively always present; we fail loudly if neither works.
-function tryDownload(cmd) {
-   try {
-      var p = new ExternalProcess(scrub(cmd));
-      spinUntilDone(p);   // 95 MB fetch — must wait for true completion, not a premature return
-      return p.exitCode == 0;
-   } catch (e) {
-      return false;   // program not found / failed to start -> try the next tool
-   }
-}
+// The installed sidecar: <PixInsight>/bin/gaia-depth-grade-sidecar, deployed by
+// the update package. Verified once per script run (an extra --version call per
+// subcommand would unpack the whole frozen program a second time). Every failure
+// names the path and says how to fix it; nothing is ever fetched or repaired here.
+var __gdgSidecarVerified = null;
 
-function downloadTo(url, path) {
-   if (tryDownload("curl -fsSL -o " + gdgQuote(path) + " " + gdgQuote(url)))
-      return;
-   if (tryDownload("wget -q -O " + gdgQuote(path) + " " + gdgQuote(url)))
-      return;
-   throw new Error("sidecar download failed for " + url +
-                   " — install curl or wget and ensure network access, then retry.");
-}
-
-// Resolve the frozen sidecar binary, fetching+verifying+caching it on first run.
-// Cache: ~/.astro-pi/gaia-depth-grade/bin/<SIDECAR_NAME>. Loud on every failure
-// path (unsupported platform, download error, sha256 mismatch, bad archive) —
-// never returns a partial/placeholder binary.
 function sidecarBin() {
+   if (__gdgSidecarVerified != null)
+      return __gdgSidecarVerified;
    if (CoreApplication.platform != "Linux")
-      throw new Error("the Gaia Depth Grade sidecar is not yet available for platform '" +
-                      CoreApplication.platform + "' (Phase 1 ships linux-x64 only).");
-
-   var binDir = File.homeDirectory + "/.astro-pi/gaia-depth-grade/bin";
-   var bin = binDir + "/" + SIDECAR_NAME;
-
-   // Cached and version-matched? Use it. A version mismatch (or a binary that
-   // won't report its version) is treated as missing -> re-download.
-   if (File.exists(bin)) {
-      var cached = "";
-      try { cached = runCapture(gdgQuote(bin) + " --version"); } catch (e) { cached = ""; }
-      if (cached == SIDECAR_VERSION)
-         return bin;
-   }
-
-   gdgEnsureDir(binDir);
-   console.noteln("Gaia Depth Grade: fetching sidecar v" + SIDECAR_VERSION + " (~95 MB, first run only)...");
-   var tmpTgz = File.systemTempDirectory + "/" + SIDECAR_TGZ;
-   downloadTo(SIDECAR_URL, tmpTgz);
-
-   var got = runCapture("sha256sum " + gdgQuote(tmpTgz)).split(/\s+/)[0];
-   if (got != SIDECAR_SHA256) {
-      File.remove(tmpTgz);
-      throw new Error("sidecar sha256 mismatch (download corrupt or tampered): got " +
-                      got + ", expected " + SIDECAR_SHA256 + " — aborting.");
-   }
-
-   run("tar -xzf " + gdgQuote(tmpTgz) + " -C " + gdgQuote(binDir));
-   File.remove(tmpTgz);
+      throw new Error("Gaia Depth Grade's sidecar program is only available for Linux x64; " +
+                      "this is " + CoreApplication.platform + ".");
+   var bin = CoreApplication.binDirPath + "/" + SIDECAR_NAME;
    if (!File.exists(bin))
-      throw new Error("sidecar archive did not contain " + SIDECAR_NAME);
-   run("chmod +x " + gdgQuote(bin));
-
-   var installed = runCapture(gdgQuote(bin) + " --version");
-   if (installed != SIDECAR_VERSION)
-      throw new Error("installed sidecar reports version '" + installed +
-                      "', expected '" + SIDECAR_VERSION + "'");
-   console.noteln("Gaia Depth Grade: sidecar ready at " + bin);
+      throw new Error("Gaia Depth Grade's sidecar program is not installed (expected " + bin +
+                      "). " + GDG_UPDATE_HINT);
+   var reported;
+   try {
+      reported = gdgExec(bin, ["--version"]);
+   } catch (e) {
+      throw new Error("Gaia Depth Grade's sidecar program at " + bin + " cannot run: " +
+                      e.message + "\n" + GDG_UPDATE_HINT);
+   }
+   // The version is printed alone on the last line; anything before it is noise
+   // a child may emit on stderr (merged into stdout by PI).
+   var lines = reported.split(/\r?\n/);
+   var version = lines[lines.length - 1].trim();
+   if (version != SIDECAR_VERSION)
+      throw new Error("Gaia Depth Grade's sidecar program at " + bin + " is version '" + version +
+                      "', but these scripts need version " + SIDECAR_VERSION + ". " + GDG_UPDATE_HINT);
+   __gdgSidecarVerified = bin;
    return bin;
 }
 
-// Build a sidecar command line: <sidecar> <subcommand> <args...>. The frozen
-// binary takes the subcommand directly (no `-m`), and resolving it triggers the
-// first-run fetch above. Args are pre-quoted by callers.
-function sidecarCmd(args) {
-   var s = gdgQuote(sidecarBin());
-   for (var i = 0; i < args.length; ++i)
-      s += " " + args[i];
-   return s;
+// Run the installed sidecar: `args` is its argv after the program name
+// (<subcommand> <args...>), plain strings -- no shell, so no quoting.
+function runSidecar(args) {
+   return gdgExec(sidecarBin(), args);
 }
 
 // --- Offline local Gaia DR3 -------------------------------------------------
