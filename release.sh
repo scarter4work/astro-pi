@@ -258,25 +258,56 @@ for name in EZStretch EZDonutRepair EZHazeKill; do
 done
 
 echo "== 3c/6 package gaia-depth-grade script zip =="
-# Mirror PI's install layout (src/scripts/GaiaDepthGrade/) so the package extracts
-# into PixInsight's scripts tree; bundle the 3 sources + their .xsgn.
-GAIA_VER=1.0.12  # script package version; the frozen sidecar is independent (see *_lib.jsh pins)
+# Mirror PI's install layout: the 3 sources + their .xsgn in src/scripts/GaiaDepthGrade/,
+# the user documentation in doc/scripts/GaiaDepthGrade/ (Repository Reference 4.2:
+# doc/scripts is for script documentation; the folder and page carry the
+# #feature-id "GaiaDepthGrade"). Modes are normalised world-readable: the updater
+# installs as root while PixInsight runs as the user.
+GAIA_VER=1.0.13  # script package version; the sidecar package (3d) has its own version
 GAIA_ZIP="gaia-depth-grade_v${GAIA_VER}.zip"
 GAIA_STAGE="$(mktemp -d)"
-mkdir -p "$GAIA_STAGE/src/scripts/GaiaDepthGrade"
+mkdir -p "$GAIA_STAGE/src/scripts/GaiaDepthGrade" "$GAIA_STAGE/doc/scripts/GaiaDepthGrade"
 cp "$ROOT/gaia-depth-grade/pi/gaia_depth_grade.js"        "$ROOT/gaia-depth-grade/pi/gaia_depth_grade.xsgn" \
    "$ROOT/gaia-depth-grade/pi/GaiaDepthGradeDialog.js"    "$ROOT/gaia-depth-grade/pi/GaiaDepthGradeDialog.xsgn" \
    "$ROOT/gaia-depth-grade/pi/gaia_depth_grade_lib.jsh"   "$ROOT/gaia-depth-grade/pi/gaia_depth_grade_lib.xsgn" \
    "$GAIA_STAGE/src/scripts/GaiaDepthGrade/"
+cp "$ROOT/gaia-depth-grade/doc/GaiaDepthGrade/GaiaDepthGrade.html" "$GAIA_STAGE/doc/scripts/GaiaDepthGrade/"
+chmod -R u=rwX,go=rX "$GAIA_STAGE"
 rm -f "$REPO/$GAIA_ZIP"
-( cd "$GAIA_STAGE" && zip -qr "$REPO/$GAIA_ZIP" src )
+( cd "$GAIA_STAGE" && zip -qrX "$REPO/$GAIA_ZIP" src doc )
 rm -rf "$GAIA_STAGE"
 [ -f "$REPO/$GAIA_ZIP" ] || die "zip $GAIA_ZIP not produced"
 reuse_if_published "$GAIA_ZIP"
-# NOTE: the frozen sidecar binary is NOT packaged here — it lives on GitHub Releases
-# (>100MB), pinned by SIDECAR_URL/SIDECAR_SHA256 in pi/gaia_depth_grade_lib.jsh.
-# After bumping the sidecar, rebuild+upload it (gaia-depth-grade/tools/build-sidecar.sh)
-# and update those pins; this script only ships the thin signed scripts.
+
+echo "== 3d/6 package the gaia-depth-grade sidecar (linux-x64: bin/gaia-depth-grade-sidecar) =="
+# The scripts run the sidecar only from <PixInsight>/bin, where this package puts
+# it; they never download or install it. A published version (a committed
+# <date>-linux-x64-GaiaDepthGradeSidecar-<ver>.tar.gz) is reused byte for byte,
+# exactly like the module tarballs: bump gaia_depth_grade.__version__ to ship
+# new bytes. Building one takes the portable Rocky 9 image and network access
+# (pinned, hash-checked inputs); see gaia-depth-grade/tools/build-sidecar.sh.
+SIDECAR_VER="$(sed -nE 's/^__version__ = "([0-9.]+)"$/\1/p' "$ROOT/gaia-depth-grade/src/gaia_depth_grade/__init__.py")"
+[[ "$SIDECAR_VER" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || die "could not read the sidecar version (got '$SIDECAR_VER')"
+grep -qE "^#define SIDECAR_VERSION +\"$SIDECAR_VER\"" "$ROOT/gaia-depth-grade/pi/gaia_depth_grade_lib.jsh" \
+  || die "gaia_depth_grade_lib.jsh SIDECAR_VERSION is not $SIDECAR_VER: the scripts would refuse the sidecar this release ships"
+SIDECAR_TGZ="$(git -C "$ROOT" ls-files "repository/*-linux-x64-GaiaDepthGradeSidecar-$SIDECAR_VER.tar.gz" | sed 's#^repository/##')"
+[ "$(printf '%s\n' "$SIDECAR_TGZ" | grep -c .)" -le 1 ] || die "several published sidecar packages for $SIDECAR_VER: $SIDECAR_TGZ"
+if [ -n "$SIDECAR_TGZ" ]; then
+  git -C "$ROOT" checkout -- "repository/$SIDECAR_TGZ"
+  echo "   $SIDECAR_TGZ already published -- reusing the committed bytes"
+else
+  SIDECAR_TGZ="$DATE-linux-x64-GaiaDepthGradeSidecar-$SIDECAR_VER.tar.gz"
+  "$ROOT/gaia-depth-grade/tools/build-sidecar.sh" "$REPO/$SIDECAR_TGZ" || die "sidecar build/smoke test failed"
+fi
+[ "$(stat -c%s "$REPO/$SIDECAR_TGZ")" -lt 95000000 ] || die "$SIDECAR_TGZ is too close to GitHub's 100 MB per-file limit"
+python3 - "$REPO/updates.xri" "$SIDECAR_TGZ" <<'PY' || die "updates.xri has no GaiaDepthGradeSidecar package entry to point at $SIDECAR_TGZ"
+import re,sys
+mf,fn=sys.argv[1:3]
+s=open(mf).read()
+s,n=re.subn(r'fileName="[^"]*-linux-x64-GaiaDepthGradeSidecar-[0-9.]+\.tar\.gz"', 'fileName="'+fn+'"', s)
+if n!=1: sys.exit(1)
+open(mf,'w').write(s)
+PY
 
 echo "== 3e/6 publish the NukeX camera database (repository/qe_*) =="
 for f in "${QE_FILES[@]}"; do cp "$QE_SRC/$f" "$REPO/$f"; done
@@ -289,6 +320,7 @@ write_pkg "$REPO/updates.xri" "EZStretch_v1.0.10.zip"     "$(sha1 "$REPO/EZStret
 write_pkg "$REPO/updates.xri" "EZDonutRepair_v1.0.3.zip"  "$(sha1 "$REPO/EZDonutRepair_v1.0.3.zip")"
 write_pkg "$REPO/updates.xri" "EZHazeKill_v1.0.1.zip"     "$(sha1 "$REPO/EZHazeKill_v1.0.1.zip")"
 write_pkg "$REPO/updates.xri" "$GAIA_ZIP"                 "$(sha1 "$REPO/$GAIA_ZIP")"
+write_pkg "$REPO/updates.xri" "$SIDECAR_TGZ"              "$(sha1 "$REPO/$SIDECAR_TGZ")"
 
 echo "== 5/6 sign manifest LAST =="
 sed -i '/<Signature developerId=/d' "$REPO/updates.xri"

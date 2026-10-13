@@ -28,6 +28,16 @@
             <p>v0.2.1.1: now loads on any Linux that runs PixInsight 1.9.5 (glibc 2.34 or newer: Ubuntu 22.04+, Debian 12+, Rocky/RHEL 9+). Earlier builds only loaded on very new distributions.</p>
          </description>
       </package>
+      <package fileName="20261013-linux-x64-GaiaDepthGradeSidecar-1.0.8.tar.gz" sha1="0000000000000000000000000000000000000000" type="generic" releaseDate="20261013">
+         <title>Gaia Depth Grade sidecar</title>
+         <description>
+            <p>
+               <b>Gaia Depth Grade sidecar 1.0.8</b>
+            </p>
+            <p>The image-processing program used by the Gaia Depth Grade script (install both). It is installed as bin/gaia-depth-grade-sidecar and its licences in doc/scripts/GaiaDepthGrade/. It is a self-contained program (Python with NumPy, SciPy, Astropy, photutils, astroquery and Pillow); no Python installation is needed.</p>
+            <p>1.0.8: now delivered by PixInsight's update system instead of being downloaded by the script; 61 MB instead of 100 MB; runs on any Linux that runs PixInsight (glibc 2.34 or newer: Ubuntu 22.04+, Debian 12+, Rocky/RHEL 9+) &#x2014; 1.0.7 only started on very new distributions. Image results are identical to 1.0.7.</p>
+         </description>
+      </package>
    </platform>
    <platform os="all" arch="noarch" version="1.8.0:2.0.0">
       <package fileName="EZStretch_v1.0.10.zip" sha1="9bb0e6afcdfd349c3cf29c942c80e25935b57b56" type="script" releaseDate="20261004">
@@ -57,14 +67,15 @@
             <p>Gradient and haze reduction.</p>
          </description>
       </package>
-      <package fileName="gaia-depth-grade_v1.0.12.zip" sha1="d4c4c6850290cb86648694ca73be2d637ca9e420" type="script" releaseDate="20261004">
+      <package fileName="gaia-depth-grade_v1.0.13.zip" sha1="0000000000000000000000000000000000000000" type="script" releaseDate="20261013">
          <title>Gaia Depth Grade</title>
          <description>
             <p>
-               <b>Gaia Depth Grade v1.0.12</b>
+               <b>Gaia Depth Grade v1.0.13</b>
             </p>
-            <p>Physically-grounded depth grade for astrophotographs using Gaia distances. Defaults to the offline local Gaia DR3 database (the one PixInsight uses for plate-solving); an online Bailer-Jones option is available. On first run it fetches a frozen Python sidecar (~95 MB, linux-x64) from GitHub Releases and verifies it by SHA-256. Requires StarXTerminator.</p>
-            <p>v1.0.12 (sidecar 1.0.7): enlarged (near) stars now wear a realistic STAR-SHINE HALO. The halo&apos;s radial shape is stacked from the frame&apos;s own bright, unsaturated, isolated stars and tinted to each star&apos;s own colour, with amplitude anchored to its real peak brightness — replacing the achromatic Gaussian blob that read as fake. Frames with too few clean reference stars fall back to a Moffat profile (with a warning). First run re-fetches the ~95 MB sidecar.</p>
+            <p>Physically-grounded depth grade for astrophotographs using Gaia distances. Defaults to the offline local Gaia DR3 database (the one PixInsight uses for plate-solving; no network use); an online option queries the ESA Gaia archive over HTTPS for Bailer-Jones distances. Linux x64 only: needs the &quot;Gaia Depth Grade sidecar&quot; package from this repository, and StarXTerminator. Documentation, including network use, the programs it runs and the files it writes: doc/scripts/GaiaDepthGrade/GaiaDepthGrade.html.</p>
+            <p>v1.0.13 (sidecar 1.0.8): the sidecar program now comes from PixInsight&apos;s update system (package &quot;Gaia Depth Grade sidecar&quot;); the script no longer downloads, unpacks or installs anything, and no longer uses ~/.astro-pi (you may delete ~/.astro-pi/gaia-depth-grade). Online Gaia query results are now cached under /tmp/gaia_depth_grade instead of PixInsight&apos;s bin directory. Ships its documentation. Image results are unchanged.</p>
+            <p>v1.0.12 (sidecar 1.0.7): enlarged (near) stars now wear a realistic STAR-SHINE HALO. The halo&apos;s radial shape is stacked from the frame&apos;s own bright, unsaturated, isolated stars and tinted to each star&apos;s own colour, with amplitude anchored to its real peak brightness — replacing the achromatic Gaussian blob that read as fake. Frames with too few clean reference stars fall back to a Moffat profile (with a warning).</p>
             <p>v1.0.11 (sidecar 1.0.6): adds optional NEBULA DEPTH. A new checkbox grades the starless layer too — dark dust/globules come forward, the diffuse glow recedes, with gentle atmospheric perspective and noise-cored structural relief. The spatial variation comes from the nebula&apos;s own structure; the overall strength is calibrated by the Gaia matched-star distance spread, so the nebula depth matches the stars. Opt-in (off by default) with live Nebula depth / atmospheric / structure sliders.</p>
          </description>
       </package>
