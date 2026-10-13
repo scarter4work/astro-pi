@@ -224,8 +224,9 @@ std::string PathProblem( const String& given, const std::string& root, std::stri
    {
       struct stat st;
       const bool link = ::lstat( g.c_str(), &st ) == 0 && S_ISLNK( st.st_mode );
-      return link ? "it is a symbolic link that leads outside " + root + " (to " + real + ")"
-                  : "it is outside " + root + ", the PixInsight script directory";
+      // No paths in the reason: it reaches the model (the install may be under /home/<user>).
+      return link ? std::string( "it is a symbolic link that leads outside the PixInsight script directory" )
+                  : std::string( "it is outside the PixInsight script directory" );
    }
    if ( !IsRegularFile( real ) )
       return "not a regular file";

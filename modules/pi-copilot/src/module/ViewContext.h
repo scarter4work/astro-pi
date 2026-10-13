@@ -18,7 +18,9 @@ constexpr int PICopilotMaxFitsKeywords   = 60;
 constexpr int PICopilotMaxFitsValueChars = 80;
 
 // FITS keywords never sent to the model (privacy): observing-site location
-// and observer identity. Matched on the trimmed, upper-cased keyword name.
+// and observer identity. These exact names, any case -- and, fail-closed,
+// every keyword whose name (any case, HIERARCH/long names included) names a
+// place or a person (IsRedactedFitsKeyword).
 // Redacted keywords do not consume a PICopilotMaxFitsKeywords slot; they are
 // counted in the context's "fitsKeywordsRedacted" (NOT in
 // "fitsKeywordsOmitted", which counts only cap overflow).
@@ -30,18 +32,46 @@ constexpr const char* PICopilotRedactedFitsKeywords[] =
    "OBSERVER"
 };
 
-// True iff name (trimmed, any case) is in PICopilotRedactedFitsKeywords.
+// True iff the keyword may hold a location or an identity: a name in
+// PICopilotRedactedFitsKeywords (any case), a name containing SITE (not in
+// COMPOSITE/POSITION), OBSGEO, GEOLAT/GEOLON/GEOELEV/GEOALT, GEODETIC,
+// LATITUD, LONGITUD, ELEVATIO, GPS, OBSERVER, OBSERVAT, LOCATION, ADDRESS,
+// AUTHOR, EMAIL or TELEPHON (any case: "Observation:Location:Latitude"), or
+// -- for FITS-style names without lowercase letters -- a separate token LAT,
+// LON, LONG, LNG, ELEV, ALT, CITY, COUNTRY, TOWN, PLACE, OWNER, USER,
+// USERNAME, CONTACT, OBSNAME, PI, PINAME, OPERATOR or ORIGIN (tokens split at
+// anything that is not a letter or digit: "LAT-OBS", "HIERARCH ESO TEL
+// GEOLAT", "GPS LONG"). Object coordinates and altitude ("OBJCTRA",
+// "OBJCTALT", "CENTALT") are kept.
 bool IsRedactedFitsKeyword( const IsoString& name );
 
-// A FITS keyword value with every absolute filesystem path in it reduced to
-// its file name (privacy: a path usually names the user's account; e.g. a
-// HISTORY or FILENAME value written by a stacker). A path starts with '/', a
-// double backslash (network share), "~/", or a drive ("X:\" or "X:/"), at the
-// start of the value or after a space, tab, quote, '=', '(', '[', ',', ';' or
-// ':'; it is cut back to what follows its last '/' or '\' before the next
-// path. "1/2", "$T/2", dates such as "2026/10/13" and plain names are
-// unchanged. Pure.
+// COMMENT, HISTORY and blank-name keywords: free text, never sent.
+bool IsCommentaryFitsKeyword( const IsoString& name );
+
+// Text with every filesystem path reduced to its file name, FAIL-CLOSED
+// (privacy: a path names the user's account and folders):
+//  - an absolute path starts with '/', a double backslash (network share),
+//    "~/" or "~\", or a drive ("X:\", "X:/"), at the start of the text or
+//    after ANY character that is not a letter or digit; it runs to the next
+//    path and is cut back to what follows its last '/' or '\'; a "file:"
+//    scheme before it goes too;
+//  - a relative path ("data/M31/raw", "M31/light.fits") is reduced the same way;
+//  - what is kept must look like a file name with an extension: a folder name,
+//    or a path cut short mid-name, becomes "[path]".
+// Kept: "1/2", "2026/10/13", "N/A", "Ha/OIII", "$T/2" and plain text. Pure.
 std::string FitsValueWithoutPaths( const std::string& value );
+
+// The same, line by line (console output, messages).
+std::string TextWithoutFolders( const std::string& text );
+
+// Every string (keys included) of a JSON value through TextWithoutFolders.
+nlohmann::json JsonWithoutFolders( const nlohmann::json& v );
+
+// Only the absolute-path pass (paths relative to a known tree, such as a
+// script's place under src/scripts, are kept): line by line, and for every
+// string of a JSON value.
+std::string    TextWithoutAbsolutePaths( const std::string& text );
+nlohmann::json JsonWithoutAbsolutePaths( const nlohmann::json& v );
 
 // What the context carries for the image's file: the file name only
 // (File::ExtractNameAndExtension), never the directory -- a local path

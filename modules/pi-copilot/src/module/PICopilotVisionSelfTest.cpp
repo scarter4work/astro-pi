@@ -474,7 +474,7 @@ bool RunVisionSelfTest( nlohmann::json& out )
                     && ViewContextFileName( String() ).IsEmpty()
                     && IsRedactedFitsKeyword( " sitelat " )
                     && !IsRedactedFitsKeyword( "OBJECT" )
-                    && !IsRedactedFitsKeyword( "SITE" );
+                    && IsRedactedFitsKeyword( "SITE" );   // 0.2.2.0: fail-closed (a site name is a location)
       int listed = 0;
       for ( const char* r : PICopilotRedactedFitsKeywords )
       {

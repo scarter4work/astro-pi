@@ -104,6 +104,15 @@ nlohmann::json ScriptDescriptionJson( const ScriptDescription& d );
 // "honours-parameters-when-targeted" | "headless-when-targeted" | "always-interactive" | "no-dialog"
 std::string ScriptInteraction( const ScriptDescription& d );
 
+// The characters a run_script argument VALUE may contain (an allowlist):
+// ASCII letters, digits, space and kSafeArgumentPunctuation, plus visible
+// non-ASCII characters. PixInsight passes script arguments on a command line
+// (run -x -p="key,value" ... "<file>"); self-test S5b proves every allowed
+// ASCII character arrives in Parameters unchanged in any position and leaves
+// the other arguments intact, and records what the refused ones do.
+extern const char* const kSafeArgumentPunctuation;
+bool ScriptArgumentCharAllowed( uint32 c );
+
 // Checks run_script arguments against the description: an object whose keys
 // are parameters the script reads (exact names; anything else is refused with
 // the list of valid ones) and whose values have the getter's type (JSON
