@@ -126,8 +126,8 @@ This is ImageSolver's behaviour, configured by you, in either mode.</p>
    and updated only by PixInsight's update system, from the signed astro-pi repository (package <i>Gaia Depth Grade
    sidecar</i>). The scripts run it once with <code>--version</code> to check it, then once per step:
    <code>footprint</code>, <code>prepare</code>, <code>preview</code>, <code>render</code> and <code>nebula</code> (dialog)
-   or <code>grade</code> (<code>gaia_depth_grade.js</code>). Its working directory is
-   <code>/tmp/gaia_depth_grade</code>. Each run starts the program's own start-up code once more (PyInstaller one-file
+   or <code>grade</code> (<code>gaia_depth_grade.js</code>). Its working directory is the private working directory
+   described under <a href="#files">Files</a>, and every path passed to it is inside that directory. Each run starts the program's own start-up code once more (PyInstaller one-file
    mode); it starts no other program.</td></tr>
    <tr><td><code>/usr/bin/env</code></td>
    <td>Your system's standard <code>env</code> utility, used only to start the sidecar with PixInsight's
@@ -138,27 +138,42 @@ This is ImageSolver's behaviour, configured by you, in either mode.</p>
 PixInsight as ordinary processes and scripts.</p>
 
 <h2 id="files">Files written outside the PixInsight installation</h2>
+<p>Everything Gaia Depth Grade writes lives in one private working directory of your own:</p>
+<p><code>$XDG_CACHE_HOME/gaia-depth-grade/</code> &mdash; by default <code>~/.cache/gaia-depth-grade/</code></p>
+<p>The scripts create it, and its subdirectories, with mode 0700 (only you can list, read or write them), and check them
+before every use without following links: each must be a real directory &mdash; not a symbolic link &mdash; owned by
+you. If that is not the case the script stops and says why; it never writes through a link or into a directory someone
+else owns. It never uses a shared, predictable location such as <code>/tmp/gaia_depth_grade</code>.</p>
 <table>
-   <tr><th>Location</th><th>Contents</th><th>Lifetime</th></tr>
-   <tr><td><code>/tmp/gaia_depth_grade/ui/</code></td>
+   <tr><th>Location (in the working directory)</th><th>Contents</th><th>Lifetime</th></tr>
+   <tr><td><code>ui/</code></td>
    <td>Working files of the dialog: <code>stars_full.fits</code>, <code>starless_full.fits</code> (the two layers),
    <code>gaia_local.tsv</code> (offline Gaia export), <code>prepare.toml</code>, <code>prep.npz</code> and
    <code>qa.json</code> (the prepared match), <code>preview_full.png</code> and <code>preview_inset.png</code>,
-   <code>graded_full.fits</code> and <code>nebula_full.fits</code> (plus <code>.qa.json</code> files next to them).</td>
-   <td>Overwritten by the next Prepare; kept between sessions. Safe to delete when the script is not running.</td></tr>
-   <tr><td><code>/tmp/gaia_depth_grade/gaia_cache/</code></td>
+   <code>graded_full.fits</code> and <code>nebula_full.fits</code> (plus <code>.qa.json</code> files next to them).
+   For a 3840&times;2160 colour image these take about 400&nbsp;MB.</td>
+   <td>Overwritten by the next Prepare. Safe to delete when the script is not running.</td></tr>
+   <tr><td><code>gaia_cache/</code></td>
    <td>Online mode only: Gaia query results, <code>gaia_&lt;hash&gt;.ecsv</code>, one per field and magnitude limit.</td>
    <td>Reused by later queries of the same field. Safe to delete.</td></tr>
-   <tr><td><code>/tmp/gaia_depth_grade/</code></td>
+   <tr><td><code>headless/</code></td>
    <td><code>gaia_depth_grade.js</code> only: <code>stars_in.fits</code>, <code>stars_out.fits</code>,
    <code>stars_out.fits.qa.json</code>, <code>grade.toml</code>.</td>
    <td>Overwritten by the next run. Safe to delete.</td></tr>
+   <tr><td><code>stars-</code><i>NNN</i><code>.csv</code></td>
+   <td>The catalogue star list PixInsight's ImageSolver writes while it plate-solves for Gaia Depth Grade.</td>
+   <td>Removed by ImageSolver when the solve ends.</td></tr>
+</table>
+<p>One location is outside the working directory:</p>
+<table>
+   <tr><th>Location</th><th>Contents</th><th>Lifetime</th></tr>
    <tr><td><code>/tmp/_MEI</code><i>xxxxxx</i><code>/</code> (in <code>$TMPDIR</code> if set)</td>
-   <td>The sidecar unpacks its bundled Python runtime (about 175 MB) into a new directory each time it starts.</td>
+   <td>The sidecar unpacks its bundled Python runtime (about 175 MB) into a new directory each time it starts. The
+   directory has a random name and mode 0700, created afresh for every run.</td>
    <td>Removed by the sidecar when it exits. Only a crash or a forced kill can leave one behind; it is then safe to
    delete.</td></tr>
 </table>
-<p>Nothing is written to your home directory, and nothing is written into the PixInsight installation except by
+<p>Nothing else is written outside the PixInsight installation, and nothing is written into the installation except by
 PixInsight's update system when it installs the packages. The result image is an ordinary PixInsight window; it is saved
 only if you save it.</p>
 
@@ -177,6 +192,7 @@ locations; you can delete them:</p>
    <li><code>~/.astro-pi/gaia-depth-grade/</code> &mdash; the previously downloaded sidecar program (about 100&nbsp;MB).</li>
    <li><code>&lt;PixInsight&gt;/bin/.cache/</code> &mdash; online Gaia query results that earlier versions could write
    into PixInsight's program directory (only if that directory was writable).</li>
+   <li><code>/tmp/gaia_depth_grade/</code> &mdash; the working files of earlier versions, if it is yours.</li>
 </ul>
 
 <h2 id="licences">Third-party software</h2>

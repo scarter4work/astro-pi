@@ -19,7 +19,7 @@
 
 function gradeWindow(window) {
    sidecarBin();   // a missing or wrong sidecar fails here, before solving
-   gdgEnsureDir(TMP_DIR);
+   var work = gdgWorkDir("headless");   // private, verified; see gaia_depth_grade_lib.jsh
    var view = window.mainView;
 
    // 1+2. Plate-solve, split stars/starless, stamp WCS onto the stars layer.
@@ -28,16 +28,16 @@ function gradeWindow(window) {
    var starless = split.starless;
 
    // 3. Export stars layer (+WCS) to FITS for the Python core.
-   var inPath  = TMP_DIR + "/stars_in.fits";
-   var outPath = TMP_DIR + "/stars_out.fits";
+   var inPath  = work + "/stars_in.fits";
+   var outPath = work + "/stars_out.fits";
    if (!starsWin.saveAs(inPath, false, false, false, false))
       throw new Error("failed to save stars FITS: " + inPath);
 
    // 4. Run the Python depth grade (online Gaia query). The config keeps the
-   //    query cache under TMP_DIR; the sidecar's default is relative to its
-   //    working directory.
-   var cfgPath = TMP_DIR + "/grade.toml";
-   File.writeTextFile(cfgPath, "cache_dir = \"" + GAIA_CACHE_DIR + "\"\n");
+   //    query cache in the private working directory; the sidecar's default is
+   //    relative to its working directory.
+   var cfgPath = work + "/grade.toml";
+   File.writeTextFile(cfgPath, "cache_dir = " + gdgTomlString(gdgWorkDir("gaia_cache")) + "\n");
    runSidecar(["grade", inPath, outPath, "--config", cfgPath]);
 
    // 5. Read the modulated stars layer back.

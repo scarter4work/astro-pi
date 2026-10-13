@@ -10,9 +10,15 @@
 // that flag ALSO suppresses ImageSolver's own dependency includes — so we must
 // pull in WCSmetadata/AstronomicalCatalogs first (and define SETTINGS_MODULE /
 // STAR_CSV_FILE), exactly as AdP/AperturePhotometry.js does.
+//
+// ImageSolver writes its catalogue star list to STAR_CSV_FILE during every solve
+// (and removes it afterwards). Its own default is a predictable name in the
+// shared temporary directory, where a symbolic link planted by another user
+// would redirect the write; ours lives in the private working directory.
 #define SETTINGS_MODULE "SOLVER"
-#define STAR_CSV_FILE   (File.systemTempDirectory + format( "/stars-%03d.csv", CoreApplication.instance ))
+#define STAR_CSV_FILE   (gdgWorkDir() + format( "/stars-%03d.csv", CoreApplication.instance ))
 #include <pjsr/DataType.jsh>
+#include <pjsr/FileAttribute.jsh>
 #include <pjsr/StdButton.jsh>
 #include <pjsr/StdIcon.jsh>
 #include <pjsr/UndoFlag.jsh>
@@ -22,10 +28,82 @@
 #define USE_SOLVER_LIBRARY true
 #include "/opt/PixInsight/src/scripts/AdP/ImageSolver.js"
 
-// Every file this product writes outside the PixInsight installation lives
-// under TMP_DIR (see doc/scripts/GaiaDepthGrade/GaiaDepthGrade.html).
-#define TMP_DIR        "/tmp/gaia_depth_grade"
-#define GAIA_CACHE_DIR "/tmp/gaia_depth_grade/gaia_cache"   // online Gaia query results
+// --- The private working directory -------------------------------------------
+// Every file this product writes outside the PixInsight installation lives in
+// one per-user directory, $XDG_CACHE_HOME/gaia-depth-grade (by default
+// ~/.cache/gaia-depth-grade), mode 0700:
+//    ui/            the dialog's layers, prep cache and previews
+//    gaia_cache/    online Gaia query results
+//    headless/      gaia_depth_grade.js's files
+//    stars-NNN.csv  ImageSolver's star list, while it solves
+// It is never a shared, predictable location such as /tmp/<name>: files there
+// can be pre-created, altered or replaced by symbolic links by any local user,
+// and the prep cache read back from it is trusted. Every directory is checked
+// WITHOUT following links (FileInfo reports a symbolic link as one): it must be
+// a real directory owned by this user, and is restricted to 0700. Anything else
+// stops the script; nothing is ever written through it. Only this user can
+// create entries inside a 0700 directory, so no other user can plant a link or
+// a file next to ours.
+var __gdgWorkDir = null;
+
+// A TOML basic string holding `s` (paths go into the sidecar's config files).
+function gdgTomlString(s) {
+   return "\"" + s.replace(/\\/g, "\\\\").replace(/"/g, "\\\"") + "\"";
+}
+
+function gdgUserId() {
+   var uid = new FileInfo(File.homeDirectory).userId;
+   if (!(uid >= 0))
+      throw new Error("cannot determine the owner of the home directory " + File.homeDirectory);
+   return uid;
+}
+
+#define GDG_PRIVATE_MODE (FilePermission_Read | FilePermission_Write | FilePermission_Execute)
+
+// `dir` must be (or is created as) a real directory owned by `uid`, mode 0700.
+function gdgPrivateDir(dir, uid) {
+   var fi = new FileInfo(dir);   // lstat semantics: a symbolic link is never followed
+   if (!fi.exists) {
+      File.createDirectory(dir, false);
+      fi.refresh(dir);
+   }
+   if (fi.isSymbolicLink)
+      throw new Error("Gaia Depth Grade: refusing to use " + dir + ": it is a symbolic link (to " +
+                      fi.symbolicLinkTarget + "), not a directory. Remove it and run the script again.");
+   if (!fi.isDirectory)
+      throw new Error("Gaia Depth Grade: refusing to use " + dir + ": it is not a directory.");
+   if (fi.userId != uid)
+      throw new Error("Gaia Depth Grade: refusing to use " + dir + ": it is owned by user id " +
+                      fi.userId + ", not by you (" + uid + ").");
+   if ((fi.attributes & FilePermission_Mask) != GDG_PRIVATE_MODE) {
+      File.setPermissions(dir, GDG_PRIVATE_MODE);
+      fi.refresh(dir);
+      if ((fi.attributes & FilePermission_Mask) != GDG_PRIVATE_MODE)
+         throw new Error("Gaia Depth Grade: cannot restrict " + dir + " to mode 0700.");
+   }
+   return dir;
+}
+
+// The private working directory, or its subdirectory `sub` ("ui", "gaia_cache",
+// "headless"), verified as above on first use in this script run.
+function gdgWorkDir(sub) {
+   if (__gdgWorkDir == null) {
+      var uid = gdgUserId();
+      var base = getEnvironmentVariable("XDG_CACHE_HOME");
+      if (!base || base.charAt(0) != "/")
+         base = File.homeDirectory + "/.cache";
+      var bi = new FileInfo(base);
+      if (bi.exists && bi.isSymbolicLink && bi.userId != uid)
+         throw new Error("Gaia Depth Grade: refusing to use " + base + ": it is a symbolic link owned by " +
+                         "user id " + bi.userId + ", not by you.");
+      if (!bi.exists)
+         File.createDirectory(base, true);
+      __gdgWorkDir = gdgPrivateDir(base + "/gaia-depth-grade", uid);
+   }
+   if (!sub)
+      return __gdgWorkDir;
+   return gdgPrivateDir(__gdgWorkDir + "/" + sub, gdgUserId());
+}
 
 // --- The sidecar: the Python core, frozen into one executable -----------------
 // PixInsight's update system installs it from the signed astro-pi repository
@@ -41,11 +119,6 @@ var GDG_UPDATE_HINT = "Install or update \"Gaia Depth Grade\" and \"Gaia Depth G
                       "from the astro-pi repository with Resources > Updates > Check for Updates, " +
                       "then restart PixInsight.";
 
-function gdgEnsureDir(d) {
-   if (!File.directoryExists(d))   // createDirectory throws if it exists
-      File.createDirectory(d, true);
-}
-
 // Do NOT use waitForFinished(): in PI it can return BEFORE a long-running child
 // actually exits, so exitCode reads as 0 prematurely — a `prepare` whose Gaia
 // query takes minutes (or fails) would look like success and we'd march on to
@@ -58,9 +131,10 @@ function spinUntilDone(p) {
    while (p.isRunning) processEvents();
 }
 
-// Start `program args...` and wait for it. The working directory is TMP_DIR, so
-// nothing a child writes by relative path can land in PixInsight's own
-// directory (PI's working directory is its bin/). Returns trimmed output; throws
+// Start `program args...` and wait for it. The working directory is the private
+// working directory, so nothing a child writes by relative path can land in
+// PixInsight's own directory (PI's working directory is its bin/) or anywhere
+// shared. Returns trimmed output; throws
 // loudly on a failed start or a non-zero exit.
 //
 // PI exports its own LD_LIBRARY_PATH (<PixInsight>/bin/lib:<PixInsight>/bin) to
@@ -74,10 +148,9 @@ function spinUntilDone(p) {
 // `.stdout` or the real error (e.g. a Python traceback) is lost. Callers that
 // parse structured output must tolerate leading noise -- see parseFootprint().
 function gdgExec(program, args) {
-   gdgEnsureDir(TMP_DIR);
    var argv = ["-u", "LD_LIBRARY_PATH", program].concat(args);
    var p = new ExternalProcess;
-   p.workingDirectory = TMP_DIR;
+   p.workingDirectory = gdgWorkDir();
    p.start("/usr/bin/env", argv);
    spinUntilDone(p);
    var out = p.stdout.toString().trim();
@@ -124,6 +197,7 @@ function sidecarBin() {
    if (!File.exists(bin))
       throw new Error("Gaia Depth Grade's sidecar program is not installed (expected " + bin +
                       "). " + GDG_UPDATE_HINT);
+   gdgWorkDir();   // the sidecar runs in it: a refused directory must say so, not "cannot run"
    var reported;
    try {
       reported = gdgExec(bin, ["--version"]);

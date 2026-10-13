@@ -47,11 +47,10 @@ function GaiaDepthGradeDialog() {
    this.insetCx = 0; this.insetCy = 0;
    this.previewBmp = null;
    this.insetBmp = null;
-   this.cacheDir = TMP_DIR + "/ui";
-   this.starsPath = this.cacheDir + "/stars_full.fits";
-   this.starlessPath = this.cacheDir + "/starless_full.fits";
-   this.fullPng = this.cacheDir + "/preview_full.png";
-   this.insetPng = this.cacheDir + "/preview_inset.png";
+   // Working files live in the private working directory (gdgWorkDir("ui")),
+   // resolved and verified when Prepare starts; Preview and Execute only run
+   // after a Prepare, so they always read the cache this session wrote there.
+   this.cacheDir = null;
 
    // live render params. Defaults tuned for "more depth, low grain" (validated on a
    // real HaO3 master): lead with SIZE (additive near-star glow — clean depth cue,
@@ -330,7 +329,7 @@ GaiaDepthGradeDialog.prototype.doPrepare = function () {
    try {
       this.cursor = new Cursor(StdCursor_Wait);
       sidecarBin();   // a missing or wrong sidecar fails here, before a minute of solving
-      gdgEnsureDir(this.cacheDir);
+      this.setWorkDir(gdgWorkDir("ui"));
       this.setStatus("Preparing: solving + StarXTerminator + Gaia match (~50s)…");
 
       dup = duplicateWindow(this.targetWindow, this.targetWindow.mainView.id + "_gdgwork");
@@ -394,14 +393,22 @@ GaiaDepthGradeDialog.prototype.doPrepare = function () {
    }
 };
 
+GaiaDepthGradeDialog.prototype.setWorkDir = function (dir) {
+   this.cacheDir = dir;
+   this.starsPath = dir + "/stars_full.fits";
+   this.starlessPath = dir + "/starless_full.fits";
+   this.fullPng = dir + "/preview_full.png";
+   this.insetPng = dir + "/preview_inset.png";
+};
+
 GaiaDepthGradeDialog.prototype.writePrepareConfig = function () {
    // emit a tiny TOML so prepare uses the dialog's detect/match values, and
-   // keeps the online Gaia query cache under TMP_DIR (the sidecar's default is
-   // relative to its working directory).
+   // keeps the online Gaia query cache in the private working directory (the
+   // sidecar's default is relative to its working directory).
    var path = this.cacheDir + "/prepare.toml";
    var toml = format("detect_threshold_sigma = %.3f\nmatch_tolerance_px = %.3f\n",
                      this.detectSigma, this.matchTol) +
-              "cache_dir = \"" + GAIA_CACHE_DIR + "\"\n";
+              "cache_dir = " + gdgTomlString(gdgWorkDir("gaia_cache")) + "\n";
    File.writeTextFile(path, toml);
    return path;
 };
