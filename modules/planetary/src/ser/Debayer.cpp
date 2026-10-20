@@ -24,6 +24,13 @@ void CheckSize(const Frame& f) {
                        std::to_string(f.channels));
 }
 
+// Samples are LSB-aligned in 1..16 bits; anything else has no 2^depth - 1 scale.
+float MaxValue(int depth) {
+    if (depth < 1 || depth > 16)
+        throw SerError("bit depth " + std::to_string(depth) + " is outside 1..16");
+    return static_cast<float>((1u << depth) - 1u);
+}
+
 // Reflection about the edge sample (-1 -> 1, n -> n-2): keeps the site parity.
 int Mirror(int i, int n) {
     if (i < 0) return -i;
@@ -33,13 +40,13 @@ int Mirror(int i, int n) {
 }  // namespace
 
 FloatImage Normalize(const Frame& frame, int depth) {
+    const float maxValue = MaxValue(depth);
     CheckSize(frame);
     FloatImage out;
     out.width = frame.width;
     out.height = frame.height;
     out.channels = frame.channels;
     out.data.resize(frame.samples.size());
-    const float maxValue = static_cast<float>((1u << depth) - 1u);
     for (size_t i = 0; i < frame.samples.size(); ++i)
         out.data[i] = static_cast<float>(frame.samples[i]) / maxValue;
     return out;
@@ -48,6 +55,7 @@ FloatImage Normalize(const Frame& frame, int depth) {
 FloatImage DebayerBilinear(const Frame& cfa, ColorId pattern, int depth) {
     if (!IsBayer(pattern))
         throw SerError(std::string("cannot debayer ") + ColorIdName(pattern) + ": not a Bayer pattern");
+    const float maxValue = MaxValue(depth);
     CheckSize(cfa);
     if (cfa.channels != 1)
         throw SerError("debayer needs a 1-channel CFA frame, got " + std::to_string(cfa.channels) + " channels");
@@ -56,7 +64,6 @@ FloatImage DebayerBilinear(const Frame& cfa, ColorId pattern, int depth) {
 
     const int w = cfa.width, h = cfa.height;
     const int* table = PatternTable(pattern);
-    const float maxValue = static_cast<float>((1u << depth) - 1u);
     auto site = [&](int x, int y) { return table[(y & 1) * 2 + (x & 1)]; };
     // Raw sample at a mirrored position; sums stay integral and divide once.
     auto val = [&](int x, int y) -> int {

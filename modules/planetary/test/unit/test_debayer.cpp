@@ -112,3 +112,14 @@ TEST_CASE("debayer rejects non-bayer and wrong input", "[debayer]") {
     Frame thin{1, 4, 1, std::vector<uint16_t>(4)};
     CHECK_THROWS_AS(DebayerBilinear(thin, ColorId::BayerRGGB, 8), SerError);
 }
+
+TEST_CASE("normalize and debayer reject a depth outside 1..16", "[debayer]") {
+    Frame f{2, 2, 1, std::vector<uint16_t>(4)};
+    for (int depth : {0, -1, 17, 32, 33}) {
+        CHECK_THROWS_WITH(Normalize(f, depth), Catch::Matchers::ContainsSubstring("bit depth"));
+        CHECK_THROWS_WITH(DebayerBilinear(f, ColorId::BayerRGGB, depth),
+                          Catch::Matchers::ContainsSubstring("bit depth"));
+        CHECK_THROWS_AS(Normalize(f, depth), SerError);
+        CHECK_THROWS_AS(DebayerBilinear(f, ColorId::BayerRGGB, depth), SerError);
+    }
+}

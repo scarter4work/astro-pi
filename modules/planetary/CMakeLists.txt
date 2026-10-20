@@ -32,6 +32,10 @@ endif()
 
 add_subdirectory(src/ser)
 
+if(PLANETARY_BUILD_MODULE)
+    add_subdirectory(src/module)
+endif()
+
 if(PLANETARY_BUILD_TESTS)
     enable_testing()
     add_subdirectory(test)

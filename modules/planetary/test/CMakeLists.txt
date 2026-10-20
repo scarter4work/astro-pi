@@ -15,3 +15,9 @@ endfunction()
 planetary_add_test(test_ser_header unit/test_ser_header.cpp planetary_ser)
 planetary_add_test(test_ser_frames unit/test_ser_frames.cpp planetary_ser)
 planetary_add_test(test_debayer unit/test_debayer.cpp planetary_ser)
+
+# Test-only fixture writer for the headless PixInsight probe (test/run-probe.sh).
+add_executable(make-fixtures make-fixtures.cpp)
+target_include_directories(make-fixtures PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/unit")
+add_test(NAME make_fixtures_runs
+         COMMAND make-fixtures "${CMAKE_CURRENT_BINARY_DIR}/fixtures-smoke")

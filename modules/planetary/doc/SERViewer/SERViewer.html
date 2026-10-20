@@ -1,0 +1,74 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SERViewer</title>
+<style>
+body { font-family: sans-serif; max-width: 60em; margin: 1.5em auto; padding: 0 1em; line-height: 1.45; color: #222; background: #fff; }
+h1 { font-size: 1.7em; margin-bottom: 0.2em; }
+h2 { font-size: 1.3em; margin-top: 1.6em; border-bottom: 1px solid #ccc; padding-bottom: 0.15em; }
+code { font-family: monospace; background: #f3f3f3; padding: 0 0.2em; }
+table { border-collapse: collapse; width: 100%; margin: 0.6em 0; }
+th, td { border: 1px solid #ccc; padding: 0.35em 0.5em; text-align: left; vertical-align: top; }
+th { background: #f3f3f3; }
+.small { font-size: 0.9em; color: #555; }
+</style>
+</head>
+<body>
+
+<h1>SERViewer</h1>
+<p class="small">Module Planetary, version 0.1.0.0 (2026-10-20). Process &gt; Planetary &gt; SERViewer.
+This document is installed with the module (doc/tools/SERViewer/).</p>
+
+<p>SERViewer opens SER video files, the format planetary (lucky-imaging) capture programs such as FireCapture and
+SharpCap write. Executing the process globally opens one frame of the video as an ordinary
+PixInsight image window, so every PixInsight tool can be used on it.</p>
+
+<h2>Parameters</h2>
+<table>
+<tr><th>Parameter</th><th>Type</th><th>Default</th><th>Meaning</th></tr>
+<tr><td><code>filePath</code></td><td>String</td><td>(empty)</td><td>Absolute path of the <code>.ser</code> file. The process cannot run while it is empty.</td></tr>
+<tr><td><code>frameIndex</code></td><td>Int32</td><td>0</td><td>Frame to open, counting from 0.</td></tr>
+<tr><td><code>debayer</code></td><td>Boolean</td><td>true</td><td>Bayer (colour-sensor) files only: open as debayered RGB (bilinear interpolation) when true, or as the raw one-channel CFA mosaic when false.</td></tr>
+</table>
+
+<h2>The image it opens</h2>
+<ul>
+<li>32-bit floating point. Samples are divided by 2<sup>depth</sup>&nbsp;&minus;&nbsp;1, so the camera's full range maps to [0,1].</li>
+<li>Identifier: the file name with every character other than letters, digits and underscores replaced by an underscore
+(an underscore is put in front if it starts with a digit), followed by <code>_f</code> and the frame number, for example
+<code>Saturn_f0</code>. PixInsight adds a suffix if that identifier is already in use.</li>
+<li>FITS keywords:
+  <ul>
+  <li><code>DATE-OBS</code>: the frame's own UTC timestamp when the file has a timestamp trailer, otherwise the file's
+  UTC start time; left out when neither is valid.</li>
+  <li><code>INSTRUME</code>, <code>TELESCOP</code>, <code>OBSERVER</code>: the camera, telescope and observer text
+  from the file header, left out when empty.</li>
+  <li><code>BAYERPAT</code> (RGGB, GRBG, GBRG or BGGR): when a Bayer file is opened with <code>debayer</code> false.</li>
+  <li><code>HISTORY</code>: the source file name and frame number, plus one <code>SERViewer warning:</code> line for each
+  problem the reader recovered from.</li>
+  </ul>
+</li>
+</ul>
+
+<h2>Supported files</h2>
+<p>Colour layouts MONO, BAYER_RGGB, BAYER_GRBG, BAYER_GBRG, BAYER_BGGR, RGB and BGR, at 1 to 16 bits per sample.
+CMY Bayer files (colour IDs 16&ndash;19) are refused with an error saying so. Files of any size are read one frame at a
+time; the whole video is never loaded into memory.</p>
+<p>Damaged files are never silently patched up. When the reader recovers (a frame count of 0 or larger than the file
+holds, as left by a capture that crashed; a byte-order flag that contradicts the data), it opens the frames it can
+prove are complete, and says what it did in the Process Console and in the image's <code>HISTORY</code> keywords. A
+file it cannot read stops the process with an error message giving the reason.</p>
+
+<h2>Files, network and privacy</h2>
+<p>SERViewer reads only the <code>.ser</code> file you choose. It uses no network connection, runs no external
+programs, and writes nothing to disk: the frame is opened as a new, unsaved image window.</p>
+
+<h2>Acknowledgments</h2>
+<p>This product is based on software from the PixInsight project, developed by Pleiades Astrophoto and its
+contributors (https://pixinsight.com/). Licence texts of third-party components are in
+<code>THIRD_PARTY_NOTICES.txt</code>, installed next to this document.</p>
+
+</body>
+</html>
