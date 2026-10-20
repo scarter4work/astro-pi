@@ -58,19 +58,36 @@ def run(cmd, **kw):
 
 # ---------------------------------------------------------------- AVI parse (RIFF)
 def walk_riff(data, pos, end, out):
-    """Collect video-stream info: strf bytes, and every '##db'/'##dc' data chunk."""
+    """Collect video-stream info: strf bytes of stream 0, and every '00db'/'00dc' data chunk.
+    Fails loudly on what this reader does not model: OpenDML (a RIFF form other than 'AVI '),
+    palette-change chunks ('##pc', which would void the identity-palette proof), and a video
+    stream that is not stream 0."""
     while pos + 8 <= end:
         fourcc = data[pos:pos + 4]
         size = struct.unpack_from("<I", data, pos + 4)[0]
         body = pos + 8
-        if fourcc in (b"RIFF", b"LIST"):
+        if fourcc == b"RIFF":
+            if data[body:body + 4] != b"AVI ":
+                fail("RIFF form '%s' at offset %d: OpenDML / multi-RIFF AVIs are not supported (frames would be lost)"
+                     % (data[body:body + 4].decode("latin1"), pos))
+            walk_riff(data, body + 4, min(body + size, end), out)
+        elif fourcc == b"LIST":
             walk_riff(data, body + 4, min(body + size, end), out)
         elif fourcc == b"strh":
-            out["strh"].append((data[body:body + 4], data[body + 4:body + 8]))
-        elif fourcc == b"strf" and out["strh"] and out["strh"][-1][0] == b"vids" and "strf" not in out:
-            out["strf"] = data[body:body + size]
-        elif len(fourcc) == 4 and fourcc[:2] == b"00" and fourcc[2:] in (b"db", b"dc"):
-            out["frames"].append(data[body:body + size])
+            out["strh"].append(data[body:body + 4])
+        elif fourcc == b"strf":
+            idx = len(out["strh"]) - 1
+            if idx == 0:
+                if out["strh"][0] != b"vids":
+                    fail("stream 0 is '%s', not the video stream" % out["strh"][0].decode("latin1"))
+                out["strf"] = data[body:body + size]
+        elif len(fourcc) == 4 and fourcc[:2].isdigit():
+            kind = fourcc[2:]
+            if kind == b"pc":
+                fail("palette-change chunk '%s' at offset %d: the identity-palette proof would no longer hold"
+                     % (fourcc.decode("latin1"), pos))
+            if fourcc[:2] == b"00" and kind in (b"db", b"dc"):
+                out["frames"].append(data[body:body + size])
         pos = body + size + (size & 1)
 
 
@@ -82,7 +99,7 @@ def parse_avi(path):
     out = {"strh": [], "frames": []}
     walk_riff(data, 0, len(data), out)
     if "strf" not in out:
-        fail("no video stream format chunk in %s" % path)
+        fail("no video stream format chunk for stream 0 in %s" % path)
     strf = out["strf"]
     (bi_size, width, height, planes, bits, comp, size_img, _, _, clr_used, _) = struct.unpack_from("<IiiHHIIiiII", strf, 0)
     if comp != 0 or bits != 8:
@@ -192,6 +209,8 @@ def main():
     start_ticks = int((START - datetime.datetime(1, 1, 1)).total_seconds()) * TICKS_PER_SEC
 
     aw, ah, pal, chunks = parse_avi(src)
+    if probe.get("nb_frames", "N/A").isdigit() and int(probe["nb_frames"]) != len(chunks):
+        fail("parsed %d video frames but ffprobe nb_frames is %s" % (len(chunks), probe["nb_frames"]))
     check_identity_palette(pal)
     if (aw, abs(ah)) != (w, h):
         fail("AVI header %dx%d disagrees with ffprobe %dx%d" % (aw, abs(ah), w, h))

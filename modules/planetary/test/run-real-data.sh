@@ -37,13 +37,27 @@ trap 'rm -rf "$WORK"' EXIT
 python3 -I "$HERE/avi_to_ser.py" "$AVI" "$WORK/ser" --frames 100 || { echo "FAIL: avi_to_ser.py"; exit 1; }
 "$CHECKER" "$WORK/ser/expected-checks.tsv" || { echo "FAIL: the C++ reader disagrees with the AVI-derived expectations"; exit 1; }
 
+# The GUI smoke's R/B-swap check needs a clear R/B balance in the raw samples. A neutral
+# balance is only acceptable for a non-colour capture; a Bayer sidecar fails loudly here.
+RB="$(jq -r '.gui.rbOrder' "$WORK/ser/expected.json")"
+RB_ENV=()
+if [ "$RB" = "none" ]; then
+   if grep -qE '^(Bayer|Debayer Type) *=' "$AVI.txt" 2>/dev/null; then
+      echo "FAIL: the capture sidecar says Bayer/colour but the raw R/B balance is neutral (ratio within 1.15): no R/B-swap check is possible, so the GUI run could not vouch for colour order"
+      exit 1
+   fi
+   echo "NOTE: no R/B order check (neutral raw balance, sidecar shows no Bayer pattern)"
+else
+   RB_ENV=( PLANETARY_GUI_EXPECT_RB="$RB" )
+   echo "R/B order check: raw samples say R $RB B"
+fi
+
 planetary_require_signing_pass || exit 2
 
 PLANETARY_PROBE_CASES="$WORK/ser/expected.json" bash "$HERE/run-probe.sh" || exit 1
 
-RB="$(jq -r '.gui.rbOrder' "$WORK/ser/expected.json")"
 GUI_ENV=( PLANETARY_GUI_FIXTURE_A="$WORK/ser/saturn_rggb16_12bit.ser" PLANETARY_GUI_FIXTURE_B="$WORK/ser/saturn_rgb8.ser" )
-[ "$RB" = "none" ] || GUI_ENV+=( PLANETARY_GUI_EXPECT_RB="$RB" )
+GUI_ENV+=( "${RB_ENV[@]}" )
 rc=0
 env "${GUI_ENV[@]}" bash "$HERE/gui-smoke.sh" "$WORK/gui" || rc=$?
 mkdir -p "$REAL_OUT"
