@@ -1,13 +1,15 @@
 // Planetary — Native PCL Module for PixInsight
 // Copyright (c) 2026 Scott Carter. MIT License.
 //
-// The SERViewer info block. PCL-free and header-only, so it is unit tested
+// SERViewer info-block text. PCL-free and header-only, so it is unit tested
 // without PixInsight (test/unit/test_preview.cpp).
 
 #ifndef __SerInfoText_h
 #define __SerInfoText_h
 
 #include <cstdint>
+#include <exception>
+#include <new>
 #include <optional>
 #include <string>
 
@@ -51,6 +53,66 @@ inline std::string InfoText( const std::string& fileNameUtf8, const ser::FileInf
       for ( size_t i = 0; i < info.warnings.size(); ++i )
          t += (i > 0 ? "\n" : "") + std::string( "Warning: " ) + info.warnings[i];
    return t;
+}
+
+// Text for pcl::TextBox::SetPlainText, which wraps it in <raw>...</raw>: the
+// '<' of anything the console parser would read as a closing raw tag
+// ("</raw", any case, whitespace allowed around the '/') closes the block,
+// is emitted as "&lt;" and the block reopens, so the text shows verbatim.
+inline std::string RawSafe( const std::string& text )
+{
+   auto space = []( char c ) { return c == ' ' || c == '\t' || c == '\n' || c == '\r'; };
+   auto lower = []( char c ) { return c >= 'A' && c <= 'Z' ? char( c - 'A' + 'a' ) : c; };
+   std::string out;
+   const size_t n = text.size();
+   for ( size_t i = 0; i < n; ++i )
+   {
+      if ( text[i] == '<' )
+      {
+         size_t j = i + 1;
+         while ( j < n && space( text[j] ) )
+            ++j;
+         if ( j < n && text[j] == '/' )
+         {
+            ++j;
+            while ( j < n && space( text[j] ) )
+               ++j;
+            if ( j + 3 <= n && lower( text[j] ) == 'r' && lower( text[j+1] ) == 'a' && lower( text[j+2] ) == 'w' )
+            {
+               out += "</raw>&lt;<raw>";
+               continue;
+            }
+         }
+      }
+      out += text[i];
+   }
+   return out;
+}
+
+// The message of an exception caught with catch ( ... ): the reader's own
+// reason for a SerError, otherwise what kind of failure it was.
+inline std::string DescribeException( std::exception_ptr p )
+{
+   try
+   {
+      std::rethrow_exception( p );
+   }
+   catch ( const ser::SerError& e )
+   {
+      return e.what();
+   }
+   catch ( const std::bad_alloc& )
+   {
+      return "out of memory";
+   }
+   catch ( const std::exception& e )
+   {
+      return std::string( "unexpected error: " ) + e.what();
+   }
+   catch ( ... )
+   {
+      return "unknown error";
+   }
 }
 
 } // namespace planetary::preview

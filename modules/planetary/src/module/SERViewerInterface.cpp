@@ -4,15 +4,15 @@
 #include "SERViewerInterface.h"
 #include "SERViewerProcess.h"
 
-#include <pcl/ErrorHandler.h>
+#include <pcl/Console.h>
 #include <pcl/File.h>
 #include <pcl/FileDialog.h>
 #include <pcl/MessageBox.h>
 
 #include <algorithm>
 #include <climits>
-#include <optional>
-#include <string>
+#include <cstdio>
+#include <exception>
 
 #include "SerInfoText.h"
 
@@ -28,16 +28,14 @@ namespace
 
 const char* const kIdleText = "No SER file loaded.\nClick Open SER... to choose a .ser video.";
 
-// TextBox output is parsed for console tags like the Process Console, so file
-// names and reader messages go in encoded.
-String InfoMarkup( const String& text )
-{
-   return text.EncodedHTMLSpecialChars();
-}
-
 String FromUtf8( const std::string& s )
 {
    return String::UTF8ToUTF16( s.c_str() );
+}
+
+std::string ToUtf8( const String& s )
+{
+   return s.ToUTF8().c_str();
 }
 
 } // namespace
@@ -117,15 +115,53 @@ bool SERViewerInterface::ImportProcess( const ProcessImplementation& p )
 {
    instance.Assign( p );
    if ( GUI != nullptr )
-   {
-      GUI->Debayer_CheckBox.SetChecked( instance.p_debayer );
-      // A hidden interface holds no file: e_Show loads it when it appears.
-      if ( IsVisible() )
-         LoadFromInstance();
-      else
-         CloseFile();
-   }
+      Guarded( [this]()
+      {
+         GUI->Debayer_CheckBox.SetChecked( instance.p_debayer );
+         // A hidden interface holds no file: e_Show loads it when it appears.
+         if ( IsVisible() )
+            LoadFromInstance();
+         else
+            CloseFile();
+      }, false/*interactive*/ );
    return true;
+}
+
+template <class F>
+void SERViewerInterface::Guarded( F&& f, bool interactive )
+{
+   try
+   {
+      f();
+   }
+   catch ( const Exception& e )
+   {
+      Fail( e.Message(), interactive );
+   }
+   catch ( ... )
+   {
+      Fail( FromUtf8( planetary::preview::DescribeException( std::current_exception() ) ), interactive );
+   }
+}
+
+void SERViewerInterface::Fail( const String& message, bool interactive )
+{
+   try
+   {
+      CloseFile();
+      ShowError( message, interactive );
+      Console().CriticalLn( "<end><cbr>*** SERViewer: " + message.EncodedHTMLSpecialChars() );
+   }
+   catch ( ... )
+   {
+      // Reporting itself failed; nothing may cross into the core.
+      std::fprintf( stderr, "SERViewer: an error could not be reported: %s\n", ToUtf8( message ).c_str() );
+   }
+}
+
+void SERViewerInterface::SetInfo( const std::string& textUtf8 )
+{
+   GUI->Info_TextBox.SetPlainText( FromUtf8( planetary::preview::RawSafe( textUtf8 ) ) );
 }
 
 void SERViewerInterface::LoadFromInstance()
@@ -133,7 +169,7 @@ void SERViewerInterface::LoadFromInstance()
    if ( instance.p_filePath.Trimmed().IsEmpty() )
    {
       CloseFile();
-      GUI->Info_TextBox.SetText( InfoMarkup( kIdleText ) );
+      SetInfo( kIdleText );
    }
    else
       LoadFile( instance.p_filePath, false/*interactive*/ );
@@ -146,14 +182,14 @@ void SERViewerInterface::LoadFile( const String& path, bool interactive )
    const String fileName = File::ExtractNameAndExtension( trimmed );
    try
    {
-      m_file = std::make_unique<ser::SerFile>( ser::SerFile::Open( trimmed.ToUTF8().c_str() ) );
+      m_file = std::make_unique<ser::SerFile>( ser::SerFile::Open( ToUtf8( trimmed ) ) );
       const ser::FileInfo& info = m_file->Info();
       if ( info.frameCount > INT_MAX )
          throw ser::SerError( std::to_string( info.frameCount ) + " frames: more than the frame slider can address" );
       if ( instance.p_frameIndex < 0 || instance.p_frameIndex >= info.frameCount )
          throw ser::SerError( "frame index " + std::to_string( instance.p_frameIndex ) + " out of range: the file has " +
                               std::to_string( info.frameCount ) + " frames" );
-      m_fileInfo = FromUtf8( planetary::preview::InfoText( fileName.ToUTF8().c_str(), info, m_file->FrameTimestamp( 0 ) ) );
+      m_fileInfo = planetary::preview::InfoText( ToUtf8( fileName ), info, m_file->FrameTimestamp( 0 ) );
    }
    catch ( const ser::SerError& e )
    {
@@ -175,7 +211,7 @@ void SERViewerInterface::ShowFrame( int index )
    try
    {
       GUI->Preview_Control.SetBitmap( MakePreviewBitmap( LoadFrameForDisplay( *m_file, index, instance.p_debayer ) ) );
-      GUI->Info_TextBox.SetText( InfoMarkup( m_fileInfo ) );
+      SetInfo( m_fileInfo );
       return;
    }
    catch ( const ser::SerError& e )
@@ -187,13 +223,13 @@ void SERViewerInterface::ShowFrame( int index )
       error = e.Message();
    }
    GUI->Preview_Control.Clear();
-   GUI->Info_TextBox.SetText( InfoMarkup( m_fileInfo + "\n\nError: frame " + String( index ) + ": " + error ) );
+   SetInfo( m_fileInfo + "\n\nError: frame " + std::to_string( index ) + ": " + ToUtf8( error ) );
 }
 
 void SERViewerInterface::CloseFile()
 {
    m_file.reset();
-   m_fileInfo.Clear();
+   m_fileInfo.clear();
    if ( GUI != nullptr )
    {
       GUI->Preview_Control.Clear();
@@ -203,7 +239,7 @@ void SERViewerInterface::CloseFile()
 
 void SERViewerInterface::ShowError( const String& message, bool interactive )
 {
-   GUI->Info_TextBox.SetText( InfoMarkup( "Error: " + message ) );
+   SetInfo( "Error: " + ToUtf8( message ) );
    if ( interactive )
       MessageBox( message, "SERViewer", StdIcon::Error, StdButton::Ok ).Execute();
 }
@@ -230,51 +266,53 @@ void SERViewerInterface::UpdateFrameControls()
 void SERViewerInterface::e_Click( Button& sender, bool checked )
 {
    if ( sender == GUI->Open_PushButton )
-   {
-      OpenFileDialog d;
-      d.SetCaption( "Open SER video" );
-      d.SetFilter( FileFilter( "SER video files", ".ser" ) );
-      d.DisableMultipleSelections();
-      const String current = instance.p_filePath.Trimmed();
-      if ( !current.IsEmpty() )
-         d.SetInitialPath( File::ExtractDrive( current ) + File::ExtractDirectory( current ) );
-      if ( d.Execute() )
+      Guarded( [this]()
       {
-         instance.p_filePath = d.FileName();
-         instance.p_frameIndex = 0;
-         LoadFile( instance.p_filePath, true/*interactive*/ );
-      }
-   }
+         OpenFileDialog d;
+         d.SetCaption( "Open SER video" );
+         d.SetFilter( FileFilter( "SER video files", ".ser" ) );
+         d.DisableMultipleSelections();
+         const String current = instance.p_filePath.Trimmed();
+         if ( !current.IsEmpty() )
+            d.SetInitialPath( File::ExtractDrive( current ) + File::ExtractDirectory( current ) );
+         if ( d.Execute() )
+         {
+            instance.p_filePath = d.FileName();
+            instance.p_frameIndex = 0;
+            LoadFile( instance.p_filePath, true/*interactive*/ );
+         }
+      }, true/*interactive*/ );
    else if ( sender == GUI->Debayer_CheckBox )
-   {
-      instance.p_debayer = checked;
-      if ( m_file )
-         ShowFrame( instance.p_frameIndex );
-   }
+      Guarded( [this, checked]()
+      {
+         instance.p_debayer = checked;
+         if ( m_file )
+            ShowFrame( instance.p_frameIndex );
+      }, true/*interactive*/ );
 }
 
 void SERViewerInterface::e_SliderValueUpdated( Slider& sender, int value )
 {
    if ( !m_updatingFrameControls && m_file && value != instance.p_frameIndex )
-      ShowFrame( value );
+      Guarded( [this, value]() { ShowFrame( value ); }, false/*interactive*/ );
 }
 
 void SERViewerInterface::e_SpinValueUpdated( SpinBox& sender, int value )
 {
    if ( !m_updatingFrameControls && m_file && value != instance.p_frameIndex )
-      ShowFrame( value );
+      Guarded( [this, value]() { ShowFrame( value ); }, false/*interactive*/ );
 }
 
 void SERViewerInterface::e_Show( Control& )
 {
    if ( !m_file )
-      LoadFromInstance();
+      Guarded( [this]() { LoadFromInstance(); }, false/*interactive*/ );
 }
 
 void SERViewerInterface::e_Hide( Control& )
 {
    // Never hold a SER file open behind a closed interface.
-   CloseFile();
+   Guarded( [this]() { CloseFile(); }, false/*interactive*/ );
 }
 
 SERViewerInterface::GUIData::GUIData( SERViewerInterface& w )
@@ -291,8 +329,8 @@ SERViewerInterface::GUIData::GUIData( SERViewerInterface& w )
 
    Top_Sizer.SetSpacing( 6 );
    Top_Sizer.Add( Open_PushButton );
-   Top_Sizer.Add( Debayer_CheckBox );
    Top_Sizer.AddStretch();
+   Top_Sizer.Add( Debayer_CheckBox );
 
    Preview_Control.SetScaledMinSize( 400, 300 );
 
@@ -319,10 +357,11 @@ SERViewerInterface::GUIData::GUIData( SERViewerInterface& w )
 
    Info_TextBox.SetReadOnly();
    Info_TextBox.SetScaledMinSize( 400, 180 );
-   Info_TextBox.SetText( InfoMarkup( kIdleText ) );
+   Info_TextBox.SetPlainText( String( kIdleText ) );
 
    // The GUI smoke (test/gui_drive.py) clicks relative to the preview: Open
-   // SER... directly above it and the frame slider directly below, 6 px apart.
+   // SER... directly above its left end, Debayer above its right end, the
+   // frame slider directly below; 6 px apart.
    Global_Sizer.SetMargin( 8 );
    Global_Sizer.SetSpacing( 6 );
    Global_Sizer.Add( Top_Sizer );

@@ -4,19 +4,22 @@
 
   gui_drive.py --dismiss OUT          answer start-up notices with Return
   gui_drive.py --open OUT A B         01-empty.png, 01b-dialog.png, 02-loaded.png,
-                                      03-last-frame.png, 04-second-file.png (+ preview.json)
+                                      03-last-frame.png, 03b-cfa.png, 03c-debayer-on.png,
+                                      04-second-file.png (+ preview.json)
   gui_drive.py --shot OUT NAME        one screenshot
-  gui_drive.py --quit OUT             File > Quit PixInsight
-  gui_drive.py --check OUT            pixel checks of the preview region (exit 1 on failure)
+  gui_drive.py --close OUT            the interface's title-bar close button -> 06-closed.png
+  gui_drive.py --quit OUT             File > Quit PixInsight (07-file-menu.png)
+  gui_drive.py --check OUT [--expect-red]
+                                      pixel checks of the preview region (exit 1 on failure)
 
 PixInsight draws its interface windows inside the main window (no X window to
 query), so the preview is found in 01-empty.png: the empty preview is the only
 large pure-black rectangle on screen (FramePreview paints black; measured: the
 PI 1.9.5 desktop on Xvfb has ~1000 scattered black pixels, all in glyphs). The
-interface layout (SERViewerInterface.cpp) puts the Open SER... button directly
-above the preview and the frame row (label, slider, spin box) directly below
-it, 6 px apart; the clicks are placed from the preview's edges. Native X
-windows (the Qt file dialog) are found by name."""
+interface layout (SERViewerInterface.cpp) puts Open SER... above the preview's
+left end, the Debayer check box above its right end and the frame row (label,
+slider, spin box) directly below it, 6 px apart; the clicks are placed from the
+preview's edges. Native X windows (the Qt file dialog) are found by name."""
 import json, subprocess, sys, time
 from collections import Counter
 
@@ -25,13 +28,20 @@ try:
     from PIL import Image
 except ImportError as e:
     raise SystemExit("FAIL: the GUI smoke needs python3 numpy and PIL (%s)" % e)
-from Xlib import X, XK, display
-from Xlib.ext import xtest
 
 MODE, OUT = sys.argv[1], sys.argv[2]
 DIALOG = "Open SER video"
-d = display.Display()
-root = d.screen().root
+# Interface title bars, measured (PI 1.9.5, Xvfb): active and inactive.
+TITLE_COLOURS = ((86, 100, 175), (110, 110, 110))
+
+if MODE != "--check":
+    try:
+        from Xlib import X, XK, display
+        from Xlib.ext import xtest
+    except ImportError as e:
+        raise SystemExit("FAIL: the GUI smoke needs python-xlib (python3 -m pip install python-xlib): %s" % e)
+    d = display.Display()
+    root = d.screen().root
 log = open(OUT + "/windows.txt", "a")
 
 
@@ -77,19 +87,19 @@ def park():
     xtest.fake_input(d, X.MotionNotify, x=1900, y=200); d.sync()
 
 
-def press(keycode, shift=False):
-    shift_kc = d.keysym_to_keycode(XK.XK_Shift_L)
-    if shift:
-        xtest.fake_input(d, X.KeyPress, shift_kc)
+def press(keycode, modifier=None):
+    mod_kc = d.keysym_to_keycode(XK.string_to_keysym(modifier)) if modifier else None
+    if mod_kc:
+        xtest.fake_input(d, X.KeyPress, mod_kc)
     xtest.fake_input(d, X.KeyPress, keycode); d.sync(); time.sleep(0.02)
     xtest.fake_input(d, X.KeyRelease, keycode)
-    if shift:
-        xtest.fake_input(d, X.KeyRelease, shift_kc)
+    if mod_kc:
+        xtest.fake_input(d, X.KeyRelease, mod_kc)
     d.sync(); time.sleep(0.02)
 
 
-def key(name):
-    press(d.keysym_to_keycode(XK.string_to_keysym(name)))
+def key(name, modifier=None):
+    press(d.keysym_to_keycode(XK.string_to_keysym(name)), modifier)
 
 
 def type_text(text):
@@ -100,7 +110,7 @@ def type_text(text):
         kc = d.keysym_to_keycode(ks)
         if kc == 0 or ks > 0xff:
             raise SystemExit("FAIL: cannot type %r on the Xvfb keyboard (path %r)" % (ch, text))
-        press(kc, shift=d.keycode_to_keysym(kc, 0) != ks)
+        press(kc, "Shift_L" if d.keycode_to_keysym(kc, 0) != ks else None)
 
 
 def wait_for(pred, timeout, what):
@@ -118,12 +128,15 @@ def dialog_open():
     return any(w[0] == DIALOG for w in windows())
 
 
+def rgb(png):
+    return np.asarray(Image.open(png).convert("RGB")).astype(np.int32)
+
+
 def find_preview(png, min_w=350, min_h=250):
     """(x0, y0, x1, y1), exclusive ends: the tallest block of consecutive rows
     that each hold a pure-black horizontal span at least min_w wide; x0/x1 are
     the most common span ends (black glyphs touching an edge lengthen some rows)."""
-    a = np.asarray(Image.open(png).convert("RGB")).astype(np.int32)
-    black = a.sum(axis=2) == 0
+    black = rgb(png).sum(axis=2) == 0
     spans = []
     for row in black:
         p = np.concatenate(([0], row.astype(np.int8), [0]))
@@ -148,17 +161,62 @@ def find_preview(png, min_w=350, min_h=250):
     return best
 
 
-def open_file(path, tag):
+def preview_box():
+    g = json.load(open(OUT + "/preview.json"))
+    return g["x0"], g["y0"], g["x1"], g["y1"]
+
+
+def open_file(path, first):
     click(*OPEN)
     park()
     wait_for(dialog_open, 15, "the '%s' file dialog after clicking Open SER..." % DIALOG)
     time.sleep(0.8)
-    if tag == "A":
+    if first:
         shot("01b-dialog.png", 0)
+    # The name field has focus; select all so a pre-filled name is replaced, not appended to.
+    key("a", "Control_L")
     type_text(path)
     time.sleep(0.5)
     key("Return")
     wait_for(lambda: not dialog_open(), 15, "the file dialog to close after Return (%s)" % path)
+
+
+def close_button(png):
+    """Centre of the interface's title-bar close button, from the preview's
+    position: the title bar is the nearest block of rows above the preview
+    that are mostly title colour across the preview's width (title text and
+    icons cover the rest), and the close button sits 12 px inside the
+    interface's right edge (where the client background beside the preview's
+    top ends), as measured on CurvesTransformation (title bar 764..1162,
+    close glyph centre at 1150)."""
+    a = rgb(png)
+    x0, y0, x1, y1 = preview_box()
+    band = a[:, x0:x1]
+    title = np.zeros(band.shape[:2], dtype=bool)
+    for c in TITLE_COLOURS:
+        title |= (np.abs(band - np.array(c)) <= 6).all(axis=2)
+    rows = title.mean(axis=1) >= 0.4
+    y = y0 - 1
+    while y > max(0, y0 - 200) and not rows[y]:
+        y -= 1
+    bottom = y
+    while y > 0 and rows[y]:
+        y -= 1
+    top = y + 1
+    if not rows[bottom] or bottom - top < 10:
+        raise SystemExit("FAIL: no interface title bar found within 200 px above the preview")
+    ty = (top + bottom) // 2
+    bg = a[y0 - 3, x1 + 2]
+    x = x1 + 2
+    while x < a.shape[1] - 1 and np.abs(a[y0 - 3, x] - bg).max() <= 4:
+        x += 1
+    cx = x - 12
+    win = a[ty - 5:ty + 6, cx - 5:cx + 6]
+    if not (win.min(axis=2) >= 220).any():   # glyph: white when active, #E8E8E8 when inactive
+        raise SystemExit("FAIL: no close-button glyph near (%d, %d) (title bar rows %d..%d, right edge %d)"
+                         % (cx, ty, top, bottom, x))
+    log.write("close button at %d,%d (title bar rows %d..%d, right edge %d)\n" % (cx, ty, top, bottom, x))
+    return cx, ty
 
 
 if MODE == "--dismiss":
@@ -175,11 +233,19 @@ if MODE == "--shot":
     shot(sys.argv[3], 1.5)
     sys.exit(0)
 
+if MODE == "--close":
+    park()
+    shot("pre-close.png", 1.0)
+    click(*close_button(OUT + "/pre-close.png"))
+    park()
+    shot("06-closed.png", 1.5)
+    sys.exit(0)
+
 if MODE == "--quit":
     # File > Quit PixInsight (measured on the 1920x1080 Xvfb screen, PI 1.9.5).
     click(34, 12)
     time.sleep(1.0)
-    shot("06-file-menu.png", 0)
+    shot("07-file-menu.png", 0)
     click(104, 583)
     sys.exit(0)
 
@@ -194,10 +260,11 @@ if MODE == "--open":
     x0, y0, x1, y1 = box
     json.dump({"x0": x0, "y0": y0, "x1": x1, "y1": y1}, open(OUT + "/preview.json", "w"))
     log.write("preview at %r\n" % (box,))
-    OPEN = (x0 + 24, y0 - 14)            # Open SER... sits right above the preview
+    OPEN = (x0 + 24, y0 - 14)            # Open SER... sits above the preview's left end
+    DEBAYER = (x1 - 20, y0 - 14)         # the Debayer label ends above its right end
     SLIDER = ((x0 + x1) // 2, y1 + 18)   # the frame slider spans the middle of the row below
 
-    open_file(path_a, "A")
+    open_file(path_a, True)
     shot("02-loaded.png", 1.5)
 
     # Click the slider (it takes focus and steps toward the click), then End: last frame.
@@ -207,15 +274,24 @@ if MODE == "--open":
     park()
     shot("03-last-frame.png", 1.5)
 
-    open_file(path_b, "B")
+    # Debayer off (raw CFA, grey mosaic), then on again (back to 03).
+    click(*DEBAYER)
+    park()
+    shot("03b-cfa.png", 1.5)
+    click(*DEBAYER)
+    park()
+    shot("03c-debayer-on.png", 1.5)
+
+    open_file(path_b, False)
     shot("04-second-file.png", 1.5)
     dump("end")
     sys.exit(0)
 
 if MODE == "--check":
-    g = json.load(open(OUT + "/preview.json"))
+    expect_red = "--expect-red" in sys.argv[3:]
+    x0, y0, x1, y1 = preview_box()
     inset = 2
-    region = (g["x0"] + inset, g["y0"] + inset, g["x1"] - inset, g["y1"] - inset)
+    region = (x0 + inset, y0 + inset, x1 - inset, y1 - inset)
 
     def px(name):
         return np.asarray(Image.open(OUT + "/" + name).convert("RGB").crop(region)).astype(np.float64)
@@ -223,22 +299,26 @@ if MODE == "--check":
     # Thresholds hold for real planetary frames too (Task 5): a small bright
     # disc on black lights a few percent of the preview, and frame-to-frame
     # seeing changes only the pixels around its edges.
-    def lit(name):
-        return float((px(name).max(axis=2) > 24).mean())
+    def lit_mask(name):
+        return px(name).max(axis=2) > 24
 
     def changed(a, b):
         return float((np.abs(px(a) - px(b)).max(axis=2) > 12).mean())
 
     fails = []
     lines = []
-    for name in ("02-loaded.png", "03-last-frame.png", "04-second-file.png", "05-import.png"):
-        f = lit(name)
+    for name in ("02-loaded.png", "03-last-frame.png", "03b-cfa.png", "03c-debayer-on.png",
+                 "04-second-file.png", "05-import.png"):
+        f = float(lit_mask(name).mean())
         lines.append("%s: %.2f%% of the preview lit" % (name, 100 * f))
         if f < 0.01:
             fails.append("%s: the preview is black (%.2f%% lit)" % (name, 100 * f))
     checks = [("02-loaded.png", "03-last-frame.png", "frame 0 vs the last frame", "differ"),
+              ("03-last-frame.png", "03b-cfa.png", "debayered vs raw CFA", "differ"),
+              ("03-last-frame.png", "03c-debayer-on.png", "debayer on again vs before", "same"),
               ("03-last-frame.png", "04-second-file.png", "fixture A vs fixture B", "differ"),
-              ("03-last-frame.png", "05-import.png", "slider End vs ImportProcess of the last frame", "same")]
+              ("03-last-frame.png", "05-import.png", "slider End vs ImportProcess of the last frame", "same"),
+              ("05-import.png", "06-closed.png", "interface open vs closed", "differ")]
     for a, b, what, want in checks:
         v = changed(a, b)
         lines.append("%s vs %s (%s): %.3f%% of the preview changed" % (a, b, what, 100 * v))
@@ -246,6 +326,24 @@ if MODE == "--check":
             fails.append("%s: %s and %s do not differ (%.3f%% changed)" % (what, a, b, 100 * v))
         if want == "same" and v > 0.0:
             fails.append("%s: %s and %s differ (%.3f%% changed)" % (what, a, b, 100 * v))
+
+    # Debayer off shows one channel replicated: grey everywhere.
+    cfa = px("03b-cfa.png")
+    spread = float((cfa.max(axis=2) - cfa.min(axis=2)).max())
+    lines.append("03b-cfa.png: largest channel spread %.0f (grey: <= 2)" % spread)
+    if spread > 2:
+        fails.append("03b-cfa.png: the raw CFA preview is not grey (channel spread %.0f)" % spread)
+
+    if expect_red:
+        # bayer-colour.ser: bright red sites, dim green, dark blue. An R/B swap
+        # anywhere between the debayer and the screen turns this blue.
+        img = px("03-last-frame.png")
+        m = lit_mask("03-last-frame.png")
+        r, g, b = (float(img[..., c][m].mean()) for c in range(3))
+        lines.append("03-last-frame.png: mean R/G/B over lit pixels %.0f/%.0f/%.0f (red: R >= 2G, R >= 2B)" % (r, g, b))
+        if not (r >= 2 * g and r >= 2 * b):
+            fails.append("03-last-frame.png: not red-dominant (R/G/B %.0f/%.0f/%.0f)" % (r, g, b))
+
     print("\n".join("  " + l for l in lines))
     open(OUT + "/checks.txt", "w").write("\n".join(lines + ["FAIL: " + f for f in fails]) + "\n")
     if fails:
@@ -253,4 +351,4 @@ if MODE == "--check":
         sys.exit(1)
     sys.exit(0)
 
-raise SystemExit("usage: gui_drive.py --dismiss|--open|--shot|--quit|--check OUT ...")
+raise SystemExit("usage: gui_drive.py --dismiss|--open|--shot|--close|--quit|--check OUT ...")

@@ -269,6 +269,26 @@ int main(int argc, char** argv) {
         cases.push_back(raw);
     }
 
+    // GUI smoke only (test/gui-smoke.sh), no probe case: Bayer RGGB 8-bit, 64x48,
+    // 3 frames. Red sites are bright in 8-pixel bars that move one bar per
+    // frame, green sites dim, blue sites dark, so the debayered preview is
+    // unmistakably red (an R/B swap shows blue) and every frame differs; with
+    // debayer off it is a grey mosaic.
+    {
+        const int w = 64, h = 48, n = 3;
+        SerSpec s;
+        s.colorId = 8; s.width = w; s.height = h; s.depth = 8; s.frameCount = n;
+        std::vector<std::vector<uint8_t>> frames(n);
+        for (int f = 0; f < n; ++f)
+            for (int y = 0; y < h; ++y)
+                for (int x = 0; x < w; ++x) {
+                    const int site = (y % 2) * 2 + x % 2;  // 0 R, 1 and 2 G, 3 B
+                    const int v = site == 0 ? 60 + 150 * ((x / 8 + f) % 2) : site == 3 ? 12 : 40;
+                    frames[f].push_back(static_cast<uint8_t>(v));
+                }
+        WriteSer((dir / "bayer-colour.ser").string(), s, frames);
+    }
+
     // FrameCount 0 (a capture that crashed before finalising its header):
     // 16x16 mono8, 2 frames on disk. Opens with a recovery warning.
     {

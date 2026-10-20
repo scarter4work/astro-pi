@@ -180,3 +180,13 @@ planetary_assert_only_dev_mapped()
    fi
    echo "only the dev module is mapped (pid $pid): $maps"
 }
+
+# The .ser files the slot's running PixInsight holds open (link targets of
+# /proc/<pid>/fd), one per line, sorted. Fails if no such PixInsight runs.
+planetary_open_ser_files()
+{
+   local pid
+   pid="$(pgrep -f -- "^$PLANETARY_PI_BIN_DIR/PixInsight -n=$PLANETARY_SLOT " | head -1)"
+   [ -n "$pid" ] || { echo "FAIL: no running PixInsight for slot $PLANETARY_SLOT" >&2; return 1; }
+   find "/proc/$pid/fd" -maxdepth 1 -type l -printf '%l\n' 2>/dev/null | grep -E '\.ser$' | sort -u || true
+}

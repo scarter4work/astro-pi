@@ -14,6 +14,7 @@
 #include <pcl/TextBox.h>
 
 #include <memory>
+#include <string>
 
 #include "FramePreview.h"
 #include "SERViewerInstance.h"
@@ -54,7 +55,7 @@ private:
    // Open only while a file is shown; replaced by the next file, released on
    // any load failure and when the interface is hidden or closed.
    std::unique_ptr<planetary::ser::SerFile> m_file;
-   String m_fileInfo; // the info block of m_file, without frame errors
+   std::string m_fileInfo; // the info block of m_file (UTF-8), without frame errors
    bool m_updatingFrameControls = false;
 
    struct GUIData
@@ -84,7 +85,17 @@ private:
    void ShowFrame( int index );
    void CloseFile();
    void ShowError( const String& message, bool interactive );
+   void SetInfo( const std::string& textUtf8 );
    void LoadFromInstance();
+
+   // Runs f (an event handler or core callback body). PCL does not catch
+   // exceptions across the API boundary into the PixInsight core, so anything
+   // f throws is stopped here: the viewer is cleared and the error shown in
+   // the info block and the Process Console (plus a message box when
+   // interactive).
+   template <class F>
+   void Guarded( F&& f, bool interactive );
+   void Fail( const String& message, bool interactive );
    void UpdateFrameControls();
 
    void e_Click( Button& sender, bool checked );

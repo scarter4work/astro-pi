@@ -127,3 +127,58 @@ TEST_CASE("info text: little-endian 16-bit data", "[preview][info]") {
     i.byteOrder = planetary::ser::ByteOrder::Little;
     CHECK(InfoText("x.ser", i, std::nullopt).find("Byte order: little-endian\n") != std::string::npos);
 }
+
+TEST_CASE("red lands in bits 16-23 and blue in bits 0-7 (ffRRGGBB, the RGB32 bitmap layout)", "[preview]") {
+    const auto px = PreviewArgb(FloatImage{3, 1, 3, {1.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 0.0f, 1.0f}});
+    CHECK(px[0] == 0xFFFF0000u);  // pure red
+    CHECK(px[1] == 0xFF00FF00u);  // pure green
+    CHECK(px[2] == 0xFF0000FFu);  // pure blue
+}
+
+TEST_CASE("RawSafe keeps text verbatim inside a <raw> block", "[preview][info]") {
+    CHECK(RawSafe("Saturn <1> & co.ser") == "Saturn <1> & co.ser");
+    // A closing raw tag (any case, whitespace inside) would end the block early:
+    // its '<' is closed out, emitted as an entity, and the block reopened.
+    CHECK(RawSafe("a</raw>b") == "a</raw>&lt;<raw>/raw>b");
+    CHECK(RawSafe("a< / RaW>b") == "a</raw>&lt;<raw> / RaW>b");
+    CHECK(RawSafe("a</rawb") == "a</raw>&lt;<raw>/rawb");
+    CHECK(RawSafe("a</ra") == "a</ra");
+}
+
+TEST_CASE("DescribeException names any in-flight exception", "[preview][info]") {
+    auto describe = [](auto thrower) {
+        try {
+            thrower();
+        } catch (...) {
+            return DescribeException(std::current_exception());
+        }
+        return std::string("nothing thrown");
+    };
+    CHECK(describe([] { throw planetary::ser::SerError("short read"); }) == "short read");
+    CHECK(describe([] { throw std::bad_alloc(); }) == "out of memory");
+    CHECK(describe([] { throw std::runtime_error("boom"); }) == "unexpected error: boom");
+    CHECK(describe([] { throw 42; }) == "unknown error");
+}
+
+TEST_CASE("a red-dominant RGGB mosaic (the GUI smoke's bayer-colour.ser) previews red", "[preview]") {
+    // Same mosaic as make-fixtures' bayer-colour.ser, frame 0.
+    const int w = 64, h = 48;
+    planetary::ser::Frame cfa{w, h, 1, {}};
+    for (int y = 0; y < h; ++y)
+        for (int x = 0; x < w; ++x) {
+            const int site = (y % 2) * 2 + x % 2;
+            cfa.samples.push_back(static_cast<uint16_t>(site == 0 ? 60 + 150 * ((x / 8) % 2) : site == 3 ? 12 : 40));
+        }
+    const auto px = PreviewArgb(planetary::ser::DebayerBilinear(cfa, ColorId::BayerRGGB, 8));
+    double r = 0, g = 0, b = 0;
+    for (uint32_t p : px) {
+        r += (p >> 16) & 0xFF;
+        g += (p >> 8) & 0xFF;
+        b += p & 0xFF;
+    }
+    CHECK(r >= 2 * g);
+    CHECK(r >= 2 * b);
+    // Raw CFA (debayer off) is grey: R == G == B everywhere.
+    for (uint32_t p : PreviewArgb(planetary::ser::Normalize(cfa, 8)))
+        CHECK((((p >> 16) & 0xFF) == ((p >> 8) & 0xFF) && ((p >> 8) & 0xFF) == (p & 0xFF)));
+}

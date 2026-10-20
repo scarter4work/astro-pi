@@ -24,7 +24,8 @@ planetary_slot_setup || exit 1
 planetary_private_tmp || exit 1
 
 FIX="$PLANETARY_RUN_DIR/fixtures"
-"$MAKE_FIXTURES" "$FIX"
+"$MAKE_FIXTURES" "$FIX" >"$PLANETARY_RUN_DIR/make-fixtures.log" 2>&1 \
+   || { echo "FAIL: make-fixtures failed: $(cat "$PLANETARY_RUN_DIR/make-fixtures.log")"; exit 1; }
 OUT="$PLANETARY_RUN_DIR/probe-out.json"
 
 planetary_sign "$SO" || exit 1
