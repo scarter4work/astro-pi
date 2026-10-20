@@ -45,6 +45,19 @@ TEST_CASE("parses mono 8-bit header", "[ser]") {
     CHECK(i.warnings.empty());
 }
 
+TEST_CASE("header strings are trimmed at both ends", "[ser]") {
+    auto p = TempPath();
+    auto s = Spec(0, 4, 4, 8, 1);
+    s.observer = "  Scott  ";
+    s.instrument = "\tZWO ASI585MC ";
+    s.telescope = "   ";
+    WriteSer(p, s, Frames(1, 16));
+    const auto i = SerFile::Open(p).Info();
+    CHECK(i.header.observer == "Scott");
+    CHECK(i.header.instrument == "ZWO ASI585MC");
+    CHECK(i.header.telescope.empty());
+}
+
 TEST_CASE("parses rgb 16-bit header", "[ser]") {
     auto p = TempPath();
     WriteSer(p, Spec(100, 10, 8, 12, 2), Frames(2, 10 * 8 * 6));

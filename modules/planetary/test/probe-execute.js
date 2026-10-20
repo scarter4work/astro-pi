@@ -36,17 +36,34 @@ function closeAllWindows()
       ws[i].forceClose();
 }
 
-function keywordMatches( k, want )
+// value / comment are checked card by card; commentContains is checked on each
+// run of consecutive same-name cards joined with single spaces, because long
+// HISTORY text is split across cards at spaces.
+function keywordFound( kws, want )
 {
-   if ( k.name != want.name )
-      return false;
-   if ( want.value !== undefined )
-      return k.strippedValue.trim() == want.value;
-   if ( want.comment !== undefined )
-      return k.comment.trim() == want.comment;
-   if ( want.commentContains !== undefined )
-      return k.comment.indexOf( want.commentContains ) >= 0;
-   return true;
+   var run = null;
+   for ( var i = 0; i < kws.length; ++i )
+   {
+      var k = kws[i];
+      if ( k.name != want.name )
+      {
+         run = null;
+         continue;
+      }
+      if ( want.value !== undefined && k.strippedValue.trim() == want.value )
+         return true;
+      if ( want.comment !== undefined && k.comment.trim() == want.comment )
+         return true;
+      if ( want.commentContains !== undefined )
+      {
+         run = run === null ? k.comment.trim() : run + " " + k.comment.trim();
+         if ( run.indexOf( want.commentContains ) >= 0 )
+            return true;
+      }
+      if ( want.value === undefined && want.comment === undefined && want.commentContains === undefined )
+         return true;
+   }
+   return false;
 }
 
 function describeKeywords( kws )
@@ -126,14 +143,12 @@ function runImageCase( c, P, r )
    }
    var kws = w.keywords;
    for ( var j = 0; j < c.keywords.length; ++j )
-   {
-      var want = c.keywords[j];
-      var found = false;
-      for ( var k = 0; k < kws.length && !found; ++k )
-         found = keywordMatches( kws[k], want );
-      if ( !found )
-         r.errors.push( "keyword " + JSON.stringify( want ) + " not found in: " + describeKeywords( kws ) );
-   }
+      if ( !keywordFound( kws, c.keywords[j] ) )
+         r.errors.push( "keyword " + JSON.stringify( c.keywords[j] ) + " not found in: " + describeKeywords( kws ) );
+   // One FITS card holds 72 characters of HISTORY text.
+   for ( var h = 0; h < kws.length; ++h )
+      if ( kws[h].name == "HISTORY" && kws[h].comment.length > 72 )
+         r.errors.push( "HISTORY card longer than 72 characters (" + kws[h].comment.length + "): " + kws[h].comment );
    for ( var a = 0; a < c.absentKeywords.length; ++a )
       for ( var m = 0; m < kws.length; ++m )
          if ( kws[m].name == c.absentKeywords[a] )

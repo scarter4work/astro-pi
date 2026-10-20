@@ -42,13 +42,22 @@ planetary_require_signing_pass()
    fi
 }
 
-# PLANETARY_TEST_SLOT (default 94) -> PLANETARY_SLOT + PLANETARY_SLOT_SETTINGS.
+# Removes whatever this run created: the slot's settings and the run dir.
+planetary_cleanup()
+{
+   [ -n "${PLANETARY_SLOT_SETTINGS:-}" ] && rm -f "$PLANETARY_SLOT_SETTINGS"
+   [ -n "${PLANETARY_RUN_DIR:-}" ] && rm -rf "$PLANETARY_RUN_DIR"
+   return 0
+}
+
+# PLANETARY_TEST_SLOT (default 96; 94 is gaia-depth-grade's, 97 the GUI
+# smoke's) -> PLANETARY_SLOT + PLANETARY_SLOT_SETTINGS, wiped now and on exit.
 # The value is env-controlled and its settings file gets deleted, so reject
 # anything but a plain decimal in the reserved test range BEFORE any arithmetic
 # (bash reads "0x1" as hex and "01" as octal: both would otherwise be slot 1).
 planetary_slot_setup()
 {
-   local slot="${PLANETARY_TEST_SLOT:-94}"
+   local slot="${PLANETARY_TEST_SLOT:-96}"
    case "$slot" in
       ''|*[!0-9]*) echo "FAIL: PLANETARY_TEST_SLOT must be a plain decimal integer, got '$slot'"; return 1 ;;
    esac
@@ -57,18 +66,19 @@ planetary_slot_setup()
    fi
    PLANETARY_SLOT=$(( 10#$slot ))
    PLANETARY_SLOT_SETTINGS="$(printf '%s/core-%03d-pxi.settings' "$HOME/.PixInsight" "$PLANETARY_SLOT")"
+   trap planetary_cleanup EXIT
    rm -f "$PLANETARY_SLOT_SETTINGS"
 }
 
 # Private scratch for this run (0700): fixtures, probe output, logs, and the
-# TMPDIR PixInsight and pi_headless use. Removed on exit with the slot settings.
+# TMPDIR PixInsight and pi_headless use. Removed on exit (planetary_cleanup).
 planetary_private_tmp()
 {
    PLANETARY_RUN_DIR="$(mktemp -d "${TMPDIR:-/tmp}/planetary-test.XXXXXX")" || return 1
+   trap planetary_cleanup EXIT
    chmod 700 "$PLANETARY_RUN_DIR"
    mkdir -m 700 "$PLANETARY_RUN_DIR/tmp"
    export TMPDIR="$PLANETARY_RUN_DIR/tmp"
-   trap 'rm -f "$PLANETARY_SLOT_SETTINGS"; rm -rf "$PLANETARY_RUN_DIR"' EXIT
 }
 
 planetary_sign()

@@ -9,6 +9,7 @@
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <sstream>
@@ -34,11 +35,28 @@ void Put16LE(std::vector<uint8_t>& b, int v) {
     b.push_back(static_cast<uint8_t>(v >> 8));
 }
 
+// JSON string literal; non-ASCII UTF-8 goes out as \uXXXX (BMP only, which is
+// all the fixtures use) so the probe's reader cannot mis-decode it.
 std::string Quote(const std::string& s) {
     std::string o = "\"";
-    for (char c : s) {
-        if (c == '"' || c == '\\') o += '\\';
-        o += c;
+    for (size_t i = 0; i < s.size(); ++i) {
+        const unsigned char c = static_cast<unsigned char>(s[i]);
+        if (c == '"' || c == '\\') {
+            o += '\\';
+            o += static_cast<char>(c);
+        } else if (c < 0x80) {
+            o += static_cast<char>(c);
+        } else {
+            unsigned cp = 0;
+            int more = 0;
+            if ((c & 0xE0) == 0xC0) { cp = c & 0x1F; more = 1; }
+            else if ((c & 0xF0) == 0xE0) { cp = c & 0x0F; more = 2; }
+            else { std::fprintf(stderr, "make-fixtures: unsupported UTF-8 in %s\n", s.c_str()); std::exit(1); }
+            for (int k = 0; k < more && i + 1 < s.size(); ++k) cp = (cp << 6) | (s[++i] & 0x3F);
+            char buf[8];
+            std::snprintf(buf, sizeof buf, "\\u%04x", cp);
+            o += buf;
+        }
     }
     return o + "\"";
 }
@@ -268,9 +286,31 @@ int main(int argc, char** argv) {
         c.name = "framecount0"; c.path = path; c.frame = 1; c.expectId = "framecount0_f1";
         c.width = w; c.height = h; c.channels = 1;
         for (auto [x, y] : Points(w, h)) c.samples.push_back({x, y, 0, Norm(Gen(x, y, 0, 1, d), d)});
+        // The warning is longer than one card (72 characters): the probe finds
+        // it whole only if the continuation card follows and joins back.
         c.keywords = {{"HISTORY", "comment", "SERViewer: framecount0.ser frame 1"},
-                      {"HISTORY", "commentContains", "SERViewer warning: header frame count is 0"}};
+                      {"HISTORY", "commentContains",
+                       "SERViewer warning: header frame count is 0; using 2 complete frames found in the file"}};
         c.absent = {"DATE-OBS"};
+        cases.push_back(c);
+    }
+
+    // Non-ASCII file name (UTF-8 "Jüpiter"): '_' in the window id, '?' in HISTORY.
+    {
+        const int w = 16, h = 16, d = 8;
+        SerSpec s;
+        s.colorId = 0; s.width = w; s.height = h; s.depth = d; s.frameCount = 1;
+        std::vector<std::vector<uint8_t>> frames(1);
+        for (int y = 0; y < h; ++y)
+            for (int x = 0; x < w; ++x) frames[0].push_back(static_cast<uint8_t>(Gen(x, y, 0, 0, d)));
+        const std::string path = (dir / "J\xc3\xbcpiter.ser").string();
+        WriteSer(path, s, frames);
+
+        Case c;
+        c.name = "utf8 file name"; c.path = path; c.frame = 0; c.expectId = "J_piter_f0";
+        c.width = w; c.height = h; c.channels = 1;
+        for (auto [x, y] : Points(w, h)) c.samples.push_back({x, y, 0, Norm(Gen(x, y, 0, 0, d), d)});
+        c.keywords = {{"HISTORY", "comment", "SERViewer: J?piter.ser frame 0"}};
         cases.push_back(c);
     }
 

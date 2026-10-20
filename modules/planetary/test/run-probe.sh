@@ -40,6 +40,12 @@ fi
 
 jq -r '.cases[] | (if .ok then "  ok    " else "  FAIL  " end) + .name + (if .via then " (" + .via + ")" else "" end)
                  + (if .ok then "" else ": " + (.errors | join("; ")) end)' "$OUT"
+# How each error case failed (probe-execute.js accepts both for now): an
+# exception, or executeGlobal returning false with the reason on the console.
+jq -r --slurpfile in "$FIX/probe-in.json" \
+   '($in[0].cases | map(select(.expectError)) | map(.name)) as $errs
+    | .cases[] | select(.name as $n | $errs | index($n))
+    | "  via   " + .name + ": " + (.via // "none observed")' "$OUT"
 if jq -e '.error' "$OUT" >/dev/null; then echo "FAIL: $(jq -r .error "$OUT")"; exit 1; fi
 want="$(jq '.cases | length' "$FIX/probe-in.json")"
 got="$(jq '[.cases[] | select(.ok)] | length' "$OUT")"

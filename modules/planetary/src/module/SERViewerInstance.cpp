@@ -15,9 +15,11 @@
 #include <optional>
 #include <string>
 
+#include "FitsText.h"
 #include "SerTime.h"
 
 namespace ser = planetary::ser;
+namespace fits = planetary::fits;
 
 namespace pcl
 {
@@ -67,15 +69,23 @@ IsoString WindowIdFor( const String& path, int64_t frameIndex )
 IsoString FitsString( const std::string& s )
 {
    IsoString v = "'";
-   for ( char c : s )
+   for ( char c : fits::AsciiFromBytes( s ) )
    {
       if ( c == '\'' )
          v += "''";
       else
-         v += (c >= 0x20 && c <= 0x7e) ? c : '?';
+         v += c;
    }
    v += '\'';
    return v;
+}
+
+// HISTORY text (ASCII already) on as many cards as it needs: a FITS card holds
+// 72 characters of it. Pieces break at spaces; readers join them with one space.
+void AddHistory( FITSKeywordArray& keywords, const std::string& text )
+{
+   for ( const std::string& piece : fits::SplitCardText( text ) )
+      keywords << FITSHeaderKeyword( "HISTORY", IsoString(), IsoString( piece.c_str() ) );
 }
 
 } // namespace
@@ -171,10 +181,10 @@ bool SERViewerInstance::ExecuteGlobal()
    if ( cfaKept )
       keywords << FITSHeaderKeyword( "BAYERPAT", FitsString( ser::BayerPatternKeyword( info.colorId ) ),
                                      "CFA pattern of the raw frame" );
-   keywords << FITSHeaderKeyword( "HISTORY", IsoString(),
-                                  ("SERViewer: " + fileName + " frame " + Num( index )).ToUTF8() );
+   const std::string asciiName = fits::AsciiFromUtf8( fileName.ToUTF8().c_str() );
+   AddHistory( keywords, "SERViewer: " + asciiName + " frame " + std::to_string( index ) );
    for ( const std::string& w : info.warnings )
-      keywords << FITSHeaderKeyword( "HISTORY", IsoString(), IsoString( ("SERViewer warning: " + w).c_str() ) );
+      AddHistory( keywords, "SERViewer warning: " + fits::AsciiFromBytes( w ) );
 
    ImageWindow window( pixels.width, pixels.height, channels, 32, true/*float*/, channels == 3, true/*initialProcessing*/,
                        WindowIdFor( path, index ) );

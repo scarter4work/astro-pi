@@ -47,8 +47,10 @@ PixInsight image window, so every PixInsight tool can be used on it.</p>
   from the file header, left out when empty.</li>
   <li><code>BAYERPAT</code> (RGGB, GRBG, GBRG or BGGR): when a Bayer file is opened with <code>debayer</code> false.</li>
   <li><code>HISTORY</code>: the source file name and frame number, plus one <code>SERViewer warning:</code> line for each
-  problem the reader recovered from.</li>
+  problem the reader recovered from. Text longer than one FITS card (72 characters) continues on the next
+  <code>HISTORY</code> card.</li>
   </ul>
+  Keyword text is plain ASCII: any other character from the file header or the file name is shown as <code>?</code>.
 </li>
 </ul>
 

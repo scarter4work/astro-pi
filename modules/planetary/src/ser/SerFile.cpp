@@ -26,8 +26,11 @@ std::string ReadText(const unsigned char* p, size_t n) {
     std::string s(reinterpret_cast<const char*>(p), n);
     const size_t nul = s.find('\0');
     if (nul != std::string::npos) s.resize(nul);
-    while (!s.empty() && (s.back() == ' ' || s.back() == '\0')) s.pop_back();
-    return s;
+    auto blank = [](char c) { return c == ' ' || c == '\t' || c == '\r' || c == '\n'; };
+    size_t b = 0, e = s.size();
+    while (b < e && blank(s[b])) ++b;
+    while (e > b && blank(s[e - 1])) --e;
+    return s.substr(b, e - b);
 }
 
 std::string Num(int64_t v) { return std::to_string(v); }
