@@ -390,9 +390,9 @@ PY
 
 echo "== 3a2/6 package Planetary module tarball (docs deploy as doc/tools/$PLANETARY_DOC_ID/) =="
 package_module "$PLANETARY_TGZ" Planetary "$PLANETARY_SO" "$PLANETARY_XSGN" "$PLANETARY_DOC" "$PLANETARY_DOC_ID"
-python3 - "$REPO/updates.xri" "$PLANETARY_TGZ" "$PLANETARY_VER" <<'PY'
+python3 - "$REPO/updates.xri" "$PLANETARY_TGZ" <<'PY'
 import re,sys
-mf,fn,ver=sys.argv[1:4]
+mf,fn=sys.argv[1:3]
 s=open(mf).read()
 pat=r'fileName="[^"]*-linux-x64-Planetary(-[0-9.]+)?\.tar\.gz"'
 if re.search(pat, s):
@@ -400,14 +400,16 @@ if re.search(pat, s):
     s=re.sub(pat, 'fileName="'+fn+'"', s)
 else:
     # First release: a new <package> in the linux/x64 platform block, with
-    # placeholder sha1/releaseDate that step 4 (write_pkg) fills in.
+    # placeholder sha1/releaseDate that step 4 (write_pkg) fills in. No version
+    # in the description: later releases only rename fileName (as for PICopilot),
+    # so a version written here would go stale.
     entry = ('\n      <package fileName="' + fn + '" '
              'sha1="0000000000000000000000000000000000000000" '
              'type="module" releaseDate="00000000">\n'
              '         <title>Planetary</title>\n'
              '         <description>\n'
              '            <p>\n'
-             '               <b>Planetary ' + ver + '</b>\n'
+             '               <b>Planetary</b>\n'
              '            </p>\n'
              '            <p>Planetary: SER video viewer for PixInsight. SERViewer opens SER video '
              'files: it shows any frame in a preview and opens it as a PixInsight image. '
