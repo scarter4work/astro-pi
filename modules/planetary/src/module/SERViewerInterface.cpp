@@ -146,17 +146,25 @@ void SERViewerInterface::Guarded( F&& f, bool interactive )
 
 void SERViewerInterface::Fail( const String& message, bool interactive )
 {
-   try
+   // Each step on its own, so a failure in one never skips the others; a step
+   // that fails is noted on stderr (nothing may cross into the core).
+   auto attempt = [&message]( const char* step, auto&& f )
    {
-      CloseFile();
-      ShowError( message, interactive );
+      try
+      {
+         f();
+      }
+      catch ( ... )
+      {
+         std::fprintf( stderr, "SERViewer: %s failed while reporting: %s\n", step, ToUtf8( message ).c_str() );
+      }
+   };
+   attempt( "closing the file", [this]() { CloseFile(); } );
+   attempt( "showing the error", [this, &message, interactive]() { ShowError( message, interactive ); } );
+   attempt( "writing the console", [&message]()
+   {
       Console().CriticalLn( "<end><cbr>*** SERViewer: " + message.EncodedHTMLSpecialChars() );
-   }
-   catch ( ... )
-   {
-      // Reporting itself failed; nothing may cross into the core.
-      std::fprintf( stderr, "SERViewer: an error could not be reported: %s\n", ToUtf8( message ).c_str() );
-   }
+   } );
 }
 
 void SERViewerInterface::SetInfo( const std::string& textUtf8 )
