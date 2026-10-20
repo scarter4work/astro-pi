@@ -16,6 +16,7 @@
 #include <string>
 
 #include "FitsText.h"
+#include "PlanetaryVersion.h"
 #include "SerTime.h"
 
 namespace ser = planetary::ser;
@@ -24,13 +25,17 @@ namespace fits = planetary::fits;
 namespace pcl
 {
 
-ser::FloatImage LoadFrameForDisplay( const ser::SerFile& file, int64_t index, bool debayer )
+DisplayFrame LoadFrameForDisplay( const ser::SerFile& file, int64_t index, bool debayer )
 {
    const ser::FileInfo& info = file.Info();
    const ser::Frame frame = file.ReadFrame( index );
+   DisplayFrame shown;
+   shown.rangeWarning = ser::FrameRangeWarning( frame, index, info.normDepth );
    if ( debayer && ser::IsBayer( info.colorId ) )
-      return ser::DebayerBilinear( frame, info.colorId, info.header.depth );
-   return ser::Normalize( frame, info.header.depth );
+      shown.image = ser::DebayerBilinear( frame, info.colorId, info.normDepth );
+   else
+      shown.image = ser::Normalize( frame, info.normDepth );
+   return shown;
 }
 
 namespace
@@ -143,8 +148,8 @@ bool SERViewerInstance::ExecuteGlobal()
 
    // Every reader failure (bad file, unsupported layout, index out of range,
    // short read) surfaces with the library's own reason. No window exists until
-   // the frame has decoded, so a reader failure leaves no half-made image.
-   ser::FloatImage pixels;
+   // the frame has been read, so a reader failure leaves no half-made image.
+   ser::Frame frame;
    ser::FileInfo info;
    std::optional<std::string> dateObs;
    bool dateFromFrame = false;
@@ -152,7 +157,7 @@ bool SERViewerInstance::ExecuteGlobal()
    {
       const ser::SerFile file = ser::SerFile::Open( path.ToUTF8().c_str() );
       info = file.Info();
-      pixels = LoadFrameForDisplay( file, index, p_debayer );
+      frame = file.ReadFrame( index );
       if ( std::optional<int64_t> ticks = file.FrameTimestamp( index ) )
          dateObs = ser::TicksToIsoUtc( *ticks );
       dateFromFrame = bool( dateObs );
@@ -164,8 +169,10 @@ bool SERViewerInstance::ExecuteGlobal()
       throw Error( "SERViewer: " + fileName + ": " + FromUtf8( e.what() ) );
    }
 
+   const bool debayered = ser::IsBayer( info.colorId ) && p_debayer;
    const bool cfaKept = ser::IsBayer( info.colorId ) && !p_debayer;
-   const int channels = pixels.channels;
+   const int channels = debayered ? 3 : frame.channels;
+   const std::string rangeWarning = ser::FrameRangeWarning( frame, index, info.normDepth );
 
    FITSKeywordArray keywords;
    if ( dateObs )
@@ -185,8 +192,10 @@ bool SERViewerInstance::ExecuteGlobal()
    AddHistory( keywords, "SERViewer: " + asciiName + " frame " + std::to_string( index ) );
    for ( const std::string& w : info.warnings )
       AddHistory( keywords, "SERViewer warning: " + fits::AsciiFromBytes( w ) );
+   if ( !rangeWarning.empty() )
+      AddHistory( keywords, "SERViewer warning: " + rangeWarning );
 
-   ImageWindow window( pixels.width, pixels.height, channels, 32, true/*float*/, channels == 3, true/*initialProcessing*/,
+   ImageWindow window( frame.width, frame.height, channels, 32, true/*float*/, channels == 3, true/*initialProcessing*/,
                        WindowIdFor( path, index ) );
    if ( window.IsNull() )
       throw Error( "SERViewer: " + fileName + ": PixInsight could not create an image window" );
@@ -199,13 +208,21 @@ bool SERViewerInstance::ExecuteGlobal()
       if ( !v.IsFloatSample() || v.BitsPerSample() != 32 || v.NumberOfChannels() != channels )
          throw Error( "SERViewer: internal error - the new window is not a 32-bit float image" );
       Image& image = static_cast<Image&>( *v );
-      const size_type n = size_type( pixels.width ) * size_type( pixels.height );
+      // Normalised (and debayered) straight into the image's planes: no
+      // intermediate float copy of the frame next to the image.
+      float* planes[3] = {};
       for ( int c = 0; c < channels; ++c )
+         planes[c] = image.PixelData( c );
+      try
       {
-         float* dst = image.PixelData( c );
-         const float* src = pixels.data.data() + c;
-         for ( size_type i = 0; i < n; ++i, src += channels )
-            dst[i] = *src;
+         if ( debayered )
+            ser::DebayerBilinearInto( frame, info.colorId, info.normDepth, planes, 1 );
+         else
+            ser::NormalizeInto( frame, info.normDepth, planes, 1 );
+      }
+      catch ( const ser::SerError& e )
+      {
+         throw Error( "SERViewer: " + fileName + ": " + FromUtf8( e.what() ) );
       }
       window.SetKeywords( keywords );
       viewId = view.Id();
@@ -221,16 +238,19 @@ bool SERViewerInstance::ExecuteGlobal()
 
    // Console text is parsed for tags, so file names and warnings go in encoded.
    Console console;
-   console.WriteLn( "<end><cbr>SERViewer: " + fileName.EncodedHTMLSpecialChars() + " frame " + Num( index ) +
-                    " of " + Num( info.frameCount ) + " -> " + String( viewId ) + " (" +
-                    Num( pixels.width ) + "x" + Num( pixels.height ) + ", " +
-                    String( ser::ColorIdName( info.colorId ) ) + (cfaKept ? " raw CFA" : "") + ", " +
-                    Num( info.header.depth ) + "-bit)" );
+   const String depth = Num( info.header.depth ) + "-bit" +
+      (info.normDepth != info.header.depth ? ", normalised as " + Num( info.normDepth ) + "-bit" : String());
+   console.WriteLn( "<end><cbr>SERViewer " PLANETARY_VERSION_STRING ": " + fileName.EncodedHTMLSpecialChars() +
+                    " frame " + Num( index ) + " of " + Num( info.frameCount ) + " -> " + String( viewId ) + " (" +
+                    Num( frame.width ) + "x" + Num( frame.height ) + ", " +
+                    String( ser::ColorIdName( info.colorId ) ) + (cfaKept ? " raw CFA" : "") + ", " + depth + ")" );
    if ( info.warnings.empty() )
       console.WriteLn( "SERViewer: no reader warnings" );
    else
       for ( const std::string& w : info.warnings )
          console.WarningLn( "SERViewer warning: " + FromUtf8( w ).EncodedHTMLSpecialChars() );
+   if ( !rangeWarning.empty() )
+      console.WarningLn( "SERViewer warning: " + FromUtf8( rangeWarning ).EncodedHTMLSpecialChars() );
 
    return true;
 }

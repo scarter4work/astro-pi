@@ -8,6 +8,7 @@
 #include <pcl/ProcessImplementation.h>
 
 #include <cstdint>
+#include <string>
 
 #include "Debayer.h"
 #include "SerFile.h"
@@ -15,11 +16,18 @@
 namespace pcl
 {
 
-// Frame `index` of `file` as normalised float samples, the way SERViewer shows
-// it: a Bayer file debayered to RGB when `debayer` is true, else its raw CFA as
-// one channel; every other colour layout as stored (BGR already reordered to
-// RGB by the reader). Throws planetary::ser::SerError with the real reason.
-planetary::ser::FloatImage LoadFrameForDisplay( const planetary::ser::SerFile& file, int64_t index, bool debayer );
+struct DisplayFrame
+{
+   planetary::ser::FloatImage image;
+   std::string rangeWarning; // planetary::ser::FrameRangeWarning of the frame; empty when it fits
+};
+
+// Frame `index` of `file` as float samples normalised by the file's normDepth,
+// the way SERViewer shows it: a Bayer file debayered to RGB when `debayer` is
+// true, else its raw CFA as one channel; every other colour layout as stored
+// (BGR already reordered to RGB by the reader). Throws
+// planetary::ser::SerError with the real reason.
+DisplayFrame LoadFrameForDisplay( const planetary::ser::SerFile& file, int64_t index, bool debayer );
 
 class SERViewerInstance : public ProcessImplementation
 {

@@ -218,8 +218,9 @@ void SERViewerInterface::ShowFrame( int index )
    String error;
    try
    {
-      GUI->Preview_Control.SetBitmap( MakePreviewBitmap( LoadFrameForDisplay( *m_file, index, instance.p_debayer ) ) );
-      SetInfo( m_fileInfo );
+      const DisplayFrame shown = LoadFrameForDisplay( *m_file, index, instance.p_debayer );
+      GUI->Preview_Control.SetBitmap( MakePreviewBitmap( shown.image ) );
+      SetInfo( planetary::preview::FrameInfoText( m_fileInfo, shown.rangeWarning ) );
       return;
    }
    catch ( const ser::SerError& e )

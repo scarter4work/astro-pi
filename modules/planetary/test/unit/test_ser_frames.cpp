@@ -91,14 +91,73 @@ TEST_CASE("byte order flag is kept when plausible or when both orders are not", 
     auto p = TempPath();
     WriteSer(p, Spec(0, 4, 2, 12, 1, 0), {Pack16(v, false)});
     CHECK(SerFile::Open(p).Info().warnings.empty());
+    CHECK(SerFile::Open(p).Info().normDepth == 12);
 
-    // Neither order fits in 12 bits: nothing to decide on, flag stands, no warning.
+    // Neither order fits in 12 bits: nothing to decide on, the flag stands, and the
+    // samples are normalised to the full 16-bit container instead of exceeding 1.0.
     const std::vector<uint16_t> bad = {0xFFFF, 0xF0F0, 0xABCD, 0xFFFF, 1, 2, 3, 4};
     auto q = TempPath();
     WriteSer(q, Spec(0, 4, 2, 12, 1, 1), {Pack16(bad, true)});
     auto g = SerFile::Open(q);
     CHECK(g.Info().byteOrder == ByteOrder::Big);
+    CHECK(g.Info().normDepth == 16);
+    REQUIRE(g.Info().warnings.size() == 1);
+    CHECK(g.Info().warnings[0] ==
+          "samples exceed the declared 12-bit depth (frame 0 max 65535); normalising to the full 16-bit range");
+    CHECK(Normalize(g.ReadFrame(0), g.Info().normDepth).data[0] == 1.0f);
+}
+
+TEST_CASE("1-byte container: samples above the declared depth normalise to the full 8 bits", "[ser][frames]") {
+    // Depth 6 declared, frame 0 holds values up to 200 (> 63).
+    auto p = TempPath();
+    WriteSer(p, Spec(0, 4, 1, 6, 2), {{0, 63, 200, 10}, {1, 2, 3, 4}});
+    auto f = SerFile::Open(p);
+    CHECK(f.Info().header.depth == 6);
+    CHECK(f.Info().normDepth == 8);
+    REQUIRE(f.Info().warnings.size() == 1);
+    CHECK(f.Info().warnings[0] ==
+          "samples exceed the declared 6-bit depth (frame 0 max 200); normalising to the full 8-bit range");
+    const FloatImage n = Normalize(f.ReadFrame(0), f.Info().normDepth);
+    CHECK(n.data[2] == 200.0f / 255.0f);
+    CHECK(n.data[1] == 63.0f / 255.0f);
+    for (float v : n.data) CHECK(v <= 1.0f);
+
+    // Within 6 bits: the declared depth stands, silently.
+    auto q = TempPath();
+    WriteSer(q, Spec(0, 4, 1, 6, 1), {{0, 63, 20, 10}});
+    auto g = SerFile::Open(q);
+    CHECK(g.Info().normDepth == 6);
     CHECK(g.Info().warnings.empty());
+    CHECK(Normalize(g.ReadFrame(0), g.Info().normDepth).data[1] == 1.0f);
+}
+
+TEST_CASE("normDepth is the declared depth when the container is full", "[ser][frames]") {
+    auto p = TempPath();
+    WriteSer(p, Spec(0, 2, 1, 8, 1), {{255, 0}});
+    CHECK(SerFile::Open(p).Info().normDepth == 8);
+    auto q = TempPath();
+    WriteSer(q, Spec(0, 2, 1, 16, 1), {Pack16({65535, 0}, false)});
+    CHECK(SerFile::Open(q).Info().normDepth == 16);
+    // A byte-order recovery leaves the declared depth in force (the swapped order fits).
+    const std::vector<uint16_t> v = {0, 1, 4095, 2048, 100, 3000, 7, 4094};
+    auto r = TempPath();
+    WriteSer(r, Spec(0, 4, 2, 12, 1, 1), {Pack16(v, false)});
+    CHECK(SerFile::Open(r).Info().normDepth == 12);
+}
+
+TEST_CASE("a later frame beyond the normalisation depth is reported per frame", "[ser][frames]") {
+    // Frame 0 fits 6 bits, frame 1 does not: normDepth stays 6.
+    auto p = TempPath();
+    WriteSer(p, Spec(0, 4, 1, 6, 2), {{0, 63, 20, 10}, {0, 100, 20, 10}});
+    auto f = SerFile::Open(p);
+    REQUIRE(f.Info().normDepth == 6);
+    CHECK(f.Info().warnings.empty());
+    CHECK(FrameRangeWarning(f.ReadFrame(0), 0, f.Info().normDepth).empty());
+    CHECK(FrameRangeWarning(f.ReadFrame(1), 1, f.Info().normDepth) ==
+          "frame 1 samples exceed the 6-bit range; values above 1.0");
+    CHECK(FrameRangeWarning(Frame{1, 1, 1, {65535}}, 7, 16).empty());
+    CHECK(FrameRangeWarning(Frame{1, 1, 1, {4096}}, 3, 12) ==
+          "frame 3 samples exceed the 12-bit range; values above 1.0");
 }
 
 TEST_CASE("no byte order override at depth 16", "[ser][frames]") {

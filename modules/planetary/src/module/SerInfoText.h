@@ -38,7 +38,10 @@ inline std::string InfoText( const std::string& fileNameUtf8, const ser::FileInf
    t += "Size: " + std::to_string( info.header.width ) + " \xc3\x97 " + std::to_string( info.header.height ) + "\n";
    t += "Frames: " + std::to_string( info.frameCount ) + "\n";
    t += std::string( "Colour: " ) + ser::ColorIdName( info.colorId ) + "\n";
-   t += "Bit depth: " + std::to_string( info.header.depth ) + "\n";
+   t += "Bit depth: " + std::to_string( info.header.depth );
+   if ( info.normDepth != info.header.depth )
+      t += " (normalised to the full " + std::to_string( info.normDepth ) + "-bit range)";
+   t += "\n";
    t += "Byte order: ";
    if ( info.bytesPerSample == 1 )
       t += "n/a (8-bit samples)";
@@ -53,6 +56,15 @@ inline std::string InfoText( const std::string& fileNameUtf8, const ser::FileInf
       for ( size_t i = 0; i < info.warnings.size(); ++i )
          t += (i > 0 ? "\n" : "") + std::string( "Warning: " ) + info.warnings[i];
    return t;
+}
+
+// The info block for one shown frame: the file's InfoText, plus a line for
+// the frame's own range warning (ser::FrameRangeWarning) when it has one.
+inline std::string FrameInfoText( const std::string& fileInfo, const std::string& frameWarning )
+{
+   if ( frameWarning.empty() )
+      return fileInfo;
+   return fileInfo + "\nWarning: " + frameWarning;
 }
 
 // Text for pcl::TextBox::SetPlainText, which wraps it in <raw>...</raw>: the

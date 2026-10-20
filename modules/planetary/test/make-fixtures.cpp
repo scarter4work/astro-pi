@@ -315,6 +315,58 @@ int main(int argc, char** argv) {
         cases.push_back(c);
     }
 
+    // Declared depth 6, but frame 0 holds full 8-bit values: every frame is
+    // normalised by 255 (not 63) and the open reports it.
+    {
+        const int w = 16, h = 16, d = 6, n = 2;
+        SerSpec s;
+        s.colorId = 0; s.width = w; s.height = h; s.depth = d; s.frameCount = n;
+        std::vector<std::vector<uint8_t>> frames(n);
+        int max0 = 0;
+        for (int f = 0; f < n; ++f)
+            for (int y = 0; y < h; ++y)
+                for (int x = 0; x < w; ++x) {
+                    const int v = Gen(x, y, 0, f, 8);
+                    if (f == 0 && v > max0) max0 = v;
+                    frames[f].push_back(static_cast<uint8_t>(v));
+                }
+        const std::string path = (dir / "depth6-over.ser").string();
+        WriteSer(path, s, frames);
+
+        Case c;
+        c.name = "depth 6, frame 0 over 6 bits"; c.path = path; c.frame = 1; c.expectId = "depth6_over_f1";
+        c.width = w; c.height = h; c.channels = 1;
+        for (auto [x, y] : Points(w, h)) c.samples.push_back({x, y, 0, Norm(Gen(x, y, 0, 1, 8), 8)});
+        c.keywords = {{"HISTORY", "commentContains",
+                       "SERViewer warning: samples exceed the declared 6-bit depth (frame 0 max " +
+                           std::to_string(max0) + "); normalising to the full 8-bit range"}};
+        cases.push_back(c);
+    }
+
+    // Declared depth 6, frame 0 fits it, frame 1 does not (pixel 0,0 = 100):
+    // frame 1 opens with values above 1.0 and says so in HISTORY.
+    {
+        const int w = 16, h = 16, d = 6, n = 2;
+        SerSpec s;
+        s.colorId = 0; s.width = w; s.height = h; s.depth = d; s.frameCount = n;
+        std::vector<std::vector<uint8_t>> frames(n);
+        for (int f = 0; f < n; ++f)
+            for (int y = 0; y < h; ++y)
+                for (int x = 0; x < w; ++x) frames[f].push_back(static_cast<uint8_t>(Gen(x, y, 0, f, d)));
+        frames[1][0] = 100;
+        const std::string path = (dir / "depth6-later.ser").string();
+        WriteSer(path, s, frames);
+
+        Case c;
+        c.name = "depth 6, frame 1 over 6 bits"; c.path = path; c.frame = 1; c.expectId = "depth6_later_f1";
+        c.width = w; c.height = h; c.channels = 1;
+        for (auto [x, y] : Points(w, h))
+            c.samples.push_back({x, y, 0, x == 0 && y == 0 ? 100.0 / 63 : Norm(Gen(x, y, 0, 1, d), d)});
+        c.keywords = {{"HISTORY", "commentContains",
+                       "SERViewer warning: frame 1 samples exceed the 6-bit range; values above 1.0"}};
+        cases.push_back(c);
+    }
+
     // Non-ASCII file name (UTF-8 "Jüpiter"): '_' in the window id, '?' in HISTORY.
     {
         const int w = 16, h = 16, d = 8;

@@ -82,6 +82,7 @@ FileInfo BayerInfo() {
     i.header.width = 320;
     i.header.height = 240;
     i.header.depth = 12;
+    i.normDepth = 12;
     i.header.dateTimeUtc = 639243434615000000LL;  // 2026-09-07T02:04:21.500
     i.colorId = ColorId::BayerRGGB;
     i.bytesPerSample = 2;
@@ -109,6 +110,7 @@ TEST_CASE("info text: 8-bit samples, no times, and each warning on its own line"
     FileInfo i = BayerInfo();
     i.colorId = ColorId::Mono;
     i.header.depth = 8;
+    i.normDepth = 8;
     i.bytesPerSample = 1;
     i.header.dateTimeUtc = 0;
     i.warnings = {"header frame count is 0; using 2 complete frames found in the file", "second"};
@@ -120,6 +122,20 @@ TEST_CASE("info text: 8-bit samples, no times, and each warning on its own line"
     CHECK(t.find("Warning: header frame count is 0; using 2 complete frames found in the file\nWarning: second") !=
           std::string::npos);
     CHECK(t.find("Warnings: none") == std::string::npos);
+}
+
+TEST_CASE("info text: the normalisation depth is shown when it differs from the declared one", "[preview][info]") {
+    FileInfo i = BayerInfo();
+    i.normDepth = 16;
+    CHECK(InfoText("x.ser", i, std::nullopt).find("Bit depth: 12 (normalised to the full 16-bit range)\n") !=
+          std::string::npos);
+    CHECK(InfoText("x.ser", BayerInfo(), std::nullopt).find("Bit depth: 12\n") != std::string::npos);
+}
+
+TEST_CASE("info text: a frame's own range warning follows the file's info", "[preview][info]") {
+    CHECK(FrameInfoText("File: x.ser\nWarnings: none", "") == "File: x.ser\nWarnings: none");
+    CHECK(FrameInfoText("File: x.ser\nWarnings: none", "frame 4 samples exceed the 6-bit range; values above 1.0") ==
+          "File: x.ser\nWarnings: none\nWarning: frame 4 samples exceed the 6-bit range; values above 1.0");
 }
 
 TEST_CASE("info text: little-endian 16-bit data", "[preview][info]") {

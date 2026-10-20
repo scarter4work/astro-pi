@@ -163,11 +163,15 @@ SerFile SerFile::Open(const std::string& path) {
         // Anything after the declared frames is either the 8-byte-per-frame timestamp
         // trailer or unknown data. It is a trailer only when it is exactly 8N bytes, or
         // is at least 8N but too short to hold another whole frame (trailing padding);
-        // otherwise it may be frame pixels and must never be read as ticks.
+        // otherwise it may be frame pixels and must never be read as ticks. Fewer than
+        // 8N bytes is a trailer cut short: no timestamps either way.
         const int64_t leftover = f.fileSize_ - kHeaderBytes - info.frameCount * info.frameBytes;
         const int64_t trailer = 8 * info.frameCount;
         if (leftover == trailer || (leftover > trailer && leftover < info.frameBytes)) {
             info.hasTimestamps = true;
+        } else if (leftover > 0 && leftover < trailer) {
+            info.warnings.push_back("timestamp trailer is incomplete (" + Num(leftover) + " of " +
+                                    Num(trailer) + " bytes); no timestamps");
         } else if (leftover > 0) {
             info.warnings.push_back(Num(info.frameCount) +
                                     " frames declared, file holds extra data after them (" +
@@ -175,23 +179,41 @@ SerFile SerFile::Open(const std::string& path) {
         }
     }
 
-    // Byte order: the header flag is trusted, except that sub-16-bit data cannot
-    // exceed 2^depth - 1. If frame 0 breaks that under the flag's order but not under
-    // the other order, the other order is used and reported.
-    if (info.bytesPerSample == 2 && h.depth < 16) {
+    // Samples below the container's full width cannot exceed 2^depth - 1; frame 0 is
+    // checked against that. Byte order (2-byte samples): the header flag is trusted,
+    // unless frame 0 breaks the limit under the flag's order but not under the other
+    // order; then the other order is used and reported. If frame 0 still exceeds the
+    // limit, the declared depth is wrong and every frame is normalised by the full
+    // container (8 or 16 bits) instead, so the samples stay within [0,1].
+    info.normDepth = h.depth;
+    const int containerBits = 8 * info.bytesPerSample;
+    if (h.depth < containerBits) {
         std::vector<unsigned char> raw0(static_cast<size_t>(info.frameBytes));
         f.stream_.clear();
         f.stream_.seekg(static_cast<std::streamoff>(kHeaderBytes));
         f.stream_.read(reinterpret_cast<char*>(raw0.data()), static_cast<std::streamsize>(raw0.size()));
         if (!f.stream_) throw SerError("failed to read frame 0 from " + path);
-        const ByteOrder other = info.byteOrder == ByteOrder::Little ? ByteOrder::Big : ByteOrder::Little;
         const uint16_t limit = static_cast<uint16_t>((1u << h.depth) - 1);
-        if (MaxSample16(raw0, info.byteOrder) > limit && MaxSample16(raw0, other) <= limit) {
-            const char* flagName = info.byteOrder == ByteOrder::Little ? "little-endian" : "big-endian";
-            const char* otherName = other == ByteOrder::Little ? "little-endian" : "big-endian";
-            info.warnings.push_back(std::string("byte order: header flag says ") + flagName +
-                                    ", data is " + otherName + "; using " + otherName);
-            info.byteOrder = other;
+        uint16_t max0 = 0;
+        if (info.bytesPerSample == 2) {
+            const ByteOrder other = info.byteOrder == ByteOrder::Little ? ByteOrder::Big : ByteOrder::Little;
+            max0 = MaxSample16(raw0, info.byteOrder);
+            if (max0 > limit && MaxSample16(raw0, other) <= limit) {
+                const char* flagName = info.byteOrder == ByteOrder::Little ? "little-endian" : "big-endian";
+                const char* otherName = other == ByteOrder::Little ? "little-endian" : "big-endian";
+                info.warnings.push_back(std::string("byte order: header flag says ") + flagName +
+                                        ", data is " + otherName + "; using " + otherName);
+                info.byteOrder = other;
+                max0 = MaxSample16(raw0, other);
+            }
+        } else {
+            for (unsigned char b : raw0) max0 = std::max<uint16_t>(max0, b);
+        }
+        if (max0 > limit) {
+            info.normDepth = containerBits;
+            info.warnings.push_back("samples exceed the declared " + Num(h.depth) + "-bit depth (frame 0 max " +
+                                    Num(max0) + "); normalising to the full " + Num(containerBits) +
+                                    "-bit range");
         }
     }
     return f;

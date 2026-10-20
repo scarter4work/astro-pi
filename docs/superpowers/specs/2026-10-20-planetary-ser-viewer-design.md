@@ -69,6 +69,11 @@ never loads the whole file.
   (Siril does not support them either).
 - **Samples:** depth ≤ 8 → 1 byte; 9–16 → 2 bytes. RGB/BGR are interleaved per pixel.
   Values are LSB-aligned per spec; normalise by `2^depth − 1`. Rows are top-down.
+  If frame 0 (after the byte-order decision) holds a value above `2^depth − 1`, the declared
+  depth is wrong: every frame is normalised by the container's full range (`2^8 − 1` or
+  `2^16 − 1`) and a warning names the declared depth and frame 0's maximum. A later frame
+  that still exceeds the normalisation range opens with values above 1.0 and a per-frame
+  warning (console, HISTORY, info block). (Final-review ruling, 2026-10-20.)
 - **Byte order (16-bit data):** follow Siril and FFmpeg — `LittleEndian == 0` means
   little-endian, non-zero means big-endian (the field is effectively an inverted flag in
   real files). Builder's call: an additional plausibility check is allowed (e.g. if
@@ -80,7 +85,8 @@ never loads the whole file.
   complete frames is an error.
 - **Timestamps:** trailer present iff `fileSize >= 178 + N·frameBytes + 8·N`. Values are
   int64 100-ns ticks since 0001-01-01 UTC; mask off the top two bits. Header `DateTime`/
-  `DateTime_UTC` use the same tick format; ≤ 0 means invalid.
+  `DateTime_UTC` use the same tick format; ≤ 0 means invalid. A partial trailer
+  (`0 < leftover < 8·N`) means no timestamps, reported as an incomplete trailer.
 
 ## Debayer (preview and `debayer=true`)
 

@@ -239,6 +239,15 @@ TEST_CASE("data after the declared frames: trailer only when it cannot be pixels
     CHECK(h.Info().warnings.empty());
     CHECK(h.FrameTimestamp(9) == 5);
 
+    // A partial trailer (fewer than 8N bytes) is named as such: no timestamps.
+    auto u = TempPath();
+    WriteSer(u, Spec(0, 8, 8, 8, 3), Frames(3, 64), {1, 2});  // 16 of 24 bytes
+    auto m = SerFile::Open(u);
+    CHECK_FALSE(m.Info().hasTimestamps);
+    REQUIRE(m.Info().warnings.size() == 1);
+    CHECK(m.Info().warnings[0] == "timestamp trailer is incomplete (16 of 24 bytes); no timestamps");
+    CHECK(m.FrameTimestamp(0) == std::nullopt);
+
     // Trailer followed by a few stray bytes (less than a frame): still a trailer.
     auto t = TempPath();
     WriteSer(t, Spec(0, 8, 8, 8, 3), Frames(3, 64), {1, 2, 3, 4});  // 32 B leftover

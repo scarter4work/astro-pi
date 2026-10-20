@@ -87,6 +87,34 @@ TEST_CASE("normalize maps the maximum to exactly 1.0 at every depth", "[debayer]
     }
 }
 
+TEST_CASE("planar output (straight into image planes) equals the interleaved result", "[debayer]") {
+    const int w = 7, h = 5;
+    Frame cfa{w, h, 1, {}};
+    for (int i = 0; i < w * h; ++i) cfa.samples.push_back(static_cast<uint16_t>((i * 37 + 11) % 4096));
+    for (ColorId p : {ColorId::BayerRGGB, ColorId::BayerGRBG, ColorId::BayerGBRG, ColorId::BayerBGGR}) {
+        const FloatImage ref = DebayerBilinear(cfa, p, 12);
+        std::vector<float> r(w * h), g(w * h), b(w * h);
+        float* const planes[3] = {r.data(), g.data(), b.data()};
+        DebayerBilinearInto(cfa, p, 12, planes, 1);
+        for (int i = 0; i < w * h; ++i) {
+            REQUIRE(r[i] == ref.data[3 * i]);
+            REQUIRE(g[i] == ref.data[3 * i + 1]);
+            REQUIRE(b[i] == ref.data[3 * i + 2]);
+        }
+    }
+    Frame rgb{w, h, 3, {}};
+    for (int i = 0; i < w * h * 3; ++i) rgb.samples.push_back(static_cast<uint16_t>((i * 53 + 5) % 256));
+    const FloatImage ref = Normalize(rgb, 8);
+    std::vector<float> r(w * h), g(w * h), b(w * h);
+    float* const planes[3] = {r.data(), g.data(), b.data()};
+    NormalizeInto(rgb, 8, planes, 1);
+    for (int i = 0; i < w * h; ++i) {
+        REQUIRE(r[i] == ref.data[3 * i]);
+        REQUIRE(g[i] == ref.data[3 * i + 1]);
+        REQUIRE(b[i] == ref.data[3 * i + 2]);
+    }
+}
+
 TEST_CASE("normalize and debayer reject a wrong sample count", "[debayer]") {
     CHECK_THROWS_AS(Normalize(Frame{2, 2, 1, std::vector<uint16_t>(3)}, 8), SerError);
     CHECK_THROWS_AS(DebayerBilinear(Frame{4, 4, 1, std::vector<uint16_t>(15)}, ColorId::BayerRGGB, 8), SerError);

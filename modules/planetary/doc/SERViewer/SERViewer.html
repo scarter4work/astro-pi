@@ -18,7 +18,7 @@ th { background: #f3f3f3; }
 <body>
 
 <h1>SERViewer</h1>
-<p class="small">Module Planetary, version 0.1.0.0 (2026-10-20). Process &gt; Planetary &gt; SERViewer.
+<p class="small">Module Planetary. Process &gt; Planetary &gt; SERViewer.
 This document is installed with the module (doc/tools/SERViewer/).</p>
 
 <p>SERViewer opens SER video files, the format planetary (lucky-imaging) capture programs such as FireCapture and
@@ -36,10 +36,12 @@ PixInsight image window, so every PixInsight tool can be used on it.</p>
   opens holds the unstretched samples.</li>
   <li><b>Frame</b>: the slider and the number box select the frame (0 to the frame count minus one). They are
   disabled until a file is loaded.</li>
-  <li>The <b>info block</b> lists the file name, width &times; height, frame count, colour layout, bit depth,
-  the byte order used for 16-bit samples, the UTC time of the first frame (from the timestamp trailer, or
-  <i>none</i>), the header's UTC start time, and any warnings from the reader. If a file cannot be read, the
-  preview is cleared and the reason is shown here (and in a message box when you chose the file).</li>
+  <li>The <b>info block</b> lists the file name, width &times; height, frame count, colour layout, bit depth
+  (followed by the depth the samples are normalised to, when that differs), the byte order used for 16-bit
+  samples, the UTC time of the first frame (from the timestamp trailer, or <i>none</i>), the header's UTC start
+  time, and any warnings from the reader, plus a warning for the frame shown when its samples exceed the
+  normalisation range. If a file cannot be read, the preview is cleared and the reason is shown here (and in a
+  message box when you chose the file).</li>
   <li><b>Apply Global</b> (the round button) opens the selected frame as an image window.</li>
 </ul>
 <p>Dragging the interface's instance triangle onto the workspace saves a process icon with the file, frame and
@@ -55,7 +57,12 @@ debayer setting; opening that icon restores them. The file stays open only while
 
 <h2>The image it opens</h2>
 <ul>
-<li>32-bit floating point. Samples are divided by 2<sup>depth</sup>&nbsp;&minus;&nbsp;1, so the camera's full range maps to [0,1].</li>
+<li>32-bit floating point. Samples are divided by 2<sup>depth</sup>&nbsp;&minus;&nbsp;1, so the camera's full range maps to [0,1].
+A file whose first frame holds values above its declared bit depth (the header understates it) is normalised by
+the full range of its sample size instead, 2<sup>8</sup>&nbsp;&minus;&nbsp;1 or 2<sup>16</sup>&nbsp;&minus;&nbsp;1, so
+the values stay within [0,1]; a warning says so. If a later frame of a file normalised by its declared depth still
+exceeds it, that frame opens with values above 1.0 and a warning (Process Console, <code>HISTORY</code>, info
+block) names the frame.</li>
 <li>Identifier: the file name with every character other than letters, digits and underscores replaced by an underscore
 (an underscore is put in front if it starts with a digit), followed by <code>_f</code> and the frame number, for example
 <code>Saturn_f0</code>. PixInsight adds a suffix if that identifier is already in use.</li>
@@ -67,7 +74,7 @@ debayer setting; opening that icon restores them. The file stays open only while
   from the file header, left out when empty.</li>
   <li><code>BAYERPAT</code> (RGGB, GRBG, GBRG or BGGR): when a Bayer file is opened with <code>debayer</code> false.</li>
   <li><code>HISTORY</code>: the source file name and frame number, plus one <code>SERViewer warning:</code> line for each
-  problem the reader recovered from. Text longer than one FITS card (72 characters) continues on the next
+  problem the reader recovered from and for a frame whose samples exceed the normalisation range. Text longer than one FITS card (72 characters) continues on the next
   <code>HISTORY</code> card.</li>
   </ul>
   Keyword text is plain ASCII: any other character from the file header or the file name is shown as <code>?</code>.
@@ -79,7 +86,8 @@ debayer setting; opening that icon restores them. The file stays open only while
 CMY Bayer files (colour IDs 16&ndash;19) are refused with an error saying so. Files of any size are read one frame at a
 time; the whole video is never loaded into memory.</p>
 <p>Damaged files are never silently patched up. When the reader recovers (a frame count of 0 or larger than the file
-holds, as left by a capture that crashed; a byte-order flag that contradicts the data), it opens the frames it can
+holds, as left by a capture that crashed; a byte-order flag that contradicts the data; samples above the declared
+bit depth), it opens the frames it can
 prove are complete, and says what it did in the interface's info block, the Process Console and the image's
 <code>HISTORY</code> keywords. A
 file it cannot read stops the process with an error message giving the reason.</p>

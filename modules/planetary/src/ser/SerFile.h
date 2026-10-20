@@ -43,6 +43,9 @@ struct FileInfo {
     int64_t frameCount = 0;
     bool hasTimestamps = false;
     ByteOrder byteOrder = ByteOrder::Little;
+    // Depth every frame is normalised by: the declared depth, or the full 8/16 bits
+    // of the sample container when frame 0 exceeds 2^depth - 1 (reported as a warning).
+    int normDepth = 0;
     std::vector<std::string> warnings;
 };
 

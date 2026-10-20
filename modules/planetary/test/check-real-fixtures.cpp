@@ -24,8 +24,8 @@ namespace {
 FloatImage Load(const SerFile& f, int64_t index, bool debayer) {
     const FileInfo& info = f.Info();
     const Frame fr = f.ReadFrame(index);
-    if (debayer && IsBayer(info.colorId)) return DebayerBilinear(fr, info.colorId, info.header.depth);
-    return Normalize(fr, info.header.depth);
+    if (debayer && IsBayer(info.colorId)) return DebayerBilinear(fr, info.colorId, info.normDepth);
+    return Normalize(fr, info.normDepth);
 }
 }  // namespace
 
