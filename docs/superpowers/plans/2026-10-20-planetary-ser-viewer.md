@@ -16,7 +16,7 @@
 - `Description()` ends with exactly: `This product is based on software from the PixInsight project, developed by Pleiades Astrophoto and its contributors (https://pixinsight.com/).` Author/Company `Scott Carter`, Copyright `Copyright (c) 2026 Scott Carter`.
 - No network, no external programs, no OpenMP, no new shared-library deps at run time. ffmpeg/python are test-only.
 - `src/ser/` must not include any PCL header.
-- Every PixInsight launch goes through `tools/pi-headless.sh` (`pi_headless` / `pi_require_private_display`), on an isolated slot in [50,256] — default **94** for this module, never slot 1. `python3 tools/check-pi-launches.py` must pass.
+- Every PixInsight launch goes through `tools/pi-headless.sh` (`pi_headless` / `pi_require_private_display`), on an isolated slot in [50,256] — default **96** (headless probe) and **97** (GUI smoke) for this module, never slot 1. `python3 tools/check-pi-launches.py` must pass.
 - Never `make install`, never GUI-launch the dev build with `-m=` on the real desktop, never release (Scott OKs the first Planetary release; ids become permanent then).
 - Signing pass file `/tmp/.pi_codesign_pass` is provided by Scott; tasks that need it stop with a clear message if it is absent (no unsigned workaround).
 - No `pcl::View`/`ImageWindow` copies kept beyond the call that produced them; no moved-from `pcl::String` in std algorithms.
@@ -108,7 +108,7 @@
 **Files:**
 - Create: `modules/planetary/src/module/CMakeLists.txt` (mirror pi-copilot's: `OUTPUT_NAME "Planetary-pxm"`, version-script map, `-Wl,-z,defs`, PCL static libs, links `planetary_ser`), `pixinsight-module.map` (copy), `PlanetaryVersion.h`, `PlanetaryModule.{h,cpp}`, `SERViewerProcess.{h,cpp}`, `SERViewerInstance.{h,cpp}`, `SERViewerParameters.{h,cpp}`, `SERViewerInterface.{h,cpp}` (minimal stub this task: registers, empty form; Task 4 fills it)
 - Create: `modules/planetary/doc/SERViewer/SERViewer.html`, `modules/planetary/doc/SERViewer/THIRD_PARTY_NOTICES.txt` (copy pi-copilot's notices file structure: PCL ack sentence + full PCL License 2.0 text; plus Catch2 is test-only so not listed)
-- Create: `modules/planetary/test/harness.sh` (adapted from `modules/pi-copilot/test/harness-lib.sh` + `run-load.sh`: slot `PLANETARY_TEST_SLOT` default 94, slot settings wiped before/after, seeded Modules list excluding any installed Planetary, private TMPDIR, sign step reading `/tmp/.pi_codesign_pass`), `modules/planetary/test/run-probe.sh`, `modules/planetary/test/probe-execute.js`, `modules/planetary/test/make-fixtures.cpp` (small CLI built only in tests that writes synthetic SER fixtures with `SerWriter.h` to a given dir)
+- Create: `modules/planetary/test/harness.sh` (adapted from `modules/pi-copilot/test/harness-lib.sh` + `run-load.sh`: slot `PLANETARY_TEST_SLOT` default 96, slot settings wiped before/after, seeded Modules list excluding any installed Planetary, private TMPDIR, sign step reading `/tmp/.pi_codesign_pass`), `modules/planetary/test/run-probe.sh`, `modules/planetary/test/probe-execute.js`, `modules/planetary/test/make-fixtures.cpp` (small CLI built only in tests that writes synthetic SER fixtures with `SerWriter.h` to a given dir)
 - Modify: `modules/planetary/CMakeLists.txt` (add `src/module` under `PLANETARY_BUILD_MODULE`)
 
 **Interfaces:**
@@ -130,7 +130,7 @@
 **Files:**
 - Modify: `modules/planetary/src/module/SERViewerInterface.{h,cpp}`
 - Create: `modules/planetary/src/module/FramePreview.{h,cpp}` (a `pcl::Control` subclass that owns a `pcl::Bitmap` and paints it scaled to fit, letterboxed on black)
-- Create: `modules/planetary/test/gui-smoke.sh`, `modules/planetary/test/gui_drive.py`, `modules/planetary/test/gui-smoke-setup.js` (adapted from `modules/pi-copilot/test/gui-smoke.sh` / `gui_drive.py`: private Xvfb, real PI GUI on slot 94, XTest clicks, `import -window root` screenshots)
+- Create: `modules/planetary/test/gui-smoke.sh`, `modules/planetary/test/gui_drive.py`, `modules/planetary/test/gui-smoke-setup.js` (adapted from `modules/pi-copilot/test/gui-smoke.sh` / `gui_drive.py`: private Xvfb, real PI GUI on slot 97, XTest clicks, `import -window root` screenshots)
 
 **Interfaces:**
 - Consumes: `SERViewerInstance`, `LoadFrameForDisplay`, `SerFile`.
