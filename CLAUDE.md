@@ -5,6 +5,11 @@ in nukex5 / EZ-Stretch-BSC). Global PixInsight conventions still live in ~/.clau
 
 ## What ships
 - `modules/nukex/` → `NukeX-pxm` module (ID string `"NukeX"` is STABLE — never rename; existing installs update by ID).
+- `modules/pi-copilot/` → `PICopilot-pxm` module (process/doc id `PICopilot`).
+- `modules/planetary/` → `Planetary-pxm` module, process `SERViewer` (docs deploy as `doc/tools/SERViewer/`).
+  0.1.0.0, NOT yet released: module id `Planetary` and process id `SERViewer` become permanent with the
+  first release, which needs Scott's go-ahead. Its release wiring lives on `feat/planetary` until then.
+- `gaia-depth-grade/` → Gaia Depth Grade scripts + the linux-x64 sidecar package.
 - `scripts/ez-stretch/` → EZStretch / EZDonutRepair / EZHazeKill (`.js` + `.xsgn`).
 Everything in `tools/` and `archive/` is NOT shipped.
 
@@ -22,6 +27,8 @@ Both were also stripped from this repo's history (git filter-repo + force-push, 
 ## Release rules (MUST follow)
 1. NEVER `make install` — users install from the GitHub repository URL.
 2. Bump the relevant version before building (NukeX: `modules/nukex/src/module/NukeXVersion.h`;
+   PI Copilot: `modules/pi-copilot/src/module/PICopilotVersion.h`;
+   Planetary: `modules/planetary/src/module/PlanetaryVersion.h`;
    EZ scripts: the `#define VERSION` in each `.js`).
 3. Run `./release.sh` — it builds, native-signs, packages, writes ONE `repository/updates.xri`,
    signs the manifest LAST, and integrity-checks every declared sha1 vs the on-disk artifact.
@@ -56,6 +63,18 @@ Harnesses with their own Xvfb call `pi_headless_env` and `pi_require_private_dis
 cd modules/nukex && cmake -B build -DPCLDIR=$HOME/PCL -DNUKEX_BUILD_MODULE=ON && cmake --build build -j$(nproc)
 cd build && ctest --output-on-failure
 ```
+
+## Build / test Planetary
+```bash
+cd modules/planetary && cmake -B build -DPCLDIR=$HOME/PCL -DPLANETARY_BUILD_MODULE=ON && cmake --build build -j$(nproc)
+(cd build && ctest --output-on-failure)
+bash test/run-probe.sh                  # headless SERViewer.executeGlobal() over synthetic fixtures, slot 96
+bash test/gui-smoke.sh <out-dir>        # real GUI on a private Xvfb, XTest-driven, slot 97; PNGs in <out-dir>
+bash test/run-real-data.sh              # 2026-09-07 Saturn capture from the NAS -> SER fixtures -> probe + GUI smoke (96/97)
+```
+The three scripts sign the module and need `/tmp/.pi_codesign_pass`; without it they print BLOCKED and exit 2
+before touching a settings slot. They test the host build by default; `PLANETARY_SO=build-portable/src/module/Planetary-pxm.so
+PLANETARY_MAKE_FIXTURES=build-portable/test/make-fixtures` runs them against the container build (`tools/build-env/build-modules.sh`).
 
 ## Distribution URL
 `https://raw.githubusercontent.com/scarter4work/astro-pi/main/repository/`

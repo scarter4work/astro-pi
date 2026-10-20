@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
-# Build the shipped PixInsight modules (NukeX, PICopilot) inside the portable
-# Rocky 9 image (see Containerfile for why), run NukeX's unit tests there, and
-# leave the .so files at:
+# Build the shipped PixInsight modules (NukeX, PICopilot, Planetary) inside the
+# portable Rocky 9 image (see Containerfile for why), run the NukeX and
+# Planetary unit tests there, and leave the .so files at:
 #   modules/nukex/build-portable/.../NukeX-pxm.so
 #   modules/pi-copilot/build-portable/.../PICopilot-pxm.so
+#   modules/planetary/build-portable/.../Planetary-pxm.so
 # PCL comes from the image (built there from the pinned commit), never from
 # the host ~/PCL, whose archives carry the dev box's glibc.
 # Signing stays on the host (it needs PixInsight); release.sh does that.
@@ -34,10 +35,14 @@ podman run --rm --security-opt label=disable --userns=keep-id \
    cmake -S /src/modules/pi-copilot -B /src/modules/pi-copilot/build-portable "${COMMON[@]}" \
          -DPICOPILOT_BUILD_MODULE=ON >/dev/null
    cmake --build /src/modules/pi-copilot/build-portable -j"$(nproc)" >/dev/null
+   cmake -S /src/modules/planetary -B /src/modules/planetary/build-portable "${COMMON[@]}" \
+         -DPLANETARY_BUILD_MODULE=ON >/dev/null
+   cmake --build /src/modules/planetary/build-portable -j"$(nproc)" >/dev/null
    if [ "$RUN_TESTS" = 1 ]; then
       # test_gpu_context needs a GPU; the container has none. It runs on the
       # host below, against this same container-built binary.
       (cd /src/modules/nukex/build-portable && ctest --output-on-failure --no-tests=error -j"$(nproc)" -E "^test_gpu_context$")
+      (cd /src/modules/planetary/build-portable && ctest --output-on-failure --no-tests=error -j"$(nproc)")
    fi'
 
 if [ "$RUN_TESTS" = 1 ]; then
@@ -48,7 +53,7 @@ if [ "$RUN_TESTS" = 1 ]; then
       || die "test_gpu_context failed on the host GPU"
 fi
 
-for so in "$ROOT/modules/nukex/build-portable" "$ROOT/modules/pi-copilot/build-portable"; do
+for so in "$ROOT/modules/nukex/build-portable" "$ROOT/modules/pi-copilot/build-portable" "$ROOT/modules/planetary/build-portable"; do
    f="$(find "$so" -name '*-pxm.so' -print -quit)"
    [ -n "$f" ] || die "no *-pxm.so under $so"
    echo "built: $f"

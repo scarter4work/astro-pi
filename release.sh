@@ -13,23 +13,27 @@ DATE="$(date +%Y%m%d)"
 die(){ echo "ERROR: $*" >&2; exit 1; }
 
 # ── Module packages: bin/ + the module's documentation ──────────────────────
-# A module tarball deploys bin/<Name>-pxm.{so,xsgn} and doc/tools/<Name>/.
+# A module tarball deploys bin/<Name>-pxm.{so,xsgn} and doc/tools/<DocId>/.
 # doc/tools is the deployment directory the PixInsight Update Repository
 # Reference (section 4.2, Example 2) assigns to documentation of PCL modules,
 # and the core's Browse Documentation opens doc/tools/<ProcessId>/<ProcessId>.html,
-# so the folder and the page carry the process Id ("NukeX", "PICopilot").
+# so the folder and the page carry the process Id: <DocId> is the module name
+# where the two agree ("NukeX", "PICopilot"), and is passed explicitly where
+# they differ (module Planetary, process "SERViewer").
 # doc/docs is for documents "not related to a particular module or script".
-# The source is modules/<m>/doc/<Name>/: <Name>.html (CPD rule 6.1 -- what the
+# The source is modules/<m>/doc/<DocId>/: <DocId>.html (CPD rule 6.1 -- what the
 # module does, its network connections, external programs and file locations)
 # and THIRD_PARTY_NOTICES.txt (CPD rule 7.3 -- PCL License 2.0 conditions 2 and
 # 4, and every linked component's notice).
 NUKEX_DOC="$ROOT/modules/nukex/doc/NukeX"
 PICOPILOT_DOC="$ROOT/modules/pi-copilot/doc/PICopilot"
+PLANETARY_DOC="$ROOT/modules/planetary/doc/SERViewer"
+PLANETARY_DOC_ID=SERViewer
 PCL_ACK='This product is based on software from the PixInsight project, developed by Pleiades Astrophoto and its contributors (https://pixinsight.com/).'
 
 modver(){ sed -nE "s/^#define $2_MODULE_VERSION_(MAJOR|MINOR|REVISION|BUILD) +([0-9]+).*/\\2/p" "$1" | paste -sd. -; }
 
-module_doc_check(){ # <doc source dir> <Name>
+module_doc_check(){ # <doc source dir> <DocId>
   local d="$1" n="$2"
   [ -f "$d/$n.html" ] || die "$d/$n.html missing: every module package ships its user documentation (CPD rule 6.1)"
   [ -f "$d/THIRD_PARTY_NOTICES.txt" ] || die "$d/THIRD_PARTY_NOTICES.txt missing (CPD rule 7.3)"
@@ -40,15 +44,15 @@ module_doc_check(){ # <doc source dir> <Name>
     || die "$d/THIRD_PARTY_NOTICES.txt lacks the full PCL licence text (PCL License 2.0 condition 2)"
 }
 
-build_module_tgz(){ # <out.tar.gz> <Name> <module .so> <module .xsgn> <doc source dir>
-  local out="$1" n="$2" so="$3" xsgn="$4" doc="$5" st
+build_module_tgz(){ # <out.tar.gz> <Name> <module .so> <module .xsgn> <doc source dir> [<DocId>, default <Name>]
+  local out="$1" n="$2" so="$3" xsgn="$4" doc="$5" id="${6:-$2}" st
   [ "$(basename "$so")" = "$n-pxm.so" ] && [ "$(basename "$xsgn")" = "$n-pxm.xsgn" ] \
     || die "build_module_tgz $n: expected $n-pxm.so + $n-pxm.xsgn, got $so + $xsgn"
-  module_doc_check "$doc" "$n"
+  module_doc_check "$doc" "$id"
   st="$(mktemp -d)"
-  mkdir -p "$st/bin" "$st/doc/tools/$n"
+  mkdir -p "$st/bin" "$st/doc/tools/$id"
   cp "$so" "$xsgn" "$st/bin/"
-  cp -R "$doc/." "$st/doc/tools/$n/"
+  cp -R "$doc/." "$st/doc/tools/$id/"
   # World-readable whatever the build's umask: the updater installs as root
   # while PixInsight runs as the user (the published PICopilot 0.2.1.1
   # tarball carries a 0700 .so and a 0600 .xsgn).
@@ -56,35 +60,35 @@ build_module_tgz(){ # <out.tar.gz> <Name> <module .so> <module .xsgn> <doc sourc
   rm -rf "$st"
 }
 
-module_pkg_check(){ # <tgz> <Name> <doc source dir> : deploys exactly bin/<Name>-pxm.{so,xsgn} + doc/tools/<Name>/ (Repository Reference 4.2), docs == source
-  python3 - "$1" "$2" "$3" <<'PY'
+module_pkg_check(){ # <tgz> <Name> <doc source dir> [<DocId>, default <Name>] : deploys exactly bin/<Name>-pxm.{so,xsgn} + doc/tools/<DocId>/ (Repository Reference 4.2), docs == source
+  python3 - "$1" "$2" "$3" "${4:-$2}" <<'PY'
 import os,sys,tarfile
-tgz,n,doc=sys.argv[1:4]
+tgz,n,doc,i=sys.argv[1:5]
 want={}
 for r,_,fs in os.walk(doc):
     for f in fs:
         p=os.path.join(r,f)
-        want["doc/tools/%s/%s"%(n,os.path.relpath(p,doc))]=open(p,'rb').read()
+        want["doc/tools/%s/%s"%(i,os.path.relpath(p,doc))]=open(p,'rb').read()
 need={"bin/%s-pxm.so"%n,"bin/%s-pxm.xsgn"%n}|set(want)
-dirs={"bin","doc","doc/tools","doc/tools/"+n}
+dirs={"bin","doc","doc/tools","doc/tools/"+i}
 errs=[]
 with tarfile.open(tgz) as t:
     files={}
     for m in t.getmembers():
         name=m.name[2:] if m.name.startswith("./") else m.name
         if m.isdir():
-            if name.rstrip("/") not in dirs and not name.startswith("doc/tools/%s/"%n): errs.append("unexpected directory "+name)
+            if name.rstrip("/") not in dirs and not name.startswith("doc/tools/%s/"%i): errs.append("unexpected directory "+name)
         elif m.isfile():
             files[name]=m
             if m.mode & 0o044 != 0o044: errs.append("%s is not world-readable (mode %o)"%(name,m.mode))
         else: errs.append("not a regular file or directory: "+name)
-    for f in sorted(set(files)-need): errs.append("deploys %s, outside bin/%s-pxm.* and doc/tools/%s/"%(f,n,n))
+    for f in sorted(set(files)-need): errs.append("deploys %s, outside bin/%s-pxm.* and doc/tools/%s/"%(f,n,i))
     for f in sorted(need-set(files)): errs.append("missing "+f)
     for f in sorted(set(want)&set(files)):
         if t.extractfile(files[f]).read()!=want[f]: errs.append("%s differs from %s"%(f,os.path.join(doc,f.split("/",3)[3])))
 if errs:
     print("  "+os.path.basename(tgz)+":"); [print("    "+e) for e in errs]; sys.exit(1)
-print("  OK  %s: bin/%s-pxm.{so,xsgn} + %d doc file(s) in doc/tools/%s/, all world-readable, docs match source"%(os.path.basename(tgz),n,len(want),n))
+print("  OK  %s: bin/%s-pxm.{so,xsgn} + %d doc file(s) in doc/tools/%s/, all world-readable, docs match source"%(os.path.basename(tgz),n,len(want),i))
 PY
 }
 
@@ -103,11 +107,11 @@ module_tgz(){ # <Module> <ver>
 # A published (committed) module tarball is reused byte for byte, never rebuilt
 # (see package_module). That is only correct while it already deploys exactly
 # the current documentation; otherwise the version must be bumped.
-published_pkg_reusable(){ # <tarball> <Name> <doc source dir>; 0 = new package, or published and up to date
+published_pkg_reusable(){ # <tarball> <Name> <doc source dir> [<DocId>, default <Name>]; 0 = new package, or published and up to date
   git -C "$ROOT" ls-files --error-unmatch "repository/$1" >/dev/null 2>&1 || { echo "  new package $1"; return 0; }
   local tmp rc=0; tmp="$(mktemp -d)"
   git -C "$ROOT" show ":repository/$1" > "$tmp/$1"
-  module_pkg_check "$tmp/$1" "$2" "$3" || rc=1
+  module_pkg_check "$tmp/$1" "$2" "$3" "${4:-$2}" || rc=1
   rm -rf "$tmp"
   return $rc
 }
@@ -116,25 +120,31 @@ published_pkg_reusable(){ # <tarball> <Name> <doc source dir>; 0 = new package, 
 # uses, on any .so/.xsgn pair (e.g. a container build and a stand-in .xsgn),
 # into a scratch directory, then the reuse verdict step 0b would give for the
 # current module versions. No build, no signing, no manifest, repository/ untouched.
-#   ./release.sh --package-test <outdir> <NukeX-pxm.so> <NukeX-pxm.xsgn> <PICopilot-pxm.so> <PICopilot-pxm.xsgn>
+#   ./release.sh --package-test <outdir> <NukeX-pxm.so> <NukeX-pxm.xsgn> <PICopilot-pxm.so> <PICopilot-pxm.xsgn> <Planetary-pxm.so> <Planetary-pxm.xsgn>
 if [ "${1:-}" = "--package-test" ]; then
-  [ $# -eq 6 ] || die "usage: $0 --package-test <outdir> <NukeX-pxm.so> <NukeX-pxm.xsgn> <PICopilot-pxm.so> <PICopilot-pxm.xsgn>"
+  [ $# -eq 8 ] || die "usage: $0 --package-test <outdir> <NukeX-pxm.so> <NukeX-pxm.xsgn> <PICopilot-pxm.so> <PICopilot-pxm.xsgn> <Planetary-pxm.so> <Planetary-pxm.xsgn>"
   OUT="$2"; mkdir -p "$OUT"
   case "$(cd "$OUT" && pwd)/" in "$REPO/"*) die "--package-test must not write into repository/";; esac
   NV="$(modver "$ROOT/modules/nukex/src/module/NukeXVersion.h" NUKEX)"
   PV="$(modver "$ROOT/modules/pi-copilot/src/module/PICopilotVersion.h" PICOPILOT)"
+  LV="$(modver "$ROOT/modules/planetary/src/module/PlanetaryVersion.h" PLANETARY)"
   NT="$OUT/$DATE-linux-x64-NukeX-$NV.tar.gz"
   PT="$OUT/$DATE-linux-x64-PICopilot-$PV.tar.gz"
+  LT="$OUT/$DATE-linux-x64-Planetary-$LV.tar.gz"
   build_module_tgz "$NT" NukeX "$3" "$4" "$NUKEX_DOC"
   module_pkg_check "$NT" NukeX "$NUKEX_DOC" || die "NukeX package check failed"
   build_module_tgz "$PT" PICopilot "$5" "$6" "$PICOPILOT_DOC"
   module_pkg_check "$PT" PICopilot "$PICOPILOT_DOC" || die "PICopilot package check failed"
-  for t in "$NT" "$PT"; do echo "== $(basename "$t")"; tar -tzvf "$t"; done
+  build_module_tgz "$LT" Planetary "$7" "$8" "$PLANETARY_DOC" "$PLANETARY_DOC_ID"
+  module_pkg_check "$LT" Planetary "$PLANETARY_DOC" "$PLANETARY_DOC_ID" || die "Planetary package check failed"
+  for t in "$NT" "$PT" "$LT"; do echo "== $(basename "$t")"; tar -tzvf "$t"; done
   echo "== release step 0b verdict for the current versions"
   published_pkg_reusable "$(module_tgz NukeX "$NV")" NukeX "$NUKEX_DOC" \
     || echo "  release.sh would STOP: NukeX $NV is published without the current docs -- bump its version"
   published_pkg_reusable "$(module_tgz PICopilot "$PV")" PICopilot "$PICOPILOT_DOC" \
     || echo "  release.sh would STOP: PICopilot $PV is published without the current docs -- bump its version"
+  published_pkg_reusable "$(module_tgz Planetary "$LV")" Planetary "$PLANETARY_DOC" "$PLANETARY_DOC_ID" \
+    || echo "  release.sh would STOP: Planetary $LV is published without the current docs -- bump its version"
   exit 0
 fi
 
@@ -235,10 +245,13 @@ echo "== 0b/6 module package names and documentation (before the long build) =="
 # release can be neither stale nor mistaken for the installed one.
 NUKEX_VER="$(modver "$ROOT/modules/nukex/src/module/NukeXVersion.h" NUKEX)"
 PICOPILOT_VER="$(modver "$ROOT/modules/pi-copilot/src/module/PICopilotVersion.h" PICOPILOT)"
+PLANETARY_VER="$(modver "$ROOT/modules/planetary/src/module/PlanetaryVersion.h" PLANETARY)"
 [[ "$NUKEX_VER" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]] || die "could not read NukeX version (got '$NUKEX_VER')"
 [[ "$PICOPILOT_VER" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]] || die "could not read PICopilot version (got '$PICOPILOT_VER')"
+[[ "$PLANETARY_VER" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]] || die "could not read Planetary version (got '$PLANETARY_VER')"
 MOD_TGZ="$(module_tgz NukeX "$NUKEX_VER")"
 PICOPILOT_TGZ="$(module_tgz PICopilot "$PICOPILOT_VER")"
+PLANETARY_TGZ="$(module_tgz Planetary "$PLANETARY_VER")"
 # A versioned module tarball that is already committed is PUBLISHED: never
 # rebuild it (a re-sign changes its bytes under the same name, and the raw CDN
 # would serve the old bytes against the new manifest sha1). Bump the module
@@ -249,27 +262,30 @@ reuse_if_published(){ # <file in repository/>: restore the committed bytes of an
     echo "   $1 already published -- reusing the committed bytes"
   fi
 }
-package_module(){ # <tarball> <Name> <module .so> <module .xsgn> <doc source dir>
-  local tgz="$1"
+package_module(){ # <tarball> <Name> <module .so> <module .xsgn> <doc source dir> [<DocId>, default <Name>]
+  local tgz="$1" id="${6:-$2}"
   if git -C "$ROOT" ls-files --error-unmatch "repository/$tgz" >/dev/null 2>&1; then
     git -C "$ROOT" checkout -- "repository/$tgz"
     echo "   $tgz already published -- reusing the committed bytes"
   else
-    build_module_tgz "$REPO/$tgz" "$2" "$3" "$4" "$5"
+    build_module_tgz "$REPO/$tgz" "$2" "$3" "$4" "$5" "$id"
   fi
-  module_pkg_check "$REPO/$tgz" "$2" "$5" || die "$tgz does not deploy exactly bin/$2-pxm.{so,xsgn} + the current doc/tools/$2/"
+  module_pkg_check "$REPO/$tgz" "$2" "$5" "$id" || die "$tgz does not deploy exactly bin/$2-pxm.{so,xsgn} + the current doc/tools/$id/"
 }
 # Fail now, not after the build: the docs each package will ship must be
 # complete, and an already-published version can only be reused if its
 # tarball already carries exactly the current docs (else: bump the version).
 module_doc_check "$NUKEX_DOC" NukeX
 module_doc_check "$PICOPILOT_DOC" PICopilot
+module_doc_check "$PLANETARY_DOC" "$PLANETARY_DOC_ID"
 published_pkg_reusable "$MOD_TGZ" NukeX "$NUKEX_DOC" \
   || die "NukeX $NUKEX_VER is already published as $MOD_TGZ without the current doc/tools/NukeX/ -- bump NukeX's version so a new package is built"
 published_pkg_reusable "$PICOPILOT_TGZ" PICopilot "$PICOPILOT_DOC" \
   || die "PICopilot $PICOPILOT_VER is already published as $PICOPILOT_TGZ without the current doc/tools/PICopilot/ -- bump PICopilot's version so a new package is built"
+published_pkg_reusable "$PLANETARY_TGZ" Planetary "$PLANETARY_DOC" "$PLANETARY_DOC_ID" \
+  || die "Planetary $PLANETARY_VER is already published as $PLANETARY_TGZ without the current doc/tools/$PLANETARY_DOC_ID/ -- bump Planetary's version so a new package is built"
 
-echo "== 1/6 build NukeX + PICopilot modules (portable Rocky 9 container) =="
+echo "== 1/6 build NukeX + PICopilot + Planetary modules (portable Rocky 9 container) =="
 # NEVER ship a host build: the dev box's glibc/libstdc++ symbol versions and
 # Fedora-only sonames (libceres/libglog/libgflags) end up in the module, which
 # then loads on this machine and nowhere else. See tools/build-env/Containerfile.
@@ -278,9 +294,11 @@ SO="$(find "$ROOT/modules/nukex/build-portable" -name 'NukeX-pxm.so' -print -qui
 [ -n "$SO" ] || die "NukeX-pxm.so not found after build"
 PICOPILOT_SO="$(find "$ROOT/modules/pi-copilot/build-portable" -name 'PICopilot-pxm.so' -print -quit)"
 [ -n "$PICOPILOT_SO" ] || die "PICopilot-pxm.so not found after build"
+PLANETARY_SO="$(find "$ROOT/modules/planetary/build-portable" -name 'Planetary-pxm.so' -print -quit)"
+[ -n "$PLANETARY_SO" ] || die "Planetary-pxm.so not found after build"
 
-echo "== 1b/6 prove both modules load on stock older distros =="
-"$ROOT/tools/build-env/verify-portable.sh" "$SO" "$PICOPILOT_SO" || die "a module would not load on a stock distro"
+echo "== 1b/6 prove all three modules load on stock older distros =="
+"$ROOT/tools/build-env/verify-portable.sh" "$SO" "$PICOPILOT_SO" "$PLANETARY_SO" || die "a module would not load on a stock distro"
 
 echo "== 2/6 sign NukeX module =="
 XSGN="${SO%-pxm.so}-pxm.xsgn"
@@ -293,6 +311,12 @@ PICOPILOT_XSGN="${PICOPILOT_SO%-pxm.so}-pxm.xsgn"
 rm -f "$PICOPILOT_XSGN"   # same guard as NukeX above
 pi_headless "$PI" --sign-module-file="$PICOPILOT_SO" --xssk-file="$KEYS" --xssk-password="$PASS"
 [ -f "$PICOPILOT_XSGN" ] || die "module signature $PICOPILOT_XSGN not produced"
+
+echo "== 2a2/6 sign Planetary module =="
+PLANETARY_XSGN="${PLANETARY_SO%-pxm.so}-pxm.xsgn"
+rm -f "$PLANETARY_XSGN"   # same guard as NukeX above
+pi_headless "$PI" --sign-module-file="$PLANETARY_SO" --xssk-file="$KEYS" --xssk-password="$PASS"
+[ -f "$PLANETARY_XSGN" ] || die "module signature $PLANETARY_XSGN not produced"
 
 echo "== 2b/6 native-sign EZ scripts =="
 ( cd "$ROOT/scripts/ez-stretch" && bash tools/sign.sh scripts )
@@ -363,6 +387,43 @@ else:
 open(mf,'w').write(s)
 PY
 [ -f "$REPO/$PICOPILOT_TGZ" ] || die "tarball $PICOPILOT_TGZ not produced"
+
+echo "== 3a2/6 package Planetary module tarball (docs deploy as doc/tools/$PLANETARY_DOC_ID/) =="
+package_module "$PLANETARY_TGZ" Planetary "$PLANETARY_SO" "$PLANETARY_XSGN" "$PLANETARY_DOC" "$PLANETARY_DOC_ID"
+python3 - "$REPO/updates.xri" "$PLANETARY_TGZ" "$PLANETARY_VER" <<'PY'
+import re,sys
+mf,fn,ver=sys.argv[1:4]
+s=open(mf).read()
+pat=r'fileName="[^"]*-linux-x64-Planetary(-[0-9.]+)?\.tar\.gz"'
+if re.search(pat, s):
+    # Entry exists from a prior release -- rename the fileName, as for PICopilot.
+    s=re.sub(pat, 'fileName="'+fn+'"', s)
+else:
+    # First release: a new <package> in the linux/x64 platform block, with
+    # placeholder sha1/releaseDate that step 4 (write_pkg) fills in.
+    entry = ('\n      <package fileName="' + fn + '" '
+             'sha1="0000000000000000000000000000000000000000" '
+             'type="module" releaseDate="00000000">\n'
+             '         <title>Planetary</title>\n'
+             '         <description>\n'
+             '            <p>\n'
+             '               <b>Planetary ' + ver + '</b>\n'
+             '            </p>\n'
+             '            <p>Planetary (lucky-imaging) tools for PixInsight. SERViewer opens SER video '
+             'files: it shows any frame in a preview and opens it as a PixInsight image. '
+             'It reads only the SER file you choose, uses no network and runs no external programs.</p>\n'
+             '         </description>\n'
+             '      </package>\n')
+    new_s,n=re.subn(
+        r'(<platform os="linux" arch="x64"[^>]*>.*?)(\s*</platform>)',
+        lambda m: m.group(1)+entry+m.group(2),
+        s, count=1, flags=re.DOTALL)
+    if n!=1:
+        sys.exit("could not locate linux/x64 <platform> block to insert Planetary package entry")
+    s=new_s
+open(mf,'w').write(s)
+PY
+[ -f "$REPO/$PLANETARY_TGZ" ] || die "tarball $PLANETARY_TGZ not produced"
 
 echo "== 3b/6 package EZ script zips (install under src/scripts/scarter4work) =="
 declare -A EZVER=( [EZStretch]=1.0.11 [EZDonutRepair]=1.0.4 [EZHazeKill]=1.0.2 )
@@ -444,6 +505,7 @@ qe_check "$REPO" || die "published QE set in repository/ does not verify"
 echo "== 4/6 write fileName/sha1/releaseDate into ONE manifest =="
 write_pkg "$REPO/updates.xri" "$MOD_TGZ"                  "$(sha1 "$REPO/$MOD_TGZ")"
 write_pkg "$REPO/updates.xri" "$PICOPILOT_TGZ"            "$(sha1 "$REPO/$PICOPILOT_TGZ")"
+write_pkg "$REPO/updates.xri" "$PLANETARY_TGZ"            "$(sha1 "$REPO/$PLANETARY_TGZ")"
 for name in EZStretch EZDonutRepair EZHazeKill; do
   zipname="${name}_v${EZVER[$name]}.zip"
   write_pkg "$REPO/updates.xri" "$zipname" "$(sha1 "$REPO/$zipname")"
