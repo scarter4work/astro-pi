@@ -7,6 +7,7 @@
 #   . "$HERE/harness.sh"
 #   planetary_require_signing_pass || exit 2   # BEFORE anything touches a slot
 #   planetary_slot_setup                       # PLANETARY_SLOT/_SETTINGS, wiped now and on exit
+#   planetary_on_exit my_cleanup               # never `trap ... EXIT`: it would drop the helpers' cleanup
 #   planetary_private_tmp                      # PLANETARY_RUN_DIR (0700), private TMPDIR
 #   planetary_sign "$SO"                       # dev build signed with the developer key
 #   planetary_seed_slot_modules                # slot settings WITHOUT any installed Planetary
@@ -42,6 +43,38 @@ planetary_require_signing_pass()
    fi
 }
 
+# EXIT cleanup registry. Helpers and callers register a function with
+# planetary_on_exit instead of `trap ... EXIT`, which would replace every
+# earlier handler. Each function runs once, newest first (a caller's own
+# cleanup, e.g. killing PixInsight and its Xvfb, runs before the slot and run
+# dir are wiped). An EXIT trap the caller set before the first registration
+# is kept and runs last.
+PLANETARY_EXIT_FNS=()
+PLANETARY_EXIT_PREV=""
+planetary_on_exit()
+{
+   local f
+   for f in "${PLANETARY_EXIT_FNS[@]}"; do
+      [ "$f" = "$1" ] && return 0
+   done
+   [ ${#PLANETARY_EXIT_FNS[@]} -eq 0 ] && PLANETARY_EXIT_PREV="$(trap -p EXIT)"
+   PLANETARY_EXIT_FNS+=( "$1" )
+   trap planetary_run_exit EXIT
+}
+
+planetary_run_exit()
+{
+   local i
+   for (( i = ${#PLANETARY_EXIT_FNS[@]} - 1; i >= 0; --i )); do
+      "${PLANETARY_EXIT_FNS[i]}" || true
+   done
+   if [ -n "$PLANETARY_EXIT_PREV" ]; then
+      # `trap -p` prints: trap -- '<command>' EXIT
+      eval "set -- $PLANETARY_EXIT_PREV"
+      eval "$3"
+   fi
+}
+
 # Removes whatever this run created: the slot's settings and the run dir.
 planetary_cleanup()
 {
@@ -66,7 +99,7 @@ planetary_slot_setup()
    fi
    PLANETARY_SLOT=$(( 10#$slot ))
    PLANETARY_SLOT_SETTINGS="$(printf '%s/core-%03d-pxi.settings' "$HOME/.PixInsight" "$PLANETARY_SLOT")"
-   trap planetary_cleanup EXIT
+   planetary_on_exit planetary_cleanup
    rm -f "$PLANETARY_SLOT_SETTINGS"
 }
 
@@ -75,7 +108,7 @@ planetary_slot_setup()
 planetary_private_tmp()
 {
    PLANETARY_RUN_DIR="$(mktemp -d "${TMPDIR:-/tmp}/planetary-test.XXXXXX")" || return 1
-   trap planetary_cleanup EXIT
+   planetary_on_exit planetary_cleanup
    chmod 700 "$PLANETARY_RUN_DIR"
    mkdir -m 700 "$PLANETARY_RUN_DIR/tmp"
    export TMPDIR="$PLANETARY_RUN_DIR/tmp"
@@ -131,4 +164,19 @@ PY
    if grep -q 'Planetary-pxm\.so' "$PLANETARY_SLOT_SETTINGS"; then
       echo "FAIL: seeded $PLANETARY_SLOT_SETTINGS still names a Planetary-pxm.so"; return 1
    fi
+}
+
+# The running PixInsight of this slot maps exactly one Planetary-pxm.so: the
+# dev build $1 (an installed release listed in the slot's settings would load
+# next to the -m= build; planetary_seed_slot_modules prevents that).
+planetary_assert_only_dev_mapped()
+{
+   local so="$1" pid maps
+   pid="$(pgrep -f -- "^$PLANETARY_PI_BIN_DIR/PixInsight -n=$PLANETARY_SLOT " | head -1)"
+   [ -n "$pid" ] || { echo "FAIL: no running PixInsight for slot $PLANETARY_SLOT to check"; return 1; }
+   maps="$(grep -- 'Planetary-pxm\.so' "/proc/$pid/maps" | awk '{print $NF}' | sort -u | xargs -r -n1 realpath -m | sort -u)"
+   if [ "$maps" != "$(realpath -e "$so")" ]; then
+      echo "FAIL: PixInsight (slot $PLANETARY_SLOT, pid $pid) maps [${maps//$'\n'/ }], expected ONLY the dev build $so"; return 1
+   fi
+   echo "only the dev module is mapped (pid $pid): $maps"
 }

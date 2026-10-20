@@ -18,6 +18,9 @@ planetary_add_test(test_debayer unit/test_debayer.cpp planetary_ser)
 # FitsText.h is the module's PCL-free keyword-text helper (header only).
 planetary_add_test(test_fits_text unit/test_fits_text.cpp)
 target_include_directories(test_fits_text PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/../src/module")
+# PreviewPixels.h / SerInfoText.h: the preview's PCL-free pixel math and info text (header only).
+planetary_add_test(test_preview unit/test_preview.cpp planetary_ser)
+target_include_directories(test_preview PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/../src/module")
 
 # Test-only fixture writer for the headless PixInsight probe (test/run-probe.sh).
 add_executable(make-fixtures make-fixtures.cpp)

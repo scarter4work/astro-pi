@@ -16,6 +16,7 @@ set(MODULE_SOURCES
     SERViewerParameters.cpp
     SERViewerInstance.cpp
     SERViewerInterface.cpp
+    FramePreview.cpp
 )
 
 add_library(Planetary SHARED ${MODULE_SOURCES})
