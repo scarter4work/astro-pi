@@ -24,7 +24,9 @@
 # (found in 01-empty.png): lit in 02-05; 02 != 03 (frame 0 vs the last frame),
 # 03 != 03b (debayered vs raw CFA), 03b grey, 03 == 03c, 03 != 04 (A vs B),
 # 03 == 05 (the slider's last frame == the imported last frame), 05 != 06; and
-# with the default fixture A, 03 red-dominant (catches an R/B swap).
+# with the default fixture A, 03 red-dominant (catches an R/B swap); with real
+# fixtures, PLANETARY_GUI_EXPECT_RB=gt|lt asserts 03 shows mean R above/below B
+# (known from the raw samples, see avi_to_ser.py) -- the same swap catch.
 #
 # Fixtures: PLANETARY_GUI_FIXTURE_A / PLANETARY_GUI_FIXTURE_B (absolute .ser
 # paths; A must be a Bayer file, since the smoke toggles Debayer, with a
@@ -70,6 +72,11 @@ fi
 if [ -z "${PLANETARY_GUI_FIXTURE_A:-}" ]; then
    CHECK_ARGS+=( --expect-red )   # bayer-colour.ser is strongly red by construction
 fi
+case "${PLANETARY_GUI_EXPECT_RB:-}" in
+   "") ;;
+   gt|lt) CHECK_ARGS+=( --expect-rb "$PLANETARY_GUI_EXPECT_RB" ) ;;
+   *) echo "FAIL: PLANETARY_GUI_EXPECT_RB must be gt or lt, got '$PLANETARY_GUI_EXPECT_RB'"; exit 1 ;;
+esac
 A="${PLANETARY_GUI_FIXTURE_A:-$PLANETARY_RUN_DIR/fixtures/bayer-colour.ser}"
 B="${PLANETARY_GUI_FIXTURE_B:-$PLANETARY_RUN_DIR/fixtures/mono8.ser}"
 for f in "$A" "$B"; do

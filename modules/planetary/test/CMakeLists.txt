@@ -27,3 +27,8 @@ add_executable(make-fixtures make-fixtures.cpp)
 target_include_directories(make-fixtures PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/unit")
 add_test(NAME make_fixtures_runs
          COMMAND make-fixtures "${CMAKE_CURRENT_BINARY_DIR}/fixtures-smoke")
+
+# Test-only: checks the reader against the Saturn fixtures' independent expectations
+# (test/run-real-data.sh runs it; not a ctest case, it needs the NAS capture).
+add_executable(check-real-fixtures check-real-fixtures.cpp)
+target_link_libraries(check-real-fixtures PRIVATE planetary_ser)

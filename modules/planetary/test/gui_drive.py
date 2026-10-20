@@ -9,7 +9,7 @@
   gui_drive.py --shot OUT NAME        one screenshot
   gui_drive.py --close OUT            the interface's title-bar close button -> 06-closed.png
   gui_drive.py --quit OUT             File > Quit PixInsight (07-file-menu.png)
-  gui_drive.py --check OUT [--expect-red]
+  gui_drive.py --check OUT [--expect-red] [--expect-rb gt|lt]
                                       pixel checks of the preview region (exit 1 on failure)
 
 PixInsight draws its interface windows inside the main window (no X window to
@@ -289,6 +289,9 @@ if MODE == "--open":
 
 if MODE == "--check":
     expect_red = "--expect-red" in sys.argv[3:]
+    expect_rb = sys.argv[sys.argv.index("--expect-rb") + 1] if "--expect-rb" in sys.argv[3:] else None
+    if expect_rb not in (None, "gt", "lt"):
+        raise SystemExit("--expect-rb takes gt or lt")
     x0, y0, x1, y1 = preview_box()
     inset = 2
     region = (x0 + inset, y0 + inset, x1 - inset, y1 - inset)
@@ -343,6 +346,18 @@ if MODE == "--check":
         lines.append("03-last-frame.png: mean R/G/B over lit pixels %.0f/%.0f/%.0f (red: R >= 2G, R >= 2B)" % (r, g, b))
         if not (r >= 2 * g and r >= 2 * b):
             fails.append("03-last-frame.png: not red-dominant (R/G/B %.0f/%.0f/%.0f)" % (r, g, b))
+
+    if expect_rb:
+        # Real data (Task 5): the scene is not strongly red, but its R/B balance is known from the
+        # raw sensor samples (avi_to_ser.py: expected.json gui.rbOrder). An R/B swap anywhere
+        # between the debayer and the screen flips it. The preview scales all channels by one factor.
+        img = px("03-last-frame.png")
+        m = lit_mask("03-last-frame.png")
+        r, b = (float(img[..., c][m].mean()) for c in (0, 2))
+        ratio = r / b if b else float("inf")
+        lines.append("03-last-frame.png: mean R/B over lit pixels %.0f/%.0f = %.2f (expected R %s B)" % (r, b, ratio, "above" if expect_rb == "gt" else "below"))
+        if (expect_rb == "gt" and not ratio >= 1.05) or (expect_rb == "lt" and not ratio <= 1 / 1.05):
+            fails.append("03-last-frame.png: R/B order wrong (R/B %.2f, expected R %s B by at least 5%%)" % (ratio, "above" if expect_rb == "gt" else "below"))
 
     print("\n".join("  " + l for l in lines))
     open(OUT + "/checks.txt", "w").write("\n".join(lines + ["FAIL: " + f for f in fails]) + "\n")

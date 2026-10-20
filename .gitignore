@@ -28,3 +28,6 @@ modules/pi-copilot/test/.test_api_key
 .claude/settings.local.json
 # Claude Code agent worktrees
 .claude/worktrees/
+
+# Planetary real-data e2e screenshots (test/run-real-data.sh)
+modules/planetary/test/output/
