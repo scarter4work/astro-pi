@@ -409,7 +409,7 @@ else:
              '            <p>\n'
              '               <b>Planetary ' + ver + '</b>\n'
              '            </p>\n'
-             '            <p>Planetary (lucky-imaging) tools for PixInsight. SERViewer opens SER video '
+             '            <p>Planetary: SER video viewer for PixInsight. SERViewer opens SER video '
              'files: it shows any frame in a preview and opens it as a PixInsight image. '
              'It reads only the SER file you choose, uses no network and runs no external programs.</p>\n'
              '         </description>\n'

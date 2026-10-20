@@ -1,6 +1,6 @@
 # Planetary PixInsight Module
 
-Planetary (lucky-imaging) tools for PixInsight. The first process, **SERViewer**, opens SER video files
+Planetary: a SER video viewer for PixInsight, the first step toward lucky-imaging stacking. Its one process, **SERViewer**, opens SER video files
 (as written by planetary capture programs such as FireCapture and SharpCap): it shows any frame in a
 preview with a frame slider and an info block, and opens the selected frame as an ordinary 32-bit PixInsight
 image, debayered (bilinear) or as the raw CFA mosaic. It reads only the SER file you choose, uses no network
