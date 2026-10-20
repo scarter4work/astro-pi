@@ -46,6 +46,20 @@ struct FileInfo {
     std::vector<std::string> warnings;
 };
 
+// One decoded frame: interleaved samples, top-down rows, colour always R,G,B
+// (BGR files are reordered). Raw values, not normalised.
+struct Frame {
+    int width = 0, height = 0, channels = 0;
+    std::vector<uint16_t> samples;
+};
+
+bool IsBayer(ColorId id);
+const char* ColorIdName(ColorId id);
+// "RGGB", "GRBG", "GBRG", "BGGR"; throws SerError for non-Bayer ids.
+const char* BayerPatternKeyword(ColorId id);
+
+// A SerFile is not thread-safe: it owns one stream with a seek position, and
+// ReadFrame/FrameTimestamp move it. Use one reader per thread.
 class SerFile {
 public:
     static constexpr int64_t kHeaderBytes = 178;
@@ -63,6 +77,9 @@ public:
     // Raw 100-ns tick value from the trailer; nullopt when the file has none.
     // Throws SerError when index is out of range.
     std::optional<int64_t> FrameTimestamp(int64_t index) const;
+
+    // Throws SerError when index is out of range or the file is shorter than expected.
+    Frame ReadFrame(int64_t index) const;
 
 private:
     SerFile() = default;

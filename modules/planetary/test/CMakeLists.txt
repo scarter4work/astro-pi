@@ -13,3 +13,5 @@ function(planetary_add_test test_name test_source)
 endfunction()
 
 planetary_add_test(test_ser_header unit/test_ser_header.cpp planetary_ser)
+planetary_add_test(test_ser_frames unit/test_ser_frames.cpp planetary_ser)
+planetary_add_test(test_debayer unit/test_debayer.cpp planetary_ser)

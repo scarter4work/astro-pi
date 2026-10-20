@@ -1,26 +1,14 @@
 #include <catch_amalgamated.hpp>
 
-#include <atomic>
-#include <filesystem>
-#include <unistd.h>
-
 #include "SerFile.h"
 #include "SerTime.h"
 #include "SerWriter.h"
+#include "TestUtil.h"
 
 using namespace planetary::ser;
 using namespace planetary::testing;
-namespace fs = std::filesystem;
 
 namespace {
-std::string TempPath() {
-    static std::atomic<int> counter{0};
-    fs::path dir = fs::temp_directory_path() /
-                   ("planetary_ser_test_" + std::to_string(::getpid()));
-    fs::create_directories(dir);
-    return (dir / ("f" + std::to_string(counter++) + ".ser")).string();
-}
-
 std::vector<std::vector<uint8_t>> Frames(int n, size_t bytes) {
     return std::vector<std::vector<uint8_t>>(n, std::vector<uint8_t>(bytes, 7));
 }
@@ -46,6 +34,8 @@ TEST_CASE("parses mono 8-bit header", "[ser]") {
     auto p = TempPath();
     auto s = Spec(0, 64, 48, 8, 3);
     s.observer = "Scott";
+    s.littleEndianField = 1;
+    s.dateTimeUtc = 638000000000000000LL;
     WriteSer(p, s, Frames(3, 64 * 48));
     auto f = SerFile::Open(p);
     const auto& i = f.Info();
@@ -55,6 +45,9 @@ TEST_CASE("parses mono 8-bit header", "[ser]") {
     CHECK(i.frameBytes == 3072);
     CHECK(i.frameCount == 3);
     CHECK(i.header.observer == "Scott");
+    CHECK(i.header.littleEndianField == 1);
+    CHECK(i.header.dateTimeUtc == 638000000000000000LL);
+    CHECK(i.byteOrder == ByteOrder::Big);
     CHECK(i.warnings.empty());
 }
 
@@ -109,6 +102,21 @@ TEST_CASE("rejects depth 0 and 17", "[ser]") {
 TEST_CASE("rejects zero width", "[ser]") {
     auto p = TempPath();
     WriteSer(p, Spec(0, 0, 4, 8, 1), Frames(1, 16));
+    CHECK_THROWS_AS(SerFile::Open(p), SerError);
+}
+
+TEST_CASE("rejects zero and negative dimensions", "[ser]") {
+    struct { int w, h; } cases[] = {{4, 0}, {4, -4}, {-4, 4}};
+    for (auto c : cases) {
+        auto p = TempPath();
+        WriteSer(p, Spec(0, c.w, c.h, 8, 1), Frames(1, 16));
+        CHECK_THROWS_AS(SerFile::Open(p), SerError);
+    }
+}
+
+TEST_CASE("rejects 100000x100000", "[ser]") {
+    auto p = TempPath();
+    WriteSer(p, Spec(0, 100000, 100000, 8, 1), Frames(1, 16));
     CHECK_THROWS_AS(SerFile::Open(p), SerError);
 }
 
@@ -176,4 +184,58 @@ TEST_CASE("ticks to iso", "[ser]") {
     CHECK(TicksToIsoUtc(flagged) == TicksToIsoUtc(ticks));
     const int64_t signFlag = static_cast<int64_t>(static_cast<uint64_t>(ticks) | (uint64_t{1} << 63));
     CHECK(TicksToIsoUtc(signFlag) == TicksToIsoUtc(ticks));
+}
+
+namespace {
+// Builds ticks from a calendar date with the independent day counter above.
+int64_t Ticks(int y, int m, int d, int hh, int mm, int ss, int ms) {
+    return DaysFromYear1(y, m, d) * 864000000000LL +
+           ((hh * 3600 + mm * 60 + ss) * 1000LL + ms) * 10000LL;
+}
+}  // namespace
+
+TEST_CASE("ticks to iso across calendar edge cases", "[ser]") {
+    CHECK(TicksToIsoUtc(Ticks(2024, 2, 29, 12, 0, 0, 0)) == std::string("2024-02-29T12:00:00.000"));
+    CHECK(TicksToIsoUtc(Ticks(2000, 2, 29, 0, 0, 0, 1)) == std::string("2000-02-29T00:00:00.001"));
+    CHECK(TicksToIsoUtc(Ticks(1900, 3, 1, 6, 30, 15, 500)) == std::string("1900-03-01T06:30:15.500"));
+    CHECK(TicksToIsoUtc(Ticks(2100, 3, 1, 23, 0, 0, 0)) == std::string("2100-03-01T23:00:00.000"));
+    CHECK(TicksToIsoUtc(Ticks(1969, 12, 31, 18, 45, 0, 250)) == std::string("1969-12-31T18:45:00.250"));
+    const int64_t lastMs = Ticks(2023, 12, 31, 23, 59, 59, 999);
+    CHECK(TicksToIsoUtc(lastMs) == std::string("2023-12-31T23:59:59.999"));
+    CHECK(TicksToIsoUtc(lastMs + 10000) == std::string("2024-01-01T00:00:00.000"));
+}
+
+TEST_CASE("data after the declared frames: trailer only when it cannot be pixels", "[ser]") {
+    // 3 declared 64-byte frames. File holds 5 frames' worth of bytes: the two extra
+    // frames are not a trailer, and must not be read as ticks.
+    auto p = TempPath();
+    WriteSer(p, Spec(0, 8, 8, 8, 3), Frames(5, 64));
+    auto f = SerFile::Open(p);
+    CHECK(f.Info().frameCount == 3);
+    CHECK_FALSE(f.Info().hasTimestamps);
+    REQUIRE(f.Info().warnings.size() == 1);
+    CHECK(f.Info().warnings[0].find("extra data") != std::string::npos);
+
+    // Exactly one extra frame: leftover (64) - 8N (24) < frameBytes, yet it is pixels.
+    auto q = TempPath();
+    WriteSer(q, Spec(0, 8, 8, 8, 3), Frames(4, 64));
+    auto g = SerFile::Open(q);
+    CHECK_FALSE(g.Info().hasTimestamps);
+    CHECK(g.Info().warnings.size() == 1);
+
+    // A genuine trailer is still recognised and silent, even when 8N exceeds one frame.
+    auto r = TempPath();
+    std::vector<int64_t> ticks(10, 5);
+    WriteSer(r, Spec(0, 4, 4, 8, 10), Frames(10, 16), ticks);  // trailer 80 B > frame 16 B
+    auto h = SerFile::Open(r);
+    CHECK(h.Info().hasTimestamps);
+    CHECK(h.Info().warnings.empty());
+    CHECK(h.FrameTimestamp(9) == 5);
+
+    // Trailer followed by a few stray bytes (less than a frame): still a trailer.
+    auto t = TempPath();
+    WriteSer(t, Spec(0, 8, 8, 8, 3), Frames(3, 64), {1, 2, 3, 4});  // 32 B leftover
+    auto k = SerFile::Open(t);
+    CHECK(k.Info().hasTimestamps);
+    CHECK(k.FrameTimestamp(2) == 3);
 }

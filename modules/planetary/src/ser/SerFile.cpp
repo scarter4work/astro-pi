@@ -31,7 +31,47 @@ std::string ReadText(const unsigned char* p, size_t n) {
 }
 
 std::string Num(int64_t v) { return std::to_string(v); }
+
+uint16_t Sample16(const unsigned char* p, ByteOrder order) {
+    return order == ByteOrder::Little
+               ? static_cast<uint16_t>(p[0] | p[1] << 8)
+               : static_cast<uint16_t>(p[1] | p[0] << 8);
+}
+
+uint16_t MaxSample16(const std::vector<unsigned char>& bytes, ByteOrder order) {
+    uint16_t m = 0;
+    for (size_t i = 0; i + 1 < bytes.size(); i += 2) m = std::max(m, Sample16(&bytes[i], order));
+    return m;
+}
 }  // namespace
+
+bool IsBayer(ColorId id) {
+    return id == ColorId::BayerRGGB || id == ColorId::BayerGRBG ||
+           id == ColorId::BayerGBRG || id == ColorId::BayerBGGR;
+}
+
+const char* ColorIdName(ColorId id) {
+    switch (id) {
+        case ColorId::Mono: return "MONO";
+        case ColorId::BayerRGGB: return "BAYER_RGGB";
+        case ColorId::BayerGRBG: return "BAYER_GRBG";
+        case ColorId::BayerGBRG: return "BAYER_GBRG";
+        case ColorId::BayerBGGR: return "BAYER_BGGR";
+        case ColorId::RGB: return "RGB";
+        case ColorId::BGR: return "BGR";
+    }
+    throw SerError("unknown ColorId " + Num(static_cast<int32_t>(id)));
+}
+
+const char* BayerPatternKeyword(ColorId id) {
+    switch (id) {
+        case ColorId::BayerRGGB: return "RGGB";
+        case ColorId::BayerGRBG: return "GRBG";
+        case ColorId::BayerGBRG: return "GBRG";
+        case ColorId::BayerBGGR: return "BGGR";
+        default: throw SerError(std::string(ColorIdName(id)) + " is not a Bayer pattern");
+    }
+}
 
 SerFile SerFile::Open(const std::string& path) {
     SerFile f;
@@ -116,9 +156,41 @@ SerFile SerFile::Open(const std::string& path) {
         info.frameCount = h.frameCount;
     }
 
-    info.hasTimestamps =
-        !recovered && f.fileSize_ >= kHeaderBytes + info.frameCount * info.frameBytes +
-                                         8 * info.frameCount;
+    if (!recovered) {
+        // Anything after the declared frames is either the 8-byte-per-frame timestamp
+        // trailer or unknown data. It is a trailer only when it is exactly 8N bytes, or
+        // is at least 8N but too short to hold another whole frame (trailing padding);
+        // otherwise it may be frame pixels and must never be read as ticks.
+        const int64_t leftover = f.fileSize_ - kHeaderBytes - info.frameCount * info.frameBytes;
+        const int64_t trailer = 8 * info.frameCount;
+        if (leftover == trailer || (leftover > trailer && leftover < info.frameBytes)) {
+            info.hasTimestamps = true;
+        } else if (leftover > 0) {
+            info.warnings.push_back(Num(info.frameCount) +
+                                    " frames declared, file holds extra data after them (" +
+                                    Num(leftover) + " bytes); ignoring it, no timestamps");
+        }
+    }
+
+    // Byte order: the header flag is trusted, except that sub-16-bit data cannot
+    // exceed 2^depth - 1. If frame 0 breaks that under the flag's order but not under
+    // the other order, the other order is used and reported.
+    if (info.bytesPerSample == 2 && h.depth < 16) {
+        std::vector<unsigned char> raw0(static_cast<size_t>(info.frameBytes));
+        f.stream_.clear();
+        f.stream_.seekg(static_cast<std::streamoff>(kHeaderBytes));
+        f.stream_.read(reinterpret_cast<char*>(raw0.data()), static_cast<std::streamsize>(raw0.size()));
+        if (!f.stream_) throw SerError("failed to read frame 0 from " + path);
+        const ByteOrder other = info.byteOrder == ByteOrder::Little ? ByteOrder::Big : ByteOrder::Little;
+        const uint16_t limit = static_cast<uint16_t>((1u << h.depth) - 1);
+        if (MaxSample16(raw0, info.byteOrder) > limit && MaxSample16(raw0, other) <= limit) {
+            const char* flagName = info.byteOrder == ByteOrder::Little ? "little-endian" : "big-endian";
+            const char* otherName = other == ByteOrder::Little ? "little-endian" : "big-endian";
+            info.warnings.push_back(std::string("byte order: header flag says ") + flagName +
+                                    ", data is " + otherName + "; using " + otherName);
+            info.byteOrder = other;
+        }
+    }
     return f;
 }
 
@@ -135,6 +207,33 @@ std::optional<int64_t> SerFile::FrameTimestamp(int64_t index) const {
     stream_.read(reinterpret_cast<char*>(buf), 8);
     if (!stream_) throw SerError("failed to read timestamp for frame " + Num(index));
     return ReadI64(buf);
+}
+
+Frame SerFile::ReadFrame(int64_t index) const {
+    if (index < 0 || index >= info_.frameCount)
+        throw SerError("frame index " + Num(index) + " out of range (0.." +
+                       Num(info_.frameCount - 1) + ")");
+
+    std::vector<unsigned char> raw(static_cast<size_t>(info_.frameBytes));
+    stream_.clear();
+    stream_.seekg(static_cast<std::streamoff>(kHeaderBytes + index * info_.frameBytes));
+    stream_.read(reinterpret_cast<char*>(raw.data()), static_cast<std::streamsize>(raw.size()));
+    if (!stream_ || stream_.gcount() != static_cast<std::streamsize>(raw.size()))
+        throw SerError("short read on frame " + Num(index) + ": file ends before the frame does");
+
+    Frame fr;
+    fr.width = info_.header.width;
+    fr.height = info_.header.height;
+    fr.channels = info_.planes;
+    fr.samples.resize(static_cast<size_t>(info_.frameBytes / info_.bytesPerSample));
+    if (info_.bytesPerSample == 1) {
+        for (size_t i = 0; i < fr.samples.size(); ++i) fr.samples[i] = raw[i];
+    } else {
+        for (size_t i = 0; i < fr.samples.size(); ++i) fr.samples[i] = Sample16(&raw[2 * i], info_.byteOrder);
+    }
+    if (info_.colorId == ColorId::BGR)
+        for (size_t i = 0; i + 2 < fr.samples.size(); i += 3) std::swap(fr.samples[i], fr.samples[i + 2]);
+    return fr;
 }
 
 }  // namespace planetary::ser
