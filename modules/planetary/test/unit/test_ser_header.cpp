@@ -13,12 +13,6 @@ std::vector<std::vector<uint8_t>> Frames(int n, size_t bytes) {
     return std::vector<std::vector<uint8_t>>(n, std::vector<uint8_t>(bytes, 7));
 }
 
-SerSpec Spec(int color, int w, int h, int depth, int frames) {
-    SerSpec s;
-    s.colorId = color; s.width = w; s.height = h; s.depth = depth; s.frameCount = frames;
-    return s;
-}
-
 // Days from 0001-01-01 to y-m-d, independent of the library (Gregorian leap rule).
 int64_t DaysFromYear1(int y, int m, int d) {
     auto leap = [](int yy) { return (yy % 4 == 0 && yy % 100 != 0) || yy % 400 == 0; };

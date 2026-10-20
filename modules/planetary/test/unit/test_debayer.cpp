@@ -48,29 +48,48 @@ TEST_CASE("debayer flat colours in all four patterns", "[debayer]") {
 }
 
 TEST_CASE("debayer interior is bilinear", "[debayer]") {
-    // 4x4 RGGB mosaic, depth 8: v(x,y) = 1 + 3x + 17y.
+    // 4x4 RGGB mosaic, depth 8, non-linear field so neighbour mix-ups change the result.
+    const int m[4][4] = {{ 10, 200,  35, 140},
+                         { 90,  17, 230,  60},
+                         {170,  45,  80, 250},
+                         { 25, 120,  66, 190}};
     Frame cfa{4, 4, 1, std::vector<uint16_t>(16)};
-    auto v = [](int x, int y) { return 1 + 3 * x + 17 * y; };
     for (int y = 0; y < 4; ++y)
-        for (int x = 0; x < 4; ++x) cfa.samples[y * 4 + x] = static_cast<uint16_t>(v(x, y));
+        for (int x = 0; x < 4; ++x) cfa.samples[y * 4 + x] = static_cast<uint16_t>(m[y][x]);
     FloatImage out = DebayerBilinear(cfa, ColorId::BayerRGGB, 8);
     auto at = [&](int x, int y, int c) { return out.data[(y * 4 + x) * 3 + c]; };
-    const float s = 255.0f;
-    // (2,2) is a red site: R is the sample, G the mean of 4 neighbours, B the mean of 4 diagonals.
-    CHECK(at(2, 2, 0) == Catch::Approx(v(2, 2) / s));
-    CHECK(at(2, 2, 1) == Catch::Approx((v(2, 1) + v(1, 2) + v(3, 2) + v(2, 3)) / 4.0f / s));
-    CHECK(at(2, 2, 2) == Catch::Approx((v(1, 1) + v(3, 1) + v(1, 3) + v(3, 3)) / 4.0f / s));
-    // (1,1) is a blue site: R is the mean of 4 diagonals.
-    CHECK(at(1, 1, 2) == Catch::Approx(v(1, 1) / s));
-    CHECK(at(1, 1, 0) == Catch::Approx((v(0, 0) + v(2, 0) + v(0, 2) + v(2, 2)) / 4.0f / s));
-    CHECK(at(1, 1, 1) == Catch::Approx((v(1, 0) + v(0, 1) + v(2, 1) + v(1, 2)) / 4.0f / s));
-    // (2,1) is green on a blue row (horizontal neighbours blue): B horizontal, R vertical.
-    CHECK(at(2, 1, 1) == Catch::Approx(v(2, 1) / s));
-    CHECK(at(2, 1, 2) == Catch::Approx((v(1, 1) + v(3, 1)) / 2.0f / s));
-    CHECK(at(2, 1, 0) == Catch::Approx((v(2, 0) + v(2, 2)) / 2.0f / s));
-    // (1,2) is green on a red row: R horizontal, B vertical.
-    CHECK(at(1, 2, 0) == Catch::Approx((v(0, 2) + v(2, 2)) / 2.0f / s));
-    CHECK(at(1, 2, 2) == Catch::Approx((v(1, 1) + v(1, 3)) / 2.0f / s));
+    // Expected values, summed by hand from m[y][x] (x right, y down).
+    // (2,2) red site: G = (230+45+250+66)/4 = 147.75 ; B = (17+60+120+190)/4 = 96.75
+    CHECK(at(2, 2, 0) == Catch::Approx(80.0f / 255));
+    CHECK(at(2, 2, 1) == Catch::Approx(147.75f / 255));
+    CHECK(at(2, 2, 2) == Catch::Approx(96.75f / 255));
+    // (1,1) blue site: G = (200+90+230+45)/4 = 141.25 ; R = (10+35+170+80)/4 = 73.75
+    CHECK(at(1, 1, 2) == Catch::Approx(17.0f / 255));
+    CHECK(at(1, 1, 1) == Catch::Approx(141.25f / 255));
+    CHECK(at(1, 1, 0) == Catch::Approx(73.75f / 255));
+    // (2,1) green on a blue row: B = (17+60)/2 = 38.5 horizontal ; R = (35+80)/2 = 57.5 vertical
+    CHECK(at(2, 1, 1) == Catch::Approx(230.0f / 255));
+    CHECK(at(2, 1, 2) == Catch::Approx(38.5f / 255));
+    CHECK(at(2, 1, 0) == Catch::Approx(57.5f / 255));
+    // (1,2) green on a red row: R = (170+80)/2 = 125 horizontal ; B = (17+120)/2 = 68.5 vertical
+    CHECK(at(1, 2, 1) == Catch::Approx(45.0f / 255));
+    CHECK(at(1, 2, 0) == Catch::Approx(125.0f / 255));
+    CHECK(at(1, 2, 2) == Catch::Approx(68.5f / 255));
+}
+
+TEST_CASE("normalize maps the maximum to exactly 1.0 at every depth", "[debayer]") {
+    for (int depth = 1; depth <= 16; ++depth) {
+        const uint16_t maxV = static_cast<uint16_t>((1u << depth) - 1u);
+        Frame f{1, 1, 1, {maxV}};
+        CHECK(Normalize(f, depth).data[0] == 1.0f);
+        Frame cfa{2, 2, 1, {maxV, maxV, maxV, maxV}};
+        for (float v : DebayerBilinear(cfa, ColorId::BayerRGGB, depth).data) CHECK(v == 1.0f);
+    }
+}
+
+TEST_CASE("normalize and debayer reject a wrong sample count", "[debayer]") {
+    CHECK_THROWS_AS(Normalize(Frame{2, 2, 1, std::vector<uint16_t>(3)}, 8), SerError);
+    CHECK_THROWS_AS(DebayerBilinear(Frame{4, 4, 1, std::vector<uint16_t>(15)}, ColorId::BayerRGGB, 8), SerError);
 }
 
 TEST_CASE("debayer edges mirror without changing parity", "[debayer]") {

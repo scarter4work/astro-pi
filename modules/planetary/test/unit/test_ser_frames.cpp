@@ -12,26 +12,6 @@ using namespace planetary::ser;
 using namespace planetary::testing;
 namespace fs = std::filesystem;
 
-namespace {
-SerSpec Spec(int color, int w, int h, int depth, int frames, int le = 0) {
-    SerSpec s;
-    s.colorId = color; s.width = w; s.height = h; s.depth = depth; s.frameCount = frames;
-    s.littleEndianField = le;
-    return s;
-}
-
-// 16-bit samples to bytes, little- or big-endian.
-std::vector<uint8_t> Pack16(const std::vector<uint16_t>& v, bool bigEndian) {
-    std::vector<uint8_t> b;
-    for (uint16_t x : v) {
-        const uint8_t lo = x & 0xFF, hi = x >> 8;
-        if (bigEndian) { b.push_back(hi); b.push_back(lo); }
-        else { b.push_back(lo); b.push_back(hi); }
-    }
-    return b;
-}
-}  // namespace
-
 TEST_CASE("names and bayer predicates", "[ser][frames]") {
     CHECK(std::string(ColorIdName(ColorId::Mono)) == "MONO");
     CHECK(std::string(ColorIdName(ColorId::BayerRGGB)) == "BAYER_RGGB");
