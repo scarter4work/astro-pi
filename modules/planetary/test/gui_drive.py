@@ -19,8 +19,9 @@ PI 1.9.5 desktop on Xvfb has ~1000 scattered black pixels, all in glyphs). The
 interface layout (SERViewerInterface.cpp) puts Open SER... above the preview's
 left end, the Debayer check box above its right end and the frame row (label,
 slider, spin box) directly below it, 6 px apart; the clicks are placed from the
-preview's edges. Native X windows (the Qt file dialog) are found by name."""
-import json, subprocess, sys, time
+preview's edges. Native X windows (the Qt file dialog) are found by name.
+Every mode but --check refuses (FAIL) unless $DISPLAY is served by Xvfb."""
+import json, os, re, subprocess, sys, time
 from collections import Counter
 
 try:
@@ -34,7 +35,36 @@ DIALOG = "Open SER video"
 # Interface title bars, measured (PI 1.9.5, Xvfb): active and inactive.
 TITLE_COLOURS = ((86, 100, 175), (110, 110, 110))
 
+
+
+def require_private_display():
+    """FAIL unless $DISPLAY is served by an Xvfb process: XTest input and
+    screenshots on any other display (the desktop's Xwayland, a real X server)
+    would act on the user's screen. The same test as pi_require_private_display
+    in tools/pi-headless.sh: whoever listens on the display's socket is Xvfb."""
+    disp = os.environ.get("DISPLAY", "")
+    m = re.fullmatch(r":(\d+)(\.\d+)?", disp)
+    if not m:
+        raise SystemExit("FAIL: refusing to drive DISPLAY=%r: not a local X display" % disp)
+    sock = "/tmp/.X11-unix/X" + m.group(1)
+    try:
+        listing = subprocess.run(["ss", "-xlpH"], capture_output=True, text=True, check=True).stdout
+    except (OSError, subprocess.CalledProcessError) as e:
+        raise SystemExit("FAIL: refusing to drive DISPLAY=%s: cannot list the X sockets (%s)" % (disp, e))
+    owner = None
+    for line in listing.splitlines():
+        if re.search(r"[@ ]" + re.escape(sock) + r"( |$)", line):
+            u = re.search(r'users:\(\("([^"]+)"', line)
+            if u:
+                owner = u.group(1)
+                break
+    if owner != "Xvfb":
+        raise SystemExit("FAIL: refusing to drive DISPLAY=%s: it is served by %r, not a private Xvfb"
+                         % (disp, owner or "nothing"))
+
+
 if MODE != "--check":
+    require_private_display()
     try:
         from Xlib import X, XK, display
         from Xlib.ext import xtest

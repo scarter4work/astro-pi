@@ -98,9 +98,44 @@ planetary_slot_setup()
       echo "FAIL: PLANETARY_TEST_SLOT must be in [50,256] (reserved for tests), got '$slot'"; return 1
    fi
    PLANETARY_SLOT=$(( 10#$slot ))
+   # A PixInsight already running on the slot (another test run, or a hung
+   # one) owns its settings file: wiping it under that process corrupts both
+   # runs. Checked BEFORE the cleanup is registered, so a refusal touches nothing.
+   local running
+   running="$(planetary_slot_processes "$PLANETARY_SLOT")"
+   if [ -n "$running" ]; then
+      echo "FAIL: a PixInsight is already running on slot $PLANETARY_SLOT; not touching its settings:"
+      sed 's/^/  /' <<<"$running"
+      return 1
+   fi
    PLANETARY_SLOT_SETTINGS="$(printf '%s/core-%03d-pxi.settings' "$HOME/.PixInsight" "$PLANETARY_SLOT")"
    planetary_on_exit planetary_cleanup
    rm -f "$PLANETARY_SLOT_SETTINGS"
+}
+
+# "<pid> <command line>" of every process launching or running PixInsight on
+# slot $1, one per line; empty when there is none. A process counts when one
+# argument is PixInsight or PixInsight.sh (any directory: the binary, the
+# launcher script under bash, or a wrapper such as timeout) and another is
+# exactly -n=<slot>. Matched per argument, not on the joined command line, so a
+# shell whose script text merely mentions "PixInsight.sh -n=96" is not a match.
+planetary_slot_processes()
+{
+   local slot="$1" d a pi n
+   local -a argv
+   for d in /proc/[0-9]*; do
+      argv=()
+      mapfile -d '' -t argv < "$d/cmdline" 2>/dev/null || continue
+      pi=0 n=0
+      for a in "${argv[@]}"; do
+         case "$a" in
+            PixInsight|PixInsight.sh|*/PixInsight|*/PixInsight.sh) pi=1 ;;
+            "-n=$slot") n=1 ;;
+         esac
+      done
+      (( pi && n )) && echo "${d#/proc/} ${argv[*]}"
+   done
+   return 0
 }
 
 # Private scratch for this run (0700): fixtures, probe output, logs, and the
