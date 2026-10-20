@@ -41,9 +41,9 @@ IsoString PlanetaryModule::Name() const
 
 String PlanetaryModule::Description() const
 {
-   // UTF-8 source text (the em dash): String( const char* ) would decode it as ISO-8859-1.
-   return String::UTF8ToUTF16( "Planetary " PLANETARY_VERSION_STRING " \xE2\x80\x94 Planetary (lucky-imaging) tools for PixInsight. "
-          "SERViewer opens SER video files: it shows any frame in a preview and opens it as a PixInsight image. "
+   // Decoded as UTF-8: String( const char* ) would read any non-ASCII text as ISO-8859-1.
+   return String::UTF8ToUTF16( "Planetary imaging for PixInsight. This version provides SERViewer, which opens SER planetary "
+          "video files, previews frames and opens a frame as an image. "
           "It reads only the SER file you choose, uses no network and runs no external programs. "
           "This product is based on software from the PixInsight project, developed by Pleiades Astrophoto and its contributors (https://pixinsight.com/)." );
 }
