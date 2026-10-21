@@ -47,16 +47,17 @@ All 103 `.avi` files under `/mnt/qnap/astro_data/` (ffprobe + header bytes):
   Testing item 3 turns this measurement into a regression check.
 - **Full measurement (Task 7, Ruling 10), on the unsaturated disc** (superpixels ≥ 50 % of the
   frame's 99.99th-percentile 2×2 sum, no site ≥ 250, 20 frames): 46 planetary sidecar files
-  (39 distinct captures; the NAS holds copies of 7 in more than one folder). All 6 `Flip = None`
+  (39 distinct captures: 6 captures sit in more than one folder, 7 extra files). All 6 `Flip = None`
   files measure RGGB. Of the 40 `Flip = Vert` files (33 captures), 35 measure BGGR (s00/s11
   0.43–0.97), 2 are unmeasurable (2022-08-17-010744 and -010921 Jupiter: 88 % / 91 % of the disc
   saturated, only the limb ring left), and **3 measure RGGB**: 2022-08-03-015840 Jupiter
   (s00/s11 1.325), 2022-08-03-021039 Saturn (1.264), 2022-08-17-004958 Moon (1.163), all ASI071MC
   Pro. Other captures with the same camera and the same ROI (1920×1080 at X1512 Y1102), including
-  the same 2022-08-17 night, measure BGGR. Every StartX/StartY is even, so the ROI offset doesn't
-  shift the phase, and the exceptions' AVI headers and sidecars match the BGGR captures' apart
-  from timing and capture values: **nothing in the file or the sidecar tells them apart**, so the
-  Flip=Vert pattern is an inference and the reader says so (see the Sidecar rule).
+  the same 2022-08-17 night, measure BGGR. StartX/StartY is even on all 53 sidecars, so the ROI
+  offset doesn't shift the phase. AVI headers compared on 5 ASI071MC Pro files (2022-08-03 to
+  2022-10-08) match apart from timing values; the sidecars carry the same Flip, Bayer and white
+  balance. **Nothing found in those headers or the sidecars tells them apart**, so the Flip=Vert
+  pattern is an inference and the reader says so (see the Sidecar rule).
 - **Index entries vs frame data:** 2 files hold fewer frames than their index (and ffprobe's
   `nb_frames`) declares: `2023-02-11-192403-Mars` (13 250 of 13 251: the last entry points into the
   idx1 table, a frame ASIAIR indexed but never wrote) and `2023-08-30-220451-Moon` (500 of 851: the
@@ -126,8 +127,8 @@ index treated as untrusted (same validation discipline as increment 1).
   `Bayer` RG/GR/GB/BG → RGGB/GRBG/GBRG/BGGR. **Flip rule (my call, from the measurement
   above, Ruling 10):** when `Flip` starts with `Vert`, `Auto` uses the 180°-rotated pattern
   (RGGB↔BGGR, GRBG↔GBRG) and the info block says so ("sidecar RG, Flip=Vert → BGGR"). It is
-  an inference that most but not all Flip=Vert captures follow, and nothing in the file tells
-  the exceptions apart, so it always carries the warning "Bayer pattern inferred from
+  an inference that most but not all Flip=Vert captures follow, and nothing found in the AVI
+  headers or the sidecars tells the exceptions apart, so it always carries the warning "Bayer pattern inferred from
   Flip=Vert (BGGR); some ASIAIR captures are RGGB -- if red and blue look swapped, choose
   RGGB under Bayer pattern" (the inferred and the sidecar's own pattern substituted). An
   explicit choice gives no such warning. `Flip = None` or absent uses the sidecar value as is.
@@ -183,10 +184,16 @@ Opening dispatches on the file's magic bytes (`LUCAM-RECORDER` vs `RIFF…AVI `)
    red on the brighter non-green site and greens on the more equal diagonal — except the
    three pinned RGGB exceptions (2022-08-03-015840 Jupiter, 2022-08-03-021039 Saturn,
    2022-08-17-004958 Moon), which must still resolve to the Flip=Vert inference (BGGR) and
-   must measure RGGB (red at (0,0)). Every Flip=Vert file must carry the inference warning.
-   A file whose disc leaves fewer than 100 superpixels (summed over the frames) is reported
-   unmeasurable with its count, never passed silently. Any disagreement fails the run with
-   its numbers. (`test/run-avi-real.sh`)
+   must measure RGGB (red at (0,0)). Every Flip=Vert file must carry the inference warning,
+   and no other file may. A file is unmeasurable when its disc leaves fewer than 100
+   unsaturated superpixels (summed over the frames) or **more than 80 % of its disc is
+   saturated** (what is left is the limb ring, whose edge gradients bias the sites; Ruling 11).
+   Only the two pinned unmeasurable captures (2022-08-17-010744 and -010921 Jupiter, 88 % /
+   91 % saturated) may be; they are listed with their numbers, never passed silently, and any
+   other unmeasurable file fails. Any disagreement fails the run with its numbers. The same run
+   pins the NAS itself: 103 AVIs, 53 with a sidecar, 46 planet captures, and only the two known
+   short files may hold fewer frames than ffprobe's `nb_frames` (each with its exact count and
+   warning). (`test/run-avi-real.sh`)
 4. **Headless PixInsight** (`run-probe.sh`, slot 96): `executeGlobal` on AVI fixtures (with
    and without sidecar, each `bayerPattern`), and `saveSerPath` conversion read back by a
    second `executeGlobal` on the written SER.

@@ -59,6 +59,7 @@ void WriteRaw(const Frame& fr, const std::string& path) {
     }
     std::ofstream o(path, std::ios::binary | std::ios::trunc);
     o.write(reinterpret_cast<const char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
+    o.close();  // flush: a full disk shows up here, not in write()
     if (!o) throw SerError("cannot write " + path);
 }
 

@@ -7,8 +7,11 @@ Runs the C++ reader (through test/avi-probe) over every *.avi under /mnt/qnap/as
 (or $PLANETARY_AVI_ROOT; read-only, nothing is ever written there) and checks it against
 ffmpeg/ffprobe, which are independent of the reader:
 
-1. Frame count == ffprobe nb_frames, or the reader is short AND one of its warnings
-   explains it ("... using the first N frames" or N + dropped zero-length frames).
+0. The NAS as surveyed: EXPECTED_FILES AVIs, EXPECTED_SIDECAR_FILES of them with a sidecar
+   (found by the checker itself), EXPECTED_PLANET_SIDECAR_FILES of those planet captures; the
+   reader must report a sidecar exactly where one exists.
+1. Frame count == ffprobe nb_frames, except the two pinned SHORT_FILES, which must read
+   exactly their pinned count with their pinned warning.
 2. Open time (OpenVideo, client page cache for the file dropped first) < 2.0 s;
    the slowest file is reported.
 3. Frames 0, N//2, N-1 equal ffmpeg's `-f rawvideo -pix_fmt pal8` output byte for byte
@@ -22,7 +25,9 @@ ffmpeg/ffprobe, which are independent of the reader:
    on the more equal diagonal and red on the brighter of the two non-green sites. The three
    captures in RGGB_EXCEPTIONS (Ruling 10: Flip=Vert files that measured RGGB) must still
    resolve to the Flip=Vert inference AND measure RGGB (red at (0,0)). Every Flip=Vert file
-   must carry the reader's inference warning. A file whose disc has fewer than
+   must resolve to the sidecar pattern rotated 180 degrees (VERT_ROTATED, written out here)
+   and carry exactly the reader's inference warning; no other file may carry it. Only the
+   pinned UNMEASURABLE captures may be unmeasurable. A file whose disc has fewer than
    MIN_DISC_SUPERPIXELS (summed over the frames), or whose bright disc is more than
    MAX_SATURATED_SHARE saturated (what is left is the limb ring), is listed as unmeasurable
    with its numbers -- reported, never passed silently.
@@ -57,6 +62,21 @@ MAX_SATURATED_SHARE = 0.8
 # Flip=Vert captures measured RGGB (red at (0,0)) on the disc, against the BGGR inference
 # (Ruling 10; disc s00/s11 1.325, 1.264, 1.163 when pinned). Matched by file-name prefix.
 RGGB_EXCEPTIONS = ("2022-08-03-015840-Jupiter", "2022-08-03-021039-Saturn", "2022-08-17-004958-Moon")
+# The whole proof is pinned to Scott's NAS as surveyed on 2026-10-21: a different count fails.
+EXPECTED_FILES = 103
+EXPECTED_SIDECAR_FILES = 53
+EXPECTED_PLANET_SIDECAR_FILES = 46
+# The only files the reader may read short, each with its exact count and warning: the
+# Mars file's last index entry points into idx1 (a frame never written), the Moon file is
+# truncated at 1.04 GB. Any other count != ffprobe's nb_frames fails.
+SHORT_FILES = {
+    "2023-02-11-192403-Mars-Bin1 16.5F.avi": (13250, "index entry 13250 is invalid; using the first 13250 frames"),
+    "2023-08-30-220451-Moon-Bin1 LPro 14.0F.avi": (500, "index entry 500 is invalid; using the first 500 frames"),
+}
+# The only planet captures whose disc is unmeasurable (Ruling 11: 88 % / 91 % saturated).
+UNMEASURABLE = ("2022-08-17-010744-Jupiter", "2022-08-17-010921-Jupiter")
+# Flip=Vert rotates the sidecar's pattern 180 degrees -- written out here, not computed from the reader.
+VERT_ROTATED = {"RG": "BGGR", "GR": "GBRG", "GB": "GRBG", "BG": "RGGB"}
 VERT_WARNING = ("Bayer pattern inferred from Flip=Vert (%s); some ASIAIR captures are %s -- if red and blue "
                 "look swapped, choose %s under Bayer pattern")
 ROUND_TRIP_MIN = 1 << 30
@@ -169,18 +189,34 @@ def rel(a, b):
     return abs(a - b) / ((a + b) / 2) if a + b > 0 else 0.0
 
 
-def count_explained(j, ff_n):
+def count_explained(base, j, ff_n):
+    """Frame count == ffprobe's, except the pinned SHORT_FILES, which must read exactly their
+    pinned count with their pinned warning."""
     n = j["frames"]
-    if n == ff_n:
-        return True, ""
-    if n > ff_n:
-        return False, "reader has more frames (%d) than ffprobe (%d)" % (n, ff_n)
-    for w in j["warnings"]:
-        if ("using the first %d frames" % n) in w:
-            return True, w
-    if j.get("droppedFrames", 0) and n + j["droppedFrames"] == ff_n and any("dropped" in w for w in j["warnings"]):
-        return True, "%d dropped frames" % j["droppedFrames"]
-    return False, "reader %d frames vs ffprobe %d with no explaining warning: %s" % (n, ff_n, j["warnings"])
+    if base in SHORT_FILES:
+        want_n, want_w = SHORT_FILES[base]
+        if n != want_n or want_w not in j["warnings"] or not n < ff_n:
+            return False, "pinned short file: reader %d frames (want %d of ffprobe's %d) with warnings %s (want %r)" % (
+                n, want_n, ff_n, j["warnings"], want_w)
+        return True, want_w
+    if n != ff_n:
+        return False, "reader %d frames vs ffprobe %d (warnings %s)" % (n, ff_n, j["warnings"])
+    return True, ""
+
+
+def read_sidecar(path):
+    """The checker's own parse of <path>.txt: {key: value}, or None when there is none."""
+    try:
+        with open(path + ".txt", encoding="utf8", errors="replace") as f:
+            text = f.read()
+    except FileNotFoundError:
+        return None
+    out = {}
+    for line in text.splitlines():
+        if "=" in line:
+            k, v = line.split("=", 1)
+            out[k.strip()] = v.strip()
+    return out
 
 
 def main():
@@ -196,8 +232,18 @@ def main():
                 avis.append(os.path.join(d, f))
     avis.sort()
     print("files: %d under %s" % (len(avis), ROOT), flush=True)
-    if not avis:
-        fail(ROOT, "no .avi files found")
+    if len(avis) != EXPECTED_FILES:
+        fail(ROOT, "%d .avi files, expected %d: %s" % (len(avis), EXPECTED_FILES,
+                                                     [os.path.relpath(a, ROOT) for a in avis]))
+    sidecar_files = [a for a in avis if os.path.exists(a + ".txt")]
+    planet_sidecar_files = [a for a in sidecar_files if target_of(a) in BAYER_TARGETS]
+    if len(sidecar_files) != EXPECTED_SIDECAR_FILES or len(planet_sidecar_files) != EXPECTED_PLANET_SIDECAR_FILES:
+        fail(ROOT, "%d AVIs with a sidecar (expected %d), %d of them planet captures (expected %d): %s" % (
+            len(sidecar_files), EXPECTED_SIDECAR_FILES, len(planet_sidecar_files), EXPECTED_PLANET_SIDECAR_FILES,
+            [os.path.relpath(a, ROOT) for a in sidecar_files]))
+    for base in SHORT_FILES:
+        if not any(os.path.basename(a) == base for a in avis):
+            fail(base, "pinned short file not found")
 
     results = []
     slowest = (0.0, "")
@@ -214,7 +260,7 @@ def main():
                 fail(name, "ffprobe says %s/%s, not rawvideo/pal8" % (s.get("codec_name"), s.get("pix_fmt")))
             if (j["width"], j["height"]) != (w, h):
                 fail(name, "reader %dx%d vs ffprobe %dx%d" % (j["width"], j["height"], w, h))
-            ok, why = count_explained(j, ff_n)
+            ok, why = count_explained(os.path.basename(path), j, ff_n)
             if not ok:
                 fail(name, why)
             if j["open_s"] >= OPEN_LIMIT_S:
@@ -244,10 +290,16 @@ def main():
                   % (idx, len(avis), name, n, w, h, j["open_s"], j["colorId"], j["bayerSource"] or "-",
                      ",".join(map(str, picks)), note), flush=True)
 
-            check_vert_warning(name, j)
-            target = os.path.basename(path).split("-")[4] if os.path.basename(path).count("-") >= 4 else ""
-            if "sidecarBayer" in j and target in BAYER_TARGETS:
-                bayer_rows.append(bayer_check(name, path, j, w, h))
+            sc = read_sidecar(path)
+            if sc is not None and "sidecarBayer" not in j:
+                fail(name, "has a sidecar but the reader reported none (bayerSource %r, warnings %s)"
+                     % (j["bayerSource"], j["warnings"]))
+            elif sc is None and "sidecarBayer" in j:
+                fail(name, "has no sidecar but the reader reported one")
+            else:
+                check_vert_warning(name, j, sc)
+                if sc is not None and target_of(path) in BAYER_TARGETS:
+                    bayer_rows.append(bayer_check(name, path, j, w, h))
             results.append((path, os.path.getsize(path), j, w, h, tb))
         except Exception as e:  # noqa: BLE001 -- every failure is reported with its file
             fail(name, str(e))
@@ -268,6 +320,12 @@ def main():
     for e, n in seen_exc.items():
         if n == 0:
             fail(e, "pinned RGGB exception not found among the measured captures")
+    for u in UNMEASURABLE:
+        if not any(os.path.basename(p).startswith(u) for p, _ in bayer_verdicts):
+            fail(u, "pinned unmeasurable capture not found among the measured captures")
+    if len(bayer_verdicts) != EXPECTED_PLANET_SIDECAR_FILES:
+        fail("Bayer phase", "%d planet sidecar files measured, expected %d"
+             % (len(bayer_verdicts), EXPECTED_PLANET_SIDECAR_FILES))
     unmeasurable = [(p, v) for p, v in bayer_verdicts if v.startswith("unmeasurable")]
     print("Bayer verdicts (of %d): %d agree with the resolved pattern, %d pinned RGGB exceptions measured RGGB, %d unmeasurable%s"
           % (len(bayer_verdicts), sum(1 for _, v in bayer_verdicts if v == "agrees"),
@@ -291,14 +349,26 @@ def main():
 SIDECAR_PATTERNS = {"RG": "RGGB", "GR": "GRBG", "GB": "GBRG", "BG": "BGGR"}
 
 
-def check_vert_warning(name, j):
-    """Every Auto-resolved Flip=Vert file carries the reader's inference warning (Ruling 10)."""
-    if not j.get("sidecarFlip", "").startswith("Vert") or j.get("sidecarBayer") not in SIDECAR_PATTERNS:
-        return
-    want = VERT_WARNING % (PATTERNS.get(j["colorId"], j["colorId"]), SIDECAR_PATTERNS[j["sidecarBayer"]],
-                           SIDECAR_PATTERNS[j["sidecarBayer"]])
-    if want not in j["warnings"]:
-        fail(name, "Flip=Vert file lacks the inference warning %r; warnings %s" % (want, j["warnings"]))
+def target_of(path):
+    """The capture target: the 5th '-' field of the file name ("" when there is none)."""
+    parts = os.path.basename(path).split("-")
+    return parts[4] if len(parts) > 4 else ""
+
+
+def check_vert_warning(name, j, sc):
+    """From the checker's own sidecar parse: a Flip=Vert file resolves to the rotated pattern and
+    carries the inference warning (Ruling 10); every other file carries no inference warning."""
+    inferred = [w for w in j["warnings"] if "inferred from Flip" in w]
+    bayer = (sc or {}).get("Bayer")
+    if sc is not None and (sc.get("Flip", "").startswith("Vert")) and bayer in VERT_ROTATED:
+        rotated, own = VERT_ROTATED[bayer], SIDECAR_PATTERNS[bayer]
+        if PATTERNS.get(j["colorId"]) != rotated:
+            fail(name, "Flip=Vert sidecar Bayer %s: reader resolved %s, expected %s" % (bayer, j["colorId"], rotated))
+        want = VERT_WARNING % (rotated, own, own)
+        if inferred != [want]:
+            fail(name, "Flip=Vert file: inference warnings %s, expected exactly [%r]" % (inferred, want))
+    elif inferred:
+        fail(name, "Flip %r file carries an inference warning: %s" % ((sc or {}).get("Flip"), inferred))
 
 
 bayer_verdicts = []  # (name, verdict)
@@ -324,11 +394,16 @@ def bayer_check(name, path, j, w, h):
                                                100 * MAX_SATURATED_SHARE)
         if pinned:
             fail(name, "pinned RGGB exception is " + verdict)
+        elif not any(os.path.basename(path).startswith(u) for u in UNMEASURABLE):
+            fail(name, "not a pinned unmeasurable capture, but " + verdict)
         d_g = d_rb = float("nan")
     else:
         d_g = rel(m[greens[0]], m[greens[1]])
         d_rb = rel(m[red], m[blue])
         verdict = "pinned RGGB exception, measures RGGB" if pinned else "agrees"
+        if any(os.path.basename(path).startswith(u) for u in UNMEASURABLE):
+            fail(name, "pinned unmeasurable capture now measures (%d disc superpixels, %.0f %% saturated): "
+                 "re-measure and re-pin" % (count, 100 * sat))
     if not verdict.startswith("unmeasurable"):
         bad = []
         if not d_g < d_rb:
