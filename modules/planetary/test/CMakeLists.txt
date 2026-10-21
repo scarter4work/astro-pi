@@ -36,3 +36,8 @@ add_test(NAME make_fixtures_runs
 # (test/run-real-data.sh runs it; not a ctest case, it needs the NAS capture).
 add_executable(check-real-fixtures check-real-fixtures.cpp)
 target_link_libraries(check-real-fixtures PRIVATE planetary_ser)
+
+# Test-only: the real-data AVI proof's CLI over the reader (test/run-avi-real.sh runs it;
+# not a ctest case, it needs the NAS captures).
+add_executable(avi-probe avi-probe.cpp)
+target_link_libraries(avi-probe PRIVATE planetary_ser)

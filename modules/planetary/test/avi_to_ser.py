@@ -184,6 +184,81 @@ def ticks_iso(ticks):
     return t.strftime("%Y-%m-%dT%H:%M:%S.") + "%03d" % ((ticks % TICKS_PER_SEC) // 10000)
 
 
+def read_sidecar(avi):
+    """The ASIAIR <name>.avi.txt as {key: value}; {} when absent."""
+    try:
+        with open(avi + ".txt", encoding="utf8", errors="replace") as f:
+            text = f.read()
+    except FileNotFoundError:
+        return {}
+    out = {}
+    for line in text.splitlines():
+        if "=" in line:
+            k, v = line.split("=", 1)
+            out[k.strip()] = v.strip()
+        elif line.strip().startswith("["):
+            out["[camera]"] = line.strip().strip("[]")
+    return out
+
+
+def view_id(path, fi):
+    """SERViewer's window id: the file stem with [^A-Za-z0-9_] -> '_', '_'-prefixed if it starts
+    with a digit, then _f<frame>."""
+    stem = os.path.splitext(os.path.basename(path))[0]
+    vid = "".join(ch if (ch.isascii() and (ch.isalnum() or ch == "_")) else "_" for ch in stem) or "SER"
+    return ("_" + vid if vid[0].isdigit() else vid) + "_f%d" % fi
+
+
+def avi_cases(avi, outdir, w, h, total, frames, n_frames):
+    """Probe cases on the AVI itself: Bayer pattern Auto from its sidecar (must say RG with Flip
+    None, i.e. RGGB, the measured phase of these 2026 ASI585MC Air captures), debayered and raw,
+    then saveSerPath converting the whole AVI into <outdir> and the written SER read back."""
+    sc = read_sidecar(avi)
+    if sc.get("Bayer") != "RG" or sc.get("Flip", "None") != "None":
+        fail("the AVI leg needs a sidecar with Bayer = RG and Flip = None (RGGB); %s.txt says Bayer %r Flip %r"
+             % (avi, sc.get("Bayer"), sc.get("Flip")))
+    camera = sc.get("[camera]", "")
+    name = os.path.basename(avi)
+    last = n_frames - 1
+    pts = points(w, h)
+    deb = lambda fi: [{"x": x, "y": y, "c": c, "v": rggb_bilinear(frames[fi], w, h, x, y, c) / 255}
+                      for x, y in pts for c in range(3)]
+    raw = lambda fi: [{"x": x, "y": y, "c": 0, "v": frames[fi][y][x] / 255} for x, y in pts]
+    base = {"width": w, "height": h}
+    cases = [
+        dict(base, name="real AVI, Bayer Auto (sidecar RG) debayered f0", path=avi, frame=0, debayer=True,
+             expectId=view_id(avi, 0), channels=3, samples=deb(0),
+             keywords=[{"name": "INSTRUME", "value": camera},
+                       {"name": "HISTORY", "comment": "SERViewer: %s frame 0" % name},
+                       {"name": "HISTORY", "comment": "SERViewer: Bayer RGGB (sidecar)"}],
+             absentKeywords=["DATE-OBS", "BAYERPAT"]),
+        dict(base, name="real AVI raw CFA f%d" % last, path=avi, frame=last, debayer=False,
+             expectId=view_id(avi, last), channels=1, samples=raw(last),
+             keywords=[{"name": "BAYERPAT", "value": "RGGB"}, {"name": "INSTRUME", "value": camera}],
+             absentKeywords=["DATE-OBS"]),
+    ]
+    out = os.path.join(outdir, "saturn_avi_converted.ser")
+    if os.path.exists(out):
+        os.remove(out)
+    cases.append({"name": "real AVI saveSerPath converts all %d frames" % total, "path": avi, "frame": 0,
+                  "debayer": True, "saveSerPath": out,
+                  "expectConsole": ["converting %s to SER; Bayer RGGB (sidecar)" % name,
+                                    "SERViewer: writing saturn_avi_converted.ser",
+                                    "SERViewer: wrote %d frames (BAYER_RGGB) to %s" % (total, out)],
+                  "consoleAbsent": ["showing the raw CFA"]})
+    cases.append(dict(base, name="converted real AVI reads back: raw f%d" % last, path=out, frame=last,
+                      debayer=False, expectId=view_id(out, last), channels=1, samples=raw(last),
+                      keywords=[{"name": "BAYERPAT", "value": "RGGB"}, {"name": "INSTRUME", "value": camera}],
+                      absentKeywords=["DATE-OBS"]))
+    cases.append(dict(base, name="converted real AVI reads back: debayered f0", path=out, frame=0,
+                      debayer=True, expectId=view_id(out, 0), channels=3, samples=deb(0),
+                      keywords=[{"name": "HISTORY", "comment": "SERViewer: saturn_avi_converted.ser frame 0"}],
+                      absentKeywords=["DATE-OBS", "BAYERPAT"]))
+    print("AVI leg: %d probe cases on %s (sidecar %s, Bayer RG, Flip None -> RGGB; %d frames converted)"
+          % (len(cases), name, camera, total))
+    return cases
+
+
 def main():
     args = sys.argv[1:]
     n_frames = PROBE_FRAMES
@@ -324,14 +399,22 @@ def main():
         cases.append({"name": "%s frame %d out of range" % (fname, n_frames), "path": os.path.join(outdir, fname),
                       "frame": n_frames, "debayer": True, "expectError": "out of range"})
 
+    # AVI leg: the capture itself (read in place, never written), Bayer from its sidecar.
+    cases += avi_cases(src, outdir, w, h, len(chunks), frames, n_frames)
+
     # Library check list (check-real-fixtures.cpp validates the C++ reader against these, no PixInsight):
     #   S path frame debayer channels x y c v | T path frame iso | W path substring | E path frame substring
+    # Conversion cases and the SER they write exist only once PixInsight has run: not checked here.
+    converted = {c["saveSerPath"] for c in cases if "saveSerPath" in c}
     tsv = []
     for c in cases:
+        if "saveSerPath" in c or c["path"] in converted:
+            continue
         if "expectError" in c:
             tsv.append("E\t%s\t%d\t%s" % (c["path"], c["frame"], c["expectError"]))
             continue
-        tsv.append("T\t%s\t%d\t%s" % (c["path"], c["frame"], c["keywords"][0]["value"]))
+        if c["keywords"] and c["keywords"][0]["name"] == "DATE-OBS":
+            tsv.append("T\t%s\t%d\t%s" % (c["path"], c["frame"], c["keywords"][0]["value"]))
         for k in c["keywords"]:
             if k["name"] == "HISTORY" and "commentContains" in k:
                 tsv.append("W\t%s\t%s" % (c["path"], k["commentContains"].replace("SERViewer warning: ", "")))

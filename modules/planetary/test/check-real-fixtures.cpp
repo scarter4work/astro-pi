@@ -1,6 +1,6 @@
-// Validates the C++ SER reader against the converter's independent expectations
-// (expected-checks.tsv, derived from the AVI bytes by avi_to_ser.py), with no
-// PixInsight. Test-only, never shipped.
+// Validates the C++ reader (OpenVideo: the SER fixtures and the source AVI) against the
+// converter's independent expectations (expected-checks.tsv, derived from the AVI bytes by
+// avi_to_ser.py), with no PixInsight. Test-only, never shipped.
 //
 //   check-real-fixtures <expected-checks.tsv>   -> exit 0 and "PASS: n checks", else FAIL lines
 //
@@ -16,12 +16,14 @@
 #include <vector>
 
 #include "Debayer.h"
+#include "FrameSource.h"
+#include "SerFile.h"
 #include "SerTime.h"
 
 using namespace planetary::ser;
 
 namespace {
-FloatImage Load(const SerFile& f, int64_t index, bool debayer) {
+FloatImage Load(const FrameSource& f, int64_t index, bool debayer) {
     const FileInfo& info = f.Info();
     const Frame fr = f.ReadFrame(index);
     if (debayer && IsBayer(info.colorId)) return DebayerBilinear(fr, info.colorId, info.normDepth);
@@ -42,7 +44,8 @@ int main(int argc, char** argv) {
         std::stringstream ss(line);
         for (std::string x; std::getline(ss, x, '\t');) t.push_back(x);
         try {
-            const SerFile f = SerFile::Open(t.at(1));
+            const auto src = OpenVideo(t.at(1));
+            const FrameSource& f = *src;
             ++checks;
             if (t[0] == "S") {
                 const int64_t fi = std::stoll(t.at(2));

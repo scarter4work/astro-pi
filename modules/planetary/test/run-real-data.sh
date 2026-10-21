@@ -10,8 +10,13 @@
 # 2. check-real-fixtures validates the C++ reader against those expectations (no PixInsight).
 # 3. BLOCKED here without /tmp/.pi_codesign_pass: nothing below launches PixInsight.
 # 4. run-probe.sh (slot 96) runs SERViewer on every fixture case.
+#    Its cases include the AVI leg: the capture itself opened in place (Bayer Auto from
+#    its sidecar -> RGGB, debayered and raw CFA), saveSerPath converting every frame into
+#    the temp dir, and the written SER read back.
 # 5. gui-smoke.sh (slot 97): fixture A = saturn_rggb16_12bit.ser (Bayer, 12-bit),
-#    B = saturn_rgb8.ser; the R/B order expectation comes from the raw samples.
+#    B = saturn_rgb8.ser, AVI = the capture itself (Open..., Bayer None, Save as SER...
+#    into the private run dir, never next to the capture); the R/B order expectation
+#    comes from the raw samples.
 #    Its PNGs and checks.txt are copied to modules/planetary/test/output/real/ (gitignored).
 #
 # PLANETARY_SATURN_AVI overrides the source capture.
@@ -56,7 +61,10 @@ planetary_require_signing_pass || exit 2
 
 PLANETARY_PROBE_CASES="$WORK/ser/expected.json" bash "$HERE/run-probe.sh" || exit 1
 
-GUI_ENV=( PLANETARY_GUI_FIXTURE_A="$WORK/ser/saturn_rggb16_12bit.ser" PLANETARY_GUI_FIXTURE_B="$WORK/ser/saturn_rgb8.ser" )
+AVI_FRAMES="$(ffprobe -v error -select_streams v:0 -show_entries stream=nb_frames -of csv=p=0 "$AVI")"
+case "$AVI_FRAMES" in ""|*[!0-9]*) echo "FAIL: ffprobe gave no frame count for $AVI ($AVI_FRAMES)"; exit 1 ;; esac
+GUI_ENV=( PLANETARY_GUI_FIXTURE_A="$WORK/ser/saturn_rggb16_12bit.ser" PLANETARY_GUI_FIXTURE_B="$WORK/ser/saturn_rgb8.ser"
+          PLANETARY_GUI_FIXTURE_AVI="$AVI" PLANETARY_GUI_AVI_FRAMES="$AVI_FRAMES" )
 GUI_ENV+=( "${RB_ENV[@]}" )
 rc=0
 env "${GUI_ENV[@]}" bash "$HERE/gui-smoke.sh" "$WORK/gui" || rc=$?
@@ -65,4 +73,4 @@ rm -f "$REAL_OUT"/*.png "$REAL_OUT"/checks.txt
 cp "$WORK"/gui/*.png "$REAL_OUT"/ 2>/dev/null || true
 [ -f "$WORK/gui/checks.txt" ] && cp "$WORK/gui/checks.txt" "$REAL_OUT"/
 [ "$rc" -eq 0 ] || { echo "FAIL: gui-smoke.sh exited $rc (PNGs, if any, in $REAL_OUT)"; exit "$rc"; }
-echo "PASS: Saturn real-data e2e (probe + GUI); PNGs in $REAL_OUT"
+echo "PASS: Saturn real-data e2e (SER fixtures + the AVI itself: probe + GUI); PNGs in $REAL_OUT"
