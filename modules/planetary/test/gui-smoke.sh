@@ -24,16 +24,30 @@
 #    Open... the AVI again (Bayer pattern back to Auto)      -> 11-reopened.png
 #    PixInsight now holds exactly the AVI open; the saved SER reads back
 #    (check_saved_ser).
+# 4b. gui_drive.py --save-pattern: Open... make-fixtures' avi-nosidecar.avi
+#    (always this run's own copy, never a caller's fixture)  -> 12-nosidecar.png
+#    Save pattern... shown, disabled under Auto; the combo two items down (RGGB)
+#                                                            -> 13-rggb.png (enabled)
+#    Save pattern... clicked, the "SERViewer" confirmation   -> 13b-confirm.png
+#    Return (Yes): the sidecar written, the AVI reopened with Auto
+#                                                            -> 14-pattern-saved.png
+#    Open... it again                                        -> 15-reopened-sidecar.png
+#    PixInsight holds exactly that AVI open; its .avi.txt is byte for byte
+#    WriteAsiairSidecar's text (Bayer = RG, this build's version; check_saved_sidecar).
 # 5. gui_drive.py --close: the interface's close button      -> 06-closed.png
 #    PixInsight holds no video file open (OnHide releases it).
 # 6. gui_drive.py --quit: File > Quit PixInsight.
 # PASS needs: PixInsight exits 0 within 60 s of Quit, every PNG present, the
 # open-file checks above, and gui_drive.py --check on the preview region
-# (found in 01-empty.png): lit in 02-05 and 08-11; 02 != 03 (frame 0 vs the last
+# (found in 01-empty.png): lit in 02-05 and 08-15; 02 != 03 (frame 0 vs the last
 # frame), 03 != 03b (debayered vs raw CFA), 03b grey, 03 == 03c, 03 != 04 (A vs B),
 # 03 == 05 (the slider's last frame == the imported last frame), 05 != 06,
 # 05 != 08 (A's last frame vs the AVI's frame 0), 08 != 09 and 09 grey (Bayer
 # None shows the raw CFA), 09 == 10 (the viewer stays on the AVI after saving),
+# 12 != 13 (raw CFA vs RGGB), 13 == 14 == 15 (the written sidecar reads back as
+# RGGB); in the Save pattern... button's box: 08 != 12 (shown only without a
+# sidecar), 12 != 13 (enabled only for a chosen pattern), 08 == 14 == 15 (hidden
+# once the sidecar exists);
 # 08 == 11 (Open... resets the Bayer pattern to Auto); with the default fixture
 # A, 03 red-dominant (catches an R/B swap); with the default AVI, 08 too, and
 # with both defaults 02 == 08 (the AVI decodes exactly as bayer-colour.ser);
@@ -80,12 +94,19 @@ if [ -e "/tmp/.X11-unix/X$DISPLAY_NO" ]; then
 fi
 
 CHECK_ARGS=()
-if [ -z "${PLANETARY_GUI_FIXTURE_A:-}" ] || [ -z "${PLANETARY_GUI_FIXTURE_B:-}" ] \
-   || [ -z "${PLANETARY_GUI_FIXTURE_AVI:-}" ]; then
-   [ -x "$MAKE_FIXTURES" ] || { echo "FAIL: make-fixtures not built at $MAKE_FIXTURES"; exit 1; }
-   "$MAKE_FIXTURES" "$PLANETARY_RUN_DIR/fixtures" >"$PLANETARY_RUN_DIR/make-fixtures.log" 2>&1 \
-      || { echo "FAIL: make-fixtures failed: $(cat "$PLANETARY_RUN_DIR/make-fixtures.log")"; exit 1; }
-fi
+# Always: Save pattern... writes its sidecar next to make-fixtures' avi-nosidecar.avi in this
+# run's private directory -- never next to a caller's fixture (real data lives on the NAS).
+[ -x "$MAKE_FIXTURES" ] || { echo "FAIL: make-fixtures not built at $MAKE_FIXTURES"; exit 1; }
+"$MAKE_FIXTURES" "$PLANETARY_RUN_DIR/fixtures" >"$PLANETARY_RUN_DIR/make-fixtures.log" 2>&1 \
+   || { echo "FAIL: make-fixtures failed: $(cat "$PLANETARY_RUN_DIR/make-fixtures.log")"; exit 1; }
+NOSIDECAR="$PLANETARY_RUN_DIR/fixtures/avi-nosidecar.avi"
+[ -f "$NOSIDECAR" ] && [ ! -e "$NOSIDECAR.txt" ] \
+   || { echo "FAIL: make-fixtures gave no sidecar-less $NOSIDECAR"; exit 1; }
+VERSION_H="$ROOT/src/module/PlanetaryVersion.h"
+PLANETARY_VERSION="$(for f in MAJOR MINOR REVISION BUILD; do
+   sed -n "s/^#define PLANETARY_MODULE_VERSION_$f  *\([0-9][0-9]*\)\$/\1/p" "$VERSION_H"; done | paste -sd.)"
+[[ "$PLANETARY_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]] \
+   || { echo "FAIL: cannot read the module version from $VERSION_H (got '$PLANETARY_VERSION')"; exit 1; }
 if [ -z "${PLANETARY_GUI_FIXTURE_A:-}" ]; then
    CHECK_ARGS+=( --expect-red )   # bayer-colour.ser is strongly red by construction
 fi
@@ -170,6 +191,22 @@ check_saved_ser()
    echo "saved SER reads back: MONO, 8-bit, $n frames of ${w}x${h}, $size bytes"
 }
 
+# The sidecar Save pattern... wrote next to $NOSIDECAR (the smoke chose RGGB): exactly
+# WriteAsiairSidecar's three lines, LF, this build's version; no .partial left.
+check_saved_sidecar()
+{
+   local want
+   want="$(printf '[SERViewer]\nBayer = RG\nWritten By = SERViewer %s (Bayer pattern chosen by the user)\nx' \
+           "$PLANETARY_VERSION")"
+   want="${want%x}"
+   [ -f "$NOSIDECAR.txt" ] || { echo "FAIL: Save pattern wrote no $NOSIDECAR.txt"; return 1; }
+   [ ! -e "$NOSIDECAR.txt.partial" ] || { echo "FAIL: $NOSIDECAR.txt.partial left behind"; return 1; }
+   if ! cmp -s "$NOSIDECAR.txt" <(printf '%s' "$want"); then
+      echo "FAIL: $NOSIDECAR.txt is not the expected sidecar:"; od -c "$NOSIDECAR.txt" | head -20; return 1
+   fi
+   echo "sidecar written by Save pattern...: $(wc -c <"$NOSIDECAR.txt") bytes, Bayer = RG, SERViewer $PLANETARY_VERSION"
+}
+
 Xvfb ":$DISPLAY_NO" -screen 0 1920x1080x24 -nolisten tcp >"$OUT/xvfb.log" 2>&1 & XVFB_PID=$!
 export DISPLAY=":$DISPLAY_NO"
 for _ in $(seq 50); do xprop -root >/dev/null 2>&1 && break; sleep 0.1; done
@@ -225,6 +262,11 @@ python3 "$HERE/gui_drive.py" --open-avi "$OUT" "$AVI" "$SAVED" \
 expect_open_video "after Save as SER" "$AVI" || exit 1
 check_saved_ser || exit 1
 
+python3 "$HERE/gui_drive.py" --save-pattern "$OUT" "$NOSIDECAR" \
+   || { echo "FAIL: driver (Save pattern...; see $OUT/windows.txt)"; exit 1; }
+expect_open_video "after Save pattern" "$NOSIDECAR" || exit 1
+check_saved_sidecar || exit 1
+
 python3 "$HERE/gui_drive.py" --close "$OUT" || { echo "FAIL: driver (close the interface; see $OUT/windows.txt)"; exit 1; }
 expect_open_video "after closing the interface" "" || exit 1
 
@@ -241,7 +283,8 @@ PI_PID=""
 ok=1
 [ "$rc" = 0 ] || { echo "FAIL: PixInsight exit code $rc (see $OUT/pi.log)"; ok=0; }
 for png in 01-empty 01b-dialog 02-loaded 03-last-frame 03b-cfa 03c-debayer-on 04-second-file 05-import 06-closed \
-           08-avi 09-bayer 09b-save-dialog 10-saved 11-reopened; do
+           08-avi 09-bayer 09b-save-dialog 10-saved 11-reopened 12-nosidecar 13-rggb 13b-confirm 14-pattern-saved \
+           15-reopened-sidecar; do
    [ -s "$OUT/$png.png" ] || { echo "FAIL: $png.png missing"; ok=0; }
 done
 python3 "$HERE/gui_drive.py" --check "$OUT" "${CHECK_ARGS[@]}" || ok=0

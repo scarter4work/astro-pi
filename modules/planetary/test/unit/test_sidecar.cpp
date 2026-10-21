@@ -382,3 +382,136 @@ TEST_CASE("OpenVideo leaves the instrument empty when the sidecar has no camera"
     CHECK(src->Info().header.instrument.empty());
     CHECK(src->Info().colorId == ColorId::BayerRGGB);
 }
+
+// ---- Increment 2.1: the sidecar SERViewer writes when the user saves a chosen pattern ----
+
+namespace {
+
+std::string ReadAll(const std::string& path) {
+    std::ifstream f(path, std::ios::binary);
+    return std::string((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+}
+
+const char* const kWritten = "Written By = SERViewer 0.2.1.0 (Bayer pattern chosen by the user)\n";
+
+}  // namespace
+
+TEST_CASE("WriteAsiairSidecar writes the exact text for each Bayer pattern") {
+    TempDir dir;
+    const struct {
+        ColorId id;
+        const char* value;
+    } cases[] = {{ColorId::BayerRGGB, "RG"}, {ColorId::BayerGRBG, "GR"},
+                 {ColorId::BayerGBRG, "GB"}, {ColorId::BayerBGGR, "BG"}};
+    for (const auto& c : cases) {
+        const std::string p = dir.NewPath(".avi");
+        WriteAsiairSidecar(p, c.id, "0.2.1.0");
+        CHECK(ReadAll(p + ".txt") == std::string("[SERViewer]\nBayer = ") + c.value + "\n" + kWritten);
+        CHECK_FALSE(std::filesystem::exists(p + ".txt.partial"));
+    }
+}
+
+TEST_CASE("WriteAsiairSidecar never overwrites a sidecar") {
+    TempDir dir;
+    const std::string p = dir.NewPath(".avi");
+    WriteText(p + ".txt", "[ZWO X]\nBayer = GB\n");
+    try {
+        WriteAsiairSidecar(p, ColorId::BayerRGGB, "0.2.1.0");
+        FAIL("an existing sidecar was not refused");
+    } catch (const SerError& e) {
+        CHECK(std::string(e.what()) ==
+              FileName(p + ".txt") + " already exists; SERViewer never overwrites a sidecar");
+    }
+    CHECK(ReadAll(p + ".txt") == "[ZWO X]\nBayer = GB\n");
+    CHECK_FALSE(std::filesystem::exists(p + ".txt.partial"));
+
+    // Nor a symbolic link in its place, even one that leads nowhere (rename would replace it).
+    const std::string q = dir.NewPath(".avi");
+    std::filesystem::create_symlink(q + ".missing", q + ".txt");
+    CHECK_THROWS_WITH(WriteAsiairSidecar(q, ColorId::BayerRGGB, "0.2.1.0"),
+                      FileName(q + ".txt") + " already exists; SERViewer never overwrites a sidecar");
+    CHECK(std::filesystem::is_symlink(q + ".txt"));
+    CHECK_FALSE(std::filesystem::exists(q + ".missing"));
+}
+
+TEST_CASE("WriteAsiairSidecar refuses anything but the four Bayer patterns") {
+    TempDir dir;
+    for (ColorId id : {ColorId::Mono, ColorId::RGB, ColorId::BGR}) {
+        const std::string p = dir.NewPath(".avi");
+        CHECK_THROWS_AS(WriteAsiairSidecar(p, id, "0.2.1.0"), SerError);
+        CHECK_FALSE(std::filesystem::exists(p + ".txt"));
+        CHECK_FALSE(std::filesystem::exists(p + ".txt.partial"));
+    }
+}
+
+TEST_CASE("WriteAsiairSidecar into a read-only folder names the path and the reason") {
+    TempDir dir;
+    const std::string sub = dir.NewPath("_ro");
+    std::filesystem::create_directory(sub);
+    const std::string p = sub + "/clip.avi";
+    WriteAvi(p, Avi(8, 6), Frames(8, 6, 1));
+    std::filesystem::permissions(sub, std::filesystem::perms::owner_read | std::filesystem::perms::owner_exec);
+    const bool enforced = !std::ofstream(sub + "/probe");  // root ignores the mode
+    if (enforced) {
+        try {
+            WriteAsiairSidecar(p, ColorId::BayerGRBG, "0.2.1.0");
+            FAIL("writing into a read-only folder did not fail");
+        } catch (const SerError& e) {
+            const std::string m = e.what();
+            CHECK(m.find(p + ".txt") != std::string::npos);
+            CHECK(m.find("Permission denied") != std::string::npos);
+        }
+        CHECK_FALSE(std::filesystem::exists(p + ".txt"));
+        CHECK_FALSE(std::filesystem::exists(p + ".txt.partial"));
+    }
+    std::filesystem::permissions(sub, std::filesystem::perms::owner_all);
+}
+
+TEST_CASE("WriteAsiairSidecar replaces a stale partial file and fails cleanly on a partial it cannot write") {
+    TempDir dir;
+    const std::string p = dir.NewPath(".avi");
+    WriteText(p + ".txt.partial", "left over from an interrupted write\n");
+    WriteAsiairSidecar(p, ColorId::BayerBGGR, "0.2.1.0");
+    CHECK(ReadAll(p + ".txt") == std::string("[SERViewer]\nBayer = BG\n") + kWritten);
+    CHECK_FALSE(std::filesystem::exists(p + ".txt.partial"));
+
+    // A directory where the partial goes: it cannot be written; the error names it, no sidecar.
+    const std::string q = dir.NewPath(".avi");
+    std::filesystem::create_directory(q + ".txt.partial");
+    try {
+        WriteAsiairSidecar(q, ColorId::BayerRGGB, "0.2.1.0");
+        FAIL("a directory in the partial's place did not fail");
+    } catch (const SerError& e) {
+        CHECK(std::string(e.what()).find(q + ".txt.partial") != std::string::npos);
+    }
+    CHECK_FALSE(std::filesystem::exists(q + ".txt"));
+    CHECK(std::filesystem::is_directory(q + ".txt.partial"));  // not ours to remove
+}
+
+TEST_CASE("ParseAsiairSidecar: a [SERViewer] section is not a camera") {
+    const auto sc = ParseAsiairSidecar(std::string("[SERViewer]\nBayer = GR\n") + kWritten);
+    REQUIRE(sc.has_value());
+    CHECK(sc->camera.empty());
+    CHECK(sc->writtenBySERViewer);
+    CHECK(sc->bayer == "GR");
+    CHECK_FALSE(ParseAsiairSidecar("[ZWO X]\nBayer = GR\n")->writtenBySERViewer);
+}
+
+TEST_CASE("A written sidecar round-trips through OpenVideo(Auto)") {
+    TempDir dir;
+    for (ColorId id : {ColorId::BayerRGGB, ColorId::BayerGRBG, ColorId::BayerGBRG, ColorId::BayerBGGR}) {
+        const std::string p = dir.NewPath(".avi");
+        WriteAvi(p, Avi(8, 6), Frames(8, 6, 2));
+        REQUIRE(OpenVideo(p)->Info().avi->sidecarStatus == SidecarStatus::Absent);
+        WriteAsiairSidecar(p, id, "0.2.1.0");
+        const auto src = OpenVideo(p);
+        const FileInfo& info = src->Info();
+        CHECK(info.colorId == id);
+        CHECK(info.avi->sidecarStatus == SidecarStatus::Parsed);
+        CHECK(info.avi->bayerSource == "sidecar (SERViewer)");
+        CHECK(info.header.instrument.empty());
+        CHECK(info.warnings.empty());  // no Flip line: no Flip warning, nothing else to say
+        // An explicit choice still wins over it.
+        CHECK(OpenVideo(p, BayerChoice::None)->Info().colorId == ColorId::Mono);
+    }
+}

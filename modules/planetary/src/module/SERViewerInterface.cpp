@@ -1,6 +1,7 @@
 // Planetary — Native PCL Module for PixInsight
 // Copyright (c) 2026 Scott Carter. MIT License.
 
+#include "PlanetaryVersion.h"
 #include "SERViewerInterface.h"
 #include "SERViewerParameters.h"
 #include "SERViewerProcess.h"
@@ -285,11 +286,61 @@ void SERViewerInterface::UpdateFrameControls()
    GUI->Bayer_Label.Enable( avi );
    GUI->Bayer_ComboBox.Enable( avi );
    GUI->SaveSer_PushButton.Enable( avi );
+   // Save pattern... only where there is no sidecar to read (never one to
+   // overwrite), and only once a pattern is chosen: Auto and None have none to save.
+   GUI->SavePattern_PushButton.SetVisible( AviWithoutSidecar() );
+   GUI->SavePattern_PushButton.Enable( AviWithoutSidecar() &&
+                                       instance.p_bayerPattern >= SVBayerPattern::RGGB &&
+                                       instance.p_bayerPattern <= SVBayerPattern::BGGR );
 }
 
 bool SERViewerInterface::AviLoaded() const
 {
    return m_file && m_file->Info().container != ser::Container::Ser;
+}
+
+bool SERViewerInterface::AviWithoutSidecar() const
+{
+   return AviLoaded() && m_file->Info().avi && m_file->Info().avi->sidecarStatus == ser::SidecarStatus::Absent;
+}
+
+void SERViewerInterface::SaveBayerPattern()
+{
+   if ( !AviWithoutSidecar() || !ser::IsBayer( m_file->Info().colorId ) )
+      return;
+   const String path = instance.p_filePath.Trimmed();
+   const ser::ColorId pattern = m_file->Info().colorId;
+   const String sidecarName = File::ExtractNameAndExtension( path ) + ".txt";
+   if ( MessageBox( "Write " + sidecarName + " with Bayer = " + String( ser::BayerPatternKeyword( pattern ) ) +
+                    "? SERViewer will use it for this file from now on.",
+                    "SERViewer", StdIcon::Question, StdButton::Yes, StdButton::No ).Execute() != StdButton::Yes )
+      return;
+
+   String failure;
+   try
+   {
+      ser::WriteAsiairSidecar( ToUtf8( path ), pattern, PLANETARY_VERSION_STRING );
+   }
+   catch ( ... )
+   {
+      failure = "SERViewer: Save pattern: " +
+                FromUtf8( planetary::preview::DescribeException( std::current_exception() ) );
+   }
+   if ( !failure.IsEmpty() )
+   {
+      // The viewer stays on the AVI: the failure is about the sidecar, not the video.
+      Console().CriticalLn( "<end><cbr>*** " + failure.EncodedHTMLSpecialChars() );
+      if ( m_file )
+         SetInfo( m_frameInfo + "\n\nSave pattern failed: " + ToUtf8( failure ) );
+      MessageBox( failure, "SERViewer", StdIcon::Error, StdButton::Ok ).Execute();
+      return;
+   }
+
+   // Reopened with Auto on the same frame: the new sidecar is read back, the
+   // info block names it as the source, and the button goes (a sidecar exists).
+   instance.p_bayerPattern = SVBayerPattern::Auto;
+   GUI->Bayer_ComboBox.SetCurrentItem( SVBayerPattern::Auto );
+   LoadFile( instance.p_filePath, true/*interactive*/ );
 }
 
 void SERViewerInterface::SaveAsSer()
@@ -412,6 +463,8 @@ void SERViewerInterface::e_Click( Button& sender, bool checked )
       }, true/*interactive*/ );
    else if ( sender == GUI->SaveSer_PushButton )
       Guarded( [this]() { SaveAsSer(); }, true/*interactive*/ );
+   else if ( sender == GUI->SavePattern_PushButton )
+      Guarded( [this]() { SaveBayerPattern(); }, true/*interactive*/ );
 }
 
 void SERViewerInterface::e_SliderValueUpdated( Slider& sender, int value )
@@ -479,9 +532,17 @@ SERViewerInterface::GUIData::GUIData( SERViewerInterface& w )
                                   "button stops it and removes the partial file. The viewer stays on the AVI.</p>" );
    SaveSer_PushButton.OnClick( (Button::click_event_handler)&SERViewerInterface::e_Click, w );
 
+   SavePattern_PushButton.SetText( "Save pattern..." );
+   SavePattern_PushButton.SetToolTip( "<p>AVI without a sidecar only: remember the Bayer pattern chosen above for this "
+                                      "video. It writes a small text file next to the video (&lt;name&gt;.avi.txt, "
+                                      "the sidecar Auto reads), so Auto uses this pattern whenever the file is opened. "
+                                      "Asks first; never replaces an existing sidecar.</p>" );
+   SavePattern_PushButton.OnClick( (Button::click_event_handler)&SERViewerInterface::e_Click, w );
+
    Avi_Sizer.SetSpacing( 6 );
    Avi_Sizer.Add( Bayer_Label );
    Avi_Sizer.Add( Bayer_ComboBox );
+   Avi_Sizer.Add( SavePattern_PushButton );
    Avi_Sizer.AddStretch();
    Avi_Sizer.Add( SaveSer_PushButton );
 
@@ -514,7 +575,8 @@ SERViewerInterface::GUIData::GUIData( SERViewerInterface& w )
 
    // The GUI smoke (test/gui_drive.py controls()) clicks relative to the
    // preview: two rows above it (Open... / Debayer, then Bayer pattern / Save
-   // as SER..., at its left / right ends), the frame slider directly below;
+   // as SER..., at its left / right ends; Save pattern..., when shown, right of
+   // the combo), the frame slider directly below;
    // 6 px apart. A layout change here means re-measuring those offsets.
    Global_Sizer.SetMargin( 8 );
    Global_Sizer.SetSpacing( 6 );
@@ -527,6 +589,12 @@ SERViewerInterface::GUIData::GUIData( SERViewerInterface& w )
    w.SetSizer( Global_Sizer );
    w.EnsureLayoutUpdated();
    w.AdjustToContents();
+   // Laid out with Save pattern... shown, so the Bayer row keeps room for it:
+   // shown later in a narrower window it would squeeze every button on the
+   // row (measured: "ave pattern." / "ave as SER."). Hidden until an AVI with
+   // no sidecar is open (UpdateFrameControls).
+   w.SetMinWidth( w.Width() );
+   SavePattern_PushButton.Hide();
 }
 
 } // namespace pcl

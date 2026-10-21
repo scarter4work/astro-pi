@@ -414,8 +414,8 @@ else:
              '            <p>Planetary: SER and AVI video viewer for PixInsight. SERViewer opens SER video '
              'files and uncompressed 8-bit greyscale or raw Bayer AVI files (such as ASIAIR captures): it shows any frame in a preview '
              'and opens it as a PixInsight image, and it can save an AVI as a SER file. '
-             'It reads only the video file you choose (and an AVI\'s .txt sidecar), writes only the SER file you choose, '
-             'uses no network and runs no external programs.</p>\n'
+             'It reads only the video file you choose (and an AVI\'s .txt sidecar), writes only the SER file you choose and, '
+             'if you click Save pattern..., the .txt sidecar next to the AVI; it uses no network and runs no external programs.</p>\n'
              '         </description>\n'
              '      </package>\n')
     new_s,n=re.subn(

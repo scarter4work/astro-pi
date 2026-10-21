@@ -239,3 +239,47 @@ File ▸ Open format module, batch conversion of many files.
 Class and file names; how the frame-source abstraction is shaped (virtual base vs variant);
 the progress UI mechanism for Save as SER (it must not freeze the interface without feedback
 and must be cancellable); where the sidecar parser lives; test-fixture layout.
+
+## Increment 2.1 — generated sidecar (0.2.1.0)
+
+Scott (2026-10-21): "can we generate a sidecar file for the avi if one doesn't exist? ask the
+user for bayer pattern, then write the file?" The user finds the pattern by trying the Bayer
+combo and looking at the preview; SERViewer remembers the answer.
+
+**Frame-based auto-detection was measured and rejected.** Reading the pattern from the frame
+data was tried on Scott's captures and was unreliable: empty frames read confidently, and
+captures from the same week contradicted each other. So the pattern always comes from the
+user's eye, never from a guess (the "no silent Bayer guess" anti-goal stands).
+
+Decided rules:
+- **Writer** (`src/ser/AsiairSidecar.{h,cpp}`, PCL-free):
+  `WriteAsiairSidecar(aviPath, ColorId pattern, writerVersion)` writes `<aviPath>.txt`, the
+  exact path `OpenVideo` reads, as LF ASCII:
+  `[SERViewer]` / `Bayer = <RG|GR|GB|BG>` /
+  `Written By = SERViewer <version> (Bayer pattern chosen by the user)`. No `Flip` line (Auto
+  uses the pattern as it stands) and no camera claim. It refuses (`SerError`, nothing written)
+  when the target exists, symbolic links included ("<name> already exists; SERViewer never
+  overwrites a sidecar"), or when the pattern is not one of the four Bayer ids. It writes
+  `<target>.partial` then renames; on failure it removes the partial and the error names
+  the path and the OS reason. The existence check runs before writing and again just before the
+  rename; nothing is locked between that check and the rename.
+- **Reading it back:** `ParseAsiairSidecar` treats a `[SERViewer]` section as no camera
+  (`camera` empty, `writtenBySERViewer` set), so no `INSTRUME` comes from it. `ResolveBayer`
+  reports the source `sidecar (SERViewer)`, and the info block shows
+  "Bayer: <PAT> (sidecar written by SERViewer)".
+- **Interface:** a `Save pattern...` button sits on the Bayer row, right of the combo. It is
+  visible only while an AVI with no sidecar is open (the reader's `SidecarStatus::Absent`), and
+  enabled only when the combo holds RGGB/GRBG/GBRG/BGGR. A click asks
+  "Write <name>.avi.txt with Bayer = <PAT>? SERViewer will use it for this file from now on."
+  (Yes/No, Yes the default). Yes writes the sidecar, then reopens the AVI with Auto on the
+  same frame (the sidecar is read back, and the button hides). A failure goes to the console,
+  the info block and a message box, and the file stays open. The interface is laid out with
+  the button shown and keeps that width, so showing it never squeezes the row (measured: it
+  clipped "Save pattern..." and "Save as SER..." in a 400 px wide preview layout).
+- No process parameter changes. The probe cases are unchanged.
+
+Proof: unit tests (exact bytes for each pattern; refuses an existing target or symlink, which
+stays unchanged; refuses non-Bayer ids; read-only folder: path + "Permission denied", no partial
+left; round trip through `OpenVideo(Auto)`); GUI smoke step `--save-pattern` on make-fixtures'
+`avi-nosidecar.avi` in the run's private directory (12-15 PNGs, button box pixel checks, the
+written bytes compared exactly); `run-avi-real.sh` stays green and writes nothing to the NAS.

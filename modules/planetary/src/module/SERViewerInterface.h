@@ -28,7 +28,8 @@ namespace pcl
 // embedded preview, the file facts go in the info block, and the frame slider /
 // spin box step through the video. For an AVI, the Bayer pattern combo chooses
 // how its raw frames are read, and Save as SER... converts it (the viewer stays
-// on the AVI). Apply Global opens the selected frame as an image window
+// on the AVI); for an AVI with no sidecar, Save pattern... records the chosen
+// pattern in a sidecar next to it. Apply Global opens the selected frame as an image window
 // (SERViewerInstance::ExecuteGlobal); the interface's instance never carries
 // saveSerPath, so Apply Global never converts.
 class SERViewerInterface : public ProcessInterface
@@ -74,6 +75,7 @@ private:
          HorizontalSizer Avi_Sizer;
             Label           Bayer_Label;
             ComboBox        Bayer_ComboBox;
+            PushButton      SavePattern_PushButton;
             PushButton      SaveSer_PushButton;
          FramePreview    Preview_Control;
          HorizontalSizer Frame_Sizer;
@@ -107,12 +109,20 @@ private:
    void Fail( const String& message, bool interactive );
    // The frame row's range/value, and which controls are enabled: the frame
    // row for any open file, the Bayer pattern combo and Save as SER... for an
-   // open AVI only.
+   // open AVI only; Save pattern... shown only for an AVI with no sidecar
+   // (AviWithoutSidecar), enabled only for a chosen Bayer pattern.
    void UpdateFrameControls();
    bool AviLoaded() const;
+   // An AVI is open and the reader found no sidecar next to it.
+   bool AviWithoutSidecar() const;
    // Save as SER...: asks for the output path, converts the open AVI
    // (ConvertToSer). A failure or cancel is reported, never closes the AVI.
    void SaveAsSer();
+   // Save pattern...: asks, then writes the chosen Bayer pattern to the AVI's
+   // .txt sidecar (WriteAsiairSidecar) and reopens the AVI with Auto on the
+   // same frame, so the sidecar is read back. A failure is reported (console,
+   // info block, message box) and never closes the AVI.
+   void SaveBayerPattern();
 
    void e_Click( Button& sender, bool checked );
    void e_ItemSelected( ComboBox& sender, int itemIndex );

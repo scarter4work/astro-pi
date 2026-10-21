@@ -10,20 +10,26 @@
                                       one item down (click, Down, Return) -> 09-bayer.png;
                                       Save as SER... (09b-save-dialog.png) to SER, typed without
                                       .ser -> 10-saved.png; Open... the AVI again -> 11-reopened.png
+  gui_drive.py --save-pattern OUT AVI Open... AVI (no sidecar) -> 12-nosidecar.png; Bayer pattern
+                                      RGGB -> 13-rggb.png; Save pattern..., the confirmation
+                                      (13b-confirm.png), Return -> 14-pattern-saved.png; Open...
+                                      it again -> 15-reopened-sidecar.png
   gui_drive.py --shot OUT NAME        one screenshot
   gui_drive.py --close OUT            the interface's title-bar close button -> 06-closed.png
   gui_drive.py --quit OUT             File > Quit PixInsight (07-file-menu.png)
   gui_drive.py --check OUT [--expect-red] [--expect-avi-red] [--avi-is-a] [--expect-rb gt|lt]
-                                      pixel checks of the preview region (exit 1 on failure)
+                                      pixel checks of the preview region and the Save pattern...
+                                      button's box (exit 1 on failure)
 
 PixInsight draws its interface windows inside the main window (no X window to
 query), so the preview is found in 01-empty.png: the empty preview is the only
 large pure-black rectangle on screen (FramePreview paints black; measured: the
 PI 1.9.5 desktop on Xvfb has ~1000 scattered black pixels, all in glyphs). The
 interface layout (SERViewerInterface.cpp) puts two rows of controls above the
-preview (Open... / Debayer, then Bayer pattern / Save as SER...) and the frame
+preview (Open... / Debayer, then Bayer pattern [Save pattern...] / Save as SER...) and the frame
 row (label, slider, spin box) directly below it; the clicks are placed from the
-preview's edges (controls()). Native X windows (the Qt file dialogs) are found by name.
+preview's edges (controls()). Native X windows (the Qt file dialogs, the Save pattern...
+confirmation) are found by name.
 Every mode but --check refuses (FAIL) unless $DISPLAY is served by Xvfb."""
 import json, os, re, subprocess, sys, time
 from collections import Counter
@@ -37,6 +43,7 @@ except ImportError as e:
 MODE, OUT = sys.argv[1], sys.argv[2]
 OPEN_DIALOG = "Open planetary video"
 SAVE_DIALOG = "Save as SER"
+CONFIRM_DIALOG = "SERViewer"   # Save pattern...'s MessageBox (interface windows have no X window)
 # Interface title bars, measured (PI 1.9.5, Xvfb): active and inactive.
 TITLE_COLOURS = ((86, 100, 175), (110, 110, 110))
 
@@ -221,13 +228,16 @@ def controls(box):
     Save as SER... (right), then the preview, then the frame row."""
     # Measured 2026-10-21 (PI 1.9.5, Xvfb) with the preview at (762, 317, 1162, 617):
     # Open... x 762..855 y 263..283; Debayer label ends at 1160 (y 273); Bayer pattern
-    # combo x 848..959 y 290..310; Save as SER... x 1056..1161 y 291..311.
+    # combo x 848..959 y 290..310; Save as SER... x 1056..1161 y 291..311. Re-measured for 0.2.1.0
+    # (the interface keeps room for Save pattern..., so the preview is 749..1175 wide): Save
+    # pattern... x 953..1062 y 290..310, i.e. x0+204..x0+313, y0-27..y0-7 (PATTERN_BOX).
     x0, y0, x1, y1 = box
     return {
         "open": (x0 + 24, y0 - 44),          # Open... above the preview's left end, row 1
         "debayer": (x1 - 20, y0 - 44),       # the Debayer label ends above its right end, row 1
         "bayer": (x0 + 140, y0 - 17),        # the Bayer pattern combo, row 2
         "save": (x1 - 40, y0 - 17),          # Save as SER... above the preview's right end, row 2
+        "pattern": (x0 + 258, y0 - 17),      # Save pattern..., right of the combo, row 2 (when shown)
         "handle": (x0 + 47, y1 + 18),        # the slider handle at frame 0 (measured: 809,621 for x0=762)
     }
 
@@ -401,6 +411,51 @@ if MODE == "--open-avi":
     dump("open-avi end")
     sys.exit(0)
 
+if MODE == "--save-pattern":
+    # After --open-avi: the interface shows the AVI with a sidecar (Save pattern... hidden).
+    # Open... an AVI with NO sidecar: Save pattern... appears, disabled under Auto.
+    path_avi = sys.argv[3]
+    sidecar = path_avi + ".txt"
+    if os.path.lexists(sidecar):
+        raise SystemExit("FAIL: --save-pattern needs an AVI without a sidecar; %s exists" % sidecar)
+    CTL = controls(preview_box())
+    dump("save-pattern start")
+    open_file(path_avi, False)
+    shot("12-nosidecar.png", 1.5)
+
+    # Auto -> None (mono) -> RGGB: two items down (see --open-avi for why the list is not
+    # visible in a screenshot). The button is enabled once a pattern is chosen.
+    click(*CTL["bayer"])
+    time.sleep(0.5)
+    key("Down")
+    time.sleep(0.2)
+    key("Down")
+    time.sleep(0.2)
+    key("Return")
+    park()
+    shot("13-rggb.png", 1.5)
+
+    # Save pattern... -> the confirmation (a native window captioned SERViewer) -> Return (Yes
+    # is its default button) -> the sidecar is written and the AVI reopened with Auto.
+    click(*CTL["pattern"])
+    park()
+    wait_for(lambda: dialog_open(CONFIRM_DIALOG), 15, "the '%s' confirmation" % CONFIRM_DIALOG)
+    time.sleep(0.8)
+    shot("13b-confirm.png", 0)
+    key("Return")
+    wait_for(lambda: not dialog_open(CONFIRM_DIALOG), 15, "the confirmation to close after Return")
+    wait_for(lambda: os.path.exists(sidecar), 15, "%s to be written" % sidecar)
+    if os.path.exists(sidecar + ".partial"):
+        raise SystemExit("FAIL: %s.partial left behind" % sidecar)
+    park()
+    shot("14-pattern-saved.png", 1.5)
+
+    # Open... the same AVI again: its sidecar is read (Auto -> RGGB), no Save pattern... button.
+    open_file(path_avi, False)
+    shot("15-reopened-sidecar.png", 1.5)
+    dump("save-pattern end")
+    sys.exit(0)
+
 if MODE == "--check":
     expect_red = "--expect-red" in sys.argv[3:]
     expect_avi_red = "--expect-avi-red" in sys.argv[3:]
@@ -487,6 +542,45 @@ if MODE == "--check":
         lines.append("03-last-frame.png: mean R/B over lit pixels %.0f/%.0f = %.2f (expected R %s B)" % (r, b, ratio, "above" if expect_rb == "gt" else "below"))
         if (expect_rb == "gt" and not ratio >= 1.05) or (expect_rb == "lt" and not ratio <= 1 / 1.05):
             fails.append("03-last-frame.png: R/B order wrong (R/B %.2f, expected R %s B by at least 5%%)" % (ratio, "above" if expect_rb == "gt" else "below"))
+
+    # Save pattern... (Increment 2.1): the button's own screen box (controls(), measured), in the
+    # whole screenshot, not the preview. Hidden: the row's plain background, as in 08 (an AVI with
+    # a sidecar); shown disabled under Auto in 12, enabled once RGGB is chosen in 13; hidden again
+    # once its sidecar exists (14 after the write, 15 reopened).
+    bx0, by0, bx1, by1 = x0 + 206, y0 - 25, x0 + 311, y0 - 9
+
+    def button(name):
+        return np.asarray(Image.open(OUT + "/" + name).convert("RGB").crop((bx0, by0, bx1, by1))).astype(np.float64)
+
+    def button_changed(a, b):
+        return float((np.abs(button(a) - button(b)).max(axis=2) > 12).mean())
+
+    for name in ("12-nosidecar.png", "13-rggb.png", "14-pattern-saved.png", "15-reopened-sidecar.png"):
+        f = float(lit_mask(name).mean())
+        lines.append("%s: %.2f%% of the preview lit" % (name, 100 * f))
+        if f < 0.001:
+            fails.append("%s: the preview is black (%.2f%% lit)" % (name, 100 * f))
+    for a, b, what, want in (
+            ("12-nosidecar.png", "13-rggb.png", "Auto (no sidecar: raw CFA) vs RGGB chosen", "differ"),
+            ("13-rggb.png", "14-pattern-saved.png", "RGGB chosen vs Auto reading the written sidecar", "same"),
+            ("14-pattern-saved.png", "15-reopened-sidecar.png", "after the write vs opened again", "same")):
+        v = changed(a, b)
+        lines.append("%s vs %s (%s): %.3f%% of the preview changed" % (a, b, what, 100 * v))
+        if want == "differ" and v < 0.002:
+            fails.append("%s: %s and %s do not differ (%.3f%% changed)" % (what, a, b, 100 * v))
+        if want == "same" and v > 0.0:
+            fails.append("%s: %s and %s differ (%.3f%% changed)" % (what, a, b, 100 * v))
+    for a, b, what, want in (
+            ("08-avi.png", "12-nosidecar.png", "hidden (AVI with a sidecar) vs shown (none)", "differ"),
+            ("12-nosidecar.png", "13-rggb.png", "disabled under Auto vs enabled for RGGB", "differ"),
+            ("08-avi.png", "14-pattern-saved.png", "hidden vs hidden after the write", "same"),
+            ("08-avi.png", "15-reopened-sidecar.png", "hidden vs hidden on reopening", "same")):
+        v = button_changed(a, b)
+        lines.append("Save pattern... box, %s vs %s (%s): %.1f%% changed" % (a, b, what, 100 * v))
+        if want == "differ" and v < 0.05:
+            fails.append("Save pattern... %s: %s and %s do not differ (%.1f%% changed)" % (what, a, b, 100 * v))
+        if want == "same" and v > 0.0:
+            fails.append("Save pattern... %s: %s and %s differ (%.1f%% changed)" % (what, a, b, 100 * v))
 
     print("\n".join("  " + l for l in lines))
     open(OUT + "/checks.txt", "w").write("\n".join(lines + ["FAIL: " + f for f in fails]) + "\n")

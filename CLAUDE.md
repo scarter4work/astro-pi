@@ -12,7 +12,7 @@ by subproject) -- never a new per-folder memory directory. No CLAUDE.md below th
 - `modules/nukex/` → `NukeX-pxm` module (ID string `"NukeX"` is STABLE — never rename; existing installs update by ID).
 - `modules/pi-copilot/` → `PICopilot-pxm` module (process/doc id `PICopilot`).
 - `modules/planetary/` → `Planetary-pxm` module, process `SERViewer` (docs deploy as `doc/tools/SERViewer/`).
-  0.2.0.0 (AVI input + Save as SER; 0.1.0.0 released 2026-10-21): module id `Planetary` and process id `SERViewer` are STABLE — never rename.
+  0.2.1.0 (Save pattern...: generated AVI sidecar; 0.2.0.0 = AVI input + Save as SER; 0.1.0.0 released 2026-10-21): module id `Planetary` and process id `SERViewer` are STABLE — never rename.
 - `gaia-depth-grade/` → Gaia Depth Grade scripts + the linux-x64 sidecar package.
 - `scripts/ez-stretch/` → EZStretch / EZDonutRepair / EZHazeKill (`.js` + `.xsgn`).
 Everything in `tools/` and `archive/` is NOT shipped.

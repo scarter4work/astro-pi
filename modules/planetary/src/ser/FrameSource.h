@@ -41,6 +41,8 @@ enum class BayerChoice { Auto, None, RGGB, GRBG, GBRG, BGGR };
 // ASIAIR capture-log fields, raw strings as read from the sidecar.
 struct AsiairSidecar {
     std::string camera, colourFormat, bayer, flip, gain, exposure, captureArea;
+    // The section was [SERViewer] (WriteAsiairSidecar): `camera` is empty, never "SERViewer".
+    bool writtenBySERViewer = false;
 };
 
 // What became of the `<video>.avi.txt` next to an AVI: none there, there but unreadable

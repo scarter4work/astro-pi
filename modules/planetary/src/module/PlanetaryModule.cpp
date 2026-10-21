@@ -45,7 +45,8 @@ String PlanetaryModule::Description() const
    return String::UTF8ToUTF16( "Planetary imaging for PixInsight. This version provides SERViewer, which opens SER planetary "
           "video files and uncompressed 8-bit greyscale or raw Bayer AVI files (such as ASIAIR captures), previews frames, opens a frame as an image "
           "and can save an AVI as a SER file. "
-          "It reads only the video file you choose (and an AVI's .txt sidecar), writes only the SER file you choose, "
+          "It reads only the video file you choose (and an AVI's .txt sidecar), writes only the SER file you choose and, if you click "
+          "Save pattern..., the .txt sidecar next to the AVI; it "
           "uses no network and runs no external programs. "
           "This product is based on software from the PixInsight project, developed by Pleiades Astrophoto and its contributors (https://pixinsight.com/)." );
 }

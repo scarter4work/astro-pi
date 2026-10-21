@@ -298,6 +298,10 @@ TEST_CASE("Bayer source tokens read as text", "[preview][info]") {
     CHECK(BayerText(i) == "RGGB (sidecar)");
     CHECK(BayerText(AviInfo()) == "BGGR (sidecar RG, Flip=Vert \xE2\x86\x92 BGGR)");
     CHECK(InfoText("x.avi", i, std::nullopt).find("Bayer: RGGB (sidecar)\n") != std::string::npos);
+    // The sidecar SERViewer wrote when the user saved a chosen pattern (Increment 2.1).
+    i.avi->bayerSource = "sidecar (SERViewer)";
+    CHECK(BayerText(i) == "RGGB (sidecar written by SERViewer)");
+    CHECK(InfoText("x.avi", i, std::nullopt).find("Bayer: RGGB (sidecar written by SERViewer)\n") != std::string::npos);
 }
 
 TEST_CASE("info text for an AVI: empty sidecar fields get no line", "[preview][info]") {

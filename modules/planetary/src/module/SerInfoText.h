@@ -37,12 +37,15 @@ inline std::string ConversionWarning( const std::string& warning )
 // "BGGR (sidecar RG, Flip=Vert → BGGR)", "RGGB (chosen)", "none (chosen)". The
 // reader's "none" token (Auto found no pattern) becomes the reason: a sidecar
 // Bayer value it did not recognise, a sidecar that could not be read, or no
-// pattern to go on at all. UTF-8.
+// pattern to go on at all. The reader's "sidecar (SERViewer)" (a sidecar that
+// Save pattern... wrote) becomes "sidecar written by SERViewer". UTF-8.
 inline std::string BayerText( const ser::FileInfo& info )
 {
    const std::string pattern = ser::IsBayer( info.colorId ) ? ser::BayerPatternKeyword( info.colorId ) : "none";
    std::string source = info.avi ? info.avi->bayerSource : std::string();
-   if ( source == "none" )
+   if ( source == "sidecar (SERViewer)" )
+      source = "sidecar written by SERViewer";
+   else if ( source == "none" )
    {
       const ser::SidecarStatus status = info.avi->sidecarStatus;
       if ( info.avi->sidecar && !info.avi->sidecar->bayer.empty() )

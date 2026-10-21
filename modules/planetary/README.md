@@ -4,10 +4,13 @@ Planetary: a SER and AVI video viewer for PixInsight, the first step toward luck
 (as written by planetary capture programs such as FireCapture and SharpCap) and uncompressed 8-bit greyscale or raw Bayer AVI files (such as ASIAIR captures, including OpenDML files over 1 GB): it shows any frame in a
 preview with a frame slider and an info block, and opens the selected frame as an ordinary 32-bit PixInsight
 image, debayered (bilinear) or as the raw CFA mosaic. For an AVI you pick the Bayer pattern (or let the ASIAIR
-sidecar decide), and Save as SER... writes the AVI out as a SER file. It reads only the video file you choose (and an AVI's
-`.txt` sidecar), writes only the SER file you choose, uses no network and runs no external programs.
+sidecar decide); for an AVI with no sidecar, Save pattern... remembers the pattern you chose in a sidecar it writes next
+to the video, and Save as SER... writes the AVI out as a SER file. It reads only the video file you choose (and an AVI's
+`.txt` sidecar), writes only the SER file you choose and, if you click Save pattern..., the `.txt` sidecar next to the
+AVI; it uses no network and runs no external programs.
 
-**Status:** 0.2.0.0 adds AVI input and Save as SER (0.1.0.0 was released 2026-10-21). The module id `Planetary` and process id `SERViewer` are
+**Status:** 0.2.1.0 adds Save pattern... (a generated sidecar for an AVI that has none); 0.2.0.0 added AVI input and
+Save as SER (0.1.0.0 was released 2026-10-21). The module id `Planetary` and process id `SERViewer` are
 permanent: existing installs update by these ids, so never rename them.
 
 **User documentation** (installed with the module as `doc/tools/SERViewer/SERViewer.html`):

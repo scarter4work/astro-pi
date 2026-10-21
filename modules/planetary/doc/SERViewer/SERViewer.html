@@ -34,6 +34,8 @@ PixInsight image window, so every PixInsight tool can be used on it.</p>
   <li><b>Bayer pattern</b> (AVI only; disabled for a SER, which states its own layout): Auto, None (mono), RGGB, GRBG,
   GBRG or BGGR. See <a href="#avi">AVI files</a>. Changing it reopens the AVI on the same frame.
   This is the <code>bayerPattern</code> parameter.</li>
+  <li><b>Save pattern...</b> (only for an AVI with no sidecar; enabled once you choose RGGB, GRBG, GBRG or BGGR) remembers
+  the chosen pattern in a sidecar next to the video. See <a href="#savepattern">Remembering a chosen pattern</a>.</li>
   <li><b>Save as SER...</b> (AVI only) writes the whole video as a SER file. See <a href="#saveser">Save as SER</a>.</li>
   <li><b>Debayer</b>: for Bayer files, show and open frames as RGB (checked) or as the raw CFA mosaic
   (unchecked). This is the <code>debayer</code> parameter.</li>
@@ -126,6 +128,31 @@ colours look wrong, choose the pattern yourself. The image itself is never flipp
 <p>The info block shows where the pattern came from. The image's <code>BAYERPAT</code> keyword and <code>HISTORY</code> note
 record the pattern used. The sidecar is read as plain text and is never required.</p>
 
+<h3 id="savepattern">Remembering a chosen pattern</h3>
+<p>An AVI with no sidecar opens as the raw CFA in mono. To find its pattern, try RGGB, GRBG, GBRG and BGGR under
+<b>Bayer pattern</b> and look at the preview. Once the colours look right, click <b>Save pattern...</b>. SERViewer asks
+&ldquo;Write &lt;name&gt;.avi.txt with Bayer = RGGB? SERViewer will use it for this file from now on.&rdquo; (with your file
+and pattern). <b>Yes</b> writes a small text file next to the video:</p>
+<pre>
+[SERViewer]
+Bayer = RG
+Written By = SERViewer &lt;version&gt; (Bayer pattern chosen by the user)
+</pre>
+<p>Then the AVI is opened again with Auto on the same frame, so the new sidecar is read back. The info block shows
+&ldquo;Bayer: RGGB (sidecar written by SERViewer)&rdquo;, and from then on Auto uses this pattern whenever the file is
+opened. The file names no camera, so the image gets no <code>INSTRUME</code> keyword from it, and it has no
+<code>Flip</code> line, so the pattern is used as it stands.</p>
+<ul>
+<li>The button is shown only when the open AVI has no sidecar, so SERViewer never replaces one, including an ASIAIR
+sidecar. If a file of that name appears before the write, the write is refused. To change a saved pattern, delete or
+edit the <code>.avi.txt</code> file.</li>
+<li>The file is written to a temporary <code>.partial</code> file first and then renamed. If the write fails (for example,
+the folder is read-only), the reason is shown in the info block, the Process Console and a message box. The partial file
+is removed, and the video stays open.</li>
+<li>SERViewer does not work out the pattern from the frames. That was tried on real captures and was not reliable:
+empty frames gave confident answers, and captures from the same week gave contradictory ones.</li>
+</ul>
+
 <h2 id="saveser">Save as SER</h2>
 <p><b>Save as SER...</b> opens a save dialog (default name: the AVI's name with <code>.ser</code>, in the AVI's folder) and writes the
 whole video as an 8-bit SER file. The viewer stays on the AVI. A progress dialog shows how far it has got, and its Cancel
@@ -156,8 +183,9 @@ prove are complete, and says what it did in the interface's info block, the Proc
 file it cannot read stops the process with an error message giving the reason.</p>
 
 <h2>Files, network and privacy</h2>
-<p>SERViewer reads only the video file you choose and, for an AVI, its <code>.txt</code> sidecar. It writes to disk only
-when you use Save as SER, and then only the SER path you choose (and its temporary <code>.partial</code> file beside it). Opening a frame
+<p>SERViewer reads only the video file you choose and, for an AVI, its <code>.txt</code> sidecar. It writes only the SER path
+you choose and, if you click Save pattern..., the <code>.txt</code> sidecar next to the video (each through a temporary
+<code>.partial</code> file beside it). Opening a frame
 creates a new, unsaved image window. It uses no network connection and runs no external programs.</p>
 
 <h2>Acknowledgments</h2>
