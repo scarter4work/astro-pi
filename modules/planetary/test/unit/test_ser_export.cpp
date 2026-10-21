@@ -84,6 +84,13 @@ TEST_CASE("ExportSer round trip from an AVI") {
     CHECK(info.header.height == kH);
     CHECK(info.header.depth == 8);
     CHECK(info.header.littleEndianField == 0);
+    {
+        const std::string raw = Slurp(out);  // FrameCount: raw bytes 38..41, little-endian
+        CHECK(static_cast<uint8_t>(raw[38]) == kN);
+        CHECK(raw[39] == 0);
+        CHECK(raw[40] == 0);
+        CHECK(raw[41] == 0);
+    }
     CHECK(info.header.instrument == "ZWO ASI071MC Pro");
     CHECK(info.header.observer.empty());
     CHECK(info.header.telescope.empty());
@@ -112,6 +119,10 @@ TEST_CASE("ExportSer truncates a long instrument name to 40 bytes") {
     const std::string out = (dir / "o.ser").string();
     ExportSer(*src, avi, out, false, kNone);
     CHECK(SerFile::Open(out).Info().header.instrument == cam.substr(0, 40));
+    CHECK(SerFile::Open(out).Info().header.telescope.empty());
+    const std::string raw = Slurp(out);
+    CHECK(raw[82 + 40] == 0);  // byte 41 of Instrument stays zero
+    CHECK(raw[122] == 0);      // Telescope starts empty
 }
 
 TEST_CASE("ExportSer cancel leaves no files") {
@@ -207,4 +218,97 @@ TEST_CASE("ExportSer reports a write failure and leaves no partial") {
     const auto src = OpenVideo(avi);
     const std::string out = (dir / "missing-dir" / "out.ser").string();
     CHECK_THROWS_AS(ExportSer(*src, avi, out, false, kNone), SerError);
+}
+
+namespace {
+// Reports a valid-looking Info but hands back a wrong-size frame at index 1.
+class BadFrames : public FrameSource {
+public:
+    BadFrames() {
+        info_.header.width = kW;
+        info_.header.height = kH;
+        info_.header.depth = 8;
+        info_.frameCount = 3;
+    }
+    const FileInfo& Info() const override { return info_; }
+    Frame ReadFrame(int64_t i) const override {
+        Frame f;
+        f.width = kW;
+        f.height = kH;
+        f.channels = 1;
+        f.samples.assign(kW * kH - (i == 1 ? 1 : 0), 5);
+        return f;
+    }
+    std::optional<int64_t> FrameTimestamp(int64_t) const override { return std::nullopt; }
+
+private:
+    FileInfo info_;
+};
+}  // namespace
+
+TEST_CASE("ExportSer rejects a wrong-size frame and leaves no files") {
+    TempDir td;
+    const fs::path dir = fs::path(td.NewPath(".d"));
+    fs::create_directories(dir);
+    const std::string out = (dir / "out.ser").string();
+    BadFrames src;
+    try {
+        ExportSer(src, (dir / "src.avi").string(), out, false, kNone);
+        FAIL("expected SerError");
+    } catch (const SerError& e) {
+        CHECK(std::string(e.what()) == "frame 1 does not match the video size");
+    }
+    CHECK_FALSE(fs::exists(out));
+    CHECK_FALSE(fs::exists(out + ".partial"));
+}
+
+TEST_CASE("ExportSer cancel on the final frame leaves no files") {
+    TempDir td;
+    const fs::path dir = fs::path(td.NewPath(".d"));
+    fs::create_directories(dir);
+    const std::string avi = MakeAvi(dir, "a.avi");
+    const auto src = OpenVideo(avi);
+    const std::string out = (dir / "out.ser").string();
+    CHECK_THROWS_AS(ExportSer(*src, avi, out, false, [](int64_t d, int64_t n) { return d < n; }),
+                    ExportCancelled);
+    CHECK_FALSE(fs::exists(out));
+    CHECK_FALSE(fs::exists(out + ".partial"));
+}
+
+TEST_CASE("ExportSer refuses when there is not enough free space") {
+    TempDir td;
+    const fs::path dir = fs::path(td.NewPath(".d"));
+    fs::create_directories(dir);
+    const std::string avi = MakeAvi(dir, "a.avi");
+    const auto src = OpenVideo(avi);
+    const std::string out = (dir / "out.ser").string();
+    const int64_t need = 178 + kN * kW * kH;
+    try {
+        ExportSerWithSpace(*src, avi, out, false, kNone, [&](const std::string&, std::error_code&) {
+            return static_cast<uint64_t>(need - 1);
+        });
+        FAIL("expected SerError");
+    } catch (const SerError& e) {
+        CHECK(std::string(e.what()) == "not enough free space: need " + std::to_string(need) +
+                                           " bytes, " + std::to_string(need - 1) + " available");
+    }
+    CHECK_FALSE(fs::exists(out));
+    CHECK_FALSE(fs::exists(out + ".partial"));
+    ExportSerWithSpace(*src, avi, out, false, kNone, [&](const std::string&, std::error_code&) {
+        return static_cast<uint64_t>(need);
+    });
+    CHECK(fs::exists(out));
+}
+
+TEST_CASE("ExportSer replaces a stale .partial") {
+    TempDir td;
+    const fs::path dir = fs::path(td.NewPath(".d"));
+    fs::create_directories(dir);
+    const std::string avi = MakeAvi(dir, "a.avi");
+    const auto src = OpenVideo(avi);
+    const std::string out = (dir / "out.ser").string();
+    std::ofstream(out + ".partial") << std::string(5000, 'x');
+    ExportSer(*src, avi, out, false, kNone);
+    CHECK_FALSE(fs::exists(out + ".partial"));
+    CHECK(fs::file_size(out) == static_cast<uintmax_t>(178 + kN * kW * kH));
 }

@@ -55,7 +55,11 @@ bool SamePath(const fs::path& a, const fs::path& b) {
         const bool eq = fs::equivalent(a, b, ec);
         if (!ec) return eq;
     }
-    return fs::absolute(a).lexically_normal() == fs::absolute(b).lexically_normal();
+    const fs::path aa = fs::absolute(a, ec1), ba = fs::absolute(b, ec2);
+    if (ec1 || ec2)
+        throw SerError("cannot resolve path " + (ec1 ? a : b).string() + ": " +
+                       (ec1 ? ec1 : ec2).message());
+    return aa.lexically_normal() == ba.lexically_normal();
 }
 
 }  // namespace
@@ -73,6 +77,15 @@ int64_t FilenameStartTicks(const std::string& fileName) {
 ExportResult ExportSer(const FrameSource& src, const std::string& sourcePath,
                        const std::string& outPath, bool allowOverwrite,
                        const ExportProgress& progress) {
+    return ExportSerWithSpace(src, sourcePath, outPath, allowOverwrite, progress,
+                              [](const std::string& dir, std::error_code& ec) {
+                                  return static_cast<uint64_t>(fs::space(dir, ec).available);
+                              });
+}
+
+ExportResult ExportSerWithSpace(const FrameSource& src, const std::string& sourcePath,
+                                const std::string& outPath, bool allowOverwrite,
+                                const ExportProgress& progress, const AvailableSpaceFn& space) {
     const FileInfo& info = src.Info();
     if (info.planes != 1 || info.bytesPerSample != 1)
         throw SerError("Save as SER converts 8-bit single-channel video only");
@@ -88,11 +101,11 @@ ExportResult ExportSer(const FrameSource& src, const std::string& sourcePath,
     const int64_t need = SerFile::kHeaderBytes + n * w * h;
     fs::path dir = out.parent_path();
     if (dir.empty()) dir = ".";
-    const auto space = fs::space(dir, ec);
+    const uint64_t available = space(dir.string(), ec);
     if (ec) throw SerError("cannot check free space in " + dir.string() + ": " + ec.message());
-    if (space.available < static_cast<uintmax_t>(need))
+    if (available < static_cast<uint64_t>(need))
         throw SerError("not enough free space: need " + std::to_string(need) + " bytes, " +
-                       std::to_string(space.available) + " available");
+                       std::to_string(available) + " available");
 
     std::vector<uint8_t> hdr(SerFile::kHeaderBytes, 0);
     std::memcpy(hdr.data(), "LUCAM-RECORDER", 14);

@@ -2,6 +2,7 @@
 #include <cstdint>
 #include <functional>
 #include <string>
+#include <system_error>
 
 #include "FrameSource.h"
 
@@ -29,6 +30,12 @@ public:
 ExportResult ExportSer(const FrameSource& src, const std::string& sourcePath,
                        const std::string& outPath, bool allowOverwrite,
                        const ExportProgress& progress);
+
+// Test seam: ExportSer with the free-space query injected (bytes available in `dir`).
+using AvailableSpaceFn = std::function<uint64_t(const std::string& dir, std::error_code& ec)>;
+ExportResult ExportSerWithSpace(const FrameSource& src, const std::string& sourcePath,
+                                const std::string& outPath, bool allowOverwrite,
+                                const ExportProgress& progress, const AvailableSpaceFn& space);
 
 // Local DateTime ticks (100 ns since 0001-01-01) of the file name's "YYYY-MM-DD-HHMMSS-"
 // start time; 0 when the name does not start so.
