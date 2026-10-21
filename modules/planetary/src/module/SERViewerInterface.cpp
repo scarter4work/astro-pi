@@ -2,6 +2,7 @@
 // Copyright (c) 2026 Scott Carter. MIT License.
 
 #include "SERViewerInterface.h"
+#include "SERViewerParameters.h"
 #include "SERViewerProcess.h"
 
 #include <pcl/Console.h>
@@ -26,7 +27,7 @@ SERViewerInterface* TheSERViewerInterface = nullptr;
 namespace
 {
 
-const char* const kIdleText = "No SER file loaded.\nClick Open SER... to choose a .ser video.";
+const char* const kIdleText = "No video loaded.\nClick Open... to choose a .ser or .avi video.";
 
 String FromUtf8( const std::string& s )
 {
@@ -114,10 +115,16 @@ bool SERViewerInterface::RequiresInstanceValidation() const
 bool SERViewerInterface::ImportProcess( const ProcessImplementation& p )
 {
    instance.Assign( p );
+   // The interface converts only through Save as SER...: an imported saveSerPath
+   // would turn Apply Global into a conversion.
+   instance.p_saveSerPath.Clear();
    if ( GUI != nullptr )
       Guarded( [this]()
       {
          GUI->Debayer_CheckBox.SetChecked( instance.p_debayer );
+         // An out-of-range value is reported by LoadFromInstance (BayerChoiceFor).
+         if ( instance.p_bayerPattern >= 0 && instance.p_bayerPattern < SVBayerPattern::NumberOfItems )
+            GUI->Bayer_ComboBox.SetCurrentItem( instance.p_bayerPattern );
          // A hidden interface holds no file: e_Show loads it when it appears.
          if ( IsVisible() )
             LoadFromInstance();
@@ -190,7 +197,7 @@ void SERViewerInterface::LoadFile( const String& path, bool interactive )
    const String fileName = File::ExtractNameAndExtension( trimmed );
    try
    {
-      m_file = std::make_unique<ser::SerFile>( ser::SerFile::Open( ToUtf8( trimmed ) ) );
+      m_file = ser::OpenVideo( ToUtf8( trimmed ), BayerChoiceFor( instance.p_bayerPattern ) );
       const ser::FileInfo& info = m_file->Info();
       if ( info.frameCount > INT_MAX )
          throw ser::SerError( std::to_string( info.frameCount ) + " frames: more than the frame slider can address" );
@@ -220,7 +227,8 @@ void SERViewerInterface::ShowFrame( int index )
    {
       const DisplayFrame shown = LoadFrameForDisplay( *m_file, index, instance.p_debayer );
       GUI->Preview_Control.SetBitmap( MakePreviewBitmap( shown.image ) );
-      SetInfo( planetary::preview::FrameInfoText( m_fileInfo, shown.rangeWarning ) );
+      m_frameInfo = planetary::preview::FrameInfoText( m_fileInfo, shown.rangeWarning );
+      SetInfo( m_frameInfo );
       return;
    }
    catch ( const ser::SerError& e )
@@ -232,13 +240,15 @@ void SERViewerInterface::ShowFrame( int index )
       error = e.Message();
    }
    GUI->Preview_Control.Clear();
-   SetInfo( m_fileInfo + "\n\nError: frame " + std::to_string( index ) + ": " + ToUtf8( error ) );
+   m_frameInfo = m_fileInfo + "\n\nError: frame " + std::to_string( index ) + ": " + ToUtf8( error );
+   SetInfo( m_frameInfo );
 }
 
 void SERViewerInterface::CloseFile()
 {
    m_file.reset();
    m_fileInfo.clear();
+   m_frameInfo.clear();
    if ( GUI != nullptr )
    {
       GUI->Preview_Control.Clear();
@@ -270,6 +280,84 @@ void SERViewerInterface::UpdateFrameControls()
    GUI->Frame_Label.Enable( loaded );
    GUI->Frame_Slider.Enable( loaded );
    GUI->Frame_SpinBox.Enable( loaded );
+   // A SER carries its own ColorID: the Bayer pattern and Save as SER are AVI-only.
+   const bool avi = AviLoaded();
+   GUI->Bayer_Label.Enable( avi );
+   GUI->Bayer_ComboBox.Enable( avi );
+   GUI->SaveSer_PushButton.Enable( avi );
+}
+
+bool SERViewerInterface::AviLoaded() const
+{
+   return m_file && m_file->Info().container != ser::Container::Ser;
+}
+
+void SERViewerInterface::SaveAsSer()
+{
+   if ( !AviLoaded() )
+      return;
+   const String source = instance.p_filePath.Trimmed();
+   SaveFileDialog d;
+   d.SetCaption( "Save as SER" );
+   d.SetFilter( FileFilter( "SER video", ".ser" ) );
+   d.SetInitialPath( File::ChangeExtension( source, ".ser" ) );
+   d.EnableOverwritePrompt();
+   if ( !d.Execute() )
+      return;
+   const String savePath = d.FileName();
+
+   // The export reads through its own reader (same file, same Bayer choice): the
+   // progress dialog processes events between frames, and nothing done to the
+   // viewer meanwhile (a frame change, a closed interface releasing m_file) may
+   // touch the reader being exported. The dialog has asked about an existing
+   // file, so ExportSer may replace it (atomically: the old file stays until the
+   // new one is complete). Progress goes in a modal dialog whose Cancel stops it:
+   // the console's Abort works only inside process execution (SaveProgress).
+   String failure;
+   try
+   {
+      std::unique_ptr<ser::FrameSource> reader;
+      try
+      {
+         reader = ser::OpenVideo( ToUtf8( source ), BayerChoiceFor( instance.p_bayerPattern ) );
+      }
+      catch ( const ser::SerError& e )
+      {
+         throw Error( "SERViewer: " + File::ExtractNameAndExtension( source ) + ": " + FromUtf8( e.what() ) );
+      }
+      const ser::ExportResult result = ConvertToSer( *reader, source, savePath, true/*allowOverwrite*/,
+                                                     SaveProgress::Dialog );
+      const std::string note = "Saved as SER: " + ToUtf8( savePath ) + " (" + std::to_string( result.framesWritten ) +
+                               " frames, " + ser::ColorIdName( reader->Info().colorId ) + ")";
+      if ( m_file )
+         SetInfo( m_frameInfo + "\n\n" + note );
+      return;
+   }
+   catch ( const ProcessAborted& )
+   {
+      failure = "Save as SER cancelled; " + savePath + " was not written";
+   }
+   catch ( const Exception& e )
+   {
+      failure = e.Message();
+   }
+   // The viewer stays on the AVI: the failure is about the output, not the source.
+   Console().CriticalLn( "<end><cbr>*** " + failure.EncodedHTMLSpecialChars() );
+   if ( m_file )
+      SetInfo( m_frameInfo + "\n\nSave as SER failed: " + ToUtf8( failure ) );
+   MessageBox( failure, "SERViewer", StdIcon::Error, StdButton::Ok ).Execute();
+}
+
+void SERViewerInterface::e_ItemSelected( ComboBox& sender, int itemIndex )
+{
+   if ( sender == GUI->Bayer_ComboBox && itemIndex != instance.p_bayerPattern )
+      Guarded( [this, itemIndex]()
+      {
+         instance.p_bayerPattern = pcl_enum( itemIndex );
+         // Reopened with the new pattern, on the same frame.
+         if ( AviLoaded() )
+            LoadFile( instance.p_filePath, true/*interactive*/ );
+      }, true/*interactive*/ );
 }
 
 void SERViewerInterface::e_Click( Button& sender, bool checked )
@@ -278,8 +366,11 @@ void SERViewerInterface::e_Click( Button& sender, bool checked )
       Guarded( [this]()
       {
          OpenFileDialog d;
-         d.SetCaption( "Open SER video" );
-         d.SetFilter( FileFilter( "SER video files", ".ser" ) );
+         d.SetCaption( "Open planetary video" );
+         d.SetFilters( OpenFileDialog::filter_list()
+                       << FileFilter( "Planetary video", StringList() << ".ser" << ".avi" )
+                       << FileFilter( "SER video", ".ser" )
+                       << FileFilter( "AVI video", ".avi" ) );
          d.DisableMultipleSelections();
          const String current = instance.p_filePath.Trimmed();
          if ( !current.IsEmpty() )
@@ -298,6 +389,8 @@ void SERViewerInterface::e_Click( Button& sender, bool checked )
          if ( m_file )
             ShowFrame( instance.p_frameIndex );
       }, true/*interactive*/ );
+   else if ( sender == GUI->SaveSer_PushButton )
+      Guarded( [this]() { SaveAsSer(); }, true/*interactive*/ );
 }
 
 void SERViewerInterface::e_SliderValueUpdated( Slider& sender, int value )
@@ -320,14 +413,15 @@ void SERViewerInterface::e_Show( Control& )
 
 void SERViewerInterface::e_Hide( Control& )
 {
-   // Never hold a SER file open behind a closed interface.
+   // Never hold a video file open behind a closed interface.
    Guarded( [this]() { CloseFile(); }, false/*interactive*/ );
 }
 
 SERViewerInterface::GUIData::GUIData( SERViewerInterface& w )
 {
-   Open_PushButton.SetText( "Open SER..." );
-   Open_PushButton.SetToolTip( "<p>Choose a SER video (.ser). Its first frame is shown in the preview.</p>" );
+   Open_PushButton.SetText( "Open..." );
+   Open_PushButton.SetToolTip( "<p>Choose a planetary video: SER (.ser) or uncompressed 8-bit AVI (.avi). "
+                               "Its first frame is shown in the preview.</p>" );
    Open_PushButton.OnClick( (Button::click_event_handler)&SERViewerInterface::e_Click, w );
 
    Debayer_CheckBox.SetText( "Debayer" );
@@ -340,6 +434,35 @@ SERViewerInterface::GUIData::GUIData( SERViewerInterface& w )
    Top_Sizer.Add( Open_PushButton );
    Top_Sizer.AddStretch();
    Top_Sizer.Add( Debayer_CheckBox );
+
+   Bayer_Label.SetText( "Bayer pattern:" );
+   Bayer_Label.SetTextAlignment( TextAlign::Left|TextAlign::VertCenter );
+
+   // Item index == SVBayerPattern value.
+   Bayer_ComboBox.AddItem( "Auto" );
+   Bayer_ComboBox.AddItem( "None (mono)" );
+   Bayer_ComboBox.AddItem( "RGGB" );
+   Bayer_ComboBox.AddItem( "GRBG" );
+   Bayer_ComboBox.AddItem( "GBRG" );
+   Bayer_ComboBox.AddItem( "BGGR" );
+   Bayer_ComboBox.SetCurrentItem( w.instance.p_bayerPattern );
+   Bayer_ComboBox.SetToolTip( "<p>AVI only (a SER file states its own layout). The CFA pattern of the AVI's raw "
+                              "frames. Auto: the pattern in the ASIAIR sidecar (&lt;name&gt;.avi.txt); with no "
+                              "pattern there, the raw CFA as mono and a warning. None (mono): the raw CFA as mono. "
+                              "RGGB, GRBG, GBRG, BGGR: that pattern, overriding the sidecar.</p>" );
+   Bayer_ComboBox.OnItemSelected( (ComboBox::item_event_handler)&SERViewerInterface::e_ItemSelected, w );
+
+   SaveSer_PushButton.SetText( "Save as SER..." );
+   SaveSer_PushButton.SetToolTip( "<p>AVI only: write the whole video as a SER file (8-bit, the Bayer pattern "
+                                  "above as its colour layout). A progress dialog shows how far it is; its Cancel "
+                                  "button stops it and removes the partial file. The viewer stays on the AVI.</p>" );
+   SaveSer_PushButton.OnClick( (Button::click_event_handler)&SERViewerInterface::e_Click, w );
+
+   Avi_Sizer.SetSpacing( 6 );
+   Avi_Sizer.Add( Bayer_Label );
+   Avi_Sizer.Add( Bayer_ComboBox );
+   Avi_Sizer.AddStretch();
+   Avi_Sizer.Add( SaveSer_PushButton );
 
    Preview_Control.SetScaledMinSize( 400, 300 );
 
@@ -368,12 +491,14 @@ SERViewerInterface::GUIData::GUIData( SERViewerInterface& w )
    Info_TextBox.SetScaledMinSize( 400, 180 );
    Info_TextBox.SetPlainText( String( kIdleText ) );
 
-   // The GUI smoke (test/gui_drive.py) clicks relative to the preview: Open
-   // SER... directly above its left end, Debayer above its right end, the
-   // frame slider directly below; 6 px apart.
+   // The GUI smoke (test/gui_drive.py controls()) clicks relative to the
+   // preview: two rows above it (Open... / Debayer, then Bayer pattern / Save
+   // as SER..., at its left / right ends), the frame slider directly below;
+   // 6 px apart. A layout change here means re-measuring those offsets.
    Global_Sizer.SetMargin( 8 );
    Global_Sizer.SetSpacing( 6 );
    Global_Sizer.Add( Top_Sizer );
+   Global_Sizer.Add( Avi_Sizer );
    Global_Sizer.Add( Preview_Control, 100 );
    Global_Sizer.Add( Frame_Sizer );
    Global_Sizer.Add( Info_TextBox );

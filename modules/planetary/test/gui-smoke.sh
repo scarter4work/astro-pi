@@ -7,31 +7,44 @@
 #                                                         BLOCKED (exit 2): no signing pass file
 #
 # 1. gui-smoke-setup.js (-r): the interface opened empty     -> 01-empty.png
-# 2. gui_drive.py --open: Open SER... -> the Qt file dialog (01b-dialog.png),
+# 2. gui_drive.py --open: Open... -> the Qt file dialog (01b-dialog.png),
 #    fixture A's path typed + Return                         -> 02-loaded.png
 #    the slider handle dragged past its end (last frame)      -> 03-last-frame.png
 #    Debayer off / on again                                  -> 03b-cfa.png, 03c-debayer-on.png
-#    Open SER... again with fixture B                        -> 04-second-file.png
+#    Open... again with fixture B                            -> 04-second-file.png
 #    PixInsight now holds exactly B open (/proc/<pid>/fd).
 # 3. gui-smoke-import.js (-x IPC): launchInterface() from an instance with
 #    filePath = A and frameIndex = A's last frame (ImportProcess) -> 05-import.png
 #    PixInsight now holds exactly A open.
-# 4. gui_drive.py --close: the interface's close button      -> 06-closed.png
-#    PixInsight holds no .ser file open (OnHide releases it).
-# 5. gui_drive.py --quit: File > Quit PixInsight.
+# 4. gui_drive.py --open-avi: Open... the AVI fixture        -> 08-avi.png
+#    the Bayer pattern combo clicked, Down, Return:
+#    Auto -> None (mono)                                     -> 09-bayer.png
+#    Save as SER... (09b-save-dialog.png), a new path typed + Return,
+#    the file written (no .partial left)                     -> 10-saved.png
+#    PixInsight now holds exactly the AVI open; the saved SER reads back
+#    (check_saved_ser).
+# 5. gui_drive.py --close: the interface's close button      -> 06-closed.png
+#    PixInsight holds no video file open (OnHide releases it).
+# 6. gui_drive.py --quit: File > Quit PixInsight.
 # PASS needs: PixInsight exits 0 within 60 s of Quit, every PNG present, the
 # open-file checks above, and gui_drive.py --check on the preview region
-# (found in 01-empty.png): lit in 02-05; 02 != 03 (frame 0 vs the last frame),
-# 03 != 03b (debayered vs raw CFA), 03b grey, 03 == 03c, 03 != 04 (A vs B),
-# 03 == 05 (the slider's last frame == the imported last frame), 05 != 06; and
-# with the default fixture A, 03 red-dominant (catches an R/B swap); with real
-# fixtures, PLANETARY_GUI_EXPECT_RB=gt|lt asserts 03 shows mean R above/below B
-# (known from the raw samples, see avi_to_ser.py) -- the same swap catch.
+# (found in 01-empty.png): lit in 02-05 and 08-10; 02 != 03 (frame 0 vs the last
+# frame), 03 != 03b (debayered vs raw CFA), 03b grey, 03 == 03c, 03 != 04 (A vs B),
+# 03 == 05 (the slider's last frame == the imported last frame), 05 != 06,
+# 05 != 08 (A vs the AVI), 08 != 09 and 09 grey (Bayer None shows the raw CFA),
+# 09 == 10 (the viewer stays on the AVI after saving); with the default fixture
+# A, 03 red-dominant (catches an R/B swap), and with the default AVI, 08 too;
+# with real fixtures, PLANETARY_GUI_EXPECT_RB=gt|lt asserts 03 shows mean R
+# above/below B (known from the raw samples, see avi_to_ser.py) -- the same swap catch.
 #
 # Fixtures: PLANETARY_GUI_FIXTURE_A / PLANETARY_GUI_FIXTURE_B (absolute .ser
 # paths; A must be a Bayer file, since the smoke toggles Debayer, with a
 # non-zero header FrameCount). Default: make-fixtures' bayer-colour.ser
 # (strongly red Bayer RGGB, 3 frames) and mono8.ser (3 frames).
+# PLANETARY_GUI_FIXTURE_AVI (absolute path of an 8-bit AVI whose Bayer pattern
+# Auto resolves to a Bayer layout, so None (mono) changes the preview) with
+# PLANETARY_GUI_AVI_FRAMES (its frame count). Default: make-fixtures'
+# bayer-colour.avi (bayer-colour.ser's frames, sidecar Bayer RG, 3 frames).
 # PLANETARY_GUI_SLOT overrides the slot (default 97).
 #
 # Display isolation beyond pi_headless_env: no desktop session variables and a
@@ -64,7 +77,8 @@ if [ -e "/tmp/.X11-unix/X$DISPLAY_NO" ]; then
 fi
 
 CHECK_ARGS=()
-if [ -z "${PLANETARY_GUI_FIXTURE_A:-}" ] || [ -z "${PLANETARY_GUI_FIXTURE_B:-}" ]; then
+if [ -z "${PLANETARY_GUI_FIXTURE_A:-}" ] || [ -z "${PLANETARY_GUI_FIXTURE_B:-}" ] \
+   || [ -z "${PLANETARY_GUI_FIXTURE_AVI:-}" ]; then
    [ -x "$MAKE_FIXTURES" ] || { echo "FAIL: make-fixtures not built at $MAKE_FIXTURES"; exit 1; }
    "$MAKE_FIXTURES" "$PLANETARY_RUN_DIR/fixtures" >"$PLANETARY_RUN_DIR/make-fixtures.log" 2>&1 \
       || { echo "FAIL: make-fixtures failed: $(cat "$PLANETARY_RUN_DIR/make-fixtures.log")"; exit 1; }
@@ -77,9 +91,18 @@ case "${PLANETARY_GUI_EXPECT_RB:-}" in
    gt|lt) CHECK_ARGS+=( --expect-rb "$PLANETARY_GUI_EXPECT_RB" ) ;;
    *) echo "FAIL: PLANETARY_GUI_EXPECT_RB must be gt or lt, got '$PLANETARY_GUI_EXPECT_RB'"; exit 1 ;;
 esac
+if [ -z "${PLANETARY_GUI_FIXTURE_AVI:-}" ]; then
+   CHECK_ARGS+=( --expect-avi-red )   # bayer-colour.avi: the same red frames, sidecar Bayer RG
+   AVI_FRAMES=3
+else
+   AVI_FRAMES="${PLANETARY_GUI_AVI_FRAMES:?PLANETARY_GUI_FIXTURE_AVI needs PLANETARY_GUI_AVI_FRAMES (its frame count)}"
+fi
 A="${PLANETARY_GUI_FIXTURE_A:-$PLANETARY_RUN_DIR/fixtures/bayer-colour.ser}"
 B="${PLANETARY_GUI_FIXTURE_B:-$PLANETARY_RUN_DIR/fixtures/mono8.ser}"
-for f in "$A" "$B"; do
+AVI="${PLANETARY_GUI_FIXTURE_AVI:-$PLANETARY_RUN_DIR/fixtures/bayer-colour.avi}"
+mkdir -m 700 "$PLANETARY_RUN_DIR/saved"
+SAVED="$PLANETARY_RUN_DIR/saved/gui-saved.ser"
+for f in "$A" "$B" "$AVI"; do
    case "$f" in /*) ;; *) echo "FAIL: fixture path must be absolute: $f"; exit 1 ;; esac
    [ -f "$f" ] || { echo "FAIL: fixture not found: $f"; exit 1; }
 done
@@ -102,16 +125,43 @@ gui_cleanup()
 }
 planetary_on_exit gui_cleanup
 
-# PixInsight must hold exactly the .ser file $2 open (none when $2 is empty).
-expect_open_ser()
+# PixInsight must hold exactly the video file $2 open (none when $2 is empty).
+expect_open_video()
 {
    local what="$1" want="" got
    [ -n "$2" ] && want="$(realpath -e "$2")"
-   got="$(planetary_open_ser_files)" || return 1
+   got="$(planetary_open_video_files)" || return 1
    if [ "$got" != "$want" ]; then
       echo "FAIL: $what: PixInsight holds [${got//$'\n'/, }] open, expected [${want}]"; return 1
    fi
-   echo "open .ser files $what: [${got}]"
+   echo "open video files $what: [${got}]"
+}
+
+# The SER that Save as SER... wrote from the AVI ($SAVED), read back: SER magic,
+# ColorID 0 (the smoke picked Bayer pattern None (mono) before saving), 8-bit,
+# the AVI's frame count, and exactly 178 + frames x width x height bytes (no
+# trailer). With the default AVI (bayer-colour.avi), its frame bytes must equal
+# bayer-colour.ser's, which holds the same frames.
+check_saved_ser()
+{
+   local magic color w h depth n size want
+   [ -f "$SAVED" ] || { echo "FAIL: Save as SER wrote no $SAVED"; return 1; }
+   [ ! -e "$SAVED.partial" ] || { echo "FAIL: $SAVED.partial left behind"; return 1; }
+   magic="$(head -c 14 "$SAVED")"
+   read -r color < <(od -An -t d4 -j 18 -N 4 --endian=little "$SAVED")
+   read -r w h depth n < <(od -An -t d4 -j 26 -N 16 --endian=little "$SAVED")
+   size="$(stat -c %s "$SAVED")"
+   want=$(( 178 + n * w * h ))
+   if [ "$magic" != "LUCAM-RECORDER" ] || [ "$color" != 0 ] || [ "$depth" != 8 ] || [ "$n" != "$AVI_FRAMES" ] \
+      || [ "$size" != "$want" ]; then
+      echo "FAIL: saved SER $SAVED: magic '$magic' ColorID $color depth $depth frames $n (want $AVI_FRAMES)" \
+           "${w}x${h}, $size bytes (want $want)"; return 1
+   fi
+   if [ -z "${PLANETARY_GUI_FIXTURE_AVI:-}" ]; then
+      cmp -i 178 -n $(( n * w * h )) "$SAVED" "$PLANETARY_RUN_DIR/fixtures/bayer-colour.ser" \
+         || { echo "FAIL: saved SER frames differ from bayer-colour.ser's"; return 1; }
+   fi
+   echo "saved SER reads back: MONO, 8-bit, $n frames of ${w}x${h}, $size bytes"
 }
 
 Xvfb ":$DISPLAY_NO" -screen 0 1920x1080x24 -nolisten tcp >"$OUT/xvfb.log" 2>&1 & XVFB_PID=$!
@@ -148,7 +198,7 @@ planetary_assert_only_dev_mapped "$SO" || exit 1
 sleep 1
 
 python3 "$HERE/gui_drive.py" --open "$OUT" "$A" "$B" || { echo "FAIL: driver (see $OUT/windows.txt)"; exit 1; }
-expect_open_ser "after opening B" "$B" || exit 1
+expect_open_video "after opening B" "$B" || exit 1
 
 pi_require_private_display || exit 1
 timeout 60 "$PI" -x="$PLANETARY_SLOT:$HERE/gui-smoke-import.js" >"$OUT/ipc.log" 2>&1 \
@@ -162,10 +212,15 @@ cp "$PLANETARY_GUI_DIR/imported" "$OUT/imported.txt" 2>/dev/null || true
 grep -q "launchInterface=true" "$OUT/imported.txt" 2>/dev/null \
    || { echo "FAIL: import script: $(cat "$OUT/imported.txt" 2>/dev/null || echo 'never ran')"; exit 1; }
 python3 "$HERE/gui_drive.py" --shot "$OUT" 05-import.png || { echo "FAIL: screenshot 05-import.png"; exit 1; }
-expect_open_ser "after the import" "$A" || exit 1
+expect_open_video "after the import" "$A" || exit 1
+
+python3 "$HERE/gui_drive.py" --open-avi "$OUT" "$AVI" "$SAVED" \
+   || { echo "FAIL: driver (AVI, Bayer pattern, Save as SER; see $OUT/windows.txt)"; exit 1; }
+expect_open_video "after Save as SER" "$AVI" || exit 1
+check_saved_ser || exit 1
 
 python3 "$HERE/gui_drive.py" --close "$OUT" || { echo "FAIL: driver (close the interface; see $OUT/windows.txt)"; exit 1; }
-expect_open_ser "after closing the interface" "" || exit 1
+expect_open_video "after closing the interface" "" || exit 1
 
 python3 "$HERE/gui_drive.py" --quit "$OUT" || { echo "FAIL: driver (quit)"; exit 1; }
 for _ in $(seq 240); do kill -0 "$PI_PID" 2>/dev/null || break; sleep 0.25; done
@@ -179,7 +234,8 @@ PI_PID=""
 
 ok=1
 [ "$rc" = 0 ] || { echo "FAIL: PixInsight exit code $rc (see $OUT/pi.log)"; ok=0; }
-for png in 01-empty 01b-dialog 02-loaded 03-last-frame 03b-cfa 03c-debayer-on 04-second-file 05-import 06-closed; do
+for png in 01-empty 01b-dialog 02-loaded 03-last-frame 03b-cfa 03c-debayer-on 04-second-file 05-import 06-closed \
+           08-avi 09-bayer 09b-save-dialog 10-saved; do
    [ -s "$OUT/$png.png" ] || { echo "FAIL: $png.png missing"; ok=0; }
 done
 python3 "$HERE/gui_drive.py" --check "$OUT" "${CHECK_ARGS[@]}" || ok=0

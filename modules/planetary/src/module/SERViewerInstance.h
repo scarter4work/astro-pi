@@ -12,6 +12,7 @@
 
 #include "Debayer.h"
 #include "FrameSource.h"
+#include "SerExport.h"
 
 namespace pcl
 {
@@ -32,6 +33,29 @@ DisplayFrame LoadFrameForDisplay( const planetary::ser::FrameSource& file, int64
 // The reader's Bayer choice for a bayerPattern parameter value (SVBayerPattern
 // element index). Throws pcl::Error for a value outside the enumeration.
 planetary::ser::BayerChoice BayerChoiceFor( pcl_enum bayerPattern );
+
+// Where ConvertToSer shows its progress and takes a cancel from.
+enum class SaveProgress
+{
+   // StandardStatus on the Process Console, whose Abort button cancels. Only
+   // inside process execution (ExecuteGlobal): PixInsight refuses
+   // Console::EnableAbort() anywhere else ("EnableAbort(): API function error",
+   // measured from an interface button handler, PI 1.9.5).
+   Console,
+   // ProgressBarStatus: a modal progress dialog whose Cancel button cancels,
+   // for the interface (the PCL pattern for interface-side work, as in Blink).
+   Dialog
+};
+
+// Save as SER, shared by saveSerPath (ExecuteGlobal) and the interface's Save as
+// SER... button: writes the AVI `source` (opened from `path`) as a SER at
+// `savePath` with planetary::ser::ExportSer. The conversion context goes on the
+// Process Console before the export, then progress as `progressIn` says (a
+// cancel removes the partial file and throws ProcessAborted), then a console
+// line saying what was written. Opens no image window. Throws pcl::Error with
+// the reason (SER input, or any ExportSer failure).
+planetary::ser::ExportResult ConvertToSer( const planetary::ser::FrameSource& source, const String& path,
+                                           const String& savePath, bool allowOverwrite, SaveProgress progressIn );
 
 class SERViewerInstance : public ProcessImplementation
 {

@@ -10,6 +10,7 @@
 #include <pcl/File.h>
 #include <pcl/Image.h>
 #include <pcl/ImageWindow.h>
+#include <pcl/ProgressBarStatus.h>
 #include <pcl/StandardStatus.h>
 #include <pcl/StatusMonitor.h>
 #include <pcl/View.h>
@@ -125,9 +126,10 @@ std::string FitsAscii( std::string s )
    return fits::AsciiFromUtf8( s );
 }
 
-// saveSerPath: writes the AVI `source` as a SER at `savePath`, with progress on
-// the console (its Abort cancels; the partial file is removed). Opens no window.
-bool ConvertToSer( const ser::FrameSource& source, const String& path, const String& savePath )
+} // namespace
+
+ser::ExportResult ConvertToSer( const ser::FrameSource& source, const String& path, const String& savePath,
+                                bool allowOverwrite, SaveProgress progressIn )
 {
    const String fileName = File::ExtractNameAndExtension( path );
    const ser::FileInfo& info = source.Info();
@@ -144,12 +146,23 @@ bool ConvertToSer( const ser::FrameSource& source, const String& path, const Str
    for ( const std::string& w : info.warnings )
       console.WarningLn( "SERViewer warning: " + FromUtf8( preview::ConversionWarning( w ) ).EncodedHTMLSpecialChars() );
 
-   console.EnableAbort();
-   StandardStatus status;
+   const String saveName = File::ExtractNameAndExtension( savePath );
+   std::unique_ptr<StatusCallback> status;
+   String what;
+   if ( progressIn == SaveProgress::Console )
+   {
+      console.EnableAbort();
+      status = std::make_unique<StandardStatus>();
+      what = "SERViewer: writing " + saveName.EncodedHTMLSpecialChars(); // console text is parsed for tags
+   }
+   else
+   {
+      status = std::make_unique<ProgressBarStatus>( "SERViewer: Save as SER" );
+      what = "Writing " + saveName;
+   }
    StatusMonitor monitor;
-   monitor.SetCallback( &status );
-   monitor.Initialize( "SERViewer: writing " + File::ExtractNameAndExtension( savePath ).EncodedHTMLSpecialChars(),
-                       size_type( info.frameCount ) );
+   monitor.SetCallback( status.get() );
+   monitor.Initialize( what, size_type( info.frameCount ) );
 
    // StatusMonitor reports an abort by throwing ProcessAborted; ExportSer is
    // told by returning false, so it removes its partial file and throws
@@ -173,7 +186,7 @@ bool ConvertToSer( const ser::FrameSource& source, const String& path, const Str
    try
    {
       result = ser::ExportSer( source, path.ToUTF8().c_str(), savePath.ToUTF8().c_str(),
-                               false/*allowOverwrite*/, progress );
+                               allowOverwrite, progress );
    }
    catch ( const ser::ExportCancelled& )
    {
@@ -186,10 +199,8 @@ bool ConvertToSer( const ser::FrameSource& source, const String& path, const Str
 
    console.WriteLn( "<end><cbr>SERViewer: wrote " + Num( result.framesWritten ) + " frames (" + layout + ") to " +
                     savePath.EncodedHTMLSpecialChars() );
-   return true;
+   return result;
 }
-
-} // namespace
 
 SERViewerInstance::SERViewerInstance( const MetaProcess* m )
    : ProcessImplementation( m )
@@ -261,8 +272,12 @@ bool SERViewerInstance::ExecuteGlobal()
       throw Error( "SERViewer: " + fileName + ": " + FromUtf8( e.what() ) );
    }
 
+   // A process icon never overwrites: an existing savePath is an error.
    if ( !savePath.IsEmpty() )
-      return ConvertToSer( *source, path, savePath );
+   {
+      ConvertToSer( *source, path, savePath, false/*allowOverwrite*/, SaveProgress::Console );
+      return true;
+   }
 
    ser::Frame frame;
    const ser::FileInfo& info = source->Info();

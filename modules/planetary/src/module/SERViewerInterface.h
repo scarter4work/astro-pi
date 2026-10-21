@@ -5,6 +5,7 @@
 #define __SERViewerInterface_h
 
 #include <pcl/CheckBox.h>
+#include <pcl/ComboBox.h>
 #include <pcl/Label.h>
 #include <pcl/ProcessInterface.h>
 #include <pcl/PushButton.h>
@@ -17,16 +18,19 @@
 #include <string>
 
 #include "FramePreview.h"
+#include "FrameSource.h"
 #include "SERViewerInstance.h"
-#include "SerFile.h"
 
 namespace pcl
 {
 
-// Open SER... picks a file; its frame is decoded and drawn in the embedded
-// preview, the header facts go in the info block, and the frame slider / spin
-// box step through the video. Apply Global opens the selected frame as an
-// image window (SERViewerInstance::ExecuteGlobal).
+// Open... picks a SER or AVI video; its frame is decoded and drawn in the
+// embedded preview, the file facts go in the info block, and the frame slider /
+// spin box step through the video. For an AVI, the Bayer pattern combo chooses
+// how its raw frames are read, and Save as SER... converts it (the viewer stays
+// on the AVI). Apply Global opens the selected frame as an image window
+// (SERViewerInstance::ExecuteGlobal); the interface's instance never carries
+// saveSerPath, so Apply Global never converts.
 class SERViewerInterface : public ProcessInterface
 {
 public:
@@ -54,8 +58,9 @@ private:
 
    // Open only while a file is shown; replaced by the next file, released on
    // any load failure and when the interface is hidden or closed.
-   std::unique_ptr<planetary::ser::SerFile> m_file;
-   std::string m_fileInfo; // the info block of m_file (UTF-8), without frame errors
+   std::unique_ptr<planetary::ser::FrameSource> m_file;
+   std::string m_fileInfo;  // the info block of m_file (UTF-8), without frame errors
+   std::string m_frameInfo; // the info block as ShowFrame last set it (UTF-8)
    bool m_updatingFrameControls = false;
 
    struct GUIData
@@ -66,6 +71,10 @@ private:
          HorizontalSizer Top_Sizer;
             PushButton      Open_PushButton;
             CheckBox        Debayer_CheckBox;
+         HorizontalSizer Avi_Sizer;
+            Label           Bayer_Label;
+            ComboBox        Bayer_ComboBox;
+            PushButton      SaveSer_PushButton;
          FramePreview    Preview_Control;
          HorizontalSizer Frame_Sizer;
             Label           Frame_Label;
@@ -96,9 +105,17 @@ private:
    template <class F>
    void Guarded( F&& f, bool interactive );
    void Fail( const String& message, bool interactive );
+   // The frame row's range/value, and which controls are enabled: the frame
+   // row for any open file, the Bayer pattern combo and Save as SER... for an
+   // open AVI only.
    void UpdateFrameControls();
+   bool AviLoaded() const;
+   // Save as SER...: asks for the output path, converts the open AVI
+   // (ConvertToSer). A failure or cancel is reported, never closes the AVI.
+   void SaveAsSer();
 
    void e_Click( Button& sender, bool checked );
+   void e_ItemSelected( ComboBox& sender, int itemIndex );
    void e_SliderValueUpdated( Slider& sender, int value );
    void e_SpinValueUpdated( SpinBox& sender, int value );
    void e_Show( Control& sender );

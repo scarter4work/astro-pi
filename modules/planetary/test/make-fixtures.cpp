@@ -339,6 +339,9 @@ int main(int argc, char** argv) {
     // one bar per frame (period 3, so the last frame differs from frame 0), green
     // sites dim, blue sites dark, so the debayered preview is unmistakably red (an
     // R/B swap shows blue) and every frame differs; with debayer off it is a grey mosaic.
+    // The same frames go into bayer-colour.avi (top-down, grey palette) with an
+    // ASIAIR sidecar saying Bayer RG, Flip None, so Auto resolves to RGGB and the
+    // AVI previews red too; Save as SER of it must write these frame bytes.
     {
         const int w = 64, h = 48, n = 3;
         SerSpec s;
@@ -352,6 +355,13 @@ int main(int argc, char** argv) {
                     frames[f].push_back(static_cast<uint8_t>(v));
                 }
         WriteSer((dir / "bayer-colour.ser").string(), s, frames);
+
+        AviSpec a;
+        a.width = w; a.height = h;
+        const std::string avi = (dir / "bayer-colour.avi").string();
+        WriteAvi(avi, a, frames);
+        WriteText(avi + ".txt",
+                  "[ZWO ASI585MC]\nCapture Area Size = 64 * 48\nColour Format = RAW8\nFlip = None\nBayer = RG\n");
     }
 
     // FrameCount 0 (a capture that crashed before finalising its header):

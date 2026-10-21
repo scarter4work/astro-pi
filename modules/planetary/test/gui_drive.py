@@ -6,20 +6,23 @@
   gui_drive.py --open OUT A B         01-empty.png, 01b-dialog.png, 02-loaded.png,
                                       03-last-frame.png, 03b-cfa.png, 03c-debayer-on.png,
                                       04-second-file.png (+ preview.json)
+  gui_drive.py --open-avi OUT AVI SER Open... the AVI -> 08-avi.png; the Bayer pattern combo
+                                      one item down (click, Down, Return) -> 09-bayer.png;
+                                      Save as SER... (09b-save-dialog.png) to SER -> 10-saved.png
   gui_drive.py --shot OUT NAME        one screenshot
   gui_drive.py --close OUT            the interface's title-bar close button -> 06-closed.png
   gui_drive.py --quit OUT             File > Quit PixInsight (07-file-menu.png)
-  gui_drive.py --check OUT [--expect-red] [--expect-rb gt|lt]
+  gui_drive.py --check OUT [--expect-red] [--expect-avi-red] [--expect-rb gt|lt]
                                       pixel checks of the preview region (exit 1 on failure)
 
 PixInsight draws its interface windows inside the main window (no X window to
 query), so the preview is found in 01-empty.png: the empty preview is the only
 large pure-black rectangle on screen (FramePreview paints black; measured: the
 PI 1.9.5 desktop on Xvfb has ~1000 scattered black pixels, all in glyphs). The
-interface layout (SERViewerInterface.cpp) puts Open SER... above the preview's
-left end, the Debayer check box above its right end and the frame row (label,
-slider, spin box) directly below it, 6 px apart; the clicks are placed from the
-preview's edges. Native X windows (the Qt file dialog) are found by name.
+interface layout (SERViewerInterface.cpp) puts two rows of controls above the
+preview (Open... / Debayer, then Bayer pattern / Save as SER...) and the frame
+row (label, slider, spin box) directly below it; the clicks are placed from the
+preview's edges (controls()). Native X windows (the Qt file dialogs) are found by name.
 Every mode but --check refuses (FAIL) unless $DISPLAY is served by Xvfb."""
 import json, os, re, subprocess, sys, time
 from collections import Counter
@@ -31,7 +34,8 @@ except ImportError as e:
     raise SystemExit("FAIL: the GUI smoke needs python3 numpy and PIL (%s)" % e)
 
 MODE, OUT = sys.argv[1], sys.argv[2]
-DIALOG = "Open SER video"
+OPEN_DIALOG = "Open planetary video"
+SAVE_DIALOG = "Save as SER"
 # Interface title bars, measured (PI 1.9.5, Xvfb): active and inactive.
 TITLE_COLOURS = ((86, 100, 175), (110, 110, 110))
 
@@ -167,8 +171,8 @@ def wait_for(pred, timeout, what):
     raise SystemExit("FAIL: timed out (%d s) waiting for %s" % (timeout, what))
 
 
-def dialog_open():
-    return any(w[0] == DIALOG for w in windows())
+def dialog_open(caption=OPEN_DIALOG):
+    return any(w[0] == caption for w in windows())
 
 
 def rgb(png):
@@ -209,19 +213,43 @@ def preview_box():
     return g["x0"], g["y0"], g["x1"], g["y1"]
 
 
-def open_file(path, first):
-    click(*OPEN)
+def controls(box):
+    """Click targets of the interface, from the preview's edges (x0, y0, x1, y1),
+    measured from screenshots of the layout in SERViewerInterface.cpp: row 1
+    Open... (left) / Debayer (right), row 2 the Bayer pattern combo (left) /
+    Save as SER... (right), then the preview, then the frame row."""
+    # Measured 2026-10-21 (PI 1.9.5, Xvfb) with the preview at (762, 317, 1162, 617):
+    # Open... x 762..855 y 263..283; Debayer label ends at 1160 (y 273); Bayer pattern
+    # combo x 848..959 y 290..310; Save as SER... x 1056..1161 y 291..311.
+    x0, y0, x1, y1 = box
+    return {
+        "open": (x0 + 24, y0 - 44),          # Open... above the preview's left end, row 1
+        "debayer": (x1 - 20, y0 - 44),       # the Debayer label ends above its right end, row 1
+        "bayer": (x0 + 140, y0 - 17),        # the Bayer pattern combo, row 2
+        "save": (x1 - 40, y0 - 17),          # Save as SER... above the preview's right end, row 2
+        "handle": (x0 + 47, y1 + 18),        # the slider handle at frame 0 (measured: 809,621 for x0=762)
+    }
+
+
+def file_dialog(button, caption, path, first_shot=None):
+    """Clicks `button`, waits for the Qt file dialog `caption`, types `path`
+    into its name field and presses Return."""
+    click(*button)
     park()
-    wait_for(dialog_open, 15, "the '%s' file dialog after clicking Open SER..." % DIALOG)
+    wait_for(lambda: dialog_open(caption), 15, "the '%s' file dialog" % caption)
     time.sleep(0.8)
-    if first:
-        shot("01b-dialog.png", 0)
+    if first_shot:
+        shot(first_shot, 0)
     # The name field has focus; select all so a pre-filled name is replaced, not appended to.
     key("a", "Control_L")
     type_text(path)
     time.sleep(0.5)
     key("Return")
-    wait_for(lambda: not dialog_open(), 15, "the file dialog to close after Return (%s)" % path)
+    wait_for(lambda: not dialog_open(caption), 15, "the '%s' dialog to close after Return (%s)" % (caption, path))
+
+
+def open_file(path, first):
+    file_dialog(CTL["open"], OPEN_DIALOG, path, "01b-dialog.png" if first else None)
 
 
 def close_button(png):
@@ -296,7 +324,7 @@ if MODE == "--open":
     path_a, path_b = sys.argv[3], sys.argv[4]
     dump("start")
     # The Process Console starts slid out over the left of the workspace (an auto-hide
-    # panel reaching under the interface's Open SER... button); a click elsewhere only
+    # panel reaching under the interface's Open... button); a click elsewhere only
     # collapses it. Spend that click on empty workspace first.
     click(1500, 950)
     park()
@@ -307,25 +335,23 @@ if MODE == "--open":
     x0, y0, x1, y1 = box
     json.dump({"x0": x0, "y0": y0, "x1": x1, "y1": y1}, open(OUT + "/preview.json", "w"))
     log.write("preview at %r\n" % (box,))
-    OPEN = (x0 + 24, y0 - 14)            # Open SER... sits above the preview's left end
-    DEBAYER = (x1 - 20, y0 - 14)         # the Debayer label ends above its right end
-    HANDLE = (x0 + 47, y1 + 18)          # the slider handle at frame 0 (measured: 809,621 for x0=762)
+    CTL = controls(box)
 
     open_file(path_a, True)
     shot("02-loaded.png", 1.5)
 
     # Drag the handle past the slider's right end: the last frame, whatever the count. (A
-    # click only steps toward the pointer and leaves keyboard focus on Open SER..., so a
+    # click only steps toward the pointer and leaves keyboard focus on Open..., so a
     # following End key never reaches the slider.)
-    drag(HANDLE, (x1 - 10, HANDLE[1]))
+    drag(CTL["handle"], (x1 - 10, CTL["handle"][1]))
     park()
     shot("03-last-frame.png", 1.5)
 
     # Debayer off (raw CFA, grey mosaic), then on again (back to 03).
-    click(*DEBAYER)
+    click(*CTL["debayer"])
     park()
     shot("03b-cfa.png", 1.5)
-    click(*DEBAYER)
+    click(*CTL["debayer"])
     park()
     shot("03c-debayer-on.png", 1.5)
 
@@ -334,8 +360,39 @@ if MODE == "--open":
     dump("end")
     sys.exit(0)
 
+if MODE == "--open-avi":
+    # After the import step: the interface is open on fixture A (bayerPattern Auto).
+    path_avi, out_ser = sys.argv[3], sys.argv[4]
+    CTL = controls(preview_box())
+    dump("open-avi start")
+    open_file(path_avi, False)
+    shot("08-avi.png", 1.5)
+
+    # The combo shows Auto; one item down is None (mono): the raw CFA, grey. The click
+    # opens the combo's list, Down moves its highlight, Return picks it. No screenshot
+    # can show the list here: measured 2026-10-21, it is mapped (an override-redirect
+    # 112x106 window under the combo) but stacked BELOW PixInsight's 32-bit interface
+    # window on this WM-less Xvfb, and the combo still reads Auto after Down (the
+    # highlight moved inside the hidden list); 09-bayer.png shows the result.
+    click(*CTL["bayer"])
+    time.sleep(0.5)
+    key("Down")
+    time.sleep(0.2)
+    key("Return")
+    park()
+    shot("09-bayer.png", 1.5)
+
+    file_dialog(CTL["save"], SAVE_DIALOG, out_ser, "09b-save-dialog.png")
+    wait_for(lambda: os.path.exists(out_ser) and not os.path.exists(out_ser + ".partial"), 30,
+             "%s to be written (and %s.partial gone)" % (out_ser, out_ser))
+    park()
+    shot("10-saved.png", 1.5)
+    dump("open-avi end")
+    sys.exit(0)
+
 if MODE == "--check":
     expect_red = "--expect-red" in sys.argv[3:]
+    expect_avi_red = "--expect-avi-red" in sys.argv[3:]
     expect_rb = sys.argv[sys.argv.index("--expect-rb") + 1] if "--expect-rb" in sys.argv[3:] else None
     if expect_rb not in (None, "gt", "lt"):
         raise SystemExit("--expect-rb takes gt or lt")
@@ -359,7 +416,7 @@ if MODE == "--check":
     fails = []
     lines = []
     for name in ("02-loaded.png", "03-last-frame.png", "03b-cfa.png", "03c-debayer-on.png",
-                 "04-second-file.png", "05-import.png"):
+                 "04-second-file.png", "05-import.png", "08-avi.png", "09-bayer.png", "10-saved.png"):
         f = float(lit_mask(name).mean())
         lines.append("%s: %.2f%% of the preview lit" % (name, 100 * f))
         if f < 0.001:
@@ -369,7 +426,10 @@ if MODE == "--check":
               ("03-last-frame.png", "03c-debayer-on.png", "debayer on again vs before", "same"),
               ("03-last-frame.png", "04-second-file.png", "fixture A vs fixture B", "differ"),
               ("03-last-frame.png", "05-import.png", "slider at the end vs ImportProcess of the last frame", "same"),
-              ("05-import.png", "06-closed.png", "interface open vs closed", "differ")]
+              ("05-import.png", "06-closed.png", "interface open vs closed", "differ"),
+              ("05-import.png", "08-avi.png", "fixture A vs the AVI", "differ"),
+              ("08-avi.png", "09-bayer.png", "Bayer pattern Auto vs None (mono)", "differ"),
+              ("09-bayer.png", "10-saved.png", "before vs after Save as SER (the viewer stays on the AVI)", "same")]
     for a, b, what, want in checks:
         v = changed(a, b)
         lines.append("%s vs %s (%s): %.3f%% of the preview changed" % (a, b, what, 100 * v))
@@ -378,22 +438,25 @@ if MODE == "--check":
         if want == "same" and v > 0.0:
             fails.append("%s: %s and %s differ (%.3f%% changed)" % (what, a, b, 100 * v))
 
-    # Debayer off shows one channel replicated: grey everywhere.
-    cfa = px("03b-cfa.png")
-    spread = float((cfa.max(axis=2) - cfa.min(axis=2)).max())
-    lines.append("03b-cfa.png: largest channel spread %.0f (grey: <= 2)" % spread)
-    if spread > 2:
-        fails.append("03b-cfa.png: the raw CFA preview is not grey (channel spread %.0f)" % spread)
+    # Debayer off, and Bayer pattern None (mono), show one channel replicated: grey everywhere.
+    for name, what in (("03b-cfa.png", "the raw CFA preview"), ("09-bayer.png", "the Bayer None (mono) preview")):
+        cfa = px(name)
+        spread = float((cfa.max(axis=2) - cfa.min(axis=2)).max())
+        lines.append("%s: largest channel spread %.0f (grey: <= 2)" % (name, spread))
+        if spread > 2:
+            fails.append("%s: %s is not grey (channel spread %.0f)" % (name, what, spread))
 
-    if expect_red:
-        # bayer-colour.ser: bright red sites, dim green, dark blue. An R/B swap
-        # anywhere between the debayer and the screen turns this blue.
-        img = px("03-last-frame.png")
-        m = lit_mask("03-last-frame.png")
+    # bayer-colour.ser / .avi: bright red sites, dim green, dark blue. An R/B swap
+    # anywhere between the debayer and the screen turns this blue.
+    for name, wanted in (("03-last-frame.png", expect_red), ("08-avi.png", expect_avi_red)):
+        if not wanted:
+            continue
+        img = px(name)
+        m = lit_mask(name)
         r, g, b = (float(img[..., c][m].mean()) for c in range(3))
-        lines.append("03-last-frame.png: mean R/G/B over lit pixels %.0f/%.0f/%.0f (red: R >= 2G, R >= 2B)" % (r, g, b))
+        lines.append("%s: mean R/G/B over lit pixels %.0f/%.0f/%.0f (red: R >= 2G, R >= 2B)" % (name, r, g, b))
         if not (r >= 2 * g and r >= 2 * b):
-            fails.append("03-last-frame.png: not red-dominant (R/G/B %.0f/%.0f/%.0f)" % (r, g, b))
+            fails.append("%s: not red-dominant (R/G/B %.0f/%.0f/%.0f)" % (name, r, g, b))
 
     if expect_rb:
         # Real data (Task 5): the scene is not strongly red, but its R/B balance is known from the
@@ -414,4 +477,4 @@ if MODE == "--check":
         sys.exit(1)
     sys.exit(0)
 
-raise SystemExit("usage: gui_drive.py --dismiss|--open|--shot|--close|--quit|--check OUT ...")
+raise SystemExit("usage: gui_drive.py --dismiss|--open|--open-avi|--shot|--close|--quit|--check OUT ...")
