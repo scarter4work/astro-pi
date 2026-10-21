@@ -38,7 +38,7 @@
             <p>1.0.8: now delivered by PixInsight&apos;s update system instead of being downloaded by the script; 61 MB instead of 100 MB; runs on any Linux that runs PixInsight (glibc 2.34 or newer: Ubuntu 22.04+, Debian 12+, Rocky/RHEL 9+) — 1.0.7 only started on very new distributions. Image results are identical to 1.0.7.</p>
          </description>
       </package>
-      <package fileName="20261021-linux-x64-Planetary-0.1.0.0.tar.gz" sha1="399cf34fdfb1cb31adf20ccaa58dad8fd251e8a6" type="module" releaseDate="20261021">
+      <package fileName="20261021-linux-x64-Planetary-0.2.0.0.tar.gz" sha1="9687c651115ee0a6ccf1d5d1effec1fcc99f71b7" type="module" releaseDate="20261021">
          <title>Planetary</title>
          <description>
             <p>
@@ -90,4 +90,4 @@
       </package>
    </platform>
 </xri>
-<Signature developerId="scarter4work" timestamp="2026-10-21T18:46:57.196Z" encoding="Base64">tfhWqDZVO4llhD7ydr6SAjchPc3GliUakB94COGLRn0JQP3aUlT/Q7FTMiS9cJo0XTZ106zZuyFiQlnT0IRSCA==</Signature>
+<Signature developerId="scarter4work" timestamp="2026-10-21T21:47:15.488Z" encoding="Base64">2Q2F+OgsJnoGp21R+Ur9x8UFOuUrTAmpy5hk0pVNk2nZoO7dub04l3EV73NQ/3+VUyr5rjLUABERGR5Mc2wwBg==</Signature>
