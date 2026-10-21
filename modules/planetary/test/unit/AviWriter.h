@@ -26,6 +26,9 @@ struct AviSpec {
     bool paletteChangeChunk = false;    // a 00pc chunk (indexed in idx1 when in segment 0)
     int paletteChangeAfter = 0;         // ...after this frame; -1 = at the start of the first movi
     bool palChangesFlag = false;        // strh dwFlags AVISF_VIDEO_PALCHANGES
+    int gapJunkAfter = -1;              // after this frame (before any palette change there):
+    int gapJunkChunks = 1;              //   this many JUNK chunks
+    size_t gapJunkChunkBytes = 0;       //   of this many data bytes each
     int64_t truncateBytes = 0;          // cut this many bytes off the end of the file
     int corruptIndexEntry = -1;         // that frame's index entries are corrupted as below
     enum Corruption { PastEnd, WrongSize } corruption = PastEnd;  // offset past EOF / size + 2
@@ -257,6 +260,13 @@ inline void WriteAvi(const std::string& path, const AviSpec& s,
             if (idx1 && seg == 0)
                 idx1Entries.push_back({"00db", 0x10, pastEnd ? 0x7FFFFFF0u : static_cast<uint32_t>(chunkAt - idx1Base),
                                        indexSize});
+            if (f == s.gapJunkAfter) {
+                for (int j = 0; j < s.gapJunkChunks; ++j) {
+                    const size_t junk = Begin(b, "JUNK");
+                    b.insert(b.end(), s.gapJunkChunkBytes, uint8_t(0));
+                    End(b, junk);
+                }
+            }
             if (s.paletteChangeChunk && f == s.paletteChangeAfter) writePaletteChange();
         }
         for (auto r = recLists.rbegin(); r != recLists.rend(); ++r) End(b, *r);

@@ -46,6 +46,10 @@ public:
     static constexpr int64_t kMaxDroppedRun = 65536;
     // Deepest nesting of LIST 'rec ' inside movi accepted by the scan (real files use 1).
     static constexpr int kMaxRecDepth = 4;
+    // Most RIFF segments accepted (real ASIAIR segments are ~1 GB each).
+    static constexpr int64_t kMaxSegments = 4096;
+    // Most chunk headers walked in one gap between frames that is too large to read whole.
+    static constexpr int64_t kMaxGapChunks = 4096;
 
     // Throws SerError with the real reason on any malformed or unsupported file.
     static AviFile Open(const std::string& path);

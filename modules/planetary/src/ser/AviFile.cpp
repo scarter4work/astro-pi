@@ -317,9 +317,10 @@ void CheckGapBytes(const unsigned char* p, int64_t n, int64_t filePos, const Str
     }
 }
 
-// CheckGapBytes over [start, end) of the file: one read when the gap is small (the ASIAIR
-// gap is a 504-byte JUNK), else a walk of its chunk headers (a segment boundary's idx1).
-void CheckGap(const Io& io, int64_t start, int64_t end, const StreamIds& ids) {
+// CheckGapBytes over [start, end) of the file, the gap before usable frame `frame`: one read
+// when the gap is small (the ASIAIR gap is a 504-byte JUNK), else a walk of its chunk headers
+// (a segment boundary's idx1), one read each and at most AviFile::kMaxGapChunks of them.
+void CheckGap(const Io& io, int64_t start, int64_t end, const StreamIds& ids, int64_t frame) {
     if (end - start <= kGapReadWhole) {
         std::vector<unsigned char> gap(static_cast<size_t>(std::max<int64_t>(end - start, 0)));
         if (io.ReadAt(start, gap.data(), static_cast<int64_t>(gap.size())))
@@ -327,7 +328,11 @@ void CheckGap(const Io& io, int64_t start, int64_t end, const StreamIds& ids) {
         return;
     }
     Chunk c;
+    int64_t chunks = 0;
     for (int64_t pos = start; io.ChunkAt(pos, end, c);) {
+        if (++chunks > AviFile::kMaxGapChunks)
+            throw SerError("the gap before frame " + Num(frame) + " holds more than " +
+                           Num(AviFile::kMaxGapChunks) + " chunks");
         if (ids.IsPaletteChange(c.id)) ThrowPaletteChange(ids, c.pos);
         pos = (Is(c.id, "LIST") || Is(c.id, "RIFF")) ? pos + 12 : c.Next();
     }
@@ -365,7 +370,8 @@ AviFile AviFile::Open(const std::string& path) {
     const Io io(f.stream_, f.fileSize_);
 
     // ---- RIFF segments: 'AVI ' then any number of 'AVIX'; bytes after the last are ignored.
-    // Each AVIX must hold at least an empty LIST movi, so the walk is bounded by fileSize / 24.
+    // Each AVIX must hold at least an empty LIST movi, and there are at most kMaxSegments
+    // (real ASIAIR segments are ~1 GB), so a crafted file cannot make this walk long.
     Chunk riff;
     if (!io.ChunkAt(0, f.fileSize_, riff) || !Is(riff.id, "RIFF") || !Is(riff.listType, "AVI "))
         throw SerError("not an AVI file: it does not start with RIFF....AVI ");
@@ -389,6 +395,8 @@ AviFile AviFile::Open(const std::string& path) {
                            " (only AVIX may follow the AVI segment)");
         if (c.size < kMinAvixSize)
             throw SerError("AVIX segment at offset " + Num(c.pos) + " is too small (" + Num(c.size) + " bytes)");
+        if (static_cast<int64_t>(segments.size()) >= AviFile::kMaxSegments)
+            throw SerError("AVI has more than " + Num(AviFile::kMaxSegments) + " RIFF segments");
         segments.push_back({c.pos, std::min(c.DataEnd(), f.fileSize_)});
         next = c.Next();
     }
@@ -520,8 +528,11 @@ AviFile AviFile::Open(const std::string& path) {
             info.warnings.push_back("OpenDML indx is malformed (" + why + "); not used");
         } else {
             table.SpotCheck(io, vs.ids);
-            if (table.Count() == 0 && table.Stopped()) {
-                info.warnings.push_back("OpenDML indx gave no usable frames (" + table.StopWarning() + "); not used");
+            if (table.Count() == 0) {
+                const std::string reason = table.Stopped()       ? table.StopWarning()
+                                           : table.Dropped() > 0 ? Num(table.Dropped()) + " zero-length entries"
+                                                                 : std::string("OpenDML index has 0 entries");
+                info.warnings.push_back("OpenDML indx gave no usable frames (" + reason + "); not used");
                 table = FrameTable(f.fileSize_, chunkBytes);
             } else {
                 details.indexKind = "OpenDML indx";
@@ -542,10 +553,11 @@ AviFile AviFile::Open(const std::string& path) {
         // measured); otherwise open checks idx1 and the gap before frame 0, and ReadFrame the
         // gap immediately before the frame it decodes. A change in a gap before an unread
         // frame is the accepted limit.
-        if (table.Count() > 0) CheckGap(io, movi.pos + 12, table.Offsets()[0] - 8, vs.ids);
+        if (table.Count() > 0) CheckGap(io, movi.pos + 12, table.Offsets()[0] - 8, vs.ids, 0);
         if (U32(vs.strh + 8) & kPalChangesFlag) {
             const std::vector<int64_t>& o = table.Offsets();
-            for (size_t k = 1; k < o.size(); ++k) CheckGap(io, o[k - 1] + chunkBytes + (chunkBytes & 1), o[k] - 8, vs.ids);
+            for (size_t k = 1; k < o.size(); ++k)
+                CheckGap(io, o[k - 1] + chunkBytes + (chunkBytes & 1), o[k] - 8, vs.ids, static_cast<int64_t>(k));
             f.allGapsChecked_ = true;
         }
     } else {
@@ -601,7 +613,7 @@ Frame AviFile::ReadFrame(int64_t index) const {
     if (index > 0 && !allGapsChecked_) {
         start = at(index - 1) + chunkBytes + (chunkBytes & 1);
         if (header - start > kGapReadWhole) {
-            CheckGap(io, start, header, ids_);
+            CheckGap(io, start, header, ids_, index);
             start = header;
         }
     }

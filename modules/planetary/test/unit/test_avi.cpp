@@ -774,3 +774,70 @@ TEST_CASE("an AVIX segment too small for a movi list is rejected") {
     WriteAt(p, end, std::string("RIFF") + Le32(4) + "AVIX");
     CHECK(OpenError(p).find("is too small (4 bytes)") != std::string::npos);
 }
+
+TEST_CASE("more RIFF segments than the cap are rejected") {
+    TempDir dir;
+    const std::string p = dir.NewPath(".avi");
+    WriteAvi(p, Avi(4, 2), MakeFrames(4, 2, 2));
+    std::string tail;
+    const std::string minimal = std::string("RIFF") + Le32(16) + "AVIX" + "LIST" + Le32(4) + "movi";
+    for (int64_t i = 0; i < AviFile::kMaxSegments; ++i) tail += minimal;  // + the AVI segment = cap + 1
+    WriteAt(p, ReadAll(p).size(), tail);
+    CHECK(OpenError(p) == "AVI has more than " + std::to_string(AviFile::kMaxSegments) + " RIFF segments");
+}
+
+TEST_CASE("an OpenDML index with no usable entries falls back to idx1") {
+    TempDir dir;
+    const std::string p = dir.NewPath(".avi");
+    const auto frames = MakeFrames(7, 5, 5);
+    AviSpec s = Avi(7, 5);
+    s.index = AviSpec::OpenDml;  // single RIFF: ix00 + a valid idx1 with all 5 frames
+    WriteAvi(p, s, frames);
+    const size_t ix = ReadAll(p).find("ix00");
+    REQUIRE(ix != std::string::npos);
+    std::string expected;
+
+    SECTION("nEntriesInUse = 0 (an aborted capture's pre-reserved ix00)") {
+        WriteAt(p, ix + 12, Le32(0));
+        expected = "OpenDML index has 0 entries";
+    }
+    SECTION("every entry zero-length") {
+        for (int i = 0; i < 5; ++i) WriteAt(p, ix + 32 + 8 * static_cast<size_t>(i) + 4, Le32(0));
+        expected = "5 zero-length entries";
+    }
+    const AviFile avi = AviFile::Open(p);
+    CHECK(avi.Info().frameCount == 5);
+    CHECK(avi.Info().avi->indexKind == "idx1");
+    CHECK(avi.Info().warnings ==
+          std::vector<std::string>{"OpenDML indx gave no usable frames (" + expected + "); not used"});
+    for (int f = 0; f < 5; ++f) CheckFrame(avi, f, frames[f]);
+}
+
+TEST_CASE("a gap too large to read whole is walked chunk by chunk") {
+    TempDir dir;
+    const std::string p = dir.NewPath(".avi");
+    const auto frames = MakeFrames(7, 5, 3);
+    AviSpec s = Avi(7, 5);
+    s.index = AviSpec::OpenDml;
+    s.openDmlIdx1 = false;
+    s.gapJunkAfter = 1;  // the gap before frame 2
+
+    SECTION("a palette change after a JUNK chunk over 1 MiB") {
+        s.gapJunkChunkBytes = (1u << 20) + 1000;
+        s.paletteChangeChunk = true;
+        s.paletteChangeAfter = 1;
+        WriteAvi(p, s, frames);
+        const AviFile avi = AviFile::Open(p);
+        for (int f = 0; f < 2; ++f) CheckFrame(avi, f, frames[f]);
+        CHECK_THROWS_WITH(avi.ReadFrame(2), Catch::Matchers::ContainsSubstring("palette-change chunk"));
+    }
+    SECTION("more chunks than the cap") {
+        s.gapJunkChunks = static_cast<int>(AviFile::kMaxGapChunks) + 1;
+        s.gapJunkChunkBytes = 300;  // 4097 x 308 bytes: over 1 MiB, so walked
+        WriteAvi(p, s, frames);
+        const AviFile avi = AviFile::Open(p);
+        for (int f = 0; f < 2; ++f) CheckFrame(avi, f, frames[f]);
+        CHECK_THROWS_WITH(avi.ReadFrame(2), "the gap before frame 2 holds more than " +
+                                                std::to_string(AviFile::kMaxGapChunks) + " chunks");
+    }
+}
