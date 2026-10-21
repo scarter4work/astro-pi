@@ -1,12 +1,13 @@
 # Planetary PixInsight Module
 
-Planetary: a SER video viewer for PixInsight, the first step toward lucky-imaging stacking. Its one process, **SERViewer**, opens SER video files
-(as written by planetary capture programs such as FireCapture and SharpCap): it shows any frame in a
+Planetary: a SER and AVI video viewer for PixInsight, the first step toward lucky-imaging stacking. Its one process, **SERViewer**, opens SER video files
+(as written by planetary capture programs such as FireCapture and SharpCap) and uncompressed 8-bit AVI files (such as ASIAIR captures, including OpenDML files over 1 GB): it shows any frame in a
 preview with a frame slider and an info block, and opens the selected frame as an ordinary 32-bit PixInsight
-image, debayered (bilinear) or as the raw CFA mosaic. It reads only the SER file you choose, uses no network
-and runs no external programs.
+image, debayered (bilinear) or as the raw CFA mosaic. For an AVI you pick the Bayer pattern (or let the ASIAIR
+sidecar decide), and Save as SER... writes the AVI out as a SER file. It reads only the video file you choose (and an AVI's
+`.txt` sidecar), writes only the SER file you choose, uses no network and runs no external programs.
 
-**Status:** released as 0.1.0.0 (2026-10-21). The module id `Planetary` and process id `SERViewer` are
+**Status:** 0.2.0.0 adds AVI input and Save as SER (0.1.0.0 was released 2026-10-21). The module id `Planetary` and process id `SERViewer` are
 permanent: existing installs update by these ids, so never rename them.
 
 **User documentation** (installed with the module as `doc/tools/SERViewer/SERViewer.html`):
@@ -19,9 +20,9 @@ This product is based on software from the PixInsight project, developed by Plei
 
 | Path | What |
 |---|---|
-| `src/ser/` | SER reader + debayer library (`planetary_ser`). PCL-free, unit-tested on its own. |
+| `src/ser/` | SER and AVI readers, SER writer, debayer library (`planetary_ser`). PCL-free, unit-tested on its own. |
 | `src/module/` | The PixInsight module: SERViewer process, instance, interface, parameters; `PlanetaryVersion.h`. |
-| `test/unit/` | Catch2 unit tests (header, frames, debayer, FITS text, preview). |
+| `test/unit/` | Catch2 unit tests (SER and AVI readers, sidecar, Save as SER, debayer, FITS text, preview). |
 | `test/` | Headless probe, GUI smoke and real-data harnesses (all through `tools/pi-headless.sh`). |
 | `doc/SERViewer/` | Shipped user documentation and third-party notices. |
 
@@ -44,9 +45,10 @@ root) builds all modules into `build-portable/` and runs this module's ctest the
 bash test/run-probe.sh                    # headless SERViewer.executeGlobal() over synthetic fixtures, slot 96
 bash test/gui-smoke.sh <out-dir>          # real GUI on a private Xvfb, XTest-driven, slot 97
 bash test/run-real-data.sh                # 2026-09-07 Saturn capture (NAS) -> SER fixtures -> probe + GUI smoke
+bash test/run-avi-real.sh                 # every NAS AVI: frames vs ffmpeg, open time, Bayer phase, >1 GB round trip (host-only)
 ```
 
-The three scripts sign the module and need `/tmp/.pi_codesign_pass`; without it they print BLOCKED and exit 2.
+The probe, GUI-smoke and Saturn real-data scripts sign the module and need `/tmp/.pi_codesign_pass`; without it they print BLOCKED and exit 2.
 `PLANETARY_SO` / `PLANETARY_MAKE_FIXTURES` point them at another build, e.g. the container build in
 `build-portable/`.
 

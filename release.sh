@@ -411,9 +411,11 @@ else:
              '            <p>\n'
              '               <b>Planetary</b>\n'
              '            </p>\n'
-             '            <p>Planetary: SER video viewer for PixInsight. SERViewer opens SER video '
-             'files: it shows any frame in a preview and opens it as a PixInsight image. '
-             'It reads only the SER file you choose, uses no network and runs no external programs.</p>\n'
+             '            <p>Planetary: SER and AVI video viewer for PixInsight. SERViewer opens SER video '
+             'files and uncompressed 8-bit AVI files (such as ASIAIR captures): it shows any frame in a preview '
+             'and opens it as a PixInsight image, and it can save an AVI as a SER file. '
+             'It reads only the video file you choose (and an AVI\'s .txt sidecar), writes only the SER file you choose, '
+             'uses no network and runs no external programs.</p>\n'
              '         </description>\n'
              '      </package>\n')
     new_s,n=re.subn(

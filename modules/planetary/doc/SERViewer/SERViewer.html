@@ -22,12 +22,19 @@ th { background: #f3f3f3; }
 This document is installed with the module (doc/tools/SERViewer/).</p>
 
 <p>SERViewer opens SER video files, the format planetary (lucky-imaging) capture programs such as FireCapture and
-SharpCap write. Executing the process globally opens one frame of the video as an ordinary
+SharpCap write, and uncompressed 8-bit AVI files such as ASIAIR captures. An AVI can be saved as a SER file.
+Executing the process globally opens one frame of the video as an ordinary
 PixInsight image window, so every PixInsight tool can be used on it.</p>
 
 <h2>The interface</h2>
 <ul>
-  <li><b>Open SER...</b> chooses a <code>.ser</code> file. Its first frame is drawn in the preview.</li>
+  <li><b>Open...</b> (dialog caption &ldquo;Open planetary video&rdquo;) chooses a <code>.ser</code> or <code>.avi</code>
+  file; the file filters are Planetary video (*.ser *.avi), SER video and AVI video. Its first frame is drawn in the
+  preview. Opening a new file sets the Bayer pattern back to Auto.</li>
+  <li><b>Bayer pattern</b> (AVI only; disabled for a SER, which states its own layout): Auto, None (mono), RGGB, GRBG,
+  GBRG or BGGR. See <a href="#avi">AVI files</a>. Changing it reopens the AVI on the same frame.
+  This is the <code>bayerPattern</code> parameter.</li>
+  <li><b>Save as SER...</b> (AVI only) writes the whole video as a SER file. See <a href="#saveser">Save as SER</a>.</li>
   <li><b>Debayer</b>: for Bayer files, show and open frames as RGB (checked) or as the raw CFA mosaic
   (unchecked). This is the <code>debayer</code> parameter.</li>
   <li>The <b>preview</b> shows the selected frame scaled to fit, keeping its proportions, on a black background.
@@ -45,14 +52,16 @@ PixInsight image window, so every PixInsight tool can be used on it.</p>
   <li><b>Apply Global</b> (the round button) opens the selected frame as an image window.</li>
 </ul>
 <p>Dragging the interface's instance triangle onto the workspace saves a process icon with the file, frame and
-debayer setting; opening that icon restores them. The file stays open only while the interface shows it.</p>
+debayer and Bayer pattern settings; opening that icon restores them. The file stays open only while the interface shows it.</p>
 
 <h2>Parameters</h2>
 <table>
 <tr><th>Parameter</th><th>Type</th><th>Default</th><th>Meaning</th></tr>
-<tr><td><code>filePath</code></td><td>String</td><td>(empty)</td><td>Absolute path of the <code>.ser</code> file. The process cannot run while it is empty.</td></tr>
+<tr><td><code>filePath</code></td><td>String</td><td>(empty)</td><td>Absolute path of the <code>.ser</code> or <code>.avi</code> file (the format is recognised from the file's content). The process cannot run while it is empty.</td></tr>
 <tr><td><code>frameIndex</code></td><td>Int32</td><td>0</td><td>Frame to open, counting from 0.</td></tr>
 <tr><td><code>debayer</code></td><td>Boolean</td><td>true</td><td>Bayer (colour-sensor) files only: open as debayered RGB (bilinear interpolation) when true, or as the raw one-channel CFA mosaic when false.</td></tr>
+<tr><td><code>bayerPattern</code></td><td>Enum</td><td>Auto</td><td>AVI only, ignored for SER: Auto, None (mono), RGGB, GRBG, GBRG or BGGR.</td></tr>
+<tr><td><code>saveSerPath</code></td><td>String</td><td>(empty)</td><td>When not empty, executing the process converts the AVI in <code>filePath</code> to a SER file at this path instead of opening a frame. It converts AVI input only, and does not replace an existing file.</td></tr>
 </table>
 
 <h2>The image it opens</h2>
@@ -69,9 +78,10 @@ block) names the frame.</li>
 <li>FITS keywords:
   <ul>
   <li><code>DATE-OBS</code>: the frame's own UTC timestamp when the file has a timestamp trailer, otherwise the file's
-  UTC start time; left out when neither is valid.</li>
+  UTC start time; left out when neither is valid. AVI frames never get a <code>DATE-OBS</code>: an AVI carries no
+  timestamps, and the clock in an ASIAIR file name is not trustworthy as UTC.</li>
   <li><code>INSTRUME</code>, <code>TELESCOP</code>, <code>OBSERVER</code>: the camera, telescope and observer text
-  from the file header, left out when empty.</li>
+  from the file header, left out when empty. For an AVI, <code>INSTRUME</code> is the camera named in the ASIAIR sidecar.</li>
   <li><code>BAYERPAT</code> (RGGB, GRBG, GBRG or BGGR): when a Bayer file is opened with <code>debayer</code> false.</li>
   <li><code>HISTORY</code>: the source file name and frame number, plus one <code>SERViewer warning:</code> line for each
   problem the reader recovered from and for a frame whose samples exceed the normalisation range. Text longer than one FITS card (72 characters) continues on the next
@@ -81,7 +91,52 @@ block) names the frame.</li>
 </li>
 </ul>
 
-<h2>Supported files</h2>
+<h2 id="avi">AVI files</h2>
+<p>SERViewer reads uncompressed 8-bit AVI files: either palettised video whose palette is the identity grey ramp
+(entry <i>i</i> is (<i>i</i>,&nbsp;<i>i</i>,&nbsp;<i>i</i>)), which is what ASIAIR writes, or raw Y800/GREY/Y8 video. Classic AVI files and
+OpenDML files (larger than 1 GB) both open, and a video is read one frame at a time, never loaded whole. Frames are
+normalised by 255.</p>
+<p>These are refused with a message saying so: compressed video (the codec is named), video that is not 8 bits per
+pixel (for example 16-bit or 24-bit), a palette that is not the identity grey ramp, and files with palette-change
+chunks. Frames the file's index lists but that are missing from the file are dropped, with a warning.</p>
+
+<h3>Bayer pattern and the ASIAIR sidecar</h3>
+<p>ASIAIR writes a text file next to each capture, <code>&lt;name&gt;.avi.txt</code>. The pattern choice works as follows.</p>
+<ul>
+<li><b>Auto</b> uses the sidecar's <code>Bayer</code> value (RG, GR, GB or BG for RGGB, GRBG, GBRG or BGGR). The sidecar's
+camera name becomes <code>INSTRUME</code>. With no sidecar, or no Bayer value in it, the raw CFA frame opens as mono
+and a warning asks you to choose the pattern.</li>
+<li><b>Flip = Vert.</b> When the sidecar says <code>Flip = Vert</code>, Auto uses the pattern rotated by 180&deg; (RGGB becomes
+BGGR, GRBG becomes GBRG), because that is what the frame data of nearly all such captures show. This is an inference,
+and some ASIAIR captures differ. It is always reported with the warning &ldquo;Bayer pattern inferred from Flip=Vert
+(BGGR); some ASIAIR captures are RGGB &ndash; if red and blue look swapped, choose RGGB under Bayer pattern&rdquo; (with the
+patterns actually involved). If red and blue look swapped, choose the other pattern yourself. An explicit choice
+carries no such warning.</li>
+<li><b>None (mono)</b> shows the raw CFA frame as one channel.</li>
+<li><b>RGGB, GRBG, GBRG, BGGR</b> use that pattern and override the sidecar.</li>
+</ul>
+<p>The info block shows where the pattern came from. The image's <code>BAYERPAT</code> keyword and <code>HISTORY</code> note
+record the pattern used. The sidecar is read as plain text and is never required.</p>
+
+<h2 id="saveser">Save as SER</h2>
+<p><b>Save as SER...</b> opens a save dialog (default name: the AVI's name with <code>.ser</code>, in the AVI's folder) and writes the
+whole video as an 8-bit SER file. The viewer stays on the AVI. A progress dialog shows how far it has got, and its Cancel
+button stops the conversion.</p>
+<ul>
+<li>The SER's colour layout is the effective Bayer pattern (mono for None). Its Instrument field is the sidecar's
+camera. Observer and Telescope are empty.</li>
+<li>Frames are copied in order, as the viewer decodes them (top row first).</li>
+<li><b>No timestamps.</b> The SER has no per-frame timestamp trailer and no UTC time. The start time from the AVI's file
+name goes only into the header's local DateTime, because the ASIAIR file name clock was found to be about an hour off the
+file's own modification time, so it is not presented as UTC.</li>
+<li>The output is written to a temporary <code>.partial</code> file and renamed when complete, so a cancelled or failed
+conversion never leaves a partial file. It cannot overwrite the source file; replacing another existing file asks first. The free
+space needed is checked before writing starts.</li>
+</ul>
+<p>From a script or process icon, set <code>saveSerPath</code> (and <code>bayerPattern</code> if needed) and execute the process. An
+existing file at that path is an error.</p>
+
+<h2>Supported SER files</h2>
 <p>Colour layouts MONO, BAYER_RGGB, BAYER_GRBG, BAYER_GBRG, BAYER_BGGR, RGB and BGR, at 1 to 16 bits per sample.
 CMY Bayer files (colour IDs 16&ndash;19) are refused with an error saying so. Files of any size are read one frame at a
 time; the whole video is never loaded into memory.</p>
@@ -93,8 +148,9 @@ prove are complete, and says what it did in the interface's info block, the Proc
 file it cannot read stops the process with an error message giving the reason.</p>
 
 <h2>Files, network and privacy</h2>
-<p>SERViewer reads only the <code>.ser</code> file you choose. It uses no network connection, runs no external
-programs, and writes nothing to disk: the frame is opened as a new, unsaved image window.</p>
+<p>SERViewer reads only the video file you choose and, for an AVI, its <code>.txt</code> sidecar. It writes to disk only
+when you use Save as SER, and then only the SER path you choose (and its temporary <code>.partial</code> file beside it). Opening a frame
+creates a new, unsaved image window. It uses no network connection and runs no external programs.</p>
 
 <h2>Acknowledgments</h2>
 <p>This product is based on software from the PixInsight project, developed by Pleiades Astrophoto and its
