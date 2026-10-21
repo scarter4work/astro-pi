@@ -31,6 +31,7 @@ if(PLANETARY_BUILD_MODULE)
 endif()
 
 add_subdirectory(src/ser)
+add_subdirectory(src/stack)
 
 if(PLANETARY_BUILD_MODULE)
     add_subdirectory(src/module)

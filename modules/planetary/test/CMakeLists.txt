@@ -19,6 +19,7 @@ planetary_add_test(test_frame_source unit/test_frame_source.cpp planetary_ser)
 planetary_add_test(test_avi unit/test_avi.cpp planetary_ser)
 planetary_add_test(test_sidecar unit/test_sidecar.cpp planetary_ser)
 planetary_add_test(test_ser_export unit/test_ser_export.cpp planetary_ser)
+planetary_add_test(test_demosaic_hq unit/test_demosaic_hq.cpp planetary_stack)
 # FitsText.h is the module's PCL-free keyword-text helper (header only).
 planetary_add_test(test_fits_text unit/test_fits_text.cpp)
 target_include_directories(test_fits_text PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/../src/module")
