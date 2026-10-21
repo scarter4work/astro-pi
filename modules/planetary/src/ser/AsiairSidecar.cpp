@@ -28,12 +28,13 @@ std::optional<AsiairSidecar> ParseAsiairSidecar(const std::string& text,
                                                 std::vector<std::string>& warnings,
                                                 const std::string& name) {
     AsiairSidecar sc;
+    const std::string body = text.compare(0, 3, "\xEF\xBB\xBF") == 0 ? text.substr(3) : text;
     bool sawSection = false, sawKey = false;
     size_t pos = 0;
-    while (pos <= text.size()) {
-        size_t nl = text.find('\n', pos);
-        if (nl == std::string::npos) nl = text.size();
-        const std::string line = Trim(text.substr(pos, nl - pos));  // also drops a trailing CR
+    while (pos <= body.size()) {
+        size_t nl = body.find('\n', pos);
+        if (nl == std::string::npos) nl = body.size();
+        const std::string line = Trim(body.substr(pos, nl - pos));  // also drops a trailing CR
         pos = nl + 1;
         if (line.empty()) continue;
         if (line.front() == '[' && line.back() == ']') {
@@ -78,8 +79,11 @@ ColorId ResolveBayer(BayerChoice choice, const std::optional<AsiairSidecar>& sid
     if (sidecar && !sidecar->bayer.empty()) {
         for (int i = 0; i < 4; ++i)
             if (sidecar->bayer == names[i]) found = i;
-        if (found < 0)
+        if (found < 0) {
             warnings.push_back("sidecar Bayer value " + sidecar->bayer + " is not recognised");
+            source = "none";
+            return ColorId::Mono;
+        }
     }
     if (found < 0) {
         source = "none";

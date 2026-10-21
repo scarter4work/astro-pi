@@ -44,7 +44,7 @@ void ApplyAviContext(AviFile& avi, const std::string& path, BayerChoice bayer) {
     info.colorId = ResolveBayer(bayer, d.sidecar, d.bayerSource, info.warnings);
 
     if (d.sidecar) {
-        info.header.instrument = d.sidecar->camera;
+        if (!d.sidecar->camera.empty()) info.header.instrument = d.sidecar->camera;
         int w = 0, h = 0;
         if (ParseCaptureArea(d.sidecar->captureArea, w, h) &&
             (w != info.header.width || h != info.header.height))

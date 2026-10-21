@@ -199,7 +199,6 @@ TEST_CASE("OpenVideo without a sidecar and with a filename start time") {
     CHECK(info.avi->bayerSource == "none");
     CHECK(info.avi->filenameStart == "2023-05-26 23:00:53");
     CHECK(Has(info.warnings, kNoBayer));
-    std::filesystem::remove(named);
 }
 
 TEST_CASE("OpenVideo warns when the sidecar ROI differs from the video") {
@@ -228,4 +227,32 @@ TEST_CASE("OpenVideo ignores an unreadable or oversized sidecar") {
     src = OpenVideo(p);
     CHECK_FALSE(src->Info().avi->sidecar.has_value());
     CHECK(Has(src->Info().warnings, "sidecar " + name + " is larger than 64 KiB; ignored"));
+}
+
+TEST_CASE("ResolveBayer with an unrecognised Bayer value warns once, specifically") {
+    const auto r = Resolve(BayerChoice::Auto, Sc("XY", "None"));
+    CHECK(r.id == ColorId::Mono);
+    CHECK(r.source == "none");
+    REQUIRE(r.warnings.size() == 1);
+    CHECK(r.warnings[0] == "sidecar Bayer value XY is not recognised");
+}
+
+TEST_CASE("ParseAsiairSidecar strips a UTF-8 BOM") {
+    std::vector<std::string> w;
+    const auto sc = ParseAsiairSidecar("\xEF\xBB\xBF[ZWO BOM]\nBayer = RG\n", w, "x.avi.txt");
+    REQUIRE(sc.has_value());
+    CHECK(sc->camera == "ZWO BOM");
+    CHECK(sc->bayer == "RG");
+    CHECK(w.empty());
+}
+
+TEST_CASE("OpenVideo keeps the instrument when the sidecar has no camera") {
+    TempDir dir;
+    const std::string p = dir.NewPath(".avi");
+    WriteAvi(p, Avi(8, 6), Frames(8, 6, 1));
+    WriteText(p + ".txt", "Bayer = RG\nFlip = None\n");
+    const auto src = OpenVideo(p);
+    CHECK(src->Info().avi->sidecar.has_value());
+    CHECK(src->Info().header.instrument.empty());
+    CHECK(src->Info().colorId == ColorId::BayerRGGB);
 }
