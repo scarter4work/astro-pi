@@ -3,6 +3,11 @@
 Single source of truth for this monorepo (supersedes the per-project CLAUDE.md files
 in nukex5 / EZ-Stretch-BSC). Global PixInsight conventions still live in ~/.claude/CLAUDE.md.
 
+**This repo root is the project level for every subproject** (modules/*, gaia-depth-grade,
+scripts/ez-stretch, tools/*), even when a session starts in a subfolder. Project memory for
+any of it goes in `~/.claude/memory/projects/projects-astro-pi/` (index: its INDEX.md, grouped
+by subproject) -- never a new per-folder memory directory. No CLAUDE.md below this one.
+
 ## What ships
 - `modules/nukex/` → `NukeX-pxm` module (ID string `"NukeX"` is STABLE — never rename; existing installs update by ID).
 - `modules/pi-copilot/` → `PICopilot-pxm` module (process/doc id `PICopilot`).
