@@ -259,7 +259,8 @@ TEST_CASE("info text for an AVI without sidecar or filename start: OpenDML, mono
     const std::string t = InfoText("m.avi", i, std::nullopt);
     CHECK(t.find("Container: AVI (OpenDML)\n") != std::string::npos);
     CHECK(t.find("Frame rate: 25.00 fps\n") != std::string::npos);
-    CHECK(t.find("Bayer: none (none)\n") != std::string::npos);
+    CHECK(t.find("Bayer: none (no sidecar pattern; choose one under Bayer pattern)\n") != std::string::npos);
+    CHECK(t.find("(none)") == std::string::npos);  // the reader's token is not shown raw
     CHECK(t.find("Camera:") == std::string::npos);
     CHECK(t.find("Gain:") == std::string::npos);
     CHECK(t.find("Exposure:") == std::string::npos);
@@ -267,6 +268,29 @@ TEST_CASE("info text for an AVI without sidecar or filename start: OpenDML, mono
     CHECK(t.find("Start:") == std::string::npos);
     CHECK(t.find("UTC") == std::string::npos);  // an AVI has no clock
     CHECK(t.find("\nWarning: no Bayer pattern known") != std::string::npos);
+}
+
+TEST_CASE("Bayer source tokens read as text", "[preview][info]") {
+    FileInfo i = AviInfo();
+    i.colorId = ColorId::Mono;
+    i.avi->bayerSource = "none";
+    // A sidecar whose Bayer value the reader did not recognise.
+    i.avi->sidecar->bayer = "XY";
+    CHECK(BayerText(i) == "none (sidecar value not recognised)");
+    // A sidecar without a Bayer value: nothing to recognise.
+    i.avi->sidecar->bayer.clear();
+    CHECK(BayerText(i) == "none (no sidecar pattern; choose one under Bayer pattern)");
+    i.avi->sidecar.reset();
+    CHECK(BayerText(i) == "none (no sidecar pattern; choose one under Bayer pattern)");
+    i.avi->bayerSource = "chosen";
+    CHECK(BayerText(i) == "none (chosen)");
+    i.colorId = ColorId::BayerGBRG;
+    CHECK(BayerText(i) == "GBRG (chosen)");
+    i.colorId = ColorId::BayerRGGB;
+    i.avi->bayerSource = "sidecar";
+    CHECK(BayerText(i) == "RGGB (sidecar)");
+    CHECK(BayerText(AviInfo()) == "BGGR (sidecar RG, Flip=Vert \xE2\x86\x92 BGGR)");
+    CHECK(InfoText("x.avi", i, std::nullopt).find("Bayer: RGGB (sidecar)\n") != std::string::npos);
 }
 
 TEST_CASE("info text for an AVI: empty sidecar fields get no line", "[preview][info]") {

@@ -87,9 +87,7 @@ ColorId ResolveBayer(BayerChoice choice, const std::optional<AsiairSidecar>& sid
     }
     if (found < 0) {
         source = "none";
-        warnings.push_back(
-            "no Bayer pattern known (no .avi.txt sidecar); showing the raw CFA as mono -- choose "
-            "the pattern under Bayer pattern");
+        warnings.push_back(kNoBayerPatternWarning);
         return ColorId::Mono;
     }
 

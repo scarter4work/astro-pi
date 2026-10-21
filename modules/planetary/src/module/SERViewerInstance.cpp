@@ -21,11 +21,14 @@
 #include "FitsText.h"
 #include "PlanetaryVersion.h"
 #include "SerExport.h"
+#include "AsiairSidecar.h"
 #include "SerFile.h"
+#include "SerInfoText.h"
 #include "SerTime.h"
 
 namespace ser = planetary::ser;
 namespace fits = planetary::fits;
+namespace preview = planetary::preview;
 
 namespace pcl
 {
@@ -113,14 +116,6 @@ void AddHistory( FITSKeywordArray& keywords, const std::string& text )
       keywords << FITSHeaderKeyword( "HISTORY", IsoString(), IsoString( piece.c_str() ) );
 }
 
-// "BGGR (sidecar RG, Flip=Vert → BGGR)" / "none (none)": an AVI's effective
-// Bayer pattern and where it came from (UTF-8).
-std::string AviBayerText( const ser::FileInfo& info )
-{
-   const std::string pattern = ser::IsBayer( info.colorId ) ? ser::BayerPatternKeyword( info.colorId ) : "none";
-   return pattern + " (" + (info.avi ? info.avi->bayerSource : std::string()) + ")";
-}
-
 // UTF-8 text bound for a FITS card: the reader's arrow becomes "->", any
 // other code point outside printable ASCII one '?'.
 std::string FitsAscii( std::string s )
@@ -140,7 +135,20 @@ bool ConvertToSer( const ser::FrameSource& source, const String& path, const Str
    if ( info.container == ser::Container::Ser )
       throw Error( "SERViewer: " + fileName + ": saveSerPath converts AVI input only" );
 
+   // What is about to be written goes on the console before the export starts.
+   // Auto with no pattern writes the raw CFA as MONO: the reader's warning is
+   // worded for viewing, so it is replaced by one that says what is written.
+   const String layout = ser::ColorIdName( info.colorId );
    Console console;
+   console.WriteLn( "<end><cbr>SERViewer " PLANETARY_VERSION_STRING ": converting " + fileName.EncodedHTMLSpecialChars() +
+                    " to SER; Bayer " + FromUtf8( preview::BayerText( info ) ).EncodedHTMLSpecialChars() );
+   for ( const std::string& w : info.warnings )
+      if ( w == ser::kNoBayerPatternWarning )
+         console.WarningLn( "SERViewer warning: no Bayer pattern known; the SER will be written as " + layout +
+                            " (raw CFA) -- set the Bayer pattern to write a Bayer SER" );
+      else
+         console.WarningLn( "SERViewer warning: " + FromUtf8( w ).EncodedHTMLSpecialChars() );
+
    console.EnableAbort();
    StandardStatus status;
    StatusMonitor monitor;
@@ -181,11 +189,7 @@ bool ConvertToSer( const ser::FrameSource& source, const String& path, const Str
       throw Error( "SERViewer: " + fileName + ": " + FromUtf8( e.what() ) );
    }
 
-   console.WriteLn( "<end><cbr>SERViewer " PLANETARY_VERSION_STRING ": " + fileName.EncodedHTMLSpecialChars() +
-                    ", Bayer " + FromUtf8( AviBayerText( info ) ).EncodedHTMLSpecialChars() );
-   for ( const std::string& w : info.warnings )
-      console.WarningLn( "SERViewer warning: " + FromUtf8( w ).EncodedHTMLSpecialChars() );
-   console.WriteLn( "SERViewer: wrote " + Num( result.framesWritten ) + " frames to " +
+   console.WriteLn( "<end><cbr>SERViewer: wrote " + Num( result.framesWritten ) + " frames (" + layout + ") to " +
                     savePath.EncodedHTMLSpecialChars() );
    return true;
 }
@@ -231,7 +235,7 @@ bool SERViewerInstance::CanExecuteGlobal( String& whyNot ) const
 {
    if ( p_filePath.Trimmed().IsEmpty() )
    {
-      whyNot = "SERViewer: no SER file selected (filePath is empty).";
+      whyNot = "SERViewer: no video file selected (filePath is empty).";
       return false;
    }
    return true;
@@ -312,7 +316,7 @@ bool SERViewerInstance::ExecuteGlobal()
    const std::string asciiName = fits::AsciiFromUtf8( fileName.ToUTF8().c_str() );
    AddHistory( keywords, "SERViewer: " + asciiName + " frame " + std::to_string( index ) );
    if ( isAvi && ser::IsBayer( info.colorId ) )
-      AddHistory( keywords, "SERViewer: Bayer " + FitsAscii( AviBayerText( info ) ) );
+      AddHistory( keywords, "SERViewer: Bayer " + FitsAscii( preview::BayerText( info ) ) );
    // SER header text has no defined encoding; AVI warnings are built from
    // UTF-8 file names and sidecar text.
    for ( const std::string& w : info.warnings )
@@ -370,7 +374,7 @@ bool SERViewerInstance::ExecuteGlobal()
                     Num( frame.width ) + "x" + Num( frame.height ) + ", " +
                     String( ser::ColorIdName( info.colorId ) ) + (cfaKept ? " raw CFA" : "") + ", " + depth + ")" );
    if ( isAvi )
-      console.WriteLn( "SERViewer: Bayer " + FromUtf8( AviBayerText( info ) ).EncodedHTMLSpecialChars() );
+      console.WriteLn( "SERViewer: Bayer " + FromUtf8( preview::BayerText( info ) ).EncodedHTMLSpecialChars() );
    if ( info.warnings.empty() )
       console.WriteLn( "SERViewer: no reader warnings" );
    else

@@ -78,6 +78,10 @@ std::string FileName(const std::string& p) { return std::filesystem::path(p).fil
 
 }  // namespace
 
+TEST_CASE("the no-pattern warning is published for callers that reword it") {
+    CHECK(kNoBayer == kNoBayerPatternWarning);
+}
+
 TEST_CASE("ParseAsiairSidecar reads the real sample") {
     std::vector<std::string> w;
     const auto sc = ParseAsiairSidecar(kSample, w, "a.avi.txt");

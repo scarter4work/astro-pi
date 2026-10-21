@@ -47,5 +47,12 @@ TEST_CASE("OpenVideo rejects unknown magic") {
 
 TEST_CASE("OpenVideo of a missing file") {
     TempDir dir;
-    CHECK_THROWS_AS(OpenVideo(dir.NewPath(".ser")), SerError);
+    const std::string p = dir.NewPath(".avi");
+    try {
+        OpenVideo(p);
+        FAIL("expected SerError");
+    } catch (const SerError& e) {
+        // Format-neutral: the file's type is unknown until it is read.
+        CHECK(std::string(e.what()) == "cannot open video file: " + p);
+    }
 }

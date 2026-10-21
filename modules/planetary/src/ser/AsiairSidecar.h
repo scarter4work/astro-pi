@@ -15,6 +15,12 @@ std::optional<AsiairSidecar> ParseAsiairSidecar(const std::string& text,
                                                 std::vector<std::string>& warnings,
                                                 const std::string& name = "");
 
+// ResolveBayer's warning when Auto finds no pattern (worded for viewing; a caller
+// that converts can recognise it and say what it writes instead).
+inline constexpr char kNoBayerPatternWarning[] =
+    "no Bayer pattern known (no .avi.txt sidecar); showing the raw CFA as mono -- choose "
+    "the pattern under Bayer pattern";
+
 // Resolves the Bayer pattern of an AVI and says where it came from in `source`.
 // Auto uses the sidecar's Bayer value, rotated 180 degrees when Flip starts with "Vert"
 // (measured on the ASIAIR files: Flip=Vert captures carry the opposite phase). An explicit

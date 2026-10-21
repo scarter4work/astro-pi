@@ -20,6 +20,21 @@
 namespace planetary::preview
 {
 
+// An AVI's effective Bayer pattern and where it came from, for people:
+// "BGGR (sidecar RG, Flip=Vert → BGGR)", "RGGB (chosen)", "none (chosen)". The
+// reader's "none" token (Auto found no pattern) becomes the reason: a sidecar
+// Bayer value it did not recognise, or no pattern to go on at all. UTF-8.
+inline std::string BayerText( const ser::FileInfo& info )
+{
+   const std::string pattern = ser::IsBayer( info.colorId ) ? ser::BayerPatternKeyword( info.colorId ) : "none";
+   std::string source = info.avi ? info.avi->bayerSource : std::string();
+   if ( source == "none" )
+      source = (info.avi->sidecar && !info.avi->sidecar->bayer.empty())
+                  ? "sidecar value not recognised"
+                  : "no sidecar pattern; choose one under Bayer pattern";
+   return pattern + " (" + source + ")";
+}
+
 // One "Label: value" line per field, UTF-8, no trailing newline. For a SER the
 // first frame's time comes from the timestamp trailer (nullopt: the file has
 // none); the header's DateTime_UTC is shown on its own line, since an opened
@@ -55,8 +70,7 @@ inline std::string InfoText( const std::string& fileNameUtf8, const ser::FileInf
    }
    t += std::string( "Colour: " ) + ser::ColorIdName( info.colorId ) + "\n";
    if ( isAvi )
-      t += std::string( "Bayer: " ) + (ser::IsBayer( info.colorId ) ? ser::BayerPatternKeyword( info.colorId ) : "none") +
-           " (" + avi.bayerSource + ")\n";
+      t += "Bayer: " + BayerText( info ) + "\n";
    t += "Bit depth: " + std::to_string( info.header.depth );
    if ( info.normDepth != info.header.depth )
       t += " (normalised to the full " + std::to_string( info.normDepth ) + "-bit range)";

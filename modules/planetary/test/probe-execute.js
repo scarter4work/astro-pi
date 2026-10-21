@@ -6,9 +6,12 @@
 //                  expectId, width, height, channels,
 //                  samples: [ {x, y, c, v} ],                 (tolerance 1e-6)
 //                  keywords: [ {name, value | comment | commentContains} ],
-//                  absentKeywords: [ name ] }
+//                  absentKeywords: [ name ],
+//                  absentComments: [ text ] (optional: no keyword comment contains it) }
 //              | { name, path, frame, debayer, expectError }
-//              | { name, path, frame, debayer, saveSerPath, expectConsole } ] }
+//              | { name, path, frame, debayer, saveSerPath,
+//                  expectConsole: [ text ] (all present, in this order),
+//                  consoleAbsent: [ text ] } ] }
 //   Any case may carry bayerPattern (a SERViewer enum element id, e.g.
 //   "BayerRGGB") and saveSerPath. A case with saveSerPath and no expectError
 //   is a conversion: executeGlobal must return true, open no window, write the
@@ -100,8 +103,23 @@ function runConvertCase( c, P, r )
       r.errors.push( "no file written at " + c.saveSerPath );
    if ( File.exists( c.saveSerPath + ".partial" ) )
       r.errors.push( "the .partial file was left behind" );
-   if ( log.indexOf( c.expectConsole ) < 0 )
-      r.errors.push( "console lacks '" + c.expectConsole + "': " + log.substring( 0, 600 ) );
+   // expectConsole: every text present, each after the previous one.
+   var from = 0;
+   for ( var i = 0; i < c.expectConsole.length; ++i )
+   {
+      var at = log.indexOf( c.expectConsole[i], from );
+      if ( at < 0 )
+      {
+         r.errors.push( "console lacks '" + c.expectConsole[i] + "'" +
+                        (log.indexOf( c.expectConsole[i] ) >= 0 ? " after the previous expected text" : "") +
+                        ": " + log.substring( 0, 900 ) );
+         break;
+      }
+      from = at + c.expectConsole[i].length;
+   }
+   for ( var j = 0; j < c.consoleAbsent.length; ++j )
+      if ( log.indexOf( c.consoleAbsent[j] ) >= 0 )
+         r.errors.push( "console carries '" + c.consoleAbsent[j] + "'" );
 }
 
 function runErrorCase( c, P, r )
@@ -196,6 +214,15 @@ function runImageCase( c, P, r )
             r.errors.push( "keyword " + c.absentKeywords[a] + " present (" + kws[m].value + "), expected absent" );
             break;
          }
+   if ( c.absentComments !== undefined )
+      for ( var t = 0; t < c.absentComments.length; ++t )
+         for ( var q = 0; q < kws.length; ++q )
+            if ( kws[q].comment.indexOf( c.absentComments[t] ) >= 0 )
+            {
+               r.errors.push( "keyword comment contains '" + c.absentComments[t] + "': " + kws[q].name + " /" +
+                              kws[q].comment );
+               break;
+            }
    w.forceClose();
 }
 

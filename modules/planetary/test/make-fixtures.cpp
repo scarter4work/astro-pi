@@ -81,10 +81,18 @@ struct Case {
     std::vector<Point> samples;
     std::vector<Kw> keywords;
     std::vector<std::string> absent;
+    std::vector<std::string> absentComments;  // no keyword comment may contain any of these
     std::string bayerPattern;   // SERViewer enum element id ("BayerRGGB"); "" leaves the default
     std::string saveSerPath;    // non-empty: a conversion case (or an error case) with this target
-    std::string expectConsole;  // conversion cases: text the Process Console must carry
+    std::vector<std::string> expectConsole;  // conversion: texts the console carries, in this order
+    std::vector<std::string> consoleAbsent;  // conversion: texts the console must not carry
 };
+
+std::string JsonList(const std::vector<std::string>& v) {
+    std::string o = "[";
+    for (size_t i = 0; i < v.size(); ++i) o += (i ? "," : "") + Quote(v[i]);
+    return o + "]";
+}
 
 std::string ToJson(const Case& c) {
     std::ostringstream o;
@@ -97,7 +105,8 @@ std::string ToJson(const Case& c) {
         return o.str();
     }
     if (!c.saveSerPath.empty()) {
-        o << ",\"expectConsole\":" << Quote(c.expectConsole) << "}";
+        o << ",\"expectConsole\":" << JsonList(c.expectConsole) << ",\"consoleAbsent\":" << JsonList(c.consoleAbsent)
+          << "}";
         return o.str();
     }
     o << ",\"expectId\":" << Quote(c.expectId) << ",\"width\":" << c.width << ",\"height\":" << c.height
@@ -109,9 +118,9 @@ std::string ToJson(const Case& c) {
     for (size_t i = 0; i < c.keywords.size(); ++i)
         o << (i ? "," : "") << "{\"name\":" << Quote(c.keywords[i].name) << "," << Quote(c.keywords[i].field)
           << ":" << Quote(c.keywords[i].text) << "}";
-    o << "],\"absentKeywords\":[";
-    for (size_t i = 0; i < c.absent.size(); ++i) o << (i ? "," : "") << Quote(c.absent[i]);
-    o << "]}";
+    o << "],\"absentKeywords\":" << JsonList(c.absent);
+    if (!c.absentComments.empty()) o << ",\"absentComments\":" << JsonList(c.absentComments);
+    o << "}";
     return o.str();
 }
 
@@ -569,6 +578,33 @@ int main(int argc, char** argv) {
                       {"HISTORY", "comment", "SERViewer: Bayer GRBG (sidecar)"}};
         c.absent = {"DATE-OBS", "BAYERPAT"};
         cases.push_back(c);
+
+        // Every explicit bayerPattern element on the same file: each one must reach
+        // the reader as its own pattern ("(chosen)" tells GRBG apart from the
+        // sidecar's GRBG), so any swap in the enum/element ids/mapping fails a case.
+        for (const char* pattern : {"GRBG", "GBRG", "BGGR"}) {
+            Case e = c;
+            e.name = std::string("avi bayerPattern=Bayer") + pattern;
+            e.bayerPattern = std::string("Bayer") + pattern;
+            e.samples.clear();
+            for (auto [x, y] : Points(w, h))
+                for (int ch = 0; ch < 3; ++ch) e.samples.push_back({x, y, ch, BayerExpected(pattern, x, y, ch, 0, d, w, h)});
+            e.keywords = {{"INSTRUME", "value", "ZWO ASI224MC"},
+                          {"HISTORY", "comment", std::string("SERViewer: Bayer ") + pattern + " (chosen)"}};
+            cases.push_back(e);
+        }
+
+        Case none = c;
+        none.name = "avi bayerPattern=BayerNone -> mono, no Bayer record";
+        none.bayerPattern = "BayerNone";
+        none.channels = 1;
+        none.samples.clear();
+        for (auto [x, y] : Points(w, h)) none.samples.push_back({x, y, 0, Norm(Gen(x, y, 0, 0, d), d)});
+        none.keywords = {{"INSTRUME", "value", "ZWO ASI224MC"},
+                         {"HISTORY", "comment", "SERViewer: avi-odd.avi frame 0"}};
+        none.absent = {"DATE-OBS", "BAYERPAT"};
+        none.absentComments = {"SERViewer: Bayer", "no Bayer pattern known"};
+        cases.push_back(none);
     }
 
     // saveSerPath: avi-vert.avi -> SER (BGGR from the sidecar), no window; then the
@@ -579,19 +615,26 @@ int main(int argc, char** argv) {
         std::error_code ec;
         std::filesystem::remove(out, ec);  // a rerun into the same directory starts clean
 
+        // The context (layout, Bayer source) is on the console before the export
+        // starts, and the result line names the layout written.
         Case c;
         c.name = "saveSerPath converts the AVI"; c.path = aviVert; c.saveSerPath = out;
-        c.expectConsole = "SERViewer: wrote 3 frames to " + out;
+        c.expectConsole = {"converting avi-vert.avi to SER; Bayer BGGR (sidecar RG, Flip=Vert",
+                           "SERViewer: writing avi-vert-converted.ser",
+                           "SERViewer: wrote 3 frames (BAYER_BGGR) to " + out};
         cases.push_back(c);
 
-        Case raw;
-        raw.name = "converted SER reads back: raw frame 0"; raw.path = out; raw.frame = 0; raw.debayer = false;
-        raw.expectId = "avi_vert_converted_f0";
-        raw.width = w; raw.height = h; raw.channels = 1;
-        for (auto [x, y] : Points(w, h)) raw.samples.push_back({x, y, 0, Norm(Gen(x, y, 0, 0, d), d)});
-        raw.keywords = {{"BAYERPAT", "value", "BGGR"}, {"INSTRUME", "value", "ZWO ASI585MC"}};
-        raw.absent = {"DATE-OBS"};
-        cases.push_back(raw);
+        for (int f = 0; f < 2; ++f) {
+            Case raw;
+            raw.name = "converted SER reads back: raw frame " + std::to_string(f);
+            raw.path = out; raw.frame = f; raw.debayer = false;
+            raw.expectId = "avi_vert_converted_f" + std::to_string(f);
+            raw.width = w; raw.height = h; raw.channels = 1;
+            for (auto [x, y] : Points(w, h)) raw.samples.push_back({x, y, 0, Norm(Gen(x, y, 0, f, d), d)});
+            raw.keywords = {{"BAYERPAT", "value", "BGGR"}, {"INSTRUME", "value", "ZWO ASI585MC"}};
+            raw.absent = {"DATE-OBS"};
+            cases.push_back(raw);
+        }
 
         Case deb;
         deb.name = "converted SER reads back: debayered last frame"; deb.path = out; deb.frame = 2;
@@ -603,6 +646,27 @@ int main(int argc, char** argv) {
         deb.keywords = {{"HISTORY", "comment", "SERViewer: avi-vert-converted.ser frame 2"}};
         deb.absent = {"DATE-OBS", "BAYERPAT"};
         cases.push_back(deb);
+
+        // No sidecar, Auto: written as MONO, and the warning says so in conversion terms.
+        const std::string monoOut = (dir / "avi-nosidecar-converted.ser").string();
+        std::filesystem::remove(monoOut, ec);
+        Case mono;
+        mono.name = "saveSerPath with no Bayer pattern writes MONO"; mono.path = (dir / "avi-nosidecar.avi").string();
+        mono.saveSerPath = monoOut;
+        mono.expectConsole = {"converting avi-nosidecar.avi to SER; Bayer none (no sidecar pattern",
+                              "the SER will be written as MONO (raw CFA)",
+                              "SERViewer: wrote 2 frames (MONO) to " + monoOut};
+        mono.consoleAbsent = {"showing the raw CFA"};
+        cases.push_back(mono);
+
+        Case monoBack;
+        monoBack.name = "MONO SER reads back: frame 1"; monoBack.path = monoOut; monoBack.frame = 1;
+        monoBack.expectId = "avi_nosidecar_converted_f1";
+        monoBack.width = 16; monoBack.height = 16; monoBack.channels = 1;
+        for (auto [x, y] : Points(16, 16)) monoBack.samples.push_back({x, y, 0, Norm(Gen(x, y, 0, 1, d), d)});
+        monoBack.keywords = {{"HISTORY", "comment", "SERViewer: avi-nosidecar-converted.ser frame 1"}};
+        monoBack.absent = {"DATE-OBS", "BAYERPAT", "INSTRUME"};
+        cases.push_back(monoBack);
 
         Case serIn;
         serIn.name = "saveSerPath on SER input"; serIn.path = (dir / "mono8.ser").string();
@@ -626,10 +690,10 @@ int main(int argc, char** argv) {
     {
         Case c;
         c.name = "missing file"; c.path = (dir / "does-not-exist.ser").string();
-        c.expectError = "cannot open SER file";
+        c.expectError = "cannot open video file";
         cases.push_back(c);
         Case e;
-        e.name = "empty filePath"; e.path = ""; e.expectError = "no SER file selected";
+        e.name = "empty filePath"; e.path = ""; e.expectError = "no video file selected";
         cases.push_back(e);
     }
 

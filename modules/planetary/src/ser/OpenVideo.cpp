@@ -61,7 +61,7 @@ std::unique_ptr<FrameSource> OpenVideo(const std::string& path, BayerChoice baye
     char magic[12] = {};
     {
         std::ifstream f(path, std::ios::binary);
-        if (!f) throw SerError("cannot open SER file: " + path);
+        if (!f) throw SerError("cannot open video file: " + path);
         f.read(magic, sizeof magic);
         if (f.gcount() != static_cast<std::streamsize>(sizeof magic))
             throw SerError("not a SER or AVI video file: " + path);
