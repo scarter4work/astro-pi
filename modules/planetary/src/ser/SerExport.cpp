@@ -1,13 +1,16 @@
 #include "SerExport.h"
 
 #include <algorithm>
+#include <cerrno>
+#include <cstdio>
 #include <cstring>
 #include <filesystem>
-#include <fstream>
+#include <memory>
 #include <system_error>
 #include <vector>
 
 #include "AsiairSidecar.h"
+#include "PartialFile.h"
 #include "SerFile.h"
 
 namespace planetary::ser {
@@ -122,12 +125,19 @@ ExportResult ExportSerWithSpace(const FrameSource& src, const std::string& sourc
     PutI64(hdr, 170, 0);
 
     const fs::path partial = outPath + ".partial";
+    // Never through a symbolic link at the partial path (CreatePartialFile). The guard is armed
+    // only once this call has created the partial: a link or directory found there is reported
+    // and left alone. Declared before `file`, so on any throw the file is closed, then removed.
+    std::string whyNot;
+    std::FILE* raw = CreatePartialFile(partial.string(), whyNot);
+    if (!raw) throw SerError("cannot create " + partial.string() + ": " + whyNot);
     PartialGuard guard{partial};
-    std::ofstream file(partial, std::ios::binary | std::ios::trunc);
-    if (!file) throw SerError("cannot create " + partial.string());
+    std::unique_ptr<std::FILE, int (*)(std::FILE*)> file(raw, &std::fclose);
     auto put = [&](const void* p, size_t len) {
-        file.write(static_cast<const char*>(p), static_cast<std::streamsize>(len));
-        if (!file) throw SerError("write to " + partial.string() + " failed");
+        errno = 0;
+        if (std::fwrite(p, 1, len, file.get()) != len)
+            throw SerError("write to " + partial.string() + " failed: " +
+                           std::error_code(errno, std::generic_category()).message());
     };
     put(hdr.data(), hdr.size());
 
@@ -148,8 +158,10 @@ ExportResult ExportSerWithSpace(const FrameSource& src, const std::string& sourc
         if (progress && !progress(i + 1, n)) throw ExportCancelled();
     }
 
-    file.close();
-    if (!file) throw SerError("write to " + partial.string() + " failed");
+    errno = 0;
+    if (std::fclose(file.release()) != 0)
+        throw SerError("write to " + partial.string() + " failed: " +
+                       std::error_code(errno, std::generic_category()).message());
     fs::rename(partial, out, ec);
     if (ec) throw SerError("cannot rename " + partial.string() + " to " + outPath + ": " + ec.message());
     guard.armed = false;

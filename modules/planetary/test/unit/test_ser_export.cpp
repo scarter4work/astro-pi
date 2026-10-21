@@ -1,5 +1,6 @@
 #include <catch_amalgamated.hpp>
 
+#include <chrono>
 #include <filesystem>
 #include <fstream>
 #include <iterator>
@@ -311,4 +312,56 @@ TEST_CASE("ExportSer replaces a stale .partial") {
     ExportSer(*src, avi, out, false, kNone);
     CHECK_FALSE(fs::exists(out + ".partial"));
     CHECK(fs::file_size(out) == static_cast<uintmax_t>(178 + kN * kW * kH));
+}
+
+TEST_CASE("ExportSer never writes through a symbolic link at the partial path") {
+    TempDir td;
+    const fs::path dir = fs::path(td.NewPath(".d"));
+    fs::create_directories(dir);
+    const std::string avi = MakeAvi(dir, "a.avi");
+    const auto src = OpenVideo(avi);
+    const std::string out = (dir / "out.ser").string();
+    const std::string victim = (dir / "victim.txt").string();
+    std::ofstream(victim) << "victim\n";
+    const auto old = fs::file_time_type::clock::now() - std::chrono::hours(48);
+    fs::last_write_time(victim, old);
+    fs::create_symlink(victim, out + ".partial");
+    try {
+        ExportSer(*src, avi, out, false, kNone);
+        FAIL("a symbolic link at the partial path was written through");
+    } catch (const SerError& e) {
+        CHECK(std::string(e.what()) ==
+              "cannot create " + out + ".partial: it is a symbolic link; SERViewer never writes through one");
+    }
+    std::ifstream v(victim);
+    CHECK(std::string((std::istreambuf_iterator<char>(v)), std::istreambuf_iterator<char>()) == "victim\n");
+    CHECK(fs::last_write_time(victim) == old);
+    CHECK_FALSE(fs::exists(fs::symlink_status(out)));
+    CHECK(fs::is_symlink(out + ".partial"));  // reported, not removed
+
+    // A dangling link must not create the file it names.
+    const std::string out2 = (dir / "out2.ser").string();
+    const std::string nowhere = (dir / "nowhere.bin").string();
+    fs::create_symlink(nowhere, out2 + ".partial");
+    CHECK_THROWS_AS(ExportSer(*src, avi, out2, false, kNone), SerError);
+    CHECK_FALSE(fs::exists(fs::symlink_status(nowhere)));
+    CHECK_FALSE(fs::exists(fs::symlink_status(out2)));
+}
+
+TEST_CASE("ExportSer refuses a directory at the partial path and leaves it") {
+    TempDir td;
+    const fs::path dir = fs::path(td.NewPath(".d"));
+    fs::create_directories(dir);
+    const std::string avi = MakeAvi(dir, "a.avi");
+    const auto src = OpenVideo(avi);
+    const std::string out = (dir / "out.ser").string();
+    fs::create_directory(out + ".partial");
+    try {
+        ExportSer(*src, avi, out, false, kNone);
+        FAIL("a directory at the partial path did not fail");
+    } catch (const SerError& e) {
+        CHECK(std::string(e.what()).find(out + ".partial") != std::string::npos);
+    }
+    CHECK(fs::is_directory(out + ".partial"));
+    CHECK_FALSE(fs::exists(out));
 }

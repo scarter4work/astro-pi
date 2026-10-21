@@ -1,6 +1,7 @@
 #include <catch_amalgamated.hpp>
 
 #include <algorithm>
+#include <chrono>
 #include <filesystem>
 #include <fstream>
 
@@ -514,4 +515,35 @@ TEST_CASE("A written sidecar round-trips through OpenVideo(Auto)") {
         // An explicit choice still wins over it.
         CHECK(OpenVideo(p, BayerChoice::None)->Info().colorId == ColorId::Mono);
     }
+}
+
+TEST_CASE("WriteAsiairSidecar never writes through a symbolic link at the partial path") {
+    TempDir dir;
+    namespace fs = std::filesystem;
+    // A victim file with known content and an old mtime, and a link to it where the partial goes.
+    const std::string victim = dir.NewPath(".victim");
+    WriteText(victim, "victim\n");
+    const auto old = fs::file_time_type::clock::now() - std::chrono::hours(48);
+    fs::last_write_time(victim, old);
+    const std::string p = dir.NewPath(".avi");
+    fs::create_symlink(victim, p + ".txt.partial");
+    try {
+        WriteAsiairSidecar(p, ColorId::BayerRGGB, "0.2.1.0");
+        FAIL("a symbolic link at the partial path was written through or replaced silently");
+    } catch (const SerError& e) {
+        CHECK(std::string(e.what()) == "cannot write sidecar " + p + ".txt: cannot create " + p +
+                                           ".txt.partial: it is a symbolic link; SERViewer never writes through one");
+    }
+    CHECK(ReadAll(victim) == "victim\n");
+    CHECK(fs::last_write_time(victim) == old);
+    CHECK_FALSE(fs::exists(fs::symlink_status(p + ".txt")));
+    CHECK(fs::is_symlink(p + ".txt.partial"));  // reported, not removed
+
+    // A dangling link must not create the file it names.
+    const std::string q = dir.NewPath(".avi");
+    const std::string nowhere = dir.NewPath(".nowhere");
+    fs::create_symlink(nowhere, q + ".txt.partial");
+    CHECK_THROWS_AS(WriteAsiairSidecar(q, ColorId::BayerRGGB, "0.2.1.0"), SerError);
+    CHECK_FALSE(fs::exists(fs::symlink_status(nowhere)));
+    CHECK_FALSE(fs::exists(fs::symlink_status(q + ".txt")));
 }

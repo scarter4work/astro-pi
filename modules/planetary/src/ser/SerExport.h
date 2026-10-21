@@ -25,7 +25,9 @@ public:
 // Writes an 8-bit single-channel source (AVI, or 8-bit mono/Bayer SER) as a SER file:
 // header ColorID from the source, depth 8, no trailer, DateTime_UTC 0, DateTime from the
 // source file name's start time (else 0). Writes `<outPath>.partial` and renames it into
-// place; on any error or cancel the partial file is removed. Holds one frame at a time.
+// place; on any error or cancel the partial file is removed. A symbolic link or other
+// non-regular file already at the partial path is refused and left alone, never written
+// through (CreatePartialFile); a stale regular partial is replaced. Holds one frame at a time.
 // Throws SerError with the real reason, ExportCancelled on cancel.
 ExportResult ExportSer(const FrameSource& src, const std::string& sourcePath,
                        const std::string& outPath, bool allowOverwrite,

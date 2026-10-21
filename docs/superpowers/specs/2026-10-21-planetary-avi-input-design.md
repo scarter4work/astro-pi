@@ -283,3 +283,16 @@ stays unchanged; refuses non-Bayer ids; read-only folder: path + "Permission den
 left; round trip through `OpenVideo(Auto)`); GUI smoke step `--save-pattern` on make-fixtures'
 `avi-nosidecar.avi` in the run's private directory (12-15 PNGs, button box pixel checks, the
 written bytes compared exactly); `run-avi-real.sh` stays green and writes nothing to the NAS.
+
+**Partial files never follow links (both writers; review fix after 3ee81095).** `ExportSer`
+(shipped in 0.2.0.0) and `WriteAsiairSidecar` create `<target>.partial` through
+`CreatePartialFile` (`src/ser/PartialFile.{h,cpp}`): an `lstat` first, where a stale regular
+file is unlinked, and a symbolic link (dangling or not) or any other non-regular file is
+refused with an error naming it and left alone. The create is
+`open(O_WRONLY|O_CREAT|O_EXCL|O_NOFOLLOW|O_CLOEXEC, 0644)`, so a link planted after the check
+fails the create instead of being written through. Before this, both opened the partial with
+plain `fopen`/`ofstream`, which follows a link planted at that path and writes into whatever it
+names. `ExportSer` also removed an empty directory found at the partial path; it now leaves it.
+Unit tests plant a link to a victim file and check that its content and mtime are unchanged,
+and that a dangling link creates nothing. The publish step is unchanged: a rename after the
+re-check, with the residual race noted above.

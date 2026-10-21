@@ -6,6 +6,7 @@
 #include <filesystem>
 #include <system_error>
 
+#include "PartialFile.h"
 #include "SerFile.h"
 
 namespace planetary::ser {
@@ -201,7 +202,7 @@ void WriteAsiairSidecar(const std::string& aviPath, ColorId pattern, const std::
                              writerVersion + " (Bayer pattern chosen by the user)\n";
     auto osReason = [](int err) { return std::error_code(err, std::generic_category()).message(); };
     // Removes the partial on any failure below; a partial path this call could not create
-    // (e.g. a directory of that name) is left alone.
+    // (a symbolic link, a directory of that name) is left alone.
     bool created = false;
     auto fail = [&](const std::string& what) {
         if (created) {
@@ -211,10 +212,11 @@ void WriteAsiairSidecar(const std::string& aviPath, ColorId pattern, const std::
         throw SerError(what);
     };
 
-    errno = 0;
-    std::FILE* f = std::fopen(partial.c_str(), "wb");
-    if (!f) fail("cannot write sidecar " + target + ": cannot create " + partial + ": " + osReason(errno));
+    std::string whyNot;
+    std::FILE* f = CreatePartialFile(partial, whyNot);  // never through a symbolic link
+    if (!f) fail("cannot write sidecar " + target + ": cannot create " + partial + ": " + whyNot);
     created = true;
+    errno = 0;
     const bool written = std::fwrite(text.data(), 1, text.size(), f) == text.size();
     const int writeErr = errno;
     errno = 0;

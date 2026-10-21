@@ -48,7 +48,9 @@ ColorId ResolveBayer(BayerChoice choice, const std::optional<AsiairSidecar>& sid
 // "sidecar (SERViewer)"). Throws SerError -- and writes nothing -- when the sidecar already
 // exists ("<name> already exists; SERViewer never overwrites a sidecar"; a symbolic link counts)
 // or `pattern` is not one of the four Bayer ids. Writes `<target>.partial`, then renames it; on
-// any failure the partial is removed and the SerError names the path and the OS reason.
+// any failure the partial is removed and the SerError names the path and the OS reason. A
+// symbolic link or other non-regular file at the partial path is refused and left alone, never
+// written through (CreatePartialFile).
 void WriteAsiairSidecar(const std::string& aviPath, ColorId pattern, const std::string& writerVersion);
 
 // "W * H" (the sidecar Capture Area Size) -> w, h; false when it does not parse.
