@@ -20,6 +20,8 @@ SERViewerProcess::SERViewerProcess()
    new SVFilePath( this );
    new SVFrameIndex( this );
    new SVDebayer( this );
+   new SVBayerPattern( this );
+   new SVSaveSerPath( this );
 }
 
 IsoString SERViewerProcess::Id() const
@@ -41,11 +43,17 @@ String SERViewerProcess::Description() const
 {
    return
       "<html>"
-      "<p><b>SERViewer</b> opens SER video files (the format planetary capture programs write).</p>"
+      "<p><b>SERViewer</b> opens planetary video files: SER, and uncompressed 8-bit AVI "
+      "(the format is read from the file's content, not its extension).</p>"
       "<p>Execute it globally to open frame <i>frameIndex</i> of <i>filePath</i> as a new 32-bit "
       "image window, samples normalised to [0,1]. Bayer files open debayered (bilinear) unless "
-      "<i>debayer</i> is false, which keeps the raw CFA and records the pattern in BAYERPAT.</p>"
-      "<p>Reads only the chosen file; no network, no external programs, nothing written to disk.</p>"
+      "<i>debayer</i> is false, which keeps the raw CFA and records the pattern in BAYERPAT. "
+      "For an AVI, <i>bayerPattern</i> sets the CFA pattern; Auto takes it from the ASIAIR "
+      "sidecar (<i>video</i>.avi.txt) and, with no sidecar, opens the raw CFA as mono with a warning.</p>"
+      "<p>With <i>saveSerPath</i> set, it instead converts the AVI at <i>filePath</i> to a SER file "
+      "at that path (never over an existing file) and opens no window.</p>"
+      "<p>Reads only the chosen file and its sidecar; no network, no external programs. Nothing is "
+      "written to disk unless <i>saveSerPath</i> is set.</p>"
       "</html>";
 }
 

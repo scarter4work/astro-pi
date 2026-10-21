@@ -7,7 +7,12 @@
 //                  samples: [ {x, y, c, v} ],                 (tolerance 1e-6)
 //                  keywords: [ {name, value | comment | commentContains} ],
 //                  absentKeywords: [ name ] }
-//              | { name, path, frame, debayer, expectError } ] }
+//              | { name, path, frame, debayer, expectError }
+//              | { name, path, frame, debayer, saveSerPath, expectConsole } ] }
+//   Any case may carry bayerPattern (a SERViewer enum element id, e.g.
+//   "BayerRGGB") and saveSerPath. A case with saveSerPath and no expectError
+//   is a conversion: executeGlobal must return true, open no window, write the
+//   file and say so on the console.
 // Output: $PLANETARY_PROBE_OUT -- { "ok": bool, "cases": [ {name, ok, errors[]} ] }
 //
 // An error case must fail loudly with the expected text: either executeGlobal
@@ -74,9 +79,35 @@ function describeKeywords( kws )
    return s.join( " | " );
 }
 
+function runConvertCase( c, P, r )
+{
+   var before = windowIds().length;
+   Console.beginLog();
+   var ok;
+   try
+   {
+      ok = P.executeGlobal();
+   }
+   finally
+   {
+      var log = Console.endLog().toString();
+   }
+   if ( ok !== true )
+      r.errors.push( "executeGlobal returned " + ok );
+   if ( windowIds().length != before )
+      r.errors.push( "a conversion opened an image window: " + windowIds().join( "," ) );
+   if ( !File.exists( c.saveSerPath ) )
+      r.errors.push( "no file written at " + c.saveSerPath );
+   if ( File.exists( c.saveSerPath + ".partial" ) )
+      r.errors.push( "the .partial file was left behind" );
+   if ( log.indexOf( c.expectConsole ) < 0 )
+      r.errors.push( "console lacks '" + c.expectConsole + "': " + log.substring( 0, 600 ) );
+}
+
 function runErrorCase( c, P, r )
 {
    var before = windowIds().length;
+   var targetExisted = c.saveSerPath !== undefined && File.exists( c.saveSerPath );
    var threw = false, message = "", ok = undefined;
    Console.beginLog();
    try
@@ -105,6 +136,15 @@ function runErrorCase( c, P, r )
       r.errors.push( "expected a failure containing '" + c.expectError + "', but executeGlobal returned " + ok );
    if ( windowIds().length != before )
       r.errors.push( "a failed run left a new image window open: " + windowIds().join( "," ) );
+   if ( c.saveSerPath !== undefined )
+   {
+      if ( targetExisted && !File.exists( c.saveSerPath ) )
+         r.errors.push( "a failed conversion removed the existing " + c.saveSerPath );
+      if ( !targetExisted && File.exists( c.saveSerPath ) )
+         r.errors.push( "a failed conversion left " + c.saveSerPath + " behind" );
+      if ( File.exists( c.saveSerPath + ".partial" ) )
+         r.errors.push( "a failed conversion left the .partial file behind" );
+   }
 }
 
 function runImageCase( c, P, r )
@@ -176,8 +216,19 @@ function main()
             P.filePath = c.path;
             P.frameIndex = c.frame;
             P.debayer = c.debayer;
+            if ( c.bayerPattern !== undefined )
+            {
+               var element = SERViewer.prototype[c.bayerPattern];
+               if ( element === undefined )
+                  throw new Error( "SERViewer has no enum element " + c.bayerPattern );
+               P.bayerPattern = element;
+            }
+            if ( c.saveSerPath !== undefined )
+               P.saveSerPath = c.saveSerPath;
             if ( c.expectError !== undefined )
                runErrorCase( c, P, r );
+            else if ( c.saveSerPath !== undefined )
+               runConvertCase( c, P, r );
             else
                runImageCase( c, P, r );
          }

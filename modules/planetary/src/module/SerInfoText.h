@@ -8,6 +8,7 @@
 #define __SerInfoText_h
 
 #include <cstdint>
+#include <cstdio>
 #include <exception>
 #include <new>
 #include <optional>
@@ -19,10 +20,13 @@
 namespace planetary::preview
 {
 
-// One "Label: value" line per field, UTF-8, no trailing newline. The first
-// frame's time comes from the timestamp trailer (nullopt: the file has none);
-// the header's DateTime_UTC is shown on its own line, since an opened frame
-// falls back to it for DATE-OBS. Every reader warning gets its own line.
+// One "Label: value" line per field, UTF-8, no trailing newline. For a SER the
+// first frame's time comes from the timestamp trailer (nullopt: the file has
+// none); the header's DateTime_UTC is shown on its own line, since an opened
+// frame falls back to it for DATE-OBS. An AVI has no clock: instead it shows its
+// container, frame rate, Bayer pattern and where that came from, the ASIAIR
+// sidecar's fields, and the file name's start time (local, zone unknown).
+// Every reader warning gets its own line.
 inline std::string InfoText( const std::string& fileNameUtf8, const ser::FileInfo& info,
                              std::optional<int64_t> firstFrameTicks )
 {
@@ -34,10 +38,25 @@ inline std::string InfoText( const std::string& fileNameUtf8, const ser::FileInf
       return iso ? *iso : std::string( "none" );
    };
 
+   const bool isAvi = info.container != ser::Container::Ser;
+   const ser::AviDetails avi = info.avi.value_or( ser::AviDetails() );
+
    std::string t = "File: " + fileNameUtf8 + "\n";
+   if ( isAvi )
+      t += std::string( "Container: " ) +
+           (info.container == ser::Container::AviOpenDml ? "AVI (OpenDML)" : "AVI") + "\n";
    t += "Size: " + std::to_string( info.header.width ) + " \xc3\x97 " + std::to_string( info.header.height ) + "\n";
    t += "Frames: " + std::to_string( info.frameCount ) + "\n";
+   if ( isAvi )
+   {
+      char fps[64];
+      std::snprintf( fps, sizeof fps, "%.2f", avi.frameRate );
+      t += std::string( "Frame rate: " ) + fps + " fps\n";
+   }
    t += std::string( "Colour: " ) + ser::ColorIdName( info.colorId ) + "\n";
+   if ( isAvi )
+      t += std::string( "Bayer: " ) + (ser::IsBayer( info.colorId ) ? ser::BayerPatternKeyword( info.colorId ) : "none") +
+           " (" + avi.bayerSource + ")\n";
    t += "Bit depth: " + std::to_string( info.header.depth );
    if ( info.normDepth != info.header.depth )
       t += " (normalised to the full " + std::to_string( info.normDepth ) + "-bit range)";
@@ -48,8 +67,28 @@ inline std::string InfoText( const std::string& fileNameUtf8, const ser::FileInf
    else
       t += info.byteOrder == ser::ByteOrder::Big ? "big-endian" : "little-endian";
    t += "\n";
-   t += "First frame UTC: " + time( firstFrameTicks ) + "\n";
-   t += "Header UTC: " + time( info.header.dateTimeUtc ) + "\n";
+   if ( isAvi )
+   {
+      auto field = [&t]( const char* label, const std::string& value )
+      {
+         if ( !value.empty() )
+            t += std::string( label ) + ": " + value + "\n";
+      };
+      if ( avi.sidecar )
+      {
+         field( "Camera", avi.sidecar->camera );
+         field( "Gain", avi.sidecar->gain );
+         field( "Exposure", avi.sidecar->exposure );
+         field( "Flip (sidecar, not applied)", avi.sidecar->flip );
+      }
+      if ( avi.filenameStart )
+         t += "Start: " + *avi.filenameStart + " (from filename, time zone unknown)\n";
+   }
+   else
+   {
+      t += "First frame UTC: " + time( firstFrameTicks ) + "\n";
+      t += "Header UTC: " + time( info.header.dateTimeUtc ) + "\n";
+   }
    if ( info.warnings.empty() )
       t += "Warnings: none";
    else

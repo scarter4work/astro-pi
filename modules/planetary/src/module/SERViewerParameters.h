@@ -9,7 +9,7 @@
 namespace pcl
 {
 
-// Absolute path of the .ser file to read.
+// Absolute path of the .ser or .avi file to read (the format is chosen by content).
 class SVFilePath : public MetaString
 {
 public:
@@ -38,9 +38,36 @@ public:
    bool DefaultValue() const override;
 };
 
-extern SVFilePath*   TheSVFilePathParameter;
-extern SVFrameIndex* TheSVFrameIndexParameter;
-extern SVDebayer*    TheSVDebayerParameter;
+// AVI only (a SER carries its own ColorID): the CFA pattern. Auto = the ASIAIR
+// sidecar's Bayer value (rotated for Flip=Vert); with no sidecar, raw mono and a warning.
+class SVBayerPattern : public MetaEnumeration
+{
+public:
+   enum { Auto, None, RGGB, GRBG, GBRG, BGGR, NumberOfItems, Default = Auto };
+
+   SVBayerPattern( MetaProcess* );
+   IsoString Id() const override;
+   size_type NumberOfElements() const override;
+   IsoString ElementId( size_type ) const override;
+   int ElementValue( size_type ) const override;
+   size_type DefaultValueIndex() const override;
+};
+
+// When non-empty, ExecuteGlobal converts the AVI at filePath to a SER at this
+// path instead of opening a frame.
+class SVSaveSerPath : public MetaString
+{
+public:
+   SVSaveSerPath( MetaProcess* );
+   IsoString Id() const override;
+   String DefaultValue() const override;
+};
+
+extern SVFilePath*     TheSVFilePathParameter;
+extern SVFrameIndex*   TheSVFrameIndexParameter;
+extern SVDebayer*      TheSVDebayerParameter;
+extern SVBayerPattern* TheSVBayerPatternParameter;
+extern SVSaveSerPath*  TheSVSaveSerPathParameter;
 
 } // namespace pcl
 

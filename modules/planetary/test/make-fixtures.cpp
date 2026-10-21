@@ -1,7 +1,7 @@
-// Test-only CLI: writes synthetic SER fixtures and the headless probe's input
+// Test-only CLI: writes synthetic SER and AVI fixtures and the headless probe's input
 // JSON (expected dimensions, samples and keywords) into a directory.
 //
-//   make-fixtures <out dir>   ->  <out dir>/*.ser + <out dir>/probe-in.json
+//   make-fixtures <out dir>   ->  <out dir>/*.ser, *.avi (+ .avi.txt sidecars) + <out dir>/probe-in.json
 //
 // Expected values come from the same generator formula that fills the files,
 // plus an independent bilinear demosaic written here, never from the reader
@@ -16,9 +16,12 @@
 #include <string>
 #include <vector>
 
+#include "AviWriter.h"
 #include "SerWriter.h"
 
+using planetary::testing::AviSpec;
 using planetary::testing::SerSpec;
+using planetary::testing::WriteAvi;
 using planetary::testing::WriteSer;
 
 namespace {
@@ -78,14 +81,23 @@ struct Case {
     std::vector<Point> samples;
     std::vector<Kw> keywords;
     std::vector<std::string> absent;
+    std::string bayerPattern;   // SERViewer enum element id ("BayerRGGB"); "" leaves the default
+    std::string saveSerPath;    // non-empty: a conversion case (or an error case) with this target
+    std::string expectConsole;  // conversion cases: text the Process Console must carry
 };
 
 std::string ToJson(const Case& c) {
     std::ostringstream o;
     o << "{\"name\":" << Quote(c.name) << ",\"path\":" << Quote(c.path) << ",\"frame\":" << c.frame
       << ",\"debayer\":" << (c.debayer ? "true" : "false");
+    if (!c.bayerPattern.empty()) o << ",\"bayerPattern\":" << Quote(c.bayerPattern);
+    if (!c.saveSerPath.empty()) o << ",\"saveSerPath\":" << Quote(c.saveSerPath);
     if (!c.expectError.empty()) {
         o << ",\"expectError\":" << Quote(c.expectError) << "}";
+        return o.str();
+    }
+    if (!c.saveSerPath.empty()) {
+        o << ",\"expectConsole\":" << Quote(c.expectConsole) << "}";
         return o.str();
     }
     o << ",\"expectId\":" << Quote(c.expectId) << ",\"width\":" << c.width << ",\"height\":" << c.height
@@ -129,6 +141,50 @@ double RggbExpected(int x, int y, int c, int f, int depth, int w, int h) {
         rgb[0] = vert; rgb[1] = here; rgb[2] = horiz;
     }
     return rgb[c] / ((1 << depth) - 1);
+}
+
+// The same bilinear demosaic for any 2x2 pattern ("RGGB", "GRBG", "GBRG", "BGGR",
+// read row by row): a red/blue site keeps its value, takes green from the four
+// orthogonal neighbours and the opposite colour from the four diagonals; a green
+// site takes the colour of its left/right neighbours from them and the colour of
+// its above/below neighbours from those.
+double BayerExpected(const std::string& pattern, int x, int y, int c, int f, int depth, int w, int h) {
+    auto m = [](int i, int n) { return i < 0 ? -i : (i >= n ? 2 * (n - 1) - i : i); };
+    auto s = [&](int dx, int dy) { return double(Gen(m(x + dx, w), m(y + dy, h), 0, f, depth)); };
+    auto colourAt = [&](int px, int py) {
+        const char k = pattern[(py % 2) * 2 + px % 2];
+        return k == 'R' ? 0 : k == 'G' ? 1 : 2;
+    };
+    const int site = colourAt(x, y);
+    double rgb[3];
+    if (site != 1) {
+        rgb[site] = s(0, 0);
+        rgb[1] = (s(-1, 0) + s(1, 0) + s(0, -1) + s(0, 1)) / 4;
+        rgb[2 - site] = (s(-1, -1) + s(1, -1) + s(-1, 1) + s(1, 1)) / 4;
+    } else {
+        rgb[1] = s(0, 0);
+        rgb[colourAt(x + 1, y)] = (s(-1, 0) + s(1, 0)) / 2;
+        rgb[colourAt(x, y + 1)] = (s(0, -1) + s(0, 1)) / 2;
+    }
+    return rgb[c] / ((1 << depth) - 1);
+}
+
+// 8-bit mono frames from the generator, top row first (what WriteAvi takes).
+std::vector<std::vector<uint8_t>> GenFrames8(int w, int h, int n) {
+    std::vector<std::vector<uint8_t>> frames(n);
+    for (int f = 0; f < n; ++f)
+        for (int y = 0; y < h; ++y)
+            for (int x = 0; x < w; ++x) frames[f].push_back(static_cast<uint8_t>(Gen(x, y, 0, f, 8)));
+    return frames;
+}
+
+void WriteText(const std::string& path, const std::string& text) {
+    std::ofstream out(path, std::ios::binary);
+    out << text;
+    if (!out) {
+        std::fprintf(stderr, "make-fixtures: cannot write %s\n", path.c_str());
+        std::exit(1);
+    }
 }
 
 // 100-ns ticks since 0001-01-01 UTC, computed with Python's datetime:
@@ -396,6 +452,174 @@ int main(int argc, char** argv) {
         Case c;
         c.name = "bad magic"; c.path = path; c.expectError = "LUCAM-RECORDER";
         cases.push_back(c);
+    }
+
+    // The generalised demosaic must agree with the RGGB one the SER cases use.
+    for (int y = 0; y < 9; ++y)
+        for (int x = 0; x < 13; ++x)
+            for (int ch = 0; ch < 3; ++ch)
+                if (BayerExpected("RGGB", x, y, ch, 1, 8, 13, 9) != RggbExpected(x, y, ch, 1, 8, 13, 9)) {
+                    std::fprintf(stderr, "make-fixtures: BayerExpected disagrees with RggbExpected\n");
+                    return 1;
+                }
+
+    // AVI with an ASIAIR sidecar saying Bayer RG, Flip Vert: Auto resolves to BGGR.
+    // 32x24, 3 frames, BI_RGB grey palette, stored bottom-up.
+    const std::string aviVert = (dir / "avi-vert.avi").string();
+    {
+        const int w = 32, h = 24, d = 8;
+        AviSpec s;
+        s.width = w; s.height = h; s.bottomUp = true;
+        WriteAvi(aviVert, s, GenFrames8(w, h, 3));
+        WriteText(aviVert + ".txt",
+                  "[ZWO ASI585MC]\r\nCapture Area Size = 32 * 24\r\nColour Format = RAW8\r\n"
+                  "Flip = Vert(unimplemented)\r\nBayer = RG\r\nGain = 200\r\nExposure = 10ms\r\n");
+
+        Case c;
+        c.name = "avi sidecar Auto debayered (RG + Flip=Vert -> BGGR)"; c.path = aviVert; c.frame = 2;
+        c.expectId = "avi_vert_f2";
+        c.width = w; c.height = h; c.channels = 3;
+        for (auto [x, y] : Points(w, h))
+            for (int ch = 0; ch < 3; ++ch) c.samples.push_back({x, y, ch, BayerExpected("BGGR", x, y, ch, 2, d, w, h)});
+        c.keywords = {{"INSTRUME", "value", "ZWO ASI585MC"},
+                      {"HISTORY", "comment", "SERViewer: avi-vert.avi frame 2"},
+                      {"HISTORY", "commentContains", "SERViewer: Bayer BGGR (sidecar RG, Flip=Vert -> BGGR)"}};
+        c.absent = {"DATE-OBS", "BAYERPAT", "OBSERVER", "TELESCOP"};
+        cases.push_back(c);
+
+        Case o;
+        o.name = "avi bayerPattern=BayerRGGB overrides the sidecar"; o.path = aviVert; o.frame = 1;
+        o.bayerPattern = "BayerRGGB";
+        o.expectId = "avi_vert_f1";
+        o.width = w; o.height = h; o.channels = 3;
+        for (auto [x, y] : Points(w, h))
+            for (int ch = 0; ch < 3; ++ch) o.samples.push_back({x, y, ch, BayerExpected("RGGB", x, y, ch, 1, d, w, h)});
+        o.keywords = {{"INSTRUME", "value", "ZWO ASI585MC"},
+                      {"HISTORY", "comment", "SERViewer: Bayer RGGB (chosen)"}};
+        o.absent = {"DATE-OBS", "BAYERPAT"};
+        cases.push_back(o);
+
+        Case r;
+        r.name = "avi sidecar raw CFA"; r.path = aviVert; r.frame = 0; r.debayer = false;
+        r.expectId = "avi_vert_f0";
+        r.width = w; r.height = h; r.channels = 1;
+        for (auto [x, y] : Points(w, h)) r.samples.push_back({x, y, 0, Norm(Gen(x, y, 0, 0, d), d)});
+        r.keywords = {{"BAYERPAT", "value", "BGGR"}, {"INSTRUME", "value", "ZWO ASI585MC"}};
+        r.absent = {"DATE-OBS"};
+        cases.push_back(r);
+    }
+
+    // AVI without a sidecar: Auto shows the raw CFA as mono and says why.
+    {
+        const int w = 16, h = 16, d = 8;
+        AviSpec s;
+        s.width = w; s.height = h;
+        const std::string path = (dir / "avi-nosidecar.avi").string();
+        WriteAvi(path, s, GenFrames8(w, h, 2));
+
+        Case c;
+        c.name = "avi no sidecar, Auto -> mono with a warning"; c.path = path; c.frame = 1;
+        c.expectId = "avi_nosidecar_f1";
+        c.width = w; c.height = h; c.channels = 1;
+        for (auto [x, y] : Points(w, h)) c.samples.push_back({x, y, 0, Norm(Gen(x, y, 0, 1, d), d)});
+        c.keywords = {{"HISTORY", "comment", "SERViewer: avi-nosidecar.avi frame 1"},
+                      {"HISTORY", "commentContains",
+                       "SERViewer warning: no Bayer pattern known (no .avi.txt sidecar); showing the raw CFA as "
+                       "mono -- choose the pattern under Bayer pattern"}};
+        c.absent = {"DATE-OBS", "INSTRUME", "BAYERPAT"};
+        cases.push_back(c);
+    }
+
+    // OpenDML: Y800, 5 frames in RIFF AVI + 2 RIFF AVIX segments (2 frames each but the last).
+    {
+        const int w = 24, h = 16, d = 8, n = 5;
+        AviSpec s;
+        s.width = w; s.height = h; s.fourcc = "Y800";
+        s.index = AviSpec::OpenDml; s.framesPerRiff = 2;
+        const std::string path = (dir / "avi-opendml.avi").string();
+        WriteAvi(path, s, GenFrames8(w, h, n));
+
+        Case c;
+        c.name = "avi OpenDML last frame"; c.path = path; c.frame = n - 1;
+        c.expectId = "avi_opendml_f4";
+        c.width = w; c.height = h; c.channels = 1;
+        for (auto [x, y] : Points(w, h)) c.samples.push_back({x, y, 0, Norm(Gen(x, y, 0, n - 1, d), d)});
+        c.keywords = {{"HISTORY", "comment", "SERViewer: avi-opendml.avi frame 4"}};
+        c.absent = {"DATE-OBS", "INSTRUME"};
+        cases.push_back(c);
+    }
+
+    // Odd size 13x9 (rows padded to 16 bytes), sidecar Bayer GR, Flip None -> GRBG.
+    {
+        const int w = 13, h = 9, d = 8;
+        AviSpec s;
+        s.width = w; s.height = h;
+        const std::string path = (dir / "avi-odd.avi").string();
+        WriteAvi(path, s, GenFrames8(w, h, 1));
+        WriteText(path + ".txt",
+                  "[ZWO ASI224MC]\nCapture Area Size = 13 * 9\nColour Format = RAW8\nFlip = None\nBayer = GR\n");
+
+        Case c;
+        c.name = "avi odd size debayered (GRBG from the sidecar)"; c.path = path; c.frame = 0;
+        c.expectId = "avi_odd_f0";
+        c.width = w; c.height = h; c.channels = 3;
+        for (auto [x, y] : Points(w, h))
+            for (int ch = 0; ch < 3; ++ch) c.samples.push_back({x, y, ch, BayerExpected("GRBG", x, y, ch, 0, d, w, h)});
+        c.keywords = {{"INSTRUME", "value", "ZWO ASI224MC"},
+                      {"HISTORY", "comment", "SERViewer: Bayer GRBG (sidecar)"}};
+        c.absent = {"DATE-OBS", "BAYERPAT"};
+        cases.push_back(c);
+    }
+
+    // saveSerPath: avi-vert.avi -> SER (BGGR from the sidecar), no window; then the
+    // written SER read back through SERViewer must hold the same frames.
+    {
+        const int w = 32, h = 24, d = 8;
+        const std::string out = (dir / "avi-vert-converted.ser").string();
+        std::error_code ec;
+        std::filesystem::remove(out, ec);  // a rerun into the same directory starts clean
+
+        Case c;
+        c.name = "saveSerPath converts the AVI"; c.path = aviVert; c.saveSerPath = out;
+        c.expectConsole = "SERViewer: wrote 3 frames to " + out;
+        cases.push_back(c);
+
+        Case raw;
+        raw.name = "converted SER reads back: raw frame 0"; raw.path = out; raw.frame = 0; raw.debayer = false;
+        raw.expectId = "avi_vert_converted_f0";
+        raw.width = w; raw.height = h; raw.channels = 1;
+        for (auto [x, y] : Points(w, h)) raw.samples.push_back({x, y, 0, Norm(Gen(x, y, 0, 0, d), d)});
+        raw.keywords = {{"BAYERPAT", "value", "BGGR"}, {"INSTRUME", "value", "ZWO ASI585MC"}};
+        raw.absent = {"DATE-OBS"};
+        cases.push_back(raw);
+
+        Case deb;
+        deb.name = "converted SER reads back: debayered last frame"; deb.path = out; deb.frame = 2;
+        deb.expectId = "avi_vert_converted_f2";
+        deb.width = w; deb.height = h; deb.channels = 3;
+        for (auto [x, y] : Points(w, h))
+            for (int ch = 0; ch < 3; ++ch)
+                deb.samples.push_back({x, y, ch, BayerExpected("BGGR", x, y, ch, 2, d, w, h)});
+        deb.keywords = {{"HISTORY", "comment", "SERViewer: avi-vert-converted.ser frame 2"}};
+        deb.absent = {"DATE-OBS", "BAYERPAT"};
+        cases.push_back(deb);
+
+        Case serIn;
+        serIn.name = "saveSerPath on SER input"; serIn.path = (dir / "mono8.ser").string();
+        serIn.saveSerPath = (dir / "from-ser.ser").string();
+        serIn.expectError = "saveSerPath converts AVI input only";
+        cases.push_back(serIn);
+
+        Case self;
+        self.name = "saveSerPath = the source path"; self.path = aviVert; self.saveSerPath = aviVert;
+        self.expectError = "refusing to overwrite the source file";
+        cases.push_back(self);
+
+        Case exists;
+        exists.name = "saveSerPath names an existing file"; exists.path = aviVert;
+        exists.saveSerPath = (dir / "mono8.ser").string();
+        exists.expectError = exists.saveSerPath + " exists";
+        cases.push_back(exists);
     }
 
     // Missing file and empty filePath.

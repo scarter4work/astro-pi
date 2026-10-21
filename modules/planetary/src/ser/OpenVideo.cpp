@@ -73,7 +73,8 @@ std::unique_ptr<FrameSource> OpenVideo(const std::string& path, BayerChoice baye
         ApplyAviContext(*avi, path, bayer);
         return avi;
     }
-    throw SerError("not a SER or AVI video file: " + path);
+    throw SerError("not a SER or AVI video file (starts with neither LUCAM-RECORDER nor RIFF/AVI): " +
+                   path);
 }
 
 }  // namespace planetary::ser

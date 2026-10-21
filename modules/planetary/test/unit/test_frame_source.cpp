@@ -40,6 +40,8 @@ TEST_CASE("OpenVideo rejects unknown magic") {
         FAIL("expected SerError");
     } catch (const SerError& e) {
         CHECK(std::string(e.what()).find("not a SER or AVI video file") != std::string::npos);
+        // Names the ids it looked for (SERViewer's "bad magic" probe case asserts LUCAM-RECORDER).
+        CHECK(std::string(e.what()).find("LUCAM-RECORDER") != std::string::npos);
     }
 }
 

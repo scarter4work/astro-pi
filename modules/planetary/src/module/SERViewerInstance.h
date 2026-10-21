@@ -11,7 +11,7 @@
 #include <string>
 
 #include "Debayer.h"
-#include "SerFile.h"
+#include "FrameSource.h"
 
 namespace pcl
 {
@@ -27,7 +27,11 @@ struct DisplayFrame
 // true, else its raw CFA as one channel; every other colour layout as stored
 // (BGR already reordered to RGB by the reader). Throws
 // planetary::ser::SerError with the real reason.
-DisplayFrame LoadFrameForDisplay( const planetary::ser::SerFile& file, int64_t index, bool debayer );
+DisplayFrame LoadFrameForDisplay( const planetary::ser::FrameSource& file, int64_t index, bool debayer );
+
+// The reader's Bayer choice for a bayerPattern parameter value (SVBayerPattern
+// element index). Throws pcl::Error for a value outside the enumeration.
+planetary::ser::BayerChoice BayerChoiceFor( pcl_enum bayerPattern );
 
 class SERViewerInstance : public ProcessImplementation
 {
@@ -48,6 +52,8 @@ public:
    String   p_filePath;
    int32    p_frameIndex;
    pcl_bool p_debayer;
+   pcl_enum p_bayerPattern;
+   String   p_saveSerPath;
 };
 
 } // namespace pcl

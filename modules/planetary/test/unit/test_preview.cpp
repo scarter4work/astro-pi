@@ -198,3 +198,100 @@ TEST_CASE("a red-dominant RGGB mosaic (the GUI smoke's bayer-colour.ser) preview
     for (uint32_t p : PreviewArgb(planetary::ser::Normalize(cfa, 8)))
         CHECK((((p >> 16) & 0xFF) == ((p >> 8) & 0xFF) && ((p >> 8) & 0xFF) == (p & 0xFF)));
 }
+
+namespace {
+FileInfo AviInfo() {
+    FileInfo i;
+    i.header.width = 32;
+    i.header.height = 24;
+    i.header.depth = 8;
+    i.normDepth = 8;
+    i.bytesPerSample = 1;
+    i.frameCount = 1168;
+    i.colorId = ColorId::BayerBGGR;
+    i.container = planetary::ser::Container::Avi;
+    planetary::ser::AviDetails d;
+    d.frameRate = 29.97;
+    d.bayerSource = "sidecar RG, Flip=Vert \xE2\x86\x92 BGGR";
+    planetary::ser::AsiairSidecar sc;
+    sc.camera = "ZWO ASI585MC";
+    sc.colourFormat = "RAW8";
+    sc.bayer = "RG";
+    sc.flip = "Vert(unimplemented)";
+    sc.gain = "200";
+    sc.exposure = "10ms";
+    d.sidecar = sc;
+    d.filenameStart = "2026-10-04 03:15:00";
+    i.avi = d;
+    return i;
+}
+}  // namespace
+
+TEST_CASE("info text for an AVI: container, frame rate, Bayer source, sidecar, filename start", "[preview][info]") {
+    const std::string t = InfoText("2026-10-04-031500-Saturn.avi", AviInfo(), std::nullopt);
+    CHECK(t ==
+          "File: 2026-10-04-031500-Saturn.avi\n"
+          "Container: AVI\n"
+          "Size: 32 \xc3\x97 24\n"
+          "Frames: 1168\n"
+          "Frame rate: 29.97 fps\n"
+          "Colour: BAYER_BGGR\n"
+          "Bayer: BGGR (sidecar RG, Flip=Vert \xE2\x86\x92 BGGR)\n"
+          "Bit depth: 8\n"
+          "Byte order: n/a (8-bit samples)\n"
+          "Camera: ZWO ASI585MC\n"
+          "Gain: 200\n"
+          "Exposure: 10ms\n"
+          "Flip (sidecar, not applied): Vert(unimplemented)\n"
+          "Start: 2026-10-04 03:15:00 (from filename, time zone unknown)\n"
+          "Warnings: none");
+}
+
+TEST_CASE("info text for an AVI without sidecar or filename start: OpenDML, mono, warnings", "[preview][info]") {
+    FileInfo i = AviInfo();
+    i.container = planetary::ser::Container::AviOpenDml;
+    i.colorId = ColorId::Mono;
+    i.avi->frameRate = 25;
+    i.avi->bayerSource = "none";
+    i.avi->sidecar.reset();
+    i.avi->filenameStart.reset();
+    i.warnings = {"no Bayer pattern known"};
+    const std::string t = InfoText("m.avi", i, std::nullopt);
+    CHECK(t.find("Container: AVI (OpenDML)\n") != std::string::npos);
+    CHECK(t.find("Frame rate: 25.00 fps\n") != std::string::npos);
+    CHECK(t.find("Bayer: none (none)\n") != std::string::npos);
+    CHECK(t.find("Camera:") == std::string::npos);
+    CHECK(t.find("Gain:") == std::string::npos);
+    CHECK(t.find("Exposure:") == std::string::npos);
+    CHECK(t.find("Flip") == std::string::npos);
+    CHECK(t.find("Start:") == std::string::npos);
+    CHECK(t.find("UTC") == std::string::npos);  // an AVI has no clock
+    CHECK(t.find("\nWarning: no Bayer pattern known") != std::string::npos);
+}
+
+TEST_CASE("info text for an AVI: empty sidecar fields get no line", "[preview][info]") {
+    FileInfo i = AviInfo();
+    i.avi->sidecar->gain.clear();
+    i.avi->sidecar->flip.clear();
+    i.colorId = ColorId::BayerRGGB;
+    i.avi->bayerSource = "chosen";
+    const std::string t = InfoText("x.avi", i, std::nullopt);
+    CHECK(t.find("Bayer: RGGB (chosen)\n") != std::string::npos);
+    CHECK(t.find("Camera: ZWO ASI585MC\n") != std::string::npos);
+    CHECK(t.find("Gain:") == std::string::npos);
+    CHECK(t.find("Flip") == std::string::npos);
+}
+
+TEST_CASE("info text for a SER is unchanged by the AVI fields", "[preview][info]") {
+    // The same expected string as "info text names every field the viewer shows".
+    CHECK(InfoText("Saturn.ser", BayerInfo(), 639243438000000000LL) ==
+          "File: Saturn.ser\n"
+          "Size: 320 \xc3\x97 240\n"
+          "Frames: 563\n"
+          "Colour: BAYER_RGGB\n"
+          "Bit depth: 12\n"
+          "Byte order: big-endian\n"
+          "First frame UTC: 2026-09-07T02:10:00.000\n"
+          "Header UTC: 2026-09-07T02:04:21.500\n"
+          "Warnings: none");
+}

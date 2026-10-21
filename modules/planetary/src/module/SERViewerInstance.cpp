@@ -10,13 +10,18 @@
 #include <pcl/File.h>
 #include <pcl/Image.h>
 #include <pcl/ImageWindow.h>
+#include <pcl/StandardStatus.h>
+#include <pcl/StatusMonitor.h>
 #include <pcl/View.h>
 
+#include <memory>
 #include <optional>
 #include <string>
 
 #include "FitsText.h"
 #include "PlanetaryVersion.h"
+#include "SerExport.h"
+#include "SerFile.h"
 #include "SerTime.h"
 
 namespace ser = planetary::ser;
@@ -25,7 +30,22 @@ namespace fits = planetary::fits;
 namespace pcl
 {
 
-DisplayFrame LoadFrameForDisplay( const ser::SerFile& file, int64_t index, bool debayer )
+ser::BayerChoice BayerChoiceFor( pcl_enum bayerPattern )
+{
+   switch ( bayerPattern )
+   {
+   case SVBayerPattern::None: return ser::BayerChoice::None;
+   case SVBayerPattern::RGGB: return ser::BayerChoice::RGGB;
+   case SVBayerPattern::GRBG: return ser::BayerChoice::GRBG;
+   case SVBayerPattern::GBRG: return ser::BayerChoice::GBRG;
+   case SVBayerPattern::BGGR: return ser::BayerChoice::BGGR;
+   case SVBayerPattern::Auto: return ser::BayerChoice::Auto;
+   default:
+      throw Error( "SERViewer: invalid bayerPattern value " + String( int( bayerPattern ) ) );
+   }
+}
+
+DisplayFrame LoadFrameForDisplay( const ser::FrameSource& file, int64_t index, bool debayer )
 {
    const ser::FileInfo& info = file.Info();
    const ser::Frame frame = file.ReadFrame( index );
@@ -93,6 +113,83 @@ void AddHistory( FITSKeywordArray& keywords, const std::string& text )
       keywords << FITSHeaderKeyword( "HISTORY", IsoString(), IsoString( piece.c_str() ) );
 }
 
+// "BGGR (sidecar RG, Flip=Vert → BGGR)" / "none (none)": an AVI's effective
+// Bayer pattern and where it came from (UTF-8).
+std::string AviBayerText( const ser::FileInfo& info )
+{
+   const std::string pattern = ser::IsBayer( info.colorId ) ? ser::BayerPatternKeyword( info.colorId ) : "none";
+   return pattern + " (" + (info.avi ? info.avi->bayerSource : std::string()) + ")";
+}
+
+// UTF-8 text bound for a FITS card: the reader's arrow becomes "->", any
+// other code point outside printable ASCII one '?'.
+std::string FitsAscii( std::string s )
+{
+   const std::string arrow = "\xE2\x86\x92";
+   for ( size_t at = s.find( arrow ); at != std::string::npos; at = s.find( arrow, at + 2 ) )
+      s.replace( at, arrow.size(), "->" );
+   return fits::AsciiFromUtf8( s );
+}
+
+// saveSerPath: writes the AVI `source` as a SER at `savePath`, with progress on
+// the console (its Abort cancels; the partial file is removed). Opens no window.
+bool ConvertToSer( const ser::FrameSource& source, const String& path, const String& savePath )
+{
+   const String fileName = File::ExtractNameAndExtension( path );
+   const ser::FileInfo& info = source.Info();
+   if ( info.container == ser::Container::Ser )
+      throw Error( "SERViewer: " + fileName + ": saveSerPath converts AVI input only" );
+
+   Console console;
+   console.EnableAbort();
+   StandardStatus status;
+   StatusMonitor monitor;
+   monitor.SetCallback( &status );
+   monitor.Initialize( "SERViewer: writing " + File::ExtractNameAndExtension( savePath ).EncodedHTMLSpecialChars(),
+                       size_type( info.frameCount ) );
+
+   // StatusMonitor reports an abort by throwing ProcessAborted; ExportSer is
+   // told by returning false, so it removes its partial file and throws
+   // ExportCancelled, which leaves here as ProcessAborted again.
+   const ser::ExportProgress progress = [&monitor]( int64_t done, int64_t ) -> bool
+   {
+      if ( done == 0 )
+         return true;
+      try
+      {
+         ++monitor;
+      }
+      catch ( const ProcessAborted& )
+      {
+         return false;
+      }
+      return true;
+   };
+
+   ser::ExportResult result;
+   try
+   {
+      result = ser::ExportSer( source, path.ToUTF8().c_str(), savePath.ToUTF8().c_str(),
+                               false/*allowOverwrite*/, progress );
+   }
+   catch ( const ser::ExportCancelled& )
+   {
+      throw ProcessAborted();
+   }
+   catch ( const ser::SerError& e )
+   {
+      throw Error( "SERViewer: " + fileName + ": " + FromUtf8( e.what() ) );
+   }
+
+   console.WriteLn( "<end><cbr>SERViewer " PLANETARY_VERSION_STRING ": " + fileName.EncodedHTMLSpecialChars() +
+                    ", Bayer " + FromUtf8( AviBayerText( info ) ).EncodedHTMLSpecialChars() );
+   for ( const std::string& w : info.warnings )
+      console.WarningLn( "SERViewer warning: " + FromUtf8( w ).EncodedHTMLSpecialChars() );
+   console.WriteLn( "SERViewer: wrote " + Num( result.framesWritten ) + " frames to " +
+                    savePath.EncodedHTMLSpecialChars() );
+   return true;
+}
+
 } // namespace
 
 SERViewerInstance::SERViewerInstance( const MetaProcess* m )
@@ -100,6 +197,8 @@ SERViewerInstance::SERViewerInstance( const MetaProcess* m )
    , p_filePath( TheSVFilePathParameter->DefaultValue() )
    , p_frameIndex( int32( TheSVFrameIndexParameter->DefaultValue() ) )
    , p_debayer( TheSVDebayerParameter->DefaultValue() )
+   , p_bayerPattern( pcl_enum( TheSVBayerPatternParameter->DefaultValueIndex() ) )
+   , p_saveSerPath( TheSVSaveSerPathParameter->DefaultValue() )
 {
 }
 
@@ -117,12 +216,14 @@ void SERViewerInstance::Assign( const ProcessImplementation& p )
       p_filePath = x->p_filePath;
       p_frameIndex = x->p_frameIndex;
       p_debayer = x->p_debayer;
+      p_bayerPattern = x->p_bayerPattern;
+      p_saveSerPath = x->p_saveSerPath;
    }
 }
 
 bool SERViewerInstance::CanExecuteOn( const View&, String& whyNot ) const
 {
-   whyNot = "SERViewer is a global process: it opens a SER frame as a new image and cannot run on a view.";
+   whyNot = "SERViewer is a global process: it opens a video frame as a new image and cannot run on a view.";
    return false;
 }
 
@@ -144,25 +245,44 @@ bool SERViewerInstance::ExecuteGlobal()
 
    const String path = p_filePath.Trimmed();
    const String fileName = File::ExtractNameAndExtension( path );
+   const String savePath = p_saveSerPath.Trimmed();
    const int64_t index = p_frameIndex;
+   const ser::BayerChoice bayer = BayerChoiceFor( p_bayerPattern );
 
    // Every reader failure (bad file, unsupported layout, index out of range,
    // short read) surfaces with the library's own reason. No window exists until
    // the frame has been read, so a reader failure leaves no half-made image.
+   std::unique_ptr<ser::FrameSource> source;
+   try
+   {
+      source = ser::OpenVideo( path.ToUTF8().c_str(), bayer );
+   }
+   catch ( const ser::SerError& e )
+   {
+      throw Error( "SERViewer: " + fileName + ": " + FromUtf8( e.what() ) );
+   }
+
+   if ( !savePath.IsEmpty() )
+      return ConvertToSer( *source, path, savePath );
+
    ser::Frame frame;
-   ser::FileInfo info;
+   const ser::FileInfo& info = source->Info();
+   const bool isAvi = info.container != ser::Container::Ser;
+   // An AVI has no trustworthy clock: no DATE-OBS (the file name's start time
+   // is local with an unknown zone).
    std::optional<std::string> dateObs;
    bool dateFromFrame = false;
    try
    {
-      const ser::SerFile file = ser::SerFile::Open( path.ToUTF8().c_str() );
-      info = file.Info();
-      frame = file.ReadFrame( index );
-      if ( std::optional<int64_t> ticks = file.FrameTimestamp( index ) )
-         dateObs = ser::TicksToIsoUtc( *ticks );
-      dateFromFrame = bool( dateObs );
-      if ( !dateObs )
-         dateObs = ser::TicksToIsoUtc( info.header.dateTimeUtc );
+      frame = source->ReadFrame( index );
+      if ( !isAvi )
+      {
+         if ( std::optional<int64_t> ticks = source->FrameTimestamp( index ) )
+            dateObs = ser::TicksToIsoUtc( *ticks );
+         dateFromFrame = bool( dateObs );
+         if ( !dateObs )
+            dateObs = ser::TicksToIsoUtc( info.header.dateTimeUtc );
+      }
    }
    catch ( const ser::SerError& e )
    {
@@ -180,7 +300,8 @@ bool SERViewerInstance::ExecuteGlobal()
                                      dateFromFrame ? "UTC time of this frame (SER timestamp trailer)"
                                                    : "UTC start of the capture (SER header)" );
    if ( !info.header.instrument.empty() )
-      keywords << FITSHeaderKeyword( "INSTRUME", FitsString( info.header.instrument ), "SER header Instrument" );
+      keywords << FITSHeaderKeyword( "INSTRUME", FitsString( info.header.instrument ),
+                                     isAvi ? "ASIAIR sidecar camera" : "SER header Instrument" );
    if ( !info.header.telescope.empty() )
       keywords << FITSHeaderKeyword( "TELESCOP", FitsString( info.header.telescope ), "SER header Telescope" );
    if ( !info.header.observer.empty() )
@@ -190,8 +311,12 @@ bool SERViewerInstance::ExecuteGlobal()
                                      "CFA pattern of the raw frame" );
    const std::string asciiName = fits::AsciiFromUtf8( fileName.ToUTF8().c_str() );
    AddHistory( keywords, "SERViewer: " + asciiName + " frame " + std::to_string( index ) );
+   if ( isAvi && ser::IsBayer( info.colorId ) )
+      AddHistory( keywords, "SERViewer: Bayer " + FitsAscii( AviBayerText( info ) ) );
+   // SER header text has no defined encoding; AVI warnings are built from
+   // UTF-8 file names and sidecar text.
    for ( const std::string& w : info.warnings )
-      AddHistory( keywords, "SERViewer warning: " + fits::AsciiFromBytes( w ) );
+      AddHistory( keywords, "SERViewer warning: " + (isAvi ? FitsAscii( w ) : fits::AsciiFromBytes( w )) );
    if ( !rangeWarning.empty() )
       AddHistory( keywords, "SERViewer warning: " + rangeWarning );
 
@@ -244,6 +369,8 @@ bool SERViewerInstance::ExecuteGlobal()
                     " frame " + Num( index ) + " of " + Num( info.frameCount ) + " -> " + String( viewId ) + " (" +
                     Num( frame.width ) + "x" + Num( frame.height ) + ", " +
                     String( ser::ColorIdName( info.colorId ) ) + (cfaKept ? " raw CFA" : "") + ", " + depth + ")" );
+   if ( isAvi )
+      console.WriteLn( "SERViewer: Bayer " + FromUtf8( AviBayerText( info ) ).EncodedHTMLSpecialChars() );
    if ( info.warnings.empty() )
       console.WriteLn( "SERViewer: no reader warnings" );
    else
@@ -257,19 +384,26 @@ bool SERViewerInstance::ExecuteGlobal()
 
 void* SERViewerInstance::LockParameter( const MetaParameter* p, size_type )
 {
-   if ( p == TheSVFilePathParameter )   return p_filePath.Begin();
-   if ( p == TheSVFrameIndexParameter ) return &p_frameIndex;
-   if ( p == TheSVDebayerParameter )    return &p_debayer;
+   if ( p == TheSVFilePathParameter )     return p_filePath.Begin();
+   if ( p == TheSVFrameIndexParameter )   return &p_frameIndex;
+   if ( p == TheSVDebayerParameter )      return &p_debayer;
+   if ( p == TheSVBayerPatternParameter ) return &p_bayerPattern;
+   if ( p == TheSVSaveSerPathParameter )  return p_saveSerPath.Begin();
    return nullptr;
 }
 
 bool SERViewerInstance::AllocateParameter( size_type sizeOrLength, const MetaParameter* p, size_type )
 {
-   if ( p != TheSVFilePathParameter )
+   String* s = nullptr;
+   if ( p == TheSVFilePathParameter )
+      s = &p_filePath;
+   else if ( p == TheSVSaveSerPathParameter )
+      s = &p_saveSerPath;
+   else
       return false;
-   p_filePath.Clear();
+   s->Clear();
    if ( sizeOrLength > 0 )
-      p_filePath.SetLength( sizeOrLength );
+      s->SetLength( sizeOrLength );
    return true;
 }
 
@@ -277,6 +411,8 @@ size_type SERViewerInstance::ParameterLength( const MetaParameter* p, size_type 
 {
    if ( p == TheSVFilePathParameter )
       return p_filePath.Length();
+   if ( p == TheSVSaveSerPathParameter )
+      return p_saveSerPath.Length();
    return 0;
 }
 
