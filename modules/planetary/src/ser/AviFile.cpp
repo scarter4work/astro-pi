@@ -104,52 +104,79 @@ struct StreamIds {
 }
 
 // Collects usable frame offsets in file order. Entry numbers count every video entry,
-// zero-length ones included. The first invalid entry ends the table.
+// zero-length ones included. The first invalid entry ends the table. Index entries are
+// checked arithmetically only (inside the file, padded frame size, ascending, no overlap):
+// reading every chunk header would cost one NAS disk seek per frame (18 s for 3618 frames,
+// measured). SpotCheck reads three headers; ReadFrame verifies each frame's own header.
 class FrameTable {
 public:
-    FrameTable(const Io& io, const StreamIds& ids, int64_t chunkBytes)
-        : io_(io), ids_(ids), chunkBytes_(chunkBytes) {}
+    FrameTable(int64_t fileSize, int64_t chunkBytes)
+        : fileSize_(fileSize), chunkBytes_(chunkBytes), maxEntries_(fileSize / 8) {}
 
     // An index entry: `dataPos` is where the chunk data starts. False = stop.
     bool AddIndexed(int64_t dataPos, int64_t size) {
+        if (entries_ >= maxEntries_) return Broken();  // more entries than the file can hold
         const int64_t entry = entries_++;
-        if (size == 0) { ++dropped_; return true; }
-        unsigned char h[8];
+        if (size == 0) return Drop() || Invalid(entry);
         const bool valid = size == chunkBytes_ && dataPos >= 8 && dataPos >= nextFree_ &&
-                           dataPos <= io_.FileSize() - size && io_.ReadAt(dataPos - 8, h, 8) &&
-                           ids_.IsFrame(h) && U32(h + 4) == static_cast<uint64_t>(size);
-        if (!valid) return Stop("index entry " + Num(entry) + " is invalid; using the first " +
-                                Num(Count()) + " frames");
-        Push(dataPos);
+                           dataPos <= fileSize_ - size;
+        if (!valid) return Invalid(entry);
+        Push(dataPos, entry);
         return true;
     }
 
     // A frame chunk met while scanning; `complete` = its data lies inside its list. False = stop.
     bool AddScanned(const Chunk& c, bool complete) {
         const int64_t entry = entries_++;
-        if (complete && c.size == 0) { ++dropped_; return true; }
-        if (!complete || c.size != chunkBytes_)
+        if (complete && c.size == 0 && Drop()) return true;
+        if (!complete || c.size != chunkBytes_ || run_ > AviFile::kMaxDroppedRun)
             return Stop("video chunk " + Num(entry) + " is truncated or malformed; using the first " +
                         Num(Count()) + " frames");
-        Push(c.pos + 8);
+        Push(c.pos + 8, entry);
         return true;
     }
 
     // An index structure (ix## chunk) is unreadable: frames from here on are lost.
-    bool Broken() {
-        return Stop("index entry " + Num(entries_) + " is invalid; using the first " + Num(Count()) +
-                    " frames");
+    bool Broken() { return Invalid(entries_); }
+
+    // Reads the chunk headers of the first, middle and last usable frames; the first one that
+    // is not this stream's video chunk of the expected size ends the table there.
+    void SpotCheck(const Io& io, const StreamIds& ids) {
+        const int64_t n = Count();
+        if (n == 0) return;
+        for (int64_t k : {int64_t(0), n / 2, n - 1}) {
+            unsigned char h[8];
+            if (io.ReadAt(offsets_[k] - 8, h, 8) && ids.IsFrame(h) && U32(h + 4) == static_cast<uint64_t>(chunkBytes_))
+                continue;
+            const int64_t entry = entryOf[k];
+            offsets_.resize(static_cast<size_t>(k));
+            entryOf.resize(static_cast<size_t>(k));
+            Invalid(entry);
+            return;
+        }
     }
 
     bool Stopped() const { return stopped_; }
     int64_t Count() const { return static_cast<int64_t>(offsets_.size()); }
     int64_t Dropped() const { return dropped_; }
     const std::string& StopWarning() const { return stopWarning_; }
-    std::vector<int64_t> Take() { return std::move(offsets_); }
+    std::vector<int64_t> TakeOffsets() { return std::move(offsets_); }
+    std::vector<int64_t> entryOf;  // index entry number of each usable frame
 
 private:
-    void Push(int64_t dataPos) {
+    // A zero-length (dropped) frame; false once the run of them exceeds the cap.
+    bool Drop() {
+        if (++run_ > AviFile::kMaxDroppedRun) return false;
+        ++dropped_;
+        return true;
+    }
+    bool Invalid(int64_t entry) {
+        return Stop("index entry " + Num(entry) + " is invalid; using the first " + Num(Count()) + " frames");
+    }
+    void Push(int64_t dataPos, int64_t entry) {
         offsets_.push_back(dataPos);
+        entryOf.push_back(entry);
+        run_ = 0;
         nextFree_ = dataPos + chunkBytes_ + 8;  // the next chunk header follows: no overlap, table bounded by the file
     }
     bool Stop(std::string warning) {
@@ -158,10 +185,8 @@ private:
         return false;
     }
 
-    const Io& io_;
-    const StreamIds& ids_;
-    int64_t chunkBytes_;
-    int64_t entries_ = 0, dropped_ = 0, nextFree_ = 0;
+    int64_t fileSize_, chunkBytes_, maxEntries_;
+    int64_t entries_ = 0, dropped_ = 0, run_ = 0, nextFree_ = 0;
     bool stopped_ = false;
     std::string stopWarning_;
     std::vector<int64_t> offsets_;
@@ -201,11 +226,14 @@ bool BuildFromSuperIndex(const VideoStream& vs, const Io& io, FrameTable& table,
     if (n > (vs.indxSize - 24) / 16) { why = Num(n) + " entries do not fit in the chunk"; return false; }
     if (!vs.ids.IsFrame(d + 8)) { why = "indexes chunk '" + FourccName(d + 8) + "', not the video stream"; return false; }
 
+    // ix## chunks must be distinct, ascending and non-overlapping, so the total index work
+    // is bounded by the file size however the super index repeats or overstates them.
+    uint64_t nextIx = 0;
     for (int64_t s = 0; s < n && !table.Stopped(); ++s) {
         const unsigned char* e = d + 24 + 16 * s;
         const uint64_t ixPos = U64(e);
         unsigned char h[32];
-        if (ixPos > static_cast<uint64_t>(io.FileSize()) ||
+        if (ixPos < nextIx || ixPos > static_cast<uint64_t>(io.FileSize()) ||
             !io.ReadAt(static_cast<int64_t>(ixPos), h, 32) || !vs.ids.IsIndex(h)) {
             table.Broken();
             break;
@@ -218,6 +246,7 @@ bool BuildFromSuperIndex(const VideoStream& vs, const Io& io, FrameTable& table,
             table.Broken();
             break;
         }
+        nextIx = ixPos + 8 + static_cast<uint64_t>(ixSize);
         const uint64_t base = U64(ix + 12);
         std::vector<unsigned char> entries(static_cast<size_t>(8 * count));
         if (base > static_cast<uint64_t>(io.FileSize()) ||
@@ -259,7 +288,7 @@ void BuildFromIdx1(const std::vector<unsigned char>& idx1, int64_t moviFourcc, c
 
 // Linear walk of the movi lists (descending into 'rec ' lists). Reads chunk headers only.
 // Returns false once the table has stopped.
-bool ScanList(const Io& io, int64_t start, int64_t end, const StreamIds& ids, FrameTable& table) {
+bool ScanList(const Io& io, int64_t start, int64_t end, const StreamIds& ids, FrameTable& table, int depth = 0) {
     Chunk c;
     for (int64_t pos = start; io.ChunkAt(pos, end, c); pos = c.Next()) {
         const bool inside = c.DataEnd() <= end;
@@ -270,7 +299,10 @@ bool ScanList(const Io& io, int64_t start, int64_t end, const StreamIds& ids, Fr
         } else if (!inside) {
             return true;  // a damaged list: nothing further in it can be trusted
         } else if (Is(c.id, "LIST") && Is(c.listType, "rec ")) {
-            if (!ScanList(io, c.pos + 12, c.DataEnd(), ids, table)) return false;
+            if (depth + 1 > AviFile::kMaxRecDepth)
+                throw SerError("AVI 'rec ' lists are nested " + Num(depth + 1) + " deep at offset " + Num(c.pos) +
+                               " (at most " + Num(AviFile::kMaxRecDepth) + " supported)");
+            if (!ScanList(io, c.pos + 12, c.DataEnd(), ids, table, depth + 1)) return false;
         }
     }
     return true;
@@ -437,7 +469,7 @@ AviFile AviFile::Open(const std::string& path) {
     }
 
     // ---- frame table: indx -> ix##, else idx1, else a scan of the movi lists
-    FrameTable table(io, vs.ids, chunkBytes);
+    FrameTable table(f.fileSize_, chunkBytes);
     bool indexed = false;
     if (vs.indx) {
         std::string why;
@@ -450,6 +482,7 @@ AviFile AviFile::Open(const std::string& path) {
         details.indexKind = "idx1";
         indexed = true;
     }
+    if (indexed) table.SpotCheck(io, vs.ids);
     if (!indexed) {
         info.warnings.push_back(haveIdx1 ? "idx1 covers only the first RIFF segment; scanned the file for frames"
                                          : "no index; scanned the file for frames");
@@ -475,7 +508,9 @@ AviFile AviFile::Open(const std::string& path) {
     h.frameCount = static_cast<int32_t>(std::min<int64_t>(info.frameCount, INT32_MAX));
     details.droppedFrames = table.Dropped();
     info.avi = details;
-    f.frameData_ = table.Take();
+    f.frameEntry_ = std::move(table.entryOf);
+    f.frameData_ = table.TakeOffsets();
+    f.videoDigits_ = std::string(vs.ids.digits, 2);
     return f;
 }
 
@@ -489,13 +524,23 @@ Frame AviFile::ReadFrame(int64_t index) const {
     if (index < 0 || index >= info_.frameCount)
         throw SerError("frame index " + Num(index) + " out of range (0.." + Num(info_.frameCount - 1) + ")");
 
+    // One read: the chunk header, then the frame data. The header is verified here because
+    // open only checks the index arithmetically (plus three spot reads).
     const int w = info_.header.width, ht = info_.header.height;
-    std::vector<unsigned char> raw(static_cast<size_t>(stride_ * ht));
+    const int64_t chunkBytes = stride_ * ht;
+    std::vector<unsigned char> raw(static_cast<size_t>(8 + chunkBytes));
     stream_.clear();
-    stream_.seekg(static_cast<std::streamoff>(frameData_[static_cast<size_t>(index)]));
+    stream_.seekg(static_cast<std::streamoff>(frameData_[static_cast<size_t>(index)] - 8));
     stream_.read(reinterpret_cast<char*>(raw.data()), static_cast<std::streamsize>(raw.size()));
     if (!stream_ || stream_.gcount() != static_cast<std::streamsize>(raw.size()))
         throw SerError("short read on frame " + Num(index) + ": file ends before the frame does");
+    StreamIds ids;
+    ids.digits[0] = videoDigits_[0];
+    ids.digits[1] = videoDigits_[1];
+    if (!ids.IsFrame(raw.data()) || U32(raw.data() + 4) != static_cast<uint64_t>(chunkBytes))
+        throw SerError("index entry " + Num(frameEntry_[static_cast<size_t>(index)]) + " points at " +
+                       FourccName(raw.data()) + "/" + Num(U32(raw.data() + 4)) + ", not a video chunk");
+    const unsigned char* data = raw.data() + 8;
 
     Frame fr;
     fr.width = w;
@@ -503,7 +548,7 @@ Frame AviFile::ReadFrame(int64_t index) const {
     fr.channels = 1;
     fr.samples.resize(static_cast<size_t>(w) * ht);
     for (int y = 0; y < ht; ++y) {
-        const unsigned char* row = raw.data() + stride_ * (bottomUp_ ? ht - 1 - y : y);
+        const unsigned char* row = data + stride_ * (bottomUp_ ? ht - 1 - y : y);
         uint16_t* out = fr.samples.data() + static_cast<size_t>(w) * y;
         for (int x = 0; x < w; ++x) out[x] = row[x];
     }

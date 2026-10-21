@@ -1,6 +1,7 @@
 #include <catch_amalgamated.hpp>
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <fstream>
 #include <iterator>
@@ -59,6 +60,40 @@ std::string OpenError(const std::string& path) {
 
 const char* IndexName(AviSpec::Index i) {
     return i == AviSpec::Idx1 ? "idx1" : i == AviSpec::OpenDml ? "OpenDML" : "none";
+}
+
+std::string ReadAll(const std::string& path) {
+    std::ifstream in(path, std::ios::binary);
+    return std::string((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+}
+
+void WriteAt(const std::string& path, size_t at, const std::string& bytes) {
+    std::fstream io(path, std::ios::in | std::ios::out | std::ios::binary);
+    io.seekp(static_cast<std::streamoff>(at));
+    io.write(bytes.data(), static_cast<std::streamsize>(bytes.size()));
+}
+
+std::string Le32(uint32_t v) {
+    std::string s(4, '\0');
+    for (int i = 0; i < 4; ++i) s[i] = static_cast<char>(v >> (8 * i));
+    return s;
+}
+
+// Renames the chunk holding `frame` (its first row is unique in these fixtures) to "01db":
+// a well-formed chunk of the same size that belongs to another stream.
+void MakeForeignChunk(const std::string& path, const std::vector<uint8_t>& frame, int width) {
+    const std::string bytes = ReadAll(path);
+    const size_t at = bytes.find(std::string(frame.begin(), frame.begin() + width));
+    REQUIRE(at != std::string::npos);
+    REQUIRE(bytes.compare(at - 8, 4, "00db") == 0);
+    WriteAt(path, at - 8, "01db");
+}
+
+// Offset of the n-th AVISUPERINDEX entry ({qwOffset, dwSize, dwDuration}) in an OpenDML file.
+size_t SuperIndexEntry(const std::string& path, int n) {
+    const size_t indx = ReadAll(path).find("indx");
+    REQUIRE(indx != std::string::npos);
+    return indx + 8 + 24 + 16 * static_cast<size_t>(n);
 }
 
 }  // namespace
@@ -229,13 +264,15 @@ TEST_CASE("zero-length frames are skipped and counted") {
 
 TEST_CASE("bad index offset") {
     const auto index = GENERATE(AviSpec::Idx1, AviSpec::OpenDml);
-    INFO("index " << IndexName(index));
+    const auto corruption = GENERATE(AviSpec::PastEnd, AviSpec::WrongSize);
+    INFO("index " << IndexName(index) << ", corruption " << (corruption == AviSpec::PastEnd ? "past end" : "wrong size"));
     TempDir dir;
     const std::string p = dir.NewPath(".avi");
     const auto frames = MakeFrames(7, 5, 4);
     AviSpec s = Avi(7, 5);
     s.index = index;
     s.corruptIndexEntry = 2;
+    s.corruption = corruption;
     WriteAvi(p, s, frames);
 
     const AviFile avi = AviFile::Open(p);
@@ -246,24 +283,178 @@ TEST_CASE("bad index offset") {
     CHECK_THROWS_AS(avi.ReadFrame(2), SerError);
 }
 
-TEST_CASE("index entry pointing at a same-size chunk of another stream") {
+TEST_CASE("a foreign chunk at the first, middle or last entry is caught at open") {
+    const auto index = GENERATE(AviSpec::Idx1, AviSpec::OpenDml);
+    INFO("index " << IndexName(index));
     TempDir dir;
     const std::string p = dir.NewPath(".avi");
-    const auto frames = MakeFrames(7, 5, 4);
-    WriteAvi(p, Avi(7, 5), frames);  // idx1: the frame chunk headers come before the idx1 entries
-    {
-        std::fstream io(p, std::ios::in | std::ios::out | std::ios::binary);
-        std::string bytes((std::istreambuf_iterator<char>(io)), std::istreambuf_iterator<char>());
-        size_t at = 0;
-        for (int i = 0; i < 3; ++i) at = bytes.find("00db", i ? at + 4 : 0);  // frame 2's header
-        REQUIRE(at != std::string::npos);
-        io.seekp(static_cast<std::streamoff>(at));
-        io.write("01db", 4);
+    const auto frames = MakeFrames(7, 5, 4);  // spot checks: frames 0, 2, 3
+    AviSpec s = Avi(7, 5);
+    s.index = index;
+    WriteAvi(p, s, frames);
+
+    SECTION("first") {
+        MakeForeignChunk(p, frames[0], 7);
+        CHECK(OpenError(p) ==
+              "AVI has no usable video frames (index entry 0 is invalid; using the first 0 frames)");
     }
+    SECTION("middle") {
+        MakeForeignChunk(p, frames[2], 7);
+        const AviFile avi = AviFile::Open(p);
+        CHECK(avi.Info().frameCount == 2);
+        CHECK(avi.Info().warnings ==
+              std::vector<std::string>{"index entry 2 is invalid; using the first 2 frames"});
+        for (int f = 0; f < 2; ++f) CheckFrame(avi, f, frames[f]);
+    }
+    SECTION("last") {
+        MakeForeignChunk(p, frames[3], 7);
+        const AviFile avi = AviFile::Open(p);
+        CHECK(avi.Info().frameCount == 3);
+        CHECK(avi.Info().warnings ==
+              std::vector<std::string>{"index entry 3 is invalid; using the first 3 frames"});
+        for (int f = 0; f < 3; ++f) CheckFrame(avi, f, frames[f]);
+    }
+}
+
+TEST_CASE("a foreign chunk between the spot checks is caught by ReadFrame") {
+    const auto index = GENERATE(AviSpec::Idx1, AviSpec::OpenDml);
+    INFO("index " << IndexName(index));
+    TempDir dir;
+    const std::string p = dir.NewPath(".avi");
+    const auto frames = MakeFrames(7, 5, 5);  // spot checks: frames 0, 2, 4
+    AviSpec s = Avi(7, 5);
+    s.index = index;
+    WriteAvi(p, s, frames);
+    MakeForeignChunk(p, frames[1], 7);
+
     const AviFile avi = AviFile::Open(p);
+    CHECK(avi.Info().frameCount == 5);
+    CHECK(avi.Info().warnings.empty());
+    try {
+        avi.ReadFrame(1);
+        FAIL("expected SerError");
+    } catch (const SerError& e) {
+        CHECK(std::string(e.what()) == "index entry 1 points at 01db/40, not a video chunk");
+    }
+    for (int f : {0, 2, 3, 4}) CheckFrame(avi, f, frames[f]);
+}
+
+TEST_CASE("a super index repeating an ix00 offset ends the index") {
+    TempDir dir;
+    const std::string p = dir.NewPath(".avi");
+    const auto frames = MakeFrames(7, 5, 5);
+    AviSpec s = Avi(7, 5);
+    s.index = AviSpec::OpenDml;
+    s.framesPerRiff = 2;  // three ix00 chunks
+    WriteAvi(p, s, frames);
+    const std::string bytes = ReadAll(p);
+    WriteAt(p, SuperIndexEntry(p, 1), bytes.substr(SuperIndexEntry(p, 0), 8));  // entry 1 -> ix00 #0
+
+    const auto t0 = std::chrono::steady_clock::now();
+    const AviFile avi = AviFile::Open(p);
+    CHECK(std::chrono::steady_clock::now() - t0 < std::chrono::seconds(1));
     CHECK(avi.Info().frameCount == 2);
     CHECK(avi.Info().warnings ==
           std::vector<std::string>{"index entry 2 is invalid; using the first 2 frames"});
+}
+
+TEST_CASE("a super index repeating an ix00 of zero-length entries ends the index") {
+    // Zero-length entries skip the frame-overlap check, so only the ix## ordering rule stops a
+    // repeated chunk of them from being counted again (and again).
+    TempDir dir;
+    const std::string p = dir.NewPath(".avi");
+    const auto frames = MakeFrames(7, 5, 6);
+    AviSpec s = Avi(7, 5);
+    s.index = AviSpec::OpenDml;
+    s.framesPerRiff = 2;
+    s.zeroLengthFrames = {2, 3};  // the second ix00 holds only dropped frames
+    WriteAvi(p, s, frames);
+    const std::string bytes = ReadAll(p);
+    WriteAt(p, SuperIndexEntry(p, 2), bytes.substr(SuperIndexEntry(p, 1), 8));  // entry 2 -> ix00 #1
+
+    const AviFile avi = AviFile::Open(p);
+    CHECK(avi.Info().frameCount == 2);
+    CHECK(avi.Info().avi->droppedFrames == 2);
+    CHECK(avi.Info().warnings ==
+          std::vector<std::string>{"2 dropped (zero-length) frames skipped",
+                                   "index entry 4 is invalid; using the first 2 frames"});
+}
+
+TEST_CASE("absurd index entry counts are bounded by the file") {
+    TempDir dir;
+    const std::string p = dir.NewPath(".avi");
+    const auto frames = MakeFrames(7, 5, 5);
+    AviSpec s = Avi(7, 5);
+    s.index = AviSpec::OpenDml;
+    s.framesPerRiff = 2;
+    WriteAvi(p, s, frames);
+
+    SECTION("an ix00 declaring 2^32-1 entries") {
+        const std::string bytes = ReadAll(p);
+        const size_t ix1 = bytes.find("ix00", bytes.find("ix00") + 4);  // the second segment's
+        REQUIRE(ix1 != std::string::npos);
+        WriteAt(p, ix1 + 8 + 4, Le32(0xFFFFFFFFu));  // nEntriesInUse
+        const auto t0 = std::chrono::steady_clock::now();
+        const AviFile avi = AviFile::Open(p);
+        CHECK(std::chrono::steady_clock::now() - t0 < std::chrono::seconds(1));
+        CHECK(avi.Info().frameCount == 2);
+        CHECK(avi.Info().warnings ==
+              std::vector<std::string>{"index entry 2 is invalid; using the first 2 frames"});
+    }
+    SECTION("a super index declaring 2^32-1 entries") {
+        WriteAt(p, SuperIndexEntry(p, 0) - 24 + 4, Le32(0xFFFFFFFFu));
+        const AviFile avi = AviFile::Open(p);
+        CHECK(avi.Info().frameCount == 5);
+        CHECK(avi.Info().avi->indexKind == "scanned");
+        CHECK(avi.Info().warnings ==
+              std::vector<std::string>{"OpenDML indx is malformed (4294967295 entries do not fit in the chunk); not used",
+                                       "idx1 covers only the first RIFF segment; scanned the file for frames"});
+    }
+}
+
+TEST_CASE("a run of zero-length entries beyond the cap ends the frame table") {
+    const auto index = GENERATE(AviSpec::Idx1, AviSpec::None);
+    INFO("index " << IndexName(index));
+    const int64_t cap = AviFile::kMaxDroppedRun;
+    TempDir dir;
+    const std::string p = dir.NewPath(".avi");
+    auto frames = MakeFrames(4, 2, 1);
+    frames.resize(static_cast<size_t>(cap + 3), frames[0]);  // frame 0, cap + 1 empty, one more
+    AviSpec s = Avi(4, 2);
+    s.index = index;
+    for (int f = 1; f <= cap + 1; ++f) s.zeroLengthFrames.push_back(f);
+    WriteAvi(p, s, frames);
+
+    const AviFile avi = AviFile::Open(p);
+    CHECK(avi.Info().frameCount == 1);
+    CHECK(avi.Info().avi->droppedFrames == cap);
+    CHECK(HasWarning(avi.Info(), std::to_string(cap) + " dropped (zero-length) frames skipped"));
+    const std::string entry = std::to_string(cap + 1);
+    CHECK(HasWarning(avi.Info(), index == AviSpec::Idx1
+                                     ? "index entry " + entry + " is invalid; using the first 1 frames"
+                                     : "video chunk " + entry + " is truncated or malformed; using the first 1 frames"));
+}
+
+TEST_CASE("nested 'rec ' lists are scanned up to the depth cap") {
+    TempDir dir;
+    const std::string p = dir.NewPath(".avi");
+    const auto frames = MakeFrames(7, 5, 3);
+    AviSpec s = Avi(7, 5);
+    s.index = AviSpec::None;
+
+    SECTION("within the cap") {
+        s.recNesting = GENERATE(1, AviFile::kMaxRecDepth);
+        WriteAvi(p, s, frames);
+        const AviFile avi = AviFile::Open(p);
+        CHECK(avi.Info().frameCount == 3);
+        for (int f = 0; f < 3; ++f) CheckFrame(avi, f, frames[f]);
+    }
+    SECTION("1000 deep") {
+        s.recNesting = 1000;
+        WriteAvi(p, s, frames);
+        const std::string msg = OpenError(p);
+        CHECK(msg.find("'rec ' lists are nested 5 deep") != std::string::npos);
+    }
 }
 
 TEST_CASE("truncated tail") {

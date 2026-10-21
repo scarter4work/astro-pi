@@ -25,7 +25,9 @@ struct AviSpec {
     std::vector<int> zeroLengthFrames;  // written as empty 00db chunks (dropped frames)
     bool paletteChangeChunk = false;    // a 00pc chunk after frame 0 (indexed in idx1)
     int64_t truncateBytes = 0;          // cut this many bytes off the end of the file
-    int corruptIndexEntry = -1;         // that frame's index entries point 4 bytes too far
+    int corruptIndexEntry = -1;         // that frame's index entries are corrupted as below
+    enum Corruption { PastEnd, WrongSize } corruption = PastEnd;  // offset past EOF / size + 2
+    int recNesting = 0;                 // frames of each movi wrapped in this many LIST 'rec '
     size_t trailingJunk = 0;            // bytes after the last RIFF segment
     bool idx1Absolute = false;          // idx1 offsets from the file start (as ASIAIR writes them)
 };
@@ -203,6 +205,8 @@ inline void WriteAvi(const std::string& path, const AviSpec& s,
             Set32(b, e + 12, static_cast<uint32_t>(last - first));
         }
 
+        std::vector<size_t> recLists;
+        for (int r = 0; r < s.recNesting; ++r) recLists.push_back(Begin(b, "LIST", "rec "));
         for (int f = first; f < last; ++f) {
             const std::vector<uint8_t>& src = topDownFrames[f];
             if (!isZero(f) && src.size() != rowBytes * s.height)
@@ -219,16 +223,19 @@ inline void WriteAvi(const std::string& path, const AviSpec& s,
                 }
             }
             End(b, ck);
-            const uint32_t skew = f == s.corruptIndexEntry ? 4 : 0;
+            const bool corrupt = f == s.corruptIndexEntry;
+            const bool pastEnd = corrupt && s.corruption == AviSpec::PastEnd;
+            const uint32_t indexSize = corrupt && s.corruption == AviSpec::WrongSize ? size + 2 : size;
             if (openDml) {
                 // dwOffset -> chunk DATA, relative to qwBaseOffset; bit 31 of dwSize marks a
                 // delta frame (set on odd frames so the reader's mask is exercised).
                 const size_t e = ixEntries + 8 * static_cast<size_t>(f - first);
-                Set32(b, e, static_cast<uint32_t>(chunkAt + 8 - moviList) + skew);
-                Set32(b, e + 4, size | (f % 2 ? 0x80000000u : 0u));
+                Set32(b, e, pastEnd ? 0x7FFFFFF0u : static_cast<uint32_t>(chunkAt + 8 - moviList));
+                Set32(b, e + 4, indexSize | (f % 2 ? 0x80000000u : 0u));
             }
             if (idx1 && seg == 0)
-                idx1Entries.push_back({"00db", 0x10, static_cast<uint32_t>(chunkAt - idx1Base) + skew, size});
+                idx1Entries.push_back({"00db", 0x10, pastEnd ? 0x7FFFFFF0u : static_cast<uint32_t>(chunkAt - idx1Base),
+                                       indexSize});
             if (s.paletteChangeChunk && f == 0) {
                 const size_t pcAt = b.size();
                 const size_t pc = Begin(b, "00pc");
@@ -239,6 +246,7 @@ inline void WriteAvi(const std::string& path, const AviSpec& s,
                     idx1Entries.push_back({"00pc", 0, static_cast<uint32_t>(pcAt - idx1Base), 8});
             }
         }
+        for (auto r = recLists.rbegin(); r != recLists.rend(); ++r) End(b, *r);
         End(b, movi);
 
         if (idx1 && seg == 0) {
