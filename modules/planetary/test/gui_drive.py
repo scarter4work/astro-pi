@@ -110,6 +110,19 @@ def click(x, y):
     xtest.fake_input(d, X.MotionNotify, x=x, y=y); d.sync(); time.sleep(0.15)
     xtest.fake_input(d, X.ButtonPress, 1); d.sync(); time.sleep(0.05)
     xtest.fake_input(d, X.ButtonRelease, 1); d.sync()
+    # Leave the pointer where it is while PI handles the release: its title-bar buttons
+    # test the live cursor position, so moving away at once (park) races the close
+    # (measured 2026-10-21: ~1 close in 7 with an immediate park, every time with this pause).
+    time.sleep(0.4)
+
+
+def drag(a, b, steps=12):
+    xtest.fake_input(d, X.MotionNotify, x=a[0], y=a[1]); d.sync(); time.sleep(0.3)
+    xtest.fake_input(d, X.ButtonPress, 1); d.sync(); time.sleep(0.1)
+    for i in range(1, steps + 1):
+        xtest.fake_input(d, X.MotionNotify, x=a[0] + (b[0] - a[0]) * i // steps,
+                         y=a[1] + (b[1] - a[1]) * i // steps); d.sync(); time.sleep(0.03)
+    xtest.fake_input(d, X.ButtonRelease, 1); d.sync(); time.sleep(0.4)
 
 
 def park():
@@ -282,6 +295,10 @@ if MODE == "--quit":
 if MODE == "--open":
     path_a, path_b = sys.argv[3], sys.argv[4]
     dump("start")
+    # The Process Console starts slid out over the left of the workspace (an auto-hide
+    # panel reaching under the interface's Open SER... button); a click elsewhere only
+    # collapses it. Spend that click on empty workspace first.
+    click(1500, 950)
     park()
     shot("01-empty.png", 1.5)
     box = find_preview(OUT + "/01-empty.png")
@@ -292,15 +309,15 @@ if MODE == "--open":
     log.write("preview at %r\n" % (box,))
     OPEN = (x0 + 24, y0 - 14)            # Open SER... sits above the preview's left end
     DEBAYER = (x1 - 20, y0 - 14)         # the Debayer label ends above its right end
-    SLIDER = ((x0 + x1) // 2, y1 + 18)   # the frame slider spans the middle of the row below
+    HANDLE = (x0 + 47, y1 + 18)          # the slider handle at frame 0 (measured: 809,621 for x0=762)
 
     open_file(path_a, True)
     shot("02-loaded.png", 1.5)
 
-    # Click the slider (it takes focus and steps toward the click), then End: last frame.
-    click(*SLIDER)
-    time.sleep(0.5)
-    key("End")
+    # Drag the handle past the slider's right end: the last frame, whatever the count. (A
+    # click only steps toward the pointer and leaves keyboard focus on Open SER..., so a
+    # following End key never reaches the slider.)
+    drag(HANDLE, (x1 - 10, HANDLE[1]))
     park()
     shot("03-last-frame.png", 1.5)
 
@@ -330,7 +347,8 @@ if MODE == "--check":
         return np.asarray(Image.open(OUT + "/" + name).convert("RGB").crop(region)).astype(np.float64)
 
     # Thresholds hold for real planetary frames too (Task 5): a small bright
-    # disc on black lights a few percent of the preview, and frame-to-frame
+    # disc on black lights little of the preview (Saturn 2026-09-07 at 320x240:
+    # 0.52-0.57%, measured 2026-10-21; an empty preview is 0%), and frame-to-frame
     # seeing changes only the pixels around its edges.
     def lit_mask(name):
         return px(name).max(axis=2) > 24
@@ -344,13 +362,13 @@ if MODE == "--check":
                  "04-second-file.png", "05-import.png"):
         f = float(lit_mask(name).mean())
         lines.append("%s: %.2f%% of the preview lit" % (name, 100 * f))
-        if f < 0.01:
+        if f < 0.001:
             fails.append("%s: the preview is black (%.2f%% lit)" % (name, 100 * f))
     checks = [("02-loaded.png", "03-last-frame.png", "frame 0 vs the last frame", "differ"),
               ("03-last-frame.png", "03b-cfa.png", "debayered vs raw CFA", "differ"),
               ("03-last-frame.png", "03c-debayer-on.png", "debayer on again vs before", "same"),
               ("03-last-frame.png", "04-second-file.png", "fixture A vs fixture B", "differ"),
-              ("03-last-frame.png", "05-import.png", "slider End vs ImportProcess of the last frame", "same"),
+              ("03-last-frame.png", "05-import.png", "slider at the end vs ImportProcess of the last frame", "same"),
               ("05-import.png", "06-closed.png", "interface open vs closed", "differ")]
     for a, b, what, want in checks:
         v = changed(a, b)

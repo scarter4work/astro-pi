@@ -9,7 +9,7 @@
 # 1. gui-smoke-setup.js (-r): the interface opened empty     -> 01-empty.png
 # 2. gui_drive.py --open: Open SER... -> the Qt file dialog (01b-dialog.png),
 #    fixture A's path typed + Return                         -> 02-loaded.png
-#    the frame slider clicked, End                           -> 03-last-frame.png
+#    the slider handle dragged past its end (last frame)      -> 03-last-frame.png
 #    Debayer off / on again                                  -> 03b-cfa.png, 03c-debayer-on.png
 #    Open SER... again with fixture B                        -> 04-second-file.png
 #    PixInsight now holds exactly B open (/proc/<pid>/fd).
