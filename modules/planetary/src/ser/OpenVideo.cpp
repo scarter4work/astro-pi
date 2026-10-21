@@ -1,6 +1,7 @@
 #include <cstring>
 #include <fstream>
 
+#include "AviFile.h"
 #include "FrameSource.h"
 #include "SerFile.h"
 
@@ -18,7 +19,7 @@ std::unique_ptr<FrameSource> OpenVideo(const std::string& path, BayerChoice /*ba
     if (std::memcmp(magic, "LUCAM-RECORDER", 12) == 0)  // first 12 of the 14-byte SER id
         return std::make_unique<SerFile>(SerFile::Open(path));
     if (std::memcmp(magic, "RIFF", 4) == 0 && std::memcmp(magic + 8, "AVI ", 4) == 0)
-        throw SerError("AVI support is not built");
+        return std::make_unique<AviFile>(AviFile::Open(path));
     throw SerError("not a SER or AVI video file: " + path);
 }
 
