@@ -8,11 +8,12 @@
                                       04-second-file.png (+ preview.json)
   gui_drive.py --open-avi OUT AVI SER Open... the AVI -> 08-avi.png; the Bayer pattern combo
                                       one item down (click, Down, Return) -> 09-bayer.png;
-                                      Save as SER... (09b-save-dialog.png) to SER -> 10-saved.png
+                                      Save as SER... (09b-save-dialog.png) to SER, typed without
+                                      .ser -> 10-saved.png; Open... the AVI again -> 11-reopened.png
   gui_drive.py --shot OUT NAME        one screenshot
   gui_drive.py --close OUT            the interface's title-bar close button -> 06-closed.png
   gui_drive.py --quit OUT             File > Quit PixInsight (07-file-menu.png)
-  gui_drive.py --check OUT [--expect-red] [--expect-avi-red] [--expect-rb gt|lt]
+  gui_drive.py --check OUT [--expect-red] [--expect-avi-red] [--avi-is-a] [--expect-rb gt|lt]
                                       pixel checks of the preview region (exit 1 on failure)
 
 PixInsight draws its interface windows inside the main window (no X window to
@@ -382,17 +383,28 @@ if MODE == "--open-avi":
     park()
     shot("09-bayer.png", 1.5)
 
-    file_dialog(CTL["save"], SAVE_DIALOG, out_ser, "09b-save-dialog.png")
+    # Typed WITHOUT its .ser suffix: Save as SER must add it.
+    if not out_ser.endswith(".ser"):
+        raise SystemExit("FAIL: --open-avi needs an output path ending in .ser, got %r" % out_ser)
+    file_dialog(CTL["save"], SAVE_DIALOG, out_ser[:-4], "09b-save-dialog.png")
     wait_for(lambda: os.path.exists(out_ser) and not os.path.exists(out_ser + ".partial"), 30,
              "%s to be written (and %s.partial gone)" % (out_ser, out_ser))
+    if os.path.exists(out_ser[:-4]):
+        raise SystemExit("FAIL: Save as SER also wrote %s (no suffix)" % out_ser[:-4])
     park()
     shot("10-saved.png", 1.5)
+
+    # Open... a file again: the Bayer pattern goes back to Auto (Ruling 9), so the
+    # same AVI shows red again, exactly as 08.
+    open_file(path_avi, False)
+    shot("11-reopened.png", 1.5)
     dump("open-avi end")
     sys.exit(0)
 
 if MODE == "--check":
     expect_red = "--expect-red" in sys.argv[3:]
     expect_avi_red = "--expect-avi-red" in sys.argv[3:]
+    avi_is_a = "--avi-is-a" in sys.argv[3:]
     expect_rb = sys.argv[sys.argv.index("--expect-rb") + 1] if "--expect-rb" in sys.argv[3:] else None
     if expect_rb not in (None, "gt", "lt"):
         raise SystemExit("--expect-rb takes gt or lt")
@@ -416,7 +428,8 @@ if MODE == "--check":
     fails = []
     lines = []
     for name in ("02-loaded.png", "03-last-frame.png", "03b-cfa.png", "03c-debayer-on.png",
-                 "04-second-file.png", "05-import.png", "08-avi.png", "09-bayer.png", "10-saved.png"):
+                 "04-second-file.png", "05-import.png", "08-avi.png", "09-bayer.png", "10-saved.png",
+                 "11-reopened.png"):
         f = float(lit_mask(name).mean())
         lines.append("%s: %.2f%% of the preview lit" % (name, 100 * f))
         if f < 0.001:
@@ -427,9 +440,14 @@ if MODE == "--check":
               ("03-last-frame.png", "04-second-file.png", "fixture A vs fixture B", "differ"),
               ("03-last-frame.png", "05-import.png", "slider at the end vs ImportProcess of the last frame", "same"),
               ("05-import.png", "06-closed.png", "interface open vs closed", "differ"),
-              ("05-import.png", "08-avi.png", "fixture A vs the AVI", "differ"),
+              ("05-import.png", "08-avi.png", "the imported last frame of A vs the opened AVI's frame 0", "differ"),
               ("08-avi.png", "09-bayer.png", "Bayer pattern Auto vs None (mono)", "differ"),
-              ("09-bayer.png", "10-saved.png", "before vs after Save as SER (the viewer stays on the AVI)", "same")]
+              ("09-bayer.png", "10-saved.png", "before vs after Save as SER (the viewer stays on the AVI)", "same"),
+              ("08-avi.png", "11-reopened.png", "the AVI vs the AVI opened again (Bayer pattern back to Auto)", "same")]
+    if avi_is_a:
+        # bayer-colour.avi holds bayer-colour.ser's frames and its sidecar resolves to the
+        # same RGGB: frame 0 of each, debayered, must look identical.
+        checks.append(("02-loaded.png", "08-avi.png", "the AVI decodes as bayer-colour.ser frame 0", "same"))
     for a, b, what, want in checks:
         v = changed(a, b)
         lines.append("%s vs %s (%s): %.3f%% of the preview changed" % (a, b, what, 100 * v))

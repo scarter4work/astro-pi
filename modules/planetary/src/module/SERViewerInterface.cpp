@@ -304,7 +304,19 @@ void SERViewerInterface::SaveAsSer()
    d.EnableOverwritePrompt();
    if ( !d.Execute() )
       return;
-   const String savePath = d.FileName();
+   String savePath = d.FileName();
+   // The dialog adds .ser to a name typed without an extension (measured on PI
+   // 1.9.5 by the GUI smoke); nothing here relies on that. A name the dialog
+   // returns without one gets .ser, and since the dialog's overwrite prompt was
+   // about the other name, an existing file under the new one is asked about here.
+   if ( File::ExtractExtension( savePath ).IsEmpty() )
+   {
+      savePath += ".ser";
+      if ( File::Exists( savePath ) )
+         if ( MessageBox( savePath + " already exists. Replace it?", "SERViewer", StdIcon::Warning,
+                          StdButton::No, StdButton::Yes ).Execute() != StdButton::Yes )
+            return;
+   }
 
    // The export reads through its own reader (same file, same Bayer choice): the
    // progress dialog processes events between frames, and nothing done to the
@@ -340,6 +352,11 @@ void SERViewerInterface::SaveAsSer()
    catch ( const Exception& e )
    {
       failure = e.Message();
+   }
+   catch ( ... )
+   {
+      failure = "SERViewer: Save as SER: " +
+                FromUtf8( planetary::preview::DescribeException( std::current_exception() ) );
    }
    // The viewer stays on the AVI: the failure is about the output, not the source.
    Console().CriticalLn( "<end><cbr>*** " + failure.EncodedHTMLSpecialChars() );
@@ -377,8 +394,12 @@ void SERViewerInterface::e_Click( Button& sender, bool checked )
             d.SetInitialPath( File::ExtractDrive( current ) + File::ExtractDirectory( current ) );
          if ( d.Execute() )
          {
+            // A new file starts on frame 0 with Bayer pattern Auto (its own sidecar
+            // decides); an imported instance keeps its bayerPattern (ImportProcess).
             instance.p_filePath = d.FileName();
             instance.p_frameIndex = 0;
+            instance.p_bayerPattern = SVBayerPattern::Auto;
+            GUI->Bayer_ComboBox.SetCurrentItem( SVBayerPattern::Auto );
             LoadFile( instance.p_filePath, true/*interactive*/ );
          }
       }, true/*interactive*/ );

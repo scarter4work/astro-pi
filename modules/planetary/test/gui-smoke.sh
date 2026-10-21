@@ -19,8 +19,9 @@
 # 4. gui_drive.py --open-avi: Open... the AVI fixture        -> 08-avi.png
 #    the Bayer pattern combo clicked, Down, Return:
 #    Auto -> None (mono)                                     -> 09-bayer.png
-#    Save as SER... (09b-save-dialog.png), a new path typed + Return,
-#    the file written (no .partial left)                     -> 10-saved.png
+#    Save as SER... (09b-save-dialog.png), the new path typed WITHOUT .ser
+#    + Return, the .ser file written (no .partial left)      -> 10-saved.png
+#    Open... the AVI again (Bayer pattern back to Auto)      -> 11-reopened.png
 #    PixInsight now holds exactly the AVI open; the saved SER reads back
 #    (check_saved_ser).
 # 5. gui_drive.py --close: the interface's close button      -> 06-closed.png
@@ -28,12 +29,14 @@
 # 6. gui_drive.py --quit: File > Quit PixInsight.
 # PASS needs: PixInsight exits 0 within 60 s of Quit, every PNG present, the
 # open-file checks above, and gui_drive.py --check on the preview region
-# (found in 01-empty.png): lit in 02-05 and 08-10; 02 != 03 (frame 0 vs the last
+# (found in 01-empty.png): lit in 02-05 and 08-11; 02 != 03 (frame 0 vs the last
 # frame), 03 != 03b (debayered vs raw CFA), 03b grey, 03 == 03c, 03 != 04 (A vs B),
 # 03 == 05 (the slider's last frame == the imported last frame), 05 != 06,
-# 05 != 08 (A vs the AVI), 08 != 09 and 09 grey (Bayer None shows the raw CFA),
-# 09 == 10 (the viewer stays on the AVI after saving); with the default fixture
-# A, 03 red-dominant (catches an R/B swap), and with the default AVI, 08 too;
+# 05 != 08 (A's last frame vs the AVI's frame 0), 08 != 09 and 09 grey (Bayer
+# None shows the raw CFA), 09 == 10 (the viewer stays on the AVI after saving),
+# 08 == 11 (Open... resets the Bayer pattern to Auto); with the default fixture
+# A, 03 red-dominant (catches an R/B swap); with the default AVI, 08 too, and
+# with both defaults 02 == 08 (the AVI decodes exactly as bayer-colour.ser);
 # with real fixtures, PLANETARY_GUI_EXPECT_RB=gt|lt asserts 03 shows mean R
 # above/below B (known from the raw samples, see avi_to_ser.py) -- the same swap catch.
 #
@@ -96,6 +99,9 @@ if [ -z "${PLANETARY_GUI_FIXTURE_AVI:-}" ]; then
    AVI_FRAMES=3
 else
    AVI_FRAMES="${PLANETARY_GUI_AVI_FRAMES:?PLANETARY_GUI_FIXTURE_AVI needs PLANETARY_GUI_AVI_FRAMES (its frame count)}"
+fi
+if [ -z "${PLANETARY_GUI_FIXTURE_A:-}" ] && [ -z "${PLANETARY_GUI_FIXTURE_AVI:-}" ]; then
+   CHECK_ARGS+=( --avi-is-a )   # bayer-colour.avi holds bayer-colour.ser's frames
 fi
 A="${PLANETARY_GUI_FIXTURE_A:-$PLANETARY_RUN_DIR/fixtures/bayer-colour.ser}"
 B="${PLANETARY_GUI_FIXTURE_B:-$PLANETARY_RUN_DIR/fixtures/mono8.ser}"
@@ -235,7 +241,7 @@ PI_PID=""
 ok=1
 [ "$rc" = 0 ] || { echo "FAIL: PixInsight exit code $rc (see $OUT/pi.log)"; ok=0; }
 for png in 01-empty 01b-dialog 02-loaded 03-last-frame 03b-cfa 03c-debayer-on 04-second-file 05-import 06-closed \
-           08-avi 09-bayer 09b-save-dialog 10-saved; do
+           08-avi 09-bayer 09b-save-dialog 10-saved 11-reopened; do
    [ -s "$OUT/$png.png" ] || { echo "FAIL: $png.png missing"; ok=0; }
 done
 python3 "$HERE/gui_drive.py" --check "$OUT" "${CHECK_ARGS[@]}" || ok=0
