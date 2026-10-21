@@ -113,7 +113,7 @@ index treated as untrusted (same validation discipline as increment 1).
   chunk (`xxpc`) → error.
 - **Rows:** BI_RGB (DIB) rows padded to 4 bytes; `biHeight > 0` = bottom-up (flip to top-down),
   `< 0` = top-down. Y800/GREY/`Y8  ` are YUV, not DIBs: always top-down, and rows may be
-  unpadded (ffmpeg) or 4-byte padded — the first index entry's size decides (exactly W×H →
+  unpadded (ffmpeg) or 4-byte padded — the first non-empty frame entry (indexed or scanned) decides (exactly W×H →
   unpadded, the padded size → padded, anything else → the invalid-entry path; Ruling 14). A
   size mismatch says "frame chunk is <N> bytes, expected <M>". Output is top-down like the SER
   reader. The sidecar `Flip` field is recorded in the info block ("Flip (sidecar; image not
@@ -145,7 +145,7 @@ index treated as untrusted (same validation discipline as increment 1).
   is a warning, not an error, and is never reported as "no sidecar": under Auto the warning is
   "sidecar <name> could not be read[ (larger than 64 KiB)]; no Bayer pattern known; showing
   the raw CFA as mono -- choose the pattern under Bayer pattern", with an explicit choice
-  "sidecar <name> could not be read; ignored". `Colour Format`
+  "sidecar <name> could not be read[ (larger than 64 KiB)]; ignored". `Colour Format`
   other than RAW8 with a Bayer value → warning, the Bayer value is still used.
 - **Values:** 8-bit, normalised by 255. `INSTRUME` from the sidecar; `BAYERPAT` and
   `HISTORY` as for SER.
