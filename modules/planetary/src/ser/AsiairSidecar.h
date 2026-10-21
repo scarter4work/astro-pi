@@ -24,7 +24,9 @@ inline constexpr char kRawCfaAsMonoTail[] =
 
 // Resolves the Bayer pattern of an AVI and says where it came from in `source`.
 // Auto uses the sidecar's Bayer value, rotated 180 degrees when Flip starts with "Vert"
-// (measured on the ASIAIR files: Flip=Vert captures carry the opposite phase). An explicit
+// (measured on the ASIAIR files: most Flip=Vert captures carry the opposite phase, 3 do not,
+// and nothing in the file tells them apart -- so it always adds a warning naming the inference
+// and the sidecar's own pattern to choose if red and blue look swapped; Ruling 10). An explicit
 // choice wins; None is Mono; Auto with nothing known is Mono with a warning naming why
 // (`sidecarName` is the sidecar's file name, for that warning).
 ColorId ResolveBayer(BayerChoice choice, const std::optional<AsiairSidecar>& sidecar,

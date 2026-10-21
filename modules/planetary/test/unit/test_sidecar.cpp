@@ -137,6 +137,28 @@ TEST_CASE("ParseAsiairSidecar unparseable text") {
     CHECK(Has(w, "sidecar x.avi.txt could not be read; ignored"));
 }
 
+TEST_CASE("ResolveBayer: Flip=Vert is an inference and says so (Ruling 10)") {
+    auto r = Resolve(BayerChoice::Auto, Sc("RG", "Vert(unimplemented)"));
+    CHECK(r.id == ColorId::BayerBGGR);
+    CHECK(r.source == kArrowBGGR);
+    REQUIRE(r.warnings.size() == 1);
+    CHECK(r.warnings[0] ==
+          "Bayer pattern inferred from Flip=Vert (BGGR); some ASIAIR captures are RGGB -- if red and blue "
+          "look swapped, choose RGGB under Bayer pattern");
+
+    // The inferred and the un-rotated sidecar pattern are substituted, not hardcoded.
+    r = Resolve(BayerChoice::Auto, Sc("GR", "Vert"));
+    REQUIRE(r.warnings.size() == 1);
+    CHECK(r.warnings[0] ==
+          "Bayer pattern inferred from Flip=Vert (GBRG); some ASIAIR captures are GRBG -- if red and blue "
+          "look swapped, choose GRBG under Bayer pattern");
+
+    // No inference, no warning: Flip None, and an explicit choice on a Flip=Vert file.
+    CHECK(Resolve(BayerChoice::Auto, Sc("RG", "None")).warnings.empty());
+    CHECK(Resolve(BayerChoice::RGGB, Sc("RG", "Vert(unimplemented)")).warnings.empty());
+    CHECK(Resolve(BayerChoice::BGGR, Sc("RG", "Vert(unimplemented)")).warnings.empty());
+}
+
 TEST_CASE("ResolveBayer table") {
     auto r = Resolve(BayerChoice::Auto, Sc("RG", "None"));
     CHECK(r.id == ColorId::BayerRGGB);
@@ -211,11 +233,14 @@ TEST_CASE("OpenVideo reads the sidecar next to an AVI") {
     REQUIRE(info.avi->sidecar.has_value());
     CHECK(info.avi->sidecar->gain == "90");
     CHECK_FALSE(info.avi->filenameStart.has_value());
-    CHECK(info.warnings.empty());
+    // The only warning: the Flip=Vert pattern is an inference (Ruling 10).
+    REQUIRE(info.warnings.size() == 1);
+    CHECK(info.warnings[0].rfind("Bayer pattern inferred from Flip=Vert (BGGR); some ASIAIR captures are RGGB", 0) == 0);
 
     const auto chosen = OpenVideo(p, BayerChoice::GRBG);
     CHECK(chosen->Info().colorId == ColorId::BayerGRBG);
     CHECK(chosen->Info().avi->bayerSource == "chosen");
+    CHECK(chosen->Info().warnings.empty());
 }
 
 TEST_CASE("OpenVideo without a sidecar and with a filename start time") {

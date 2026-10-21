@@ -70,6 +70,11 @@ std::string Num(double v) {
     return buf;
 }
 
+// The warning every Auto-resolved Flip=Vert RG sidecar carries (Ruling 10).
+const char* const kVertWarning =
+    "Bayer pattern inferred from Flip=Vert (BGGR); some ASIAIR captures are RGGB -- if red and blue look swapped, "
+    "choose RGGB under Bayer pattern";
+
 struct Point { int x, y, c; double v; };
 struct Kw { std::string name, field, text; };  // field: value | comment | commentContains
 
@@ -502,7 +507,9 @@ int main(int argc, char** argv) {
             for (int ch = 0; ch < 3; ++ch) c.samples.push_back({x, y, ch, BayerExpected("BGGR", x, y, ch, 2, d, w, h)});
         c.keywords = {{"INSTRUME", "value", "ZWO ASI585MC"},
                       {"HISTORY", "comment", "SERViewer: avi-vert.avi frame 2"},
-                      {"HISTORY", "commentContains", "SERViewer: Bayer BGGR (sidecar RG, Flip=Vert -> BGGR)"}};
+                      {"HISTORY", "commentContains", "SERViewer: Bayer BGGR (sidecar RG, Flip=Vert -> BGGR)"},
+                      // Ruling 10: the Flip=Vert pattern is labelled an inference.
+                      {"HISTORY", "commentContains", std::string("SERViewer warning: ") + kVertWarning}};
         c.absent = {"DATE-OBS", "BAYERPAT", "OBSERVER", "TELESCOP"};
         cases.push_back(c);
 
@@ -516,6 +523,7 @@ int main(int argc, char** argv) {
         o.keywords = {{"INSTRUME", "value", "ZWO ASI585MC"},
                       {"HISTORY", "comment", "SERViewer: Bayer RGGB (chosen)"}};
         o.absent = {"DATE-OBS", "BAYERPAT"};
+        o.absentComments = {"inferred from Flip=Vert"};  // a chosen pattern is no inference
         cases.push_back(o);
 
         Case r;
@@ -665,6 +673,7 @@ int main(int argc, char** argv) {
         Case c;
         c.name = "saveSerPath converts the AVI"; c.path = aviVert; c.saveSerPath = out;
         c.expectConsole = {"converting avi-vert.avi to SER; Bayer BGGR (sidecar RG, Flip=Vert",
+                           kVertWarning,
                            "SERViewer: writing avi-vert-converted.ser",
                            "SERViewer: wrote 3 frames (BAYER_BGGR) to " + out};
         cases.push_back(c);

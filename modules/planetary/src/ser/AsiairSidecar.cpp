@@ -106,6 +106,12 @@ ColorId ResolveBayer(BayerChoice choice, const std::optional<AsiairSidecar>& sid
         const int rotated = 3 - found;  // RGGB<->BGGR, GRBG<->GBRG
         source = std::string("sidecar ") + names[found] + ", Flip=Vert \xE2\x86\x92 " +
                  patterns[rotated];
+        // An inference, not a fact (Ruling 10): 43 of 46 measured Flip=Vert captures carry
+        // the rotated phase, 3 keep the sidecar's own, and nothing in the file tells them apart.
+        warnings.push_back(std::string("Bayer pattern inferred from Flip=Vert (") + patterns[rotated] +
+                           "); some ASIAIR captures are " + patterns[found] +
+                           " -- if red and blue look swapped, choose " + patterns[found] +
+                           " under Bayer pattern");
         return ids[rotated];
     }
     source = "sidecar";

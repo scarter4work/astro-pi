@@ -30,7 +30,8 @@ All 103 `.avi` files under `/mnt/qnap/astro_data/` (ffprobe + header bytes):
   Temperature, Capture Area Size, StartX/StartY, `Duration=<n> Sec`.
 - **Index structure (all 103 parsed):** every file has a valid OpenDML `indx` super-index
   whose entries all point at `ix##` chunks, and its frame total equals ffprobe's
-  `nb_frames` on every file. 3 files have no `idx1`. 56 are multi-RIFF (`AVIX`). Every
+  `nb_frames` on every file (but on 2 files the data behind the last entries is missing; see
+  "Index entries vs frame data" below). 3 files have no `idx1`. 56 are multi-RIFF (`AVIX`). Every
   `strf` has `biHeight < 0` (top-down rows). 64 files carry bytes after the last RIFF
   segment (ignored; frames are complete).
 - **`Flip` and the Bayer phase (measured, not assumed):** `Flip = Vert(unimplemented)` on 47
@@ -44,6 +45,22 @@ All 103 `.avi` files under `/mnt/qnap/astro_data/` (ffprobe + header bytes):
   Jupiter, 0.68 Moon) → effectively **BGGR**, contradicting the sidecar. White balance gains
   are similar in both groups (B/R ≈ 1.3–1.5), so they don't explain the reversal.
   Testing item 3 turns this measurement into a regression check.
+- **Full measurement (Task 7, Ruling 10), on the unsaturated disc** (superpixels ≥ 50 % of the
+  frame's 99.99th-percentile 2×2 sum, no site ≥ 250, 20 frames): 46 planetary sidecar files
+  (39 distinct captures; the NAS holds copies of 7 in more than one folder). All 6 `Flip = None`
+  files measure RGGB. Of the 40 `Flip = Vert` files (33 captures), 35 measure BGGR (s00/s11
+  0.43–0.97), 2 are unmeasurable (2022-08-17-010744 and -010921 Jupiter: 88 % / 91 % of the disc
+  saturated, only the limb ring left), and **3 measure RGGB**: 2022-08-03-015840 Jupiter
+  (s00/s11 1.325), 2022-08-03-021039 Saturn (1.264), 2022-08-17-004958 Moon (1.163), all ASI071MC
+  Pro. Other captures with the same camera and the same ROI (1920×1080 at X1512 Y1102), including
+  the same 2022-08-17 night, measure BGGR. Every StartX/StartY is even, so the ROI offset doesn't
+  shift the phase, and the exceptions' AVI headers and sidecars match the BGGR captures' apart
+  from timing and capture values: **nothing in the file or the sidecar tells them apart**, so the
+  Flip=Vert pattern is an inference and the reader says so (see the Sidecar rule).
+- **Index entries vs frame data:** 2 files hold fewer frames than their index (and ffprobe's
+  `nb_frames`) declares: `2023-02-11-192403-Mars` (13 250 of 13 251: the last entry points into the
+  idx1 table, a frame ASIAIR indexed but never wrote) and `2023-08-30-220451-Moon` (500 of 851: the
+  file is truncated at 1.04 GB). The reader stops at the first bad entry with its warning.
 - **Filename time is not trustworthy as UTC.** Names start `YYYY-MM-DD-HHMMSS-<target>`. On
   two files checked the filename time is ~1 hour later than the file's mtime (e.g.
   `2023-05-26-230053-Moon…` has mtime 22:01:03 EDT with `Duration=9 Sec`); which clock is
@@ -107,9 +124,14 @@ index treated as untrusted (same validation discipline as increment 1).
   zone unknown".
 - **Sidecar:** `<avi path>.txt`, parsed leniently (`Key = Value`, trim, ignore unknown keys).
   `Bayer` RG/GR/GB/BG → RGGB/GRBG/GBRG/BGGR. **Flip rule (my call, from the measurement
-  above):** when `Flip` starts with `Vert`, `Auto` uses the 180°-rotated pattern
-  (RGGB↔BGGR, GRBG↔GBRG) and the info block says so ("sidecar RG, Flip=Vert → BGGR");
-  `Flip = None` or absent uses the sidecar value as is. The user can override with the combo.
+  above, Ruling 10):** when `Flip` starts with `Vert`, `Auto` uses the 180°-rotated pattern
+  (RGGB↔BGGR, GRBG↔GBRG) and the info block says so ("sidecar RG, Flip=Vert → BGGR"). It is
+  an inference that most but not all Flip=Vert captures follow, and nothing in the file tells
+  the exceptions apart, so it always carries the warning "Bayer pattern inferred from
+  Flip=Vert (BGGR); some ASIAIR captures are RGGB -- if red and blue look swapped, choose
+  RGGB under Bayer pattern" (the inferred and the sidecar's own pattern substituted). An
+  explicit choice gives no such warning. `Flip = None` or absent uses the sidecar value as is.
+  The user can override with the combo.
   The section name gives `INSTRUME`. A
   sidecar that exists but cannot be parsed is a warning, not an error. `Colour Format`
   other than RAW8 with a Bayer value → warning, the Bayer value is still used.
@@ -154,10 +176,17 @@ Opening dispatches on the file's magic bytes (`LUCAM-RECORDER` vs `RIFF…AVI `)
    (ffmpeg is test-only). Opening **any** of the 103 over the NAS mount must take under 2 s
    (all are indexed, so no scan); the run reports the slowest. Round-trip one >1 GB file
    through Save as SER.
-3. **Bayer phase regression (host-only, NAS):** the spike measurement becomes a test over
-   the planetary captures with sidecars: for every file, the pattern `Auto` resolves to must
-   put red on the site the frame data says is redder on Mars/Saturn/Jupiter, and greens on
-   the equal diagonal. Any file that disagrees fails the run with its numbers.
+3. **Bayer phase regression (host-only, NAS):** over the planetary captures with sidecars
+   (Mars/Saturn/Jupiter/Moon/Betelgeuse), the mean of each 2×2 site over the planet's
+   unsaturated disc (superpixels whose 2×2 sum is ≥ 50 % of the frame's 99.99th percentile,
+   no site ≥ 250; first 20 frames). For every file the pattern `Auto` resolves to must put
+   red on the brighter non-green site and greens on the more equal diagonal — except the
+   three pinned RGGB exceptions (2022-08-03-015840 Jupiter, 2022-08-03-021039 Saturn,
+   2022-08-17-004958 Moon), which must still resolve to the Flip=Vert inference (BGGR) and
+   must measure RGGB (red at (0,0)). Every Flip=Vert file must carry the inference warning.
+   A file whose disc leaves fewer than 100 superpixels (summed over the frames) is reported
+   unmeasurable with its count, never passed silently. Any disagreement fails the run with
+   its numbers. (`test/run-avi-real.sh`)
 4. **Headless PixInsight** (`run-probe.sh`, slot 96): `executeGlobal` on AVI fixtures (with
    and without sidecar, each `bayerPattern`), and `saveSerPath` conversion read back by a
    second `executeGlobal` on the written SER.
