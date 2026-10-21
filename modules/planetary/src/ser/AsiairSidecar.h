@@ -15,18 +15,21 @@ std::optional<AsiairSidecar> ParseAsiairSidecar(const std::string& text,
                                                 std::vector<std::string>& warnings,
                                                 const std::string& name = "");
 
-// ResolveBayer's warning when Auto finds no pattern (worded for viewing; a caller
-// that converts can recognise it and say what it writes instead).
-inline constexpr char kNoBayerPatternWarning[] =
-    "no Bayer pattern known (no .avi.txt sidecar); showing the raw CFA as mono -- choose "
-    "the pattern under Bayer pattern";
+// Every warning ResolveBayer gives when Auto finds no pattern is "<reason>" + this
+// tail (worded for viewing); a caller that converts swaps the tail for what it writes.
+// Reasons: "no Bayer pattern known (no .avi.txt sidecar)", "sidecar <name> has no Bayer
+// value", "sidecar Bayer value <v> is not recognised".
+inline constexpr char kRawCfaAsMonoTail[] =
+    "; showing the raw CFA as mono -- choose the pattern under Bayer pattern";
 
 // Resolves the Bayer pattern of an AVI and says where it came from in `source`.
 // Auto uses the sidecar's Bayer value, rotated 180 degrees when Flip starts with "Vert"
 // (measured on the ASIAIR files: Flip=Vert captures carry the opposite phase). An explicit
-// choice wins; None is Mono; Auto with nothing known is Mono with a warning.
+// choice wins; None is Mono; Auto with nothing known is Mono with a warning naming why
+// (`sidecarName` is the sidecar's file name, for that warning).
 ColorId ResolveBayer(BayerChoice choice, const std::optional<AsiairSidecar>& sidecar,
-                     std::string& source, std::vector<std::string>& warnings);
+                     std::string& source, std::vector<std::string>& warnings,
+                     const std::string& sidecarName = "");
 
 // "W * H" (the sidecar Capture Area Size) -> w, h; false when it does not parse.
 bool ParseCaptureArea(const std::string& text, int& w, int& h);

@@ -41,7 +41,7 @@ void ApplyAviContext(AviFile& avi, const std::string& path, BayerChoice bayer) {
     }
 
     d.filenameStart = FilenameStart(p.filename().string());
-    info.colorId = ResolveBayer(bayer, d.sidecar, d.bayerSource, info.warnings);
+    info.colorId = ResolveBayer(bayer, d.sidecar, d.bayerSource, info.warnings, sidecarName);
 
     if (d.sidecar) {
         if (!d.sidecar->camera.empty()) info.header.instrument = d.sidecar->camera;

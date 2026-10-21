@@ -78,8 +78,34 @@ std::string FileName(const std::string& p) { return std::filesystem::path(p).fil
 
 }  // namespace
 
-TEST_CASE("the no-pattern warning is published for callers that reword it") {
-    CHECK(kNoBayer == kNoBayerPatternWarning);
+const std::string kTail = "; showing the raw CFA as mono -- choose the pattern under Bayer pattern";
+
+TEST_CASE("every no-pattern warning ends with the published viewing tail") {
+    CHECK(kTail == kRawCfaAsMonoTail);
+    CHECK(kNoBayer == "no Bayer pattern known (no .avi.txt sidecar)" + kTail);
+}
+
+TEST_CASE("ResolveBayer: a sidecar without a Bayer value says so, not 'no sidecar'") {
+    Resolved r;
+    r.id = ResolveBayer(BayerChoice::Auto, Sc("", "None"), r.source, r.warnings, "x.avi.txt");
+    CHECK(r.id == ColorId::Mono);
+    CHECK(r.source == "none");
+    REQUIRE(r.warnings.size() == 1);
+    CHECK(r.warnings[0] == "sidecar x.avi.txt has no Bayer value" + kTail);
+}
+
+TEST_CASE("OpenVideo: a sidecar without a Bayer line warns with its name") {
+    TempDir dir;
+    const std::string p = dir.NewPath(".avi");
+    WriteAvi(p, Avi(8, 6), Frames(8, 6, 1));
+    WriteText(p + ".txt", "[ZWO X]\nCapture Area Size = 8 * 6\nFlip = None\nGain = 90\n");
+    const auto src = OpenVideo(p);
+    const FileInfo& info = src->Info();
+    CHECK(info.colorId == ColorId::Mono);
+    CHECK(info.avi->sidecar.has_value());
+    CHECK(info.avi->bayerSource == "none");
+    CHECK(Has(info.warnings, "sidecar " + FileName(p + ".txt") + " has no Bayer value" + kTail));
+    CHECK_FALSE(Has(info.warnings, kNoBayer));
 }
 
 TEST_CASE("ParseAsiairSidecar reads the real sample") {
@@ -143,10 +169,12 @@ TEST_CASE("ResolveBayer without a sidecar or Bayer key") {
     CHECK(r.source == "none");
     CHECK(Has(r.warnings, kNoBayer));
 
+    // Without the sidecar's name (the default argument) the text still says a sidecar exists.
     r = Resolve(BayerChoice::Auto, Sc("", "None"));
     CHECK(r.id == ColorId::Mono);
     CHECK(r.source == "none");
-    CHECK(Has(r.warnings, kNoBayer));
+    CHECK(Has(r.warnings, "the sidecar has no Bayer value" + kTail));
+    CHECK_FALSE(Has(r.warnings, kNoBayer));
 
     r = Resolve(BayerChoice::BGGR, std::nullopt);
     CHECK(r.id == ColorId::BayerBGGR);
@@ -238,7 +266,7 @@ TEST_CASE("ResolveBayer with an unrecognised Bayer value warns once, specificall
     CHECK(r.id == ColorId::Mono);
     CHECK(r.source == "none");
     REQUIRE(r.warnings.size() == 1);
-    CHECK(r.warnings[0] == "sidecar Bayer value XY is not recognised");
+    CHECK(r.warnings[0] == "sidecar Bayer value XY is not recognised" + kTail);
 }
 
 TEST_CASE("ParseAsiairSidecar strips a UTF-8 BOM") {

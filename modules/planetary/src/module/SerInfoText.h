@@ -14,11 +14,24 @@
 #include <optional>
 #include <string>
 
+#include "AsiairSidecar.h"
 #include "SerFile.h"
 #include "SerTime.h"
 
 namespace planetary::preview
 {
+
+// A reader warning reworded for Save as SER: ResolveBayer's "<reason>; showing the
+// raw CFA as mono -- choose..." says what is written instead; any other warning
+// is returned as is.
+inline std::string ConversionWarning( const std::string& warning )
+{
+   const std::string tail = ser::kRawCfaAsMonoTail;
+   if ( warning.size() <= tail.size() || warning.compare( warning.size() - tail.size(), tail.size(), tail ) != 0 )
+      return warning;
+   return warning.substr( 0, warning.size() - tail.size() ) +
+          "; the SER will be written as MONO (raw CFA) -- set the Bayer pattern to write a Bayer SER";
+}
 
 // An AVI's effective Bayer pattern and where it came from, for people:
 // "BGGR (sidecar RG, Flip=Vert → BGGR)", "RGGB (chosen)", "none (chosen)". The

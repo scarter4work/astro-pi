@@ -61,7 +61,8 @@ std::optional<AsiairSidecar> ParseAsiairSidecar(const std::string& text,
 }
 
 ColorId ResolveBayer(BayerChoice choice, const std::optional<AsiairSidecar>& sidecar,
-                     std::string& source, std::vector<std::string>& warnings) {
+                     std::string& source, std::vector<std::string>& warnings,
+                     const std::string& sidecarName) {
     switch (choice) {
         case BayerChoice::None: source = "chosen"; return ColorId::Mono;
         case BayerChoice::RGGB: source = "chosen"; return ColorId::BayerRGGB;
@@ -80,14 +81,20 @@ ColorId ResolveBayer(BayerChoice choice, const std::optional<AsiairSidecar>& sid
         for (int i = 0; i < 4; ++i)
             if (sidecar->bayer == names[i]) found = i;
         if (found < 0) {
-            warnings.push_back("sidecar Bayer value " + sidecar->bayer + " is not recognised");
+            warnings.push_back("sidecar Bayer value " + sidecar->bayer + " is not recognised" +
+                               kRawCfaAsMonoTail);
             source = "none";
             return ColorId::Mono;
         }
     }
     if (found < 0) {
         source = "none";
-        warnings.push_back(kNoBayerPatternWarning);
+        if (!sidecar)
+            warnings.push_back(std::string("no Bayer pattern known (no .avi.txt sidecar)") + kRawCfaAsMonoTail);
+        else
+            warnings.push_back((sidecarName.empty() ? std::string("the sidecar")
+                                                    : "sidecar " + sidecarName) +
+                               " has no Bayer value" + kRawCfaAsMonoTail);
         return ColorId::Mono;
     }
 

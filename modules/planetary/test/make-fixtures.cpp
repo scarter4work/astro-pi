@@ -539,6 +539,41 @@ int main(int argc, char** argv) {
         cases.push_back(c);
     }
 
+    // AVI whose sidecar has no Bayer line: mono, and the warning names the sidecar
+    // (never "no .avi.txt sidecar"); converting it writes MONO and says so.
+    {
+        const int w = 16, h = 16, d = 8;
+        AviSpec s;
+        s.width = w; s.height = h;
+        const std::string path = (dir / "avi-nobayer.avi").string();
+        WriteAvi(path, s, GenFrames8(w, h, 2));
+        WriteText(path + ".txt", "[ZWO ASI120MM Mini]\nCapture Area Size = 16 * 16\nColour Format = RAW8\nGain = 50\n");
+
+        Case c;
+        c.name = "avi sidecar without a Bayer line -> mono, says so"; c.path = path; c.frame = 0;
+        c.expectId = "avi_nobayer_f0";
+        c.width = w; c.height = h; c.channels = 1;
+        for (auto [x, y] : Points(w, h)) c.samples.push_back({x, y, 0, Norm(Gen(x, y, 0, 0, d), d)});
+        c.keywords = {{"INSTRUME", "value", "ZWO ASI120MM Mini"},
+                      {"HISTORY", "commentContains",
+                       "SERViewer warning: sidecar avi-nobayer.avi.txt has no Bayer value; showing the raw CFA as "
+                       "mono -- choose the pattern under Bayer pattern"}};
+        c.absent = {"DATE-OBS", "BAYERPAT"};
+        c.absentComments = {"no .avi.txt sidecar", "SERViewer: Bayer"};
+        cases.push_back(c);
+
+        const std::string out = (dir / "avi-nobayer-converted.ser").string();
+        std::error_code ec;
+        std::filesystem::remove(out, ec);
+        Case conv;
+        conv.name = "saveSerPath, sidecar without a Bayer line, writes MONO"; conv.path = path; conv.saveSerPath = out;
+        conv.expectConsole = {"converting avi-nobayer.avi to SER; Bayer none (no sidecar pattern",
+                              "sidecar avi-nobayer.avi.txt has no Bayer value; the SER will be written as MONO (raw CFA)",
+                              "SERViewer: wrote 2 frames (MONO) to " + out};
+        conv.consoleAbsent = {"showing the raw CFA", "no .avi.txt sidecar"};
+        cases.push_back(conv);
+    }
+
     // OpenDML: Y800, 5 frames in RIFF AVI + 2 RIFF AVIX segments (2 frames each but the last).
     {
         const int w = 24, h = 16, d = 8, n = 5;

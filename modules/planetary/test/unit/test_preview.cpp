@@ -319,3 +319,19 @@ TEST_CASE("info text for a SER is unchanged by the AVI fields", "[preview][info]
           "Header UTC: 2026-09-07T02:04:21.500\n"
           "Warnings: none");
 }
+
+TEST_CASE("conversion rewords every 'showing the raw CFA as mono' warning to what it writes", "[preview][info]") {
+    const std::string tail = "; showing the raw CFA as mono -- choose the pattern under Bayer pattern";
+    const std::string writes = "; the SER will be written as MONO (raw CFA) -- set the Bayer pattern to write a Bayer SER";
+    // No sidecar, a sidecar without a Bayer line, an unrecognised Bayer value.
+    for (const std::string& reason : {std::string("no Bayer pattern known (no .avi.txt sidecar)"),
+                                     std::string("sidecar a.avi.txt has no Bayer value"),
+                                     std::string("sidecar Bayer value XY is not recognised")}) {
+        INFO(reason);
+        CHECK(ConversionWarning(reason + tail) == reason + writes);
+    }
+    // Every other warning passes through untouched.
+    CHECK(ConversionWarning("sidecar Colour Format is RAW16, not RAW8; using its Bayer value anyway") ==
+          "sidecar Colour Format is RAW16, not RAW8; using its Bayer value anyway");
+    CHECK(ConversionWarning(tail.substr(2)) == tail.substr(2));
+}

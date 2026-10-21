@@ -21,7 +21,6 @@
 #include "FitsText.h"
 #include "PlanetaryVersion.h"
 #include "SerExport.h"
-#include "AsiairSidecar.h"
 #include "SerFile.h"
 #include "SerInfoText.h"
 #include "SerTime.h"
@@ -137,17 +136,13 @@ bool ConvertToSer( const ser::FrameSource& source, const String& path, const Str
 
    // What is about to be written goes on the console before the export starts.
    // Auto with no pattern writes the raw CFA as MONO: the reader's warning is
-   // worded for viewing, so it is replaced by one that says what is written.
+   // worded for viewing, so ConversionWarning rewords it to say what is written.
    const String layout = ser::ColorIdName( info.colorId );
    Console console;
    console.WriteLn( "<end><cbr>SERViewer " PLANETARY_VERSION_STRING ": converting " + fileName.EncodedHTMLSpecialChars() +
                     " to SER; Bayer " + FromUtf8( preview::BayerText( info ) ).EncodedHTMLSpecialChars() );
    for ( const std::string& w : info.warnings )
-      if ( w == ser::kNoBayerPatternWarning )
-         console.WarningLn( "SERViewer warning: no Bayer pattern known; the SER will be written as " + layout +
-                            " (raw CFA) -- set the Bayer pattern to write a Bayer SER" );
-      else
-         console.WarningLn( "SERViewer warning: " + FromUtf8( w ).EncodedHTMLSpecialChars() );
+      console.WarningLn( "SERViewer warning: " + FromUtf8( preview::ConversionWarning( w ) ).EncodedHTMLSpecialChars() );
 
    console.EnableAbort();
    StandardStatus status;
