@@ -167,7 +167,7 @@ camera. Observer and Telescope are empty.</li>
 <li><b>No timestamps.</b> The SER has no per-frame timestamp trailer and no UTC time. The start time from the AVI's file
 name goes only into the header's local DateTime, because on the two files checked the ASIAIR file name clock was about
 an hour off the file's own modification time, so it is not presented as UTC.</li>
-<li>The output is written to a temporary <code>.partial</code> file and renamed when complete; SERViewer removes the
+<li>The output is written to a temporary <code>.partial</code> file and moved into place when complete; SERViewer removes the
 partial file if the conversion fails or is cancelled. It cannot overwrite the source file; replacing another existing file asks first. The free
 space needed is checked before writing starts.</li>
 </ul>

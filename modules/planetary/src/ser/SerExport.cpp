@@ -175,7 +175,7 @@ ExportResult ExportSerWithSpace(const FrameSource& src, const std::string& sourc
     const PublishResult published = PublishPartial(partial.string(), outPath, allowOverwrite, whyNot);
     if (published == PublishResult::TargetExists) throw SerError(outPath + " exists");
     if (published == PublishResult::Failed)
-        throw SerError("cannot rename " + partial.string() + " to " + outPath + ": " + whyNot);
+        throw SerError("cannot publish " + partial.string() + " as " + outPath + ": " + whyNot);
     guard.armed = false;
     return result;
 }
