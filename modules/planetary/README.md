@@ -6,8 +6,8 @@ preview with a frame slider and an info block, and opens the selected frame as a
 image, debayered (bilinear) or as the raw CFA mosaic. It reads only the SER file you choose, uses no network
 and runs no external programs.
 
-**Status:** 0.1.0.0, not yet released. The module id `Planetary` and process id `SERViewer` become permanent
-with the first release.
+**Status:** released as 0.1.0.0 (2026-10-21). The module id `Planetary` and process id `SERViewer` are
+permanent: existing installs update by these ids, so never rename them.
 
 **User documentation** (installed with the module as `doc/tools/SERViewer/SERViewer.html`):
 [`doc/SERViewer/SERViewer.html`](doc/SERViewer/SERViewer.html). Third-party notices:

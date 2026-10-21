@@ -7,8 +7,7 @@ in nukex5 / EZ-Stretch-BSC). Global PixInsight conventions still live in ~/.clau
 - `modules/nukex/` → `NukeX-pxm` module (ID string `"NukeX"` is STABLE — never rename; existing installs update by ID).
 - `modules/pi-copilot/` → `PICopilot-pxm` module (process/doc id `PICopilot`).
 - `modules/planetary/` → `Planetary-pxm` module, process `SERViewer` (docs deploy as `doc/tools/SERViewer/`).
-  0.1.0.0, NOT yet released: module id `Planetary` and process id `SERViewer` become permanent with the
-  first release, which needs Scott's go-ahead. Its release wiring lives on `feat/planetary` until then.
+  Released 0.1.0.0 on 2026-10-21: module id `Planetary` and process id `SERViewer` are STABLE — never rename.
 - `gaia-depth-grade/` → Gaia Depth Grade scripts + the linux-x64 sidecar package.
 - `scripts/ez-stretch/` → EZStretch / EZDonutRepair / EZHazeKill (`.js` + `.xsgn`).
 Everything in `tools/` and `archive/` is NOT shipped.
