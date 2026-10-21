@@ -23,13 +23,19 @@ struct AviSpec {
     int framesPerRiff = 0;  // > 0 splits the frames into RIFF AVIX segments
     double fps = 25;
     std::vector<int> zeroLengthFrames;  // written as empty 00db chunks (dropped frames)
-    bool paletteChangeChunk = false;    // a 00pc chunk after frame 0 (indexed in idx1)
+    bool paletteChangeChunk = false;    // a 00pc chunk (indexed in idx1 when in segment 0)
+    int paletteChangeAfter = 0;         // ...after this frame; -1 = at the start of the first movi
+    bool palChangesFlag = false;        // strh dwFlags AVISF_VIDEO_PALCHANGES
     int64_t truncateBytes = 0;          // cut this many bytes off the end of the file
     int corruptIndexEntry = -1;         // that frame's index entries are corrupted as below
     enum Corruption { PastEnd, WrongSize } corruption = PastEnd;  // offset past EOF / size + 2
     int recNesting = 0;                 // frames of each movi wrapped in this many LIST 'rec '
     size_t trailingJunk = 0;            // bytes after the last RIFF segment
     bool idx1Absolute = false;          // idx1 offsets from the file start (as ASIAIR writes them)
+    bool openDmlIdx1 = true;            // OpenDml: also write idx1 for the first segment
+    bool strhRate = true;               // false: strh rate/scale 0, so avih carries the frame rate
+    std::string segmentForm = "AVIX";   // RIFF form of the segments after the first
+    bool asiairAvixSize = false;        // segment 1 RIFF and movi sizes 8 too large (ASIAIR)
 };
 
 namespace avi_detail {
@@ -48,6 +54,9 @@ inline void Set32(std::vector<uint8_t>& b, size_t off, uint32_t v) {
 }
 inline void Set64(std::vector<uint8_t>& b, size_t off, uint64_t v) {
     for (int i = 0; i < 8; ++i) b[off + i] = static_cast<uint8_t>(v >> (8 * i));
+}
+inline uint32_t U32At(const std::vector<uint8_t>& b, size_t off) {
+    return static_cast<uint32_t>(b[off] | b[off + 1] << 8 | b[off + 2] << 16 | static_cast<uint32_t>(b[off + 3]) << 24);
 }
 inline void PutFourcc(std::vector<uint8_t>& b, const std::string& f) {
     for (int i = 0; i < 4; ++i) b.push_back(static_cast<uint8_t>(i < static_cast<int>(f.size()) ? f[i] : ' '));
@@ -80,7 +89,7 @@ inline void WriteAvi(const std::string& path, const AviSpec& s,
     const int perRiff = s.framesPerRiff > 0 ? s.framesPerRiff : (n > 0 ? n : 1);
     const int segments = n > 0 ? (n + perRiff - 1) / perRiff : 1;
     const bool openDml = s.index == AviSpec::OpenDml;
-    const bool idx1 = s.index == AviSpec::Idx1 || openDml;  // OpenDML files also carry idx1
+    const bool idx1 = s.index == AviSpec::Idx1 || (openDml && s.openDmlIdx1);  // as real OpenDML files do
     auto isZero = [&](int f) {
         for (int z : s.zeroLengthFrames) if (z == f) return true;
         return false;
@@ -109,12 +118,12 @@ inline void WriteAvi(const std::string& path, const AviSpec& s,
     const size_t strh = Begin(b, "strh");
     PutFourcc(b, "vids");
     PutFourcc(b, s.fourcc.empty() ? "DIB " : s.fourcc);
-    Put32(b, 0);  // dwFlags
+    Put32(b, s.palChangesFlag ? 0x00010000u : 0u);  // dwFlags
     Put16(b, 0);  // wPriority
     Put16(b, 0);  // wLanguage
     Put32(b, 0);  // dwInitialFrames
-    Put32(b, 1000000);                                                // dwScale
-    Put32(b, static_cast<uint32_t>(std::llround(s.fps * 1000000)));  // dwRate
+    Put32(b, s.strhRate ? 1000000u : 0u);                             // dwScale
+    Put32(b, s.strhRate ? static_cast<uint32_t>(std::llround(s.fps * 1000000)) : 0u);  // dwRate
     Put32(b, 0);                                                      // dwStart
     Put32(b, static_cast<uint32_t>(n));                               // dwLength
     Put32(b, frameBytes);                                             // dwSuggestedBufferSize
@@ -176,7 +185,8 @@ inline void WriteAvi(const std::string& path, const AviSpec& s,
     for (int seg = 0; seg < segments; ++seg) {
         if (seg > 0) {
             End(b, riff);
-            riff = Begin(b, "RIFF", "AVIX");
+            if (seg == 2 && s.asiairAvixSize) Set32(b, riff, U32At(b, riff) + 8);
+            riff = Begin(b, "RIFF", s.segmentForm);
         }
         const size_t moviList = b.size();
         const size_t movi = Begin(b, "LIST", "movi");
@@ -205,6 +215,16 @@ inline void WriteAvi(const std::string& path, const AviSpec& s,
             Set32(b, e + 12, static_cast<uint32_t>(last - first));
         }
 
+        auto writePaletteChange = [&] {
+            const size_t pcAt = b.size();
+            const size_t pc = Begin(b, "00pc");
+            b.push_back(0); b.push_back(1); Put16(b, 0);  // bFirstEntry, bNumEntries, wFlags
+            b.push_back(0); b.push_back(0); b.push_back(0); b.push_back(0);
+            End(b, pc);
+            if (idx1 && seg == 0) idx1Entries.push_back({"00pc", 0, static_cast<uint32_t>(pcAt - idx1Base), 8});
+        };
+        if (s.paletteChangeChunk && s.paletteChangeAfter < 0 && seg == 0) writePaletteChange();
+
         std::vector<size_t> recLists;
         for (int r = 0; r < s.recNesting; ++r) recLists.push_back(Begin(b, "LIST", "rec "));
         for (int f = first; f < last; ++f) {
@@ -216,7 +236,8 @@ inline void WriteAvi(const std::string& path, const AviSpec& s,
             const uint32_t size = isZero(f) ? 0 : frameBytes;
             if (size) {
                 for (int y = 0; y < s.height; ++y) {
-                    const int srcRow = s.bottomUp ? s.height - 1 - y : y;
+                    // Only RGB DIBs are bottom-up; YUV (Y800...) rows are top-down whatever the sign.
+                    const int srcRow = s.bottomUp && s.fourcc.empty() ? s.height - 1 - y : y;
                     const uint8_t* row = src.data() + rowBytes * srcRow;
                     b.insert(b.end(), row, row + rowBytes);
                     b.insert(b.end(), stride - rowBytes, uint8_t(0));
@@ -236,18 +257,11 @@ inline void WriteAvi(const std::string& path, const AviSpec& s,
             if (idx1 && seg == 0)
                 idx1Entries.push_back({"00db", 0x10, pastEnd ? 0x7FFFFFF0u : static_cast<uint32_t>(chunkAt - idx1Base),
                                        indexSize});
-            if (s.paletteChangeChunk && f == 0) {
-                const size_t pcAt = b.size();
-                const size_t pc = Begin(b, "00pc");
-                b.push_back(0); b.push_back(1); Put16(b, 0);  // bFirstEntry, bNumEntries, wFlags
-                b.push_back(0); b.push_back(0); b.push_back(0); b.push_back(0);
-                End(b, pc);
-                if (idx1 && seg == 0)
-                    idx1Entries.push_back({"00pc", 0, static_cast<uint32_t>(pcAt - idx1Base), 8});
-            }
+            if (s.paletteChangeChunk && f == s.paletteChangeAfter) writePaletteChange();
         }
         for (auto r = recLists.rbegin(); r != recLists.rend(); ++r) End(b, *r);
         End(b, movi);
+        if (seg == 1 && s.asiairAvixSize) Set32(b, movi, U32At(b, movi) + 8);
 
         if (idx1 && seg == 0) {
             const size_t ix = Begin(b, "idx1");
@@ -261,6 +275,7 @@ inline void WriteAvi(const std::string& path, const AviSpec& s,
         }
     }
     End(b, riff);
+    if (segments == 2 && s.asiairAvixSize) Set32(b, riff, U32At(b, riff) + 8);
 
     for (size_t i = 0; i < s.trailingJunk; ++i) b.push_back(static_cast<uint8_t>(i * 37 + 11));
     if (s.truncateBytes > 0) b.resize(b.size() - static_cast<size_t>(s.truncateBytes));

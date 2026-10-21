@@ -9,6 +9,23 @@
 
 namespace planetary::ser {
 
+namespace avi_detail {
+// Chunk ids of the chosen video stream NN: "NNdb"/"NNdc" (frames), "NNpc" (palette change),
+// "ixNN" (OpenDML standard index).
+struct StreamIds {
+    char digits[2] = {'0', '0'};
+    bool IsFrame(const unsigned char* p) const {
+        return p[0] == digits[0] && p[1] == digits[1] && p[2] == 'd' && (p[3] == 'b' || p[3] == 'c');
+    }
+    bool IsPaletteChange(const unsigned char* p) const {
+        return p[0] == digits[0] && p[1] == digits[1] && p[2] == 'p' && p[3] == 'c';
+    }
+    bool IsIndex(const unsigned char* p) const {
+        return p[0] == 'i' && p[1] == 'x' && p[2] == digits[0] && p[3] == digits[1];
+    }
+};
+}  // namespace avi_detail
+
 // Reader for uncompressed 8-bit grey AVI (AVI 1.0 and OpenDML/AVI 2.0): BI_RGB with the
 // identity grey palette, or Y800/GREY/Y8. The header and index are untrusted: every
 // offset is 64-bit and every size is checked against the file before allocation. Open
@@ -16,8 +33,11 @@ namespace planetary::ser {
 // linear movi scan) and never reads frame data. Index entries are checked arithmetically
 // at open (inside the file, padded frame size, ascending, non-overlapping) and the chunk
 // headers of the first, middle and last frames are read; ReadFrame verifies each frame's
-// own chunk header in the same read as its data. Frames are returned top-down, 1 channel.
-// Opened as Mono with bayerSource "none".
+// own chunk header in the same read as its data. Palette-change chunks are an error: the
+// scan, idx1 and the gap before frame 0 are checked at open (every gap when strh declares
+// palette changes); ReadFrame checks every gap before the frame it decodes, in the same read
+// when frames are read in order.
+// Frames are returned top-down, 1 channel. Opened as Mono with bayerSource "none".
 //
 // Not thread-safe: it owns one stream with a seek position. Use one reader per thread.
 class AviFile : public FrameSource {
@@ -40,7 +60,8 @@ public:
     // Always nullopt (AVI has no per-frame clock). Throws SerError when index is out of range.
     std::optional<int64_t> FrameTimestamp(int64_t index) const override;
 
-    // Throws SerError when index is out of range or the frame cannot be read.
+    // Throws SerError when index is out of range, the frame cannot be read, or the index
+    // entry does not point at this stream's video chunk.
     Frame ReadFrame(int64_t index) const override;
 
 private:
@@ -51,10 +72,12 @@ private:
     FileInfo info_;
     int64_t fileSize_ = 0;
     int64_t stride_ = 0;      // DIB row bytes, padded to 4
-    bool bottomUp_ = false;   // biHeight > 0
+    bool bottomUp_ = false;   // BI_RGB with biHeight > 0 (YUV fourccs are always top-down)
+    avi_detail::StreamIds ids_;
     std::vector<int64_t> frameData_;   // file offset of each usable frame's chunk data
     std::vector<int64_t> frameEntry_;  // its index entry number (zero-length entries counted)
-    std::string videoDigits_ = "00";   // stream number in the video chunk ids ("00db")
+    // Frames 0..this have had the gap before them checked for palette-change chunks.
+    mutable int64_t gapsCheckedThrough_ = -1;
 };
 
 }  // namespace planetary::ser

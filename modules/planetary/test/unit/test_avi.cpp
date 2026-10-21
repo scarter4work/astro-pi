@@ -205,6 +205,20 @@ TEST_CASE("Y800 fourcc") {
     for (int f = 0; f < 2; ++f) CheckFrame(avi, f, frames[f]);
 }
 
+TEST_CASE("Y800 with a positive biHeight is not flipped") {
+    // BITMAPINFOHEADER: YUV formats are top-down whatever the sign; only RGB DIBs flip.
+    TempDir dir;
+    const std::string p = dir.NewPath(".avi");
+    const auto frames = MakeFrames(6, 3, 2);
+    AviSpec s = Avi(6, 3);
+    s.fourcc = "Y800";
+    s.bottomUp = true;  // biHeight > 0; the writer keeps Y800 rows top-down
+    WriteAvi(p, s, frames);
+
+    const AviFile avi = AviFile::Open(p);
+    for (int f = 0; f < 2; ++f) CheckFrame(avi, f, frames[f]);
+}
+
 TEST_CASE("unindexed file is scanned with a warning") {
     const int framesPerRiff = GENERATE(0, 2);
     INFO("framesPerRiff " << framesPerRiff);
@@ -429,10 +443,8 @@ TEST_CASE("a run of zero-length entries beyond the cap ends the frame table") {
     CHECK(avi.Info().frameCount == 1);
     CHECK(avi.Info().avi->droppedFrames == cap);
     CHECK(HasWarning(avi.Info(), std::to_string(cap) + " dropped (zero-length) frames skipped"));
-    const std::string entry = std::to_string(cap + 1);
-    CHECK(HasWarning(avi.Info(), index == AviSpec::Idx1
-                                     ? "index entry " + entry + " is invalid; using the first 1 frames"
-                                     : "video chunk " + entry + " is truncated or malformed; using the first 1 frames"));
+    CHECK(HasWarning(avi.Info(), "more than " + std::to_string(cap) + " consecutive zero-length frames at entry " +
+                                     std::to_string(cap + 1) + "; using the first 1 frames"));
 }
 
 TEST_CASE("nested 'rec ' lists are scanned up to the depth cap") {
@@ -611,4 +623,138 @@ TEST_CASE("ReadFrame out of range throws") {
     CHECK_THROWS_AS(avi.ReadFrame(3), SerError);
     CHECK_THROWS_AS(avi.FrameTimestamp(-1), SerError);
     CHECK_THROWS_AS(avi.FrameTimestamp(3), SerError);
+}
+
+TEST_CASE("palette change in a later OpenDML segment stops every frame after it") {
+    TempDir dir;
+    const std::string p = dir.NewPath(".avi");
+    const auto frames = MakeFrames(7, 5, 6);
+    AviSpec s = Avi(7, 5);
+    s.index = AviSpec::OpenDml;  // idx1 covers segment 0 only
+    s.framesPerRiff = 2;
+    s.paletteChangeChunk = true;
+    s.paletteChangeAfter = 2;    // segment 1, between frames 2 and 3
+    WriteAvi(p, s, frames);
+
+    const AviFile avi = AviFile::Open(p);
+    CHECK(avi.Info().frameCount == 6);
+    CHECK(avi.Info().warnings.empty());
+    SECTION("read in order") {
+        for (int f = 0; f < 3; ++f) CheckFrame(avi, f, frames[f]);
+        CHECK_THROWS_WITH(avi.ReadFrame(3), Catch::Matchers::ContainsSubstring("palette-change chunk"));
+        CHECK_THROWS_WITH(avi.ReadFrame(4), Catch::Matchers::ContainsSubstring("palette-change chunk"));
+        CheckFrame(avi, 1, frames[1]);
+    }
+    SECTION("a jump past it") {
+        CHECK_THROWS_WITH(avi.ReadFrame(5), Catch::Matchers::ContainsSubstring("palette-change chunk"));
+        CheckFrame(avi, 2, frames[2]);
+    }
+}
+
+TEST_CASE("palette change in an OpenDML file without idx1") {
+    TempDir dir;
+    const std::string p = dir.NewPath(".avi");
+    const auto frames = MakeFrames(7, 5, 4);
+    AviSpec s = Avi(7, 5);
+    s.index = AviSpec::OpenDml;
+    s.openDmlIdx1 = false;
+    s.paletteChangeChunk = true;
+
+    SECTION("between frames 0 and 1: no frame after it is decoded") {
+        s.paletteChangeAfter = 0;
+        WriteAvi(p, s, frames);
+        const AviFile avi = AviFile::Open(p);
+        CheckFrame(avi, 0, frames[0]);
+        CHECK_THROWS_WITH(avi.ReadFrame(3), Catch::Matchers::ContainsSubstring("palette-change chunk"));
+        CHECK_THROWS_WITH(avi.ReadFrame(1), Catch::Matchers::ContainsSubstring("palette-change chunk"));
+    }
+    SECTION("before frame 0: rejected at open") {
+        s.paletteChangeAfter = -1;
+        WriteAvi(p, s, frames);
+        CHECK(OpenError(p).find("palette-change chunk") != std::string::npos);
+    }
+    SECTION("declared by the strh flag: every gap is checked at open") {
+        s.paletteChangeAfter = 1;
+        s.palChangesFlag = true;
+        WriteAvi(p, s, frames);
+        CHECK(OpenError(p).find("palette-change chunk") != std::string::npos);
+    }
+}
+
+TEST_CASE("an indx with no usable frames falls back to idx1 or the scan") {
+    TempDir dir;
+    const std::string p = dir.NewPath(".avi");
+    const auto frames = MakeFrames(7, 5, 5);
+    AviSpec s = Avi(7, 5);
+    s.index = AviSpec::OpenDml;
+    const std::string indxWarning =
+        "OpenDML indx gave no usable frames (index entry 0 is invalid; using the first 0 frames); not used";
+
+    SECTION("single RIFF: idx1") {
+        WriteAvi(p, s, frames);
+        WriteAt(p, ReadAll(p).find("ix00"), "JUNK");  // the only ix00
+        const AviFile avi = AviFile::Open(p);
+        CHECK(avi.Info().frameCount == 5);
+        CHECK(avi.Info().avi->indexKind == "idx1");
+        CHECK(avi.Info().warnings == std::vector<std::string>{indxWarning});
+        for (int f = 0; f < 5; ++f) CheckFrame(avi, f, frames[f]);
+    }
+    SECTION("multi RIFF: scan") {
+        s.framesPerRiff = 2;
+        WriteAvi(p, s, frames);
+        WriteAt(p, ReadAll(p).find("ix00"), "JUNK");  // segment 0's ix00
+        const AviFile avi = AviFile::Open(p);
+        CHECK(avi.Info().frameCount == 5);
+        CHECK(avi.Info().avi->indexKind == "scanned");
+        CHECK(avi.Info().warnings ==
+              std::vector<std::string>{indxWarning, "idx1 covers only the first RIFF segment; scanned the file for frames"});
+        for (int f = 0; f < 5; ++f) CheckFrame(avi, f, frames[f]);
+    }
+}
+
+TEST_CASE("ASIAIR AVIX size 8 bytes too large: the next segment is still found") {
+    const auto index = GENERATE(AviSpec::OpenDml, AviSpec::None);
+    INFO("index " << IndexName(index));
+    TempDir dir;
+    const std::string p = dir.NewPath(".avi");
+    const auto frames = MakeFrames(7, 5, 6);
+    AviSpec s = Avi(7, 5);
+    s.index = index;
+    s.framesPerRiff = 2;  // segment 1 is inflated; segment 2 starts 8 bytes before its declared end
+    s.asiairAvixSize = true;
+    WriteAvi(p, s, frames);
+
+    const AviFile avi = AviFile::Open(p);
+    CHECK(avi.Info().frameCount == 6);
+    for (int f = 0; f < 6; ++f) CheckFrame(avi, f, frames[f]);
+}
+
+TEST_CASE("frame rate falls back to avih when strh has none") {
+    TempDir dir;
+    const std::string p = dir.NewPath(".avi");
+    AviSpec s = Avi(4, 2);
+    s.fps = 25;
+    s.strhRate = false;  // avih dwMicroSecPerFrame = 40000
+    WriteAvi(p, s, MakeFrames(4, 2, 2));
+    const AviFile avi = AviFile::Open(p);
+    CHECK(std::abs(avi.Info().avi->frameRate - 25.0) < 1e-9);
+}
+
+TEST_CASE("a RIFF form other than AVIX after the AVI segment is rejected") {
+    TempDir dir;
+    const std::string p = dir.NewPath(".avi");
+    AviSpec s = Avi(4, 2);
+    s.framesPerRiff = 1;
+    s.segmentForm = "WAVE";
+    WriteAvi(p, s, MakeFrames(4, 2, 2));
+    CHECK(OpenError(p).find("unexpected RIFF form 'WAVE'") != std::string::npos);
+}
+
+TEST_CASE("an AVIX segment too small for a movi list is rejected") {
+    TempDir dir;
+    const std::string p = dir.NewPath(".avi");
+    WriteAvi(p, Avi(4, 2), MakeFrames(4, 2, 2));
+    const size_t end = ReadAll(p).size();
+    WriteAt(p, end, std::string("RIFF") + Le32(4) + "AVIX");
+    CHECK(OpenError(p).find("is too small (4 bytes)") != std::string::npos);
 }

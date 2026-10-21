@@ -1,15 +1,19 @@
 #include "AviFile.h"
 
 #include <algorithm>
-#include <climits>
 #include <cstring>
 
 namespace planetary::ser {
+
+using avi_detail::StreamIds;
 
 namespace {
 constexpr int32_t kMaxDimension = 65536;
 constexpr int64_t kMaxHeaderListBytes = 16 << 20;  // hdrl is ~33 KB on real captures
 constexpr uint32_t kSizeMask = 0x7FFFFFFFu;        // ix## dwSize bit 31 = delta-frame flag
+constexpr int64_t kMinAvixSize = 4 + 12;           // 'AVIX' + an empty LIST movi
+constexpr int64_t kGapReadWhole = 1 << 20;         // gaps up to this size are read in one go
+constexpr uint32_t kPalChangesFlag = 0x00010000u;  // strh AVISF_VIDEO_PALCHANGES
 
 uint16_t U16(const unsigned char* p) { return static_cast<uint16_t>(p[0] | p[1] << 8); }
 
@@ -37,6 +41,11 @@ std::string FourccName(const unsigned char* p) {
     std::string s = "0x";
     for (int i = 3; i >= 0; --i) { s += hex[p[i] >> 4]; s += hex[p[i] & 15]; }
     return s;
+}
+
+// The 8-byte chunk header `h` is this stream's video chunk of the expected size.
+bool IsVideoHeader(const unsigned char* h, const StreamIds& ids, int64_t chunkBytes) {
+    return ids.IsFrame(h) && U32(h + 4) == static_cast<uint64_t>(chunkBytes);
 }
 
 // One RIFF/LIST child: header at `pos`, `size` data bytes from pos + 8.
@@ -84,23 +93,9 @@ private:
     int64_t fileSize_;
 };
 
-// Chunk ids of the chosen video stream: "NNdb"/"NNdc" (frames), "NNpc" (palette change), "ixNN".
-struct StreamIds {
-    char digits[2] = {'0', '0'};
-    bool IsFrame(const unsigned char* p) const {
-        return p[0] == digits[0] && p[1] == digits[1] && p[2] == 'd' && (p[3] == 'b' || p[3] == 'c');
-    }
-    bool IsPaletteChange(const unsigned char* p) const {
-        return p[0] == digits[0] && p[1] == digits[1] && p[2] == 'p' && p[3] == 'c';
-    }
-    bool IsIndex(const unsigned char* p) const {
-        return p[0] == 'i' && p[1] == 'x' && p[2] == digits[0] && p[3] == digits[1];
-    }
-};
-
-[[noreturn]] void ThrowPaletteChange(const StreamIds& ids) {
-    throw SerError(std::string("palette-change chunk (") + ids.digits[0] + ids.digits[1] +
-                   "pc) found; changing palettes are not supported");
+[[noreturn]] void ThrowPaletteChange(const StreamIds& ids, int64_t pos) {
+    throw SerError(std::string("palette-change chunk (") + ids.digits[0] + ids.digits[1] + "pc) at offset " +
+                   Num(pos) + "; changing palettes are not supported");
 }
 
 // Collects usable frame offsets in file order. Entry numbers count every video entry,
@@ -117,7 +112,7 @@ public:
     bool AddIndexed(int64_t dataPos, int64_t size) {
         if (entries_ >= maxEntries_) return Broken();  // more entries than the file can hold
         const int64_t entry = entries_++;
-        if (size == 0) return Drop() || Invalid(entry);
+        if (size == 0) return Drop(entry);
         const bool valid = size == chunkBytes_ && dataPos >= 8 && dataPos >= nextFree_ &&
                            dataPos <= fileSize_ - size;
         if (!valid) return Invalid(entry);
@@ -128,8 +123,8 @@ public:
     // A frame chunk met while scanning; `complete` = its data lies inside its list. False = stop.
     bool AddScanned(const Chunk& c, bool complete) {
         const int64_t entry = entries_++;
-        if (complete && c.size == 0 && Drop()) return true;
-        if (!complete || c.size != chunkBytes_ || run_ > AviFile::kMaxDroppedRun)
+        if (complete && c.size == 0) return Drop(entry);
+        if (!complete || c.size != chunkBytes_)
             return Stop("video chunk " + Num(entry) + " is truncated or malformed; using the first " +
                         Num(Count()) + " frames");
         Push(c.pos + 8, entry);
@@ -146,11 +141,10 @@ public:
         if (n == 0) return;
         for (int64_t k : {int64_t(0), n / 2, n - 1}) {
             unsigned char h[8];
-            if (io.ReadAt(offsets_[k] - 8, h, 8) && ids.IsFrame(h) && U32(h + 4) == static_cast<uint64_t>(chunkBytes_))
-                continue;
-            const int64_t entry = entryOf[k];
+            if (io.ReadAt(offsets_[k] - 8, h, 8) && IsVideoHeader(h, ids, chunkBytes_)) continue;
+            const int64_t entry = entryOf_[k];
             offsets_.resize(static_cast<size_t>(k));
-            entryOf.resize(static_cast<size_t>(k));
+            entryOf_.resize(static_cast<size_t>(k));
             Invalid(entry);
             return;
         }
@@ -160,13 +154,16 @@ public:
     int64_t Count() const { return static_cast<int64_t>(offsets_.size()); }
     int64_t Dropped() const { return dropped_; }
     const std::string& StopWarning() const { return stopWarning_; }
+    const std::vector<int64_t>& Offsets() const { return offsets_; }
     std::vector<int64_t> TakeOffsets() { return std::move(offsets_); }
-    std::vector<int64_t> entryOf;  // index entry number of each usable frame
+    std::vector<int64_t> TakeEntries() { return std::move(entryOf_); }
 
 private:
-    // A zero-length (dropped) frame; false once the run of them exceeds the cap.
-    bool Drop() {
-        if (++run_ > AviFile::kMaxDroppedRun) return false;
+    // A zero-length (dropped) frame; a run longer than the cap ends the table.
+    bool Drop(int64_t entry) {
+        if (++run_ > AviFile::kMaxDroppedRun)
+            return Stop("more than " + Num(AviFile::kMaxDroppedRun) + " consecutive zero-length frames at entry " +
+                        Num(entry) + "; using the first " + Num(Count()) + " frames");
         ++dropped_;
         return true;
     }
@@ -175,7 +172,7 @@ private:
     }
     void Push(int64_t dataPos, int64_t entry) {
         offsets_.push_back(dataPos);
-        entryOf.push_back(entry);
+        entryOf_.push_back(entry);
         run_ = 0;
         nextFree_ = dataPos + chunkBytes_ + 8;  // the next chunk header follows: no overlap, table bounded by the file
     }
@@ -190,6 +187,7 @@ private:
     bool stopped_ = false;
     std::string stopWarning_;
     std::vector<int64_t> offsets_;
+    std::vector<int64_t> entryOf_;  // index entry number of each usable frame
 };
 
 // The chunks inside a header-list buffer (hdrl/strl), bounds-checked against the buffer.
@@ -295,7 +293,7 @@ bool ScanList(const Io& io, int64_t start, int64_t end, const StreamIds& ids, Fr
         if (ids.IsFrame(c.id)) {
             if (!table.AddScanned(c, inside)) return false;
         } else if (ids.IsPaletteChange(c.id)) {
-            ThrowPaletteChange(ids);
+            ThrowPaletteChange(ids, c.pos);
         } else if (!inside) {
             return true;  // a damaged list: nothing further in it can be trusted
         } else if (Is(c.id, "LIST") && Is(c.listType, "rec ")) {
@@ -308,10 +306,50 @@ bool ScanList(const Io& io, int64_t start, int64_t end, const StreamIds& ids, Fr
     return true;
 }
 
+// The bytes between two usable frames (JUNK, ix##, other streams, dropped frames, and at a
+// segment boundary idx1 and the RIFF/LIST headers): throws on a palette-change chunk.
+// Lists are stepped into, everything else skipped by its size. `filePos` = p's offset.
+void CheckGapBytes(const unsigned char* p, int64_t n, int64_t filePos, const StreamIds& ids) {
+    for (int64_t pos = 0; pos + 8 <= n;) {
+        if (ids.IsPaletteChange(p + pos)) ThrowPaletteChange(ids, filePos + pos);
+        const int64_t size = U32(p + pos + 4);
+        pos += (Is(p + pos, "LIST") || Is(p + pos, "RIFF")) ? 12 : 8 + size + (size & 1);
+    }
+}
+
+// CheckGapBytes over [start, end) of the file: one read when the gap is small (the ASIAIR
+// gap is a 504-byte JUNK), else a walk of its chunk headers (a segment boundary's idx1).
+void CheckGap(const Io& io, int64_t start, int64_t end, const StreamIds& ids) {
+    if (end - start <= kGapReadWhole) {
+        std::vector<unsigned char> gap(static_cast<size_t>(std::max<int64_t>(end - start, 0)));
+        if (io.ReadAt(start, gap.data(), static_cast<int64_t>(gap.size())))
+            CheckGapBytes(gap.data(), static_cast<int64_t>(gap.size()), start, ids);
+        return;
+    }
+    Chunk c;
+    for (int64_t pos = start; io.ChunkAt(pos, end, c);) {
+        if (ids.IsPaletteChange(c.id)) ThrowPaletteChange(ids, c.pos);
+        pos = (Is(c.id, "LIST") || Is(c.id, "RIFF")) ? pos + 12 : c.Next();
+    }
+}
+
 struct Segment {
     int64_t pos = 0;
     int64_t end = 0;  // end of its data, clamped to the file
 };
+
+// The LIST movi of a segment as [start of its children, end clamped to the segment); false if none.
+bool FindMovi(const Io& io, const Segment& seg, int64_t& start, int64_t& end) {
+    Chunk c;
+    for (int64_t pos = seg.pos + 12; io.ChunkAt(pos, seg.end, c); pos = c.Next()) {
+        if (Is(c.id, "LIST") && Is(c.listType, "movi")) {
+            start = c.pos + 12;
+            end = std::min(c.DataEnd(), seg.end);
+            return true;
+        }
+    }
+    return false;
+}
 
 }  // namespace
 
@@ -327,6 +365,7 @@ AviFile AviFile::Open(const std::string& path) {
     const Io io(f.stream_, f.fileSize_);
 
     // ---- RIFF segments: 'AVI ' then any number of 'AVIX'; bytes after the last are ignored.
+    // Each AVIX must hold at least an empty LIST movi, so the walk is bounded by fileSize / 24.
     Chunk riff;
     if (!io.ChunkAt(0, f.fileSize_, riff) || !Is(riff.id, "RIFF") || !Is(riff.listType, "AVI "))
         throw SerError("not an AVI file: it does not start with RIFF....AVI ");
@@ -348,6 +387,8 @@ AviFile AviFile::Open(const std::string& path) {
         if (!Is(c.listType, "AVIX"))
             throw SerError("unexpected RIFF form '" + FourccName(c.listType) + "' at offset " + Num(c.pos) +
                            " (only AVIX may follow the AVI segment)");
+        if (c.size < kMinAvixSize)
+            throw SerError("AVIX segment at offset " + Num(c.pos) + " is too small (" + Num(c.size) + " bytes)");
         segments.push_back({c.pos, std::min(c.DataEnd(), f.fileSize_)});
         next = c.Next();
     }
@@ -436,7 +477,9 @@ AviFile AviFile::Open(const std::string& path) {
     if (width > kMaxDimension || height > kMaxDimension)
         throw SerError("image size " + Num(width) + "x" + Num(height) + " exceeds the supported maximum of " +
                        Num(kMaxDimension));
-    f.bottomUp_ = biHeight > 0;
+    // BITMAPINFOHEADER: an RGB DIB with biHeight > 0 is bottom-up; YUV formats (Y800 and kin)
+    // are always top-down whatever the sign.
+    f.bottomUp_ = biRgb && biHeight > 0;
     f.stride_ = (width + 3) & ~int64_t(3);
     const int64_t chunkBytes = f.stride_ * height;
 
@@ -465,7 +508,7 @@ AviFile AviFile::Open(const std::string& path) {
         if (!io.ReadAt(idx1Chunk.pos + 8, idx1.data(), static_cast<int64_t>(idx1.size())))
             throw SerError("failed to read the AVI idx1 index");
         for (size_t i = 0; i + 16 <= idx1.size(); i += 16)
-            if (vs.ids.IsPaletteChange(&idx1[i])) ThrowPaletteChange(vs.ids);
+            if (vs.ids.IsPaletteChange(&idx1[i])) ThrowPaletteChange(vs.ids, int64_t(U32(&idx1[i + 8])));
     }
 
     // ---- frame table: indx -> ix##, else idx1, else a scan of the movi lists
@@ -473,28 +516,49 @@ AviFile AviFile::Open(const std::string& path) {
     bool indexed = false;
     if (vs.indx) {
         std::string why;
-        indexed = BuildFromSuperIndex(vs, io, table, why);
-        if (indexed) details.indexKind = "OpenDML indx";
-        else info.warnings.push_back("OpenDML indx is malformed (" + why + "); not used");
+        if (!BuildFromSuperIndex(vs, io, table, why)) {
+            info.warnings.push_back("OpenDML indx is malformed (" + why + "); not used");
+        } else {
+            table.SpotCheck(io, vs.ids);
+            if (table.Count() == 0 && table.Stopped()) {
+                info.warnings.push_back("OpenDML indx gave no usable frames (" + table.StopWarning() + "); not used");
+                table = FrameTable(f.fileSize_, chunkBytes);
+            } else {
+                details.indexKind = "OpenDML indx";
+                indexed = true;
+            }
+        }
     }
     if (!indexed && haveIdx1 && segments.size() == 1) {
         BuildFromIdx1(idx1, movi.pos + 8, vs, io, table);
+        table.SpotCheck(io, vs.ids);
         details.indexKind = "idx1";
         indexed = true;
     }
-    if (indexed) table.SpotCheck(io, vs.ids);
-    if (!indexed) {
+    if (indexed) {
+        // Palette changes hide in the movi chunks an index skips. Walking every gap between
+        // frames costs one NAS disk seek per frame on ASIAIR files (a JUNK chunk follows each
+        // frame: 2440 reads, 14.2 s cold, measured), so open checks the gap before frame 0 and
+        // ReadFrame checks every earlier gap before it decodes a frame. A stream that declares
+        // palette changes (strh flag) has every gap checked here.
+        if (table.Count() > 0) {
+            CheckGap(io, movi.pos + 12, table.Offsets()[0] - 8, vs.ids);
+            f.gapsCheckedThrough_ = 0;
+        }
+        if (U32(vs.strh + 8) & kPalChangesFlag) {
+            const std::vector<int64_t>& o = table.Offsets();
+            for (size_t k = 1; k < o.size(); ++k) CheckGap(io, o[k - 1] + chunkBytes + (chunkBytes & 1), o[k] - 8, vs.ids);
+            f.gapsCheckedThrough_ = table.Count() - 1;
+        }
+    } else {
         info.warnings.push_back(haveIdx1 ? "idx1 covers only the first RIFF segment; scanned the file for frames"
                                          : "no index; scanned the file for frames");
         details.indexKind = "scanned";
         for (const Segment& seg : segments) {
-            Chunk c;
-            int64_t pos = seg.pos + 12;
-            bool found = false;
-            for (; io.ChunkAt(pos, seg.end, c); pos = c.Next())
-                if (Is(c.id, "LIST") && Is(c.listType, "movi")) { found = true; break; }
-            if (found && !ScanList(io, c.pos + 12, std::min(c.DataEnd(), seg.end), vs.ids, table)) break;
+            int64_t start = 0, end = 0;
+            if (FindMovi(io, seg, start, end) && !ScanList(io, start, end, vs.ids, table)) break;
         }
+        f.gapsCheckedThrough_ = table.Count() - 1;  // the scan saw every chunk
     }
 
     if (table.Dropped() > 0)
@@ -508,9 +572,9 @@ AviFile AviFile::Open(const std::string& path) {
     h.frameCount = static_cast<int32_t>(std::min<int64_t>(info.frameCount, INT32_MAX));
     details.droppedFrames = table.Dropped();
     info.avi = details;
-    f.frameEntry_ = std::move(table.entryOf);
+    f.ids_ = vs.ids;
+    f.frameEntry_ = table.TakeEntries();
     f.frameData_ = table.TakeOffsets();
-    f.videoDigits_ = std::string(vs.ids.digits, 2);
     return f;
 }
 
@@ -524,23 +588,39 @@ Frame AviFile::ReadFrame(int64_t index) const {
     if (index < 0 || index >= info_.frameCount)
         throw SerError("frame index " + Num(index) + " out of range (0.." + Num(info_.frameCount - 1) + ")");
 
-    // One read: the chunk header, then the frame data. The header is verified here because
-    // open only checks the index arithmetically (plus three spot reads).
     const int w = info_.header.width, ht = info_.header.height;
     const int64_t chunkBytes = stride_ * ht;
-    std::vector<unsigned char> raw(static_cast<size_t>(8 + chunkBytes));
-    stream_.clear();
-    stream_.seekg(static_cast<std::streamoff>(frameData_[static_cast<size_t>(index)] - 8));
-    stream_.read(reinterpret_cast<char*>(raw.data()), static_cast<std::streamsize>(raw.size()));
-    if (!stream_ || stream_.gcount() != static_cast<std::streamsize>(raw.size()))
+    const Io io(stream_, fileSize_);
+    const auto at = [&](int64_t k) { return frameData_[static_cast<size_t>(k)]; };
+    const auto gapStart = [&](int64_t k) { return at(k - 1) + chunkBytes + (chunkBytes & 1); };
+
+    // No frame is decoded past a palette-change chunk: the gaps before every earlier frame
+    // must have been checked (free when frames are read in order; a jump ahead walks them).
+    for (int64_t k = gapsCheckedThrough_ + 1; k < index; ++k) {
+        CheckGap(io, gapStart(k), at(k) - 8, ids_);
+        gapsCheckedThrough_ = k;
+    }
+    // One read: this frame's own unchecked gap (when small), its chunk header, its data. The
+    // header is verified here because open only checks the index arithmetically.
+    const int64_t header = at(index) - 8;
+    int64_t start = header;
+    if (index > gapsCheckedThrough_) {
+        start = gapStart(index);
+        if (header - start > kGapReadWhole) {
+            CheckGap(io, start, header, ids_);
+            start = header;
+        }
+    }
+    std::vector<unsigned char> raw(static_cast<size_t>(at(index) + chunkBytes - start));
+    if (!io.ReadAt(start, raw.data(), static_cast<int64_t>(raw.size())))
         throw SerError("short read on frame " + Num(index) + ": file ends before the frame does");
-    StreamIds ids;
-    ids.digits[0] = videoDigits_[0];
-    ids.digits[1] = videoDigits_[1];
-    if (!ids.IsFrame(raw.data()) || U32(raw.data() + 4) != static_cast<uint64_t>(chunkBytes))
+    CheckGapBytes(raw.data(), header - start, start, ids_);
+    gapsCheckedThrough_ = std::max(gapsCheckedThrough_, index);
+    const unsigned char* h = raw.data() + (header - start);
+    if (!IsVideoHeader(h, ids_, chunkBytes))
         throw SerError("index entry " + Num(frameEntry_[static_cast<size_t>(index)]) + " points at " +
-                       FourccName(raw.data()) + "/" + Num(U32(raw.data() + 4)) + ", not a video chunk");
-    const unsigned char* data = raw.data() + 8;
+                       FourccName(h) + "/" + Num(U32(h + 4)) + ", not a video chunk");
+    const unsigned char* data = h + 8;
 
     Frame fr;
     fr.width = w;
