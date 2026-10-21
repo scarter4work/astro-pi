@@ -35,8 +35,8 @@ struct StreamIds {
 // headers of the first, middle and last frames are read; ReadFrame verifies each frame's
 // own chunk header in the same read as its data. Palette-change chunks are an error: the
 // scan, idx1 and the gap before frame 0 are checked at open (every gap when strh declares
-// palette changes); ReadFrame checks every gap before the frame it decodes, in the same read
-// when frames are read in order.
+// palette changes); ReadFrame checks the gap immediately before the frame it decodes, in the
+// same read. A palette change in a gap before an unread frame is not detected (Ruling 4).
 // Frames are returned top-down, 1 channel. Opened as Mono with bayerSource "none".
 //
 // Not thread-safe: it owns one stream with a seek position. Use one reader per thread.
@@ -76,8 +76,9 @@ private:
     avi_detail::StreamIds ids_;
     std::vector<int64_t> frameData_;   // file offset of each usable frame's chunk data
     std::vector<int64_t> frameEntry_;  // its index entry number (zero-length entries counted)
-    // Frames 0..this have had the gap before them checked for palette-change chunks.
-    mutable int64_t gapsCheckedThrough_ = -1;
+    // Every gap between frames was checked for palette-change chunks at open (scan, or strh
+    // declares palette changes), so ReadFrame need not check the gap before its frame.
+    bool allGapsChecked_ = false;
 };
 
 }  // namespace planetary::ser

@@ -536,19 +536,17 @@ AviFile AviFile::Open(const std::string& path) {
         indexed = true;
     }
     if (indexed) {
-        // Palette changes hide in the movi chunks an index skips. Walking every gap between
-        // frames costs one NAS disk seek per frame on ASIAIR files (a JUNK chunk follows each
-        // frame: 2440 reads, 14.2 s cold, measured), so open checks the gap before frame 0 and
-        // ReadFrame checks every earlier gap before it decodes a frame. A stream that declares
-        // palette changes (strh flag) has every gap checked here.
-        if (table.Count() > 0) {
-            CheckGap(io, movi.pos + 12, table.Offsets()[0] - 8, vs.ids);
-            f.gapsCheckedThrough_ = 0;
-        }
+        // Palette-change rule (Ruling 4): open walks every gap between frames only when strh
+        // declares AVISF_VIDEO_PALCHANGES, because ASIAIR writes a JUNK chunk after every frame
+        // and the full walk costs one NAS disk seek per frame (2440 reads, 14.2 s cold,
+        // measured); otherwise open checks idx1 and the gap before frame 0, and ReadFrame the
+        // gap immediately before the frame it decodes. A change in a gap before an unread
+        // frame is the accepted limit.
+        if (table.Count() > 0) CheckGap(io, movi.pos + 12, table.Offsets()[0] - 8, vs.ids);
         if (U32(vs.strh + 8) & kPalChangesFlag) {
             const std::vector<int64_t>& o = table.Offsets();
             for (size_t k = 1; k < o.size(); ++k) CheckGap(io, o[k - 1] + chunkBytes + (chunkBytes & 1), o[k] - 8, vs.ids);
-            f.gapsCheckedThrough_ = table.Count() - 1;
+            f.allGapsChecked_ = true;
         }
     } else {
         info.warnings.push_back(haveIdx1 ? "idx1 covers only the first RIFF segment; scanned the file for frames"
@@ -558,7 +556,7 @@ AviFile AviFile::Open(const std::string& path) {
             int64_t start = 0, end = 0;
             if (FindMovi(io, seg, start, end) && !ScanList(io, start, end, vs.ids, table)) break;
         }
-        f.gapsCheckedThrough_ = table.Count() - 1;  // the scan saw every chunk
+        f.allGapsChecked_ = true;  // the scan saw every chunk
     }
 
     if (table.Dropped() > 0)
@@ -592,20 +590,16 @@ Frame AviFile::ReadFrame(int64_t index) const {
     const int64_t chunkBytes = stride_ * ht;
     const Io io(stream_, fileSize_);
     const auto at = [&](int64_t k) { return frameData_[static_cast<size_t>(k)]; };
-    const auto gapStart = [&](int64_t k) { return at(k - 1) + chunkBytes + (chunkBytes & 1); };
 
-    // No frame is decoded past a palette-change chunk: the gaps before every earlier frame
-    // must have been checked (free when frames are read in order; a jump ahead walks them).
-    for (int64_t k = gapsCheckedThrough_ + 1; k < index; ++k) {
-        CheckGap(io, gapStart(k), at(k) - 8, ids_);
-        gapsCheckedThrough_ = k;
-    }
-    // One read: this frame's own unchecked gap (when small), its chunk header, its data. The
-    // header is verified here because open only checks the index arithmetically.
+    // One read: the gap since the previous usable frame (when small; frame 0's was checked at
+    // open), this frame's chunk header, its data. Ruling 4: only the gap immediately before the
+    // decoded frame is checked here -- walking every earlier gap would turn a jump to the end
+    // of a cold 21k-frame ASIAIR capture into a multi-minute stall (one seek per JUNK chunk).
+    // The header is verified here because open only checks the index arithmetically.
     const int64_t header = at(index) - 8;
     int64_t start = header;
-    if (index > gapsCheckedThrough_) {
-        start = gapStart(index);
+    if (index > 0 && !allGapsChecked_) {
+        start = at(index - 1) + chunkBytes + (chunkBytes & 1);
         if (header - start > kGapReadWhole) {
             CheckGap(io, start, header, ids_);
             start = header;
@@ -615,7 +609,6 @@ Frame AviFile::ReadFrame(int64_t index) const {
     if (!io.ReadAt(start, raw.data(), static_cast<int64_t>(raw.size())))
         throw SerError("short read on frame " + Num(index) + ": file ends before the frame does");
     CheckGapBytes(raw.data(), header - start, start, ids_);
-    gapsCheckedThrough_ = std::max(gapsCheckedThrough_, index);
     const unsigned char* h = raw.data() + (header - start);
     if (!IsVideoHeader(h, ids_, chunkBytes))
         throw SerError("index entry " + Num(frameEntry_[static_cast<size_t>(index)]) + " points at " +

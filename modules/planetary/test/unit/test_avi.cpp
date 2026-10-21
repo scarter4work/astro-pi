@@ -625,60 +625,76 @@ TEST_CASE("ReadFrame out of range throws") {
     CHECK_THROWS_AS(avi.FrameTimestamp(3), SerError);
 }
 
-TEST_CASE("palette change in a later OpenDML segment stops every frame after it") {
+// Ruling 4: open walks every gap only when strh declares palette changes; otherwise ReadFrame
+// checks the gap immediately before the frame it decodes.
+TEST_CASE("palette change with the strh flag set: rejected at open") {
+    const bool withIdx1 = GENERATE(true, false);
+    INFO("idx1 " << withIdx1);
+    TempDir dir;
+    const std::string p = dir.NewPath(".avi");
+    AviSpec s = Avi(7, 5);
+    s.index = AviSpec::OpenDml;
+    s.openDmlIdx1 = withIdx1;  // idx1 covers segment 0 only, so it cannot see this one
+    s.framesPerRiff = 2;
+    s.paletteChangeChunk = true;
+    s.paletteChangeAfter = 2;  // segment 1, between frames 2 and 3
+    s.palChangesFlag = true;
+    WriteAvi(p, s, MakeFrames(7, 5, 6));
+    CHECK(OpenError(p).find("palette-change chunk") != std::string::npos);
+}
+
+TEST_CASE("palette change with the flag clear: the frame right after it throws") {
+    const bool withIdx1 = GENERATE(true, false);
+    INFO("idx1 " << withIdx1);
     TempDir dir;
     const std::string p = dir.NewPath(".avi");
     const auto frames = MakeFrames(7, 5, 6);
     AviSpec s = Avi(7, 5);
-    s.index = AviSpec::OpenDml;  // idx1 covers segment 0 only
+    s.index = AviSpec::OpenDml;
+    s.openDmlIdx1 = withIdx1;
     s.framesPerRiff = 2;
     s.paletteChangeChunk = true;
-    s.paletteChangeAfter = 2;    // segment 1, between frames 2 and 3
+    s.paletteChangeAfter = 2;  // segment 1, immediately before frame 3
     WriteAvi(p, s, frames);
 
     const AviFile avi = AviFile::Open(p);
     CHECK(avi.Info().frameCount == 6);
     CHECK(avi.Info().warnings.empty());
-    SECTION("read in order") {
-        for (int f = 0; f < 3; ++f) CheckFrame(avi, f, frames[f]);
-        CHECK_THROWS_WITH(avi.ReadFrame(3), Catch::Matchers::ContainsSubstring("palette-change chunk"));
-        CHECK_THROWS_WITH(avi.ReadFrame(4), Catch::Matchers::ContainsSubstring("palette-change chunk"));
-        CheckFrame(avi, 1, frames[1]);
-    }
-    SECTION("a jump past it") {
-        CHECK_THROWS_WITH(avi.ReadFrame(5), Catch::Matchers::ContainsSubstring("palette-change chunk"));
-        CheckFrame(avi, 2, frames[2]);
-    }
+    for (int f = 0; f < 3; ++f) CheckFrame(avi, f, frames[f]);
+    CHECK_THROWS_WITH(avi.ReadFrame(3), Catch::Matchers::ContainsSubstring("palette-change chunk"));
+    CheckFrame(avi, 1, frames[1]);
 }
 
-TEST_CASE("palette change in an OpenDML file without idx1") {
+TEST_CASE("palette change with the flag clear, before frame 0: rejected at open") {
     TempDir dir;
     const std::string p = dir.NewPath(".avi");
-    const auto frames = MakeFrames(7, 5, 4);
     AviSpec s = Avi(7, 5);
     s.index = AviSpec::OpenDml;
     s.openDmlIdx1 = false;
     s.paletteChangeChunk = true;
+    s.paletteChangeAfter = -1;
+    WriteAvi(p, s, MakeFrames(7, 5, 4));
+    CHECK(OpenError(p).find("palette-change chunk") != std::string::npos);
+}
 
-    SECTION("between frames 0 and 1: no frame after it is decoded") {
-        s.paletteChangeAfter = 0;
-        WriteAvi(p, s, frames);
-        const AviFile avi = AviFile::Open(p);
-        CheckFrame(avi, 0, frames[0]);
-        CHECK_THROWS_WITH(avi.ReadFrame(3), Catch::Matchers::ContainsSubstring("palette-change chunk"));
-        CHECK_THROWS_WITH(avi.ReadFrame(1), Catch::Matchers::ContainsSubstring("palette-change chunk"));
-    }
-    SECTION("before frame 0: rejected at open") {
-        s.paletteChangeAfter = -1;
-        WriteAvi(p, s, frames);
-        CHECK(OpenError(p).find("palette-change chunk") != std::string::npos);
-    }
-    SECTION("declared by the strh flag: every gap is checked at open") {
-        s.paletteChangeAfter = 1;
-        s.palChangesFlag = true;
-        WriteAvi(p, s, frames);
-        CHECK(OpenError(p).find("palette-change chunk") != std::string::npos);
-    }
+TEST_CASE("palette change with the flag clear, not next to a read frame: the accepted limit") {
+    // Documents Ruling 4's limit: a change in the gap before frame 3 goes unseen when frame 3
+    // is never read; later frames decode with the identity palette.
+    TempDir dir;
+    const std::string p = dir.NewPath(".avi");
+    const auto frames = MakeFrames(7, 5, 6);
+    AviSpec s = Avi(7, 5);
+    s.index = AviSpec::OpenDml;
+    s.openDmlIdx1 = false;
+    s.framesPerRiff = 2;
+    s.paletteChangeChunk = true;
+    s.paletteChangeAfter = 2;
+    WriteAvi(p, s, frames);
+
+    const AviFile avi = AviFile::Open(p);
+    CHECK(avi.Info().frameCount == 6);
+    CHECK(avi.Info().warnings.empty());
+    for (int f : {5, 4, 0}) CheckFrame(avi, f, frames[f]);
 }
 
 TEST_CASE("an indx with no usable frames falls back to idx1 or the scan") {
