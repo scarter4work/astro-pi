@@ -60,6 +60,9 @@ public:
     AviFile& operator=(const AviFile&) = delete;
 
     const FileInfo& Info() const override { return info_; }
+    // For OpenVideo only: it adds what lives outside the file (sidecar, file name, Bayer
+    // pattern) after Open. AviFile itself does no sidecar or file-name I/O.
+    FileInfo& MutableInfo() { return info_; }
 
     // Always nullopt (AVI has no per-frame clock). Throws SerError when index is out of range.
     std::optional<int64_t> FrameTimestamp(int64_t index) const override;
