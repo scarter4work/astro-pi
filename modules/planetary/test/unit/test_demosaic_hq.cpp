@@ -2,7 +2,11 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstddef>
+#include <cstdint>
 #include <functional>
+#include <string>
+#include <utility>
 #include <vector>
 
 #include "Demosaic.h"
@@ -14,6 +18,9 @@ using ser::FloatImage;
 using ser::Frame;
 
 namespace {
+// Slack for comparisons that can tie exactly (an error of exactly half of bilinear's).
+constexpr float kTol = 1e-6f;
+
 const ColorId kPatterns[4] = {ColorId::BayerRGGB, ColorId::BayerGRBG, ColorId::BayerGBRG, ColorId::BayerBGGR};
 
 // Channel index (0=R,1=G,2=B) at site (x,y) -- written independently of the engine.
@@ -92,29 +99,38 @@ double Coverage(double x, double y, const std::function<bool(double, double)>& i
 struct EdgeCase {
     const char* name;
     std::function<void(double, double, float*)> rgbAt;
-    enum class Along { Columns, Rows, None } zipper;  // edge direction; None for a disc (it turns)
+    // Edge direction for the zipper check; a disc's edge turns, so it is checked both ways.
+    enum class Along { Columns, Rows, Both } zipper;
+    // Absolute zipper ceiling for HQ, as a fraction of the edge step (every edge here steps
+    // 0 -> 1); < 0 when only the comparison with bilinear applies.
+    float zipperCeiling;
 };
 
 std::vector<EdgeCase> GreyEdges() {
     auto grey = [](double v, float* px) { px[0] = px[1] = px[2] = static_cast<float>(v); };
+    using A = EdgeCase::Along;
     return {
-        {"sharp vertical edge", [=](double x, double, float* px) { grey(x >= 15 ? 1.0 : 0.0, px); }, EdgeCase::Along::Columns},
-        {"sharp horizontal edge", [=](double, double y, float* px) { grey(y >= 15 ? 1.0 : 0.0, px); }, EdgeCase::Along::Rows},
+        // Grid-aligned edges: Hamilton-Adams interpolates along them, so no zipper at all.
+        {"sharp vertical edge", [=](double x, double, float* px) { grey(x >= 15 ? 1.0 : 0.0, px); }, A::Columns,
+         1e-6f},
+        {"sharp horizontal edge", [=](double, double y, float* px) { grey(y >= 15 ? 1.0 : 0.0, px); }, A::Rows,
+         1e-6f},
+        // Slanted anti-aliased edges (a limb at a shallow angle): at most 1/8 of the step.
         {"anti-aliased slanted edge (1:6)",
          [=](double x, double y, float* px) {
              grey(Coverage(x, y, [](double u, double v) { return u >= 12.3 + v / 6.0; }), px);
          },
-         EdgeCase::Along::Columns},
+         A::Columns, 0.125f},
         {"anti-aliased slanted edge (6:1)",
          [=](double x, double y, float* px) {
              grey(Coverage(x, y, [](double u, double v) { return v >= 13.6 + u / 6.0; }), px);
          },
-         EdgeCase::Along::Rows},
+         A::Rows, 0.125f},
         {"sharp disc r=10",
          [=](double x, double y, float* px) {
              grey((x - 16) * (x - 16) + (y - 16) * (y - 16) <= 100 ? 1.0 : 0.0, px);
          },
-         EdgeCase::Along::None},
+         A::Both, -1.0f},
         {"anti-aliased disc r=10.4",
          [=](double x, double y, float* px) {
              grey(Coverage(x, y, [](double u, double v) {
@@ -122,7 +138,7 @@ std::vector<EdgeCase> GreyEdges() {
                   }),
                   px);
          },
-         EdgeCase::Along::None},
+         A::Both, -1.0f},
     };
 }
 }  // namespace
@@ -261,15 +277,25 @@ TEST_CASE("DemosaicHQ halves bilinear's colour error at sharp edges, with no zip
             const float hq = MaxOf(eHq), bl = MaxOf(ErrorMap(blImage, truth));
             INFO(ec.name << " " << ser::ColorIdName(p) << ": max colour error HQ " << hq << " bilinear " << bl);
             REQUIRE(bl > 0.1f);  // the case really stresses bilinear
-            CHECK(hq <= 0.5f * bl);
+            // The sharp binary disc lands on exactly half (0.375 vs 0.75, 0.5 vs 1.0: single-
+            // pixel staircase nubs below the CFA's sampling limit); kTol keeps float rounding
+            // of that exact tie from deciding the result.
+            CHECK(hq <= 0.5f * bl + kTol);
 
             // Zipper: alternation of the error along the edge direction.
-            if (ec.zipper != EdgeCase::Along::None) {
-                const bool alongY = ec.zipper == EdgeCase::Along::Columns;
-                const float zHq = Zipper(hqImage, truth, alongY), zBl = Zipper(blImage, truth, alongY);
-                INFO("zipper HQ " << zHq << " bilinear " << zBl);
+            auto zipper = [&](const FloatImage& img) {
+                switch (ec.zipper) {
+                    case EdgeCase::Along::Columns: return Zipper(img, truth, true);
+                    case EdgeCase::Along::Rows: return Zipper(img, truth, false);
+                    default: return std::max(Zipper(img, truth, true), Zipper(img, truth, false));
+                }
+            };
+            const float zHq = zipper(hqImage), zBl = zipper(blImage);
+            INFO("zipper HQ " << zHq << " bilinear " << zBl);
+            CHECK(zHq <= 0.5f * zBl + kTol);
+            if (ec.zipperCeiling >= 0) {
                 REQUIRE(zBl > 0.1f);  // bilinear really zippers here
-                CHECK(zHq <= 0.5f * zBl);
+                CHECK(zHq <= ec.zipperCeiling);
             }
 
             // Flat area: wherever the truth is constant over the 7x7 window, HQ is exact.
@@ -306,6 +332,90 @@ TEST_CASE("DemosaicHQ halves bilinear's colour error on a coloured disc limb", "
         const float hq = MaxOf(ErrorMap(stack::DemosaicHQ(cfa, p, 16), truth));
         const float bl = MaxOf(ErrorMap(ser::DebayerBilinear(cfa, p, 16), truth));
         INFO(ser::ColorIdName(p) << ": max colour error HQ " << hq << " bilinear " << bl);
-        CHECK(hq <= 0.5f * bl);
+        CHECK(hq <= 0.5f * bl + kTol);
     }
+}
+
+TEST_CASE("DemosaicHQ output stays in [0, brightest sample] at saturated limbs", "[stack][demosaic]") {
+    // Saturated discs on black sky: unbounded colour differences reach -0.14 and 1.06 here
+    // (measured before the bound existed); the documented range is [0, M], M = 1 for these.
+    const int w = 40, h = 40;
+    const float colours[3][3] = {{1.0f, 0.6f, 0.3f}, {0.2f, 0.5f, 1.0f}, {1.0f, 1.0f, 1.0f}};
+    for (const auto& rgb : colours)
+        for (ColorId p : kPatterns) {
+            FloatImage truth = MakeTruth(w, h, [&](double x, double y, float* px) {
+                const double c = Coverage(x, y, [](double u, double v) {
+                    return (u - 20.3) * (u - 20.3) + (v - 19.6) * (v - 19.6) <= 13.2 * 13.2;
+                });
+                for (int k = 0; k < 3; ++k) px[k] = static_cast<float>(rgb[k] * c);
+            });
+            FloatImage out = stack::DemosaicHQ(Mosaic(truth, p), p, 16);
+            const auto [lo, hi] = std::minmax_element(out.data.begin(), out.data.end());
+            INFO(ser::ColorIdName(p) << " rgb " << rgb[0] << "," << rgb[1] << "," << rgb[2] << ": min " << *lo
+                                     << " max " << *hi);
+            CHECK(*lo >= 0.0f);
+            CHECK(*hi <= 1.0f);
+        }
+}
+
+TEST_CASE("DemosaicHQ keeps samples above 2^normDepth - 1 instead of clipping them to 1", "[stack][demosaic]") {
+    // 8-bit normalisation of data reaching 300 (FrameRangeWarning's case): the bound is the
+    // frame's own brightest sample, 300/255, not 1.
+    for (ColorId p : kPatterns) {
+        Frame flat{6, 6, 1, std::vector<uint16_t>(36, 300)};
+        FloatImage f = stack::DemosaicHQ(flat, p, 8);
+        for (float v : f.data) CHECK(v == Catch::Approx(300.0f / 255).epsilon(1e-6));
+
+        // A bright square on a dim field: nothing leaves [0, 300/255], and the square's
+        // centre keeps its over-range value.
+        Frame sq{12, 12, 1, std::vector<uint16_t>(144, 20)};
+        for (int y = 4; y < 8; ++y)
+            for (int x = 4; x < 8; ++x) sq.samples[y * 12 + x] = 300;
+        FloatImage s = stack::DemosaicHQ(sq, p, 8);
+        const auto [lo, hi] = std::minmax_element(s.data.begin(), s.data.end());
+        CHECK(*lo >= 0.0f);
+        CHECK(*hi <= 300.0f / 255 + kTol);
+        CHECK(*hi > 1.0f);
+    }
+}
+
+TEST_CASE("DemosaicHQ handles structure through the border of tiny frames", "[stack][demosaic]") {
+    // Odd and minimal sizes with an edge, a diagonal or a lone bright pixel crossing the
+    // border, where the mirrored padding is all that is there to read.
+    struct Scene {
+        const char* name;
+        std::function<void(double, double, float*)> rgbAt;
+    };
+    const Scene scenes[] = {
+        {"vertical edge", [](double x, double, float* px) { px[0] = px[1] = px[2] = x >= 1 ? 0.9f : 0.1f; }},
+        {"horizontal edge", [](double, double y, float* px) { px[0] = px[1] = px[2] = y >= 2 ? 0.9f : 0.1f; }},
+        {"diagonal edge", [](double x, double y, float* px) { px[0] = px[1] = px[2] = x + y >= 3 ? 0.9f : 0.1f; }},
+        {"coloured edge",
+         [](double x, double, float* px) {
+             px[0] = x >= 2 ? 0.8f : 0.0f;
+             px[1] = x >= 2 ? 0.5f : 0.0f;
+             px[2] = x >= 2 ? 0.2f : 0.0f;
+         }},
+        {"corner pixel", [](double x, double y, float* px) { px[0] = px[1] = px[2] = x + y == 0 ? 1.0f : 0.0f; }},
+    };
+    for (const Scene& sc : scenes)
+        for (ColorId p : kPatterns)
+            for (auto [w, h] : {std::pair{2, 2}, std::pair{3, 3}, std::pair{5, 3}, std::pair{3, 5}, std::pair{7, 5}}) {
+                FloatImage truth = MakeTruth(w, h, sc.rgbAt);
+                Frame cfa = Mosaic(truth, p);
+                FloatImage out = stack::DemosaicHQ(cfa, p, 16);
+                REQUIRE(out.width == w);
+                REQUIRE(out.height == h);
+                REQUIRE(out.channels == 3);
+                const float top = *std::max_element(truth.data.begin(), truth.data.end());
+                bool finiteInRange = true;
+                for (float v : out.data) finiteInRange = finiteInRange && std::isfinite(v) && v >= 0 && v <= top + kTol;
+                const float hq = MaxOf(ErrorMap(out, truth));
+                const float bl = MaxOf(ErrorMap(ser::DebayerBilinear(cfa, p, 16), truth));
+                INFO(sc.name << " " << ser::ColorIdName(p) << " " << w << "x" << h << ": max error HQ " << hq
+                             << " bilinear " << bl);
+                CHECK(finiteInRange);
+                // Bounded error: never worse than bilinear on the same border data.
+                CHECK(hq <= bl + kTol);
+            }
 }

@@ -1,60 +1,27 @@
 #include "Debayer.h"
 
+#include "BayerPattern.h"
+
 namespace planetary::ser {
 
 namespace {
-// Channel (0=R, 1=G, 2=B) at site (x,y), indexed by (y&1)*2 + (x&1).
-const int* PatternTable(ColorId p) {
-    static const int rggb[4] = {0, 1, 1, 2}, grbg[4] = {1, 0, 2, 1},
-                     gbrg[4] = {1, 2, 0, 1}, bggr[4] = {2, 1, 1, 0};
-    switch (p) {
-        case ColorId::BayerRGGB: return rggb;
-        case ColorId::BayerGRBG: return grbg;
-        case ColorId::BayerGBRG: return gbrg;
-        case ColorId::BayerBGGR: return bggr;
-        default: throw SerError(std::string(ColorIdName(p)) + " is not a Bayer pattern");
-    }
-}
-
-void CheckSize(const Frame& f) {
-    if (f.width <= 0 || f.height <= 0 || f.channels <= 0 ||
-        f.samples.size() != static_cast<size_t>(f.width) * f.height * f.channels)
-        throw SerError("frame holds " + std::to_string(f.samples.size()) + " samples, expected " +
-                       std::to_string(f.width) + "x" + std::to_string(f.height) + "x" +
-                       std::to_string(f.channels));
-}
-
-// Samples are LSB-aligned in 1..16 bits; anything else has no 2^depth - 1 scale.
-float MaxValue(int depth) {
-    if (depth < 1 || depth > 16)
-        throw SerError("bit depth " + std::to_string(depth) + " is outside 1..16");
-    return static_cast<float>((1u << depth) - 1u);
-}
-
 // Every check DebayerBilinear documents; returns the scale.
 float CheckCfa(const Frame& cfa, ColorId pattern, int depth) {
     if (!IsBayer(pattern))
         throw SerError(std::string("cannot debayer ") + ColorIdName(pattern) + ": not a Bayer pattern");
-    const float maxValue = MaxValue(depth);
-    CheckSize(cfa);
+    const float maxValue = MaxSampleValue(depth);
+    CheckFrameSize(cfa);
     if (cfa.channels != 1)
         throw SerError("debayer needs a 1-channel CFA frame, got " + std::to_string(cfa.channels) + " channels");
     if (cfa.width < 2 || cfa.height < 2)
         throw SerError("debayer needs at least a 2x2 frame");
     return maxValue;
 }
-
-// Reflection about the edge sample (-1 -> 1, n -> n-2): keeps the site parity.
-int Mirror(int i, int n) {
-    if (i < 0) return -i;
-    if (i >= n) return 2 * (n - 1) - i;
-    return i;
-}
 }  // namespace
 
 FloatImage Normalize(const Frame& frame, int depth) {
-    const float maxValue = MaxValue(depth);
-    CheckSize(frame);
+    const float maxValue = MaxSampleValue(depth);
+    CheckFrameSize(frame);
     FloatImage out;
     out.width = frame.width;
     out.height = frame.height;
@@ -66,8 +33,8 @@ FloatImage Normalize(const Frame& frame, int depth) {
 }
 
 void NormalizeInto(const Frame& frame, int depth, float* const* planes, size_t stride) {
-    const float maxValue = MaxValue(depth);
-    CheckSize(frame);
+    const float maxValue = MaxSampleValue(depth);
+    CheckFrameSize(frame);
     const size_t n = static_cast<size_t>(frame.width) * frame.height;
     const uint16_t* src = frame.samples.data();
     for (size_t i = 0; i < n; ++i)
@@ -94,7 +61,7 @@ void DebayerBilinearInto(const Frame& cfa, ColorId pattern, int depth, float* co
     auto site = [&](int x, int y) { return table[(y & 1) * 2 + (x & 1)]; };
     // Raw sample at a mirrored position; sums stay integral and divide once.
     auto val = [&](int x, int y) -> int {
-        return cfa.samples[static_cast<size_t>(Mirror(y, h)) * w + Mirror(x, w)];
+        return cfa.samples[static_cast<size_t>(MirrorIndex(y, h)) * w + MirrorIndex(x, w)];
     };
     auto mean2 = [&](int a, int b) { return static_cast<float>(a + b) / (2.0f * maxValue); };
     auto mean4 = [&](int a, int b, int c, int d) { return static_cast<float>(a + b + c + d) / (4.0f * maxValue); };
@@ -122,7 +89,7 @@ void DebayerBilinearInto(const Frame& cfa, ColorId pattern, int depth, float* co
 }
 
 std::string FrameRangeWarning(const Frame& frame, int64_t index, int normDepth) {
-    const uint32_t limit = static_cast<uint32_t>(MaxValue(normDepth));
+    const uint32_t limit = static_cast<uint32_t>(MaxSampleValue(normDepth));
     for (uint16_t s : frame.samples)
         if (s > limit)
             return "frame " + std::to_string(index) + " samples exceed the " + std::to_string(normDepth) +

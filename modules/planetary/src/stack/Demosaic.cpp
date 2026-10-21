@@ -2,9 +2,12 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstddef>
+#include <cstdint>
 #include <string>
 #include <vector>
 
+#include "BayerPattern.h"
 #include "SerFile.h"
 
 namespace planetary::stack {
@@ -15,37 +18,11 @@ using ser::Frame;
 using ser::SerError;
 
 namespace {
-// Channel (0=R, 1=G, 2=B) at site (x,y), indexed by (y&1)*2 + (x&1).
-const int* PatternTable(ColorId p) {
-    static const int rggb[4] = {0, 1, 1, 2}, grbg[4] = {1, 0, 2, 1},
-                     gbrg[4] = {1, 2, 0, 1}, bggr[4] = {2, 1, 1, 0};
-    switch (p) {
-        case ColorId::BayerRGGB: return rggb;
-        case ColorId::BayerGRBG: return grbg;
-        case ColorId::BayerGBRG: return gbrg;
-        case ColorId::BayerBGGR: return bggr;
-        default: throw SerError(std::string(ser::ColorIdName(p)) + " is not a Bayer pattern");
-    }
-}
-
-float MaxValue(int depth) {
-    if (depth < 1 || depth > 16)
-        throw SerError("bit depth " + std::to_string(depth) + " is outside 1..16");
-    return static_cast<float>((1u << depth) - 1u);
-}
-
-void CheckSize(const Frame& f) {
-    if (f.width <= 0 || f.height <= 0 || f.channels <= 0 ||
-        f.samples.size() != static_cast<size_t>(f.width) * f.height * f.channels)
-        throw SerError("frame holds " + std::to_string(f.samples.size()) + " samples, expected " +
-                       std::to_string(f.width) + "x" + std::to_string(f.height) + "x" +
-                       std::to_string(f.channels));
-}
-
-// Validates the frame for `color`; returns the normalisation scale.
+// Throws SerError for every case LumaForMeasure documents (depth, size, channels, Bayer
+// shape); otherwise returns 2^depth - 1, the value samples are divided by.
 float CheckFrame(const Frame& f, ColorId color, int depth) {
-    const float maxValue = MaxValue(depth);
-    CheckSize(f);
+    const float maxValue = ser::MaxSampleValue(depth);
+    ser::CheckFrameSize(f);
     if (ser::IsBayer(color)) {
         if (f.channels != 1)
             throw SerError(std::string(ser::ColorIdName(color)) + " needs a 1-channel CFA frame, got " +
@@ -56,16 +33,6 @@ float CheckFrame(const Frame& f, ColorId color, int depth) {
         throw SerError("expected a 1- or 3-channel frame, got " + std::to_string(f.channels) + " channels");
     }
     return maxValue;
-}
-
-// Reflection about the edge sample (-1 -> 1, n -> n-2), repeated until in range: keeps the
-// Bayer site parity, and works for any n >= 2.
-int Mirror(int i, int n) {
-    while (i < 0 || i >= n) {
-        if (i < 0) i = -i;
-        if (i >= n) i = 2 * (n - 1) - i;
-    }
-    return i;
 }
 
 // A float plane with a mirrored border of `pad` samples on every side.
@@ -81,13 +48,13 @@ struct Padded {
     void MirrorBorder() {
         for (int y = -pad; y < h + pad; ++y)
             for (int x = -pad; x < w + pad; ++x)
-                if (x < 0 || y < 0 || x >= w || y >= h) at(x, y) = at(Mirror(x, w), Mirror(y, h));
+                if (x < 0 || y < 0 || x >= w || y >= h) at(x, y) = at(ser::MirrorIndex(x, w), ser::MirrorIndex(y, h));
     }
 };
 
 FloatImage HamiltonAdams(const Frame& cfa, ColorId pattern, float maxValue) {
     const int w = cfa.width, h = cfa.height;
-    const int* table = PatternTable(pattern);
+    const int* table = ser::PatternTable(pattern);
     auto site = [&](int x, int y) { return table[(y & 1) * 2 + (x & 1)]; };
 
     // Normalised CFA with a 2-sample mirrored border (the green step reads +-2).
@@ -125,7 +92,13 @@ FloatImage HamiltonAdams(const Frame& cfa, ColorId pattern, float maxValue) {
     g.MirrorBorder();
 
     // Step 2: red and blue from colour differences (channel - green), which are smooth
-    // even where the luminance is not.
+    // even where the luminance is not. Where they are not smooth (a coloured limb on black
+    // sky) the sum can leave the recorded range -- measured -0.14 and 1.06 on a saturated
+    // disc -- so red and blue are held to [0, brightest sample of the frame]. That bound is at
+    // most 1 for in-range data and keeps samples above 2^normDepth - 1 (FrameRangeWarning) as
+    // they are. Green and the site channel are already inside it.
+    const float top = static_cast<float>(*std::max_element(cfa.samples.begin(), cfa.samples.end())) / maxValue;
+    auto bound = [top](float v) { return std::clamp(v, 0.0f, top); };
     auto diff = [&](int x, int y) { return c.at(x, y) - g.at(x, y); };
     FloatImage out;
     out.width = w;
@@ -141,8 +114,8 @@ FloatImage HamiltonAdams(const Frame& cfa, ColorId pattern, float maxValue) {
             if (s == 1) {
                 // The channel on this row's horizontal neighbours, then the other one vertically.
                 const int hc = site(x + 1, y);
-                px[hc] = gHere + 0.5f * (diff(x - 1, y) + diff(x + 1, y));
-                px[2 - hc] = gHere + 0.5f * (diff(x, y - 1) + diff(x, y + 1));
+                px[hc] = bound(gHere + 0.5f * (diff(x - 1, y) + diff(x + 1, y)));
+                px[2 - hc] = bound(gHere + 0.5f * (diff(x, y - 1) + diff(x, y + 1)));
             } else {
                 px[s] = c.at(x, y);
                 // The opposite channel sits on the diagonals: use the smoother diagonal.
@@ -152,7 +125,7 @@ FloatImage HamiltonAdams(const Frame& cfa, ColorId pattern, float maxValue) {
                                  std::fabs(2.0f * gHere - g.at(x + 1, y - 1) - g.at(x - 1, y + 1));
                 const float e1 = 0.5f * (diff(x - 1, y - 1) + diff(x + 1, y + 1));
                 const float e2 = 0.5f * (diff(x + 1, y - 1) + diff(x - 1, y + 1));
-                px[2 - s] = gHere + (d1 < d2 ? e1 : d2 < d1 ? e2 : 0.5f * (e1 + e2));
+                px[2 - s] = bound(gHere + (d1 < d2 ? e1 : d2 < d1 ? e2 : 0.5f * (e1 + e2)));
             }
         }
     return out;

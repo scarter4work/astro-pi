@@ -15,12 +15,15 @@ namespace planetary::stack {
 ser::FloatImage LumaForMeasure(const ser::Frame& frame, ser::ColorId color, int normDepth);
 
 // Final-quality colour image, normalised by 2^normDepth - 1.
-//  - Bayer: Hamilton-Adams edge-directed demosaic. Green is interpolated along the
-//    direction of the smaller gradient (with a Laplacian correction from the site's own
-//    channel, held inside the range of the four green neighbours); red and blue are rebuilt from colour differences (R-G, B-G), along the
-//    smoother diagonal at red/blue sites. Exact on any flat colour field (borders
-//    included: edges are mirrored with Bayer parity kept). Interleaved RGB output.
-//  - Mono / RGB: Normalize, unchanged layout.
+//  - Bayer: Hamilton-Adams edge-directed demosaic, interleaved RGB output. Green is
+//    interpolated along the direction of the smaller gradient, with a Laplacian correction
+//    from the site's own channel, held inside the range of the four green neighbours. Red
+//    and blue are rebuilt from colour differences (R-G, B-G), along the smoother diagonal
+//    at red/blue sites. Exact on any flat colour field; edges are mirrored with Bayer
+//    parity kept, so borders included.
+//    Range: every output sample is in [0, M], M = the frame's largest sample / (2^normDepth - 1).
+//    M <= 1 for in-range data; samples above 2^normDepth - 1 keep their value above 1.
+//  - Mono / RGB: Normalize, unchanged layout (no clamping).
 // Throws ser::SerError for the cases LumaForMeasure lists (Bayer frames under 2x2 included).
 ser::FloatImage DemosaicHQ(const ser::Frame& frame, ser::ColorId color, int normDepth);
 
