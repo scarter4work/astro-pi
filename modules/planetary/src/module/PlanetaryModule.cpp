@@ -43,7 +43,7 @@ String PlanetaryModule::Description() const
 {
    // Decoded as UTF-8: String( const char* ) would read any non-ASCII text as ISO-8859-1.
    return String::UTF8ToUTF16( "Planetary imaging for PixInsight. This version provides SERViewer, which opens SER planetary "
-          "video files and uncompressed 8-bit AVI files (such as ASIAIR captures), previews frames, opens a frame as an image "
+          "video files and uncompressed 8-bit greyscale or raw Bayer AVI files (such as ASIAIR captures), previews frames, opens a frame as an image "
           "and can save an AVI as a SER file. "
           "It reads only the video file you choose (and an AVI's .txt sidecar), writes only the SER file you choose, "
           "uses no network and runs no external programs. "

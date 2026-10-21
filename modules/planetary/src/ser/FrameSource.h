@@ -43,10 +43,15 @@ struct AsiairSidecar {
     std::string camera, colourFormat, bayer, flip, gain, exposure, captureArea;
 };
 
+// What became of the `<video>.avi.txt` next to an AVI: none there, there but unreadable
+// (I/O error or no section/key lines), there but over the 64 KiB cap, or parsed.
+enum class SidecarStatus { Absent, Unreadable, TooLarge, Parsed };
+
 struct AviDetails {
     double frameRate = 0;
     std::string bayerSource;
-    std::optional<AsiairSidecar> sidecar;
+    SidecarStatus sidecarStatus = SidecarStatus::Absent;
+    std::optional<AsiairSidecar> sidecar;  // set exactly when sidecarStatus is Parsed
     std::optional<std::string> filenameStart;
     std::string indexKind;
     int64_t droppedFrames = 0;

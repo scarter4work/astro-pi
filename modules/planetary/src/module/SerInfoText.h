@@ -36,15 +36,22 @@ inline std::string ConversionWarning( const std::string& warning )
 // An AVI's effective Bayer pattern and where it came from, for people:
 // "BGGR (sidecar RG, Flip=Vert → BGGR)", "RGGB (chosen)", "none (chosen)". The
 // reader's "none" token (Auto found no pattern) becomes the reason: a sidecar
-// Bayer value it did not recognise, or no pattern to go on at all. UTF-8.
+// Bayer value it did not recognise, a sidecar that could not be read, or no
+// pattern to go on at all. UTF-8.
 inline std::string BayerText( const ser::FileInfo& info )
 {
    const std::string pattern = ser::IsBayer( info.colorId ) ? ser::BayerPatternKeyword( info.colorId ) : "none";
    std::string source = info.avi ? info.avi->bayerSource : std::string();
    if ( source == "none" )
-      source = (info.avi->sidecar && !info.avi->sidecar->bayer.empty())
-                  ? "sidecar value not recognised"
-                  : "no sidecar pattern; choose one under Bayer pattern";
+   {
+      const ser::SidecarStatus status = info.avi->sidecarStatus;
+      if ( info.avi->sidecar && !info.avi->sidecar->bayer.empty() )
+         source = "sidecar value not recognised";
+      else if ( status == ser::SidecarStatus::Unreadable || status == ser::SidecarStatus::TooLarge )
+         source = "sidecar could not be read; choose one under Bayer pattern";
+      else
+         source = "no sidecar pattern; choose one under Bayer pattern";
+   }
    return pattern + " (" + source + ")";
 }
 
@@ -106,7 +113,7 @@ inline std::string InfoText( const std::string& fileNameUtf8, const ser::FileInf
          field( "Camera", avi.sidecar->camera );
          field( "Gain", avi.sidecar->gain );
          field( "Exposure", avi.sidecar->exposure );
-         field( "Flip (sidecar, not applied)", avi.sidecar->flip );
+         field( "Flip (sidecar; image not flipped)", avi.sidecar->flip );
       }
       if ( avi.filenameStart )
          t += "Start: " + *avi.filenameStart + " (from filename, time zone unknown)\n";

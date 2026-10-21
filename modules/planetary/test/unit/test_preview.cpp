@@ -242,7 +242,7 @@ TEST_CASE("info text for an AVI: container, frame rate, Bayer source, sidecar, f
           "Camera: ZWO ASI585MC\n"
           "Gain: 200\n"
           "Exposure: 10ms\n"
-          "Flip (sidecar, not applied): Vert(unimplemented)\n"
+          "Flip (sidecar; image not flipped): Vert(unimplemented)\n"
           "Start: 2026-10-04 03:15:00 (from filename, time zone unknown)\n"
           "Warnings: none");
 }
@@ -281,7 +281,14 @@ TEST_CASE("Bayer source tokens read as text", "[preview][info]") {
     i.avi->sidecar->bayer.clear();
     CHECK(BayerText(i) == "none (no sidecar pattern; choose one under Bayer pattern)");
     i.avi->sidecar.reset();
+    i.avi->sidecarStatus = planetary::ser::SidecarStatus::Absent;
     CHECK(BayerText(i) == "none (no sidecar pattern; choose one under Bayer pattern)");
+    // A sidecar that is there but could not be read (or is over the size cap).
+    for (auto status : {planetary::ser::SidecarStatus::Unreadable, planetary::ser::SidecarStatus::TooLarge}) {
+        i.avi->sidecarStatus = status;
+        CHECK(BayerText(i) == "none (sidecar could not be read; choose one under Bayer pattern)");
+    }
+    i.avi->sidecarStatus = planetary::ser::SidecarStatus::Absent;
     i.avi->bayerSource = "chosen";
     CHECK(BayerText(i) == "none (chosen)");
     i.colorId = ColorId::BayerGBRG;
@@ -323,8 +330,12 @@ TEST_CASE("info text for a SER is unchanged by the AVI fields", "[preview][info]
 TEST_CASE("conversion rewords every 'showing the raw CFA as mono' warning to what it writes", "[preview][info]") {
     const std::string tail = "; showing the raw CFA as mono -- choose the pattern under Bayer pattern";
     const std::string writes = "; the SER will be written as MONO (raw CFA) -- set the Bayer pattern to write a Bayer SER";
-    // No sidecar, a sidecar without a Bayer line, an unrecognised Bayer value.
+    // No sidecar, an unreadable or oversized one, a sidecar without a Bayer line, an
+    // unrecognised Bayer value.
     for (const std::string& reason : {std::string("no Bayer pattern known (no .avi.txt sidecar)"),
+                                     std::string("sidecar a.avi.txt could not be read; no Bayer pattern known"),
+                                     std::string("sidecar a.avi.txt could not be read (larger than 64 KiB); "
+                                                 "no Bayer pattern known"),
                                      std::string("sidecar a.avi.txt has no Bayer value"),
                                      std::string("sidecar Bayer value XY is not recognised")}) {
         INFO(reason);

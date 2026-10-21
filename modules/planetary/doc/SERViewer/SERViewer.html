@@ -22,7 +22,7 @@ th { background: #f3f3f3; }
 This document is installed with the module (doc/tools/SERViewer/).</p>
 
 <p>SERViewer opens SER video files, the format planetary (lucky-imaging) capture programs such as FireCapture and
-SharpCap write, and uncompressed 8-bit AVI files such as ASIAIR captures. An AVI can be saved as a SER file.
+SharpCap write, and uncompressed 8-bit greyscale or raw Bayer AVI files such as ASIAIR captures. An AVI can be saved as a SER file.
 Executing the process globally opens one frame of the video as an ordinary
 PixInsight image window, so every PixInsight tool can be used on it.</p>
 
@@ -93,25 +93,33 @@ block) names the frame.</li>
 
 <h2 id="avi">AVI files</h2>
 <p>SERViewer reads uncompressed 8-bit AVI files: either palettised video whose palette is the identity grey ramp
-(entry <i>i</i> is (<i>i</i>,&nbsp;<i>i</i>,&nbsp;<i>i</i>)), which is what ASIAIR writes, or raw Y800/GREY/Y8 video. Classic AVI files and
+(entry <i>i</i> is (<i>i</i>,&nbsp;<i>i</i>,&nbsp;<i>i</i>)), which is what ASIAIR writes, or raw Y800/GREY/Y8 greyscale video
+(rows padded to a multiple of 4 bytes or not; ffmpeg writes them unpadded). Classic AVI files and
 OpenDML files (larger than 1 GB) both open, and a video is read one frame at a time, never loaded whole. Frames are
 normalised by 255.</p>
 <p>These are refused with a message saying so: compressed video (the codec is named), video that is not 8 bits per
 pixel (for example 16-bit or 24-bit), a palette that is not the identity grey ramp, and files with palette-change
-chunks. Frames the file's index lists but that are missing from the file are dropped, with a warning.</p>
+chunks. Zero-length (dropped) frames are skipped and counted in a warning. At the first bad index entry (one that
+points outside the file, at the wrong size, or back over an earlier frame) that frame and all later ones are dropped,
+with a warning naming the entry. Only the first, middle and last frames' chunk headers are read when the file opens,
+so a bad entry between those checks shows as an error when that frame is displayed.</p>
 
 <h3>Bayer pattern and the ASIAIR sidecar</h3>
 <p>ASIAIR writes a text file next to each capture, <code>&lt;name&gt;.avi.txt</code>. The pattern choice works as follows.</p>
 <ul>
 <li><b>Auto</b> uses the sidecar's <code>Bayer</code> value (RG, GR, GB or BG for RGGB, GRBG, GBRG or BGGR). The sidecar's
-camera name becomes <code>INSTRUME</code>. With no sidecar, or no Bayer value in it, the raw CFA frame opens as mono
-and a warning asks you to choose the pattern.</li>
+camera name becomes <code>INSTRUME</code>. With no sidecar, a sidecar that could not be read, or no Bayer value in it,
+the raw CFA frame opens as mono and a warning says which of these it was and asks you to choose the pattern.</li>
 <li><b>Flip = Vert.</b> When the sidecar says <code>Flip = Vert</code>, Auto uses the pattern rotated by 180&deg; (RGGB becomes
-BGGR, GRBG becomes GBRG), because that is what the frame data of nearly all such captures show. This is an inference,
+BGGR, GRBG becomes GBRG), because that is what the frame data of most such captures show (35 of the 38 measurable
+<code>Flip = Vert</code> files checked). This is an inference,
 and some ASIAIR captures differ. It is always reported with the warning &ldquo;Bayer pattern inferred from Flip=Vert
 (BGGR); some ASIAIR captures are RGGB &ndash; if red and blue look swapped, choose RGGB under Bayer pattern&rdquo; (with the
 patterns actually involved). If red and blue look swapped, choose the other pattern yourself. An explicit choice
 carries no such warning.</li>
+<li><b>Other Flip values.</b> Only <code>None</code> and <code>Vert</code> have been checked against frame data. For any other
+<code>Flip</code> value Auto uses the sidecar's pattern as it stands and warns that this Flip value is unmeasured; if the
+colours look wrong, choose the pattern yourself. The image itself is never flipped.</li>
 <li><b>None (mono)</b> shows the raw CFA frame as one channel.</li>
 <li><b>RGGB, GRBG, GBRG, BGGR</b> use that pattern and override the sidecar.</li>
 </ul>
@@ -127,10 +135,10 @@ button stops the conversion.</p>
 camera. Observer and Telescope are empty.</li>
 <li>Frames are copied in order, as the viewer decodes them (top row first).</li>
 <li><b>No timestamps.</b> The SER has no per-frame timestamp trailer and no UTC time. The start time from the AVI's file
-name goes only into the header's local DateTime, because the ASIAIR file name clock was found to be about an hour off the
-file's own modification time, so it is not presented as UTC.</li>
-<li>The output is written to a temporary <code>.partial</code> file and renamed when complete, so a cancelled or failed
-conversion never leaves a partial file. It cannot overwrite the source file; replacing another existing file asks first. The free
+name goes only into the header's local DateTime, because on the two files checked the ASIAIR file name clock was about
+an hour off the file's own modification time, so it is not presented as UTC.</li>
+<li>The output is written to a temporary <code>.partial</code> file and renamed when complete; SERViewer removes the
+partial file if the conversion fails or is cancelled. It cannot overwrite the source file; replacing another existing file asks first. The free
 space needed is checked before writing starts.</li>
 </ul>
 <p>From a script or process icon, set <code>saveSerPath</code> (and <code>bayerPattern</code> if needed) and execute the process. An

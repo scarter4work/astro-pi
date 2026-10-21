@@ -43,7 +43,7 @@ String SERViewerProcess::Description() const
 {
    return
       "<html>"
-      "<p><b>SERViewer</b> opens planetary video files: SER, and uncompressed 8-bit AVI "
+      "<p><b>SERViewer</b> opens planetary video files: SER, and uncompressed 8-bit greyscale or raw Bayer AVI "
       "(the format is read from the file's content, not its extension).</p>"
       "<p>Execute it globally to open frame <i>frameIndex</i> of <i>filePath</i> as a new 32-bit "
       "image window, samples normalised to [0,1]. Bayer files open debayered (bilinear) unless "

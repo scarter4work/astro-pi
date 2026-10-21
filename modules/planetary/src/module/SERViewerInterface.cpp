@@ -441,7 +441,7 @@ void SERViewerInterface::e_Hide( Control& )
 SERViewerInterface::GUIData::GUIData( SERViewerInterface& w )
 {
    Open_PushButton.SetText( "Open..." );
-   Open_PushButton.SetToolTip( "<p>Choose a planetary video: SER (.ser) or uncompressed 8-bit AVI (.avi). "
+   Open_PushButton.SetToolTip( "<p>Choose a planetary video: SER (.ser) or uncompressed 8-bit greyscale or raw Bayer AVI (.avi). "
                                "Its first frame is shown in the preview.</p>" );
    Open_PushButton.OnClick( (Button::click_event_handler)&SERViewerInterface::e_Click, w );
 

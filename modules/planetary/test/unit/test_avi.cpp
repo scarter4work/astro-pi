@@ -219,6 +219,76 @@ TEST_CASE("Y800 with a positive biHeight is not flipped") {
     for (int f = 0; f < 2; ++f) CheckFrame(avi, f, frames[f]);
 }
 
+TEST_CASE("Y800 rows may be unpadded (ffmpeg) or 4-byte padded at an odd width (Ruling 14)") {
+    const bool unpadded = GENERATE(false, true);
+    const auto index = GENERATE(AviSpec::Idx1, AviSpec::OpenDml, AviSpec::None);
+    INFO((unpadded ? "unpadded" : "padded") << ", index " << IndexName(index));
+    TempDir dir;
+    const std::string p = dir.NewPath(".avi");
+    const auto frames = MakeFrames(13, 5, 4);
+    AviSpec s = Avi(13, 5);
+    s.fourcc = "Y800";
+    s.index = index;
+    s.unpaddedRows = unpadded;
+    WriteAvi(p, s, frames);
+
+    const AviFile avi = AviFile::Open(p);
+    CHECK(avi.Info().frameBytes == 13 * 5);
+    CHECK(avi.Info().frameCount == 4);
+    if (index == AviSpec::None)
+        CHECK(avi.Info().warnings == std::vector<std::string>{"no index; scanned the file for frames"});
+    else
+        CHECK(avi.Info().warnings.empty());
+    for (int f : {3, 0, 2, 1}) CheckFrame(avi, f, frames[f]);
+}
+
+TEST_CASE("Y800: the first entry decides the row layout; a later entry of the other size is invalid") {
+    TempDir dir;
+    const std::string p = dir.NewPath(".avi");
+    const auto frames = MakeFrames(13, 5, 4);
+    AviSpec s = Avi(13, 5);
+    s.fourcc = "Y800";
+    s.unpaddedRows = true;
+    s.corruptIndexEntry = 2;
+    s.corruption = AviSpec::WrongSize;  // 67 bytes
+    WriteAvi(p, s, frames);
+
+    const AviFile avi = AviFile::Open(p);
+    CHECK(avi.Info().frameCount == 2);
+    CHECK(avi.Info().warnings ==
+          std::vector<std::string>{"index entry 2 is invalid (frame chunk is 67 bytes, expected 65); using the first 2 frames"});
+    for (int f = 0; f < 2; ++f) CheckFrame(avi, f, frames[f]);
+}
+
+TEST_CASE("Y800: a first entry of neither size names both") {
+    TempDir dir;
+    const std::string p = dir.NewPath(".avi");
+    AviSpec s = Avi(13, 5);
+    s.fourcc = "Y800";
+    s.corruptIndexEntry = 0;
+    s.corruption = AviSpec::WrongSize;  // 82 bytes
+    WriteAvi(p, s, MakeFrames(13, 5, 2));
+    CHECK(OpenError(p) == "AVI has no usable video frames (index entry 0 is invalid (frame chunk is 82 bytes, "
+                          "expected 65 or 80); using the first 0 frames)");
+}
+
+TEST_CASE("BI_RGB 8-bit rows must be 4-byte padded") {
+    const auto index = GENERATE(AviSpec::Idx1, AviSpec::None);
+    INFO("index " << IndexName(index));
+    TempDir dir;
+    const std::string p = dir.NewPath(".avi");
+    AviSpec s = Avi(13, 5);
+    s.index = index;
+    s.unpaddedRows = true;
+    WriteAvi(p, s, MakeFrames(13, 5, 2));
+    CHECK(OpenError(p) ==
+          (index == AviSpec::None
+               ? "AVI has no usable video frames (video chunk 0 is truncated or malformed (frame chunk is 65 bytes, "
+                 "expected 80); using the first 0 frames)"
+               : "AVI has no usable video frames (index entry 0 is invalid (frame chunk is 65 bytes, expected 80); "
+                 "using the first 0 frames)"));
+}
+
 TEST_CASE("unindexed file is scanned with a warning") {
     const int framesPerRiff = GENERATE(0, 2);
     INFO("framesPerRiff " << framesPerRiff);
@@ -292,7 +362,9 @@ TEST_CASE("bad index offset") {
     const AviFile avi = AviFile::Open(p);
     CHECK(avi.Info().frameCount == 2);
     CHECK(avi.Info().warnings ==
-          std::vector<std::string>{"index entry 2 is invalid; using the first 2 frames"});
+          std::vector<std::string>{corruption == AviSpec::WrongSize
+                                       ? "index entry 2 is invalid (frame chunk is 42 bytes, expected 40); using the first 2 frames"
+                                       : "index entry 2 is invalid; using the first 2 frames"});
     for (int f = 0; f < 2; ++f) CheckFrame(avi, f, frames[f]);
     CHECK_THROWS_AS(avi.ReadFrame(2), SerError);
 }

@@ -75,11 +75,13 @@ cd modules/planetary && cmake -B build -DPCLDIR=$HOME/PCL -DPLANETARY_BUILD_MODU
 bash test/run-probe.sh                  # headless SERViewer.executeGlobal() over synthetic fixtures, slot 96
 bash test/gui-smoke.sh <out-dir>        # real GUI on a private Xvfb, XTest-driven, slot 97; PNGs in <out-dir>
 bash test/run-real-data.sh              # 2026-09-07 Saturn capture from the NAS -> SER fixtures -> probe + GUI smoke (96/97)
-bash modules/planetary/test/run-avi-real.sh   # all NAS AVIs: frames vs ffmpeg, open time, Bayer phase, >1 GB round trip (host-only, needs /mnt/qnap)
+bash test/run-avi-real.sh               # all NAS AVIs via build/test/avi-probe: frames vs ffmpeg, open time, Bayer phase, >1 GB round trip
 ```
-The three scripts sign the module and need `/tmp/.pi_codesign_pass`; without it they print BLOCKED and exit 2
-before touching a settings slot. They test the host build by default; `PLANETARY_SO=build-portable/src/module/Planetary-pxm.so
+run-probe.sh, gui-smoke.sh and run-real-data.sh sign the module and need `/tmp/.pi_codesign_pass`; without it they print
+BLOCKED and exit 2 before touching a settings slot. They test the host build by default; `PLANETARY_SO=build-portable/src/module/Planetary-pxm.so
 PLANETARY_MAKE_FIXTURES=build-portable/test/make-fixtures` runs them against the container build (`tools/build-env/build-modules.sh`).
+run-avi-real.sh neither signs nor launches PixInsight: it runs the PCL-free reader (`build/test/avi-probe`, host build)
+against ffmpeg/ffprobe and needs `/mnt/qnap`, ffmpeg, ffprobe and numpy; the NAS is only read.
 
 ## Distribution URL
 `https://raw.githubusercontent.com/scarter4work/astro-pi/main/repository/`

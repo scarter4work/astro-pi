@@ -109,8 +109,7 @@ TEST_CASE("OpenVideo: a sidecar without a Bayer line warns with its name") {
 }
 
 TEST_CASE("ParseAsiairSidecar reads the real sample") {
-    std::vector<std::string> w;
-    const auto sc = ParseAsiairSidecar(kSample, w, "a.avi.txt");
+    const auto sc = ParseAsiairSidecar(kSample);
     REQUIRE(sc.has_value());
     CHECK(sc->camera == "ZWO ASI2400MC Pro");
     CHECK(sc->colourFormat == "RAW8");
@@ -119,12 +118,10 @@ TEST_CASE("ParseAsiairSidecar reads the real sample") {
     CHECK(sc->gain == "273");
     CHECK(sc->exposure == "0.00045 Sec");
     CHECK(sc->captureArea == "1280 * 960");
-    CHECK(w.empty());
 }
 
 TEST_CASE("ParseAsiairSidecar handles CRLF, no spaces, unknown keys") {
-    std::vector<std::string> w;
-    const auto sc = ParseAsiairSidecar("[Cam X]\r\nBayer=GB\r\nFoo = bar\r\nGain =  5  \r\n", w);
+    const auto sc = ParseAsiairSidecar("[Cam X]\r\nBayer=GB\r\nFoo = bar\r\nGain =  5  \r\n");
     REQUIRE(sc.has_value());
     CHECK(sc->camera == "Cam X");
     CHECK(sc->bayer == "GB");
@@ -132,9 +129,34 @@ TEST_CASE("ParseAsiairSidecar handles CRLF, no spaces, unknown keys") {
 }
 
 TEST_CASE("ParseAsiairSidecar unparseable text") {
-    std::vector<std::string> w;
-    CHECK_FALSE(ParseAsiairSidecar("hello world\nnothing here\n", w, "x.avi.txt").has_value());
-    CHECK(Has(w, "sidecar x.avi.txt could not be read; ignored"));
+    CHECK_FALSE(ParseAsiairSidecar("hello world\nnothing here\n").has_value());
+    CHECK_FALSE(ParseAsiairSidecar("").has_value());
+}
+
+TEST_CASE("ResolveBayer: an unreadable or oversized sidecar is never 'no sidecar'") {
+    for (auto [status, why] : {std::pair{SidecarStatus::Unreadable, std::string("could not be read")},
+                               std::pair{SidecarStatus::TooLarge,
+                                         std::string("could not be read (larger than 64 KiB)")}}) {
+        INFO(why);
+        Resolved r;
+        r.id = ResolveBayer(BayerChoice::Auto, std::nullopt, r.source, r.warnings, "x.avi.txt", status);
+        CHECK(r.id == ColorId::Mono);
+        CHECK(r.source == "none");
+        CHECK(r.warnings == std::vector<std::string>{"sidecar x.avi.txt " + why + "; no Bayer pattern known" + kTail});
+
+        // An explicit choice still says the sidecar was not read.
+        r = Resolved();
+        r.id = ResolveBayer(BayerChoice::RGGB, std::nullopt, r.source, r.warnings, "x.avi.txt", status);
+        CHECK(r.id == ColorId::BayerRGGB);
+        CHECK(r.source == "chosen");
+        CHECK(r.warnings == std::vector<std::string>{"sidecar x.avi.txt " + why + "; ignored"});
+    }
+    // A parsed sidecar wins over the status argument.
+    Resolved r;
+    r.id = ResolveBayer(BayerChoice::Auto, Sc("RG", "None"), r.source, r.warnings, "x.avi.txt",
+                        SidecarStatus::Unreadable);
+    CHECK(r.id == ColorId::BayerRGGB);
+    CHECK(r.warnings.empty());
 }
 
 TEST_CASE("ResolveBayer: Flip=Vert is an inference and says so (Ruling 10)") {
@@ -157,6 +179,27 @@ TEST_CASE("ResolveBayer: Flip=Vert is an inference and says so (Ruling 10)") {
     CHECK(Resolve(BayerChoice::Auto, Sc("RG", "None")).warnings.empty());
     CHECK(Resolve(BayerChoice::RGGB, Sc("RG", "Vert(unimplemented)")).warnings.empty());
     CHECK(Resolve(BayerChoice::BGGR, Sc("RG", "Vert(unimplemented)")).warnings.empty());
+}
+
+TEST_CASE("ResolveBayer: a Flip other than None/Vert keeps the sidecar pattern and says it is unmeasured (Ruling 15)") {
+    auto r = Resolve(BayerChoice::Auto, Sc("RG", "Horiz"));
+    CHECK(r.id == ColorId::BayerRGGB);
+    CHECK(r.source == "sidecar");
+    CHECK(r.warnings == std::vector<std::string>{
+                            "sidecar Flip=Horiz is unmeasured; using RGGB as the sidecar says -- if colours look "
+                            "wrong, choose the pattern under Bayer pattern"});
+
+    r = Resolve(BayerChoice::Auto, Sc("GB", "Both"));
+    CHECK(r.id == ColorId::BayerGBRG);
+    CHECK(r.source == "sidecar");
+    CHECK(r.warnings == std::vector<std::string>{
+                            "sidecar Flip=Both is unmeasured; using GBRG as the sidecar says -- if colours look "
+                            "wrong, choose the pattern under Bayer pattern"});
+
+    // Measured or absent Flip values, and an explicit choice, carry no such warning.
+    CHECK(Resolve(BayerChoice::Auto, Sc("RG", "None")).warnings.empty());
+    CHECK(Resolve(BayerChoice::Auto, Sc("RG", "")).warnings.empty());
+    CHECK(Resolve(BayerChoice::GRBG, Sc("RG", "Horiz")).warnings.empty());
 }
 
 TEST_CASE("ResolveBayer table") {
@@ -231,6 +274,7 @@ TEST_CASE("OpenVideo reads the sidecar next to an AVI") {
     REQUIRE(info.avi.has_value());
     CHECK(info.avi->bayerSource == kArrowBGGR);
     REQUIRE(info.avi->sidecar.has_value());
+    CHECK(info.avi->sidecarStatus == SidecarStatus::Parsed);
     CHECK(info.avi->sidecar->gain == "90");
     CHECK_FALSE(info.avi->filenameStart.has_value());
     // The only warning: the Flip=Vert pattern is an inference (Ruling 10).
@@ -277,13 +321,40 @@ TEST_CASE("OpenVideo ignores an unreadable or oversized sidecar") {
 
     WriteText(p + ".txt", "garbage only\n");
     auto src = OpenVideo(p);
-    CHECK(Has(src->Info().warnings, "sidecar " + name + " could not be read; ignored"));
     CHECK_FALSE(src->Info().avi->sidecar.has_value());
+    CHECK(src->Info().avi->sidecarStatus == SidecarStatus::Unreadable);
+    CHECK(src->Info().avi->bayerSource == "none");
+    CHECK_FALSE(Has(src->Info().warnings, kNoBayer));  // a sidecar exists; "no .avi.txt sidecar" is false
+    CHECK(src->Info().warnings ==
+          std::vector<std::string>{"sidecar " + name + " could not be read; no Bayer pattern known" + kTail});
+    src = OpenVideo(p, BayerChoice::GBRG);
+    CHECK(src->Info().colorId == ColorId::BayerGBRG);
+    CHECK(src->Info().warnings == std::vector<std::string>{"sidecar " + name + " could not be read; ignored"});
 
     WriteText(p + ".txt", std::string(65 * 1024, 'x'));
     src = OpenVideo(p);
     CHECK_FALSE(src->Info().avi->sidecar.has_value());
-    CHECK(Has(src->Info().warnings, "sidecar " + name + " is larger than 64 KiB; ignored"));
+    CHECK(src->Info().avi->sidecarStatus == SidecarStatus::TooLarge);
+    CHECK_FALSE(Has(src->Info().warnings, kNoBayer));
+    CHECK(src->Info().warnings == std::vector<std::string>{"sidecar " + name +
+                                                           " could not be read (larger than 64 KiB); no Bayer "
+                                                           "pattern known" + kTail});
+
+    // Present but not readable by this user (an I/O failure, not a parse failure).
+    WriteText(p + ".txt", "[ZWO X]\nBayer = RG\n");
+    std::filesystem::permissions(p + ".txt", std::filesystem::perms::none);
+    if (!std::ifstream(p + ".txt")) {
+        src = OpenVideo(p);
+        CHECK(src->Info().avi->sidecarStatus == SidecarStatus::Unreadable);
+        CHECK(src->Info().warnings ==
+              std::vector<std::string>{"sidecar " + name + " could not be read; no Bayer pattern known" + kTail});
+    }
+    std::filesystem::permissions(p + ".txt", std::filesystem::perms::owner_read | std::filesystem::perms::owner_write);
+
+    std::filesystem::remove(p + ".txt");
+    src = OpenVideo(p);
+    CHECK(src->Info().avi->sidecarStatus == SidecarStatus::Absent);
+    CHECK(src->Info().warnings == std::vector<std::string>{kNoBayer});
 }
 
 TEST_CASE("ResolveBayer with an unrecognised Bayer value warns once, specifically") {
@@ -295,15 +366,13 @@ TEST_CASE("ResolveBayer with an unrecognised Bayer value warns once, specificall
 }
 
 TEST_CASE("ParseAsiairSidecar strips a UTF-8 BOM") {
-    std::vector<std::string> w;
-    const auto sc = ParseAsiairSidecar("\xEF\xBB\xBF[ZWO BOM]\nBayer = RG\n", w, "x.avi.txt");
+    const auto sc = ParseAsiairSidecar("\xEF\xBB\xBF[ZWO BOM]\nBayer = RG\n");
     REQUIRE(sc.has_value());
     CHECK(sc->camera == "ZWO BOM");
     CHECK(sc->bayer == "RG");
-    CHECK(w.empty());
 }
 
-TEST_CASE("OpenVideo keeps the instrument when the sidecar has no camera") {
+TEST_CASE("OpenVideo leaves the instrument empty when the sidecar has no camera") {
     TempDir dir;
     const std::string p = dir.NewPath(".avi");
     WriteAvi(p, Avi(8, 6), Frames(8, 6, 1));

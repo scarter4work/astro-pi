@@ -24,9 +24,7 @@ int Num(const std::string& s, size_t pos, size_t n) { return std::stoi(s.substr(
 
 }  // namespace
 
-std::optional<AsiairSidecar> ParseAsiairSidecar(const std::string& text,
-                                                std::vector<std::string>& warnings,
-                                                const std::string& name) {
+std::optional<AsiairSidecar> ParseAsiairSidecar(const std::string& text) {
     AsiairSidecar sc;
     const std::string body = text.compare(0, 3, "\xEF\xBB\xBF") == 0 ? text.substr(3) : text;
     bool sawSection = false, sawKey = false;
@@ -53,16 +51,21 @@ std::optional<AsiairSidecar> ParseAsiairSidecar(const std::string& text,
         else if (key == "Exposure") sc.exposure = value;
         else if (key == "Capture Area Size") sc.captureArea = value;
     }
-    if (!sawSection && !sawKey) {
-        warnings.push_back("sidecar " + name + " could not be read; ignored");
-        return std::nullopt;
-    }
+    if (!sawSection && !sawKey) return std::nullopt;
     return sc;
 }
 
 ColorId ResolveBayer(BayerChoice choice, const std::optional<AsiairSidecar>& sidecar,
                      std::string& source, std::vector<std::string>& warnings,
-                     const std::string& sidecarName) {
+                     const std::string& sidecarName, SidecarStatus status) {
+    const std::string named = sidecarName.empty() ? std::string("the sidecar") : "sidecar " + sidecarName;
+    // A sidecar that is there but unusable: say so, whatever the choice. Under Auto it is
+    // also why no pattern is known, in one warning (never "no .avi.txt sidecar").
+    std::string unreadable;
+    if (!sidecar && status == SidecarStatus::Unreadable) unreadable = named + " could not be read";
+    if (!sidecar && status == SidecarStatus::TooLarge) unreadable = named + " could not be read (larger than 64 KiB)";
+    if (!unreadable.empty() && choice != BayerChoice::Auto) warnings.push_back(unreadable + "; ignored");
+
     switch (choice) {
         case BayerChoice::None: source = "chosen"; return ColorId::Mono;
         case BayerChoice::RGGB: source = "chosen"; return ColorId::BayerRGGB;
@@ -89,12 +92,12 @@ ColorId ResolveBayer(BayerChoice choice, const std::optional<AsiairSidecar>& sid
     }
     if (found < 0) {
         source = "none";
-        if (!sidecar)
+        if (!unreadable.empty())
+            warnings.push_back(unreadable + "; no Bayer pattern known" + kRawCfaAsMonoTail);
+        else if (!sidecar)
             warnings.push_back(std::string("no Bayer pattern known (no .avi.txt sidecar)") + kRawCfaAsMonoTail);
         else
-            warnings.push_back((sidecarName.empty() ? std::string("the sidecar")
-                                                    : "sidecar " + sidecarName) +
-                               " has no Bayer value" + kRawCfaAsMonoTail);
+            warnings.push_back(named + " has no Bayer value" + kRawCfaAsMonoTail);
         return ColorId::Mono;
     }
 
@@ -115,6 +118,10 @@ ColorId ResolveBayer(BayerChoice choice, const std::optional<AsiairSidecar>& sid
                            " under Bayer pattern");
         return ids[rotated];
     }
+    // Only None and Vert were measured (Ruling 15): any other Flip keeps the sidecar's pattern.
+    if (!sidecar->flip.empty() && sidecar->flip != "None")
+        warnings.push_back("sidecar Flip=" + sidecar->flip + " is unmeasured; using " + patterns[found] +
+                           " as the sidecar says -- if colours look wrong, choose the pattern under Bayer pattern");
     source = "sidecar";
     return ids[found];
 }

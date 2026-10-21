@@ -39,6 +39,7 @@ struct AviSpec {
     bool strhRate = true;               // false: strh rate/scale 0, so avih carries the frame rate
     std::string segmentForm = "AVIX";   // RIFF form of the segments after the first
     bool asiairAvixSize = false;        // segment 1 RIFF and movi sizes 8 too large (ASIAIR)
+    bool unpaddedRows = false;          // rows not padded to 4 bytes (Y800 as ffmpeg writes it)
 };
 
 namespace avi_detail {
@@ -86,7 +87,7 @@ inline void WriteAvi(const std::string& path, const AviSpec& s,
     using namespace avi_detail;
     const int bytesPerPixel = s.bitCount / 8;
     const size_t rowBytes = static_cast<size_t>(s.width) * bytesPerPixel;
-    const size_t stride = (rowBytes + 3) & ~size_t(3);
+    const size_t stride = s.unpaddedRows ? rowBytes : (rowBytes + 3) & ~size_t(3);
     const uint32_t frameBytes = static_cast<uint32_t>(stride * s.height);
     const int n = static_cast<int>(topDownFrames.size());
     const int perRiff = s.framesPerRiff > 0 ? s.framesPerRiff : (n > 0 ? n : 1);

@@ -30,8 +30,10 @@ struct StreamIds {
 // identity grey palette, or Y800/GREY/Y8. The header and index are untrusted: every
 // offset is 64-bit and every size is checked against the file before allocation. Open
 // builds the frame offset table from the index (OpenDML indx -> ix##, else idx1, else a
-// linear movi scan) and never reads frame data. Index entries are checked arithmetically
-// at open (inside the file, padded frame size, ascending, non-overlapping) and the chunk
+// linear movi scan) and never reads frame data. BI_RGB rows are padded to 4 bytes; Y800
+// rows may be unpadded (as ffmpeg writes them) or padded, decided by the first index entry's
+// size (Ruling 14). Index entries are checked arithmetically
+// at open (inside the file, frame chunk size, ascending, non-overlapping) and the chunk
 // headers of the first, middle and last frames are read; ReadFrame verifies each frame's
 // own chunk header in the same read as its data. Palette-change chunks are an error: the
 // scan, idx1 and the gap before frame 0 are checked at open (every gap when strh declares
@@ -78,7 +80,7 @@ private:
     mutable std::ifstream stream_;
     FileInfo info_;
     int64_t fileSize_ = 0;
-    int64_t stride_ = 0;      // DIB row bytes, padded to 4
+    int64_t stride_ = 0;      // row bytes in a frame chunk: padded to 4 (BI_RGB), or as the file has them (Y800)
     bool bottomUp_ = false;   // BI_RGB with biHeight > 0 (YUV fourccs are always top-down)
     avi_detail::StreamIds ids_;
     std::vector<int64_t> frameData_;   // file offset of each usable frame's chunk data

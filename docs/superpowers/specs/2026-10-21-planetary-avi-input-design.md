@@ -111,9 +111,13 @@ index treated as untrusted (same validation discipline as increment 1).
   is rejected with the first differing entries in the message. Anything else (compressed
   codecs, 16/24/32-bit) → "not supported" error naming the fourcc/bit count. A palette-change
   chunk (`xxpc`) → error.
-- **Rows:** DIB rows padded to 4 bytes; `biHeight > 0` = bottom-up (flip to top-down),
-  `< 0` = top-down. Output is top-down like the SER reader. The sidecar `Flip` field is
-  recorded in the info block and **not** applied.
+- **Rows:** BI_RGB (DIB) rows padded to 4 bytes; `biHeight > 0` = bottom-up (flip to top-down),
+  `< 0` = top-down. Y800/GREY/`Y8  ` are YUV, not DIBs: always top-down, and rows may be
+  unpadded (ffmpeg) or 4-byte padded — the first index entry's size decides (exactly W×H →
+  unpadded, the padded size → padded, anything else → the invalid-entry path; Ruling 14). A
+  size mismatch says "frame chunk is <N> bytes, expected <M>". Output is top-down like the SER
+  reader. The sidecar `Flip` field is recorded in the info block ("Flip (sidecar; image not
+  flipped)") and the image is **not** flipped.
 - **Frame index:** OpenDML `indx` → `ix##` standard indexes when present; else `idx1`; else a
   linear scan of the `movi` lists with a warning ("no index; scanned"). Zero-length video
   chunks (dropped frames) are skipped and counted in a warning. An index entry that points
@@ -132,9 +136,16 @@ index treated as untrusted (same validation discipline as increment 1).
   Flip=Vert (BGGR); some ASIAIR captures are RGGB -- if red and blue look swapped, choose
   RGGB under Bayer pattern" (the inferred and the sidecar's own pattern substituted). An
   explicit choice gives no such warning. `Flip = None` or absent uses the sidecar value as is.
+  Any other non-empty `Flip` (unmeasured; Ruling 15) also uses the sidecar value as is, with the
+  warning "sidecar Flip=<x> is unmeasured; using <PAT> as the sidecar says -- if colours look
+  wrong, choose the pattern under Bayer pattern".
   The user can override with the combo.
   The section name gives `INSTRUME`. A
-  sidecar that exists but cannot be parsed is a warning, not an error. `Colour Format`
+  sidecar that exists but cannot be read (I/O error, no section or key lines, or over 64 KiB)
+  is a warning, not an error, and is never reported as "no sidecar": under Auto the warning is
+  "sidecar <name> could not be read[ (larger than 64 KiB)]; no Bayer pattern known; showing
+  the raw CFA as mono -- choose the pattern under Bayer pattern", with an explicit choice
+  "sidecar <name> could not be read; ignored". `Colour Format`
   other than RAW8 with a Bayer value → warning, the Bayer value is still used.
 - **Values:** 8-bit, normalised by 255. `INSTRUME` from the sidecar; `BAYERPAT` and
   `HISTORY` as for SER.

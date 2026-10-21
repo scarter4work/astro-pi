@@ -100,21 +100,26 @@ private:
 
 // Collects usable frame offsets in file order. Entry numbers count every video entry,
 // zero-length ones included. The first invalid entry ends the table. Index entries are
-// checked arithmetically only (inside the file, padded frame size, ascending, no overlap):
+// checked arithmetically only (inside the file, frame chunk size, ascending, no overlap):
 // reading every chunk header would cost one NAS disk seek per frame (18 s for 3618 frames,
 // measured). SpotCheck reads three headers; ReadFrame verifies each frame's own header.
+// `unpaddedBytes` > 0 (Y800 at a width that is not a multiple of 4) allows a second frame
+// size: the first non-empty entry decides between it and `chunkBytes` (Ruling 14).
 class FrameTable {
 public:
-    FrameTable(int64_t fileSize, int64_t chunkBytes)
-        : fileSize_(fileSize), chunkBytes_(chunkBytes), maxEntries_(fileSize / 8) {}
+    FrameTable(int64_t fileSize, int64_t chunkBytes, int64_t unpaddedBytes = 0)
+        : fileSize_(fileSize), chunkBytes_(chunkBytes), unpaddedBytes_(unpaddedBytes),
+          maxEntries_(fileSize / 8) {}
 
     // An index entry: `dataPos` is where the chunk data starts. False = stop.
     bool AddIndexed(int64_t dataPos, int64_t size) {
         if (entries_ >= maxEntries_) return Broken();  // more entries than the file can hold
         const int64_t entry = entries_++;
         if (size == 0) return Drop(entry);
-        const bool valid = size == chunkBytes_ && dataPos >= 8 && dataPos >= nextFree_ &&
-                           dataPos <= fileSize_ - size;
+        if (!SizeFits(size))
+            return Stop("index entry " + Num(entry) + " is invalid (" + SizeMismatch(size) + "); using the first " +
+                        Num(Count()) + " frames");
+        const bool valid = dataPos >= 8 && dataPos >= nextFree_ && dataPos <= fileSize_ - size;
         if (!valid) return Invalid(entry);
         Push(dataPos, entry);
         return true;
@@ -124,12 +129,16 @@ public:
     bool AddScanned(const Chunk& c, bool complete) {
         const int64_t entry = entries_++;
         if (complete && c.size == 0) return Drop(entry);
-        if (!complete || c.size != chunkBytes_)
-            return Stop("video chunk " + Num(entry) + " is truncated or malformed; using the first " +
+        if (!complete || !SizeFits(c.size))
+            return Stop("video chunk " + Num(entry) + " is truncated or malformed" +
+                        (complete ? " (" + SizeMismatch(c.size) + ")" : std::string()) + "; using the first " +
                         Num(Count()) + " frames");
         Push(c.pos + 8, entry);
         return true;
     }
+
+    // Bytes in every frame chunk (once the first entry has decided the Y800 row layout).
+    int64_t ChunkBytes() const { return chunkBytes_; }
 
     // An index structure (ix## chunk) is unreadable: frames from here on are lost.
     bool Broken() { return Invalid(entries_); }
@@ -159,6 +168,28 @@ public:
     std::vector<int64_t> TakeEntries() { return std::move(entryOf_); }
 
 private:
+    // The first non-empty entry settles the frame size (unpadded or padded Y800 rows); every
+    // entry must then match it.
+    bool SizeFits(int64_t size) {
+        if (!decided_) {
+            decided_ = true;
+            if (unpaddedBytes_ > 0 && size == unpaddedBytes_) {
+                chunkBytes_ = unpaddedBytes_;
+                return true;
+            }
+            if (size == chunkBytes_) {
+                unpaddedBytes_ = 0;
+                return true;
+            }
+            return false;  // unpaddedBytes_ kept, so the message names both sizes
+        }
+        return size == chunkBytes_;
+    }
+    std::string SizeMismatch(int64_t size) const {
+        return "frame chunk is " + Num(size) + " bytes, expected " +
+               (unpaddedBytes_ > 0 && unpaddedBytes_ != chunkBytes_ ? Num(unpaddedBytes_) + " or " : std::string()) +
+               Num(chunkBytes_);
+    }
     // A zero-length (dropped) frame; a run longer than the cap ends the table.
     bool Drop(int64_t entry) {
         if (++run_ > AviFile::kMaxDroppedRun)
@@ -182,8 +213,9 @@ private:
         return false;
     }
 
-    int64_t fileSize_, chunkBytes_, maxEntries_;
+    int64_t fileSize_, chunkBytes_, unpaddedBytes_, maxEntries_;
     int64_t entries_ = 0, dropped_ = 0, run_ = 0, nextFree_ = 0;
+    bool decided_ = false;
     bool stopped_ = false;
     std::string stopWarning_;
     std::vector<int64_t> offsets_;
@@ -488,8 +520,10 @@ AviFile AviFile::Open(const std::string& path) {
     // BITMAPINFOHEADER: an RGB DIB with biHeight > 0 is bottom-up; YUV formats (Y800 and kin)
     // are always top-down whatever the sign.
     f.bottomUp_ = biRgb && biHeight > 0;
-    f.stride_ = (width + 3) & ~int64_t(3);
-    const int64_t chunkBytes = f.stride_ * height;
+    // An RGB DIB pads each row to 4 bytes. Y800 and kin are YUV, not DIBs: ffmpeg writes
+    // their rows unpadded, other writers pad them -- the first index entry decides (Ruling 14).
+    const int64_t paddedChunk = ((width + 3) & ~int64_t(3)) * height;
+    const int64_t unpaddedChunk = grey && width % 4 != 0 ? width * height : 0;
 
     FileInfo& info = f.info_;
     Header& h = info.header;
@@ -520,7 +554,7 @@ AviFile AviFile::Open(const std::string& path) {
     }
 
     // ---- frame table: indx -> ix##, else idx1, else a scan of the movi lists
-    FrameTable table(f.fileSize_, chunkBytes);
+    FrameTable table(f.fileSize_, paddedChunk, unpaddedChunk);
     bool indexed = false;
     if (vs.indx) {
         std::string why;
@@ -533,7 +567,7 @@ AviFile AviFile::Open(const std::string& path) {
                                            : table.Dropped() > 0 ? Num(table.Dropped()) + " zero-length entries"
                                                                  : std::string("OpenDML index has 0 entries");
                 info.warnings.push_back("OpenDML indx gave no usable frames (" + reason + "); not used");
-                table = FrameTable(f.fileSize_, chunkBytes);
+                table = FrameTable(f.fileSize_, paddedChunk, unpaddedChunk);
             } else {
                 details.indexKind = "OpenDML indx";
                 indexed = true;
@@ -556,8 +590,9 @@ AviFile AviFile::Open(const std::string& path) {
         if (table.Count() > 0) CheckGap(io, movi.pos + 12, table.Offsets()[0] - 8, vs.ids, 0);
         if (U32(vs.strh + 8) & kPalChangesFlag) {
             const std::vector<int64_t>& o = table.Offsets();
+            const int64_t chunk = table.ChunkBytes();
             for (size_t k = 1; k < o.size(); ++k)
-                CheckGap(io, o[k - 1] + chunkBytes + (chunkBytes & 1), o[k] - 8, vs.ids, static_cast<int64_t>(k));
+                CheckGap(io, o[k - 1] + chunk + (chunk & 1), o[k] - 8, vs.ids, static_cast<int64_t>(k));
             f.allGapsChecked_ = true;
         }
     } else {
@@ -578,6 +613,7 @@ AviFile AviFile::Open(const std::string& path) {
         throw SerError("AVI has no usable video frames" +
                        (table.Stopped() ? " (" + table.StopWarning() + ")" : std::string()));
 
+    f.stride_ = table.ChunkBytes() / height;
     info.frameCount = table.Count();
     h.frameCount = static_cast<int32_t>(std::min<int64_t>(info.frameCount, INT32_MAX));
     details.droppedFrames = table.Dropped();

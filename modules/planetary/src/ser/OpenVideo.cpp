@@ -25,23 +25,21 @@ void ApplyAviContext(AviFile& avi, const std::string& path, BayerChoice bayer) {
     const std::string sidecarName = p.filename().string() + ".txt";
     std::error_code ec;
     if (std::filesystem::is_regular_file(sidecarPath, ec)) {
+        d.sidecarStatus = SidecarStatus::Unreadable;
         const auto size = std::filesystem::file_size(sidecarPath, ec);
-        if (ec) {
-            info.warnings.push_back("sidecar " + sidecarName + " could not be read; ignored");
-        } else if (size > static_cast<uintmax_t>(kMaxSidecarBytes)) {
-            info.warnings.push_back("sidecar " + sidecarName + " is larger than 64 KiB; ignored");
-        } else {
+        if (!ec && size > static_cast<uintmax_t>(kMaxSidecarBytes)) {
+            d.sidecarStatus = SidecarStatus::TooLarge;
+        } else if (!ec) {
             std::ifstream f(sidecarPath, std::ios::binary);
             const std::string text((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
-            if (!f && !f.eof())
-                info.warnings.push_back("sidecar " + sidecarName + " could not be read; ignored");
-            else
-                d.sidecar = ParseAsiairSidecar(text, info.warnings, sidecarName);
+            if (f || f.eof()) d.sidecar = ParseAsiairSidecar(text);
+            if (d.sidecar) d.sidecarStatus = SidecarStatus::Parsed;
         }
     }
 
     d.filenameStart = FilenameStart(p.filename().string());
-    info.colorId = ResolveBayer(bayer, d.sidecar, d.bayerSource, info.warnings, sidecarName);
+    // ResolveBayer words every sidecar warning, so an unreadable sidecar is never "no sidecar".
+    info.colorId = ResolveBayer(bayer, d.sidecar, d.bayerSource, info.warnings, sidecarName, d.sidecarStatus);
 
     if (d.sidecar) {
         if (!d.sidecar->camera.empty()) info.header.instrument = d.sidecar->camera;

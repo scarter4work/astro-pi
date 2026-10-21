@@ -1,7 +1,7 @@
 # Planetary PixInsight Module
 
 Planetary: a SER and AVI video viewer for PixInsight, the first step toward lucky-imaging stacking. Its one process, **SERViewer**, opens SER video files
-(as written by planetary capture programs such as FireCapture and SharpCap) and uncompressed 8-bit AVI files (such as ASIAIR captures, including OpenDML files over 1 GB): it shows any frame in a
+(as written by planetary capture programs such as FireCapture and SharpCap) and uncompressed 8-bit greyscale or raw Bayer AVI files (such as ASIAIR captures, including OpenDML files over 1 GB): it shows any frame in a
 preview with a frame slider and an info block, and opens the selected frame as an ordinary 32-bit PixInsight
 image, debayered (bilinear) or as the raw CFA mosaic. For an AVI you pick the Bayer pattern (or let the ASIAIR
 sidecar decide), and Save as SER... writes the AVI out as a SER file. It reads only the video file you choose (and an AVI's
