@@ -18,7 +18,8 @@ std::optional<AsiairSidecar> ParseAsiairSidecar(const std::string& text);
 // tail (worded for viewing); a caller that converts swaps the tail for what it writes.
 // Reasons: "no Bayer pattern known (no .avi.txt sidecar)", "sidecar <name> could not be
 // read[ (larger than 64 KiB)]; no Bayer pattern known", "sidecar <name> has no Bayer value",
-// "sidecar Bayer value <v> is not recognised".
+// "sidecar Bayer value <v> is not recognised", "sidecar path <name> is not a file; ignored;
+// no Bayer pattern known".
 inline constexpr char kRawCfaAsMonoTail[] =
     "; showing the raw CFA as mono -- choose the pattern under Bayer pattern";
 
@@ -47,7 +48,8 @@ ColorId ResolveBayer(BayerChoice choice, const std::optional<AsiairSidecar>& sid
 // the [SERViewer] section as "no camera", writtenBySERViewer; ResolveBayer's source is
 // "sidecar (SERViewer)"). Throws SerError -- and writes nothing -- when the sidecar already
 // exists ("<name> already exists; SERViewer never overwrites a sidecar"; a symbolic link counts)
-// or `pattern` is not one of the four Bayer ids. Writes `<target>.partial`, then renames it; on
+// or `pattern` is not one of the four Bayer ids. Writes `<target>.partial`, then publishes it by hard link
+// (PublishPartial: atomic no-replace; check + rename only without hard links); on
 // any failure the partial is removed and the SerError names the path and the OS reason. A
 // symbolic link or other non-regular file at the partial path is refused and left alone, never
 // written through (CreatePartialFile).

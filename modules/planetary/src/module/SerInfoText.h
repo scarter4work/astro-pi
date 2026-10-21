@@ -52,6 +52,8 @@ inline std::string BayerText( const ser::FileInfo& info )
          source = "sidecar value not recognised";
       else if ( status == ser::SidecarStatus::Unreadable || status == ser::SidecarStatus::TooLarge )
          source = "sidecar could not be read; choose one under Bayer pattern";
+      else if ( status == ser::SidecarStatus::NotAFile )
+         source = "sidecar path is not a file; choose one under Bayer pattern";
       else
          source = "no sidecar pattern; choose one under Bayer pattern";
    }

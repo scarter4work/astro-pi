@@ -45,9 +45,10 @@ struct AsiairSidecar {
     bool writtenBySERViewer = false;
 };
 
-// What became of the `<video>.avi.txt` next to an AVI: none there, there but unreadable
+// What became of the `<video>.avi.txt` next to an AVI: none there (nothing at that path), there
+// but not a file (a directory, FIFO or dangling link: NotAFile, never opened), there but unreadable
 // (I/O error or no section/key lines), there but over the 64 KiB cap, or parsed.
-enum class SidecarStatus { Absent, Unreadable, TooLarge, Parsed };
+enum class SidecarStatus { Absent, Unreadable, TooLarge, Parsed, NotAFile };
 
 struct AviDetails {
     double frameRate = 0;

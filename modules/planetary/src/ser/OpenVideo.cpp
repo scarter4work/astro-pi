@@ -35,6 +35,9 @@ void ApplyAviContext(AviFile& avi, const std::string& path, BayerChoice bayer) {
             if (f || f.eof()) d.sidecar = ParseAsiairSidecar(text);
             if (d.sidecar) d.sidecarStatus = SidecarStatus::Parsed;
         }
+    } else if (std::filesystem::exists(std::filesystem::symlink_status(sidecarPath, ec))) {
+        // Something is there (directory, FIFO, a link leading nowhere): not opened, not absent.
+        d.sidecarStatus = SidecarStatus::NotAFile;
     }
 
     d.filenameStart = FilenameStart(p.filename().string());

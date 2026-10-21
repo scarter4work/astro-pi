@@ -261,15 +261,20 @@ Decided rules:
   when the target exists, symbolic links included ("<name> already exists; SERViewer never
   overwrites a sidecar"), or when the pattern is not one of the four Bayer ids. It writes
   `<target>.partial` then renames; on failure it removes the partial and the error names
-  the path and the OS reason. The existence check runs before writing and again just before the
-  rename; nothing is locked between that check and the rename.
+  the path and the OS reason. The existence check runs before writing; the publish is a hard link
+  (`link`, which refuses atomically when anything is at the target), and only on a filesystem
+  without hard links (EPERM/EOPNOTSUPP/ENOSYS/EXDEV, e.g. some CIFS mounts) a re-check + rename,
+  where a sidecar created in that instant is the one race left (`PublishPartial`).
 - **Reading it back:** `ParseAsiairSidecar` treats a `[SERViewer]` section as no camera
   (`camera` empty, `writtenBySERViewer` set), so no `INSTRUME` comes from it. `ResolveBayer`
   reports the source `sidecar (SERViewer)`, and the info block shows
   "Bayer: <PAT> (sidecar written by SERViewer)".
 - **Interface:** a `Save pattern...` button sits on the Bayer row, right of the combo. It is
-  visible only while an AVI with no sidecar is open (the reader's `SidecarStatus::Absent`), and
-  enabled only when the combo holds RGGB/GRBG/GBRG/BGGR. A click asks
+  visible only while an AVI with nothing at its sidecar path is open (the reader's
+  `SidecarStatus::Absent`; a directory, FIFO or dangling link there is `NotAFile`, warned "sidecar
+  path <name> is not a file; ignored", and hides it), and
+  enabled only when the combo holds RGGB/GRBG/GBRG/BGGR and Debayer is checked (the colours that
+  confirm the pattern show only debayered). A `[SERViewer]` section matches in any case. A click asks
   "Write <name>.avi.txt with Bayer = <PAT>? SERViewer will use it for this file from now on."
   (Yes/No, Yes the default). Yes writes the sidecar, then reopens the AVI with Auto on the
   same frame (the sidecar is read back, and the button hides). A failure goes to the console,
@@ -294,5 +299,7 @@ fails the create instead of being written through. Before this, both opened the 
 plain `fopen`/`ofstream`, which follows a link planted at that path and writes into whatever it
 names. `ExportSer` also removed an empty directory found at the partial path; it now leaves it.
 Unit tests plant a link to a victim file and check that its content and mtime are unchanged,
-and that a dangling link creates nothing. The publish step is unchanged: a rename after the
-re-check, with the residual race noted above.
+and that a dangling link creates nothing. Both writers create the partial 0666 less the umask (as
+0.2.0.0's ofstream did), and publish through `PublishPartial`: a hard link when the target must
+not be replaced (Save pattern..., Save as SER without allowOverwrite), else a rename; the re-check +
+rename fallback, and its race, only on filesystems without hard links.

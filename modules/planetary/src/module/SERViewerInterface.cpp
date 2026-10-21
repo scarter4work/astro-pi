@@ -287,11 +287,12 @@ void SERViewerInterface::UpdateFrameControls()
    GUI->Bayer_ComboBox.Enable( avi );
    GUI->SaveSer_PushButton.Enable( avi );
    // Save pattern... only where there is no sidecar to read (never one to
-   // overwrite), and only once a pattern is chosen: Auto and None have none to save.
+   // overwrite), and only once a pattern is chosen (Auto and None have none to
+   // save) with Debayer on: the colours that confirm it show only debayered.
    GUI->SavePattern_PushButton.SetVisible( AviWithoutSidecar() );
    GUI->SavePattern_PushButton.Enable( AviWithoutSidecar() &&
                                        instance.p_bayerPattern >= SVBayerPattern::RGGB &&
-                                       instance.p_bayerPattern <= SVBayerPattern::BGGR );
+                                       instance.p_bayerPattern <= SVBayerPattern::BGGR && instance.p_debayer );
 }
 
 bool SERViewerInterface::AviLoaded() const
@@ -306,7 +307,7 @@ bool SERViewerInterface::AviWithoutSidecar() const
 
 void SERViewerInterface::SaveBayerPattern()
 {
-   if ( !AviWithoutSidecar() || !ser::IsBayer( m_file->Info().colorId ) )
+   if ( !AviWithoutSidecar() || !ser::IsBayer( m_file->Info().colorId ) || !instance.p_debayer )
       return;
    const String path = instance.p_filePath.Trimmed();
    const ser::ColorId pattern = m_file->Info().colorId;
@@ -536,7 +537,9 @@ SERViewerInterface::GUIData::GUIData( SERViewerInterface& w )
    SavePattern_PushButton.SetToolTip( "<p>AVI without a sidecar only: remember the Bayer pattern chosen above for this "
                                       "video. It writes a small text file next to the video (&lt;name&gt;.avi.txt, "
                                       "the sidecar Auto reads), so Auto uses this pattern whenever the file is opened. "
-                                      "Asks first; never replaces an existing sidecar.</p>" );
+                                      "Enabled once a pattern is chosen and Debayer is on: the colours of the "
+                                      "debayered preview are how you tell the pattern is right (the raw CFA shows "
+                                      "none). Asks first; never replaces an existing sidecar.</p>" );
    SavePattern_PushButton.OnClick( (Button::click_event_handler)&SERViewerInterface::e_Click, w );
 
    Avi_Sizer.SetSpacing( 6 );

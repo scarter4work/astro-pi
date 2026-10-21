@@ -288,6 +288,9 @@ TEST_CASE("Bayer source tokens read as text", "[preview][info]") {
         i.avi->sidecarStatus = status;
         CHECK(BayerText(i) == "none (sidecar could not be read; choose one under Bayer pattern)");
     }
+    // Something at the sidecar path that is not a file (a directory, a FIFO, a dangling link).
+    i.avi->sidecarStatus = planetary::ser::SidecarStatus::NotAFile;
+    CHECK(BayerText(i) == "none (sidecar path is not a file; choose one under Bayer pattern)");
     i.avi->sidecarStatus = planetary::ser::SidecarStatus::Absent;
     i.avi->bayerSource = "chosen";
     CHECK(BayerText(i) == "none (chosen)");

@@ -34,7 +34,7 @@ PixInsight image window, so every PixInsight tool can be used on it.</p>
   <li><b>Bayer pattern</b> (AVI only; disabled for a SER, which states its own layout): Auto, None (mono), RGGB, GRBG,
   GBRG or BGGR. See <a href="#avi">AVI files</a>. Changing it reopens the AVI on the same frame.
   This is the <code>bayerPattern</code> parameter.</li>
-  <li><b>Save pattern...</b> (only for an AVI with no sidecar; enabled once you choose RGGB, GRBG, GBRG or BGGR) remembers
+  <li><b>Save pattern...</b> (only for an AVI with no sidecar; enabled once you choose RGGB, GRBG, GBRG or BGGR with Debayer checked) remembers
   the chosen pattern in a sidecar next to the video. See <a href="#savepattern">Remembering a chosen pattern</a>.</li>
   <li><b>Save as SER...</b> (AVI only) writes the whole video as a SER file. See <a href="#saveser">Save as SER</a>.</li>
   <li><b>Debayer</b>: for Bayer files, show and open frames as RGB (checked) or as the raw CFA mosaic
@@ -110,7 +110,7 @@ so a bad entry between those checks shows as an error when that frame is display
 <p>ASIAIR writes a text file next to each capture, <code>&lt;name&gt;.avi.txt</code>. The pattern choice works as follows.</p>
 <ul>
 <li><b>Auto</b> uses the sidecar's <code>Bayer</code> value (RG, GR, GB or BG for RGGB, GRBG, GBRG or BGGR). The sidecar's
-camera name becomes <code>INSTRUME</code>. With no sidecar, a sidecar that could not be read, or no Bayer value in it,
+camera name becomes <code>INSTRUME</code>. With no sidecar, a sidecar that could not be read, something at the sidecar path that is not a file, or no Bayer value in it,
 the raw CFA frame opens as mono and a warning says which of these it was and asks you to choose the pattern.</li>
 <li><b>Flip = Vert.</b> When the sidecar says <code>Flip = Vert</code>, Auto uses the pattern rotated by 180&deg; (RGGB becomes
 BGGR, GRBG becomes GBRG), because that is what the frame data of most such captures show (35 of the 38 measurable
@@ -130,7 +130,8 @@ record the pattern used. The sidecar is read as plain text and is never required
 
 <h3 id="savepattern">Remembering a chosen pattern</h3>
 <p>An AVI with no sidecar opens as the raw CFA in mono. To find its pattern, try RGGB, GRBG, GBRG and BGGR under
-<b>Bayer pattern</b> and look at the preview. Once the colours look right, click <b>Save pattern...</b>. SERViewer asks
+<b>Bayer pattern</b> with <b>Debayer</b> checked and look at the preview. Once the colours look right, click <b>Save pattern...</b>
+(it stays disabled while Debayer is off, because the raw CFA preview shows no colour to judge by). SERViewer asks
 &ldquo;Write &lt;name&gt;.avi.txt with Bayer = RGGB? SERViewer will use it for this file from now on.&rdquo; (with your file
 and pattern). <b>Yes</b> writes a small text file next to the video:</p>
 <pre>
@@ -143,10 +144,12 @@ Written By = SERViewer &lt;version&gt; (Bayer pattern chosen by the user)
 opened. The file names no camera, so the image gets no <code>INSTRUME</code> keyword from it, and it has no
 <code>Flip</code> line, so the pattern is used as it stands.</p>
 <ul>
-<li>The button is shown only when the open AVI has no sidecar, so SERViewer never replaces one, including an ASIAIR
-sidecar. If a file of that name appears before the write, the write is refused. To change a saved pattern, delete or
+<li>The button is shown only when nothing is at the sidecar path, so SERViewer never replaces a sidecar, including an ASIAIR
+sidecar. If a file of that name appears before the write, the write is refused (on a filesystem without hard links, a
+file created in the same instant as the write could still be replaced). Something at that path that is not a file
+(for example a folder) is ignored with a warning, and the button stays hidden. To change a saved pattern, delete or
 edit the <code>.avi.txt</code> file.</li>
-<li>The file is written to a temporary <code>.partial</code> file first and then renamed. If the write fails (for example,
+<li>The file is written to a temporary <code>.partial</code> file first and then moved into place. If the write fails (for example,
 the folder is read-only), the reason is shown in the info block, the Process Console and a message box. The partial file
 is removed, and the video stays open.</li>
 <li>SERViewer does not work out the pattern from the frames. That was tried on real captures and was not reliable:

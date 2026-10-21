@@ -11,7 +11,9 @@
                                       Save as SER... (09b-save-dialog.png) to SER, typed without
                                       .ser -> 10-saved.png; Open... the AVI again -> 11-reopened.png
   gui_drive.py --save-pattern OUT AVI Open... AVI (no sidecar) -> 12-nosidecar.png; Bayer pattern
-                                      RGGB -> 13-rggb.png; Save pattern..., the confirmation
+                                      RGGB -> 13-rggb.png; Debayer off -> 13a-debayer-off.png, on
+                                      again; the last frame -> 13c-last-frame.png; Save pattern...,
+                                      the confirmation
                                       (13b-confirm.png), Return -> 14-pattern-saved.png; Open...
                                       it again -> 15-reopened-sidecar.png
   gui_drive.py --shot OUT NAME        one screenshot
@@ -435,6 +437,19 @@ if MODE == "--save-pattern":
     park()
     shot("13-rggb.png", 1.5)
 
+    # Debayer off: the raw CFA shows no colour to judge the pattern by, so the button is
+    # disabled again; then on again (back to 13).
+    click(*CTL["debayer"])
+    park()
+    shot("13a-debayer-off.png", 1.5)
+    click(*CTL["debayer"])
+    park()
+
+    # The last frame, so the reopen after the write must keep it (14 == 13c, not frame 0).
+    drag(CTL["handle"], (preview_box()[2] - 10, CTL["handle"][1]))
+    park()
+    shot("13c-last-frame.png", 1.5)
+
     # Save pattern... -> the confirmation (a native window captioned SERViewer) -> Return (Yes
     # is its default button) -> the sidecar is written and the AVI reopened with Auto.
     click(*CTL["pattern"])
@@ -545,7 +560,8 @@ if MODE == "--check":
 
     # Save pattern... (Increment 2.1): the button's own screen box (controls(), measured), in the
     # whole screenshot, not the preview. Hidden: the row's plain background, as in 08 (an AVI with
-    # a sidecar); shown disabled under Auto in 12, enabled once RGGB is chosen in 13; hidden again
+    # a sidecar); shown disabled under Auto in 12, enabled once RGGB is chosen in 13 (and on the
+    # last frame, 13c), disabled again with Debayer off (13a, the same pixels as 12); hidden again
     # once its sidecar exists (14 after the write, 15 reopened).
     bx0, by0, bx1, by1 = x0 + 206, y0 - 25, x0 + 311, y0 - 9
 
@@ -555,24 +571,35 @@ if MODE == "--check":
     def button_changed(a, b):
         return float((np.abs(button(a) - button(b)).max(axis=2) > 12).mean())
 
-    for name in ("12-nosidecar.png", "13-rggb.png", "14-pattern-saved.png", "15-reopened-sidecar.png"):
+    for name in ("12-nosidecar.png", "13-rggb.png", "13a-debayer-off.png", "13c-last-frame.png",
+                 "14-pattern-saved.png", "15-reopened-sidecar.png"):
         f = float(lit_mask(name).mean())
         lines.append("%s: %.2f%% of the preview lit" % (name, 100 * f))
         if f < 0.001:
             fails.append("%s: the preview is black (%.2f%% lit)" % (name, 100 * f))
     for a, b, what, want in (
             ("12-nosidecar.png", "13-rggb.png", "Auto (no sidecar: raw CFA) vs RGGB chosen", "differ"),
-            ("13-rggb.png", "14-pattern-saved.png", "RGGB chosen vs Auto reading the written sidecar", "same"),
-            ("14-pattern-saved.png", "15-reopened-sidecar.png", "after the write vs opened again", "same")):
+            ("13-rggb.png", "13c-last-frame.png", "RGGB frame 0 vs the last frame", "differ"),
+            ("13c-last-frame.png", "14-pattern-saved.png",
+             "the last frame chosen vs after the write (sidecar read back, frame kept)", "same"),
+            ("13-rggb.png", "15-reopened-sidecar.png", "RGGB frame 0 vs Open... again (frame 0, Auto = RGGB)",
+             "same")):
         v = changed(a, b)
         lines.append("%s vs %s (%s): %.3f%% of the preview changed" % (a, b, what, 100 * v))
         if want == "differ" and v < 0.002:
             fails.append("%s: %s and %s do not differ (%.3f%% changed)" % (what, a, b, 100 * v))
         if want == "same" and v > 0.0:
             fails.append("%s: %s and %s differ (%.3f%% changed)" % (what, a, b, 100 * v))
+    cfa = px("13a-debayer-off.png")
+    spread = float((cfa.max(axis=2) - cfa.min(axis=2)).max())
+    lines.append("13a-debayer-off.png: largest channel spread %.0f (grey: <= 2)" % spread)
+    if spread > 2:
+        fails.append("13a-debayer-off.png: Debayer off is not grey (channel spread %.0f)" % spread)
     for a, b, what, want in (
             ("08-avi.png", "12-nosidecar.png", "hidden (AVI with a sidecar) vs shown (none)", "differ"),
             ("12-nosidecar.png", "13-rggb.png", "disabled under Auto vs enabled for RGGB", "differ"),
+            ("12-nosidecar.png", "13a-debayer-off.png", "disabled under Auto vs disabled with Debayer off", "same"),
+            ("13-rggb.png", "13c-last-frame.png", "enabled vs enabled on the last frame", "same"),
             ("08-avi.png", "14-pattern-saved.png", "hidden vs hidden after the write", "same"),
             ("08-avi.png", "15-reopened-sidecar.png", "hidden vs hidden on reopening", "same")):
         v = button_changed(a, b)

@@ -46,7 +46,9 @@ std::optional<AsiairSidecar> ParseAsiairSidecar(const std::string& text) {
             if (!sawSection) {
                 // SERViewer's own section (WriteAsiairSidecar) names no camera.
                 sc.camera = Trim(line.substr(1, line.size() - 2));
-                if (sc.camera == "SERViewer") {
+                std::string lower = sc.camera;
+                for (char& c : lower) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+                if (lower == "serviewer") {  // any case
                     sc.camera.clear();
                     sc.writtenBySERViewer = true;
                 }
@@ -78,7 +80,12 @@ ColorId ResolveBayer(BayerChoice choice, const std::optional<AsiairSidecar>& sid
     std::string unreadable;
     if (!sidecar && status == SidecarStatus::Unreadable) unreadable = named + " could not be read";
     if (!sidecar && status == SidecarStatus::TooLarge) unreadable = named + " could not be read (larger than 64 KiB)";
-    if (!unreadable.empty() && choice != BayerChoice::Auto) warnings.push_back(unreadable + "; ignored");
+    // A directory, FIFO or dangling link where the sidecar goes: never opened, never a sidecar.
+    if (!sidecar && status == SidecarStatus::NotAFile)
+        unreadable = (sidecarName.empty() ? std::string("the sidecar path") : "sidecar path " + sidecarName) +
+                     " is not a file; ignored";
+    if (!unreadable.empty() && choice != BayerChoice::Auto)
+        warnings.push_back(status == SidecarStatus::NotAFile ? unreadable : unreadable + "; ignored");
 
     switch (choice) {
         case BayerChoice::None: source = "chosen"; return ColorId::Mono;
@@ -187,20 +194,21 @@ void WriteAsiairSidecar(const std::string& aviPath, ColorId pattern, const std::
     const std::string target = aviPath + ".txt";
     const std::string partial = target + ".partial";
     const std::string name = fs::path(target).filename().string();
-    // symlink_status: a link in the sidecar's place, even a dangling one, is a sidecar too
-    // (rename would replace the link). Checked again just before the rename; between the two
-    // checks and the rename nothing is locked, so another program creating the sidecar in that
-    // instant is the one case not caught.
-    auto refuseExisting = [&] {
+    const std::string exists = name + " already exists; SERViewer never overwrites a sidecar";
+    // symlink_status: anything in the sidecar's place, even a dangling link, is refused. The
+    // publish below is a hard link, which refuses atomically too; only on a filesystem without
+    // hard links is it a check + rename, where a sidecar created in that instant is the one case
+    // not caught (PublishPartial).
+    {
         std::error_code ec;
-        if (fs::exists(fs::symlink_status(target, ec)))
-            throw SerError(name + " already exists; SERViewer never overwrites a sidecar");
-    };
-    refuseExisting();
+        if (fs::exists(fs::symlink_status(target, ec))) throw SerError(exists);
+    }
 
     const std::string text = std::string("[SERViewer]\nBayer = ") + value + "\nWritten By = SERViewer " +
                              writerVersion + " (Bayer pattern chosen by the user)\n";
-    auto osReason = [](int err) { return std::error_code(err, std::generic_category()).message(); };
+    auto osReason = [](int err) {
+        return err == 0 ? std::string("short write") : std::error_code(err, std::generic_category()).message();
+    };
     // Removes the partial on any failure below; a partial path this call could not create
     // (a symbolic link, a directory of that name) is left alone.
     bool created = false;
@@ -221,17 +229,14 @@ void WriteAsiairSidecar(const std::string& aviPath, ColorId pattern, const std::
     const int writeErr = errno;
     errno = 0;
     const bool closed = std::fclose(f) == 0;
+    const int closeErr = errno;
     if (!written || !closed)
         fail("cannot write sidecar " + target + ": write to " + partial + " failed: " +
-             osReason(!written ? writeErr : errno));
-    try {
-        refuseExisting();
-    } catch (const SerError& e) {
-        fail(e.what());
-    }
-    std::error_code ec;
-    fs::rename(partial, target, ec);
-    if (ec) fail("cannot write sidecar " + target + ": cannot rename " + partial + " to it: " + ec.message());
+             osReason(!written ? writeErr : closeErr));
+    const PublishResult published = PublishPartial(partial, target, false/*replace*/, whyNot);
+    if (published == PublishResult::TargetExists) fail(exists);
+    if (published == PublishResult::Failed)
+        fail("cannot write sidecar " + target + ": cannot publish " + partial + " as it: " + whyNot);
 }
 
 }  // namespace planetary::ser

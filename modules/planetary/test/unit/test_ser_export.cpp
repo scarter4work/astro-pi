@@ -5,6 +5,8 @@
 #include <fstream>
 #include <iterator>
 
+#include <sys/stat.h>
+
 #include "AsiairSidecar.h"
 #include "AviWriter.h"
 #include "FrameSource.h"
@@ -364,4 +366,19 @@ TEST_CASE("ExportSer refuses a directory at the partial path and leaves it") {
     }
     CHECK(fs::is_directory(out + ".partial"));
     CHECK_FALSE(fs::exists(out));
+}
+
+TEST_CASE("ExportSer creates the SER 0666 less the umask, as 0.2.0.0 did") {
+    TempDir td;
+    const fs::path dir = fs::path(td.NewPath(".d"));
+    fs::create_directories(dir);
+    const std::string avi = MakeAvi(dir, "a.avi");
+    const auto src = OpenVideo(avi);
+    const std::string out = (dir / "out.ser").string();
+    const mode_t old = ::umask(002);
+    ExportSer(*src, avi, out, false, kNone);
+    ::umask(old);
+    CHECK((fs::status(out).permissions() & fs::perms::mask) ==
+          (fs::perms::owner_read | fs::perms::owner_write | fs::perms::group_read |
+           fs::perms::group_write | fs::perms::others_read));
 }

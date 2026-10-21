@@ -1,12 +1,17 @@
 #include <catch_amalgamated.hpp>
 
 #include <algorithm>
+#include <cerrno>
 #include <chrono>
 #include <filesystem>
 #include <fstream>
+#include <system_error>
+
+#include <sys/stat.h>
 
 #include "AsiairSidecar.h"
 #include "AviWriter.h"
+#include "PartialFile.h"
 #include "FrameSource.h"
 #include "TestUtil.h"
 
@@ -546,4 +551,103 @@ TEST_CASE("WriteAsiairSidecar never writes through a symbolic link at the partia
     CHECK_THROWS_AS(WriteAsiairSidecar(q, ColorId::BayerRGGB, "0.2.1.0"), SerError);
     CHECK_FALSE(fs::exists(fs::symlink_status(nowhere)));
     CHECK_FALSE(fs::exists(fs::symlink_status(q + ".txt")));
+}
+
+TEST_CASE("WriteAsiairSidecar creates the file 0666 less the umask") {
+    TempDir dir;
+    namespace fs = std::filesystem;
+    const mode_t old = ::umask(002);
+    const std::string p = dir.NewPath(".avi");
+    WriteAsiairSidecar(p, ColorId::BayerRGGB, "0.2.1.0");
+    ::umask(old);
+    CHECK((fs::status(p + ".txt").permissions() & fs::perms::mask) ==
+          (fs::perms::owner_read | fs::perms::owner_write | fs::perms::group_read |
+           fs::perms::group_write | fs::perms::others_read));
+}
+
+namespace {
+int g_linkErrno = 0;
+int FailingLink(const char*, const char*) {
+    errno = g_linkErrno;
+    return -1;
+}
+}  // namespace
+
+TEST_CASE("PublishPartial: hard link where possible, re-check + rename only without hard links") {
+    TempDir dir;
+    namespace fs = std::filesystem;
+    std::string why;
+    auto partialWith = [&](const std::string& target, const std::string& text) {
+        WriteText(target + ".partial", text);
+        return target + ".partial";
+    };
+
+    // Hard link: published, the partial name gone.
+    std::string t = dir.NewPath(".txt");
+    CHECK(PublishPartial(partialWith(t, "new\n"), t, false, why) == PublishResult::Published);
+    CHECK(ReadAll(t) == "new\n");
+    CHECK_FALSE(fs::exists(t + ".partial"));
+
+    // Hard link onto an existing target: refused atomically, target unchanged, partial kept for the caller.
+    t = dir.NewPath(".txt");
+    WriteText(t, "old\n");
+    CHECK(PublishPartial(partialWith(t, "new\n"), t, false, why) == PublishResult::TargetExists);
+    CHECK(ReadAll(t) == "old\n");
+    CHECK(fs::exists(t + ".partial"));
+
+    // No hard links on this filesystem (CIFS): re-check + rename.
+    for (int err : {EPERM, EOPNOTSUPP, ENOSYS, EXDEV}) {
+        g_linkErrno = err;
+        t = dir.NewPath(".txt");
+        CHECK(PublishPartial(partialWith(t, "new\n"), t, false, why, &FailingLink) == PublishResult::Published);
+        CHECK(ReadAll(t) == "new\n");
+        CHECK_FALSE(fs::exists(t + ".partial"));
+        t = dir.NewPath(".txt");
+        WriteText(t, "old\n");
+        CHECK(PublishPartial(partialWith(t, "new\n"), t, false, why, &FailingLink) == PublishResult::TargetExists);
+        CHECK(ReadAll(t) == "old\n");
+    }
+
+    // Any other link failure is a failure, with its reason.
+    g_linkErrno = EIO;
+    t = dir.NewPath(".txt");
+    CHECK(PublishPartial(partialWith(t, "new\n"), t, false, why, &FailingLink) == PublishResult::Failed);
+    CHECK(why.find(std::error_code(EIO, std::generic_category()).message()) != std::string::npos);
+    CHECK_FALSE(fs::exists(t));
+
+    // Replace (Save as SER after its dialog asked): rename over the target.
+    t = dir.NewPath(".txt");
+    WriteText(t, "old\n");
+    CHECK(PublishPartial(partialWith(t, "new\n"), t, true, why) == PublishResult::Published);
+    CHECK(ReadAll(t) == "new\n");
+}
+
+TEST_CASE("OpenVideo: anything but a file at the sidecar path is not a sidecar, and says so") {
+    TempDir dir;
+    namespace fs = std::filesystem;
+    for (int kind = 0; kind < 3; ++kind) {
+        const std::string p = dir.NewPath(".avi");
+        WriteAvi(p, Avi(8, 6), Frames(8, 6, 1));
+        if (kind == 0) fs::create_directory(p + ".txt");
+        if (kind == 1) REQUIRE(::mkfifo((p + ".txt").c_str(), 0600) == 0);
+        if (kind == 2) fs::create_symlink(p + ".nowhere", p + ".txt");
+        const std::string name = FileName(p + ".txt");
+        auto src = OpenVideo(p);
+        CHECK(src->Info().avi->sidecarStatus == SidecarStatus::NotAFile);
+        CHECK(src->Info().colorId == ColorId::Mono);
+        CHECK(src->Info().warnings == std::vector<std::string>{"sidecar path " + name +
+                                                               " is not a file; ignored; no Bayer pattern known" + kTail});
+        src = OpenVideo(p, BayerChoice::GRBG);
+        CHECK(src->Info().colorId == ColorId::BayerGRBG);
+        CHECK(src->Info().warnings == std::vector<std::string>{"sidecar path " + name + " is not a file; ignored"});
+    }
+}
+
+TEST_CASE("ParseAsiairSidecar: the [SERViewer] section matches in any case") {
+    for (const char* s : {"[serviewer]\nBayer = GR\n", "[ SERVIEWER ]\nBayer = GR\n", "[SerViewer]\nBayer = GR\n"}) {
+        const auto sc = ParseAsiairSidecar(s);
+        REQUIRE(sc.has_value());
+        CHECK(sc->writtenBySERViewer);
+        CHECK(sc->camera.empty());
+    }
 }

@@ -28,8 +28,10 @@
 #    (always this run's own copy, never a caller's fixture)  -> 12-nosidecar.png
 #    Save pattern... shown, disabled under Auto; the combo two items down (RGGB)
 #                                                            -> 13-rggb.png (enabled)
+#    Debayer off (disabled again, raw CFA grey)              -> 13a-debayer-off.png
+#    Debayer on, the slider dragged to the last frame        -> 13c-last-frame.png
 #    Save pattern... clicked, the "SERViewer" confirmation   -> 13b-confirm.png
-#    Return (Yes): the sidecar written, the AVI reopened with Auto
+#    Return (Yes): the sidecar written, the AVI reopened with Auto on the same (last) frame
 #                                                            -> 14-pattern-saved.png
 #    Open... it again                                        -> 15-reopened-sidecar.png
 #    PixInsight holds exactly that AVI open; its .avi.txt is byte for byte
@@ -44,9 +46,11 @@
 # 03 == 05 (the slider's last frame == the imported last frame), 05 != 06,
 # 05 != 08 (A's last frame vs the AVI's frame 0), 08 != 09 and 09 grey (Bayer
 # None shows the raw CFA), 09 == 10 (the viewer stays on the AVI after saving),
-# 12 != 13 (raw CFA vs RGGB), 13 == 14 == 15 (the written sidecar reads back as
+# 12 != 13 (raw CFA vs RGGB), 13a grey, 13 != 13c (frame 0 vs last), 13c == 14 (the
+# written sidecar reads back as RGGB on the kept frame), 13 == 15 (Open... again: frame 0, as
 # RGGB); in the Save pattern... button's box: 08 != 12 (shown only without a
-# sidecar), 12 != 13 (enabled only for a chosen pattern), 08 == 14 == 15 (hidden
+# sidecar), 12 != 13 (enabled only for a chosen pattern), 12 == 13a (disabled with Debayer
+# off), 13 == 13c, 08 == 14 == 15 (hidden
 # once the sidecar exists);
 # 08 == 11 (Open... resets the Bayer pattern to Auto); with the default fixture
 # A, 03 red-dominant (catches an R/B swap); with the default AVI, 08 too, and
@@ -59,7 +63,8 @@
 # non-zero header FrameCount). Default: make-fixtures' bayer-colour.ser
 # (strongly red Bayer RGGB, 3 frames) and mono8.ser (3 frames).
 # PLANETARY_GUI_FIXTURE_AVI (absolute path of an 8-bit AVI whose Bayer pattern
-# Auto resolves to a Bayer layout, so None (mono) changes the preview) with
+# Auto resolves to a Bayer layout from its .avi.txt sidecar, which must exist, so None (mono)
+# changes the preview and Save pattern... stays hidden) with
 # PLANETARY_GUI_AVI_FRAMES (its frame count). Default: make-fixtures'
 # bayer-colour.avi (bayer-colour.ser's frames, sidecar Bayer RG, 3 frames).
 # PLANETARY_GUI_SLOT overrides the slot (default 97).
@@ -133,6 +138,10 @@ for f in "$A" "$B" "$AVI"; do
    case "$f" in /*) ;; *) echo "FAIL: fixture path must be absolute: $f"; exit 1 ;; esac
    [ -f "$f" ] || { echo "FAIL: fixture not found: $f"; exit 1; }
 done
+# The --open-avi AVI resolves its pattern from its sidecar (Auto -> Bayer, so None changes the
+# preview) and shows no Save pattern... button (08 is the hidden-button reference): it needs one.
+[ -f "$AVI.txt" ] || { echo "FAIL: PLANETARY_GUI_FIXTURE_AVI must have its .avi.txt sidecar next to it (Auto resolves" \
+                         "its Bayer pattern from it, and 08-avi.png is the hidden Save pattern... reference): $AVI.txt not found"; exit 1; }
 # SER header (int32 LE): ColorID at byte 18, FrameCount at byte 38.
 A_COLOR="$(od -An -t d4 -j 18 -N 4 --endian=little "$A" | tr -d ' ')"
 A_FRAMES="$(od -An -t d4 -j 38 -N 4 --endian=little "$A" | tr -d ' ')"
@@ -283,7 +292,8 @@ PI_PID=""
 ok=1
 [ "$rc" = 0 ] || { echo "FAIL: PixInsight exit code $rc (see $OUT/pi.log)"; ok=0; }
 for png in 01-empty 01b-dialog 02-loaded 03-last-frame 03b-cfa 03c-debayer-on 04-second-file 05-import 06-closed \
-           08-avi 09-bayer 09b-save-dialog 10-saved 11-reopened 12-nosidecar 13-rggb 13b-confirm 14-pattern-saved \
+           08-avi 09-bayer 09b-save-dialog 10-saved 11-reopened 12-nosidecar 13-rggb 13a-debayer-off 13c-last-frame \
+           13b-confirm 14-pattern-saved \
            15-reopened-sidecar; do
    [ -s "$OUT/$png.png" ] || { echo "FAIL: $png.png missing"; ok=0; }
 done

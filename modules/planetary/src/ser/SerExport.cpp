@@ -132,12 +132,19 @@ ExportResult ExportSerWithSpace(const FrameSource& src, const std::string& sourc
     std::FILE* raw = CreatePartialFile(partial.string(), whyNot);
     if (!raw) throw SerError("cannot create " + partial.string() + ": " + whyNot);
     PartialGuard guard{partial};
-    std::unique_ptr<std::FILE, int (*)(std::FILE*)> file(raw, &std::fclose);
+    auto closeFile = [](std::FILE* f) { std::fclose(f); };
+    std::unique_ptr<std::FILE, decltype(closeFile)> file(raw, closeFile);
+    auto failed = [&partial](int err) {
+        return SerError("write to " + partial.string() + " failed: " +
+                        (err == 0 ? std::string("short write")
+                                  : std::error_code(err, std::generic_category()).message()));
+    };
     auto put = [&](const void* p, size_t len) {
         errno = 0;
-        if (std::fwrite(p, 1, len, file.get()) != len)
-            throw SerError("write to " + partial.string() + " failed: " +
-                           std::error_code(errno, std::generic_category()).message());
+        if (std::fwrite(p, 1, len, file.get()) != len) {
+            const int err = errno;
+            throw failed(err);
+        }
     };
     put(hdr.data(), hdr.size());
 
@@ -159,11 +166,16 @@ ExportResult ExportSerWithSpace(const FrameSource& src, const std::string& sourc
     }
 
     errno = 0;
-    if (std::fclose(file.release()) != 0)
-        throw SerError("write to " + partial.string() + " failed: " +
-                       std::error_code(errno, std::generic_category()).message());
-    fs::rename(partial, out, ec);
-    if (ec) throw SerError("cannot rename " + partial.string() + " to " + outPath + ": " + ec.message());
+    if (std::fclose(file.release()) != 0) {
+        const int err = errno;
+        throw failed(err);
+    }
+    // Without allowOverwrite, published by hard link: a file that appeared at outPath since the
+    // check above is refused atomically, except on a filesystem without hard links (PublishPartial).
+    const PublishResult published = PublishPartial(partial.string(), outPath, allowOverwrite, whyNot);
+    if (published == PublishResult::TargetExists) throw SerError(outPath + " exists");
+    if (published == PublishResult::Failed)
+        throw SerError("cannot rename " + partial.string() + " to " + outPath + ": " + whyNot);
     guard.armed = false;
     return result;
 }
