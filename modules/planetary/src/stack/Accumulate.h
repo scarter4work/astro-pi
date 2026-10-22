@@ -56,8 +56,10 @@ namespace planetary::stack {
 // interpolation's ringing next to a sharp trail, the demosaic's spread of a defect). Rejection is
 // against the reference, not the running stack, so it is the same whichever frame comes first and
 // needs no per-pixel history. Measured (unit test, a +0.5 bright or -0.5 dark 1.5 px trail across one
-// frame of 40 that every region keeps): what leaks into the stack is 0 (mono) / 0.0004 (Bayer),
-// against >= 0.0125 unrejected; pixels farther than the reach are unchanged.
+// frame of 40 that every region keeps): what leaks into the stack is 0 (mono) / 0.001 (Bayer),
+// against >= 0.0125 unrejected, the same on a frame's row seam (see "Thread safety") as elsewhere,
+// and in a border band only a tenth of the frames reach as in the interior; pixels farther than the
+// reach are unchanged.
 // Limit: a hot pixel that does NOT move on the output (a target perfectly still on the sensor) is in
 // the reference too and is not an outlier in time; that needs a sensor-space fix before demosaicing.
 //
