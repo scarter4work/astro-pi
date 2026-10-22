@@ -13,7 +13,7 @@ from scipy import ndimage
 
 import metric
 import refs
-from conftest import add_noise, lunar_scene, nas_path, planet_scene
+from conftest import add_noise, banded_planet, lunar_scene, nas_path, planet_scene, unsharp
 
 BLUR_SIGMAS = (0.5, 1.0, 2.0)
 
@@ -141,15 +141,81 @@ def test_featureless_image_is_refused_loudly():
         metric.measure(np.full((128, 128), 0.3))
 
 
+# --- interior score (review round 1, Important 2) -----------------------------------------------
+
+def _interior_pair(R, **kw):
+    """(sharp, other) measured on the sharp image's box and interior window, noise 0.003."""
+    sharp = banded_planet(R)
+    other = banded_planet(R, **kw)
+    box = metric.target_box(sharp)
+    win = metric.interior_window(sharp, box)
+    m = lambda img, s: metric.measure(add_noise(img, 0.003, s), box, interior=win)   # noqa: E731
+    return m(sharp, 5), m(other, 6), win
+
+
+def test_interior_smeared_with_a_crisp_limb_fails_the_interior_score():
+    """The review's case: surface detail smeared sigma 1, limb kept crisp. DAN_full is limb-
+    weighted and barely moves; DAN_interior must drop below the 0.97 bar."""
+    sharp, smeared, win = _interior_pair(15, interior_blur=1.0)
+    full, interior = smeared.value / sharp.value, smeared.interior / sharp.interior
+    print(f"\nR15 interior sigma 1: full {full:.3f}, interior {interior:.3f}, eroded disc "
+          f"{win.diameter:.1f} px (erosion {win.erosion:.1f}, limb sigma {win.limb_sigma:.2f})")
+    assert win.diameter >= metric.INTERIOR_MIN_DIAMETER
+    assert interior < 0.97
+    assert interior < full
+
+
+def test_interior_score_falls_with_global_blur_and_ignores_added_noise():
+    sharp = banded_planet(15)
+    box = metric.target_box(sharp)
+    win = metric.interior_window(sharp, box)
+    base = metric.measure(add_noise(sharp, 0.003, 1), box, interior=win).interior
+    soft = metric.measure(add_noise(ndimage.gaussian_filter(sharp, 1.0), 0.003, 2), box, interior=win).interior
+    noisy = metric.measure(add_noise(sharp, 0.01, 3), box, interior=win).interior
+    print(f"\ninterior: base {base:.4f}, blur 1 {soft:.4f}, noise 0.01 {noisy:.4f}")
+    assert soft < 0.9 * base
+    assert noisy <= 1.05 * base
+
+
+def test_limb_sigma_estimate():
+    for seeing in (1.0, 2.0):
+        img = banded_planet(20, seeing=seeing, size=(200, 240))
+        win = metric.interior_window(img, metric.target_box(img))
+        assert win.limb_sigma == pytest.approx(seeing, rel=0.4), win
+
+
+def test_a_small_disc_is_limb_only():
+    img = banded_planet(7)
+    win = metric.interior_window(img, metric.target_box(img))
+    assert win.diameter < metric.INTERIOR_MIN_DIAMETER
+    r = metric.measure(img, metric.target_box(img), interior=win)
+    assert r.interior is None and r.interior_judged is False
+
+
+# --- known limit: sharpening (review round 1, Important 3) -------------------------------------
+
+@pytest.mark.parametrize("R", [7, 15])
+def test_known_limit_unsharp_masking_buys_dan(R):
+    """KNOWN LIMIT, pinned: a disc softened sigma 1.6 and then unsharp-masked (sigma 1.5,
+    amount 1) scores at least the 0.97 bar against the genuinely sharp disc. DAN is valid only
+    between unsharpened linear stacks (metric.py LIMITS); this test fails if that changes, so
+    the README and LIMITS get revisited."""
+    sharp = banded_planet(R)
+    box = metric.target_box(sharp)
+    a = metric.measure(add_noise(sharp, 0.003, 5), box).value
+    b = metric.measure(add_noise(unsharp(banded_planet(R, seeing=1.6)), 0.003, 5), box).value
+    print(f"\nR{R}: soft+USM / sharp = {b / a:.3f}")
+    assert b / a >= 0.97
+
+
 # --- real data (NAS, read-only) --------------------------------------------------------------
 
 AS_P20_JUPITER = ("2_12_2023", "AS_P20", "2023-02-11-191831-Jupiter-Bin1 13.3F_lapl5_ap1.png")
-AS_P25_JUPITER = ("2_12_2023", "AS_P25", "2023-02-11-191831-Jupiter-Bin1 13.3F_lapl5_ap1_Drizzle30.png")
 AS_P20_MOON = ("2_12_2023", "AS_P20", "2023-02-12-024708-Moon-Bin1 14.9F_lapl5_ap1.png")
-AS_P25_MOON = ("2_12_2023", "AS_P25", "2023-02-12-024708-Moon-Bin1 14.9F_lapl5_ap2_Drizzle30.png")
 AS_P50_MOON = ("2_12_2023", "AS_P50", "2023-02-12-024708-Moon-Bin1 14.9F_lapl5_ap2.png")
 
 
+@pytest.mark.nas
 @pytest.mark.parametrize("parts", [AS_P20_JUPITER, AS_P20_MOON], ids=["jupiter", "moon"])
 def test_real_blurred_copy_ranks_below(parts):
     lum = metric.luminance(refs.load_image(nas_path(*parts)))
@@ -161,6 +227,7 @@ def test_real_blurred_copy_ranks_below(parts):
     _assert_strictly_decreasing(values)
 
 
+@pytest.mark.nas
 @pytest.mark.parametrize("parts", [AS_P20_JUPITER, AS_P20_MOON], ids=["jupiter", "moon"])
 @pytest.mark.parametrize("sigma", [0.005, 0.01, 0.02])  # as a fraction of the mean target signal
 def test_real_added_noise_does_not_raise_it(parts, sigma):
@@ -173,21 +240,18 @@ def test_real_added_noise_does_not_raise_it(parts, sigma):
     assert noisy.value <= 1.02 * base.value
 
 
+@pytest.mark.nas
 def test_real_2_12_2023_moon_ranks_as_autostakkert_selection_implies():
-    """AS_P20 (sharpest 20 % of the frames) must measure above AS_P25 and AS_P50 of the same
-    capture: the premise of AutoStakkert's percentage is that fewer, sharper frames give more
-    detail, and the metric discounts the extra noise of using fewer frames."""
-    rows = refs.compare(nas_path(*AS_P20_MOON), [nas_path(*AS_P25_MOON), nas_path(*AS_P50_MOON)],
-                        anchor_label="AS_P20")
+    """The clean validation: AS_P20 and AS_P50 of the 2_12_2023 Moon are both native (no drizzle,
+    no resample), so the only difference is the share of frames. Measured exactly as the bench
+    path measures this capture (benchset.compare_capture, AS_P20 standing in for our stack):
+    fewer, sharper frames must give more detail although P50 has half P20's noise floor."""
+    import benchset
+    rows = benchset.compare_capture("2023-02-12-moon", nas_path(*AS_P20_MOON))
+    by = {r.label: r.result for r in rows}
     for r in rows:
-        print(f"\n{r.label}: {r.result.value:.5f} (band SNR {r.result.band_snr:.1f}, "
-              f"scale {r.registration.scale if r.registration else 1:.4f})")
-    p20, p25, p50 = (r.result.value for r in rows)
-    assert p20 > p25 and p20 > p50
-
-
-def test_real_2_12_2023_jupiter_ranks_as_autostakkert_selection_implies():
-    rows = refs.compare(nas_path(*AS_P20_JUPITER), [nas_path(*AS_P25_JUPITER)], anchor_label="AS_P20")
-    for r in rows:
-        print(f"\n{r.label}: {r.result.value:.5f} (band SNR {r.result.band_snr:.1f})")
-    assert rows[0].result.value > rows[1].result.value
+        print(f"\n{r.label}: DAN {r.result.value:.5f}, interior {r.result.interior}, "
+              f"floor {r.result.noise_floor:.3g}")
+    p20, p50 = by["AS_P20"], by["AS_P50"]
+    assert p20.value > p50.value
+    assert p50.noise_floor < p20.noise_floor

@@ -61,6 +61,14 @@ UPSAMPLE = 20
 OVERLAP_INSET = 4            # px kept clear of every reference's edge
 
 DRIZZLE_TAGS = {"15": 1.5, "30": 3.0}
+DRIZZLE_FACTORS = (1.0, 1.5, 3.0)
+SIZE_TOLERANCE = 0.10        # a stacker's crop may shrink its output by up to 10 %
+NOISE_REGIME_FACTOR = 30.0   # ours' floor/band outside [min/30, max*30] of the references' -> review;
+                             # legitimate tools differ by up to 17.7x (8_23_2023 ASIStudio vs AutoStakkert)
+MOSAIC_WARNING = ("mosaic mode: a raw-CFA mono image compared with debayered references; bias measured "
+                  "x0.93-1.09 on the 2_12_2023 Moon by CFA phase (review round 1) -- not a pass/fail")
+LIMB_ONLY = "limb-only: human review decides"
+PASS_BAR = 0.97              # Ruling 2
 
 
 class ScaleMismatch(ValueError):
@@ -98,7 +106,10 @@ def _factor_text(f: float) -> str:
     return f"x{f:g}"
 
 
-def parse_reference_name(path: str, factor: Optional[float] = None) -> RefInfo:
+def parse_reference_name(path: str, factor: Optional[float] = None, source: str = "measured") -> RefInfo:
+    """Tool, percentage, name drizzle factor and label. `factor` is the factor actually used
+    when it was not taken from the name; `source` says where it came from ("measured" by
+    register, or "size" from the reference's size against the capture's frame)."""
     base = os.path.basename(path)
     stem, ext = os.path.splitext(base)
     parts = path.replace("\\", "/").split("/")
@@ -121,7 +132,7 @@ def parse_reference_name(path: str, factor: Optional[float] = None) -> RefInfo:
         if used == drz:
             label += f" (drizzled {_factor_text(drz)}, resampled)"
         else:
-            label += f" (named {_factor_text(drz)}, measured {_factor_text(used)}, resampled)"
+            label += f" (named {_factor_text(drz)}, {source} {_factor_text(used)}, resampled)"
     return RefInfo(tool, percent, drz, processed, label)
 
 
@@ -199,14 +210,35 @@ class Reference:
     image: np.ndarray          # native scale, HxW or HxWxC, file units
 
 
-def load_reference(path: str, factor: Optional[float] = None) -> Reference:
-    """Load a reference and bring it to native scale: by `factor` if given (a measured one),
-    else by the drizzle factor in its name."""
-    info = parse_reference_name(path, factor)
-    used = info.drizzle if factor is None else float(factor)
+def factor_from_size(ref_size, frame_size) -> float:
+    """The drizzle factor a reference's size implies: the nearest of DRIZZLE_FACTORS to its
+    width and height over the capture's frame (AutoStakkert crops its output a little, e.g.
+    5688x3168 for 1920x1080 -> 2.96 / 2.93 -> x3). Both ratios must agree with the chosen
+    factor within SIZE_TOLERANCE, or the size implies no drizzle factor at all (ValueError)."""
+    rw, rh = ref_size[0] / frame_size[0], ref_size[1] / frame_size[1]
+    f = min(DRIZZLE_FACTORS, key=lambda k: abs(math.log(rw / k)) + abs(math.log(rh / k)))
+    if abs(rw / f - 1) > SIZE_TOLERANCE or abs(rh / f - 1) > SIZE_TOLERANCE:
+        raise ValueError(f"reference {ref_size[0]}x{ref_size[1]} for a {frame_size[0]}x{frame_size[1]} "
+                         f"capture is x{rw:.3f} / x{rh:.3f}: no drizzle factor of {DRIZZLE_FACTORS} fits")
+    return f
+
+
+def load_reference(path: str, factor: Optional[float] = None, frame_size=None) -> Reference:
+    """Load a reference and bring it to native scale. The factor is, in order: `factor` if given
+    (a measured one); the size-derived factor when the capture's `frame_size` (w, h) is given
+    (factor_from_size; a disagreement with the name is recorded in the label); else the
+    drizzle factor in the name."""
+    img = load_image(path)
+    if factor is not None:
+        used, info = float(factor), parse_reference_name(path, factor, "measured")
+    elif frame_size is not None:
+        used = factor_from_size((img.shape[1], img.shape[0]), frame_size)
+        info = parse_reference_name(path, used, "size")
+    else:
+        info = parse_reference_name(path)
+        used = info.drizzle
     if not used >= 1.0:
         raise ValueError(f"resampling factor must be >= 1, got {used}")
-    img = load_image(path)
     return Reference(path, info, used, area_resample(img, used) if used > 1.0 else img)
 
 
@@ -496,15 +528,17 @@ RefSpec = Union[str, Tuple[str, Optional[float]]]
 
 
 def compare(anchor, references: Sequence[RefSpec], *, mosaic: bool = False,
-            anchor_label: Optional[str] = None) -> List[Row]:
+            anchor_label: Optional[str] = None, frame_size=None) -> List[Row]:
     """Measure the anchor (normally OUR stack: a path, (path, factor) or an array) and each
-    reference (path, or (path, measured_factor)) with metric.measure on one common box.
-    Row 0 is the anchor; with mosaic=True every image is measured in mosaic mode.
+    reference (path, or (path, measured_factor)) with metric.measure on one common box, with
+    DAN_interior on the anchor's interior window. Row 0 is the anchor. `frame_size` (w, h) of
+    the capture makes every reference's resampling factor size-derived (load_reference).
+    mosaic=True is a fallback that rows_to_dicts marks as not a pass/fail.
 
     Refuses processed references (sharpened/stretched: ASIStudio .jpg, AutoStakkert _conv)."""
     if isinstance(anchor, (str, tuple)):
         a_path, a_factor = (anchor, None) if isinstance(anchor, str) else anchor
-        a_ref = load_reference(a_path, a_factor)        # a drizzled anchor comes to native too
+        a_ref = load_reference(a_path, a_factor, frame_size)   # a drizzled anchor comes to native too
         a_img, a_label, a_used = a_ref.image, anchor_label or a_ref.info.label, a_ref.factor
     else:
         a_img, a_path, a_used = np.asarray(anchor, dtype=np.float64), None, 1.0
@@ -513,11 +547,10 @@ def compare(anchor, references: Sequence[RefSpec], *, mosaic: bool = False,
     loaded = []
     for spec in references:
         path, factor = (spec, None) if isinstance(spec, str) else spec
-        info = parse_reference_name(path, factor)
-        if info.processed:
+        if parse_reference_name(path, factor).processed:
             raise ValueError(f"{path} is processed output (sharpened or stretched), not a stack;"
                              " measure the linear stack (.fit/.tif/.png) instead")
-        ref = load_reference(path, factor)
+        ref = load_reference(path, factor, frame_size)
         loaded.append((ref, register(ref.image, a_lum)))
 
     box = metric.target_box(a_lum)
@@ -529,31 +562,76 @@ def compare(anchor, references: Sequence[RefSpec], *, mosaic: bool = False,
     if y1 - y0 < 32 or x1 - x0 < 32:
         raise ValueError(f"the references' common area with the target is too small: {(y0, y1, x0, x1)}")
     box = Box(y0, y1, x0, x1)
+    window = metric.interior_window(a_lum, box)
 
-    rows = [Row(a_label, a_path, a_used, None, metric.measure(a_lum, box, mosaic=mosaic))]
+    rows = [Row(a_label, a_path, a_used, None, metric.measure(a_lum, box, mosaic=mosaic, interior=window))]
     for ref, reg in loaded:
         crop = metric.luminance(crop_registered(ref.image, reg, box))
-        r = metric.measure(crop, Box(0, crop.shape[0], 0, crop.shape[1]), mosaic=mosaic)
+        r = metric.measure(crop, Box(0, crop.shape[0], 0, crop.shape[1]), mosaic=mosaic, interior=window)
         rows.append(Row(ref.info.label, ref.path, ref.factor, reg, replace(r, box=box)))
     return rows
 
 
+def review_notes(rows: Sequence[Row]) -> List[str]:
+    """What sends the comparison to human review rather than the numbers alone."""
+    notes = []
+    if any(r.result.mosaic for r in rows):
+        notes.append(MOSAIC_WARNING)
+    if not rows[0].result.interior_judged:
+        d = rows[0].result.interior_diameter
+        notes.append(LIMB_ONLY + (f" (eroded disc {d:.1f} px < {metric.INTERIOR_MIN_DIAMETER:g})" if d is not None else ""))
+    ratios = [r.result.noise_floor / r.result.band_power for r in rows[1:] if r.result.band_power > 0]
+    if ratios and rows[0].result.band_power > 0:
+        ours = rows[0].result.noise_floor / rows[0].result.band_power
+        lo, hi = min(ratios) / NOISE_REGIME_FACTOR, max(ratios) * NOISE_REGIME_FACTOR
+        if not lo <= ours <= hi:
+            notes.append(f"noise regime unlike every reference (floor/band {ours:.2e}, references "
+                         f"{min(ratios):.2e}..{max(ratios):.2e}): human review (this does not detect sharpening)")
+    return notes
+
+
 def rows_to_dicts(rows: Sequence[Row]) -> List[dict]:
-    refs_only = [r.result.value for r in rows[1:]]
-    best = max(refs_only) if refs_only else None
+    """One dict per row (row 0 = the anchor). Ratios are to the best REFERENCE (rows 1..);
+    `bar` applies Ruling 2's 0.97 to DAN_full and, when judged, to DAN_interior; `review` lists
+    what needs a human (the same list on every row)."""
+    best = max((r.result.value for r in rows[1:]), default=None)
+    ints = [r.result.interior for r in rows[1:] if r.result.interior is not None]
+    best_int = max(ints) if ints else None
+    notes = review_notes(rows)
     out = []
     for r in rows:
-        g = r.registration
+        g, res = r.registration, r.result
+        full = (res.value / best) if best else None
+        interior = (res.interior / best_int) if (best_int and res.interior is not None) else None
         out.append({
             "label": r.label, "path": r.path, "factor": r.factor,
-            "dan": r.result.value, "band_snr": r.result.band_snr,
-            "noise_floor": r.result.noise_floor, "box": list(r.result.box), "mosaic": r.result.mosaic,
-            "ratio_to_best_reference": (r.result.value / best) if best else None,
+            "dan": res.value, "band_snr": res.band_snr,
+            "noise_floor": res.noise_floor, "box": list(res.box), "mosaic": res.mosaic,
+            "ratio_to_best_reference": full,
+            "dan_interior": res.interior, "interior_judged": res.interior_judged,
+            "interior_diameter": res.interior_diameter,
+            "interior_ratio_to_best_reference": interior,
+            "bar": {"full": None if full is None else full >= PASS_BAR,
+                    "interior": None if interior is None else interior >= PASS_BAR},
+            "review": list(notes),
             "orientation": g.orientation if g else None,
             "shift": list(g.shift) if g else None, "scale": g.scale if g else None,
             "ncc": g.ncc if g else None,
         })
     return out
+
+
+def print_rows(d: Sequence[dict]) -> None:
+    for r in d:
+        reg = (f"  {r['orientation']} shift ({r['shift'][0]:+.2f},{r['shift'][1]:+.2f}) "
+               f"scale {r['scale']:.4f} ncc {r['ncc']:.3f}") if r["orientation"] else ""
+        full = f"  {r['ratio_to_best_reference']:.3f}" if r["ratio_to_best_reference"] is not None else "  -"
+        inner = (f"  interior {r['dan_interior']:.5f} ({r['interior_ratio_to_best_reference']:.3f})"
+                 if r["interior_ratio_to_best_reference"] is not None else
+                 (f"  interior {r['dan_interior']:.5f}" if r["dan_interior"] is not None else "  interior -"))
+        print(f"{r['label']:<48} DAN {r['dan']:.6f}{full}{inner}  SNR {r['band_snr']:9.1f}{reg}")
+    for note in (d[0]["review"] if d else []):
+        print(f"REVIEW: {note}")
 
 
 def _main(argv=None):
@@ -564,30 +642,31 @@ def _main(argv=None):
     c.add_argument("--anchor-label")
     c.add_argument("--ref", action="append", default=[],
                    help="reference path, optionally PATH::FACTOR with a measured resampling factor")
-    c.add_argument("--mosaic", action="store_true", help="undeclared Bayer capture: flatten the four CFA sites")
+    c.add_argument("--frame", help="capture frame size WxH: reference factors from their size")
+    c.add_argument("--mosaic", action="store_true",
+                   help="FALLBACK, not a pass/fail: raw-CFA mono anchor, four CFA sites flattened")
     c.add_argument("--json", action="store_true")
     m = sub.add_parser("measure", help="DAN of one image on its own target box")
     m.add_argument("path")
-    m.add_argument("--mosaic", action="store_true")
+    m.add_argument("--mosaic", action="store_true", help="FALLBACK: four CFA sites flattened")
     args = ap.parse_args(argv)
     if args.cmd == "measure":
         r = metric.measure_path(args.path, mosaic=args.mosaic)
         print(f"DAN {r.value:.6f}  band SNR {r.band_snr:.2f}  box {tuple(r.box)}")
+        if args.mosaic:
+            print(f"REVIEW: {MOSAIC_WARNING}")
         return 0
     specs = []
     for s in args.ref:
         path, sep, f = s.rpartition("::")
         specs.append((path, float(f)) if sep else s)
-    rows = compare(args.anchor, specs, mosaic=args.mosaic, anchor_label=args.anchor_label)
-    d = rows_to_dicts(rows)
+    frame = tuple(int(v) for v in args.frame.lower().split("x")) if args.frame else None
+    d = rows_to_dicts(compare(args.anchor, specs, mosaic=args.mosaic, anchor_label=args.anchor_label,
+                              frame_size=frame))
     if args.json:
         print(json.dumps(d, indent=2))
     else:
-        for r in d:
-            reg = (f"  {r['orientation']} shift ({r['shift'][0]:+.2f},{r['shift'][1]:+.2f}) "
-                   f"scale {r['scale']:.4f} ncc {r['ncc']:.3f}") if r["orientation"] else ""
-            ratio = f"  {r['ratio_to_best_reference']:.3f} of best ref" if r["ratio_to_best_reference"] else ""
-            print(f"{r['label']:<44} DAN {r['dan']:.6f}  SNR {r['band_snr']:7.1f}{ratio}{reg}")
+        print_rows(d)
     return 0
 
 

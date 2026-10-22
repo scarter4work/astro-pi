@@ -9,7 +9,7 @@ from scipy import ndimage
 
 import metric
 import refs
-from conftest import add_noise, lunar_scene, nas_path, planet_scene
+from conftest import add_noise, banded_planet, lunar_scene, nas_path, planet_scene
 
 
 def fourier_shift(img, dy, dx):
@@ -253,6 +253,7 @@ def test_compare_refuses_a_processed_reference(tmp_path):
 
 # --- real data (NAS, read-only) --------------------------------------------------------------
 
+@pytest.mark.nas
 def test_real_drizzled_as_registers_to_native_as():
     """2_12_2023 Jupiter: AS_P25 is drizzled x3; after area resampling it must sit on AS_P20's
     native grid at scale 1 (the scale check measures it, it is not assumed)."""
@@ -265,18 +266,84 @@ def test_real_drizzled_as_registers_to_native_as():
     assert reg.ncc > 0.9
 
 
-def test_real_asi_fit_registers_to_the_video_grid_of_as():
-    """2_1_2024 Moon: ASIStudio's native .fit against AutoStakkert's 'Drizzle15' .fit. The
-    AutoStakkert file is 5688x3168 for a 1920x1080 capture, i.e. about x3 -- not x1.5 as the
-    name says; the scale check catches this and reports the measured factor."""
-    asi = refs.load_reference(nas_path("2_1_2024", "ASIVideoStack_Output", "2024-02-01-013847-Moon-Bin1 Lqef 14.9F_Surface_40.fit"))
-    as_path = nas_path("2_1_2024", "AS_P60", "2024-02-01-013847-Moon-Bin1 Lqef 14.9F_lapl5_ap16_Drizzle15.fit")
-    asi_lum = metric.luminance(asi.image)
-    with pytest.raises(refs.ScaleMismatch) as e:
-        refs.register(metric.luminance(refs.load_reference(as_path).image), asi_lum)
-    print(f"\n2_1_2024 AS 'Drizzle15' measured residual scale {e.value.measured:.4f}")
-    assert e.value.measured == pytest.approx(2.0, rel=0.02)
-    fixed = refs.load_reference(as_path, factor=3.0)
-    reg = refs.register(metric.luminance(fixed.image), asi_lum)
-    print(f"2_1_2024 AS (x3) -> ASI: {reg}")
+@pytest.mark.nas
+def test_real_size_derived_factor_overrules_a_wrong_drizzle_name():
+    """2_1_2024 Moon: the AutoStakkert .fit is named Drizzle15 but is 5688x3168 for a 1920x1080
+    capture (2.96 / 2.93 -> x3). The factor comes from the size, the label records the
+    disagreement, and the result registers to ASIStudio's native .fit at scale 1."""
+    asi = refs.load_reference(nas_path("2_1_2024", "ASIVideoStack_Output", "2024-02-01-013847-Moon-Bin1 Lqef 14.9F_Surface_40.fit"),
+                              frame_size=(1920, 1080))
+    as_ = refs.load_reference(nas_path("2_1_2024", "AS_P60", "2024-02-01-013847-Moon-Bin1 Lqef 14.9F_lapl5_ap16_Drizzle15.fit"),
+                              frame_size=(1920, 1080))
+    assert asi.factor == 1.0 and as_.factor == 3.0
+    assert "named x1.5, size x3" in as_.info.label
+    reg = refs.register(metric.luminance(as_.image), metric.luminance(asi.image))
+    print(f"\n2_1_2024 AS (size x3) -> ASI: {reg}")
     assert reg.scale == pytest.approx(1.0, abs=0.01) and reg.ncc > 0.8
+
+
+@pytest.mark.parametrize("ref_size, frame, factor", [
+    ((5688, 3168), (1920, 1080), 3.0), ((2916, 1668), (1920, 1080), 1.5), ((640, 480), (640, 480), 1.0),
+    ((1896, 1440), (640, 480), 3.0)])
+def test_factor_from_size(ref_size, frame, factor):
+    assert refs.factor_from_size(ref_size, frame) == factor
+
+
+def test_factor_from_size_refuses_an_unknown_scale():
+    with pytest.raises(ValueError):
+        refs.factor_from_size((2560, 1440), (1920, 1080))     # x1.33: no drizzle factor
+
+
+def test_size_and_name_factors(tmp_path):
+    native = planet_scene()
+    p = tmp_path / "AS_P60"
+    p.mkdir()
+    tifffile.imwrite(p / "cap_lapl5_ap1_Drizzle15.tif", np.kron(native, np.ones((3, 3))).astype(np.float32))
+    ref = refs.load_reference(str(p / "cap_lapl5_ap1_Drizzle15.tif"), frame_size=(320, 240))
+    assert ref.factor == 3.0 and ref.image.shape == native.shape
+    assert ref.info.label == "AS_P60 (named x1.5, size x3, resampled)"
+    tifffile.imwrite(p / "ok_lapl5_ap1_Drizzle30.tif", np.kron(native, np.ones((3, 3))).astype(np.float32))
+    ok = refs.load_reference(str(p / "ok_lapl5_ap1_Drizzle30.tif"), frame_size=(320, 240))
+    assert ok.info.label == "AS_P60 (drizzled x3, resampled)"
+
+
+def test_compare_reports_the_interior_score_on_a_large_disc(tmp_path):
+    sharp = add_noise(banded_planet(15), 0.003, 1)
+    soft = add_noise(banded_planet(15, interior_blur=1.0), 0.003, 2)
+    p = tmp_path / "AS_P20"
+    p.mkdir()
+    tifffile.imwrite(p / "cap_lapl5_ap1.tif", soft.astype(np.float32))
+    rows = refs.compare(sharp, [str(p / "cap_lapl5_ap1.tif")])
+    d = refs.rows_to_dicts(rows)
+    assert d[0]["interior_judged"] and d[0]["dan_interior"] > 0
+    assert d[1]["dan_interior"] < 0.97 * d[0]["dan_interior"]
+    assert d[0]["review"] == []
+
+
+def test_compare_marks_a_small_disc_limb_only(tmp_path):
+    p = tmp_path / "AS_P20"
+    p.mkdir()
+    tifffile.imwrite(p / "cap_lapl5_ap1.tif", add_noise(banded_planet(7), 0.003, 2).astype(np.float32))
+    d = refs.rows_to_dicts(refs.compare(add_noise(banded_planet(7), 0.003, 1), [str(p / "cap_lapl5_ap1.tif")]))
+    assert d[0]["interior_judged"] is False and d[0]["dan_interior"] is None
+    assert any(n.startswith("limb-only: human review decides") for n in d[0]["review"])
+
+
+def test_mosaic_fallback_carries_a_bias_warning(tmp_path):
+    p = tmp_path / "AS_P20"
+    p.mkdir()
+    img = add_noise(lunar_scene(), 0.002, 3)
+    tifffile.imwrite(p / "cap_lapl5_ap1.tif", img.astype(np.float32))
+    d = refs.rows_to_dicts(refs.compare(img, [str(p / "cap_lapl5_ap1.tif")], mosaic=True))
+    assert any(w.startswith("mosaic mode") and "not a pass/fail" in w for w in d[0]["review"])
+
+
+def test_out_of_family_noise_regime_is_flagged(tmp_path):
+    """Not a sharpening detector (measured: unsharp masking leaves floor/band where it was) --
+    a stack whose noise regime is unlike every reference's goes to human review."""
+    base = banded_planet(15)
+    p = tmp_path / "AS_P20"
+    p.mkdir()
+    tifffile.imwrite(p / "cap_lapl5_ap1.tif", add_noise(base, 0.001, 2).astype(np.float32))
+    d = refs.rows_to_dicts(refs.compare(add_noise(base, 0.05, 1), [str(p / "cap_lapl5_ap1.tif")]))
+    assert any("noise regime" in w for w in d[0]["review"])

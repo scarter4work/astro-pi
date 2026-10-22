@@ -37,18 +37,43 @@ WHY THIS MEASURE
     * One number per image, computed identically for all; band_snr says how far above the
       noise the band is (noise-floor mistakes matter only when it is near 1).
 
+DAN_INTERIOR (review round 1): the same question asked of the surface alone
+    On a small disc DAN_full is limb-weighted: on the 29 px 2_12_2023 AS_P20 Jupiter an
+    interior-only blur sigma 1 costs 5.4 % of DAN, a whole-image blur 10 % (reviewer-measured),
+    so a soft interior behind a crisp limb could pass. interior_window(anchor, box) takes the
+    anchor's target mask (target_mask), erodes it by max(3 px, 2 x the limb's blur sigma,
+    estimated from the limb's gradient), and tapers it over 2 px (cosine); measure(...,
+    interior=window) then high-passes x inside the UNERODED mask (normalised convolution: x minus
+    its sigma-3 Gaussian mean over target pixels only, so the limb step does not leak inward),
+    and reports DAN_interior = sqrt(mean_w(hp^2) - N_int * g): the window-weighted RMS of that
+    high-pass minus its noise, with N_int the noise floor of the windowed interior itself (median
+    periodogram power at 0.40-0.50 / ln 2; photon noise on the disc exceeds the sky's) and g the
+    high-pass's white-noise gain. It is judged (interior_judged) only when the eroded disc is at
+    least INTERIOR_MIN_DIAMETER = 20 px across (equivalent diameter); below that -- Mars -- the
+    result is limb-only and the side-by-side review decides.
+
 LIMITS (stated, not hidden)
+    * Valid only between UNSHARPENED LINEAR stacks. Sharpening buys DAN: a disc softened sigma
+      1.6 and then unsharp-masked scores at least the 0.97 bar against the genuinely sharp disc
+      (pinned in test_metric.py as a known limit). No automatic detector was found that
+      separates them -- measured: the noise-floor/band-power ratio is unchanged by unsharp
+      masking (3.05e-4 vs 3.00e-4 at R 15) while the references' own ratios span 1e-6..7e-3;
+      limb undershoot moves 1.2-1.5 % against references at -0.4..-38 % (glow); sky-noise
+      spectral tilt moves 0.74 -> 0.87-0.95 against references at 0.001..0.6. So: our stack is
+      unsharpened by construction in this increment (cubic B-spline interpolation, no
+      deconvolution; sharpening is increment 2's sliders); ASIStudio's .fit is its unsharpened
+      stack (its .jpg carries the sharpening: verified side by side, ringing halos only in the
+      .jpg; the .fit header's SHARPEN/PB/PC/PN/PS record the export settings); AutoStakkert's
+      _conv files and every .jpg are refused.
     * The floor assumes the stack's noise is roughly white. Interpolated or resampled stacks
       have less noise power near Nyquist than mid-band, so part of their mid-band noise can
       count as detail; band_snr is reported so a low-SNR comparison is visible.
-    * Linear images only: a gamma-stretched or sharpened file (ASIStudio's .jpg, AutoStakkert's
-      _conv) is not a stack and is refused by refs.compare.
-    * Undeclared Bayer (raw CFA stacked as mono, e.g. the 2023 Moons): measure with mosaic=True
-      for EVERY image of that capture. The crop's four CFA sites are then scaled to a common
-      mean (flatten_cfa) before step 3, which removes the per-site gain checkerboard at native
-      resolution (same bands). Measured on raw NAS frames, the checkerboard moves DAN by
-      0.2-1.7 % (its power sits at Nyquist, outside the band) but inflates the noise floor;
-      on a debayered reference the flattening is a no-op to < 0.2 %.
+    * mosaic=True (flatten_cfa: the crop's four CFA sites scaled to one mean) is a FALLBACK
+      only, never a pass/fail: a raw-CFA mono stack is a different representation from a
+      debayered reference. The review re-mosaicked AS_P20 in all four phases and measured the
+      bias of mosaic mode against RGB luminance: Jupiter x1.019-1.026, Moon x0.930-1.094 by
+      phase (2x2 binning: Jupiter +-0.8 %, Moon 0.969-1.067). The benchmark stacks every
+      capture debayered instead (stack-probe --bayer, pattern per capture in benchset.py).
 """
 import math
 from dataclasses import dataclass
@@ -66,6 +91,10 @@ BOX_MARGIN = 0.15            # of the target's larger side, at least 8 px
 BOX_INSET = 0.02             # of each frame side, at least 4 px
 EDGE_ARTEFACT_SHARE = 0.10   # an edge-touching component thinner than this share is no target
 EDGE_NEAR = 0.03             # "touching" = within 3 % of the side (at least 4 px) of the edge
+INTERIOR_HP_SIGMA = 3.0      # px, the interior high-pass
+INTERIOR_MIN_EROSION = 3.0   # px
+INTERIOR_TAPER = 2.0         # px, cosine edge of the interior window
+INTERIOR_MIN_DIAMETER = 20.0 # px, equivalent diameter of the eroded disc for the interior to be judged
 
 
 class Box(NamedTuple):
@@ -85,6 +114,23 @@ class Result:
     signal: float         # s (input units)
     box: Box
     mosaic: bool
+    interior: Optional[float] = None         # DAN_interior (None when not judged)
+    interior_judged: bool = False
+    interior_diameter: Optional[float] = None
+
+
+@dataclass(frozen=True)
+class InteriorWindow:
+    """Chosen once on the anchor, in box coordinates, and applied to every image."""
+    window: np.ndarray        # eroded target mask with a 2 px cosine edge, [0, 1]
+    mask: np.ndarray          # uneroded target mask (bool), for the normalised high-pass
+    diameter: float           # equivalent diameter of the eroded mask, px
+    erosion: float            # px
+    limb_sigma: float         # estimated blur sigma of the limb, px
+
+    @property
+    def judged(self) -> bool:
+        return self.diameter >= INTERIOR_MIN_DIAMETER
 
 
 def luminance(img):
@@ -117,6 +163,15 @@ def target_extent(img) -> Box:
     luminance above b + 15 % of (its maximum - b); moons and specks are smaller components.
     A 3x3 median first, so a hot pixel cannot set the maximum. (The maximum, not a high
     percentile: a 30 px Saturn fills 0.06 % of a 1280x960 frame, below any percentile cut.)"""
+    return _target_component(img)[0]
+
+
+def target_mask(img) -> np.ndarray:
+    """The target component of target_extent as a boolean image, holes filled."""
+    return ndimage.binary_fill_holes(_target_component(img)[1])
+
+
+def _target_component(img):
     lum = luminance(img)
     lp = ndimage.gaussian_filter(ndimage.median_filter(lum, size=3), 2.0)
     bg, top = np.percentile(lp, BG_PERCENTILE), float(lp.max())
@@ -141,7 +196,7 @@ def target_extent(img) -> Box:
             best = (k, Box(y0, y1, x0, x1))
     if best is None:
         raise ValueError("only thin structures on the frame edge; no target")
-    return best[1]
+    return best[1], labels == best[0] + 1
 
 
 def target_box(img):
@@ -158,15 +213,89 @@ def target_box(img):
     return Box(int(y0), int(y1), int(x0), int(x1))
 
 
+def limb_sigma(img, mask=None) -> float:
+    """Blur sigma (px) of the target's edge: a Gaussian-blurred step of height H has a peak
+    gradient H / (sigma sqrt(2 pi)). H = (median just inside the edge) - (median of the sky
+    just outside), G = median over edge pixels of the local maximum gradient; iterated, since
+    "just inside" scales with sigma. Edge pixels on the frame border are not limb. Limb
+    darkening makes the edge read softer than it is (synthetic disc, true sigma 0.7 / 1 / 2 / 3:
+    reads 1.04 / 1.23 / 2.20 / 3.09), which only erodes the interior window a little more."""
+    lum = luminance(img)
+    if mask is None:
+        mask = target_mask(lum)
+    pre = 0.7                                       # px; removed again in quadrature
+    lp = ndimage.gaussian_filter(lum, pre)
+    gy, gx = np.gradient(lp)
+    grad = np.hypot(gy, gx)
+    d_in = ndimage.distance_transform_edt(mask)
+    d_out = ndimage.distance_transform_edt(~mask)
+    edge = mask & ~ndimage.binary_erosion(mask)
+    edge[:3, :] = edge[-3:, :] = False
+    edge[:, :3] = edge[:, -3:] = False
+    if not edge.any():
+        raise ValueError("the target has no limb inside the frame")
+    sigma = 1.5
+    for _ in range(4):
+        reach = int(math.ceil(2 * sigma)) + 1
+        inner = lp[(d_in >= reach) & (d_in < reach + 3)]
+        sky = lp[(d_out >= reach + 2) & (d_out < reach + 8)]
+        if inner.size == 0 or sky.size == 0:
+            break
+        height = float(np.median(inner) - np.median(sky))
+        g = float(np.median(ndimage.maximum_filter(grad, size=2 * reach + 1)[edge]))
+        if not (height > 0 and g > 0):
+            break
+        sigma = float(np.clip(height / (math.sqrt(2 * math.pi) * g), 0.3, 50.0))
+    return math.sqrt(max(sigma ** 2 - pre ** 2, 0.09))
+
+
+def interior_window(img, box: Box) -> InteriorWindow:
+    """The anchor's interior window for DAN_interior on `box` (see DAN_INTERIOR)."""
+    lum = luminance(img)
+    full = target_mask(lum)
+    sig = limb_sigma(lum, full)
+    erosion = max(INTERIOR_MIN_EROSION, 2.0 * sig)
+    mask = full[box.y0:box.y1, box.x0:box.x1]
+    # distance to the limb or to the crop's edge (a lunar disc runs past the box)
+    d = ndimage.distance_transform_edt(np.pad(mask, 1))[1:-1, 1:-1]
+    inner = d > erosion
+    d2 = ndimage.distance_transform_edt(np.pad(inner, 1))[1:-1, 1:-1]
+    w = np.where(inner, 0.5 - 0.5 * np.cos(np.pi * np.clip(d2 / INTERIOR_TAPER, 0, 1)), 0.0)
+    diameter = 2.0 * math.sqrt(float(inner.sum()) / math.pi)
+    return InteriorWindow(w, mask, diameter, erosion, sig)
+
+
+def _interior_score(x, iw: InteriorWindow) -> float:
+    m = iw.mask.astype(np.float64)
+    num = ndimage.gaussian_filter(x * m, INTERIOR_HP_SIGMA)
+    den = ndimage.gaussian_filter(m, INTERIOR_HP_SIGMA)
+    hp = x - num / np.maximum(den, 1e-6)
+    w2 = iw.window ** 2
+    ms = float((w2 * hp ** 2).sum() / w2.sum())
+    ys, xs = np.nonzero(iw.window > 0)
+    sl = (slice(ys.min(), ys.max() + 1), slice(xs.min(), xs.max() + 1))
+    w, xx = iw.window[sl], x[sl]
+    xw = (xx - (w * xx).sum() / w.sum()) * w
+    p = np.abs(np.fft.fft2(xw)) ** 2 / (w ** 2).sum()
+    f = _radial_frequency(xw.shape)
+    n_int = float(np.median(p[(f >= NOISE_BAND[0]) & (f <= NOISE_BAND[1])]) / math.log(2))
+    fc = _radial_frequency(x.shape)
+    gain = float(np.mean((1.0 - np.exp(-2.0 * (math.pi * INTERIOR_HP_SIGMA * fc) ** 2)) ** 2))
+    return math.sqrt(max(ms - n_int * gain, 0.0))
+
+
 def _radial_frequency(shape):
     fy = np.fft.fftfreq(shape[0])[:, None]
     fx = np.fft.fftfreq(shape[1])[None, :]
     return np.hypot(fy, fx)
 
 
-def measure(img, box: Optional[Box] = None, *, mosaic=False) -> Result:
+def measure(img, box: Optional[Box] = None, *, mosaic=False,
+            interior: Optional[InteriorWindow] = None) -> Result:
     """DAN of `img` (HxW or HxWxC array, any linear units) on `box` (default: its own
-    target_box). Raises ValueError when there is no target signal to measure."""
+    target_box), and DAN_interior when an anchor's interior window is given (judged only when
+    the window is >= INTERIOR_MIN_DIAMETER across). Raises ValueError when there is no target
+    signal to measure."""
     lum = luminance(img)
     if box is None:
         box = target_box(lum)
@@ -190,9 +319,17 @@ def measure(img, box: Optional[Box] = None, *, mosaic=False) -> Result:
     floor = float(np.median(power[noise]) / math.log(2))
     band_power = float(power[band].mean())
     excess = (float(power[band].sum()) - floor * int(band.sum())) / power.size
+    interior_value, judged, diameter = None, False, None
+    if interior is not None:
+        if interior.window.shape != crop.shape:
+            raise ValueError(f"interior window {interior.window.shape} does not match the crop {crop.shape}")
+        diameter, judged = interior.diameter, interior.judged
+        if judged:
+            interior_value = _interior_score((crop - bg) / signal, interior)
     return Result(value=math.sqrt(max(excess, 0.0)), band_power=band_power, noise_floor=floor,
                   band_snr=(band_power - floor) / floor if floor > 0 else math.inf,
-                  background=bg, signal=signal, box=box, mosaic=mosaic)
+                  background=bg, signal=signal, box=box, mosaic=mosaic,
+                  interior=interior_value, interior_judged=judged, interior_diameter=diameter)
 
 
 def measure_path(path, box: Optional[Box] = None, *, mosaic=False) -> Result:

@@ -4,6 +4,7 @@ Synthetic scenes are deterministic (fixed seeds). Real-data tests read the NAS r
 skipped, with the reason printed, when /mnt/qnap/astro_data is not mounted.
 """
 import os
+import shutil
 import sys
 
 import numpy as np
@@ -15,6 +16,17 @@ if HERE not in sys.path:
     sys.path.insert(0, HERE)
 
 NAS = os.environ.get("PLANETARY_BENCH_NAS", "/mnt/qnap/astro_data")
+HAVE_FFMPEG = shutil.which("ffmpeg") is not None and shutil.which("ffprobe") is not None
+
+
+def pytest_configure(config):
+    config.addinivalue_line("markers", "nas: reads real captures from the NAS (deselect with -m 'not nas')")
+    config.addinivalue_line("markers", "ffmpeg: needs ffmpeg and ffprobe (skipped when missing)")
+
+
+def pytest_runtest_setup(item):
+    if item.get_closest_marker("ffmpeg") and not HAVE_FFMPEG:
+        pytest.skip("ffmpeg/ffprobe not on PATH")
 
 
 def nas_path(*parts):
@@ -65,6 +77,29 @@ def lunar_scene(size=(256, 384), seed=2, seeing=1.0):
     tex = 0.10 * fractal_field(size, seed, 1.5)
     img = np.clip(base + tex, 0.02, None)
     return ndimage.gaussian_filter(img, seeing) if seeing > 0 else img
+
+
+def banded_planet(R, belt_contrast=0.25, interior_blur=0.0, seeing=1.0, size=(160, 200), seed=0):
+    """Jupiter-like: an oblate limb-darkened disc of radius R with two belts and fine texture.
+    interior_blur smears the surface detail only and keeps the limb crisp (the review's case:
+    an interior softened while the limb stays sharp)."""
+    h, w = size
+    yy, xx = np.mgrid[0:h, 0:w].astype(float)
+    cy, cx = h / 2 + 0.3, w / 2 - 0.4
+    r = np.hypot((yy - cy) / 0.935, xx - cx) / R
+    mu = np.sqrt(np.clip(1 - r ** 2, 0, 1))
+    lat = (yy - cy) / R
+    belts = 1 - belt_contrast * (np.exp(-((lat - 0.25) / 0.08) ** 2) + np.exp(-((lat + 0.18) / 0.08) ** 2))
+    tex = 1 + 0.24 * ndimage.gaussian_filter(np.random.default_rng(seed).standard_normal(size), 1.0)
+    detail = belts * tex
+    if interior_blur > 0:
+        detail = ndimage.gaussian_filter(detail, interior_blur)
+    img = 0.02 + 0.8 * (r < 1) * detail * (0.35 + 0.65 * mu)
+    return ndimage.gaussian_filter(img, seeing)
+
+
+def unsharp(img, sigma=1.5, amount=1.0):
+    return img + amount * (img - ndimage.gaussian_filter(img, sigma))
 
 
 def add_noise(img, sigma, seed):
