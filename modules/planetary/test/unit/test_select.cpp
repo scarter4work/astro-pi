@@ -1244,6 +1244,30 @@ TEST_CASE("no suspects: admission changes nothing; a diagnosed selection has non
     CHECK(admDiag.explanation == diag.explanation);
 }
 
+TEST_CASE("AdmitSuspects refuses a cut that AlignmentCut cannot return (controller follow-up)", "[select][suspects]") {
+    // AlignmentCut is never below kMinAlignConfidence; a lower, zero, negative or NaN cut is a caller
+    // bug that would admit torn or foreign frames, so it throws -- with or without suspects.
+    std::mt19937 rng(41);
+    std::normal_distribution<double> n01(0, 1);
+    std::vector<FrameStats> stats;
+    for (int64_t i = 0; i < 300; ++i) stats.push_back(DiscQ(i, 1.0 * (1 + 0.01 * n01(rng)), 0.0));
+    for (int64_t i = 300; i < 305; ++i) stats.push_back(DiscQ(i, 1.3, 0.0));
+    const Selection sel = SelectFrames(stats, Info(640, 480));
+    REQUIRE(sel.suspects.size() == 5);
+    const std::vector<stack::Shift> shifts = Confidences(5, 0.96, 0.99, rng);
+    const double nan = std::numeric_limits<double>::quiet_NaN();
+    const double below = std::nextafter(stack::kMinAlignConfidence, 0.0);
+    for (double bad : {below, 0.3, 0.0, -0.85, nan, -std::numeric_limits<double>::infinity()}) {
+        INFO("cut " << bad);
+        CHECK_THROWS_AS(AdmitSuspects(sel, shifts, bad), std::invalid_argument);
+        CHECK_THROWS_AS(AdmitSuspects(Selection{}, {}, bad), std::invalid_argument);
+    }
+    // The floor itself and anything above it are accepted.
+    CHECK(AdmitSuspects(sel, shifts, stack::kMinAlignConfidence).admitted.size() == 5);
+    CHECK(AdmitSuspects(sel, shifts, 0.995).rejected.size() == 5);
+    CHECK_NOTHROW(AdmitSuspects(Selection{}, {}, stack::kMinAlignConfidence));
+}
+
 namespace {
 // The review's cloudy Moon: n frames of 640 x 480; with probability p a frame shows a frame-filling
 // box (0, 0)-(320, 200..206), quality log-normal 3%, noise 1%; otherwise cloud (no target).

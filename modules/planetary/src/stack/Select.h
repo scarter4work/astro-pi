@@ -81,7 +81,10 @@ constexpr double kFullFrameMinSide = 0.05;
 // A trail crossing at a uniformly random place in a band of the frame a wide has robust sd 0.37 a
 // (MAD of a uniform is a / 4), so 0.1 refuses any set of trails not confined to a band under 27% of
 // the frame, while a surface may drift through up to ~27% of the frame over the capture (6x the
-// measured worst).
+// measured worst). The limit for a capture re-centred once (two positions, not a drift): two equal
+// halves d apart have MAD d / 2, robust sd 0.74 d, so re-centring by more than ~0.135 of the frame
+// (0.1 / 0.74) is refused when it splits the frame-filling frames about evenly; a clear majority at
+// one position has MAD 0 and passes whatever the jump.
 constexpr double kFullFrameMaxDrift = 0.1;
 // ... and the target is found (consistently, step 1) in at least this share of ALL frames (Ruling
 // P7). A low satellite or an aircraft moves ~0.5-1.5 degrees/s, so it crosses a planetary field (a
@@ -271,7 +274,12 @@ struct Admission {
 //    alignment, 3 rejected"
 // The quality bound is unchanged (admitted suspects are above it). Without suspects, the result is
 // the selection's frames and explanation as they are. Throws std::invalid_argument when
-// suspectShifts.size() != selection.suspects.size().
+// suspectShifts.size() != selection.suspects.size(), or unless alignCut >= kMinAlignConfidence
+// (Align.h; AlignmentCut never returns less, so a lower, zero, negative or NaN cut is a caller bug
+// that would let torn or foreign frames in) -- with or without suspects.
+// The line counts SELECTION only: "rejected by alignment" there means suspects. Clean frames (in
+// selection.frames) that later fail AlignmentCut are still in Admission::frames and are not
+// mentioned; the caller reports them in StackSummary.alignment, never by editing this line.
 Admission AdmitSuspects(const Selection& selection, const std::vector<Shift>& suspectShifts, double alignCut);
 
 // Steps 5, 6 and 8 of SelectFrames on bare samples -- the upper fence, the deconvolution and the

@@ -553,6 +553,10 @@ Selection SelectFrames(const std::vector<FrameStats>& stats, const ser::FileInfo
 }
 
 Admission AdmitSuspects(const Selection& selection, const std::vector<Shift>& suspectShifts, double alignCut) {
+    // AlignmentCut never returns less than the floor; below it (or NaN) a torn frame could pass.
+    if (!(alignCut >= kMinAlignConfidence))
+        throw std::invalid_argument("AdmitSuspects: alignCut " + std::to_string(alignCut) +
+                                    " is not >= kMinAlignConfidence (" + std::to_string(kMinAlignConfidence) + ")");
     if (suspectShifts.size() != selection.suspects.size())
         throw std::invalid_argument("AdmitSuspects: " + std::to_string(suspectShifts.size()) + " shifts for " +
                                     std::to_string(selection.suspects.size()) + " suspect frames");
