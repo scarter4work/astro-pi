@@ -1,8 +1,17 @@
 #include <catch_amalgamated.hpp>
 
+#include <linux/perf_event.h>
+#include <sys/ioctl.h>
+#include <sys/syscall.h>
+#include <unistd.h>
+
 #include <algorithm>
+#include <cerrno>
 #include <cmath>
 #include <cstdint>
+#include <cstring>
+#include <ctime>
+#include <functional>
 #include <limits>
 #include <random>
 #include <regex>
@@ -72,6 +81,46 @@ double Number(const stack::Diagnosis& d, const std::string& name) {
 }
 
 void CheckCountsAddUp(const Selection& sel, int64_t n);
+
+// Instructions retired by this thread, user space only, while `f` runs (perf_event_open; Linux allows
+// it for one's own thread at perf_event_paranoid <= 2). available false, with the reason, where the
+// kernel or a container gives no hardware counter.
+struct InstructionCount {
+    bool available = false;
+    uint64_t count = 0;
+    std::string error;
+};
+InstructionCount Instructions(const std::function<void()>& f) {
+    perf_event_attr attr{};
+    attr.type = PERF_TYPE_HARDWARE;
+    attr.size = sizeof attr;
+    attr.config = PERF_COUNT_HW_INSTRUCTIONS;
+    attr.disabled = 1;
+    attr.exclude_kernel = 1;
+    attr.exclude_hv = 1;
+    InstructionCount out;
+    const int fd = static_cast<int>(syscall(SYS_perf_event_open, &attr, 0, -1, -1, 0));
+    if (fd < 0) {
+        out.error = std::strerror(errno);
+        f();
+        return out;
+    }
+    ioctl(fd, PERF_EVENT_IOC_RESET, 0);
+    ioctl(fd, PERF_EVENT_IOC_ENABLE, 0);
+    f();
+    ioctl(fd, PERF_EVENT_IOC_DISABLE, 0);
+    uint64_t v = 0;
+    out.available = read(fd, &v, sizeof v) == static_cast<ssize_t>(sizeof v);
+    if (!out.available) out.error = "short read of the counter";
+    out.count = v;
+    close(fd);
+    return out;
+}
+// The 20 000- over the 5 000-frame instruction count of the long-capture test may not exceed this
+// (measured 4.003, idle or under 32 memcpy-bandwidth processes; the counts repeat to within ~20
+// instructions in 4.2e9 idle and ~3 000 under that load: deterministic, so the
+// margin is small).
+constexpr double kLinearInstructionRatio = 4.2;
 
 // Checks what every successful selection promises; returns the indices as a set.
 std::set<int64_t> CheckSelected(const Selection& sel, const std::vector<FrameStats>& stats) {
@@ -432,7 +481,7 @@ TEST_CASE("very short captures behave sensibly", "[select][short]") {
     }
 }
 
-TEST_CASE("20 000 frames: same rule, fast", "[select][long]") {
+TEST_CASE("20 000 frames: same rule, linear cost", "[select][long]") {
     auto good = [](int64_t i) { return (i / 50) % 3 == 0; };  // steady spells of 50 frames
     auto capture = [&](int64_t n) {
         std::mt19937 rng(31);
@@ -457,13 +506,14 @@ TEST_CASE("20 000 frames: same rule, fast", "[select][long]") {
 
     CHECK(SelectFrames(stats, Info(640, 480)).frames == sel.frames);  // deterministic
 
-    // Speed as counted work, never a clock: CPU time includes memory stalls, and under memory-bandwidth
-    // load (review: 32 processes copying 64 MB) the 20 000-frame working set spills cache where the
-    // 5 000 one does not -- 2.6-3.1 s CPU against 0.40-0.43 s idle, ratio 8.6-12.1 against 3.9-4.1 --
-    // so no timing bound on this machine is both meaningful and safe. RankByDetail counts its grid
-    // evaluations (steps 6 and 8, where the cost is); on the samples SelectFrames ranks here, 4x the
-    // frames is 4x the work (an O(N^2) step would be 16x), and it is exactly the likelihood table
-    // plus kPriorIterations EM steps plus the posteriors, kPriorGrid each per sample.
+    // Cost, without a clock that load can stretch: CPU time includes memory stalls, and under
+    // memory-bandwidth load (review: 32 processes copying 64 MB) the 20 000-frame working set spills
+    // cache where the 5 000 one does not -- 2.6-3.1 s CPU against 0.40-0.43 s idle, ratio 8.6-12.1
+    // against 3.9-4.1.
+    // (1) RankByDetail's own count of its grid evaluations (steps 6 and 8, where nearly all the cost
+    // is), on every frame's quality passed to it directly: exactly the likelihood table plus
+    // kPriorIterations EM steps plus the posteriors, kPriorGrid each per sample -- 4x the frames, 4x.
+    // It is counted inside the loops it measures, so it pins those loops' shape, nothing else.
     auto work = [](const std::vector<FrameStats>& s) {
         std::vector<double> q, sg;
         for (const FrameStats& f : s) {
@@ -483,6 +533,34 @@ TEST_CASE("20 000 frames: same rule, fast", "[select][long]") {
     CHECK(full == perSample * fullLeft);
     CHECK(part == perSample * partLeft);
     CHECK(static_cast<double>(full) / static_cast<double>(part) == Catch::Approx(4).epsilon(0.01));
+
+    // (2) The whole of SelectFrames, by the instructions this thread retires (a hardware counter,
+    // user space only): the same input runs the same code, so the count is the same under any load --
+    // memory stalls, other processes and cache misses retire no instructions. 4x the frames retires
+    // 4.003x the instructions; any step superlinear in N anywhere in SelectFrames raises it
+    // (an O(N^2) pass of a few instructions per pair adds ~1.6e9 at 20 000 frames). The bound is the
+    // measured ratio plus a small margin, safe because the count is deterministic.
+    const InstructionCount full20 = Instructions([&] { (void)SelectFrames(stats, Info(640, 480)); });
+    const InstructionCount part5 = Instructions([&] { (void)SelectFrames(quarter, Info(640, 480)); });
+    if (full20.available && part5.available) {
+        const double ratio = static_cast<double>(full20.count) / static_cast<double>(part5.count);
+        INFO("instructions retired: 20 000 frames " << full20.count << ", 5 000 frames " << part5.count << " (ratio "
+                                                    << ratio << ")");
+        CHECK(ratio < kLinearInstructionRatio);
+    } else {
+        WARN("no hardware instruction counter here (perf_event_open: " << full20.error
+                                                                       << "); the superlinear check is the CPU ceiling alone");
+    }
+    // (3) A ceiling on this thread's CPU for the 20 000-frame selection, ~10x the most measured under
+    // memory-bandwidth load (2.6-3.1 s; 0.40-0.43 s idle): never tripped by load, only by a change
+    // that costs an order of magnitude -- the backstop where (2) has no counter.
+    timespec a{}, b{};
+    clock_gettime(CLOCK_THREAD_CPUTIME_ID, &a);
+    (void)SelectFrames(stats, Info(640, 480));
+    clock_gettime(CLOCK_THREAD_CPUTIME_ID, &b);
+    const double cpu = static_cast<double>(b.tv_sec - a.tv_sec) + 1e-9 * static_cast<double>(b.tv_nsec - a.tv_nsec);
+    INFO("CPU for 20 000 frames: " << cpu << " s");
+    CHECK(cpu < 30.0);
 }
 
 TEST_CASE("input order does not matter; the result is in frame order", "[select]") {

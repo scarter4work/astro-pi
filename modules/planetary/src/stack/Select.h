@@ -141,7 +141,8 @@ constexpr double kMinJudgedRadius = 15;
 // A disc of at least kMinJudgedRadius is refused only when grossly blurred: sigma(q_ref) >= this times
 // its half-contrast radius (FrameStats::halfRadius), twice the highest in-focus reading measured and
 // reached on real Jupiters only past a true blur of ~0.3 R (step 7). Diagnoses refuse the image, and
-// a false refusal of a good capture is worse than a missed one (Ruling P15's rule for the region stage).
+// a false refusal of a good capture is worse than a missed one (Rulings P15 and P20: refuse only on
+// gross failure, and only here -- the region stage never refuses).
 constexpr double kGrossBlurLimit = 0.25;
 // Limb width the luma sampling itself gives a perfectly sharp edge, removed in quadrature (luma px).
 constexpr double kSamplingBlur = 0.5;
