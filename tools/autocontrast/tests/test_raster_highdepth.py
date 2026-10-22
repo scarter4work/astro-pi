@@ -127,56 +127,65 @@ def test_a_corrupt_sixteen_bit_png_raises_instead_of_falling_back_to_pillow(tmp_
         load_raster(path)
 
 
-# Formats Pillow also opens and truncates. Each guard reads the file's own header,
-# so a crafted header is enough to prove the loader refuses instead of decoding.
+# The supported set is an explicit allow-list. Everything else Pillow registers is
+# refused by name, because Pillow accepts it and quietly reduces it to 8 bits.
 
 
-def test_sixteen_bit_ppm_is_rejected_not_truncated(tmp_path):
-    path = tmp_path / "wide.ppm"
-    path.write_bytes(b"P6\n1 1\n65535\n" + np.array([65535, 40000, 257], ">u2").tobytes())
+def test_supported_suffixes_is_exactly_the_verified_allow_list():
+    from autocontrast.io.loaders import supported_suffixes
 
-    with pytest.raises(ValueError, match=r"wide\.ppm.*16-bit"):
-        load_raster(path)
-
-
-def test_sixteen_bit_pgm_is_rejected_not_rescaled_by_inference(tmp_path):
-    path = tmp_path / "wide.pgm"  # Pillow returns int32 here, so a dark one would infer /255
-    path.write_bytes(b"P5\n# comment\n1 1\n65535\n" + np.array([200], ">u2").tobytes())
-
-    with pytest.raises(ValueError, match=r"wide\.pgm.*16-bit"):
-        load_raster(path)
+    assert supported_suffixes() == frozenset({
+        ".fits", ".fit", ".fts", ".tif", ".tiff", ".png",
+        ".jpg", ".jpeg", ".jpe", ".jfif", ".webp",
+    })
 
 
-def test_eight_bit_ppm_still_loads(tmp_path):
-    path = tmp_path / "ok.ppm"
-    path.write_bytes(b"P6\n1 1\n255\n" + bytes([255, 128, 0]))
+@pytest.mark.parametrize("name, payload", [
+    ("wide.ppm", b"P6\n1 1\n65535\n" + np.array([65535, 40000, 257], ">u2").tobytes()),
+    ("wide.pgm", b"P5\n1 1\n65535\n" + np.array([200], ">u2").tobytes()),
+    ("wide.sgi", b"\x01\xda\x00\x02\x00\x03" + bytes(506)),
+    ("hdr.avif", b"\x00\x00\x00\x14pixi\x00\x00\x00\x00\x03\x0a\x0a\x0a"),
+    ("scene.dds", b"DDS " + bytes(120)),
+    ("layered.psd", b"8BPS" + bytes(30)),
+    ("wide.jp2", b"\x00\x00\x00\x0cjP  \r\n\x87\n"),
+    ("anim.gif", b"GIF89a" + bytes(10)),
+    ("pic.bmp", b"BM" + bytes(50)),
+    ("pic.xisf", b"XISF0100" + bytes(10)),
+    ("noext", b"anything"),
+])
+def test_a_suffix_outside_the_allow_list_is_refused_naming_the_supported_set(tmp_path, name, payload):
+    path = tmp_path / name
+    path.write_bytes(payload)
 
-    np.testing.assert_allclose(load_raster(path)[0, 0], [1.0, 128 / 255, 0.0])
+    for call in (load_raster, load_image, image_dimensions):
+        with pytest.raises(ValueError, match=r"unsupported image format.*supported: \.fit,"):
+            call(path)
 
 
-def test_sixteen_bit_sgi_is_rejected_not_truncated(tmp_path):
-    path = tmp_path / "wide.sgi"
-    # magic 474, storage 0 (verbatim), bpc 2, dimension 3
-    path.write_bytes(b"\x01\xda\x00\x02\x00\x03" + bytes(506))
-
-    with pytest.raises(ValueError, match=r"wide\.sgi.*16-bit"):
-        load_raster(path)
-
-
-def test_sixteen_bit_jpeg2000_rgb_is_rejected_not_truncated(tmp_path):
+def test_a_real_sixteen_bit_jpeg2000_is_refused_not_truncated(tmp_path):
     cv2 = pytest.importorskip("cv2")  # only used to author the fixture
     path = tmp_path / "wide.jp2"
-    ok = cv2.imwrite(str(path), np.tile(np.array([[[257, 40000, 65535]]], np.uint16), (64, 64, 1)))
-    assert ok
+    assert cv2.imwrite(str(path), np.tile(np.array([[[257, 40000, 65535]]], np.uint16), (64, 64, 1)))
 
-    with pytest.raises(ValueError, match=r"wide\.jp2.*16-bit"):
+    with pytest.raises(ValueError, match="unsupported image format"):
         load_raster(path)
 
 
-def test_high_bit_depth_avif_is_rejected_not_truncated(tmp_path):
-    path = tmp_path / "hdr.avif"
-    # An ISOBMFF 'pixi' property box (version/flags, 3 channels, 10 bits each).
-    path.write_bytes(b"\x00\x00\x00\x14pixi\x00\x00\x00\x00\x03\x0a\x0a\x0a")
+def test_the_allow_list_is_case_insensitive(tmp_path):
+    path = tmp_path / "STACK.PNG"
+    _write_png16(path, np.full((4, 4, 3), 40000, dtype=np.uint16))
 
-    with pytest.raises(ValueError, match=r"hdr\.avif.*10-bit"):
-        load_raster(path)
+    np.testing.assert_allclose(load_raster(path), 40000 / 65535, rtol=0, atol=1e-12)
+
+
+@pytest.mark.parametrize("suffix, kwargs", [
+    (".jpg", {"quality": 100}), (".jpeg", {"quality": 100}), (".webp", {"lossless": True}),
+])
+def test_eight_bit_formats_on_the_allow_list_still_load(tmp_path, suffix, kwargs):
+    path = tmp_path / f"ok{suffix}"
+    Image.fromarray(np.full((8, 8, 3), 128, dtype=np.uint8)).save(path, **kwargs)
+
+    img = load_raster(path)
+
+    assert img.shape == (8, 8, 3)
+    np.testing.assert_allclose(img, 128 / 255, atol=2 / 255)

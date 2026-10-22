@@ -9,7 +9,6 @@ XISF support is deferred; FITS is the Phase 0 baseline.
 
 from __future__ import annotations
 
-import re
 import warnings
 import zlib
 from dataclasses import dataclass, field
@@ -147,71 +146,51 @@ def _decode_png16(path: Path, max_dim: int | None) -> tuple[np.ndarray, float]:
     return _resize_native(arr, max_dim), _INTEGER_FULL_SCALE[np.dtype(np.uint16)]
 
 
-# Other formats Pillow will open and quietly reduce to 8 bits (measured
-# 2026-10-22, each with a 16-bit source): 16-bit RGB PPM -> RGB uint8
-# (255, 156, 1); 16-bit PGM -> int32, which `load_raster` would then rescale by
-# inferring the range from the data, wrong for a dark frame; 16-bit RGB JPEG 2000
-# -> RGB uint8 with even the high byte off ((0, 156, 1)); 16-bit SGI the same
-# shape of failure by its reader's raw mode. Nothing in this project writes or
-# reads these at depth, and no lossless decoder is worth a dependency each, so
-# they are refused by name rather than decoded (§12). AVIF stores 8-, 10- and
-# 12-bit and Pillow hands back 8-bit RGB for all of them.
-_PNM_SUFFIXES = {".pgm", ".ppm", ".pnm"}
-_SGI_SUFFIXES = {".sgi", ".rgb", ".rgba", ".bw"}
-_JPEG2000_SUFFIXES = {".jp2", ".j2k", ".j2c", ".jpc", ".jpf", ".jpx"}
-_AVIF_SUFFIXES = {".avif", ".avifs"}
-
-
-def _declared_depth_beyond_eight(path: Path) -> tuple[str, int] | None:
-    """``(format, bits)`` when a non-PNG Pillow format declares more than 8 bits."""
-    suffix = path.suffix.lower()
-    with open(path, "rb") as fh:
-        head = fh.read(65536)
-    if suffix in _PNM_SUFFIXES:
-        # Header: magic, width, height, maxval, with '#' comments to end of line.
-        tokens = re.sub(rb"#[^\r\n]*", b"", head[:512]).split()
-        if len(tokens) >= 4 and tokens[0] in (b"P2", b"P3", b"P5", b"P6") and tokens[3].isdigit():
-            maxval = int(tokens[3])
-            if maxval > 255:
-                return "PNM", maxval.bit_length()
-    elif suffix in _SGI_SUFFIXES:
-        if len(head) >= 4 and head[:2] == b"\x01\xda" and head[3] == 2:  # bytes per channel
-            return "SGI", 16
-    elif suffix in _JPEG2000_SUFFIXES:
-        # SIZ marker segment inside the codestream: FF4F FF51 Lsiz Rsiz Xsiz Ysiz
-        # XOsiz YOsiz XTsiz YTsiz XTOsiz YTOsiz Csiz, then Ssiz per component
-        # (low 7 bits = precision - 1).
-        start = head.find(b"\xff\x4f\xff\x51")
-        if start >= 0 and len(head) > start + 42:
-            bits = (head[start + 42] & 0x7F) + 1
-            if bits > 8:
-                return "JPEG 2000", bits
-    elif suffix in _AVIF_SUFFIXES:
-        # 'pixi' property box: version/flags (4), channel count (1), bits per channel.
-        start = head.find(b"pixi")
-        if start >= 0 and len(head) > start + 9:
-            channels = head[start + 8]
-            bits = max(head[start + 9:start + 9 + channels], default=8)
-            if bits > 8:
-                return "AVIF", bits
-    return None
+# Which suffixes are loadable is an ALLOW-LIST, not "whatever Pillow registers".
+# `supported_suffixes()` used to be read off Pillow's plugin registry, which meant
+# every format Pillow can open was accepted whether or not its bit depth survives
+# the decode. Measured 2026-10-22, each with a 16-bit source and no warning:
+# 16-bit RGB PPM -> RGB uint8 (255, 156, 1); 16-bit PGM -> int32, which
+# `load_raster` would then rescale by inferring the range from the data (wrong
+# for a dark frame); 16-bit RGB JPEG 2000 -> RGB uint8 (0, 156, 1), even the high
+# byte off; 16-bit SGI the same shape of failure; AVIF stores 8/10/12 bits and
+# Pillow returns 8-bit RGB for all. Chasing those one by one leaves DDS, PSD and
+# whatever Pillow registers next as the same trap, so the default is closed
+# (§12): a format is in the set only when its depth handling is exact.
+#
+#   FITS            astropy, native float, normalized by its own range
+#   TIFF            tifffile at native depth
+#   PNG             8-bit and below exact via Pillow; 16-bit via pypng
+#   JPEG, WebP      8-bit by specification, so Pillow is exact; the project's
+#                   references ship as JPEG and ranking/degrade read WebP
+#
+# Adding a format means showing its depth survives and adding it here, with a test.
+_PNG_SUFFIXES = {".png"}
+_PILLOW_8BIT_SUFFIXES = {".jpg", ".jpeg", ".jpe", ".jfif", ".webp"}
 
 
 def supported_suffixes() -> frozenset[str]:
-    """Every file suffix :func:`load_image` can actually read back.
+    """Every file suffix :func:`load_image` can read back at full fidelity.
 
-    ``load_image`` dispatches on suffix: FITS goes through astropy, TIFF through
-    ``tifffile``, everything else through Pillow's ``Image.open``. Each of those
-    three dispatch conditions contributes its own suffixes here, and each is the
-    single place that condition lives — the Pillow half is read off its own
-    registered plugins rather than hand-copied, so this can never drift from what
-    Pillow can actually open. Callers that hand a path to something outside this
-    set (a PixInsight-native ``.xisf``, say) need to fail immediately and loudly,
-    not discover it as a read error deep inside a run (§12).
+    The explicit allow-list described above, and the single place it lives.
+    ``optimize_begin`` validates ``candidate_suffix`` against it, so a path handed
+    to something outside this set (a PixInsight-native ``.xisf``, a 16-bit
+    ``.ppm``) fails immediately and loudly, not as a read error deep inside a run,
+    and never as a silently quantized image (§12).
     """
-    Image.init()  # populate Image.registered_extensions(); idempotent
     return (frozenset(_FITS_SUFFIXES) | frozenset(_TIFF_SUFFIXES)
-            | frozenset(Image.registered_extensions()))
+            | frozenset(_PNG_SUFFIXES) | frozenset(_PILLOW_8BIT_SUFFIXES))
+
+
+def _require_supported(path: Path) -> None:
+    """Raise ``ValueError`` naming the supported set if ``path`` is not loadable."""
+    if path.suffix.lower() not in supported_suffixes():
+        raise ValueError(
+            f"{path.name}: unsupported image format {path.suffix.lower() or '(no suffix)'!r}; "
+            f"supported: {', '.join(sorted(supported_suffixes()))}. Other formats are refused "
+            f"because their bit depth is not verified to survive decoding, and Pillow would "
+            f"silently reduce them to 8 bits"
+        )
 
 
 def _resize_native(arr: np.ndarray, max_dim: int | None) -> np.ndarray:
@@ -272,6 +251,7 @@ def image_dimensions(path: str | Path) -> tuple[int, int]:
     fingerprint (§2.2).
     """
     path = Path(path)
+    _require_supported(path)
     if path.suffix.lower() in _FITS_SUFFIXES:
         with fits.open(path) as hdul:
             header = hdul[0].header
@@ -360,22 +340,16 @@ def load_raster(path: str | Path, max_dim: int | None = None) -> np.ndarray:
     promotion, alpha, normalization, clipping — is shared, deliberately, so the
     two decoders cannot come to disagree about what a loaded image is. 16-bit PNG
     is decoded by ``pypng`` for the same reason (see ``_decode_png16``), and
-    PNM/SGI/JPEG 2000/AVIF files declaring more than 8 bits are refused with a
-    ``ValueError`` rather than handed to Pillow to truncate.
+    any suffix outside :func:`supported_suffixes` is refused with a ``ValueError``
+    rather than handed to Pillow to truncate.
     """
     path = Path(path)
+    _require_supported(path)
     if path.suffix.lower() in _TIFF_SUFFIXES:
         arr, full_scale = _decode_tiff(path, max_dim)
     elif _png_bit_depth(path) == 16:
         arr, full_scale = _decode_png16(path, max_dim)
     else:
-        too_deep = _declared_depth_beyond_eight(path)
-        if too_deep is not None:
-            fmt, bits = too_deep
-            raise ValueError(
-                f"{path.name}: {bits}-bit {fmt} cannot be loaded without losing precision "
-                f"(Pillow would silently reduce it to 8 bits); convert it to 16-bit PNG or TIFF"
-            )
         full_scale = None
         Image.MAX_IMAGE_PIXELS = None  # professional mosaics exceed Pillow's default guard
         with Image.open(path) as im:
