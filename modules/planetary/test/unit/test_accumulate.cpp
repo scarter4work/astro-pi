@@ -534,6 +534,102 @@ TEST_CASE("Concurrent Add gives the sequential result", "[accumulate]") {
     CHECK(acc.FramesAdded() == p.plan.stackedCount);
 }
 
+TEST_CASE("Concurrent Add on a Bayer capture gives the sequential result: odd luma height and a trail on the row seam", "[accumulate]") {
+    // Review round 2 (M3): the 12-lane 3-channel sampling, a last luma row holding 3 sensor rows
+    // (127 rows: luma 63, maxRows 3) and rejection across the seam where a frame's two row segments
+    // meet (luma row pos * 97 % lumaH), on 1 thread in frame order and on 8 in reverse, interleaved.
+    const int w = 160, h = 127;
+    const Scene s = testing::MakeSurface(46, w, h);
+    Capture clean = testing::NewCapture(w, h, ser::ColorId::BayerRGGB);
+    std::mt19937 rng(84);
+    std::vector<FrameSpec> specs;
+    for (int k = 0; k < 40; ++k) {
+        FrameSpec f = Seeing(rng, w, h, 1.5, 48);
+        if (k == 17)  // the sharpest frame everywhere, so every region stacks it
+            for (double& v : f.sigma.v) v = 0.4;
+        specs.push_back(f);
+    }
+    RenderCapture(clean, s, 40, [&](int k) { return specs[static_cast<size_t>(k)]; });
+    const Pipeline q = Run(clean, true);
+    const int lumaH = q.reference.height;
+    REQUIRE(lumaH == 63);
+    const int64_t pos = q.plan.Find(17);
+    REQUIRE(pos >= 0);
+    for (size_t r = 0; r < q.plan.RegionCount(); ++r)
+        REQUIRE((q.plan.flags[static_cast<size_t>(pos) * q.plan.RegionCount() + r] & stack::RegionPlan::kKept) != 0);
+    const int seam = static_cast<int>((pos * 97) % lumaH);
+    INFO("frame 17's seam at luma row " << seam);
+    REQUIRE(seam > stack::kRejectReach + 2);
+    REQUIRE(seam < lumaH - stack::kRejectReach - 2);
+    // Frame 17 crossed by a trail lying along its seam (luma rows seam - 1 .. seam + 1) and, for
+    // comparison, by a second one 26 luma rows away; bright and dark (the leak is half their
+    // difference, as in the streak test).
+    const int other = seam + 26;
+    REQUIRE(other < lumaH - stack::kRejectReach - 2);
+    auto trailDist = [&](int x, int y, int lumaRow) {
+        const double y0 = 2 * lumaRow - 1.5, lx = w, ly = 4.0;
+        return std::fabs(x * ly - (y - y0) * lx) / std::hypot(lx, ly);
+    };
+    auto run = [&](double level, int threads, int64_t& rejected) {
+        std::vector<float> v = testing::RenderFrame(s, w, h, specs[17], 1000u + 17);
+        for (int y = 0; y < h; ++y)
+            for (int x = 0; x < w; ++x)
+                for (int row : {seam, other}) {
+                    const double d = trailDist(x, y, row);
+                    v[static_cast<size_t>(y) * w + x] += static_cast<float>(level * std::exp(-d * d / (2 * 0.75 * 0.75)));
+                }
+        Capture one = testing::NewCapture(w, h, ser::ColorId::BayerRGGB);
+        one.Add(v);
+        auto read = [&](int64_t f) { return f == 17 ? one.Factory()()->ReadFrame(0) : clean.Factory()()->ReadFrame(f); };
+        stack::ResidualScale rs(q.plan.layout, q.reference);
+        for (size_t i = 0; i < q.used.size(); ++i) rs.Observe(stack::MeasurementLuma(read(q.used[i]), q.info), q.measured[i]);
+        stack::Accumulator acc(q.plan, q.reference, rs.Sigma(q.info.normDepth), q.info);
+        std::vector<FloatImage> frames;
+        for (int64_t f : q.used) frames.push_back(stack::DemosaicHQ(read(f), q.info.colorId, q.info.normDepth));
+        std::vector<std::thread> pool;
+        for (int t = 0; t < threads; ++t)
+            pool.emplace_back([&, t] {
+                if (threads == 1)
+                    for (size_t i = 0; i < frames.size(); ++i) acc.Add(q.used[i], frames[i]);
+                else
+                    for (size_t i = frames.size(); i-- > 0;)
+                        if (static_cast<int>(i % threads) == t) acc.Add(q.used[i], frames[i]);
+            });
+        for (auto& th : pool) th.join();
+        CHECK(acc.FramesAdded() == q.plan.stackedCount);
+        rejected = acc.RejectedCells();
+        return acc.Finish();
+    };
+    int64_t rej1 = 0, rej8 = 0, rejDark = 0;
+    const FloatImage bright1 = run(0.5, 1, rej1), bright8 = run(0.5, 8, rej8), dark = run(-0.5, 8, rejDark);
+    REQUIRE(bright1.channels == 3);
+    REQUIRE(bright1.data.size() == bright8.data.size());
+    double worst = 0;
+    for (size_t i = 0; i < bright1.data.size(); ++i)
+        worst = std::max(worst, static_cast<double>(std::fabs(bright1.data[i] - bright8.data[i])));
+    // Float sums in a different order (Accumulate.h "Thread safety").
+    CHECK(worst < 1e-6);
+    CHECK(rej1 == rej8);
+    CHECK(rej1 > 0);
+    CHECK(rejDark > 0);
+    // Rejected across the seam as anywhere: each trail's leak within 4 sensor px of its centre line,
+    // against 0.5 / 40 unrejected (the Bayer leak is ~0.001 anywhere, "A single-frame streak").
+    double leakSeam = 0, leakOther = 0;
+    for (int y = 0; y < h; ++y)
+        for (int x = 8; x < w - 8; ++x)
+            for (int c = 0; c < 3; ++c) {
+                const size_t i = (static_cast<size_t>(y) * w + x) * 3 + c;
+                const double l = 0.5 * std::fabs(bright8.data[i] - dark.data[i]);
+                if (trailDist(x, y, seam) <= 4) leakSeam = std::max(leakSeam, l);
+                if (trailDist(x, y, other) <= 4) leakOther = std::max(leakOther, l);
+            }
+    INFO("thread order max diff " << worst << "; rejected cells " << rej1 << " / " << rej8 << "; trail leak on the seam "
+                                  << leakSeam << ", away from it " << leakOther);
+    CHECK(leakSeam < 0.002);
+    CHECK(leakOther < 0.002);
+    CHECK(leakSeam < 1.5 * leakOther + 2e-4);
+}
+
 TEST_CASE("ResidualScale and Accumulator argument errors", "[accumulate]") {
     const int w = 96, h = 80;
     const Scene s = testing::MakeSurface(44, w, h);
