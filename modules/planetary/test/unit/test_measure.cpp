@@ -188,6 +188,79 @@ TEST_CASE("a frame of background only has no target") {
         CHECK_FALSE(s.targetFound);
         CHECK(s.clippedFraction == 1.0);
     }
+    SECTION("all-black frame") {
+        const FrameStats s = MeasureFrame(Flat(64, 48, 0.0f), 0);
+        CHECK_FALSE(s.targetFound);
+        CHECK(s.quality == 0);
+        CHECK(s.brightness == 0);
+        CHECK(s.clippedFraction == 0);
+    }
+    SECTION("1x1 and 2x2 frames") {
+        const FrameStats one = MeasureFrame(Flat(1, 1, 1.0f), 0);
+        CHECK_FALSE(one.targetFound);
+        CHECK(one.clippedFraction == 1.0);
+        FloatImage two = Flat(2, 2, 0.05f);
+        At(two, 1, 1) = 0.9f;
+        const FrameStats s2 = MeasureFrame(two, 0);
+        CHECK_FALSE(s2.targetFound);
+        CHECK(s2.brightness == Catch::Approx((3 * 0.05 + 0.9) / 4).epsilon(1e-6));
+    }
+}
+
+namespace {
+
+// The 2026-01-30 Saturn AVI's background: a 5-7 DN pedestal with a gentle gradient, 1.5 DN noise, 8-bit.
+FloatImage SaturnBackground(int w, int h, unsigned seed) {
+    FloatImage im = Flat(w, h, 0.0f);
+    for (int y = 0; y < h; ++y)
+        for (int x = 0; x < w; ++x) At(im, x, y) = 0.022f + 0.004f * x / w + 0.002f * y / h;
+    AddNoise(im, 1.5 / 255, seed);
+    Quantize8(im);
+    return im;
+}
+
+}  // namespace
+
+TEST_CASE("small bright structures on a background-only frame are not a target") {
+    using Paint = void (*)(FloatImage&, int, int);
+    const std::pair<const char*, Paint> cases[] = {
+        {"hot pair", [](FloatImage& im, int x, int y) { At(im, x, y) = At(im, x + 1, y) = 1.0f; }},
+        {"hot column segment", [](FloatImage& im, int x, int y) { for (int k = 0; k < 16; ++k) At(im, x, y + k) = 1.0f; }},
+        {"hot row segment", [](FloatImage& im, int x, int y) { for (int k = 0; k < 16; ++k) At(im, x + k, y) = 1.0f; }},
+        {"3-px diagonal cosmic-ray streak", [](FloatImage& im, int x, int y) { for (int k = 0; k < 3; ++k) At(im, x + k, y + k) = 1.0f; }},
+        {"staircase streak", [](FloatImage& im, int x, int y) {
+             for (int k = 0; k < 6; ++k) At(im, x + k, y + k) = At(im, x + k + 1, y + k) = 1.0f;
+         }},
+        {"3x3 hot cluster", [](FloatImage& im, int x, int y) {
+             for (int j = 0; j < 3; ++j)
+                 for (int i = 0; i < 3; ++i) At(im, x + i, y + j) = 1.0f;
+         }},
+    };
+    for (const auto& size : {std::pair<int, int>{1920, 1080}, std::pair<int, int>{96, 64}}) {
+        const FloatImage background = SaturnBackground(size.first, size.second, 21);
+        REQUIRE_FALSE(MeasureFrame(background, 0).targetFound);
+        for (const auto& c : cases) {
+            FloatImage im = background;
+            c.second(im, size.first / 3, size.second / 3);
+            INFO(size.first << "x" << size.second << ": " << c.first);
+            CHECK_FALSE(MeasureFrame(im, 0).targetFound);
+        }
+    }
+}
+
+TEST_CASE("a small real planet on that background is still found") {
+    for (const double r : {20.0, 6.0}) {  // a 40-px disc and a 12-px one (Neptune-sized)
+        FloatImage im = SaturnBackground(1920, 1080, 33);
+        const double cx = 1011.4, cy = 517.7;
+        PaintDisc(im, cx, cy, r, [](int, int) { return 0.6; });
+        At(im, 300, 300) = At(im, 301, 300) = 1.0f;  // and a hot pair elsewhere
+        const FrameStats s = MeasureFrame(im, 0);
+        INFO("r " << r << " centroid " << s.cx << "," << s.cy);
+        REQUIRE(s.targetFound);
+        CHECK(std::fabs(s.cx - cx) < 0.5);
+        CHECK(std::fabs(s.cy - cy) < 0.5);
+        CHECK(s.quality > 0);
+    }
 }
 
 TEST_CASE("target centroid within half a pixel of the truth") {
@@ -269,13 +342,15 @@ constexpr int kAviW = 128, kAviH = 96, kAviFrames = 200;
 // Counts live readers and reads; optionally slow, optionally failing.
 class CountingSource : public ser::FrameSource {
 public:
-    CountingSource(std::unique_ptr<ser::FrameSource> inner, std::atomic<int>& live, std::atomic<int>& reads, int delayMs)
-        : inner_(std::move(inner)), live_(live), reads_(reads), delayMs_(delayMs) { ++live_; }
+    CountingSource(std::unique_ptr<ser::FrameSource> inner, std::atomic<int>& live, std::atomic<int>& reads, int delayMs,
+                   int64_t failAt = -1)
+        : inner_(std::move(inner)), live_(live), reads_(reads), delayMs_(delayMs), failAt_(failAt) { ++live_; }
     ~CountingSource() override { --live_; }
     const ser::FileInfo& Info() const override { return inner_->Info(); }
     ser::Frame ReadFrame(int64_t i) const override {
         if (delayMs_ > 0) std::this_thread::sleep_for(std::chrono::milliseconds(delayMs_));
         ++reads_;
+        if (i == failAt_) throw ser::SerError("frame " + std::to_string(i) + " is unreadable");
         return inner_->ReadFrame(i);
     }
     std::optional<int64_t> FrameTimestamp(int64_t i) const override { return inner_->FrameTimestamp(i); }
@@ -285,6 +360,7 @@ private:
     std::atomic<int>& live_;
     std::atomic<int>& reads_;
     int delayMs_;
+    int64_t failAt_;
 };
 
 }  // namespace
@@ -411,14 +487,48 @@ TEST_CASE("MeasureAll: a worker's failure is rethrown after all threads are join
         CHECK_THROWS_AS(MeasureAll(factory, info, 4, {}), std::runtime_error);
     }
     SECTION("reader for a different file") {
-        ser::FileInfo other = info;
-        other.frameCount = 41;
         const stack::SourceFactory factory = [&] {
             return std::make_unique<CountingSource>(ser::OpenVideo(path), live, reads, 0);
         };
+        ser::FileInfo other = info;
+        SECTION("frame count") { other.frameCount = 41; }
+        SECTION("colour") { other.colorId = ser::ColorId::BayerRGGB; }
+        SECTION("normalisation depth") { other.normDepth = 12; }
         CHECK_THROWS_AS(MeasureAll(factory, other, 2, {}), ser::SerError);
     }
+    SECTION("a read fails mid-run: the error comes out, no partial result") {
+        const stack::SourceFactory factory = [&] {
+            return std::make_unique<CountingSource>(ser::OpenVideo(path), live, reads, 1, 17);
+        };
+        CHECK_THROWS_WITH(MeasureAll(factory, info, 4, {}), "frame 17 is unreadable");
+    }
+    SECTION("a throwing progress callback: workers are joined, its exception comes out") {
+        const stack::SourceFactory factory = [&] {
+            return std::make_unique<CountingSource>(ser::OpenVideo(path), live, reads, 2);
+        };
+        int reports = 0;
+        stack::Progress progress;
+        progress.report = [&](const std::string&, int64_t, int64_t) {
+            if (++reports == 2) throw std::runtime_error("interface gone");
+        };
+        CHECK_THROWS_WITH(MeasureAll(factory, info, 4, progress), "interface gone");
+    }
+    SECTION("a throwing cancel poll: the same") {
+        const stack::SourceFactory factory = [&] {
+            return std::make_unique<CountingSource>(ser::OpenVideo(path), live, reads, 2);
+        };
+        int polls = 0;
+        stack::Progress progress;
+        progress.cancelled = [&]() -> bool {
+            if (++polls == 3) throw std::runtime_error("poll failed");
+            return false;
+        };
+        CHECK_THROWS_WITH(MeasureAll(factory, info, 4, progress), "poll failed");
+    }
     CHECK(live == 0);
+    const int after = reads;
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    CHECK(reads == after);
 }
 
 TEST_CASE("MeasureAll on an empty capture returns nothing") {

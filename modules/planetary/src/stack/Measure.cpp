@@ -6,7 +6,6 @@
 #include <cmath>
 #include <condition_variable>
 #include <exception>
-#include <limits>
 #include <mutex>
 #include <stdexcept>
 #include <string>
@@ -29,7 +28,7 @@ constexpr double kPeakSigmas = 10;           // a target's brightest block: >= b
 constexpr double kMinContrast = 0.01;        // ... and >= b + 1% of full scale
 constexpr double kExtentFraction = 0.1;      // extent: above 10% of the contrast
 constexpr double kCentroidFraction = 0.5;    // centroid: above half the contrast
-constexpr int64_t kMinTargetPixels = 9;
+constexpr int64_t kMinTargetPixels = 16;     // real pixels above half the contrast
 constexpr double kMarginFraction = 0.1;      // quality region: box + 10%
 
 const char* const kPhase = "Measuring frames";
@@ -78,33 +77,48 @@ struct Grid {
     std::vector<int64_t> area;  // pixels per block (edge blocks may be partial)
 };
 
-// Block means of the despiked image: each pixel is first held to the largest of its 4
-// neighbours, so a hot pixel (or a lone noise spike) cannot lift a block into a "target".
-Grid BlockMeans(const float* p, int w, int h) {
+// One pass of a 3-wide min or max filter along rows (step 1) or columns (step w); the window is
+// cut at the image border, so a target cut by the edge stays at the edge.
+template <bool kMax>
+void Filter3(const float* in, float* out, int w, int h, bool alongRows) {
+    for (int y = 0; y < h; ++y)
+        for (int x = 0; x < w; ++x) {
+            const size_t i = static_cast<size_t>(y) * w + x;
+            float v = in[i];
+            const bool lo = alongRows ? x > 0 : y > 0, hi = alongRows ? x + 1 < w : y + 1 < h;
+            const size_t step = alongRows ? 1 : static_cast<size_t>(w);
+            if (lo) v = kMax ? std::max(v, in[i - step]) : std::min(v, in[i - step]);
+            if (hi) v = kMax ? std::max(v, in[i + step]) : std::min(v, in[i + step]);
+            out[i] = v;
+        }
+}
+
+// Grey-scale opening by a 3x3 square (erosion, then dilation): every structure that a 3x3 square
+// does not fit inside -- a hot pixel, pair, column or row segment, a 1-2 px wide cosmic-ray
+// streak -- is flattened to its surroundings; anything at least 3x3 keeps its shape. Result in `a`.
+void Open3x3(const float* p, int w, int h, std::vector<float>& a, std::vector<float>& b) {
+    const size_t n = static_cast<size_t>(w) * h;
+    a.resize(n);
+    b.resize(n);
+    Filter3<false>(p, a.data(), w, h, true);
+    Filter3<false>(a.data(), b.data(), w, h, false);
+    Filter3<true>(b.data(), a.data(), w, h, true);
+    Filter3<true>(a.data(), b.data(), w, h, false);
+    a.swap(b);
+}
+
+// Block means of the opened image `o`.
+Grid BlockMeans(const float* o, int w, int h) {
     Grid g;
     g.d = DetectionBlock(w, h);
     g.cw = (w + g.d - 1) / g.d;
     g.ch = (h + g.d - 1) / g.d;
     g.mean.assign(static_cast<size_t>(g.cw) * g.ch, 0.0);
     g.area.assign(g.mean.size(), 0);
-    const bool alone = w == 1 && h == 1;
     for (int y = 0; y < h; ++y) {
-        const float* row = p + static_cast<size_t>(y) * w;
-        const float* up = y > 0 ? row - w : nullptr;
-        const float* down = y + 1 < h ? row + w : nullptr;
+        const float* row = o + static_cast<size_t>(y) * w;
         const size_t grow = static_cast<size_t>(y / g.d) * g.cw;
-        for (int x = 0; x < w; ++x) {
-            float v = row[x];
-            if (!alone) {
-                float m = -std::numeric_limits<float>::infinity();
-                if (x > 0) m = std::max(m, row[x - 1]);
-                if (x + 1 < w) m = std::max(m, row[x + 1]);
-                if (up) m = std::max(m, up[x]);
-                if (down) m = std::max(m, down[x]);
-                v = std::min(v, m);
-            }
-            g.mean[grow + x / g.d] += v;
-        }
+        for (int x = 0; x < w; ++x) g.mean[grow + x / g.d] += row[x];
     }
     for (int gy = 0; gy < g.ch; ++gy)
         for (int gx = 0; gx < g.cw; ++gx) {
@@ -177,7 +191,11 @@ FrameStats MeasureFrame(const ser::FloatImage& luma, int64_t index) {
     FrameStats s;
     s.index = index;
 
-    const Grid g = BlockMeans(p, w, h);
+    // Per-thread scratch for the opened image (a 1080p frame is 8 MB; MeasureAll calls this per frame).
+    thread_local std::vector<float> openA, openB;
+    Open3x3(p, w, h, openA, openB);
+    const float* opened = openA.data();
+    const Grid g = BlockMeans(opened, w, h);
     const double sigma = PixelNoise(p, w, h);
     std::vector<double> sorted = g.mean;
     const double b = Quantile(sorted, kBackgroundPercentile);
@@ -189,18 +207,29 @@ FrameStats MeasureFrame(const ser::FloatImage& luma, int64_t index) {
     size_t bestPeak = 0;
     double bestFlux = -1;
     int next = 1;
+    std::vector<size_t> blocks;
     for (size_t i = 0; i < g.mean.size(); ++i) {
         if (labels[i] != 0 || g.mean[i] <= seedThr) continue;
         size_t peak = i;
         double flux = 0;
-        int64_t area = 0;
+        blocks.clear();
         Flood(g, seedThr, i, next++, labels, [&](size_t j) {
             if (g.mean[j] > g.mean[peak] || (g.mean[j] == g.mean[peak] && j < peak)) peak = j;
             flux += (g.mean[j] - b) * static_cast<double>(g.area[j]);
-            area += g.area[j];
+            blocks.push_back(j);
         });
         const double contrast = g.mean[peak] - b;
-        if (contrast >= std::max(kPeakSigmas * sigmaB, kMinContrast) && area >= kMinTargetPixels && flux > bestFlux) {
+        if (contrast < std::max(kPeakSigmas * sigmaB, kMinContrast) || flux <= bestFlux) continue;
+        // Size in real pixels: opened-image pixels of the component above half its contrast.
+        const double half = b + kCentroidFraction * contrast;
+        int64_t core = 0;
+        for (size_t j : blocks) {
+            const int x0 = static_cast<int>(j % g.cw) * g.d, y0 = static_cast<int>(j / g.cw) * g.d;
+            for (int y = y0; y < std::min(h, y0 + g.d); ++y)
+                for (int x = x0; x < std::min(w, x0 + g.d); ++x)
+                    if (opened[static_cast<size_t>(y) * w + x] > half) ++core;
+        }
+        if (core >= kMinTargetPixels) {
             bestFlux = flux;
             bestPeak = peak;
         }
@@ -319,13 +348,14 @@ std::vector<FrameStats> MeasureAll(const SourceFactory& factory, const ser::File
             const std::unique_ptr<ser::FrameSource> src = factory();
             if (!src) throw ser::SerError("MeasureAll: the reader factory returned no reader");
             const ser::FileInfo& si = src->Info();
+            auto describe = [](const ser::FileInfo& f) {
+                return std::to_string(f.header.width) + "x" + std::to_string(f.header.height) + ", " +
+                       std::to_string(f.frameCount) + " frames, " + ser::ColorIdName(f.colorId) + ", depth " +
+                       std::to_string(f.normDepth);
+            };
             if (si.frameCount != info.frameCount || si.header.width != info.header.width ||
-                si.header.height != info.header.height)
-                throw ser::SerError("MeasureAll: a reader opened " + std::to_string(si.header.width) + "x" +
-                                    std::to_string(si.header.height) + " with " + std::to_string(si.frameCount) +
-                                    " frames, expected " + std::to_string(info.header.width) + "x" +
-                                    std::to_string(info.header.height) + " with " +
-                                    std::to_string(info.frameCount));
+                si.header.height != info.header.height || si.colorId != info.colorId || si.normDepth != info.normDepth)
+                throw ser::SerError("MeasureAll: a reader opened " + describe(si) + "; expected " + describe(info));
             while (!stop.load(std::memory_order_relaxed)) {
                 const int64_t first = nextFrame.fetch_add(kRun);
                 if (first >= total) break;

@@ -28,6 +28,9 @@ struct FrameStats {
     // the frame (a lunar surface) touches all four edges.
     int bx0 = 0, by0 = 0, bx1 = 0, by1 = 0;
     // Sharpness, in 1/pixel; only frames of the same capture are meant to be compared.
+    // targetFound -- never quality -- says whether there is a target: quality is 0 both for
+    // "no target" and for a found target with no measurable detail (gradient energy at or below
+    // the noise floor), so a consumer must test targetFound first.
     double quality = 0;
     // Mean luma of the target pixels (in the box, above 10% of the contrast), in [0, 1] units.
     double brightness = 0;
@@ -47,32 +50,46 @@ double LumaScale(const ser::FileInfo& info);
 int DetectionBlock(int width, int height);
 
 // Luma at or above this is saturated: 254/255 is not, a 12- or 10-bit ADC scaled into 16 bits
-// (65520/65535, 65472/65535) is, and a Bayer cell counts only when all four sites are.
+// (65520/65535, 65472/65535) is. For Bayer input the luma is a 2x2 cell mean, so the test is
+// "cell mean >= 0.999": with in-range samples (each <= 1) that needs every one of the four sites
+// at >= 0.996 of full scale, i.e. all four saturated -- a cell with only its red site clipped
+// does not count.
 constexpr double kClippedLuma = 0.999;
 
 // Measures one luma image (1 channel, normalised to [0, 1] as LumaForMeasure makes it).
 // Throws std::invalid_argument for an empty image, a channel count other than 1, or a sample
 // count that does not match width * height. Deterministic: the same image gives the same stats.
 //
-// Background and noise. The image is despiked (each pixel held to the largest of its 4 neighbours,
-// so a hot pixel cannot make a target) and block-averaged on a detection grid of d x d pixels,
+// Background and noise. Detection works on a grey-scale opening of the luma by a 3x3 square
+// (erosion, then dilation): every structure a 3x3 square does not fit inside -- a hot pixel, a hot
+// pair, a hot column or row segment, a 1-2 px wide cosmic-ray streak or staircase -- is flattened
+// to its surroundings, while a target keeps its shape (only texture peaks are trimmed, and only
+// for detection: centroid, box contents, brightness, clipping and quality use the raw luma).
+// The opened image is block-averaged on a detection grid of d x d pixels,
 // d = ceil(longest side / 256) (1080p mono: d = 8). The background b is the 20th percentile of
 // the block means (the sky, as long as the target covers less than ~80% of the frame). The block
 // noise s_b is the MAD of neighbouring block differences / sqrt(2) (blind to smooth gradients
 // and vignetting), floored at s / d. The pixel noise s is from the 20th percentile, over tiles
 // of up to 32 x 32 pixels, of the mean squared neighbour difference / 2 -- the smoothest tiles,
-// i.e. sky where there is any, the flattest maria on a full-frame Moon -- so texture does not
-// inflate it and quantised 8-bit data still gets its true (quantisation included) noise.
+// i.e. sky where there is any -- so planet texture does not inflate it and quantised 8-bit data
+// still gets its true (quantisation included) noise. Caveat: on a target that fills the frame
+// (lunar surface, no sky) the smoothest tiles are still textured, s comes out too high, and the
+// quality's noise term over-corrects (all frames of the capture alike, so their ranking holds,
+// but the absolute quality reads low and can reach 0 on a smooth, blurred frame).
 //
 // Target rule. Blocks brighter than b + 4 s_b form 8-connected components. A component is a
-// target candidate when its brightest block stands at least max(10 s_b, 0.01) above b and it
-// covers at least 9 pixels; the candidate with the most flux (sum of block excess) is the target.
+// target candidate when its brightest block stands at least max(10 s_b, 0.01) above b and at
+// least 16 real pixels of the opened luma inside it stand above half that contrast; the candidate
+// with the most flux (sum of block excess) is the target.
 // 10 s_b: white noise peaks near 4-5 s_b over a 1080p grid, and the 2026-01-30 Saturn AVI (a
-// 5-6 DN pedestal and nothing else) peaks at 5.2-6.7 s_b, 0.0050-0.0064 of full scale (measured
-// 2026-10-21), so a real target has to stand well clear of both. 0.01 of full scale (2.5 DN at
+// 5-6 DN pedestal and nothing else) peaks at 4.9-5.7 s_b, 0.0044-0.0051 of full scale on the
+// opened grid (measured 2026-10-21), so a real target has to stand well clear of both. 0.01 of full scale (2.5 DN at
 // 8 bits): a smooth amp glow or gradient can reach many s_b yet stays that faint, while a planet
-// capture is exposed to tens of percent (the same night's Neptune, the faintest target on the NAS:
-// 0.74, 24 s_b). 9 pixels: a lone noise spike is never a target. The target's extent is then
+// capture is exposed to tens of percent (the same night's Neptune, the faintest target on the NAS,
+// at gain high enough for 22 DN of noise: 0.80 of full scale, over 18 s_b). 16 pixels, counted on the luma rather than as whole blocks (a 1080p block alone is
+// 64 px): the opening already removes anything thinner than 3 px, so this rejects a compact 3x3
+// hot cluster (9 px) or a small cosmic-ray blob, while a planet down to ~5 px across (a 12-px
+// Neptune has ~100 px above half its contrast) is found. The target's extent is then
 // regrown from its brightest block over blocks above b + max(4 s_b, 10% of the contrast), which
 // keeps a faint halo or a nearby moon out of the box.
 //
@@ -104,8 +121,9 @@ using SourceFactory = std::function<std::unique_ptr<ser::FrameSource>()>;
 // in frame order, identical for any thread count.
 // Progress phase "Measuring frames" (done, frameCount); report() and cancelled() are only called
 // from the calling thread. Cancel: workers stop, every thread is joined, StackCancelled is thrown.
-// A worker's exception (a read error, a factory that throws or returns null, a reader whose size
-// or frame count differs from `info`) is rethrown here after every thread is joined.
+// A worker's exception (a read error, a factory that throws or returns null, a reader whose size,
+// frame count, colour id or normalisation depth differs from `info`) is rethrown here after every
+// thread is joined; so is an exception from report() or cancelled(). No partial result is returned.
 std::vector<FrameStats> MeasureAll(const SourceFactory& factory, const ser::FileInfo& info, int threads,
                                    const Progress& progress);
 
