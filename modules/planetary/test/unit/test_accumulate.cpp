@@ -27,23 +27,9 @@ using testing::Scene;
 
 namespace {
 
-
-// Renders `n` frames on `threads` threads: spec(k) describes frame k.
-void RenderCapture(Capture& cap, const Scene& s, int n, const std::function<FrameSpec(int)>& spec) {
-    const int w = cap.info.header.width, h = cap.info.header.height;
-    std::vector<std::vector<float>> frames(static_cast<size_t>(n));
-    std::vector<FrameSpec> specs;
-    for (int k = 0; k < n; ++k) specs.push_back(spec(k));
-    std::vector<std::thread> pool;
-    const int t = 16;
-    for (int i = 0; i < t; ++i)
-        pool.emplace_back([&, i] {
-            for (int k = i; k < n; k += t)
-                frames[static_cast<size_t>(k)] = testing::RenderFrame(s, w, h, specs[static_cast<size_t>(k)], 1000u + k);
-        });
-    for (auto& th : pool) th.join();
-    for (auto& f : frames) cap.Add(f);
-}
+using testing::RenderCapture;
+using testing::RmsToTruth;
+using testing::Seeing;
 
 // Catmull-Rom sample, clamped (the plain global-aligned mean's interpolation).
 double Cubic(const FloatImage& im, double x, double y, int c = 0) {
@@ -149,42 +135,6 @@ FloatImage PlainMean(const Capture& cap, const Pipeline& p, const std::vector<in
                 out.data[static_cast<size_t>(y) * w + x] += static_cast<float>(Cubic(im, x + s.dx, y + s.dy) / frames.size());
     }
     return out;
-}
-
-// RMS difference between a stack and the sharp scene, after registering the stack to the scene
-// (GlobalShift: stack(x + d) ~ scene(x)), over `inside` pixels.
-double RmsToTruth(const FloatImage& stackIm, const Scene& s, const std::function<bool(int, int)>& inside) {
-    const int w = stackIm.width, h = stackIm.height;
-    FloatImage truth{w, h, 1, std::vector<float>(static_cast<size_t>(w) * h)};
-    for (int y = 0; y < h; ++y)
-        for (int x = 0; x < w; ++x) truth.data[static_cast<size_t>(y) * w + x] = static_cast<float>(s.Eval(x, y, 0));
-    const Shift d = stack::GlobalShift(truth, stackIm, stack::MeasureFrame(stackIm, 0, 1), 1);
-    double sum = 0;
-    int64_t n = 0;
-    for (int y = 0; y < h; ++y)
-        for (int x = 0; x < w; ++x) {
-            if (!inside(x, y)) continue;
-            const double e = stackIm.data[static_cast<size_t>(y) * w + x] - s.Eval(x - d.dx, y - d.dy, 0);
-            sum += e * e;
-            ++n;
-        }
-    REQUIRE(n > 0);
-    return std::sqrt(sum / static_cast<double>(n));
-}
-
-// A surface capture with seeing: per-frame drift, a smooth local displacement field (rms ~0.7 px,
-// cells of 40 px) and a smooth blur field (0.4-3 px, lognormal per 40-px cell).
-FrameSpec Seeing(std::mt19937& rng, int w, int h, double drift, double cell, double blurMedian = 1.2) {
-    std::normal_distribution<double> n(0, 1);
-    FrameSpec f;
-    f.gx = drift * n(rng);
-    f.gy = drift * n(rng);
-    f.hasLocal = true;
-    f.dx = testing::RandomField(rng, w, h, cell, [&] { return 0.7 * n(rng); });
-    f.dy = testing::RandomField(rng, w, h, cell, [&] { return 0.7 * n(rng); });
-    f.sigma = testing::RandomField(rng, w, h, cell, [&] { return std::clamp(blurMedian * std::exp(0.6 * n(rng)), std::min(0.4, blurMedian), 3.0); });
-    f.noise = 0.01;
-    return f;
 }
 
 }  // namespace

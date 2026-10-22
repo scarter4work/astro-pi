@@ -10,6 +10,8 @@
 #include <memory>
 #include <optional>
 #include <random>
+#include <stdexcept>
+#include <thread>
 #include <vector>
 
 #include "Align.h"
@@ -238,6 +240,60 @@ struct Capture {
         info.header.frameCount = static_cast<int32_t>(frames->size());
     }
 };
+
+// Renders `n` frames on 16 threads into `cap`: spec(k) describes frame k (spec is called in frame
+// order on the calling thread, so a spec drawing from one generator stays reproducible).
+inline void RenderCapture(Capture& cap, const Scene& s, int n, const std::function<FrameSpec(int)>& spec) {
+    const int w = cap.info.header.width, h = cap.info.header.height;
+    std::vector<std::vector<float>> frames(static_cast<size_t>(n));
+    std::vector<FrameSpec> specs;
+    for (int k = 0; k < n; ++k) specs.push_back(spec(k));
+    std::vector<std::thread> pool;
+    const int t = 16;
+    for (int i = 0; i < t; ++i)
+        pool.emplace_back([&, i] {
+            for (int k = i; k < n; k += t)
+                frames[static_cast<size_t>(k)] = RenderFrame(s, w, h, specs[static_cast<size_t>(k)], 1000u + k);
+        });
+    for (auto& th : pool) th.join();
+    for (auto& f : frames) cap.Add(f);
+}
+
+// A capture with seeing: per-frame drift, a smooth local displacement field (rms ~0.7 px, cells of
+// `cell` px) and a smooth blur field (lognormal per cell around blurMedian, within [min(0.4, median), 3]).
+inline FrameSpec Seeing(std::mt19937& rng, int w, int h, double drift, double cell, double blurMedian = 1.2) {
+    std::normal_distribution<double> n(0, 1);
+    FrameSpec f;
+    f.gx = drift * n(rng);
+    f.gy = drift * n(rng);
+    f.hasLocal = true;
+    f.dx = RandomField(rng, w, h, cell, [&] { return 0.7 * n(rng); });
+    f.dy = RandomField(rng, w, h, cell, [&] { return 0.7 * n(rng); });
+    f.sigma = RandomField(rng, w, h, cell, [&] { return std::clamp(blurMedian * std::exp(0.6 * n(rng)), std::min(0.4, blurMedian), 3.0); });
+    f.noise = 0.01;
+    return f;
+}
+
+// RMS difference between a 1-channel image and the sharp scene, after registering the image to the
+// scene (GlobalShift: image(x + d) ~ scene(x)), over `inside` pixels. Throws when no pixel is inside.
+inline double RmsToTruth(const ser::FloatImage& im, const Scene& s, const std::function<bool(int, int)>& inside) {
+    const int w = im.width, h = im.height;
+    ser::FloatImage truth{w, h, 1, std::vector<float>(static_cast<size_t>(w) * h)};
+    for (int y = 0; y < h; ++y)
+        for (int x = 0; x < w; ++x) truth.data[static_cast<size_t>(y) * w + x] = static_cast<float>(s.Eval(x, y, 0));
+    const stack::Shift d = stack::GlobalShift(truth, im, stack::MeasureFrame(im, 0, 1), 1);
+    double sum = 0;
+    int64_t n = 0;
+    for (int y = 0; y < h; ++y)
+        for (int x = 0; x < w; ++x) {
+            if (!inside(x, y)) continue;
+            const double e = im.data[static_cast<size_t>(y) * w + x] - s.Eval(x - d.dx, y - d.dy, 0);
+            sum += e * e;
+            ++n;
+        }
+    if (n == 0) throw std::logic_error("RmsToTruth: no pixel inside");
+    return std::sqrt(sum / static_cast<double>(n));
+}
 
 inline Capture NewCapture(int w, int h, ser::ColorId color = ser::ColorId::Mono) {
     Capture c;
