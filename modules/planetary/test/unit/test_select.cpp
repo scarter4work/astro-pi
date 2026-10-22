@@ -68,6 +68,8 @@ double Number(const stack::Diagnosis& d, const std::string& name) {
     return 0;
 }
 
+void CheckCountsAddUp(const Selection& sel, int64_t n);
+
 // Checks what every successful selection promises; returns the indices as a set.
 std::set<int64_t> CheckSelected(const Selection& sel, const std::vector<FrameStats>& stats) {
     REQUIRE(sel.diagnosis.kind == DiagnosisKind::None);
@@ -90,7 +92,24 @@ std::set<int64_t> CheckSelected(const Selection& sel, const std::vector<FrameSta
     CHECK(std::stoll(m[1]) == static_cast<long long>(sel.frames.size()));
     CHECK(std::stoll(m[2]) == static_cast<long long>(stats.size()));
     CHECK(sel.explanation.find('\n') == std::string::npos);
+    CheckCountsAddUp(sel, static_cast<int64_t>(stats.size()));
     return {sel.frames.begin(), sel.frames.end()};
+}
+
+// The explanation accounts for every frame: used + every "not used" group == n.
+void CheckCountsAddUp(const Selection& sel, int64_t n) {
+    INFO(sel.explanation);
+    std::smatch m;
+    REQUIRE(std::regex_search(sel.explanation, m, std::regex(R"(^used (\d+) of)")));
+    int64_t total = std::stoll(m[1]);
+    const auto pos = sel.explanation.find("not used: ");
+    if (pos != std::string::npos) {
+        const std::string tail = sel.explanation.substr(pos);
+        const std::regex item(R"((\d+) (without a target|stray detections?|at the frame edge|clipped|outliers?|without detail|below the cut))");
+        for (auto it = std::sregex_iterator(tail.begin(), tail.end(), item); it != std::sregex_iterator(); ++it)
+            total += std::stoll((*it)[1]);
+    }
+    CHECK(total == n);
 }
 
 void CheckDiagnosed(const Selection& sel, DiagnosisKind kind) {
@@ -192,6 +211,7 @@ TEST_CASE("frames without a target, cut by the edge or clipped are never selecte
     for (int64_t f : kept) CHECK(bad.count(f) == 0);
     CHECK(kept.size() >= 180);  // nearly all of the 200 good frames
     CHECK(sel.explanation.find("not used: 50 without a target, 50 at the frame edge, 50 clipped") != std::string::npos);
+    CheckCountsAddUp(sel, 350);
 }
 
 TEST_CASE("the frame edge is the luma image's edge: Bayer luma is half size (LumaScale)", "[select]") {
@@ -315,7 +335,8 @@ TEST_CASE("diagnosis: out of focus (steady blur over the limit)", "[select][diag
     CHECK(Number(mono.diagnosis, "limb blur (pixels)") == Catch::Approx(10).epsilon(0.05));
     CHECK(Number(mono.diagnosis, "target radius (pixels)") == Catch::Approx(60).epsilon(0.05));
     CHECK(Number(mono.diagnosis, "blur / radius") == Catch::Approx(1.0 / 6).epsilon(0.05));
-    CHECK(Number(mono.diagnosis, "blur limit / radius") == stack::kBlurLimit);
+    CHECK(Number(mono.diagnosis, "blur limit (pixels)") == Catch::Approx(60 * stack::kBlurLimit).epsilon(0.05));
+    CHECK(mono.focusJudged);
     CHECK(Number(mono.diagnosis, "blur spread") < stack::kSteadySpread);
 
     // The same luma statistics from a Bayer capture: pixels are reported at sensor scale.
@@ -351,7 +372,7 @@ TEST_CASE("diagnosis: poor seeing (varying blur, best frames still over the limi
 TEST_CASE("a disc too small to judge focus on is stacked, not diagnosed", "[select][diagnosis]") {
     // Neptune-like: R = 5.5 luma px with a 2 px limb (0.36 R) -- sharp for its size.
     std::vector<FrameStats> stats;
-    for (int64_t i = 0; i < 94; ++i) stats.push_back(Disc(i, 480, 360, 240, 180, 5.5, 2.0 + 0.01 * (i % 9)));
+    for (int64_t i = 0; i < 94; ++i) stats.push_back(Disc(i, 480, 360, 240, 180, 5.5, 2.0 + 0.01 * static_cast<double>(i % 9)));
     const auto kept = CheckSelected(SelectFrames(stats, Info(480, 360)), stats);
     CHECK(kept.size() >= 5);
 }
@@ -427,4 +448,230 @@ TEST_CASE("input order does not matter; the result is in frame order", "[select]
     CHECK(a.frames == b.frames);
     CHECK(a.threshold == b.threshold);
     CHECK(a.explanation == b.explanation);
+}
+
+// ---- review round 1 ------------------------------------------------------------------------------
+
+namespace {
+// A disc frame with a given quality and its 1-sigma measurement noise.
+FrameStats DiscQ(int64_t i, double q, double qSigma) {
+    FrameStats s = Disc(i, 640, 480, 320, 240, 60, 1.0);
+    s.quality = q;
+    s.qualitySigma = qSigma;
+    return s;
+}
+
+// A satellite streak or plane: a bright line across the frame, its box spanning it edge to edge.
+FrameStats Streak(int64_t i, int lw, int lh) {
+    FrameStats s;
+    s.index = i;
+    s.targetFound = true;
+    s.bx0 = 0;
+    s.bx1 = lw;
+    s.by0 = (static_cast<int>(i) * 37) % (lh - 20);
+    s.by1 = s.by0 + 12;
+    s.cx = lw / 2.0;
+    s.cy = s.by0 + 6.0;
+    s.quality = 2.5;
+    s.qualitySigma = 0.01;
+    return s;
+}
+}  // namespace
+
+TEST_CASE("a small cluster of implausibly sharp frames is fenced off as outliers", "[select][outliers]") {
+    std::mt19937 rng(41);
+    std::normal_distribution<double> n01(0, 1);
+    std::vector<FrameStats> stats;
+    for (int64_t i = 0; i < 300; ++i) stats.push_back(DiscQ(i, 1.0 * (1 + 0.01 * n01(rng)), 0.0));
+    for (int64_t i = 300; i < 305; ++i) stats.push_back(DiscQ(i, 1.3, 0.0));  // glitches
+    const Selection sel = SelectFrames(stats, Info(640, 480));
+    const auto kept = CheckSelected(sel, stats);
+    for (int64_t f = 300; f < 305; ++f) CHECK(kept.count(f) == 0);
+    CHECK(kept.size() >= 270);
+    CHECK(sel.explanation.find("5 outliers") != std::string::npos);
+}
+
+TEST_CASE("a genuine lucky tail, or a real sharp mode, is not fenced", "[select][outliers]") {
+    std::mt19937 rng(43);
+    std::normal_distribution<double> n01(0, 1);
+    // Poor night: log-normal blur, 30% spread -- its sharp tail is the point of lucky imaging.
+    const auto poor = DiscCapture(3000, [&](int64_t) { return 1.5 * std::exp(0.3 * n01(rng)); });
+    const Selection selPoor = SelectFrames(poor, Info(640, 480));
+    CheckSelected(selPoor, poor);
+    CHECK(selPoor.explanation.find("outlier") == std::string::npos);
+    // The sharpest frame of the night is among those used.
+    const auto best = std::max_element(poor.begin(), poor.end(),
+                                       [](const FrameStats& a, const FrameStats& b) { return a.quality < b.quality; });
+    CHECK(std::count(selPoor.frames.begin(), selPoor.frames.end(), best->index) == 1);
+    // A sharp mode of 5% of the frames, far above the bulk (well past 6 MAD): it is the selection.
+    const auto modes = DiscCapture(3000, [&](int64_t i) { return i % 20 == 0 ? 1.0 * (1 + 0.02 * n01(rng)) : 2.0 * (1 + 0.03 * n01(rng)); });
+    const Selection selModes = SelectFrames(modes, Info(640, 480));
+    const auto kept = CheckSelected(selModes, modes);
+    for (int64_t f : kept) CHECK(f % 20 == 0);
+    CHECK(kept.size() >= 135);
+}
+
+TEST_CASE("measurement noise alone does not drive the cut (Ruling P5)", "[select][noise]") {
+    for (const double noise : {0.03, 0.05, 0.10}) {
+        std::mt19937 rng(47);
+        std::normal_distribution<double> n01(0, 1);
+        // Identical blur in every frame; the quality scatter is the measurement noise it reports.
+        std::vector<FrameStats> stats;
+        for (int64_t i = 0; i < 2000; ++i) stats.push_back(DiscQ(i, 1.0 * (1 + noise * n01(rng)), noise));
+        INFO("noise " << noise);
+        const auto kept = CheckSelected(SelectFrames(stats, Info(640, 480)), stats);
+        CHECK(kept.size() >= 1800);
+    }
+    // Neptune 2026-01-30: 94 frames, spread 0.059 of the mean, reported noise 0.070 -- all noise.
+    {
+        std::mt19937 rng(53);
+        std::normal_distribution<double> n01(0, 1);
+        std::vector<FrameStats> stats;
+        for (int64_t i = 0; i < 94; ++i) stats.push_back(DiscQ(i, 0.58 * (1 + 0.059 * n01(rng)), 0.58 * 0.070));
+        const auto kept = CheckSelected(SelectFrames(stats, Info(640, 480)), stats);
+        CHECK(kept.size() >= 85);
+    }
+    // A real bimodal capture with the same 3% noise still keeps its sharp mode only.
+    {
+        std::mt19937 rng(59);
+        std::normal_distribution<double> n01(0, 1);
+        auto good = [](int64_t i) { return i % 10 < 3; };
+        std::vector<FrameStats> stats;
+        for (int64_t i = 0; i < 2000; ++i) {
+            const double q = DiscQuality(60, good(i) ? 1.0 : 1.8);
+            stats.push_back(DiscQ(i, q * (1 + 0.03 * n01(rng)), 0.03 * q));
+        }
+        const auto kept = CheckSelected(SelectFrames(stats, Info(640, 480)), stats);
+        for (int64_t f : kept) CHECK(good(f));
+        CHECK(kept.size() >= 540);
+    }
+}
+
+TEST_CASE("small discs: sampling-corrected focus judgement with an absolute floor (Ruling P4)", "[select][diagnosis]") {
+    const ser::FileInfo info = Info(480, 360);
+    auto capture = [](double radius, double sigma, int64_t n, double jitter, uint32_t seed) {
+        std::mt19937 rng(seed);
+        std::normal_distribution<double> n01(0, 1);
+        std::vector<FrameStats> v;
+        for (int64_t i = 0; i < n; ++i) v.push_back(Disc(i, 480, 360, 240, 180, radius, sigma * (1 + jitter * n01(rng))));
+        return v;
+    };
+    // A sharp small disc (R = 6 luma px, limb 0.6 px: mostly the sampling's own 0.5 px) is stacked.
+    {
+        const auto stats = capture(6, 0.6, 200, 0.02, 61);
+        const Selection sel = SelectFrames(stats, info);
+        CheckSelected(sel, stats);
+        CHECK(sel.focusJudged);
+    }
+    // Over R/8 relative but under the absolute floor (1.5 px on R = 6): still stacked.
+    {
+        const auto stats = capture(6, 1.5, 200, 0.02, 67);
+        CheckSelected(SelectFrames(stats, info), stats);
+    }
+    // A small disc smeared over 5 px in every frame: out of focus, numbers in sensor pixels.
+    {
+        const auto stats = capture(8, 5.0, 200, 0.005, 71);
+        const Selection sel = SelectFrames(stats, info);
+        CheckDiagnosed(sel, DiagnosisKind::OutOfFocus);
+        CHECK(Number(sel.diagnosis, "limb blur (pixels)") == Catch::Approx(std::sqrt(25 - 0.25)).epsilon(0.05));
+        CHECK(Number(sel.diagnosis, "blur limit (pixels)") == stack::kBlurFloorPixels);
+        CHECK(sel.focusJudged);
+    }
+}
+
+TEST_CASE("full-frame targets: focus is left to the region stage (Ruling P4)", "[select]") {
+    // A blurred-looking full-frame quality is not judged here; focusJudged says so.
+    std::vector<FrameStats> stats;
+    for (int64_t i = 0; i < 300; ++i) {
+        FrameStats s;
+        s.index = i;
+        s.targetFound = true;
+        s.bx0 = 0;
+        s.by0 = 0;
+        s.bx1 = 640;
+        s.by1 = 480;
+        s.cx = 320;
+        s.cy = 240;
+        s.quality = 0.02;  // a texture scale of 50 px
+        stats.push_back(s);
+    }
+    const Selection sel = SelectFrames(stats, Info(640, 480));
+    CheckSelected(sel, stats);
+    CHECK(sel.fullFrameTarget);
+    CHECK_FALSE(sel.focusJudged);
+}
+
+TEST_CASE("count floors scale with the capture, stray detections do not count (review item 4)", "[select][diagnosis]") {
+    // 20 000 frames of empty sky with 6 satellite streaks: no target, and not a full-frame one.
+    {
+        std::vector<FrameStats> stats;
+        for (int64_t i = 0; i < 20000; ++i) stats.push_back(i % 3333 == 7 ? Streak(i, 640, 480) : NoTargetFrame(i));
+        const Selection sel = SelectFrames(stats, Info(640, 480));
+        CheckDiagnosed(sel, DiagnosisKind::NoTarget);
+        CHECK_FALSE(sel.fullFrameTarget);
+        CHECK(Number(sel.diagnosis, "frames") == 20000);
+    }
+    // 10 000 frames with a target in 60 (< sqrt(n) = 100): no target.
+    {
+        std::vector<FrameStats> stats;
+        for (int64_t i = 0; i < 10000; ++i)
+            stats.push_back(i % 166 == 0 ? Disc(i, 640, 480, 320, 240, 60, 1.0) : NoTargetFrame(i));
+        CheckDiagnosed(SelectFrames(stats, Info(640, 480)), DiagnosisKind::NoTarget);
+    }
+    // 10 000 frames, the disc whole in only 60: the target leaves the frame.
+    {
+        std::vector<FrameStats> stats;
+        for (int64_t i = 0; i < 10000; ++i) stats.push_back(Disc(i, 640, 480, i % 166 == 0 ? 320 : 30, 240, 60, 1.0));
+        CheckDiagnosed(SelectFrames(stats, Info(640, 480)), DiagnosisKind::TargetLeavesFrame);
+    }
+    // 10 000 frames, unclipped in only 60: clipped.
+    {
+        std::vector<FrameStats> stats;
+        for (int64_t i = 0; i < 10000; ++i) {
+            FrameStats s = Disc(i, 640, 480, 320, 240, 60, 1.0);
+            s.clippedFraction = i % 166 == 0 ? 0 : 0.5;
+            stats.push_back(s);
+        }
+        CheckDiagnosed(SelectFrames(stats, Info(640, 480)), DiagnosisKind::Clipped);
+    }
+    // A planet capture with 3 streak frames: the streaks are stray detections, never selected.
+    {
+        std::vector<FrameStats> stats;
+        for (int64_t i = 0; i < 500; ++i) stats.push_back(i % 150 == 1 ? Streak(i, 640, 480) : Disc(i, 640, 480, 320, 240, 60, 1.0));
+        const Selection sel = SelectFrames(stats, Info(640, 480));
+        const auto kept = CheckSelected(sel, stats);
+        for (int64_t f : kept) CHECK(f % 150 != 1);
+        CHECK(sel.explanation.find("4 stray detections") != std::string::npos);
+        CHECK_FALSE(sel.fullFrameTarget);
+    }
+}
+
+TEST_CASE("frames without detail (quality 0) are left out, not a reason to refuse (review item 5)", "[select]") {
+    // Three frames (1, 1, 0): the two with detail.
+    {
+        auto stats = DiscCapture(3, [](int64_t) { return 1.0; });
+        stats[2].quality = 0;
+        const Selection sel = SelectFrames(stats, Info(640, 480));
+        CHECK(sel.frames == std::vector<int64_t>{0, 1});
+        CHECK(sel.explanation.find("1 without detail") != std::string::npos);
+        CheckCountsAddUp(sel, 3);
+    }
+    // Ten frames, three with detail (< need = 5): out of focus.
+    {
+        auto stats = DiscCapture(10, [](int64_t) { return 1.0; });
+        for (int64_t i = 3; i < 10; ++i) stats[static_cast<size_t>(i)].quality = 0;
+        const Selection sel = SelectFrames(stats, Info(640, 480));
+        CheckDiagnosed(sel, DiagnosisKind::OutOfFocus);
+        CHECK(Number(sel.diagnosis, "frames with detail") == 3);
+    }
+}
+
+TEST_CASE("few blurred frames: focus or seeing is worded as undetermined (review item 6)", "[select][diagnosis]") {
+    std::mt19937 rng(73);
+    std::normal_distribution<double> n01(0, 1);
+    const auto stats = DiscCapture(20, [&](int64_t) { return 20.0 * std::exp(0.3 * n01(rng)); });
+    const Selection sel = SelectFrames(stats, Info(640, 480));
+    CheckDiagnosed(sel, DiagnosisKind::OutOfFocus);
+    CHECK(sel.diagnosis.message.find("too few frames to tell") != std::string::npos);
+    CHECK(Number(sel.diagnosis, "frames judged") == 20);
 }

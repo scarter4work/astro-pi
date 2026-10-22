@@ -43,8 +43,7 @@ struct FrameStats {
     double clippedFraction = 0;
 };
 
-// Measurement-luma pixels per frame pixel, inverted: a frame pixel is LumaScale(info) times smaller
-// than a luma pixel. 2 for Bayer input (LumaForMeasure sums each 2x2 CFA cell, so the luma image is
+// Frame (sensor) pixels per measurement-luma pixel, along each axis. 2 for Bayer input (LumaForMeasure sums each 2x2 CFA cell, so the luma image is
 // width / 2 x height / 2, integer division), 1 for mono and RGB. FrameStats coordinates times this
 // are frame (sensor) pixels; the luma image's size is header.width / LumaScale (integer part).
 // The one place this factor is defined (Ruling P3): consumers never scale by 2 on their own.
