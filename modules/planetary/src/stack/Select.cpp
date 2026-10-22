@@ -463,21 +463,24 @@ Selection SelectFrames(const std::vector<FrameStats>& stats, const ser::FileInfo
     if (!sel.fullFrameTarget) {
         sel.focusJudged = true;
         const int d = DetectionBlock(lw, lh);
-        std::vector<double> radii;
+        std::vector<double> radii, halfRadii;
         for (size_t i : rank.ranked) {
             const FrameStats* s = detailed[i];
             radii.push_back(std::sqrt(static_cast<double>(s->bx1 - s->bx0) * (s->by1 - s->by0)) / 2 - d);
+            halfRadii.push_back(s->halfRadius);
         }
-        const double radius = std::max(1.0, Quantile(radii, 0.5));
-        sel.targetRadius = radius;
-        const bool small = radius < kMinJudgedRadius;
+        const double boxRadius = std::max(1.0, Quantile(radii, 0.5));
+        sel.targetRadius = boxRadius;
+        const bool small = boxRadius < kMinJudgedRadius;
+        // A large disc is judged at its half-contrast radius: the box grows with the blur being judged.
+        const double radius = small ? boxRadius : std::max(1.0, Quantile(halfRadii, 0.5));
         const double sqrtPi = std::sqrt(M_PI);
         auto limbBlur = [&](double q) {
             const double sigma = 1 / (sqrtPi * q * q * radius);
             return small ? std::sqrt(std::max(0.0, sigma * sigma - kSamplingBlur * kSamplingBlur)) : sigma;
         };
         const double sigmaRef = limbBlur(qRef);
-        const double limit = small ? std::max(kBlurLimit * radius, kBlurFloorPixels / scale) : kBlurLimit * radius;
+        const double limit = small ? std::max(kBlurLimit * radius, kBlurFloorPixels / scale) : kGrossBlurLimit * radius;
         if (sigmaRef >= limit) {
             // The spread of the true blur: q at mu -+ 1.2816 tau (p10 / p90 of a normal), not the
             // posterior means (those are pulled together by the noise); tauHi gives the upper bound.
