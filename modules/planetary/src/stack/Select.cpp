@@ -167,7 +167,8 @@ Selection SelectFrames(const std::vector<FrameStats>& stats, const ser::FileInfo
         if (touches(*s)) ++atEdge;
         if (FillsFrame(*s, lw, lh)) ++filling;
     }
-    sel.fullFrameTarget = static_cast<double>(filling) >= kFullFrameShare * static_cast<double>(nTarget);
+    sel.fullFrameTarget = static_cast<double>(filling) >= kFullFrameShare * static_cast<double>(nTarget) &&
+                          static_cast<double>(nTarget) >= kFullFramePresence * static_cast<double>(n);
     std::vector<const FrameStats*> placed;
     if (sel.fullFrameTarget) {
         placed = target;
@@ -258,9 +259,15 @@ Selection SelectFrames(const std::vector<FrameStats>& stats, const ser::FileInfo
         int64_t cut = 0;  // fence off the `cut` sharpest frames
         if (above > 0 && nDetailed >= kMinFenceFrames && above < modeSize && nDetailed - above >= floorCount) {
             double below = -std::numeric_limits<double>::infinity();  // sharpest frame under the fence
+            int64_t band = 0;  // frames in the kFenceBandSigmas robust sd just under the fence
             for (double v : lq)
-                if (!(v > fence)) below = std::max(below, v);
-            for (int64_t k = above; k >= 1; --k) {
+                if (!(v > fence)) {
+                    below = std::max(below, v);
+                    band += v > fence - kFenceBandSigmas * robustSd;
+                }
+            // Not the top of a population declining through the fence: every candidate goes.
+            if (band < above) cut = above;
+            for (int64_t k = above; k >= 1 && cut == 0; --k) {
                 const double next = k < above ? lq[order[static_cast<size_t>(k)]] : below;
                 if (lq[order[static_cast<size_t>(k - 1)]] - next >= kFenceGapSigmas * robustSd) {
                     cut = k;

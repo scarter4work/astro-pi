@@ -46,21 +46,33 @@ constexpr double kClippedFrame = 0.25;
 // edge AND spans at least kFullFrameSpan of the frame's width or height.
 constexpr double kFullFrameShare = 0.75;
 constexpr double kFullFrameSpan = 0.5;
-// ... and its box's shorter side is at least this share of the frame's. A satellite or plane trail
-// is a line a few pixels wide; its box adds one detection block on each side, so it is 2-3% of the
-// frame across at any ROI (1080p: 3 px + 2 x 8 px of 1080; 320 x 240: 3 px + 2 x 2 px of 240). A
-// lunar limb or crescent sliver worth stacking is wider: the thinnest real framing kept is 9%.
+// ... and its box's shorter side is at least this share of the frame's. This refuses a trail that
+// runs along a frame axis: a line a few pixels wide plus one detection block on each side is 2-3%
+// of the frame across at any ROI (1080p: 3 px + 2 x 8 px of 1080; 320 x 240: 3 px + 2 x 2 px of
+// 240). A lunar limb or crescent sliver worth stacking is wider: the thinnest real framing kept is
+// 9%. A TILTED trail's box is as wide as a sliver's (1.5 degrees across 640 x 480 is ~6%, 4 degrees
+// ~12%), so the box shape cannot refuse it; the presence rule below does.
 constexpr double kFullFrameMinSide = 0.05;
-// The per-frame half of that rule: a found target whose box touches an edge of the lumaWidth x
+// ... and the target is found (consistently, step 1) in at least this share of ALL frames. A
+// frame-filling target is in the field for the whole capture (the three NAS Moons: every frame); a
+// satellite or plane trail is a transient, crossing in a few frames of a capture, never in most.
+// A lunar capture whose surface is detected in under half its frames is treated as a disc (and,
+// its boxes touching the edge, diagnosed TargetLeavesFrame).
+constexpr double kFullFramePresence = 0.5;
+// The per-frame half of the box rule: a found target whose box touches an edge of the lumaWidth x
 // lumaHeight luma frame, spans at least kFullFrameSpan of its width or height, and at least
-// kFullFrameMinSide of both.
+// kFullFrameMinSide of both. Per frame, a tilted trail can pass it; only the capture-level rule
+// (share and presence) tells a trail from a surface.
 bool FillsFrame(const FrameStats& s, int lumaWidth, int lumaHeight);
 // Upper fence on log quality, in robust standard deviations (1.4826 MAD) above the median; the
 // robust sd is floored at kFenceMinLogSd (1%: identical frames still differ by that much in
 // quality from frame to frame) and nothing is fenced in fewer than kMinFenceFrames frames.
 constexpr double kFenceSigmas = 6;
-// ... and only the frames above a gap of at least this many robust sd among them (step 5).
+// ... and only the frames above a gap of at least this many robust sd among them (step 5) -- unless
+// the band of this many robust sd just under the fence holds fewer frames than the fence has above
+// it, when every frame above the fence goes (step 5).
 constexpr double kFenceGapSigmas = 2;
+constexpr double kFenceBandSigmas = 2;
 constexpr double kFenceMinLogSd = 0.01;
 constexpr int kMinFenceFrames = 30;
 // Deconvolution grid and EM budget (step 6). EM never converges on this problem (the NPMLE is a
@@ -109,13 +121,28 @@ constexpr int kMinJudgedFrames = 30;
 // 4. Frames with quality 0 ("without detail") are dropped; fewer than floor with detail ->
 //    OutOfFocus.
 // 5. Upper fence: frames with log q > median + kFenceSigmas * max(1.4826 MAD, median relative
-//    qualitySigma, kFenceMinLogSd) are candidates; the outliers (a torn frame, a satellite in the
-//    box) are the candidates above the lowest gap of at least kFenceGapSigmas robust sd between
-//    consecutive frames (sharpest first, down to the sharpest frame under the fence). A glitch
-//    stands apart from everything; the top of a real sharp mode is continuous, so a mode that
-//    straddles the fence loses nothing. Only with at least kMinFenceFrames frames, only when the
-//    candidates number fewer than ceil(sqrt(N)) (a larger group is a real mode), and never leaving
-//    fewer than floor.
+//    qualitySigma, kFenceMinLogSd) are candidates. Only with at least kMinFenceFrames frames, only
+//    when the candidates number fewer than ceil(sqrt(N)) (a larger group is a real mode), and never
+//    leaving fewer than floor. The outliers (torn frames, a satellite in the box) among them:
+//    a. All of them when the band of kFenceBandSigmas robust sd just under the fence holds fewer
+//       frames than the fence has above it. A real population whose top crosses the fence (a sharp
+//       mode straddling it, a lucky tail) declines through it, so it has at least as many frames
+//       just under the fence as over it: an exponential tail of scale s puts e^(w/s) - 1 times as
+//       many frames in the band of width w under the fence as above it, >= 1 for s <= w / ln 2 =
+//       2.9 robust sd (a Laplace tail's s is ~1 robust sd, a normal tail is far lighter). Glitches
+//       are a sparse population of their own: spread from the bulk's edge to far above it, they
+//       shield one another from the gap rule (b) but leave the band nearly empty. Measured
+//       2026-10-21 (50 seeds each): a 600-frame sharp mode straddling the fence of 3000 frames has
+//       461-528 frames in the band against 16-106 above; glitch clusters (50 or 40 spread over
+//       q 1.05-1.6 / 1.1-1.5 on 3000 frames, a 10-rung ladder on 300) leave 1-14 in the band
+//       against 8-49 above. A Laplace tail in log q (200 seeds, N 300 / 3000) is fenced no more
+//       often than without this rule (0.1-0.2 frames per capture).
+//    b. Otherwise the candidates above the lowest gap of at least kFenceGapSigmas robust sd between
+//       consecutive frames (sharpest first, down to the sharpest frame under the fence): a compact
+//       group standing apart from the continuous top of a real mode.
+//    A glitch under the fence (within kFenceSigmas of the median) is not an outlier by this rule
+//    and ranks with the rest. A real sharp group of fewer than ceil(sqrt(N)) frames above the fence
+//    and not reaching down to it is fenced too: it cannot be told from glitches by count or shape.
 // 6. Deconvolution (Ruling P5). Each observed q_i = true quality + noise N(0, qualitySigma_i^2).
 //    The distribution G of the true quality is estimated by nonparametric maximum likelihood
 //    (Kiefer-Wolfowitz NPMLE, heteroscedastic; EM on kPriorGrid points over the observed range);

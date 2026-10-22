@@ -338,6 +338,10 @@ TEST_CASE("diagnosis: out of focus (steady blur over the limit)", "[select][diag
     CHECK(Number(mono.diagnosis, "blur limit (pixels)") == Catch::Approx(60 * stack::kBlurLimit).epsilon(0.05));
     CHECK(mono.focusJudged);
     CHECK(Number(mono.diagnosis, "blur spread") < stack::kSteadySpread);
+    // Clearly steady: the confident verdict, not "can't tell" -- even the upper bound is under 5%.
+    CHECK(Number(mono.diagnosis, "blur spread upper bound") < stack::kSteadySpread);
+    CHECK(mono.diagnosis.message.find("the optics, not the air") != std::string::npos);
+    CHECK(mono.diagnosis.message.find("to tell") == std::string::npos);
 
     // The same luma statistics from a Bayer capture: pixels are reported at sensor scale.
     const Selection bayer = SelectFrames(stats, Info(1280, 960, ser::ColorId::BayerRGGB));
@@ -828,6 +832,16 @@ TEST_CASE("focus or seeing: a verdict only when the noise allows one (N5)", "[se
         }
         CHECK(poorSeeing <= 2);
     }
+    // Clearly steady -- steady blur under 1% noise, 50 seeds: the confident "optics" verdict in
+    // every seed, its upper bound under kSteadySpread. (At 3% noise and 500 frames the 2-SE bound
+    // alone is ~5.5% of blur spread, so "can't tell" is the honest verdict there.)
+    for (uint32_t seed = 1; seed <= 50; ++seed) {
+        const Selection sel = SelectFrames(capture(0, 0.01, seed), Info(640, 480));
+        INFO("seed " << seed << ": " << sel.diagnosis.message);
+        REQUIRE(sel.diagnosis.kind == DiagnosisKind::OutOfFocus);
+        CHECK(sel.diagnosis.message.find("the optics, not the air") != std::string::npos);
+        CHECK(Number(sel.diagnosis, "blur spread upper bound") < stack::kSteadySpread);
+    }
     // 6% seeing under 3% noise is measurable: PoorSeeing in (nearly) every seed.
     {
         int poorSeeing = 0;
@@ -914,4 +928,110 @@ TEST_CASE("the fence never cuts the top of a real sharp mode (E)", "[select][out
     const auto best = std::max_element(stats.begin(), stats.end(),
                                        [](const FrameStats& x, const FrameStats& y) { return x.quality < y.quality; });
     CHECK(kept.count(best->index) == 1);
+}
+
+// ---- review round 3 ------------------------------------------------------------------------------
+
+namespace {
+// 3000 bulk frames (true quality 1, spread `spread`) and m glitch frames log-uniform in [lo, hi],
+// all measured with relative noise `noise` (reported). Frames >= 3000 are the glitches.
+std::vector<FrameStats> BulkAndGlitches(int m, double lo, double hi, double spread, double noise, uint32_t seed) {
+    std::mt19937 rng(seed);
+    std::normal_distribution<double> n01(0, 1);
+    std::uniform_real_distribution<double> u(std::log(lo), std::log(hi));
+    std::vector<FrameStats> v;
+    for (int64_t i = 0; i < 3000; ++i) {
+        const double qt = 1.0 * (1 + spread * n01(rng));
+        v.push_back(DiscQ(i, qt * (1 + noise * n01(rng)), noise * qt));
+    }
+    for (int64_t i = 0; i < m; ++i) {
+        const double q = std::exp(u(rng));
+        v.push_back(DiscQ(3000 + i, q, noise * q));
+    }
+    return v;
+}
+}  // namespace
+
+TEST_CASE("glitch clusters that reach down to the bulk are fenced, never the selection (round 4)", "[select][outliers]") {
+    // Glitches spread from just above the bulk to far above it shield one another from the gap
+    // rule (no 2-sd gap anywhere); the frames under the fence must still outnumber those above it
+    // for the latter to be the top of a real population. 20 seeds per case.
+    struct Case {
+        int m;
+        double lo, hi, spread, noise;
+    };
+    for (const Case c : {Case{50, 1.05, 1.6, 0.01, 0.01}, Case{40, 1.1, 1.5, 0.02, 0.02}}) {
+        for (uint32_t seed = 1; seed <= 20; ++seed) {
+            const auto stats = BulkAndGlitches(c.m, c.lo, c.hi, c.spread, c.noise, seed);
+            const Selection sel = SelectFrames(stats, Info(640, 480));
+            INFO("glitches " << c.m << " in [" << c.lo << ", " << c.hi << "], seed " << seed << ": " << sel.explanation);
+            const auto kept = CheckSelected(sel, stats);
+            int64_t keptBulk = 0;
+            for (int64_t f : kept) {
+                keptBulk += f < 3000;
+                CHECK(stats[static_cast<size_t>(f)].quality < 1.25);  // nothing far above the bulk
+            }
+            CHECK(keptBulk >= 2700);
+            CHECK(sel.explanation.find("outlier") != std::string::npos);
+        }
+    }
+}
+
+TEST_CASE("a ladder of glitches starting under the fence is fenced (round 4)", "[select][outliers]") {
+    // 300 frames (1% spread, no noise reported) and 10 frames climbing from 5 sd above the median in
+    // steps of 1.9 sd: no step is a 2-sd gap, and the lowest rung sits under the fence.
+    for (uint32_t seed = 41; seed <= 45; ++seed) {
+        std::mt19937 rng(seed);
+        std::normal_distribution<double> n01(0, 1);
+        std::vector<FrameStats> stats;
+        for (int64_t i = 0; i < 300; ++i) stats.push_back(DiscQ(i, 1.0 * (1 + 0.01 * n01(rng)), 0.0));
+        for (int64_t i = 0; i < 10; ++i) stats.push_back(DiscQ(300 + i, std::exp(0.05 + 0.019 * static_cast<double>(i)), 0.0));
+        const Selection sel = SelectFrames(stats, Info(640, 480));
+        INFO("seed " << seed << ": " << sel.explanation);
+        const auto kept = CheckSelected(sel, stats);
+        int64_t keptBulk = 0, keptRungs = 0;
+        for (int64_t f : kept) {
+            keptBulk += f < 300;
+            keptRungs += f >= 300;
+            CHECK(f < 302);  // rungs 2.. (7 sd and up) are over any fence these 300 frames give
+        }
+        CHECK(keptBulk >= 270);
+        CHECK(keptRungs <= 2);
+        CHECK(sel.explanation.find("outlier") != std::string::npos);
+    }
+}
+
+namespace {
+// A satellite or plane trail tilted by `degrees` across the full width of a lw x lh luma frame:
+// its box is the line's vertical run plus the line width (3 px) plus one detection block per side.
+FrameStats TiltedTrail(int64_t i, int lw, int lh, double degrees) {
+    const int d = stack::DetectionBlock(lw, lh);
+    const int run = static_cast<int>(std::ceil(lw * std::tan(degrees * M_PI / 180))) + 3 + 2 * d;
+    FrameStats s;
+    s.index = i;
+    s.targetFound = true;
+    s.bx0 = 0;
+    s.bx1 = lw;
+    s.by0 = (static_cast<int>(i) * 37) % (lh - run);
+    s.by1 = s.by0 + run;
+    s.cx = lw / 2.0;
+    s.cy = s.by0 + run / 2.0;
+    s.quality = 2.5;
+    s.qualitySigma = 0.01;
+    return s;
+}
+}  // namespace
+
+TEST_CASE("tilted trails are never a frame-filling target (round 4)", "[select]") {
+    // Tilted 1.5-4 degrees, a trail's box is 5.5-12% of a 640 x 480 frame across -- as wide as a
+    // thin lunar sliver's, so the box shape alone cannot refuse it.
+    std::vector<FrameStats> stats;
+    for (int64_t i = 0; i < 2000; ++i)
+        stats.push_back(i % 30 == 0 ? TiltedTrail(i, 640, 480, 1.5 + 2.5 * static_cast<double>(i % 7) / 6) : NoTargetFrame(i));
+    CHECK(stack::FillsFrame(TiltedTrail(0, 640, 480, 1.5), 640, 480));  // per frame it can pass
+    const Selection sel = SelectFrames(stats, Info(640, 480));
+    INFO(sel.explanation);
+    CHECK_FALSE(sel.fullFrameTarget);
+    CHECK(sel.frames.empty());
+    CHECK(sel.diagnosis.kind != DiagnosisKind::None);
 }
