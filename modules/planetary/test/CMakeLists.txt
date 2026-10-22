@@ -32,6 +32,9 @@ target_include_directories(test_fits_text PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/.
 # PreviewPixels.h / SerInfoText.h: the preview's PCL-free pixel math and info text (header only).
 planetary_add_test(test_preview unit/test_preview.cpp planetary_ser)
 target_include_directories(test_preview PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/../src/module")
+# StackCards.h: PlanetaryStack's PCL-free keyword plan and result text (header only).
+planetary_add_test(test_stack_cards unit/test_stack_cards.cpp planetary_stack)
+target_include_directories(test_stack_cards PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/../src/module")
 
 # Test-only fixture writer for the headless PixInsight probes (test/run-probe.sh, test/run-probe-stack.sh).
 # planetary_stack: the --stack fixtures are rendered with StackSynth.h (the engine tests' scenes);

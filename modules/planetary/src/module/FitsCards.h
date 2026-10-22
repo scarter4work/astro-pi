@@ -45,16 +45,6 @@ inline void AddHistory( FITSKeywordArray& keywords, const std::string& text )
       keywords << FITSHeaderKeyword( "HISTORY", IsoString(), IsoString( piece.c_str() ) );
 }
 
-// UTF-8 text bound for a FITS card: the reader's arrow becomes "->", any
-// other code point outside printable ASCII one '?'.
-inline std::string FitsAscii( std::string s )
-{
-   const std::string arrow = "\xE2\x86\x92";
-   for ( size_t at = s.find( arrow ); at != std::string::npos; at = s.find( arrow, at + 2 ) )
-      s.replace( at, arrow.size(), "->" );
-   return planetary::fits::AsciiFromUtf8( s );
-}
-
 // A view id from the file stem: [A-Za-z0-9_] only, never starting with a digit;
 // "SER" for a stem with nothing usable. Callers append their own suffix.
 inline IsoString ViewIdStem( const String& path )

@@ -227,7 +227,7 @@ constexpr int64_t kFrameStep = 333330000LL;            // 33.333 s
 //              expectId, sample: [[x, y]], keywords: [{name, value|comment|commentContains}],
 //              absentKeywords: [name], absentComments: [text] (no keyword comment contains it),
 //              frameTimes? (ISO UTC per frame, from the SER trailer),
-//              consoleContains: [text]
+//              consoleContains: [text], expectFocusWarning? (the engine must warn "may be out of focus")
 //   diagnosis  probeBayer, expectKind (stack-probe's diagnosis kind)
 //   error      expectError (text the thrown error carries)
 //   cancel     probeBayer, abortAfter (seconds), minSeconds (the run must take at least this long
@@ -316,6 +316,7 @@ struct StackCase {
     std::vector<Kw> keywords;
     std::vector<std::string> absent, absentComments, frameTimes, consoleContains;
     double abortAfter = 0, minSeconds = 0;
+    bool expectFocusWarning = false;  // image: the engine must warn "may be out of focus"
 };
 
 std::string ToJson(const StackCase& c) {
@@ -327,6 +328,7 @@ std::string ToJson(const StackCase& c) {
     if (!c.expectKind.empty()) o << ",\"expectKind\":" << Quote(c.expectKind);
     if (!c.expectError.empty()) o << ",\"expectError\":" << Quote(c.expectError);
     if (c.kind == "cancel") o << ",\"abortAfter\":" << Num(c.abortAfter) << ",\"minSeconds\":" << Num(c.minSeconds);
+    if (c.expectFocusWarning) o << ",\"expectFocusWarning\":true";
     o << ",\"sample\":[";
     for (size_t i = 0; i < c.sample.size(); ++i) o << (i ? "," : "") << "[" << c.sample[i].first << "," << c.sample[i].second << "]";
     o << "],\"keywords\":[";
@@ -410,6 +412,54 @@ int WriteStackFixtures(const std::filesystem::path& dir) {
                       {"OBSERVER", "value", "Scott"},
                       {"SRCVIDEO", "value", "stack-mono.ser"}};
         c.absent = {"BAYERPAT"};
+        cases.push_back(c);
+
+        // The same frames with no timestamp trailer: DATE-OBS falls back to the header's capture start,
+        // and there is no DATE-END.
+        const std::string headerOnly = (dir / "stack-mono-header.ser").string();
+        WriteSer(headerOnly, s, Frames16(cap));
+        StackCase hdr = c;
+        hdr.name = "mono SER without timestamps: DATE-OBS from the header"; hdr.path = headerOnly;
+        hdr.expectId = "stack_mono_header_stack";
+        hdr.frameTimes.clear();
+        hdr.keywords = {{"DATE-OBS", "value", "2026-09-07T02:04:21.500"},
+                        {"DATE-OBS", "comment", "UTC start of the capture (SER header)"},
+                        {"SRCVIDEO", "value", "stack-mono-header.ser"}};
+        hdr.absent = {"BAYERPAT", "DATE-END"};
+        cases.push_back(hdr);
+    }
+
+    // A lunar-like surface filling the frame, blurred by 12 px: stacked (a frame-filling target is never
+    // refused for focus, Ruling P16) with the region stage's "may be out of focus" warning, which must reach
+    // HISTORY and the console. Mono 16-bit SER, 224 x 176, 40 frames (the engine test's soft surface).
+    {
+        const int w = 224, h = 176;
+        const Scene scene = planetary::testing::MakeSurface(71, w, h);
+        Capture cap = planetary::testing::NewCapture(w, h);
+        std::mt19937 rng(7100);
+        std::normal_distribution<double> n01(0, 1);
+        planetary::testing::RenderCapture(cap, scene, 40, [&](int) {
+            FrameSpec f;
+            f.gx = 1.5 * n01(rng);
+            f.gy = 1.5 * n01(rng);
+            f.hasLocal = true;
+            f.dx = planetary::testing::RandomField(rng, w, h, 40, [&] { return 0.3 * n01(rng); });
+            f.dy = planetary::testing::RandomField(rng, w, h, 40, [&] { return 0.3 * n01(rng); });
+            f.sigma = planetary::testing::RandomField(rng, w, h, 40, [&] { return 12.0 * std::exp(0.1 * n01(rng)); });
+            return f;
+        });
+        SerSpec s;
+        s.colorId = 0; s.width = w; s.height = h; s.depth = 16; s.frameCount = 40;
+        const std::string path = (dir / "stack-soft-surface.ser").string();
+        WriteSer(path, s, Frames16(cap));
+        StackCase c;
+        c.name = "soft frame-filling surface: stacked, focus warning in HISTORY"; c.path = path; c.kind = "image";
+        c.expectId = "stack_soft_surface_stack";
+        c.expectFocusWarning = true;
+        c.sample = {{112, 88}, {30, 20}, {200, 150}};
+        c.keywords = {{"HISTORY", "commentContains", "PlanetaryStack warning: The stack may be out of focus"}};
+        c.absent = {"DATE-OBS", "BAYERPAT"};
+        c.consoleContains = {"PlanetaryStack warning: The stack may be out of focus"};
         cases.push_back(c);
     }
 

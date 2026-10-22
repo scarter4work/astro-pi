@@ -18,6 +18,7 @@ set(MODULE_SOURCES
     SERViewerInterface.cpp
     FramePreview.cpp
     BayerPatternParameter.cpp
+    NewImageWindow.cpp
     PlanetaryStackProcess.cpp
     PlanetaryStackParameters.cpp
     PlanetaryStackInstance.cpp

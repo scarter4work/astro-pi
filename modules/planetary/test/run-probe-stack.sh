@@ -59,15 +59,22 @@ while IFS= read -r c; do
          [ "$got" = "$(jq -r .expectKind <<<"$c")" ] \
             || { echo "FAIL: fixture '$name' gives diagnosis $got from the engine, expected $(jq -r .expectKind <<<"$c")"; exit 1; } ;;
    esac
+   if jq -e '.expectFocusWarning == true' <<<"$c" >/dev/null; then
+      jq -e '.warnings | any(contains("may be out of focus"))' "$ENGINE" >/dev/null \
+         || { echo "FAIL: fixture '$name' is not warned out of focus by the engine: $(jq -c .focus "$ENGINE")"; exit 1; }
+   fi
    if [ "$kind" = "cancel" ]; then
       secs="$(jq -r .seconds "$ENGINE")"
       jq -e --argjson s "$secs" '$s >= .minSeconds' <<<"$c" >/dev/null \
          || { echo "FAIL: fixture '$name' stacks in $secs s, too fast for an abort to land mid-run"; exit 1; }
    fi
-   # image: the engine's size, pixel values and summary become the expectations;
-   # diagnosis: its message is the error text.
+   # image: the engine's size, pixel values, summary and warnings become the
+   # expectations (a reader warning ending in the viewing tail is reworded for a
+   # stack, so only the cases name it); diagnosis: its message is the error text
+   # and its numbers must be on the console.
    jq -c --slurpfile e "$ENGINE" '
       $e[0] as $r
+      | ($r.warnings | map(select(endswith("; showing the raw CFA as mono -- choose the pattern under Bayer pattern") | not))) as $w
       | if .kind == "image" then
            . + { width: $r.image.width, height: $r.image.height, channels: $r.image.channels,
                  samples: $r.samples,
@@ -76,12 +83,15 @@ while IFS= read -r c; do
                         { name: "NFRAMES", value: ($r.measured | tostring) },
                         { name: "HISTORY", commentContains: ("PlanetaryStack: " + $r.selection) },
                         { name: "HISTORY", commentContains: ("PlanetaryStack: " + $r.alignment) } ]
+                    + ($w | map({ name: "HISTORY", commentContains: ("PlanetaryStack warning: " + .) }))
                     + (if (.frameTimes | length) > 0
                        then [ { name: "DATE-OBS", value: .frameTimes[$r.stackedFirst] },
                               { name: "DATE-END", value: .frameTimes[$r.stackedLast] } ]
                        else [] end)),
-                 consoleContains: (.consoleContains + [ $r.selection, $r.alignment ]) }
-        elif .kind == "diagnosis" then . + { expectError: $r.diagnosis.message }
+                 consoleContains: (.consoleContains + [ $r.selection, $r.alignment ] + $w) }
+        elif .kind == "diagnosis" then
+           . + { expectError: $r.diagnosis.message,
+                 numbers: ($r.diagnosis.numbers | to_entries | map({ name: .key, value: .value })) }
         else . end' <<<"$c" >> "$PLANETARY_RUN_DIR/cases.jsonl"
    [ "$kind" = "image" ] && [ -z "$FIRST_IMAGE" ] && FIRST_IMAGE="$(tail -1 "$PLANETARY_RUN_DIR/cases.jsonl")"
 done < <(jq -c '.cases[]' "$FIX/stack-cases.json")

@@ -10,7 +10,8 @@
 //       keywords: [ {name, value | comment | commentContains} ], absentKeywords: [ name ],
 //       absentComments: [ text ] (no keyword comment contains it),
 //       consoleContains: [ text ] },
-//     { kind: "diagnosis", name, path, bayerPattern?, expectError },   (the engine's message)
+//     { kind: "diagnosis", name, path, bayerPattern?, expectError,      (the engine's message)
+//       numbers: [ {name, value} ] },                                   (its numbers, on the console too)
 //     { kind: "error", name, path, expectError },
 //     { kind: "cancel", name, path, abortAfter, after: <an image case> } ] }
 // Output: $PLANETARY_PROBE_OUT -- { "ok": bool, "cases": [ {name, ok, errors[], note?} ] }
@@ -145,13 +146,47 @@ function failedWith( x, text, r )
       r.errors.push( "expected a failure containing '" + text + "', but executeGlobal returned " + x.ok );
 }
 
+// The diagnosis numbers follow its message on the console, in the engine's
+// order, as "(<name> <value>, ...)" (%.4g; stack-probe's JSON has 4 decimals;
+// null = not finite).
+function checkNumbers( log, from, numbers, errors )
+{
+   if ( numbers.length == 0 )
+      errors.push( "the engine gave this diagnosis no numbers" );
+   var line = log.substring( from, log.indexOf( "\n", from ) < 0 ? log.length : log.indexOf( "\n", from ) );
+   var pos = 0;
+   for ( var i = 0; i < numbers.length; ++i )
+   {
+      var n = numbers[i];
+      var at = line.indexOf( n.name + " ", pos );
+      if ( at < 0 )
+      {
+         errors.push( "console lacks the diagnosis number '" + n.name + "' after the message: " + line );
+         return;
+      }
+      pos = at + n.name.length + 1;
+      var m = line.substring( pos ).match( /^(-?[0-9][0-9.e+-]*|-?inf|nan)/ );
+      if ( m === null )
+         errors.push( "no value after '" + n.name + "': " + line );
+      else if ( n.value === null ? !/inf|nan/.test( m[1] )
+                                 : Math.abs( parseFloat( m[1] ) - n.value ) > Math.max( 1e-3, 1e-3 * Math.abs( n.value ) ) )
+         errors.push( "diagnosis number '" + n.name + "' reads " + m[1] + " on the console, engine " + n.value );
+   }
+}
+
 function runFailureCase( c, r )
 {
    var before = windowIds().length;
    var x = execute( newProcess( c ) );
    failedWith( x, c.expectError, r );
-   if ( c.kind == "diagnosis" && x.log.indexOf( c.expectError ) < 0 )
-      r.errors.push( "console lacks the diagnosis '" + c.expectError + "': " + x.log.substring( 0, 900 ) );
+   if ( c.kind == "diagnosis" )
+   {
+      var at = x.log.indexOf( c.expectError );
+      if ( at < 0 )
+         r.errors.push( "console lacks the diagnosis '" + c.expectError + "': " + x.log.substring( 0, 900 ) );
+      else
+         checkNumbers( x.log, at + c.expectError.length, c.numbers, r.errors );
+   }
    if ( windowIds().length != before )
       r.errors.push( "a failed run left a new image window open: " + windowIds().join( "," ) );
 }

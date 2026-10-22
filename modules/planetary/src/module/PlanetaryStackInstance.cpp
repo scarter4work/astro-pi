@@ -8,18 +8,15 @@
 #include <pcl/ErrorHandler.h>
 #include <pcl/File.h>
 #include <pcl/Image.h>
-#include <pcl/ImageWindow.h>
 #include <pcl/StandardStatus.h>
 #include <pcl/StatusMonitor.h>
 #include <pcl/Thread.h>
-#include <pcl/View.h>
 
-#include <cstdio>
 #include <exception>
 #include <memory>
 
 #include "FitsCards.h"
-#include "FitsText.h"
+#include "NewImageWindow.h"
 #include "PlanetaryVersion.h"
 #include "SerFile.h"
 #include "SerInfoText.h"
@@ -27,8 +24,8 @@
 
 namespace ser = planetary::ser;
 namespace stack = planetary::stack;
-namespace fits = planetary::fits;
 namespace preview = planetary::preview;
+namespace stackcards = planetary::stackcards;
 using namespace pcl::planetary_fits;
 
 namespace pcl
@@ -44,58 +41,9 @@ String Html( const std::string& utf8 )
    return String::UTF8ToUTF16( utf8.c_str() ).EncodedHTMLSpecialChars();
 }
 
-std::string Fixed( double v, int decimals )
-{
-   char b[64];
-   std::snprintf( b, sizeof b, "%.*f", decimals, v );
-   return b;
-}
-
 String Num( int64_t n )
 {
    return String( std::to_string( n ).c_str() );
-}
-
-bool IsAvi( const ser::FileInfo& info )
-{
-   return info.container != ser::Container::Ser;
-}
-
-// "4088 frames measured, 4085 stacked in 5.09 s (Hot pixels 0.16 s, ...); read 2135 MB at 420 MB/s".
-// Without an image (a diagnosis), "stacked" is left out: nothing was.
-std::string CountsLine( const stack::StackSummary& s, bool stacked )
-{
-   std::string t = std::to_string( s.measured ) + " frames measured";
-   if ( stacked )
-      t += ", " + std::to_string( s.used ) + " stacked";
-   t += " in " + Fixed( s.seconds, 2 ) + " s";
-   if ( !s.phaseSeconds.empty() )
-   {
-      t += " (";
-      for ( size_t i = 0; i < s.phaseSeconds.size(); ++i )
-         t += (i > 0 ? ", " : "") + s.phaseSeconds[i].first + " " + Fixed( s.phaseSeconds[i].second, 2 ) + " s";
-      t += ")";
-   }
-   t += "; read " + Fixed( s.bytesRead / 1e6, 0 ) + " MB at " + Fixed( s.readMBps, 0 ) + " MB/s";
-   return t;
-}
-
-// The diagnosis message with its numbers: "<message> (frames 40, frames with a target 0)".
-std::string DiagnosisText( const stack::Diagnosis& d )
-{
-   std::string t = d.message;
-   if ( !d.numbers.empty() )
-   {
-      t += " (";
-      for ( size_t i = 0; i < d.numbers.size(); ++i )
-      {
-         char v[64];
-         std::snprintf( v, sizeof v, "%.4g", d.numbers[i].second );
-         t += (i > 0 ? ", " : "") + d.numbers[i].first + " " + v;
-      }
-      t += ")";
-   }
-   return t;
 }
 
 // The context line before a run: what is about to be stacked, and how.
@@ -118,7 +66,7 @@ StackTimes CaptureTimes( const ser::FrameSource& source, const stack::StackOutco
 {
    StackTimes t;
    const ser::FileInfo& info = source.Info();
-   if ( IsAvi( info ) || !outcome.image || outcome.frames.stacked.empty() )
+   if ( stackcards::IsAvi( info ) || !outcome.image || outcome.frames.stacked.empty() )
       return t;
    if ( info.hasTimestamps )
    {
@@ -142,42 +90,14 @@ StackTimes CaptureTimes( const ser::FrameSource& source, const stack::StackOutco
 
 FITSKeywordArray StackKeywords( const String& path, const stack::StackOutcome& outcome, const StackTimes& times )
 {
-   const ser::FileInfo& info = outcome.info;
-   const stack::StackSummary& s = outcome.summary;
-   const bool isAvi = IsAvi( info );
-   const std::string asciiName = fits::AsciiFromUtf8( File::ExtractNameAndExtension( path ).ToUTF8().c_str() );
-
+   const std::string fileName = File::ExtractNameAndExtension( path ).ToUTF8().c_str();
    FITSKeywordArray keywords;
-   keywords << FITSHeaderKeyword( "SRCVIDEO", FitsString( asciiName ), "Video this image was stacked from" )
-            << FITSHeaderKeyword( "NFRAMES", IsoString( std::to_string( s.measured ).c_str() ),
-                                  "Frames in the video, every one measured" )
-            << FITSHeaderKeyword( "NCOMBINE", IsoString( std::to_string( s.used ).c_str() ), "Frames stacked" );
-   if ( times.start )
-      keywords << FITSHeaderKeyword( "DATE-OBS", FitsString( *times.start ),
-                                     times.fromFrames ? "UTC time of the first frame stacked (SER timestamps)"
-                                                      : "UTC start of the capture (SER header)" );
-   if ( times.end )
-      keywords << FITSHeaderKeyword( "DATE-END", FitsString( *times.end ),
-                                     "UTC time of the last frame stacked (SER timestamps)" );
-   if ( !info.header.instrument.empty() )
-      keywords << FITSHeaderKeyword( "INSTRUME", FitsString( info.header.instrument ),
-                                     isAvi ? "ASIAIR sidecar camera" : "SER header Instrument" );
-   if ( !info.header.telescope.empty() )
-      keywords << FITSHeaderKeyword( "TELESCOP", FitsString( info.header.telescope ), "SER header Telescope" );
-   if ( !info.header.observer.empty() )
-      keywords << FITSHeaderKeyword( "OBSERVER", FitsString( info.header.observer ), "SER header Observer" );
-
-   AddHistory( keywords, "PlanetaryStack " PLANETARY_VERSION_STRING ": stacked " + asciiName );
-   if ( isAvi )
-      AddHistory( keywords, "PlanetaryStack: Bayer " + FitsAscii( preview::BayerText( info ) ) );
-   AddHistory( keywords, "PlanetaryStack: " + FitsAscii( s.selection ) );
-   AddHistory( keywords, "PlanetaryStack: " + FitsAscii( s.alignment ) );
-   AddHistory( keywords, "PlanetaryStack: " + CountsLine( s, true/*stacked*/ ) );
-   // SER header text has no defined encoding; AVI warnings and the engine's are
-   // built from UTF-8 file names and sidecar text, or are ASCII.
-   for ( const std::string& w : s.warnings )
-      AddHistory( keywords, "PlanetaryStack warning: " +
-                               (isAvi ? FitsAscii( preview::StackWarning( w ) ) : fits::AsciiFromBytes( w )) );
+   for ( const stackcards::Card& card : stackcards::StackCards( fileName, outcome, times ) )
+      keywords << FITSHeaderKeyword( card.name.c_str(),
+                                     card.text ? FitsString( card.value ) : IsoString( card.value.c_str() ),
+                                     card.comment.c_str() );
+   for ( const std::string& text : stackcards::StackHistory( fileName, outcome ) )
+      AddHistory( keywords, text );
    return keywords;
 }
 
@@ -191,13 +111,13 @@ void WriteStackResult( const String& path, const stack::StackOutcome& outcome )
    if ( !outcome.image )
    {
       console.WarningLn( "PlanetaryStack: no image from " + File::ExtractNameAndExtension( path ).EncodedHTMLSpecialChars() +
-                         ": " + Html( DiagnosisText( outcome.diagnosis ) ) );
-      console.WriteLn( "PlanetaryStack: " + Html( CountsLine( s, false/*stacked*/ ) ) );
+                         ": " + Html( stackcards::DiagnosisText( outcome.diagnosis ) ) );
+      console.WriteLn( "PlanetaryStack: " + Html( stackcards::CountsLine( s, false/*stacked*/ ) ) );
       return;
    }
    console.WriteLn( "PlanetaryStack: " + Html( s.selection ) );
    console.WriteLn( "PlanetaryStack: " + Html( s.alignment ) );
-   console.WriteLn( "PlanetaryStack: " + Html( CountsLine( s, true/*stacked*/ ) ) );
+   console.WriteLn( "PlanetaryStack: " + Html( stackcards::CountsLine( s, true/*stacked*/ ) ) );
 }
 
 IsoString OpenStackWindow( const String& path, const stack::StackOutcome& outcome, const StackTimes& times )
@@ -207,21 +127,8 @@ IsoString OpenStackWindow( const String& path, const stack::StackOutcome& outcom
       throw Error( "PlanetaryStack: internal error - no stack to open for " + fileName );
    const ser::FloatImage& stacked = *outcome.image;
    const int channels = stacked.channels;
-   const FITSKeywordArray keywords = StackKeywords( path, outcome, times );
-
-   ImageWindow window( stacked.width, stacked.height, channels, 32, true/*float*/, channels == 3,
-                       true/*initialProcessing*/, ViewIdStem( path ) + "_stack" );
-   if ( window.IsNull() )
-      throw Error( "PlanetaryStack: " + fileName + ": PixInsight could not create an image window" );
-
-   IsoString viewId;
-   try
+   const auto fill = [&]( Image& image )
    {
-      View view = window.MainView();
-      ImageVariant v = view.Image();
-      if ( !v.IsFloatSample() || v.BitsPerSample() != 32 || v.NumberOfChannels() != channels )
-         throw Error( "PlanetaryStack: internal error - the new window is not a 32-bit float image" );
-      Image& image = static_cast<Image&>( *v );
       // The stack is interleaved; the image's planes are separate.
       const size_t n = size_t( stacked.width ) * size_t( stacked.height );
       for ( int c = 0; c < channels; ++c )
@@ -230,16 +137,9 @@ IsoString OpenStackWindow( const String& path, const stack::StackOutcome& outcom
          for ( size_t i = 0; i < n; ++i )
             plane[i] = stacked.data[i * channels + c];
       }
-      window.SetKeywords( keywords );
-      viewId = view.Id();
-   }
-   catch ( ... )
-   {
-      // The window is still hidden: drop it rather than leave a half-made image.
-      window.ForceClose();
-      throw;
-   }
-   window.Show();
+   };
+   const IsoString viewId = ShowNewImageWindow( stacked.width, stacked.height, channels, ViewIdStem( path ) + "_stack",
+                                                StackKeywords( path, outcome, times ), fill, "PlanetaryStack: " + fileName );
 
    Console().WriteLn( "<end><cbr>PlanetaryStack: " + fileName.EncodedHTMLSpecialChars() + " -> " + String( viewId ) + " (" +
                       Num( stacked.width ) + "x" + Num( stacked.height ) + ", " +
@@ -314,7 +214,7 @@ bool PlanetaryStackInstance::ExecuteGlobal()
 
    Console console;
    console.WriteLn( ContextLine( fileName, source->Info(), threads ) );
-   if ( IsAvi( source->Info() ) )
+   if ( stackcards::IsAvi( source->Info() ) )
       console.WriteLn( "PlanetaryStack: Bayer " + Html( preview::BayerText( source->Info() ) ) );
 
    // Progress: one StatusMonitor run per engine phase, with the engine's fixed
@@ -375,7 +275,8 @@ bool PlanetaryStackInstance::ExecuteGlobal()
    // No image from a capture with nothing usable: fail loudly with the
    // diagnosis (no window).
    if ( !outcome.image )
-      throw Error( "PlanetaryStack: " + fileName + ": no image: " + String( outcome.diagnosis.message.c_str() ) );
+      throw Error( "PlanetaryStack: " + fileName + ": no image: " +
+                   String::UTF8ToUTF16( outcome.diagnosis.message.c_str() ) );
 
    StackTimes times;
    try

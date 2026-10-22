@@ -13,6 +13,7 @@
 
 #include "Engine.h"
 #include "FrameSource.h"
+#include "StackCards.h"
 
 namespace pcl
 {
@@ -29,19 +30,12 @@ int StackThreads();
 // no trustworthy clock): the UTC times of the first and last frame stacked
 // when the file has a timestamp trailer; else the header's DateTime_UTC as the
 // start (no end). Empty for an AVI, a diagnosed outcome, or a SER without times.
-struct StackTimes
-{
-   std::optional<std::string> start, end;
-   bool fromFrames = false; // start/end are frame times (trailer), not the header's start
-};
+using StackTimes = planetary::stackcards::StackTimes;
 StackTimes CaptureTimes( const planetary::ser::FrameSource& source, const planetary::stack::StackOutcome& outcome );
 
-// The stack window's FITS keywords: SRCVIDEO, NFRAMES (measured), NCOMBINE
-// (stacked), DATE-OBS / DATE-END (StackTimes), INSTRUME / TELESCOP / OBSERVER
-// (the SER header, or the ASIAIR sidecar's camera as INSTRUME), and HISTORY:
-// the version and file, an AVI's Bayer pattern and its source, the selection
-// and alignment lines, the frame counts and time, and every summary warning.
-// No BAYERPAT: the stack is debayered RGB, or the raw mosaic as mono.
+// The stack window's FITS keywords: stackcards::StackCards (SRCVIDEO, NFRAMES,
+// NCOMBINE, DATE-OBS / DATE-END never for an AVI, INSTRUME / TELESCOP /
+// OBSERVER) and stackcards::StackHistory as HISTORY cards.
 FITSKeywordArray StackKeywords( const String& path, const planetary::stack::StackOutcome& outcome, const StackTimes& times );
 
 // Writes the outcome to the Process Console: the summary warnings first (an
@@ -51,9 +45,9 @@ FITSKeywordArray StackKeywords( const String& path, const planetary::stack::Stac
 void WriteStackResult( const String& path, const planetary::stack::StackOutcome& outcome );
 
 // Opens outcome's image (which must be present) as a new, shown 32-bit float
-// image window "<file stem>_stack" with StackKeywords, and says so on the
-// console. Returns the new view's id. Throws pcl::Error if no window can be
-// made; a half-made window is closed, never shown.
+// image window "<file stem>_stack" with StackKeywords (ShowNewImageWindow: a
+// half-made window is closed, never shown), and says so on the console.
+// Returns the new view's id. Throws pcl::Error if no window can be made.
 IsoString OpenStackWindow( const String& path, const planetary::stack::StackOutcome& outcome, const StackTimes& times );
 
 class PlanetaryStackInstance : public ProcessImplementation

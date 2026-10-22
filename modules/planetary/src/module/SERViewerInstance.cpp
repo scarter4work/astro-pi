@@ -21,6 +21,7 @@
 
 #include "FitsCards.h"
 #include "FitsText.h"
+#include "NewImageWindow.h"
 #include "PlanetaryVersion.h"
 #include "SerExport.h"
 #include "SerFile.h"
@@ -261,27 +262,16 @@ bool SERViewerInstance::ExecuteGlobal()
    const std::string asciiName = fits::AsciiFromUtf8( fileName.ToUTF8().c_str() );
    AddHistory( keywords, "SERViewer: " + asciiName + " frame " + std::to_string( index ) );
    if ( isAvi && ser::IsBayer( info.colorId ) )
-      AddHistory( keywords, "SERViewer: Bayer " + FitsAscii( preview::BayerText( info ) ) );
+      AddHistory( keywords, "SERViewer: Bayer " + fits::FitsAscii( preview::BayerText( info ) ) );
    // SER header text has no defined encoding; AVI warnings are built from
    // UTF-8 file names and sidecar text.
    for ( const std::string& w : info.warnings )
-      AddHistory( keywords, "SERViewer warning: " + (isAvi ? FitsAscii( w ) : fits::AsciiFromBytes( w )) );
+      AddHistory( keywords, "SERViewer warning: " + (isAvi ? fits::FitsAscii( w ) : fits::AsciiFromBytes( w )) );
    if ( !rangeWarning.empty() )
       AddHistory( keywords, "SERViewer warning: " + rangeWarning );
 
-   ImageWindow window( frame.width, frame.height, channels, 32, true/*float*/, channels == 3, true/*initialProcessing*/,
-                       ViewIdStem( path ) + "_f" + IsoString( std::to_string( index ).c_str() ) );
-   if ( window.IsNull() )
-      throw Error( "SERViewer: " + fileName + ": PixInsight could not create an image window" );
-
-   IsoString viewId;
-   try
+   const auto fill = [&]( Image& image )
    {
-      View view = window.MainView();
-      ImageVariant v = view.Image();
-      if ( !v.IsFloatSample() || v.BitsPerSample() != 32 || v.NumberOfChannels() != channels )
-         throw Error( "SERViewer: internal error - the new window is not a 32-bit float image" );
-      Image& image = static_cast<Image&>( *v );
       // Normalised (and debayered) straight into the image's planes: no
       // intermediate float copy of the frame next to the image.
       float* planes[3] = {};
@@ -298,17 +288,10 @@ bool SERViewerInstance::ExecuteGlobal()
       {
          throw Error( "SERViewer: " + fileName + ": " + FromUtf8( e.what() ) );
       }
-      window.SetKeywords( keywords );
-      viewId = view.Id();
-   }
-   catch ( ... )
-   {
-      // The window is still hidden: drop it rather than leave a half-made image.
-      window.ForceClose();
-      throw;
-   }
-
-   window.Show();
+   };
+   const IsoString viewId = ShowNewImageWindow( frame.width, frame.height, channels,
+                                                ViewIdStem( path ) + "_f" + IsoString( std::to_string( index ).c_str() ),
+                                                keywords, fill, "SERViewer: " + fileName );
 
    // Console text is parsed for tags, so file names and warnings go in encoded.
    Console console;
