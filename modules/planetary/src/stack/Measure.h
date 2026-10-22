@@ -135,6 +135,25 @@ constexpr double kClippedLuma = 0.999;
 // empirical scatter is 0.88-1.07 times the reported sigma.
 FrameStats MeasureFrame(const ser::FloatImage& luma, int64_t index);
 
+// The pieces of MeasureFrame that other stages reuse on parts of a frame (Task 5's regions).
+// Pixel noise s of a luma image, as MeasureFrame estimates it ("Background and noise"), and the
+// variance of the estimate s^2 itself (6.12 s^4 / M, M the pixel pairs used). Throws
+// std::invalid_argument for an empty or non-1-channel image or a sample count that does not match.
+struct NoiseEstimate {
+    double sigma = 0;      // s
+    double varSigma2 = 0;  // variance of the estimate s^2
+};
+NoiseEstimate EstimatePixelNoise(const ser::FloatImage& luma);
+// MeasureFrame's quality and qualitySigma ("Quality", "qualitySigma") over the rectangle
+// [rx0, rx1) x [ry0, ry1) of a row-major 1-channel image of row length w (the rectangle must lie
+// inside it), with background level b and the image's pixel noise. Both 0 when the noise-corrected
+// gradient or signal energy is not positive (or the rectangle is empty).
+struct QualityEstimate {
+    double quality = 0, sigma = 0;
+};
+QualityEstimate RegionQuality(const float* p, int w, int rx0, int ry0, int rx1, int ry1, double b,
+                              const NoiseEstimate& noise);
+
 // Opens one reader. Called once per worker thread, from that thread -- so concurrently.
 using SourceFactory = std::function<std::unique_ptr<ser::FrameSource>()>;
 

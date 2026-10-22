@@ -198,4 +198,24 @@ constexpr int kMinJudgedFrames = 30;
 // kept raw quality over q_ref, rounded down.
 Selection SelectFrames(const std::vector<FrameStats>& stats, const ser::FileInfo& info);
 
+// Steps 5, 6 and 8 of SelectFrames on bare samples -- the upper fence, the deconvolution and the
+// "maximise sum MTF / sqrt(k)" count -- for a caller that ranks something other than whole frames
+// (Task 5 ranks each region's frames with it, so a region keeps its own best frames by the same
+// rule). SelectFrames itself runs through it. Positions refer to the input vectors; ties break by
+// position, so pass samples in frame order to break them by frame index.
+struct DetailRanking {
+    std::vector<size_t> left;    // positions not fenced off (step 5), ascending
+    std::vector<size_t> ranked;  // the same positions, highest expected contrast first (step 8's order)
+    std::vector<double> mean;    // per ranked entry: posterior mean of the true quality
+    std::vector<double> mtf;     // per ranked entry: expected contrast at the detail frequency
+    size_t outliers = 0;         // fenced off (step 5)
+    double qRef = 0;             // "the best" (step 6)
+    size_t keep = 0;             // keep ranked[0 .. keep): step 8's count, at least min(need, left)
+};
+// `quality` must be finite and > 0 (std::invalid_argument otherwise, or when the sizes differ);
+// a non-finite or non-positive sigma counts as 0 (exact). need, floorCount: as in SelectFrames.
+// Empty input gives an empty ranking.
+DetailRanking RankByDetail(const std::vector<double>& quality, const std::vector<double>& sigma, int64_t need,
+                           int64_t floorCount);
+
 }  // namespace planetary::stack

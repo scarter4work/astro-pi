@@ -5,6 +5,7 @@
 #include <cstdio>
 #include <functional>
 #include <limits>
+#include <stdexcept>
 #include <string>
 #include <utility>
 #include <vector>
@@ -59,17 +60,17 @@ struct Prior {
 };
 
 // NPMLE of G (Kiefer-Wolfowitz) on a kPriorGrid-point grid over the observed range, by EM.
-Prior FitPrior(const std::vector<const FrameStats*>& f) {
+Prior FitPrior(const std::vector<double>& q, const std::vector<double>& sigma) {
     Prior p;
     bool noisy = false;
-    double lo = f.front()->quality, hi = lo;
-    for (const FrameStats* s : f) {
-        noisy = noisy || Sigma(*s) > 0;
-        lo = std::min(lo, s->quality);
-        hi = std::max(hi, s->quality);
+    double lo = q.front(), hi = lo;
+    for (size_t i = 0; i < q.size(); ++i) {
+        noisy = noisy || sigma[i] > 0;
+        lo = std::min(lo, q[i]);
+        hi = std::max(hi, q[i]);
     }
     if (!noisy || !(hi > lo)) return p;
-    const size_t k = kPriorGrid, n = f.size();
+    const size_t k = kPriorGrid, n = q.size();
     const double h = (hi - lo) / static_cast<double>(k - 1);
     p.k = k;
     p.u.resize(k);
@@ -77,9 +78,9 @@ Prior FitPrior(const std::vector<const FrameStats*>& f) {
     for (size_t j = 0; j < k; ++j) p.u[j] = lo + h * static_cast<double>(j);
     p.lik.resize(n * k);
     for (size_t i = 0; i < n; ++i) {
-        const double sg = std::max(Sigma(*f[i]), h / 2);
+        const double sg = std::max(sigma[i], h / 2);
         for (size_t j = 0; j < k; ++j) {
-            const double z = (f[i]->quality - p.u[j]) / sg;
+            const double z = (q[i] - p.u[j]) / sg;
             p.lik[i * k + j] = std::exp(-0.5 * z * z) / sg;
         }
     }
@@ -98,14 +99,149 @@ Prior FitPrior(const std::vector<const FrameStats*>& f) {
     return p;
 }
 
-// A frame that reached the ranking: its posterior mean quality and expected detail contrast.
+// A sample that reached the ranking: its posterior mean quality and expected detail contrast.
 struct Ranked {
-    const FrameStats* s;
+    size_t pos;   // position in the input
     double mean;  // posterior mean of its true quality
     double mtf;   // posterior expectation of MTF (step 8)
 };
 
 }  // namespace
+
+DetailRanking RankByDetail(const std::vector<double>& quality, const std::vector<double>& sigma, int64_t need,
+                           int64_t floorCount) {
+    if (sigma.size() != quality.size())
+        throw std::invalid_argument("RankByDetail: " + std::to_string(sigma.size()) + " sigmas for " +
+                                    std::to_string(quality.size()) + " qualities");
+    for (double q : quality)
+        if (!(std::isfinite(q) && q > 0)) throw std::invalid_argument("RankByDetail: a quality is not finite and > 0");
+    DetailRanking out;
+    const size_t nd = quality.size();
+    if (nd == 0) return out;
+    std::vector<double> sg(nd);
+    for (size_t i = 0; i < nd; ++i) sg[i] = std::isfinite(sigma[i]) && sigma[i] > 0 ? sigma[i] : 0.0;
+
+    // 5. Upper fence on log quality.
+    std::vector<size_t> left;
+    {
+        std::vector<double> lq, relNoise;
+        for (size_t i = 0; i < nd; ++i) {
+            lq.push_back(std::log(quality[i]));
+            relNoise.push_back(sg[i] / quality[i]);
+        }
+        const double med = Quantile(lq, 0.5);
+        std::vector<double> dev;
+        for (double v : lq) dev.push_back(std::fabs(v - med));
+        const double robustSd =
+            std::max({1.4826 * Quantile(dev, 0.5), Quantile(relNoise, 0.5), kFenceMinLogSd});
+        const double fence = med + kFenceSigmas * robustSd;
+        // Samples above the fence, sharpest first; the outliers are those above the lowest gap of at
+        // least kFenceGapSigmas robust sd among them (a glitch stands apart; the top of a real mode
+        // or tail is continuous and has no such gap).
+        std::vector<size_t> order;
+        for (size_t i = 0; i < lq.size(); ++i)
+            if (lq[i] > fence) order.push_back(i);
+        std::sort(order.begin(), order.end(), [&](size_t a, size_t b) { return lq[a] != lq[b] ? lq[a] > lq[b] : a < b; });
+        const auto above = static_cast<int64_t>(order.size());
+        const auto nDetailed = static_cast<int64_t>(nd);
+        const auto modeSize = static_cast<int64_t>(std::ceil(std::sqrt(static_cast<double>(nDetailed))));
+        int64_t cut = 0;  // fence off the `cut` sharpest samples
+        if (above > 0 && nDetailed >= kMinFenceFrames && above < modeSize && nDetailed - above >= floorCount) {
+            double below = -std::numeric_limits<double>::infinity();  // sharpest sample under the fence
+            int64_t band = 0;  // samples in the kFenceBandSigmas robust sd just under the fence
+            for (double v : lq)
+                if (!(v > fence)) {
+                    below = std::max(below, v);
+                    band += v > fence - kFenceBandSigmas * robustSd;
+                }
+            // Not the top of a population declining through the fence: every candidate goes.
+            if (band < above) cut = above;
+            for (int64_t k = above; k >= 1 && cut == 0; --k) {
+                const double next = k < above ? lq[order[static_cast<size_t>(k)]] : below;
+                if (lq[order[static_cast<size_t>(k - 1)]] - next >= kFenceGapSigmas * robustSd) {
+                    cut = k;
+                    break;
+                }
+            }
+        }
+        std::vector<bool> fenced(lq.size(), false);
+        for (int64_t k = 0; k < cut; ++k) fenced[order[static_cast<size_t>(k)]] = true;
+        for (size_t i = 0; i < nd; ++i)
+            if (!fenced[i]) left.push_back(i);
+    }
+    out.outliers = nd - left.size();
+    out.left = left;
+    const int64_t nLeft = static_cast<int64_t>(left.size());
+
+    // 6. Deconvolution (Ruling P5): the distribution of the true quality, and each sample's posterior.
+    std::vector<double> qLeft, sLeft;
+    for (size_t i : left) {
+        qLeft.push_back(quality[i]);
+        sLeft.push_back(sg[i]);
+    }
+    const Prior prior = FitPrior(qLeft, sLeft);
+    const int64_t refRank = std::max<int64_t>(std::min<int64_t>(3, nLeft), (nLeft + 99) / 100);
+    double qRef = 0;
+    if (prior.k > 0) {
+        // The quality the sharpest refRank / N of the TRUE distribution reach (no winner's curse).
+        double mass = 0;
+        const double topShare = static_cast<double>(refRank) / static_cast<double>(nLeft);
+        for (size_t j = prior.k; j-- > 0;) {
+            mass += prior.pi[j];
+            qRef = prior.u[j];
+            if (mass >= topShare) break;
+        }
+    } else {
+        std::vector<double> qs = qLeft;
+        std::nth_element(qs.begin(), qs.begin() + (refRank - 1), qs.end(), std::greater<double>());
+        qRef = qs[static_cast<size_t>(refRank - 1)];
+    }
+    out.qRef = qRef;
+
+    // 8's weight: contrast at the detail frequency of a sample of true quality q.
+    auto mtfAt = [&](double q) {
+        return q > 0 ? std::exp(-kDetailDepth * std::max(1.0, std::pow(qRef / q, 4))) : 0.0;
+    };
+    std::vector<Ranked> ranked;
+    for (size_t i = 0; i < left.size(); ++i) {
+        const size_t pos = left[i];
+        if (prior.k == 0 || sg[pos] <= 0) {
+            ranked.push_back({pos, quality[pos], mtfAt(quality[pos])});
+            continue;
+        }
+        double d = 0, m = 0, w = 0;
+        for (size_t j = 0; j < prior.k; ++j) {
+            const double p = prior.pi[j] * prior.lik[i * prior.k + j];
+            d += p;
+            m += p * prior.u[j];
+            w += p * mtfAt(prior.u[j]);
+        }
+        ranked.push_back(d > 0 ? Ranked{pos, m / d, w / d} : Ranked{pos, quality[pos], mtfAt(quality[pos])});
+    }
+    std::sort(ranked.begin(), ranked.end(), [](const Ranked& a, const Ranked& b) {
+        if (a.mtf != b.mtf) return a.mtf > b.mtf;
+        return a.mean != b.mean ? a.mean > b.mean : a.pos < b.pos;
+    });
+    for (const Ranked& r : ranked) {
+        out.ranked.push_back(r.pos);
+        out.mean.push_back(r.mean);
+        out.mtf.push_back(r.mtf);
+    }
+
+    // 8. The k samples with the highest expected contrast maximising sum / sqrt(k).
+    double sum = 0, bestScore = -1;
+    int64_t keep = 0;
+    for (int64_t k = 1; k <= nLeft; ++k) {
+        sum += ranked[static_cast<size_t>(k - 1)].mtf;
+        const double score = sum / std::sqrt(static_cast<double>(k));
+        if (score > bestScore) {
+            bestScore = score;
+            keep = k;
+        }
+    }
+    out.keep = static_cast<size_t>(std::max(keep, std::min(need, nLeft)));
+    return out;
+}
 
 bool FillsFrame(const FrameStats& s, int lumaWidth, int lumaHeight) {
     const bool touches = s.bx0 <= 0 || s.by0 <= 0 || s.bx1 >= lumaWidth || s.by1 >= lumaHeight;
@@ -232,76 +368,20 @@ Selection SelectFrames(const std::vector<FrameStats>& stats, const ser::FileInfo
                           {"frames needed", static_cast<double>(floorCount)}});
     }
 
-    // 5. Upper fence on log quality.
-    std::vector<const FrameStats*> left;
-    {
-        std::vector<double> lq, relNoise;
-        for (const FrameStats* s : detailed) {
-            lq.push_back(std::log(s->quality));
-            relNoise.push_back(Sigma(*s) / s->quality);
-        }
-        const double med = Quantile(lq, 0.5);
-        std::vector<double> dev;
-        for (double v : lq) dev.push_back(std::fabs(v - med));
-        const double robustSd =
-            std::max({1.4826 * Quantile(dev, 0.5), Quantile(relNoise, 0.5), kFenceMinLogSd});
-        const double fence = med + kFenceSigmas * robustSd;
-        // Frames above the fence, sharpest first; the outliers are those above the lowest gap of at
-        // least kFenceGapSigmas robust sd among them (a glitch stands apart; the top of a real mode
-        // or tail is continuous and has no such gap).
-        std::vector<size_t> order;
-        for (size_t i = 0; i < lq.size(); ++i)
-            if (lq[i] > fence) order.push_back(i);
-        std::sort(order.begin(), order.end(), [&](size_t a, size_t b) { return lq[a] != lq[b] ? lq[a] > lq[b] : a < b; });
-        const auto above = static_cast<int64_t>(order.size());
-        const auto nDetailed = static_cast<int64_t>(detailed.size());
-        const auto modeSize = static_cast<int64_t>(std::ceil(std::sqrt(static_cast<double>(nDetailed))));
-        int64_t cut = 0;  // fence off the `cut` sharpest frames
-        if (above > 0 && nDetailed >= kMinFenceFrames && above < modeSize && nDetailed - above >= floorCount) {
-            double below = -std::numeric_limits<double>::infinity();  // sharpest frame under the fence
-            int64_t band = 0;  // frames in the kFenceBandSigmas robust sd just under the fence
-            for (double v : lq)
-                if (!(v > fence)) {
-                    below = std::max(below, v);
-                    band += v > fence - kFenceBandSigmas * robustSd;
-                }
-            // Not the top of a population declining through the fence: every candidate goes.
-            if (band < above) cut = above;
-            for (int64_t k = above; k >= 1 && cut == 0; --k) {
-                const double next = k < above ? lq[order[static_cast<size_t>(k)]] : below;
-                if (lq[order[static_cast<size_t>(k - 1)]] - next >= kFenceGapSigmas * robustSd) {
-                    cut = k;
-                    break;
-                }
-            }
-        }
-        std::vector<bool> out(lq.size(), false);
-        for (int64_t k = 0; k < cut; ++k) out[order[static_cast<size_t>(k)]] = true;
-        for (size_t i = 0; i < detailed.size(); ++i)
-            if (!out[i]) left.push_back(detailed[i]);
+    // 5, 6 and 8's ranking (RankByDetail): the fence, the deconvolution and each frame's expected
+    // contrast; `detailed` is in frame order, so its positions break ties as frame indices did.
+    std::vector<double> dq, ds;
+    for (const FrameStats* s : detailed) {
+        dq.push_back(s->quality);
+        ds.push_back(Sigma(*s));
     }
+    const DetailRanking rank = RankByDetail(dq, ds, need, floorCount);
+    std::vector<const FrameStats*> left;
+    for (size_t i : rank.left) left.push_back(detailed[i]);
     const int64_t nOutliers = static_cast<int64_t>(detailed.size() - left.size());
     const int64_t nLeft = static_cast<int64_t>(left.size());
+    const double qRef = rank.qRef;
 
-    // 6. Deconvolution (Ruling P5): the distribution of the true quality, and each frame's posterior.
-    const Prior prior = FitPrior(left);
-    const int64_t refRank = std::max<int64_t>(std::min<int64_t>(3, nLeft), (nLeft + 99) / 100);
-    double qRef = 0;
-    if (prior.k > 0) {
-        // The quality the sharpest refRank / N of the TRUE distribution reach (no winner's curse).
-        double mass = 0;
-        const double topShare = static_cast<double>(refRank) / static_cast<double>(nLeft);
-        for (size_t j = prior.k; j-- > 0;) {
-            mass += prior.pi[j];
-            qRef = prior.u[j];
-            if (mass >= topShare) break;
-        }
-    } else {
-        std::vector<double> qs;
-        for (const FrameStats* s : left) qs.push_back(s->quality);
-        std::nth_element(qs.begin(), qs.begin() + (refRank - 1), qs.end(), std::greater<double>());
-        qRef = qs[static_cast<size_t>(refRank - 1)];
-    }
     // Moments: mu, and tau^2 = the variance the noise does not explain (step 7's spread).
     double mu = 0, noise2 = 0, var = 0;
     for (const FrameStats* s : left) {
@@ -319,38 +399,15 @@ Selection SelectFrames(const std::vector<FrameStats>& stats, const ser::FileInfo
     const double tauHi = std::sqrt(std::max(0.0, var - noise2 + 2 * seTau2));
     const double tauLo = std::sqrt(std::max(0.0, var - noise2 - 2 * seTau2));
 
-    // 8's weight: contrast at the detail frequency of a frame of true quality q.
-    auto mtfAt = [&](double q) {
-        return q > 0 ? std::exp(-kDetailDepth * std::max(1.0, std::pow(qRef / q, 4))) : 0.0;
-    };
-    std::vector<Ranked> ranked;
-    for (size_t i = 0; i < left.size(); ++i) {
-        const FrameStats* s = left[i];
-        if (prior.k == 0 || Sigma(*s) <= 0) {
-            ranked.push_back({s, s->quality, mtfAt(s->quality)});
-            continue;
-        }
-        double d = 0, m = 0, w = 0;
-        for (size_t j = 0; j < prior.k; ++j) {
-            const double p = prior.pi[j] * prior.lik[i * prior.k + j];
-            d += p;
-            m += p * prior.u[j];
-            w += p * mtfAt(prior.u[j]);
-        }
-        ranked.push_back(d > 0 ? Ranked{s, m / d, w / d} : Ranked{s, s->quality, mtfAt(s->quality)});
-    }
-    std::sort(ranked.begin(), ranked.end(), [](const Ranked& a, const Ranked& b) {
-        if (a.mtf != b.mtf) return a.mtf > b.mtf;
-        return a.mean != b.mean ? a.mean > b.mean : a.s->index < b.s->index;
-    });
-
     // 7. Focus and seeing, on a disc.
     if (!sel.fullFrameTarget) {
         sel.focusJudged = true;
         const int d = DetectionBlock(lw, lh);
         std::vector<double> radii;
-        for (const Ranked& r : ranked)
-            radii.push_back(std::sqrt(static_cast<double>(r.s->bx1 - r.s->bx0) * (r.s->by1 - r.s->by0)) / 2 - d);
+        for (size_t i : rank.ranked) {
+            const FrameStats* s = detailed[i];
+            radii.push_back(std::sqrt(static_cast<double>(s->bx1 - s->bx0) * (s->by1 - s->by0)) / 2 - d);
+        }
         const double radius = std::max(1.0, Quantile(radii, 0.5));
         const bool small = radius < kMinJudgedRadius;
         const double sqrtPi = std::sqrt(M_PI);
@@ -407,21 +464,10 @@ Selection SelectFrames(const std::vector<FrameStats>& stats, const ser::FileInfo
     }
 
     // 8. Selection: the k frames with the highest expected contrast maximising sum / sqrt(k).
-    double sum = 0, bestScore = -1;
-    int64_t keep = 0;
-    for (int64_t k = 1; k <= nLeft; ++k) {
-        sum += ranked[static_cast<size_t>(k - 1)].mtf;
-        const double score = sum / std::sqrt(static_cast<double>(k));
-        if (score > bestScore) {
-            bestScore = score;
-            keep = k;
-        }
-    }
-    keep = std::max(keep, std::min(need, nLeft));
-
-    sel.threshold = ranked.front().s->quality;
+    const auto keep = static_cast<int64_t>(rank.keep);
+    sel.threshold = detailed[rank.ranked.front()]->quality;
     for (int64_t k = 0; k < keep; ++k) {
-        const FrameStats* s = ranked[static_cast<size_t>(k)].s;
+        const FrameStats* s = detailed[rank.ranked[static_cast<size_t>(k)]];
         sel.frames.push_back(s->index);
         sel.threshold = std::min(sel.threshold, s->quality);
     }

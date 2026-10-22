@@ -23,6 +23,8 @@ planetary_add_test(test_demosaic_hq unit/test_demosaic_hq.cpp planetary_stack)
 planetary_add_test(test_measure unit/test_measure.cpp planetary_stack)
 planetary_add_test(test_select unit/test_select.cpp planetary_stack)
 planetary_add_test(test_align unit/test_align.cpp planetary_stack)
+planetary_add_test(test_regions unit/test_regions.cpp planetary_stack)
+planetary_add_test(test_accumulate unit/test_accumulate.cpp planetary_stack)
 # FitsText.h is the module's PCL-free keyword-text helper (header only).
 planetary_add_test(test_fits_text unit/test_fits_text.cpp)
 target_include_directories(test_fits_text PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/../src/module")
@@ -50,3 +52,8 @@ target_link_libraries(avi-probe PRIVATE planetary_ser)
 # it needs the NAS captures).
 add_executable(align-probe align-probe.cpp)
 target_link_libraries(align-probe PRIVATE planetary_stack)
+
+# Test-only: the region stage on real captures (lucky regions vs the global-only stack; timings).
+# Not a ctest case, it needs the NAS captures.
+add_executable(stack-region-probe stack-region-probe.cpp)
+target_link_libraries(stack-region-probe PRIVATE planetary_stack)
