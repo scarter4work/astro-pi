@@ -287,6 +287,29 @@ Capture SeeingDisc(int w, int h, double cx, double cy, double radius, int n, uns
     return cap;
 }
 
+// A disc of `radius` px centred in a (4 R + 80)-px square frame, with 1-px drift, whose limb is blurred
+// by blur(rng) px in each frame, everywhere alike, and pixel noise `noise`.
+Capture BlurredDisc(double radius, int n, double noise, const std::function<double(std::mt19937&)>& blur) {
+    const int side = static_cast<int>(4 * radius + 80) / 2 * 2;
+    const Scene s = planetary::testing::MakeDisc(61, side / 2.0 + 0.3, side / 2.0 - 0.2, radius);
+    Capture cap = planetary::testing::NewCapture(side, side);
+    std::mt19937 rng(68);
+    std::normal_distribution<double> n01(0, 1);
+    planetary::testing::RenderCapture(cap, s, n, [&](int) {
+        FrameSpec f;
+        f.noise = noise;
+        f.gx = n01(rng);
+        f.gy = n01(rng);
+        f.hasLocal = true;
+        f.dx = planetary::testing::RandomField(rng, side, side, 32, [] { return 0.0; });
+        f.dy = planetary::testing::RandomField(rng, side, side, 32, [] { return 0.0; });
+        const double b = blur(rng);
+        f.sigma = planetary::testing::RandomField(rng, side, side, 32, [b] { return b; });
+        return f;
+    });
+    return cap;
+}
+
 // A disc with small drift whose every pixel is scaled by `gain` (clipped at full scale).
 Capture BrightDisc(int w, int h, double radius, int n, unsigned seed, double gain) {
     const Scene s = planetary::testing::MakeDisc(seed, w / 2.0 + 0.3, h / 2.0 - 0.2, radius);
@@ -463,6 +486,26 @@ int WriteStackFixtures(const std::filesystem::path& dir) {
         cases.push_back(c);
     }
 
+    // A small disc (radius 8 px, under kMinJudgedRadius) blurred by 5 px: Select does not refuse it (its
+    // small-disc rule never fired on measured data, Select.h step 7), the region stage warns (limb blur
+    // over radius 0.53 against 0.4, measured) -- the disc warn-but-stack band. Mono 16-bit SER, 60 frames.
+    {
+        const Capture cap = BlurredDisc(8, 60, 0.01, [](std::mt19937&) { return 5.0; });
+        SerSpec s;
+        s.colorId = 0; s.width = cap.info.header.width; s.height = cap.info.header.height; s.depth = 16; s.frameCount = 60;
+        const std::string path = (dir / "stack-soft-disc.ser").string();
+        WriteSer(path, s, Frames16(cap));
+        StackCase c;
+        c.name = "soft small disc: stacked, focus warning in HISTORY"; c.path = path; c.kind = "image";
+        c.expectId = "stack_soft_disc_stack";
+        c.expectFocusWarning = true;
+        c.sample = {{56, 56}, {60, 52}, {10, 10}};
+        c.keywords = {{"HISTORY", "commentContains", "PlanetaryStack warning: The stack may be out of focus: the sharpest frames blur the limb"}};
+        c.absent = {"DATE-OBS", "BAYERPAT"};
+        c.consoleContains = {"PlanetaryStack warning: The stack may be out of focus: the sharpest frames blur the limb"};
+        cases.push_back(c);
+    }
+
     // An AVI of a colour mosaic with no sidecar, Auto (Ruling P9): stacked as raw mono, with the warning.
     {
         const int w = 192, h = 160;
@@ -527,6 +570,24 @@ int WriteStackFixtures(const std::filesystem::path& dir) {
         // A disc overexposed to full scale in every frame.
         Capture cap = BrightDisc(128, 112, 26, 40, 51, 3.0);
         diagnosis("diagnosis: clipped", "diag-clipped.ser", cap, "Clipped");
+    }
+    // Focus and seeing (Ruling P23): only Select refuses them, and only for a disc of half-contrast radius
+    // >= kMinJudgedRadius blurred past kGrossBlurLimit (Select.h step 7). A disc of radius 24 px in low
+    // noise (0.003; at 0.01 the reading levels off near the limit): measured 2026-10-22, the sharpest frames
+    // read 37-38% of the radius against the 25% limit.
+    {
+        // The same blur, 16 px, in all 60 frames: steady -- "the optics, not the air".
+        Capture cap = BlurredDisc(24, 60, 0.003, [](std::mt19937&) { return 16.0; });
+        diagnosis("diagnosis: out of focus", "diag-defocus.ser", cap, "OutOfFocus");
+    }
+    {
+        // 26 px x a 10% log-normal spread over 200 frames: the blur changes from frame to frame (spread at
+        // least 25% beyond the noise, measured) and even the sharpest frames read 38% of the radius.
+        Capture cap = BlurredDisc(24, 200, 0.003, [](std::mt19937& rng) {
+            std::normal_distribution<double> n01(0, 1);
+            return 26.0 * std::exp(0.1 * n01(rng));
+        });
+        diagnosis("diagnosis: poor seeing", "diag-seeing.ser", cap, "PoorSeeing");
     }
     {
         // Every frame a different lunar field: no frame aligns to the others.
