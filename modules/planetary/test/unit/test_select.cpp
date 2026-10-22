@@ -86,7 +86,7 @@ std::set<int64_t> CheckSelected(const Selection& sel, const std::vector<FrameSta
     CHECK(sel.threshold == lowest);
     // One line, the spec's style, numbers matching.
     std::smatch m;
-    const std::regex re(R"(^used (\d+) of (\d+) frames: the sharpest group, quality >= ([01]\.\d\d) of the best)");
+    const std::regex re(R"(^used (\d+) of (\d+) frames: the frames judged sharpest after allowing for measurement noise, quality >= ([01]\.\d\d) of the best)");
     INFO(sel.explanation);
     REQUIRE(std::regex_search(sel.explanation, m, re));
     CHECK(std::stoll(m[1]) == static_cast<long long>(sel.frames.size()));
@@ -424,9 +424,14 @@ TEST_CASE("20 000 frames: same rule, fast", "[select][long]") {
     std::mt19937 rng(31);
     std::normal_distribution<double> n01(0, 1);
     auto good = [](int64_t i) { return (i / 50) % 3 == 0; };  // steady spells of 50 frames
-    const auto stats = DiscCapture(20000, [&](int64_t i) {
+    auto stats = DiscCapture(20000, [&](int64_t i) {
         return good(i) ? 1.0 * (1 + 0.03 * n01(rng)) : 1.7 * (1 + 0.05 * n01(rng));
     });
+    // With 1% measurement noise reported, so the deconvolution (step 6) runs at full size.
+    for (auto& s : stats) {
+        s.quality *= 1 + 0.01 * n01(rng);
+        s.qualitySigma = 0.01 * s.quality;
+    }
     const auto t0 = std::chrono::steady_clock::now();
     const Selection sel = SelectFrames(stats, Info(640, 480));
     const double secs = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
@@ -674,4 +679,145 @@ TEST_CASE("few blurred frames: focus or seeing is worded as undetermined (review
     CheckDiagnosed(sel, DiagnosisKind::OutOfFocus);
     CHECK(sel.diagnosis.message.find("too few frames to tell") != std::string::npos);
     CHECK(Number(sel.diagnosis, "frames judged") == 20);
+}
+
+// ---- review round 2 ------------------------------------------------------------------------------
+
+namespace {
+// The reviewer's oracle: a capture whose true limb blur per frame is known. Score = the detail
+// signal-to-noise S of a frame set computed with the TRUE blurs, relative to the best set an
+// oracle (knowing the true blurs) would pick with the same rule.
+struct Oracle {
+    std::vector<double> sigma;  // true limb blur per frame
+    std::vector<FrameStats> stats;
+};
+
+Oracle VaryingNight(double g, double noise, uint32_t seed) {
+    std::mt19937 rng(seed);
+    std::normal_distribution<double> n01(0, 1);
+    Oracle o;
+    for (int64_t i = 0; i < 3000; ++i) {
+        const double sig = 2.0 * std::exp(g * n01(rng));
+        const double qt = DiscQuality(60, sig);
+        o.sigma.push_back(sig);
+        o.stats.push_back(DiscQ(i, qt * (1 + noise * n01(rng)), noise * qt));
+    }
+    return o;
+}
+
+double OracleRelativeScore(const Oracle& o, const std::vector<int64_t>& set) {
+    const size_t n = o.sigma.size();
+    std::vector<double> sorted = o.sigma;
+    std::sort(sorted.begin(), sorted.end());
+    const double ref = sorted[(n + 99) / 100 - 1];
+    auto w = [&](double sig) { return std::exp(-3 * std::max(1.0, (sig / ref) * (sig / ref))); };
+    double sum = 0, best = -1;
+    for (size_t k = 1; k <= n; ++k) {
+        sum += w(sorted[k - 1]);
+        best = std::max(best, sum / std::sqrt(static_cast<double>(k)));
+    }
+    double s = 0;
+    for (int64_t f : set) s += w(o.sigma[static_cast<size_t>(f)]);
+    return s / std::sqrt(static_cast<double>(set.size())) / best;
+}
+}  // namespace
+
+TEST_CASE("varying nights with measurement noise: close to the oracle's choice (N1)", "[select][noise]") {
+    struct Case {
+        double g, noise, minScore;
+    };
+    // Blur log-sd g, quality noise; the bars are the review's (step 6 alone reached .975/.853/.680).
+    for (const Case c : {Case{0.2, 0.02, 0.95}, Case{0.2, 0.05, 0.85}, Case{0.3, 0.10, 0.68}}) {
+        const Oracle o = VaryingNight(c.g, c.noise, 7);
+        const Selection sel = SelectFrames(o.stats, Info(640, 480));
+        CheckSelected(sel, o.stats);
+        const double score = OracleRelativeScore(o, sel.frames);
+        INFO("g " << c.g << " noise " << c.noise << " kept " << sel.frames.size() << " score " << score);
+        CHECK(score >= c.minScore);
+    }
+}
+
+TEST_CASE("frames with detail must reach the count floor too (N2)", "[select][diagnosis]") {
+    std::vector<FrameStats> stats;
+    for (int64_t i = 0; i < 20000; ++i) {
+        FrameStats s = Disc(i, 640, 480, 320, 240, 60, 1.0);
+        if (i >= 5) s.quality = 0;
+        stats.push_back(s);
+    }
+    const Selection sel = SelectFrames(stats, Info(640, 480));
+    CheckDiagnosed(sel, DiagnosisKind::OutOfFocus);
+    CHECK(Number(sel.diagnosis, "frames with detail") == 5);
+}
+
+TEST_CASE("streaks are never a frame-filling target, even as the majority of detections (N3)", "[select]") {
+    std::vector<FrameStats> stats;
+    for (int64_t i = 0; i < 2000; ++i) stats.push_back(i % 30 == 0 ? Streak(i, 640, 480) : NoTargetFrame(i));
+    const Selection sel = SelectFrames(stats, Info(640, 480));
+    CHECK(sel.frames.empty());
+    CHECK_FALSE(sel.fullFrameTarget);
+    CHECK(sel.diagnosis.kind != DiagnosisKind::None);
+    // The per-frame rule shared with Align: a frame-wide thin box does not fill the frame.
+    CHECK_FALSE(stack::FillsFrame(Streak(0, 640, 480), 640, 480));
+    FrameStats moon;
+    moon.targetFound = true;
+    moon.bx0 = 330;
+    moon.by0 = 0;
+    moon.bx1 = 640;
+    moon.by1 = 321;
+    CHECK(stack::FillsFrame(moon, 640, 480));
+}
+
+TEST_CASE("short captures are not fenced: their sharpest frames stay (N4)", "[select][outliers]") {
+    auto capture = [](const std::vector<double>& qs) {
+        std::vector<FrameStats> v;
+        for (size_t i = 0; i < qs.size(); ++i) v.push_back(DiscQ(static_cast<int64_t>(i), qs[i], 0.0));
+        return v;
+    };
+    {
+        const auto stats = capture({1.0, 1.0, 1.01, 1.3, 1.32});
+        const Selection sel = SelectFrames(stats, Info(640, 480));
+        const auto kept = CheckSelected(sel, stats);
+        CHECK(kept.count(3) == 1);
+        CHECK(kept.count(4) == 1);
+        CHECK(sel.explanation.find("outlier") == std::string::npos);
+    }
+    {
+        const auto stats = capture({1.0, 1.01, 1.02, 1.0, 1.01, 1.0, 1.02, 1.25, 1.26, 1.27});
+        const Selection sel = SelectFrames(stats, Info(640, 480));
+        const auto kept = CheckSelected(sel, stats);
+        for (int64_t f : {7, 8, 9}) CHECK(kept.count(f) == 1);
+    }
+    // 100 frames, 99 identical and one 0.1% sharper: no outlier (differences under the floor).
+    {
+        std::vector<double> qs(100, 1.0);
+        qs[42] = 1.001;
+        const Selection sel = SelectFrames(capture(qs), Info(640, 480));
+        CHECK(sel.explanation.find("outlier") == std::string::npos);
+    }
+}
+
+TEST_CASE("seeing that varies under heavy measurement noise is still seeing (N5)", "[select][diagnosis]") {
+    std::mt19937 rng(13);
+    std::normal_distribution<double> n01(0, 1);
+    // Blurred disc (limb 10 px on R = 60), true blur sd 6%, quality noise 10%.
+    std::vector<FrameStats> stats;
+    for (int64_t i = 0; i < 500; ++i) {
+        const double qt = DiscQuality(60, 10.0 * (1 + 0.06 * n01(rng)));
+        stats.push_back(DiscQ(i, qt * (1 + 0.10 * n01(rng)), 0.10 * qt));
+    }
+    const Selection sel = SelectFrames(stats, Info(640, 480));
+    CheckDiagnosed(sel, DiagnosisKind::PoorSeeing);
+    CHECK(Number(sel.diagnosis, "blur spread") >= stack::kSteadySpread);
+
+    // Heavy noise and no measurable spread (scatter exactly the reported 15%: tau^2 = 0), yet a
+    // spread over 5% cannot be ruled out: neither "steady" (focus) nor "varying" -- can't tell.
+    std::vector<FrameStats> noisy;
+    const double qt = DiscQuality(60, 10.0);
+    for (int64_t i = 0; i < 500; ++i) noisy.push_back(DiscQ(i, qt * (i % 2 ? 1.15 : 0.85), 0.15 * qt));
+    const Selection selNoisy = SelectFrames(noisy, Info(640, 480));
+    CheckDiagnosed(selNoisy, DiagnosisKind::OutOfFocus);
+    INFO(selNoisy.diagnosis.message);
+    CHECK(Number(selNoisy.diagnosis, "blur spread") < stack::kSteadySpread);
+    CHECK(Number(selNoisy.diagnosis, "blur spread upper bound") >= stack::kSteadySpread);
+    CHECK(selNoisy.diagnosis.message.find("too large to tell") != std::string::npos);
 }
