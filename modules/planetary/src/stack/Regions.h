@@ -320,7 +320,8 @@ struct RegionPlan {
 // fallback's plain mean of the stacked frames -- ranked, its noise-floor "detail" kept a handful, once
 // a single frame of 2102 on the Moon 193142, sqrt(2102) times the noise; and one or two candidates out
 // of many aligned frames, or after alignment collapsed there, are the noise's tail, whatever their
-// ratio). A region whose detail is real but whose spread is noise is left to the ranking: step 6's
+// ratio). That includes every region of a whole capture of 1-4 frames, which SelectFrames accepts:
+// ranking 2-4 frames per region gains nothing, so such a capture is the plain mean. A region whose detail is real but whose spread is noise is left to the ranking: step 6's
 // deconvolution keeps everything there (Neptune 204515: 93 of 93 per region). An override that kept
 // every aligned frame when the spread was within qualitySigma discarded real lucky frames at low SNR,
 // where qualitySigma overstates q's scatter (~1.25x at a median q / qualitySigma of 4-5; Ruling P26).
