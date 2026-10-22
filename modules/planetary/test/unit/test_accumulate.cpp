@@ -887,13 +887,15 @@ TEST_CASE("A streak in a border band a tenth of the frames reach is rejected as 
     CHECK(zeros == 0);
 }
 
-TEST_CASE("Hot segments on a Bayer sensor are repaired whole; still moons lines and a limb are not flagged", "[accumulate]") {
+TEST_CASE("Hot segments are repaired whole on Bayer and mono sensors; still moons lines and a limb are not flagged", "[accumulate]") {
     // Review round 2 (M2): in a mosaic the same-colour neighbours are 2 px apart, so along a hot
-    // column or row segment of 3 px or more the same-colour members are each other's neighbours.
-    // The optical features are held perfectly still on the sensor in every frame (the hardest case:
-    // only their shape tells them from hot pixels), at PSF sigma 1.6 px; the limb is sharper (1.0).
+    // column or row segment of 3 px or more the same-colour members are each other's neighbours; on a
+    // mono sensor an adjacent pair already is. The optical features are held perfectly still on the
+    // sensor in every frame (the hardest case: only their shape tells them from hot pixels), at PSF
+    // sigma 1.6 px; the limb is sharper (1.0). Mono: a still point between two pixels and a still line
+    // look like a hot pair or segment on the 1-px ring (the third-largest-neighbour rule of round 1
+    // flagged 8 and 192 such sites here).
     const int w = 160, h = 128;
-    ser::FileInfo info = testing::NewCapture(w, h, ser::ColorId::BayerRGGB).info;
     std::vector<std::pair<int, int>> hot;
     auto column = [&](int x, int y0, int n) { for (int y = y0; y < y0 + n; ++y) hot.push_back({x, y}); };
     auto row = [&](int y, int x0, int n) { for (int x = x0; x < x0 + n; ++x) hot.push_back({x, y}); };
@@ -905,57 +907,66 @@ TEST_CASE("Hot segments on a Bayer sensor are repaired whole; still moons lines 
     row(107, 65, 3);
     row(112, 75, 5);
     row(119, 86, 5);
+    for (int i = 0; i < 3; ++i) hot.push_back({100 + i, 100 + i});  // diagonal
+    for (int i = 0; i < 3; ++i) hot.push_back({102 - i, 120 + i});  // anti-diagonal
     // Moons centred on an R, a G (R row), a G (B row) and a B site, and between sites.
     const std::vector<std::pair<double, double>> moons = {{30, 30}, {51, 30}, {70, 31}, {91, 31}, {110.5, 30.5}, {130.5, 30}};
-    std::mt19937 rng(13);
-    std::normal_distribution<double> n(0, 1);
-    auto frame = [&]() {
-        ser::Frame f;
-        f.width = w;
-        f.height = h;
-        f.channels = 1;
-        f.samples.resize(static_cast<size_t>(w) * h);
-        for (int y = 0; y < h; ++y)
-            for (int x = 0; x < w; ++x) {
-                double v = 0.05;
-                for (const auto& [mx, my] : moons) {
-                    const double dx = x - mx, dy = y - my;
-                    v += 0.6 * std::exp(-(dx * dx + dy * dy) / (2 * 1.6 * 1.6));
+    for (ser::ColorId color : {ser::ColorId::BayerRGGB, ser::ColorId::Mono}) {
+        INFO((color == ser::ColorId::Mono ? "mono" : "Bayer"));
+        const ser::FileInfo info = testing::NewCapture(w, h, color).info;
+        std::mt19937 rng(13);
+        std::normal_distribution<double> n(0, 1);
+        auto frame = [&]() {
+            ser::Frame f;
+            f.width = w;
+            f.height = h;
+            f.channels = 1;
+            f.samples.resize(static_cast<size_t>(w) * h);
+            for (int y = 0; y < h; ++y)
+                for (int x = 0; x < w; ++x) {
+                    double v = 0.05;
+                    for (const auto& [mx, my] : moons) {
+                        const double dx = x - mx, dy = y - my;
+                        v += 0.6 * std::exp(-(dx * dx + dy * dy) / (2 * 1.6 * 1.6));
+                    }
+                    // Thin lines (a ring seen edge-on, a rille's lit wall): along a row, along a column, a
+                    // row between two sensor rows, and a diagonal.
+                    auto line = [&](double d, double along, double a0, double a1) {
+                        return along < a0 || along > a1 ? 0.0 : 0.5 * std::exp(-d * d / (2 * 1.6 * 1.6));
+                    };
+                    v += line(y - 55.0, x, 10, 70) + line(x - 100.0, y, 45, 75) + line(y - 68.5, x, 10, 70) +
+                         line((x - y - 32.0) / std::sqrt(2.0), x, 75, 92);
+                    // A still disc, limb sigma 1.0 px.
+                    v += 0.45 * 0.5 * std::erfc((std::hypot(x - 132.0, y - 92.0) - 20) / (std::sqrt(2.0) * 1.0));
+                    v += 0.004 * n(rng);
+                    for (const auto& [hx, hy] : hot)
+                        if (x == hx && y == hy) v += 0.3;
+                    f.samples[static_cast<size_t>(y) * w + x] = static_cast<uint16_t>(std::lround(std::clamp(v, 0.0, 1.0) * 65535));
                 }
-                // Thin lines (a ring seen edge-on, a rille's lit wall): along a row, along a column, and
-                // a row between two sensor rows.
-                auto line = [&](double d, double along, double a0, double a1) {
-                    return along < a0 || along > a1 ? 0.0 : 0.5 * std::exp(-d * d / (2 * 1.6 * 1.6));
-                };
-                v += line(y - 55.0, x, 10, 70) + line(x - 100.0, y, 45, 75) + line(y - 68.5, x, 10, 70);
-                // A still disc, limb sigma 1.0 px.
-                v += 0.45 * 0.5 * std::erfc((std::hypot(x - 132.0, y - 92.0) - 20) / (std::sqrt(2.0) * 1.0));
-                v += 0.004 * n(rng);
-                for (const auto& [hx, hy] : hot)
-                    if (x == hx && y == hy) v += 0.3;
-                f.samples[static_cast<size_t>(y) * w + x] = static_cast<uint16_t>(std::lround(std::clamp(v, 0.0, 1.0) * 65535));
-            }
-        return f;
-    };
-    stack::HotPixelMap map(info);
-    for (int k = 0; k < 20; ++k) map.Observe(frame());
-    map.Finish();
-    std::vector<size_t> expect;
-    for (const auto& [hx, hy] : hot) expect.push_back(static_cast<size_t>(hy) * w + hx);
-    std::sort(expect.begin(), expect.end());
-    std::string missed, extra;
-    for (size_t k : expect)
-        if (!std::binary_search(map.Sites().begin(), map.Sites().end(), k)) missed += std::to_string(k % w) + "," + std::to_string(k / w) + " ";
-    for (size_t k : map.Sites())
-        if (!std::binary_search(expect.begin(), expect.end(), k)) extra += std::to_string(k % w) + "," + std::to_string(k / w) + " ";
-    INFO("hot sites missed: " << missed << "; flagged that are not hot: " << extra);
-    CHECK(missed.empty());
-    CHECK(extra.empty());
-    ser::Frame f = frame();
-    map.Repair(f);
-    for (const auto& [hx, hy] : hot) {
-        INFO("site " << hx << "," << hy);
-        CHECK(f.samples[static_cast<size_t>(hy) * w + hx] / 65535.0 < 0.07);
+            return f;
+        };
+        stack::HotPixelMap map(info);
+        for (int k = 0; k < 20; ++k) map.Observe(frame());
+        map.Finish();
+        std::vector<size_t> expect;
+        for (const auto& [hx, hy] : hot) expect.push_back(static_cast<size_t>(hy) * w + hx);
+        std::sort(expect.begin(), expect.end());
+        std::string missed, extra;
+        size_t extras = 0;
+        for (size_t k : expect)
+            if (!std::binary_search(map.Sites().begin(), map.Sites().end(), k)) missed += std::to_string(k % w) + "," + std::to_string(k / w) + " ";
+        for (size_t k : map.Sites())
+            if (!std::binary_search(expect.begin(), expect.end(), k) && ++extras <= 12)
+                extra += std::to_string(k % w) + "," + std::to_string(k / w) + " ";
+        INFO("hot sites missed: " << missed << "; flagged that are not hot: " << extras << " (" << extra << ")");
+        CHECK(missed.empty());
+        CHECK(extras == 0);
+        ser::Frame f = frame();
+        map.Repair(f);
+        for (const auto& [hx, hy] : hot) {
+            INFO("site " << hx << "," << hy);
+            CHECK(f.samples[static_cast<size_t>(hy) * w + hx] / 65535.0 < 0.07);
+        }
     }
 }
 

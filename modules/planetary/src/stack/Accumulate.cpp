@@ -460,7 +460,8 @@ void HotPixelMap::Observe(const ser::Frame& frame) {
                 const size_t k = (static_cast<size_t>(y) * W + x) * C + c;
                 const double v = s[k];
                 if (v < minExcess) continue;
-                // The ring, row by row: 1 and 6 are the column neighbours, 3 and 4 the row neighbours.
+                // The ring, row by row: 1 and 6 are the column neighbours, 3 and 4 the row neighbours, 0 and 7
+                // the diagonal ones, 2 and 5 the anti-diagonal ones.
                 uint16_t ring[8], n[8];
                 int m = 0;
                 for (int j = -1; j <= 1; ++j)
@@ -469,32 +470,33 @@ void HotPixelMap::Observe(const ser::Frame& frame) {
                         ring[m++] = s[(static_cast<size_t>(y + j * d) * W + (x + i * d)) * C + c];
                     }
                 std::copy(ring, ring + 8, n);
-                // Sorted ascending. Mono and RGB: the third largest neighbour stands for "the others", so a
-                // hot pair or a hot column segment (up to two hot neighbours) still stands alone. Bayer: the
-                // largest -- adjacent sensor pixels are other colours, so a pair is two lone sites in their
-                // planes, while next to a sharp peak the 2-px same-colour ring has nearer greens outside it.
+                // A lone site: above the whole ring (sorted ascending), by the shape margin over its median.
                 std::sort(n, n + 8);
-                const double excess = v - n[d == 1 ? 5 : 7];
+                const double excess = v - n[7];
                 const double med = 0.5 * (n[3] + n[4]);
                 bool alone = excess > minExcess && excess > kHotRatio * (v - med);
-                // Bayer, a hot column or row segment of 3 px or more: its same-colour members are each
-                // other's ring neighbours along that axis. The site counts when it stands above the ring off
-                // the axis, by kHotRatio of its excess over the lowest of the ring and the two same-colour
-                // samples beyond it across the axis (4 px out): a segment is one pixel wide, so the
-                // background is flat across it; a still optical feature that would pass the first part --
-                // two sites flanking a peak, a thin line along the axis -- falls off across it, and its
-                // 4-px samples are far below its 2-px ones (unit test: still moons on every site colour and
-                // between sites, lines along a row, a column and between rows, all at PSF sigma 1.6).
-                // Not within 4 px of the frame's edge across the axis.
-                if (!alone && d == 2 && v - n[5] > minExcess)  // off the axis is at least the third largest
-                    for (int axis = 0; axis < 2 && !alone; ++axis) {
-                        const int a = axis ? 3 : 1, b = axis ? 4 : 6;  // column axis, then row axis
-                        const int fx = axis ? 0 : 2 * d, fy = axis ? 2 * d : 0;
-                        if (x - fx < 0 || x + fx >= W || y - fy < 0 || y + fy >= height_) continue;
+                // A member of a hot pair or segment along a line through it (column, row or diagonal): its
+                // fellow members are the ring's two neighbours on that line (1 px away in mono, 2 in a
+                // mosaic). It counts when it stands above the 6 ring neighbours off the line, by the shape
+                // margin over the lowest of the ring and the two same-colour samples 2 ring steps out
+                // across the line: a segment is one pixel wide, so the background is flat across it; a still
+                // optical feature that would pass the first part -- a point between two sites, two sites
+                // flanking a peak, a thin line along the line -- falls off across it, and its far samples
+                // are well below the ring (unit test: still moons on every site colour and between sites,
+                // lines along a row, a column, a diagonal and between rows, PSF sigma 1.6; round 1's mono
+                // rule -- above all but the two largest neighbours -- flagged the points and lines).
+                // Only where the far samples are inside the frame.
+                if (!alone && v - n[5] > minExcess)  // off any line, the largest is at least the third largest
+                    for (int line = 0; line < 4 && !alone; ++line) {
+                        static constexpr int kPair[4][2] = {{1, 6}, {3, 4}, {0, 7}, {2, 5}};
+                        static constexpr int kAcross[4][2] = {{1, 0}, {0, 1}, {1, -1}, {1, 1}};
+                        const int fx = 2 * d * kAcross[line][0], fy = 2 * d * kAcross[line][1];
+                        if (x - std::abs(fx) < 0 || x + std::abs(fx) >= W || y - std::abs(fy) < 0 || y + std::abs(fy) >= height_)
+                            continue;
                         double off = 0, low = 65535;
                         for (int q = 0; q < 8; ++q) {
                             low = std::min<double>(low, ring[q]);
-                            if (q != a && q != b) off = std::max<double>(off, ring[q]);
+                            if (q != kPair[line][0] && q != kPair[line][1]) off = std::max<double>(off, ring[q]);
                         }
                         low = std::min<double>(low, s[(static_cast<size_t>(y - fy) * W + (x - fx)) * C + c]);
                         low = std::min<double>(low, s[(static_cast<size_t>(y + fy) * W + (x + fx)) * C + c]);

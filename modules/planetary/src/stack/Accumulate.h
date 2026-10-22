@@ -149,26 +149,29 @@ private:
 // above cannot see it; it is found and repaired on the raw frames instead, before MeasurementLuma and
 // DemosaicHQ (Task 6 calls Repair on every frame it reads, measurement and stacking passes alike).
 // A site counts as isolated in a frame when it stands above its 8 same-colour neighbours (2 px away in
-// a Bayer mosaic, 1 px in mono and in each RGB channel) -- in mono and RGB above all but the two
-// largest, so an adjacent hot pair or a hot column segment counts too -- by more than kHotMin of full
-// scale AND by more than kHotRatio of its excess over their median: an optical image is never that
-// peaked (a star or moon of PSF sigma >= 1.6 sensor px -- planetary optics at f/15 and slower -- keeps
-// its neighbours at >= 0.46 of its peak: ratio <= 0.8; a hot pixel's neighbours are the background,
-// ~1). Bayer: neighbouring sensor pixels are other colours, so an adjacent pair is two lone sites; a
-// hot column or row segment of 3 px or more puts same-colour members on each other's ring, so a site
-// also counts when it stands above the 6 neighbours off one axis (column or row) by those margins,
-// the second measured from the lowest of the ring and the 2 same-colour samples 4 px out across the
-// axis -- a segment is one pixel wide, a still optical feature falls off across it (two sites
-// flanking a peak, a thin line along a row), so a 3-px segment is found whole and a 5-px one at all
-// (unit test, with still moons on every site colour and lines along both axes not flagged). Sites
-// within 4 px of the edge across the axis get only the first rule. Caveat: a Bayer capture sharper
+// a Bayer mosaic, 1 px in mono and in each RGB channel) by more than kHotMin of full scale AND by more
+// than kHotRatio of its excess over their median: an optical image is never that peaked (a star or moon
+// of PSF sigma >= 1.6 sensor px -- planetary optics at f/15 and slower -- keeps its neighbours at >= 0.46
+// of its peak: ratio <= 0.8; a hot pixel's neighbours are the background, ~1). In a mosaic an adjacent
+// pair is two lone sites (neighbouring sensor pixels are other colours). Hot pairs and segments along a
+// line -- column, row or diagonal; in mono any adjacent pair, in a mosaic 3 px or more -- put members on
+// each other's ring, so a site also counts when it stands above the 6 neighbours off one such line by
+// those margins, the second measured from the lowest of the ring and the 2 same-colour samples 2 ring
+// steps out across the line: a segment is one pixel wide and the background flat across it, while a
+// still optical feature that looks like one on the ring alone -- a point between two sites, two sites
+// flanking a peak, a thin line -- falls off across it (unit test: segments of 3 and 5 px along every
+// line found and repaired whole; still moons on every site colour and between sites, still lines along
+// a row, a column, a diagonal and between rows, a still sharp limb, none flagged, Bayer and mono).
+// Round 1's mono rule (above all but the two largest neighbours) flagged still points between pixels
+// and still lines at any PSF sigma. Not found: a cluster that bends (an L of 3), a 2 x 2 block, and the
+// line rule within 2 ring steps of the frame's edge across the line. Caveat: a Bayer capture sharper
 // than PSF sigma ~1.1 px puts a point's distance-2 neighbours under 0.2 of its peak, so a star held
-// perfectly still on one site would pass the shape test (measured: false flags from sigma 1.0 on;
-// for still lines along an axis, from 0.9); only the persistence rule below then protects it. A site isolated in at least kHotShare of the observed
-// frames is hot (a moon peak that passes the shape test moves over the sensor with drift and jitter and
-// is not on one site that often). Repair replaces it with the median of its same-colour neighbours.
-// Observing ~50-100 frames spread over the capture is enough (kMinHotFrames at least; fewer observed
-// marks nothing). Memory per instance: 2 bytes per sample (1080p mono 4 MB, 1080p RGB 12 MB), so one
+// perfectly still on one site would pass the shape test (scan, 20 frames: false flags from sigma 1.0 on;
+// still lines along a line, from 0.9; mono none down to 0.9); only the persistence rule below then
+// protects it. A site isolated in at least kHotShare of the observed frames is hot (a moon peak that
+// passes the shape test moves over the sensor with drift and jitter and is not on one site that often).
+// Repair replaces it with the median of its same-colour neighbours. Observing ~50-100 frames spread
+// over the capture is enough (kMinHotFrames at least; fewer observed marks nothing). Memory per instance: 2 bytes per sample (1080p mono 4 MB, 1080p RGB 12 MB), so one
 // instance per worker, merged, is cheap. Not thread-safe: one instance per thread, then Merge.
 constexpr double kHotMin = 0.02;
 constexpr double kHotRatio = 0.9;
