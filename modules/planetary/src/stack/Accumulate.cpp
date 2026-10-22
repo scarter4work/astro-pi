@@ -475,6 +475,17 @@ void HotPixelMap::Observe(const ser::Frame& frame) {
                 const double excess = v - n[7];
                 const double med = 0.5 * (n[3] + n[4]);
                 bool alone = excess > minExcess && excess > kHotRatio * (v - med);
+                // A lone site on texture: still above the whole ring by minExcess, and by the shape margin
+                // over the ring's own smooth surface rather than over its largest member -- the quadratic
+                // through the ring predicts the site as 2 mean(sides) - mean(corners), which follows the
+                // texture's slope and curvature under a hot pixel, while a site where optics put a peak
+                // or a ridge is predicted to within a fraction of its rise (Accumulate.h).
+                if (!alone && excess > minExcess) {
+                    const double sides = 0.25 * (ring[1] + ring[3] + ring[4] + ring[6]);
+                    const double corners = 0.25 * (ring[0] + ring[2] + ring[5] + ring[7]);
+                    const double unpredicted = v - (2 * sides - corners);
+                    alone = unpredicted > minExcess && unpredicted > kHotRatio * (v - med);
+                }
                 // A member of a hot pair or segment along a line through it (column, row or diagonal): its
                 // fellow members are the ring's two neighbours on that line (1 px away in mono, 2 in a
                 // mosaic). It counts when it stands above the 6 ring neighbours off the line, by the shape

@@ -956,6 +956,116 @@ TEST_CASE("Hot pixel clusters on a mono sensor: an adjacent pair and a column se
     CHECK(changed == hot.size());
 }
 
+TEST_CASE("Hot pixels inside a tracked textured disc are found and repaired; still points and lines on it are not", "[accumulate]") {
+    // Task 6 found it: on a perfectly tracked disc with texture (MakeDisc's belts and spots, seeing
+    // blur and local jitter, no drift) the ring rule passed a +0.35 site in only 27 of 50 frames, under
+    // kHotShare -- the texture puts a ring neighbour within a tenth of the hot pixel's excess of it.
+    // Measured over every site within 21 px of the centre (1386), a hot pixel found = isolated in >= 0.8
+    // of the 50 frames: ring rule alone mono +0.35 549, +0.2 3, +0.15 0; Bayer +0.35 125, +0.5 552.
+    // With the ring's smooth-surface rule (Accumulate.h): mono 1386, 1356, 1212; Bayer 1196, 1306.
+    const int w = 112, h = 96;
+    const double cx = 56.2, cy = 47.8;
+    const Scene s = testing::MakeDisc(61, cx, cy, 24);
+    Capture base = testing::NewCapture(w, h);
+    std::mt19937 rng(6100);
+    RenderCapture(base, s, 50, [&](int) { return Seeing(rng, w, h, 0.0, 28); });
+    // The same frames with something added at fixed sensor positions in every frame.
+    auto with = [&](const std::function<double(int, int)>& add) {
+        std::vector<ser::Frame> out;
+        for (const auto& f : *base.frames) {
+            ser::Frame fr;
+            fr.width = w;
+            fr.height = h;
+            fr.channels = 1;
+            fr.samples.resize(f.size());
+            for (int y = 0; y < h; ++y)
+                for (int x = 0; x < w; ++x) {
+                    const size_t i = static_cast<size_t>(y) * w + x;
+                    fr.samples[i] = static_cast<uint16_t>(std::lround(std::clamp(f[i] / 65535.0 + add(x, y), 0.0, 1.0) * 65535));
+                }
+            out.push_back(std::move(fr));
+        }
+        return out;
+    };
+    // Hot sites on a 5 px grid over the disc (every colour of a mosaic), +0.35 and +0.2 alternately.
+    std::vector<std::pair<int, int>> hot;
+    std::vector<double> excess;
+    for (int y = 30; y <= 66; y += 5)
+        for (int x = 38; x <= 75; x += 5)
+            if (std::hypot(x - cx, y - cy) <= 19) {
+                hot.push_back({x, y});
+                excess.push_back(hot.size() % 2 ? 0.35 : 0.2);
+            }
+    REQUIRE(hot.size() >= 40);
+    const auto hotFrames = with([&](int x, int y) {
+        for (size_t i = 0; i < hot.size(); ++i)
+            if (hot[i].first == x && hot[i].second == y) return excess[i];
+        return 0.0;
+    });
+    // Still optical detail on the disc, PSF sigma 1.6 px, held perfectly still on the sensor in every
+    // frame (only its shape tells it from hot pixels): points on a site and between sites, and thin
+    // lines along a row, a column and at 35 degrees (the predictor's worst angle, below), +0.25.
+    auto gauss = [](double d) { return std::exp(-d * d / (2 * 1.6 * 1.6)); };
+    auto segment = [&](double x, double y, double x0, double y0, double deg, double len) {
+        const double c = std::cos(deg * M_PI / 180), sn = std::sin(deg * M_PI / 180);
+        const double along = (x - x0) * c + (y - y0) * sn, across = -(x - x0) * sn + (y - y0) * c;
+        return along < 0 || along > len ? 0.0 : gauss(across);
+    };
+    const auto stillFrames = with([&](int x, int y) {
+        double v = 0;
+        for (const auto& [px, py] : std::vector<std::pair<double, double>>{{46, 40}, {64.5, 55.5}, {51, 57.5}, {67, 42}})
+            v += gauss(std::hypot(x - px, y - py));
+        v += segment(x, y, 42, 33, 0, 14) + segment(x, y, 40, 44, 90, 12) + segment(x, y, 56, 44, 35, 14) +
+             segment(x, y, 52, 63, -35, 12);
+        return 0.25 * v;
+    });
+    for (ser::ColorId color : {ser::ColorId::Mono, ser::ColorId::BayerRGGB}) {
+        const bool mono = color == ser::ColorId::Mono;
+        INFO((mono ? "mono" : "Bayer"));
+        const ser::FileInfo info = testing::NewCapture(w, h, color).info;
+        auto mapOf = [&](const std::vector<ser::Frame>& frames) {
+            stack::HotPixelMap map(info);
+            for (const auto& f : frames) map.Observe(f);
+            map.Finish();
+            return map;
+        };
+        // Nothing on the clean disc, nothing on the still detail.
+        CHECK(mapOf(stillFrames).Count() == 0);
+        {
+            std::vector<ser::Frame> clean;
+            for (const auto& f : with([](int, int) { return 0.0; })) clean.push_back(f);
+            CHECK(mapOf(clean).Count() == 0);
+        }
+        const stack::HotPixelMap map = mapOf(hotFrames);
+        size_t found = 0, extras = 0;
+        std::string missed;
+        for (const auto& [hx, hy] : hot) {
+            const size_t k = static_cast<size_t>(hy) * w + hx;
+            if (std::binary_search(map.Sites().begin(), map.Sites().end(), k)) ++found;
+            else missed += std::to_string(hx) + "," + std::to_string(hy) + " ";
+        }
+        extras = map.Count() - found;
+        INFO("found " << found << " of " << hot.size() << "; missed " << missed << "; " << extras << " flagged that are not hot");
+        CHECK(extras == 0);
+        // Mono: every site. Bayer: the same-colour ring is 2 px out, where the texture is rougher (over
+        // all 1386 sites: +0.35 found at 1196, +0.5 at 1306) -- most, not all.
+        if (mono) CHECK(found == hot.size());
+        else CHECK(found >= hot.size() * 3 / 4);
+        // Repaired to the disc around them, not left 0.2-0.35 above it.
+        ser::Frame f = hotFrames[17];
+        map.Repair(f);
+        const auto& clean = (*base.frames)[17];
+        double worst = 0;
+        for (const auto& [hx, hy] : hot) {
+            const size_t k = static_cast<size_t>(hy) * w + hx;
+            if (std::binary_search(map.Sites().begin(), map.Sites().end(), k))
+                worst = std::max(worst, std::fabs(f.samples[k] - static_cast<double>(clean[k])) / 65535.0);
+        }
+        INFO("largest repaired-site error against the frame without hot pixels: " << worst);
+        CHECK(worst < 0.08);
+    }
+}
+
 TEST_CASE("A raw colour mosaic read as mono is measured binned, stacked raw (Ruling P9)", "[accumulate]") {
     const int w = 224, h = 176;
     const Scene s = testing::MakeSurface(51, w, h);
