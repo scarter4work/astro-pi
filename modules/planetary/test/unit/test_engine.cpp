@@ -375,7 +375,11 @@ TEST_CASE("RunStack: an AVI with an unknown Bayer pattern stacks the raw mosaic 
     const std::string warning = stack::kUndeclaredMosaicWarning;
     CHECK(warning.find("mono") != std::string::npos);
     CHECK(warning.find("cannot be debayered afterwards") != std::string::npos);
-    CHECK(warning.find("Save pattern...") != std::string::npos);
+    // Neutral: anything reading summary.warnings directly (a script, stack-probe's JSON) gets the fact,
+    // the consequence and the remedy, naming no tool; each window gives its own controls (ShownWarnings).
+    CHECK(warning.find("choose a Bayer pattern and stack again") != std::string::npos);
+    CHECK(warning.find("Save pattern") == std::string::npos);
+    CHECK(warning.find("SERViewer") == std::string::npos);
     CheckFinalLines(raw);
 
     const StackOutcome colour = stack::RunStack(path, ser::BayerChoice::RGGB, 8, {});

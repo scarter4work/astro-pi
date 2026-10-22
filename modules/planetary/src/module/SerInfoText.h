@@ -42,7 +42,7 @@ inline std::string ConversionWarning( const std::string& warning )
 inline std::string StackWarning( const std::string& warning )
 {
    return ReplaceRawCfaTail( warning, "; the raw CFA is stacked as mono -- set bayerPattern (or save the pattern with "
-                                      "SERViewer's Save pattern...) to stack in colour" );
+                                      "Save pattern... in PlanetaryStack or SERViewer) to stack in colour" );
 }
 
 // A reader warning reworded for the PlanetaryStack window, whose Bayer pattern

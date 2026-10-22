@@ -406,8 +406,9 @@ StackOutcome RunStack(const std::string& path, ser::BayerChoice bayer, int threa
 // path form is this with [path, bayer] { return OpenVideo(path, bayer); }.
 StackOutcome RunStack(const SourceFactory& factory, int threads, const Progress& progress);
 
-// The summary warning of an undeclared mosaic (Ruling P9), word for word (Task 7 also writes it to
-// HISTORY).
+// The summary warning of an undeclared mosaic (Ruling P9): the fact, the consequence and the remedy,
+// naming no tool (a script reading summary.warnings gets it as is). The windows, the console and
+// HISTORY show it merged with the reader's warning, with their own remedy (stackcards::ShownWarnings).
 extern const char* const kUndeclaredMosaicWarning;
 
 }  // namespace planetary::stack

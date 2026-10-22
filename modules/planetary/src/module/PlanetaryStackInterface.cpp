@@ -190,15 +190,26 @@ bool PlanetaryStackInterface::Launch( const MetaProcess&, const ProcessImplement
 {
    if ( GUI == nullptr )
       // Nothing may cross into the core: a window that cannot be built is said on
-      // the console and not launched.
+      // the console and not launched. All or nothing: GUI is set only once every
+      // step has run, so a failure leaves no half-made window behind.
       GuardedCall( [this]()
       {
-         GUI = new GUIData( *this );
+         std::unique_ptr<GUIData> gui = std::make_unique<GUIData>( *this );
          SetWindowTitle( "PlanetaryStack" );
          OnShow( (Control::event_handler)&PlanetaryStackInterface::e_Show, *this );
          OnHide( (Control::event_handler)&PlanetaryStackInterface::e_Hide, *this );
-         ShowText();
-         UpdateControls();
+         GUI = gui.get();
+         try
+         {
+            ShowText();
+            UpdateControls();
+         }
+         catch ( ... )
+         {
+            GUI = nullptr;
+            throw;
+         }
+         gui.release();
       },
       []( const String& message )
       {

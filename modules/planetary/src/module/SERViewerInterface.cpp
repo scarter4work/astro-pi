@@ -75,14 +75,25 @@ bool SERViewerInterface::Launch( const MetaProcess&, const ProcessImplementation
 {
    if ( GUI == nullptr )
       // Nothing may cross into the core: a window that cannot be built is said on
-      // the console and not launched.
+      // the console and not launched. All or nothing: GUI is set only once every
+      // step has run, so a failure leaves no half-made window behind.
       GuardedCall( [this]()
       {
-         GUI = new GUIData( *this );
+         std::unique_ptr<GUIData> gui = std::make_unique<GUIData>( *this );
          SetWindowTitle( "SERViewer" );
          OnShow( (Control::event_handler)&SERViewerInterface::e_Show, *this );
          OnHide( (Control::event_handler)&SERViewerInterface::e_Hide, *this );
-         UpdateFrameControls();
+         GUI = gui.get();
+         try
+         {
+            UpdateFrameControls();
+         }
+         catch ( ... )
+         {
+            GUI = nullptr;
+            throw;
+         }
+         gui.release();
       },
       []( const String& message )
       {

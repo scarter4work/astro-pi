@@ -357,7 +357,7 @@ TEST_CASE("conversion rewords every 'showing the raw CFA as mono' warning to wha
 TEST_CASE("stacking rewords every 'showing the raw CFA as mono' warning to what it stacks", "[preview][info]") {
     const std::string tail = "; showing the raw CFA as mono -- choose the pattern under Bayer pattern";
     const std::string stacks = "; the raw CFA is stacked as mono -- set bayerPattern (or save the pattern with "
-                               "SERViewer's Save pattern...) to stack in colour";
+                               "Save pattern... in PlanetaryStack or SERViewer) to stack in colour";
     for (const std::string& reason : {std::string("no Bayer pattern known (no .avi.txt sidecar)"),
                                      std::string("sidecar a.avi.txt could not be read; no Bayer pattern known"),
                                      std::string("sidecar a.avi.txt has no Bayer value"),
