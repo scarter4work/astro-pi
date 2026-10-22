@@ -32,6 +32,11 @@ struct FrameStats {
     // "no target" and for a found target with no measurable detail (gradient energy at or below
     // the noise floor), so a consumer must test targetFound first.
     double quality = 0;
+    // 1-sigma uncertainty of `quality` from the pixel noise s, propagated per frame (derivation at
+    // MeasureFrame). 0 when s measures 0 -- e.g. a sky clipped to a constant black level in 8-bit
+    // data, where the target's own noise is real but not measurable this way -- and 0 whenever
+    // quality is 0.
+    double qualitySigma = 0;
     // Mean luma of the target pixels (in the box, above 10% of the contrast), in [0, 1] units.
     double brightness = 0;
     // Fraction of the target pixels with luma >= kClippedLuma.
@@ -109,6 +114,25 @@ constexpr double kClippedLuma = 0.999;
 //    removed: ranking within the capture still holds, but haze-dimmed frames read slightly sharp.
 //  - box size: background pixels add ~0 to both sums after the noise terms, so how tight the box
 //    is does not matter.
+//
+// qualitySigma (noise propagation, first order). Over the n region pixels let SN = n * numerator
+// (gradient energy, sum |grad t|^2 of the noise-free t) and SD = n * denominator (signal energy,
+// sum (t - b)^2). With white noise e of variance s^2 added to t:
+//  - SN = sum |grad(t + e)|^2 - 4 n s^2 fluctuates by 2 sum grad t . grad e = -2 sum e lap(t)
+//    (summation by parts), variance 4 s^2 sum lap(t)^2; plus the quadratic sum |grad e|^2, variance
+//    40 n s^4 (8 s^4 per squared difference, 2 s^4 with each of the 2 same-direction neighbours,
+//    2 s^4 with each of the 4 crossing differences that share a pixel);
+//  - SD fluctuates by 2 sum (t - b) e, variance 4 s^2 SD; plus sum e^2, variance 2 n s^4;
+//  - their linear parts covary by -4 s^2 sum lap(t) (t - b) = +4 s^2 SN, the quadratic parts by
+//    8 n s^4 (4 s^4 per difference, both directions);
+//  - s^2 is itself estimated (the 20th percentile of the tile estimates), variance V = 6.12 s^4 / M
+//    over the M pixel pairs used; it enters SN as -4 n s^2 and SD as -n s^2, adding 16 n^2 V,
+//    n^2 V and covariance 4 n^2 V.
+// sum lap(t)^2 is the measured 5-point Laplacian energy minus its noise part (20 s^2 per pixel).
+// Then (dQ/Q)^2 = (Var SN / SN^2 + Var SD / SD^2 - 2 Cov / (SN SD)) / 4. The background level b
+// and the region are taken as fixed (their noise moves SD a little and SN not at all). Checked
+// against 200 noise realisations of a textured planet and a plain disc at two noise levels: the
+// empirical scatter is 0.88-1.07 times the reported sigma.
 FrameStats MeasureFrame(const ser::FloatImage& luma, int64_t index);
 
 // Opens one reader. Called once per worker thread, from that thread -- so concurrently.

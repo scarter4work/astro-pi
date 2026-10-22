@@ -115,7 +115,7 @@ void Quantize8(FloatImage& im) {
 bool SameStats(const FrameStats& a, const FrameStats& b) {
     return a.index == b.index && a.targetFound == b.targetFound && a.cx == b.cx && a.cy == b.cy &&
            a.bx0 == b.bx0 && a.by0 == b.by0 && a.bx1 == b.bx1 && a.by1 == b.by1 && a.quality == b.quality &&
-           a.brightness == b.brightness && a.clippedFraction == b.clippedFraction;
+           a.qualitySigma == b.qualitySigma && a.brightness == b.brightness && a.clippedFraction == b.clippedFraction;
 }
 
 }  // namespace
@@ -151,6 +151,39 @@ TEST_CASE("quality falls strictly with blur, whatever the brightness, with and w
         INFO("blur " << sigmas[b]);
         CHECK(clean[0][b] == Catch::Approx(clean[2][b]).epsilon(1e-3));
         CHECK(clean[1][b] == Catch::Approx(clean[2][b]).epsilon(1e-3));
+    }
+}
+
+TEST_CASE("qualitySigma matches the scatter of quality over noise realisations") {
+    // A textured planet (gradient energy mostly in texture) and a plain small disc (all in the limb).
+    FloatImage plain = Flat(128, 112, 0.05f);
+    PaintDisc(plain, 61.3, 57.8, 20, [](int, int) { return 0.5; });
+    const FloatImage images[2] = {TexturedPlanet(192, 176, 95.3, 88.6, 42, 0.05f), plain};
+    for (const FloatImage& clean : images) {
+        const FrameStats noiseless = MeasureFrame(clean, 0);
+        REQUIRE(noiseless.targetFound);
+        CHECK(noiseless.qualitySigma == 0);  // no measurable noise
+        for (const double noise : {0.004, 0.015}) {
+            constexpr int kRuns = 200;
+            double sum = 0, sum2 = 0, sigmaSum = 0;
+            for (int k = 0; k < kRuns; ++k) {
+                FloatImage im = clean;
+                AddNoise(im, noise, 5000u + static_cast<unsigned>(k) + (noise > 0.01 ? 100000u : 0u));
+                const FrameStats s = MeasureFrame(im, k);
+                REQUIRE(s.targetFound);
+                REQUIRE(s.qualitySigma > 0);
+                sum += s.quality;
+                sum2 += s.quality * s.quality;
+                sigmaSum += s.qualitySigma;
+            }
+            const double mean = sum / kRuns;
+            const double empirical = std::sqrt(std::max(0.0, (sum2 - kRuns * mean * mean) / (kRuns - 1)));
+            const double reported = sigmaSum / kRuns;
+            INFO(clean.width << "x" << clean.height << " noise " << noise << ": quality mean " << mean
+                             << ", empirical std " << empirical << ", mean qualitySigma " << reported);
+            CHECK(empirical >= 0.7 * reported);
+            CHECK(empirical <= 1.3 * reported);
+        }
     }
 }
 

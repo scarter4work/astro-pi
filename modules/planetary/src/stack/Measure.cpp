@@ -40,10 +40,19 @@ double Quantile(std::vector<double>& v, double q) {
     return v[k];
 }
 
+struct Noise {
+    double sigma = 0;      // s
+    double varSigma2 = 0;  // variance of the estimate s^2 itself
+};
+
 // Pixel noise: from the smoothest tiles' mean squared horizontal neighbour difference
 // (white noise: E[d^2] = 2 s^2). Tiles with fewer than half a full tile's pairs are skipped.
-double PixelNoise(const float* p, int w, int h) {
-    if (w < 2) return 0;
+// Uncertainty of s^2: a tile of m pairs estimates 2 s^2 with variance 12 s^4 / m (8 s^4 per
+// squared difference, 2 s^4 covariance with each neighbouring pair); the 20th percentile of K
+// such (near-normal) estimates has variance 0.2 * 0.8 / (K phi(z_0.2)^2) * 12 s^4 / m
+// = 24.5 s^4 / (m K); halved twice for s^2 = q / 2: 6.12 s^4 / M, M = all pairs used.
+Noise PixelNoise(const float* p, int w, int h) {
+    if (w < 2) return {};
     const int tile = std::max(1, std::min({kMaxTile, std::max(8, std::min(w, h) / 4), std::min(w, h)}));
     const int tx = (w + tile - 1) / tile, ty = (h + tile - 1) / tile;
     std::vector<double> sum(static_cast<size_t>(tx) * ty, 0.0);
@@ -65,10 +74,18 @@ double PixelNoise(const float* p, int w, int h) {
     const int64_t full = static_cast<int64_t>(std::min(tile, w - 1)) * std::min(tile, h);
     std::vector<double> est;
     est.reserve(sum.size());
+    int64_t pairs = 0;
     for (size_t i = 0; i < sum.size(); ++i)
-        if (cnt[i] > 0 && 2 * cnt[i] >= full) est.push_back(sum[i] / static_cast<double>(cnt[i]));
-    if (est.empty()) return 0;
-    return std::sqrt(Quantile(est, kNoisePercentile) / 2);
+        if (cnt[i] > 0 && 2 * cnt[i] >= full) {
+            est.push_back(sum[i] / static_cast<double>(cnt[i]));
+            pairs += cnt[i];
+        }
+    if (est.empty()) return {};
+    Noise n;
+    const double s2 = Quantile(est, kNoisePercentile) / 2;
+    n.sigma = std::sqrt(s2);
+    n.varSigma2 = 6.12 * s2 * s2 / static_cast<double>(pairs);
+    return n;
 }
 
 struct Grid {
@@ -196,7 +213,8 @@ FrameStats MeasureFrame(const ser::FloatImage& luma, int64_t index) {
     Open3x3(p, w, h, openA, openB);
     const float* opened = openA.data();
     const Grid g = BlockMeans(opened, w, h);
-    const double sigma = PixelNoise(p, w, h);
+    const Noise noise = PixelNoise(p, w, h);
+    const double sigma = noise.sigma;
     std::vector<double> sorted = g.mean;
     const double b = Quantile(sorted, kBackgroundPercentile);
     const double sigmaB = std::max(BlockNoise(g), sigma / g.d);
@@ -297,10 +315,12 @@ FrameStats MeasureFrame(const ser::FloatImage& luma, int64_t index) {
     const int margin = std::max(1, static_cast<int>(std::lround(kMarginFraction * std::max(s.bx1 - s.bx0, s.by1 - s.by0))));
     const int rx0 = std::max(0, s.bx0 - margin), ry0 = std::max(0, s.by0 - margin);
     const int rx1 = std::min(w, s.bx1 + margin), ry1 = std::min(h, s.by1 + margin);
-    double gh = 0, gv = 0, e = 0;
+    double gh = 0, gv = 0, e = 0, lap2 = 0;
+    int64_t nLap = 0;
     for (int y = ry0; y < ry1; ++y) {
         const float* row = p + static_cast<size_t>(y) * w;
         const float* below = y + 1 < ry1 ? row + w : nullptr;
+        const float* above = y > ry0 ? row - w : nullptr;
         for (int x = rx0; x < rx1; ++x) {
             const double v = row[x];
             e += (v - b) * (v - b);
@@ -312,16 +332,38 @@ FrameStats MeasureFrame(const ser::FloatImage& luma, int64_t index) {
                 const double d = static_cast<double>(below[x]) - v;
                 gv += d * d;
             }
+            if (above && below && x > rx0 && x + 1 < rx1) {  // 5-point Laplacian, for qualitySigma
+                const double l = static_cast<double>(row[x - 1]) + row[x + 1] + above[x] + below[x] - 4 * v;
+                lap2 += l * l;
+                ++nLap;
+            }
         }
     }
+    const double nReg = static_cast<double>(rx1 - rx0) * (ry1 - ry0);
     const double nh = static_cast<double>(rx1 - rx0 - 1) * (ry1 - ry0);
     const double nv = static_cast<double>(rx1 - rx0) * (ry1 - ry0 - 1);
     const double var = sigma * sigma;
     double num = 0;
     if (nh > 0) num += gh / nh - 2 * var;
     if (nv > 0) num += gv / nv - 2 * var;
-    const double den = e / (static_cast<double>(rx1 - rx0) * (ry1 - ry0)) - var;
-    s.quality = num > 0 && den > 0 ? std::sqrt(num / den) : 0.0;
+    const double den = e / nReg - var;
+    if (!(num > 0 && den > 0)) return s;
+    s.quality = std::sqrt(num / den);
+
+    // qualitySigma: first-order propagation of the pixel noise (derivation in Measure.h), on the
+    // region sums SN = nReg * num (gradient energy) and SD = nReg * den (signal energy).
+    if (var > 0) {
+        const double sn = nReg * num, sd = nReg * den;
+        const double var2 = var * var;
+        const double lapTrue = std::max(0.0, lap2 - 20.0 * var * static_cast<double>(nLap)) * nReg /
+                               std::max<double>(1.0, static_cast<double>(nLap));
+        const double vs = noise.varSigma2;
+        const double varSN = 4 * var * lapTrue + 40 * nReg * var2 + 16 * nReg * nReg * vs;
+        const double varSD = 4 * var * sd + 2 * nReg * var2 + nReg * nReg * vs;
+        const double cov = 4 * var * sn + 8 * nReg * var2 + 4 * nReg * nReg * vs;
+        const double rel2 = 0.25 * (varSN / (sn * sn) + varSD / (sd * sd) - 2 * cov / (sn * sd));
+        s.qualitySigma = s.quality * std::sqrt(std::max(0.0, rel2));
+    }
     return s;
 }
 
