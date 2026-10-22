@@ -10,6 +10,7 @@
 #include <utility>
 
 #include "Demosaic.h"
+#include "Parallel.h"
 #include "SerFile.h"
 
 namespace planetary::stack {
@@ -124,30 +125,13 @@ double SampleCubic(const ser::FloatImage& im, double x, double y) {
     return acc;
 }
 
-// Runs body(y0, y1) over row bands [y0, y1) of 0 .. h on up to hardware_concurrency threads. Each row
-// is computed by exactly one call, so a body that writes only its own rows gives the same result for
-// any thread count. `body` must not throw.
-template <class Body>
-void ParallelRows(int h, Body body) {
-    const int threads = static_cast<int>(std::clamp<unsigned>(std::thread::hardware_concurrency(), 1u, 64u));
-    const int bands = std::max(1, std::min(threads, h / 16));
-    if (bands == 1) {
-        body(0, h);
-        return;
-    }
-    std::vector<std::thread> pool;
-    pool.reserve(static_cast<size_t>(bands));
-    for (int b = 0; b < bands; ++b) pool.emplace_back(body, h * b / bands, h * (b + 1) / bands);
-    for (std::thread& t : pool) t.join();
-}
-
 // Mean of the frames' samples at (x + dx, y + dy) that fall inside the frame; uncovered pixels take
-// frame `fallback` (a frame in use) with clamped coordinates. Rows in parallel; deterministic.
+// frame `fallback` (a frame in use) with clamped coordinates. Rows in `threads` bands; deterministic.
 ser::FloatImage Average(const std::vector<ser::FloatImage>& frames, const std::vector<Shift>& shifts,
-                        const std::vector<bool>& use, size_t fallback) {
+                        const std::vector<bool>& use, size_t fallback, int threads) {
     const int w = frames[0].width, h = frames[0].height;
     ser::FloatImage out{w, h, 1, std::vector<float>(static_cast<size_t>(w) * h, 0.f)};
-    ParallelRows(h, [&](int y0, int y1) {
+    ParallelBands(h, threads, [&](int y0, int y1) {
         for (int y = y0; y < y1; ++y)
             for (int x = 0; x < w; ++x) {
                 double sum = 0;
@@ -477,7 +461,7 @@ Shift GlobalShift(const ser::FloatImage& reference, const ser::FloatImage& frame
 }
 
 ser::FloatImage BuildReference(const SourceFactory& factory, const ser::FileInfo& info, const Selection& selection,
-                               const std::vector<FrameStats>& stats, const Progress& progress) {
+                               const std::vector<FrameStats>& stats, int threads, const Progress& progress) {
     if (selection.frames.empty())
         throw std::invalid_argument("BuildReference: the selection holds no frames (" + selection.diagnosis.message + ")");
     if (!factory) throw std::invalid_argument("BuildReference: no reader factory");
@@ -530,19 +514,21 @@ ser::FloatImage BuildReference(const SourceFactory& factory, const ser::FileInfo
     std::vector<bool> use(k);
     // Pass 1: onto an anchor the other frames confirm. The sharpest frame first; it is turned down
     // when fewer than half of the others reach AlignmentCut against it (cut over the others only --
-    // its self-match is not evidence), and the next sharpest is tried, up to kAnchorCandidates. None
-    // confirmed: the candidate most others agreed with (the sharper on a tie).
+    // its self-match is not evidence), and the next sharpest is tried -- through every frame read until
+    // one is confirmed (a sharp group of foreign frames confirms itself only if it is at least half of
+    // the frames read). None confirmed: the candidate most others agreed with (the sharper on a tie).
     size_t anchor = 0;
     {
         int bestCount = -1;
         std::vector<Shift> bestShifts;
-        size_t tried = 0;
-        for (size_t a = 0; a < k && tried < static_cast<size_t>(kAnchorCandidates); ++a) {
+        bool tried = false;
+        for (size_t a = 0; a < k; ++a) {
             if (!full && !ranked[a]->targetFound) continue;  // a disc anchor needs a target
-            if (tried++ > 0) {
+            if (tried) {
                 total += static_cast<int64_t>(k);
                 tick();
             }
+            tried = true;
             const GlobalAligner aligner(frames[a], full);
             std::vector<Shift> s(k), others;
             for (size_t i = 0; i < k; ++i) {
@@ -573,7 +559,7 @@ ser::FloatImage BuildReference(const SourceFactory& factory, const ser::FileInfo
         const double cut = AlignmentCut(others);
         for (size_t i = 0; i < k; ++i) use[i] = i == anchor || shifts[i].confidence >= cut;
     }
-    const ser::FloatImage first = Average(frames, shifts, use, anchor);
+    const ser::FloatImage first = Average(frames, shifts, use, anchor, threads);
 
     // Pass 2: onto that average, re-centred on the mean shift. The frames' stats centroids still
     // place the windows (they are positions in each frame, not relative to any reference).
@@ -603,7 +589,7 @@ ser::FloatImage BuildReference(const SourceFactory& factory, const ser::FileInfo
         s.dx -= mx;
         s.dy -= my;
     }
-    return Average(frames, shifts, use, bestKept);
+    return Average(frames, shifts, use, bestKept, threads);
 }
 
 

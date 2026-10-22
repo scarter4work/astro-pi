@@ -31,8 +31,14 @@ struct Shift {
     //    0.806 at 3 / 3.5 / 4 px, a lunar surface 0.943 / 0.910 / 0.875), so the relative cut acted
     //    as a second, blur-driven frame selection; now frames 1-3x the best frame's blur score >= 0.99
     //    (unit test, best blur 1 and 2 px, spread evenly or with the median at the sharp end).
-    //    Blurring the reference cannot rescue a torn frame: its sharp halves match a sharp reference
-    //    best (half torn by 8 px: 0.72 of an intact frame).
+    //  - The price: blur matching also lets a blurred torn frame match more, so the tear tolerance
+    //    widens with blur. Half-frame tears of a lunar surface (unit test, sharp frames 0.8 px, cut
+    //    0.85): sharp, 4-5 px pass (0.85-0.90) and 6-8 px are rejected; at 2x blur 5 px passes; at 3x
+    //    blur 6 px passes (0.88) and 8 px is still rejected (0.82). Only a sharp torn frame gains
+    //    nothing from the blurred references.
+    //  - It measures shape agreement, not detail: a featureless blob (a defocused disc, a cloud-dimmed
+    //    smear) scores like a blurred disc (0.92 / 0.89 at radius 12 / 20 px, measured in review), so
+    //    frame selection (Select) is the only guard against defocused or featureless frames.
     // So it says whether the frame shows the reference's scene in one piece. A frame torn by a shake
     // during readout (part of it displaced) loses about that part's share. 0 when either window has
     // no signal.
@@ -54,8 +60,9 @@ constexpr double kMinAlignConfidence = 0.5;
 // captures stay >= 0.97 of their median. 0.85 sits in the gap. Synthetic (unit test): a lunar frame
 // torn through the middle by 8 px scores 0.72 of an intact one, its lower 60% displaced by 8 px
 // 0.78, a 1 px wobble 0.99. Limit: the match is measured after the low pass, where large-scale
-// structure still correlates across a few pixels -- a half-frame tear of only 4 px keeps ~0.9 and is
-// stacked; such moderate tears are left to local alignment and per-region ranking (Task 5).
+// structure still correlates across a few pixels, and blur matching widens that (Shift::confidence):
+// a sharp half-frame tear of 4-5 px, or of 6 px at 3x blur, passes and is stacked. Such tears are
+// left to local alignment and per-region ranking: Task 5's local search must reach ~8 luma px.
 constexpr double kAlignRelative = 0.85;
 // Frames whose Shift::confidence is below the returned cut cannot be aligned and are excluded from
 // the stack (spec: "Frames that cannot be aligned are excluded, not smeared in"):
@@ -80,8 +87,6 @@ constexpr double kConfidenceBlurs[] = {0, 0.75, 1.5, 2.25, 3, 4, 5, 6};
 // sharpest frames and are aligned before averaging, so the reference stays sharp; and K frames of
 // luma are held in memory (16 x 2 MB for 1080p Bayer, 16 x 8 MB for 1080p mono).
 constexpr int kReferenceFrames = 16;
-// Pass-1 anchors BuildReference tries (sharpest first) before settling for the best-confirmed one.
-constexpr int kAnchorCandidates = 3;
 
 // A prepared reference: its window, taper and weighted spectrum are computed once, so aligning a
 // frame costs one forward and one inverse FFT per correlation and a few Newton steps. Immutable
@@ -177,9 +182,17 @@ private:
 
 // One-call form (the plan's interface): prepares a GlobalAligner and aligns one frame -- the same
 // result as GlobalAligner(reference, full).Align(frameLuma, frameStats), where `full` is decided from
-// the reference itself with SelectFrames' per-frame rule FillsFrame (its box touches an edge and spans at
-// least kFullFrameSpan of the width or height), or true when the reference has no target. For
-// many frames prepare a GlobalAligner once, with Selection::fullFrameTarget.
+// the reference itself with SelectFrames' per-frame rule FillsFrame (its box touches an edge, spans
+// at least kFullFrameSpan -- half -- of the frame's width or height, and its shorter side at least
+// kFullFrameMinSide -- 5% -- of the frame), or true when the reference has no target. SelectFrames
+// applies the same rule over the capture (Selection::fullFrameTarget: FillsFrame in at least
+// kFullFrameShare -- 75% -- of the target frames); for many frames prepare a GlobalAligner once,
+// with Selection::fullFrameTarget.
+// Thin slivers: a full-frame target only 5-6% of the frame thick (a thin crescent along an edge)
+// aligns worse -- measured in Task 3's review 0.14-0.28 px error and confidence 0.86-0.90, against
+// 0.02 px and >= 0.98 at 9% -- because the full-frame window cannot move past the image edge, so the
+// sliver lies in the window's taper. Not fixed yet (a window allowed to overhang the edge, or a
+// taper fitted to the target box, would be the fix).
 Shift GlobalShift(const ser::FloatImage& reference, const ser::FloatImage& frameLuma, const FrameStats& frameStats);
 
 // The reference every frame is aligned to, in measurement-luma scale (same size as LumaForMeasure's
@@ -190,27 +203,30 @@ Shift GlobalShift(const ser::FloatImage& reference, const ser::FloatImage& frame
 //  2. pass 1: align each to an anchor and average those with confidence >= AlignmentCut (the anchor
 //     always) on the anchor's grid. The anchor is the sharpest frame unless the others do not
 //     confirm it: when fewer than half of them reach AlignmentCut against it (the cut taken over
-//     the others -- its self-match is no evidence), the next sharpest is tried, up to
-//     kAnchorCandidates (a disc anchor must have a target); when none is confirmed, the candidate
-//     most others agreed with (the sharper on a tie). So a foreign or corrupt frame that measures
-//     sharpest (unit test: a square of terrain ranked first) cannot become the reference;
+//     the others -- its self-match is no evidence), the next sharpest is tried, and so on through
+//     every frame read until one is confirmed (a disc anchor must have a target); when none is, the
+//     candidate most others agreed with (the sharper on a tie). So a foreign or corrupt frame -- or a
+//     group of them smaller than half the frames read -- that measures sharpest cannot become the
+//     reference (unit tests: a square of terrain ranked first; three copies ranked first to third).
+//     Each anchor turned down costs one more alignment of the frames read;
 //  3. pass 2: align each to that average (lower noise, so a better template); average again those
 //     with confidence >= AlignmentCut, with the shifts re-centred on their mean -- the
 //     reference sits at the mean position of the frames it is built from, so one frame's seeing
 //     tilt does not set the geometry every frame is stacked onto.
-// Averaging (rows on hardware_concurrency threads, the same result for any count): each output
-// pixel is the mean of the frames' bicubic (Catmull-Rom) samples at (x + dx, y + dy) that fall inside
-// the frame; a pixel no frame covers takes the sample of the sharpest frame in use (pass 1: the
-// anchor), coordinates clamped to the image.
+// Averaging (ParallelBands over rows on `threads` threads, < 1 counts as 1; the same result for any
+// count): each output pixel is the mean of the frames' bicubic (Catmull-Rom) samples at
+// (x + dx, y + dy) that fall inside the frame; a pixel no frame covers takes the sample of the
+// sharpest frame in use (pass 1: the anchor), coordinates clamped to the image. Alignment runs on
+// the calling thread.
 // Progress phase "Building reference": (done, total) over the frames read and the two passes
 // (total = 3 x frames used, plus the frames used for each anchor turned down); cancelled() is polled
 // between frames and throws StackCancelled.
 // Throws std::invalid_argument for a diagnosed (empty) selection, a disc selection none of whose
-// kAnchorCandidates sharpest frames has a target, or a selected frame with no entry
+// frames read has a target, or a selected frame with no entry
 // in `stats` (stats is MeasureAll's output, any order); ser::SerError when the factory returns no
 // reader or a reader whose frame size, frame count, colour id or depth differs from `info`; and
-// whatever the reader throws.
+// whatever the reader or a thread start throws (no thread is left running).
 ser::FloatImage BuildReference(const SourceFactory& factory, const ser::FileInfo& info, const Selection& selection,
-                               const std::vector<FrameStats>& stats, const Progress& progress);
+                               const std::vector<FrameStats>& stats, int threads, const Progress& progress);
 
 }  // namespace planetary::stack

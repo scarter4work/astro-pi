@@ -1,6 +1,10 @@
 #include <catch_amalgamated.hpp>
 
 #include <algorithm>
+#include <atomic>
+#include <chrono>
+#include <functional>
+#include <system_error>
 #include <cmath>
 #include <complex>
 #include <cstdint>
@@ -15,6 +19,7 @@
 #include "AviWriter.h"
 #include "Demosaic.h"
 #include "Fft.h"
+#include "Parallel.h"
 #include "Measure.h"
 #include "Select.h"
 #include "StackTypes.h"
@@ -395,6 +400,16 @@ TEST_CASE("a torn frame (part of it displaced) scores below the cut; a few pixel
         AddNoise(f, 0.01, seed);
         return f;
     };
+    // The same with the frame blurred by seeing (blur > 0 replaces the 0.8 px of the sharp frames).
+    auto tornBlurred = [&](int tearRow, double jump, double blur, unsigned seed) {
+        const FloatImage top = RenderLunar(w, h, moon, 2.3, -1.6), bottom = RenderLunar(w, h, moon, 2.3 + jump, -1.6);
+        FloatImage f = top;
+        std::copy(bottom.data.begin() + static_cast<size_t>(tearRow) * w, bottom.data.end(),
+                  f.data.begin() + static_cast<size_t>(tearRow) * w);
+        f = GaussianBlur(f, blur);
+        AddNoise(f, 0.01, seed);
+        return f;
+    };
     std::vector<Shift> capture;
     for (unsigned i = 0; i < 20; ++i) {
         const FloatImage f = torn(h, 0, 40 + i);  // intact
@@ -402,7 +417,7 @@ TEST_CASE("a torn frame (part of it displaced) scores below the cut; a few pixel
     }
     // Torn through the middle, and with the larger part (the lower 60%) displaced: either way the
     // match is cut by about the torn part's share. A 1 px wobble is local alignment's to take out.
-    // (Measured 2026-10-21: a half-frame tear of only 4 px still scores 0.89 of an intact frame --
+    // (Measured 2026-10-21: a sharp half-frame tear of 4-5 px still scores 0.85-0.90 against a cut of 0.85 --
     // after the 1.5 px low pass the large-scale structure correlates across 4 px -- so moderate tears
     // are left to the region stage, like the real 1.2-2.5 px wobble frames.)
     const FloatImage half = torn(h / 2, 8, 1), most = torn(h * 2 / 5, 8, 2), wobble = torn(h / 2, 1.0, 3);
@@ -419,6 +434,18 @@ TEST_CASE("a torn frame (part of it displaced) scores below the cut; a few pixel
     CHECK(sMost.confidence < cut);
     CHECK(sWobble.confidence >= cut);
     for (int i = 0; i < 20; ++i) CHECK(capture[static_cast<size_t>(i)].confidence >= cut);
+    // Blurred torn frames (seeing 1-3x the sharp frames' 0.8 px): blur matching lets a blurred tear
+    // match more, so the tolerance widens with blur (Shift::confidence). Measured and pinned here.
+    for (double blur : {0.8, 1.6, 2.4})
+        for (double jump : {4.0, 5.0, 6.0, 8.0}) {
+            const FloatImage f = tornBlurred(h / 2, jump, blur, 60);
+            const double c = aligner.Align(f, stack::MeasureFrame(f, 0)).confidence;
+            INFO("half torn by " << jump << " px at blur " << blur << ": " << c << " (cut " << cut << ")");
+            if (jump >= 8) CHECK(c < cut);                     // rejected through 3x blur (2.4 px: 0.82)
+            if (jump >= 6 && blur < 1) CHECK(c < cut);         // sharp: 6 px rejected
+            if (jump == 6 && blur > 2) CHECK(c >= cut);        // limit: at 3x blur a 6 px tear passes (0.88)
+            if (jump == 4) CHECK(c >= cut);                    // limit: 4 px passes at any blur (0.90-0.94)
+        }
 }
 
 TEST_CASE("AlignmentCut: relative to the capture's median, never below the absolute floor") {
@@ -577,10 +604,14 @@ TEST_CASE("BuildReference: a sharp, low-noise luma reference centred on the best
             dones.push_back(d);
             totals.push_back(t);
         };
-        const FloatImage ref = stack::BuildReference(factory, info, sel, stats, progress);
+        const FloatImage ref = stack::BuildReference(factory, info, sel, stats, 4, progress);
         REQUIRE(ref.channels == 1);
         REQUIRE(ref.width == static_cast<int>(kRefW / scale));
         REQUIRE(ref.height == static_cast<int>(kRefH / scale));
+        for (int t : {1, 3, 16}) {  // the same reference for any thread count
+            const FloatImage other = stack::BuildReference(factory, info, sel, stats, t, {});
+            CHECK(other.data == ref.data);
+        }
         REQUIRE_FALSE(phases.empty());
         for (const std::string& p : phases) CHECK(p == "Building reference");
         CHECK(std::is_sorted(dones.begin(), dones.end()));
@@ -667,7 +698,7 @@ TEST_CASE("BuildReference on a frame-filling surface") {
     stack::Selection sel;  // a full-frame selection of every frame (selection itself is Task 3's)
     sel.fullFrameTarget = true;
     for (int f = 0; f < n; ++f) sel.frames.push_back(f);
-    const FloatImage ref = stack::BuildReference(factory, info, sel, stats, {});
+    const FloatImage ref = stack::BuildReference(factory, info, sel, stats, 4, {});
     REQUIRE(ref.width == w);
     REQUIRE(ref.height == h);
 
@@ -699,17 +730,17 @@ TEST_CASE("BuildReference: cancel, diagnosed selections and missing stats") {
     int polls = 0;
     stack::Progress cancelLater;
     cancelLater.cancelled = [&] { return ++polls > 3; };
-    CHECK_THROWS_AS(stack::BuildReference(factory, info, sel, stats, cancelLater), stack::StackCancelled);
+    CHECK_THROWS_AS(stack::BuildReference(factory, info, sel, stats, 4, cancelLater), stack::StackCancelled);
 
     stack::Selection none;
     none.diagnosis.kind = stack::DiagnosisKind::NoTarget;
-    CHECK_THROWS_AS(stack::BuildReference(factory, info, none, stats, {}), std::invalid_argument);
+    CHECK_THROWS_AS(stack::BuildReference(factory, info, none, stats, 4, {}), std::invalid_argument);
 
     std::vector<FrameStats> partial(stats.begin(), stats.begin() + 5);
-    CHECK_THROWS_AS(stack::BuildReference(factory, info, sel, partial, {}), std::invalid_argument);
+    CHECK_THROWS_AS(stack::BuildReference(factory, info, sel, partial, 4, {}), std::invalid_argument);
 
     const stack::SourceFactory noReader = []() -> std::unique_ptr<ser::FrameSource> { return nullptr; };
-    CHECK_THROWS(stack::BuildReference(noReader, info, sel, stats, {}));
+    CHECK_THROWS(stack::BuildReference(noReader, info, sel, stats, 4, {}));
 }
 
 // ---- review round 1 ---------------------------------------------------------------------------------
@@ -767,7 +798,7 @@ TEST_CASE("BuildReference: a different-scene frame at the top quality rank does 
         dones.push_back(d);
         totals.push_back(t);
     };
-    const FloatImage ref = stack::BuildReference(factory, info, sel, stats, progress);
+    const FloatImage ref = stack::BuildReference(factory, info, sel, stats, 4, progress);
     CHECK(std::is_sorted(dones.begin(), dones.end()));
     CHECK(dones.back() == totals.back());
     CHECK(totals.back() == 4 * stack::kReferenceFrames);  // one anchor turned down
@@ -861,4 +892,92 @@ TEST_CASE("a frame-filling crescent wider than the window: the window sits on th
         CHECK(std::fabs(s.dy - d.second) <= 0.05);
         CHECK(s.confidence >= 0.95);
     }
+}
+
+// ---- review round 2 ---------------------------------------------------------------------------------
+
+TEST_CASE("BuildReference: three copies of a foreign scene ranked sharpest do not become the reference") {
+    static testing::TempDir dir;
+    const std::string path = dir.NewPath(".avi");
+    const int n = 30;
+    const std::vector<int> foreign = {4, 11, 19};  // ranked first to third below; they match each other
+    {
+        std::vector<std::vector<uint8_t>> frames;
+        for (int f = 0; f < n; ++f) {
+            const bool isForeign = std::find(foreign.begin(), foreign.end(), f) != foreign.end();
+            FloatImage im = isForeign ? ForeignScene(kRefW, kRefH)
+                                      : GaussianBlur(RenderDisc(kRefW, kRefH, RefTruth(f).cx, RefTruth(f).cy, 30, 0.04), 1.0);
+            AddNoise(im, 0.01, 1700u + f);
+            frames.push_back(To8(im));
+        }
+        testing::AviSpec spec;
+        spec.width = kRefW;
+        spec.height = kRefH;
+        testing::WriteAvi(path, spec, frames);
+    }
+    auto probe = ser::OpenVideo(path, ser::BayerChoice::None);
+    const ser::FileInfo info = probe->Info();
+    const stack::SourceFactory factory = [&] { return ser::OpenVideo(path, ser::BayerChoice::None); };
+    std::vector<FrameStats> stats = stack::MeasureAll(factory, info, 4, {});
+    double qmax = 0;
+    for (const FrameStats& s : stats) qmax = std::max(qmax, s.quality);
+    for (size_t r = 0; r < foreign.size(); ++r) {
+        REQUIRE(stats[foreign[r]].targetFound);
+        stats[foreign[r]].quality = (10 - static_cast<double>(r)) * qmax;
+    }
+    stack::Selection sel;
+    for (int f = 0; f < n; ++f) sel.frames.push_back(f);
+
+    const FloatImage ref = stack::BuildReference(factory, info, sel, stats, 4, {});
+    const FrameStats rs = stack::MeasureFrame(ref, 0);
+    REQUIRE(rs.targetFound);
+    INFO("reference box " << rs.bx1 - rs.bx0 << "x" << rs.by1 - rs.by0 << ", a disc frame's "
+                          << stats[0].bx1 - stats[0].bx0 << "x" << stats[0].by1 - stats[0].by0);
+    CHECK(std::abs((rs.bx1 - rs.bx0) - (stats[0].bx1 - stats[0].bx0)) <= 8);
+    const GlobalAligner aligner(ref, false);
+    for (int f = 0; f < n; ++f) {
+        if (std::find(foreign.begin(), foreign.end(), f) != foreign.end()) continue;
+        const Shift s = aligner.Align(stack::LumaForMeasure(probe->ReadFrame(f), info.colorId, info.normDepth), stats[f]);
+        INFO("frame " << f << " confidence " << s.confidence);
+        CHECK(s.confidence >= 0.9);
+    }
+}
+
+TEST_CASE("ParallelBands: every row once for any thread count; failures join every thread") {
+    for (int threads : {-1, 0, 1, 3, 8, 100}) {
+        std::vector<int> hits(1000, 0);
+        stack::ParallelBands(1000, threads, [&](int r0, int r1) {
+            for (int r = r0; r < r1; ++r) ++hits[static_cast<size_t>(r)];
+        });
+        INFO("threads " << threads);
+        CHECK(std::all_of(hits.begin(), hits.end(), [](int h) { return h == 1; }));
+    }
+    stack::ParallelBands(0, 8, [](int, int) { FAIL("no rows, no call"); });
+
+    // A band that throws: the others finish, every thread is joined, the exception comes out.
+    std::atomic<int> finished{0};
+    CHECK_THROWS_AS(stack::ParallelBands(800, 8,
+                                         [&](int r0, int) {
+                                             if (r0 == 0) throw std::runtime_error("band 0 failed");
+                                             std::this_thread::sleep_for(std::chrono::milliseconds(20));
+                                             ++finished;
+                                         }),
+                    std::runtime_error);
+    CHECK(finished == 7);
+
+    // Thread creation fails on the fourth thread (as std::thread does when the process is out of
+    // threads): the three started are joined before the error is rethrown -- no std::terminate.
+    std::atomic<int> started{0}, ran{0};
+    const stack::ThreadSpawner failFourth = [&](std::function<void()> fn) {
+        if (started++ == 3) throw std::system_error(std::make_error_code(std::errc::resource_unavailable_try_again));
+        return std::thread(std::move(fn));
+    };
+    CHECK_THROWS_AS(stack::ParallelBands(800, 8,
+                                         [&](int, int) {
+                                             std::this_thread::sleep_for(std::chrono::milliseconds(20));
+                                             ++ran;
+                                         },
+                                         failFourth),
+                    std::system_error);
+    CHECK(ran == 3);
 }

@@ -94,7 +94,7 @@ int main(int argc, char** argv) try {
         std::printf("%s | diagnosed: %s\n", name.c_str(), sel.explanation.c_str());
         return 2;
     }
-    const ser::FloatImage ref = stack::BuildReference(factory, info, sel, stats, {});
+    const ser::FloatImage ref = stack::BuildReference(factory, info, sel, stats, threads, {});
     const auto t2 = Clock::now();
     const stack::GlobalAligner aligner(ref, sel.fullFrameTarget);
 
