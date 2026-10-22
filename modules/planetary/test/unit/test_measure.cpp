@@ -17,6 +17,8 @@
 #include "Demosaic.h"
 #include "Measure.h"
 #include "StackTypes.h"
+#include "Select.h"
+#include "StackSynth.h"
 #include "TestUtil.h"
 
 using namespace planetary;
@@ -263,6 +265,59 @@ TEST_CASE("EstimatePixelNoise is unbiased on sky, with a disc, and on 8-bit data
         INFO("8-bit noise " << dn << " DN: mean s^2 / truth " << ratio / runs);
         CHECK(ratio / runs == Catch::Approx(1).margin(0.01));
     }
+}
+
+namespace {
+// The uncorrected reading, from scratch (Measure.h "Background and noise"): half the 20th percentile
+// (lower element) of the tiles' mean squared horizontal neighbour difference.
+double RawQuantileHalf(const FloatImage& im) {
+    const int w = im.width, h = im.height;
+    const int tile = std::max(1, std::min({32, std::max(8, std::min(w, h) / 4), std::min(w, h)}));
+    const int tx = (w + tile - 1) / tile, ty = (h + tile - 1) / tile;
+    std::vector<double> sum(static_cast<size_t>(tx) * ty, 0.0);
+    std::vector<int64_t> cnt(sum.size(), 0);
+    for (int y = 0; y < h; ++y)
+        for (int x = 0; x + 1 < w; ++x) {
+            const double d = static_cast<double>(im.data[static_cast<size_t>(y) * w + x + 1]) - im.data[static_cast<size_t>(y) * w + x];
+            const size_t t = static_cast<size_t>(y / tile) * tx + x / tile;
+            sum[t] += d * d;
+            ++cnt[t];
+        }
+    const int64_t full = static_cast<int64_t>(std::min(tile, w - 1)) * std::min(tile, h);
+    std::vector<double> est;
+    for (size_t i = 0; i < sum.size(); ++i)
+        if (cnt[i] > 0 && 2 * cnt[i] >= full) est.push_back(sum[i] / static_cast<double>(cnt[i]));
+    const size_t k = static_cast<size_t>(0.2 * static_cast<double>(est.size() - 1));
+    std::nth_element(est.begin(), est.begin() + static_cast<std::ptrdiff_t>(k), est.end());
+    return est[k] / 2;
+}
+}  // namespace
+
+TEST_CASE("the order-statistic correction needs sky: a frame-filling target keeps q / 2 (Ruling P19)") {
+    // A frame-filling surface (StackSynth, noise 0.01): its smoothest tiles are texture, which already
+    // reads high; with no sky outside the target's box to anchor the noise band, the correction is not
+    // applied and the reading is the uncorrected one, exactly.
+    const int w = 224, h = 176;
+    const testing::Scene surface = testing::MakeSurface(33, w, h);
+    testing::FrameSpec f;
+    f.noise = 0.01;
+    const FloatImage frame{w, h, 1, testing::RenderFrame(surface, w, h, f, 21)};
+    const FrameStats st = MeasureFrame(frame, 0, 1);
+    REQUIRE(st.targetFound);
+    const double raw = RawQuantileHalf(frame), s2 = std::pow(stack::EstimatePixelNoise(frame).sigma, 2);
+    INFO("surface box " << st.bx0 << "," << st.by0 << "-" << st.bx1 << "," << st.by1 << "; q / 2 = " << raw / 1e-4
+                        << " of the true s^2, reading " << s2 / 1e-4);
+    CHECK(stack::FillsFrame(st, w, h));  // Select's frame-filling box (its outer column of tiles is texture too)
+    CHECK(raw > 1.1e-4);                 // texture: above the true noise
+    CHECK(s2 == Catch::Approx(raw).epsilon(1e-12));
+    // A disc with sky around it: corrected -- the reading sits above q / 2 by the order statistic's
+    // offset (~0.84 tau, tau ~ 5% for 32 x 32 tiles) and near the truth.
+    FloatImage disc = TexturedPlanet(w, h, 112.3, 87.6, 30, 0.05f);
+    AddNoise(disc, 0.01, 22);
+    const double rawDisc = RawQuantileHalf(disc), s2Disc = std::pow(stack::EstimatePixelNoise(disc).sigma, 2);
+    INFO("disc: q / 2 = " << rawDisc / 1e-4 << " of the true s^2, reading " << s2Disc / 1e-4);
+    CHECK(s2Disc / rawDisc > 1.03);
+    CHECK(s2Disc / rawDisc < 1.08);
 }
 
 TEST_CASE("a frame of background only has no target") {

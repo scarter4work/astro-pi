@@ -25,7 +25,7 @@ constexpr double kNoisePercentile = 0.2;     // of tile noise estimates
 constexpr int kMaxTile = 32;
 constexpr double kNoiseTileSigmas = 3;       // a noise tile: within 3 model sd of the noise mean
 constexpr int kNoiseRounds = 8;              // fixed-point rounds of the noise-tile count and kurtosis
-constexpr double kMaxNoiseKurtosis = 12;     // 8-bit noise of ~0.3 DN reads 10.5; texture is cut there
+constexpr double kMaxNoiseKurtosis = 12;     // caps kappa (8-bit noise of ~0.3 DN reads 10.5)
 constexpr double kSeedSigmas = 4;            // component seeds: blocks above b + 4 s_b
 constexpr double kPeakSigmas = 10;           // a target's brightest block: >= b + 10 s_b ...
 constexpr double kMinContrast = 0.01;        // ... and >= b + 1% of full scale
@@ -208,7 +208,6 @@ NoiseEstimate PixelNoise(NoiseTiles t, const TargetBox* target) {
     return n;
 }
 
-
 struct Grid {
     int d = 1, cw = 0, ch = 0;
     std::vector<double> mean;   // block means
@@ -321,7 +320,8 @@ int DetectionBlock(int width, int height) {
     return std::max(1, (std::max(width, height) + kGridCells - 1) / kGridCells);
 }
 
-FrameStats MeasureFrame(const ser::FloatImage& luma, int64_t index, double lumaScale) {
+// MeasureFrame, also handing out the noise its quality used (EstimatePixelNoise).
+static FrameStats MeasureWithNoise(const ser::FloatImage& luma, int64_t index, double lumaScale, NoiseEstimate* qualityNoise) {
     if (luma.width <= 0 || luma.height <= 0)
         throw std::invalid_argument("MeasureFrame: empty image");
     if (luma.channels != 1)
@@ -348,7 +348,11 @@ FrameStats MeasureFrame(const ser::FloatImage& luma, int64_t index, double lumaS
     const float* opened = openA.data();
     const Grid g = BlockMeans(opened, w, h);
     const NoiseTiles tiles = MeasureNoiseTiles(p, w, h);
-    const NoiseEstimate noiseImage = PixelNoise(tiles, nullptr);  // the whole image as sky: detection's floor
+    // Detection's floor s / d needs s before there is a box, so the whole image is taken as sky. On a
+    // frame-filling target that corrects texture as if it were noise, but the floor does not hold
+    // there: the opened grid's MAD estimate averages 8.7x / 21x s / d on the 2026-01-30 193142 / 2023-02-02
+    // 202030 Moons, and the floor holds in none of their first 300 frames (measured 2026-10-22).
+    const NoiseEstimate noiseImage = PixelNoise(tiles, nullptr);
     const double sigma = noiseImage.sigma;
     std::vector<double> sorted = g.mean;
     const double b = Quantile(sorted, kBackgroundPercentile);
@@ -397,6 +401,7 @@ FrameStats MeasureFrame(const ser::FloatImage& luma, int64_t index, double lumaS
         }
         s.brightness = sum / static_cast<double>(npix);
         s.clippedFraction = static_cast<double>(clipped) / static_cast<double>(npix);
+        if (qualityNoise) *qualityNoise = noiseImage;  // no target: the whole image is sky
         return s;
     }
     s.targetFound = true;
@@ -462,17 +467,24 @@ FrameStats MeasureFrame(const ser::FloatImage& luma, int64_t index, double lumaS
     // tiles ("Background and noise"; a frame-filling target leaves none, and its reading stays as it was).
     const TargetBox box{s.bx0, s.by0, s.bx1, s.by1};
     const NoiseEstimate noise = PixelNoise(tiles, &box);
+    if (qualityNoise) *qualityNoise = noise;
     const QualityEstimate q = RegionQuality(p, w, rx0, ry0, rx1, ry1, b, noise);
     s.quality = q.quality;
     s.qualitySigma = q.sigma;
     return s;
 }
 
+FrameStats MeasureFrame(const ser::FloatImage& luma, int64_t index, double lumaScale) {
+    return MeasureWithNoise(luma, index, lumaScale, nullptr);
+}
+
 NoiseEstimate EstimatePixelNoise(const ser::FloatImage& luma) {
     if (luma.channels != 1 || luma.width <= 0 || luma.height <= 0 ||
         luma.data.size() != static_cast<size_t>(luma.width) * luma.height)
         throw std::invalid_argument("EstimatePixelNoise: expected a non-empty 1-channel image");
-    return PixelNoise(MeasureNoiseTiles(luma.data.data(), luma.width, luma.height), nullptr);
+    NoiseEstimate n;
+    MeasureWithNoise(luma, 0, 1, &n);  // the target's box gates the correction, as for the quality
+    return n;
 }
 
 QualityEstimate RegionQuality(const float* p, int w, int rx0, int ry0, int rx1, int ry1, double b,

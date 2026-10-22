@@ -111,10 +111,10 @@ constexpr double kClippedLuma = 0.999;
 // d = ceil(longest side / 256) (1080p mono: d = 8). The background b is the 20th percentile of
 // the block means (the sky, as long as the target covers less than ~80% of the frame). The block
 // noise s_b is the MAD of neighbouring block differences / sqrt(2) (blind to smooth gradients
-// and vignetting), floored at s / d (s as EstimatePixelNoise reads it: the box is not known yet).
+// and vignetting), floored at s / d (s with the whole image taken as sky: the box is not known yet).
 // On sky the floor is what holds -- s / d exceeds the MAD estimate in every frame of the 2026-01-30
 // Saturn, Neptune and Jupiter 195830 and the 2023-02-11 Jupiter (measured 2026-10-22) -- so s_b
-// moved with Ruling P19's s (+2-3% there).
+// moved with Ruling P19's s (+2-3% there); on the Moons it never holds (Measure.cpp).
 // The pixel noise s is read from the smoothest tiles -- sky where there is any -- so planet texture
 // does not inflate it and quantised 8-bit data still gets its true (quantisation included) noise:
 // over tiles of up to 32 x 32 pixels, each tile's mean squared horizontal neighbour difference
@@ -138,13 +138,19 @@ constexpr double kClippedLuma = 0.999;
 // the Blom share, f the noise tiles' density at q), scaled to s^2.
 // No correction (s^2 = q / 2, variance 6.12 s^4 / M, M the pairs used: the same order statistic's
 // for K Gaussian tiles at p = 0.2) when q cannot be shown to be noise: the sky -- the tiles clear of
-// the target's box in MeasureFrame, the whole image for EstimatePixelNoise -- holds at most k noise
-// tiles, or there are at most 2k + 1 in all (q is not in their lower half). That is a target that
-// fills the frame: its smoothest tiles are texture, which no noise model describes (corrected anyway,
-// s varied 0-1.9% between the frames of a synthetic surface, as the share of its tiles in the band
-// did, and the frames' ranking moved with it). Caveat there: s comes out too high and the quality's
-// noise term over-corrects (all frames of the capture alike, so their ranking holds, but the absolute
-// quality reads low and can reach 0 on a smooth, blurred frame).
+// the target's box (the whole image when no target is found) -- holds at most k noise tiles, or there
+// are at most 2k + 1 in all (q is not in their lower half). That is a target that fills the frame:
+// there is no sky to anchor the noise band, so the band and kappa would be measured on texture, which
+// already reads high -- on a StackSynth surface at noise 0.01, q / 2 is 2.33 of the true s^2, and the
+// correction would push it to 2.44 (test "the order-statistic correction needs sky ..."); corrected
+// per frame, s also varied 0-1.9% between the frames of a synthetic surface, as the share of its tiles
+// in the band did, and the frames' ranking moved with it. Caveat there: s comes out too high and the
+// quality's noise term over-corrects (all frames of the capture alike, so their ranking holds, but the
+// absolute quality reads low and can reach 0 on a smooth, blurred frame).
+// Limit: s is measured on the sky and taken as the target's. Where the two differ the quality keeps
+// part of the noise, as before P19 everywhere: a sky clipped at black (2 noise sd above it, the 16-bit
+// capture clips 2.3% of it and its noise variance reads 0.960 of the target's), or a target whose own
+// shot noise exceeds the sky's.
 //
 // Target rule. Blocks brighter than b + 4 s_b form 8-connected components. A component is a
 // target candidate when its brightest block stands at least max(10 s_b, 0.01) above b and at
@@ -214,12 +220,13 @@ constexpr double kClippedLuma = 0.999;
 // 0.95. There the quality is near the noise floor in another way: its gradient energy is ~4.5% of
 // the noise's 4 s^2, so an error of 1% in s^2 moves it ~10% -- the estimate's own scatter is in
 // qualitySigma, but what is left of its bias is not (+0.4-0.9% in s^2 on such frames, whose wing tiles
-// carry a little gradient: quality 3-9% low).
+// carry a little gradient: quality 3-9% low; float frames, no clipping).
 FrameStats MeasureFrame(const ser::FloatImage& luma, int64_t index, double lumaScale);
 
 // The pieces of MeasureFrame that other stages reuse on parts of a frame (Task 5's regions).
-// Pixel noise s of a luma image, as MeasureFrame estimates it ("Background and noise") with the whole
-// image taken as sky (no target box), and the variance of the estimate s^2 itself. Throws
+// Pixel noise s of a luma image exactly as MeasureFrame's quality uses it ("Background and noise": the
+// target is detected, at lumaScale 1, and its box gates the correction; no target, the whole image is
+// sky), and the variance of the estimate s^2 itself. Throws
 // std::invalid_argument for an empty or non-1-channel image or a sample count that does not match.
 struct NoiseEstimate {
     double sigma = 0;      // s

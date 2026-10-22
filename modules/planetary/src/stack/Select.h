@@ -284,16 +284,20 @@ constexpr int kMinJudgedFrames = 30;
 //    0.005: R 24 by 2 px 0.086, R 40 by 3 px 0.075 (stacked), R 24 by 12 px 0.344 (0.325), R 40 by
 //    20 px 0.344 (0.305) (refused); at noise 0.01 R 24 by 2 px 0.087, R 40 by 3 px 0.073 (stacked), R
 //    24 by 12 px 0.312 (0.267, on the limit) (refused). Noise-free, the convolved R 24 / 12 px reads
-//    0.334 and R 40 / 20 px 0.342. With s^2 read 4.3-5.2% low, q kept ~0.18 s^2 per pixel of noise in
-//    its gradient term, which dominated once a spread-out blob's own gradients were weaker. Limit,
-//    still: at noise 0.01 the convolved R 40 / 20 px reads 0.240 (0.181) and is stacked, R 24 / 24 px
-//    0.191 (0.103; noise-free 0.400). Not the noise estimate now (it reads these frames' s^2 0.4-0.9%
-//    high, which lowers q, raising the reading): such a blob's gradient energy is ~5% of the noise's,
-//    so each frame's q carries ~10% noise (qualitySigma), and q_ref -- the top of G over 60 frames --
-//    keeps most of it: 0.040 against a mean q of 0.031 (noise-free 0.034), the winner's curse that
-//    step 6's early-stopped EM removes only in part. A defocus that grows a disc into a faint blob
-//    (sigma ~ R and over) reads sharper again for that reason, and a centre that dims moves R_h out.
-//    Missed, such a capture stacks into a visibly soft image -- the failure the rule prefers.
+//    0.334, R 40 / 20 px 0.342 and R 24 / 24 px 0.400. With s^2 read 4.3-5.2% low, q kept ~0.18 s^2 per
+//    pixel of noise in its gradient term, which dominates once a spread-out blob's own gradients are
+//    weaker (its gradient energy is a few percent of the noise's 4 s^2), and q stopped falling: the
+//    faint blobs were stacked. Over a sky of 0.06 at noise 0.01 (seeds 7 / 107 / 207): R 40 / 20 px
+//    0.377 / 0.348 / 0.339 (0.225 / 0.212 / 0.188), R 24 / 24 px 0.327 / 0.313 / 0.321 (0.130 / 0.129 /
+//    0.124) -- now refused -- and R 24 / 12 px 0.332-0.362 (0.255-0.287), 1.33-1.45x the limit.
+//    Limit: s is measured on the sky and taken as the target's. Where they differ, the reading is low
+//    again: MakeDisc's own sky of 0.02 is 2 noise sd above black at noise 0.01, the 16-bit capture
+//    clips 2.3% of it at 0, and the clipped sky's noise variance is 0.960 of the target's (as was a
+//    target's own shot noise above the sky's) -- there the convolved R 40 / 20 px at noise 0.01 reads
+//    0.240 (0.181) and is stacked, R 24 / 24 px 0.191 (0.103). A centre that dims (blur ~ R and over)
+//    also moves R_h out. Missed, such a capture stacks into a visibly soft image, and the region stage
+//    warns (RunStack on that R 40 / 20 px: limb blur 0.47 R against the warn level 0.40) -- the
+//    failure the rule prefers.
 //    The blur spread is that of the true quality: tau^2 = max(0, var(q) - mean(qualitySigma^2)),
 //    spread = (sigma(mu - 1.2816 tau) - sigma(mu + 1.2816 tau)) / sigma(mu); its bounds use tau^2 -+ 2 SE, SE = sqrt(2 / N) var(q).
 //    Blurred -> OutOfFocus ("steady") when even the upper bound (tau^2 + 2 SE) gives a spread under
