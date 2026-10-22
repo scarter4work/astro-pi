@@ -35,6 +35,17 @@ struct FrameStats {
     double clippedFraction = 0;
 };
 
+// Measurement-luma pixels per frame pixel, inverted: a frame pixel is LumaScale(info) times smaller
+// than a luma pixel. 2 for Bayer input (LumaForMeasure sums each 2x2 CFA cell, so the luma image is
+// width / 2 x height / 2, integer division), 1 for mono and RGB. FrameStats coordinates times this
+// are frame (sensor) pixels; the luma image's size is header.width / LumaScale (integer part).
+// The one place this factor is defined (Ruling P3): consumers never scale by 2 on their own.
+double LumaScale(const ser::FileInfo& info);
+
+// Side d of the detection grid's square blocks for a luma image of width x height:
+// d = ceil(longest side / 256), at least 1 (see "Background and noise" below).
+int DetectionBlock(int width, int height);
+
 // Luma at or above this is saturated: 254/255 is not, a 12- or 10-bit ADC scaled into 16 bits
 // (65520/65535, 65472/65535) is, and a Bayer cell counts only when all four sites are.
 constexpr double kClippedLuma = 0.999;

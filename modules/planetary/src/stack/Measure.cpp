@@ -14,6 +14,7 @@
 #include <utility>
 
 #include "Demosaic.h"
+#include "SerFile.h"
 
 namespace planetary::stack {
 
@@ -81,7 +82,7 @@ struct Grid {
 // neighbours, so a hot pixel (or a lone noise spike) cannot lift a block into a "target".
 Grid BlockMeans(const float* p, int w, int h) {
     Grid g;
-    g.d = std::max(1, (std::max(w, h) + kGridCells - 1) / kGridCells);
+    g.d = DetectionBlock(w, h);
     g.cw = (w + g.d - 1) / g.d;
     g.ch = (h + g.d - 1) / g.d;
     g.mean.assign(static_cast<size_t>(g.cw) * g.ch, 0.0);
@@ -152,6 +153,12 @@ void Flood(const Grid& g, double thr, size_t seed, int label, std::vector<int>& 
 }
 
 }  // namespace
+
+double LumaScale(const ser::FileInfo& info) { return ser::IsBayer(info.colorId) ? 2.0 : 1.0; }
+
+int DetectionBlock(int width, int height) {
+    return std::max(1, (std::max(width, height) + kGridCells - 1) / kGridCells);
+}
 
 FrameStats MeasureFrame(const ser::FloatImage& luma, int64_t index) {
     if (luma.width <= 0 || luma.height <= 0)
