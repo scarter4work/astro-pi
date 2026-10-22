@@ -116,7 +116,8 @@ constexpr double kClippedLuma = 0.999;
 // rejects a compact 3x3 hot cluster (9 px) or a small cosmic-ray blob, while a planet
 // 5 px across is found every time (measured 2026-10-22 at lumaScale 1: seeing sigma 1 px on the Saturn
 // AVI's background, 96 placements per diameter: 5 px and up 96/96, 4 px 85-87/96, 3 px 28-44/96,
-// 2 px 32-41/96, 1 px 0/96; test "the size floor finds a blurred planet from 5 px across"), so below
+// 2 px 32-41/96, 1 px 0/96; 2 px reads as often as 3 px, a non-monotone result whose cause was not
+// investigated; test "the size floor finds a blurred planet from 5 px across"), so below
 // ~5 px across detection is unreliable. On half-resolution luma (Bayer, or an undeclared mosaic) the floor is 4 luma px,
 // below the 9 that any structure surviving the opening already has (a 3x3 luma square = 6x6 sensor
 // pixels; the hot structures above, painted at sensor resolution and binned, are all rejected), so

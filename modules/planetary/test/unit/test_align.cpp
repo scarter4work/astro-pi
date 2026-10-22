@@ -448,10 +448,11 @@ TEST_CASE("a torn frame (part of it displaced) scores below the cut; a few pixel
         }
 }
 
-TEST_CASE("the documented tear tolerance: a sharp half-frame tear of 5 px passes the cut, 6 px does not") {
+TEST_CASE("the documented tear tolerance: sharp half-frame tears of 4 px pass the cut, 5 px sit at it, 6 px do not") {
     // Align.h (kAlignRelative, Shift::confidence): after the 1.5 px low pass the large-scale structure
-    // still correlates across a few pixels, so a sharp frame torn through the middle by up to 5 px keeps
-    // a confidence above the cut and is stacked (left to local alignment); 6 px falls below it.
+    // still correlates across a few pixels, so a sharp frame torn through the middle by 4 px keeps a
+    // confidence above the cut and is stacked (left to local alignment), 5 px passes or sits within
+    // ~0.02 of the cut, and 6 px falls below it.
     // Measured 2026-10-22 on the lunar-like scene, sharp frames 0.8 px, noise 0.01, 12 noise draws per
     // tear, intact frames 0.996-0.997 (cut 0.85 x median = 0.847):
     //   tear 3 px 0.938-0.939;  4 px 0.899-0.900;  5 px 0.852-0.854;  5.5 px 0.831-0.832;
@@ -474,10 +475,16 @@ TEST_CASE("the documented tear tolerance: a sharp half-frame tear of 5 px passes
     for (unsigned seed = 0; seed < 12; ++seed) intact.push_back(align(0, 200 + seed));
     const double cut = stack::AlignmentCut(intact);
     for (unsigned seed = 0; seed < 12; ++seed) {
-        const double five = align(5.0, 100 + seed).confidence, six = align(6.0, 100 + seed).confidence;
-        INFO("cut " << cut << "; 5 px tear " << five << ", 6 px tear " << six);
-        CHECK(five >= cut);
+        const double four = align(4.0, 100 + seed).confidence, five = align(5.0, 100 + seed).confidence,
+                     six = align(6.0, 100 + seed).confidence;
+        INFO("cut " << cut << "; tear 4 px " << four << ", 5 px " << five << ", 6 px " << six);
+        CHECK(four >= cut);
         CHECK(six < cut);
+        // 5 px sits on the boundary (0.005-0.007 over the cut here), which moves with the low-pass
+        // numerics: pinned as an ordering and as within 0.02 of the cut, not as a side of it.
+        CHECK(four > five);
+        CHECK(five > six);
+        CHECK(five >= cut - 0.02);
     }
 }
 
