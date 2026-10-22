@@ -838,9 +838,14 @@ ser::FloatImage Accumulator::Finish() const {
         for (int y = y0; y < y1; ++y)
             for (int x = 0; x < width_; ++x) {
                 const size_t o = static_cast<size_t>(y) * width_ + x;
-                // Never a hole: where rejection took most of a pixel's weight (under kMinKeptWeight of the
-                // full 1), the rejected samples are blended back in, fully when nothing was kept.
-                const double lam = std::max(0.0, 1 - weight_[o] / kMinKeptWeight);
+                // Never a hole: where rejection took most of a pixel's weight (it kept under kMinKeptWeight
+                // of the weight its samples brought), the rejected samples are blended back in, fully when
+                // nothing was kept. The share, not the absolute weight: a border band that only a few
+                // frames reach in-bounds (drift) holds a small weight however few samples were rejected
+                // there, and an absolute threshold blended a rejected trail back into it.
+                const double all = static_cast<double>(weight_[o]) + weightRej_[o];
+                if (!(all > 0)) continue;
+                const double lam = std::max(0.0, 1 - weight_[o] / all / kMinKeptWeight);
                 const double wt = weight_[o] + lam * weightRej_[o];
                 if (!(wt > 0)) continue;
                 for (int c = 0; c < channels_; ++c)

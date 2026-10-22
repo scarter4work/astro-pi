@@ -91,8 +91,10 @@ constexpr int kRejectGrow = 2;
 constexpr int kRejectReach = 4;
 // Weight of a sample whose position falls outside the frame (see "Interpolation").
 constexpr double kOutsideWeight = 1e-6;
-// A pixel whose kept weight is under this (of the 1 a full stack gives it) blends its rejected samples
-// back in, linearly up to all of them at 0 kept: rejection never leaves a hole (see Finish).
+// A pixel whose kept weight is under this share of the weight its samples brought (kept + rejected)
+// blends its rejected samples back in, linearly up to all of them at 0 kept: rejection never leaves a
+// hole (see Finish). A share, not an absolute weight: a border band only a tenth of the frames reach
+// in-bounds holds ~0.1 of the full weight, and one rejected trail must stay out there too (unit test).
 constexpr double kMinKeptWeight = 0.25;
 // Smallest blend weight of usable regions for the full local shift, and the spacing (full-resolution
 // px) of the exactly evaluated blend weights and warp (see "The warp").

@@ -739,6 +739,58 @@ TEST_CASE("Rejection never empties a pixel", "[accumulate]") {
     CHECK(v == Catch::Approx(expect).margin(0.02));
 }
 
+TEST_CASE("A streak in a border band a tenth of the frames reach is rejected as in the interior", "[accumulate]") {
+    // Review round 2 (M1): drift moves most frames' edge out of the output's border band, so only a
+    // tenth of the frames reach it in-bounds (lunar drift up to 51 px). One of those carries a bright
+    // streak. Rejection must take it out there as it does where every frame reaches.
+    const int w = 96, h = 64, frames = 100, streaked = 95;
+    stack::RegionLayout none;  // the fallback stack alone: every frame equally
+    none.width = w;
+    none.height = h;
+    std::vector<FrameRegions> measured;
+    std::vector<FloatImage> imgs;
+    std::mt19937 rng(12);
+    std::normal_distribution<double> n(0, 1);
+    for (int k = 0; k < frames; ++k) {
+        FrameRegions m;
+        m.frameIndex = k;
+        // 90 frames sampled 30 px to the right: x >= 66 is outside them; 10 frames not shifted.
+        m.global = Shift{k < 90 ? 30.0 : 0.0, 0, 1};
+        measured.push_back(m);
+        FloatImage im{w, h, 1, std::vector<float>(static_cast<size_t>(w) * h)};
+        for (float& v : im.data) v = static_cast<float>(0.5 + 0.001 * n(rng));
+        if (k == streaked)
+            for (int y = 30; y < 32; ++y)
+                for (int x = 0; x < w; ++x) im.data[static_cast<size_t>(y) * w + x] += 0.5f;
+        imgs.push_back(std::move(im));
+    }
+    const stack::RegionPlan plan = stack::PlanRegions(none, measured);
+    const FloatImage flat{w, h, 1, std::vector<float>(static_cast<size_t>(w) * h, 0.5f)};
+    const FloatImage sigma{w, h, 1, std::vector<float>(static_cast<size_t>(w) * h, 0.01f)};
+    stack::Accumulator acc(plan, flat, sigma, testing::NewCapture(w, h).info);
+    for (int k = 0; k < frames; ++k) acc.Add(k, imgs[static_cast<size_t>(k)]);
+    const FloatImage out = acc.Finish();
+    // The streak's rows against rows far from it, over the same columns: what of the streak is left.
+    auto leak = [&](int x0, int x1) {
+        double on = 0, off = 0;
+        int non = 0, noff = 0;
+        for (int x = x0; x < x1; ++x) {
+            for (int y = 30; y < 32; ++y, ++non) on += out.data[static_cast<size_t>(y) * w + x];
+            for (int y = 44; y < 56; ++y, ++noff) off += out.data[static_cast<size_t>(y) * w + x];
+        }
+        return on / non - off / noff;
+    };
+    const double interior = leak(8, 58), band = leak(72, 90);
+    INFO("streak left in the interior " << interior << ", in the border band " << band << "; rejected cells "
+                                        << acc.RejectedCells());
+    // Unrejected: +0.5 / 100 in the interior, +0.5 / 10 = 0.05 in the band.
+    CHECK(std::fabs(interior) < 0.001);
+    CHECK(std::fabs(band) < 0.001);
+    int zeros = 0;
+    for (float v : out.data) zeros += v == 0.f;
+    CHECK(zeros == 0);
+}
+
 TEST_CASE("Hot pixel clusters on a mono sensor: an adjacent pair and a column segment", "[accumulate]") {
     const int w = 96, h = 80;
     ser::FileInfo info = testing::NewCapture(w, h).info;  // mono: neighbours 1 px away
