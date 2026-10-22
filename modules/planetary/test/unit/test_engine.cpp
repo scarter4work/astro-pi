@@ -79,20 +79,27 @@ Capture DiscCapture(int w, int h, double cx, double cy, double radius, int n, un
 
 // Readers that count themselves and their reads, optionally slowed down.
 struct ReaderLedger {
-    std::atomic<int> live{0};
+    std::atomic<int> live{0}, peak{0};
     std::atomic<int64_t> reads{0};
+    // Reads made on the thread that called RunStack (BuildReference's and the focus measure's) and on
+    // the workers (every pass).
+    std::atomic<int64_t> callerReads{0}, workerReads{0};
+    std::thread::id caller = std::this_thread::get_id();
     int delayMs = 0;
 };
 
 class CountedSource : public ser::FrameSource {
 public:
     CountedSource(std::unique_ptr<ser::FrameSource> inner, ReaderLedger& ledger) : inner_(std::move(inner)), ledger_(ledger) {
-        ++ledger_.live;
+        const int now = ++ledger_.live;
+        for (int p = ledger_.peak.load(); now > p && !ledger_.peak.compare_exchange_weak(p, now);) {
+        }
     }
     ~CountedSource() override { --ledger_.live; }
     const ser::FileInfo& Info() const override { return inner_->Info(); }
     ser::Frame ReadFrame(int64_t i) const override {
         ++ledger_.reads;
+        ++(std::this_thread::get_id() == ledger_.caller ? ledger_.callerReads : ledger_.workerReads);
         if (ledger_.delayMs > 0) std::this_thread::sleep_for(std::chrono::milliseconds(ledger_.delayMs));
         return inner_->ReadFrame(i);
     }
@@ -115,6 +122,23 @@ int ThreadCount() {
         ++n;
     }
     return n;
+}
+
+// The thread count once it has stopped changing (the same over 100 ms, at most 3 s). pthread_join
+// returns once the kernel clears the joined thread's tid during its exit, and /proc/self/task lists the
+// task until it is reaped a moment later -- so a count taken straight after a join, or straight after
+// the previous RunStack, can be high (under ctest -j8: 3 for 1 after a cancel, and a baseline taken
+// right after a dry run that never came back). A worker still running would hold its reader open
+// (ReaderLedger::live, checked first) and keep the count from settling at the baseline.
+int SettledThreadCount() {
+    int last = ThreadCount(), same = 0;
+    for (int i = 0; i < 300 && same < 10; ++i) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        const int now = ThreadCount();
+        same = now == last ? same + 1 : 0;
+        last = now;
+    }
+    return last;
 }
 
 FloatImage NormalizedFrame(const std::string& path, int64_t i) {
@@ -238,50 +262,90 @@ TEST_CASE("RunStack: a capture with no target gives NoTarget and no image", "[en
     CHECK(std::count(raw.summary.warnings.begin(), raw.summary.warnings.end(), std::string(stack::kUndeclaredMosaicWarning)) == 0);
 }
 
-    const Capture cap = DiscCapture(112, 96, 56.2, 47.8, 22, 48, 21);
+namespace {
+
+// A disc on a steady night (blur 1.6 px +- 4%), so selection keeps most frames (>= kFocusFrames).
+Capture SteadyDisc(int w, int h, int frames, unsigned seed) {
+    const Scene s = testing::MakeDisc(seed, w / 2.0 + 0.2, h / 2.0 - 0.2, 22);
+    Capture cap = testing::NewCapture(w, h);
+    std::mt19937 rng(seed + 3);
+    std::normal_distribution<double> n(0, 1);
+    testing::RenderCapture(cap, s, frames, [&](int) {
+        FrameSpec f;
+        f.gx = 1.5 * n(rng);
+        f.gy = 1.5 * n(rng);
+        f.hasLocal = true;
+        f.dx = testing::RandomField(rng, w, h, 28, [] { return 0.0; });
+        f.dy = testing::RandomField(rng, w, h, 28, [] { return 0.0; });
+        const double blur = 1.6 * std::exp(0.04 * n(rng));
+        f.sigma = testing::RandomField(rng, w, h, 28, [blur] { return blur; });
+        return f;
+    });
+    return cap;
+}
+
+}  // namespace
+
 TEST_CASE("RunStack: cancel in each phase throws StackCancelled, joins every thread and closes every reader", "[engine]") {
+    const Capture cap = SteadyDisc(112, 96, 48, 21);
+    // The boundaries are read from who reads, not from progress counts: BuildReference reads its
+    // kReferenceFrames frames on the calling thread, then the alignment pass reads on the workers, then
+    // the focus measure reads its kFocusFrames on the calling thread again. That needs >= kFocusFrames
+    // kept frames (so kReferenceFrames selected), checked on a dry run.
+    {
+        const StackOutcome dry = stack::RunStack(cap.Factory(), 6, {});
+        REQUIRE(dry.frames.stacked.size() >= static_cast<size_t>(stack::kFocusFrames));
+    }
     struct Case {
-        std::string phase;
-        // Fire once done >= 2, or (fromEnd > 0) once done >= total - fromEnd: in Aligning the last
-        // kFocusFrames units are the focus measure's reads, the ones before them the alignment pass.
-        int fromEnd;
         const char* where;
+        std::string phase;
     };
-    for (const Case& c : {Case{stack::kPhaseMeasuring, 0, "measuring"}, Case{stack::kPhaseAligning, 0, "building the reference"},
-                          Case{stack::kPhaseAligning, stack::kFocusFrames + 4, "the alignment pass"},
-                          Case{stack::kPhaseAligning, 3, "the focus measure's reads"}, Case{stack::kPhaseStacking, 0, "stacking"}}) {
-        INFO("cancel in " << c.where);
+    for (const Case& c : {Case{"measuring", stack::kPhaseMeasuring}, Case{"building the reference", stack::kPhaseAligning},
+                          Case{"the alignment pass", stack::kPhaseAligning}, Case{"the focus measure's reads", stack::kPhaseAligning},
+                          Case{"stacking", stack::kPhaseStacking}}) {
+        const std::string where = c.where;
+        INFO("cancel in " << where);
         ReaderLedger ledger;
         ledger.delayMs = 2;
         const auto factory = Counted(cap.Factory(), ledger);
-        const int threadsBefore = ThreadCount();
+        const int threadsBefore = SettledThreadCount();
         std::string phase;
-        int64_t done = 0, total = 0;
+        int64_t done = 0;
+        int64_t callerAtAligning = -1, workerAtAligning = -1, callerAtFire = -1, workerAtFire = -1;
         std::vector<std::string> seen;
         bool fired = false;
-        int64_t firedAt = -1;
         stack::Progress progress;
-        progress.report = [&](const std::string& p, int64_t d, int64_t t) {
+        progress.report = [&](const std::string& p, int64_t d, int64_t) {
             phase = p;
             done = d;
-            total = t;
             if (seen.empty() || seen.back() != p) seen.push_back(p);
+            if (p == stack::kPhaseAligning && callerAtAligning < 0) {
+                callerAtAligning = ledger.callerReads.load();
+                workerAtAligning = ledger.workerReads.load();
+            }
         };
         progress.cancelled = [&] {
-            if (!fired && phase == c.phase && (c.fromEnd > 0 ? done >= total - c.fromEnd : done >= 2)) {
-                fired = true;
-                firedAt = done;
+            if (fired || phase != c.phase) return fired;
+            const int64_t caller = ledger.callerReads.load() - callerAtAligning, worker = ledger.workerReads.load() - workerAtAligning;
+            if (where == "building the reference") fired = caller >= 2;
+            else if (where == "the alignment pass") fired = worker >= 3;
+            else if (where == "the focus measure's reads") fired = caller >= stack::kReferenceFrames + 2;
+            else fired = done >= 2;
+            if (fired) {
+                callerAtFire = caller;
+                workerAtFire = worker;
             }
             return fired;
         };
         CHECK_THROWS_AS(stack::RunStack(factory, 6, progress), stack::StackCancelled);
         CHECK(fired);
-        if (c.fromEnd > stack::kFocusFrames) CHECK(firedAt <= total - stack::kFocusFrames);  // before the focus reads
-        if (c.fromEnd > 0 && c.fromEnd < stack::kFocusFrames) CHECK(firedAt > total - stack::kFocusFrames);
         REQUIRE_FALSE(seen.empty());
         CHECK(seen.back() == c.phase);  // nothing after the cancelled phase was started
+        if (where == "building the reference") CHECK(workerAtFire == 0);
+        if (where == "the alignment pass") CHECK(callerAtFire == stack::kReferenceFrames);  // no focus read yet
+        if (where == "the focus measure's reads") CHECK(callerAtFire > stack::kReferenceFrames);
         CHECK(ledger.live.load() == 0);
-        CHECK(ThreadCount() == threadsBefore);
+        CHECK(SettledThreadCount() == threadsBefore);
         const int64_t reads = ledger.reads.load();
         std::this_thread::sleep_for(std::chrono::milliseconds(30));
         CHECK(ledger.reads.load() == reads);  // no worker is still reading
@@ -334,7 +398,7 @@ TEST_CASE("RunStack: 1 and 8 threads give the same result within 1e-6", "[engine
     CHECK(a.frames.stacked == b.frames.stacked);
     CHECK(a.frames.regionsKeeping == b.frames.regionsKeeping);
     CHECK(a.summary.memory.observers == 1);
-    CHECK(a.summary.detailScale == b.summary.detailScale);  // MeasureFocus is identical for any count
+    CHECK(a.summary.focus.measure == b.summary.focus.measure);  // MeasureFocus is identical for any count
 }
 
 TEST_CASE("RunStack: a lucky suspect is admitted and carries region weight, a torn one is rejected (Rulings P6, P8)", "[engine]") {
@@ -430,7 +494,7 @@ TEST_CASE("RepairingSource returns every frame repaired; RepairingFactory passes
     CHECK(none() == nullptr);
 }
 
-TEST_CASE("RunStack: a defocused frame-filling surface is diagnosed out of focus from its regions (Ruling P4)", "[engine]") {
+TEST_CASE("RunStack: a frame-filling surface is judged by its detail scale -- clean, or warned and stacked, never refused (Ruling P15)", "[engine]") {
     const int w = 224, h = 176;
     const Scene s = testing::MakeSurface(71, w, h);
     auto capture = [&](double blur) {
@@ -449,26 +513,98 @@ TEST_CASE("RunStack: a defocused frame-filling surface is diagnosed out of focus
         });
         return cap;
     };
-    // Measured here (detail scale, sensor px = luma px): blur 1 -> 4.5, 3 -> 7.3, 12 -> 12.3.
-    for (double blur : {1.0, 3.0}) {
-        const StackOutcome o = stack::RunStack(capture(blur).Factory(), 8, {});
-        INFO("blur " << blur << ": detail " << o.summary.detailScale << " | " << o.summary.alignment);
-        CHECK(o.diagnosis.kind == DiagnosisKind::None);
-        CHECK(o.image.has_value());
-        CHECK(o.summary.detailScale > 0);
-        CHECK(o.summary.detailScale < stack::kMaxDetailScale);
-    }
-    const StackOutcome o = stack::RunStack(capture(12.0).Factory(), 8, {});
-    INFO("blur 12: " << o.diagnosis.message << " | detail " << o.summary.detailScale << " | " << o.summary.selection);
-    REQUIRE(o.diagnosis.kind == DiagnosisKind::OutOfFocus);
-    CHECK_FALSE(o.image.has_value());
-    CHECK(o.summary.used == 0);
-    CHECK(o.summary.detailScale > stack::kMaxDetailScale);
-    bool regionNumbers = false;  // the region stage's verdict, not Select's
-    for (const auto& nb : o.diagnosis.numbers) regionNumbers |= nb.first == "detail scale (pixels)";
-    CHECK(regionNumbers);
+    auto focusWarnings = [](const StackOutcome& o) {
+        int k = 0;
+        for (const auto& wtext : o.summary.warnings) k += wtext.find("may be out of focus") != std::string::npos;
+        return k;
+    };
+    // Measured here (detail scale, sensor px = luma px): blur 1 -> 4.5, 12 -> 12.3.
+    const StackOutcome sharp = stack::RunStack(capture(1.0).Factory(), 8, {});
+    INFO("blur 1: detail " << sharp.summary.focus.detailScale << " | " << sharp.summary.alignment);
+    CHECK(sharp.diagnosis.kind == DiagnosisKind::None);
+    CHECK(sharp.image.has_value());
+    CHECK_FALSE(sharp.summary.focus.disc);
+    CHECK(sharp.summary.focus.outcome == stack::FocusOutcome::InFocus);
+    CHECK(sharp.summary.focus.detailScale < stack::kSurfaceWarnAbove);
+    CHECK(focusWarnings(sharp) == 0);
+    const StackOutcome soft = stack::RunStack(capture(12.0).Factory(), 8, {});
+    INFO("blur 12: detail " << soft.summary.focus.detailScale << " | " << soft.diagnosis.message);
+    CHECK(soft.diagnosis.kind == DiagnosisKind::None);
+    CHECK(soft.image.has_value());
+    CHECK(soft.summary.focus.outcome == stack::FocusOutcome::Warned);
+    CHECK(soft.summary.focus.detailScale > stack::kSurfaceWarnAbove);
+    CHECK(focusWarnings(soft) == 1);
 }
 
+namespace {
+
+// A Bayer (RGGB) capture of a textured disc of `radius` luma px (2 x in sensor px) blurred by `blur`
+// sensor px, with a little jitter.
+Capture BayerDisc(int w, int h, double radiusLuma, double blur, unsigned seed) {
+    const double cx = w / 2.0 + 0.3, cy = h / 2.0 - 0.4;
+    const Scene s = testing::MakeDisc(seed, cx, cy, 2 * radiusLuma);
+    Capture cap = testing::NewCapture(w, h, ser::ColorId::BayerRGGB);
+    std::mt19937 rng(seed + 7);
+    std::normal_distribution<double> n(0, 1);
+    RenderMosaic(cap, s, 40, [&](int) {
+        FrameSpec f;
+        f.gx = 1.2 * n(rng);
+        f.gy = 1.2 * n(rng);
+        f.hasLocal = true;
+        f.dx = testing::RandomField(rng, w, h, 40, [] { return 0.0; });
+        f.dy = testing::RandomField(rng, w, h, 40, [] { return 0.0; });
+        f.sigma = testing::RandomField(rng, w, h, 40, [&] { return blur * std::exp(0.05 * n(rng)); });
+        return f;
+    });
+    return cap;
+}
+
+}  // namespace
+
+TEST_CASE("RunStack: a disc is judged by its limb blur against its radius -- clean, warned or refused (review C1, Ruling P15)", "[engine]") {
+    SECTION("a sharp Bayer disc of radius 14 luma px stacks clean, at 0.85 and at 1.25 luma px of blur (1.5 x Barlow)") {
+        for (double blur : {1.7, 2.5}) {
+            const StackOutcome o = stack::RunStack(BayerDisc(192, 160, 14, blur, 81).Factory(), 8, {});
+            const stack::FocusCheck& f = o.summary.focus;
+            INFO("blur " << blur << " sensor px: limb " << f.limbBlur << " of usable " << f.usableBlur << " (" << f.measure << "), radius "
+                         << f.radius << " | " << o.diagnosis.message);
+            CHECK(o.diagnosis.kind == DiagnosisKind::None);
+            CHECK(o.image.has_value());
+            CHECK(f.disc);
+            CHECK(f.outcome == stack::FocusOutcome::InFocus);
+            CHECK(f.radius == Catch::Approx(14).margin(1.5));  // the half-level radius, not the blurred box
+            for (const auto& wtext : o.summary.warnings) CHECK(wtext.find("out of focus") == std::string::npos);
+        }
+    }
+    SECTION("the same disc blurred by 4.5 sensor px is stacked with a may-be-out-of-focus warning") {
+        const StackOutcome o = stack::RunStack(BayerDisc(192, 160, 14, 4.5, 81).Factory(), 8, {});
+        const stack::FocusCheck& f = o.summary.focus;
+        INFO("limb " << f.limbBlur << " of usable " << f.usableBlur << " (" << f.measure << ") | " << o.diagnosis.message);
+        CHECK(o.diagnosis.kind == DiagnosisKind::None);
+        CHECK(o.image.has_value());
+        CHECK(f.outcome == stack::FocusOutcome::Warned);
+        CHECK(f.measure > stack::kDiscWarnAbove);
+        CHECK(f.measure < stack::kDiscRefuseFrom);
+        int warned = 0;
+        for (const auto& wtext : o.summary.warnings) warned += wtext == stack::FocusWarning(f);
+        CHECK(warned == 1);
+    }
+    SECTION("a defocused small disc (radius 5 luma px, blurred by 9 sensor px) is refused: OutOfFocus, no image") {
+        const StackOutcome o = stack::RunStack(BayerDisc(160, 128, 5, 9, 82).Factory(), 8, {});
+        const stack::FocusCheck& f = o.summary.focus;
+        INFO("limb " << f.limbBlur << " of usable " << f.usableBlur << " (" << f.measure << "), radius " << f.radius << " | "
+                     << o.diagnosis.message << " | " << o.summary.selection);
+        REQUIRE(o.diagnosis.kind == DiagnosisKind::OutOfFocus);
+        CHECK_FALSE(o.image.has_value());
+        CHECK(o.summary.used == 0);
+        CHECK(o.summary.alignment.empty());
+        CHECK(f.outcome == stack::FocusOutcome::Refused);
+        CHECK(f.measure >= stack::kDiscRefuseFrom);
+        bool regionStage = false;  // the region stage's verdict (Select's carries no such number)
+        for (const auto& nb : o.diagnosis.numbers) regionStage |= nb.first == "limb blur / usable";
+        CHECK(regionStage);
+    }
+}
 TEST_CASE("RunStack: frames that do not show one scene are diagnosed Unaligned, with no image", "[engine]") {
     const int w = 160, h = 128;
     Capture cap = testing::NewCapture(w, h);
@@ -479,6 +615,7 @@ TEST_CASE("RunStack: frames that do not show one scene are diagnosed Unaligned, 
     const StackOutcome o = stack::RunStack(cap.Factory(), 8, {});
     INFO(o.diagnosis.message);
     CHECK(o.diagnosis.kind == DiagnosisKind::Unaligned);
+    CHECK(o.summary.alignment.empty());
     CHECK_FALSE(o.image.has_value());
     CHECK(o.summary.used == 0);
     CHECK_FALSE(o.diagnosis.numbers.empty());
@@ -523,6 +660,26 @@ TEST_CASE("PlanMemory caps ResidualScale observers and workers so the engine sta
     CHECK(mono.alignWorkers == 32);
     // 4K RGB: the stacking pass's workers are what the budget caps.
     CHECK(stack::PlanMemory(formats[2].info, 64).stackWorkers < 64);
+    // The focus measure's kFocusFrames luma frames are counted (after the residual scale is released):
+    // 4K mono, 16 x 33 MB = 531 MB.
+    const stack::MemoryPlan mono4k = stack::PlanMemory(info(3840, 2160, ser::ColorId::Mono, 16), 32);
+    CHECK(mono4k.focusBytes == static_cast<size_t>(stack::kFocusFrames) * 4 * 3840 * 2160);
+    CHECK(mono4k.peakBytes >= mono4k.focusBytes);
+    CHECK(mono4k.peakBytes <= stack::kMemoryBudget);
+}
+
+TEST_CASE("RunStack opens no more readers at once than the memory plan's workers", "[engine]") {
+    const Capture cap = DiscCapture(112, 96, 55.6, 48.3, 22, 50, 43);
+    for (int threads : {1, 3, 8}) {
+        ReaderLedger ledger;
+        const StackOutcome o = stack::RunStack(Counted(cap.Factory(), ledger), threads, {});
+        REQUIRE(o.image.has_value());
+        const stack::MemoryPlan& m = o.summary.memory;
+        INFO(threads << " threads: peak live readers " << ledger.peak.load());
+        CHECK(ledger.peak.load() <= std::max({m.measureWorkers, m.alignWorkers, m.stackWorkers}));
+        CHECK(ledger.peak.load() >= 1);  // how many overlap depends on scheduling; the bound above does not
+        CHECK(ledger.live.load() == 0);
+    }
 }
 
 TEST_CASE("RunStack: a file that cannot be opened is an error, not a diagnosis", "[engine]") {
@@ -584,4 +741,107 @@ TEST_CASE("MeasureFocus: the detail scale of a blurred white texture is its blur
             CHECK(stack::JudgeFocus(one, 2).detailScale == Catch::Approx(2 * v.detailScale));  // sensor px
         }
     }
+}
+
+TEST_CASE("The disc focus measure recovers the limb blur of a blurred disc of any radius (review C1)", "[engine]") {
+    // Discs rendered in real space -- each pixel the mean of 8 x 8 sub-samples of a uniform disc on sky --
+    // then blurred exactly (Gaussian in the Fourier domain), moved by sub-pixel shifts, noise added.
+    const int n = 96;
+    const stack::Fft2D fft(n, n);
+    auto freq = [n](int k) { return (k <= n / 2 ? k : k - n) / static_cast<double>(n); };
+    std::mt19937 rng(9200);
+    std::normal_distribution<double> g(0, 1);
+    std::uniform_real_distribution<double> u(-2, 2);
+    for (double radius : {2.7, 9.5, 14.0}) {
+        std::vector<stack::Complex> disc(static_cast<size_t>(n) * n);
+        for (int y = 0; y < n; ++y)
+            for (int x = 0; x < n; ++x) {
+                int in = 0;
+                for (int j = 0; j < 8; ++j)
+                    for (int i = 0; i < 8; ++i) in += std::hypot(x - 48 + (i + 0.5) / 8 - 0.5, y - 48 + (j + 0.5) / 8 - 0.5) < radius;
+                disc[static_cast<size_t>(y) * n + x] = in / 64.0;
+            }
+        fft.Forward(disc);
+        for (double sigma : {0.85, 1.25, 2.0, 4.0}) {
+            std::vector<FloatImage> lumas;
+            std::vector<stack::Shift> shifts;
+            for (int k = 0; k < 16; ++k) {
+                stack::Shift d;
+                d.dx = u(rng);
+                d.dy = u(rng);
+                std::vector<stack::Complex> f = disc;
+                for (int ky = 0; ky < n; ++ky)
+                    for (int kx = 0; kx < n; ++kx) {
+                        const double fx = freq(kx), fy = freq(ky);
+                        f[static_cast<size_t>(ky) * n + kx] *= std::exp(-2 * M_PI * M_PI * sigma * sigma * (fx * fx + fy * fy)) *
+                                                               std::polar(1.0, -2 * M_PI * (fx * d.dx + fy * d.dy));
+                    }
+                fft.Inverse(f);
+                FloatImage im{n, n, 1, std::vector<float>(static_cast<size_t>(n) * n)};
+                for (size_t i = 0; i < f.size(); ++i)
+                    im.data[i] = static_cast<float>(0.03 + 0.6 * f[i].real() / (n * n) + 0.01 * g(rng));
+                lumas.push_back(std::move(im));
+                shifts.push_back(d);
+            }
+            const stack::FocusWindow win = stack::DiscFocusWindow(48, 48, radius, n, n);
+            REQUIRE(win.side > 0);
+            CHECK_FALSE(win.taper);
+            const auto p = stack::MeasureFocus(lumas, shifts, {win}, 1);
+            const double detail = stack::FocusDetailScale(p[0]);
+            const double limb = stack::LimbBlurFromDetail(detail, radius, p[0].side);
+            INFO("radius " << radius << ", sigma " << sigma << ": window " << win.side << ", detail " << detail << ", limb blur " << limb);
+            CHECK(limb == Catch::Approx(sigma).epsilon(0.15));
+            // The half-level radius of one frame (its disc sits at 48 + its shift) stays near the true one.
+            const stack::FocusWindow w0 = stack::DiscFocusWindow(48 + shifts[0].dx, 48 + shifts[0].dy, radius, n, n);
+            const double half = stack::DiscHalfRadius(lumas[0], 48 + shifts[0].dx, 48 + shifts[0].dy, radius, w0);
+            INFO("half-level radius " << half);
+            // Measured: within 0.13 sigma (inward) while sigma <= radius / 2; outward by 0.25 / 0.6 sigma at
+            // sigma 2 / 4 on the 2.7-px disc (a blob).
+            if (sigma <= radius / 2) CHECK(std::fabs(half - radius) <= 0.15 * sigma + 0.15);
+        }
+    }
+}
+
+TEST_CASE("MeasureFocus: noise-free frames are judged (no noise is infinite signal-to-noise, not none)", "[engine]") {
+    const int n = 128;
+    const Scene s = testing::MakeSurface(95, n, n);
+    FloatImage im{n, n, 1, std::vector<float>(static_cast<size_t>(n) * n)};
+    for (int y = 0; y < n; ++y)
+        for (int x = 0; x < n; ++x) im.data[static_cast<size_t>(y) * n + x] = static_cast<float>(s.Eval(x, y, 1.0));
+    const std::vector<FloatImage> lumas(16, im);  // identical: the halves' power equals their cross-power
+    const std::vector<stack::Shift> shifts(16);
+    const auto p = stack::MeasureFocus(lumas, shifts, {{32, 32, 64}}, 1);
+    double snr = 0;
+    const double d = stack::FocusDetailScale(p[0], &snr);
+    INFO("detail " << d << ", snr " << snr);
+    CHECK(std::isinf(snr));
+    CHECK(std::isfinite(d));
+    CHECK(stack::JudgeFocus(p, 1).judged == 1);
+}
+
+TEST_CASE("The alignment line's region phrase never claims a region stacks 0 frames of its own", "[engine]") {
+    auto detail = [](std::vector<int64_t> kept) {
+        std::vector<stack::RegionDetail> d;
+        for (int64_t k : kept) {
+            stack::RegionDetail r;
+            r.kept = k;
+            r.candidates = k;
+            d.push_back(r);
+        }
+        return d;
+    };
+    CHECK(stack::RegionPhrase(detail({262, 300, 290}), 300, 300) ==
+          "3 regions placed on the target's detail, each stacking its own sharpest 262-300 of 300 frames (median 290)");
+    CHECK(stack::RegionPhrase(detail({300}), 300, 300) ==
+          "1 region placed on the target's detail, stacking its own sharpest 300 of 300 frames");
+    // The 2026-01-30 Moon 193142: 7 of 326 regions (lunar-limb windows, mostly dark sky) measured no
+    // detail in any frame; they take the plain mean of the stacked frames (Accumulator's fallback).
+    std::vector<int64_t> moon(319, 2043);
+    moon[0] = 5;
+    moon[1] = 2102;
+    moon.insert(moon.end(), 7, 0);
+    CHECK(stack::RegionPhrase(detail(moon), 2102, 2102) ==
+          "326 regions placed on the target's detail: 319 stacking their own sharpest 5-2102 of 2102 frames (median "
+          "2043), 7 with no measurable detail in any frame taking the mean of the 2102 stacked frames");
+    CHECK(stack::RegionPhrase({}, 40, 40) == "no region holds detail to rank on, so the 40 aligned frames are stacked whole");
 }

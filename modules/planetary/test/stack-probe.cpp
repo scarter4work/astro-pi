@@ -123,6 +123,16 @@ ser::BayerChoice ParseBayer(const std::string& s) {
     throw std::invalid_argument("--bayer: auto, none, RGGB, GRBG, GBRG or BGGR");
 }
 
+const char* FocusName(stack::FocusOutcome k) {
+    switch (k) {
+        case stack::FocusOutcome::NotJudged: return "NotJudged";
+        case stack::FocusOutcome::InFocus: return "InFocus";
+        case stack::FocusOutcome::Warned: return "Warned";
+        case stack::FocusOutcome::Refused: return "Refused";
+    }
+    return "?";
+}
+
 const char* KindName(stack::DiagnosisKind k) {
     switch (k) {
         case stack::DiagnosisKind::None: return "None";
@@ -329,8 +339,11 @@ int main(int argc, char** argv) try {
              Fmt(peakMB, 1) + ",\"warnings\":[";
         for (size_t i = 0; i < s.warnings.size(); ++i) j += (i ? "," : "") + Json(s.warnings[i]);
         j += "],\"hotPixels\":" + std::to_string(s.hotPixels) + ",\"rejectedCells\":" + std::to_string(s.rejectedCells) +
-             ",\"detailScale\":" + Fmt(s.detailScale) + ",\"focusByRegions\":" + (s.focusByRegions ? "true" : "false") +
-             ",\"targetRadius\":" + Fmt(s.targetRadius, 2) +
+             ",\"focus\":{\"outcome\":" + Json(FocusName(s.focus.outcome)) + ",\"disc\":" + (s.focus.disc ? "true" : "false") +
+             ",\"measure\":" + Fmt(s.focus.measure) + ",\"warnAbove\":" + Fmt(s.focus.warnAbove) + ",\"refuseFrom\":" +
+             Fmt(s.focus.refuseFrom) + ",\"detailScale\":" + Fmt(s.focus.detailScale) + ",\"limbBlur\":" + Fmt(s.focus.limbBlur) +
+             ",\"usableBlur\":" + Fmt(s.focus.usableBlur) + ",\"radius\":" + Fmt(s.focus.radius, 2) + ",\"judged\":" +
+             std::to_string(s.focus.judged) + ",\"windows\":" + std::to_string(s.focus.windows) + "}" +
              ",\"regions\":" + std::to_string(o.frames.regions) + ",\"admittedSuspects\":" +
              std::to_string(o.frames.admittedSuspects.size()) + ",\"rejectedSuspects\":" +
              std::to_string(o.frames.rejectedSuspects.size()) + ",\"alignmentExcluded\":" +
@@ -349,8 +362,15 @@ int main(int argc, char** argv) try {
         for (const auto& nb : o.diagnosis.numbers) std::printf("          %s = %s\n", nb.first.c_str(), Fmt(nb.second, 4).c_str());
         std::printf("selection %s\n", s.selection.c_str());
         std::printf("alignment %s\n", s.alignment.c_str());
-        std::printf("used      %lld of %lld; detail scale %s px (%s); target radius %.1f luma px; %d regions\n", static_cast<long long>(s.used),
-                    static_cast<long long>(s.measured), Fmt(s.detailScale, 2).c_str(), s.focusByRegions ? "judged here" : "Select judges", s.targetRadius, o.frames.regions);
+        std::printf("used      %lld of %lld; %d regions\n", static_cast<long long>(s.used), static_cast<long long>(s.measured),
+                    o.frames.regions);
+        const stack::FocusCheck& fc = s.focus;
+        std::printf("focus     %s, %s: measure %s (warn above %s, refuse from %s); detail %s px; limb blur %s px of usable %s px; "
+                    "radius %.1f luma px; %d of %d windows judged\n",
+                    FocusName(fc.outcome), fc.outcome == stack::FocusOutcome::NotJudged ? "nothing judged" : fc.disc ? "disc" : "frame-filling",
+                    Fmt(fc.measure, 3).c_str(), Fmt(fc.warnAbove, 3).c_str(),
+                    Fmt(fc.refuseFrom, 3).c_str(), Fmt(fc.detailScale, 2).c_str(), Fmt(fc.limbBlur, 2).c_str(),
+                    Fmt(fc.usableBlur, 2).c_str(), fc.radius, fc.judged, fc.windows);
         std::printf("time      %.2f s:", s.seconds);
         for (const auto& p : s.phaseSeconds) std::printf(" %s %.2f;", p.first.c_str(), p.second);
         std::printf("\nread      %.1f MB at %.1f MB/s; peak RSS %.0f MB (planned engine peak %.0f MB; workers %d/%d/%d, observers %d)\n",

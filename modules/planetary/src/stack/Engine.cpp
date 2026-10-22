@@ -300,7 +300,8 @@ std::vector<FocusProfile> MeasureFocus(const std::vector<ser::FloatImage>& lumas
             const Fft2D fft(n, n);
             std::vector<double> taper(static_cast<size_t>(s));
             for (int i = 0; i < s; ++i) {
-                const double v = std::sin(M_PI * (i + 0.5) / s);
+                // Hann for texture windows; flat for a disc window (the disc sits inside it on dark sky).
+                const double v = win.taper ? std::sin(M_PI * (i + 0.5) / s) : 1.0;
                 taper[static_cast<size_t>(i)] = v * v;
             }
             std::vector<Complex> a(static_cast<size_t>(n) * n, Complex(0, 0)), b = a, data;
@@ -361,6 +362,9 @@ std::vector<FocusProfile> MeasureFocus(const std::vector<ser::FloatImage>& lumas
                     const double pw = 0.5 * (std::norm(a[i]) / (static_cast<double>(na) * na) +
                                              std::norm(b[i]) / (static_cast<double>(nb) * nb));
                     const double t = std::norm(data[i]);
+                    // A disc window drops DC: its window mean is the disc's flux, not detail (and the sky level
+                    // only moves DC). A texture window keeps it: the taper moments are additive over every bin.
+                    if (!win.taper && vx == 0 && vy == 0) continue;
                     p.c0 += c;
                     p.c2 += f2 * c;
                     p.p0 += pw;
@@ -372,13 +376,107 @@ std::vector<FocusProfile> MeasureFocus(const std::vector<ser::FloatImage>& lumas
                     p.power[static_cast<size_t>(r)] += pw;
                 }
             }
+            if (!win.taper) {  // no taper to correct for
+                p.w0 = 1;
+                p.w2 = 0;
+            }
         }
     });
     return out;
 }
 
+FocusWindow DiscFocusWindow(double cx, double cy, double radius, int width, int height) {
+    FocusWindow f;
+    f.taper = false;
+    const int fit = std::min(width, height);
+    if (fit < kMinFocusWindow) return f;
+    const int want = NextFastSize(static_cast<int>(std::ceil(4 * radius + 16)));
+    f.side = want <= fit ? want : PrevFastSize(fit);
+    f.x0 = std::clamp(static_cast<int>(std::lround(cx)) - f.side / 2, 0, width - f.side);
+    f.y0 = std::clamp(static_cast<int>(std::lround(cy)) - f.side / 2, 0, height - f.side);
+    return f;
+}
+
+double DiscHalfRadius(const ser::FloatImage& luma, double cx, double cy, double r0, const FocusWindow& window) {
+    if (luma.channels != 1 || window.side < kMinFocusWindow || window.x0 < 0 || window.y0 < 0 ||
+        window.x0 + window.side > luma.width || window.y0 + window.side > luma.height)
+        throw std::invalid_argument("DiscHalfRadius: the window is not inside the image");
+    const int W = luma.width, s = window.side;
+    auto at = [&](int x, int y) { return static_cast<double>(luma.data[static_cast<size_t>(y) * W + x]); };
+    std::vector<double> border;
+    for (int i = 0; i < s; ++i) {
+        border.push_back(at(window.x0 + i, window.y0));
+        border.push_back(at(window.x0 + i, window.y0 + s - 1));
+        border.push_back(at(window.x0, window.y0 + i));
+        border.push_back(at(window.x0 + s - 1, window.y0 + i));
+    }
+    const double sky = Median(border);
+    constexpr double kRing = 0.25;
+    const double reach = std::max(cx - window.x0, std::max(window.x0 + s - 1 - cx, std::max(cy - window.y0, window.y0 + s - 1 - cy)));
+    const size_t rings = static_cast<size_t>(reach / kRing) + 1;
+    std::vector<double> sum(rings, 0.0), count(rings, 0.0);
+    double inner = 0, innerCount = 0;
+    const double innerR = std::max(1.0, 0.5 * r0);
+    for (int y = window.y0; y < window.y0 + s; ++y)
+        for (int x = window.x0; x < window.x0 + s; ++x) {
+            const double r = std::hypot(x - cx, y - cy);
+            const size_t k = static_cast<size_t>(r / kRing);
+            if (k < rings) {
+                sum[k] += at(x, y);
+                count[k] += 1;
+            }
+            if (r < innerR) {
+                inner += at(x, y);
+                innerCount += 1;
+            }
+        }
+    if (innerCount == 0) return 0;
+    const double half = sky + 0.5 * (inner / innerCount - sky);
+    double prevR = 0, prevV = inner / innerCount;
+    for (size_t k = 0; k < rings; ++k) {
+        if (count[k] == 0) continue;
+        const double r = (k + 0.5) * kRing, v = sum[k] / count[k];
+        if (v <= half) return prevV > v ? prevR + (r - prevR) * (prevV - half) / (prevV - v) : r;
+        prevR = r;
+        prevV = v;
+    }
+    return 0;
+}
+
+double DiscDetailScale(double radius, double sigma, int n) {
+    auto sinc = [](double u) { return u == 0 ? 1.0 : std::sin(M_PI * u) / (M_PI * u); };
+    double num = 0, den = 0;
+    for (int ky = 0; ky < n; ++ky) {
+        const double fy = (ky <= n / 2 ? ky : ky - n) / static_cast<double>(n);
+        for (int kx = 0; kx < n; ++kx) {
+            if (kx == 0 && ky == 0) continue;
+            const double fx = (kx <= n / 2 ? kx : kx - n) / static_cast<double>(n);
+            const double f2 = fx * fx + fy * fy, x = 2 * M_PI * std::sqrt(f2) * radius;
+            const double airy = x > 1e-9 ? 2 * std::cyl_bessel_j(1.0, x) / x : 1.0;
+            const double s = sinc(fx) * sinc(fy);
+            const double p = airy * airy * std::exp(-4 * M_PI * M_PI * sigma * sigma * f2) * s * s;
+            num += f2 * p;
+            den += p;
+        }
+    }
+    return num > 0 && den > 0 ? 1 / (2 * M_PI * std::sqrt(num / den)) : std::numeric_limits<double>::infinity();
+}
+
+double LimbBlurFromDetail(double detail, double radius, int n) {
+    const double maxSigma = 4 * radius + 8;
+    if (!(detail > DiscDetailScale(radius, 0, n))) return 0;
+    if (!(detail < DiscDetailScale(radius, maxSigma, n))) return maxSigma;
+    double lo = 0, hi = maxSigma;
+    while (hi - lo > 1e-3) {
+        const double mid = 0.5 * (lo + hi);
+        (DiscDetailScale(radius, mid, n) < detail ? lo : hi) = mid;
+    }
+    return 0.5 * (lo + hi);
+}
+
 double FocusDetailScale(const FocusProfile& p, double* snr) {
-    if (snr) *snr = p.p0 > p.c0 ? p.c0 / (p.p0 - p.c0) : 0;
+    // Signal over noise power; no noise at all (identical halves: power == cross-power) is infinite, not 0.
+    if (snr) *snr = !(p.c0 > 0) ? 0 : p.p0 > p.c0 ? p.c0 / (p.p0 - p.c0) : std::numeric_limits<double>::infinity();
     if (!(p.c0 > 0) || !(p.w0 > 0)) return std::numeric_limits<double>::infinity();
     const double m = p.c2 / p.c0 - p.w2 / p.w0;
     return m > 0 ? 1 / (2 * M_PI * std::sqrt(m)) : std::numeric_limits<double>::infinity();
@@ -399,6 +497,79 @@ FocusVerdict JudgeFocus(const std::vector<FocusProfile>& profiles, double lumaSc
     const double m = c0 > 0 ? (c2 - taper) / c0 : 0;
     v.detailScale = m > 0 ? lumaScale / (2 * M_PI * std::sqrt(m)) : std::numeric_limits<double>::infinity();
     return v;
+}
+
+FocusCheck JudgeDiscFocus(const FocusProfile& profile, double radius, double lumaScale) {
+    FocusCheck c;
+    c.disc = true;
+    c.radius = radius;
+    c.windows = 1;
+    c.warnAbove = kDiscWarnAbove;
+    c.refuseFrom = kDiscRefuseFrom;
+    double snr = 0;
+    const double detail = FocusDetailScale(profile, &snr);
+    if (!(radius > 0) || !(snr >= kMinFocusSnr) || !std::isfinite(detail)) return c;  // nothing to judge on
+    c.judged = 1;
+    c.detailScale = detail * lumaScale;
+    const double limb = LimbBlurFromDetail(detail, radius, profile.side);
+    const double usable = std::max(kBlurLimit * radius, kBlurFloorPixels / lumaScale);
+    c.limbBlur = limb * lumaScale;
+    c.usableBlur = usable * lumaScale;
+    c.measure = limb / usable;
+    c.outcome = c.measure >= c.refuseFrom ? FocusOutcome::Refused
+                : c.measure > c.warnAbove ? FocusOutcome::Warned
+                                          : FocusOutcome::InFocus;
+    return c;
+}
+
+FocusCheck JudgeSurfaceFocus(const std::vector<FocusProfile>& profiles, double lumaScale) {
+    FocusCheck c;
+    c.windows = static_cast<int>(profiles.size());
+    c.warnAbove = kSurfaceWarnAbove;
+    c.refuseFrom = std::numeric_limits<double>::infinity();  // never refused: see kSurfaceWarnAbove
+    const FocusVerdict v = JudgeFocus(profiles, lumaScale);
+    c.judged = v.judged;
+    if (v.judged == 0) return c;  // nothing above the noise: stacked, no verdict
+    c.detailScale = std::isfinite(v.detailScale) ? v.detailScale : 0.0;
+    c.measure = v.detailScale;
+    c.outcome = c.measure > c.warnAbove ? FocusOutcome::Warned : FocusOutcome::InFocus;
+    return c;
+}
+
+std::string FocusWarning(const FocusCheck& c) {
+    if (c.outcome != FocusOutcome::Warned) return {};
+    if (c.disc)
+        return "The stack may be out of focus: the sharpest frames blur the limb by " + Num(c.limbBlur, 1) + " px, " +
+               Num(c.measure, 2) + " x the usable " + Num(c.usableBlur, 1) + " px for a target this size (in-focus captures: up to " +
+               Num(c.warnAbove, 2) + " x; refused from " + Num(c.refuseFrom, 2) + " x) -- check the focus.";
+    return "The stack may be out of focus (or the capture is sampled far finer than the detail it holds): the "
+           "sharpest frames show no detail finer than " +
+           Num(c.detailScale, 1) + " px (in-focus captures: up to " + Num(c.warnAbove, 1) + " px).";
+}
+
+std::string RegionPhrase(const std::vector<RegionDetail>& detail, int64_t alignedFrames, int64_t stackedFrames) {
+    if (detail.empty()) return "no region holds detail to rank on, so the " + Count(alignedFrames) + " aligned frames are stacked whole";
+    std::vector<int64_t> k;
+    int64_t none = 0;
+    for (const RegionDetail& d : detail)
+        if (d.kept > 0) k.push_back(d.kept);
+        else ++none;
+    const int64_t regions = static_cast<int64_t>(detail.size());
+    std::string out = Plural(regions, "region", "regions") + " placed on the target's detail";
+    if (!k.empty()) {
+        std::sort(k.begin(), k.end());
+        const std::string range = Count(k.front()) + (k.front() == k.back() ? "" : "-" + Count(k.back())) + " of " +
+                                  Count(alignedFrames) + " frames";
+        const std::string median = k.size() > 1 ? " (median " + Count(k[(k.size() - 1) / 2]) + ")" : "";
+        if (none == 0)
+            out += (regions == 1 ? ", stacking its own sharpest " : ", each stacking its own sharpest ") + range + median;
+        else
+            out += ": " + Count(static_cast<int64_t>(k.size())) + " stacking their own sharpest " + range + median + ",";
+    }
+    if (none > 0)
+        out += (k.empty() ? ": " : " ") + Count(none) + " with no measurable detail in any frame taking the mean of the " +
+               Count(stackedFrames) + " stacked frames";
+    return out;
 }
 
 MemoryPlan PlanMemory(const ser::FileInfo& info, int threads) {
@@ -435,7 +606,10 @@ MemoryPlan PlanMemory(const ser::FileInfo& info, int threads) {
     const size_t measurePeak = p.measureWorkers * p.measureWorkerBytes;
     const size_t alignPeak = lumaImages + p.observers * p.observerBytes + p.alignWorkers * p.alignWorkerBytes;
     const size_t stackPeak = p.fixedBytes + p.stackWorkers * p.stackWorkerBytes;
-    p.peakBytes = std::max({measurePeak, alignPeak, stackPeak});
+    // The focus measure holds its frames after the residual scale's observers are gone (RunStack).
+    p.focusBytes = static_cast<size_t>(kFocusFrames) * 4 * lumaPx;
+    const size_t focusPeak = lumaImages + p.focusBytes;
+    p.peakBytes = std::max({measurePeak, alignPeak, stackPeak, focusPeak});
     return p;
 }
 
@@ -550,7 +724,8 @@ StackOutcome RunStack(const SourceFactory& rawFactory, int threads, const Progre
 
     t0 = Clock::now();
     const GlobalAligner aligner(reference, sel.fullFrameTarget, scale);
-    const RegionLayout layout = PlaceRegions(reference, MeasureFrame(reference, 0, scale), sel.fullFrameTarget);
+    const FrameStats refStats = MeasureFrame(reference, 0, scale);
+    const RegionLayout layout = PlaceRegions(reference, refStats, sel.fullFrameTarget);
     const RegionMeasurer measurer(reference, layout);
     std::vector<Shift> shifts(static_cast<size_t>(nAlign));
     std::vector<FrameRegions> measured(static_cast<size_t>(nAlign));
@@ -570,23 +745,26 @@ StackOutcome RunStack(const SourceFactory& rawFactory, int threads, const Progre
         observers->Observe(luma, measured[p]);
     });
 
-    // The clean frames' cut; the suspects decided against it (Ruling P6).
+    // The clean frames' cut; the suspects decided against it (Ruling P6). Each suspect is found in the
+    // sorted alignList by index (Select's order of suspects is not relied on); suspectShifts follows
+    // sel.suspects' order, as AdmitSuspects takes it.
     std::vector<Shift> clean, suspectShifts;
     std::vector<double> cleanConfidence;
     std::vector<uint8_t> isSuspect(static_cast<size_t>(nAlign), 0);
-    {
-        size_t s = 0;
-        for (size_t p = 0; p < alignList.size(); ++p) {
-            if (s < sel.suspects.size() && sel.suspects[s].index == alignList[p]) {
-                isSuspect[p] = 1;
-                suspectShifts.push_back(shifts[p]);
-                ++s;
-            } else {
-                clean.push_back(shifts[p]);
-                cleanConfidence.push_back(shifts[p].confidence);
-            }
-        }
+    if (std::adjacent_find(alignList.begin(), alignList.end()) != alignList.end())
+        throw std::logic_error("RunStack: a frame is both selected and suspect");
+    for (const Suspect& s : sel.suspects) {
+        const auto it = std::lower_bound(alignList.begin(), alignList.end(), s.index);
+        if (it == alignList.end() || *it != s.index) throw std::logic_error("RunStack: a suspect is missing from the alignment pass");
+        const size_t p = static_cast<size_t>(it - alignList.begin());
+        isSuspect[p] = 1;
+        suspectShifts.push_back(shifts[p]);
     }
+    for (size_t p = 0; p < alignList.size(); ++p)
+        if (!isSuspect[p]) {
+            clean.push_back(shifts[p]);
+            cleanConfidence.push_back(shifts[p].confidence);
+        }
     const double cut = AlignmentCut(clean);
     const Admission adm = AdmitSuspects(sel, suspectShifts, cut);
     sum.selection = adm.explanation;
@@ -631,10 +809,14 @@ StackOutcome RunStack(const SourceFactory& rawFactory, int threads, const Progre
     kept = {};
     step("Planning regions", t0);
 
-    // Region-stage focus (Ruling P4): the detail the sharpest frames the stack keeps show on the target.
     const int regions = static_cast<int>(plan.RegionCount());
     out.frames.regions = regions;
     out.frames.regionDetail = plan.detail;
+    // The residual scale now, so its observers are gone before the focus measure holds its frames.
+    const ser::FloatImage residualSigma = observers->Sigma(info.normDepth);
+    observers.reset();
+
+    // Region-stage focus (Rulings P4, P15): the detail the sharpest frames the stack keeps show on the target.
     {
         t0 = Clock::now();
         std::vector<size_t> ranked;  // positions in alignList of the frames kept, sharpest first
@@ -664,48 +846,48 @@ StackOutcome RunStack(const SourceFactory& rawFactory, int threads, const Progre
                 aligning.ThrowIfCancelled();
             }
         }
-        const std::vector<FocusWindow> windows = FocusWindows(layout, scale);
+        // A disc's radius from its half-level crossing on the reference (blur-proof), not Select's box.
+        double discRadius = sel.targetRadius;
+        if (!sel.fullFrameTarget) {
+            const FocusWindow first = DiscFocusWindow(refStats.cx, refStats.cy, sel.targetRadius, layout.width, layout.height);
+            const double half = first.side > 0 ? DiscHalfRadius(reference, refStats.cx, refStats.cy, sel.targetRadius, first) : 0;
+            if (half > 0) discRadius = half;
+        }
+        const std::vector<FocusWindow> windows =
+            sel.fullFrameTarget ? FocusWindows(layout, scale)
+                                : std::vector<FocusWindow>{DiscFocusWindow(refStats.cx, refStats.cy, discRadius,
+                                                                           layout.width, layout.height)};
         out.frames.focusWindows = windows;
-        out.frames.focus = MeasureFocus(lumas, focusShifts, windows, mem.alignWorkers);
+        if (!windows.empty() && windows.front().side > 0)
+            out.frames.focus = MeasureFocus(lumas, focusShifts, windows, mem.alignWorkers);
         lumas = {};
         aligning.Finish();
         aligning.ThrowIfCancelled();
-        const FocusVerdict v = JudgeFocus(out.frames.focus, scale);
-        const bool measurable = v.judged > 0 && std::isfinite(v.detailScale);
-        sum.detailScale = measurable ? v.detailScale : 0.0;
+        FocusCheck& fc = sum.focus;
+        if (!out.frames.focus.empty())
+            fc = sel.fullFrameTarget ? JudgeSurfaceFocus(out.frames.focus, scale)
+                                     : JudgeDiscFocus(out.frames.focus.front(), discRadius, scale);
         step("Judging focus", t0);
-        const auto numbers = std::vector<std::pair<std::string, double>>{
-            {"detail scale (pixels)", measurable ? v.detailScale : 0.0},
-            {"detail scale limit (pixels)", kMaxDetailScale},
-            {"windows judged", static_cast<double>(v.judged)},
-            {"windows", static_cast<double>(windows.size())},
-            {"frames measured for detail", static_cast<double>(ranked.size())},
-            {"regions placed", static_cast<double>(regions)}};
-        // Judged for a frame-filling target and a small disc; a larger disc is Select's (its limb model).
-        const bool judge = sel.fullFrameTarget || (sel.focusJudged && sel.targetRadius < kMinJudgedRadius);
-        sum.focusByRegions = judge;
-        sum.targetRadius = sel.targetRadius;
-        if (judge && v.judged == 0 && sel.fullFrameTarget)
+        if (fc.outcome == FocusOutcome::Refused) {
+            // Only a disc is refused (P15: gross limb blur; a frame-filling target is never refused here).
+            const auto numbers = std::vector<std::pair<std::string, double>>{
+                {"limb blur (pixels)", fc.limbBlur},
+                {"usable limb blur (pixels)", fc.usableBlur},
+                {"limb blur / usable", fc.measure},
+                {"refused from (limb blur / usable)", fc.refuseFrom},
+                {"target radius (pixels)", fc.radius * scale},
+                {"frames measured for detail", static_cast<double>(ranked.size())}};
             return finish(Diagnosed(std::move(out), DiagnosisKind::OutOfFocus,
-                                    "Out of focus: no part of the frame shows detail above the noise in the " +
-                                        Count(static_cast<int64_t>(ranked.size())) +
-                                        " sharpest frames -- the focus, or seeing that blurred every frame.",
+                                    "Out of focus: even the " + Count(static_cast<int64_t>(ranked.size())) +
+                                        " sharpest frames blur the limb by " + Num(fc.limbBlur, 1) + " px, " +
+                                        Num(fc.measure, 1) + " x the usable " + Num(fc.usableBlur, 1) +
+                                        " px for a target this size -- the focus, or seeing that blurred every frame.",
                                     numbers));
-        if (judge && v.judged > 0 && v.detailScale > kMaxDetailScale)
-            return finish(Diagnosed(std::move(out), DiagnosisKind::OutOfFocus,
-                                    "Out of focus: the " + Count(static_cast<int64_t>(ranked.size())) +
-                                        " sharpest frames show " +
-                                        (measurable ? "no detail finer than " + Num(v.detailScale, 1) + " px"
-                                                    : std::string("no measurable detail")) +
-                                        " on the target (usable: under " + Num(kMaxDetailScale, 0) +
-                                        " px) -- the focus, or seeing that blurred every frame.",
-                                    numbers));
+        }
     }
 
     // ---- Stacking ------------------------------------------------------------------------------------
     t0 = Clock::now();
-    const ser::FloatImage residualSigma = observers->Sigma(info.normDepth);
-    observers.reset();
     Accumulator acc(plan, reference, residualSigma, info);
     std::vector<int64_t> stackList;
     for (size_t p = 0; p < plan.frames.size(); ++p)
@@ -738,16 +920,7 @@ StackOutcome RunStack(const SourceFactory& rawFactory, int threads, const Progre
     if (excluded > 0)
         line += "; " + Plural(excluded, "frame", "frames") + " could not be aligned (torn, shaken or not the target) and " +
                 (excluded == 1 ? "was" : "were") + " left out";
-    if (regions > 0) {
-        std::vector<int64_t> k;
-        for (const RegionDetail& d : plan.detail) k.push_back(d.kept);
-        std::sort(k.begin(), k.end());
-        line += "; " + Plural(regions, "region", "regions") + " placed on the target's detail, each stacking its own sharpest " +
-                Count(k.front()) + (k.front() == k.back() ? "" : "-" + Count(k.back())) + " of " + Count(nKept) +
-                " frames (median " + Count(k[(k.size() - 1) / 2]) + ")";
-    } else {
-        line += "; no region holds detail to rank on, so the " + Count(nKept) + " aligned frames are stacked whole";
-    }
+    line += "; " + RegionPhrase(plan.detail, nKept, sum.used);
     const double cells = static_cast<double>(sum.used) * static_cast<double>(info.header.width / static_cast<int>(scale)) *
                          static_cast<double>(info.header.height / static_cast<int>(scale));
     line += "; " + Num(cells > 0 ? 100.0 * static_cast<double>(sum.rejectedCells) / cells : 0.0, 3) +
@@ -757,6 +930,7 @@ StackOutcome RunStack(const SourceFactory& rawFactory, int threads, const Progre
 
     // Only with an image: a diagnosed capture stacked nothing (Ruling P9's warning is about the result).
     if (UndeclaredMosaic(info)) sum.warnings.push_back(kUndeclaredMosaicWarning);
+    if (sum.focus.outcome == FocusOutcome::Warned) sum.warnings.push_back(FocusWarning(sum.focus));
     out.image = std::move(image);
     return finish(std::move(out));
 }
