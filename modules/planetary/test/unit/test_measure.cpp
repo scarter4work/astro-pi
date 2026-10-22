@@ -341,6 +341,35 @@ TEST_CASE("a small real planet on that background is still found") {
     }
 }
 
+TEST_CASE("the size floor finds a blurred planet from 5 px across at sensor resolution") {
+    // Where detection stops at lumaScale 1, on the Saturn AVI's background (5-7 DN pedestal, 1.5 DN
+    // noise, 8-bit) with seeing sigma 1 px, at two brightnesses, over 96 placements (sub-pixel
+    // positions x noise draws) per diameter. Measured 2026-10-22, found of 96 at brightness 0.6 / 0.3:
+    //   diameter 1 px: 0 / 0;  2 px: 32 / 41;  3 px: 28 / 44;  4 px: 85 / 87;  5 px and up: 96 / 96.
+    // So 5 px across is the smallest disc found every time; at 4 px a few placements fall under the
+    // 16-px floor, and below 4 px the result is a coin flip (a 1-px disc is never a target).
+    for (const double brightness : {0.6, 0.3})
+        for (const int d : {1, 2, 3, 4, 5, 6, 8, 12}) {
+            int found = 0;
+            const int placements = 96;
+            for (int k = 0; k < placements; ++k) {
+                FloatImage im = SaturnBackground(512, 384, 100 + k);
+                FloatImage disc = Flat(512, 384, 0.0f);
+                PaintDisc(disc, 250.0 + 0.37 * k, 190.0 + 0.23 * (k % 7), d / 2.0,
+                          [&](int, int) { return brightness; });
+                disc = GaussianBlur(disc, 1.0);
+                for (size_t i = 0; i < im.data.size(); ++i) im.data[i] += disc.data[i];
+                Quantize8(im);
+                if (MeasureFrame(im, 0, 1).targetFound) ++found;
+            }
+            INFO("diameter " << d << " px, brightness " << brightness << ": found " << found << " of " << placements);
+            if (d >= 5) CHECK(found == placements);
+            else if (d == 4) CHECK(found >= placements * 8 / 10);
+            else if (d == 1) CHECK(found == 0);
+            else CHECK(found < placements * 9 / 10);
+        }
+}
+
 TEST_CASE("target centroid within half a pixel of the truth") {
     struct Case { int w, h; double cx, cy, r; };
     const Case cases[] = {{160, 120, 71.37, 58.81, 20}, {320, 240, 151.62, 97.19, 20}, {1280, 720, 640.27, 351.73, 60}};

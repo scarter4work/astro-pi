@@ -214,7 +214,9 @@ FrameStats MeasureFrame(const ser::FloatImage& luma, int64_t index, double lumaS
     FrameStats s;
     s.index = index;
 
-    // Per-thread scratch for the opened image (a 1080p frame is 8 MB; MeasureAll calls this per frame).
+    // Per-thread scratch for the opened image (a 1080p mono frame is 8 MB as float; MeasureAll calls this
+    // per frame). Two buffers (openA, openB), so ~16 MB per calling thread at 1080p, held until the
+    // thread exits -- per MeasureAll worker, see its memory note in Measure.h.
     thread_local std::vector<float> openA, openB;
     Open3x3(p, w, h, openA, openB);
     const float* opened = openA.data();
