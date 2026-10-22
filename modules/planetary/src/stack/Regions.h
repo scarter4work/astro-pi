@@ -15,9 +15,10 @@ namespace planetary::stack {
 // keeps its own best ones (RankByDetail, SelectFrames' rule -- no percentage); Accumulate.h stacks
 // them and blends the regions seamlessly.
 //
-// Scale. Everything here is in measurement-luma pixels (MeasurementLuma: half resolution for Bayer and an undeclared mosaic
-// input), like FrameStats and Shift; the Accumulator works at full resolution and scales by
-// LumaScale(info) (Ruling P3). Shift convention as in Align.h: frame(x + dx, y + dy) ~ reference(x, y).
+// Scale. Everything here is in measurement-luma pixels (MeasurementLuma: half resolution for Bayer
+// input and an undeclared mosaic), like FrameStats and Shift; the Accumulator works at full
+// resolution and scales by LumaScale(info) (Ruling P3). Shift convention as in Align.h:
+// frame(x + dx, y + dy) ~ reference(x, y).
 //
 // The pipeline (Task 6 drives it; every piece here is I/O-free, Ruling P1):
 //  1. layout = PlaceRegions(reference, MeasureFrame(reference), selection.fullFrameTarget);

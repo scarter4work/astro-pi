@@ -245,10 +245,13 @@ int main(int argc, char** argv) try {
     });
     const ser::FloatImage ours = acc.Finish(), base = accGlobal.Finish();
     const double tPassB = Seconds(t0);
-    std::printf("stack    rejected cells %lld (%.4f%% of frame cells), held %.1f MB\n",
-                static_cast<long long>(acc.RejectedCells()),
-                100.0 * acc.RejectedCells() / (static_cast<double>(plan.frames.size()) * (info.header.width / scale) * (info.header.height / scale)),
-                acc.BytesHeld() / 1e6);
+    size_t zeros = 0, zerosGlobal = 0;
+    for (float v : ours.data) zeros += v == 0.f;
+    for (float v : base.data) zerosGlobal += v == 0.f;
+    std::printf("stack    %lld of %zu planned frames stacked; rejected cells %lld (%.4f%% of stacked frame cells); zero samples: ours %zu, global %zu; held %.1f MB\n",
+                static_cast<long long>(plan.stackedCount), plan.frames.size(), static_cast<long long>(acc.RejectedCells()),
+                100.0 * acc.RejectedCells() / (static_cast<double>(plan.stackedCount) * (info.header.width / scale) * (info.header.height / scale)),
+                zeros, zerosGlobal, acc.BytesHeld() / 1e6);
     std::printf("pass B   per frame and thread: read %.1f ms, demosaic %.1f ms, Add (regions) %.1f ms\n", readNs.load() / 1e6 / plan.frames.size(), demosaicNs.load() / 1e6 / plan.frames.size(), addNs.load() / 1e6 / plan.frames.size());
     std::printf("time     measure %.2f s, select+reference %.2f s, pass A %.2f s (regions %.1f, residual %.1f ms/frame/thread), plan %.2f s, "
                 "pass B (both stacks) %.2f s\n",
