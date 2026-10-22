@@ -21,8 +21,8 @@ Python 3.14 in a venv outside the repo (any location; the session used its scrat
 python3 -m venv <venv>
 <venv>/bin/pip install numpy scipy astropy tifffile Pillow opencv-python-headless pytest
 cd modules/planetary/test/bench
-<venv>/bin/python -I -m pytest -q -p no:cacheprovider               # 121 tests, 1-3 min with the NAS
-<venv>/bin/python -I -m pytest -q -p no:cacheprovider -m "not nas"  # 70 synthetic tests, ~1 min
+<venv>/bin/python -I -m pytest -q -p no:cacheprovider               # 122 tests, 1-3 min with the NAS
+<venv>/bin/python -I -m pytest -q -p no:cacheprovider -m "not nas"  # 71 synthetic tests, ~1 min
 <venv>/bin/python -I benchset.py survey ../output/bench-survey       # survey.json + thumbnails (gitignored)
 ```
 
@@ -79,7 +79,12 @@ the RMS amplitude of the detail on 3-17 px scales, as a fraction of the mean tar
 the noise power removed.
 
 **DAN_interior** asks the same question of the surface alone. The window is the anchor's target
-mask eroded by max(3 px, 2 x the limb's blur sigma), with a 2 px cosine edge. Inside it, x is
+mask eroded by max(3 px, 2 x the limb's blur sigma), with a 2 px cosine edge. The limb sigma is
+the **sharpest of the capture**: ours and every reference, each measured on its registered crop.
+The window, and whether the interior is judged at all, is then a property of the capture, not of
+whoever is anchor. Without this, a softer stack of ours would erode itself under 20 px and escape
+the interior bar: a synthetic R 13 disc at seeing 2.5 gets 19.7 px from its own limb and 23.8 px
+from the capture's, where it fails the bar at 0.656 (`test_a_softer_ours_cannot_escape_the_interior_bar`). Inside it, x is
 high-passed against its sigma-3 mean over target pixels only (normalised convolution, so the limb
 step does not leak inward). The result is that high-pass's RMS minus its own noise (the interior's
 noise floor, measured in the interior). It is judged only when the eroded disc is at least 20 px
@@ -203,7 +208,11 @@ target size), which still separates x1 / x1.5 / x3.
 
 Frame counts, sizes, sidecars, reference files, size-derived factors and recorded patterns are
 checked against the NAS by `test_benchset.py`. Paths are under `/mnt/qnap/astro_data/`. "Eroded"
-is the interior window's equivalent diameter (>= 20 px: interior judged). DAN values compare
+is the interior window's equivalent diameter (>= 20 px: interior judged), from the references'
+sharpest limb. Once our stack joins, the sharpest of ours and the references sets the erosion.
+A sharper stack of ours can only enlarge the window; a softer one cannot shrink it. The window's
+outline is ours' target mask, so the reviewer's own stack of the 2026-01-30 Jupiter measured 28.0 px
+on its own limb, against 28.5 here. DAN values compare
 reference against reference on the capture's common box; our stack joins in Task 9's run.
 
 ### Planets
@@ -222,8 +231,8 @@ All four are lunar discs or limbs with sky in the frame, not frame-filling surfa
 | ID | Video | Frames, size, file | Bayer (source) | References | DAN (interior) | Why |
 |---|---|---|---|---|---|---|
 | 2023-02-12-moon | `2_12_2023/2023-02-12-024708-Moon-Bin1 14.9F.avi` | 2354, 1920x1080, 4.9 GB | BGGR (measured; AS same) | `2_12_2023/AS_P20/2023-02-12-024708-Moon-Bin1 14.9F_lapl5_ap1.png` (x1); `2_12_2023/AS_P50/..._lapl5_ap2.png` (x1); `2_12_2023/AS_P25/..._lapl5_ap2_Drizzle30.png` (x3) | 0.0688 (0.0732); 0.0527 (0.0587); 0.0559 (0.0603) | Metric validation: P20 and P50 both native |
-| 2024-02-01-moon | `2_1_2024/2024-02-01-013847-Moon-Bin1 Lqef 14.9F.avi` | 1310, 1920x1080, 2.7 GB | RGGB (as AS and ASI debayered it; Lqef: R/B unverified) | `2_1_2024/ASIVideoStack_Output/2024-02-01-013847-Moon-Bin1 Lqef 14.9F_Surface_40.fit`; `2_1_2024/AS_P60/..._lapl5_ap16_Drizzle15.fit` (named x1.5, size x3) | 0.1320 (0.1429); 0.1415 (0.1518) | Both tools on one capture |
-| 2023-08-22-moon | `8_23_2023/2023-08-22-213239-FOV-Bin1 LPro 15.8F.avi` | 1352, 1920x1080, 2.8 GB | RGGB (measured; AS and ASI same) | `8_23_2023/ASIVideoStack_Output/2023-08-22-213239-FOV-Bin1 LPro 15.8F_Surface_35.fit`; `8_23_2023/AS_P20/..._lapl5_ap4_Drizzle30.fit` (x3) | 0.0300 (0.0234); 0.0352 (0.0278; band SNR 149) | Both tools; named "FOV" but a lunar limb (checked visually) |
+| 2024-02-01-moon | `2_1_2024/2024-02-01-013847-Moon-Bin1 Lqef 14.9F.avi` | 1310, 1920x1080, 2.7 GB | RGGB (as AS and ASI debayered it; Lqef: R/B unverified) | `2_1_2024/ASIVideoStack_Output/2024-02-01-013847-Moon-Bin1 Lqef 14.9F_Surface_40.fit`; `2_1_2024/AS_P60/..._lapl5_ap16_Drizzle15.fit` (named x1.5, size x3) | 0.1320 (0.1465); 0.1415 (0.1556) | Both tools on one capture |
+| 2023-08-22-moon | `8_23_2023/2023-08-22-213239-FOV-Bin1 LPro 15.8F.avi` | 1352, 1920x1080, 2.8 GB | RGGB (measured; AS and ASI same) | `8_23_2023/ASIVideoStack_Output/2023-08-22-213239-FOV-Bin1 LPro 15.8F_Surface_35.fit`; `8_23_2023/AS_P20/..._lapl5_ap4_Drizzle30.fit` (x3) | 0.0300 (0.0248); 0.0352 (0.0288; band SNR 149) | Both tools; named "FOV" but a lunar limb (checked visually) |
 | 2023-03-05-moon | `3_6_2023/moon/2023-03-05-224808-Moon-Bin1 18.3F.avi` | 1705, 1920x1080, 3.5 GB | BGGR (measured = the reader's sidecar resolution RG + Flip=Vert; AS used RGGB) | `3_6_2023/moon/AS_P20/2023-03-05-224808-Moon-Bin1 18.3F_lapl5_ap4_Drizzle15.fit` (named x1.5, size x3); `3_6_2023/moon/AS_P50/..._jupiter_lapl5_ap4_Drizzle15.png` (x1.5) | 0.0267 (0.0271); 0.0264 (0.0269) | Sidecar; a second AS P20/P50 pair |
 
 ### Diagnosis cases (no image expected; stack-probe runs with Auto)
@@ -248,6 +257,16 @@ Bayer sidecars: the 2023 Moon AVIs and the 2026-01-30 captures have none. The ex
 * `8_16/Video` 2022 Jupiters: 88-91 % of the disc saturated (measured by `avi_real_check.py`).
 * The other 2026-01-30 Jupiters (ASI only, no sidecar): 195830 is the one with Scott's pattern.
 * `3_31_2023/Moon`: no usable reference (spec Ruling 5).
+
+## Expectation for Task 9's run: the first real comparison
+
+The reviewer stacked the full 4088-frame 2026-01-30 Jupiter with our engine (debayered RGGB). It
+scored **1.23 x ASIStudio on DAN_full and 1.16 x on DAN_interior**, and the noise-regime note fired:
+floor/band 1.05e-4 against ASIStudio's 2.24e-6, 46 x apart. The likely cause (untested) is that
+ASIStudio's `.fit` has suppressed power near Nyquist, which makes its noise floor look small. That
+is the white-noise LIMITS case. It biases toward ASIStudio, so the ratio understates ours rather
+than inflating it. This capture therefore always goes to Scott's side-by-side review, whatever the
+numbers say.
 
 ## API for run-stack-bench.sh
 
@@ -279,7 +298,7 @@ The Python functions behind it, for the side-by-side and summary code:
   `refs.crop_registered(image, registration, box)` -- a reference's pixels under ours' box at the
   registered integer offset: the same crop the metric used, ready for a side-by-side at one scale.
 * `refs.load_image(path)`, `refs.register(moving, anchor)`, `metric.target_box(img)`,
-  `metric.interior_window(img, box)`, `metric.measure(img, box, interior=window)`,
+  `metric.interior_window(img, box, limb=None)`, `metric.measure(img, box, interior=window)`,
   `bayer.measure_video(path, (w, h))`.
 
 ## Limits

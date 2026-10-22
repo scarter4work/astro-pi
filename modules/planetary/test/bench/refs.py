@@ -562,7 +562,12 @@ def compare(anchor, references: Sequence[RefSpec], *, mosaic: bool = False,
     if y1 - y0 < 32 or x1 - x0 < 32:
         raise ValueError(f"the references' common area with the target is too small: {(y0, y1, x0, x1)}")
     box = Box(y0, y1, x0, x1)
-    window = metric.interior_window(a_lum, box)
+    # The interior window's erosion comes from the sharpest limb of the capture (ours and every
+    # reference, each on its registered crop), so a softer anchor cannot erode itself out of
+    # the interior bar.
+    limbs = [metric.limb_sigma(a_lum[box.y0:box.y1, box.x0:box.x1])]
+    limbs += [metric.limb_sigma(metric.luminance(crop_registered(ref.image, reg, box))) for ref, reg in loaded]
+    window = metric.interior_window(a_lum, box, limb=min(limbs))
 
     rows = [Row(a_label, a_path, a_used, None, metric.measure(a_lum, box, mosaic=mosaic, interior=window))]
     for ref, reg in loaded:

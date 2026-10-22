@@ -50,7 +50,8 @@ DAN_INTERIOR (review round 1): the same question asked of the surface alone
     periodogram power at 0.40-0.50 / ln 2; photon noise on the disc exceeds the sky's) and g the
     high-pass's white-noise gain. It is judged (interior_judged) only when the eroded disc is at
     least INTERIOR_MIN_DIAMETER = 20 px across (equivalent diameter); below that -- Mars -- the
-    result is limb-only and the side-by-side review decides.
+    result is limb-only and the side-by-side review decides. The erosion uses the sharpest limb
+    of the capture (anchor and references, refs.compare), not the anchor's own.
 
 LIMITS (stated, not hidden)
     * Valid only between UNSHARPENED LINEAR stacks. Sharpening buys DAN: a disc softened sigma
@@ -249,11 +250,15 @@ def limb_sigma(img, mask=None) -> float:
     return math.sqrt(max(sigma ** 2 - pre ** 2, 0.09))
 
 
-def interior_window(img, box: Box) -> InteriorWindow:
-    """The anchor's interior window for DAN_interior on `box` (see DAN_INTERIOR)."""
+def interior_window(img, box: Box, limb: Optional[float] = None) -> InteriorWindow:
+    """The interior window for DAN_interior on `box` (see DAN_INTERIOR): the target mask of
+    `img` (the anchor) eroded by max(3 px, 2 x `limb`). `limb` defaults to img's own limb sigma;
+    refs.compare passes the SHARPEST limb among the anchor and the references, so the window --
+    and whether the interior is judged -- is a property of the capture, and a softer stack of
+    ours cannot erode itself under 20 px and escape the interior bar."""
     lum = luminance(img)
     full = target_mask(lum)
-    sig = limb_sigma(lum, full)
+    sig = limb_sigma(lum, full) if limb is None else float(limb)
     erosion = max(INTERIOR_MIN_EROSION, 2.0 * sig)
     mask = full[box.y0:box.y1, box.x0:box.x1]
     # distance to the limb or to the crop's edge (a lunar disc runs past the box)

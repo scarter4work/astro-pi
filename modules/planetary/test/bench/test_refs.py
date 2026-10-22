@@ -320,6 +320,23 @@ def test_compare_reports_the_interior_score_on_a_large_disc(tmp_path):
     assert d[0]["review"] == []
 
 
+def test_a_softer_ours_cannot_escape_the_interior_bar(tmp_path):
+    """The interior window is a property of the capture, not of whoever is anchor: its erosion
+    comes from the sharpest limb among ours and the references. A softened ours (seeing 2.5 vs
+    1.0, R 13) eroded by its own limb measures 19.7 px, under 20, and would escape the bar."""
+    sharp = add_noise(banded_planet(13, seeing=1.0), 0.003, 1)
+    soft = add_noise(banded_planet(13, seeing=2.5), 0.003, 2)
+    own = metric.interior_window(soft, metric.target_box(soft))
+    assert not own.judged                                   # the escape this test guards
+    p = tmp_path / "AS_P20"
+    p.mkdir()
+    tifffile.imwrite(p / "cap_lapl5_ap1.tif", sharp.astype(np.float32))
+    d = refs.rows_to_dicts(refs.compare(soft, [str(p / "cap_lapl5_ap1.tif")]))
+    print(f"\nown window {own.diameter:.1f} px (limb {own.limb_sigma:.2f}); capture window "
+          f"{d[0]['interior_diameter']:.1f} px; interior ratio {d[0]['interior_ratio_to_best_reference']}")
+    assert d[0]["interior_judged"] and d[0]["bar"]["interior"] is False
+
+
 def test_compare_marks_a_small_disc_limb_only(tmp_path):
     p = tmp_path / "AS_P20"
     p.mkdir()
