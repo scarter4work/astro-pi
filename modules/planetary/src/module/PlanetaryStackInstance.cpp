@@ -127,19 +127,19 @@ IsoString OpenStackWindow( const String& path, const stack::StackOutcome& outcom
       throw Error( "PlanetaryStack: internal error - no stack to open for " + fileName );
    const ser::FloatImage& stacked = *outcome.image;
    const int channels = stacked.channels;
-   const auto fill = [&]( Image& image )
+   // The image and its keywords are complete before any window exists: the
+   // window only receives a copy (ShowNewImageWindow). The stack is
+   // interleaved; the image's planes are separate.
+   const FITSKeywordArray keywords = StackKeywords( path, outcome, times );
+   Image image( stacked.width, stacked.height, channels == 3 ? ColorSpace::RGB : ColorSpace::Gray );
+   const size_t n = size_t( stacked.width ) * size_t( stacked.height );
+   for ( int c = 0; c < channels; ++c )
    {
-      // The stack is interleaved; the image's planes are separate.
-      const size_t n = size_t( stacked.width ) * size_t( stacked.height );
-      for ( int c = 0; c < channels; ++c )
-      {
-         float* plane = image.PixelData( c );
-         for ( size_t i = 0; i < n; ++i )
-            plane[i] = stacked.data[i * channels + c];
-      }
-   };
-   const IsoString viewId = ShowNewImageWindow( stacked.width, stacked.height, channels, ViewIdStem( path ) + "_stack",
-                                                StackKeywords( path, outcome, times ), fill, "PlanetaryStack: " + fileName );
+      float* plane = image.PixelData( c );
+      for ( size_t i = 0; i < n; ++i )
+         plane[i] = stacked.data[i * channels + c];
+   }
+   const IsoString viewId = ShowNewImageWindow( image, ViewIdStem( path ) + "_stack", keywords, "PlanetaryStack: " + fileName );
 
    Console().WriteLn( "<end><cbr>PlanetaryStack: " + fileName.EncodedHTMLSpecialChars() + " -> " + String( viewId ) + " (" +
                       Num( stacked.width ) + "x" + Num( stacked.height ) + ", " +

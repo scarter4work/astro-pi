@@ -582,7 +582,7 @@ int WriteStackFixtures(const std::filesystem::path& dir) {
     }
     {
         // 26 px x a 10% log-normal spread over 200 frames: the blur changes from frame to frame (spread at
-        // least 25% beyond the noise, measured) and even the sharpest frames read 38% of the radius.
+        // least 26% beyond the noise, measured) and even the sharpest frames read 37% of the radius.
         Capture cap = BlurredDisc(24, 200, 0.003, [](std::mt19937& rng) {
             std::normal_distribution<double> n01(0, 1);
             return 26.0 * std::exp(0.1 * n01(rng));

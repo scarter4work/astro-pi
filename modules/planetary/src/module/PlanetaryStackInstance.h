@@ -46,7 +46,8 @@ void WriteStackResult( const String& path, const planetary::stack::StackOutcome&
 
 // Opens outcome's image (which must be present) as a new, shown 32-bit float
 // image window "<file stem>_stack" with StackKeywords (ShowNewImageWindow: a
-// half-made window is closed, never shown), and says so on the console.
+// half-made window is closed, never shown; the image and keywords are built
+// first, so the window exists only for PCL's own calls), and says so on the console.
 // Returns the new view's id. Throws pcl::Error if no window can be made.
 IsoString OpenStackWindow( const String& path, const planetary::stack::StackOutcome& outcome, const StackTimes& times );
 

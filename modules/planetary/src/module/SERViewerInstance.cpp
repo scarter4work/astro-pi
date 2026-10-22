@@ -270,28 +270,25 @@ bool SERViewerInstance::ExecuteGlobal()
    if ( !rangeWarning.empty() )
       AddHistory( keywords, "SERViewer warning: " + rangeWarning );
 
-   const auto fill = [&]( Image& image )
+   // The frame, normalised (and debayered), is ready before any window exists:
+   // the window only receives a copy of it (ShowNewImageWindow).
+   Image image( frame.width, frame.height, channels == 3 ? ColorSpace::RGB : ColorSpace::Gray );
+   float* planes[3] = {};
+   for ( int c = 0; c < channels; ++c )
+      planes[c] = image.PixelData( c );
+   try
    {
-      // Normalised (and debayered) straight into the image's planes: no
-      // intermediate float copy of the frame next to the image.
-      float* planes[3] = {};
-      for ( int c = 0; c < channels; ++c )
-         planes[c] = image.PixelData( c );
-      try
-      {
-         if ( debayered )
-            ser::DebayerBilinearInto( frame, info.colorId, info.normDepth, planes, 1 );
-         else
-            ser::NormalizeInto( frame, info.normDepth, planes, 1 );
-      }
-      catch ( const ser::SerError& e )
-      {
-         throw Error( "SERViewer: " + fileName + ": " + FromUtf8( e.what() ) );
-      }
-   };
-   const IsoString viewId = ShowNewImageWindow( frame.width, frame.height, channels,
-                                                ViewIdStem( path ) + "_f" + IsoString( std::to_string( index ).c_str() ),
-                                                keywords, fill, "SERViewer: " + fileName );
+      if ( debayered )
+         ser::DebayerBilinearInto( frame, info.colorId, info.normDepth, planes, 1 );
+      else
+         ser::NormalizeInto( frame, info.normDepth, planes, 1 );
+   }
+   catch ( const ser::SerError& e )
+   {
+      throw Error( "SERViewer: " + fileName + ": " + FromUtf8( e.what() ) );
+   }
+   const IsoString viewId = ShowNewImageWindow( image, ViewIdStem( path ) + "_f" + IsoString( std::to_string( index ).c_str() ),
+                                                keywords, "SERViewer: " + fileName );
 
    // Console text is parsed for tags, so file names and warnings go in encoded.
    Console console;
