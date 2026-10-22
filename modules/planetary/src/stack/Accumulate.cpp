@@ -246,6 +246,7 @@ ResidualScale::ResidualScale(const RegionLayout& layout, const ser::FloatImage& 
     if (reference.width != layout.width || reference.height != layout.height)
         throw std::invalid_argument("ResidualScale: the reference is not the layout's size");
     sum2_.assign(reference.data.size(), 0.0);
+    max2_.assign(reference.data.size(), 0.f);
     count_.assign(reference.data.size(), 0.f);
 }
 
@@ -320,6 +321,7 @@ void ResidualScale::Observe(const ser::FloatImage& frameLuma, const FrameRegions
             const size_t k = static_cast<size_t>(y) * w + x;
             const double r = v * ig - reference_.data[k];
             sum2_[k] += r * r;
+            max2_[k] = std::max(max2_[k], static_cast<float>(r * r));
             count_[k] += 1;
         }
     }
@@ -332,6 +334,7 @@ void ResidualScale::Merge(const ResidualScale& other) {
         throw std::invalid_argument("ResidualScale::Merge: a different reference or layout");
     for (size_t k = 0; k < sum2_.size(); ++k) {
         sum2_[k] += other.sum2_[k];
+        max2_[k] = std::max(max2_[k], other.max2_[k]);
         count_[k] += other.count_[k];
     }
     frames_ += other.frames_;
@@ -342,10 +345,15 @@ ser::FloatImage ResidualScale::Sigma(int normDepth) const {
     if (normDepth < 1 || normDepth > 16) throw std::invalid_argument("ResidualScale::Sigma: depth outside 1..16");
     const int w = reference_.width, h = reference_.height;
     const double floor = 1.0 / (std::pow(2.0, normDepth) - 1);
+    // Per pixel, robust to one outlier: the RMS without the pixel's largest squared residual (a trail
+    // or a bird crossing in one observed frame does not widen its own tolerance).
     std::vector<float> raw(sum2_.size());
     std::vector<float> seen;
     for (size_t k = 0; k < raw.size(); ++k) {
-        raw[k] = count_[k] > 0 ? static_cast<float>(std::sqrt(sum2_[k] / count_[k])) : -1.f;
+        const double n = count_[k];
+        raw[k] = n >= 2 ? static_cast<float>(std::sqrt(std::max(0.0, sum2_[k] - max2_[k]) / (n - 1)))
+                 : n > 0 ? static_cast<float>(std::sqrt(sum2_[k] / n))
+                         : -1.f;
         if (raw[k] >= 0) seen.push_back(raw[k]);
     }
     float fill = static_cast<float>(floor);
@@ -353,23 +361,18 @@ ser::FloatImage ResidualScale::Sigma(int normDepth) const {
         std::nth_element(seen.begin(), seen.begin() + static_cast<std::ptrdiff_t>(seen.size() / 2), seen.end());
         fill = seen[seen.size() / 2];
     }
+    // The largest over 3 x 3 pixels: a sharp feature that lands a pixel off in some frame meets the
+    // tolerance of its own pixel. Never a median or mean over space: thin structure (a rim, a spot, a
+    // gap) carries the large residual on its own pixels only, and smoothing it away rejected the
+    // sharpest frames exactly there (review finding: +293% RMS on sharp point features).
     ser::FloatImage out{w, h, 1, std::vector<float>(raw.size())};
-    std::vector<float> win;
-    win.reserve(25);
     for (int y = 0; y < h; ++y)
         for (int x = 0; x < w; ++x) {
-            win.clear();
-            for (int j = std::max(0, y - 2); j <= std::min(h - 1, y + 2); ++j)
-                for (int i = std::max(0, x - 2); i <= std::min(w - 1, x + 2); ++i) {
-                    const float v = raw[static_cast<size_t>(j) * w + i];
-                    if (v >= 0) win.push_back(v);
-                }
-            float med = fill;
-            if (!win.empty()) {
-                std::nth_element(win.begin(), win.begin() + static_cast<std::ptrdiff_t>(win.size() / 2), win.end());
-                med = win[win.size() / 2];
-            }
-            out.data[static_cast<size_t>(y) * w + x] = std::max(med, static_cast<float>(floor));
+            float m = -1;
+            for (int j = std::max(0, y - 1); j <= std::min(h - 1, y + 1); ++j)
+                for (int i = std::max(0, x - 1); i <= std::min(w - 1, x + 1); ++i)
+                    m = std::max(m, raw[static_cast<size_t>(j) * w + i]);
+            out.data[static_cast<size_t>(y) * w + x] = std::max(m >= 0 ? m : fill, static_cast<float>(floor));
         }
     return out;
 }
@@ -495,6 +498,8 @@ Accumulator::Accumulator(const RegionPlan& plan, const ser::FloatImage& referenc
     sigma_ = residualSigma.data;
     sum_.assign(static_cast<size_t>(width_) * height_ * channels_, 0.0);
     weight_.assign(static_cast<size_t>(width_) * height_, 0.0);
+    sumRej_.assign(sum_.size(), 0.f);
+    weightRej_.assign(weight_.size(), 0.f);
     blendRegion_.resize(plan_.RegionCount());
     for (size_t r = 0; r < plan_.RegionCount(); ++r) blendRegion_[r] = plan_.detail[r].kept > 0 ? 1 : 0;
     const int bands = (lumaH_ + kBandRows - 1) / kBandRows;
@@ -730,9 +735,14 @@ bool Accumulator::Add(int64_t frameIndex, ser::FloatImage frame) {
             const size_t kr = static_cast<size_t>(y - y0) * W, orow = static_cast<size_t>(y) * W;
             for (int x = 0; x < W; ++x) {
                 const size_t k = kr + x;
-                if (!(alp[k] > 0) || g[std::min(x / scale_, lumaW_ - 1)]) continue;
+                if (!(alp[k] > 0)) continue;
                 const double wgt = alp[k] * (out[k] ? kOutsideWeight : 1.0);
                 const size_t o = orow + x;
+                if (g[std::min(x / scale_, lumaW_ - 1)]) {  // rejected: kept aside, see Finish
+                    weightRej_[o] += static_cast<float>(wgt);
+                    for (int c = 0; c < C; ++c) sumRej_[o * C + c] += static_cast<float>(wgt * smp[k * C + c]);
+                    continue;
+                }
                 weight_[o] += wgt;
                 for (int c = 0; c < C; ++c) sum_[o * C + c] += wgt * smp[k * C + c];
             }
@@ -754,9 +764,14 @@ ser::FloatImage Accumulator::Finish() const {
         for (int y = y0; y < y1; ++y)
             for (int x = 0; x < width_; ++x) {
                 const size_t o = static_cast<size_t>(y) * width_ + x;
-                if (!(weight_[o] > 0)) continue;
+                // Never a hole: where rejection took most of a pixel's weight (under kMinKeptWeight of the
+                // full 1), the rejected samples are blended back in, fully when nothing was kept.
+                const double lam = std::max(0.0, 1 - weight_[o] / kMinKeptWeight);
+                const double wt = weight_[o] + lam * weightRej_[o];
+                if (!(wt > 0)) continue;
                 for (int c = 0; c < channels_; ++c)
-                    out.data[o * channels_ + c] = static_cast<float>(sum_[o * channels_ + c] / weight_[o]);
+                    out.data[o * channels_ + c] =
+                        static_cast<float>((sum_[o * channels_ + c] + lam * sumRej_[o * channels_ + c]) / wt);
             }
     }
     return out;
@@ -765,6 +780,7 @@ ser::FloatImage Accumulator::Finish() const {
 size_t Accumulator::BytesHeld() const {
     size_t b = sizeof(*this);
     b += sum_.capacity() * sizeof(double) + weight_.capacity() * sizeof(double);
+    b += (sumRej_.capacity() + weightRej_.capacity()) * sizeof(float);
     b += refLuma_.capacity() * sizeof(float) + sigma_.capacity() * sizeof(float);
     b += blendRegion_.capacity() * sizeof(int) + addedFlags_.capacity();
     b += bandLocks_.capacity() * (sizeof(std::unique_ptr<std::mutex>) + sizeof(std::mutex));

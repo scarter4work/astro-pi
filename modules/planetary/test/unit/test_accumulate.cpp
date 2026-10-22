@@ -77,6 +77,7 @@ struct Pipeline {
     stack::RegionPlan plan;
     FloatImage ours;                    // the region stack
     FloatImage sigma;                   // ResidualScale::Sigma
+    std::vector<FrameRegions> measured; // per used frame
     std::unique_ptr<stack::Accumulator> acc;
 };
 
@@ -121,6 +122,7 @@ Pipeline Run(const Capture& cap, bool allFrames = false, bool keepTorn = false, 
         p.used.push_back(cand[i]);
         p.shifts.push_back(all[i]);
         measured.push_back(measurer.Measure(lumas[i], cand[i], all[i]));
+        p.measured.push_back(measured.back());
         residual.Observe(lumas[i], measured.back());
     }
     p.plan = stack::PlanRegions(layout, measured);
@@ -171,7 +173,7 @@ double RmsToTruth(const FloatImage& stackIm, const Scene& s, const std::function
 
 // A surface capture with seeing: per-frame drift, a smooth local displacement field (rms ~0.7 px,
 // cells of 40 px) and a smooth blur field (0.4-3 px, lognormal per 40-px cell).
-FrameSpec Seeing(std::mt19937& rng, int w, int h, double drift, double cell) {
+FrameSpec Seeing(std::mt19937& rng, int w, int h, double drift, double cell, double blurMedian = 1.2) {
     std::normal_distribution<double> n(0, 1);
     FrameSpec f;
     f.gx = drift * n(rng);
@@ -179,7 +181,7 @@ FrameSpec Seeing(std::mt19937& rng, int w, int h, double drift, double cell) {
     f.hasLocal = true;
     f.dx = testing::RandomField(rng, w, h, cell, [&] { return 0.7 * n(rng); });
     f.dy = testing::RandomField(rng, w, h, cell, [&] { return 0.7 * n(rng); });
-    f.sigma = testing::RandomField(rng, w, h, cell, [&] { return std::clamp(1.2 * std::exp(0.6 * n(rng)), 0.4, 3.0); });
+    f.sigma = testing::RandomField(rng, w, h, cell, [&] { return std::clamp(blurMedian * std::exp(0.6 * n(rng)), std::min(0.4, blurMedian), 3.0); });
     f.noise = 0.01;
     return f;
 }
@@ -436,7 +438,16 @@ TEST_CASE("A single-frame streak is rejected", "[accumulate]") {
             streaked.sy1 = h - 30;
             Capture one = testing::NewCapture(w, h, color);
             one.Add(testing::RenderFrame(s, w, h, streaked, 1000u + 17));
-            stack::Accumulator acc(q.plan, q.reference, q.sigma, q.info);
+            // The residual scale is observed with the streaked frame among the others (as Task 6 will).
+            stack::ResidualScale rs(q.plan.layout, q.reference);
+            {
+                auto src = clean.Factory()();
+                for (size_t i = 0; i < q.used.size(); ++i) {
+                    const ser::Frame fr = q.used[i] == 17 ? one.Factory()()->ReadFrame(0) : src->ReadFrame(q.used[i]);
+                    rs.Observe(stack::LumaForMeasure(fr, q.info.colorId, q.info.normDepth), q.measured[i]);
+                }
+            }
+            stack::Accumulator acc(q.plan, q.reference, rs.Sigma(q.info.normDepth), q.info);
             auto src = clean.Factory()();
             for (int64_t f : q.used) {
                 const ser::Frame fr = f == 17 ? one.Factory()()->ReadFrame(0) : src->ReadFrame(f);
@@ -482,9 +493,10 @@ TEST_CASE("Accumulator memory is bounded by one frame, not by the frames added",
     Pipeline p = Run(cap, true);
     const size_t held = p.acc->BytesHeld();
     const size_t frameBytes = static_cast<size_t>(w) * h * sizeof(float);
-    // Sums in double (channels + 1 per pixel) + luma maps + the plan: a few frames' worth.
+    // Sums in double and the rejected samples' in float ((channels + 1) of each per pixel), the luma
+    // maps and the plan: a few frames' worth.
     const size_t planBytes = p.plan.frames.size() * p.plan.RegionCount() * 9 + p.plan.frames.size() * 40;
-    CHECK(held <= 2 * 2 * frameBytes + 2 * frameBytes + planBytes + 64 * 1024);
+    CHECK(held <= 2 * 2 * frameBytes + 2 * frameBytes + 2 * frameBytes + planBytes + 64 * 1024);
     // Adding more frames does not grow it (re-adding is refused, so build a second accumulator and
     // compare after a partial run).
     CHECK(p.acc->FramesAdded() == static_cast<int64_t>(p.used.size()));
@@ -639,4 +651,86 @@ TEST_CASE("Hot pixels fixed on the sensor are found and repaired; a moving moon'
         INFO("hot site " << hx << "," << hy << ": repaired " << v << ", neighbours " << left << " / " << right);
         CHECK(std::fabs(v - 0.5 * (left + right)) < 0.03);
     }
+}
+
+TEST_CASE("Rejection leaves lucky detail alone: sharp point features, good seeing, low noise", "[accumulate]") {
+    // Review finding: thin structure (crater rims, spots, gaps) has a large residual at its own pixels
+    // only; a spatially smoothed scale tolerated the surrounding noise there, so the sharpest frames
+    // were rejected exactly where they are sharpest, and pixels emptied.
+    const int w = 224, h = 176;
+    Scene s = testing::MakeSurface(31, w, h);
+    std::mt19937 r(9);
+    std::uniform_real_distribution<double> u(0, 1);
+    for (int i = 0; i < 150; ++i) s.blobs.push_back({20 + (w - 40) * u(r), 20 + (h - 40) * u(r), 0.6, u(r) < 0.5 ? 0.3 : -0.25});
+    s.Bin(-40, -40, w + 40, h + 40);
+    Capture cap = testing::NewCapture(w, h);
+    std::mt19937 rng(77);
+    RenderCapture(cap, s, 80, [&](int) {
+        FrameSpec f = Seeing(rng, w, h, 2.0, 40, 0.7);
+        f.noise = 0.003;
+        return f;
+    });
+    const Pipeline p = Run(cap, true);
+    FloatImage noRejection = p.sigma;
+    for (float& v : noRejection.data) v = 1e9f;
+    stack::Accumulator open(p.plan, p.reference, noRejection, p.info);
+    auto src = cap.Factory()();
+    for (int64_t f : p.used) open.Add(f, stack::DemosaicHQ(src->ReadFrame(f), p.info.colorId, p.info.normDepth));
+    const FloatImage without = open.Finish();
+    auto inside = [&](int x, int y) { return x >= 16 && y >= 16 && x < w - 16 && y < h - 16; };
+    const double with = RmsToTruth(p.ours, s, inside), base = RmsToTruth(without, s, inside);
+    int zeros = 0;
+    for (float v : p.ours.data) zeros += v == 0.f;
+    const double share = static_cast<double>(p.acc->RejectedCells()) / (static_cast<double>(w) * h * p.used.size());
+    INFO("rms with rejection " << with << ", without " << base << "; rejected " << 100 * share << "% of cells; zero pixels "
+                                << zeros);
+    CHECK(with < 1.01 * base);
+    CHECK(share < 2e-4);
+    CHECK(zeros == 0);
+}
+
+TEST_CASE("Rejection never empties a pixel", "[accumulate]") {
+    // A region keeps only `need` frames and every one of them carries a feature the reference lacks
+    // (here forced: a residual scale far too small), so all its samples there are rejected. The pixel
+    // must still get a value -- from the rejected samples -- never 0.
+    const int w = 160, h = 128;
+    const Scene s = testing::MakeSurface(45, w, h);
+    FloatImage ref{w, h, 1, std::vector<float>(static_cast<size_t>(w) * h)};
+    for (int y = 0; y < h; ++y)
+        for (int x = 0; x < w; ++x) ref.data[static_cast<size_t>(y) * w + x] = static_cast<float>(s.Eval(x, y, 0.6));
+    const stack::RegionLayout lay = stack::PlaceRegions(ref, stack::MeasureFrame(ref, 0), true);
+    std::vector<FrameRegions> measured;
+    std::mt19937 rng(3);
+    std::normal_distribution<double> n(0, 1);
+    std::vector<FloatImage> frames;
+    for (int k = 0; k < 10; ++k) {
+        FrameRegions m;
+        m.frameIndex = k;
+        for (size_t r = 0; r < lay.regions.size(); ++r) {
+            stack::RegionMeasure q;
+            q.aligned = true;
+            q.confidence = 0.95f;
+            q.quality = static_cast<float>(k < 5 ? 1.0 : 0.2);  // frames 0-4 are the sharp ones everywhere
+            q.qualitySigma = 0.001f;
+            m.regions.push_back(q);
+        }
+        measured.push_back(m);
+        FloatImage im = ref;
+        for (int y = 60; y < 64; ++y)
+            for (int x = 70; x < 74; ++x) im.data[static_cast<size_t>(y) * w + x] += 0.4f;  // the feature
+        for (float& v : im.data) v += static_cast<float>(0.002 * n(rng));
+        frames.push_back(std::move(im));
+    }
+    const stack::RegionPlan plan = stack::PlanRegions(lay, measured);
+    FloatImage tiny{w, h, 1, std::vector<float>(static_cast<size_t>(w) * h, 1e-4f)};
+    stack::Accumulator acc(plan, ref, tiny, testing::NewCapture(w, h).info);
+    for (int k = 0; k < 10; ++k) acc.Add(k, frames[static_cast<size_t>(k)]);
+    const FloatImage out = acc.Finish();
+    CHECK(acc.RejectedCells() > 0);
+    int zeros = 0;
+    for (float v : out.data) zeros += v == 0.f;
+    CHECK(zeros == 0);
+    // Where everything was rejected the rejected samples stand in: the feature, not a hole.
+    const double v = out.data[static_cast<size_t>(62) * w + 72], expect = ref.data[static_cast<size_t>(62) * w + 72] + 0.4;
+    CHECK(v == Catch::Approx(expect).margin(0.02));
 }

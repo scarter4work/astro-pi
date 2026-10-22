@@ -83,6 +83,9 @@ constexpr int kRejectGrow = 2;
 constexpr int kRejectReach = 4;
 // Weight of a sample whose position falls outside the frame (see "Interpolation").
 constexpr double kOutsideWeight = 1e-6;
+// A pixel whose kept weight is under this (of the 1 a full stack gives it) blends its rejected samples
+// back in, linearly up to all of them at 0 kept: rejection never leaves a hole (see Finish).
+constexpr double kMinKeptWeight = 0.25;
 // Smallest blend weight of usable regions for the full local shift, and the spacing (full-resolution
 // px) of the exactly evaluated blend weights and warp (see "The warp").
 constexpr double kWarpFade = 0.25;
@@ -118,6 +121,7 @@ private:
     RegionLayout layout_;
     ser::FloatImage reference_;
     std::vector<double> sum2_;
+    std::vector<float> max2_;  // per pixel: the largest squared residual observed
     std::vector<float> count_;
     int64_t frames_ = 0;
 };
@@ -198,6 +202,7 @@ private:
     double lumaWeights_[3];
     std::vector<float> refLuma_, sigma_;  // luma size: reference luma, residual scale
     std::vector<double> sum_, weight_;        // full size (sum_: channels per pixel)
+    std::vector<float> sumRej_, weightRej_;   // full size: the rejected samples (Finish's stand-in)
     std::vector<int> blendRegion_;  // per region: 1 when it keeps frames
     std::vector<std::unique_ptr<std::mutex>> bandLocks_;
     std::vector<uint8_t> addedFlags_;
