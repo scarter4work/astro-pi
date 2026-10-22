@@ -374,6 +374,12 @@ TEST_CASE("PlanRegions: each region keeps the frames sharp there", "[regions]") 
     // ... and not everything (about 30% are sharp at any place).
     CHECK(static_cast<double>(keptTotal) < 0.6 * static_cast<double>(frames * plan.RegionCount()));
     REQUIRE(plan.bestRegion >= 0);
+    // Only frames some region keeps are stacked at all (no region keeps -> no weight anywhere).
+    for (size_t f = 0; f < plan.frames.size(); ++f) {
+        bool kept = false;
+        for (size_t r = 0; r < plan.RegionCount(); ++r) kept = kept || (plan.flags[f * plan.RegionCount() + r] & stack::RegionPlan::kKept);
+        CHECK(plan.Uses(plan.frames[f]) == kept);
+    }
 
     std::vector<FrameRegions> dup = measured;
     dup.push_back(measured.front());

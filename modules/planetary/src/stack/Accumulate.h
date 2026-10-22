@@ -32,8 +32,9 @@ namespace planetary::stack {
 // error is under 0.02 px, its curvature being that of sin^2 blends over >= 32 luma px).
 //
 // Interpolation: cubic B-spline (each frame prefiltered once, recursive filter with mirrored edges,
-// then a 4 x 4 B-spline kernel). It reproduces the frame exactly at integer shifts and passes more of
-// the fine detail at fractional ones than Catmull-Rom: amplitude kept at a half-pixel shift 0.97 vs
+// then a 4 x 4 kernel whose weights are tabulated at 1/64 px of the fractional offset -- a position
+// error under 1/128 px). It reproduces the frame exactly at integer shifts and passes more of the fine
+// detail at fractional ones than Catmull-Rom: amplitude kept at a half-pixel shift 0.97 vs
 // 0.88 at 0.25 cycles/px, 0.66 vs 0.45 at 0.4 cycles/px (unit test) -- lucky imaging is about that
 // detail, and a frame's softening is the worst at half a pixel. A sample whose position falls outside
 // the frame counts with weight kOutsideWeight (so an output pixel only the frames' edges reach still
@@ -60,18 +61,24 @@ namespace planetary::stack {
 // Limit: a hot pixel that does NOT move on the output (a target perfectly still on the sensor) is in
 // the reference too and is not an outlier in time; that needs a sensor-space fix before demosaicing.
 //
-// Memory (asserted by BytesHeld): (channels + 1) doubles per output pixel, the reference and residual
-// scale at luma size, the plan (frames x regions x 9 bytes plus ~40 bytes per frame); per Add call,
-// the frame itself (moved in and prefiltered in place) and a band of scratch rows -- O(one frame),
-// independent of the number of frames. (Not the O(regions x region size) of per-region stacks: the
-// blend above needs none.)
+// Memory (asserted by BytesHeld): per output pixel (channels + 1) float sums and as many float sums of
+// rejected samples; the reference and residual scale at luma size; the plan (frames x regions x 9
+// bytes plus ~40 bytes per frame) -- 1080p RGB: 66 MB. Per Add call: the frame itself (moved in and
+// prefiltered in place) and a ring of 2 kRejectReach + 1 luma rows of scratch -- O(one frame) per
+// concurrent Add, independent of the number of frames. (Not the O(regions x region size) of
+// per-region stacks: the blend above needs none.)
 //
-// Cost (measured 2026-10-21, 1920 x 1080 mono, one thread): 56 ms per Add -- prefilter ~10, sampling
-// ~40 (16 taps per pixel), rejection and sums the rest; 66 ms per Add with 16 threads adding at once.
+// Cost (measured 2026-10-21, Ryzen 9 9950X, 128 synthetic 1920 x 1080 frames moved in): Bayer (RGB
+// output) 43 ms per Add on one thread, 273 frames/s on 16 threads and 289 on 32 (4000 frames: 14.7 /
+// 13.8 s); mono 34 ms, 408 / 429 frames/s (9.8 / 9.3 s). What made it so (from 72 ms and 96 frames/s):
+// the prefilter in two streaming passes, tabulated B-spline weights, no libm floor in the sampling, the
+// 3 channels' taps as 12 vectorisable lanes, rows processed through a ring that stays in cache, and
+// float sums.
 //
-// Thread safety: Add() may be called from many threads at once (rows are added under per-band locks,
-// each frame starting at its own band; the sums are in double, so the order frames arrive in changes
-// the result only at the level of double rounding, far below the float output's precision).
+// Thread safety: Add() may be called from many threads at once (rows are added under per-kLockRows
+// locks, each frame starting at its own row). The sums are float: the order frames arrive in changes
+// the result at float rounding (~1e-7 relative per sum, ~1e-5 after thousands of frames) -- the
+// concurrency test agrees with a sequential stack to 1e-6.
 
 // Rejection threshold in residual-scale units. The residual scale is measured on luma cells, the
 // test runs on luma cells: 6 keeps Gaussian false rejections near 2e-9 per cell; heavier real tails
@@ -201,9 +208,10 @@ private:
     int width_, height_, channels_, scale_, lumaW_, lumaH_;
     double lumaWeights_[3];
     std::vector<float> refLuma_, sigma_;  // luma size: reference luma, residual scale
-    std::vector<double> sum_, weight_;        // full size (sum_: channels per pixel)
+    std::vector<float> sum_, weight_;         // full size (sum_: channels per pixel)
     std::vector<float> sumRej_, weightRej_;   // full size: the rejected samples (Finish's stand-in)
     std::vector<int> blendRegion_;  // per region: 1 when it keeps frames
+    std::vector<int> cellOfX_;      // per full-resolution column: its luma cell column
     std::vector<std::unique_ptr<std::mutex>> bandLocks_;
     std::vector<uint8_t> addedFlags_;
     std::mutex addedLock_;

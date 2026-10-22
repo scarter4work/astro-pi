@@ -23,7 +23,8 @@ void CheckLuma(const ser::FloatImage& im, const char* what) {
 }
 
 // Luma rows per locked band of the accumulator.
-constexpr int kBandRows = 64;
+// Luma rows per lock of the sums.
+constexpr int kLockRows = 16;
 
 // Catmull-Rom weights for fractional offset t in [0, 1).
 void CubicWeights(double t, double w[4]) {
@@ -41,6 +42,22 @@ void BSplineWeights(float t, float w[4]) {
     w[1] = (3 * t3 - 6 * t2 + 4) / 6;
     w[2] = (-3 * t3 + 3 * t2 + 3 * t + 1) / 6;
     w[3] = t3 / 6;
+}
+
+// B-spline weights tabulated at 1/kSplineSteps px of the fractional offset (the offset is rounded to
+// the nearest step: a position error under 1/128 px, far below the warp's own accuracy).
+constexpr int kSplineSteps = 64;
+struct SplineTable {
+    float w[kSplineSteps + 1][4];
+    SplineTable() {
+        for (int i = 0; i <= kSplineSteps; ++i) BSplineWeights(static_cast<float>(i) / kSplineSteps, w[i]);
+    }
+};
+const SplineTable kSplineTable;
+
+inline int FloorInt(float v) {
+    const int i = static_cast<int>(v);
+    return i > v ? i - 1 : i;
 }
 
 // Mirror (whole-sample symmetric) index into [0, n), as the B-spline prefilter assumes.
@@ -122,9 +139,9 @@ void PrefilterLines(float* const* line, int lines, int n, ptrdiff_t stride) {
         }
 }
 
-// Whole image (interleaved channels): rows, then columns -- the columns all at once, row by row, so
+// Whole image (interleaved channels), separately: rows, then columns -- the columns all at once, row by row, so
 // the vertical pass streams through memory.
-void Prefilter(ser::FloatImage& im) {
+void PrefilterSeparate(ser::FloatImage& im) {
     const int w = im.width, h = im.height, c = im.channels;
     const ptrdiff_t rowLen = static_cast<ptrdiff_t>(w) * c;
     if (w > 13) {
@@ -187,6 +204,57 @@ void Prefilter(ser::FloatImage& im) {
         float* r = row(y);
         const float* n = row(y + 1);
         for (ptrdiff_t k = 0; k < rowLen; ++k) r[k] = zf * (n[k] - r[k]);
+    }
+}
+
+// The same filter in two streaming passes over memory instead of five (the frame is 25 MB for 1080p
+// RGB, and memory bandwidth is what limits many concurrent Adds): pass 1, top to bottom, filters each
+// row horizontally while it is in cache and applies the vertical causal recursion to it; pass 2,
+// bottom to top, the vertical anticausal one. Images with a side of 13 or less take the separate form.
+void Prefilter(ser::FloatImage& im) {
+    const int w = im.width, h = im.height, c = im.channels;
+    if (w <= 13 || h <= 13) {
+        PrefilterSeparate(im);
+        return;
+    }
+    const ptrdiff_t rowLen = static_cast<ptrdiff_t>(w) * c;
+    float* d = im.data.data();
+    auto row = [&](int y) { return d + y * rowLen; };
+    auto horizontal = [&](int y) {
+        float* line[3];
+        for (int ch = 0; ch < c; ++ch) line[ch] = row(y) + ch;
+        PrefilterLines(line, c, w, c);
+    };
+    const float z = static_cast<float>(kPole);
+    // Causal start: c+(0) = sum_{i < 13} z^i 6 r(i), over the first 13 rows (filtered horizontally first).
+    for (int y = 0; y < 13; ++y) horizontal(y);
+    std::vector<double> start(static_cast<size_t>(rowLen), 0.0);
+    double zn = 1;
+    for (int y = 0; y < 13; ++y) {
+        const float* r = row(y);
+        for (ptrdiff_t k = 0; k < rowLen; ++k) start[static_cast<size_t>(k)] += zn * 6.0 * r[k];
+        zn *= kPole;
+    }
+    {
+        float* r = row(0);
+        for (ptrdiff_t k = 0; k < rowLen; ++k) r[k] = static_cast<float>(start[static_cast<size_t>(k)]);
+    }
+    for (int y = 1; y < h; ++y) {
+        if (y >= 13) horizontal(y);
+        float* r = row(y);
+        const float* p = row(y - 1);
+        for (ptrdiff_t k = 0; k < rowLen; ++k) r[k] = 6.0f * r[k] + z * p[k];
+    }
+    {
+        float* r = row(h - 1);
+        const float* p = row(h - 2);
+        const float a = static_cast<float>(kPole / (kPole * kPole - 1));
+        for (ptrdiff_t k = 0; k < rowLen; ++k) r[k] = a * (z * p[k] + r[k]);
+    }
+    for (int y = h - 2; y >= 0; --y) {
+        float* r = row(y);
+        const float* nx = row(y + 1);
+        for (ptrdiff_t k = 0; k < rowLen; ++k) r[k] = z * (nx[k] - r[k]);
     }
 }
 
@@ -496,15 +564,17 @@ Accumulator::Accumulator(const RegionPlan& plan, const ser::FloatImage& referenc
     }
     refLuma_ = reference.data;
     sigma_ = residualSigma.data;
-    sum_.assign(static_cast<size_t>(width_) * height_ * channels_, 0.0);
-    weight_.assign(static_cast<size_t>(width_) * height_, 0.0);
+    sum_.assign(static_cast<size_t>(width_) * height_ * channels_, 0.f);
+    weight_.assign(static_cast<size_t>(width_) * height_, 0.f);
     sumRej_.assign(sum_.size(), 0.f);
     weightRej_.assign(weight_.size(), 0.f);
     blendRegion_.resize(plan_.RegionCount());
     for (size_t r = 0; r < plan_.RegionCount(); ++r) blendRegion_[r] = plan_.detail[r].kept > 0 ? 1 : 0;
-    const int bands = (lumaH_ + kBandRows - 1) / kBandRows;
-    for (int b = 0; b < bands; ++b) bandLocks_.push_back(std::make_unique<std::mutex>());
+    const int locks = (lumaH_ + kLockRows - 1) / kLockRows;
+    for (int b = 0; b < locks; ++b) bandLocks_.push_back(std::make_unique<std::mutex>());
     addedFlags_.assign(plan_.frames.size(), 0);
+    cellOfX_.resize(static_cast<size_t>(width_));
+    for (int x = 0; x < width_; ++x) cellOfX_[static_cast<size_t>(x)] = std::min(x / scale_, lumaW_ - 1);
 }
 
 Accumulator::~Accumulator() = default;
@@ -516,7 +586,7 @@ bool Accumulator::Add(int64_t frameIndex, ser::FloatImage frame) {
                                     std::to_string(height_) + " frame with " + std::to_string(channels_) +
                                     " channels");
     const int64_t pos = plan_.Find(frameIndex);
-    if (pos < 0) return false;
+    if (pos < 0 || !plan_.stacked[static_cast<size_t>(pos)]) return false;
     {
         std::lock_guard<std::mutex> lock(addedLock_);
         if (addedFlags_[static_cast<size_t>(pos)])
@@ -538,7 +608,7 @@ bool Accumulator::Add(int64_t frameIndex, ser::FloatImage frame) {
         usable[r] = plan_.flags[k] & RegionPlan::kShiftUsable ? 1 : 0;
         if (plan_.flags[k] & RegionPlan::kKept) mine[r] = 1.0 / static_cast<double>(plan_.detail[r].kept);
     }
-    const double fallback = 1.0 / static_cast<double>(plan_.frames.size());
+    const double fallback = 1.0 / static_cast<double>(plan_.stackedCount);
     const double gain = plan_.gain[static_cast<size_t>(pos)];
     const double invGain = 1 / gain;
     const double s = scale_;
@@ -546,9 +616,7 @@ bool Accumulator::Add(int64_t frameIndex, ser::FloatImage frame) {
     const int C = channels_, W = width_, H = height_;
 
     // alpha (this frame's blend weight) and the warp offset at full-resolution point (x, y), exact.
-    auto weightAndWarp = [&](double x, double y, double& alpha, double& ox, double& oy) {
-        const AxisWeight ax = AxisWeightAt(lay, false, (x + 0.5) / s - 0.5);
-        const AxisWeight ay = AxisWeightAt(lay, true, (y + 0.5) / s - 0.5);
+    auto weightAndWarp = [&](const AxisWeight& ax, const AxisWeight& ay, double& alpha, double& ox, double& oy) {
         double cover = 0, a = 0;
         for (int b = 0; b < 2; ++b) {
             const int j = ay.i0 + b;
@@ -577,10 +645,13 @@ bool Accumulator::Add(int64_t frameIndex, ser::FloatImage frame) {
     const int G = kWarpGrid;
     const int gw = (W + G - 1) / G + 1, gh = (H + G - 1) / G + 1;
     std::vector<float> gA(static_cast<size_t>(gw) * gh), gX(gA.size()), gY(gA.size());
+    std::vector<AxisWeight> colW(static_cast<size_t>(gw)), rowW(static_cast<size_t>(gh));
+    for (int i = 0; i < gw; ++i) colW[static_cast<size_t>(i)] = AxisWeightAt(lay, false, (static_cast<double>(i) * G + 0.5) / s - 0.5);
+    for (int j = 0; j < gh; ++j) rowW[static_cast<size_t>(j)] = AxisWeightAt(lay, true, (static_cast<double>(j) * G + 0.5) / s - 0.5);
     for (int j = 0; j < gh; ++j)
         for (int i = 0; i < gw; ++i) {
             double a, ox, oy;
-            weightAndWarp(static_cast<double>(i) * G, static_cast<double>(j) * G, a, ox, oy);
+            weightAndWarp(colW[static_cast<size_t>(i)], rowW[static_cast<size_t>(j)], a, ox, oy);
             const size_t k = static_cast<size_t>(j) * gw + i;
             gA[k] = static_cast<float>(a);
             gX[k] = static_cast<float>(ox);
@@ -590,164 +661,172 @@ bool Accumulator::Add(int64_t frameIndex, ser::FloatImage frame) {
     const float* fr = frame.data.data();
     const float ig = static_cast<float>(invGain);
 
-    // Band scratch: per full-resolution pixel of the band's luma rows plus kRejectReach above and
-    // below: samples (C), alpha, outside flag; per luma cell its deviation in residual scales.
-    const int bands = static_cast<int>(bandLocks_.size());
-    std::vector<float> smp, dev;
-    std::vector<double> alp;
-    std::vector<uint8_t> out, grown, cellAny, strong, rowMax, nearStrong, reachStrong;
+    // Luma rows are processed in order through a ring of 2 kRejectReach + 1 rows (samples, weights,
+    // deviations, dilated outlier masks): a row is added once the rows kRejectReach below it are
+    // judged. The working set is a few rows -- it stays in cache, which is what lets many concurrent
+    // Adds scale. Each frame starts at its own row (two segments, each with its own judged margin), so
+    // concurrent Adds spread over the locks.
+    auto fy0 = [&](int lr) { return lr * scale_; };
+    auto fy1 = [&](int lr) { return lr + 1 >= lumaH_ ? H : (lr + 1) * scale_; };
+    const int R = kRejectReach, NR = 2 * R + 1;
+    const int maxRows = scale_ + (H - lumaH_ * scale_);  // full-resolution rows of the last luma row
+    const size_t slotPx = static_cast<size_t>(maxRows) * W, lw = static_cast<size_t>(lumaW_);
+    std::vector<float> smp(NR * slotPx * C), alp(NR * slotPx), dev(NR * lw);
+    std::vector<uint8_t> out(NR * slotPx), cellAny(NR * lw), near(NR * lw), reach(NR * lw), strong(lw);
     int64_t rejected = 0;
-    // Each frame starts at its own band, so concurrent Adds spread over the locks.
-    for (int step = 0; step < bands; ++step) {
-        const int band = static_cast<int>((pos + step) % bands);
-        const int l0 = band * kBandRows, l1 = std::min(lumaH_, l0 + kBandRows);
-        const int m0 = std::max(0, l0 - kRejectReach), m1 = std::min(lumaH_, l1 + kRejectReach);  // rows judged
-        // Full-resolution rows of luma rows [a, b): [a s, b s), the last luma row taking the rest.
-        auto fy0 = [&](int lr) { return lr * scale_; };
-        auto fy1 = [&](int lr) { return lr + 1 >= lumaH_ ? H : (lr + 1) * scale_; };
-        const int y0 = fy0(m0), y1 = fy1(m1 - 1);
-        const size_t npx = static_cast<size_t>(y1 - y0) * W;
-        smp.assign(npx * C, 0.f);
-        alp.assign(npx, 0.0);
-        out.assign(npx, 0);
-        dev.assign(static_cast<size_t>(m1 - m0) * lumaW_, 0.f);
-        cellAny.assign(dev.size(), 0);
-        for (int y = y0; y < y1; ++y) {
-            const int gj = y / G;
-            const float ty = static_cast<float>(y - gj * G) / G;
-            for (int i = 0; i < gw; ++i) {
-                const size_t k0 = static_cast<size_t>(gj) * gw + i, k1 = k0 + gw;
-                rA[i] = gA[k0] + ty * (gA[k1] - gA[k0]);
-                rX[i] = gX[k0] + ty * (gX[k1] - gX[k0]);
-                rY[i] = gY[k0] + ty * (gY[k1] - gY[k0]);
-            }
-            for (int x = 0; x < W; ++x) {
-                const int gi = x / G;
-                const float tx = static_cast<float>(x - gi * G) / G;
-                const float a = rA[gi] + tx * (rA[gi + 1] - rA[gi]);
-                const size_t k = static_cast<size_t>(y - y0) * W + x;
-                alp[k] = a;
-                if (!(a > 0)) continue;
-                const double sx = x + rX[gi] + tx * (rX[gi + 1] - rX[gi]);
-                const double sy = y + rY[gi] + tx * (rY[gi + 1] - rY[gi]);
-                out[k] = sx < 0 || sy < 0 || sx > W - 1 || sy > H - 1;
-                const int ix = static_cast<int>(std::floor(sx)), iy = static_cast<int>(std::floor(sy));
-                float wx[4], wy[4];
-                BSplineWeights(static_cast<float>(sx - ix), wx);
-                BSplineWeights(static_cast<float>(sy - iy), wy);
-                float* o = smp.data() + k * C;
-                if (ix >= 1 && iy >= 1 && ix + 2 < W && iy + 2 < H) {
-                    const float* p0 = fr + (static_cast<size_t>(iy - 1) * W + (ix - 1)) * C;
-                    const size_t rowLen = static_cast<size_t>(W) * C;
-                    if (C == 1) {
-                        float acc = 0;
-                        for (int j = 0; j < 4; ++j) {
-                            const float* p = p0 + j * rowLen;
-                            acc += wy[j] * (wx[0] * p[0] + wx[1] * p[1] + wx[2] * p[2] + wx[3] * p[3]);
-                        }
-                        o[0] = acc * ig;
-                    } else {
-                        float acc[3] = {0, 0, 0};
-                        for (int j = 0; j < 4; ++j) {
-                            const float* p = p0 + j * rowLen;
-                            for (int c = 0; c < 3; ++c)
-                                acc[c] += wy[j] * (wx[0] * p[c] + wx[1] * p[3 + c] + wx[2] * p[6 + c] + wx[3] * p[9 + c]);
-                        }
-                        for (int c = 0; c < 3; ++c) o[c] = acc[c] * ig;
-                    }
-                } else {
-                    float acc[3] = {0, 0, 0};
+
+    auto sampleRow = [&](int y, float* srow, float* arow, uint8_t* orow) {
+        const int gj = y / G;
+        const float ty = static_cast<float>(y - gj * G) / G;
+        for (int i = 0; i < gw; ++i) {
+            const size_t k0 = static_cast<size_t>(gj) * gw + i, k1 = k0 + gw;
+            rA[i] = gA[k0] + ty * (gA[k1] - gA[k0]);
+            rX[i] = gX[k0] + ty * (gX[k1] - gX[k0]);
+            rY[i] = gY[k0] + ty * (gY[k1] - gY[k0]);
+        }
+        for (int x = 0; x < W; ++x) {
+            const int gi = x / G;
+            const float tx = static_cast<float>(x - gi * G) / G;
+            const float a = rA[gi] + tx * (rA[gi + 1] - rA[gi]);
+            arow[x] = a;
+            if (!(a > 0)) continue;
+            const float sx = static_cast<float>(x) + rX[gi] + tx * (rX[gi + 1] - rX[gi]);
+            const float sy = static_cast<float>(y) + rY[gi] + tx * (rY[gi + 1] - rY[gi]);
+            orow[x] = sx < 0 || sy < 0 || sx > W - 1 || sy > H - 1;
+            // floor without a libm call (the baseline x86-64 target has no rounding instruction).
+            const int ix = FloorInt(sx), iy = FloorInt(sy);
+            const float* wx = kSplineTable.w[static_cast<int>((sx - ix) * kSplineSteps + 0.5f)];
+            const float* wy = kSplineTable.w[static_cast<int>((sy - iy) * kSplineSteps + 0.5f)];
+            float* o = srow + static_cast<size_t>(x) * C;
+            if (ix >= 1 && iy >= 1 && ix + 2 < W && iy + 2 < H) {
+                const float* p0 = fr + (static_cast<size_t>(iy - 1) * W + (ix - 1)) * C;
+                const size_t rowLen = static_cast<size_t>(W) * C;
+                if (C == 1) {
+                    float acc = 0;
                     for (int j = 0; j < 4; ++j) {
-                        const float* row = fr + static_cast<size_t>(Mirror(iy - 1 + j, H)) * W * C;
-                        for (int i = 0; i < 4; ++i) {
-                            const float* p = row + static_cast<size_t>(Mirror(ix - 1 + i, W)) * C;
-                            for (int c = 0; c < C; ++c) acc[c] += wx[i] * wy[j] * p[c];
-                        }
+                        const float* p = p0 + j * rowLen;
+                        acc += wy[j] * (wx[0] * p[0] + wx[1] * p[1] + wx[2] * p[2] + wx[3] * p[3]);
                     }
-                    for (int c = 0; c < C; ++c) o[c] = acc[c] * ig;
+                    o[0] = acc * ig;
+                } else {
+                    // 12 lanes (4 taps x 3 channels) a row at a time: the compiler keeps them in
+                    // three 4-wide vectors; the taps are summed per channel at the end.
+                    float w12[12], t[12] = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
+                    for (int q = 0; q < 12; ++q) w12[q] = wx[q / 3];
+                    for (int j = 0; j < 4; ++j) {
+                        const float* p = p0 + j * rowLen;
+                        for (int q = 0; q < 12; ++q) t[q] += wy[j] * (w12[q] * p[q]);
+                    }
+                    for (int c = 0; c < 3; ++c) o[c] = (t[c] + t[3 + c] + t[6 + c] + t[9 + c]) * ig;
                 }
+            } else {
+                float acc[3] = {0, 0, 0};
+                for (int j = 0; j < 4; ++j) {
+                    const float* row = fr + static_cast<size_t>(Mirror(iy - 1 + j, H)) * W * C;
+                    for (int i = 0; i < 4; ++i) {
+                        const float* p = row + static_cast<size_t>(Mirror(ix - 1 + i, W)) * C;
+                        for (int c = 0; c < C; ++c) acc[c] += wx[i] * wy[j] * p[c];
+                    }
+                }
+                for (int c = 0; c < C; ++c) o[c] = acc[c] * ig;
             }
         }
-        // Rejection per luma cell: the cell's mean luma against the reference's.
-        for (int lr = m0; lr < m1; ++lr) {
-            const int ya = fy0(lr), yb = fy1(lr);
-            for (int lc = 0; lc < lumaW_; ++lc) {
-                const int xa = lc * scale_, xb = lc + 1 >= lumaW_ ? W : (lc + 1) * scale_;
-                double luma = 0;
-                int n = 0;
-                bool any = false;
-                for (int y = ya; y < yb; ++y)
-                    for (int x = xa; x < xb; ++x) {
-                        const size_t k = static_cast<size_t>(y - y0) * W + x;
-                        if (!(alp[k] > 0) || out[k]) continue;
-                        any = true;
-                        double v = 0;
-                        for (int c = 0; c < C; ++c) v += lumaWeights_[c] * smp[k * C + c];
-                        luma += v;
-                        ++n;
-                    }
-                if (!any) continue;
-                cellAny[static_cast<size_t>(lr - m0) * lumaW_ + lc] = 1;
-                const size_t li = static_cast<size_t>(lr) * lumaW_ + lc;
-                dev[static_cast<size_t>(lr - m0) * lumaW_ + lc] =
-                    static_cast<float>(std::fabs(luma / n - refLuma_[li]) / sigma_[li]);
-            }
+    };
+    // Samples luma row lr into its slot and judges its cells: deviation in residual scales, and the
+    // row's outlier mask dilated along the row by kRejectGrow and by kRejectReach.
+    auto judgeRow = [&](int lr) {
+        const size_t slot = static_cast<size_t>(lr % NR);
+        float* sbase = smp.data() + slot * slotPx * C;
+        float* abase = alp.data() + slot * slotPx;
+        uint8_t* obase = out.data() + slot * slotPx;
+        const int ya = fy0(lr), yb = fy1(lr);
+        for (int y = ya; y < yb; ++y) {
+            const size_t r = static_cast<size_t>(y - ya) * W;
+            sampleRow(y, sbase + r * C, abase + r, obase + r);
         }
-        // Rejected: within kRejectGrow cells of a cell beyond kRejectSigmas, or beyond kGrowSigmas and within
-        // kRejectReach cells of one (a trail's wings, the demosaic's spread of a defect). Square
-        // neighbourhoods by separable max filters over the judged rows.
-        const int mr = m1 - m0;
-        strong.assign(dev.size(), 0);
-        for (size_t k = 0; k < dev.size(); ++k) strong[k] = dev[k] > kRejectSigmas;
-        auto dilate = [&](int radius, std::vector<uint8_t>& dst) {
-            rowMax.assign(dev.size(), 0);
-            for (int j = 0; j < mr; ++j) {
-                const uint8_t* s = strong.data() + static_cast<size_t>(j) * lumaW_;
-                uint8_t* d = rowMax.data() + static_cast<size_t>(j) * lumaW_;
-                for (int i = 0; i < lumaW_; ++i)
-                    if (s[i])
-                        for (int k = std::max(0, i - radius); k <= std::min(lumaW_ - 1, i + radius); ++k) d[k] = 1;
-            }
-            dst.assign(dev.size(), 0);
-            for (int j = 0; j < mr; ++j) {
-                const uint8_t* s = rowMax.data() + static_cast<size_t>(j) * lumaW_;
-                for (int k = std::max(0, j - radius); k <= std::min(mr - 1, j + radius); ++k) {
-                    uint8_t* d = dst.data() + static_cast<size_t>(k) * lumaW_;
-                    for (int i = 0; i < lumaW_; ++i) d[i] |= s[i];
+        float* d = dev.data() + slot * lw;
+        uint8_t* any = cellAny.data() + slot * lw;
+        for (int lc = 0; lc < lumaW_; ++lc) {
+            const int xa = lc * scale_, xb = lc + 1 >= lumaW_ ? W : (lc + 1) * scale_;
+            float luma = 0;
+            int n = 0;
+            for (int y = ya; y < yb; ++y)
+                for (int x = xa; x < xb; ++x) {
+                    const size_t k = static_cast<size_t>(y - ya) * W + x;
+                    if (!(abase[k] > 0) || obase[k]) continue;
+                    float v = 0;
+                    for (int c = 0; c < C; ++c) v += static_cast<float>(lumaWeights_[c]) * sbase[k * C + c];
+                    luma += v;
+                    ++n;
                 }
+            any[lc] = n > 0;
+            const size_t li = static_cast<size_t>(lr) * lw + lc;
+            d[lc] = n > 0 ? std::fabs(luma / n - refLuma_[li]) / sigma_[li] : 0.f;
+            strong[lc] = d[lc] > kRejectSigmas;
+        }
+        uint8_t* nr2 = near.data() + slot * lw;
+        uint8_t* rr4 = reach.data() + slot * lw;
+        std::fill(nr2, nr2 + lw, 0);
+        std::fill(rr4, rr4 + lw, 0);
+        for (int lc = 0; lc < lumaW_; ++lc)
+            if (strong[lc]) {
+                for (int k = std::max(0, lc - kRejectGrow); k <= std::min(lumaW_ - 1, lc + kRejectGrow); ++k) nr2[k] = 1;
+                for (int k = std::max(0, lc - R); k <= std::min(lumaW_ - 1, lc + R); ++k) rr4[k] = 1;
             }
-        };
-        dilate(kRejectGrow, nearStrong);
-        dilate(kRejectReach, reachStrong);
-        grown.assign(static_cast<size_t>(l1 - l0) * lumaW_, 0);
-        for (int lr = l0; lr < l1; ++lr)
-            for (int lc = 0; lc < lumaW_; ++lc) {
-                const size_t k = static_cast<size_t>(lr - m0) * lumaW_ + lc;
-                grown[static_cast<size_t>(lr - l0) * lumaW_ + lc] =
-                    nearStrong[k] || (dev[k] > kGrowSigmas && reachStrong[k]);
-            }
-        std::lock_guard<std::mutex> lock(*bandLocks_[static_cast<size_t>(band)]);
-        for (int lr = l0; lr < l1; ++lr)
-            for (int lc = 0; lc < lumaW_; ++lc)
-                rejected += grown[static_cast<size_t>(lr - l0) * lumaW_ + lc] && cellAny[static_cast<size_t>(lr - m0) * lumaW_ + lc];
-        for (int y = fy0(l0); y < fy1(l1 - 1); ++y) {
-            const uint8_t* g = grown.data() + static_cast<size_t>(std::min(y / scale_, lumaH_ - 1) - l0) * lumaW_;
-            const size_t kr = static_cast<size_t>(y - y0) * W, orow = static_cast<size_t>(y) * W;
+    };
+    // Rejected: within kRejectGrow cells of a cell beyond kRejectSigmas, or beyond kGrowSigmas and
+    // within kRejectReach of one (a trail's wings, the interpolation's ringing next to a sharp trail,
+    // the demosaic's spread of a defect); then the row is added (rejected samples aside, see Finish).
+    std::vector<uint8_t> grown(lw);
+    auto finishRow = [&](int f, int j0, int j1) {  // judged rows [j0, j1)
+        const size_t slot = static_cast<size_t>(f % NR);
+        const float* d = dev.data() + slot * lw;
+        const uint8_t* any = cellAny.data() + slot * lw;
+        for (int lc = 0; lc < lumaW_; ++lc) {
+            bool g = false;
+            for (int j = std::max(j0, f - kRejectGrow); j <= std::min(j1 - 1, f + kRejectGrow) && !g; ++j)
+                g = near[static_cast<size_t>(j % NR) * lw + lc] != 0;
+            if (!g && d[lc] > kGrowSigmas)
+                for (int j = std::max(j0, f - R); j <= std::min(j1 - 1, f + R) && !g; ++j)
+                    g = reach[static_cast<size_t>(j % NR) * lw + lc] != 0;
+            grown[static_cast<size_t>(lc)] = g;
+            rejected += g && any[lc];
+        }
+        const float* sbase = smp.data() + slot * slotPx * C;
+        const float* abase = alp.data() + slot * slotPx;
+        const uint8_t* obase = out.data() + slot * slotPx;
+        const int ya = fy0(f), yb = fy1(f);
+        std::lock_guard<std::mutex> lock(*bandLocks_[static_cast<size_t>(f / kLockRows)]);
+        for (int y = ya; y < yb; ++y) {
+            const size_t kr = static_cast<size_t>(y - ya) * W, orow = static_cast<size_t>(y) * W;
             for (int x = 0; x < W; ++x) {
                 const size_t k = kr + x;
-                if (!(alp[k] > 0)) continue;
-                const double wgt = alp[k] * (out[k] ? kOutsideWeight : 1.0);
+                if (!(abase[k] > 0)) continue;
+                const float wgt = abase[k] * (obase[k] ? static_cast<float>(kOutsideWeight) : 1.0f);
                 const size_t o = orow + x;
-                if (g[std::min(x / scale_, lumaW_ - 1)]) {  // rejected: kept aside, see Finish
-                    weightRej_[o] += static_cast<float>(wgt);
-                    for (int c = 0; c < C; ++c) sumRej_[o * C + c] += static_cast<float>(wgt * smp[k * C + c]);
+                if (grown[static_cast<size_t>(cellOfX_[static_cast<size_t>(x)])]) {
+                    weightRej_[o] += wgt;
+                    for (int c = 0; c < C; ++c) sumRej_[o * C + c] += wgt * sbase[k * C + c];
                     continue;
                 }
                 weight_[o] += wgt;
-                for (int c = 0; c < C; ++c) sum_[o * C + c] += wgt * smp[k * C + c];
+                for (int c = 0; c < C; ++c) sum_[o * C + c] += wgt * sbase[k * C + c];
             }
         }
-    }
+    };
+    auto segment = [&](int a, int b) {  // finish luma rows [a, b)
+        if (a >= b) return;
+        const int j0 = std::max(0, a - R), j1 = std::min(lumaH_, b + R);
+        for (int lr = j0; lr < j1; ++lr) {
+            judgeRow(lr);
+            const int f = lr - R;
+            if (f >= a && f < b) finishRow(f, j0, j1);
+        }
+        for (int f = std::max(a, j1 - R); f < b; ++f) finishRow(f, j0, j1);
+    };
+    const int start = static_cast<int>((pos * 97) % lumaH_);
+    segment(start, lumaH_);
+    segment(0, start);
     rejected_ += rejected;
     ++added_;
     return true;
@@ -756,10 +835,10 @@ bool Accumulator::Add(int64_t frameIndex, ser::FloatImage frame) {
 ser::FloatImage Accumulator::Finish() const {
     if (added_.load() == 0) throw std::logic_error("Accumulator::Finish: no frame added");
     ser::FloatImage out{width_, height_, channels_, std::vector<float>(sum_.size(), 0.f)};
-    // Bands are locked one at a time, so a Finish during Adds sees each band consistently.
+    // Chunks are locked one at a time, so a Finish during Adds sees each chunk consistently.
     for (size_t b = 0; b < bandLocks_.size(); ++b) {
         std::lock_guard<std::mutex> lock(*bandLocks_[b]);
-        const int l0 = static_cast<int>(b) * kBandRows, l1 = std::min(lumaH_, l0 + kBandRows);
+        const int l0 = static_cast<int>(b) * kLockRows, l1 = std::min(lumaH_, l0 + kLockRows);
         const int y0 = l0 * scale_, y1 = l1 >= lumaH_ ? height_ : l1 * scale_;
         for (int y = y0; y < y1; ++y)
             for (int x = 0; x < width_; ++x) {
@@ -779,7 +858,7 @@ ser::FloatImage Accumulator::Finish() const {
 
 size_t Accumulator::BytesHeld() const {
     size_t b = sizeof(*this);
-    b += sum_.capacity() * sizeof(double) + weight_.capacity() * sizeof(double);
+    b += (sum_.capacity() + weight_.capacity()) * sizeof(float);
     b += (sumRej_.capacity() + weightRej_.capacity()) * sizeof(float);
     b += refLuma_.capacity() * sizeof(float) + sigma_.capacity() * sizeof(float);
     b += blendRegion_.capacity() * sizeof(int) + addedFlags_.capacity();

@@ -704,6 +704,14 @@ RegionPlan PlanRegions(const RegionLayout& layout, const std::vector<FrameRegion
         if (plan.detail[r].kept > 0 &&
             (plan.bestRegion < 0 || plan.detail[r].bestQuality > plan.detail[static_cast<size_t>(plan.bestRegion)].bestQuality))
             plan.bestRegion = static_cast<int>(r);
+    plan.stacked.assign(nf, 0);
+    for (size_t f = 0; f < nf; ++f)
+        for (size_t r = 0; r < nr && !plan.stacked[f]; ++r) plan.stacked[f] = (plan.flags[f * nr + r] & RegionPlan::kKept) != 0;
+    plan.stackedCount = std::count(plan.stacked.begin(), plan.stacked.end(), uint8_t{1});
+    if (plan.stackedCount == 0) {
+        std::fill(plan.stacked.begin(), plan.stacked.end(), uint8_t{1});
+        plan.stackedCount = static_cast<int64_t>(nf);
+    }
     return plan;
 }
 

@@ -228,7 +228,12 @@ struct RegionDetail {
 
 struct RegionPlan {
     RegionLayout layout;
-    std::vector<int64_t> frames;  // frame indices measured, ascending (the fallback set)
+    std::vector<int64_t> frames;  // frame indices measured, ascending
+    // Per frame: stacked at all -- kept by some region, or (when no region keeps any frame) every
+    // measured frame. These are the fallback stack's frames (where regions do not cover); a frame no
+    // region keeps would add nothing anywhere else, so it is not read, demosaiced or added at all.
+    std::vector<uint8_t> stacked;
+    int64_t stackedCount = 0;
     std::vector<Shift> global;    // per frame
     std::vector<float> gain;      // per frame (FrameRegions::gain)
     // Per frame and region, at [frame * regions + region]:
@@ -243,8 +248,11 @@ struct RegionPlan {
     size_t RegionCount() const { return layout.regions.size(); }
     // Position of a frame index in `frames`, or -1.
     int64_t Find(int64_t frameIndex) const;
-    // Whether the stack uses this frame at all (every planned frame feeds the fallback stack).
-    bool Uses(int64_t frameIndex) const { return Find(frameIndex) >= 0; }
+    // Whether the stack uses this frame at all (see `stacked`); Task 6 reads only these in pass B.
+    bool Uses(int64_t frameIndex) const {
+        const int64_t p = Find(frameIndex);
+        return p >= 0 && stacked[static_cast<size_t>(p)] != 0;
+    }
 };
 
 // Builds the per-region choice from every measured frame (any order; duplicates of a frame index are

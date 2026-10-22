@@ -128,7 +128,8 @@ Pipeline Run(const Capture& cap, bool allFrames = false, bool keepTorn = false, 
     p.plan = stack::PlanRegions(layout, measured);
     p.sigma = residual.Sigma(p.info.normDepth);
     p.acc = std::make_unique<stack::Accumulator>(p.plan, p.reference, p.sigma, p.info);
-    for (int64_t f : p.used) CHECK(p.acc->Add(f, stack::DemosaicHQ(src->ReadFrame(f), p.info.colorId, p.info.normDepth)));
+    for (int64_t f : p.used)  // frames no region keeps are refused (not stacked anywhere)
+        CHECK(p.acc->Add(f, stack::DemosaicHQ(src->ReadFrame(f), p.info.colorId, p.info.normDepth)) == p.plan.Uses(f));
     p.ours = p.acc->Finish();
     return p;
 }
@@ -499,8 +500,8 @@ TEST_CASE("Accumulator memory is bounded by one frame, not by the frames added",
     CHECK(held <= 2 * 2 * frameBytes + 2 * frameBytes + 2 * frameBytes + planBytes + 64 * 1024);
     // Adding more frames does not grow it (re-adding is refused, so build a second accumulator and
     // compare after a partial run).
-    CHECK(p.acc->FramesAdded() == static_cast<int64_t>(p.used.size()));
-    CHECK_THROWS_AS(p.acc->Add(p.used.front(), FloatImage{w, h, 1, std::vector<float>(static_cast<size_t>(w) * h)}),
+    CHECK(p.acc->FramesAdded() == p.plan.stackedCount);
+    CHECK_THROWS_AS(p.acc->Add(*std::find_if(p.used.begin(), p.used.end(), [&](int64_t f) { return p.plan.Uses(f); }), FloatImage{w, h, 1, std::vector<float>(static_cast<size_t>(w) * h)}),
                     std::logic_error);
     CHECK_FALSE(p.acc->Add(999999, FloatImage{w, h, 1, std::vector<float>(static_cast<size_t>(w) * h)}));
     CHECK(p.acc->BytesHeld() == held);
@@ -530,7 +531,7 @@ TEST_CASE("Concurrent Add gives the sequential result", "[accumulate]") {
     double worst = 0;
     for (size_t i = 0; i < out.data.size(); ++i) worst = std::max(worst, static_cast<double>(std::fabs(out.data[i] - p.ours.data[i])));
     CHECK(worst < 1e-6);
-    CHECK(acc.FramesAdded() == static_cast<int64_t>(p.used.size()));
+    CHECK(acc.FramesAdded() == p.plan.stackedCount);
 }
 
 TEST_CASE("ResidualScale and Accumulator argument errors", "[accumulate]") {
