@@ -168,3 +168,11 @@ The quality statistic, the selection rule (as long as it is automatic, adaptive 
 region placement and blending, alignment method, demosaic method, rejection method, threading,
 the interface layout, and the metric — all within the requirements and measured
 against the yardstick.
+
+## Timing, revised by Scott (2026-10-21)
+
+"AutoStakkert takes a long time to stack bigger video files... we might want to consider that going
+forward." The hard 60 s target above is replaced: **quality comes first; a stack should take no longer
+than AutoStakkert needs for the same file on the same machine (order of magnitude), with a progress bar
+throughout.** Speed work is welcome only when it costs no detail. The benchmark reports our time per
+capture next to the capture's size; a capture far slower than that bar is a finding, not a blocker.
