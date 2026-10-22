@@ -9,7 +9,9 @@ XISF support is deferred; FITS is the Phase 0 baseline.
 
 from __future__ import annotations
 
+import re
 import warnings
+import zlib
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -97,6 +99,102 @@ _TIFF_SUFFIXES = {".tif", ".tiff"}
 # defensible constant, and those fall back to the range inference in
 # `load_raster`. The formats this project writes and reads back are covered.
 _INTEGER_FULL_SCALE = {np.dtype(np.uint8): 255.0, np.dtype(np.uint16): 65535.0}
+
+
+# 16-bit PNG is decoded by `pypng`, NOT by Pillow, for the same measured reason
+# as TIFF. Pillow opens a 48-bit RGB PNG (AutoStakkert's output format) as mode
+# "RGB" / uint8: a pixel of (65535, 40000, 257) loads as (1.0, 0.61176, 0.00392)
+# where (1.0, 0.61036, 0.00392) is correct — 156/255 instead of 40000/65535, the
+# low byte gone, no warning (measured 2026-10-22, Pillow 12.3 and 13.0). PNG was
+# the format missed when TIFF was closed. 16-bit grayscale happens to survive
+# (Pillow gives mode "I;16"), but it is routed here too so every 16-bit PNG,
+# gray-alpha and RGBA included, goes through one decode with one known full scale.
+# 8-bit and lower PNG stays on Pillow, which is exact for it.
+_PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
+
+
+def _png_bit_depth(path: Path) -> int | None:
+    """Declared bit depth from a PNG's IHDR, or ``None`` if it is not a PNG.
+
+    Read from the file rather than guessed from the decoded array, because the
+    decoded array is exactly what Pillow has already truncated.
+    """
+    with open(path, "rb") as fh:
+        head = fh.read(25)
+    if len(head) < 25 or head[:8] != _PNG_SIGNATURE or head[12:16] != b"IHDR":
+        return None
+    return head[24]
+
+
+def _decode_png16(path: Path, max_dim: int | None) -> tuple[np.ndarray, float]:
+    """Decode a 16-bit PNG losslessly; returns the array and its full scale (65535).
+
+    Never falls back to Pillow: a file that cannot be decoded here raises, because
+    the fallback is the silent 8-bit truncation this exists to prevent (§12).
+    """
+    import png
+
+    try:
+        width, height, rows, info = png.Reader(filename=str(path)).asDirect()
+        planes = int(info["planes"])
+        arr = np.vstack([np.asarray(row, dtype=np.uint16) for row in rows])
+        arr = arr.reshape(height, width, planes)
+    except (png.Error, EOFError, ValueError, zlib.error) as exc:
+        raise ValueError(f"{path.name}: could not decode 16-bit PNG: {exc}") from exc
+    # gray(+alpha) -> one plane; RGB(+alpha) -> three. Alpha is dropped either way,
+    # as load_raster already does for every other format.
+    arr = arr[..., 0] if planes in (1, 2) else arr[..., :3]
+    return _resize_native(arr, max_dim), _INTEGER_FULL_SCALE[np.dtype(np.uint16)]
+
+
+# Other formats Pillow will open and quietly reduce to 8 bits (measured
+# 2026-10-22, each with a 16-bit source): 16-bit RGB PPM -> RGB uint8
+# (255, 156, 1); 16-bit PGM -> int32, which `load_raster` would then rescale by
+# inferring the range from the data, wrong for a dark frame; 16-bit RGB JPEG 2000
+# -> RGB uint8 with even the high byte off ((0, 156, 1)); 16-bit SGI the same
+# shape of failure by its reader's raw mode. Nothing in this project writes or
+# reads these at depth, and no lossless decoder is worth a dependency each, so
+# they are refused by name rather than decoded (§12). AVIF stores 8-, 10- and
+# 12-bit and Pillow hands back 8-bit RGB for all of them.
+_PNM_SUFFIXES = {".pgm", ".ppm", ".pnm"}
+_SGI_SUFFIXES = {".sgi", ".rgb", ".rgba", ".bw"}
+_JPEG2000_SUFFIXES = {".jp2", ".j2k", ".j2c", ".jpc", ".jpf", ".jpx"}
+_AVIF_SUFFIXES = {".avif", ".avifs"}
+
+
+def _declared_depth_beyond_eight(path: Path) -> tuple[str, int] | None:
+    """``(format, bits)`` when a non-PNG Pillow format declares more than 8 bits."""
+    suffix = path.suffix.lower()
+    with open(path, "rb") as fh:
+        head = fh.read(65536)
+    if suffix in _PNM_SUFFIXES:
+        # Header: magic, width, height, maxval, with '#' comments to end of line.
+        tokens = re.sub(rb"#[^\r\n]*", b"", head[:512]).split()
+        if len(tokens) >= 4 and tokens[0] in (b"P2", b"P3", b"P5", b"P6") and tokens[3].isdigit():
+            maxval = int(tokens[3])
+            if maxval > 255:
+                return "PNM", maxval.bit_length()
+    elif suffix in _SGI_SUFFIXES:
+        if len(head) >= 4 and head[:2] == b"\x01\xda" and head[3] == 2:  # bytes per channel
+            return "SGI", 16
+    elif suffix in _JPEG2000_SUFFIXES:
+        # SIZ marker segment inside the codestream: FF4F FF51 Lsiz Rsiz Xsiz Ysiz
+        # XOsiz YOsiz XTsiz YTsiz XTOsiz YTOsiz Csiz, then Ssiz per component
+        # (low 7 bits = precision - 1).
+        start = head.find(b"\xff\x4f\xff\x51")
+        if start >= 0 and len(head) > start + 42:
+            bits = (head[start + 42] & 0x7F) + 1
+            if bits > 8:
+                return "JPEG 2000", bits
+    elif suffix in _AVIF_SUFFIXES:
+        # 'pixi' property box: version/flags (4), channel count (1), bits per channel.
+        start = head.find(b"pixi")
+        if start >= 0 and len(head) > start + 9:
+            channels = head[start + 8]
+            bits = max(head[start + 9:start + 9 + channels], default=8)
+            if bits > 8:
+                return "AVIF", bits
+    return None
 
 
 def supported_suffixes() -> frozenset[str]:
@@ -260,12 +358,24 @@ def load_raster(path: str | Path, max_dim: int | None = None) -> np.ndarray:
     TIFF is decoded by ``tifffile`` rather than Pillow so 16-bit data survives
     (see ``_TIFF_SUFFIXES``); everything downstream of the decode — channel
     promotion, alpha, normalization, clipping — is shared, deliberately, so the
-    two decoders cannot come to disagree about what a loaded image is.
+    two decoders cannot come to disagree about what a loaded image is. 16-bit PNG
+    is decoded by ``pypng`` for the same reason (see ``_decode_png16``), and
+    PNM/SGI/JPEG 2000/AVIF files declaring more than 8 bits are refused with a
+    ``ValueError`` rather than handed to Pillow to truncate.
     """
     path = Path(path)
     if path.suffix.lower() in _TIFF_SUFFIXES:
         arr, full_scale = _decode_tiff(path, max_dim)
+    elif _png_bit_depth(path) == 16:
+        arr, full_scale = _decode_png16(path, max_dim)
     else:
+        too_deep = _declared_depth_beyond_eight(path)
+        if too_deep is not None:
+            fmt, bits = too_deep
+            raise ValueError(
+                f"{path.name}: {bits}-bit {fmt} cannot be loaded without losing precision "
+                f"(Pillow would silently reduce it to 8 bits); convert it to 16-bit PNG or TIFF"
+            )
         full_scale = None
         Image.MAX_IMAGE_PIXELS = None  # professional mosaics exceed Pillow's default guard
         with Image.open(path) as im:
