@@ -48,8 +48,10 @@ struct FrameStats {
 // colour pattern sits at the Nyquist frequency in every frame and would dominate any detail measure;
 // measurement (frame statistics, reference, global and local alignment, region quality) therefore
 // works on 2 x 2-binned luma, as for Bayer input, while the stack itself stays raw mono at full
-// resolution (the user can still choose the pattern). A pattern chosen as "none" by the user
-// (bayerSource "chosen") is a mono camera and is measured as is.
+// resolution. That stack is not a CFA any more -- every frame was resampled at sub-pixel shifts before
+// it was added, which mixes the colour sites -- so it cannot be debayered afterwards; colour needs the
+// pattern chosen when the capture is opened (BayerChoice), and the stack run again. A pattern chosen
+// as "none" by the user (bayerSource "chosen") is a mono camera and is measured as is.
 bool UndeclaredMosaic(const ser::FileInfo& info);
 
 // Frame (sensor) pixels per measurement-luma pixel, along each axis. 2 for Bayer input and for an
