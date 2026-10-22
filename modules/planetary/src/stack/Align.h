@@ -186,9 +186,9 @@ private:
 // at least kFullFrameSpan -- half -- of the frame's width or height, and its shorter side at least
 // kFullFrameMinSide -- 5% -- of the frame), or true when the reference has no target. SelectFrames
 // applies the same rule over the capture (Selection::fullFrameTarget: FillsFrame in at least
-// kFullFrameShare -- 75% -- of the target frames, and a target found in at least
-// kFullFramePresence -- half -- of all frames); for many frames prepare a GlobalAligner once,
-// with Selection::fullFrameTarget.
+// kFullFrameShare -- 75% -- of the target frames, their box centres within kFullFrameMaxDrift --
+// 10% of the frame, robust sd -- and a target found in at least kFullFramePresence -- 10% -- of
+// all frames); for many frames prepare a GlobalAligner once, with Selection::fullFrameTarget.
 // Thin slivers: a full-frame target only 5-6% of the frame thick (a thin crescent along an edge)
 // aligns worse -- measured in Task 3's review 0.14-0.28 px error and confidence 0.86-0.90, against
 // 0.02 px and >= 0.98 at 9% -- because the full-frame window cannot move past the image edge, so the
@@ -199,7 +199,8 @@ Shift GlobalShift(const ser::FloatImage& reference, const ser::FloatImage& frame
 // The reference every frame is aligned to, in measurement-luma scale (same size as LumaForMeasure's
 // output) -- the scale FrameStats and GlobalAligner work in; full-resolution consumers scale shifts
 // by LumaScale(info).
-// Built from the kReferenceFrames sharpest selected frames (FrameStats::quality, ties by index):
+// Built from the kReferenceFrames sharpest selected frames (FrameStats::quality, ties by index; only
+// Selection::frames -- a suspect frame, Ruling P6, is never part of the reference):
 //  1. read them (one reader from `factory`, in frame order) as LumaForMeasure luma;
 //  2. pass 1: align each to an anchor and average those with confidence >= AlignmentCut (the anchor
 //     always) on the anchor's grid. The anchor is the sharpest frame unless the others do not
