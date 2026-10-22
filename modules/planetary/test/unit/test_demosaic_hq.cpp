@@ -66,6 +66,12 @@ std::vector<float> ErrorMap(const FloatImage& out, const FloatImage& truth) {
 
 float MaxOf(const std::vector<float>& v) { return *std::max_element(v.begin(), v.end()); }
 
+// The frame's brightest sample, normalised the way DemosaicHQ normalises it at 16 bits: the
+// upper bound its output is documented to stay within.
+float BrightestSample(const Frame& f) {
+    return static_cast<float>(*std::max_element(f.samples.begin(), f.samples.end())) / 65535.0f;
+}
+
 // Zipper = error that alternates pixel to pixel along an edge. With the signed per-channel
 // error e = out - truth, the second difference along the edge direction,
 // |e(p) - (e(p-1) + e(p+1))/2|, is ~0 for an error that varies smoothly along the edge and
@@ -337,8 +343,9 @@ TEST_CASE("DemosaicHQ halves bilinear's colour error on a coloured disc limb", "
 }
 
 TEST_CASE("DemosaicHQ output stays in [0, brightest sample] at saturated limbs", "[stack][demosaic]") {
-    // Saturated discs on black sky: unbounded colour differences reach -0.14 and 1.06 here
-    // (measured before the bound existed); the documented range is [0, M], M = 1 for these.
+    // Saturated discs on black sky: unbounded colour differences would reach below 0 and above
+    // the brightest sample here; the documented range is [0, M], M the frame's own maximum
+    // (1 for every colour below, since each has a full-scale channel).
     const int w = 40, h = 40;
     const float colours[3][3] = {{1.0f, 0.6f, 0.3f}, {0.2f, 0.5f, 1.0f}, {1.0f, 1.0f, 1.0f}};
     for (const auto& rgb : colours)
@@ -349,12 +356,15 @@ TEST_CASE("DemosaicHQ output stays in [0, brightest sample] at saturated limbs",
                 });
                 for (int k = 0; k < 3; ++k) px[k] = static_cast<float>(rgb[k] * c);
             });
-            FloatImage out = stack::DemosaicHQ(Mosaic(truth, p), p, 16);
+            const Frame cfa = Mosaic(truth, p);
+            const float top = BrightestSample(cfa);
+            FloatImage out = stack::DemosaicHQ(cfa, p, 16);
             const auto [lo, hi] = std::minmax_element(out.data.begin(), out.data.end());
             INFO(ser::ColorIdName(p) << " rgb " << rgb[0] << "," << rgb[1] << "," << rgb[2] << ": min " << *lo
-                                     << " max " << *hi);
+                                     << " max " << *hi << " frame max " << top);
+            CHECK(top == 1.0f);
             CHECK(*lo >= 0.0f);
-            CHECK(*hi <= 1.0f);
+            CHECK(*hi <= top);
         }
 }
 
@@ -407,7 +417,7 @@ TEST_CASE("DemosaicHQ handles structure through the border of tiny frames", "[st
                 REQUIRE(out.width == w);
                 REQUIRE(out.height == h);
                 REQUIRE(out.channels == 3);
-                const float top = *std::max_element(truth.data.begin(), truth.data.end());
+                const float top = BrightestSample(cfa);
                 bool finiteInRange = true;
                 for (float v : out.data) finiteInRange = finiteInRange && std::isfinite(v) && v >= 0 && v <= top + kTol;
                 const float hq = MaxOf(ErrorMap(out, truth));
