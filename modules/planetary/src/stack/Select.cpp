@@ -58,6 +58,12 @@ struct Ranked {
 
 }  // namespace
 
+bool FillsFrame(const FrameStats& s, int lumaWidth, int lumaHeight) {
+    const bool touches = s.bx0 <= 0 || s.by0 <= 0 || s.bx1 >= lumaWidth || s.by1 >= lumaHeight;
+    return s.targetFound && touches &&
+           (s.bx1 - s.bx0 >= kFullFrameSpan * lumaWidth || s.by1 - s.by0 >= kFullFrameSpan * lumaHeight);
+}
+
 Selection SelectFrames(const std::vector<FrameStats>& stats, const ser::FileInfo& info) {
     Selection sel;
     const int64_t n = static_cast<int64_t>(stats.size());
@@ -106,13 +112,10 @@ Selection SelectFrames(const std::vector<FrameStats>& stats, const ser::FileInfo
 
     // 2. Full-frame target or disc; a disc cut by the frame edge is never used.
     auto touches = [&](const FrameStats& s) { return s.bx0 <= 0 || s.by0 <= 0 || s.bx1 >= lw || s.by1 >= lh; };
-    auto spansFrame = [&](const FrameStats& s) {
-        return s.bx1 - s.bx0 >= kFullFrameSpan * lw || s.by1 - s.by0 >= kFullFrameSpan * lh;
-    };
     int64_t filling = 0, atEdge = 0;
     for (const FrameStats* s : target) {
         if (touches(*s)) ++atEdge;
-        if (touches(*s) && spansFrame(*s)) ++filling;
+        if (FillsFrame(*s, lw, lh)) ++filling;
     }
     sel.fullFrameTarget = static_cast<double>(filling) >= kFullFrameShare * static_cast<double>(nTarget);
     std::vector<const FrameStats*> placed;

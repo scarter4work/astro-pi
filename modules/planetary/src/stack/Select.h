@@ -46,6 +46,9 @@ constexpr double kClippedFrame = 0.25;
 // edge AND spans at least kFullFrameSpan of the frame's width or height.
 constexpr double kFullFrameShare = 0.75;
 constexpr double kFullFrameSpan = 0.5;
+// The per-frame half of that rule: a found target whose box touches an edge of the lumaWidth x
+// lumaHeight luma frame and spans at least kFullFrameSpan of its width or height.
+bool FillsFrame(const FrameStats& s, int lumaWidth, int lumaHeight);
 // Upper fence on log quality, in robust standard deviations (1.4826 MAD) above the median.
 constexpr double kFenceSigmas = 6;
 // The frequency the selection optimises, as the contrast the best frames keep there: e^-3 = 5%.
