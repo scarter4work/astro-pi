@@ -148,14 +148,21 @@ private:
 // DemosaicHQ (Task 6 calls Repair on every frame it reads, measurement and stacking passes alike).
 // A site counts as isolated in a frame when it stands above its 8 same-colour neighbours (2 px away in
 // a Bayer mosaic, 1 px in mono and in each RGB channel) -- in mono and RGB above all but the two
-// largest, so an adjacent hot pair or a hot column segment counts too (Bayer: above all; neighbouring
-// sensor pixels are other colours, so a pair there is two lone sites) -- by more than kHotMin of full
+// largest, so an adjacent hot pair or a hot column segment counts too -- by more than kHotMin of full
 // scale AND by more than kHotRatio of its excess over their median: an optical image is never that
 // peaked (a star or moon of PSF sigma >= 1.6 sensor px -- planetary optics at f/15 and slower -- keeps
 // its neighbours at >= 0.46 of its peak: ratio <= 0.8; a hot pixel's neighbours are the background,
-// ~1). Caveat: a Bayer capture sharper than PSF sigma ~1.1 px puts a point's distance-2 neighbours under
-// 0.2 of its peak, so a star held perfectly still on one site would pass the shape test; only the
-// persistence rule below then protects it. A site isolated in at least kHotShare of the observed
+// ~1). Bayer: neighbouring sensor pixels are other colours, so an adjacent pair is two lone sites; a
+// hot column or row segment of 3 px or more puts same-colour members on each other's ring, so a site
+// also counts when it stands above the 6 neighbours off one axis (column or row) by those margins,
+// the second measured from the lowest of the ring and the 2 same-colour samples 4 px out across the
+// axis -- a segment is one pixel wide, a still optical feature falls off across it (two sites
+// flanking a peak, a thin line along a row), so a 3-px segment is found whole and a 5-px one at all
+// (unit test, with still moons on every site colour and lines along both axes not flagged). Sites
+// within 4 px of the edge across the axis get only the first rule. Caveat: a Bayer capture sharper
+// than PSF sigma ~1.1 px puts a point's distance-2 neighbours under 0.2 of its peak, so a star held
+// perfectly still on one site would pass the shape test (measured: false flags from sigma 1.0 on;
+// for still lines along an axis, from 0.9); only the persistence rule below then protects it. A site isolated in at least kHotShare of the observed
 // frames is hot (a moon peak that passes the shape test moves over the sensor with drift and jitter and
 // is not on one site that often). Repair replaces it with the median of its same-colour neighbours.
 // Observing ~50-100 frames spread over the capture is enough (kMinHotFrames at least; fewer observed

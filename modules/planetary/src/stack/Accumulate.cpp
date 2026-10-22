@@ -460,22 +460,48 @@ void HotPixelMap::Observe(const ser::Frame& frame) {
                 const size_t k = (static_cast<size_t>(y) * W + x) * C + c;
                 const double v = s[k];
                 if (v < minExcess) continue;
-                uint16_t n[8];
+                // The ring, row by row: 1 and 6 are the column neighbours, 3 and 4 the row neighbours.
+                uint16_t ring[8], n[8];
                 int m = 0;
                 for (int j = -1; j <= 1; ++j)
                     for (int i = -1; i <= 1; ++i) {
                         if (!i && !j) continue;
-                        n[m++] = s[(static_cast<size_t>(y + j * d) * W + (x + i * d)) * C + c];
+                        ring[m++] = s[(static_cast<size_t>(y + j * d) * W + (x + i * d)) * C + c];
                     }
+                std::copy(ring, ring + 8, n);
                 // Sorted ascending. Mono and RGB: the third largest neighbour stands for "the others", so a
                 // hot pair or a hot column segment (up to two hot neighbours) still stands alone. Bayer: the
                 // largest -- adjacent sensor pixels are other colours, so a pair is two lone sites in their
                 // planes, while next to a sharp peak the 2-px same-colour ring has nearer greens outside it.
                 std::sort(n, n + 8);
                 const double excess = v - n[d == 1 ? 5 : 7];
-                if (!(excess > minExcess)) continue;
                 const double med = 0.5 * (n[3] + n[4]);
-                if (excess > kHotRatio * (v - med) && isolated_[k] < 65535) ++isolated_[k];
+                bool alone = excess > minExcess && excess > kHotRatio * (v - med);
+                // Bayer, a hot column or row segment of 3 px or more: its same-colour members are each
+                // other's ring neighbours along that axis. The site counts when it stands above the ring off
+                // the axis, by kHotRatio of its excess over the lowest of the ring and the two same-colour
+                // samples beyond it across the axis (4 px out): a segment is one pixel wide, so the
+                // background is flat across it; a still optical feature that would pass the first part --
+                // two sites flanking a peak, a thin line along the axis -- falls off across it, and its
+                // 4-px samples are far below its 2-px ones (unit test: still moons on every site colour and
+                // between sites, lines along a row, a column and between rows, all at PSF sigma 1.6).
+                // Not within 4 px of the frame's edge across the axis.
+                if (!alone && d == 2 && v - n[5] > minExcess)  // off the axis is at least the third largest
+                    for (int axis = 0; axis < 2 && !alone; ++axis) {
+                        const int a = axis ? 3 : 1, b = axis ? 4 : 6;  // column axis, then row axis
+                        const int fx = axis ? 0 : 2 * d, fy = axis ? 2 * d : 0;
+                        if (x - fx < 0 || x + fx >= W || y - fy < 0 || y + fy >= height_) continue;
+                        double off = 0, low = 65535;
+                        for (int q = 0; q < 8; ++q) {
+                            low = std::min<double>(low, ring[q]);
+                            if (q != a && q != b) off = std::max<double>(off, ring[q]);
+                        }
+                        low = std::min<double>(low, s[(static_cast<size_t>(y - fy) * W + (x - fx)) * C + c]);
+                        low = std::min<double>(low, s[(static_cast<size_t>(y + fy) * W + (x + fx)) * C + c]);
+                        const double e = v - off;
+                        alone = e > minExcess && e > kHotRatio * (v - low);
+                    }
+                if (alone && isolated_[k] < 65535) ++isolated_[k];
             }
     ++frames_;
 }
