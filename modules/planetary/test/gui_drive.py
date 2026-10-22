@@ -656,6 +656,39 @@ if MODE == "--stack-cancel":
     shot("09-cancelled.png", 1.0)
     sys.exit(0)
 
+if MODE == "--stack-shade":
+    # PixInsight's title-bar shade button (left of close, measured 21 px: glyphs at 1206 and 1227
+    # in 03-progress.png) collapses the window to its title bar. A collapsed window is not a closed
+    # one: the run must go on and its stack be shown once the window is expanded again.
+    stack_mid_run("09b-shade-progress.png")
+    cx, cy = close_button(OUT + "/09b-shade-progress.png")
+    click(cx - 21, cy)
+    park()
+    shot("09c-shaded.png", 1.5)
+    # Collapsed, PixInsight moves the window to a bare title bar (~194 x 26) elsewhere (measured:
+    # mid-screen): found by the title colour; its expand button is 34 px inside its right end,
+    # the close button 13.
+    a = rgb(OUT + "/09c-shaded.png")
+    # The active title colour only: the inactive one is a neutral grey, as is much of the desktop.
+    title = (np.abs(a - np.array(TITLE_COLOURS[0])) <= 6).all(axis=2)
+    title[:80] = False     # the menu and tool bars
+    title[1040:] = False   # the status bar
+    title[:, :40] = False  # the side panels' tabs (blue icons)
+    ys, xs = np.nonzero(title)
+    if len(xs) < 500 or xs.max() - xs.min() > 400:
+        raise SystemExit("FAIL: no collapsed title bar found in 09c-shaded.png")
+    log.write("collapsed title bar at x %d..%d, y %d..%d\n" % (xs.min(), xs.max(), ys.min(), ys.max()))
+    click(int(xs.max()) - 34, (int(ys.min()) + int(ys.max())) // 2)
+    park()
+    shot("09c2-expanded.png", 1.5)
+    # Expanded, it is back where it was (its preview, black while the run goes on, exactly the recorded one).
+    if find_preview(OUT + "/09c2-expanded.png") != BOX:
+        raise SystemExit("FAIL: the window did not expand back in place (09c2-expanded.png: preview %r, recorded %r)"
+                         % (find_preview(OUT + "/09c2-expanded.png"), BOX))
+    wait_for(lambda: idle(BOX), 120, "the run to end after the window was expanded (the progress bar empty, Stack! enabled)")
+    shot("09d-unshaded.png", 1.0)
+    sys.exit(0)
+
 if MODE == "--stack-file":
     file_dialog(CTL["open"], OPEN_DIALOG, sys.argv[3])
     stack_and_wait()
@@ -890,15 +923,32 @@ if MODE == "--check-stack":
             fails.append(text)
 
     # Nothing stacked: the preview black. 01 is where it was found (pure black by definition).
-    for name in ("02-loaded.png", "09-cancelled.png", "13b-bayer-changed.png"):
+    # A dropped stack says why (13b: "Bayer pattern changed: click Stack! ..."): no stack drawn,
+    # only the grey note.
+    need(0 < lit("13b-bayer-changed.png") < 0.03 and spread("13b-bayer-changed.png") <= 2,
+         "13b-bayer-changed.png: the stack is dropped, a grey note says why (%.2f%% lit, channel spread %.0f)"
+         % (100 * lit("13b-bayer-changed.png"), spread("13b-bayer-changed.png")))
+    # Collapsing the window mid-run (09c) is not closing it: the run went on to its stack (09d).
+    need(lit("09d-unshaded.png") > 0.05, "09d-unshaded.png: the run went on while collapsed; its stack is shown "
+         "(%.1f%% lit)" % (100 * lit("09d-unshaded.png")))
+    # The info box never has the focus (no focus ring, so no caret): the ring is (135, 179, 255),
+    # measured, around the box (from 30 px below the preview to Execute's row).
+    ibox = (x0 - 3, y1 + 30, x1 + 3, y1 + 236)
+    for name in ("02-loaded.png", "03-progress.png", "04-fit.png", "07-execute.png", "08-cancel-progress.png",
+                 "09-cancelled.png", "09d-unshaded.png", "10-diagnosis.png", "11-warning-mosaic.png",
+                 "12-warning-focus.png", "13b-bayer-changed.png", "14-bayer-bggr.png", "16-pattern-saved.png"):
+        ring = int((np.abs(crop(name, ibox) - np.array((135, 179, 255))) <= 6).all(axis=2).sum())
+        need(ring == 0, "%s: the info box has no focus ring (%d ring pixels)" % (name, ring))
+    for name in ("02-loaded.png", "09-cancelled.png"):
         need(lit(name) == 0.0, "%s: the preview is black (%.2f%% lit)" % (name, 100 * lit(name)))
     # Mid-run: the bar partly filled and, while it runs, no preview.
-    for name in ("03-progress.png", "08-cancel-progress.png", "17-close-progress.png", "19-quit-progress.png"):
+    for name in ("03-progress.png", "08-cancel-progress.png", "09b-shade-progress.png", "17-close-progress.png",
+                 "19-quit-progress.png"):
         f = bar_fill(box, OUT + "/" + name)
         need(0.02 < f < 0.97, "%s: the progress bar is part filled (%.1f%%)" % (name, 100 * f))
         need(lit(name) == 0.0, "%s: no preview while it runs (%.2f%% lit)" % (name, 100 * lit(name)))
     # Not running: the bar empty.
-    for name in ("02-loaded.png", "04-fit.png", "07-execute.png", "09-cancelled.png", "10-diagnosis.png",
+    for name in ("02-loaded.png", "04-fit.png", "07-execute.png", "09-cancelled.png", "09d-unshaded.png", "10-diagnosis.png",
                  "11-warning-mosaic.png", "14-bayer-bggr.png", "16-pattern-saved.png"):
         f = bar_fill(box, OUT + "/" + name)
         need(f == 0.0, "%s: the progress bar is empty (%.1f%%)" % (name, 100 * f))

@@ -339,7 +339,7 @@ struct StackCase {
     std::string name, path, kind, bayerPattern, probeBayer = "auto", expectId, expectKind, expectError;
     std::vector<std::pair<int, int>> sample;
     std::vector<Kw> keywords;
-    std::vector<std::string> absent, absentComments, frameTimes, consoleContains;
+    std::vector<std::string> absent, absentComments, frameTimes, consoleContains, consoleAbsent;
     double abortAfter = 0, minSeconds = 0;
     bool expectFocusWarning = false;  // image: the engine must warn "may be out of focus"
 };
@@ -362,7 +362,8 @@ std::string ToJson(const StackCase& c) {
           << Quote(c.keywords[i].text) << "}";
     o << "],\"absentKeywords\":" << JsonList(c.absent) << ",\"absentComments\":" << JsonList(c.absentComments)
       << ",\"frameTimes\":" << JsonList(c.frameTimes)
-      << ",\"consoleContains\":" << JsonList(c.consoleContains) << "}";
+      << ",\"consoleContains\":" << JsonList(c.consoleContains)
+      << ",\"consoleAbsent\":" << JsonList(c.consoleAbsent) << "}";
     return o.str();
 }
 
@@ -391,8 +392,10 @@ void WriteLongCapture(const std::string& path, int n) {
 
 int WriteStackFixtures(const std::filesystem::path& dir) {
     std::vector<StackCase> cases;
-    const std::string kMosaicWarning = "No Bayer pattern is known for this AVI (no capture sidecar names one), so the raw colour "
-                                       "mosaic was stacked as mono";
+    const std::string kMosaicWarning = "No Bayer pattern known (no .avi.txt sidecar), so the raw colour mosaic was stacked "
+                                       "as mono";
+    const std::string kMosaicRemedy = "set bayerPattern (or save the pattern with Save pattern... in PlanetaryStack or "
+                                      "SERViewer) and stack again";
 
     // A Bayer AVI with an ASIAIR sidecar (RG, Flip None -> RGGB): 192 x 160, a disc of radius 40
     // sensor px with seeing, 40 frames.
@@ -535,15 +538,18 @@ int WriteStackFixtures(const std::filesystem::path& dir) {
         c.name = "undeclared mosaic AVI -> raw mono, warned"; c.path = path; c.kind = "image";
         c.expectId = "stack_mosaic_stack";
         c.sample = {{96, 80}, {97, 80}, {96, 81}, {120, 100}, {10, 10}};
+        // One warning for the one condition (stackcards::ShownWarnings): the reader's reason, what was
+        // stacked and why it cannot be undone, and the process's remedy. The reader's own line and the
+        // engine's P9 text (with its SERViewer-only remedy) are merged into it, never shown as well.
         c.keywords = {{"HISTORY", "commentContains", "PlanetaryStack warning: " + kMosaicWarning},
                       {"HISTORY", "commentContains", "cannot be debayered afterwards"},
-                      {"HISTORY", "commentContains", "SERViewer's Save pattern... remembers it"},
-                      {"HISTORY", "commentContains",
-                       "PlanetaryStack warning: no Bayer pattern known (no .avi.txt sidecar); the raw CFA is stacked as mono"}};
+                      {"HISTORY", "commentContains", kMosaicRemedy}};
         c.absent = {"BAYERPAT", "INSTRUME", "DATE-OBS"};
-        c.absentComments = {"showing the raw CFA"};  // the reader's viewing wording, reworded for a stack
-        c.consoleContains = {kMosaicWarning, "cannot be debayered afterwards",
-                             "no Bayer pattern known (no .avi.txt sidecar); the raw CFA is stacked as mono"};
+        c.absentComments = {"showing the raw CFA", "the raw CFA is stacked as mono", "No Bayer pattern is known for this AVI",
+                            "SERViewer's Save pattern... remembers it"};
+        c.consoleContains = {kMosaicWarning, "cannot be debayered afterwards", kMosaicRemedy};
+        c.consoleAbsent = {"showing the raw CFA", "the raw CFA is stacked as mono", "No Bayer pattern is known for this AVI",
+                           "SERViewer's Save pattern... remembers it"};
         cases.push_back(c);
     }
 

@@ -40,24 +40,39 @@ const char* const kNoImageNote = "No image -- the diagnosis is below.";
 const RGBA kProgressFill = RGBAColor( 58, 110, 165 );
 
 // Run::progress: the engine's phase (1-3, in Engine.h's order; 0 before the
-// first report) and how far into it, in one atomic so the two always agree.
-int PackProgress( const std::string& phase, int64_t done, int64_t total )
+// first report) and its done / total counts, in one atomic so they always
+// agree: phase << 62 | total << 31 | done (each count at most 2^31 - 1).
+struct ProgressSnapshot
+{
+   int phase = 0;
+   int64_t done = 0, total = 0;
+};
+
+uint64_t PackProgress( const std::string& phase, int64_t done, int64_t total )
 {
    const char* const phases[] = { stack::kPhaseMeasuring, stack::kPhaseAligning, stack::kPhaseStacking };
-   int index = 0;
+   uint64_t index = 0;
    for ( int i = 0; i < 3; ++i )
       if ( phase == phases[i] )
-         index = i + 1;
-   return index * 10000 + int( 9999 * stackcards::ProgressFraction( done, total ) );
+         index = uint64_t( i + 1 );
+   const int64_t limit = (int64_t( 1 ) << 31) - 1;
+   const uint64_t t = uint64_t( Range<int64_t>( total, 0, limit ) );
+   const uint64_t d = uint64_t( Range<int64_t>( done, 0, int64_t( t ) ) );
+   return index << 62 | t << 31 | d;
 }
 
-// The bar's fill for a packed progress: the whole run, each phase a third, so
-// it only grows (a bar that restarts at every phase reads as a run that ended;
-// the text names the step and its own percentage).
-double OverallFraction( int packed )
+ProgressSnapshot UnpackProgress( uint64_t packed )
 {
-   const int phase = packed / 10000;
-   return phase < 1 ? 0.0 : (phase - 1 + (packed % 10000) / 9999.0) / 3;
+   const uint64_t mask = (uint64_t( 1 ) << 31) - 1;
+   return { int( packed >> 62 ), int64_t( packed & mask ), int64_t( (packed >> 31) & mask ) };
+}
+
+// The bar's fill: the whole run, each phase a third, so it only grows (a bar
+// that restarts at every phase reads as a run that ended; the text names the
+// step and how far into it).
+double OverallFraction( const ProgressSnapshot& p )
+{
+   return p.phase < 1 ? 0.0 : (p.phase - 1 + stackcards::ProgressFraction( p.done, p.total )) / 3;
 }
 
 const char* PhaseName( int index )
@@ -174,17 +189,24 @@ void PlanetaryStackInterface::ResetInstance()
 bool PlanetaryStackInterface::Launch( const MetaProcess&, const ProcessImplementation*, bool& dynamic, unsigned& )
 {
    if ( GUI == nullptr )
-   {
-      GUI = new GUIData( *this );
-      SetWindowTitle( "PlanetaryStack" );
-      OnShow( (Control::event_handler)&PlanetaryStackInterface::e_Show, *this );
-      OnHide( (Control::event_handler)&PlanetaryStackInterface::e_Hide, *this );
-      ShowText();
-      UpdateControls();
-   }
+      // Nothing may cross into the core: a window that cannot be built is said on
+      // the console and not launched.
+      GuardedCall( [this]()
+      {
+         GUI = new GUIData( *this );
+         SetWindowTitle( "PlanetaryStack" );
+         OnShow( (Control::event_handler)&PlanetaryStackInterface::e_Show, *this );
+         OnHide( (Control::event_handler)&PlanetaryStackInterface::e_Hide, *this );
+         ShowText();
+         UpdateControls();
+      },
+      []( const String& message )
+      {
+         Console().CriticalLn( "<end><cbr>*** PlanetaryStack: cannot open the window: " + message.EncodedHTMLSpecialChars() );
+      } );
 
    dynamic = false;
-   return true;
+   return GUI != nullptr;
 }
 
 ProcessImplementation* PlanetaryStackInterface::NewProcess() const
@@ -296,11 +318,26 @@ void PlanetaryStackInterface::ReadInfo( bool interactive )
          MessageBox( message, "PlanetaryStack", StdIcon::Error, StdButton::Ok ).Execute();
       return;
    }
-   // A stack stays only while it is what Stack! would make now: the same file,
-   // the same effective pattern, and the same raw-mosaic standing (its warning).
-   if ( m_outcome && (m_outcomePath != path || m_outcome->info.colorId != info.colorId ||
-                      stack::UndeclaredMosaic( m_outcome->info ) != stack::UndeclaredMosaic( info )) )
+   // A stack stays only while it is what Stack! would make now: the same file
+   // and the same capture (stackcards::SameCapture: size, depth, frames, the
+   // effective pattern and the raw-mosaic standing). When it goes for the same
+   // file, the window says why, so an empty preview is never a mystery.
+   if ( m_outcome && (m_outcomePath != path || !stackcards::SameCapture( m_outcome->info, info )) )
+   {
+      const bool sameFile = m_outcomePath == path;
+      const bool patternChanged = m_outcome->info.colorId != info.colorId ||
+                                  stack::UndeclaredMosaic( m_outcome->info ) != stack::UndeclaredMosaic( info );
       DropResult();
+      if ( sameFile && GUI != nullptr )
+      {
+         const String as = ser::IsBayer( info.colorId ) ? String( ser::BayerPatternKeyword( info.colorId ) )
+                                                        : String( "mono (raw CFA)" );
+         m_status = patternChanged ? "Bayer pattern changed: click Stack! to stack as " + as + "."
+                                   : String( "The video changed on disk: click Stack! to stack it again." );
+         GUI->Preview_Control.Clear( m_status );
+         GUI->Progress_Bar.SetIdle( m_status );
+      }
+   }
    m_info = info;
    m_infoLine = stackcards::StackInfoLine( ToUtf8( fileName ), info );
    m_warnings.clear();
@@ -385,8 +422,8 @@ void PlanetaryStackInterface::UpdateControls()
    GUI->Zoom200_PushButton.Enable( zoom );
    GUI->ZoomOut_PushButton.Enable( zoom );
    GUI->ZoomIn_PushButton.Enable( zoom );
-   GUI->Zoom_Label.SetText( !zoom ? String() : GUI->Preview_Control.IsFit() ? String( "Fit" )
-                                  : String().Format( "%.0f%%", 100 * GUI->Preview_Control.ShownZoom() ) );
+   GUI->Zoom_Label.SetText( !zoom ? String() : GUI->Preview_Control.IsFit() ? String( "Zoom: Fit" )
+                                  : String().Format( "Zoom: %.0f%%", 100 * GUI->Preview_Control.ShownZoom() ) );
 }
 
 void PlanetaryStackInterface::StartStack( bool openWhenDone )
@@ -401,6 +438,7 @@ void PlanetaryStackInterface::StartStack( bool openWhenDone )
    run->path = ToUtf8( path );
    run->bayer = BayerChoiceFor( instance.p_bayerPattern, "PlanetaryStack" );
    run->threads = StackThreads();
+   run->frames = m_info->frameCount;
    WriteStackContext( path, *m_info, run->threads );
 
    // The worker: RunStack and, for a SER's DATE-OBS, the frame times
@@ -448,6 +486,7 @@ void PlanetaryStackInterface::StartStack( bool openWhenDone )
    GUI->Progress_Timer.Start();
    ShowText();
    UpdateControls();
+   GUI->Cancel_PushButton.Focus();
 }
 
 void PlanetaryStackInterface::PollStack()
@@ -464,11 +503,11 @@ void PlanetaryStackInterface::PollStack()
    }
    if ( m_run->cancel.load() )
       return; // "Cancelling..." stays until the worker is done
-   const int p = m_run->progress.load( std::memory_order_relaxed );
-   const int phase = p / 10000;
+   const ProgressSnapshot p = UnpackProgress( m_run->progress.load( std::memory_order_relaxed ) );
    GUI->Progress_Bar.SetRunning( OverallFraction( p ),
-                                 phase == 0 ? String( PhaseName( 0 ) )
-                                            : FromUtf8( stackcards::ProgressText( PhaseName( phase ), p % 10000, 9999 ) ) );
+                                 p.phase == 0 ? String( PhaseName( 0 ) )
+                                              : FromUtf8( stackcards::ProgressText( PhaseName( p.phase ), p.done, p.total,
+                                                                                    m_run->frames ) ) );
 }
 
 void PlanetaryStackInterface::FinishStack()
@@ -497,10 +536,10 @@ void PlanetaryStackInterface::FinishStack()
       m_outcome = std::move( run->outcome );
       m_outcomePath = path;
       m_times = run->times;
-      WriteStackResult( path, *m_outcome );
+      WriteStackResult( path, *m_outcome, stackcards::WarningsFor::Window );
       if ( m_outcome->image )
       {
-         GUI->Preview_Control.SetBitmap( MakePreviewBitmap( *m_outcome->image, "PlanetaryStack: cannot show the stack" ) );
+         GUI->Preview_Control.SetBitmap( MakeStackPreviewBitmap( *m_outcome->image ) );
          m_status = String().Format( "Stacked in %.2f s.", m_outcome->summary.seconds );
       }
       else
@@ -512,6 +551,11 @@ void PlanetaryStackInterface::FinishStack()
    GUI->Progress_Bar.SetIdle( m_status );
    ShowText();
    UpdateControls();
+   // The next step has the focus: Execute after a stack, Stack! after a diagnosis, cancel or error.
+   if ( m_outcome && m_outcome->image )
+      GUI->Execute_PushButton.Focus();
+   else
+      GUI->Stack_PushButton.Focus();
    if ( open && m_outcome && m_outcome->image )
       OpenStackWindow( m_outcomePath, *m_outcome, m_times );
 }
@@ -539,6 +583,7 @@ void PlanetaryStackInterface::StopStack( const char* why )
       GUI->Progress_Bar.SetIdle( m_status );
       ShowText();
       UpdateControls();
+      GUI->Stack_PushButton.Focus();
    }
 }
 
@@ -554,14 +599,25 @@ void PlanetaryStackInterface::ExecuteStack()
    }
    if ( !m_info )
       throw Error( "PlanetaryStack: no video loaded: click Open... to choose one." );
+   // The file read again first: a stack of a file since replaced under the same
+   // name (other frames or geometry) is dropped (ReadInfo, SameCapture), not opened.
+   ReadInfo( true/*interactive*/ );
+   if ( !m_info )
+      return; // the file can no longer be read: ReadInfo has said so
    if ( m_outcome )
    {
+      if ( !m_outcome->image )
+      {
+         // Nothing to open: as loud as ExecuteGlobal's failure, with the diagnosis
+         // left on screen (a thrown Error would clear the window it explains).
+         const String message = "PlanetaryStack: " + File::ExtractNameAndExtension( m_outcomePath ) + ": no image: " +
+                                FromUtf8( stackcards::DiagnosisText( m_outcome->diagnosis ) );
+         Console().CriticalLn( "<end><cbr>*** " + message.EncodedHTMLSpecialChars() );
+         MessageBox( message, "PlanetaryStack", StdIcon::Error, StdButton::Ok ).Execute();
+         return;
+      }
       // The stack shown: opened as ExecuteGlobal would, without stacking again.
-      if ( m_outcome->image )
-         OpenStackWindow( m_outcomePath, *m_outcome, m_times );
-      else
-         Console().WarningLn( "<end><cbr>PlanetaryStack: no image to open: " +
-                              FromUtf8( stackcards::DiagnosisText( m_outcome->diagnosis ) ).EncodedHTMLSpecialChars() );
+      OpenStackWindow( m_outcomePath, *m_outcome, m_times );
       return;
    }
    StartStack( true/*openWhenDone*/ );
@@ -616,7 +672,7 @@ void PlanetaryStackInterface::e_Click( Button& sender, bool /*checked*/ )
          {
             // The bar keeps its fill until the worker is done (PollStack then shows the idle line).
             m_run->cancel.store( true );
-            GUI->Progress_Bar.SetRunning( OverallFraction( m_run->progress.load() ), "Cancelling..." );
+            GUI->Progress_Bar.SetRunning( OverallFraction( UnpackProgress( m_run->progress.load() ) ), "Cancelling..." );
             UpdateControls();
          }
       }
@@ -668,7 +724,13 @@ void PlanetaryStackInterface::e_Show( Control& )
 
 void PlanetaryStackInterface::e_Hide( Control& )
 {
-   // Nothing runs, and no stack is kept, behind a closed window.
+   // Nothing runs, and no stack is kept, behind a closed window. Only a window
+   // hidden on purpose is closed: measured (PI 1.9.5, GUI smoke), the title-bar
+   // close hides it with IsVisible() false, and collapsing it to its title bar
+   // sends no hide at all. A hide from the window system (the main window
+   // minimised) leaves Qt's visibility set: the run goes on.
+   if ( IsVisible() )
+      return;
    Guarded( [this]()
    {
       StopStack( "the window was closed" );
@@ -743,7 +805,9 @@ PlanetaryStackInterface::GUIData::GUIData( PlanetaryStackInterface& w )
                            &ZoomIn_PushButton } )
       b->OnClick( (Button::click_event_handler)&PlanetaryStackInterface::e_Click, w );
    Zoom_Label.SetTextAlignment( TextAlign::Right|TextAlign::VertCenter );
-   Zoom_Label.SetScaledMinWidth( 50 );
+   Zoom_Label.SetScaledMinWidth( 80 );
+   ZoomOut_PushButton.SetScaledFixedWidth( 40 );
+   ZoomIn_PushButton.SetScaledFixedWidth( 40 );
 
    Zoom_Sizer.SetSpacing( 4 );
    Zoom_Sizer.Add( Fit_PushButton );
@@ -755,6 +819,10 @@ PlanetaryStackInterface::GUIData::GUIData( PlanetaryStackInterface& w )
    Zoom_Sizer.Add( Zoom_Label );
 
    Info_TextBox.SetReadOnly();
+   // Never focused (mouse selection and copy still work): a button that disables
+   // itself (Stack!, Cancel) would otherwise hand Qt's focus here, with a caret and a
+   // focus ring in the result. Focus moves explicitly instead (StartStack, FinishStack).
+   Info_TextBox.SetFocusStyle( FocusStyle::NoFocus );
    Info_TextBox.SetScaledMinSize( 400, 200 );
 
    Execute_PushButton.SetText( "Execute" );

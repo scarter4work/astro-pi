@@ -19,37 +19,35 @@
 namespace planetary::preview
 {
 
-// The frame as opaque 0xAARRGGBB words, rows top-down: a linear stretch from 0
-// to the frame's maximum onto 0..255 (planetary frames are a bright disc on
-// black, so max-scaling shows them well). The maximum is the largest finite
-// sample over every channel; a frame whose maximum is <= 0 renders black. One
-// channel is replicated to grey; three are R, G, B. Negative and NaN samples
-// render 0. Throws std::invalid_argument for an empty image, a channel count
-// other than 1 or 3, or sample data that does not match the geometry.
-inline std::vector<uint32_t> PreviewArgb( const ser::FloatImage& img )
+inline void CheckPreviewImage( const ser::FloatImage& img )
 {
    if ( img.width <= 0 || img.height <= 0 )
       throw std::invalid_argument( "preview: empty image" );
    if ( img.channels != 1 && img.channels != 3 )
       throw std::invalid_argument( "preview: " + std::to_string( img.channels ) + " channels (1 or 3 expected)" );
-   const size_t n = size_t( img.width ) * size_t( img.height );
-   if ( img.data.size() != n * size_t( img.channels ) )
+   if ( img.data.size() != size_t( img.width ) * size_t( img.height ) * size_t( img.channels ) )
       throw std::invalid_argument( "preview: sample count does not match the image geometry" );
+}
 
-   float max = 0;
-   for ( float s : img.data )
-      if ( std::isfinite( s ) && s > max )
-         max = s;
-
+// The image as opaque 0xAARRGGBB words, rows top-down: a linear stretch of
+// black..white onto 0..255 over every channel alike (samples at or below black,
+// and NaN, render 0; at or above white, 255). Nothing renders when white is not
+// above black: all black. One channel is replicated to grey; three are R, G, B.
+// Throws std::invalid_argument for an empty image, a channel count other than 1
+// or 3, or sample data that does not match the geometry.
+inline std::vector<uint32_t> PreviewArgb( const ser::FloatImage& img, float black, float white )
+{
+   CheckPreviewImage( img );
+   const size_t n = size_t( img.width ) * size_t( img.height );
    std::vector<uint32_t> out( n, 0xFF000000u );
-   if ( !(max > 0) )
+   if ( !(white > black) )
       return out;
-   const float scale = 255.0f / max;
-   auto level = [scale]( float s ) -> uint32_t
+   const float scale = 255.0f / (white - black);
+   auto level = [scale, black]( float s ) -> uint32_t
    {
-      if ( !(s > 0) ) // negative or NaN
+      if ( !(s > black) ) // below black, or NaN
          return 0;
-      const float v = s * scale;
+      const float v = (s - black) * scale;
       return v >= 255.0f ? 255u : uint32_t( v + 0.5f );
    };
    const float* s = img.data.data();
@@ -66,6 +64,64 @@ inline std::vector<uint32_t> PreviewArgb( const ser::FloatImage& img )
          out[i] = 0xFF000000u | (r << 16) | (g << 8) | b;
       }
    return out;
+}
+
+// SERViewer's frames: 0..the frame's maximum (the largest finite sample over
+// every channel; planetary frames are a bright disc on black, so max-scaling
+// shows them well). A frame whose maximum is <= 0 renders black.
+inline std::vector<uint32_t> PreviewArgb( const ser::FloatImage& img )
+{
+   CheckPreviewImage( img );
+   float max = 0;
+   for ( float s : img.data )
+      if ( std::isfinite( s ) && s > max )
+         max = s;
+   return PreviewArgb( img, 0.0f, max );
+}
+
+struct DisplayRange
+{
+   float black = 0, white = 0;
+};
+
+// PlanetaryStack's preview range (display only; the stack stays linear), over
+// every channel's finite samples alike, from an even subsample of at most 2^20:
+// white at the 99.99th percentile, so a lone hot pixel or satellite cannot dim
+// the stack; black at the background level, the 0.5th percentile -- the sky's
+// floor (the pedestal) for a planet; for a frame-filling Moon, whose median is
+// its surface, only the darkest 0.5 % goes black. When that leaves white not
+// above black (a flat image), 0..the maximum instead.
+inline DisplayRange StackDisplayRange( const ser::FloatImage& img )
+{
+   CheckPreviewImage( img );
+   const size_t n = img.data.size();
+   const size_t step = std::max<size_t>( 1, (n + (size_t( 1 ) << 20) - 1) >> 20 );
+   std::vector<float> v;
+   v.reserve( n / step + 1 );
+   float max = 0;
+   for ( size_t i = 0; i < n; ++i )
+   {
+      const float s = img.data[i];
+      if ( !std::isfinite( s ) )
+         continue;
+      max = std::max( max, s );
+      if ( i % step == 0 )
+         v.push_back( s );
+   }
+   DisplayRange r;
+   if ( v.empty() )
+      return r;
+   auto at = [&v]( double p )
+   {
+      const size_t k = size_t( p * double( v.size() - 1 ) );
+      std::nth_element( v.begin(), v.begin() + k, v.end() );
+      return v[k];
+   };
+   r.black = at( 0.005 );
+   r.white = at( 0.9999 );
+   if ( !(r.white > r.black) )
+      r = { 0.0f, max };
+   return r;
 }
 
 // x1, y1 exclusive.

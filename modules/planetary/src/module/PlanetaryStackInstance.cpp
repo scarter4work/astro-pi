@@ -104,13 +104,14 @@ FITSKeywordArray StackKeywords( const String& path, const stack::StackOutcome& o
    return keywords;
 }
 
-void WriteStackResult( const String& path, const stack::StackOutcome& outcome )
+void WriteStackResult( const String& path, const stack::StackOutcome& outcome, stackcards::WarningsFor where )
 {
    const stack::StackSummary& s = outcome.summary;
    Console console;
    console.Write( "<end><cbr>" );
-   for ( const std::string& w : s.warnings )
-      console.WarningLn( "PlanetaryStack warning: " + Html( preview::StackWarning( w ) ) );
+   // One line per condition (stackcards::ShownWarnings: an undeclared mosaic's two become one).
+   for ( const std::string& w : stackcards::ShownWarnings( outcome, where ) )
+      console.WarningLn( "PlanetaryStack warning: " + Html( w ) );
    if ( !outcome.image )
    {
       console.WarningLn( "PlanetaryStack: no image from " + File::ExtractNameAndExtension( path ).EncodedHTMLSpecialChars() +

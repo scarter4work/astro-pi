@@ -22,19 +22,24 @@ namespace preview = planetary::preview;
 namespace pcl
 {
 
-Bitmap MakePreviewBitmap( const planetary::ser::FloatImage& image, const char* what )
+namespace
 {
-   std::vector<uint32_t> argb;
+
+// `argb()` (PreviewPixels.h) as a bitmap; its std::invalid_argument becomes pcl::Error "<what>: <reason>".
+template <class F>
+Bitmap ArgbBitmap( const planetary::ser::FloatImage& image, const char* what, F&& argb )
+{
+   std::vector<uint32_t> words;
    try
    {
-      argb = preview::PreviewArgb( image );
+      words = argb();
    }
    catch ( const std::invalid_argument& e )
    {
       throw Error( String( what ) + ": " + e.what() );
    }
    Bitmap bitmap( image.width, image.height, BitmapFormat::RGB32 );
-   const uint32_t* src = argb.data();
+   const uint32_t* src = words.data();
    for ( int y = 0; y < image.height; ++y, src += image.width )
    {
       RGBA* row = bitmap.ScanLine( y );
@@ -42,6 +47,22 @@ Bitmap MakePreviewBitmap( const planetary::ser::FloatImage& image, const char* w
          row[x] = RGBA( src[x] );
    }
    return bitmap;
+}
+
+} // namespace
+
+Bitmap MakePreviewBitmap( const planetary::ser::FloatImage& image, const char* what )
+{
+   return ArgbBitmap( image, what, [&image]() { return preview::PreviewArgb( image ); } );
+}
+
+Bitmap MakeStackPreviewBitmap( const planetary::ser::FloatImage& image )
+{
+   return ArgbBitmap( image, "PlanetaryStack: cannot show the stack", [&image]()
+   {
+      const preview::DisplayRange r = preview::StackDisplayRange( image );
+      return preview::PreviewArgb( image, r.black, r.white );
+   } );
 }
 
 // ----------------------------------------------------------------------------

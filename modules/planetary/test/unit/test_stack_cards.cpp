@@ -175,12 +175,117 @@ TEST_CASE("the window's diagnosis: no image, the message, and each number on its
           "Warning: a reader warning");
 }
 
-TEST_CASE("the progress text names the step and how far it is", "[stackcards][window]") {
-    CHECK(stackcards::ProgressText(stack::kPhaseMeasuring, 0, 1564) == "Step 1 of 3: Measuring frames  0%");
-    CHECK(stackcards::ProgressText(stack::kPhaseAligning, 733, 1464) == "Step 2 of 3: Aligning  50%");
-    CHECK(stackcards::ProgressText(stack::kPhaseStacking, 1400, 1400) == "Step 3 of 3: Stacking  100%");
-    CHECK(stackcards::ProgressText("Something else", 1, 0) == "Something else");
+TEST_CASE("the progress text names the step and how far it is, in frames where it counts frames", "[stackcards][window]") {
+    // Measuring: the engine's total is the hot-pixel frames plus every frame; the text counts frames.
+    CHECK(stackcards::ProgressText(stack::kPhaseMeasuring, 0, 1564, 1500) == "Step 1 of 3: Measuring frames 0/1500");
+    CHECK(stackcards::ProgressText(stack::kPhaseMeasuring, 40, 1564, 1500) == "Step 1 of 3: Measuring frames 0/1500");
+    CHECK(stackcards::ProgressText(stack::kPhaseMeasuring, 1298, 1564, 1500) == "Step 1 of 3: Measuring frames 1234/1500");
+    CHECK(stackcards::ProgressText(stack::kPhaseMeasuring, 1564, 1564, 1500) == "Step 1 of 3: Measuring frames 1500/1500");
+    // Aligning's total is not a frame count: a percentage.
+    CHECK(stackcards::ProgressText(stack::kPhaseAligning, 733, 1464, 1500) == "Step 2 of 3: Aligning 50%");
+    // Stacking counts the frames the plan uses.
+    CHECK(stackcards::ProgressText(stack::kPhaseStacking, 312, 1400, 1500) == "Step 3 of 3: Stacking 312/1400");
+    CHECK(stackcards::ProgressText("Something else", 1, 0, 10) == "Something else");
     CHECK(stackcards::ProgressFraction(733, 1464) == Catch::Approx(733.0 / 1464));
     CHECK(stackcards::ProgressFraction(5, 0) == 0.0);
     CHECK(stackcards::ProgressFraction(9, 4) == 1.0);
+}
+
+namespace {
+
+// An undeclared mosaic as RunStack returns it (Ruling P9): an AVI with no pattern, stacked as raw mono,
+// with the reader's warning and the engine's P9 warning in its summary.
+stack::StackOutcome Mosaic() {
+    stack::StackOutcome o = Stacked(ser::Container::Avi);
+    o.info.colorId = ser::ColorId::Mono;
+    o.info.avi->bayerSource = "none";
+    o.image = ser::FloatImage{4, 4, 1, std::vector<float>(16, 0.5f)};
+    o.summary.warnings = {std::string("no Bayer pattern known (no .avi.txt sidecar)") + ser::kRawCfaAsMonoTail,
+                          stack::kUndeclaredMosaicWarning,
+                          "The stack may be out of focus: soft"};
+    return o;
+}
+
+size_t Count(const std::string& text, const std::string& what) {
+    size_t n = 0;
+    for (size_t at = text.find(what); at != std::string::npos; at = text.find(what, at + 1)) ++n;
+    return n;
+}
+
+}  // namespace
+
+TEST_CASE("an undeclared mosaic gives one warning, with the reader's reason and this context's remedy", "[stackcards]") {
+    REQUIRE(stack::UndeclaredMosaic(Mosaic().info));
+    for (auto where : {stackcards::WarningsFor::Window, stackcards::WarningsFor::Process}) {
+        const std::vector<std::string> w = stackcards::ShownWarnings(Mosaic(), where);
+        REQUIRE(w.size() == 2);   // the mosaic's one line, then the focus warning
+        CHECK(w[0].rfind("No Bayer pattern known (no .avi.txt sidecar), so the raw colour mosaic was stacked as mono", 0) == 0);
+        CHECK(w[0].find("cannot be debayered afterwards") != std::string::npos);
+        CHECK(w[0].find("showing the raw CFA") == std::string::npos);
+        CHECK(w[1] == "The stack may be out of focus: soft");
+    }
+    CHECK(stackcards::ShownWarnings(Mosaic(), stackcards::WarningsFor::Window)[0].find(
+              "choose the pattern under Bayer pattern and Stack! again; Save pattern... then remembers it") != std::string::npos);
+    CHECK(stackcards::ShownWarnings(Mosaic(), stackcards::WarningsFor::Process)[0].find(
+              "set bayerPattern (or save the pattern with Save pattern... in PlanetaryStack or SERViewer) and stack again") !=
+          std::string::npos);
+}
+
+TEST_CASE("an undeclared mosaic's result, console and HISTORY text carry its warning once", "[stackcards]") {
+    const std::string result = stackcards::ResultText(Mosaic());
+    CHECK(Count(result, "Warning: ") == 2);
+    CHECK(Count(result, "cannot be debayered") == 1);
+    CHECK(Count(result, "no .avi.txt sidecar") == 1);
+    std::string history;
+    for (const std::string& h : stackcards::StackHistory("m.avi", Mosaic())) history += h + "\n";
+    CHECK(Count(history, "PlanetaryStack warning: ") == 2);
+    CHECK(Count(history, "cannot be debayered") == 1);
+    CHECK(Count(history, "no .avi.txt sidecar") == 1);
+    // The window's info line states the fact only.
+    ser::FileInfo info = Mosaic().info;
+    info.frameCount = 40;
+    info.header.width = 192;
+    info.header.height = 160;
+    info.header.depth = 8;
+    CHECK(stackcards::StackInfoLine("m.avi", info) == "m.avi: 40 frames, 192 x 160, 8-bit, no Bayer pattern known (raw CFA)");
+}
+
+TEST_CASE("other warnings pass through, reworded for the context; a diagnosed mosaic keeps the reader's", "[stackcards]") {
+    stack::StackOutcome o = Mosaic();
+    o.image.reset();
+    o.summary.warnings = {std::string("no Bayer pattern known (no .avi.txt sidecar)") + ser::kRawCfaAsMonoTail};
+    const auto window = stackcards::ShownWarnings(o, stackcards::WarningsFor::Window);
+    REQUIRE(window.size() == 1);
+    CHECK(window[0] == planetary::preview::StackWindowWarning(o.summary.warnings[0]));
+    const auto process = stackcards::ShownWarnings(o, stackcards::WarningsFor::Process);
+    REQUIRE(process.size() == 1);
+    CHECK(process[0] == planetary::preview::StackWarning(o.summary.warnings[0]));
+    // A SER's warnings are its own text.
+    stack::StackOutcome s = Stacked(ser::Container::Ser);
+    CHECK(stackcards::ShownWarnings(s, stackcards::WarningsFor::Window) == s.summary.warnings);
+}
+
+TEST_CASE("a stack is reused only for the same capture: layout, pattern standing, frames and geometry", "[stackcards]") {
+    const ser::FileInfo a = Stacked(ser::Container::Avi).info;
+    CHECK(stackcards::SameCapture(a, a));
+    ser::FileInfo b = a;
+    b.colorId = ser::ColorId::BayerBGGR;
+    CHECK_FALSE(stackcards::SameCapture(a, b));
+    b = a;
+    b.frameCount += 1;
+    CHECK_FALSE(stackcards::SameCapture(a, b));
+    b = a;
+    b.header.width += 2;
+    CHECK_FALSE(stackcards::SameCapture(a, b));
+    b = a;
+    b.header.depth = 16;
+    CHECK_FALSE(stackcards::SameCapture(a, b));
+    // The same pattern from another source (chosen, then the sidecar Save pattern... wrote) is the same capture.
+    b = a;
+    b.avi->bayerSource = "sidecar (SERViewer)";
+    CHECK(stackcards::SameCapture(a, b));
+    // Mono by choice vs mono because no pattern is known: not the same stack (P9's warning).
+    ser::FileInfo none = Mosaic().info, chosen = none;
+    chosen.avi->bayerSource = "chosen";
+    CHECK_FALSE(stackcards::SameCapture(none, chosen));
 }

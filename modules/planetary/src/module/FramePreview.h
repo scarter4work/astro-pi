@@ -20,6 +20,11 @@ namespace pcl
 // image it cannot show.
 Bitmap MakePreviewBitmap( const planetary::ser::FloatImage& image, const char* what = "SERViewer: cannot show the frame" );
 
+// PlanetaryStack's preview of a stack: the same, stretched over
+// preview::StackDisplayRange (black at the background, white at the 99.99th
+// percentile) -- a display copy only.
+Bitmap MakeStackPreviewBitmap( const planetary::ser::FloatImage& image );
+
 // Paints one bitmap scaled to fit its client area, keeping the aspect ratio,
 // letterboxed on black. Black and empty until SetBitmap().
 class FramePreview : public Control

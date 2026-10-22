@@ -58,13 +58,14 @@ inline std::string StackWindowWarning( const std::string& warning )
 // reader's "none" token (Auto found no pattern) becomes the reason: a sidecar
 // Bayer value it did not recognise, a sidecar that could not be read, or no
 // pattern to go on at all. The reader's "sidecar (SERViewer)" (a sidecar that
-// Save pattern... wrote) becomes "sidecar written by SERViewer". UTF-8.
+// Save pattern... wrote) becomes "sidecar from Save pattern..." (either window
+// writes it). UTF-8.
 inline std::string BayerText( const ser::FileInfo& info )
 {
    const std::string pattern = ser::IsBayer( info.colorId ) ? ser::BayerPatternKeyword( info.colorId ) : "none";
    std::string source = info.avi ? info.avi->bayerSource : std::string();
    if ( source == "sidecar (SERViewer)" )
-      source = "sidecar written by SERViewer";
+      source = "sidecar from Save pattern...";
    else if ( source == "none" )
    {
       const ser::SidecarStatus status = info.avi->sidecarStatus;

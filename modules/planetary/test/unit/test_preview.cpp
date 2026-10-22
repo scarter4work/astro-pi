@@ -303,8 +303,8 @@ TEST_CASE("Bayer source tokens read as text", "[preview][info]") {
     CHECK(InfoText("x.avi", i, std::nullopt).find("Bayer: RGGB (sidecar)\n") != std::string::npos);
     // The sidecar SERViewer wrote when the user saved a chosen pattern (Increment 2.1).
     i.avi->bayerSource = "sidecar (SERViewer)";
-    CHECK(BayerText(i) == "RGGB (sidecar written by SERViewer)");
-    CHECK(InfoText("x.avi", i, std::nullopt).find("Bayer: RGGB (sidecar written by SERViewer)\n") != std::string::npos);
+    CHECK(BayerText(i) == "RGGB (sidecar from Save pattern...)");
+    CHECK(InfoText("x.avi", i, std::nullopt).find("Bayer: RGGB (sidecar from Save pattern...)\n") != std::string::npos);
 }
 
 TEST_CASE("info text for an AVI: empty sidecar fields get no line", "[preview][info]") {
@@ -452,4 +452,31 @@ TEST_CASE("the zoomed view maps the visible image pixels onto the box", "[previe
     // Nothing to show.
     CHECK(ZoomRect(400, 300, 0, 160, 1.0, 0, 0).Empty());
     CHECK(ZoomRect(400, 300, 192, 160, 0.0, 96, 80).Empty());
+}
+
+TEST_CASE("the stack preview's range: black at the background, white below a lone outlier", "[preview][stretch]") {
+    // A 0.1 pedestal over 90 % of a 100 x 100 image, a 0.2..0.8 disc, one hot pixel at 50.
+    FloatImage img{100, 100, 1, std::vector<float>(10000, 0.1f)};
+    for (int i = 0; i < 1000; ++i) img.data[size_t(i) * 10] = 0.2f + 0.6f * float(i) / 999;
+    img.data[5] = 50.0f;
+    const DisplayRange r = StackDisplayRange(img);
+    CHECK(r.black == 0.1f);
+    CHECK(r.white == Catch::Approx(0.8f).margin(0.001));
+    const std::vector<uint32_t> argb = PreviewArgb(img, r.black, r.white);
+    CHECK(argb[1] == 0xFF000000u);                 // the pedestal is black
+    CHECK((argb[9990] & 0xFF) == 255u);            // the disc's brightest is white, not dimmed by the outlier
+    CHECK((argb[5] & 0xFF) == 255u);               // the outlier clips
+    CHECK((argb[5000] & 0xFF) > 100u);             // a mid-disc sample is mid-grey
+}
+
+TEST_CASE("the stack preview's range ignores non-finite samples and falls back to 0..max when flat", "[preview][stretch]") {
+    FloatImage flat{4, 4, 3, std::vector<float>(48, 0.4f)};
+    flat.data[0] = std::numeric_limits<float>::quiet_NaN();
+    const DisplayRange r = StackDisplayRange(flat);
+    CHECK(r.black == 0.0f);
+    CHECK(r.white == 0.4f);
+    CHECK(PreviewArgb(flat, r.black, r.white)[1] == 0xFFFFFFFFu);
+    // PreviewArgb( img ) is the 0..max range (SERViewer's frames).
+    FloatImage g{2, 1, 1, {0.25f, 0.5f}};
+    CHECK(PreviewArgb(g) == PreviewArgb(g, 0.0f, 0.5f));
 }

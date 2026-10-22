@@ -70,11 +70,14 @@ while IFS= read -r c; do
    fi
    # image: the engine's size, pixel values, summary and warnings become the
    # expectations (a reader warning ending in the viewing tail is reworded for a
-   # stack, so only the cases name it); diagnosis: its message is the error text
+   # stack, and the engine's undeclared-mosaic warning (Ruling P9) is merged with
+   # that reader warning into one line (stackcards::ShownWarnings), so for both only
+   # the cases name the text); diagnosis: its message is the error text
    # and its numbers must be on the console.
    jq -c --slurpfile e "$ENGINE" '
       $e[0] as $r
-      | ($r.warnings | map(select(endswith("; showing the raw CFA as mono -- choose the pattern under Bayer pattern") | not))) as $w
+      | ($r.warnings | map(select((endswith("; showing the raw CFA as mono -- choose the pattern under Bayer pattern")
+                                   or startswith("No Bayer pattern is known for this AVI (no capture sidecar names one)")) | not))) as $w
       | if .kind == "image" then
            . + { width: $r.image.width, height: $r.image.height, channels: $r.image.channels,
                  samples: $r.samples,

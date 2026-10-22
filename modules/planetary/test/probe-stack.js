@@ -122,6 +122,10 @@ function runImageCase( c, r )
    for ( var t = 0; t < c.consoleContains.length; ++t )
       if ( x.log.indexOf( c.consoleContains[t] ) < 0 )
          r.errors.push( "console lacks '" + c.consoleContains[t] + "': " + x.log.substring( 0, 1500 ) );
+   var absent = c.consoleAbsent || [];
+   for ( var u = 0; u < absent.length; ++u )
+      if ( x.log.indexOf( absent[u] ) >= 0 )
+         r.errors.push( "console carries '" + absent[u] + "': " + x.log.substring( 0, 1500 ) );
    w.forceClose();
 }
 

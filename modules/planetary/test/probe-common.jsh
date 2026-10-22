@@ -75,14 +75,23 @@ function checkKeywords( kws, keywords, absentKeywords, errors )
          }
 }
 
-// No keyword comment contains any of `texts`.
+// No keyword comment contains any of `texts`, nor does any run of consecutive
+// same-name cards joined with single spaces (long HISTORY text is split across
+// cards at spaces, as keywordFound joins it).
 function checkAbsentComments( kws, texts, errors )
 {
    for ( var t = 0; t < texts.length; ++t )
+   {
+      var run = "", runName = null;
       for ( var q = 0; q < kws.length; ++q )
-         if ( kws[q].comment.indexOf( texts[t] ) >= 0 )
+      {
+         run = kws[q].name == runName ? run + " " + kws[q].comment.trim() : kws[q].comment.trim();
+         runName = kws[q].name;
+         if ( kws[q].comment.indexOf( texts[t] ) >= 0 || run.indexOf( texts[t] ) >= 0 )
          {
             errors.push( "keyword comment contains '" + texts[t] + "': " + kws[q].name + " /" + kws[q].comment );
             break;
          }
+      }
+   }
 }

@@ -74,16 +74,23 @@ void SERViewerInterface::ResetInstance()
 bool SERViewerInterface::Launch( const MetaProcess&, const ProcessImplementation*, bool& dynamic, unsigned& )
 {
    if ( GUI == nullptr )
-   {
-      GUI = new GUIData( *this );
-      SetWindowTitle( "SERViewer" );
-      OnShow( (Control::event_handler)&SERViewerInterface::e_Show, *this );
-      OnHide( (Control::event_handler)&SERViewerInterface::e_Hide, *this );
-      UpdateFrameControls();
-   }
+      // Nothing may cross into the core: a window that cannot be built is said on
+      // the console and not launched.
+      GuardedCall( [this]()
+      {
+         GUI = new GUIData( *this );
+         SetWindowTitle( "SERViewer" );
+         OnShow( (Control::event_handler)&SERViewerInterface::e_Show, *this );
+         OnHide( (Control::event_handler)&SERViewerInterface::e_Hide, *this );
+         UpdateFrameControls();
+      },
+      []( const String& message )
+      {
+         Console().CriticalLn( "<end><cbr>*** SERViewer: cannot open the window: " + message.EncodedHTMLSpecialChars() );
+      } );
 
    dynamic = false;
-   return true;
+   return GUI != nullptr;
 }
 
 ProcessImplementation* SERViewerInterface::NewProcess() const

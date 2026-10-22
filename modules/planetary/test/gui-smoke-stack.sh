@@ -28,12 +28,16 @@
 #     Cancel -> idle                                               -> 09-cancelled.png
 #     no image window, no video file held open, PixInsight's thread count back to its value
 #     before the run (every engine thread and the worker joined).
+#  4b. --stack-shade: Stack! -> mid-run                            -> 09b-shade-progress.png
+#     the title bar's shade button: collapsed to its title bar     -> 09c-shaded.png
+#     expanded again, in place, still running                      -> 09c2-expanded.png
+#     the run goes on to its stack (collapsing is not closing)     -> 09d-unshaded.png
 #  5. --stack-file: diag-notarget.ser (NoTarget) -> no preview     -> 10-diagnosis.png
 #     stack-mosaic.avi (Ruling P9 warning)                         -> 11-warning-mosaic.png
 #     stack-soft-disc.ser (focus warning, Rulings P16/P20)         -> 12-warning-focus.png
 #     no image window after any of them.
 #  6. --stack-bayer: stack-bayer.avi (sidecar RG), Auto            -> 13-bayer-auto.png
-#     the combo set to BGGR: the stack is discarded                -> 13b-bayer-changed.png
+#     the combo set to BGGR: the stack dropped, a note says why    -> 13b-bayer-changed.png
 #     Stack! again (the explicit pattern beats the sidecar)        -> 14-bayer-bggr.png
 #  7. --stack-pattern: stack-mosaic.avi (no sidecar), RGGB chosen, Stack!   -> 15-pattern-rggb.png
 #     Save pattern... -> the "PlanetaryStack" confirmation         -> 15b-confirm.png
@@ -46,6 +50,7 @@
 #     Stack!, mid-run                                              -> 19-quit-progress.png
 #     File > Quit while it runs: PixInsight exits 0 within 60 s (the module joins the run).
 # PASS needs all of that, every PNG present, and gui_drive.py --check-stack on the
+# info box (never focused: no focus ring, no caret),
 # preview, progress bar and Save pattern... boxes (see its --check-stack).
 #
 # PLANETARY_GUI_SLOT overrides the slot (default 97). PLANETARY_SO /
@@ -216,6 +221,8 @@ expect_no_window "after Cancel" windows-cancel.json || exit 1
 expect_no_open_video "after Cancel" || exit 1
 expect_threads "after Cancel" "$T0" || exit 1
 
+drive --stack-shade "$OUT" || exit 1
+expect_no_open_video "after collapsing and expanding the window mid-run" || exit 1
 drive --stack-file "$OUT" "$DIAG" 10-diagnosis.png || exit 1
 expect_no_window "after the diagnosis" windows-diagnosis.json || exit 1
 drive --stack-file "$OUT" "$MOSAIC" 11-warning-mosaic.png || exit 1
@@ -245,7 +252,7 @@ grep -n -E "Segmentation fault|SIGSEGV|SIGABRT|terminate called|core dumped" "$O
    && { echo "FAIL: PixInsight's log reports a crash"; ok=0; }
 
 for png in 01-opened 02-loaded 03-progress 04-fit 05-zoom-100 06-zoom-200 06b-zoom-in 06c-pan 06d-fit-again 07-execute \
-           08-cancel-progress 09-cancelled 10-diagnosis 11-warning-mosaic 12-warning-focus 13-bayer-auto \
+           08-cancel-progress 09-cancelled 09b-shade-progress 09c-shaded 09c2-expanded 09d-unshaded 10-diagnosis 11-warning-mosaic 12-warning-focus 13-bayer-auto \
            13b-bayer-changed 14-bayer-bggr 15-pattern-rggb 15b-confirm 16-pattern-saved 17-close-progress 18-closed \
            19-quit-progress; do
    [ -s "$OUT/$png.png" ] || { echo "FAIL: $png.png missing"; ok=0; }

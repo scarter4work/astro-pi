@@ -104,7 +104,8 @@ private:
       std::string path;
       planetary::ser::BayerChoice bayer;
       int threads = 1;
-      std::atomic<int> progress{ 0 };       // phase (1-3) x 10000 + the phase's part done in 1/10000
+      int64_t frames = 0;   // the capture's frame count, for the progress text
+      std::atomic<uint64_t> progress{ 0 };  // the phase and its done / total counts (PackProgress)
       std::atomic<bool> cancel{ false };    // Cancel / StopStack; the engine's cancelled() reads it
       std::atomic<bool> finished{ false };  // the worker's last write
       std::optional<planetary::stack::StackOutcome> outcome;

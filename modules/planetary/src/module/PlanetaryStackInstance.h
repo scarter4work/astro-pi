@@ -44,11 +44,13 @@ FITSKeywordArray StackKeywords( const String& path, const planetary::stack::Stac
 // where it came from.
 void WriteStackContext( const String& path, const planetary::ser::FileInfo& info, int threads );
 
-// Writes the outcome to the Process Console: the summary warnings first (an
+// Writes the outcome to the Process Console: the summary warnings first, one
+// line per condition as stackcards::ShownWarnings gives them for `where` (an
 // undeclared mosaic's among them, so it is not missed), then the selection and
 // alignment lines and the frame counts, time per step and read rate; for a
 // diagnosis, its message and numbers instead of the selection.
-void WriteStackResult( const String& path, const planetary::stack::StackOutcome& outcome );
+void WriteStackResult( const String& path, const planetary::stack::StackOutcome& outcome,
+                       planetary::stackcards::WarningsFor where = planetary::stackcards::WarningsFor::Process );
 
 // Opens outcome's image (which must be present) as a new, shown 32-bit float
 // image window "<file stem>_stack" with StackKeywords (ShowNewImageWindow: a
