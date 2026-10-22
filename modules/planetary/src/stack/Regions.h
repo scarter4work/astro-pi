@@ -109,7 +109,7 @@ struct RegionLayout {
 // trimmed moment's small-sample excess).
 // varSigma2 = kRegionNoiseVariance s^4 / (pixels measured: the rectangle's, a quarter of it for
 // bins): measured Var(s^2) x pixels / s^4 = 8.6-11.6 on pixels and 8.8-12.3 on bins (bins counted),
-// 32^2 to 1024^2, and in the test 0.71-1.17 of the formula (the 21.8 s^4 / area it replaces was ~2x
+// 32^2 to 1024^2: 0.71-1.23 of the formula, 1.23 the 32^2 bins (the 21.8 s^4 / area it replaces was ~2x
 // high on pixels and ~2x low on bins). 0 for a rectangle under 3 x 3 (6 x 6 for bins).
 constexpr double kRegionNoiseVariance = 10.0;
 NoiseEstimate RegionNoise(const ser::FloatImage& im, int x0, int y0, int x1, int y1, bool onBins);
@@ -261,10 +261,9 @@ struct RegionDetail {
     // RMS spatial frequency inverted: for a Gaussian-blurred white texture it is about sqrt(2) x the
     // blur sigma, so it grows with defocus or seeing whatever the target's brightness.
     double detailScale = 0;
-    // Ruling P27 (PlanRegions): the candidates' detail is indistinguishable from the measurement
-    // noise (kept 0: the fallback's plain mean), or real but steady within its qualitySigma (kept =
-    // every aligned frame).
-    bool noiseOnly = false, steady = false;
+    // Ruling P27 (PlanRegions): no detail to rank above the measurement noise (kept 0: the fallback's
+    // plain mean).
+    bool noiseOnly = false;
 };
 
 // A region's detail is real when its median candidate's quality is at least this many of its own
@@ -316,12 +315,15 @@ struct RegionPlan {
 // quality distribution -- few where the region's sharpness comes and goes with the seeing, most where
 // it is steady (measured 2026-10-21: the steady 2026-01-30 Jupiter keeps 260-300 of 300 per region,
 // spread +-3%; the same night's Moon a median 199 of 300). Deterministic and order-independent.
-// Ruling P27, before the ranking: a region whose median candidate's quality is under
-// kRegionDetailSigmas of its qualitySigma keeps no frame (noiseOnly: the fallback's plain mean of the
-// stacked frames -- ranked, its noise-floor "detail" kept a handful, once a single frame of 2102 on
-// the Moon 193142, sqrt(2102) times the noise); one whose quality spread its qualitySigma explains
-// (var(q) (1 + 2 sqrt(2 / n)) <= mean qualitySigma^2) keeps every aligned frame (steady; Neptune
-// 204515's regions, spread 0.76-0.80 of their qualitySigma, kept all 93 frames ranked as well).
+// Ruling P27, before the ranking: a region with fewer than kMinStackFrames candidates, or whose median
+// candidate's quality is under kRegionDetailSigmas of its qualitySigma, keeps no frame (noiseOnly: the
+// fallback's plain mean of the stacked frames -- ranked, its noise-floor "detail" kept a handful, once
+// a single frame of 2102 on the Moon 193142, sqrt(2102) times the noise; and one or two candidates out
+// of many aligned frames, or after alignment collapsed there, are the noise's tail, whatever their
+// ratio). A region whose detail is real but whose spread is noise is left to the ranking: step 6's
+// deconvolution keeps everything there (Neptune 204515: 93 of 93 per region). An override that kept
+// every aligned frame when the spread was within qualitySigma discarded real lucky frames at low SNR,
+// where qualitySigma overstates q's scatter (~1.25x at a median q / qualitySigma of 4-5; Ruling P26).
 // threads: regions are ranked on that many threads (< 1 counts as 1); the result is the same for any count.
 RegionPlan PlanRegions(const RegionLayout& layout, const std::vector<FrameRegions>& measured, int threads = 1);
 

@@ -433,7 +433,7 @@ TEST_CASE("A featureless region stacks every frame; textured ones keep their luc
         const bool inside = reg.x0 >= px0 && reg.x1 <= px1 && reg.y0 >= py0 && reg.y1 <= py1;
         const bool clear = reg.x1 <= px0 || reg.x0 >= px1 || reg.y1 <= py0 || reg.y0 >= py1;
         INFO("region at " << reg.x0 << "," << reg.y0 << ": candidates " << d.candidates << ", kept " << d.kept
-                          << (d.noiseOnly ? ", noise only" : "") << (d.steady ? ", steady" : ""));
+                          << (d.noiseOnly ? ", noise only" : ""));
         if (inside) {
             ++flat;
             CHECK(d.candidates > 0);  // the case that matters: noise-floor "detail" in some frames
@@ -442,13 +442,115 @@ TEST_CASE("A featureless region stacks every frame; textured ones keep their luc
         } else if (clear) {
             ++textured;
             CHECK_FALSE(d.noiseOnly);
-            CHECK_FALSE(d.steady);
             CHECK(d.kept >= 1);
             CHECK(d.kept < d.candidates);  // a lucky subset
         }
     }
     CHECK(flat >= 1);
     CHECK(textured >= 10);
+}
+
+TEST_CASE("A low-SNR region with real seeing variation keeps a lucky subset (P27 review round 3)", "[regions]") {
+    // The surface at half contrast, noise 0.01, seeing changing from frame to frame (sigma uniform in
+    // 0.5-2.5 px over the whole frame): per region a median q / qualitySigma of ~3.3-12, where
+    // qualitySigma overstates q's scatter (Ruling P26). An override that stacked every aligned frame
+    // when the spread looked like noise fired on ~40 of these regions and threw their sharper frames
+    // away. The ranking must keep a subset there, of frames truly sharper than the average.
+    const int w = 256, h = 192, frames = 150;
+    const Scene s = testing::MakeSurface(21, w, h);
+    FloatImage ref = Truth(s, w, h, 0.6);
+    double level = 0;
+    for (const float v : ref.data) level += v;
+    level /= static_cast<double>(ref.data.size());
+    for (float& v : ref.data) v = static_cast<float>(0.4 + 0.5 * (v - level));
+    const RegionLayout lay = stack::PlaceRegions(ref, stack::MeasureFrame(ref, 0, 1), true);
+    const RegionMeasurer m(ref, lay);
+    std::mt19937 rng(9);
+    std::uniform_real_distribution<double> uni(0, 1);
+    std::normal_distribution<double> noise(0, 0.01);
+    std::vector<FrameRegions> measured;
+    std::vector<double> blur;
+    for (int k = 0; k < frames; ++k) {
+        FrameSpec f;
+        f.hasLocal = true;
+        f.dx = Constant(0);
+        f.dy = Constant(0);
+        f.noise = 0;
+        const double sg = 0.5 + 2.0 * uni(rng);
+        f.sigma = Constant(sg);
+        FloatImage frame = Render(s, w, h, f, 100u + static_cast<unsigned>(k));
+        for (float& v : frame.data) v = static_cast<float>(0.4 + 0.5 * (v - level) + noise(rng));
+        blur.push_back(sg);
+        measured.push_back(m.Measure(frame, k, Shift{}));
+    }
+    const stack::RegionPlan plan = stack::PlanRegions(lay, measured);
+    const size_t nr = plan.RegionCount();
+    int judged = 0, sharper = 0;
+    for (size_t r = 0; r < nr; ++r) {
+        const auto& d = plan.detail[r];
+        if (d.noiseOnly) continue;
+        double keptBlur = 0, allBlur = 0;
+        int64_t usable = 0;
+        for (size_t f = 0; f < plan.frames.size(); ++f) {
+            const uint8_t fl = plan.flags[f * nr + r];
+            if (!(fl & stack::RegionPlan::kShiftUsable)) continue;
+            ++usable;
+            allBlur += blur[static_cast<size_t>(plan.frames[f])];
+            if (fl & stack::RegionPlan::kKept) keptBlur += blur[static_cast<size_t>(plan.frames[f])];
+        }
+        REQUIRE(d.kept > 0);
+        keptBlur /= static_cast<double>(d.kept);
+        allBlur /= static_cast<double>(usable);
+        INFO("region " << r << ": kept " << d.kept << " of " << usable << " aligned, true blur kept " << keptBlur << " / all "
+                       << allBlur);
+        ++judged;
+        CHECK(d.kept < usable);              // a subset, never every aligned frame
+        sharper += keptBlur < allBlur - 0.25;  // of frames truly sharper
+    }
+    INFO(sharper << " of " << judged << " regions kept frames >= 0.25 px sharper than the average");
+    CHECK(judged >= 100);
+    CHECK(sharper >= 0.6 * judged);
+}
+
+TEST_CASE("A region with too few candidates takes the plain mean (P27 review round 3)", "[regions]") {
+    // Alignment collapsed in one region: 2 of 200 frames align there, both with a quality in the noise's
+    // tail (6 qualitySigma: the most of ~200 noise readings). The ratio test alone passed them and the
+    // region stacked them alone; with fewer than kMinStackFrames candidates it takes the plain mean.
+    const int w = 192, h = 160;
+    const Scene s = testing::MakeSurface(23, w, h);
+    const FloatImage ref = Truth(s, w, h, 0.6);
+    const RegionLayout lay = stack::PlaceRegions(ref, stack::MeasureFrame(ref, 0, 1), true);
+    REQUIRE(lay.regions.size() >= 2);
+    std::mt19937 rng(8);
+    std::normal_distribution<double> n(0, 1);
+    std::vector<FrameRegions> measured;
+    for (int k = 0; k < 200; ++k) {
+        FrameRegions fr;
+        fr.frameIndex = k;
+        for (size_t r = 0; r < lay.regions.size(); ++r) {
+            stack::RegionMeasure q;
+            q.confidence = 0.95f;
+            if (r == 0) {
+                q.aligned = k < 2;
+                q.quality = 0.06f;
+                q.qualitySigma = 0.01f;
+            } else {
+                q.aligned = true;
+                q.quality = static_cast<float>(0.3 * (1 + 0.05 * n(rng)));
+                q.qualitySigma = 0.002f;
+            }
+            fr.regions.push_back(q);
+        }
+        measured.push_back(fr);
+    }
+    const stack::RegionPlan plan = stack::PlanRegions(lay, measured);
+    CHECK(plan.detail[0].candidates == 2);
+    CHECK(plan.detail[0].noiseOnly);
+    CHECK(plan.detail[0].kept == 0);
+    for (size_t r = 1; r < plan.RegionCount(); ++r) {
+        CHECK_FALSE(plan.detail[r].noiseOnly);
+        CHECK(plan.detail[r].kept > 0);
+    }
 }
 
 TEST_CASE("An exceptionally sharp frame is kept by the regions, not fenced off (Ruling P8)", "[regions]") {
