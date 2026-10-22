@@ -23,30 +23,39 @@ struct Shift {
     // Normalised gradient correlation of the frame and the reference at the found shift, clamped to
     // [0, 1]: sum grad a . grad r / sqrt(sum |grad a|^2 sum |grad r|^2) over the two low-passed,
     // mean-free, tapered windows -- the share of the frame's structure that sits where the
-    // reference's does. Noise barely enters (the low pass passes white noise into the gradient
-    // correlation at 1 / (4 pi sigma^4) = 1/64 of its variance), so it says whether the frame shows
-    // the reference's scene in one piece, not how noisy it is. A frame torn by a shake during readout
-    // (part of it displaced) loses about that part's share. 0 when either window has no signal.
+    // reference's does -- taken as the best over the reference blurred by each of kConfidenceBlurs.
+    //  - Noise barely enters: the low pass passes white noise into the gradient correlation at
+    //    1 / (4 pi sigma^4) = 1/64 of its variance.
+    //  - Blur does not enter: a frame blurred by seeing is compared with a reference blurred as much.
+    //    Without that, the match fell with the blur mismatch (1 px reference: a disc 0.889 / 0.845 /
+    //    0.806 at 3 / 3.5 / 4 px, a lunar surface 0.943 / 0.910 / 0.875), so the relative cut acted
+    //    as a second, blur-driven frame selection; now frames 1-3x the best frame's blur score >= 0.99
+    //    (unit test, best blur 1 and 2 px, spread evenly or with the median at the sharp end).
+    //    Blurring the reference cannot rescue a torn frame: its sharp halves match a sharp reference
+    //    best (half torn by 8 px: 0.72 of an intact frame).
+    // So it says whether the frame shows the reference's scene in one piece. A frame torn by a shake
+    // during readout (part of it displaced) loses about that part's share. 0 when either window has
+    // no signal.
     double confidence = 0;
 };
 
 // Absolute floor: below it the frame does not show the reference's scene. Measured 2026-10-21 (unit
-// tests): another lunar field, a disc against a surface, a noise frame score 0.05-0.22; the same
-// scene under noise, blur and drift >= 0.96. A frame torn through the middle scores ~0.5.
+// tests): another lunar field, a disc against a surface, a noise frame score 0.05-0.27; the same
+// scene under noise, blur and drift >= 0.96. A frame torn through the middle scores ~0.5-0.7.
 constexpr double kMinAlignConfidence = 0.5;
 // Relative cut: a frame is excluded when it matches the reference worse than this share of the
 // capture's median confidence -- when a shake, tear or foreign object cost it more than 15% of the
-// match a typical frame of the capture reaches. Relative because the whole capture's level depends on the seeing and the
-// scale (steady frames: 0.92-0.94 on the 1080p Moon, 0.996-1 on the 240x180 Jupiter luma), the way
-// SelectFrames adapts to the quality distribution. Measured 2026-10-21 on the 2023-02-02 Moon, top
-// and bottom halves aligned separately: frames whose halves differ by 3.4-8.6 px (torn) score
-// 0.52-0.78 = 0.53-0.80 of the median (0.983); frames whose halves differ by 1.2-2.5 px (wobble that
-// local alignment takes out) 0.895-0.95 = 0.91-0.97; steady frames on six captures stay >= 0.98 of
-// their median. 0.85 sits in the gap. Synthetic (unit test): a lunar frame torn through the middle
-// by 8 px scores 0.65 of an intact one, its lower 60% displaced by 8 px 0.76, a 1 px wobble 0.99.
-// Limit: the match is measured after the low pass, where large-scale structure still correlates
-// across a few pixels -- a half-frame tear of only 4 px keeps 0.89 and is stacked; such moderate
-// tears are left to local alignment and per-region ranking (Task 5).
+// match a typical frame of the capture reaches. Relative because the whole capture's level depends
+// on the scale and the scene (steady frames: 0.94-0.95 on the 1080p Moon, 0.996-1 on the 240x180
+// Jupiter luma), the way SelectFrames adapts to the quality distribution. Measured 2026-10-21 on the
+// 2023-02-02 Moon, top and bottom halves aligned separately: frames whose halves differ by 3.4-8.6 px
+// (torn) score 0.50-0.79 = 0.51-0.81 of the median (0.982); frames whose halves differ by 1.2-2.5 px
+// (wobble that local alignment takes out) 0.90-0.95 = 0.92-0.97; steady frames on six other
+// captures stay >= 0.97 of their median. 0.85 sits in the gap. Synthetic (unit test): a lunar frame
+// torn through the middle by 8 px scores 0.72 of an intact one, its lower 60% displaced by 8 px
+// 0.78, a 1 px wobble 0.99. Limit: the match is measured after the low pass, where large-scale
+// structure still correlates across a few pixels -- a half-frame tear of only 4 px keeps ~0.9 and is
+// stacked; such moderate tears are left to local alignment and per-region ranking (Task 5).
 constexpr double kAlignRelative = 0.85;
 // Frames whose Shift::confidence is below the returned cut cannot be aligned and are excluded from
 // the stack (spec: "Frames that cannot be aligned are excluded, not smeared in"):
@@ -62,11 +71,17 @@ constexpr int kMaxAlignWindow = 512;
 // it should not: pixel noise and the fine, seeing-distorted detail that differs from frame to frame.
 // A symmetric filter on both images cannot move the correlation peak, so it adds no bias.
 constexpr double kAlignLowPassSigma = 1.5;
+// Extra Gaussian blurs (sigma, luma px) of the reference tried for Shift::confidence (see there).
+// Up to 6 px: a frame 3x as blurred as a 2-px-sharp reference needs sqrt(6^2 - 2^2) = 5.7 more.
+// Evaluated at the found shift only (one pass over the cross-spectrum, all blurs at once).
+constexpr double kConfidenceBlurs[] = {0, 0.75, 1.5, 2.25, 3, 4, 5, 6};
 // Frames averaged into the reference: the sharpest this many of the selection (fewer when fewer
 // are selected). Averaging K frames cuts the reference's noise by sqrt(K) (4x here); they are the
 // sharpest frames and are aligned before averaging, so the reference stays sharp; and K frames of
 // luma are held in memory (16 x 2 MB for 1080p Bayer, 16 x 8 MB for 1080p mono).
 constexpr int kReferenceFrames = 16;
+// Pass-1 anchors BuildReference tries (sharpest first) before settling for the best-confirmed one.
+constexpr int kAnchorCandidates = 3;
 
 // A prepared reference: its window, taper and weighted spectrum are computed once, so aligning a
 // frame costs one forward and one inverse FFT per correlation and a few Newton steps. Immutable
@@ -80,7 +95,10 @@ constexpr int kReferenceFrames = 16;
 //     most kMaxAlignWindow; a disc bigger than that is aligned on its central part). A frame
 //     without a target is placed where the reference is. Full frame (fullFrame true, a lunar
 //     surface): the window is the largest fast size <= min(frame side, kMaxAlignWindow) on each
-//     axis, centred on the frame; drift is found by the correlation itself (up to half the window).
+//     axis, placed inside the reference where it holds the most structure (summed squared gradient
+//     of the low-passed reference; positions on a 1/32-window grid; ties nearest the frame centre),
+//     so a crescent or terminator off-centre is what it covers, and the frame's window starts at the
+//     same place; drift is found by the correlation itself (up to half the window).
 //  2. Each window: pixels outside the image repeat the nearest edge; the weighted mean is removed
 //     and a separable Tukey taper applied (flat over the central two thirds, cosine to 0 over the
 //     outer sixth on each side), so the window edges do not correlate.
@@ -90,7 +108,7 @@ constexpr int kReferenceFrames = 16;
 //     so a plain intensity correlation is ruled by a few of the lowest frequencies -- any bright
 //     blob matches any bright patch (measured: a lunar field against a disc reference scored 0.64)
 //     -- while the gradient spectrum is about flat, so every scale counts, the peak is sharp, and a
-//     different scene scores <= 0.22. It also cut the sub-pixel error 3-5x on the same tests.
+//     different scene scores <= 0.27. It also cut the sub-pixel error 3-5x on the same tests.
 //     The inverse FFT of C is the correlation at integer shifts; the maximum is searched within
 //     +-1/4 of the window (disc: the centroids already agree to a few pixels) or +-1/2 (full frame).
 //  4. Re-centring. The tapered windows weight content shifted by d unequally, which pulls the peak
@@ -101,17 +119,19 @@ constexpr int kReferenceFrames = 16;
 //     gradient and Hessian at any (x, y) are exact sums over C; Newton's method from the parabolic
 //     estimate around the integer peak converges to the continuous maximum (steps capped at 0.5 px;
 //     at most 20 steps; stops below 1e-4 px). No grid, so no quantisation of the result.
-//  6. Shift = (frame window centre - reference window centre) + the refined peak.
+//  6. Shift = (frame window centre - reference window centre) + the refined peak; confidence as
+//     documented at Shift.
 // Accuracy, unit tests on exactly shifted synthetic scenes (luma px): a 34-px textured disc, integer
 // and sub-pixel shifts, worst error 0.0075 noise-free; with noise 0.02 / 0.05 of full scale (signal
 // ~0.6) and the frame blurred 1.0-1.6 px against a 1.0 px reference, rms 0.012 / 0.027, worst
 // 0.031 / 0.055; a lunar-like surface, shifts up to 31 px, worst 0.015 noise-free, 0.026 with noise
-// 0.02 and blur 0.8-1.4. Real captures (2026-10-21, every selected frame against BuildReference):
+// 0.02 and blur 0.8-1.4; a crescent filling the left third of a 1024-px frame, within 0.05 px.
+// Real captures (2026-10-21, test/run-align-real.sh, every selected frame against BuildReference):
 // four Jupiter / Neptune captures (luma 240x180 to 1920x1080, windows 45-100 px) confidence
-// 0.957-1.000, |centroid offset - shift| median 0.03-0.14 px; three Moons (windows 480x360 to
-// 512x512, drifts up to 51 px) 0.905-0.988 in steady frames, 6 torn frames of 1750 below the cut.
-// Cost: 0.1-2.3 ms per disc frame; 13.8 ms per 1080p Moon frame on one thread (one or two 512 x 512
-// correlations), ~600 frames/s on 16 cores.
+// 0.957-1.000, |centroid offset - shift| median 0.045-0.144 px; three Moons (windows 480x360 to
+// 512x512, drifts up to 51 px) 0.90-0.99 in steady frames, 6 torn frames of 1750 below the cut.
+// Cost: 0.1-2.5 ms per disc frame; 14.4 ms per 1080p Moon frame on one thread (one or two 512 x 512
+// correlations), ~420 frames/s on 16 threads (memory-bound: 38 ms per frame each).
 class GlobalAligner {
 public:
     // `reference`: a 1-channel luma image (BuildReference's output). fullFrame: Selection::
@@ -127,6 +147,10 @@ public:
     bool FullFrame() const { return fullFrame_; }
     int WindowWidth() const { return ww_; }
     int WindowHeight() const { return wh_; }
+    // Centre of the reference window (image px): the target centroid, or for a full frame the
+    // window position with the most structure (BestWindow).
+    int WindowCentreX() const { return refCx_; }
+    int WindowCentreY() const { return refCy_; }
 
 private:
     struct Peak {
@@ -143,9 +167,11 @@ private:
     int ww_, wh_;          // window size
     int refCx_, refCy_;    // reference window centre (image px)
     std::vector<double> taperX_, taperY_;
-    std::vector<double> lowPass2_;   // G^2 per frequency bin, 0 at Nyquist
-    std::vector<Complex> refSpec_;   // conj(F(reference window)) G^2
-    double refEnergy_ = 0;           // sum |F(ref)|^2 G^2 / (ww wh): low-passed window energy
+    std::vector<double> lowPass2_;   // W = |w|^2 G^2 per frequency bin, 0 at Nyquist
+    std::vector<Complex> refSpec_;   // conj(F(reference window)) W
+    std::vector<double> refEnergy_;  // per kConfidenceBlurs: sum |F(ref)|^2 W B_j^2 / (ww wh)
+    std::vector<double> blurX_;  // B_j(kx) at [kx * nBlurs + j] (contiguous per bin)
+    std::vector<double> blurY_;  // B_j(ky) at [j * wh + ky]
     Fft2D fft_;
 };
 
@@ -161,18 +187,26 @@ Shift GlobalShift(const ser::FloatImage& reference, const ser::FloatImage& frame
 // by LumaScale(info).
 // Built from the kReferenceFrames sharpest selected frames (FrameStats::quality, ties by index):
 //  1. read them (one reader from `factory`, in frame order) as LumaForMeasure luma;
-//  2. pass 1: align each to the sharpest frame; average those with confidence >= AlignmentCut
-//     (the sharpest always) on the sharpest frame's grid;
+//  2. pass 1: align each to an anchor and average those with confidence >= AlignmentCut (the anchor
+//     always) on the anchor's grid. The anchor is the sharpest frame unless the others do not
+//     confirm it: when fewer than half of them reach AlignmentCut against it (the cut taken over
+//     the others -- its self-match is no evidence), the next sharpest is tried, up to
+//     kAnchorCandidates (a disc anchor must have a target); when none is confirmed, the candidate
+//     most others agreed with (the sharper on a tie). So a foreign or corrupt frame that measures
+//     sharpest (unit test: a square of terrain ranked first) cannot become the reference;
 //  3. pass 2: align each to that average (lower noise, so a better template); average again those
 //     with confidence >= AlignmentCut, with the shifts re-centred on their mean -- the
 //     reference sits at the mean position of the frames it is built from, so one frame's seeing
 //     tilt does not set the geometry every frame is stacked onto.
-// Averaging: each output pixel is the mean of the frames' bicubic (Catmull-Rom) samples at
-// (x + dx, y + dy) that fall inside the frame; a pixel no frame covers takes the sharpest frame's
-// sample with the coordinates clamped to the image.
+// Averaging (rows on hardware_concurrency threads, the same result for any count): each output
+// pixel is the mean of the frames' bicubic (Catmull-Rom) samples at (x + dx, y + dy) that fall inside
+// the frame; a pixel no frame covers takes the sample of the sharpest frame in use (pass 1: the
+// anchor), coordinates clamped to the image.
 // Progress phase "Building reference": (done, total) over the frames read and the two passes
-// (total = 3 x frames used); cancelled() is polled between frames and throws StackCancelled.
-// Throws std::invalid_argument for a diagnosed (empty) selection or a selected frame with no entry
+// (total = 3 x frames used, plus the frames used for each anchor turned down); cancelled() is polled
+// between frames and throws StackCancelled.
+// Throws std::invalid_argument for a diagnosed (empty) selection, a disc selection none of whose
+// kAnchorCandidates sharpest frames has a target, or a selected frame with no entry
 // in `stats` (stats is MeasureAll's output, any order); ser::SerError when the factory returns no
 // reader or a reader whose frame size, frame count, colour id or depth differs from `info`; and
 // whatever the reader throws.

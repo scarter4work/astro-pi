@@ -711,3 +711,154 @@ TEST_CASE("BuildReference: cancel, diagnosed selections and missing stats") {
     const stack::SourceFactory noReader = []() -> std::unique_ptr<ser::FrameSource> { return nullptr; };
     CHECK_THROWS(stack::BuildReference(noReader, info, sel, stats, {}));
 }
+
+// ---- review round 1 ---------------------------------------------------------------------------------
+
+namespace {
+
+// A square of lunar-like terrain on a dark sky: a target, but not the planet.
+FloatImage ForeignScene(int w, int h) {
+    const Lunar l = MakeLunar(77);
+    FloatImage im{w, h, 1, std::vector<float>(static_cast<size_t>(w) * h, 0.04f)};
+    for (int y = h / 2 - 50; y < h / 2 + 50; ++y)
+        for (int x = w / 2 - 60; x < w / 2 + 60; ++x) im.data[static_cast<size_t>(y) * w + x] = static_cast<float>(l.Eval(x, y));
+    return GaussianBlur(im, 0.9);
+}
+
+std::vector<uint8_t> To8(const FloatImage& im) {
+    std::vector<uint8_t> b(im.data.size());
+    for (size_t i = 0; i < b.size(); ++i) b[i] = static_cast<uint8_t>(std::clamp(std::lround(im.data[i] * 255.0), 0L, 255L));
+    return b;
+}
+
+}  // namespace
+
+TEST_CASE("BuildReference: a different-scene frame at the top quality rank does not become the reference") {
+    static testing::TempDir dir;
+    const std::string path = dir.NewPath(".avi");
+    constexpr int kForeign = 7, n = 30;
+    {
+        std::vector<std::vector<uint8_t>> frames;
+        for (int f = 0; f < n; ++f) {
+            FloatImage im = f == kForeign ? ForeignScene(kRefW, kRefH)
+                                          : GaussianBlur(RenderDisc(kRefW, kRefH, RefTruth(f).cx, RefTruth(f).cy, 30, 0.04), 1.0);
+            AddNoise(im, 0.01, 1300u + f);
+            frames.push_back(To8(im));
+        }
+        testing::AviSpec spec;
+        spec.width = kRefW;
+        spec.height = kRefH;
+        testing::WriteAvi(path, spec, frames);
+    }
+    auto probe = ser::OpenVideo(path, ser::BayerChoice::None);
+    const ser::FileInfo info = probe->Info();
+    const stack::SourceFactory factory = [&] { return ser::OpenVideo(path, ser::BayerChoice::None); };
+    std::vector<FrameStats> stats = stack::MeasureAll(factory, info, 4, {});
+    REQUIRE(stats[kForeign].targetFound);
+    double qmax = 0;
+    for (const FrameStats& s : stats) qmax = std::max(qmax, s.quality);
+    stats[kForeign].quality = 10 * qmax;  // the sharpest frame by far
+    stack::Selection sel;
+    for (int f = 0; f < n; ++f) sel.frames.push_back(f);
+
+    std::vector<int64_t> dones, totals;
+    stack::Progress progress;
+    progress.report = [&](const std::string&, int64_t d, int64_t t) {
+        dones.push_back(d);
+        totals.push_back(t);
+    };
+    const FloatImage ref = stack::BuildReference(factory, info, sel, stats, progress);
+    CHECK(std::is_sorted(dones.begin(), dones.end()));
+    CHECK(dones.back() == totals.back());
+    CHECK(totals.back() == 4 * stack::kReferenceFrames);  // one anchor turned down
+    const FrameStats rs = stack::MeasureFrame(ref, 0);
+    REQUIRE(rs.targetFound);
+    const FrameStats& disc = stats[0];
+    INFO("reference box " << rs.bx1 - rs.bx0 << "x" << rs.by1 - rs.by0 << ", a disc frame's " << disc.bx1 - disc.bx0
+                          << "x" << disc.by1 - disc.by0);
+    CHECK(std::abs((rs.bx1 - rs.bx0) - (disc.bx1 - disc.bx0)) <= 8);
+    CHECK(std::abs((rs.by1 - rs.by0) - (disc.by1 - disc.by0)) <= 8);
+    const GlobalAligner aligner(ref, false);
+    double ox0 = 0, oy0 = 0;
+    bool first = true;
+    for (int f = 0; f < n; ++f) {
+        if (f == kForeign) continue;
+        const Shift s = aligner.Align(stack::LumaForMeasure(probe->ReadFrame(f), info.colorId, info.normDepth), stats[f]);
+        INFO("frame " << f << " confidence " << s.confidence);
+        CHECK(s.confidence >= 0.9);
+        const double ox = RefTruth(f).cx - s.dx, oy = RefTruth(f).cy - s.dy;
+        if (first) {
+            ox0 = ox;
+            oy0 = oy;
+            first = false;
+        }
+        CHECK(std::fabs(ox - ox0) <= 0.2);
+        CHECK(std::fabs(oy - oy0) <= 0.2);
+    }
+}
+
+TEST_CASE("blurred frames across the range selection keeps (1-3x the best blur) all pass the cut") {
+    struct Scene { const char* name; bool full; double best; };
+    for (const Scene& sc : {Scene{"disc", false, 1.0}, Scene{"disc", false, 2.0}, Scene{"lunar", true, 1.0},
+                            Scene{"lunar", true, 2.0}}) {
+        const int w = 256, h = 192;
+        const Lunar moon = MakeLunar(91);
+        auto render = [&](double dx, double dy, double blur) {
+            return GaussianBlur(sc.full ? RenderLunar(w, h, moon, dx, dy) : RenderDisc(w, h, 120 + dx, 95 + dy, 40, 0.03), blur);
+        };
+        FloatImage ref = render(0, 0, sc.best);
+        AddNoise(ref, 0.003, 5);
+        const GlobalAligner aligner(ref, sc.full);
+        // Evenly spread over 1x .. 3x, and skewed: most frames near the best, a tail at 2.5-3x (the
+        // median is then a sharp frame's, the hardest case for a relative cut).
+        for (bool skewed : {false, true}) {
+            std::vector<Shift> shifts;
+            std::vector<double> blurs;
+            for (int i = 0; i < 16; ++i) {
+                const double blur = skewed ? sc.best * (i < 12 ? 1 + 0.2 * i / 11 : 2.5 + 0.5 * (i - 12) / 3)
+                                           : sc.best * (1 + 2.0 * i / 15);
+                FloatImage f = render(0.37 * i - 4, 2.9 - 0.21 * i, blur);
+                AddNoise(f, 0.01, 2000u + i);
+                shifts.push_back(aligner.Align(f, stack::MeasureFrame(f, i)));
+                blurs.push_back(blur);
+            }
+            const double cut = stack::AlignmentCut(shifts);
+            for (size_t i = 0; i < shifts.size(); ++i) {
+                INFO(sc.name << (skewed ? " skewed" : " even") << ", best blur " << sc.best << ": frame blur " << blurs[i]
+                             << " confidence " << shifts[i].confidence << " cut " << cut);
+                CHECK(shifts[i].confidence >= cut);
+                CHECK(shifts[i].confidence >= 0.95);  // blur alone costs (almost) nothing
+            }
+        }
+    }
+}
+
+TEST_CASE("a frame-filling crescent wider than the window: the window sits on the lit part") {
+    const int w = 1024, h = 384;
+    const Lunar moon = MakeLunar(55);
+    // Lit surface left of a curved terminator (x < 300 + 60 sin), dark sky to the right.
+    auto render = [&](double dx, double dy) {
+        FloatImage im{w, h, 1, std::vector<float>(static_cast<size_t>(w) * h)};
+        for (int y = 0; y < h; ++y)
+            for (int x = 0; x < w; ++x) {
+                const double sx = x - dx, sy = y - dy;
+                const double edge = 300 + 60 * std::sin(sy / 120.0);
+                const double lit = 1 / (1 + std::exp((sx - edge) / 2.0));
+                im.data[static_cast<size_t>(y) * w + x] = static_cast<float>(0.02 + lit * moon.Eval(sx, sy));
+            }
+        return GaussianBlur(im, 0.8);
+    };
+    const FloatImage ref = render(0, 0);
+    const GlobalAligner aligner(ref, true);
+    INFO("window centre " << aligner.WindowCentreX() << ", " << aligner.WindowCentreY() << " size " << aligner.WindowWidth());
+    CHECK(aligner.WindowCentreX() - aligner.WindowWidth() / 2 <= 40);  // the window starts at the lit left side
+    for (auto d : std::vector<std::pair<double, double>>{{3.4, -2.2}, {-11.7, 6.25}, {25.5, 9.1}}) {
+        FloatImage f = render(d.first, d.second);
+        AddNoise(f, 0.01, 77);
+        const Shift s = aligner.Align(f, stack::MeasureFrame(f, 0));
+        INFO("true " << d.first << ", " << d.second << " got " << s.dx << ", " << s.dy << " conf " << s.confidence);
+        CHECK(std::fabs(s.dx - d.first) <= 0.05);
+        CHECK(std::fabs(s.dy - d.second) <= 0.05);
+        CHECK(s.confidence >= 0.95);
+    }
+}

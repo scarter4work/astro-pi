@@ -6,6 +6,8 @@
 #include <memory>
 #include <stdexcept>
 #include <string>
+#include <thread>
+#include <utility>
 
 #include "Demosaic.h"
 #include "SerFile.h"
@@ -122,27 +124,119 @@ double SampleCubic(const ser::FloatImage& im, double x, double y) {
     return acc;
 }
 
+// Runs body(y0, y1) over row bands [y0, y1) of 0 .. h on up to hardware_concurrency threads. Each row
+// is computed by exactly one call, so a body that writes only its own rows gives the same result for
+// any thread count. `body` must not throw.
+template <class Body>
+void ParallelRows(int h, Body body) {
+    const int threads = static_cast<int>(std::clamp<unsigned>(std::thread::hardware_concurrency(), 1u, 64u));
+    const int bands = std::max(1, std::min(threads, h / 16));
+    if (bands == 1) {
+        body(0, h);
+        return;
+    }
+    std::vector<std::thread> pool;
+    pool.reserve(static_cast<size_t>(bands));
+    for (int b = 0; b < bands; ++b) pool.emplace_back(body, h * b / bands, h * (b + 1) / bands);
+    for (std::thread& t : pool) t.join();
+}
+
 // Mean of the frames' samples at (x + dx, y + dy) that fall inside the frame; uncovered pixels take
-// frame `fallback` with clamped coordinates.
+// frame `fallback` (a frame in use) with clamped coordinates. Rows in parallel; deterministic.
 ser::FloatImage Average(const std::vector<ser::FloatImage>& frames, const std::vector<Shift>& shifts,
                         const std::vector<bool>& use, size_t fallback) {
     const int w = frames[0].width, h = frames[0].height;
     ser::FloatImage out{w, h, 1, std::vector<float>(static_cast<size_t>(w) * h, 0.f)};
+    ParallelRows(h, [&](int y0, int y1) {
+        for (int y = y0; y < y1; ++y)
+            for (int x = 0; x < w; ++x) {
+                double sum = 0;
+                int n = 0;
+                for (size_t i = 0; i < frames.size(); ++i) {
+                    if (!use[i]) continue;
+                    const double sx = x + shifts[i].dx, sy = y + shifts[i].dy;
+                    if (sx < 0 || sy < 0 || sx > w - 1 || sy > h - 1) continue;
+                    sum += SampleCubic(frames[i], sx, sy);
+                    ++n;
+                }
+                out.data[static_cast<size_t>(y) * w + x] = static_cast<float>(
+                    n > 0 ? sum / n : SampleCubic(frames[fallback], x + shifts[fallback].dx, y + shifts[fallback].dy));
+            }
+    });
+    return out;
+}
+
+// Separable Gaussian blur (sigma px, edges clamped) of a 1-channel image, in double.
+std::vector<double> Blurred(const ser::FloatImage& im, double sigma) {
+    const int w = im.width, h = im.height, rad = std::max(1, static_cast<int>(std::ceil(3 * sigma)));
+    std::vector<double> k(static_cast<size_t>(2 * rad + 1));
+    double sum = 0;
+    for (int i = -rad; i <= rad; ++i) sum += k[static_cast<size_t>(i + rad)] = std::exp(-0.5 * i * i / (sigma * sigma));
+    for (double& v : k) v /= sum;
+    std::vector<double> tmp(static_cast<size_t>(w) * h), out(tmp.size());
     for (int y = 0; y < h; ++y)
         for (int x = 0; x < w; ++x) {
-            double sum = 0;
-            int n = 0;
-            for (size_t i = 0; i < frames.size(); ++i) {
-                if (!use[i]) continue;
-                const double sx = x + shifts[i].dx, sy = y + shifts[i].dy;
-                if (sx < 0 || sy < 0 || sx > w - 1 || sy > h - 1) continue;
-                sum += SampleCubic(frames[i], sx, sy);
-                ++n;
-            }
-            out.data[static_cast<size_t>(y) * w + x] = static_cast<float>(
-                n > 0 ? sum / n : SampleCubic(frames[fallback], x + shifts[fallback].dx, y + shifts[fallback].dy));
+            double a = 0;
+            for (int i = -rad; i <= rad; ++i)
+                a += k[static_cast<size_t>(i + rad)] * im.data[static_cast<size_t>(y) * w + std::clamp(x + i, 0, w - 1)];
+            tmp[static_cast<size_t>(y) * w + x] = a;
+        }
+    for (int y = 0; y < h; ++y)
+        for (int x = 0; x < w; ++x) {
+            double a = 0;
+            for (int i = -rad; i <= rad; ++i)
+                a += k[static_cast<size_t>(i + rad)] * tmp[static_cast<size_t>(std::clamp(y + i, 0, h - 1)) * w + x];
+            out[static_cast<size_t>(y) * w + x] = a;
         }
     return out;
+}
+
+// Full frame: the ww x wh window position inside the image holding the most structure -- the summed
+// squared gradient of the reference low-passed like the correlation sees it -- so a crescent or a
+// terminator off-centre is what the window covers. Positions on a grid of step max(1, min side / 32);
+// ties go to the position nearest the frame centre. Returns the window's top-left corner.
+std::pair<int, int> BestWindow(const ser::FloatImage& ref, int ww, int wh) {
+    const int w = ref.width, h = ref.height;
+    if (ww >= w && wh >= h) return {0, 0};
+    const std::vector<double> b = Blurred(ref, kAlignLowPassSigma);
+    // Integral image of the squared central-difference gradient.
+    std::vector<double> integral(static_cast<size_t>(w + 1) * (h + 1), 0.0);
+    for (int y = 0; y < h; ++y) {
+        double row = 0;
+        for (int x = 0; x < w; ++x) {
+            const double gx = 0.5 * (b[static_cast<size_t>(y) * w + std::min(x + 1, w - 1)] -
+                                     b[static_cast<size_t>(y) * w + std::max(x - 1, 0)]);
+            const double gy = 0.5 * (b[static_cast<size_t>(std::min(y + 1, h - 1)) * w + x] -
+                                     b[static_cast<size_t>(std::max(y - 1, 0)) * w + x]);
+            row += gx * gx + gy * gy;
+            integral[static_cast<size_t>(y + 1) * (w + 1) + x + 1] = integral[static_cast<size_t>(y) * (w + 1) + x + 1] + row;
+        }
+    }
+    auto box = [&](int x0, int y0) {
+        const size_t W = static_cast<size_t>(w + 1);
+        return integral[(y0 + wh) * W + x0 + ww] - integral[y0 * W + x0 + ww] - integral[(y0 + wh) * W + x0] +
+               integral[y0 * W + x0];
+    };
+    const int step = std::max(1, std::min(ww, wh) / 32);
+    const int cx = (w - ww) / 2, cy = (h - wh) / 2;
+    auto positions = [&](int span) {
+        std::vector<int> p;
+        for (int v = 0; v <= span; v += step) p.push_back(v);
+        if (p.back() != span) p.push_back(span);
+        return p;
+    };
+    std::pair<int, int> best{cx, cy};
+    double bestE = box(cx, cy);
+    for (int y0 : positions(h - wh))
+        for (int x0 : positions(w - ww)) {
+            const double e = box(x0, y0);
+            const auto d = [&](int x, int y) { return std::abs(x - cx) + std::abs(y - cy); };
+            if (e > bestE || (e == bestE && d(x0, y0) < d(best.first, best.second))) {
+                bestE = e;
+                best = {x0, y0};
+            }
+        }
+    return best;
 }
 
 }  // namespace
@@ -160,8 +254,9 @@ GlobalAligner::GlobalAligner(const ser::FloatImage& reference, bool fullFrame)
     if (fullFrame_) {
         ww_ = PrevFastSize(std::min(width_, kMaxAlignWindow));
         wh_ = PrevFastSize(std::min(height_, kMaxAlignWindow));
-        refCx_ = width_ / 2;
-        refCy_ = height_ / 2;
+        const std::pair<int, int> at = BestWindow(reference, ww_, wh_);
+        refCx_ = at.first + ww_ / 2;
+        refCy_ = at.second + wh_ / 2;
     } else {
         const FrameStats rs = MeasureFrame(reference, 0);
         if (!rs.targetFound) throw std::invalid_argument("GlobalAligner: the reference has no target to align on");
@@ -184,14 +279,35 @@ GlobalAligner::GlobalAligner(const ser::FloatImage& reference, bool fullFrame)
             const double f2 = fx * fx + fy * fy;
             lowPass2_[static_cast<size_t>(ky) * ww_ + kx] = 4 * M_PI * M_PI * f2 * std::exp(-k * f2);
         }
+    // Extra blurs of the reference for the confidence: separable Gaussian factors per axis.
+    const size_t nb = std::size(kConfidenceBlurs);
+    blurX_.assign(nb * static_cast<size_t>(ww_), 0.0);
+    blurY_.assign(nb * static_cast<size_t>(wh_), 0.0);
+    for (size_t j = 0; j < nb; ++j) {
+        const double s2 = 2 * M_PI * M_PI * kConfidenceBlurs[j] * kConfidenceBlurs[j];
+        for (int kx = 0; kx < ww_; ++kx) {
+            const double fx = static_cast<double>(Signed(kx, ww_)) / ww_;
+            blurX_[static_cast<size_t>(kx) * nb + j] = std::exp(-s2 * fx * fx);
+        }
+        for (int ky = 0; ky < wh_; ++ky) {
+            const double fy = static_cast<double>(Signed(ky, wh_)) / wh_;
+            blurY_[j * wh_ + ky] = std::exp(-s2 * fy * fy);
+        }
+    }
     Window(reference, refCx_, refCy_, refSpec_);
     fft_.Forward(refSpec_);
-    double e = 0;
-    for (size_t i = 0; i < refSpec_.size(); ++i) {
-        e += std::norm(refSpec_[i]) * lowPass2_[i];
-        refSpec_[i] = std::conj(refSpec_[i]) * lowPass2_[i];
-    }
-    refEnergy_ = e / (static_cast<double>(ww_) * wh_);
+    refEnergy_.assign(nb, 0.0);
+    for (int ky = 0; ky < wh_; ++ky)
+        for (int kx = 0; kx < ww_; ++kx) {
+            const size_t i = static_cast<size_t>(ky) * ww_ + kx;
+            const double p = std::norm(refSpec_[i]) * lowPass2_[i];
+            for (size_t j = 0; j < nb; ++j) {
+                const double b = blurX_[static_cast<size_t>(kx) * nb + j] * blurY_[j * wh_ + ky];
+                refEnergy_[j] += p * b * b;
+            }
+            refSpec_[i] = std::conj(refSpec_[i]) * lowPass2_[i];
+        }
+    for (double& e : refEnergy_) e /= static_cast<double>(ww_) * wh_;
 }
 
 // The window of `im` centred on (cx, cy) (top-left cx - ww/2, cy - wh/2), edge-repeated outside the
@@ -262,7 +378,7 @@ GlobalAligner::Peak GlobalAligner::Correlate(const ser::FloatImage& frameLuma, i
     }
     const double energy = e / n;
     // A window with no variation (mean square far below one 16-bit step) has nothing to align on.
-    if (!(energy > kNoSignal * n) || !(refEnergy_ > kNoSignal * n)) return result;
+    if (!(energy > kNoSignal * n) || !(refEnergy_[0] > kNoSignal * n)) return result;
     std::vector<Complex> cc = c;
     fft_.Inverse(cc);
 
@@ -327,7 +443,29 @@ GlobalAligner::Peak GlobalAligner::Correlate(const ser::FloatImage& frameLuma, i
     result.iy = py;
     result.x = x;
     result.y = y;
-    result.confidence = std::clamp(l.v / std::sqrt(energy * refEnergy_), 0.0, 1.0);
+    // Confidence: the best normalised correlation at (x, y) over the reference blurred by each of
+    // kConfidenceBlurs (blur multiplies the reference spectrum by a separable Gaussian B_j), so a
+    // frame blurred by seeing is compared with a reference as blurred as it is:
+    //   v_j = Re sum_k C(k) B_j(k) e^{i w.(x, y)} / (W H),  ncc_j = v_j / sqrt(E_frame E_ref,j).
+    const size_t nb = refEnergy_.size();
+    std::vector<Complex> ex(static_cast<size_t>(ww_));
+    for (int kx = 0; kx < ww_; ++kx) ex[static_cast<size_t>(kx)] = std::polar(1.0, 2 * M_PI * Signed(kx, ww_) * x / ww_);
+    std::vector<double> v(nb, 0.0);
+    std::vector<Complex> rowSum(nb);
+    for (int ky = 0; ky < wh_; ++ky) {
+        std::fill(rowSum.begin(), rowSum.end(), Complex(0, 0));
+        const Complex* row = c.data() + static_cast<size_t>(ky) * ww_;
+        for (int kx = 0; kx < ww_; ++kx) {
+            const Complex t = row[kx] * ex[static_cast<size_t>(kx)];
+            const double* bx = blurX_.data() + static_cast<size_t>(kx) * nb;
+            for (size_t j = 0; j < nb; ++j) rowSum[j] += t * bx[j];
+        }
+        const Complex ey = std::polar(1.0, 2 * M_PI * Signed(ky, wh_) * y / wh_);
+        for (size_t j = 0; j < nb; ++j) v[j] += (ey * rowSum[j]).real() * blurY_[j * wh_ + ky];
+    }
+    double conf = 0;
+    for (size_t j = 0; j < nb; ++j) conf = std::max(conf, v[j] / n / std::sqrt(energy * refEnergy_[j]));
+    result.confidence = std::clamp(conf, 0.0, 1.0);
     return result;
 }
 
@@ -358,7 +496,7 @@ ser::FloatImage BuildReference(const SourceFactory& factory, const ser::FileInfo
     });
     ranked.resize(std::min(ranked.size(), static_cast<size_t>(kReferenceFrames)));
     const size_t k = ranked.size();
-    const int64_t total = 3 * static_cast<int64_t>(k);
+    int64_t total = 3 * static_cast<int64_t>(k);  // grows by k for each anchor that is turned down
     int64_t done = 0;
     auto tick = [&] {
         if (progress.cancelled && progress.cancelled()) throw StackCancelled("cancelled while building the reference");
@@ -366,7 +504,7 @@ ser::FloatImage BuildReference(const SourceFactory& factory, const ser::FileInfo
     };
     tick();
 
-    // Read in frame order (the reader reads forward); frames[0] is the sharpest.
+    // Read in frame order (the reader reads forward); frames[i] is ranked[i], frames[0] the sharpest.
     std::vector<size_t> order(k);
     for (size_t i = 0; i < k; ++i) order[i] = i;
     std::sort(order.begin(), order.end(), [&](size_t a, size_t b) { return ranked[a]->index < ranked[b]->index; });
@@ -390,18 +528,52 @@ ser::FloatImage BuildReference(const SourceFactory& factory, const ser::FileInfo
     const bool full = selection.fullFrameTarget;
     std::vector<Shift> shifts(k);
     std::vector<bool> use(k);
-    // Pass 1: onto the sharpest frame (which matches itself).
+    // Pass 1: onto an anchor the other frames confirm. The sharpest frame first; it is turned down
+    // when fewer than half of the others reach AlignmentCut against it (cut over the others only --
+    // its self-match is not evidence), and the next sharpest is tried, up to kAnchorCandidates. None
+    // confirmed: the candidate most others agreed with (the sharper on a tie).
+    size_t anchor = 0;
     {
-        const GlobalAligner aligner(frames[0], full);
-        for (size_t i = 0; i < k; ++i) {
-            shifts[i] = i == 0 ? Shift{0, 0, 1} : aligner.Align(frames[i], *ranked[i]);
-            ++done;
+        int bestCount = -1;
+        std::vector<Shift> bestShifts;
+        size_t tried = 0;
+        for (size_t a = 0; a < k && tried < static_cast<size_t>(kAnchorCandidates); ++a) {
+            if (!full && !ranked[a]->targetFound) continue;  // a disc anchor needs a target
+            if (tried++ > 0) {
+                total += static_cast<int64_t>(k);
+                tick();
+            }
+            const GlobalAligner aligner(frames[a], full);
+            std::vector<Shift> s(k), others;
+            for (size_t i = 0; i < k; ++i) {
+                if (i == a) continue;
+                s[i] = aligner.Align(frames[i], *ranked[i]);
+                others.push_back(s[i]);
+                ++done;
+                tick();
+            }
+            s[a] = Shift{0, 0, 1};
+            const double cut = AlignmentCut(others);
+            int count = 0;
+            for (const Shift& o : others) count += o.confidence >= cut ? 1 : 0;
+            if (count > bestCount) {
+                bestCount = count;
+                bestShifts = s;
+                anchor = a;
+            }
+            ++done;  // the anchor's own slot
             tick();
+            if (2 * static_cast<size_t>(count) >= others.size()) break;
         }
-        const double cut = AlignmentCut(shifts);
-        for (size_t i = 0; i < k; ++i) use[i] = i == 0 || shifts[i].confidence >= cut;
+        if (bestCount < 0) throw std::invalid_argument("BuildReference: no selected frame has a target to align on");
+        shifts = bestShifts;
+        std::vector<Shift> others;
+        for (size_t i = 0; i < k; ++i)
+            if (i != anchor) others.push_back(shifts[i]);
+        const double cut = AlignmentCut(others);
+        for (size_t i = 0; i < k; ++i) use[i] = i == anchor || shifts[i].confidence >= cut;
     }
-    const ser::FloatImage first = Average(frames, shifts, use, 0);
+    const ser::FloatImage first = Average(frames, shifts, use, anchor);
 
     // Pass 2: onto that average, re-centred on the mean shift. The frames' stats centroids still
     // place the windows (they are positions in each frame, not relative to any reference).
@@ -414,12 +586,14 @@ ser::FloatImage BuildReference(const SourceFactory& factory, const ser::FileInfo
     const double cut = AlignmentCut(shifts);
     double mx = 0, my = 0;
     int used = 0;
+    size_t bestKept = k;  // the sharpest frame kept: covers pixels no shifted frame reaches
     for (size_t i = 0; i < k; ++i) {
         use[i] = shifts[i].confidence >= cut;
         if (use[i]) {
             mx += shifts[i].dx;
             my += shifts[i].dy;
             ++used;
+            bestKept = std::min(bestKept, i);
         }
     }
     if (used == 0) return first;
@@ -429,8 +603,9 @@ ser::FloatImage BuildReference(const SourceFactory& factory, const ser::FileInfo
         s.dx -= mx;
         s.dy -= my;
     }
-    return Average(frames, shifts, use, 0);
+    return Average(frames, shifts, use, bestKept);
 }
+
 
 double AlignmentCut(const std::vector<Shift>& shifts) {
     std::vector<double> ok;

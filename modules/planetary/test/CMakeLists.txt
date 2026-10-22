@@ -45,3 +45,8 @@ target_link_libraries(check-real-fixtures PRIVATE planetary_ser)
 # not a ctest case, it needs the NAS captures).
 add_executable(avi-probe avi-probe.cpp)
 target_link_libraries(avi-probe PRIVATE planetary_ser)
+
+# Test-only: global alignment on real captures (test/run-align-real.sh runs it; not a ctest case,
+# it needs the NAS captures).
+add_executable(align-probe align-probe.cpp)
+target_link_libraries(align-probe PRIVATE planetary_stack)
