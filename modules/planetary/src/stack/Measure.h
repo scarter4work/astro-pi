@@ -71,9 +71,10 @@ int DetectionBlock(int width, int height);
 
 // Luma at or above this is saturated: 254/255 is not, a 12- or 10-bit ADC scaled into 16 bits
 // (65520/65535, 65472/65535) is. For Bayer input the luma is a 2x2 cell mean, so the test is
-// "cell mean >= 0.999": with in-range samples (each <= 1) that needs every one of the four sites
-// at >= 0.996 of full scale, i.e. all four saturated -- a cell with only its red site clipped
-// does not count.
+// "cell mean >= 0.999": with in-range samples (each <= 1) the four sites' shortfalls from full
+// scale have to sum to at most 0.004. Every site is therefore at >= 0.996 of full scale, and a site
+// can sit as low as 0.996 only when the other three are exactly full scale; a cell with only its red
+// site clipped does not count, and neither does one whose four sites are all at 254/255.
 constexpr double kClippedLuma = 0.999;
 
 // Measures one luma image (1 channel, normalised to [0, 1] as LumaForMeasure makes it).
@@ -112,8 +113,12 @@ constexpr double kClippedLuma = 0.999;
 // capture is exposed to tens of percent (the same night's Neptune, the faintest target on the NAS,
 // at gain high enough for 22 DN of noise: 0.80 of full scale, over 18 s_b). 16 sensor pixels, counted on the luma rather than as whole blocks (a 1080p block alone is
 // 64 px): the opening already removes anything thinner than 3 luma px, so at sensor resolution this
-// rejects a compact 3x3 hot cluster (9 px) or a small cosmic-ray blob, while a planet down to ~5 px
-// across is found. On half-resolution luma (Bayer, or an undeclared mosaic) the floor is 4 luma px,
+// rejects a compact 3x3 hot cluster (9 px) or a small cosmic-ray blob, while a planet
+// 5 px across is found every time (measured 2026-10-22 at lumaScale 1: seeing sigma 1 px on the Saturn
+// AVI's background, 96 placements per diameter: 5 px and up 96/96, 4 px 85-87/96, 3 px 28-44/96,
+// 2 px 32-41/96, 1 px 0/96; 2 px reads as often as 3 px, a non-monotone result whose cause was not
+// investigated; test "the size floor finds a blurred planet from 5 px across"), so below
+// ~5 px across detection is unreliable. On half-resolution luma (Bayer, or an undeclared mosaic) the floor is 4 luma px,
 // below the 9 that any structure surviving the opening already has (a 3x3 luma square = 6x6 sensor
 // pixels; the hot structures above, painted at sensor resolution and binned, are all rejected), so
 // the opening is the floor there. Counting the floor in
@@ -187,6 +192,9 @@ using SourceFactory = std::function<std::unique_ptr<ser::FrameSource>()>;
 // there are fewer frames; < 1 counts as 1) each open their own reader through `factory` and take
 // runs of consecutive frames, so every reader reads forward. Result: one FrameStats per frame,
 // in frame order, identical for any thread count.
+// Memory: besides its reader and the frame in flight, each worker thread keeps MeasureFrame's
+// thread_local scratch alive for the life of the thread (two opened-luma buffers, ~16 MB at 1080p
+// mono, 4 bytes per luma pixel each), so budget ~16 MB per worker at 1080p on top of the frames.
 // Progress phase "Measuring frames" (done, frameCount); report() and cancelled() are only called
 // from the calling thread. Cancel: workers stop, every thread is joined, StackCancelled is thrown.
 // A worker's exception (a read error, a factory that throws or returns null, a reader whose size,

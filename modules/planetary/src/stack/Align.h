@@ -33,7 +33,7 @@ struct Shift {
     //    (unit test, best blur 1 and 2 px, spread evenly or with the median at the sharp end).
     //  - The price: blur matching also lets a blurred torn frame match more, so the tear tolerance
     //    widens with blur. Half-frame tears of a lunar surface (unit test, sharp frames 0.8 px, cut
-    //    0.85): sharp, 4-5 px pass (0.85-0.90) and 6-8 px are rejected; at 2x blur 5 px passes; at 3x
+    //    0.85): sharp, 4 px passes (0.90), 5 px passes or sits within ~0.02 of the cut (0.852-0.854 against 0.847, measured 2026-10-22) and 6-8 px are rejected (0.81-0.72); at 2x blur 5 px passes; at 3x
     //    blur 6 px passes (0.88) and 8 px is still rejected (0.82). Only a sharp torn frame gains
     //    nothing from the blurred references.
     //  - It measures shape agreement, not detail: a featureless blob (a defocused disc, a cloud-dimmed
@@ -61,7 +61,7 @@ constexpr double kMinAlignConfidence = 0.5;
 // torn through the middle by 8 px scores 0.72 of an intact one, its lower 60% displaced by 8 px
 // 0.78, a 1 px wobble 0.99. Limit: the match is measured after the low pass, where large-scale
 // structure still correlates across a few pixels, and blur matching widens that (Shift::confidence):
-// a sharp half-frame tear of 4-5 px, or of 6 px at 3x blur, passes and is stacked. Such tears are
+// a sharp half-frame tear of 4 px (5 px: at the cut, within ~0.02), or of 6 px at 3x blur, passes and is stacked. Such tears are
 // left to local alignment and per-region ranking: Task 5's local search must reach ~8 luma px.
 constexpr double kAlignRelative = 0.85;
 // Frames whose Shift::confidence is below the returned cut cannot be aligned and are excluded from

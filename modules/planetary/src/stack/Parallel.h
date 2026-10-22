@@ -11,17 +11,19 @@ namespace planetary::stack {
 // Starts a thread running `fn`; ParallelBands' seam for tests that make thread creation fail.
 using ThreadSpawner = std::function<std::thread(std::function<void()>)>;
 
+// Fewest rows a band holds before it is worth a thread of its own.
+constexpr int kMinBandRows = 16;
+
 // Runs body(r0, r1) over contiguous bands [r0, r1) that cover 0 .. rows exactly once: `threads`
-// bands (fewer when a band would hold under kMinBandRows rows; < 1 counts as 1), the first on the
-// calling thread when there is only one. Each row is in exactly one band, so a body that writes only
+// bands (fewer when a band would hold under kMinBandRows rows; < 1 counts as 1). A single band runs
+// on the calling thread; with several, every band runs on a thread started here and the calling
+// thread only waits for them. Each row is in exactly one band, so a body that writes only
 // its own rows gives the same result for any thread count.
 // Never leaves a thread running and never reaches std::terminate (this runs inside PixInsight):
 //  - if starting a thread throws partway (std::system_error when the process is out of threads),
 //    the threads already started are joined, then that exception is rethrown;
 //  - if a band throws, the other bands run to completion, all threads are joined, and the first
 //    exception (by band order of completion) is rethrown.
-constexpr int kMinBandRows = 16;
-
 inline void ParallelBands(int rows, int threads, const std::function<void(int, int)>& body,
                           const ThreadSpawner& spawn = {}) {
     if (rows <= 0) return;
