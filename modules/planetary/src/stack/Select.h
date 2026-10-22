@@ -240,7 +240,9 @@ constexpr int kMinJudgedFrames = 30;
 //           LumaScale) reads 0.50 / 0.50 / 0.48 / 0.00 on the 2026-01-30 Jupiters 195830 / 202657 /
 //           195438 and Neptune as captured (every NAS disc as captured: 0.00-0.74, the highest the
 //           2022-09-08 001402 Jupiter), at most 0.93 when they are blurred by 1-24 sensor px
-//           (Neptune by 1-3: 0.19-0.54; by 4 it is not found), and 0.00-0.85 on StackSynth discs of R
+//           (Neptune by 1-3: 0.19-0.54, 0.20-0.70 with the unbiased noise of Ruling P19, which also
+//           finds it in 16 frames of 94 at 3 px where it found 35; by 4 it is not found; 195830's
+//           readings, its noise far under its detail, did not move), and 0.00-0.85 on StackSynth discs of R
 //           3-14 blurred 0.6-6 px (mono, limb and convolved); in the region stage's warn band (those
 //           Jupiters blurred 1-3 sensor px) 0.54-0.77 -- so on measured data a small disc is never
 //           refused for focus: the region stage only warns (Ruling P20), and a disc defocused far
@@ -261,22 +263,37 @@ constexpr int kMinJudgedFrames = 30;
 //    safe. Measured 2026-10-22 (q_ref as here): the four largest discs on the NAS as captured read
 //    0.053 / 0.053 (2022-09-17 1080p Jupiters, R_h 21.5: the only ones in this class), 0.125
 //    (2022-08-03, R_h 14.5), 0.081 (2026-01-30-195137, R_h 12) -- the limit is twice the highest (43
-//    planetary files surveyed, none refused for focus or seeing). The same four, defocused
+//    planetary files surveyed, none refused for focus or seeing; re-surveyed with Ruling P19's
+//    unbiased noise, 46 files: every verdict the same, every reading within 0.002 of its old value
+//    (S within 0.02), those four unchanged -- in focus a disc's detail dwarfs the noise term, so the
+//    limit stays 0.25). The same four, defocused
 //    by a Gaussian of sigma 0.5 / 1 / 1.5 / 2 / 3 / 4 / 6 / 8 luma px (stack-probe --blur, own noise
 //    put back): 2022-09-17 0.093 / 0.139 / 0.150 / 0.159 / 0.184 / 0.202 / 0.249 / 0.288 and
 //    0.094 / 0.142 / 0.161 / 0.170 / 0.187 / 0.215 / 0.251 / 0.288; 2022-08-03 0.160 / 0.196 / 0.206 / 0.217 / 0.238 / 0.262 / 0.318 /
 //    0.343; 195137 0.096 / 0.119 / 0.147 / 0.173 / 0.237 / 0.282 / 0.343 / 0.362 -- refused from a
 //    true blur of 0.28-0.37 R on; at 0.43-0.57 R they read 0.32-0.35, 1.3-1.4x over the limit.
-//    StackSynth (unit test, 60 frames, noise 0.01 unless said): R 24 blurred 0.6 / 2 / 3 px 0.027 /
-//    0.079 / 0.113, R 40 by 4 px 0.084 (stacked); R 24 by 12 px (Task 6's case) 0.274 (refused);
-//    convolved (true defocus) at noise 0.005: R 24 by 2 px 0.086, R 40 by 3 px 0.074 (stacked), R 24
-//    by 12 px 0.325, R 40 by 20 px 0.305 (refused). Limit: at noise 0.01 the convolved R 24 / 12 px
-//    reads 0.267 (refused) but R 40 / 20 px 0.181 (stacked): EstimatePixelNoise reads s^2 4.3-5.2%
-//    low (its 20th-percentile tile pick; measured on white noise), so q keeps ~0.18 s^2 per pixel of
-//    noise in its gradient term, which dominates once a spread-out blob's own gradients are weaker,
-//    and q stops falling. A defocus that grows a disc into a faint blob (sigma ~ R and over) reads
-//    sharper again for the same reason, and a centre that dims moves R_h out. Missed, such a
-//    capture stacks into a visibly soft image -- the failure the rule prefers.
+//    Re-measured with Ruling P19's noise: 0.000-0.006 higher (2022-09-17 0.094 / 0.139 / 0.150 /
+//    0.159 / 0.184 / 0.202 / 0.250 / 0.289 and 0.094 / 0.142 / 0.161 / 0.171 / 0.188 / 0.215 / 0.251 /
+//    0.290; 2022-08-03 0.160 / 0.197 / 0.207 / 0.217 / 0.239 / 0.263 / 0.321 / 0.349; 195137 0.096 /
+//    0.119 / 0.147 / 0.173 / 0.237 / 0.283 / 0.343 / 0.362): a real disc's noise is small against even
+//    its blurred limb; the first 2022-09-17 file at 6 luma px now sits on the limit (0.250, refused).
+//    StackSynth (unit test, 60 frames, noise 0.01 unless said; seed 7, re-measured 2026-10-22 with
+//    Ruling P19's unbiased pixel noise, the earlier reading in brackets): R 24 blurred 0.6 / 2 / 3 px
+//    0.027 / 0.080 / 0.114, R 40 by 4 px 0.084 (stacked); R 24 by 10 px 0.263 (0.245: it was
+//    stacked), by 12 px (Task 6's case) 0.312 (0.274) (refused); convolved (true defocus) at noise
+//    0.005: R 24 by 2 px 0.086, R 40 by 3 px 0.075 (stacked), R 24 by 12 px 0.344 (0.325), R 40 by
+//    20 px 0.344 (0.305) (refused); at noise 0.01 R 24 by 2 px 0.087, R 40 by 3 px 0.073 (stacked), R
+//    24 by 12 px 0.312 (0.267, on the limit) (refused). Noise-free, the convolved R 24 / 12 px reads
+//    0.334 and R 40 / 20 px 0.342. With s^2 read 4.3-5.2% low, q kept ~0.18 s^2 per pixel of noise in
+//    its gradient term, which dominated once a spread-out blob's own gradients were weaker. Limit,
+//    still: at noise 0.01 the convolved R 40 / 20 px reads 0.240 (0.181) and is stacked, R 24 / 24 px
+//    0.191 (0.103; noise-free 0.400). Not the noise estimate now (it reads these frames' s^2 0.4-0.9%
+//    high, which lowers q, raising the reading): such a blob's gradient energy is ~5% of the noise's,
+//    so each frame's q carries ~10% noise (qualitySigma), and q_ref -- the top of G over 60 frames --
+//    keeps most of it: 0.040 against a mean q of 0.031 (noise-free 0.034), the winner's curse that
+//    step 6's early-stopped EM removes only in part. A defocus that grows a disc into a faint blob
+//    (sigma ~ R and over) reads sharper again for that reason, and a centre that dims moves R_h out.
+//    Missed, such a capture stacks into a visibly soft image -- the failure the rule prefers.
 //    The blur spread is that of the true quality: tau^2 = max(0, var(q) - mean(qualitySigma^2)),
 //    spread = (sigma(mu - 1.2816 tau) - sigma(mu + 1.2816 tau)) / sigma(mu); its bounds use tau^2 -+ 2 SE, SE = sqrt(2 / N) var(q).
 //    Blurred -> OutOfFocus ("steady") when even the upper bound (tau^2 + 2 SE) gives a spread under

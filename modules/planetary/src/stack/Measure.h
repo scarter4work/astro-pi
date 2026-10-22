@@ -111,24 +111,54 @@ constexpr double kClippedLuma = 0.999;
 // d = ceil(longest side / 256) (1080p mono: d = 8). The background b is the 20th percentile of
 // the block means (the sky, as long as the target covers less than ~80% of the frame). The block
 // noise s_b is the MAD of neighbouring block differences / sqrt(2) (blind to smooth gradients
-// and vignetting), floored at s / d. The pixel noise s is from the 20th percentile, over tiles
-// of up to 32 x 32 pixels, of the mean squared neighbour difference / 2 -- the smoothest tiles,
-// i.e. sky where there is any -- so planet texture does not inflate it and quantised 8-bit data
-// still gets its true (quantisation included) noise. Caveat: on a target that fills the frame
-// (lunar surface, no sky) the smoothest tiles are still textured, s comes out too high, and the
-// quality's noise term over-corrects (all frames of the capture alike, so their ranking holds,
-// but the absolute quality reads low and can reach 0 on a smooth, blurred frame).
+// and vignetting), floored at s / d (s as EstimatePixelNoise reads it: the box is not known yet).
+// On sky the floor is what holds -- s / d exceeds the MAD estimate in every frame of the 2026-01-30
+// Saturn, Neptune and Jupiter 195830 and the 2023-02-11 Jupiter (measured 2026-10-22) -- so s_b
+// moved with Ruling P19's s (+2-3% there).
+// The pixel noise s is read from the smoothest tiles -- sky where there is any -- so planet texture
+// does not inflate it and quantised 8-bit data still gets its true (quantisation included) noise:
+// over tiles of up to 32 x 32 pixels, each tile's mean squared horizontal neighbour difference
+// (2 s^2 for white noise); q = the 20th percentile of them; s^2 = the noise level at which q is where
+// that order statistic is expected (Ruling P19). Taken as is, q / 2 read s^2 4.3-5.2% low (0.948-0.957
+// of the truth on white noise, 100^2 to 1080^2): the lowest fifth of K tile estimates sits ~0.84 of
+// their spread under their mean. The model of a noise tile: m pairs in rows of L estimate 2 s^2
+// near-normally with relative sd tau = sqrt((kappa - (kappa - 1) / (2 L)) / m) (a row's variance is
+// (4 kappa L - 2 kappa + 2) s^4; kappa = mu4 / s^4 of the noise, 3 for Gaussian noise, 4.8 for 8-bit
+// noise of 0.4 DN), and the k-th smallest of N of them is expected at their Phi^-1((k + 0.625) /
+// (N + 0.25)) (Blom). The noise tiles are those whose estimate lies within 3 Gaussian tau of the
+// fitted mean (counted / 0.99865) -- the target's own tiles sit far above the sky's -- and kappa is
+// measured on them (2 E[d^4] / E[d^2]^2 - 3, at most 12); 8 rounds to a fixed point. Where every tile
+// is a full tile of Gaussian noise this is the order-statistic correction 1 / (1 - 0.8416 sqrt(3 K /
+// M)); where not it is more exact: that one, counting a disc's tiles as noise, read s^2 0.2-2.3% high
+// with a disc of radius 0.15 of the short side and 1.0-14% high at 0.3, and with few tiles its rank is
+// off (the 4th of 16 is the 0.22 quantile, not 0.2: 100^2 read 1.005-1.007). Measured 2026-10-22
+// (test "EstimatePixelNoise is unbiased ...", white noise 0.01): mean s^2 over the truth 0.997-1.001
+// from 100^2 to 1080^2, on sky and with such a disc; 0.997-1.000 on 8-bit sky of 0.4-3 DN. The
+// variance of the estimate (qualitySigma's V) is the sample quantile's, pr (1 - pr) / (N f(q)^2) (pr
+// the Blom share, f the noise tiles' density at q), scaled to s^2.
+// No correction (s^2 = q / 2, variance 6.12 s^4 / M, M the pairs used: the same order statistic's
+// for K Gaussian tiles at p = 0.2) when q cannot be shown to be noise: the sky -- the tiles clear of
+// the target's box in MeasureFrame, the whole image for EstimatePixelNoise -- holds at most k noise
+// tiles, or there are at most 2k + 1 in all (q is not in their lower half). That is a target that
+// fills the frame: its smoothest tiles are texture, which no noise model describes (corrected anyway,
+// s varied 0-1.9% between the frames of a synthetic surface, as the share of its tiles in the band
+// did, and the frames' ranking moved with it). Caveat there: s comes out too high and the quality's
+// noise term over-corrects (all frames of the capture alike, so their ranking holds, but the absolute
+// quality reads low and can reach 0 on a smooth, blurred frame).
 //
 // Target rule. Blocks brighter than b + 4 s_b form 8-connected components. A component is a
 // target candidate when its brightest block stands at least max(10 s_b, 0.01) above b and at
 // least 16 sensor pixels' worth of the opened luma inside it (luma pixels x lumaScale^2) stand
 // above half that contrast; the candidate with the most flux (sum of block excess) is the target.
 // 10 s_b: white noise peaks near 4-5 s_b over a 1080p grid, and the 2026-01-30 Saturn AVI (a
-// 5-6 DN pedestal and nothing else) peaks at 4.9-5.7 s_b, 0.0044-0.0051 of full scale on the
-// opened grid (measured 2026-10-21), so a real target has to stand well clear of both. 0.01 of full scale (2.5 DN at
+// 5-6 DN pedestal and nothing else) peaks at 4.5-6.0 s_b, 0.0045-0.0060 of full scale on the
+// opened grid (measured 2026-10-22 over its 21 frames, the brightest block over b; 4.7-6.2 s_b with
+// the s that read low before Ruling P19), so a real target has to stand well clear of both. 0.01 of full scale (2.5 DN at
 // 8 bits): a smooth amp glow or gradient can reach many s_b yet stays that faint, while a planet
 // capture is exposed to tens of percent (the same night's Neptune, the faintest target on the NAS,
-// at gain high enough for 22 DN of noise: 0.80 of full scale, over 18 s_b). 16 sensor pixels, counted on the luma rather than as whole blocks (a 1080p block alone is
+// at gain high enough for 22 DN of noise: its brightest opened block 0.34-0.60 of full scale,
+// 9.7-17.2 s_b -- the one frame of 94 under 10 s_b is the one found without a target, before P19 as
+// after (9.9-17.6 s_b then)). 16 sensor pixels, counted on the luma rather than as whole blocks (a 1080p block alone is
 // 64 px): the opening already removes anything thinner than 3 luma px, so at sensor resolution this
 // rejects a compact 3x3 hot cluster (9 px) or a small cosmic-ray blob, while a planet
 // 5 px across is found every time (measured 2026-10-22 at lumaScale 1: seeing sigma 1 px on the Saturn
@@ -172,19 +202,24 @@ constexpr double kClippedLuma = 0.999;
 //  - SD fluctuates by 2 sum (t - b) e, variance 4 s^2 SD; plus sum e^2, variance 2 n s^4;
 //  - their linear parts covary by -4 s^2 sum lap(t) (t - b) = +4 s^2 SN, the quadratic parts by
 //    8 n s^4 (4 s^4 per difference, both directions);
-//  - s^2 is itself estimated (the 20th percentile of the tile estimates), variance V = 6.12 s^4 / M
-//    over the M pixel pairs used; it enters SN as -4 n s^2 and SD as -n s^2, adding 16 n^2 V,
-//    n^2 V and covariance 4 n^2 V.
+//  - s^2 is itself estimated (from the 20th percentile of the tile estimates), variance V as
+//    "Background and noise" gives it (~6.7 s^4 / M over the M pixel pairs used, on 1080p sky); it enters
+//    SN as -4 n s^2 and SD as -n s^2, adding 16 n^2 V, n^2 V and covariance 4 n^2 V.
 // sum lap(t)^2 is the measured 5-point Laplacian energy minus its noise part (20 s^2 per pixel).
 // Then (dQ/Q)^2 = (Var SN / SN^2 + Var SD / SD^2 - 2 Cov / (SN SD)) / 4. The background level b
 // and the region are taken as fixed (their noise moves SD a little and SN not at all). Checked
 // against 200 noise realisations of a textured planet and a plain disc at two noise levels: the
-// empirical scatter is 0.88-1.07 times the reported sigma.
+// empirical scatter is 0.86-1.05 times the reported sigma (0.88-1.07 before Ruling P19); on a
+// defocused blob at the noise floor (StackSynth R 40 convolved by 20 px, noise 0.005 / 0.01) 1.06 /
+// 0.95. There the quality is near the noise floor in another way: its gradient energy is ~4.5% of
+// the noise's 4 s^2, so an error of 1% in s^2 moves it ~10% -- the estimate's own scatter is in
+// qualitySigma, but what is left of its bias is not (+0.4-0.9% in s^2 on such frames, whose wing tiles
+// carry a little gradient: quality 3-9% low).
 FrameStats MeasureFrame(const ser::FloatImage& luma, int64_t index, double lumaScale);
 
 // The pieces of MeasureFrame that other stages reuse on parts of a frame (Task 5's regions).
-// Pixel noise s of a luma image, as MeasureFrame estimates it ("Background and noise"), and the
-// variance of the estimate s^2 itself (6.12 s^4 / M, M the pixel pairs used). Throws
+// Pixel noise s of a luma image, as MeasureFrame estimates it ("Background and noise") with the whole
+// image taken as sky (no target box), and the variance of the estimate s^2 itself. Throws
 // std::invalid_argument for an empty or non-1-channel image or a sample count that does not match.
 struct NoiseEstimate {
     double sigma = 0;      // s

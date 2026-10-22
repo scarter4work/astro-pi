@@ -207,6 +207,64 @@ TEST_CASE("qualitySigma matches the scatter of quality over noise realisations")
     }
 }
 
+TEST_CASE("EstimatePixelNoise is unbiased on sky, with a disc, and on 8-bit data (Ruling P19)") {
+    // The 20th-percentile tile pick read s^2 4.3-5.2% low on white noise (0.948 / 0.957 / 0.957 / 0.954
+    // of the truth from 100^2 to 1080^2, gaps report); the mean ratio over many realisations must now be
+    // within 1%. Enough realisations that the Monte Carlo error is ~0.15% at every size.
+    struct Size {
+        int w, h;
+    };
+    for (const Size sz : {Size{100, 100}, Size{160, 120}, Size{320, 240}, Size{640, 480}, Size{1080, 1080}})
+        for (const bool disc : {false, true}) {
+            const int runs = std::max(6, static_cast<int>(4e6 / (static_cast<double>(sz.w) * sz.h)));
+            // A textured planet of radius 0.15 of the short side: 4 of the 16 tiles at 100^2 hold it.
+            const double r = 0.15 * std::min(sz.w, sz.h);
+            const FloatImage clean = disc ? TexturedPlanet(sz.w, sz.h, 0.5 * sz.w + 0.3, 0.5 * sz.h - 0.2, r, 0.05f)
+                                          : Flat(sz.w, sz.h, 0.05f);
+            double ratio = 0, ratio2 = 0, reported = 0;
+            for (int k = 0; k < runs; ++k) {
+                FloatImage im = clean;
+                AddNoise(im, 0.01, 9000u + 37u * static_cast<unsigned>(k) + static_cast<unsigned>(sz.w) + (disc ? 1u : 0u));
+                const stack::NoiseEstimate n = stack::EstimatePixelNoise(im);
+                const double v = n.sigma * n.sigma / 1e-4;
+                ratio += v;
+                ratio2 += v * v;
+                reported += n.varSigma2 / 1e-8;
+            }
+            const double mean = ratio / runs, spread = (ratio2 - runs * mean * mean) / (runs - 1);
+            INFO(sz.w << "x" << sz.h << (disc ? " with a disc" : " sky") << ": mean s^2 / truth " << mean << " over " << runs
+                      << " runs; variance of the ratio " << spread << ", reported " << reported / runs);
+            CHECK(mean == Catch::Approx(1).margin(0.01));
+            // varSigma2 (the order statistic's variance) matches the scatter where there are runs enough to tell.
+            if (runs >= 150) {  // the sample variance's own relative sd is sqrt(2 / runs), <= 12%
+                CHECK(spread >= 0.7 * reported / runs);
+                CHECK(spread <= 1.3 * reported / runs);
+            }
+        }
+    // 8-bit sky on a 10 DN pedestal: quantisation included (the truth is the image's own variance), down
+    // to noise of 0.4 DN, where most neighbour differences are 0 and the noise is far from Gaussian
+    // (kurtosis 4.8 against 3: the tile estimates spread wider than a Gaussian model says).
+    for (const double dn : {0.4, 0.6, 1.0, 3.0}) {
+        const int w = 320, h = 240, runs = 60;
+        double ratio = 0;
+        for (int k = 0; k < runs; ++k) {
+            FloatImage im = Flat(w, h, 10.0f / 255);
+            AddNoise(im, dn / 255, 7000u + static_cast<unsigned>(k) + static_cast<unsigned>(100 * dn));
+            Quantize8(im);
+            double m1 = 0, m2 = 0;
+            for (const float v : im.data) {
+                m1 += v;
+                m2 += static_cast<double>(v) * v;
+            }
+            const double npx = static_cast<double>(w) * h, var = m2 / npx - (m1 / npx) * (m1 / npx);
+            const double s = stack::EstimatePixelNoise(im).sigma;
+            ratio += s * s / var;
+        }
+        INFO("8-bit noise " << dn << " DN: mean s^2 / truth " << ratio / runs);
+        CHECK(ratio / runs == Catch::Approx(1).margin(0.01));
+    }
+}
+
 TEST_CASE("a frame of background only has no target") {
     SECTION("1080p-sized pedestal, gentle gradient, 8-bit quantised, a hot pixel (the 2026-01-30 Saturn case)") {
         FloatImage im = Flat(1280, 720, 0.0f);

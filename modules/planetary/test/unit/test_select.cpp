@@ -1550,9 +1550,14 @@ TEST_CASE("a grossly defocused large disc is out of focus; sharp and mildly soft
         double noise;
         bool diagnosed;
     };
+    // Ruling P19 (an unbiased pixel noise): R 24 blurred 10 px at noise 0.01 read 0.245 and was stacked
+    // while the noise estimate read s^2 ~5% low (0.263 now), and the convolved R 24 / 12 px at noise 0.01
+    // sat on the limit (0.267; 0.312 now). Its noise-free reading is 0.334.
     for (const Case& c : {Case{24, 0.6, false, 0.01, false}, Case{24, 2, false, 0.01, false}, Case{24, 3, false, 0.01, false},
                           Case{40, 4, false, 0.01, false}, Case{24, 2, true, 0.005, false}, Case{40, 3, true, 0.005, false},
-                          Case{24, 12, false, 0.01, true}, Case{24, 12, true, 0.005, true}, Case{40, 20, true, 0.005, true}}) {
+                          Case{24, 2, true, 0.01, false}, Case{40, 3, true, 0.01, false},
+                          Case{24, 12, false, 0.01, true}, Case{24, 12, true, 0.005, true}, Case{40, 20, true, 0.005, true},
+                          Case{24, 10, false, 0.01, true}, Case{24, 12, true, 0.01, true}}) {
         const Selection sel = MeasuredDisc(c.radius, c.blur, c.convolve, c.noise, 7);
         std::string numbers;
         for (const auto& [name, v] : sel.diagnosis.numbers) numbers += name + " " + std::to_string(v) + "; ";
