@@ -89,7 +89,39 @@ struct RegionLayout {
     bool flatEdges = false;
     std::vector<Region> regions;  // the nodes that hold structure, in row-major node order
     std::vector<int> node;        // nx * ny: index into regions, -1 where no region was placed
+    // The region stage's noise is read on 2 x 2 bins instead of the pixels (RegionNoiseOnBins on the
+    // reference over the target's box, decided once by PlaceRegions; Ruling P25).
+    bool noiseOnBins = false;
 };
+
+// Region-stage pixel noise (Ruling P25), blind to texture: MaskNoise -- the trimmed second moment of
+// the [1 -2 1] x [1 -2 1] responses, Regions.cpp -- on the pixels of [x0, x1) x [y0, y1) (clipped to
+// the image), or with onBins twice that on their 2 x 2 bins (white noise s gives s / 2 in a bin).
+// Each reading misreads one texture as noise: a raw colour mosaic read as mono carries its pattern at
+// Nyquist in every frame, which the pixels see and a bin (one cell of the pattern) cancels; texture at
+// 4-8 px, coarse for the pixels, is fine for the bins. The capture's own data says which applies, so
+// the choice is made once, on the reference, and every frame is read the same way -- not per frame by
+// the smaller of the two, which read s^2 0.923 / 0.961 / 0.981 / 0.989 / 0.995 of the truth on white
+// noise over 32^2 / 64^2 / 128^2 / 256^2 / 512^2 (measured 2026-10-22), each frame taking whichever
+// fluctuated low. Each reading alone (test "RegionNoise is unbiased ...", white noise, 32^2-512^2):
+// pixels 1.000-1.006 of the truth (1.010 at 32^2 before the trimmed moment's constant was taken at the
+// share actually kept), bins 0.999-1.009 from 48^2 and 1.022 at 32^2 (16 x 16 bins, 196 responses: the
+// trimmed moment's small-sample excess).
+// varSigma2 = kRegionNoiseVariance s^4 / (pixels measured: the rectangle's, a quarter of it for
+// bins): measured Var(s^2) x pixels / s^4 = 8.6-11.6 on pixels and 8.8-12.3 on bins (bins counted),
+// 32^2 to 1024^2, and in the test 0.71-1.17 of the formula (the 21.8 s^4 / area it replaces was ~2x
+// high on pixels and ~2x low on bins). 0 for a rectangle under 3 x 3 (6 x 6 for bins).
+constexpr double kRegionNoiseVariance = 10.0;
+NoiseEstimate RegionNoise(const ser::FloatImage& im, int x0, int y0, int x1, int y1, bool onBins);
+// Bins when the reference's pixel reading exceeds kRegionNoiseMosaicRatio times its bin reading: a
+// mosaic. Measured 2026-10-22 over the regions' extent of the references of the 2026-01-30 Jupiter
+// 195830 (AVI and SER), Neptune 204515 and Moon 193142, the 2023-02-02 Moon, the 2023-02-11 Jupiter and
+// the 2022-09-17 Jupiter 225418 (all measured on 2 x 2 luma, so no mosaic reaches the region stage):
+// pixels / bins 0.21-0.65 -- texture raises the bins' reading -- while a StackSynth disc as a
+// mono-labelled mosaic (sites R 1 / G 0.5 / B 0.35) reads 2.19 in one frame at noise 0.01 (0.93
+// without the mosaic).
+constexpr double kRegionNoiseMosaicRatio = 1.5;
+bool RegionNoiseOnBins(const ser::FloatImage& reference, int x0, int y0, int x1, int y1);
 
 // The (at most two) nodes covering coordinate u along one axis, and their weights (0 for a node
 // outside the grid; i0 may then be -1 or nx - 1 with w1 = 0 and so on). Shared by the measurement,

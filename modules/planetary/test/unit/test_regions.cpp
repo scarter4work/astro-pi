@@ -416,3 +416,58 @@ TEST_CASE("An exceptionally sharp frame is kept by the regions, not fenced off (
     for (size_t r = 0; r < plan.RegionCount(); ++r)
         CHECK((plan.flags[static_cast<size_t>(pos) * plan.RegionCount() + r] & stack::RegionPlan::kKept) != 0);
 }
+
+TEST_CASE("RegionNoise is unbiased on pixels and on bins, chosen once per capture (Ruling P25)", "[regions][noise]") {
+    // The region stage used to take, per frame, the smaller of the two readings: s^2 0.923 / 0.961 /
+    // 0.981 / 0.989 / 0.995 of the truth over 32^2 / 64^2 / 128^2 / 256^2 / 512^2 (white noise), each
+    // frame taking whichever fluctuated low. Each reading alone, white noise 0.01:
+    for (const int n : {32, 48, 64, 128, 256, 512})
+        for (const bool onBins : {false, true}) {
+            const int runs = std::max(150, static_cast<int>(3e6 / (static_cast<double>(n) * n)));
+            double sum = 0, sum2 = 0, reported = 0;
+            for (int k = 0; k < runs; ++k) {
+                std::mt19937 rng(4000u + 31u * static_cast<unsigned>(k) + static_cast<unsigned>(n) + (onBins ? 7u : 0u));
+                std::normal_distribution<double> g(0, 0.01);
+                FloatImage im{n, n, 1, std::vector<float>(static_cast<size_t>(n) * n)};
+                for (float& v : im.data) v = static_cast<float>(0.3 + g(rng));
+                const stack::NoiseEstimate e = stack::RegionNoise(im, 0, 0, n, n, onBins);
+                const double v = e.sigma * e.sigma / 1e-4;
+                sum += v;
+                sum2 += v * v;
+                reported += e.varSigma2 / 1e-8;
+            }
+            const double mean = sum / runs, var = (sum2 - runs * mean * mean) / (runs - 1);
+            INFO(n << "^2 on " << (onBins ? "bins" : "pixels") << ": mean s^2 / truth " << mean << " over " << runs
+                   << " runs; variance " << var << ", reported " << reported / runs);
+            // Within 1%, but for 16 x 16 bins (196 responses, a mosaic's smallest extent): the trimmed
+            // moment's small-sample excess, +2.2% measured.
+            CHECK(mean == Catch::Approx(1).margin(onBins && n == 32 ? 0.025 : 0.01));
+            CHECK(var >= 0.65 * reported / runs);  // the formula is one constant for 32^2-1024^2: 0.71-1.23 of it
+            CHECK(var <= 1.5 * reported / runs);
+        }
+    // The choice, made on the reference: a mono disc (texture at a few px raises the bins' reading) is
+    // read on the pixels; the same disc as a mono-labelled colour mosaic (sites R 1 / G 0.5 / B 0.35),
+    // whose pattern the pixels read as noise, on the bins.
+    const int w = 160, h = 160;
+    const Scene s = testing::MakeDisc(3, 80.3, 79.8, 40);
+    auto cfa = [&](FloatImage& im) {
+        for (int y = 0; y < h; ++y)
+            for (int x = 0; x < w; ++x)
+                im.data[static_cast<size_t>(y) * w + x] *= y % 2 == 0 ? (x % 2 == 0 ? 1.0f : 0.5f) : (x % 2 == 0 ? 0.5f : 0.35f);
+    };
+    FrameSpec f;
+    f.noise = 0.0025;  // a reference: the mean of 16 frames of noise 0.01
+    const FloatImage mono{w, h, 1, testing::RenderFrame(s, w, h, f, 11)};
+    FloatImage mosaic = mono;
+    cfa(mosaic);
+    CHECK_FALSE(stack::RegionNoiseOnBins(mono, 30, 30, 130, 130));
+    CHECK(stack::RegionNoiseOnBins(mosaic, 30, 30, 130, 130));
+    // ... and a frame of that mosaic: the pixels read its pattern as noise, the bins do not.
+    f.noise = 0.01;
+    FloatImage frame{w, h, 1, testing::RenderFrame(s, w, h, f, 12)};
+    cfa(frame);
+    const double onBins = stack::RegionNoise(frame, 30, 30, 130, 130, true).sigma;
+    const double onPixels = stack::RegionNoise(frame, 30, 30, 130, 130, false).sigma;
+    INFO("mosaic frame: bins " << onBins << ", pixels " << onPixels);
+    CHECK(onPixels > 1.3 * onBins);
+}
