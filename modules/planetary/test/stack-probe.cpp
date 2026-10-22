@@ -2,7 +2,7 @@
 // Never shipped, not a ctest case. Reads the video only; writes only --out.
 //
 //   stack-probe <video> [--bayer auto|none|RGGB|GRBG|GBRG|BGGR] [--threads N] [--out stack.fits|stack.tif]
-//               [--bits 16|32] [--json] [--frames N] [--blur S]
+//               [--bits 16|32] [--json] [--frames N] [--blur S] [--sample X,Y]...
 //
 // Runs RunStack on the video (default: Auto pattern, every hardware thread) and prints the summary --
 // as one JSON object with --json, else as plain lines -- including the phase times, the read
@@ -12,7 +12,10 @@
 // 0..65535) or 32 (IEEE float)). Probe-only knobs, both through a reader wrapper: --frames N stacks the
 // first N frames; --blur S blurs every frame by a Gaussian of sigma S sensor px before the engine sees it
 // (each colour site plane on its own for a mosaic, each channel for RGB): a synthetic defocus of a real
-// capture, for calibrating the focus floor. Exit 0 with an image, 2 when diagnosed, 1 on error.
+// capture, for calibrating the focus floor. --sample X,Y (repeatable) adds the stack's value at pixel (X, Y)
+// in every channel to the JSON ("samples"; the headless PixInsight probe compares PlanetaryStack's window
+// with them, test/run-probe-stack.sh), next to the image's size ("image") and the first and last frame
+// stacked ("stackedFirst", "stackedLast"). Exit 0 with an image, 2 when diagnosed, 1 on error.
 #include <sys/resource.h>
 
 #include <algorithm>
@@ -264,7 +267,7 @@ bool EndsWith(const std::string& s, const std::string& t) { return s.size() >= t
 int main(int argc, char** argv) try {
     if (argc < 2) {
         std::fprintf(stderr, "usage: stack-probe <video> [--bayer auto|none|RGGB|GRBG|GBRG|BGGR] [--threads N] "
-                             "[--out stack.fits|stack.tif] [--bits 16|32] [--json] [--frames N] [--blur S]\n");
+                             "[--out stack.fits|stack.tif] [--bits 16|32] [--json] [--frames N] [--blur S] [--sample X,Y]...\n");
         return 1;
     }
     const std::string path = argv[1];
@@ -275,6 +278,7 @@ int main(int argc, char** argv) try {
     bool json = false;
     int64_t limit = INT64_MAX;
     double blur = 0;
+    std::vector<std::pair<int, int>> samples;
     for (int i = 2; i < argc; ++i) {
         const std::string a = argv[i];
         auto next = [&] {
@@ -288,6 +292,12 @@ int main(int argc, char** argv) try {
         else if (a == "--json") json = true;
         else if (a == "--frames") limit = std::stoll(next());
         else if (a == "--blur") blur = std::stod(next());
+        else if (a == "--sample") {
+            const std::string v = next();
+            const size_t comma = v.find(',');
+            if (comma == std::string::npos) throw std::invalid_argument("--sample: X,Y");
+            samples.emplace_back(std::stoi(v.substr(0, comma)), std::stoi(v.substr(comma + 1)));
+        }
         else throw std::invalid_argument("unknown argument " + a);
     }
     if (bits != 16 && bits != 32) throw std::invalid_argument("--bits: 16 or 32");
@@ -350,6 +360,24 @@ int main(int argc, char** argv) try {
         j += ",\"memory\":{\"measureWorkers\":" + std::to_string(s.memory.measureWorkers) + ",\"alignWorkers\":" +
              std::to_string(s.memory.alignWorkers) + ",\"stackWorkers\":" + std::to_string(s.memory.stackWorkers) +
              ",\"observers\":" + std::to_string(s.memory.observers) + ",\"plannedPeakMB\":" + Fmt(s.memory.peakBytes / 1e6, 1) + "}";
+        if (o.image) {
+            const ser::FloatImage& im = *o.image;
+            j += ",\"image\":{\"width\":" + std::to_string(im.width) + ",\"height\":" + std::to_string(im.height) +
+                 ",\"channels\":" + std::to_string(im.channels) + "},\"stackedFirst\":" + std::to_string(o.frames.stacked.front()) +
+                 ",\"stackedLast\":" + std::to_string(o.frames.stacked.back()) + ",\"samples\":[";
+            bool first = true;
+            for (const auto& [x, y] : samples) {
+                if (x < 0 || y < 0 || x >= im.width || y >= im.height) throw std::invalid_argument("--sample outside the image");
+                for (int c = 0; c < im.channels; ++c) {
+                    char v[48];
+                    std::snprintf(v, sizeof v, "%.9g", im.data[(static_cast<size_t>(y) * im.width + x) * im.channels + c]);
+                    j += std::string(first ? "" : ",") + "{\"x\":" + std::to_string(x) + ",\"y\":" + std::to_string(y) +
+                         ",\"c\":" + std::to_string(c) + ",\"v\":" + v + "}";
+                    first = false;
+                }
+            }
+            j += "]";
+        }
         j += ",\"output\":" + (o.image && !out.empty() ? Json(out) : std::string("null")) + "}";
         std::printf("%s\n", j.c_str());
     } else {

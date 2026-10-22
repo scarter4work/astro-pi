@@ -2,11 +2,15 @@
 // JSON (expected dimensions, samples and keywords) into a directory.
 //
 //   make-fixtures <out dir>   ->  <out dir>/*.ser, *.avi (+ .avi.txt sidecars) + <out dir>/probe-in.json
+//   make-fixtures --stack <out dir>  ->  PlanetaryStack's captures + <out dir>/stack-cases.json
+//                                        (test/run-probe-stack.sh; see WriteStackFixtures)
 //
-// Expected values come from the same generator formula that fills the files,
+// SERViewer's expected values come from the same generator formula that fills the files,
 // plus an independent bilinear demosaic written here, never from the reader
 // under test. Never shipped.
 #include <cmath>
+#include <functional>
+#include <random>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -17,7 +21,9 @@
 #include <vector>
 
 #include "AviWriter.h"
+#include "PlanetaryVersion.h"
 #include "SerWriter.h"
+#include "StackSynth.h"
 
 using planetary::testing::AviSpec;
 using planetary::testing::SerSpec;
@@ -207,11 +213,335 @@ constexpr int64_t kHeaderUtc = 639243434615000000LL;   // 2026-09-07T02:04:21.50
 constexpr int64_t kFrame0 = 639243438000000000LL;      // 2026-09-07T02:10:00.000
 constexpr int64_t kFrameStep = 333330000LL;            // 33.333 s
 
+// ---- PlanetaryStack fixtures (make-fixtures --stack <dir>) ----------------------------------------
+//
+// Synthetic captures rendered with StackSynth.h (the engine tests' scenes, seeing and frame model),
+// written as real SER and AVI files, plus <dir>/stack-cases.json for test/run-probe-stack.sh. What a
+// stack of them must look like cannot come from a formula here: the run script takes it from the
+// engine itself (build/test/stack-probe on the same file: pixel values, frames used, the diagnosis and
+// its message) and checks that every fixture still gives the outcome named here, so a fixture that
+// stops producing its diagnosis fails loudly instead of testing nothing.
+//
+// stack-cases.json: { "cases": [ { name, path, kind, ... } ] }, kind:
+//   image      bayerPattern? (PlanetaryStack enum element id), probeBayer (stack-probe --bayer),
+//              expectId, sample: [[x, y]], keywords: [{name, value|comment|commentContains}],
+//              absentKeywords: [name], frameTimes? (ISO UTC per frame, from the SER trailer),
+//              consoleContains: [text]
+//   diagnosis  probeBayer, expectKind (stack-probe's diagnosis kind)
+//   error      expectError (text the thrown error carries)
+//   cancel     probeBayer, abortAfter (seconds), minSeconds (the run must take at least this long
+//              uninterrupted, so the abort lands mid-run)
+
+using planetary::testing::Capture;
+using planetary::testing::FrameSpec;
+using planetary::testing::Scene;
+
+// A capture's 16-bit frames as 8-bit (what an ASIAIR AVI holds) or as 16-bit little-endian SER bytes.
+std::vector<std::vector<uint8_t>> Frames8(const Capture& cap) {
+    std::vector<std::vector<uint8_t>> out;
+    for (const auto& f : *cap.frames) {
+        std::vector<uint8_t> b(f.size());
+        for (size_t i = 0; i < f.size(); ++i) b[i] = static_cast<uint8_t>(std::lround(f[i] / 257.0));
+        out.push_back(std::move(b));
+    }
+    return out;
+}
+
+std::vector<std::vector<uint8_t>> Frames16(const Capture& cap) {
+    std::vector<std::vector<uint8_t>> out;
+    for (const auto& f : *cap.frames) {
+        std::vector<uint8_t> b;
+        b.reserve(f.size() * 2);
+        for (uint16_t v : f) Put16LE(b, v);
+        out.push_back(std::move(b));
+    }
+    return out;
+}
+
+// A scene seen through an RGGB colour filter: each site keeps its own colour of the scene times a
+// per-colour gain (R 1.0, G 0.8, B 0.55), like the engine tests' mosaics.
+Capture Mosaic(const Capture& mono) {
+    const int w = mono.info.header.width, h = mono.info.header.height;
+    const double gain[3] = {1.0, 0.8, 0.55};
+    Capture cap = planetary::testing::NewCapture(w, h);
+    for (const auto& f : *mono.frames) {
+        std::vector<float> v(f.size());
+        for (int y = 0; y < h; ++y)
+            for (int x = 0; x < w; ++x) {
+                const int c = (y & 1) == 0 ? ((x & 1) == 0 ? 0 : 1) : ((x & 1) == 0 ? 1 : 2);
+                const size_t i = static_cast<size_t>(y) * w + x;
+                v[i] = static_cast<float>(gain[c] * f[i] / 65535.0);
+            }
+        cap.Add(v);
+    }
+    return cap;
+}
+
+// A planet disc with seeing (drift, local displacement, a blur field around 1.2 px).
+Capture SeeingDisc(int w, int h, double cx, double cy, double radius, int n, unsigned seed) {
+    const Scene s = planetary::testing::MakeDisc(seed, cx, cy, radius);
+    Capture cap = planetary::testing::NewCapture(w, h);
+    std::mt19937 rng(seed + 1000);
+    planetary::testing::RenderCapture(cap, s, n, [&](int) { return planetary::testing::Seeing(rng, w, h, 2.0, 28); });
+    return cap;
+}
+
+// A disc with small drift whose every pixel is scaled by `gain` (clipped at full scale).
+Capture BrightDisc(int w, int h, double radius, int n, unsigned seed, double gain) {
+    const Scene s = planetary::testing::MakeDisc(seed, w / 2.0 + 0.3, h / 2.0 - 0.2, radius);
+    Capture cap = planetary::testing::NewCapture(w, h);
+    std::mt19937 rng(seed + 7);
+    std::normal_distribution<double> n01(0, 1);
+    planetary::testing::RenderCapture(cap, s, n, [&](int) {
+        FrameSpec f;
+        f.gx = 1.0 * n01(rng);
+        f.gy = 1.0 * n01(rng);
+        f.gain = gain;
+        return f;
+    });
+    return cap;
+}
+
+// "2026-09-07T02:10:00.000" plus k seconds (frame k of the mono SER, one per second from kFrame0).
+std::string FrameIso(int k) {
+    char b[40];
+    std::snprintf(b, sizeof b, "2026-09-07T02:%02d:%02d.000", 10 + k / 60, k % 60);
+    return b;
+}
+
+struct StackCase {
+    std::string name, path, kind, bayerPattern, probeBayer = "auto", expectId, expectKind, expectError;
+    std::vector<std::pair<int, int>> sample;
+    std::vector<Kw> keywords;
+    std::vector<std::string> absent, frameTimes, consoleContains;
+    double abortAfter = 0, minSeconds = 0;
+};
+
+std::string ToJson(const StackCase& c) {
+    std::ostringstream o;
+    o << "{\"name\":" << Quote(c.name) << ",\"path\":" << Quote(c.path) << ",\"kind\":" << Quote(c.kind)
+      << ",\"probeBayer\":" << Quote(c.probeBayer);
+    if (!c.bayerPattern.empty()) o << ",\"bayerPattern\":" << Quote(c.bayerPattern);
+    if (!c.expectId.empty()) o << ",\"expectId\":" << Quote(c.expectId);
+    if (!c.expectKind.empty()) o << ",\"expectKind\":" << Quote(c.expectKind);
+    if (!c.expectError.empty()) o << ",\"expectError\":" << Quote(c.expectError);
+    if (c.kind == "cancel") o << ",\"abortAfter\":" << Num(c.abortAfter) << ",\"minSeconds\":" << Num(c.minSeconds);
+    o << ",\"sample\":[";
+    for (size_t i = 0; i < c.sample.size(); ++i) o << (i ? "," : "") << "[" << c.sample[i].first << "," << c.sample[i].second << "]";
+    o << "],\"keywords\":[";
+    for (size_t i = 0; i < c.keywords.size(); ++i)
+        o << (i ? "," : "") << "{\"name\":" << Quote(c.keywords[i].name) << "," << Quote(c.keywords[i].field) << ":"
+          << Quote(c.keywords[i].text) << "}";
+    o << "],\"absentKeywords\":" << JsonList(c.absent) << ",\"frameTimes\":" << JsonList(c.frameTimes)
+      << ",\"consoleContains\":" << JsonList(c.consoleContains) << "}";
+    return o.str();
+}
+
+const char* const kAsiairSidecarRG =
+    "[ZWO ASI585MC]\nCapture Area Size = %d * %d\nColour Format = RAW8\nFlip = None\nBayer = RG\n";
+
+void WriteSidecarRG(const std::string& avi, int w, int h) {
+    char text[256];
+    std::snprintf(text, sizeof text, kAsiairSidecarRG, w, h);
+    WriteText(avi + ".txt", text);
+}
+
+int WriteStackFixtures(const std::filesystem::path& dir) {
+    std::vector<StackCase> cases;
+    const std::string kMosaicWarning = "No Bayer pattern is known for this AVI (no capture sidecar), so the raw colour "
+                                       "mosaic was stacked as mono";
+
+    // A Bayer AVI with an ASIAIR sidecar (RG, Flip None -> RGGB): 192 x 160, a disc of radius 40
+    // sensor px with seeing, 40 frames.
+    const std::string bayerAvi = (dir / "stack-bayer.avi").string();
+    {
+        const int w = 192, h = 160;
+        const Capture cap = Mosaic(SeeingDisc(w, h, 96.4, 80.6, 40, 40, 31));
+        AviSpec a;
+        a.width = w; a.height = h;
+        WriteAvi(bayerAvi, a, Frames8(cap));
+        WriteSidecarRG(bayerAvi, w, h);
+
+        StackCase c;
+        c.name = "Bayer AVI with sidecar (Auto -> RGGB)"; c.path = bayerAvi; c.kind = "image";
+        c.expectId = "stack_bayer_stack";
+        c.sample = {{96, 80}, {97, 81}, {70, 64}, {120, 100}, {135, 80}, {10, 10}};
+        c.keywords = {{"INSTRUME", "value", "ZWO ASI585MC"},
+                      {"SRCVIDEO", "value", "stack-bayer.avi"},
+                      {"HISTORY", "commentContains", "PlanetaryStack " PLANETARY_VERSION_STRING ": stacked stack-bayer.avi"},
+                      {"HISTORY", "commentContains", "PlanetaryStack: Bayer RGGB (sidecar RG)"}};
+        c.absent = {"DATE-OBS", "DATE-END", "BAYERPAT"};
+        c.consoleContains = {"PlanetaryStack: Bayer RGGB (sidecar RG)"};
+        cases.push_back(c);
+
+        // A pattern set explicitly wins over the sidecar (as in SERViewer).
+        StackCase o = c;
+        o.name = "bayerPattern=BayerBGGR overrides the sidecar"; o.bayerPattern = "BayerBGGR"; o.probeBayer = "BGGR";
+        o.keywords = {{"INSTRUME", "value", "ZWO ASI585MC"},
+                      {"HISTORY", "commentContains", "PlanetaryStack: Bayer BGGR (chosen)"}};
+        o.consoleContains = {"PlanetaryStack: Bayer BGGR (chosen)"};
+        cases.push_back(o);
+    }
+
+    // Mono 16-bit SER with header strings and a timestamp trailer (one frame a second): 128 x 112, a
+    // disc of radius 26 px with seeing, 60 frames.
+    {
+        const int w = 128, h = 112, n = 60;
+        const Capture cap = SeeingDisc(w, h, 64.3, 55.7, 26, n, 11);
+        SerSpec s;
+        s.colorId = 0; s.width = w; s.height = h; s.depth = 16; s.frameCount = n;
+        s.dateTimeUtc = kHeaderUtc;
+        s.observer = "Scott"; s.instrument = "ZWO ASI462MM"; s.telescope = "VC200L";
+        std::vector<int64_t> ticks;
+        StackCase c;
+        for (int k = 0; k < n; ++k) {
+            ticks.push_back(kFrame0 + static_cast<int64_t>(k) * 10000000LL);
+            c.frameTimes.push_back(FrameIso(k));
+        }
+        const std::string path = (dir / "stack-mono.ser").string();
+        WriteSer(path, s, Frames16(cap), ticks);
+
+        c.name = "mono SER"; c.path = path; c.kind = "image"; c.expectId = "stack_mono_stack";
+        c.sample = {{64, 56}, {50, 40}, {80, 70}, {89, 56}, {5, 5}};
+        c.keywords = {{"INSTRUME", "value", "ZWO ASI462MM"},
+                      {"TELESCOP", "value", "VC200L"},
+                      {"OBSERVER", "value", "Scott"},
+                      {"SRCVIDEO", "value", "stack-mono.ser"}};
+        c.absent = {"BAYERPAT"};
+        cases.push_back(c);
+    }
+
+    // An AVI of a colour mosaic with no sidecar, Auto (Ruling P9): stacked as raw mono, with the warning.
+    {
+        const int w = 192, h = 160;
+        const Capture cap = Mosaic(SeeingDisc(w, h, 96.4, 80.6, 40, 40, 32));
+        AviSpec a;
+        a.width = w; a.height = h;
+        const std::string path = (dir / "stack-mosaic.avi").string();
+        WriteAvi(path, a, Frames8(cap));
+
+        StackCase c;
+        c.name = "undeclared mosaic AVI -> raw mono, warned"; c.path = path; c.kind = "image";
+        c.expectId = "stack_mosaic_stack";
+        c.sample = {{96, 80}, {97, 80}, {96, 81}, {120, 100}, {10, 10}};
+        c.keywords = {{"HISTORY", "commentContains", "PlanetaryStack warning: " + kMosaicWarning},
+                      {"HISTORY", "commentContains", "cannot be debayered afterwards"},
+                      {"HISTORY", "commentContains", "SERViewer's Save pattern... remembers it"}};
+        c.absent = {"BAYERPAT", "INSTRUME", "DATE-OBS"};
+        c.consoleContains = {kMosaicWarning, "cannot be debayered afterwards"};
+        cases.push_back(c);
+    }
+
+    // Diagnoses: captures that must give no image, each with the engine's own message.
+    auto diagnosis = [&](const std::string& name, const std::string& file, const Capture& cap, const std::string& kind) {
+        const std::string path = (dir / file).string();
+        SerSpec s;
+        s.colorId = 0; s.width = cap.info.header.width; s.height = cap.info.header.height; s.depth = 16;
+        s.frameCount = static_cast<int32_t>(cap.frames->size());
+        WriteSer(path, s, Frames16(cap));
+        StackCase c;
+        c.name = name; c.path = path; c.kind = "diagnosis"; c.expectKind = kind;
+        cases.push_back(c);
+    };
+    {
+        // Flat 2% sky and noise: the 2026-01-30 Saturn AVI in miniature.
+        Capture cap = planetary::testing::NewCapture(96, 80);
+        Scene sky;
+        sky.level = 0.02;
+        planetary::testing::RenderCapture(cap, sky, 40, [](int) {
+            FrameSpec f;
+            f.noise = 0.004;
+            return f;
+        });
+        diagnosis("diagnosis: no target", "diag-notarget.ser", cap, "NoTarget");
+    }
+    {
+        // The disc sits on the left edge (half cut off) in 36 of 40 frames.
+        const int w = 160, h = 120;
+        const Scene inside = planetary::testing::MakeDisc(41, 80, 60, 20);
+        const Scene edge = planetary::testing::MakeDisc(41, 6, 60, 20);
+        Capture cap = planetary::testing::NewCapture(w, h);
+        for (int k = 0; k < 40; ++k) {
+            FrameSpec f;
+            cap.Add(planetary::testing::RenderFrame(k < 4 ? inside : edge, w, h, f, 500u + k));
+        }
+        diagnosis("diagnosis: target leaves the frame", "diag-edge.ser", cap, "TargetLeavesFrame");
+    }
+    {
+        // A disc overexposed to full scale in every frame.
+        Capture cap = BrightDisc(128, 112, 26, 40, 51, 3.0);
+        diagnosis("diagnosis: clipped", "diag-clipped.ser", cap, "Clipped");
+    }
+    {
+        // Every frame a different lunar field: no frame aligns to the others.
+        const int w = 160, h = 128;
+        Capture cap = planetary::testing::NewCapture(w, h);
+        for (int k = 0; k < 30; ++k) {
+            FrameSpec f;
+            cap.Add(planetary::testing::RenderFrame(planetary::testing::MakeSurface(900u + k, w, h), w, h, f, 77u + k));
+        }
+        diagnosis("diagnosis: unaligned", "diag-unaligned.ser", cap, "Unaligned");
+    }
+
+    // Files that cannot be stacked at all.
+    {
+        StackCase m;
+        m.name = "missing file"; m.path = (dir / "does-not-exist.avi").string(); m.kind = "error";
+        m.expectError = "cannot open video file";
+        cases.push_back(m);
+
+        const std::string junk = (dir / "not-a-video.avi").string();
+        WriteText(junk, std::string(4096, 'x'));
+        StackCase j;
+        j.name = "not a video file"; j.path = junk; j.kind = "error"; j.expectError = "not-a-video.avi";
+        cases.push_back(j);
+
+        StackCase e;
+        e.name = "empty filePath"; e.path = ""; e.kind = "error"; e.expectError = "no video file selected";
+        cases.push_back(e);
+    }
+
+    // Cancel: a longer Bayer capture (1024 x 768, 600 frames: 30 rendered frames, repeated) aborted from
+    // the Process Console while it runs; afterwards the Bayer AVI above must still stack (the run script
+    // runs it again after the cancel).
+    {
+        const int w = 1024, h = 768, unique = 30, n = 600;
+        const std::vector<std::vector<uint8_t>> rendered = Frames8(Mosaic(SeeingDisc(w, h, 512.4, 384.6, 180, unique, 81)));
+        std::vector<std::vector<uint8_t>> frames;
+        for (int k = 0; k < n; ++k) frames.push_back(rendered[static_cast<size_t>(k % unique)]);
+        AviSpec a;
+        a.width = w; a.height = h;
+        const std::string path = (dir / "stack-long.avi").string();
+        WriteAvi(path, a, frames);
+        WriteSidecarRG(path, w, h);
+        StackCase c;
+        c.name = "cancel mid-run from the console"; c.path = path; c.kind = "cancel";
+        c.abortAfter = 0.5; c.minSeconds = 1.5;
+        cases.push_back(c);
+    }
+
+    std::ofstream out(dir / "stack-cases.json");
+    out << "{\"cases\":[";
+    for (size_t i = 0; i < cases.size(); ++i) out << (i ? ",\n" : "\n") << ToJson(cases[i]);
+    out << "\n]}\n";
+    if (!out) {
+        std::fprintf(stderr, "make-fixtures: cannot write %s\n", (dir / "stack-cases.json").c_str());
+        return 1;
+    }
+    std::printf("make-fixtures: %zu PlanetaryStack cases in %s\n", cases.size(), (dir / "stack-cases.json").c_str());
+    return 0;
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
+    if (argc == 3 && std::string(argv[1]) == "--stack") {
+        const std::filesystem::path dir = std::filesystem::absolute(argv[2]);
+        std::filesystem::create_directories(dir);
+        return WriteStackFixtures(dir);
+    }
     if (argc != 2) {
-        std::fprintf(stderr, "usage: %s <out dir>\n", argv[0]);
+        std::fprintf(stderr, "usage: %s <out dir>\n       %s --stack <out dir>\n", argv[0], argv[0]);
         return 2;
     }
     const std::filesystem::path dir = std::filesystem::absolute(argv[1]);

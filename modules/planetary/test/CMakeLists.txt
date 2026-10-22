@@ -33,9 +33,12 @@ target_include_directories(test_fits_text PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/.
 planetary_add_test(test_preview unit/test_preview.cpp planetary_ser)
 target_include_directories(test_preview PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/../src/module")
 
-# Test-only fixture writer for the headless PixInsight probe (test/run-probe.sh).
+# Test-only fixture writer for the headless PixInsight probes (test/run-probe.sh, test/run-probe-stack.sh).
+# planetary_stack: the --stack fixtures are rendered with StackSynth.h (the engine tests' scenes);
+# PlanetaryVersion.h: the version their HISTORY expectations name.
 add_executable(make-fixtures make-fixtures.cpp)
-target_include_directories(make-fixtures PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/unit")
+target_include_directories(make-fixtures PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/unit" "${CMAKE_CURRENT_SOURCE_DIR}/../src/module")
+target_link_libraries(make-fixtures PRIVATE planetary_stack)
 add_test(NAME make_fixtures_runs
          COMMAND make-fixtures "${CMAKE_CURRENT_BINARY_DIR}/fixtures-smoke")
 
