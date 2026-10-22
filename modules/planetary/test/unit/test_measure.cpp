@@ -465,11 +465,15 @@ TEST_CASE("MeasureAll matches per-frame measurement and is identical for 1 and 8
         spec.height = kAviH;
         testing::WriteAvi(path, spec, frames);
     }
-    for (ser::BayerChoice choice : {ser::BayerChoice::None, ser::BayerChoice::RGGB}) {
+    // Auto: no sidecar next to the file, so the pattern is unknown -- an undeclared mosaic (Ruling P9),
+    // measured binned like RGGB though it is read as mono.
+    for (ser::BayerChoice choice : {ser::BayerChoice::None, ser::BayerChoice::RGGB, ser::BayerChoice::Auto}) {
         auto probe = ser::OpenVideo(path, choice);
         const ser::FileInfo info = probe->Info();
         REQUIRE(info.frameCount == kAviFrames);
         REQUIRE(info.colorId == (choice == ser::BayerChoice::RGGB ? ser::ColorId::BayerRGGB : ser::ColorId::Mono));
+        REQUIRE(stack::UndeclaredMosaic(info) == (choice == ser::BayerChoice::Auto));
+        REQUIRE(stack::LumaScale(info) == (choice == ser::BayerChoice::None ? 1.0 : 2.0));
         const stack::SourceFactory factory = [&] { return ser::OpenVideo(path, choice); };
 
         std::vector<std::string> phases;
@@ -506,7 +510,7 @@ TEST_CASE("MeasureAll matches per-frame measurement and is identical for 1 and 8
         REQUIRE(eight.size() == static_cast<size_t>(kAviFrames));
         int found = 0;
         for (int64_t i = 0; i < kAviFrames; ++i) {
-            const FrameStats direct = MeasureFrame(stack::LumaForMeasure(probe->ReadFrame(i), info.colorId, info.normDepth), i, stack::LumaScale(info));
+            const FrameStats direct = MeasureFrame(stack::MeasurementLuma(probe->ReadFrame(i), info), i, stack::LumaScale(info));
             INFO("frame " << i);
             CHECK(SameStats(one[i], direct));
             CHECK(SameStats(eight[i], direct));
