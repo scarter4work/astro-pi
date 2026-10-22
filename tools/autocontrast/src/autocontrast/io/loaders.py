@@ -77,9 +77,9 @@ _FITS_SUFFIXES = {".fits", ".fit", ".fts"}
 # source pixel of (65535, 40000, 257) comes back as (255, 156, 1) — the low
 # byte is gone and nothing says so. That is the one failure mode §12 forbids
 # outright, and it is exactly what the optimizer's candidate round trip would
-# have hit: `.tif` is already in `supported_suffixes()` (Pillow registers it),
-# so it passes `optimize_begin`'s validation and then silently quantizes every
-# candidate to 8 bits. Production must not optimize against an approximation
+# hit: `.tif` is in `supported_suffixes()`, so it passes `optimize_begin`'s
+# validation, and a Pillow decode would then silently quantize every candidate
+# to 8 bits. Production must not optimize against an approximation
 # (§2.2), and an 8-bit intermediate is one.
 _TIFF_SUFFIXES = {".tif", ".tiff"}
 
