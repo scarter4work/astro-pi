@@ -25,6 +25,7 @@ planetary_add_test(test_select unit/test_select.cpp planetary_stack)
 planetary_add_test(test_align unit/test_align.cpp planetary_stack)
 planetary_add_test(test_regions unit/test_regions.cpp planetary_stack)
 planetary_add_test(test_accumulate unit/test_accumulate.cpp planetary_stack)
+planetary_add_test(test_engine unit/test_engine.cpp planetary_stack)
 # FitsText.h is the module's PCL-free keyword-text helper (header only).
 planetary_add_test(test_fits_text unit/test_fits_text.cpp)
 target_include_directories(test_fits_text PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/../src/module")
@@ -57,3 +58,9 @@ target_link_libraries(align-probe PRIVATE planetary_stack)
 # Not a ctest case, it needs the NAS captures.
 add_executable(stack-region-probe stack-region-probe.cpp)
 target_link_libraries(stack-region-probe PRIVATE planetary_stack)
+
+# Test-only: RunStack on a real capture -- summary (JSON with --json), phase times, read rate, peak RSS,
+# the stack as FITS or TIFF (Task 6's real-data smoke; Task 9's harness). Not a ctest case, it needs the
+# NAS captures.
+add_executable(stack-probe stack-probe.cpp)
+target_link_libraries(stack-probe PRIVATE planetary_stack)

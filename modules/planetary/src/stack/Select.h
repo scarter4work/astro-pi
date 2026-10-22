@@ -9,8 +9,10 @@
 
 namespace planetary::stack {
 
-// Why a capture gives no image (spec "Diagnosis"). None: frames were selected.
-enum class DiagnosisKind { None, NoTarget, OutOfFocus, PoorSeeing, Clipped, TargetLeavesFrame };
+// Why a capture gives no image (spec "Diagnosis"). None: frames were selected. SelectFrames makes the
+// first five; Unaligned (too few frames align to the reference) and the region stage's OutOfFocus are
+// made by RunStack after alignment (Engine.h).
+enum class DiagnosisKind { None, NoTarget, OutOfFocus, PoorSeeing, Clipped, TargetLeavesFrame, Unaligned };
 
 struct Diagnosis {
     DiagnosisKind kind = DiagnosisKind::None;
@@ -50,6 +52,9 @@ struct Selection {
     // (Ruling P4: Task 5 exposes per-region detail with its uncertainty, Task 6 diagnoses when even
     // the best regions of the best frames fall below an absolute texture-scale floor).
     bool focusJudged = false;
+    // Step 7's disc radius R (luma px) when focusJudged; 0 otherwise. Discs under kMinJudgedRadius are
+    // judged a second time from the region stage (Ruling P4, Engine.h).
+    double targetRadius = 0;
 };
 
 // Fewest frames worth stacking: outlier rejection (satellite, hot pixel) needs a handful of samples

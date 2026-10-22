@@ -469,6 +469,7 @@ Selection SelectFrames(const std::vector<FrameStats>& stats, const ser::FileInfo
             radii.push_back(std::sqrt(static_cast<double>(s->bx1 - s->bx0) * (s->by1 - s->by0)) / 2 - d);
         }
         const double radius = std::max(1.0, Quantile(radii, 0.5));
+        sel.targetRadius = radius;
         const bool small = radius < kMinJudgedRadius;
         const double sqrtPi = std::sqrt(M_PI);
         auto limbBlur = [&](double q) {
