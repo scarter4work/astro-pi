@@ -235,6 +235,9 @@ GlobalAligner::GlobalAligner(const ser::FloatImage& reference, bool fullFrame, d
       refCy_(0),
       fft_(1, 1) {
     CheckLuma(reference, "GlobalAligner");
+    // MeasureFrame's rule, checked here too: the full-frame branch never measures the reference.
+    if (!std::isfinite(lumaScale) || lumaScale < 1)
+        throw std::invalid_argument("GlobalAligner: luma scale " + std::to_string(lumaScale) + " is not >= 1");
     if (fullFrame_) {
         ww_ = PrevFastSize(std::min(width_, kMaxAlignWindow));
         wh_ = PrevFastSize(std::min(height_, kMaxAlignWindow));

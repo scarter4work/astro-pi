@@ -142,8 +142,8 @@ public:
     // `reference`: a 1-channel luma image (BuildReference's output). fullFrame: Selection::
     // fullFrameTarget. lumaScale: LumaScale(info), as MeasureFrame takes it (the reference's target
     // is found with it). Throws std::invalid_argument for an empty or non-1-channel image, a sample
-    // count that does not match, a lumaScale MeasureFrame refuses, or fullFrame false on a reference
-    // without a target.
+    // count that does not match, a lumaScale that is not finite and >= 1 (MeasureFrame's rule, in both
+    // branches), or fullFrame false on a reference without a target.
     GlobalAligner(const ser::FloatImage& reference, bool fullFrame, double lumaScale);
 
     // `frameLuma` must have the reference's size (std::invalid_argument otherwise); `frameStats` is

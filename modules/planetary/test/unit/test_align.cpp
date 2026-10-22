@@ -530,6 +530,13 @@ TEST_CASE("GlobalAligner rejects malformed input") {
     CHECK_THROWS_AS(GlobalAligner(FloatImage{4, 4, 1, std::vector<float>(15, 0.f)}, true, 1), std::invalid_argument);
     // A disc reference must have a target.
     CHECK_THROWS_AS(GlobalAligner(FloatImage{64, 64, 1, std::vector<float>(64 * 64, 0.1f)}, false, 1), std::invalid_argument);
+    // A luma scale MeasureFrame refuses (not finite, or under 1), whichever branch: the full-frame
+    // one never measures the reference.
+    for (bool full : {false, true})
+        for (double scale : {0.0, 0.5, -2.0, std::nan(""), HUGE_VAL}) {
+            INFO((full ? "full frame" : "disc") << ", luma scale " << scale);
+            CHECK_THROWS_AS(GlobalAligner(ref, full, scale), std::invalid_argument);
+        }
     const GlobalAligner aligner(ref, false, 1);
     const FloatImage other = RenderDisc(100, 100, 50, 50, 20, 0.03);
     CHECK_THROWS_AS(aligner.Align(other, stack::MeasureFrame(other, 0, 1)), std::invalid_argument);
