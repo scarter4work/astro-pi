@@ -85,6 +85,10 @@ within 1.1 % while the band SNR falls by up to two orders of magnitude:
 
 A blurred (sigma 1) copy plus noise 0.02 still measures < 0.9 x the original (noise cannot buy back blur).
 
+Repeatability on planet-sized crops (synthetic disc, 20 noise seeds, same box): boxes of 33-106 px
+give a seed-to-seed sd of 0.07-0.14 % at noise 0.002, 0.18-0.38 % at 0.005 and 0.35-0.75 % at
+0.01; the full range never exceeds 2.8 %. Measurement noise alone stays inside Ruling 2's 3 %.
+
 AutoStakkert's own selection (fewer, sharper frames -> more detail), same capture, one box:
 
 | Capture | Fewer frames | More frames | Ratio | Asserted |
