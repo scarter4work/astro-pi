@@ -342,7 +342,7 @@ int main(int argc, char** argv) try {
              ",\"focus\":{\"outcome\":" + Json(FocusName(s.focus.outcome)) + ",\"disc\":" + (s.focus.disc ? "true" : "false") +
              ",\"measure\":" + Fmt(s.focus.measure) + ",\"warnAbove\":" + Fmt(s.focus.warnAbove) + ",\"refuseFrom\":" +
              Fmt(s.focus.refuseFrom) + ",\"detailScale\":" + Fmt(s.focus.detailScale) + ",\"limbBlur\":" + Fmt(s.focus.limbBlur) +
-             ",\"usableBlur\":" + Fmt(s.focus.usableBlur) + ",\"radius\":" + Fmt(s.focus.radius, 2) + ",\"judged\":" +
+             ",\"note\":" + Json(s.focus.note) + ",\"radius\":" + Fmt(s.focus.radius, 2) + ",\"judged\":" +
              std::to_string(s.focus.judged) + ",\"windows\":" + std::to_string(s.focus.windows) + "}" +
              ",\"regions\":" + std::to_string(o.frames.regions) + ",\"admittedSuspects\":" +
              std::to_string(o.frames.admittedSuspects.size()) + ",\"rejectedSuspects\":" +
@@ -365,12 +365,12 @@ int main(int argc, char** argv) try {
         std::printf("used      %lld of %lld; %d regions\n", static_cast<long long>(s.used), static_cast<long long>(s.measured),
                     o.frames.regions);
         const stack::FocusCheck& fc = s.focus;
-        std::printf("focus     %s, %s: measure %s (warn above %s, refuse from %s); detail %s px; limb blur %s px of usable %s px; "
-                    "radius %.1f luma px; %d of %d windows judged\n",
+        std::printf("focus     %s, %s: measure %s (warn above %s, refuse from %s); detail %s px; limb blur %s px; "
+                    "radius %.1f luma px; %d of %d windows judged%s%s\n",
                     FocusName(fc.outcome), fc.outcome == stack::FocusOutcome::NotJudged ? "nothing judged" : fc.disc ? "disc" : "frame-filling",
                     Fmt(fc.measure, 3).c_str(), Fmt(fc.warnAbove, 3).c_str(),
                     Fmt(fc.refuseFrom, 3).c_str(), Fmt(fc.detailScale, 2).c_str(), Fmt(fc.limbBlur, 2).c_str(),
-                    Fmt(fc.usableBlur, 2).c_str(), fc.radius, fc.judged, fc.windows);
+                    fc.radius, fc.judged, fc.windows, fc.note.empty() ? "" : "; ", fc.note.c_str());
         std::printf("time      %.2f s:", s.seconds);
         for (const auto& p : s.phaseSeconds) std::printf(" %s %.2f;", p.first.c_str(), p.second);
         std::printf("\nread      %.1f MB at %.1f MB/s; peak RSS %.0f MB (planned engine peak %.0f MB; workers %d/%d/%d, observers %d)\n",

@@ -279,7 +279,8 @@ std::vector<FocusWindow> FocusWindows(const RegionLayout& layout, double lumaSca
 }
 
 std::vector<FocusProfile> MeasureFocus(const std::vector<ser::FloatImage>& lumas, const std::vector<Shift>& shifts,
-                                       const std::vector<FocusWindow>& windows, int threads) {
+                                       const std::vector<FocusWindow>& windows, int threads,
+                                       const std::function<void()>& poll) {
     if (lumas.size() != shifts.size()) throw std::invalid_argument("MeasureFocus: one shift per frame");
     for (const ser::FloatImage& l : lumas)
         if (l.channels != 1 || l.width != lumas[0].width || l.height != lumas[0].height ||
@@ -291,11 +292,8 @@ std::vector<FocusProfile> MeasureFocus(const std::vector<ser::FloatImage>& lumas
     for (const FocusWindow& f : windows)
         if (f.side < kMinFocusWindow || f.x0 < 0 || f.y0 < 0 || f.x0 + f.side > W || f.y0 + f.side > H)
             throw std::invalid_argument("MeasureFocus: a window is not inside the frames");
-    // Windows over ParallelBands: window w is "row" w x kMinBandRows, so every band of whole rows holds
-    // whole windows (ceil(r0 / kMinBandRows) .. ceil(r1 / kMinBandRows) - 1) and each window is in one band.
-    ParallelBands(static_cast<int>(windows.size()) * kMinBandRows, threads, [&](int r0, int r1) {
-        for (int wi = (r0 + kMinBandRows - 1) / kMinBandRows; wi < (r1 + kMinBandRows - 1) / kMinBandRows; ++wi) {
-            const FocusWindow& win = windows[static_cast<size_t>(wi)];
+    auto measure = [&](size_t wi, const std::function<void()>* framePoll) {
+            const FocusWindow& win = windows[wi];
             const int s = win.side, n = NextFastSize(s);
             const Fft2D fft(n, n);
             std::vector<double> taper(static_cast<size_t>(s));
@@ -307,6 +305,7 @@ std::vector<FocusProfile> MeasureFocus(const std::vector<ser::FloatImage>& lumas
             std::vector<Complex> a(static_cast<size_t>(n) * n, Complex(0, 0)), b = a, data;
             int na = 0, nb = 0;
             for (size_t k = 0; k < lumas.size(); ++k) {
+                if (framePoll) (*framePoll)();
                 // The window's content in frame k sits at the reference window + the global shift: read it
                 // at the integer part, then move it by the fraction with the Fourier shift theorem (exact
                 // for the windowed data; interpolation would colour the noise and soften the detail).
@@ -342,7 +341,7 @@ std::vector<FocusProfile> MeasureFocus(const std::vector<ser::FloatImage>& lumas
             FocusProfile& p = out[static_cast<size_t>(wi)];
             p.side = n;
             p.frames = na + nb;
-            if (na == 0 || nb == 0) continue;
+            if (na == 0 || nb == 0) return;
             // The taper's own power spectrum: its second moment adds to the signal's (see FocusProfile).
             data.assign(static_cast<size_t>(n) * n, Complex(0, 0));
             for (int y = 0; y < s; ++y)
@@ -380,18 +379,35 @@ std::vector<FocusProfile> MeasureFocus(const std::vector<ser::FloatImage>& lumas
                 p.w0 = 1;
                 p.w2 = 0;
             }
-        }
-    });
+    };
+    if (windows.size() == 1) {  // one window (a disc): on the calling thread, polled between frames
+        measure(0, poll ? &poll : nullptr);
+        return out;
+    }
+    // Windows over ParallelBands, in groups (polled between them): window w is "row" w x kMinBandRows, so
+    // every band of whole rows holds whole windows and each window is in one band.
+    const size_t group = static_cast<size_t>(std::max(1, threads)) * 4;
+    for (size_t g0 = 0; g0 < windows.size(); g0 += group) {
+        if (poll) poll();
+        const size_t count = std::min(group, windows.size() - g0);
+        ParallelBands(static_cast<int>(count) * kMinBandRows, threads, [&](int r0, int r1) {
+            for (int i = (r0 + kMinBandRows - 1) / kMinBandRows; i < (r1 + kMinBandRows - 1) / kMinBandRows; ++i)
+                measure(g0 + static_cast<size_t>(i), nullptr);
+        });
+    }
+    if (poll) poll();
     return out;
 }
 
 FocusWindow DiscFocusWindow(double cx, double cy, double radius, int width, int height) {
     FocusWindow f;
     f.taper = false;
-    const int fit = std::min(width, height);
-    if (fit < kMinFocusWindow) return f;
+    f.cx = cx;
+    f.cy = cy;
+    const int fit = PrevFastSize(std::max(1, std::min(width, height)));
+    if (fit < kMinFocusWindow || fit < 2 * radius + 16) return f;  // no room for the disc and 8 px of sky
     const int want = NextFastSize(static_cast<int>(std::ceil(4 * radius + 16)));
-    f.side = want <= fit ? want : PrevFastSize(fit);
+    f.side = std::min(want, fit);
     f.x0 = std::clamp(static_cast<int>(std::lround(cx)) - f.side / 2, 0, width - f.side);
     f.y0 = std::clamp(static_cast<int>(std::lround(cy)) - f.side / 2, 0, height - f.side);
     return f;
@@ -443,33 +459,93 @@ double DiscHalfRadius(const ser::FloatImage& luma, double cx, double cy, double 
     return 0;
 }
 
-double DiscDetailScale(double radius, double sigma, int n) {
+double DiscRadius(const ser::FloatImage& luma, double cx, double cy, double r0) {
+    double r = r0;
+    for (int step = 0; step < 6; ++step) {
+        FocusWindow win = DiscFocusWindow(cx, cy, r, luma.width, luma.height);
+        if (win.side == 0) {  // an inflated first guess: the largest window the frame allows
+            win.side = PrevFastSize(std::max(1, std::min(luma.width, luma.height)));
+            if (win.side < kMinFocusWindow) break;
+            win.x0 = std::clamp(static_cast<int>(std::lround(cx)) - win.side / 2, 0, luma.width - win.side);
+            win.y0 = std::clamp(static_cast<int>(std::lround(cy)) - win.side / 2, 0, luma.height - win.side);
+        }
+        const double next = DiscHalfRadius(luma, cx, cy, r, win);
+        if (!(next > 0)) break;
+        const bool settled = std::fabs(next - r) < 0.05;
+        r = next;
+        if (settled) break;
+    }
+    return r;
+}
+
+namespace {
+
+// The disc model reduced to its distinct radial frequencies: the power is (2 J1(x) / x)^2 exp(-4 pi^2
+// sigma^2 f^2) sinc^2(fx) sinc^2(fy); every factor but the separable pixel sinc^2 depends on f^2 =
+// (kx^2 + ky^2) / n^2 alone, so the grid's bins are grouped by the integer key kx^2 + ky^2 with their
+// sinc^2 summed, and the Bessel term evaluated once per key. Exact (the same sums, regrouped); a model
+// evaluation is then one exp per distinct key -- ~0.4 M for n = 2048 instead of 4 M bins with a Bessel
+// each. poll() is called every 64 rows.
+struct DiscModel {
+    std::vector<double> f2, weight;  // per distinct key: f^2 and (2 J1 / x)^2 x the summed sinc^2
+};
+
+DiscModel BuildDiscModel(double radius, int n, const std::function<void()>& poll) {
     auto sinc = [](double u) { return u == 0 ? 1.0 : std::sin(M_PI * u) / (M_PI * u); };
-    double num = 0, den = 0;
+    std::vector<double> s2(static_cast<size_t>(n));
+    for (int k = 0; k < n; ++k) {
+        const double v = sinc((k <= n / 2 ? k : k - n) / static_cast<double>(n));
+        s2[static_cast<size_t>(k)] = v * v;
+    }
+    const int half = n / 2 + 1;
+    const size_t maxKey = 2 * static_cast<size_t>(half) * static_cast<size_t>(half);
+    std::vector<double> sum(maxKey + 1, 0.0);
     for (int ky = 0; ky < n; ++ky) {
-        const double fy = (ky <= n / 2 ? ky : ky - n) / static_cast<double>(n);
+        if (poll && ky % 64 == 0) poll();
+        const int vy = ky <= n / 2 ? ky : ky - n;
         for (int kx = 0; kx < n; ++kx) {
             if (kx == 0 && ky == 0) continue;
-            const double fx = (kx <= n / 2 ? kx : kx - n) / static_cast<double>(n);
-            const double f2 = fx * fx + fy * fy, x = 2 * M_PI * std::sqrt(f2) * radius;
-            const double airy = x > 1e-9 ? 2 * std::cyl_bessel_j(1.0, x) / x : 1.0;
-            const double s = sinc(fx) * sinc(fy);
-            const double p = airy * airy * std::exp(-4 * M_PI * M_PI * sigma * sigma * f2) * s * s;
-            num += f2 * p;
-            den += p;
+            const int vx = kx <= n / 2 ? kx : kx - n;
+            sum[static_cast<size_t>(vx * vx + vy * vy)] += s2[static_cast<size_t>(kx)] * s2[static_cast<size_t>(ky)];
         }
+    }
+    DiscModel m;
+    for (size_t key = 1; key <= maxKey; ++key) {
+        if (sum[key] == 0) continue;
+        const double f2 = static_cast<double>(key) / (static_cast<double>(n) * n);
+        const double x = 2 * M_PI * std::sqrt(f2) * radius;
+        const double airy = x > 1e-9 ? 2 * std::cyl_bessel_j(1.0, x) / x : 1.0;
+        m.f2.push_back(f2);
+        m.weight.push_back(airy * airy * sum[key]);
+    }
+    return m;
+}
+
+double ModelDetail(const DiscModel& m, double sigma) {
+    const double c = 4 * M_PI * M_PI * sigma * sigma;
+    double num = 0, den = 0;
+    for (size_t i = 0; i < m.f2.size(); ++i) {
+        const double p = m.weight[i] * std::exp(-c * m.f2[i]);
+        num += m.f2[i] * p;
+        den += p;
     }
     return num > 0 && den > 0 ? 1 / (2 * M_PI * std::sqrt(num / den)) : std::numeric_limits<double>::infinity();
 }
 
-double LimbBlurFromDetail(double detail, double radius, int n) {
+}  // namespace
+
+double DiscDetailScale(double radius, double sigma, int n) { return ModelDetail(BuildDiscModel(radius, n, {}), sigma); }
+
+double LimbBlurFromDetail(double detail, double radius, int n, const std::function<void()>& poll) {
     const double maxSigma = 4 * radius + 8;
-    if (!(detail > DiscDetailScale(radius, 0, n))) return 0;
-    if (!(detail < DiscDetailScale(radius, maxSigma, n))) return maxSigma;
+    const DiscModel m = BuildDiscModel(radius, n, poll);
+    if (!(detail > ModelDetail(m, 0))) return 0;
+    if (!(detail < ModelDetail(m, maxSigma))) return maxSigma;
     double lo = 0, hi = maxSigma;
     while (hi - lo > 1e-3) {
+        if (poll) poll();
         const double mid = 0.5 * (lo + hi);
-        (DiscDetailScale(radius, mid, n) < detail ? lo : hi) = mid;
+        (ModelDetail(m, mid) < detail ? lo : hi) = mid;
     }
     return 0.5 * (lo + hi);
 }
@@ -499,7 +575,8 @@ FocusVerdict JudgeFocus(const std::vector<FocusProfile>& profiles, double lumaSc
     return v;
 }
 
-FocusCheck JudgeDiscFocus(const FocusProfile& profile, double radius, double lumaScale) {
+FocusCheck JudgeDiscFocus(const FocusProfile& profile, double radius, double lumaScale, const FocusWindow& window,
+                          const std::function<void()>& poll) {
     FocusCheck c;
     c.disc = true;
     c.radius = radius;
@@ -508,17 +585,60 @@ FocusCheck JudgeDiscFocus(const FocusProfile& profile, double radius, double lum
     c.refuseFrom = kDiscRefuseFrom;
     double snr = 0;
     const double detail = FocusDetailScale(profile, &snr);
-    if (!(radius > 0) || !(snr >= kMinFocusSnr) || !std::isfinite(detail)) return c;  // nothing to judge on
+    if (!(radius > 0) || !(snr >= kMinFocusSnr) || !std::isfinite(detail)) {
+        c.note = "the disc shows no signal above the noise";
+        return c;
+    }
     c.judged = 1;
     c.detailScale = detail * lumaScale;
-    const double limb = LimbBlurFromDetail(detail, radius, profile.side);
-    const double usable = std::max(kBlurLimit * radius, kBlurFloorPixels / lumaScale);
+    const double limb = LimbBlurFromDetail(detail, radius, profile.side, poll);
     c.limbBlur = limb * lumaScale;
-    c.usableBlur = usable * lumaScale;
-    c.measure = limb / usable;
+    c.measure = limb / radius;
     c.outcome = c.measure >= c.refuseFrom ? FocusOutcome::Refused
                 : c.measure > c.warnAbove ? FocusOutcome::Warned
                                           : FocusOutcome::InFocus;
+    // The blurred halo must lie inside the window around the disc's centre, or the window's edge cuts it
+    // and the measure reads sharper than the disc is; a refusal stands (the cut only understates).
+    const double room = std::min({window.cx - window.x0, window.x0 + window.side - 1 - window.cx, window.cy - window.y0,
+                                  window.y0 + window.side - 1 - window.cy});
+    if (c.outcome != FocusOutcome::Refused && radius + 3 * limb > room) {
+        c.note = "the disc's blurred halo (radius " + Num((radius + 3 * limb) * lumaScale, 0) + " px) does not fit the " +
+                 Num(window.side * lumaScale, 0) + "-px window the frame allows";
+        c.outcome = FocusOutcome::NotJudged;
+    }
+    return c;
+}
+
+FocusCheck MeasureDiscFocus(const std::vector<ser::FloatImage>& lumas, const std::vector<Shift>& shifts, double cx, double cy,
+                            double radius, double lumaScale, int threads, const std::function<void()>& poll,
+                            FocusProfile* profile, FocusWindow* window) {
+    FocusCheck c;
+    c.disc = true;
+    c.radius = radius;
+    c.warnAbove = kDiscWarnAbove;
+    c.refuseFrom = kDiscRefuseFrom;
+    if (lumas.empty()) return c;
+    const int W = lumas[0].width, H = lumas[0].height;
+    FocusWindow win = DiscFocusWindow(cx, cy, radius, W, H);
+    if (window) *window = win;
+    if (win.side == 0) {
+        c.note = "the disc and 8 px of sky around it do not fit the frame";
+        return c;
+    }
+    const int fit = PrevFastSize(std::min(W, H));
+    for (int attempt = 0; attempt < 3; ++attempt) {
+        const FocusProfile p = MeasureFocus(lumas, shifts, {win}, threads, poll).front();
+        if (profile) *profile = p;
+        if (window) *window = win;
+        c = JudgeDiscFocus(p, radius, lumaScale, win, poll);
+        const double limb = c.limbBlur / lumaScale;
+        if (c.outcome != FocusOutcome::NotJudged || c.judged == 0 || win.side >= fit) return c;
+        const int need = std::min(fit, NextFastSize(static_cast<int>(std::ceil(2 * (radius + 3 * limb) + 8))));
+        if (need <= win.side) return c;
+        win.side = need;
+        win.x0 = std::clamp(static_cast<int>(std::lround(cx)) - need / 2, 0, W - need);
+        win.y0 = std::clamp(static_cast<int>(std::lround(cy)) - need / 2, 0, H - need);
+    }
     return c;
 }
 
@@ -540,8 +660,8 @@ std::string FocusWarning(const FocusCheck& c) {
     if (c.outcome != FocusOutcome::Warned) return {};
     if (c.disc)
         return "The stack may be out of focus: the sharpest frames blur the limb by " + Num(c.limbBlur, 1) + " px, " +
-               Num(c.measure, 2) + " x the usable " + Num(c.usableBlur, 1) + " px for a target this size (in-focus captures: up to " +
-               Num(c.warnAbove, 2) + " x; refused from " + Num(c.refuseFrom, 2) + " x) -- check the focus.";
+               Num(c.measure, 2) + " of the disc's radius (in-focus captures: up to " + Num(c.warnAbove, 2) + "; refused from " +
+               Num(c.refuseFrom, 2) + ") -- check the focus.";
     return "The stack may be out of focus (or the capture is sampled far finer than the detail it holds): the "
            "sharpest frames show no detail finer than " +
            Num(c.detailScale, 1) + " px (in-focus captures: up to " + Num(c.warnAbove, 1) + " px).";
@@ -847,41 +967,41 @@ StackOutcome RunStack(const SourceFactory& rawFactory, int threads, const Progre
             }
         }
         // A disc's radius from its half-level crossing on the reference (blur-proof), not Select's box.
-        double discRadius = sel.targetRadius;
-        if (!sel.fullFrameTarget) {
-            const FocusWindow first = DiscFocusWindow(refStats.cx, refStats.cy, sel.targetRadius, layout.width, layout.height);
-            const double half = first.side > 0 ? DiscHalfRadius(reference, refStats.cx, refStats.cy, sel.targetRadius, first) : 0;
-            if (half > 0) discRadius = half;
+        const double discRadius = sel.fullFrameTarget ? 0.0 : DiscRadius(reference, refStats.cx, refStats.cy, sel.targetRadius);
+        const std::function<void()> poll = [&aligning] { aligning.ThrowIfCancelled(); };
+        FocusCheck& fc = sum.focus;
+        if (sel.fullFrameTarget) {
+            out.frames.focusWindows = FocusWindows(layout, scale);
+            if (!out.frames.focusWindows.empty()) {
+                out.frames.focus = MeasureFocus(lumas, focusShifts, out.frames.focusWindows, mem.alignWorkers, poll);
+                fc = JudgeSurfaceFocus(out.frames.focus, scale);
+            }
+        } else {
+            FocusProfile profile;
+            FocusWindow window;
+            fc = MeasureDiscFocus(lumas, focusShifts, refStats.cx, refStats.cy, discRadius, scale, mem.alignWorkers, poll,
+                                  &profile, &window);
+            out.frames.focusWindows = {window};
+            if (window.side > 0) out.frames.focus = {profile};
         }
-        const std::vector<FocusWindow> windows =
-            sel.fullFrameTarget ? FocusWindows(layout, scale)
-                                : std::vector<FocusWindow>{DiscFocusWindow(refStats.cx, refStats.cy, discRadius,
-                                                                           layout.width, layout.height)};
-        out.frames.focusWindows = windows;
-        if (!windows.empty() && windows.front().side > 0)
-            out.frames.focus = MeasureFocus(lumas, focusShifts, windows, mem.alignWorkers);
         lumas = {};
         aligning.Finish();
         aligning.ThrowIfCancelled();
-        FocusCheck& fc = sum.focus;
-        if (!out.frames.focus.empty())
-            fc = sel.fullFrameTarget ? JudgeSurfaceFocus(out.frames.focus, scale)
-                                     : JudgeDiscFocus(out.frames.focus.front(), discRadius, scale);
         step("Judging focus", t0);
         if (fc.outcome == FocusOutcome::Refused) {
             // Only a disc is refused (P15: gross limb blur; a frame-filling target is never refused here).
             const auto numbers = std::vector<std::pair<std::string, double>>{
                 {"limb blur (pixels)", fc.limbBlur},
-                {"usable limb blur (pixels)", fc.usableBlur},
-                {"limb blur / usable", fc.measure},
-                {"refused from (limb blur / usable)", fc.refuseFrom},
                 {"target radius (pixels)", fc.radius * scale},
+                {"limb blur / radius", fc.measure},
+                {"refused from (limb blur / radius)", fc.refuseFrom},
                 {"frames measured for detail", static_cast<double>(ranked.size())}};
             return finish(Diagnosed(std::move(out), DiagnosisKind::OutOfFocus,
                                     "Out of focus: even the " + Count(static_cast<int64_t>(ranked.size())) +
                                         " sharpest frames blur the limb by " + Num(fc.limbBlur, 1) + " px, " +
-                                        Num(fc.measure, 1) + " x the usable " + Num(fc.usableBlur, 1) +
-                                        " px for a target this size -- the focus, or seeing that blurred every frame.",
+                                        Num(fc.measure, 2) + " of the disc's " + Num(fc.radius * scale, 1) +
+                                        "-px radius (in-focus captures: up to " + Num(fc.warnAbove, 2) +
+                                        ") -- the focus, or seeing that blurred every frame.",
                                     numbers));
         }
     }
